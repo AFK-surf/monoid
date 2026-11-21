@@ -11,6 +11,7 @@ fn parse(s : String) -> Json {
 test "a profile's login files, by its runtime and how it signs in" {
   assert_eq(sign_in_files(parse("{\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"}}"), "/"), [".credentials.json", ".claude.json"])
   assert_eq(sign_in_files(parse("{\"access\":{\"kind\":\"subscription\"}}"), "/"), [])
+  assert_eq(sign_in_files(parse("{\"access\":{\"kind\":\"service\",\"service\":\"colab\"}}"), "/"), ["colab-auth.json"])
   assert_eq(sign_in_files(parse("{\"access\":{\"kind\":\"service\",\"service\":\"fake-gpu\"}}"), "/"), [])
   assert_eq(sign_in_files(parse("{\"runtime\":\"codex\",\"access\":{\"kind\":\"subscription\"}}"), "/"), ["auth.json"])
   assert_eq(sign_in_files(parse("{\"runtime\":\"devin\",\"access\":{\"kind\":\"subscription\"}}"), "/"), [

@@ -2528,6 +2528,7 @@ let en : Map[String, String] = {
   "web-pages.profiles.signedInSwitch": "Signed in. Sign in again to switch accounts.",
   "web-pages.profiles.signingIn": "Signing in to {provider}",
   "web-pages.profiles.signingInNote": "Finish within 15 minutes, or it's canceled automatically",
+  "web-pages.profiles.step1Colab": "Open the auth page, sign in with the Google account for {name}, and check all Google Colab permissions",
   "web-pages.profiles.step1Devin": "Open the auth page and sign in with the Devin account for {name}",
   "web-pages.profiles.step1Google": "Open the auth page, sign in with the Google account for {name}, and approve",
   "web-pages.profiles.step2": "After approving, the page shows a code. Paste it here:",

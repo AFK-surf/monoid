@@ -837,6 +837,15 @@ pub fn overview(
                       ),
                     ),
                     (
+                      "profileServices",
+                      Some(
+                        match d.accounts {
+                          Some(_) => ja([js("colab")])
+                          None => ja([])
+                        },
+                      ),
+                    ),
+                    (
                       "machineLogins",
                       Some(
                         match d.accounts {

@@ -258,6 +258,7 @@ pub fn Given::of_jv(v : JV, data : String) -> Given {
 /// A sign-in with no profile yet (`Pending`).
 struct Pending {
   runtime : String?
+  service : String?
   access : String?
   home : String
   by : JV

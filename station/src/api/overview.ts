@@ -208,6 +208,7 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     disk: await disk,
     logins: d.accounts?.loginsView(viewer) ?? [],
     apiProviders: d.accounts?.apiProviders() ?? [],
+    profileServices: d.accounts?.profileServices() ?? [],
     machineLogins: d.accounts?.machineLogins() ?? [],
     // An OpenCode Go profile can be signed in to the OpenCode Console (accounts/console.ts) rather than given a key.
     consoleSignIn: d.accounts !== undefined,

@@ -466,3 +466,45 @@ test("service profiles decorate without agent runtime, dedup by (service, email)
   assert.equal(anon.title, "GPU 1");
   assert.ok(view.items.some((i: any) => i.group === "agy" && i.members.length === 1), "agy subscription must not merge with service profile");
 });
+
+test("colab service profile uses Google Colab group, CU creditsText, and login trouble action", () => {
+  const colab = shownProfile({
+    id: "colab-1",
+    name: "gpu@example.com",
+    email: "gpu@example.com",
+    runtime: null,
+    service: "colab",
+    runtimes: [],
+    access: { kind: "service", key: "", service: "colab" },
+    models: [],
+    env: [],
+    check: { state: "ok", detail: "已登录，gpu@example.com", models: null, checkedAt: 1000 },
+    quota: {
+      state: "ok",
+      windows: [],
+      credits: { hasCredits: true, unlimited: false, balance: "2500.00 CU" },
+      detail: "1 台运行中 · 10.05 CU/h",
+      checkedAt: 1000,
+    },
+  });
+  assert.equal(colab.group, "colab");
+  assert.equal(colab.groupTitle, "Google Colab");
+  assert.equal(colab.providerName, "Google Colab");
+  assert.equal(colab.providerMark, "colab");
+  assert.equal(colab.signInProvider, "Google Colab");
+  assert.equal(colab.usesText, "Google Colab GPU 算力");
+
+  const expired = shownProfile({
+    id: "colab-2",
+    name: "expired@example.com",
+    email: "expired@example.com",
+    runtime: null,
+    service: "colab",
+    runtimes: [],
+    access: { kind: "service", key: "", service: "colab" },
+    models: [],
+    env: [],
+    check: { state: "login", detail: "未登录", models: null, checkedAt: 1000 },
+  });
+  assert.equal(expired.trouble?.action, "login");
+});

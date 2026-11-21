@@ -481,6 +481,16 @@ let fx_new_login_done : Ref[Bool] = Ref(false)
 let fx_google_profiles : Ref[Bool] = Ref(false)
 
 ///|
+/// Whether a Google Colab compute service account is among the profiles (settings-profiles-colab, settings-profile-colab).
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_colab_profiles : Ref[Bool] = Ref(false)
+
+///|
+/// Whether a new Google Colab service sign-in is under way (settings-new-profile-colab-login).
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_colab_login : Ref[Bool] = Ref(false)
+
+///|
 /// Claude 主账号 named by an email as long as an account's (settings-profiles-long-name): its plan leaves its row's line
 /// in the sidebar before its name is cut short.
 // kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
@@ -633,6 +643,8 @@ fn fixture_reset() -> Unit {
   fx_google_login.val = ""
   fx_new_login_done.val = false
   fx_google_profiles.val = false
+  fx_colab_profiles.val = false
+  fx_colab_login.val = false
   fx_long_name.val = false
   fx_connects_waiting.val = false
 }
@@ -1112,6 +1124,8 @@ pub fn fixture_page(mode : String) -> String {
       fx_google_login.val = "needs_project"
     }
     "settings-profiles-google" => fx_google_profiles.val = true
+    "settings-profiles-colab" | "settings-profile-colab" => fx_colab_profiles.val = true
+    "settings-new-profile-colab-login" => fx_colab_login.val = true
     // a key's form for a provider with a choice of region and of protocol (Kimi's: 中国 / 国际, OpenAI / Anthropic
     // 兼容)
     "settings-new-profile-key" => fx.new_key = true
@@ -1284,7 +1298,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-adb-second" => "adb:ws1/st2"
     "settings-profile-menu" | "settings-profile-lower" | "settings-profile-share" | "settings-profile-login" | "settings-profile-login-station" =>
       "profile:ws1/st1#cc"
-    "settings-new-profile" | "settings-new-profile-hermes" | "settings-new-profile-stations" | "settings-new-profile-login" | "settings-new-profile-login-station" | "settings-new-profile-key" | "settings-new-profile-google" | "settings-new-profile-google-ways"
+    "settings-new-profile" | "settings-new-profile-hermes" | "settings-new-profile-colab" | "settings-new-profile-colab-login" | "settings-new-profile-stations" | "settings-new-profile-login" | "settings-new-profile-login-station" | "settings-new-profile-key" | "settings-new-profile-google" | "settings-new-profile-google-ways"
     | "settings-new-profile-google-code" | "settings-new-profile-google-plan" | "settings-new-profile-google-project" => "new-profile:ws1/st1"
     "settings-connect-menu" | "settings-connect-mode" => "connect:ws1/st1#k1"
     "settings-connect-run" | "settings-connect-switch" | "settings-slack-app" => "connect:ws1/st1#k1"
@@ -1332,6 +1346,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profile" | "settings-profile-hosts" | "settings-profile-hosts-one" | "settings-profile-hosts-away" | "settings-profile-hosts-pending" | "settings-profile-hosts-cutoff" | "settings-profile-quota-failed" | "settings-profile-verify" | "settings-profile-blocked" | "settings-profile-signin" | "settings-profile-fable" | "settings-profile-own3" | "settings-profile-week-fable" =>
       "profile:ws1/st1#cc"
     "settings-profile-key" | "settings-profile-move-key" => "profile:ws1/st1#k2"
+    "settings-profile-colab" => "profile:ws1/st1#colab"
     "settings-profile-move" => "profile:ws1/st1#cx"
     "settings-profile-copy" => "profile:ws1/st1#bx"
     "settings-profile-quota" | "settings-profile-quota-login" | "settings-profile-quota-expiry" | "settings-profile-unshareable" => "profile:ws1/st1#cx"
@@ -1344,7 +1359,7 @@ pub fn fixture_page(mode : String) -> String {
     // (its prices of the same workspace's: usage_real's)
     "settings-usage-real-prices" => "prices"
     "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
-    | "settings-profiles-google" | "settings-profiles-sum-a" | "settings-profiles-long-name" => "profiles"
+    | "settings-profiles-google" | "settings-profiles-colab" | "settings-profiles-sum-a" | "settings-profiles-long-name" => "profiles"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
     _ =>
       if m.has_prefix("settings-") {
@@ -1556,6 +1571,44 @@ fn fx_profiles() -> Array[Json] {
         ]),
       )
     }
+  }
+  if fx_colab_profiles.val {
+    profiles.push(
+      fx_profile("colab", "lin@colab.example", "service", "green", "可用", "colab", "Google Colab", [
+        ("runtime", Json::null()),
+        ("service", str("colab")),
+        ("runtimes", []),
+        ("email", str("lin@colab.example")),
+        ("access", obj([("kind", str("service")), ("key", str("")), ("service", str("colab")), ("login", Json::boolean(true))])),
+        ("providerName", str("Google Colab")),
+        ("providerMark", str("colab")),
+        ("signInProvider", str("Google Colab")),
+        ("kindText", str("Google Colab")),
+        ("usesText", str("Google Colab GPU 算力")),
+        ("planText", str("")),
+        ("models", []),
+        ("available", []),
+        ("added", []),
+        ("series", []),
+        ("modelsText", str("")),
+        ("canAddModel", Json::boolean(false)),
+        ("decisionOnly", Json::boolean(false)),
+        ("decisionModels", []),
+        ("usedBy", []),
+        ("share", Json::null()),
+        ("shareable", Json::boolean(false)),
+        ("shareRefusal", str("Google Colab 算力账号仅保存在所属 station 上，不支持跨 station 分享")),
+        ("check", obj([("state", str("ok")), ("detail", str("已登录，lin@colab.example")), ("models", Json::null()), ("time", obj([("checkedAt", obj([("ago", str("刚刚"))]))]))])),
+        ("quota", obj([
+          ("state", str("ok")),
+          ("windows", []),
+          ("credits", obj([("hasCredits", Json::boolean(true)), ("unlimited", Json::boolean(false)), ("balance", str("2500.00 CU"))])),
+          ("creditsText", str("2,500 CU")),
+          ("detail", str("1 台运行中 · 10.05 CU/h")),
+          ("time", obj([("checkedAt", obj([("ago", str("刚刚"))]))])),
+        ])),
+      ]),
+    )
   }
   if fx.copy_shown {
     // Maple's Claude subscription borrowed here (share role user): its station pauses it (`enabled`), edits nothing else.
@@ -2582,7 +2635,28 @@ fn fx_station(address : String) -> Json {
           // a new profile's sign-in under way (settings-new-profile-login…)
           (
             "logins",
-            if fx_google_login.val != "" {
+            if fx_colab_login.val {
+              [
+                obj([
+                  ("id", str("login-new")),
+                  ("runtime", Json::null()),
+                  ("service", str("colab")),
+                  (
+                    "job",
+                    obj([
+                      ("profile", str("login-new")),
+                      ("runtime", Json::null()),
+                      ("service", str("colab")),
+                      ("state", str("needs_code")),
+                      ("url", str("https://accounts.google.com/o/oauth2/v2/auth?client_id=1014160490159&scope=colaboratory")),
+                      ("startedAt", Json::number(0.0)),
+                      ("expiresAt", Json::number(0.0)),
+                      ("browser", Json::boolean(true)),
+                    ]),
+                  ),
+                ]),
+              ]
+            } else if fx_google_login.val != "" {
               [
                 obj([
                   ("id", str("login-new")), ("runtime", str("agy")), ("job", fx_google_job(fx_google_login.val)),
@@ -3563,10 +3637,11 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
         ]),
       )
+    "profileFlow" if fx_colab_login.val => Some(fx_profile_flow_colab_login())
     "profileFlow" if fx_google.val != "" => Some(fx_profile_flow_google(fx_google.val))
     "profileFlow" if fx.new_login => Some(fx_profile_flow_plan())
     "profileFlow" if fx.new_key => Some(fx_profile_flow_key())
-    "profileFlow" => Some(fx_profile_flow(hermes=mode == "settings-new-profile-hermes"))
+    "profileFlow" => Some(fx_profile_flow(hermes=mode == "settings-new-profile-hermes", colab=mode == "settings-new-profile-colab"))
     "pick" if text(Some(Json::object(params)), "of").has_prefix("session:") => Some(fx_session_pick())
     "connectFlow" if fx_connect_step.val == "commaBind" => Some(fx_comma_flow())
     "connectFlow" if fx_connect_step.val == "platformGroup" => Some(fx_group_flow("platform", mode))
@@ -4512,6 +4587,27 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     }
     // the drafts' forms (a new profile's, a new connect's, the decisions' and the archive policy's), opened and edited
     // an Anthropic plan's sign-in for a new profile, begun (settings-new-profile-login…)
+    "login.new" if fx_colab_login.val =>
+      Some(
+        Ok(
+          obj([
+            ("id", str("login-new")),
+            (
+              "job",
+              obj([
+                ("profile", str("login-new")),
+                ("runtime", Json::null()),
+                ("service", str("colab")),
+                ("state", str("needs_code")),
+                ("url", str("https://accounts.google.com/o/oauth2/v2/auth?client_id=1014160490159&scope=colaboratory")),
+                ("startedAt", Json::number(0.0)),
+                ("expiresAt", Json::number(0.0)),
+                ("browser", Json::boolean(true)),
+              ]),
+            ),
+          ]),
+        ),
+      )
     "login.new" if fx.new_login => Some(Ok(obj([("id", str("login-new")), ("job", fx_login_job("login-new", "needs_code"))])))
     // a code pasted back for Claude's sign-in, as the station takes it (station/src/accounts/login.ts claudeCodeOf):
     // refused without its `#` and what follows it, the sign-in still waiting; whole, signed in
@@ -5062,8 +5158,34 @@ fn fx_profile_flow_key() -> Json {
 }
 
 ///|
+/// A new profile's draft at a Google Colab OAuth sign-in (`profileFlow`, settings-new-profile-colab-login).
+fn fx_profile_flow_colab_login() -> Json {
+  obj([
+    ("step", str("connect")),
+    ("station", str("ws1/st1")),
+    ("title", str("连接 Google Colab")),
+    ("hint", str("")),
+    ("method", str("plan")),
+    ("tile", obj([("id", str("service-colab")), ("name", str("Google Colab")), ("kind", str("service")), ("service", str("colab")), ("mark", str("colab"))])),
+    ("signIn", obj([("service", str("colab")), ("provider", str("Google Colab"))])),
+    ("groups", []),
+    ("choices", []),
+    ("showEndpoint", Json::boolean(false)),
+    ("endpoint", str("")),
+    ("protocols", []),
+    ("showKey", Json::boolean(false)),
+    ("key", str("")),
+    ("keyLabel", str("")),
+    ("canSubmit", Json::boolean(false)),
+    ("pending", Json::boolean(false)),
+    ("submitLabel", str("")),
+    ("usesLine", str("添加后可用于 Google Colab GPU 算力任务")),
+  ])
+}
+
+///|
 /// A new profile's draft at its first step (`profileFlow`): the providers by group.
-fn fx_profile_flow(hermes? : Bool = false) -> Json {
+fn fx_profile_flow(hermes? : Bool = false, colab? : Bool = false) -> Json {
   let provider = fn(id : String, name : String, group : String, runtime : String, mark : String) {
     obj([("id", str(id)), ("name", str(name)), ("group", str(group)), ("kind", str("api-provider")), ("runtime", str(runtime)), ("mark", str(mark))])
   }
@@ -5083,6 +5205,28 @@ fn fx_profile_flow(hermes? : Bool = false) -> Json {
     ]),
     obj([("id", str("gateways")), ("title", str("中转站")), ("providers", [provider("openrouter", "OpenRouter", "gateways", "", "openrouter")])]),
   ]
+  if colab {
+    groups.push(obj([
+      ("id", str("services")),
+      ("title", str("算力与服务")),
+      (
+        "providers",
+        [
+          obj([
+            ("id", str("service-colab")),
+            ("name", str("Google Colab")),
+            ("group", str("services")),
+            ("kind", str("service")),
+            ("service", str("colab")),
+            ("mark", str("colab")),
+            ("hasPlan", Json::boolean(true)),
+            ("hasKey", Json::boolean(false)),
+            ("usesText", str("Google Colab GPU 算力")),
+          ]),
+        ],
+      ),
+    ]))
+  }
   if hermes {
     groups.push(obj([
       ("id", str("local")), ("title", str("自定义变量")),

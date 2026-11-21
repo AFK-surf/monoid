@@ -551,3 +551,27 @@ test("Hermes variables are offered only on stations that support Hermes", () => 
   flows.change(topic, 1, "edit", { back: true });
   assert.ok(!flows.value(topic).groups.find((g: J) => g.id === "local").providers.some((p: J) => p.id === "env-hermes"));
 });
+
+test("Google Colab is offered in services group when station advertises profileServices and starts service sign-in", () => {
+  const { s, flows, topic } = flow();
+  flows.change(topic, 1, "open", {});
+  s.set(overview, { ok: { apiProviders: [], profileServices: ["colab"] } });
+  let view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  const servicesGroup = view.groups.find((g: J) => g.id === "services");
+  assert.ok(servicesGroup, "services group should be present");
+  assert.deepEqual(
+    servicesGroup.providers.map((p: J) => [p.id, p.name, p.mark, p.hasPlan, p.hasKey]),
+    [["service-colab", "Google Colab", "colab", true, false]],
+  );
+  flows.change(topic, 1, "edit", { provider: "service-colab" });
+  view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  assert.equal(view.step, "connect");
+  assert.deepEqual(view.signIn, { service: "colab", provider: "Google Colab" });
+  assert.equal(view.usesLine, "添加后可用于 Google Colab GPU 算力任务");
+  // Station without profileServices hides the services group.
+  s.set(overview, { ok: { apiProviders: [] } });
+  flows.change(topic, 1, "edit", { back: true });
+  assert.equal(flows.value(topic).groups.find((g: J) => g.id === "services"), undefined);
+});

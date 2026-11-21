@@ -178,6 +178,9 @@ pub fn sign_in_files(p : Json, sep : String) -> Array[String] {
   let kind = if access is Some(Object(_)) { get(access, "kind") } else { None }
   let out = []
   if kind is Some(String("service")) {
+    if get(access, "service") is Some(String("colab")) {
+      out.push("colab-auth.json")
+    }
     return out
   }
   if kind is Some(String("subscription")) {

@@ -4,7 +4,8 @@
 import type { Env } from "../agents/machine-logins.ts";
 import type { Lang } from "../ops/i18n.ts";
 import type { Profile } from "../sessions/config.ts";
-import type { LoginJob } from "./login.ts";
+import { type ColabUrls, makeColabServiceAdapter } from "./colab.ts";
+import type { LoginJob, LoginManager } from "./login.ts";
 import type { ProfileCheck, ProfileQuota } from "./profiles.ts";
 
 export interface ServiceProfileAdapter {
@@ -16,12 +17,20 @@ export interface ServiceProfileAdapter {
   identity(home: string): Promise<string | null>;
   check(profile: Profile, ctx: { env: Env; lang: Lang }): Promise<ProfileCheck>;
   quota(profile: Profile, ctx: { env: Env; lang: Lang }): Promise<ProfileQuota>;
-  login?(profile: { id: string; home: string; email?: string | null }, ctx: { env: Env; lang: Lang }): Promise<LoginJob>;
+  login?(
+    profile: { id: string; home: string; email?: string | null },
+    ctx: { env: Env; lang: Lang; logins: Pick<LoginManager, "startOAuthCode"> },
+  ): Promise<LoginJob>;
 }
 
 export type ServiceRegistry = ReadonlyMap<string, ServiceProfileAdapter>;
 
-export const DEFAULT_SERVICES: ServiceRegistry = new Map();
+export function builtInServices(urls?: { colab?: ColabUrls }): ServiceRegistry {
+  const colab = makeColabServiceAdapter(urls?.colab);
+  return new Map([[colab.id, colab]]);
+}
+
+export const DEFAULT_SERVICES: ServiceRegistry = builtInServices();
 
 export function serviceOf(p: { access?: unknown; service?: unknown } | null | undefined): string | undefined {
   if (!p || typeof p !== "object") return undefined;

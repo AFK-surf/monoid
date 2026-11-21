@@ -949,7 +949,7 @@ function planTile(runtime: string): J {
 /// the open platform's key beside it; Kimi Code has no tile of its own). xAI
 /// has a plan (SuperGrok) where the station runs Grok Build, Google one (its account signed in to) where it runs the
 /// Antigravity CLI; Cursor and Devin, last of the makers, where it runs them.
-export function groups(supported: string[] | null, runtimes: string[] = format.RUNTIMES, console = false): J[] {
+export function groups(supported: string[] | null, runtimes: string[] = format.RUNTIMES, console = false, services: string[] = []): J[] {
   const listed = (id: string) => supported !== null && supported.includes(id);
   const out: J[] = [];
   for (const group of providers.GROUPS) {
@@ -967,10 +967,40 @@ export function groups(supported: string[] | null, runtimes: string[] = format.R
     }
     if (tiles.length > 0) out.push({ id: group, title: t(`core-views.flow.group.${group}`), providers: tiles });
   }
+  if (services.includes("colab")) {
+    out.push({
+      id: "services",
+      title: t("core-views.flow.group.services"),
+      providers: [
+        {
+          id: "service-colab",
+          name: "Google Colab",
+          group: "services",
+          mark: "colab",
+          kind: "service",
+          service: "colab",
+          hasKey: false,
+          hasPlan: true,
+          runtime: null,
+          endpointRequired: false,
+          protocols: [],
+          keyOptional: false,
+          uses: [],
+          usesText: t("core-views.present.uses.colab"),
+          regions: [],
+        },
+      ],
+    });
+  }
   return out;
 }
 
 const consoleOf = (overview: J): boolean => get(overview, "consoleSignIn") === true;
+
+function servicesOf(overview: J): string[] {
+  const list = get(overview, "profileServices");
+  return Array.isArray(list) ? list.filter((s): s is string => typeof s === "string" && s !== "") : [];
+}
 
 function supportedOf(overview: J): string[] | null {
   const list = get(overview, "apiProviders");
@@ -982,7 +1012,7 @@ const blank = () => ({ provider: "", method: "", endpoint: "", protocol: "", reg
 
 function profileView(station: string, draft: J, overview: J, manages = false): J {
   const runtimes = stationRuntimes(overview);
-  const gs = groups(supportedOf(overview), runtimes, consoleOf(overview));
+  const gs = groups(supportedOf(overview), runtimes, consoleOf(overview), servicesOf(overview));
   const tile = typeof draft.provider === "string" ? findTile(gs, draft.provider) : undefined;
   const method = typeof draft.method === "string" && draft.method !== "" ? draft.method : null;
   const out: J = {
@@ -1019,6 +1049,11 @@ function profileView(station: string, draft: J, overview: J, manages = false): J
     return out;
   }
   if (method === "plan") {
+    if (kind === "service" && typeof tile.service === "string" && tile.service !== "") {
+      out.signIn = { service: tile.service, provider: name };
+      out.usesLine = tile.service === "colab" ? t("core-views.flow.uses_colab") : "";
+      return out;
+    }
     if (opencode) {
       out.signIn = { runtime: "claude", access: "opencode-go", provider: "OpenCode" };
       out.usesLine = t("core-views.flow.uses", { uses: usesTextOf(arr(tile.uses).filter((u: unknown) => u !== "decision")) });
@@ -1117,7 +1152,7 @@ export class ProfileFlows {
     if (action === "edit") {
       if (d.pending) throw CoreError.invalid(t("core-views.flow.wait"));
       const o = overviewOf(this.#store, station);
-      const gs = groups(supportedOf(o), stationRuntimes(o), consoleOf(o));
+      const gs = groups(supportedOf(o), stationRuntimes(o), consoleOf(o), servicesOf(o));
       if (!isObject(patch)) return null;
       if (typeof patch.provider === "string") {
         if (patch.provider === "") d.value = blank();

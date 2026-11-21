@@ -172,7 +172,7 @@ export const PARAMS: Record<string, string> = {
   "profile.login": "id:string",
   "profile.cancelLogin": "id:string",
   "profile.loginCode": "id:string code?:string",
-  "login.new": "runtime?:string access?:string",
+  "login.new": "runtime?:string access?:string service?:string",
   "login.code": "id:string code?:string",
   "login.drop": "id:string",
   "profile.loginBrowser": "id:string",
@@ -660,7 +660,7 @@ function stationOp(name: string, params: unknown): Request | null {
     case "profile.loginCode":
       return op("POST", () => `/profiles/${p.at("id")}/login-code`, p.pick(["code"]), OVERVIEW);
     case "login.new":
-      return op("POST", () => "/logins", p.pick(["runtime", "access"]), { kind: "login", id: null, from: null });
+      return op("POST", () => "/logins", p.pick(["runtime", "access", "service"]), { kind: "login", id: null, from: null });
     // A code is taken only while its sign-in waits for one (or, a company's Google account with no licence, for its
     // Google Cloud project, given the same way).
     case "login.code":

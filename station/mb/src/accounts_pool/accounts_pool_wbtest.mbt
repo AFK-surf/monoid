@@ -595,6 +595,11 @@ test "service and non-runtime profiles keep runtime=None and validate against se
     "{\"profiles\":[{\"id\":\"gpu-1\",\"home\":\"homes/gpu-1\",\"access\":{\"kind\":\"service\",\"service\":\"fake-gpu\"}}]}",
   )
   check_config(Some(cfg), "/data", services=["fake-gpu"])
+  // Default built-in services includes colab.
+  let colab_cfg = @jsjson.parse(
+    "{\"profiles\":[{\"id\":\"colab-1\",\"home\":\"homes/colab-1\",\"access\":{\"kind\":\"service\",\"service\":\"colab\"}}]}",
+  )
+  check_config(Some(colab_cfg), "/data")
   let unregistered = try {
     check_config(Some(cfg), "/data", services=[])
     false

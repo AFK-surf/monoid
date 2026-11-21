@@ -109,7 +109,7 @@ fn new_profile_flow_node(
   v.reacts(planning, fn(on) {
     if on && !n.asked {
       let sv = @signals.untracked(sign)
-      @settings.start_login(core, station, n, text(sv, "runtime"), text(sv, "access"))
+      @settings.start_login(core, station, n, text(sv, "runtime"), text(sv, "access"), service=text(sv, "service"))
     } else if !on && n.asked {
       @settings.drop_login(core, station, n)
     }
@@ -338,15 +338,16 @@ fn provider_group_node(b : @view.View, g : () -> Json?, pick : (String) -> Unit)
         }
       }
       @sf.provider_mark_node(m, fn() {
+        let kind = match text(pv(), "kind") {
+          "" => "api-provider"
+          k => k
+        }
         (
           match text(pv(), "runtime") {
-            "" => "claude"
+            "" => if kind == "service" { "" } else { "claude" }
             rt => rt
           },
-          match text(pv(), "kind") {
-            "" => "api-provider"
-            k => k
-          },
+          kind,
           text(pv(), "mark"),
         )
       }, ap_tile_glyph)
@@ -439,7 +440,7 @@ fn new_profile_plan_node(
               // let go, then asked again at once
               @settings.drop_login(core, station, n)
               let sv = field(@signals.untracked(d), "signIn")
-              @settings.start_login(core, station, n, text(sv, "runtime"), text(sv, "access"))
+              @settings.start_login(core, station, n, text(sv, "runtime"), text(sv, "access"), service=text(sv, "service"))
             })
             |> ignore
           })

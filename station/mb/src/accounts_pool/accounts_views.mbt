@@ -542,8 +542,14 @@ pub async fn Accounts::put_archive_policy(
 
 ///|
 /// `homeAsked`: what a profile's home is read for: the home, and what in it says whose account it is.
-fn home_asked(p : Profile) -> (String, String?, String?) {
-  let files = if access_kind(p.raw) == "subscription" {
+fn home_asked(p : Profile) -> (String, String?, String?, String?) {
+  let kind = access_kind(p.raw)
+  let files = if kind == "service" {
+    match p.service {
+      Some(_) => Some("service")
+      None => None
+    }
+  } else if kind == "subscription" {
     if borrowed(p.raw) {
       None
     } else {
@@ -559,20 +565,23 @@ fn home_asked(p : Profile) -> (String, String?, String?) {
     None | Some(Null) => ""
     h => js_string(h)
   }
-  (home, p.runtime, files)
+  (home, p.runtime, p.service, files)
 }
 
 ///|
 /// `JSON.stringify(homeAsked(p))`.
 fn home_asked_key(p : Profile) -> String {
-  let (home, _, files) = home_asked(p)
-  stringify(
-    jobj([
-      ("home", js(home)),
-      ("runtime", p.get("runtime").unwrap_or(jundef)),
-      ("files", jopt(files)),
-    ]),
-  )
+  let (home, _, svc, files) = home_asked(p)
+  let fields = [
+    ("home", js(home)),
+    ("runtime", p.get("runtime").unwrap_or(jundef)),
+  ]
+  match svc {
+    Some(s) => fields.push(("service", js(s)))
+    None => ()
+  }
+  fields.push(("files", jopt(files)))
+  stringify(jobj(fields))
 }
 
 ///|
@@ -722,13 +731,42 @@ pub async fn Accounts::account_email(
 }
 
 ///|
+/// The account a service home is signed in as, when its files say.
+pub async fn Accounts::service_email(
+  self : Accounts,
+  service : String,
+  home : String,
+) -> String? {
+  if service == "colab" {
+    return self.email_in([
+      {
+        path: join_path([home, "colab-auth.json"]),
+        email: async fn(text) {
+          let j = json_parse(text)
+          match j.get("email") {
+            Some(Str(e)) if trim_js(e) != "" => Some(trim_js(e))
+            _ => None
+          }
+        },
+      },
+    ])
+  }
+  None
+}
+
+///|
 /// `homeSaysSoon`: what a profile's home says, read off the thread.
 async fn Accounts::home_says_soon(self : Accounts, p : Profile) -> HomeSays {
-  let (home, runtime, files) = home_asked(p)
+  let (home, runtime, service, files) = home_asked(p)
   let email = match files {
     Some("account") =>
       match runtime {
         Some(r) => self.account_email(r, home)
+        None => None
+      }
+    Some("service") =>
+      match service {
+        Some(s) => self.service_email(s, home)
         None => None
       }
     Some(_) =>
@@ -1133,15 +1171,18 @@ pub fn Accounts::fusion_view(self : Accounts, id : String) -> JV raise Thrown {
 pub async fn Accounts::logins_view(self : Accounts) -> JV {
   let out = []
   for e in self.pending.iter() {
-    out.push(
-      jobj([
-        ("id", js(e.0)),
-        ("runtime", jopt(e.1.runtime)),
-        ("job", self.ask("logins.get", [js(e.0)])),
-        ("created", jopt(e.1.created)),
-        ("error", jopt(e.1.error)),
-      ]),
-    )
+    let fields = [
+      ("id", js(e.0)),
+      ("runtime", jopt(e.1.runtime)),
+    ]
+    match e.1.service {
+      Some(s) => fields.push(("service", js(s)))
+      None => ()
+    }
+    fields.push(("job", self.ask("logins.get", [js(e.0)])))
+    fields.push(("created", jopt(e.1.created)))
+    fields.push(("error", jopt(e.1.error)))
+    out.push(jobj(fields))
   }
   jarr(out)
 }
@@ -1189,6 +1230,7 @@ pub fn Accounts::state(self : Accounts) -> JV {
       e.0,
       jobj([
         ("runtime", jopt(e.1.runtime)),
+        ("service", jopt(e.1.service)),
         ("access", jopt(e.1.access)),
         ("home", js(e.1.home)),
         ("created", jopt(e.1.created)),

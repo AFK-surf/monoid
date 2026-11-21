@@ -385,6 +385,15 @@
   "station.profile.efforts": "{runtime} effort levels: {efforts}",
   "station.profile.envName": "Env vars ({runtime})",
   "station.profile.envUnchecked": "Custom env vars; still.fail can't check them",
+  "station.colab.activeVms": {
+    "one": "1 active VM · {rate} CU/h",
+    "other": "{n} active VMs · {rate} CU/h"
+  },
+  "station.colab.invalidCode": "Enter a valid authorization code or callback URL",
+  "station.colab.missingScope": "Google Colab permission was not granted. Sign in again and check all permissions.",
+  "station.colab.missingTokens": "Google did not return complete credentials. Sign in again and approve access.",
+  "station.colab.oauthError": "Google authorization failed: {error}",
+  "station.colab.wrongState": "This callback URL does not match the current sign-in. Use the authorization page opened for this session.",
   "station.profile.keyRefused": "{provider} refused this key ({status})",
   "station.profile.keyRequired": "Key required",
   "station.profile.lastForRuntime": "This is the last {runtime} Profile, and {users} still use it",

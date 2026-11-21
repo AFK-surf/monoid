@@ -765,6 +765,7 @@ async fn P53Accounts::sign_in_answer(self : P53Accounts, name : String, args : A
     "logins.startConsole" => Some(logins.start_console(jtext_or_empty(at(0), "id"), jtext_or_empty(at(0), "home"), lang(1)).to_json())
     "logins.startKimi" => Some(logins.start_kimi(jtext_or_empty(at(0), "id"), jtext_or_empty(at(0), "home"), lang(1)).to_json())
     "logins.startCursor" => Some(logins.start_cursor(jtext_or_empty(at(0), "id"), jtext_or_empty(at(0), "home"), lang(1)).to_json())
+    "logins.startService" => raise P53Error("service sign-in is not yet supported in native station: " + jtext_or_empty(at(0), "service"))
     "logins.get" => Some(p53_job(logins.get(s(0))))
     "logins.cancel" => {
       logins.cancel(s(0))

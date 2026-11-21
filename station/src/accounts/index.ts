@@ -872,7 +872,7 @@ export class Accounts {
       if (!adapter?.login) throw new Refusal(400, tr(lang, "station.admin.loginSubscriptionOnly"));
       log.info("accounts", "service login started from the admin page", { profile: id, service: sid, by: viewer.email });
       const email = await adapter.identity(profile.home).catch(() => null);
-      return adapter.login({ id, home: profile.home, email }, { env: this.env, lang });
+      return adapter.login({ id, home: profile.home, email }, { env: this.env, lang, logins: this.logins });
     }
     if (kind !== "subscription" && kind !== "opencode-go" && !kimi) throw new Refusal(400, tr(lang, "station.admin.loginSubscriptionOnly"));
     if (profile.machine === true) throw new Refusal(400, tr(lang, "station.admin.loginOnMachine"));
@@ -906,6 +906,13 @@ export class Accounts {
   async newLogin(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<{ id: string; job: LoginJob }> {
     const id = `login-${randomBytes(4).toString("hex")}`;
     const home = join(this.deps.data, "homes", id);
+    if (typeof input.service === "string" && input.service !== "") {
+      const adapter = this.services.get(input.service);
+      if (!adapter?.login) throw new Refusal(400, `unknown service ${text(input.service)}`);
+      this.pending.set(id, { service: input.service, home, by: viewer, created: null, error: null });
+      log.info("accounts", "service sign-in for a new profile started", { login: id, service: input.service, by: viewer.email });
+      return { id, job: await adapter.login({ id, home }, { env: this.env, lang, logins: this.logins }) };
+    }
     if (input.access === "opencode-go") {
       this.pending.set(id, { access: "opencode-go", home, by: viewer, created: null, error: null });
       log.info("accounts", "OpenCode sign-in for a new profile started", { login: id, by: viewer.email });
@@ -2107,6 +2114,11 @@ export class Accounts {
   /// The overview's `apiProviders`: the providers a key can be added for (not the two kinds from before the list).
   apiProviders(): Json[] {
     return SOURCES.filter((s) => !(s.id in LEGACY)).map((s) => ({ id: s.id, name: s.name, group: groupOf(s.id) }));
+  }
+
+  /// The overview's `profileServices`: the registered non-agent service profile adapters.
+  profileServices(): string[] {
+    return [...this.services.keys()];
   }
 
   /// Ids a new profile may not take: the profiles' own, those being made, and every home on disk (a deleted profile's

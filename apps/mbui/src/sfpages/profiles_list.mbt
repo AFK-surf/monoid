@@ -379,7 +379,12 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
     if text(state(), "text") != "" {
       text(state(), "text")
     } else if usable() && no_windows && text(quota(), "state") == "ok" && text(quota(), "creditsText") != "" {
-      text(quota(), "creditsText")
+      let detail = text(quota(), "detail")
+      if detail != "" {
+        text(quota(), "creditsText") + " · " + detail
+      } else {
+        text(quota(), "creditsText")
+      }
     } else if usable() && no_windows && text(ev(), "group") != "key" {
       if quota() is (None | Some(Null)) {
         @sf.t("web-main.quota.unchecked")

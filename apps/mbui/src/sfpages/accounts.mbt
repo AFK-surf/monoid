@@ -258,7 +258,7 @@ fn profile_keys(core : Core, here : () -> Here, o : () -> Json?, p : () -> Json?
   let kind = text(access, "kind")
   let copy = profile_copy(pv)
   let machine = flag(pv, "machine")
-  let signs_in = kind == "subscription" || flag(access, "login")
+  let signs_in = kind == "subscription" || kind == "service" || flag(access, "login")
   let asked = sign_asked(pv)
   let out : Array[String] = []
   if !copy && signs_in && !machine && asked {
@@ -890,6 +890,8 @@ pub fn login_steps_node(
           @sf.words_node(st, fn() {
             if provider() == "Devin" {
               @sf.t("web-pages.profiles.step1Devin", args=[("name", @sf.product())])
+            } else if provider() == "Google Colab" {
+              @sf.t("web-pages.profiles.step1Colab", args=[("name", @sf.product())])
             } else if provider() == "Google" {
               @sf.t("web-pages.profiles.step1Google", args=[("name", @sf.product())])
             } else {
@@ -1139,9 +1141,7 @@ fn profile_quota_node(
           let st = text(Some(q), "state")
           if st == "ok" && windows().length() > 0 {
             2
-          } else if st == "ok" &&
-            opt_text(Some(q), "detail").unwrap_or("") == "" &&
-            (credits() != "" || items(Some(q), "resets").length() > 0) {
+          } else if st == "ok" && (credits() != "" || items(Some(q), "resets").length() > 0) {
             3
           } else {
             1
@@ -1250,7 +1250,14 @@ fn profile_quota_node(
           }
         })
         g.show(at_once=true, fn() { credits() != "" }, fn(x) {
-          @sf.link_row_node(x, fn() { @sf.t("android-settings.quota.credits") }, fn() {  }, value=credits, goes=false)
+          @sf.link_row_node(
+            x,
+            fn() { @sf.t("android-settings.quota.credits") },
+            fn() {  },
+            note=fn() { if windows().length() == 0 { opt_text(quota(), "detail").unwrap_or("") } else { "" } },
+            value=credits,
+            goes=false,
+          )
         })
         // Each kind of reset it holds, a row each: how many are left at its end, where they are seen at once (the user,
         // 2026-11-10), what one gives back and till when under its name; the row pressed asks first, then uses one.

@@ -1134,3 +1134,13 @@ test("devin_fusion_pairings_factor_by_lead_and_sidekick_stay_removable_when_tick
   });
   assert.equal(p.buildFusion(null), null);
 });
+
+test("colab CU credits balance keeps CU suffix with formatted decimal", () => {
+  const c = { now: 1_900_000_000_000, offsetMin: 480 };
+  const whole = p.times({ state: "ok", windows: [], credits: { balance: "2500.00 CU" } }, c) as Record<string, unknown>;
+  assert.equal(whole.creditsText, "2,500 CU");
+  const frac = p.times({ state: "ok", windows: [], credits: { balance: "2489.95 CU" } }, c) as Record<string, unknown>;
+  assert.equal(frac.creditsText, "2,489.95 CU");
+  const dollar = p.times({ state: "ok", windows: [], credits: { balance: "12.5" } }, c) as Record<string, unknown>;
+  assert.equal(dollar.creditsText, t("core-views.present.credits.balance", { balance: "12.5" }));
+});

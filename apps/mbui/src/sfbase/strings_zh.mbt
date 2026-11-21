@@ -2501,6 +2501,7 @@ let zh : Map[String, String] = {
   "web-pages.profiles.signedInSwitch": "已登录。如需切换账号，请重新登录。",
   "web-pages.profiles.signingIn": "正在登录 {provider}",
   "web-pages.profiles.signingInNote": "请在 15 分钟内完成，超时将自动取消",
+  "web-pages.profiles.step1Colab": "打开授权页面，用 {name} 要使用的 Google 账号登录，并在权限页勾选全部 Google Colab 权限",
   "web-pages.profiles.step1Devin": "打开授权页面，用 {name} 要使用的 Devin 账号登录",
   "web-pages.profiles.step1Google": "打开授权页面，用 {name} 要使用的 Google 账号登录并同意授权",
   "web-pages.profiles.step2": "同意后页面会显示授权码，将其复制到此处：",

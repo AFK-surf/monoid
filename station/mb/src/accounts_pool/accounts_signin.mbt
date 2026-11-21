@@ -338,6 +338,27 @@ pub async fn Accounts::start_login(
   }
   let kind = access_kind(profile.raw)
   let kimi = kimi_signed_in(profile.raw)
+  if kind == "service" {
+    if borrowed(profile.raw) {
+      raise refusal(409, self.tr(lang, "station.share.borrowedEdit"))
+    }
+    let svc = jstr(jget(profile.get("access"), "service"))
+    if svc != Some("colab") {
+      raise refusal(400, self.tr(lang, "station.admin.loginSubscriptionOnly"))
+    }
+    let s = svc.unwrap()
+    self.log("info", "service login started from the admin page", [
+      ("profile", js(id)),
+      ("service", js(s)),
+      ("by", viewer.get("email").unwrap_or(jundef)),
+    ])
+    let fields = [("id", js(id)), ("service", js(s)), ("home", js(profile.home))]
+    match self.service_email(s, profile.home) {
+      Some(e) => fields.push(("email", js(e)))
+      None => ()
+    }
+    return self.ask("logins.startService", [jobj(fields), js(lang)])
+  }
   if kind != "subscription" && kind != "opencode-go" && !kimi {
     raise refusal(400, self.tr(lang, "station.admin.loginSubscriptionOnly"))
   }
@@ -419,10 +440,38 @@ pub async fn Accounts::new_login(
 ) -> JV {
   let id = "login-\{self.ctx.io.random_hex(4)}"
   let home = join_path([self.given.data, "homes", id])
+  match input.get("service") {
+    Some(Str(svc)) if svc != "" => {
+      if svc != "colab" {
+        raise refusal(400, "unknown service \{svc}")
+      }
+      self.pending[id] = {
+        runtime: None,
+        service: Some(svc),
+        access: None,
+        home,
+        by: viewer,
+        created: None,
+        error: None,
+      }
+      self.log("info", "service sign-in for a new profile started", [
+        ("login", js(id)),
+        ("service", js(svc)),
+        ("by", viewer.get("email").unwrap_or(jundef)),
+      ])
+      let job = self.ask("logins.startService", [
+        jobj([("id", js(id)), ("service", js(svc)), ("home", js(home))]),
+        js(lang),
+      ])
+      return jobj([("id", js(id)), ("job", job)])
+    }
+    _ => ()
+  }
   let access = input.get("access")
   if access == Some(Str("opencode-go")) {
     self.pending[id] = {
       runtime: None,
+      service: None,
       access: Some("opencode-go"),
       home,
       by: viewer,
@@ -439,6 +488,7 @@ pub async fn Accounts::new_login(
   if access == Some(Str("kimi-code")) {
     self.pending[id] = {
       runtime: None,
+      service: None,
       access: Some("kimi-code"),
       home,
       by: viewer,
@@ -455,6 +505,7 @@ pub async fn Accounts::new_login(
   if access == Some(Str("agy-enterprise")) {
     self.pending[id] = {
       runtime: Some("agy"),
+      service: None,
       access: Some("agy-enterprise"),
       home,
       by: viewer,
@@ -479,7 +530,7 @@ pub async fn Accounts::new_login(
   guard runtime_kind(input.get("runtime")) is Some(runtime) else {
     raise refusal(400, "unknown runtime \{text_of(input.get("runtime"))}")
   }
-  self.pending[id] = { runtime: Some(runtime), access: None, home, by: viewer, created: None, error: None }
+  self.pending[id] = { runtime: Some(runtime), service: None, access: None, home, by: viewer, created: None, error: None }
   self.log("info", "sign-in for a new profile started", [
     ("login", js(id)),
     ("runtime", js(runtime)),
@@ -586,9 +637,13 @@ async fn Accounts::pending_settled(self : Accounts, id : String) -> Unit {
       if kimi {
         None
       } else {
-        match p.runtime {
-          Some(r) => self.account_email(r, p.home)
-          None => None
+        match p.service {
+          Some(svc) => self.service_email(svc, p.home)
+          None =>
+            match p.runtime {
+              Some(r) => self.account_email(r, p.home)
+              None => None
+            }
         }
       }
   }
@@ -600,12 +655,20 @@ async fn Accounts::pending_settled(self : Accounts, id : String) -> Unit {
   } else if kimi {
     kimi_code
   } else {
-    let rt = p.runtime.unwrap_or("profile")
-    let s = slug(email.unwrap_or("\{rt}-subscription"), 40)
-    if s == "" {
-      rt
-    } else {
-      s
+    match p.service {
+      Some(svc) => {
+        let s = slug(email.unwrap_or(svc), 40)
+        if s == "" { svc } else { s }
+      }
+      None => {
+        let rt = p.runtime.unwrap_or("profile")
+        let s = slug(email.unwrap_or("\{rt}-subscription"), 40)
+        if s == "" {
+          rt
+        } else {
+          s
+        }
+      }
     }
   }
   let taken = self.taken_ids()
@@ -673,24 +736,30 @@ async fn Accounts::made_of_login(
     None =>
       if kimi {
         "Kimi Code"
-      } else if enterprise {
-        match email {
-          Some(e) => e
-          None => self.tr(lang, "station.profile.agyEnterpriseSubscription")
-        }
       } else {
-        match email {
-          Some(e) => e
+        match p.service {
+          Some(svc) => email.unwrap_or(if svc == "colab" { "Google Colab" } else { svc })
           None =>
-            match p.runtime {
-              Some("claude") => self.tr(lang, "station.profile.claudeSubscription")
-              Some("codex") => self.tr(lang, "station.profile.chatgptSubscription")
-              Some("grok") => self.tr(lang, "station.profile.grokSubscription")
-              Some("cursor") => self.tr(lang, "station.profile.cursorSubscription")
-              Some("devin") => self.tr(lang, "station.profile.devinSubscription")
-              Some("agy") => self.tr(lang, "station.profile.agySubscription")
-              Some(r) => r
-              None => profile_id
+            if enterprise {
+              match email {
+                Some(e) => e
+                None => self.tr(lang, "station.profile.agyEnterpriseSubscription")
+              }
+            } else {
+              match email {
+                Some(e) => e
+                None =>
+                  match p.runtime {
+                    Some("claude") => self.tr(lang, "station.profile.claudeSubscription")
+                    Some("codex") => self.tr(lang, "station.profile.chatgptSubscription")
+                    Some("grok") => self.tr(lang, "station.profile.grokSubscription")
+                    Some("cursor") => self.tr(lang, "station.profile.cursorSubscription")
+                    Some("devin") => self.tr(lang, "station.profile.devinSubscription")
+                    Some("agy") => self.tr(lang, "station.profile.agySubscription")
+                    Some(r) => r
+                    None => profile_id
+                  }
+              }
             }
         }
       }
@@ -730,21 +799,38 @@ async fn Accounts::made_of_login(
               ("env", Obj([])),
             ])
           } else {
-            jobj([
-              ("id", js(profile_id)),
-              ("name", js(name)),
-              ("runtime", jopt(p.runtime)),
-              (
-                "access",
-                if enterprise {
-                  jobj([("kind", js("subscription")), ("enterprise", jbool(true))])
-                } else {
-                  jobj([("kind", js("subscription"))])
-                },
-              ),
-              ("home", js("homes/\{profile_id}")),
-              ("env", Obj([])),
-            ])
+            match p.service {
+              Some(svc) =>
+                jobj([
+                  ("id", js(profile_id)),
+                  ("name", js(name)),
+                  (
+                    "access",
+                    jobj([
+                      ("kind", js("service")),
+                      ("service", js(svc)),
+                    ]),
+                  ),
+                  ("home", js("homes/\{profile_id}")),
+                  ("env", Obj([])),
+                ])
+              None =>
+                jobj([
+                  ("id", js(profile_id)),
+                  ("name", js(name)),
+                  ("runtime", jopt(p.runtime)),
+                  (
+                    "access",
+                    if enterprise {
+                      jobj([("kind", js("subscription")), ("enterprise", jbool(true))])
+                    } else {
+                      jobj([("kind", js("subscription"))])
+                    },
+                  ),
+                  ("home", js("homes/\{profile_id}")),
+                  ("env", Obj([])),
+                ])
+            }
           }
       }
       let list = profiles_of_raw(raw)

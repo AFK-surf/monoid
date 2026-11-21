@@ -250,14 +250,17 @@ export function times(value: unknown, c: Clock): unknown {
     byMinute();
     const credits = (map ?? from).credits;
     if (isObject(credits)) {
+      const cuMatch = typeof credits.balance === "string" ? /^\s*(-?\d+(?:\.\d+)?)\s*CU\s*$/i.exec(credits.balance) : null;
       const text =
         credits.unlimited === true
           ? t("core-views.present.credits.unlimited")
-          : typeof credits.balance === "string"
-            ? t("core-views.present.credits.balance", { balance: format.decimal(credits.balance) })
-            : credits.hasCredits === false
-              ? t("core-views.present.credits.none")
-              : t("core-views.present.credits.unknown");
+          : cuMatch !== null
+            ? `${format.decimal(cuMatch[1]!)} CU`
+            : typeof credits.balance === "string"
+              ? t("core-views.present.credits.balance", { balance: format.decimal(credits.balance) })
+              : credits.hasCredits === false
+                ? t("core-views.present.credits.none")
+                : t("core-views.present.credits.unknown");
       (map ??= { ...from }).creditsText = text;
     }
     const count = u64((map ?? from).resetCount);
@@ -1038,10 +1041,14 @@ export function profile(p: J): J {
   }
   o.uses = usesList;
   const kind = get(o.access, "kind");
+  const serviceId = kind === "service" ? (str(o.service) ?? str(get(o.access, "service"))) : undefined;
   o.planText = profilePlanText(o, o.quota);
   const plain = (kind === "subscription" || kind === "env") && !usesList.includes("decision");
-  o.usesText = plain ? "" : usesText(usesList);
-  if (provider) {
+  o.usesText = serviceId === "colab" ? t("core-views.present.uses.colab") : plain ? "" : usesText(usesList);
+  if (serviceId === "colab") {
+    o.providerName = "Google Colab";
+    o.providerMark = "colab";
+  } else if (provider) {
     o.providerName = provider[0];
     o.providerMark = provider[1];
   }
@@ -1054,9 +1061,15 @@ export function profile(p: J): J {
   o.modelsReading = !isObject(o.check) && !decisionOnly && kind !== "service";
   // What it is, in a word (a page's facts): the machine's own login, its provider, else its kind of account.
   o.kindText = o.machine === true ? t("core-views.present.profile.machine") : (o.providerName ?? accessLabel(str(kind) ?? ""));
-  // Who a sign-in goes to: OpenCode for OpenCode Go, Kimi for Kimi Code, else its runtime's vendor.
-  o.signInProvider = kind === "opencode-go" ? "OpenCode" : get(o.access, "provider") === "kimi-code" ? "Kimi"
-    : (SIGN_IN[str(o.runtime) ?? ""] ?? "");
+  // Who a sign-in goes to: OpenCode for OpenCode Go, Kimi for Kimi Code, Google Colab for Colab service, else its runtime's vendor.
+  o.signInProvider =
+    serviceId === "colab"
+      ? "Google Colab"
+      : kind === "opencode-go"
+        ? "OpenCode"
+        : get(o.access, "provider") === "kimi-code"
+          ? "Kimi"
+          : (SIGN_IN[str(o.runtime) ?? ""] ?? "");
   // Its last check in a line (its detail, without the 可用 (Works) a working one starts with: its state says that, nor the
   // address it signed in as where that is its name: its head says it), or that it has none yet.
   const detailOf = str(get(o.check, "detail"));
@@ -1184,8 +1197,8 @@ export function profileTrouble(p: J): J {
     const machine = get(p, "machine") === true;
     if (machine && state === "login") return issue(title, why, t("core-views.present.trouble.command_next"), "command", t("core-views.present.trouble.command_label"));
     const kind = str(get(get(p, "access"), "kind"));
-    // A subscription, or a profile signed in to an account (OpenCode Go's, Kimi Code's): signed in again.
-    const signsIn = kind === "subscription" || get(get(p, "access"), "login") === true;
+    // A subscription, a service account, or a profile signed in to an account (OpenCode Go's, Kimi Code's): signed in again.
+    const signsIn = kind === "subscription" || kind === "service" || get(get(p, "access"), "login") === true;
     if (signsIn && !machine && state === "login") return issue(title, why, t("core-views.present.trouble.login_next"), "login", t("core-views.present.trouble.login_label"));
     if (kind === "anthropic-api" || kind === "opencode-go" || kind === "api-provider") return issue(title, why, t("core-views.present.trouble.key_next"), "key", t("core-views.present.trouble.key_label"));
     if (kind === "env") return issue(title, why, t("core-views.present.trouble.env_next"), "env", t("core-views.present.trouble.env_label"));

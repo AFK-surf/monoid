@@ -277,7 +277,7 @@ pub fn check_sandboxes(raw : JV) -> Unit raise Thrown {
 pub fn check_config(
   raw : JV?,
   _data : String,
-  services? : Array[String] = [],
+  services? : Array[String] = ["colab"],
 ) -> Unit raise Thrown {
   guard raw is Some(Obj(_) as raw) else {
     raise check_fail("invalid type: \{describe(raw)}, expected struct RawConfig")

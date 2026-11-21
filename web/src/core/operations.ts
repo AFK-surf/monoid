@@ -103,7 +103,7 @@ export interface OperationParams {
   "profile.login": { id: string };
   "profile.cancelLogin": { id: string };
   "profile.loginCode": { id: string; code?: string | null | undefined };
-  "login.new": { runtime?: string | null | undefined; access?: string | null | undefined };
+  "login.new": { runtime?: string | null | undefined; access?: string | null | undefined; service?: string | null | undefined };
   "login.code": { id: string; code?: string | null | undefined };
   "login.drop": { id: string };
   "profile.loginBrowser": { id: string };

@@ -1133,3 +1133,331 @@ test "service profile hides model, fast, and env rows while keeping station cont
   assert_true(t.find("分享给其他 station") is Some(_), msg="service profile keeps sharing row")
   assert_eq(t.audit(), [])
 }
+
+///|
+test "colab service profile shows CU credits, active VM note, and relogin on expired token" {
+  let colab : Json = {
+    "id": "colab-1",
+    "name": "gpu@example.com",
+    "email": "gpu@example.com",
+    "runtime": null,
+    "service": "colab",
+    "runtimes": [],
+    "access": { "kind": "service", "key": "", "service": "colab", "login": false },
+    "usedBy": [],
+    "loginCommand": "",
+    "machine": false,
+    "enabled": true,
+    "fast": null,
+    "check": { "state": "ok", "time": { "checkedAt": { "ago": "2 分钟前" } } },
+    "login": null,
+    "quota": {
+      "state": "ok",
+      "windows": [],
+      "creditsText": "2,500 CU",
+      "detail": "1 台运行中 · 10.05 CU/h",
+      "time": { "checkedAt": { "ago": "2 分钟前" } },
+    },
+    "checkText": "可用",
+    "checkTone": "green",
+    "trouble": null,
+    "makers": {},
+    "names": {},
+    "series": [],
+    "modelsText": "尚未列出模型",
+    "available": [],
+    "added": [],
+    "modelsReading": false,
+    "uses": [],
+    "providerName": "Google Colab",
+    "providerMark": "colab",
+    "canAddModel": false,
+    "decisionOnly": false,
+    "decisionModels": [],
+    "share": null,
+    "shareable": false,
+    "workspaces": [],
+    "kindText": "Google Colab",
+    "planText": "",
+    "signInProvider": "Google Colab",
+    "checkLine": "已登录",
+  }
+  let t = setting_tester(Profile("ws1/st1", "colab-1"), 1280.0, over=fn(s) {
+    fn inject(v : Json) -> Json {
+      match v {
+        Object(o) => {
+          let copy = o.copy()
+          for k, val in o {
+            copy[k] = if k == "profiles" && val is Array(arr) {
+              Json::array(arr + [colab])
+            } else {
+              inject(val)
+            }
+          }
+          Json::object(copy)
+        }
+        Array(a) => Json::array(a.map(inject))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(inject) }
+      },
+    }
+  })
+  assert_true(t.find("gpu@example.com") is Some(_))
+  assert_true(t.find("Google Colab") is Some(_))
+  assert_true(t.find("2,500 CU") is Some(_), msg="colab profile must show CU balance")
+  assert_true(t.find("1 台运行中 · 10.05 CU/h") is Some(_), msg="colab profile must show active VM note")
+  assert_true(t.find("无可用额度信息") is None, msg="colab credits row must not fall back to no-quota row")
+  assert_true(t.find("可用模型") is None)
+  assert_true(t.find("默认 Fast") is None)
+  assert_true(t.find("编辑环境变量") is None)
+  assert_eq(t.audit(), [])
+
+  // Token expired: check.state == "login" shows sign-in block with primary login button
+  let expired : Json = {
+    "id": "colab-exp",
+    "name": "expired@example.com",
+    "email": "expired@example.com",
+    "runtime": null,
+    "service": "colab",
+    "runtimes": [],
+    "access": { "kind": "service", "key": "", "service": "colab", "login": false },
+    "usedBy": [],
+    "loginCommand": "",
+    "machine": false,
+    "enabled": true,
+    "fast": null,
+    "check": { "state": "login", "time": { "checkedAt": { "ago": "刚刚" } } },
+    "login": null,
+    "quota": null,
+    "checkText": "需要登录",
+    "checkTone": "red",
+    "trouble": {
+      "title": "需要登录",
+      "detail": "未登录",
+      "next": "重新登录以继续使用",
+      "action": "login",
+      "label": "重新登录",
+    },
+    "makers": {},
+    "names": {},
+    "series": [],
+    "modelsText": "尚未列出模型",
+    "available": [],
+    "added": [],
+    "modelsReading": false,
+    "uses": [],
+    "providerName": "Google Colab",
+    "providerMark": "colab",
+    "canAddModel": false,
+    "decisionOnly": false,
+    "decisionModels": [],
+    "share": null,
+    "shareable": false,
+    "workspaces": [],
+    "kindText": "Google Colab",
+    "planText": "",
+    "signInProvider": "Google Colab",
+    "checkLine": "未登录",
+  }
+  let t2 = setting_tester(Profile("ws1/st1", "colab-exp"), 1280.0, over=fn(s) {
+    fn inject(v : Json) -> Json {
+      match v {
+        Object(o) => {
+          let copy = o.copy()
+          for k, val in o {
+            copy[k] = if k == "profiles" && val is Array(arr) {
+              Json::array(arr + [expired])
+            } else {
+              inject(val)
+            }
+          }
+          Json::object(copy)
+        }
+        Array(a) => Json::array(a.map(inject))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(inject) }
+      },
+    }
+  })
+  assert_true(t2.find("登录") is Some(_), msg="expired colab profile must show sign-in card")
+  assert_eq(t2.audit(), [])
+}
+
+///|
+test "profiles list shows Google Colab group with CU balance and add profile flow starts service login" {
+  let colab_item : Json = {
+    "key": "colab-user@example.com",
+    "group": "colab",
+    "groupTitle": "Google Colab",
+    "title": "user@example.com",
+    "usable": true,
+    "station": "ws1/st1",
+    "stationName": "Willow",
+    "state": { "text": "", "tone": "neutral" },
+    "profile": {
+      "id": "colab-1",
+      "name": "user@example.com",
+      "runtime": null,
+      "service": "colab",
+      "access": { "kind": "service", "service": "colab" },
+      "providerMark": "colab",
+      "planText": "",
+      "quota": {
+        "state": "ok",
+        "windows": [],
+        "creditsText": "2,500 CU",
+        "detail": "1 台运行中 · 10.05 CU/h",
+      },
+    },
+  }
+  let t_list = setting_tester(Profiles(""), 1280.0, over=fn(s) {
+    fn inject_list(v : Json) -> Json {
+      match v {
+        Object(o) => {
+          let copy = o.copy()
+          for k, val in o {
+            copy[k] = if k == "items" && val is Array(arr) {
+              Json::array(arr + [colab_item])
+            } else {
+              inject_list(val)
+            }
+          }
+          Json::object(copy)
+        }
+        Array(a) => Json::array(a.map(inject_list))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        if name == "profiles" {
+          { ..r, value: r.value.map(inject_list) }
+        } else {
+          r
+        }
+      },
+    }
+  })
+  assert_true(t_list.find("Google Colab") is Some(_), msg="profiles list shows Google Colab group")
+  assert_true(t_list.find("2,500 CU · 1 台运行中 · 10.05 CU/h") is Some(_), msg="profiles list shows CU balance and active VM detail")
+  assert_eq(t_list.audit(), [])
+
+  // Add profile flow: pick step shows services group -> Google Colab and sends profileFlow.edit
+  let edit_calls : Array[Json] = []
+  let pick_view : Json = {
+    "step": "pick",
+    "title": "添加账号",
+    "groups": [
+      {
+        "id": "services",
+        "title": "算力与服务",
+        "providers": [
+          {
+            "id": "service-colab",
+            "name": "Google Colab",
+            "mark": "colab",
+            "hasPlan": true,
+            "hasKey": false,
+            "usesText": "Google Colab 算力",
+            "kind": "service",
+            "service": "colab",
+          },
+        ],
+      },
+    ],
+    "choices": [],
+    "signIn": null,
+    "showKey": false,
+    "showEndpoint": false,
+    "protocols": [],
+    "regions": [],
+    "canSubmit": false,
+    "pending": false,
+    "error": null,
+  }
+  let t_pick = setting_tester(NewProfile("ws1/st1"), 1280.0, over=fn(s) {
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        if name == "profileFlow" {
+          { value: Some(pick_view), version: 1, error: None }
+        } else {
+          s.topic(name, params).get().snapshot()
+        }
+      },
+      call: fn(name, params, done) {
+        if name == "profile.flow.edit" {
+          edit_calls.push(params)
+          done(Ok(obj([])))
+        } else {
+          (s.call)(name, params, done)
+        }
+      },
+    }
+  })
+  assert_true(t_pick.find("算力与服务") is Some(_), msg="add profile shows services group")
+  assert_true(t_pick.find("Google Colab") is Some(_), msg="add profile shows Google Colab tile")
+  assert_eq(t_pick.audit(), [])
+  t_pick.tap_text("Google Colab")
+  t_pick.frame()
+  assert_eq(edit_calls.length(), 1, msg="tapping Google Colab calls profile.flow.edit")
+  assert_eq(text(field(Some(edit_calls[0]), "input"), "provider"), "service-colab")
+
+  // Connect step for Google Colab starts login.new with service=colab (no runtime)
+  let login_calls : Array[Json] = []
+  let connect_view : Json = {
+    "step": "connect",
+    "method": "plan",
+    "title": "连接 Google Colab",
+    "groups": [],
+    "choices": [],
+    "signIn": { "service": "colab", "provider": "Google Colab" },
+    "usesLine": "添加后可用于：Google Colab 算力",
+    "showKey": false,
+    "showEndpoint": false,
+    "protocols": [],
+    "regions": [],
+    "canSubmit": false,
+    "pending": false,
+    "error": null,
+  }
+  let t_conn = setting_tester(NewProfile("ws1/st1"), 1280.0, over=fn(s) {
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        if name == "profileFlow" {
+          { value: Some(connect_view), version: 1, error: None }
+        } else {
+          s.topic(name, params).get().snapshot()
+        }
+      },
+      call: fn(name, params, done) {
+        if name == "login.new" {
+          login_calls.push(params)
+          done(Ok({ "id": "job-colab-1" }))
+        } else {
+          (s.call)(name, params, done)
+        }
+      },
+    }
+  })
+  assert_true(t_conn.find("Google Colab 算力") is Some(_), msg="connect step shows usesLine")
+  assert_eq(login_calls.length(), 1, msg="connect step starts login.new")
+  assert_eq(text(Some(login_calls[0]), "service"), "colab", msg="login.new passes service=colab")
+  assert_eq(field(Some(login_calls[0]), "runtime"), None, msg="login.new omits runtime for service")
+  assert_eq(t_conn.audit(), [])
+}
