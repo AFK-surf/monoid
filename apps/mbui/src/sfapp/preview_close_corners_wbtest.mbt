@@ -17,7 +17,9 @@ test "a picture returning to a rounded card keeps all four thumbnail corners thr
           v.grow(Is(1.0)) |> ignore
           @ui.old(v, fn(c) {
             let radius = @ui.Radius::Corners(corners.0, corners.1, corners.2, corners.3)
-            c.box(style=@ui.style(w=Fixed(300.0), h=Fixed(225.0), radius~, clip=true), fn() { chat_file(c, src, a) })
+            c.box(style=@ui.style(w=Fixed(300.0), h=Fixed(225.0), radius~, clip=true), fn() {
+              legacy_note_thumb_file(c, src, a, fixed_box=Some((300.0, 225.0)))
+            })
             |> ignore
           })
           .over(Is(true))

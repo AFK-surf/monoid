@@ -369,12 +369,16 @@ test "the list while it is read: no rows, the shapes" {
 test "a state line's lead is the core's: an icon in its words' place with what follows; none, the words as they are" {
   new_run()
   let t = @ui.Tester::new(
-    fn(c) {
-      c.box(w=Fill(1.0), fn() {
-        @sfpages.state_line(c, "a", c.id("a"), "要你帮忙：看一下", lead="need", rest="看一下")
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      root.box(fn(b) {
+        b.width_share(Is(1.0)) |> ignore
+        @sfpages.state_line_node(b, tips, fn() { "要你帮忙：看一下" }, fn() { "need" }, fn() { "" }, fn() { "看一下" }, fn() { false })
         // (words that look like a lead, said by none: as they are)
-        @sfpages.state_line(c, "b", c.id("b"), "要你帮忙看一眼")
-        @sfpages.state_line(c, "c", c.id("c"), "待处理 · 用哪个？", lead="decision", lead_text="待处理", rest=" · 用哪个？")
+        @sfpages.state_line_node(b, tips, fn() { "要你帮忙看一眼" }, fn() { "" }, fn() { "" }, fn() { "" }, fn() { false })
+        @sfpages.state_line_node(b, tips, fn() { "待处理 · 用哪个？" }, fn() { "decision" }, fn() { "待处理" }, fn() { " · 用哪个？" }, fn() { false })
       })
       |> ignore
     },
@@ -400,14 +404,15 @@ test "a pending card's long question gives way to its lead on a narrow row" {
       new_run()
       let width = @signals.signal(240.0)
       let t = @ui.Tester::new(
-        fn(c) {
-          @sf.begin(c) |> ignore
-          c.with_theme(@sf.ui_theme(), fn() {
-            c.box(w=Px(width.get()), fn() {
-              @sfpages.state_line(c, "card", c.id("card"), lead + rest, lead="decision", lead_text=lead, rest~)
-            })
-            |> ignore
+        fn(c) { @sf.begin(c) |> ignore },
+        tree=fn(root) {
+          @ui.set_tree_theme(@sf.ui_theme_now)
+          let tips = @sf.TipLayer::new(fn() { Some(root) })
+          root.box(fn(b) {
+            b.width(By(fn() { Some(width.get()) })) |> ignore
+            @sfpages.state_line_node(b, tips, fn() { lead + rest }, fn() { "decision" }, fn() { lead }, fn() { rest }, fn() { false })
           })
+          |> ignore
         },
         w=800.0,
         h=120.0,
@@ -773,9 +778,11 @@ test "a row's state line in red while a message of the viewer's in it did not go
   let red = Ref(0L)
   let muted = Ref(0L)
   let t = @ui.Tester::new(
-    fn(c) {
-      red.val = @sf.begin(c).p.red
-      c.with_theme(@sf.ui_theme(), fn() { @sfpages.state_line(c, "a", c.id("a"), "有一条消息没发出去", alert=true) })
+    fn(c) { red.val = @sf.begin(c).p.red },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      @sfpages.state_line_node(root, tips, fn() { "有一条消息没发出去" }, fn() { "" }, fn() { "" }, fn() { "" }, fn() { true })
     },
     w=390.0,
     h=40.0,
@@ -785,9 +792,11 @@ test "a row's state line in red while a message of the viewer's in it did not go
   assert_true(t.drawn_glyphs().length() > 0)
   assert_true(t.drawn_glyphs().iter().all(fn(g) { g.2 == red.val }))
   let t2 = @ui.Tester::new(
-    fn(c) {
-      muted.val = @sf.begin(c).p.muted
-      c.with_theme(@sf.ui_theme(), fn() { @sfpages.state_line(c, "a", c.id("a"), "有一条消息没发出去") })
+    fn(c) { muted.val = @sf.begin(c).p.muted },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      @sfpages.state_line_node(root, tips, fn() { "有一条消息没发出去" }, fn() { "" }, fn() { "" }, fn() { "" }, fn() { false })
     },
     w=390.0,
     h=40.0,

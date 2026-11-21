@@ -279,7 +279,7 @@ test "a video in the chat: the station's still of it (its poster) on the black, 
     frames: 0,
     held: false,
   }
-  let t = @ui.Tester::new(fn(c) { chat_file(c, src, a) }, w=390.0, h=844.0)
+  let t = chat_file_tester(src, a)
   t.draw()
   t.run_for(@ui.image_fade_ms)
   assert_eq(asked[0], "ws1/st1 s-c1 演示录屏.mp4")
@@ -311,7 +311,7 @@ test "a video in the chat says how long it is in its foot's start corner, as its
     frames: 2175,
     held: false,
   }
-  let t = @ui.Tester::new(fn(c) { chat_file(c, src, a) }, w=390.0, h=844.0)
+  let t = chat_file_tester(src, a)
   t.draw()
   t.run_for(@ui.image_fade_ms)
   let (lx, ly) = t.find("1:13").unwrap()
@@ -458,7 +458,9 @@ fn video_in_chat(duration? : Double = 0.0, still? : Bool = true) -> @ui.Tester {
     tree=fn(root) {
       root.box(fn(v) {
         v.grow(Is(1.0)) |> ignore
-        @ui.old(v, fn(c) { chat_file(c, src, a) }).over(Is(true)) |> ignore
+        @ui.old(v, fn(c) { c.box(style=@ui.style(w=Fixed(300.0)), fn() { legacy_note_thumb_file(c, src, a) }) |> ignore })
+        .over(Is(true))
+        |> ignore
         @sfbase.viewer_node(v, src, fn() { v.window() })
       })
       |> ignore
@@ -570,7 +572,7 @@ fn posterless(size : Double) -> @ui.Tester {
     frames: 0,
     held: false,
   }
-  let t = @ui.Tester::new(fn(c) { chat_file(c, src, a) }, w=390.0, h=844.0)
+  let t = chat_file_tester(src, a)
   t.draw()
   t
 }
@@ -1219,24 +1221,102 @@ test "a desktop's video opened over its chat has the keys: Space plays it each t
 }
 
 ///|
-/// A chat's file `a` as its message draws it (sfpages' message_files), in a column 300 wide.
-fn chat_file(c : @ui.Ctx, src : Source, a : Attachment, list? : String = "") -> Unit {
-  let here : @sfpages.MessageHere = {
-    station: "ws1/st1",
-    session: "s-c1",
-    view: chat_view_made(Json::object({})),
-    go: None,
-    inline: true,
-    gutter: 0.0,
-    // (in chat list `list`, where it is in one)
-    list: if list == "" {
-      None
-    } else {
-      Some({ rk: list, turns: @sfbase.turns_of(list), emits: @sfbase.emits_of(list), flight: None })
-    },
-    core: None,
+/// TEMPORARY (Wave 8B-2B): exercises sfbase/viewer.mbt's legacy Ctx note_thumb/note_list/over_flight contract until
+/// Wave 8B-3 deletes note_thumb and migrates/retires these viewer flight tests together.
+fn legacy_note_thumb_file(
+  c : @ui.Ctx,
+  src : Source,
+  a : Attachment,
+  list? : String = "",
+  fixed_box? : (Double, Double)? = None,
+) -> Unit {
+  let id = "ws1/st1/s-c1/" + a.path
+  let r = @sf.message_file_corner
+  let open = c.id("pv-legacy-thumb/" + a.path)
+  c.on_press(open, fn() { open_preview("ws1/st1", "s-c1", a) })
+  match preview_kind(a.name).0 {
+    Some(KVideo) => {
+      let (bw, bh, letterbox) = @sfpages.image_box(a, @sfpages.video_least)
+      let (w, h) = match fixed_box {
+        Some((fw, fh)) => (fw, fh)
+        None => if bw > 300.0 { (300.0, bh * 300.0 / bw) } else { (bw, bh) }
+      }
+      let kept = pv_frames.get(id).map(fn(f) { f.0 }).unwrap_or("")
+      let pic = if kept != "" { kept } else { (src.poster)("ws1/st1", "s-c1", a.name) }
+      let node = c.box(
+        style=@ui.style(w=Fixed(w), h=Fixed(h), radius=InnerOr(@sf.file_radius(r)), clip=true),
+        id=open,
+        label=a.name,
+        fn() {
+          c.layer(fn() {
+            if pic != "" && pic != "!" {
+              c.image(pic, w=Px(w), h=Px(h), fit=if letterbox { FitContain } else { FitCover }, fade=false) |> ignore
+            }
+          })
+          |> ignore
+          c.layer(fn() {
+            c.box(style=@ui.css("w=Full h=Full p=S2 align=AStart justify=JEnd"), fn() {
+              @sf.video_capsule(c, "video/legacy/" + a.path, a.duration, coming=None, corner=r)
+            })
+            |> ignore
+          })
+          |> ignore
+        },
+      )
+      note_thumb(
+        c,
+        id,
+        node,
+        r,
+        picture=if pic == "!" { "" } else { pic },
+        letterbox~,
+        list~,
+        over=Some({ duration: a.duration, coming: None, corner: r, seen: 1.0 }),
+      )
+      c.look(node, @ui.look(alpha=thumb_shows(id)))
+      c.semantics(node, Button, id=open, label=@sf.t("web-main.file.play", args=[("name", a.name)]))
+    }
+    _ => {
+      let (bw, bh, letterbox) = @sfpages.image_box(a, @sfpages.image_least, min_side=@sfpages.image_min_side)
+      let (w, h) = match fixed_box {
+        Some((fw, fh)) => (fw, fh)
+        None => if bw > 300.0 { (300.0, bh * 300.0 / bw) } else { (bw, bh) }
+      }
+      let pic = @sfbase.sent_picture("ws1/st1", a).unwrap_or("")
+      let start_crop = a.width > 0.0 && a.height > 0.0 && (a.width / a.height >= 2.5 || a.height / a.width >= 2.5)
+      let node = c.box(
+        style=@ui.style(w=Fixed(w), h=Fixed(h), radius=InnerOr(@sf.file_radius(r)), clip=true),
+        id=open,
+        fn() {
+          if pic != "" {
+            let fit : @ui.Fit = if letterbox { FitContain } else if start_crop { FitCoverFrom(0.0, 0.0) } else { FitCover }
+            c.image(pic, w=Px(w), h=Px(h), fit~, fade=false) |> ignore
+          }
+        },
+      )
+      note_thumb(c, id, node, r, picture=pic, letterbox~, start_crop~, list~)
+      c.look(node, @ui.look(alpha=thumb_shows(id)))
+    }
   }
-  c.box(style=@ui.style(w=Fixed(300.0)), fn() { @sfpages.message_files(c, src, here, [a], false) }) |> ignore
+}
+
+///|
+/// A chat's file `a` as its message draws it (sfpages' message_files_of_node), in a column 300 wide.
+fn chat_file_tester(src : Source, a : Attachment) -> @ui.Tester {
+  @ui.Tester::new(
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      root.box(fn(col) {
+        col.width(Is(Some(300.0))) |> ignore
+        @sfpages.message_files_of_node(col, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() { [a] }, false)
+      })
+      |> ignore
+    },
+    w=390.0,
+    h=844.0,
+  )
 }
 
 ///|

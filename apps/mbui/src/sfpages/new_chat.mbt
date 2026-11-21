@@ -21,21 +21,6 @@
 // becomes the chat (NewChatFrame).
 
 ///|
-/// What the frame a new chat is drawn in gives it: the settings' core (the machine's own sessions, borrowing a
-/// model), its bar over it (the Small stack's 取消 and 新对话; a pane's has none: its 文件 is the frame's, over the page),
-/// the room under it (the navigation bar), whether the chat it becomes opens in its place (the Small stack's: its first
-/// words fly as Android's do) or beside it, the composer going into the chat's (a pane's: as the web's do), and what
-/// the frame does as the page becomes the chat (its files' tab carried over). Come to, it is there at once
-/// (switch.mbt).
-pub(all) struct NewChatFrame {
-  core : Core
-  bar : (@ui.Ctx) -> Unit
-  foot : Double
-  in_place : Bool
-  sent : (ChatRef) -> Unit
-}
-
-///|
 /// What the page keeps of its own: which of its picks is asked open as it is next drawn (a fixture's: new_chat_ask).
 priv struct NewChatPage {
   mut asked : String

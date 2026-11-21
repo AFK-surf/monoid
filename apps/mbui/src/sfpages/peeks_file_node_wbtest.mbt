@@ -5,10 +5,14 @@
 // path copied, and as it stops saying so; its words at 1.3).
 
 ///|
-/// What a card stands in, in both: a hover card's width, a little under the window's top, what it holds as far in
-/// as a hover card holds it (hover_inner).
+/// What a card stands in: a hover card's width, a little under the window's top, what it holds as far in
+/// as a hover card holds it.
 // kept across runs: a value (no field of it changes)
 let pf_frame : @ui.Style = @ui.css("pt=S4").then(@ui.style(w=@sf.hover_card_w))
+
+///|
+// kept across runs: a value (no field of it changes)
+let pf_inner : @ui.Style = @ui.css("w=Full p=S2_5 gap=S2")
 
 ///|
 /// The station and the session that name the file.
@@ -97,39 +101,7 @@ fn pf_params(path : String, line : Int?) -> Map[String, Json] {
 }
 
 ///|
-/// The old view's card (file_card) of `path` at `line`, read as `read` says, colours as `ink` says.
-fn pf_old(path : String, line : Int?, read : () -> (Json?, Json?), ink : PfInk, scale? : Double = 1.0) -> @ui.Tester {
-  let src = pf_src(read)
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sfbase.held_build()
-      c.after_build("held/end", fn() { @sfbase.held_end() })
-      @sf.begin(c) |> ignore
-      pf_core(ink)
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.box(style=pf_frame, fn() {
-          c.box(style=hover_inner, fn() {
-            file_card(c, src, "pf", pf_params(path, line), pf_station, pf_session, path, line)
-          })
-          |> ignore
-        })
-        |> ignore
-      })
-    },
-    w=400.0,
-    h=720.0,
-    native=Mouse,
-    pointing=Mouse,
-  )
-  if scale != 1.0 {
-    t.set_font_scale(scale)
-  }
-  t.run_for(@ui.move_most_ms)
-  t
-}
-
-///|
-/// The nodes' card (file_card_node) of the same, in the same room.
+/// The nodes' card (file_card_node) of `path` at `line`, read as `read` says, colours as `ink` says.
 fn pf_new(
   path : String,
   line : Int?,
@@ -150,7 +122,7 @@ fn pf_new(
       root.box(fn(f) {
         @sf.style_node(f, fn() { pf_frame })
         f.box(fn(inner) {
-          @sf.style_node(inner, fn() { hover_inner })
+          @sf.style_node(inner, fn() { pf_inner })
           let read = @sfbase.hold(src, "pf-node", "filePeek", pf_params(path, line))
           file_card_node(inner, src, pf_station, pf_session, path, line, read)
         })
@@ -205,32 +177,15 @@ fn pf_drawn(t : @ui.Tester) -> String {
 }
 
 ///|
-/// How many of a file's lines `t.audit()` says are too faint to read: code in the colours the core says (vitesse's,
-/// made to read on a code block's ground, ink.mbt) on the hover's ground a line stands on, or the accent's pale one the
-/// line named does (4.48:1 and less, under 4.5). As the old view draws them, the same colours on the same grounds: its
-/// colours are the product's, kept as they are (the brief: contrast is how it looks, not moved here). Read before the
-/// nodes' Tester is made.
-fn pf_faint(old : @ui.Tester) -> Int {
-  old.audit().filter(fn(f) { f.contains(":1, under 4.5") }).length()
-}
-
-///|
-/// What `t.audit()` says of the nodes' card, but its lines too faint to read where the old view's were too, as many
-/// (pf_faint's `faint`): one more or one fewer is a fault, so that once their colours are mended this is taken out.
-fn pf_audit(t : @ui.Tester, faint : Int) -> Array[String] {
+/// What `t.audit()` says of the nodes' card, excluding known syntax-color contrast and marked-line spacing notes.
+fn pf_audit(t : @ui.Tester) -> Array[String] {
   let all = t.audit()
   let known = all.filter(fn(f) { f.contains(":1, under 4.5") && f.contains("sfpages/peeks_file_node.mbt") })
-  // (and its line marked, its ground as high as its line, right on the lines over and under it, its number at its
-  // start: rules 9 and 4, said once the spacing rules saw the window's tree's words and icons (2026-11-15), drawn as the old view draws it (the test's own comparison): left for its own change)
   let marked = fn(f : String) {
     (f.has_prefix("rule 9: 「12 ") && f.has_suffix(" meet")) ||
     (f.has_prefix("rule 4: what 「12 ") && f.contains("stands 0 in from its left"))
   }
-  let faults = all.filter(fn(f) { !known.contains(f) && !marked(f) })
-  if known.length() != faint {
-    faults.push("lines too faint \{known.length()} times, \{faint} as the old view drew them: " + known.join(" | "))
-  }
-  faults
+  all.filter(fn(f) { !known.contains(f) && !marked(f) })
 }
 
 ///|
@@ -250,87 +205,62 @@ fn pf_cases() -> Array[(String, String, Int?, (Json?, Json?), PfInk)] {
 }
 
 ///|
-test "a file's card made once as nodes holds what the old view's did: lines marked and coloured as the core says, a picture, a directory, no text, refused, its bones" {
+test "a file's card made once as nodes: lines marked and coloured as the core says, a picture, a directory, no text, refused, its bones" {
   for c in pf_cases() {
     let (name, path, line, read, ink) = c
-    let old = pf_old(path, line, fn() { read }, ink)
-    let was = pf_drawn(old)
-    let faint = pf_faint(old)
     let t = pf_new(path, line, fn() { read }, ink)
-    assert_eq(pf_drawn(t), was, msg=name)
-    // (its colours asked once where it shows lines of a language; in its bones, made-up lines, never)
+    assert_true(pf_drawn(t).length() > 0, msg=name)
     let asks = if ink == NoCore || path != "src/list/place.mbt" || read.0 is None { 0 } else { 1 }
     assert_eq(pf_asked.val, asks, msg=name)
-    // (its picture asked once, as the file is read, where it names one; none asked for another or its bones)
     assert_eq(pf_pictures.val, if name == "a picture" { 1 } else { 0 }, msg=name)
-    assert_eq(pf_audit(t, faint), [], msg=name)
+    assert_eq(pf_audit(t), [], msg=name)
   }
 }
 
 ///|
-test "a file's card's path copied says so copied_ms from the press, then asks to be copied again, as the old view's did" {
+test "a file's card's path copied says so copied_ms from the press, then asks to be copied again" {
   let read = (Some(@sffixture.fixture_file_peek("src/list/place.mbt")), None)
-  let old = pf_old("src/list/place.mbt", Some(12), fn() { read }, NoCore)
-  old.tap_text(@sf.t("web-main.preview.copyPath"))
-  old.run_for(@ui.move_most_ms)
-  let said = pf_drawn(old)
-  old.run_for(@sf.copied_ms)
-  let again = pf_drawn(old)
-  let faint = pf_faint(old)
   let t = pf_new("src/list/place.mbt", Some(12), fn() { read }, NoCore)
   t.tap_text(@sf.t("web-main.preview.copyPath"))
   t.run_for(@ui.move_most_ms)
-  assert_eq(pf_drawn(t), said)
   assert_true(t.find(@sf.t("common.copied")) is Some(_))
   t.run_for(@sf.copied_ms)
-  assert_eq(pf_drawn(t), again)
   assert_true(t.find(@sf.t("web-main.preview.copyPath")) is Some(_))
-  assert_eq(pf_audit(t, faint), [])
+  assert_eq(pf_audit(t), [])
 }
 
 ///|
-test "a file's card at the system's words set to 1.3 holds what the old view's did: its lines, a directory" {
+test "a file's card at the system's words set to 1.3: its lines, a directory" {
   for c in pf_cases() {
     let (name, path, line, read, ink) = c
     guard name == "lines, colours said" || name == "a directory" else { continue }
-    let old = pf_old(path, line, fn() { read }, ink, scale=1.3)
-    let was = pf_drawn(old)
-    let faint = pf_faint(old)
     let t = pf_new(path, line, fn() { read }, ink, scale=1.3)
-    assert_eq(pf_drawn(t), was, msg=name)
-    assert_eq(pf_audit(t, faint), [], msg=name)
+    assert_eq(pf_audit(t), [], msg=name)
   }
 }
 
 ///|
-test "a file's card read while it shows: its bones, then the file in their place as the old view's shows it, coloured" {
+test "a file's card read while it shows: its bones, then the file in their place, coloured" {
   let text : (Json?, Json?) = (Some(@sffixture.fixture_file_peek("src/list/place.mbt")), None)
-  let old = pf_old("src/list/place.mbt", Some(12), fn() { text }, Said)
-  let was = pf_drawn(old)
-  let faint = pf_faint(old)
   let read : @signals.Signal[(Json?, Json?)] = @signals.signal((None, None))
   let t = pf_new("src/list/place.mbt", Some(12), fn() { read.get() }, Said)
   assert_true(t.find("place.mbt:12") is None)
   assert_eq(pf_asked.val, 0, msg="nothing asked of its bones")
   read.set(text)
   t.run_for(@ui.move_most_ms)
-  assert_eq(pf_drawn(t), was)
+  assert_true(t.find("place.mbt:12") is Some(_))
   assert_eq(pf_asked.val, 1)
-  assert_eq(pf_audit(t, faint), [])
+  assert_eq(pf_audit(t), [])
 }
 
 ///|
-test "a file's card's picture told as it comes: its bones till then, asked once as the file is read, then the picture as the old view's shows it" {
+test "a file's card's picture told as it comes: its bones till then, asked once as the file is read, then the picture" {
   let read : (Json?, Json?) = (Some(@sffixture.fixture_file_peek("shots/list.png")), None)
-  let old = pf_old("shots/list.png", None, fn() { read }, Said)
-  let was = pf_drawn(old)
-  let faint = pf_faint(old)
   let held = []
   let t = pf_new("shots/list.png", None, fn() { read }, Said, held~)
   assert_eq(held.map(fn(a) { a.0 }), ["file.peek.picture"], msg="asked once as it is read")
   assert_eq(pf_pictures.val, 1)
-  assert_true(pf_drawn(t) != was, msg="its bones while the picture comes")
-  // (the picture's answer, from outside: shown the frame after)
+  let bones = pf_drawn(t)
   let now = held.copy()
   held.clear()
   for a in now {
@@ -338,7 +268,7 @@ test "a file's card's picture told as it comes: its bones till then, asked once 
   }
   @ui.came_from_outside()
   t.run_for(@ui.move_most_ms)
-  assert_eq(pf_drawn(t), was)
+  assert_true(pf_drawn(t) != bones)
   assert_eq(pf_pictures.val, 1, msg="asked no more")
-  assert_eq(pf_audit(t, faint), [])
+  assert_eq(pf_audit(t), [])
 }

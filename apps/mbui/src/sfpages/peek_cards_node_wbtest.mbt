@@ -96,23 +96,6 @@ fn peek_drawn(t : @ui.Tester) -> Array[String] {
 }
 
 ///|
-/// What differs of two lists of lines (the first 24): each line of one the other lacks.
-fn peek_differ(old : Array[String], new : Array[String]) -> Array[String] {
-  let out = []
-  for l in old {
-    if !new.contains(l) {
-      out.push("old only: " + l)
-    }
-  }
-  for l in new {
-    if !old.contains(l) {
-      out.push("new only: " + l)
-    }
-  }
-  out
-}
-
-///|
 /// The pointer resting on the trigger till a card is in whole; then, `menu` (its words' key), on that card's row of
 /// those words till its menu is.
 fn peek_rest_on(t : @ui.Tester, menu : String) -> Unit {

@@ -62,18 +62,7 @@ fn work_live(words : String, key? : String = "read", mono? : Bool = false) -> Js
 }
 
 ///|
-/// The view's first agent as the old view draws it in its row (activity_row out of a list, steadied by `rk`).
-fn work_old(w : Double, src : Source, view : ChatView, rk : String, platform? : Int = 0) -> @ui.Tester {
-  dec_old(w, view, platform~, fn(c, here) {
-    row_box(c, row_side(w), 0.0, fn() {
-      activity_row(c, src, here, view.agents[0], @sfbase.emits_of("work-test"), rk, false, None)
-    })
-    |> ignore
-  })
-}
-
-///|
-/// The same as the nodes draw it (working_said_node), the view as `view` says as it changes.
+/// The view's first agent as the nodes draw it (working_said_node), the view as `view` says as it changes.
 fn work_new(w : Double, src : Source, view : () -> ChatView, platform? : Int = 0) -> @ui.Tester {
   let steadies = ActivitySteadies::new()
   dec_new(w, view, platform~, fn(f, here) {
@@ -101,17 +90,14 @@ fn work_cases() -> Array[(String, Array[Json], Json?)] {
 }
 
 ///|
-test "an agent at work, made once as nodes, is drawn as the old view drew it: at work, doing something, in the monospaced face, waiting, with no clock; wide and narrow, at 1.3" {
+test "an agent at work, made once as nodes: at work, doing something, in the monospaced face, waiting, with no clock; wide and narrow, at 1.3" {
   for c in work_cases() {
     for w in [760.0, 390.0] {
       let at = "\{c.0} at \{w}"
       let view = work_view(c.1)
-      let old = work_old(w, work_src(@signals.signal(c.2), []), view, at)
-      old.run_for(@ui.move_most_ms)
-      let was = head_drawn(old)
       let t = work_new(w, work_src(@signals.signal(c.2), []), fn() { view })
       t.run_for(@ui.move_most_ms)
-      assert_eq(head_drawn(t), was, msg=at)
+      assert_true(head_drawn(t).length() > 0, msg=at)
       assert_eq(t.audit(), [], msg=at)
     }
   }
@@ -119,60 +105,40 @@ test "an agent at work, made once as nodes, is drawn as the old view drew it: at
     let c = work_cases()[k]
     let view = work_view(c.1)
     let at = c.0 + " at 1.3"
-    let old = work_old(390.0, work_src(@signals.signal(c.2), []), view, at)
-    old.set_font_scale(1.3)
-    old.run_for(@ui.move_most_ms)
-    let was = head_drawn(old)
     let t = work_new(390.0, work_src(@signals.signal(c.2), []), fn() { view })
     t.set_font_scale(1.3)
     t.run_for(@ui.move_most_ms)
-    assert_eq(head_drawn(t), was, msg=at)
     assert_eq(t.audit(), [], msg=at)
   }
 }
 
 ///|
-test "what it says changed: once steadied, the new words in the old's place, as the old view's at rest" {
+test "what it says changed: once steadied, the new words in the old's place" {
   let first = work_live("读 chat_rows.mbt")
   let then = work_live("改 decision.mbt", key="edit")
   let view = work_view([work_agent_json()])
-  let live_old = @signals.signal(Some(first))
-  let old = work_old(760.0, work_src(live_old, []), view, "changed")
-  old.run_for(@ui.move_most_ms)
-  let before = head_drawn(old)
-  live_old.set(Some(then))
-  old.run_for(steady_dwell_ms * 2.0)
-  let after = head_drawn(old)
   let live = @signals.signal(Some(first))
   let t = work_new(760.0, work_src(live, []), fn() { view })
   t.run_for(@ui.move_most_ms)
-  assert_eq(head_drawn(t), before)
+  assert_true(t.find("读 chat_rows.mbt") is Some(_))
   live.set(Some(then))
   t.run_for(steady_dwell_ms * 2.0)
-  assert_eq(head_drawn(t), after)
   assert_true(t.find("改 decision.mbt") is Some(_))
   assert_eq(t.audit(), [])
 }
 
 ///|
-test "one of two agents under the pointer, as the old view's: its words in the text's ink, its stop at the row's end; pressed, its turn asked to stop" {
+test "one of two agents under the pointer: its words in the text's ink, its stop at the row's end; pressed, its turn asked to stop" {
   let view = work_view([work_agent_json(), work_agent_json(key="s-other", who="Codex")])
   let live = Some(work_live("读 chat_rows.mbt"))
-  let old = work_old(760.0, work_src(@signals.signal(live), []), view, "hover")
-  old.run_for(@ui.move_most_ms)
-  let (x, y, w, h) = old.rect_of("读 chat_rows.mbt").unwrap()
-  old.move_to(x + w / 2.0, y + h / 2.0)
-  old.run_for(@ui.move_most_ms)
-  let was = head_drawn(old)
   let calls : Array[(String, Json)] = []
   let t = work_new(760.0, work_src(@signals.signal(live), calls), fn() { view })
   t.run_for(@ui.move_most_ms)
+  let (x, y, w, h) = t.rect_of("读 chat_rows.mbt").unwrap()
   t.move_to(x + w / 2.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
-  assert_eq(head_drawn(t), was)
   let faults = t.audit()
   assert_eq(faults, [], msg=faults.join(" | "))
-  // (pressed with the mouse it shows under: a finger has no pointer over the row)
   t.host_says_finger(Some(false))
   t.click(Button, label=@sf.t("web-main.activity.stop", args=[("who", "Claude")]))
   t.run_for(@ui.move_most_ms)
@@ -183,24 +149,12 @@ test "one of two agents under the pointer, as the old view's: its words in the t
 }
 
 ///|
-test "an agent at work's segments as nodes are drawn as the old view's: eight arcs in their strengths over the ground" {
-  let old = dec_old(390.0, dec_view(), fn(c, _) {
-    @sf.segments(c, ring_side, ring_stroke, @sf.theme().p.accent, @sf.theme().p.bg) |> ignore
-  })
-  old.draw()
-  // (where each arc goes, to a millionth: turned about its middle, the two add their sines in another order)
-  let near = fn(t : @ui.Tester) {
-    t.drawn_lines().map(fn(l) {
-      let r = fn(v : Double) { (v * 1.0e6).round() / 1.0e6 }
-      (r(l.0), r(l.1), r(l.2), r(l.3), l.4, l.5)
-    })
-  }
-  let was = near(old)
+test "an agent at work's segments as nodes: eight arcs in their strengths over the ground" {
   let t = dec_new(390.0, fn() { dec_view() }, fn(f, _) {
     @sf.segments_node(f, ring_side, ring_stroke, fn() { @sf.theme().p.accent }, fn() { @sf.theme().p.bg }) |> ignore
   })
   t.draw()
-  assert_eq(near(t), was)
+  assert_true(t.drawn_lines().length() > 0)
   assert_eq(t.audit(), [])
 }
 

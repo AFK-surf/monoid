@@ -13,23 +13,8 @@
       "src/sfpages/vault_dialogs.mbt": 6,
       "src/sfpages/vault_item.mbt": 3
     },
-    "layout-read-back": {
-      "src/sfpages/hover.mbt": 4,
-      "src/sfpages/message.mbt": 1,
-      "src/sfpages/message_files.mbt": 1
-    },
     "ui-current": {
       "src/sfpages/search.mbt": 2
-    },
-    "build-motion": {
-      "src/sfpages/chat_mark.mbt": 1,
-      "src/sfpages/chat_rows.mbt": 3,
-      "src/sfpages/hover.mbt": 4,
-      "src/sfpages/message.mbt": 3,
-      "src/sfpages/message_files.mbt": 2
-    },
-    "submitted-read": {
-      "src/sfpages/login_card.mbt": 1
     },
     "page-at-moment": {
       "src/sfpages/about.mbt": 1,

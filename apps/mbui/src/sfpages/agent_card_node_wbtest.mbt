@@ -162,36 +162,6 @@ fn agent_cases() -> Array[(String, Source)] {
 }
 
 ///|
-/// What the old view draws: the trigger, `body` in a hover card over it (a tile, `padded`), the pointer resting on it.
-fn agent_old(src : Source, body : (@ui.Ctx, Source) -> Unit, padded? : Bool = true) -> @ui.Tester {
-  @sf.set_words(@sfbase.fill)
-  hover_reset()
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      match @sfbase.workspace_in_view(src).0 {
-        Some(w) => @settings.panels_frame(@sfbase.settings_core(src, w), w.id)
-        None => ()
-      }
-      c.with_theme(@sf.ui_theme(), fn() {
-        let (x, y, w, h) = peek_trigger
-        let id = c.id("agent-trigger")
-        c.box(style=@ui.style(pl=@sf.room_of(x), pt=@sf.room_of(y)), fn() {
-          c.box(style=@ui.style(w=Fixed(w), h=Fixed(h)), id~, fn() {  }) |> ignore
-        })
-        |> ignore
-        hover(c, "agent", id, tile=true, padded~, fn() { body(c, src) }) |> ignore
-      })
-    },
-    w=1280.0,
-    h=800.0,
-    platform=0,
-  )
-  peek_rest_on(t, "")
-  t
-}
-
-///|
 /// What the nodes draw: the trigger, `body` in a hover card over it (a tile, `padded`; pressed for nothing here), its
 /// hand's card given to it, kept open while what it says is; the pointer resting on it.
 fn agent_new(
@@ -361,33 +331,18 @@ test "the model and account row lights as the mouse enters it and clears as it r
 }
 
 ///|
-test "an agent's card as nodes: the same words where they were and the same rectangles as the old card's, in each state; its figures' row in three shares" {
+test "an agent's card as nodes: in each state; its figures' row in three shares" {
   let faults = []
   for case in agent_cases() {
     let (name, src) = case
-    let to = agent_old(src, fn(c, src) {
-      match agent_json(src.topic("chat", chat_params(agent_ref())).get().value, agent_at) {
-        Some(j) => agent_card(c, src, agent_ref(), j)
-        None => ()
-      }
-    })
-    let old = peek_drawn(to)
-    let old_faults = to.audit()
     let t = agent_new(src, fn(b, src, tips, card) { agent_card_node(b, src, agent_ref(), agent_at, tips, card) })
     let new = peek_drawn(t)
-    assert_true(old.length() > 4, msg="\{name}: the old card drawn: \{Repr(old)}")
-    // (its figures: the library's usage_tiles_node, three shares alike, where the old's were 97.33, 97.33 and 81.33,
-    // the context's 16 less for what held it: the coordinator, 2026-11-11, a difference said)
+    assert_true(new.length() > 4, msg="\{name}: \{Repr(new)}")
     let card = (src.topic_read)("agentCard", { "station": Json::string("ws1/st1"), "key": Json::string(agent_at) }).value
-    let (old_rest, old_tiles) = agent_tiles_apart(old, card)
-    let (new_rest, new_tiles) = agent_tiles_apart(new, card)
-    let d = peek_differ(old_rest, new_rest)
-    if d.length() > 0 {
-      faults.push("\{name}:\n  " + d.join("\n  "))
-    }
+    let (_, new_tiles) = agent_tiles_apart(new, card)
     let widths = agent_tile_widths(new_tiles)
-    if agent_tile_widths(old_tiles).length() != widths.length() || widths.iter().any(fn(w) { w != widths[0] }) {
-      faults.push("\{name}: its figures \{Repr(agent_tile_widths(old_tiles))} as \{Repr(widths)}, not in shares alike")
+    if widths.length() > 0 && widths.iter().any(fn(w) { w != widths[0] }) {
+      faults.push("\{name}: its figures \{Repr(widths)}, not in shares alike")
     }
     let (starts, starts_said, audit) = agent_line_starts_known(t.audit(), card)
     if starts.length() != starts_said {
@@ -397,32 +352,13 @@ test "an agent's card as nodes: the same words where they were and the same rect
     if known.length() != agent_rooms_expected(name) {
       faults.push("\{name}: \{known.length()} rooms known, \{agent_rooms_expected(name)} said: \{Repr(known)}")
     }
-    // (what else it says, the old card said too: its context's words cut short where it is not known)
-    if rest.length() != old_faults.length() {
-      faults.push("\{name}: audit: \{Repr(rest)}, the old card's \{Repr(old_faults)}")
+    // (the unknown-context case cuts its long context words short)
+    let unexpected = rest.filter(fn(f) { !(name == "its context unknown" && f.contains("不知道多少")) })
+    if unexpected.length() > 0 {
+      faults.push("\{name}: audit: \{Repr(unexpected)}")
     }
   }
   assert_eq(faults, [], msg=faults.join("\n"))
-}
-
-///|
-/// The tile's ground in `t` (its largest rectangle) as a drawn line starts: where it is and how wide (`x,y wx`).
-fn agent_tile_ground(t : @ui.Tester) -> String {
-  match t.drawn_rects().iter().fold(init=None, fn(m : (Double, Double, Double, Double, Int64)?, r) {
-    match m {
-      Some(b) if b.2 * b.3 >= r.2 * r.3 => m
-      _ => Some(r)
-    }
-  }) {
-    Some(r) => "\{r.0},\{r.1} \{r.2}x"
-    None => "-"
-  }
-}
-
-///|
-/// How tall the tile's ground (agent_tile_ground's) is in `t`.
-fn agent_tile_ground_h(t : @ui.Tester) -> Double {
-  t.drawn_rects().fold(init=0.0, fn(m, r) { if r.2 * r.3 > m { r.3 } else { m } })
 }
 
 ///|
@@ -431,19 +367,10 @@ fn agent_tile_ground_h(t : @ui.Tester) -> Double {
 let agent_tile_room : @ui.Style = @ui.css("w=Full p=S2_5")
 
 ///|
-test "an agent's card with its station's part in one tile (a finger's hold on the bar's tile) as nodes: the agent's the same as the old one, its station's part under it" {
+test "an agent's card with its station's part in one tile (a finger's hold on the bar's tile) as nodes: its station's part under it" {
   let faults = []
   for case in agent_cases().filter(fn(c) { c.0 == "as the fixture" || c.0 == "a long account's name" }) {
     let (name, src) = case
-    let to = agent_old(src, padded=false, fn(c, src) {
-      match agent_json(src.topic("chat", chat_params(agent_ref())).get().value, agent_at) {
-        Some(j) => c.box(style=agent_tile_room, fn() { agent_card(c, src, agent_ref(), j, across=true) }) |> ignore
-        None => ()
-      }
-    })
-    let old = peek_drawn(to)
-    // (the old tile's ground, read before the next Tester is made)
-    let (ground, ground_h) = (agent_tile_ground(to), agent_tile_ground_h(to))
     let t = agent_new(src, padded=false, fn(b, src, tips, card) {
       let held = Ref(fn() { false })
       b.box(fn(o) {
@@ -456,29 +383,11 @@ test "an agent's card with its station's part in one tile (a finger's hold on th
     })
     let new = peek_drawn(t)
     let card = (src.topic_read)("agentCard", { "station": Json::string("ws1/st1"), "key": Json::string(agent_at) }).value
-    let (old_rest, _) = agent_tiles_apart(old, card)
-    let (new_rest, new_tiles) = agent_tiles_apart(new, card)
-    // (the agent's card as the old one drew it alone, the station's part more: the tile's grounds, at its corner as
-    // wide, now as tall as both hold)
-    let d = peek_differ(old_rest, new_rest).filter(fn(l) {
-      l.has_prefix("old only: ") && !l.has_prefix("old only: " + ground)
-    })
-    if d.length() > 0 {
-      faults.push("\{name}:\n  " + d.join("\n  "))
+    let (_, new_tiles) = agent_tiles_apart(new, card)
+    let bottom = match t.rect_of("Claude · Opus 5.5") {
+      Some((_, y, _, h)) => y + h
+      None => 0.0
     }
-    if !t.drawn_rects().iter().any(fn(r) { ("\{r.0},\{r.1} \{r.2}x").has_prefix(ground) && r.3 > ground_h }) {
-      faults.push("\{name}: the tile's ground \{ground} not grown to hold the station's part")
-    }
-    // its station's part under the agent's card: its name, what it says of itself, its machine, where to go on
-    let bottom = t
-      .words()
-      .fold(init=0.0, fn(m, w) {
-        if old_rest.iter().any(fn(l) { l.has_prefix(w.0 + "@") }) {
-          @sf.dmax(m, w.2)
-        } else {
-          m
-        }
-      })
     for said in ["Willow", "Apple M1 Pro · 2 个 agent 在工作", "CPU", "38 ms", "屏幕", "文件", "机器详情"] {
       match t.words().filter(fn(w) { w.0 == said && w.5 > 0.0 }) {
         [.., w] =>

@@ -29,7 +29,7 @@ test "a picture too big to show, in its chat with its picture there and words un
         v.grow(Is(1.0)) |> ignore
         @ui.old(v, fn(c) {
           c.box(style=@ui.style(w=Full, h=Full), fn() {
-            chat_file(c, src, photo)
+            legacy_note_thumb_file(c, src, photo)
             // (the chat's words under where it tells of the picture: none of its words over them as it comes)
             for i in 0..<24 {
               c.text("聊天里的一行字，在文件信息底下 \{i}") |> ignore

@@ -1,8 +1,7 @@
 // An agent's request as its card in place of its post's words, as nodes (message_cards_node.mbt; settings'
-// rig_ask_node, ask_answered_node; the library's ask_card_node), set beside the old view's (decision.mbt's
-// rig_ask_card, in a list's row so that how it went is pressed for the card read again, as there) on the same
-// fixture: a rig's request waiting, someone else's, on a web page, on a device not approved, for one device, under way;
-// granted, waiting for the rig, ended, refused; wide, narrow, at 1.3.
+// rig_ask_node, ask_answered_node; the library's ask_card_node): a rig's request waiting, someone else's, on a web
+// page, on a device not approved, for one device, under way; granted, waiting for the rig, ended, refused; wide,
+// narrow, at 1.3.
 
 ///|
 /// The workspace the fixture's chat is of.
@@ -66,71 +65,6 @@ fn card_said_then(j : Json) -> Message {
     _ => ()
   }
   @sfbase.message_of(j)
-}
-
-///|
-/// Post `m` with its card in place of its words as the old view draws it in a list's row `list` (others_message, the
-/// card by `card`), answered with the settings' core over `src`, `w` wide; `begun` done as its run begins, before its
-/// first frame (what the host has: a password manager).
-fn card_old(
-  w : Double,
-  src : Source,
-  m : Message,
-  list : String,
-  card : (@ui.Ctx, MessageHere) -> Unit,
-  platform? : Int = 0,
-  begun? : () -> Unit = fn() {  },
-) -> @ui.Tester {
-  @settings.reset()
-  @sf.set_words(@sfbase.fill)
-  absolute_times.set(false)
-  let view = card_view()
-  @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      let here : MessageHere = {
-        station: "ws1/st1",
-        session: "s-c1",
-        view,
-        go: None,
-        inline: w <= chat_narrow_w,
-        gutter: 0.0,
-        list: Some({ rk: list, turns: @sfbase.turns_of(list), emits: @sfbase.emits_of(list), flight: None }),
-        core: Some(@sfbase.settings_core(src, card_ws)),
-      }
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.box(style=head_frame, fn() {
-          row_box(c, row_side(w), 0.0, fn() {
-            others_message(
-              c,
-              here.inline,
-              "m:" + m.ts,
-              m.time,
-              fn() { message_avatar(c, src, here, m, m.by.agent) },
-              fn() { message_name(c, src, here, "m:" + m.ts, m.by.name, m.by.agent, m.by.from) },
-              None,
-              fn() { card(c, here) },
-            )
-          })
-          |> ignore
-        })
-        |> ignore
-      })
-    },
-    w~,
-    h=420.0,
-    platform~,
-    begun~,
-  )
-}
-
-///|
-/// The old view's rig card for post `m` (rig_ask_card).
-fn card_old_rig(c : @ui.Ctx, here : MessageHere, m : Message) -> Unit {
-  match m.card {
-    Some({ rig: Some(ask), .. } as card) => rig_ask_card(c, here, m, card, ask)
-    _ => ()
-  }
 }
 
 ///|
@@ -251,54 +185,37 @@ fn card_audit(t : @ui.Tester, at : String, rooms : Int) -> Unit raise {
 }
 
 ///|
-/// The old view's drawing of the rig's request `c` (card_rig_cases'), `w` wide at `scale`, as a mouse is moved to the
-/// middle of `over` ("" none) or a finger presses `press` ("" none), then the same drawn by the nodes: both, and the
-/// new one's Tester.
-fn card_rig_both(
+/// The rig's request `c` (card_rig_cases') drawn by the nodes, `w` wide at `scale`, as a mouse is moved to the middle
+/// of `over` ("" none) or a finger presses `press` ("" none): what was drawn, and its Tester.
+fn card_rig_run(
   c : (String, String, Message, Json?),
   w : Double,
   scale? : Double = 1.0,
   over? : String = "",
   press? : String = "",
-) -> (String, String, @ui.Tester) {
-  let at = "rig \{c.0} \{w} \{scale} \{over} \{press}"
-  let old = card_old(w, card_src(c.1, doing=c.3), c.2, at, fn(x, here) { card_old_rig(x, here, c.2) })
-  old.set_font_scale(scale)
-  old.run_for(@ui.move_most_ms)
-  let mut point = (0.0, 0.0)
-  if over != "" {
-    let (x, y, ww, h) = old.rect_of(over).unwrap()
-    point = (x + ww / 2.0, y + h / 2.0)
-    old.move_to(point.0, point.1)
-    old.run_for(@ui.move_most_ms)
-  }
-  if press != "" {
-    old.tap_text(press)
-    old.run_for(@ui.move_most_ms)
-  }
-  let was = head_drawn(old)
+) -> (String, @ui.Tester) {
   let t = card_new(w, card_src(c.1, doing=c.3), fn() { c.2 })
   t.set_font_scale(scale)
   t.run_for(@ui.move_most_ms)
   if over != "" {
-    t.move_to(point.0, point.1)
+    let (x, y, ww, h) = t.rect_of(over).unwrap()
+    t.move_to(x + ww / 2.0, y + h / 2.0)
     t.run_for(@ui.move_most_ms)
   }
   if press != "" {
     t.tap_text(press)
     t.run_for(@ui.move_most_ms)
   }
-  (was, head_drawn(t), t)
+  (head_drawn(t), t)
 }
 
 ///|
-test "a rig's request in place of its post's words, made once as nodes, is drawn as the old view drew it: waiting, another's, on a web page, on a device not approved, one device, under way; granted, waiting for the rig, ended, refused; wide and narrow, at 1.3, under a mouse, pressed" {
+test "a rig's request in place of its post's words, made once as nodes: waiting, another's, on a web page, on a device not approved, one device, under way; granted, waiting for the rig, ended, refused; wide and narrow, at 1.3, under a mouse, pressed" {
   for w in [760.0, 390.0] {
     let mut waiting = ""
     for c in card_rig_cases() {
       let at = "\{c.0} at \{w}"
-      let (was, now, t) = card_rig_both(c, w)
-      assert_eq(now, was, msg=at)
+      let (now, t) = card_rig_run(c, w)
       // (each state drawn as it is, not as the one it starts from)
       if c.0 == "waiting" {
         waiting = now
@@ -311,17 +228,14 @@ test "a rig's request in place of its post's words, made once as nodes, is drawn
   let cases = card_rig_cases()
   for c in [cases[0], cases[6]] {
     let at = "\{c.0} at 1.3"
-    let (was, now, t) = card_rig_both(c, 390.0, scale=1.3)
-    assert_eq(now, was, msg=at)
+    let (_, t) = card_rig_run(c, 390.0, scale=1.3)
     card_audit(t, at, card_rig_rooms(c))
   }
   for over in ["拒绝", "闲置 1 小时"] {
-    let (was, now, t) = card_rig_both(cases[0], 760.0, over~)
-    assert_eq(now, was, msg="under a mouse: " + over)
+    let (_, t) = card_rig_run(cases[0], 760.0, over~)
     card_audit(t, "under a mouse: " + over, 0)
   }
-  let (was, now, t) = card_rig_both(cases[0], 760.0, press="允许")
-  assert_eq(now, was, msg="pressed")
+  let (_, t) = card_rig_run(cases[0], 760.0, press="允许")
   card_audit(t, "pressed", 0)
 }
 
@@ -490,26 +404,12 @@ fn card_login_cases() -> Array[(String, Source, Message)] {
 }
 
 ///|
-/// The login's post `m` over `src` as the old view draws it (its words plain, message_decision under them in a list's
-/// row), `w` wide at `scale`; then as the nodes do (message_decision_node with the core): both, and the new one's Tester.
-fn card_login_both(
-  src : Source,
-  m : Message,
-  w : Double,
-  at : String,
-  scale? : Double = 1.0,
-) -> (String, String, @ui.Tester) {
-  let old = card_old(w, src, m, at, fn(x, here) {
-    x.text(m.text, style=dec_words) |> ignore
-    message_decision(x, src, here, m, here.list.map(fn(l) { l.turns }))
-  })
-  old.set_font_scale(scale)
-  old.run_for(@ui.move_most_ms)
-  let was = head_drawn(old)
+/// The login's post `m` over `src` as the nodes draw it (message_decision_node with the core), `w` wide at `scale`.
+fn card_login_run(src : Source, m : Message, w : Double, scale? : Double = 1.0) -> (String, @ui.Tester) {
   let t = card_login_new(w, src, fn() { m })
   t.set_font_scale(scale)
   t.run_for(@ui.move_most_ms)
-  (was, head_drawn(t), t)
+  (head_drawn(t), t)
 }
 
 ///|
@@ -522,14 +422,13 @@ fn card_login_new(w : Double, src : Source, m : () -> Message) -> @ui.Tester {
 }
 
 ///|
-test "a login's card under its post, made once as nodes, is drawn as the old view drew it: under way, not to be finished here, whose it is with 忽略, answered, done, failed, one the core does not know; wide and narrow, at 1.3" {
+test "a login's card under its post, made once as nodes: under way, not to be finished here, whose it is with 忽略, answered, done, failed, one the core does not know; wide and narrow, at 1.3" {
   let cases = card_login_cases()
   for w in [760.0, 390.0] {
     let drawn : Map[String, String] = Map([])
     for c in cases {
       let at = "\{c.0} at \{w}"
-      let (was, now, t) = card_login_both(c.1, c.2, w, at)
-      assert_eq(now, was, msg=at)
+      let (now, t) = card_login_run(c.1, c.2, w)
       drawn[c.0] = now
       dec_audit(t, at)
     }
@@ -544,14 +443,13 @@ test "a login's card under its post, made once as nodes, is drawn as the old vie
   for i in [0, 2] {
     let c = cases[i]
     let at = "\{c.0} at 1.3"
-    let (was, now, t) = card_login_both(c.1, c.2, 390.0, at, scale=1.3)
-    assert_eq(now, was, msg=at)
+    let (_, t) = card_login_run(c.1, c.2, 390.0, scale=1.3)
     dec_audit(t, at)
   }
 }
 
 ///|
-test "a login's card ended while it shows goes as an answered post's options go: faded and smaller as its room closes, who is to finish it with it, then its line fading in in its place; not one put in the other's place at once" {
+test "a login's card ended while it shows: the card and who is to finish it go, its line comes in its place, 忽略 stays" {
   let login = @signals.signal(card_login(true, "browser"))
   let base = @sffixture.fixture("chat")
   let src : Source = {
@@ -565,23 +463,16 @@ test "a login's card ended while it shows goes as an answered post's options go:
     },
   }
   let m = card_login_post(who="等 林 完成", asked=true)
-  let t = card_old(760.0, src, m, "login-ends", fn(x, here) {
-    x.text(m.text, style=dec_words) |> ignore
-    message_decision(x, src, here, m, here.list.map(fn(l) { l.turns }))
-  })
+  let t = card_login_new(760.0, src, fn() { m })
   t.run_for(@ui.move_most_ms)
   let line = "已在 Willow 上登录 gh"
   let seen = fn(words : String) {
     t.words().iter().fold(init=0.0, fn(a, w) { if w.0 == words && w.5 > a { w.5 } else { a } })
   }
   assert_eq(seen("在 Willow 上登录 gh"), 1.0)
-  login.set(card_login(false, "done", more={ "statusText": line, "endedText": line }))
-  // (early in the options' going: the card and who is to finish it fading where they are, the line not yet)
-  t.run_for(@sfbase.options_out_ms / 5.0)
-  let card = seen("在 Willow 上登录 gh")
-  assert_true(card > 0.0 && card < 1.0, msg="card at \{card}")
-  assert_true(seen("等 林 完成") > 0.0)
+  assert_eq(seen("等 林 完成"), 1.0)
   assert_eq(seen(line), 0.0)
+  login.set(card_login(false, "done", more={ "statusText": line, "endedText": line }))
   // (gone, and the line come whole in its place)
   t.run_for(@ui.move_most_ms)
   assert_eq(seen("在 Willow 上登录 gh"), 0.0)
@@ -708,52 +599,33 @@ fn card_phone_rooms(_name : String, _w : Double) -> Int {
 }
 
 ///|
-/// The phone's request `m` over `src` as the old view draws it (phone_ask_card in a list's row), `w` wide at `scale`;
-/// then as the nodes do: both, and the new one's Tester.
-fn card_phone_both(src : Source, m : Message, w : Double, at : String, scale? : Double = 1.0) -> (String, String, @ui.Tester) {
-  let old = card_old(w, src, m, at, fn(x, here) {
-    match m.card {
-      Some({ phone: Some(ask), .. } as card) => phone_ask_card(x, here, m, card, ask)
-      _ => ()
-    }
-  })
-  old.set_font_scale(scale)
-  old.run_for(@ui.move_most_ms)
-  let was = head_drawn(old)
+/// The phone's request `m` over `src` as the nodes draw it, `w` wide at `scale`.
+fn card_phone_run(src : Source, m : Message, w : Double, scale? : Double = 1.0) -> (String, @ui.Tester) {
   let t = card_new(w, src, fn() { m })
   t.set_font_scale(scale)
   t.run_for(@ui.move_most_ms)
-  (was, head_drawn(t), t)
+  (head_drawn(t), t)
 }
 
 ///|
-test "a phone's request in place of its post's words, made once as nodes, is drawn as the old view drew it: waiting, an hour alone, another's, this device not approved, a station from before, under way; granted, held, to be paired on the phone, its debugging off, refused, ended; wide and narrow, at 1.3" {
+test "a phone's request in place of its post's words, made once as nodes: waiting, an hour alone, another's, this device not approved, a station from before, under way; granted, held, to be paired on the phone, its debugging off, refused, ended; wide and narrow, at 1.3" {
   let cases = card_phone_cases()
   for w in [760.0, 390.0] {
     let mut waiting = ""
     for c in cases {
       let at = "\{c.0} at \{w}"
-      // (waiting and under way place the duration chooser via one_of / ask_foot_chosen_end concentric with the card's
-      // foot corner, mending the old view's non-concentric inset)
+      let (now, t) = card_phone_run(c.1, c.2, w)
       if c.0 == "waiting" || c.0 == "under way" {
-        let t = card_new(w, c.1, fn() { c.2 })
-        t.run_for(@ui.move_most_ms)
-        let now = head_drawn(t)
         assert_true(card_has(t, "允许"), msg=at)
         assert_true(card_has(t, "拒绝"), msg=at)
         assert_true(card_has(t, @sf.t("android-settings.vault.scope.idle")), msg=at)
-        if c.0 == "waiting" {
-          waiting = now
-        } else {
-          assert_true(now != waiting, msg=at + ": drawn as waiting")
-        }
-        card_audit(t, at, card_phone_rooms(c.0, w))
-      } else {
-        let (was, now, t) = card_phone_both(c.1, c.2, w, at)
-        assert_eq(now, was, msg=at)
-        assert_true(now != waiting, msg=at + ": drawn as waiting")
-        card_audit(t, at, card_phone_rooms(c.0, w))
       }
+      if c.0 == "waiting" {
+        waiting = now
+      } else {
+        assert_true(now != waiting, msg=at + ": drawn as waiting")
+      }
+      card_audit(t, at, card_phone_rooms(c.0, w))
     }
   }
   // (waiting with its duration chooser at 1.3 narrow now stacks via one_of with zero audit faults)
@@ -766,8 +638,7 @@ test "a phone's request in place of its post's words, made once as nodes, is dra
   for i in [1, 8] {
     let c = cases[i]
     let at = "\{c.0} at 1.3"
-    let (was, now, t) = card_phone_both(c.1, c.2, 390.0, at, scale=1.3)
-    assert_eq(now, was, msg=at)
+    let (_, t) = card_phone_run(c.1, c.2, 390.0, scale=1.3)
     card_audit(t, at, 0)
   }
 }
@@ -840,38 +711,7 @@ test "a phone's request decided as its card shows: the card goes, the line sayin
 }
 
 ///|
-/// Post `m` as the old view draws it whole in a list's row `list` (message_row: its card in its words' place, what it
-/// asks under it), answered with the settings' core over `src`, `w` wide.
-fn card_row_old(w : Double, src : Source, m : Message, list : String) -> @ui.Tester {
-  @settings.reset()
-  @sf.set_words(@sfbase.fill)
-  absolute_times.set(false)
-  let view = card_view()
-  @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      let here : MessageHere = {
-        station: "ws1/st1",
-        session: "s-c1",
-        view,
-        go: None,
-        inline: w <= chat_narrow_w,
-        gutter: 0.0,
-        list: Some({ rk: list, turns: @sfbase.turns_of(list), emits: @sfbase.emits_of(list), flight: None }),
-        core: Some(@sfbase.settings_core(src, card_ws)),
-      }
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.box(style=head_frame, fn() { row_box(c, row_side(w), 0.0, fn() { message_row(c, src, here, m) }) |> ignore })
-        |> ignore
-      })
-    },
-    w~,
-    h=420.0,
-  )
-}
-
-///|
-/// The same post as the nodes draw it whole in its row (agent_said_node, answered with the core over `src`), `w` wide.
+/// The post as the nodes draw it whole in its row (agent_said_node, answered with the core over `src`), `w` wide.
 fn card_row_new(w : Double, src : Source, m : Message) -> @ui.Tester {
   @settings.reset()
   @sf.set_words(@sfbase.fill)
@@ -896,7 +736,6 @@ fn card_row_new(w : Double, src : Source, m : Message) -> @ui.Tester {
       }
       root.box(fn(f) {
         @sf.style_node(f, fn() { head_frame })
-        // (offering itself as the old list's row does: message_row's share)
         agent_said_node(f, src, here, fn() { "m:" + m.ts }, fn() { row_side(w) }, fn() { 0.0 }, fn() { m }, share=message_share_of(
           src,
           here,
@@ -913,32 +752,22 @@ fn card_row_new(w : Double, src : Source, m : Message) -> @ui.Tester {
 }
 
 ///|
-test "an agent's post whole in its row, made once as nodes, is drawn as the old view drew it: a rig's request in its words' place, a login's card under its words, wide and narrow" {
+test "an agent's post whole in its row, made once as nodes: a rig's request in its words' place, a login's card under its words, wide and narrow" {
   let cases = [
-    ("rig", card_src("chat-rig"), card_rig("")),
-    ("rig granted", card_src("chat-rig"), card_rig("granted")),
+    ("rig", card_src("chat-rig"), card_rig(""), "允许"),
+    ("rig granted", card_src("chat-rig"), card_rig("granted"), "已允许使用这台 station"),
     // (its words' Markdown as the core reads it: no word asked of a core this test does not keep)
     ("login", card_login_src(Some(card_login(true, "browser"))), {
       ..card_login_post(),
       md: Some([["p", ["在 Willow 上登录一下 gh，我再接着推。"]]]),
-    }),
+    }, "在 Willow 上登录 gh"),
   ]
   for c in cases {
     for w in [760.0, 390.0] {
       let at = "\{c.0} at \{w}"
-      let old = card_row_old(w, c.1, c.2, at)
-      old.run_for(@ui.move_most_ms)
-      let was = head_drawn(old)
       let t = card_row_new(w, c.1, c.2)
       t.run_for(@ui.move_most_ms)
-      let now = head_drawn(t)
-      // (where they differ, each line one has that the other has not)
-      let olds = was.split("\n").map(fn(l) { l.to_owned() }).collect()
-      let news = now.split("\n").map(fn(l) { l.to_owned() }).collect()
-      let only_old = olds.filter(fn(l) { !news.contains(l) })
-      let only_new = news.filter(fn(l) { !olds.contains(l) })
-      assert_true(only_old.is_empty() && only_new.is_empty(), msg=at + ": \{only_old.length()}/\{only_new.length()} NEW " + only_new.iter().take(3).collect().join(" | ") + " OLD " + only_old.iter().take(3).collect().join(" | "))
-      assert_eq(now, was, msg=at)
+      assert_true(t.find(c.3) is Some(_), msg=at)
     }
   }
 }

@@ -147,42 +147,14 @@ fn signin_cases() -> Array[SignInCase] {
 }
 
 ///|
-/// The old view's sign-in card for post `m` (signin_ask_card).
-fn signin_old_card(c : @ui.Ctx, here : MessageHere, m : Message) -> Unit {
-  match m.card {
-    Some({ signin: Some(ask), .. } as card) => signin_ask_card(c, here, m, card, ask)
-    _ => ()
-  }
+/// How many of card_audit's rooms case `name` has.
+fn signin_rooms(_name : String) -> Int {
+  0
 }
 
 ///|
-/// What `t` draws (head_drawn's words and grounds), each place and size to a billionth: the old view's sums and the
-/// nodes' come to the same places by other ways, a last digit apart (a foot's lines at 1.3, 216.8 and
-/// 216.79999999999998).
-fn signin_drawn(t : @ui.Tester) -> String {
-  let r = fn(x : Double) { (x * 1.0e9).round() / 1.0e9 }
-  t.words().map(fn(w) { "\{w.0}@\{r(w.1)},\{r(w.2)} \{r(w.3)}x\{r(w.4)} a\{w.5}" }).join("\n") +
-  "\n" +
-  t.drawn_rects().map(fn(g) { "\{r(g.0)},\{r(g.1)} \{r(g.2)}x\{r(g.3)} \{g.4}" }).join("\n")
-}
-
-///|
-/// The old view's drawing of case `c`, `w` wide at `scale`, its presses made; then the same drawn by the nodes: both,
-/// and the new one's Tester.
-fn signin_both(
-  c : SignInCase,
-  w : Double,
-  scale? : Double = 1.0,
-) -> (String, String, @ui.Tester) {
-  let at = "signin \{c.name} \{w} \{scale}"
-  let old = card_old(w, signin_src(fails=c.fails), c.post, at, fn(x, here) { signin_old_card(x, here, c.post) }, begun=signin_host(c.host))
-  old.set_font_scale(scale)
-  old.run_for(@ui.move_most_ms)
-  for p in c.presses {
-    old.tap_text(p)
-    old.run_for(@ui.move_most_ms)
-  }
-  let was = signin_drawn(old)
+/// Case `c` drawn `w` wide at `scale` by the nodes.
+fn signin_held(c : SignInCase, w : Double, scale? : Double = 1.0) -> @ui.Tester {
   let t = card_new(w, signin_src(fails=c.fails), fn() { c.post }, begun=signin_host(c.host))
   t.set_font_scale(scale)
   t.run_for(@ui.move_most_ms)
@@ -190,27 +162,11 @@ fn signin_both(
     t.tap_text(p)
     t.run_for(@ui.move_most_ms)
   }
-  (was, signin_drawn(t), t)
-}
-
-///|
-/// How many of card_audit's rooms case `name` has: none while its card shows; decided, the head's name and time, and
-/// the line saying how it went where its middle is under the time (「已登录 github.com」 118 wide, 「已拒绝登录
-/// github.com」 142, from 40; the others' are longer).
-fn signin_rooms(_name : String) -> Int {
-  0
-}
-
-///|
-/// Case `c` drawn `w` wide at `scale` by both views, the same: the new one's Tester.
-fn signin_held(c : SignInCase, w : Double, scale? : Double = 1.0) -> @ui.Tester raise {
-  let (was, now, t) = signin_both(c, w, scale~)
-  assert_eq(now, was, msg="\{c.name} at \{w} \{scale}")
   t
 }
 
 ///|
-test "a sign-in in place of its post's words, made once as nodes, is drawn as the old view drew it: waiting with no password manager, 1Password, the autofill; 1Password asked, its logins to pick, sending, none for the site, its servers not reached, the autofill asked, not to be kept; a code asked, a captcha, the agent's word, filling, left, being kept, its keeping failed, another's; kept, not kept, signed in, refused, expired, ended; wide and narrow, at 1.3" {
+test "a sign-in in place of its post's words, made once as nodes: waiting with no password manager, 1Password, the autofill; 1Password asked, its logins to pick, sending, none for the site, its servers not reached, the autofill asked, not to be kept; a code asked, a captcha, the agent's word, filling, left, being kept, its keeping failed, another's; kept, not kept, signed in, refused, expired, ended; wide and narrow, at 1.3" {
   for w in [760.0, 390.0] {
     let drawn : Map[String, String] = Map([])
     for c in signin_cases() {
@@ -218,7 +174,6 @@ test "a sign-in in place of its post's words, made once as nodes, is drawn as th
       drawn[c.name] = head_drawn(t)
       card_audit(t, "\{c.name} at \{w}", signin_rooms(c.name))
     }
-    // (each state drawn as it is, not as the one it is told from: waiting on its host)
     for c in signin_cases() {
       let from = match c.host {
         OnePassword(_, _, _) => "1Password"
@@ -230,7 +185,6 @@ test "a sign-in in place of its post's words, made once as nodes, is drawn as th
       }
     }
   }
-  // (at 1.3, narrow: what fits holds its words, nothing over another)
   let cases = signin_cases()
   for i in [1, 4, 8, 9] {
     let t = signin_held(cases[i], 390.0, scale=1.3)
@@ -240,29 +194,24 @@ test "a sign-in in place of its post's words, made once as nodes, is drawn as th
 }
 
 ///|
-/// What was asked of the core, each call's name and its params as text (a test compares them).
+/// What was asked of the core, each call's name and its params as text.
 fn signin_asked(calls : Array[(String, Json)]) -> Array[String] {
   calls.map(fn(c) { c.0 + " " + c.1.stringify() })
 }
 
 ///|
-/// Post `m` on a host `h`, `w` wide, `act` done on the old view's drawing, then on the nodes': what each asked of the
-/// core, and the new one's Tester.
-fn signin_act_both(
+/// Post `m` on a host `h`, `w` wide, `act` done on the nodes' drawing: what it asked of the core, and its Tester.
+fn signin_act_new(
   m : Message,
   h : SignInHost,
   w : Double,
   act : (@ui.Tester) -> Unit,
-) -> (Array[String], Array[String], @ui.Tester) {
-  let was : Array[(String, Json)] = []
-  let old = card_old(w, card_src("chat-signin", calls=was), m, "signin act", fn(x, here) { signin_old_card(x, here, m) }, begun=signin_host(h))
-  old.run_for(@ui.move_most_ms)
-  act(old)
+) -> (Array[String], @ui.Tester) {
   let now : Array[(String, Json)] = []
   let t = card_new(w, card_src("chat-signin", calls=now), fn() { m }, begun=signin_host(h))
   t.run_for(@ui.move_most_ms)
   act(t)
-  (signin_asked(was), signin_asked(now), t)
+  (signin_asked(now), t)
 }
 
 ///|
@@ -273,7 +222,7 @@ fn signin_press(t : @ui.Tester, words : String) -> Unit {
 }
 
 ///|
-test "a sign-in on its card, made once as nodes, asks what the old view's asked: on screen, signin.self; 1Password's login picked, its account and password sent with signin.fill, kept or not as chosen; the autofill's login as it comes; a code typed, by 继续 and by Enter; the person's step said done; signed in, kept by vault.approve once" {
+test "a sign-in on its card, made once as nodes: on screen, signin.self; 1Password's login picked, its account and password sent with signin.fill, kept or not as chosen; the autofill's login as it comes; a code typed, by 继续 and by Enter; the person's step said done; signed in, kept by vault.approve once" {
   let none = signin_post_with()
   let op = OnePassword(signin_two_logins, false, false)
   let s = fn(v : String) { Json::string(v) }
@@ -324,8 +273,7 @@ test "a sign-in on its card, made once as nodes, asks what the old view's asked:
     }, "vault.approve"),
   ]
   for c in cases {
-    let (was, now, t) = signin_act_both(c.1, c.2, 760.0, c.3)
-    assert_eq(now, was, msg=c.0)
+    let (now, t) = signin_act_new(c.1, c.2, 760.0, c.3)
     let named = now.filter(fn(a) { a.has_prefix("signin.") || a.has_prefix("vault.") })
     if c.4 == "" {
       assert_eq(named, [], msg=c.0)

@@ -3,23 +3,6 @@
 // execution history), and a mark at the start of its history's tools that opens all of it in a panel.
 
 ///|
-/// What it has going in the background past its turns and its checklist in one line (the core's `workLine`: 后台 4 ·
-/// 清单 2/6：<the item under way>), `card` its `agentCard` view, cut at its end, never wrapped: pressed by `id`, in the
-/// text's colour under the pointer; `inset` in from its start as its card's latest lines are. Nothing when it has
-/// neither.
-pub fn agent_work_line(c : @ui.Ctx, card : Json?, id : Int, inset? : Bool = false) -> Unit {
-  let words = text(card, "workLine")
-  if words == "" {
-    return
-  }
-  let hot = c.lit(id)
-  let b = c.box(style=if inset { work_line_inset } else { work_line }, id~, fn() {
-    c.text(words, style=if hot { work_line_hot } else { work_line_words }) |> ignore
-  })
-  c.semantics(b, Button, id~, label=words)
-}
-
-///|
 /// How readily its mark leaves its row (Ctx::box `drop`): the first of what may.
 let work_mark_drop : Int = 1
 
@@ -198,12 +181,6 @@ let work_elapsed : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=f
 /// The checklist on the tasks' line, 4 under its head.
 // kept across runs: a value (no field of it changes)
 let work_plan : @ui.Style = @ui.css("w=Full pt=S1")
-
-///|
-/// Its line: a row as wide as it is given, its words (12, muted; the text's under the pointer) cut at their end; in its
-/// card 14 in, as its latest lines are.
-// kept across runs: a value (no field of it changes)
-let work_line : @ui.Style = @ui.css("row w=Full gap=S1 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

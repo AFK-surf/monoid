@@ -6,59 +6,8 @@
 // second line says (its bell, card label, check), not a shape of its own here.
 
 ///|
-/// A chat's mark `tone` (the core's: busy, done, alert, wait; anything else none), the row's ground behind it: a dot 8
-/// across, blue (done and unread, or waiting on the viewer) or red (alert), at work yellow spokes stepping round in 10.
-/// Its node (0 for none).
-pub fn chat_mark(c : @ui.Ctx, tone : String) -> Int {
-  let label = match tone {
-    "busy" | "done" | "alert" | "wait" => @sf.t("web-main.chatMark." + tone)
-    _ => return 0
-  }
-  match tone {
-    "done" | "wait" => c.box(style=mark_done, label~, fn() {  })
-    "alert" => c.box(style=mark_alert, label~, fn() {  })
-    _ => c.box(style=mark_busy, label~, fn() { @sf.spokes(c, mark_busy_side, @sf.mark_yellow()) |> ignore })
-  }
-}
-
-///|
 /// The spokes' box.
 let mark_busy_side : Double = 10.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let mark_done : @ui.Style = @ui.style(w=S2, h=S2, radius=Full, bg=@sf.mark_blue)
-
-///|
-// kept across runs: a value (no field of it changes)
-let mark_alert : @ui.Style = @ui.style(w=S2, h=S2, radius=Full, bg=@sf.mark_red)
-
-///|
-// kept across runs: a value (no field of it changes)
-let mark_busy : @ui.Style = @ui.css("w=S2_5 h=S2_5")
-
-///|
-/// A row's mark (its row's `key`): one that comes while the chat is in view (a new message, work
-/// begun) fades in over @sf.dur_ms (140 ms Out, no scale); one there as the list is first drawn does not.
-pub fn row_mark(c : @ui.Ctx, key : String, tone : String) -> Unit {
-  let pop = @motion.anim(c, "side/mark-pop/" + key, 1.0, global=true)
-  match marks_seen.get(key) {
-    Some(was) if was != tone => {
-      marks_seen[key] = tone
-      if tone != "" && !@ui.reduced_motion() {
-        pop.snap(c, 0.0)
-        pop.animate(c, 1.0, @motion.tween(@sf.dur_ms, ease=Out))
-      }
-    }
-    None => marks_seen[key] = tone
-    _ => ()
-  }
-  let mark = chat_mark(c, tone)
-  let v = pop.get(c)
-  if mark != 0 && v < 1.0 {
-    c.look(mark, @ui.look(alpha=v))
-  }
-}
 
 ///|
 /// The mark each chat has had, as its row was last drawn.
@@ -67,107 +16,6 @@ let marks_seen : Map[String, String] = Map([])
 ///|
 fn marks_reset() -> Unit {
   marks_seen.clear()
-}
-
-// A row's second line from where its chat stands (still.fail web/src/ChatMark.tsx WaitingText `slot`, ChatMark.css.ts
-// leadLine, leadSlot, waitingLead; Sidebar.css.ts navSessionLast): by what the core says leads it (ChatItem's
-// state_lead, its card's lead word state_lead_text, what follows state_rest), never read out of the words. A lead said
-// as an icon (needs the viewer a bell, done a check, done and offered to archive the archive box, waiting the waiting
-// arc, watching a radar) stands in the title's mark's column, centred under it, what follows where the title starts;
-// the two still going move (waiting's dots breathe in turn, the radar's dot beats and its arcs light up after it, inner
-// then outer, then rest: every 3.1 s). 待处理 · … in ink, its lead word bold; needs the viewer in ink too; anything else
-// as quiet as the last message.
-
-///|
-/// The state line `text` (the core's stateText): `lead` what leads it, `lead_text` a card's lead word, `rest` what
-/// follows the lead; `alert` (a message that did not go) in red. `slot`: the icon's place's id (only pointed at: a press
-/// on it is what holds it's, the row's), its tip `key`.
-pub fn state_line(
-  c : @ui.Ctx,
-  key : String,
-  slot : Int,
-  text : String,
-  lead? : String = "",
-  lead_text? : String = "",
-  rest? : String = "",
-  alert? : Bool = false,
-) -> Unit {
-  let turn = lead == "decision" || lead == "need"
-  // (the row's size, the theme's lists': Sidebar.css.ts navSessionLast)
-  let look = @sf.theme().chat_list
-  let words = if alert { look.state_alert } else if turn { look.state_turn } else { look.state_quiet }
-  match lead {
-    "need" | "done" | "archive" | "wait" | "watch" => {
-      let label = match lead {
-        "watch" => text
-        "need" => @sf.t("web-main.chatMark.alert")
-        "done" => @sf.t("web-main.status.done")
-        "archive" => @sf.t("web-main.chatMark.settled")
-        _ => @sf.t("web-main.status.waiting")
-      }
-      let ink = if alert {
-        @sf.theme().p.red
-      } else if turn {
-        @sf.theme().p.text
-      } else {
-        @sf.theme().p.muted
-      }
-      // (read out whole: its aria-label)
-      c.box(style=state_lead_line(), label=text, fn() {
-        let b = c.box(style=state_slot, id=slot, taps=false, points=true, fn() { lead_icon(c, lead, ink) })
-        // (role="img": its words, the row pressed through it)
-        c.semantics(b, Image, id=slot, label~)
-        if rest != "" {
-          c.text(rest, style=words) |> ignore
-        }
-      })
-      |> ignore
-      @sf.tip(c, key + "/lead-tip", slot, label)
-    }
-    "decision" if lead_text != "" && text.has_prefix(lead_text) =>
-      c.box(style=state_row, fn() {
-        // (the theme's lists' lead word: bold with touch, as the phone's Home.kt StateLine; 600 with keyboard and mouse,
-        // ChatMark.css.ts)
-        c.text(lead_text, style=words.then(look.state_lead)) |> ignore
-        c.text(text.exact_view(start=lead_text.length()).to_owned(), style=words.then(state_rest_cut)) |> ignore
-      })
-      |> ignore
-    _ => c.text(text, style=words) |> ignore
-  }
-}
-
-///|
-/// The lead's icon, 14 in its 10 wide column (standing 2 out of it each side): a bell, a check, the archive box (done and
-/// offered to archive: @sfbase.row_lead); waiting's arc with its three dots breathing one after another; watching's dot
-/// beating, its arcs lit after it. Each part that moves is drawn apart, over what stays (leadSlot's copies). `centred`:
-/// in the middle of a column at least as wide as it instead (an option's disc's: need_card).
-fn lead_icon(c : @ui.Ctx, lead : String, ink : Int64, centred? : Bool = false) -> Unit {
-  let name = match lead {
-    "need" => "bell"
-    "done" => "check"
-    _ => lead
-  }
-  c.box(style=state_icon_at, tx=if centred { 0.0 } else { -state_icon_out }, fn() {
-    match lead {
-      "wait" => {
-        @sf.icon_parts(c, name, [0], size=state_icon, color=ink) |> ignore
-        for k, d in wait_delays {
-          let part = c.layer(fn() { @sf.icon_parts(c, name, [k + 1], size=state_icon, color=ink) |> ignore })
-          lead_look(c, part, d, fn(f) { @ui.look(alpha=lead_breathe(f)) })
-        }
-      }
-      "watch" => {
-        let dot = c.layer(fn() { @sf.icon_parts(c, name, [0], size=state_icon, color=ink) |> ignore })
-        lead_look(c, dot, 0.0, fn(f) { @ui.look(scale=lead_beat(f)) })
-        for k, d in watch_delays {
-          let arcs = c.layer(fn() { @sf.icon_parts(c, name, [2 * k + 1, 2 * k + 2], size=state_icon, color=ink) |> ignore })
-          lead_look(c, arcs, d, fn(f) { @ui.look(alpha=lead_lit(f)) })
-        }
-      }
-      _ => @sf.icon(c, name, size=state_icon, color=ink) |> ignore
-    }
-  })
-  |> ignore
 }
 
 ///|
@@ -189,27 +37,6 @@ let wait_delays : Array[Double] = [0.0, 300.0, 600.0]
 ///|
 // kept across runs: a table, never written
 let watch_delays : Array[Double] = [180.0, 420.0]
-
-///|
-/// Part `node` drawn with what `look` gives where it is in its loop (0 to 1), `delay` late, on the one clock's steps
-/// (resident: up for as long as the agent waits or watches), worked out as each frame is drawn, not as the row is built
-/// (Ctx::cycle_look); with motion reduced, at its rest (0: what each is between beats).
-fn lead_look(c : @ui.Ctx, node : Int, delay : Double, look : (Double) -> @ui.Look) -> Unit {
-  c.cycle_look(
-    node,
-    lead_loop_ms,
-    fn(f) {
-      if @ui.reduced_motion() {
-        look(0.0)
-      } else {
-        let g = f - delay / lead_loop_ms
-        look(g - g.floor())
-      }
-    },
-    resident=true,
-    held=true,
-  )
-}
 
 ///|
 /// A keyframe track at `f` (0 to 1): its stops (where, what), each step eased by `ease`.
@@ -269,10 +96,6 @@ let state_lead_line_base : @ui.Style = @ui.css("row w=Full align=ACenter")
 /// The title's mark's column: 10 wide, 14 high (leadSlot).
 // kept across runs: a value (no field of it changes)
 let state_slot : @ui.Style = @ui.css("w=S2_5 h=S3_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let state_icon_at : @ui.Style = @ui.css("w=S3_5 h=S3_5")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -97,8 +97,6 @@ priv struct Composing {
   /// each quote's card's colour as it was last drawn, by quote: where its ground sets out from as it is sent
   /// (flying_quotes)
   grounds : Map[String, Int64]
-  /// each quote's own picture as it was last drawn in its card, by quote: what flies from there as it is sent
-  pictures : Map[String, MediaPicture]
   /// what its box changed shape for and how as it was built in what composer_shaped builds (None till it is)
   /// each draft's composer's corner as it was last built, where it stands (its place's): what its chat's list keeps clear
   /// for it is worked out from (composer_least), not from another composer's built last (a chat beside another's)
@@ -181,7 +179,6 @@ let composing : Composing = {
   cold_open: @signals.signal("", same=fn(a, b) { a == b }),
   wanted: false,
   grounds: {},
-  pictures: {},
   corners: @sf.LiveMap::new(),
 }
 
@@ -196,7 +193,6 @@ fn composing_reset() -> Unit {
   composing.warmed.clear()
   composing.comments.clear()
   composing.grounds.clear()
-  composing.pictures.clear()
   composing.took.clear()
   composing.notices_said.clear()
   composing.restoring.clear()

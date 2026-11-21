@@ -29,7 +29,7 @@ fn media_tree(w? : Double = 390.0, platform? : Int = 0, pressed? : Array[Int] = 
       root.box(fn(v) {
         v.grow(Is(1.0)) |> ignore
         @ui.old(v, fn(c) {
-          c.box(style=@ui.style(w=Full, h=Full), fn() { chat_file(c, src, a) }) |> ignore
+          c.box(style=@ui.style(w=Full, h=Full), fn() { legacy_note_thumb_file(c, src, a) }) |> ignore
         })
         .over(Is(true))
         |> ignore

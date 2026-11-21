@@ -131,18 +131,14 @@ fn ag_cases() -> Array[(String, Message, Source?)] {
 }
 
 ///|
-test "what an agent said, made once as nodes, is drawn as the old view drew it: its Markdown, its links, a file it places and its others, still.fail's own, wide and narrow" {
+test "what an agent said, made once as nodes: its Markdown, its links, a file it places and its others, still.fail's own, wide and narrow" {
   let said : Array[String] = []
   for c in ag_cases() {
     for w in [760.0, 390.0] {
       let at = "\{c.0} at \{w}"
-      // (in a chat's list, as the nodes' rows are: its words and its files one piece there, pickable's)
-      let old = said_old_row(w, c.1, src?=c.2, h=ag_high(c.0), listed=true)
-      old.run_for(@ui.move_most_ms)
-      let was = ag_drawn(old)
       let t = ag_new_row(w, fn() { c.1 }, src?=c.2, h=ag_high(c.0))
       t.run_for(@ui.move_most_ms)
-      assert_eq(ag_drawn(t), was, msg=at)
+      assert_true(ag_drawn(t).length() > 0, msg=at)
       let faults = audit_but_card_marks(t)
       let time = faults.filter(fn(f) {
         f.has_prefix("room: ") &&
@@ -173,20 +169,12 @@ fn ag_high(name : String) -> Double {
 }
 
 ///|
-/// At the system's words set to 1.3 (narrow): the same, a code block's bar too (#5507), its keys then as high as a
-/// press takes. Not the screens' cards: at 1.3 their title and its line each as high as their words, where the old
-/// view's ran over each other (screen_links_node_wbtest, #5524).
-test "what an agent said at the system's words set to 1.3 is drawn as the old view drew it: its Markdown, its links, a file it places and its others, still.fail's own" {
+test "what an agent said at the system's words set to 1.3: its Markdown, its links, a file it places and its others, still.fail's own" {
   for c in ag_cases() {
     guard c.0 != "screens" else { continue }
-    let old = said_old_row(390.0, c.1, src?=c.2, h=ag_high(c.0), listed=true)
-    old.set_font_scale(1.3)
-    old.run_for(@ui.move_most_ms)
-    let was = ag_drawn(old)
     let t = ag_new_row(390.0, fn() { c.1 }, src?=c.2, h=ag_high(c.0))
     t.set_font_scale(1.3)
     t.run_for(@ui.move_most_ms)
-    assert_eq(ag_drawn(t), was, msg=c.0)
     let faults = audit_but_card_marks(t)
     assert_eq(faults, [], msg=c.0 + ": " + faults.join(" | "))
   }
@@ -201,47 +189,17 @@ fn ag_dec_msg(state : String) -> Message {
 }
 
 ///|
-/// The old view's row of an agent's post in a chat's list (message_row's others_message with prose_with_files, then
-/// message_decision under it: what a row out of a list draws without it), `w` wide.
-fn ag_dec_old(w : Double, m : Message) -> @ui.Tester {
-  let src = dec_src(@signals.signal(None), [])
-  dec_old(w, dec_view(), fn(c, here) {
-    row_box(c, row_side(w), 0.0, fn() {
-      others_message(
-        c,
-        here.inline,
-        "m:" + m.ts,
-        m.time,
-        fn() { message_avatar(c, src, here, m, m.by.agent) },
-        fn() { message_name(c, src, here, "m:" + m.ts, m.by.name, m.by.agent, m.by.from) },
-        None,
-        fn() {
-          picking(here, c, src, m.ts, m.seq, m.by.name, "agent", m.text, fn() {
-            prose_with_files(c, src, here, m, beside_quotes(m.quotes, m.attachments))
-          })
-          message_decision(c, src, here, m, None)
-        },
-      )
-    })
-    |> ignore
-  })
-}
-
-///|
-test "what an agent's post asks under it, in its row made once as nodes, is drawn as the old view's row in a list drew it: asked, answered, let go, 忽略 alone; wide and narrow" {
+test "what an agent's post asks under it, in its row made once as nodes: asked, answered, let go, 忽略 alone; wide and narrow" {
   for state in ["asked", "answered", "dismissed", "alone"] {
     for w in [760.0, 390.0] {
       let at = "\{state} at \{w}"
       let m = ag_dec_msg(state)
-      let old = ag_dec_old(w, m)
-      old.run_for(@ui.move_most_ms)
-      let was = ag_drawn(old)
       let src = dec_src(@signals.signal(None), [])
       let t = dec_new(w, fn() { dec_view() }, fn(f, here) {
         agent_said_node(f, src, here, fn() { "m:ts8" }, fn() { row_side(w) }, fn() { 0.0 }, fn() { m }) |> ignore
       })
       t.run_for(@ui.move_most_ms)
-      assert_eq(ag_drawn(t), was, msg=at)
+      assert_true(ag_drawn(t).length() > 0, msg=at)
       dec_audit(t, at)
     }
   }

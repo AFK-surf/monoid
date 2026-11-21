@@ -58,7 +58,7 @@ fn photo_sent(
     // (in a chat's list, the composer's room at its foot, where it is one)
     let list = c.box(style=card, fn() {
       c.box(style=@ui.style(h=Fixed(shift.val)), fn() {  }) |> ignore
-      chat_file(c, src, a, list=if listed { "test-list" } else { "" })
+      legacy_note_thumb_file(c, src, a, list=if listed { "test-list" } else { "" })
     })
     if listed {
       note_list(c, list, "test-list", if head { flight_bar_h } else { 0.0 }, if bar { flight_bar_h } else { 0.0 })
@@ -227,7 +227,16 @@ test "a letterboxed video's light picture has no black rim where it meets its ro
     thumbhash: "", owner: "s-c1", upload: "", duration: 0.0, frames: 0, held: false,
   }
   let t = @ui.Tester::new(
-    fn(c) { chat_file(c, src, a) },
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      root.box(fn(col) {
+        col.width(Is(Some(300.0))) |> ignore
+        @sfpages.message_files_of_node(col, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() { [a] }, false)
+      })
+      |> ignore
+    },
     w=390.0,
     h=844.0,
     images=[("wide-still", 360, 95)],

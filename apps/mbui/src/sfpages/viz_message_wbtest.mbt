@@ -1,4 +1,46 @@
 ///|
+/// An agent's message with Mermaid blocks drawn by agent_prose_node + viz_mermaid_node.
+fn viz_prose_tester(src : Source, view : ChatView, message : Message) -> @ui.Tester {
+  @ui.Tester::new(
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : MessageNodeHere = {
+        station: "ws1/st1",
+        session: "s-c1",
+        view: fn() { view },
+        width: fn() { 390.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
+      }
+      root.box(fn(f) {
+        f.width(Is(Some(390.0))) |> ignore
+        agent_prose_node(
+          f,
+          src,
+          here,
+          fn() { message },
+          code=fn(lang) {
+            if lang == "mermaid" {
+              Some(fn(b, code) { @sfbase.viz_mermaid_node(b, src, "ws1/st1", code, fn() { @sf.theme().p.subtle }, tips) })
+            } else {
+              None
+            }
+          },
+        )
+      })
+      |> ignore
+    },
+    w=390.0,
+    h=700.0,
+    platform=1,
+  )
+}
+
+///|
 test "two identical Mermaid blocks in one message are two pictures, the chart asked of the core once" {
   @sfbase.reset()
   reset()
@@ -22,11 +64,7 @@ test "two identical Mermaid blocks in one message are two pictures, the chart as
   let original = view.messages[view.messages.length() - 1]
   let block : Json = ["pre", { "code": "graph TD; A-->B", "lang": "mermaid" }]
   let message = { ..original, text: "two charts", md: Some(Json::array([block, block])), attachments: [], placed: [] }
-  let here : MessageHere = { station: "ws1/st1", session: "s-c1", view, go: None, inline: false, gutter: 0.0, list: None, core: None }
-  let t = @ui.Tester::new(fn(c) {
-    @sf.begin(c) |> ignore
-    c.with_theme(@sf.ui_theme(), fn() { prose_with_files(c, src, here, message, []) })
-  }, w=390.0, h=700.0, platform=1)
+  let t = viz_prose_tester(src, view, message)
   t.check_looks(false)
   t.draw()
   t.frames_owed()
@@ -64,11 +102,7 @@ test "a mermaid chart the core makes is drawn as a picture in the theme's colour
   let original = view.messages[view.messages.length() - 1]
   let block : Json = ["pre", { "code": "graph TD; A-->B", "lang": "mermaid" }]
   let message = { ..original, text: "a chart", md: Some(Json::array([block])), attachments: [], placed: [] }
-  let here : MessageHere = { station: "ws1/st1", session: "s-c1", view, go: None, inline: false, gutter: 0.0, list: None, core: None }
-  let t = @ui.Tester::new(fn(c) {
-    @sf.begin(c) |> ignore
-    c.with_theme(@sf.ui_theme(), fn() { prose_with_files(c, src, here, message, []) })
-  }, w=390.0, h=700.0, platform=1)
+  let t = viz_prose_tester(src, view, message)
   t.check_looks(false)
   t.draw()
   t.frames_owed()
@@ -114,11 +148,7 @@ test "a chart the core will not make shows as its code" {
   let original = view.messages[view.messages.length() - 1]
   let block : Json = ["pre", { "code": "graph TD; A-->", "lang": "mermaid" }]
   let message = { ..original, text: "a chart", md: Some(Json::array([block])), attachments: [], placed: [] }
-  let here : MessageHere = { station: "ws1/st1", session: "s-c1", view, go: None, inline: false, gutter: 0.0, list: None, core: None }
-  let t = @ui.Tester::new(fn(c) {
-    @sf.begin(c) |> ignore
-    c.with_theme(@sf.ui_theme(), fn() { prose_with_files(c, src, here, message, []) })
-  }, w=390.0, h=700.0, platform=1)
+  let t = viz_prose_tester(src, view, message)
   t.check_looks(false)
   t.draw()
   t.frames_owed()

@@ -4222,7 +4222,9 @@ fn cornered_card(
           let (tl, tr, br, bl) = corners.get()
           if shown.get() {
             let radius = @ui.Radius::Corners(tl, tr, br, bl)
-            c.box(style=@ui.style(w=Fixed(300.0), h=Fixed(225.0), radius~, clip=true), fn() { chat_file(c, src, a) })
+            c.box(style=@ui.style(w=Fixed(300.0), h=Fixed(225.0), radius~, clip=true), fn() {
+              legacy_note_thumb_file(c, src, a, fixed_box=Some((300.0, 225.0)))
+            })
             |> ignore
           }
         })

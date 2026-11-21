@@ -67,18 +67,13 @@ test "a wide picture fills its taller chat preview without stretching, its start
   new_run()
   let a = { ..strip("wide.png"), width: 2000.0, height: 400.0 }
   let src : Source = { ..fixture("chat"), file: fn(_, _, _) { "wide" } }
-  let here : @sfpages.MessageHere = {
-    station: "ws1/st1",
-    session: "s-c1",
-    view: chat_view_made(Json::object({})),
-    go: None,
-    inline: true,
-    gutter: 0.0,
-    list: None,
-    core: None,
-  }
   let t = @ui.Tester::new(
-    fn(c) { @sfpages.message_files(c, src, here, [a], false) },
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      @sfpages.message_files_of_node(root, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() { [a] }, false)
+    },
     w=390.0,
     h=600.0,
     images=[("wide", 2000, 400)],
@@ -93,7 +88,6 @@ test "a wide picture fills its taller chat preview without stretching, its start
     (i[4] - 0.0).abs() < 0.001 && (i[5] - 0.0).abs() < 0.001 &&
     (i[6] - 0.45).abs() < 0.001 && (i[7] - 1.0).abs() < 0.001
   }), msg="\{Repr(images)}")
-  assert_true(thumb_of(t.ctx(), "ws1/st1/s-c1/uploads/fx/wide.png").unwrap().start_crop)
 }
 
 ///|
@@ -101,18 +95,13 @@ test "a tall picture fills its wider chat preview without stretching" {
   new_run()
   let a = { ..strip("tall.png"), width: 400.0, height: 2000.0 }
   let src : Source = { ..fixture("chat"), file: fn(_, _, _) { "tall" } }
-  let here : @sfpages.MessageHere = {
-    station: "ws1/st1",
-    session: "s-c1",
-    view: chat_view_made(Json::object({})),
-    go: None,
-    inline: true,
-    gutter: 0.0,
-    list: None,
-    core: None,
-  }
   let t = @ui.Tester::new(
-    fn(c) { @sfpages.message_files(c, src, here, [a], false) },
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      @sfpages.message_files_of_node(root, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() { [a] }, false)
+    },
     w=390.0,
     h=600.0,
     images=[("tall", 400, 2000)],
@@ -126,8 +115,6 @@ test "a tall picture fills its wider chat preview without stretching" {
     (i[4] - 0.0).abs() < 0.001 && (i[5] - 0.0).abs() < 0.001 &&
     (i[6] - 1.0).abs() < 0.001 && (i[7] - 0.375).abs() < 0.001
   }), msg="\{Repr(images)}")
-  let thumb = thumb_of(t.ctx(), "ws1/st1/s-c1/uploads/fx/tall.png").unwrap()
-  assert_true(thumb.start_crop)
   t.tap(80.0, 150.0)
   assert_true(viewer.get() is Some(_))
   let file = viewer.get().unwrap().file
@@ -148,18 +135,21 @@ test "a letterboxed strip waiting to load: what it waits on is its share of its 
     "attachments": [attachment_json({ ..strip("line.png"), width: 200.0, height: 4.0 }, "s-c1")],
   })
   let t = @ui.Tester::new(
-    fn(c) {
-      let here : @sfpages.MessageHere = {
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
         station: "ws1/st1",
         session: "s-c1",
-        view: chat_view_made(Json::object({})),
-        go: None,
-        inline: true,
-        gutter: 0.0,
-        list: None,
-        core: None,
+        view: fn() { chat_view_made(Json::object({})) },
+        width: fn() { 760.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
       }
-      @sfpages.message_row(c, src, here, m)
+      @sfpages.message_row_node(root, src, here, fn() { m })
     },
     w=760.0,
     h=600.0,

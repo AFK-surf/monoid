@@ -42,26 +42,7 @@ fn sl_src(said? : Bool = true, up? : Bool = true, peek? : Bool = false) -> Sourc
 }
 
 ///|
-/// The words as the old view draws them (@sf.markdown with screen_links), `w` wide.
-fn sl_old(w : Double, src : Source, words : String) -> @ui.Tester {
-  @sf.set_words(@sfbase.fill)
-  @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.box(style=head_frame, fn() {
-          @sf.markdown(c, words, key="sl", size=body_size, screens=Some(screen_links(c, src, "sl"))) |> ignore
-        })
-        |> ignore
-      })
-    },
-    w~,
-    h=900.0,
-  )
-}
-
-///|
-/// The same words as the nodes draw them (markdown_node with screen_links_node), `w` wide.
+/// The words as the nodes draw them (markdown_node with screen_links_node), `w` wide.
 fn sl_new(w : Double, src : Source, words : String) -> @ui.Tester {
   @sf.set_words(@sfbase.fill)
   @ui.Tester::new(
@@ -83,26 +64,16 @@ fn sl_new(w : Double, src : Source, words : String) -> @ui.Tester {
 }
 
 ///|
-/// What a Tester draws (head_drawn's), each place and size to a hundredth (the old view's sums leave tails the nodes'
-/// do not: 245.31000080108643 against 245.3100008010864).
-fn sl_drawn(t : @ui.Tester) -> String {
-  let r = fn(v : Double) { (v * 100.0).round() / 100.0 }
-  t.words().map(fn(w) { "\{w.0}@\{r(w.1)},\{r(w.2)} \{r(w.3)}x\{r(w.4)} a\{w.5}" }).join("\n") +
-  "\n" +
-  t.drawn_rects().map(fn(d) { "\{r(d.0)},\{r(d.1)} \{r(d.2)}x\{r(d.3)} \{d.4}" }).join("\n")
-}
-
-///|
-test "links to screens and a web service, made once as nodes, are drawn as the old view drew them: their cards, a bare one's title, said and not yet, a service down; wide and narrow" {
+test "links to screens and a web service, made once as nodes: their cards, a bare one's title, said and not yet, a service down; wide and narrow" {
   for case in [("said", true, true), ("not said yet", false, true), ("service down", true, false)] {
     for w in [760.0, 390.0] {
       let at = "\{case.0} at \{w}"
-      let old = sl_old(w, sl_src(said=case.1, up=case.2), @sffixture.screens_answer)
-      old.run_for(@ui.move_most_ms)
-      let was = sl_drawn(old)
       let t = sl_new(w, sl_src(said=case.1, up=case.2), @sffixture.screens_answer)
       t.run_for(@ui.move_most_ms)
-      assert_eq(sl_drawn(t), was, msg=at)
+      if case.1 {
+        assert_true(t.find("Ana 正在查看") is Some(_), msg=at)
+        assert_true(t.find(if case.2 { "Willow :5173 · 在线" } else { "Willow :5173 · 已停止" }) is Some(_), msg=at)
+      }
       let faults = audit_but_card_marks(t).filter(fn(f) { !sl_card_ends(f) })
       assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
     }
@@ -138,36 +109,24 @@ fn sl_tapped(t : @ui.Tester, words : String) -> (Array[String], Bool) {
 }
 
 ///|
-test "a card tapped opens where its link leads, as the old view's does: the desktop's, a tab gone, the web service" {
+test "a card tapped opens where its link leads: the desktop's, a tab gone, the web service" {
   for words in ["Ana 正在查看", "此屏幕已不存在", "打开定价页"] {
-    let old = sl_old(760.0, sl_src(), @sffixture.screens_answer)
-    old.run_for(@ui.move_most_ms)
-    let was = sl_tapped(old, words)
-    assert_true(was.0.length() > 0 || was.1, msg=words + ": the old one opened nothing")
     let t = sl_new(760.0, sl_src(), @sffixture.screens_answer)
     t.run_for(@ui.move_most_ms)
-    assert_eq(sl_tapped(t, words), was, msg=words)
+    let got = sl_tapped(t, words)
+    assert_true(got.0.length() > 0 || got.1, msg=words + ": opened nothing")
     let faults = audit_but_card_marks(t)
     assert_true(faults.is_empty(), msg=words + ": " + faults.join(" | "))
   }
 }
 
 ///|
-test "a tab its station previews: its card drawn by the nodes as the old view draws it, its preview over its words, the rest as they were" {
-  let old = sl_old(760.0, sl_src(peek=true), @sffixture.screens_answer)
-  old.run_for(@ui.move_most_ms)
-  // (each to a hundredth, as sl_drawn's)
-  let r = fn(v : Double) { (v * 100.0).round() / 100.0 }
-  let at = fn(t : @ui.Tester) {
-    ["林 正在查看", "发布清单预览", "Ana 正在查看"].map(fn(w) {
-      t.rect_of(w).map(fn(q) { "\{r(q.0)},\{r(q.1)} \{r(q.2)}x\{r(q.3)}" }).unwrap_or("none")
-    })
-  }
-  let was = at(old)
-  assert_true(was[0] != "none", msg="the old view's card with its preview")
+test "a tab its station previews: its card drawn by the nodes, its preview over its words, the rest as they were" {
   let t = sl_new(760.0, sl_src(peek=true), @sffixture.screens_answer)
   t.run_for(@ui.move_most_ms)
-  assert_eq(at(t), was)
+  assert_true(t.rect_of("林 正在查看") is Some(_))
+  assert_true(t.rect_of("发布清单预览") is Some(_))
+  assert_true(t.rect_of("Ana 正在查看") is Some(_))
   let faults = audit_but_card_marks(t)
   assert_true(faults.is_empty(), msg=faults.join(" | "))
 }

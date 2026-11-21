@@ -57,7 +57,6 @@ fn vault_src(
 /// message row; `save`: to keep a password for demo-user; `typed`: to keep one of that kind the person types in, OpenCode Go;
 /// `status`: how it ended), answered here as the core says with it (`answer`, `lasts`: its vaultAsk's).
 fn ask_card(
-  c : @ui.Ctx,
   src : Source,
   save? : Bool = false,
   typed? : String = "",
@@ -68,7 +67,11 @@ fn ask_card(
   lasts? : String = "",
   timeout_kind? : String = "",
   timeout_seconds? : Int = 0,
-) -> Unit {
+  w? : Double = 390.0,
+  h? : Double = 844.0,
+  platform? : Int = 2,
+  pointing? : @ui.Pointing,
+) -> @ui.Tester {
   let viewer = Json::object({ "me": Json::object({ "email": Json::string("me@x.com") }) })
   let ask : Map[String, Json] = {
     "name": Json::string(if typed != "" { "OpenCode Go" } else if save { "测试服务登录" } else { "GitHub token" }),
@@ -108,18 +111,33 @@ fn ask_card(
     "text": "要用 GitHub token",
     "card": Json::object(card),
   })
-  let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
-  let here : @sfpages.MessageHere = {
-    station: "ws1/st1",
-    session: "s-c1",
-    view: chat_view_made(viewer),
-    go: None,
-    inline: false,
-    gutter: 0.0,
-    list: None,
-    core: Some(settings_core(src, w)),
-  }
-  c.box(w=Fill(1.0), fn() { @sfpages.message_row(c, src, here, m) }) |> ignore
+  let ws : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
+  @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
+        station: "ws1/st1",
+        session: "s-c1",
+        view: fn() { chat_view_made(viewer) },
+        width: fn() { w },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
+      }
+      @sfpages.message_row_node(root, src, here, fn() { m }, core=Some(settings_core(src, ws)))
+      @sf.presented_nodes(root)
+    },
+    w~,
+    h~,
+    platform~,
+    pointing?,
+  )
 }
 
 ///|
@@ -127,7 +145,7 @@ test "an idle timeout requested for a daily task is shown and approved as reques
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, timeout_kind="idle", timeout_seconds=129600) }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, timeout_kind="idle", timeout_seconds=129600)
   t.draw()
   assert_true(t.find("闲置 36 小时后失效") is Some(_))
   t.tap_text("允许")
@@ -182,7 +200,7 @@ test "a request's card is whole with its post: its answer the core's with it, no
       base.topic(name, params).get().snapshot()
     },
   }
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src) }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src)
   t.draw()
   for w in ["使用 GitHub token", "允许", "拒绝", "本对话内"] {
     assert_true(t.find(w) is Some(_), msg=w)
@@ -195,7 +213,7 @@ test "a request to use a secret: its title and command, 允许 for the chat (the
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src) }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src)
   t.draw()
   for w in ["使用 GitHub token", "gh run rerun 1846 --failed", "允许", "拒绝", "本对话内"] {
     assert_true(t.find(w) is Some(_), msg=w)
@@ -212,7 +230,7 @@ test "a request to use a secret for an item given an hour at most: 允许 for th
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, lasts="hour") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, lasts="hour")
   t.draw()
   assert_true(t.find("本对话内") is None)
   t.tap_text("1 小时内")
@@ -227,7 +245,7 @@ test "a request to use a secret for an item given an hour at most: 允许 for th
 ///|
 test "a command that reads the secret itself: said, in the one colour the card has" {
   new_run()
-  let t = @ui.Tester::new(fn(c) { ask_card(c, vault_src(["r1"], true, []), mode="env") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(vault_src(["r1"], true, []), mode="env")
   t.draw()
   assert_true(t.find("可读取明文") is Some(_))
 }
@@ -237,7 +255,7 @@ test "a request to keep a secret: 存入 or 不存, kept as once; its kind and a
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls, save=true)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, save=true) }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, save=true)
   t.draw()
   for w in ["存入密码 测试服务登录", "demo-user", "存入", "不存"] {
     assert_true(t.find(w) is Some(_), msg=w)
@@ -255,7 +273,7 @@ test "a secret the person types in: its field over 存入, which waits for somet
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls, save=true)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, typed="token") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, typed="token")
   t.draw()
   for w in ["存入Token OpenCode Go", "粘贴 Token", "不存"] {
     assert_true(t.find(w) is Some(_), msg=w)
@@ -273,7 +291,7 @@ test "a secret the person types in: its field over 存入, which waits for somet
   t.draw()
   assert_eq(calls, ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r1\",\"scope\":\"once\",\"typed\":{\"secret\":\"sk-go-1\"}}"])
   // its field answered: the keyboard goes with it (the card says how it went, the field no longer there)
-  assert_false(t.ctx().field_focused())
+  assert_true(t.focused() is None)
 }
 
 ///|
@@ -281,7 +299,7 @@ test "a file the person picks: 选择文件 over 存入, which waits for one; pi
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls, save=true)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, typed="file") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, typed="file")
   t.draw()
   assert_true(t.find("存入文件 OpenCode Go") is Some(_))
   let (x, y) = t.find_last("存入").unwrap()
@@ -309,7 +327,7 @@ test "a login the person types in, the agent naming no account: 用户名 over i
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls, save=true)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, typed="login") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, typed="login")
   t.draw()
   t.tap_text("用户名")
   t.type_text("admin")
@@ -320,7 +338,7 @@ test "a login the person types in, the agent naming no account: 用户名 over i
   t.enter()
   t.draw()
   assert_eq(calls, ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r1\",\"scope\":\"once\",\"typed\":{\"secret\":\"pw 1\",\"username\":\"admin\"}}"])
-  assert_false(t.ctx().field_focused())
+  assert_true(t.focused() is None)
 }
 
 ///|
@@ -328,7 +346,7 @@ test "a request to keep a secret while the vault is not on here: 开启密钥库
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls, save=true, set_up=false)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, save=true, answer="setUp") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, save=true, answer="setUp")
   t.draw()
   t.tap_text("开启密钥库")
   t.draw()
@@ -340,12 +358,12 @@ test "a request to keep a secret while the vault is not on here: 开启密钥库
 test "a request another's to decide, or on a web page: no buttons, a line saying so" {
   new_run()
   let calls = []
-  let t = @ui.Tester::new(fn(c) { ask_card(c, vault_src(["r1"], true, calls), assignee="lin@x.com") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(vault_src(["r1"], true, calls), assignee="lin@x.com")
   t.draw()
   assert_true(t.find("待 林晓 决策") is Some(_))
   assert_true(t.find("允许") is None)
   new_run()
-  let t = @ui.Tester::new(fn(c) { ask_card(c, vault_src(["r1"], false, calls), answer="elsewhere") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(vault_src(["r1"], false, calls), answer="elsewhere")
   t.draw()
   assert_true(t.find("请在客户端批准") is Some(_))
   assert_eq(calls.length(), 0)
@@ -406,7 +424,7 @@ test "how a request ended: one line, its item named" {
   let src = vault_src([], true, [])
   for case in [(false, "granted", "已允许使用 GitHub token · 本对话内"), (true, "granted", "已存入密码 测试服务登录"), (false, "denied", "已拒绝使用 GitHub token"), (true, "denied", "未存入 测试服务登录")] {
     let (save, status, words) = case
-    let t = @ui.Tester::new(fn(c) { ask_card(c, src, save~, status~) }, w=390.0, h=844.0, platform=2)
+    let t = ask_card(src, save~, status~)
     t.draw()
     assert_true(t.find(words) is Some(_), msg=words)
   }

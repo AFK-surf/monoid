@@ -6,7 +6,6 @@
 /// core (@sfbase.settings_core); and the library where a picture made in it goes (@sf.picture_out_by, @sf.picture_out_now_by: a table's).
 /// Said once (reset runs only as a Tester starts).
 fn init {
-  @sfbase.login_card_of.val = fn(c, core, station, id, marked) { login_card(c, core, station, id, marked~) }
   @sfbase.share_card_of.val = share_card_open
   @sfbase.screen_made_stream.val = screen_fixture_stream
   @sf.picture_out_now_by.val = fn(png, said) { picture_out_now(png, copy_said=said) }

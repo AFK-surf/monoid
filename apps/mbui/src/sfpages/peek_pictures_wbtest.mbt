@@ -34,27 +34,28 @@ fn peek_pictures_answer(asked : Array[(String, Json, (Result[(Json, Bytes), Json
 }
 
 ///|
-/// A window `w` wide (窄排法 at 390, 宽排法 at 1280) with a link 截图 drawn and `card` its card (given the link's id).
-fn peek_pictures_tester(w : Double, card : (@ui.Ctx, Int) -> Unit) -> @ui.Tester {
+/// A window `w` wide (窄排法 at 390, 宽排法 at 1280) with a link 截图 drawn and `card` attached to its node.
+fn peek_pictures_tester(w : Double, card : (@view.View) -> Unit) -> @ui.Tester {
   @sfbase.reset()
-  @ui.Tester::new(
-    fn(c) {
-      @sfbase.held_build()
-      c.after_build("held/end", fn() { @sfbase.held_end() })
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.column(pad=40.0, fn() {
-          let link = @kit.button(c, "截图", key="shot", variant=Ghost)
-          card(c, link.id)
-        })
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, h=800.0, native=Mouse, pointing=Mouse)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(col) {
+      col.pad(Is(40.0)) |> ignore
+      col.box(fn(link) {
+        link
+        .width(Is(Some(120.0)))
+        .height(Is(Some(32.0)))
+        .on_press(fn() {  })
+        .says(Is(Some(@view.said(Button, label="截图"))))
         |> ignore
+        card(link)
       })
-    },
-    w~,
-    h=800.0,
-    native=Mouse,
-    pointing=Mouse,
-  )
+      |> ignore
+    })
+    |> ignore
+  })
+  t
 }
 
 ///|
@@ -77,7 +78,11 @@ fn peek_pictures_frames(
     if i == answer_at {
       peek_pictures_answer(asked)
     }
-    seen.push((t.rect_of(title), t.image_nodes().map(fn(n) { (n.1, n.2) })))
+    let imgs = match @ui.view_tree() {
+      Some(tree) => tree.drawn().filter(fn(d) { d.image is Some(_) }).map(fn(d) { (d.w, d.h) })
+      None => []
+    }
+    seen.push((t.rect_of(title), imgs))
   }
   seen
 }
@@ -92,7 +97,25 @@ fn peek_pictures_whole(seen : Array[((Double, Double, Double, Double)?, Array[(D
     if f.1.length() != images {
       return "frame \{i} of those shown: \{f.1.length()} images, not \{images}"
     }
-    if f.0 != Some(last) || f.1 != last_images {
+    guard f.0 is Some(r) else { return "frame \{i} of those shown: title missing" }
+    // (hover_card_node pops in with a slight scale from ~0.96 -> 1.0 without reflowing layout)
+    let same_place = (r.0 - last.0).abs() <= 6.0 &&
+      (r.1 - last.1).abs() <= 6.0 &&
+      (r.2 - last.2).abs() <= last.2 * 0.06 + 1.0 &&
+      (r.3 - last.3).abs() <= last.3 * 0.06 + 1.0
+    let same_images = f.1.length() == last_images.length() &&
+      {
+        let mut ok = true
+        for j in 0..<f.1.length() {
+          let (w, h) = f.1[j]
+          let (lw, lh) = last_images[j]
+          if (w - lw).abs() > lw * 0.06 + 1.0 || (h - lh).abs() > lh * 0.06 + 1.0 {
+            ok = false
+          }
+        }
+        ok
+      }
+    if !same_place || !same_images {
       return "frame \{i} of those shown: at \{Repr(f.0)}, images \{Repr(f.1)}; at rest at \{Repr(last)}, \{Repr(last_images)}"
     }
   }
@@ -104,10 +127,13 @@ test "a link's card naming an icon and a picture shows whole from its first fram
   for w in [390.0, 1280.0] {
     let asked = []
     let src = peek_pictures_source(asked)
-    let t = peek_pictures_tester(w, fn(c, id) { web_peek(c, src, "ws1/st1", "https://example.com/bench/shot", "截图", id) })
+    let t = peek_pictures_tester(w, fn(row) {
+      web_peek_node(row, src, "ws1/st1", fn() { "https://example.com/bench/shot" }, fn() { "截图" })
+    })
     // (answered a frame after the pointer came onto the link: before its card opens, as the core's memory answers)
     let seen = peek_pictures_frames(t, asked, "列表滚动截图", 1)
-    assert_eq(peek_pictures_whole(seen, 2), "", msg="width \{w}")
+    let res = peek_pictures_whole(seen, 2)
+    assert_eq(res, "", msg="width \{w}: \{res}")
   }
 }
 
@@ -116,7 +142,7 @@ test "a picture file's peek shows whole from its first frame, 窄排法 and 宽�
   for w in [390.0, 1280.0] {
     let asked = []
     let src = peek_pictures_source(asked)
-    let t = peek_pictures_tester(w, fn(c, id) { file_peek(c, src, "ws1/st1", "s-c1", "shots/list.png", None, id) })
+    let t = peek_pictures_tester(w, fn(row) { file_peek_test_node(row, src, "ws1/st1", "s-c1", "shots/list.png", None) })
     let seen = peek_pictures_frames(t, asked, "list.png", 1)
     assert_eq(peek_pictures_whole(seen, 1), "", msg="width \{w}")
     assert_true(asked.length() == 0, msg="width \{w}: asked once")
@@ -179,7 +205,9 @@ test "a card's picture the core has none of shows the card without it, asked onc
       }
     },
   }
-  let t = peek_pictures_tester(390.0, fn(c, id) { web_peek(c, src, "ws1/st1", "https://example.com/gone", "截图", id) })
+  let t = peek_pictures_tester(390.0, fn(row) {
+    web_peek_node(row, src, "ws1/st1", fn() { "https://example.com/gone" }, fn() { "截图" })
+  })
   let seen = peek_pictures_frames(t, asked, "没有图", 1)
   assert_eq(peek_pictures_whole(seen, 0), "")
   assert_eq(@sfbase.link_picture(src, "ws1/st1", "https://example.com/gone", Some(v), "image"), "!")

@@ -53,6 +53,29 @@ fn MessageFilesAt::here(self : MessageFilesAt) -> MessageHere {
 }
 
 ///|
+/// A message's files drawn as nodes (`message_files_node`), for standalone tests.
+pub fn message_files_of_node(
+  parent : @view.View,
+  src : Source,
+  tips : @sf.TipLayer,
+  station : String,
+  session : String,
+  view : ChatView,
+  list : () -> Array[Attachment],
+  mine : Bool,
+) -> Unit {
+  let place : MessageFilesAt = {
+    station: fn() { station },
+    session: fn() { session },
+    view: fn() { view },
+    said: fn() { false },
+    picture: None,
+    share: fn() { None },
+  }
+  message_files_node(parent, src, tips, place, list, fn() { mine }, fn() { None }, fn() { "" })
+}
+
+///|
 /// A message's files in `parent` (message_files'), `list` as it is now, at the column's end where they are the viewer's
 /// (`mine`): in rows by the width given, 6 apart along a row and between rows, a picture's and a video's box their data's
 /// at most that width, a card as wide as what it says (236 at most, that width at most). `by`: whose message they are

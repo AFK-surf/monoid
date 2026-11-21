@@ -79,17 +79,24 @@ test "desk: an agent's request to use a secret is its card in place of its words
   })
   let t = @ui.Tester::new(
     fn(c) {
-      let here : @sfpages.MessageHere = {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
         station: "ws1/st1",
         session: "s-c1",
-        view: chat_view_made(viewer),
-        go: None,
-        inline: false,
-        gutter: 0.0,
-        list: None,
-        core: Some(settings_core(src, w)),
+        view: fn() { chat_view_made(viewer) },
+        width: fn() { 760.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
       }
-      @sfpages.message_row(c, src, here, m)
+      @sfpages.message_row_node(root, src, here, fn() { m }, core=Some(settings_core(src, w)))
+      @sf.presented_nodes(root)
     },
     w=760.0,
     h=600.0,
@@ -117,17 +124,24 @@ test "desk: a message's file card, pointed at, says nothing of where the station
   let src = fixture("chat")
   let t = @ui.Tester::new(
     fn(c) {
-      let here : @sfpages.MessageHere = {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
         station: "ws1/st1",
         session: "s-c1",
-        view: chat_view_made(Json::object({})),
-        go: None,
-        inline: true,
-        gutter: 0.0,
-        list: None,
-        core: None,
+        view: fn() { chat_view_made(Json::object({})) },
+        width: fn() { 760.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
       }
-      @sfpages.message_row(c, src, here, m)
+      @sfpages.message_row_node(root, src, here, fn() { m })
+      @sf.presented_nodes(root)
     },
     w=760.0,
     h=600.0,

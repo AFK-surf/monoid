@@ -1,15 +1,18 @@
-// A message's image coming in at a desktop's width (sfdesk/message_files.mbt image_reveal), as the web's
-// msgImageReveal.
+// A message's image coming in at a desktop's width (@sf.image_reveal_node), as the web's msgImageReveal.
 
 ///|
 /// How long a message's image takes to come in on the desktop.
-let reveal_ms : Double = 1100.0
+let reveal_ms : Double = @sf.reveal_ms
 
 ///|
 test "a message's image as the web's: what it waits on until decoded; then brushed in from its top and sharpened over 1100 ms" {
   new_run()
   let t = @ui.Tester::new(
-    fn(c) { @sfpages.image_reveal(c, "pic", 300.0, 200.0, FitCover, "") },
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.image_reveal_node(root, fn() { "pic" }, fn() { "" }, fn() { 300.0 }, fn() { 200.0 }) |> ignore
+    },
     w=400.0,
     h=300.0,
     platform=0,
@@ -32,13 +35,16 @@ test "a message's image already decoded as it is first shown comes as it is" {
   new_run()
   let shown = @signals.signal(false)
   let t = @ui.Tester::new(
-    fn(c) {
-      // (decoded first, drawn once it is)
-      if shown.get() {
-        @sfpages.image_reveal(c, "pic", 300.0, 200.0, FitCover, "")
-      } else {
-        c.image("pic", w=Px(300.0), h=Px(200.0), fade=false) |> ignore
-      }
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick(fn() { shown.get() }, fn(p, s) {
+        if s {
+          @sf.image_reveal_node(p, fn() { "pic" }, fn() { "" }, fn() { 300.0 }, fn() { 200.0 }) |> ignore
+        } else {
+          p.image(Is(Some(("pic", "", 0)))).width(Is(Some(300.0))).height(Is(Some(200.0))) |> ignore
+        }
+      })
     },
     w=400.0,
     h=300.0,
@@ -58,7 +64,11 @@ test "a message's image already decoded as it is first shown comes as it is" {
 test "a message's image the device had comes as it is once decoded, not brushed in as one waited for from its station" {
   new_run()
   let t = @ui.Tester::new(
-    fn(c) { @sfpages.image_reveal(c, "pic", 300.0, 200.0, FitCover, "", held=true) },
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.image_reveal_node(root, fn() { "pic" }, fn() { "" }, fn() { 300.0 }, fn() { 200.0 }, held=fn() { true }) |> ignore
+    },
     w=400.0,
     h=300.0,
     platform=0,
@@ -76,7 +86,11 @@ test "a message's image the device had comes as it is once decoded, not brushed 
 test "a message's image of a message not new while the chat shows: what it waits on till decoded, then whole at once, never brushed in" {
   new_run()
   let t = @ui.Tester::new(
-    fn(c) { @sfpages.image_reveal(c, "pic", 300.0, 200.0, FitCover, "", comes=false) },
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.image_reveal_node(root, fn() { "pic" }, fn() { "" }, fn() { 300.0 }, fn() { 200.0 }, comes=fn() { false }) |> ignore
+    },
     w=400.0,
     h=300.0,
     platform=0,

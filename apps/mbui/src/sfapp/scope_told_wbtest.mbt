@@ -7,7 +7,7 @@
 fn scope_tester() -> @ui.Tester {
   new_run()
   let src = vault_src(["r1"], true, [])
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src) }, w=900.0, h=700.0, platform=0, pointing=Mouse)
+  let t = ask_card(src, w=900.0, h=700.0, platform=0, pointing=Mouse)
   t.draw()
   t
 }
@@ -19,7 +19,7 @@ fn scope_dismissed(how : (@ui.Tester) -> Unit) -> Array[Bool] raise {
   let t = scope_tester()
   guard t.query(Button, label="本对话内") is Some(s) else { fail("no 本对话内") }
   let (x, y) = (s.rect.0 + s.rect.2 / 2.0, s.rect.1 + s.rect.3 / 2.0)
-  let open = fn() { @settings.vault_menu_open() != "" }
+  let open = fn() { t.takes_back() }
   t.tap(x, y)
   t.frame()
   let shown = t.find("仅这一次") is Some(_)
@@ -47,7 +47,7 @@ test "a request's length menu dismissed by a press on the page: closed as it goe
   let down : Array[Bool] = []
   let seen = scope_dismissed(fn(t) {
     t.touch_at(0, 880.0, 680.0, t.time())
-    down.push(@settings.vault_menu_open() != "")
+    down.push(t.takes_back())
     t.touch_at(2, 880.0, 680.0, t.time())
   })
   assert_eq((down, seen), ([false], [true, false, false, true, true]))
@@ -56,7 +56,8 @@ test "a request's length menu dismissed by a press on the page: closed as it goe
 ///|
 test "a request's 本对话内 pressed again with its menu open, then Escape at once: closed as it is let go, and stays closed, a frame between or none" {
   let run = fn(frames : Bool) raise {
-    button_then_escape(scope_tester(), "本对话内", fn() { @settings.vault_menu_open() != "" }, frames)
+    let t = scope_tester()
+    button_then_escape(t, "本对话内", fn() { t.takes_back() }, frames)
   }
   assert_eq((run(false), run(true)), ([false, false, false], [false, false, false]))
 }

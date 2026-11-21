@@ -76,7 +76,6 @@ using @sfapp {
   tagging_new,
   tagging_take,
   text,
-  thumb_of,
   tr,
   update,
   update_asks,
