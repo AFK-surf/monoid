@@ -954,6 +954,7 @@ pub async fn run_command(host : @host.Host, argv0 : String, args : Array[String]
     }
     Some("heap") => cmd_heap(data)
     Some("enroll") => cmd_enroll(host, args, data, argv0)
+    Some("admin") => run_admin_cli(host, argv0, args)
     _ => usage()
   }
 }

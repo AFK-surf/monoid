@@ -62,7 +62,7 @@ pub struct Host {
 pub async fn Host::accept(Self, @json.Json) -> Conn
 pub fn Host::cancel_fetch(Self, Int64) -> Unit
 pub fn Host::conn(Self, @json.Json, peer? : String) -> Conn
-pub async fn Host::fetch(Self, String, method_? : String, headers? : Array[(String, String)], body? : Bytes, entry? : (String, Int32), head_ms? : Int32, stall_ms? : Int32, timeout_ms? : Int32, redirect? : String, called? : (Int64) -> Unit) -> FetchResponse
+pub async fn Host::fetch(Self, String, method_? : String, headers? : Array[(String, String)], body? : Bytes, entry? : (String, Int32), head_ms? : Int32, stall_ms? : Int32, timeout_ms? : Int32, redirect? : String, proxy? : String, ca_pem? : String, called? : (Int64) -> Unit) -> FetchResponse
 pub async fn Host::file_sha256(Self, String) -> String?
 pub async fn Host::line(Self) -> String?
 pub async fn Host::listen_close(Self, @json.Json) -> Unit noraise

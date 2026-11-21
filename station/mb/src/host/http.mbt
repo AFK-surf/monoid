@@ -96,27 +96,17 @@ pub fn Host::cancel_fetch(self : Host, id : Int64) -> Unit {
   }
 }
 
-///|
-/// An HTTP request by the shell: `entry`, the host and port its TCP goes to (TLS's name and HTTP's Host the URL's
-/// own); `head_ms`, how long the shell waits for its answer's head, `stall_ms` how long its body may stay silent
-/// (neither: as long as this waits); `timeout_ms`, the deadline here for the whole answer (`FetchTimeout` once it
-/// passes); `redirect`, `"follow"` for redirects followed (up to ten; else, `"manual"` or none, a 3xx is the answer);
-/// `called`, told the shell's call id as it is asked (what `Host::cancel_fetch` takes). Given up by its
-/// deadline or an interruption, it is given up at the shell too, its connection with it. The shell's own failure is
-/// raised as it says it (`@wire.ShellError`).
-pub async fn Host::fetch(
-  self : Host,
+fn fetch_args(
   url : String,
-  method_? : String = "GET",
-  headers? : Array[(String, String)] = [],
-  body? : Bytes,
-  entry? : (String, Int),
-  head_ms? : Int,
-  stall_ms? : Int,
-  timeout_ms? : Int,
-  redirect? : String,
-  called? : (Int64) -> Unit,
-) -> FetchResponse {
+  method_ : String,
+  headers : Array[(String, String)],
+  entry : (String, Int)?,
+  head_ms : Int?,
+  stall_ms : Int?,
+  redirect : String?,
+  proxy : String?,
+  ca_pem : String?,
+) -> Json {
   let args : Map[String, Json] = {
     "url": Json::string(url),
     "method": Json::string(method_),
@@ -134,6 +124,40 @@ pub async fn Host::fetch(
   if redirect is Some(r) {
     args["redirect"] = Json::string(r)
   }
+  if proxy is Some(p) && p != "" {
+    args["proxy"] = Json::string(p)
+  }
+  if ca_pem is Some(pem) && pem != "" {
+    args["caPem"] = Json::string(pem)
+  }
+  Json::object(args)
+}
+
+///|
+/// An HTTP request by the shell: `entry`, the host and port its TCP goes to (TLS's name and HTTP's Host the URL's
+/// own); `head_ms`, how long the shell waits for its answer's head, `stall_ms` how long its body may stay silent
+/// (neither: as long as this waits); `timeout_ms`, the deadline here for the whole answer (`FetchTimeout` once it
+/// passes); `redirect`, `"follow"` for redirects followed (up to ten; else, `"manual"` or none, a 3xx is the answer);
+/// `proxy`, an HTTP/HTTPS proxy URL (for HTTPS CONNECT tunnels); `ca_pem`, additional PEM root CA certificates;
+/// `called`, told the shell's call id as it is asked (what `Host::cancel_fetch` takes). Given up by its
+/// deadline or an interruption, it is given up at the shell too, its connection with it. The shell's own failure is
+/// raised as it says it (`@wire.ShellError`).
+pub async fn Host::fetch(
+  self : Host,
+  url : String,
+  method_? : String = "GET",
+  headers? : Array[(String, String)] = [],
+  body? : Bytes,
+  entry? : (String, Int),
+  head_ms? : Int,
+  stall_ms? : Int,
+  timeout_ms? : Int,
+  redirect? : String,
+  proxy? : String,
+  ca_pem? : String,
+  called? : (Int64) -> Unit,
+) -> FetchResponse {
+  let args = fetch_args(url, method_, headers, entry, head_ms, stall_ms, redirect, proxy, ca_pem)
   fetch_by(
     async fn(args, body, told) {
       self.shell("fetch", args, bytes?=body, called=id => {
@@ -144,7 +168,7 @@ pub async fn Host::fetch(
       })
     },
     id => self.cancel_fetch(id),
-    Json::object(args),
+    args,
     body,
     timeout_ms,
   )

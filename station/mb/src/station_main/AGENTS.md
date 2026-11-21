@@ -3,7 +3,7 @@
 - `stillfail-reader` is the station itself when its arguments ask for it (`entry.mbt` `is_station`: a hook's file,
   a sandbox's bridge or a Claude TUI's (`<…>/claude-tui.mjs` and its `hook` and `mcp`: claude_tui.mbt, line for line
   as assets/agents/claude-tui.mjs, which a session a station from before started still runs under Node), one of `run`,
-  `enroll`, `status`, `id`, `lock`, `channel`, `update`, `heap`, or `run`'s flags with no command);
+  `enroll`, `status`, `id`, `lock`, `channel`, `update`, `heap`, `admin`, or `run`'s flags with no command);
   every reader and builder mode (`--data`, `--serve`, `--sessions`, `--builder …`) stays reader/main.mbt's as it was.
 - What the shell (client/shell) does not do is `sys.c`'s, POSIX and `_WIN32` both, built into the reader for every
   target (station/mb/build.sh takes `src/*/*.c`): what comes later (a child's output and end, a lock taken, a control

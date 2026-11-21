@@ -70,8 +70,20 @@ impl Listener {
 }
 
 pub(crate) fn tls_config() -> rustls::ClientConfig {
+    tls_config_with_ca(None)
+}
+
+fn tls_config_with_ca(ca_pem: Option<&str>) -> rustls::ClientConfig {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    let mut roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    if let Some(pem) = ca_pem {
+        for item in CertificateDer::pem_slice_iter(pem.as_bytes()) {
+            if let Ok(cert) = item {
+                let _ = roots.add(cert);
+            }
+        }
+    }
     rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .expect("ring supports the default protocol versions")
@@ -97,6 +109,32 @@ fn http_builder(tls: &rustls::ClientConfig, follow: bool) -> reqwest::ClientBuil
         .http2_keep_alive_timeout(Duration::from_secs(5))
         .http2_keep_alive_while_idle(true)
         .redirect(if follow { reqwest::redirect::Policy::limited(10) } else { reqwest::redirect::Policy::none() })
+}
+
+fn custom_http_client(
+    default_tls: &rustls::ClientConfig,
+    follow: bool,
+    proxy: Option<&str>,
+    ca_pem: Option<&str>,
+    entry: Option<(String, u16)>,
+) -> Result<reqwest::Client, String> {
+    let owned_tls;
+    let tls = match ca_pem {
+        Some(pem) => {
+            owned_tls = tls_config_with_ca(Some(pem));
+            &owned_tls
+        }
+        None => default_tls,
+    };
+    let mut builder = http_builder(tls, follow);
+    builder = match proxy {
+        Some(proxy_url) => builder.proxy(reqwest::Proxy::all(proxy_url).map_err(http_error)?),
+        None => builder.no_proxy(),
+    };
+    if let Some((host, port)) = entry {
+        builder = builder.dns_resolver(Arc::new(EntryResolver { host, port }));
+    }
+    builder.build().map_err(http_error)
 }
 
 /// Every name resolved to a cloud entry (its host and port): the TCP goes there, while TLS (its server name, the
@@ -373,20 +411,27 @@ impl Inner {
     fn request(&self, a: &Value, body: Option<Vec<u8>>) -> Result<reqwest::RequestBuilder, String> {
         let method = reqwest::Method::from_bytes(str_of(a, "method")?.as_bytes()).map_err(err)?;
         let follow = a.get("redirect").and_then(Value::as_str) == Some("follow");
-        let client = match entry_of(a)? {
-            None if follow => self.http_follow.lock().unwrap().clone(),
-            None => self.http.lock().unwrap().clone(),
-            Some((host, port)) => {
-                let mut entries = self.entries.lock().unwrap();
-                match entries.get(&(host.clone(), port, follow)) {
-                    Some(c) => c.clone(),
-                    None => {
-                        let c = http_builder(&self.tls, follow).dns_resolver(Arc::new(EntryResolver { host: host.clone(), port })).build().map_err(http_error)?;
-                        entries.insert((host, port, follow), c.clone());
-                        c
+        let proxy = a.get("proxy").and_then(Value::as_str).filter(|s| !s.is_empty());
+        let ca_pem = a.get("caPem").and_then(Value::as_str).filter(|s| !s.is_empty());
+        let entry = entry_of(a)?;
+        let client = if proxy.is_none() && ca_pem.is_none() {
+            match entry {
+                None if follow => self.http_follow.lock().unwrap().clone(),
+                None => self.http.lock().unwrap().clone(),
+                Some((host, port)) => {
+                    let mut entries = self.entries.lock().unwrap();
+                    match entries.get(&(host.clone(), port, follow)) {
+                        Some(c) => c.clone(),
+                        None => {
+                            let c = http_builder(&self.tls, follow).dns_resolver(Arc::new(EntryResolver { host: host.clone(), port })).build().map_err(http_error)?;
+                            entries.insert((host, port, follow), c.clone());
+                            c
+                        }
                     }
                 }
             }
+        } else {
+            custom_http_client(&self.tls, follow, proxy, ca_pem, entry)?
         };
         let mut builder = client.request(method, str_of(a, "url")?);
         for pair in a.get("headers").and_then(Value::as_array).into_iter().flatten() {
@@ -775,5 +820,38 @@ mod tests {
         let too_long = "a".repeat(256);
         assert!(listen_unix(&too_long, UNIX_LISTEN_BACKLOG).is_err());
         assert!(listen_unix("/tmp/bad\0path.sock", UNIX_LISTEN_BACKLOG).is_err());
+    }
+
+    #[test]
+    fn custom_ca_pem_and_proxy_client_build_succeeds() {
+        use rustls::pki_types::{CertificateDer, pem::PemObject};
+        const TEST_CA_PEM: &str = "\
+-----BEGIN CERTIFICATE-----
+MIIBjjCCATOgAwIBAgIUYHYbOqqZy+eYaN4rkS9jP4ZVUSAwCgYIKoZIzj0EAwIw
+HDEaMBgGA1UEAwwRc3RpbGxmYWlsLXRlc3QtY2EwHhcNMjYxMTIxMDcxNDI5WhcN
+MzYxMTE4MDcxNDI5WjAcMRowGAYDVQQDDBFzdGlsbGZhaWwtdGVzdC1jYTBZMBMG
+ByqGSM49AgEGCCqGSM49AwEHA0IABBHI57/Y6OgmY0jrusLuT9YsWur9nhLWy3MC
+yYt4aLNl+r2RcaD82cn6it76323wjsp0AAif/Z8e4TdGQXzFohCjUzBRMB0GA1Ud
+DgQWBBSZ97ne31/pRCtnnorzMIezJVw1UDAfBgNVHSMEGDAWgBSZ97ne31/pRCtn
+norzMIezJVw1UDAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0kAMEYCIQCD
+dGDcGBkuuoBMO1MRy/K1ejVmX4CeIcQLmX1ri75nigIhAOljuAdmxyT6pTXrMsse
+VuGw5P1LAmsKR9BKtrU6UfbY
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+not-valid-base64!!!
+-----END CERTIFICATE-----
+";
+        let base_len = webpki_roots::TLS_SERVER_ROOTS.len();
+        let mut roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+        for item in CertificateDer::pem_slice_iter(TEST_CA_PEM.as_bytes()) {
+            if let Ok(cert) = item {
+                let _ = roots.add(cert);
+            }
+        }
+        assert_eq!(roots.len(), base_len + 1);
+
+        let default_tls = tls_config();
+        assert!(custom_http_client(&default_tls, false, Some("http://user:pass@127.0.0.1:8080"), Some(TEST_CA_PEM), None).is_ok());
+        assert!(custom_http_client(&default_tls, true, None, Some(TEST_CA_PEM), None).is_ok());
     }
 }

@@ -115,3 +115,38 @@ test "fetch: interrupted from outside its deadline, cancelled once" {
   assert_true(f.poll() is Some(Interrupted))
   assert_eq(fake.cancelled, [1L])
 }
+
+///|
+test "fetch_args: forwards non-empty proxy and ca_pem, omits empty or None" {
+  let with_both = fetch_args(
+    "https://example.test/v1/admin/me",
+    "GET",
+    [],
+    None,
+    None,
+    None,
+    None,
+    Some("http://127.0.0.1:8080"),
+    Some("-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n"),
+  )
+  assert_true(with_both is { "proxy": String("http://127.0.0.1:8080"), "caPem": String(_), .. })
+
+  let with_empty = fetch_args(
+    "https://example.test/v1/admin/me",
+    "GET",
+    [],
+    None,
+    None,
+    None,
+    None,
+    Some(""),
+    Some(""),
+  )
+  match with_empty {
+    Object(m) => {
+      assert_true(m.get("proxy") is None)
+      assert_true(m.get("caPem") is None)
+    }
+    _ => fail("expected object")
+  }
+}

@@ -162,6 +162,13 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     exit 0
   }
   { $a[0] -eq 'admin' } {
+    $env:STILLFAIL_DATA = $data
+    $rest = if ($a.Count -gt 1) { $a[1..($a.Count - 1)] } else { @() }
+    $reader = if ($env:STILLFAIL_MB_READER) { $env:STILLFAIL_MB_READER } else { Join-Path $here 'station\stillfail-reader.exe' }
+    if (Test-Path -LiteralPath $reader) {
+      & $reader admin @rest --data $data
+      exit $LASTEXITCODE
+    }
     $node = if ($env:STILLFAIL_NODE) { $env:STILLFAIL_NODE } else { Join-Path $here 'node\node.exe' }
     if (-not (Test-Path -LiteralPath $node)) { $cmd = Get-Command node -ErrorAction SilentlyContinue; $node = if ($cmd) { $cmd.Source } else { $null } }
     if (-not $node) { [Console]::Error.WriteLine('stillfail admin: node not found'); exit 1 }
@@ -169,8 +176,6 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     $src = Join-Path $here 'bin\admin-cli.ts'
     $entry = if (Test-Path -LiteralPath $built) { $built } elseif (Test-Path -LiteralPath $src) { $src } else { $null }
     if (-not $entry) { [Console]::Error.WriteLine("stillfail admin: admin-cli not found in $here\station or $here\bin"); exit 1 }
-    $env:STILLFAIL_DATA = $data
-    $rest = if ($a.Count -gt 1) { $a[1..($a.Count - 1)] } else { @() }
     & $node $entry @rest
     exit $LASTEXITCODE
   }

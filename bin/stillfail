@@ -396,6 +396,10 @@ PLAN
   "heap "*) exec "$station" heap --data "$data" ;;
   "admin "*)
     shift
+    reader=${STILLFAIL_MB_READER:-$here/station/stillfail-reader}
+    if [ -x "$reader" ]; then
+      STILLFAIL_CMD=$(basename "$0") STILLFAIL_DATA=$data exec "$reader" admin "$@" --data "$data"
+    fi
     node=${STILLFAIL_NODE:-$here/node/bin/node}
     [ -x "$node" ] || node=$(command -v node 2>/dev/null || true)
     [ -n "$node" ] || { echo "stillfail admin: node not found" >&2; exit 1; }
