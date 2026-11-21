@@ -185,6 +185,49 @@ test "liquid bottom tabs: pressing an unselected tab lifts the lens there immedi
 }
 
 ///|
+test "liquid bottom tabs: external selection change slides the pill without pressing or scaling the bar" {
+  let chosen = @signals.signal(0)
+  let drag = DampedDrag::new(0.0, lo=0.0, hi=2.0, held_scale=tab_lens_held_scale)
+  let t = lg_case(fn(p) {
+    p.box(fn(b) {
+      b.width(Is(Some(408.0))) |> ignore
+      liquid_bottom_tabs_node(b, ["Home", "Search", "Me"], fn() { chosen.get() }, fn(i) { chosen.set(i) }, label="Tabs", drag~)
+      |> ignore
+    })
+    |> ignore
+  })
+  let node = drag.node.val.unwrap()
+  let near = fn(a : Double, b : Double) { (a - b).abs() < 0.01 }
+  // (each moment: unpressed, unsqueezed, one glass (the bar's, no lens) the bar's own size at rest)
+  let unpressed = fn() {
+    let g = t.drawn_glass()
+    drag.pressed(node) == 0.0 &&
+    drag.jelly(node, 10.0) == (1.0, 1.0) &&
+    g.length() == 1 &&
+    near(g[0].2, 408.0) &&
+    near(g[0].3, 64.0)
+  }
+  t.by_hand(fn() { chosen.set(2) })
+  t.run_for(a_frame)
+  let first = unpressed()
+  t.run_for(slide_early_ms - a_frame)
+  let mid = (unpressed(), drag.value(node) > 0.1 && drag.value(node) < 1.9)
+  t.run_for(slide_mid_ms - slide_early_ms)
+  let later = unpressed()
+  t.run_for(slide_late_ms - slide_mid_ms)
+  let latest = unpressed()
+  t.run_for(springs_out)
+  let landed = (unpressed(), near(drag.value(node), 2.0))
+  // (a press on a tab of the bar still squeezes and magnifies it)
+  let (x, y) = middle(t, Tab, "Search")
+  t.touch(0, x, y)
+  t.run_for(held_ms)
+  let g = t.drawn_glass()
+  let pressed = (drag.pressed(node) > 0.5, drag.jelly(node, 10.0).0 > 1.2, g.length() > 0 && g[0].2 > 408.5)
+  assert_eq((first, mid, later, latest, landed, pressed), (true, (true, true), true, true, (true, true), (true, true, true)))
+}
+
+///|
 test "a liquid button's press highlight decays monotonically to zero on release without bouncing back" {
   let light = InteractiveHighlight::new()
   let t = lg_case(fn(p) { liquid_button_node(p, fn() { "Send" }, fn() {  }, light~) |> ignore })
@@ -536,6 +579,16 @@ let a_frame : Double = @ui.input_step_ms
 /// Moments the frame-rate test looks at, each mid-way through what it looks at: a finger down that long, let go that
 /// long ago, a drag ended that long ago.
 let held_ms : Double = 150.0
+
+///|
+/// Moments into a selection slid there from outside on the value spring: early, midway and late in its way.
+let slide_early_ms : Double = 40.0
+
+///|
+let slide_mid_ms : Double = 80.0
+
+///|
+let slide_late_ms : Double = 150.0
 
 ///|
 let letting_go_ms : Double = 90.0

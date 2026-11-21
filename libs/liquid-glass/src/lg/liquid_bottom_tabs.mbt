@@ -150,11 +150,12 @@ pub fn liquid_bottom_tabs_node(
     dd.attach(g)
     ih.attach(g)
     g.height(Is(Some(tabs_h))).padding(Is((tabs_pad, tabs_pad, tabs_pad, tabs_pad))) |> ignore
-    // (chosen by what is not the lens: a tab pressed, the keys, its caller; the lens sent there as by a hand)
+    // (chosen by what is not the lens: the keys, its caller, a sidebar; the lens only slides there, the bar and the
+    // tabs unpressed and unscaled: a press, a drag and their let-go (`stopped`) alone squeeze and magnify)
     g.reacts(at_start=false, selected, fn(i) {
       if i != current.val {
         current.val = i
-        dd.animate_to(i.to_double())
+        dd.slide_to(i.to_double())
       }
     })
     g.by_room(fn(inner, room) {

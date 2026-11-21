@@ -158,6 +158,37 @@ test "liquid segmented control: tap, keyboard arrows/Home/End, and continuous dr
 }
 
 ///|
+test "liquid segmented control: external selection change slides the thumb without pressing or magnifying" {
+  let chosen = @signals.signal(0)
+  let drag = DampedDrag::new(0.0, lo=0.0, hi=2.0, held_scale=ctrl_seg_held_scale)
+  let t = lg_case(fn(p) {
+    liquid_segmented_node(
+      p,
+      fn() { ["Day", "Week", "Month"] },
+      fn() { chosen.get() },
+      fn(i) { chosen.set(i) },
+      width=300.0,
+      drag~,
+    )
+    |> ignore
+  })
+  let node = drag.node.val.unwrap()
+  let unpressed = fn() {
+    drag.pressed(node) == 0.0 && drag.jelly(node, 10.0) == (1.0, 1.0) && t.drawn_glass().length() == 1
+  }
+  t.by_hand(fn() { chosen.set(2) })
+  t.run_for(a_frame)
+  let first = unpressed()
+  t.run_for(slide_early_ms - a_frame)
+  let mid = (unpressed(), drag.value(node) > 0.1 && drag.value(node) < 1.9)
+  t.run_for(slide_late_ms - slide_early_ms)
+  let later = unpressed()
+  t.run_for(springs_out)
+  let landed = (unpressed(), (drag.value(node) - 2.0).abs() < 0.01)
+  assert_eq((first, mid, later, landed), (true, (true, true), true, (true, true)))
+}
+
+///|
 test "liquid text field: label focus, clearable show/hide, error vs description, read_only and disabled" {
   let f = @ui.Field::new()
   let cleared = Ref(0)

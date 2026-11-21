@@ -233,3 +233,13 @@ pub fn DampedDrag::animate_to(self : DampedDrag, v : Double) -> Unit {
   self.speed.go(n, 0.0, speed_spring(self.threshold))
   self.release()
 }
+
+///|
+/// Sent smoothly to `v` without pressing or scaling (external/programmatic selection change):
+/// only its value slides to `v` on the value spring while `press` and `scale` stay at rest.
+pub fn DampedDrag::slide_to(self : DampedDrag, v : Double) -> Unit {
+  let n = self.at()
+  let to = clamp(v, self.lo, self.hi)
+  self.value.go(n, to, value_spring(self.threshold))
+  self.speed.go(n, 0.0, speed_spring(self.threshold))
+}

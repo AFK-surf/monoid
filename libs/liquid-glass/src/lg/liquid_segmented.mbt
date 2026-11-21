@@ -52,10 +52,11 @@ pub fn liquid_segmented_node(
         Some(w) => g.width(Is(Some(w))) |> ignore
         None => ()
       }
+      // (chosen by what is not the thumb: the keys, its caller; the thumb only slides there, unpressed and unmagnified)
       g.reacts(at_start=false, selected, fn(i) {
         if i != current.val {
           current.val = i
-          dd.animate_to(i.to_double())
+          dd.slide_to(i.to_double())
         }
       })
       g.by_room(fn(inner, room) {
