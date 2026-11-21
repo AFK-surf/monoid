@@ -784,7 +784,7 @@ let transfers_from : Ref[(Double, Double, Double, Double)?] = Ref(None)
 
 ///|
 /// The workspaces at the rail's foot (workspaceItem) in `r`, under the ＋, where `at` says the rail is drawn: each on a
-/// 30 square of its own, 6 apart (a letter on the places' ground, a mark on nothing, the places' ground under the
+/// 30 square of its own, 6 apart (a letter in a hairline ring, a mark on nothing, the places' ground under the
 /// pointer); the one in view a short bar at its left; another with what waits in it (the core's marks' tone) its mark on
 /// its corner, said beside its name. The ＋ (making one, another account, invitations; the accent's dot on its corner
 /// while one waits) always seen (the web's only as the pointer comes over them), lit while its menu is open; pressed,
@@ -873,9 +873,25 @@ fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : 
                 }
               },
               square=true,
-              rest=fn() { !marked() },
               lit=false,
               fn(k) {
+                // a letter's square: ringed at rest (an outlined control's hairline, Border pointed at), never the
+                // pointer's ground, so resting and pointed at read apart; a mark stands on nothing. The ring under
+                // what is hung on its corner, whose disc cuts it as it cuts the ground.
+                k.sq.box(fn(ring) {
+                  ring.over(Is(true)) |> ignore
+                  @sf.style_node(ring, fn() { rail_sq })
+                  rail_round_node(ring, at)
+                  ring.edge(By(fn() {
+                    if marked() {
+                      (0.0, 0L)
+                    } else {
+                      @sf.control_edge(hot=@sf.lit_node(k.sq))
+                    }
+                  }))
+                  |> ignore
+                })
+                |> ignore
                 // its mark, else its letter (sfpages' workspace_mark)
                 k.sq.pick(fn() { if marked() { 1 } else { 0 } }, fn(m, which) {
                   if which == 1 {
