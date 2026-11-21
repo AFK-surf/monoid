@@ -164,7 +164,7 @@ fn item_block_node(
     "risk" =>
       @sf.page_card_node(b, footed=true, fn(k) {
         @sf.words_node(k, fn() { @sf.t("web-pages.vault.risk.title") }, fn() { vi_risk_title }) |> ignore
-        @sf.words_node(k, fn() { @sf.t("web-pages.vault.risk.body", args=[("station", text(vv(), "stationName"))]) }, fn() { desk_muted }) |> ignore
+        @sf.words_node(k, fn() { @sf.t("web-pages.vault.risk.body", args=[("station", text(vv(), "stationName"))]) }, fn() { @sf.card_muted }) |> ignore
         @sf.card_foot_node(k, fn(f) {
           @sf.button_node(f, fn() { @sf.t("web-pages.vault.lib.turnOn") }, fn() { (core.push)(Security) }, tone=Primary, card_words=true) |> ignore
         })
@@ -202,7 +202,7 @@ fn item_block_node(
       section("web-pages.vault.forAgents", fn(sec) {
         sec.pick(fn() { flag(rv(), "listed") }, fn(p, listed) {
           if !listed {
-            @sf.words_node(p, fn() { @sf.t("web-pages.vault.notForAgents") }, fn() { desk_muted }) |> ignore
+            @sf.words_node(p, fn() { @sf.t("web-pages.vault.notForAgents") }, fn() { @sf.card_muted }) |> ignore
             return
           }
           p.box(fn(fs) {
@@ -256,7 +256,7 @@ fn item_block_node(
           fn(p, what) {
             match what {
               0 => @sf.waiting_node(p, fn(w) { item_uses_node(w, core.quiet(), ws, fn() { uses_sample() }) })
-              1 => @sf.words_node(p, fn() { @sf.t("web-pages.vault.uses.none") }, fn() { desk_muted }) |> ignore
+              1 => @sf.words_node(p, fn() { @sf.t("web-pages.vault.uses.none") }, fn() { @sf.card_muted }) |> ignore
               _ => item_uses_node(p, core, ws, fn() { items(uses(), "uses") })
             }
           },

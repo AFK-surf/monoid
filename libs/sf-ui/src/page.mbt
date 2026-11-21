@@ -1659,27 +1659,51 @@ pub let desk_hint_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, 
 /// A card of words (pages.css.ts card: 20 in, its rows 14 apart, the settings' corner on the card's ground; a row of
 /// it: cardRow, 12 apart in its middle; its words cardRowText, 2 apart, the ui's 13 on 20, the title in 600).
 // kept across runs: a value (no field of it changes)
-pub let desk_card : @ui.Style = @ui.css("w=Full gap=S3_5 radius=Xl3 bg=Card").then(@ui.style(p=room(card_pad)))
+pub let card_surface : @ui.Style = @ui.css("w=Full gap=S3_5 radius=Xl3 bg=Card").then(@ui.style(p=room(card_pad)))
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let desk_card_row : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter")
+pub let desk_card : @ui.Style = card_surface
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let desk_card_text : @ui.Style = @ui.style(w=grow, gap=S0_5)
+pub let card_row : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let desk_strong : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Semibold, color=Fg, w=Full)
+pub let desk_card_row : @ui.Style = card_row
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let desk_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=Full)
+pub let card_text : @ui.Style = @ui.style(w=grow, gap=S0_5)
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let desk_muted : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full)
+pub let desk_card_text : @ui.Style = card_text
+
+///|
+// kept across runs: a value (no field of it changes)
+pub let card_strong : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Semibold, color=Fg, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+pub let desk_strong : @ui.TextStyle = card_strong
+
+///|
+// kept across runs: a value (no field of it changes)
+pub let card_body : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+pub let desk_words : @ui.TextStyle = card_body
+
+///|
+// kept across runs: a value (no field of it changes)
+pub let card_muted : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+pub let desk_muted : @ui.TextStyle = card_muted
 
 ///|
 /// A list on a wide page: a list card (the narrow page's ListCard, at the column's edges: list_pad in, its rows 2
@@ -1864,7 +1888,15 @@ pub let wide_list_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, c
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let desk_note_bad : @ui.TextStyle = wide_list_note.then(@ui.text_style(color=Danger))
+pub let list_note : @ui.TextStyle = wide_list_note
+
+///|
+// kept across runs: a value (no field of it changes)
+pub let list_note_bad : @ui.TextStyle = list_note.then(@ui.text_style(color=Danger))
+
+///|
+// kept across runs: a value (no field of it changes)
+pub let desk_note_bad : @ui.TextStyle = list_note_bad
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -373,7 +373,7 @@ fn config_token_form_node(
         @sf.button_node(r, fn() { @sf.t("web-pages.slackApp.add") }, add, tone=Primary, busy~, disabled=fn() { !ready() }) |> ignore
       })
       |> ignore
-      b.show(fn() { wrong() != "" }, fn(w) { @sf.words_node(w, wrong, fn() { desk_note_bad }) |> ignore })
+      b.show(fn() { wrong() != "" }, fn(w) { @sf.words_node(w, wrong, fn() { @sf.list_note_bad }) |> ignore })
     })
   })
   |> ignore
@@ -390,8 +390,8 @@ fn sa_guide_step_node(g : @view.View, n : Int, title : String, note : () -> Stri
     @sf.step_circle_node(r, fn() { n.to_string() }, first_line=Ui, leading=L6) |> ignore
     r.box(fn(b) {
       @sf.style_node(b, fn() { sa_step_body }, in_row=true)
-      @sf.words_node(b, fn() { @sf.t(title) }, fn() { desk_strong }) |> ignore
-      @sf.words_node(b, note, fn() { desk_muted }) |> ignore
+      @sf.words_node(b, fn() { @sf.t(title) }, fn() { @sf.card_strong }) |> ignore
+      @sf.words_node(b, note, fn() { @sf.card_muted }) |> ignore
       body(b)
     })
     |> ignore

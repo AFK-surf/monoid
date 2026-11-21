@@ -80,7 +80,7 @@ fn doc_body_node(
   }
   v.pick(fn() { skill != "" && kv() is None }, fn(p, gone) {
     if gone {
-      @sf.words_node(p, fn() { @sf.t("web-main.memory.gone") }, fn() { desk_muted }) |> ignore
+      @sf.words_node(p, fn() { @sf.t("web-main.memory.gone") }, fn() { @sf.card_muted }) |> ignore
       return
     }
     // its pages: the global memory's parts, or the skill's (its SKILL.md, then each other file)

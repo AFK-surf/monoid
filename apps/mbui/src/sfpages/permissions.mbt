@@ -90,16 +90,16 @@ fn permission_row_node(
 ) -> Unit {
   @sf.page_card_node(parent, fn(k) {
     k.box(fn(r) {
-      @sf.style_node(r, fn() { desk_card_row })
+      @sf.style_node(r, fn() { @sf.card_row })
       r.box(fn(m) {
         @sf.style_node(m, fn() { permission_icon }, in_row=true)
         @sf.icon_node(m, icon, permission_glyph, By(fn() { @sf.theme().p.text })) |> ignore
       })
       |> ignore
       r.box(fn(w) {
-        @sf.style_node(w, fn() { desk_card_text }, in_row=true)
-        @sf.words_node(w, name, fn() { desk_strong }) |> ignore
-        @sf.words_node(w, purpose, fn() { desk_muted }) |> ignore
+        @sf.style_node(w, fn() { @sf.card_text }, in_row=true)
+        @sf.words_node(w, name, fn() { @sf.card_strong }) |> ignore
+        @sf.words_node(w, purpose, fn() { @sf.card_muted }) |> ignore
       })
       |> ignore
       r.box(fn(st) {
@@ -120,11 +120,11 @@ fn permission_row_node(
     })
     |> ignore
     k.show(fn() { state() == "default" || state() == "denied" }, fn(r) {
-      @sf.style_node(r, fn() { desk_card_row })
+      @sf.style_node(r, fn() { @sf.card_row })
       r.box(fn(w) {
-        @sf.style_node(w, fn() { desk_card_text }, in_row=true)
-        @sf.words_node(w, without, fn() { desk_words }) |> ignore
-        w.show(fn() { state() == "denied" }, fn(d) { @sf.words_node(d, where_, fn() { desk_muted }) |> ignore })
+        @sf.style_node(w, fn() { @sf.card_text }, in_row=true)
+        @sf.words_node(w, without, fn() { @sf.card_body }) |> ignore
+        w.show(fn() { state() == "denied" }, fn(d) { @sf.words_node(d, where_, fn() { @sf.card_muted }) |> ignore })
       })
       |> ignore
       r.pick(fn() { state() == "default" }, fn(p, asks) {

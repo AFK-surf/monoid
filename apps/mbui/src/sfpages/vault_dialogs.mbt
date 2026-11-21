@@ -248,7 +248,7 @@ pub fn vault_editor_dialog(
             f.pick(fn() { k() == "ssh_key" || k() == "file" || k() == "browser" }, fn(p, one_way) {
               if one_way {
                 @sf.words_node(p, fn() { mode_name(if k() == "file" { "file" } else if k() == "browser" { "browser" } else { "ssh" }) }, fn() {
-                  desk_words
+                  @sf.card_body
                 })
                 |> ignore
               } else {
@@ -275,7 +275,7 @@ pub fn vault_editor_dialog(
                 "web-pages.vault.editor.envNote"
               },
             )
-          }, fn() { desk_note })
+          }, fn() { @sf.list_note })
           |> ignore
           o.show(fn() { (k() != "ssh_key" && k() != "file" && mode.get() == "proxy") || k() == "browser" }, fn(h) {
             vd_input_node(h, of("hosts"), "hosts", said("web-pages.vault.editor.hosts"), said("web-pages.vault.editor.hostsPlaceholder"), bad=fn() {
@@ -298,11 +298,11 @@ pub fn vault_editor_dialog(
             })
             |> ignore
           })
-          @sf.words_node(o, said("web-pages.vault.editor.lastsNote"), fn() { desk_note }) |> ignore
+          @sf.words_node(o, said("web-pages.vault.editor.lastsNote"), fn() { @sf.list_note }) |> ignore
         })
       })
       |> ignore
-      v.show(fn() { error.get() != "" }, fn(e) { @sf.words_node(e, fn() { error.get() }, fn() { desk_note_bad }) |> ignore })
+      v.show(fn() { error.get() != "" }, fn(e) { @sf.words_node(e, fn() { error.get() }, fn() { @sf.list_note_bad }) |> ignore })
     },
     fn(v, shut) {
       match row {
@@ -510,10 +510,10 @@ pub fn vault_recover_dialog(core : Core, ws : String) -> Unit {
     description=@sf.t("web-pages.vault.recoverLead"),
     fn(v, _) {
       @sf.textarea_node(v, typed, rows=4, label=@sf.t("web-pages.vault.recover")) |> ignore
-      v.show(fn() { error.get() != "" }, fn(e) { @sf.words_node(e, fn() { error.get() }, fn() { desk_note_bad }) |> ignore })
+      v.show(fn() { error.get() != "" }, fn(e) { @sf.words_node(e, fn() { error.get() }, fn() { @sf.list_note_bad }) |> ignore })
     },
     fn(v, shut) {
-      @sf.words_node(v, fn() { "\{count_of()} / 24" }, fn() { desk_note }) |> ignore
+      @sf.words_node(v, fn() { "\{count_of()} / 24" }, fn() { @sf.list_note }) |> ignore
       @sf.foot_spacer_node(v)
       @sf.button_node(
         v,

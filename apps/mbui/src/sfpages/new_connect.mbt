@@ -421,7 +421,7 @@ fn nc_body_node(
           nc_made_steps_node(k, core, made)
           k.show(fn() { opt_text(view(), "iconError").unwrap_or("") != "" }, fn(e) {
             @sf.words_node(e, fn() { @sf.t("web-pages.connect.iconFailed", args=[("error", text(view(), "iconError"))]) }, fn() {
-              desk_note_bad
+              @sf.list_note_bad
             })
             |> ignore
           })
@@ -442,7 +442,7 @@ fn nc_body_node(
 ///|
 /// What went wrong (`error`, as it is now), in red, while it says something.
 fn nc_bad_node(k : @view.View, error : () -> String) -> Unit {
-  k.show(fn() { error() != "" }, fn(e) { @sf.words_node(e, error, fn() { desk_note_bad }) |> ignore })
+  k.show(fn() { error() != "" }, fn(e) { @sf.words_node(e, error, fn() { @sf.list_note_bad }) |> ignore })
 }
 
 ///|
@@ -522,7 +522,7 @@ fn nc_team_node(k : @view.View, core : Core, f : NcFlow, view : () -> Json?, clo
     if getting {
       p.box(fn(s) {
         @sf.style_node(s, fn() { nc_token_start })
-        @sf.words_node(s, fn() { @sf.t("web-pages.connect.tokenWhy", args=[("name", @sf.product())]) }, fn() { desk_muted }) |> ignore
+        @sf.words_node(s, fn() { @sf.t("web-pages.connect.tokenWhy", args=[("name", @sf.product())]) }, fn() { @sf.card_muted }) |> ignore
         config_token_form_node(s, core, f.station, "nc-config/" + f.form, fn() {  }, flow=(
           view,
           fn() { nc_act(core, f, "config") },
@@ -726,13 +726,13 @@ fn nc_scan_node(k : @view.View, core : Core, fe : () -> Json?) -> Unit {
         ) {
           @sf.spinner_node(s, size=cd_icon) |> ignore
         })
-        @sf.words_node(l, fn() { text(fe(), "stateText") }, fn() { if failing() { nc_scan_bad } else { desk_words } }) |> ignore
+        @sf.words_node(l, fn() { text(fe(), "stateText") }, fn() { if failing() { nc_scan_bad } else { @sf.card_body } }) |> ignore
       })
       |> ignore
       nc_bad_node(w, fn() { opt_text(fe(), "error").unwrap_or("") })
       w.show(waiting, fn(s) {
         @sf.style_node(s, fn() { nc_scan_waits })
-        @sf.words_node(s, fn() { @sf.t("web-pages.connect.feishu.scanHint") }, fn() { desk_muted }) |> ignore
+        @sf.words_node(s, fn() { @sf.t("web-pages.connect.feishu.scanHint") }, fn() { @sf.card_muted }) |> ignore
         @sf.button_node(s, fn() { @sf.t("web-pages.connect.feishu.openInFeishu") }, fn() { (core.open_link)(text(r(), "url")) }, icon="external")
         |> ignore
       })
@@ -748,7 +748,7 @@ fn nc_feishu_app_node(k : @view.View, core : Core, f : NcFlow, fe : () -> Json?,
   let lark = fn() { flag(fe(), "lark") }
   k.box(fn(l) {
     @sf.style_node(l, fn() { nc_hint_line })
-    @sf.words_node(l, fn() { @sf.t("web-pages.connect.feishu.appHint") }, fn() { desk_muted }).shrink(Is(1.0)) |> ignore
+    @sf.words_node(l, fn() { @sf.t("web-pages.connect.feishu.appHint") }, fn() { @sf.card_muted }).shrink(Is(1.0)) |> ignore
     @sf.link_node(l, fn() { @sf.t("web-pages.connect.feishu.openConsole") }, fn() {
       (core.open_link)(if @signals.untracked(lark) { "https://open.larksuite.com/app" } else { "https://open.feishu.cn/app" })
     })
