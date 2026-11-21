@@ -306,10 +306,12 @@ static const char *FS =
     "    float glintFaceGain;\n"
     "    float glintVib;\n"
     "    if (is_clear) {\n"
-    "      emission = vec3(0.126, 0.126, 0.126);\n"
-    "      transmittance = 0.954; lift = 0.0; chromaGain = 1.057;\n"
-    "      contourStr = 0.36; contourDirAmt = 1.0; bevelShadowStr = 0.0;\n"
-    "      glintLum = 2.34; glintFaceGain = 3.58; glintVib = 0.78;\n"
+    "      // Pure crystal-clear refractive optical lens (lifted tab-bar / toggle / slider thumb & loupe):\n"
+    "      // zero milky emission veil so light bars never clip to opaque white and dark bars stay crisp.\n"
+    "      emission = vec3(0.0, 0.0, 0.0);\n"
+    "      transmittance = 1.0; lift = 0.0; chromaGain = 1.06;\n"
+    "      contourStr = 0.24; contourDirAmt = 0.85; bevelShadowStr = 0.045;\n"
+    "      glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "    } else if (is_dark) {\n"
     "      emission = vec3(32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0);\n"
     "      transmittance = 0.52625; lift = 0.583; chromaGain = 1.005;\n"
@@ -889,7 +891,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   int kind = (int)(a[5] + 0.5f);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
-  float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + a[22]) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
+  float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   for (int32_t i = start; i < end; i++) {
     const float *b = f + i * MB_INST;

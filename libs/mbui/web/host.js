@@ -1017,10 +1017,12 @@
       float glintFaceGain;
       float glintVib;
       if (is_clear) {
-        emission = vec3(0.126, 0.126, 0.126);
-        transmittance = 0.954; lift = 0.0; chromaGain = 1.057;
-        contourStr = 0.36; contourDirAmt = 1.0; bevelShadowStr = 0.0;
-        glintLum = 2.34; glintFaceGain = 3.58; glintVib = 0.78;
+        // Pure crystal-clear refractive optical lens (lifted tab-bar / toggle / slider thumb & loupe):
+        // zero milky emission veil so light bars never clip to opaque white and dark bars stay crisp.
+        emission = vec3(0.0, 0.0, 0.0);
+        transmittance = 1.0; lift = 0.0; chromaGain = 1.06;
+        contourStr = 0.24; contourDirAmt = 0.85; bevelShadowStr = 0.045;
+        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
       } else if (is_dark) {
         emission = vec3(32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0);
         transmittance = 0.52625; lift = 0.583; chromaGain = 1.005;
@@ -1490,7 +1492,7 @@
     const blur = Math.abs(f32[a + 7]), kind = Math.round(f32[a + 5]);
     const mergedLiquid = kind === 6 && f32[a + 23] > 0;
     const unmergedLiquid = kind === 6 && !mergedLiquid;
-    let margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + f32[a + 22]) + Math.max(f32[a + 23], 0) : 0) + 2;
+    let margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     let mN = 0;
     const mShape = new Float32Array(32), mRad = new Float32Array(8);

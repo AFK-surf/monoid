@@ -714,6 +714,7 @@ fn bar_lens_node(holder : @view.View) -> Unit {
           g
           .glass(By(fn() { Some(@sf.glass_tab_lens(held(g))) }))
           .shadow(Is((@sf.tab_lens_raised.sigma, @sf.tab_lens_raised.dy, @sf.tab_lens_raised.color)))
+          .shadow_outside(Is(true))
           |> ignore
         },
       )

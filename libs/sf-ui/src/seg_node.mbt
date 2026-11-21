@@ -606,6 +606,7 @@ pub fn seg_fill_node(
             .radius(Is(1.0e6))
             .glass(By(fn() { Some(glass_tab_lens(full())) }))
             .shadow(By(fn() { (seg_lens_shadow * full(), seg_lens_shadow_y * full(), @ui.tree_theme().shadow) }))
+            .shadow_outside(Is(true))
             .alpha(By(full))
             .ground_drawn(By(fn() {
               match rect() {
