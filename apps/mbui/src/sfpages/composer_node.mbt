@@ -2495,6 +2495,7 @@ fn waiting_tile_of(
           }
         }),
       )
+      .image_for(Is((@sf.waiting_tile_side, @sf.waiting_tile_side)))
       .image_covers(Is(true))
       |> ignore
     },

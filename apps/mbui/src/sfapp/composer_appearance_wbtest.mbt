@@ -428,3 +428,100 @@ test "small screen unfocused capsule adding attachments expands smoothly without
     assert_no_extras_clip(t, gx, gx + gw, gy - 12.0, gy + gh - 44.0, "phone remove at \{ms}ms")
   }
 }
+
+///|
+test "small screen focused composer adding, wrapping, and removing attachments animates height smoothly frame by frame" {
+  let calls : Array[Made] = []
+  let made : Ref[Source?] = Ref(None)
+  let t = fake_core(calls, made~, platform=1)
+  let src = made.val.unwrap()
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  t.tap_text("发消息")
+  t.resize(390.0, 520.0)
+  t.run_for(@ui.move_most_ms)
+  let ground = fn() {
+    let glasses = t.drawn_glass_corners().filter(fn(g) { g.2 > 200.0 })
+    glasses.sort_by(fn(a, b) { a.1.compare(b.1) })
+    glasses[glasses.length() - 1]
+  }
+  let fmt_heights = fn(hs : Array[Double]) {
+    hs.map(fn(h) { "\{(h * 10.0).round() / 10.0}" }).join(", ")
+  }
+  let assert_smooth_height_change = fn(tag : String, expect_grow : Bool) raise {
+    let h_start = ground().3
+    let heights : Array[Double] = [h_start]
+    let mut ms = 0.0
+    while ms < @ui.move_most_ms {
+      t.run_for(@ui.frame_period_default)
+      ms = ms + @ui.frame_period_default
+      let (gx, gy, gw, gh, _) = ground()
+      heights.push(gh)
+      assert_no_extras_clip(t, gx, gx + gw, gy - 12.0, gy + gh - 44.0, "\{tag} at \{ms}ms")
+    }
+    let h_end = heights[heights.length() - 1]
+    let total_delta = (h_end - h_start).abs()
+    assert_true(
+      total_delta > 35.0 && (if expect_grow { h_end > h_start } else { h_end < h_start }),
+      msg="\{tag}: unexpected height delta \{h_start} -> \{h_end} (expect_grow=\{expect_grow}), heights=[\{fmt_heights(heights)}]",
+    )
+    let lo = if h_start < h_end { h_start } else { h_end }
+    let hi = if h_start > h_end { h_start } else { h_end }
+    let mut mid_count = 0
+    let mut max_step = 0.0
+    for i in 1..<heights.length() {
+      let prev = heights[i - 1]
+      let cur = heights[i]
+      if cur > lo + 0.5 && cur < hi - 0.5 {
+        mid_count = mid_count + 1
+      }
+      let step = (cur - prev).abs()
+      if step > max_step {
+        max_step = step
+      }
+      if expect_grow {
+        assert_true(
+          cur >= prev - 0.5,
+          msg="\{tag}: non-monotonic grow at frame \{i} (\{prev} -> \{cur}), heights=[\{fmt_heights(heights)}]",
+        )
+      } else {
+        assert_true(
+          cur <= prev + 0.5,
+          msg="\{tag}: non-monotonic shrink at frame \{i} (\{prev} -> \{cur}), heights=[\{fmt_heights(heights)}]",
+        )
+      }
+    }
+    assert_true(
+      mid_count >= 3,
+      msg="\{tag}: expected >= 3 intermediate frames, got \{mid_count}, heights=[\{fmt_heights(heights)}]",
+    )
+    assert_true(
+      max_step < total_delta * 0.45,
+      msg="\{tag}: max frame step \{max_step} >= 45% of total delta \{total_delta}, heights=[\{fmt_heights(heights)}]",
+    )
+  }
+  let h0 = ground().3
+  // 1. focused 0->1 picture, then 1->0 remove
+  @sfbase.writing_add(src, w, "ws1/st1", "新图片.png", png_head())
+  assert_smooth_height_change("focused pic 0->1", true)
+  let pic_id = text(Some(w.files.get()[0]), "id")
+  @sfbase.writing_remove(src, w, pic_id)
+  assert_smooth_height_change("focused pic 1->0", false)
+  // 2. focused file 0->1, wrap row1->row2, then unwrap row2->row1
+  @sfbase.writing_add(src, w, "ws1/st1", "构建日志-1.log", b"log-1")
+  assert_smooth_height_change("focused file 0->1", true)
+  @sfbase.writing_add(src, w, "ws1/st1", "构建日志-2.log", b"log-2")
+  assert_smooth_height_change("focused wrap row1->row2", true)
+  let files_after_wrap = w.files.get()
+  let last_id = text(Some(files_after_wrap[files_after_wrap.length() - 1]), "id")
+  @sfbase.writing_remove(src, w, last_id)
+  assert_smooth_height_change("focused unwrap row2->row1", false)
+  // 3. remove last remaining file back to 0 and verify height returns to h0
+  let first_id = text(Some(w.files.get()[0]), "id")
+  @sfbase.writing_remove(src, w, first_id)
+  assert_smooth_height_change("focused remove to 0", false)
+  let h_final = ground().3
+  assert_true(
+    (h_final - h0).abs() < 1.0,
+    msg="focused remove to 0 did not return to h0: h0=\{h0}, h_final=\{h_final}",
+  )
+}

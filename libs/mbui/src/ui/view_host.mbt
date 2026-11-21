@@ -2458,13 +2458,14 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
   let (fw, fh) = c.image_for
   let judged = fw > 0.0 || fh > 0.0
   let room = if judged { dmax(fw, fh) * s } else { dmax(pw, ph) }
-  let shown = if stand_in == "" && !judged {
+  let shown = if stand_in == "" {
     src
-  } else if self.image_ready(src, dmin(room * self.scale, most.to_double())) || stand_in == "" {
+  } else if self.image_ready(src, dmin(room * self.scale, most.to_double())) {
     src
   } else {
     stand_in
   }
+  let decode_size = if judged && stand_in == "" { Some((fw, fh)) } else { None }
   match c.image_in {
     // (the picture and its matte as one, cut once at the node's edge, as Ctx::picture's matte is)
     // (filling its rect, or covering it where it says so: View::image_covers, View::image_covers_at)
@@ -2477,8 +2478,7 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
       } else {
         FitFill
       }
-      let decode_scale = if s > 0.0 && s < 1.0 { 1.0 / s } else { 1.0 }
-      self.draw_image(shown, x + ix * s, y + iy * s, iw * s, ih * s, fit, c.radius * s, a, fade=false, max_px=most, ground=matte, matte=true, frame=Some((x, y, w, h)), decode_scale~)
+      self.draw_image(shown, x + ix * s, y + iy * s, iw * s, ih * s, fit, c.radius * s, a, fade=false, max_px=most, ground=matte, matte=true, frame=Some((x, y, w, h)), decode_size~)
       // (its corners each, where it says them (View::corners), as big as it is drawn: the frame's)
       match c.corners {
         Some((tl, tr, br, bl)) if self.ninst > before => self.corners_last_each(tl * s, tr * s, br * s, bl * s)
@@ -2500,8 +2500,7 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
         FitFill
       }
       let shown = self.moving_key(shown, w, h, fit)
-      let decode_scale = if s > 0.0 && s < 1.0 { 1.0 / s } else { 1.0 }
-      self.draw_image(shown, x, y, w, h, fit, c.radius * s, a, fade=c.image_fade, max_px=most, decode_scale~)
+      self.draw_image(shown, x, y, w, h, fit, c.radius * s, a, fade=c.image_fade, max_px=most, decode_size~)
     }
   }
   inst_owners.painting = was
@@ -7844,9 +7843,13 @@ fn tree_glides_end() -> Double? {
 fn Ctx::view_unseen(self : Ctx, c : @view.Content, s : Double) -> Unit {
   match c.image {
     // (none in its bones: nothing it would show asked for, View::bones)
-    Some((src, _, most)) if c.bones == 0L => {
+    Some((src, stand_in, most)) if c.bones == 0L => {
       let (fw, fh) = c.image_for
-      let room = if fw > 0.0 || fh > 0.0 { dmax(fw, fh) * s } else { dmax(c.w * s, c.h * s) }
+      let room = if fw > 0.0 || fh > 0.0 {
+        if stand_in == "" { dmax(fw, fh) } else { dmax(fw, fh) * s }
+      } else {
+        dmax(c.w * s, c.h * s)
+      }
       self.image_ready(src, dmin(room * self.scale, most.to_double())) |> ignore
     }
     _ => ()
