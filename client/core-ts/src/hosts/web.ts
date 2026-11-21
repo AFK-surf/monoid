@@ -430,6 +430,7 @@ export function webIroh(load: () => Promise<IrohModule>): Iroh {
         ...(o.relayAllowlist !== undefined ? { relayAllowlist: o.relayAllowlist } : {}),
       }) as Promise<BoundEndpoint>,
     (b) => b,
+    { relayControls: true },
   );
 }
 

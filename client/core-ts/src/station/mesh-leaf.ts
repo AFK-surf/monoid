@@ -38,7 +38,13 @@ export class LeafLinks {
     // own lock rules authenticate the target. A descriptor-bearing peer always
     // attaches, and a signing or policy failure there is never downgraded.
     if(!state.config.peers.some(p=>hex(new Uint8Array(p.binding.endpoint))===target))return undefined;
-    return yield* state.lock.withPermits(1)(this.#attach(state,target));
+    return yield* state.lock.withPermits(1)(Effect.gen({self:this},function*(){
+      if(!state.config || state.link.closed()!==null)return undefined;
+      // Binding opens relay sockets. Keep an unused workspace's policy alone
+      // until a descriptor-bearing peer needs its authenticated inner route.
+      if(!state.descriptor)state.descriptor=yield* native(state.endpoint.meshConfigure!({...state.config,transit:false}));
+      return yield* this.#attach(state,target);
+    }));
   });
   #attach(state:State,target:string):Effect.Effect<string|undefined,CoreError>{
     return Effect.gen(function*(){
@@ -62,7 +68,10 @@ export class LeafLinks {
     held.set(workspace,state);
     yield* this.#follow(state).pipe(Effect.ensuring(Effect.gen(function*(){
       if(held!.get(workspace)===state)held!.delete(workspace);
-      if(state.config)yield* Effect.ignore(endpoint.meshRemove!(state.config.scope));
+      yield* state.lock.withPermits(1)(Effect.gen(function*(){
+        if(state.config && state.descriptor)yield* Effect.ignore(endpoint.meshRemove!(state.config.scope));
+        state.config=null;state.descriptor=null;
+      }));
       Deferred.doneUnsafe(state.done,Effect.void);
     })));
     // A failed stream releases ingress ownership so an authenticated alternate can take over.
@@ -79,12 +88,24 @@ export class LeafLinks {
           const joined=new Uint8Array(carry.length+chunk.length);joined.set(carry);joined.set(chunk,carry.length);carry=joined;
           for(;;){const end=carry.indexOf(10);if(end<0)break;const bytes=carry.slice(0,end);carry=carry.slice(end+1);
             const config=yield* Effect.try({try:()=>JSON.parse(fromUtf8(bytes)) as LeafConfig,catch:error});
+            // Inspect peer keys before prepare reads them. The native binding
+            // still verifies signatures and policy before creating a route.
+            if(!config || typeof config.scope!=="string" || !/^[0-9a-f]{64}$/i.test(config.scope)
+              || !Array.isArray(config.peers) || config.peers.length>=256
+              || config.peers.some(p=>!Array.isArray(p?.binding?.endpoint) || p.binding.endpoint.length!==32
+                || p.binding.endpoint.some(b=>!Number.isInteger(b) || b<0 || b>255))
+              || !Array.isArray(config.relayUrls) || config.relayUrls.length>32 || config.relayUrls.some(url=>typeof url!=="string"))return yield* Effect.fail(error("invalid leaf config"));
             if(config.stations!==undefined && (!Array.isArray(config.stations) || config.stations.length>256 || config.stations.some(n=>typeof n!=="string" || !/^[0-9a-f]{64}$/.test(n))))return yield* Effect.fail(error("invalid leaf station roster"));
             yield* state.lock.withPermits(1)(Effect.gen({self:this},function*(){
               const previous=state.config;
-              if(previous && previous.scope!==config.scope)yield* native(state.endpoint.meshRemove!(previous.scope));
-              const descriptor=yield* native(state.endpoint.meshConfigure!({...config,transit:false}));
+              const configured=state.descriptor!==null;
+              if(previous && previous.scope!==config.scope && configured){
+                yield* native(state.endpoint.meshRemove!(previous.scope));
+                state.descriptor=null;
+              }
+              const descriptor=configured?yield* native(state.endpoint.meshConfigure!({...config,transit:false})):null;
               state.config=config;state.descriptor=descriptor;
+              if(!descriptor)return;
               for(const [target,attachment] of [...state.attachments]){
                 const issuer=config.peers.find(p=>sameBytes(p.binding.endpoint,attachment.issuer.endpoint))?.binding;
                 const targetPresent=config.peers.some(p=>hex(new Uint8Array(p.binding.endpoint))===target);
