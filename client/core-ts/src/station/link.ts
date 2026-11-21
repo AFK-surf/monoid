@@ -17,6 +17,7 @@ import { laterSleep, type Scoped } from "../runtime.ts";
 import { equal, get, isObject, parseJson } from "../util.ts";
 import { GONE, NETWORK } from "../wake.ts";
 import { StationAddr } from "./addr.ts";
+import { Back, BACK_AWAY_MS, BACK_WATCH_MS } from "./back.ts";
 import { Cursor, upTo } from "./cursor.ts";
 import { type Keeper, Memory } from "./memory.ts";
 import { LIVE_RATES, HEAD, RESUMED, type Requests } from "./requests.ts";
@@ -164,6 +165,8 @@ export class Link {
   answered: number | null = null;
   /// Where it is in the station's log of events: what its next stream goes on from (cursor.ts).
   cursor = new Cursor();
+  /// The app's last return, while it is followed (back.ts).
+  back: Back | null = null;
   /// Sessions at work as their stream says (steps, phase, rate, usage).
   readonly lives = new Map<string, LiveView>();
   /// Positive output rates from this stream alone. Nothing here survives a disconnect or a new stream.
@@ -462,7 +465,31 @@ export class Links {
       ),
       link.scoped,
     );
+    core.runner.fork(this.#followBacks(link), link.scoped);
     this.openEvents(address, false);
+  }
+
+  /// Each return of the app, followed for what it says of this link (back.ts).
+  #followBacks(link: Link): Effect.Effect<void> {
+    const core = this.#core;
+    return Effect.forever( // timer: none of its own, each turn waits for the app to return
+      Effect.flatMap(core.wakes.next, (wake) =>
+        Effect.sync(() => {
+          if (wake.retry || (!wake.network && wake.away < BACK_AWAY_MS)) return;
+          link.back?.end("again");
+          const span = core.tracer.root("station.back", Kind.Internal);
+          span.set("stillfail.station", link.address);
+          const back = new Back(span, () => core.host.nowMs(), wake.away, wake.network, link.heard !== null);
+          link.back = back;
+          const over = Effect.sync(() => {
+            if (link.back !== back) return;
+            link.back = null;
+            back.end("quiet");
+          });
+          core.runner.fork(Effect.andThen(laterSleep(BACK_WATCH_MS), over), link.scoped); // timer: the end of what is measured
+        }),
+      ),
+    );
   }
 
   setLink(address: string, value: Record<string, unknown>): void {
@@ -672,6 +699,7 @@ export class Links {
             // says none, and what it tells is taken as it comes).
             const head = resumed ? (replyHeader(opened.success, HEAD) ?? null) : null;
             span.set("stillfail.resumed", resumed);
+            link.back?.opened(resumed);
             if (link.cursor.restored) span.set("stillfail.restored", true);
             span.end();
             let snapshotted = !handing && !resumed;
@@ -734,6 +762,7 @@ export class Links {
               if (chunk === null) break;
               heard = core.host.nowMs();
               link.heard = heard;
+              link.back?.heard();
               read += chunk.length;
               if (link.state.state === "reconnecting") self.setLink(address, { state: "online" });
               for (const [name, data, id] of parser.feed(chunk)) {
@@ -748,7 +777,11 @@ export class Links {
                   if (!snapshotted) self.#told.afresh(address, null);
                   snapshotted = true;
                 } else self.#told.event(address, name, data, head !== null && id !== undefined && upTo(id, head));
-                if (id !== undefined) link.cursor.heard(id);
+                if (id !== undefined) {
+                  link.cursor.heard(id);
+                  link.back?.end("event");
+                  link.back = null;
+                }
               }
               if (!snapshotted && link.catching?.tallied === false) self.#told.toldMissed(address);
               // Written down in the same write as what the events changed: a core after this one takes up from it.
