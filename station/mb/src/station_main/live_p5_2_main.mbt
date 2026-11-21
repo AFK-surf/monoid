@@ -1115,9 +1115,54 @@ fn P52::wire_bus(self : P52) -> Unit {
       "session.configure", "session.list", "session.notice",
       "session.message",
     ] {
-    bus.on_peer(meth, async fn(peer, ws, params, _bytes) {
-      (self.peer_local(peer, ws, meth, params), None)
+    bus.on_peer(meth, async fn(peer, ws, params, bytes) {
+      let req = peer_request_with_bytes(params, bytes)
+      let answer = self.peer_local(peer, ws, meth, req)
+      self.peer_answer_with_bytes(answer)
     })
+  }
+}
+
+///|
+/// Attaches inbound stream bytes to a peer request object as `$bytes` (base64), as `session_storage` expects.
+fn peer_request_with_bytes(params : Json, bytes : Bytes?) -> Json {
+  match (params, bytes) {
+    (Object(m), Some(b)) => {
+      let c = m.copy()
+      c["$bytes"] = Json::string(@base64.encode(b))
+      Json::object(c)
+    }
+    _ => params
+  }
+}
+
+///|
+/// Unpacks outbound `$file` (read off the main thread via `p51_file_piece`) or `$bytes` from a `peer_local` answer
+/// into `(clean_json, Some(bytes))`, stripping the internal carrier key so it never leaks over the mesh.
+async fn P52::peer_answer_with_bytes(self : P52, answer : Json) -> (Json, Bytes?) {
+  match answer {
+    Object(m) =>
+      match m.get("$file") {
+        Some(f) => {
+          let c = m.copy()
+          c.remove("$file")
+          let from = as_num(jfield(f, "offset")).unwrap_or(0.0)
+          let end = as_num(jfield(f, "end")).unwrap_or(0.0)
+          let len = if end > from { (end - from).to_int() } else { 0 }
+          let piece = p51_file_piece(self.host, jtext(f, "path").unwrap_or(""), from, len)
+          (Json::object(c), Some(piece))
+        }
+        None =>
+          match m.get("$bytes") {
+            Some(String(b)) => {
+              let c = m.copy()
+              c.remove("$bytes")
+              (Json::object(c), Some(@base64.decode(b)))
+            }
+            _ => (answer, None)
+          }
+      }
+    _ => (answer, None)
   }
 }
 
@@ -1342,7 +1387,16 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
     "inbox" => {
       let req = jfield(arg, "request")
       let meth = jtext_or_empty(req, "method")
-      self.peer_local(jtext(arg, "station").unwrap_or(""), None, meth, req)
+      let answer = self.peer_local(jtext(arg, "station").unwrap_or(""), None, meth, req)
+      let (clean, bytes) = self.peer_answer_with_bytes(answer)
+      match (clean, bytes) {
+        (Object(m), Some(b)) => {
+          let out = m.copy()
+          out["$bytes"] = Json::string(@base64.encode(b))
+          Json::object(out)
+        }
+        _ => clean
+      }
     }
     "codex.renewRunning" | "codex.rateLimits" =>
       match self.drivers.get("codex") {

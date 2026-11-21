@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, sign as nodeSign, type KeyObject } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as httpServer, request as httpRequest } from "node:http";
 import { type AddressInfo, connect as tcpConnect, createServer as tcpServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -867,14 +867,21 @@ test("xshare shares a chat across workspaces with read-only / write / revocation
   });
   const [workA1, workA2, workB] = [fresh("wa1"), fresh("wa2"), fresh("wb")];
 
-  // Seed two chats on Station A (w1): `c-shared` and `c-private`, and one chat on Station B (w2): `c-b`.
+  // Seed two chats on Station A (w1): `c-shared` (with a binary attachment) and `c-private`, and one chat on Station B (w2): `c-b`.
+  const planBuf = randomBytes(96 * 1024 + 13);
+  mkdirSync(join(workA1, "uploads"), { recursive: true });
+  const planPath = join(workA1, "uploads", "plan.bin");
+  writeFileSync(planPath, planBuf);
+
   const storeA = Store.open(join(pair.dataA, "stillfail.db"), join(pair.dataA, "archive"), {
     currentTimeMillisUnsafe: () => Date.now(),
   } as never);
   const tShared = storeA.openThread("ember", "c-shared", "c-shared", "Release Plan", "alice@team.test");
   storeA.insertMessage({
     thread: tShared.id, ts: "1700000001.000", authorKind: "person", author: "alice@team.test",
-    text: "the release plan is Friday", at: Date.now(),
+    text: "the release plan is Friday",
+    attachments: [{ name: "plan.bin", path: planPath, size: planBuf.length }],
+    at: Date.now(),
   });
   storeA.insertSession({
     key: "c-shared", connect: "ember", runtime: "claude", profile: "cc", workspace: workA1,
@@ -938,10 +945,15 @@ test("xshare shares a chat across workspaces with read-only / write / revocation
     return !r.error && r.text.includes(linkShared) && r.text.includes("read only") ? r.text : null;
   });
 
-  // Reading `c-shared` succeeds; reading `c-private` or writing to read-only `c-shared` is refused.
+  // Reading `c-shared` succeeds and fetches its binary attachment across workspaces via xshare `inbox`;
+  // reading `c-private` or writing to read-only `c-shared` is refused.
   const readShared = await tool(pair.doorB, "tb", "chat_read", { chat: linkShared });
   assert.equal(readShared.error, false, readShared.text);
   assert.ok(readShared.text.includes("the release plan is Friday"), readShared.text);
+  assert.doesNotMatch(readShared.text, /the file stopped coming|\$file/, readShared.text);
+  const fetchedPlan = join(workB, "uploads", pair.idA.slice(0, 12), "plan.bin");
+  assert.equal(existsSync(fetchedPlan), true, `expected xshare attachment at ${fetchedPlan}; got:\n${readShared.text}`);
+  assert.equal(sha256(readFileSync(fetchedPlan)), sha256(planBuf), "xshare chat_read preserved every byte");
 
   const readPriv = await tool(pair.doorB, "tb", "chat_read", { chat: linkPrivate });
   assert.equal(readPriv.error, true, `unshared chat must be refused: ${readPriv.text}`);
@@ -966,8 +978,18 @@ test("xshare shares a chat across workspaces with read-only / write / revocation
     return !r.error && r.text.includes(linkShared) && r.text.includes("you may send to it") ? true : null;
   });
 
-  const sendRw = await tool(pair.doorB, "tb", "session_send", { to: linkShared, text: "hello from Home workspace" });
+  const replyBuf = randomBytes(64 * 1024 + 11);
+  const replyPath = join(workB, "reply.bin");
+  writeFileSync(replyPath, replyBuf);
+  const sendRw = await tool(pair.doorB, "tb", "session_send", {
+    to: linkShared,
+    text: "hello from Home workspace",
+    files: [replyPath],
+  });
   assert.equal(sendRw.error, false, sendRw.text);
+  const claimedOnA = readdirSync(join(workA1, "uploads")).filter((f) => f.endsWith("reply.bin"));
+  assert.equal(claimedOnA.length, 1, `expected claimed xshare reply.bin in ${join(workA1, "uploads")}`);
+  assert.equal(sha256(readFileSync(join(workA1, "uploads", claimedOnA[0]!))), sha256(replyBuf));
 
   // Revoke share (`to: []`): disappears from Station B's list and `chat_read` is refused again.
   const revokeRes = await httpRaw(pair.doorA, "/admin-api/sessions/c-shared/xshare", {
@@ -1130,6 +1152,88 @@ test("safe-mode lock: owner pins lock via /lock, syncs across stations, rejects 
   const [aliceGetStatus, aliceGetBody] = await memberAsk(aliceConnA, "GET", "/admin/api/lock");
   assert.equal(aliceGetStatus, 200);
   assert.equal(aliceGetBody.head.seq, 1);
+
+  await pair.stop();
+});
+
+// ── 6. Cross-station `session_send` (`session.put`) & `chat_read` (`session.file`) binary attachments ───────────────
+test("cross-station session_send (session.put) and chat_read (session.file) preserve binary stream bytes end to end", { skip }, async () => {
+  const pair = await startPair({ build: "9526" });
+  const [workA, workB] = [fresh("workA"), fresh("workB")];
+
+  const storeA = Store.open(join(pair.dataA, "stillfail.db"), join(pair.dataA, "archive"), {
+    currentTimeMillisUnsafe: () => Date.now(),
+  } as never);
+  const tA = storeA.openThread("ember", "c-alpha", "c-alpha", "Alpha Chat", "alice@team.test");
+  storeA.insertSession({
+    key: "c-alpha", connect: "ember", runtime: "claude", profile: "cc", workspace: workA,
+    token: "ta", createdAt: Date.now(), lastActiveAt: Date.now(),
+  });
+  storeA.joinThread(tA.id, "c-alpha", "ember");
+  storeA.close();
+
+  // Seed an attachment on Station B's thread `c-beta` so `chat_read` from Station A exercises `session.file` (`whole: true`).
+  const betaPayload = randomBytes(320 * 1024 + 31);
+  betaPayload[0] = 0x00;
+  betaPayload[1] = 0xfe;
+  mkdirSync(join(workB, "uploads"), { recursive: true });
+  const betaFilePath = join(workB, "uploads", "beta-report.bin");
+  writeFileSync(betaFilePath, betaPayload);
+
+  const storeB = Store.open(join(pair.dataB, "stillfail.db"), join(pair.dataB, "archive"), {
+    currentTimeMillisUnsafe: () => Date.now(),
+  } as never);
+  const tB = storeB.openThread("ember", "c-beta", "c-beta", "Beta Chat", "bob@team.test");
+  storeB.insertMessage({
+    thread: tB.id, ts: "1700000010.000", authorKind: "person", author: "bob@team.test",
+    text: "beta report attached",
+    attachments: [{ name: "beta-report.bin", path: betaFilePath, size: betaPayload.length }],
+    at: Date.now(),
+  });
+  storeB.insertSession({
+    key: "c-beta", connect: "ember", runtime: "claude", profile: "cc", workspace: workB,
+    token: "tb", createdAt: Date.now(), lastActiveAt: Date.now(),
+  });
+  storeB.joinThread(tB.id, "c-beta", "ember");
+  storeB.close();
+
+  await given("alpha reaches beta", async () => {
+    const r = await tool(pair.doorA, "ta", "station_list", { station: "beta" });
+    return !r.error && JSON.parse(r.text).tasks === true ? true : null;
+  });
+
+  // 1. Station A sends a binary file (>300 KiB, non-ASCII / NUL bytes) to Station B via `session_send` (`session.put` stream bytes + `session.message` claim).
+  const payload = randomBytes(320 * 1024 + 29);
+  payload[0] = 0x00;
+  payload[1] = 0xff;
+  const srcPath = join(workA, "artifact.bin");
+  writeFileSync(srcPath, payload);
+
+  const linkBeta = `${pair.plane.origin}/o/w1/${pair.idB}/c-beta`;
+  const sent = await tool(pair.doorA, "ta", "session_send", {
+    to: linkBeta,
+    text: "sending binary attachment",
+    files: [srcPath],
+  });
+  assert.equal(sent.error, false, sent.text);
+
+  const uploadsB = join(workB, "uploads");
+  const claimed = readdirSync(uploadsB).filter((f) => f.endsWith("artifact.bin"));
+  assert.equal(claimed.length, 1, `expected claimed artifact.bin in ${uploadsB}, found ${JSON.stringify(claimed)}`);
+  const claimedBuf = readFileSync(join(uploadsB, claimed[0]!));
+  assert.equal(sha256(claimedBuf), sha256(payload), "session.put + session.message claim preserved every byte");
+
+  // 2. Station A reads Station B's chat via `chat_read` (`session.file` whole:true stream bytes, no `$file` leak).
+  const read = await tool(pair.doorA, "ta", "chat_read", { chat: linkBeta });
+  assert.equal(read.error, false, read.text);
+  assert.ok(read.text.includes("beta report attached"), read.text);
+  assert.doesNotMatch(read.text, /the file stopped coming|\$file/, read.text);
+
+  const fetchedDir = join(workA, "uploads", pair.idB.slice(0, 12));
+  const fetched = readdirSync(fetchedDir).filter((f) => f.endsWith("beta-report.bin"));
+  assert.equal(fetched.length, 1, `expected downloaded beta-report.bin in ${fetchedDir}, found ${JSON.stringify(fetched)}`);
+  const fetchedBuf = readFileSync(join(fetchedDir, fetched[0]!));
+  assert.equal(sha256(fetchedBuf), sha256(betaPayload), "session.file whole:true preserved every byte");
 
   await pair.stop();
 });
