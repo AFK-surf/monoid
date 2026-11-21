@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [46634e602](https://github.com/AFK-surf/monoid/commit/46634e6021e43e4fbfd9e222e9535e8aa848db19) fix(mbui): rule 4 takes a bar's end in a round out | 2.65 | 3.57 | 14.48 | 36.49 | 55.19 | 31.94 | 64.53 | 98.39 | 126.3 |
 | [1ec0f07a1](https://github.com/AFK-surf/monoid/commit/1ec0f07a174d2813c19136e9755ea5ca612fea62) fix(sf-ui,mbui): scale remaining text controls wit | 2.65 | 3.57 | 14.48 | 36.49 | 55.19 | 31.94 | 64.53 | 98.24 | 121.81 |
 | [30e2a95d3](https://github.com/AFK-surf/monoid/commit/30e2a95d3418054dde1a7448b347ec346ca0502f) refactor(profiles): decouple profiles from coding- | 2.65 | 3.57 | 14.48 | 36.49 | 55.19 | 31.94 | 64.53 | 98.24 | 121.81 |
 | [ea14ed57d](https://github.com/AFK-surf/monoid/commit/ea14ed57d50b70493f151ea2a000c7ac82ffe1eb) refactor(mbui): clear 83 remaining structure-box d | 2.65 | 3.57 | 14.48 | 36.48 | 55.19 | 31.95 | 64.53 | 98.21 | 116.29 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cc5a6f395](https://github.com/AFK-surf/monoid/commit/cc5a6f3953af40f1ec641df1cef8688ea8c08732) refactor(sf-ui): clear width-structure and pick-lo | 2.79 | 3.77 | 15.38 | 37.48 | 58.11 | 32.85 | 67.1 | 98.42 | 119.73 |
 | [fca1d04f9](https://github.com/AFK-surf/monoid/commit/fca1d04f95bc33b63b3f0c520d631b9a7da214df) fix(mbui): let auto-sized column items animate thr | 2.79 | 3.77 | 15.36 | 37.48 | 58.06 | 32.84 | 67.06 | 98.42 | 123.57 |
 | [bb906ebb3](https://github.com/AFK-surf/monoid/commit/bb906ebb34bffe02aeccdd1bed4824393f7dfae0) refactor(mbui): clear remaining page-headless and  | 2.79 | 3.77 | 15.36 | 37.47 | 58.06 | 32.84 | 67.06 | 98.22 | 125.05 |
-| [b159ee25d](https://github.com/AFK-surf/monoid/commit/b159ee25de5625dfffe1ffa62ff8ef127a01b829) fix(mbui): forward unhandled Control shortcuts on  | 2.79 | 3.77 | 15.36 | 37.47 | 58.06 | 32.84 | 67.06 | 98.22 | 125.05 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [46634e602](https://github.com/AFK-surf/monoid/commit/46634e6021e43e4fbfd9e222e9535e8aa848db19) fix(mbui): rule 4 takes a bar's end in a round out | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
 | [1ec0f07a1](https://github.com/AFK-surf/monoid/commit/1ec0f07a174d2813c19136e9755ea5ca612fea62) fix(sf-ui,mbui): scale remaining text controls wit | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
 | [30e2a95d3](https://github.com/AFK-surf/monoid/commit/30e2a95d3418054dde1a7448b347ec346ca0502f) refactor(profiles): decouple profiles from coding- | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [ea14ed57d](https://github.com/AFK-surf/monoid/commit/ea14ed57d50b70493f151ea2a000c7ac82ffe1eb) refactor(mbui): clear 83 remaining structure-box d | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cc5a6f395](https://github.com/AFK-surf/monoid/commit/cc5a6f3953af40f1ec641df1cef8688ea8c08732) refactor(sf-ui): clear width-structure and pick-lo | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.4 |
 | [fca1d04f9](https://github.com/AFK-surf/monoid/commit/fca1d04f95bc33b63b3f0c520d631b9a7da214df) fix(mbui): let auto-sized column items animate thr | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.4 |
 | [bb906ebb3](https://github.com/AFK-surf/monoid/commit/bb906ebb34bffe02aeccdd1bed4824393f7dfae0) refactor(mbui): clear remaining page-headless and  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.4 |
-| [b159ee25d](https://github.com/AFK-surf/monoid/commit/b159ee25de5625dfffe1ffa62ff8ef127a01b829) fix(mbui): forward unhandled Control shortcuts on  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.13 |
