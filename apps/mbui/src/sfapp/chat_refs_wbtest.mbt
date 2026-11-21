@@ -27,6 +27,8 @@ test "a finger scrolls the @ menu while the composer and its keyboard keep focus
   assert_true(t.ime().0, msg="the keyboard stays open")
   let (_, after_y, _, _) = t.get(Option, label="候选对话 7").rect
   assert_true(after_y < before_y, msg="the results moved up")
+  // (let go moving: at rest before the tap, else it catches the glide)
+  t.run_past_glides()
   t.tap_text("候选对话 7")
   t.draw()
   let picked = named(calls, "chat.ref")

@@ -855,3 +855,14 @@ fn Ctx::waited_by(self : Ctx) -> String {
     }
   }
 }
+
+///|
+/// Run on to the moment the last of the tree's columns gliding on by themselves (a fling, what shows past an end going
+/// back) comes to rest, as each says it now: a press there after is a press again, not one that catches the glide
+/// (view_caught). Nothing run where none glides.
+pub fn Tester::run_past_glides(self : Tester) -> Unit {
+  match tree_glides_end() {
+    Some(end) if end > self.time() => self.run_for(end - self.time())
+    _ => ()
+  }
+}

@@ -1431,6 +1431,8 @@ test "the workspaces' sheet: more workspaces than it holds are reached by scroll
     presented_rested(t)
   }
   assert_true(in_view(), msg="the last workspace scrolled into the sheet")
+  // (the list's end met on the last drag and going back from past it: at rest before the tap, else it catches that)
+  t.run_past_glides()
   t.tap_text(last)
   assert_true(!@sf.presenting())
   let (_, bar_y) = t.find(last).unwrap()

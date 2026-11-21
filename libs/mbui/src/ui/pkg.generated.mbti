@@ -3134,6 +3134,7 @@ pub fn Tester::run_as_host(Self, Double, skip_unasked? : Bool) -> Unit
 pub fn Tester::run_for(Self, Double) -> Unit
 pub fn Tester::run_for_exact(Self, Double) -> Unit
 pub fn Tester::run_rects(Self, String) -> Array[(Double, Double, Double, Double)]
+pub fn Tester::run_past_glides(Self) -> Unit
 pub fn Tester::run_shown(Self, Double) -> Unit
 pub fn Tester::said(Self) -> String
 pub fn Tester::scroll_all_to_end(Self) -> Int32

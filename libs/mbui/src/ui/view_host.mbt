@@ -7756,6 +7756,20 @@ fn tree_gliding(t : Double) -> Bool {
 }
 
 ///|
+/// When the last of the window's tree's columns gliding on by themselves now comes to rest (tree_gliding's): none where
+/// none glides.
+fn tree_glides_end() -> Double? {
+  let mut most : Double? = None
+  for g in tree_glide_movers.values() {
+    match @signals.untracked(g.1) {
+      Some(end) if most is None || end > most.unwrap() => most = Some(end)
+      _ => ()
+    }
+  }
+  most
+}
+
+///|
 /// Content `c`'s picture not seen yet (drawn `s` times as big) asked for all the same, for the pixels it is laid out at,
 /// as an old view's is as it is built whatever is seen of it: decoded by the time it shows, View::image; for the room
 /// it is judged ready for where it is said, View::image_for (Ctx::view_paint's, for one faded out or out of its clip).
