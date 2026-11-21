@@ -34,6 +34,8 @@ priv struct P52 {
   ids_seq : Ref[Int]
   /// The repositories on the machine, offered as a preset's folders (hub.ts `repoIndex`).
   repo_index : @session_chats.RepoIndex
+  /// A person's drafts of 待派发 and their files (sessions/board-drafts.ts, `hub.boardDrafts`).
+  board_drafts : @session_chats.BoardDrafts
   /// Its pass under way, if there is (presets.ts RepoIndex `#walking`).
   mut repo_walking : Bool
   /// What a part set going every so often (ops/fibers.ts `wall.every`), by the handle it was given: still going.

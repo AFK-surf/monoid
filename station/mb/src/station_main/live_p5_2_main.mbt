@@ -28,6 +28,45 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
       return
     }
   }
+  let board_drafts = @session_chats.BoardDrafts::new({
+    read_store: (ws, sub) => match bus.store.board_drafts(Json::string(ws), Json::string(sub)) {
+      String(s) => Some(s)
+      _ => None
+    },
+    write_store: (ws, sub, drafts) =>
+      bus.store.put_board_drafts(Json::string(ws), Json::string(sub), Json::string(drafts)),
+    dir: () => path([bus.data, "board-files"]),
+    uploads: () => path([bus.data, "uploads"]),
+    now: () => p5_epoch_ms().to_double(),
+    sep: sep(),
+    resolve: p => {
+      let s = sep()
+      if @nodepath.is_absolute(s, p) {
+        @nodepath.join(s, [p])
+      } else {
+        @nodepath.join(s, [@drive.cwd(), p])
+      }
+    },
+    stat: async fn(p) {
+      match host_stat_follow(host, p) {
+        Some((kind, size, mtime_ms)) => Some({ is_file: kind == "file", size, mtime_ms })
+        None => None
+      }
+    },
+    mkdir: async fn(p) { host_mkdir(host, p) },
+    rename: async fn(from, to) { host_rename(host, from, to) },
+    rm: async fn(p, _recursive) { host_remove_tree(host, p) },
+    readdir: async fn(p) { host_readdir_names(host, p) },
+    utimes: async fn(p, ms) {
+      ignore(host.shell("fs.utimes", { "path": jstr(p), "mtimeMs": jn(ms) })) catch {
+        _ => ()
+      }
+    },
+    read_bytes: async fn(p) { host_read_bytes_req(host, p) },
+    copy_file: async fn(from, to) { host_copy_over(host, from, to) },
+    random_hex6: () => @drive.hex(@drive.random_bytes(3)),
+    log_warn: (msg, err) => slice_log("warn", "board", msg, { "error": jstr(err) }),
+  })
   let ctx : P52 = {
     bus,
     host,
@@ -61,6 +100,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     computer: None,
     ids_seq: Ref(0),
     repo_index: @session_chats.RepoIndex::new(),
+    board_drafts,
     repo_walking: false,
     everies: {},
     live_locator: None,

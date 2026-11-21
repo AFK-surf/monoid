@@ -891,6 +891,32 @@ pub fn Store::put_model_stars(
 }
 
 ///|
+pub fn Store::board_drafts(self : Store, ws : Json, sub : Json) -> Json raise {
+  match
+    self.one("SELECT drafts FROM board_drafts WHERE ws = ?1 AND sub = ?2", [
+      ws, sub,
+    ]) {
+    None => Json::null()
+    Some(r) => jstr(js_string(col(r, "drafts")))
+  }
+}
+
+///|
+pub fn Store::put_board_drafts(
+  self : Store,
+  ws : Json,
+  sub : Json,
+  drafts : Json,
+) -> Unit raise {
+  ignore(
+    self.run(
+      "INSERT INTO board_drafts (ws, sub, drafts) VALUES (?1, ?2, ?3) ON CONFLICT (ws, sub) DO UPDATE SET drafts = excluded.drafts",
+      [ws, sub, drafts],
+    ),
+  )
+}
+
+///|
 /// Since when this station keeps the devices' builds: `now` the first time it is asked, the same ever after. Read
 /// without the write lock where it is kept; the first write waits for no other writer (store.ts `#tryNow`: the mesh
 /// tries again after a failed start), refused "device builds write is busy" where one holds the lock.

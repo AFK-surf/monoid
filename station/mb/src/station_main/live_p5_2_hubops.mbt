@@ -436,6 +436,37 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
           None => undef_json()
         }
       "dep.grantChatTitle" => jopt(self.grant_chat_title(arg_or_null(args, 0)))
+      "hub.boardDrafts.said" =>
+        of_jv(self.board_drafts.said(arg_text(args, 0), arg_text(args, 1)))
+      "hub.boardDrafts.carry" =>
+        of_jv(self.board_drafts.carry(arg_text(args, 0), arg_text(args, 1), to_jv(arg_or_null(args, 2))))
+      "hub.boardDrafts.keep" =>
+        of_jv(
+          self.board_drafts.keep(
+            arg_text(args, 0),
+            arg_text(args, 1),
+            arg_text(args, 2),
+            arg_text(args, 3),
+            arg_text(args, 4),
+          ),
+        )
+      "hub.boardDrafts.bytes" =>
+        match self.board_drafts.bytes(arg_text(args, 0), arg_text(args, 1), arg_text(args, 2), arg_text(args, 3)) {
+          Some((mime, bytes)) => { "type": Json::string(mime), "bytes": of_jv(@api_routes.jbytes(bytes)) }
+          None => Json::null()
+        }
+      "hub.boardDrafts.stage" =>
+        match
+          self.board_drafts.stage(
+            arg_text(args, 0),
+            arg_text(args, 1),
+            arg_text(args, 2),
+            arg_text(args, 3),
+            arg_text(args, 4),
+          ) {
+          Some(v) => of_jv(v)
+          None => Json::null()
+        }
       "hub.presets.list" => Json::array(@session_chats.presets_list(w(), to_jv(arg_or_null(args, 0))).map(of_jv))
       "hub.presets.listed" =>
         Json::array(@session_chats.presets_listed(w(), to_jv(arg_or_null(args, 0))).map(of_jv))

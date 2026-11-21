@@ -56,6 +56,8 @@ pub fn Store::call(self : Store, name : String, x : Array[Json]) -> Json raise {
     "setSessionUsage" => unit(self.set_session_usage(s(x, 0), a(x, 1), b(x, 2)))
     "modelStars" => self.model_stars(a(x, 0), a(x, 1))
     "putModelStars" => unit(self.put_model_stars(a(x, 0), a(x, 1), a(x, 2)))
+    "boardDrafts" => self.board_drafts(a(x, 0), a(x, 1))
+    "putBoardDrafts" => unit(self.put_board_drafts(a(x, 0), a(x, 1), a(x, 2)))
     "sessionUsage" => self.session_usage(s(x, 0))
     // ── runtime sessions ──
     "runtimeSessions" => Json::array(self.runtime_sessions(s(x, 0)))
