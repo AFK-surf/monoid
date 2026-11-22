@@ -54,6 +54,7 @@ public final class MBTextTest extends Instrumentation {
             "測字\nfi\t字漢\n\n\t字，Ａ。AV", "中文👩🏽‍💻👪❤️e\u0301\n\tÉ字",
             "中文\tﬃ\r\nالعربية אבג 123 fi", "計測\temoji💡\nEnd",
             "測字前綴我是漢字測字後綴", "測字、漢字！測字：漢字　漢字", "ゔゕカッヷ・한글",
+            "完成任务 ✅ 下一步 → 延迟 ≤ 16ms 🎉 汉字缓存命中测试",
             "# flex fi\n## 中文漢字仮名\n\tTo AV Markdown\n".repeat(48),
             "文字版面布局測試包含中文日本語支援漢字的長篇測量".repeat(64)
         };
@@ -67,6 +68,22 @@ public final class MBTextTest extends Instrumentation {
                 }
             }
         }
+        // Verify non-Bidi text with emoji/arrows/math symbols populates and hits isolated Han unitAdv cache.
+        MBText.keysSweep();
+        MBTextBefore.keysSweep();
+        MBText.setScale(2.625f);
+        MBTextBefore.setScale(2.625f);
+        String mixed = "完成任务 ✅ 下一步 → 延迟 ≤ 16ms 🎉 汉字缓存命中测试";
+        double[] mixedOut = new double[mixed.length() * 4];
+        MBText.shape(mixed, 17.25, 400, 0, mixedOut);
+        MBText.Clusters mixedFont = MBText.clusters(17.25f, 400, 0);
+        char sampleHan = '汉';
+        float[] hanPage = mixedFont.unitAdv[sampleHan >>> 8];
+        check(hanPage != null && !Float.isNaN(hanPage[sampleHan & 255]),
+                "non-Bidi mixed emoji/symbol run did not populate isolated Han unitAdv cache");
+        sameShape(mixed, 400, 0, 2.625f);
+        MBText.setScale(1f);
+        MBTextBefore.setScale(1f);
         MBText.facesChanged();
         MBTextBefore.facesChanged();
         for (String text : samples) sameShape(text, 400, 0, 1f);
