@@ -871,6 +871,7 @@ pub fn Scroll::foot_covered_now(Self) -> Double
 pub fn Scroll::glides_till(Self) -> Double?
 pub fn Scroll::glides_to_foot(Self) -> Bool
 pub fn Scroll::goes(Self) -> Bool
+pub fn Scroll::goes_on(Self) -> Bool
 pub fn Scroll::grew_above(Self, Double) -> Unit
 pub fn Scroll::holds_here(Self) -> Unit
 pub fn Scroll::in_hand(Self) -> Bool

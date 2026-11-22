@@ -1420,3 +1420,36 @@ test "scrolls across: two fingers on it by turns: the last down leads it along t
   k.tree.advance(long_after_at)
   assert_eq((at, k.across.at(k.tree), k.column.at(k.tree)), ([20.0, 20.0, 30.0, 40.0], 40.0, 100.0))
 }
+
+///|
+test "scrolls: View::reacts on in_hand || goes_on transitions strictly [false, true, false] and wakes when fling settles" {
+  let seen : Array[Bool] = []
+  let scroll = @view.Scroll::plain()
+  let tree = @view.Tree::new(
+    fn(root) {
+      root.box(fn(v) {
+        v.width(Is(Some(300.0))).height(Is(Some(100.0))).scrolls(scroll, fn(held) {
+          for _ in 0..<20 {
+            held.box(fn(r) { r.width(Is(Some(300.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+          }
+        })
+        |> ignore
+        v.reacts(fn() { scroll.in_hand() || scroll.goes_on() }, fn(on) { seen.push(on) })
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  tree.frame(390.0, 844.0) |> ignore
+  let id = match tree.claimers_at(150.0, 50.0) {
+    [(id, _), ..] => id
+    _ => @halt.saying("no scroll column")
+  }
+  tree.drag_at(id, Down, 150.0, 90.0, 100.0, finger=0) |> ignore
+  tree.drag_at(id, Moved, 150.0, 70.0, 110.0, finger=0) |> ignore
+  tree.drag_at(id, Moved, 150.0, 50.0, 120.0, finger=0) |> ignore
+  tree.drag_at(id, Up, 150.0, 50.0, 120.0, finger=0) |> ignore
+  let mid = seen.copy()
+  tree.advance(long_after_at)
+  assert_eq((mid, seen, scroll.in_hand(), scroll.goes_on()), ([false, true], [false, true, false], false, false))
+}

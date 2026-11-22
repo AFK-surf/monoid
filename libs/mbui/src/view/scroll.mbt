@@ -782,7 +782,7 @@ pub fn Scroll::tucks(self : Scroll, v : View, cover : () -> Double, kept? : () -
     }
   })
   // (the hand on it, or it gliding: put there no more)
-  host.reacts(fn() { host.pointed_in() || self.glides_till() is Some(_) }, fn(on) {
+  host.reacts(fn() { host.pointed_in() || self.in_hand() || self.goes_on() }, fn(on) {
     if on {
       self.tuck_owed = false
     }
