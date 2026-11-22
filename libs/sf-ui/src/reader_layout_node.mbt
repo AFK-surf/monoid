@@ -78,6 +78,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       top: 0.0,
       most: None,
       flush: false,
+      head_end: None,
     },
   }
   let shut = fn() {

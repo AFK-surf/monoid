@@ -1596,6 +1596,7 @@ fn reader_sheets(parent : @view.View, r : Reading, paper : () -> ReaderPaper, lo
         top: 0.0,
         most: None,
         flush: false,
+        head_end: None,
       },
     }
   }

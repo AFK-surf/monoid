@@ -211,6 +211,8 @@ priv struct PanelNodes {
   /// pick's rows across it, a confirm's and a question's words as far in as a sheet's), as one a share of the window
   /// tall lays them out: sheet_node's `own_sides`
   flush : Bool
+  /// on a sheet, what stands at the end of its title's line (panel_nodes' `head_end`)
+  head_end : ((@view.View) -> Unit)?
 }
 
 ///|
@@ -542,6 +544,8 @@ pub fn pick(
 /// the middle, drawn smaller where the window has not the room for it, 关闭 and its `foot`'s buttons under it on the
 /// night; a press beside it, Escape and the back close it too; `above`, over those buttons, what is chosen of the
 /// picture (the card to share's looks).
+/// `head_end`: on a sheet, what stands at the end of its title's line (a quiet action of the whole panel's, as a panel
+/// that heads itself beside what opened it has at its own head's end); not drawn where the panel has no such head.
 pub fn panel_nodes(
   title : String,
   body : (@view.View, () -> Unit) -> Unit,
@@ -572,6 +576,7 @@ pub fn panel_nodes(
   most? : () -> Double,
   stage? : Bool = false,
   above? : (@view.View) -> Unit,
+  head_end? : (@view.View) -> Unit,
 ) -> Unit {
   present(
     Panel({
@@ -595,7 +600,7 @@ pub fn panel_nodes(
       offset,
       match_panel,
       on_back: back,
-      nodes: { body, foot, hugs, hugs_centred, steps, sheet_heads: false, heads: heads_itself, top: top_share, most, flush: false },
+      nodes: { body, foot, hugs, hugs_centred, steps, sheet_heads: false, heads: heads_itself, top: top_share, most, flush: false, head_end },
     }),
     from,
     gone~,
@@ -632,7 +637,7 @@ pub fn panel_go_nodes(
       match p.shows {
         Panel(x) => {
           let n = x.nodes
-          let step : PanelOf = { ..x, title, description, live, on_back: back, nodes: { body, foot, hugs: n.hugs, hugs_centred: n.hugs_centred, steps: false, sheet_heads: false, heads: false, top: 0.0, most: n.most, flush: n.flush } }
+          let step : PanelOf = { ..x, title, description, live, on_back: back, nodes: { body, foot, hugs: n.hugs, hugs_centred: n.hugs_centred, steps: false, sheet_heads: false, heads: false, top: 0.0, most: n.most, flush: n.flush, head_end: None } }
           // (opened by what opened the panel: on a sheet as far in as its first step, sheet_node's `pressed`)
           panel_page(p, step, p.from, left)
         }

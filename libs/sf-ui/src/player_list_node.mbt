@@ -369,6 +369,7 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
       top: 0.0,
       most: None,
       flush: false,
+      head_end: None,
     },
   }
   parent.box(made_for=loc, fn(layer) {

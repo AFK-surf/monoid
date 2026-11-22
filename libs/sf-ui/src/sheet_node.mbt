@@ -1081,6 +1081,16 @@ fn sheet_node(
                       title_words(at)
                     })
                     |> ignore
+                    // (what stands at the end of its line: PanelNodes' `head_end`, its title taking the room up to it)
+                    match x.nodes.head_end {
+                      Some(f) =>
+                        r.box(fn(e) {
+                          e.shrink(Is(0.0)).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+                          f(e)
+                        })
+                        |> ignore
+                      None => ()
+                    }
                   }
                   // (a step further in: its back key before its title, as a step's head has it (step_head), the row no
                   // taller for it)

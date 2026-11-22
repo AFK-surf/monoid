@@ -101,6 +101,7 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
       top: 0.0,
       most: None,
       flush: true,
+      head_end: None,
     },
   }
 }

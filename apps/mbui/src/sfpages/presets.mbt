@@ -275,11 +275,10 @@ fn PresetPickRow::key(self : PresetPickRow) -> String {
 
 ///|
 /// The person's presets as a structured `@sf.panel_nodes` panel: compact header (with a quiet text-only "No preset"
-/// button when a preset is active on popover), optional full-width search bar (>= 5 presets, paired with "No preset"
-/// beside it on sheet), picked other-member preset (with copy button), own presets with icons, one-line summaries and
-/// independent edit buttons (editing without changing the active preset; clicking the active row toggles it off), and
-/// a footer with "+ New preset" and "Other members' presets ›" stepping in-panel (plus quiet "No preset" centered
-/// between them on sheet when no search bar is shown and a preset is active).
+/// button when a preset is active on popover; on a sheet the same button at the end of its title's line), optional
+/// full-width search bar (>= 5 presets), picked other-member preset (with copy button), own presets with icons,
+/// one-line summaries and independent edit buttons (editing without changing the active preset; clicking the active
+/// row toggles it off), and a footer with "+ New preset" and "Other members' presets ›" stepping in-panel.
 fn preset_panel(
   src : Source,
   w : Workspace,
@@ -298,6 +297,8 @@ fn preset_panel(
   let query_field = @ui.Field::new()
   let search_at : @signals.Signal[Int] = @signals.signal(0)
   let in_small : Ref[Bool] = Ref(false)
+  // (what closes it, for 不用预设 at the end of a sheet's title line, made outside what it holds)
+  let closes : Ref[() -> Unit] = Ref(fn() {  })
   let has_search = all.length() >= 5
   let one_summary = if !own && picked != "" { text(one, "summary") } else { "" }
   let one_maker_id = if !own && picked != "" { text(field(one, "maker"), "id") } else { "" }
@@ -311,6 +312,7 @@ fn preset_panel(
     fn(body, close) {
       let small = @sf.in_small_panel_node(body)
       in_small.val = small
+      closes.val = close
       let searching = fn() { query_field.text().trim().to_owned() != "" }
       let visible_entries = fn() -> Array[(String, String, () -> Unit)] {
         let q = query_field.text()
@@ -394,33 +396,11 @@ fn preset_panel(
           |> ignore
         }
       } else if has_search {
-        if picked == "" {
-          body.box(fn(sb) {
-            @sf.style_node(sb, fn() { preset_panel_search_wrap.then(@sf.panel_field_in_node(sb)) })
-            preset_find_node(sb, query_field, search_at, on_enter~, on_step~)
-          })
-          |> ignore
-        } else {
-          body.box(fn(sb) {
-            @sf.style_node(sb, fn() { preset_panel_search_row.then(@sf.panel_field_in_node(sb)) }, in_row=true)
-            sb.box(fn(fw) {
-              fw.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              preset_find_node(fw, query_field, search_at, on_enter~, on_step~)
-            })
-            |> ignore
-            @sf.action_box_node(sb, fn() { @sf.t("web-main.preset.none") }, fn(_) {
-              preset_pick(src, w, "", "")()
-              close()
-            }, fn(btn) {
-              @sf.style_node(btn, fn() { preset_sheet_clear_btn.then(@ui.style(min_h=Fixed(@sf.theme().items.least))) }, in_row=true)
-              btn.shrink(Is(0.0)) |> ignore
-              @sf.hover_ground_node(btn)
-              @sf.words_node(btn, fn() { @sf.t("web-main.preset.none") }, fn() { preset_sheet_clear_words }) |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        }
+        body.box(fn(sb) {
+          @sf.style_node(sb, fn() { preset_panel_search_wrap.then(@sf.panel_field_in_node(sb)) })
+          preset_find_node(sb, query_field, search_at, on_enter~, on_step~)
+        })
+        |> ignore
       }
       if picked == "" && all.length() == 0 {
         body.box(fn(e) {
@@ -560,18 +540,6 @@ fn preset_panel(
         })
         |> ignore
         @sf.foot_spacer_node(row)
-        if !in_small.val && !has_search && picked != "" {
-          @sf.action_box_node(row, fn() { @sf.t("web-main.preset.none") }, fn(_) {
-            preset_pick(src, w, "", "")()
-            close()
-          }, fn(btn) {
-            @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.button_height()))) }, in_row=true)
-            @sf.hover_ground_node(btn)
-            @sf.words_node(btn, fn() { @sf.t("web-main.preset.none") }, fn() { preset_sheet_clear_words }) |> ignore
-          })
-          |> ignore
-          @sf.foot_spacer_node(row)
-        }
         @sf.action_box_node(row, fn() { @sf.t("web-main.preset.others") }, fn(_) {
           if in_small.val {
             preset_others_open(src, w, v, from, close_first=close)
@@ -592,6 +560,23 @@ fn preset_panel(
     heads_itself=true,
     steps=true,
     focus=false,
+    // (on a sheet, 不用预设 at the end of its title's line, as a small panel has it at its own head's end: never a
+    // third button in the foot, which went to two lines on a phone)
+    head_end?=if picked == "" {
+      None
+    } else {
+      Some(fn(h) {
+        @sf.action_box_node(h, fn() { @sf.t("web-main.preset.none") }, fn(_) {
+          preset_pick(src, w, "", "")()
+          (closes.val)()
+        }, fn(btn) {
+          @sf.style_node(btn, fn() { preset_sheet_clear_btn.then(@ui.style(min_h=Fixed(@sf.theme().items.least))) }, in_row=true)
+          @sf.hover_ground_node(btn)
+          @sf.words_node(btn, fn() { @sf.t("web-main.preset.none") }, fn() { preset_sheet_clear_words }) |> ignore
+        })
+        |> ignore
+      })
+    },
   )
 }
 
@@ -2475,10 +2460,6 @@ let preset_find_hot : @ui.Style = @ui.css("row w=Full px=S3 gap=S2 align=ACenter
 ///|
 // kept across runs: a value (no field of it changes)
 let preset_panel_search_wrap : @ui.Style = @ui.css("w=Full pb=S2")
-
-///|
-// kept across runs: a value (no field of it changes)
-let preset_panel_search_row : @ui.Style = @ui.css("row w=Full pb=S2 gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
