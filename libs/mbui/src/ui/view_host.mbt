@@ -3407,6 +3407,16 @@ fn Ctx::view_blit(
   // (each instance's numbers written unchecked, every one composed each frame: the room for them grown above, the
   // clip's level whole)
   guard k >= 0 else { @halt.saying("view_blit: no clip pushed") }
+  // (what it cuts to its own box (a line cut short: made.cut) clipped as a box of its own pushed within the clip it is
+  // in: square where its corners are its own, round only at a corner it shares with that clip, that clip's curve kept
+  // as its outer where it reaches in; not that clip's corners set on its own box's, which would cut its words round)
+  let has_cut = made.cut.0 < made.cut.1
+  let k_cut = if has_cut {
+    push_box_clip(x, y, made.w, made.h, 0.0, 0.0, 0.0, 0.0)
+    clip_top()
+  } else {
+    k
+  }
   for i in 0..<n {
     let b = at + i * inst_size
     s.unsafe_set(b, s.unsafe_get(b) + x)
@@ -3429,21 +3439,19 @@ fn Ctx::view_blit(
       s.unsafe_set(b + 33, s.unsafe_get(b + 33) + x)
       s.unsafe_set(b + 34, s.unsafe_get(b + 34) + y)
     }
+    let ck = if i >= made.cut.0 && i < made.cut.1 { k_cut } else { k }
     for j in 0..<4 {
-      s.unsafe_set(b + 16 + j, clip_stack.unsafe_get(k + j))
-    }
-    if i >= made.cut.0 && i < made.cut.1 {
-      s.unsafe_set(b + 16, dmax(s.unsafe_get(b + 16), x))
-      s.unsafe_set(b + 17, dmax(s.unsafe_get(b + 17), y))
-      s.unsafe_set(b + 18, dmin(s.unsafe_get(b + 18), x + made.w))
-      s.unsafe_set(b + 19, dmin(s.unsafe_get(b + 19), y + made.h))
+      s.unsafe_set(b + 16 + j, clip_stack.unsafe_get(ck + j))
     }
     for j in 0..<8 {
-      s.unsafe_set(b + 24 + j, clip_stack.unsafe_get(k + 4 + j))
+      s.unsafe_set(b + 24 + j, clip_stack.unsafe_get(ck + 4 + j))
     }
     for j in 0..<12 {
-      s.unsafe_set(b + 40 + j, clip_stack.unsafe_get(k + 12 + j))
+      s.unsafe_set(b + 40 + j, clip_stack.unsafe_get(ck + 12 + j))
     }
+  }
+  if has_cut {
+    pop_clip()
   }
   // (its glyphs set on the pixels where they are composed, as emit_text sets an old view's where it paints them: x on
   // the pixels, down by the baseline on a row then the glyph's own offset; where it is drawn bigger or smaller, on the

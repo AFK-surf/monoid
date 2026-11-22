@@ -474,3 +474,41 @@ test "an offline row on a station with its own glyph shows the unplugged icon an
     }
   }
 }
+
+///|
+test "a side row's state words cut short in its round slot: their ellipsis within their box, never cut round by the slot's corners" {
+  let rest = "#8075 已合进 main（9bfb4f6f4b），CI 30 项通过，其余按改动范围跳过"
+  // (windows where the words were cut after a mark set closer before what followed it, their ellipsis then past their
+  // box: cut to it, by the slot's 18 round corners set on their own 18 tall box)
+  for case in [(0, 248.0), (2, 268.0)] {
+    let (platform, ww) = case
+    @sfbase.reset()
+    reset()
+    @sf.set_words(@sfbase.fill)
+    let item = { ..sample_chat(0), title: "Cut state row", state_text: Some(rest), state_lead: "archive", state_rest: rest }
+    let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=ww, h=200.0, platform~)
+    // (Chinese words spaced as on Android, Windows, Linux and the web: "），" a half em closer)
+    t.words_spaced_here()
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+      let tips = @sf.TipLayer::new(fn() { Some(popup) })
+      chat_row_node(root, @sfbase.sample_source, tips, fn() { item }, "agents", fn() { false }, Side, fn() { 0 }) |> ignore
+    })
+    t.draw()
+    guard t.rect_of(rest) is Some((x, y, w, h)) else { fail("the state words are not drawn") }
+    let glyphs = t
+      .drawn_instances()
+      .filter(fn(a) { a[5] == 1.0 && a[0] + a[2] / 2.0 >= x && a[0] + a[2] / 2.0 <= x + w && a[1] + a[3] / 2.0 >= y && a[1] + a[3] / 2.0 <= y + h })
+    assert_true(glyphs.length() > 0, msg="platform \{platform}: no glyph of the state words")
+    for a in glyphs {
+      let clip = a[16:32].to_owned()
+      // (each glyph within their box: the ellipsis too)
+      assert_true(a[0] + a[2] <= x + w + 0.5, msg="platform \{platform}: a glyph past their box \{x + w}: \{Repr(a[0:4].to_owned())}")
+      // (cut to their own box where they are: square there)
+      if a[16] >= x - 0.01 && a[17] >= y - 0.01 && a[18] <= x + w + 0.01 && a[19] <= y + h + 0.01 {
+        assert_eq(a[24:28].to_owned(), [0.0, 0.0, 0.0, 0.0], msg="platform \{platform}: a glyph cut round: \{Repr(clip)}")
+      }
+    }
+  }
+}

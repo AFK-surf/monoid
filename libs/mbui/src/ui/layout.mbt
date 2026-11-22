@@ -191,8 +191,22 @@ fn ellipsized(s : String, tl : TextLayout, w : Double, lay : (String, Bool) -> T
   while end > 0 && shaped.cu[end - 1] == 32 {
     end = end - 1
   }
-  let cut = if end < shaped.starts.length() { shaped.starts[end] } else { shaped.len }
-  lay(s.exact_view(end=cut).to_owned() + "…", has_digit(s))
+  let keep_tabular = has_digit(s)
+  let cut_at = fn(end : Int) {
+    let cut = if end < shaped.starts.length() { shaped.starts[end] } else { shaped.len }
+    lay(s.exact_view(end=cut).to_owned() + "…", keep_tabular)
+  }
+  let mut out = cut_at(end)
+  // (what it ends in set wider before the dots than before what followed it (a full-width mark a half em closer
+  // before another, words_spaced_in, as chws: "），" cut after its "）"): a cluster fewer until it fits)
+  while out.w > w + 0.5 && end > 0 {
+    end = end - 1
+    while end > 0 && shaped.cu[end - 1] == 32 {
+      end = end - 1
+    }
+    out = cut_at(end)
+  }
+  out
 }
 
 ///|
@@ -233,8 +247,29 @@ fn lines_cut(
   while end > a && s.cu[end - 1] == 32 {
     end = end - 1
   }
-  let cut = if end < count { s.starts[end] } else { s.len }
-  lay(text.exact_view(end=cut).to_owned() + "…", w, true, has_digit(text))
+  let keep_tabular = has_digit(text)
+  let cut_at = fn(end : Int) {
+    let cut = if end < count { s.starts[end] } else { s.len }
+    lay(text.exact_view(end=cut).to_owned() + "…", w, true, keep_tabular)
+  }
+  let mut out = cut_at(end)
+  // (its last line wider with the dots than it was measured (a full-width mark set closer before what followed it
+  // than before the dots, words_spaced_in): wrapped onto a line more, or past `w`; a cluster fewer until it fits)
+  while end > a && lines_over(out, most, w) {
+    end = end - 1
+    while end > a && s.cu[end - 1] == 32 {
+      end = end - 1
+    }
+    out = cut_at(end)
+  }
+  out
+}
+
+///|
+/// Whether wrapped words laid out as `tl` come to more than `most` lines, or their last is wider than `w`.
+fn lines_over(tl : TextLayout, most : Int, w : Double) -> Bool {
+  let n = tl.line_start.length()
+  n > most || (n > 0 && tl.line_w[n - 1] > w + 0.5)
 }
 
 ///|

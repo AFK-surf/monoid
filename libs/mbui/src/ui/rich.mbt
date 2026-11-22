@@ -1354,21 +1354,41 @@ fn cut_rich(r : Rich, lay : RichLayout, w : Double) -> Rich {
   while end > a && lay.cu[end - 1] == 32 {
     end = end - 1
   }
-  let cut = if end < count { lay.starts[end] } else { lay.len }
-  let last = style_of(if end > a { end - 1 } else { a })
-  let runs : Array[Run] = []
-  let mut off = 0
-  for run in r.runs {
-    let n = run.text.length()
-    if off + n <= cut {
-      runs.push(run)
-    } else if off < cut {
-      runs.push({ ..run, text: run.text.clamped_view(end=cut - off).to_owned() })
+  let cut_at = fn(end : Int) -> Rich {
+    let cut = if end < count { lay.starts[end] } else { lay.len }
+    let last = style_of(if end > a { end - 1 } else { a })
+    let runs : Array[Run] = []
+    let mut off = 0
+    for run in r.runs {
+      let n = run.text.length()
+      if off + n <= cut {
+        runs.push(run)
+      } else if off < cut {
+        runs.push({ ..run, text: run.text.clamped_view(end=cut - off).to_owned() })
+      }
+      off = off + n
     }
-    off = off + n
+    runs.push({ ..last, text: "…", link: "", drawing: None })
+    { ..r, runs }
   }
-  runs.push({ ..last, text: "…", link: "", drawing: None })
-  { ..r, runs }
+  let mut out = cut_at(end)
+  // (its last line wider with the dots than it was measured (a full-width mark set closer before what followed it
+  // than before the dots, words_spaced_in): on one line past `w`, or wrapped onto a line more; a cluster fewer until
+  // it fits. Laid out as its callers lay it out next, in the width they do: kept, not laid out twice, rich_kept_of)
+  while end > a {
+    let cl = layout_rich(out, if r.wrap { w } else { 1.0e9 })
+    let n = cl.line_start.length()
+    let over = if r.wrap { n > r.max_lines || (n > 0 && cl.line_w[n - 1] > w + 0.5) } else { cl.w > w + 0.5 }
+    if !over {
+      break
+    }
+    end = end - 1
+    while end > a && lay.cu[end - 1] == 32 {
+      end = end - 1
+    }
+    out = cut_at(end)
+  }
+  out
 }
 
 ///|
