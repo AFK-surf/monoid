@@ -839,7 +839,7 @@ fn small_neon_tester(w : Double, has_jobs? : Bool = false, has_subchats? : Bool 
 }
 
 ///|
-test "小屏输入框上方胶囊：390/320/280 下 Gemini 4 Neon · 高 逐级降级且零省略号、零 audit 告警" {
+test "小屏输入框上方胶囊：390/340/320/280 下 Gemini 4 Neon · 高 逐级降级且零省略号、零 audit 告警" {
   let pill_texts = fn(t : @ui.Tester) -> Array[String] {
     match composer_agent_rect(t) {
       Some((x, y, w, h)) =>
@@ -853,19 +853,32 @@ test "小屏输入框上方胶囊：390/320/280 下 Gemini 4 Neon · 高 逐级�
   assert_true(w390.contains("Gemini 4 Neon") && w390.contains("· 高") && w390.contains("Willow"), msg="390 roomy: \{Repr(w390)}")
   assert_true(w390.iter().all(fn(s) { !s.contains("…") }), msg="390: zero ellipsis: \{Repr(w390)}")
   assert_eq(bar_node_audit(t390), [], msg="390 audit")
-  // 390 with subchats + jobs: steps to "Neon" + "· 高" + "Willow"
+  // 390 with subchats + jobs: the right capsule (services and the sub-chats' mark and count, no words) leaves the
+  // full name its room
   let t390c = small_neon_tester(390.0, has_jobs=true, has_subchats=true)
   let w390c = pill_texts(t390c)
-  assert_true(w390c.contains("Neon") && !w390c.contains("Gemini 4 Neon"), msg="390 crowded: stepped to Neon: \{Repr(w390c)}")
-  assert_true(w390c.contains("· 高") && w390c.contains("Willow"), msg="390 crowded: kept effort+station: \{Repr(w390c)}")
+  assert_true(w390c.contains("Gemini 4 Neon") && w390c.contains("· 高") && w390c.contains("Willow"), msg="390 crowded: full kept: \{Repr(w390c)}")
   assert_true(w390c.iter().all(fn(s) { !s.contains("…") }), msg="390 crowded: zero ellipsis: \{Repr(w390c)}")
   assert_eq(bar_node_audit(t390c), [], msg="390 crowded audit")
+  // 340 with subchats + jobs: steps to "Neon" + "· 高" + "Willow"
+  let t340 = small_neon_tester(340.0, has_jobs=true, has_subchats=true)
+  let w340 = pill_texts(t340)
+  assert_true(w340.contains("Neon") && !w340.contains("Gemini 4 Neon"), msg="340 crowded: stepped to Neon: \{Repr(w340)}")
+  assert_true(w340.contains("· 高") && w340.contains("Willow"), msg="340 crowded: kept effort+station: \{Repr(w340)}")
+  assert_true(w340.iter().all(fn(s) { !s.contains("…") }), msg="340 crowded: zero ellipsis: \{Repr(w340)}")
+  assert_eq(bar_node_audit(t340), [], msg="340 crowded audit")
   // 320 with subchats + jobs: steps further (no effort, still Neon, zero ellipsis)
   let t320 = small_neon_tester(320.0, has_jobs=true, has_subchats=true)
   let w320 = pill_texts(t320)
   assert_true(!w320.contains("Gemini 4 Neon"), msg="320: full stepped down: \{Repr(w320)}")
   assert_true(w320.iter().all(fn(s) { !s.contains("…") }), msg="320: zero ellipsis: \{Repr(w320)}")
   assert_eq(bar_node_audit(t320), [], msg="320 audit")
+  // 280 with subchats + jobs: steps down to "Neon" alone (effort gone), the short name always kept
+  let t280n = small_neon_tester(280.0, has_jobs=true, has_subchats=true)
+  let w280n = pill_texts(t280n)
+  assert_true(w280n.contains("Neon") && !w280n.contains("Gemini 4 Neon") && !w280n.contains("· 高"), msg="280: Neon alone: \{Repr(w280n)}")
+  assert_true(w280n.iter().all(fn(s) { !s.contains("…") }), msg="280: zero ellipsis: \{Repr(w280n)}")
+  assert_eq(bar_node_audit(t280n), [], msg="280 Neon audit")
   // 280 with extra agent + subchats + jobs: drops down cleanly without ellipsis or audit faults
   let t280 = small_neon_tester(280.0, has_jobs=true, has_subchats=true, extra_agents=1)
   let w280 = pill_texts(t280)

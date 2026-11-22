@@ -141,7 +141,7 @@ pub fn open_fixture(mode : String) -> Unit {
     }
     // the wide frame's (wide_panel.mbt): the chat's "…" open, its services' popover, what is opened beside it
     "chat-letters-pop" | "chat-opener-pop" | "chat-opened-pop" => @sfdesk.open_info_pop()
-    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" | "chat-subchats-idle" =>
+    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" | "chat-subchats-done-many" | "chat-subchats-idle" =>
       @sfdesk.open_subchats_pop()
     "chat-jobs-pop" => {
       @sfdesk.open_jobs_pop()
@@ -208,7 +208,7 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
     }
     "chat-agent" | "chat-agent-working" | "chat-agent-unsaid" | "chat-agent-context" | "chat-agent-compacted" | "chat-agent-screens" => open_agent(src, r, "s-c1")
     "chat-jobs" => open_chat_jobs(src, r)
-    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" | "chat-subchats-idle" =>
+    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" | "chat-subchats-done-many" | "chat-subchats-idle" =>
       open_subchats(src, r)
     "chat-job" => {
       dui.job_tab = 0

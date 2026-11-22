@@ -1183,79 +1183,95 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
       }
     },
   )
+  // Right group: one 30pt liquid glass capsule holding the live/active controls as segments,
+  // a hairline between two shown segments only, each segment's own before it (as above the composer on 中屏/大屏)
   o.show(has_right, at_once=true, fn(right) {
-    right.row(Is(true)).grow(Is(1.0)).lies_along(Is(End)).gap(Is(6.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
-    right.show(has_jobs, at_once=true, fn(j_slot) {
-      let alarm = fn() { @sfbase.chat_jobs_service_alarm(jobs()) }
-      @sf.action_box_node(j_slot, fn() { tr("android-misc.jobs.services") }, fn(_) { open_chat_jobs(src, r, scope=ServicesOnly) }, fn(k) {
-        small_glass_capsule(k)
-        k.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(5.0)) |> ignore
-        @sf.hover_ground_node(k)
-        @sf.icon_node(k, "web", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
-        k.show(fn() { alarm() == "fail" || alarm() == "restart" }, at_once=true, fn(d) {
-          d
-          .width(Is(Some(6.0)))
-          .height(Is(Some(6.0)))
-          .radius(Is(3.0))
-          .ground(By(fn() { if alarm() == "fail" { @sf.theme().p.red } else { @ui.tree_theme().color(Warn) } }))
-          |> ignore
-        })
-      })
+    right.row(Is(true)).grow(Is(1.0)).lies_along(Is(End)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
+    let seg_sep = fn(sep : @view.View) {
+      sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
       |> ignore
-    })
-    right.show(driven, at_once=true, fn(s_slot) {
-      @sf.action_box_node(s_slot, fn() { @sf.t("web-pages.chat.screen") }, fn(at) {
-        match @signals.untracked(view) {
-          Some(v) => chat_remote_open(src, r, v, from=Node(at), along=End)
-          None => ()
-        }
-      }, fn(k) {
-        small_glass_capsule(k)
-        k.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(5.0)) |> ignore
-        @sf.hover_ground_node(k)
-        @sf.icon_node(k, "monitor", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
-        k.box(fn(d) {
-          d
-          .width(Is(Some(6.0)))
-          .height(Is(Some(6.0)))
-          .radius(Is(3.0))
-          .ground(By(fn() { @sf.theme().p.primary }))
+    }
+    let seg = fn(k : @view.View, pad : () -> (Double, Double, Double, Double)) {
+      k.row(Is(true)).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)).gap(Is(5.0)).padding(By(pad))
+      |> ignore
+    }
+    right.box(fn(pill) {
+      small_glass_capsule(pill)
+      pill.shrink(Is(0.0)) |> ignore
+      pill.show(has_jobs, at_once=true, fn(j_slot) {
+        let alarm = fn() { @sfbase.chat_jobs_service_alarm(jobs()) }
+        @sf.action_box_node(j_slot, fn() { tr("android-misc.jobs.services") }, fn(_) { open_chat_jobs(src, r, scope=ServicesOnly) }, fn(k) {
+          seg(k, fn() { (10.0, 0.0, if driven() || has_subchats() { 8.0 } else { 10.0 }, 0.0) })
+          @sf.hover_ground_node(k)
+          @sf.icon_node(k, "web", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+          k.show(fn() { alarm() == "fail" || alarm() == "restart" }, at_once=true, fn(d) {
+            d
+            .width(Is(Some(6.0)))
+            .height(Is(Some(6.0)))
+            .radius(Is(3.0))
+            .ground(By(fn() { if alarm() == "fail" { @sf.theme().p.red } else { @ui.tree_theme().color(Warn) } }))
+            |> ignore
+          })
+        })
+        |> ignore
+      })
+      pill.show(driven, at_once=true, fn(s_slot) {
+        s_slot.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+        s_slot.show(has_jobs, at_once=true, seg_sep)
+        @sf.action_box_node(s_slot, fn() { @sf.t("web-pages.chat.screen") }, fn(at) {
+          match @signals.untracked(view) {
+            Some(v) => chat_remote_open(src, r, v, from=Node(at), along=End)
+            None => ()
+          }
+        }, fn(k) {
+          seg(k, fn() { (if has_jobs() { 8.0 } else { 10.0 }, 0.0, if has_subchats() { 8.0 } else { 10.0 }, 0.0) })
+          @sf.hover_ground_node(k)
+          @sf.icon_node(k, "monitor", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+          k.box(fn(d) {
+            d
+            .width(Is(Some(6.0)))
+            .height(Is(Some(6.0)))
+            .radius(Is(3.0))
+            .ground(By(fn() { @sf.theme().p.primary }))
+            |> ignore
+          })
           |> ignore
         })
         |> ignore
       })
-      |> ignore
-    })
-    right.show(has_subchats, at_once=true, fn(sc_slot) {
-      let tone = fn() {
-        match view() {
-          Some(v) => @sfpages.opened_summary_tone(v.opened)
-          None => ""
+      // Led sub-chats: their mark and count only (said as 子会话)
+      pill.show(has_subchats, at_once=true, fn(sc_slot) {
+        sc_slot.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+        sc_slot.show(fn() { has_jobs() || driven() }, at_once=true, seg_sep)
+        let tone = fn() {
+          match view() {
+            Some(v) => @sfpages.opened_summary_tone(v.opened)
+            None => ""
+          }
         }
-      }
-      @sf.action_box_node(sc_slot, fn() { @sf.t("web-pages.chat.subchats") }, fn(_) { open_subchats(src, r) }, fn(k) {
-        small_glass_capsule(k)
-        k.padding(Is((11.0, 0.0, 11.0, 0.0))).gap(Is(5.0)) |> ignore
-        @sf.hover_ground_node(k)
-        @sf.icon_node(k, "spawned", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
-        @sf.words_node(k, fn() { @sf.t("web-pages.chat.subchats") }, fn() { small_composer_pill_words }) |> ignore
-        @sf.words_node(k, fn() { led_subchats().length().to_string() }, fn() { small_composer_pill_count }) |> ignore
-        k.show(fn() { tone() != "" }, at_once=true, fn(d) {
-          d
-          .width(Is(Some(6.0)))
-          .height(Is(Some(6.0)))
-          .radius(Is(3.0))
-          .ground(By(fn() {
-            match tone() {
-              "fail" => @sf.theme().p.red
-              "need" => @ui.tree_theme().color(Warn)
-              _ => @sf.theme().p.online
-            }
-          }))
-          |> ignore
+        @sf.action_box_node(sc_slot, fn() { @sf.t("web-pages.chat.subchats") }, fn(_) { open_subchats(src, r) }, fn(k) {
+          seg(k, fn() { (if has_jobs() || driven() { 8.0 } else { 10.0 }, 0.0, 10.0, 0.0) })
+          @sf.hover_ground_node(k)
+          @sf.icon_node(k, "spawned", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+          @sf.words_node(k, fn() { led_subchats().length().to_string() }, fn() { small_composer_pill_count }) |> ignore
+          k.show(fn() { tone() != "" }, at_once=true, fn(d) {
+            d
+            .width(Is(Some(6.0)))
+            .height(Is(Some(6.0)))
+            .radius(Is(3.0))
+            .ground(By(fn() {
+              match tone() {
+                "fail" => @sf.theme().p.red
+                "need" => @ui.tree_theme().color(Warn)
+                _ => @sf.theme().p.online
+              }
+            }))
+            |> ignore
+          })
         })
+        |> ignore
       })
-      |> ignore
     })
+    |> ignore
   })
 }

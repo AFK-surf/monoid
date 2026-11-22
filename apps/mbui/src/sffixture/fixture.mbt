@@ -1086,8 +1086,32 @@ fn with_subchats_idle(v : Json?) -> Json? {
 }
 
 ///|
+/// Many finished led sub-chats and none at work (chat-subchats-done-many): chat-subchats-tall's 14 done (bare 已完成 and
+/// summaries) and 2 archived, nothing else: the list leads with the latest 3 done, the other 11 behind a press.
+fn with_subchats_done_many(v : Json?) -> Json? {
+  match with_subchats_tall(v) {
+    Some(Object(m)) => {
+      let m = m.copy()
+      let kept = match m.get("opened") {
+        Some(Array(a)) =>
+          a.filter(fn(o) {
+            match o {
+              Object(f) => f.get("stateLead") is Some(String("done")) || f.get("archived") is Some(True)
+              _ => false
+            }
+          })
+        _ => []
+      }
+      m["opened"] = Json::array(kept)
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
 /// Done-only led sub-chats fixture (chat-subchats-done-only): 3 unarchived done + 2 archived, verifying that the Done
-/// group auto-expands when no active sub-chats exist while Archived stays collapsed.
+/// done ones lead the list, all three shown (no more than the latest), Archived folded under them.
 fn with_subchats_done_only(v : Json?) -> Json? {
   match v {
     Some(Object(m)) => {
@@ -1862,6 +1886,8 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       fixture_with_tabs(f, params, with_subchats_idle(value))
     "chat" if f.mode == "chat-subchats-done-only" && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_subchats_done_only(value))
+    "chat" if f.mode == "chat-subchats-done-many" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_done_many(value))
     "chat" if f.mode == "chat-subchats-many" && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_subchats_many(value))
     "chat" if f.mode == "chat-subchats-one" && params.get("session") is Some(String("s-c1")) =>

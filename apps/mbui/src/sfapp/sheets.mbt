@@ -1761,14 +1761,17 @@ fn open_chat_jobs(src : Source, r : ChatRef, scope? : JobsScope = All) -> Unit {
 }
 
 ///|
-/// One of the rows of the chat's led sub-chats bottom sheet (`subchats_sheet_node`): empty state, collapsible done or
-/// archived group heading (`has_above`), or a sub-chat row in the active (`0`), done (`1`), or archived (`2`) card group.
+/// One of the rows of the chat's led sub-chats bottom sheet (`subchats_sheet_node`): empty state; a sub-chat on the card
+/// it leads with (`0`: subchats_lead's) or on an open folding group's card (`1` done, `2` archived); the press at that
+/// card's foot that shows or folds back the finished ones past the latest; or a folding group's head, on a card of its
+/// own (subchats_sheet_group_head_node).
 #derive(Eq, Hash)
 priv enum SubchatSheetRow {
   SubchatsEmpty
-  SubchatsDoneHead(Bool)
-  SubchatsArchivedHead(Bool)
   SubchatsOne(Int, String)
+  SubchatsMore
+  SubchatsDoneHead
+  SubchatsArchivedHead
 }
 
 ///|
@@ -1781,23 +1784,25 @@ fn subchats_sheet_rows(
   subchats : Array[@sfbase.OpenedChat],
   done_open : Bool,
   archived_open : Bool,
+  more : Bool,
 ) -> Array[SubchatSheetRow] {
   let out : Array[SubchatSheetRow] = []
   if subchats.length() == 0 {
     out.push(SubchatsEmpty)
     return out
   }
-  let mut has_active = false
-  for o in subchats {
-    if !o.archived && !@sfpages.subchat_is_done(o) {
-      has_active = true
-      out.push(SubchatsOne(0, subchat_sheet_key(o)))
-    }
+  let kind = @sfpages.subchats_lead_kind(subchats)
+  let (lead, past) = @sfpages.subchats_lead(subchats, more)
+  for o in lead {
+    out.push(SubchatsOne(0, subchat_sheet_key(o)))
+  }
+  if past > 0 {
+    out.push(SubchatsMore)
   }
   let done = subchats.filter(fn(o) { @sfpages.subchat_is_done(o) })
-  let has_done = done.length() > 0
-  if has_done {
-    out.push(SubchatsDoneHead(has_active))
+  let done_folds = kind == 0 && done.length() > 0
+  if done_folds {
+    out.push(SubchatsDoneHead)
     if done_open {
       for o in done {
         out.push(SubchatsOne(1, subchat_sheet_key(o)))
@@ -1805,8 +1810,8 @@ fn subchats_sheet_rows(
     }
   }
   let archived = subchats.filter(fn(o) { o.archived })
-  if archived.length() > 0 {
-    out.push(SubchatsArchivedHead(has_active || has_done))
+  if kind != 2 && archived.length() > 0 {
+    out.push(SubchatsArchivedHead)
     if archived_open {
       for o in archived {
         out.push(SubchatsOne(2, subchat_sheet_key(o)))
@@ -1840,100 +1845,177 @@ fn open_subchats(src : Source, r : ChatRef) -> Unit {
 ///|
 fn subchats_sheet_node(v : @view.View, opened : () -> Array[@sfbase.OpenedChat], close : () -> Unit) -> Unit {
   let subchats = @signals.computed(fn(_) { @sfpages.led_subchats(opened()) })
-  // None until pressed: a group follows the list (folded while anything above it shows, as `subchats_list_node`), so a
-  // sheet opened before its data came does not stay open; a press keeps the person's choice.
-  let done_chosen : @signals.Signal[Bool?] = @signals.signal(None)
-  let archived_chosen : @signals.Signal[Bool?] = @signals.signal(None)
-  let done_open = @signals.computed(fn(_) {
-    match done_chosen.get() {
-      Some(b) => b
-      None => !subchats.get().iter().any(fn(o) { !o.archived && !@sfpages.subchat_is_done(o) })
+  // Folded until pressed; the finished ones led with, the latest until pressed (one each for done and archived)
+  let done_open : @signals.Signal[Bool] = @signals.signal(false)
+  let archived_open : @signals.Signal[Bool] = @signals.signal(false)
+  let done_more : @signals.Signal[Bool] = @signals.signal(false)
+  let archived_more : @signals.Signal[Bool] = @signals.signal(false)
+  let lead_kind = @signals.computed(fn(_) { @sfpages.subchats_lead_kind(subchats.get()) })
+  let more_now = fn() {
+    match lead_kind.get() {
+      1 => done_more.get()
+      2 => archived_more.get()
+      _ => false
     }
-  })
-  let archived_open = @signals.computed(fn(_) {
-    match archived_chosen.get() {
-      Some(b) => b
-      None => !subchats.get().iter().any(fn(o) { !o.archived })
-    }
-  })
-  let done_group = SubchatsGroupOpen::{ open: fn() { done_open.get() }, chosen: done_chosen }
-  let archived_group = SubchatsGroupOpen::{ open: fn() { archived_open.get() }, chosen: archived_chosen }
-  let rows = @signals.computed(fn(_) { subchats_sheet_rows(subchats.get(), done_open.get(), archived_open.get()) })
+  }
+  let toggle_more = fn() {
+    let m = if lead_kind.untracked() == 2 { archived_more } else { done_more }
+    m.set(!m.untracked())
+  }
+  let done_group = SubchatsGroupOpen::{ open: done_open }
+  let archived_group = SubchatsGroupOpen::{ open: archived_open }
+  let rows = @signals.computed(fn(_) { subchats_sheet_rows(subchats.get(), done_open.get(), archived_open.get(), more_now()) })
   v.reacts(at_start=false, fn() { rows.get().length() }, fn(_) { @sf.panel_reshaped_node(v) }) |> ignore
-  @sf.panel_list_node(
-    v,
-    fn() { rows.get() },
-    fn(b, row) { subchats_sheet_row_node(b, row, fn() { subchats.get() }, done_group, archived_group, close) },
-    est=subchats_row_est,
-  )
+  // (已完成 folding under those at work, 已归档 under those or the done ones: both folded, they share one card)
+  let folds_done = fn() { lead_kind.get() == 0 && subchats.get().iter().any(fn(o) { @sfpages.subchat_is_done(o) }) }
+  let folds_archived = fn() { lead_kind.get() != 2 && subchats.get().iter().any(fn(o) { o.archived }) }
+  let shared = fn() { folds_done() && !done_open.get() && folds_archived() }
+  let sheet = SubchatsSheet::{
+    subchats: fn() { subchats.get() },
+    more_now,
+    toggle_more,
+    done_group,
+    archived_group,
+    shared,
+    close,
+  }
+  @sf.panel_list_node(v, fn() { rows.get() }, fn(b, row) { subchats_sheet_row_node(b, row, sheet) }, est=subchats_row_est)
   |> ignore
-  v.show(at_once=true, fn() { rows.get().last() is Some(SubchatsOne(_, _)) }, fn(f) {
+  // (the last card's foot concentric with the sheet's: every row but the empty state's on a card)
+  v.show(at_once=true, fn() { !(rows.get().get(0) is Some(SubchatsEmpty)) }, fn(f) {
     @sf.style_node(f, fn() { @sf.panel_card_last_node(f) })
   })
 }
 
 ///|
-/// A folding group of the sheet: whether it is open now, and the person's press (None until pressed).
+/// A folding group of the sheet: whether it is open (folded until pressed).
 priv struct SubchatsGroupOpen {
-  open : () -> Bool
-  chosen : @signals.Signal[Bool?]
+  open : @signals.Signal[Bool]
+}
+
+///|
+/// What a row of the sheet reads: its sub-chats, whether the finished ones it leads with show past the latest and the
+/// press that turns that, its folding groups, and what closes it.
+priv struct SubchatsSheet {
+  subchats : () -> Array[@sfbase.OpenedChat]
+  more_now : () -> Bool
+  toggle_more : () -> Unit
+  done_group : SubchatsGroupOpen
+  archived_group : SubchatsGroupOpen
+  // (both folding groups folded: one card for the two heads, 已完成's its top, 已归档's the rest)
+  shared : () -> Bool
+  close : () -> Unit
 }
 
 ///|
 let subchats_row_est : Double = 56.0
 
 ///|
+/// A folding group's head in the sheet (已完成, 已归档), under the card it leads with: on a card of its own, 10 under the
+/// one above it, unless `on_last` (已归档 under a folded 已完成 on that one's card: no room between); the piece of it
+/// `piece()` says, a hairline under it while `line()` (rows of the card under it). Muted, so what folds stays under
+/// what is led with: its mark in the rows' 16 wide column and its words (Ui) muted till pointed at or open, its count
+/// and a chevron down to open it in place, up to fold it.
 fn subchats_sheet_group_head_node(
   b : @view.View,
   label : () -> String,
+  icon : String,
   count : () -> Int,
   group : SubchatsGroupOpen,
-  has_above : Bool,
+  on_last : () -> Bool,
+  piece : () -> @sf.CardPiece,
+  line : () -> Bool,
 ) -> Unit {
   b.box(fn(slot) {
-    @sf.style_node(slot, fn() { @sf.panel_words_in_node(slot).then(info_fill) })
-    @sf.action_box_node(
-      slot,
-      label,
-      fn(_) { group.chosen.set(Some(!@signals.untracked(group.open))) },
-      expanded=group.open,
-      fn(h) {
-        @sf.style_node(h, fn() {
-          (if has_above { subchats_archived_head } else { subchats_archived_head_top })
-          .then(subchats_archived_round)
-        })
-        h.min_height(Is(Some(44.0))) |> ignore
-        @sf.hover_ground_node(h)
-        h.box(fn(l) {
-          @sf.style_node(l, fn() { subchats_archived_left }, in_row=true)
-          @sf.words_node(l, label, fn() { jobs_head_words }) |> ignore
-          @sf.words_node(l, fn() { count().to_string() }, fn() { subchats_archived_count_words }) |> ignore
-        })
-        |> ignore
-        @sf.icon_node(
-          h,
-          "",
-          14.0,
-          By(fn() { @sf.theme().p.subtle }),
-          name_now=fn() { if (group.open)() { "chevron-down" } else { "chevron-right" } },
-        )
-        |> ignore
-      },
-    )
+    @sf.style_node(slot, fn() { info_fill })
+    slot.box(fn(gap) {
+      gap.height(By(fn() { Some(if on_last() { 0.0 } else { 10.0 }) })).shrink(Is(0.0)) |> ignore
+      gap.reacts(on_last, fn(_) { gap.resizes() |> ignore }, at_start=false) |> ignore
+    })
     |> ignore
+    @sf.card_piece_node(slot, piece, fn(k) {
+      @sf.action_box_node(
+        k,
+        label,
+        fn(_) { group.open.set(!group.open.untracked()) },
+        expanded=fn() { group.open.get() },
+        fn(h) {
+          @sf.style_node(h, fn() { @sf.quiet_row_middle })
+          h.radius(Is(@sf.quiet_row_corner)) |> ignore
+          @sf.hover_ground_node(h)
+          let lit = fn() { @sf.lit_node(h) }
+          let hot = fn() { lit() || group.open.get() }
+          h.box(fn(d) {
+            d.width(Is(Some(16.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)).shrink(Is(0.0)) |> ignore
+            @sf.icon_node(d, icon, 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } })) |> ignore
+          })
+          |> ignore
+          @sf.words_node(h, label, fn() { if hot() { job_name } else { subchats_sec_title } })
+          .grow(Is(1.0))
+          .shrink(Is(1.0))
+          .basis(Is(Some(0.0)))
+          .min_width(Is(Some(0.0)))
+          |> ignore
+          h.box(fn(end) {
+            @sf.style_node(end, fn() { subchats_fold_left }, in_row=true)
+            end.shrink(Is(0.0)) |> ignore
+            @sf.words_node(end, fn() { count().to_string() }, fn() { subchats_archived_count_words }) |> ignore
+            @sf.icon_node(
+              end,
+              "",
+              14.0,
+              By(fn() { if lit() { @sf.theme().p.text } else { @sf.theme().p.subtle } }),
+              name_now=fn() { if group.open.get() { "chevron-up" } else { "chevron-down" } },
+            )
+            |> ignore
+          })
+          |> ignore
+        },
+      )
+      |> ignore
+      k.show(at_once=true, line, fn(l) { @sf.style_node(l, fn() { subchats_head_rule }) })
+    })
   })
   |> ignore
 }
 
 ///|
-fn subchats_sheet_row_node(
-  b : @view.View,
-  row : SubchatSheetRow,
-  subchats : () -> Array[@sfbase.OpenedChat],
-  done_group : SubchatsGroupOpen,
-  archived_group : SubchatsGroupOpen,
-  close : () -> Unit,
-) -> Unit {
+/// The foot of the card the sheet leads with where finished ones past the latest are (展开其余 N 个 / 收起其余 N 个):
+/// a hairline, then a row as the card's (quiet_row_middle) with its chevron in the marks' column and its words where
+/// the titles start.
+fn subchats_sheet_more_node(b : @view.View, sheet : SubchatsSheet) -> Unit {
+  let past = fn() {
+    let (_, n) = @sfpages.subchats_lead((sheet.subchats)(), false)
+    n
+  }
+  let words = fn() { @sfpages.subchats_more_words(past(), (sheet.more_now)()) }
+  @sf.card_piece_node(b, fn() { @sf.CardFoot }, fn(k) {
+    k.box(fn(l) { @sf.style_node(l, fn() { subchats_more_line }) }) |> ignore
+    @sf.action_box_node(k, words, fn(_) { (sheet.toggle_more)() }, expanded=sheet.more_now, fn(h) {
+      @sf.style_node(h, fn() { @sf.quiet_row_middle })
+      h.radius(Is(@sf.quiet_row_corner)) |> ignore
+      @sf.hover_ground_node(h)
+      h.box(fn(d) {
+        d.width(Is(Some(16.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)).shrink(Is(0.0)) |> ignore
+        @sf.icon_node(
+          d,
+          "",
+          14.0,
+          By(fn() { if @sf.lit_node(h) { @sf.theme().p.text } else { @sf.theme().p.subtle } }),
+          name_now=fn() { if (sheet.more_now)() { "chevron-up" } else { "chevron-down" } },
+        )
+        |> ignore
+      })
+      |> ignore
+      @sf.words_node(h, words, fn() { if @sf.lit_node(h) { subchats_fold_hot } else { subchats_fold_words } }) |> ignore
+    })
+    |> ignore
+  })
+}
+
+///|
+fn subchats_sheet_row_node(b : @view.View, row : SubchatSheetRow, sheet : SubchatsSheet) -> Unit {
+  let subchats = sheet.subchats
   match row {
     SubchatsEmpty =>
       b.box(fn(n) {
@@ -1941,10 +2023,12 @@ fn subchats_sheet_row_node(
         @sf.words_node(n, fn() { tr("web-pages.chat.subchatsNone") }, fn() { jobs_none_words }) |> ignore
       })
       |> ignore
-    SubchatsDoneHead(has_above) =>
+    SubchatsMore => subchats_sheet_more_node(b, sheet)
+    SubchatsDoneHead =>
       subchats_sheet_group_head_node(
         b,
         fn() { tr("web-pages.chat.subchatsDone") },
+        "check",
         fn() {
           let mut n = 0
           for o in subchats() {
@@ -1954,13 +2038,16 @@ fn subchats_sheet_row_node(
           }
           n
         },
-        done_group,
-        has_above,
+        sheet.done_group,
+        fn() { false },
+        fn() { if sheet.done_group.open.get() || (sheet.shared)() { @sf.CardTop } else { @sf.CardWhole } },
+        fn() { sheet.done_group.open.get() || (sheet.shared)() },
       )
-    SubchatsArchivedHead(has_above) =>
+    SubchatsArchivedHead =>
       subchats_sheet_group_head_node(
         b,
         fn() { tr("web-pages.chat.subchatsArchived") },
+        "archive",
         fn() {
           let mut n = 0
           for o in subchats() {
@@ -1970,27 +2057,51 @@ fn subchats_sheet_row_node(
           }
           n
         },
-        archived_group,
-        has_above,
+        sheet.archived_group,
+        sheet.shared,
+        fn() {
+          match ((sheet.shared)(), sheet.archived_group.open.get()) {
+            (true, true) => @sf.CardBetween
+            (true, false) => @sf.CardFoot
+            (false, true) => @sf.CardTop
+            (false, false) => @sf.CardWhole
+          }
+        },
+        fn() { sheet.archived_group.open.get() },
       )
     SubchatsOne(group_kind, key) => {
-      let group = fn() {
+      // (the card it is on: what the sheet leads with, the press at its foot one more piece of it where it shows; or
+      // an open folding group's)
+      let group = fn() -> (Array[@sfbase.OpenedChat], Int) {
         match group_kind {
-          0 => subchats().filter(fn(o) { !o.archived && !@sfpages.subchat_is_done(o) })
-          1 => subchats().filter(fn(o) { @sfpages.subchat_is_done(o) })
-          _ => subchats().filter(fn(o) { o.archived })
+          0 => {
+            let (lead, past) = @sfpages.subchats_lead(subchats(), (sheet.more_now)())
+            (lead, if past > 0 { 1 } else { 0 })
+          }
+          1 => (subchats().filter(fn(o) { @sfpages.subchat_is_done(o) }), 0)
+          _ => (subchats().filter(fn(o) { o.archived }), 0)
         }
       }
-      let item_now = @signals.computed(fn(_) { group().iter().find_first(fn(o) { subchat_sheet_key(o) == key }) })
+      // (a folding group's rows the rest of its head's card: that head its top, or, 已归档 sharing 已完成's card, the
+      // two heads)
+      let headed = fn() {
+        match group_kind {
+          0 => 0
+          1 => 1
+          _ => if (sheet.shared)() { 2 } else { 1 }
+        }
+      }
+      let item_now = @signals.computed(fn(_) { group().0.iter().find_first(fn(o) { subchat_sheet_key(o) == key }) })
       let piece_now = @signals.computed(fn(_) {
-        let g = group()
+        let (g, foot) = group()
+        let h = headed()
         match g.search_by(fn(o) { subchat_sheet_key(o) == key }) {
-          Some(i) => @sf.card_piece_of(i, g.length())
+          Some(i) => @sf.card_piece_of(i + h, g.length() + foot + h)
           None => @sf.CardWhole
         }
       })
       @sf.card_piece_node(b, fn() { piece_now.get() }, fn(k) {
-        subchat_sheet_item_node(k, fn() { item_now.get() }, close)
+        subchat_sheet_item_node(k, fn() { item_now.get() }, sheet.close)
       })
     }
   }
@@ -2082,23 +2193,31 @@ let subchats_sheet_state : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_archived_round : @ui.Style = @ui.style(radius=@sf.panel_in)
+let subchats_more_line : @ui.Style = @ui.css("h=SPx mx=S2_5 mb=S1 bg=Line")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_archived_head : @ui.Style = @ui.css("row w=Full mt=S2 align=ACenter justify=JBetween")
+let subchats_head_rule : @ui.Style = @ui.css("h=SPx mx=S2_5 bg=Line")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_archived_head_top : @ui.Style = @ui.css("row w=Full align=ACenter justify=JBetween")
+let subchats_sec_title : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Muted, wrap=false, w=Cut)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_archived_left : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
+let subchats_fold_left : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_archived_count_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, tabular=true, wrap=false)
+let subchats_fold_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_fold_hot : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Fg, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_archived_count_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, tabular=true, wrap=false)
 
 ///|
 /// The chat's services and jobs to come while they are read (in their bones): made-up ones, two services and a job.

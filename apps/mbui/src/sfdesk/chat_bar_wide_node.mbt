@@ -1272,97 +1272,129 @@ fn wide_composer_bar_node(
       }
     },
   )
-  // Right group: live/active controls under a single `show`
+  // Right group: one 30pt liquid glass capsule holding the live/active controls as segments, a hairline between two
+  // shown segments only (no glass on glass, no line left dangling): each segment's own, before it, made only while one
+  // shows before it
   o.show(has_right, at_once=true, fn(right) {
-    right.row(Is(true)).grow(Is(1.0)).lies_along(Is(End)).gap(Is(6.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
-    // Active Web Services pill
-    right.show(fn() { own() && has_services() }, at_once=true, fn(b) {
-      let button = @sf.action_box_node(b, fn() { @sf.t("web-main.jobs.services") }, fn(_) { jobs_pressed(src, r) }, fn(btn) {
-        wide_glass_capsule(btn)
-        btn.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(5.0)) |> ignore
-        @sf.hover_ground_node(btn, extra=fn() { chat_own.jobs_open.get() })
-        @sf.focus_ring_node(btn)
-        let hot = fn() { @sf.lit_node(btn) || chat_own.jobs_open.get() }
-        @sf.icon_node(btn, "web", 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } })) |> ignore
-        btn.show(fn() { alarm() == "fail" || alarm() == "restart" }, at_once=true, fn(d) {
-          d
-          .width(Is(Some(6.0)))
-          .height(Is(Some(6.0)))
-          .radius(Is(3.0))
-          .ground(By(fn() { if alarm() == "fail" { @sf.theme().p.red } else { @ui.tree_theme().color(Warn) } }))
-          |> ignore
-        })
-        @sf.tip_node(tips, btn, fn() { @sf.t("web-main.jobs.services") }, shortcut="chat.jobs") |> ignore
-      })
-      if @signals.untracked(own) {
-        chat_jobs_pop_node(b, src, r, Some(button))
-      }
-    })
-    // Driven Screen pill
-    right.show(fn() { own() && driven() }, at_once=true, fn(b) {
-      @sf.action_box_node(b, fn() { @sf.t("web-pages.chat.screen") }, fn(at) {
-        match @signals.untracked(view) {
-          Some(v) => chat_remote_open(src, r, v, from=Node(at), along=End)
-          None => ()
-        }
-      }, fn(btn) {
-        wide_glass_capsule(btn)
-        btn.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(5.0)) |> ignore
-        @sf.hover_ground_node(btn)
-        @sf.focus_ring_node(btn)
-        let hot = fn() { @sf.lit_node(btn) }
-        @sf.icon_node(btn, "monitor", 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } })) |> ignore
-        btn.box(fn(d) {
-          d
-          .width(Is(Some(6.0)))
-          .height(Is(Some(6.0)))
-          .radius(Is(3.0))
-          .ground(By(fn() { @sf.theme().p.primary }))
-          |> ignore
-        })
-        |> ignore
-        @sf.tip_node(tips, btn, fn() { @sf.t("web-pages.chat.screen") }, shortcut="chat.screen") |> ignore
-      })
+    right.row(Is(true)).grow(Is(1.0)).lies_along(Is(End)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
+    let show_services = fn() { own() && has_services() }
+    let show_driven = fn() { own() && driven() }
+    let seg_sep = fn(sep : @view.View) {
+      sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
       |> ignore
-    })
-    // Led Sub-chats pill
-    right.show(has_subchats, at_once=true, fn(b) {
-      let label = fn() { @sf.t("web-pages.chat.subchats") }
-      let button = @sf.action_box_node(b, label, fn(_) { toggle_subchats_pop() }, fn(btn) {
-        wide_glass_capsule(btn)
-        btn.padding(Is((11.0, 0.0, 11.0, 0.0))).gap(Is(5.0)) |> ignore
-        @sf.hover_ground_node(btn, extra=fn() { chat_own.subchats_open.get() })
-        @sf.focus_ring_node(btn)
-        let hot = fn() { @sf.lit_node(btn) || chat_own.subchats_open.get() }
-        @sf.icon_node(btn, "spawned", 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } })) |> ignore
-        @sf.words_node(btn, label, fn() { wide_subchats_words }) |> ignore
-        @sf.words_node(btn, fn() { led_subchats().length().to_string() }, fn() {
-          if hot() {
-            wide_subchats_count_hot
-          } else {
-            wide_subchats_count
+    }
+    right.box(fn(pill) {
+      wide_glass_capsule(pill)
+      // (the left station/agent capsules give way first: this one never shrinks)
+      pill.shrink(Is(0.0)).min_width(Is(None)) |> ignore
+      // Active Web Services segment
+      pill.show(show_services, at_once=true, fn(b) {
+        let button = @sf.action_box_node(b, fn() { @sf.t("web-main.jobs.services") }, fn(_) { jobs_pressed(src, r) }, fn(btn) {
+          btn
+          .row(Is(true))
+          .min_height(Is(Some(30.0)))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .gap(Is(5.0))
+          .padding(By(fn() { (10.0, 0.0, if show_driven() || has_subchats() { 8.0 } else { 10.0 }, 0.0) }))
+          |> ignore
+          @sf.hover_ground_node(btn, extra=fn() { chat_own.jobs_open.get() })
+          let hot = fn() { @sf.lit_node(btn) || chat_own.jobs_open.get() }
+          @sf.icon_node(btn, "web", 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } })) |> ignore
+          btn.show(fn() { alarm() == "fail" || alarm() == "restart" }, at_once=true, fn(d) {
+            d
+            .width(Is(Some(6.0)))
+            .height(Is(Some(6.0)))
+            .radius(Is(3.0))
+            .ground(By(fn() { if alarm() == "fail" { @sf.theme().p.red } else { @ui.tree_theme().color(Warn) } }))
+            |> ignore
+          })
+          @sf.tip_node(tips, btn, fn() { @sf.t("web-main.jobs.services") }, shortcut="chat.jobs") |> ignore
+        })
+        if @signals.untracked(own) {
+          chat_jobs_pop_node(b, src, r, Some(button))
+        }
+      })
+      // Driven Screen segment
+      pill.show(show_driven, at_once=true, fn(b) {
+        b.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+        b.show(show_services, at_once=true, seg_sep)
+        @sf.action_box_node(b, fn() { @sf.t("web-pages.chat.screen") }, fn(at) {
+          match @signals.untracked(view) {
+            Some(v) => chat_remote_open(src, r, v, from=Node(at), along=End)
+            None => ()
           }
+        }, fn(btn) {
+          btn
+          .row(Is(true))
+          .min_height(Is(Some(30.0)))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .gap(Is(5.0))
+          .padding(By(fn() { (if show_services() { 8.0 } else { 10.0 }, 0.0, if has_subchats() { 8.0 } else { 10.0 }, 0.0) }))
+          |> ignore
+          @sf.hover_ground_node(btn)
+          let hot = fn() { @sf.lit_node(btn) }
+          @sf.icon_node(btn, "monitor", 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } })) |> ignore
+          btn.box(fn(d) {
+            d
+            .width(Is(Some(6.0)))
+            .height(Is(Some(6.0)))
+            .radius(Is(3.0))
+            .ground(By(fn() { @sf.theme().p.primary }))
+            |> ignore
+          })
+          |> ignore
+          @sf.tip_node(tips, btn, fn() { @sf.t("web-pages.chat.screen") }, shortcut="chat.screen") |> ignore
         })
         |> ignore
-        btn.show(at_once=true, fn() { subchats_tone() != "" }, fn(d) {
-          d
-          .width(Is(Some(6.0)))
-          .height(Is(Some(6.0)))
-          .radius(Is(3.0))
-          .ground(By(fn() {
-            match subchats_tone() {
-              "fail" => @sf.theme().p.red
-              "need" => @ui.tree_theme().color(Warn)
-              _ => @sf.theme().p.online
-            }
-          }))
-          |> ignore
-        })
-        @sf.tip_node(tips, btn, label) |> ignore
       })
-      if @signals.untracked(own) {
-        chat_subchats_pop_node(b, src, r, view, Some(button))
-      }
+      // Led Sub-chats segment: its mark and count only (said as 子会话)
+      pill.show(has_subchats, at_once=true, fn(b) {
+        b.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+        b.show(fn() { show_services() || show_driven() }, at_once=true, seg_sep)
+        let label = fn() { @sf.t("web-pages.chat.subchats") }
+        let button = @sf.action_box_node(b, label, fn(_) { toggle_subchats_pop() }, fn(btn) {
+          btn
+          .row(Is(true))
+          .min_height(Is(Some(30.0)))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .gap(Is(5.0))
+          .padding(By(fn() { (if show_services() || show_driven() { 8.0 } else { 10.0 }, 0.0, 10.0, 0.0) }))
+          |> ignore
+          @sf.hover_ground_node(btn, extra=fn() { chat_own.subchats_open.get() })
+          let hot = fn() { @sf.lit_node(btn) || chat_own.subchats_open.get() }
+          @sf.icon_node(btn, "spawned", 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } })) |> ignore
+          @sf.words_node(btn, fn() { led_subchats().length().to_string() }, fn() {
+            if hot() {
+              wide_subchats_count_hot
+            } else {
+              wide_subchats_count
+            }
+          })
+          |> ignore
+          btn.show(at_once=true, fn() { subchats_tone() != "" }, fn(d) {
+            d
+            .width(Is(Some(6.0)))
+            .height(Is(Some(6.0)))
+            .radius(Is(3.0))
+            .ground(By(fn() {
+              match subchats_tone() {
+                "fail" => @sf.theme().p.red
+                "need" => @ui.tree_theme().color(Warn)
+                _ => @sf.theme().p.online
+              }
+            }))
+            |> ignore
+          })
+          @sf.tip_node(tips, btn, label) |> ignore
+        })
+        if @signals.untracked(own) {
+          chat_subchats_pop_node(b, src, r, view, Some(button))
+        }
+      })
     })
+    |> ignore
   })
 }

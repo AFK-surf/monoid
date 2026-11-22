@@ -296,12 +296,36 @@ test "small: subchats sheet aligns heading, shows header counts, collapses/expan
   let t = decide_core(calls, "chat-subchats-pop")
   t.run_for(@ui.move_most_ms)
   assert_eq(t.audit(), [])
-  guard t.words().filter(fn(w) { w.0 == "子会话" && w.5 > 0.5 }).last() is Some(head) else {
-    fail("expected sheet title 子会话")
+  // What it leads with on a card; under it 已完成 and 已归档, both folded, share one card of their own: as wide as the
+  // first and as far in from the sheet's sides (16, concentric), no card's gap between the two heads, the card's foot
+  // as far from the sheet's (16); their words where the rows' titles start
+  guard t.query(Button, label="安卓构建与冒烟测试") is Some(active_row) else { fail("expected an active row") }
+  guard t.query(Button, label="已完成") is Some(done_head) else { fail("expected 已完成") }
+  guard t.query(Button, label="已归档") is Some(arch_head) else { fail("expected 已归档") }
+  for h in [done_head, arch_head] {
+    assert_true(
+      (h.rect.0 - active_row.rect.0).abs() <= 0.5 && (h.rect.2 - active_row.rect.2).abs() <= 0.5,
+      msg="\{h.label} on a card as wide as the rows': \{Repr(h.rect)} vs \{Repr(active_row.rect)}",
+    )
   }
-  let x_title = head.1
+  let between = arch_head.rect.1 - (done_head.rect.1 + done_head.rect.3)
+  assert_true(between >= 0.0 && between < 4.0, msg="the two folded heads on one card: \{between} between")
+  guard t.all(Dialog).last() is Some(sheet) else { fail("expected the sheet") }
+  let card_left = arch_head.rect.0 - @sf.corner_inset
+  let card_right = arch_head.rect.0 + arch_head.rect.2 + @sf.corner_inset
+  assert_true((card_left - sheet.rect.0 - 16.0).abs() <= 0.5, msg="card 16 in from the sheet: \{card_left} vs \{Repr(sheet.rect)}")
+  assert_true(
+    (sheet.rect.0 + sheet.rect.2 - card_right - (card_left - sheet.rect.0)).abs() <= 0.5,
+    msg="card as far in on both sides: \{card_left}..\{card_right} vs \{Repr(sheet.rect)}",
+  )
+  let card_foot = arch_head.rect.1 + arch_head.rect.3 + @sf.corner_inset
+  let sheet_foot = sheet.rect.1 + sheet.rect.3
+  let screen_foot = if sheet_foot < 844.0 { sheet_foot } else { 844.0 }
+  assert_true((screen_foot - card_foot - 16.0).abs() <= 0.5, msg="card's foot 16 over the sheet's: \{card_foot} vs \{screen_foot}")
   let (x_archived, _, _, _) = t.rect_of("已归档").unwrap()
-  assert_true((x_archived - x_title).abs() <= 1.0, msg="archived head x=\{x_archived} must align with title x=\{x_title}")
+  let (x_row_title, _, _, _) = t.rect_of("安卓构建与冒烟测试").unwrap()
+  assert_true((x_archived - x_row_title).abs() <= 1.0, msg="archived head x=\{x_archived} must align with row titles x=\{x_row_title}")
+  assert_true(t.find("暂无进行中") is None)
   assert_true(t.find("1 进行中") is Some(_), msg="expected running count in sheet head_end")
   assert_true(t.find("1 待处理") is Some(_), msg="expected need count in sheet head_end")
   assert_true(t.find("正在运行端到端用例") is Some(_), msg="active subchat stateText must show")
@@ -532,7 +556,7 @@ test "wide: tall subchats popover stands in the room above its pill, collapses d
 }
 
 ///|
-test "small: tall and done-only subchats sheets collapse/auto-expand done, pass audit at 1.0x/1.3x, and scroll to navigate" {
+test "small: tall sheet folds done and archived under those at work, done-only leads with its done ones, audit at 1.0x/1.3x, scroll to navigate" {
   // 1) tall sheet: active visible, done & archived collapsed by default; scroll to 已完成, expand, scroll to bottom, navigate
   let calls : Array[Made] = []
   let t = decide_core(calls, "chat-subchats-tall")
@@ -563,17 +587,26 @@ test "small: tall and done-only subchats sheets collapse/auto-expand done, pass 
     _ => fail("expected last done subchat s-c4 open")
   }
 
-  // 2) done-only sheet: no active items -> done auto-expands, archived stays collapsed
+  // 2) done-only sheet: none at work, so its 3 done ones lead, whole, with no 已完成 head and no more to show; 暂无进行中
+  // said; 已归档 folded under them
   let calls2 : Array[Made] = []
   let t2 = decide_core(calls2, "chat-subchats-done-only")
   t2.run_for(@ui.move_most_ms)
   assert_eq(t2.audit(), [])
-  assert_eq(t2.query(Button, label="已完成").unwrap().expanded, Some(true))
+  assert_true(t2.query(Button, label="已完成") is None)
+  assert_true(t2.find("暂无进行中") is Some(_))
+  assert_true(t2.find("展开其余") is None)
+  for title in ["给设置页加一个深色模式开关", "排查首页列表滚动掉帧", "补齐弹窗无障碍语义标签"] {
+    assert_true(t2.query(Button, label=title) is Some(_), msg=title)
+  }
   assert_eq(t2.query(Button, label="已归档").unwrap().expanded, Some(false))
-  assert_true(t2.query(Button, label="给设置页加一个深色模式开关") is Some(_))
   assert_true(t2.query(Button, label="旧版引导页的截图") is None)
   let bare_done = t2.words().filter(fn(w) { w.0 == "已完成" && w.5 > 0.5 })
-  assert_eq(bare_done.length(), 1, msg="bare 已完成 must not repeat on done rows: \{Repr(bare_done)}")
+  assert_eq(bare_done.length(), 0, msg="bare 已完成 must not show on done rows: \{Repr(bare_done)}")
+  t2.click(Button, label="已归档")
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(t2.audit(), [])
+  assert_true(t2.query(Button, label="旧版引导页的截图") is Some(_))
 
   // 3) 1.3x font scale audit on both tall and done-only
   let phone = ("phone", 390.0, 844.0, 2, "")
@@ -617,4 +650,221 @@ test "wide and small: sub-chats that stopped without a state fold into 已完成
   t2.run_for(@ui.move_most_ms)
   assert_eq(t2.audit(), [])
   check(t2)
+}
+
+///|
+test "wide: done-only subchats popover leads with its 3 done ones (no 已完成 head, 暂无进行中), 已归档 folded under them" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat-subchats-done-only")
+  t.draw()
+  t.click(Button, label="子会话")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.all(Dialog).length() > 0, msg="expected subchats popover dialog")
+  assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
+  assert_true(t.query(Button, label="已完成") is None)
+  assert_true(t.find("暂无进行中") is Some(_))
+  assert_true(t.find("展开其余") is None)
+  for title in ["给设置页加一个深色模式开关", "排查首页列表滚动掉帧", "补齐弹窗无障碍语义标签"] {
+    assert_true(t.query(Button, label=title) is Some(_), msg=title)
+  }
+  assert_true(t.find("已完成：开关和三处颜色都改好了") is Some(_))
+  let bare_done = t.words().filter(fn(w) { w.0 == "已完成" && w.5 > 0.5 })
+  assert_eq(bare_done.length(), 0, msg="bare 已完成 must not show on done rows: \{Repr(bare_done)}")
+  assert_eq(t.query(Button, label="已归档").unwrap().expanded, Some(false))
+  assert_true(t.query(Button, label="旧版引导页的截图") is None)
+  t.click(Button, label="已归档")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="旧版引导页的截图") is Some(_))
+  assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
+}
+
+///|
+/// chat-subchats-done-many's done ones, latest first (chat-subchats-tall's).
+let done_many_first : Array[String] = ["给设置页加一个深色模式开关", "排查首页列表滚动掉帧", "补齐弹窗无障碍语义标签"]
+
+///|
+test "wide and small: 14 done and none at work lead with the latest 3, 展开其余 11 个 shows all in place and scrolls to the last, 收起其余 11 个 folds back" {
+  let check = fn(t : @ui.Tester, at : String, scroll : (@ui.Tester) -> Unit) raise {
+    let faults = fn() { t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }) }
+    assert_eq(faults(), [], msg=at)
+    for title in done_many_first {
+      assert_true(t.query(Button, label=title) is Some(_), msg="\{at}: \{title}")
+    }
+    assert_true(t.query(Button, label="收尾回归与变更日志核对") is None, msg="\{at}: the 14th folded")
+    assert_true(t.query(Button, label="已完成") is None, msg=at)
+    assert_true(t.find("暂无进行中") is Some(_), msg=at)
+    guard t.query(Button, label="展开其余 11 个") is Some(more) else { fail("\{at}: expected 展开其余 11 个") }
+    assert_eq(more.expanded, Some(false), msg=at)
+    assert_eq(t.query(Button, label="已归档").unwrap().expanded, Some(false), msg=at)
+    t.click(Button, label="展开其余 11 个")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(faults(), [], msg="\{at} open")
+    // (all 14 then, the press under the last: scrolled to)
+    scroll(t)
+    assert_true(t.query(Button, label="收尾回归与变更日志核对") is Some(_), msg="\{at}: the 14th shown once open")
+    guard t.query(Button, label="收起其余 11 个") is Some(less) else { fail("\{at}: expected 收起其余 11 个 under the 14th") }
+    assert_eq(less.expanded, Some(true), msg=at)
+    assert_eq(faults(), [], msg="\{at} scrolled")
+    t.click(Button, label="收起其余 11 个")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.query(Button, label="展开其余 11 个") is Some(_), msg="\{at}: folded back")
+    assert_true(t.query(Button, label="收尾回归与变更日志核对") is None, msg="\{at}: the 14th folded back")
+    // (folded back from under the last of them, the latest are seen again in what holds them, not scrolled away)
+    t.run_for(@ui.move_most_ms)
+    let d = t.all(Dialog).last().unwrap().rect
+    let seen = t
+      .words()
+      .filter(fn(w) { w.5 > 0.5 && w.1 >= d.0 && w.1 <= d.0 + d.2 && w.2 >= d.1 && w.2 + w.4 <= d.1 + d.3 + 0.5 })
+      .map(fn(w) { w.0 })
+    for title in done_many_first {
+      assert_true(seen.contains(title), msg="\{at}: \{title} seen once folded back: \{seen.join("|")}")
+    }
+    assert_true(seen.contains("展开其余 11 个"), msg="\{at}: the press seen once folded back")
+  }
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat-subchats-done-many")
+  t.draw()
+  t.click(Button, label="子会话")
+  t.run_for(@ui.move_most_ms)
+  check(t, "wide", fn(tt) {
+    let d = tt.all(Dialog).last().unwrap().rect
+    for _ in 0..<8 {
+      tt.wheel(d.0 + d.2 / 2.0, d.1 + d.3 / 2.0, 160.0)
+      tt.run_for(@ui.move_most_ms)
+    }
+  })
+  let calls2 : Array[Made] = []
+  let t2 = decide_core(calls2, "chat-subchats-done-many")
+  t2.run_for(@ui.move_most_ms)
+  check(t2, "small", fn(tt) {
+    for _ in 0..<8 {
+      tt.drag(195.0, 720.0, 195.0, 380.0, steps=16)
+      tt.run_for(@ui.move_most_ms)
+    }
+  })
+  let phone = ("phone", 390.0, 844.0, 2, "")
+  let t3 = screen_in("chat-subchats-done-many", phone, "zh", font_scale=1.3)
+  assert_eq(t3.audit(), [], msg="small 1.3x")
+  assert_true(t3.find("展开其余 11 个") is Some(_), msg="small 1.3x")
+}
+
+///|
+/// The composer-top buttons said `labels` (in order, left to right): segments of one liquid glass capsule, side by side
+/// without overlapping, a hairline between each two of them and none else in it, and no 子会话 words drawn in it (the
+/// sub-chats' mark and count only, said 子会话).
+fn composer_right_capsule_check(t : @ui.Tester, at : String, labels : Array[String]) -> Unit raise {
+  let rects = labels.map(fn(l) {
+    match t.all(Button).filter(fn(b) { b.label == l && b.rect.1 > 400.0 && b.rect.3 < 90.0 }) {
+      [b, ..] => b.rect
+      _ => (-1.0, -1.0, 0.0, 0.0)
+    }
+  })
+  for i, r in rects {
+    assert_true(r.2 > 0.0, msg="\{at}: no \{labels[i]}")
+  }
+  let holding = fn(r : (Double, Double, Double, Double)) {
+    t.drawn_glass().filter(fn(g) {
+      g.4 == 6 && g.0 <= r.0 + 0.5 && g.1 <= r.1 + 0.5 && g.0 + g.2 >= r.0 + r.2 - 0.5 && g.1 + g.3 >= r.1 + r.3 - 0.5
+    })
+  }
+  guard holding(rects[0]) is [cap, ..] else { fail("\{at}: \{labels[0]} in no glass") }
+  for i, r in rects {
+    guard holding(r) is [g, ..] else { fail("\{at}: \{labels[i]} in no glass") }
+    assert_eq((g.0, g.1, g.2, g.3), (cap.0, cap.1, cap.2, cap.3), msg="\{at}: \{labels[i]} in a capsule of its own")
+    if i > 0 {
+      let p = rects[i - 1]
+      assert_true(p.0 + p.2 <= r.0 + 0.01, msg="\{at}: \{labels[i - 1]} and \{labels[i]} overlap: \{Repr(p)} \{Repr(r)}")
+    }
+  }
+  let lines = t
+    .drawn_rects()
+    .filter(fn(d) {
+      d.2 <= 1.01 && d.3 >= 11.5 && d.3 <= 12.5 && d.0 >= cap.0 && d.0 + d.2 <= cap.0 + cap.2 && d.1 >= cap.1 && d.1 + d.3 <= cap.1 + cap.3
+    })
+  assert_eq(lines.length(), labels.length() - 1, msg="\{at}: hairlines in the capsule: \{Repr(lines)}")
+  for i, l in lines {
+    let (p, n) = (rects[i], rects[i + 1])
+    assert_true(l.0 >= p.0 + p.2 - 0.01 && l.0 + l.2 <= n.0 + 0.01, msg="\{at}: hairline \{i} not between \{labels[i]} and \{labels[i + 1]}: \{Repr(l)}")
+  }
+  let said = t
+    .words()
+    .filter(fn(w) { w.0 == "子会话" && w.5 > 0.5 && w.1 >= cap.0 && w.1 <= cap.0 + cap.2 && w.2 >= cap.1 - 1.0 && w.2 <= cap.1 + cap.3 })
+  assert_eq(said, [], msg="\{at}: 子会话 drawn in the capsule")
+}
+
+///|
+test "wide and small: the composer-top services and sub-chats buttons are segments of one liquid glass capsule, the sub-chats' mark and count only" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat-subchats-jobs")
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  composer_right_capsule_check(t, "wide", [@sf.t("web-main.jobs.services"), "子会话"])
+  assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
+  assert_eq(t.room_faults(), [])
+  let calls2 : Array[Made] = []
+  let t2 = decide_core(calls2, "chat-subchats-jobs")
+  for w in [390.0, 320.0] {
+    t2.resize(w, 844.0)
+    t2.run_for(@ui.move_most_ms)
+    composer_right_capsule_check(t2, "small \{w}", ["服务", "子会话"])
+    assert_eq(t2.audit(), [])
+    assert_eq(t2.room_faults(), [])
+  }
+}
+
+///|
+/// The chat's screens: one an agent drives.
+fn bar_screen_driven() -> (String, Topic) -> Topic {
+  wide_bar_chat_field("screens", fn(_) {
+    Json::array([
+      Json::object({
+        "id": Json::string("d1"),
+        "kind": Json::string("display"),
+        "title": Json::string("Display"),
+        "agent": Json::boolean(true),
+      }),
+    ])
+  })
+}
+
+///|
+test "wide and small: services, a driven screen and sub-chats all shown: one capsule, exactly two hairlines between them" {
+  let calls : Array[Made] = []
+  let t = wide_bar_at(calls, over=wide_bar_both(wide_bar_both(wide_bar_jobs(""), bar_leads_one()), bar_screen_driven()))
+  let screen = @sf.t("web-pages.chat.screen")
+  composer_right_capsule_check(t, "wide", [@sf.t("web-main.jobs.services"), screen, "子会话"])
+  assert_eq(t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") }), [])
+  let (t2, _) = chat_bar_node_tester("短标题", has_jobs=true, over=wide_bar_both(bar_leads_one(), bar_screen_driven()))
+  composer_right_capsule_check(t2, "small", ["服务", screen, "子会话"])
+  assert_eq(bar_node_audit(t2), [])
+}
+
+///|
+test "small and wide: every sub-chats state passes audit at 1.0x and 1.3x, its folded groups folded and open" {
+  let phone = ("phone", 390.0, 844.0, 2, "")
+  for mode in ["chat-subchats-done-only", "chat-subchats-done-many", "chat-subchats-pop", "chat-subchats-many", "chat-subchats-tall", "chat-subchats-idle"] {
+    let calls : Array[Made] = []
+    let t = decide_core(calls, mode)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.audit(), [], msg="\{mode} small 1.0x")
+    let t2 = screen_in(mode, phone, "zh", font_scale=1.3)
+    assert_eq(t2.audit(), [], msg="\{mode} small 1.3x")
+    let calls3 : Array[Made] = []
+    let t3 = wide_tester(calls3, mode~)
+    t3.draw()
+    t3.click(Button, label="子会话")
+    t3.run_for(@ui.move_most_ms)
+    assert_eq(t3.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [], msg="\{mode} wide")
+    // (each group folded at first; 已完成, where there is one, opened then)
+    for g in ["已完成", "已归档"] {
+      if t3.query(Button, label=g) is Some(head) {
+        assert_eq(head.expanded, Some(false), msg="\{mode} wide \{g}")
+      }
+    }
+    if t3.query(Button, label="已完成") is Some(_) && mode != "chat-subchats-tall" {
+      t3.click(Button, label="已完成")
+      t3.run_for(@ui.move_most_ms)
+      assert_eq(t3.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [], msg="\{mode} wide, 已完成 open")
+    }
+  }
 }

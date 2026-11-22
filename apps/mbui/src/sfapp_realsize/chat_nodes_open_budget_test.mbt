@@ -117,7 +117,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // offers making no node and binding none while closed, as a chooser's menu (sf ChooserMenu::menu): 2 made, 2 laid and
   // 1 binding fewer, the same at 60, 120, 24 and 7, the bar brought down to it; measured before it (1027, 26, 663, 81,
   // 1015), its bar (1037, 26, 673, 87, 1029))
-  "phone cold": (1025, 26, 661, 81, 1014),
+  // (+1 made, +1 laid, +1 binding, 2026-11-22: the composer-top services, screen and sub-chats buttons segments of one
+  // liquid glass capsule of their own (sfapp chat_bar_node's pill), each with its padding by its neighbours; before it
+  // (1025, 26, 661, 81, 1014))
+  "phone cold": (1026, 26, 662, 81, 1015),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
@@ -149,7 +152,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (2026-11-22: what a field offers held in its layer only once it first opens (sf offers_node): 4 made, 2 let go, 3
   // laid and 2 bindings fewer, the same at 60, 120, 24 and 7, the bar brought down to it; measured before it (2461, 500,
   // 1943, 195, 2527), its bar (2462, 500, 1943, 195, 2528))
-  "wide cold": (2457, 498, 1940, 195, 2525),
+  // (+1 made, +1 binding, 2026-11-22: the composer-top services, screen and sub-chats buttons segments of one liquid
+  // glass capsule of their own (sfdesk chat_bar_wide_node's pill), each with its padding by its neighbours; before it
+  // (2457, 498, 1940, 195, 2525))
+  "wide cold": (2458, 498, 1940, 195, 2526),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))
@@ -161,7 +167,9 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (2026-11-22: what a field offers held in its layer only once it first opens (sf offers_node): 2 made, 4 let go, 2
   // laid and 1 binding fewer, the same at 60, 120, 24 and 7, the bar brought down to it; measured before it (151, 313,
   // 121, 14, 307), its bar (174, 325, 184, 23, 332))
-  "wide again": (149, 309, 119, 14, 306),
+  // (+1 binding, 2026-11-22: the composer-top capsule's segment padding by its neighbours (sfdesk chat_bar_wide_node);
+  // before it (149, 309, 119, 14, 306))
+  "wide again": (149, 309, 119, 14, 307),
   "phone up": (543, 354, 606, 87, 0),
   // (wide up 2 made and 1 laid more, 2026-11-18: a quote's source that leads somewhere is mbui's headless button, read
   // out and pressed as one (sf button_while_node), the pick that makes it a button only then and the button's own box
