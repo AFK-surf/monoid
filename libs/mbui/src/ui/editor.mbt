@@ -1236,7 +1236,7 @@ let handle_r : Double = 9.0
 ///|
 /// Whether (`x`, `y`) is on the caret's handle of `st` (its circle, and a little round it: a finger's).
 fn EditorState::on_handle(self : EditorState, x : Double, y : Double) -> Bool {
-  if !self.handle_on {
+  if !self.handle_on || y < self.handle_y {
     return false
   }
   // the circle's middle: its radius √2 under the tip, straight down
@@ -2401,9 +2401,9 @@ fn EditorState::on_sel_handle(self : EditorState, x : Double, y : Double) -> Int
     } else {
       0
     }
-  } else if near(self.sel_bx + handle_r, self.sel_by + handle_r) {
+  } else if y >= self.sel_by && near(self.sel_bx + handle_r, self.sel_by + handle_r) {
     3
-  } else if near(self.sel_ax - handle_r, self.sel_ay + handle_r) {
+  } else if y >= self.sel_ay && near(self.sel_ax - handle_r, self.sel_ay + handle_r) {
     2
   } else {
     0
