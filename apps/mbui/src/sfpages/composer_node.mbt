@@ -338,25 +338,44 @@ fn composer_node_of(
   }
   // (how far what stands in its foot is drawn off where it is laid out, as its foot's room goes its way: below)
   let foot_shift = @motion.NodeWay::new(0.0)
-  // (a chat's: what its box shares with its foot, made here so the page is told where the top of what it shows is as
-  // it is made (composer_floats_drop_lent), before its foot is first laid out)
-  let shared : ChatBoxShared? = if made is None {
-    let extras_alive = @signals.signal(
-      @signals.untracked(fn() { w.files.get().length() > 0 || w.quotes.get().length() > 0 }),
-      same=fn(a, b) { a == b },
-    )
-    // (opened as its box says, composer_box_node's `multiline` of a chat's: no `own`, never roomy)
-    let multiline = fn() {
-      composer_wants_open(
-        w,
-        roomy=false,
-        focused=w.field.focused(),
-        lingers=composing_node.held.get(draft).unwrap_or(false),
-      ) ||
-      extras_alive.get()
+  // (what its box shares with its foot, made here so the page is told where the top of what it shows is as it is made
+  // (composer_floats_drop_lent), and the foot's scrim follows its top, before its foot is first laid out)
+  let extras_alive = @signals.signal(
+    @signals.untracked(fn() { w.files.get().length() > 0 || w.quotes.get().length() > 0 }),
+    same=fn(a, b) { a == b },
+  )
+  let multiline = fn() {
+    composer_wants_open(
+      w,
+      roomy=roomy(),
+      focused=w.field.focused(),
+      lingers=composing_node.held.get(draft).unwrap_or(false),
+    ) ||
+    extras_alive.get()
+  }
+  let morph = @motion.NodeWay::new(
+    if @signals.untracked(multiline) || composing_node.focus_waits == draft { 1.0 } else { 0.0 },
+  )
+  let sent_over = @motion.NodeWay::new(0.0)
+  let shared : ChatBoxShared = { extras_alive, morph, sent_over }
+  // (what stands over its box as tall as its least keeps for it (`over_tall`, its row of capsules); an error
+  // under it making it taller than its least, its foot laid out as tall as what it holds: no room over them)
+  let has_extra = fn() { w.error.get() != "" }
+  let slack_and_morph_at = fn(u : @view.View, st : Stand, wide : Double) -> Double {
+    if has_extra() || @ui.system_tabletop() is Some(_) {
+      0.0
+    } else {
+      let (_, _, b) = st.place().capsule_in
+      let one_line = @sf.dmax(@sf.theme().round.side, node_field_line(u.words_scale()))
+      let shut_h = one_line + 2.0 * st.place().capsule_pad
+      let open_h = st.at(fn() { node_open_room(st, wide) - 12.0 - composer_foot_at(wide) })
+      // (a capsule: its least's room over it; on its way from a capsule to a box or back, its ground's top where it is
+      // drawn (composer_box_node's morph_dy): algebraically `(open_h - shut_h - b) * (1 - k)` for any `to` in `{0, 1}`)
+      let k = morph.shown(u)
+      @sf.dmax(0.0, (open_h - shut_h - b) * (1.0 - k))
     }
-    let morph = @motion.NodeWay::new(if @signals.untracked(multiline) { 1.0 } else { 0.0 })
-    let sent_over = @motion.NodeWay::new(0.0)
+  }
+  if made is None {
     match v.lent(composer_floats_drop_lent) {
       Some(drop) => {
         let chat = r.station + "\u{1}" + r.session
@@ -368,38 +387,11 @@ fn composer_node_of(
             apart: fn() { apart() },
             pane,
           }
-          // (what stands over its box as tall as its least keeps for it (`over_tall`, its row of capsules); an error
-          // under it making it taller than its least, its foot laid out as tall as what it holds: no room over them)
-          let has_extra = w.error.get() != ""
-          let slack_and_morph = if has_extra || @ui.system_tabletop() is Some(_) {
-            0.0
-          } else {
-            let (_, _, b) = st.place().capsule_in
-            let one_line = @sf.dmax(@sf.theme().round.side, node_field_line(u.words_scale()))
-            let shut_h = one_line + 2.0 * st.place().capsule_pad
-            let open_h = st.at(fn() { node_open_room(st, wide) - 12.0 - composer_foot_at(wide) })
-            // (a capsule: its least's room over it; on its way from a capsule to a box or back, its ground's top where
-            // it is drawn (composer_box_node's morph_dy))
-            let slack = if multiline() { 0.0 } else { @sf.dmax(0.0, open_h - shut_h - b) }
-            let k = morph.shown(u)
-            let to = morph.target()
-            let mdy = if k != to {
-              let low = fn(t : Double) { b * (1.0 - t) }
-              let high = fn(t : Double) { shut_h + (open_h - shut_h) * t }
-              low(to) + high(to) - low(k) - high(k)
-            } else {
-              0.0
-            }
-            slack + mdy
-          }
-          over + slack_and_morph - sent_over.shown(u) + foot_shift.shown(u)
+          over + slack_and_morph_at(u, st, wide) - sent_over.shown(u) + foot_shift.shown(u)
         }
       }
       None => ()
     }
-    Some({ extras_alive, morph, sent_over })
-  } else {
-    None
   }
   // (by the width the column gives it, as it changes: never one worked out of the shell's state)
   v.by_room(fn(foot, room) {
@@ -537,7 +529,50 @@ fn composer_node_of(
     } else {
       None
     }
-    composer_foot_scrim_node(foot, roomy, made, fn() { stand.at(fn() { composer_foot_at(rest_wide()) }) })
+    let backdrop_top = fn(u : @view.View) -> Double {
+      let over_h = match made {
+        Some(m) => m.over_tall
+        None => (over_tall)()
+      }
+      let wide = rest_wide()
+      let seam = stand.at(fn() { composer_foot_at(wide) })
+      let (_, _, b) = stand.place().capsule_in
+      let one_line = @sf.dmax(@sf.theme().round.side, node_field_line(u.words_scale()))
+      let shut_h = one_line + 2.0 * stand.place().capsule_pad
+      let open_h = stand.at(fn() { node_open_room(stand, wide) - 12.0 - seam })
+      let k = shared.morph.shown(u)
+      let drop_at_0 = (if has_extra() || @ui.system_tabletop() is Some(_) {
+        shut_h + b + 64.0
+      } else {
+        @sf.dmax(open_h, shut_h + b)
+      }) + seam
+      over +
+      over_h +
+      drop_at_0 * (1.0 - k) -
+      composer_backdrop_over * k -
+      shared.sent_over.shown(u) +
+      foot_shift.shown(u)
+    }
+    let lift_backdrop_top = fn(u : @view.View) -> Double {
+      let over_h = match made {
+        Some(m) => m.over_tall
+        None => (over_tall)()
+      }
+      over +
+      over_h +
+      slack_and_morph_at(u, stand, rest_wide()) -
+      shared.sent_over.shown(u) +
+      foot_shift.shown(u) -
+      composer_backdrop_over
+    }
+    composer_foot_scrim_node(
+      foot,
+      roomy,
+      made,
+      fn() { stand.at(fn() { composer_foot_at(rest_wide()) }) },
+      backdrop_top,
+      lift_backdrop_top,
+    )
     match made {
       None =>
         match over_it {
@@ -600,7 +635,7 @@ fn composer_node_of(
       own=made,
       before_take_in~,
       over_in~,
-      shared?,
+      shared~,
     )
     // (what went wrong, under it)
     foot.show(at_once=true, fn() { w.error.get() != "" }, fn(e) {
@@ -617,10 +652,17 @@ fn composer_node_of(
 let composer_seam_fade : Double = 18.0
 
 ///|
-/// What the chat holds fades out behind the composer, so a picture or a busy message passing under its glass does not
-/// drown what is being written: the page's own ground, as good as solid at the foot and clear `composer_backdrop_fade`
-/// above the seam. With a soft keyboard it comes and goes with the keyboard; with keyboard and mouse it stays there.
-let composer_backdrop_fade : Double = 220.0
+/// How far above the composer's drawn top edge its backdrop fade starts (matching the top bar's soft edge).
+let composer_backdrop_over : Double = 16.0
+
+///|
+/// What the chat holds fades out behind the expanded composer, so a picture or a busy message passing under its glass
+/// does not drown what is being written: the page's own ground, starting clear `composer_backdrop_over` above the
+/// composer's drawn top edge and fading linearly over `composer_backdrop_fade` to nearly solid behind its glass and
+/// seam. With keyboard and mouse it appears only while expanded (`morph == 1`), sliding up from below the foot as it
+/// expands and sliding back below the viewport when collapsed to a single-line capsule; with a soft keyboard it comes
+/// and goes with the keyboard.
+let composer_backdrop_fade : Double = 64.0
 
 ///|
 let composer_backdrop_in_ms : Double = 220.0
@@ -634,6 +676,8 @@ fn composer_foot_scrim_node(
   roomy : () -> Bool,
   made : ComposerNodeFor?,
   seam_h : () -> Double,
+  backdrop_top : (@view.View) -> Double,
+  lift_backdrop_top : (@view.View) -> Double,
 ) -> Unit {
   foot.box(fn(scrim) {
     scrim
@@ -651,17 +695,44 @@ fn composer_foot_scrim_node(
         .alpha(By(fn() { if (m.away)() { 0.0 } else { 1.0 } }))
         .hides(By(m.away))
         |> ignore
-      None =>
-        scrim
-        .laid_nowhere(By(fn() { @ui.system_tabletop() is Some(_) }))
-        |> ignore
+      None => ()
     }
-    let seam_fade = if @sf.soft_keyboard() { composer_seam_fade } else { composer_backdrop_fade }
+    let fill_ground = fn() {
+      if made is None && @ui.system_tabletop() is Some(_) {
+        0L
+      } else {
+        @sf.theme().p.bg
+      }
+    }
+    if !@sf.soft_keyboard() {
+      scrim.box(fn(band) {
+        band
+        .width_share(Is(1.0))
+        .height_share(Is(1.0))
+        .offset(By(fn() { (0.0, backdrop_top(band)) }))
+        .fades(Is((0.0, composer_backdrop_fade, 0.0, 0.0)))
+        .points(Is(false))
+        |> ignore
+        band.box(fn(fill) {
+          fill
+          .width_share(Is(1.0))
+          .height_share(Is(1.0))
+          .points(Is(false))
+          .ground(By(fill_ground))
+          .ground_drawn(Is({ dx: 0.0, dy: 0.0, dw: 0.0, dh: 300.0, corners: None }))
+          .alpha(Is(254.0 / 255.0))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      return
+    }
     scrim.box(fn(band) {
       band
       .width_share(Is(1.0))
-      .height(By(fn() { Some(seam_h() + 6.0 + seam_fade) }))
-      .fades(Is((0.0, seam_fade, 0.0, 0.0)))
+      .height(By(fn() { Some(seam_h() + 6.0 + composer_seam_fade) }))
+      .fades(Is((0.0, composer_seam_fade, 0.0, 0.0)))
       .points(Is(false))
       |> ignore
       band.box(fn(fill) {
@@ -669,17 +740,14 @@ fn composer_foot_scrim_node(
         .width_share(Is(1.0))
         .height_share(Is(1.0))
         .points(Is(false))
-        .ground(By(fn() { @sf.theme().p.bg }))
+        .ground(By(fill_ground))
         .alpha(Is(254.0 / 255.0))
         |> ignore
       })
       |> ignore
     })
     |> ignore
-    // (the soft keyboard's fade: eased in as it comes up and out as it goes; the band above handles keyboard and mouse)
-    if !@sf.soft_keyboard() {
-      return
-    }
+    // (the soft keyboard's fade: eased in as it comes up and out as it goes)
     let typing = @motion.NodeWay::new(if @signals.untracked(fn() { scrim.keyboard_inset() }) > 0.0 { 1.0 } else { 0.0 })
     scrim.reacts(fn() { scrim.keyboard_inset() > 0.0 }, fn(up) {
       if up {
@@ -701,7 +769,8 @@ fn composer_foot_scrim_node(
       lift.box(fn(band) {
         band
         .width_share(Is(1.0))
-        .height(By(fn() { Some(seam_h() + 6.0 + composer_backdrop_fade) }))
+        .height_share(Is(1.0))
+        .offset(By(fn() { (0.0, lift_backdrop_top(band)) }))
         .fades(Is((0.0, composer_backdrop_fade, 0.0, 0.0)))
         .points(Is(false))
         |> ignore
@@ -710,7 +779,8 @@ fn composer_foot_scrim_node(
           .width_share(Is(1.0))
           .height_share(Is(1.0))
           .points(Is(false))
-          .ground(By(fn() { @sf.theme().p.bg }))
+          .ground(By(fill_ground))
+          .ground_drawn(Is({ dx: 0.0, dy: 0.0, dw: 0.0, dh: 300.0, corners: None }))
           .alpha(Is(254.0 / 255.0))
           |> ignore
         })
@@ -831,6 +901,7 @@ fn composer_box_node(
   shared? : ChatBoxShared,
 ) -> Unit {
   let draft = w.key
+  let will_focus = composing_node.focus_waits == draft
   let focused = fn() { w.field.focused() }
   // (roomy, a new chat's in the page's middle: a box all along, its words over its row)
   let roomy = fn() {
@@ -1691,7 +1762,11 @@ fn composer_box_node(
               @view.transition(opened)
             }
           }
-        }, regrow, placeholder?=chat_placeholder, status_hint~, locked~, no_files~)
+        }, regrow, placeholder?=chat_placeholder, status_hint~, locked~, no_files~, on_focus_wait_done=fn() {
+          if !w.field.focused() && !@signals.untracked(multiline) {
+            morph.put(0.0)
+          }
+        })
       })
       |> ignore
       // (a new chat's choices in its row, after ＋, as far in as ＋ leaves them (＋ concentric with the box's foot corner,
@@ -1846,9 +1921,12 @@ fn composer_box_node(
     let quiet_changed = quiet != quiet_was.val
     quiet_was.val = quiet
     if first.val || (quiet_changed && composing_node.shown == draft) || !foot.was_placed() || resized {
+      let is_first = first.val
       first.val = false
       shape.put(to)
-      morph.put(to)
+      if !(is_first && will_focus && !on) {
+        morph.put(to)
+      }
     } else if to != shape.target() {
       // (opened from a capsule or let go to one with nothing in it before or after, the cursor come or gone: a box of
       // one line, in its foot's least, drawn there; with something put in or taken out, its height its way, laid out;
@@ -2011,6 +2089,7 @@ fn composer_field_node(
   status_hint? : () -> Bool = fn() { false },
   locked? : () -> Bool = fn() { false },
   no_files? : () -> Bool = fn() { false },
+  on_focus_wait_done? : () -> Unit = fn() {  },
 ) -> Unit {
   let prefs = fn() { src.topic("prefs", {}).get().value }
   let by_command = fn() { @settings.sends_by_command(prefs()) }
@@ -2135,6 +2214,7 @@ fn composer_field_node(
         w.field.focus()
         composing_node.quiet = false
       }
+      on_focus_wait_done()
     })
   }
   typed.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore

@@ -10,7 +10,11 @@ let cover_mouse_hold_ms : Double = 500.0
 let cover_drag_step_ms : Double = 16.0
 
 ///|
-fn composer_cover_tester(pointing? : @ui.Pointing = Mouse, platform? : Int = 0) -> @ui.Tester {
+fn composer_cover_tester(
+  pointing? : @ui.Pointing = Mouse,
+  platform? : Int = 0,
+  over_tall? : Double = 0.0,
+) -> @ui.Tester {
   new_run()
   let src = fixture("chat")
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
@@ -47,7 +51,19 @@ fn composer_cover_tester(pointing? : @ui.Pointing = Mouse, platform? : Int = 0) 
           foot=fn(f) {
             f.box(fn(pad) {
               @sf.style_node(pad, fn() { @ui.css("w=Full p=S4") })
-              @sfpages.chat_composer_node(pad, src, r, shows=fn() { true }, tips~)
+              if over_tall > 0.0 {
+                @sfpages.chat_composer_node(
+                  pad,
+                  src,
+                  r,
+                  shows=fn() { true },
+                  tips~,
+                  over_it=fn(o) { o.height(Is(Some(over_tall))) |> ignore },
+                  over_tall=fn() { over_tall },
+                )
+              } else {
+                @sfpages.chat_composer_node(pad, src, r, shows=fn() { true }, tips~)
+              }
             })
             |> ignore
           },
@@ -155,7 +171,25 @@ test "composer over messages: clicking inside its field clears a previous messag
 }
 
 ///|
-test "composer adaptive glass keeps its backdrop fade as it expands with keyboard and mouse" {
+fn composer_cover_backdrop(t : @ui.Tester) -> Array[Array[Double]] {
+  let (gx, gy, gw, gh) = composer_cover_glass_box(t)
+  t.drawn_instances().filter(fn(a) {
+    a[5] == 0.0 && a[53] > 0.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw &&
+    a[1] < gy && a[1] + a[3] > gy + gh / 2.0
+  })
+}
+
+///|
+fn composer_cover_visible_fade(t : @ui.Tester) -> Array[Array[Double]] {
+  let (gx, gy, gw, gh) = composer_cover_glass_box(t)
+  t.drawn_instances().filter(fn(a) {
+    a[5] == 0.0 && a[53] > 0.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw &&
+    a[1] < gy + gh
+  })
+}
+
+///|
+test "composer adaptive glass shows its backdrop fade only when expanded and keeps it tight as it grows" {
   let t = composer_cover_tester()
   let glass_of = fn() -> (Double, Int, Bool) {
     let (gx, gy, gw, gh) = composer_cover_glass_box(t)
@@ -168,41 +202,86 @@ test "composer adaptive glass keeps its backdrop fade as it expands with keyboar
     }
   }
   assert_eq(glass_of(), (2.1, 0x67, true))
-  let has_backdrop = fn() {
-    let (gx, gy, gw, gh) = composer_cover_glass_box(t)
-    t.drawn_instances().iter().any(fn(a) {
-      a[5] == 0.0 && a[53] > 0.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw &&
-      a[1] < gy && a[1] + a[3] > gy + gh / 2.0
-    })
+  assert_eq(composer_cover_backdrop(t).length(), 0, msg="expected no backdrop fade on compact single-line capsule")
+  assert_eq(composer_cover_visible_fade(t).length(), 0, msg="expected no visible 0xFE fade behind compact capsule")
+  let check_tight = fn(label : String) -> (Double, Double) raise {
+    let (_, gy, _, _) = composer_cover_glass_box(t)
+    guard composer_cover_backdrop(t) is [a, ..] else {
+      fail("expected a fade behind the \{label} composer")
+    }
+    assert_eq(a[53], 64.0, msg="expected 64pt fade height on \{label} composer")
+    assert_true(
+      (gy - a[1] - 16.0).abs() < 2.0,
+      msg="expected fade top ~16pt above \{label} composer (gy=\{gy}, fade_y=\{a[1]})",
+    )
+    (gy, a[1])
   }
-  assert_true(has_backdrop(), msg="expected a fade behind the compact composer")
   // Focusing expands the composer into the 40% (0x67), blur=4.0 adaptive glass recipe (#8086 + Wave 7)
   let (lx, ly) = composer_cover_line_hit(t)
   t.tap(lx, ly)
   t.run_for(@ui.move_most_ms)
   assert_true(composer_focused())
   assert_eq(glass_of(), (4.0, 0x67, true))
-  assert_true(has_backdrop(), msg="expected a fade behind the expanded composer")
+  let (open_gy, open_fy) = check_tight("expanded")
+  // Blurring collapses back to the single-line capsule with no backdrop fade.
+  t.ctx().blur()
+  t.run_for(@sfpages.let_go_ms + @ui.move_most_ms)
+  assert_eq(composer_cover_backdrop(t).length(), 0, msg="expected backdrop fade gone after collapsing to capsule")
+  assert_eq(composer_cover_visible_fade(t).length(), 0, msg="expected no visible 0xFE fade after collapsing")
+  // Focusing again and typing multiple lines grows the composer and lifts the fade top with it.
+  t.tap(lx, ly)
+  t.run_for(@ui.move_most_ms)
+  t.type_text("第一行")
+  t.key(@ui.key_code_enter, mods=@ui.mod_shift_key)
+  t.type_text("第二行")
+  t.run_for(@ui.move_most_ms)
+  let (multi_gy, multi_fy) = check_tight("multiline")
+  assert_true(multi_gy < open_gy - 10.0, msg="expected multiline composer top to rise")
+  assert_true(multi_fy < open_fy - 10.0, msg="expected fade top to rise with multiline composer")
+}
+
+///|
+test "composer backdrop fade stays off when compact and tight above the composer when an over_it capsule row sits above it" {
+  let t = composer_cover_tester(over_tall=36.0)
+  assert_eq(composer_cover_backdrop(t).length(), 0, msg="expected no backdrop fade on compact capsule with over_it")
+  assert_eq(composer_cover_visible_fade(t).length(), 0, msg="expected no visible 0xFE fade behind compact capsule with over_it")
+  let (lx, ly) = composer_cover_line_hit(t)
+  t.tap(lx, ly)
+  t.run_for(@ui.move_most_ms)
+  assert_true(composer_focused())
+  let (_, gy, _, _) = composer_cover_glass_box(t)
+  guard composer_cover_backdrop(t) is [a, ..] else {
+    fail("expected a fade behind the expanded composer with over_it")
+  }
+  assert_eq(a[53], 64.0, msg="expected 64pt fade height on expanded composer with over_it")
+  assert_true(
+    (gy - a[1] - 16.0).abs() < 2.0,
+    msg="expected fade top ~16pt above expanded composer with over_it (gy=\{gy}, fade_y=\{a[1]})",
+  )
+  t.ctx().blur()
+  t.run_for(@sfpages.let_go_ms + @ui.move_most_ms)
+  assert_eq(composer_cover_backdrop(t).length(), 0, msg="expected backdrop fade gone after collapsing with over_it")
+  assert_eq(composer_cover_visible_fade(t).length(), 0, msg="expected no visible 0xFE fade after collapsing with over_it")
 }
 
 ///|
 test "the messages fade behind the composer only while the soft keyboard is up, eased in and out" {
   let t = composer_cover_tester(pointing=Finger, platform=2)
-  // (the keyboard's fade: the page's ground, nearly opaque, reaching over the composer's glass from above it)
-  let backdrop = fn() {
-    let (gx, gy, gw, gh) = composer_cover_glass_box(t)
-    t.drawn_instances().filter(fn(a) {
-      a[5] == 0.0 && a[53] > 0.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw &&
-      a[1] < gy && a[1] + a[3] > gy + gh / 2.0
-    })
-  }
-  assert_eq(backdrop().length(), 0, msg="none with the keyboard down")
+  assert_eq(composer_cover_backdrop(t).length(), 0, msg="none with the keyboard down")
   t.set_ime_inset(300.0)
   t.run_for(@ui.move_most_ms)
-  guard backdrop() is [_, ..] else { fail("no fade behind the composer with the keyboard up") }
+  let (_, gy, _, _) = composer_cover_glass_box(t)
+  guard composer_cover_backdrop(t) is [a, ..] else {
+    fail("no fade behind the composer with the keyboard up")
+  }
+  assert_eq(a[53], 64.0, msg="expected 64pt fade height with soft keyboard up")
+  assert_true(
+    (gy - a[1] - 16.0).abs() < 2.0,
+    msg="expected fade top ~16pt above composer with soft keyboard up (gy=\{gy}, fade_y=\{a[1]})",
+  )
   t.set_ime_inset(0.0)
   t.run_for(@ui.move_most_ms)
-  assert_eq(backdrop().length(), 0, msg="gone as the keyboard goes")
+  assert_eq(composer_cover_backdrop(t).length(), 0, msg="gone as the keyboard goes")
 }
 
 ///|
