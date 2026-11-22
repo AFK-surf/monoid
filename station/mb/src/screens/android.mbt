@@ -1047,6 +1047,13 @@ fn volume_command(args : String) -> String {
 }
 
 ///|
+/// Its music stream set to `level`: by the audio service where it has `set-volume` (Android 16's media service reads
+/// the volume but sets none from a shell), else by the media service (`set-volume` there answering nothing).
+fn volume_set_command(level : Int) -> String {
+  "cmd audio set-volume 3 \{level} >/dev/null 2>&1; " + volume_command("--set \{level}")
+}
+
+///|
 pub async fn AndroidScreen::volume(self : AndroidScreen) -> ScreenVolume? {
   let said = (self.adb.run)(["shell", volume_command("--get")]) catch { _ => "" }
   volume_of(said)
@@ -1056,7 +1063,7 @@ pub async fn AndroidScreen::volume(self : AndroidScreen) -> ScreenVolume? {
 pub async fn AndroidScreen::set_volume(self : AndroidScreen, level : Double) -> ScreenVolume {
   guard self.volume() is Some(now) else { raise fail("the device says no volume") }
   let to = level.round().max(0.0).min(now.max).to_int()
-  ignore((self.adb.run)(["shell", volume_command("--set \{to}")]))
+  ignore((self.adb.run)(["shell", volume_set_command(to)]))
   self.volume().unwrap_or(now)
 }
 

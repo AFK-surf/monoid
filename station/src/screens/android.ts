@@ -549,6 +549,9 @@ export function volumeOf(said: string): ScreenVolume | null {
 
 /// The device's music stream (3: STREAM_MUSIC), asked of its media service: `media volume` before Android 10.
 const VOLUME = (args: string) => `cmd media_session volume --stream 3 ${args} 2>/dev/null || media volume --stream 3 ${args}`;
+/// Its music stream set to `level`: by the audio service where it has `set-volume` (Android 16's media service reads
+/// the volume but sets none from a shell), else by the media service (`set-volume` there answering nothing).
+const VOLUME_SET = (level: number) => `cmd audio set-volume 3 ${level} >/dev/null 2>&1; ${VOLUME(`--set ${level}`)}`;
 
 /// One device on adb.
 export class AndroidScreen implements ScreenSource {
@@ -601,7 +604,7 @@ export class AndroidScreen implements ScreenSource {
   async setVolume(level: number): Promise<ScreenVolume> {
     const now = await this.volume();
     if (now === null) throw new Error("the device says no volume");
-    await this.#adb.run(["shell", VOLUME(`--set ${Math.max(0, Math.min(now.max, Math.round(level)))}`)]);
+    await this.#adb.run(["shell", VOLUME_SET(Math.max(0, Math.min(now.max, Math.round(level))))]);
     return (await this.volume()) ?? now;
   }
 

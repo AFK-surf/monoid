@@ -283,5 +283,5 @@ test("a device's volume: read from its music stream, set within its range and re
   assert.match(asked[0], /^shell cmd media_session volume --stream 3 --get/);
   assert.deepEqual(await screen.setVolume(12), { level: 12, max: 15 });
   assert.deepEqual(await screen.setVolume(40), { level: 15, max: 15 });
-  assert.ok(asked.some((a) => a.includes("--stream 3 --set 15")));
+  assert.ok(asked.some((a) => a.includes("cmd audio set-volume 3 15") && a.includes("--stream 3 --set 15")));
 });
