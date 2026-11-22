@@ -9,7 +9,9 @@ export interface OperationParams {
   "agentEnv.set": { env?: unknown; text?: string | null | undefined };
   "search.setPersonal": { personal: boolean };
   "network.setCongestion": { congestion: string };
-  "copies.restore": { origin: string; gen: string; fromStation: string };
+  "copies.setSettings": { mode?: string | null | undefined; stations?: string[] | null | undefined; acceptOthers?: boolean | null | undefined; s3?: unknown };
+  "copies.testS3": { id?: string | null | undefined; endpoint?: string | null | undefined; region?: string | null | undefined; bucket?: string | null | undefined; prefix?: string | null | undefined; forcePathStyle?: boolean | null | undefined; accessKeyId?: string | null | undefined; secretAccessKey?: string | null | undefined; encryptionKey?: string | null | undefined };
+  "copies.restore": { origin: string; gen: string; fromStation?: string | null | undefined; fromS3?: string | null | undefined };
   "copies.retire": { to: string };
   "copies.retireCancel": {  };
   "copies.retireAgain": {  };
@@ -220,6 +222,8 @@ export function bindStationOperations(call: Call) {
     agentEnvSet: <T = unknown>(params: OperationParams["agentEnv.set"] = {}) => call("agentEnv.set", params) as Promise<T>,
     searchSetPersonal: <T = unknown>(params: OperationParams["search.setPersonal"]) => call("search.setPersonal", params) as Promise<T>,
     networkSetCongestion: <T = unknown>(params: OperationParams["network.setCongestion"]) => call("network.setCongestion", params) as Promise<T>,
+    copiesSetSettings: <T = unknown>(params: OperationParams["copies.setSettings"] = {}) => call("copies.setSettings", params) as Promise<T>,
+    copiesTestS3: <T = unknown>(params: OperationParams["copies.testS3"] = {}) => call("copies.testS3", params) as Promise<T>,
     copiesRestore: <T = unknown>(params: OperationParams["copies.restore"]) => call("copies.restore", params) as Promise<T>,
     copiesRetire: <T = unknown>(params: OperationParams["copies.retire"]) => call("copies.retire", params) as Promise<T>,
     copiesRetireCancel: <T = unknown>(params: OperationParams["copies.retireCancel"] = {}) => call("copies.retireCancel", params) as Promise<T>,

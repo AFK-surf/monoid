@@ -1023,8 +1023,8 @@ pub fn fixture_corner_modes() -> Array[String] {
     "screen-reconnecting", "screen-trackpad", "screen-trackpad-command", "screen-user-pages", "screen-user-tabs", "screen-windows", "screen-window", "settings-home", "settings-appearance", "settings-experimental",
     "settings-me", "settings-me-reading", "settings-workspace", "settings-security", "settings-vault",
     "settings-vault-items", "settings-vault-item", "settings-stations", "settings-stations-unprotected", "settings-station", "settings-station-unprotected", "settings-station-terminals", "settings-station-offline", "settings-station-env", "settings-station-processes",
-    "settings-station-mark", "settings-station-lower", "settings-station-versions", "settings-station-updated", "settings-station-network", "settings-station-copies", "settings-station-copies-alone",
-    "settings-station-restore", "settings-station-restore-offer", "settings-station-restore-confirm", "settings-station-restore-confirm-long",
+    "settings-station-mark", "settings-station-lower", "settings-station-versions", "settings-station-updated", "settings-station-network", "settings-station-copies", "settings-station-copies-alone", "settings-station-copies-config", "settings-station-copies-s3-form",
+    "settings-station-restore", "settings-station-restore-offer", "settings-station-restore-confirm", "settings-station-restore-confirm-long", "settings-station-restore-s3",
     "settings-station-restored",
     // (a station retired: its panel, Maple chosen, two up and none chosen, none up, a joined workspace's, a long name;
     // then 迁移's steps as it goes, sending, all sent waiting for the hand-over, back there after one failed, paused,

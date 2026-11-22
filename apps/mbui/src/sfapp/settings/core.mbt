@@ -574,6 +574,7 @@ pub fn reset() -> Unit {
   login_marked.val = None
   station_parts.clear()
   station_network_open.clear()
+  station_copies_open.clear()
   lock_prompts_reset()
   vault_prompts_reset()
   fonts_at.set(0)

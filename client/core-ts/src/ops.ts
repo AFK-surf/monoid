@@ -78,7 +78,9 @@ export const PARAMS: Record<string, string> = {
   "agentEnv.set": "env?:json text?:string",
   "search.setPersonal": "personal:boolean",
   "network.setCongestion": "congestion:string",
-  "copies.restore": "origin:string gen:string fromStation:string",
+  "copies.setSettings": "mode?:string stations?:strings acceptOthers?:boolean s3?:json",
+  "copies.testS3": "id?:string endpoint?:string region?:string bucket?:string prefix?:string forcePathStyle?:boolean accessKeyId?:string secretAccessKey?:string encryptionKey?:string",
+  "copies.restore": "origin:string gen:string fromStation?:string fromS3?:string",
   "copies.retire": "to:string",
   "copies.retireCancel": "",
   "copies.retireAgain": "",
@@ -371,10 +373,20 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("PUT", () => "/search/settings", p.pick(["personal"]), OVERVIEW);
     case "network.setCongestion":
       return op("PUT", () => "/network/settings", p.pick(["congestion"]), OVERVIEW);
-    // A lost station's chats restored into a new one (the overview's `copies.offers`), from a station that keeps them
-    // (its station's replica/copies.ts), by the workspace's owners and admins.
-    case "copies.restore":
-      return op("POST", () => "/copies/restore", { station: p.str("origin"), gen: p.str("gen"), from: { station: p.str("fromStation") } }, OVERVIEW);
+    // Configure backup targets (station mode/selection, acceptOthers, and external R2/S3 targets).
+    case "copies.setSettings":
+      return op("PUT", () => "/copies/settings", p.pick(["mode", "stations", "acceptOthers", "s3"]), OVERVIEW);
+    // Test connectivity and credentials for an R2/S3 backup target without saving.
+    case "copies.testS3":
+      return op("POST", () => "/copies/s3/test", p.pick(["id", "endpoint", "region", "bucket", "prefix", "forcePathStyle", "accessKeyId", "secretAccessKey", "encryptionKey"]), NONE);
+    // A lost station's chats restored into a new one (the overview's `copies.offers`), from a station or S3/R2 target
+    // that keeps them (its station's replica/copies.ts), by the workspace's owners and admins.
+    case "copies.restore": {
+      const from = p.has("fromS3") && p.str("fromS3") !== ""
+        ? { s3: p.str("fromS3") }
+        : { station: p.str("fromStation") };
+      return op("POST", () => "/copies/restore", { station: p.str("origin"), gen: p.str("gen"), from }, OVERVIEW);
+    }
     // The station retired from the workspace, its chats going on on `to` (another of its stations' id), by the
     // workspace's owners and admins (its station's replica/retire.ts); let go of while its station says it can be
     // (`retire.cancellable`: answered 409 in words where it no longer can), a failed one tried again now.

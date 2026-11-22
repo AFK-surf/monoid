@@ -223,10 +223,17 @@ test "a station's page in three parts: 概览 what runs on it, 进程 what still
 test "a new station's backup to restore is a row of its 设置, 恢复到这台 its one button" {
   for (w, platform) in page_cases {
     let at = "\{w} platform \{platform}"
+    // legacy station without backup field: quiet backup status stays hidden
+    let legacy = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-copies-alone", h=2400.0)
+    legacy.run_for(@ui.move_most_ms)
+    assert_true(legacy.find("再加一台 station 就会自动备份") is None, msg="quiet legacy backup status not shown: \{at}")
+    assert_true(legacy.find("恢复到这台") is None, msg="nothing to press: \{at}")
+    // station with backup settings: collapsed by default with status row and 管理 button
     let t = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-copies", h=2400.0)
     t.run_for(@ui.move_most_ms)
-    assert_true(t.find("已备份到 Cedar 和 Aspen · 2 分钟前") is None, msg="quiet backup status not shown: \{at}")
-    assert_true(t.find("恢复到这台") is None, msg="nothing to press: \{at}")
+    assert_true(t.find("已备份到 Cedar 和 Aspen · 2 分钟前") is Some(_), msg="backup status shown: \{at}")
+    assert_true(t.find("管理") is Some(_), msg="manage toggle shown: \{at}")
+    assert_true(t.find("允许替其他 Station 存备份") is None, msg="collapsed by default: \{at}")
     // a new station: the backup of a station no longer there in 设置, 恢复到这台 its one button
     let r = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-restore-offer", h=2400.0)
     r.run_for(@ui.move_most_ms)
@@ -244,6 +251,169 @@ test "a new station's backup to restore is a row of its 设置, 恢复到这台 
     assert_true(r.find("恢复到这台") is None, msg="not on the overview: \{at}")
     assert_true(r.find("Old Mac 的 128 个聊天") is None, msg="not on the overview: \{at}")
   }
+}
+
+///|
+test "backup targets config: expand, toggle peers and acceptOthers, test/save S3 with generated recovery key, restore from S3, audit clean" {
+  for (w, platform) in [(390.0, 2), (1280.0, 0)] {
+    let at = "\{w} platform \{platform}"
+    let calls : Array[(String, Json)] = []
+    let t = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-copies-config", h=2600.0, over=fn(s) {
+      {
+        ..s,
+        call: fn(name, params, done) {
+          if name.has_prefix("copies.") {
+            calls.push((name, params))
+            if name == "copies.testS3" {
+              done(Ok(@settings.obj([("ok", Json::boolean(true))])))
+              return
+            }
+            if name == "copies.setSettings" {
+              done(
+                Ok(
+                  @settings.obj([
+                    (
+                      "generatedKeys",
+                      @settings.obj([("r2-new", Json::string("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))]),
+                    ),
+                  ]),
+                ),
+              )
+              return
+            }
+          }
+          (s.call)(name, params, done)
+        },
+      }
+    })
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("已备份到 Cedar 和 Cloudflare R2 · 2 分钟前") is Some(_), msg="summary: \{at}")
+    assert_true(t.find("备份方式") is Some(_), msg="mode label: \{at}")
+    assert_true(t.find("Cedar") is Some(_), msg="peer Cedar: \{at}")
+    assert_true(t.find("不接收他人备份") is Some(_), msg="peer Aspen declined: \{at}")
+    assert_true(t.find("当前离线") is Some(_), msg="peer Birch offline: \{at}")
+    assert_true(t.find("允许替其他 Station 存备份") is Some(_), msg="acceptOthers switch: \{at}")
+    assert_true(t.find("R2 / S3 对象存储") is Some(_), msg="s3 heading: \{at}")
+    assert_true(t.find("Cloudflare R2") is Some(_), msg="s3 target name: \{at}")
+    assert_true(t.find("stillfail-backups") is Some(_), msg="s3 bucket: \{at}")
+    assert_true(t.find("密钥指纹 ab12cd34") is Some(_), msg="s3 key fingerprint: \{at}")
+    assert_eq(t.audit(), [], msg="audit config \{at}: \{Repr(t.audit())}")
+    assert_eq(t.squeeze_faults(), [], msg="squeeze config \{at}: \{Repr(t.squeeze_faults())}")
+    // 1.3x font scale check
+    t.set_font_scale(1.3)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.squeeze_faults(), [], msg="squeeze 1.3x \{at}: \{Repr(t.squeeze_faults())}")
+    t.set_font_scale(1.0)
+    t.run_for(@ui.move_most_ms)
+    // Toggle acceptOthers switch -> copies.setSettings
+    t.click(Switch, label="允许替其他 Station 存备份")
+    t.run_for(@ui.move_most_ms)
+    assert_true(
+      calls.iter().any(fn(c) { c.0 == "copies.setSettings" && !flag(Some(c.1), "acceptOthers") }),
+      msg="acceptOthers call: \{at}",
+    )
+    // Click 添加 to open S3 add form dialog/sheet directly and audit it
+    t.tap_text("添加")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("添加 R2 / S3 对象存储") is Some(_), msg="s3 form title: \{at}")
+    assert_true(t.find("测试连接") is Some(_), msg="test button: \{at}")
+    assert_eq(t.audit(), [], msg="audit form \{at}: \{Repr(t.audit())}")
+    assert_eq(t.squeeze_faults(), [], msg="squeeze form \{at}: \{Repr(t.squeeze_faults())}")
+    t.click(Button, label="取消")
+    t.run_for(@ui.move_most_ms)
+    // English + 320px narrow + long station/bucket name check on station_copies_node directly
+    @sfbase.reset()
+    reset()
+    @settings.reset()
+    @sffixture.fixture_reset()
+    @sf.presenters_reset()
+    @sf.set_words(@sfbase.fill)
+    @settings.station_copies_open["ws1/st1"] = true
+    let en_core = @sfbase.settings_core(@sffixture.fixture("settings"), rig_workspace)
+    let en_copies : Json = {
+      "line": "Backed up to Cedar-Production-Primary-Node-01 and Cloudflare R2 · 2m ago",
+      "level": "ok",
+      "offers": [],
+      "canRestore": true,
+      "formerly": [],
+      "backup": {
+        "mode": "manual",
+        "stations": ["st2"],
+        "acceptOthers": true,
+        "peers": [
+          { "station": "st2", "name": "Cedar-Production-Primary-Node-01", "acceptOthers": true, "online": true },
+          { "station": "st3", "name": "Aspen-Secondary-Archive-Host", "acceptOthers": false, "online": true },
+        ],
+        "s3": [
+          {
+            "id": "r2-1",
+            "name": "Cloudflare R2 Primary Backup",
+            "endpoint": "https://account-id-123456.r2.cloudflarestorage.com",
+            "region": "auto",
+            "bucket": "stillfail-team-encrypted-backups-prod",
+            "prefix": "stillfail-backup",
+            "forcePathStyle": true,
+            "accessKeyMask": "AKIA****1234",
+            "keyFingerprint": "ab12cd34",
+            "includeTranscripts": true,
+            "to": 7,
+            "at": 480000,
+            "error": null,
+            "reason": null,
+            "statusLine": "Synced · 2m ago",
+            "level": "ok",
+          },
+        ],
+      },
+    }
+    let en_w = if w < 500.0 { 320.0 } else { w }
+    let en = station_part_tester(
+      fn(p) {
+        @sf.set_language(Some("en"))
+        station_copies_node(p, en_core, "ws1/st1", fn() { Some(en_copies) }, true, fn() { true })
+      },
+      w=en_w,
+      h=1200.0,
+      platform~,
+    )
+    en.run_for(@ui.move_most_ms)
+    let en_words = en.words().map(fn(x) { x.0 }).join("|")
+    assert_true(en.find("R2 / S3 storage") is Some(_), msg="en s3 heading \{at}: \{en_words}")
+    assert_true(en.find("stillfail-team-encrypted-backups-prod") is Some(_), msg="en long bucket: \{at}")
+    assert_eq(en.audit(), [], msg="en audit \{en_w} \{at}: \{Repr(en.audit())}")
+    assert_eq(en.squeeze_faults(), [], msg="en squeeze \{en_w} \{at}: \{Repr(en.squeeze_faults())}")
+    @sf.set_language(None)
+  }
+  // Restore from S3 passes fromS3 (not fromStation)
+  let restore_calls : Array[(String, Json)] = []
+  let r = setting_tester(Station("ws1/st1"), 390.0, platform=2, mode="settings-station-restore-s3", h=2400.0, over=fn(s) {
+    {
+      ..s,
+      call: fn(name, params, done) {
+        if name == "copies.restore" {
+          restore_calls.push((name, params))
+          done(Ok(@settings.obj([])))
+          return
+        }
+        (s.call)(name, params, done)
+      },
+    }
+  })
+  r.run_for(@ui.move_most_ms)
+  assert_true(r.find("Old Mac 的 128 个聊天 · 来自 Cloudflare R2") is Some(_), msg="s3 offer line")
+  assert_eq(r.audit(), [], msg="audit restore s3")
+  assert_eq(r.squeeze_faults(), [], msg="squeeze restore s3")
+  r.click(Button, label="恢复到这台")
+  r.run_for(@ui.move_most_ms)
+  // Confirm dialog's primary button
+  let btns = r.words().filter(fn(w) { w.0 == "恢复到这台" })
+  assert_true(btns.length() >= 1)
+  let last = btns[btns.length() - 1]
+  r.tap(last.1 + last.3 / 2.0, last.2 + last.4 / 2.0)
+  r.run_for(@ui.move_most_ms)
+  assert_eq(restore_calls.length(), 1)
+  assert_eq(text(Some(restore_calls[0].1), "fromS3"), "r2-1")
+  assert_eq(text(Some(restore_calls[0].1), "fromStation"), "")
 }
 
 ///|

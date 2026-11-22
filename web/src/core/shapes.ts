@@ -1367,6 +1367,10 @@ export interface CopyOffer {
 	line: string;
 	/** The station it is restored from: `copies.restore`'s `fromStation`. */
 	fromStation?: string;
+	/** The S3/R2 target id it is restored from: `copies.restore`'s `fromS3`. */
+	fromS3?: string;
+	/** Display name of the backup source (station or S3/R2 target). */
+	fromName?: string;
 	/** Its restore is under way. */
 	busy: boolean;
 }
@@ -1420,6 +1424,48 @@ export interface CopyTaking {
 	level: Level;
 }
 
+/** Another station in the workspace that can be chosen as a backup target. */
+export interface CopyPeerChoice {
+	station: string;
+	name: string;
+	acceptOthers: boolean;
+	online: boolean;
+}
+
+/** An external R2/S3 backup target with its formatted sync status. */
+export interface CopyS3Target {
+	id: string;
+	name: string;
+	endpoint: string;
+	region: string;
+	bucket: string;
+	prefix: string;
+	forcePathStyle: boolean;
+	accessKeyMask: string;
+	keyFingerprint: string;
+	includeTranscripts: boolean;
+	to: number;
+	at?: number;
+	error?: string;
+	reason?: string;
+	statusLine: string;
+	level: Level;
+}
+
+/** Backup target settings and S3/R2 target states for a station. */
+export interface CopyBackup {
+	/** auto | manual */
+	mode: string;
+	/** Selected peer station ids when mode is manual. */
+	stations: string[];
+	/** Whether this station accepts backups from other stations in the workspace. */
+	acceptOthers: boolean;
+	/** Other stations in the workspace available as backup targets. */
+	peers: CopyPeerChoice[];
+	/** Configured external R2/S3 backup targets and their sync status. */
+	s3: CopyS3Target[];
+}
+
 /** A station's backups, as its 设置 shows them: one row; and its chats moved away as it is retired, or another's taken in. */
 export interface StationCopies {
 	/** Its 备份 row: the stations up to date with it and since when, one not reached or behind said briefly; that it is the only station; that backups stopped and why; or, just after a restore, what came of it. */
@@ -1438,6 +1484,8 @@ export interface StationCopies {
 	retire?: CopyRetire;
 	/** Retired stations' chats being taken in here, a row each: its page's 迁移. */
 	taking?: CopyTaking[];
+	/** Configurable backup targets (stations and R2/S3 object storage). Absent from older stations. */
+	backup?: CopyBackup;
 }
 
 export interface StationMoveOffer {

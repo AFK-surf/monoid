@@ -979,9 +979,24 @@ pub fn fixture_page(mode : String) -> String {
       station_network_open["ws1/st1"] = true
       up("", "settings/station/ws1/st1", -1)
     }
-    // its 设置 scrolled to 备份: its row (Cedar and Aspen up to date; -alone: the only station of its workspace)
+    // its 设置 scrolled to 备份: its row (Cedar and Aspen up to date; -alone: the only station of its workspace;
+    // -config: expanded backup settings with manual peer selection and Cloudflare R2; -s3-form: R2/S3 add dialog)
     "settings-station-copies" | "settings-station-copies-alone" => {
       fx.copies = Some(fixture_copies_row(alone=m == "settings-station-copies-alone"))
+      station_parts["ws1/st1"] = "settings"
+      up("", "settings/station/ws1/st1", -1)
+    }
+    "settings-station-copies-config" | "settings-station-copies-s3-form" => {
+      fx.copies = Some(fixture_copies_config())
+      station_copies_open["ws1/st1"] = true
+      station_parts["ws1/st1"] = "settings"
+      up("", "settings/station/ws1/st1", -1)
+      if m == "settings-station-copies-s3-form" {
+        fixture_open.desk = "copies-s3-form"
+      }
+    }
+    "settings-station-restore-s3" => {
+      fx.copies = Some(fixture_copies_restore_s3())
       station_parts["ws1/st1"] = "settings"
       up("", "settings/station/ws1/st1", -1)
     }
@@ -1285,7 +1300,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings" => "home"
     _ if moves && (m == "settings-station-move-section" || m == "settings-station-move-offered") => "station:ws1/st1"
     _ if moves => "move:ws1/st1"
-    "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-back" | "settings-station-back-held" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" | "settings-station-terminals" =>
+    "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-back" | "settings-station-back-held" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-copies-config" | "settings-station-copies-s3-form" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restore-s3" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" | "settings-station-terminals" =>
       "station:ws1/st1"
     "settings-stations-add" | "settings-stations-existing" | "settings-stations-command" | "settings-first-station" =>
       "stations"
@@ -5800,10 +5815,109 @@ pub fn fixture_machine_sessions(core : Core) -> Unit {
 /// Willow's 备份 row as the core shows it (StationCopies): Cedar and Aspen up to date; `alone`: the only station of its
 /// workspace.
 fn fixture_copies_row(alone~ : Bool) -> Json {
-  obj([
+  let fields : Array[(String, Json)] = [
     ("line", str(if alone { "再加一台 station 就会自动备份" } else { "已备份到 Cedar 和 Aspen · 2 分钟前" })),
     ("level", str(if alone { "amber" } else { "ok" })),
     ("offers", []),
+    ("canRestore", Json::boolean(true)),
+    ("formerly", []),
+  ]
+  if !alone {
+    fields.push(
+      (
+        "backup",
+        obj([
+          ("mode", str("auto")),
+          ("stations", []),
+          ("acceptOthers", Json::boolean(true)),
+          (
+            "peers",
+            Json::array([
+              obj([("station", str("st2")), ("name", str("Cedar")), ("acceptOthers", Json::boolean(true)), ("online", Json::boolean(true))]),
+              obj([("station", str("st3")), ("name", str("Aspen")), ("acceptOthers", Json::boolean(true)), ("online", Json::boolean(true))]),
+            ]),
+          ),
+          ("s3", []),
+        ]),
+      ),
+    )
+  }
+  obj(fields)
+}
+
+///|
+/// Willow's expanded backup configuration: manual station selection (Cedar selected, Aspen declining, Birch offline)
+/// plus a configured Cloudflare R2 target.
+fn fixture_copies_config() -> Json {
+  obj([
+    ("line", str("已备份到 Cedar 和 Cloudflare R2 · 2 分钟前")),
+    ("level", str("ok")),
+    ("offers", []),
+    ("canRestore", Json::boolean(true)),
+    ("formerly", []),
+    (
+      "backup",
+      obj([
+        ("mode", str("manual")),
+        ("stations", Json::array([str("st2")])),
+        ("acceptOthers", Json::boolean(true)),
+        (
+          "peers",
+          Json::array([
+            obj([("station", str("st2")), ("name", str("Cedar")), ("acceptOthers", Json::boolean(true)), ("online", Json::boolean(true))]),
+            obj([("station", str("st3")), ("name", str("Aspen")), ("acceptOthers", Json::boolean(false)), ("online", Json::boolean(true))]),
+            obj([("station", str("st4")), ("name", str("Birch")), ("acceptOthers", Json::boolean(true)), ("online", Json::boolean(false))]),
+          ]),
+        ),
+        (
+          "s3",
+          Json::array([
+            obj([
+              ("id", str("r2-1")),
+              ("name", str("Cloudflare R2")),
+              ("endpoint", str("https://acct.r2.cloudflarestorage.com")),
+              ("region", str("auto")),
+              ("bucket", str("stillfail-backups")),
+              ("prefix", str("stillfail-backup")),
+              ("forcePathStyle", Json::boolean(true)),
+              ("accessKeyMask", str("AKIA****1234")),
+              ("keyFingerprint", str("ab12cd34")),
+              ("includeTranscripts", Json::boolean(true)),
+              ("to", Json::number(7.0)),
+              ("at", Json::number(480000.0)),
+              ("error", Json::null()),
+              ("reason", Json::null()),
+              ("statusLine", str("已同步 · 2 分钟前")),
+              ("level", str("ok")),
+            ]),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+}
+
+///|
+/// A new empty station discovering a restorable backup stored in Cloudflare R2.
+fn fixture_copies_restore_s3() -> Json {
+  obj([
+    ("line", str("未配置备份目标")),
+    ("level", str("amber")),
+    (
+      "offers",
+      [
+        obj([
+          ("station", str("st9")),
+          ("gen", str("1-abcdef01")),
+          ("name", str("Old Mac")),
+          ("line", str("Old Mac 的 128 个聊天 · 来自 Cloudflare R2")),
+          ("fromStation", Json::null()),
+          ("fromS3", str("r2-1")),
+          ("fromName", str("Cloudflare R2")),
+          ("busy", Json::boolean(false)),
+        ]),
+      ],
+    ),
     ("canRestore", Json::boolean(true)),
     ("formerly", []),
   ])

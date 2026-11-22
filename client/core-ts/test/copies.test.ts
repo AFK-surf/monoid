@@ -7,6 +7,7 @@ import { linkNow, linkTarget } from "../src/asks.ts";
 import { conform } from "../src/conform.ts";
 import { copiesShown } from "../src/copies.ts";
 import { holdLanguage } from "../src/i18n.ts";
+import { request } from "../src/ops.ts";
 
 holdLanguage();
 const c = { now: 10 * 60_000, offsetMin: 0 };
@@ -172,4 +173,147 @@ test("a station taking retired ones' chats in: a row for each, whose and where i
   assert.equal(v.taking[0].origin, C);
   assert.equal(v.canRetire, true, "taking others' in, it may be retired itself");
   assert.ok("ok" in conform("StationCopies", v), JSON.stringify(conform("StationCopies", v)));
+});
+
+const s3Target = (id: string, name: string, o: Record<string, unknown> = {}) => ({
+  id,
+  name,
+  endpoint: "https://acct.r2.cloudflarestorage.com",
+  region: "auto",
+  bucket: "stillfail-backups",
+  prefix: "stillfail-backup",
+  forcePathStyle: true,
+  accessKeyMask: "AKIA****1234",
+  keyFingerprint: "ab12cd34",
+  includeTranscripts: true,
+  to: 7,
+  at: 8 * 60_000,
+  error: null,
+  reason: null,
+  ...o,
+});
+
+test("backup settings: S3-only, mixed station+S3, partial failure, unconfigured, manual peers, and S3 restore offer", () => {
+  // Older station without backup field stays backward compatible
+  const legacy = copiesShown({ to: 7, chats: 12, keepers: [keeper(A, "Cedar", {})], empty: false, manage: true, formerly: [] }, c);
+  assert.equal(legacy.backup, undefined);
+  assert.ok("ok" in conform("StationCopies", legacy), JSON.stringify(conform("StationCopies", legacy)));
+
+  // S3-only target (station backups off): no longer says "add another station"
+  const s3Only = copiesShown({
+    to: 7,
+    chats: 12,
+    keepers: [],
+    empty: false,
+    manage: true,
+    formerly: [],
+    backup: {
+      mode: "manual",
+      stations: [],
+      acceptOthers: true,
+      peers: [{ station: A, name: "Cedar", acceptOthers: true, online: true }],
+      s3: [s3Target("r2-1", "Cloudflare R2")],
+    },
+  }, c);
+  assert.equal(s3Only.line, "已备份到 Cloudflare R2 · 2 分钟前");
+  assert.equal(s3Only.level, "ok");
+  assert.equal(s3Only.backup.s3[0].statusLine, "已同步 · 2 分钟前");
+  assert.equal(s3Only.backup.s3[0].level, "ok");
+  assert.ok("ok" in conform("StationCopies", s3Only), JSON.stringify(conform("StationCopies", s3Only)));
+
+  // Mixed station + S3 targets all up to date
+  const mixed = copiesShown({
+    to: 7,
+    chats: 12,
+    keepers: [keeper(A, "Cedar", {}), keeper(B, "Aspen", { at: 9 * 60_000 })],
+    empty: false,
+    manage: true,
+    formerly: [],
+    backup: {
+      mode: "manual",
+      stations: [A, B],
+      acceptOthers: false,
+      peers: [
+        { station: A, name: "Cedar", acceptOthers: true, online: true },
+        { station: B, name: "Aspen", acceptOthers: false, online: false },
+      ],
+      s3: [s3Target("r2-1", "Cloudflare R2", { at: 8 * 60_000 })],
+    },
+  }, c);
+  assert.equal(mixed.line, "已备份到 Cedar、Aspen 和 Cloudflare R2 · 1 分钟前");
+  assert.equal(mixed.level, "ok");
+  assert.equal(mixed.backup.acceptOthers, false);
+  assert.equal(mixed.backup.peers.length, 2);
+  assert.equal(mixed.backup.peers[1].acceptOthers, false);
+  assert.ok("ok" in conform("StationCopies", mixed), JSON.stringify(conform("StationCopies", mixed)));
+
+  // Partial failure: station ok, S3 failing
+  const partial = copiesShown({
+    to: 7,
+    chats: 12,
+    keepers: [keeper(A, "Cedar", {})],
+    empty: false,
+    manage: true,
+    formerly: [],
+    backup: {
+      mode: "auto",
+      stations: [],
+      acceptOthers: true,
+      peers: [],
+      s3: [s3Target("r2-1", "Cloudflare R2", { error: "AccessDenied", reason: "error" })],
+    },
+  }, c);
+  assert.equal(partial.line, "已备份到 Cedar · 2 分钟前 · Cloudflare R2 出错了");
+  assert.equal(partial.level, "amber");
+  assert.equal(partial.backup.s3[0].level, "red");
+  assert.equal(partial.backup.s3[0].statusLine, "同步失败");
+  assert.ok("ok" in conform("StationCopies", partial), JSON.stringify(conform("StationCopies", partial)));
+
+  // Unconfigured: manual mode with no stations and no S3
+  const none = copiesShown({
+    to: 7,
+    chats: 12,
+    keepers: [],
+    empty: false,
+    manage: true,
+    formerly: [],
+    backup: { mode: "manual", stations: [], acceptOthers: true, peers: [], s3: [] },
+  }, c);
+  assert.equal(none.line, "未配置备份目标");
+  assert.equal(none.level, "amber");
+  assert.ok("ok" in conform("StationCopies", none), JSON.stringify(conform("StationCopies", none)));
+
+  // Restore offer from S3/R2
+  const offeredS3 = {
+    looking: false,
+    at: 1,
+    copies: [{ station: A, name: "Old Mac", gen: "1-abcdef01", made: 60_000, to: 9, chats: 128, from: [{ s3: "r2-1", name: "Cloudflare R2" }] }],
+  };
+  const restoreS3 = copiesShown({ to: 0, chats: 0, keepers: [], empty: true, manage: true, formerly: [], restorable: offeredS3, restoring: null }, c);
+  assert.equal(restoreS3.offers.length, 1);
+  assert.equal(restoreS3.offers[0].line, "Old Mac 的 128 个聊天 · 来自 Cloudflare R2");
+  assert.equal(restoreS3.offers[0].fromStation, null);
+  assert.equal(restoreS3.offers[0].fromS3, "r2-1");
+  assert.equal(restoreS3.offers[0].fromName, "Cloudflare R2");
+  assert.ok("ok" in conform("StationCopies", restoreS3), JSON.stringify(conform("StationCopies", restoreS3)));
+
+  // Ops wire contract: setSettings, testS3, and restore with fromS3 vs fromStation
+  const setReq = request("copies.setSettings", { station: "ws1/st1", mode: "manual", stations: [A], acceptOthers: false, s3: [] });
+  assert.equal(setReq?.method, "PUT");
+  assert.equal(setReq?.path, "/copies/settings");
+  assert.deepEqual(setReq?.body, { mode: "manual", stations: [A], acceptOthers: false, s3: [] });
+  assert.deepEqual(setReq?.effect, { kind: "overview" });
+
+  const testReq = request("copies.testS3", { station: "ws1/st1", endpoint: "https://r2.example", bucket: "b", accessKeyId: "k", secretAccessKey: "s" });
+  assert.equal(testReq?.method, "POST");
+  assert.equal(testReq?.path, "/copies/s3/test");
+  assert.deepEqual(testReq?.effect, { kind: "none" });
+
+  const restoreS3Req = request("copies.restore", { station: "ws1/st1", origin: A, gen: "1-abcdef01", fromS3: "r2-1" });
+  assert.equal(restoreS3Req?.method, "POST");
+  assert.equal(restoreS3Req?.path, "/copies/restore");
+  assert.deepEqual(restoreS3Req?.body, { station: A, gen: "1-abcdef01", from: { s3: "r2-1" } });
+
+  const restoreStReq = request("copies.restore", { station: "ws1/st1", origin: A, gen: "1-abcdef01", fromStation: B });
+  assert.deepEqual(restoreStReq?.body, { station: A, gen: "1-abcdef01", from: { station: B } });
 });

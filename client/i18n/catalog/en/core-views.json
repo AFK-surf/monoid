@@ -925,14 +925,24 @@
   "core-views.copies.done": "Backed up to {places} · {ago}",
   "core-views.copies.notYet": "Not backed up yet",
   "core-views.copies.alone": "Add another station and backups start by themselves",
+  "core-views.copies.none": "No backup target configured",
   "core-views.copies.problem.offline": "{name} not reached",
   "core-views.copies.problem.behind": "{name} behind",
   "core-views.copies.problem.old": "{name} too old",
   "core-views.copies.problem.error": "{name} failed",
+  "core-views.copies.s3.synced": "Synced · {ago}",
+  "core-views.copies.s3.pending": "Waiting for first sync",
+  "core-views.copies.s3.behind": "Behind",
+  "core-views.copies.s3.offline": "Can't reach endpoint",
+  "core-views.copies.s3.error": "Sync failed",
   "core-views.copies.stopped": "Backups stopped: {why}; tried again by itself",
   "core-views.copies.offer": {
     "one": "{name}'s chat",
     "other": "{name}'s {n} chats"
+  },
+  "core-views.copies.offerFrom": {
+    "one": "{name}'s chat · from {from}",
+    "other": "{name}'s {n} chats · from {from}"
   },
   "core-views.copies.restoring.going": "Restoring: {done} of {total} files",
   "core-views.copies.restoring.starting": "The files are here; the restore finishes as the station restarts",

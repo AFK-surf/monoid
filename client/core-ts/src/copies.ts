@@ -49,15 +49,79 @@ function restoredLine(o: J, c: Clock, quiet: boolean): string | null {
   return num(o.missing) > 0 ? `${line} · ${t("core-views.copies.restored.missing", { n: num(o.missing) })}` : line;
 }
 
+/// Format a single S3/R2 target from station backup settings with its status line and severity level.
+function s3TargetOf(s: J, stationTo: number, c: Clock): J {
+  const id = str(s?.id);
+  const name = str(s?.name) || str(s?.bucket) || short(id);
+  const sTo = num(s?.to);
+  const at = typeof s?.at === "number" && Number.isFinite(s.at) ? s.at : null;
+  const error = typeof s?.error === "string" && s.error !== "" ? s.error : null;
+  const reason = s?.reason === "offline" || s?.reason === "old" || s?.reason === "error" ? s.reason : null;
+  let statusLine: string;
+  let level: "ok" | "amber" | "red";
+  if (error !== null) {
+    statusLine = reason === "offline" ? t("core-views.copies.s3.offline") : t("core-views.copies.s3.error");
+    level = "red";
+  } else if (at === null) {
+    statusLine = t("core-views.copies.s3.pending");
+    level = "amber";
+  } else if (sTo < stationTo) {
+    statusLine = t("core-views.copies.s3.behind");
+    level = "amber";
+  } else {
+    statusLine = t("core-views.copies.s3.synced", { ago: ago(at, c) });
+    level = "ok";
+  }
+  return {
+    id,
+    name,
+    endpoint: str(s?.endpoint),
+    region: str(s?.region) || "auto",
+    bucket: str(s?.bucket),
+    prefix: str(s?.prefix),
+    forcePathStyle: s?.forcePathStyle === true,
+    accessKeyMask: str(s?.accessKeyMask),
+    keyFingerprint: str(s?.keyFingerprint),
+    includeTranscripts: s?.includeTranscripts !== false,
+    to: sTo,
+    at,
+    error,
+    reason,
+    statusLine,
+    level,
+  };
+}
+
+/// Sanitize and format optional `backup` settings from the station overview; undefined for older stations.
+function backupOf(b: unknown, stationTo: number, c: Clock): J | undefined {
+  if (!isObject(b)) return undefined;
+  return {
+    mode: b.mode === "manual" ? "manual" : "auto",
+    stations: arr(b.stations).filter((s): s is string => typeof s === "string"),
+    acceptOthers: b.acceptOthers !== false,
+    peers: arr(b.peers).map((p) => ({
+      station: str(p?.station),
+      name: str(p?.name) || short(str(p?.station)),
+      acceptOthers: p?.acceptOthers !== false,
+      online: p?.online === true,
+    })),
+    s3: arr(b.s3).map((s) => s3TargetOf(s, stationTo, c)),
+  };
+}
+
 /// The overview's `copies` as the page shows it; undefined when the station said none.
 export function copiesShown(v: unknown, c: Clock): J | undefined {
   if (!isObject(v)) return undefined;
   const to = num(v.to);
+  const backup = backupOf(v.backup, to, c);
   const keepers = arr(v.keepers).map((k) => ({ k, name: str(k?.name) || short(str(k?.station)) }));
+  const s3List: J[] = backup ? backup.s3 : [];
   // (those as far as this station, and when the last of them was brought level; then what is wrong, briefly)
-  const current = keepers.filter(({ k }) => str(k?.error) === "" && typeof k?.at === "number" && num(k?.to) >= to);
-  const last = Math.max(0, ...current.map(({ k }) => num(k.at)));
-  const wrong = keepers.filter((x) => !current.includes(x)).map(({ k, name }) =>
+  const currentKeepers = keepers.filter(({ k }) => str(k?.error) === "" && typeof k?.at === "number" && num(k?.to) >= to);
+  const currentS3 = s3List.filter((s) => s.error === null && s.at !== null && s.to >= to);
+  const currentNames = [...currentKeepers.map((x) => x.name), ...currentS3.map((s) => s.name as string)];
+  const last = Math.max(0, ...currentKeepers.map(({ k }) => num(k.at)), ...currentS3.map((s) => num(s.at)));
+  const wrongKeepers = keepers.filter((x) => !currentKeepers.includes(x)).map(({ k, name }) =>
     str(k?.error) === ""
       ? t("core-views.copies.problem.behind", { name })
       : k?.reason === "old"
@@ -65,28 +129,40 @@ export function copiesShown(v: unknown, c: Clock): J | undefined {
         : k?.reason === "error"
           ? t("core-views.copies.problem.error", { name })
           : t("core-views.copies.problem.offline", { name }));
+  const wrongS3 = s3List.filter((s) => !currentS3.includes(s)).map((s) =>
+    s.error === null
+      ? t("core-views.copies.problem.behind", { name: s.name })
+      : s.reason === "old"
+        ? t("core-views.copies.problem.old", { name: s.name })
+        : s.reason === "offline"
+          ? t("core-views.copies.problem.offline", { name: s.name })
+          : t("core-views.copies.problem.error", { name: s.name }));
+  const wrong = [...wrongKeepers, ...wrongS3];
+  const totalTargets = keepers.length + s3List.length;
   let line: string;
   let level: "ok" | "amber" | "red";
   if (isObject(v.stopped)) {
     line = t("core-views.copies.stopped", { why: why(v.stopped.reason) });
     level = "red";
-  } else if (keepers.length === 0) {
-    line = t("core-views.copies.alone");
+  } else if (totalTargets === 0) {
+    line = backup !== undefined && backup.mode === "manual" && backup.stations.length === 0 && backup.s3.length === 0
+      ? t("core-views.copies.none")
+      : t("core-views.copies.alone");
     level = "amber";
   } else {
-    const done = current.length > 0 ? t("core-views.copies.done", { places: listed(current.map((x) => x.name)), ago: ago(last, c) }) : t("core-views.copies.notYet");
+    const done = currentNames.length > 0 ? t("core-views.copies.done", { places: listed(currentNames), ago: ago(last, c) }) : t("core-views.copies.notYet");
     line = [done, ...wrong].join(" · ");
-    level = wrong.length > 0 || current.length === 0 ? "amber" : "ok";
+    level = wrong.length > 0 || currentNames.length === 0 ? "amber" : "ok";
   }
-  // (just after a restore: what came of it, until a station is up to date with it; one that failed or left files to
+  // (just after a restore: what came of it, until a target is up to date with it; one that failed or left files to
   // place, until it is put right)
-  const after = restoredLine(v.restored, c, current.length > 0);
+  const after = restoredLine(v.restored, c, currentNames.length > 0);
   if (after !== null && !isObject(v.stopped)) line = after;
   const manage = v.manage === true;
   const offers = v.empty === true ? offersOf(v) : [];
   const busy = offers.some((o) => o.busy);
   const retire = retireOf(v.retiring, manage);
-  return {
+  const out: J = {
     line,
     level,
     offers,
@@ -97,6 +173,8 @@ export function copiesShown(v: unknown, c: Clock): J | undefined {
     retire,
     taking: arr(v.taking).map((x) => takingOf(x)),
   };
+  if (backup !== undefined) out.backup = backup;
+  return out;
 }
 
 /// Bytes in a few characters (1.2 GB).
@@ -201,19 +279,27 @@ function offersOf(v: J): J[] {
   const offers = arr(looked?.copies).map((x) => {
     const name = str(x?.name) || short(str(x?.station));
     const first = arr(x?.from)[0] ?? null;
+    const fromStation = typeof first?.station === "string" && first.station !== "" ? first.station : null;
+    const fromS3 = typeof first?.s3 === "string" && first.s3 !== "" ? first.s3 : null;
+    const fromName = typeof first?.name === "string" && first.name !== "" ? first.name : null;
     const mine = r !== null && str(r.origin) === str(x?.station) && str(r.gen) === str(x?.gen);
+    const offerLine = fromS3 !== null && fromName !== null
+      ? t("core-views.copies.offerFrom", { name, n: num(x?.chats), from: fromName })
+      : t("core-views.copies.offer", { name, n: num(x?.chats) });
     return {
       station: str(x?.station),
       gen: str(x?.gen),
       name,
-      line: mine ? going(r) : t("core-views.copies.offer", { name, n: num(x?.chats) }),
-      fromStation: typeof first?.station === "string" ? first.station : null,
+      line: mine ? going(r) : offerLine,
+      fromStation,
+      fromS3,
+      fromName,
       busy: mine && running,
     };
   });
   // (one being restored whose backup is not among those found any more: its row still says how it goes)
   if (r !== null && !offers.some((o) => o.station === str(r.origin) && o.gen === str(r.gen))) {
-    offers.push({ station: str(r.origin), gen: str(r.gen), name: str(r.name) || short(str(r.origin)), line: going(r), fromStation: str(r.from) || null, busy: running });
+    offers.push({ station: str(r.origin), gen: str(r.gen), name: str(r.name) || short(str(r.origin)), line: going(r), fromStation: str(r.from) || null, fromS3: null, fromName: null, busy: running });
   }
   return offers;
 }
