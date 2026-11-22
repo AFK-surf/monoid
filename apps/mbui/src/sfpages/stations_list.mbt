@@ -46,6 +46,21 @@ pub fn stations_list_node(
     }
   })
   let addresses = fn() { addresses_now.get() }
+  // (the stations' cards as last shown: a station joining or leaving a list already shown comes or goes its way, a
+  // live cause told within the page (its card's own changes at once: transitions_only on each); the first answer, the
+  // last one gone or the first one come, there at once, as the page's blocks put another set in their place then)
+  let shown_addresses = @signals.signal(@signals.untracked(addresses), same=fn(a, b) { a == b })
+  v.reacts(
+    addresses,
+    fn(next) {
+      if !@view.answering_now() {
+        @view.transition(within=v, fn() { shown_addresses.set(next) })
+      } else {
+        shown_addresses.set(next)
+      }
+    },
+    at_start=false,
+  )
   // (the list kept by address once, so a station's card is told only as its own station changes: View::keyed_by)
   let stations_by = v.keyed_by(fn() { stations().unwrap_or([]) }, fn(st) { text(Some(st), "station") })
   let rigs_now = @signals.computed(fn(_) { if stations() is Some(_) { @settings.rigs_listed(core, here()) } else { [] } }, same=jsons_same)
@@ -75,9 +90,14 @@ pub fn stations_list_node(
       match stations() {
         None => ["waiting"]
         Some(a) => {
-          // (its stations one block, a card each by its address in it: one added to a list shown makes its way in,
-          // View::each's, where the page's blocks come at once)
-          let out : Array[String] = if a.length() == 0 { ["first"] } else { ["stations"] }
+          // (a block each station, by its address, so the page's list makes only the cards in sight and near it
+          // (View::scrolls_window), not all of them as it opens; none shown yet, those the list has now, at once)
+          let out : Array[String] = if a.length() == 0 {
+            ["first"]
+          } else {
+            let shown = shown_addresses.get()
+            (if shown.length() == 0 { addresses() } else { shown }).map(fn(addr) { "station/" + addr })
+          }
           for r in rigs_now.get() {
             out.push("rig/" + text(Some(r), "id"))
           }
@@ -111,35 +131,22 @@ pub fn stations_list_node(
           )
         "first" => sl_first_node(b, core, here, add, adding)
         "devices" => @sf.section_heading_node(b, fn() { @sf.t("web-pages.devices.title") })
-        "stations" => {
-          // (live station additions/removals open or close their card slots within this block; card-internal updates stay static)
-          b.transitions_only() |> ignore
-          let shown_addresses = @signals.signal(@signals.untracked(addresses), same=fn(a, b) { a == b })
-          b.reacts(
-            addresses,
-            fn(next) {
-              if !@view.answering_now() {
-                @view.transition(within=b, fn() { shown_addresses.set(next) })
-              } else {
-                shown_addresses.set(next)
+        k if k.has_prefix("station/") => {
+          let address = k.exact_view(start=8).to_owned()
+          // (its own station of the list, read by its address: told only as that one changes; while the block leaves
+          // after its address is dropped, keep the last known station so the leaving card does not blank or snap its
+          // height)
+          let last_station : Ref[Json?] = Ref(None)
+          let station = fn() {
+            match stations_by.get(address) {
+              Some(v) => {
+                last_station.val = Some(v)
+                Some(v)
               }
-            },
-            at_start=false,
-          )
-          b.each(fn() { shown_addresses.get() }, fn(k) { k }, fn(row, k) {
-            let address = k.untracked()
-            // (its own station of the list, read by its address: told only as that one changes; while the row leaves after
-            // its address is dropped, keep the last known station so the leaving card does not blank or snap its height)
-            let last_station : Ref[Json?] = Ref(None)
-            let station = fn() {
-              match stations_by.get(address) {
-                Some(v) => {
-                  last_station.val = Some(v)
-                  Some(v)
-                }
-                None => last_station.val
-              }
+              None => last_station.val
             }
+          }
+          b.box(fn(row) {
             row.box(fn(card) {
               card.transitions_only() |> ignore
               sl_station_card_node(card, core, station, fn() { (core.push)(Station(address)) }, shown~)
@@ -159,6 +166,7 @@ pub fn stations_list_node(
             })
             |> ignore
           })
+          |> ignore
         }
         k if k.has_prefix("rig/") => {
           let id = k.exact_view(start=4).to_owned()
