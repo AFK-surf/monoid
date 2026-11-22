@@ -666,7 +666,14 @@ pub fn field_edit_now(id : Int, what : Int) -> Unit {
   let c = g()
   if what == @hostapi.text_menu_paste {
     c.field_paste(id)
-    h_frame_owed()
+    match c.editors.get(id) {
+      Some(st) => {
+        st.menu = false
+        st.sel_handles = false
+      }
+      None => ()
+    }
+    tree_field_redraw()
   } else {
     c.field_edit(id, what)
   }
@@ -694,9 +701,14 @@ fn tree_field_gone(id : @view.NodeId) -> Unit {
       tree_fields_rev.val = tree_fields_rev.val + 1
       match tree_said_of.get(id) {
         Some(k) => {
-          match g().editors.get(k) {
-            Some(st) if physical_equal(st, tf.st) => g().editors.remove(k)
+          let c = g()
+          match c.editors.get(k) {
+            Some(st) if physical_equal(st, tf.st) => c.editors.remove(k)
             _ => ()
+          }
+          if c.word_drag == k {
+            c.word_drag = 0
+            tree_finger_read.val.set(None)
           }
           sideways.remove(k)
         }
@@ -729,6 +741,10 @@ fn tree_field_down(id : @view.NodeId, x : Double, y : Double, at : Double) -> Bo
   tf.strayed = false
   tf.editing = false
   tf.word_drag = false
+  if g().word_drag == tree_said_id(id) {
+    g().word_drag = 0
+  }
+  tree_finger_read.val.set(None)
   tf.handle = 0
   tf.track.reset()
   tf.track.add(at, y)
@@ -781,7 +797,14 @@ fn tree_field_held(id : @view.NodeId) -> Unit {
   let st = tf.st
   tf.editing = true
   match st.local_point(x, y) {
-    Some((lx, ly)) => if st.pick_word(lx, ly, view_moment()) { tf.word_drag = true }
+    Some((lx, ly)) =>
+      if st.pick_word(lx, ly, view_moment()) {
+        tf.word_drag = true
+        c.word_drag = tree_said_id(id)
+        if pointing() is Finger {
+          tree_finger_read.val.set(Some((x, y)))
+        }
+      }
     None => ()
   }
   view_down.val = None
@@ -817,6 +840,9 @@ fn tree_field_handle_down(x : Double, y : Double, at : Double) -> Bool {
   c.handle_which = which
   c.handle_drag = c.focus
   c.handle_dy = dy
+  if pointing() is Finger {
+    tree_finger_read.val.set(Some((x, y - loupe_reach)))
+  }
   if which != 1 {
     st.menu = false
   }
@@ -863,10 +889,16 @@ fn tree_field_moved(id : @view.NodeId, x : Double, y : Double, at : Double) -> B
     }
   } else if tf.handle != 0 {
     handle_move(g(), x, y, at)
+    if pointing() is Finger {
+      tree_finger_read.val.set(Some((x, y - loupe_reach)))
+    }
   } else if tf.word_drag {
     match st.local_point(x, y) {
       Some((lx, ly)) => st.widen_to(lx, ly)
       None => ()
+    }
+    if pointing() is Finger {
+      tree_finger_read.val.set(Some((x, y)))
     }
     st.menu = false
   } else {
@@ -948,6 +980,12 @@ fn tree_field_let_go(id : @view.NodeId, x : Double, y : Double, up : Bool) -> Un
   }
   if tf.handle != 0 {
     c.handle_drag = 0
+  }
+  if tf.word_drag || c.word_drag == tree_said_id(id) {
+    c.word_drag = 0
+  }
+  if tf.handle != 0 || tf.word_drag {
+    tree_finger_read.val.set(None)
   }
   if tf.bar {
     c.bar_let_go()
@@ -1348,6 +1386,7 @@ fn Ctx::paint_tree_field(
   // about its top left and within what cuts it where it is drawn: as a block of the tree's is composed, view_blit)
   let (outer, outer_r, outer_s) = clip_at(clip_top())
   let i0 = self.ninst
+  let tops0 = dr.tops.length()
   push_unclipped()
   // (its bar, where its words scroll in it, found where it is drawn as an old view's field's is (Ctx::bar_at): kept for
   // the pointer with the frame's bars where those are found alone)
@@ -1386,7 +1425,26 @@ fn Ctx::paint_tree_field(
     bar_pointed=fn(b) { tree_field_thumb_pointed(id, bar_drawn_at(b, laid, x, y, s, outer)) },
   )
   pop_clip()
-  self.transform_insts(i0, self.ninst, ux, uy, s, s, x - ux, y - uy, outer, outer_r, outer_s)
+  let body_end = if dr.tops.length() > tops0 { dr.tops[tops0].0 } else { self.ninst }
+  self.transform_insts(i0, body_end, ux, uy, s, s, x - ux, y - uy, outer, outer_r, outer_s)
+  if body_end < self.ninst {
+    let unclipped = (-1.0e9, -1.0e9, 1.0e9, 1.0e9)
+    push_unclipped()
+    self.transform_insts(
+      body_end,
+      self.ninst,
+      ux,
+      uy,
+      s,
+      s,
+      x - ux,
+      y - uy,
+      unclipped,
+      (0.0, 0.0, 0.0, 0.0),
+      (0.0, 0.0, 0.0, 0.0),
+    )
+    pop_clip()
+  }
 }
 
 ///|

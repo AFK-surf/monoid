@@ -19,7 +19,12 @@ pub(all) struct PickBarItem {
 /// where there is a mark): what is picked anew makes a bar anew, so what it offers is said as it is made. The node:
 /// the capsule.
 #callsite(autofill(loc))
-pub fn pick_bar_node(parent : @view.View, items : Array[PickBarItem], loc~ : SourceLoc) -> @view.View {
+pub fn pick_bar_node(
+  parent : @view.View,
+  items : Array[PickBarItem],
+  compact? : Bool = false,
+  loc~ : SourceLoc,
+) -> @view.View {
   parent.box(made_for=loc, fn(bar) {
     style_node(bar, fn() { pick_bar_look })
     bar
@@ -31,7 +36,7 @@ pub fn pick_bar_node(parent : @view.View, items : Array[PickBarItem], loc~ : Sou
     |> ignore
     for it in items {
       if !it.mark {
-        pick_bar_button(bar, it) |> ignore
+        pick_bar_button(bar, it, compact~) |> ignore
       }
     }
     let marks = items.filter(fn(it) { it.mark })
@@ -39,7 +44,7 @@ pub fn pick_bar_node(parent : @view.View, items : Array[PickBarItem], loc~ : Sou
       bar.box(fn(r) { style_node(r, fn() { pick_bar_rule }) }) |> ignore
     }
     for it in marks {
-      pick_bar_button(bar, it) |> ignore
+      pick_bar_button(bar, it, compact~) |> ignore
     }
   })
 }
@@ -48,9 +53,22 @@ pub fn pick_bar_node(parent : @view.View, items : Array[PickBarItem], loc~ : Sou
 /// A button of the bar (pick_bar's button, its mark): its ground the page's while pressed (its ripple), its icon 15
 /// and its words in the ink.
 #callsite(autofill(loc))
-fn pick_bar_button(parent : @view.View, it : PickBarItem, loc~ : SourceLoc) -> @view.View {
+fn pick_bar_button(
+  parent : @view.View,
+  it : PickBarItem,
+  compact? : Bool = false,
+  loc~ : SourceLoc,
+) -> @view.View {
   @headless.button(made_for=loc, parent, fn() { it.label }, fn(_) { (it.press)() }, fn(v, b) {
-    style_node(v, fn() { if it.mark { pick_bar_mark_look } else { pick_bar_button_look } })
+    style_node(v, fn() {
+      if it.mark {
+        pick_bar_mark_look
+      } else if compact {
+        pick_bar_button_compact_look
+      } else {
+        pick_bar_button_look
+      }
+    })
     if it.icon != "" {
       icon_node(v, it.icon, pick_bar_icon, By(fn() { theme().p.text })) |> ignore
     }
@@ -88,12 +106,17 @@ fn pick_bar_button(parent : @view.View, it : PickBarItem, loc~ : SourceLoc) -> @
 ///|
 /// The capsule (pick_bar's): 40 high, 4 in at its ends, round; glass/solid ground and shadow are bound on the node.
 // kept across runs: a value (no field of it changes)
-let pick_bar_look : @ui.Style = @ui.css("row h=S10 px=S1 radius=Full align=ACenter")
+let pick_bar_look : @ui.Style = @ui.css("row min_h=S10 px=S1 radius=Full align=ACenter")
 
 ///|
 /// A button (pick_button's): 32 high, 12 in, its icon 5 before its words, round.
 // kept across runs: a value (no field of it changes)
-let pick_bar_button_look : @ui.Style = @ui.css("row h=S8 px=S3 gap=S1_25 radius=Full align=ACenter")
+let pick_bar_button_look : @ui.Style = @ui.css("row min_h=S8 px=S3 gap=S1_25 radius=Full align=ACenter")
+
+///|
+/// A compact button for tight narrow viewports (e.g. 320pt at 1.3x font scale with 4 actions): 8 in, round.
+// kept across runs: a value (no field of it changes)
+let pick_bar_button_compact_look : @ui.Style = @ui.css("row min_h=S8 px=S2 gap=S1 radius=Full align=ACenter")
 
 ///|
 /// A mark alone (pick_mark_button's): 32 round, its icon in its middle.

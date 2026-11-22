@@ -764,6 +764,21 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     @sf.presented_nodes(root)
     // what a right click offers, over every shell, switcher, viewer and presented modal (sfdesk context_menu.mbt)
     @sfdesk.context_menu_node(root)
+    // floating liquid-glass editing bar for focused text fields, over presented layers and below the loupe
+    @ui.field_menu_bar(root) |> ignore
+    @sf.field_bar_node(
+      root,
+      fn() { !share_over.get() && app_is(src) is SignedIn },
+      fn() {
+        {
+          cut: @sf.t("desktop.contextMenu.cut"),
+          copy: @sf.t("desktop.contextMenu.copy"),
+          paste: @sf.t("desktop.contextMenu.paste"),
+          select_all: @sf.t("desktop.contextMenu.selectAll"),
+        }
+      },
+      on_copied=fn() { @sfbase.toast_later(@sf.t("common.copied")) },
+    )
     // what a write said, over all of it, in every state and shell (sfbase's toasts_node)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
     // what a finger hides as it drags a field's caret or what is picked, shown larger over all of it, signed in (the
@@ -1043,6 +1058,20 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
     |> ignore
     @sf.presented_nodes(root)
     @sfdesk.context_menu_node(root)
+    @ui.field_menu_bar(root) |> ignore
+    @sf.field_bar_node(
+      root,
+      fn() { true },
+      fn() {
+        {
+          cut: @sf.t("desktop.contextMenu.cut"),
+          copy: @sf.t("desktop.contextMenu.copy"),
+          paste: @sf.t("desktop.contextMenu.paste"),
+          select_all: @sf.t("desktop.contextMenu.selectAll"),
+        }
+      },
+      on_copied=fn() { @sfbase.toast_later(@sf.t("common.copied")) },
+    )
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
     @sf.window_keys_node(root, whole=fn() { true })
   }

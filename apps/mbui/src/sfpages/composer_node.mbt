@@ -462,6 +462,10 @@ fn composer_node_of(
                 drawn_top_said.get() |> ignore
                 (over_alpha.val)(o)
               }))
+              .in_use(By(fn() {
+                drawn_top_said.get() |> ignore
+                (over_alpha.val)(o) > 0.5
+              }))
               |> ignore
               f(o)
             })
@@ -1218,7 +1222,15 @@ fn composer_box_node(
         @view.ground_as_laid
       }
     }
-    on_over_alpha(fn(v) { if sent_over.shown(v) > 0.5 || sent_flying.shown(v) > 0.5 { 0.0 } else { 1.0 } })
+    on_over_alpha(fn(v) {
+      if sent_over.shown(v) > 0.5 ||
+        sent_flying.shown(v) > 0.5 ||
+        (@ui.field_menu_now() is Some(_) && w.field.focused()) {
+        0.0
+      } else {
+        1.0
+      }
+    })
     drawn_top(fn(v) { ground_now(v).dy })
     box.ground_drawn(By(fn() { ground_now(box) }))
     |> ignore

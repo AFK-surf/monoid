@@ -218,6 +218,12 @@ pub fn field_has_focus() -> Bool
 
 pub fn field_has_keys() -> Bool
 
+pub fn field_menu_bar(@view.View) -> @view.View
+
+pub fn field_menu_dismiss() -> Unit
+
+pub fn field_menu_now() -> FieldMenuNow?
+
 pub fn field_menu_on(@view.View, Field, enabled? : () -> Bool) -> Unit
 
 pub fn field_sends_by(@view.View, () -> (Bool, Bool)) -> Unit
@@ -337,6 +343,8 @@ pub fn keep_awake(Bool) -> Unit
 pub fn keep_begin(String, String, way? : @hostapi.KeepWay) -> Keep?
 
 pub fn keep_zoom_wheel() -> Unit
+
+pub fn keeps_field_menu(@view.View) -> @view.View
 
 pub fn keeps_picked(@view.View) -> @view.View
 
@@ -1897,6 +1905,18 @@ pub struct FieldLines {
 }
 pub fn FieldLines::line_h(Self) -> Double
 pub fn FieldLines::place(Self, Int32) -> (Double, Double)
+
+#derive(Eq, @debug.Debug)
+pub struct FieldMenuNow {
+  field : Int32
+  node : @view.NodeId?
+  x : Double
+  y : Double
+  w : Double
+  h : Double
+  can : Int32
+  selected : Bool
+}
 
 #derive(Eq, @debug.Debug)
 pub(all) enum FilmFailure {

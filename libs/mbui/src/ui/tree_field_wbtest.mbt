@@ -1802,11 +1802,11 @@ test "a field of the tree's right clicked: wins over an ancestor's on_menu, focu
   assert_true(f.focused())
   let (fid, can) = asked[0]
   assert_true((can & @hostapi.text_menu_paste) != 0 && (can & @hostapi.text_menu_select_all) != 0)
-  // field_edit_now select all updates selection and repaints selection rect
-  let rects_before = t.drawn_rects().length()
+  // field_edit_now select all updates selection and repaints selection rect (hiding the independent caret)
   field_edit_now(fid, @hostapi.text_menu_select_all)
   t.frame()
-  assert_true(t.drawn_rects().length() > rects_before, msg="select all painted selection rect")
+  assert_eq(f.selection(), (0, 11))
+  assert_true(t.drawn_rects().iter().any(fn(r) { r.2 > 20.0 }), msg="select all painted selection rect")
   // field_edit_now paste exceeding paste_limit triggers pasted callback via tree_field_told
   t.clipboard_gives("123456")
   field_edit_now(fid, @hostapi.text_menu_paste)
@@ -1939,4 +1939,147 @@ test "one Field in two branches that take each other's place, what moves of the 
   t2.draw()
   @view.faults_stop.val = true
   assert_eq(fell.val, Some("field: one Field given to two fields of the tree's: a Field is one editor's"))
+}
+
+///|
+test "tree field inside a clipped parent: caret handle and selection handles are unclipped and raised to top" {
+  let f = Field::new(text="hello world")
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=2)
+  set_view_app(fn(root) {
+    root.box(fn(box) {
+      box.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))).height(Is(Some(24.0))).clips(Is(true)) |> ignore
+      field(box, f, label="字", font_size=14.0, max_lines=1) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Tap to place caret and show caret handle
+  t.tap(50.0, 30.0)
+  t.draw()
+  let st = g().editors.get(g().focus).unwrap()
+  assert_true(st.handle_on)
+  // Find the caret handle circle (2*handle_r x 2*handle_r) and verify its clip bottom extends beyond the 44pt clipped box
+  let circles = insts().filter(fn(a) { a[5] == 0.0 && (a[2] - 2.0 * handle_r).abs() < 0.5 && (a[3] - 2.0 * handle_r).abs() < 0.5 })
+  assert_true(circles.length() >= 1, msg="expected caret handle circle")
+  for c in circles {
+    assert_true(c[19] > 100.0, msg="caret handle clipped by parent: clip_y1=\{c[19]}")
+  }
+  // Long-press to select a word and show selection handles
+  t.press_at(45.0, 30.0)
+  t.run_for(long_press_ms + 20.0)
+  t.release(45.0, 30.0)
+  t.draw()
+  assert_true(st.sel_on)
+  let sel_circles = insts().filter(fn(a) { a[5] == 0.0 && (a[2] - 2.0 * handle_r).abs() < 0.5 && (a[3] - 2.0 * handle_r).abs() < 0.5 })
+  assert_eq(sel_circles.length(), 2, msg="expected two selection handle circles")
+  for c in sel_circles {
+    assert_true(c[19] > 100.0, msg="selection handle clipped by parent: clip_y1=\{c[19]}")
+  }
+}
+
+///|
+test "selection without IME composition hides the independent blinking caret" {
+  let f = Field::new(text="hello world")
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=0)
+  set_view_app(fn(root) {
+    root.box(fn(box) {
+      box.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))) |> ignore
+      field(box, f, label="字", font_size=14.0, max_lines=1) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.tap(40.0, 28.0)
+  t.draw()
+  let carets_empty = insts().filter(fn(a) { a[5] == 0.0 && a[2] == caret_w })
+  assert_eq(carets_empty.length(), 1, msg="expected 1 caret when selection is empty")
+  // Select a range
+  f.st.anchor = 0
+  f.st.caret = 5
+  tree_field_redraw()
+  t.draw()
+  let carets_sel = insts().filter(fn(a) { a[5] == 0.0 && a[2] == caret_w })
+  assert_eq(carets_sel.length(), 0, msg="expected 0 independent carets while range is selected")
+}
+
+///|
+test "tree field long-press word drag drives finger_reads loupe" {
+  let f = Field::new(text="hello world again")
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=2, pointing=Finger, native=Finger)
+  set_view_app(fn(root) {
+    root.box(fn(box) {
+      box.over(Is(true)).offset(Is((20.0, 40.0))).width(Is(Some(220.0))) |> ignore
+      field(box, f, label="字", font_size=14.0, max_lines=1) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.press_at(45.0, 48.0)
+  t.run_for(long_press_ms + 20.0)
+  t.move_to(90.0, 48.0)
+  t.draw()
+  assert_true(finger_reads() is Some(_), msg="expected finger_reads() to be Some during tree_field word drag")
+  t.release(90.0, 48.0)
+  t.draw()
+  assert_eq(finger_reads(), None)
+}
+
+///|
+test "field_menu_bar takes over system text_menu, keeps_field_menu preserves bar, outside tap dismisses" {
+  let f = Field::new(text="hello world")
+  let copied_pressed = Ref(false)
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=2, pointing=Finger, native=Finger)
+  set_view_app(fn(root) {
+    field_menu_bar(root) |> ignore
+    root.box(fn(box) {
+      box.over(Is(true)).offset(Is((20.0, 80.0))).width(Is(Some(220.0))) |> ignore
+      field(box, f, label="字", font_size=14.0, max_lines=1) |> ignore
+    })
+    |> ignore
+    root.show(at_once=true, fn() { field_menu_now() is Some(_) }, fn(bar) {
+      keeps_field_menu(bar)
+      .over(Is(true))
+      .offset(Is((20.0, 20.0)))
+      .width(Is(Some(120.0)))
+      .height(Is(Some(36.0)))
+      .presses(Is(true))
+      .on_press(fn() {
+        copied_pressed.val = true
+        match @signals.untracked(field_menu_now) {
+          Some(m) => field_edit_now(m.field, @hostapi.text_menu_copy)
+          None => ()
+        }
+      })
+      |> ignore
+    })
+  })
+  t.draw()
+  // Long-press word -> menu opens, system text_menu stays false, field_menu_now is Some
+  t.press_at(45.0, 88.0)
+  t.run_for(long_press_ms + 20.0)
+  t.release(45.0, 88.0)
+  t.draw()
+  t.draw()
+  assert_false(t.text_menu().0, msg="system text_menu must be suppressed when field_menu_bar is active")
+  let m = field_menu_now()
+  assert_true(m is Some(_), msg="field_menu_now must be Some")
+  assert_true(m.unwrap().selected)
+  assert_true((m.unwrap().can & @hostapi.text_menu_copy) != 0)
+  // Tapping keeps_field_menu bar triggers copy and closes menu
+  t.tap(50.0, 38.0)
+  t.draw()
+  t.draw()
+  assert_true(copied_pressed.val)
+  assert_eq(field_menu_now(), None)
+  // Re-open menu via long-press, then tap outside -> menu dismisses immediately
+  t.press_at(45.0, 88.0)
+  t.run_for(long_press_ms + 20.0)
+  t.release(45.0, 88.0)
+  t.draw()
+  t.draw()
+  assert_true(field_menu_now() is Some(_))
+  t.tap(250.0, 170.0)
+  t.draw()
+  t.draw()
+  assert_eq(field_menu_now(), None)
 }

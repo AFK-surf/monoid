@@ -566,6 +566,8 @@ fn view_forget() -> Unit {
   @signals.untracked(fn() {
     tree_theme_of.val.set(None)
     tree_inset_said.val.set(None)
+    field_menu_now_said.val.set(None)
+    tree_finger_read.val.set(None)
   })
   view_held.val = None
   view_nothing_down.val = None
@@ -4090,17 +4092,22 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
     // (a handle of words a finger picked with the pointer, the tree's or an old view's, over everything: the old frame's,
     // which moves that end, finger_select.mbt)
     (0, _) if button != 2 && finger_end_at(x, y) => {
+      tree_field_menu_dismiss_if_outside(tree, x, y)
       view_held.val = Some(Old(-1, None))
       view_input_went(-1)
       false
     }
     // (a column under it gliding on by itself (flung, going back from past an end): the press catches it and presses
     // nothing, view_caught)
-    (0, _) if button != 2 && view_caught(tree, x, y, at) => true
+    (0, _) if button != 2 && view_caught(tree, x, y, at) => {
+      tree_field_menu_dismiss_if_outside(tree, x, y)
+      true
+    }
     // (words of the tree's a finger picked stand over the page: a press anywhere else that does not keep them
     // (keeps_picked) takes no control, gesture or link under them; scrolled, what holds it claims it as ever
     // (view_claimed); lifted where it went down, a tap that lets go of what is picked and opens nothing)
     (0, _) if button != 2 && tree_picking() && picked.finger && !tree_keeps_picked_at(tree, x, y) => {
+      tree_field_menu_dismiss_if_outside(tree, x, y)
       // (its moment and place kept for what follows as any finger's press keeps them: a finger held still there
       // picks anew, one that moves scrolls what holds it, tree_finger_down)
       tree_finger_down(tree, x, y, at)
@@ -4109,6 +4116,9 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       true
     }
     (0, _) => {
+      if button != 2 {
+        tree_field_menu_dismiss_if_outside(tree, x, y)
+      }
       // (a press of the primary button, wherever on the tree: words of its picked with the pointer let go, as an old
       // view's page's are by a press elsewhere (Ctx::select_press); on words to pick, picked anew from there below)
       if button != 2 && tree_picking() && !picked.finger && !tree_keeps_picked_at(tree, x, y) {
