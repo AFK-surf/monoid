@@ -448,8 +448,8 @@ fn chat_goes_to(
     }
     jump.sight.set(Some((s.first, s.last, s.last_slice)))
     // (where the page put it: there once what it asked is done, its block's top as it then stood; moved off it since,
-    // the reader's (a message streamed into at the foot, a page before come in over it, a row over it measured anew
-    // move none of it: the list holds what is read))
+    // the reader's (a message arriving or growing at the foot, a page before come in over it, a row over it measured
+    // anew move none of it: the list holds what is read))
     match jump.stand {
       // (not while a glide it asked goes on: where it stood is taken once it ends)
       Some((k, slice, _, _)) if !place.asking() && scroll.glides_till() is None =>

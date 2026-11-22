@@ -333,7 +333,7 @@ test "flips: a block laid out at another width as its column sets off on a way t
 }
 
 ///|
-test "flips: a block's words come to more lines as the room over it is declared on the list's way (more words streamed in): drawn whole at their size from the first frame, opened as the block is, never grown from their top" {
+test "flips: a block's words come to more lines as the room over it is declared on the list's way (more text appended in place): drawn whole at their size from the first frame, opened as the block is, never grown from their top" {
   let looks = rc_looks(rc_at + 600.0)
   for rate in rc_rates {
     let w = @signals.signal(300.0, same=fn(a, b) { a == b })

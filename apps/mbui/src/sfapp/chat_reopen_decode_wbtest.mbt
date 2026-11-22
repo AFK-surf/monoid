@@ -6,7 +6,7 @@
 // none of its messages read again, and only the one come since where one came.
 
 ///|
-/// The pictures the fixture's chats hold handed over (chat_nodes_lifecycle_stream_wbtest's, the same chat opened the
+/// The pictures the fixture's chats hold handed over (chat_nodes_lifecycle_keyed_wbtest's, the same chat opened the
 /// same ways): what the Testers here hold at most.
 fn init {
   @ui.host_image_bytes_known([("src/sfapp/chat_reopen_decode_wbtest.mbt", 159102)])

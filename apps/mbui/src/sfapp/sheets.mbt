@@ -112,8 +112,8 @@ fn agent_tiles_known(card : Json?) -> Bool {
 /// with it is the "…"'s menu, a row of the list's. As tall as what it shows; a row that opens something closes the
 /// panel (`close`) first.
 fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit) -> Unit {
-  // (the chat's head alone, as sfdesk's chat_info_node reads it: told as it changes, not as a word streams into a
-  // message, none of its messages read again)
+  // (the chat's head alone, as sfdesk's chat_info_node reads it: told as it changes, not as a message is patched in
+  // place, none of its messages read again)
   let chat = fn() { @sfbase.chat_head_json(src, r) }
   let view = fn() { @sfbase.chat_head(src, r).0 }
   // archived or offline it is only read: no name to change

@@ -346,7 +346,7 @@ priv struct MdNode {
   /// none, all of them; none in what a block holds (a list's item, a quote)
   table_rows : (Int, Int)?
   /// those rows or items as they are now, where the piece is told as it changes (markdown_node's `piece_by`: a message's
-  /// table streamed in, the piece of its rows after the first growing as rows come), none: table_rows all along
+  /// table updated in place, with later slices growing as rows are added), none: table_rows all along
   rows_by : (() -> (Int, Int)?)?
   /// what the table at a block scrolls across with (markdown_node's `across_of`: the pieces of one table as one)
   across_of : (Int) -> @view.Scroll
@@ -1146,7 +1146,8 @@ fn md_list_node(
   // (all its items, or those of them its piece draws (`items`), each by its place among all)
   let count = fn() {
     let n = list().map(fn(l) { l.items.length() }).unwrap_or(0)
-    // (those its piece draws as it is now, where it is told so: more come as the list is streamed in)
+    // (those its piece draws as it is now, where it is told so: more items may be added when the list is edited in
+    // place)
     let items = match items_by {
       Some(f) => f()
       None => items

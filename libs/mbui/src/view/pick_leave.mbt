@@ -439,8 +439,8 @@ fn View::pick_leaving(
           held_scaled(now.fader, p, now.held, from, progress_of(now.way_at))
           // (held by the way this change set out on alone: once that is over (the longest a way goes, as what went is
           // let go then) it is at rest, whole, drawn by nothing's way; a later way of its place or of its list (the
-          // list's rows going as what is under or over them grows, an agent's answer streamed in) is no change of its,
-          // and drew it from nothing again each time (the user, 2026-11-18: 「“刚刚”两个字为啥一直重复播动效」))
+          // list's rows going as what is under or over them grows, a row edited or growing in place) is no change of
+          // its, and drew it from nothing again each time (the user, 2026-11-18: 「“刚刚”两个字为啥一直重复播动效」))
           let held = now.held
           p.at_moment(now.way_at.val + dmax(leave, @flex.move_most_ms), fn() {
             if held.untracked() == 1 {

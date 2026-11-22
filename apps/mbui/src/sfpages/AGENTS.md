@@ -3,7 +3,7 @@
 ## Page lists and keyed chat nodes
 
 - Virtualized list blocks represent single rows, not whole multi-row cards. Split long cards (such as 更新日志 days) into one block per row using `@sf.card_piece_node` so entering the viewport does not build dozens of rows in one frame.
-- The node-based chat page reads data by key: subscribe to the chat head (`chat_head`, `chat_view_now`, with no messages) and keyed messages (`ChatMessages` via `Sub::keyed`, rows via `chat_body_keyed`) so streaming into one message reads no other rows and triggers no `view_of_chat` reads on bars, composer, or tickers (`chat_body_keyed_wbtest.mbt`). Read `chat_whole` only on press. Keep optimistic sends and outbox rows keyed (`chat_body_keyed` `taken`, `chat_sent_here`), scanning from newest back for server handoff. Use `chat_body_rows` only when a source lacks keyed messages.
+- The node-based chat page reads data by key: subscribe to the chat head (`chat_head`, `chat_view_now`, with no messages) and keyed messages (`ChatMessages` via `Sub::keyed`, rows via `chat_body_keyed`) so updating or editing one message in place (chat messages are posted whole, never streamed word by word) reads no other rows and triggers no `view_of_chat` reads on bars, composer, or tickers (`chat_body_keyed_wbtest.mbt`). Read `chat_whole` only on press. Keep optimistic sends and outbox rows keyed (`chat_body_keyed` `taken`, `chat_sent_here`), scanning from newest back for server handoff. Use `chat_body_rows` only when a source lacks keyed messages.
 
 ## Chat block reuse (`chat_body_shape`)
 

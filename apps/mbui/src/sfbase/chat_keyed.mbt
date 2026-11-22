@@ -1,7 +1,7 @@
 // A chat read by key (the core's own way: client/core-ts AGENTS.md, rule 6): its head (all its view says but its
 // messages) worked out of the topic's value as anything but a message changes it, and its messages kept by key as the
 // core changes them item by item (@core.Sub::keyed's @signals.KeyedList), each read as a Message only as its item
-// changes. So a word streamed into one message tells what reads that message and nothing else: no reader walks the
+// changes. So an in-place update to one message tells what reads that message and nothing else: no reader walks the
 // chat, and what one change costs is the same in a chat of 50 messages as in one of 5,000. What reads the chat whole
 // (view_of_chat: the old page, a chat's sheets) reads it as before.
 

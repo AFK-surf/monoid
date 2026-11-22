@@ -212,7 +212,7 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
       bar.box(fn(t) {
         t.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
         @sf.words_node(t, fn() {
-          // (its head alone, as the bar of the chat's page made as nodes reads it: a word streamed into a message reads
+          // (its head alone, as the bar of the chat's page made as nodes reads it: a message patched in place reads
           // none of it again)
           match @sfbase.chat_view_now(src, r) {
             Some(v) => v.title

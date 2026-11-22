@@ -777,7 +777,7 @@ fn chat_entries_same(a : ChatView, b : ChatView) -> Bool {
 }
 
 ///|
-/// Messages changed where they stand (a streamed answer's words), and appended after the history before, keep the
+/// Messages changed where they stand (an edited or patched message), and appended after the history before, keep the
 /// entries of all the rest: the old ones copied, the changed messages' put in their place and the new ones' after them.
 /// The old array remains untouched, since a frame may still use it. Other list changes take the ordinary path. A
 /// message changed in place keeps its seq (the unread line stays where it was over it) and says nothing elsewhere,
@@ -834,7 +834,7 @@ fn chat_entries_appended(v : ChatView, was : ChatRead) -> (Array[Entry], Int)? {
 
 ///|
 /// The messages of `message_json` read from those of a chat read before (`was`) where they changed only where they
-/// stand or came after them (a streamed answer's words, a message come at the end): each the same JSON as before taken
+/// stand or came after them (an edited message, a new message appended at the end): each the same JSON as before taken
 /// as it was, each changed where it stands (its key the same) and each come read, no other looked at or keyed. None
 /// where any came or went elsewhere, or moved: made_again's to find.
 fn chat_read_again(message_json : Array[Json], was : ChatRead) -> (Array[(Json, Message)], Array[Message])? {

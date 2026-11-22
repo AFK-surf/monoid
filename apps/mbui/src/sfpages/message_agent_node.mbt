@@ -117,11 +117,11 @@ fn agent_said_node(
     Some(pc) => pc.last
     None => true
   }
-  // (one said while the chat shows: its words streamed in may cut it into pieces as it is drawn (a table come to more
+  // (one said while the chat shows: in-place edits may split it into pieces as it is drawn (a table come to more
   // rows than a piece holds), its first this, under its head; what it draws, its files and what it asks under it then as
   // its piece is now. One read before, as it was made: chat_body_made_as makes it again as its piece changes)
-  let streamed = @signals.untracked(m).said
-  let piece_now = fn() { if streamed { piece_by() } else { piece } }
+  let live_said = @signals.untracked(m).said
+  let piece_now = fn() { if live_said { piece_by() } else { piece } }
   let last_now = fn() { piece_now().map_or(true, fn(pc) { pc.last }) }
   let row = message_row_frame_node(v, key, side, top, fn(r) {
     // (come by data while its agent was at work: out of that agent's picture on its line (`out_of`), as emit.mbt's, each
@@ -177,12 +177,12 @@ fn agent_said_node(
         // (what it quotes ahead of its words, as the old body's)
         message_quotes_node(b, src, here, fn() { m().quotes }, fn() { m().attachments }, false, fn() { message_place(m()) }, said=fn() { m().said })
         // (its words, or the card in their place: one in the other's place as the post says)
-        // (and, of one streamed, which make of piece it is now: none, a block, some rows of a table or items of a list,
-        // the last or not: its words drawn again as that changes, its head as it was, coming out of its picture)
+        // (and, of one arrived live, which make of piece it is now: none, a block, some rows of a table or items of a
+        // list, the last or not: its words drawn again as that changes, its head as it was, coming out of its picture)
         b.pick(fn() {
           (
             agent_card_kind(m()) == "",
-            if streamed {
+            if live_said {
               piece_now().map_or(0, fn(pc) { if pc.rows is Some(_) { 2 } else { 1 } }) * 2 + (if last_now() { 1 } else { 0 })
             } else {
               0
@@ -206,8 +206,8 @@ fn agent_said_node(
             message_card_node(p, here, core, m)
           }
         })
-        // (what it asks under it: its last piece's; of one streamed, while it is that)
-        if streamed {
+        // (what it asks under it: its last piece's; of one arrived live, while it is that)
+        if live_said {
           agent_asks_node(b, src, here, m, core, sought=ask_sought, only_while=last_now)
         } else if last {
           agent_asks_node(b, src, here, m, core, sought=ask_sought)
@@ -224,7 +224,7 @@ fn agent_said_node(
 ///|
 /// What agent's message `m` asks under it in `b`, where it asks anything: nothing else made, as no gap is wanted for
 /// nothing; a login's card where there is a core to read it with; what a go-to brings before the eyes while `sought`;
-/// nothing while `only_while` says not (a message streamed in whose piece it is under is no longer its last).
+/// nothing while `only_while` says not (an edited message whose piece it is under is no longer its last).
 fn agent_asks_node(
   b : @view.View,
   src : Source,
@@ -401,18 +401,18 @@ fn agent_prose_node(
       tracks_of~,
     )
     |> ignore
-    // (words streamed in by the core, each a change of what it had answered: where they come out another height (a
-    // line more), that height makes its way, the list's (in a page's list its set-out, those over it going up with it on
-    // its way, as the old list's Changed did); the same height, nothing (View::resizes). An answer's first words are
-    // there at once, as ever (answering.mbt). Only words streamed on (the words before them still there at their start):
-    // a message's words set again to others are no stream, nothing of the list set out for them, none of its other
-    // rows read again; nor another message's, a block put by and taken for another row (View::scrolls_window's
-    // `reused`), whatever its words begin with)
-    let streamed = Ref(@signals.untracked(fn() { (m().ts, m().text) }))
+    // (prefix-preserving in-place edits by the core, each extending the text it had answered: where they come out
+    // another height (a line more), that height makes its way, the list's (in a page's list its set-out, those over it
+    // going up with it on its way, as the old list's Changed did); the same height, nothing (View::resizes). An
+    // answer's first words are there at once, as ever (answering.mbt). Only text extended in place (the text before
+    // still there at its start): a message's text replaced by other text is no extension, nothing of the list set out
+    // for it, none of its other rows read again; nor another message's, a block put by and taken for another row
+    // (View::scrolls_window's `reused`), whatever its text begins with)
+    let prev_text = Ref(@signals.untracked(fn() { (m().ts, m().text) }))
     w.reacts(fn() { (m().ts, m().text) }, fn(now) {
       let (ts, text) = now
-      let (was_ts, was) = streamed.val
-      streamed.val = now
+      let (was_ts, was) = prev_text.val
+      prev_text.val = now
       if ts == was_ts && text.length() > was.length() && text.has_prefix(was) {
         w.resizes() |> ignore
       }

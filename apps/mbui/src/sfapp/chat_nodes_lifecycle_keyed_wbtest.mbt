@@ -2,14 +2,15 @@
 // sffixture's round_trip_again, a change sent as the core's keyed ops), as a device reads it: left, the core told it
 // shows no more and where it was left, and told it shows again as it is opened again (its head alone was read: sfbase's
 // chat_head keeps it for the page as it is left); a new chat become its chat keeps what was sent from here as the
-// core's view of it comes and as it is the new chat's no more (sfpages' chat_body_node going on by key); words streamed
-// into its last message on 大屏, its side panel open or not, read none of the chat whole (sfbase's chat_read_made) and
-// that message alone once a word (chat_messages_read): its bar, its composer, its side panel read its head alone.
+// core's view of it comes and as it is the new chat's no more (sfpages' chat_body_node going on by key); in-place
+// edits patched into its last message on 大屏, its side panel open or not, read none of the chat whole (sfbase's
+// chat_read_made) and that message alone once per patch (chat_messages_read): its bar, its composer, its side panel
+// read its head alone.
 
 ///|
 /// The pictures the fixture's chats hold handed over (chat_opens_whole_wbtest's): what the Testers here hold at most.
 fn init {
-  @ui.host_image_bytes_known([("src/sfapp/chat_nodes_lifecycle_stream_wbtest.mbt", 159102)])
+  @ui.host_image_bytes_known([("src/sfapp/chat_nodes_lifecycle_keyed_wbtest.mbt", 159102)])
 }
 
 ///|
@@ -188,16 +189,16 @@ fn ls_last(v : Json?) -> (Json, String)? {
 }
 
 ///|
-/// The fixture `mode`'s chat on `screen`, `words` words streamed into its last message as the core sends them: how
-/// many times it was worked out whole, how many messages were read, and its last message's words as the page's source
-/// keeps them by key.
-fn ls_stream(mode : String, screen : (String, Double, Double, Int), words : Int) -> (Int, Int, String?) raise {
+/// The fixture `mode`'s chat on `screen`, `edits` in-place edits patched into its last message as the core sends them:
+/// how many times it was worked out whole, how many messages were read, and its last message's words as the page's
+/// source keeps them by key.
+fn ls_patch(mode : String, screen : (String, Double, Double, Int), edits : Int) -> (Int, Int, String?) raise {
   let (t, src, held, _) = ls_open(mode, screen)
   guard ls_last(held.value) is Some((key, first)) else { fail("\{mode} \{screen.0}: no message") }
   let whole0 = @sfbase.chat_read_made.val
   let read0 = @sfbase.chat_messages_read.val
   let mut said = first
-  for i in 0..<words {
+  for i in 0..<edits {
     said = said + "字\{i}"
     ls_change(held, [
       Json::object({
@@ -228,17 +229,17 @@ fn ls_stream(mode : String, screen : (String, Double, Double, Int), words : Int)
       }
     None => None
   }
-  assert_true(last == Some(said), msg="\{mode} \{screen.0}: the words streamed in not taken: \{Repr(last)}")
+  assert_true(last == Some(said), msg="\{mode} \{screen.0}: the patched text not taken: \{Repr(last)}")
   (whole, read, last)
 }
 
 ///|
-test "words streamed into the last message of a chat's page made as nodes, 大屏 with its side panel shut, on 往来 and on 文件, and 小屏: none of the chat read whole, that message alone once a word" {
+test "in-place edits patched into the last message of a chat's page made as nodes, 大屏 with its side panel shut, on 往来 and on 文件, and 小屏: none of the chat read whole, that message alone once per patch" {
   let cases = [("chat", cr_screens[1]), ("chat-letters-side", cr_screens[1]), ("chat-things-side", cr_screens[1]), ("chat", cr_screens[0])]
   for case in cases {
     let (mode, screen) = case
-    let (whole, read, _) = ls_stream(mode, screen, 10)
+    let (whole, read, _) = ls_patch(mode, screen, 10)
     assert_eq(whole, 0, msg="\{mode} \{screen.0}: the chat worked out whole \{whole} times")
-    assert_eq(read, 10, msg="\{mode} \{screen.0}: \{read} messages read for 10 words")
+    assert_eq(read, 10, msg="\{mode} \{screen.0}: \{read} messages read for 10 edits")
   }
 }

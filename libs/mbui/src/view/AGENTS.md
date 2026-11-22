@@ -13,7 +13,7 @@
 - Settle initial data answers (`@view.answering`, `libs/mbui/src/view/answering.mbt`, `@signals.first_told`, reused blocks, woken parts) and stack pages (`at_once`) immediately without animating in.
 - Group simultaneous column transitions into one `ComeGroup` so they start and land together. A reversed transition decelerates smoothly and reverses with continuous position, speed, and acceleration (`come_turned`, `come_back_path`).
 - Clip animating nodes only along their travel axis (`Content::clips_self`, `clips_way`).
-- Layout always reflects resting state, while drawing shows motion: do not hold old layout sizes during `pick` transitions (render leaving content fading in place via `libs/mbui/src/view/pick_leave.mbt`). Only entering/leaving nodes scale open: a staying node that changes height (reflowed text, streamed words) lays out at its new size immediately and opens downward via `Tree::grown_cut_of` (`libs/mbui/src/view/list_flip_test.mbt`), never shrinking and regrowing.
+- Layout always reflects resting state, while drawing shows motion: do not hold old layout sizes during `pick` transitions (render leaving content fading in place via `libs/mbui/src/view/pick_leave.mbt`). Only entering/leaving nodes scale open: a staying node that changes height (reflowed text, appended text) lays out at its new size immediately and opens downward via `Tree::grown_cut_of` (`libs/mbui/src/view/list_flip_test.mbt`), never shrinking and regrowing.
 
 ## Parking and block reuse
 

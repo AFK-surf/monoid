@@ -197,8 +197,8 @@ priv struct ChatBodyMade {
 
 ///|
 /// chat_body_rows' rows of `v`'s entries `all` and what is on its way from here (`sending`), from what it made last
-/// (`was`) where only entries changed where they stand, each the same row as before by its key (a streamed answer's
-/// words, an agent's line, where the chat stands): those rows put again, their keys the same array, the rest of the
+/// (`was`) where only entries changed where they stand, each the same row as before by its key (an edited message,
+/// an agent's line, where the chat stands): those rows put again, their keys the same array, the rest of the
 /// chat looked at no further than to find them. A row that came, went or moved, its gap or its pieces another, what is
 /// sent from here or an outbox (their keys and the agents they set at work are chat_body_rows'): all of it made again.
 /// The rows' map is the one made last, changed in place: what reads them reads them by key as they are now.
@@ -450,9 +450,9 @@ fn chat_body_gap_room(gap : ChatBodyGap, w : Double) -> Double {
 /// of piece it is (chat_body_piece_make), what such a row's nodes are made as (a long message's first piece, under its
 /// head; a piece after it, its block alone; the last, its files and what it asks under it); -1 for any other. Made again
 /// only as that changes. A piece after the first of one said while the chat shows is so too, with its block, whether it
-/// holds its table's head and whether it is the last: it comes out of no picture, and its message streamed in makes it
-/// another piece (a table come to more rows than a piece holds, its rows after the first a piece of their own, scrolled
-/// across with them: chat_table_kept).
+/// holds its table's head and whether it is the last: it comes out of no picture, and an in-place edit to that message
+/// may split it into another piece (a table come to more rows than a piece holds, its rows after the first a piece of
+/// their own, scrolled across with them: chat_table_kept).
 fn chat_body_made_as(r : ChatBodyRow, piece : @sf.MdPiece?) -> (ChatBodyKind, Int) {
   let kind = chat_body_kind(r.entry)
   match r.entry {
@@ -1945,9 +1945,9 @@ fn chat_body_node(
   let keys_now : Ref[Array[String]] = Ref([])
   let keys_before : Ref[Array[String]] = Ref([])
   // (whether a key came by the change that gave these keys, as last found: the same keys and key, not looked for among
-  // all of them again for each word streamed into a row)
+  // all of them again for each in-place patch to a row)
   let came_last : Ref[(Array[String], String, Bool)?] = Ref(None)
-  // (a message by its key: a long message streamed on into another slice is the message it was, its top what is
+  // (a message by its key: a long message edited into another slice is the message it was, its top what is
   // followed from, never a slice of it come)
   let newest = fn() -> (String, Bool, Bool)? {
     let rs_keys = keys.get()

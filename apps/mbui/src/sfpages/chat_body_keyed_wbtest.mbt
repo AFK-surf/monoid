@@ -1,6 +1,6 @@
 // A chat's list by key (chat_body_keyed) against the same chat's rows made whole (chat_body_rows): the same keys in the
 // same order, each the same row; and its page as the core changes a message by key: what reads the chat whole
-// (chat_read) not worked out at all, one message read again for each word streamed in, the same in a chat of 50
+// (chat_read) not worked out at all, one message read again for each in-place edit, the same in a chat of 50
 // messages as in one of 150.
 
 ///|
@@ -173,10 +173,10 @@ test "a chat's rows by key are its rows made whole" {
 }
 
 ///|
-/// What a chat of `n` messages took, open on 小屏 on a source that keeps its messages by key, for `words` words
-/// streamed into its last message, each a change as the core's: the times it was worked out whole (chat_read), the
-/// messages read again, and what the tree did (bound, made, let go, laid, measured).
-fn keyed_run(n : Int, words : Int) -> (Int, Int, (Int, Int, Int, Int, Int)) raise {
+/// What a chat of `n` messages took, open on 小屏 on a source that keeps its messages by key, for `edits` in-place
+/// edits patched into its last message, each a change as the core's: the times it was worked out whole (chat_read),
+/// the messages read again, and what the tree did (bound, made, let go, laid, measured).
+fn keyed_run(n : Int, edits : Int) -> (Int, Int, (Int, Int, Int, Int, Int)) raise {
   @sfbase.reset()
   reset()
   @sf.set_words(@sfbase.fill)
@@ -219,7 +219,7 @@ fn keyed_run(n : Int, words : Int) -> (Int, Int, (Int, Int, Int, Int, Int)) rais
   let read0 = @sfbase.chat_messages_read.val
   let w0 = scale_work()
   let mut said = scale_words(0)
-  for i in 0..<words {
+  for i in 0..<edits {
     said = said + "字\{i}"
     let ops = [
       Json::object({ "path": Json::array([Json::string("text")]), "set": Json::string(said) }),
@@ -243,17 +243,17 @@ fn keyed_run(n : Int, words : Int) -> (Int, Int, (Int, Int, Int, Int, Int)) rais
     t.run_for(@ui.frame_period_default)
   }
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find(said) is Some(_), msg="\{n}: the words streamed in shown")
+  assert_true(t.find(said) is Some(_), msg="\{n}: the patched text shown")
   (@sfbase.chat_read_made.val - whole0, @sfbase.chat_messages_read.val - read0, scale_did(w0, scale_work()))
 }
 
 ///|
-test "words streamed into a chat's last message read that message alone, by key, the same in a chat of 50 as of 150" {
+test "in-place edits patched into a chat's last message read that message alone, by key, the same in a chat of 50 as of 150" {
   let (whole50, read50, did50) = keyed_run(50, 5)
   let (whole150, read150, did150) = keyed_run(150, 5)
   // (nothing reads the chat whole: its head and that message alone)
   assert_eq((whole50, whole150), (0, 0))
-  // (each word: the message it came into read once)
+  // (each edit: the patched message read once)
   assert_eq((read50, read150), (5, 5))
   assert_true(did150 == did50, msg="150 messages \{Repr(did150)}, 50 \{Repr(did50)}")
 }

@@ -7,7 +7,7 @@
 // it): one row that goes on to a second line once it is opened, its words the whole of the first (View::wraps), ＋
 // laid over its foot's start (it stands there in either shape, the words kept clear of it while it is a capsule). What
 // it holds is the draft as the core keeps it (sfbase's compose.mbt); what it reads of its chat is its head alone
-// (sfbase's chat_view_now: a word streamed into a message reads none of it again).
+// (sfbase's chat_view_now: a message patched in place reads none of it again).
 
 ///|
 /// What a chat's composer made as nodes keeps of its own, each its draft's: when the cursor left it (it stays a box a

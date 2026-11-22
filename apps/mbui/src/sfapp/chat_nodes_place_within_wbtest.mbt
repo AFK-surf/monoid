@@ -87,7 +87,7 @@ test "a message gone to on a chat's page made as nodes, 小屏 and 大屏: what 
 }
 
 ///|
-test "a message gone to on a chat's page made as nodes stands there while a message streams in at the list's foot: the page before not asked, the one gone to not moved; moved by the reader, the page before asked and what it lit let go of" {
+test "a message gone to on a chat's page made as nodes stands there while new messages arrive at the list's foot: the page before not asked, the one gone to not moved; moved by the reader, the page before asked and what it lit let go of" {
   for s in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
     let (name, w, h, platform) = s
     let calls : Array[(String, Json)] = []
@@ -97,7 +97,7 @@ test "a message gone to on a chat's page made as nodes stands there while a mess
     let words = "帮我把聊天页的列表做成虚拟列表"
     guard place_within_line(t, words) is Some((at, _)) else { fail("\{name}: 2 not drawn") }
     calls.clear()
-    // (an answer coming at the foot, word by word as it were: what is in sight told again each time)
+    // (new messages arriving at the foot: what is in sight told again each time)
     for i in 1..=3 {
       @ui.came_from_outside()
       came.set(i)
@@ -178,22 +178,22 @@ test "the bell to what waits to be decided under a long message drawn a block a 
 }
 
 ///|
-test "a long message streaming into more pieces at the list's foot, on a chat's page made as nodes, 小屏 and 大屏: followed no further than its top, which stays in sight" {
+test "a long message edited into more pieces at the list's foot, on a chat's page made as nodes, 小屏 and 大屏: followed no further than its top, which stays in sight" {
   for s in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
     let (name, w, h, platform) = s
     let came = @signals.signal(0)
     let long = @signals.signal([])
     let (t, _) = chat_nodes_calling(w, h, platform, [], came~, long~, said=true)
-    // (an answer come at the foot as the list rests there, then its words on into more and more paragraphs)
+    // (a message arriving at the foot as the list rests there, then edited in place into more and more paragraphs)
     @ui.came_from_outside()
-    long.set([(12.0, place_within_paras(1, "流式"))])
+    long.set([(12.0, place_within_paras(1, "长文"))])
     came.set(1)
     t.run_for(@ui.move_most_ms)
-    let first = "流式第1段"
+    let first = "长文第1段"
     // (a paragraph more at a time, each a piece more)
     for n in 2..=16 {
       @ui.came_from_outside()
-      long.set([(12.0, place_within_paras(n, "流式"))])
+      long.set([(12.0, place_within_paras(n, "长文"))])
       t.run_for(@ui.move_most_ms)
       guard place_within_line(t, first) is Some((top, _)) else { fail("\{name}: its top gone with \{n} paragraphs") }
       assert_true(top > 40.0, msg="\{name}: its top at \{top} with \{n} paragraphs")

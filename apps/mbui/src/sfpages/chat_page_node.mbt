@@ -76,8 +76,8 @@ pub fn chat_page_body_node(
   @ui.words_picked(v)
   // (its view and entries as last read: once read, never none again while the page is)
   // (the chat's messages by key where the source keeps them so (sfbase's ChatMessages): then, while nothing sent from
-  // here is on its way and its outbox is empty, its view is its head alone (sfbase's chat_head: a word streamed into a
-  // message reads none of it again) and its rows are by key (chat_body_keyed); else its view and entries whole, as
+  // here is on its way and its outbox is empty, its view is its head alone (sfbase's chat_head: a message patched in
+  // place reads none of it again) and its rows are by key (chat_body_keyed); else its view and entries whole, as
   // view_of_chat works them out)
   let sending = fn() { @sfbase.sending_now(r.station + "\u{1}" + r.session) }
   // (put by at rest (View::on_rest): what it last read given to whatever reads it meanwhile, the chat read for none of

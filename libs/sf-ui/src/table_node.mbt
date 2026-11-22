@@ -493,7 +493,7 @@ fn table_frame_node(
     let all = fn() { table().map_or(0, fn(t) { t.rows.length() + 1 }) }
     let rows = fn() {
       let n = all()
-      // (those its piece draws as it is now, where it is told so: rows streamed in after them its own)
+      // (those its piece draws as it is now, where it is told so: additional rows added in place go into later slices)
       let some = match rows_by {
         Some(f) => f()
         None => some

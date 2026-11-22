@@ -247,7 +247,7 @@ fn chat_bar_handed_node(v : @view.View, src : Source, r : ChatRef) -> Unit {
 
 ///|
 /// What chat_bar_hand reads of chat `r` (`top` its page on top), as a value: changed, what it hands changes. Its head
-/// alone (sfbase's chat_view_now, chat_head_json): a word streamed into a message reads none of it again.
+/// alone (sfbase's chat_view_now, chat_head_json): a message patched in place reads none of it again.
 fn chat_bar_said(
   src : Source,
   r : ChatRef,

@@ -972,8 +972,8 @@ fn body_table_case(
 }
 
 ///|
-/// The words of a table of `rows` rows (its head's not counted) under a paragraph `words` where it says one, as an
-/// agent writes it out: the same words before it, a row more each time (a message streamed in).
+/// The words of a table of `rows` rows (its head's not counted) under a paragraph `words` where it says one, with the
+/// same intro text before it and an expanding row count (a message edited in place).
 fn body_wide_text(words : String?, rows : Int) -> String {
   let lines = Array::makei(rows + 1, fn(r) { "| r\{r} |" })
   match words {
@@ -1037,7 +1037,7 @@ test "a long table a few rows a piece a little wider than the pane, less than it
 }
 
 ///|
-test "a table streamed in while the chat shows, from 3 rows to 10, as a message's first block or after a paragraph: its pieces scrolled across as one, no row drawn twice" {
+test "a table edited in place while the chat shows, from 3 rows to 10, as a message's first block or after a paragraph: its pieces scrolled across as one, no row drawn twice" {
   for words in [None, Some("表格在下面。")] {
     for si in [0, 2] {
       let (t, entries, m, last, place) = body_table_case(si, body_wide_text(words, 3), body_wide_table(words, 3, 8), true)

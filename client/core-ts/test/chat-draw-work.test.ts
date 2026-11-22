@@ -1,4 +1,4 @@
-// What making a chat again costs while its reply streams, on the parts that were most of it on a phone (0.1.10103 and
+// What making a chat again costs while its agent is working, on the parts that were most of it on a phone (0.1.10103 and
 // 0.1.10123: `chat.make` 77-146 ms, `chat.draw` 13-22 ms with no Markdown read, 30 makes in a row): each of its files
 // asked of the database twice (a thumbnail, a poster), each chat it links to read whole for a title, and every message
 // drawn anew and walked to be found equal. Counted, not timed (what it takes is printed).
@@ -98,7 +98,7 @@ async function rig() {
 /// What a message of the chat shows as these tests look at it: its files' pictures kept, the chats it links to.
 const drawnOf = (u: J) => u.value.messages.map((m: J) => [m.seq, (m.attachments ?? []).map((f: J) => [f.owner, f.held === true]), (m.chats ?? []).map((c: J) => [c.title, c.thread, c.archived === true])]);
 
-test("a_chat_made_again_while_its_reply_streams_reads_no_file_kept_nor_linked_record_and_draws_its_messages_as_they_were", async () => {
+test("a_chat_made_again_while_its_agent_works_reads_no_file_kept_nor_linked_record_and_draws_its_messages_as_they_were", async () => {
   const { t, u, sql } = await rig();
   // As it is first made: each file's picture as kept, each link titled as its row is, the archived one said so.
   const shown = drawnOf(u);
@@ -106,7 +106,7 @@ test("a_chat_made_again_while_its_reply_streams_reads_no_file_kept_nor_linked_re
   assert.deepEqual(shown.slice(FILES, FILES + LINKS).map((m: J) => m[2][0]), Array.from({ length: LINKS }, (_, i) => (i < LINKS - 1 ? [`链接 ${i}`, 100 + i, false] : ["归档的", 100 + i, true])));
   assert.deepEqual(u.value.opened.map((o: J) => [o.session, o.title, o.mark ?? null]), Array.from({ length: OPENED }, (_, i) => [`o${i}`, `开的 ${i} 现在`, i % 2 === 0 ? "run" : null]));
 
-  // Its reply streams: the chat made again ROUNDS times, nothing it shows of its messages changed.
+  // While its agent is working: the chat made again ROUNDS times, nothing it shows of its messages changed.
   const counted = counting(sql);
   const before = { ...work };
   const was = u.value;

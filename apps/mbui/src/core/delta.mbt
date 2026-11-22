@@ -225,7 +225,7 @@ fn key_field(item : Json, f : Json) -> Json {
 ///|
 /// Whether `item`'s key is `target` (key_of's, an op's `patch`, `drop`, `move` or `before`), nothing made to tell: a
 /// list's items are looked through for one, and an array made of each one's fields (a chat's messages' `seq` and
-/// `outgoing`) was an allocation an item, hundreds a streamed word.
+/// `outgoing`) was an allocation an item, hundreds per message patch.
 fn key_match(item : Json, fields : Array[Json], target : Json) -> Bool {
   if fields.length() == 1 {
     return key_field(item, fields[0]) == target
@@ -257,7 +257,7 @@ fn apply_keyed(list : Array[Json], op : Map[String, Json]) -> Array[Json] {
     _ => return list
   }
   let out = list.copy()
-  // (where each key is, of a list as long as a chat's: kept for the list each op makes, so a word streamed into a
+  // (where each key is, of a list as long as a chat's: kept for the list each op makes, so an in-place patch to a
   // chat's last message finds it at once, not after every message before it; the first of a key where it is there
   // twice, as walking from the start finds it)
   let at = if list.length() >= keyed_at_least { Some(keyed_at_of(list, fields)) } else { None }

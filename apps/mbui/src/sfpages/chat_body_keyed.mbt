@@ -2,7 +2,7 @@
 // ChatMessages): each message's rows (the unread line over it where it is there, its blocks, what went elsewhere after
 // it) worked out of that message alone, its own computed, and the list's keys of each message's keys and the chat's
 // head (its page before, its emptiness, what went elsewhere before its messages; what is newer, where it stands and
-// its agents at work after them). So a word streamed into a message works out that message's rows and reads none of
+// its agents at work after them). So a message updated in place works out that message's rows and reads none of
 // the others; the list's keys are made again only as a message comes, goes or moves, or a message's own keys change
 // (one gone elsewhere after it), and a row reads only what it is; how many slices a message's words are drawn in
 // (View::scrolls_window's `slices`) worked out of that message's JSON alone, its own computed too (chat_said_slices_raw). What is sent from here and what waits in the outbox are
@@ -480,7 +480,7 @@ fn chat_body_keyed(
     }
   }
   // (how many slices each message's own row is drawn in, worked out of its JSON's few fields (chat_said_slices_raw), as
-  // its keys are: told only as that count changes, a word streamed into it waking nothing else)
+  // its keys are: told only as that count changes, an in-place update to it waking nothing else)
   let slice_counts : Map[String, @signals.Computed[Int]] = Map([])
   let slices_of = fn(mk : String) -> @signals.Computed[Int] {
     match slice_counts.get(mk) {

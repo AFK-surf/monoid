@@ -1170,7 +1170,7 @@ fn ride_spoil() -> Unit {
 /// times running with nothing of it changed, where it was and as opaque (it would be drawn as it was; what changes or
 /// moves each time it is drawn never kept, its recording never drawn again), holding others or drawing words (a
 /// paragraph's node of words, alone or alone in what holds it: else its glyphs set and drawn again each time what holds
-/// it is gone through, as a message streamed into does at its every word; a box drawing a ground alone is not worth
+/// it is gone through, as a rapidly updating text node does on every edit; a box drawing a ground alone is not worth
 /// keeping); not an old view, in its bones, glass, what a column scrolls by its offset alone, nor what was found holding
 /// such (ride_unkept). Each node gone through is marked so; one that changed lets go of what it kept.
 fn ride_holder(

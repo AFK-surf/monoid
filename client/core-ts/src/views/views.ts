@@ -3299,7 +3299,7 @@ export class Views implements Owner {
 
   /// Where a chat a chat's agent opened stands (#opened): its mark and its row's second line, made of its record alone
   /// (and the words of the language they are said in), so kept by the record, the same object while it does not change.
-  /// A chat that leads many is made again on each change while its reply streams: each of them was copied whole and
+  /// A chat that leads many is made again on each change while its agent is working: each of them was copied whole and
   /// presented again every time.
   readonly #openedStates = new WeakMap<object, { lang: string; mark: string | null; text: string | null; lead: string | null }>();
   #openedState(row: J): { mark: string | null; text: string | null; lead: string | null } {

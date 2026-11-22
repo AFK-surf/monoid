@@ -947,7 +947,7 @@ fn chat_view(v : Json) -> ChatView {
 ///|
 /// Part `name` of a chat's view `v` read by `make`, or as it was read (`kept`, of `was`'s view) where it is the same
 /// JSON as in the value `was` was read from: the core's deltas keep what they do not touch (src/core delta.mbt), so a
-/// streamed word reads none of the chat's people, agents, outbox and the rest again.
+/// patched message reads none of the chat's people, agents, outbox and the rest again.
 fn[T] chat_part(v : Json, was : (Json, ChatView)?, name : String, kept : (ChatView) -> T, make : () -> T) -> T {
   match was {
     Some((raw, view)) =>
