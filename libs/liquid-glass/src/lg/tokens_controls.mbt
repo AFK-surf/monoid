@@ -614,6 +614,25 @@ pub fn liquid_viewer_dark_glass(
 }
 
 ///|
+/// Clear refractive liquid glass lens recipe for knobs and text loupes (`blur=0`, `tint=clear`,
+/// `bezel=7`, `refraction=5`, `chroma=-0.06`).
+pub fn liquid_knob_glass(solid? : Int64 = clear) -> @paint.Glass {
+  let sol = if solid != clear { solid } else { colors().paper }
+  @paint.Glass::liquid(
+    blur=0.0,
+    tint=0xFFFFFF00L,
+    solid=sol,
+    saturation=1.0,
+    rim=0.6,
+    bezel=7.0,
+    refraction=5.0,
+    chroma=-0.06,
+    merge=0.0,
+    adaptive=false,
+  )
+}
+
+///|
 /// Clear lifted Liquid Glass loupe for compact tab bar / segmented control thumbs while held.
 pub fn liquid_tab_lens_glass(
   press : Double,
