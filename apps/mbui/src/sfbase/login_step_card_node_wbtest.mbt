@@ -5,7 +5,7 @@
 ///|
 /// A window with keyboard and mouse holding what `make` makes, its words at `scale` of their size.
 fn u16_case(make : (@view.View) -> Unit, scale? : Double = 1.0, w? : Double = 600.0) -> @ui.Tester {
-  presenters_reset()
+  @sf.presenters_reset()
   let t = @ui.Tester::new(fn(_c) {  }, w~, h=500.0, platform=0)
   t.check_looks(false)
   if scale != 1.0 {
@@ -18,7 +18,7 @@ fn u16_case(make : (@view.View) -> Unit, scale? : Double = 1.0, w? : Double = 60
 
 ///|
 /// A step's button as a login's card is given one: `label`, solid or not, its other ways (`more`), `press`.
-fn u16_step(label : String, solid : Bool, more : Array[MenuItem], press : () -> Unit) -> LoginStep {
+fn u16_step(label : String, solid : Bool, more : Array[@sf.MenuItem], press : () -> Unit) -> LoginStep {
   { key: "u16/" + label, label, solid, busy: false, external: false, more, last: true, press, told: None }
 }
 
@@ -36,7 +36,7 @@ test "a login's card: its × on its title's first line, cancelled as pressed; it
             fn() { [{ words: "在 github.com 上输入这个码", red: false, busy: false, last: false }] },
             fn() { "8F2C-41DA" },
             fn() {
-              Some(u16_step("复制并打开", true, [menu_item_of("复制链接", fn() {  })], fn() { pressed.set(pressed.get() + 1) }))
+              Some(u16_step("复制并打开", true, [@sf.menu_item_of("复制链接", fn() {  })], fn() { pressed.set(pressed.get() + 1) }))
             },
             fn(code) { copied.set(code) },
           )
@@ -45,7 +45,7 @@ test "a login's card: its × on its title's first line, cancelled as pressed; it
     })
     let at = "words ×\{scale}"
     let (_, ty, _, _) = tt.rect_of("GitHub CLI").unwrap()
-    let x = tt.query(Button, label=t("web-main.logins.cancelWhat")).unwrap().rect
+    let x = tt.query(Button, label=@sf.t("web-main.logins.cancelWhat")).unwrap().rect
     // (the × in the card's top corner, over the title's first line, not under it)
     assert_true(x.1 <= ty, msg="\{at}: × at \{x.1}, title at \{ty}")
     tt.tap(x.0 + x.2 / 2.0, x.1 + x.3 / 2.0)
@@ -57,7 +57,7 @@ test "a login's card: its × on its title's first line, cancelled as pressed; it
     tt.tap_text("8F2C-41DA")
     tt.run_for(@ui.move_most_ms)
     assert_eq(copied.get(), "8F2C-41DA")
-    assert_true(tt.query(Button, label=t("common.login.otherWays")) is Some(_), msg="\{at}: the ⋯ beside the step")
+    assert_true(tt.query(Button, label=@sf.t("common.login.otherWays")) is Some(_), msg="\{at}: the ⋯ beside the step")
     let faults = tt.audit()
     assert_true(faults.is_empty(), msg="\{at}: \{faults.join("\n")}")
   }
@@ -75,7 +75,7 @@ test "a login's card with nothing to cancel here: no ×, its line last; ended, o
     })
     |> ignore
   })
-  assert_true(tt.query(Button, label=t("web-main.logins.cancelWhat")) is None)
+  assert_true(tt.query(Button, label=@sf.t("web-main.logins.cancelWhat")) is None)
   assert_true(tt.rect_of("请在工作站上完成登录") is Some(_))
   assert_true(tt.rect_of("gcloud · 登录失败") is Some(_))
   assert_eq(tt.audit(), [])
@@ -99,9 +99,9 @@ test "a code pasted back: 完成 comes in once a code is typed, Enter sends it a
       })
     })
   })
-  let finish = t("web-main.logins.finish")
+  let finish = @sf.t("web-main.logins.finish")
   assert_true(tt.query(Button, label=finish) is None, msg="nothing typed: no 完成")
-  tt.tap_text(t("web-main.logins.pasteCode"))
+  tt.tap_text(@sf.t("web-main.logins.pasteCode"))
   tt.type_text("abc123 ")
   tt.run_for(@ui.move_most_ms)
   assert_true(tt.query(Button, label=finish) is Some(_), msg="typed: 完成")
@@ -187,25 +187,25 @@ test "answered in place: the answer gives way to how it went where it stood, the
   let ended : @signals.Signal[(Bool, String)?] = @signals.signal(None)
   let opened = @signals.signal(0)
   let t = u16_case(fn(root) {
-    ask_card_node(root, fn(k) {
-      ask_words_node(k, fn() { "允许调试你的手机" }, fn() { "" }) |> ignore
-      answered_in_place_node(k, fn() { ended.get().map(fn(e) { (e.0, [@ui.span(e.1)]) }) }, fn(a) {
-        ask_buttons_node(a, fn(f) {
-          button_node(f, fn() { "允许" }, fn() { ended.set(Some((true, "已允许 · 1 小时"))) }, tone=Primary, card_words=true) |> ignore
-          button_node(f, fn() { "拒绝" }, fn() { ended.set(Some((false, "已拒绝"))) }, tone=Ghost, card_words=true) |> ignore
+    @sf.ask_card_node(root, fn(k) {
+      @sf.ask_words_node(k, fn() { "允许调试你的手机" }, fn() { "" }) |> ignore
+      @sf.answered_in_place_node(k, fn() { ended.get().map(fn(e) { (e.0, [@ui.span(e.1)]) }) }, fn(a) {
+        @sf.ask_buttons_node(a, fn(f) {
+          @sf.button_node(f, fn() { "允许" }, fn() { ended.set(Some((true, "已允许 · 1 小时"))) }, tone=Primary, card_words=true) |> ignore
+          @sf.button_node(f, fn() { "拒绝" }, fn() { ended.set(Some((false, "已拒绝"))) }, tone=Ghost, card_words=true) |> ignore
         })
         |> ignore
       })
     })
     |> ignore
-    ask_outcome_node(root, fn() { true }, fn() { [@ui.span("已允许使用 GitHub 令牌")] }, fn() { false }, history=Some(fn(_) {
+    @sf.ask_outcome_node(root, fn() { true }, fn() { [@ui.span("已允许使用 GitHub 令牌")] }, fn() { false }, history=Some(fn(_) {
       opened.set(opened.get() + 1)
     }))
   })
   let (_, _, _, before) = t.rect_of("允许调试你的手机").unwrap()
   let (_, ay, _, _) = t.rect_of("允许").unwrap()
   t.click(Button, label="允许")
-  t.run_for(answered_fade_ms * 2.0 + @ui.move_most_ms)
+  t.run_for(@sf.answered_fade_ms * 2.0 + @ui.move_most_ms)
   assert_true(ended.get() is Some(_), msg="允许 pressed")
   let words = t.words().map(fn(w) { w.0 })
   guard t.rect_of("已允许 · 1 小时") is Some((_, wy, _, _)) else {

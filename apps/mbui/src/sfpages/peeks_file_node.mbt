@@ -2,7 +2,7 @@
 // and shut as the pointer rests on the chip that names the file, is the hover card's (sf's), not this; this is what is
 // in it, as the core reads the file (`filePeek`, read by whoever holds the card) and as that changes: its head, a few of
 // its lines, its picture or its first entries, its foot with its path to copy; in its bones while it is read and its
-// picture comes, said why not where it is not read. Drawn by the library's (@sf.peek_file_head_node, its lines, picture,
+// picture comes, said why not where it is not read. Drawn by the library's (@sfbase.peek_file_head_node, its lines, picture,
 // entries and foot); this is what is read for it and what that says.
 
 ///|
@@ -60,15 +60,15 @@ fn file_card_node(
     }
   }
   parent.pick(shows, fn(b, s) {
-    @sf.style_node(b, fn() { @sf.peek_card_part })
+    @sf.style_node(b, fn() { @sfbase.peek_card_part })
     match s {
       Shown => file_shown_node(b, fn() { @sfbase.picture_drawn(picture_key()) }, value)
       // (while it is read: a made-up file's, in its bones)
       Bones => @sf.waiting_node(b, fn(bones) { file_shown_node(bones, fn() { "" }, fn() { file_sample(path) }) })
       Refused =>
-        @sf.peek_rich_node(b, fn(rich) {
+        @sfbase.peek_rich_node(b, fn(rich) {
           file_head_node(rich, fn() { base_of(path) }, fn() { is_dir_path(path) }, fn() { path }, fn() { "" })
-          @sf.peek_note_node(rich, fn() { text(read.get().error, "message") })
+          @sfbase.peek_note_node(rich, fn() { text(read.get().error, "message") })
           file_foot_node(rich, fn() { path }, fn() { "" })
         })
     }
@@ -100,7 +100,7 @@ fn file_shown_node(parent : @view.View, picture : () -> String, v : () -> Json?)
       _ => None
     }
   }
-  @sf.peek_rich_node(parent, fn(rich) {
+  @sfbase.peek_rich_node(parent, fn(rich) {
     file_head_node(
       rich,
       fn() {
@@ -130,7 +130,7 @@ fn file_shown_node(parent : @view.View, picture : () -> String, v : () -> Json?)
           1 => file_lines_node(b, lines, at, fn() { text(v(), "name") })
           // (its picture all in its box, fading in once it is decoded for the room it is given, the hover's ground under
           // it till then: an old view's picture's bg)
-          2 => @sf.peek_file_picture_node(b, picture)
+          2 => @sfbase.peek_file_picture_node(b, picture)
           3 => file_entries_node(b, fn() { items(v(), "entries") })
           _ => ()
         }
@@ -158,7 +158,7 @@ fn file_shown_node(parent : @view.View, picture : () -> String, v : () -> Json?)
 }
 
 ///|
-/// Its head (file_head's, @sf.peek_file_head_node) in `parent`: its mark (a folder's where `dir`), its name and when it
+/// Its head (file_head's, @sfbase.peek_file_head_node) in `parent`: its mark (a folder's where `dir`), its name and when it
 /// was written; its whole path under them, a home directory as `~` (shown_path).
 fn file_head_node(
   parent : @view.View,
@@ -167,11 +167,11 @@ fn file_head_node(
   path : () -> String,
   ago : () -> String,
 ) -> Unit {
-  @sf.peek_file_head_node(parent, name, dir, fn() { shown_path(path()) }, ago)
+  @sfbase.peek_file_head_node(parent, name, dir, fn() { shown_path(path()) }, ago)
 }
 
 ///|
-/// Its lines (file_lines's, @sf.peek_file_lines_node) in `parent`: each numbered from `lines`' start, the one at `at`
+/// Its lines (file_lines's, @sfbase.peek_file_lines_node) in `parent`: each numbered from `lines`' start, the one at `at`
 /// marked, in the colours the core says of the language `name`'s (code.ink, as a preview colours it: code_ink_node),
 /// plain till it has.
 fn file_lines_node(parent : @view.View, lines : () -> Json?, at : () -> Int?, name : () -> String) -> Unit {
@@ -200,13 +200,13 @@ fn file_lines_node(parent : @view.View, lines : () -> Json?, at : () -> Int?, na
       }
     }
   }
-  @sf.peek_file_lines_node(parent, fn() { count(lines(), "start") }, words, at, colored)
+  @sfbase.peek_file_lines_node(parent, fn() { count(lines(), "start") }, words, at, colored)
 }
 
 ///|
-/// A directory's first entries (file_entries's, @sf.peek_file_entries_node) in `parent`, by their names.
+/// A directory's first entries (file_entries's, @sfbase.peek_file_entries_node) in `parent`, by their names.
 fn file_entries_node(parent : @view.View, entries : () -> Array[Json]) -> Unit {
-  @sf.peek_file_entries_node(parent, fn() {
+  @sfbase.peek_file_entries_node(parent, fn() {
     entries().map(fn(e) {
       match e {
         String(t) => t
@@ -217,10 +217,10 @@ fn file_entries_node(parent : @view.View, entries : () -> Array[Json]) -> Unit {
 }
 
 ///|
-/// Its foot (file_foot's, @sf.peek_file_foot_node) in `parent`: what it is in words (`what`), and its path to copy
+/// Its foot (file_foot's, @sfbase.peek_file_foot_node) in `parent`: what it is in words (`what`), and its path to copy
 /// (复制路径, saying 已复制 copied_ms from the moment it was pressed) in the card's bottom end corner.
 fn file_foot_node(parent : @view.View, path : () -> String, what : () -> String) -> Unit {
-  @sf.peek_file_foot_node(parent, what, fn(f) { @sf.peek_copy_node(f, path, "web-main.preview.copyPath", path_copied_at) })
+  @sfbase.peek_file_foot_node(parent, what, fn(f) { @sfbase.peek_copy_node(f, path, "web-main.preview.copyPath", path_copied_at) })
 }
 
 ///|

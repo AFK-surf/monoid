@@ -156,27 +156,6 @@ test "permissions one to a line in a narrow box" {
 }
 
 ///|
-test "the avatars: each pressed by its name picks it, the one picked read out selected" {
-  let picked = @signals.signal("")
-  let got = Ref("")
-  let tips = TipLayer::new(fn() { None })
-  let tt = u5_case(fn(root) {
-    avatar_tiles_node(root, fn() { app_makers }, fn() { picked.get() }, fn() { 560.0 }, fn(a) {
-      got.val = a.id
-      picked.set(a.id)
-    }, tips)
-    |> ignore
-  })
-  let first = app_makers[0]
-  let label = if first.label.has_prefix("android-") { t(first.label) } else { first.label }
-  tt.click(Button, label~)
-  tt.run_for(@ui.move_most_ms)
-  assert_eq(got.val, first.id)
-  assert_eq(picked.get(), first.id)
-  assert_eq(tt.fixed_outgrown(), [])
-}
-
-///|
 test "a colour's swatch beside its field, and the icon's well pressed for a picture" {
   let hex = @ui.Field::new(text="#3B82F6")
   let shown = @signals.signal("")
@@ -186,9 +165,9 @@ test "a colour's swatch beside its field, and the icon's well pressed for a pict
       r.row(Is(true)).gap(Is(16.0)) |> ignore
       icon_well_node(r, fn() { "上传图标" }, fn() { pressed.val += 1 }, fn() { 0x3B82F6FFL }, fn() { 0xFFFFFFFFL }, fn() { shown.get() }, fn() {
         "上传"
-      }, app_icon_px)
+      }, 1024)
       |> ignore
-      swatch_field_node(r, hex, fn() { hex_color(hex.text()).unwrap_or(0L) }, "颜色") |> ignore
+      swatch_field_node(r, hex, fn() { 0x3B82F6FFL }, "颜色") |> ignore
     })
     |> ignore
   })

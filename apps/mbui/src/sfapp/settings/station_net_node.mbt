@@ -39,7 +39,7 @@ pub fn level_figure_node(
   style? : () -> @ui.TextStyle = fn() { net_card_figure },
   loc~ : SourceLoc,
 ) -> @view.View {
-  words_node(loc~, parent, fn() { net_text(f(), "text") }, fn() { level_figure_style(net_text(f(), "level"), style()) })
+  @sf.words_node(loc~, parent, fn() { net_text(f(), "text") }, fn() { level_figure_style(net_text(f(), "level"), style()) })
 }
 
 ///|
@@ -73,8 +73,8 @@ pub fn station_net_line_node(parent : @view.View, net : () -> Json?, look? : Net
   // (each look's words: plain, cut short where the line is, a figure by its level, a speed)
   let words = fn(p : @view.View, said : () -> String) {
     match look {
-      Peek => net_peek_words(p, said, fn() { theme().p.muted })
-      _ => words_node(p, said, fn() { net_card_words }) |> ignore
+      Peek => net_peek_words(p, said, fn() { @sf.theme().p.muted })
+      _ => @sf.words_node(p, said, fn() { net_card_words }) |> ignore
     }
   }
   // (how it is reached long: it is what is cut short, its round trip's words kept; else those words, it kept. Worked
@@ -84,7 +84,7 @@ pub fn station_net_line_node(parent : @view.View, net : () -> Json?, look? : Net
   let short_path = fn() { !long_path() }
   let words_cut = fn(p : @view.View, said : () -> String, cut : () -> Bool) {
     match look {
-      Peek => net_peek_words(p, said, fn() { theme().p.muted }, cut~)
+      Peek => net_peek_words(p, said, fn() { @sf.theme().p.muted }, cut~)
       _ => net_words_cut_by(p, said, fn() { net_card_words }, cut)
     }
   }
@@ -95,7 +95,7 @@ pub fn station_net_line_node(parent : @view.View, net : () -> Json?, look? : Net
           p,
           fn() { net_text(net_field(n(), key), "text") },
           fn() {
-            let t = theme()
+            let t = @sf.theme()
             match net_text(net_field(n(), key), "level") {
               "red" => t.p.red
               "amber" => t.p.warn_ink
@@ -109,35 +109,35 @@ pub fn station_net_line_node(parent : @view.View, net : () -> Json?, look? : Net
   }
   let speed = fn(p : @view.View, key : String) {
     match look {
-      Peek => net_peek_words(p, fn() { net_text(n(), key) }, fn() { theme().p.text }, weight=500)
-      _ => words_node(p, fn() { net_text(n(), key) }, fn() { net_card_figure }) |> ignore
+      Peek => net_peek_words(p, fn() { net_text(n(), key) }, fn() { @sf.theme().p.text }, weight=500)
+      _ => @sf.words_node(p, fn() { net_text(n(), key) }, fn() { net_card_figure }) |> ignore
     }
   }
   parent.box(made_for=loc, fn(row) {
-    style_node(row, fn() { net_row })
+    @sf.style_node(row, fn() { net_row })
     row.wraps(Is(Some(net_lines))) |> ignore
     row.box(fn(left) {
-      style_node(left, fn() { net_left }, in_row=true)
+      @sf.style_node(left, fn() { net_left }, in_row=true)
       left.box(fn(l) {
-        style_node(l, fn() { if long_path() { net_path_cut } else { net_path } }, in_row=true)
+        @sf.style_node(l, fn() { if long_path() { net_path_cut } else { net_path } }, in_row=true)
         words_cut(l, fn() { net_text(n(), "path") }, long_path)
         l.show(fn() { has("loss") }, fn(x) { figure(x, "loss") })
       })
       |> ignore
       left.show(fn() { has("rtt") }, fn(x) {
-        style_node(x, fn() { if long_path() { net_way } else { net_rtt } }, in_row=true)
+        @sf.style_node(x, fn() { if long_path() { net_way } else { net_rtt } }, in_row=true)
         words(x, fn() { "·" })
-        words_cut(x, fn() { t("android-settings.stations.rtt") }, short_path)
+        words_cut(x, fn() { @sf.t("android-settings.stations.rtt") }, short_path)
         figure(x, "rtt")
       })
     })
     |> ignore
     row.box(fn(right) {
-      style_node(right, fn() { net_right }, in_row=true)
+      @sf.style_node(right, fn() { net_right }, in_row=true)
       right.wraps(Is(Some(net_lines))) |> ignore
       for way in [("↑", "up"), ("↓", "down")] {
         right.box(fn(l) {
-          style_node(l, fn() { net_way }, in_row=true)
+          @sf.style_node(l, fn() { net_way }, in_row=true)
           words(l, fn() { way.0 })
           speed(l, way.1)
         })
@@ -161,12 +161,12 @@ fn net_page_line(parent : @view.View, net : () -> Json?, loc~ : SourceLoc) -> Un
   let long_path = fn() { long_now.get() }
   let short_path = fn() { !long_path() }
   parent.box(made_for=loc, fn(r) {
-    style_node(r, fn() { net_page_row })
+    @sf.style_node(r, fn() { net_page_row })
     r.wraps(Is(Some(net_page_lines))) |> ignore
     r.box(fn(part) {
-      style_node(part, fn() { net_left }, in_row=true)
+      @sf.style_node(part, fn() { net_left }, in_row=true)
       part.box(fn(l) {
-        style_node(l, fn() { if long_path() { net_page_cut_box } else { net_page_line_box } }, in_row=true)
+        @sf.style_node(l, fn() { if long_path() { net_page_cut_box } else { net_page_line_box } }, in_row=true)
         net_words_cut_by(l, fn() { net_text(net(), "path") }, fn() { net_page_words }, long_path)
         l.show(fn() { has("loss") }, fn(f) {
           level_figure_node(f, fn() { net_field(net(), "loss") }, style=fn() { net_page_figure }) |> ignore
@@ -174,10 +174,10 @@ fn net_page_line(parent : @view.View, net : () -> Json?, loc~ : SourceLoc) -> Un
       })
       |> ignore
       part.show(fn() { has("rtt") }, fn(x) {
-        style_node(x, fn() { if long_path() { net_page_line_box } else { net_page_cut_box } }, in_row=true)
-        words_node(x, fn() { "·" }, fn() { net_page_words }) |> ignore
+        @sf.style_node(x, fn() { if long_path() { net_page_line_box } else { net_page_cut_box } }, in_row=true)
+        @sf.words_node(x, fn() { "·" }, fn() { net_page_words }) |> ignore
         let parts = fn() {
-          let words = t("web-pages.stations.latency", args=[("latency", "\u{0}")])
+          let words = @sf.t("web-pages.stations.latency", args=[("latency", "\u{0}")])
           words.split("\u{0}").map(fn(p) { p.to_owned() }).collect()
         }
         net_words_cut_by(x, fn() { parts().get(0).unwrap_or("") }, fn() { net_page_words }, short_path)
@@ -187,13 +187,13 @@ fn net_page_line(parent : @view.View, net : () -> Json?, loc~ : SourceLoc) -> Un
     })
     |> ignore
     r.box(fn(rates) {
-      style_node(rates, fn() { net_right }, in_row=true)
+      @sf.style_node(rates, fn() { net_right }, in_row=true)
       rates.wraps(Is(Some(net_page_lines))) |> ignore
       for way in [("↑", "up"), ("↓", "down")] {
         rates.box(fn(l) {
-          style_node(l, fn() { net_page_rate }, in_row=true)
-          words_node(l, fn() { way.0 }, fn() { net_page_words }) |> ignore
-          words_node(l, fn() { net_text(net(), way.1) }, fn() { net_page_figure }) |> ignore
+          @sf.style_node(l, fn() { net_page_rate }, in_row=true)
+          @sf.words_node(l, fn() { way.0 }, fn() { net_page_words }) |> ignore
+          @sf.words_node(l, fn() { net_text(net(), way.1) }, fn() { net_page_figure }) |> ignore
         })
         |> ignore
       }
@@ -219,7 +219,7 @@ fn net_peek_words(
     net_cut_by(w, cut)
     w
     .words(By(words))
-    .words_look(By(fn() { { size: theme().t.meta, weight, line: net_peek_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 } }))
+    .words_look(By(fn() { { size: @sf.theme().t.meta, weight, line: net_peek_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 } }))
     .ink(By(ink))
     |> ignore
   })
@@ -238,7 +238,7 @@ fn net_words_cut_by(
   loc~ : SourceLoc,
 ) -> Unit {
   p.box(made_for=loc, fn(w) {
-    styled_words(w, words, style) |> ignore
+    @sf.styled_words(w, words, style) |> ignore
     net_cut_by(w, cut)
   })
   |> ignore
@@ -285,46 +285,46 @@ pub fn summary_mark_card_node(
   loc~ : SourceLoc,
 ) -> Unit {
   // (a page's card, laid out by the page's arrangement, pressed whole: what it holds in one column of its own)
-  page_card_node(loc~, parent, fn(card) {
-    rippled_node(card, press, card_corner, name)
+  @sf.page_card_node(loc~, parent, fn(card) {
+    @sf.rippled_node(card, press, @sf.card_corner, name)
     card.box(fn(col) {
       // (its head, then what is under it, 10 apart)
-      style_node(col, fn() { summary_col })
+      @sf.style_node(col, fn() { summary_col })
       // (its head: its mark, its name, what stands at its end and its chevron on its first line, each across that
       // line's middle, never across the lines under it; what is said of it under the name from where the name starts:
       // after a room as wide as the mark's square, whatever size that is drawn at)
       col.box(fn(top) {
         // (its lines 2 apart: a tag's ground after its name does not meet the line under it)
-        style_node(top, fn() { summary_top })
+        @sf.style_node(top, fn() { summary_top })
         top.box(fn(head) {
-          style_node(head, fn() { summary_head })
+          @sf.style_node(head, fn() { summary_head })
           head.box(fn(m) {
-            style_node(m, fn() { summary_mark_box }, in_row=true)
+            @sf.style_node(m, fn() { summary_mark_box }, in_row=true)
             mark(m)
           })
           |> ignore
           head.box(fn(n) {
-            style_node(n, fn() { summary_name_row })
+            @sf.style_node(n, fn() { summary_name_row })
             n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             n.box(fn(w) {
               w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              words_node(w, name, fn() { summary_name }) |> ignore
+              @sf.words_node(w, name, fn() { summary_name }) |> ignore
             })
             |> ignore
-            n.show(fn() { tag() != "" }, fn(x) { pill_node(x, tag) |> ignore })
+            n.show(fn() { tag() != "" }, fn(x) { @sf.pill_node(x, tag) |> ignore })
           })
           |> ignore
           match end {
             Some(e) => e(head)
             None => ()
           }
-          icon_node(head, "chevron-right", summary_chevron, By(fn() { theme().p.subtle })) |> ignore
+          @sf.icon_node(head, "chevron-right", summary_chevron, By(fn() { @sf.theme().p.subtle })) |> ignore
         })
         |> ignore
         top.show(fn() { said() != "" }, fn(s) {
-          style_node(s, fn() { summary_said_line })
-          s.box(fn(m) { style_node(m, fn() { summary_mark_room }, in_row=true) }) |> ignore
-          words_node(s, said, fn() { summary_said }).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.style_node(s, fn() { summary_said_line })
+          s.box(fn(m) { @sf.style_node(m, fn() { summary_mark_room }, in_row=true) }) |> ignore
+          @sf.words_node(s, said, fn() { summary_said }).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         })
       })
       |> ignore

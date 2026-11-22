@@ -5,8 +5,8 @@
 ///|
 /// Whether an allowance shows as chips (quota_chips draws any): the core can say it (`state` ok) and it has a window.
 pub fn has_quota(q : Json?) -> Bool {
-  chip_str(q, "state") == "ok" &&
-  (match chip_field(q, "windows") {
+  @sf.chip_str(q, "state") == "ok" &&
+  (match @sf.chip_field(q, "windows") {
     Some(Array(a)) => a.length() > 0
     _ => false
   })
@@ -17,7 +17,7 @@ pub fn has_quota(q : Json?) -> Bool {
 /// pressed (a chat's agent's row of its account): each window's mark and what is left in it, `5H 62% W 18%`; "" where
 /// it shows none (has_quota).
 pub fn quota_chips_said(q : Json?) -> String {
-  guard has_quota(q) && chip_field(q, "windows") is Some(Array(windows)) else { return "" }
+  guard has_quota(q) && @sf.chip_field(q, "windows") is Some(Array(windows)) else { return "" }
   windows.map(fn(w) { quota_mark(Some(w)) + " " + quota_figure(Some(w)) }).join(" ")
 }
 
@@ -25,10 +25,10 @@ pub fn quota_chips_said(q : Json?) -> String {
 /// The group display name of a window when its label has a `" · "` suffix (such as `"5 小时 · Gemini"` or
 /// `"每周 · Claude / GPT"`), or its `scope` otherwise.
 fn quota_group_name(w : Json) -> String {
-  let label = chip_str(Some(w), "label")
+  let label = @sf.chip_str(Some(w), "label")
   match label.find(" · ") {
     Some(i) => label.clamped_view(start=i + 3).to_owned()
-    None => chip_str(Some(w), "scope")
+    None => @sf.chip_str(Some(w), "scope")
   }
 }
 
@@ -59,7 +59,7 @@ fn quota_parts(windows : Array[Json]) -> Array[(String, Array[Json])] {
   let counts : Map[String, Int] = Map([])
   let order : Array[String] = []
   for w in windows {
-    let s = chip_str(Some(w), "scope")
+    let s = @sf.chip_str(Some(w), "scope")
     if s == "" {
       base.push(w)
     } else {
@@ -81,9 +81,9 @@ fn quota_parts(windows : Array[Json]) -> Array[(String, Array[Json])] {
   let has_pool = base.length() == 0 && order.iter().any(fn(s) { counts.get(s).unwrap_or(0) > 1 })
   let single : Array[Json] = []
   for s in order {
-    let group_wins = windows.filter(fn(w) { chip_str(Some(w), "scope") == s })
+    let group_wins = windows.filter(fn(w) { @sf.chip_str(Some(w), "scope") == s })
     let gname = if group_wins.length() > 0 { quota_group_name(group_wins[0]) } else { "" }
-    if counts.get(s).unwrap_or(0) > 1 || (has_pool && gname != "" && chip_str(Some(group_wins[0]), "mark").has_prefix(gname + " ")) {
+    if counts.get(s).unwrap_or(0) > 1 || (has_pool && gname != "" && @sf.chip_str(Some(group_wins[0]), "mark").has_prefix(gname + " ")) {
       parts.push((gname, group_wins))
     } else {
       for w in group_wins {
@@ -119,7 +119,7 @@ let nav_quota_group : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, 
 /// Use the same hour and day units on both sides of a quota chip. In a scoped
 /// mark only its final duration changes (for example, "Gemini 5H").
 pub fn quota_mark(w : Json?) -> String {
-  let mark = chip_str(w, "mark")
+  let mark = @sf.chip_str(w, "mark")
   if !mark.has_suffix("H") && !mark.has_suffix("D") {
     return mark
   }
@@ -135,9 +135,9 @@ pub fn quota_mark(w : Json?) -> String {
 ///|
 /// A quota chip shows when an empty window refills, if known.
 pub fn quota_figure(w : Json?) -> String {
-  let left = chip_left(w)
+  let left = @sf.chip_left(w)
   if left == 0 {
-    let refill = chip_str(w, "refillShort")
+    let refill = @sf.chip_str(w, "refillShort")
     if refill != "" {
       return refill
     }
@@ -148,15 +148,15 @@ pub fn quota_figure(w : Json?) -> String {
 ///|
 /// Whether `w` is rendered in its dedicated refill-countdown capsule state.
 pub fn quota_is_refill(w : Json?) -> Bool {
-  chip_left(w) == 0 && chip_str(w, "refillShort") != ""
+  @sf.chip_left(w) == 0 && @sf.chip_str(w, "refillShort") != ""
 }
 
 ///|
 /// Numeric durations always use the compact mark. Other windows use their name while it fits.
 fn quota_worded(w : Json?, form : Int) -> (String, String) {
   let mark = quota_mark(w)
-  let label = chip_str(w, "label")
-  let typed = mark != chip_str(w, "mark")
+  let label = @sf.chip_str(w, "label")
+  let typed = mark != @sf.chip_str(w, "mark")
   let name = if form < 2 && !typed && label != "" {
     label.replace(old=" · ", new=" ")
   } else {
@@ -170,7 +170,7 @@ fn quota_worded(w : Json?, form : Int) -> (String, String) {
 /// when it fills again on a line of its own (QuotaBars' tip).
 pub fn quota_said(w : Json?) -> String {
   let said = quota_left(w)
-  match chip_str(w, "refills") {
+  match @sf.chip_str(w, "refills") {
     "" => said
     refills => said + "\n" + refills
   }
@@ -179,12 +179,12 @@ pub fn quota_said(w : Json?) -> String {
 ///|
 /// What is left of an allowance's window, in words: 每周剩余 78% (剩余 78% where it has no name).
 fn quota_left(w : Json?) -> String {
-  let label = chip_str(w, "label")
-  let left = chip_left(w).to_string()
+  let label = @sf.chip_str(w, "label")
+  let left = @sf.chip_left(w).to_string()
   if label != "" {
-    t("web-main.quota.left", args=[("label", label), ("left", left)])
+    @sf.t("web-main.quota.left", args=[("label", label), ("left", left)])
   } else {
-    t("web-main.quota.leftAlone", args=[("left", left)])
+    @sf.t("web-main.quota.leftAlone", args=[("left", left)])
   }
 }
 
@@ -193,41 +193,8 @@ fn quota_left(w : Json?) -> String {
 // kept across runs: a value (no field of it changes)
 let meter_line_way : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 
-///|
-// kept across runs: a value (no field of it changes)
-let meter_chips_line : @ui.Style = @ui.css("row w=Full gap=S1 align=ACenter")
 
-///|
-fn chip_field(v : Json?, key : String) -> Json? {
-  match v {
-    Some(Object(o)) => o.get(key)
-    _ => None
-  }
-}
 
-///|
-fn chip_str(v : Json?, key : String) -> String {
-  match chip_field(v, key) {
-    Some(String(s)) => s
-    _ => ""
-  }
-}
-
-///|
-/// What is left (0–100) of a window or a meter (`left`).
-fn chip_left(v : Json?) -> Int {
-  let n = match chip_field(v, "left") {
-    Some(Number(x, ..)) => x.to_int()
-    _ => 0
-  }
-  if n < 0 {
-    0
-  } else if n > 100 {
-    100
-  } else {
-    n
-  }
-}
 
 ///|
 /// The chips in a line, in its middle.

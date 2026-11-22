@@ -39,40 +39,40 @@ pub fn station_choice_node(
     }
   }
   let several = fn() { stations().length() > 1 }
-  let opener = Opener::new()
+  let opener = @sf.Opener::new()
   // (a disclosure where there are others to choose, its menu what it opens; else what it is, nothing to press:
   // button_while_node)
-  button_while_node(
+  @sf.button_while_node(
     parent,
     several,
     fn() { label(now().name) },
     fn(b) {
       let at = @signals.untracked(chosen)
-      let items : Array[MenuItem?] = @signals.untracked(stations).map(fn(s) {
-        Some(menu_item_of(s.name, fn() { if s.station != at { choose(s.station) } }, chosen=s.station == at))
+      let items : Array[@sf.MenuItem?] = @signals.untracked(stations).map(fn(s) {
+        Some(@sf.menu_item_of(s.name, fn() { if s.station != at { choose(s.station) } }, chosen=s.station == at))
       })
-      present(Menu(items, title, Start, Bottom), Node(b))
+      @sf.menu(items, from=Node(b), title~)
       opener.mark()
     },
     open=fn() { opener.open() },
     in_row=true,
     fn(b, pressed) {
-      style_node(b, fn() { if round { station_choice_round } else { station_choice_box } }, in_row=true)
+      @sf.style_node(b, fn() { if round { station_choice_round } else { station_choice_box } }, in_row=true)
       // (shrinking to its words' least where the line is short: its name cut short, its mark and chevron whole)
-      b.shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(By(fn() { Some(if round { button_height() } else { theme().items.least }) })) |> ignore
+      b.shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(By(fn() { Some(if round { @sf.button_height() } else { @sf.theme().items.least }) })) |> ignore
       if pressed {
-        hover_ground_node(b)
+        @sf.hover_ground_node(b)
       }
       b.pick(fn() { (now().emoji, now().icon) }, at_once=true, fn(m, mark) {
-        if has_station_mark(mark.0, mark.1) {
-          station_mark_node(m, fn() { mark.0 }, fn() { mark.1 }, station_choice_mark, fn() { theme().p.muted }, fn() { 0 })
+        if @sf.has_station_mark(mark.0, mark.1) {
+          @sf.station_mark_node(m, fn() { mark.0 }, fn() { mark.1 }, station_choice_mark, fn() { @sf.theme().p.muted }, fn() { 0 })
         } else {
-          icon_node(m, "server", station_choice_mark, By(fn() { theme().p.muted })) |> ignore
+          @sf.icon_node(m, "server", station_choice_mark, By(fn() { @sf.theme().p.muted })) |> ignore
         }
       })
-      words_node(b, fn() { now().name }, fn() { station_choice_words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      @sf.words_node(b, fn() { now().name }, fn() { station_choice_words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       if pressed {
-        icon_node(b, "chevron-down", station_choice_chevron, By(fn() { theme().p.muted })) |> ignore
+        @sf.icon_node(b, "chevron-down", station_choice_chevron, By(fn() { @sf.theme().p.muted })) |> ignore
       }
     },
     loc~,

@@ -157,7 +157,7 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
       }
     }
     let in_use = fn() { in_use_id() == id }
-    @sf.workspace_row_node(
+    @sfbase.workspace_row_node(
       b,
       fn() { w().name },
       fn() { w().email },
@@ -221,7 +221,7 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
       @sf.panel_rule_node(r)
     })
     |> ignore
-    @sf.workspace_row_node(
+    @sfbase.workspace_row_node(
       foot,
       fn() { @sf.t("android-misc.workspace.addAccount") },
       fn() { @sf.t("android-misc.workspace.addAccount.sub") },
@@ -232,7 +232,7 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
       },
     )
     // (in place of the list: one over another is not stacked)
-    @sf.workspace_row_node(foot, fn() { @sf.t("android-misc.workspace.new") }, fn() { "" }, icon="plus", fn() {
+    @sfbase.workspace_row_node(foot, fn() { @sf.t("android-misc.workspace.new") }, fn() { "" }, icon="plus", fn() {
       close()
       open_new_workspace(src)
     })
@@ -244,10 +244,10 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
 let ws_block_est : Double = 64.0
 
 ///|
-/// A workspace's mark (`w`'s, as it is now) in `parent`: the library's (@sf.workspace_mark_node), its mark else its
+/// A workspace's mark (`w`'s, as it is now) in `parent`: the library's (@sfbase.workspace_mark_node), its mark else its
 /// first letter.
 fn ws_mark_node(parent : @view.View, w : () -> Workspace) -> Unit {
-  @sf.workspace_mark_node(parent, fn() { w().emoji }, fn() { w().icon }, fn() { w().name })
+  @sfbase.workspace_mark_node(parent, fn() { w().emoji }, fn() { w().icon }, fn() { w().name })
 }
 
 ///|
@@ -370,7 +370,7 @@ fn ws_invitations_node(b : @view.View, src : Source, close : () -> Unit) -> Unit
     at_start=false,
   )
   let pending = fn() { shown_pending.get() }
-  b.show(fn() { pending().length() > 0 }, fn(l) { @sf.workspace_label_node(l, fn() { @sf.t("android-misc.invite.label") }) })
+  b.show(fn() { pending().length() > 0 }, fn(l) { @sfbase.workspace_label_node(l, fn() { @sf.t("android-misc.invite.label") }) })
   // (each in a box of no padding of its own: what comes and goes down a column closes its way to none of what it
   // holds, its padding not)
   b.each(pending, fn(p) { text(Some(p.1), "id") }, fn(row, p) {
@@ -381,7 +381,7 @@ fn ws_invitations_node(b : @view.View, src : Source, close : () -> Unit) -> Unit
         answer_invitation(src, account, id, join, text(Some(inv), "name"), if join { close } else { fn() {  } })
       }
     }
-    @sf.invitation_line_node(
+    @sfbase.invitation_line_node(
       row,
       fn() { invited_you(p.get().1) },
       fn() { text(p.get().0, "email") },

@@ -473,7 +473,7 @@ fn picker_where(v : @view.View, src : Source, p : @sfbase.FolderPick) -> Unit {
   }
   v.box(fn(line) {
     @sf.style_node(line, fn() { @sf.panel_words_out_by_node(v, pick_crumb_in).then(picker_where_row) })
-    @sf.station_choice_node(
+    @sfbase.station_choice_node(
       line,
       fn() { p.stations },
       // (the one pressed from the press; what is under it the one shown till its home is answered)

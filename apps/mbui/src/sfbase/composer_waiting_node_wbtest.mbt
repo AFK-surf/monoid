@@ -12,9 +12,9 @@ test "a file waiting in the composer: its ✎ and ↻ pressed whether it opens o
   let tt = @ui.Tester::new(fn(_c) {  }, w=480.0, h=200.0, platform=0)
   tt.check_looks(false)
   @ui.set_view_app(fn(root) {
-    @ui.set_tree_theme(ui_theme_now)
+    @ui.set_tree_theme(@sf.ui_theme_now)
     root.lines_up(Is(Some(Start))) |> ignore
-    let tips = TipLayer::new(fn() { None })
+    let tips = @sf.TipLayer::new(fn() { None })
     file_waiting_node(
       root,
       tips,
@@ -43,9 +43,9 @@ test "a file waiting in the composer: its ✎ and ↻ pressed whether it opens o
     let (x, y) = tt.find("12 KB").unwrap()
     tt.tap(x, y)
     tt.run_for(waiting_tapped_ms)
-    tt.click(Button, label=t("web-main.composer.expandPaste"))
+    tt.click(Button, label=@sf.t("web-main.composer.expandPaste"))
     tt.run_for(waiting_tapped_ms)
-    tt.click(Button, label=t("web-main.composer.retryUpload"))
+    tt.click(Button, label=@sf.t("web-main.composer.retryUpload"))
     tt.run_for(waiting_tapped_ms)
     pressed.join(",")
   }

@@ -75,10 +75,10 @@ pub fn file_mark(name : String) -> String {
 ///|
 /// A file's mark on its card: its line icon, 24, its box its own (no room round it: the gap to its words the card's).
 // kept across runs: a value (no field of it changes)
-let card_mark : @ui.Style = @ui.css("w=S6 h=S6 align=ACenter justify=JCenter")
+pub let card_mark : @ui.Style = @ui.css("w=S6 h=S6 align=ACenter justify=JCenter")
 
 ///|
-let card_mark_size : Double = 24.0
+pub let card_mark_size : Double = 24.0
 
 ///|
 /// The sheet's outline, its fold, its two lines (where it has no extension), a folder's shape (FileTile's paths), and
@@ -193,11 +193,11 @@ pub fn composer_card() -> @ui.Style {
 let composer_card_ground : @ui.Style = @ui.css("bg=Neutral dark{bg=Over(Raised, A(Fg, O10))}")
 
 ///|
-let tile_going_spinner : Double = 16.0
+pub let tile_going_spinner : Double = 16.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let card_words : @ui.Style = @ui.style(w=grow)
+pub let card_words : @ui.Style = @ui.style(w=grow)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -205,15 +205,15 @@ let card_words_hug : @ui.Style = @ui.css("w=Cut")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let card_name : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, leading=L6, wrap=false)
+pub let card_name : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, leading=L6, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let card_meta : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, leading=L4, wrap=false)
+pub let card_meta : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, leading=L4, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let card_failed : @ui.TextStyle = card_meta.then(@ui.text_style(color=Danger))
+pub let card_failed : @ui.TextStyle = card_meta.then(@ui.text_style(color=Danger))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -235,7 +235,7 @@ let card_button_hot : @ui.Style = card_button_box.then(@ui.css("bg=Hover"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let name_row : @ui.Style = @ui.css("row w=Full")
+pub let name_row : @ui.Style = @ui.css("row w=Full")
 
 ///|
 /// A mark on a previewed page or an image (`role`): its pin's number, the digits `author` ends with; "" for any other

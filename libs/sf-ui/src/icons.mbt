@@ -253,7 +253,7 @@ fn icon_parts_shapes(name : String, parts : Array[Int], size : Double, ink : Int
 ///|
 /// Icon `name`'s numbers with its lines as `trace` gives them (icon_traced's), for icon_shapes: a mark drawn on or back
 /// along its strokes, in an old view or a node (sync_key_node).
-fn icon_traced_data(name : String, trace : (Int, Array[Double]) -> Array[Array[Double]]) -> Array[Double] {
+pub fn icon_traced_data(name : String, trace : (Int, Array[Double]) -> Array[Array[Double]]) -> Array[Double] {
   let data : Array[Double] = []
   match icon_numbers(name) {
     Some(d) => {
@@ -286,7 +286,7 @@ fn icon_traced_data(name : String, trace : (Int, Array[Double]) -> Array[Array[D
 
 ///|
 /// The first `part` (0 to 1) of the line through `pts` (x y each) by its length: none where that is nothing.
-fn stroke_from_start(pts : Array[Double], part : Double) -> Array[Double] {
+pub fn stroke_from_start(pts : Array[Double], part : Double) -> Array[Double] {
   let n = pts.length() / 2
   let mut whole = 0.0
   for j in 1..<n {
@@ -347,7 +347,7 @@ fn icon_data_parts(data : Array[Double], parts : Array[Int]) -> Array[Double] {
 ///|
 /// Icon `name`'s numbers, read from icon_data.mbt's text the first time it is asked for (as an array literal each, they
 /// were the design system's start-up code: 670 KB of C compiled on every build, 2026-10-24).
-fn icon_numbers(name : String) -> Array[Double]? {
+pub fn icon_numbers(name : String) -> Array[Double]? {
   match icon_read.get(name) {
     Some(d) => Some(d)
     None =>
@@ -417,7 +417,7 @@ fn stroke_k(k : Double) -> Double {
 /// An icon's parts as icon_data.mbt has them (0 a line, 1 a closed one, 2 a fill's outline: one with a width the
 /// first of a fill), `k` points a unit, in `color`: its strokes of a width one shape (their pieces' nearest the one
 /// that covers a pixel, as one stroke), each fill one.
-fn icon_shapes(data : Array[Double], k : Double, color : Int64) -> Array[@ui.Shape] {
+pub fn icon_shapes(data : Array[Double], k : Double, color : Int64) -> Array[@ui.Shape] {
   let strokes : Array[(Double, Array[(Array[Double], Bool)])] = []
   let fills : Array[Array[(Array[Double], Bool)]] = []
   let mut i = 0

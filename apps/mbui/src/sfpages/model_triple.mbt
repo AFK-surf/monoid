@@ -622,7 +622,7 @@ pub fn model_triple_node(
           |> ignore
         })
         part(r, triple_drop_account, fn() { offers() && account() is Some(Object(_)) && marked() }, fn(x) {
-          @sf.quota_chips_node(x, fn() { field(profile(), "quota") }, small=true)
+          @sfbase.quota_chips_node(x, fn() { field(profile(), "quota") }, small=true)
         })
       // what was picked on its way: a ring in place of the chevron
       b.pick(fn() { (doing(dkey), bound()) }, fn(e, k) {

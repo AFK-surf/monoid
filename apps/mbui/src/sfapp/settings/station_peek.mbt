@@ -502,9 +502,9 @@ fn peek_figures_node(p : @view.View, core : Core, s : () -> Json?, net : () -> J
         // (until it is read, a made-up one's in its bones)
         w.pick(fn() { net() is Some(_) }, fn(x, read) {
           if read {
-            @sf.station_net_line_node(x, net, look=Peek)
+            station_net_line_node(x, net, look=Peek)
           } else {
-            @sf.waiting_node(x, fn(b) { @sf.station_net_line_node(b, fn() { None }, look=Peek) })
+            @sf.waiting_node(x, fn(b) { station_net_line_node(b, fn() { None }, look=Peek) })
           }
         })
       })

@@ -78,24 +78,3 @@ test "a bar's tool while what it does goes on: unable to be pressed, read out as
   t.run_for(@ui.move_most_ms)
   assert_eq(done.val, 1)
 }
-
-///|
-test "a station's choice: with one station, words alone, nothing to press; with others, a button that opens its menu" {
-  let stations = @signals.signal([{ station: "a", name: "办公室", emoji: "", icon: "" }])
-  let chosen = Ref("")
-  let t = parts_tester(390.0, 400.0, fn(root) {
-    station_choice_node(root, fn() { stations.get() }, fn() { "a" }, fn(s) { chosen.val = s }, title="工作站", label=fn(n) {
-      "在 " + n
-    })
-    |> ignore
-  })
-  assert_true(t.query(Button, label="在 办公室") is None, msg="one station: no button")
-  assert_true(t.rect_of("办公室") is Some(_))
-  stations.set([{ station: "a", name: "办公室", emoji: "", icon: "" }, { station: "b", name: "家里", emoji: "", icon: "" }])
-  t.draw()
-  let b = t.get(Button, label="在 办公室", expanded=false)
-  let (x, y, w, h) = b.rect
-  t.tap(x + w / 2.0, y + h / 2.0)
-  t.run_for(@ui.move_most_ms)
-  assert_true(t.query(Button, label="在 办公室", expanded=true) is Some(_), msg="its menu open")
-}

@@ -39,13 +39,13 @@ pub fn peek_page_tile_node(
   // (its thumb in the card's corner, or, under its picture, beside its title's first line: pictured)
   let tile = fn(holder : @view.View, pictured : Bool) {
     holder.box(made_for=loc, fn(t) {
-      style_node(t, fn() { peek_tile })
+      @sf.style_node(t, fn() { peek_tile })
       t.box(fn(th) {
-        style_node(th, fn() { if pictured { peek_thumb_under } else { peek_thumb } }, in_row=true)
+        @sf.style_node(th, fn() { if pictured { peek_thumb_under } else { peek_thumb } }, in_row=true)
         th.pick(fn() { (icon(), github()) }, fn(m, k) {
           match k {
-            ("", true) => peek_github_mark_node(m, peek_thumb_mark, fn() { theme().p.muted })
-            ("", false) => icon_node(m, "web", peek_thumb_icon, By(fn() { theme().p.muted })) |> ignore
+            ("", true) => peek_github_mark_node(m, peek_thumb_mark, fn() { @sf.theme().p.muted })
+            ("", false) => @sf.icon_node(m, "web", peek_thumb_icon, By(fn() { @sf.theme().p.muted })) |> ignore
             (key, _) =>
               m
               .width(Is(Some(peek_thumb_mark)))
@@ -59,12 +59,12 @@ pub fn peek_page_tile_node(
       })
       |> ignore
       t.box(fn(body) {
-        style_node(body, fn() { peek_tile_body }, in_row=true)
-        words_node(body, title, fn() { peek_tile_title }) |> ignore
+        @sf.style_node(body, fn() { peek_tile_body }, in_row=true)
+        @sf.words_node(body, title, fn() { peek_tile_title }) |> ignore
         // (as wide as its words, as the old view's (w=Cut): cut where it is longer, not stretched across)
         body.box(fn(u) {
           u.lines_up(Is(Some(@view.Along::Start))) |> ignore
-          words_node(u, url, fn() { peek_tile_url }) |> ignore
+          @sf.words_node(u, url, fn() { peek_tile_url }) |> ignore
         })
         |> ignore
       })
@@ -75,18 +75,18 @@ pub fn peek_page_tile_node(
   parent.pick(fn() { picture() != "" }, fn(b, pictured) {
     // (in a hover card's room: its words the panel's padding and theirs in from the card's edges, what reaches out to its
     // corners concentric with it)
-    corner_card_node(b, fn() { r_menu }, inset=fn() { panel_pad + peek_words_in })
+    @sf.corner_card_node(b, fn() { @sf.r_menu }, inset=fn() { @sf.panel_pad + peek_words_in })
     if pictured {
       // (its picture over it, 16:9, in the card's top corners as the thumb is in its corner without one)
-      style_node(b, fn() { peek_with_picture })
+      @sf.style_node(b, fn() { peek_with_picture })
       b.box(fn(i) {
-        style_node(i, fn() { peek_picture })
+        @sf.style_node(i, fn() { peek_picture })
         i
         .aspect(Is(peek_picture_aspect))
         |> ignore
-        concentric_radius_node(i, fn() { peek_picture_r }, extra_inset=fn() { peek_thumb_out })
+        @sf.concentric_radius_node(i, fn() { peek_picture_r }, extra_inset=fn() { peek_thumb_out })
         i
-        .ground(By(fn() { theme().p.hover }))
+        .ground(By(fn() { @sf.theme().p.hover }))
         .image(By(fn() { Some((picture(), "", peek_image_most)) }))
         .image_covers(Is(true))
         |> ignore
@@ -97,8 +97,8 @@ pub fn peek_page_tile_node(
   })
   // (its copy in its foot's end corner, as a file's card's is: file_foot)
   parent.box(made_for=loc, fn(f) {
-    style_node(f, fn() { peek_file_foot })
-    f.box(fn(r) { style_node(r, fn() { peek_ref }, in_row=true) }) |> ignore
+    @sf.style_node(f, fn() { peek_file_foot })
+    f.box(fn(r) { @sf.style_node(r, fn() { peek_ref }, in_row=true) }) |> ignore
     copy(f)
   })
   |> ignore
@@ -122,9 +122,9 @@ pub fn peek_change_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(rich) {
-    style_node(rich, fn() { peek_rich })
+    @sf.style_node(rich, fn() { peek_rich })
     rich.box(fn(meta) {
-      style_node(meta, fn() { peek_change_meta })
+      @sf.style_node(meta, fn() { peek_change_meta })
       peek_state_pill_node(
         meta,
         state,
@@ -132,10 +132,10 @@ pub fn peek_change_node(
         state_words,
       )
       meta.box(fn(r) {
-        style_node(r, fn() { peek_ref }, in_row=true)
+        @sf.style_node(r, fn() { peek_ref }, in_row=true)
         // (its words as wide as they are, cut where it has not the room, as an old view's in a column are)
         r.lines_up(Is(Some(@view.Along::Start))) |> ignore
-        words_node(r, where_, fn() { peek_meta_words }) |> ignore
+        @sf.words_node(r, where_, fn() { peek_meta_words }) |> ignore
       })
       |> ignore
       meta.show(fn() { ago() != "" }, fn(a) { peek_ago_node(a, ago) })
@@ -145,14 +145,14 @@ pub fn peek_change_node(
     // in a box across the card of its own, not stretched across it)
     rich.box(fn(b) {
       b.lines_up(Is(Some(@view.Along::Start))) |> ignore
-      words_node(b, title, fn() { peek_title }) |> ignore
+      @sf.words_node(b, title, fn() { peek_title }) |> ignore
     })
     |> ignore
     // its facts, and at their line's end what is pressed to copy it (in the card's bottom end corner, as a file's is)
     rich.box(fn(line) {
-      style_node(line, fn() { peek_facts_line })
+      @sf.style_node(line, fn() { peek_facts_line })
       line.box(fn(fs) {
-        style_node(fs, fn() { peek_facts }, in_row=true)
+        @sf.style_node(fs, fn() { peek_facts }, in_row=true)
         // (what the copy at the line's end leaves of it, from none, its facts wrapping in that: not as wide as they all
         // are in a line)
         fs.wraps(Is(Some(@ui.Space::S2.px()))).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
@@ -162,7 +162,7 @@ pub fn peek_change_node(
       })
       |> ignore
       line.box(fn(e) {
-        style_node(e, fn() { peek_copy_end }, in_row=true)
+        @sf.style_node(e, fn() { peek_copy_end }, in_row=true)
         copy(e)
       })
       |> ignore
@@ -180,35 +180,35 @@ pub fn peek_change_node(
 fn peek_fact_node(cell : @view.View, f : PeekFact, loc~ : SourceLoc) -> Unit {
   match f {
     Person(login, avatar) => {
-      style_node(cell, fn() { peek_person }, in_row=true)
+      @sf.style_node(cell, fn() { peek_person }, in_row=true)
       cell.box(made_for=loc, fn(a) {
         if avatar == "" {
-          style_node(a, fn() { peek_avatar })
+          @sf.style_node(a, fn() { peek_avatar })
         } else {
           a
           .width(Is(Some(peek_avatar_d)))
           .height(Is(Some(peek_avatar_d)))
           .radius(Is(peek_avatar_d / 2.0))
-          .ground(By(fn() { theme().p.hover }))
+          .ground(By(fn() { @sf.theme().p.hover }))
           .image(Is(Some((avatar, "", peek_image_most))))
           .image_covers(Is(true))
           |> ignore
         }
       })
       |> ignore
-      words_node(cell, fn() { login }, fn() { peek_person_words }) |> ignore
+      @sf.words_node(cell, fn() { login }, fn() { peek_person_words }) |> ignore
     }
     Size(add, del) => {
-      style_node(cell, fn() { peek_chip }, in_row=true)
+      @sf.style_node(cell, fn() { peek_chip }, in_row=true)
       // (in the green states' ink: Positive is a badge's fill, too light to read on the hover's ground)
-      words_node(cell, fn() { "+" + add.to_string() }, fn() { peek_add })
-      .ink(By(fn() { theme().p.green_ink }))
+      @sf.words_node(cell, fn() { "+" + add.to_string() }, fn() { peek_add })
+      .ink(By(fn() { @sf.theme().p.green_ink }))
       |> ignore
-      words_node(cell, fn() { "\u{2212}" + del.to_string() }, fn() { peek_del }) |> ignore
+      @sf.words_node(cell, fn() { "\u{2212}" + del.to_string() }, fn() { peek_del }) |> ignore
     }
     Chip(words) => {
-      style_node(cell, fn() { peek_chip }, in_row=true)
-      words_node(cell, fn() { words }, fn() { peek_meta_words }) |> ignore
+      @sf.style_node(cell, fn() { peek_chip }, in_row=true)
+      @sf.words_node(cell, fn() { words }, fn() { peek_meta_words }) |> ignore
     }
     Checks(how, said) => peek_state_pill_node(cell, fn() { how }, fn() { None }, fn() { said }, own=true)
   }
@@ -231,7 +231,7 @@ pub fn peek_state_pill_node(
 ) -> Unit {
   let pill = fn(p : @view.View) {
     // (the glyph's 6 in is for a glyph alone: words alone stand as far in from both ends)
-    style_node(
+    @sf.style_node(
       p,
       fn() { if physical_equal(style, peek_state) && glyph() is None { peek_state_words_only } else { style } },
       in_row=true,
@@ -249,7 +249,7 @@ pub fn peek_state_pill_node(
       }))
       |> ignore
     })
-    words_node(p, words, fn() { peek_state_words }).ink(By(fn() { peek_state_colours(state()).0 })) |> ignore
+    @sf.words_node(p, words, fn() { peek_state_words }).ink(By(fn() { peek_state_colours(state()).0 })) |> ignore
   }
   if own {
     pill(parent)
@@ -288,9 +288,9 @@ pub fn peek_copy_node(
   // (said so from `at`, the moment it was copied, till copied_ms on; off as of then)
   let said_from = fn(at : Double) {
     (off.val)()
-    if parent.cause_at() < at + copied_ms {
+    if parent.cause_at() < at + @sf.copied_ms {
       copied.set(true)
-      off.val = parent.at_moment(at + copied_ms, fn() { copied.set(false) })
+      off.val = parent.at_moment(at + @sf.copied_ms, fn() { copied.set(false) })
     } else {
       copied.set(false)
     }
@@ -302,9 +302,9 @@ pub fn peek_copy_node(
       None => ()
     }
   })
-  panel_button_node(
+  @sf.panel_button_node(
     parent,
-    fn() { t(if copied.get() { "common.copied" } else { idle }) },
+    fn() { @sf.t(if copied.get() { "common.copied" } else { idle }) },
     fn() {
       let v = @signals.untracked(value)
       @ui.clipboard_set(v)
@@ -321,12 +321,12 @@ pub fn peek_copy_node(
 ///|
 /// A state's ink and ground (a pull request's or an issue's, its checks').
 pub fn peek_state_colours(state : String) -> (Int64, Int64) {
-  let p = theme().p
+  let p = @sf.theme().p
   match state {
     "open" | "passed" => (p.green_ink, p.green_bg)
     "merged" | "completed" => {
-      let ink = if theme().dark { peek_merged_dark } else { peek_merged_light }
-      (ink, tone_ground(ink))
+      let ink = if @sf.theme().dark { peek_merged_dark } else { peek_merged_light }
+      (ink, @sf.tone_ground(ink))
     }
     "closed" | "failed" => (p.red, p.red_bg)
     "pending" => (p.warn_ink, p.amber_bg)
@@ -392,7 +392,7 @@ let peek_github_path : String = "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.
 #callsite(autofill(loc))
 pub fn peek_rich_node(parent : @view.View, body : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(rich) {
-    style_node(rich, fn() { peek_rich })
+    @sf.style_node(rich, fn() { peek_rich })
     body(rich)
   })
   |> ignore
@@ -412,10 +412,10 @@ pub fn peek_file_head_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(h) {
-    style_node(h, fn() { peek_file_head })
+    @sf.style_node(h, fn() { peek_file_head })
     h.box(fn(t) {
-      style_node(t, fn() { peek_chat_title })
-      icon_node(t, "file", peek_file_icon, By(fn() { theme().p.muted }), name_now=fn() {
+      @sf.style_node(t, fn() { peek_chat_title })
+      @sf.icon_node(t, "file", peek_file_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() {
         if dir() {
           "folder"
         } else {
@@ -424,9 +424,9 @@ pub fn peek_file_head_node(
       })
       |> ignore
       t.box(fn(r) {
-        style_node(r, fn() { peek_ref }, in_row=true)
+        @sf.style_node(r, fn() { peek_ref }, in_row=true)
         r.lines_up(Is(Some(@view.Along::Start))) |> ignore
-        words_node(r, fn() { if dir() { name() + "/" } else { name() } }, fn() { peek_title }) |> ignore
+        @sf.words_node(r, fn() { if dir() { name() + "/" } else { name() } }, fn() { peek_title }) |> ignore
       })
       |> ignore
       t.show(fn() { ago() != "" }, fn(a) { peek_ago_node(a, ago) })
@@ -450,17 +450,17 @@ pub fn peek_file_lines_node(
   colored : () -> Array[Array[@ui.Run]],
   loc~ : SourceLoc,
 ) -> Unit {
-  style_node(parent, fn() { peek_file_lines })
+  @sf.style_node(parent, fn() { peek_file_lines })
   parent.each(fn() { Array::makei(words().length(), fn(k) { k }) }, fn(k) { k }, fn(row, k) {
     let n = fn() { start() + k.get() }
-    style_node(row, fn() { if at() == Some(n()) { peek_file_line_at } else { peek_file_line } })
+    @sf.style_node(row, fn() { if at() == Some(n()) { peek_file_line_at } else { peek_file_line } })
     row.box(fn(no) {
-      style_node(no, fn() { peek_file_line_no }, in_row=true)
+      @sf.style_node(no, fn() { peek_file_line_no }, in_row=true)
       peek_mono_node(no, fn() { [@ui.span(n().to_string(), mono=true)] }, peek_file_no, loc~)
     })
     |> ignore
     row.box(fn(r) {
-      style_node(r, fn() { peek_ref }, in_row=true)
+      @sf.style_node(r, fn() { peek_ref }, in_row=true)
       peek_mono_node(
         r,
         fn() {
@@ -497,7 +497,7 @@ pub fn peek_file_picture_node(parent : @view.View, picture : () -> String) -> Un
       if g.image_ready(picture(), side * g.pixel_scale()) {
         0L
       } else {
-        theme().p.hover
+        @sf.theme().p.hover
       }
     }))
     .image(By(fn() { Some((picture(), "", peek_image_most)) }))
@@ -513,10 +513,10 @@ pub fn peek_file_picture_node(parent : @view.View, picture : () -> String) -> Un
 /// ending in `/`) and its name in the code face (without its `/`), cut.
 #callsite(autofill(loc))
 pub fn peek_file_entries_node(parent : @view.View, entries : () -> Array[String], loc~ : SourceLoc) -> Unit {
-  style_node(parent, fn() { peek_file_entries })
+  @sf.style_node(parent, fn() { peek_file_entries })
   let name = fn(k : Int) { entries().get(k).unwrap_or("") }
   parent.each(fn() { Array::makei((entries().length() + 1) / 2, fn(r) { r }) }, fn(r) { r }, fn(row, r) {
-    style_node(row, fn() { peek_file_entry_row })
+    @sf.style_node(row, fn() { peek_file_entry_row })
     row.each(
       fn() {
         let r = r.get()
@@ -525,8 +525,8 @@ pub fn peek_file_entries_node(parent : @view.View, entries : () -> Array[String]
       fn(k) { k },
       fn(e, k) {
         let dir = fn() { name(k.get()).has_suffix("/") }
-        style_node(e, fn() { peek_file_entry }, in_row=true)
-        icon_node(e, "file", peek_file_entry_icon, By(fn() { theme().p.muted }), name_now=fn() {
+        @sf.style_node(e, fn() { peek_file_entry }, in_row=true)
+        @sf.icon_node(e, "file", peek_file_entry_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() {
           if dir() {
             "folder"
           } else {
@@ -535,7 +535,7 @@ pub fn peek_file_entries_node(parent : @view.View, entries : () -> Array[String]
         })
         |> ignore
         e.box(fn(b) {
-          style_node(b, fn() { peek_ref }, in_row=true)
+          @sf.style_node(b, fn() { peek_ref }, in_row=true)
           peek_mono_node(
             b,
             fn() {
@@ -563,11 +563,11 @@ pub fn peek_file_foot_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(f) {
-    style_node(f, fn() { peek_file_foot })
+    @sf.style_node(f, fn() { peek_file_foot })
     f.box(fn(r) {
-      style_node(r, fn() { peek_ref }, in_row=true)
+      @sf.style_node(r, fn() { peek_ref }, in_row=true)
       r.lines_up(Is(Some(@view.Along::Start))) |> ignore
-      words_node(r, what, fn() { peek_meta_words }) |> ignore
+      @sf.words_node(r, what, fn() { peek_meta_words }) |> ignore
     })
     |> ignore
     copy(f)
@@ -616,12 +616,12 @@ pub fn peek_chat_head_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(t) {
-    style_node(t, fn() { peek_chat_title })
+    @sf.style_node(t, fn() { peek_chat_title })
     t.show(marked, mark)
     t.box(fn(r) {
-      style_node(r, fn() { peek_ref }, in_row=true)
+      @sf.style_node(r, fn() { peek_ref }, in_row=true)
       r.lines_up(Is(Some(@view.Along::Start))) |> ignore
-      words_node(r, title, fn() { peek_title }) |> ignore
+      @sf.words_node(r, title, fn() { peek_title }) |> ignore
     })
     |> ignore
     t.show(fn() { ago() != "" }, fn(a) { peek_ago_node(a, ago) })
@@ -641,13 +641,13 @@ pub fn peek_chat_where_node(
   words : () -> String,
 ) -> Unit {
   parent.show(shows, fn(m) {
-    style_node(m, fn() { peek_meta })
+    @sf.style_node(m, fn() { peek_meta })
     m.box(fn(w) {
-      style_node(w, fn() { peek_chat_where }, in_row=true)
+      @sf.style_node(w, fn() { peek_chat_where }, in_row=true)
       w.show(elsewhere, fn(s) {
-        station_mark_node(s, emoji, icon, peek_station_mark, fn() { theme().p.muted }, fn() { 0 })
+        @sf.station_mark_node(s, emoji, icon, peek_station_mark, fn() { @sf.theme().p.muted }, fn() { 0 })
       })
-      words_node(w, words, fn() { peek_meta_words }) |> ignore
+      @sf.words_node(w, words, fn() { peek_meta_words }) |> ignore
     })
     |> ignore
   })
@@ -659,17 +659,17 @@ pub fn peek_chat_where_node(
 pub fn peek_message_node(parent : @view.View, head : () -> String, words : () -> String) -> Unit {
   parent.show(fn() { head() != "" }, fn(h) {
     h.lines_up(Is(Some(@view.Along::Start))) |> ignore
-    words_node(h, head, fn() { peek_meta_words }) |> ignore
+    @sf.words_node(h, head, fn() { peek_meta_words }) |> ignore
   })
-  words_node(parent, words, fn() { peek_message }) |> ignore
+  @sf.words_node(parent, words, fn() { peek_message }) |> ignore
 }
 
 ///|
 /// A message a link names while it is read: a made-up one's bones (waiting_node's), in `parent`.
 pub fn peek_message_bones_node(parent : @view.View) -> Unit {
-  waiting_node(parent, fn(bones) {
-    words_node(bones, fn() { sample_words(8) }, fn() { peek_meta_words }) |> ignore
-    words_node(bones, fn() { sample_words(60) }, fn() { peek_message }) |> ignore
+  @sf.waiting_node(parent, fn(bones) {
+    @sf.words_node(bones, fn() { @sf.sample_words(8) }, fn() { peek_meta_words }) |> ignore
+    @sf.words_node(bones, fn() { @sf.sample_words(60) }, fn() { peek_message }) |> ignore
   })
 }
 
@@ -677,14 +677,14 @@ pub fn peek_message_bones_node(parent : @view.View) -> Unit {
 /// What a card says of what it shows (a chat's words, three lines at most), in `parent`.
 #callsite(autofill(loc))
 pub fn peek_excerpt_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
-  words_node(parent, words, fn() { peek_excerpt }, loc~) |> ignore
+  @sf.words_node(parent, words, fn() { peek_excerpt }, loc~) |> ignore
 }
 
 ///|
 /// What a card says where it has nothing to show (why not, that it is gone), muted, in `parent`.
 #callsite(autofill(loc))
 pub fn peek_note_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
-  words_node(parent, words, fn() { peek_note }, loc~) |> ignore
+  @sf.words_node(parent, words, fn() { peek_note }, loc~) |> ignore
 }
 
 // ── a link's card in an agent's words ──────────────────────────────
@@ -705,8 +705,8 @@ pub fn link_card_node(
   loc~ : SourceLoc,
 ) -> Unit {
   v.box(made_for=loc, fn(b) {
-    style_node(b, fn() { link_card_box })
-    presses_node(b, press)
+    @sf.style_node(b, fn() { link_card_box })
+    @sf.presses_node(b, press)
     b.says(By(fn() { Some(@view.said(Link, label=title())) })) |> ignore
     link_mark_node(b, mark)
     link_words_node(b, title, line, gone, in_row=true)
@@ -729,15 +729,15 @@ pub fn link_words_node(
   loc~ : SourceLoc,
 ) -> Unit {
   v.box(made_for=loc, fn(w) {
-    style_node(w, fn() { look }, in_row~)
+    @sf.style_node(w, fn() { look }, in_row~)
     w.box(fn(l) {
-      style_node(l, fn() { link_title_line_node })
-      words_node(l, title, fn() { if gone() { link_card_title_gone } else { link_card_title } }) |> ignore
+      @sf.style_node(l, fn() { link_title_line_node })
+      @sf.words_node(l, title, fn() { if gone() { link_card_title_gone } else { link_card_title } }) |> ignore
     })
     |> ignore
     w.box(fn(l) {
-      style_node(l, fn() { link_line_line_node })
-      words_node(l, line, fn() { link_card_line }) |> ignore
+      @sf.style_node(l, fn() { link_line_line_node })
+      @sf.words_node(l, line, fn() { link_card_line }) |> ignore
     })
     |> ignore
   })
@@ -750,10 +750,10 @@ pub fn link_words_node(
 #callsite(autofill(loc))
 pub fn link_mark_node(v : @view.View, mark : () -> String?, loc~ : SourceLoc) -> Unit {
   v.box(made_for=loc, fn(r) {
-    style_node(r, fn() { link_card_mark_box }, in_row=true)
+    @sf.style_node(r, fn() { link_card_mark_box }, in_row=true)
     r.pick(mark, fn(i, name) {
       match name {
-        Some(n) => icon_node(i, n, 24.0, By(fn() { theme().p.muted })) |> ignore
+        Some(n) => @sf.icon_node(i, n, 24.0, By(fn() { @sf.theme().p.muted })) |> ignore
         None => ()
       }
     })
@@ -787,18 +787,18 @@ let peek_tile : @ui.Style = @ui.css("row w=Full gap=S2_5 align=AStart")
 /// Its thumb: 36 square on the hover's ground, what it shows in its middle (20); in the card's corner as far in as makes
 /// the small block's corner concentric with the card's there, out past the card's words to there.
 // kept across runs: a value (no field of it changes)
-let peek_thumb : @ui.Style = peek_thumb_under.then(@ui.style(mt=room_of(peek_thumb_out)))
+let peek_thumb : @ui.Style = peek_thumb_under.then(@ui.style(mt=@sf.room_of(peek_thumb_out)))
 
 ///|
 /// Its thumb under a picture (no corner of the card's there): its top at its title's, out to where the picture's start is.
 // kept across runs: a value (no field of it changes)
 let peek_thumb_under : @ui.Style = @ui.css("w=S9 h=S9 bg=Hover align=ACenter justify=JCenter clip=true").then(
-  @ui.style(radius=small_radius, ml=room_of(peek_thumb_out)),
+  @ui.style(radius=@sf.small_radius, ml=@sf.room_of(peek_thumb_out)),
 )
 
 ///|
 /// How far the thumb stands out of the card's words (the panel's padding and peek_words_in) to be concentric there.
-let peek_thumb_out : Double = r_menu - small_corner - panel_pad - peek_words_in
+let peek_thumb_out : Double = @sf.r_menu - @sf.small_corner - @sf.panel_pad - peek_words_in
 
 ///|
 let peek_thumb_mark : Double = 20.0
@@ -809,7 +809,7 @@ let peek_thumb_icon : Double = 18.0
 ///|
 /// Its words: its title (two lines at most, 500) over where it goes (12, muted, one line), 1 apart.
 // kept across runs: a value (no field of it changes)
-let peek_tile_body : @ui.Style = @ui.css("gap=SPx").then(@ui.style(w=grow))
+let peek_tile_body : @ui.Style = @ui.css("gap=SPx").then(@ui.style(w=@sf.grow))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -829,7 +829,7 @@ let peek_with_picture : @ui.Style = @ui.css("w=Full gap=S2_5")
 /// (peek_thumb_out), so it stands as far in from the card's top as from its sides, its corners concentric with the
 /// card's however wide the card is.
 // kept across runs: a value (no field of it changes)
-let peek_picture : @ui.Style = @ui.style(w=Full, mx=room_of(peek_thumb_out), mt=room_of(peek_thumb_out))
+let peek_picture : @ui.Style = @ui.style(w=Full, mx=@sf.room_of(peek_thumb_out), mt=@sf.room_of(peek_thumb_out))
 
 ///|
 /// Its width for its height: 16:9.
@@ -837,7 +837,7 @@ let peek_picture_aspect : Double = 16.0 / 9.0
 
 ///|
 /// Its corner: in the card's top corners, concentric with the card's there, as the tile's thumb.
-let peek_picture_r : Double = small_corner
+let peek_picture_r : Double = @sf.small_corner
 
 ///|
 /// A rich card: its meta, its title, its facts, 8 apart.
@@ -854,13 +854,13 @@ let peek_meta : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
 /// edges as makes it concentric with it (capsule_in), out past the panel's padding and the card's words' to there.
 // kept across runs: a value (no field of it changes)
 let peek_change_meta : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter").then(
-  @ui.style(mt=room_of(peek_capsule_in), ml=room_of(peek_capsule_in)),
+  @ui.style(mt=@sf.room_of(peek_capsule_in), ml=@sf.room_of(peek_capsule_in)),
 )
 
 ///|
 /// How far a capsule 20 high in a card's corner (a state's pill, a fact's, a face) stands from where its words start,
 /// out past them: concentric with the card's corner.
-let peek_capsule_in : Double = @ui.capsule_in(r_menu, peek_capsule_h) - panel_pad - peek_words_in
+let peek_capsule_in : Double = @ui.capsule_in(@sf.r_menu, peek_capsule_h) - @sf.panel_pad - peek_words_in
 
 ///|
 /// A capsule's height: a state's, a fact's, a face.
@@ -871,8 +871,8 @@ let peek_capsule_h : Double = 20.0
 /// way (peek_ref, from nothing), cut short itself only where it alone is longer than the line.
 #callsite(autofill(loc))
 fn peek_ago_node(a : @view.View, ago : () -> String, loc~ : SourceLoc) -> Unit {
-  style_node(a, fn() { peek_ago_cut }, in_row=true, loc~)
-  words_node(a, ago, fn() { peek_meta_words }, loc~) |> ignore
+  @sf.style_node(a, fn() { peek_ago_cut }, in_row=true, loc~)
+  @sf.words_node(a, ago, fn() { peek_meta_words }, loc~) |> ignore
 }
 
 ///|
@@ -882,7 +882,7 @@ let peek_ago_cut : @ui.Style = @ui.css("row w=Cut")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let peek_ref : @ui.Style = @ui.css("clip=true").then(@ui.style(w=grow))
+let peek_ref : @ui.Style = @ui.css("clip=true").then(@ui.style(w=@sf.grow))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -896,21 +896,21 @@ let peek_title : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg
 /// Its facts: in a line that goes on to another, 8 apart across and between its lines; its first (who opened it, or a
 /// fact's pill) in the card's bottom start corner, concentric with it as its state is in its top start.
 // kept across runs: a value (no field of it changes)
-let peek_facts : @ui.Style = @ui.css("row gap=S2 align=ACenter").then(@ui.style(w=grow))
+let peek_facts : @ui.Style = @ui.css("row gap=S2 align=ACenter").then(@ui.style(w=@sf.grow))
 
 ///|
 /// Their line (the card's last): out to the card's bottom start corner for its first pill (peek_capsule_in), what
 /// copies it at its end.
 // kept across runs: a value (no field of it changes)
 let peek_facts_line : @ui.Style = @ui.css("row w=Full gap=S2 align=AEnd").then(
-  @ui.style(mb=room_of(peek_capsule_in), ml=room_of(peek_capsule_in)),
+  @ui.style(mb=@sf.room_of(peek_capsule_in), ml=@sf.room_of(peek_capsule_in)),
 )
 
 ///|
 /// What copies it, in the card's bottom end corner as far from both its edges as makes it concentric with it (24
 /// across: peek_button_in), its line's foot out past the pills' (peek_capsule_in).
 // kept across runs: a value (no field of it changes)
-let peek_copy_end : @ui.Style = @ui.style(mr=room_of(peek_button_in), mb=room_of(peek_button_in - peek_capsule_in))
+let peek_copy_end : @ui.Style = @ui.style(mr=@sf.room_of(peek_button_in), mb=@sf.room_of(peek_button_in - peek_capsule_in))
 
 ///|
 /// Who opened it: their picture (round, a capsule's height) 6 from their name, in the words' colour.
@@ -967,7 +967,7 @@ let peek_chat_title : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter")
 ///|
 /// Where a chat is: its station's mark (11) 4 from its name, then that it is the history, one line.
 // kept across runs: a value (no field of it changes)
-let peek_chat_where : @ui.Style = @ui.css("row gap=S1 align=ACenter clip=true").then(@ui.style(w=grow))
+let peek_chat_where : @ui.Style = @ui.css("row gap=S1 align=ACenter clip=true").then(@ui.style(w=@sf.grow))
 
 ///|
 let peek_station_mark : Double = 11.0
@@ -1050,7 +1050,7 @@ let peek_file_entry_row : @ui.Style = @ui.css("row w=Full gap=S3")
 ///|
 /// An entry: its mark (12, muted) 5 from its name.
 // kept across runs: a value (no field of it changes)
-let peek_file_entry : @ui.Style = @ui.css("row gap=S1_25 align=ACenter clip=true").then(@ui.style(w=grow))
+let peek_file_entry : @ui.Style = @ui.css("row gap=S1_25 align=ACenter clip=true").then(@ui.style(w=@sf.grow))
 
 ///|
 let peek_file_entry_icon : Double = 12.0
@@ -1060,11 +1060,11 @@ let peek_file_entry_icon : Double = 12.0
 /// makes it concentric with it (capsule_in: the button 24 high), out past the panel's padding and the card's words'.
 // kept across runs: a value (no field of it changes)
 let peek_file_foot : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter").then(
-  @ui.style(mb=room_of(peek_button_in), mr=room_of(peek_button_in)),
+  @ui.style(mb=@sf.room_of(peek_button_in), mr=@sf.room_of(peek_button_in)),
 )
 
 ///|
-let peek_button_in : Double = @ui.capsule_in(r_menu, 24.0) - panel_pad - peek_words_in
+let peek_button_in : Double = @ui.capsule_in(@sf.r_menu, 24.0) - @sf.panel_pad - peek_words_in
 
 ///|
 /// A link's card: a row 236 wide, a capsule as a file's card (a row high, 52), on the chat's bubble ground: its mark,
@@ -1073,10 +1073,10 @@ let peek_button_in : Double = @ui.capsule_in(r_menu, 24.0) - panel_pad - peek_wo
 // kept across runs: a value (no field of it changes)
 let link_card_box : @ui.Style = @ui.style(
   row=true,
-  w=link_card_w,
-  h=file_capsule_h,
+  w=@sf.link_card_w,
+  h=@sf.file_capsule_h,
   pl=S3_5,
-  pr=room_of(file_capsule_words_end),
+  pr=@sf.room_of(@sf.file_capsule_words_end),
   gap=S2,
   align=ACenter,
   radius=Full,
@@ -1106,13 +1106,13 @@ let link_line_line_node : @ui.Style = @ui.css("w=Full min_h=S4")
 ///|
 /// The title (15/20, on one line); quieter for what is no longer there.
 // kept across runs: a value (no field of it changes)
-let link_card_title : @ui.TextStyle = card_title.then(one_line).then(full_words)
+let link_card_title : @ui.TextStyle = @sf.card_title.then(@sf.one_line).then(@sf.full_words)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let link_card_title_gone : @ui.TextStyle = link_card_title.then(quiet)
+let link_card_title_gone : @ui.TextStyle = link_card_title.then(@sf.quiet)
 
 ///|
 /// What is said of it under its title (11/16, muted, on one line).
 // kept across runs: a value (no field of it changes)
-let link_card_line : @ui.TextStyle = card_line.then(full_words)
+let link_card_line : @ui.TextStyle = @sf.card_line.then(@sf.full_words)

@@ -255,7 +255,7 @@ fn share_account_row(r : @view.View, ev : () -> Json?) -> Unit {
         @sf.style_node(w, fn() { pl_quota_line })
         let (_, _, _, foot) = @sf.row_below_inset(w)
         w.margin(Is((0.0, 0.0, 0.0, foot))) |> ignore
-        @sf.quota_worded_node(w, fn() { field(p(), "quota") })
+        @sfbase.quota_worded_node(w, fn() { field(p(), "quota") })
       })
       |> ignore
     },

@@ -12,11 +12,11 @@
 #callsite(autofill(loc))
 pub fn sync_key_node(
   parent : @view.View,
-  tips : TipLayer,
+  tips : @sf.TipLayer,
   side : Double,
   mark : Double,
   syncing : () -> String?,
-  delay_ms? : Double = later_ms,
+  delay_ms? : Double = @sf.later_ms,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(k) {
@@ -113,7 +113,7 @@ pub fn sync_key_node(
     .radius(Is(side / 2.0))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
-    .alpha(By(fn() { dmin(1.0, fade.shown(k)) }))
+    .alpha(By(fn() { @sf.dmin(1.0, fade.shown(k)) }))
     .laid_nowhere(By(fn() { !there.get() }))
     .says(By(fn() { Some(@view.said(Status, label=said.get())) }))
     |> ignore
@@ -130,15 +130,15 @@ pub fn sync_key_node(
           if gone >= 1.0 {
             []
           } else if gone > 0.0 {
-            icon_shapes(icon_traced_data("refresh", fn(i, pts) { sync_drawn_back(i, pts, 1.0 - gone) }), mark / 24.0, 0x000000FFL)
+            @sf.icon_shapes(@sf.icon_traced_data("refresh", fn(i, pts) { sync_drawn_back(i, pts, 1.0 - gone) }), mark / 24.0, 0x000000FFL)
           } else {
-            match icon_numbers("refresh") {
-              Some(d) => icon_shapes(d, mark / 24.0, 0x000000FFL)
+            match @sf.icon_numbers("refresh") {
+              Some(d) => @sf.icon_shapes(d, mark / 24.0, 0x000000FFL)
               None => []
             }
           }
         }))
-        .tint(By(fn() { theme().p.muted }))
+        .tint(By(fn() { @sf.theme().p.muted }))
         .turn(By(fn() {
           match rest.get() {
             None => sync_turned(a.cycle(sync_turn_ms))
@@ -166,22 +166,101 @@ pub fn sync_key_node(
           if drawn <= 0.0 {
             []
           } else if drawn < 1.0 {
-            icon_shapes(icon_traced_data("check", fn(_, pts) { [stroke_from_start(pts, drawn)] }), mark / 24.0, 0x000000FFL)
+            @sf.icon_shapes(@sf.icon_traced_data("check", fn(_, pts) { [@sf.stroke_from_start(pts, drawn)] }), mark / 24.0, 0x000000FFL)
           } else {
-            match icon_numbers("check") {
-              Some(d) => icon_shapes(d, mark / 24.0, 0x000000FFL)
+            match @sf.icon_numbers("check") {
+              Some(d) => @sf.icon_shapes(d, mark / 24.0, 0x000000FFL)
               None => []
             }
           }
         }))
-        .tint(By(fn() { theme().p.muted }))
+        .tint(By(fn() { @sf.theme().p.muted }))
         |> ignore
       })
       |> ignore
     })
     // (no control, it takes no press: its tip shown by the pointer within it, as it is placed)
-    ignore(tip_node(tips, k, fn() { said.get() }, side=Bottom, within=true))
+    ignore(@sf.tip_node(tips, k, fn() { said.get() }, side=Bottom, within=true))
   })
   |> ignore
 }
 
+
+///|
+fn sync_turned(k : Double) -> Double {
+  k * 2.0 * 3.141592653589793
+}
+
+///|
+fn sync_turning() -> Double {
+  2.0 * 3.141592653589793 / sync_turn_ms
+}
+
+///|
+#derive(Eq)
+priv struct SyncRest {
+  ms : Double
+  from : Double
+  speed : Double
+  to : Double
+}
+
+///|
+fn sync_rest(now : Double) -> SyncRest {
+  let pi = 3.141592653589793
+  let p = now / sync_turn_ms
+  let k = p - p.floor()
+  let from = sync_turned(k)
+  let speed = sync_turning()
+  let mut to = (from / pi).ceil() * pi
+  while to <= from || speed * sync_settle_least > 3.0 * (to - from) {
+    to = to + pi
+  }
+  let even = if speed > 0.0 { 2.0 * (to - from) / speed } else { sync_settle_most }
+  let ms = @sf.dmin(sync_settle_most, @sf.dmax(sync_settle_least, even))
+  { ms, from, speed, to }
+}
+
+///|
+fn SyncRest::ease(self : SyncRest, s : Double) -> Double {
+  let lead = if self.to > self.from { self.ms * self.speed / (self.to - self.from) } else { 0.0 }
+  let s2 = s * s
+  let s3 = s2 * s
+  (s3 - 2.0 * s2 + s) * lead + (3.0 * s2 - 2.0 * s3)
+}
+
+///|
+fn sync_drawn_back(part : Int, pts : Array[Double], left : Double) -> Array[Array[Double]] {
+  if part % 2 == 0 {
+    [@sf.stroke_from_start(pts, left)]
+  } else {
+    [
+      @sf.stroke_from_start([pts[2], pts[3], pts[0], pts[1]], left),
+      @sf.stroke_from_start([pts[2], pts[3], pts[4], pts[5]], left),
+    ]
+  }
+}
+
+///|
+let sync_turn_ms : Double = 1400.0
+
+///|
+let sync_settle_least : Double = 150.0
+
+///|
+let sync_settle_most : Double = 700.0
+
+///|
+let sync_rest_gone : Double = 0.8
+
+///|
+let sync_done_ms : Double = 1000.0
+
+///|
+let sync_back_ms : Double = 180.0
+
+///|
+let sync_tick_ms : Double = 240.0
+
+///|
+let sync_out_ms : Double = 400.0

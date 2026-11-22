@@ -33,7 +33,7 @@ pub(all) struct LoginStep {
   solid : Bool
   busy : Bool
   external : Bool
-  more : Array[MenuItem]
+  more : Array[@sf.MenuItem]
   last : Bool
   press : () -> Unit
   told : String?
@@ -72,15 +72,15 @@ pub fn login_step_card_node(
 ) -> Unit {
   parent.box(made_for=loc, fn(room) {
     // (in a panel's body (its login sheet): all of its width, concentric with its sides and its foot)
-    style_node(room, fn() {
+    @sf.style_node(room, fn() {
       if in_sheet {
-        login_room_sheet.then(panel_card_out_node(room)).then(panel_card_last_node(room))
+        login_room_sheet.then(@sf.panel_card_out_node(room)).then(@sf.panel_card_last_node(room))
       } else {
         login_room
       }
     })
     room.box(fn(card) {
-      style_node(card, fn() {
+      @sf.style_node(card, fn() {
         match (in_sheet, marked) {
           (true, true) => login_card_body_marked.then(lc_card_across)
           (true, false) => login_card_body.then(lc_card_across)
@@ -94,15 +94,15 @@ pub fn login_step_card_node(
       card.min_width(Is(Some(lc_card_least)), within=true).max_width(Is(Some(lc_card_most)), within=true) |> ignore
       let head = fn(t : @view.View, in_row : Bool) {
         t.box(fn(r) {
-          style_node(r, fn() { login_title_room }, in_row~)
-          words_node(r, title, fn() { login_title }) |> ignore
+          @sf.style_node(r, fn() { login_title_room }, in_row~)
+          @sf.words_node(r, title, fn() { login_title }) |> ignore
         })
         |> ignore
       }
       match cancel {
         Some((busy, press)) => {
           card.box(fn(h) {
-            style_node(h, fn() { login_head })
+            @sf.style_node(h, fn() { login_head })
             head(h, true)
             login_cancel_node(h, busy, press)
           })
@@ -123,20 +123,20 @@ pub fn login_step_card_node(
 ///|
 /// An ended login's one quiet line in `parent`, as `words` and `failed` (said in red) say it now.
 pub fn login_ended_node(parent : @view.View, words : () -> String, failed : () -> Bool) -> Unit {
-  words_node(parent, words, fn() { if failed() { login_ended_failed } else { login_ended } }) |> ignore
+  @sf.words_node(parent, words, fn() { if failed() { login_ended_failed } else { login_ended } }) |> ignore
 }
 
 ///|
 /// 取消 as the card's × (CancelLogin: a small panel's icon button, in its corner, concentric with it), spinning while
 /// it is done (`busy`).
 fn login_cancel_node(h : @view.View, busy : () -> Bool, press : () -> Unit) -> Unit {
-  action_box_node(h, fn() { t("web-main.logins.cancelWhat") }, fn(_) { press() }, disabled=fn() { busy() }, fn(b) {
-    style_node(b, fn() { if lit_node(b) && !busy() { lc_cancel_lit } else { login_cancel } }, in_row=true)
+  @sf.action_box_node(h, fn() { @sf.t("web-main.logins.cancelWhat") }, fn(_) { press() }, disabled=fn() { busy() }, fn(b) {
+    @sf.style_node(b, fn() { if @sf.lit_node(b) && !busy() { lc_cancel_lit } else { login_cancel } }, in_row=true)
     b.pick(busy, fn(m, spins) {
       if spins {
-        spinner_node(m, size=login_spin) |> ignore
+        @sf.spinner_node(m, size=login_spin) |> ignore
       } else {
-        icon_node(m, "close", login_icon, By(fn() { theme().p.muted })) |> ignore
+        @sf.icon_node(m, "close", login_icon, By(fn() { @sf.theme().p.muted })) |> ignore
       }
     })
   })
@@ -150,9 +150,9 @@ fn login_cancel_node(h : @view.View, busy : () -> Bool, press : () -> Unit) -> U
 #callsite(autofill(loc))
 pub fn login_said_node(p : @view.View, s : () -> LoginSaid, loc~ : SourceLoc) -> Unit {
   p.box(made_for=loc, fn(b) {
-    style_node(b, fn() { if s().last { login_said_last } else { login_said } })
-    b.show(fn() { s().busy }, fn(x) { spinner_node(x, size=login_spin) |> ignore })
-    words_node(b, fn() { s().words }, fn() { if s().red { login_said_red } else { login_said_words } }) |> ignore
+    @sf.style_node(b, fn() { if s().last { login_said_last } else { login_said } })
+    b.show(fn() { s().busy }, fn(x) { @sf.spinner_node(x, size=login_spin) |> ignore })
+    @sf.words_node(b, fn() { s().words }, fn() { if s().red { login_said_red } else { login_said_words } }) |> ignore
   })
   |> ignore
 }
@@ -163,7 +163,7 @@ pub fn login_said_node(p : @view.View, s : () -> LoginSaid, loc~ : SourceLoc) ->
 pub fn login_active_node(card : @view.View, paste : () -> Bool, body : (@view.View, Bool) -> Unit) -> Unit {
   card.pick(paste, fn(x, pasted) {
     // (its lines, its code and its step as far apart as the card's own: login_card_body's)
-    style_node(x, fn() { lc_active })
+    @sf.style_node(x, fn() { lc_active })
     body(x, pasted)
   })
 }
@@ -190,8 +190,8 @@ pub fn login_lines_node(
 /// The device code (CardCode), large enough to read and copy by eye, as `code` says it now: pressed, given to `copy`
 /// (nothing opened).
 pub fn login_code_node(p : @view.View, code : () -> String, copy : (String) -> Unit) -> Unit {
-  action_box_node(p, fn() { t("web-main.logins.copyCode") + " " + code() }, fn(_) { copy(code()) }, fn(b) {
-    style_node(b, fn() { login_code_room })
+  @sf.action_box_node(p, fn() { @sf.t("web-main.logins.copyCode") + " " + code() }, fn(_) { copy(code()) }, fn(b) {
+    @sf.style_node(b, fn() { login_code_room })
     b.box(fn(w) {
       w
       .words_runs(By(fn() { [@ui.span(code(), mono=true)] }))
@@ -211,12 +211,12 @@ pub fn login_code_node(p : @view.View, code : () -> String, copy : (String) -> U
 pub fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
   let foot = fn(style : @ui.Style) { if s().last { style.then(login_foot_reach) } else { style } }
   let button = fn(at : @view.View, in_row : Bool) {
-    action_box_node(at, fn() { s().label }, fn(_) { (s().press)() }, disabled=fn() { s().busy }, fn(b) {
-      style_node(
+    @sf.action_box_node(at, fn() { s().label }, fn(_) { (s().press)() }, disabled=fn() { s().busy }, fn(b) {
+      @sf.style_node(
         b,
         fn() {
           let now = s()
-          let lit = lit_node(b) && !now.busy
+          let lit = @sf.lit_node(b) && !now.busy
           let look = match (now.solid, lit) {
             (true, true) => lc_step_solid_lit
             (true, false) => login_step_solid
@@ -232,10 +232,10 @@ pub fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
         },
         in_row~,
       )
-      let ink = fn() { if s().solid { theme().p.on_primary } else { theme().p.text } }
-      b.show(fn() { s().busy }, fn(x) { spinner_node(x, size=login_spin, arc=ink) |> ignore })
-      words_node(b, fn() { s().label }, fn() { if s().solid { login_step_words_solid } else { login_step_words } }) |> ignore
-      b.show(fn() { s().external }, fn(x) { icon_node(x, "arrow-up-right", login_icon, By(ink)) |> ignore })
+      let ink = fn() { if s().solid { @sf.theme().p.on_primary } else { @sf.theme().p.text } }
+      b.show(fn() { s().busy }, fn(x) { @sf.spinner_node(x, size=login_spin, arc=ink) |> ignore })
+      @sf.words_node(b, fn() { s().label }, fn() { if s().solid { login_step_words_solid } else { login_step_words } }) |> ignore
+      b.show(fn() { s().external }, fn(x) { @sf.icon_node(x, "arrow-up-right", login_icon, By(ink)) |> ignore })
     })
     |> ignore
   }
@@ -247,14 +247,14 @@ pub fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
     // the other ways of doing the step, seldom used, in a ⋯ at the row's end (align.mbt: what is used least goes into
     // the row's ⋯)
     x.box(fn(r) {
-      style_node(r, fn() { foot(login_step_row) })
+      @sf.style_node(r, fn() { foot(login_step_row) })
       button(r, true)
-      action_box_node(r, fn() { t("common.login.otherWays") }, fn(m) {
+      @sf.action_box_node(r, fn() { @sf.t("common.login.otherWays") }, fn(m) {
           let (wx, wy, ww, wh) = m.placed_window_now()
-          menu(s().more.map(fn(i) { Some(i) }), from=At(wx, wy, ww, wh), along=End)
+          @sf.menu(s().more.map(fn(i) { Some(i) }), from=At(wx, wy, ww, wh), along=End)
         }, fn(m) {
-        style_node(m, fn() { (if lit_node(m) { lc_more_lit } else { login_more }).then(login_inner_round) }, in_row=true)
-        icon_node(m, "more", login_icon, By(fn() { theme().p.text })) |> ignore
+        @sf.style_node(m, fn() { (if @sf.lit_node(m) { lc_more_lit } else { login_more }).then(login_inner_round) }, in_row=true)
+        @sf.icon_node(m, "more", login_icon, By(fn() { @sf.theme().p.text })) |> ignore
       })
       |> ignore
     })
@@ -286,19 +286,19 @@ pub fn login_paste_node(
     send(code)
   }
   x.box(made_for=loc, fn(b) {
-    style_node(b, fn() { login_paste.then(login_inner_round) })
+    @sf.style_node(b, fn() { login_paste.then(login_inner_round) })
     b.box(fn(w) {
-      style_node(w, fn() { login_paste_words }, in_row=true)
+      @sf.style_node(w, fn() { login_paste_words }, in_row=true)
       @ui.field(
         w,
         field,
-        placeholder=t("web-main.logins.pasteCode"),
+        placeholder=@sf.t("web-main.logins.pasteCode"),
         font_size=login_paste_size,
         line=login_paste_line,
         max_lines=1,
         enter_sends=true,
         colors_by=fn() {
-          let p = theme().p
+          let p = @sf.theme().p
           (p.text, p.muted, p.accent)
         },
         submitted=fn(said) {
@@ -312,10 +312,10 @@ pub fn login_paste_node(
     })
     |> ignore
     b.show(fn() { words() != "" || busy() }, fn(d) {
-      action_box_node(d, fn() { t("web-main.logins.finish") }, fn(_) { sent(words()) }, disabled=fn() { busy() }, fn(go) {
-        style_node(go, fn() { (if lit_node(go) && !busy() { lc_done_lit } else { login_done }).then(login_done_round) }, in_row=true)
+      @sf.action_box_node(d, fn() { @sf.t("web-main.logins.finish") }, fn(_) { sent(words()) }, disabled=fn() { busy() }, fn(go) {
+        @sf.style_node(go, fn() { (if @sf.lit_node(go) && !busy() { lc_done_lit } else { login_done }).then(login_done_round) }, in_row=true)
         // busy: a spinner over its word, as wide as before
-        words_node(go, fn() { t("web-main.logins.finish") }, fn() { login_done_words }).alpha(By(fn() {
+        @sf.words_node(go, fn() { @sf.t("web-main.logins.finish") }, fn() { login_done_words }).alpha(By(fn() {
           if busy() {
             0.0
           } else {
@@ -325,8 +325,8 @@ pub fn login_paste_node(
         |> ignore
         go.show(busy, fn(s) {
           s.over(Is(true)) |> ignore
-          style_node(s, fn() { login_done_spin })
-          spinner_node(s, size=login_spin, arc=fn() { theme().p.on_primary }) |> ignore
+          @sf.style_node(s, fn() { login_done_spin })
+          @sf.spinner_node(s, size=login_spin, arc=fn() { @sf.theme().p.on_primary }) |> ignore
         })
       })
       |> ignore
@@ -348,26 +348,26 @@ pub fn step_card_node(
   loc~ : SourceLoc,
 ) -> Unit {
   v.box(made_for=loc, fn(room) {
-    style_node(room, fn() { login_room })
+    @sf.style_node(room, fn() { login_room })
     let goes = fn() { go() is Some(_) }
     // (the button across the room, lined up at its start: its card as wide as the plain one, by the room's width)
-    button_while_node(loc~, room, goes, title, fn(_) {
+    @sf.button_while_node(loc~, room, goes, title, fn(_) {
       match @signals.untracked(go) {
         Some(f) => f()
         None => ()
       }
     }, across=Start, fn(card, _) {
-      style_node(card, fn() { if goes() && lit_node(card) { lc_card_step_lit } else { login_card } })
+      @sf.style_node(card, fn() { if goes() && @sf.lit_node(card) { lc_card_step_lit } else { login_card } })
       card.box(fn(h) {
-        style_node(h, fn() { login_head })
+        @sf.style_node(h, fn() { login_head })
         h.box(fn(t) {
-          style_node(t, fn() { if line() == "" { login_title_alone } else { login_title_room } }, in_row=true)
-          words_node(t, title, fn() { login_title }) |> ignore
+          @sf.style_node(t, fn() { if line() == "" { login_title_alone } else { login_title_room } }, in_row=true)
+          @sf.words_node(t, title, fn() { login_title }) |> ignore
         })
         |> ignore
         h.show(goes, fn(b) {
-          style_node(b, fn() { login_cancel }, in_row=true)
-          icon_node(b, "chevron-right", login_icon, By(fn() { theme().p.muted })) |> ignore
+          @sf.style_node(b, fn() { login_cancel }, in_row=true)
+          @sf.icon_node(b, "chevron-right", login_icon, By(fn() { @sf.theme().p.muted })) |> ignore
         })
       })
       |> ignore
@@ -389,12 +389,12 @@ pub fn step_card_node(
 /// apart, on the ink at 5%; its corner its padding and its × pill's; the accent at 10% when it is the one a link
 /// pointed to.
 // kept across runs: a value (no field of it changes)
-pub let login_card : @ui.Style = login_card_body.then(@ui.style(min_w=login_card_least, max_w=login_card_most))
+pub let login_card : @ui.Style = login_card_body.then(@ui.style(min_w=@sf.login_card_least, max_w=@sf.login_card_most))
 
 ///|
 /// The card but how wide it is (its node's: that by where it is, as laid out).
 // kept across runs: a value (no field of it changes)
-pub let login_card_body : @ui.Style = @ui.style(w=Cut, p=inset_room, gap=S0_5, radius=login_card_corner, bg=A(Fg, O5), align=AStart)
+pub let login_card_body : @ui.Style = @ui.style(w=Cut, p=@sf.inset_room, gap=S0_5, radius=@sf.login_card_corner, bg=A(Fg, O5), align=AStart)
 
 ///|
 /// What a login under way shows in its card (login_active_node's): its lines, code and step as far apart as the card's.
@@ -459,7 +459,7 @@ pub let login_title : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, col
 /// concentric with it (capsule_in: the card's corner less its half), past the card's padding.
 // kept across runs: a value (no field of it changes)
 pub let login_cancel : @ui.Style = @ui.css("w=S6 h=S6 radius=Full align=ACenter justify=JCenter hovered{bg=Hover}").then(
-  @ui.style(mt=room_of(lc_cancel_off), mr=room_of(lc_cancel_off)),
+  @ui.style(mt=@sf.room_of(lc_cancel_off), mr=@sf.room_of(lc_cancel_off)),
 )
 
 ///|
@@ -469,7 +469,7 @@ let lc_cancel_lit : @ui.Style = login_cancel.then(@ui.css("bg=Hover"))
 
 ///|
 /// How far past the card's padding 取消 stands (login_cancel), and its side (S6).
-let lc_cancel_off : Double = @ui.capsule_in(card_corner, lc_cancel_side) - corner_inset
+let lc_cancel_off : Double = @ui.capsule_in(@sf.card_corner, lc_cancel_side) - @sf.corner_inset
 
 ///|
 let lc_cancel_side : Double = 24.0
@@ -507,13 +507,13 @@ pub let login_code : @ui.TextStyle = @ui.text_style(size=Title, weight=Semibold,
 // kept across runs: a value (no field of it changes)
 pub let login_step : @ui.Style = @ui.css(
   "row w=Full h=S8 mt=S2 px=S3 gap=S1_5 radius=Inner bg=A(Fg,O5) align=ACenter justify=JCenter hovered{bg=Hover}",
-).then(@ui.style(mx=room_of(-lc_step_reach)))
+).then(@ui.style(mx=@sf.room_of(-lc_step_reach)))
 
 ///|
 /// How far past the card's padding a step's button (a capsule 32 high, in the card's foot corners where it is last, a
 /// pasted code's field so: login_paste) reaches,
 /// to stand concentric with them (capsule_in: 8.87 in, the card's padding 10).
-let lc_step_reach : Double = corner_inset - @ui.capsule_in(card_corner, 32.0)
+let lc_step_reach : Double = @sf.corner_inset - @ui.capsule_in(@sf.card_corner, 32.0)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -533,13 +533,13 @@ let lc_step_solid_lit : @ui.Style = login_step_solid.then(@ui.css("bg=Over(Prima
 /// round one as high, 6 after it, on the step's grey.
 // kept across runs: a value (no field of it changes)
 pub let login_step_row : @ui.Style = @ui.css("row w=Full mt=S2 gap=S1_5 align=ACenter").then(
-  @ui.style(mx=room_of(-lc_step_reach)),
+  @ui.style(mx=@sf.room_of(-lc_step_reach)),
 )
 
 ///|
 /// What is last in the card reaching its foot as far as its sides (lc_step_reach).
 // kept across runs: a value (no field of it changes)
-pub let login_foot_reach : @ui.Style = @ui.style(mb=room_of(-lc_step_reach))
+pub let login_foot_reach : @ui.Style = @ui.style(mb=@sf.room_of(-lc_step_reach))
 
 ///|
 /// A step's button beside its ⋯: none of its own room round it.
@@ -569,7 +569,7 @@ pub let login_step_words_solid : @ui.TextStyle = login_step_words.then(@ui.text_
 /// less 4, its words 12 medium.
 // kept across runs: a value (no field of it changes)
 pub let login_paste : @ui.Style = @ui.css("row w=Full h=S8 mt=S1_5 pl=S3 pr=S1 gap=S1 radius=Inner bg=Bg align=ACenter").then(
-  @ui.style(mx=room_of(-lc_step_reach), mb=room_of(-lc_step_reach)),
+  @ui.style(mx=@sf.room_of(-lc_step_reach), mb=@sf.room_of(-lc_step_reach)),
 )
 
 ///|
@@ -611,18 +611,18 @@ pub let login_icon : Double = 14.0
 ///|
 /// The corner of what stands in the card's corners as a step's button does (Inner, its node's: concentric with the
 /// card, as far in as lc_step_reach leaves it), and 完成's in the pasted code's field (4 in from its end).
-let lc_inner_corner : Double = @ui.concentric(card_corner, @ui.capsule_in(card_corner, 32.0))
+let lc_inner_corner : Double = @ui.concentric(@sf.card_corner, @ui.capsule_in(@sf.card_corner, 32.0))
 
 ///|
 let lc_done_corner : Double = @ui.concentric(lc_inner_corner, 4.0)
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let login_inner_round : @ui.Style = @ui.style(radius=radius_between(lc_inner_corner))
+pub let login_inner_round : @ui.Style = @ui.style(radius=@sf.radius_between(lc_inner_corner))
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let login_done_round : @ui.Style = @ui.style(radius=radius_between(lc_done_corner))
+pub let login_done_round : @ui.Style = @ui.style(radius=@sf.radius_between(lc_done_corner))
 
 ///|
 /// A step's card (step_card_node) under the pointer: lit, as the old view's hovered.
@@ -630,196 +630,3 @@ pub let login_done_round : @ui.Style = @ui.style(radius=radius_between(lc_done_c
 let lc_card_step_lit : @ui.Style = login_card.then(@ui.css("bg=Hover"))
 
 // ── a request's card answered ─────────────────────────────────────────────────
-
-///|
-/// A card's answer at its foot, made by `answer` in `v` (answered_in_place's, as nodes), as `ended` says it now (whether
-/// it was granted, and how it went in words): answered, the answer fades out where it is (answered_fade_ms, Leave),
-/// taking no press, then how it went fades in after it over the room it leaves (as long, eased out), its dot and its
-/// words in the middle of it. The answer stays laid out, unseen: the card keeps its size to the point. Answered before
-/// it is made, how it went is there at once.
-#callsite(autofill(loc))
-pub fn answered_in_place_node(
-  v : @view.View,
-  ended : () -> (Bool, Array[@ui.Run])?,
-  answer : (@view.View) -> Unit,
-  loc~ : SourceLoc,
-) -> Unit {
-  let gone = fn() { ended() is Some(_) }
-  let first = @signals.untracked(gone)
-  let was = @motion.NodeWay::new(if first { 0.0 } else { 1.0 })
-  let now = @motion.NodeWay::new(if first { 1.0 } else { 0.0 })
-  v.box(made_for=loc, fn(whole) {
-    style_node(whole, fn() { answered_whole })
-    whole.reacts(gone, fn(g) {
-      if g {
-        was.go_ms(whole, 0.0, answered_fade_ms, ease=Leave)
-        now.go(whole, 1.0, @motion.tween(answered_fade_ms, ease=Out, delay=answered_fade_ms))
-      } else {
-        now.put(0.0)
-        was.put(1.0)
-      }
-    })
-    whole.box(fn(a) {
-      style_node(a, fn() { answered_room })
-      a.alpha(By(fn() { was.shown(a) })).presses(By(fn() { !gone() })) |> ignore
-      answer(a)
-    })
-    |> ignore
-    // (over the answer's room, the whole of it)
-    whole.box(fn(o) {
-      o.over(Is(true)).alpha(By(fn() { now.shown(o) })) |> ignore
-      o.box(fn(r) {
-        style_node(r, fn() { answered_over })
-        r.box(fn(d) {
-          style_node(d, fn() {
-            match ended() {
-              Some((true, _)) => ask_dot_on
-              _ => ask_dot
-            }
-          })
-        })
-        |> ignore
-        r.box(fn(w) {
-          w
-          .words_runs(By(fn() { ended().map(fn(e) { e.1 }).unwrap_or([]) }))
-          .words_look(By(fn() { @ui.style_words(ask_ended_words) }))
-          .ink(By(fn() { @ui.style_ink(ask_ended_words) }))
-          |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A request's outcome line in `v` (ask_outcome's, as nodes), as they say it now: a dot (green while `granted`) and its
-/// `words`; the dot in the middle of the words' first line, under the message's picture as wide as it where the
-/// message's head is `inline`, else out in the margin where the picture is, the words at the row's start. `history`:
-/// pressed, the card read again (given what it opens from).
-#callsite(autofill(loc))
-pub fn ask_outcome_node(
-  v : @view.View,
-  granted : () -> Bool,
-  words : () -> Array[@ui.Run],
-  inline : () -> Bool,
-  history? : ((@view.View) -> Unit)? = None,
-  loc~ : SourceLoc,
-) -> Unit {
-  let th = ui_theme()
-  let line = th.leading(ask_ended_leading).unwrap_or(th.text_size(ask_ended_size).1)
-  v.box(made_for=loc, fn(o) {
-    style_node(o, fn() { ask_ended })
-    o.box(fn(w) {
-      style_node(w, fn() {
-        let base = if inline() { ask_ended_past } else { ask_ended_at }
-        if history is Some(_) {
-          base.then(ask_ended_start)
-        } else {
-          base
-        }
-      })
-      match history {
-        Some(open) => ask_history_trigger_node(w, words, fn() { ask_ended_words }, line, open) |> ignore
-        None =>
-          w.box(fn(t) {
-            t
-            .words_runs(By(words))
-            .words_look(By(fn() { @ui.style_words(ask_ended_words) }))
-            .ink(By(fn() { @ui.style_ink(ask_ended_words) }))
-            |> ignore
-          })
-          |> ignore
-      }
-    })
-    |> ignore
-    // (over the line, the whole of it: the dot's room)
-    o.box(fn(l) {
-      l.over(Is(true)) |> ignore
-      l.box(fn(d) {
-        style_node(d, fn() {
-          (if inline() { ask_dot_line } else { ask_dot_line_out }).then(@ui.style(h=Fixed(node_sp(d, line))))
-        })
-        d.box(fn(x) { style_node(x, fn() { if granted() { ask_dot_on } else { ask_dot } }) }) |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// How long a card's answer takes to fade out as it is answered, and how it went to fade in after it.
-pub let answered_fade_ms : Double = 200.0
-
-///|
-/// How it ended: a dot and its words, a little under what is over it.
-// kept across runs: a value (no field of it changes)
-pub let ask_ended : @ui.Style = @ui.css("w=Full mt=S0_5")
-
-///|
-/// Its words inline: past the message's picture, where its name is (the app's message.mbt msg_head_inline).
-// kept across runs: a value (no field of it changes)
-pub let ask_ended_past : @ui.Style = @ui.style(w=Full, pl=message_head_in)
-
-///|
-/// Its words with the picture out in the margin: at the row's start, as the name is.
-// kept across runs: a value (no field of it changes)
-pub let ask_ended_at : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-pub let ask_ended_start : @ui.Style = @ui.css("align=AStart")
-
-///|
-/// Where the dot stands: as wide as the message's picture (18) and under it, the dot in its middle; as high as a line
-/// of the words, the theme's (ask_outcome_node).
-// kept across runs: a value (no field of it changes)
-pub let ask_dot_line : @ui.Style = @ui.css("row w=S4_5 align=ACenter justify=JCenter")
-
-///|
-/// The same out in the margin, where the picture is then (message_avatar_out).
-// kept across runs: a value (no field of it changes)
-pub let ask_dot_line_out : @ui.Style = ask_dot_line.then(@ui.style(ml=message_avatar_out))
-
-///|
-/// A card's answer's room at its foot (answered_in_place_node): the card's width, what is in it as far apart as in the
-/// card (ask_card_node's 14).
-// kept across runs: a value (no field of it changes)
-pub let answered_room : @ui.Style = @ui.css("w=Full gap=S3_5")
-
-///|
-/// What holds a card's answer and how it went over it (answered_in_place_node): the card's width.
-// kept across runs: a value (no field of it changes)
-pub let answered_whole : @ui.Style = @ui.css("w=Full")
-
-///|
-/// How it went over a card's answer's room: its dot and its words on a line in the middle of the room's height.
-// kept across runs: a value (no field of it changes)
-pub let answered_over : @ui.Style = @ui.css("row w=Full h=Full gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-pub let ask_ended_words : @ui.TextStyle = @ui.text_style(size=ask_ended_size, leading=ask_ended_leading, color=Muted)
-
-///|
-/// Its words' size and line (ask_ended_words), the line the dot beside them stands in the middle of.
-// kept across runs: a value (no field of it changes)
-pub let ask_ended_size : @ui.TextSize = Meta
-
-///|
-// kept across runs: a value (no field of it changes)
-pub let ask_ended_leading : @ui.Leading = L5
-
-///|
-/// Its dot, 6 round: green once granted, else quiet.
-// kept across runs: a value (no field of it changes)
-pub let ask_dot : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full bg=Subtle")
-
-///|
-// kept across runs: a value (no field of it changes)
-pub let ask_dot_on : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full bg=Positive")

@@ -1,143 +1,4 @@
-// An allowance as nodes of a page made once (fill_chip.mbt's, quota_chip.mbt's and dials' parts, the same look): a fill
-// chip, an allowance's chips in a line, an allowance's windows as dials. What they show followed as it changes.
-
-///|
-/// A fill chip (fill_chip's, as a node) in `parent`: on the neutral ground, filled from the left as far as `fill` (0–100)
-/// says now, grey while `level` is ok, faintly the level's colour once it is not; `mark` and `words` in the text's
-/// colour; `small` a lower one. `said` (what is left and when it fills again) over it while it is pointed at, in `tips`.
-/// In a page's bones, one piece. Never squeezed, but `squeezes`: given way to its row where that has not the room for it
-/// left, its figure cut short with an ellipsis (meter_chips_brief_node's, the old line's `keep`).
-#callsite(autofill(loc))
-pub fn fill_chip_node(
-  parent : @view.View,
-  fill : () -> Int,
-  level : () -> String,
-  mark : () -> String,
-  words : () -> String,
-  small? : Bool = false,
-  label_muted? : Bool = false,
-  refill? : () -> Bool,
-  said? : () -> String,
-  tips? : TipLayer,
-  tips_within? : Bool = false,
-  squeezes? : Bool = false,
-  loc~ : SourceLoc,
-) -> @view.View {
-  let part = fn() {
-    let f = fill()
-    if f < 0 {
-      0
-    } else if f > 100 {
-      100
-    } else {
-      f
-    }
-  }
-  let is_refill = match refill {
-    Some(f) => {
-      let sig = @signals.computed(fn(_) { f() })
-      fn() { sig.get() }
-    }
-    None => fn() { false }
-  }
-  let icon_sz = if small { 9.0 } else { 10.5 }
-  let chip = parent.box(made_for=loc, fn(b) {
-    // (as high as its words' line at the system's size of words where that is higher than the chip: at 1.3 a small
-    // chip's 16 held words of 20, over the line above and below it, a station's row in 选择运行的 station, main
-    // df98aad1 42956992852, 2026-11-11)
-    style_node(b, fn() { chip_box_at(b.words_scale(), small) })
-    b.bone_whole(Is(true)).shrink(Is(if squeezes { 1.0 } else { 0.0 })) |> ignore
-    if squeezes {
-      b.min_width(Is(Some(0.0))) |> ignore
-    }
-    // (its fill a plain rectangle cut along the chip's corners, its end square where it stops)
-    b.clips(Is(true)) |> ignore
-    b.box(fn(x) {
-      style_node(x, fn() { chip_fill_part })
-      x
-      .over_at(Is((Some(0.0), Some(0.0), None, Some(0.0))))
-      .width_share(By(fn() { if is_refill() { 1.0 } else { part().to_double() / 100.0 } }))
-      .ground(By(fn() {
-        let t = theme()
-        if is_refill() {
-          over(t.p.card, t.p.red_bg)
-        } else {
-          let lv = level()
-          let tint = if lv == "amber" || lv == "red" {
-            level_color(lv)
-          } else if lv == "progress" {
-            t.p.accent_text
-          } else {
-            t.p.muted
-          }
-          alpha(tint, chip_fill_share)
-        }
-      }))
-      |> ignore
-    })
-    |> ignore
-    b.box(fn(w) {
-      style_node(w, fn() {
-        if is_refill() {
-          if small {
-            if mark() == "" { chip_refill_words_small_unmarked } else { chip_refill_words_small }
-          } else if mark() == "" {
-            chip_refill_words_unmarked
-          } else {
-            chip_refill_words
-          }
-        } else {
-          let s = if small { chip_words_small } else { chip_words }
-          if mark() == "" || (!label_muted && chip_joined(mark(), words())) {
-            s.then(chip_joined_gap)
-          } else {
-            s
-          }
-        }
-      })
-      // (its mark made with it, none where it says none: a chip whose mark comes is the same chip, never one making its
-      // way in across its words)
-      // (a mark run on into its words, 磁盘剩 420 G, one line of words, never two touching)
-      let joined = fn() { !is_refill() && !label_muted && chip_joined(mark(), words()) }
-      let k = words_node(w, fn() { if joined() { "" } else { mark() } }, fn() {
-        if is_refill() { chip_refill_label_text } else if label_muted { chip_label_text } else { chip_text }
-      })
-      match refill {
-        Some(_) =>
-          w.show(at_once=true, is_refill, fn(x) {
-            let ic = icon_node(x, "refresh", icon_sz, By(fn() { theme().p.red }))
-            if squeezes {
-              ic.shrink(Is(0.0)) |> ignore
-            }
-          })
-        None => ()
-      }
-      let f = words_node(w, fn() { if joined() { mark() + words() } else { words() } }, fn() {
-        if is_refill() { chip_refill_text } else { chip_text }
-      })
-      // (squeezed where it may be: its figure cut short with an ellipsis, as the old line's chips kept to the last are;
-      // else whole, its mark and figure never squeezed over each other, so a line short of the room for it gives it
-      // up whole: View::drops)
-      if squeezes {
-        w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        k.shrink(Is(0.0)) |> ignore
-        f.shrink(Is(1.0)).min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
-      } else {
-        w.shrink(Is(0.0)) |> ignore
-        k.shrink(Is(0.0)) |> ignore
-        f.shrink(Is(0.0)) |> ignore
-      }
-    })
-    |> ignore
-  })
-  match (tips, said) {
-    // (`tips_within`: shown by the pointer within it, where the chip stands in what takes no press and so is never
-    // pointed at itself, an agent's card's; tip_node's `within`)
-    (Some(t), Some(s)) => tip_node(t, chip, s, within=tips_within) |> ignore
-    _ => ()
-  }
-  chip
-}
+// Quota and meter chip nodes (moved from libs/sf-ui/src/quota_node.mbt).
 
 ///|
 /// An allowance's windows as chips in a line (quota_chips', not worded, as a node) in `parent`, `q` as the core says it
@@ -150,25 +11,25 @@ pub fn quota_chips_node(
   small? : Bool = false,
   marked? : Bool = true,
   gap? : Double = 8.0,
-  tips? : TipLayer,
+  tips? : @sf.TipLayer,
   tips_within? : Bool = false,
 ) -> Unit {
   let windows = fn() {
-    match chip_field(q(), "windows") {
+    match @sf.chip_field(q(), "windows") {
       Some(Array(a)) => a
       _ => []
     }
   }
   parent.show(fn() { has_quota(q()) }, fn(r) {
-    style_node(r, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) }, in_row=true)
-    r.shrink(Is(0.0)) |> ignore
+    @sf.style_node(r, fn() { quota_chips_row }, in_row=true)
+    r.gap(Is(gap)).shrink(Is(0.0)) |> ignore
     r.each(fn() { Array::makei(windows().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
       let k = i.untracked()
       let w = fn() { windows().get(k) }
-      fill_chip_node(
+      @sf.fill_chip_node(
         c,
-        fn() { chip_left(w()) },
-        fn() { chip_str(w(), "level") },
+        fn() { @sf.chip_left(w()) },
+        fn() { @sf.chip_str(w(), "level") },
         fn() { if marked { quota_mark(w()) } else { "" } },
         fn() { quota_figure(w()) },
         small~,
@@ -184,217 +45,28 @@ pub fn quota_chips_node(
 }
 
 ///|
-/// Dials side by side (dials', as nodes): `dials` as they are said, `details` a quiet line under each where there is one
-/// (a GPU's model). Wide, each 96 wide at least (`columns` > 0: each 96), 36 apart, on as many lines as they take (12
-/// between). Narrow: sharing the line's width, 16 apart, their cells narrower; `columns` > 0, that many a line (the last
-/// line's room kept where it has fewer); `lines` > 0, the same, a note longer than its dial going on under itself (an
-/// allowance's, two a line: its windows have no shorter words, and three in a line cut 每周 · Fable and 2 天 4 小时后刷新
-/// at a third of a phone's card; with its models' own weeks, five, they ran past the card); else all in a line, in
-/// their full words where the line has the room for all of them so, else all in their short ones (one way for all).
-/// `press`: a dial that `turns` pressed (by its place), pressed with the hand, the keyboard or a screen reader.
-#callsite(autofill(loc))
-pub fn dials_node(
-  parent : @view.View,
-  dials : () -> Array[Dial],
-  details? : () -> Array[String] = fn() { [] },
-  columns? : Int = 0,
-  lines? : Int = 0,
-  press? : (Int) -> Unit,
-  loc~ : SourceLoc,
-) -> Unit {
-  let narrow = part_of(parent).look == Narrow
-  // (each dial its own, worked out once of them all, told only as it comes out otherwise: one dial's change runs nothing
-  // of the others)
-  let dial = fn(d : @view.View, i : Int, short : Bool, wraps : Bool) {
-    let one = @signals.computed(fn(_) { dials().get(i) })
-    let detail = @signals.computed(fn(_) { details().get(i) })
-    let detailed = @signals.computed(fn(_) { !details().is_empty() })
-    let pressed = match press {
-      Some(p) => Some(fn() { p(i) })
-      None => None
-    }
-    dial_node(d, fn() { one.get() }, fn() { detail.get() }, fn() { detailed.get() }, short, wraps, narrow, columns, pressed)
-  }
-  let line = fn(r : @view.View, short : Bool) {
-    style_node(r, fn() { if narrow { dl_row_narrow } else { dl_row_wide } }, in_row=narrow)
-    if !narrow {
-      r.wraps(Is(Some(dl_lines))) |> ignore
-    }
-    r.each(fn() { Array::makei(dials().length(), fn(i) { i }) }, fn(i) { i }, fn(d, i) {
-      dial(d, i.untracked(), short, false)
-    })
-  }
-  // (a line `per` of them, the last one's room kept where it has fewer)
-  let in_lines = fn(b : @view.View, per : Int, wraps : Bool) {
-    style_node(b, fn() { dl_rows })
-    b.each(fn() { Array::makei((dials().length() + per - 1) / per, fn(k) { k }) }, fn(k) { k }, fn(r, k) {
-      let start = k.untracked() * per
-      style_node(r, fn() { dl_row_narrow })
-      for i in start..<(start + per) {
-        r.pick(fn() { i < dials().length() }, fn(d, there) {
-          if there {
-            dial(d, i, false, wraps)
-          } else {
-            style_node(d, fn() { dl_dial_narrow }, in_row=true)
-          }
-        })
-      }
-    })
-  }
-  parent.box(made_for=loc, fn(b) {
-    if narrow && columns > 0 {
-      in_lines(b, columns, false)
-    } else if narrow && lines > 0 {
-      in_lines(b, lines, true)
-    } else if narrow {
-      // all of them in their full words where the line has the room for all, else all in their short ones: the full
-      // line left out of its row where it has not the room, the short one there only while it is (View::drops)
-      let ways = fn() { dials().iter().any(fn(d) { d.label_short != "" || d.note_short != "" }) }
-      style_node(b, fn() { dl_row_ways })
-      b.fits(Is(true)) |> ignore
-      b.box(fn(r) {
-        r.drops(By(fn() { if ways() { 1 } else { 0 } })) |> ignore
-        line(r, false)
-      })
-      |> ignore
-      b.show(ways, fn(s) {
-        s.drops(Is(-1)) |> ignore
-        line(s, true)
-      })
-    } else {
-      line(b, false)
-    }
-  })
-  |> ignore
-}
-
-///|
-/// A dial (dials' draw): what is left large, its unit after it quieter on its line; its ten cells, as many lit as `fill`
-/// says in its level's colour; its label and its note under (`short`: their short words where they have them), its
-/// `detail` under that where there is one (`detailed`: the note in the detail's look, as wide as it is). `press`: done as
-/// it is pressed while it `turns` (the whole dial the button, read out by its label and its figure).
-#callsite(autofill(loc))
-fn dial_node(
-  d : @view.View,
-  dial : () -> Dial?,
-  detail : () -> String?,
-  detailed : () -> Bool,
-  short : Bool,
-  wraps : Bool,
-  narrow : Bool,
-  columns : Int,
-  press : (() -> Unit)?,
-  loc~ : SourceLoc,
-) -> Unit {
-  let blank : Dial = { number: "", unit: "", fill: 0, level: "", label: "", note: "", label_short: "", note_short: "", turns: false }
-  let now = fn() { dial().unwrap_or(blank) }
-  // (its colour, whether it runs low and how many cells are lit, each worked out once of it, told only as it comes out
-  // otherwise: its figure or its words changing run nothing of its ten cells)
-  let ink_now = @signals.computed(fn(_) {
-    let t = theme()
-    match now().level {
-      "amber" | "warn" => t.p.warn_ink
-      "red" => t.p.red
-      _ => t.p.green
-    }
-  })
-  let ink = fn() { ink_now.get() }
-  let low_now = @signals.computed(fn(_) {
-    match now().level {
-      "amber" | "warn" | "red" => true
-      _ => false
-    }
-  })
-  let low = fn() { low_now.get() }
-  let lit_now = @signals.computed(fn(_) {
-    let f = now().fill
-    let fill = if f < 0 { 0 } else if f > 100 { 100 } else { f }
-    (fill.to_double() / 10.0).round().to_int()
-  })
-  let lit = fn() { lit_now.get() }
-  style_node(d, fn() { if narrow { dl_dial_narrow } else if columns > 0 { dl_dial_wide_fixed } else { dl_dial_wide } }, in_row=true)
-  // (the dial itself the button where it turns: its look is what follows, drawn alike pressable or not)
-  if press is Some(p) {
-    let turns = @signals.computed(fn(_) { now().turns })
-    @headless.button(
-      made_for=loc,
-      d,
-      fn() { now().label },
-      fn(_) { p() },
-      fn(_, _) {  },
-      disabled=fn() { !turns.get() },
-      value=fn() { now().number + now().unit },
-      in_node=true,
-    )
-    |> ignore
-  }
-  // (the figure and its unit one line's runs: the unit on the figure's baseline)
-  let number = fn() { if low() { dl_number.then(@ui.text_style(color=Data(ink()))) } else { dl_number } }
-  d.box(made_for=loc, fn(w) {
-    w
-    .words_runs(By(fn() {
-      let t = theme()
-      [@ui.span(now().number), @ui.span(now().unit, weight=500, scale=t.t.meta / dl_number_size, color=t.p.muted)]
-    }))
-    .words_look(By(fn() { @ui.style_words(number()) }))
-    .ink(By(fn() { @ui.style_ink(number()) }))
-    |> ignore
-  })
-  |> ignore
-  d.box(fn(cells) {
-    style_node(cells, fn() { if narrow { dl_cells_narrow } else { dl_cells_wide } })
-    let cell = if narrow { dl_cell_narrow } else { dl_cell_wide }
-    for i in 0..<10 {
-      cells.box(fn(x) { style_node(x, fn() { if i < lit() { cell.then(@ui.style(bg=Data(ink()))) } else { cell } }, in_row=true) })
-      |> ignore
-    }
-  })
-  |> ignore
-  words_node(d, fn() { if short && now().label_short != "" { now().label_short } else { now().label } }, fn() {
-    if wraps { dl_label_lines } else { dl_label }
-  })
-  |> ignore
-  words_node(
-    d,
-    fn() {
-      let n = now()
-      if n.note == "" {
-        " "
-      } else if short && n.note_short != "" {
-        n.note_short
-      } else {
-        n.note
-      }
-    },
-    fn() { if detailed() { dl_detail } else if wraps { dl_reset_lines } else { dl_reset } },
-  )
-  |> ignore
-  d.show(fn() { detail().unwrap_or("") != "" }, fn(s) { words_node(s, fn() { detail().unwrap_or("") }, fn() { dl_detail }) |> ignore })
-}
-
-///|
 /// A machine's CPU, memory and disk in `parent`, as `meters` says them now: each a chip, what
 /// is left in it, filled as far as is used, its mark before it; 8 apart in a line; what it is (its name, how much of
 /// how much, a note) over it while it is pointed at, in `tips`.
 #callsite(autofill(loc))
-pub fn meter_chips_node(parent : @view.View, meters : () -> Array[Json], tips? : TipLayer, loc~ : SourceLoc) -> Unit {
+pub fn meter_chips_node(parent : @view.View, meters : () -> Array[Json], tips? : @sf.TipLayer, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(r) {
-    style_node(r, fn() { meter_line_way }, in_row=true)
+    @sf.style_node(r, fn() { meter_line_way }, in_row=true)
     r.shrink(Is(0.0)) |> ignore
     r.each(fn() { Array::makei(meters().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
       let k = i.untracked()
       let m = fn() { meters().get(k) }
-      fill_chip_node(
+      @sf.fill_chip_node(
         c,
-        fn() { 100 - chip_left(m()) },
-        fn() { chip_str(m(), "level") },
-        fn() { chip_str(m(), "short") },
-        fn() { chip_str(m(), "remaining") },
+        fn() { 100 - @sf.chip_left(m()) },
+        fn() { @sf.chip_str(m(), "level") },
+        fn() { @sf.chip_str(m(), "short") },
+        fn() { @sf.chip_str(m(), "remaining") },
         said=fn() {
-          let note = chip_str(m(), "note")
-          match chip_str(m(), "label") {
+          let note = @sf.chip_str(m(), "note")
+          match @sf.chip_str(m(), "label") {
             "" => ""
-            label => label + " " + chip_str(m(), "value") + (if note != "" { " · " + note } else { "" })
+            label => label + " " + @sf.chip_str(m(), "value") + (if note != "" { " · " + note } else { "" })
           }
         },
         tips?,
@@ -404,26 +76,6 @@ pub fn meter_chips_node(parent : @view.View, meters : () -> Array[Json], tips? :
   })
   |> ignore
 }
-
-///|
-/// A fill chip's box (chip_box's, chip_box_small's) at the system's size of words `scale`: as high as chip_text's line
-/// drawn at that size where that is higher than the chip (box_at: kept for the last theme and size, each its own).
-fn chip_box_at(scale : Double, small : Bool) -> @ui.Style {
-  if small {
-    box_at(chip_small_kept, chip_box_small, fill_chip_small_h, chip_text, scale)
-  } else {
-    box_at(chip_kept, chip_box, fill_chip_h, chip_text, scale)
-  }
-}
-
-///|
-// kept across runs: the last theme and size of words a fill chip was asked at and its box (box_at), worked out again
-// for any other
-let chip_kept : Ref[WordsBoxKept?] = Ref(None)
-
-///|
-// kept across runs: the same of a small fill chip
-let chip_small_kept : Ref[WordsBoxKept?] = Ref(None)
 
 ///|
 /// Window names and figures in one row when they fit, else by their marks (quota_chips' worded ways). Where even that
@@ -436,13 +88,13 @@ pub fn quota_worded_node(
   parent : @view.View,
   q : () -> Json?,
   gap? : Double = 8.0,
-  tips? : TipLayer,
+  tips? : @sf.TipLayer,
   room_w? : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.show(fn() { has_quota(q()) }, fn(x) {
     let windows_sig = @signals.computed(fn(_) {
-      match chip_field(q(), "windows") {
+      match @sf.chip_field(q(), "windows") {
         Some(Array(a)) => a
         _ => []
       }
@@ -456,9 +108,9 @@ pub fn quota_worded_node(
     let build = fn(held : @view.View, avail_w : () -> Double) {
       // (how wide a line of its chips said `form`'s way stands, `gap` apart: each chip its words' room and theirs)
       let wide = fn(form : Int) {
-        let look = @ui.style_words(chip_text)
-        let label_look = @ui.style_words(chip_label_text)
-        let size = node_sp(held, look.size)
+        let look = @ui.style_words(@sf.chip_text)
+        let label_look = @ui.style_words(@sf.chip_label_text)
+        let size = @sf.node_sp(held, look.size)
         let fig_cache : Map[String, Double] = Map([])
         let mark_cache : Map[String, Double] = Map([])
         let fig_w = fn(s : String) {
@@ -468,7 +120,7 @@ pub fn quota_worded_node(
             match fig_cache.get(s) {
               Some(w) => w
               None => {
-                let w = node_words_w(s, size, weight=look.weight)
+                let w = @sf.node_words_w(s, size, weight=look.weight)
                 fig_cache[s] = w
                 w
               }
@@ -482,7 +134,7 @@ pub fn quota_worded_node(
             match mark_cache.get(s) {
               Some(w) => w
               None => {
-                let w = node_words_w(s, size, weight=label_look.weight)
+                let w = @sf.node_words_w(s, size, weight=label_look.weight)
                 mark_cache[s] = w
                 w
               }
@@ -505,12 +157,12 @@ pub fn quota_worded_node(
         used
       }
       let wide1_sig = @signals.computed(fn(_) {
-        let _ = theme()
+        let _ = @sf.theme()
         let _ = held.words_scale()
         wide(1)
       })
       let wide2_sig = @signals.computed(fn(_) {
-        let _ = theme()
+        let _ = @sf.theme()
         let _ = held.words_scale()
         wide(2)
       })
@@ -525,7 +177,7 @@ pub fn quota_worded_node(
       let lined_sig = @signals.computed(fn(_) { pooled() && !(wide2_sig.get() <= avail_w() + 0.01) })
       let lined = fn() { lined_sig.get() }
       let label_w_sig = @signals.computed(fn(_) {
-        let _ = theme()
+        let _ = @sf.theme()
         let _ = held.words_scale()
         nav_quota_label_w(held, parts())
       })
@@ -544,22 +196,23 @@ pub fn quota_worded_node(
             // (a pool's line: its name in a column as wide as the widest pool's, its short capsules beside it)
             let k = k.untracked()
             c.width_share(Is(1.0)) |> ignore
-            style_node(c, fn() { quota_chips_part.then(@ui.style(gap=room(gap))) })
+            @sf.style_node(c, fn() { quota_chips_part })
+            c.gap(Is(gap)) |> ignore
             c.show(fn() { part(k).0 != "" }, fn(l) {
               l.width(By(fn() { Some(label_w()) })).shrink(Is(0.0)) |> ignore
-              words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+              @sf.words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
             })
             c.box(fn(cs) {
-              style_node(cs, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) })
-              cs.grow(Is(1.0)).min_width(Is(Some(0.0))).wraps(Is(Some(quota_chips_part_lines))) |> ignore
+              @sf.style_node(cs, fn() { quota_chips_row })
+              cs.gap(Is(gap)).grow(Is(1.0)).min_width(Is(Some(0.0))).wraps(Is(Some(quota_chips_part_lines))) |> ignore
               let ws = fn() { part(k).1 }
               cs.each(fn() { Array::makei(ws().length(), fn(j) { j }) }, fn(j) { j }, fn(d, j) {
                 let j = j.untracked()
                 let w = fn() { ws().get(j) }
-                fill_chip_node(
+                @sf.fill_chip_node(
                   d,
-                  fn() { chip_left(w()) },
-                  fn() { chip_str(w(), "level") },
+                  fn() { @sf.chip_left(w()) },
+                  fn() { @sf.chip_str(w(), "level") },
                   fn() { quota_line_mark(part(k).0, w()) },
                   fn() { quota_figure(w()) },
                   label_muted=true,
@@ -583,10 +236,10 @@ pub fn quota_worded_node(
             // (a window as a chip of the line, by its name where the line has the room, else by its mark)
             let i = i.untracked()
             let w = fn() { windows().get(i) }
-            fill_chip_node(
+            @sf.fill_chip_node(
               c,
-              fn() { chip_left(w()) },
-              fn() { chip_str(w(), "level") },
+              fn() { @sf.chip_left(w()) },
+              fn() { @sf.chip_str(w(), "level") },
               fn() { quota_worded(w(), form()).0 },
               fn() { quota_figure(w()) },
               label_muted=true,
@@ -613,7 +266,7 @@ fn quota_line_mark(group : String, w : Json?) -> String {
   if group != "" {
     quota_part_mark(group, w)
   } else {
-    quota_worded(w, if chip_str(w, "scope") != "" { 2 } else { 1 }).0
+    quota_worded(w, if @sf.chip_str(w, "scope") != "" { 2 } else { 1 }).0
   }
 }
 
@@ -623,7 +276,7 @@ fn quota_line_mark(group : String, w : Json?) -> String {
 /// the windows come in groups, the widest of those; else every chip; 0 where it shows none.
 pub fn nav_quota_line_node(v : @view.View, q : Json?) -> Double {
   guard has_quota(q) else { return 0.0 }
-  let windows = match chip_field(q, "windows") {
+  let windows = match @sf.chip_field(q, "windows") {
     Some(Array(a)) => a
     _ => []
   }
@@ -637,7 +290,7 @@ pub fn nav_quota_line_node(v : @view.View, q : Json?) -> Double {
         sum += chip(quota_part_mark(p.0, Some(w)), quota_figure(Some(w)), quota_is_refill(Some(w))) +
           (if i > 0 { @ui.Space::S1.px() } else { 0.0 })
       }
-      dmax(most, sum)
+      @sf.dmax(most, sum)
     })
   }
   let mut sum = 0.0
@@ -652,10 +305,10 @@ pub fn nav_quota_line_node(v : @view.View, q : Json?) -> Double {
 /// How wide a small chip of `mark` and `words` is in node `v`'s tree (fill_chip_node's: its words' room and theirs, its
 /// mark and figure 5 apart normally or separated by the refresh icon when spent).
 fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
-  let look = @ui.style_words(chip_text)
-  let label_look = @ui.style_words(chip_label_text)
-  let refill_label_look = @ui.style_words(chip_refill_label_text)
-  let size = node_sp(v, look.size)
+  let look = @ui.style_words(@sf.chip_text)
+  let label_look = @ui.style_words(@sf.chip_label_text)
+  let refill_label_look = @ui.style_words(@sf.chip_refill_label_text)
+  let size = @sf.node_sp(v, look.size)
   let fig_cache : Map[String, Double] = Map([])
   let mark_cache : Map[String, Double] = Map([])
   let refill_mark_cache : Map[String, Double] = Map([])
@@ -666,7 +319,7 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
       match fig_cache.get(s) {
         Some(w) => w
         None => {
-          let w = node_words_w(s, size, weight=look.weight)
+          let w = @sf.node_words_w(s, size, weight=look.weight)
           fig_cache[s] = w
           w
         }
@@ -680,7 +333,7 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
       match mark_cache.get(s) {
         Some(w) => w
         None => {
-          let w = node_words_w(s, size, weight=label_look.weight)
+          let w = @sf.node_words_w(s, size, weight=label_look.weight)
           mark_cache[s] = w
           w
         }
@@ -694,7 +347,7 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
       match refill_mark_cache.get(s) {
         Some(w) => w
         None => {
-          let w = node_words_w(s, size, weight=refill_label_look.weight)
+          let w = @sf.node_words_w(s, size, weight=refill_label_look.weight)
           refill_mark_cache[s] = w
           w
         }
@@ -707,7 +360,7 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
     let w = if refill {
       2.0 * side + (if mark == "" { 0.0 } else { refill_mark_w(mark) + gap }) + 9.0 + gap + fig_w(words)
     } else {
-      let between = if mark == "" || chip_joined(mark, words) { 0.0 } else { @ui.Space::S1_25.px() }
+      let between = if mark == "" || @sf.chip_joined(mark, words) { 0.0 } else { @ui.Space::S1_25.px() }
       2.0 * side + mark_w(mark) + between + fig_w(words)
     }
     w.ceil()
@@ -720,7 +373,7 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
 /// (nav_quota_chips_node's `widest`).
 pub fn nav_quota_room_node(v : @view.View, q : Json?) -> (Double, Array[Double]) {
   guard has_quota(q) else { return (0.0, []) }
-  let windows = match chip_field(q, "windows") {
+  let windows = match @sf.chip_field(q, "windows") {
     Some(Array(a)) => a
     _ => []
   }
@@ -735,7 +388,7 @@ pub fn nav_quota_room_node(v : @view.View, q : Json?) -> (Double, Array[Double])
         sum += chip(quota_part_mark(p.0, Some(w)), quota_figure(Some(w)), quota_is_refill(Some(w))) +
           (if i > 0 { @ui.Space::S1.px() } else { 0.0 })
       }
-      dmax(most, sum)
+      @sf.dmax(most, sum)
     })
   } else {
     let mut sum = 0.0
@@ -768,8 +421,8 @@ fn nav_quota_lines(widths : Array[Double], room : Double) -> Int {
 /// How wide the widest of `parts`' group names is in node `v`'s tree (nav_quota_group's words): 0 where none has one.
 fn nav_quota_label_w(v : @view.View, parts : Array[(String, Array[Json])]) -> Double {
   let look = @ui.style_words(nav_quota_group)
-  let size = node_sp(v, look.size)
-  parts.fold(init=0.0, fn(m, p) { if p.0 == "" { m } else { dmax(m, node_words_w(p.0, size, weight=look.weight).ceil()) } })
+  let size = @sf.node_sp(v, look.size)
+  parts.fold(init=0.0, fn(m, p) { if p.0 == "" { m } else { @sf.dmax(m, @sf.node_words_w(p.0, size, weight=look.weight).ceil()) } })
 }
 
 ///|
@@ -787,17 +440,17 @@ fn nav_quota_label_w(v : @view.View, parts : Array[(String, Array[Json])]) -> Do
 pub fn nav_quota_chips_node(
   parent : @view.View,
   q : () -> Json?,
-  at : ListAt,
+  at : @sf.ListAt,
   widest : () -> (Double, Array[Double]),
-  tips? : TipLayer,
+  tips? : @sf.TipLayer,
   room_w? : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
-  let inset = @ui.capsule_in(row_corner, fill_chip_small_h)
-  let side = band_pad_in(at)
+  let inset = @ui.capsule_in(@sf.row_corner, @sf.fill_chip_small_h)
+  let side = @sf.band_pad_in(at)
   // (a capsule reaches the corner until it is past the outer corner's circle-equivalent radius)
-  let clear = dmax(0.0, inset + fill_chip_small_h / 2.0 - side)
-  let pad_y = fn() { dmax(0.0, (theme().chat_list.meta_h - fill_chip_small_h) / 2.0) }
+  let clear = @sf.dmax(0.0, inset + @sf.fill_chip_small_h / 2.0 - side)
+  let pad_y = fn() { @sf.dmax(0.0, (@sf.theme().chat_list.meta_h - @sf.fill_chip_small_h) / 2.0) }
   // (the chips of `ws()`, each the window at its place there, its mark less its pool's name `group()`)
   let chips = fn(r : @view.View, ws : () -> Array[Json], group : () -> String) {
     r.each(fn() { Array::makei(ws().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
@@ -805,10 +458,10 @@ pub fn nav_quota_chips_node(
       // (its window as it is now, told on only as it comes out otherwise: another's changing runs none of this one's)
       let held = @signals.computed(fn(_) { ws().get(k) })
       let w = fn() { held.get() }
-      fill_chip_node(
+      @sf.fill_chip_node(
         c,
-        fn() { chip_left(w()) },
-        fn() { chip_str(w(), "level") },
+        fn() { @sf.chip_left(w()) },
+        fn() { @sf.chip_str(w(), "level") },
         fn() { quota_part_mark(group(), w()) },
         fn() { quota_figure(w()) },
         small=true,
@@ -822,7 +475,7 @@ pub fn nav_quota_chips_node(
   }
   parent.show(fn() { has_quota(q()) }, fn(x) {
     let windows_sig = @signals.computed(fn(_) {
-      match chip_field(q(), "windows") {
+      match @sf.chip_field(q(), "windows") {
         Some(Array(a)) => a
         _ => []
       }
@@ -839,11 +492,11 @@ pub fn nav_quota_chips_node(
       // (on one line where the room the widest of its provider's rows needs fits beside the corner's: else on lines)
       let room = fn() { avail_w() - (inset - side) - clear }
       let line_w_sig = @signals.computed(fn(_) {
-        let _ = theme()
+        let _ = @sf.theme()
         let _ = held.words_scale()
         nav_quota_line_node(held, q())
       })
-      let one_sig = @signals.computed(fn(_) { dmax(widest().0, line_w_sig.get()) <= room() + 0.01 })
+      let one_sig = @signals.computed(fn(_) { @sf.dmax(widest().0, line_w_sig.get()) <= room() + 0.01 })
       let one = fn() { one_sig.get() }
       // (on lines: as many as the widest of its provider's take, each of this row's as many of its chips as share them)
       let per_sig = @signals.computed(fn(_) {
@@ -852,12 +505,12 @@ pub fn nav_quota_chips_node(
           n
         } else {
           let lines = nav_quota_lines(widest().1, room())
-          dmax(1.0, (n.to_double() / lines.to_double()).ceil()).to_int()
+          @sf.dmax(1.0, (n.to_double() / lines.to_double()).ceil()).to_int()
         }
       })
       let per = fn() { per_sig.get() }
       let label_w_sig = @signals.computed(fn(_) {
-        let _ = theme()
+        let _ = @sf.theme()
         let _ = held.words_scale()
         nav_quota_label_w(held, parts())
       })
@@ -879,10 +532,10 @@ pub fn nav_quota_chips_node(
                 p.row(Is(true)).width_share(Is(1.0)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S1_5))) |> ignore
                 p.show(fn() { part(k).0 != "" }, fn(l) {
                   l.width(By(fn() { Some(label_w()) })) |> ignore
-                  words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+                  @sf.words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
                 })
                 p.box(fn(r) {
-                  style_node(r, fn() { quota_chips_row.then(@ui.style(gap=S1)) }, in_row=true)
+                  @sf.style_node(r, fn() { quota_chips_row.then(@ui.style(gap=S1)) }, in_row=true)
                   chips(r, fn() { part(k).1 }, fn() { part(k).0 })
                 })
                 |> ignore
@@ -898,10 +551,10 @@ pub fn nav_quota_chips_node(
                 let k = k.untracked()
                 p.width_share(Is(1.0)).gap(Is(@ui.Space::px(S0_5))) |> ignore
                 p.show(fn() { part(k).0 != "" }, fn(n) {
-                  words_node(n, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+                  @sf.words_node(n, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
                 })
                 p.box(fn(r) {
-                  style_node(r, fn() { quota_chips_part.then(@ui.style(gap=S1)) })
+                  @sf.style_node(r, fn() { quota_chips_part.then(@ui.style(gap=S1)) })
                   r.wraps(Is(Some(@ui.Space::S1.px()))) |> ignore
                   chips(r, fn() { part(k).1 }, fn() { part(k).0 })
                 })
@@ -915,9 +568,9 @@ pub fn nav_quota_chips_node(
           .margin(By(fn() { (inset - side, if one() { 0.0 } else { pad_y() }, clear, if one() { 0.0 } else { pad_y() }) }))
           .gap(Is(@ui.Space::px(S1)))
           |> ignore
-          b.each(fn() { Array::makei((windows().length() + per() - 1) / dmax(1.0, per().to_double()).to_int(), fn(i) { i }) }, fn(i) { i }, at_once=true, fn(r, i) {
+          b.each(fn() { Array::makei((windows().length() + per() - 1) / @sf.dmax(1.0, per().to_double()).to_int(), fn(i) { i }) }, fn(i) { i }, at_once=true, fn(r, i) {
             let i = i.untracked()
-            style_node(r, fn() { quota_chips_part.then(@ui.style(gap=S1)) })
+            @sf.style_node(r, fn() { quota_chips_part.then(@ui.style(gap=S1)) })
             chips(r, fn() { windows().iter().drop(i * per()).take(per()).collect() }, fn() { "" })
           })
         }

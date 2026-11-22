@@ -76,7 +76,7 @@ fn login_carded(l : Json?) -> Bool {
 ///|
 /// A login under way runs out of time (`expiresAt`, the station's 15 minutes): how long is left as of `now`, said on
 /// its card while the person has a step to do (red its last 3 minutes); None where it is not known, or none is left.
-fn login_left(l : Json?, now : Double) -> @sf.LoginSaid? {
+fn login_left(l : Json?, now : Double) -> @sfbase.LoginSaid? {
   let ends = number(l, "expiresAt")
   guard ends > 0.0 && flag(l, "active") else { return None }
   // (whole minutes, rounded up: 14:59 left is 15)
@@ -121,13 +121,13 @@ fn login_ended(l : Json?) -> (String, Bool) {
 }
 
 ///|
-/// A line of how a login stands or what to do (@sf.LoginSaid): red, busy, last as it says.
-fn said_line(words : String, red? : Bool = false, busy? : Bool = false, last? : Bool = false) -> @sf.LoginSaid {
+/// A line of how a login stands or what to do (@sfbase.LoginSaid): red, busy, last as it says.
+fn said_line(words : String, red? : Bool = false, busy? : Bool = false, last? : Bool = false) -> @sfbase.LoginSaid {
   { words, red, busy, last }
 }
 
 ///|
-/// A step's button (@sf.LoginStep), as its words, solid and what it does say; the rest as it is mostly.
+/// A step's button (@sfbase.LoginStep), as its words, solid and what it does say; the rest as it is mostly.
 fn step_of(
   key : String,
   label : String,
@@ -138,7 +138,7 @@ fn step_of(
   more? : Array[@sf.MenuItem] = [],
   last? : Bool = true,
   told? : String,
-) -> @sf.LoginStep {
+) -> @sfbase.LoginStep {
   { key, label, solid, busy, external, more, last, press: on_press, told }
 }
 
@@ -146,9 +146,9 @@ fn step_of(
 /// What a login under way shows, for one who may finish it (ActiveCard's): its lines, the device code, the step's own
 /// button. One whose page gives a code to paste back is login_paste_shows'.
 priv struct LoginShows {
-  said : Array[@sf.LoginSaid]
+  said : Array[@sfbase.LoginSaid]
   code : String
-  step : @sf.LoginStep?
+  step : @sfbase.LoginStep?
 }
 
 ///|
@@ -202,7 +202,7 @@ fn login_steps(core : Core, station : String, l : Json?, relay : Bool) -> LoginS
     // browser, which can, is the step (this device's again in its ⋯), else what is wrong is said; the page's host all
     // the same
     "loopback" if elsewhere.length() > 0 && (!relay || text(l, "relayText") != "") => {
-      let said : Array[@sf.LoginSaid] = []
+      let said : Array[@sfbase.LoginSaid] = []
       if text(l, "relayText") != "" && relay {
         said.push(said_line(text(l, "relayText"), red=true))
       }
@@ -239,7 +239,7 @@ fn login_steps(core : Core, station : String, l : Json?, relay : Bool) -> LoginS
       { said, code: "", step: Some(go) }
     }
     "loopback" if !relay => {
-      let said : Array[@sf.LoginSaid] = [said_line(@sf.t("web-main.logins.needsDesktop"), last=domain == "")]
+      let said : Array[@sfbase.LoginSaid] = [said_line(@sf.t("web-main.logins.needsDesktop"), last=domain == "")]
       if domain != "" {
         said.push(said_line(domain, last=true))
       }
@@ -247,7 +247,7 @@ fn login_steps(core : Core, station : String, l : Json?, relay : Bool) -> LoginS
     }
     "loopback" => {
       let opened = flag(l, "listening")
-      let said : Array[@sf.LoginSaid] = []
+      let said : Array[@sfbase.LoginSaid] = []
       if opened {
         said.push(said_line(@sf.t("web-main.logins.waitingBrowser"), busy=true))
       } else if text(l, "relayText") != "" {
@@ -297,8 +297,8 @@ fn login_steps(core : Core, station : String, l : Json?, relay : Bool) -> LoginS
 /// then 打开登录页 (solid until pressed here or a code is in: `typed`), and whether what is typed is sent or checked
 /// (`busy`: 完成 turning, nothing more sent).
 priv struct LoginPaste {
-  lead : @sf.LoginSaid
-  step : @sf.LoginStep
+  lead : @sfbase.LoginSaid
+  step : @sfbase.LoginStep
   busy : Bool
 }
 
@@ -519,14 +519,14 @@ pub fn login_card_node(
     let title = fn() { text(l(), "title") }
     match k {
       0 => ()
-      1 => @sf.login_ended_node(x, fn() { login_ended(l()).0 }, fn() { login_ended(l()).1 })
+      1 => @sfbase.login_ended_node(x, fn() { login_ended(l()).0 }, fn() { login_ended(l()).1 })
       // (in its login sheet its title alone: the sheet's own close is how it is put away)
       2 if in_sheet =>
-        @sf.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
+        @sfbase.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
           login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place, now)
         })
       2 =>
-        @sf.login_step_card_node(
+        @sfbase.login_step_card_node(
           x,
           title,
           in_sheet~,
@@ -538,17 +538,17 @@ pub fn login_card_node(
           fn(card) { login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place, now) },
         )
       4 =>
-        @sf.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
+        @sfbase.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
           // (by the one it made: its step's press is a function made with it, no value to compare)
           let shows = @signals.computed_ref(fn(_) { login_again_shows(core, station, l()) })
           let shows = fn() { shows.get() }
-          @sf.login_active_node(card, fn() { false }, fn(x, _) {
-            @sf.login_lines_node(x, fn() { shows().said }, fn() { "" }, fn() { shows().step }, fn(_) {  })
+          @sfbase.login_active_node(card, fn() { false }, fn(x, _) {
+            @sfbase.login_lines_node(x, fn() { shows().said }, fn() { "" }, fn() { shows().step }, fn(_) {  })
           })
         })
       _ =>
-        @sf.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
-          @sf.login_said_node(card, fn() { said_line(text(l(), "statusText"), last=true) })
+        @sfbase.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
+          @sfbase.login_said_node(card, fn() { said_line(text(l(), "statusText"), last=true) })
         })
     }
   })
@@ -566,7 +566,7 @@ fn login_active_node(
   place : String,
   now : () -> Double,
 ) -> Unit {
-  @sf.login_active_node(card, fn() { flag(l(), "paste") && text(l(), "url") != "" }, fn(x, paste) {
+  @sfbase.login_active_node(card, fn() { flag(l(), "paste") && text(l(), "url") != "" }, fn(x, paste) {
     if paste {
       login_paste_node(x, core, station, l, place, now)
       return
@@ -574,7 +574,7 @@ fn login_active_node(
     // (by the one it made: its step's press is a function made with it, no value to compare)
     let shows = @signals.computed_ref(fn(_) { login_shows(core, station, l(), relay(), now()) })
     let shows = fn() { shows.get() }
-    @sf.login_lines_node(x, fn() { shows().said }, fn() { shows().code }, fn() { shows().step }, fn(code) {
+    @sfbase.login_lines_node(x, fn() { shows().said }, fn() { shows().code }, fn() { shows().step }, fn(code) {
       @sfbase.copy_out(code)
       (core.say)(@sf.t("web-main.logins.codeCopied"))
     })
@@ -591,7 +591,7 @@ fn login_paste_node(x : @view.View, core : Core, station : String, l : () -> Jso
   // (by the one it made: its step's press is a function made with it, no value to compare)
   let shows = @signals.computed_ref(fn(_) { login_paste_shows(core, station, l(), words() != "", now()) })
   let shows = fn() { shows.get() }
-  @sf.login_paste_node(x, fn() { shows().lead }, fn() { shows().step }, field, fn() { shows().busy }, fn(code) {
+  @sfbase.login_paste_node(x, fn() { shows().lead }, fn() { shows().step }, field, fn() { shows().busy }, fn(code) {
     login_answer(core, station, id, code)
   })
 }
@@ -606,5 +606,5 @@ pub fn step_card_node(
   line : () -> String,
   go : () -> (() -> Unit)?,
 ) -> Unit {
-  @sf.step_card_node(v, title, line, go)
+  @sfbase.step_card_node(v, title, line, go)
 }

@@ -33,6 +33,28 @@ priv struct PressLook {
 }
 
 ///|
+/// Make node `v` pressable with ripple look around `corner`, focus ring, and accessibility `role`/`label`/`selected`.
+#callsite(autofill(loc))
+pub fn pressed_box_node(
+  v : @view.View,
+  press : () -> Unit,
+  corner : @view.Live[Double],
+  role : @view.Role,
+  label : () -> String,
+  selected? : () -> Bool? = fn() { None },
+  loc~ : SourceLoc,
+) -> Unit {
+  v
+  .presses(Is(true))
+  .focusable(Is(true))
+  .focus_ring_theme()
+  .says(By(fn() { Some(@view.said(role, label=label(), selected?=selected())) }))
+  .on_press(press)
+  |> ignore
+  rippled_look(loc~, v, corner, press)
+}
+
+///|
 /// A press's ripple and sink over node `v`, as big as the press says it is laid out as it goes down (Drag's `w`, `h`:
 /// nothing read back of its layout), its corners
 /// `corner`, the disc in `ink` as it is now (black at .1 by default, @motion.ripple_ink; a theme's, followed as it changes); sunk while pressed where `grounded` (a

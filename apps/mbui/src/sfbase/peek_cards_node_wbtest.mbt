@@ -8,10 +8,10 @@
 /// A Tester of what `make` makes in a hover card's room (`wide`, 308 as a card 320 wide has it, its words 10 in), 40 in,
 /// 40 down, a mouse's.
 fn peek_rig(make : (@view.View) -> Unit, wide? : Double = 308.0) -> @ui.Tester {
-  set_words(fn(key, _) { key })
+  @sf.set_words(fn(key, _) { key })
   let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=640.0, native=Mouse, pointing=Mouse)
   @ui.set_view_app(fn(root) {
-    @ui.set_tree_theme(ui_theme_now)
+    @ui.set_tree_theme(@sf.ui_theme_now)
     root.box(fn(col) {
       col.padding(Is((40.0, 40.0, 0.0, 40.0))) |> ignore
       col.box(fn(card) {
@@ -49,7 +49,7 @@ test "a page's tile: its title over where it goes, its address to copy saying so
   let copied : Map[String, Double] = Map([])
   let t = peek_rig(fn(card) {
     card.box(fn(b) {
-      style_node(b, fn() { peek_card_part })
+      @sf.style_node(b, fn() { peek_card_part })
       peek_page_tile_node(
         b,
         fn() { "一个网页的标题" },
@@ -66,10 +66,10 @@ test "a page's tile: its title over where it goes, its address to copy saying so
   assert_true(t.find("example.com/a/page") is Some(_))
   assert_eq(peek_faults(t), [])
   t.click(@ui.Role::Button, label="common.link.copy")
-  t.run_for(copied_ms / 2.0)
+  t.run_for(@sf.copied_ms / 2.0)
   assert_true(t.find("common.copied") is Some(_), msg="copied")
   assert_true(copied.contains("https://example.com/a/page"))
-  t.run_for(copied_ms)
+  t.run_for(@sf.copied_ms)
   assert_true(t.find("common.link.copy") is Some(_), msg="said so no more once copied_ms is over")
 }
 
@@ -95,7 +95,7 @@ test "a page's tile with its picture: the picture in the card's top corners, the
     for title in ["一个网页的标题", "一个网页的标题很长很长，长到在卡片里要折成两行才放得下它的全部文字"] {
       let t = peek_rig(fn(card) {
         card.box(fn(b) {
-          style_node(b, fn() { peek_card_part })
+          @sf.style_node(b, fn() { peek_card_part })
           peek_page_tile_node(b, fn() { title }, fn() { "example.com/a/page" }, fn() { "" }, fn() { false }, fn() {
             "mem:peek-picture"
           }, fn(f) { peek_copy_node(f, fn() { "https://example.com/a/page" }, "common.link.copy", Map([])) })
@@ -183,7 +183,7 @@ test "a chat's card: its head, where it is, the message a link names; a note whe
   let found = @signals.signal(true)
   let t = peek_rig(fn(card) {
     card.pick(fn() { found.get() }, fn(b, yes) {
-      style_node(b, fn() { peek_card_part })
+      @sf.style_node(b, fn() { peek_card_part })
       if yes {
         peek_rich_node(b, fn(rich) {
           peek_chat_head_node(rich, fn() { "首页的列表改成按天分组" }, ago=fn() { "5 分钟前" })

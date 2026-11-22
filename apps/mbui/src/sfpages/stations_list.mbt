@@ -163,9 +163,9 @@ pub fn stations_list_node(
         k if k.has_prefix("rig/") => {
           let id = k.exact_view(start=4).to_owned()
           let r = fn() { rigs_by.get(id) }
-          @sf.summary_mark_card_node(
+          @sfbase.summary_mark_card_node(
             b,
-            fn(m) { @sf.icon_node(m, "boxes", @sf.summary_mark_side, By(fn() { @sf.theme().p.text })) |> ignore },
+            fn(m) { @sf.icon_node(m, "boxes", @sfbase.summary_mark_side, By(fn() { @sf.theme().p.text })) |> ignore },
             fn() { text(r(), "name") },
             fn() { @settings.rig_said(r()) },
             fn() { (core.push)(Station(here().workspace + "/" + id)) },
@@ -173,9 +173,9 @@ pub fn stations_list_node(
         }
         k if k.has_prefix("device/") => {
           let d = fn() { devices_by.get(k) }
-          @sf.summary_mark_card_node(
+          @sfbase.summary_mark_card_node(
             b,
-            fn(m) { @sf.icon_node(m, "", @sf.summary_mark_side, By(fn() { @sf.theme().p.text }), name_now=fn() { @settings.device_icon(d()) }) |> ignore },
+            fn(m) { @sf.icon_node(m, "", @sfbase.summary_mark_side, By(fn() { @sf.theme().p.text }), name_now=fn() { @settings.device_icon(d()) }) |> ignore },
             fn() { text(d(), "name") },
             fn() { @settings.device_said(d()) },
             fn() {
@@ -283,14 +283,14 @@ fn sl_station_card_node(
   press : () -> Unit,
   shown? : () -> Bool = fn() { true },
 ) -> Unit {
-  @sf.summary_mark_card_node(
+  @sfbase.summary_mark_card_node(
     b,
     fn(m) {
       m.pick(fn() { @sf.has_station_mark(text(s(), "emoji"), text(s(), "icon")) }, fn(x, marked) {
         if marked {
-          @sf.station_mark_node(x, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, @sf.summary_mark_side, fn() { @sf.theme().p.text }, fn() { 0 })
+          @sf.station_mark_node(x, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, @sfbase.summary_mark_side, fn() { @sf.theme().p.text }, fn() { 0 })
         } else {
-          @sf.icon_node(x, "server", @sf.summary_mark_side, By(fn() { @sf.theme().p.text })) |> ignore
+          @sf.icon_node(x, "server", @sfbase.summary_mark_side, By(fn() { @sf.theme().p.text })) |> ignore
         }
       })
     },
@@ -407,12 +407,12 @@ fn sl_station_body_node(card : @view.View, core : Core, s : () -> Json?, shown :
     body.box(fn(n) {
       n.box(fn(x) {
         x.alpha(By(fn() { seen(net() is Some(_)) })) |> ignore
-        @sf.station_net_line_node(x, net)
+        @sfbase.station_net_line_node(x, net)
       })
       |> ignore
       n.show(fn() { online() && net() is None }, fn(o) {
         o.over(Is(true)) |> ignore
-        @sf.waiting_node(o, fn(w) { @sf.station_net_line_node(w, fn() { None }) })
+        @sf.waiting_node(o, fn(w) { @sfbase.station_net_line_node(w, fn() { None }) })
       })
     })
     |> ignore

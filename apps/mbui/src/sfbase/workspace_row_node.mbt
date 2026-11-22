@@ -10,8 +10,8 @@
 #callsite(autofill(loc))
 pub fn workspace_label_node(parent : @view.View, label : () -> String, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(l) {
-    style_node(l, fn() { ws_label_box.then(panel_words_in_node(l)) })
-    words_node(l, label, fn() { ws_label_words }) |> ignore
+    @sf.style_node(l, fn() { ws_label_box.then(@sf.panel_words_in_node(l)) })
+    @sf.words_node(l, label, fn() { ws_label_words }) |> ignore
   })
   |> ignore
 }
@@ -38,21 +38,21 @@ pub fn workspace_row_node(
   // (a row of the panel's own `panel_card_in` from its sides: its mark and words on the panel's words' line, every
   // row's on one)
   parent.box(made_for=loc, fn(o) {
-    style_node(o, fn() { ws_row_in.then(panel_card_out_node(o)) })
+    @sf.style_node(o, fn() { ws_row_in.then(@sf.panel_card_out_node(o)) })
     o.box(fn(r) {
-      style_node(r, fn() { ws_row })
+      @sf.style_node(r, fn() { ws_row })
       // (what stands beside its words on their first line, under a line under it as well: from its top, each on that
       // line (first_line_node); a row of one line in its middle, its least height's)
       r.lines_up(By(fn() { Some(if sub() != "" { Start } else { Middle }) })) |> ignore
       // (its ripple a card's corner in a panel)
-      let corner = r.concentric_radius(fn() { card_corner })
-      pressed_node(r, press, corner, Button, label, selected=fn() { Some(checked()) })
+      let corner = r.concentric_radius(fn() { @sf.card_corner })
+      @sf.pressed_box_node(r, press, corner, Button, label, selected=fn() { Some(checked()) })
       // (its mark, or an icon in the same square a mark stands in: the rows' words on one line, a workspace's or an
       // action's)
       let lead_square = fn(make : (@view.View) -> Unit) {
-        first_line_node(r, Ui, fn(f) {
+        @sf.first_line_node(r, Ui, fn(f) {
           f.box(fn(l) {
-            style_node(l, fn() { ws_row_lead })
+            @sf.style_node(l, fn() { ws_row_lead })
             l.shrink(Is(0.0)) |> ignore
             make(l)
           })
@@ -65,16 +65,16 @@ pub fn workspace_row_node(
         None => ()
       }
       if icon != "" {
-        lead_square(fn(l) { icon_node(l, icon, ws_row_icon, By(fn() { theme().p.text })) |> ignore })
+        lead_square(fn(l) { @sf.icon_node(l, icon, ws_row_icon, By(fn() { @sf.theme().p.text })) |> ignore })
       }
       r.box(fn(words) {
-        style_node(words, fn() { full_width }, in_row=true)
-        words_node(words, label, fn() { ws_row_label }) |> ignore
+        @sf.style_node(words, fn() { @sf.full_width }, in_row=true)
+        @sf.words_node(words, label, fn() { ws_row_label }) |> ignore
         // (as wide as it says, cut short where the row has not the room: ws_row_sub's w=Cut; under the label, down the
         // words' column: making its way in as it comes to say something, closing it as it says nothing)
         words.show(fn() { sub() != "" }, fn(s) {
           s.lines_up(Is(Some(Start))) |> ignore
-          words_node(s, sub, fn() { ws_row_sub }) |> ignore
+          @sf.words_node(s, sub, fn() { ws_row_sub }) |> ignore
         })
       })
       |> ignore
@@ -84,7 +84,7 @@ pub fn workspace_row_node(
       }
       r.show(checked, fn(k) {
         k.shrink(Is(0.0)) |> ignore
-        first_line_node(k, Ui, fn(c) { icon_node(c, "check", ws_row_check, By(fn() { theme().p.accent })) |> ignore })
+        @sf.first_line_node(k, Ui, fn(c) { @sf.icon_node(c, "check", ws_row_check, By(fn() { @sf.theme().p.accent })) |> ignore })
         |> ignore
       })
     })
@@ -106,11 +106,11 @@ pub fn workspace_mark_node(
   name : () -> String,
   loc~ : SourceLoc,
 ) -> Unit {
-  parent.pick(loc~, fn() { has_station_mark(emoji(), icon()) }, fn(m, marked) {
+  parent.pick(loc~, fn() { @sf.has_station_mark(emoji(), icon()) }, fn(m, marked) {
     if marked {
-      station_mark_node(m, emoji, icon, ws_row_mark, fn() { theme().p.text }, fn() { 0 })
+      @sf.station_mark_node(m, emoji, icon, ws_row_mark, fn() { @sf.theme().p.text }, fn() { 0 })
     } else {
-      mark_words_node(m, fn() { initial(name()) }, fn() { ws_row_letter }) |> ignore
+      @sf.mark_words_node(m, fn() { @sf.initial(name()) }, fn() { ws_row_letter }) |> ignore
     }
   })
 }
@@ -132,7 +132,7 @@ pub fn invitation_line_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(line) {
-    style_node(line, fn() { invite_line })
+    @sf.style_node(line, fn() { invite_line })
     // (where its words and its buttons have not the room side by side, the buttons go on under its words, never
     // pressing them into a narrow column: only where its words at their least and the buttons whole have not the room)
     line.wraps(Is(Some(invite_lines))).wraps_at_least(Is(true)) |> ignore
@@ -140,7 +140,7 @@ pub fn invitation_line_node(
     // lines: the shorter of the two put down by half of what it lacks of the other, from the line's top)
     let first = fn() {
       let th = @ui.tree_theme()
-      node_sp(line, th.text_size(Body).1)
+      @sf.node_sp(line, th.text_size(Body).1)
     }
     line.box(fn(w) {
       w
@@ -148,12 +148,12 @@ pub fn invitation_line_node(
       .basis(Is(Some(0.0)))
       .min_width(Is(Some(invite_words_least)), within=true)
       .padding(By(fn() {
-        let d = dmax(0.0, (button_height() - first()) / 2.0)
+        let d = @sf.dmax(0.0, (@sf.button_height() - first()) / 2.0)
         (0.0, d, 0.0, 0.0)
       }))
       |> ignore
-      words_node(w, words, fn() { invite_line_words }) |> ignore
-      words_node(w, account, fn() { invite_line_email }) |> ignore
+      @sf.words_node(w, words, fn() { invite_line_words }) |> ignore
+      @sf.words_node(w, account, fn() { invite_line_email }) |> ignore
     })
     |> ignore
     line.box(fn(b) {
@@ -163,12 +163,12 @@ pub fn invitation_line_node(
       .lines_up(Is(Some(Middle)))
       .shrink(Is(0.0))
       .padding(By(fn() {
-        let d = dmax(0.0, (first() - button_height()) / 2.0)
+        let d = @sf.dmax(0.0, (first() - @sf.button_height()) / 2.0)
         (0.0, d, 0.0, 0.0)
       }))
       |> ignore
-      button_node(b, fn() { t("android-misc.invite.join") }, join, tone=Primary, busy=joining) |> ignore
-      button_node(b, fn() { t("android-misc.invite.ignore") }, decline, busy=ignoring) |> ignore
+      @sf.button_node(b, fn() { @sf.t("android-misc.invite.join") }, join, tone=Primary, busy=joining) |> ignore
+      @sf.button_node(b, fn() { @sf.t("android-misc.invite.ignore") }, decline, busy=ignoring) |> ignore
     })
     |> ignore
   })
@@ -185,7 +185,7 @@ pub fn provider_mark_node(
   size : Double,
   loc~ : SourceLoc,
 ) -> Unit {
-  parent.pick(loc~, of, fn(l, k) { provider_logo_node(l, k.0, k.1, size, k.2) |> ignore })
+  parent.pick(loc~, of, fn(l, k) { @sf.provider_logo_node(l, k.0, k.1, size, k.2) |> ignore })
 }
 
 ///|
@@ -202,8 +202,8 @@ pub fn provider_badge_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(m) {
-    style_node(m, fn() { provider_badge })
-    provider_logo_node(m, runtime, kind, size, mark) |> ignore
+    @sf.style_node(m, fn() { provider_badge })
+    @sf.provider_logo_node(m, runtime, kind, size, mark) |> ignore
   })
   |> ignore
 }
@@ -227,7 +227,7 @@ let ws_row_in : @ui.Style = @ui.css("w=Full")
 /// A row: 12 over and under its words, 48 at least (a row of one line as tall as one beside its mark), its mark, words,
 /// marks and check 12 apart, each by its words' first line (workspace_row_node).
 // kept across runs: a value (no field of it changes)
-let ws_row : @ui.Style = @ui.css("row w=Full min_h=S12 py=S3 gap=S3").then(@ui.style(px=room_of(panel_words - panel_card_in)))
+let ws_row : @ui.Style = @ui.css("row w=Full min_h=S12 py=S3 gap=S3").then(@ui.style(px=@sf.room_of(@sf.panel_words - @sf.panel_card_in)))
 
 ///|
 /// A workspace's mark or its letter in a square 24 across: the mark 22, the letter 15 semibold, muted; an icon 20 in
@@ -255,7 +255,7 @@ let ws_row_label : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let ws_row_sub : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, w=Cut, leading=pick_sub_line)
+let ws_row_sub : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, w=Cut, leading=@sf.pick_sub_line)
 
 ///|
 /// An invitation: 20 in, 8 over and under, 8 apart; its words the body's, the account under them small and muted.
@@ -282,5 +282,5 @@ let invite_line_email : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w
 /// A vendor's mark on a card: 32 on the neutral ground in the card's corner, the ladder's small corner.
 // kept across runs: a value (no field of it changes)
 let provider_badge : @ui.Style = @ui.css("w=S8 h=S8 bg=Neutral align=ACenter justify=JCenter").then(
-  @ui.style(radius=small_radius),
-).then(card_mark_out)
+  @ui.style(radius=@sf.small_radius),
+).then(@sf.card_mark_out)

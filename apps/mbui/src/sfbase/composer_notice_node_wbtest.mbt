@@ -4,11 +4,11 @@
 ///|
 test "composer notice: its words, what it offers pressed, why that failed under its words, its mark over the ＋" {
   let tt = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, platform=0)
-  set_dark(Some(false))
-  @ui.set_tree_theme(ui_theme_now)
+  @sf.set_dark(Some(false))
+  @ui.set_tree_theme(@sf.ui_theme_now)
   let pressed = Ref(0)
   let failed = @signals.signal("", same=fn(a, b) { a == b })
-  let tips = TipLayer::new(fn() { None })
+  let tips = @sf.TipLayer::new(fn() { None })
   @ui.set_view_app(fn(root) {
     root.box(fn(page) {
       page.pad(Is(20.0)).width(Is(Some(380.0))) |> ignore
@@ -41,18 +41,18 @@ test "composer notice: its words, what it offers pressed, why that failed under 
   guard tt.words().iter().find_first(fn(w) { w.0.contains("这个对话已归档") }) is Some(said) else { fail("words gone") }
   assert_true(e.2 > said.2, msg="why not under its words")
   // (its mark's middle 24.5 in from the capsule's start, as the composer's ＋'s)
-  let side = theme().t.meta_line + 2.0 * notice_pad
+  let side = @sf.theme().t.meta_line + 2.0 * notice_pad
   assert_true(said.1 >= 20.0 + 24.5 - side / 2.0 + side - 0.5, msg="its words before its mark: \{said.1}")
 }
 
 ///|
 test "composer notice: its × pressed; out of reach, not pressed" {
   let tt = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, platform=0)
-  set_dark(Some(false))
-  @ui.set_tree_theme(ui_theme_now)
+  @sf.set_dark(Some(false))
+  @ui.set_tree_theme(@sf.ui_theme_now)
   let closed = Ref(0)
   let off = @signals.signal(true, same=fn(a, b) { a == b })
-  let tips = TipLayer::new(fn() { None })
+  let tips = @sf.TipLayer::new(fn() { None })
   @ui.set_view_app(fn(root) {
     root.box(fn(page) {
       page.pad(Is(20.0)).width(Is(Some(380.0))) |> ignore
@@ -87,9 +87,9 @@ test "composer notice: its × pressed; out of reach, not pressed" {
 ///|
 test "composer notice: what it offers on the first line of what it says, not in the middle of the lines it wraps to" {
   let tt = @ui.Tester::new(fn(_c) {  }, w=260.0, h=240.0, platform=0)
-  set_dark(Some(false))
-  @ui.set_tree_theme(ui_theme_now)
-  let tips = TipLayer::new(fn() { None })
+  @sf.set_dark(Some(false))
+  @ui.set_tree_theme(@sf.ui_theme_now)
+  let tips = @sf.TipLayer::new(fn() { None })
   @ui.set_view_app(fn(root) {
     root.box(fn(page) {
       page.pad(Is(10.0)).width(Is(Some(240.0))) |> ignore
@@ -108,7 +108,7 @@ test "composer notice: what it offers on the first line of what it says, not in 
   tt.draw()
   guard tt.words().iter().find_first(fn(w) { w.0.contains("归档") }) is Some(said) else { fail("words not drawn") }
   guard tt.words().iter().find_first(fn(w) { w.0 == "还原对话" }) is Some(offer) else { fail("offer not drawn") }
-  let line = theme().t.meta_line
+  let line = @sf.theme().t.meta_line
   assert_true(said.4 > line * 1.5, msg="did not wrap: \{said.4}")
   // (the middles of their lines: the offer's one line, the words' first)
   let offer_mid = offer.2 + offer.4 / 2.0
@@ -119,12 +119,12 @@ test "composer notice: what it offers on the first line of what it says, not in 
 ///|
 test "composer notice: a choice among a few, a quiet capsule concentric with its round end; held, out of reach, not opened" {
   let tt = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, platform=0)
-  set_dark(Some(false))
-  @ui.set_tree_theme(ui_theme_now)
+  @sf.set_dark(Some(false))
+  @ui.set_tree_theme(@sf.ui_theme_now)
   let chosen = @signals.signal("go_on", same=fn(a, b) { a == b })
   let held = @signals.signal(false, same=fn(a, b) { a == b })
   let picked : Array[String] = []
-  let tips = TipLayer::new(fn() { None })
+  let tips = @sf.TipLayer::new(fn() { None })
   let made : Ref[@view.View?] = Ref(None)
   @ui.set_view_app(fn(root) {
     root.box(fn(page) {

@@ -313,12 +313,12 @@ test "an away station's 概览 shows diagnostics card with copy and cached resou
       t.set_font_scale(scale)
       t.run_for(@ui.move_most_ms)
       let a = if scale > 1.0 && w < 390.0 {
-        t.audit().filter(fn(f) { !f.contains("quota_node.mbt") })
+        t.audit().filter(fn(f) { !f.contains("meter_atoms_node.mbt") })
       } else {
         t.audit()
       }
       let s = if scale > 1.0 && w < 390.0 {
-        t.squeeze_faults().filter(fn(f) { !f.contains("quota_node.mbt") })
+        t.squeeze_faults().filter(fn(f) { !f.contains("meter_atoms_node.mbt") })
       } else {
         t.squeeze_faults()
       }

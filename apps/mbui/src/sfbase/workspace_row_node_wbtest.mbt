@@ -1,3 +1,29 @@
+///|
+fn u5_case(make : (@view.View) -> Unit, scale? : Double = 1.0) -> @ui.Tester {
+  @sf.presenters_reset()
+  let t = @ui.Tester::new(fn(_c) {  }, w=600.0, h=400.0, platform=0)
+  t.check_looks(false)
+  if scale != 1.0 {
+    t.set_font_scale(scale)
+  }
+  @ui.set_view_app(fn(root) {
+    root.box(fn(e) {
+      e
+      .width(Is(Some(40.0)))
+      .height(Is(Some(40.0)))
+      .presses(Is(true))
+      .focusable(Is(true))
+      .says(Is(Some(@view.said(Button, label="别处"))))
+      .on_press(fn() {  })
+      |> ignore
+    })
+    |> ignore
+    make(root)
+  })
+  t.draw()
+  t
+}
+
 // The workspaces' list's parts and a vendor's marks (workspace_row_node.mbt): a row pressed once a press, the one in
 // use checked where it stands, its words on the same line as the others', a workspace's letter giving way to its mark, an
 // invitation's 加入 and 忽略 each pressed alone and waiting while asked.
@@ -61,7 +87,9 @@ test "a workspace's mark: its letter till it has a mark of its own, then the mar
 test "an invitation: 加入 and 忽略 each pressed alone, waiting while asked" {
   let answered : Array[String] = []
   let joining = @signals.signal(false)
-  let tr = u5_case(fn(root) {
+  let tr = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=460.0, h=400.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
     root.box(fn(col) {
       col.width(Is(Some(420.0))) |> ignore
       invitation_line_node(
@@ -76,8 +104,9 @@ test "an invitation: 加入 and 忽略 each pressed alone, waiting while asked" 
     })
     |> ignore
   })
-  let join = t("android-misc.invite.join")
-  let decline = t("android-misc.invite.ignore")
+  tr.draw()
+  let join = @sf.t("android-misc.invite.join")
+  let decline = @sf.t("android-misc.invite.ignore")
   tr.click(Button, label=decline)
   tr.click(Button, label=join)
   tr.draw()
@@ -105,7 +134,7 @@ fn invite_at(
   (Double, Double, Double, Double),
   (Double, Double, Double, Double),
 ) raise {
-  presenters_reset()
+  @sf.presenters_reset()
   // (a window wider than the others': a test's labels are their keys, 加入 as wide as `android-misc.invite.join`)
   let tr = @ui.Tester::new(fn(_c) {  }, w=800.0, h=400.0, platform=0)
   tr.check_looks(false)
@@ -129,8 +158,8 @@ fn invite_at(
     tr,
     tr.rect_of(words).unwrap(),
     tr.rect_of("me@acme.dev").unwrap(),
-    tr.get(Button, label=t("android-misc.invite.join")).rect,
-    tr.get(Button, label=t("android-misc.invite.ignore")).rect,
+    tr.get(Button, label=@sf.t("android-misc.invite.join")).rect,
+    tr.get(Button, label=@sf.t("android-misc.invite.ignore")).rect,
   )
 }
 

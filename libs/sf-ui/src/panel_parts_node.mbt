@@ -52,7 +52,7 @@ fn panel_in_lend(
 /// Where the tips of what a panel's body and foot are made of are shown (icon_button_node's in a panel, by panel_tips_of): the window's layer
 /// of them over all of it, lent by presented_nodes to each of what it presents, read as what the panel holds is made.
 // kept across runs: what each presented one is lent, let go with it
-let panel_tips_lent : @view.Lent[TipLayer] = @view.Lent::new()
+pub let panel_tips_lent : @view.Lent[TipLayer] = @view.Lent::new()
 
 ///|
 /// Where a row of a panel's body stands across: how far its ground reaches out of the column it is made in (`out`) and

@@ -278,7 +278,7 @@ fn home_top_bar_node(
         // catching up beside them (laid nowhere while it is not there): it and transfers stay, the workspace's name giving
         // way to them; the stations' releases the first to leave where the bar has not the room (their dialog in 设置 as
         // well), 看板 the second (end's, below)
-        @sf.sync_key_node(pill, tips, 34.0, 20.0, fn() {
+        @sfbase.sync_key_node(pill, tips, 34.0, 20.0, fn() {
           match view() {
             Some({ syncing: Some(y), .. }) => Some(y)
             _ => None

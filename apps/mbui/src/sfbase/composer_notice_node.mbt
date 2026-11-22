@@ -36,7 +36,7 @@ pub(all) struct NoticeChoice {
 #callsite(autofill(loc))
 pub fn composer_notice_node(
   parent : @view.View,
-  tips : TipLayer,
+  tips : @sf.TipLayer,
   mark : () -> String,
   said : () -> String,
   plus_mid : () -> Double,
@@ -49,18 +49,18 @@ pub fn composer_notice_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   // (a line of it: its words' line and its padding; its mark in a square that high at its start)
-  let side = fn() { theme().t.meta_line + 2.0 * notice_pad }
+  let side = fn() { @sf.theme().t.meta_line + 2.0 * notice_pad }
   // (its first line: what stands beside its words stands on it, never in the middle of what wraps under it. As high as
   // its words' line; with a choice, as its chooser is (28); with a ×, a line and its padding, the × as round as its end,
   // concentric with it)
   let with_x = dismiss is Some(_)
   let with_choice = choice is Some(_)
   let head = fn() {
-    let line = theme().t.meta_line
+    let line = @sf.theme().t.meta_line
     if with_x {
       side()
     } else if with_choice {
-      dmax(line, @ui.Space::S7.px())
+      @sf.dmax(line, @ui.Space::S7.px())
     } else {
       line
     }
@@ -68,13 +68,13 @@ pub fn composer_notice_node(
   // (its first line and the room over and under it: as round as that at its ends, its mark in a square that wide; drawn
   // in from the composer's ends as far as puts that mark's middle over the ＋'s)
   let outer = fn() { if with_x { head() } else { head() + 2.0 * notice_pad } }
-  let inset = fn() { dmax(0.0, plus_mid() - outer() / 2.0) }
+  let inset = fn() { @sf.dmax(0.0, plus_mid() - outer() / 2.0) }
   // (each part's room on that line: its middle the line's)
   let on_head = fn(v : @view.View) {
     v.height(By(fn() { Some(head()) })).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
   }
   parent.box(made_for=loc, fn(b) {
-    style_node(b, fn() { if with_x { notice_box_x } else { notice_box } })
+    @sf.style_node(b, fn() { if with_x { notice_box_x } else { notice_box } })
     // (with a choice at its end: that choice's capsule as far in as makes it concentric with the notice's round end, as
     // the old one's inline_end)
     if with_choice {
@@ -84,7 +84,7 @@ pub fn composer_notice_node(
     .margin(By(fn() { (inset(), 0.0, inset(), notice_over) }))
     .radius(By(fn() { outer() / 2.0 }))
     |> ignore
-    glass_capsule_node(b, sharing=false) |> ignore
+    @sf.glass_capsule_node(b, sharing=false) |> ignore
     // its line: the mark, what it says, then what it offers, its ×, or its choice (wrapping under what it says where
     // the line has not the room for both)
     b.box(fn(line) {
@@ -109,9 +109,9 @@ pub fn composer_notice_node(
           |> ignore
           m.pick(fn() { mark() == "updating" }, fn(i, turning) {
             if turning {
-              updating_mark_node(i, notice_mark, fn() { theme().p.muted })
+              @sf.updating_mark_node(i, notice_mark, fn() { @sf.theme().p.muted })
             } else {
-              icon_node(i, "", notice_mark, By(fn() { theme().p.muted }), name_now=mark) |> ignore
+              @sf.icon_node(i, "", notice_mark, By(fn() { @sf.theme().p.muted }), name_now=mark) |> ignore
             }
           })
         })
@@ -119,18 +119,18 @@ pub fn composer_notice_node(
         title.box(fn(words) {
           words.row(Is(true)).wraps(Is(Some(@ui.Space::S1.px()))).gap(Is(@ui.Space::S2.px())).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
           // (its first line's middle the head's: as far down as that puts it, what wraps under it going on down)
-          words.padding(By(fn() { (0.0, (head() - theme().t.meta_line) / 2.0, 0.0, 0.0) })) |> ignore
+          words.padding(By(fn() { (0.0, (head() - @sf.theme().t.meta_line) / 2.0, 0.0, 0.0) })) |> ignore
           words.pick(fn() { summary.map(fn(f) { f() is Some(_) }).unwrap_or(false) }, fn(w, parts) {
             if parts {
               // (side by side, the line wrapping under them where it has not the room: the status and its detail
               // together, as the words' box lays what it holds; the pick's own box a row as that one is)
               w.row(Is(true)).wraps(Is(Some(@ui.Space::S1.px()))).gap(Is(@ui.Space::S2.px())).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              words_node(w, fn() { summary.bind(fn(f) { f() }).map(fn(s) { s.0 }).unwrap_or("") }, fn() { notice_status })
+              @sf.words_node(w, fn() { summary.bind(fn(f) { f() }).map(fn(s) { s.0 }).unwrap_or("") }, fn() { notice_status })
               |> ignore
-              words_node(w, fn() { summary.bind(fn(f) { f() }).map(fn(s) { s.1 }).unwrap_or("") }, fn() { notice_words })
+              @sf.words_node(w, fn() { summary.bind(fn(f) { f() }).map(fn(s) { s.1 }).unwrap_or("") }, fn() { notice_words })
               |> ignore
             } else {
-              words_node(w, said, fn() { notice_words }) |> ignore
+              @sf.words_node(w, said, fn() { notice_words }) |> ignore
             }
           })
         })
@@ -140,15 +140,15 @@ pub fn composer_notice_node(
       match offer {
         Some(o) =>
           line.box(fn(at) {
-            style_node(at, fn() { notice_offer_at }, in_row=true)
+            @sf.style_node(at, fn() { notice_offer_at }, in_row=true)
             on_head(at)
             // (its words a step heavier in the words' ink, quiet while out of reach: a press on them what it offers)
-            link_node(
+            @sf.link_node(
               at,
               o.words,
               o.press,
               style=fn() { notice_offer_words },
-              ink=fn() { if (o.off)() { theme().p.muted } else { theme().p.text } },
+              ink=fn() { if (o.off)() { @sf.theme().p.muted } else { @sf.theme().p.text } },
               on=fn() { !(o.off)() },
             )
             |> ignore
@@ -160,7 +160,7 @@ pub fn composer_notice_node(
         Some(d) =>
           line.box(fn(at) {
             on_head(at)
-            icon_button_node(at, "close", d.name, d.press, tips~, size=@signals.untracked(side), icon_size=notice_mark, disabled=d.off) |> ignore
+            @sf.icon_button_node(at, "close", d.name, d.press, tips~, size=@signals.untracked(side), icon_size=notice_mark, disabled=d.off) |> ignore
           })
           |> ignore
         None => ()
@@ -172,7 +172,7 @@ pub fn composer_notice_node(
             at.margin(By(fn() { (outer() - @ui.Space::S2.px(), 0.0, 0.0, 0.0) })) |> ignore
             on_head(at)
             // (a quiet choice, round as a capsule concentric with the notice's round end: the old one's `capsule`)
-            capsule_chooser_node(at, fn() {
+            @sf.capsule_chooser_node(at, fn() {
               let id = now()
               cs().iter().find_first(fn(c) { c.0 == id }).map(fn(c) { c.1 }).unwrap_or("")
             }, cs, now, fn(id) { if !held() { f(id) } }, side=Top, disabled=held, on_open?) |> ignore
@@ -184,7 +184,7 @@ pub fn composer_notice_node(
     |> ignore
     b.show(fn() { failed() != "" }, fn(e) {
       e.padding(By(fn() { (outer(), 0.0, 0.0, 0.0) })) |> ignore
-      words_node(e, failed, fn() { notice_failed }) |> ignore
+      @sf.words_node(e, failed, fn() { notice_failed }) |> ignore
     })
   })
 }

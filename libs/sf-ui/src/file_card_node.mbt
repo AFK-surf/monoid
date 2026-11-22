@@ -126,7 +126,7 @@ pub fn file_card_node(
 /// A file's card `v` pressed as presses_node's is while `on` says so; while it does not, it takes no finger, no focus
 /// and no press of its own, and what it holds (its ↻, ✎ and ✕ at its end) is still pressed: never View::presses,
 /// whose `inert` would take its own buttons with it.
-fn card_presses_node(v : @view.View, press : () -> Unit, on : () -> Bool) -> Unit {
+pub fn card_presses_node(v : @view.View, press : () -> Unit, on : () -> Bool) -> Unit {
   v
   .focusable(By(on))
   .focus_ring_theme()
@@ -146,7 +146,7 @@ fn card_presses_node(v : @view.View, press : () -> Unit, on : () -> Bool) -> Uni
 /// A file's name on one line in `parent` (file_name's): what is cut short the middle of it, never its extension (7 at
 /// most, its dot with it).
 #callsite(autofill(loc))
-fn file_name_node(parent : @view.View, name : () -> String, loc~ : SourceLoc) -> Unit {
+pub fn file_name_node(parent : @view.View, name : () -> String, loc~ : SourceLoc) -> Unit {
   let split = fn() -> (String, String) {
     let n = name()
     match n.rev_find(".") {
@@ -171,7 +171,7 @@ fn file_name_node(parent : @view.View, name : () -> String, loc~ : SourceLoc) ->
 /// A button at the end of a message's file card (card_end's and card_button's): in a room 24, 22 round, the hover
 /// ground under the hand, its icon in the muted ink (the text's under the hand), named `label`, its tip saying it.
 #callsite(autofill(loc))
-fn card_end_node(
+pub fn card_end_node(
   parent : @view.View,
   tips : TipLayer,
   icon : String,

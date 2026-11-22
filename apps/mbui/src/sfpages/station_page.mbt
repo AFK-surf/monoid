@@ -346,7 +346,7 @@ fn station_profile_row_node(
       })
       |> ignore
     }),
-    below=fn(q) { @sf.quota_lines_node(q, fn() { field(p(), "quota") }, small=true, in_row=true) },
+    below=fn(q) { @sfbase.quota_lines_node(q, fn() { field(p(), "quota") }, small=true, in_row=true) },
     below_open=fn() { if text(field(p(), "quota"), "state") == "ok" { 1.0 } else { 0.0 } },
     tail=fn(e) {
       e.pick(check, fn(k, c) {

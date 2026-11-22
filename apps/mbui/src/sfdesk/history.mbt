@@ -336,7 +336,7 @@ fn wh_details_node(
             text(Some(m), "level") != "ok"
           })
         }
-        e.show(at_once=true, fn() { low().length() > 0 }, fn(x) { @sf.meter_chips_node(x, low, tips~) })
+        e.show(at_once=true, fn() { low().length() > 0 }, fn(x) { @sfbase.meter_chips_node(x, low, tips~) })
       },
     )
     // its context, by hand (ContextLine)

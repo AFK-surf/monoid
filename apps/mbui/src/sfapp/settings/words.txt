@@ -2093,3 +2093,4 @@ web-pages.security.pairGrantVaultPersonal
 web-pages.security.pairGrantVaultPersonalIn
 web-pages.security.pairGrantVaultWorkspace
 web-pages.security.pairGrantVaultWorkspaceIn
+web-pages.stations.latency

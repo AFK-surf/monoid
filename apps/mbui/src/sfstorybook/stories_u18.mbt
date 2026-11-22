@@ -24,16 +24,16 @@ fn stories_u18(tips : @sf.TipLayer) -> Array[Story] {
           fn(card) {
             let hex = @ui.Field::new(text="#4A154B")
             let picked = kept("")
-            let ground = fn() { @sf.hex_color(hex.text()).unwrap_or(@sf.theme().p.neutral_bg) }
+            let ground = fn() { @sfbase.hex_color(hex.text()).unwrap_or(@sf.theme().p.neutral_bg) }
             let ink = fn() {
-              match @sf.hex_color(hex.text()) {
+              match @sfbase.hex_color(hex.text()) {
                 Some(v) => @ui.ink_on(v, [0x24272BFFL, 0xFFFFFFFFL])
                 None => @sf.theme().p.muted
               }
             }
             card.box(fn(r) {
               r.row(Is(true)).gap(Is(16.0)).lines_up(Is(Some(Start))) |> ignore
-              @sf.icon_well_node(r, fn() { "上传图标" }, fn() {  }, ground, ink, fn() { "" }, fn() { "上传" }, @sf.app_icon_px) |> ignore
+              @sf.icon_well_node(r, fn() { "上传图标" }, fn() {  }, ground, ink, fn() { "" }, fn() { "上传" }, @sfbase.app_icon_px) |> ignore
               r.box(fn(m) {
                 @sf.style_node(m, fn() { story_u18_main }, in_row=true)
                 @sf.swatch_field_node(m, hex, ground, "颜色", after=fn(c) {
@@ -48,7 +48,7 @@ fn stories_u18(tips : @sf.TipLayer) -> Array[Story] {
               |> ignore
             })
             |> ignore
-            @sf.avatar_tiles_node(card, fn() { @sf.app_makers }, fn() { picked.get() }, fn() { 600.0 }, fn(a) {
+            @sfbase.avatar_tiles_node(card, fn() { @sfbase.app_makers }, fn() { picked.get() }, fn() { 600.0 }, fn(a) {
               picked.set(a.id)
               hex.set(a.bg)
             }, tips)

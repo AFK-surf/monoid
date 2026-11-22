@@ -26,7 +26,7 @@ fn stories_u16(tips : @sf.TipLayer) -> Array[Story] {
           fn(card) {
             let pressed = kept(false)
             let cancelled = kept(false)
-            let step = fn() -> @sf.LoginStep? {
+            let step = fn() -> @sfbase.LoginStep? {
               Some({
                 key: "story-login-device",
                 label: "复制并打开",
@@ -39,9 +39,9 @@ fn stories_u16(tips : @sf.TipLayer) -> Array[Story] {
                 told: None,
               })
             }
-            @sf.login_step_card_node(card, fn() { if cancelled.get() { "GitHub CLI（已取消）" } else { "GitHub CLI" } }, cancel=(fn() { false }, fn() { cancelled.set(true) }), fn(c) {
-              @sf.login_active_node(c, fn() { false }, fn(x, _) {
-                @sf.login_lines_node(
+            @sfbase.login_step_card_node(card, fn() { if cancelled.get() { "GitHub CLI（已取消）" } else { "GitHub CLI" } }, cancel=(fn() { false }, fn() { cancelled.set(true) }), fn(c) {
+              @sfbase.login_active_node(c, fn() { false }, fn(x, _) {
+                @sfbase.login_lines_node(
                   x,
                   fn() { [{ words: "在 github.com 上输入这个码", red: false, busy: false, last: false }] },
                   fn() { "8F2C-41DA" },
@@ -57,9 +57,9 @@ fn stories_u16(tips : @sf.TipLayer) -> Array[Story] {
           fn(card) {
             let field = @ui.Field::new()
             let sent = kept(false)
-            @sf.login_step_card_node(card, fn() { "Claude Code" }, cancel=(fn() { false }, fn() {  }), fn(c) {
-              @sf.login_active_node(c, fn() { true }, fn(x, _) {
-                @sf.login_paste_node(
+            @sfbase.login_step_card_node(card, fn() { "Claude Code" }, cancel=(fn() { false }, fn() {  }), fn(c) {
+              @sfbase.login_active_node(c, fn() { true }, fn(x, _) {
+                @sfbase.login_paste_node(
                   x,
                   fn() { { words: "在 claude.ai 上登录，把页面给出的码粘贴回来", red: false, busy: false, last: false } },
                   fn() {
@@ -86,9 +86,9 @@ fn stories_u16(tips : @sf.TipLayer) -> Array[Story] {
         (
           "等待中与本设备收不到回调（标红）",
           fn(card) {
-            @sf.login_step_card_node(card, fn() { "Google Cloud CLI" }, cancel=(fn() { true }, fn() {  }), fn(c) {
-              @sf.login_active_node(c, fn() { false }, fn(x, _) {
-                @sf.login_lines_node(
+            @sfbase.login_step_card_node(card, fn() { "Google Cloud CLI" }, cancel=(fn() { true }, fn() {  }), fn(c) {
+              @sfbase.login_active_node(c, fn() { false }, fn(x, _) {
+                @sfbase.login_lines_node(
                   x,
                   fn() {
                     [
@@ -107,27 +107,27 @@ fn stories_u16(tips : @sf.TipLayer) -> Array[Story] {
         (
           "不能在这里完成（无 ×）与已结束",
           fn(card) {
-            @sf.login_step_card_node(card, fn() { "AWS CLI" }, fn(c) {
-              @sf.login_said_node(c, fn() { { words: "请在工作站上完成登录", red: false, busy: false, last: true } })
+            @sfbase.login_step_card_node(card, fn() { "AWS CLI" }, fn(c) {
+              @sfbase.login_said_node(c, fn() { { words: "请在工作站上完成登录", red: false, busy: false, last: true } })
             })
-            @sf.login_ended_node(card, fn() { "已在 willow 上登录 gh" }, fn() { false })
-            @sf.login_ended_node(card, fn() { "gcloud · 登录失败" }, fn() { true })
+            @sfbase.login_ended_node(card, fn() { "已在 willow 上登录 gh" }, fn() { false })
+            @sfbase.login_ended_node(card, fn() { "gcloud · 登录失败" }, fn() { true })
           },
         ),
         (
           "剩下的一步 StepCard（可点 / 无去处）",
           fn(card) {
             let went = kept(0)
-            @sf.step_card_node(card, fn() { "在手机上配对" }, fn() { if went.get() == 0 { "打开开发者选项里的无线调试" } else { "按了 \{went.get()} 次" } }, fn() {
+            @sfbase.step_card_node(card, fn() { "在手机上配对" }, fn() { if went.get() == 0 { "打开开发者选项里的无线调试" } else { "按了 \{went.get()} 次" } }, fn() {
               Some(fn() { went.set(went.get() + 1) })
             })
-            @sf.step_card_node(card, fn() { "这台手机不能共享调试" }, fn() { "" }, fn() { None })
+            @sfbase.step_card_node(card, fn() { "这台手机不能共享调试" }, fn() { "" }, fn() { None })
             // (in a column narrower than a card's least, 260, as far apart as the cards above: both all of it, the one that goes
             // somewhere no wider)
             card.box(fn(narrow) {
               narrow.width(Is(Some(260.0))).gap(Is(12.0)) |> ignore
-              @sf.step_card_node(narrow, fn() { "在手机上配对" }, fn() { "打开开发者选项里的无线调试" }, fn() { Some(fn() {  }) })
-              @sf.step_card_node(narrow, fn() { "这台手机不能共享调试" }, fn() { "" }, fn() { None })
+              @sfbase.step_card_node(narrow, fn() { "在手机上配对" }, fn() { "打开开发者选项里的无线调试" }, fn() { Some(fn() {  }) })
+              @sfbase.step_card_node(narrow, fn() { "这台手机不能共享调试" }, fn() { "" }, fn() { None })
             })
             |> ignore
           },

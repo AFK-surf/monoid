@@ -337,7 +337,7 @@ fn provider_group_node(b : @view.View, g : () -> Json?, pick : (String) -> Unit)
           None => None
         }
       }
-      @sf.provider_mark_node(m, fn() {
+      @sfbase.provider_mark_node(m, fn() {
         let kind = match text(pv(), "kind") {
           "" => "api-provider"
           k => k
@@ -380,7 +380,7 @@ fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -
     fn() { items(d(), "choices").map(fn(c) { (text(Some(c), "id"), text(Some(c), "title"), text(Some(c), "hint")) }) },
     choose,
     mark=fn(m, id) {
-      @sf.provider_mark_node(m, fn() {
+      @sfbase.provider_mark_node(m, fn() {
         if id == "colab" {
           return ("", "service", "colab")
         }
@@ -700,7 +700,7 @@ fn machine_offers_node(
         @sf.style_node(c, fn() { if blocked { ap_offer } else { ap_offer_footed_style() } })
         c.box(fn(h) {
           @sf.style_node(h, fn() { ap_offer_head })
-          @sf.provider_badge_node(h, rt, "subscription", ap_offer_glyph)
+          @sfbase.provider_badge_node(h, rt, "subscription", ap_offer_glyph)
           // (short of room, its name kept: whether it is signed in leaves its line first, then its plan)
           h.box(fn(w) {
             @sf.style_node(w, fn() { ap_offer_text }, in_row=true)
@@ -735,7 +735,7 @@ fn machine_offers_node(
             })
           })
           |> ignore
-          @sf.quota_chips_node(h, quota, small=true, tips?)
+          @sfbase.quota_chips_node(h, quota, small=true, tips?)
         })
         |> ignore
         if !blocked {

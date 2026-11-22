@@ -167,7 +167,7 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
     // usable) do not re-measure text across all accounts. The user, 2026-11-13: 「按账号类型来搞，不要所有全用同一种」「相同
     // 供应商的账号用同一种就行」)
     let quota_windows_key = fn(quota : Json?) -> Array[(String, String, String, Int, String)] {
-      if !@sf.has_quota(quota) {
+      if !@sfbase.has_quota(quota) {
         return []
       }
       items(quota, "windows").map(fn(win) {
@@ -214,7 +214,7 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
           })
         })
         let qj : Json = Json::object({ "state": Json::string("ok"), "windows": Json::array(wins) })
-        let room = @sf.nav_quota_room_node(q, Some(qj))
+        let room = @sfbase.nav_quota_room_node(q, Some(qj))
         match by.get(k) {
           Some((most, _)) if most >= room.0 => ()
           _ => by[k] = room
@@ -497,7 +497,7 @@ fn profile_side_row_node(
       fn() { lit(picked_as()) },
       name,
       press,
-      fn(m) { @sf.provider_mark_node(m, fn() { logo_c.get() }, @sf.nav_mark_side) },
+      fn(m) { @sfbase.provider_mark_node(m, fn() { logo_c.get() }, @sf.nav_mark_side) },
       fn(t) {
         @sf.nav_title_node(t, name, away=fn() { !usable() }, after=fn(a) { @sf.row_tag_node(a, plan) }, after_shown=fn() {
           plan() != ""
@@ -512,7 +512,7 @@ fn profile_side_row_node(
         })
       },
       more~,
-      foot=fn(f) { @sf.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~, room_w~) },
+      foot=fn(f) { @sfbase.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~, room_w~) },
       foot_on=windows,
       foot_capsule=@sf.fill_chip_small_h,
     )
@@ -584,7 +584,7 @@ fn machine_side_row_node(
         })
       },
       more~,
-      foot=fn(f) { @sf.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~, room_w~) },
+      foot=fn(f) { @sfbase.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~, room_w~) },
       foot_on=windows,
       foot_capsule=@sf.fill_chip_small_h,
     )

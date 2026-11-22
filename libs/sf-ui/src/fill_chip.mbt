@@ -28,7 +28,7 @@ pub fn level_color(level : String) -> Int64 {
 /// Whether its mark and figure read as one phrase in Chinese, the mark ending in a Han character and the figure
 /// beginning with one (内存剩 12.3 G, 每周剩 95%): none of chip_words' 5 between them, as Chinese sets no space between
 /// its characters; that only beside Latin and figures (CPU 空闲 72%, 5H 62%, 每周 95%), the space Chinese leaves there.
-fn chip_joined(mark : String, words : String) -> Bool {
+pub fn chip_joined(mark : String, words : String) -> Bool {
   mark != "" && words != "" && han(mark.unsafe_get(mark.length() - 1).to_int()) && han(words.unsafe_get(0).to_int())
 }
 
@@ -51,7 +51,7 @@ let chip_fill_share : Double = 0.28
 ///|
 /// Its words: the caption's (11 with keyboard and mouse, 12 with touch: the screen's type), 600, on a line of 16.
 // kept across runs: a value (no field of it changes)
-let chip_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, leading=L4, wrap=false, color=Fg, narrow=@ui.text_patch(size=Xs))
+pub let chip_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, leading=L4, wrap=false, color=Fg, narrow=@ui.text_patch(size=Xs))
 
 ///|
 /// The chip: on the neutral ground, round by the ladder's small corner (fill_chip_corner), its words in its middle.
@@ -94,12 +94,12 @@ let chip_refill_words_small_unmarked : @ui.Style = @ui.css("row pl=S0_5 pr=S1_25
 ///|
 /// Its label: regular weight in Fg so window type reads distinctly beside semibold figures while keeping >= 4.5:1 contrast over progress fills.
 // kept across runs: a value (no field of it changes)
-let chip_label_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Normal, leading=L4, wrap=false, color=Fg, narrow=@ui.text_patch(size=Xs))
+pub let chip_label_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Normal, leading=L4, wrap=false, color=Fg, narrow=@ui.text_patch(size=Xs))
 
 ///|
 /// Label in an exhausted quota chip: danger ink at medium weight beside the refresh icon.
 // kept across runs: a value (no field of it changes)
-let chip_refill_label_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, leading=L4, wrap=false, color=Danger, narrow=@ui.text_patch(size=Xs))
+pub let chip_refill_label_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, leading=L4, wrap=false, color=Danger, narrow=@ui.text_patch(size=Xs))
 
 ///|
 /// Countdown in an exhausted quota chip: danger ink at semibold weight.

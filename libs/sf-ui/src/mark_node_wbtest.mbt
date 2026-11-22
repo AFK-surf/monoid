@@ -101,6 +101,12 @@ fn mark_drawn(emoji : String, icon : String, size : Double) -> Array[Array[Strin
 
 ///|
 test "a station's mark as a node: a glyph, a glyph in its colour, an emoji, a picture put up covering its square, fading in as it is decoded" {
+  register_station_glyphs(
+    Map([
+      ("laptop", "💻|M 3 5 L 21 5 L 21 17 L 3 17 Z;M 2 19 L 22 19|"),
+      ("desktop", "🖥️|M 4 4 L 20 4 L 20 16 L 4 16 Z;M 9 20 L 15 20|"),
+    ]),
+  )
   for m in [("", "glyph:laptop"), ("", "glyph:desktop:blue"), ("🚀", ""), ("🚀", "https://example.com/m.png")] {
     for size in [26.0, 46.0] {
       let made = mark_drawn(m.0, m.1, size)

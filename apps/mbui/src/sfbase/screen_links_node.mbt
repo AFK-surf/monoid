@@ -9,7 +9,7 @@
 // peeks_settle pass a node's Peek by). An Android device's (H.264 alone, where the host decodes it) is its Peek's
 // Stream, drawn in the card by a stream node (ui's stream) the Peek closes itself (peek_drop_video: as the card leaves
 // sight, and past video_peeks_most). A card's capsule, its mark and its two lines are the library's
-// (@sf.link_card_node, link_mark_node, link_words_node); this is what the core says of each and where a press leads.
+// (link_card_node, link_mark_node, link_words_node); this is what the core says of each and where a press leads.
 
 ///|
 /// Whether the page what is made in it is on shows (a chat's page made as nodes lends it to its rows:
@@ -53,7 +53,7 @@ pub fn screen_links_node(src : Source, message? : String = "") -> @sf.ScreensNod
 ///|
 fn terminal_link_card_node(v : @view.View, src : Source, href : String, to : @sf.LinkTo, words : String?) -> Unit {
   let card = fn() { terminal_card_of(src, to) }
-  link_card_node(
+  screen_href_link_card_node(
     v,
     href,
     fn() { Some(terminal_mark.name) },
@@ -110,7 +110,7 @@ fn screen_link_card_node(
       })
       return
     }
-    link_card_node(
+    screen_href_link_card_node(
       b,
       href,
       fn() {
@@ -148,7 +148,7 @@ fn screen_link_card_node(
 /// where the link leads. As the core says it as that changes.
 fn service_link_card_node(v : @view.View, src : Source, href : String, to : @sf.LinkTo, words : String?) -> Unit {
   let said = fn() { service_card_of(src, to) }
-  link_card_node(
+  screen_href_link_card_node(
     v,
     href,
     fn() { Some(globe_mark.name) },
@@ -164,10 +164,10 @@ fn service_link_card_node(v : @view.View, src : Source, href : String, to : @sf.
 }
 
 ///|
-/// A link's card (link_card's, @sf.link_card_node) in `v`: `mark` (an icon's name; none: the room kept), its `title`
+/// A link's card (link_card's, link_card_node) in `v`: `mark` (an icon's name; none: the room kept), its `title`
 /// over its `line`, the title quieter where `gone`; tapped, `href` opened (open_link, as the link does). Each as it
 /// changes.
-fn link_card_node(
+fn screen_href_link_card_node(
   v : @view.View,
   href : String,
   mark : () -> String?,
@@ -175,7 +175,7 @@ fn link_card_node(
   line : () -> String,
   gone : () -> Bool,
 ) -> Unit {
-  @sf.link_card_node(v, mark, title, line, gone, fn() { open_link(href) })
+  link_card_node(v, mark, title, line, gone, fn() { open_link(href) })
 }
 
 ///|
@@ -196,7 +196,7 @@ fn screen_peek_card_node(
     @sf.presses_node(b, fn() { open_link(href) })
     b.says(By(fn() { Some(@view.said(Link, label=title())) })) |> ignore
     screen_peek_node(b, src, key, to.station, to.screen, card)
-    @sf.link_words_node(
+    link_words_node(
       b,
       title,
       fn() {
@@ -371,7 +371,7 @@ fn screen_peek_node(
     |> ignore
     // (its mark in its middle till a picture is decoded; the picture over it then, which covers it)
     f.show(at_once=true, fn() { newest() < 0 }, fn(m) {
-      @sf.link_mark_node(m, fn() {
+      link_mark_node(m, fn() {
         Some(if card().map(fn(k) { k.kind }) == Some("browser") { globe_mark.name } else { monitor_mark.name })
       })
     })

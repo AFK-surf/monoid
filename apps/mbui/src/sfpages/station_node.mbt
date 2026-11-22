@@ -872,7 +872,7 @@ fn station_resources_node(b : @view.View, core : Core, src : Source, here : () -
             @sf.words_node(x, fn() { made_of.get() }, fn() { st_made_of }) |> ignore
           })
           station_dials_node(r, src, fn() { field(s(), "host") })
-          r.show(fn() { flag(s(), "online") && net() is Some(Object(_)) }, fn(x) { @sf.station_net_line_node(x, net, look=Page) })
+          r.show(fn() { flag(s(), "online") && net() is Some(Object(_)) }, fn(x) { @sfbase.station_net_line_node(x, net, look=Page) })
           // (what still.fail itself uses of the machine, opening its 进程: read while shown)
           r.show(fn() { uses() is Some(_) }, fn(x) { station_uses_node(x, uses, processes) })
           r.show(fn() { uses() is None && items(field(s(), "overview"), "processes").length() > 0 }, fn(x) {

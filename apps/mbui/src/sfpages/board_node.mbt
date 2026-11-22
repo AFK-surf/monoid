@@ -44,7 +44,7 @@ priv struct BoardOwn {
   /// closed: let go at once, its draft come in its place, and made anew closed)
   room_made : @signals.Signal[Int]
   /// the stations a draft may go to (the workspace's), the one chosen for the next ("" none chosen: the first)
-  stations : () -> Array[@sf.StationChoice]
+  stations : () -> Array[@sfbase.StationChoice]
   /// the chats and the stations by their keys (View::keyed_by): a card reads its own, told only as that one changes,
   /// never as another does
   items_by : @signals.KeyedList[String, ChatItem]
@@ -54,7 +54,7 @@ priv struct BoardOwn {
   /// card as the card leaves (a keyed list follows its source a reaction after, the card leaving with its words then);
   /// the device's own few, read by the drafts' cards alone
   drafts_by : () -> Map[String, @sfbase.BoardDraft]
-  stations_by : @signals.KeyedList[String, @sf.StationChoice]
+  stations_by : @signals.KeyedList[String, @sfbase.StationChoice]
   /// the viewer as the board names them among the people (by person)
   me : () -> String
   /// the columns the board shows now (board_columns', its empty ones left out where 显示空列 is off), and the cards of
@@ -385,7 +385,7 @@ pub fn board_node(
       None => []
     }
     rows
-    .map(fn(r) -> @sf.StationChoice {
+    .map(fn(r) -> @sfbase.StationChoice {
       let one = Some(r)
       { station: text(one, "station"), name: text(one, "name"), emoji: text(one, "emoji"), icon: text(one, "icon") }
     })
@@ -2091,7 +2091,7 @@ fn draft_panel(src : Source, own : BoardOwn, id : String, from : @view.View, sta
         // (in a box of its own, the choice making none it gives back, put down to the words' first line)
         on.box(fn(c) {
           c.margin(By(fn() { ((words_at() - @ui.Space::px(S1)).max(0.0), 0.0, 0.0, 0.0) })) |> ignore
-          @sf.station_choice_node(
+          @sfbase.station_choice_node(
             c,
             stations,
             fn() { station.get() },

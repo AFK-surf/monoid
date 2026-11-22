@@ -5438,11 +5438,11 @@ pub fn history_attention_node(
           x,
           fn() { number(q(), "left").to_int() },
           fn() { text(q(), "level") },
-          fn() { @sf.quota_mark(q()) },
-          fn() { @sf.quota_figure(q()) },
+          fn() { @sfbase.quota_mark(q()) },
+          fn() { @sfbase.quota_figure(q()) },
           small=true,
           label_muted=true,
-          refill=fn() { @sf.quota_is_refill(q()) },
+          refill=fn() { @sfbase.quota_is_refill(q()) },
           said=fn() {
             let more = text(n(), "more")
             text(n(), "text") + (if more != "" { "\n" + more } else { "" })

@@ -2,9 +2,9 @@
 // its illustrations, design/brand; the model makers' marks, Slack's, Feishu's and Comma's), the station glyphs of
 // design/station-icons, and the apps' launcher icons (apps/mbui/android: launcher_face on launcher_bg, the middle 72 of
 // its 108 as a launcher shows it; still.fail mbui's, still.fail's and youdid.wtf's colours), into
-// libs/sf-ui/src/drawable_data.mbt as mbui's @pixels.Vector (path strings), which its picture.mbt draws.
+// apps/mbui/src/sfbase/drawable_data.mbt as mbui's @pixels.Vector (path strings), which picture.mbt draws.
 //
-//   scripts/drawables <repository> > ../../libs/sf-ui/src/drawable_data.mbt
+//   scripts/drawables <repository> > src/sfbase/drawable_data.mbt
 //
 // Each drawable is its viewport and its paths in order, each with its fill (0xRRGGBBAA, 0 none), its stroke and stroke
 // width, the even-odd rule, and the transform of the groups it is in (scale, then translate).
@@ -386,7 +386,7 @@ fn launcher(line : (String) -> Unit, name : String, face : String?) -> Unit {
 fn main {
   let argv = @env.args()
   if argv.length() < 2 {
-    @sys.eprintln("scripts/drawables <repository> > ../../libs/sf-ui/src/drawable_data.mbt")
+    @sys.eprintln("scripts/drawables <repository> > src/sfbase/drawable_data.mbt")
     @sys.exit(2)
     return
   }

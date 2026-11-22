@@ -32,7 +32,7 @@ fn stories_u12(_tips : @sf.TipLayer) -> Array[Story] {
             let state = kept(0)
             let states = ["open", "draft", "merged", "closed"]
             story_peek_room(card, fn(b) {
-              @sf.peek_change_node(
+              @sfbase.peek_change_node(
                 b,
                 true,
                 fn() { states[state.get() % states.length()] },
@@ -50,7 +50,7 @@ fn stories_u12(_tips : @sf.TipLayer) -> Array[Story] {
                     Checks("passed", "18 项检查通过"),
                   ]
                 },
-                fn(e) { @sf.peek_copy_node(e, fn() { "https://github.com/AFK-surf/monoid/pull/7279" }, "common.link.copy", story_copied) },
+                fn(e) { @sfbase.peek_copy_node(e, fn() { "https://github.com/AFK-surf/monoid/pull/7279" }, "common.link.copy", story_copied) },
               )
             })
             @sf.button_node(card, fn() { "切换状态" }, fn() { state.set(state.get() + 1) }, tone=Ghost) |> ignore
@@ -60,12 +60,12 @@ fn stories_u12(_tips : @sf.TipLayer) -> Array[Story] {
           "文件 File",
           fn(card) {
             story_peek_room(card, fn(b) {
-              @sf.peek_rich_node(b, fn(rich) {
-                @sf.peek_file_head_node(rich, fn() { "peeks_node.mbt:42" }, fn() { false }, fn() {
+              @sfbase.peek_rich_node(b, fn(rich) {
+                @sfbase.peek_file_head_node(rich, fn() { "peeks_node.mbt:42" }, fn() { false }, fn() {
                   "~/monoid/apps/mbui/src/sfpages/peeks_node.mbt"
                 }, fn() { "3 分钟前" })
                 rich.box(fn(l) {
-                  @sf.peek_file_lines_node(
+                  @sfbase.peek_file_lines_node(
                     l,
                     fn() { 41 },
                     fn() { ["  let hand = @sf.hover_card_node(", "    tips,", "    row,"] },
@@ -74,8 +74,8 @@ fn stories_u12(_tips : @sf.TipLayer) -> Array[Story] {
                   )
                 })
                 |> ignore
-                @sf.peek_file_foot_node(rich, fn() { "18 KB" }, fn(f) {
-                  @sf.peek_copy_node(f, fn() { "~/monoid/apps/mbui/src/sfpages/peeks_node.mbt" }, "web-main.preview.copyPath", story_copied)
+                @sfbase.peek_file_foot_node(rich, fn() { "18 KB" }, fn(f) {
+                  @sfbase.peek_copy_node(f, fn() { "~/monoid/apps/mbui/src/sfpages/peeks_node.mbt" }, "web-main.preview.copyPath", story_copied)
                 })
               })
             })
@@ -85,15 +85,15 @@ fn stories_u12(_tips : @sf.TipLayer) -> Array[Story] {
           "目录 Folder",
           fn(card) {
             story_peek_room(card, fn(b) {
-              @sf.peek_rich_node(b, fn(rich) {
-                @sf.peek_file_head_node(rich, fn() { "sfpages" }, fn() { true }, fn() { "~/monoid/apps/mbui/src/sfpages/" }, fn() {
+              @sfbase.peek_rich_node(b, fn(rich) {
+                @sfbase.peek_file_head_node(rich, fn() { "sfpages" }, fn() { true }, fn() { "~/monoid/apps/mbui/src/sfpages/" }, fn() {
                   ""
                 })
                 rich.box(fn(l) {
-                  @sf.peek_file_entries_node(l, fn() { ["flows/", "peeks.mbt", "peeks_node.mbt", "hover.mbt", "moon.pkg"] })
+                  @sfbase.peek_file_entries_node(l, fn() { ["flows/", "peeks.mbt", "peeks_node.mbt", "hover.mbt", "moon.pkg"] })
                 })
                 |> ignore
-                @sf.peek_file_foot_node(rich, fn() { "128 项" }, fn(_) {  })
+                @sfbase.peek_file_foot_node(rich, fn() { "128 项" }, fn(_) {  })
               })
             })
           },
@@ -104,19 +104,19 @@ fn stories_u12(_tips : @sf.TipLayer) -> Array[Story] {
             let gone = kept(false)
             story_peek_room(card, fn(b) {
               b.pick(fn() { gone.get() }, fn(p, is_gone) {
-                @sf.style_node(p, fn() { @sf.peek_card_part })
+                @sf.style_node(p, fn() { @sfbase.peek_card_part })
                 if is_gone {
-                  @sf.peek_note_node(p, fn() { "这个对话已经不在了" })
+                  @sfbase.peek_note_node(p, fn() { "这个对话已经不在了" })
                   @sf.button_node(p, fn() { "恢复" }, fn() { gone.set(false) }, tone=Ghost) |> ignore
                 } else {
-                  @sf.peek_rich_node(p, fn(rich) {
-                    @sf.peek_chat_head_node(rich, fn() { "首页的列表改成按天分组" }, ago=fn() { "5 分钟前" })
-                    @sf.peek_chat_where_node(rich, fn() { true }, fn() { true }, fn() { "🌳" }, fn() { "" }, fn() {
+                  @sfbase.peek_rich_node(p, fn(rich) {
+                    @sfbase.peek_chat_head_node(rich, fn() { "首页的列表改成按天分组" }, ago=fn() { "5 分钟前" })
+                    @sfbase.peek_chat_where_node(rich, fn() { true }, fn() { true }, fn() { "🌳" }, fn() { "" }, fn() {
                       "Willow 的工作站 · 执行记录"
                     })
                     rich.box(fn(q) {
-                      @sf.style_node(q, fn() { @sf.peek_card_part })
-                      @sf.peek_message_node(q, fn() { "林小满 · 5 分钟前" }, fn() {
+                      @sf.style_node(q, fn() { @sfbase.peek_card_part })
+                      @sfbase.peek_message_node(q, fn() { "林小满 · 5 分钟前" }, fn() {
                         "列表按天分组做好了，今天、昨天和更早三段，各段里按最后活跃排序。"
                       })
                     })
@@ -145,13 +145,13 @@ fn stories_u12(_tips : @sf.TipLayer) -> Array[Story] {
             let gone = kept(false)
             card.box(fn(col) {
               col.gap(Is(12.0)) |> ignore
-              @sf.link_card_node(col, fn() { Some("monitor") }, fn() { "Willow 的屏幕" }, fn() {
+              @sfbase.link_card_node(col, fn() { Some("monitor") }, fn() { "Willow 的屏幕" }, fn() {
                 if gone.get() { "已不在" } else { "1920 × 1080 · 在线" }
               }, fn() { gone.get() }, fn() { gone.set(!gone.get()) })
-              @sf.link_card_node(col, fn() { Some("web") }, fn() { "预览服务" }, fn() { "Willow · 端口 5173 · 运行中" }, fn() {
+              @sfbase.link_card_node(col, fn() { Some("web") }, fn() { "预览服务" }, fn() { "Willow · 端口 5173 · 运行中" }, fn() {
                 false
               }, fn() {  })
-              @sf.link_card_node(col, fn() { Some("terminal") }, fn() { "构建终端" }, fn() { "moon test 正在跑" }, fn() { false }, fn() {
+              @sfbase.link_card_node(col, fn() { Some("terminal") }, fn() { "构建终端" }, fn() { "moon test 正在跑" }, fn() { false }, fn() {
 
               })
             })
@@ -183,15 +183,15 @@ fn story_peek_room(card : @view.View, make : (@view.View) -> Unit) -> Unit {
 /// given, its ground alone, as a card shows it while its picture comes).
 fn story_page_tile(b : @view.View, picture? : String = "") -> Unit {
   b.box(fn(p) {
-    @sf.style_node(p, fn() { @sf.peek_card_part })
-    @sf.peek_page_tile_node(
+    @sf.style_node(p, fn() { @sfbase.peek_card_part })
+    @sfbase.peek_page_tile_node(
       p,
       fn() { "MoonBit：为云与边缘计算设计的编程语言" },
       fn() { "moonbitlang.com" },
       fn() { "" },
       fn() { false },
       fn() { picture },
-      fn(f) { @sf.peek_copy_node(f, fn() { "https://www.moonbitlang.com/" }, "common.link.copy", story_copied) },
+      fn(f) { @sfbase.peek_copy_node(f, fn() { "https://www.moonbitlang.com/" }, "common.link.copy", story_copied) },
     )
   })
   |> ignore

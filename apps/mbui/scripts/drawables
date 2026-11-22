@@ -1,6 +1,6 @@
 #!/bin/sh
 # still.fail's pictures as its Android app draws them (tools/drawables, in MoonBit: its main.mbt says what), into
-# libs/sf-ui/src/drawable_data.mbt:  scripts/drawables <repository> > ../../libs/sf-ui/src/drawable_data.mbt
+# apps/mbui/src/sfbase/drawable_data.mbt:  scripts/drawables <repository> > src/sfbase/drawable_data.mbt
 # Built here only when there is none built from these very sources (by content).
 D=$(cd "$(dirname "$0")" && pwd)
 A=$(cd "$D/.." && pwd)

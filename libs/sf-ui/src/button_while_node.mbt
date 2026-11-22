@@ -16,7 +16,7 @@
 /// its own round the pick's: what it holds is laid out in `parent` (a quote's source made one node more than before
 /// for it, two with one, the chat's page counted).
 #callsite(autofill(loc))
-fn button_while_node(
+pub fn button_while_node(
   parent : @view.View,
   on : () -> Bool,
   label : () -> String,

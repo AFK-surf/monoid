@@ -190,21 +190,21 @@ fn stories(tips : @sf.TipLayer, layer? : () -> @view.View? = fn() { None }) -> A
         (
           "操作 · 关闭 · 选项",
           fn(card) {
-            @sf.composer_notice_node(card, tips, fn() { "archive" }, fn() { "这个对话已归档" }, fn() { 24.5 }, offer={
+            @sfbase.composer_notice_node(card, tips, fn() { "archive" }, fn() { "这个对话已归档" }, fn() { 24.5 }, offer={
               words: fn() { "还原对话" },
               name: fn() { "还原对话" },
               off: fn() { false },
               press: fn() {  },
             })
             |> ignore
-            @sf.composer_notice_node(card, tips, fn() { "message" }, fn() { "有新的回复" }, fn() { 24.5 }, dismiss={
+            @sfbase.composer_notice_node(card, tips, fn() { "message" }, fn() { "有新的回复" }, fn() { 24.5 }, dismiss={
               words: fn() { "" },
               name: fn() { "关闭" },
               off: fn() { false },
               press: fn() {  },
             })
             |> ignore
-            @sf.composer_notice_node(
+            @sfbase.composer_notice_node(
               card,
               tips,
               fn() { "clock" },

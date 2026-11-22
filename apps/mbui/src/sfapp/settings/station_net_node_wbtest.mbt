@@ -6,8 +6,8 @@
 /// A window with keyboard and mouse holding what `make` makes in a box `w` wide, the system's words at `scale`, what
 /// its round trip is called said as the app's Chinese says it.
 fn net_case(make : (@view.View) -> Unit, w? : Double = 360.0, scale? : Double = 1.0) -> @ui.Tester {
-  presenters_reset()
-  set_words(fn(key, args) {
+  @sf.presenters_reset()
+  @sf.set_words(fn(key, args) {
     match key {
       "android-settings.stations.rtt" => "当前延迟 "
       "web-pages.stations.latency" => "当前延迟 " + args.get(0).map(fn(a) { a.1 }).unwrap_or("")
@@ -89,7 +89,7 @@ test "a machine's card: its mark and chevron on its name's line, what is said of
   let t = net_case(fn(b) {
     summary_mark_card_node(
       b,
-      fn(m) { icon_node(m, "server", summary_mark_side, By(fn() { theme().p.text })) |> ignore },
+      fn(m) { @sf.icon_node(m, "server", summary_mark_side, By(fn() { @sf.theme().p.text })) |> ignore },
       fn() { "studio" },
       fn() { "3 个会话在跑 · 2 个任务排队，还有一个很长的说明，要折到第二行才放得下" },
       fn() { pressed.set(pressed.get() + 1) },

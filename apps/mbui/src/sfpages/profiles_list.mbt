@@ -476,7 +476,7 @@ fn pl_account_row_node(
         lacks=amber,
         note_cut=true,
         lead=LeadLine(fn(l) {
-          @sf.provider_mark_node(l, fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, pl_logo)
+          @sfbase.provider_mark_node(l, fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, pl_logo)
         }),
         title_cut=true,
         title_after=fn(a) {
@@ -518,7 +518,7 @@ fn pl_quota_node(
   @sf.style_node(w, fn() { pl_quota_line })
   let (_, _, _, foot) = @sf.row_below_inset(w)
   w.margin(Is((0.0, 0.0, 0.0, foot))) |> ignore
-  @sf.quota_worded_node(w, quota, tips~, room_w?)
+  @sfbase.quota_worded_node(w, quota, tips~, room_w?)
 }
 
 ///|
@@ -530,7 +530,7 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
   let calls = ["profile.check", "profile.quota"]
   let quota = fn() { field(pv(), "quota") }
   let grouped = fn() {
-    @sf.has_quota(quota()) && items(quota(), "windows").iter().any(fn(w) { text(Some(w), "scope") != "" })
+    @sfbase.has_quota(quota()) && items(quota(), "windows").iter().any(fn(w) { text(Some(w), "scope") != "" })
   }
   let trouble = fn() { pl_trouble_of(pv()) }
   // (its menu where the pointer's other button is pressed on it: its page opened, its name copied)
@@ -584,12 +584,12 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
       t.box(fn(e) {
         @sf.style_node(e, fn() { pl_tail }, in_row=true)
         doing_mark_node(e, fn() { is_doing(core, calls, on()) }, fn() { failed_of(core, calls, on()) }, tips~)
-        @sf.quota_chips_node(e, fn() { if grouped() { None } else { quota() } }, small=true, tips~)
+        @sfbase.quota_chips_node(e, fn() { if grouped() { None } else { quota() } }, small=true, tips~)
       })
       |> ignore
     },
     // (its tail's room only while it holds something: what is under way, or its allowance's chips)
-    tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) || (!grouped() && @sf.has_quota(quota())) },
+    tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) || (!grouped() && @sfbase.has_quota(quota())) },
   )
 }
 
@@ -737,7 +737,7 @@ fn pl_machine_offers_node(
               c.show(fn() { trouble() != "" }, fn(y) {
                 @sf.words_node(y, trouble, fn() { if blocked() { pl_offer_bad_note } else { pl_offer_note } }) |> ignore
               })
-              @sf.quota_chips_node(c, quota, tips~)
+              @sfbase.quota_chips_node(c, quota, tips~)
             })
             |> ignore
           },

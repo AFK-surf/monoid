@@ -3051,7 +3051,7 @@ fn composer_file_node(
           let ref_ = fn() { field(v(), "ref") }
           let error = fn() { text(v(), "error") }
           card.val = Some(
-            @sf.file_waiting_node(
+            @sfbase.file_waiting_node(
               at,
               tips,
               fn() {

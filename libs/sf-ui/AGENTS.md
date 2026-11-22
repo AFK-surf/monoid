@@ -17,8 +17,8 @@ the parts still.fail itself ships and tests (左子健, 2026-11-17: 「感觉最
   (those lines saved to a file, `node client/core-ts/scripts/kept-answers.ts <file>`), and its line is copied here.
 - Some of its files are made, never edited: `src/palette_data.mbt` (`scripts/palette.ts`), `src/font_assets.mbt`
   (`apps/mbui/scripts/fontassets.py`), `src/math_glyphs.mbt` and `src/math.json` (`client/core-ts/scripts`'
-  `math-font.ts`, `math-fixture.ts`), `src/icon_data.mbt` and `src/drawable_data.mbt` (`apps/mbui/scripts`'
-  `icons.py`, `drawables`).
+  `math-font.ts`, `math-fixture.ts`), and `src/icon_data.mbt` (`apps/mbui/scripts/icons.py`). App-specific brand
+  drawables live in `apps/mbui/src/sfbase/drawable_data.mbt` and register via `register_drawables` / `register_station_glyphs`.
 - `scripts/check.sh` is its check, CI's `check-sf-ui`: the determinism lint with this module's `detlint.json` (its
   counts, as the app's, only fall), its packages type-checked on native and js, its tests on native.
 - A `SourceLoc` of a part made here reads `stillfail/sf/src/<file>`: a test that names one (an audit's fault, what a node
