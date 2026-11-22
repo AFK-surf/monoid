@@ -40,6 +40,7 @@ fn screen_rig(
   os? : String = "",
   screens? : Json,
   in_tab? : Bool = false,
+  keep_screen? : Bool = false,
   net? : Json,
 ) -> ScreenRig {
   @sfbase.reset()
@@ -165,7 +166,10 @@ fn screen_rig(
         fn(k) { k },
         fn(row, k) {
           let (station, screen) = k.untracked()
-          row.owns(fn() { screen_left(src, station, screen) }) |> ignore
+          row.owns(fn() {
+            if keep_screen { screen_covered(src, station, screen, true) } else { screen_left(src, station, screen) }
+          })
+          |> ignore
         },
       )
       // the page as nodes, made again for another screen on top (as the shells make it)
@@ -2208,6 +2212,49 @@ test "a screen left covered by a background tab opens at once when mounted in an
   nav_rested(r.t)
   assert_false(screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).covered.get())
   assert_eq(r.told("screen.view").length(), 3)
+  screen_done(r.t)
+}
+
+///|
+test "switching browser tabs keeps the fitted or manually zoomed picture" {
+  for zoomed in [false, true] {
+    let r = screen_rig(w=900.0, h=600.0, platform=0, in_tab=true, keep_screen=true)
+    r.live()
+    let u = screen_ui(screen_key("ws-1/st-1", "browser:tab-1"))
+    if zoomed {
+      u.zoom.zoom_to(u.zoom.fit() * 2.0, u.box_w.get() / 2.0, u.box_h.get() / 2.0, false, at=r.t.time())
+      r.t.draw()
+    }
+    let before = u.shown(r.t.ctx())
+    assert_eq(u.zoom.zoomed_at(r.t.time()), zoomed)
+    for _ in 0..<3 {
+      app.nav.push(Screen({ station: "ws-1/st-1", screen: "browser:tab-2", title: "Other", until_gone: false }))
+      nav_rested(r.t)
+      app.nav.pop() |> ignore
+      nav_rested(r.t)
+      let after = u.shown(r.t.ctx())
+      assert_true(close_to(before.x, after.x) && close_to(before.y, after.y))
+      assert_true(close_to(before.w, after.w) && close_to(before.h, after.h), msg="before \{before.w}×\{before.h}, after \{after.w}×\{after.h}")
+      assert_eq(u.zoom.zoomed_at(r.t.time()), zoomed)
+    }
+    assert_eq(r.t.audit(), [])
+    screen_done(r.t)
+  }
+}
+
+///|
+test "a screen keeps its fitted size when its stage temporarily has no height" {
+  let r = screen_rig(w=900.0, h=600.0, platform=0, in_tab=true)
+  r.live()
+  let u = r.ui()
+  let before = u.shown(r.t.ctx())
+  r.t.resize(900.0, 1.0)
+  r.t.draw()
+  r.t.resize(900.0, 600.0)
+  r.t.draw()
+  let after = u.shown(r.t.ctx())
+  assert_true(close_to(before.w, after.w) && close_to(before.h, after.h))
+  assert_false(u.zoom.zoomed_at(r.t.time()))
   screen_done(r.t)
 }
 
