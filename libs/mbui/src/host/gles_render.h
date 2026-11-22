@@ -859,7 +859,7 @@ static GLint adu_bd, adu_prev, adu_map, adu_uvc, adu_box, adu_param;
 #define MB_KIND_LIQUID_SINGLE 13
 #define MB_KINDS 14
 static int has_own_prog(int kind) {
-  return (kind >= 0 && kind <= 6) || kind == 10 || kind == 11 || kind == MB_KIND_LIQUID_SINGLE;
+  return (kind >= 0 && kind <= 7) || kind == 10 || kind == 11 || kind == MB_KIND_LIQUID_SINGLE;
 }
 typedef struct {
   GLuint p;
@@ -1340,22 +1340,26 @@ static void grab_levels(const Grab *m, int lw[4], int lh[4]) {
   }
 }
 
-// What the glass shows of a grab's blur in texture `bt` (bw × bh, level k's place in it): bd_tex and the uniforms
-// that say where in it it is.
-static void show_blur(const Grab *m, GLuint bt, int bw, int bh) {
+static void grab_map_uvc(const Grab *m, int bw, int bh, float map[4], float uvc[4]) {
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
   int sk = m->progressive ? 0 : m->k, px0 = m->px0, pb0 = m->pb0, top = m->top;
   float sc = (float)cur_scale;
+  float d = (float)(1 << sk);
+  map[0] = sc / d / bw; map[1] = -sc / d / bh;
+  map[2] = -(float)px0 / d / bw; map[3] = (float)(top - pb0) / d / bh;
+  uvc[0] = 0.5f / bw; uvc[1] = 0.5f / bh; uvc[2] = (lw[sk] - 0.5f) / bw; uvc[3] = (lh[sk] - 0.5f) / bh;
+}
+
+// What the glass shows of a grab's blur in texture `bt` (bw × bh, level k's place in it): bd_tex and the uniforms
+// that say where in it it is.
+static void show_blur(const Grab *m, GLuint bt, int bw, int bh) {
   memcpy(ggb, m->gb, sizeof ggb);
   memcpy(gshape, m->shape, sizeof gshape);
   memcpy(grad, m->rad, sizeof grad);
   gn = m->n;
-  float d = (float)(1 << sk);
   bd_tex = bt;
-  gmap[0] = sc / d / bw; gmap[1] = -sc / d / bh;
-  gmap[2] = -(float)px0 / d / bw; gmap[3] = (float)(top - pb0) / d / bh;
-  guvc[0] = 0.5f / bw; guvc[1] = 0.5f / bh; guvc[2] = (lw[sk] - 0.5f) / bw; guvc[3] = (lh[sk] - 0.5f) / bh;
+  grab_map_uvc(m, bw, bh, gmap, guvc);
 }
 
 // The level a grab's blur is left in.
@@ -1646,8 +1650,15 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
   return n_upd;
 }
 
-static void ad_run_updates(const gl_ad_pend *pend, int n_upd, double dt) {
-  if (n_upd <= 0 || !bd_tex || !ad_prog) return;
+typedef struct {
+  gl_ad_pend p;
+  GLuint bt;
+  float map[4];
+  float uvc[4];
+} gl_ad_batch;
+
+static void ad_run_updates_batch(const gl_ad_batch *items, int n_upd, double dt) {
+  if (n_upd <= 0 || !ad_prog) return;
   ensure_ad_tex();
   int cur = ad_cur, nxt = 1 - cur;
   glDisable(GL_BLEND);
@@ -1659,21 +1670,37 @@ static void ad_run_updates(const gl_ad_pend *pend, int n_upd, double dt) {
   glViewport(0, 0, MB_ADAPTIVE_MAX, 1);
   glEnable(GL_SCISSOR_TEST);
   glUseProgram(ad_prog);
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, bd_tex);
-  glUniform1i(adu_bd, 0);
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_2D, ad_tex[cur]);
   glUniform1i(adu_prev, 1);
-  glUniform4fv(adu_map, 1, gmap);
-  glUniform4fv(adu_uvc, 1, guvc);
+  glUniform1i(adu_bd, 0);
+  glActiveTexture(GL_TEXTURE0);
+  GLuint last_bt = 0;
   for (int i = 0; i < n_upd; i++) {
-    glScissor(pend[i].sid, 0, 1, 1);
-    glUniform4f(adu_box, pend[i].cx, pend[i].cy, pend[i].hx, pend[i].hy);
-    glUniform4f(adu_param, (float)pend[i].is_dark, (float)pend[i].is_new, (float)dt, (float)pend[i].sid);
+    if (items[i].bt != last_bt) {
+      last_bt = items[i].bt;
+      glBindTexture(GL_TEXTURE_2D, last_bt);
+    }
+    glUniform4fv(adu_map, 1, items[i].map);
+    glUniform4fv(adu_uvc, 1, items[i].uvc);
+    glScissor(items[i].p.sid, 0, 1, 1);
+    glUniform4f(adu_box, items[i].p.cx, items[i].p.cy, items[i].p.hx, items[i].p.hy);
+    glUniform4f(adu_param, (float)items[i].p.is_dark, (float)items[i].p.is_new, (float)dt, (float)items[i].p.sid);
     glDrawArrays(GL_TRIANGLES, 0, 3);
   }
   ad_cur = nxt;
+}
+
+static void ad_run_updates(const gl_ad_pend *pend, int n_upd, double dt) {
+  if (n_upd <= 0 || !bd_tex || !ad_prog) return;
+  gl_ad_batch items[MB_ADAPTIVE_MAX];
+  for (int i = 0; i < n_upd; i++) {
+    items[i].p = pend[i];
+    items[i].bt = bd_tex;
+    memcpy(items[i].map, gmap, sizeof items[i].map);
+    memcpy(items[i].uvc, guvc, sizeof items[i].uvc);
+  }
+  ad_run_updates_batch(items, n_upd, dt);
 }
 
 static double ad_next_dt(void) {
@@ -1918,12 +1945,14 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
   double stretch_w = ((int)(cur_w * cur_scale + 0.5) != fb_w) ? cur_w : 0.0;
   double stretch_h = (vhp == fb_h && (int)(cur_h * cur_scale + 0.5) != fb_h) ? cur_h : 0.0;
   double key[9] = {fb_w, fb_h, cur_scale, r, g, b, over_other, stretch_w, stretch_h};
+  int switched = 0;
   if (shows) {
     int known = under_take(f, start, count, pieces, &m);
     glass_slot *s = known ? slot_same(&m, key) : NULL;
     int reblurred = 0;
     if (!s) {
       reblurred = 1;
+      switched = 1;
       blur(&m);
       s = slot_fill(&m, frame_clock);
       // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not kept
@@ -1934,10 +1963,19 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
     slot_show(&m, s);
     gl_ad_pend ad_pend[MB_ADAPTIVE_MAX];
     int ad_n_upd = ad_collect_and_match(f, start, end, count, &m, reblurred, ad_cur_dt, ad_frame_serial, ad_pend);
-    if (ad_n_upd > 0) ad_run_updates(ad_pend, ad_n_upd, ad_cur_dt);
+    if (ad_n_upd > 0) {
+      switched = 1;
+      ad_run_updates(ad_pend, ad_n_upd, ad_cur_dt);
+    }
     ad_fill_uniforms();
   }
-  main_state();
+  if (switched) {
+    main_state();
+  } else if (shows) {
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, bd_tex ? bd_tex : atlas);
+    prog_gen++;
+  }
   return shows;
 }
 
@@ -2313,14 +2351,6 @@ static void draw_into(GLuint fb, int part) {
   target_fb = fb;
   encode_missing = 0;
   cut_on = part == 1;
-  glBindFramebuffer(GL_FRAMEBUFFER, target_fb);
-  glViewport(0, 0, fb_w, fb_h);
-  if (!cut_on) {
-    glDisable(GL_SCISSOR_TEST);
-    if (over_other) glClearColor(0, 0, 0, 0);
-    else glClearColor((float)r, (float)g, (float)b, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
-  }
   // the app drawn in the surface's top part, as tall as it was told (the soft keyboard over the rest: MBView)
   int vh = (int)(cur_h * cur_scale + 0.5);
   vy0 = 0;
@@ -2328,6 +2358,85 @@ static void draw_into(GLuint fb, int part) {
   if (vh > 0 && vh < fb_h) {
     vy0 = fb_h - vh;
     vhp = vh;
+  }
+  // (where the pieces of the frame's shapes start: what a capture is of, with what is before it)
+  int32_t pieces = count;
+  while (pieces > 0 && (int)(fbuf[(pieces - 1) * MB_INST + 5] + 0.5f) == 12) pieces--;
+  // Pre-scan glass captures before binding target_fb: size blur levels once, and batch adaptive updates for
+  // blur-cache-hit groups into a single pass so tile-based GPUs do not split the main FBO render pass mid-frame.
+  int levels_sized = 0;
+  if (count > 0) {
+    int max_w = 0, max_h = 0, scan_bound = 0, any_glass = 0;
+    for (int32_t s0 = 0; s0 < count;) {
+      int stid = (int)fbuf[s0 * MB_INST + 20];
+      int32_t e0 = s0 + 1;
+      if (stid < 0) {
+        any_glass = 1;
+        while (e0 < count && (int)fbuf[e0 * MB_INST + 20] == stid) e0++;
+        if (stid != scan_bound) {
+          scan_bound = stid;
+          Grab gm;
+          if (grab_of(&gm, fbuf, s0, e0, count)) {
+            if (gm.w > max_w) max_w = gm.w;
+            if (gm.h > max_h) max_h = gm.h;
+          }
+        }
+      }
+      s0 = e0;
+    }
+    if (any_glass) {
+      levels_sized = 1;
+      if (max_w > lv_w || max_h > lv_h) ensure_levels(max_w, max_h);
+      if (ad_mode > 0 && ad_cur_dt >= 0.0) {
+        gl_ad_batch pre_batch[MB_ADAPTIVE_MAX];
+        int pre_n = 0;
+        double stretch_w = ((int)(cur_w * cur_scale + 0.5) != fb_w) ? cur_w : 0.0;
+        double stretch_h = (vhp == fb_h && (int)(cur_h * cur_scale + 0.5) != fb_h) ? cur_h : 0.0;
+        double key[9] = {fb_w, fb_h, cur_scale, r, g, b, over_other, stretch_w, stretch_h};
+        int pre_bound = 0;
+        for (int32_t s0 = 0; s0 < count && pre_n < MB_ADAPTIVE_MAX;) {
+          int stid = (int)fbuf[s0 * MB_INST + 20];
+          int32_t e0 = s0 + 1;
+          if (stid < 0) {
+            while (e0 < count && (int)fbuf[e0 * MB_INST + 20] == stid) e0++;
+            if (stid != pre_bound) {
+              pre_bound = stid;
+              if ((int)(fbuf[s0 * MB_INST + 5] + 0.5f) == 6) {
+                Grab gm;
+                if (grab_of(&gm, fbuf, s0, e0, count) && under_take(fbuf, s0, count, pieces, &gm)) {
+                  glass_slot *sl = slot_same(&gm, key);
+                  if (sl && sl->bt) {
+                    gl_ad_pend tmp[MB_ADAPTIVE_MAX];
+                    int nu = ad_collect_and_match(fbuf, s0, e0, count, &gm, 0, ad_cur_dt, ad_frame_serial, tmp);
+                    if (nu > 0) {
+                      float map[4], uvc[4];
+                      grab_map_uvc(&gm, sl->bw, sl->bh, map, uvc);
+                      for (int i = 0; i < nu && pre_n < MB_ADAPTIVE_MAX; i++) {
+                        pre_batch[pre_n].p = tmp[i];
+                        pre_batch[pre_n].bt = sl->bt;
+                        memcpy(pre_batch[pre_n].map, map, sizeof map);
+                        memcpy(pre_batch[pre_n].uvc, uvc, sizeof uvc);
+                        pre_n++;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          s0 = e0;
+        }
+        if (pre_n > 0) ad_run_updates_batch(pre_batch, pre_n, ad_cur_dt);
+      }
+    }
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, target_fb);
+  glViewport(0, 0, fb_w, fb_h);
+  if (!cut_on) {
+    glDisable(GL_SCISSOR_TEST);
+    if (over_other) glClearColor(0, 0, 0, 0);
+    else glClearColor((float)r, (float)g, (float)b, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
   }
   glViewport(0, vy0, fb_w, vhp);
   if (count <= 0 && !cut_on) {
@@ -2366,11 +2475,8 @@ static void draw_into(GLuint fb, int part) {
   // picture where it shows, kind 9: nothing until it has one) of one kind (its program: use_prog), or sharing one
   // capture of glass (negative); GLES has no base instance, so the attributes start at the run instead
   int32_t start = 0;
-  int bound = 0, shows = 0, levels_sized = 0;
+  int bound = 0, shows = 0;
   unsigned frame_clock = slots_clock;
-  // (where the pieces of the frame's shapes start: what a capture is of, with what is before it)
-  int32_t pieces = count;
-  while (pieces > 0 && (int)(fbuf[(pieces - 1) * MB_INST + 5] + 0.5f) == 12) pieces--;
   while (start < count) {
     int tid = (int)fbuf[start * MB_INST + 20];
     int kind = (int)(fbuf[start * MB_INST + 5] + 0.5f);
