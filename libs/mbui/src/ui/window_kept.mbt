@@ -586,6 +586,7 @@ fn window_kept_ui_7() -> Array[WindowKept] {
     kept_ref(view_held, fn() { None }),
     kept_ref(view_nothing_down, fn() { None }),
     kept_ref(view_down, fn() { None }),
+    kept_ref(view_down2, fn() { None }),
     kept_ref(view_handed, fn() { None }),
     kept_ref(downs_made, fn() { 0 }),
   ]

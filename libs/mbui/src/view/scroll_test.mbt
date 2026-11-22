@@ -1119,3 +1119,121 @@ test "scrolls in variable-width max_width + max_height hugs container converges 
   assert_true((h2 - 90.0).abs() <= 0.5, msg="at max_width=160 expected 3 wrapped rows (90.0), got \{h2}")
   assert_eq(scroll.reach(), 0.0)
 }
+
+///|
+/// A moment just after two fingers' turns let go flinging at 175 (a fling's 20 ms on), short of its end.
+let turns_set_out_at : Double = 195.0
+
+///|
+/// The column scroll_case scrolls: what is found holding a hold there (its own node).
+fn scroll_case_id(k : ScrollCase) -> @view.NodeId {
+  match k.tree.claimers_at(150.0, 150.0) {
+    [(id, _), ..] => id
+    _ => @halt.saying("no column there")
+  }
+}
+
+///|
+test "scrolls: two fingers on it by turns: the last down leads it, the other's moves move nothing but are kept; either let go, the other goes on from where it is, no jump; let go last, flung at the leader's speed" {
+  let k = scroll_case()
+  let id = scroll_case_id(k)
+  let at = []
+  k.tree.drag_at(id, Down, 150.0, 190.0, 100.0, finger=0) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 170.0, 110.0, finger=0) |> ignore
+  at.push(k.at())
+  // (a second down: it leads, the first's moves move nothing)
+  k.tree.drag_at(id, Down, 150.0, 150.0, 120.0, finger=1) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 160.0, 125.0, finger=0) |> ignore
+  at.push(k.at())
+  k.tree.drag_at(id, Moved, 150.0, 140.0, 130.0, finger=1) |> ignore
+  at.push(k.at())
+  // (the first let go: the second goes on)
+  k.tree.drag_at(id, Up, 150.0, 160.0, 135.0, finger=0) |> ignore
+  let held = k.scroll.in_hand()
+  k.tree.drag_at(id, Moved, 150.0, 130.0, 140.0, finger=1) |> ignore
+  at.push(k.at())
+  // (the first down again: it leads)
+  k.tree.drag_at(id, Down, 150.0, 190.0, 145.0, finger=2) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 180.0, 150.0, finger=2) |> ignore
+  at.push(k.at())
+  k.tree.drag_at(id, Moved, 150.0, 100.0, 155.0, finger=1) |> ignore
+  at.push(k.at())
+  // (the leader let go: the one before it leads again from where it was last, 100)
+  k.tree.drag_at(id, Up, 150.0, 180.0, 160.0, finger=2) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 95.0, 165.0, finger=1) |> ignore
+  at.push(k.at())
+  k.tree.drag_at(id, Moved, 150.0, 80.0, 170.0, finger=1) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 65.0, 175.0, finger=1) |> ignore
+  let up = k.at()
+  k.tree.drag_at(id, Up, 150.0, 65.0, 175.0, finger=1) |> ignore
+  let let_go = k.scroll.in_hand()
+  k.tree.advance(turns_set_out_at)
+  let on = k.at()
+  k.tree.advance(long_after_at)
+  let rest = k.at()
+  assert_eq(
+    (at, held, up, let_go, on > up, rest > on, rest <= 300.0),
+    ([20.0, 20.0, 30.0, 40.0, 50.0, 50.0, 55.0], true, 85.0, false, true, true, true),
+    msg="\{on} \{rest}",
+  )
+}
+
+///|
+test "scrolls: two fingers on it, the leader let go, the other let go at once without moving: not flung by how the other went before" {
+  let k = scroll_case()
+  let id = scroll_case_id(k)
+  k.tree.drag_at(id, Down, 150.0, 190.0, 100.0, finger=0) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 170.0, 108.0, finger=0) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 150.0, 116.0, finger=0) |> ignore
+  k.tree.drag_at(id, Down, 150.0, 150.0, 120.0, finger=1) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 140.0, 124.0, finger=1) |> ignore
+  k.tree.drag_at(id, Up, 150.0, 140.0, 128.0, finger=1) |> ignore
+  k.tree.drag_at(id, Up, 150.0, 150.0, 132.0, finger=0) |> ignore
+  let up = k.at()
+  k.tree.advance(long_after_at)
+  assert_eq((up, k.at(), k.scroll.glides_till(), k.scroll.in_hand()), (50.0, 50.0, None, false))
+}
+
+///|
+test "scrolls: two fingers on it, a third down: called off once, each finger told Off, at rest where it was; a hold after it its own as ever" {
+  let k = scroll_case()
+  let id = scroll_case_id(k)
+  k.tree.drag_at(id, Down, 150.0, 190.0, 100.0, finger=0) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 170.0, 110.0, finger=0) |> ignore
+  k.tree.drag_at(id, Down, 150.0, 150.0, 120.0, finger=1) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 140.0, 130.0, finger=1) |> ignore
+  let held = (k.at(), k.scroll.in_hand())
+  k.tree.drag_at(id, Down, 150.0, 120.0, 140.0, finger=2) |> ignore
+  let off = (k.at(), k.scroll.in_hand(), k.scroll.glides_till())
+  // (its fingers' moves after it told nothing)
+  k.tree.drag_at(id, Moved, 150.0, 100.0, 150.0, finger=1) |> ignore
+  k.tree.advance(long_after_at)
+  let rest = k.at()
+  k.tree.drag_at(id, Down, 150.0, 190.0, 20000.0, finger=0) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 180.0, 20010.0, finger=0) |> ignore
+  k.tree.drag_at(id, Up, 150.0, 180.0, 20200.0, finger=0) |> ignore
+  assert_eq((held, off, rest, k.at()), ((30.0, true), (30.0, false, None), 30.0, 40.0))
+}
+
+///|
+test "scrolls across: two fingers on it by turns: the last down leads it along the row, the other's moves kept; the first let go, the second goes on, no jump; the column it is in not moved" {
+  let k = across_case()
+  k.tree.wheel_at(150.0, 50.0, 0.0, 100.0, 0, 5.0) |> ignore
+  k.tree.frame(390.0, 844.0) |> ignore
+  let id = k.row.val.unwrap()
+  let at = []
+  k.tree.drag_at(id, Down, 200.0, 70.0, 100.0, finger=0) |> ignore
+  k.tree.drag_at(id, Moved, 180.0, 70.0, 110.0, finger=0) |> ignore
+  at.push(k.across.at(k.tree))
+  k.tree.drag_at(id, Down, 100.0, 60.0, 120.0, finger=1) |> ignore
+  k.tree.drag_at(id, Moved, 170.0, 70.0, 125.0, finger=0) |> ignore
+  at.push(k.across.at(k.tree))
+  k.tree.drag_at(id, Moved, 90.0, 60.0, 130.0, finger=1) |> ignore
+  at.push(k.across.at(k.tree))
+  k.tree.drag_at(id, Up, 170.0, 70.0, 135.0, finger=0) |> ignore
+  k.tree.drag_at(id, Moved, 80.0, 60.0, 140.0, finger=1) |> ignore
+  at.push(k.across.at(k.tree))
+  k.tree.drag_at(id, Up, 80.0, 60.0, 400.0, finger=1) |> ignore
+  k.tree.advance(long_after_at)
+  assert_eq((at, k.across.at(k.tree), k.column.at(k.tree)), ([20.0, 20.0, 30.0, 40.0], 40.0, 100.0))
+}

@@ -62,9 +62,13 @@ pub struct Scroll {
   /// what ends the fling's settling at its end (View::at_moment's), as it is called off: one for what scrolls beside it
   /// (Scroll::beside), whose fling is one, so the hand stopping it on any of them calls off the end said on another
   priv settle_off : Ref[() -> Unit]
-  /// where the hand held on it was last (the window's, down), and how fast it went (points a ms, down the column)
-  priv mut hand_y : Double
-  priv mut hand_wy : Double
+  /// the fingers held on it, in the order they went down, each where it was last (its own terms and the window's, down):
+  /// the last down leads it, the others' moves kept, moving nothing (on_drag's `fingers`: two at once); and how fast it
+  /// went (points a ms, down the column)
+  priv hand_fingers : Array[(Int, Double, Double)]
+  /// whether the finger leading it has moved since it came to lead: the one leading let go, another still down that has
+  /// not moved since, let go, flings nothing by how it went before
+  priv mut hand_moved : Bool
   priv mut hand_v : Double
   /// the hand on it now: from its press to its let go (Scroll::in_hand)
   priv hand_on : @signals.Signal[Bool]
@@ -287,8 +291,8 @@ fn Scroll::made(as_list : Bool, across? : Bool = false, rows_list? : Bool = fals
     fill_put: fn() {  },
     whole: None,
     settle_off: Ref(fn() {  }),
-    hand_y: 0.0,
-    hand_wy: 0.0,
+    hand_fingers: [],
+    hand_moved: true,
     hand_v: 0.0,
     hand_on: @signals.signal(false, same=fn(a, b) { a == b }),
     claimed: false,
@@ -1506,6 +1510,9 @@ pub fn View::scrolls(
     }
     s.peers_scrolled.remove(self.at)
     guard s.host is Some(h) && h.same(self) else { return }
+    // (no finger on it after it)
+    s.hand_fingers.clear()
+    s.hand_moved = true
     // (the hand past its edge: at rest where it had it then, as far as it could go as it was said: how far it can go is
     // gone with what it was laid out in, as a fling's below)
     match s.edge.untracked() {
@@ -1643,32 +1650,45 @@ pub fn View::scrolls(
     s.claimed = takes
     takes
   }, scrolls=true, for_in?)
-  // (held, its own terms: what it holds moved as far as the hand, as big as it is drawn)
+  // (held, its own terms: what it holds moved as far as the hand, as big as it is drawn; two fingers at once, the last
+  // down leading it, either let go the other leading on from where it is, as Android's lists take them)
   .on_drag(fn(d) {
     // (where the hand is along it, in its own terms and the window's, and how fast: across, along the row)
     let (hy, hwy) = if across { (d.x, d.wx) } else { (d.y, d.wy) }
     match d.kind {
       Down => {
-        // (the hand on it: what it kept in sight for the focus kept no more, Tree::holds_now)
-        self.tree.focus_holds.remove(self.at) |> ignore
-        // (what shows past an end of a page's list caught where it shows: held by the finger from there)
-        if s.as_list {
-          s.past_held(d.at)
+        // (the hold's first finger (Tree::drag_at's downs: this one alone): it set going anew, what was kept of a hold
+        // ended untold (its on_drag let go) let go of; another down beside it leads it from here, nothing else anew)
+        if self.tree.downs.length() <= 1 {
+          s.hand_fingers.clear()
+          // (the hand on it: what it kept in sight for the focus kept no more, Tree::holds_now)
+          self.tree.focus_holds.remove(self.at) |> ignore
+          // (what shows past an end of a page's list caught where it shows: held by the finger from there)
+          if s.as_list {
+            s.past_held(d.at)
+          }
+          s.stopped(d.at) |> ignore
+          s.hand_anew(d.at)
+          s.hand_v = 0.0
+          s.hand_on.set(true)
         }
-        s.stopped(d.at) |> ignore
-        s.hand_anew(d.at)
-        s.hand_y = hy
-        s.hand_wy = hwy
-        s.hand_v = 0.0
-        s.hand_on.set(true)
+        s.hand_fingers.retain(fn(f) { f.0 != d.finger })
+        s.hand_fingers.push((d.finger, hy, hwy))
+        s.hand_moved = true
       }
       Moved => {
+        guard s.hand_fingers.search_by(fn(f) { f.0 == d.finger }) is Some(i) else { return }
+        let (_, prev_y, prev_wy) = s.hand_fingers[i]
+        // (where it is kept, leading or not: what leads it again goes on from there)
+        s.hand_fingers[i] = (d.finger, hy, hwy)
+        guard i == s.hand_fingers.length() - 1 else { return }
+        s.hand_moved = true
         // (taken over by a move: held from there, though its press went down on what it holds)
         s.hand_on.set(true)
         // (taken over: the first move from where it went down past the slop alone, in the window's points, as big
         // in its own terms as it is drawn)
-        let mut dy = hy - s.hand_y
-        let dw = hwy - s.hand_wy
+        let mut dy = hy - prev_y
+        let dw = hwy - prev_wy
         if s.claimed && dw != 0.0 {
           s.claimed = false
           let past = if dw > 0.0 { dmax(dw - slop(), 0.0) } else { dmin(dw + slop(), 0.0) }
@@ -1686,17 +1706,35 @@ pub fn View::scrolls(
         } else {
           s.moved(d.at, -dy) |> ignore
         }
-        s.hand_y = hy
-        s.hand_wy = hwy
       }
       // (let go: flung at the finger's speed as of then, by its own events (Drag's `vy`: a pause before it let go, none),
-      // no faster than a fling goes in the window's points, then in its own terms)
+      // no faster than a fling goes in the window's points, then in its own terms; another finger still on it, it goes
+      // on by that one, nothing flung)
       Up => {
+        let n = s.hand_fingers.length()
+        let led = n > 0 && s.hand_fingers[n - 1].0 == d.finger
+        s.hand_fingers.retain(fn(f) { f.0 != d.finger })
+        if !s.hand_fingers.is_empty() {
+          // (the one leading let go: the one leading now flings nothing till it moves)
+          if led {
+            s.hand_moved = false
+          }
+          return
+        }
         s.hand_on.set(false)
         s.pull_free = false
+        s.claimed = false
         let (_, _, sc) = self.tree.placed(self.at)
-        // (how fast it went, worked out as it is let go: none of its moves asked it)
-        let hvy = if across { d.vx() } else { d.vy() }
+        // (how fast it went, worked out as it is let go: none of its moves asked it; none where the finger let go last
+        // came to lead it and never moved)
+        let hvy = if !s.hand_moved {
+          0.0
+        } else if across {
+          d.vx()
+        } else {
+          d.vy()
+        }
+        s.hand_moved = true
         s.hand_v = dclamp(-hvy, -scroll_most_v, scroll_most_v) / (if sc > 0.0 { sc } else { 1.0 })
         if s.as_list {
           s.let_go(self, d.at)
@@ -1704,8 +1742,14 @@ pub fn View::scrolls(
           s.flung(self, d.at)
         }
       }
-      // (called off: a page's list's let go of still)
+      // (called off: a page's list's let go of still; told once a finger down (Tree::drag_at), let go once)
       Off => {
+        if s.hand_fingers.is_empty() && !s.hand_on.untracked() {
+          return
+        }
+        s.hand_fingers.clear()
+        s.hand_moved = true
+        s.claimed = false
         s.hand_on.set(false)
         s.pull_free = false
         if s.as_list {
@@ -1716,7 +1760,7 @@ pub fn View::scrolls(
         }
       }
     }
-  })
+  }, fingers=2)
   // (a part of what it holds brought into sight: its top or its foot to its own, as little as that takes)
   .shows(fn(top, foot) {
     let t = self.tree.logic_said()

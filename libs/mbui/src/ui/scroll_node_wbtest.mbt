@@ -1186,3 +1186,160 @@ test "a column of the tree's that scrolls, flung: a tap on a row in it as it gli
   t.tap(80.0, 150.0)
   assert_eq(pressed.val, 1)
 }
+
+///|
+/// A column the window's whole (400 by 300) of 40 rows 40 high, on a finger's host (Android's): each row nothing of its
+/// own (`rows` 0), pressed as it is tapped (1), or a gesture counting its taps and its drags' ends (2); `list`: a page's
+/// list's scroll. Its scroll and how many times a row was pressed, tapped or dragged.
+fn two_finger_rows(rows : Int, list? : Bool = false) -> (Tester, @view.Scroll, Ref[Int]) {
+  let s = if list { @view.Scroll::list() } else { @view.Scroll::new() }
+  let pressed = Ref(0)
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2)
+  set_view_app(fn(root) {
+    root
+    .width(Is(Some(400.0)))
+    .height(Is(Some(300.0)))
+    .scrolls(s, slop=touch_slop(), fn(held) {
+      for i in 0..<40 {
+        held.box(fn(r) {
+          r.width(Is(Some(400.0))).height(Is(Some(40.0))).words(Is("第\{i}行")) |> ignore
+          if rows == 1 {
+            r.on_press(fn() { pressed.val += 1 }).says(Is(Some(@view.said(Button, label="第\{i}行")))) |> ignore
+          } else if rows == 2 {
+            r
+            .gesture(touch_slop(), tap=fn(_) { pressed.val += 1 }, drag=fn(d) { if d.kind == Up { pressed.val += 1 } })
+            .says(Is(Some(@view.said(Button, label="第\{i}行"))))
+            |> ignore
+          }
+        })
+        |> ignore
+      }
+    })
+    |> ignore
+  })
+  t.draw()
+  (t, s, pressed)
+}
+
+///|
+/// The host's fingers on it (`phase`: 0 down, 1 moved, 2 up, 3 called off; the system's id; y, all at x 200), each
+/// `step` after the one before, and where the column stands after each.
+fn two_fingers_on(
+  t : Tester,
+  s : @view.Scroll,
+  events : Array[(Int, Int, Double)],
+  step? : Double = hand_step_ms,
+) -> Array[Double] {
+  let stands = []
+  for e in events {
+    t.run_for(step)
+    t.touch_raw(e.0, e.1, 200.0, e.2, t.time())
+    stands.push(s.at(view_tree().unwrap()))
+  }
+  stands
+}
+
+///|
+/// The host's finger `id` let go at y (x 200) a frame's step on, and what it sets going run to its end.
+fn two_lift(t : Tester, id : Int, y : Double) -> Unit {
+  t.run_for(hand_step_ms)
+  t.touch_raw(2, id, 200.0, y, t.time())
+  t.run_for(turn_done_ms)
+}
+
+///|
+test "a column of the tree's that scrolls, a finger's (Android's): two fingers taking turns, round after round: the last down leads it, the other's moves move nothing; either let go, the other goes on from where it is, no jump; let go last, flung" {
+  let (t, s, _) = two_finger_rows(0)
+  let stands = two_fingers_on(t, s, [
+    (0, 7, 250.0),
+    (1, 7, 230.0),
+    (1, 7, 210.0),
+    // (the second down: it leads)
+    (0, 9, 100.0),
+    (1, 7, 190.0),
+    (1, 9, 80.0),
+    // (the first let go: the second goes on)
+    (2, 7, 190.0),
+    (1, 9, 70.0),
+    // (the first down again: it leads)
+    (0, 7, 250.0),
+    (1, 7, 230.0),
+    (1, 9, 40.0),
+    // (the second let go: the first goes on)
+    (2, 9, 40.0),
+    (1, 7, 220.0),
+    (1, 7, 200.0),
+  ])
+  // (let go a frame on as it goes)
+  t.run_for(hand_step_ms)
+  t.touch_raw(2, 7, 200.0, 200.0, t.time())
+  let up = s.at(view_tree().unwrap())
+  t.run_for(turn_done_ms)
+  assert_eq(stands, [0.0, 12.0, 32.0, 32.0, 32.0, 52.0, 52.0, 62.0, 62.0, 82.0, 82.0, 82.0, 92.0, 112.0])
+  assert_true(s.at(view_tree().unwrap()) > up, msg="not flung on from \{up}")
+}
+
+///|
+test "a column of the tree's that scrolls, a finger's (Android's): a finger down on a row that is pressed or is a gesture, a second down before the first moved past the slop: either finger moving takes it to scroll, the first let go before or after, no jump, nothing pressed" {
+  for rows in [1, 2] {
+    // (the first let go first: the second sets it going from where it is)
+    let (t, s, pressed) = two_finger_rows(rows)
+    let first_up = two_fingers_on(t, s, [(0, 7, 100.0), (0, 9, 250.0), (2, 7, 100.0), (1, 9, 240.0), (1, 9, 220.0)])
+    two_lift(t, 9, 220.0)
+    assert_eq((first_up, pressed.val), ([0.0, 0.0, 0.0, 2.0, 22.0], 0), msg="rows \{rows}")
+    // (the first held: the second moving takes it; the first let go after, the second goes on)
+    let (t, s, pressed) = two_finger_rows(rows)
+    let second = two_fingers_on(t, s, [
+      (0, 7, 100.0),
+      (0, 9, 250.0),
+      (1, 9, 240.0),
+      (1, 9, 220.0),
+      (2, 7, 100.0),
+      (1, 9, 210.0),
+    ])
+    two_lift(t, 9, 210.0)
+    assert_eq((second, pressed.val), ([0.0, 0.0, 2.0, 22.0, 22.0, 32.0], 0), msg="rows \{rows}")
+    // (the first moving takes it, the second there; the first let go, the second goes on from where it is)
+    let (t, s, pressed) = two_finger_rows(rows)
+    let first = two_fingers_on(t, s, [
+      (0, 7, 100.0),
+      (0, 9, 250.0),
+      (1, 7, 80.0),
+      (1, 7, 70.0),
+      (2, 7, 70.0),
+      (1, 9, 240.0),
+    ])
+    two_lift(t, 9, 240.0)
+    assert_eq((first, pressed.val), ([0.0, 0.0, 12.0, 22.0, 22.0, 32.0], 0), msg="rows \{rows}")
+  }
+}
+
+///|
+test "a column of the tree's that scrolls, a finger's (Android's): the second finger leading let go, the first goes on from where it is; let go at once without moving instead, not flung by how it went before" {
+  let (t, s, _) = two_finger_rows(0)
+  let on = two_fingers_on(t, s, [(0, 7, 250.0), (1, 7, 230.0), (1, 7, 210.0), (0, 9, 100.0), (1, 9, 90.0), (2, 9, 90.0), (1, 7, 200.0), (1, 7, 190.0)], step=hand_half_step_ms)
+  assert_eq(on, [0.0, 12.0, 32.0, 32.0, 42.0, 42.0, 52.0, 62.0])
+  let (t, s, _) = two_finger_rows(0)
+  let still = two_fingers_on(t, s, [(0, 7, 250.0), (1, 7, 230.0), (1, 7, 210.0), (0, 9, 100.0), (1, 9, 90.0), (2, 9, 90.0), (2, 7, 210.0)], step=hand_half_step_ms)
+  t.run_for(turn_done_ms)
+  assert_eq((still, s.at(view_tree().unwrap()), s.glides_till()), ([0.0, 12.0, 32.0, 32.0, 42.0, 42.0, 42.0], 42.0, None))
+}
+
+///|
+test "a page's list, a finger's (Android's): pulled past its top by two fingers by turns, the system calling both off: stretched by both, then back to its top, once" {
+  let (t, s, _) = two_finger_rows(0, list=true)
+  let tree = view_tree().unwrap()
+  let past = []
+  for e in [(0, 7, 100.0), (1, 7, 130.0), (1, 7, 160.0), (0, 9, 150.0), (1, 9, 180.0), (1, 9, 210.0)] {
+    t.run_for(hand_step_ms)
+    t.touch_raw(e.0, e.1, 200.0, e.2, t.time())
+    past.push(s.past(tree))
+  }
+  t.run_for(hand_step_ms)
+  t.touch_raw(3, 7, 200.0, 160.0, t.time())
+  let off = (s.past(tree), s.in_hand(), s.glides_till() is Some(_))
+  t.run_for(bar_long_gone_ms)
+  assert_true(past[2] > past[1] && past[4] > past[3] && past[5] > past[4], msg="\{past[1]} \{past[2]} \{past[3]} \{past[4]} \{past[5]}")
+  assert_eq((off.0 == past[5], off.1, off.2), (true, false, true), msg="\{off.0} \{past[5]}")
+  assert_eq((s.past(tree), s.glides_till(), s.at(tree)), (0.0, None, 0.0))
+}

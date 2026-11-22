@@ -349,6 +349,8 @@ fn Scroll::rebind_still(self : Scroll) -> Unit {
   self.hand_on.set(false)
   self.claimed = false
   self.hand_v = 0.0
+  self.hand_fingers.clear()
+  self.hand_moved = true
 }
 
 ///|
