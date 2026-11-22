@@ -163,7 +163,7 @@ async function view(viewport = { width: 1000, height: 500 }) {
 
 test("a view casts JPEG within the viewer's size, and acknowledges a frame only once the next is asked for", async () => {
   const { cdp, v, frame, acks } = await view();
-  assert.deepEqual(cdp.of("Page.startScreencast")[0]!.params, { format: "jpeg", quality: 70, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 });
+  assert.deepEqual(cdp.of("Page.startScreencast")[0]!.params, { format: "jpeg", quality: 82, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 });
   assert.equal(cdp.of("Page.startScreencast")[0]!.sessionId, "S", "on the view's own session");
 
   // Asked before any frame: given the first when it comes, with its config.

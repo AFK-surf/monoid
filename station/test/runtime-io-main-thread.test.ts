@@ -155,7 +155,7 @@ test("the overview's disk room waits on no file", async () => {
 /// A station process's events, handing over in `file`.
 function events(file: string, clock: ReturnType<typeof testClock>["clock"], gone: Promise<void> = Promise.resolve()) {
   return new Events({
-    readers: { read: async () => { throw new Error("nothing read"); } } as any,
+    readers: { read: async (op: string) => { if (op === "sharedOf") return JSON.stringify({ rows: [], scope: null }); throw new Error("nothing read"); } } as any,
     said: (_thread, entries) => entries.map((e) => ({ n: e.n, text: "hi" })),
     subscribe: () => () => {},
     host: async () => ({ cpu: 1 }),

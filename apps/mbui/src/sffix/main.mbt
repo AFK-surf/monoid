@@ -64,7 +64,7 @@ fn main {
   // Preview a native action once its system bar exists, without desktop clicks.
   let native_action = @ui.env("MBUI_NATIVE_ACTION")
   let action_sent = Ref(false)
-  @ui.run("still.fail", fn(c) {
+  @ui.run_legacy_ctx("still.fail", fn(c) {
     if !action_sent.val && native_action != "" {
       for a in @sf.native_over.acts {
         if a.0 == native_action {

@@ -5,7 +5,7 @@ import { Clock, Effect, Exit, Queue, type Fiber } from "effect";
 import { HostError } from "../src/error.ts";
 import { HEDGE, type Host, type HttpRequest, type HttpResponse, type Pull } from "../src/host.ts";
 import { FakeHost, flush, jsonResponse } from "../src/testing.ts";
-import { DROPPED, GONE, NETWORK, QUIET_MS, STREAM_AWAY_MS, Wake, WakingHost, Wakes, hedgeable, hedged, quietEnds, resendable, unlessDropped } from "../src/wake.ts";
+import { CHECK_AWAY_MS, DROPPED, GONE, NETWORK, QUIET_MS, STREAM_AWAY_MS, Wake, WakingHost, Wakes, hedgeable, hedged, quietEnds, resendable, unlessDropped } from "../src/wake.ts";
 
 // Optional host capabilities must also be considered by the wrapper used by a running core.
 type Assert<T extends true> = T;
@@ -34,6 +34,15 @@ const errorOf = (exit: Exit.Exit<unknown, HostError> | null) => {
   const r = Effect.runSync(Effect.result(exit as Effect.Effect<unknown, HostError>));
   return r._tag === "Failure" ? r.failure.message : null;
 };
+
+test("a_short_while_away_checks_the_connections_and_a_long_one_takes_them_for_gone", () => {
+  assert.equal(wake(10_000, CHECK_AWAY_MS - 1).checksConnections(), false);
+  assert.equal(wake(10_000, CHECK_AWAY_MS).checksConnections(), true);
+  assert.equal(wake(40_000, STREAM_AWAY_MS - 1).checksConnections(), true);
+  assert.equal(wake(40_000, STREAM_AWAY_MS).checksConnections(), false);
+  assert.equal(new Wake(10_000, 10_000, true, false).checksConnections(), false);
+  assert.equal(new Wake(10_000, 10_000, false, true).checksConnections(), false);
+});
 
 test("a_request_long_unanswered_fails_when_the_page_is_back", async () => {
   const wakes = new Wakes();

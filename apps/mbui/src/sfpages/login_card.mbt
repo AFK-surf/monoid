@@ -49,6 +49,48 @@ fn login_of(core : Core, station : String, id : String) -> Json? {
 }
 
 ///|
+/// Login `id` of `station` as its card shows it: the one a person started again from it, where it was (`again`: its
+/// card follows it), else itself as the core says it now (None: one it does not know).
+fn login_followed(core : Core, station : String, id : String) -> Json? {
+  let mut l = login_of(core, station, id)
+  // (a few times at most: each started again from the one before)
+  for _ in 0..<4 {
+    match text(l, "again") {
+      "" => break
+      next =>
+        match login_of(core, station, next) {
+          Some(_) as n => l = n
+          None => break
+        }
+    }
+  }
+  l
+}
+
+///|
+/// Whether login `l`'s card stands: under way, or ended without logging in and offered again (its 重新发起).
+fn login_carded(l : Json?) -> Bool {
+  flag(l, "active") || flag(l, "canAgain")
+}
+
+///|
+/// A login under way runs out of time (`expiresAt`, the station's 15 minutes): how long is left as of `now`, said on
+/// its card while the person has a step to do (red its last 3 minutes); None where it is not known, or none is left.
+fn login_left(l : Json?, now : Double) -> @sf.LoginSaid? {
+  let ends = number(l, "expiresAt")
+  guard ends > 0.0 && flag(l, "active") else { return None }
+  // (whole minutes, rounded up: 14:59 left is 15)
+  let minutes = ((ends - now + 59999.0) / 60000.0).floor().to_int()
+  guard minutes > 0 else { return None }
+  let words = if minutes <= 1 {
+    @sf.t("web-main.logins.leftLast")
+  } else {
+    @sf.t("web-main.logins.left", args=[("minutes", minutes.to_string())])
+  }
+  Some(said_line(words, red=minutes <= 3))
+}
+
+///|
 /// What the core is asked for login `id` of `station` (login_of's, its card's; its chat's as it opens, sfbase's
 /// chat_opens): its `machineLogin`.
 fn login_ask(station : String, id : String) -> (String, Map[String, Json]) {
@@ -113,7 +155,18 @@ priv struct LoginShows {
 /// What login `l` of `station` under way shows now (login_active's): what the person does now by its step (or, while
 /// its agent answers the command or it is checked, how it stands), then the step; `relay`: this device may take the
 /// browser's callback.
-fn login_shows(core : Core, station : String, l : Json?, relay : Bool) -> LoginShows {
+fn login_shows(core : Core, station : String, l : Json?, relay : Bool, now : Double) -> LoginShows {
+  let shows = login_steps(core, station, l, relay)
+  // (how long is left of it, first, while the person has a step to do)
+  match login_left(l, now) {
+    Some(left) if shows.step is Some(_) => { said: [left, ..shows.said], code: shows.code, step: shows.step }
+    _ => shows
+  }
+}
+
+///|
+/// What login `l` of `station` under way shows now by its step (login_shows', without the time left).
+fn login_steps(core : Core, station : String, l : Json?, relay : Bool) -> LoginShows {
   let id = text(l, "id")
   let url = text(l, "url")
   // checking what came back (the browser's callback): nothing left for the person but to wait
@@ -250,7 +303,7 @@ priv struct LoginPaste {
 }
 
 ///|
-fn login_paste_shows(core : Core, station : String, l : Json?, typed : Bool) -> LoginPaste {
+fn login_paste_shows(core : Core, station : String, l : Json?, typed : Bool, now : Double) -> LoginPaste {
   let id = text(l, "id")
   let sending = @settings.is_doing(core, ["machineLogin.answer"], [("station", station), ("id", id)])
   let checking = text(l, "state") == "verifying"
@@ -263,6 +316,11 @@ fn login_paste_shows(core : Core, station : String, l : Json?, typed : Bool) -> 
       "" => text(l, "statusText")
       d => @sf.t("web-main.logins.pasteLead", args=[("domain", d)])
     }
+  }
+  // (how long is left of it, after what to do, while there is something to do)
+  let (lead, red) = match login_left(l, now) {
+    Some(left) if !busy => (lead + " · " + left.words, left.red)
+    _ => (lead, false)
   }
   let elsewhere = match login_station_way(core, station, l) {
     Some(way) => [way]
@@ -282,7 +340,7 @@ fn login_paste_shows(core : Core, station : String, l : Json?, typed : Bool) -> 
       })
     },
   )
-  { lead: said_line(lead), step, busy }
+  { lead: said_line(lead, red~), step, busy }
 }
 
 ///|
@@ -296,6 +354,26 @@ fn login_answer(core : Core, station : String, id : String, code : String) -> Un
 }
 
 ///|
+/// Login `id` of `station` started again (`machineLogin.again`), as its card's 重新发起 is pressed: its card follows the
+/// new one as the station says it.
+fn login_again_now(core : Core, station : String, id : String) -> Unit {
+  @settings.act(core, @sf.t("web-main.logins.againWhat"), "machineLogin.again", { "station": Json::string(station), "id": Json::string(id) })
+}
+
+///|
+/// What a login ended without logging in shows on its card, for one who may start it again: how it ended (red: 超时了…),
+/// and 重新发起.
+fn login_again_shows(core : Core, station : String, l : Json?) -> LoginShows {
+  let id = text(l, "id")
+  let busy = @settings.is_doing(core, ["machineLogin.again"], [("station", station), ("id", id)])
+  let go = step_of("login-again/" + id, @sf.t("web-main.logins.again"), true, busy~, on_press=fn() {
+    login_again_now(core, station, id)
+  })
+  // (how it ended, short: its title says what it was)
+  { said: [said_line(text(l, "statusText"), red=true)], code: "", step: Some(go) }
+}
+
+///|
 /// Whether login `id` of `station` is being cancelled (its × spinning).
 fn login_cancelling(core : Core, station : String, id : String) -> Bool {
   @settings.is_doing(core, ["machineLogin.cancel"], [("station", station), ("id", id)])
@@ -305,206 +383,6 @@ fn login_cancelling(core : Core, station : String, id : String) -> Bool {
 /// Login `id` of `station` cancelled (`machineLogin.cancel`), as its × is pressed.
 fn login_cancel_now(core : Core, station : String, id : String) -> Unit {
   @settings.act(core, @sf.t("web-main.logins.cancelWhat"), "machineLogin.cancel", { "station": Json::string(station), "id": Json::string(id) })
-}
-
-// ── the card, an old view's ─────────────────────────────────────────────
-
-///|
-/// Login `id` of `station` as its card; one the core does not know (ended long ago) draws nothing, the message's words
-/// say it. `marked`: the one a link pointed to (its ground the accent, faint). `place`: where it is drawn (its chat, its
-/// station's page), each place's code field its own. `as_was`: the card as it last showed under way, drawn in place of
-/// what the core says now (closing once ended, login_card_last's).
-pub fn login_card(
-  c : @ui.Ctx,
-  core : Core,
-  station : String,
-  id : String,
-  marked? : Bool = false,
-  place? : String = "chat",
-  as_was? : Json? = None,
-) -> Unit {
-  let now = login_of(core, station, id)
-  // signed in while its card is in view, felt as something done; failed, as something refused (feel.mbt)
-  @sfbase.felt_change(c, "login-done/" + station + "/" + id, text(now, "state") == "done", Confirm)
-  @sfbase.felt_change(c, "login-failed/" + station + "/" + id, text(now, "state") == "failed", Reject)
-  let l = match as_was {
-    Some(_) => as_was
-    None =>
-      match now {
-        Some(_) => now
-        None => return
-      }
-  }
-  // ended: one quiet line, failed in red; no card
-  if !flag(l, "active") {
-    let (words, failed) = login_ended(l)
-    c.text(words, style=if failed { lc_ended_failed } else { lc_ended }) |> ignore
-    return
-  }
-  let all = logins_of(core, station)
-  let in_sheet = place == "sheet"
-  let room = if in_sheet {
-    @sf.login_room_sheet.then(@sf.panel_card_out()).then(@sf.panel_card_last())
-  } else {
-    @sf.login_room
-  }
-  let card = if in_sheet {
-    if marked { lc_card_sheet_marked } else { lc_card_sheet }
-  } else {
-    if marked { lc_card_marked } else { @sf.login_card }
-  }
-  c.box(style=room, fn() {
-    c.box(style=card, fn() {
-      if flag(all, "canLogin") {
-        if in_sheet {
-          c.box(style=@sf.login_title_room, fn() { c.text(text(l, "title"), style=@sf.login_title) |> ignore }) |> ignore
-        } else {
-          c.box(style=@sf.login_head, fn() {
-            c.box(style=@sf.login_title_room, fn() { c.text(text(l, "title"), style=@sf.login_title) |> ignore }) |> ignore
-            login_cancel(c, core, station, id)
-          })
-          |> ignore
-        }
-        login_active(c, core, station, l, flag(all, "canRelay"), place)
-      } else {
-        c.box(style=@sf.login_title_room, fn() { c.text(text(l, "title"), style=@sf.login_title) |> ignore }) |> ignore
-        login_said(c, said_line(text(l, "statusText"), last=true))
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A step left of something under an agent's message, as a login's card looks (its ground, its title, a line under it
-/// where there is one), the whole card the way to it (`go`), a › in its corner where a login's × is: what is left on
-/// the phone for an approved request of it (decision.mbt phone_ask_card). Quiet as the cards beside it are, no button
-/// of its own (2026-10-30, user: a card with a solid button was 「明显有点过大了，而且好像不是很搭风格」). A step with
-/// nothing to press (`go` None) is the card alone: no ›, no answer to a press.
-pub fn step_card(c : @ui.Ctx, key : String, title : String, line : String, go? : (() -> Unit)? = None) -> Unit {
-  let x = if go is Some(_) { c.id(key) } else { 0 }
-  match go {
-    Some(go) => c.on_press(x, fn() { go() })
-    None => ()
-  }
-  c.box(style=@sf.login_room, fn() {
-    let b = c.box(style=if go is Some(_) { lc_card_step } else { @sf.login_card }, id=x, fn() {
-      c.box(style=@sf.login_head, fn() {
-        c.box(style=if line == "" { @sf.login_title_alone } else { @sf.login_title_room }, fn() { c.text(title, style=@sf.login_title) |> ignore }) |> ignore
-        if go is Some(_) {
-          c.box(style=@sf.login_cancel, fn() { @sf.icon(c, "chevron-right", size=@sf.login_icon, color=@sf.theme().p.muted) |> ignore }) |> ignore
-        }
-      })
-      |> ignore
-      if line != "" {
-        login_said(c, said_line(line, last=true))
-      }
-    })
-    if go is Some(_) {
-      c.semantics(b, Button, id=x, label=title)
-    }
-  })
-  |> ignore
-}
-
-///|
-/// 取消, as the card's × (CancelLogin: a small panel's icon button, in its corner, concentric with it).
-fn login_cancel(c : @ui.Ctx, core : Core, station : String, id : String) -> Unit {
-  let busy = login_cancelling(core, station, id)
-  let x = if busy { 0 } else { c.id("login-cancel/" + station + "/" + id) }
-  c.on_press(x, fn() {
-    login_cancel_now(core, station, id)
-  })
-  let b = c.box(style=@sf.login_cancel, id=x, fn() {
-    if busy {
-      @sf.spinner(c, size=@sf.login_spin) |> ignore
-    } else {
-      @sf.icon(c, "close", size=@sf.login_icon, color=@sf.theme().p.muted) |> ignore
-    }
-  })
-  c.semantics(b, Button, id=x, label=@sf.t("web-main.logins.cancelWhat"))
-}
-
-///|
-/// A line of how it stands or what to do (cardStatus: 12 on 18, grey; red what kept this device from the callback), a
-/// spinner 6 before it while it waits; `last`, as far from the card's foot as the title from its top.
-fn login_said(c : @ui.Ctx, s : @sf.LoginSaid) -> Unit {
-  c.box(style=if s.last { @sf.login_said_last } else { @sf.login_said }, fn() {
-    if s.busy {
-      @sf.spinner(c, size=@sf.login_spin) |> ignore
-    }
-    c.text(s.words, style=if s.red { @sf.login_said_red } else { @sf.login_said_words }) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A step's button (StepButton): the card's width, solid while it is the next thing to do, a plain grey one once it has
-/// been; a spinner while it is under way, ↗ for a page opened elsewhere; the other ways in a ⋯ beside it.
-fn login_step(c : @ui.Ctx, s : @sf.LoginStep) -> Unit {
-  let p = @sf.theme().p
-  let id = if s.busy { 0 } else { c.id(s.key) }
-  let ink = if s.solid { p.on_primary } else { p.text }
-  let step = fn(style : @ui.Style) {
-    c.box(style~, id~, fn() {
-      if s.busy {
-        @sf.spinner(c, size=@sf.login_spin, arc=ink) |> ignore
-      }
-      c.text(s.label, style=if s.solid { @sf.login_step_words_solid } else { @sf.login_step_words }) |> ignore
-      if s.external {
-        @sf.icon(c, "arrow-up-right", size=@sf.login_icon, color=ink) |> ignore
-      }
-    })
-    |> ignore
-  }
-  let foot = fn(style : @ui.Style) { if s.last { style.then(@sf.login_foot_reach) } else { style } }
-  if s.more.is_empty() {
-    step(foot(if s.solid { @sf.login_step_solid } else { @sf.login_step }).then(@sf.login_inner_round))
-  } else {
-    // the other ways of doing the step, seldom used, in a ⋯ at the row's end (sf/align.mbt: what is used least
-    // goes into the row's ⋯)
-    c.box(style=foot(@sf.login_step_row), fn() {
-      step((if s.solid { lc_step_solid_in_row } else { lc_step_in_row }).then(@sf.login_inner_round))
-      let mid = c.id(s.key + "/more")
-      let what = @sf.t("common.login.otherWays")
-      let b = c.box(style=@sf.login_more.then(@sf.login_inner_round), id=mid, fn() { @sf.icon(c, "more", size=@sf.login_icon, color=p.text) |> ignore })
-      c.semantics(b, Button, id=mid, label=what)
-      c.on_press(mid, fn() {
-        @sf.menu(s.more.map(fn(i) { Some(i) }), from=Of(mid), along=End)
-      })
-    })
-    |> ignore
-  }
-  if id != 0 {
-    c.on_press(id, fn() {
-      match s.told {
-        Some(key) => c.tell(key, s.press)
-        None => (s.press)()
-      }
-    })
-  }
-}
-
-///|
-/// A login under way, for one who may finish it (ActiveCard): login_shows' lines, its code, its step's button. One
-/// whose page gives a code to paste back is its own (PasteSteps).
-fn login_active(c : @ui.Ctx, core : Core, station : String, l : Json?, relay : Bool, place : String) -> Unit {
-  if flag(l, "paste") && text(l, "url") != "" {
-    login_paste(c, core, station, l, place)
-    return
-  }
-  let shows = login_shows(core, station, l, relay)
-  for s in shows.said {
-    login_said(c, s)
-  }
-  if shows.code != "" {
-    login_code(c, core, shows.code)
-  }
-  match shows.step {
-    Some(s) => login_step(c, s)
-    None => ()
-  }
 }
 
 ///|
@@ -587,20 +465,6 @@ fn login_relay_now(core : Core, station : String, id : String, title : String) -
 }
 
 ///|
-/// The device code, large enough to read and copy by eye (CardCode): pressed, it is copied (nothing opened), said so.
-fn login_code(c : @ui.Ctx, core : Core, code : String) -> Unit {
-  let id = c.id("login-code/" + code)
-  c.on_press(id, fn() {
-    c.copy_text(code)
-    (core.say)(@sf.t("web-main.logins.codeCopied"))
-  })
-  c.box(style=@sf.login_code_room, id~, label=@sf.t("web-main.logins.copyCode") + " " + code, fn() {
-    c.rich([@ui.span(code, mono=true)], style=@sf.login_code) |> ignore
-  })
-  |> ignore
-}
-
-///|
 /// The field a login's code is pasted in, by its key (login_paste's: the place, station and login; kept across frames).
 /// One a place: a card shown in its chat and on its station's page beside it is two editors, and one Field given to
 /// both faulted, the chat in its place 这部分显示出错了 as it opened (2026-11-06).
@@ -616,84 +480,6 @@ fn login_field(key : String) -> @ui.Field {
 }
 
 ///|
-/// A login whose page gives a code to paste back (PasteSteps): login_paste_shows' line and step, then the field, 完成
-/// at its end once a code is in (Enter too); sent, the keyboard goes, the code stays and 完成 turns while it is checked.
-fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : String) -> Unit {
-  let p = @sf.theme().p
-  let id = text(l, "id")
-  let here = place + "\u{1}" + station + "\u{1}" + id
-  let field = login_field(here)
-  let shows = login_paste_shows(core, station, l, field.text().trim(chars=" \n").to_owned() != "")
-  let busy = shows.busy
-  login_said(c, shows.lead)
-  login_step(c, shows.step)
-  // sent, nothing is left to type: the keyboard goes (the code stays in the field as it is checked)
-  let send = fn(code : String) {
-    c.blur()
-    c.tell("login-answer/" + id, fn() { login_answer(core, station, id, code) })
-  }
-  c.box(style=@sf.login_paste.then(@sf.login_inner_round), fn() {
-    let mut words = ""
-    c.box(style=@sf.login_paste_words, fn() {
-      let r = c.editor(
-        "login-paste/" + id,
-        placeholder=@sf.t("web-main.logins.pasteCode"),
-        font_size=@sf.login_paste_size,
-        line=@sf.login_paste_line,
-        max_lines=1,
-        plain=true,
-        color=p.text,
-        placeholder_color=p.muted,
-        caret_color=p.accent,
-        enter_sends=true,
-        field~,
-      )
-      words = r.text.trim(chars=" \n").to_owned()
-      match r.submitted {
-        Some(sent) if sent.trim(chars=" \n").to_owned() != "" && !busy => send(sent.trim(chars=" \n").to_owned())
-        _ => ()
-      }
-    })
-    |> ignore
-    if words != "" || busy {
-      let go = if busy { 0 } else { c.id("login-paste-go/" + id) }
-      c.on_press(go, fn() {
-        if go != 0 {
-          send(words)
-        }
-      })
-      c.box(style=@sf.login_done.then(@sf.login_done_round), id=go, fn() {
-        // busy: a spinner over its word, as wide as before
-        let w = c.text(@sf.t("web-main.logins.finish"), style=@sf.login_done_words)
-        if busy {
-          c.look(w, @ui.look(alpha=0.0))
-          c.layer(fn() { c.box(style=@sf.login_done_spin, fn() { @sf.spinner(c, size=@sf.login_spin, arc=p.on_primary) |> ignore }) |> ignore })
-          |> ignore
-        }
-      })
-      |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
-/// Login `id` of `station` as its card last showed under way (kept as it is drawn under way, for it to close as it
-/// was once ended: decision.mbt's), None where it never showed so here.
-fn login_card_last(station : String, id : String, l : Json?) -> Json? {
-  let key = station + "/" + id
-  match l {
-    Some(v) if flag(l, "active") => {
-      logins_here.last[key] = v
-      l
-    }
-    _ => logins_here.last.get(key)
-  }
-}
-
-// ── the card, made once (the library's: @sf.login_step_card_node) ──────────────
-
-///|
 /// Login `id` of `station` as its card (login_card's, as nodes of a page made once), all of it as the core says it now:
 /// nothing for one it does not know; ended, one quiet line; else its title, its × where it may be finished here, what
 /// to do now and its step (a code to paste back, its field). `marked`, `place`: login_card's. The chat's card is the
@@ -706,16 +492,25 @@ pub fn login_card_node(
   marked? : Bool = false,
   place? : String = "chat",
 ) -> Unit {
-  let l = fn() { login_of(core, station, id) }
+  let l = fn() { login_followed(core, station, id) }
   let all = fn() { logins_of(core, station) }
+  // (the one shown: the one started again from it, where it was)
+  let shown_id = fn() {
+    match text(l(), "id") {
+      "" => id
+      shown => shown
+    }
+  }
+  // the time, said again as each minute of a login's time left goes
+  let now = @sf.countdown_now_node(p, core.now, fn() { number(l(), "expiresAt") })
   // signed in while its card is in view, felt as something done; failed, as something refused (feel.mbt)
   @sfbase.felt_change_node(p, fn() { text(l(), "state") == "done" }, Confirm)
   @sfbase.felt_change_node(p, fn() { text(l(), "state") == "failed" }, Reject)
-  // (0: none; 1: ended; 2: under way, finished here; 3: under way, not here)
+  // (0: none; 1: ended; 2: under way, finished here; 3: under way, not here; 4: ended, started again here)
   let stands = fn() {
     match l() {
       None => 0
-      Some(_) as v if !flag(v, "active") => 1
+      Some(_) as v if !flag(v, "active") => if flag(v, "canAgain") && flag(all(), "canLogin") { 4 } else { 1 }
       _ => if flag(all(), "canLogin") { 2 } else { 3 }
     }
   }
@@ -728,7 +523,7 @@ pub fn login_card_node(
       // (in its login sheet its title alone: the sheet's own close is how it is put away)
       2 if in_sheet =>
         @sf.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
-          login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place)
+          login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place, now)
         })
       2 =>
         @sf.login_step_card_node(
@@ -736,9 +531,21 @@ pub fn login_card_node(
           title,
           in_sheet~,
           marked~,
-          cancel=(fn() { login_cancelling(core, station, id) }, fn() { login_cancel_now(core, station, id) }),
-          fn(card) { login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place) },
+          cancel=(
+            fn() { login_cancelling(core, station, shown_id()) },
+            fn() { login_cancel_now(core, station, @signals.untracked(shown_id)) },
+          ),
+          fn(card) { login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place, now) },
         )
+      4 =>
+        @sf.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
+          // (by the one it made: its step's press is a function made with it, no value to compare)
+          let shows = @signals.computed_ref(fn(_) { login_again_shows(core, station, l()) })
+          let shows = fn() { shows.get() }
+          @sf.login_active_node(card, fn() { false }, fn(x, _) {
+            @sf.login_lines_node(x, fn() { shows().said }, fn() { "" }, fn() { shows().step }, fn(_) {  })
+          })
+        })
       _ =>
         @sf.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
           @sf.login_said_node(card, fn() { said_line(text(l(), "statusText"), last=true) })
@@ -750,14 +557,22 @@ pub fn login_card_node(
 ///|
 /// What a login under way shows (login_active's), as the core says it now: a code to paste back, else
 /// login_shows' lines, its code and its step.
-fn login_active_node(card : @view.View, core : Core, station : String, l : () -> Json?, relay : () -> Bool, place : String) -> Unit {
+fn login_active_node(
+  card : @view.View,
+  core : Core,
+  station : String,
+  l : () -> Json?,
+  relay : () -> Bool,
+  place : String,
+  now : () -> Double,
+) -> Unit {
   @sf.login_active_node(card, fn() { flag(l(), "paste") && text(l(), "url") != "" }, fn(x, paste) {
     if paste {
-      login_paste_node(x, core, station, l, place)
+      login_paste_node(x, core, station, l, place, now)
       return
     }
     // (by the one it made: its step's press is a function made with it, no value to compare)
-    let shows = @signals.computed_ref(fn(_) { login_shows(core, station, l(), relay()) })
+    let shows = @signals.computed_ref(fn(_) { login_shows(core, station, l(), relay(), now()) })
     let shows = fn() { shows.get() }
     @sf.login_lines_node(x, fn() { shows().said }, fn() { shows().code }, fn() { shows().step }, fn(code) {
       @sfbase.copy_out(code)
@@ -769,53 +584,17 @@ fn login_active_node(card : @view.View, core : Core, station : String, l : () ->
 ///|
 /// A login whose page gives a code to paste back (login_paste's), as the core says it now: its line and its step, then
 /// the field (this place's: login_field), 完成 at its end once a code is in (Enter too), sent as the code pasted back.
-fn login_paste_node(x : @view.View, core : Core, station : String, l : () -> Json?, place : String) -> Unit {
+fn login_paste_node(x : @view.View, core : Core, station : String, l : () -> Json?, place : String, now : () -> Double) -> Unit {
   let id = text(@signals.untracked(l), "id")
   let field = login_field(place + "\u{1}" + station + "\u{1}" + id)
   let words = fn() { field.text().trim(chars=" \n").to_owned() }
   // (by the one it made: its step's press is a function made with it, no value to compare)
-  let shows = @signals.computed_ref(fn(_) { login_paste_shows(core, station, l(), words() != "") })
+  let shows = @signals.computed_ref(fn(_) { login_paste_shows(core, station, l(), words() != "", now()) })
   let shows = fn() { shows.get() }
   @sf.login_paste_node(x, fn() { shows().lead }, fn() { shows().step }, field, fn() { shows().busy }, fn(code) {
     login_answer(core, station, id, code)
   })
 }
-
-///|
-/// The old view's card (login_card's): as wide as the library's says, across a panel's body (its login sheet), lit
-/// under the pointer as a step left (step_card), the accent at 10% when it is the one a link pointed to.
-// kept across runs: a value (no field of it changes)
-let lc_card_sheet : @ui.Style = @sf.login_card_body.then(@ui.css("w=Full"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_card_sheet_marked : @ui.Style = @sf.login_card_body_marked.then(@ui.css("w=Full"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_card_step : @ui.Style = @sf.login_card.then(@ui.css("hovered{bg=Hover}"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_card_marked : @ui.Style = @sf.login_card.then(@ui.css("bg=A(Accent,O10)"))
-
-///|
-/// An ended login's line (the library's: decision.mbt's too), failed in red.
-// kept across runs: a value (no field of it changes)
-let lc_ended : @ui.TextStyle = @sf.login_ended
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_ended_failed : @ui.TextStyle = @sf.login_ended_failed
-
-///|
-/// The old view's step's button beside its ⋯: none of its own room round it.
-// kept across runs: a value (no field of it changes)
-let lc_step_in_row : @ui.Style = @sf.login_step.then(@sf.login_in_row)
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_step_solid_in_row : @ui.Style = @sf.login_step_solid.then(@sf.login_in_row)
 
 ///|
 /// A step left of something under an agent's message (step_card's, as nodes: the library's step_card_node), as it says

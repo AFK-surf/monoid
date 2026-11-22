@@ -62,7 +62,7 @@ pub fn exists(path : String) -> Bool {
 pub fn makedirs(path : String) -> Unit {
   let cs = path.to_array()
   for i in 1..<cs.length() {
-    if cs[i] == '/' {
+    if cs[i] == '/' || cs[i] == '\\' {
       let _ = c_mkdir(enc(String::from_array(cs[:i])))
 
     }
@@ -128,11 +128,38 @@ pub fn exit(code : Int) -> Unit {
 }
 
 ///|
+fn is_ascii_alpha(c : Char) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+///|
+fn has_drive_prefix(p : String) -> Bool {
+  let cs = p.to_array()
+  cs.length() >= 2 && is_ascii_alpha(cs[0]) && cs[1] == ':'
+}
+
+///|
+fn is_abs_path(p : String) -> Bool {
+  let cs = p.to_array()
+  (cs.length() >= 1 && (cs[0] == '/' || cs[0] == '\\')) ||
+  (has_drive_prefix(p) && cs.length() >= 3 && (cs[2] == '/' || cs[2] == '\\'))
+}
+
+///|
+fn slash(p : String) -> String {
+  if p.contains("\\") {
+    p.replace_all(old="\\", new="/")
+  } else {
+    p
+  }
+}
+
+///|
 /// os.path.join of two
 pub fn join(a : String, b : String) -> String {
-  if b.has_prefix("/") || a == "" {
+  if is_abs_path(b) || a == "" {
     b
-  } else if a.has_suffix("/") {
+  } else if a.has_suffix("/") || a.has_suffix("\\") {
     a + b
   } else {
     a + "/" + b
@@ -141,26 +168,41 @@ pub fn join(a : String, b : String) -> String {
 
 ///|
 pub fn basename(p : String) -> String {
-  match p.rev_find("/") {
-    Some(k) => p.exact_view(start=k + 1).to_owned()
-    None => p
+  let s = slash(p)
+  match s.rev_find("/") {
+    Some(k) => s.exact_view(start=k + 1).to_owned()
+    None => s
   }
 }
 
 ///|
 pub fn dirname(p : String) -> String {
-  match p.rev_find("/") {
-    Some(k) => p.exact_view(end=k).to_owned()
+  let s = slash(p)
+  match s.rev_find("/") {
+    Some(k) =>
+      if k == 2 && has_drive_prefix(s) {
+        s.exact_view(end=3).to_owned()
+      } else {
+        s.exact_view(end=k).to_owned()
+      }
     None => ""
   }
 }
 
 ///|
-/// os.path.abspath (POSIX)
+/// os.path.abspath (POSIX and Windows drive paths)
 pub fn abspath(p : String) -> String {
-  let full = if p.has_prefix("/") { p } else { cwd() + "/" + p }
+  let full = if is_abs_path(p) { slash(p) } else { slash(cwd()) + "/" + slash(p) }
+  let (prefix, rest) = if has_drive_prefix(full) {
+    (
+      full.exact_view(end=2).to_owned() + "/",
+      full.exact_view(start=2).to_owned(),
+    )
+  } else {
+    ("/", full)
+  }
   let parts : Array[String] = []
-  for part in full.split("/") {
+  for part in rest.split("/") {
     let part = part.to_owned()
     if part == "" || part == "." {
       continue
@@ -171,7 +213,7 @@ pub fn abspath(p : String) -> String {
     }
     parts.push(part)
   }
-  "/" + parts.join("/")
+  prefix + parts.join("/")
 }
 
 ///|

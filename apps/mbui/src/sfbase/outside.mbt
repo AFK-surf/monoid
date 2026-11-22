@@ -138,8 +138,11 @@ fn outside_is(s : OutsideAsk) -> Bool {
 /// Asking `s` decided yes (sent as it is, or shared): its asking down (its page's asking closes as it reads `open`, and
 /// lets go of it as it has gone: outside_gone), and the words sent now, as the composer's send was pressed.
 fn outside_goes(s : OutsideAsk) -> Unit {
+  // (whether it is still the one asked, read before its asking closes: closing it lets go of it at once where its page
+  // reads `open` as it changes, the composer made as nodes, outside_gone)
+  let go = outside_is(s)
   s.open.set(false)
-  if outside_is(s) {
+  if go {
     (s.send)()
   }
 }

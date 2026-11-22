@@ -21,6 +21,20 @@ pub let core : Array[String] = [
 ]
 
 ///|
+/// Declared next when a runtime budgets its tools (mcp.ts `PRIORITY`).
+pub let priority : Array[String] = [
+  "chat_list", "chat_create", "session_send", "chat_configure", "chat_archive", "session_history",
+  "search", "station_list", "device_list", "device_use", "browser", "screen", "secret_list",
+  "secret_use", "secret_run",
+]
+
+///|
+/// Superseded tools omitted from tools/list and station_tool while kept callable (mcp.ts `HIDDEN`).
+pub let hidden : Array[String] = [
+  "adb_devices", "phone_use", "secret_reask", "station_retire",
+]
+
+///|
 /// What every turn calls.
 pub let every_turn : Array[String] = ["chat_post", "chat_state"]
 
@@ -28,6 +42,7 @@ pub let every_turn : Array[String] = ["chat_post", "chat_state"]
 /// By which a session speaks or acts in chats as itself: its own agent's alone (mcp.ts `SPEAKS`).
 pub let speaks : Array[String] = [
   "chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive",
+  "chat_configure",
 ]
 
 ///|
@@ -130,17 +145,28 @@ pub fn weight(t : Tool) -> Int {
 ///|
 /// The tools to declare within `budget` bytes, and the rest, reached through `indirect` (mcp.ts `fitted`).
 pub fn fitted(tools : Array[Tool], budget : Int) -> (Array[Tool], Array[Tool]) {
+  let visible = tools.filter(t => !hidden.contains(t.name))
   let core_tools = []
   for name in core {
-    for t in tools {
+    for t in visible {
       if t.name == name {
         core_tools.push(t)
       }
     }
   }
-  let others = tools.filter(t => !core.contains(t.name))
+  let priority_tools = []
+  for name in priority {
+    if !core.contains(name) {
+      for t in visible {
+        if t.name == name {
+          priority_tools.push(t)
+        }
+      }
+    }
+  }
+  let others = visible.filter(t => !core.contains(t.name) && !priority.contains(t.name))
   let weights = Map::new()
-  for t in tools {
+  for t in visible {
     weights[t.name] = weight(t)
   }
   let w = (t : Tool) => weights.get(t.name).unwrap_or(0)
@@ -154,27 +180,31 @@ pub fn fitted(tools : Array[Tool], budget : Int) -> (Array[Tool], Array[Tool]) {
       1
     }
   })
-  let fits = (list : Array[Tool], rest : Array[Tool]) => {
+  let queue = [..priority_tools, ..others]
+  let fits = (list : Array[Tool], left : Array[Tool]) => {
     let mut n = 0
     for t in list {
       n += w(t)
     }
-    if rest.length() == 0 {
+    if left.length() == 0 {
       n
     } else {
-      n + weight(indirect_tool(rest))
+      n + weight(indirect_tool(left))
     }
   }
   let out = core_tools.copy()
-  let mut i = 0
-  while i < others.length() &&
-        fits([..out, others[i]], others[i + 1:].to_array()) <= budget {
-    out.push(others[i])
-    i += 1
+  let rest = []
+  for i in 0..<queue.length() {
+    let t = queue[i]
+    let remaining = [..rest, ..queue[i + 1:]]
+    if fits([..out, t], remaining) <= budget {
+      out.push(t)
+    } else {
+      rest.push(t)
+    }
   }
-  let rest = others[i:].to_array()
   let names = out.map(t => t.name)
-  (tools.filter(t => names.contains(t.name)), rest)
+  (visible.filter(t => names.contains(t.name)), rest)
 }
 
 ///|
@@ -358,7 +388,7 @@ async fn McpEndpoint::listing(self : McpEndpoint, session : String) -> Listing {
 ///|
 /// The tools a session is declared (mcp.ts `listed`).
 async fn McpEndpoint::listed(self : McpEndpoint, session : String) -> Array[JV] {
-  let all = (self.tools)()
+  let visible = (self.tools)().filter(t => !hidden.contains(t.name))
   let { budget, loaded } = self.listing(session)
   let say = (t : Tool) => match loaded {
     Some(meta) if every_turn.contains(t.name) =>
@@ -366,13 +396,13 @@ async fn McpEndpoint::listed(self : McpEndpoint, session : String) -> Array[JV] 
     _ => declared(t)
   }
   match budget {
-    None => all.map(say)
+    None => visible.map(say)
     Some(b) => {
       let mut marks = 0
-      for t in all {
+      for t in visible {
         marks += byte_length(stringify(say(t))) - weight(t)
       }
-      let (fit, rest) = fitted(all, b - marks)
+      let (fit, rest) = fitted(visible, b - marks)
       let listed = if rest.length() == 0 {
         fit
       } else {

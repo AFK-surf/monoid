@@ -298,7 +298,7 @@ pub fn Logins::history(self : Logins) -> Array[J] {
 ///|
 /// `{ ...o, [k]: v }`: in its place where `o` has it, else last.
 fn set_key(o : J, k : String, v : J) -> J {
-  let u = @jsjson.units(k)
+  let u = k
   match o {
     Obj(ps) => {
       let out = ps.copy()
@@ -421,12 +421,12 @@ pub fn Logins::get(self : Logins, id : String) -> J? {
 /// The words of a command the agent gave: a line split as a shell would, or its words (None: no command).
 fn words_of(command : J) -> Array[String]? {
   match command {
-    Str(u) => @ops_platform.command_words(@jsjson.raw_text(u))
+    Str(u) => @ops_platform.command_words(u)
     Arr(items) => {
       let out = []
       for w in items {
         match w {
-          Str(u) if u.length() > 0 => out.push(@jsjson.raw_text(u))
+          Str(u) if u.length() > 0 => out.push(u)
           _ => return None
         }
       }
@@ -605,7 +605,7 @@ pub fn Logins::input(self : Logins, id : String, text? : J, key? : J) -> Unit ra
   }
   match (key, text) {
     (Some(Str(k)), _) => {
-      let name = @jsjson.raw_text(k)
+      let name = k
       if key_code(name) is None {
         raise Refused(400, "key: one of " + keys.map(k => k.0).join(", "))
       }
@@ -615,7 +615,7 @@ pub fn Logins::input(self : Logins, id : String, text? : J, key? : J) -> Unit ra
       if t.length() > 10000 {
         raise Refused(413, "too much text")
       }
-      e.run.input(text=@jsjson.raw_text(t))
+      e.run.input(text=t)
     }
     _ => raise Refused(400, "text or key")
   }
@@ -640,7 +640,7 @@ pub fn Logins::answer(self : Logins, id : String, given : J?, by? : Person) -> J
     raise Refused(409, "its code was entered: it is being checked")
   }
   let t = match given {
-    Some(Str(u)) if @jscase.trim(@jsjson.raw_text(u)) != "" => @jsjson.raw_text(u)
+    Some(Str(u)) if @jscase.trim(u) != "" => u
     _ => raise Refused(400, "text")
   }
   if t.length() > 10000 || has_line_break(@jscase.trim(t)) {
@@ -880,7 +880,7 @@ fn Logins::shown(self : Logins, e : Entry) -> J {
 ///|
 /// A login as a read-only member may see it.
 pub fn limited(login : J) -> J {
-  let drop = ["url", "callback", "code", "codeUrl", "error", "browser", "screen"].map(@jsjson.units)
+  let drop = ["url", "callback", "code", "codeUrl", "error", "browser", "screen"]
   match login {
     Obj(ps) => Obj(ps.filter(p => !drop.contains(p.0)))
     other => other

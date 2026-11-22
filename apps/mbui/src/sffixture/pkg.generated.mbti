@@ -2,7 +2,7 @@
 package "stillfail/sffixture"
 
 import {
-  "mbui/kit",
+  "mbui/player",
   "mbui/ui",
   "moonbitlang/core/ref",
   "stillfail/sfbase",
@@ -526,7 +526,7 @@ pub fn person(String, String, Bool) -> Json
 
 pub fn phone_post() -> Json
 
-pub fn play_fixture(String) -> (@sfbase.DriveAt, @kit.MediaStatus?)?
+pub fn play_fixture(String) -> (@sfbase.DriveAt, @player.MediaStatus?)?
 
 pub let preview_broken : @ref.Ref[String?]
 

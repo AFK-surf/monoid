@@ -12,6 +12,11 @@
 //
 // A view a person drives carries the Mac's clipboard both ways (text, PNG): the helper sets NSPasteboard and pastes with
 // ⌘V, and, while the view watches it, looks at its changeCount every half a second and says what was copied.
+//
+// A person who drives it sets the display's resolution (the helper's `resolution`: Resolution.swift, its sizes in
+// points, HiDPI kept on a Retina display), for this login session alone; once the last view ends, or the station
+// stops, the mode it was in before the first change is put back. A helper from before it has no resolution to give:
+// none is told, and nothing is set.
 import { hostname } from "node:os";
 import type { HelperApp } from "../helper/app.ts";
 import { HelperGrants } from "../helper/grants.ts";
@@ -22,7 +27,7 @@ import { ScreenRefused } from "./hub.ts";
 import { MacInput } from "./mac-input.ts";
 import { helperUi } from "./ui.ts";
 export type { HelperStatus } from "../helper/grants.ts";
-import { type AudioCodec, type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, OPUS_MAX, clipFits, codecFor, regionOf, windowsOf } from "./source.ts";
+import { type AudioCodec, type AudioFrame, type Clip, type ClipType, PRIVACY_CODE, privacyOf, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenMic, type ScreenResolution, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, CURSOR_IMAGES_MOST, CURSOR_SHAPE, MIC_PCM_MAX, OPUS_MAX, clipFits, codecFor, cursorImageShape, regionOf, resolutionOf, windowsOf } from "./source.ts";
 
 export type DesktopOptions = {
   /// Whether this machine's display can be seen at all (platform.desktopScreen: the helper).
@@ -76,6 +81,11 @@ export class Desktop implements ScreenSource {
   readonly #views = new Set<HelperView>();
   /// Its window was put up for grants not all taken yet: up again when the helper comes back still lacking one.
   #wanted = false;
+  /// The display's mode before a view first changed it (its size, and its id where the helper said it), put back once
+  /// the last view ends; null while unchanged.
+  #originalMode: { width: number; height: number; modeID?: number } | null = null;
+  /// Resolution changes, one after another.
+  #sizing: Promise<unknown> = Promise.resolve();
 
   constructor(options: DesktopOptions) {
     this.#o = options;
@@ -135,7 +145,7 @@ export class Desktop implements ScreenSource {
     // `audio` in its info, and none is pulled.
     const audio = options.audio === true && !options.peek;
     for (let attempt = 0; ; attempt++) {
-      const view = new HelperView(codec, await helper.connect({ op: "screen.view", codec, maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(this.#status?.display ? { display: this.#status.display.id } : {}), ...(audio ? { audio: true, ...(options.opus ? { audioCodec: "opus" } : {}) } : {}), ...(synthetic ? { synthetic: this.#o.synthetic } : {}) }), () => this.#views.delete(view), new MacInput(), "ScreenCaptureKit", audio);
+      const view = new HelperView(codec, await helper.connect({ op: "screen.view", codec, maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}), ...(this.#status?.display ? { display: this.#status.display.id } : {}), ...(audio ? { audio: true, ...(options.opus ? { audioCodec: "opus" } : {}) } : {}), ...(synthetic ? { synthetic: this.#o.synthetic } : {}) }), () => (this.#views.delete(view), this.#putBack()), new MacInput(), "ScreenCaptureKit", audio, true);
       this.#views.add(view);
       try {
         await view.ready;
@@ -189,32 +199,99 @@ export class Desktop implements ScreenSource {
     return helperUi(helper)(args);
   }
 
-  /// The station stopping: every view ends, and the helper (resolved once it is gone).
-  close(): Promise<void> {
+  /// The helper's `resolution` op for its display, with `more` (a size to set).
+  #resolutionOp(more: Record<string, unknown> = {}): Record<string, unknown> {
+    const display = this.#status?.display?.id;
+    return { op: "resolution", ...more, ...(display !== undefined ? { display } : {}) };
+  }
+
+  /// As it is once the changes asked before are made; null where it is not had (no helper, one from before it).
+  resolution(): Promise<ScreenResolution | null> {
+    const helper = this.#o.helper;
+    if (!this.#o.supported || helper === null) return Promise.resolve(null);
+    const read = this.#sizing.then(() => helper.request(this.#resolutionOp())).then(resolutionOf, (error) => {
+      log.info("screens", "the display's resolution was not had", { error: (error as Error).message });
+      return null;
+    });
+    this.#sizing = read;
+    return read;
+  }
+
+  setResolution(width: number, height: number): Promise<ScreenResolution> {
+    const helper = this.#o.helper;
+    if (!this.#o.supported || helper === null) return Promise.reject(new Error("the display's resolution was not had"));
+    const set = this.#sizing.then(async () => {
+      if (this.#originalMode === null) {
+        const told = await helper.request(this.#resolutionOp());
+        const before = resolutionOf(told);
+        if (before === null) throw new Error("the display's resolution was not had");
+        this.#originalMode = { width: before.width, height: before.height, ...(Number.isInteger(told.modeID) ? { modeID: told.modeID } : {}) };
+      }
+      const now = resolutionOf(await helper.request(this.#resolutionOp({ width: Math.round(width), height: Math.round(height) })));
+      if (now === null) throw new Error("the display's resolution was not had");
+      log.info("screens", "the display's resolution set", { width: now.width, height: now.height, was: this.#originalMode });
+      // (its size in pixels another now: had again, and listed anew)
+      await this.refresh(true);
+      this.#o.changed();
+      return now;
+    });
+    this.#sizing = set.catch(() => {});
+    return set;
+  }
+
+  /// The last view ended: the display's mode as it was before a view changed it.
+  #putBack() {
+    const helper = this.#o.helper;
+    const mode = this.#originalMode;
+    if (this.#views.size > 0 || mode === null || helper === null) return;
+    this.#originalMode = null;
+    this.#sizing = this.#sizing.then(() =>
+      helper.request(this.#resolutionOp(mode)).then(
+        async () => {
+          log.info("screens", "the display's resolution put back", mode);
+          await this.refresh(true);
+          this.#o.changed();
+        },
+        (error) => log.warn("screens", "the display's resolution was not put back", { ...mode, error: (error as Error).message }),
+      ),
+    );
+  }
+
+  /// The station stopping: every view ends, the display's resolution is put back, then the helper goes (resolved once
+  /// it is gone).
+  async close(): Promise<void> {
     for (const view of [...this.#views]) view.close();
-    return this.#o.helper?.quit().catch(() => {}) ?? Promise.resolve();
+    // (put back before the helper quits: it is the helper that sets it)
+    await this.#sizing;
+    await this.#o.helper?.quit().catch(() => {});
   }
 }
 
 type HelperError = Error & { code?: string };
 
 /// The helper's messages: a kind byte, the payload's length (4 bytes), the payload (native/helper's ScreenView.swift).
-/// To it: 1 next, 2 keyframe, 3 input, 4 clipboard (flags: bit 0 paste; type: 1 text, 2 PNG; the bytes), 5 watch the
+/// To it: 1 next, 2 keyframe, 3 input, 4 clipboard (flags: bit 0 paste, bits 1..2 the clip's mark, 1 concealed, 2
+/// transient, 3 auto, which a helper from before lets be; type: 1 text, 2 PNG; the bytes), 5 watch the
 /// clipboard (1 on, 0 off), 6 reveal (the path), 7 rate (bits a second, 4 bytes), 8 bounds (JSON {maxWidth, maxHeight,
 /// region?}: `region` a part of the display, 0..1 of it, framed alone; none, the whole); a helper from before 7 and 8
 /// lets them be, one from before regions frames the whole display (its info says `regions: true` where it frames parts);
-/// 9 audio (empty: the next 20 ms packet of system output, a view opened with `audio: true` whose info says `audio: true`).
-/// From it: 1 info, 2 config, 3 frame, 4 event, 5 clipboard (type, bytes), 6 cursor (JSON {x, y, shape}: a video's
+/// 9 audio (empty: the next 20 ms packet of system output, a view opened with `audio: true` whose info says `audio: true`),
+/// 11 watch the virtual microphone (1 on, 0 off), 12 a packet for it (flags, the recording's epoch u32 big-endian, 48
+/// kHz mono s16le; a helper from before lets 11 and 12 be, and says nothing of a microphone).
+/// From it: 1 info, 2 config, 3 frame, 4 event (JSON: `{windows, window}`, `{pointerLock}` whether an app holds the
+/// pointer, `{mic: {available, active, epoch}}` the virtual microphone while it is watched, else its log), 5 clipboard (type, bytes), 12 a clipboard marked private (its mark, type, bytes), 6 cursor (JSON {x, y, shape}: a video's
 /// pictures leave the pointer out), 7 region (JSON {region}: the part of the display the frames from the next on show,
 /// as it was framed; null the whole; said before the frame whose part is another than the last one's), 8 audio config
 /// (JSON {codec: "pcm_s16le" | "opus", sampleRate: 48000, channels: 2}, or {error}: no more audio; `opus` only to a
 /// view opened with `audioCodec: "opus"`, which a helper that encodes none lets be), 9 audio (8 bytes timestamp µs, then
-/// 3840 bytes of interleaved stereo PCM16, or one Opus packet of those 20 ms).
-export const TO_HELPER = { next: 1, keyframe: 2, input: 3, clipboard: 4, watch: 5, reveal: 6, rate: 7, bounds: 8, audio: 9, window: 10 } as const;
+/// 3840 bytes of interleaved stereo PCM16, or one Opus packet of those 20 ms), 11 cursor image (a pointer of an app's own,
+/// before the first 6 that names it "custom:<id>": source.ts `cursorImageShape`; a helper from before says "default").
+export const TO_HELPER = { next: 1, keyframe: 2, input: 3, clipboard: 4, watch: 5, reveal: 6, rate: 7, bounds: 8, audio: 9, window: 10, watchMic: 11, mic: 12 } as const;
 const CLIP_BYTE: Record<ClipType, number> = { text: 1, png: 2 };
 
 /// A clip as the helper's `clipboard` message has it: from the helper (`flags` none) or to it.
 export function helperClip(clip: Clip, flags?: number): Buffer {
+  if (flags !== undefined && clip.privacy !== undefined) flags |= PRIVACY_CODE[clip.privacy] << 1;
   const body = clip.type === "text" ? Buffer.from(clip.text, "utf8") : Buffer.from(clip.data);
   return Buffer.concat([Buffer.from(flags === undefined ? [CLIP_BYTE[clip.type]] : [flags, CLIP_BYTE[clip.type]]), body]);
 }
@@ -258,9 +335,17 @@ export class HelperView implements ScreenView {
   readonly #gone: () => void;
   /// Who hears the clipboard as it changes, while it is watched.
   #clipboard: ((clip: Clip) => void) | null = null;
+  /// Who hears whether an app holds the pointer, and the last it said (told at once to one who starts to hear it).
+  #pointerLock: ((locked: boolean) => void) | null = null;
+  #lastPointerLock = false;
+  /// Who hears the virtual microphone while it is watched, and the last the helper said of it.
+  #micHeard: ((mic: ScreenMic) => void) | null = null;
+  #lastMic: ScreenMic | null = null;
   /// Who hears the pointer, and the last it said (told at once to one who starts to hear it).
   #cursor: ((cursor: ScreenCursor) => void) | null = null;
   #lastCursor: ScreenCursor | null = null;
+  /// The pictures of the pointers of apps' own it said (message 11), by shape: "custom:<id>".
+  readonly #cursorImages = new Map<string, Uint8Array>();
   /// Who hears how a simulator's picture is turned, and the last it said (message 10).
   #turn: ((turn: number) => void) | null = null;
   #lastTurn: number | null = null;
@@ -277,7 +362,11 @@ export class HelperView implements ScreenView {
   readonly #capture: string;
   #encoder = "";
 
-  constructor(codec: Codec, socket: HelperPipe, gone: () => void, input: InputOps = new MacInput(), capture = "ScreenCaptureKit", audio = false) {
+  /// The machine's virtual microphone, where its helper has one to watch (`mic`: a desktop's, not a simulator's).
+  readonly watchMic?: (heard: (mic: ScreenMic) => void) => () => void;
+
+  constructor(codec: Codec, socket: HelperPipe, gone: () => void, input: InputOps = new MacInput(), capture = "ScreenCaptureKit", audio = false, mic = false) {
+    if (mic) this.watchMic = (heard) => this.#watchMic(heard);
     this.#audio = audio;
     this.#codec = codec;
     this.#capture = capture;
@@ -378,6 +467,21 @@ export class HelperView implements ScreenView {
         try {
           said = JSON.parse(payload.toString());
         } catch {}
+        if (said !== null && typeof said === "object" && typeof said.pointerLock === "boolean") {
+          if (said.pointerLock === this.#lastPointerLock) return;
+          this.#lastPointerLock = said.pointerLock;
+          this.#pointerLock?.(said.pointerLock);
+          return;
+        }
+        if (said !== null && typeof said === "object" && said.mic !== null && typeof said.mic === "object") {
+          const m = said.mic;
+          const epoch = typeof m.epoch === "number" && Number.isInteger(m.epoch) && m.epoch >= 0 ? m.epoch >>> 0 : 0;
+          const mic: ScreenMic = { available: m.available === true, active: m.available === true && m.active === true, epoch };
+          if (this.#micHeard === null) return;
+          this.#lastMic = mic;
+          this.#micHeard(mic);
+          return;
+        }
         // The windows changed, or the one shown alone (asked, or it closed): told; anything else is the helper's log.
         if (said !== null && typeof said === "object" && (Array.isArray(said.windows) || said.window === null || typeof said.window === "number")) {
           const was = this.#windows ?? { windows: [], window: null };
@@ -398,8 +502,17 @@ export class HelperView implements ScreenView {
         } catch {}
         const unit = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
         if (said === null || !unit(said.x) || !unit(said.y)) return;
-        this.#lastCursor = { x: said.x, y: said.y, shape: typeof said.shape === "string" && /^[a-z-]{1,24}$/.test(said.shape) ? said.shape : "default" };
+        // (one of an app's own whose picture it did not say: the default)
+        const shape = typeof said.shape === "string" && CURSOR_SHAPE.test(said.shape) && (!said.shape.startsWith("custom:") || this.#cursorImages.has(said.shape)) ? said.shape : "default";
+        this.#lastCursor = { x: said.x, y: said.y, shape };
         this.#cursor?.(this.#lastCursor);
+        return;
+      }
+      case 11: {
+        const shape = cursorImageShape(payload);
+        if (shape === null) return;
+        if (this.#cursorImages.size >= CURSOR_IMAGES_MOST && !this.#cursorImages.has(shape)) this.#cursorImages.clear();
+        this.#cursorImages.set(shape, new Uint8Array(payload));
         return;
       }
       case 10: {
@@ -416,6 +529,13 @@ export class HelperView implements ScreenView {
         const body = payload.subarray(1);
         const clip: Clip | null = payload[0] === 1 ? { type: "text", text: body.toString("utf8") } : payload[0] === 2 ? { type: "png", data: new Uint8Array(body) } : null;
         if (clip !== null && clipFits(clip)) this.#clipboard?.(clip);
+        return;
+      }
+      case 12: {
+        const privacy = privacyOf(payload[0] ?? 0);
+        const body = payload.subarray(2);
+        const clip: Clip | null = payload[1] === 1 ? { type: "text", text: body.toString("utf8") } : payload[1] === 2 ? { type: "png", data: new Uint8Array(body) } : null;
+        if (clip !== null && clipFits(clip)) this.#clipboard?.(privacy ? { ...clip, privacy } : clip);
         return;
       }
     }
@@ -489,6 +609,35 @@ export class HelperView implements ScreenView {
     };
   }
 
+  watchPointerLock(heard: (locked: boolean) => void): () => void {
+    this.#pointerLock = heard;
+    if (this.#lastPointerLock) heard(true);
+    return () => {
+      if (this.#pointerLock === heard) this.#pointerLock = null;
+    };
+  }
+
+  /// The machine's virtual microphone (Helper's Microphone.swift, stillfail-screen's mic.rs), watched by the helper.
+  #watchMic(heard: (mic: ScreenMic) => void): () => void {
+    this.#micHeard = heard;
+    this.#lastMic = null;
+    this.#send(TO_HELPER.watchMic, Buffer.from([1]));
+    return () => {
+      if (this.#micHeard !== heard) return;
+      this.#micHeard = null;
+      this.#lastMic = null;
+      this.#send(TO_HELPER.watchMic, Buffer.from([0]));
+    };
+  }
+
+  feedMic(pcm16le: Uint8Array, epoch: number) {
+    const mic = this.#lastMic;
+    if (mic === null || !mic.active || mic.epoch !== epoch || pcm16le.byteLength < 2 || pcm16le.byteLength > MIC_PCM_MAX || pcm16le.byteLength % 2 !== 0) return;
+    const head = Buffer.alloc(5);
+    head.writeUInt32BE(epoch >>> 0, 1);
+    this.#send(TO_HELPER.mic, Buffer.concat([head, pcm16le]));
+  }
+
   async reveal(path: string): Promise<void> {
     this.#send(TO_HELPER.reveal, Buffer.from(path, "utf8"));
   }
@@ -499,6 +648,10 @@ export class HelperView implements ScreenView {
     return () => {
       if (this.#cursor === heard) this.#cursor = null;
     };
+  }
+
+  cursorImage(shape: string): Uint8Array | undefined {
+    return this.#cursorImages.get(shape);
   }
 
   watchWindows(heard: (windows: ScreenWindows) => void): () => void {

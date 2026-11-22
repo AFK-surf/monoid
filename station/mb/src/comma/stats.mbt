@@ -23,6 +23,9 @@ let day_ms : Double = 86400000.0
 let settle_ms : Int = 60000
 
 ///|
+pub let fast_settle_ms : Int = 1000
+
+///|
 /// How long a statement on the statistics' database waits for another process's write (a handover's) before SQLite
 /// refuses it.
 pub let busy_ms : Int = 5000
@@ -155,7 +158,7 @@ fn who(person : J?, ref_ : J) -> J {
 /// A string's first `max` characters; None for anything else, or none.
 fn cut(value : J?, max : Int) -> String? {
   match value {
-    Some(Str(u)) if u.length() > 0 => Some(first_points(utext(u), max))
+    Some(Str(u)) if u.length() > 0 => Some(first_points(u, max))
     _ => None
   }
 }
@@ -222,7 +225,7 @@ pub fn stats_rows_of(given : StationRows, from_day : String) -> Map[String, (Str
   for r in usage_rows {
     let rr = Some(r)
     let day = match prop(rr, "day") {
-      Some(Str(u)) => utext(u)
+      Some(Str(u)) => u
       _ => continue
     }
     guard prop(rr, "session") is Some(Str(session)) else { continue }
@@ -296,8 +299,11 @@ pub fn stats_rows_of(given : StationRows, from_day : String) -> Map[String, (Str
 }
 
 ///|
-/// What a Task asks of someone, as Comma takes it: Comma's bounds on whom (`waits_for`), its sentence and its link.
+/// What a Task asks of someone, as Comma takes it: Comma's bounds on whom (`waits_for`), its sentence, its card kind and its link.
 let attention_kinds : Array[String] = ["need", "done", "failed"]
+
+///|
+let card_kinds : Array[String] = ["options", "text", "login", "secret", "device", "rig", "signin"]
 
 ///|
 let max_waits : Int = 8
@@ -337,13 +343,13 @@ fn attention_fields(chat : J) -> Array[(String, J?)] {
     return []
   }
   let kind = match prop(a, "kind") {
-    Some(Str(u)) if attention_kinds.contains(utext(u)) => utext(u)
+    Some(Str(u)) if attention_kinds.contains(u) => u
     _ => return []
   }
   let waits : Array[String] = []
   for w in arr_of(prop(a, "waitsFor")).unwrap_or([]) {
     let email = match w {
-      Str(u) => @jscase.lower(js_trim(utext(u)))
+      Str(u) => @jscase.lower(js_trim(u))
       _ => ""
     }
     if email_like(email) && email.length() <= max_text && waits.length() < max_waits && !waits.contains(email) {
@@ -351,13 +357,18 @@ fn attention_fields(chat : J) -> Array[(String, J?)] {
     }
   }
   let note = match prop(a, "note") {
-    Some(Str(u)) => cut(Some(jstr(js_trim(utext(u)))), max_note)
+    Some(Str(u)) => cut(Some(jstr(js_trim(u))), max_note)
+    _ => None
+  }
+  let card = match prop(a, "card") {
+    Some(Str(u)) if kind == "need" && card_kinds.contains(u) => Some(jstr(u))
     _ => None
   }
   [
     ("attention", Some(jstr(kind))),
     ("waits_for", if waits.length() > 0 { Some(Arr(waits.map(jstr))) } else { None }),
     ("note", note.map(jstr)),
+    ("card", card),
   ]
 }
 
@@ -365,7 +376,7 @@ fn attention_fields(chat : J) -> Array[(String, J?)] {
 /// A chat's link in the app, as Comma takes one: https, at most MAX_URL.
 fn url_of(url : J?) -> J? {
   match url {
-    Some(Str(u)) if utext(u).has_prefix("https://") && u.length() <= max_url => Some(Str(u))
+    Some(Str(u)) if u.has_prefix("https://") && u.length() <= max_url => Some(Str(u))
     _ => None
   }
 }
@@ -667,34 +678,7 @@ fn RevIndex::set_meta(self : RevIndex, key : String, value : String) -> Unit rai
 ///|
 /// The UTC day of `ms` (ms since the epoch) as `new Date(ms).toISOString().slice(0, 10)` says it.
 pub fn iso_day(ms : Double) -> String {
-  let days = (ms / day_ms).floor()
-  // civil from days (Howard Hinnant's)
-  let z = days + 719468.0
-  let era = ((if z >= 0.0 { z } else { z - 146096.0 }) / 146097.0).floor()
-  let doe = z - era * 146097.0
-  let yoe = ((doe - (doe / 1460.0).floor() + (doe / 36524.0).floor() - (doe / 146096.0).floor()) / 365.0).floor()
-  let y = yoe + era * 400.0
-  let doy = doe - (365.0 * yoe + (yoe / 4.0).floor() - (yoe / 100.0).floor())
-  let mp = ((5.0 * doy + 2.0) / 153.0).floor()
-  let d = doy - ((153.0 * mp + 2.0) / 5.0).floor() + 1.0
-  let m = if mp < 10.0 { mp + 3.0 } else { mp - 9.0 }
-  let year = if m <= 2.0 { y + 1.0 } else { y }
-  let pad = (v : Double, w : Int) => {
-    let s = v.abs().to_int64().to_string()
-    let mut out = s
-    while out.length() < w {
-      out = "0" + out
-    }
-    out
-  }
-  let ys = if year >= 0.0 && year <= 9999.0 {
-    pad(year, 4)
-  } else if year < 0.0 {
-    "-" + pad(year, 6)
-  } else {
-    "+" + pad(year, 6)
-  }
-  "\{ys}-\{pad(m, 2)}-\{pad(d, 2)}".unsafe_substring(start=0, end=10)
+  @time.format_iso_ms(ms.floor().to_int64()).view(end_offset=10).to_string()
 }
 
 ///|
@@ -708,10 +692,11 @@ pub struct CommaStats {
   priv mut building : @effect.Deferred[Unit]?
   priv mut again : Bool
   priv mut stops : Array[() -> Unit]?
+  priv mut nudge_ : (() -> Unit)?
   priv mut closed : Bool
   priv mut stop_retry : (() -> Unit)?
   priv read : async (Double, Double) -> ReadRows
-  priv changes : (() -> Unit) -> () -> Unit
+  priv changes : ((Bool) -> Unit) -> () -> Unit
 }
 
 ///|
@@ -720,7 +705,7 @@ pub struct CommaStats {
 pub fn CommaStats::new(
   path : String,
   read : async (Double, Double) -> ReadRows,
-  changes : (() -> Unit) -> () -> Unit,
+  changes : ((Bool) -> Unit) -> () -> Unit,
   io : Io,
   runtime : @effect.Runtime,
   ready? : async () -> Unit = async fn() { () },
@@ -742,6 +727,7 @@ pub fn CommaStats::new(
     building: None,
     again: false,
     stops: None,
+    nudge_: None,
     closed: false,
     stop_retry: None,
     read,
@@ -805,7 +791,7 @@ pub async fn CommaStats::make_dirs(io : Io, data : String) -> Unit {
 pub fn CommaStats::at(
   data : String,
   read : async (Double, Double) -> ReadRows,
-  changes : (() -> Unit) -> () -> Unit,
+  changes : ((Bool) -> Unit) -> () -> Unit,
   io : Io,
   runtime : @effect.Runtime,
   ready? : async () -> Unit = async fn() { () },
@@ -827,7 +813,7 @@ pub fn CommaStats::in_workspace(
   data : String,
   workspace : String,
   read : async (Double, Double) -> ReadRows,
-  changes : (() -> Unit) -> () -> Unit,
+  changes : ((Bool) -> Unit) -> () -> Unit,
   io : Io,
   runtime : @effect.Runtime,
 ) -> CommaStats raise {
@@ -836,30 +822,43 @@ pub fn CommaStats::in_workspace(
 }
 
 ///|
-/// Once Comma is connected first: builds now, a minute after a change, and every hour, until close.
+/// Once Comma is connected first: builds now, a second after a chat moves (a minute after spending alone), and every
+/// hour, until close.
 pub fn CommaStats::start(self : CommaStats) -> Unit {
   if self.closed || self.stops is Some(_) {
     return
   }
   let settle : Ref[(() -> Unit)?] = Ref(None)
-  let stop_changes = (self.changes)(() => {
-    if settle.val is Some(_) {
+  let settle_fast = Ref(false)
+  let schedule = (fast : Bool) => {
+    if settle.val is Some(_) && (settle_fast.val || !fast) {
       return
     }
-    settle.val = Some(
-      (self.io.after)(settle_ms, () => {
+    match settle.val {
+      Some(stop) => {
+        stop()
         settle.val = None
+      }
+      None => ()
+    }
+    settle_fast.val = fast
+    settle.val = Some(
+      (self.io.after)(if fast { fast_settle_ms } else { settle_ms }, () => { // timer: burst debouncing
+        settle.val = None
+        settle_fast.val = false
         self.build()
       }),
     )
-  })
+  }
+  let stop_changes = (self.changes)(schedule)
+  self.nudge_ = Some(() => schedule(true))
   let hourly : Ref[() -> Unit] = Ref(() => ())
   fn tick() {
     self.build()
-    hourly.val = (self.io.after)(every_ms, tick)
+    hourly.val = (self.io.after)(every_ms, tick) // timer: fallback periodic sync
   }
 
-  hourly.val = (self.io.after)(every_ms, tick)
+  hourly.val = (self.io.after)(every_ms, tick) // timer: fallback periodic sync
   self.stops = Some([
     stop_changes,
     () => match settle.val {
@@ -872,11 +871,21 @@ pub fn CommaStats::start(self : CommaStats) -> Unit {
 }
 
 ///|
+/// Schedules a fast build once started (for peer chat-change pushes).
+pub fn CommaStats::nudge(self : CommaStats) -> Unit {
+  match self.nudge_ {
+    Some(f) => f()
+    None => ()
+  }
+}
+
+///|
 pub fn CommaStats::close(self : CommaStats) -> Unit {
   if self.closed {
     return
   }
   self.closed = true
+  self.nudge_ = None
   match self.stop_retry {
     Some(f) => f()
     None => ()
@@ -903,7 +912,11 @@ pub fn CommaStats::build(self : CommaStats) -> Unit {
   let done : @effect.Deferred[Unit] = @effect.Deferred::new()
   self.building = Some(done)
   ignore(
-    self.runtime.fork(async fn() {
+    self.runtime.fork_daemon("comma stats build", on_error=e => {
+        self.io.info("the statistics were not read this time", [("error", Some(jstr(message_of(e))))])
+        self.building = None
+        ignore(done.succeed(()))
+      }, async fn() {
       (async fn() {
         let got = (self.read)(from, now)
         self.apply_build(got.stations, got.unread, from, got.valid)
@@ -1043,7 +1056,7 @@ fn CommaStats::apply_(
   }
   let read = fn(row : J) raise { match prop(Some(row), "station") {
     Some(Null) | None => !unread.contains("")
-    Some(Str(u)) => !unread.contains(utext(u))
+    Some(Str(u)) => !unread.contains(u)
     Some(_) => true
   } }
   // (the write taken first: begun deferred, its read then write was refused at once while the process beside it wrote)
@@ -1091,7 +1104,7 @@ fn CommaStats::apply_(
 /// array as the string it makes, anything else as numbers (a date's string is NaN as a number: never).
 fn js_ge(v : J, text : String) -> Bool {
   match v {
-    Str(u) => units_cmp(utext(u), text) >= 0
+    Str(u) => units_cmp(u, text) >= 0
     Obj(_) | Arr(_) => units_cmp(js_text(v), text) >= 0
     Null => 0.0 >= js_number(text)
     Bool(b) => (if b { 1.0 } else { 0.0 }) >= js_number(text)
@@ -1214,6 +1227,10 @@ pub fn task_wire(row : IndexRow) -> J? {
   }
   let tt = Some(t)
   let attention = prop(tt, "attention") is Some(Str(_))
+  let labels : Array[J] = match (prop(tt, "attention"), prop(tt, "card")) {
+    (Some(Str(att)), Some(Str(c))) if att == "need" && card_kinds.contains(c) => [jstr("card:\{c}")]
+    _ => []
+  }
   Some(
     jo([
       ("thread", Some(jstr(row.key))),
@@ -1226,7 +1243,7 @@ pub fn task_wire(row : IndexRow) -> J? {
       ("last_activity_at", prop(tt, "last_activity_at")),
       ("runtime", prop(tt, "runtime")),
       ("model", prop(tt, "model")),
-      ("labels", Some(Arr([]))),
+      ("labels", Some(Arr(labels))),
       ("attention", if attention { prop(tt, "attention") } else { None }),
       (
         "waits_for",
@@ -1436,7 +1453,7 @@ pub fn held_from(result : J?) -> Held? {
   guard result is Some(Obj(_) | Arr(_)) else { return None }
   let epoch = match prop(result, "epoch") {
     None | Some(Null) => None
-    Some(Str(u)) => Some(utext(u))
+    Some(Str(u)) => Some(u)
     Some(_) => return None
   }
   let through = match prop(result, "through") {

@@ -30,6 +30,9 @@ typedef struct {
   /// The scheme `web_auth` comes back on (UTF-8, kept by the engine): the app's own where each build has one (Android:
   /// its package, so the stable, beta and dev apps side by side each get their own way back). NULL: "stillfail".
   const char *(*auth_scheme)(void);
+  /// The app's input to a remote screen (`json`, UTF-8, `len` bytes: `screen.input`'s `input`) sent straight to its
+  /// station, in order, by the shell that reads its view (`call`) itself: 1, else 0 (the app asks the core). NULL: never.
+  int (*screen_input)(double call, const uint8_t *json, size_t len);
 } mbc_engine;
 
 // mbui's (its src/host/post_api.h, the host's own file): for an engine to hand over (`post`, `post_drop`)

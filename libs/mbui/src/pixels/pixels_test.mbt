@@ -227,3 +227,35 @@ test "a HEIC or AVIF picture's size as it is shown: its primary item's ispe, tur
   assert_eq(@pixels.image_size(heic_sample("heic", 4032, 3024, rot=3, thumb=(512, 384))), Some((3024, 4032)))
   assert_eq(@pixels.image_size(heic_sample("avif", 1920, 1080)), Some((1920, 1080)))
 }
+
+///|
+test "a 4-bit indexed PNG with PLTE and tRNS decodes back to its size and RGBA pixels (even and odd widths)" {
+  let palette = FixedArray::make(16 * 3, b'\x00')
+  let alphas = FixedArray::make(16, b'\x00')
+  for i in 0..<16 {
+    palette[i * 3] = (i * 16).to_byte()
+    palette[i * 3 + 1] = (255 - i * 15).to_byte()
+    palette[i * 3 + 2] = (i * 7 + 3).to_byte()
+    alphas[i] = (i * 15).to_byte()
+  }
+  for dims in [(6, 3), (5, 4)] {
+    let (w, h) = dims
+    let indices = FixedArray::make(w * h, b'\x00')
+    for y in 0..<h {
+      for x in 0..<w {
+        indices[y * w + x] = ((y * 5 + x * 3) & 0xF).to_byte()
+      }
+    }
+    let png = @pixels.png_indexed(w, h, palette, alphas, indices)
+    assert_eq(@pixels.image_size(png), Some((w, h)))
+    guard @pixels.decode_png(png) is Some((dw, dh, rgba)) else { fail("decode_png failed") }
+    assert_eq((dw, dh), (w, h))
+    for i in 0..<(w * h) {
+      let idx = indices[i].to_int()
+      assert_eq(rgba[i * 4], palette[idx * 3])
+      assert_eq(rgba[i * 4 + 1], palette[idx * 3 + 1])
+      assert_eq(rgba[i * 4 + 2], palette[idx * 3 + 2])
+      assert_eq(rgba[i * 4 + 3], alphas[idx])
+    }
+  }
+}

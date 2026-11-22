@@ -162,63 +162,17 @@ pub fn Answered::data(self : Answered) -> JV {
 ///|
 /// application/x-www-form-urlencoded's byte serializer (URLSearchParams').
 fn form_encode(s : String) -> String {
-  let out = StringBuilder::new()
-  let hex = "0123456789ABCDEF"
-  for b in utf8(s) {
-    let c = b.to_int()
-    if (c >= 'a' && c <= 'z') ||
-      (c >= 'A' && c <= 'Z') ||
-      (c >= '0' && c <= '9') ||
-      c is ('*' | '-' | '.' | '_') {
-      out.write_char(c.unsafe_to_char())
-    } else if c == 0x20 {
-      out.write_char('+')
-    } else {
-      out.write_char('%')
-      out.write_char(hex.unsafe_charcode_at(c >> 4).unsafe_to_char())
-      out.write_char(hex.unsafe_charcode_at(c & 15).unsafe_to_char())
-    }
-  }
-  out.to_string()
-}
-
-///|
-fn hex_digit(c : Int) -> Int? {
-  if c >= '0' && c <= '9' {
-    Some(c - '0')
-  } else if c >= 'a' && c <= 'f' {
-    Some(c - 'a' + 10)
-  } else if c >= 'A' && c <= 'F' {
-    Some(c - 'A' + 10)
-  } else {
-    None
-  }
+  @url.percent_encode(
+    s,
+    c => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c is ('*' | '-' | '.' | '_'),
+    space_plus=true,
+  )
 }
 
 ///|
 /// application/x-www-form-urlencoded's parser's percent-decoding of one name or value (`+` a space).
 fn form_decode(s : String) -> String {
-  let bytes = utf8(s)
-  let out = []
-  let n = bytes.length()
-  let mut i = 0
-  while i < n {
-    let c = bytes[i].to_int()
-    if c == '+' {
-      out.push(b' ')
-      i += 1
-    } else if c == '%' &&
-      i + 2 < n &&
-      hex_digit(bytes[i + 1].to_int()) is Some(h) &&
-      hex_digit(bytes[i + 2].to_int()) is Some(l) {
-      out.push((h * 16 + l).to_byte())
-      i += 3
-    } else {
-      out.push(bytes[i])
-      i += 1
-    }
-  }
-  utf8_text(Bytes::from_array(out))
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|
@@ -334,7 +288,7 @@ pub fn multipart(body : JV?, files : Array[FilePart]) -> Bytes {
     Some(Str(s)) => {
       let parts = []
       for i in 0..<s.length() {
-        parts.push((i.to_string(), Str(s.unsafe_substring(start=i, end=i + 1))))
+        parts.push((i.to_string(), JV::Str(s.unsafe_substring(start=i, end=i + 1))))
       }
       parts
     }
@@ -575,7 +529,7 @@ async fn FeishuClient::raw(
     }
     let said = utf8_text(response.body, bom=true)
     let data = if said == "" {
-      Obj([])
+      JV::Obj([])
     } else {
       match try_parse(said) {
         Some(d) => d

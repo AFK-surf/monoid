@@ -3,6 +3,52 @@
 // ran.
 
 ///|
+/// A file's hover card attached to `row` using `file_link_card` + `@sf.hover_card_node`.
+fn file_peek_test_node(
+  row : @view.View,
+  src : Source,
+  station : String,
+  session : String,
+  path : String,
+  line : Int?,
+) -> Unit {
+  let layer : Ref[@view.View?] = Ref(None)
+  let tips = @sf.TipLayer::new(fn() {
+    match layer.val {
+      Some(_) as l => l
+      None => {
+        let l = peek_layer(row).box(fn(h) { h.over(Is(true)).over_all(Is(true)) |> ignore }).lives_with(row)
+        layer.val = Some(l)
+        Some(l)
+      }
+    }
+  })
+  let hand_ref : Ref[@sf.HoverHand?] = Ref(None)
+  let card = file_link_card(
+    {
+      node: row,
+      href: path,
+      words: fn() { path },
+      first: 0,
+      pointed: fn() { @sf.hovered_in_node(row) },
+      reading: fn() {
+        @sf.hovered_in_node(row) ||
+        (match hand_ref.val {
+          Some(h) => (h.card)() is Some(_)
+          None => false
+        })
+      },
+    },
+    src,
+    station,
+    session,
+    path,
+    line,
+  )
+  hand_ref.val = Some(@sf.hover_card_node(tips, row, card.body, tile=card.tile))
+}
+
+///|
 test "a link's card is read as the pointer comes onto it and let go of once it has gone, read again the next time" {
   @sfbase.reset()
   let href = "https://github.com/AFK-surf/Cue/pull/4466"
@@ -27,24 +73,24 @@ test "a link's card is read as the pointer comes onto it and let go of once it h
       read.push("left")
     },
   }
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sfbase.held_build()
-      c.after_build("held/end", fn() { @sfbase.held_end() })
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.column(pad=40.0, fn() {
-          let link = @kit.button(c, "PR #4466", key="pr", variant=Ghost)
-          web_peek(c, src, "st", href, "PR #4466", link.id)
-        })
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=800.0, h=800.0, native=Mouse, pointing=Mouse)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(col) {
+      col.pad(Is(40.0)) |> ignore
+      col.box(fn(link) {
+        link
+        .width(Is(Some(160.0)))
+        .height(Is(Some(32.0)))
+        .on_press(fn() {  })
+        .says(Is(Some(@view.said(Button, label="PR #4466"))))
         |> ignore
+        web_peek_node(link, src, "st", fn() { href }, fn() { "PR #4466" })
       })
-    },
-    w=800.0,
-    h=800.0,
-    native=Mouse,
-    pointing=Mouse,
-  )
+      |> ignore
+    })
+    |> ignore
+  })
   t.draw()
   assert_eq(read, [])
   let (x, y, w, h) = t.get(@ui.Role::Button, label="PR #4466").rect
@@ -55,9 +101,9 @@ test "a link's card is read as the pointer comes onto it and let go of once it h
   assert_eq(left, [])
   // the pointer gone, the card goes; once it has, what it read is let go of, once
   t.move_to(700.0, 700.0)
-  t.run_for((hover_close_ms + hover_out_ms) * 2.0)
+  t.run_for((hover_close_ms + @sf.hover_card_out_ms) * 2.0)
   assert_eq(left, ["linkPreview"])
-  t.run_for((hover_close_ms + hover_out_ms) * 2.0)
+  t.run_for((hover_close_ms + @sf.hover_card_out_ms) * 2.0)
   assert_eq(left, ["linkPreview"])
   // pointed at again: read again
   t.move_to(x + w / 2.0, y + h / 2.0)
@@ -83,18 +129,16 @@ fn chat_card_tester(href : String, linked : LinkedChat?, said : (Map[String, Jso
       }
     },
   }
-  @ui.Tester::new(
-    fn(c) {
-      @sfbase.held_build()
-      c.after_build("held/end", fn() { @sfbase.held_end() })
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() { c.column(pad=40.0, fn() { chat_card(c, src, "card", "ws1/st1", href, linked) }) |> ignore })
-    },
-    w=800.0,
-    h=800.0,
-    native=Mouse,
-    pointing=Mouse,
-  )
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=800.0, h=800.0, native=Mouse, pointing=Mouse)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(col) {
+      col.pad(Is(40.0)) |> ignore
+      chat_card_node(col, src, "card", "ws1/st1", fn() { href }, fn() { linked })
+    })
+    |> ignore
+  })
+  t
 }
 
 ///|
@@ -144,7 +188,6 @@ test "a link to a chat alone reads no message; one archived or gone says so" {
 ///|
 test "a file is read on every entry, including while its card is still open" {
   @sfbase.reset()
-  hovered_file.val = None
   let reads = Ref(0)
   let active = Ref(false)
   let made = @sfbase.made_source()
@@ -163,23 +206,24 @@ test "a file is read on every entry, including while its card is still open" {
     release: fn(name, _) { if name == "filePeek" { active.val = false } },
     refresh: fn(name, _) { if name == "filePeek" && active.val { reads.val += 1 } },
   }
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sfbase.held_build()
-      c.after_build("held/end", fn() { @sfbase.held_end() })
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.column(pad=40.0, fn() {
-          let link = @kit.button(c, "src/a.ts", key="file", variant=Ghost)
-          file_peek(c, src, "st", "session", "src/a.ts", None, link.id)
-        }) |> ignore
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=800.0, h=800.0, native=Mouse, pointing=Mouse)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(col) {
+      col.pad(Is(40.0)) |> ignore
+      col.box(fn(link) {
+        link
+        .width(Is(Some(160.0)))
+        .height(Is(Some(32.0)))
+        .on_press(fn() {  })
+        .says(Is(Some(@view.said(Button, label="src/a.ts"))))
+        |> ignore
+        file_peek_test_node(link, src, "st", "session", "src/a.ts", None)
       })
-    },
-    w=800.0,
-    h=800.0,
-    native=Mouse,
-    pointing=Mouse,
-  )
+      |> ignore
+    })
+    |> ignore
+  })
   // (its card's made-up file while it is read, in its bones: none of its code coloured, nothing asked of the core)
   let inked = Ref(0)
   let kept = @sf.kept_call.val
@@ -210,7 +254,6 @@ test "a file is read on every entry, including while its card is still open" {
 ///|
 fn file_card_refresh_case(intermediate : Bool) -> Unit raise {
   @sfbase.reset()
-  hovered_file.val = None
   let sent : Array[String] = []
   let client = @core.Client::new(fn(s) { sent.push(s) })
   let made = @sfbase.made_source()
@@ -227,23 +270,24 @@ fn file_card_refresh_case(intermediate : Bool) -> Unit raise {
     release: fn(name, params) { client.release_topic(name, params~) },
     refresh: fn(name, params) { client.refresh_topic(name, params~) },
   }
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sfbase.held_build()
-      c.after_build("held/end", fn() { @sfbase.held_end() })
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.column(pad=40.0, fn() {
-          let link = @kit.button(c, "src/a.ts", key="file", variant=Ghost)
-          file_peek(c, src, "ws/st", "session", "src/a.ts", Some(12), link.id)
-        }) |> ignore
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=800.0, h=800.0, native=Mouse, pointing=Mouse)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(col) {
+      col.pad(Is(40.0)) |> ignore
+      col.box(fn(link) {
+        link
+        .width(Is(Some(160.0)))
+        .height(Is(Some(32.0)))
+        .on_press(fn() {  })
+        .says(Is(Some(@view.said(Button, label="src/a.ts"))))
+        |> ignore
+        file_peek_test_node(link, src, "ws/st", "session", "src/a.ts", Some(12))
       })
-    },
-    w=800.0,
-    h=800.0,
-    native=Mouse,
-    pointing=Mouse,
-  )
+      |> ignore
+    })
+    |> ignore
+  })
   t.draw()
   let (x, y, w, h) = t.get(@ui.Role::Button, label="src/a.ts").rect
   let entered = t.time()
@@ -278,8 +322,8 @@ fn file_card_refresh_case(intermediate : Bool) -> Unit raise {
   assert_eq(sent.length(), 3, msg="the open card still holds the topic")
   t.frame_at(left + hover_close_ms)
   assert_eq(sent.length(), 3, msg="the leaving card still holds the topic")
-  if intermediate { t.frame_at(left + hover_close_ms + hover_out_ms / 2.0) }
-  t.frame_at(left + hover_close_ms + hover_out_ms)
+  if intermediate { t.frame_at(left + hover_close_ms + @sf.hover_card_out_ms / 2.0) }
+  t.frame_at(left + hover_close_ms + @sf.hover_card_out_ms)
   t.frame()
   assert_eq(sent.length(), 4)
   assert_true(sent[3].contains("\"id\":2") && sent[3].contains("\"unsubscribe\":true"))

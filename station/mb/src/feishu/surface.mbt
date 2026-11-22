@@ -287,7 +287,8 @@ pub fn file_type(name : String) -> String {
   let ext = @jscase.lower(extname(name))
   if ext == ".opus" {
     "opus"
-  } else if ext is (".mp4" | ".mov" | ".m4v") {
+  } else if ext == ".mp4" {
+    // Only MP4 itself: Feishu checks the container, so a QuickTime .mov goes as a plain file.
     "mp4"
   } else if ext == ".pdf" {
     "pdf"
@@ -299,6 +300,18 @@ pub fn file_type(name : String) -> String {
     "ppt"
   } else {
     "stream"
+  }
+}
+
+///|
+/// The message type a file of that type is sent as: Feishu refuses any other (230055).
+fn file_msg_type(kind : String) -> String {
+  if kind == "mp4" {
+    "media"
+  } else if kind == "opus" {
+    "audio"
+  } else {
+    "file"
   }
 }
 
@@ -334,8 +347,8 @@ pub let stale_ms : Int = 45_000
 let email_again_ms : Double = 24.0 * 60.0 * 60_000.0
 
 ///|
-/// A question posted, kept until it is answered: what it said, for the answered card (its card and thread kept with
-/// it as the TypeScript kept them, read by nothing yet).
+/// A question posted, kept until it is answered: what it said, for the answered card, and the thread it answers in
+/// (its card kept with it as the TypeScript keeps it, read by nothing yet).
 #warnings("-unused_field")
 priv struct Asked {
   text : String
@@ -362,6 +375,9 @@ pub(all) struct FeishuSurfaceOptions {
   /// In a group, one conversation for each thread, begun by an @ and answered in it (「会话怎么分」); else one
   /// for the group.
   thread_mode : Bool
+  /// In a direct chat, one conversation for each thread, as a group's in thread mode: each message outside a thread
+  /// begins one, answered in it; else one for the chat.
+  direct_threads : Bool
   /// Keeps names across restarts and lets the admin API ask without waiting (knownPerson, knownChannel).
   book : NameBook?
   /// The client (tests: one pointed at a stand-in); None: one of the app's.
@@ -382,6 +398,7 @@ pub struct FeishuSurface {
   priv options : FeishuSurfaceOptions
   priv threads : FeishuThreads
   priv thread_mode : Bool
+  priv direct_threads : Bool
   priv words : Words
   priv log : Log
   priv book : NameBook?
@@ -432,6 +449,7 @@ pub fn FeishuSurface::new(
     options,
     threads: options.threads,
     thread_mode: options.thread_mode,
+    direct_threads: options.direct_threads,
     words: options.words,
     log: options.log,
     book: options.book,
@@ -454,18 +472,23 @@ pub fn FeishuSurface::new(
 ///|
 /// Who its bot is, as Feishu says now.
 pub async fn FeishuSurface::identify(self : FeishuSurface) -> BotIdentity {
-  identity_of(self.client)
+  let me = identity_of(self.client)
+  if me.bot_user_id != "" {
+    self.me = Some(me)
+  }
+  me
 }
 
 ///|
 /// An identity it cannot work as: a Feishu app without a bot.
 pub fn FeishuSurface::usable(
-  _self : FeishuSurface,
+  self : FeishuSurface,
   identity : BotIdentity,
 ) -> Unit raise FeishuError {
   if identity.bot_user_id == "" {
     raise FeishuError("this Feishu app has no bot: turn on its bot capability")
   }
+  self.me = Some(identity)
 }
 
 ///|
@@ -580,7 +603,7 @@ pub fn FeishuSurface::socket_hooks(
         _ => ()
       }
       ignore(
-        self.rt.fork(async fn() {
+        self.rt.fork_daemon("feishu catch up", on_error=_ => (), async fn() {
           self.catch_up(handler) catch {
             e =>
               self.log.warn(
@@ -618,7 +641,7 @@ pub fn FeishuSurface::socket_hooks(
       let whole = self.parts.add(frame, now)
       guard whole is Some(whole) else { return }
       ignore(
-        self.rt.fork(async fn() {
+        self.rt.fork_daemon("feishu event", on_error=e => self.log.warn("feishu", "a feishu event was not answered", jobj([("connect", Some(js(self.connect))), ("error", Some(js(error_words(e))))])), async fn() {
           let answer = try {
             let envelope = parse(frame_text(whole))
             self.take(envelope, handler)
@@ -827,7 +850,7 @@ async fn FeishuSurface::heard(
     let topic = m.topic.unwrap()
     self.threads.heard_topic(self.connect, topic, m.root.unwrap_or(m.id))
     js(topic)
-  } else if self.thread_mode && !m.p2p {
+  } else if (if m.p2p { self.direct_threads } else { self.thread_mode }) {
     let ts = m.root.unwrap_or(m.id)
     if m.topic is Some(_) || m.addressed {
       self.threads.heard_topic(self.connect, ts, ts)
@@ -893,8 +916,15 @@ async fn FeishuSurface::answered(
   let a = card_answer_of(event, event_id)
   guard a is Some(a) else { return None }
   let value = a.value
-  guard jget(Some(value), "sf") == Some(Str("answer")) &&
-    jget(Some(value), "t") is Some(Str(thread)) else {
+  guard jget(Some(value), "sf") == Some(Str("answer")) else { return None }
+  let asked = self.asked.get(a.message)
+  // (a button pressed before its card was changed to name its thread, a conversation's first message: the thread kept)
+  let thread = match (jget(Some(value), "t"), asked) {
+    (Some(Str(t)), _) if t != "" => t
+    (_, Some(q)) => q.thread
+    _ => ""
+  }
+  if thread == "" {
     return None
   }
   let lang = (self.words.station_lang)()
@@ -917,7 +947,6 @@ async fn FeishuSurface::answered(
       ]),
     )
   }
-  let asked = self.asked.get(a.message)
   if asked is Some(q) && q.answered {
     return Some(
       jobj([
@@ -1034,8 +1063,89 @@ fn line_key(thread : ThreadRef) -> String {
 }
 
 ///|
+/// Each file uploaded, as the message that sends it: an image as one (larger ones as files), any other file as the
+/// message type its file type takes. All of them before anything is sent (FB-41).
+async fn FeishuSurface::upload(
+  self : FeishuSurface,
+  files : Array[Attachment],
+) -> Array[(String, String)] {
+  let uploaded : Array[(String, String)] = []
+  for file in files {
+    let bytes = match (self.options.disk.read)(file.path) {
+      Some(b) => b
+      None =>
+        raise FeishuError(
+          "ENOENT: no such file or directory, open '\{file.path}'",
+        )
+    }
+    if is_image_name(file.name) && bytes.length() <= max_image {
+      let up = self.client.call(
+        "POST",
+        "/open-apis/im/v1/images",
+        body=Some(jobj([("image_type", Some(js("message")))])),
+        files=[
+          { field: "image", bytes, name: file.name, mime: "application/octet-stream" },
+        ],
+      )
+      uploaded.push(
+        (
+          "image",
+          stringify(
+            jobj([("image_key", jget(jget(Some(up), "data"), "image_key"))]),
+          ),
+        ),
+      )
+    } else {
+      let kind = file_type(file.name)
+      let up = self.client.call(
+        "POST",
+        "/open-apis/im/v1/files",
+        body=Some(
+          jobj([
+            ("file_type", Some(js(kind))),
+            ("file_name", Some(js(file.name))),
+          ]),
+        ),
+        files=[
+          { field: "file", bytes, name: file.name, mime: "application/octet-stream" },
+        ],
+      )
+      uploaded.push(
+        (
+          file_msg_type(kind),
+          stringify(
+            jobj([("file_key", jget(jget(Some(up), "data"), "file_key"))]),
+          ),
+        ),
+      )
+    }
+  }
+  uploaded
+}
+
+///|
+/// A question posted as message `id`, kept until it is answered.
+fn FeishuSurface::ask(
+  self : FeishuSurface,
+  id : String,
+  message : String,
+  card : JV,
+  thread_ts : String,
+) -> Unit {
+  self.asked[id] = { text: message, card, thread: thread_ts, answered: false }
+  // The oldest go once there are many: an answer to one of those shows as said, without its card changed.
+  if self.asked.length() > 500 {
+    match self.asked.keys().next() {
+      Some(oldest) => self.asked.remove(oldest)
+      None => ()
+    }
+  }
+}
+
+///|
 /// The agent's words as rich text (a question's as a card, its buttons or field with them), then each file as a message
-/// of its own. The first message's id stands for the whole.
+/// of its own. Every file is uploaded before anything is sent, so a file that fails leaves no words posted alone. The
+/// first message's id stands for the whole.
 pub async fn FeishuSurface::post(
   self : FeishuSurface,
   thread : ThreadRef,
@@ -1043,11 +1153,6 @@ pub async fn FeishuSurface::post(
   files : Array[Attachment],
   card? : JV? = None,
 ) -> String {
-  match self.lines.get(line_key(thread)) {
-    Some(line) => line.spoke()
-    None => ()
-  }
-  let mut first : String? = None
   let lang = (self.words.station_lang)()
   let question = match card {
     Some(Obj(_) as c) if jget(Some(c), "type") is Some(Str("options" | "text")) =>
@@ -1064,74 +1169,27 @@ pub async fn FeishuSurface::post(
       ]
     None => text_posts(message).map(p => ("post", p))
   }
+  if sends.length() == 0 && files.length() == 0 {
+    raise FeishuError("nothing to post")
+  }
+  let uploaded = self.upload(files)
+  match self.lines.get(line_key(thread)) {
+    Some(line) => line.spoke()
+    None => ()
+  }
+  let mut first : String? = None
   for s in sends {
     let id = self.send(thread, s.0, s.1)
     if first is None {
       first = Some(id)
     }
     match question {
-      Some(q) => {
-        self.asked[id] = {
-          text: message,
-          card: q,
-          thread: thread.thread_ts,
-          answered: false,
-        }
-        // The oldest go once there are many: an answer to one of those shows as said, without its card changed.
-        if self.asked.length() > 500 {
-          match self.asked.keys().next() {
-            Some(oldest) => self.asked.remove(oldest)
-            None => ()
-          }
-        }
-      }
+      Some(q) => self.ask(id, message, q, thread.thread_ts)
       None => ()
     }
   }
-  for file in files {
-    let bytes = match (self.options.disk.read)(file.path) {
-      Some(b) => b
-      None =>
-        raise FeishuError(
-          "ENOENT: no such file or directory, open '\{file.path}'",
-        )
-    }
-    let id = if is_image_name(file.name) && bytes.length() <= max_image {
-      let up = self.client.call(
-        "POST",
-        "/open-apis/im/v1/images",
-        body=Some(jobj([("image_type", Some(js("message")))])),
-        files=[
-          { field: "image", bytes, name: file.name, mime: "application/octet-stream" },
-        ],
-      )
-      self.send(
-        thread,
-        "image",
-        stringify(
-          jobj([("image_key", jget(jget(Some(up), "data"), "image_key"))]),
-        ),
-      )
-    } else {
-      let up = self.client.call(
-        "POST",
-        "/open-apis/im/v1/files",
-        body=Some(
-          jobj([
-            ("file_type", Some(js(file_type(file.name)))),
-            ("file_name", Some(js(file.name))),
-          ]),
-        ),
-        files=[
-          { field: "file", bytes, name: file.name, mime: "application/octet-stream" },
-        ],
-      )
-      self.send(
-        thread,
-        "file",
-        stringify(jobj([("file_key", jget(jget(Some(up), "data"), "file_key"))])),
-      )
-    }
+  for u in uploaded {
+    let id = self.send(thread, u.0, u.1)
     if first is None {
       first = Some(id)
     }
@@ -1284,88 +1342,127 @@ pub fn FeishuSurface::permalink(
 }
 
 ///|
-/// A new message in the chat, as the agent's words are (rich text): in a topic group a topic of its own; elsewhere the
-/// chat's conversation from now on, as a new one asked for in it begins (「会话怎么分」).
+/// A new message in the chat, as the agent's words are (rich text, or a question's card), its files after it: in a topic
+/// group a topic of its own; elsewhere the chat's conversation from now on, as a new one asked for in it begins
+/// (「会话怎么分」), or in thread mode a thread of its own. Every file is uploaded before anything is sent, as `post`'s.
 pub async fn FeishuSurface::begin(
   self : FeishuSurface,
   chat : String,
   message : String,
+  files? : Array[Attachment] = [],
+  card? : JV? = None,
 ) -> (ThreadRef, String) {
-  let topics = self.chat_info(chat).topics
-  let mut first : JV = Null
-  let mut thread : ThreadRef? = None
-  for content in text_posts(message) {
-    match thread {
-      Some(t) => {
-        ignore(self.send(t, "post", content))
-        continue
-      }
-      None => ()
-    }
-    first = nullish(
+  let lang = (self.words.station_lang)()
+  let question = match card {
+    Some(Obj(_) as c) if jget(Some(c), "type") is Some(Str("options" | "text")) =>
+      Some(c)
+    _ => None
+  }
+  // (a question's buttons name the thread they answer in, known once its message is: changed to it then)
+  let sends = match question {
+    Some(q) =>
+      [("interactive", inline(question_card(self.words, message, Some(q), "", lang)))]
+    None => text_posts(message).map(p => ("post", p))
+  }
+  if sends.length() == 0 && files.length() == 0 {
+    raise FeishuError("nothing to post")
+  }
+  let uploaded = self.upload(files)
+  let info = self.chat_info(chat)
+  let topics = info.topics
+  let all = [..sends, ..uploaded]
+  let first = nullish(
+    jget(
+      Some(
+        self.client.call(
+          "POST",
+          "/open-apis/im/v1/messages",
+          body=Some(
+            jobj([
+              ("receive_id", Some(js(chat))),
+              ("msg_type", Some(js(all[0].0))),
+              ("content", Some(js(all[0].1))),
+            ]),
+          ),
+          query=[("receive_id_type", "chat_id")],
+        ),
+      ),
+      "data",
+    ),
+    Obj([]),
+  )
+  let id = text(jget(Some(first), "message_id"))
+  if id == "" {
+    raise FeishuError("feishu gave no message_id")
+  }
+  let mut topic = if topics { text(jget(Some(first), "thread_id")) } else { "" }
+  // A topic group's message is a topic, whose id Feishu may leave out of the answer: read the message back.
+  if topics && topic == "" {
+    topic = text(
       jget(
-        Some(
+        jat(
+          jget(
+            jget(
+              Some(
+                self.client.call(
+                  "GET",
+                  "/open-apis/im/v1/messages/\{encode_uri_component(id)}",
+                ),
+              ),
+              "data",
+            ),
+            "items",
+          ),
+          0,
+        ),
+        "thread_id",
+      ),
+    )
+  }
+  let thread : ThreadRef = if topic != "" {
+    self.threads.heard_topic(self.connect, topic, id)
+    ThreadRef::{ channel: chat, thread_ts: topic }
+  } else {
+    if (if info.p2p { self.direct_threads } else { self.thread_mode }) {
+      self.threads.heard_topic(self.connect, id, id)
+    } else {
+      self.threads.begin(self.connect, chat, id)
+    }
+    ThreadRef::{ channel: chat, thread_ts: id }
+  }
+  match question {
+    Some(q) => {
+      self.ask(id, message, q, thread.thread_ts)
+      // (only an options card's buttons name the thread: a text card's field does not)
+      if jget(Some(q), "type") is Some(Str("options")) {
+        ignore(
           self.client.call(
-            "POST",
-            "/open-apis/im/v1/messages",
+            "PATCH",
+            "/open-apis/im/v1/messages/\{encode_uri_component(id)}",
             body=Some(
               jobj([
-                ("receive_id", Some(js(chat))),
-                ("msg_type", Some(js("post"))),
-                ("content", Some(js(content))),
-              ]),
-            ),
-            query=[("receive_id_type", "chat_id")],
-          ),
-        ),
-        "data",
-      ),
-      Obj([]),
-    )
-    let id = text(jget(Some(first), "message_id"))
-    if id == "" {
-      raise FeishuError("feishu gave no message_id")
-    }
-    let mut topic = if topics { text(jget(Some(first), "thread_id")) } else { "" }
-    // A topic group's message is a topic, whose id Feishu may leave out of the answer: read the message back.
-    if topics && topic == "" {
-      topic = text(
-        jget(
-          jat(
-            jget(
-              jget(
-                Some(
-                  self.client.call(
-                    "GET",
-                    "/open-apis/im/v1/messages/\{encode_uri_component(id)}",
+                (
+                  "content",
+                  Some(
+                    js(
+                      inline(
+                        question_card(self.words, message, Some(q), thread.thread_ts, lang),
+                      ),
+                    ),
                   ),
                 ),
-                "data",
-              ),
-              "items",
+              ]),
             ),
-            0,
           ),
-          "thread_id",
-        ),
-      )
-    }
-    if topic != "" {
-      self.threads.heard_topic(self.connect, topic, id)
-      thread = Some({ channel: chat, thread_ts: topic })
-    } else {
-      if self.thread_mode {
-        self.threads.heard_topic(self.connect, id, id)
-      } else {
-        self.threads.begin(self.connect, chat, id)
+        )
       }
-      thread = Some({ channel: chat, thread_ts: id })
     }
+    None => ()
   }
-  match thread {
-    Some(t) => (t, text(jget(Some(first), "message_id")))
-    None => raise FeishuError("nothing to post")
+  for u in all[1:] {
+    ignore(self.send(thread, u.0, u.1))
   }
+  (thread, id)
 }
 
 ///|
@@ -1913,7 +2010,7 @@ pub async fn FeishuSurface::api(
     }
     return self.client.api(verb, path, body=None, query~, take_file=true)
   }
-  let body = Obj([])
+  let body = JV::Obj([])
   let mut query : JV? = None
   for k in jkeys(params) {
     if k == "query" {

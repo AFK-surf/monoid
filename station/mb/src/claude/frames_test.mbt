@@ -101,10 +101,9 @@ let as_typescript_said : Array[(String, String, Bool, Int)] = [
 ///|
 test "a failure's reason, as the TypeScript station told it" {
   for c in as_typescript_said {
-    let text = @jsjson.units(c.0)
-    assert_eq(@claude.classify_result(text), c.1, msg=c.0)
-    assert_eq(@claude.refused(text), c.2, msg=c.0)
-    assert_eq(@claude.chars(text, 1000).length(), c.3, msg=c.0)
+    assert_eq(@claude.classify_result(c.0), c.1, msg=c.0)
+    assert_eq(@claude.refused(c.0), c.2, msg=c.0)
+    assert_eq(@claude.chars(c.0, 1000).length(), c.3, msg=c.0)
   }
 }
 
@@ -116,7 +115,7 @@ fn outcomes(frames : Array[String], turn? : @claude.Turn = @claude.Turn::new()) 
     @claude.on_frame(
       @jsjson.parse(f),
       turn,
-      e => if e.get("type") is Some(Str(t)) && t == @jsjson.units("turnEnded") {
+      e => if e.get("type") is Some(Str(t)) && t == "turnEnded" {
         out.push(@jsjson.stringify(e.get("outcome").unwrap()))
       },
       () => (),
@@ -130,7 +129,7 @@ fn outcomes(frames : Array[String], turn? : @claude.Turn = @claude.Turn::new()) 
 ///|
 test "a failed result is told apart by what claude said; is_error decides, not subtype" {
   for text in ["You've hit your 5-hour limit · resets 7:50am (UTC)", "You've hit your 5 hour limit", "You've hit your 3-hour limit"] {
-    let said = @jsjson.stringify(Str(@jsjson.units(text)))
+    let said = @jsjson.stringify(Str(text))
     assert_eq(outcomes(["{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\{said}}"]), [
       "{\"kind\":\"failed\",\"reason\":\"rate_limit\",\"message\":\{said}}",
     ])
@@ -140,9 +139,9 @@ test "a failed result is told apart by what claude said; is_error decides, not s
     "{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"API Error: 401 invalid x-api-key\"}",
   ])
   // What is kept of it: 1000 characters, a pair of surrogates one.
-  let long = @jsjson.stringify(Str(@jsjson.units(rep("😀", 1001))))
+  let long = @jsjson.stringify(Str(rep("😀", 1001)))
   assert_eq(outcomes(["{\"type\":\"result\",\"is_error\":true,\"result\":\{long}}"]), [
-    "{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\{@jsjson.stringify(Str(@jsjson.units(rep("😀", 1000))))}}",
+    "{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\{@jsjson.stringify(Str(rep("😀", 1000)))}}",
   ])
 }
 
@@ -220,7 +219,7 @@ test "an API key's credits run out: a limit, so another account takes the sessio
     "Credit balance is too low",
     "API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"}}",
   ] {
-    assert_eq(@claude.classify_result(@jsjson.units(text)), "rate_limit", msg=text)
-    assert_eq(@claude.failure_of(@jsjson.units(text)), "rate_limit", msg=text)
+    assert_eq(@claude.classify_result(text), "rate_limit", msg=text)
+    assert_eq(@claude.failure_of(text), "rate_limit", msg=text)
   }
 }

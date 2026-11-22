@@ -4,10 +4,13 @@
 // read whole from a station from before that, what came before a cut kept.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { constants, createZstdCompress, zstdCompressSync } from "node:zlib";
 import { Deferred, Effect } from "effect";
 import type { Core } from "../src/core.ts";
-import { HostError } from "../src/error.ts";
+import { asCoreError, HostError } from "../src/error.ts";
 import { Priority } from "../src/sync/scheduler.ts";
+import { StationAddr } from "../src/station/addr.ts";
+import { BATCH_LINES, NDJSON } from "../src/station/requests.ts";
 import { HostWire, type StationWire } from "../src/station/wire.ts";
 import type { FakeHost } from "../src/testing.ts";
 import { READ_RETRY_MS } from "../src/station/sync.ts";
@@ -239,9 +242,153 @@ test("a_history_batch_asks_its_answer_streamed_and_carries_no_write_key", async 
   const { host, core } = await started(manyChats(3, 3));
   const r = host.requests.find((x) => x.method === "POST" && x.url.endsWith("/admin/api/batch"))!;
   const header = (k: string) => r.headers.find(([n]) => n.toLowerCase() === k)?.[1];
-  assert.ok(header("accept")?.includes("application/x-ndjson"));
+  assert.equal(header("accept"), `${BATCH_LINES}, application/json`);
+  assert.ok(!header("accept")?.includes(NDJSON));
   assert.equal(header("idempotency-key"), undefined);
   for (const id of [1, 3]) assert.deepEqual(core.inner.data.logNumbers("entry", ST, String(id)), [1, 2, 3]);
   core.close();
+});
+
+/// Compress chunks with real zstd stream flushing each chunk; `finish=false` reproduces the old station bug (no frame end).
+async function zstdStreamBytes(chunks: Uint8Array[], finish: boolean): Promise<Uint8Array> {
+  const z = createZstdCompress({ params: { [constants.ZSTD_c_compressionLevel]: 3, [constants.ZSTD_c_windowLog]: 20 } });
+  const out: Buffer[] = [];
+  z.on("data", (p: Buffer) => out.push(p));
+  for (const c of chunks) {
+    await new Promise<void>((resolve, reject) => {
+      z.write(c, (err) => err && reject(err));
+      z.flush(constants.ZSTD_e_flush, () => resolve());
+    });
+  }
+  if (finish) {
+    await new Promise<void>((resolve, reject) => {
+      z.once("error", reject);
+      z.once("end", resolve);
+      z.end();
+    });
+  }
+  z.close();
+  return new Uint8Array(Buffer.concat(out));
+}
+
+test("batch_negotiation_matrix_strict_edges_and_over_six_compressed_batches", async () => {
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const replyWith = (status: number, headers: [string, string][], chunks: Uint8Array[], failAfter?: number): ((host: FakeHost) => StationWire) => () => ({
+    request: () => {
+      let i = 0;
+      return Effect.succeed({
+        status,
+        headers,
+        via: null,
+        relay: null,
+        body: {
+          take: Effect.suspend(() => {
+            if (failAfter !== undefined && i >= failAfter) return Effect.fail(new HostError("cut"));
+            return Effect.succeed(i < chunks.length ? chunks[i++]! : null);
+          }),
+        },
+      });
+    },
+  });
+
+  const addr = StationAddr.parse(ST)!;
+  const runBatch = async (gets: string[], status: number, headers: [string, string][], chunks: Uint8Array[], failAfter?: number) => {
+    const { core } = await started(base(), 0, replyWith(status, headers, chunks, failAfter));
+    try {
+      return await core.inner.runner.run(Effect.result(core.inner.stations.requests.batch(addr, gets, null)));
+    } finally {
+      core.close();
+    }
+  };
+
+  // 1. New client + new station: compressed BATCH_LINES with finished zstd frame, split 1 byte at a time (fragmented).
+  const twoLines = [enc('{"status":200,"body":{"v":"你好1"}}\n'), enc('{"status":200,"body":{"v":"世界2"}}\n')];
+  const packedNew = await zstdStreamBytes(twoLines, true);
+  const oneByOne = Array.from(packedNew, (b) => new Uint8Array([b]));
+  const rNew = await runBatch(["/a", "/b"], 200, [["content-type", `${BATCH_LINES}; charset=utf-8`], ["content-encoding", "zstd"]], oneByOne);
+  assert.equal(rNew._tag, "Success");
+  assert.deepEqual(rNew.success, [{ status: 200, body: { v: "你好1" } }, { status: 200, body: { v: "世界2" } }]);
+
+  // 2. New client + old station: falls back to whole compressed application/json.
+  const packedWhole = new Uint8Array(zstdCompressSync(enc('{"answers":[{"status":200,"body":{"v":1}},{"status":200,"body":{"v":2}}]}')));
+  const rOldStation = await runBatch(["/a", "/b"], 200, [["content-type", "application/json"], ["content-encoding", "zstd"]], [packedWhole]);
+  assert.equal(rOldStation._tag, "Success");
+  assert.deepEqual(rOldStation.success, [{ status: 200, body: { v: 1 } }, { status: 200, body: { v: 2 } }]);
+
+  // 3. New client accepting finished NDJSON response (old token compatibility).
+  const rNdjson = await runBatch(["/a", "/b"], 200, [["content-type", NDJSON], ["content-encoding", "zstd"]], [packedNew]);
+  assert.equal(rNdjson._tag, "Success");
+  assert.equal(rNdjson.success.length, 2);
+
+  // 4. Old-station unfinished zstd stream: strictly rejected (no relaxed EOF).
+  const packedUnfinished = await zstdStreamBytes(twoLines, false);
+  const rUnfinished = await runBatch(["/a", "/b"], 200, [["content-type", NDJSON], ["content-encoding", "zstd"]], [packedUnfinished]);
+  assert.equal(rUnfinished._tag, "Failure");
+
+  // 5. Empty batch: compressed empty zstd frame on BATCH_LINES and whole JSON both succeed.
+  const packedEmpty = await zstdStreamBytes([], true);
+  const rEmptyStream = await runBatch([], 200, [["content-type", BATCH_LINES], ["content-encoding", "zstd"]], [packedEmpty]);
+  assert.equal(rEmptyStream._tag, "Success");
+  assert.deepEqual(rEmptyStream.success, []);
+  const rEmptyWhole = await runBatch([], 200, [["content-type", "application/json"]], [enc('{"answers":[]}')]);
+  assert.equal(rEmptyWhole._tag, "Success");
+  assert.deepEqual(rEmptyWhole.success, []);
+
+  // 6. Strict line rules: missing trailing newline, blank line, wrong count, corrupted zstd, truncated error body.
+  const rNoNewline = await runBatch(["/a"], 200, [["content-type", BATCH_LINES]], [enc('{"status":200,"body":1}')]);
+  assert.equal(rNoNewline._tag, "Failure");
+  const rBlankLine = await runBatch(["/a"], 200, [["content-type", BATCH_LINES]], [enc('\n{"status":200,"body":1}\n')]);
+  assert.equal(rBlankLine._tag, "Failure");
+  const rTooFew = await runBatch(["/a", "/b"], 200, [["content-type", BATCH_LINES]], [enc('{"status":200,"body":1}\n')]);
+  assert.equal(rTooFew._tag, "Failure");
+  const rTooMany = await runBatch(["/a"], 200, [["content-type", BATCH_LINES]], [enc('{"status":200,"body":1}\n{"status":200,"body":2}\n')]);
+  assert.equal(rTooMany._tag, "Failure");
+  const rCorrupt = await runBatch(["/a"], 200, [["content-type", BATCH_LINES], ["content-encoding", "zstd"]], [enc("not-zstd")]);
+  assert.equal(rCorrupt._tag, "Failure");
+  // Error body compression is NOT relaxed: a truncated compressed 500 body fails decompression instead of decoding partial error.
+  const packedErr = new Uint8Array(zstdCompressSync(enc('{"error":"server broke"}')));
+  const rCutErr = await runBatch(["/a"], 500, [["content-type", "application/json"], ["content-encoding", "zstd"]], [packedErr.subarray(0, packedErr.length - 2)]);
+  assert.equal(rCutErr._tag, "Failure");
+  assert.notEqual(rCutErr.failure.message, "server broke");
+
+  // 7. >=7 consecutive compressed streaming batches end-to-end (regression for the 6-batch retry exhaustion bug).
+  // 250 threads with 3 entries each -> 8 batches of history reads, all zstd-compressed with finished frames.
+  let batchCount = 0;
+  const compressedWire = (host: FakeHost): StationWire => {
+    const inner = new HostWire(host);
+    return {
+      request: (s, head, body) => {
+        if (!head.path.endsWith("/batch")) return inner.request(s, head, body);
+        const plainHead = { ...head, headers: head.headers.filter(([k]) => k.toLowerCase() !== "accept-encoding") };
+        return Effect.flatMap(inner.request(s, plainHead, body), (reply) => {
+          if (reply.status !== 200) return Effect.succeed(reply);
+          batchCount++;
+          return Effect.gen(function* () {
+            const raw: Uint8Array[] = [];
+            for (;;) {
+              const c = yield* Effect.mapError(reply.body.take, asCoreError);
+              if (c === null) break;
+              raw.push(c);
+            }
+            const packed = new Uint8Array(zstdCompressSync(Buffer.concat(raw)));
+            let sent = false;
+            return {
+              ...reply,
+              headers: [...reply.headers, ["content-encoding", "zstd"]] as [string, string][],
+              body: { take: Effect.sync(() => (sent ? null : ((sent = true), packed))) },
+            };
+          });
+        });
+      },
+    };
+  };
+  const { host: h7, core: c7 } = await started(manyChats(250, 3), 0, (h) => compressedWire(h), (s) => void (s.batches.ndjson = true));
+  // Let all background batches finish without advancing any retry backoff clock.
+  await h7.settle();
+  assert.ok(batchCount >= 7, `expected >=7 batches, got ${batchCount}`);
+  for (let id = 1; id <= 250; id++) {
+    assert.deepEqual(c7.inner.data.logNumbers("entry", ST, String(id)), [1, 2, 3], `thread ${id} entries synced`);
+  }
+  c7.close();
 });
 

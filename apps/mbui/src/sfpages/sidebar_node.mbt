@@ -117,40 +117,64 @@ pub fn chats_lists_node(
         }
       }
     })
-    for i in 0..<all {
-      p.box(fn(lane) {
-        lane
-        .over(Is(true))
-        .shift(By(fn() { (i.to_double() - at.shown(lane), 0.0) }))
-        // (out of view: no taller than nothing, so its list makes none of its rows; its height back as it comes)
-        .max_height(By(fn() {
-          let (a, b) = ((frame.shown)(), rest.get())
-          if i < (if a < b { a } else { b }) || i > (if a < b { b } else { a }) {
-            Some(0.0)
-          } else {
-            None
+    // Release optimistic-hidden stations once core stops listing them so a subsequent restart shows the card again.
+    p.reacts(
+      fn() -> Array[String]? {
+        if !@sfbase.restart_interrupted_gone.is_empty() {
+          match @sfbase.chats_of(src, id, "all").0 {
+            Some(v) => Some(v.interrupted.map(fn(item) { item.station }))
+            None => None
           }
-        }))
-        .clips(Is(true))
-        // (read out only while it is the list shown: one slid off to a side, or on its way off, is out of view, its rows
-        // none a screen reader is to read, and none of what changes as the filter does)
-        .hides(By(fn() { (frame.shown)() != i }))
-        |> ignore
-        // (made once it is shown, or as the filter's menu opens (what it would show read by the time one is picked),
-        // kept from then while the workspace is: each row only while it is in view; where it is scrolled to its list's
-        // own, kept by the list's key: list_scroll)
-        // (at once: a list made as it is first shown, or as the filter's menu opens, takes no way down the lane)
-        lane.show(fn() { shown_once[i].get() }, at_once=true, fn(l) {
-          l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-          if i < list_filters.length() {
-            chats_pane_node(l, src, id, list_filters[i], frame, fn() { (frame.shown)() == i }, tips, stint)
-          } else {
-            (frame.others[i - list_filters.length()])(l)
-          }
-        })
-      })
+        } else {
+          None
+        }
+      },
+      fn(stations) {
+        guard stations is Some(stations) else { return }
+        if @sfbase.restart_interrupted_gone.is_empty() {
+          return
+        }
+        let listed : Map[String, Bool] = Map([])
+        for station in stations {
+          listed[station] = true
+        }
+        if @sfbase.restart_interrupted_gone.keys().any(fn(k) { !listed.contains(k) }) {
+          @sfbase.restart_interrupted_gone.retain(fn(k, _) { listed.contains(k) })
+        }
+      },
+    )
+    p.each(at_once=true, fn() { Array::makei(all, fn(i) { i }) }, fn(i) { i }, fn(lane, idx) {
+      let i = idx.untracked()
+      lane
+      .over(Is(true))
+      .shift(By(fn() { (i.to_double() - at.shown(lane), 0.0) }))
+      // (out of view: no taller than nothing, so its list makes none of its rows; its height back as it comes)
+      .max_height(By(fn() {
+        let (a, b) = ((frame.shown)(), rest.get())
+        if i < (if a < b { a } else { b }) || i > (if a < b { b } else { a }) {
+          Some(0.0)
+        } else {
+          None
+        }
+      }))
+      .clips(Is(true))
+      // (read out only while it is the list shown: one slid off to a side, or on its way off, is out of view, its rows
+      // none a screen reader is to read, and none of what changes as the filter does)
+      .hides(By(fn() { (frame.shown)() != i }))
       |> ignore
-    }
+      // (made once it is shown, or as the filter's menu opens (what it would show read by the time one is picked),
+      // kept from then while the workspace is: each row only while it is in view; where it is scrolled to its list's
+      // own, kept by the list's key: list_scroll)
+      // (at once: a list made as it is first shown, or as the filter's menu opens, takes no way down the lane)
+      lane.show(fn() { shown_once[i].get() }, at_once=true, fn(l) {
+        l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        if i < list_filters.length() {
+          chats_pane_node(l, src, id, list_filters[i], frame, fn() { (frame.shown)() == i }, tips, stint)
+        } else {
+          (frame.others[i - list_filters.length()])(l)
+        }
+      })
+    })
   })
 }
 
@@ -253,10 +277,17 @@ fn chats_pane_node(
         at.3,
         at.4,
       )
-      ordered.set(shown)
-      rows.reset(names, by_name)
-      day_lines.set(lines)
-      revision.set(revision.untracked() + 1)
+      let apply = fn() {
+        ordered.set(shown)
+        rows.reset(names, by_name)
+        day_lines.set(lines)
+        revision.set(revision.untracked() + 1)
+      }
+      if motion.watched {
+        @view.transition(within=v, apply)
+      } else {
+        apply()
+      }
     },
   )
   let days = fn() { ordered.get() }
@@ -326,7 +357,7 @@ fn chats_pane_node(
   // (a window made taller: the list told the first window of it, where it holds fewer and the core has more; it never
   // shrinks)
   let held_rows = @signals.computed(fn(_) { @sfbase.chats_held(read().0) })
-  v.reacts(fn() { (v.window().1, more.get(), held_rows.get()) }, fn(at) {
+  v.reacts(fn() { (v.window_h(), more.get(), held_rows.get()) }, fn(at) {
     @sfbase.chats_window_for(src, id, filter, at.0, at.2, at.1)
   })
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
@@ -406,7 +437,28 @@ fn chats_pane_node(
         "top" => line.height(By(fn() { Some((frame.top)() + @sf.theme().chat_list.top_in) })) |> ignore
         "foot" => line.height(By(fn() { Some((frame.foot)() + @sf.list_foot_in(frame.at)) })) |> ignore
         "search" => {
-          let field = search_field_node(line, frame.at)
+          let tucked = @signals.computed(fn(_) { search_tucked(read().0) })
+          let reveal = match frame.at {
+            Whole =>
+              fn() {
+                if !tucked.get() {
+                  1.0
+                } else {
+                  let band = @sf.theme().chat_list
+                  let vis_bottom = (frame.top)() + band.top_in + band.band_h - scroll.drawn(line.tree)
+                  let emerged = vis_bottom - (frame.under)()
+                  if emerged <= 0.5 {
+                    0.0
+                  } else if emerged >= 22.5 {
+                    1.0
+                  } else {
+                    (emerged - 0.5) / 22.0
+                  }
+                }
+              }
+            Side | Tape => fn() { 1.0 }
+          }
+          let field = search_field_node(line, frame.at, reveal~)
           // the list's first time with its rows: the search tucked over them out of view, the first line after it at the
           // foot of what covers the list (frame.under: a phone's top bar, not the room under it; a side column's band,
           // the room over the list), there once scrolled to (Scroll::tucks: as far as the room over the list and the
@@ -419,7 +471,7 @@ fn chats_pane_node(
                 Whole => (frame.under)()
               }
             },
-            kept=fn() { search_tucked(read().0) },
+            kept=fn() { tucked.get() },
           )
         }
         "wait" => list_waiting_node(line, src, read, frame.at, tips, stint)
@@ -454,7 +506,7 @@ fn chats_pane_node(
     make_reused=fn(b, key) {
       b.box(fn(line) {
         @sf.style_node(line, fn() { @sf.list_line(frame.at) })
-        if @signals.untracked(key).has_prefix("h/") {
+        if b.reused_kind() == Some(1) {
           @sf.list_heading_node(line, fn() { key().exact_view(start=2).to_owned() }, frame.at)
         } else {
           row_line(line, key)
@@ -791,7 +843,7 @@ fn RowsMotion::said(
     }
   }
   if back {
-    self.told.set(self.told.untracked() + 1)
+    @view.transition(within=v, fn() { self.told.set(self.told.untracked() + 1) })
   }
   // (archived from its row in the list in view, its line not kept (the list's last row gone with it, or its page not
   // on top as the core said it gone): said in a toast with its 撤销 as from anywhere else, never left unsaid)
@@ -882,7 +934,7 @@ fn RowsMotion::undo_over(self : RowsMotion, v : @view.View, here : ArchivedHere?
   if end > rows_rest_at.val {
     rows_rest_at.val = end
   }
-  self.told.set(self.told.untracked() + 1)
+  @view.transition(within=v, fn() { self.told.set(self.told.untracked() + 1) })
 }
 
 ///|

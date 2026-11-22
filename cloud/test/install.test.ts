@@ -119,7 +119,7 @@ function machine(os: "mac" | "linux" | "wsl" = "mac", systemd = true, base = tmp
   mkdirSync(home, { recursive: true });
   mkdirSync(stub);
   mkdirSync(join(release, "bin"), { recursive: true });
-  writeFileSync(join(release, "bin", "stillfail"), '#!/bin/sh\necho "stillfail $*" >> "$HOME/said"\n', { mode: 0o755 });
+  writeFileSync(join(release, "bin", "stillfail"), '#!/bin/sh\necho "${STILLFAIL_DATA:+data=$STILLFAIL_DATA }stillfail $*" >> "$HOME/said"\n', { mode: 0o755 });
   symlinkSync("stillfail", join(release, "bin", "ember"));
   writeFileSync(join(release, "VERSION"), "new\n");
   execFileSync("tar", ["-czf", join(root, "release.tar.gz"), "-C", join(root, "release"), "stillfail"]);
@@ -275,7 +275,8 @@ test("another product's station is installed beside still.fail's: its own data, 
     const plist = readFileSync(join(both.home, "Library", "LaunchAgents", "build.monoid.station.plist"), "utf8");
     assert.match(plist, new RegExp(`<key>STILLFAIL_DATA</key><string>${join(both.home, ".monoid")}</string>`));
     assert.ok(!existsSync(join(both.home, "Library", "LaunchAgents", "fail.still.station.plist")));
-    assert.match(done.said, /stillfail station enroll https:\/\/app\.monoid\.build tok --stay/);
+    // enrolled in its own data, not still.fail's: called as `stillfail`, the command would take ~/.stillfail
+    assert.ok(done.said.includes(`data=${join(both.home, ".monoid")} stillfail station enroll https://app.monoid.build tok --stay`), done.said);
     // still.fail's service is never stopped for it
     assert.doesNotMatch(done.said, /launchctl bootout \S*fail\.still\.station|org\.3720\.ember\.station/);
   } finally {
@@ -1074,6 +1075,302 @@ test("stillfail move refuses what it cannot do, and uninstall --purge takes the 
     const purged = await uninstall(m, ["uninstall", "--purge"]);
     assert.equal(purged.status, 0, purged.out);
     assert.ok(!existsSync(join(disk, "stillfail")) && !existsSync(data));
+  } finally {
+    m.done();
+  }
+});
+
+/**
+ * still.fail's station and monoid's beside it on one machine, each installed by its cloud's installer and each with
+ * data of its own (a database saying whose), the repository's bin/stillfail in both releases; launchctl and systemctl
+ * saying what they were asked, the service a start names writing Node's word (run/health.json, now) in its own data.
+ */
+async function both(os: "mac" | "linux") {
+  const m = machine(os, true, "/tmp");
+  assert.equal(m.run(["tok"]).status, 0);
+  assert.equal(m.run(["tok"], {}, installScript("https://app.monoid.build")).status, 0);
+  for (const product of ["stillfail", "monoid"]) {
+    const data = join(m.home, `.${product}`);
+    writeFileSync(join(data, "stillfail.db"), `${product}'s chats`);
+    writeFileSync(join(data, "app", "bin", "stillfail"), readFileSync(join(import.meta.dirname, "..", "..", "bin", "stillfail")), { mode: 0o755 });
+  }
+  const healthy = `mkdir -p "$d/run"; printf '{"pid":1,"updatedAt":%s}\\n' "$(( $(date +%s) * 1000 + 1000 ))" > "$d/run/health.json"`;
+  for (const [name, start] of [["launchctl", "bootstrap"], ["systemctl", "start"]]) {
+    writeFileSync(join(m.root, "stub", name), `#!/bin/sh\necho "${name} $*" >> "$HOME/said"\n[ "$1" = print ] && exit 1\ncase "$*" in *${start}*monoid*) d=$HOME/.monoid; ${healthy} ;; *${start}*) d=$HOME/.stillfail; ${healthy} ;; esac\nexit 0\n`, { mode: 0o755 });
+  }
+  return m;
+}
+
+/** `command` (a path) run with `args` as the person would, the machine's stand-ins and Node on its PATH. */
+function cli(m: ReturnType<typeof machine>, command: string, args: string[], env: Record<string, string> = {}): Promise<{ status: number | null; out: string; said: string }> {
+  return new Promise((resolve) => {
+    let out = "";
+    const child = spawn("sh", [command, ...args], {
+      env: { HOME: m.home, PATH: `${join(m.root, "stub")}:${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`, ...env } as unknown as NodeJS.ProcessEnv,
+    });
+    child.stdout.on("data", (d: Buffer) => (out += d));
+    child.stderr.on("data", (d: Buffer) => (out += d));
+    child.on("close", (status: number | null) => resolve({ status, out, said: existsSync(join(m.home, "said")) ? readFileSync(join(m.home, "said"), "utf8") : "" }));
+  });
+}
+
+test("monoid's release command moves monoid's data and service, never still.fail's beside it, and brings it back", async () => {
+  for (const os of ["mac", "linux"] as const) {
+    // called by its path (as the app calls it), with no STILLFAIL_DATA and with the app's
+    for (const env of [{}, { STILLFAIL_DATA: "" }]) {
+      const m = await both(os);
+      const monoid = join(m.home, ".monoid");
+      const stillfail = join(m.home, ".stillfail");
+      const given: Record<string, string> = "STILLFAIL_DATA" in env ? { STILLFAIL_DATA: monoid, STILLFAIL_MOVE_APART: "1" } : { STILLFAIL_MOVE_APART: "1" };
+      const what = `${os}, ${"STILLFAIL_DATA" in env ? "STILLFAIL_DATA=~/.monoid" : "no STILLFAIL_DATA"}`;
+      const mine = launcher(stillfail);
+      try {
+        const disk = join(m.root, "disk");
+        mkdirSync(disk);
+        writeFileSync(join(m.home, "said"), "");
+        const command = join(monoid, "app", "bin", "stillfail");
+        const done = await cli(m, command, ["move", disk], given);
+        assert.equal(done.status, 0, `${what}: ${done.out}`);
+        assert.equal(readlinkSync(monoid), join(realpathSync(disk), "monoid"), what);
+        assert.equal(readFileSync(join(monoid, "stillfail.db"), "utf8"), "monoid's chats", what);
+        assert.ok(lstatSync(stillfail).isDirectory(), `${what}: still.fail's data where it was`);
+        assert.equal(readFileSync(join(stillfail, "stillfail.db"), "utf8"), "stillfail's chats", what);
+        assert.equal(mine.child.exitCode, null, `${what}: still.fail's station still runs`);
+        if (os === "mac") {
+          assert.match(done.said, /^launchctl bootout gui\/\d+\/build\.monoid\.station$/m, what);
+          assert.match(done.said, /^launchctl bootstrap gui\/\d+ \S+build\.monoid\.station\.plist$/m, what);
+          assert.doesNotMatch(done.said, /fail\.still\.station/, what);
+        } else {
+          assert.match(done.said, /^systemctl --user stop monoid-station\.service$/m, what);
+          assert.match(done.said, /^systemctl --user start monoid-station\.service$/m, what);
+          assert.doesNotMatch(done.said, /stillfail-station/, what);
+        }
+
+        // back home, called by the same path, which now runs through the link to the disk
+        writeFileSync(join(m.home, "said"), "");
+        const back = await cli(m, command, ["move", m.home], given);
+        assert.equal(back.status, 0, `${what}: ${back.out}`);
+        assert.ok(lstatSync(monoid).isDirectory(), `${what}: home again`);
+        assert.equal(readFileSync(join(monoid, "stillfail.db"), "utf8"), "monoid's chats", what);
+        assert.ok(!existsSync(join(disk, "monoid")), `${what}: the disk's copy given back`);
+        assert.equal(readFileSync(join(stillfail, "stillfail.db"), "utf8"), "stillfail's chats", what);
+        assert.doesNotMatch(back.said, /fail\.still\.station|stillfail-station/, what);
+        assert.equal(mine.child.exitCode, null, `${what}: still.fail's station still runs`);
+      } finally {
+        mine.child.kill();
+        m.done();
+      }
+    }
+  }
+});
+
+test("monoid's command with its data on a disk not connected, or with still.fail's named, never moves still.fail's", async () => {
+  const m = await both("mac");
+  try {
+    const monoid = join(m.home, ".monoid");
+    const stillfail = join(m.home, ".stillfail");
+    const disk = join(m.root, "disk");
+    mkdirSync(disk);
+    // its release's command with still.fail's STILLFAIL_DATA (an agent of still.fail's station's): refused
+    const crossed = await cli(m, join(monoid, "app", "bin", "stillfail"), ["move", disk], { STILLFAIL_DATA: stillfail, STILLFAIL_MOVE_APART: "1" });
+    assert.equal(crossed.status, 2, crossed.out);
+    assert.ok(lstatSync(stillfail).isDirectory() && lstatSync(monoid).isDirectory(), "nothing moved");
+    rmSync(monoid, { recursive: true });
+    symlinkSync(join(m.root, "unplugged", "monoid"), monoid);
+    // (its command where its release is not: a clone's, linked as monoid)
+    mkdirSync(join(m.root, "clone", "bin"), { recursive: true });
+    writeFileSync(join(m.root, "clone", "bin", "monoid"), readFileSync(join(import.meta.dirname, "..", "..", "bin", "stillfail")), { mode: 0o755 });
+    writeFileSync(join(m.home, "said"), "");
+    const done = await cli(m, join(m.root, "clone", "bin", "monoid"), ["move", disk], { STILLFAIL_MOVE_APART: "1" });
+    assert.equal(done.status, 8, done.out);
+    assert.match(done.out, /not connected/);
+    assert.ok(lstatSync(stillfail).isDirectory(), "still.fail's data where it was");
+    assert.equal(readFileSync(join(stillfail, "stillfail.db"), "utf8"), "stillfail's chats");
+    assert.ok(!existsSync(join(disk, "stillfail")) && !existsSync(join(disk, "monoid")), "nothing copied");
+    assert.doesNotMatch(done.said, /launchctl|systemctl/);
+  } finally {
+    m.done();
+  }
+});
+
+test("monoid's release command uninstalls monoid's station alone, still.fail's beside it left as it was", async () => {
+  for (const os of ["mac", "linux"] as const) {
+    const m = await both(os);
+    const monoid = join(m.home, ".monoid");
+    const stillfail = join(m.home, ".stillfail");
+    const mine = launcher(stillfail);
+    try {
+      writeFileSync(join(m.home, "said"), "");
+      const done = await cli(m, join(monoid, "app", "bin", "stillfail"), ["uninstall"]);
+      assert.equal(done.status, 0, `${os}: ${done.out}`);
+      assert.ok(!existsSync(join(monoid, "app")) && existsSync(join(monoid, "uninstalled")), `${os}: monoid's taken away, its data kept`);
+      assert.ok(!existsSync(join(m.home, ".local", "bin", "monoid")), `${os}: monoid's command gone`);
+      assert.ok(existsSync(join(stillfail, "app")) && !existsSync(join(stillfail, "uninstalled")), `${os}: still.fail's release left`);
+      assert.ok(lstatSync(join(m.home, ".local", "bin", "stillfail")).isSymbolicLink(), `${os}: still.fail's command left`);
+      assert.equal(mine.child.exitCode, null, `${os}: still.fail's station still runs`);
+      if (os === "mac") {
+        assert.match(done.said, /^launchctl bootout gui\/\d+\/build\.monoid\.station$/m);
+        assert.doesNotMatch(done.said, /fail\.still\.station|org\.3720\.ember/);
+        assert.ok(!existsSync(join(m.home, "Library", "LaunchAgents", "build.monoid.station.plist")));
+        assert.ok(existsSync(join(m.home, "Library", "LaunchAgents", "fail.still.station.plist")));
+      } else {
+        assert.match(done.said, /^systemctl --user disable --now monoid-station\.service$/m);
+        assert.doesNotMatch(done.said, /stillfail-station/);
+        assert.ok(existsSync(join(m.home, ".config", "systemd", "user", "stillfail-station.service")));
+      }
+    } finally {
+      mine.child.kill();
+      m.done();
+    }
+  }
+});
+
+/** The service files of `os` under `m`'s home: launchd's plist or systemd's unit, by product. */
+function services(m: ReturnType<typeof machine>, os: "mac" | "linux") {
+  const at = (product: "stillfail" | "monoid") =>
+    os === "mac"
+      ? join(m.home, "Library", "LaunchAgents", `${product === "stillfail" ? "fail.still" : "build.monoid"}.station.plist`)
+      : join(m.home, ".config", "systemd", "user", `${product}-station.service`);
+  return { stillfail: at("stillfail"), monoid: at("monoid") };
+}
+
+test("a data directory of its own moved to monoid's cloud keeps its still.fail service: no monoid service beside it, and an update hands over", () => {
+  for (const os of ["mac", "linux"] as const) {
+    const m = machine(os);
+    const data = join(m.root, "station");
+    const svc = services(m, os);
+    let pid = 0;
+    try {
+      // Monoid Machine's: /data/station, run by stillfail-station.service
+      assert.equal(m.run(["tok"], { STILLFAIL_DATA: data }).status, 0);
+      assert.ok(existsSync(svc.stillfail), os);
+      mkdirSync(join(data, "mesh"), { recursive: true });
+      writeFileSync(join(data, "mesh", "cloud.json"), '{"origin": "https://app.monoid.build"}');
+      writeFileSync(join(m.home, "said"), "");
+      const update = m.run([], { STILLFAIL_DATA: data, STILLFAIL_ORIGIN: "https://app.monoid.build" }, installScript("https://app.monoid.build"));
+      assert.equal(update.status, 0, `${os}: ${update.out}`);
+      assert.ok(existsSync(svc.stillfail), `${os}: its service kept`);
+      assert.ok(!existsSync(svc.monoid), `${os}: no monoid service for the same data`);
+      assert.throws(() => lstatSync(join(m.home, ".local", "bin", "monoid")), `${os}: no monoid command`);
+      assert.equal(readlinkSync(join(m.home, ".local", "bin", "stillfail")), join(data, "app", "bin", "stillfail"));
+      if (os === "mac") assert.match(update.said, /^launchctl bootstrap gui\/\d+ \S+fail\.still\.station\.plist$/m);
+      else assert.match(update.said, /^systemctl --user restart stillfail-station\.service$/m);
+      assert.doesNotMatch(update.said, /build\.monoid|monoid-station/, os);
+
+      // running, its service unchanged: the next update hands over in place
+      writeFileSync(join(data, "app", "VERSION"), "old\n");
+      pid = running(m, data, true);
+      writeFileSync(join(m.home, "said"), "");
+      const handed = m.run([], { STILLFAIL_DATA: data }, installScript("https://app.monoid.build"));
+      assert.equal(handed.status, 0, `${os}: ${handed.out}`);
+      assert.match(handed.out, /已更新|updated/i, os);
+      assert.doesNotMatch(handed.said, /launchctl (bootout|bootstrap)|systemctl --user (stop|restart|disable)/, `${os}: not restarted`);
+      assert.ok(!existsSync(svc.monoid), os);
+    } finally {
+      if (pid) process.kill(pid, "SIGKILL");
+      m.done();
+    }
+  }
+});
+
+test("a data directory run by both products' services is given back its still.fail service alone, even on the release it runs", () => {
+  for (const os of ["mac", "linux"] as const) {
+    const m = machine(os);
+    const data = join(m.root, "station");
+    const svc = services(m, os);
+    let pid = 0;
+    try {
+      assert.equal(m.run(["tok"], { STILLFAIL_DATA: data }).status, 0);
+      mkdirSync(join(data, "mesh"), { recursive: true });
+      writeFileSync(join(data, "mesh", "cloud.json"), '{"origin": "https://app.monoid.build"}');
+      // as an installer from before left it: monoid's service for the same data, and monoid's command linked to it
+      writeFileSync(svc.monoid, readFileSync(svc.stillfail, "utf8").replace("fail.still.station", "build.monoid.station"));
+      symlinkSync(join(data, "app", "bin", "stillfail"), join(m.home, ".local", "bin", "monoid"));
+      pid = running(m, data, true);
+      writeFileSync(join(m.home, "said"), "");
+      const update = m.run([], { STILLFAIL_DATA: data, STILLFAIL_NO_DRAIN: "1" }, installScript("https://app.monoid.build"));
+      assert.equal(update.status, 0, `${os}: ${update.out}`);
+      assert.ok(existsSync(svc.stillfail), `${os}: its service kept`);
+      assert.ok(!existsSync(svc.monoid), `${os}: monoid's taken away`);
+      assert.throws(() => lstatSync(join(m.home, ".local", "bin", "monoid")), `${os}: monoid's command gone`);
+      if (os === "mac") {
+        assert.match(update.said, /^launchctl bootout gui\/\d+\/build\.monoid\.station$/m);
+        assert.match(update.said, /^launchctl bootstrap gui\/\d+ \S+fail\.still\.station\.plist$/m);
+        assert.doesNotMatch(update.said, /bootstrap \S+ \S+build\.monoid/);
+      } else {
+        assert.match(update.said, /^systemctl --user disable --now monoid-station\.service$/m);
+        assert.match(update.said, /^systemctl --user restart stillfail-station\.service$/m);
+        assert.doesNotMatch(update.said, /(restart|enable) monoid-station/);
+      }
+    } finally {
+      if (pid) process.kill(pid, "SIGKILL");
+      m.done();
+    }
+  }
+});
+
+test("a data directory of its own run by monoid's service alone keeps it when updated from still.fail's cloud", () => {
+  const m = machine("linux");
+  const data = join(m.root, "station");
+  const svc = services(m, "linux");
+  try {
+    assert.equal(m.run(["tok"], { STILLFAIL_DATA: data }, installScript("https://app.monoid.build")).status, 0);
+    assert.ok(existsSync(svc.monoid) && !existsSync(svc.stillfail));
+    mkdirSync(join(data, "mesh"), { recursive: true });
+    writeFileSync(join(data, "mesh", "cloud.json"), '{"origin": "https://app.still.fail"}');
+    writeFileSync(join(m.home, "said"), "");
+    const update = m.run([], { STILLFAIL_DATA: data });
+    assert.equal(update.status, 0, update.out);
+    assert.ok(existsSync(svc.monoid) && !existsSync(svc.stillfail), "no still.fail service beside it");
+    assert.match(update.said, /^systemctl --user restart monoid-station\.service$/m);
+    assert.doesNotMatch(update.said, /stillfail-station\.service/);
+  } finally {
+    m.done();
+  }
+});
+
+test("~/.stillfail updated from monoid's cloud keeps still.fail's service, monoid's own station beside it left as it was", () => {
+  for (const os of ["mac", "linux"] as const) {
+    const m = machine(os);
+    const stillfail = join(m.home, ".stillfail");
+    const svc = services(m, os);
+    try {
+      assert.equal(m.run(["tok"]).status, 0);
+      assert.equal(m.run(["tok"], {}, installScript("https://app.monoid.build")).status, 0);
+      const monoidService = readFileSync(svc.monoid, "utf8");
+      mkdirSync(join(stillfail, "mesh"), { recursive: true });
+      writeFileSync(join(stillfail, "mesh", "cloud.json"), '{"origin": "https://app.monoid.build"}');
+      writeFileSync(join(m.home, "said"), "");
+      const update = m.run([], { STILLFAIL_DATA: stillfail }, installScript("https://app.monoid.build"));
+      assert.equal(update.status, 0, `${os}: ${update.out}`);
+      assert.match(readFileSync(svc.stillfail, "utf8"), new RegExp(stillfail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), os);
+      assert.equal(readFileSync(svc.monoid, "utf8"), monoidService, `${os}: monoid's service as it was`);
+      assert.equal(readlinkSync(join(m.home, ".local", "bin", "monoid")), join(m.home, ".monoid", "app", "bin", "stillfail"));
+      assert.doesNotMatch(update.said, /build\.monoid|monoid-station/, os);
+    } finally {
+      m.done();
+    }
+  }
+});
+
+test("stillfail uninstall of a data directory of its own takes away whichever product's service runs it, never the person's own", async () => {
+  const m = machine("linux", true, "/tmp");
+  try {
+    assert.equal(m.run(["tok"]).status, 0);
+    const svc = services(m, "linux");
+    const apart = join(m.root, "apart");
+    mkdirSync(join(apart, "app", "bin"), { recursive: true });
+    writeFileSync(join(apart, "app", "bin", "stillfail"), "");
+    writeFileSync(svc.monoid, readFileSync(svc.stillfail, "utf8").replaceAll(join(m.home, ".stillfail"), apart));
+    symlinkSync(join(apart, "app", "bin", "stillfail"), join(m.home, ".local", "bin", "monoid"));
+    writeFileSync(join(m.home, "said"), "");
+    const done = await uninstall(m, ["uninstall"], { STILLFAIL_DATA: apart });
+    assert.equal(done.status, 0, done.out);
+    assert.match(done.said, /^systemctl --user disable --now monoid-station\.service$/m);
+    assert.doesNotMatch(done.said, /stillfail-station/);
+    assert.ok(!existsSync(svc.monoid) && existsSync(svc.stillfail));
+    assert.throws(() => lstatSync(join(m.home, ".local", "bin", "monoid")));
+    assert.ok(lstatSync(join(m.home, ".local", "bin", "stillfail")).isSymbolicLink(), "the person's command left");
   } finally {
     m.done();
   }

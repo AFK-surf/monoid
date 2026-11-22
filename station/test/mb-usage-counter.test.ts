@@ -15,8 +15,10 @@ import { packFile } from "../src/sessions/archive.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
-import { UsageCounter } from "../src/usage/counter.ts";
-import { ReferenceUsageCounter, claudeProject } from "./usage-counter-reference.ts";
+import { TIMED_BACK_MS, UsageCounter } from "../src/usage/counter.ts";
+import { ReferenceUsageCounter, UNTIMED_SESSIONS, claudeProject } from "./usage-counter-reference.ts";
+import { paceView } from "../src/accounts/pace.ts";
+import { HOUR_MS } from "../src/store/profile-hours.ts";
 import { keepUsage } from "../src/usage/module.ts";
 import { testClock } from "./hub-fakes.ts";
 
@@ -267,6 +269,125 @@ test("how long each call took: Claude Code's from what asked it, Codex's to its 
   assert.deepEqual([quarters.ms, quarters.output], [10_400, 105]);
 });
 
+test("Antigravity calls settle speed at turn end across chunks with crossing tools, feed paceView, and backfill legacy ',,,' rows", { skip }, async () => {
+  const w = await world();
+  const t0 = w.now();
+  session(w, "agy-speed", join(w.data, "w-agy-speed"), t0 - 1_000, "agy", "ag");
+  runtimeSession(w, "agy-speed", "agy-s1", "agy");
+  w.each((s) => s.startTurnFor("t-agy", "agy-speed", "input", { profile: "ag", person: "a@x", thread: null }));
+  const transcript = join(w.data, "transcripts/agy", "agy-s1.jsonl");
+  const user = (time: number, steered = false) => JSON.stringify(steered ? { type: "user", steered: true, time } : { type: "user", time });
+  const tool = (startedAt: number, time: number) => JSON.stringify({ type: "tool", startedAt, time });
+  const agyUsage = (run: string, time: number, inputTokens: number, outputTokens: number) =>
+    JSON.stringify({ type: "usage", run, time, model: "gemini-4-neon", calls: 1, context: 500, window: 1000000, usage: { inputTokens, outputTokens } });
+  const end = (time: number) => JSON.stringify({ type: "end", time });
+
+  // Chunk 1: before end, usage is recorded immediately with gen_ms = 0 and in-flight speed state persisted.
+  append(transcript, [
+    user(t0 + 1_000),
+    tool(t0 + 1_500, t0 + 2_500),
+    tool(t0 + 2_000, t0 + 3_000),
+    agyUsage("run-1", t0 + 5_000, 100, 400),
+    user(t0 + 5_200, true),
+  ]);
+  assert.equal(await w.read(["agy-speed"], "agy chunk 1"), 1);
+  const rows = (store: Store) => (store.db.prepare("SELECT id, calls, input, output, gen_ms, gen_output FROM usage ORDER BY id").all() as
+    { id: string; calls: number; input: number; output: number; gen_ms: number; gen_output: number }[])
+    .map((r) => [r.id, r.calls, r.input, r.output, r.gen_ms, r.gen_output]);
+  assert.deepEqual(rows(w.mb), [["agy:run-1", 1, 100, 400, 0, 0]]);
+
+  // Chunk 2: crossing tool [4000, 6000] finishes after run-1, second usage arrives, and turn ends.
+  append(transcript, [
+    tool(t0 + 4_000, t0 + 6_000),
+    agyUsage("run-2", t0 + 9_000, 200, 600),
+    end(t0 + 9_100),
+  ]);
+  assert.equal(await w.read(["agy-speed"], "agy chunk 2"), 1);
+  // run-1: wall 4000 - ([1500,3000]=1500 + [4000,5000]=1000) = 1500ms; calls/input unchanged.
+  // run-2: wall 4000 - ([5000,6000]=1000) = 3000ms.
+  assert.deepEqual(rows(w.mb), [
+    ["agy:run-1", 1, 100, 400, 1_500, 400],
+    ["agy:run-2", 1, 200, 600, 3_000, 600],
+  ]);
+  const pace = paceView(t0 + 10_000, w.mb.profileHours(Math.floor((t0 + 10_000) / HOUR_MS)), () => true);
+  assert.deepEqual(pace.speedHours.map((s) => [s.model, s.output, s.ms]), [["gemini-4-neon", 1_000, 4_500]]);
+  assert.deepEqual(pace.speedQuarters.map((s) => [s.model, s.output, s.ms]), [["gemini-4-neon", 1_000, 4_500]]);
+
+  // Legacy ',,,' agy row is recognized as untimed and backfilled once, upgrading speed to 'v1:'.
+  w.each((s) => {
+    s.endTurn("t-agy", "completed", null, null, null);
+    s.db.exec("UPDATE usage SET gen_ms = 0, gen_output = 0; UPDATE usage_files SET speed = ',,,'");
+    s.db.prepare("UPDATE usage_counter SET through = ? WHERE id = 1").run(t0 + 60_000);
+  });
+  const profiles = [{ home: join(w.data, "homes/cc") }, { home: join(w.data, "homes/cx") }];
+  const ts = new ReferenceUsageCounter({ store: w.ts, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock });
+  const mb = new UsageCounter({ store: w.mb, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock, mb: binary });
+  cleanup.unshift(() => ts.stop(), () => mb.stop());
+  assert.equal(await ts.read(undefined, t0 - TIMED_BACK_MS), 0);
+  assert.equal(await mb.read(undefined, t0 - TIMED_BACK_MS), 0);
+  assert.deepEqual(dump(w.mb), dump(w.ts), "agy legacy backfill parity");
+  assert.deepEqual(rows(w.mb), [
+    ["agy:run-1", 1, 100, 400, 1_500, 400],
+    ["agy:run-2", 1, 200, 600, 3_000, 600],
+  ]);
+  assert.equal((w.mb.db.prepare("SELECT speed FROM usage_files WHERE path = ?").get(transcript) as { speed: string }).speed, "v1:");
+
+  // Timing-only update (calls=0) at end must never insert a ghost row if the original usage row is absent.
+  append(transcript, [user(t0 + 20_000), agyUsage("run-missing", t0 + 22_000, 50, 100)]);
+  assert.equal(await w.read(["agy-speed"], "agy chunk 3 before end"), 1);
+  w.each((s) => s.db.prepare("DELETE FROM usage WHERE id = ?").run("agy:run-missing"));
+  append(transcript, [end(t0 + 22_500)]);
+  assert.equal(await w.read(["agy-speed"], "agy chunk 3 end after missing row"), 0);
+  assert.equal(w.mb.db.prepare("SELECT COUNT(*) AS n FROM usage WHERE id = 'agy:run-missing'").get()!.n, 0, "no ghost row inserted on missing id");
+
+  // Outlier sample guard (1927/15ms replay + 951/257ms steer), -1ms jitter, and >256 tools parity between MB and TS.
+  const largeLines: string[] = [
+    user(t0 + 30_000),
+    tool(t0 + 30_015, t0 + 30_711),
+    agyUsage("run-replay", t0 + 30_711, 10, 1927),
+    end(t0 + 30_711),
+    user(t0 + 40_000),
+    tool(t0 + 40_101, t0 + 40_100), // -1ms jitter tolerated
+  ];
+  for (let i = 0; i < 280; i++) largeLines.push(tool(t0 + 41_000 + i * 20, t0 + 41_000 + i * 20 + 10));
+  largeLines.push(agyUsage("run-280tools", t0 + 50_000, 50, 300), end(t0 + 50_100));
+  append(transcript, largeLines);
+  assert.equal(await w.read(["agy-speed"], "agy replay + jitter + 280 tools"), 2);
+  const extraRows = (store: Store) => (store.db.prepare("SELECT id, output, gen_ms, gen_output FROM usage WHERE id IN ('agy:run-replay', 'agy:run-280tools') ORDER BY id").all() as
+    { id: string; output: number; gen_ms: number; gen_output: number }[])
+    .map((r) => [r.id, r.output, r.gen_ms, r.gen_output]);
+  // run-280tools: wall 10000 - 280 * 10 = 7200ms; run-replay: 1927/15ms > 500 tok/s -> gen_ms = 0, output kept.
+  assert.deepEqual(extraRows(w.mb), [["agy:run-280tools", 300, 7_200, 300], ["agy:run-replay", 1927, 0, 0]]);
+
+  // Archived (.jsonl.zst) agy transcript with existing cutoff/anchor and legacy speed ',,,' is backfilled once, then skipped on re-read.
+  pack(transcript);
+  w.each((s) => {
+    s.db.exec("UPDATE usage SET gen_ms = 0, gen_output = 0; UPDATE usage_files SET speed = ',,,'");
+    s.db.prepare("UPDATE usage_counter SET through = ? WHERE id = 1").run(t0 + 120_000);
+  });
+  const ts2 = new ReferenceUsageCounter({ store: w.ts, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock });
+  const mb2 = new UsageCounter({ store: w.mb, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock, mb: binary });
+  cleanup.unshift(() => ts2.stop(), () => mb2.stop());
+  assert.equal(await ts2.read(undefined, t0 - TIMED_BACK_MS), 0);
+  assert.equal(await mb2.read(undefined, t0 - TIMED_BACK_MS), 0);
+  assert.deepEqual(dump(w.mb), dump(w.ts), "archived agy legacy backfill parity");
+  assert.deepEqual(rows(w.mb), [
+    ["agy:run-1", 1, 100, 400, 1_500, 400],
+    ["agy:run-2", 1, 200, 600, 3_000, 600],
+    ["agy:run-280tools", 1, 50, 300, 7_200, 300],
+    ["agy:run-replay", 1, 10, 1927, 0, 0],
+  ]);
+  assert.equal((w.mb.db.prepare("SELECT speed FROM usage_files WHERE path = ?").get(transcript) as { speed: string }).speed, "v1:");
+  // Re-read after upgrade: does not re-decompress or re-time if gen_ms is cleared manually.
+  w.each((s) => s.db.exec("UPDATE usage SET gen_ms = 0, gen_output = 0"));
+  assert.equal(await ts2.read(new Set(["agy-speed"]), t0 - TIMED_BACK_MS), 0);
+  assert.equal(await mb2.read(new Set(["agy-speed"]), t0 - TIMED_BACK_MS), 0);
+  assert.deepEqual(dump(w.mb), dump(w.ts), "archived upgraded agy skip parity");
+  assert.deepEqual(rows(w.mb).map((r) => [r[0], r[4], r[5]]), [
+    ["agy:run-1", 0, 0], ["agy:run-2", 0, 0], ["agy:run-280tools", 0, 0], ["agy:run-replay", 0, 0],
+  ]);
+});
+
 test("what was read before calls were timed is timed once, from then on, as a counter starts; no call more", { skip }, async () => {
   const w = await world();
   const t0 = w.now();
@@ -300,6 +421,114 @@ test("what was read before calls were timed is timed once, from then on, as a co
   assert.equal(await mb.read(new Set(["chat:c-8"])), 1);
   assert.deepEqual(dump(w.mb), dump(w.ts), "read on alike");
   assert.deepEqual(timed(w.ts).at(-1), ["j3", 3_000, 30]);
+});
+
+test("as a counter starts it finds itself, off the station's thread, the sessions of the last TIMED_BACK_MS read before calls were timed: timed once, none found to time kept so", { skip }, async () => {
+  const w = await world();
+  const t0 = w.now();
+  const asked = (at: number) => JSON.stringify({ parentUuid: "p", isSidechain: false, type: "user", message: { role: "user", content: "go" }, timestamp: iso(at) });
+  // c-7 asked, then answered (timed); c-6 a transcript of no call and nothing that asked one (nothing to time).
+  const ws7 = join(w.data, "sessions/ember/c-7/workspace");
+  const ws6 = join(w.data, "sessions/ember/c-6/workspace");
+  session(w, "chat:c-7", ws7, t0 - 1_000);
+  session(w, "chat:c-6", ws6, t0 - 1_000);
+  w.each((s) => {
+    s.startTurnFor("t7", "chat:c-7", "input", { profile: "cc", person: "a@x", thread: null });
+    s.startTurnFor("t6", "chat:c-6", "input", { profile: "cc", person: "a@x", thread: null });
+  });
+  const p7 = join(w.data, "transcripts/claude", claudeProject(ws7), "r7.jsonl");
+  const p6 = join(w.data, "transcripts/claude", claudeProject(ws6), "r6.jsonl");
+  append(p7, [asked(t0 + 1_000), claudeLine("h1", t0 + 3_000, "claude-opus-5-5", usage(1, 0, 0, 0, 10))]);
+  append(p6, [JSON.stringify({ type: "summary", summary: "s", leafUuid: "l" })]);
+  // Devin's calls are not timed: its transcript read before is not read again for it.
+  session(w, "devin-a", join(w.data, "w-devin"), t0 - 1_000, "devin", "devin");
+  runtimeSession(w, "devin-a", "devin-id", "devin");
+  w.each((s) => s.startTurn("ta", "devin-a", "input"));
+  append(join(w.data, "transcripts/devin", "devin-id.jsonl"), [
+    JSON.stringify({ type: "usage", run: "r1", time: t0 + 4, model: "devin-model", calls: 1, context: 9, window: 200000, usage: { inputTokens: 1, outputTokens: 2 } }),
+  ]);
+  assert.equal(await w.read(undefined, "read and timed"), 2);
+  assert.equal((w.mb.db.prepare("SELECT COUNT(*) AS n FROM usage_files WHERE speed IS NULL").get() as { n: number }).n, 0, "read now: none left as read before calls were timed");
+  w.each((s) => {
+    s.endTurn("t7", "completed", null, null, null);
+    s.endTurn("t6", "completed", null, null, null);
+    s.endTurn("ta", "completed", null, null, null);
+  });
+  await w.time.adjust(2 * 86_400_000);
+  // As a station from before the calls were timed left them, its last sweep after both turns ended: no session ran
+  // since that sweep.
+  w.each((s) => s.db.exec("UPDATE usage SET gen_ms = 0, gen_output = 0; UPDATE usage_files SET speed = NULL"));
+  w.each((s) => s.db.prepare("UPDATE usage_counter SET through = ? WHERE id = 1").run(w.now()));
+  const profiles = [{ home: join(w.data, "homes/cc") }, { home: join(w.data, "homes/cx") }];
+  const speeds = (store: Store) => (store.db.prepare("SELECT path, speed FROM usage_files ORDER BY path").all() as { path: string; speed: string | null }[]).map((r) => [r.path, r.speed]);
+  const timed = (store: Store) => store.db.prepare("SELECT id, gen_ms, gen_output FROM usage ORDER BY id").all().map((r) => [r.id, r.gen_ms, r.gen_output]);
+  // Nothing of it asked on the station's thread.
+  w.mb.usageActiveSessions = () => assert.fail("the sessions to time back asked on the station's thread");
+  const starts = async () => {
+    const ts = new ReferenceUsageCounter({ store: w.ts, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock });
+    const mb = new UsageCounter({ store: w.mb, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock, mb: binary, settleMs: 20, safetyMs: 60 * 60_000 });
+    cleanup.unshift(() => ts.stop(), () => mb.stop());
+    await ts.read(undefined, w.now() - TIMED_BACK_MS);
+    const waits = w.time.asked();
+    mb.start();
+    // Its first wait: what it reads as it starts read.
+    await w.time.begun(waits + 1);
+    await mb.stop();
+  };
+  await starts();
+  assert.deepEqual(dump(w.mb), dump(w.ts), "timed back alike");
+  assert.deepEqual(timed(w.mb).filter(([id]) => id === "h1"), [["h1", 2_000, 10]]);
+  const kept = speeds(w.mb);
+  assert.equal(kept.length, 3);
+  assert.notEqual(new Map(kept as [string, string][]).get(p7) ?? null, null, "where its reading stands kept");
+  assert.equal(new Map(kept as [string, string][]).get(p6), ",,,", "nothing found to time: kept as none");
+  assert.deepEqual(w.mb.db.prepare(UNTIMED_SESSIONS).all(w.now() - TIMED_BACK_MS), [], "none left to time back");
+  // Read on with still nothing to time: kept so.
+  append(p6, [JSON.stringify({ type: "summary", summary: "t", leafUuid: "m" })]);
+  assert.equal(await w.read(["chat:c-6"], "read on, nothing to time"), 0);
+  assert.equal(new Map(speeds(w.mb) as [string, string][]).get(p6), ",,,", "read on: still kept as none");
+  // Started again: each timed already, none read again (its calls' times, lost since, not found again).
+  w.each((s) => s.db.exec("UPDATE usage SET gen_ms = 0, gen_output = 0"));
+  await starts();
+  assert.deepEqual(dump(w.mb), dump(w.ts), "not timed again alike");
+  assert.deepEqual(timed(w.mb).filter(([id]) => id === "h1"), [["h1", 0, 0]], "not timed again");
+  assert.deepEqual(speeds(w.mb), kept);
+});
+
+test("a transcript's calls are timed again WRITE_BATCH a write: one that fails leaves those written before it, the rest timed the next time", { skip }, async () => {
+  const w = await world();
+  const t0 = w.now();
+  const workspace = join(w.data, "sessions/ember/c-5/workspace");
+  session(w, "chat:c-5", workspace, t0 - 1_000);
+  w.each((s) => s.startTurnFor("t5", "chat:c-5", "input", { profile: "cc", person: "a@x", thread: null }));
+  const main = join(w.data, "transcripts/claude", claudeProject(workspace), "r5.jsonl");
+  const asked = (at: number) => JSON.stringify({ parentUuid: "p", isSidechain: false, type: "user", message: { role: "user", content: "go" }, timestamp: iso(at) });
+  const id = (i: number) => `c${String(i).padStart(3, "0")}`;
+  const lines: string[] = [];
+  for (let i = 0; i < 150; i++) lines.push(asked(t0 + 1_000 + i * 1_000), claudeLine(id(i), t0 + 1_500 + i * 1_000, "claude-opus-5-5", usage(1, 0, 0, 0, 1)));
+  append(main, lines);
+  assert.equal(await w.read(["chat:c-5"], "read and timed"), 150);
+  w.each((s) => s.db.exec(`UPDATE usage SET gen_ms = 0, gen_output = 0; UPDATE usage_files SET speed = NULL;
+    CREATE TRIGGER fails_at_c100 BEFORE UPDATE OF gen_ms ON usage WHEN NEW.id = 'c100' BEGIN SELECT RAISE(ABORT, 'fails at c100'); END;`));
+  const profiles = [{ home: join(w.data, "homes/cc") }, { home: join(w.data, "homes/cx") }];
+  const ts = new ReferenceUsageCounter({ store: w.ts, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock });
+  const mb = new UsageCounter({ store: w.mb, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock, mb: binary });
+  cleanup.unshift(() => ts.stop(), () => mb.stop());
+  const timed = (store: Store) => (store.db.prepare("SELECT COUNT(*) AS n FROM usage WHERE gen_ms > 0").get() as { n: number }).n;
+  const speed = (store: Store) => (store.db.prepare("SELECT speed FROM usage_files").get() as { speed: string | null }).speed;
+  await assert.rejects(ts.read(new Set(["chat:c-5"]), t0), /c100/);
+  await assert.rejects(mb.read(new Set(["chat:c-5"]), t0), /c100/);
+  // The first 64 written in their own write; the write holding c100 undone (c064..c127), its position not kept.
+  assert.equal(timed(w.ts), 64);
+  assert.equal(timed(w.mb), 64);
+  assert.equal(speed(w.mb), null);
+  assert.deepEqual(dump(w.mb), dump(w.ts), "failed alike");
+  w.each((s) => s.db.exec("DROP TRIGGER fails_at_c100"));
+  assert.equal(await ts.read(new Set(["chat:c-5"]), t0), 0);
+  assert.equal(await mb.read(new Set(["chat:c-5"]), t0), 0);
+  assert.deepEqual(dump(w.mb), dump(w.ts), "timed again alike");
+  assert.equal(timed(w.mb), 150);
+  assert.notEqual(speed(w.mb), null);
 });
 
 test("a transcript cut short or replaced is read again from its start, its old calls not taken; put away, read from its frames", { skip }, async () => {

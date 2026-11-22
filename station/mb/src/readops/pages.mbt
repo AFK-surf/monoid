@@ -22,7 +22,7 @@ fn exists_in(db : @sql.Db, kind : String, name : String) -> Bool raise {
 
 ///|
 /// legacy-said-build.ts `hasLegacySaid`.
-fn has_legacy_said(db : @sql.Db) -> Bool raise {
+pub fn has_legacy_said(db : @sql.Db) -> Bool raise {
   if !exists_in(db, "view", "legacy_said") {
     return false
   }

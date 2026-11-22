@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { test } from "node:test";
-import { signatureOk, verifyWith } from "../src/cloud/lock.ts";
+import { signatureOk, verifyWith } from "../../shared/lock.ts";
 import { loadMesh } from "../src/mesh/native.ts";
 
 const mesh = (() => {

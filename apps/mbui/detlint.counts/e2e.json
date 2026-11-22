@@ -1,0 +1,12 @@
+{
+  "counts": {
+    "device-shot": {
+      "e2e/android-flow.sh": 2
+    }
+  },
+  "excused": {
+    "script-wait": {
+      "e2e/move.ts": 1
+    }
+  }
+}

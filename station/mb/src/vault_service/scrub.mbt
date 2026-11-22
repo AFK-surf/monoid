@@ -26,87 +26,13 @@ fn ascii(s : String) -> Bytes {
 }
 
 ///|
-let b64_alphabet : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-///|
-let b64url_alphabet : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-
-///|
 /// `buf.toString("base64")` (padded) or `"base64url"` (unpadded).
 fn b64_text(b : Bytes, url : Bool) -> String {
-  let a = if url { b64url_alphabet } else { b64_alphabet }
-  let out = StringBuilder()
-  let n = b.length()
-  let mut i = 0
-  while i + 2 < n {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8) | b[i + 2].to_int()
-    out.write_char(a.code_unit_at((v >> 18) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at((v >> 12) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at((v >> 6) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at(v & 63).to_int().unsafe_to_char())
-    i += 3
+  if url {
+    @codec.base64url_encode(b[:])
+  } else {
+    @codec.base64_encode(b[:])
   }
-  if n - i == 1 {
-    let v = b[i].to_int() << 16
-    out.write_char(a.code_unit_at((v >> 18) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at((v >> 12) & 63).to_int().unsafe_to_char())
-    if !url {
-      out.write_string("==")
-    }
-  } else if n - i == 2 {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8)
-    out.write_char(a.code_unit_at((v >> 18) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at((v >> 12) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at((v >> 6) & 63).to_int().unsafe_to_char())
-    if !url {
-      out.write_char('=')
-    }
-  }
-  out.to_string()
-}
-
-///|
-let uri_unreserved : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"
-
-///|
-/// `encodeURIComponent(s)`; None where `s` holds a lone surrogate (where JS throws).
-fn encode_uri_component(s : String) -> String? {
-  let out = StringBuilder()
-  let hexs = "0123456789ABCDEF"
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let c = s.code_unit_at(i).to_int()
-    if c < 128 && uri_unreserved.find(c.unsafe_to_char().to_string()) is Some(_) {
-      out.write_char(c.unsafe_to_char())
-      i += 1
-      continue
-    }
-    let mut cp = c
-    if c >= 0xd800 && c <= 0xdbff {
-      if i + 1 < n {
-        let d = s.code_unit_at(i + 1).to_int()
-        if d >= 0xdc00 && d <= 0xdfff {
-          cp = 0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00)
-          i += 1
-        } else {
-          return None
-        }
-      } else {
-        return None
-      }
-    } else if c >= 0xdc00 && c <= 0xdfff {
-      return None
-    }
-    let bytes = utf8_of(cp.unsafe_to_char().to_string())
-    for x in bytes {
-      out.write_char('%')
-      out.write_char(hexs.code_unit_at(x.to_int() >> 4).to_int().unsafe_to_char())
-      out.write_char(hexs.code_unit_at(x.to_int() & 15).to_int().unsafe_to_char())
-    }
-    i += 1
-  }
-  Some(out.to_string())
 }
 
 ///|
@@ -118,7 +44,7 @@ pub fn forms_of(value : String) -> Array[Bytes] {
     ascii(b64_text(raw, false)),
     ascii(b64_text(raw, true)),
   ]
-  match encode_uri_component(value) {
+  match @url.encode_uri_component_strict(value) {
     Some(e) => forms.push(ascii(e))
     // (JS throws there: scrub.ts would fail; the value's own form kept)
     None => ()

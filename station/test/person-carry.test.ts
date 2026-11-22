@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type Entry, LockRefusal, entryHash, signedBytes } from "../src/cloud/lock.ts";
+import { type Entry, LockRefusal, entryHash, signedBytes } from "../../shared/lock.ts";
 import type { Cloud } from "../src/cloud/state.ts";
 import { CHAINS_A_PERSON, PersonChains } from "../src/mesh/person-chains.ts";
 import { answerPerson, followPersons, personSyncWith } from "../src/mesh/person-sync.ts";

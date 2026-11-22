@@ -6,28 +6,10 @@
 /// core (@sfbase.settings_core); and the library where a picture made in it goes (@sf.picture_out_by, @sf.picture_out_now_by: a table's).
 /// Said once (reset runs only as a Tester starts).
 fn init {
-  @sfbase.login_card_of.val = fn(c, core, station, id, marked) { login_card(c, core, station, id, marked~) }
   @sfbase.share_card_of.val = share_card_open
   @sfbase.screen_made_stream.val = screen_fixture_stream
-  @sf.picture_out_by.val = fn(c, png, said) { picture_out(c, png, copy_said=said) }
   @sf.picture_out_now_by.val = fn(png, said) { picture_out_now(png, copy_said=said) }
-  // (a part of a page whose build faulted, in its place: as a list with nothing in it says so; a page's own bar and
-  // back went with it, so back is under the words where there is somewhere to go)
-  @ui.old_fault_shown.val = fn(c, _) {
-    @sf.empty(c, fn() {
-      c.text(@sf.t("android-misc.fault.shown"), style=fault_words) |> ignore
-      if @sfbase.back_step() is Some(_) {
-        @sf.button(c, @sf.t("common.back"), key="fault-back", on_press=fn() {
-          @sfbase.go_back() |> ignore
-        }) |> ignore
-      }
-    })
-  }
 }
-
-///|
-// kept across runs: a value (no field of it changes)
-let fault_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
 
 ///|
 /// What this package keeps put back as the app begins anew (its reset).
@@ -72,6 +54,7 @@ pub fn reset() -> Unit {
   feedback_reset()
   decision_reply_reset()
   new_chat_reset()
+  sent_in_field_reset()
   changelog_reset()
   share_looks_reset()
   font_setting_reset()

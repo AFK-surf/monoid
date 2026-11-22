@@ -89,13 +89,10 @@ fn station_update_row_node(row : @view.View, core : Core, it : () -> Json?) -> U
           @sf.style_node(e, fn() { sw_rest })
           match state {
             "updating" =>
-              e.show(fn() { field(it(), "percent") is Some(Number(_, ..)) }, fn(b) {
-                b.box(fn(bar) {
-                  bar.width(Is(Some(sw_progress_w))) |> ignore
-                  @sf.progress_node(bar, fn() { Some(number(it(), "percent") / 100.0) }, fn() { @ui.tree_theme().line }, fn() {
-                    @sf.theme().p.accent
-                  })
-                  |> ignore
+              e.show(fn() { field(it(), "percent") is Some(Number(_, ..)) }, fn(bar) {
+                bar.width(Is(Some(sw_progress_w))) |> ignore
+                @sf.progress_node(bar, fn() { Some(number(it(), "percent") / 100.0) }, fn() { @ui.tree_theme().line }, fn() {
+                  @sf.theme().p.accent
                 })
                 |> ignore
               })
@@ -154,15 +151,18 @@ fn app_update_row_node(row : @view.View, src : @sfbase.Source) -> Unit {
         h.pick(fn() { now().2 != "" }, fn(e, pressed) {
           @sf.style_node(e, fn() { sw_rest })
           if pressed {
-            @sf.button_node(e, fn() { now().2 }, fn() { @sfbase.update_go(src) }, tone=Primary) |> ignore
+            @sf.button_node(
+              e,
+              fn() { now().2 },
+              fn() { if @sfbase.stale_build_now() { @sfbase.stale_build_action(src) } else { @sfbase.update_go(src) } },
+              tone=Primary,
+            )
+            |> ignore
           } else {
-            e.show(fn() { now().1 is Some(_) }, fn(b) {
-              b.box(fn(bar) {
-                bar.width(Is(Some(sw_progress_w))) |> ignore
-                @sf.progress_node(bar, fn() { now().1.unwrap_or(None) }, fn() { @ui.tree_theme().line }, fn() {
-                  @sf.theme().p.accent
-                })
-                |> ignore
+            e.show(fn() { now().1 is Some(_) }, fn(bar) {
+              bar.width(Is(Some(sw_progress_w))) |> ignore
+              @sf.progress_node(bar, fn() { now().1.unwrap_or(None) }, fn() { @ui.tree_theme().line }, fn() {
+                @sf.theme().p.accent
               })
               |> ignore
             })

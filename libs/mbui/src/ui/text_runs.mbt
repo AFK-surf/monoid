@@ -156,7 +156,7 @@ fn tree_text_runs() -> Array[TextRun] {
     guard a > 0.0 && c.bones == 0L else { return }
     let mine : Array[TextRun] = []
     if !c.runs.is_empty() {
-      let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
+      let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks, tabular=c.words_tabular)
       let shifted = lay.line_start.length() > 0 && c.words_center
       rich_runs_into(mine, lay, 0.0, 0.0, -1.0e9, 1.0e9)
       if shifted {
@@ -180,7 +180,7 @@ fn tree_text_runs() -> Array[TextRun] {
         balance=look.balance,
         line=view_line(scale, look),
         spacing=view_spacing(scale, look),
-        style=view_words_style(),
+        style=view_words_style(tabular=c.words_tabular),
         max_lines=look.max_lines,
       )
       text_runs_into(mine, tl, 0.0, 0.0, fn(l) { if c.words_center && l < tl.line_w.length() { dmax((c.w - tl.line_w[l]) / 2.0, 0.0) } else { 0.0 } }, -1.0e9, 1.0e9)
@@ -191,11 +191,23 @@ fn tree_text_runs() -> Array[TextRun] {
       None => (x, y, sc)
     }
     let (_, by0, _, by1) = tree.seen_bounds(c.id)
+    let nav_cut = nav_clip_for_node(tree, c.id)
     for r in mine {
       let top = y + r.top * sc
       let bottom = y + r.bottom * sc
       if top < by1 && bottom > by0 {
-        out.push({ text: r.text, x0: x + r.x0 * sc, x1: x + r.x1 * sc, base: y + r.base * sc, top, bottom })
+        let mut rx0 = x + r.x0 * sc
+        let mut rx1 = x + r.x1 * sc
+        match nav_cut {
+          Some((cut_l, cut_r)) => {
+            rx0 = dmax(rx0, cut_l)
+            rx1 = dmin(rx1, cut_r)
+          }
+          None => ()
+        }
+        if rx1 > rx0 {
+          out.push({ text: r.text, x0: rx0, x1: rx1, base: y + r.base * sc, top, bottom })
+        }
       }
     }
   })

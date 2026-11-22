@@ -15,6 +15,10 @@ export type Stream = {
   /// 2026-10-28: nothing).
   stopped(): Promise<number | null | void>;
   reset(code: number): Promise<void>;
+  /// A view's video and audio frames written on it from now on sent as datagrams on its connection under `token`
+  /// (client/shell screen_dgram.rs), asked before its reply's head is written: false where its connection's datagrams
+  /// will not do (they go on it as before). An addon or a front from before has none.
+  mediaDatagrams?(token: number): Promise<boolean>;
 };
 /// What went over a connection since it opened (native/mesh `Stats`): bytes; and from the addon of 2026-10-19 on,
 /// packets and the frames in them, those that carry nothing (pings, ACK requests, ACKs) and those that carry data.
@@ -79,6 +83,11 @@ export type Endpoint = {
   /// inactive for another of its id (`conflict`: a second station on its key). An addon or a front from before says no
   /// `conflict`; one from before relays' status none of it.
   relayStatus?(): { url: string; connected: boolean; access: string; conflict?: boolean }[];
+  /// Whether it is reached through relay `url` now, end to end (native/mesh keep.rs `probe`: a fresh endpoint on that
+  /// relay alone, dialed by this one): `ok`, or what failed (`probe_offline`: the relay is out of this machine's reach,
+  /// the endpoint not to blame; `endpoint_failed`: the relay is in reach, yet this endpoint is not reached through it).
+  /// An addon or a front from before has none (a front says `no operation`).
+  probeRelay?(url: string): Promise<{ ok: boolean; stage?: "probe_offline" | "endpoint_failed" }>;
   insertRelay(url: string): Promise<void>;
   removeRelay(url: string): Promise<void>;
   publicRelays(on: boolean): Promise<void>;

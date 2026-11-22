@@ -20,5 +20,13 @@ for p in "$T/MBUI.app/Info.plist" "$T/MBUI.app/PlugIns/Share.appex/Info.plist"; 
   [ "$(plutil -extract CFBundleDisplayName raw -o - "$p")" = monoid ]
 done
 [ "$(plutil -extract MBUIShareTaken raw -o - "$T/MBUI.app/PlugIns/Share.appex/Info.plist")" = '已收下。打开 monoid，选要发到的对话。' ]
+for lang in en zh-Hans; do
+  strings="$T/MBUI.app/$lang.lproj/InfoPlist.strings"
+  [ -f "$strings" ]
+  plutil -lint -s "$strings"
+  for key in NSPhotoLibraryAddUsageDescription NSPhotoLibraryUsageDescription NSCameraUsageDescription NSFaceIDUsageDescription; do
+    [ -n "$(plutil -extract "$key" raw -o - "$strings")" ]
+  done
+done
 clang -fobjc-arc -framework Foundation "$D/ios-product-test.m" -o "$T/product-test"
 "$T/product-test" "$T/MBUI.app/Info.plist"

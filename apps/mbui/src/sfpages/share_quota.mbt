@@ -27,10 +27,33 @@ fn share_picture_open(
     above?,
     live=fn() { (@sf.t(title), "", "") },
     foot=fn(f, _) {
+      let taking : @signals.Signal[Bool] = @signals.signal(false)
       let (label, icon) = @sf.picture_out_way()
-      @sf.button_node(f, fn() { label }, tone=Primary, icon~, on_night=true, fn() {
-        @ui.take_picture(share_shot, w, fn(paper) { draw(paper, true) }, fn(png) { picture_out_now(png) |> ignore }, scale=share_scale)
-      })
+      @sf.button_node(
+        f,
+        fn() { label },
+        tone=Primary,
+        icon~,
+        on_night=true,
+        busy=fn() { taking.get() },
+        disabled=fn() { taking.get() },
+        fn() {
+          if taking.untracked() {
+            return
+          }
+          taking.set(true)
+          @ui.take_picture(
+            share_shot,
+            w,
+            fn(paper) { draw(paper, true) },
+            fn(png) {
+              taking.set(false)
+              picture_out_now(png) |> ignore
+            },
+            scale=share_scale,
+          )
+        },
+      )
       |> ignore
     },
   )
@@ -261,7 +284,7 @@ pub fn pool_share_open(core : Core, scope : () -> String) -> Unit {
           @sf.t("web-main.share.poolReady", args=[("ready", pv.ready.to_string()), ("total", pv.total.to_string())])
         })
         // (on a card as the accounts' rows are, the panel's: group_node's)
-        @sf.group_node(x, fn(card) { ov_charts_node(card, fn() { Some(pool.get()) }, None, None) })
+        @sf.group_node(x, fn(card) { ov_charts_node(card, fn() { Some(pool.get()) }, None, None, show_speed=false) })
       })
     })
   })

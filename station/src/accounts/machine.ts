@@ -68,7 +68,7 @@ export class MachineLogins {
 
   /// The last reading, at once; read again in the background when it is old.
   get(): MachineLogin[] {
-    if (this.clock.currentTimeMillisUnsafe() - this.readAt > FRESH_MS) void this.refresh();
+    if (this.clock.currentTimeMillisUnsafe() - this.readAt > FRESH_MS) void this.refresh().catch(() => {});
     return this.logins.map((l) => ({ ...l }));
   }
 
@@ -118,15 +118,21 @@ const CLAUDE_DROP = ["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_T
 
 /// What a command said, and how it ended: undefined when it could not be run at all (not installed).
 async function run(command: string, args: string[], env: Env): Promise<{ ok: boolean; stdout: string; stderr: string } | undefined | Error> {
-  env = await withShellCommand(command, env);
-  const r = await platform.runnableSoon(command, args, env as NodeJS.ProcessEnv);
-  return new Promise((resolve) => {
-    execFile(r.file, r.args, { env: env as NodeJS.ProcessEnv, timeout: 20_000, killSignal: "SIGKILL", windowsVerbatimArguments: r.windowsVerbatimArguments }, (error, stdout, stderr) => {
-      if (error && (error as NodeJS.ErrnoException).code === "ENOENT") return resolve(undefined);
-      if (error && error.killed) return resolve(new Error(`${command} took too long`));
-      resolve({ ok: !error, stdout: String(stdout), stderr: String(stderr) });
+  try {
+    env = await withShellCommand(command, env);
+    const r = await platform.runnableSoon(command, args, env as NodeJS.ProcessEnv);
+    return await new Promise((resolve) => {
+      execFile(r.file, r.args, { env: env as NodeJS.ProcessEnv, timeout: 20_000, killSignal: "SIGKILL", windowsVerbatimArguments: r.windowsVerbatimArguments }, (error, stdout, stderr) => {
+        if (error && (error as NodeJS.ErrnoException).code === "ENOENT") return resolve(undefined);
+        if (error && error.killed) return resolve(new Error(`${command} took too long`));
+        resolve({ ok: !error, stdout: String(stdout), stderr: String(stderr) });
+      });
     });
-  });
+  } catch (error) {
+    // Node throws synchronously from execFile on ENOEXEC / Windows ERROR_BAD_EXE_FORMAT (e.g. a broken native binary stub).
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    return error instanceof Error ? error : new Error(String(error));
+  }
 }
 
 async function claudeLogin(env: Env, lang: Lang): Promise<MachineLogin> {

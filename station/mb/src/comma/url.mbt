@@ -42,26 +42,6 @@ fn ascii_lower(s : String) -> String {
 }
 
 ///|
-/// UTF-8 of `s`, each byte `keep` does not take percent-encoded.
-fn percent_encode(s : String, keep : (Int) -> Bool, space_plus? : Bool = false) -> String {
-  let out = StringBuilder::new()
-  let hexd = "0123456789ABCDEF"
-  for b in utf8_of(s) {
-    let v = b.to_int()
-    if space_plus && v == 0x20 {
-      out.write_char('+')
-    } else if keep(v) {
-      out.write_char(v.unsafe_to_char())
-    } else {
-      out.write_char('%')
-      out.write_char(hexd.unsafe_charcode_at(v >> 4).unsafe_to_char())
-      out.write_char(hexd.unsafe_charcode_at(v & 15).unsafe_to_char())
-    }
-  }
-  out.to_string()
-}
-
-///|
 fn userinfo_keep(v : Int) -> Bool {
   v > 0x20 &&
   v < 0x7f &&
@@ -300,8 +280,8 @@ fn parse_url(input : String) -> Url? {
         password: "",
         host,
         port: None,
-        path: percent_encode(p, path_keep_pct),
-        query: query.map(q => percent_encode(q, query_keep_pct(true))),
+        path: @url.percent_encode(p, path_keep_pct),
+        query: query.map(q => @url.percent_encode(q, query_keep_pct(true))),
         opaque: false,
       })
     }
@@ -339,10 +319,10 @@ fn parse_url(input : String) -> Url? {
       match u.find(":") {
         Some(c) =>
           (
-            percent_encode(u.unsafe_substring(start=0, end=c), userinfo_keep_pct),
-            percent_encode(u.unsafe_substring(start=c + 1, end=u.length()), userinfo_keep_pct),
+            @url.percent_encode(u.unsafe_substring(start=0, end=c), userinfo_keep_pct),
+            @url.percent_encode(u.unsafe_substring(start=c + 1, end=u.length()), userinfo_keep_pct),
           )
-        None => (percent_encode(u, userinfo_keep_pct), "")
+        None => (@url.percent_encode(u, userinfo_keep_pct), "")
       }
   }
   // host and port: a colon outside brackets
@@ -370,7 +350,7 @@ fn parse_url(input : String) -> Url? {
       None => return None
     }
   } else {
-    percent_encode(raw_host, c => c > 0x20 && c < 0x7f && !(c is ('#' | '/' | '<' | '>' | '?' | '@' | '[' | '\\' | ']' | '^' | '|')))
+    @url.percent_encode(raw_host, c => c > 0x20 && c < 0x7f && !(c is ('#' | '/' | '<' | '>' | '?' | '@' | '[' | '\\' | ']' | '^' | '|')))
   }
   let port = match raw_port {
     None | Some("") => None
@@ -411,10 +391,10 @@ fn parse_url(input : String) -> Url? {
     if p == "" {
       "/"
     } else {
-      percent_encode(p, path_keep_pct)
+      @url.percent_encode(p, path_keep_pct)
     }
   } else {
-    percent_encode(path_part, path_keep_pct)
+    @url.percent_encode(path_part, path_keep_pct)
   }
   Some({
     scheme,
@@ -423,7 +403,7 @@ fn parse_url(input : String) -> Url? {
     host,
     port,
     path,
-    query: query.map(q => percent_encode(q, query_keep_pct(special))),
+    query: query.map(q => @url.percent_encode(q, query_keep_pct(special))),
     opaque: false,
   })
 }
@@ -547,7 +527,7 @@ pub fn connect_url(server : String, name : String, workspace : String?, os : Str
   params.push(("os", os))
   params.push(("arch", arch))
   let query = params
-    .map(p => percent_encode(p.0, form_keep, space_plus=true) + "=" + percent_encode(p.1, form_keep, space_plus=true))
+    .map(p => @url.percent_encode(p.0, form_keep, space_plus=true) + "=" + @url.percent_encode(p.1, form_keep, space_plus=true))
     .join("&")
   { ..url, query: Some(query) }.to_string()
 }

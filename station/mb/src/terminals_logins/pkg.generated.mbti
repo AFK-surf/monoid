@@ -3,13 +3,12 @@ package "station/terminals_logins"
 
 import {
   "mbui/effect",
-  "station/host",
   "station/jsjson",
   "station/ops_platform",
 }
 
 // Values
-pub const COLS : Int32 = 200
+pub const COLS : Int32 = 1000
 
 pub const KIND_CONTROL : Int32 = 18
 
@@ -63,8 +62,6 @@ pub fn from_base64(String) -> Bytes
 
 pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn is_terminal_runner(String) -> Bool
 
 pub fn ja(Array[@jsjson.JValue]) -> @jsjson.JValue
@@ -105,7 +102,7 @@ pub fn num(@jsjson.JValue?) -> Double?
 
 pub fn osc_cwd(String) -> (String?, String)
 
-pub fn parse(String) -> @jsjson.JValue raise
+pub fn parse(String) -> @jsjson.JValue raise @jsjson.SyntaxError
 
 pub fn past_screen(Out, Double) -> Bytes?
 
@@ -460,6 +457,7 @@ pub(all) enum Said {
 
 pub(all) struct Screen {
   rows : Array[String]
+  wrapped : Array[Bool]
   cursor : (Int32, Int32)
   echo : Bool
   live : Bool
@@ -588,6 +586,7 @@ pub fn Vt::new(Int32, Int32, Int32) -> Self
 pub fn Vt::on_data(Self, (String) -> Unit) -> Unit
 pub fn Vt::osc(Self, Int32, (String) -> Bool) -> Unit
 pub fn Vt::row(Self, Int32) -> String
+pub fn Vt::row_wrapped(Self, Int32) -> Bool
 pub fn Vt::rows(Self) -> Int32
 pub fn Vt::write(Self, String) -> Unit
 

@@ -18,9 +18,10 @@ pub let level : Int = 3
 pub let window_log : Int = 20
 
 ///|
-/// A zstd stream: each piece given comes out flushed.
+/// A zstd stream: each piece given comes out flushed; `finish` ends the frame once on normal EOF.
 pub(all) struct Packing {
   push : async (Bytes) -> Bytes
+  finish : async () -> Bytes
   close : () -> Unit
 }
 
@@ -41,10 +42,21 @@ pub fn asks_zstd(headers : Array[(String, String)]) -> Bool {
 }
 
 ///|
-fn texty(t : String) -> Bool {
-  t.has_prefix("application/json") ||
-  t.has_prefix("application/x-ndjson") ||
-  t.has_prefix("text/")
+fn media_type(t : String) -> String {
+  let base = match t.find(";") {
+    Some(i) => t.unsafe_substring(start=0, end=i)
+    None => t
+  }
+  base.trim(chars=" \t\n\r").to_owned().to_lower()
+}
+
+///|
+fn texty(t : String, extra_types : Array[String]) -> Bool {
+  let m = media_type(t)
+  m == "application/json" ||
+  m == "application/x-ndjson" ||
+  m.has_prefix("text/") ||
+  extra_types.contains(m)
 }
 
 ///|
@@ -54,13 +66,14 @@ pub async fn compressed(
   answer : Answer,
   headers : Array[(String, String)],
   path : String,
+  extra_types? : Array[String] = [],
 ) -> Answer {
   if !asks_zstd(headers) ||
     path.has_prefix("/preview/") ||
     header_of(answer.headers, "content-encoding") is Some(_) {
     return answer
   }
-  if !texty(header_of(answer.headers, "content-type").unwrap_or("")) {
+  if !texty(header_of(answer.headers, "content-type").unwrap_or(""), extra_types) {
     return answer
   }
   // A length said was of what it says, not of what is sent: none is said.
@@ -77,17 +90,55 @@ pub async fn compressed(
     Coming(source) => {
       let z = (packer.stream)()
       let mut closed = false
+      let mut ended = false
       let close = () => if !closed {
         closed = true
         (z.close)()
       }
       let next = async fn() -> Bytes? {
-        match (source.next)() {
-          None => {
+        if closed || ended {
+          return None
+        }
+        let item = (source.next)() catch {
+          e => {
             close()
-            None
+            raise e
           }
-          Some(piece) => Some((z.push)(piece))
+        }
+        if closed {
+          return None
+        }
+        match item {
+          None => {
+            ended = true
+            let tail = (z.finish)() catch {
+              e => {
+                close()
+                raise e
+              }
+            }
+            if closed {
+              return None
+            }
+            close()
+            if tail.length() > 0 {
+              Some(tail)
+            } else {
+              None
+            }
+          }
+          Some(piece) => {
+            let out = (z.push)(piece) catch {
+              e => {
+                close()
+                raise e
+              }
+            }
+            if closed {
+              return None
+            }
+            Some(out)
+          }
         }
       }
       let stop = () => {

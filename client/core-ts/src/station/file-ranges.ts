@@ -13,6 +13,7 @@ type Range<H> = {
   at: number;
   end: number;
   users: number;
+  noHedge: boolean;
   head?: H;
   loaded: number;
   pieces: { at: number; bytes: Uint8Array }[];
@@ -47,7 +48,7 @@ export class FileRanges<H extends Head> {
       Effect.sync(() => { Deferred.doneUnsafe(range.done, result); })));
   }
 
-  #reserve(key: string, at: number, end: number): Slice<H>[] {
+  #reserve(key: string, at: number, end: number, noHedge: boolean): Slice<H>[] {
     const active = this.#files.get(key) ?? new Set<Range<H>>();
     this.#files.set(key, active);
     const slices: Slice<H>[] = [];
@@ -55,11 +56,12 @@ export class FileRanges<H extends Head> {
       let cover: Range<H> | undefined;
       let next = end;
       for (const range of active) {
+        if (!noHedge && range.noHedge) continue;
         if (range.at <= at && at < range.end) { cover = range; break; }
         if (range.at > at) next = Math.min(next, range.at);
       }
       if (!cover) {
-        cover = { at, end: next, loaded: 0, users: 0, pieces: [], listeners: new Set(), done: Deferred.makeUnsafe() };
+        cover = { at, end: next, loaded: 0, users: 0, noHedge, pieces: [], listeners: new Set(), done: Deferred.makeUnsafe() };
         active.add(cover);
       }
       cover.users++;
@@ -78,7 +80,7 @@ export class FileRanges<H extends Head> {
     return Effect.forEach(last, (range) => range.fiber ? Fiber.interrupt(range.fiber) : Effect.void, { discard: true });
   }
 
-  read(key: string, at: number, length: number, fetch: Fetch<H>, heard?: (loaded: number) => void, sink?: (bytes: Uint8Array) => void, said?: (head: H) => void): Effect.Effect<H & { bytes: Uint8Array }, CoreError> {
+  read(key: string, at: number, length: number, fetch: Fetch<H>, heard?: (loaded: number) => void, sink?: (bytes: Uint8Array) => void, said?: (head: H) => void, noHedge = false): Effect.Effect<H & { bytes: Uint8Array }, CoreError> {
     return Effect.suspend(() => {
       const chunks: Uint8Array[] = [];
       let head: H | undefined;
@@ -91,7 +93,7 @@ export class FileRanges<H extends Head> {
         return true;
       };
       return Effect.acquireUseRelease(
-        Effect.sync(() => this.#reserve(key, at, at + length)),
+        Effect.sync(() => this.#reserve(key, at, at + length, noHedge)),
         (slices) => Effect.gen({ self: this }, function* () {
           for (const { range, at: from, end } of slices) {
             this.#start(range, fetch);

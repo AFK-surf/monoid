@@ -48,7 +48,11 @@ test "a finger moved up past the slop on a row that is a gesture: the column's, 
   assert_true(s.at(tree) > 150.0, msg="scrolled \{s.at(tree)}")
   assert_eq(taps.val, 0)
   assert_eq(drags.val, 0)
-  // (and a tap on it still a tap)
+  // (a tap on it as the column still glides on from that: the column caught, no tap)
+  assert_true(s.glides_till() is Some(_))
+  t.drag(195.0, 300.0, 195.0, 300.0)
+  assert_eq((taps.val, s.glides_till()), (0, None))
+  // (and a tap on it at rest still a tap)
   t.drag(195.0, 300.0, 195.0, 300.0)
   assert_eq(taps.val, 1)
 }

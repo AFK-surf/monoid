@@ -68,8 +68,6 @@ pub let grant_ms : Double
 
 pub fn grant_names(@jsjson.JValue) -> Array[String]
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn hash_of(String, Codecs?) -> (String, Double, Double)?
 
 pub let held_ms : Double
@@ -144,8 +142,6 @@ pub fn names(String) -> Array[String] raise FsError
 
 pub fn odel(@jsjson.JValue, String) -> Unit
 
-pub fn of_jv(@jsjson.JValue) -> @json.Json
-
 pub fn oget(@jsjson.JValue, String) -> @jsjson.JValue?
 
 pub fn oset(@jsjson.JValue, String, @jsjson.JValue) -> Unit
@@ -163,6 +159,8 @@ pub fn place_word(String, String) -> String
 pub async fn poster(String, String, Makers, since? : Double) -> String?
 
 pub fn poster_path(String, String) -> String
+
+pub fn preview(String, String, Codecs?) -> Thumbnail?
 
 pub fn protected_place(String, String, Array[String]) -> Where?
 
@@ -238,8 +236,6 @@ pub fn thumbs_dir(String) -> String
 
 pub fn tmpdir() -> String
 
-pub fn to_jv(@json.Json) -> @jsjson.JValue
-
 pub fn to_trash(String, String?, Double, String?) -> String? raise
 
 pub let too_big : String
@@ -283,23 +279,23 @@ pub let zip_chunk : Int32
 pub fn zip_folder(String, String, Double, (String, String) -> Bool raise, Fs) -> Double raise
 
 // Errors
-#derive(Show)
 pub(all) suberror DriveError {
   DriveError(DriveFailure)
 }
+pub impl Show for DriveError
 
-#derive(Show)
 pub(all) suberror FsError {
   FsError(FsFailure)
 }
+pub impl Show for FsError
 
-#derive(Show)
 pub(all) suberror Refused {
   Refused(String)
 }
+pub impl Show for Refused
 
-#derive(Show)
 pub(all) suberror TooBig
+pub impl Show for TooBig
 
 // Types and methods
 pub(all) struct Answer {
@@ -314,6 +310,7 @@ pub(all) struct Clock {
 
 pub(all) struct Codecs {
   thumbnail : (String, String) -> Thumbnail? raise
+  preview : (String, String) -> Thumbnail? raise
   thumbhash : (String, String?) -> (String, Double, Double)? raise
 }
 
@@ -560,4 +557,3 @@ pub(all) struct Written {
 // Type aliases
 
 // Traits
-trait ToJ

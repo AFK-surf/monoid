@@ -43,14 +43,16 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
             })
           _ => ()
         }
-        let (base_mode, chat_nodes) = match mode.strip_prefix("nodes:") {
-          Some(rest) => (rest.to_owned(), true)
-          None => (mode, arg("MBUI_CHAT_PAGE") == "nodes" || arg("MBUI_CHAT_PAGE") == "composed")
+        // (`nodes:` before a mode, as scripts of before say it: the chat's page is made as nodes whatever it says, as
+        // MBUI_CHAT_PAGE is let be)
+        let base_mode = match mode.strip_prefix("nodes:") {
+          Some(rest) => rest.to_owned()
+          None => mode
         }
         let s = if base_mode == "json" {
           @sfapp.fixture_json_app(arg("MBUI_FIXTURE_JSON"))
         } else {
-          @sfapp.fixture_app(base_mode, chat_nodes~)
+          @sfapp.fixture_app(base_mode)
         }
         // MBUI_FIX_PACE, MBUI_FIX_CORE: the made-up station's pace (said in the film's record, scripts/media.sh)
         @sffixture.fix_pace_said(arg("MBUI_FIX_PACE"), arg("MBUI_FIX_CORE"))
@@ -103,12 +105,6 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
           s
         }
         if dark { @sf.set_dark(Some(true)) }
-        // MBUI_CHAT_PAGE=nodes: the chat's page made as nodes (外观's 试用新对话页, as a run that chose it begins);
-        // `composed`: its composer too (试用新输入框)
-        if arg("MBUI_CHAT_PAGE") == "nodes" || arg("MBUI_CHAT_PAGE") == "composed" {
-          @sfbase.chat_page_nodes.set(true)
-        }
-        if arg("MBUI_CHAT_PAGE") == "composed" { @sfbase.composer_nodes.set(true) }
         @sf.give_faces()
         src.val = Some(s)
         s

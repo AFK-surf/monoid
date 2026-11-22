@@ -174,7 +174,7 @@ fn screen_link_level(st : Json?, net : Json?) -> String {
 ///|
 /// 画质's choices, the default first: its key in the prefs ("" none), its words' key.
 // kept across runs: a table, never written
-let screen_qualities : Array[(String, String)] = [("", "auto"), ("smooth", "smooth"), ("hd", "hd"), ("original", "original")]
+let screen_qualities : Array[(String, String)] = [("", "auto"), ("smooth", "smooth"), ("hd", "hd"), ("qhd", "qhd"), ("original", "original")]
 
 // ── what the view's figures are now ──────────────────────────────────────
 
@@ -403,7 +403,7 @@ fn net_node(v : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
         fn() { @sf.t(if copied.get() { "web-pages.screen.stat.copied" } else { "web-pages.screen.stat.copy" }) },
         fn() {
           let n = @signals.untracked(net)
-          @ui.clipboard_set(diagnosis(s, u, n, screen_os(s.src, s.station)).stringify(), label="still.fail")
+          @ui.clipboard_set(diagnosis(s, u, n, screen_os(s.src, s.station)).stringify(), label=@sf.product())
           copied.set(true)
           (due.val)()
           due.val = at.at_moment(at.cause_at() + diag_said_ms, fn() { copied.set(false) })
@@ -470,12 +470,24 @@ let diag_said_ms : Double = 1500.0
 // ── 按键 ─────────────────────────────────────────────────────────────────
 
 ///|
+/// Wide enough for the 3-column English combo tiles ("Switch windows", "Task Manager", etc.) to fit without ellipsis
+/// after `tiles_box` (`S4`) and `tile_box` (`S1`) padding.
+let keys_panel_w : Double = 380.0
+
+///|
 /// 按键 (the combos, then F1–F12 and the keys the keys row has not) beside what opened it (`from`), or with keyboard and
 /// mouse (`combos_only`: its keyboard has the rest) 组合键 alone; this page's panel of its own (screen_panel_toggle).
 fn keys_open(s : ScreenSess, u : ScreenUi, from : @sf.Anchor, combos_only? : Bool = false) -> Unit {
   let title = @sf.t(if combos_only { "web-pages.screen.combos" } else { "web-pages.screen.keysPanel" })
   screen_panel_toggle(u, "keys", fn() {
-    @sf.panel_nodes(title, fn(v, _) { keys_node(v, s, u, combos_only) }, from~, side=screen_panel_side(), focus=false)
+    @sf.panel_nodes(
+      title,
+      fn(v, _) { keys_node(v, s, u, combos_only) },
+      from~,
+      w=keys_panel_w,
+      side=screen_panel_side(),
+      focus=false,
+    )
   })
 }
 

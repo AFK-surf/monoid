@@ -5,7 +5,7 @@
 // (Cloud.resetLock) leaves a station of two. What is so on 2026-11-14, held as found: nothing here is a design.
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import { LockRefusal } from "../src/cloud/lock.ts";
+import { LockRefusal } from "../../shared/lock.ts";
 import { Cloud } from "../src/cloud/state.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { inLock, inLockBringing } from "../src/mesh/serve.ts";

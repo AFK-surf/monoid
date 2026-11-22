@@ -194,7 +194,8 @@ pub fn tool_node(
 
 ///|
 /// Icon `name` as a node in `parent`, `size` across, drawn in `tint` as it changes (icon's: its shapes the same, in
-/// the node's tint), called as an old view's icon is by what finds it on screen. The node.
+/// the node's tint), called as an old view's icon is by what finds it on screen. `weighed`: drawn with its weight in
+/// its middle where it stands alone in a round key (icon_weighed). The node.
 #callsite(autofill(loc))
 pub fn icon_node(
   parent : @view.View,
@@ -202,6 +203,7 @@ pub fn icon_node(
   size : Double,
   tint : @view.Live[Int64],
   name_now? : () -> String,
+  weighed? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   // (the icon said as it changes where `name_now` says it: a key's copy turning to a check a moment)
@@ -215,7 +217,7 @@ pub fn icon_node(
     .height(Is(Some(size)))
     .shapes(By(fn() {
       match icon_numbers(name()) {
-        Some(d) => icon_shapes(d, size / 24.0, 0x000000FFL)
+        Some(d) => icon_shapes(if weighed { icon_weighed(name(), d) } else { d }, size / 24.0, 0x000000FFL)
         None => []
       }
     }))
@@ -232,4 +234,43 @@ fn tool_shapes(name : String) -> Array[@ui.Shape] {
     Some(d) => icon_shapes(d, viewer_tool_icon / 24.0, 0x000000FFL)
     None => []
   }
+}
+///|
+/// 复制 as a tool of a bar in `parent` (a file tab's tools' row, the whole window's viewer's bar): `copy` done at its
+/// press, true where it copied, a check said in its place copied_ms after the press, its end its own, another press
+/// another end (let go with the node). The node.
+#callsite(autofill(loc))
+pub fn copy_tool_node(
+  parent : @view.View,
+  ink : () -> ViewerInk,
+  corner : @view.Live[Double],
+  copy : () -> Bool,
+  tip? : TipLayer,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let copied : @signals.Signal[Bool] = @signals.signal(false)
+  let copied_end : Ref[() -> Unit] = Ref(fn() {  })
+  let n = tool_node(
+    parent,
+    fn() {
+      if copied.get() {
+        { icon: "check", label: t("common.copied"), on: false, disabled: false }
+      } else {
+        { icon: "copy", label: t("common.copy"), on: false, disabled: false }
+      }
+    },
+    ink,
+    corner,
+    fn() {
+      if copy() {
+        (copied_end.val)()
+        copied.set(true)
+        copied_end.val = parent.at_moment(parent.cause_at() + copied_ms, later=true, fn() { copied.set(false) })
+      }
+    },
+    tip?,
+    loc~,
+  )
+  n.owns(fn() { (copied_end.val)() }) |> ignore
+  n
 }

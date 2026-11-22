@@ -51,6 +51,12 @@ let take_over_place : @ui.Style = @ui.css("w=Full px=S3 py=S1 align=ACenter")
 let round_icon : Double = 20.0
 
 ///|
+/// 左键 floating over the picture (mouse_left_round_node): as round and as large as @sf.tool_round_node's Floating
+/// look, 44 (a press's least), its mark in the middle; its ground and shadow said by whether it is held.
+// kept across runs: a value (no field of it changes)
+let mouse_round : @ui.Style = @ui.css("w=S11 h=S11 radius=Full align=ACenter justify=JCenter")
+
+///|
 /// A round button's icon in a pane's own bar (screen_round_node's, ScreenPage's `tab_pads`): a bar's key's, 16.
 let round_bar_icon : Double = 16.0
 
@@ -587,7 +593,7 @@ let debug_pane_head : @ui.Style = @ui.css("row w=Full align=ACenter justify=JBet
 
 ///|
 // kept across runs: a value (no field of it changes)
-let net_panel_box : @ui.Style = @ui.css("w=Full px=S2_5 py=S2 gap=S2_5")
+let net_panel_box : @ui.Style = @ui.css("w=Full px=S4 py=S2 gap=S2_5")
 
 ///|
 /// 复制诊断 in the middle under its figures.
@@ -639,7 +645,7 @@ let net_value_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, tabula
 /// Tiles (快捷操作's, the combos', the keys'): rows of them, 8 apart, in by a panel row's padding, on its labels' and
 /// rows' words' edges.
 // kept across runs: a value (no field of it changes)
-let tiles_box : @ui.Style = @ui.css("w=Full px=S2_5 py=S1 gap=S2")
+let tiles_box : @ui.Style = @ui.css("w=Full px=S4 py=S1 gap=S2")
 
 ///|
 /// Under 按键's last tiles: what keeps them out of its panel's foot corners, as far up as those are round (a corner's
@@ -655,7 +661,7 @@ let tiles_row : @ui.Style = @ui.css("row w=Full gap=S2")
 /// A tile: its icon over its name, on the ink at 6% (8% pressed), 64 high, its corner 12.
 // kept across runs: a value (no field of it changes)
 let tile_box : @ui.Style = @ui.style(w=@sf.grow).then(
-  @ui.css("h=S16 gap=S1_5 radius=Xl bg=Tint align=ACenter justify=JCenter pressed{bg=Hover}"),
+  @ui.css("h=S16 px=S1 gap=S1_5 radius=Xl bg=Tint align=ACenter justify=JCenter pressed{bg=Hover}"),
 )
 
 ///|

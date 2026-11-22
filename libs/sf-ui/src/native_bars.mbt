@@ -71,14 +71,16 @@ pub fn native_clear() -> Double {
 ///|
 /// How high a capsule across a card's foot stands beside the system's action at the column's foot (iOS 27's prominent
 /// tab, an iPhone Duo's round one: @ui.system_nav_action): as high as it, so the two are one row (the user, 2026-10-28:
-/// 输入框跟右边的对上); None where there is none (every other device, upright, none said).
+/// 输入框跟右边的对上); None where there is none (every other device, upright, none said), and where the action is
+/// said lower than a capsule holding a round button stands (the theme's round, corner_fit near over and under it):
+/// iOS 27.3 on a Duo's outer screen said one so, and a capsule as high left its padding under nothing (2026-11-20).
 pub fn native_capsule_h() -> Double? {
   if !native_side() {
     return None
   }
   match @ui.system_nav_action() {
-    Some((_, _, _, h)) => Some(h)
-    None => None
+    Some((_, _, _, h)) if h >= theme().round.side + 2.0 * corner_fit.near - 0.5 => Some(h)
+    _ => None
   }
 }
 

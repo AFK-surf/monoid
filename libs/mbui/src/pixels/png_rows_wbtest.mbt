@@ -2,6 +2,21 @@
 // pixels it was given, its check right, the codes it made whole and none too long.
 
 ///|
+fn paeth(a : Int, b : Int, c : Int) -> Int {
+  let p = a + b - c
+  let pa = if p > a { p - a } else { a - p }
+  let pb = if p > b { p - b } else { b - p }
+  let pc = if p > c { p - c } else { c - p }
+  if pa <= pb && pa <= pc {
+    a
+  } else if pb <= pc {
+    b
+  } else {
+    c
+  }
+}
+
+///|
 fn be32(a : Array[Byte], at : Int) -> Int {
   (a[at].to_int() << 24) | (a[at + 1].to_int() << 16) | (a[at + 2].to_int() << 8) | a[at + 3].to_int()
 }

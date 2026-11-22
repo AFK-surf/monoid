@@ -8,34 +8,7 @@
 let bones_note : Int = 60
 
 ///|
-/// The sample as an old view's (what `waiting` is given).
-fn bones_sample_old(c : @ui.Ctx, pressed : Ref[Int]) -> Unit {
-  group(c, fn() {
-    link_row(c, "b1", sample_words(6), note=sample_words(bones_note), on_press=fn() {
-      pressed.val += 1
-    }) |> ignore
-    link_row(c, "b2", sample_words(4), value=sample_words(3), on_press=fn() {
-      pressed.val += 1
-    }) |> ignore
-  })
-  c.box(dir=Row, gap=8.0, align=ACenter, fn() {
-    icon(c, "bell", size=20.0, color=theme().p.muted) |> ignore
-    let whole = c.box(w=Px(64.0), h=Px(28.0), radius=8.0, bg=theme().p.accent, fn() {
-      c.text("按钮", style=bones_words) |> ignore
-    })
-    c.bone_whole(whole)
-    c.box(w=Px(60.0), h=Px(28.0), radius=6.0, bg=theme().p.accent, border=1.0, border_color=theme().p.red, fn() {  })
-    |> ignore
-    c.box(w=Px(60.0), h=Px(28.0), radius=6.0, bg=theme().p.neutral_bg, border=1.0, border_color=theme().p.line, fn() {  })
-    |> ignore
-    c.image(bones_picture, w=Px(40.0), h=Px(40.0), radius=20.0) |> ignore
-  })
-  |> ignore
-  waiting(c, fn() { c.text(sample_words(10), style=bones_words) |> ignore })
-}
-
-///|
-/// The same as nodes (what `waiting_node` is given).
+/// The sample as nodes (what `waiting_node` is given).
 fn bones_sample_node(v : @view.View, pressed : Ref[Int]) -> Unit {
   group_node(v, fn(g) {
     link_row_node(g, fn() { sample_words(6) }, fn() { pressed.val += 1 }, note=fn() { sample_words(bones_note) })
@@ -92,36 +65,17 @@ let bones_picture : String = "https://example.com/p.png"
 let bones_words : @ui.TextStyle = @ui.text_style(size=Body)
 
 ///|
-/// The sample waiting, 390 by 600 to touch: drawn by an old view (`node` false) or as nodes; what was pressed counted.
-fn bones_tester(node : Bool, pressed : Ref[Int]) -> @ui.Tester {
+/// The sample waiting, 390 by 600 to touch, as nodes; what was pressed counted.
+fn bones_tester(pressed : Ref[Int]) -> @ui.Tester {
   let images = [(bones_picture, 80, 80)]
-  if node {
-    // (the library's theme, the tree's too, as the app's view sets it: begin)
-    let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, images~, finish=false, w=390.0, h=600.0, platform=2)
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      waiting_node(root, fn(v) { bones_sample_node(v, pressed) })
-    })
-    t.draw()
-    t
-  } else {
-    let t = @ui.Tester::new(
-      fn(c) {
-        begin(c) |> ignore
-        // (laid out by its width, as a page of the library's is: narrow on a phone)
-        c.with_theme(ui_theme(), fn() {
-          with_look(look_for(c.width), fn() { waiting(c, fn() { bones_sample_old(c, pressed) }) })
-        })
-      },
-      images~,
-      finish=false,
-      w=390.0,
-      h=600.0,
-      platform=2,
-    )
-    t.draw()
-    t
-  }
+  // (the library's theme, the tree's too, as the app's view sets it: begin)
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, images~, finish=false, w=390.0, h=600.0, platform=2)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    waiting_node(root, fn(v) { bones_sample_node(v, pressed) })
+  })
+  t.draw()
+  t
 }
 
 ///|
@@ -146,34 +100,22 @@ fn bones_drawn(t : @ui.Tester) -> Array[String] {
 }
 
 ///|
-test "what waits as nodes drawn in its bones as an old view's wait: every instance the same, as it breathes" {
-  let seen = fn(node : Bool) {
-    let t = bones_tester(node, Ref(0))
-    let t0 = t.time()
-    let out = [bones_drawn(t)]
-    // (a quarter of its breath, and half: at its faintest)
-    for dt in [breath_ms / 4.0, breath_ms / 2.0] {
-      t.frame_at(t0 + dt)
-      out.push(bones_drawn(t))
-    }
-    out
-  }
-  let old = seen(false)
-  let made = seen(true)
-  for i, o in old {
-    assert_true(o.length() > 0, msg="nothing drawn at step \{i}")
-    if made[i] != o {
-      let only_old = o.filter(fn(x) { !made[i].contains(x) })
-      let only_made = made[i].filter(fn(x) { !o.contains(x) })
-      fail("at step \{i}: made \{made[i].length()}, old \{o.length()}\nold's alone:\n  \{only_old.join("\n  ")}\nmade's alone:\n  \{only_made.join("\n  ")}")
-    }
-  }
+test "what waits as nodes drawn in its bones: draws bones and breathes over its cycle" {
+  let t = bones_tester(Ref(0))
+  let t0 = t.time()
+  let d0 = bones_drawn(t)
+  assert_true(d0.length() > 0)
+  t.frame_at(t0 + breath_ms / 4.0)
+  let d1 = bones_drawn(t)
+  t.frame_at(t0 + breath_ms / 2.0)
+  let d2 = bones_drawn(t)
+  assert_true(d1 != d0 && d2 != d1, msg="bones breathe")
 }
 
 ///|
 test "what waits as nodes, in its bones: none of it pressed, read out, found by its words or asking for its picture" {
   let pressed = Ref(0)
-  let t = bones_tester(true, pressed)
+  let t = bones_tester(pressed)
   // (where its rows are: a finger on each)
   for y in [20.0, 60.0, 100.0, 140.0] {
     t.tap(195.0, y)
@@ -186,4 +128,43 @@ test "what waits as nodes, in its bones: none of it pressed, read out, found by 
   // (its picture never asked for)
   assert_eq(t.pending().length(), 0)
   assert_eq(t.image_loads().length(), 0)
+}
+
+///|
+/// A narrow row that fits what it holds (View::fits), 160 wide: a box 60 wide, then what waits on a model read (`fits`
+/// as said), made of a name and what it drops to fit; its faults, by the audit.
+fn fits_wait_faults(fits : Bool) -> Array[String] {
+  let t = @ui.Tester::new(fn(_c) {  }, w=240.0, h=120.0, platform=0)
+  @ui.set_tree_theme(ui_theme_now)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.pad(Is(24.0)).lines_up(Is(Some(Start))) |> ignore
+      page.box(fn(r) {
+        r.row(Is(true)).fits(Is(true)).width(Is(Some(160.0))).clips(Is(true)) |> ignore
+        r.box(fn(a) { a.width(Is(Some(60.0))).height(Is(Some(20.0))).shrink(Is(0.0)) |> ignore }) |> ignore
+        waiting_node(
+          r,
+          fn(b) {
+            b.box(fn(s) {
+              s.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fits(Is(true)) |> ignore
+              words_node(s, fn() { "Opus 5.5" }, fn() { bones_words }) |> ignore
+              words_node(s, fn() { " · Default effort" }, fn() { bones_words }).drops(Is(1)) |> ignore
+            })
+            |> ignore
+          },
+          fits~,
+        )
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.audit().filter(fn(f) { f.contains("cut off") || f.contains("squeezed") || f.contains("runs past") })
+}
+
+///|
+test "waiting_node fits: in a narrow row that fits what it holds, its sample drops what does not fit, nothing cut off" {
+  let faults = fits_wait_faults(true)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
 }

@@ -1,14 +1,14 @@
 // A workspace's rigs (src/rigs.ts, a station that only runs tasks): what the stations say of them merged into the `rigs` topic; a rig added
 // by a command that names its person's own lock; and what that person signs here (a chat's grant, one taken back,
-// 免批准) taken by the rig itself (station/src/rig/grants.ts), which checks it against the lock it pinned.
+// 免批准) taken by the rig itself (station/mb/src/rigs_mode/grants.mbt via stillfail-reader-harness), which checks it against the lock it pinned.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { Effect, Result } from "effect";
-import { RigGrants } from "../../../station/src/rig/grants.ts";
 import { CoreError, HostError } from "../src/error.ts";
+import { t } from "../src/i18n.ts";
 import type { Entry } from "../src/lock.ts";
 import { shortCode } from "../src/lock.ts";
 import { PersonalLock } from "../src/personal-lock.ts";
@@ -18,6 +18,42 @@ import { Runner } from "../src/runtime.ts";
 import { StationAddr } from "../src/station/addr.ts";
 import { FakeHost } from "../src/testing.ts";
 import { sha256 } from "../src/util.ts";
+import { startHarness } from "./mb-harness.ts";
+
+const harness = startHarness("harness-rigs");
+after(() => harness.close());
+
+async function createRigGrants(opts: {
+  path: string;
+  self: { id: string; workspace: string; owner: string; person: string };
+  nowMs: number;
+}) {
+  const { handle } = await harness.call<{ handle: number }>("create", opts);
+  return {
+    setNow: (nowMs: number) => harness.call("setNow", { handle, nowMs }),
+    grant: (station: string, signed: unknown, chain?: unknown) =>
+      harness.call<{ until: number }>("grant", { handle, station, signed, chain }),
+    refusal: (ws: string, station: string, session: string) =>
+      harness.call<string | null>("refusal", { handle, ws, station, session }),
+    deviceRefusal: (ws: string, station: string, session: string, device: string) =>
+      harness.call<string | null>("deviceRefusal", { handle, ws, station, session, device }),
+    settings: (signed: unknown, chain?: unknown) =>
+      harness.call("settings", { handle, signed, chain }),
+    open: () => harness.call<boolean>("open", { handle }),
+    revoke: (signed: unknown, chain?: unknown) =>
+      harness.call("revoke", { handle, signed, chain }),
+    full: (signed: unknown, chain?: unknown) =>
+      harness.call<{ body: any }>("full", { handle, signed, chain }),
+    added: (signed: unknown, pin?: unknown, chain?: unknown) =>
+      harness.call<string | null>("added", { handle, signed, pin: pin ?? null, chain: chain ?? null }),
+    device: (signed: unknown, chain?: unknown) =>
+      harness.call("device", { handle, signed, chain }),
+    devices: () => harness.call<any[]>("devices", { handle }),
+    view: () => harness.call<any>("view", { handle }),
+    takeEnded: () => harness.call<string[]>("takeEnded", { handle }),
+    close: () => harness.call("close", { handle }),
+  };
+}
 
 const WS = "ws1";
 const SUB = "pat";
@@ -55,7 +91,7 @@ function world() {
   /// How each station answers: its `GET /rigs`, and whether it is reached at all.
   const stations = new Map<string, { up: boolean; rigs: any[] }>([[ST1, { up: true, rigs: [] }], [ST2, { up: true, rigs: [] }]]);
   const invalidated: string[] = [];
-  const lock = { locked: false, as: null as "lock" | "person" | null };
+  const lock = { locked: false, as: null as "lock" | "person" | null, pin: null as string | null };
   const rigs = new Rigs({
     host,
     store: { invalidate: (topic: any) => void invalidated.push(`${topic.topic} ${topic.workspace}`) } as any,
@@ -76,6 +112,7 @@ function world() {
       enrolled: (_sub, _ws, made: any) => Effect.succeed(lock.locked ? { ...made, install: `${made.install} LOCKHASH`, installWindows: `${made.installWindows} LOCKHASH`, installDocker: `${made.installDocker} LOCKHASH`, command: `${made.command} --lock LOCKHASH` } : made),
       signsAs: () => lock.as,
       signAdd: () => Effect.succeed({ key: "ed25519:lockkey", sig: "00" }),
+      pinHash: () => lock.pin,
     },
     sha256,
   });
@@ -152,15 +189,15 @@ test("the topic: the cloud's list, with how the stations last said each rig is a
 test("what the rig's person signs here, the rig takes: a grant, 免批准, a grant taken back; another's rig they do not sign for", async () => {
   const w = world();
   const dir = mkdtempSync(join(tmpdir(), "core-rigs-"));
+  let rig: Awaited<ReturnType<typeof createRigGrants>> | undefined;
   try {
     await w.run(w.personal.open(SUB, "turn it on"));
     // The rig, as it joined with the command: its person's lock pinned.
-    const ended: string[] = [];
     const now = Math.floor(w.host.nowMs() / 1000);
-    const rig = new RigGrants({
-      path: join(dir, "grants.json"), self: () => ({ id: RIG, workspace: WS, owner: SUB, person: w.personal.root(SUB)! }),
-      busy: () => false, stop: () => {}, running: () => [], ended: (e) => void ended.push(`${e.request} ${e.why}`), changed: () => {},
-      fibers: { now: () => now * 1000, after: () => () => {}, close: async () => {} } as any,
+    rig = await createRigGrants({
+      path: join(dir, "grants.json"),
+      self: { id: RIG, workspace: WS, owner: SUB, person: w.personal.root(SUB)! },
+      nowMs: now * 1000,
     });
     const ask = { rig: RIG, name: "build-box", session: "sess", chat: "CHAT/1", title: "Fix CI", by: "lee@example.com" };
     const before = w.asks.n;
@@ -171,8 +208,8 @@ test("what the rig's person signs here, the rig takes: a grant, 免批准, a gra
     assert.deepEqual(sent.body.signed.body, { v: 1, sub: SUB, ws: WS, rig: RIG, station: ST1, session: "sess", chat: "CHAT/1", request: "r1", title: "Fix CI", by: "lee@example.com", timeout: { kind: "fixed", seconds: 7200 }, at: now, exp: now + 7200 });
     // Over the wire as JSON, then to the rig by the chat's station.
     const wire = JSON.parse(JSON.stringify(sent.body));
-    assert.deepEqual(rig.grant(ST1, wire.signed, wire.chain), { until: now + 7200 });
-    assert.equal(rig.refusal(WS, ST1, "sess"), null);
+    assert.deepEqual(await rig.grant(ST1, wire.signed, wire.chain), { until: now + 7200 });
+    assert.equal(await rig.refusal(WS, ST1, "sess"), null);
 
     // Refused: nothing signed, the person not asked.
     const quiet = w.asks.n;
@@ -185,11 +222,11 @@ test("what the rig's person signs here, the rig takes: a grant, 免批准, a gra
     await w.run(w.rigs.run(call("rig.setOpen", { workspace: WS, rig: RIG, open: true })));
     const settings = w.asked.filter((a) => a.path === `/rigs/${RIG}/settings`);
     assert.deepEqual(settings.map((a) => a.station).sort(), [ST1, ST2]);
-    rig.settings(JSON.parse(JSON.stringify(settings[0]!.body.signed)), settings[0]!.body.chain);
-    assert.equal(rig.open(), true);
+    await rig.settings(JSON.parse(JSON.stringify(settings[0]!.body.signed)), settings[0]!.body.chain);
+    assert.equal(await rig.open(), true);
     await w.run(w.rigs.run(call("rig.setOpen", { workspace: WS, rig: RIG, open: false })));
-    rig.settings(JSON.parse(JSON.stringify(w.asked.filter((a) => a.path === `/rigs/${RIG}/settings`).at(-1)!.body.signed)));
-    assert.equal(rig.open(), false, "the later settings are the newer ones");
+    await rig.settings(JSON.parse(JSON.stringify(w.asked.filter((a) => a.path === `/rigs/${RIG}/settings`).at(-1)!.body.signed)));
+    assert.equal(await rig.open(), false, "the later settings are the newer ones");
     // Reached by none: said, nothing lost for good (the person asks again).
     w.stations.get(ST2)!.up = false;
     const away = await w.runner.run(Effect.result(w.rigs.run(call("rig.setOpen", { workspace: WS, rig: RIG, open: true }))));
@@ -201,9 +238,9 @@ test("what the rig's person signs here, the rig takes: a grant, 免批准, a gra
     await w.run(w.rigs.run(call("rig.revoke", { workspace: WS, rig: RIG, request: "r1", station: ST1 })));
     const revoke = w.asked.at(-1)!;
     assert.deepEqual([revoke.station, revoke.path, revoke.body.rig], [ST1, "/rigs/requests/r1/revoke", RIG]);
-    rig.revoke(JSON.parse(JSON.stringify(revoke.body.signed)), revoke.body.chain);
-    assert.deepEqual(ended, ["r1 revoked"]);
-    assert.match(rig.refusal(WS, ST1, "sess")!, /no grant/);
+    await rig.revoke(JSON.parse(JSON.stringify(revoke.body.signed)), revoke.body.chain);
+    assert.deepEqual(await rig.takeEnded(), ["r1 revoked"]);
+    assert.match((await rig.refusal(WS, ST1, "sess"))!, /no grant/);
 
     // Another person's rig: nothing is signed for it here.
     for (const c of [call("rig.setOpen", { workspace: WS, rig: "bb".repeat(32), open: true }), call("rig.revoke", { workspace: WS, rig: "bb".repeat(32), request: "x", station: ST1 }), call("rig.decide", { station: `${WS}/${ST1}`, request: "r9", allow: true, ask: { ...ask, rig: "bb".repeat(32) } })]) {
@@ -211,6 +248,7 @@ test("what the rig's person signs here, the rig takes: a grant, 免批准, a gra
       assert.ok(Result.isFailure(r) && r.failure.code === "rig_not_owner");
     }
   } finally {
+    await rig?.close();
     w.runner.shutdown();
     rmSync(dir, { recursive: true, force: true });
   }
@@ -219,6 +257,7 @@ test("what the rig's person signs here, the rig takes: a grant, 免批准, a gra
 test("a station's mode: made one that only runs tasks by asking it first, then the cloud; whole again by its person's signature, then the cloud", async () => {
   const w = world();
   const dir = mkdtempSync(join(tmpdir(), "core-rigs-"));
+  let rig: Awaited<ReturnType<typeof createRigGrants>> | undefined;
   try {
     // Only tasks: the station itself is told first (by this device, with the lock to pin: begun here, there being
     // none yet), then the cloud lists it so.
@@ -244,15 +283,16 @@ test("a station's mode: made one that only runs tasks by asking it first, then t
     assert.equal(sent.method, "POST");
     assert.deepEqual(w.cloudAsked.at(-1), { method: "PATCH", path: `/v1/workspaces/${WS}/stations/${RIG}`, body: { mode: "full" } });
     const now = Math.floor(w.host.nowMs() / 1000);
-    const rig = new RigGrants({
-      path: join(dir, "grants.json"), self: () => ({ id: RIG, workspace: WS, owner: SUB, person: root }),
-      busy: () => false, stop: () => {}, running: () => [], ended: () => {}, changed: () => {},
-      fibers: { now: () => now * 1000, after: () => () => {}, close: async () => {} } as any,
+    rig = await createRigGrants({
+      path: join(dir, "grants.json"),
+      self: { id: RIG, workspace: WS, owner: SUB, person: root },
+      nowMs: now * 1000,
     });
     const wire = JSON.parse(JSON.stringify(sent.body));
-    assert.deepEqual(rig.full(wire.signed, wire.chain).body, { v: 1, sub: SUB, ws: WS, rig: RIG, at: now });
+    assert.deepEqual((await rig.full(wire.signed, wire.chain)).body, { v: 1, sub: SUB, ws: WS, rig: RIG, at: now });
     assert.throws(() => parseRig("rig.setMode", { workspace: WS, station: RIG, mode: "half" }));
   } finally {
+    await rig?.close();
     w.runner.shutdown();
     rmSync(dir, { recursive: true, force: true });
   }
@@ -286,16 +326,73 @@ test("security mode: the rig's code compared, then signed for with the key the w
   }
 });
 
+test("security mode: the add names the workspace lock's entry, which the rig takes from what its person's own lock signed (FB-45)", async () => {
+  const w = world();
+  const dir = mkdtempSync(join(tmpdir(), "core-rig-pin-"));
+  let rig: Awaited<ReturnType<typeof createRigGrants>> | undefined;
+  try {
+    await w.run(w.personal.open(SUB, "turn it on"));
+    const root = w.personal.root(SUB)!;
+    w.lock.locked = true;
+    w.lock.pin = "ab".repeat(32);
+    rig = await createRigGrants({ path: join(dir, "grants.json"), self: { id: RIG, workspace: WS, owner: SUB, person: root }, nowMs: w.host.nowMs() });
+    const vouch = () => w.runner.run(Effect.result(w.rigs.run(call("rig.vouch", { workspace: WS, rig: RIG, code: shortCode(RIG) }))));
+    const sent = () => JSON.parse(JSON.stringify(w.asked.filter((a) => a.path === `/rigs/${RIG}/add`).at(-1)!.body));
+    // Bound to their own lock: the add a key on it signed, naming the entry, their lock with it; the rig names it.
+    w.lock.as = "person";
+    assert.ok(Result.isSuccess(await vouch()));
+    const person = sent();
+    assert.equal(person.signed.body.lock, w.lock.pin);
+    assert.ok(Array.isArray(person.chain) && person.chain.length > 0, "their own lock with it");
+    assert.equal(person.pin, undefined);
+    assert.equal(await rig.added(person.signed, person.pin, person.chain), w.lock.pin);
+    // Signing in the workspace's lock (its lock key, which the rig does not judge): their own lock's `pin` beside it,
+    // the person asked for that once; the add alone names nothing to the rig.
+    w.lock.as = "lock";
+    const before = w.asks.n;
+    assert.ok(Result.isSuccess(await vouch()));
+    const viaLock = sent();
+    assert.equal(viaLock.signed.sig.key, "ed25519:lockkey");
+    assert.equal(viaLock.signed.body.lock, w.lock.pin);
+    assert.deepEqual(viaLock.pin.body, viaLock.signed.body, "the same statement, signed on their own lock");
+    assert.notEqual(viaLock.pin.sig.key, "ed25519:lockkey");
+    assert.equal(w.asks.n, before + 1);
+    assert.equal(await rig.added(viaLock.pin, null, viaLock.chain), w.lock.pin, "their own lock's statement names it");
+    // Not on its person's own lock (a lock begun on another device of theirs): refused before anything is sent, saying
+    // where on this device it joins it, so the rig is not marked checked without what it pins by; on it again, sent.
+    const adds = () => w.asked.filter((a) => a.path === `/rigs/${RIG}/add`).length;
+    const sentBefore = adds();
+    (w.personal as any).standing = () => "outside";
+    const outside = await vouch();
+    assert.ok(Result.isFailure(outside) && outside.failure.code === "personal_outside" && outside.failure.message === t("core-misc.personal.outsideSafe"), JSON.stringify(outside));
+    assert.equal(adds(), sentBefore, "nothing sent while it is not on its own lock");
+    delete (w.personal as any).standing;
+    assert.ok(Result.isSuccess(await vouch()));
+    assert.equal(adds(), sentBefore + 2, "sent to both stations once on it again");
+    assert.ok(sent().pin !== undefined && Array.isArray(sent().chain), JSON.stringify(sent()));
+    // None held on here: no entry named, nothing more asked.
+    w.lock.pin = null;
+    const none = w.asks.n;
+    assert.ok(Result.isSuccess(await vouch()));
+    assert.deepEqual([sent().signed.body.lock, sent().pin, w.asks.n], [undefined, undefined, none]);
+  } finally {
+    await rig?.close();
+    w.runner.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("devices: a whole station's added there; a rig's signed by its person and taken by the rig; granted alone, 免批准 on one; one list", async () => {
   const w = world();
   const dir = mkdtempSync(join(tmpdir(), "core-devices-"));
+  let rig: Awaited<ReturnType<typeof createRigGrants>> | undefined;
   try {
     await w.run(w.personal.open(SUB, "turn it on"));
     const now = Math.floor(w.host.nowMs() / 1000);
-    const rig = new RigGrants({
-      path: join(dir, "grants.json"), self: () => ({ id: RIG, workspace: WS, owner: SUB, person: w.personal.root(SUB)! }),
-      busy: () => false, stop: () => {}, running: () => [], ended: () => {}, changed: () => {},
-      fibers: { now: () => now * 1000, after: () => () => {}, close: async () => {} } as any,
+    rig = await createRigGrants({
+      path: join(dir, "grants.json"),
+      self: { id: RIG, workspace: WS, owner: SUB, person: w.personal.root(SUB)! },
+      nowMs: now * 1000,
     });
     const devices = new Devices({
       host: w.host, store: { invalidate: (topic: any) => void w.invalidated.push(`${topic.topic} ${topic.workspace}`) } as any,
@@ -313,8 +410,8 @@ test("devices: a whole station's added there; a rig's signed by its person and t
     await w.run(devices.run(dcall("device.add", { workspace: WS, station: RIG, name: "board", kind: "serial", target: "/dev/ttyUSB0", baud: 9600 })));
     const added = w.asked.at(-1)!;
     assert.equal(added.path, `/rigs/${RIG}/devices`);
-    rig.device(JSON.parse(JSON.stringify(added.body.signed)), JSON.parse(JSON.stringify(added.body.chain)));
-    const board = rig.devices()[0]!;
+    await rig.device(JSON.parse(JSON.stringify(added.body.signed)), JSON.parse(JSON.stringify(added.body.chain)));
+    const board = (await rig.devices())[0]!;
     assert.deepEqual([board.name, board.kind, board.target, board.baud], ["board", "serial", "/dev/ttyUSB0", 9600]);
     // Another's rig: not theirs to attach to.
     const theirs = await w.runner.run(Effect.result(devices.run(dcall("device.add", { workspace: WS, station: "bb".repeat(32), name: "x", kind: "tcp", target: "a:1" }))));
@@ -332,21 +429,22 @@ test("devices: a whole station's added there; a rig's signed by its person and t
     await w.run(w.rigs.run(call("rig.decide", { station: `${WS}/${ST2}`, request: "q1", allow: true, timeoutKind: "fixed", timeoutSeconds: 600, ask })));
     const decided = JSON.parse(JSON.stringify(w.asked.at(-1)!.body));
     assert.equal(decided.signed.body.device, board.id);
-    rig.grant(ST2, decided.signed, decided.chain);
-    assert.equal(rig.deviceRefusal(WS, ST2, "s1", board.id), null);
-    assert.notEqual(rig.refusal(WS, ST2, "s1"), null);
+    await rig.grant(ST2, decided.signed, decided.chain);
+    assert.equal(await rig.deviceRefusal(WS, ST2, "s1", board.id), null);
+    assert.notEqual(await rig.refusal(WS, ST2, "s1"), null);
     // 免批准 on the device alone.
     await w.run(devices.run(dcall("device.setOpen", { workspace: WS, station: RIG, device: board.id, open: true })));
-    rig.settings(JSON.parse(JSON.stringify(w.asked.at(-1)!.body.signed)));
-    assert.equal(rig.view()!.devices[0]!.open, true);
-    assert.equal(rig.open(), false);
+    await rig.settings(JSON.parse(JSON.stringify(w.asked.at(-1)!.body.signed)));
+    assert.equal((await rig.view())!.devices[0]!.open, true);
+    assert.equal(await rig.open(), false);
     // Taken off: signed as removed; a whole station's, asked of it.
     await w.run(devices.run(dcall("device.remove", { workspace: WS, station: RIG, device: board.id })));
-    rig.device(JSON.parse(JSON.stringify(w.asked.at(-1)!.body.signed)));
-    assert.deepEqual(rig.devices(), []);
+    await rig.device(JSON.parse(JSON.stringify(w.asked.at(-1)!.body.signed)));
+    assert.deepEqual(await rig.devices(), []);
     await w.run(devices.run(dcall("device.remove", { workspace: WS, station: ST1, device: "0123456789abcdef" })));
     assert.deepEqual([w.asked.at(-1)!.method, w.asked.at(-1)!.path], ["DELETE", "/devices/0123456789abcdef"]);
   } finally {
+    await rig?.close();
     w.runner.shutdown();
     rmSync(dir, { recursive: true, force: true });
   }

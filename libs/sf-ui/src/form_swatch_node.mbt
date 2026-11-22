@@ -45,12 +45,9 @@ pub fn icon_well_node(
   action_box_node(loc~, parent, label, fn(_) { press() }, fn(a) {
     style_node(loc~, a, fn() { icon_well }, in_row=true)
     a.ground(By(ground)).clips(Is(true)) |> ignore
-    a.pick(shown, fn(s, now) {
+    a.pick(shown, at_once=true, fn(s, now) {
       if now != "" {
-        s.box(fn(img) {
-          img.over(Is(true)).image(Is(Some((now, "", px)))).image_covers(Is(true)).image_fades(Is(false)) |> ignore
-        })
-        |> ignore
+        s.over(Is(true)).image(Is(Some((now, "", px)))).image_covers(Is(true)).image_fades(Is(false)) |> ignore
       } else {
         s.box(fn(e) {
           style_node(loc~, e, fn() { icon_well_empty })
@@ -64,7 +61,7 @@ pub fn icon_well_node(
 }
 
 ///|
-/// A colour typed as hex beside its swatch (28 square, a corner of 8, edged in the border, on `ground()`): the field
+/// A colour typed as hex beside its swatch (28 square, a corner of 8, edged in the line, on `ground()`): the field
 /// `hex` (96 wide, read out `label`), and what `after` makes after them (a way back to the colour recommended), 8
 /// apart on one line.
 #callsite(autofill(loc))
@@ -124,7 +121,7 @@ pub fn avatar_tiles_node(
         let label = if a.label.has_prefix("android-") { t(a.label) } else { a.label }
         let on = fn() { picked_is(a.id) }
         let tile = action_box_node(loc~, cell, fn() { label }, selected=on, fn(_) { pick(a) }, fn(b) {
-          // (its edge: picked, avatar_tile_on's; under the pointer, avatar_tile_lit's, its hovered{border_color=FieldHover})
+          // (its edge: picked, avatar_tile_on's; under the pointer, avatar_tile_lit's, its hovered{border_color=Border})
           style_node(loc~, b, fn() { if on() { avatar_tile_on } else if b.pointed() { avatar_tile_lit } else { avatar_tile } })
           b
           .width(By(fn() { Some(side()) }))
@@ -217,85 +214,79 @@ pub fn check_groups_node(
   }
   let count = fn() { every().filter(fn(g) { on(g) }).length() }
   let admin_any = fn() { sections().iter().any(fn(s) { s.groups.iter().any(fn(g) { g.admin }) }) }
-  parent.show(fn() { every().length() > 0 }, fn(p) {
-    p.box(made_for=loc, fn(b) {
-      style_node(loc~, b, fn() { check_groups })
-      b.box(fn(l) {
-        style_node(loc~, l, fn() { check_groups_line })
-        let summary = fn() { (said.summary)(count(), every().length()) }
-        action_box_node(loc~, l, summary, expanded=open, fn(_) { toggle() }, fn(s) {
-          style_node(loc~, s, fn() { check_groups_summary }, in_row=true)
-          icon_node(s, "chevron-right", check_groups_chevron, By(fn() { theme().p.muted }), name_now=fn() {
-            if open() {
-              "chevron-down"
-            } else {
-              "chevron-right"
-            }
-          })
-          |> ignore
-          words_node(loc~, s, summary, fn() { check_groups_said }) |> ignore
+  parent.show(loc~, fn() { every().length() > 0 }, fn(b) {
+    style_node(loc~, b, fn() { check_groups })
+    b.box(fn(l) {
+      style_node(loc~, l, fn() { check_groups_line })
+      let summary = fn() { (said.summary)(count(), every().length()) }
+      action_box_node(loc~, l, summary, expanded=open, fn(_) { toggle() }, fn(s) {
+        style_node(loc~, s, fn() { check_groups_summary }, in_row=true)
+        icon_node(s, "chevron-right", check_groups_chevron, By(fn() { theme().p.muted }), name_now=fn() {
+          if open() {
+            "chevron-down"
+          } else {
+            "chevron-right"
+          }
         })
         |> ignore
-        l.show(fn() { count() < every().length() }, fn(a) {
-          quiet_action_node(loc~, a, said.all_on, fn() {
-            for g in @signals.untracked(every) {
-              set(g, true)
-            }
-          })
-          |> ignore
-        })
+        words_node(loc~, s, summary, fn() { check_groups_said }) |> ignore
       })
       |> ignore
-      b.show(open, fn(o) {
-        o.box(fn(ss) {
-          style_node(loc~, ss, fn() { check_sections })
-          ss.each(fn() { sections().mapi(fn(i, s) { (i, s) }) }, fn(x) { x.1.title + "\u{1}" + x.0.to_string() }, fn(sec, x) {
-            let section = @signals.untracked(fn() { x.get().1 })
-            let groups = section.groups
-            let all = fn() { groups.iter().all(fn(g) { on(g.id) }) }
-            sec.box(fn(s) {
-              style_node(loc~, s, fn() { check_section })
-              s.box(fn(h) {
-                style_node(loc~, h, fn() { check_section_head })
-                words_node(loc~, h, fn() { section.title }, fn() { check_section_title }) |> ignore
-                quiet_action_node(loc~, h, fn() { if all() { (said.select_none)() } else { (said.select_all)() } }, fn() {
-                  let was = @signals.untracked(all)
-                  for g in groups {
-                    set(g.id, g.fixed || !was)
-                  }
-                })
-                |> ignore
-              })
-              |> ignore
-              // (as many to a line as the room has for each, three at most, a line's last ones as wide as the others
-              // and where they would be under them: a width each, bound to the room, never a structure by it)
-              s.by_room(fn(grid, room) {
-                style_node(loc~, grid, fn() { check_grid })
-                grid.wraps(Is(Some(check_grid_lines))) |> ignore
-                let each_w = fn() {
-                  let w = room.width()
-                  if w <= 0.0 {
-                    None
-                  } else {
-                    let least = (if admin_any() { check_col_admin } else { check_col }) * grid.words_scale()
-                    let n = check_columns(w, least)
-                    // (in 64ths of a point: n of them and their gaps never more than the line, which would wrap)
-                    Some(((w - check_grid_gap * (n - 1).to_double()) / n.to_double() * 64.0).floor() / 64.0)
-                  }
-                }
-                for g in groups {
-                  check_group_node(loc~, grid, g, on, set, said, tips, each_w)
-                }
-              })
-              |> ignore
-            })
-            |> ignore
-          })
+      l.show(fn() { count() < every().length() }, fn(a) {
+        quiet_action_node(loc~, a, said.all_on, fn() {
+          for g in @signals.untracked(every) {
+            set(g, true)
+          }
         })
         |> ignore
       })
     })
     |> ignore
+    b.show(open, fn(ss) {
+      style_node(loc~, ss, fn() { check_sections })
+      ss.each(fn() { sections().mapi(fn(i, s) { (i, s) }) }, fn(x) { x.1.title + "\u{1}" + x.0.to_string() }, fn(sec, x) {
+        let section = @signals.untracked(fn() { x.get().1 })
+        let groups = section.groups
+        let all = fn() { groups.iter().all(fn(g) { on(g.id) }) }
+        sec.box(fn(s) {
+          style_node(loc~, s, fn() { check_section })
+          s.box(fn(h) {
+            style_node(loc~, h, fn() { check_section_head })
+            words_node(loc~, h, fn() { section.title }, fn() { check_section_title }) |> ignore
+            quiet_action_node(loc~, h, fn() { if all() { (said.select_none)() } else { (said.select_all)() } }, fn() {
+              let was = @signals.untracked(all)
+              for g in groups {
+                set(g.id, g.fixed || !was)
+              }
+            })
+            |> ignore
+          })
+          |> ignore
+          // (as many to a line as the room has for each, three at most, a line's last ones as wide as the others
+          // and where they would be under them: a width each, bound to the room, never a structure by it)
+          s.by_room(fn(grid, room) {
+            style_node(loc~, grid, fn() { check_grid })
+            grid.wraps(Is(Some(check_grid_lines))) |> ignore
+            let each_w = fn() {
+              let w = room.width()
+              if w <= 0.0 {
+                None
+              } else {
+                let least = (if admin_any() { check_col_admin } else { check_col }) * grid.words_scale()
+                let n = check_columns(w, least)
+                // (in 64ths of a point: n of them and their gaps never more than the line, which would wrap)
+                Some(((w - check_grid_gap * (n - 1).to_double()) / n.to_double() * 64.0).floor() / 64.0)
+              }
+            }
+            for g in groups {
+              check_group_node(loc~, grid, g, on, set, said, tips, each_w)
+            }
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+    })
   })
 }
 
@@ -494,7 +485,7 @@ let quiet_action_lit : @ui.TextStyle = quiet_action_words.then(@ui.text_style(co
 ///|
 /// The well (appAvatar: 136 as the web had it, S32 here; the settings' corner), its upload mark 20.
 // kept across runs: a value (no field of it changes)
-let icon_well : @ui.Style = @ui.css("w=S32 h=S32 radius=Xl3 clip border=B1 border_color=Line align=ACenter justify=JCenter")
+let icon_well : @ui.Style = @ui.css("w=S32 h=S32 radius=Xl3 clip border=B0_5 border_color=Line align=ACenter justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -510,7 +501,7 @@ let swatch_line : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let swatch : @ui.Style = @ui.css("w=S7 h=S7 radius=Lg border=B1 border_color=Border")
+let swatch : @ui.Style = @ui.css("w=S7 h=S7 radius=Lg border=B0_5 border_color=Line")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -542,12 +533,12 @@ let avatar_tiles_row : @ui.Style = @ui.css("row w=Full gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let avatar_tile : @ui.Style = @ui.css("radius=Lg clip border=B1 border_color=Line align=ACenter justify=JCenter hovered{border_color=FieldHover}")
+let avatar_tile : @ui.Style = @ui.css("radius=Lg clip border=B0_5 border_color=Line align=ACenter justify=JCenter hovered{border_color=Border}")
 
 ///|
 /// A tile under the pointer (avatar_tile's hovered, as a node takes it).
 // kept across runs: a value (no field of it changes)
-let avatar_tile_lit : @ui.Style = avatar_tile.then(@ui.css("border_color=FieldHover"))
+let avatar_tile_lit : @ui.Style = avatar_tile.then(@ui.css("border_color=Border"))
 
 ///|
 // kept across runs: a value (no field of it changes)

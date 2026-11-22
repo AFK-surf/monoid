@@ -25,7 +25,7 @@ fn outside_chat(id : String, title : String, may : Bool) -> Json {
 test "words with no reference go at once: the core is not asked what they refer to" {
   let calls : Array[Made] = []
   let t = fake_core(calls)
-  t.tap_text("发消息")
+  outside_tap_field(t, "发消息")
   t.type_text("没有引用的话")
   tap_send(t)
   assert_eq(named(calls, "chat.outsideRefs").length(), 0)
@@ -40,7 +40,7 @@ test "words with no reference go at once: the core is not asked what they refer 
 test "a reference to another workspace's chat: asked first, the sheet says whose, 分享并发送 shares it, then it goes" {
   let calls : Array[Made] = []
   let t = fake_core(calls)
-  t.tap_text("发消息")
+  outside_tap_field(t, "发消息")
   t.type_text("先看 @[季度路线图] 再定")
   tap_send(t)
   // nothing sent yet: the core asked what the words refer to, a second tap meanwhile nothing more
@@ -87,7 +87,7 @@ test "a reference to another workspace's chat: asked first, the sheet says whose
 test "a share that fails is said in the sheet: nothing goes, the words stay; 取消 leaves them as they were" {
   let calls : Array[Made] = []
   let t = fake_core(calls)
-  t.tap_text("发消息")
+  outside_tap_field(t, "发消息")
   t.type_text("对照 @[季度路线图]")
   tap_send(t)
   (named(calls, "chat.outsideRefs")[0].done)(Ok({ "chats": [outside_chat("s-p1", "季度路线图", true)] }))
@@ -116,7 +116,7 @@ test "a share that fails is said in the sheet: nothing goes, the words stay; 取
 test "none of them the viewer may share: each says so, and 仍然发送 sends it as it is" {
   let calls : Array[Made] = []
   let t = fake_core(calls)
-  t.tap_text("发消息")
+  outside_tap_field(t, "发消息")
   t.type_text("参考 @[预算草稿]")
   tap_send(t)
   (named(calls, "chat.outsideRefs")[0].done)(Ok({ "chats": [outside_chat("s-p2", "预算草稿", false)] }))
@@ -138,7 +138,7 @@ test "none of them the viewer may share: each says so, and 仍然发送 sends it
 test "a core that cannot say what the words refer to: they go as they are" {
   let calls : Array[Made] = []
   let t = fake_core(calls)
-  t.tap_text("发消息")
+  outside_tap_field(t, "发消息")
   t.type_text("看 @[季度路线图]")
   tap_send(t)
   (named(calls, "chat.outsideRefs")[0].done)(Err({ "code": "unknown_call", "message": "chat.outsideRefs" }))
@@ -155,9 +155,9 @@ test "a core that cannot say what the words refer to: they go as they are" {
 test "a new chat's first message is shared before it goes too, over the fixture's core" {
   let t = tester("home")
   let (_, y) = bar_places_at()
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
-  t.tap_text("做任何事")
+  outside_tap_field(t, "做任何事")
   t.type_text("按 @[季度路线图] 排一下")
   tap_send(t)
   // asked first: the page is still the new chat, the sheet over it
@@ -177,7 +177,7 @@ test "a new chat's first message is shared before it goes too, over the fixture'
 test "references the core says nothing of: the words go with no sheet" {
   let calls : Array[Made] = []
   let t = fake_core(calls)
-  t.tap_text("发消息")
+  outside_tap_field(t, "发消息")
   t.type_text("同一个工作区的 @[发布清单]")
   tap_send(t)
   (named(calls, "chat.outsideRefs")[0].done)(Ok({ "chats": [] }))
@@ -224,7 +224,7 @@ fn outside_asked(
     t.resize(1200.0, 800.0)
     t.run_for(@ui.move_most_ms)
   }
-  t.tap_text("发消息")
+  outside_tap_field(t, "发消息")
   t.type_text("@[首页] 吧")
   t.draw()
   t.draw()
@@ -453,23 +453,16 @@ let outside_late_ms : Double = 300.0
 /// The app over the fixture's core (`new_chat`: its new chat, else its chat), answered through the app's client
 /// (round_trip_again, between frames), the calls `late` names (what the words refer to and their sharing unless said)
 /// `outside_late_ms` late, with keyboard
-/// and mouse in a phone's window or a wide one (`wide`), the chat's page made as nodes or not (`nodes`), what the client
-/// sent kept in `heard`, the frames' check of what was kept `looks`; at rest.
+/// and mouse in a phone's window or a wide one (`wide`), what the client sent kept in `heard`, the frames' check of what was kept `looks`; at rest.
 fn outside_round_trip(
   heard : Array[String],
   new_chat~ : Bool,
   wide~ : Bool,
   looks~ : Bool,
-  nodes~ : Bool,
   late? : Array[String] = ["chat.outsideRefs", "chat.outsideShare"],
   late_ms? : Double = outside_late_ms,
 ) -> @ui.Tester {
   new_run()
-  // (the chat's page made as nodes, its composer an old view in its list's foot, where `nodes` says so: sfbase's
-  // chat_page_nodes)
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
   let base = fixture(if new_chat { "home" } else { "chat" })
   let station : Source = {
     ..base,
@@ -490,11 +483,6 @@ fn outside_round_trip(
   let (w, h) = if wide { (1280.0, 800.0) } else { (390.0, 844.0) }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=0)
   t.check_looks(looks)
-  // (the old chat's page in a phone's window: the gap over a reply streamed in steps as it grows, as it does on main
-  // in every test that runs to its answer's end; that page made as nodes, and the wide frame, judged in full)
-  if !nodes && !wide {
-    t.motion_unjudged(true)
-  }
   t.run_for(@ui.move_most_ms)
   t
 }
@@ -522,23 +510,30 @@ fn outside_key_enter(t : @ui.Tester) -> Unit {
 }
 
 ///|
+/// The composer's field pressed: by its hint `hint` where it shows it (the old one's), else where the field is (the one
+/// made as nodes says nothing while the cursor is in it, as it is on a computer as its page comes).
+fn outside_tap_field(t : @ui.Tester, hint : String) -> Unit {
+  match (t.find(hint), composer_field(t)) {
+    (None, Some((x, y, w, h))) => t.tap(x + w / 2.0, y + h / 2.0)
+    _ => t.tap_text(hint)
+  }
+}
+
+///|
 /// Words `words` typed in the composer (its hint `hint`), the core's reading of them come, then Enter.
 fn outside_enter(t : @ui.Tester, hint : String, words : String) -> Unit {
-  t.tap_text(hint)
+  outside_tap_field(t, hint)
   t.type_text(words)
   t.run_for(@ui.frame_period_default * 2.0)
   outside_key_enter(t)
 }
 
 ///|
-/// Each screen (a phone's window, a wide one), the chat's page made as nodes or not, and each way the frames are
-/// checked: `f` given the Tester's every one.
-fn outside_each(f : (Bool, Bool, Bool, String) -> Unit raise) -> Unit raise {
+/// Each screen (a phone's window, a wide one) and each way the frames are checked: `f` given the Tester's every one.
+fn outside_each(f : (Bool, Bool, String) -> Unit raise) -> Unit raise {
   for wide in [false, true] {
-    for nodes in [false, true] {
-      for looks in [false, true] {
-        f(wide, looks, nodes, "wide \{wide}, nodes \{nodes}, looks checked \{looks}")
-      }
+    for looks in [false, true] {
+      f(wide, looks, "wide \{wide}, looks checked \{looks}")
     }
   }
 }
@@ -556,9 +551,9 @@ let outside_enter_ms : Double = outside_late_ms + @ui.frame_period_default * 2.0
 
 ///|
 test "Enter on a new chat, words referring to this workspace's chat: the core's round trip, then sent, the chat at once" {
-  outside_each(fn(wide, looks, nodes, at) raise {
+  outside_each(fn(wide, looks, at) raise {
     let heard : Array[String] = []
-    let t = outside_round_trip(heard, new_chat=true, wide~, looks~, nodes~)
+    let t = outside_round_trip(heard, new_chat=true, wide~, looks~)
     outside_enter(t, "做任何事", "同一个工作区的 @[发布清单]")
     t.run_for(outside_enter_ms)
     assert_eq(outside_called(heard, "chat.outsideRefs"), 1, msg=at)
@@ -575,9 +570,9 @@ test "Enter on a new chat, words referring to this workspace's chat: the core's 
 
 ///|
 test "Enter on a new chat, words referring to another workspace's chat: 分享对话 at once, Enter again shares and sends, the chat at once, nothing left of it" {
-  outside_each(fn(wide, looks, nodes, at) raise {
+  outside_each(fn(wide, looks, at) raise {
     let heard : Array[String] = []
-    let t = outside_round_trip(heard, new_chat=true, wide~, looks~, nodes~)
+    let t = outside_round_trip(heard, new_chat=true, wide~, looks~)
     outside_enter(t, "做任何事", "按 @[季度路线图] 排一下")
     t.run_for(outside_enter_ms)
     assert_eq(outside_called(heard, "chat.outsideRefs"), 1, msg=at)
@@ -602,9 +597,9 @@ test "Enter on a new chat, words referring to another workspace's chat: 分享�
 
 ///|
 test "Enter on a chat, words referring to this workspace's chat: the core's round trip, then sent at once" {
-  outside_each(fn(wide, looks, nodes, at) raise {
+  outside_each(fn(wide, looks, at) raise {
     let heard : Array[String] = []
-    let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~)
+    let t = outside_round_trip(heard, new_chat=false, wide~, looks~)
     outside_enter(t, "发消息", "同一个工作区的 @[发布清单]")
     t.run_for(outside_enter_ms)
     assert_eq(outside_called(heard, "chat.outsideRefs"), 1, msg=at)
@@ -619,9 +614,9 @@ test "Enter on a chat, words referring to this workspace's chat: the core's roun
 
 ///|
 test "Enter on a chat, words referring to another workspace's chat: 分享对话 at once, Enter again shares and sends at once" {
-  outside_each(fn(wide, looks, nodes, at) raise {
+  outside_each(fn(wide, looks, at) raise {
     let heard : Array[String] = []
-    let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~)
+    let t = outside_round_trip(heard, new_chat=false, wide~, looks~)
     outside_enter(t, "发消息", "先看 @[季度路线图] 再定")
     t.run_for(outside_enter_ms)
     assert_eq(outside_called(heard, "chat.outsideRefs"), 1, msg=at)
@@ -649,10 +644,10 @@ let outside_busy_ms : Double = 3000.0
 
 ///|
 test "Enter on a new chat, a chat of this workspace picked in the `@` menu: the chat and its send at once, the core not asked, however late it would answer" {
-  outside_each(fn(wide, looks, nodes, at) raise {
+  outside_each(fn(wide, looks, at) raise {
     let heard : Array[String] = []
-    let t = outside_round_trip(heard, new_chat=true, wide~, looks~, nodes~, late_ms=outside_busy_ms)
-    t.tap_text("做任何事")
+    let t = outside_round_trip(heard, new_chat=true, wide~, looks~, late_ms=outside_busy_ms)
+    outside_tap_field(t, "做任何事")
     t.type_text("看 @首页")
     t.run_for(@ui.frame_period_default * 2.0)
     t.tap_text("首页的列表改成按天分组")
@@ -674,10 +669,10 @@ test "Enter on a new chat, a chat of this workspace picked in the `@` menu: the 
 
 ///|
 test "Enter on a new chat, a chat of another workspace picked in the `@` menu: the core asked, 分享对话 once it answers, nothing sent before" {
-  outside_each(fn(wide, looks, nodes, at) raise {
+  outside_each(fn(wide, looks, at) raise {
     let heard : Array[String] = []
-    let t = outside_round_trip(heard, new_chat=true, wide~, looks~, nodes~)
-    t.tap_text("做任何事")
+    let t = outside_round_trip(heard, new_chat=true, wide~, looks~)
+    outside_tap_field(t, "做任何事")
     t.type_text("@路线")
     t.run_for(@ui.frame_period_default * 2.0)
     t.tap_text("季度路线图")

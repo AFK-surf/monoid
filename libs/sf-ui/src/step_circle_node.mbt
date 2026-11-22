@@ -16,10 +16,6 @@ pub(all) enum StepLook {
 }
 
 ///|
-/// A step's circle across (24).
-pub let step_circle_side : Double = 24.0
-
-///|
 /// A circle in `parent` holding `n()` (its number, as it is now), as `look` says. Where `first_line` is given, it stands
 /// in a box as tall as a line of words of that size (`leading` where it says one), across that line's middle: on the
 /// first line of the words beside it. The circle's node.

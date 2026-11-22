@@ -39,67 +39,6 @@ pub fn initial(name : String) -> String {
 }
 
 ///|
-/// A face's disc: round, what it holds in its middle (its side and colour said where it is drawn).
-// kept across runs: a value (no field of it changes)
-let avatar_disc : @ui.Style = @ui.css("radius=Full align=ACenter justify=JCenter")
-
-///|
-/// A face's initial: semibold, white on every theme, on one line (its size, half the face's,
-/// said where it is drawn).
-// kept across runs: a value (no field of it changes)
-let avatar_letter : @ui.TextStyle = @ui.text_style(weight=Semibold, color=Data(face_ink), wrap=false)
-
-///|
-/// A person, round: `picture` (an image's key, "" while it comes or without one) once it is decoded
-/// at the size it is shown, at once, as Compose draws the bitmap it was handed; their initial on their colour until
-/// then, and for good when it cannot be decoded (rememberPicture: null).
-pub fn avatar(c : @ui.Ctx, id : String, name : String, picture : String, size : Double) -> Unit {
-  // (its decode started here the first frame it is asked for)
-  let decoded = picture != "" && c.image_ready(picture, size * c.scale)
-  let half = size / 2.0
-  let disc = avatar_disc.then(@ui.style(w=Fixed(size), h=Fixed(size), bg=Data(avatar_color(id))))
-  // (in a page's bones, one disc: its colour and its letter someone's)
-  let b = c.box(style=disc, fn() {
-    if decoded {
-      c.image(picture, w=Px(size), h=Px(size), radius=half, bg=0L, fade=false) |> ignore
-    } else {
-      // its initial half the face's size, as the side its caller asks (18 by a message, 46 on the settings' card)
-      avatar_initial(c, name, half)
-    }
-  })
-  c.bone_whole(b)
-}
-
-///|
-/// A thing's mark (a repository, a project), a rounded square as an agent's tile is (agent_mark_corner): `picture` (a
-/// data URL of its own, its favicon or touch icon) once decoded at the size it is shown; else its initial on a colour
-/// of its own, by `id` (its repository's address), as a face's is. `corner` its own where it stands in a row's corner
-/// (a step of the ladder in from it), not a tile's .3 of its side.
-pub fn tile_avatar(c : @ui.Ctx, id : String, name : String, picture : String, size : Double, corner? : Double) -> Unit {
-  let key = data_image(picture)
-  let decoded = key != "" && c.image_ready(key, size * c.scale)
-  let half = size / 2.0
-  let corner = corner.unwrap_or(size * 0.3)
-  let ground = if decoded { transparent_ground } else { avatar_color(id) }
-  let round = rounded(corner)
-  let tile = avatar_disc.then(@ui.style(w=Fixed(size), h=Fixed(size), radius=round, bg=Data(ground)))
-  let b = c.box(style=tile, fn() {
-    if decoded {
-      c.image(key, w=Px(size), h=Px(size), radius=corner, bg=0L, fade=false) |> ignore
-    } else {
-      avatar_initial(c, name, half)
-    }
-  })
-  c.bone_whole(b)
-}
-
-///|
-/// A face's or a tile's initial, `half` its side.
-fn avatar_initial(c : @ui.Ctx, name : String, half : Double) -> Unit {
-  c.text(initial(name), style=avatar_letter, size=half, line=half) |> ignore
-}
-
-///|
 /// Under a picture that fills its tile: nothing.
 let transparent_ground : Int64 = 0L
 

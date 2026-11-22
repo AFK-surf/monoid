@@ -320,7 +320,7 @@ pub async fn candidates(w : World, repos_dir : String, presets : Array[J], found
         if l != 0.0 {
           if l > 0.0 { -1.0 } else { 1.0 }
         } else {
-          num_of(Some(w.dep("localeCompare", [at(Some(b), "name").unwrap_or(Null), at(Some(c), "name").unwrap_or(Null)]))).unwrap_or(0.0) * -1.0
+          @drive.collate(str_of(at(Some(b), "name")).unwrap_or(""), str_of(at(Some(c), "name")).unwrap_or("")).to_double() * -1.0
         }
       }
       if order < 0.0 {
@@ -392,11 +392,11 @@ pub async fn RepoIndex::walk(self : RepoIndex, w : World) -> Unit {
   let found = []
   let skip = []
   for p in arr_of(Some(w.ask("repoIndex.besides", []))).unwrap_or([]) {
-    skip.push(str_of(Some(w.ask("path.resolve", [p]))).unwrap_or(""))
+    skip.push(resolve_path([str_of(Some(p)).unwrap_or("")]))
   }
   let looked = Ref::new(0)
   for root in arr_of(Some(w.ask("repoIndex.roots", []))).unwrap_or([]) {
-    let r = str_of(Some(w.ask("path.resolve", [root]))).unwrap_or("")
+    let r = resolve_path([str_of(Some(root)).unwrap_or("")])
     walk_into(w, r, 0, looked, skip, found)
   }
   let held = jo([("at", w.ask("repoIndex.now", [])), ("repos", ja(found))])

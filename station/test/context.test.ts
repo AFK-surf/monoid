@@ -159,6 +159,23 @@ test("a compaction down to its most that fails is said once and not tried again"
   await r.close();
 });
 
+test("its compactions, on its own or by hand, are counted for its card, afresh with each runtime session", async () => {
+  const r = new Rig();
+  const { m, key, session } = await done(r);
+  assert.equal(r.session(key).compactions, undefined, "none yet");
+  session.events({ type: "compacted" });
+  await settle();
+  assert.equal(await r.hub.compact(key), null);
+  session.events({ type: "compacted" });
+  session.complete();
+  await settle();
+  assert.equal(r.session(key).compactions, 2);
+  await r.accept(reply(m, "9999.2", "<@UBOT> -clear", { addressed: true }));
+  await settle();
+  assert.equal(r.session(key).compactions, undefined, "cleared: a new runtime session counts from none");
+  await r.close();
+});
+
 test("a runtime that cannot compact says so", async () => {
   const r = new Rig();
   const { key, session } = await done(r);

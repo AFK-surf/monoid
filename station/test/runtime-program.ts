@@ -83,9 +83,10 @@ export async function throughProgram(kind: HostedKind, cases: Json[]) {
           close();
           ops.push(step);
           if (step.$prompt !== undefined) want.events.push(...(reference instanceof AcpReference ? reference.prompted(step.$prompt.owner, step.$prompt.text) : reference.prompted()));
+          else if (step.$resend !== undefined) want.events.push(...(reference as AcpReference).resent(step.$resend.owner));
           else if (step.$inject !== undefined) want.events.push(...(reference as AcpReference).injected(step.$inject.id, step.$inject.takeOver, step.$inject.text));
           else if (step.$session !== undefined) (reference as AcpReference).session = step.$session;
-          else if (step.$opened !== undefined) (reference as AcpReference).loading = false;
+          else if (step.$opened !== undefined) (reference as AcpReference).opened(step.$opened?.resumed === true);
           else if (step.$aborting !== undefined) reference.turn.aborting = true;
           continue;
         }
@@ -116,9 +117,10 @@ export async function throughProgram(kind: HostedKind, cases: Json[]) {
             if (op.$prompt !== undefined) {
               if (kind === "acp") proc.say("acpPrompt", { owner: op.$prompt.owner, text: op.$prompt.text });
               else proc.tell("begin");
-            } else if (op.$inject !== undefined) proc.say("acpInject", { id: op.$inject.id, takeOver: op.$inject.takeOver, text: op.$inject.text });
+            } else if (op.$resend !== undefined) proc.say("acpPrompt", { owner: op.$resend.owner, resend: true });
+            else if (op.$inject !== undefined) proc.say("acpInject", { id: op.$inject.id, takeOver: op.$inject.takeOver, text: op.$inject.text });
             else if (op.$session !== undefined) proc.say("acpSession", { id: op.$session });
-            else if (op.$opened !== undefined) proc.say("acpOpened");
+            else if (op.$opened !== undefined) proc.say("acpOpened", op.$opened?.resumed === true ? { resumed: true } : {});
             else if (op.$aborting !== undefined) proc.tell("aborting");
           }
           // (the part's mark is the last of it the program tells: all before it has come)

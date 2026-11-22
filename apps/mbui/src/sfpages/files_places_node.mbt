@@ -342,13 +342,10 @@ fn favorite_row_node(
           @sf.words_node(r, fn() { st().name }, fn() { @sf.nav_meta().then(meta_cut) }) |> ignore
           // (its ✕ takes it out, a press elsewhere on it goes there: there with a pointer while it is pointed at, as small
           // as a row's key, its row as high as ever)
-          r.show(fn() { !@sf.more_held() && @sf.lit_within_node(r) }, at_once=true, fn(x) {
-            x.box(fn(key) {
-              @sf.style_node(key, fn() { favorite_remove_key(at) }, in_row=true)
-              @sf.icon_button_node(key, "close", fn() { label }, remove, tips?, size=favorite_key_side, icon_size=nav_icon, ink=fn() {
-                @sf.theme().p.subtle
-              })
-              |> ignore
+          r.show(fn() { !@sf.more_held() && @sf.lit_within_node(r) }, at_once=true, fn(key) {
+            @sf.style_node(key, fn() { favorite_remove_key(at) }, in_row=true)
+            @sf.icon_button_node(key, "close", fn() { label }, remove, tips?, size=favorite_key_side, icon_size=nav_icon, ink=fn() {
+              @sf.theme().p.subtle
             })
             |> ignore
           })

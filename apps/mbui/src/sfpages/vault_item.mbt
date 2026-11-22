@@ -164,7 +164,7 @@ fn item_block_node(
     "risk" =>
       @sf.page_card_node(b, footed=true, fn(k) {
         @sf.words_node(k, fn() { @sf.t("web-pages.vault.risk.title") }, fn() { vi_risk_title }) |> ignore
-        @sf.words_node(k, fn() { @sf.t("web-pages.vault.risk.body", args=[("station", text(vv(), "stationName"))]) }, fn() { desk_muted }) |> ignore
+        @sf.words_node(k, fn() { @sf.t("web-pages.vault.risk.body", args=[("station", text(vv(), "stationName"))]) }, fn() { @sf.card_muted }) |> ignore
         @sf.card_foot_node(k, fn(f) {
           @sf.button_node(f, fn() { @sf.t("web-pages.vault.lib.turnOn") }, fn() { (core.push)(Security) }, tone=Primary, card_words=true) |> ignore
         })
@@ -202,7 +202,7 @@ fn item_block_node(
       section("web-pages.vault.forAgents", fn(sec) {
         sec.pick(fn() { flag(rv(), "listed") }, fn(p, listed) {
           if !listed {
-            @sf.words_node(p, fn() { @sf.t("web-pages.vault.notForAgents") }, fn() { desk_muted }) |> ignore
+            @sf.words_node(p, fn() { @sf.t("web-pages.vault.notForAgents") }, fn() { @sf.card_muted }) |> ignore
             return
           }
           p.box(fn(fs) {
@@ -217,6 +217,8 @@ fn item_block_node(
             let fact = fn(at : @view.View, term : String, value : (@view.View) -> Unit) {
               at.box(fn(r) {
                 @sf.style_node(r, fn() { vi_fact })
+                // (its term on the baseline of how it stands' first line: a Meta line beside a Ui one)
+                r.lines_up_baseline(Is(true)) |> ignore
                 r.box(fn(t) {
                   t.width(By(fn() { Some(term_w()) })).shrink(Is(0.0)) |> ignore
                   @sf.words_node(t, fn() { @sf.t(term) }, fn() { vi_term }) |> ignore
@@ -254,7 +256,7 @@ fn item_block_node(
           fn(p, what) {
             match what {
               0 => @sf.waiting_node(p, fn(w) { item_uses_node(w, core.quiet(), ws, fn() { uses_sample() }) })
-              1 => @sf.words_node(p, fn() { @sf.t("web-pages.vault.uses.none") }, fn() { desk_muted }) |> ignore
+              1 => @sf.words_node(p, fn() { @sf.t("web-pages.vault.uses.none") }, fn() { @sf.card_muted }) |> ignore
               _ => item_uses_node(p, core, ws, fn() { items(uses(), "uses") })
             }
           },
@@ -288,7 +290,11 @@ fn item_uses_node(b : @view.View, core : Core, ws : () -> String, uses : () -> A
                 l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                 @sf.presses_node(l, fn() {
                   let u = @signals.untracked(uv)
-                  (core.open_chat)(@signals.untracked(ws) + "/" + text(u, "station"), text(u, "session"), @signals.untracked(chat))
+                  let target_ws = match text(u, "workspace") {
+                    "" => @signals.untracked(ws)
+                    w => w
+                  }
+                  (core.open_chat)(target_ws + "/" + text(u, "station"), text(u, "session"), @signals.untracked(chat))
                 })
                 l.says(By(fn() { Some(@view.said(Link, label=chat())) })) |> ignore
                 l.box(fn(w) {
@@ -308,6 +314,15 @@ fn item_uses_node(b : @view.View, core : Core, ws : () -> String, uses : () -> A
             } else {
               @sf.words_node(p, chat, fn() { vi_chat }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             }
+          })
+          n.show(fn() { text(uv(), "workspace") != "" }, fn(d) {
+            @sf.pill_node(d, fn() {
+              match text(uv(), "workspaceName") {
+                "" => text(uv(), "workspace")
+                name => name
+              }
+            }, tone=Neutral)
+            |> ignore
           })
           n.show(fn() { flag(uv(), "denied") }, fn(d) { @sf.pill_node(d, fn() { @sf.t("web-pages.vault.uses.denied") }, tone=Red) |> ignore })
         },
@@ -415,7 +430,8 @@ let vi_facts : @ui.Style = @ui.css("w=Full gap=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let vi_fact : @ui.Style = @ui.css("row w=Full gap=S3_5 align=AStart")
+// (its term and how it stands on one baseline: View::lines_up_baseline, where it is made)
+let vi_fact : @ui.Style = @ui.css("row w=Full gap=S3_5")
 
 ///|
 /// Its terms' column at least (the web's 96).

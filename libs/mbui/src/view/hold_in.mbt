@@ -62,7 +62,7 @@ fn Tree::hold_found(self : Tree, x : Double, y : Double) -> (NodeId, Double, Dou
             n.top_row {
             taker.val = o
             taker_box.val = (cx, cy, cx + c.w * s, cy + c.h * s)
-          } else if !n.points && n.covers(a) {
+          } else if !n.points && self.covers_at(c.id, a, x, y) {
             match hold.val {
               Some((_, hid, _, _)) if self.covers_over(hid, c.id) => hold.val = None
               _ => ()
@@ -94,7 +94,7 @@ fn Tree::hold_found(self : Tree, x : Double, y : Double) -> (NodeId, Double, Dou
     Some((o, id, ms, slop)) if o > taker.val => return Some((id, ms, slop))
     _ => ()
   }
-  let (ww, wh) = self.room.untracked()
+  let (ww, wh) = self.room_untracked()
   let cut = if taker.val >= 0 { taker_box.val } else { (0.0, 0.0, ww, wh) }
   let mut best : (NodeId, Double, Double)? = None
   let mut best_d = 1.0e18

@@ -6,7 +6,7 @@ import { createHash, generateKeyPairSync, sign as nodeSign } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { type GrantBody, type Timeout, latest, signedBytes } from "../../client/core-ts/src/rig-form.ts";
-import { type Entry, apply, entryHash, genesis, signedBytes as entryBytes } from "../src/cloud/lock.ts";
+import { type Entry, apply, entryHash, genesis, signedBytes as entryBytes } from "../../shared/lock.ts";
 import { RigAdds, addRefusal } from "../src/rigs/adds.ts";
 import { personChainsOf } from "../src/cloud/state.ts";
 import { bring, handover, station as movedStation, world as movedWorld } from "./lock-moved-world.ts";

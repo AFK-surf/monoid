@@ -79,7 +79,7 @@ test "sharing a chat on a small screen: a table wider than the screen and the us
   t.run_for(@sfpages.publish_in_ms)
     t.run_for(@ui.move_most_ms)
     t.click(Button, label="保存到相册")
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     let (pw, ph) = png_size(t.kept()[0].2).unwrap()
     // Its width is the chat's widest column at two pixels a point, independent of the small screen's width.
     assert_eq(pw, 1520, msg="the picture should keep the chat's maximum width")
@@ -128,7 +128,7 @@ test "分享图片: the page shows the picture as it would be, 取消, 复制 an
   assert_true(viewer.get() is None)
   // nothing is published
   t.click(Button, label="保存到相册")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   // the picture taken: the chat's name, its messages, their times as dates, still.fail's; not the attachments left
   // out, nor the notes of what was hidden (for the one sharing it)
   let shots = t.shots()
@@ -164,7 +164,7 @@ test "分享图片: the page shows the picture as it would be, 取消, 复制 an
   assert_true(t.query(Button, label="已复制") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
   // 取消, beside them at the foot, closes it: gone as a dialog goes
   t.click(Button, label="取消")
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("部署登录页") is None)
 }
 
@@ -203,7 +203,7 @@ test "分享图片 on an iPhone Duo: the system's tabs put away, its way back an
     }
     // 保存到相册 chosen there: the picture kept in the photo album
     t.post(@hostapi.system_channel, "{\"nav\":\"over/act\"}")
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     assert_eq(t.kept_ways().map(fn(k) { (k.0, Show::to_string(k.1)) }), [("still.fail.png", "Photos")])
     // 复制图片 chosen there: the picture on the clipboard, nothing more in the album, 已复制 there a moment
     t.post(@hostapi.system_channel, "{\"nav\":\"over/copy\"}")
@@ -213,7 +213,7 @@ test "分享图片 on an iPhone Duo: the system's tabs put away, its way back an
     assert_true(t.nav_said().contains("已复制"), msg=t.nav_said())
     // closed there: gone as a dialog goes, the tabs back
     t.post(@hostapi.system_channel, "{\"nav\":\"lead/over/close\"}")
-    t.run_for(@kit.pop_out_ms)
+    t.run_for(@motion.pop_out_ms)
     assert_true(t.find("部署登录页") is None)
     assert_true(t.nav_said().contains("\"bare\":false"), msg=t.nav_said())
   }
@@ -252,7 +252,7 @@ test "分享图片: a message unticked fades on the page and is not in the pictu
   assert_true(@sfpages.publish_message_left_out(6.0))
   assert_true(!@sfpages.publish_message_left_out(4.0))
   t.click(Button, label="保存到相册")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   let words = t.shots()[0].join("|")
   assert_true(words.contains("截图、日志和构建缓存都附上了") && !words.contains("跑了 42 秒"), msg=words)
 }
@@ -272,9 +272,16 @@ test "多选: the chat's picture opened from a message has that message alone ti
   let asked = named(calls, "chat.publishPreview")
   assert_eq(asked.length(), 1)
   assert_true(field(Some(asked[0].params), "turn") is None)
-  assert_eq(t.all(Checkbox, label="放进图片").map(fn(n) { n.check == Some(On) }), [false, false, false, true])
-  assert_true(@sfpages.publish_message_left_out(4.0) && @sfpages.publish_message_left_out(6.0))
-  assert_true(!@sfpages.publish_message_left_out(9.0))
+  let ticks = t.all(Checkbox, label="放进图片")
+  assert_true(ticks.length() >= 2, msg="\{Repr(ticks.map(fn(n) { n.check }))}")
+  assert_eq(ticks.filter(fn(n) { n.check == Some(On) }).length(), 1)
+  assert_eq(ticks[ticks.length() - 1].check, Some(On))
+  assert_true(
+    @sfpages.publish_message_left_out(4.0) &&
+    @sfpages.publish_message_left_out(6.0) &&
+    @sfpages.publish_message_left_out(7.0) &&
+    !@sfpages.publish_message_left_out(9.0),
+  )
   match t.rect_of("截图、日志和构建缓存都附上了") {
     Some((_, y, _, h)) => assert_true(y > 0.0 && y + h < 520.0, msg="\{Repr((y, h))}")
     None => fail("Ana's message not drawn")
@@ -282,12 +289,16 @@ test "多选: the chat's picture opened from a message has that message alone ti
   // another ticked (the one over it, scrolled back to): both in the picture, the rest not
   t.wheel(195.0, 260.0, -150.0)
   t.run_for(@ui.move_most_ms)
-  let (x, y, w, h) = t.all(Checkbox, label="放进图片")[2].rect
+  let ticks_after = t.all(Checkbox, label="放进图片")
+  assert_true(ticks_after.length() >= 2, msg="\{Repr(ticks_after.map(fn(n) { n.check }))}")
+  let prev = ticks_after[ticks_after.length() - 2]
+  assert_eq(prev.check, Some(Off))
+  let (x, y, w, h) = prev.rect
   assert_true(y > 0.0 && y + h < 520.0, msg="\{Repr((y, h))}")
   t.tap(x + w / 2.0, y + h / 2.0)
   assert_true(!@sfpages.publish_message_left_out(7.0) && @sfpages.publish_message_left_out(6.0))
   t.click(Button, label="保存到相册")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   let words = t.shots()[0].join("|")
   assert_true(words.contains("截图、日志和构建缓存都附上了") && words.contains("Axiom 查询 token") && !words.contains("跑了 42 秒") && !words.contains("帮我把登录页部署到预发"), msg=words)
 }
@@ -442,7 +453,7 @@ test "分享图片: a page of HTML its words place is drawn live on the page and
     }
   }))
   assert_true(t.view_said("{\"still\":{\"view\":\{view}},\"b\":\"\{@codec.hex(png)}\"}"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.each_frame(None)
   // The picture is wider than this screen, but its captured page keeps its original size and is not cropped.
   guard drawn.val is Some((iw, ih)) else { fail("no captured page in the picture") }
@@ -468,7 +479,7 @@ test "分享图片: a page of HTML whose grab fails, or is of a part of it, is i
     } else {
       assert_true(t.view_said("{\"still\":{\"view\":\{view}},\"b\":\"\{@codec.hex(publish_blank_png(100, 10))}\"}"))
     }
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     assert_eq(t.shots().length(), 1)
     assert_true(t.shots()[0].join("|").contains(".html"), msg=t.shots()[0].join("|"))
     assert_true(!@sfpages.publish_has_still("f0"))
@@ -487,7 +498,7 @@ test "分享图片: a page of HTML taken out of the picture is its card on the p
   assert_true(@sfpages.publish_left_out("f0"))
   assert_true(t.find(".html") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
   t.click(Button, label="保存到相册")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   // (taken at once: nothing to wait for)
   assert_eq(t.shots().length(), 1)
   assert_true(!t.shots()[0].join("|").contains(".html"), msg=t.shots()[0].join("|"))
@@ -500,7 +511,110 @@ test "分享图片: in a browser, which grabs no page, a page of HTML is its car
   assert_true(t.find(".html") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
   assert_true(!viz_frames.keys().any(fn(k) { k.has_prefix("publish/") }))
   t.click(Button, label="复制图片")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_eq(t.shots().length(), 1)
   assert_true(t.shots()[0].join("|").contains(".html"), msg=t.shots()[0].join("|"))
+}
+
+///|
+test "多选: 500 messages virtualizes mounted rows and brings the picked message into sight" {
+  let calls : Array[Made] = []
+  let preview = fn() -> Json {
+    let base_list = items(Some(fix_preview()), "list")
+    guard base_list[1] is Object(tmpl) else { @halt.saying("missing agent message template") }
+    let list : Array[Json] = []
+    for i in 1..<=500 {
+      let m = tmpl.copy()
+      let body = if i == 480 {
+        "第 480 条目标消息"
+      } else {
+        "第 \{i} 条测试消息，用于验证多选分享图片长对话虚拟化"
+      }
+      m["seq"] = Json::number(i.to_double())
+      m["ts"] = Json::string("ts-\{i}")
+      m["text"] = Json::string(body)
+      m["md"] = [["p", [Json::string(body)]]]
+      list.push(Json::object(m))
+    }
+    { "upto": 500, "title": "长对话压测", "list": Json::array(list), "messages": [], "files": [], "hidden": 0 }
+  }
+  let t = publish_core(calls, preview~, menu=true, width=1280.0, height=800.0, platform=0)
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "长对话压测", station_name: "Willow" }
+  @sfpages.open_publish(publish_src.val.unwrap(), r, 7.0, picked=Some(480.0))
+  t.frame()
+  t.run_for(@sf.presented_rest() - t.time())
+  t.run_for(@sfpages.publish_in_ms)
+  t.run_for(@ui.move_most_ms)
+  assert_true(!@sfpages.publish_message_left_out(480.0))
+  assert_true(@sfpages.publish_message_left_out(1.0))
+  assert_true(@sfpages.publish_message_left_out(479.0))
+  match t.rect_of("第 480 条目标消息") {
+    Some((_, y, _, h)) => assert_true(y >= 0.0 && y + h <= 800.0, msg="\{Repr((y, h))}")
+    None => fail("picked message 480 not drawn")
+  }
+  let ticks = t.all(Checkbox, label="放进图片")
+  assert_true(ticks.length() > 0 && ticks.length() < 60, msg="mounted checkboxes=\{ticks.length()}")
+}
+
+///|
+test "分享图片: an off-viewport HTML page mounts only when scrolled into sight during export and is grabbed into the picture" {
+  let calls : Array[Made] = []
+  let preview = fn() -> Json {
+    let base_list = items(Some(fix_preview()), "list")
+    guard base_list[1] is Object(tmpl) else { @halt.saying("missing agent message template") }
+    let viz_p = fix_preview_viz()
+    let viz_list = items(Some(viz_p), "list")
+    guard viz_list[0] is Object(viz_tmpl) else { @halt.saying("missing viz message template") }
+    let viz_files = items(Some(viz_p), "files")
+    guard viz_files[0] is Object(file_tmpl) else { @halt.saying("missing viz file template") }
+    let list : Array[Json] = []
+    for i in 1..<=40 {
+      let m = tmpl.copy()
+      let body = "第 \{i} 条前置消息，用于把 HTML 可视化推到首屏视口之外"
+      m["seq"] = Json::number(i.to_double())
+      m["ts"] = Json::string("ts-\{i}")
+      m["text"] = Json::string(body)
+      m["md"] = [["p", [Json::string(body)]]]
+      list.push(Json::object(m))
+    }
+    let vm = viz_tmpl.copy()
+    vm["seq"] = Json::number(41.0)
+    vm["ts"] = Json::string("ts-41")
+    list.push(Json::object(vm))
+    let vf = file_tmpl.copy()
+    vf["n"] = Json::number(41.0)
+    {
+      "upto": 41,
+      "title": "视口外可视化导出",
+      "list": Json::array(list),
+      "messages": [],
+      "files": [Json::object(vf)],
+      "hidden": 0,
+    }
+  }
+  let t = publish_core(calls, preview~, menu=true, width=390.0, height=520.0, platform=2)
+  open_publish_page()
+  t.frame()
+  t.run_for(@sf.presented_rest() - t.time())
+  t.run_for(@sfpages.publish_in_ms)
+  t.run_for(@ui.move_most_ms)
+  // off-viewport HTML page is not mounted on open
+  assert_true(!viz_frames.keys().any(fn(k) { k.has_prefix("publish/") }), msg="off-viewport html mounted on open")
+  t.click(Button, label="保存到相册")
+  t.run_for(@ui.move_most_ms)
+  let view = publish_viz_drawn_up(t)
+  t.run_for(@ui.move_most_ms)
+  let (bw, bh) = match view_rect(t, view) {
+    Some((_, _, w, h)) => (w, h)
+    None => fail("the off-viewport page was not brought into sight")
+  }
+  t.run_for(@sfpages.publish_viz_settle_ms + 100.0)
+  assert_eq(t.shots().length(), 0)
+  let png = publish_blank_png((bw * 2.0).to_int(), (bh * 2.0).to_int())
+  assert_true(t.view_said("{\"still\":{\"view\":\{view}},\"b\":\"\{@codec.hex(png)}\"}"))
+  t.run_for(@motion.presence_in_ms)
+  assert_eq(t.shots().length(), 1)
+  assert_true(!t.shots()[0].join("|").contains(".html"), msg=t.shots()[0].join("|"))
+  assert_true(@sfpages.publish_has_still("f0"))
+  assert_eq(t.kept().length(), 1)
 }

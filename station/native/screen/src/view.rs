@@ -6,42 +6,24 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use windows::Graphics::Capture::GraphicsCaptureSession;
-use windows::Win32::Foundation::{POINT, RECT};
-use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12};
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint};
+use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::Media::MediaFoundation::{MFSTARTUP_LITE, MFShutdown, MFStartup, MF_VERSION};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::Win32::System::Power::{ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, SetThreadExecutionState};
-use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
 use super::Out;
 use super::avc;
 use super::hevc;
 use super::capture::{Capture, Gpu, Scaler, fitted};
 use super::clipboard::{Clipboard, PNG_MAX};
+pub use super::display::{dpi_aware, main_display};
 use super::encode::H264;
 use super::image::{Images, Pixels};
-use super::input::Input;
 use super::pace::{self, Gate, KeyClock};
 use super::region::{self, Region};
-
-/// Its coordinates in pixels, whatever the display's scale.
-pub fn dpi_aware() {
-    unsafe {
-        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    }
-}
-
-/// The main display and where it is on the virtual desktop, in pixels.
-pub fn main_display() -> (HMONITOR, RECT) {
-    unsafe {
-        let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-        let _ = GetMonitorInfoW(monitor, &mut info);
-        (monitor, info.rcMonitor)
-    }
-}
+use super::svc_client::{ServiceCapture, ServiceInput};
 
 pub fn status() -> Value {
     let (monitor, rect) = main_display();
@@ -60,6 +42,12 @@ pub enum Msg {
     Rate(u32),
     /// The pictures from now on fitted into these bounds, of a part of the display alone (None: the whole).
     Bounds(u32, u32, Option<Region>),
+    /// Active input desktop switched between Default and a secure desktop (Winlogon UAC / lock screen).
+    SecureDesktop(bool, String),
+    /// A BGRA frame captured on Winlogon by stillfail-screen-svc.
+    ServiceFrame { width: u32, height: u32, bgra: Vec<u8> },
+    /// The capture connection to stillfail-screen-svc closed.
+    ServiceGone,
 }
 
 struct Options {
@@ -72,6 +60,8 @@ struct Options {
     fps: Option<u32>,
     /// The software encoder even where there is hardware (a test of it): never asked by the station.
     software: bool,
+    /// Whether this view may fall back to stillfail-screen-svc for Winlogon capture (human views only, never agent).
+    service_capture: bool,
 }
 
 pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
@@ -79,6 +69,11 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
     let audio = if request["audio"].as_bool() == Some(true) { Some(super::audio::Audio::start(out.clone(), request["audioCodec"].as_str() == Some("opus"))) } else { None };
+    let is_agent = request["agent"].as_bool() == Some(true);
+    let is_peek = request["peek"].as_bool() == Some(true);
+    let is_video = matches!(request["codec"].as_str(), Some("h265") | Some("h264"));
+    let use_service_input = !is_agent && !is_peek && request["serviceInput"].as_bool().unwrap_or(is_video);
+    let use_service_capture = !is_agent && request["serviceCapture"].as_bool().unwrap_or(is_video || is_peek);
     let options = Options {
         jpeg: request["codec"].as_str() == Some("jpeg"),
         hevc: request["codec"].as_str() == Some("h265"),
@@ -86,6 +81,7 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
         bitrate: request["bitrate"].as_u64().map(|b| b as u32),
         fps: pace::fps(request["fps"].as_u64()),
         software: request["encoder"].as_str() == Some("software"),
+        service_capture: use_service_capture,
     };
     let (tx, rx) = channel();
     let worker = {
@@ -108,9 +104,16 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
             std::process::exit(0);
         })
     };
-    let mut keys = Input::new();
+    let mut keys = ServiceInput::new(use_service_input, out.clone());
     keys.nudge();
+    // Whether an app holds the pointer (pointer_lock.rs), and the person's controllers (gamepad.rs).
+    let lock = super::pointer_lock::Watch::start(out.clone());
+    let pads = {
+        let lock = lock.clone();
+        super::gamepad::Gamepads::new(&out, move || lock.moved())
+    };
     let mut clipboard = Clipboard::new(out.clone());
+    let mic = ViewMic::start(out.clone());
     // A picture on the clipboard is the largest message.
     while let Some((kind, payload)) = super::message(input, 2 + PNG_MAX) {
         match kind {
@@ -118,15 +121,26 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
             2 => drop(tx.send(Msg::Keyframe)),
             3 => {
                 if let Ok(op) = serde_json::from_slice::<Value>(&payload) {
-                    keys.post(&op);
+                    match op["op"].as_str() {
+                        Some("gamepad") => pads.post(&op),
+                        Some("mouse") => {
+                            keys.post(&op);
+                            if op["type"].as_str() == Some("move") {
+                                lock.moved();
+                            }
+                        }
+                        _ => keys.post(&op),
+                    }
                 }
             }
             4 => {
-                if clipboard.set(&payload) && payload[0] & 1 == 1 {
+                if clipboard.set(&payload) && super::privacy::flags(payload[0]).0 {
                     keys.paste();
                 }
             }
             5 => clipboard.watch(payload.first() == Some(&1)),
+            11 => mic.watch(payload.first() == Some(&1)),
+            12 => mic.feed(&payload),
             9 => { if let Some(a) = &audio { a.next(); } },
             6 => reveal(&String::from_utf8_lossy(&payload)),
             8 => {
@@ -141,9 +155,132 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
         }
     }
     clipboard.stop();
+    mic.end();
+    pads.release();
+    lock.stop();
     drop(tx);
     drop(worker);
     std::process::exit(0);
+}
+
+enum MicAsk {
+    Watch(bool),
+    Wake,
+    Feed(u32, Vec<u8>),
+    End,
+}
+
+/// The view's virtual microphone (mic.rs), on a thread of its own while the station watches it (message 11): who
+/// records the cable looked at as its sessions say they changed (and every 500 ms besides), said as message 4 `{mic}`
+/// as it changes; the cable played into only while an app records it, a packet (message 12) only of the epoch said.
+struct ViewMic {
+    asks: Sender<MicAsk>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ViewMic {
+    fn start(out: Out) -> ViewMic {
+        let (asks, rx) = channel::<MicAsk>();
+        let wake = asks.clone();
+        let thread = std::thread::Builder::new()
+            .name("view-mic".into())
+            .spawn(move || mic_loop(rx, wake, out))
+            .ok();
+        ViewMic { asks, thread }
+    }
+    fn watch(&self, on: bool) {
+        let _ = self.asks.send(MicAsk::Watch(on));
+    }
+    fn feed(&self, payload: &[u8]) {
+        if let Some((epoch, pcm)) = super::mic::packet(payload) {
+            let _ = self.asks.send(MicAsk::Feed(epoch, pcm.to_vec()));
+        }
+    }
+    fn end(mut self) {
+        let _ = self.asks.send(MicAsk::End);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+fn mic_loop(rx: Receiver<MicAsk>, wake: Sender<MicAsk>, out: Out) {
+    use super::mic::{WinMicFeeder, WinMicMonitor, said};
+    let mut monitor: Option<WinMicMonitor> = None;
+    let mut feeder: Option<WinMicFeeder> = None;
+    let mut feeding: Option<u32> = None;
+    let mut told: Option<(bool, bool, u32)> = None;
+    let tell = |told: &mut Option<(bool, bool, u32)>, now: (bool, bool, u32)| {
+        if *told == Some(now) {
+            return;
+        }
+        *told = Some(now);
+        out.json(4, json!({ "mic": { "available": now.0, "active": now.1, "epoch": now.2 } }));
+    };
+    loop {
+        let ask = if monitor.is_some() {
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(a) => a,
+                Err(RecvTimeoutError::Timeout) => MicAsk::Wake,
+                Err(RecvTimeoutError::Disconnected) => MicAsk::End,
+            }
+        } else {
+            rx.recv().unwrap_or(MicAsk::End)
+        };
+        match ask {
+            MicAsk::Watch(true) if monitor.is_none() => {
+                let w = wake.clone();
+                match WinMicMonitor::start(None, move || drop(w.send(MicAsk::Wake))) {
+                    Ok(m) => monitor = Some(m),
+                    Err(_) => tell(&mut told, (false, false, 0)),
+                }
+                if monitor.is_none() {
+                    continue;
+                }
+            }
+            MicAsk::Watch(true) => {}
+            MicAsk::Watch(false) | MicAsk::End => {
+                let end = matches!(ask, MicAsk::End);
+                if let Some(mut f) = feeder.take() {
+                    f.stop();
+                }
+                feeding = None;
+                monitor = None;
+                told = None;
+                if end {
+                    return;
+                }
+                continue;
+            }
+            MicAsk::Feed(epoch, pcm) => {
+                if let (Some(f), Some(e)) = (&feeder, feeding) {
+                    if e == epoch {
+                        f.feed(&pcm);
+                    }
+                }
+                continue;
+            }
+            MicAsk::Wake => {}
+        }
+        let Some(m) = &monitor else { continue };
+        let (available, mut active, epoch) = said(&m.sample());
+        if active && feeder.is_none() {
+            match WinMicFeeder::start(None) {
+                Ok(f) => feeder = Some(f),
+                Err(e) => {
+                    out.json(4, json!({ "micFeed": e }));
+                    active = false;
+                }
+            }
+        }
+        if !active {
+            if let Some(mut f) = feeder.take() {
+                f.stop();
+            }
+        }
+        feeding = if active { Some(epoch) } else { None };
+        tell(&mut told, (available, active, epoch));
+    }
 }
 
 /// A file shown selected in Explorer (one dropped into the view, put on the machine).
@@ -157,10 +294,20 @@ fn reveal(path: &str) {
 
 /// How long a picture may be in the encoder before it is taken as lost.
 const STUCK: Duration = Duration::from_secs(2);
+/// At this bit rate asked or more, a still picture's key frame is the view's own encoder's, as any other key frame: the
+/// still picture's encoder (encode.rs `still`) writes other parameter sets (its rate, twice this, in their VUI), so its
+/// picture went with a config and the next moving one with the view's again, the client's decoder made anew for each
+/// (a game paused a moment, a menu opened: the picture flashed twice). The view's own at this rate is sharp already.
+const STILL_OWN_FROM: u32 = 20_000_000;
 
 struct View {
     gpu: Gpu,
-    capture: Capture,
+    capture: Option<Capture>,
+    monitor: HMONITOR,
+    tx: Sender<Msg>,
+    service_capture: Option<ServiceCapture>,
+    service_secure: bool,
+    service_req_inflight: bool,
     options: Options,
     images: Option<Images>,
     /// The newest picture, as captured (BGRA, the display's size), and when (µs).
@@ -217,18 +364,44 @@ impl View {
     fn open(options: Options, tx: Sender<Msg>, out: &Out) -> windows::core::Result<View> {
         let gpu = Gpu::new().map_err(|e| failed(out, &e, "capture"))?;
         let (monitor, rect) = main_display();
-        let capture = Capture::start(&gpu, monitor, tx, options.jpeg, options.fps).map_err(|e| failed(out, &e, "capture"))?;
+        let (service_capture, service_secure) = if options.service_capture {
+            match ServiceCapture::connect(options.max.0, options.max.1, tx.clone(), out.clone(), !options.jpeg) {
+                Some((sc, secure, desktop)) => {
+                    out.json(4, json!({ "serviceCapture": true, "desktop": desktop, "secure": secure }));
+                    (Some(sc), secure)
+                }
+                None => (None, false),
+            }
+        } else {
+            (None, false)
+        };
+        let capture = if service_capture.is_some() && service_secure {
+            None
+        } else {
+            Some(Capture::start(&gpu, monitor, tx.clone(), options.jpeg, options.fps).map_err(|e| failed(out, &e, "capture"))?)
+        };
         if !options.jpeg {
             super::cursor::follow(out.clone());
         }
-        if let Some(white) = capture.hdr_white() {
+        if let Some(white) = capture.as_ref().and_then(|c| c.hdr_white()) {
             out.json(4, json!({ "hdr": { "sdrWhiteNits": white } }));
         }
-        let (width, height) = fitted((rect.right - rect.left) as u32, (rect.bottom - rect.top) as u32, options.max.0, options.max.1);
+        let disp_w = (rect.right - rect.left).max(0) as u32;
+        let disp_h = (rect.bottom - rect.top).max(0) as u32;
+        let (width, height) = if disp_w >= 16 && disp_h >= 16 {
+            fitted(disp_w, disp_h, options.max.0, options.max.1)
+        } else {
+            fitted(options.max.0, options.max.1, options.max.0, options.max.1)
+        };
         let options_fps = options.fps;
         let mut view = View {
             gpu,
             capture,
+            monitor,
+            tx,
+            service_capture,
+            service_secure,
+            service_req_inflight: false,
             images: if options.jpeg { Some(Images::new().map_err(|e| failed(out, &e, "encoder"))?) } else { None },
             options,
             latest: None,
@@ -307,10 +480,17 @@ impl View {
 
     fn run(&mut self, rx: Receiver<Msg>, out: &Out) {
         loop {
-            // Waiting on the encoder: looked at again in a moment; else until something comes.
+            // Waiting on the encoder or waiting to reopen WGC after returning from Winlogon.
             let busy = self.busy() || (self.wanted > 0 && self.fresh);
+            let need_reopen = self.capture.is_none() && !self.service_secure;
             let msg = if busy {
                 match rx.recv_timeout(Duration::from_millis(1)) {
+                    Ok(m) => Some(m),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else if need_reopen {
+                match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(m) => Some(m),
                     Err(RecvTimeoutError::Timeout) => None,
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -349,28 +529,106 @@ impl View {
                     }
                 }
                 Some(Msg::Closed) => {
-                    out.json(4, json!({ "stopped": "the display went" }));
-                    return;
+                    if self.service_capture.is_some() {
+                        self.capture = None;
+                    } else {
+                        out.json(4, json!({ "stopped": "the display went" }));
+                        return;
+                    }
                 }
-                Some(Msg::Frame) => match self.capture.take(&self.gpu, &mut self.latest) {
-                    Ok(Some(at)) => {
-                        self.latest_at = at;
+                Some(Msg::Frame) => {
+                    if let Some(cap) = self.capture.as_mut() {
+                        if self.service_secure {
+                            let mut discard = None;
+                            let _ = cap.take(&self.gpu, &mut discard);
+                        } else {
+                            match cap.take(&self.gpu, &mut self.latest) {
+                                Ok(Some(_)) => {
+                                    self.latest_at = self.opened.elapsed().as_micros() as i64;
+                                    self.fresh = true;
+                                    self.still = false;
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    if self.service_capture.is_some() {
+                                        self.capture = None;
+                                    } else {
+                                        out.json(4, json!({ "stopped": e.message() }));
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(Msg::SecureDesktop(secure, name)) => {
+                    self.service_secure = secure;
+                    self.service_req_inflight = false;
+                    self.force_key = true;
+                    out.json(4, json!({ "desktop": name, "secure": secure }));
+                    // Drop WGC across Winlogon transitions: a WGC session created on or kept across Winlogon can stall
+                    // or deliver black frames after switching back to Default. Reopening fresh on Default forces a clean frame.
+                    self.capture = None;
+                    if !secure {
+                        let (mon, _) = main_display();
+                        if let Ok(c) = Capture::start(&self.gpu, mon, self.tx.clone(), self.options.jpeg, self.options.fps) {
+                            self.monitor = mon;
+                            self.capture = Some(c);
+                        }
+                    }
+                }
+                Some(Msg::ServiceFrame { width, height, bgra }) => {
+                    self.service_req_inflight = false;
+                    if self.service_secure {
+                        if let Err(e) = self.upload_bgra(width, height, &bgra) {
+                            out.json(4, json!({ "stopped": e.message() }));
+                            return;
+                        }
+                        self.latest_at = self.opened.elapsed().as_micros() as i64;
                         self.fresh = true;
                         self.still = false;
                     }
-                    Ok(None) => {}
-                    Err(e) => {
-                        out.json(4, json!({ "stopped": e.message() }));
-                        return;
+                }
+                Some(Msg::ServiceGone) => {
+                    self.service_capture = None;
+                    self.service_secure = false;
+                    self.service_req_inflight = false;
+                    if self.capture.is_none() {
+                        let (mon, _) = main_display();
+                        match Capture::start(&self.gpu, mon, self.tx.clone(), self.options.jpeg, self.options.fps) {
+                            Ok(c) => {
+                                self.monitor = mon;
+                                self.capture = Some(c);
+                            }
+                            Err(e) => {
+                                out.json(4, json!({ "stopped": e.message() }));
+                                return;
+                            }
+                        }
                     }
-                },
+                }
                 None => {}
             }
-            // Another display made the main one: this view ends (the station opens the main one again), as its
-            // input would go to the other.
-            if self.looked.elapsed() > Duration::from_secs(1) {
+            // Pull next Winlogon frame on demand whenever the view wants a frame on a secure desktop.
+            if self.service_secure && self.wanted > 0 && !self.fresh && !self.service_req_inflight {
+                if let Some(sc) = self.service_capture.as_ref() {
+                    if sc.request_frame(self.options.max.0, self.options.max.1) {
+                        self.service_req_inflight = true;
+                    }
+                }
+            }
+            // Reopen WGC quickly after leaving Winlogon if DWM wasn't ready on the first attempt.
+            if !self.service_secure && self.capture.is_none() {
+                let (mon, _) = main_display();
+                if let Ok(c) = Capture::start(&self.gpu, mon, self.tx.clone(), self.options.jpeg, self.options.fps) {
+                    self.monitor = mon;
+                    self.capture = Some(c);
+                    self.force_key = true;
+                }
+            } else if !self.service_secure && self.looked.elapsed() > Duration::from_secs(1) {
                 self.looked = Instant::now();
-                if main_display().0 != self.capture.monitor {
+                let (mon, _) = main_display();
+                if mon != self.monitor {
                     out.json(4, json!({ "stopped": "another display is the main one now" }));
                     return;
                 }
@@ -379,7 +637,35 @@ impl View {
                 out.json(4, json!({ "stopped": e.message() }));
                 return;
             }
+            if self.service_secure && self.wanted > 0 && !self.fresh && !self.service_req_inflight {
+                if let Some(sc) = self.service_capture.as_ref() {
+                    if sc.request_frame(self.options.max.0, self.options.max.1) {
+                        self.service_req_inflight = true;
+                    }
+                }
+            }
         }
+    }
+
+    fn upload_bgra(&mut self, width: u32, height: u32, bgra: &[u8]) -> windows::core::Result<()> {
+        let fits = self.latest.as_ref().is_some_and(|t| {
+            let mut d = D3D11_TEXTURE2D_DESC::default();
+            unsafe { t.GetDesc(&mut d) };
+            d.Width == width && d.Height == height
+        });
+        if !fits {
+            self.latest = Some(self.gpu.texture(
+                width,
+                height,
+                DXGI_FORMAT_B8G8R8A8_UNORM,
+                D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+            )?);
+        }
+        let target = self.latest.as_ref().unwrap();
+        unsafe {
+            self.gpu.context.UpdateSubresource(target, 0, None, bgra.as_ptr() as *const _, width * 4, 0);
+        }
+        Ok(())
     }
 
     /// `crop` of the latest picture scaled into `to`, its scaler made anew when either size changed.
@@ -478,8 +764,9 @@ impl View {
         }
         // Another part of the display: from a key frame (the client's config says the part); one 10 s after the last.
         let mut key = self.force_key || part != self.pushed_region || self.keys.due(self.ms());
-        // The same picture again as a key frame (the screen at rest): encoded finer, by an encoder made for it.
-        let still = key && self.still && !self.no_still && self.encoder.as_ref().unwrap().sharpens();
+        // The same picture again as a key frame (the screen at rest): encoded finer, by an encoder made for it, where the
+        // rate asked is under STILL_OWN_FROM.
+        let still = key && self.still && !self.no_still && self.encoder.as_ref().unwrap().sharpens() && self.encoder.as_ref().unwrap().rates().1 < STILL_OWN_FROM;
         // An encoder that keeps the bit rate it started at: started anew at the one asked, now and then (its next
         // picture a key frame); made anew where it cannot be.
         let now = self.ms();

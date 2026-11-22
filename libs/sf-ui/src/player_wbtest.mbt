@@ -61,7 +61,7 @@ fn player_tester(
   window? : (Double, Double, Int),
   subtitled? : Bool = false,
   keyed? : Bool = false,
-  pin? : @kit.MediaStatus,
+  pin? : @player.MediaStatus,
 ) -> @ui.Tester {
   let (w, h, platform) = window.unwrap_or(if narrow { (390.0, 844.0, 1) } else { (1280.0, 800.0, 0) })
   set_viewer_host(viewer_host_default())
@@ -167,9 +167,11 @@ test "a desktop's timeline dragged: paused, the picture going to the start of ea
   assert_true(told(t, 2))
   assert_true(told(t, 9, value="1"))
   assert_true(told(t, 3, value="200"))
+  assert_false(told(t, 11, value="200"))
   let (x1, y1) = at(0.75)
   t.move_to(x1, y1)
   assert_true(told(t, 3, value="700"))
+  assert_false(told(t, 11, value="700"))
   // the frame it is at, of how many, while the finger is on it
   assert_true(t.find("8 / 10 帧") is Some(_))
   t.release(x1, y1)
@@ -180,7 +182,7 @@ test "a desktop's timeline dragged: paused, the picture going to the start of ea
 
 ///|
 /// How the player stands, pinned (as a fixture's): playing at `position` of 10 s, or at its end.
-fn pinned(position : Double, ended? : Bool = false) -> @kit.MediaStatus {
+fn pinned(position : Double, ended? : Bool = false) -> @player.MediaStatus {
   {
     state: 1,
     duration: 10000.0,
@@ -229,6 +231,40 @@ test "at its end the next one plays a moment after, its seconds counted down, un
 }
 
 ///|
+test "at its end 选集 opened: the card goes at once and the next one is let go, played neither while it is open nor once it closes" {
+  for narrow in [true, false] {
+    let gone = []
+    let t = player_tester(narrow, "E1.mp4", ["E1.mp4", "E2.mp4"], gone, [], pin=pinned(10000.0, ended=true))
+    t.draw()
+    assert_true(t.find("播放结束") is Some(_))
+    t.click(Button, label="web-pages.drive.player.list")
+    assert_true(t.find("播放结束") is None)
+    t.run_for(player_next_ms * 2.0)
+    assert_eq(gone.length(), 0)
+    // closed (as the system's bars close it too): the card not back, nothing played
+    player_list_toggle("k")
+    t.run_for(player_next_ms * 2.0)
+    assert_eq(gone.length(), 0)
+    assert_true(t.find("播放结束") is None)
+  }
+}
+
+///|
+test "a desktop's with 选集 open beside it as it ends: the card comes and the next one plays a moment after, as with it shut" {
+  let gone = []
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4"], gone, [])
+  t.draw()
+  t.set_player(1, position=5000.0, duration=10000.0, playing=true)
+  t.draw()
+  t.click(Button, label="web-pages.drive.player.list")
+  t.set_player(1, position=10000.0, duration=10000.0, playing=false, ended=true)
+  t.draw()
+  assert_true(t.find("播放结束") is Some(_))
+  t.run_for(player_next_ms)
+  assert_eq(gone, ["E2.mp4"])
+}
+
+///|
 test "a phone's: a finger down the film takes it away with it, past 120 back" {
   let backs = []
   let t = player_tester(true, "a.mp4", [], [], backs)
@@ -249,7 +285,7 @@ test "a phone's: a finger along the film moves through the time, the player sent
 test "a phone's song: its mark and name in the middle, on the page's colours, the controls staying" {
   let t = player_tester(true, "曲.mp3", [], [], [], kind="audio")
   t.draw()
-  t.run_for(@kit.media_rest_ms + @kit.media_sleep_ms)
+  t.run_for(@player.media_rest_ms + @player.media_sleep_ms)
   assert_true(t.find("0:00 / 0:10") is Some(_))
   assert_true(t.find_last("曲.mp3") is Some(_))
 }
@@ -267,7 +303,7 @@ test "a desktop's: a double click in the middle of the film plays it, as a phone
   }
   let before = plays()
   t.tap(640.0, 400.0)
-  t.run_for(@kit.media_note_ms)
+  t.run_for(@player.media_note_ms)
   assert_eq(plays(), before)
   t.tap(640.0, 400.0)
   t.advance(@ui.double_tap_ms / 2.0)
@@ -370,15 +406,15 @@ test "a frame the host never gives is given up by the app's clock, told as faile
   t.click(Button, label="android-chat.video.saveFrame")
   t.draw()
   assert_eq(said.length(), 0)
-  t.run_for(@kit.media_grab_wait_ms / 2.0)
+  t.run_for(@player.media_grab_wait_ms / 2.0)
   assert_eq(said.length(), 0)
-  t.run_for(@kit.media_grab_wait_ms)
+  t.run_for(@player.media_grab_wait_ms)
   assert_eq(said, ["android-chat.video.saveFrame.failed"])
   t.click(Button, label="android-chat.video.saveFrame")
   t.draw()
   assert_true(t.view_said("{\"still\":{\"view\":1},\"b\":\"89504e47\"}"))
   t.draw()
-  t.run_for(@kit.media_grab_wait_ms * 2.0)
+  t.run_for(@player.media_grab_wait_ms * 2.0)
   assert_eq(said.length(), 1)
 }
 
@@ -418,7 +454,7 @@ test "a song's end and its failure on the page's own colours: their cards' butto
 
 ///|
 test "what it waits on is said in its bar beside its name, a phone's and a desktop's, never over the middle of the film" {
-  let buffering : @kit.MediaStatus = { ..pinned(1000.0), buffered: 1000.0, buffering: true }
+  let buffering : @player.MediaStatus = { ..pinned(1000.0), buffered: 1000.0, buffering: true }
   for narrow in [true, false] {
     let t = player_tester(narrow, "a.mp4", [], [], [], pin=buffering)
     t.draw()
@@ -429,4 +465,99 @@ test "what it waits on is said in its bar beside its name, a phone's and a deskt
       None => fail("narrow \{narrow}: not said once it has waited")
     }
   }
+}
+
+///|
+/// What the audit finds of a phone's bar along the top: the faults whose first box stands in its 100 points (its
+/// controls at the foot have their own).
+fn top_bar_faults(t : @ui.Tester) -> Array[String] {
+  t
+  .audit()
+  .filter(fn(f) {
+    match f.find("(at ") {
+      Some(i) => {
+        let at = f.unsafe_substring(start=i + 4, end=f.length())
+        let xy = at.unsafe_substring(start=0, end=at.find(" ").unwrap_or(at.length()))
+        match xy.find(",") {
+          Some(j) => {
+            // (under 100: two digits at most before its point, if it has one)
+            let y = xy.unsafe_substring(start=j + 1, end=xy.length())
+            y.find(".").unwrap_or(y.length()) <= 2
+          }
+          None => false
+        }
+      }
+      None => false
+    }
+  })
+}
+
+///|
+test "a phone's bar along the top is a capsule its round keys stand concentric in: pressed, lit, the audit clean" {
+  let t = player_tester(true, "E2.mp4", ["E1.mp4", "E2.mp4", "E3.mp4"], [], [])
+  t.draw()
+  // (the bar: 48 high across the top, its keys 40 round, 4 in from its ends)
+  let bars = t
+    .drawn_rect_corners()
+    .filter(fn(r) { r.2 > 200.0 && (r.3 - 48.0).abs() < 0.5 && r.1 < 200.0 && r.4 == media_dark_ground })
+  assert_eq(bars.length(), 1, msg="\{Repr(bars)}")
+  let half = @ui.Space::S12.px() / 2.0
+  assert_eq(bars[0].5, (half, half, half, half))
+  assert_eq(top_bar_faults(t), [])
+  // the back key and 下载 held down, each drawing its press's round ground and ripple in the bar's ends
+  for icon in ["icon:chevron-left", "icon:download"] {
+    let (x, y) = t.locate(icon).filter(fn(p) { p.1 < 100.0 })[0]
+    t.press_at(x, y)
+    t.run_for(press_whole_ms)
+    let faults = top_bar_faults(t)
+    assert_true(faults.is_empty(), msg="\{icon} held: " + faults.join("\n"))
+    // (let go off it, nothing done)
+    t.release(x, y + 300.0)
+    t.run_for(feel_past_ms)
+  }
+  // 选集 lit, its list open
+  let (x, y) = t.locate("icon:list").filter(fn(p) { p.1 < 100.0 })[0]
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let faults = top_bar_faults(t)
+  assert_true(faults.is_empty(), msg="选集 lit: " + faults.join("\n"))
+}
+
+///|
+test "player_node speed capsule: 1.0x keeps exact media_rate_h / phone_key_side; 2.0x scales without fixed_outgrown or squeeze_faults" {
+  // Desktop (non-phone) speed capsule
+  let td = player_tester(false, "E1.mp4", ["E1.mp4"], [], [])
+  td.draw()
+  let hd0 = td.get(Button, label="web-pages.drive.player.rate").rect.3
+  assert_eq(hd0, media_rate_h, msg="desktop 1.0x speed height")
+  assert_eq(td.fixed_outgrown(), [], msg="desktop 1.0x fixed_outgrown")
+  assert_eq(td.squeeze_faults(), [], msg="desktop 1.0x squeeze_faults")
+  td.set_font_scale(2.0)
+  td.draw()
+  let hd2 = td.get(Button, label="web-pages.drive.player.rate").rect.3
+  let player_outgrown = fn(t : @ui.Tester) {
+    t.fixed_outgrown().filter(fn(f) { !f.contains("viewer_bar_node.mbt") })
+  }
+  assert_true(hd2 > media_rate_h, msg="desktop 2.0x speed height grew: \{hd2}")
+  assert_eq(player_outgrown(td), [], msg="desktop 2.0x fixed_outgrown: \{Repr(player_outgrown(td))}")
+  assert_eq(td.squeeze_faults(), [], msg="desktop 2.0x squeeze_faults: \{Repr(td.squeeze_faults())}")
+  // Phone speed capsule
+  let tp = player_tester(true, "E1.mp4", ["E1.mp4"], [], [])
+  tp.draw()
+  let hp0 = tp.get(Button, label="android-misc.drive.player.speed").rect.3
+  assert_eq(hp0, phone_key_side, msg="phone 1.0x speed height")
+  assert_eq(tp.fixed_outgrown(), [], msg="phone 1.0x fixed_outgrown")
+  assert_eq(tp.squeeze_faults(), [], msg="phone 1.0x squeeze_faults")
+  tp.set_font_scale(2.0)
+  tp.draw()
+  let hp2 = tp.get(Button, label="android-misc.drive.player.speed").rect.3
+  assert_true(hp2 >= phone_key_side, msg="phone 2.0x speed height: \{hp2}")
+  assert_eq(tp.fixed_outgrown(), [], msg="phone 2.0x fixed_outgrown")
+  assert_eq(tp.squeeze_faults(), [], msg="phone 2.0x squeeze_faults")
+  tp.set_font_scale(3.0)
+  tp.draw()
+  let hp3 = tp.get(Button, label="android-misc.drive.player.speed").rect.3
+  assert_true(hp3 > phone_key_side, msg="phone 3.0x speed height grew: \{hp3}")
+  assert_eq(tp.fixed_outgrown().filter(fn(f) { f.contains("1×") }), [], msg="phone 3.0x speed fixed_outgrown")
+  assert_eq(tp.squeeze_faults().filter(fn(f) { f.contains("1×") }), [], msg="phone 3.0x speed squeeze_faults")
 }

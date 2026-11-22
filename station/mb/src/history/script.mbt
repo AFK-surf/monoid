@@ -3,31 +3,14 @@
 // TypeScript (after the Rust) reads them, its quirks kept.
 
 ///|
-fn in_ranges(ranges : FixedArray[Int], c : Int) -> Bool {
-  let mut lo = 0
-  let mut hi = ranges.length() / 2
-  while lo < hi {
-    let mid = (lo + hi) / 2
-    if c < ranges[mid * 2] {
-      hi = mid
-    } else if c > ranges[mid * 2 + 1] {
-      lo = mid + 1
-    } else {
-      return true
-    }
-  }
-  false
-}
-
-///|
 fn is_alphabetic(c : Int) -> Bool {
-  in_ranges(alphabetic_ranges, c)
+  @jscase.in_ranges(alphabetic_ranges, c)
 }
 
 ///|
 /// [\p{Alphabetic}\p{N}] (read/machine.ts `injected` tests the same).
 pub fn is_alphanumeric(c : Int) -> Bool {
-  in_ranges(alphanumeric_ranges, c)
+  @jscase.in_ranges(alphanumeric_ranges, c)
 }
 
 ///|
@@ -193,15 +176,7 @@ fn hex_value(h : String) -> Int? {
   }
   let mut v = 0
   for c in body {
-    let d = if c >= '0' && c <= '9' {
-      c.to_int() - '0'.to_int()
-    } else if c >= 'a' && c <= 'f' {
-      c.to_int() - 'a'.to_int() + 10
-    } else if c >= 'A' && c <= 'F' {
-      c.to_int() - 'A'.to_int() + 10
-    } else {
-      return None
-    }
+    guard @codec.hex_digit(c.to_int()) is Some(d) else { return None }
     v = v * 16 + d
   }
   Some(v)
@@ -301,12 +276,11 @@ fn read_literal(src : Array[String], from : Int) -> (@jsjson.JValue, Int)? {
     guard at(src, i) is Some(c) else { return None }
     if c == "{" {
       i += 1
-      let fields : Array[(Array[Int], @jsjson.JValue)] = []
+      let fields : Array[(String, @jsjson.JValue)] = []
       let put = (key : String, v : @jsjson.JValue) => {
-        let units = @jsjson.units(key)
-        match fields.search_by(f => f.0 == units) {
-          Some(p) => fields[p] = (units, v)
-          None => fields.push((units, v))
+        match fields.search_by(f => f.0 == key) {
+          Some(p) => fields[p] = (key, v)
+          None => fields.push((key, v))
         }
       }
       while true {
@@ -370,7 +344,7 @@ fn read_literal(src : Array[String], from : Int) -> (@jsjson.JValue, Int)? {
       None
     } else if c == "\"" || c == "'" || c == "`" {
       match string() {
-        Some(s) => Some(Str(@jsjson.units(s)))
+        Some(s) => Some(Str(s))
         None => None
       }
     } else {

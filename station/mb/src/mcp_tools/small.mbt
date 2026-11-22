@@ -44,8 +44,10 @@ pub fn job_tools(
       let given = trim_js(text(args.get("cwd")))
       let cwd = if given == "" {
         home
+      } else if c.consts.os == "windows" {
+        @ops_platform.win_join(home, given)
       } else {
-        said_text(b.ask("ops/paths.joinPath", [js(home), js(given)]))
+        @ops_platform.unix_join(home, given)
       }
       let mut port : JV = Null
       if !absent(args.get("port")) && !(args.get("port") is Some(Null)) {

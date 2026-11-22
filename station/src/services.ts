@@ -18,7 +18,7 @@ import { type ControlPlaneShape, makeControlPlane } from "./cloud/plane.ts";
 import type { Provider } from "./cloud/provider.ts";
 import { type Mesh, loadMesh, withRelays } from "./mesh/native.ts";
 import { withFront } from "./mesh/front.ts";
-import { verifyWith } from "./cloud/lock.ts";
+import { verifyWith } from "../../shared/lock.ts";
 import { Readers as ReaderPool } from "./read/pool.ts";
 import { repairMergedEditLookup } from "./store/schema.ts";
 import { makeStore } from "./read/store.ts";
@@ -31,6 +31,7 @@ import { Desktop } from "./screens/desktop.ts";
 import { Simulators } from "./screens/simulator.ts";
 import { WindowsDesktop, screenBinary } from "./screens/win-desktop.ts";
 import { LinuxDesktop } from "./screens/linux-desktop.ts";
+import { linuxScreenBinary } from "./screens/linux-native.ts";
 import { uiBinary } from "./screens/ui.ts";
 import { type Drive, droppedInto, stationDrive } from "./drive/drive.ts";
 import { stationVersion } from "./ops/version.ts";
@@ -71,7 +72,7 @@ export class ControlPlane extends Context.Service<ControlPlane, ControlPlaneShap
     return Layer.effect(
       ControlPlane,
       Effect.gen(function* () {
-        const { data } = yield* Paths;
+        const { data, app } = yield* Paths;
         const key = yield* Key;
         const up = yield* Up;
         const clock = yield* Clock.clockWith(Effect.succeed);
@@ -83,7 +84,9 @@ export class ControlPlane extends Context.Service<ControlPlane, ControlPlaneShap
             (unlisten) => Effect.sync(unlisten),
           ),
         );
-        return ControlPlane.of(makeControlPlane({ state, changes, key, up, provider }));
+        // (the platform's, not process.platform: test/platform.test.ts)
+        const traceResource: [string, string][] = [["service.version", stationVersion(app) ?? ""], ["os.type", platform.buildOs ?? platform.os], ["host.arch", process.arch], ["process.runtime.name", "nodejs"]];
+        return ControlPlane.of(makeControlPlane({ state, changes, key, up, provider, traceResource }));
       }),
     );
   }
@@ -217,7 +220,7 @@ export class ScreenRegistry extends Context.Service<ScreenRegistry, ScreenHub>()
         platform.desktopScreen === "screen"
           ? new WindowsDesktop({ binary: screenBinary(), ui: uiBinary(), changed: () => hub.changed(), title })
           : platform.desktopScreen === "x11"
-          ? new LinuxDesktop({ data, changed: () => hub.changed(), title })
+          ? new LinuxDesktop({ data, changed: () => hub.changed(), title, nativeBinary: linuxScreenBinary() })
           : new Desktop({ supported: platform.desktopScreen === "helper", helper, grants: yield* Grants, changed: () => hub.changed(), title });
       // Back after it ended by itself: the desktop asks again for a grant still missing.
       if (desktop instanceof Desktop) helper?.onBack(() => void desktop.helperBack());

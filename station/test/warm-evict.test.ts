@@ -42,8 +42,8 @@ function rig(o: Setup) {
   return { time, r: new Rig({ ...o, clock: time.clock }) };
 }
 
-test("handed over every 12 minutes, idle processes beyond the warm limit still end once idle past warmMs", async () => {
-  const { time, r } = rig({ maxWarmClaude: 1, warmMinutes: 30 });
+test("handed over every 12 minutes, idle processes within the warm limit still end once idle past warmMs", async () => {
+  const { time, r } = rig({ maxWarmClaude: 2, warmMinutes: 30 });
   await idleSession(r);
   await time.adjust(5);
   await idleSession(r);
@@ -54,35 +54,38 @@ test("handed over every 12 minutes, idle processes beyond the warm limit still e
     claude = await updated(r);
     assert.ok(claude.sessions.every((s) => !s.disposed), `idle ${12 * (i + 1)} minutes: within warmMs`);
   }
-  // 30 minutes idle in all, 6 after the last handover: the oldest is let go then, the other stays warm.
+  // 30 minutes idle in all, 6 after the last handover: the oldest is let go then, the other is 5ms shy of warmMs.
   await time.adjust(6 * MIN - 5);
   await settle();
   const by = (id: string) => claude.sessions.find((s) => s.sessionId === id)!;
-  assert.ok(by(oldest!).disposed, "the oldest idle one, past warmMs and beyond the limit, ended at its deadline");
-  assert.ok(!by(newer!).disposed, "within the limit: kept warm");
+  assert.ok(by(oldest!).disposed, "the oldest idle one, past warmMs, ended at its deadline");
+  assert.ok(!by(newer!).disposed, "5ms shy of warmMs: still warm");
+  await time.adjust(5);
+  await settle();
+  assert.ok(by(newer!).disposed, "the newer idle one ended once it reached warmMs too");
   await r.close();
 });
 
-test("taken up beyond the warm limit, idle processes already past warmMs end at once", async () => {
+test("taken up beyond the warm limit, excess idle processes end at once without waiting for warmMs", async () => {
   const { time, r } = rig({ maxWarmClaude: 2, warmMinutes: 30 });
   await idleSession(r);
   await time.adjust(5);
   await idleSession(r);
   const [oldest, newer] = r.claude.sessions.map((s) => s.sessionId);
-  await time.adjust(36 * MIN);
+  await time.adjust(10 * MIN);
   await settle();
-  assert.ok(r.claude.sessions.every((s) => !s.disposed), "within the limit of two");
+  assert.ok(r.claude.sessions.every((s) => !s.disposed), "within the limit of two and under warmMs");
   // The next station keeps one warm: the one idle longest is let go as it is taken up.
   r.edit((raw) => void (raw.maxWarmClaude = 1));
   const claude = await updated(r);
   const by = (id: string) => claude.sessions.find((s) => s.sessionId === id)!;
-  assert.ok(by(oldest!).disposed, "beyond the limit and idle 36 minutes: ended as it is taken up");
+  assert.ok(by(oldest!).disposed, "beyond the limit: ended as it is taken up without waiting for warmMs");
   assert.ok(!by(newer!).disposed);
   await r.close();
 });
 
 test("taken up, an idle process is let go at its own deadline, counted from when it went idle", async () => {
-  const { time, r } = rig({ maxWarmClaude: 0, warmMinutes: 30 });
+  const { time, r } = rig({ maxWarmClaude: 1, warmMinutes: 30 });
   await idleSession(r);
   await time.adjust(20 * MIN);
   const claude = await updated(r);
@@ -97,7 +100,7 @@ test("taken up, an idle process is let go at its own deadline, counted from when
 });
 
 test("taken up after a crash with no snapshot, an idle runner keeps the time since its session was last active", async () => {
-  const { time, r } = rig({ maxWarmClaude: 0, warmMinutes: 30 });
+  const { time, r } = rig({ maxWarmClaude: 1, warmMinutes: 30 });
   const key = await idleSession(r);
   const old = r.claude.last();
   await time.adjust(20 * MIN);
@@ -114,6 +117,32 @@ test("taken up after a crash with no snapshot, an idle runner keeps the time sin
   await time.adjust(10 * MIN);
   await settle();
   assert.ok(claude.last().disposed, "idle since it was last active, 30 minutes ago: ended");
+  await r.close();
+});
+
+test("maxWarmClaude is a hard cap: 10 idle sessions immediately evict the 6 oldest, and remaining 4 evict at warmMs", async () => {
+  const { time, r } = rig({ maxWarmClaude: 4, warmMinutes: 30 });
+  for (let i = 0; i < 10; i++) {
+    await idleSession(r);
+    await time.adjust(1);
+  }
+  // Only 10ms elapsed (well under 30 min), yet the 6 oldest must already be evicted.
+  assert.deepEqual(
+    r.claude.sessions.map((s) => s.disposed),
+    [true, true, true, true, true, true, false, false, false, false],
+    "oldest 6 evicted immediately, newest 4 kept warm",
+  );
+  // After 30 minutes idle, the remaining 4 are evicted too.
+  await time.adjust(30 * MIN);
+  await settle();
+  assert.ok(r.claude.sessions.every((s) => s.disposed), "all remaining warm processes evicted once past warmMs");
+  await r.close();
+});
+
+test("maxWarmClaude: 0 evicts idle processes immediately without waiting for warmMs", async () => {
+  const { r } = rig({ maxWarmClaude: 0, warmMinutes: 30 });
+  await idleSession(r);
+  assert.ok(r.claude.last().disposed, "evicted immediately when maxWarmClaude is 0");
   await r.close();
 });
 

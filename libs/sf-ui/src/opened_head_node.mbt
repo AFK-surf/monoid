@@ -48,7 +48,7 @@ pub fn opened_head_node(
           fn() { false },
           fn(_) { 1.0 },
           top,
-          fn() { p.window().0 },
+          fn() { p.window_w() },
           ink,
           fn(row, corner) {
             match paste {

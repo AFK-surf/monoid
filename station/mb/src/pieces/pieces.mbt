@@ -72,31 +72,20 @@ pub fn Pieces::rest(self : Pieces) -> Bytes? {
 /// `bytes` then `tail` written to `out` as base64 (padded), as the bytes it is sent as: what a runner is given to write
 /// (a prompt of MBs) not put together again as a string first.
 pub fn base64_into(out : @buffer.Buffer, bytes : Bytes, tail : Bytes) -> Unit {
-  let table = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-  let n = bytes.length()
-  let total = n + tail.length()
-  let at = (i : Int) => (if i < n { bytes[i] } else { tail[i - n] }).to_int()
+  // (`bytes` a whole number of 3s at a time, 48 KiB each, so no piece's base64 has padding; what is left of it with
+  // `tail` last)
+  let put = (text : String) => for c in text {
+    out.write_byte(c.to_int().to_byte())
+  }
+  let whole = bytes.length() / 3 * 3
   let mut i = 0
-  while i + 3 <= total {
-    let v = (at(i) << 16) | (at(i + 1) << 8) | at(i + 2)
-    out.write_byte(table[(v >> 18) & 63])
-    out.write_byte(table[(v >> 12) & 63])
-    out.write_byte(table[(v >> 6) & 63])
-    out.write_byte(table[v & 63])
-    i += 3
+  while i < whole {
+    let end = if whole - i < 49152 { whole } else { i + 49152 }
+    put(@codec.base64_encode(bytes[i:end]))
+    i = end
   }
-  let left = total - i
-  if left == 1 {
-    let v = at(i) << 16
-    out.write_byte(table[(v >> 18) & 63])
-    out.write_byte(table[(v >> 12) & 63])
-    out.write_byte(b'=')
-    out.write_byte(b'=')
-  } else if left == 2 {
-    let v = (at(i) << 16) | (at(i + 1) << 8)
-    out.write_byte(table[(v >> 18) & 63])
-    out.write_byte(table[(v >> 12) & 63])
-    out.write_byte(table[(v >> 6) & 63])
-    out.write_byte(b'=')
-  }
+  let rest = Buffer(capacity=bytes.length() - whole + tail.length())
+  rest.write_bytesview(bytes[whole:])
+  rest.write_bytes(tail)
+  put(@codec.base64_encode(rest.to_bytes()))
 }

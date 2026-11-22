@@ -20,12 +20,21 @@ const NVIDIA_KEEP_MS = 10_000;
 const MAC_DISPLAYS_KEEP_MS = 60_000;
 const WINDOWS_AMD = "(Get-CimInstance -ClassName Win32_VideoController | Where-Object { $_.PNPDeviceID -like 'PCI\\VEN_1002*' } | Select-Object Name,PNPDeviceID) | ConvertTo-Json -Compress";
 
-const run: Run = (file, args, ms) =>
+/// A Run on `exec` (execFile but in tests). Spawning can throw before execFile returns (Windows' `spawn UNKNOWN`):
+/// that is a failed command like any other, never a rejection nobody waits for.
+export const runOn = (exec: typeof execFile): Run => (file, args, ms) =>
   new Promise((resolve) => {
-    execFile(file, args, { timeout: ms, killSignal: "SIGKILL", maxBuffer: 1 << 20 }, (error, stdout) =>
-      resolve(error ? ((error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null) : String(stdout)),
-    );
+    const failed = (error: unknown) => resolve((error as NodeJS.ErrnoException | null)?.code === "ENOENT" ? undefined : null);
+    try {
+      exec(file, args, { timeout: ms, killSignal: "SIGKILL", maxBuffer: 1 << 20 }, (error, stdout) =>
+        error ? failed(error) : resolve(String(stdout)),
+      );
+    } catch (error) {
+      failed(error);
+    }
   });
+
+const run: Run = runOn(execFile);
 
 /// Apple Silicon's GPU from `ioreg -rc AGXAccelerator -d1`, including its device utilization where reported.
 export function appleGpu(ioreg: string): Gpu | null {
@@ -184,6 +193,7 @@ export class Gpus {
       if (this.asking === null && (this.nvidia === null || this.now() - this.nvidia.at >= NVIDIA_KEEP_MS)) {
         const at = this.now();
         this.asking = this.run("nvidia-smi", ["--query-gpu=name,memory.total,memory.used,utilization.gpu", "--format=csv,noheader,nounits"], GPU_WAIT_MS)
+          .catch(() => null)
           .then((out) => {
             if (out === undefined) this.absent = true;
             const found = typeof out === "string" ? nvidiaGpus(out) : [];

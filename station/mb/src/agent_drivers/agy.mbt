@@ -13,7 +13,7 @@ let agy_scrubbed : Array[String] = [
 
 ///|
 /// The thinking levels Antigravity's models append to a family's name (`AGY_LEVELS`).
-let agy_levels : Array[String] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+let agy_levels : Array[String] = @agent_runtimes.agy_levels
 
 ///|
 /// The waits before a process that offered no models is opened again (`AGY_CATALOG_RETRY_MS`).
@@ -26,6 +26,14 @@ let agy_lent_renew_ms = 2400000.0
 ///|
 /// What `agy` needs left of a sign-in to start on it (`AGY_LENT_LEAST_MS`).
 let agy_lent_least_ms = 600000.0
+
+///|
+/// Margin before a borrowed sign-in's expiry within which an auth failure is taken as it running out (`AGY_LENT_EXPIRE_MARGIN_MS`).
+let agy_lent_expire_margin_ms = 300000.0
+
+///|
+/// Minimum time a process must have been open on its borrowed sign-in before another mid-turn expiry reopens it (`AGY_LENT_MIN_RUN_MS`).
+let agy_lent_min_run_ms = 300000.0
 
 ///|
 /// Where the station keeps its sessions' transcripts (`SESSIONS`).
@@ -181,24 +189,34 @@ pub fn agy_company(text : String) -> Bool {
 
 ///|
 /// The plan a Google account is on, from its tier (`agyPlan`).
-pub fn agy_plan(tier : String?, company? : Bool = false) -> String? {
+pub fn agy_plan(tier : JValue?, company? : Bool = false) -> String? {
+  agy_plan_fields(str_at(tier, "id"), str_at(tier, "name"), company)
+}
+
+///|
+fn agy_plan_fields(tier : String?, name : String?, company : Bool) -> String? {
   let id = match tier {
     Some(t) => @jscase.lower(@jscase.trim(t))
     None => ""
   }
   let known = [
-    ("g1-ultra-tier", "Ultra"),
-    ("g1-pro-tier", "Pro"),
     ("free-tier", "Free"),
-    ("gcp-ge-ultra-tier", "Enterprise Ultra"),
-    ("gcp-ge-plus-tier", "Enterprise Plus"),
+    ("g1-plus-tier", "Plus"),
+    ("g1-pro-tier", "Pro"),
+    ("g1-ultra-lite-tier", "Ultra 5x"),
+    ("g1-ultra-tier", "Ultra 20x"),
     ("gcp-ge-standard-tier", "Enterprise"),
-    ("gcp-standard-tier", "Enterprise"),
+    ("gcp-ge-plus-tier", "Enterprise Plus"),
+    ("gcp-ge-ultra-tier", "Enterprise Ultra"),
   ]
   for k in known {
     if k.0 == id {
       return Some(k.1)
     }
+  }
+  let label = name.map(@jscase.trim).unwrap_or("")
+  if label != "" && @jscase.lower(label) != "unknown" {
+    return Some(label)
   }
   if id.has_prefix("gcp-") || company {
     Some("Enterprise")
@@ -211,7 +229,12 @@ pub fn agy_plan(tier : String?, company? : Bool = false) -> String? {
 /// The plan of a profile's sign-in as its file says it (`agyPlanIn`).
 pub fn agy_plan_in(text : String, enterprise? : Bool = false) -> String? {
   match parse_json(text) {
-    Some(j) => agy_plan(str_at(Some(j), "user_tier"), company=enterprise || agy_company(text))
+    Some(j) =>
+      agy_plan_fields(
+        str_at(Some(j), "user_tier"),
+        str_at(Some(j), "tier_display_name"),
+        enterprise || company_method(get(Some(j), "auth_method")),
+      )
     None => if enterprise { Some("Enterprise") } else { None }
   }
 }
@@ -220,125 +243,13 @@ pub fn agy_plan_in(text : String, enterprise? : Bool = false) -> String? {
 /// `Date.parse` of an ISO time (a date, a time to the second with its fraction, `Z` or an offset), none otherwise; a
 /// time with no zone read as UTC.
 pub fn date_parse(text : String) -> Double? {
-  let u = @jsjson.units(text)
-  let at = Ref(0)
-  let digits = (count : Int) => {
-    if at.val + count > u.length() {
-      return None
-    }
-    let mut v = 0
-    for k in 0..<count {
-      let c = u[at.val + k]
-      if c < 0x30 || c > 0x39 {
-        return None
-      }
-      v = v * 10 + (c - 0x30)
-    }
-    at.val += count
-    Some(v)
-  }
-  let sign = if at.val < u.length() && (u[0] == 0x2b || u[0] == 0x2d) {
-    let s = if u[0] == 0x2d { -1 } else { 1 }
-    at.val = 1
-    Some(s)
-  } else {
-    None
-  }
-  let year = match sign {
-    Some(sg) => digits(6).map(y => y * sg)
-    None => digits(4)
-  }
-  guard year is Some(year) else { return None }
-  let peek = (c : Int) => at.val < u.length() && u[at.val] == c
-  let mut month = 1
-  let mut day = 1
-  if peek(0x2d) {
-    at.val += 1
-    guard digits(2) is Some(mo) else { return None }
-    month = mo
-    if peek(0x2d) {
-      at.val += 1
-      guard digits(2) is Some(dd) else { return None }
-      day = dd
-    }
-  }
-  let mut hour = 0
-  let mut minute = 0
-  let mut second = 0
-  let mut millis = 0.0
-  let mut offset = 0
-  if peek(0x54) || peek(0x74) {
-    at.val += 1
-    guard digits(2) is Some(h) else { return None }
-    guard peek(0x3a) else { return None }
-    at.val += 1
-    guard digits(2) is Some(mi) else { return None }
-    hour = h
-    minute = mi
-    if peek(0x3a) {
-      at.val += 1
-      guard digits(2) is Some(se) else { return None }
-      second = se
-      if peek(0x2e) || peek(0x2c) {
-        at.val += 1
-        let start = at.val
-        let mut frac = 0.0
-        let mut scale = 100.0
-        while at.val < u.length() && u[at.val] >= 0x30 && u[at.val] <= 0x39 {
-          if scale >= 1.0 {
-            frac += (u[at.val] - 0x30).to_double() * scale
-          }
-          scale /= 10.0
-          at.val += 1
-        }
-        if at.val == start {
-          return None
-        }
-        millis = frac.floor()
-      }
-    }
-    if peek(0x5a) || peek(0x7a) {
-      at.val += 1
-    } else if peek(0x2b) || peek(0x2d) {
-      let sg = if u[at.val] == 0x2d { -1 } else { 1 }
-      at.val += 1
-      guard digits(2) is Some(oh) else { return None }
-      if peek(0x3a) {
-        at.val += 1
-      }
-      guard digits(2) is Some(om) else { return None }
-      offset = sg * (oh * 60 + om)
-    }
-  } else if peek(0x5a) {
-    at.val += 1
-  }
-  if at.val != u.length() {
-    return None
-  }
-  if month < 1 || month > 12 || day < 1 || day > 31 || hour > 24 || minute > 59 || second > 59 {
-    return None
-  }
-  if hour == 24 && (minute != 0 || second != 0 || millis != 0.0) {
-    return None
-  }
-  let days = days_from_civil(year, month, day)
-  Some(
-    days.to_double() * 86400000.0 +
-    ((hour * 60 + minute - offset) * 60 + second).to_double() * 1000.0 +
-    millis,
-  )
+  @jsjson.js_parse_iso(text)
 }
 
 ///|
 /// Days since 1970-01-01 of a date of the proleptic Gregorian calendar.
 pub fn days_from_civil(y0 : Int, m : Int, d : Int) -> Int {
-  let y = if m <= 2 { y0 - 1 } else { y0 }
-  let era = (if y >= 0 { y } else { y - 399 }) / 400
-  let yoe = y - era * 400
-  let mp = if m > 2 { m - 3 } else { m + 9 }
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  era * 146097 + doe - 719468
+  @time.days_from_civil(y0, m, d).to_int()
 }
 
 ///|
@@ -388,7 +299,7 @@ pub fn agy_classify_failure(text : String) -> String {
     text,
     auth=[
       "authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant",
-      "unauthenticated", "token expired",
+      "unauthenticated", "token expired", "verification required",
     ],
     limit=["resource_exhausted", "quota"],
   )
@@ -397,28 +308,17 @@ pub fn agy_classify_failure(text : String) -> String {
 ///|
 /// A failure Antigravity CLI tells only in words (`noticeFailure`): the reading's (mb/src/acp `notice_failure`).
 pub fn agy_notice_failure(said : String) -> String? {
-  @acp.notice_failure(@jsjson.units(said))
+  @acp.notice_failure(said)
 }
 
 ///|
 /// A raw ACP `modelId` split into its base model and thinking level (`agyBaseModel`).
-pub fn agy_base_model(id : String) -> (String, String?) {
-  let trimmed = @jscase.trim(id)
-  for l in agy_levels {
-    if trimmed.has_suffix("-\{l}") && trimmed.length() > l.length() + 1 {
-      return (trimmed.substring(end=trimmed.length() - l.length() - 1), Some(l))
-    }
-  }
-  (trimmed, None)
-}
+pub using @agent_runtimes {agy_base_model}
 
 ///|
-/// The tier session/new or session/load said the account is on (`agyTierIn`).
-pub fn agy_tier_in(result : JValue?) -> String? {
-  match str_at(get(get(get(result, "_meta"), "antigravity"), "tier"), "id") {
-    Some(id) if id != "" => Some(id)
-    _ => None
-  }
+/// The account's plan from session/new or session/load (`agySessionPlan`).
+fn agy_session_plan(result : JValue?) -> String? {
+  agy_plan(get(get(get(result, "_meta"), "antigravity"), "tier"))
 }
 
 ///|
@@ -597,10 +497,11 @@ pub struct AgySession {
   mut available_models : Array[String]
   mut current_model_id : String?
   mut default_model_id : String?
-  mut tier : String?
+  mut plan : String?
   mut context_used : Double
   mut context_size : Double
   mut sign_in_until : Double?
+  mut sign_in_opened_at : Double?
 }
 
 ///|
@@ -843,6 +744,10 @@ pub fn last_written(m : Machine, cli : String, id : String) -> Later[Double?] {
 }
 
 ///|
+/// How many conversations this process brought in (`agy_bring_in`): the names it copies beside under.
+let agy_bring_seq : Ref[Int] = { val: 0 }
+
+///|
 /// A conversation brought into a profile's CLI from another home of the station that kept it last (`agyBringIn`): the
 /// name of that home, none where nothing was brought.
 pub fn agy_bring_in(m : Machine, home : String, id : String) -> Later[String?] {
@@ -887,12 +792,16 @@ pub fn agy_bring_in(m : Machine, home : String, id : String) -> Later[String?] {
         let conv = m.join([here, "conversations"])
         let db = m.join([conv, "\{id}.db"])
         let from_wal = m.join([cli, "conversations", "\{id}.db-wal"])
+        // (names of its own beside, so that two bringing it at once, or one left by a failed one, are not each other's)
+        agy_bring_seq.val += 1
+        let db_bringing = "\{db}.\{agy_bring_seq.val}.bringing"
+        let wal_bringing = "\{db}-wal.\{agy_bring_seq.val}.bringing"
         m
         .make_dir(conv)
         .bind(_ => m.there(from_wal))
         .bind(has_wal => m
-          .copy(m.join([cli, "conversations", "\{id}.db"]), "\{db}.bringing")
-          .bind(_ => if has_wal { m.copy(from_wal, "\{db}-wal.bringing") } else { done(lp) })
+          .copy(m.join([cli, "conversations", "\{id}.db"]), db_bringing)
+          .bind(_ => if has_wal { m.copy(from_wal, wal_bringing) } else { done(lp) })
           .bind(_ => {
             let parts = [("annotations", "\{id}.pbtxt"), ("brain", id)]
             each_in_turn(lp, parts.length(), k => {
@@ -911,8 +820,8 @@ pub fn agy_bring_in(m : Machine, home : String, id : String) -> Later[String?] {
           })
           .bind(_ => m.remove_tree("\{db}-wal"))
           .bind(_ => m.remove_tree("\{db}-shm"))
-          .bind(_ => m.rename("\{db}.bringing", db))
-          .bind(_ => if has_wal { m.rename("\{db}-wal.bringing", "\{db}-wal") } else { done(lp) })
+          .bind(_ => m.rename(db_bringing, db))
+          .bind(_ => if has_wal { m.rename(wal_bringing, "\{db}-wal") } else { done(lp) })
           .map(_ => {
             m.log(
               "info",
@@ -1149,10 +1058,11 @@ pub fn AgyDriver::session(self : AgyDriver, options : JValue, events : (JValue) 
     available_models: [],
     current_model_id: None,
     default_model_id: None,
-    tier: None,
+    plan: None,
     context_used: 0.0,
     context_size: 0.0,
     sign_in_until: None,
+    sign_in_opened_at: None,
   }
   acp.acp = {
     updated: (update, _) => session.updated(update),
@@ -1170,9 +1080,9 @@ pub fn AgyDriver::session(self : AgyDriver, options : JValue, events : (JValue) 
 ///|
 pub fn AgySession::opened(self : AgySession, result : JValue?) -> Unit {
   self.available_models = agy_models(result)
-  self.tier = match agy_tier_in(result) {
-    Some(t) => Some(t)
-    None => self.tier
+  self.plan = match agy_session_plan(result) {
+    Some(p) => Some(p)
+    None => self.plan
   }
   match str_at(get(result, "models"), "currentModelId") {
     Some(current) if current != "" => {
@@ -1198,6 +1108,13 @@ pub fn AgySession::kept(self : AgySession) -> Array[(String, JValue)] {
         None => Null
       },
     ),
+    (
+      "signInOpenedAt",
+      match self.sign_in_opened_at {
+        Some(x) => d(x)
+        None => Null
+      },
+    ),
   ]
 }
 
@@ -1218,6 +1135,7 @@ pub fn AgySession::taken(self : AgySession, snapshot : JValue) -> Unit {
     _ => ()
   }
   self.sign_in_until = num_at(sn, "signInUntil")
+  self.sign_in_opened_at = num_at(sn, "signInOpenedAt")
 }
 
 ///|
@@ -1233,8 +1151,20 @@ pub fn AgySession::outlived(self : AgySession) -> Bool {
 /// Its borrowed sign-in has run out under the turn (`signInExpired`).
 pub fn AgySession::sign_in_expired(self : AgySession) -> Bool {
   match self.sign_in_until {
-    Some(until) => until - self.driver.m().now() <= 60000.0
+    Some(until) => until - self.driver.m().now() <= agy_lent_expire_margin_ms
     None => false
+  }
+}
+
+///|
+/// Its known borrowed sign-in ran at least AGY_LENT_MIN_RUN_MS and reached expiry (`lentExpired`).
+pub fn AgySession::lent_expired(self : AgySession) -> Bool {
+  match (self.sign_in_until, self.sign_in_opened_at) {
+    (Some(until), Some(opened_at)) if until > 0.0 => {
+      let now = self.driver.m().now()
+      until - now <= agy_lent_expire_margin_ms && now - opened_at >= agy_lent_min_run_ms
+    }
+    _ => false
   }
 }
 
@@ -1373,31 +1303,51 @@ pub fn AgyDriver::starting(self : AgyDriver, options : JValue) -> Later[AcpStart
 }
 
 ///|
-/// One opening, opened again after a wait while its process offers no models (`begin`).
+/// One opening, opened again after a wait while its process offers no models (`begin`). Given up (`cancelled`: timed
+/// out, stopped, suspended, closed), it opens nothing again and starts no process.
 pub fn AgyDriver::begin(
   self : AgyDriver,
   options : JValue,
   events : (JValue) -> Unit,
   probe : Bool,
+  cancelled? : () -> Bool = () => false,
 ) -> Later[AgySession] {
   let m = self.m()
-  fn attempt(i : Int) -> Later[AgySession] {
-    self
-    .begin_once(options, events, probe)
-    .recover(e => {
+  agy_opened_again(m.lp, () => self.begin_once(options, events, probe, cancelled~), self.world.sleep, cancelled, (i, wait) => m.log(
+    "warn",
+    "agents::agy",
+    "its process offered no models (its network not up?); opened again after a wait",
+    obj([("key", get(Some(options), "key").unwrap_or(Null)), ("attempt", n(i + 1)), ("waitMs", d(wait))]),
+  ))
+}
+
+///|
+/// `begin`'s openings (`once`): one whose process offered no models opened again after each of
+/// `agy_catalog_retry_ms` (`sleep`, `waiting` told first), none once `cancelled`, whose failure is "open aborted".
+fn[T] agy_opened_again(
+  lp : Loop,
+  once : () -> Later[T],
+  sleep : (Double) -> Later[Unit],
+  cancelled : () -> Bool,
+  waiting : (Int, Double) -> Unit,
+) -> Later[T] {
+  fn attempt(i : Int) -> Later[T] {
+    if cancelled() {
+      return Later::fail(lp, Failed("open aborted"))
+    }
+    once().recover(e => {
+      if cancelled() {
+        return Later::fail(lp, Failed("open aborted"))
+      }
       guard e is Failed(msg) &&
         msg == "Antigravity CLI could not load its model catalog: connection failed" &&
         i < agy_catalog_retry_ms.length() else {
-        return Later::fail(m.lp, e)
+        return Later::fail(lp, e)
       }
       let wait = agy_catalog_retry_ms[i]
-      m.log(
-        "warn",
-        "agents::agy",
-        "its process offered no models (its network not up?); opened again after a wait",
-        obj([("key", get(Some(options), "key").unwrap_or(Null)), ("attempt", n(i + 1)), ("waitMs", d(wait))]),
-      )
-      (self.world.sleep)(wait).bind(_ => attempt(i + 1))
+      waiting(i, wait)
+      // (given up during its wait: `attempt` refuses at once, nothing opened again)
+      sleep(wait).bind(_ => attempt(i + 1))
     })
   }
 
@@ -1410,6 +1360,7 @@ pub fn AgyDriver::begin_once(
   options : JValue,
   events : (JValue) -> Unit,
   probe : Bool,
+  cancelled? : () -> Bool = () => false,
 ) -> Later[AgySession] {
   let m = self.m()
   let lp = m.lp
@@ -1441,8 +1392,17 @@ pub fn AgyDriver::begin_once(
     } else {
       done(lp)
     }
-    prepared.bind(_ => self.acp_begin(options, events, probe)).map(session => {
+    prepared
+    .bind(_ => {
+      // (given up while it was made ready: no process started)
+      if cancelled() {
+        return Later::fail(lp, Failed("open aborted"))
+      }
+      self.acp_begin(options, events, probe, cancelled~)
+    })
+    .map(session => {
       session.sign_in_until = until
+      session.sign_in_opened_at = if borrowed { Some(m.now()) } else { None }
       session
     })
   })
@@ -1455,13 +1415,21 @@ pub fn AgyDriver::acp_begin(
   options : JValue,
   events : (JValue) -> Unit,
   probe : Bool,
+  cancelled? : () -> Bool = () => false,
 ) -> Later[AgySession] {
   let m = self.m()
   let lp = m.lp
   let o = Some(options)
+  if cancelled() {
+    return Later::fail(lp, Failed("open aborted"))
+  }
   self
   .starting(options)
   .bind(start => {
+    // (given up while it was made ready: no process started)
+    if cancelled() {
+      return Later::fail(lp, Failed("open aborted"))
+    }
     let session = self.session(options, events)
     let own = session.acp.own
     own.tools_url = str_at(o, "mcpUrl")
@@ -1474,7 +1442,7 @@ pub fn AgyDriver::acp_begin(
       start.command,
       start.args,
       start.env,
-      own.hosted_options("agy \{key}", "acp", flavor="agy", kept=true),
+      session.acp.hosted_options("agy \{key}", "agy", kept=true),
     )
     .bind(_ => {
       let meta = match start.meta {
@@ -1535,7 +1503,7 @@ pub fn AgyDriver::acp_begin(
           }
         })
         .bind(opened => {
-          session.acp.opened(get(Some(opened), "result"))
+          session.acp.opened(get(Some(opened), "result"), resumed=str_at(o, "resume") is Some(_))
           self.ready(session, options, probe)
         })
         .bind(_ => match own.settled() {
@@ -1544,6 +1512,10 @@ pub fn AgyDriver::acp_begin(
         })
       work
       .map(_ => {
+        // (given up as it opened: ended below, never a session's)
+        if cancelled() {
+          raise Failed("open aborted")
+        }
         self.sessions.push(session)
         session
       })
@@ -1608,8 +1580,13 @@ pub fn AgyDriver::ready(self : AgyDriver, session : AgySession, options : JValue
 
 ///|
 /// Opens a session (`open`).
-pub fn AgyDriver::open(self : AgyDriver, options : JValue, events : (JValue) -> Unit) -> Later[AgySession] {
-  self.begin(options, events, false)
+pub fn AgyDriver::open(
+  self : AgyDriver,
+  options : JValue,
+  events : (JValue) -> Unit,
+  cancelled? : () -> Bool = () => false,
+) -> Later[AgySession] {
+  self.begin(options, events, false, cancelled~)
 }
 
 ///|
@@ -1629,8 +1606,8 @@ pub fn AgyDriver::catalog(self : AgyDriver, profile : JValue) -> Later[JValue] {
   .begin(options, _ => (), true)
   .bind(session => {
     let catalog = agy_catalog(session.available_models, session.current_model_id)
-    let out = match session.tier {
-      Some(t) => set(catalog, "tier", s(t))
+    let out = match session.plan {
+      Some(p) => set(catalog, "plan", s(p))
       None => catalog
     }
     session.acp.own.dispose().map(_ => out)
@@ -1706,8 +1683,12 @@ pub fn AgyDriver::adopt(
     let session = made.val.unwrap()
     if !self.borrowed(profile) {
       session.sign_in_until = None
+      session.sign_in_opened_at = None
     } else if session.sign_in_until is None {
       session.sign_in_until = Some(0.0)
+      session.sign_in_opened_at = None
+    } else if session.sign_in_opened_at is None && session.sign_in_until is Some(u) && u > 0.0 {
+      session.sign_in_opened_at = Some(u - 3600000.0)
     }
     let checked = if Some(session.acp.own.session_id) != id {
       self

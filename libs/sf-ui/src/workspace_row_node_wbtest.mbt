@@ -1,42 +1,40 @@
 // The workspaces' list's parts and a vendor's marks (workspace_row_node.mbt): a row pressed once a press, the one in
-// use's words on the same line as the others' on its card, a workspace's letter giving way to its mark, an
+// use checked where it stands, its words on the same line as the others', a workspace's letter giving way to its mark, an
 // invitation's 加入 and 忽略 each pressed alone and waiting while asked.
 
 ///|
-test "workspace rows: pressed once a press; the one on its card has its words on the others' line, checked" {
+test "workspace rows: pressed once a press; the one in use checked where it stands, its words on the others' line" {
   let pressed = Ref(0)
+  let in_use = @signals.signal("Acme")
   let tr = u5_case(fn(root) {
     root.box(fn(col) {
       col.width(Is(Some(360.0))) |> ignore
-      workspace_label_node(col, fn() { "当前" })
-      workspace_card_node(col, fn(card) {
+      for name in ["Acme", "Globex"] {
         workspace_row_node(
-          card,
-          fn() { "Acme" },
-          fn() { "me@acme.dev" },
-          fn() { pressed.val += 10 },
-          checked=true,
-          lead=fn(l) { workspace_mark_node(l, fn() { "" }, fn() { "" }, fn() { "Acme" }) },
-          on_card=true,
+          col,
+          fn() { name },
+          fn() { if name == "Acme" { "me@acme.dev" } else { "" } },
+          fn() {
+            pressed.val += 1
+            in_use.set(name)
+          },
+          checked=fn() { in_use.get() == name },
+          lead=fn(l) { workspace_mark_node(l, fn() { "" }, fn() { "" }, fn() { name }) },
         )
-      })
-      workspace_label_node(col, fn() { "其他" })
-      workspace_row_node(
-        col,
-        fn() { "Globex" },
-        fn() { "" },
-        fn() { pressed.val += 1 },
-        lead=fn(l) { workspace_mark_node(l, fn() { "" }, fn() { "" }, fn() { "Globex" }) },
-      )
+      }
       workspace_row_node(col, fn() { "新建 workspace" }, fn() { "" }, icon="plus", fn() { pressed.val += 100 })
     })
     |> ignore
   })
+  let ys = fn() { (tr.rect_of("Acme").map(fn(r) { r.1 }), tr.rect_of("Globex").map(fn(r) { r.1 })) }
+  let was = ys()
   tr.click(Button, label="Globex")
-  tr.draw()
+  tr.run_for(@ui.move_most_ms)
   assert_eq(pressed.val, 1)
+  // (the one in use another: each row where it was)
+  assert_eq(ys(), was)
   let x = fn(w : String) { tr.rect_of(w).map(fn(r) { r.0 }) }
-  // (the one in use's words where the others' are, on its card or not; an action's too)
+  // (the one in use's words where the others' are; an action's too)
   assert_eq(x("Acme"), x("Globex"))
   assert_eq(x("Acme"), x("新建 workspace"))
   assert_true(tr.rect_of("me@acme.dev") is Some(_))

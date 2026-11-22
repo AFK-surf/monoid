@@ -64,7 +64,7 @@ fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, (
         // `width`): moved with the pane as the sidebar closes beside it, its columns' words never wrapped anew on the
         // way, each frame's width another)
         let width = fn() {
-          let ww = b.window().0
+          let ww = b.window_w()
           match @sfbase.workspace_in_view(src).0 {
             Some(w) => board_width(src, w, ww)
             None => ww
@@ -134,7 +134,7 @@ fn board_pane_bar(parent : @view.View, src : Source, make : (@view.View) -> Unit
       .presses(Is(true))
       .moves_window(By(fn() { @ui.window_inset() }))
       |> ignore
-      bar_room_node(bar, ends.start)
+      bar_room_node(bar, fn() { (ends.start)(true) })
       bar.box(fn(inner) {
         // (as wide as the bar gives it, not as all it holds: what has not the room leaves, board_bar_items')
         inner.row(Is(true)).grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
@@ -175,22 +175,19 @@ fn board_listed_back() -> Unit {
 }
 
 ///|
-/// Chat `r` beside the board: on the page's paper, a line at its start, its bar over its page (the chat's page as the
-/// pane draws it, its old view as yet).
+/// Chat `r` beside the board: on the page's paper, its bar over its page (the chat's page as the pane draws it, its old
+/// view as yet). No line between it and the board: its paper sets it apart, and its edge's own line (sfpages'
+/// board_beside_edge) shows only under a pointer, focused or in hand, as the chat's side panel's (the user, 2026-10-26,
+/// #2012: 「这个分割线不对，去掉，搞坏了宽度调整的样式」; again 2026-11-17 of this one: 「这个分割线怎么又出现了」).
 fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, serial : Int) -> Unit {
   s.row(Is(true)).grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { @sf.theme().p.bg })) |> ignore
-  // (a line the whole height at its start, between it and the board)
-  s.box(fn(line) {
-    line.width(Is(Some(1.0))).shrink(Is(0.0)).ground(By(fn() { @sf.theme().p.line })) |> ignore
-  })
-  |> ignore
   // (its bar's end at the window's corner, as a chat's bar in the pane: pane_chat_bar_ends')
   let ends = pane_chat_bar_ends(src, s)
   s.box(fn(col) {
     col.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     col.box(fn(page) {
       page.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-      // (the chat's page as the pane draws it: made as nodes or its old view, as 试用新对话页 says now)
+      // (the chat's page as the pane draws it, made as nodes)
       board_beside_page(page, src, r, tips, serial)
     })
     |> ignore
@@ -215,7 +212,7 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
       bar.box(fn(t) {
         t.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
         @sf.words_node(t, fn() {
-          // (its head alone, as the bar of the chat's page made as nodes reads it: a word streamed into a message reads
+          // (its head alone, as the bar of the chat's page made as nodes reads it: a message patched in place reads
           // none of it again)
           match @sfbase.chat_view_now(src, r) {
             Some(v) => v.title
@@ -227,9 +224,9 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
       @sf.icon_button_node(bar, "expand", fn() { @sf.t("web-main.board.full") }, fn() {
         @sfbase.board_set(src, false)
         open_page(Chat(r))
-      }, tips~)
+      }, tips~, linked=ends.linked)
       |> ignore
-      @sf.icon_button_node(bar, "close", fn() { @sf.t("web-main.board.close") }, fn() { @sfbase.board_pick.set(None) }, tips~)
+      @sf.icon_button_node(bar, "close", fn() { @sf.t("web-main.board.close") }, fn() { @sfbase.board_pick.set(None) }, tips~, linked=ends.linked)
       |> ignore
     })
     |> ignore
@@ -315,7 +312,7 @@ fn board_back_to_chat(w : Workspace) -> Bool {
   guard board_kept_chat.get(w.id) is Some(p) else { return false }
   board_kept_chat.remove(w.id)
   if app.nav.pages()[0] != Home {
-    @sfbase.go_place("chats") |> ignore
+    @sfbase.go_place("chats", kept=true) |> ignore
   }
   @sfbase.history_push()
   app.nav.replace_above(1, [p])

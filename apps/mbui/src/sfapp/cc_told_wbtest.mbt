@@ -7,29 +7,44 @@
 fn cc_tester(calls? : Array[Made] = []) -> @ui.Tester {
   new_run()
   let base = fixture("chat")
+  let chat_json : Json = {
+    "title": "整理发布清单",
+    "thread": { "id": 7 },
+    "cc": [
+      { "thread": 21, "place": "#still-fail", "via": "slack", "on": false },
+      { "thread": 22, "place": "产品讨论", "via": "feishu", "on": false },
+    ],
+  }
   let src : Source = {
     ..base,
+    topic_read: fn(name, params) {
+      if name == "chat" || name == "chatHead" {
+        { value: Some(chat_json), error: None, version: 1 }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
     call: fn(name, params, done) {
       calls.push({ name, params, bytes: None, done })
       (base.call)(name, params, done)
     },
   }
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  @sf.set_words(fill)
   let t = @ui.Tester::new(
     fn(c) {
-      @sf.set_words(fill)
       let _ = @sf.begin(c)
-      let ws : Workspace = { id: "ws1", name: "Acme", emoji: "", icon: "", email: "" }
-      let v = chat_view_made({
-        "title": "整理发布清单",
-        "thread": { "id": 7 },
-        "cc": [
-          { "thread": 21, "place": "#still-fail", "via": "slack", "on": false },
-          { "thread": 22, "place": "产品讨论", "via": "feishu", "on": false },
-        ],
-      })
-      @sfpages.chat_composer(c, src, ws, r, Some(v))
       @sf.presented(c)
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+      let tips = @sf.TipLayer::new(fn() { Some(popup) })
+      root.box(fn(b) {
+        b.width(Is(Some(900.0))).height(Is(Some(500.0))) |> ignore
+        @sfpages.chat_composer_node(b, src, r, shows=fn() { true }, tips~)
+      })
+      |> ignore
     },
     w=900.0,
     h=500.0,

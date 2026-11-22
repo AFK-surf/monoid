@@ -13,163 +13,47 @@
 using @jsjson {type JValue}
 
 ///|
+using @live_wire {
+  jstr, obj, field, str, non_empty, is_str, has_prefix, or_else, pretty, joined, start, delta, end_event, live, failed,
+}
+
+///|
 type J = JValue
 
 ///|
-fn u(s : String) -> Array[Int] {
-  @jsjson.units(s)
-}
-
-///|
-fn jstr(s : String) -> J {
-  Str(u(s))
-}
-
-///|
-fn obj(fields : Array[(String, J)]) -> J {
-  Obj(fields.map(f => (u(f.0), f.1)))
-}
-
-///|
-/// `v?.name`.
-fn field(v : J?, name : String) -> J? {
-  match v {
-    Some(Obj(_) as o) => o.get(name)
-    _ => None
-  }
-}
-
-///|
-/// `str(v)`: the string it is.
-fn str(v : J?) -> Array[Int]? {
-  match v {
-    Some(Str(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-/// `nonEmpty(v)`.
-fn non_empty(v : J?) -> Array[Int]? {
-  match v {
-    Some(Str(s)) if s.length() > 0 => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn is_str(v : J?, s : String) -> Bool {
-  v is Some(Str(t)) && t == u(s)
-}
-
-///|
 /// `v === s`.
-fn is_text(v : J?, s : Array[Int]) -> Bool {
+fn is_text(v : J?, s : String) -> Bool {
   v is Some(Str(t)) && t == s
 }
 
 ///|
-fn has_prefix(s : Array[Int], p : Array[Int]) -> Bool {
-  s.length() >= p.length() && s[0:p.length()].to_owned() == p
-}
-
-///|
-/// `v ?? fallback`: none or null is the fallback.
-fn or_else(v : J?, fallback : J) -> J {
-  match v {
-    None | Some(Null) => fallback
-    Some(x) => x
-  }
-}
-
-///|
-/// live.ts `INPUT_MOST`.
-const INPUT_MOST : Int = 262144
-
-///|
-/// live.ts `pretty`: JSON.stringify(v ?? {}, null, 2).
-fn pretty(v : J?) -> Array[Int] {
-  u(@jsjson.stringify_pretty(or_else(v, Obj([]))))
-}
-
-///|
-fn joined(parts : Array[Array[Int]], sep : Array[Int]) -> Array[Int] {
-  let out = []
-  for i, p in parts {
-    if i > 0 {
-      out.append(sep)
-    }
-    out.append(p)
-  }
-  out
-}
-
-///|
-/// A step's start as live.ts `start` makes it: what is none left out.
-fn start(id : Array[Int], step : String, tool : Array[Int]?, input : Array[Int]?) -> J {
-  let fields : Array[(String, J)] = [("kind", jstr("start")), ("id", Str(id)), ("step", jstr(step))]
-  if tool is Some(t) {
-    fields.push(("tool", Str(t)))
-  }
-  if input is Some(i) {
-    fields.push(("input", Str(i)))
-  }
-  obj(fields)
-}
-
-///|
-fn delta(id : Array[Int], field_name : String, text : Array[Int]) -> J {
-  obj([("kind", jstr("delta")), ("id", Str(id)), ("field", jstr(field_name)), ("text", Str(text))])
-}
-
-///|
-fn end_event(id : Array[Int]) -> J {
-  obj([("kind", jstr("end")), ("id", Str(id))])
-}
-
-///|
-fn live(e : J) -> J {
-  obj([("type", jstr("live")), ("event", e)])
-}
-
-///|
-fn trimmed(s : Array[Int]) -> Array[Int] {
-  u(@jscase.trim(@jsjson.raw_text(s)))
+fn trimmed(s : String) -> String {
+  @jscase.trim(s)
 }
 
 ///|
 /// `{ ...v, name: value }`: a key there keeps its place.
 fn with_field(v : J, name : String, value : J) -> J {
-  guard v is Obj(entries) else { return v }
-  let key = u(name)
-  let out = entries.copy()
-  for i, e in out {
-    if e.0 == key {
-      out[i] = (key, value)
-      return Obj(out)
-    }
-  }
-  out.push((key, value))
-  Obj(out)
+  @jsjson.jval_set(v, name, value)
 }
 
 ///|
 /// acp.ts `acpText`: what a content block says (its text; anything else nothing).
-fn acp_text(content : J?) -> Array[Int] {
+fn acp_text(content : J?) -> String {
   if field(content, "text") is Some(Str(t)) {
     return t
   }
   if is_str(field(content, "type"), "content") {
     return acp_text(field(content, "content"))
   }
-  []
+  ""
 }
 
 ///|
 /// live.ts `acpCall`: Grok Build's `use_tool` named as the tool itself (mcp__<server>__<tool>), with its own input.
-pub fn acp_call(name : Array[Int], input : J) -> (Array[Int], J) {
-  if name == u("use_tool") && field(Some(input), "tool_name") is Some(Str(t)) {
-    return (u("mcp__") + t, or_else(field(Some(input), "tool_input"), Obj([])))
+pub fn acp_call(name : String, input : J) -> (String, J) {
+  if name == "use_tool" && field(Some(input), "tool_name") is Some(Str(t)) {
+    return ("mcp__" + t, or_else(field(Some(input), "tool_input"), Obj([])))
   }
   (name, input)
 }
@@ -177,14 +61,14 @@ pub fn acp_call(name : Array[Int], input : J) -> (Array[Int], J) {
 ///|
 /// live.ts `acpNamed`: a call an update starts, as the station names and gives it (Grok Build's name in its _meta,
 /// Devin's in its own, the others' in its title).
-pub fn acp_named(update : J?) -> (Array[Int], J) {
+pub fn acp_named(update : J?) -> (String, J) {
   let meta = field(update, "_meta")
   let name = match str(field(field(meta, "x.ai/tool"), "name")) {
     Some(n) => n
     None =>
       match str(field(meta, "cognition.ai/inferenceToolName")) {
         Some(n) => n
-        None => str(field(update, "title")).unwrap_or([])
+        None => str(field(update, "title")).unwrap_or("")
       }
   }
   acp_call(name, or_else(field(update, "rawInput"), Null))
@@ -199,7 +83,7 @@ pub fn plan_of(update : J?) -> J? {
     guard field(Some(e), "content") is Some(Str(text)) else { continue }
     let status = match field(Some(e), "status") {
       Some(Str(s)) => s
-      _ => u("pending")
+      _ => "pending"
     }
     items.push(obj([("text", Str(text)), ("status", Str(status))]))
   }
@@ -216,8 +100,8 @@ pub fn turn_step(update : J?) -> Bool {
 /// A session's live steps (live.ts `LiveFromAcp`): the steps started and not ended, in order; the step what is being
 /// said goes into, and how many were made; where the turn stands.
 pub(all) struct Live {
-  open : Array[Array[Int]]
-  mut said : Array[Int]?
+  open : Array[String]
+  mut said : String?
   mut n : Int
   mut phase : String?
 }
@@ -245,7 +129,7 @@ pub fn Live::of_state(state : J?) -> Live {
     live.n = n.to_int()
   }
   if field(state, "phase") is Some(Str(p)) {
-    live.phase = Some(@jsjson.raw_text(p))
+    live.phase = Some(p)
   }
   live
 }
@@ -269,7 +153,7 @@ fn Live::to(self : Live, next : String, out : Array[J]) -> Unit {
 }
 
 ///|
-fn Live::close(self : Live, id : Array[Int]) -> Unit {
+fn Live::close(self : Live, id : String) -> Unit {
   if self.open.search(id) is Some(i) {
     ignore(self.open.remove(i))
   }
@@ -294,10 +178,10 @@ pub fn Live::prompted(self : Live) -> Array[J] {
 
 ///|
 /// The call that started last of those still running (what a subagent spawned now was spawned by).
-pub fn Live::open_call(self : Live) -> Array[Int]? {
+pub fn Live::open_call(self : Live) -> String? {
   let mut last = None
   for id in self.open {
-    if has_prefix(id, u("call:")) {
+    if has_prefix(id, "call:") {
       last = Some(id)
     }
   }
@@ -308,42 +192,42 @@ pub fn Live::open_call(self : Live) -> Array[Int]? {
 /// The live steps an update says (live.ts `feed`).
 pub fn Live::feed(self : Live, update : J?) -> Array[J] {
   let out = []
-  let kind = str(field(update, "sessionUpdate")).unwrap_or([])
-  if kind == u("agent_message_chunk") || kind == u("agent_thought_chunk") {
-    let step = if kind == u("agent_message_chunk") { "text" } else { "thinking" }
+  let kind = str(field(update, "sessionUpdate")).unwrap_or("")
+  if kind == "agent_message_chunk" || kind == "agent_thought_chunk" {
+    let step = if kind == "agent_message_chunk" { "text" } else { "thinking" }
     let text = acp_text(field(update, "content"))
     if text.length() == 0 {
       return out
     }
     self.to("responding", out)
-    let tail = u("/" + step)
+    let tail = "/" + step
     let same = match self.said {
-      Some(s) => s.length() >= tail.length() && s[s.length() - tail.length():].to_owned() == tail
+      Some(s) => s.has_suffix(tail)
       None => false
     }
     if !same {
       self.end_said(out)
       self.n += 1
-      let id = u("said:") + u(self.n.to_string()) + tail
+      let id = "said:" + self.n.to_string() + tail
       self.said = Some(id)
       self.open.push(id)
       out.push(start(id, step, None, None))
     }
     out.push(delta(self.said.unwrap(), "text", text))
-  } else if kind == u("tool_call") {
+  } else if kind == "tool_call" {
     guard non_empty(field(update, "toolCallId")) is Some(call) else { return out }
-    let id = u("call:") + call
+    let id = "call:" + call
     self.end_said(out)
     self.to("working", out)
     if !self.open.contains(id) {
       self.open.push(id)
       let (name, input) = acp_named(update)
-      out.push(start(id, "tool", Some(name), Some(@claude.chars(pretty(Some(input)), INPUT_MOST))))
+      out.push(start(id, "tool", Some(name), Some(@claude.chars(pretty(Some(input)), @live_wire.INPUT_MOST))))
     }
     self.result(id, update, out)
-  } else if kind == u("tool_call_update") {
-    if non_empty(field(update, "toolCallId")) is Some(call) && self.open.contains(u("call:") + call) {
-      self.result(u("call:") + call, update, out)
+  } else if kind == "tool_call_update" {
+    if non_empty(field(update, "toolCallId")) is Some(call) && self.open.contains("call:" + call) {
+      self.result("call:" + call, update, out)
     }
   }
   out
@@ -351,7 +235,7 @@ pub fn Live::feed(self : Live, update : J?) -> Array[J] {
 
 ///|
 /// A call's output once it is done, and its end.
-fn Live::result(self : Live, id : Array[Int], update : J?, out : Array[J]) -> Unit {
+fn Live::result(self : Live, id : String, update : J?, out : Array[J]) -> Unit {
   if !is_str(field(update, "status"), "completed") && !is_str(field(update, "status"), "failed") {
     return
   }
@@ -359,13 +243,13 @@ fn Live::result(self : Live, id : Array[Int], update : J?, out : Array[J]) -> Un
     Some(Arr(items)) => items.map(c => acp_text(Some(c))).filter(t => t.length() > 0)
     _ => []
   }
-  let output = joined(parts, [0x0a])
+  let output = joined(parts, "\n")
   if output.length() > 0 {
-    out.push(delta(id, "output", @claude.chars(output, INPUT_MOST)))
+    out.push(delta(id, "output", @claude.chars(output, @live_wire.INPUT_MOST)))
   }
   self.close(id)
   out.push(end_event(id))
-  if !self.open.iter().any(o => has_prefix(o, u("call:"))) {
+  if !self.open.iter().any(o => has_prefix(o, "call:")) {
     self.to("requesting", out)
   }
 }
@@ -384,9 +268,9 @@ pub fn Live::ended(self : Live) -> Array[J] {
 /// agy.ts `agyUpdate`: Antigravity CLI names an MCP tool `Run mcp_<server>_<tool>`, named here mcp__<server>__<tool>.
 pub fn agy_update(update : J?) -> J? {
   guard is_str(field(update, "sessionUpdate"), "tool_call") && field(update, "title") is Some(Str(title)) else { return update }
-  let prefix = u("Run mcp_stillfail_")
-  if has_prefix(title, prefix) {
-    return Some(with_field(update.unwrap(), "title", Str(u("mcp__stillfail__") + title[prefix.length():].to_owned())))
+  let prefix = "Run mcp_stillfail_"
+  if title.has_prefix(prefix) {
+    return Some(with_field(update.unwrap(), "title", Str("mcp__stillfail__" + title.unsafe_substring(start=prefix.length(), end=title.length()))))
   }
   update
 }
@@ -396,19 +280,24 @@ pub fn agy_update(update : J?) -> J? {
 /// the station's tools (mcp__editor_stillfail_<8 hex>__) as theirs.
 pub fn hermes_update(update : J?) -> J? {
   guard is_str(field(update, "sessionUpdate"), "tool_call") && field(update, "title") is Some(Str(title)) else { return update }
-  let mut name = title
-  for i = 0; i + 1 < title.length(); i = i + 1 {
-    if title[i] == 0x3a && title[i + 1] == 0x20 {
-      name = title[0:i].to_owned()
-      break
-    }
+  let mut name = match title.find(": ") {
+    Some(i) => title.unsafe_substring(start=0, end=i)
+    None => title
   }
-  let scoped = u("mcp__editor_stillfail_")
-  if has_prefix(name, scoped) && name.length() >= scoped.length() + 10 {
-    let hex = name[scoped.length():scoped.length() + 8].to_owned()
-    let lower_hex = hex.iter().all(c => (c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66))
-    if lower_hex && name[scoped.length() + 8] == 0x5f && name[scoped.length() + 9] == 0x5f {
-      name = u("mcp__stillfail__") + name[scoped.length() + 10:].to_owned()
+  let scoped = "mcp__editor_stillfail_"
+  if name.has_prefix(scoped) && name.length() >= scoped.length() + 10 {
+    let mut lower_hex = true
+    for i in 0..<8 {
+      let c = name.unsafe_get(scoped.length() + i).to_int()
+      if !((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66)) {
+        lower_hex = false
+        break
+      }
+    }
+    if lower_hex &&
+      name.unsafe_get(scoped.length() + 8).to_int() == 0x5f &&
+      name.unsafe_get(scoped.length() + 9).to_int() == 0x5f {
+      name = "mcp__stillfail__" + name.unsafe_substring(start=scoped.length() + 10, end=name.length())
     }
   }
   Some(with_field(update.unwrap(), "title", Str(name)))
@@ -416,7 +305,7 @@ pub fn hermes_update(update : J?) -> J? {
 
 ///|
 /// Each runtime's `classifyFailure`: what failed a turn, from what it said of it.
-pub fn classify(flavor : String, text : Array[Int]) -> String {
+pub fn classify(flavor : String, text : String) -> String {
   match flavor {
     "grok" => @claude.failure_of(text, auth=["access token", "subscription"])
     "agy" =>
@@ -424,7 +313,7 @@ pub fn classify(flavor : String, text : Array[Int]) -> String {
         text,
         auth=[
           "authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant",
-          "unauthenticated", "token expired",
+          "unauthenticated", "token expired", "verification required",
         ],
         limit=["resource_exhausted", "quota"],
       )
@@ -433,26 +322,23 @@ pub fn classify(flavor : String, text : Array[Int]) -> String {
 }
 
 ///|
-fn last_line(text : Array[Int]) -> Array[Int] {
-  let mut after = 0
-  for i = 0; i < text.length(); i = i + 1 {
-    if text[i] == 0x0a {
-      after = i + 1
-    }
+fn last_line(text : String) -> String {
+  match text.rev_find("\n") {
+    Some(i) => trimmed(text.unsafe_substring(start=i + 1, end=text.length()))
+    None => trimmed(text)
   }
-  trimmed(text[after:].to_owned())
 }
 
 ///|
 /// agy.ts `noticeFailure`: a failure Antigravity CLI tells only in words, a turn's last words one line of its own
 /// beginning with ⚠ that is not the model's, or its executor's trailing notice line after partial text.
-pub fn notice_failure(said : Array[Int]) -> String? {
+pub fn notice_failure(said : String) -> String? {
   let text = trimmed(said)
   if text.length() == 0 {
     return None
   }
   let last = last_line(text)
-  let lower = @jscase.lower(@jsjson.raw_text(last))
+  let lower = @jscase.lower(last)
   if lower == "\u{26a0} agent execution terminated due to error." {
     // (agy.ts `AGY_TERMINATED`: its 1.5.8 words for a failure it does not name, even after partial streamed text)
     return Some("other")
@@ -461,7 +347,13 @@ pub fn notice_failure(said : Array[Int]) -> String? {
     let reason = classify("agy", last)
     return Some(if reason == "model" { "other" } else { reason })
   }
-  if text[0] != 0x26a0 || text.contains(0x0a) {
+  if lower.has_prefix("\u{26a0} unauthenticated (code 401):") {
+    return Some("auth")
+  }
+  if lower.has_prefix("\u{26a0} verification required") {
+    return Some("auth")
+  }
+  if text.unsafe_get(0).to_int() != 0x26a0 || text.contains("\n") {
     return None
   }
   let reason = classify("agy", text)
@@ -473,32 +365,27 @@ pub fn notice_failure(said : Array[Int]) -> String? {
 }
 
 ///|
-fn failed(reason : String, message : Array[Int]) -> J {
-  obj([("kind", jstr("failed")), ("reason", jstr(reason)), ("message", Str(message))])
-}
-
-///|
 /// acp.ts `errorText`: what an error answer says, its message and its data's.
-fn error_text(error : J) -> Array[Int] {
+fn error_text(error : J) -> String {
   let e = Some(error)
   let text = match field(e, "message") {
     Some(Str(m)) => {
-      let lead = u("Internal error: ")
-      if has_prefix(m, lead) {
-        m[lead.length():].to_owned()
+      let lead = "Internal error: "
+      if m.has_prefix(lead) {
+        m.unsafe_substring(start=lead.length(), end=m.length())
       } else {
         m
       }
     }
-    _ => u(@jsjson.stringify(error))
+    _ => @jsjson.stringify(error)
   }
   let data = match field(e, "data") {
-    Some(Str(d)) => u(": ") + d
+    Some(Str(d)) => ": " + d
     d =>
       match (str(field(d, "message")), str(field(d, "details"))) {
-        (Some(m), _) => u(": ") + m
-        (None, Some(m)) => u(": ") + m
-        _ => []
+        (Some(m), _) => ": " + m
+        (None, Some(m)) => ": " + m
+        _ => ""
       }
   }
   text + data
@@ -516,7 +403,7 @@ pub fn acp_outcome(flavor : String, answer : J?) -> J {
     return obj([("kind", jstr("aborted"))])
   }
   if is_str(stop, "refusal") {
-    return failed("model", u("the model refused"))
+    return failed("model", "the model refused")
   }
   obj([("kind", jstr("completed"))])
 }
@@ -524,7 +411,7 @@ pub fn acp_outcome(flavor : String, answer : J?) -> J {
 ///|
 /// A call under way, as it started (acp.ts `Call`).
 pub(all) struct Call {
-  name : Array[Int]
+  name : String
   input : J
   started_at : Double?
 }
@@ -542,7 +429,7 @@ fn Call::json(self : Call) -> J {
 /// A subagent's session in the process (Grok Build's): its steps, under the call that spawned it.
 pub(all) struct Child {
   live : Live
-  parent : Array[Int]?
+  parent : String?
 }
 
 ///|
@@ -550,8 +437,8 @@ pub(all) struct Child {
 pub(all) struct Turn {
   mut busy : Bool
   mut aborting : Bool
-  mut owner : Array[Int]?
-  steering : Array[Array[Int]]
+  mut owner : String?
+  steering : Array[String]
 }
 
 ///|
@@ -578,6 +465,17 @@ pub fn Turn::of_json(v : J?) -> Turn {
 }
 
 ///|
+/// Whether a prompt's answer carries non-zero token usage (matches agy.ts `turnUsage`).
+fn has_turn_usage(answer : J?) -> Bool {
+  guard field(field(answer, "result"), "usage") is Some(Obj(_) as u) else { return false }
+  let pos = (k : String) => match u.get(k) {
+    Some(Num(x)) if x - x == 0.0 && x > 0.0 => x
+    _ => 0.0
+  }
+  pos("inputTokens") + pos("cachedReadTokens") + pos("cachedWriteTokens") + pos("outputTokens") > 0.0
+}
+
+///|
 /// A session as the program reads its process (acp.ts `AcpSession`).
 pub(all) struct Session {
   /// which runtime: "agy", "grok", "devin" or "hermes"
@@ -585,17 +483,23 @@ pub(all) struct Session {
   /// the station keeps its transcript (acp.ts `KeptTranscript`: Antigravity CLI's, Devin's, Hermes')
   kept : Bool
   /// its ACP session's id ("" until the runtime names it)
-  mut session : Array[Int]
+  mut session : String
   /// until the session is open: what session/load says again of its past is no turn
   mut loading : Bool
+  /// agy opened via session/load: guards the first prompt against ghost history replay + empty end_turn
+  mut load_replay_guard : Bool
+  /// when the guarded first prompt started (on the parser's clock)
+  mut guard_started_at : Double?
+  /// kept transcript lines staged while load_replay_guard is active
+  staged_kept : Array[J]
   turn : Turn
   mut live : Live
-  calls : Array[(Array[Int], Call)]
+  calls : Array[(String, Call)]
   /// what the model said last in the running turn (acp.ts `saidLast`)
-  mut said_last : Array[Int]
+  mut said_last : String
   /// what is being said, as the transcript keeps it: "assistant" or "thinking", and its text so far
-  mut said : (String, Array[Int])?
-  children : Array[(Array[Int], Child)]
+  mut said : (String, String)?
+  children : Array[(String, Child)]
 }
 
 ///|
@@ -605,6 +509,9 @@ pub fn Session::new(flavor : String, kept~ : Bool) -> Session {
     kept,
     session: [],
     loading: true,
+    load_replay_guard: false,
+    guard_started_at: None,
+    staged_kept: [],
     turn: { busy: false, aborting: false, owner: None, steering: [] },
     live: Live::new(),
     calls: [],
@@ -612,6 +519,43 @@ pub fn Session::new(flavor : String, kept~ : Bool) -> Session {
     said: None,
     children: [],
   }
+}
+
+///|
+/// The session is open (`acpOpened`): what session/load said before is no turn, and an `agy` session opened via
+/// `session/load` (`resumed=true`) guards its first prompt against ghost history replay.
+pub fn Session::opened(self : Session, resumed? : Bool = false) -> Unit {
+  if self.loading && self.flavor == "agy" && resumed {
+    self.load_replay_guard = true
+  }
+  self.loading = false
+}
+
+///|
+fn Session::emit_kept(self : Session, line : J, events : Array[J]) -> Unit {
+  if self.load_replay_guard && self.guard_started_at is Some(_) {
+    self.staged_kept.push(kept(line))
+  } else {
+    events.push(kept(line))
+  }
+}
+
+///|
+fn Session::flush_staged(self : Session, events : Array[J]) -> Unit {
+  for e in self.staged_kept {
+    events.push(e)
+  }
+  self.staged_kept.clear()
+  self.load_replay_guard = false
+  self.guard_started_at = None
+}
+
+///|
+/// Flushes any staged kept lines (for freeze/handover) and turns off load_replay_guard.
+pub fn Session::flush_staged_events(self : Session) -> Array[J] {
+  let events = []
+  self.flush_staged(events)
+  events
 }
 
 ///|
@@ -624,9 +568,9 @@ pub fn Session::of_state(flavor : String, kept~ : Bool, turn : J?, state : J?) -
   s.turn.owner = t.owner
   s.turn.steering.append(t.steering)
   s.live = Live::of_state(field(state, "live"))
-  s.session = str(field(state, "session")).unwrap_or([])
+  s.session = str(field(state, "session")).unwrap_or("")
   s.loading = field(state, "loading") is Some(Bool(true))
-  s.said_last = str(field(state, "saidLast")).unwrap_or([])
+  s.said_last = str(field(state, "saidLast")).unwrap_or("")
   if field(state, "said") is Some(Obj(_) as said) && str(said.get("text")) is Some(text) {
     s.said = Some((if is_str(said.get("type"), "thinking") { "thinking" } else { "assistant" }, text))
   }
@@ -637,7 +581,7 @@ pub fn Session::of_state(flavor : String, kept~ : Bool, turn : J?, state : J?) -
         Some(Num(at)) => Some(at)
         _ => None
       }
-      s.put_call(id, { name: str(field(Some(call), "name")).unwrap_or([]), input: or_else(field(Some(call), "input"), Null), started_at })
+      s.put_call(id, { name: str(field(Some(call), "name")).unwrap_or(""), input: or_else(field(Some(call), "input"), Null), started_at })
     }
   }
   if field(state, "children") is Some(Arr(children)) {
@@ -672,7 +616,7 @@ pub fn Session::state(self : Session) -> J {
 }
 
 ///|
-fn Session::put_call(self : Session, id : Array[Int], call : Call) -> Unit {
+fn Session::put_call(self : Session, id : String, call : Call) -> Unit {
   for i, c in self.calls {
     if c.0 == id {
       self.calls[i] = (id, call)
@@ -683,7 +627,7 @@ fn Session::put_call(self : Session, id : Array[Int], call : Call) -> Unit {
 }
 
 ///|
-fn Session::call(self : Session, id : Array[Int]) -> Call? {
+fn Session::call(self : Session, id : String) -> Call? {
   for c in self.calls {
     if c.0 == id {
       return Some(c.1)
@@ -695,9 +639,9 @@ fn Session::call(self : Session, id : Array[Int]) -> Call? {
 ///|
 /// The answers that end a turn: a prompt's, and where a message for the running turn is a prompt of its own
 /// (Antigravity CLI's, Devin's) one's of those.
-fn Session::ends_turn(self : Session, id : J?) -> Array[Int]? {
+fn Session::ends_turn(self : Session, id : J?) -> String? {
   guard id is Some(Str(s)) else { return None }
-  if has_prefix(s, u("prompt:")) || ((self.flavor == "agy" || self.flavor == "devin") && has_prefix(s, u("steer:"))) {
+  if has_prefix(s, "prompt:") || ((self.flavor == "agy" || self.flavor == "devin") && has_prefix(s, "steer:")) {
     Some(s)
   } else {
     None
@@ -781,6 +725,16 @@ fn Session::update(self : Session, params : J?, now : () -> Double, events : Arr
   if !self.turn.busy && turn_step(update) && !self.unprompted(events) {
     return
   }
+  if self.load_replay_guard {
+    match self.guard_started_at {
+      Some(started) if now() - started >= 5000.0 => self.flush_staged(events)
+      None if self.turn.busy => self.guard_started_at = Some(now())
+      _ => ()
+    }
+    if is_str(field(update, "sessionUpdate"), "usage_update") {
+      self.flush_staged(events)
+    }
+  }
   let done = self.track(update, now)
   self.heard_said(update)
   self.take(update, done, events)
@@ -797,8 +751,8 @@ fn Session::update(self : Session, params : J?, now : () -> Double, events : Arr
 
 ///|
 /// runtime.ts `stationTool`.
-fn station_tool(name : Array[Int]) -> Bool {
-  has_prefix(name, u("mcp__stillfail__")) || has_prefix(name, u("stillfail__"))
+fn station_tool(name : String) -> Bool {
+  has_prefix(name, "mcp__stillfail__") || has_prefix(name, "stillfail__")
 }
 
 ///|
@@ -817,7 +771,7 @@ fn Session::unprompted(self : Session, events : Array[J]) -> Bool {
 ///|
 /// What an update says of its calls: one starting is under way; one done (completed or failed) is given back, with
 /// what it said.
-fn Session::track(self : Session, update : J?, now : () -> Double) -> (Array[Int], Call, Bool, Array[Int])? {
+fn Session::track(self : Session, update : J?, now : () -> Double) -> (String, Call, Bool, String)? {
   let kind = field(update, "sessionUpdate")
   guard (is_str(kind, "tool_call") || is_str(kind, "tool_call_update")) && field(update, "toolCallId") is Some(Str(id)) else {
     return None
@@ -850,12 +804,12 @@ fn Session::track(self : Session, update : J?, now : () -> Double) -> (Array[Int
         v => v
       }
       match v {
-        None | Some(Str([])) => ()
+        None | Some(Str("")) => ()
         Some(x) => parts.push(@jsjson.js_string(x))
       }
     }
   }
-  Some((id, call, failed, joined(parts, [0x0a])))
+  Some((id, call, failed, joined(parts, "\n")))
 }
 
 ///|
@@ -873,14 +827,14 @@ fn Session::heard_said(self : Session, update : J?) -> Unit {
 ///|
 /// What an update adds to the transcript kept (acp.ts `KeptTranscript.take`): what is being said grows, whole once
 /// something else comes; a call once it is done.
-fn Session::take(self : Session, update : J?, done : (Array[Int], Call, Bool, Array[Int])?, events : Array[J]) -> Unit {
+fn Session::take(self : Session, update : J?, done : (String, Call, Bool, String)?, events : Array[J]) -> Unit {
   if !self.kept {
     return
   }
   let kind = field(update, "sessionUpdate")
   if is_str(kind, "agent_message_chunk") || is_str(kind, "agent_thought_chunk") {
     let t = if is_str(kind, "agent_message_chunk") { "assistant" } else { "thinking" }
-    let text = str(field(field(update, "content"), "text")).unwrap_or([])
+    let text = str(field(field(update, "content"), "text")).unwrap_or("")
     if self.said is Some((was, _)) && was != t {
       self.flush(events)
     }
@@ -899,7 +853,7 @@ fn Session::take(self : Session, update : J?, done : (Array[Int], Call, Bool, Ar
   }
   line.push(("args", call.input))
   line.push(("result", Str(@claude.chars(text, 20000))))
-  events.push(kept(obj(line)))
+  self.emit_kept(obj(line), events)
 }
 
 ///|
@@ -907,14 +861,14 @@ fn Session::take(self : Session, update : J?, done : (Array[Int], Call, Bool, Ar
 fn Session::flush(self : Session, events : Array[J]) -> Unit {
   guard self.said is Some((kind, text)) else { return }
   if trimmed(text).length() > 0 {
-    events.push(kept(obj([("type", jstr(kind)), ("text", Str(text))])))
+    self.emit_kept(obj([("type", jstr(kind)), ("text", Str(text))]), events)
   }
   self.said = None
 }
 
 ///|
 /// A subagent's session says its own steps: under the call that spawned it (Grok Build's).
-fn Session::other(self : Session, from : Array[Int], update : J?, events : Array[J]) -> Unit {
+fn Session::other(self : Session, from : String, update : J?, events : Array[J]) -> Unit {
   guard self.flavor == "grok" else { return }
   for c in self.children {
     if c.0 == from {
@@ -929,14 +883,14 @@ fn Session::other(self : Session, from : Array[Int], update : J?, events : Array
 ///|
 /// grok.ts `underParent`: a subagent's step as the parent session shows it, its own id, marked a subagent's, under the
 /// call that spawned it.
-fn under_parent(event : J, child : Array[Int], parent : Array[Int]?) -> J {
-  let kind = str(event.get("kind")).unwrap_or([])
-  if kind == u("phase") || kind == u("tasks") || kind == u("plan") {
+fn under_parent(event : J, child : String, parent : String?) -> J {
+  let kind = str(event.get("kind")).unwrap_or("")
+  if kind == "phase" || kind == "tasks" || kind == "plan" {
     return event
   }
-  let id = u("sub:") + child + [0x3a] + str(event.get("id")).unwrap_or([])
+  let id = "sub:" + child + ":" + str(event.get("id")).unwrap_or("")
   let e = with_field(event, "id", Str(id))
-  if kind != u("start") {
+  if kind != "start" {
     return e
   }
   let e = with_field(e, "subagent", Bool(true))
@@ -972,7 +926,7 @@ fn Session::notified(self : Session, message : J?, events : Array[J]) -> Unit {
 
 ///|
 /// A subagent done: what it still had open ends.
-fn Session::end_child(self : Session, id : Array[Int], events : Array[J]) -> Unit {
+fn Session::end_child(self : Session, id : String, events : Array[J]) -> Unit {
   for i, c in self.children {
     if c.0 == id {
       ignore(self.children.remove(i))
@@ -987,18 +941,18 @@ fn Session::end_child(self : Session, id : Array[Int], events : Array[J]) -> Uni
 ///|
 /// The kept line of a turn's end (acp.ts `KeptTranscript.ended`).
 fn ended_line(outcome : J) -> J {
-  let kind = str(outcome.get("kind")).unwrap_or([])
-  let status = if kind == u("completed") { "finished" } else if kind == u("aborted") { "cancelled" } else { "error" }
+  let kind = str(outcome.get("kind")).unwrap_or("")
+  let status = if kind == "completed" { "finished" } else if kind == "aborted" { "cancelled" } else { "error" }
   let fields = [("type", jstr("end")), ("status", jstr(status))]
-  if kind == u("failed") {
-    fields.push(("error", obj([("message", outcome.get("message").unwrap_or(Str([])))])))
+  if kind == "failed" {
+    fields.push(("error", obj([("message", outcome.get("message").unwrap_or(Str("")))])))
   }
   obj(fields)
 }
 
 ///|
 /// The turn ended as the answer to its prompt says.
-fn Session::end(self : Session, id : Array[Int], answer : J, events : Array[J]) -> Unit {
+fn Session::end(self : Session, id : String, answer : J, events : Array[J]) -> Unit {
   let a = Some(answer)
   let mut outcome = if self.turn.aborting && field(a, "error") is Some(_) {
     obj([("kind", jstr("aborted"))])
@@ -1010,6 +964,27 @@ fn Session::end(self : Session, id : Array[Int], answer : J, events : Array[J]) 
   if self.flavor == "agy" && is_str(outcome.get("kind"), "completed") && said.length() > 0 && notice_failure(said) is Some(reason) {
     outcome = failed(reason, @claude.chars(last_line(said), 1000))
   }
+  if self.flavor == "agy" &&
+    self.load_replay_guard &&
+    !self.turn.aborting &&
+    self.turn.steering.length() == 0 &&
+    is_str(outcome.get("kind"), "completed") &&
+    !has_turn_usage(a) {
+    self.load_replay_guard = false
+    self.guard_started_at = None
+    self.staged_kept.clear()
+    self.said = None
+    self.calls.clear()
+    for e in self.live.ended() {
+      events.push(live(e))
+    }
+    for e in self.live.prompted() {
+      events.push(live(e))
+    }
+    self.turn.busy = true
+    events.push(obj([("type", jstr("loadReplay")), ("id", Str(id))]))
+    return
+  }
   // An answer to a prompt this station did not see start (taken up after a crash just as it was given).
   if !self.turn.busy {
     events.push(obj([("type", jstr("turnStarted"))]))
@@ -1018,6 +993,7 @@ fn Session::end(self : Session, id : Array[Int], answer : J, events : Array[J]) 
   self.turn.aborting = false
   self.turn.owner = None
   self.flush(events)
+  self.flush_staged(events)
   events.push(obj([("type", jstr("answered")), ("id", Str(id)), ("answer", answer), ("outcome", outcome)]))
   if self.flavor == "grok" {
     for c in self.children.map(c => c.0) {
@@ -1036,12 +1012,32 @@ fn Session::end(self : Session, id : Array[Int], answer : J, events : Array[J]) 
 
 ///|
 /// A prompt of Node's, `owner` its id (acp.ts `prompt`): the turn runs, its message kept, the turn with the model.
-pub fn Session::prompted(self : Session, owner : Array[Int], text : Array[Int]) -> Array[J] {
+pub fn Session::prompted(self : Session, owner : String, text : String, now? : () -> Double) -> Array[J] {
   let events = []
   self.turn.busy = true
   self.said_last = []
   self.turn.owner = Some(owner)
   self.user(text, false, events)
+  if self.load_replay_guard {
+    self.guard_started_at = match now {
+      Some(clock) => Some(clock())
+      None => None
+    }
+  }
+  for e in self.live.prompted() {
+    events.push(live(e))
+  }
+  events
+}
+
+///|
+/// The driver resent the original prompt after an agy session/load ghost replay (`acpPrompt` with `resend: true`):
+/// updates the active turn owner without writing a second `user` transcript line.
+pub fn Session::resent(self : Session, owner : String) -> Array[J] {
+  let events = []
+  self.turn.busy = true
+  self.said_last = []
+  self.turn.owner = Some(owner)
   for e in self.live.prompted() {
     events.push(live(e))
   }
@@ -1051,9 +1047,10 @@ pub fn Session::prompted(self : Session, owner : Array[Int], text : Array[Int]) 
 ///|
 /// A prompt of Node's put in the running turn (acp.ts `injectPrompt`): `take_over`, it is the one whose answer ends the
 /// turn from now on (Antigravity CLI's).
-pub fn Session::injected(self : Session, id : Array[Int], take_over : Bool, text : Array[Int]) -> Array[J] {
+pub fn Session::injected(self : Session, id : String, take_over : Bool, text : String) -> Array[J] {
   let events = []
-  let add = (s : Array[Int]) => if !self.turn.steering.contains(s) { self.turn.steering.push(s) }
+  self.flush_staged(events)
+  let add = (s : String) => if !self.turn.steering.contains(s) { self.turn.steering.push(s) }
   if take_over {
     if self.turn.owner is Some(o) {
       add(o)
@@ -1067,7 +1064,7 @@ pub fn Session::injected(self : Session, id : Array[Int], take_over : Bool, text
 }
 
 ///|
-fn Session::user(self : Session, text : Array[Int], steered : Bool, events : Array[J]) -> Unit {
+fn Session::user(self : Session, text : String, steered : Bool, events : Array[J]) -> Unit {
   if !self.kept {
     return
   }
@@ -1088,6 +1085,7 @@ pub fn Session::cut_short(self : Session) -> Array[J] {
     return events
   }
   self.flush(events)
+  self.flush_staged(events)
   self.calls.clear()
   for e in self.live.ended() {
     events.push(live(e))
@@ -1107,7 +1105,7 @@ pub(all) struct Replay {
 }
 
 ///|
-pub fn Replay::new(flavor : String, kept~ : Bool, from_id : Array[Int]) -> Replay {
+pub fn Replay::new(flavor : String, kept~ : Bool, from_id : String) -> Replay {
   let s = Session::new(flavor, kept~)
   s.session = from_id
   { s, open: false, opened: None, partial: [] }

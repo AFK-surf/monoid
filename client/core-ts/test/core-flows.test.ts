@@ -417,7 +417,7 @@ test("a_chat_opening_is_one_trace_its_requests_carry_and_ember_cloud_gets", asyn
   assert.ok(said.some((m) => m.id === 1 && "value" in m), JSON.stringify(said).slice(0, 500));
   // (but its agent's history brought whole behind every other read, the sync's: topics.ts `#wholeHistory`)
   assert.equal(host.requests.slice(before).filter((r) => !r.url.includes("/timeline?")).length, 0, "opening a chat asks nothing");
-  const reads = ["/events?running=1&views=1&rows=1&shared=1", "/overview", "/sessions", "/threads", "/chats?marks=1", "/jobs?chats=0"].map((p) => host.requests.find((r) => r.url === `https://stillfail.test/admin/api${p}`)!);
+  const reads = ["/events?running=1&views=1&rows=1&shared=1", "/overview", "/sessions", "/threads", "/chats?marks=1&own=1", "/jobs?chats=0"].map((p) => host.requests.find((r) => r.url === `https://stillfail.test/admin/api${p}`)!);
   const parents = reads.map((r) => header(r, "traceparent")!);
   const trace = parents[0].slice(3, 35);
   assert.ok(parents.every((p) => p.slice(3, 35) === trace && p.endsWith("-01")), JSON.stringify(parents));
@@ -850,6 +850,7 @@ test("sending_to_an_archived_session_without_a_thread_restores_it_after_making_i
     "GET /sessions": [archived],
     "GET /sessions/k1": { session: archived, threads: [], turns: [], jobs: [] },
     "GET /threads": [],
+    "GET /chats?shared=1": [],
     "GET /chats": [],
   });
   const steps: string[] = [];
@@ -1945,9 +1946,8 @@ test("the_chats_a_few_words_find_are_a_view_of_the_list", async () => {
 // menu, reached from its opener's info and found by a search (the user, 2026-11-17). One opened for its person is
 // theirs and listed as any other.
 test("a_chat_an_agent_leads_is_in_no_list_but_a_search_and_one_it_opened_for_its_person_is_listed", async () => {
-  const row = (id: string, title: string, at: number) => ({ id, session: id, thread: at, title, agents: [{ key: id }], last: null, unread: false, mine: true, lastActiveAt: at, connect: null, origin: null });
-  const answers: J = { ...base(), ...chatsOf([row("lead", "部署", 1), row("part", "部署 子任务", 3), row("theirs", "部署 给你的", 2)]) };
-  answers["GET /chats?marks=1"] = { ...answers["GET /chats?marks=1"], openers: { part: { session: "lead", title: "部署", led: true }, theirs: { session: "lead", title: "部署", led: false } } };
+  const row = (id: string, title: string, at: number, opener?: J) => ({ id, session: id, thread: at, title, agents: [{ key: id }], last: null, unread: false, mine: true, lastActiveAt: at, connect: null, origin: null, ...(opener ? { opener } : {}) });
+  const answers: J = { ...base(), ...chatsOf([row("lead", "部署", 1), row("part", "部署 子任务", 3, { session: "lead", title: "部署", led: true }), row("theirs", "部署 给你的", 2, { session: "lead", title: "部署", led: false })]) };
   const { host, core } = await started(answers);
   const ui = core.connect();
   subscribe(core, ui, 1, { topic: "chats", scope: "ws" });
@@ -2286,7 +2286,7 @@ test("notifications_are_on_until_turned_off_and_kept_so_with_no_pushes", async (
   apply(host, values);
   // (the workspaces the accounts are in apart: as the fixture's are)
   const settings = (x: J) => Object.fromEntries(Object.entries(x).filter(([k]) => k !== "workspaces"));
-  assert.deepEqual(settings(v(values, 1)), { on: true, asked: false, push: true, kinds: { wait: true, failed: true, done: "away", message: true }, preview: true, muted: [], permission: "unknown", show: [] });
+  assert.deepEqual(settings(v(values, 1)), { on: true, asked: false, push: true, kinds: { wait: true, failed: true, done: "away", message: true, billed: false }, preview: true, muted: [], permission: "unknown", show: [] });
   // What the system allows, as the app finds it: shown to every UI, not kept.
   call(core, ui, 4, "notify.permission", { state: "denied" });
   call(core, ui, 5, "notify.set", { preview: false });
@@ -2299,7 +2299,7 @@ test("notifications_are_on_until_turned_off_and_kept_so_with_no_pushes", async (
   call(core, ui, 3, "push.register", { kind: "fcm", token: "t" });
   await host.settle();
   apply(host, values);
-  assert.deepEqual(settings(v(values, 1)), { on: false, asked: true, push: false, kinds: { wait: true, failed: true, done: "away", message: true }, preview: false, muted: [], permission: "denied", show: [] });
+  assert.deepEqual(settings(v(values, 1)), { on: false, asked: true, push: false, kinds: { wait: true, failed: true, done: "away", message: true, billed: false }, preview: false, muted: [], permission: "denied", show: [] });
   assert.equal(host.stored(PUSH_KEY), undefined);
   // Kept across a restart.
   core.close();
@@ -2328,7 +2328,7 @@ test("a_push_registration_says_what_this_device_shows_and_is_given_again_as_that
   const ui = core.connect();
   call(core, ui, 1, "push.register", { kind: "fcm", token: "t" });
   await host.settle();
-  assert.deepEqual(posted.map((p) => [p.token, p.preview, p.kinds]), [["t", true, { wait: true, failed: true, done: "away", message: true }]]);
+  assert.deepEqual(posted.map((p) => [p.token, p.preview, p.kinds]), [["t", true, { wait: true, failed: true, done: "away", message: true, billed: false }]]);
   // Its preview off, people's messages off: given again saying so (the cloud makes its pushes so), not waited on.
   call(core, ui, 2, "notify.set", { preview: false, kinds: { message: false } });
   await host.settle();
@@ -2466,7 +2466,12 @@ test("a_chat_made_here_is_a_new_chat_all_along_until_it_is_named", async () => {
   // in it) what the station called a chat with nothing said in it, then by the words again as the station had them:
   // the bar's title went and came. It is a new chat, as its station calls it, until people or its agent name it.
   const made = { ...threadView(7, 0), createdBy: "a@x.com" };
-  const { host, core } = await started({ ...base(), "GET /threads": [made], "GET /chats": [{ id: "7", thread: 7, session: "k1", title: "新对话", agents: [], lastActiveAt: 1 }], "GET /threads/7/entries?limit=50": { first: 1, last: 0, entries: [] } });
+  const { host, core } = await started({
+    ...base(),
+    "GET /threads": [made],
+    "GET /chats?shared=1": chatsOf([{ id: "k1", thread: 7, session: "k1", title: null, agents: [], lastActiveAt: 1 }])["GET /chats?shared=1"],
+    "GET /threads/7/entries?limit=50": { first: 1, last: 0, entries: [] },
+  });
   stationReplies(host, (req) => {
     const path = req.url.replace("https://stillfail.test/admin/api", "");
     if (req.method === "POST" && path === "/sessions") return { key: "k1", thread: made };
@@ -2500,19 +2505,17 @@ test("a_new_chats_lists_read_before_its_agent_began_and_come_after_it_was_told_a
   const made = { ...threadView(9, 0), createdBy: "a@x.com", sessions: [{ thread: 9, session: "chat:c-1", connect: "ember", joinedAt: 1 }] };
   const atRest = session("chat:c-1");
   const working = { ...atRest, process: "running", running: true, turns: 1, lastTurn: { id: "t1", kind: "input", startedAt: 5, endedAt: null } };
-  const row = (id: string, session: string, thread: number, agents: J[]) => ({ id, session, thread, title: "新对话", agents, last: null, unread: false, mine: true, lastActiveAt: thread, connect: null, origin: null });
-  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [] };
-  const answers: J = { ...base(), "GET /chats": [row("7", "k1", 7, [])], "GET /chats?marks=1": marks };
+  const row = (id: string, session: string, thread: number, agents: J[]) => ({ id, session, thread, title: "新对话", agents, last: null, unread: false, mine: true, lastActiveAt: thread, connect: null, origin: null, ws: null, mineOf: [{ id: "a@x.com", email: "a@x.com", via: "cloud" }], said: null, pinned: null });
+  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [], dismissed: [], reads: {} };
+  const answers: J = { ...base(), "GET /chats?shared=1": [row("k1", "k1", 7, [])], "GET /chats?marks=1": marks };
   const s = await started(answers);
   const { host, core } = s;
-  // A station that keeps the marks: the sidebar made here of the summaries held.
-  s.push("made", { rows: true, marks: true });
   await host.settle();
   // The station as it is at each moment: what a read is answered with is what it had as it was asked.
   const now = (agent: J) => {
     answers["GET /sessions"] = [session("k1"), agent];
     answers["GET /sessions/chat%3Ac-1"] = { session: agent, threads: [], turns: agent.lastTurn ? [agent.lastTurn] : [], jobs: [] };
-    answers["GET /chats"] = [row("7", "k1", 7, []), row("9", "chat:c-1", 9, [agent])];
+    answers["GET /chats?shared=1"] = [row("k1", "k1", 7, []), row("chat:c-1", "chat:c-1", 9, [agent])];
   };
   answers["GET /threads/9"] = { ...made, last: 1 };
   stationReplies(host, (req) => {
@@ -2526,7 +2529,7 @@ test("a_new_chats_lists_read_before_its_agent_began_and_come_after_it_was_told_a
   subscribe(core, ui, 1, { topic: "chats", scope: "ws" });
   await host.settle();
   // A slow link: the lists, asked as the chat is made, come long after.
-  const release = [host.hold("/admin/api/changed/sessions"), host.hold("/admin/api/changed/chats")];
+  const release = [host.hold("/admin/api/changed/sessions"), host.hold("/admin/api/chats?shared=1")];
   now(atRest);
   const key = String((await ask(host, core, ui, 2, "chat.create", { station: "ws/st", runtime: "claude", model: "opus" })).key);
   call(core, ui, 3, "chat.send", { station: "ws/st", session: key, text: "修一下登录" });
@@ -2535,6 +2538,7 @@ test("a_new_chats_lists_read_before_its_agent_began_and_come_after_it_was_told_a
   // Its agent begins: the station tells it, and has it so from now.
   now(working);
   s.push("session", working);
+  s.push("chat-shared", row("chat:c-1", "chat:c-1", 9, [working]));
   await host.settle();
   subscribe(core, ui, 4, { topic: "chat", station: "ws/st", thread: 9 });
   await host.settle();
@@ -2808,7 +2812,7 @@ test("undo holds the row while a station's shared-list events catch up", async (
     named: { thread: { surface: "ember", title: id }, firstText: null, channelName: null }, mineOf: [], said: null,
   });
   const rows = [shared("k1", 7, 8), shared("k2", 8, 7)];
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows });
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
     if (req.url.includes("/chats?shared=1&session=k1")) return { rows: [rows[0]], scope: ["k1"] };
@@ -2859,7 +2863,7 @@ test("a restored chat removed again before it is listed does not remain in the l
     named: { thread: { surface: "ember", title: id }, firstText: null, channelName: null }, mineOf: [], said: null,
   });
   const rows = [shared("k1", 7, 8), shared("k2", 8, 7)];
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
@@ -2897,7 +2901,7 @@ test("a late removal from the original archive does not end a completed undo", a
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
     if (req.url.includes("/chats?shared=1&session=k1")) return { rows: [row], scope: ["k1"] };
@@ -2931,7 +2935,7 @@ test("a rearchive coalesced before the shared list can tell it settles the resto
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
@@ -2967,7 +2971,7 @@ test("an unrelated row cannot settle an undo before a delayed archive removal", 
   });
   const row = shared("k1", 7);
   const other = shared("k2", 8);
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row, other] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row, other] });
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
     if (req.url.includes("/chats?shared=1&session=k1")) return { rows: [row], scope: ["k1"] };
@@ -3000,7 +3004,7 @@ test("a newer tell wins over a restore read already on its way", async () => {
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
@@ -3034,7 +3038,7 @@ test("a failed restore reconciliation is retried after the station answers with 
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   let fail = false;
   stationReplies(host, (req) => {
@@ -3072,7 +3076,7 @@ test("a confirmed restore is reconciled after restart when it was archived elsew
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
@@ -4197,6 +4201,63 @@ test("profile_fusion_is_asked_on_demand_and_legacy_tiered_agy_picks_resolve_to_b
   core.close();
 });
 
+
+test("remembered Ultrafast configurations remain selectable when the account loses access", async () => {
+  for (const [of, source] of [["new", "combo"], ["new", "usual"], ["session:k1", "combo"], ["connect-new:preset", "combo"]] as const) {
+    const { host, core } = await choosing(true, false, null, true, false, [], "gpt-6-astra");
+    const ui = core.connect();
+    const at = { station: "ws/st", of };
+    const original = { model: "gpt-6-astra", runtime: "codex", effort: "high", speed: "ultrafast" };
+    core.inner.choose.used("ws/st", original);
+    subscribe(core, ui, 1, { topic: "pick", ...at });
+    await host.settle();
+    const values = new Map();
+    apply(host, values);
+    const pick = v(values, 1);
+    const combo = pick.combos.find((c: J) => c.model === original.model && c.speed === "ultrafast");
+    assert.ok(combo, `${of}: the remembered configuration is still offered`);
+    assert.match(combo.text, /标准（Ultrafast 不可用）/);
+    assert.equal(combo.selected, false);
+    const usual = pick.options.find((o: J) => o.model === original.model);
+    if (source === "usual") assert.match(usual.usualText, /标准（Ultrafast 不可用）/);
+    const chosen = source === "combo" ? combo : { model: original.model, ...usual.usual };
+    const answer = await ask(host, core, ui, 2, "pick.save", { ...at, ...chosen });
+    assert.equal(answer.notice, "Ultrafast 不可用，已改用标准速度。");
+    if (of === "session:k1") {
+      const sent = stationPosted(host, "/sessions/k1/settings").at(-1);
+      assert.deepEqual([sent.model, sent.effort, sent.speed, sent.fast], [original.model, "high", "standard", false]);
+    } else {
+      apply(host, values);
+      assert.deepEqual([v(values, 1).value.model, v(values, 1).value.effort, v(values, 1).value.speed, v(values, 1).value.fast], [original.model, "high", "standard", false]);
+    }
+    assert.equal((core.inner.data.record("choice", "ws:ws:frequent") as J)[0].speed, "ultrafast", "the remembered configuration stays intact");
+    await assert.rejects(ask(host, core, ui, 3, "pick.save", { ...at, speed: "ultrafast" }), /Ultrafast/);
+    core.close();
+  }
+});
+
+test("an unavailable remembered speed works on an older station and its aliased record can be removed", async () => {
+  const { host, core } = await choosing(true, false, null, true, false, false, "gpt-6-astra");
+  const ui = core.connect();
+  const at = { station: "ws/st", of: "session:k1" };
+  core.inner.choose.used("ws/st", { model: "openai/gpt-6-astra", runtime: "codex", effort: "high", speed: "ultrafast" });
+  subscribe(core, ui, 1, { topic: "pick", ...at });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  const combo = v(values, 1).combos.find((c: J) => c.speed === "ultrafast");
+  assert.ok(combo);
+  assert.equal(combo.model, "gpt-6-astra");
+  const answer = await ask(host, core, ui, 2, "pick.save", { ...at, ...combo });
+  const sent = stationPosted(host, "/sessions/k1/settings").at(-1);
+  assert.equal(answer.notice, "Ultrafast 不可用，已改用标准速度。");
+  assert.equal(sent.model, "gpt-6-astra");
+  assert.equal(sent.fast, false);
+  assert.equal(sent.speed, undefined, "the old station receives its Fast switch");
+  await ask(host, core, ui, 3, "pick.forget", { ...at, ...combo });
+  assert.deepEqual(core.inner.data.record("choice", "ws:ws:frequent"), []);
+  core.close();
+});
 
 test("Ultrafast round trips through the picker, new chats and presets; older stations refuse it", async () => {
   for (const [codexModel, speeds, available] of [

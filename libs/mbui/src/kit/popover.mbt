@@ -58,22 +58,22 @@ pub fn in_room(
 /// app, pengxiao 2026-10-25, its dialogs and menus vanishing as they closed). A popover's, a menu's, a select's, a
 /// hover card's, a dialog's by default.
 // kept across runs: a value (no field of it changes)
-pub let pop_in : @motion.Trans = @motion.trans(fade=0.0, scale=0.97, spec=@motion.tween(pop_ms, ease=Out), ground_first=true)
+pub let pop_in : @motion.Trans = @motion.pop_in
 
 ///|
-pub let pop_ms : Double = 140.0
+pub let pop_ms : Double = @motion.pop_ms
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let pop_out : @motion.Trans = @motion.trans(fade=0.0, scale=0.97, spec=@motion.tween(pop_out_ms, ease=Leave), ground_first=true)
+pub let pop_out : @motion.Trans = @motion.pop_out
 
 ///|
-pub let pop_out_ms : Double = 100.0
+pub let pop_out_ms : Double = @motion.pop_out_ms
 
 ///|
 /// How a tooltip comes (parts.css.ts tooltip: fadeKeyframes, 120 ms on the ease-out); it goes at once.
 // kept across runs: a value (no field of it changes)
-pub let tip_in : @motion.Trans = @motion.trans(fade=0.0, spec=@motion.tween(120.0, ease=Out), ground_first=true)
+pub let tip_in : @motion.Trans = @motion.tip_in
 
 ///|
 /// `key`'s popover (see the file's head), `open` or not, by the trigger `anchor` (its id; or by the rectangle `at`, a
@@ -149,7 +149,7 @@ pub fn hover_card(
   // (a finger's tap on a `tap` trigger opens it or shuts it as it is let go, beside what the trigger's own press does:
   // Ctx::on_press_beside)
   if tap && @ui.pointing() is Finger {
-    c.on_press_beside(trigger, fn() { kit.val.opens[id] = !kit.val.opens.get(id).unwrap_or(false) })
+    c.on_press_beside(trigger, fn() { opens_set(id, !kit.val.opens.get(id).unwrap_or(false)) })
   }
   let was = kit.val.opens.get(id).unwrap_or(false)
   let mut open = match @ui.pointing() {
@@ -200,7 +200,7 @@ pub fn hover_card(
     ignore(after(c, key + "/in", false, open_delay))
     ignore(after(c, key + "/out", false, close_delay))
   }
-  kit.val.opens[id] = open
+  opens_set(id, open)
   open
 }
 
@@ -222,38 +222,6 @@ fn latest(at : Array[Double]) -> Double {
 let tip_closed : Int = @ui.stable_hash("kit/tooltip closed").to_int()
 
 ///|
-/// A tooltip in an old view or at a node of the window's tree. Both share the same visible slot.
-#derive(Eq, Debug)
-pub(all) enum TipOwner {
-  Built(Int)
-  Node(Int)
-}
-
-///|
-/// A fresh identity for a tooltip made with a node. Two tips may name the same anchor.
-pub fn tip_node_owner() -> TipOwner {
-  install()
-  kit.val.tip_next = kit.val.tip_next + 1
-  Node(kit.val.tip_next)
-}
-
-///|
-/// Give the window's tooltip slot to `owner` as it is newly shown. The views and nodes that read it follow the signal.
-pub fn tip_claim(owner : TipOwner) -> Unit {
-  install()
-  if kit.val.tip_owner.untracked() != Some(owner) {
-    kit.val.tip_owner.set(Some(owner))
-  }
-}
-
-///|
-/// Whether `owner` holds the window's tooltip slot (followed by a node drawing its tooltip).
-pub fn tip_owns(owner : TipOwner) -> Bool {
-  install()
-  kit.val.tip_owner.get() == Some(owner)
-}
-
-///|
 /// An old view's last opening causes, kept while what builds the tooltip is built (forgotten as it is no longer:
 /// @ui.Ctx::on_unbuilt; come again, each of them is a new cause).
 priv struct TipReady {
@@ -263,14 +231,14 @@ priv struct TipReady {
 ///|
 /// How long a mouse rests on a tooltip's trigger before it shows (ms), and how soon after another tooltip closed one
 /// shows at once: `tooltip`'s defaults.
-pub let tooltip_delay_ms : Double = 700.0
+pub let tooltip_delay_ms : Double = @headless.tooltip_delay_ms
 
 ///|
-pub let tooltip_skip_ms : Double = 300.0
+pub let tooltip_skip_ms : Double = @headless.tooltip_skip_ms
 
 ///|
 /// How long a tooltip a finger held open stays once it is lifted (Android's: 1500 ms).
-pub let tooltip_lifted_ms : Double = 1500.0
+pub let tooltip_lifted_ms : Double = @headless.tooltip_lifted_ms
 
 ///|
 /// `key`'s tooltip (see the file's head) for the trigger `trigger` (its id), saying `text`: shown once a mouse has
@@ -345,14 +313,14 @@ pub fn tooltip(
   let (old_focus, old_rest, old_held, old_shown) = state.causes
   let (by_focus, by_rest, by_hand, by_app) = ready
   if (by_focus && !old_focus) || (by_rest && !old_rest) || (by_hand && !old_held) || (by_app && !old_shown) {
-    tip_claim(Built(id))
+    @headless.tip_claim(@headless.TipOwner::Built(id))
   }
   state.causes = ready
-  let owner = Built(id)
-  let mut open = (shown || held || (!shut && (focused || rested || (was && hovered)))) && tip_owns(owner)
+  let owner = @headless.TipOwner::Built(id)
+  let mut open = (shown || held || (!shut && (focused || rested || (was && hovered)))) && @headless.tip_owns(owner)
   if @motion.presence_by(c, "\u{2}pop/" + key, open, initial=true, enter=tip_in, exit=pop_out) is Some(shows) {
     // A previous tooltip may finish its exit only until another claims the slot: never paint two at once.
-    if tip_owns(owner) {
+    if @headless.tip_owns(owner) {
       // (the system's back goes on to what is under it: a tip only says what the pointer rests on, no place to leave)
       let o = c.overlay(key, anchor=trigger, outside=false, back=false, initial_focus=0, inert=!open, fn() {
         beside(c, key, trigger, side, along, offset, Some(shows), Tooltip, text, fn(c, s, _) { look(c, s, text) }, fn() {  }, at?=at)
@@ -367,7 +335,7 @@ pub fn tooltip(
   if was && !open {
     c.mark(tip_closed)
   }
-  kit.val.opens[id] = open
+  opens_set(id, open)
   open
 }
 

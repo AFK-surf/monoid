@@ -122,10 +122,7 @@ async fn shell_path(host : @host.Host, shell : String, login : Bool, env : Array
   }
   let dirs = read_shell_path(host, shell, login, clean)
   if shell_readings.length() >= 32 {
-    match shell_readings.keys().next() {
-      Some(k) => shell_readings.remove(k)
-      None => ()
-    }
+    if shell_readings.keys().next() is Some(k) { shell_readings.remove(k) }
   }
   shell_readings[key] = (now, dirs)
   dirs
@@ -197,10 +194,7 @@ async fn saved_path(host : @host.Host, env : Array[(String, String)]) -> Array[S
   }
   let dirs = read_saved_path(host, clean)
   if shell_readings.length() >= 32 {
-    match shell_readings.keys().next() {
-      Some(k) => shell_readings.remove(k)
-      None => ()
-    }
+    if shell_readings.keys().next() is Some(k) { shell_readings.remove(k) }
   }
   shell_readings[key] = (now, dirs)
   dirs

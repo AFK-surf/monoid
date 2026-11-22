@@ -110,7 +110,7 @@ test("a profile signed in to OpenCode runs on its token, renewed, kept through e
     oc.s.approved = true;
     const made = await upon((wake) => accounts.onChange(wake), () => accounts.loginsView().find((l) => l.id === login)?.created, "profile");
     assert.equal(made, "opencode-go");
-    assert.deepEqual(raw(made), { id: made, name: "go@example.com", access: { kind: "opencode-go", key: "st_1", login: true }, home: "homes/opencode-go", env: {} });
+    assert.deepEqual(raw(made), { id: made, name: "go@example.com", access: { kind: "opencode-go", key: "st_1", login: true }, home: "homes/opencode-go", env: {}, maxConcurrentSessions: 8, newAccountProtection: true });
     assert.deepEqual(accounts.profiles().find((p) => p.id === made)!.runtimes, ["claude", "codex", "dsh", "pi"]);
     await accounts.homesReadSoon();
     assert.deepEqual([view(made)!.access.login, view(made)!.email, view(made)!.loginCommand], [true, "go@example.com", ""]);

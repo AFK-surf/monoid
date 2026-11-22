@@ -151,11 +151,13 @@ static CTFontRef face_font(int face, double size, int weight, bool tabular, bool
 static void ahead_forget(void);
 
 // What was shaped and drawn before a face changed: forgotten (MoonBit drops its glyphs as the generation moves on).
+static int keys_stale;  // the keys made before forgotten as the next frame starts (keys_sweep)
 static void faces_changed(void) {
   [fonts removeAllObjects];
   ahead_forget();
   last_size = -1;
   generation++;
+  keys_stale = 1;
 }
 
 // Drawn at this many pixels a point (the screen the window is on): a change draws every glyph again, as a face's does
@@ -540,7 +542,6 @@ int32_t mb_host_shape(moonbit_string_t text, double size, int32_t weight, int32_
   }
 }
 
-int32_t mb_host_atlas_generation(void) { return generation; }
 
 // The side of the words' atlas, or of colour glyphs' (apple.h).
 int32_t mb_host_atlas_size(int32_t colour) { return colour ? MB_ATLAS_COLOR_SIDE : MB_ATLAS_SIDE; }
@@ -814,6 +815,38 @@ static void ahead_forget(void) {
   [ahead_order removeAllObjects];
 }
 
+// The glyphs' keys and what each is of forgotten (the faces changed, or more than KEYS_MOST of them: each a cluster of a
+// size, weight and style ever shaped, a run left open on changing text growing them without end), the generation moved
+// on. Only where MoonBit reads the generation (text.mbt text_arrive, as a frame starts: what it shaped is dropped as it
+// sees it moved; faces.mbt words_forgotten, what it shaped dropped just before), never where it may still draw by a key
+// made before (a face given in a frame); a key past the table draws nothing (mb_host_glyph).
+#define KEYS_MOST 65536
+static void keys_sweep(void) {
+  if (!keys_stale && n_entries <= KEYS_MOST) return;
+  keys_stale = 0;
+  ahead_forget();
+  [keys removeAllObjects];
+  [texts removeAllObjects];
+  n_entries = 0;
+  if (cap_entries > 1024) {
+    free(entries);
+    entries = NULL;
+    cap_entries = 0;
+  }
+  free(ascii);
+  ascii = NULL;
+  n_ascii = 0;
+  last_ascii = -1;
+  held = nil;
+  held_key = -1;
+  generation++;
+}
+
+int32_t mb_host_atlas_generation(void) {
+  keys_sweep();
+  return generation;
+}
+
 // Glyph `k` asked to be drawn ahead at the phases of `want`, those of `first` before the rest (none of it asked before:
 // its entry's subs_queued); the asked put in `asked` for the queues. False where it is not (asked
 // already and not all taken, or too many asked).
@@ -839,16 +872,28 @@ static BOOL ahead_ask(int k, uint8_t want, uint8_t first, NSMutableArray<MBAhead
   return YES;
 }
 
+// The phases of `asked` other than their first, a phase an item, in the order the queue of less weight draws them: a
+// phase of every glyph in turn, one more of each before a third of any (so a page moved across by a quarter of a pixel
+// a frame finds the next phase of all its glyphs drawn, not all four of a few).
+static NSMutableArray<MBAhead *> *ahead_rests(NSArray<MBAhead *> *asked) {
+  NSMutableArray<MBAhead *> *rests = [NSMutableArray new];
+  for (int pass = 0; pass < SUB_COUNT; pass++) {
+    for (MBAhead *a in asked) {
+      if (pass < __builtin_popcount((uint8_t)(a.want & ~a.first))) [rests addObject:a];
+    }
+  }
+  return rests;
+}
+
 // What was asked handed to the queues, a phase an item: each glyph's first phases over the cores there are (a page's
 // few hundred drawn in the time a frame or two takes, not one after another), each batch after the one before; the
-// rest of their phases on the queue of less weight. `firsts`: more first phases of glyphs asked before.
+// rest of their phases on the queue of less weight (ahead_rests). `firsts`: more first phases of glyphs asked before.
 static void ahead_go(NSMutableArray<MBAhead *> *asked, NSMutableArray<MBAhead *> *firsts) {
   if (!asked.count && !firsts.count) return;
-  NSMutableArray<MBAhead *> *rests = [NSMutableArray new];
   for (MBAhead *a in asked) {
     for (int n = __builtin_popcount(a.first); n > 0; n--) [firsts addObject:a];
-    for (int n = __builtin_popcount((uint8_t)(a.want & ~a.first)); n > 0; n--) [rests addObject:a];
   }
+  NSMutableArray<MBAhead *> *rests = ahead_rests(asked);
   if (firsts.count) {
     dispatch_async(ahead_q, ^{
       dispatch_apply(firsts.count, DISPATCH_APPLY_AUTO, ^(size_t i) { draw_ahead(firsts[i], YES); });

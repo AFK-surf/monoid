@@ -143,25 +143,30 @@ fn Mesh::begin_race(self : Mesh, place : Place, opening : Opening, link : Link, 
 }
 
 ///|
+/// How a grace wait on a suspect link ended once a replacement link opened first.
+priv enum Grace {
+  OldAnswered
+  SwitchNow
+  CandidateGone
+}
+
+///|
 /// A link suspect against a new one opened beside it at once: whichever answers first. The new one is dialled with
 /// the old one's credentials' source; the old one is asked its credential again and given `probe_ms` to answer. The
-/// old one answering first, the new one is let go (its dial given up, or closed); the new one opening first, it
-/// takes the place (`Mesh::switch`); neither, the old one is let go and nothing dialled: the next `link` does. And
-/// where anything came on the old one meanwhile, the transport's own packets too, and it has not ended, it is there
-/// after all (the network only paused, and moving would cut what is open on it): it is kept, whichever came first.
-/// That last only of a race begun for a ping missed: one begun at its program's word (`Mesh::wake`) goes by the
-/// two answers alone, since packets still coming say nothing of a network its program says changed.
+/// old one answering first, the new one is let go (its dial given up, or closed). Neither answering, the old one is
+/// let go and nothing dialled until the next `link`. On a race begun for a missed ping (`race.missed`), if the new
+/// link opens while the old one is still usable and probing, switching waits at most `race_grace_ms` for the old
+/// link's control stream to finish a round trip (a race begun by `Mesh::wake` switches as soon as the new link opens).
 ///
 /// The old link is asked the `Mesh::ping` way: its exchange is a fiber of the mesh's that nothing cuts short, in
 /// its turn on the control stream behind whatever exchange is out on it (the ping it missed), and what waits
 /// `probe_ms` is this race, not the exchange. Its time run out before its turn came, nothing is sent; run out with
 /// its line sent, its answer is still read as it comes. So the control stream is never left with a line sent and
-/// its answer unread, and a link kept after its probe's time ran out reads its answers in their order. (The
-/// TypeScript mesh gives the exchange itself up at that time, its line sent or not, and may keep the link all the
-/// same, one answer behind.)
+/// its answer unread, and a link kept after its probe's time ran out reads its answers in their order.
 async fn Mesh::race(self : Mesh, place : Place, opening : Opening, race : Race) -> Unit {
   let old = race.old
-  let heard = old.heard()
+  let before = old.control.answers
+  let recovered = () => race.missed && old.usable() && old.control.answers > before
   let dialled : @effect.Deferred[Link?] = @effect.Deferred::new()
   race.dial = Some(
     self.scope.fork(name="mesh race dial", () => {
@@ -184,6 +189,7 @@ async fn Mesh::race(self : Mesh, place : Place, opening : Opening, race : Race) 
         guard race.probing else { return false }
         old.control.send(old.credential)
         ignore(old.control.answer())
+        old.control.noted()
         true
       }))
       ignore(answered.succeed(asked is Did(true)))
@@ -203,14 +209,48 @@ async fn Mesh::race(self : Mesh, place : Place, opening : Opening, race : Race) 
     Probed(true) => Old
     Probed(false) =>
       match dialled.wait() {
-        Some(link) => New(link)
-        None => Neither
+        Some(link) => if recovered() { Old } else { New(link) }
+        None => if recovered() { Old } else { Neither }
       }
-    Dialled(Some(link)) => New(link)
-    Dialled(None) => if probed.wait() { Old } else { Neither }
+    Dialled(Some(link)) =>
+      if recovered() {
+        Old
+      } else if !race.missed || !old.usable() {
+        New(link)
+      } else {
+        let settled = @effect.race_first(
+          () => if probed.wait() || recovered() { OldAnswered } else { SwitchNow },
+          () => @effect.race_first(
+            () => {
+              old.control.next_answer(before)
+              OldAnswered
+            },
+            () => @effect.race_first(
+              () => {
+                ignore(old.gone.wait())
+                SwitchNow
+              },
+              () => @effect.race_first(
+                () => {
+                  ignore(link.gone.wait())
+                  CandidateGone
+                },
+                () => {
+                  @effect.sleep(race_grace_ms)
+                  SwitchNow
+                },
+              ),
+            ),
+          ),
+        )
+        match settled {
+          OldAnswered => if old.usable() { Old } else if link.usable() { New(link) } else { Neither }
+          CandidateGone => if probed.wait() || recovered() { Old } else { Neither }
+          SwitchNow => if link.usable() { New(link) } else if probed.wait() || recovered() { Old } else { Neither }
+        }
+      }
+    Dialled(None) => if probed.wait() || recovered() { Old } else { Neither }
   }
-  // Something came on the old one meanwhile, its probe answered or not: it is there after all.
-  let won : Won = if race.missed && !(won is Old) && old.ended() is None && old.heard() > heard { Old } else { won }
   // (ended from outside while this waited, this fiber was cut there and is not here: `Mesh::end_race`)
   race.probing = false
   self.racing.remove(place)

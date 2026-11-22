@@ -14,12 +14,22 @@ fn no_preview() -> String {
 
 ///|
 /// A message with picture line.png (800 × 600), its picture asked through `images`, each asking answered by `answer` (by how many
-/// times it was asked: from 1), counted in `asked`.
-fn image_tester(images : @sfbase.ChatImages, asked : Ref[Int], answer : (Int) -> Result[(Json, Bytes?), Json]) -> @ui.Tester {
-  image_tester_asking(images, fn(_, done) {
+/// times it was asked: from 1) when `flush()` is called, counted in `asked`.
+fn image_tester(images : @sfbase.ChatImages, asked : Ref[Int], answer : (Int) -> Result[(Json, Bytes?), Json]) -> (@ui.Tester, () -> Unit) {
+  let pending : Array[() -> Unit] = []
+  let t = image_tester_asking(images, fn(_, done) {
     asked.val += 1
-    done(answer(asked.val))
+    let n = asked.val
+    pending.push(fn() { done(answer(n)) })
   })
+  let flush = fn() {
+    let run = pending.copy()
+    pending.clear()
+    for f in run {
+      f()
+    }
+  }
+  (t, flush)
 }
 
 ///|
@@ -46,17 +56,28 @@ fn image_tester_asking(
   })
   @ui.Tester::new(
     fn(c) {
-      let here : @sfpages.MessageHere = {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
         station: "ws1/st1",
         session: "s-c1",
-        view: chat_view_made(Json::object({})),
-        go: None,
-        inline: true,
-        gutter: 0.0,
-        list: None,
-        core: None,
+        view: fn() { chat_view_made(Json::object({})) },
+        width: fn() { 760.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
       }
-      @sfpages.message_row(c, src, here, m)
+      root.box(fn(f) {
+        f.width_share(Is(1.0)) |> ignore
+        @sfpages.message_row_node(f, src, here, fn() { m })
+      })
+      |> ignore
+      @sf.presented_nodes(root)
     },
     w=760.0,
     h=600.0,
@@ -67,7 +88,7 @@ fn image_tester_asking(
 test "a chat's picture its station could not be reached for: 加载失败，点按重试, asked again when pressed" {
   let images = @sfbase.ChatImages::new()
   let asked = Ref(0)
-  let t = image_tester(images, asked, fn(n) {
+  let (t, flush) = image_tester(images, asked, fn(n) {
     if n == 1 {
       Err({ "code": "mesh", "message": "unreachable" })
     } else {
@@ -75,12 +96,14 @@ test "a chat's picture its station could not be reached for: 加载失败，点�
     }
   })
   t.draw()
+  flush()
   t.draw()
   assert_eq(asked.val, 1)
   assert_true(t.find(load_again()) is Some(_))
   assert_true(t.find(no_preview()) is None)
   t.tap_text(load_again())
   t.draw()
+  flush()
   t.draw()
   assert_eq(asked.val, 2)
   assert_true(t.find(load_again()) is None)
@@ -90,8 +113,9 @@ test "a chat's picture its station could not be reached for: 加载失败，点�
 test "a chat's picture its station has none of: 暂时无法预览, not asked again" {
   let images = @sfbase.ChatImages::new()
   let asked = Ref(0)
-  let t = image_tester(images, asked, fn(_) { Err({ "code": "http_404", "message": "not found", "status": 404 }) })
+  let (t, flush) = image_tester(images, asked, fn(_) { Err({ "code": "http_404", "message": "not found", "status": 404 }) })
   t.draw()
+  flush()
   t.draw()
   assert_true(t.find(no_preview()) is Some(_))
   assert_true(t.find(load_again()) is None)
@@ -99,6 +123,7 @@ test "a chat's picture its station has none of: 暂时无法预览, not asked ag
   images.seen("ws1/st1", false)
   images.seen("ws1/st1", true)
   t.draw()
+  flush()
   t.draw()
   assert_eq(asked.val, 1)
 }
@@ -107,8 +132,9 @@ test "a chat's picture its station has none of: 暂时无法预览, not asked ag
 test "the pictures that failed for want of a station asked again once it is reached again, not while it stays so" {
   let images = @sfbase.ChatImages::new()
   let asked = Ref(0)
-  let t = image_tester(images, asked, fn(_) { Err({ "code": "timeout", "message": "slow" }) })
+  let (t, flush) = image_tester(images, asked, fn(_) { Err({ "code": "timeout", "message": "slow" }) })
   t.draw()
+  flush()
   t.draw()
   assert_eq(asked.val, 1)
   // reached all along: nothing asked again
@@ -121,6 +147,7 @@ test "the pictures that failed for want of a station asked again once it is reac
   assert_eq(asked.val, 1)
   images.seen("ws1/st1", true)
   t.draw()
+  flush()
   t.draw()
   assert_eq(asked.val, 2)
 }
@@ -208,16 +235,28 @@ test "a chat's picture slow to come: the whole of what stands in for it breathin
     Data(v) => v
     _ => @halt.saying("video_shade is a colour")
   }
-  let breathing = fn() { t.cycles().filter(fn(s) { s.has_prefix("\{@sf.breath_ms.to_int()} ms") }).length() }
   // (nothing heard of it: no spinner over it in a pill of its own, which looked like a switch; it breathes)
   assert_eq(t.drawn_rect_corners().filter(fn(r) { r.4 == shade }).length(), 0)
-  assert_eq(breathing(), 1)
+  let alphas = fn() {
+    let mut low = 255L
+    for r in t.drawn_rects() {
+      let a = r.4 & 0xFFL
+      if a > 0L && a < low {
+        low = a
+      }
+    }
+    low
+  }
+  let a0 = alphas()
+  t.run_for(@sf.breath_ms / 2.0)
+  let a1 = alphas()
+  assert_true(a0 != a1, msg="breathing changes alpha: \{a0} -> \{a1}")
   (answer.val)(Ok((Json::object({}), Some(png_head()))))
   // (the frame it is here on, then back to whole over dur_ms)
   t.draw()
-  t.run_for(@sf.dur_ms)
+  t.run_for(@sf.dur_ms + @sf.reveal_ms)
   t.draw()
-  assert_eq(breathing(), 0)
+  assert_true(t.at_rest())
 }
 
 ///|
@@ -230,11 +269,20 @@ test "a light screenshot slow to come stands apart from the page: what stands in
   t.draw()
   t.run_for(@sfpages.coming_after_ms + @sfpages.coming_in_ms)
   // (the neutral ground as this window's theme has it: what `bg=Neutral` draws)
-  let ground = t.ctx().color(Neutral)
+  let ground = @ui.tree_theme().color(Neutral)
   assert_true((ground & 0xFFL) > 0L)
-  let waiting = t.image_nodes().filter(fn(i) { i.0.has_prefix("mem:wait-picture/\{hash}/") })
-  assert_true(waiting.length() > 0, msg="\{Repr(t.image_nodes())}")
-  assert_true(waiting.iter().all(fn(i) { i.0.has_suffix("/\{ground}/\{t.ctx().color(Bg)}") }), msg="\{Repr(waiting)}")
+  let waiting = match @ui.view_tree() {
+    Some(tree) =>
+      tree.drawn().filter_map(fn(d) {
+        match d.image {
+          Some((k, _, _)) if k.has_prefix("mem:wait-picture/\{hash}/") => Some(k)
+          _ => None
+        }
+      })
+    None => []
+  }
+  assert_true(waiting.length() > 0, msg="\{Repr(waiting)}")
+  assert_true(waiting.iter().all(fn(k) { k.has_suffix("/\{ground}/\{@ui.tree_theme().color(Bg)}") }), msg="\{Repr(waiting)}")
   // (the ground in it: not under it as well)
   assert_false(t.drawn_rects().iter().any(fn(r) { (r.4 & 0xFFFFFF00L) == (ground & 0xFFFFFF00L) }), msg="\{Repr(t.drawn_rects())}")
 }

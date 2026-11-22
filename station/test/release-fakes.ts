@@ -6,7 +6,7 @@ import { appendFileSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { makeTree } from "../../scripts/delta.ts";
-import { type Build, keyId } from "../src/updates/signed.ts";
+import { type Build, keyId } from "../../shared/release-signed.ts";
 import { platform } from "../src/updates/versions.ts";
 
 const pair = () => {

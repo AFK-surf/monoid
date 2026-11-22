@@ -1242,55 +1242,52 @@ fn found_line_node(
         top.show(at_once=true, fn() { !under_meta() && parts.get().length() > 0 }, said)
       })
       |> ignore
-      col.show(at_once=true, fn() { two.get() }, fn(u) {
-        u.box(fn(second) {
-          @sf.style_node(second, fn() { f().second })
-          second.min_width(Is(Some(0.0))) |> ignore
-          let under = fn() {
-            match now() {
-              Chat(ch) if ch.found is Some(_) => ch.item.title
-              Message(msg) => msg.chat.title
-              _ => ""
-            }
+      col.show(at_once=true, fn() { two.get() }, fn(second) {
+        @sf.style_node(second, fn() { f().second })
+        second.min_width(Is(Some(0.0))) |> ignore
+        let under = fn() {
+          match now() {
+            Chat(ch) if ch.found is Some(_) => ch.item.title
+            Message(msg) => msg.chat.title
+            _ => ""
           }
-          match first {
-            Chat(_) | Message(_) =>
-              second.show(at_once=true, fn() { under() != "" }, fn(n) {
-                n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                name_words_node(n, under, fn() { f().under })
-              })
-            Item(_) =>
-              second.show(at_once=true, fn() {
-                match now() {
-                  Item(it) => it.text != ""
-                  _ => false
-                }
-              }, fn(n) {
-                n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                @sf.found_words_node(
-                  n,
-                  fn() {
-                    match now() {
-                      Item(it) => it.text
-                      _ => ""
-                    }
-                  },
-                  fn() {
-                    match now() {
-                      Item(it) => it.marks
-                      _ => []
-                    }
-                  },
-                  fn() { f().under_words },
-                  fn() { @sf.theme().p.text },
-                )
-                |> ignore
-              })
-            _ => ()
-          }
-          second.show(at_once=true, fn() { under_meta() }, said)
-        })
-        |> ignore
+        }
+        match first {
+          Chat(_) | Message(_) =>
+            second.show(at_once=true, fn() { under() != "" }, fn(n) {
+              n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              name_words_node(n, under, fn() { f().under })
+            })
+          Item(_) =>
+            second.show(at_once=true, fn() {
+              match now() {
+                Item(it) => it.text != ""
+                _ => false
+              }
+            }, fn(n) {
+              n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sf.found_words_node(
+                n,
+                fn() {
+                  match now() {
+                    Item(it) => it.text
+                    _ => ""
+                  }
+                },
+                fn() {
+                  match now() {
+                    Item(it) => it.marks
+                    _ => []
+                  }
+                },
+                fn() { f().under_words },
+                fn() { @sf.theme().p.text },
+              )
+              |> ignore
+            })
+          _ => ()
+        }
+        second.show(at_once=true, fn() { under_meta() }, said)
       })
     })
     |> ignore

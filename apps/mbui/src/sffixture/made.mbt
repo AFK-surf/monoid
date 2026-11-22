@@ -61,6 +61,7 @@ pub fn fixture_reset() -> Unit {
   fix_windowed.clear()
   fix_timers.clear()
   fix_downloads.clear()
+  fix_saved.clear()
   fix_keeping_reset()
   fix_done.val = 0
   fix_unsaid.clear()

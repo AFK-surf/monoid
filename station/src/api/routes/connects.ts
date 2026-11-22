@@ -75,11 +75,12 @@ export type ConnectEditDeps = {
 export function connectEdits(deps: ConnectEditDeps) {
   const { config } = deps;
   const overview = async (r: Request) => await deps.overview(r.viewer, r.lang);
-  /// Edits the config for the viewer (said in the log as `what`); its refusals are the asker's (400).
+  /// Edits the config for the viewer (said in the log as `what`); its refusals are the asker's (400 unless already Refused).
   const change = async (r: Request, what: string, f: (raw: Json) => void) => {
     try {
       await config.updateSoon(f);
     } catch (e) {
+      if (e instanceof Refused) throw e;
       throw new Refused(400, (e as Error).message);
     }
     log.info("admin", "config changed from the admin page", { what, by: idOf(r.viewer) });
@@ -191,9 +192,72 @@ export function connectEdits(deps: ConnectEditDeps) {
         if (own !== null) next[next.kind] = own;
       }
       if (owner !== null) next.createdBy = owner;
-      // The station of its workspace a new conversation of it runs on (connects/workspace.ts); null: this one.
-      if (typeof i.station === "string" && i.station !== "") next.station = i.station;
-      else if (i.station === undefined && typeof existing?.station === "string") next.station = existing.station;
+      // The station(s) of its workspace a new conversation of it runs on (connects/workspace.ts); absent: this one.
+      // `stations` is an explicit manual allowlist: [] clears both; [s] writes `station` alone; >=2 writes `stations`
+      // and sets `station` to its first entry so older clients still read `startsOn`.
+      // Normalize `<workspace>/<station_id>` addresses from older clients down to bare station ids.
+      const bareStationId = (s: string): string => {
+        const t = s.trim();
+        const slash = t.lastIndexOf("/");
+        return slash >= 0 ? t.slice(slash + 1).trim() : t;
+      };
+      const stationListOf = (v: unknown): string[] | null => {
+        if (!Array.isArray(v)) return null;
+        const out = [...new Set(v.filter((x): x is string => typeof x === "string").map(bareStationId).filter((x) => x !== ""))];
+        return out.length > 0 ? out : null;
+      };
+      if (i.autoStation !== undefined && i.autoStation !== null && typeof i.autoStation !== "boolean") {
+        throw new Refused(400, "autoStation must be a boolean or null");
+      }
+      if (i.stations !== undefined && i.stations !== null && (!Array.isArray(i.stations) || i.stations.some((x) => typeof x !== "string"))) {
+        throw new Refused(400, "stations must be a list of station ids or null");
+      }
+      const oldAuto = existing?.autoStation === true;
+      const oldStations: string[] = oldAuto
+        ? []
+        : (stationListOf(existing?.stations) ?? (typeof existing?.station === "string" && bareStationId(existing.station) !== "" ? [bareStationId(existing.station)] : []));
+      if (i.autoStation === true) {
+        next.autoStation = true;
+      } else if (i.stations !== undefined) {
+        const pickedStations = stationListOf(i.stations);
+        if (pickedStations !== null && pickedStations.length === 1) {
+          next.station = pickedStations[0]!;
+        } else if (pickedStations !== null && pickedStations.length > 1) {
+          next.stations = pickedStations;
+          next.station = pickedStations[0]!;
+        }
+      } else if (i.station !== undefined) {
+        if (typeof i.station === "string") {
+          const s = bareStationId(i.station);
+          if (s !== "") next.station = s;
+        }
+      } else if (i.autoStation === false) {
+        // Explicit opt-out of autoStation with no manual stations specified: defaults to running here.
+      } else if (oldAuto) {
+        next.autoStation = true;
+      } else {
+        if (typeof existing?.station === "string") {
+          const s = bareStationId(existing.station);
+          if (s !== "") next.station = s;
+        }
+        const keptStations = stationListOf(existing?.stations);
+        if (keptStations !== null && keptStations.length > 1) {
+          next.stations = keptStations;
+          if (next.station === undefined) next.station = keptStations[0]!;
+        } else if (keptStations !== null && keptStations.length === 1 && next.station === undefined) {
+          next.station = keptStations[0]!;
+        }
+      }
+      const nextAuto = next.autoStation === true;
+      const nextStations: string[] = nextAuto
+        ? []
+        : (stationListOf(next.stations) ?? (typeof next.station === "string" && bareStationId(next.station) !== "" ? [bareStationId(next.station)] : []));
+      const routingChanged = existing === undefined
+        ? (nextAuto || nextStations.length > 0)
+        : (oldAuto !== nextAuto || oldStations.length !== nextStations.length || oldStations.some((s, idx) => s !== nextStations[idx]));
+      if (routingChanged && !manages(r.viewer)) {
+        throw new Refused(403, tr(lang, "station.connect.stationManagersOnly"));
+      }
       // Added in a workspace the station joined: that workspace's (one of the home workspace says none, as before).
       if (existing === undefined && home() !== null && r.viewer.workspace !== home()) next.workspace = r.viewer.workspace;
       const b: Json = { runtime };
@@ -218,7 +282,7 @@ export function connectEdits(deps: ConnectEditDeps) {
         }
       }
       // What this station does not know of it is kept (but its kind's part, and the part of a kind it was).
-      const known = new Set(["id", "enabled", "kind", "mode", "requireMention", "createdBy", "bind", "station", next.kind, typeof existing?.kind === "string" ? existing.kind : "slack"]);
+      const known = new Set(["id", "enabled", "kind", "mode", "requireMention", "createdBy", "bind", "station", "stations", "autoStation", next.kind, typeof existing?.kind === "string" ? existing.kind : "slack"]);
       for (const [k, v] of Object.entries(existing ?? {})) if (!known.has(k)) next[k] = v;
       const at = connects.findIndex((c) => c?.id === id);
       if (at >= 0) connects[at] = next;

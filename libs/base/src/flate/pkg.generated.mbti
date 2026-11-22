@@ -1,0 +1,35 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "base/flate"
+
+// Values
+pub fn adler32(BytesView) -> UInt32
+
+pub fn adler32_update(UInt32, BytesView) -> UInt32
+
+pub fn deflate(BytesView) -> Bytes
+
+pub fn gunzip(BytesView) -> Bytes?
+
+pub fn gzip(BytesView) -> Bytes
+
+pub fn inflate(BytesView, size? : Int32) -> Bytes?
+
+pub fn inflate_at(BytesView, Int32, size? : Int32) -> (Bytes, Int32)?
+
+pub fn zlib_compress(BytesView) -> Bytes
+
+pub fn zlib_decompress(BytesView) -> Bytes?
+
+// Errors
+
+// Types and methods
+pub struct Deflater {
+  // private fields
+}
+pub fn Deflater::finish(Self) -> Bytes
+pub fn Deflater::new() -> Self
+pub fn Deflater::push(Self, BytesView) -> Bytes
+
+// Type aliases
+
+// Traits

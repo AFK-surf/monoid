@@ -1,47 +1,52 @@
-// The phone's bottom bar: a floating capsule
-// of the places of one bar, 22 in from the screen's sides and its foot (the system's bars are the host's: the view is
-// laid out inside them); a ball over the place shown that travels on a spring stretched by its speed and goes where a
-// finger takes it; the page's primary action in a notch cut out of the bar's top (令, a new chat, on the chats'
-// pages); with more than one bar, the glass grows upward into a panel of the other bars, one row each, open once a
-// finger on the bar is drawn 24 over it and closed once back under 16, and a bar chosen there is the bar. Every
+// The phone's bottom bar, as Comma's Android tab bar is drawn (ShellTabBar.kt): a floating capsule of liquid glass
+// holding the places of one bar, 22 in from the screen's sides and its foot (the system's bars are the host's: the
+// view is laid out inside them); a grey pill under the place shown that travels on a spring stretched by its speed and
+// goes where a finger takes it, a lens of clear glass lifting out of it under a finger; the page's primary action (令,
+// a new chat, on the chats' pages) a glass circle of its own beside the capsule, 10 to its right, the capsule giving it
+// room as it comes; with more than one bar, the glass grows upward into a panel of the other bars, one row each, open
+// once a finger on the bar is drawn 24 over it and closed once back under 16, and a bar chosen there is the bar. Every
 // motion is a number on a spring (or a timed glide) stepped a frame at a time. Shown on a place's top page with
 // nothing over it; gone down out of the way (300 ms) under a page pushed, back up (380 ms) as it comes back.
 //
-// All of it is frosted glass of one capture (the pages its one source): the bar (its notch cut out of
-// it, a box's `notch_*`), the action in the notch and the ball frost the pages under them, not each other
-// (@ui.Glass::sharing). Where glass is drawn solid, the bar is its ground (Glass.kt `floating`: --raised at 72% over
-// the paper). What moves is only drawn so (src/motion's rule): the bar going down and coming back, the action growing
-// and shrinking, its icon swapping, a bar chosen in the panel sliding down into the bar's place are looks over where
-// they are laid out, and what leaves is drawn only.
+// The capsule and the circle are neutral optical liquid glass over the pages (@sf.glass_tab_bar: uniform 2.1pt blur,
+// quarter-circle bevel refraction, adaptive iOS 27 color transfer and glint, optional touch spot); where glass is drawn solid, their ground. What moves is only drawn so (src/motion's rule): the
+// bar going down and coming back, the capsule giving the action room and the action growing and shrinking, its icon
+// swapping, a bar chosen in the panel sliding down into the bar's place are looks over where they are laid out, and
+// what leaves is drawn only. (The action shown or not is still called the notch here, `k`, as it stood in one cut into
+// the bar's top before it was a circle of its own.)
 
 // ── geometry (dp) ──────────────────────────────────────────────
 
 ///|
-let bar_track : Double = 56.0
+let bar_track : Double = 50.0
 
 ///|
-let bar_inset : Double = 6.0
+/// How far the pill under the place shown is in from the capsule's edge (ShellTabBar.kt PILL_INSET_DP): its corner the
+/// capsule's less that, concentric.
+let pill_inset : Double = 4.0
 
 ///|
-let ball_rest : Double = bar_track - bar_inset * 2.0
+/// The pill's height (ShellTabBar.kt PILL_DP, as the capsule's 60 is our 56).
+let pill_h : Double = bar_track - pill_inset * 2.0
 
 ///|
-let ball_size : Double = bar_track + 12.0
+/// How far in from the capsule's ends its places start (ShellTabBar.kt TAB_EDGE_DP).
+let tab_edge : Double = 8.0
 
 ///|
-let c0 : Double = bar_inset + ball_rest / 2.0
+/// The action's circle: as high as the capsule, `act_gap` to its right (ShellTabBar.kt HEIGHT_DP, GAP_DP).
+let act_size : Double = bar_track
 
 ///|
-let drop : Double = 56.0
+let act_gap : Double = 10.0
 
 ///|
-let notch_gap : Double = 6.0
+/// How much taller than the capsule its lens is lifted (TabBarLens.kt LIFTED_HEIGHT_RATIO), and how wide for that
+/// height, no wider than a share of a place (LIFTED_ASPECT, LIFTED_TAB_SHARE).
+let lens_lift_h : Double = 1.17
 
 ///|
-let lift : Double = 4.0
-
-///|
-let fillet : Double = 8.0
+let lens_lift_aspect : Double = 1.45
 
 ///|
 /// How far the bar and its panel are drawn up while a finger has them. Give a taller window a little more room above
@@ -54,7 +59,7 @@ fn bar_raise(height : Double, foot : Double, panel : Double, top : Double) -> Do
 }
 
 ///|
-let bar_row : Double = 56.0
+let bar_row : Double = 50.0
 
 ///|
 let over : Double = 20.0
@@ -82,7 +87,7 @@ let bar_hold_ms : Double = 200.0
 ///|
 /// What a place's top page keeps clear at its foot for the bar (Places.kt BAR_ROOM: the bar, its 22 from the foot, a
 /// little air, and the action standing 32 over it).
-let bar_room : Double = 56.0 + 22.0 + 16.0 + 32.0
+let bar_room : Double = 50.0 + 22.0 + 16.0 + 32.0
 
 ///|
 /// The chats' family of places, whose pages have 令 in the notch.
@@ -90,21 +95,31 @@ let bar_room : Double = 56.0 + 22.0 + 16.0 + 32.0
 let chat_family : Array[String] = ["chats", "archive"]
 
 ///|
-/// The places' middles on a bar `w` wide holding `n` with the notch `k` open.
-fn bar_centres(w : Double, k : Double, n : Int) -> Array[Double] {
-  let closed = (w - 2.0 * c0) / 3.0
-  let open = w / 2.0 - (drop / 2.0 + notch_gap) - 6.0 - ball_rest / 2.0 - c0
-  let sp = closed + (open - closed) * k
-  if n >= 4 {
-    [c0, c0 + sp, w - c0 - sp, w - c0]
-  } else if n == 3 {
-    let mid = w / 2.0 - c0 - (w / 2.0 - c0 - sp) * k
-    [c0, c0 + mid, w - c0, w - c0]
-  } else if n == 2 {
-    [c0, w - c0, w - c0, w - c0]
-  } else {
-    [c0, c0, c0, c0]
-  }
+/// How wide the capsule is on a bar `w` wide with the notch `k` open: the whole bar, less the action's circle and its
+/// gap as far as it is open.
+pub fn bar_capsule_w(w : Double, k : Double) -> Double {
+  w - (act_size + act_gap) * k
+}
+
+///|
+/// How wide each of `n` places is in the capsule of a bar `w` wide with the notch `k` open (ShellTabBar.kt itemWidth).
+fn bar_item_w(w : Double, k : Double, n : Int) -> Double {
+  (bar_capsule_w(w, k) - 2.0 * tab_edge) / (if n < 1 { 1 } else { n }).to_double()
+}
+
+///|
+/// The slot a place is laid out in: as wide as a place is with the action there, its icon in its middle.
+fn bar_slot(w : Double, n : Int) -> Double {
+  bar_item_w(w, 1.0, n)
+}
+
+///|
+/// The places' middles on a bar `w` wide holding `n` with the notch `k` open: each in the middle of its share of the
+/// capsule; four always, those past `n` the last's.
+pub fn bar_centres(w : Double, k : Double, n : Int) -> Array[Double] {
+  let m = if n < 1 { 1 } else { n }
+  let iw = bar_item_w(w, k, m)
+  [0, 1, 2, 3].map(fn(j) { tab_edge + ((if j < m { j } else { m - 1 }).to_double() + 0.5) * iw })
 }
 
 ///|
@@ -140,10 +155,6 @@ let bar_drop : Double = 120.0
 ///|
 /// How long the bar takes to go (a page pushed over it): shorter than its coming, mostly gone by half of the page's push.
 let bar_hide_ms : Double = 250.0
-
-///|
-/// How much larger than the ball its lens is, held (liquid glass over the places, iOS 26's tab bar's).
-let lens_grow : Double = 0.18
 
 ///|
 /// How long the ball takes to fade in or out, and to grow back or shrink.
@@ -619,6 +630,17 @@ priv struct BarModel {
   /// the notch's icon going as another swaps in ("" none), how far the swap is (0 to 1)
   mut icon_was : String
   icon_swap : Glide
+  /// capillary liquid bridge merge radius & elastic recoil between capsule and `＋` action circle
+  bond_merge : @motion.Way
+  bond_recoil : @motion.Way
+  mut bond_bonded : Bool
+  /// iOS 26 scroll-to-collapse state (0.0 expanded -> 1.0 collapsed into left 56x56 orb)
+  mut collapsed : Bool
+  collapse : @motion.Way
+  /// scroll direction hysteresis tracking for root-page lists
+  mut scroll_last_y : Double
+  mut scroll_acc : Double
+  mut scroll_page_key : String
   /// what it was last told by the app's state (bar_tell, at its cause's moment): told the same again, nothing new
   mut told : BarTold?
 }
@@ -669,6 +691,14 @@ let bar : BarModel = {
   waits: false,
   felt: "",
   icon_was: "",
+  bond_merge: @motion.Way::new(0.0),
+  bond_recoil: @motion.Way::new(0.0),
+  bond_bonded: false,
+  collapsed: false,
+  collapse: @motion.Way::new(0.0),
+  scroll_last_y: 0.0,
+  scroll_acc: 0.0,
+  scroll_page_key: "",
   told: None,
   icon_swap: glide(1.0),
 }
@@ -707,6 +737,14 @@ fn bar_reset() -> Unit {
   bar.felt = ""
   bar.icon_was = ""
   back_glide(bar.icon_swap, 1.0)
+  bar.bond_merge.put(0.0)
+  bar.bond_recoil.put(0.0)
+  bar.bond_bonded = false
+  bar.collapsed = false
+  bar.collapse.put(0.0)
+  bar.scroll_last_y = 0.0
+  bar.scroll_acc = 0.0
+  bar.scroll_page_key = ""
   m_face.val = ""
   bar.told = None
   bar_told_now.set(None)
@@ -720,12 +758,23 @@ fn bar_reset() -> Unit {
 ///|
 /// The panel opened or closed from the moment `at` (its cause's; none: now).
 fn BarModel::open_panel(self : BarModel, open : Bool, at~ : Double) -> Unit {
+  let prev_k_end = self.k_end()
+  if open && self.collapsed {
+    self.collapsed = false
+    self.scroll_acc = 0.0
+    if @ui.reduced_motion() {
+      self.collapse.put(0.0)
+    } else {
+      self.collapse.go(0.0, @motion.snappy_damped, at~)
+    }
+  }
   self.mode.set(open)
   if open {
     self.o.go(1.0, 260.0, 17.0, at~)
   } else {
     self.o.go(0.0, 320.0, 26.0, at~)
   }
+  self.schedule_bond(prev_k_end, at~)
 }
 
 ///|
@@ -744,6 +793,8 @@ fn BarModel::rest(self : BarModel) -> Double {
   for g in gs {
     e = dmax(e, g.end())
   }
+  e = dmax(e, dmax(self.bond_merge.ends_at(), self.bond_recoil.ends_at()))
+  e = dmax(e, self.collapse.ends_at())
   e
 }
 
@@ -778,14 +829,242 @@ fn BarModel::jump(self : BarModel) -> Unit {
   for _, g in self.tints {
     g.snap(g.target)
   }
+  self.bond_merge.put(self.bond_merge.target())
+  self.bond_recoil.put(0.0)
+  self.collapse.put(self.collapse.target())
   self.swap = None
+}
+
+///|
+/// Capillary liquid bridge parameters between the bottom bar capsule and the `＋` action circle.
+let bar_bond_merge_max : Double = 30.0
+
+///|
+let bar_bond_break_gap : Double = 8.0
+
+///|
+/// Visual outer-contour tangency offset (0.75pt external contour on each glass body = 1.5pt total).
+let bar_bond_contact_gap : Double = 1.5
+
+///|
+/// Fast capillary snap-coalescence duration once the glass contours touch (`gap <= bar_bond_contact_gap`).
+let bar_bond_merge_ms : Double = 40.0
+
+///|
+/// Schedules the closed-form capillary liquid bridge (`bond_merge` & `bond_recoil`) directly from the physical gap
+/// `gap_at(t)` and hysteresis band `[bar_bond_contact_gap, bar_bond_break_gap]`, handling tab switches, panel
+/// open/close, and slow manual drags that touch `gap <= bar_bond_contact_gap` before `m.open` flips.
+fn BarModel::schedule_bond(self : BarModel, _prev_k_end : Double, at~ : Double) -> Unit {
+  let end = dmax(at, dmax(dmax(self.k.end(), self.o.end()), self.collapse.ends_at()))
+  let w = self.width
+  let gap_at = fn(t : Double) {
+    let k = self.k_at(t)
+    let c = self.collapse_at(t)
+    let extra = if w > 0.0 && c > 0.0 {
+      dmax(0.0, bar_capsule_w(w, k) - bar_track) * c
+    } else {
+      0.0
+    }
+    (act_size + act_gap) * k - act_size + extra
+  }
+  let cur_gap = gap_at(at)
+  let cur_merge = self.bond_merge.value_at(at)
+  let merge_spec = @motion.tween(bar_bond_merge_ms, ease=Out)
+  let bonded_now = if cur_gap <= bar_bond_contact_gap {
+    true
+  } else if cur_gap >= bar_bond_break_gap {
+    false
+  } else {
+    cur_merge > 1.0
+  }
+  if bonded_now {
+    match @motion.liquid_bond_cross_time(at, end, gap_at, true, bar_bond_break_gap) {
+      Some(ts) => {
+        self.bond_bonded = false
+        let delay = dmax(0.0, ts - at)
+        if delay > 0.0 {
+          if cur_merge < bar_bond_merge_max * 0.5 {
+            self.bond_merge.put(bar_bond_merge_max)
+          }
+          self.bond_merge.go(0.0, @motion.liquid_split_spring.delayed(delay), at~)
+        } else {
+          self.bond_merge.go(0.0, @motion.liquid_split_spring, at~)
+        }
+        self.bond_recoil.put(0.0)
+        self.bond_recoil.go(0.0, @motion.liquid_recoil_spring.delayed(delay), at~, velocity=-4.5)
+      }
+      None => {
+        self.bond_bonded = true
+        if self.bond_merge.target() < bar_bond_merge_max - 0.1 {
+          self.bond_merge.go(bar_bond_merge_max, merge_spec, at~)
+          self.bond_recoil.put(0.0)
+          self.bond_recoil.go(0.0, @motion.liquid_recoil_spring, at~, velocity=4.0)
+        }
+      }
+    }
+  } else {
+    match @motion.liquid_bond_cross_time(at, end, gap_at, false, bar_bond_contact_gap) {
+      Some(tt) => {
+        self.bond_bonded = true
+        let delay = dmax(0.0, tt - at)
+        self.bond_merge.put(0.0)
+        self.bond_merge.go(bar_bond_merge_max, merge_spec.delayed(delay), at~)
+        self.bond_recoil.put(0.0)
+        self.bond_recoil.go(0.0, @motion.liquid_recoil_spring.delayed(delay), at~, velocity=4.0)
+      }
+      None => {
+        self.bond_bonded = false
+        if cur_merge > 0.05 || self.bond_merge.target() > 0.0 {
+          self.bond_merge.go(0.0, @motion.liquid_split_spring, at~)
+        } else {
+          self.bond_merge.put(0.0)
+        }
+      }
+    }
+  }
+}
+
+///|
+/// Capillary liquid bridge merge radius between the capsule and `＋` circle at moment `t` (ms).
+fn bar_merge_at(t : Double) -> Double {
+  if bar.k_at(t) <= 0.002 || bar.collapse_at(t) > 0.05 {
+    return 0.0
+  }
+  let m = bar.bond_merge.value_at(t)
+  if !bar.bond_bonded && m < 0.05 {
+    0.0
+  } else {
+    dmax(0.0, m)
+  }
+}
+
+///|
+/// Scroll hysteresis thresholds for iOS 26 bottom bar scroll-to-collapse (dp).
+let bar_collapse_down_acc : Double = 36.0
+
+///|
+let bar_collapse_down_min_y : Double = 48.0
+
+///|
+let bar_collapse_up_acc : Double = 24.0
+
+///|
+let bar_collapse_top_y : Double = 24.0
+
+///|
+/// Effective scroll-to-collapse progress at moment `t` (0.0 expanded -> 1.0 collapsed left orb), suppressed when the
+/// multi-bar panel is open.
+fn BarModel::collapse_at(self : BarModel, t : Double) -> Double {
+  if self.o.value_at(t) > 0.01 {
+    0.0
+  } else {
+    dclamp(self.collapse.value_at(t), 0.0, 1.0)
+  }
+}
+
+///|
+/// Capsule width on a bar `w` wide with notch `k` and scroll-collapse progress `c`: shrinks smoothly from
+/// `bar_capsule_w(w, k)` down to `bar_track` (56pt circular orb anchored at `x = 0`).
+fn bar_cur_capsule_w(w : Double, k : Double, c : Double) -> Double {
+  let full_w = bar_capsule_w(w, k)
+  full_w + (bar_track - full_w) * dclamp(c, 0.0, 1.0)
+}
+
+///|
+/// Transitions the bottom bar between expanded (`false`) and scroll-collapsed (`true`) at moment `at`.
+fn bar_set_collapsed(collapsed : Bool, at : Double) -> Unit {
+  let m = bar
+  if m.collapsed == collapsed {
+    return
+  }
+  if collapsed {
+    if m.mode.untracked() || m.holds || m.drag >= 0.0 || m.o.value_at(at) > 0.01 {
+      return
+    }
+    match m.told {
+      Some(t) if t.shown => ()
+      _ => return
+    }
+  }
+  m.collapsed = collapsed
+  m.scroll_acc = 0.0
+  let target = if collapsed { 1.0 } else { 0.0 }
+  if @ui.reduced_motion() {
+    m.collapse.put(target)
+  } else {
+    m.collapse.go(target, @motion.snappy_damped, at~)
+  }
+  let prev_k_end = m.k_end()
+  m.schedule_bond(prev_k_end, at~)
+  bar_said_again()
+}
+
+///|
+/// Feeds a root-page list's scroll offset `y` (within `[0, most]`, ignoring rubber-band overscroll) into the
+/// scroll-to-collapse hysteresis controller.
+fn bar_scroll_note(page_key : String, y : Double, most : Double, at : Double) -> Unit {
+  let m = bar
+  if most <= 0.0 || y < 0.0 || y > most {
+    return
+  }
+  if page_key != m.scroll_page_key {
+    m.scroll_page_key = page_key
+    m.scroll_last_y = y
+    m.scroll_acc = 0.0
+    if y <= bar_collapse_top_y && m.collapsed {
+      bar_set_collapsed(false, at)
+    }
+    return
+  }
+  let dy = y - m.scroll_last_y
+  m.scroll_last_y = y
+  if dy.abs() < 0.01 {
+    return
+  }
+  if y <= bar_collapse_top_y {
+    m.scroll_acc = 0.0
+    if m.collapsed {
+      bar_set_collapsed(false, at)
+    }
+    return
+  }
+  if dy > 0.0 {
+    if m.scroll_acc < 0.0 {
+      m.scroll_acc = dy
+    } else {
+      m.scroll_acc = m.scroll_acc + dy
+    }
+    if !m.collapsed && y > bar_collapse_down_min_y && m.scroll_acc >= bar_collapse_down_acc {
+      bar_set_collapsed(true, at)
+    }
+  } else {
+    if m.scroll_acc > 0.0 {
+      m.scroll_acc = dy
+    } else {
+      m.scroll_acc = m.scroll_acc + dy
+    }
+    if m.collapsed && -m.scroll_acc >= bar_collapse_up_acc {
+      bar_set_collapsed(false, at)
+    }
+  }
 }
 
 // ── what the bar is told ───────────────────────────────────────────────
 
 ///|
-/// The notch's action's icon, as last shown (kept as it closes).
+/// The notch's action's icon, as last shown (kept as it closes): bar_action_icon's.
 let m_face : Ref[String] = { val: "" }
+
+///|
+/// The icon the notch draws for `action` (bar_action's; "" none): 令's action, a new chat, drawn as a ＋ as the others'
+/// are (令's own glyph read as no shape anyone knew).
+fn bar_action_icon(action : String) -> String {
+  if action == "ling" {
+    "plus"
+  } else {
+    action
+  }
+}
 
 ///|
 /// A place's name (the bar's words for what a screen reader says, the place's page's title).
@@ -795,7 +1074,7 @@ fn place_label(place : String) -> String {
 
 ///|
 /// The place a page is the top of (none: it is not a place's).
-fn place_of(page : Page) -> String? {
+pub fn place_of(page : Page) -> String? {
   match page {
     Home => Some("chats")
     Files => Some("files")
@@ -805,41 +1084,6 @@ fn place_of(page : Page) -> String? {
 }
 
 // ── drawing ────────────────────────────────────────────────────────────
-
-///|
-/// The notch cut into the glass's top (notch): a circle of radius `r` about the top's middle, `cy`
-/// below the edge (above it as it opens), met by the edge through fillets; where it meets the edge on the left and
-/// right of a glass `w` wide; None while it is closed (the circle not through the edge).
-fn notch_lips(w : Double, cy : Double, r : Double) -> (Double, Double)? {
-  if r <= 0.5 {
-    return None
-  }
-  let dy = fillet - cy
-  let reach = (r + fillet) * (r + fillet) - dy * dy
-  if cy + r <= 0.5 || reach <= 0.0 {
-    return None
-  }
-  let xf = reach.sqrt()
-  Some((w / 2.0 - xf, w / 2.0 + xf))
-}
-
-///|
-/// The notch with it `k` open (BarModel::k_now): where its circle's middle is below the glass's top, its radius.
-fn notch_at(k : Double) -> (Double, Double) {
-  (-lift * k, (drop / 2.0 + notch_gap) * k)
-}
-
-///|
-/// 令's ground: the accent at 86% (Bar.kt: accent.copy(alpha = 0.86f) over the page).
-let action_ink : Double = 0.86
-
-///|
-/// How far below the glass its shadow falls.
-let bar_shadow_y : Double = 4.0
-
-///|
-/// The bands its fade down the rounded ends is drawn in.
-let bar_shadow_fade : Int = 8
 
 ///|
 /// How long a place takes to light up or go dim.
@@ -958,21 +1202,44 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   if m.told == Some(told) {
     return
   }
+  let prev_told = m.told
   m.told = Some(told)
   bar_told_now.set(Some(told))
   bar_laid_told.set(bar_laid(told))
   let shown = told.shown
   let notched = told.action != ""
-  // shown or not
-  m.vis.go_by(
-    if shown { 1.0 } else { 0.0 },
-    if shown {
-      @motion.moved(points=bar_drop)
+  // Force expand whenever leaving a root page, switching tabs, or switching bars
+  let tab_changed = match prev_told {
+    Some(p) => p.active != told.active || p.cur != told.cur
+    None => false
+  }
+  if (!shown || tab_changed) && (m.collapsed || m.collapse.target() > 0.0) {
+    m.collapsed = false
+    m.scroll_acc = 0.0
+    m.scroll_page_key = ""
+    if @ui.reduced_motion() {
+      m.collapse.put(0.0)
     } else {
-      @motion.tween(bar_hide_ms, ease=Leave)
-    },
-    at~,
-  )
+      m.collapse.go(0.0, @motion.snappy_damped, at~)
+    }
+  }
+  // shown or not
+  let p_now = if shown && app.nav.root_shows() { app.nav.root_progress(fn() { at }) } else { 0.0 }
+  if shown && m.vis.target < 0.5 && m.vis.at(at).0 <= 0.01 && p_now > 0.01 && p_now < 0.99 {
+    // Handing off from a swipe-back gesture (the bar gone all the way down): on smoothly from its live progress
+    m.vis.snap(p_now)
+    m.vis.go_by(1.0, @motion.moved(points=bar_drop * (1.0 - p_now)), at~)
+  } else {
+    m.vis.go_by(
+      if shown { 1.0 } else { 0.0 },
+      if shown {
+        @motion.moved(points=bar_drop)
+      } else {
+        @motion.tween(bar_hide_ms, ease=Leave)
+      },
+      at~,
+    )
+  }
   // going: the panel closed, a finger's slide let go
   if !shown {
     if m.mode.get() {
@@ -983,22 +1250,26 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
     m.drag_y = -1.0
     m.holds = false
   }
-  // the notch's icon: another swaps in as the notch stays open (a short scale and fade); closed or none shown, at once
-  if told.action != "" && told.action != m_face.val {
+  // the notch's icon: another swaps in as the notch stays open (a short scale and fade); closed or none shown, at once.
+  // By the icon drawn, not the action: 令 and ＋ draw the same ＋, which stays still as one gives way to the other.
+  let face = bar_action_icon(told.action)
+  if face != "" && face != m_face.val {
     let k_then = m.k_at(at)
     if m_face.val == "" || k_then <= 0.001 {
-      m_face.val = told.action
+      m_face.val = face
       m.icon_was = ""
       m.icon_swap.snap(1.0)
     } else {
       m.icon_was = m_face.val
-      m_face.val = told.action
+      m_face.val = face
       m.icon_swap.snap(0.0)
       m.icon_swap.go(1.0, icon_swap_ms, Linear, at~)
     }
   }
   // the notch as the place has it
+  let prev_k_end = m.k_end()
   m.k.go(if notched { 1.0 } else { 0.0 }, 300.0, 30.0, at~)
+  m.schedule_bond(prev_k_end, at~)
   let items = told.sets[told.cur]
   // the ball: to the place shown, from where it is then, as stiff as the way there is short (a new place's); riding
   // a bar chosen as it lands; a new width, there at once. Not while a finger has it, nor before the width is known.
@@ -1163,10 +1434,9 @@ fn BarModel::ride(self : BarModel, s : Swap, j : Int, w : Double, row_top : Doub
   let still = dmax(self.up.end(), dmax(self.o.end(), self.k.end()))
   let o = self.o
   let k = self.k
-  let up = self.up
   let place_at = fn(t : Double) {
     let ot = o.value_at(t)
-    let kt = k.value_at(t) * (1.0 - dclamp(2.0 * ot, 0.0, 1.0)) * (1.0 - dclamp(up.value_at(t), 0.0, 1.0))
+    let kt = k.value_at(t) * (1.0 - dclamp(2.0 * ot, 0.0, 1.0))
     let (xs, y) = swap_at(s, ot, w, kt, row_top)
     (xs[j], y + s.drop * (1.0 - s.t(ot)))
   }
@@ -1231,15 +1501,16 @@ fn bar_glass_top(reach : Double, o : Double) -> Double {
 }
 
 ///|
-/// The notch as it is at `t`: as its place has it, closed with the panel or the bar's rise under a finger.
+/// The notch as it is at `t`: as its place has it, closed with the panel (its rows across the whole bar). A finger on
+/// the bar leaves it as it is, as Comma's bar keeps its circle: the places stay where the finger found them.
 fn BarModel::k_at(self : BarModel, t : Double) -> Double {
-  self.k.value_at(t) * (1.0 - dclamp(2.0 * self.o.value_at(t), 0.0, 1.0)) * (1.0 - dclamp(self.up.value_at(t), 0.0, 1.0))
+  self.k.value_at(t) * (1.0 - dclamp(2.0 * self.o.value_at(t), 0.0, 1.0))
 }
 
 ///|
-/// Where the notch as drawn (BarModel::k_now) is going: where its spring, the panel and the rise are sent.
+/// Where the notch as drawn (BarModel::k_now) is going: where its spring and the panel are sent.
 fn BarModel::k_end(self : BarModel) -> Double {
-  self.k.to * (1.0 - dclamp(2.0 * self.o.to, 0.0, 1.0)) * (1.0 - dclamp(self.up.to, 0.0, 1.0))
+  self.k.to * (1.0 - dclamp(2.0 * self.o.to, 0.0, 1.0))
 }
 
 ///|
@@ -1258,6 +1529,21 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
   let px = d.x
   let py = d.y
   let o_at = m.o.value_at(t)
+  // Collapsed state: tapping or interacting with the left 56x56 orb expands the bar cleanly without triggering
+  // another tab; empty space to its right is already excluded by `bar_glass_node`'s `.takes`.
+  if m.collapsed || m.collapse_at(t) > 0.5 {
+    if how is (Tapped | Ended) {
+      @sfbase.place_press_lifted(t)
+    }
+    match how {
+      Pressed => ()
+      Tapped | Held | Dragging | Ended =>
+        if px >= 0.0 && px <= bar_track && py >= l.row_top - 4.0 {
+          bar_set_collapsed(false, t)
+        }
+    }
+    return
+  }
   // another place chosen is felt, unless the finger already felt it getting there (a drag let go on it); the place shown
   // tapped again (`again`: a tap, not a slide let go on it), its list back to its top where it is away from it (the bar
   // shows only over a place's root: sfdesk's list_back_to_top)
@@ -1293,8 +1579,10 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
     for id, g in m.tints {
       lit[id] = g.at(t).0
     }
+    let prev_k_end = m.k_end()
     m.mode.set(false)
     m.o.go(0.0, 200.0, 28.0, at=t)
+    m.schedule_bond(prev_k_end, at=t)
     m.swap = Some({
       i,
       n,
@@ -1323,7 +1611,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
     if l.items.length() > 0 && py >= l.row_top - 4.0 {
       let now = bar_centres(l.w, m.k_at(t), l.items.length())
       let j = nearest(now, l.items.length(), px)
-      let slot = (l.w - 2.0 * c0) / 3.0
+      let slot = bar_item_w(l.w, m.k_at(t), l.items.length())
       if (now[j] - px).abs() <= slot / 2.0 {
         if m.mode.get() {
           m.open_panel(false, at=t)
@@ -1406,11 +1694,13 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
           }
           let snap = if m.open { 1.0 } else { 0.0 }
           let goal = dclamp(snap + lean * (raw - snap), 0.0, 1.1)
+          let prev_k_end = m.k_end()
           if m.open {
             m.o.go(goal, 260.0, 17.0, at=t)
           } else {
             m.o.go(goal, 320.0, 26.0, at=t)
           }
+          m.schedule_bond(prev_k_end, at=t)
         }
       }
       m.drag = px
@@ -1477,7 +1767,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
             let set = l.sets[l.others[n]]
             let cs = bar_centres(l.w, 0.0, set.length())
             let j = nearest(cs, set.length(), px)
-            let slot = (l.w - 2.0 * c0) / 3.0
+            let slot = bar_item_w(l.w, 0.0, set.length())
             pick(l.others[n], if (cs[j] - px).abs() <= slot / 2.0 { Some(set[j]) } else { None })
           }
         }
@@ -1587,10 +1877,20 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
         }
       }))
       // (a finger taken where the glass is drawn at its moment: under the panel's top as far open as it is then; above it,
-      // what is under the bar's)
+      // what is under the bar's; while scroll-collapsed, only the shrinking left capsule intercepts so the middle gap
+      // passes through to the scrollable list underneath)
       .takes(fn(w, h, at) {
         match told() {
-          Some(t) => [(0.0, bar_glass_top(bar_laid(t).reach, bar.o.value_at(at)), w, h)]
+          Some(t) => {
+            let top = bar_glass_top(bar_laid(t).reach, bar.o.value_at(at))
+            let c = bar.collapse_at(at)
+            if c > 0.01 {
+              let cur_w = bar_cur_capsule_w(w, bar.k_at(at), c)
+              [(0.0, top, cur_w, h)]
+            } else {
+              [(0.0, top, w, h)]
+            }
+          }
           None => []
         }
       })
@@ -1626,60 +1926,6 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
 }
 
 ///|
-/// A place's top page other than the chats (with the bar under it): Home's top bar over it (the
-/// place's name, settings), what it shows the settings' page of it (src/sfapp/settings).
-fn place_page(c : @ui.Ctx, src : Source, w : Workspace, place : String) -> Unit {
-  // what it shows runs under the top bar, frosted over it (scrolling under it)
-  c.box(style=page_whole, fn() {
-    // what it shows: the settings' page of the same place (src/sfapp/settings), in place of its own bar
-    c.box(style=page_whole, fn() {
-      match @settings.route_of(place) {
-        Some(r) => {
-          // under the top bar, which names it; over the bottom bar
-          let top = status_top() + bar_h + 8.0
-          let core = settings_core(src, w)
-          @settings.page(c, core, @settings.here_of(core, w.id, w.name), r, root=true, top~)
-        }
-        None => ()
-      }
-    })
-    |> ignore
-    c.layer(fn() { place_top_bar(c, place) }) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A place's top bar at the stack's root: the place's name, the page's actions
-/// (`@sf.named_actions`), settings at the right edge; frosted over what runs under it, no line under it.
-fn place_top_bar(c : @ui.Ctx, place : String) -> Unit {
-  let actions = @sf.named_actions.val
-  @sf.named_actions.val = None
-  let glass_top = c.box(style=place_top_whole, glass=@sf.glass_bar(), fn() {
-    // under the status bar (TopGlassBar: windowInsetsPadding(statusBars), then TopBarHeight)
-    c.box(style=place_top_row.then(@ui.style(pt=@sf.room_of(status_top()), min_h=Fixed(top_bar_h()))), fn() {
-      // (its words whole: what the page does at its end gives way where the bar has not the room, @sf.head_end)
-      c.box(style=place_title_box, keep=true, fn() {
-        top_bar_title(c, place_label(place)) |> ignore
-      })
-      |> ignore
-      match actions {
-        Some(a) => @sf.head_end(c, a)
-        None => ()
-      }
-      // settings at the right edge, as at Home's
-      nav_button(c, "settings", 22.0, key="place-settings", said=tr("android-chat.home.settings"), on_press=fn() {
-        @sfbase.history_push()
-        app.nav.push(Settings)
-      })
-    })
-    |> ignore
-  })
-  // over what runs under it: the scroll bar there keeps clear of it
-  c.floats_over(glass_top)
-}
-
-///|
 /// A slide let go while the finger still moves across: the place chosen is where the finger would be this long on at
 /// the speed it was let go at (a flick's way projected on, as a list's fling carries its speed), never further than one
 /// place's room past where it is let go; let go still, where it is (bar_flung).
@@ -1689,23 +1935,6 @@ let bar_fling_ms : Double = 100.0
 /// Where a slide let go at `px` across a bar `w` wide, the finger moving at `vx` (points a ms), chooses its place by
 /// (bar_fling_ms on, within one place's room of `px`): `px` itself where it was still.
 fn bar_flung(px : Double, vx : Double, w : Double) -> Double {
-  let slot = (w - 2.0 * c0) / 3.0
+  let slot = bar_item_w(w, 1.0, 4)
   px + dclamp(vx * bar_fling_ms, -slot, slot)
 }
-
-///|
-/// A place's top bar (place_top_bar): as wide as the page; its row (16 in from its sides, 10 between its parts), its
-/// title's box (34 high, what the page does at its end giving way to it).
-// kept across runs: a value (no field of it changes)
-let place_top_whole : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let place_top_row : @ui.Style = @ui.css("row w=Full px=S4 gap=S2_5 align=ACenter")
-
-///|
-let place_title_h : Double = 34.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let place_title_box : @ui.Style = @ui.css("row w=Full align=ACenter").then(@ui.style(h=Fixed(place_title_h)))

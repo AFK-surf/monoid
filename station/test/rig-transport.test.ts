@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type GrantBody, latest, signedBytes } from "../../client/core-ts/src/rig-form.ts";
-import { type Entry, entryHash, signedBytes as entryBytes } from "../src/cloud/lock.ts";
+import { type Entry, entryHash, signedBytes as entryBytes } from "../../shared/lock.ts";
 import { Cloud } from "../src/cloud/state.ts";
 import { PeerBus, Refused } from "../src/mesh/bus.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../src/mesh/peer.ts";

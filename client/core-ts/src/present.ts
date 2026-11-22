@@ -13,6 +13,7 @@ import * as jobsMod from "./jobs.ts";
 import { permissionsShown } from "./permissions.ts";
 import { copiesShown } from "./copies.ts";
 import { elevationShown } from "./elevation.ts";
+import { screenServiceShown } from "./screen-service.ts";
 import * as model from "./shapes/model.ts";
 import * as providers from "./shapes/providers.ts";
 import { arr as arrU, equal, get as getU, isObject, shaped, str, u64 } from "./util.ts";
@@ -30,7 +31,7 @@ const arr = (v: unknown): J[] | undefined => arrU(v);
 const get = (v: unknown, k: string | number): J => getU(v, k);
 
 /// The time a value is put together for: now, and the viewer's offset from UTC.
-export type Clock = { now: number; offsetMin: number };
+export type Clock = { now: number; offsetMin: number; reached?: (at: number, later?: boolean) => boolean };
 
 /// The clock moved on to `c` (a value is put together for it): what reads a grain that changed is made again.
 export function clockAt(c: Clock): void {
@@ -117,7 +118,7 @@ export function stamp(ms: number, c: Clock): Record<string, unknown> {
 }
 
 /// Times kept in seconds (still.fail cloud's) and in milliseconds (the station's).
-const SECONDS = new Set(["created_at", "expires_at", "used_at", "revoked_at", "last_seen", "lastSeen", "updated_at", "delivered_at", "added_at"]);
+const SECONDS = new Set(["created_at", "expires_at", "used_at", "last_used_at", "revoked_at", "last_seen", "lastSeen", "updated_at", "delivered_at", "added_at"]);
 const MILLIS = new Set(["createdAt", "lastActiveAt", "lastUsedAt", "checkedAt", "resetsAt"]);
 /// The fields `times` says in words (`time`), each a moment.
 export const TIME_KEYS: readonly string[] = [...SECONDS, ...MILLIS];
@@ -249,14 +250,17 @@ export function times(value: unknown, c: Clock): unknown {
     byMinute();
     const credits = (map ?? from).credits;
     if (isObject(credits)) {
+      const cuMatch = typeof credits.balance === "string" ? /^\s*(-?\d+(?:\.\d+)?)\s*CU\s*$/i.exec(credits.balance) : null;
       const text =
         credits.unlimited === true
           ? t("core-views.present.credits.unlimited")
-          : typeof credits.balance === "string"
-            ? t("core-views.present.credits.balance", { balance: format.decimal(credits.balance) })
-            : credits.hasCredits === false
-              ? t("core-views.present.credits.none")
-              : t("core-views.present.credits.unknown");
+          : cuMatch !== null
+            ? `${format.decimal(cuMatch[1]!)} CU`
+            : typeof credits.balance === "string"
+              ? t("core-views.present.credits.balance", { balance: format.decimal(credits.balance) })
+              : credits.hasCredits === false
+                ? t("core-views.present.credits.none")
+                : t("core-views.present.credits.unknown");
       (map ??= { ...from }).creditsText = text;
     }
     const count = u64((map ?? from).resetCount);
@@ -340,9 +344,12 @@ export function ending(s: J): string | null {
   return said === "final" ? "all_done" : said === "block" || said === "need_decision" ? "need_help" : said;
 }
 
+const failedStart = (s: J): boolean => get(s, "startFailed") === true && (u64(get(s, "pending")) ?? 0) > 0;
+
 /// Where a session stands.
 export function sessionStatus(s: J): string {
   if (get(s, "process") === "running") return "running";
+  if (failedStart(s)) return "failed";
   const turn = get(s, "lastTurn");
   // A turn not ended yet is running, whatever `process` says: the station reads its process states before its
   // database (read/pool.ts), so a turn that has just begun can come with the process still cold. One that ended
@@ -559,7 +566,7 @@ function stateWhat(a: J): string | null {
   if (waiting(a) === null) {
     const need = said("need");
     if (status === "block" && need !== null) return need;
-    if (status === "failed") return format.failureText(said("detail") ?? "");
+    if (status === "failed") return failedStart(a) ? t("station.notice.cannotStart") : format.failureText(said("detail") ?? "");
     if (status === "aborted") return t("core-logic.format.status.aborted.what");
     if (status === "unexpected") return t("core-logic.format.status.unexpected.what");
   }
@@ -615,8 +622,10 @@ export function mentions(text: string, named: [string, string][], members: J[]):
     while (len < tail.length && /[A-Z0-9]/.test(tail[len])) len++;
     if (len > 0 && tail[len] === ">") {
       const id = tail.slice(0, len);
-      const name = named.find(([b]) => b === id)?.[1] ?? memberName(members, id) ?? id;
-      out += `@${name}`;
+      // (a bot named nothing yet, as a connect not named, goes by a name heard of it, else as a member; one named with
+      // its `@` is not given another)
+      const name = named.find(([b, n]) => b === id && n !== "")?.[1] ?? memberName(members, id) ?? id;
+      out += name.startsWith("@") ? name : `@${name}`;
       rest = tail.slice(len + 1);
     } else {
       out += "<@";
@@ -751,7 +760,7 @@ function statusOf(s: J): { text: string; tone: J; lead: Lead["kind"] | null; res
     lead = "done";
     rest = done ?? "";
   } else if (status === "failed") {
-    text = t("core-views.present.failed", { why: format.failureText(said("detail") ?? "") });
+    text = t("core-views.present.failed", { why: failedStart(s) ? t("station.notice.cannotStart") : format.failureText(said("detail") ?? "") });
   }
   if (waiting(s) !== null) {
     const what = nonEmpty(get(turn, "waitFor"));
@@ -822,6 +831,7 @@ export function session(s: J): J {
     titleText: title,
     agentText: format.agentLabel(m, effort),
     modelName: m ? model.name(m) : null,
+    modelShort: m ? model.shortIfShorter(m) : null,
     maker: maker(m),
     runtimeText: format.runtimeLabel(runtime),
     processText: process !== null ? format.processText(process) : null,
@@ -973,6 +983,25 @@ function legacyCodexQuota(p: J): J {
   };
 }
 
+function profileCheckPlan(check: J): string | undefined {
+  return get(check, "state") === "ok" ? knownPlan(get(check, "plan")) : undefined;
+}
+
+/// The subscription tier as the account named it most recently, from its check or allowance.
+export function profilePlanText(p: J, quota = legacyCodexQuota(p)): string {
+  if (get(get(p, "access"), "kind") !== "subscription") return "";
+  const check = get(p, "check");
+  const state = get(check, "state");
+  const checkPlan = profileCheckPlan(check);
+  const canShowQuotaPlan = !isObject(check) || state === "ok" || state === "unknown";
+  const quotaPlan = canShowQuotaPlan && get(quota, "state") !== "blocked" ? knownPlan(get(quota, "plan")) : undefined;
+  const checkAt = get(check, "checkedAt");
+  const quotaAt = get(quota, "checkedAt");
+  const newerQuota = typeof checkAt === "number" && typeof quotaAt === "number" && quotaAt > checkAt;
+  const plan = newerQuota ? quotaPlan || checkPlan : checkPlan || quotaPlan;
+  return plan === undefined ? "" : planName(plan, str(get(p, "runtime")));
+}
+
 /// A profile with its last check in words, its models' makers and series, what it can do, and its trouble.
 export function profile(p: J): J {
   if (!isObject(p)) return p;
@@ -1016,18 +1045,14 @@ export function profile(p: J): J {
   }
   o.uses = usesList;
   const kind = get(o.access, "kind");
-  // Only subscriptions have a plan. A check may report it, or an allowance (e.g. Grok's billing).
-  const checkPlan = get(o.check, "state") === "ok" ? knownPlan(get(o.check, "plan")) : undefined;
-  const canShowQuotaPlan = !isObject(o.check) || ["ok", "unknown"].includes(String(get(o.check, "state")));
-  const quotaPlan = canShowQuotaPlan && get(o.quota, "state") !== "blocked" ? knownPlan(get(o.quota, "plan")) : undefined;
-  const checkAt = get(o.check, "checkedAt");
-  const quotaAt = get(o.quota, "checkedAt");
-  const newerQuota = typeof checkAt === "number" && typeof quotaAt === "number" && quotaAt > checkAt;
-  const plan = kind === "subscription" ? (newerQuota ? quotaPlan || checkPlan || "" : checkPlan || quotaPlan || "") : "";
-  o.planText = planName(plan, str(o.runtime));
+  const serviceId = kind === "service" ? (str(o.service) ?? str(get(o.access, "service"))) : undefined;
+  o.planText = profilePlanText(o, o.quota);
   const plain = (kind === "subscription" || kind === "env") && !usesList.includes("decision");
-  o.usesText = plain ? "" : usesText(usesList);
-  if (provider) {
+  o.usesText = serviceId === "colab" ? t("core-views.present.uses.colab") : plain ? "" : usesText(usesList);
+  if (serviceId === "colab") {
+    o.providerName = "Google Colab";
+    o.providerMark = "colab";
+  } else if (provider) {
     o.providerName = provider[0];
     o.providerMark = provider[1];
   }
@@ -1037,16 +1062,23 @@ export function profile(p: J): J {
   o.modelsText = modelsText;
   o.available = all;
   o.added = added;
-  o.modelsReading = !isObject(o.check) && !decisionOnly;
+  o.modelsReading = !isObject(o.check) && !decisionOnly && kind !== "service";
   // What it is, in a word (a page's facts): the machine's own login, its provider, else its kind of account.
   o.kindText = o.machine === true ? t("core-views.present.profile.machine") : (o.providerName ?? accessLabel(str(kind) ?? ""));
-  // Who a sign-in goes to: OpenCode for OpenCode Go, Kimi for Kimi Code, else its runtime's vendor.
-  o.signInProvider = kind === "opencode-go" ? "OpenCode" : get(o.access, "provider") === "kimi-code" ? "Kimi"
-    : (SIGN_IN[str(o.runtime) ?? ""] ?? "ChatGPT");
+  // Who a sign-in goes to: OpenCode for OpenCode Go, Kimi for Kimi Code, Google Colab for Colab service, else its runtime's vendor.
+  o.signInProvider =
+    serviceId === "colab"
+      ? "Google Colab"
+      : kind === "opencode-go"
+        ? "OpenCode"
+        : get(o.access, "provider") === "kimi-code"
+          ? "Kimi"
+          : (SIGN_IN[str(o.runtime) ?? ""] ?? "");
   // Its last check in a line (its detail, without the 可用 (Works) a working one starts with: its state says that, nor the
   // address it signed in as where that is its name: its head says it), or that it has none yet.
   const detailOf = str(get(o.check, "detail"));
   const named = str(o.name) ?? "";
+  const checkPlan = profileCheckPlan(o.check);
   const detail = withoutPart(withoutPart((detailOf ?? "").replace(/^(可用[，,]|Works,)\s*/, ""), named), kind === "subscription" ? (checkPlan ?? "") : "");
   // A machine's token-only check may have said `max` while its own login identifies that plan as Ultra.
   o.checkLine = o.enabled === false ? "" : isObject(o.check)
@@ -1107,7 +1139,7 @@ function withoutPart(line: string, part: string): string {
 }
 
 /// Who a runtime's subscription signs in to.
-const SIGN_IN: Record<string, string> = { claude: "Claude", grok: "Grok", cursor: "Cursor", devin: "Devin", agy: "Google" };
+const SIGN_IN: Record<string, string> = { claude: "Claude", codex: "ChatGPT", grok: "Grok", cursor: "Cursor", devin: "Devin", agy: "Google" };
 
 /// A kind of account in words.
 function accessLabel(kind: string): string {
@@ -1117,11 +1149,12 @@ function accessLabel(kind: string): string {
     case "anthropic-api": return "Anthropic API";
     case "api-provider": return t("core-views.present.access.provider");
     case "env": return t("core-views.present.access.env");
+    case "service": return t("core-views.present.access.service");
     default: return "";
   }
 }
 
-const KINDS = new Set(["subscription", "anthropic-api", "opencode-go", "api-provider", "env"]);
+const KINDS = new Set(["subscription", "anthropic-api", "opencode-go", "api-provider", "env", "service"]);
 
 function uses(p: J): [string[], [string, string | null] | null] {
   const runs = (r: string) => (arr(p.runtimes) ?? []).includes(r);
@@ -1168,8 +1201,8 @@ export function profileTrouble(p: J): J {
     const machine = get(p, "machine") === true;
     if (machine && state === "login") return issue(title, why, t("core-views.present.trouble.command_next"), "command", t("core-views.present.trouble.command_label"));
     const kind = str(get(get(p, "access"), "kind"));
-    // A subscription, or a profile signed in to an account (OpenCode Go's, Kimi Code's): signed in again.
-    const signsIn = kind === "subscription" || get(get(p, "access"), "login") === true;
+    // A subscription, a service account, or a profile signed in to an account (OpenCode Go's, Kimi Code's): signed in again.
+    const signsIn = kind === "subscription" || kind === "service" || get(get(p, "access"), "login") === true;
     if (signsIn && !machine && state === "login") return issue(title, why, t("core-views.present.trouble.login_next"), "login", t("core-views.present.trouble.login_label"));
     if (kind === "anthropic-api" || kind === "opencode-go" || kind === "api-provider") return issue(title, why, t("core-views.present.trouble.key_next"), "key", t("core-views.present.trouble.key_label"));
     if (kind === "env") return issue(title, why, t("core-views.present.trouble.env_next"), "env", t("core-views.present.trouble.env_label"));
@@ -1424,7 +1457,7 @@ export function decorate(topic: Topic, value: unknown, c: Clock): unknown {
     case "drive":
       return drive.shown(value, c);
     case "prefs":
-      return prefsMod.shown(value);
+      return prefsMod.shown(value, c);
   }
   if (!ticks(topic)) return value;
   const v = value as J;
@@ -1498,6 +1531,10 @@ function overview(value: J, c: Clock, station: string | null): J {
   const elevation = elevationShown(v.elevation);
   if (elevation === undefined) delete v.elevation;
   else v.elevation = elevation;
+  // A Windows station's optional LocalSystem screen service, in words (screen-service.ts); none said, none shown.
+  const screenService = screenServiceShown(v.screenService);
+  if (screenService === undefined) delete v.screenService;
+  else v.screenService = screenService;
   // Where its chats are copied (copies.ts); none said, none shown.
   const copies = copiesShown(v.copies, c);
   if (copies === undefined) delete v.copies;

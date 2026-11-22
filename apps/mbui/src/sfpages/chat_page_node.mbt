@@ -1,4 +1,4 @@
-// A chat's page made with its inside nodes (sfbase's chat_page_nodes on; chat_page_made's `body`): its messages the
+// A chat's page made with its inside nodes (chat_page_made's `body`): its messages the
 // page's list (chat_body_node), the composer in the list's foot the page's old view as yet, what floats over it there
 // (the way to the newest, the bell, 对话目录's button and rail: chat_body_node's foot), a passage picked in a message
 // quoted by its pill or the bar over a finger's pick (chat_quote_node).
@@ -23,8 +23,10 @@ pub fn chat_page_body_node(
   cover_to? : () -> Double,
   room? : Double = list_room,
   foot? : () -> Double = fn() { list_foot },
+  foot_clear_extra? : () -> Double = fn() { 0.0 },
   composer? : (@view.View) -> Unit,
   lead? : Double = unread_lead,
+  on_stack? : () -> Bool = fn() { true },
 ) -> Unit {
   // (what changes on it moves only for a cause said (a press, a key, a live cause its list judges so): what the core
   // brings or a page coming to show is there at once, @view.transition)
@@ -61,9 +63,7 @@ pub fn chat_page_body_node(
     v,
     w.field,
     fn(paths) {
-      for d in @sfbase.finder_dragged(src, paths) {
-        @sfbase.files_into(draft, d)
-      }
+      @sfbase.files_into_many(draft, @sfbase.finder_dragged(src, paths))
     },
     takes=fn() { @sfbase.finder_by_station_in(@sfbase.workspace_of(r.station)) },
   )
@@ -76,8 +76,8 @@ pub fn chat_page_body_node(
   @ui.words_picked(v)
   // (its view and entries as last read: once read, never none again while the page is)
   // (the chat's messages by key where the source keeps them so (sfbase's ChatMessages): then, while nothing sent from
-  // here is on its way and its outbox is empty, its view is its head alone (sfbase's chat_head: a word streamed into a
-  // message reads none of it again) and its rows are by key (chat_body_keyed); else its view and entries whole, as
+  // here is on its way and its outbox is empty, its view is its head alone (sfbase's chat_head: a message patched in
+  // place reads none of it again) and its rows are by key (chat_body_keyed); else its view and entries whole, as
   // view_of_chat works them out)
   let sending = fn() { @sfbase.sending_now(r.station + "\u{1}" + r.session) }
   // (put by at rest (View::on_rest): what it last read given to whatever reads it meanwhile, the chat read for none of
@@ -147,13 +147,17 @@ pub fn chat_page_body_node(
     wake=fn() {
       at_rest.val = false
       woken.set(woken.untracked() + 1)
+      // (shown again from where it was put by, its `shows` the same as it rested so the reaction under tells nothing:
+      // its pictures that could not be had asked again, as it comes into view)
+      src.images.again(r.station)
     },
   )
   |> ignore
   // its pictures that could not be had for want of its station asked again as the chat comes into view (made, or shown
   // again from under what covered it), and as its station is reached again (ChatImages::seen, as its view says it
   // offline or not), as the old page's list asks them (chat_list's)
-  v.reacts(shows, fn(now) { if now { src.images.again(r.station) } })
+  // (and as it is woken, taken back from the stack's kept left: shown as it was, its pictures asked again all the same)
+  v.reacts(fn() { (shows(), woken.get()) }, fn(now) { if now.0 { src.images.again(r.station) } })
   // (whether it shows, lent to what its rows make: a screen's card previews it only while it does, screen_links_node's)
   v.lends(@sfbase.page_shows_lent, shows) |> ignore
   v.reacts(fn() { read.get().map(fn(x) { !x.0.offline }) }, fn(reached) {
@@ -166,19 +170,31 @@ pub fn chat_page_body_node(
   v.by_room(fn(b, given) {
     b.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     let width = fn() { given.width() }
-    // (the composer at the foot of the room before the view is read, in the list's foot once it is)
-    match composer {
-      Some(build) =>
-        // (at once: the composer is in one place at a time, never in both as the view is read)
-        b.show(at_once=true, fn() { read.get() is None }, fn(o) {
-          o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-          o.box(fn(s) { s.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore }) |> ignore
-          build(o)
-        })
-        |> ignore
-      None => ()
-    }
-    b.show(at_once=true, fn() { read.get() is Some(_) }, fn(o) {
+    // (the composer at the foot of the room before the view is read, in the list's foot once it is: one pick, so that
+    // the one before the view is let go of before the one in the list's foot is made, never both at once; the cursor
+    // it had, or was to take, taken by the one after it)
+    b.pick(at_once=true, fn() { read.get() is Some(_) }, fn(o, loaded) {
+      guard loaded else {
+        match composer {
+          Some(build) => {
+            o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+            o.box(fn(s) { s.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore }) |> ignore
+            build(o)
+            // (whether its field had the cursor, as it last said: what its field's going tells first is not the person's)
+            let had = Ref(false)
+            o.reacts(fn() { w.field.focused() }, fn(f) { had.val = f })
+            o.owns(fn() {
+              if had.val || w.field.focused() || composing.wanted {
+                composer_take_focus()
+                composing_node.shown = ""
+              }
+            })
+            |> ignore
+          }
+          None => ()
+        }
+        return
+      }
       o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       let first = @signals.untracked(fn() { read.get().unwrap() })
       let view = fn() {
@@ -240,11 +256,12 @@ pub fn chat_page_body_node(
         // (and while something waits to be decided whose bell may float over the list's end, its room over it: the last
         // row as far over the bell as it is over the composer without it, as the page before kept it (chat_list's
         // `ask_clear`))
-        foot=fn() { foot() + (if @sfbase.ask_clears((here.view)()) { float_lift + float_side } else { 0.0 }) },
+        foot=fn() { foot() + (if @sfbase.ask_clears((here.view)()) { float_ask_clear } else { 0.0 }) },
+        foot_clear_extra~,
         composer?,
         lead~,
-        read=fn(place, scroll, rows) {
-          chat_read_node(o, src, r, view, place, scroll, rows, shows, cover, fn() { cover() + room }, rest=read_rest)
+        read=fn(place, scroll, rows, reopening, on_reopened) {
+          chat_read_node(o, src, r, view, place, scroll, rows, shows, cover, fn() { cover() + room }, rest=read_rest, reopening~, on_reopened~, on_stack~)
         },
         to=r,
         shows~,
@@ -263,7 +280,6 @@ pub fn chat_page_body_node(
       )
       |> ignore
     })
-    |> ignore
   })
   .grow(Is(1.0))
   .shrink(Is(1.0))

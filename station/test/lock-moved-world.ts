@@ -6,7 +6,7 @@ import { createHash, generateKeyPairSync, sign as nodeSign, type KeyObject } fro
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Entry, bodyHash, endpointBytes, entryHash, signedBytes, wsTag } from "../src/cloud/lock.ts";
+import { type Entry, bodyHash, endpointBytes, entryHash, signedBytes, wsTag } from "../../shared/lock.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
 import { lockPartRoute } from "../src/mesh/serve.ts";
 

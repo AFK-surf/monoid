@@ -81,7 +81,7 @@ fn trouble_again(close : (@ui.Tester, Double, Double) -> Unit, frames : Bool) ->
   t.touch_at(0, x, y, t.time())
   t.touch_at(2, x, y, t.time())
   // (the panel closed gone its way out: what it listed as it showed no longer drawn)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   (t.find("Maple 连不上了") is Some(_), t.find("暂无待处理") is Some(_), kept, (app.nav.depth(), app.nav.top()) == page)
 }
 

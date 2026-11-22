@@ -388,22 +388,8 @@ let fold_goes : FoldGoes = {
 }
 
 ///|
-/// How many times the block's move has set off (fold_moves_from): what is bound to the block's way only once it has set
-/// off follows it (pane_fold_set_off).
-// kept across runs: put back as a run begins (fold_goes_reset)
-let fold_set_offs : @signals.Signal[Int] = @signals.signal(0)
-
-///|
-/// Whether the block's move has set off yet (fold_set_offs): what the pane's chat holds its old view by is bound then,
-/// none of it at rest before (chat_page_made's `held_from`).
-fn pane_fold_set_off() -> Bool {
-  fold_set_offs.get() > 0
-}
-
-///|
 fn fold_goes_reset() -> Unit {
   pane_page_wait.reset()
-  fold_set_offs.set(0)
   fold_goes.way.put(1.0)
   fold_goes.from = None
   fold_goes.to = None
@@ -458,25 +444,46 @@ fn fold_target(src : Source, w : Workspace, ww : Double) -> (PaneRoom, FoldLook)
 /// was committed: the tape's, as it was left) to `to`, one way as long as the furthest of what it moves goes.
 fn fold_moves_from(at : Double, to : FoldLook, was_look? : FoldLook) -> Unit {
   // (where the move before has it then; at rest, where it was put: the state before this one, as it was drawn)
-  let from = match (fold_goes.from, fold_goes.to) {
+  let (from, old_move) = match (fold_goes.from, fold_goes.to) {
     (Some(a), Some(b)) =>
       if fold_goes.way.goes_at(at) {
-        fold_mix(a, b, fold_goes.way.value_at(at))
+        let (k, vk) = fold_goes.way.at(at)
+        (fold_mix(a, b, k), Some((a, b, vk)))
       } else {
-        b
+        (b, None)
       }
-    _ => was_look.unwrap_or(to)
+    _ => (was_look.unwrap_or(to), None)
   }
   if fold_far(from, to) <= 0.5 && from.ground == to.ground && from.corner == to.corner {
     fold_put(to, at)
     return
   }
+  let v_norm = match old_move {
+    Some((a, b, vk)) => {
+      let (old_d, new_d) = if (b.col - a.col).abs() > 1.0 && (to.col - from.col).abs() > 1.0 {
+        (b.col - a.col, to.col - from.col)
+      } else if (b.mr - a.mr).abs() > 1.0 && (to.mr - from.mr).abs() > 1.0 {
+        (b.mr - a.mr, to.mr - from.mr)
+      } else {
+        (b.x - a.x, to.x - from.x)
+      }
+      if new_d.abs() > 1.0 {
+        dmax(-6.0, dmin(6.0, old_d * vk / new_d))
+      } else {
+        0.0
+      }
+    }
+    None => 0.0
+  }
   fold_goes.from = Some(from)
   fold_goes.to = Some(to)
   fold_goes.way.put(0.0)
-  fold_goes.way.go(1.0, @motion.moved(over=fold_far(from, to)), at~)
+  fold_goes.way.go(1.0, @motion.moved(over=fold_far(from, to)), velocity=v_norm, at~)
   fold_said()
-  fold_set_offs.set(fold_set_offs.untracked() + 1)
+  match app.nav.top() {
+    Chat(r) => @sfbase.column_sets_off(r.station + "\u{1}" + r.session, resize=false)
+    _ => ()
+  }
 }
 
 ///|
@@ -506,22 +513,6 @@ fn fold_drawn_at(n : @view.View) -> Double {
 }
 
 ///|
-/// Where the block is as an island builds (`now` where nothing is committed): read again each frame its move goes (its
-/// way read so), at rest no more.
-fn fold_built(c : @ui.Ctx, now : FoldLook) -> FoldLook {
-  fold_goes.said.get() |> ignore
-  fold_goes.way.said()
-  if fold_goes.way.goes_at(c.moment()) {
-    fold_goes.way.get(c) |> ignore
-    fold_along(c.moment(), now)
-  } else {
-    // (at rest, as the state has it now: what it is worked out from that no move follows, the theme, the window's
-    // buttons, read as the island is built)
-    now
-  }
-}
-
-///|
 /// The frame off the tape in node `v` (the signed-in shell's, filling the window: sfapp's paned_shell), in the workspace
 /// in view (its file's head).
 pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : Double) -> Unit {
@@ -539,10 +530,16 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   fold_goes.was = None
   fold_goes.shift = 0.0
   fold_goes.way.put(1.0)
+  let side_at_c = @signals.computed(fn(_) { pane_side_at(src, v) })
+  let rail_at_c = @signals.computed(fn(_) { pane_rail_at(src, v) })
+  let side_at = fn() { if @signals.active_sub() is None { pane_side_at(src, v) } else { side_at_c.get() } }
+  let rail_at = fn() { if @signals.active_sub() is None { pane_rail_at(src, v) } else { rail_at_c.get() } }
   nav_hold(src)
   // (a chat's detail asked as a page put beside its chat as it comes on top, before a frame builds it)
   beside_follow(v, src)
   v.owns(fn() {
+    side_at_c.dispose()
+    rail_at_c.dispose()
     nav_held.val = fn() { None }
     fold_goes.node = None
     fold_goes.parts.clear()
@@ -580,7 +577,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     fn() {
       match @sfbase.workspace_in_view(src).0 {
         Some(w) => {
-          let r = pane_room(src, w, v.window().0)
+          let r = pane_room(src, w, v.window_w())
           let group = if @sf.native_on() { "tabs" } else { side_group(src, w.id) }
           let cause : FoldIs = {
             folded: wide.folded.get(),
@@ -610,7 +607,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
           let look = if cause.peeking && !w.peeking {
             fold_goes.shift = fold_peek_shift(fold_along(at, look))
             match @sfbase.workspace_in_view(src).0 {
-              Some(ws) => fold_look_of(pane_room(src, ws, v.window().0), fold_goes.shift)
+              Some(ws) => fold_look_of(pane_room(src, ws, v.window_w()), fold_goes.shift)
               None => look
             }
           } else {
@@ -627,9 +624,10 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   // window's tree's under the page and the block, what an old view says takes back (a page's own, a layer over all)
   // taking it before it; whose it is said at the cause that changes it, each step taken at its moment (wide_back_step)
   let held : Ref[WideBack?] = Ref(None)
+  let hint = back_hint_new(v)
   v.show(fn() { wide_takes_back(src) }, fn(b) {
-    b.follows_back(fn(step) { wide_back_step(src, held, step) }) |> ignore
-    b.owns(fn() { wide_back_left(held, v.cause_at()) }) |> ignore
+    b.follows_back(fn(step) { wide_back_step(src, held, hint, step) }) |> ignore
+    b.owns(fn() { wide_back_left(held, hint, v.cause_at()) }) |> ignore
   })
   v.box(fn(row) {
     fold_goes.parts.clear()
@@ -642,7 +640,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
       .width(By(fn() {
         match @sfbase.workspace_in_view(src).0 {
           Some(w) => {
-            let (_, now) = fold_target(src, w, col.window().0)
+            let (_, now) = fold_target(src, w, col.window_w())
             Some(fold_along(fold_drawn_at(col), now).col)
           }
           None => Some(0.0)
@@ -669,13 +667,13 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   // the block over them (reaching over the page shown a while), the tree's: its ground and the rail (dock_node)
   v.box(fn(b) {
     b.over(Is(true)) |> ignore
-    dock_node(b, fn() { pane_side_at(src, b) }, fn(r) { rail_node(r, src, tips, fn() { pane_rail_at(src, b) }) })
+    dock_node(b, side_at, fn(r) { rail_node(r, src, tips, rail_at) })
   })
   |> ignore
   // The rail's closed look follows the block's target, at the cause of the change.
   v.reacts(fn() {
     match @sfbase.workspace_in_view(src).0 {
-      Some(w) => pane_room(src, w, v.window().0).bar
+      Some(w) => pane_room(src, w, v.window_w()).bar
       None => false
     }
   }, fn(bar) { wide.closed.set(bar) })
@@ -684,13 +682,13 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   // the sidebar made once, the tree's, over the block where it lays its sidebar out (side_node)
   v.box(fn(sides) {
     sides.over(Is(true)) |> ignore
-    side_node(sides, src, tips, fn() { pane_side_at(src, sides) })
+    side_node(sides, src, tips, side_at)
   })
   |> ignore
   // the block's line over all it holds (dock_edge_node)
   v.box(fn(line) {
     line.over(Is(true)) |> ignore
-    dock_edge_node(line, fn() { pane_side_at(src, line) })
+    dock_edge_node(line, side_at)
   })
   |> ignore
   // the sidebar's edge, the tree's, over the block (its rows under its strip), but where a list's thumb of the
@@ -699,6 +697,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     n.over(Is(true)) |> ignore
     pane_edge(n, v, src, tips)
   })
+  back_hint_node(v, hint)
 }
 
 ///|
@@ -744,13 +743,6 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
         tape: false,
       }
   }
-}
-
-///|
-/// Who the page shown in the pane off the tape is among the old views' (its island's: pane_page_one), for a test: what it
-/// shows across is read by it (fold_peek_shift).
-pub fn pane_page_id() -> Int {
-  fold_goes.page_id
 }
 
 ///|
@@ -850,7 +842,7 @@ fn fold_peek_shift(at : FoldLook) -> Double {
   match fold_goes.node {
     Some(v) => {
       let s = wide.side_w.get()
-      let w = v.window().0
+      let w = v.window_w()
       match shown {
         Some((left, right)) => {
           let moved = (rail_left() - at.col) / 2.0
@@ -880,29 +872,12 @@ fn fold_held_at(t : Double, f : FoldLook) -> (Double, Double, Double) {
 }
 
 ///|
-/// What an old page's bars work out from where the block's move has got (page_bar_room).
-fn fold_bars(c : @ui.Ctx, f : FoldLook) -> Unit {
-  wide.bar_pl = f.bar_pl
-  wide.bar_ml = f.bar_ml
-  wide.bar_mr = f.bar_mr
-  wide.brand_h = f.brand
-  wide.band = f.band
-  wide.mark = f.mark
-  // (the page's width on the block's way: where the block's column goes, the window's less it)
-  match (fold_goes.to, fold_goes.node) {
-    (Some(b), Some(v)) if fold_going(c.moment()) =>
-      @sfbase.page_way_said(fold_goes.way.starts_at().to_string(), v.window().0 - b.col, ends=fold_goes.way.ends_at())
-    _ => @sfbase.page_way_said("", 0.0, ends=0.0)
-  }
-}
-
-///|
 /// Whether 更新 shows off the tape with the sidebar closed, where its first row is not shown, in the workspace in view, a
 /// window as wide as node `n` has it: an update offered (update_shown), the block the closed bar, not shown a while.
 fn pane_update_shows(src : Source, n : @view.View) -> Bool {
   match @sfbase.workspace_in_view(src).0 {
     Some(w) => {
-      let r = pane_room(src, w, n.window().0)
+      let r = pane_room(src, w, n.window_w())
       !r.gated && update_shown() && r.bar && !r.peek
     }
     None => false
@@ -919,7 +894,7 @@ fn pane_update_node(o : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
   .over(Is(true))
   .padding(By(fn() {
     let top = match @sfbase.workspace_in_view(src).0 {
-      Some(w) => pane_room(src, w, o.window().0).top
+      Some(w) => pane_room(src, w, o.window_w()).top
       None => 0.0
     }
     let left = if @ui.window_inset_now() { update_closed_inset } else { update_closed_in }
@@ -940,7 +915,7 @@ fn pane_update_node(o : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
 fn pane_rail_at(src : Source, n : @view.View) -> RailAt {
   match @sfbase.workspace_in_view(src).0 {
     Some(w) => {
-      let (r, now) = fold_target(src, w, n.window().0)
+      let (r, now) = fold_target(src, w, n.window_w())
       rail_at_fold(r.bar, fold_along(fold_drawn_at(n), now))
     }
     None => rail_at_tape(dock_ground(false))
@@ -948,10 +923,10 @@ fn pane_rail_at(src : Source, n : @view.View) -> RailAt {
 }
 
 ///|
-/// What the frame off the tape does under its page and block with workspace `w` in view (an island under all of it:
-/// sfapp's paned_shell): how the lists take the hand, the sidebar of this place and workspace as it was left, the
-/// system's tabs where it has its own bars, the folded sidebar shown a while as the pointer comes on the closed bar, the
-/// chat landed on, the window's buttons' row, the web services' pages let go.
+/// What the old frame does under the frame off the tape with workspace `w` in view, before the old views it holds
+/// (sfapp's view_in, off the tape): how the lists take the hand, the system's tabs where it has its own bars, the folded
+/// sidebar shown a while as the pointer comes on the closed bar. The sidebar of this place and workspace as it was left,
+/// the chat landed on. The window's buttons' row is the tree's (sfapp's wide_top_node).
 pub fn pane_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspace]) -> Unit {
   c.mouse_drags_lists(pane_finger())
   wide.side_place = side_place()
@@ -967,9 +942,6 @@ pub fn pane_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspac
   let peek_top = if @ui.window_keys_left() { closed_bar_top } else { bar_in_now() }
   side_peek(c, bar_in_now(), r.top + peek_top, peek_r, c.height - r.foot - bar_in_now())
   land(src, w)
-  if @ui.window_inset() {
-    title_row(c, "window-title-row", closed_bar_top)
-  }
   // (back, the shell's one way: the frame's node's, pane_view, wide_takes_back)
   // (the pages of closed tabs let go as each closes: service_tab.mbt's tab_let_go)
 }
@@ -980,7 +952,7 @@ pub fn pane_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspac
 fn pane_edge_stands(src : Source, n : @view.View) -> Bool {
   match @sfbase.workspace_in_view(src).0 {
     Some(w) => {
-      let r = pane_room(src, w, n.window().0)
+      let r = pane_room(src, w, n.window_w())
       !r.bare && r.on_fold is None && !r.crowded
     }
     None => false
@@ -1011,11 +983,11 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
   let fold = fn() { wide.folded.set(!wide.folded.get()) }
   n
   .width(Is(Some(@ui.Space::px(S3))))
-  .height(By(fn() { Some(dmax(0.0, n.window().1 - pane_top())) }))
+  .height(By(fn() { Some(dmax(0.0, n.window_h() - pane_top())) }))
   .offset(By(fn() {
     match @sfbase.workspace_in_view(src).0 {
       Some(w) => {
-        let (r, now) = fold_target(src, w, n.window().0)
+        let (r, now) = fold_target(src, w, n.window_w())
         (fold_along(fold_drawn_at(holder), now).edge, r.top)
       }
       None => (0.0, pane_top())
@@ -1052,11 +1024,12 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
   @ui.yield_thumbs(e)
   // (a button's as the web's is: its pointer the resizing one while open; read out as what a press does; Enter, Space
   // or a screen reader's press of it, as a press of it is)
-  e
-  .cursor(By(fn() { if wide.folded.get() { None } else { Some(ResizeX) } }))
-  .says(By(fn() { Some(@view.said(Button, label=words())) }))
-  .focusable(Is(true))
-  .on_press(fold)
+  @sf.action_box_node(e, words, fn(_) { fold() }, in_node=true, fn(v) {
+    v
+    .focus_ring(Is(None))
+    .cursor(By(fn() { if wide.folded.get() { None } else { Some(ResizeX) } }))
+    |> ignore
+  })
   |> ignore
   e.box(fn(g) {
     g.over(Is(true)).padding(Is((@ui.Space::px(@sf.edge_in), 0.0, 0.0, 0.0))) |> ignore

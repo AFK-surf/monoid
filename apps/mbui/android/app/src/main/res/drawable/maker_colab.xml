@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Google Colab interlocking amber rings mark (#F9AB00 / #E37400). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M 4.157 16.243 A 6 6 0 0 1 12.643 7.757 L 10.663 9.737 A 3.2 3.2 0 0 0 6.137 14.263 Z"
+        android:fillColor="#E37400" />
+    <path android:pathData="M 19.843 16.243 A 6 6 0 0 1 11.357 7.757 L 13.337 9.737 A 3.2 3.2 0 0 0 17.863 14.263 Z"
+        android:fillColor="#E37400" />
+    <path android:pathData="M 12.643 7.757 A 6 6 0 0 1 4.157 16.243 L 6.137 14.263 A 3.2 3.2 0 0 0 10.663 9.737 Z"
+        android:fillColor="#F9AB00" />
+    <path android:pathData="M 11.357 7.757 A 6 6 0 0 1 19.843 16.243 L 17.863 14.263 A 3.2 3.2 0 0 0 13.337 9.737 Z"
+        android:fillColor="#F9AB00" />
+</vector>

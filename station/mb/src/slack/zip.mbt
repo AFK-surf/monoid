@@ -38,26 +38,9 @@ fn zip_entry_name(name : String) -> String {
 }
 
 ///|
-let crc32_table : FixedArray[UInt] = {
-  let t = FixedArray::make(256, 0U)
-  for n in 0..<256 {
-    let mut c = n.reinterpret_as_uint()
-    for _ in 0..<8 {
-      c = if (c & 1U) != 0U { 0xEDB88320U ^ (c >> 1) } else { c >> 1 }
-    }
-    t[n] = c
-  }
-  t
-}
-
-///|
 /// The CRC-32 of `bytes` (the one gzip's trailer and zip's headers carry).
 pub fn crc32(bytes : Bytes) -> UInt {
-  let mut c = 0xFFFFFFFFU
-  for b in bytes {
-    c = crc32_table[((c ^ b.to_uint()) & 0xFFU).reinterpret_as_int()] ^ (c >> 8)
-  }
-  c ^ 0xFFFFFFFFU
+  @codec.crc32(bytes[:])
 }
 
 ///|

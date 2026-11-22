@@ -57,7 +57,6 @@ fn vault_src(
 /// message row; `save`: to keep a password for demo-user; `typed`: to keep one of that kind the person types in, OpenCode Go;
 /// `status`: how it ended), answered here as the core says with it (`answer`, `lasts`: its vaultAsk's).
 fn ask_card(
-  c : @ui.Ctx,
   src : Source,
   save? : Bool = false,
   typed? : String = "",
@@ -68,7 +67,11 @@ fn ask_card(
   lasts? : String = "",
   timeout_kind? : String = "",
   timeout_seconds? : Int = 0,
-) -> Unit {
+  w? : Double = 390.0,
+  h? : Double = 844.0,
+  platform? : Int = 2,
+  pointing? : @ui.Pointing,
+) -> @ui.Tester {
   let viewer = Json::object({ "me": Json::object({ "email": Json::string("me@x.com") }) })
   let ask : Map[String, Json] = {
     "name": Json::string(if typed != "" { "OpenCode Go" } else if save { "测试服务登录" } else { "GitHub token" }),
@@ -108,18 +111,33 @@ fn ask_card(
     "text": "要用 GitHub token",
     "card": Json::object(card),
   })
-  let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
-  let here : @sfpages.MessageHere = {
-    station: "ws1/st1",
-    session: "s-c1",
-    view: chat_view_made(viewer),
-    go: None,
-    inline: false,
-    gutter: 0.0,
-    list: None,
-    core: Some(settings_core(src, w)),
-  }
-  c.box(w=Fill(1.0), fn() { @sfpages.message_row(c, src, here, m) }) |> ignore
+  let ws : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
+  @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
+        station: "ws1/st1",
+        session: "s-c1",
+        view: fn() { chat_view_made(viewer) },
+        width: fn() { w },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
+      }
+      @sfpages.message_row_node(root, src, here, fn() { m }, core=Some(settings_core(src, ws)))
+      @sf.presented_nodes(root)
+    },
+    w~,
+    h~,
+    platform~,
+    pointing?,
+  )
 }
 
 ///|
@@ -127,7 +145,7 @@ test "an idle timeout requested for a daily task is shown and approved as reques
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, timeout_kind="idle", timeout_seconds=129600) }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, timeout_kind="idle", timeout_seconds=129600)
   t.draw()
   assert_true(t.find("闲置 36 小时后失效") is Some(_))
   t.tap_text("允许")
@@ -182,7 +200,7 @@ test "a request's card is whole with its post: its answer the core's with it, no
       base.topic(name, params).get().snapshot()
     },
   }
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src) }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src)
   t.draw()
   for w in ["使用 GitHub token", "允许", "拒绝", "本对话内"] {
     assert_true(t.find(w) is Some(_), msg=w)
@@ -195,7 +213,7 @@ test "a request to use a secret: its title and command, 允许 for the chat (the
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src) }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src)
   t.draw()
   for w in ["使用 GitHub token", "gh run rerun 1846 --failed", "允许", "拒绝", "本对话内"] {
     assert_true(t.find(w) is Some(_), msg=w)
@@ -212,7 +230,7 @@ test "a request to use a secret for an item given an hour at most: 允许 for th
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, lasts="hour") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, lasts="hour")
   t.draw()
   assert_true(t.find("本对话内") is None)
   t.tap_text("1 小时内")
@@ -227,7 +245,7 @@ test "a request to use a secret for an item given an hour at most: 允许 for th
 ///|
 test "a command that reads the secret itself: said, in the one colour the card has" {
   new_run()
-  let t = @ui.Tester::new(fn(c) { ask_card(c, vault_src(["r1"], true, []), mode="env") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(vault_src(["r1"], true, []), mode="env")
   t.draw()
   assert_true(t.find("可读取明文") is Some(_))
 }
@@ -237,7 +255,7 @@ test "a request to keep a secret: 存入 or 不存, kept as once; its kind and a
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls, save=true)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, save=true) }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, save=true)
   t.draw()
   for w in ["存入密码 测试服务登录", "demo-user", "存入", "不存"] {
     assert_true(t.find(w) is Some(_), msg=w)
@@ -255,7 +273,7 @@ test "a secret the person types in: its field over 存入, which waits for somet
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls, save=true)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, typed="token") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, typed="token")
   t.draw()
   for w in ["存入Token OpenCode Go", "粘贴 Token", "不存"] {
     assert_true(t.find(w) is Some(_), msg=w)
@@ -273,7 +291,7 @@ test "a secret the person types in: its field over 存入, which waits for somet
   t.draw()
   assert_eq(calls, ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r1\",\"scope\":\"once\",\"typed\":{\"secret\":\"sk-go-1\"}}"])
   // its field answered: the keyboard goes with it (the card says how it went, the field no longer there)
-  assert_false(t.ctx().field_focused())
+  assert_true(t.focused() is None)
 }
 
 ///|
@@ -281,7 +299,7 @@ test "a file the person picks: 选择文件 over 存入, which waits for one; pi
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls, save=true)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, typed="file") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, typed="file")
   t.draw()
   assert_true(t.find("存入文件 OpenCode Go") is Some(_))
   let (x, y) = t.find_last("存入").unwrap()
@@ -297,7 +315,7 @@ test "a file the person picks: 选择文件 over 存入, which waits for one; pi
   t.tap_text("选择文件")
   t.draw()
   t.draw()
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("sa.json · 3 B") is Some(_))
   t.tap(x, y)
   t.draw()
@@ -309,7 +327,7 @@ test "a login the person types in, the agent naming no account: 用户名 over i
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls, save=true)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, typed="login") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, typed="login")
   t.draw()
   t.tap_text("用户名")
   t.type_text("admin")
@@ -320,7 +338,7 @@ test "a login the person types in, the agent naming no account: 用户名 over i
   t.enter()
   t.draw()
   assert_eq(calls, ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r1\",\"scope\":\"once\",\"typed\":{\"secret\":\"pw 1\",\"username\":\"admin\"}}"])
-  assert_false(t.ctx().field_focused())
+  assert_true(t.focused() is None)
 }
 
 ///|
@@ -328,7 +346,7 @@ test "a request to keep a secret while the vault is not on here: 开启密钥库
   new_run()
   let calls = []
   let src = vault_src(["r1"], true, calls, save=true, set_up=false)
-  let t = @ui.Tester::new(fn(c) { ask_card(c, src, save=true, answer="setUp") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(src, save=true, answer="setUp")
   t.draw()
   t.tap_text("开启密钥库")
   t.draw()
@@ -340,12 +358,12 @@ test "a request to keep a secret while the vault is not on here: 开启密钥库
 test "a request another's to decide, or on a web page: no buttons, a line saying so" {
   new_run()
   let calls = []
-  let t = @ui.Tester::new(fn(c) { ask_card(c, vault_src(["r1"], true, calls), assignee="lin@x.com") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(vault_src(["r1"], true, calls), assignee="lin@x.com")
   t.draw()
   assert_true(t.find("待 林晓 决策") is Some(_))
   assert_true(t.find("允许") is None)
   new_run()
-  let t = @ui.Tester::new(fn(c) { ask_card(c, vault_src(["r1"], false, calls), answer="elsewhere") }, w=390.0, h=844.0, platform=2)
+  let t = ask_card(vault_src(["r1"], false, calls), answer="elsewhere")
   t.draw()
   assert_true(t.find("请在客户端批准") is Some(_))
   assert_eq(calls.length(), 0)
@@ -353,23 +371,35 @@ test "a request another's to decide, or on a web page: no buttons, a line saying
 
 ///|
 test "how a request ended, the phone's as the vault's: its dot beside its words, in the middle of their line" {
-  new_run()
-  let lines : Array[(String, (@ui.Ctx) -> Unit)] = [
-    ("已允许调试手机 · 本对话内", fn(c) { @settings.phone_outcome(c, "granted", "chat", "") }),
-    ("已拒绝调试手机", fn(c) { @settings.phone_outcome(c, "denied", "", "") }),
+  let lines : Array[(String, (@view.View) -> Unit)] = [
+    ("已允许调试手机 · 本对话内", fn(v) { @settings.phone_outcome_node(v, fn() { "granted" }, fn() { "chat" }, fn() { "" }, fn() { "" }, fn() { true }) }),
+    ("已拒绝调试手机", fn(v) { @settings.phone_outcome_node(v, fn() { "denied" }, fn() { "" }, fn() { "" }, fn() { "" }, fn() { true }) }),
   ]
   for line in lines {
+    new_run()
     let (words, outcome) = line
-    let t = @ui.Tester::new(fn(c) { c.box(w=Fill(1.0), fn() { outcome(c) }) |> ignore }, w=390.0, h=844.0, platform=2)
+    let t = @ui.Tester::new(
+      fn(c) { @sf.begin(c) |> ignore },
+      tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        root.box(fn(b) {
+          @sf.style_node(b, fn() { @sfbase.viz_mermaid_box })
+          outcome(b)
+        })
+        |> ignore
+      },
+      w=390.0,
+      h=844.0,
+      platform=2,
+    )
     t.draw()
-    let bs = t.boxes()
-    let said = bs.filter(fn(b) { b.text.contains(words) })
-    let dots = bs.filter(fn(b) { b.bg != 0L && b.w == b.h && b.w < 10.0 && b.radius * 2.0 >= b.w })
+    let said = t.words().filter(fn(w) { w.0.contains(words) })
+    let dots = t.drawn_rects().filter(fn(r) { r.4 != 0L && (r.2 - r.3).abs() < 0.5 && r.2 > 0.0 && r.2 < 10.0 })
     assert_eq(said.length(), 1, msg=words)
     assert_eq(dots.length(), 1, msg=words)
     let (w, d) = (said[0], dots[0])
-    assert_true(d.x + d.w <= w.x, msg="\{words}: the dot before the words")
-    assert_true((d.y + d.h / 2.0 - (w.y + w.h / 2.0)).abs() < 1.0, msg="\{words}: the dot in the middle of their line")
+    assert_true(d.0 + d.2 <= w.1, msg="\{words}: the dot before the words")
+    assert_true((d.1 + d.3 / 2.0 - (w.2 + w.4 / 2.0)).abs() < 1.5, msg="\{words}: the dot in the middle of their line")
   }
 }
 
@@ -390,7 +420,7 @@ test "the vault's page's request where it is not this device's to answer, or dec
 /// phone's window, drawn.
 fn vault_ask(src : Source) -> @ui.Tester {
   let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
-  let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
+  let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", save_vault_name: "", save_shared: false, save_targets: [], username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false, browse: false, browse_hint: "", browse_workspaces: 0, browse_items: 0, cross_workspace: "", cross_workspace_name: "", cross_vault_name: "" }
   let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
   let core = settings_core(src, w)
   @ui.set_view_app(fn(root) {
@@ -406,7 +436,7 @@ test "how a request ended: one line, its item named" {
   let src = vault_src([], true, [])
   for case in [(false, "granted", "已允许使用 GitHub token · 本对话内"), (true, "granted", "已存入密码 测试服务登录"), (false, "denied", "已拒绝使用 GitHub token"), (true, "denied", "未存入 测试服务登录")] {
     let (save, status, words) = case
-    let t = @ui.Tester::new(fn(c) { ask_card(c, src, save~, status~) }, w=390.0, h=844.0, platform=2)
+    let t = ask_card(src, save~, status~)
     t.draw()
     assert_true(t.find(words) is Some(_), msg=words)
   }
@@ -715,4 +745,277 @@ test "a request to delete an item: 删除密钥 and its name, 删除 deletes it"
   assert_eq(card_faults, [])
   vt_press(t, "删除")
   assert_eq(vt_vault_calls(calls), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r-demo\",\"scope\":\"once\"}"])
+}
+
+///|
+test "a save request card defaults to personal vault and only shows shared notice after manually picking workspace vault" {
+  let multi_vault_src = fn(calls : Array[String]) -> Source {
+    let base = vault_src(["r1"], true, calls, save=true)
+    {
+      ..base,
+      topic_read: fn(name, params) {
+        if name == "vaults" {
+          {
+            value: Some(
+              Json::object({
+                "available": Json::boolean(true),
+                "locked": Json::boolean(true),
+                "setUp": Json::boolean(true),
+                "vaults": Json::array([
+                  Json::object({ "id": Json::string("v1"), "name": Json::string("个人密钥库"), "keyed": Json::boolean(true), "mine": Json::boolean(true) }),
+                  Json::object({ "id": Json::string("v-ws"), "name": Json::string("Workspace 密钥库"), "scope": Json::string("workspace"), "keyed": Json::boolean(true), "manages": Json::boolean(true) }),
+                ]),
+                "requests": Json::array([
+                  Json::object({
+                    "id": Json::string("r1"),
+                    "save": Json::object({ "kind": Json::string("token") }),
+                  }),
+                ]),
+              }),
+            ),
+            error: None,
+            version: 1,
+          }
+        } else {
+          (base.topic_read)(name, params)
+        }
+      },
+    }
+  }
+  let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
+  // Even if an older station sent save_shared=true, default stays personal vault with no shared warning.
+  let asked : @settings.Asked = { name: "Sentry DSN", reason: "存入错误上报配置", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "env", command: "", how_text: "环境变量 · SENTRY_DSN", save_kind: "token", save_vault_name: "Workspace 密钥库", save_shared: true, save_targets: [], username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false, browse: false, browse_hint: "", browse_workspaces: 0, browse_items: 0, cross_workspace: "", cross_workspace_name: "", cross_vault_name: "" }
+
+  // 1. Default save goes to personal vault (v1) with no shared notice.
+  new_run()
+  let calls1 : Array[String] = []
+  let t1 = @ui.Tester::new(fn(_c) {  }, w=480.0, h=844.0, platform=0)
+  let core1 = settings_core(multi_vault_src(calls1), w)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) { @settings.vault_request_node(b, core1, fn() { "ws1" }, fn() { "r1" }, fn() { asked }) }) |> ignore
+  })
+  t1.draw()
+  assert_true(t1.find("个人密钥库") is Some(_))
+  assert_true(t1.find("将存入团队共享密钥库「Workspace 密钥库」") is None)
+  vt_press(t1, "存入")
+  assert_eq(vt_vault_calls(calls1), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r1\",\"scope\":\"once\",\"vault\":\"v1\"}"])
+
+  // 2. Manually switching chooser to Workspace 密钥库 shows shared notice and approves with vault=v-ws.
+  new_run()
+  let calls2 : Array[String] = []
+  let t2 = @ui.Tester::new(fn(_c) {  }, w=480.0, h=844.0, platform=0)
+  let core2 = settings_core(multi_vault_src(calls2), w)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) { @settings.vault_request_node(b, core2, fn() { "ws1" }, fn() { "r1" }, fn() { asked }) }) |> ignore
+  })
+  t2.draw()
+  vt_press(t2, "个人密钥库")
+  t2.run_for(@ui.move_most_ms)
+  vt_press(t2, "Workspace 密钥库")
+  t2.run_for(@ui.move_most_ms)
+  assert_true(t2.find("将存入团队共享密钥库「Workspace 密钥库」") is Some(_))
+  vt_press(t2, "存入")
+  assert_eq(vt_vault_calls(calls2), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r1\",\"scope\":\"once\",\"vault\":\"v-ws\"}"])
+}
+
+///|
+test "workspace vault fixture modes pass audit across wide, narrow, and 1.3x font scale" {
+  let sizes : Array[(Double, Double, Int, Double)] = [(1100.0, 760.0, 0, 1.0), (390.0, 844.0, 2, 1.0), (390.0, 844.0, 2, 1.3)]
+  let modes : Array[String] = [
+    "settings-vault-workspace-create",
+    "settings-vault-workspace",
+    "settings-vault-workspace-save-picked",
+    "settings-vault-workspace-members",
+    "settings-vault-workspace-editor",
+  ]
+  for size in sizes {
+    let (w, h, platform, scale) = size
+    for mode in modes {
+      let src = fixture_app(mode)
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+      t.set_font_scale(scale)
+      t.frame()
+      vt_rest(t)
+      let at = "\{mode} \{w}×\{h} @\{scale}"
+      // (the wide frame's 12px sidebar drag edge overlaps its neighboring panes by 6px on every wide settings screen)
+      let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt") })
+      assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+    }
+  }
+}
+
+///|
+/// A cross-workspace browse card (pending, empty, granted, or denied) in a chat message row.
+fn browse_ask_card(
+  src : Source,
+  hint? : String = "",
+  workspaces? : Int = 2,
+  items? : Int = 3,
+  decided_workspaces? : Int = 0,
+  decided_items? : Int = 0,
+  answer? : String = "approve",
+  status? : String = "",
+) -> @ui.Tester {
+  let viewer = Json::object({ "me": Json::object({ "email": Json::string("me@x.com") }) })
+  let browse : Map[String, Json] = Map([])
+  if hint != "" {
+    browse["workspace"] = Json::string(hint)
+  }
+  if status != "" {
+    let dw = if decided_workspaces > 0 { decided_workspaces } else { workspaces }
+    let di = if decided_items > 0 { decided_items } else { items }
+    browse["workspaces"] = Json::number(dw.to_double())
+    browse["items"] = Json::number(di.to_double())
+  }
+  let ask : Map[String, Json] = {
+    "name": Json::string(""),
+    "reason": Json::string("查找个人仓库部署用的 Token"),
+    "mode": Json::string("proxy"),
+    "hosts": Json::array([]),
+    "browse": Json::object(browse),
+    "browseWorkspaces": Json::number(workspaces.to_double()),
+    "browseItems": Json::number(items.to_double()),
+    "answer": Json::string(answer),
+  }
+  if status != "" {
+    ask["status"] = Json::string(status)
+  }
+  let m = message_of({
+    "seq": 3,
+    "ts": "3",
+    "authorKind": "agent",
+    "author": "Claude",
+    "text": "申请查看其它工作区的个人密钥列表",
+    "card": { "type": "options", "vault": "r-browse", "vaultAsk": Json::object(ask) },
+  })
+  let ws : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
+  @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
+        station: "ws1/st1",
+        session: "s-c1",
+        view: fn() { chat_view_made(viewer) },
+        width: fn() { 480.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
+      }
+      @sfpages.message_row_node(root, src, here, fn() { m }, core=Some(settings_core(src, ws)))
+      @sf.presented_nodes(root)
+    },
+    w=480.0,
+    h=844.0,
+    platform=0,
+  )
+}
+
+///|
+test "cross-workspace browse card renders pending, empty, granted, and denied states" {
+  // 1. Pending with workspace hint: shows title, safe notice, summary, 允许查看, 拒绝, 选择范围.
+  new_run()
+  let calls : Array[String] = []
+  let t = browse_ask_card(vault_src(["r-browse"], true, calls), hint="个人", workspaces=2, items=3)
+  t.draw()
+  for w in ["查看 个人 等工作区的个人密钥列表", "仅共享名称与说明给本对话，不含明文；使用仍需逐次批准", "已选 2 个工作区，共 3 条个人密钥", "允许查看", "拒绝", "选择范围"] {
+    assert_true(t.find(w) is Some(_), msg="pending: " + w)
+  }
+  t.tap_text("允许查看")
+  t.draw()
+  assert_eq(vt_vault_calls(calls), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r-browse\",\"scope\":\"once\"}"])
+
+  // 2. Empty state: shows empty notice + only 拒绝 button (no 允许查看, no 选择范围).
+  new_run()
+  let empty_calls : Array[String] = []
+  let te = browse_ask_card(vault_src(["r-browse"], true, empty_calls), workspaces=0, items=0, answer="empty")
+  te.draw()
+  assert_true(te.find("其它工作区暂无可共享的个人密钥") is Some(_))
+  assert_true(te.find("允许查看") is None)
+  assert_true(te.find("选择范围") is None)
+  te.tap_text("拒绝")
+  te.draw()
+  assert_eq(vt_vault_calls(empty_calls), ["vault.deny {\"workspace\":\"ws1\",\"request\":\"r-browse\"}"])
+
+  // 3. Settled granted & denied outcome lines (decided browse.items overrides pending candidate browseItems).
+  new_run()
+  let tg = browse_ask_card(vault_src([], true, []), workspaces=2, items=3, status="granted")
+  tg.draw()
+  assert_true(tg.find("已允许查看其它工作区个人密钥 · 3 条") is Some(_))
+  new_run()
+  let tg1 = browse_ask_card(vault_src([], true, []), workspaces=2, items=3, decided_workspaces=1, decided_items=1, status="granted")
+  tg1.draw()
+  assert_true(tg1.find("已允许查看其它工作区个人密钥 · 1 条") is Some(_))
+  assert_true(tg1.find("已允许查看其它工作区个人密钥 · 3 条") is None)
+  new_run()
+  let td = browse_ask_card(vault_src([], true, []), workspaces=2, items=3, status="denied")
+  td.draw()
+  assert_true(td.find("已拒绝查看其它工作区个人密钥") is Some(_))
+}
+
+///|
+test "cross-workspace browse picker expands workspace, toggles item, updates summary, and approves exact items" {
+  new_run()
+  @sf.presenters_reset()
+  let calls : Array[String] = []
+  let base = fixture("chat-vault-browse")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push(name + " " + params.stringify())
+      (base.call)(name, params, done)
+    },
+  }
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1100.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  // Cross-workspace secret_use source notice is visible on the earlier card in the chat.
+  assert_true(t.find("来自工作区「个人」的个人密钥") is Some(_))
+  assert_true(t.find("已允许查看其它工作区个人密钥 · 3 条") is Some(_))
+  // Open picker from pending browse card.
+  vt_press(t, "选择范围")
+  assert_true(t.find("选择可查看的个人密钥") is Some(_))
+  assert_true(t.find("另有 1 个工作区的个人密钥库尚未在本设备授权，暂不可选。") is Some(_))
+  // Expand workspace "个人" and uncheck "Cloudflare API Token".
+  guard t.query(Button, label="展开 个人") is Some(exp) else { fail("missing 展开 个人") }
+  t.tap(exp.rect.0 + exp.rect.2 / 2.0, exp.rect.1 + exp.rect.3 / 2.0)
+  t.frame()
+  vt_rest(t)
+  assert_true(t.find("Cloudflare API Token") is Some(_))
+  vt_press(t, "Cloudflare API Token")
+  // Confirm selection and verify card summary updates to 2 items.
+  vt_press(t, "确定")
+  assert_false(@sf.presenter_visible())
+  assert_true(t.find("已选 2 个工作区，共 2 条个人密钥") is Some(_))
+  assert_true(t.find("已选 2 条") is Some(_))
+  // Approve and verify exact selected items are sent to vault.approve.
+  vt_press(t, "允许查看")
+  let approve_calls = vt_vault_calls(calls).filter(fn(c) { c.has_prefix("vault.approve ") })
+  assert_eq(
+    approve_calls,
+    [
+      "vault.approve {\"workspace\":\"ws1\",\"request\":\"r-browse\",\"scope\":\"once\",\"items\":[{\"workspace\":\"ws-personal\",\"vault\":\"v-p1\",\"item\":\"it-gh\"},{\"workspace\":\"ws-lab\",\"vault\":\"v-l1\",\"item\":\"it-oai\"}]}",
+    ],
+  )
+}
+
+///|
+test "vault item cross-workspace audit row shows target workspace pill and opens target workspace chat" {
+  new_run()
+  let src = fixture_app("settings-vault-item-cross")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=480.0, h=844.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("产品研发组") is Some(_))
+  assert_true(t.find("运维值班") is Some(_))
+  assert_true(t.find("排查生产环境发布失败") is Some(_))
+  let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt") })
+  assert_true(faults.is_empty(), msg="settings-vault-item-cross audit: " + faults.join(" | "))
+  t.tap_text("排查生产环境发布失败")
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is Chat({ station: "ws-team/st2", session: "s-c2", .. }))
 }

@@ -123,9 +123,21 @@ test "a run let go while its splash waits: what kept its moment let go with it; 
   }
   let src = splash_src(@signals.signal(false, same=fn(a, b) { a == b }))
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=800.0, platform=2, time=ended)
+  let t2_0 = t.time()
   // (past where the first run's second ended, the next's not yet)
   t.run_for(t1_0 + splash_label_ms + splash_side - t.time())
   let past_first = (splash_waited.get(), frame_bare.val)
-  t.run_for(ended + splash_label_ms + splash_side - t.time())
+  t.run_for(t2_0 + splash_label_ms + splash_side - t.time())
   assert_eq((gone, past_first, splash_waited.get(), !frame_bare.val), (true, (false, true), true, true))
+}
+
+///|
+test "splash_from is recorded at the first sized frame rather than during set_view_app tree construction" {
+  new_run()
+  let src = splash_src(@signals.signal(false, same=fn(a, b) { a == b }))
+  let start = 100.0
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, time=start)
+  let t0 = t.time()
+  assert_true(t0 > start, msg="first frame advances past construction time")
+  assert_eq(splash_from.val, t0, msg="splash_from should equal first sized frame time \{t0}, not construction time \{start}")
 }

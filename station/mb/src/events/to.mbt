@@ -43,7 +43,7 @@ pub fn manages_station(role : String) -> Bool {
 /// store/rows.ts `sees`: a chat of workspace `ws` (null: the home one) is the viewer's.
 pub fn sees(viewer : Viewer, ws : J) -> Bool {
   match ws {
-    Str(s) => @jsjson.raw_text(s) == viewer.workspace
+    Str(s) => s == viewer.workspace
     Null => viewer.home != Some(false)
     _ => false
   }
@@ -120,6 +120,10 @@ pub fn is_for(
   }
   if to.get("readOnly") is Some(r) &&
     !(r is Bool(b) && b == read_only(viewer.role)) {
+    return false
+  }
+  if to.get("managers") is Some(m) &&
+    !(m is Bool(b) && b == manages_station(viewer.role)) {
     return false
   }
   if to.get("vault") is Some(v) {

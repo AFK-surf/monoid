@@ -138,3 +138,93 @@ test "flips: two flown in close together, the first's whole once its own flight 
     assert_true((seen[3].1 - 1.0).abs() < 0.001, msg="at \{rate} a second: 时70 at \{seen[3].1} once both are done")
   }
 }
+
+///|
+test "flips: a flight longer than a Move, its list's first way, carries what is over it all the way, none of it let go part way, at every rate" {
+  // (the first way set out binds the blocks, and that commit may carry the flight from within the way being told: its
+  // rest is the flight's, never the Move's sooner one put back over it once that returns)
+  let ms = 560.0
+  for rate in rc_rates {
+    let (t, keys) = cr_case(true, ms, 0.0, flips=true)
+    let looks = [rc_at, rc_at + 350.0, rc_at + 450.0, rc_at + ms]
+    let ys = rc_walk(t, [(rc_at, fn() { keys.set(rc_ten_and([70])) })], looks, rate, fn() { rc_y(t, "行8") })
+    for j in [1, 2, 3] {
+      let want = 60.0 * (looks[j] - rc_at) / ms
+      let up = ys[0] - ys[j]
+      assert_true((up - want).abs() < 1.0, msg="at \{rate} a second, \{looks[j] - rc_at} in: 行8 up \{up}, \{want} wanted")
+    }
+  }
+  // (followed every 10: up only, by no more than the flight's own pace, never at once to where it rests)
+  for rate in rc_rates {
+    let (t, keys) = cr_case(true, ms, 0.0, flips=true)
+    let ys = rc_walk(t, [(rc_at, fn() { keys.set(rc_ten_and([70])) })], rc_looks(rc_at + ms + 100.0), rate, fn() {
+      rc_y(t, "行8")
+    })
+    for j in 1..<ys.length() {
+      let step = ys[j - 1] - ys[j]
+      assert_true(step >= -0.01, msg="at \{rate} a second, look \{j}: 行8 down by \{-step}")
+      assert_true(step < 2.5, msg="at \{rate} a second, look \{j}: 行8 up \{step} at once")
+    }
+  }
+}
+
+///|
+/// A page's list as cr_case's, flips on: key 60 (40 high) comes by data and does not fly; key 70 (60 high) comes by
+/// data after it, its words in a box that flies in from the window's foot (`ms` long, its rise `up_late` late).
+fn cr_after_move(ms : Double, up_late : Double) -> (@view.Tree, @signals.Signal[Array[Int]]) {
+  let keys = @signals.signal(rc_ten_and([]), same=fn(a, b) { a == b })
+  let scroll = @view.Scroll::list()
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(scroll, fn() { keys.get() }, est=40.0, follows=fn() { true }, flips=true, fn(b, k) {
+        if k == 70 {
+          b.box(fn(w) {
+            w.height(Is(Some(60.0))).words(Is("行70")) |> ignore
+            w.flies_in(cr_flight(ms), fn(to) { Some((0.0, 380.0, to.2, to.3)) }, up_late~) |> ignore
+          })
+          |> ignore
+        } else {
+          b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0) |> ignore
+  (tree, keys)
+}
+
+///|
+test "flips: words sent while the list's Move of a row come before is still going ride the flight's rise with what is over them, the gap between them only opening to where it rests, never closed again, at every rate" {
+  // (the Move's tail taken up by the flight's way from where each is drawn, as a ComeGroup's curve takes all of its
+  // group's way: never a Move of its own pulling the row over the words up while they wait out the rise's late start)
+  let ms = 520.0
+  for later in [65.0, 260.0] {
+    for rate in rc_rates {
+      let at = "sent \{later} into the Move, at \{rate} a second"
+      let (t, keys) = cr_after_move(ms, 0.12)
+      let sent = rc_at + later
+      let seen = rc_walk(
+        t,
+        [(rc_at, fn() { keys.set(rc_ten_and([60])) }), (sent, fn() { keys.set(rc_ten_and([60, 70])) })],
+        rc_looks(sent + ms + 100.0),
+        rate,
+        fn() { (rc_y(t, "行60"), rc_y(t, "行70")) },
+      )
+      let mut last = rc_none
+      for j, s in seen {
+        if s.0 == rc_none || s.1 == rc_none {
+          continue
+        }
+        let gap = s.1 - s.0
+        if last != rc_none {
+          assert_true(gap >= last - 0.01, msg="\{at}, look \{j}: the gap under 行60 closed again from \{last} to \{gap}")
+        }
+        last = gap
+      }
+      assert_true((last - 40.0).abs() < 0.5, msg="\{at}: the gap under 行60 \{last} at rest, 40 wanted")
+    }
+  }
+}

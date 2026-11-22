@@ -41,10 +41,10 @@ export const pageUrl = (cfg, loc) => cfg.origin + loc.prefix;
  *  each its name, the web app it opens, and the cloud its apps download from (the beta apps on a test channel's site).
  *  The template is monoid.build's; --site names another. */
 export const SITES = {
-  "monoid.build": { name: "monoid", app: "https://app.monoid.build", cloud: "https://app.monoid.build", beta: false },
-  "monoid.zone": { name: "monoid", app: "https://app.monoid.zone", cloud: "https://app.monoid.build", beta: true },
-  "still.fail": { name: "still.fail", app: "https://app.still.fail", cloud: "https://app.still.fail", beta: false },
-  "youdid.wtf": { name: "youdid.wtf", app: "https://app.youdid.wtf", cloud: "https://app.still.fail", beta: true },
+  "monoid.build": { name: "monoid", app: "https://app.monoid.build", cloud: "https://app.monoid.build", beta: false, style: "monoid" },
+  "monoid.zone": { name: "monoid", app: "https://app.monoid.zone", cloud: "https://app.monoid.build", beta: true, style: "monoid" },
+  "still.fail": { name: "still.fail", app: "https://app.still.fail", cloud: "https://app.still.fail", beta: false, style: "classic", head: "still", tail: ".fail" },
+  "youdid.wtf": { name: "youdid.wtf", app: "https://app.youdid.wtf", cloud: "https://app.still.fail", beta: true, style: "classic", head: "youdid", tail: ".wtf" },
 };
 export const TEMPLATE_SITE = "monoid.build";
 
@@ -62,6 +62,26 @@ export function rebrand(html, site) {
     .replaceAll("/assets/android-qr.svg", `/assets/android-qr-${site}.svg`)
     .replace(/(?<![\w.-])monoid\.build(?![\w-])/g, site)
     .replace(/(?<![\w./-])monoid(?![\w-]|\.\w)/g, name);
+}
+
+/** Who runs monoid, as its legal pages say it where still.fail's say its operator (web/public's `data-operator`):
+ *  cloud/deploy.py CLOUDS' `operator`, the same words. */
+export const MONOID_OPERATOR = { zh: "在美国特拉华州注册成立的公司 AFK AI, Inc.", en: "AFK AI, Inc., a Delaware corporation" };
+
+/** A legal page of still.fail's (web/public) as `site`'s product has it: who runs it (`data-operator`), on monoid's sites its name where still.fail's
+ *  stands alone and its own terms where they differ (`data-product`), then its hosts and addresses where still.fail's are (still.fail: monoid.build, youdid.wtf:
+ *  monoid.zone), as cloud/deploy.py `rebrand_static` makes the web app's copies of them on app.monoid.build. */
+export function legal(html, site) {
+  if (SITES[site].style !== "monoid") return html;
+  const en = /<html lang="en"/.test(html);
+  return html
+    .replace(/<span data-operator>[^<]*<\/span>/g, `<span data-operator>${MONOID_OPERATOR[en ? "en" : "zh"]}</span>`)
+    // (where its terms differ from still.fail's: still.fail's element left out, monoid's put in its place)
+    .replace(/<(p|li|h2)\b[^>]*\sdata-product="still\.fail"[^>]*>[\s\S]*?<\/\1>/g, "")
+    .replace(/<template data-product="monoid">([\s\S]*?)<\/template>/g, "$1")
+    .replace(/(?<![\w./@-])still\.fail(?![\w-]|\.\w)/g, "monoid")
+    .replace(/(?<![\w.-])((?:[\w-]+\.)*)still\.fail(?![\w-]|\.\w)/g, "$1monoid.build")
+    .replace(/(?<![\w.-])((?:[\w-]+\.)*)youdid\.wtf(?![\w-]|\.\w)/g, "$1monoid.zone");
 }
 
 // ---------- Keys ----------
@@ -414,6 +434,95 @@ export function check(tpl, cfg, only = []) {
 const glyphLines = (g) => Object.entries(g).map(([ch, ks]) =>
   `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")} "${ch}" in ${ks.slice(0, 3).join(", ")}${ks.length > 3 ? ` …+${ks.length - 3}` : ""}`);
 
+function buildClassic(site, outDir, out) {
+  const s = SITES[site];
+  const kb = (n) => (n / 1024).toFixed(1) + " KB", bytes = (v) => Buffer.byteLength(v);
+  const suf = s.beta ? "-beta" : "";
+  const css = readFileSync(here("stillfail/styles.css"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").map((l) => l.trim()).filter(Boolean).join("\n")
+    .replace(/\s*([{};,>])\s*/g, "$1")
+    .replace(/;}/g, "}");
+  const js = readFileSync(here("stillfail/main.js"), "utf8")
+    .split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("//")).join("\n");
+  const vars = {
+    "{{SITE}}": site,
+    "{{SITE_HEAD}}": s.head,
+    "{{SITE_TAIL}}": s.tail,
+    "{{APP_URL}}": s.app,
+    "{{MAC_URL}}": `${s.cloud}/releases/latest/mac${suf}`,
+    "{{WIN_URL}}": `${s.cloud}/releases/latest/win${suf}`,
+    "{{ANDROID_URL}}": `${s.cloud}/releases/latest/android${suf}`,
+    "{{ANDROID_QR}}": `/assets/android-qr-${site}.svg`,
+    "{{OG_IMAGE}}": `https://${site}/assets/og/${site}/og.png`,
+    "{{CANONICAL}}": `https://${site}/`,
+    "{{DEFAULT_HOST}}": site,
+    "{{STATUS_URL}}": site === "still.fail" ? "/status" : "https://still.fail/status",
+  };
+  let html = readFileSync(here("stillfail/index.html"), "utf8");
+  for (const [k, v] of Object.entries(vars)) html = html.replaceAll(k, v);
+  html = html
+    .replace('<link rel="stylesheet" href="styles.css">', () => `<style>${css}</style>`)
+    .replace('<script src="main.js" defer></script>', () => `<script>${js}</script>`)
+    .split("\n").map((l) => l.trim()).filter(Boolean).join("\n");
+  if (html.includes('href="styles.css"') || html.includes('src="main.js"')) throw new Error("stillfail/index.html: stylesheet or script tag not found");
+
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out + "assets/fonts", { recursive: true });
+  mkdirSync(out + "assets/shots", { recursive: true });
+  mkdirSync(out + `assets/og/${site}`, { recursive: true });
+  mkdirSync(out + "en", { recursive: true });
+
+  writeFileSync(out + "index.html", html);
+  console.log(`${outDir}/index.html`.padEnd(36) + `${kb(bytes(html))}  (gzip ${kb(gzipSync(html).length)})`);
+
+  for (const f of ["inter-latin.woff2", "suisse-intl-regular.woff2", "suisse-intl-book.woff2", "suisse-intl-medium.woff2"]) {
+    cpSync(here(`assets/fonts/${f}`), out + `assets/fonts/${f}`);
+  }
+  cpSync(here("../web/public/mark.svg"), out + "assets/mark.svg");
+  cpSync(here("../web/public/mark-dark.svg"), out + "assets/mark-dark.svg");
+  cpSync(here(`assets/android-qr-${site}.svg`), out + `assets/android-qr-${site}.svg`);
+  const ogSrc = here(`assets/og/${site}/og.png`);
+  if (existsSync(ogSrc)) cpSync(ogSrc, out + `assets/og/${site}/og.png`);
+
+  const shotsDir = here("stillfail/shots");
+  if (existsSync(shotsDir)) {
+    for (const f of readdirSync(shotsDir)) {
+      if (f.endsWith(".webp")) cpSync(resolve(shotsDir, f), out + `assets/shots/${f}`);
+    }
+  }
+
+  if (s.beta) {
+    for (const [from, to] of [["favicon-beta.svg", "favicon.svg"], ["favicon-beta-32.png", "favicon-32.png"], ["apple-touch-icon-beta.png", "apple-touch-icon.png"]]) {
+      cpSync(here(`../web/public/${from}`), out + `assets/${to}`);
+    }
+  } else {
+    for (const f of ["favicon.svg", "favicon-32.png", "apple-touch-icon.png"]) {
+      cpSync(here(`assets/${f}`), out + `assets/${f}`);
+    }
+  }
+  for (const f of ["terms", "privacy", "trademark", "support"]) {
+    cpSync(here(`../web/public/${f}.html`), out + `${f}.html`);
+    cpSync(here(`../web/public/en/${f}.html`), out + `en/${f}.html`);
+  }
+  cpSync(here("../web/public/legal.css"), out + "legal.css");
+  cpSync(out + "assets/favicon.svg", out + "favicon.svg");
+
+  writeFileSync(out + "sitemap.xml", [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    `  <url><loc>https://${site}/</loc></url>`,
+    "</urlset>", "",
+  ].join("\n"));
+  writeFileSync(out + "robots.txt", `User-agent: *\nAllow: /\n\nSitemap: https://${site}/sitemap.xml\n`);
+  writeFileSync(out + "_headers", [
+    "/assets/fonts/*", "  Cache-Control: public, max-age=31536000, immutable",
+    "/assets/shots/*", "  Cache-Control: public, max-age=86400",
+    ...["/assets/*.svg", "/assets/*.png"].flatMap((p) => [p, "  Cache-Control: public, max-age=86400"]),
+    "/*", "  X-Content-Type-Options: nosniff", "",
+  ].join("\n"));
+}
+
 function main(argv) {
   const has = (f) => argv.includes(f);
   const cfg = loadConfig();
@@ -489,9 +598,13 @@ function main(argv) {
   const opt = (f) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : undefined);
   const site = opt("--site") ?? TEMPLATE_SITE;
   if (!(site in SITES)) throw new Error(`--site: no such site ${site} (of ${Object.keys(SITES).join(", ")})`);
-  cfg.origin = `https://${site}`;
   const outDir = opt("--out") ?? "dist/website";
   const out = resolve(here(".."), outDir) + "/";
+  if (SITES[site].style === "classic") {
+    buildClassic(site, outDir, out);
+    return;
+  }
+  cfg.origin = `https://${site}`;
   const { css, js } = sheetAndScript();
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
@@ -525,10 +638,11 @@ function main(argv) {
     }
   }
   // Terms, privacy and trademark, the pages the footer links (still.fail's web/public: in Chinese at /terms…, in
-  // English at /en/terms…), with the sheet and icon they ask for at the root.
-  for (const f of ["terms", "privacy", "trademark"]) {
-    cpSync(here(`../web/public/${f}.html`), out + `${f}.html`);
-    cpSync(here(`../web/public/en/${f}.html`), out + `en/${f}.html`);
+  // English at /en/terms…), with the sheet and icon they ask for at the root: as this site's product has them.
+  mkdirSync(out + "en", { recursive: true });
+  for (const f of ["terms", "privacy", "trademark", "support"]) {
+    writeFileSync(out + `${f}.html`, legal(readFileSync(here(`../web/public/${f}.html`), "utf8"), site));
+    writeFileSync(out + `en/${f}.html`, legal(readFileSync(here(`../web/public/en/${f}.html`), "utf8"), site));
   }
   cpSync(here("../web/public/legal.css"), out + "legal.css");
   cpSync(out + "assets/favicon.svg", out + "favicon.svg");

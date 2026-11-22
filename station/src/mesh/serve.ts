@@ -8,7 +8,7 @@
 import type { Admin } from "../api/admin.ts";
 import { langOfCore, queryPairs } from "../api/request.ts";
 import { BUILD_HEADER, COUNTED_FROM, buildOf, coreTooOld } from "../api/oldest.ts";
-import { LOGS_ANY_FROM_BUILD, LOGS_BEFORE, MOVED_FROM_BUILD, ROOT_OUT_FROM_BUILD } from "../api/moved-from.ts";
+import { LOGS_ANY_FROM_BUILD, LOGS_BEFORE, MOVED_FROM_BUILD, ROOT_OUT_FROM_BUILD } from "../../../shared/moved-from.ts";
 import { deviceBuildsOf } from "./device-builds.ts";
 import { tr } from "../ops/i18n.ts";
 import type { Cloud } from "../cloud/state.ts";
@@ -17,15 +17,14 @@ import { wall } from "../ops/fibers.ts";
 import { nowSecs } from "../ops/files.ts";
 import type { Accepted } from "../cloud/provider.ts";
 import { type Admitted, managesStation, readOnly, revoked, verifyMemberOf } from "./credential.ts";
-import { SeenDevices } from "./seen-devices.ts";
 import { foldChain, takeChain } from "./person-sync.ts";
 import { AT_ODDS } from "./person-chains.ts";
 import { MarkRefusal, stationMarksOf } from "./station-marks.ts";
 import { WaysRefusal, setRelays, setWay, waysOf as workspaceWaysOf } from "./ways.ts";
 import { join } from "node:path";
-import { FORK, NOT_GIVEN, meshDir, personChainsOf } from "../cloud/state.ts";
-import { hashOf } from "../cloud/log-keep.ts";
-import { type Entry, LockRefusal, admit, admitPerson, asEntry, endpointProof, fold, lowerRole, personFold } from "../cloud/lock.ts";
+import { FORK, NOT_GIVEN, meshDir, personChainsOf, seenDevicesOf } from "../cloud/state.ts";
+import { hashOf } from "../../../shared/log-keep.ts";
+import { type Entry, LockRefusal, admit, admitPerson, asEntry, endpointProof, fold, lowerRole, personFold } from "../../../shared/lock.ts";
 import type { Connection, Stream } from "./native.ts";
 import { answerScreen } from "./screens.ts";
 import { pinBrought } from "./moved-pin.ts";
@@ -106,13 +105,9 @@ function broughtForState(hello: any, cloud: Cloud, workspace: string): boolean {
 /// moved workspace's state is made of them).
 export { personChainsOf };
 
-/// The members' devices that came to this station, by workspace (seen-devices.ts).
-const seens = new WeakMap<Cloud, SeenDevices>();
-export function seenDevicesOf(cloud: Cloud): SeenDevices {
-  let s = seens.get(cloud);
-  if (s === undefined) seens.set(cloud, (s = new SeenDevices(join(meshDir(cloud.data), "seen-devices.json"))));
-  return s;
-}
+/// The members' devices that came to this station, by workspace (seen-devices.ts; kept beside the Cloud: its vault's
+/// lock where the workspace is not in security mode names them, cloud/vault-lock.ts).
+export { seenDevicesOf };
 
 /// `ws` when it is a workspace the station joined, null for its home one (whose lock is the home's).
 const joinedOf = (cloud: Cloud, ws: string) => (ws && ws !== cloud.home() ? ws : null);
@@ -976,7 +971,7 @@ function tracing(traces: Traces | undefined, head: any, method: string, path: st
           const said = JSON.parse(line.toString());
           outcome.status = Number(said.status) || 0;
           const type = String(said.headers?.["content-type"] ?? "");
-          if (outcome.status === 101 || type.startsWith("text/event-stream") || type.startsWith("application/x-ndjson") || type.startsWith("application/x-stillfail-screen")) end(true, null);
+          if (outcome.status === 101 || type.startsWith("text/event-stream") || type.startsWith("application/x-ndjson") || type.startsWith("application/vnd.stillfail.batch-lines+json") || type.startsWith("application/x-stillfail-screen")) end(true, null);
         } catch {}
         outcome.sent += bytes.length - line.length - 1;
       } else outcome.sent += bytes.length;
@@ -984,6 +979,8 @@ function tracing(traces: Traces | undefined, head: any, method: string, path: st
     finish: () => stream.finish(),
     stopped: () => stream.stopped(),
     reset: (code) => stream.reset(code),
+    // (a screen's frames as datagrams: what goes so is not counted here, as the stream does not carry it)
+    ...(stream.mediaDatagrams ? { mediaDatagrams: (token: number) => stream.mediaDatagrams!(token) } : {}),
   };
   return { stream: counted, end: (error: Error | null) => end(false, error) };
 }
@@ -1044,7 +1041,7 @@ async function answerRequest(m: Members, stream: Stream, reader: Reader, head: a
   const { handled, headers, rest, plain } = await handledOf(m, method, path, head, body, viewer, controller?.signal).finally(() => { handling = false; });
   if (plain) return answer(handled.status, (handled.body as Buffer).toString());
   // Compressed, for a client that asks so (compress.ts).
-  const sent = await compressed(handled, headers, rest);
+  const sent = await compressed(handled, headers, rest, ["application/vnd.stillfail.batch-lines+json"]);
   const ready = wall.now();
   await send(stream, sent);
   await stream.finish();
@@ -1055,7 +1052,7 @@ async function answerRequest(m: Members, stream: Stream, reader: Reader, head: a
 const readsOf = (method: string, path: string) => {
   const rest = path.slice("/admin/api".length);
   const at = rest.indexOf("?");
-  return method === "GET" || (method === "POST" && /^\/*(batch|changed\/(chats|threads|sessions))$/.test(at < 0 ? rest : rest.slice(0, at)));
+  return method === "GET" || (method === "POST" && /^\/*(batch|changed\/(chats|threads|sessions|shared))$/.test(at < 0 ? rest : rest.slice(0, at)));
 };
 
 /// A request's answer once its body is in, as the admin API and the station's own routes give it (not compressed), with

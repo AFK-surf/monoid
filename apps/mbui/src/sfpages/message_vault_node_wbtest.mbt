@@ -82,51 +82,29 @@ fn vault_cases() -> Array[(String, Json?, String, Message)] {
     ("another's", Some(vault_topic([vault_row()])), "", vault_ask_post(theirs=true)),
     ("under way", Some(vault_topic([vault_row()])), "vault.approve", vault_ask_post()),
     ("the topic not come", None, "", vault_ask_post()),
+    ("no key on this device", Some(vault_topic([vault_row(more={ "noKey": true })])), "", vault_ask_post()),
   ]
 }
 
 ///|
-/// The post `m` over `src` as the old view draws it (its words plain, message_decision under them in a list's row), `w`
-/// wide at `scale`, a mouse moved to the middle of `over` ("" none); then as the nodes do (message_decision_node with
-/// the core): both, and the new one's Tester.
-fn vault_both(
+/// The post `m` over `src` as the nodes draw it (message_decision_node with the core), `w` wide at `scale`, a mouse
+/// moved to the middle of `over` ("" none).
+fn vault_run(
   src : Source,
   m : Message,
   w : Double,
-  at : String,
   scale? : Double = 1.0,
   over? : String = "",
-) -> (String, String, @ui.Tester) {
-  let old = card_old(w, src, m, at, fn(x, here) {
-    x.text(m.text, style=dec_words) |> ignore
-    message_decision(x, src, here, m, here.list.map(fn(l) { l.turns }))
-  })
-  old.set_font_scale(scale)
-  old.run_for(@ui.move_most_ms)
-  let mut point = (0.0, 0.0)
-  if over != "" {
-    let (x, y, ww, h) = old.rect_of(over).unwrap()
-    point = (x + ww / 2.0, y + h / 2.0)
-    old.move_to(point.0, point.1)
-    old.run_for(@ui.move_most_ms)
-  }
-  let was = head_drawn(old)
+) -> (String, @ui.Tester) {
   let t = vault_new(w, src, fn() { m })
   t.set_font_scale(scale)
   t.run_for(@ui.move_most_ms)
   if over != "" {
-    t.move_to(point.0, point.1)
+    let (x, y, ww, h) = t.rect_of(over).unwrap()
+    t.move_to(x + ww / 2.0, y + h / 2.0)
     t.run_for(@ui.move_most_ms)
   }
-  (was, head_drawn(t), t)
-}
-
-///|
-/// What head_drawn says, a line each, in order of the line.
-fn drawn_lines(drawn : String) -> Array[String] {
-  let lines = drawn.split("\n").map(fn(l) { l.to_owned() }).to_array()
-  lines.sort()
-  lines
+  (head_drawn(t), t)
 }
 
 ///|
@@ -139,13 +117,12 @@ fn vault_new(w : Double, src : Source, m : () -> Message) -> @ui.Tester {
 }
 
 ///|
-test "a vault item's approval under its post, made once as nodes, is drawn as the old view drew it: for the chat, an hour at most, once alone, for a time asked; to keep, a token, a login, an ssh key typed in; the vault not on, not this device's, on a web page, decided, another's, under way, the topic not come; wide and narrow" {
+test "a vault item's approval under its post, made once as nodes: for the chat, an hour at most, once alone, for a time asked; to keep, a token, a login, an ssh key typed in; the vault not on, not this device's, on a web page, decided, another's, under way, the topic not come; wide and narrow" {
   for w in [760.0, 390.0] {
     let mut first = ""
     for c in vault_cases() {
       let at = "\{c.0} at \{w}"
-      let (was, now, t) = vault_both(vault_src(c.1, doing=c.2), c.3, w, at)
-      assert_eq(now, was, msg=at)
+      let (now, t) = vault_run(vault_src(c.1, doing=c.2), c.3, w)
       // (each state drawn as it is, not as the one it starts from)
       if c.0 == "for the chat" {
         first = now
@@ -158,13 +135,12 @@ test "a vault item's approval under its post, made once as nodes, is drawn as th
 }
 
 ///|
-test "a vault item's approval under its post at 1.3, narrow, and under a mouse: drawn as the old view drew it" {
+test "a vault item's approval under its post at 1.3, narrow, and under a mouse" {
   let cases = vault_cases()
   for i in [0, 3, 5] {
     let c = cases[i]
     let at = "\{c.0} at 1.3"
-    let (was, now, t) = vault_both(vault_src(c.1, doing=c.2), c.3, 390.0, at, scale=1.3)
-    assert_eq(now, was, msg=at)
+    let (_, t) = vault_run(vault_src(c.1, doing=c.2), c.3, 390.0, scale=1.3)
     dec_audit(t, at)
   }
   // (a time asked in minutes, its words long: beside its buttons where the post leaves them the room (390 wide, at 1.3
@@ -173,10 +149,7 @@ test "a vault item's approval under its post at 1.3, narrow, and under a mouse: 
   for case in [(390.0, 1.0), (390.0, 1.3), (340.0, 1.3)] {
     let (w, scale) = case
     let at = "in minutes at \{w}, \{scale}"
-    let (was, now, t) = vault_both(vault_src(Some(topic)), vault_ask_post(), w, at, scale~)
-    // (each the same where it is drawn, in whichever order: the old view puts the line over its buttons by its foot's
-    // flow, after them in what it draws, the nodes before them)
-    assert_eq(drawn_lines(now), drawn_lines(was), msg=at)
+    let (_, t) = vault_run(vault_src(Some(topic)), vault_ask_post(), w, scale~)
     dec_audit(t, at)
     let (_, cy, _, ch) = t.query(Button, label="闲置 4319 分钟后失效").unwrap().rect
     let (_, ay, _, ah) = t.query(Button, label="允许").unwrap().rect
@@ -188,8 +161,7 @@ test "a vault item's approval under its post at 1.3, narrow, and under a mouse: 
   }
   for over in ["允许", "本对话内"] {
     let c = cases[0]
-    let (was, now, t) = vault_both(vault_src(c.1), c.3, 760.0, "under a mouse: " + over, over~)
-    assert_eq(now, was, msg="under a mouse: " + over)
+    let (_, t) = vault_run(vault_src(c.1), c.3, 760.0, over~)
     dec_audit(t, "under a mouse: " + over)
   }
 }
@@ -396,41 +368,22 @@ fn vault_card_cases() -> Array[(String, Message, String)] {
       ),
       "",
     ),
+    ("no key on this device", vault_card_post(vault_use(more={ "answer": "noKey" })), ""),
   ]
 }
 
 ///|
-/// The old view's vault card for post `m` (vault_ask_card).
-fn vault_card_old(c : @ui.Ctx, here : MessageHere, m : Message) -> Unit {
-  match m.card {
-    Some({ ask: Some(ask), .. } as card) => vault_ask_card(c, here, m, card, ask)
-    _ => ()
-  }
-}
-
-///|
-/// The post `m` with the core doing `doing` as the old view draws it (vault_ask_card in a list's row), `w` wide at
-/// `scale`, a mouse over `over` ("" none); then as the nodes do: both, and the new one's Tester.
-fn vault_card_both(m : Message, doing : String, w : Double, at : String, scale? : Double = 1.0, over? : String = "") -> (String, String, @ui.Tester) {
-  let old = card_old(w, vault_src(None, doing~), m, at, fn(x, here) { vault_card_old(x, here, m) })
-  old.set_font_scale(scale)
-  old.run_for(@ui.move_most_ms)
-  let mut point = (0.0, 0.0)
-  if over != "" {
-    let (x, y, ww, h) = old.rect_of(over).unwrap()
-    point = (x + ww / 2.0, y + h / 2.0)
-    old.move_to(point.0, point.1)
-    old.run_for(@ui.move_most_ms)
-  }
-  let was = head_drawn(old)
+/// The post `m` with the core doing `doing` as the nodes draw it, `w` wide at `scale`, a mouse over `over` ("" none).
+fn vault_card_run(m : Message, doing : String, w : Double, scale? : Double = 1.0, over? : String = "") -> (String, @ui.Tester) {
   let t = card_new(w, vault_src(None, doing~), fn() { m })
   t.set_font_scale(scale)
   t.run_for(@ui.move_most_ms)
   if over != "" {
-    t.move_to(point.0, point.1)
+    let (x, y, ww, h) = t.rect_of(over).unwrap()
+    t.move_to(x + ww / 2.0, y + h / 2.0)
     t.run_for(@ui.move_most_ms)
   }
-  (was, head_drawn(t), t)
+  (head_drawn(t), t)
 }
 
 ///|
@@ -443,18 +396,12 @@ fn vault_card_rooms(_c : (String, Message, String)) -> Int {
 }
 
 ///|
-test "a vault item's request in place of its post's words, made once as nodes, is drawn as the old view drew it: to use (for the chat, an hour, once, a time asked, reading it on another station), to keep (named, a token, a login, an ssh key typed in), the vault not on, not this device's, on a web page, another's, under way; granted, for a time, kept, refused, not kept, expired; wide and narrow" {
+test "a vault item's request in place of its post's words, made once as nodes: to use (for the chat, an hour, once, a time asked, reading it on another station), to keep (named, a token, a login, an ssh key typed in), the vault not on, not this device's, on a web page, another's, under way; granted, for a time, kept, refused, not kept, expired; wide and narrow" {
   for w in [760.0, 390.0] {
     let mut first = ""
     for c in vault_card_cases() {
-      // (for a time asked: the old view's length's capsule ends in the card's foot corner, not concentric with it, which
-      // breaks the corner rule and stops its Tester; the nodes lay it out otherwise: alone, below)
-      if c.0 == "for a time asked" {
-        continue
-      }
       let at = "\{c.0} at \{w}"
-      let (was, now, t) = vault_card_both(c.1, c.2, w, at)
-      assert_eq(now, was, msg=at)
+      let (now, t) = vault_card_run(c.1, c.2, w)
       if c.0 == "for the chat" {
         first = now
       } else {
@@ -466,13 +413,12 @@ test "a vault item's request in place of its post's words, made once as nodes, i
 }
 
 ///|
-test "a vault item's request in place of its post's words at 1.3, narrow, drawn as the old view drew it where it has no length to choose or one beside the buttons" {
+test "a vault item's request in place of its post's words at 1.3, narrow" {
   let cases = vault_card_cases()
-  for i in [0, 1, 2, 5, 6, 14] {
+  for i in [0, 1, 2, 5, 6, 14, 21] {
     let c = cases[i]
     let at = "\{c.0} at 1.3"
-    let (was, now, t) = vault_card_both(c.1, c.2, 390.0, at, scale=1.3)
-    assert_eq(now, was, msg=at)
+    let (_, t) = vault_card_run(c.1, c.2, 390.0, scale=1.3)
     card_audit(t, at, vault_card_rooms(c))
   }
 }
@@ -586,7 +532,7 @@ test "a vault item's request for a time asked, made once as nodes: how long acro
   let cases = vault_card_cases()
   let minutes = vault_card_post(vault_use(more={ "timeoutKind": "idle", "timeoutSeconds": 259140 }))
   for asked in [(cases[3].1, "闲置 36 小时后失效"), (minutes, "闲置 4319 分钟后失效")] {
-    for case in [(760.0, 1.0), (390.0, 1.0), (390.0, 1.3)] {
+    for case in [(760.0, 1.0), (390.0, 1.0), (320.0, 1.3)] {
       let (w, scale) = case
       let at = "\{asked.1} at \{w}, \{scale}"
       let t = card_new(w, vault_src(None), fn() { asked.0 })
@@ -608,4 +554,25 @@ test "a vault item's request for a time asked, made once as nodes: how long acro
       assert_true(lit.is_empty(), msg=at + ", all lit: " + lit.join(" | "))
     }
   }
+}
+
+///|
+test "a vault item's request on a chat card when this device has no key: 前往授权 opens Vault without approving, 拒绝 calls vault.deny" {
+  let calls : Array[(String, Json)] = []
+  let t = card_new(760.0, vault_src(None, calls~), fn() { vault_card_post(vault_use(more={ "answer": "noKey" })) })
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="允许") is None)
+  assert_true(t.query(Button, label="本对话内") is None)
+  t.click(Button, label="前往授权")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.length(), 0)
+  assert_true(app.nav.top() == Setting(@settings.Route::Vault))
+  card_audit(t, "noKey authorize", 0)
+  let calls : Array[(String, Json)] = []
+  let t = card_new(390.0, vault_src(None, calls~), fn() { vault_card_post(vault_use(more={ "answer": "noKey" })) })
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="拒绝")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.map(fn(c) { c.0 + " " + c.1.stringify() }), ["vault.deny {\"workspace\":\"ws1\",\"request\":\"r1\"}"])
+  card_audit(t, "noKey deny", 0)
 }

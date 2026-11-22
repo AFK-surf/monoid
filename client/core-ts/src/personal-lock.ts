@@ -29,6 +29,7 @@ export const personOf = (sub: string) => `person:${sub}`;
 export const isPerson = (where: string) => where.startsWith("person:");
 
 const KEY = "personal-signer";
+export const PERSONAL_KEY = KEY;
 /// What a person does here (an entry they sign) waits out the cloud's "too many requests": the account's devices share
 /// one budget a minute, which their reads as a lock moves can use up (as views/lock.ts `Lock` waits, by hand).
 const LIMITED_TRIES = 6;
@@ -145,6 +146,36 @@ export function grantHolds(g: J, station: string, sub: string, devices: Readonly
   if (!Number.isSafeInteger(b.exp) || b.exp <= now) return null;
   try {
     return verifies(s.sig.key, s.sig.sig, grantBytes(b)) ? b.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+/// What a person's device signs to take a chat's grant of their phone back: carried by every station of theirs it
+/// reaches, so a phone ends the grant though the station holding it goes on saying it (each phone checks it alone, as
+/// it checks a grant). Its own tag: a grant's signature is never one of these.
+export type RevokeBody = { v: 1; sub: string; station: string; request: string; exp: number };
+export type SignedRevoke = { body: RevokeBody; sig: { key: string; sig: string } };
+const revokeBytes = (body: unknown) => {
+  const tag = utf8("stillfail-phone-revoke/1\0");
+  const digest = sha256(utf8(canonical(body)));
+  const out = new Uint8Array(tag.length + digest.length);
+  out.set(tag, 0);
+  out.set(digest, tag.length);
+  return out;
+};
+
+/// What a signed taking back says, where it holds: signed for `sub` by a device on the lock pinned here, not ended
+/// (`exp`, when the grant would have ended at the latest). Null otherwise.
+export function revokeHolds(s: unknown, sub: string, devices: ReadonlyMap<string, Device>, now: number): RevokeBody | null {
+  const r = s as SignedRevoke | null | undefined;
+  if (r === null || typeof r !== "object" || r.body === null || typeof r.body !== "object") return null;
+  if (typeof r.sig?.key !== "string" || typeof r.sig.sig !== "string" || !devices.has(r.sig.key)) return null;
+  const b = r.body;
+  if (b.v !== 1 || b.sub !== sub || typeof b.station !== "string" || b.station.length === 0 || typeof b.request !== "string" || b.request.length === 0) return null;
+  if (!Number.isSafeInteger(b.exp) || b.exp <= now) return null;
+  try {
+    return verifies(r.sig.key, r.sig.sig, revokeBytes(b)) ? b : null;
   } catch {
     return null;
   }
@@ -285,6 +316,9 @@ export class PersonalLock {
   /// Of each person's lock, what `#heard` brought the stations last and they took (`#bringPinned`): the head pinned and
   /// what the read that it answered showed.
   readonly #brought = new Map<string, string>();
+  /// People whose pinned chain is currently being brought to the stations (`#bringPinned`): prevents a station's
+  /// refusal of that POST from triggering recursive concurrent POSTs.
+  readonly #bringing = new Set<string>();
 
   constructor(env: PersonalEnv) {
     this.#env = env;
@@ -394,7 +428,12 @@ export class PersonalLock {
     const root = pinned[0] === undefined ? null : entryHash(pinned[0]);
     const mine = root === null ? [] : chains.filter((c) => c[0] !== undefined && entryHash(c[0]) === root && !this.#isLeft(sub, c));
     let best: Entry[] | null = null;
-    for (const c of mine) if (checkChain(c, sub) !== null && (best === null || c.length > best.length)) best = c;
+    for (const c of mine) {
+      // A chain read over HTTP/JSON-RPC is a fresh array even when identical to `pinned`; reuse `pinned` so `checkChain`'s WeakMap cache hits without re-running `person_fold_js`.
+      const same = c.length === pinned.length && c.every((e, i) => entryHash(e) === entryHash(pinned[i]!));
+      const candidate = same ? pinned : c;
+      if (checkChain(candidate, sub) !== null && (best === null || candidate.length > best.length)) best = candidate;
+    }
     if (mine.length > 0) return { chain: best ?? [], more: mine.filter((c) => c !== best).flat() };
     for (const c of chains) if (c.length > 0 && !this.#isLeft(sub, c) && checkChain(c, sub) !== null) best = c;
     return { chain: best ?? [], more: [] };
@@ -441,7 +480,7 @@ export class PersonalLock {
         yield* this.#pin(sub, entries);
         this.#seen.delete(sub);
       } else if (holds && entries.length > 0) this.#seen.set(sub, entries);
-      else this.#seen.delete(sub);
+      else if (stations) this.#seen.delete(sub);
       // Told only when it changed: what is told retries the stations that refused this device, and each refusal brings
       // this same chain again (views/lock.ts heardRefused), so telling it unchanged would ask them again at once, endlessly.
       if (this.#stands(sub) !== was) this.#env.changed();
@@ -457,12 +496,16 @@ export class PersonalLock {
   /// not to change by it (round 24 of apps/mbui/e2e/locks-moved.ts, 2026-11-14: the root's person's new app, its old
   /// log shown as theirs, 878 POSTs in 91 s). Not taken, it is brought at the next read, as before.
   #bringPinned(sub: string, chain: Entry[], heard: readonly Entry[]): Effect.Effect<void> {
-    if (chain.length === 0) return Effect.void;
+    if (chain.length === 0 || this.#bringing.has(sub)) return Effect.void;
     const why = `${hashOf(chain[chain.length - 1]!)} ${heard.length === 0 ? "-" : `${entryHash(heard[0]!)} ${hashOf(heard[heard.length - 1]!)}`}`;
     if (this.#brought.get(sub) === why) return Effect.void;
-    return Effect.ignore(Effect.tap(this.#env.stations!.bring(sub, chain), (took) => Effect.sync(() => {
-      if (typeof took === "number" && took > 0) this.#brought.set(sub, why);
-    })));
+    this.#bringing.add(sub);
+    return Effect.ensuring(
+      Effect.ignore(Effect.tap(this.#env.stations!.bring(sub, chain), (took) => Effect.sync(() => {
+        if (typeof took === "number" && took > 0) this.#brought.set(sub, why);
+      }))),
+      Effect.sync(() => { this.#bringing.delete(sub); }),
+    );
   }
 
   /// Whether `entries` (a chain that holds, heard of the stations by a device with none pinned) is its person's lock as
@@ -717,6 +760,26 @@ export class PersonalLock {
       const seed = yield* Effect.mapError(host.secureGet(KEY, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key"));
       if (seed === null || seed.length !== 32) return yield* Effect.fail(new CoreError("personal_no_key", t("core-misc.personal.noKey")));
       return seed;
+    });
+  }
+
+  /// The key's seed together with `extraKeys` in a single biometric prompt (`secureGetMany` when available).
+  #unsealWith(reason: string, extraKeys: readonly string[]): Effect.Effect<{ seed: Uint8Array; extra: (Uint8Array | null)[] }, CoreError> {
+    const { host } = this.#env;
+    if (extraKeys.length === 0) return Effect.map(this.#unseal(reason), (seed) => ({ seed, extra: [] }));
+    return Effect.gen({ self: this }, function* () {
+      if (host.secureGetMany) {
+        const values = yield* Effect.mapError(host.secureGetMany([KEY, ...extraKeys], { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key"));
+        const seed = values[0] ?? null;
+        if (seed === null || seed.length !== 32) return yield* Effect.fail(new CoreError("personal_no_key", t("core-misc.personal.noKey")));
+        return { seed, extra: values.slice(1) };
+      }
+      const seed = yield* this.#unseal(reason);
+      const extra: (Uint8Array | null)[] = [];
+      for (const k of extraKeys) {
+        extra.push(yield* Effect.mapError(host.secureGet!(k, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key")));
+      }
+      return { seed, extra };
     });
   }
 
@@ -1323,6 +1386,27 @@ export class PersonalLock {
     });
   }
 
+  /// Grants taken back, signed at one go, the person asked once (none: nobody asked); refused on a device not on the
+  /// lock. `station`: the station it goes through, read of alone.
+  signRevokes(sub: string, bodies: Omit<RevokeBody, "v" | "sub">[], reason: string, station?: string): Effect.Effect<SignedRevoke[], CoreError> {
+    return Effect.gen({ self: this }, function* () {
+      yield* Effect.result(this.refresh(sub, station, this.asked()));
+      const standing = this.standing(sub);
+      if (standing === "replaced") return yield* Effect.fail(new CoreError("personal_replaced", t("core-misc.personal.replaced")));
+      if (standing !== "member") return yield* Effect.fail(new CoreError("personal_outside", t("core-misc.personal.outside")));
+      if (bodies.length === 0) return [];
+      const seed = yield* this.#unseal(reason);
+      const within = this.asked();
+      yield* this.#signAgain(sub, seed, within);
+      yield* this.#restate(sub, seed, within);
+      yield* this.#addApproved(sub, seed, within);
+      return bodies.map((body) => {
+        const whole: RevokeBody = { v: 1, sub, ...body };
+        return { body: whole, sig: { key: this.#myKey!, sig: hex(ed25519.sign(revokeBytes(whole), seed)) } };
+      });
+    });
+  }
+
   /// Their lock begun with nobody asked where an act of theirs on it would begin it (`seedFor`'s `begins`) and this
   /// device may (`beginQuietly`'s `acted`), ahead of that act: a code shown here goes with its root (views/pair.ts
   /// `rootsOf`), and the act asks only once the code is proved. Never unseals, never asks; nothing done otherwise.
@@ -1343,16 +1427,31 @@ export class PersonalLock {
   /// bindings ride what the act then signs (`#restate`). The lead, 2026-11-14: the same one ask as before the move,
   /// nobody else involved.
   seedFor(sub: string, reason: string): Effect.Effect<Uint8Array, CoreError> {
+    return Effect.map(this.seedForWith(sub, reason, []), (r) => r.seed);
+  }
+
+  /// Like `seedFor`, also reading `extraKeys` in the same prompt (`secureGetMany`) when this device is already a member.
+  seedForWith(sub: string, reason: string, extraKeys: readonly string[]): Effect.Effect<{ seed: Uint8Array; extra: (Uint8Array | null)[] }, CoreError> {
+    const { host } = this.#env;
     return Effect.gen({ self: this }, function* () {
       if (this.standing(sub) === "none" && this.#env.begins?.(sub) === true) {
         const read = yield* Effect.result(this.refresh(sub, undefined, this.asked()));
         if (this.standing(sub) === "none") {
           if (read._tag === "Failure") return yield* Effect.fail(read.failure);
-          if (!(this.mayBeginQuietly(sub) && (yield* this.beginQuietly(sub, true)))) return yield* this.begin(sub, reason);
+          if (!(this.mayBeginQuietly(sub) && (yield* this.beginQuietly(sub, true)))) {
+            const seed = yield* this.begin(sub, reason);
+            const extra: (Uint8Array | null)[] = [];
+            if (extraKeys.length > 0 && host.secureGetMany) {
+              extra.push(...(yield* Effect.mapError(host.secureGetMany(extraKeys, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key"))));
+            } else if (extraKeys.length > 0 && host.secureGet) {
+              for (const k of extraKeys) extra.push(yield* Effect.mapError(host.secureGet(k, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key")));
+            }
+            return { seed, extra };
+          }
         }
       }
       if (this.standing(sub) !== "member") return yield* Effect.fail(new CoreError("personal_outside", t("core-misc.personal.outside")));
-      return yield* this.#unseal(reason);
+      return yield* this.#unsealWith(reason, extraKeys);
     });
   }
 

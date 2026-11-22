@@ -115,9 +115,12 @@ pub fn keep_local(env : Env) -> Env {
 
 ///|
 /// The station's environment for what it starts (`startEnv`): `raw` (its own with its owners' variables over it) less
-/// `scrubbed`, this machine kept out of a proxy.
+/// `scrubbed` and the station's internal variables (`STATION_INTERNAL`: the launcher's front, whose socket binds the
+/// station's endpoint), this machine kept out of a proxy.
 pub fn start_env(raw : Env, scrubbed : Array[String]) -> Env {
-  keep_local(Env::new(raw.pairs.filter(p => !scrubbed.contains(p.0))))
+  keep_local(
+    Env::new(raw.pairs.filter(p => !scrubbed.contains(p.0) && p.0 != "STILLFAIL_MESH_FRONT")),
+  )
 }
 
 ///|
@@ -191,9 +194,13 @@ pub fn access_of(p : JValue) -> JValue? {
 }
 
 ///|
-/// `accessKind`.
-pub fn access_kind(p : JValue) -> String {
-  str_at(access_of(p), "kind").unwrap_or("env")
+pub using @agent_runtimes {
+  access_kind,
+  profile_model,
+  is_machine,
+  profile_fast,
+  takes_fast,
+  kimi_signed_in,
 }
 
 ///|
@@ -204,44 +211,4 @@ pub fn profile_id(p : JValue) -> String {
 ///|
 pub fn profile_home(p : JValue) -> String {
   str_at(Some(p), "home").unwrap_or("")
-}
-
-///|
-/// `profileModel`.
-pub fn profile_model(p : JValue) -> String? {
-  filled(Some(p), "model")
-}
-
-///|
-/// `isMachine`.
-pub fn is_machine(p : JValue) -> Bool {
-  is_true(Some(p), "machine")
-}
-
-///|
-/// `profileFast`.
-pub fn profile_fast(p : JValue) -> Bool {
-  is_true(Some(p), "fast")
-}
-
-///|
-/// `takesFast`.
-pub fn takes_fast(p : JValue) -> Bool {
-  let kind = access_kind(p)
-  match str_at(Some(p), "runtime") {
-    Some("codex") => kind == "subscription"
-    Some("claude") =>
-      kind == "anthropic-api" ||
-      kind == "subscription" ||
-      (kind == "api-provider" && str_at(access_of(p), "provider") == Some("openrouter"))
-    _ => false
-  }
-}
-
-///|
-/// `kimiSignedIn`.
-pub fn kimi_signed_in(p : JValue) -> Bool {
-  access_kind(p) == "api-provider" &&
-  str_at(access_of(p), "provider") == Some("kimi-code") &&
-  is_true(access_of(p), "login")
 }

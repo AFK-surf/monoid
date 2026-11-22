@@ -262,3 +262,57 @@ test "the key's prompt in every window of the sweeps, in Chinese and English, an
   }
   assert_eq(wrong, [])
 }
+
+///|
+test "vault key prompt shows device code, owner, scope with item count, and accurate non-safe-mode copy" {
+  // safeMode = true: device code, owner, scope & item count
+  let t = key_asked(platform=0, wide=true)
+  assert_true(t.find("K7M-4PX") is Some(_))
+  assert_true(t.find("林（本人）") is Some(_))
+  assert_true(t.find("个人密钥库 · 共 3 条密钥") is Some(_))
+  assert_eq(t.audit(), [])
+  // safeMode = false: does not claim "安全模式的锁"
+  let t2 = prompt_asked(fn() { @settings.fixture_prompts_now(pairing=false, key_ask=true, safe_mode=false) }, platform=0, wide=true)
+  assert_true(t2.find("此设备已在你的受信任设备中") is Some(_))
+  assert_true(t2.find("安全模式的锁") is None)
+  assert_true(t2.find("K7M-4PX") is Some(_))
+  assert_eq(t2.audit(), [])
+}
+
+///|
+test "pairing prompt with clarity metadata shows device code, build, willSign, and handover vaults; 0 added faults across screens and 1.3x" {
+  for screen in [(0, 1100.0, 760.0), (2, 390.0, 844.0)] {
+    let (platform, w, h) = screen
+    new_run()
+    let t = settings_tester("home", mode="settings-pair-prompt", shows="settings-pair-prompt", platform~)
+    t.resize(w, h)
+    t.frame()
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w}×\{h} p=\{platform}"
+    assert_true(@sf.presenting(), msg=at)
+    for words in ["K7M-4PX", "客户端版本 0.1.10587", "批准后将授予", "成为你的受信任设备", "个人密钥库「林的库」", "团队共享密钥库「Workspace 密钥库」"] {
+      assert_true(t.find(words) is Some(_), msg="\{at}: missing \{words}")
+    }
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg="\{at}: " + faults.join(" | "))
+  }
+  // 1.3x font scale on phone in Chinese and English: 0 added faults over underlying settings-home
+  let large : Array[(String, (@ui.Tester) -> Array[String])] = [
+    ("outgrown", fn(t) { t.fixed_outgrown() }),
+    ("squeeze", fn(t) { t.squeeze_faults() }),
+    ("words over words", fn(t) { t.words_over_now() }),
+  ]
+  let wrong : Array[String] = []
+  for lang in ["zh", "en"] {
+    let prompt = key_ask_faults("settings-pair-prompt", corner_windows[0], lang, large, scale=words_large_scale)
+    let under = key_ask_faults("settings-home", corner_windows[0], lang, large, scale=words_large_scale)
+    for k, c in prompt {
+      for f in c.1 {
+        if !under[k].1.contains(f) {
+          wrong.push("phone-\{lang} at \{words_large_scale} \{c.0}: \{f}")
+        }
+      }
+    }
+  }
+  assert_eq(wrong, [])
+}

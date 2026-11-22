@@ -121,3 +121,49 @@ test "rows steady: what covers a list's top grown at once, drawn over what it sh
   let found : Array[String] = rows_steady.found.iter().collect()
   assert_eq(found, [], msg="rows judged a step as what covers the list or its head changed: \{Repr(found)}")
 }
+
+///|
+test "rows steady: an old Ctx::list hidden under an ancestor with alpha 0.0 is skipped, while a visible one stepping row height in one frame is caught" {
+  // (frames it walks itself, judged by the default run alone: at a rate none of them is judged, test_at_a_rate)
+  if test_at_a_rate() {
+    return
+  }
+  let run = fn(hidden : Bool) -> Array[String] {
+    let first_h = @signals.signal(40.0)
+    let t = Tester::new(
+      fn(c) {
+        let wrap = c.box(w=Px(300.0), h=Px(300.0), fn() {
+          c.list("rows", 3, 40.0, fn(i) {
+            let h = if i == 0 { first_h.get() } else { 40.0 }
+            c.box(w=Px(200.0), h=Px(h), bg=0x445566FFL, fn() {
+              c.text("第\{i}行", size=14.0) |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        if hidden {
+          c.look(wrap, { ..still_look, alpha: 0.0 })
+        }
+      },
+      w=300.0,
+      h=300.0,
+      platform=0,
+    )
+    rows_steady_bars[rows_steady.file] = 99
+    sizes_steady_bars[sizes_steady.file] = 99
+    t.draw()
+    t.run_for(row_size_ms * 2.0)
+    t.frame()
+    t.frame()
+    first_h.set(122.0)
+    t.frame()
+    t.frame()
+    t.frame()
+    rows_steady.found.iter().collect()
+  }
+  let hidden_found = run(true)
+  assert_eq(hidden_found, [], msg="hidden Ctx::list should not trigger rows_steady: \{Repr(hidden_found)}")
+  let visible_found = run(false)
+  assert_true(visible_found.length() > 0, msg="visible Ctx::list stepping row height in one frame was not caught")
+}

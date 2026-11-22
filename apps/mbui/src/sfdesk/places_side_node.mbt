@@ -162,29 +162,68 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
       })
     }
     // (the room the allowance of each kind of account that needs the most on one line takes, a vendor's, a profile's or
-    // an offered login's, so that every row of a kind takes one way (nav_quota_chips_node); told on only as it comes out
-    // otherwise: a quota changed that leaves it as it was runs nothing of the rows. The user, 2026-11-13: 「按账号类型来
-    // 搞，不要所有全用同一种」「相同供应商的账号用同一种就行」)
+    // an offered login's, so that every row of a kind takes one way (nav_quota_chips_node); narrowed to only the quota
+    // fields that affect chip width so unrelated profile updates (usedCount, checkText, state, name, planText, where,
+    // usable) do not re-measure text across all accounts. The user, 2026-11-13: 「按账号类型来搞，不要所有全用同一种」「相同
+    // 供应商的账号用同一种就行」)
+    let quota_windows_key = fn(quota : Json?) -> Array[(String, String, String, Int, String)] {
+      if !@sf.has_quota(quota) {
+        return []
+      }
+      items(quota, "windows").map(fn(win) {
+        let wv = Some(win)
+        let left = match field(wv, "left") {
+          Some(Number(x, ..)) => {
+            let n = x.to_int()
+            if n < 0 { 0 } else if n > 100 { 100 } else { n }
+          }
+          _ => 0
+        }
+        (text(wv, "label"), text(wv, "scope"), text(wv, "mark"), left, text(wv, "refillShort"))
+      })
+    }
+    let quota_inputs = @signals.computed(fn(_) {
+      let out : Array[(String, Array[(String, String, String, Int, String)])] = []
+      for e in list() {
+        let ws = quota_windows_key(field(field(Some(e), "profile"), "quota"))
+        if !ws.is_empty() {
+          out.push((profile_kind(Some(e)), ws))
+        }
+      }
+      for o in offered() {
+        for l in o.1 {
+          let ws = quota_windows_key(field(Some(l), "quota"))
+          if !ws.is_empty() {
+            out.push((offer_kind(Some(l)), ws))
+          }
+        }
+      }
+      out
+    })
     let widths = @signals.computed(fn(_) {
       let by : Map[String, (Double, Array[Double])] = Map([])
-      let put = fn(k : String, quota : Json?) {
-        let room = @sf.nav_quota_room_node(q, quota)
+      for item in quota_inputs.get() {
+        let (k, ws) = item
+        let wins = ws.map(fn(win) {
+          Json::object({
+            "label": Json::string(win.0),
+            "scope": Json::string(win.1),
+            "mark": Json::string(win.2),
+            "left": Json::number(win.3.to_double()),
+            "refillShort": Json::string(win.4),
+          })
+        })
+        let qj : Json = Json::object({ "state": Json::string("ok"), "windows": Json::array(wins) })
+        let room = @sf.nav_quota_room_node(q, Some(qj))
         match by.get(k) {
           Some((most, _)) if most >= room.0 => ()
           _ => by[k] = room
         }
       }
-      for e in list() {
-        put(profile_kind(Some(e)), field(field(Some(e), "profile"), "quota"))
-      }
-      for o in offered() {
-        for l in o.1 {
-          put(offer_kind(Some(l)), field(Some(l), "quota"))
-        }
-      }
       by
     })
     let widest = fn(kind : String) { fn() { widths.get().get(kind).unwrap_or((0.0, [])) } }
+    let quota_room_w = profiles_side_quota_room_w(fn() { at().laid_w }, list_at)
     // (its lines in their order: the overview, the accounts under their kinds' headings, each station's logins under
     // its own)
     let lines = fn() -> Array[PlaceLine] {
@@ -227,7 +266,7 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
       }
     })
     let lit = q.selected(fn() { chosen.get() })
-    place_list_node(q, list_at, lines, profiles_line_shape, fn(line, key, now) {
+    place_list_node(q, list_at, lines, profiles_line_shape, est=@signals.untracked(fn() { @sf.theme().chat_list.row_h + 24.0 }), fn(line, key, now) {
       let data = fn() { now().bind(fn(p) { p.data }) }
       // (told on only as it comes out otherwise: its line changed tells its room under it nothing)
       let more_c = @signals.computed(fn(_) { now().map(fn(p) { p.more }).unwrap_or(false) })
@@ -269,9 +308,9 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
           list_at,
         )
       } else if made_as == 3 {
-        profile_side_row_node(line, src, w, tips, list_at, data, more, lit, widest)
+        profile_side_row_node(line, src, w, tips, list_at, data, more, lit, widest, quota_room_w)
       } else {
-        machine_side_row_node(line, src, core, here, tips, list_at, data, more, widest)
+        machine_side_row_node(line, src, core, here, tips, list_at, data, more, widest, quota_room_w)
       }
     })
   })
@@ -349,6 +388,17 @@ fn offer_kind(l : Json?) -> String {
 }
 
 ///|
+/// The inner width available to `nav_quota_chips_node` inside a row of `profiles_side_node`, derived from the sidebar's
+/// `laid_w()` without reading `at()` during tree construction: `from` (+side_into_rail) and `back` (-side_into_rail)
+/// cancel out, leaving `side_list` (`band_in` per side) and `list_row_in(list_at)` (`band_pad_in(list_at)` per side).
+fn profiles_side_quota_room_w(laid_w : () -> Double, list_at : @sf.ListAt) -> () -> Double {
+  fn() {
+    let w = laid_w() - 2.0 * @sf.theme().chat_list.band_in - 2.0 * @sf.band_pad_in(list_at)
+    if w > 0.0 { w } else { 0.0 }
+  }
+}
+
+///|
 /// An account's row in the profiles' sidebar (profiles_side_node's), as `e()` says it now: its provider's logo, its
 /// name (faint where it cannot be used); what is wrong in its tone, else a balance or why its allowance is not said; its
 /// allowance's chips across its foot where it has windows. Pressed, its page in the pane once what it shows is answered,
@@ -363,6 +413,7 @@ fn profile_side_row_node(
   more : () -> Bool,
   lit : (String) -> Bool,
   widest : (String) -> () -> (Double, Array[Double]),
+  room_w : () -> Double,
 ) -> Unit {
   // (each part of it it shows worked out once as the row's account changes, told on only as it comes out otherwise:
   // an account's state changed runs only what shows it)
@@ -461,7 +512,7 @@ fn profile_side_row_node(
         })
       },
       more~,
-      foot=fn(f) { @sf.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~) },
+      foot=fn(f) { @sf.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~, room_w~) },
       foot_on=windows,
       foot_capsule=@sf.fill_chip_small_h,
     )
@@ -483,6 +534,7 @@ fn machine_side_row_node(
   row : () -> Json?,
   more : () -> Bool,
   widest : (String) -> () -> (Double, Array[Double]),
+  room_w : () -> Double,
 ) -> Unit {
   let l = fn() { field(row(), "login") }
   let station = fn() { text(row(), "station") }
@@ -532,7 +584,7 @@ fn machine_side_row_node(
         })
       },
       more~,
-      foot=fn(f) { @sf.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~) },
+      foot=fn(f) { @sf.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~, room_w~) },
       foot_on=windows,
       foot_capsule=@sf.fill_chip_small_h,
     )
@@ -558,7 +610,11 @@ fn place_side_node(
     ({ brand: a.brand, band: a.band, tape: a.tape, in_bar: a.bar, roots: @ui.tree_corner_roots_now() } : BandAt)
   }
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
-  s.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  s
+  .grow(Is(1.0))
+  .min_height(Is(Some(0.0)))
+  .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   |> ignore
   s.pick(fn() { workspace().map(fn(w) { w.id }) }, fn(q, _id) {
     q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
@@ -572,56 +628,50 @@ fn place_side_node(
     side_top_node(q, fn() { at().brand })
     // the band (NavAction): 添加 where the viewer may add one, the update at its end where one is offered; none where
     // neither is
-    q.show(fn() { action() is Some(_) || update_shown() }, fn(k) {
-      k.box(fn(band) {
-        // (on the tape, as the settings' band: in the panel's top corner, its row kept off that corner by the update's
-        // room, which the update's round key, where one is offered, is concentric with)
-        let tape = list_at is Tape
-        @sf.style_node(band, fn() { if tape { band_new_tape(at=band_at()) } else { update_band(at=band_at()) } })
-        band.box(fn(main) {
-          @sf.style_node(main, fn() { side_full }, in_row=true)
-          if tape {
-            main.margin(By(fn() { (0.0, 0.0, if update_shown() { 0.0 } else { update_key_side }, 0.0) })) |> ignore
-          }
-          main.show(fn() { action() is Some(_) }, fn(a) {
-            // (what it puts up beside the row pressed: the row's box)
-            a.box(fn(o) {
-              o.row(Is(true)).grow(Is(1.0)) |> ignore
-              @sf.band_row_node(o, fn() { false }, label, fn() {
-                match @signals.untracked(action) {
-                  Some(go) => go(Node(o))
-                  None => ()
-                }
-              }, list_at, fn(b) {
-                @sf.icon_node(b, "plus", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-                @sf.nav_words_node(b, label)
-              })
-            })
-            |> ignore
+    q.show(fn() { action() is Some(_) || update_shown() }, fn(band) {
+      // (on the tape, as the settings' band: in the panel's top corner, its row kept off that corner by the update's
+      // room, which the update's round key, where one is offered, is concentric with)
+      let tape = list_at is Tape
+      @sf.style_node(band, fn() { if tape { band_new_tape(at=band_at()) } else { update_band(at=band_at()) } })
+      band.box(fn(main) {
+        @sf.style_node(main, fn() { side_full }, in_row=true)
+        if tape {
+          main.margin(By(fn() { (0.0, 0.0, if update_shown() { 0.0 } else { update_key_side }, 0.0) })) |> ignore
+        }
+        main.show(fn() { action() is Some(_) }, fn(o) {
+          // (what it puts up beside the row pressed: the row's box)
+          o.row(Is(true)).grow(Is(1.0)) |> ignore
+          @sf.band_row_node(o, fn() { false }, label, fn() {
+            match @signals.untracked(action) {
+              Some(go) => go(Node(o))
+              None => ()
+            }
+          }, list_at, fn(b) {
+            @sf.icon_node(b, "plus", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
+            @sf.nav_words_node(b, label)
           })
-        })
-        |> ignore
-        band.show(update_shown, fn(u) {
-          @sf.update_key_node(
-            u,
-            tips,
-            update_key_side,
-            update_key_mark,
-            fn() { update_said().0 },
-            fn() { update_said().1 },
-            fn() { update_said().2 },
-            fn() {
-              match update_now() {
-                Coming(_, part) => Some(part)
-                _ => None
-              }
-            },
-            fn() { update_pressed(src) },
-            offered=fn() { update_now() is Offered(_, ..) },
-          )
         })
       })
       |> ignore
+      band.show(update_shown, fn(u) {
+        @sf.update_key_node(
+          u,
+          tips,
+          update_key_side,
+          update_key_mark,
+          fn() { update_said().0 },
+          fn() { update_said().1 },
+          fn() { update_said().2 },
+          fn() {
+            match update_now() {
+              Coming(_, part) => Some(part)
+              _ => None
+            }
+          },
+          fn() { update_pressed(src) },
+          offered=fn() { update_now() is Offered(_, ..) },
+        )
+      })
     })
     // the list under the band (side_scroll's): what scrolls, and takes the hand, starts at the rail's edge: the
     // sidebar's first 8 reach over the rail's empty side, which its places' keys take; its rows where they were, in from
@@ -651,8 +701,10 @@ fn place_list_node(
   list_at : @sf.ListAt,
   lines : () -> Array[PlaceLine],
   shape : (String) -> Int,
+  est? : Double,
   make : (@view.View, () -> String, () -> PlaceLine?) -> Unit,
 ) -> Unit {
+  let est = est.unwrap_or_else(fn() { @signals.untracked(fn() { @sf.theme().chat_list.row_h }) })
   let held = l.keyed_by(lines, fn(p) { p.key })
   let keys = @signals.computed(fn(_) {
     let ks = held.keys().copy()
@@ -664,7 +716,7 @@ fn place_list_node(
     fn() { keys.get() },
     shape~,
     reuses=fn(k) { k != place_list_foot },
-    est=@signals.untracked(fn() { @sf.theme().chat_list.row_h }),
+    est~,
     slop=@ui.touch_slop(),
     bar=@ui.tree_scroll_bar(),
     fn(b, k) {

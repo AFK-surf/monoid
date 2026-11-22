@@ -204,14 +204,11 @@ fn token_fields_node(
       }
     }
     f.show(fn() { verified() != "" }, fn(o) { @sf.verify_ok_node(o, verified) })
-    f.show(fn() { strings(view(), "errors").length() > 0 }, fn(e) {
-      e.box(fn(l) {
-        @sf.style_node(l, fn() { sk_errors })
-        l.each(fn() { strings(view(), "errors").mapi(fn(i, w) { (i, w) }) }, fn(x) { x.0 }, fn(w, x) {
-          @sf.words_node(w, fn() { "• " + x.get().1 }, fn() { sk_error }) |> ignore
-        })
+    f.show(fn() { strings(view(), "errors").length() > 0 }, fn(l) {
+      @sf.style_node(l, fn() { sk_errors })
+      l.each(fn() { strings(view(), "errors").mapi(fn(i, w) { (i, w) }) }, fn(x) { x.0 }, fn(w, x) {
+        @sf.words_node(w, fn() { "• " + x.get().1 }, fn() { sk_error }) |> ignore
       })
-      |> ignore
     })
     f.show(fn() { tk.error.get() != "" }, fn(e) { @sf.words_node(e, fn() { tk.error.get() }, fn() { sk_error }) |> ignore })
   })
@@ -225,14 +222,14 @@ fn token_fields_node(
 fn create_app_steps_node(b : @view.View, core : Core, station : String, name : () -> String) -> Unit {
   let named = fn() {
     match name().trim(chars=" \t\n").to_owned() {
-      "" => "still.fail"
+      "" => @sf.product()
       n => n
     }
   }
   let words = fn(s : @view.View, w : () -> String) { @sf.words_node(s, w, fn() { @sf.step_words }) |> ignore }
   @sf.steps_node(b, [
     fn(s) {
-      words(s, fn() { @sf.t("web-main.slack.step.create", args=[("app", "still.fail"), ("name", named())]) })
+      words(s, fn() { @sf.t("web-main.slack.step.create", args=[("app", @sf.product()), ("name", named())]) })
       @sf.button_node(
         s,
         fn() { @sf.t("web-main.slack.create") },

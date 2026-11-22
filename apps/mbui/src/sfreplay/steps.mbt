@@ -291,6 +291,7 @@ pub fn Flow::start(
     keeping.val = 0
   }
   step_moment.val = None
+  step_waits.val = false
   first_taken.val = false
   opening_late.val = 0.0
   first_step_run_at.val = None
@@ -333,13 +334,19 @@ pub fn Flow::start(
   // (what the run's host said comes before the frame it was said for: given as a frame ends, it is the next one's, by
   // that frame's time, as a host's events before a vsync are that frame's)
   run_framed.val = None
-  t.between_frames(fn() {
-    if followed.val != "" {
-      match t.find(followed.val) {
-        Some((_, y)) => follow_ys.push((t.time(), y))
-        None => ()
+  // (what is followed read as each frame is drawn: never between frames, where what came was laid out and not yet
+  // drawn on its way, Flow::follow)
+  t.each_frame(
+    Some(fn() {
+      if followed.val != "" {
+        match t.find(followed.val) {
+          Some((_, y)) => follow_ys.push((t.time(), y))
+          None => ()
+        }
       }
-    }
+    }),
+  )
+  t.between_frames(fn() {
     for m in t.moving() {
       if !said.contains(m) {
         said.push(m)
@@ -577,6 +584,7 @@ fn Flow::take_step(self : Flow, line : String) -> Unit {
         }
         strict_steps.push((line, self.t.time()))
         step_moment.val = if at < @double.infinity { Some(self.t.time()) } else { None }
+        step_waits.val = waiting_step(line)
         if strict_steps.length() > 1 {
           first_taken.val = true
         }
@@ -599,6 +607,7 @@ fn Flow::take_step(self : Flow, line : String) -> Unit {
       if keeping.val == 1 {
         strict_steps.push((line, self.t.time()))
         step_moment.val = None
+        step_waits.val = false
         if strict_steps.length() > 1 {
           first_taken.val = true
         }
@@ -747,6 +756,7 @@ pub fn Flow::until(self : Flow, so : () -> Bool, loc~ : SourceLoc) -> Unit {
     return
   }
   step_moment.val = None
+  step_waits.val = false
   self.until_at(loc.to_string(), so)
 }
 
@@ -776,14 +786,16 @@ fn Flow::until_at(self : Flow, site : String, so : () -> Bool) -> Unit {
   let first_own = opening && strict_steps.length() == 1 && step_moment.val is Some(_)
   let by = if strict_on() && !opening {
     match step_moment.val {
-      Some(t) => t
-      None => self.r.next_step_at()
+      // (a step that waits: the run wrote it as it began waiting, what it waits for there by the run's next step)
+      Some(t) if !step_waits.val => t
+      _ => self.r.next_step_at()
     }
   } else {
     @double.infinity
   }
   let run_at = step_moment.val
   step_moment.val = None
+  step_waits.val = false
   let mut late = false
   // (the strict pass: what comes meanwhile told at its own moment between the host's frames, all that came by then at
   // once, as a device's host tells it (Tester::come_to), not a message a frame: one at a time, each with a frame of its
@@ -980,6 +992,12 @@ pub fn Flow::tap(self : Flow, what : String, top? : Bool = false, loc~ : SourceL
   // what came for it given first, Flow::until)
   self.until_at(site, fn() { self.reach_spots(what).length() > 0 })
   let p = self.kept_point(site, fn() {
+    if keeping.val == 1 {
+      match @ui.view_tree() {
+        Some(tree) => tree.bring_to(self.t.time())
+        None => ()
+      }
+    }
     let at = self.reach_spots(what)
     if at.length() == 0 {
       self.fail("nothing to tap: " + what)
@@ -1110,6 +1128,7 @@ pub fn Flow::answered(self : Flow, call : String, n : Int, loc~ : SourceLoc) -> 
     return
   }
   step_moment.val = None
+  step_waits.val = false
   self.until_at(site, fn() { self.r.answers_given(call) >= n })
   if keeping.val == 1 {
     strict_answers[site + " " + call + " \{n}"] = self.r.nth_call_at(call, n)
@@ -1250,7 +1269,7 @@ pub fn Flow::end(self : Flow, unmade? : Array[String] = []) -> String {
     }
     // (a toast's time too, before the frame owed: what is shown does not wait for it, but one left at the end goes at
     // its time, not as the end's last frame happens to fall)
-    let toast = @kit.toast_due("toast")
+    let toast = @sf.toast_due("toast").unwrap_or(-1.0)
     if toast > self.t.time() {
       self.t.run_for(toast - self.t.time())
       continue
@@ -1363,7 +1382,7 @@ let end_rounds : Int = 10
 
 ///|
 /// How many times one timer may be run to at a flow's end before it is said to keep telling itself again (Flow::end).
-let end_wakes : Int = 3
+let end_wakes : Int = 8
 
 ///|
 /// The other passes a flow is run in (pace_of): at once, twice as fast, twice as slow, each in an order of its seed's.
@@ -1454,7 +1473,7 @@ pub fn Flow::clear(self : Flow) -> Unit {
 }
 
 ///|
-/// On the frames' clock to `end`, a motion's own end as it says it (`@kit.sheet_rest`, `@ui.nav_rest`,
+/// On the frames' clock to `end`, a motion's own end as it says it (`@ui.nav_rest`,
 /// `@sf.presented_rest`, `@sfapp.bar_rest`: asked, not its answer, so the strict pass can ask again at the run's next
 /// step, Flow::run_to_at), or none where the clock is past it already (the run's own waiting took it there: each says
 /// its end as it was once it is over, whichever frames were drawn): the test fails if it has not started yet (+inf:
@@ -1486,7 +1505,9 @@ fn Flow::run_to_at(self : Flow, site : String, end_of : () -> Double) -> Unit {
   // saying by how much)
   if strict_on() && first_taken.val {
     let by = self.r.next_step_at()
-    if (end < 0.0 || end > 1.0e300) && by < @double.infinity && by > self.t.time() {
+    // (and where its end is said past the run's next step, a bound said before what came by then was given (a page's
+    // wait for its reads, nav's rest): the clock to that step first, its end asked again there)
+    if (end < 0.0 || end > 1.0e300 || end > by + 1.0e-6) && by < @double.infinity && by > self.t.time() {
       self.t.come_to(by)
       end = end_of()
     }
@@ -1640,6 +1661,12 @@ let pace_step_next : Ref[Int] = Ref(0)
 /// Flow::answered; a line the trace has not).
 // kept across runs: put back as each flow starts
 let step_moment : Ref[Double?] = Ref(None)
+
+///|
+/// The strict pass: whether the step whose moment step_moment holds is one that waits (waiting_step: the run wrote
+/// it as it began waiting, Flow::until_at holding it by the run's next step instead).
+// kept across runs: put back as each flow starts
+let step_waits : Ref[Bool] = Ref(false)
 
 ///|
 /// The strict pass: whether its first step has been taken, what it waited for so (Flow::until_at): from then on its
@@ -1858,13 +1885,10 @@ pub fn Flow::wheel_aligned(self : Flow, dy : Double, loc~ : SourceLoc) -> Unit {
   }
   let site = loc.to_string()
   let actual = "wheel \{dy.to_int()}"
-  let step = if !self.strict {
-    match self.r.next_step() {
-      Some(recorded) if recorded.has_prefix("wheel ") && recorded != "wheel 0" &&
-        ((dy < 0.0 && recorded.has_prefix("wheel -")) || (dy > 0.0 && !recorded.has_prefix("wheel -"))) => recorded
-      _ => actual
-    }
-  } else { actual }
+  let step = match self.r.next_step() {
+    Some(recorded) if recorded.has_prefix("wheel ") && recorded != "wheel 0" => recorded
+    _ => actual
+  }
   emit(step)
   // (how far, as the strict pass measured it on its screen: a pace pass's the same)
   let dy = match keeping.val {
@@ -1929,7 +1953,7 @@ pub fn Flow::wheel_at(self : Flow, what : String, dy : Double, loc~ : SourceLoc)
 
 ///|
 /// The toast on screen gone: its time shown (`@sfapp.toast_ms`, a timer), then the frame that sends it away and its way
-/// out (`@kit.toast_rest`).
+/// out (`@sf.toast_rest`).
 #callsite(autofill(loc))
 pub fn Flow::toast_gone(self : Flow, loc~ : SourceLoc) -> Unit {
   if pace_split.val != "" {
@@ -1939,9 +1963,9 @@ pub fn Flow::toast_gone(self : Flow, loc~ : SourceLoc) -> Unit {
   self.run_for(@sfapp.toast_ms)
   self.t.draw()
   // (its way out over already where it began before the test looked at it: a step that waited took the clock past)
-  let out = @kit.toast_rest("toast")
+  let out = @sf.toast_rest("toast").unwrap_or(-1.0)
   if out > self.t.time() {
-    self.run_to_at(site, fn() { @kit.toast_rest("toast") })
+    self.run_to_at(site, fn() { @sf.toast_rest("toast").unwrap_or(-1.0) })
   }
 }
 

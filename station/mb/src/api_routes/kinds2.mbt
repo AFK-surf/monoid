@@ -290,7 +290,7 @@ fn Admin::feishu_routes(self : Admin) -> Array[Route] {
           r.lang,
         )
         let shown = if identity is Null {
-          Null
+          JV::Null
         } else {
           jobj([
             ("botName", identity.get("botName").unwrap_or(jundef)),

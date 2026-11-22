@@ -1,4 +1,4 @@
-// The bar across the top of a file opened over a wide window (viewer_bar), its way back pointed at by a mouse in a
+// The bar across the top of a file opened over a wide window as nodes (viewer_bar_node), its way back pointed at by a mouse in a
 // window 16 round with none of the system's buttons at its left: its hover ground, drawn, in the window's top left
 // corner keeps the corner rule, concentric with it as the bar's last tool at its right is; in a square window, as it
 // stands alone.
@@ -15,14 +15,8 @@ fn back_pointed_faults(corner : Double) -> (Bool, Array[String]) {
     hover: 0x2427E70FL,
     chosen: 0x2427E71FL,
   }
-  let t = @ui.Tester::new(
-    fn(c) { viewer_bar(c, "bar", "整理发布清单", "a.png", "18 KB", false, ink, fn() {  }) |> ignore },
-    w=1280.0,
-    h=800.0,
-    window_corner=corner,
-    platform=0,
-    corners_held=false,
-  )
+  let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, window_corner=corner, platform=0, corners_held=false)
+  @ui.set_view_app(fn(root) { viewer_bar_test_node(root, ink, fn() { false }) })
   t.draw()
   let (x, y, w, h) = t.rect_of("整理发布清单").unwrap()
   t.move_to(x + w / 2.0, y + h / 2.0)
@@ -42,4 +36,27 @@ test "the viewer's bar across the top: its way back pointed at, its hover ground
 test "the viewer's bar across the top: its way back pointed at, its hover ground drawn, in a square window keeps the corner rule" {
   let (lit, faults) = back_pointed_faults(0.0)
   assert_eq((lit, faults), (true, []), msg=faults.join("\n"))
+}
+
+///|
+/// The bar across the top of a file opened as nodes, over `root` 1280 wide: back to "整理发布清单", the file "a.png" of
+/// "18 KB", no tools, gone up out of the way while `hidden` says.
+fn viewer_bar_test_node(root : @view.View, ink : ViewerInk, hidden : () -> Bool) -> Unit {
+  let tips = TipLayer::new(fn() { Some(root) })
+  viewer_bar_node(
+    root,
+    fn() { "整理发布清单" },
+    fn() { "a.png" },
+    fn() { "18 KB" },
+    fn() { "" },
+    hidden,
+    fn(_) { 1.0 },
+    fn() { 0.0 },
+    fn() { 1280.0 },
+    fn() { ink },
+    fn(_, _) {  },
+    fn() {  },
+    tips,
+  )
+  |> ignore
 }

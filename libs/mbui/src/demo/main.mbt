@@ -219,5 +219,5 @@ fn view(c : @ui.Ctx) -> Unit {
 
 ///|
 fn main {
-  @ui.run("MoonBit UI 原型", view)
+  @ui.run_legacy_ctx("MoonBit UI 原型", view)
 }

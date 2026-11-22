@@ -8,7 +8,7 @@
 // (lock-root-out.test.ts, `~root`: another owner takes the root's person out and admits them again) and say what is so.
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import { type Entry, LockRefusal, endpointBytes, entryHash } from "../src/cloud/lock.ts";
+import { type Entry, LockRefusal, endpointBytes, entryHash } from "../../shared/lock.ts";
 import { applyState } from "../src/cloud/presence.ts";
 import { Cloud } from "../src/cloud/state.ts";
 import { wall } from "../src/ops/fibers.ts";

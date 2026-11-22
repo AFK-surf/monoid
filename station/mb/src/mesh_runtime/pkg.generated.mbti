@@ -23,7 +23,7 @@ pub fn address_shown(String?) -> String?
 
 pub fn admin_answered(Int32, String) -> Result[@json.Json, (String, String)]
 
-pub async fn answer_screen(ScreenHubPort, @door.Stream, Bytes, @json.Json, @json.Json, () -> Bool, @effect.Runtime, (String, String, @json.Json) -> String, (String, String, String, @json.Json) -> Unit, paths? : (() -> Array[LinkPath])?, host_now? : (() -> Double)?, stall? : (() -> Double, () -> Unit)) -> Unit
+pub async fn answer_screen(ScreenHubPort, @door.Stream, Bytes, @json.Json, @json.Json, () -> Bool, @effect.Runtime, (String, String, @json.Json) -> String, (String, String, String, @json.Json) -> Unit, paths? : (() -> Array[LinkPath])?, host_now? : (() -> Double)?, stall? : (() -> Double, () -> Unit), media_datagrams? : (async (Double) -> Bool)?) -> Unit
 
 pub fn asked(@json.Json) -> @json.Json
 
@@ -49,11 +49,21 @@ pub fn congestion_of(@json.Json?) -> String
 
 pub fn control_or_format(Int32) -> Bool
 
+pub let cursor_images_most : Int32
+
+pub fn cursor_payload(@json.Json) -> Bytes
+
+pub let cursor_shape_max : Int32
+
 pub let cut : Double
 
 pub fn decode_uri_component(String) -> String?
 
 pub let delivery_window_ms : Double
+
+pub let dgram_header : String
+
+pub let direct_rate : Double
 
 pub fn dirname(String) -> String
 
@@ -63,15 +73,23 @@ pub let downsize_ms : Double
 
 pub let downsize_share : Double
 
+pub let drop_warn_ns : Int64
+
 pub fn dscp_taken(@json.Json?) -> Bool
 
 pub fn encode_uri_component(String) -> String
 
 pub let export_ms : Int32
 
+pub let far_rtt_ms : Double
+
 pub fn file_bytes(async () -> FileReading, Int64, Int64) -> Pieces
 
 pub let fps_choices : Array[Int32]
+
+pub fn fps_scale(Double?) -> Double
+
+pub let fps_scale_most : Double
 
 pub fn frame(Int32, Bytes) -> Bytes
 
@@ -83,11 +101,7 @@ pub let front_end : UInt32
 
 pub let front_failed : UInt32
 
-pub async fn harness(@host.Host) -> Unit
-
 pub let hold_ms : Double
-
-pub fn incoming_steps_json(Array[@json.Json]) -> @json.Json
 
 pub fn interfaces_of_json(@json.Json) -> Array[(String, Array[Iface])]
 
@@ -109,9 +123,13 @@ pub fn js_stringify(@json.Json) -> String
 
 pub fn js_trim(String) -> String
 
+pub fn js_u32(Double) -> UInt32
+
 pub fn json_of(@jsjson.JValue) -> @json.Json
 
 pub fn jvalue(@json.Json) -> @jsjson.JValue
+
+pub let key_queue_ms : Double
 
 pub let kind_ack : Int32
 
@@ -123,11 +141,21 @@ pub let kind_clipboard : Int32
 
 pub let kind_config : Int32
 
+pub let kind_cursor : Int32
+
+pub let kind_cursor_image : Int32
+
 pub let kind_input : Int32
 
 pub let kind_keyframe : Int32
 
 pub let kind_look : Int32
+
+pub let kind_mic : Int32
+
+pub let kind_mic_on : Int32
+
+pub let kind_private_clipboard : Int32
 
 pub let kind_set_clipboard : Int32
 
@@ -141,13 +169,19 @@ pub fn lan_addrs(Array[String], Array[(String, Array[Iface])]) -> Array[String]
 
 pub fn lan_neighbours(Array[(String, Array[Iface])]) -> Array[String]
 
+pub let lan_rate : Double
+
 pub async fn lan_reach(Array[String], async (String) -> String?) -> String?
+
+pub let lan_rtt_ms : Double
 
 pub fn lang_of_core(Array[(String, String)]) -> String
 
 pub let latency_every_ms : Double
 
 pub let latency_window_ms : Double
+
+pub let light_cut : Double
 
 pub fn limit_in(Int32) -> Int32
 
@@ -187,7 +221,17 @@ pub let measured_ms : Double
 
 pub fn message_of(Error) -> String
 
+pub let mic_pcm_max : Int32
+
 pub let min_rate : Double
+
+pub let moving_sharpen_ms : Double
+
+pub let moving_sharpen_up : Double
+
+pub let near_rate : Double
+
+pub let near_rtt_ms : Double
 
 pub fn network_view(@json.Json?) -> @json.Json
 
@@ -195,17 +239,21 @@ pub fn not_lan(String) -> Bool
 
 pub fn one_bytes(Bytes) -> Pieces
 
-pub fn otlp_body(String, Array[@json.Json]) -> String
+pub fn otlp_body(String, Array[@json.Json], resource? : Array[(String, String)]) -> String
 
 pub fn own_rate(Double, Double) -> Double
 
 pub fn parse_clip(Bytes) -> (Clip, Bool)?
+
+pub fn parse_clip_privacy(Bytes) -> Int32
 
 pub fn parse_fill(@json.Json) -> @json.Json?
 
 pub fn parse_input(@json.Json) -> @json.Json?
 
 pub fn parse_look(Bytes, Bounds) -> (Region?, Bounds)?
+
+pub fn parse_mic(Bytes) -> (UInt32, Bytes)?
 
 pub fn parse_parent(String?) -> Parent?
 
@@ -217,15 +265,19 @@ pub fn parse_reveal(@json.Json) -> String?
 
 pub fn parse_scale(@json.Json) -> Double?
 
-pub fn parse_window_pick(@json.Json) -> WindowPick
+pub fn parse_volume(@json.Json) -> Double??
 
-pub fn paths_of(Array[WayPath]) -> String
+pub fn parse_window_pick(@json.Json) -> WindowPick
 
 pub let piece : Int32
 
 pub fn presence_refusal(ToolsDeps) -> String?
 
 pub async fn presence_tools(ToolsDeps, @json.Json?) -> @json.Json
+
+pub fn privacy_name(Int32) -> String?
+
+pub fn private_clip_payload(Clip, Int32) -> Bytes
 
 pub fn private_v4(String) -> Bool
 
@@ -237,11 +289,15 @@ pub let queue_share : Double
 
 pub let quiet : Int32
 
-pub fn rate_ceiling(Double, Double, String?) -> Double
+pub fn rate_ceiling(Double, Double, String?, fps? : Double?) -> Double
 
 pub async fn read_bytes(Pieces, Int32) -> Bytes
 
 pub fn region_of(@json.Json?) -> Region?
+
+pub let relay_rate : Double
+
+pub let relay_rtt_ms : Double
 
 pub fn route(String) -> String
 
@@ -251,21 +307,7 @@ pub fn said_word(@json.Json?, Int32) -> String?
 
 pub let screen_type : String
 
-pub fn sent_on(Array[WayPath]) -> Array[(String, Double)]
-
 pub async fn serve_tools(ToolsDeps, @door.Connection, @effect.Runtime) -> Unit
-
-pub fn served_again_after(Double) -> Double
-
-pub let served_again_ms : Double
-
-pub let served_listen_ms : Double
-
-pub let served_routes : Array[String]
-
-pub let served_steady_ms : Double
-
-pub let servers : Int32
 
 pub let sharper : Double
 
@@ -273,17 +315,13 @@ pub async fn shell_file(@host.Host, String) -> FileReading
 
 pub fn shell_sockets(@host.Host) -> Sockets
 
-pub fn slow_line(Array[(String, Double)], Int32?, Double, Array[WayPath], () -> String, Double, Double, String) -> @json.Json?
-
-pub let slow_reply_bytes : Int32
-
-pub let slow_reply_ms : Double
-
-pub async fn slowly(@door.Stream, () -> Array[WayPath], String, () -> String, Double, Double, Double, () -> Double, (String, String, @json.Json) -> Unit) -> Unit
-
 pub let stall_tick_ms : Double
 
 pub let start_rate : Double
+
+pub fn start_rate_for(@json.Json?) -> Double
+
+pub fn start_rate_of(Array[LinkPath]) -> Double
 
 pub let start_unacked : Int32
 
@@ -339,6 +377,8 @@ pub let used : Double
 
 pub fn video_payload(Bool, Double, Bytes) -> Bytes
 
+pub let viewer_hold_limit_ms : Double
+
 pub async fn write_bytes(async (Bytes, Int64) -> Unit, Pieces, Int64, Int64) -> Int64
 
 // Errors
@@ -370,12 +410,6 @@ pub struct Came {
   carry : Bytes
   id : Int64
   // private fields
-}
-
-pub(all) enum Claimed {
-  Kept(Handled)
-  Refused(Handled)
-  Claim(String, (Handled?) -> Unit)
 }
 
 #derive(Eq, @debug.Debug)
@@ -451,6 +485,7 @@ pub fn FrontEndpoint::mesh_listen(Self, (Array[@json.Json]) -> Unit) -> () -> Un
 pub async fn FrontEndpoint::mesh_remove(Self, String) -> Unit
 pub async fn FrontEndpoint::network_change(Self) -> Unit
 pub async fn FrontEndpoint::online(Self) -> Unit
+pub async fn FrontEndpoint::probe_relay(Self, String) -> @json.Json
 pub async fn FrontEndpoint::public_relays(Self, Bool) -> Unit
 pub fn FrontEndpoint::relay_status(Self) -> @json.Json
 pub async fn FrontEndpoint::remove_relay(Self, String) -> Unit
@@ -458,12 +493,6 @@ pub async fn FrontEndpoint::route(Self, Bytes, Array[String], Array[String]) -> 
 pub fn FrontEndpoint::set_congestion(Self, String) -> Unit
 pub async fn FrontEndpoint::set_relay_entries(Self, @json.Json) -> Unit
 pub fn FrontEndpoint::sockets(Self) -> Array[String]
-
-pub(all) struct Handled {
-  status : Int32
-  headers : @json.Json
-  body : Bytes
-}
 
 pub(all) struct Iface {
   address : String
@@ -494,6 +523,7 @@ pub(all) struct LinkPath {
   selected : Bool
   relay : String?
   ip : String?
+  rtt_ms : Double?
   tx_packets : Double
   lost_packets : Double
 }
@@ -533,11 +563,13 @@ pub struct Out {
   bytes : Double
   at : Double
   stall : Double
+  key : Bool
 }
 
 pub struct Pacer {
   out : Array[Out]
   trips : Array[Trip]
+  viewer_waits : Array[Trip]
   through : Array[Through]
   mut rate : Double?
   mut ceiling : Double?
@@ -551,16 +583,18 @@ pub struct Pacer {
   now : () -> Double
   stalled : () -> Double
 }
-pub fn Pacer::acked(Self, Double) -> Unit
+pub fn Pacer::acked(Self, Double, viewer_wait_ms? : Double) -> Unit
 pub fn Pacer::asked_rate(Self) -> Double?
 pub fn Pacer::backlogged(Self) -> Bool
+pub fn Pacer::free(Self) -> Bool
 pub fn Pacer::may(Self) -> Bool
 pub fn Pacer::new(() -> Double, start? : Double?, fps? : Double?, stalled? : () -> Double) -> Self
 pub fn Pacer::rtt(Self) -> Double?
-pub fn Pacer::sent(Self, Double, Double) -> Unit
+pub fn Pacer::sent(Self, Double, Double, key? : Bool) -> Unit
 pub fn Pacer::set_ceiling(Self, Double) -> Unit
 pub fn Pacer::through_rate(Self) -> Double
 pub fn Pacer::unacked(Self) -> Int32
+pub fn Pacer::viewer_wait(Self) -> Double
 pub fn Pacer::wait(Self) -> Double
 
 #derive(Eq, @debug.Debug)
@@ -570,13 +604,6 @@ pub(all) struct Parent {
   sampled : Bool
 }
 pub fn Parent::to_json(Self) -> @json.Json
-
-pub struct PieceQueue {
-  pending : Array[(String?, Array[Int32])]
-}
-pub fn PieceQueue::drain(Self) -> Array[@json.Json]
-pub fn PieceQueue::new() -> Self
-pub fn PieceQueue::piece(Self, Int32, String?) -> Unit
 
 pub(all) struct Pieces {
   next : async () -> Bytes?
@@ -596,11 +623,6 @@ pub struct Sample {
   at : Double
   frame : Double
   before : Double
-}
-
-pub(all) struct Says {
-  claim : async (@json.Json, String, String?, String) -> Claimed
-  said : (Double, Double, String, @json.Json) -> Unit
 }
 
 pub(all) struct ScreenFrame {
@@ -633,6 +655,8 @@ pub(all) struct ScreenSourcePort {
   address : (() -> String?)?
   scale : (async () -> @json.Json?)?
   set_scale : (async (Double) -> @json.Json)?
+  volume : (async () -> @json.Json?)?
+  set_volume : (async (Double) -> @json.Json)?
   resolution : (async () -> @json.Json?)?
   set_resolution : (async (Double, Double) -> @json.Json)?
 }
@@ -651,6 +675,7 @@ pub(all) struct ScreenViewPort {
   set_clipboard : (async (Clip, Bool) -> Unit)?
   watch_clipboard : (((Clip) -> Unit) -> (() -> Unit))?
   watch_cursor : (((@json.Json) -> Unit) -> (() -> Unit))?
+  cursor_image : ((String) -> Bytes?)?
   watch_turn : (((@json.Json) -> Unit) -> (() -> Unit))?
   watch_windows : (((@json.Json) -> Unit) -> (() -> Unit))?
   window : ((Double?) -> Unit)?
@@ -660,57 +685,25 @@ pub(all) struct ScreenViewPort {
   watch_passkey : (((@json.Json) -> Unit) -> (() -> Unit))?
   passkey : (async (@json.Json) -> Unit)?
   watch_child : (((String) -> Unit) -> (() -> Unit))?
-}
-
-pub struct Served {
-  // private fields
-}
-pub async fn Served::close(Self) -> Unit
-pub fn Served::new(String, String, ServedWith, @effect.Runtime) -> Self
-pub fn Served::set_changed(Self, (@json.Json, @json.Json) -> Unit) -> Unit
-pub fn Served::set_on_routes(Self, (Array[String]) -> Unit) -> Unit
-pub fn Served::set_says(Self, Says) -> Unit
-pub async fn Served::start(Self) -> Array[String]
-pub fn Served::viewer(Self, Int32, @json.Json?, moved? : Bool, floor? : Double?) -> Unit
-
-pub struct ServedTold {
-  told : Map[Int32, String]
-  names : Map[String, String]
-}
-pub fn ServedTold::again(Self) -> Array[@json.Json]
-pub fn ServedTold::new() -> Self
-pub fn ServedTold::viewer(Self, Int32, @json.Json?, Bool, Double?) -> Array[@json.Json]
-pub fn ServedTold::viewer_of(Self, Int32) -> @json.Json?
-
-pub(all) struct ServedWith {
-  spawn : (String, Array[String], (@json.Json) -> Unit, (Int32) -> Unit) -> ServingProcess
-  now : () -> Double
-  after : (Double, () -> Unit) -> () -> Unit
-  wall : () -> Double
-  answer : async (@json.Json, @json.Json, Bytes) -> Handled
-  built : (@json.Json, Double?) -> Unit
-  stream : (async (@json.Json, @json.Json, Bytes) -> StreamAnswer)?
-  prepare : (String) -> Unit
-  remove : async (String) -> Unit
-  set : () -> @json.Json
-  pid : Int32
-  sep : String
-  log : (String, String, String, @json.Json) -> Unit
-}
-
-pub(all) struct ServingProcess {
-  post : (@json.Json) -> Unit
-  terminate : async () -> Unit
+  set_clipboard_marked : (async (Clip, Bool, Int32) -> Unit)?
+  watch_clipboard_marked : (((Clip, Int32) -> Unit) -> (() -> Unit))?
+  watch_pointer_lock : (((Bool) -> Unit) -> (() -> Unit))?
+  watch_mic : (((@json.Json) -> Unit) -> (() -> Unit))?
+  feed_mic : ((Bytes, UInt32) -> Unit)?
 }
 
 pub struct Sharpener {
   mut at : Double
   mut rate : Double?
+  mut key : Bool
+  mut key_at : Double
+  mut key_rate : Double?
 }
 pub fn Sharpener::due(Self, Double, Double?) -> Bool
+pub fn Sharpener::due_moving(Self, Double, Double?) -> Bool
 pub fn Sharpener::left(Self, Double) -> Double
 pub fn Sharpener::new() -> Self
-pub fn Sharpener::sent(Self, Double, Double?) -> Unit
+pub fn Sharpener::sent(Self, Double, Double?, key? : Bool) -> Unit
 
 pub struct Sizer {
   now : () -> Double
@@ -751,18 +744,6 @@ pub(all) struct Span {
   started : Int64
 }
 
-pub(all) struct StreamAnswer {
-  status : Int32
-  headers : @json.Json
-  body : StreamBody
-}
-
-pub(all) enum StreamBody {
-  Whole(Bytes)
-  Relay(((String) -> Unit, () -> Unit) -> Unit, () -> Unit)
-  Pieces(async () -> Bytes?, async () -> Unit)
-}
-
 pub struct Through {
   at : Double
   bytes : Double
@@ -793,11 +774,15 @@ pub struct Traces {
   mut waiting : @effect.Fiber[Unit]?
   hr_now : () -> Int64
   said : (String, String, @json.Json) -> Unit
+  tail_only : Bool
+  slow_ms : Int32
+  mut retrying : Bool
+  mut dropped_at : Int64?
 }
 pub fn Traces::close(Self) -> Unit
 pub fn Traces::end(Self, Span, String, Array[(String, @json.Json)], Bool) -> Unit
 pub fn Traces::export_to(Self, async (Array[@json.Json]) -> Unit) -> Unit
-pub fn Traces::new(Bool, @effect.Runtime, () -> Int64, (String, String, @json.Json) -> Unit) -> Self
+pub fn Traces::new(Bool, @effect.Runtime, () -> Int64, (String, String, @json.Json) -> Unit, tail_only? : Bool, slow_ms? : Int32) -> Self
 pub fn Traces::start(Self, Parent?, String, Int64) -> Span?
 
 pub struct Trip {
@@ -816,18 +801,6 @@ pub(all) struct Watcher {
   end : (String) -> Unit
   watch_only : (String?) -> Unit
 }
-
-pub(all) struct WayPath {
-  selected : Bool
-  relay : String?
-  ip : String?
-  rtt_ms : Double?
-  tx_packets : Double
-  lost_packets : Double
-  cwnd : Double?
-  congestion_events : Double?
-}
-pub fn WayPath::of_json(@json.Json) -> Self
 
 #derive(Eq, @debug.Debug)
 pub(all) enum WindowPick {

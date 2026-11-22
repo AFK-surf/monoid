@@ -4,20 +4,19 @@
 // each account's hours, the models the decisions may ask and their settings, the archive policy and its checks.
 
 ///|
-/// `decisionModels`: the models the decisions may ask: each a usable profile's verified one, with the profiles that
-/// have it.
-pub async fn Accounts::decision_models(self : Accounts) -> JV {
+async fn decision_models_of(
+  profiles : Array[Profile],
+  health_of : (String) -> Health,
+  resolved_model : async (JV, JV, JV) -> JV,
+  model_name : async (String) -> JV,
+) -> JV {
   let order : Array[String] = []
   let models : Map[String, Array[String]] = Map::new()
-  let cfg = self.hub_config()
-  for profile in cfg.profiles {
+  for profile in profiles {
     if !profile.enabled {
       continue
     }
-    let health = match self.hub_accounts {
-      Some(h) => h.health_of(cfg, profile.id)
-      None => self.health(profile.id)
-    }
+    let health = health_of(profile.id)
     if !usable(health) {
       continue
     }
@@ -25,13 +24,16 @@ pub async fn Accounts::decision_models(self : Accounts) -> JV {
       None | Some(Null) => continue
       Some(c) => c
     }
+    if capability.get("state") != Some(Str("ready")) {
+      continue
+    }
     let candidates = jitems(capability.get("models")).copy()
     match capability.get("model") {
       Some(m) if is_truthy(Some(m)) => candidates.push(m)
       _ => ()
     }
     for model in candidates {
-      let resolved = self.ask("decision.resolvedModel", [profile.raw, capability, model])
+      let resolved = resolved_model(profile.raw, capability, model)
       if !is_truthy(Some(resolved)) {
         continue
       }
@@ -61,12 +63,28 @@ pub async fn Accounts::decision_models(self : Accounts) -> JV {
     out.push(
       jobj([
         ("id", js(id)),
-        ("name", self.ask("modelName", [js(id)])),
+        ("name", model_name(id)),
         ("profiles", jstrs(models[id])),
       ]),
     )
   }
   jarr(out)
+}
+
+///|
+/// `decisionModels`: the models the decisions may ask: each a usable profile's verified one, with the profiles that
+/// have it.
+pub async fn Accounts::decision_models(self : Accounts) -> JV {
+  let cfg = self.hub_config()
+  decision_models_of(
+    cfg.profiles,
+    id => match self.hub_accounts {
+      Some(h) => h.health_of(cfg, id)
+      None => self.health(id)
+    },
+    async fn(raw, cap, model) { self.ask("decision.resolvedModel", [raw, cap, model]) },
+    async fn(id) { self.ask("modelName", [js(id)]) },
+  )
 }
 
 ///|
@@ -135,6 +153,23 @@ pub async fn Accounts::put_archiving(
 }
 
 ///|
+/// `putAutoChats`: PUT /auto-chats (a workspace manager's).
+pub async fn Accounts::put_auto_chats(
+  self : Accounts,
+  input : JV,
+  viewer : JV,
+  lang : String,
+) -> Unit {
+  if !manages_station(viewer) {
+    raise refusal(403, self.tr(lang, "station.autoChats.managersOnly"))
+  }
+  guard input.get("enabled") is Some(Bool(enabled)) else {
+    raise refusal(400, self.tr(lang, "station.autoChats.badSettings"))
+  }
+  self.save(viewer, "auto chats", raw => jset(raw, "acceptAutoChats", jbool(enabled)))
+}
+
+///|
 /// `reviewUndecided`: POST /automatic-decisions/review: the done chats no decision has answered, reviewed now; how many.
 pub async fn Accounts::review_undecided(
   self : Accounts,
@@ -176,7 +211,7 @@ pub async fn Accounts::refresh_decision_models(
 ///|
 /// `chatTitleOf`: what the session's chat is called in the chat list; its key only where it has no chat.
 async fn Accounts::chat_title_of(self : Accounts, session : String) -> String {
-  match self.ask("store.sessionChat", [js(session)]) {
+  match self.b.with_threads(t => t.session_chat(Json::string(session))) {
     Obj(_) as chat =>
       js_string(
         Some(
@@ -188,7 +223,7 @@ async fn Accounts::chat_title_of(self : Accounts, session : String) -> String {
         ),
       )
     _ =>
-      match jget(Some(self.ask("store.getSession", [js(session)])), "title") {
+      match jget(Some(json_to_jv(self.b.with_store(s => s.get_session(session)))), "title") {
         None | Some(Null) => session
         t => js_string(t)
       }
@@ -237,6 +272,7 @@ pub async fn Accounts::automatic_decisions_view(
   include_policy? : Bool = true,
   visible? : async (String) -> Bool,
   title? : async (String) -> String,
+  models? : JV,
 ) -> JV {
   if !manages_station(viewer) {
     return jobj([
@@ -262,7 +298,7 @@ pub async fn Accounts::automatic_decisions_view(
     }
   }
   let recent = []
-  for row in jitems(Some(self.ask("store.recentDecisions", []))) {
+  for row in jitems(Some(self.b.with_threads(t => t.recent_decisions()))) {
     let session = match row.get("session") {
       Some(Str(s)) => s
       _ => ""
@@ -275,11 +311,11 @@ pub async fn Accounts::automatic_decisions_view(
       continue
     }
     let d = match row.get("detail") {
-      None | Some(Null) => Obj([])
+      None | Some(Null) => JV::Obj([])
       Some(x) => x
     }
     let or_null = (k : String) => match d.get(k) {
-      None | Some(Null) => Null
+      None | Some(Null) => JV::Null
       Some(x) => x
     }
     recent.push(
@@ -323,7 +359,13 @@ pub async fn Accounts::automatic_decisions_view(
         ),
       ]),
     ),
-    ("models", self.decision_models()),
+    (
+      "models",
+      match models {
+        Some(m) => m
+        None => self.decision_models()
+      },
+    ),
     ("recent", jarr(recent)),
   ]
   if include_policy {
@@ -338,13 +380,15 @@ async fn Accounts::policy_view(
   self : Accounts,
   title : async (String) -> String,
 ) -> JV {
-  let saved = self.ask("store.archivePolicy", [])
+  let saved = self.b.with_threads(t => t.archive_policy(Json::null()))
   let policy = self.ask("policy.policyFrom", [saved])
-  let now = to_number(Some(self.ask("store.now", [])))
+  let now = self.b.store.now().to_double()
   let latest_order : Array[String] = []
   let latest : Map[String, JV] = Map::new()
   for row in jitems(
-    Some(self.ask("store.latestDecisionsSince", [jnum(now - policy_days * 86_400_000.0)])),
+    Some(
+      self.b.with_threads(t => t.latest_decisions_since(Json::number(now - policy_days * 86_400_000.0), Json::null())),
+    ),
   ) {
     match row.get("session") {
       Some(Str(s)) => {
@@ -422,7 +466,7 @@ async fn Accounts::policy_view(
           ("title", js(title(session))),
           (
             "runtime",
-            match jget(Some(self.ask("store.getSession", [js(session)])), "runtime") {
+            match jget(Some(json_to_jv(self.b.with_store(s => s.get_session(session)))), "runtime") {
               None | Some(Null) => Null
               Some(r) => r
             },
@@ -498,8 +542,14 @@ pub async fn Accounts::put_archive_policy(
 
 ///|
 /// `homeAsked`: what a profile's home is read for: the home, and what in it says whose account it is.
-fn home_asked(p : Profile) -> (String, String, String?) {
-  let files = if access_kind(p.raw) == "subscription" {
+fn home_asked(p : Profile) -> (String, String?, String?, String?) {
+  let kind = access_kind(p.raw)
+  let files = if kind == "service" {
+    match p.service {
+      Some(_) => Some("service")
+      None => None
+    }
+  } else if kind == "subscription" {
     if borrowed(p.raw) {
       None
     } else {
@@ -515,20 +565,23 @@ fn home_asked(p : Profile) -> (String, String, String?) {
     None | Some(Null) => ""
     h => js_string(h)
   }
-  (home, js_string(p.get("runtime")), files)
+  (home, p.runtime, p.service, files)
 }
 
 ///|
 /// `JSON.stringify(homeAsked(p))`.
 fn home_asked_key(p : Profile) -> String {
-  let (home, _, files) = home_asked(p)
-  stringify(
-    jobj([
-      ("home", js(home)),
-      ("runtime", p.get("runtime").unwrap_or(jundef)),
-      ("files", jopt(files)),
-    ]),
-  )
+  let (home, _, svc, files) = home_asked(p)
+  let fields = [
+    ("home", js(home)),
+    ("runtime", p.get("runtime").unwrap_or(jundef)),
+  ]
+  match svc {
+    Some(s) => fields.push(("service", js(s)))
+    None => ()
+  }
+  fields.push(("files", jopt(files)))
+  stringify(jobj(fields))
 }
 
 ///|
@@ -678,11 +731,44 @@ pub async fn Accounts::account_email(
 }
 
 ///|
+/// The account a service home is signed in as, when its files say.
+pub async fn Accounts::service_email(
+  self : Accounts,
+  service : String,
+  home : String,
+) -> String? {
+  if service == "colab" {
+    return self.email_in([
+      {
+        path: join_path([home, "colab-auth.json"]),
+        email: async fn(text) {
+          let j = json_parse(text)
+          match j.get("email") {
+            Some(Str(e)) if trim_js(e) != "" => Some(trim_js(e))
+            _ => None
+          }
+        },
+      },
+    ])
+  }
+  None
+}
+
+///|
 /// `homeSaysSoon`: what a profile's home says, read off the thread.
 async fn Accounts::home_says_soon(self : Accounts, p : Profile) -> HomeSays {
-  let (home, runtime, files) = home_asked(p)
+  let (home, runtime, service, files) = home_asked(p)
   let email = match files {
-    Some("account") => self.account_email(runtime, home)
+    Some("account") =>
+      match runtime {
+        Some(r) => self.account_email(r, home)
+        None => None
+      }
+    Some("service") =>
+      match service {
+        Some(s) => self.service_email(s, home)
+        None => None
+      }
     Some(_) =>
       self.email_in([
         {
@@ -812,11 +898,15 @@ async fn Accounts::email(self : Accounts, p : Profile, says : HomeSays) -> JV {
   }
   if p.machine {
     let logins = jitems(Some(self.machine_logins()))
-    match logins.iter().find_first(l => l.get("runtime") == Some(Str(p.runtime))) {
-      Some(l) =>
-        match l.get("email") {
-          None | Some(Null) => ()
-          Some(e) => return e
+    match p.runtime {
+      Some(r) =>
+        match logins.iter().find_first(l => l.get("runtime") == Some(Str(r))) {
+          Some(l) =>
+            match l.get("email") {
+              None | Some(Null) => ()
+              Some(e) => return e
+            }
+          None => ()
         }
       None => ()
     }
@@ -845,9 +935,22 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
       }
     None => Null
   }
-  self.read_homes_soon(config.profiles)
+  // A copy of another station's profile only to the workspaces that station lends it in (`profilesView`).
+  let visible = match viewer {
+    None => config.profiles
+    Some(v) => {
+      let effective_home = match home {
+        Some(_) => home
+        None => jstr(v.get("workspace"))
+      }
+      config.profiles.filter(p => {
+        !borrowed(p.raw) || allowed_in(p, joined, effective_home)
+      })
+    }
+  }
+  self.read_homes_soon(visible)
   let views = []
-  for p in config.profiles {
+  for p in visible {
     let says = self.home_says(p)
     let kind = access_kind(p.raw)
     let a = match p.get("access") {
@@ -906,7 +1009,7 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
     }
     let email = if kind == "subscription" {
       self.email(p, says)
-    } else if a.get("login") == Some(Bool(true)) {
+    } else if kind == "service" || a.get("login") == Some(Bool(true)) {
       jopt(says.email)
     } else {
       Null
@@ -927,17 +1030,16 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
       .filter(c => p.runtimes.contains(c.runtime) && serves(p, c.model))
       .map(c => c.id)
     }
-    let login_command = if kind == "subscription" {
-      self.ask("profiles.loginCommand", [js(p.runtime), js(p.home), jbool(p.machine)])
-    } else {
-      js("")
+    let login_command = match (kind, p.runtime) {
+      ("subscription", Some(r)) =>
+        self.ask("profiles.loginCommand", [js(r), js(p.home), jbool(p.machine)])
+      _ => js("")
     }
-    views.push(
-      (
-        jobj([
-          ("id", p.get("id").unwrap_or(jundef)),
+    let mut view = jobj([
+      ("id", p.get("id").unwrap_or(jundef)),
           ("name", js(p.name)),
-          ("runtime", js(p.runtime)),
+          ("runtime", jopt(p.runtime)),
+          ("service", jopt(p.service)),
           ("runtimes", jstrs(p.runtimes)),
           ("email", email),
           (
@@ -958,6 +1060,7 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
                 ),
               ),
               ("provider", jopt(via.provider)),
+              ("service", jopt(p.service)),
               ("endpoint", jopt(via.endpoint)),
               ("protocol", jopt(via.protocol)),
               (
@@ -997,14 +1100,18 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
           ),
           (
             "shareable",
-            jbool(self.ask("share.shareRefusal", [p.raw]) == Null),
+            jbool(@share_sync.share_refusal(jv_to_json(p.raw)) is None),
           ),
           ("workspaces", jstrs(others.filter(w => allowed_in(p, Some(w), home)))),
           ("serves", jbool(allowed_in(p, joined, home))),
-        ]),
-        used_by,
-      ),
-    )
+        ])
+    if p.max_concurrent_sessions is Some(n) {
+      view = jset(view, "maxConcurrentSessions", jint(n))
+      if p.new_account_protection {
+        view = jset(view, "newAccountProtection", jbool(true))
+      }
+    }
+    views.push((view, used_by))
   }
   match joined {
     None => jarr(views.map(v => v.0))
@@ -1023,14 +1130,14 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
 /// `paceView`: GET /profiles/pace: the hours of the accounts the viewer's workspace may run on, read again once a
 /// minute at most or as an allowance is read.
 pub async fn Accounts::pace_view(self : Accounts, viewer : JV?) -> JV {
-  let now = to_number(Some(self.ask("store.now", [])))
+  let now = self.b.store.now().to_double()
   let minute = (now / 60000.0).floor()
   let stale = match self.pace_read {
     None => true
     Some((m, rev, _, _)) => m != minute || rev != self.pace_rev
   }
   if stale {
-    let read = self.ask("store.profileHours", [jnum((now / 3_600_000.0).floor())])
+    let read = json_to_jv(self.b.with_store(s => s.profile_hours((now / 3_600_000.0).floor())))
     self.pace_read = Some((minute, self.pace_rev, now, read))
   }
   let joined = match viewer {
@@ -1066,15 +1173,18 @@ pub fn Accounts::fusion_view(self : Accounts, id : String) -> JV raise Thrown {
 pub async fn Accounts::logins_view(self : Accounts) -> JV {
   let out = []
   for e in self.pending.iter() {
-    out.push(
-      jobj([
-        ("id", js(e.0)),
-        ("runtime", js(e.1.runtime)),
-        ("job", self.ask("logins.get", [js(e.0)])),
-        ("created", jopt(e.1.created)),
-        ("error", jopt(e.1.error)),
-      ]),
-    )
+    let fields = [
+      ("id", js(e.0)),
+      ("runtime", jopt(e.1.runtime)),
+    ]
+    match e.1.service {
+      Some(s) => fields.push(("service", js(s)))
+      None => ()
+    }
+    fields.push(("job", self.ask("logins.get", [js(e.0)])))
+    fields.push(("created", jopt(e.1.created)))
+    fields.push(("error", jopt(e.1.error)))
+    out.push(jobj(fields))
   }
   jarr(out)
 }
@@ -1121,7 +1231,8 @@ pub fn Accounts::state(self : Accounts) -> JV {
       pending,
       e.0,
       jobj([
-        ("runtime", js(e.1.runtime)),
+        ("runtime", jopt(e.1.runtime)),
+        ("service", jopt(e.1.service)),
         ("access", jopt(e.1.access)),
         ("home", js(e.1.home)),
         ("created", jopt(e.1.created)),

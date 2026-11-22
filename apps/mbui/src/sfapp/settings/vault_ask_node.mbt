@@ -14,6 +14,8 @@ fn vault_line_words(answer : Answer?) -> String {
   match answer {
     Some(Elsewhere) => tr("android-settings.vault.approve.inApp")
     Some(NotHere) => tr("web-pages.vault.approve.notHere")
+    Some(NoKey) => tr("web-pages.vault.approve.noKey")
+    Some(Empty) => tr("android-settings.vault.ask.browseEmpty")
     Some(Decided) => tr("android-settings.vault.approve.decided")
     Some(Theirs(w)) => w
     _ => ""
@@ -57,6 +59,8 @@ pub fn vault_foot_node(
   foot~ : Bool,
   describe? : () -> Bool = fn() { false },
   remove? : () -> Bool = fn() { false },
+  browse? : () -> Bool = fn() { false },
+  targets? : () -> Array[(String, String, Bool)] = fn() { [] },
   extra? : (@view.View) -> Unit,
 ) -> Unit {
   let lasts = fn() {
@@ -65,9 +69,9 @@ pub fn vault_foot_node(
       _ => ""
     }
   }
-  let timed = fn() { !save() && timeout().1 > 0 }
+  let timed = fn() { !save() && !browse() && timeout().1 > 0 }
   let scopes = fn() {
-    if save() {
+    if save() || browse() {
       ["once"]
     } else if timed() {
       if lasts() == "once" {
@@ -179,6 +183,8 @@ pub fn vault_foot_node(
           vault_typed.remove(r + "/secret")
           vault_typed.remove(r + "/username")
           vault_files.remove(r)
+          vault_target_picked.remove(r)
+          vault_browse_picked.remove(r)
         }
       }
     })
@@ -205,6 +211,25 @@ pub fn vault_foot_node(
       })
     })
   }
+  let save_targets = targets
+  let can_pick_save_vault = fn() {
+    save() && !remove() && !describe() && signs_in() == "" && answer() is Some(Approve(_)) && save_targets().length() > 1
+  }
+  let chosen_save_target = fn() {
+    let ts = save_targets()
+    if ts.is_empty() {
+      ("", "", false)
+    } else {
+      match vault_target_picked.get(request()) {
+        Some((id, _, _)) =>
+          match ts.iter().find_first(fn(t) { t.0 == id }) {
+            Some(t) => t
+            None => ts[0]
+          }
+        None => ts[0]
+      }
+    }
+  }
   let approve = fn() {
     if @signals.untracked(signs_in) != "" {
       sign_in()
@@ -212,12 +237,29 @@ pub fn vault_foot_node(
     }
     @signals.untracked(fn() {
       let s = save()
+      let b = browse()
       let sc = scope()
       let t = timed()
       let m = minutes()
-      let what = tr(if remove() { "android-settings.vault.act.removeWhat" } else if describe() { "android-settings.vault.act.changeWhat" } else if s { "android-settings.vault.act.saveWhat" } else { "android-settings.vault.act.allowWhat" })
-      let chosen = if !t || sc == "once" { if s { "once" } else { sc } } else if m <= 60 { "hour" } else { "chat" }
+      let what = tr(if b { "android-settings.vault.act.allowBrowseWhat" } else if remove() { "android-settings.vault.act.removeWhat" } else if describe() { "android-settings.vault.act.changeWhat" } else if s { "android-settings.vault.act.saveWhat" } else { "android-settings.vault.act.allowWhat" })
+      let chosen = if b { "once" } else if !t || sc == "once" { if s { "once" } else { sc } } else if m <= 60 { "hour" } else { "chat" }
       let params : Array[(String, Json)] = [("workspace", str(ws())), ("request", str(request())), ("scope", str(chosen))]
+      if b {
+        match vault_browse_picked.get(request()) {
+          Some(p) =>
+            params.push(
+              (
+                "items",
+                Json::array(
+                  p.items.map(fn(it) {
+                    obj([("workspace", str(it.workspace)), ("vault", str(it.vault)), ("item", str(it.item))])
+                  }),
+                ),
+              ),
+            )
+          None => ()
+        }
+      }
       if t && sc != "once" {
         params.push(("timeout", obj([("kind", str(sc)), ("seconds", Json::number((m * 60).to_double()))])))
       }
@@ -234,6 +276,9 @@ pub fn vault_foot_node(
           }
         }
         params.push(("typed", obj(given)))
+      }
+      if can_pick_save_vault() {
+        params.push(("vault", str(chosen_save_target().0)))
       }
       act(true, "vault.approve", what, obj(params))
     })
@@ -325,45 +370,83 @@ pub fn vault_foot_node(
   // its buttons, last in the card's foot corners; how long beside them where the foot has the room for it, else on a
   // line of its own over them (never under: the buttons keep the foot), its ends where theirs are; beside them on a
   // card, how long chosen in 授权时限 across from them, in the foot's end corner as they are in its start corner
-  let picks = fn() { !save() && scopes().length() > 1 }
+  let can_pick_browse = fn() { browse() && answer() is Some(Approve(_)) }
+  let picks = fn() { (!save() && !browse() && answer() is Some(Approve(_)) && scopes().length() > 1) || can_pick_save_vault() || can_pick_browse() }
   let choice = fn(at : @view.View) {
-    at.pick(timed, fn(p, by_panel) {
-      if by_panel {
-        // (how long in words, pressed for 授权时限)
-        let words = fn() {
-          if scope() == "once" {
-            tr("android-settings.vault.scope.once")
+    at.pick(
+      fn() { if can_pick_browse() { 3 } else if can_pick_save_vault() { 0 } else if timed() { 1 } else { 2 } },
+      fn(p, mode) {
+        if mode == 3 {
+          let words = fn() {
+            match vault_browse_picked.get(request()) {
+              Some(picked) => fill("android-settings.vault.browse.pickedCount", [("n", picked.items.length().to_string())])
+              None => tr("android-settings.vault.browse.choose")
+            }
+          }
+          let open = fn() {
+            @signals.untracked(fn() { vault_browse_picker_open(core, ws(), request()) })
+          }
+          if foot {
+            @sf.foot_chooser_node(p, words, fn() { [] }, fn() { "" }, fn(_) {  }, press=open, disabled=under) |> ignore
           } else {
-            fill("android-settings.vault.timeout.button." + scope(), [("time", vault_minutes_words(minutes()))])
+            @sf.chooser_node(p, words, fn() { [] }, fn() { "" }, fn(_) {  }, press=open, disabled=under) |> ignore
+          }
+        } else if mode == 0 {
+          let words = fn() { chosen_save_target().1 }
+          let choices = fn() { save_targets().map(fn(t) { (t.0, t.1) }) }
+          let picked_id = fn() { chosen_save_target().0 }
+          let choose = fn(id : String) {
+            match @signals.untracked(save_targets).iter().find_first(fn(t) { t.0 == id }) {
+              Some(t) => vault_target_picked[@signals.untracked(request)] = t
+              None => ()
+            }
+          }
+          if foot {
+            @sf.foot_chooser_node(p, words, choices, picked_id, choose, disabled=under) |> ignore
+          } else {
+            @sf.chooser_node(p, words, choices, picked_id, choose, disabled=under) |> ignore
+          }
+        } else if mode == 1 {
+          // (how long in words, pressed for 授权时限)
+          let words = fn() {
+            if scope() == "once" {
+              tr("android-settings.vault.scope.once")
+            } else {
+              fill("android-settings.vault.timeout.button." + scope(), [("time", vault_minutes_words(minutes()))])
+            }
+          }
+          let open = fn() {
+            @signals.untracked(fn() { vault_timeout_open(request(), minutes(), max_minutes(), scope()) })
+          }
+          if foot {
+            @sf.foot_chooser_node(p, words, fn() { [] }, fn() { "" }, fn(_) {  }, press=open, disabled=under) |> ignore
+          } else {
+            @sf.chooser_node(p, words, fn() { [] }, fn() { "" }, fn(_) {  }, press=open, disabled=under) |> ignore
+          }
+        } else {
+          let words = fn() { tr("android-settings.vault.scope." + scope()) }
+          let choices = fn() { scopes().map(fn(s) { (s, tr("android-settings.vault.scope." + s)) }) }
+          let choose = fn(s : String) { vault_picked[@signals.untracked(request)] = s }
+          if foot {
+            @sf.foot_chooser_node(p, words, choices, scope, choose) |> ignore
+          } else {
+            @sf.chooser_node(p, words, choices, scope, choose) |> ignore
           }
         }
-        let open = fn() {
-          @signals.untracked(fn() { vault_timeout_open(request(), minutes(), max_minutes(), scope()) })
-        }
-        if foot {
-          @sf.foot_chooser_node(p, words, fn() { [] }, fn() { "" }, fn(_) {  }, press=open, disabled=under) |> ignore
-        } else {
-          @sf.chooser_node(p, words, fn() { [] }, fn() { "" }, fn(_) {  }, press=open, disabled=under) |> ignore
-        }
-      } else {
-        let words = fn() { tr("android-settings.vault.scope." + scope()) }
-        let choices = fn() { scopes().map(fn(s) { (s, tr("android-settings.vault.scope." + s)) }) }
-        let choose = fn(s : String) { vault_picked[@signals.untracked(request)] = s }
-        if foot {
-          @sf.foot_chooser_node(p, words, choices, scope, choose) |> ignore
-        } else {
-          @sf.chooser_node(p, words, choices, scope, choose) |> ignore
-        }
-      }
-    })
+      },
+    )
   }
   // its buttons: `grouped`, one part of the foot's row (across from how long, beside them); else each a part of the
   // foot's own row, as an ask's are (@sf.ask_buttons_node): where they have not the room on one line, the one after goes
   // on to a line over the first, the first kept in the foot's start corner
-  let primary = fn(p : @view.View, set_up : Bool) {
-    if set_up {
+  let primary = fn(p : @view.View, kind : Int) {
+    if kind == 1 {
       // (kept only in a vault that is on here: the way to turn it on first)
       @sf.button_node(p, fn() { tr("android-settings.vault.turnOn") }, fn() { (core.push)(Route::Vault) }, tone=Primary, card_words=foot)
+      |> ignore
+    } else if kind == 2 {
+      // (this device does not hold a key to this vault yet: open Vault to request access or recover)
+      @sf.button_node(p, fn() { tr("web-pages.vault.approve.authorize") }, fn() { (core.push)(Route::Vault) }, tone=Primary, card_words=foot)
       |> ignore
     } else {
       @sf.button_node(
@@ -372,7 +455,7 @@ pub fn vault_foot_node(
           if signs_in() != "" {
             tr("web-pages.vault.oauth.signIn." + signs_in())
           } else {
-            tr(if remove() { "android-settings.vault.act.remove" } else if describe() { "android-settings.vault.act.change" } else if save() { "android-settings.vault.act.save" } else { "android-settings.vault.act.allow" })
+            tr(if browse() { "android-settings.vault.act.allowBrowse" } else if remove() { "android-settings.vault.act.remove" } else if describe() { "android-settings.vault.act.change" } else if save() { "android-settings.vault.act.save" } else { "android-settings.vault.act.allow" })
           }
         },
         approve,
@@ -401,15 +484,27 @@ pub fn vault_foot_node(
     |> ignore
   }
   let acts = fn(at : @view.View, grouped : Bool) {
-    at.pick(fn() { answer() is Some(SetUp) }, fn(p, set_up) {
-      if grouped {
-        @sf.style_node(p, fn() { @sf.ask_foot })
-      }
-      primary(p, set_up)
-      if grouped {
-        deny(p)
-      }
-    })
+    at.pick(
+      fn() {
+        match answer() {
+          Some(SetUp) => 1
+          Some(NoKey) => 2
+          Some(Empty) => 3
+          _ => 0
+        }
+      },
+      fn(p, kind) {
+        if grouped {
+          @sf.style_node(p, fn() { @sf.ask_foot })
+        }
+        if kind != 3 {
+          primary(p, kind)
+        }
+        if grouped {
+          deny(p)
+        }
+      },
+    )
     if !grouped {
       deny(at)
     }
@@ -435,8 +530,8 @@ pub fn vault_foot_node(
     }
     at.box(fn(f) {
       @sf.style_node(f, fn() {
-        if foot && timed() {
-          // (how long, chosen in 授权时限, across from the buttons in the card's foot end corner, concentric with it)
+        if foot && (timed() || can_pick_browse()) {
+          // (how long, chosen in 授权时限, or browse scope picker, across from the buttons in the card's foot end corner, concentric with it)
           @sf.ask_foot_chosen_end()
         } else if foot {
           @sf.ask_foot.then(@sf.foot_reach(@sf.button_height()))
@@ -450,7 +545,7 @@ pub fn vault_foot_node(
     })
     |> ignore
   }
-  v.show(fn() { answer() is Some(Approve(_) | SetUp) }, fn(s) {
+  v.show(fn() { answer() is Some(Approve(_) | SetUp | Empty) || (foot && answer() is Some(NoKey)) }, fn(s) {
     s.width_share(Is(1.0)) |> ignore
     s.pick(picks, fn(r, two) {
       // (across what holds it: ask_room's)
@@ -505,6 +600,8 @@ pub fn vault_actions_node(
     foot=false,
     describe=fn() { field(row(), "describe") is Some(_) },
     remove=fn() { flag(row(), "remove") },
+    browse=fn() { field(row(), "browse") is Some(_) },
+    targets=fn() { vault_save_targets(core, ws()) },
   )
 }
 
@@ -516,7 +613,13 @@ fn vault_title_runs(ask : Asked) -> Array[@ui.Run] {
   let save = ask.save_kind != ""
   let named = fn(n) { @ui.span(n, weight=600, color=t.p.text) }
   let words = fn(w) { @ui.span(w, weight=400, color=t.p.text) }
-  let runs = if ask.remove {
+  let runs = if ask.browse {
+    if ask.browse_hint != "" {
+      fill_named("android-settings.vault.ask.browseHint", [("workspace", ask.browse_hint)], named, words)
+    } else {
+      [words(tr("android-settings.vault.ask.browse"))]
+    }
+  } else if ask.remove {
     fill_named("android-settings.vault.ask.remove", [("name", ask.name)], named, words)
   } else if ask.describe {
     describe_title_runs(ask, named, words)
@@ -540,14 +643,17 @@ fn vault_title_runs(ask : Asked) -> Array[@ui.Run] {
 ///|
 /// What is out of the ordinary in what is asked (vault_asked's): a command that reads the secret itself, one run on
 /// another station; none where neither is.
-fn vault_odd_runs(ask : Asked) -> Array[@ui.Run] {
+fn vault_odd_runs(ask : Asked, request : String) -> Array[@ui.Run] {
+  let shared = vault_save_shared_text(ask, request)
   let risky = !ask.writes() && (ask.mode == "env" || ask.mode == "file")
   let elsewhere = ask.station != ""
   let runs : Array[@ui.Run] = []
-  if risky {
+  if shared != "" {
+    runs.push(@ui.span(shared, color=@sf.theme().p.warn_ink))
+  } else if risky {
     runs.push(@ui.span(tr("android-settings.vault.ask.plain"), color=@sf.theme().p.warn_ink))
   }
-  if risky && elsewhere {
+  if (shared != "" || risky) && elsewhere {
     runs.push(@ui.span(" · "))
   }
   if elsewhere {
@@ -569,15 +675,40 @@ fn vault_runs_node(v : @view.View, runs : () -> Array[@ui.Run], style : @ui.Text
 }
 
 ///|
+/// Combined note lines shown under the title of a vault ask card (cross-workspace source, agent reason,
+/// browse safety notice, and browse selection summary), merged into one node so normal cards keep the
+/// exact same node count and `let_go` budget as before.
+fn vault_asked_notes_text(ask : Asked, request : String) -> String {
+  let lines : Array[String] = []
+  let cross = vault_cross_source_text(ask)
+  if cross != "" {
+    lines.push(cross)
+  }
+  if ask.reason != "" {
+    lines.push(ask.reason)
+  }
+  if ask.browse {
+    lines.push(tr("android-settings.vault.ask.browseSafe"))
+  }
+  let summary = vault_browse_summary(ask, request)
+  if summary != "" {
+    lines.push(summary)
+  }
+  lines.join("\n")
+}
+
+///|
 /// What is asked in `v` (vault_asked's, as nodes), as `ask()` says it now: its title, the agent's reason, the command
 /// (one line of it; `full_command`: all of it, a history's), how it is given, and only what is out of the ordinary.
-fn vault_asked_node(v : @view.View, ask : () -> Asked, full_command : Bool) -> Unit {
+fn vault_asked_node(v : @view.View, ask : () -> Asked, full_command : Bool, request? : () -> String = fn() { "" }) -> Unit {
   v.box(fn(w) {
     @sf.style_node(w, fn() { @sf.ask_what })
     // (one the person signs in to a service for: its mark, what it connects and the item's name, in place of the title)
     w.show(fn() { ask().oauth != "" }, fn(s) { vault_oauth_head_node(s, ask) })
     w.show(fn() { ask().oauth == "" }, fn(s) { vault_runs_node(s, fn() { vault_title_runs(ask()) }, @sf.ask_title) |> ignore })
-    w.show(fn() { ask().reason != "" }, fn(s) { @sf.words_node(s, fn() { ask().reason }, fn() { @sf.ask_note }) |> ignore })
+    w.show(fn() { vault_asked_notes_text(ask(), request()) != "" }, fn(s) {
+      @sf.words_node(s, fn() { vault_asked_notes_text(ask(), request()) }, fn() { @sf.ask_note }) |> ignore
+    })
     // (what signing in lets agents do, and that it stays theirs: the card's how it is given, in the person's words)
     w.show(fn() { ask().oauth != "" }, fn(s) { vault_oauth_gives_node(s, ask) })
     w.show(fn() { ask().command != "" }, fn(s) {
@@ -585,30 +716,24 @@ fn vault_asked_node(v : @view.View, ask : () -> Asked, full_command : Bool) -> U
       |> ignore
     })
     // (one to rename: what changes, a part each, in place of how it is given)
-    w.show(fn() { ask().renames() }, fn(s) {
-      s.box(fn(p) {
-        @sf.style_node(p, fn() { ask_describe_part })
-        @sf.words_node(p, fn() { tr("android-settings.vault.ask.describe.nameLabel") }, fn() { @sf.ask_note }) |> ignore
-        vault_runs_node(p, fn() { describe_name_lines(ask())[0] }, ask_describe_words) |> ignore
-        vault_runs_node(p, fn() { describe_name_lines(ask())[1] }, ask_describe_words) |> ignore
-      })
-      |> ignore
+    w.show(fn() { ask().renames() }, fn(p) {
+      @sf.style_node(p, fn() { ask_describe_part })
+      @sf.words_node(p, fn() { tr("android-settings.vault.ask.describe.nameLabel") }, fn() { @sf.ask_note }) |> ignore
+      vault_runs_node(p, fn() { describe_name_lines(ask())[0] }, ask_describe_words) |> ignore
+      vault_runs_node(p, fn() { describe_name_lines(ask())[1] }, ask_describe_words) |> ignore
     })
-    w.show(fn() { ask().reabouts() }, fn(s) {
-      s.box(fn(p) {
-        @sf.style_node(p, fn() { ask_describe_part })
-        @sf.words_node(p, fn() { tr("android-settings.vault.ask.describe.aboutLabel") }, fn() { @sf.ask_note }) |> ignore
-        // (as it was where it said one, then as it would be)
-        p.show(fn() { ask().was_about != "" }, fn(w) { vault_runs_node(w, fn() { describe_about_lines(ask())[0] }, ask_describe_words) |> ignore })
-        vault_runs_node(p, fn() { describe_about_lines(ask()).last().unwrap_or([]) }, ask_describe_words) |> ignore
-      })
-      |> ignore
+    w.show(fn() { ask().reabouts() }, fn(p) {
+      @sf.style_node(p, fn() { ask_describe_part })
+      @sf.words_node(p, fn() { tr("android-settings.vault.ask.describe.aboutLabel") }, fn() { @sf.ask_note }) |> ignore
+      // (as it was where it said one, then as it would be)
+      p.show(fn() { ask().was_about != "" }, fn(w) { vault_runs_node(w, fn() { describe_about_lines(ask())[0] }, ask_describe_words) |> ignore })
+      vault_runs_node(p, fn() { describe_about_lines(ask()).last().unwrap_or([]) }, ask_describe_words) |> ignore
     })
     w.show(fn() { ask().how_text != "" && !ask().describe && !ask().remove && ask().oauth == "" }, fn(s) {
       @sf.words_node(s, fn() { ask().how_text }, fn() { @sf.ask_note }) |> ignore
     })
-    w.show(fn() { vault_odd_runs(ask()).length() > 0 }, fn(s) {
-      vault_runs_node(s, fn() { vault_odd_runs(ask()) }, @sf.ask_note) |> ignore
+    w.show(fn() { vault_odd_runs(ask(), request()).length() > 0 }, fn(s) {
+      vault_runs_node(s, fn() { vault_odd_runs(ask(), request()) }, @sf.ask_note) |> ignore
     })
   })
   |> ignore
@@ -718,7 +843,7 @@ pub fn vault_card_node(
   ended : () -> (String, String)?,
 ) -> Unit {
   @sf.ask_card_node(v, fn(k) {
-    vault_asked_node(k, ask, false)
+    vault_asked_node(k, ask, false, request~)
     answered_in_place_node(
       k,
       fn() { ended().map(fn(e) { (e.0 == "granted", vault_outcome_words(ask(), e.0, e.1)) }) },
@@ -735,6 +860,8 @@ pub fn vault_card_node(
           foot=true,
           describe=fn() { ask().describe },
           remove=fn() { ask().remove },
+          browse=fn() { ask().browse },
+          targets=fn() { ask().save_targets },
         )
       },
     )
@@ -787,9 +914,9 @@ pub fn vault_request_node(
   let said_now = @signals.computed(fn(_) { topic_answer(core, ws(), request(), true, None) })
   let said = fn() { said_now.get() }
   // (in its card's foot corners where it is answered here: vault_card's `foot`)
-  let foot = @signals.untracked(said) is Some((Approve(_) | SetUp, _, _))
+  let foot = @signals.untracked(said) is Some((Approve(_) | SetUp | Empty, _, _))
   @sf.ask_card_node(v, fn(k) {
-    vault_asked_node(k, ask, false)
+    vault_asked_node(k, ask, false, request~)
     vault_foot_node(
       k,
       core,
@@ -802,6 +929,8 @@ pub fn vault_request_node(
       foot~,
       describe=fn() { ask().describe },
       remove=fn() { ask().remove },
+      browse=fn() { ask().browse },
+      targets=fn() { vault_save_targets(core, ws()) },
       extra?,
     )
   })

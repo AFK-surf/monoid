@@ -50,7 +50,7 @@ test "lifted as lift_of's: on lift_spring from the moment its menu is said up, b
   for to in [true, false] {
     let at = t.time() + lift_test_mid
     root.val.unwrap().at_moment(at, fn() { open.set(to) }) |> ignore
-    want.go(if to { 1.0 } else { 0.0 }, @motion.lift_spring, at~)
+    want.go(if to { 1.0 } else { 0.0 }, @motion.tactile_bounce, at~)
     for dt in [lift_test_mid / 2.0, lift_test_mid, @ui.move_most_ms] {
       t.run_for(at + dt - t.time())
       let w = lift_test_side * (1.0 + (lift_test_scale - 1.0) * want.value_at(t.time()))

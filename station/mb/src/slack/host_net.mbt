@@ -1,6 +1,6 @@
 // What a station's program gives Slack's parts on its host (`@host.Host`, the shell's IO on the program's runtime):
-// HTTP by `fetch`, Socket Mode by `ws.open`/`ws.next`/`ws.send`/`ws.close`, an attachment's bytes by `fs.bytes`, the
-// machine's clock and the runtime's timers and fibers.
+// HTTP by `fetch`, Socket Mode by `ws.open`/`ws.next`/`ws.send`/`ws.ping`/`ws.close`, an attachment's bytes by
+// `fs.bytes`, the machine's clock and the runtime's timers and fibers.
 
 ///|
 fn shell_words(e : Error) -> String {
@@ -44,7 +44,8 @@ pub fn Wall::now(self : Wall) -> Double {
 
 ///|
 /// HTTP on the shell, the machine's time the wall's: a request whose answer the shell did not get (no way there, a
-/// timeout) is `Unanswered`.
+/// timeout) is `Unanswered`. Redirects are followed as Node's `fetch` follows them (a file's `url_private` sent to
+/// Slack's sign-in page where the app lacks files:read is told by `redirected`).
 pub fn host_net(host : @host.Host, wall : Wall) -> Net {
   let fetch = async fn(
     meth : String,
@@ -53,45 +54,13 @@ pub fn host_net(host : @host.Host, wall : Wall) -> Net {
     body : Bytes?,
     timeout_ms : Int,
   ) -> HttpAnswer {
-    let args : Map[String, Json] = {
-      "url": Json::string(url),
-      "method": Json::string(meth),
-      "headers": Json::array(headers.map(h => Json::array([Json::string(h.0), Json::string(h.1)]))),
+    let r = host.fetch(url, method_=meth, headers~, body?=body, timeout_ms~, redirect="follow") catch {
+      @host.FetchTimeout => raise Unanswered(@host.fetch_timed_out)
+      e => raise Unanswered(shell_words(e))
     }
-    let call = async fn() -> HttpAnswer {
-      let (answer, bytes) = shell_fetch(host, args, body)
-      let status = match json_field(answer, "status") {
-        Some(Number(n, ..)) => n.to_int()
-        _ => 0
-      }
-      let pairs = match json_field(answer, "headers") {
-        Some(Array(xs)) =>
-          xs.filter_map(x => match x {
-            Array([String(k), String(v)]) => Some((k, v))
-            _ => None
-          })
-        _ => []
-      }
-      { status, headers: pairs, body: bytes.unwrap_or(b""), redirected: false }
-    }
-    match @effect.timeout(timeout_ms, call) {
-      Some(r) => r
-      None => raise Unanswered("The operation was aborted due to timeout")
-    }
+    { status: r.status, headers: r.headers, body: r.body, redirected: r.redirected }
   }
   { fetch, now: () => wall.now(), sleep: async fn(ms : Int) { @effect.sleep(ms) } }
-}
-
-///|
-async fn shell_fetch(host : @host.Host, args : Map[String, Json], body : Bytes?) -> (Json, Bytes?) {
-  try {
-    match body {
-      Some(b) => host.shell("fetch", Json::object(args), bytes=b)
-      None => host.shell("fetch", Json::object(args))
-    }
-  } catch {
-    e => raise Unanswered(shell_words(e))
-  }
 }
 
 ///|
@@ -139,24 +108,54 @@ fn decode_hex(hex : String) -> Bytes {
 }
 
 ///|
-/// Socket Mode on the shell: `ws.open`, its frames read by `ws.next`. The shell answers Slack's pings itself and says
-/// nothing of pongs: its socket has no `ping` of the surface's.
+/// Parses a shell `ws.open` refusal message (`"websocket refused (<code>)"` or `"websocket refused (<code>): <why>"`)
+/// into `(status, why)`.
+fn parse_ws_refusal(words : String) -> (Int, String)? {
+  match words.find("websocket refused (") {
+    Some(at) => {
+      let rest = words.unsafe_substring(start=at + 19, end=words.length())
+      let digits = rest.iter().take_while(c => c >= '0' && c <= '9').collect()
+      if digits.is_empty() || digits.length() > 6 {
+        return None
+      }
+      let mut n = 0
+      for c in digits {
+        n = n * 10 + (c.to_int() - '0'.to_int())
+      }
+      let tail = words.unsafe_substring(start=at + 19 + digits.length(), end=words.length())
+      if !tail.has_prefix(")") {
+        return None
+      }
+      let why = if tail.has_prefix("): ") {
+        trim(tail.unsafe_substring(start=3, end=tail.length()))
+      } else {
+        ""
+      }
+      Some((n, why))
+    }
+    None => None
+  }
+}
+
+///|
+/// Socket Mode on the shell: `ws.open` with `control: true`, its frames read by `ws.next`, and liveness pings sent by
+/// `ws.ping`.
 pub fn host_ws(host : @host.Host) -> WsIO {
   {
     open: async fn(url) {
       let (answer, _) = host.shell(
         "ws.open",
-        Json::object({ "url": Json::string(url), "headers": Json::array([]) }),
+        Json::object({
+          "url": Json::string(url),
+          "headers": Json::array([]),
+          "control": Json::boolean(true),
+        }),
       ) catch {
         e => {
           let words = shell_words(e)
-          // "websocket refused (404)": an answer other than the Upgrade
-          if words.has_prefix("websocket refused (") {
-            let digits = words.unsafe_substring(start=19, end=words.length()).iter().take_while(c => c >= '0' && c <= '9').collect()
-            let n = String::from_array(digits)
-            if n != "" {
-              raise WsRefused(js_num(Some(js(n))).to_int(), "")
-            }
+          // "websocket refused (404)" or "websocket refused (403): too_many_websockets"
+          if parse_ws_refusal(words) is Some((n, why)) {
+            raise WsRefused(n, why)
           }
           raise Unanswered(words)
         }
@@ -174,14 +173,16 @@ pub fn host_ws(host : @host.Host) -> WsIO {
           let (frame, _) = host.shell("ws.next", Json::object({ "id": Json::number(id) })) catch {
             e => raise fail_(shell_words(e))
           }
-          match json_field(frame, "text") {
-            Some(String(t)) => Some(t)
+          match frame {
+            { "text": String(t), .. } => Some(Text(t))
+            { "pong": True, .. } => Some(Pong)
+            { "ping": True, .. } => Some(Ping)
             _ => None
           }
         },
         send: t => if !closed.val {
           ignore(
-            host.rt.fork(async fn() {
+            host.rt.fork_quiet(name="slack ws send", async fn() {
               ignore(host.shell("ws.send", Json::object({ "id": Json::number(id), "text": Json::string(t) }))) catch {
                 _ => ()
               }
@@ -191,14 +192,22 @@ pub fn host_ws(host : @host.Host) -> WsIO {
         close: () => if !closed.val {
           closed.val = true
           ignore(
-            host.rt.fork(async fn() {
+            host.rt.fork_quiet(name="slack ws close", async fn() {
               ignore(host.shell("ws.close", Json::object({ "id": Json::number(id) }))) catch {
                 _ => ()
               }
             }),
           )
         },
-        ping: None,
+        ping: Some(() => if !closed.val {
+          ignore(
+            host.rt.fork_quiet(name="slack ws ping", async fn() {
+              ignore(host.shell("ws.ping", Json::object({ "id": Json::number(id) }))) catch {
+                _ => ()
+              }
+            }),
+          )
+        }),
       }
     },
   }

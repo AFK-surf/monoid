@@ -196,3 +196,31 @@ test("a_job_not_held_of_a_station_coming_back_whose_jobs_were_read_before_is_gon
     core.close();
   }
 });
+
+test("card_topics_waiting_on_connecting_station_emit_waiting_true_then_resolve_when_station_answers", async () => {
+  const s = await started({ ...base(), "GET /machine-logins": { logins: [device] }, "GET /jobs": [job] }, 0, undefined, (f) => {
+    f.gate.stream = "hang";
+  });
+  try {
+    const ui = s.core.connect();
+    subscribe(s.core, ui, 1, { topic: "machineLogin", station: ST, id: "l1" });
+    subscribe(s.core, ui, 2, { topic: "job", station: ST, id: "j-web" });
+    await s.host.time.pass(300, 50);
+    assert.equal((s.core.inner.stations.link(ST)?.state as { state: string }).state, "connecting");
+    const whileWaiting = s.host.takeEmitted().map(([, m]) => m as any);
+    assert.ok(whileWaiting.some((m) => m.id === 1 && m.waiting === true), `machineLogin should emit waiting: true, got ${JSON.stringify(whileWaiting)}`);
+    assert.ok(whileWaiting.some((m) => m.id === 2 && m.waiting === true), `job should emit waiting: true, got ${JSON.stringify(whileWaiting)}`);
+    assert.ok(!whileWaiting.some((m) => (m.id === 1 || m.id === 2) && ("value" in m || "error" in m)));
+
+    s.gate.stream = "open";
+    const n = s.streams.length;
+    for (let waited = 0; s.streams.length <= n && waited < 60_000; waited += 250) await s.host.time.pass(250, 250);
+    await s.host.time.pass(2000, 250);
+    const values = new Map();
+    apply(s.host, values);
+    assert.equal(v(values, 1).id, "l1");
+    assert.equal(v(values, 2).id, "j-web");
+  } finally {
+    s.core.close();
+  }
+});

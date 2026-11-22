@@ -117,6 +117,15 @@ static void auth_done(const char *url, const char *error, void *ctx) {
 
 int32_t mbc_screen_ack(double call, double ts) { return engine && engine->screen_ack ? engine->screen_ack(call, ts) : 0; }
 
+int32_t mbc_screen_input(double call, moonbit_string_t json) {
+  if (!engine || !engine->screen_input) return 0;
+  size_t len;
+  char *s = utf8_of(json, &len);
+  int32_t done = engine->screen_input(call, (const uint8_t *)s, len) ? 1 : 0;
+  free(s);
+  return done;
+}
+
 int32_t mbc_has_web_auth(void) { return engine && engine->web_auth ? 1 : 0; }
 
 // The scheme the browser session comes back on (core_client.h `auth_scheme`): the engine's, else "stillfail".

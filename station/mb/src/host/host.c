@@ -16,6 +16,7 @@ typedef CONDITION_VARIABLE cond_t;
 static void lock(lock_t *l) { AcquireSRWLockExclusive(l); }
 static void unlock(lock_t *l) { ReleaseSRWLockExclusive(l); }
 static void signal_one(cond_t *c) { WakeConditionVariable(c); }
+static void broadcast(cond_t *c) { WakeAllConditionVariable(c); }
 static void wait_cond(cond_t *c, lock_t *l) { SleepConditionVariableSRW(c, l, INFINITE, 0); }
 #else
 #include <pthread.h>
@@ -35,6 +36,7 @@ typedef pthread_cond_t cond_t;
 static void lock(lock_t *l) { pthread_mutex_lock(l); }
 static void unlock(lock_t *l) { pthread_mutex_unlock(l); }
 static void signal_one(cond_t *c) { pthread_cond_signal(c); }
+static void broadcast(cond_t *c) { pthread_cond_broadcast(c); }
 static void wait_cond(cond_t *c, lock_t *l) { pthread_cond_wait(c, l); }
 #endif
 
@@ -49,6 +51,7 @@ void sf_free(uint8_t *ptr, size_t len);
 typedef struct event {
   struct event *next;
   uint8_t kind;
+  uint8_t bounded;
   uint64_t id;
   uint8_t *data;
   size_t len;
@@ -56,8 +59,22 @@ typedef struct event {
 
 static lock_t queue_lock = LOCK_INIT;
 static cond_t queue_cond = COND_INIT;
+#if !defined(_WIN32) && !defined(__APPLE__)
+static pthread_once_t queue_cond_once = PTHREAD_ONCE_INIT;
+static void queue_cond_init(void) {
+  pthread_condattr_t attr;
+  pthread_condattr_init(&attr);
+  pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+  pthread_cond_init(&queue_cond, &attr);
+  pthread_condattr_destroy(&attr);
+}
+static void ensure_queue_cond(void) { pthread_once(&queue_cond_once, queue_cond_init); }
+#else
+static void ensure_queue_cond(void) {}
+#endif
 static event_t *head = NULL, *tail = NULL;
 static void *shell = NULL;
+int64_t sfh_now(void);
 
 /// The most of stdin's pieces (kind 1) the queue holds before read_input stops reading: the parent's lines wait in the
 /// pipe meanwhile, and the parent's writes behind them (Node's own bound: read/mb-reader.ts STDIN_MOST), while the
@@ -68,10 +85,18 @@ static void *shell = NULL;
 static size_t stdin_queued = 0;
 static cond_t stdin_cond = COND_INIT;
 
+/// The most of bounded sys events (child stdout/stderr chunks) the queue holds before pipe readers pause: the child
+/// blocks on its pipe meanwhile, keeping RSS bounded. Control sys events use `sfh_push_sys` and never wait.
+#define SYS_DATA_MOST (2u * 1024u * 1024u)
+static size_t sys_data_queued = 0;
+static size_t sys_data_waiters = 0;
+static cond_t sys_data_cond = COND_INIT;
+
 static event_t *event_of(uint8_t kind, uint64_t id, size_t len) {
   event_t *e = malloc(sizeof *e);
   e->next = NULL;
   e->kind = kind;
+  e->bounded = 0;
   e->id = id;
   e->len = len;
   e->data = malloc(len ? len : 1);
@@ -80,6 +105,7 @@ static event_t *event_of(uint8_t kind, uint64_t id, size_t len) {
 
 /// `e` at the queue's end (queue_lock held).
 static void enqueue(event_t *e) {
+  ensure_queue_cond();
   if (tail) tail->next = e; else head = e;
   tail = e;
   signal_one(&queue_cond);
@@ -96,6 +122,22 @@ static void push(uint8_t kind, uint64_t id, const uint8_t *a, size_t al) {
 /// What a system call of the program's own C (station_main's sys.c: a child's output and end, a lock taken, a line of
 /// the launcher's, a signal) tells it as event `id` (kind 4), from whatever thread it is on.
 void sfh_push_sys(uint64_t id, const uint8_t *a, size_t al) { push(4, id, a, al); }
+
+/// Bounded variant of `sfh_push_sys` for child pipe output: waits while `sys_data_queued >= SYS_DATA_MOST`.
+void sfh_push_sys_bounded(uint64_t id, const uint8_t *a, size_t al) {
+  event_t *e = event_of(4, id, al);
+  e->bounded = 1;
+  if (al) memcpy(e->data, a, al);
+  lock(&queue_lock);
+  while (sys_data_queued >= SYS_DATA_MOST) {
+    sys_data_waiters++;
+    wait_cond(&sys_data_cond, &queue_lock);
+    sys_data_waiters--;
+  }
+  sys_data_queued += al;
+  enqueue(e);
+  unlock(&queue_lock);
+}
 
 /// A piece of stdin, once the queue has room for it (read_input's thread alone).
 static void push_stdin(const uint8_t *a, size_t al) {
@@ -179,6 +221,7 @@ static void raise_nofile(void) {
 /// Starts reading stdin, and the shell keeping its own files in `dir` (none when `dir` is empty). False: the shell did not
 /// start.
 int32_t sfh_start(moonbit_bytes_t dir) {
+  ensure_queue_cond();
 #ifndef _WIN32
   raise_nofile();
   // A write to a pipe or socket whose other end closed fails (EPIPE) and ends nothing else: the shell's are a Unix
@@ -205,20 +248,37 @@ int32_t sfh_start(moonbit_bytes_t dir) {
 /// The next event (kind, id as 8 bytes, then what it carries), waiting at most `ms` (negative: until there is one).
 /// Empty: none came in time.
 moonbit_bytes_t sfh_wait(int64_t ms) {
+  ensure_queue_cond();
   lock(&queue_lock);
   if (head == NULL && ms != 0) {
 #ifdef _WIN32
     SleepConditionVariableSRW(&queue_cond, &queue_lock, ms < 0 ? INFINITE : (DWORD)ms, 0);
+#elif defined(__APPLE__)
+    if (ms < 0) {
+      while (head == NULL) pthread_cond_wait(&queue_cond, &queue_lock);
+    } else {
+      if (ms > 86400000LL) ms = 86400000LL;
+      int64_t deadline = sfh_now() + ms;
+      while (head == NULL) {
+        int64_t left = deadline - sfh_now();
+        if (left <= 0) break;
+        struct timespec rel;
+        rel.tv_sec = (time_t)(left / 1000);
+        rel.tv_nsec = (long)((left % 1000) * 1000000);
+        if (pthread_cond_timedwait_relative_np(&queue_cond, &queue_lock, &rel) != 0) break;
+      }
+    }
 #else
     if (ms < 0) {
       while (head == NULL) pthread_cond_wait(&queue_cond, &queue_lock);
     } else {
+      if (ms > 86400000LL) ms = 86400000LL;
       struct timespec at;
-      clock_gettime(CLOCK_REALTIME, &at);
-      at.tv_sec += ms / 1000;
-      at.tv_nsec += (ms % 1000) * 1000000;
-      if (at.tv_nsec >= 1000000000) { at.tv_sec += 1; at.tv_nsec -= 1000000000; }
-      while (head == NULL && pthread_cond_timedwait(&queue_cond, &queue_lock, &at) != ETIMEDOUT) {}
+      clock_gettime(CLOCK_MONOTONIC, &at);
+      at.tv_sec += (time_t)(ms / 1000);
+      at.tv_nsec += (long)((ms % 1000) * 1000000);
+      if (at.tv_nsec >= 1000000000L) { at.tv_sec += 1; at.tv_nsec -= 1000000000L; }
+      while (head == NULL && pthread_cond_timedwait(&queue_cond, &queue_lock, &at) == 0) {}
     }
 #endif
   }
@@ -229,6 +289,10 @@ moonbit_bytes_t sfh_wait(int64_t ms) {
     if (e->kind == 1) {
       stdin_queued -= e->len;
       if (stdin_queued < STDIN_MOST) signal_one(&stdin_cond);
+    }
+    if (e->bounded) {
+      sys_data_queued -= e->len;
+      if (sys_data_waiters > 0 && sys_data_queued < SYS_DATA_MOST) broadcast(&sys_data_cond);
     }
   }
   unlock(&queue_lock);
@@ -266,6 +330,20 @@ int64_t sfh_now(void) {
 #else
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
+  return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+#endif
+}
+
+/// The time since 1970, in ms: the system's wall clock, which may jump as the machine's time is set.
+int64_t sfh_wall_ms(void) {
+#ifdef _WIN32
+  FILETIME t;
+  GetSystemTimePreciseAsFileTime(&t);
+  uint64_t v = ((uint64_t)t.dwHighDateTime << 32) | t.dwLowDateTime;
+  return (int64_t)((v - 116444736000000000ULL) / 10000ULL);
+#else
+  struct timespec t;
+  clock_gettime(CLOCK_REALTIME, &t);
   return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
 #endif
 }

@@ -117,15 +117,7 @@ pub fn branded(text : String, product : Product) -> String {
 ///|
 /// `String(v)` of an argument as the case gives it.
 fn arg_text(v : Json) -> String {
-  match v {
-    String(s) => s
-    Number(n, ..) => num_text(n)
-    True => "true"
-    False => "false"
-    Null => "null"
-    Array(a) => a.map(x => match x { Null => ""; _ => arg_text(x) }).join(",")
-    Object(_) => "[object Object]"
-  }
+  @jsjson.json_js_str(Some(v))
 }
 
 ///|
@@ -634,8 +626,8 @@ pub fn keep_local(env : Array[(String, String)]) -> Array[(String, String)] {
 }
 
 ///|
-/// agent-env.ts `startEnv`: the station's own environment, `agentEnv` over it, less `scrubbed`; this machine kept out
-/// of a proxy.
+/// agent-env.ts `startEnv`: the station's own environment, `agentEnv` over it, less `scrubbed` and the station's
+/// internal variables (`STATION_INTERNAL`); this machine kept out of a proxy.
 pub fn start_env(
   own : Array[(String, String)],
   raw : Json,
@@ -645,7 +637,7 @@ pub fn start_env(
   for p in agent_env(raw) {
     env_set(env, p.0, p.1)
   }
-  keep_local(env.filter(p => !scrubbed.contains(p.0)))
+  keep_local(env.filter(p => !scrubbed.contains(p.0) && p.0 != "STILLFAIL_MESH_FRONT"))
 }
 
 ///|

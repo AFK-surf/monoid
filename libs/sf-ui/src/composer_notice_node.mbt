@@ -17,10 +17,20 @@ pub(all) struct NoticeOffer {
 }
 
 ///|
+/// What a notice lets be chosen at its end: its `choices` (each its id and words), the one `chosen`, what `choose` is
+/// given as one is picked, and `on_open`, told as its menu opens and shuts.
+pub(all) struct NoticeChoice {
+  choices : () -> Array[(String, String)]
+  chosen : () -> String
+  choose : (String) -> Unit
+  on_open : ((Bool) -> Unit)?
+}
+
+///|
 /// The notice in `parent`: its mark (`mark()`: an icon's name; "updating", the update's mark turning), what it says
 /// (`said`; `summary`, where said, its status and its detail as separate words in place of it), what it offers
-/// (`offer`), its × (`dismiss`: named by its offer's `name`, out of reach by its `off`), or its `choices` (each its id
-/// and words; `chosen`, the one taken; `choose` given the one picked; out of reach while `held`); `failed`: why what it
+/// (`offer`), its × (`dismiss`: named by its offer's `name`, out of reach by its `off`), or its `choice` (NoticeChoice:
+/// out of reach while `held`); `failed`: why what it
 /// offered failed ("" none). `plus_mid`: how far in from its start the middle of the composer's ＋ is, where its mark
 /// stands. Its tips in `tips`. The capsule's node.
 #callsite(autofill(loc))
@@ -33,9 +43,7 @@ pub fn composer_notice_node(
   summary? : () -> (String, String)?,
   offer? : NoticeOffer,
   dismiss? : NoticeOffer,
-  choices? : () -> Array[(String, String)],
-  chosen? : () -> String,
-  choose? : (String) -> Unit,
+  choice? : NoticeChoice,
   held? : () -> Bool = fn() { false },
   failed? : () -> String = fn() { "" },
   loc~ : SourceLoc,
@@ -46,7 +54,7 @@ pub fn composer_notice_node(
   // its words' line; with a choice, as its chooser is (28); with a ×, a line and its padding, the × as round as its end,
   // concentric with it)
   let with_x = dismiss is Some(_)
-  let with_choice = choices is Some(_)
+  let with_choice = choice is Some(_)
   let head = fn() {
     let line = theme().t.meta_line
     if with_x {
@@ -157,8 +165,8 @@ pub fn composer_notice_node(
           |> ignore
         None => ()
       }
-      match (choices, chosen, choose) {
-        (Some(cs), Some(now), Some(f)) =>
+      match choice {
+        Some({ choices: cs, chosen: now, choose: f, on_open }) =>
           line.box(fn(at) {
             // (wrapped under what it says: its words where those begin)
             at.margin(By(fn() { (outer() - @ui.Space::S2.px(), 0.0, 0.0, 0.0) })) |> ignore
@@ -167,7 +175,7 @@ pub fn composer_notice_node(
             capsule_chooser_node(at, fn() {
               let id = now()
               cs().iter().find_first(fn(c) { c.0 == id }).map(fn(c) { c.1 }).unwrap_or("")
-            }, cs, now, fn(id) { if !held() { f(id) } }, side=Top, disabled=held) |> ignore
+            }, cs, now, fn(id) { if !held() { f(id) } }, side=Top, disabled=held, on_open?) |> ignore
           })
           |> ignore
         _ => ()

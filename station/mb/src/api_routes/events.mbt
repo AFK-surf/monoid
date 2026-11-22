@@ -74,7 +74,6 @@ fn Admin::events_routes(self : Admin) -> Array[Route] {
         jbool(r.param("brief") == Some("1")),
         jstrs(logins),
         jbool(r.param("running") == Some("1")),
-        jbool(r.param("shared") == Some("1")),
       ])
       self.answer_from(said)
     }),

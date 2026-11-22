@@ -380,7 +380,7 @@ test "what failed a turn, as Pi words its provider's errors" {
   let reasons = [
     "401: {\"message\":\"Incorrect API key provided\"}", "429 Too Many Requests: rate limit reached", "529 overloaded",
     "context overflow: prompt is too long", "fetch failed: getaddrinfo ENOTFOUND api.example.com", "500 internal error",
-  ].map(t => classify_failure(@jsjson.units(t)))
+  ].map(t => classify_failure(t))
   inspect(reasons, content=(
     #|[auth, rate_limit, overloaded, context, network, model]
 

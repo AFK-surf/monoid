@@ -9,7 +9,8 @@ pub(all) struct Profile {
   raw : JV
   id : String
   name : String
-  runtime : String
+  runtime : String?
+  service : String?
   runtimes : Array[String]
   models : Array[String]
   named : Array[String]
@@ -19,6 +20,8 @@ pub(all) struct Profile {
   machine : Bool
   background_on_message : Bool
   withheld : Array[String]?
+  max_concurrent_sessions : Int?
+  new_account_protection : Bool
 }
 
 ///|
@@ -53,50 +56,13 @@ fn is_absolute(p : String) -> Bool {
 ///|
 /// Node's `path.normalize` (POSIX).
 pub fn normalize_path(path : String) -> String {
-  if path == "" {
-    return "."
-  }
-  let absolute = path.has_prefix("/")
-  let trailing = path.has_suffix("/")
-  let out : Array[String] = []
-  for seg in split_on(path, "/") {
-    if seg == "" || seg == "." {
-      continue
-    }
-    if seg == ".." {
-      if out.length() > 0 && out[out.length() - 1] != ".." {
-        ignore(out.pop())
-      } else if !absolute {
-        out.push("..")
-      }
-      continue
-    }
-    out.push(seg)
-  }
-  let mut s = out.join("/")
-  if s == "" && !absolute {
-    s = "."
-  }
-  if s != "" && trailing && s != "." {
-    s = s + "/"
-  } else if s == "." && trailing {
-    s = "./"
-  }
-  if absolute {
-    "/" + s
-  } else {
-    s
-  }
+  @nodepath.join("/", [path])
 }
 
 ///|
 /// Node's `path.join` (POSIX).
 pub fn join_path(parts : Array[String]) -> String {
-  let kept = parts.filter(p => p != "")
-  if kept.length() == 0 {
-    return "."
-  }
-  normalize_path(kept.join("/"))
+  @nodepath.join("/", parts)
 }
 
 ///|
@@ -177,7 +143,8 @@ pub fn profile_of(
     Some(n) if trim_js(n) != "" => Str(trim_js(n))
     _ => p.get("id").unwrap_or(jundef)
   }
-  let runtime = if runtimes.length() > 0 { runtimes[0] } else { "claude" }
+  let runtime : String? = if runtimes.length() > 0 { Some(runtimes[0]) } else { None }
+  let service = profile_service(base)
   let model = nonempty_str(p.get("model"))
   let withheld = match p.get("withheld") {
     Some(Arr(a)) =>
@@ -192,7 +159,14 @@ pub fn profile_of(
   let mut o = base
   o = jset(o, "id", p.get("id").unwrap_or(jundef))
   o = if is_undef(name_v) { jdel(o, "name") } else { jset(o, "name", name_v) }
-  o = jset(o, "runtime", js(runtime))
+  o = match runtime {
+    Some(r) => jset(o, "runtime", js(r))
+    None => jdel(o, "runtime")
+  }
+  o = match service {
+    Some(s) => jset(o, "service", js(s))
+    None => jdel(o, "service")
+  }
   o = jset(o, "runtimes", jstrs(runtimes))
   o = jset(o, "models", jstrs(runs))
   o = jset(o, "named", jstrs(models))
@@ -208,6 +182,21 @@ pub fn profile_of(
     Some(w) => jset(o, "withheld", jstrs(w))
     None => o
   }
+  let max_concurrent_sessions : Int? = match p.get("maxConcurrentSessions") {
+    Some(Num(n)) if is_integer(n) && n > 0.0 => Some(n.to_int())
+    _ => None
+  }
+  o = match max_concurrent_sessions {
+    Some(n) => jset(o, "maxConcurrentSessions", jint(n))
+    None => jdel(o, "maxConcurrentSessions")
+  }
+  let new_account_protection = p.get("newAccountProtection") == Some(Bool(true)) &&
+    max_concurrent_sessions is Some(_)
+  o = if new_account_protection {
+    jset(o, "newAccountProtection", jbool(true))
+  } else {
+    jdel(o, "newAccountProtection")
+  }
   if is_undef(o.get("id").unwrap_or(Null)) {
     o = jdel(o, "id")
   }
@@ -219,6 +208,7 @@ pub fn profile_of(
       other => js_string(defined(other))
     },
     runtime,
+    service,
     runtimes,
     models: runs,
     named: models,
@@ -228,6 +218,8 @@ pub fn profile_of(
     machine,
     background_on_message: bg,
     withheld,
+    max_concurrent_sessions,
+    new_account_protection,
   }
 }
 
@@ -341,7 +333,11 @@ pub fn Profile::of_hub(v : JV) -> Profile {
       Some(Str(n)) => n
       other => js_string(other)
     },
-    runtime: js_string(v.get("runtime")),
+    runtime: runtime_kind(v.get("runtime")),
+    service: match nonempty_str(v.get("service")) {
+      Some(s) => Some(s)
+      None => profile_service(v)
+    },
     runtimes: strings("runtimes"),
     models: strings("models"),
     named: strings("named"),
@@ -354,6 +350,15 @@ pub fn Profile::of_hub(v : JV) -> Profile {
       Some(Arr(a)) => Some(a.map(x => js_string(Some(x))))
       _ => None
     },
+    max_concurrent_sessions: match v.get("maxConcurrentSessions") {
+      Some(Num(n)) if is_integer(n) && n > 0.0 => Some(n.to_int())
+      _ => None
+    },
+    new_account_protection: v.get("newAccountProtection") == Some(Bool(true)) &&
+      (match v.get("maxConcurrentSessions") {
+        Some(Num(n)) if is_integer(n) && n > 0.0 => true
+        _ => false
+      }),
   }
 }
 

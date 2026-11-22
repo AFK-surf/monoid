@@ -79,7 +79,7 @@ test("closed connections free capacity, counted by the relay process", async () 
 
 test("the relay parses iroh-relay's counters", () => {
   const text = "# HELP x\nrelayserver_bytes_sent_total 10\nrelayserver_bytes_recv_total 5\nrelayserver_send_packets_recv_total 3\nrelayserver_got_ping_total 1\nrelayserver_accepts_total 7\nrelayserver_disconnects_total 2\n";
-  assert.deepEqual(relayCounters(text), { bytes: 15, frames: 4, accepts: 7, disconnects: 2 });
+  assert.deepEqual(relayCounters(text), { bytes: 10, frames: 4, accepts: 7, disconnects: 2 });
 });
 
 test("a Worker restart cannot reset the anonymous relay byte budget", async () => {
@@ -183,6 +183,52 @@ test("a day's budget counted before reads kept their place starts over", async (
     assert.equal(response.status, 101);
     response.webSocket!.accept();
     response.webSocket!.close();
+  } finally {
+    await h.close();
+  }
+});
+
+test("bytes the relay received from clients do not spend the day's budget", async () => {
+  const h = await harness({ noGoogle: true });
+  try {
+    const relays: any = await h.mf.getDurableObjectNamespace("RELAY", "relay");
+    const budgets: any = await h.mf.getDurableObjectNamespace("RELAY_BUDGET", "relay");
+    const relay = relays.get(relays.idFromName("primary"));
+    const budget = budgets.get(budgets.idFromName("primary"));
+    const gib = 1024 ** 3;
+    await budget.poll();
+    await relay.received(20 * gib);
+    await relay.carried(gib);
+    await budget.poll();
+    assert.equal((await budget.statistics()).bytes, gib);
+    const response = await h.fetch("/relay", { headers: upgrade });
+    assert.equal(response.status, 101);
+    response.webSocket!.accept();
+    response.webSocket!.close();
+  } finally {
+    await h.close();
+  }
+});
+
+/// 2026-11-20: counted both ways the budget ran out at 16:32 in Beijing with 4.92 GiB sent. Counting bytes sent alone,
+/// the running process's count is below the one seen before: kept, that would look like a process started again.
+test("a day counted both ways starts over, counting nothing the running relay sent before twice", async () => {
+  const h = await harness({ noGoogle: true });
+  try {
+    const relays: any = await h.mf.getDurableObjectNamespace("RELAY", "relay");
+    const budgets: any = await h.mf.getDurableObjectNamespace("RELAY_BUDGET", "relay");
+    const relay = relays.get(relays.idFromName("primary"));
+    const budget = budgets.get(budgets.idFromName("primary"));
+    const mib = 1024 ** 2;
+    await relay.carried(10 * 1024 ** 3);
+    await budget.exhaustedBefore(4);
+    const response = await h.fetch("/relay", { headers: upgrade });
+    assert.equal(response.status, 101);
+    response.webSocket!.accept();
+    response.webSocket!.close();
+    await relay.carried(mib);
+    await budget.poll();
+    assert.equal((await budget.statistics()).bytes, mib);
   } finally {
     await h.close();
   }

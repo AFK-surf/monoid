@@ -14,41 +14,43 @@ let machine_sessions : @sf.LiveMap[String, Array[Json]] = @sf.LiveMap::new()
 let machine_sessions_asked : Map[String, Bool] = Map([])
 
 ///|
-/// The offer, where the station's machine kept sessions of its own Claude Code or Codex:
-/// quiet as the words around it until pointed at, then its ground and its words the text's; its list and a look at one
-/// before going on with it are sheets. Drawn by a new chat's page (sfpages), which says where it hangs.
-pub fn machine_sessions_offer(c : @ui.Ctx, core : Core, station : String, name : String) -> Unit {
-  let t = @sf.theme()
-  if !machine_sessions_asked.contains(station) {
-    machine_sessions_asked[station] = true
-    // (asked once the frame's builds are over: the build that first comes to it alone)
-    c.tell("machineSessions.list/" + station, fn() {
-      (core.call)("machineSessions.list", obj([("station", str(station))]), fn(r) {
-        match r {
-          Ok(v) => machine_sessions.set(station, items(Some(v), "sessions"))
-          Err(_) => ()
-        }
-      })
+/// The offer as nodes in `parent`, of the station `station()` names (`name()` its name, ""
+/// this machine): the sessions its machine kept asked once a station, as it is first made for it; shown once it has
+/// any, its mark and words quiet till the hand is on it; pressed, their list (open_machine_sessions).
+#callsite(autofill(loc))
+pub fn machine_sessions_offer_node(
+  parent : @view.View,
+  core : Core,
+  station : () -> String,
+  name : () -> String,
+  loc~ : SourceLoc,
+) -> Unit {
+  // (asked once a station, as the page is first made on it: as the answer comes, it shows)
+  parent.reacts(station, fn(st) {
+    guard st != "" && !machine_sessions_asked.contains(st) else { return }
+    machine_sessions_asked[st] = true
+    (core.call)("machineSessions.list", obj([("station", str(st))]), fn(r) {
+      match r {
+        Ok(v) => machine_sessions.set(st, items(Some(v), "sessions"))
+        Err(_) => ()
+      }
     })
-  }
-  let sessions = machine_sessions.get(station).unwrap_or([])
-  if sessions.length() == 0 {
-    return
-  }
-  let id = c.id("machine-offer/" + station)
-  c.on_press(id, fn() {
-    open_machine_sessions(core, station, name)
   })
-  let lit = c.lit(id)
-  let words = fill("android-chat.new.machine.offer", [
-    ("station", if name == "" { tr("android-chat.new.machine.here") } else { name }),
-  ])
-  let b = c.box(style=machine_offer_box, id~, fn() {
-    @sf.icon(c, "monitor", size=machine_offer_mark, color=if lit { t.p.text } else { t.p.muted }) |> ignore
-    c.text(words, style=if lit { machine_offer_words_lit } else { machine_offer_words }) |> ignore
-    @sf.press_ripple(c, id, @sf.small_corner)
+  let words = fn() {
+    fill("android-chat.new.machine.offer", [("station", if name() == "" { tr("android-chat.new.machine.here") } else { name() })])
+  }
+  parent.show(fn() { machine_sessions.get(station()).unwrap_or([]).length() > 0 }, fn(o) {
+    @sf.ripple_button_node(loc~, o, words, fn() { open_machine_sessions(core, station(), name()) }, fn(b, state) {
+      let lit = fn() { state.hovered() || state.pressed() || state.focus_shown() }
+      @sf.style_node(b, fn() { machine_offer_box })
+      @sf.hover_ground_node(b, lit=Some(lit))
+      @sf.icon_node(b, "monitor", machine_offer_mark, By(fn() { if lit() { @sf.theme().p.text } else { @sf.theme().p.muted } }))
+      |> ignore
+      @sf.words_node(b, words, fn() { if lit() { machine_offer_words_lit } else { machine_offer_words } }) |> ignore
+      Is(@sf.small_corner)
+    })
+    |> ignore
   })
-  c.semantics(b, Button, id~, label=words)
 }
 
 ///|
@@ -244,12 +246,9 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
       })
       |> ignore
       // where none is left by the filters: said in the middle
-      v.show(at_once=true, fn() { rows.get().is_empty() }, fn(n) {
-        n.box(fn(b) {
-          @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(machine_none) })
-          @sf.words_node(b, fn() { tr("android-chat.new.machine.none") }, fn() { machine_none_words }) |> ignore
-        })
-        |> ignore
+      v.show(at_once=true, fn() { rows.get().is_empty() }, fn(b) {
+        @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(machine_none) })
+        @sf.words_node(b, fn() { tr("android-chat.new.machine.none") }, fn() { machine_none_words }) |> ignore
       })
       let tips = @sf.panel_tips_of(v)
       v.show(at_once=true, fn() { !rows.get().is_empty() }, fn(l) {
@@ -277,7 +276,7 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
                   lead=fn(m) { @sf.maker_mark_node(m, "", @signals.untracked(fn() { text(sv(), "runtime") }), machine_mark) |> ignore },
                   tag=fn(g) {
                     g.show(at_once=true, fn() { has(sv(), "session") }, fn(p) {
-                      @sf.pill_node(p, fn() { fill("android-chat.new.machine.inApp", [("app", "still.fail")]) }) |> ignore
+                      @sf.pill_node(p, fn() { fill("android-chat.new.machine.inApp", [("app", @sf.product())]) }) |> ignore
                     })
                   },
                   trail=fn(t) { @sf.words_node(t, fn() { text(sv(), "when") }, fn() { machine_when }) |> ignore },
@@ -396,12 +395,9 @@ fn look_at_machine_session(core : Core, station : String, s : Json) -> Unit {
         @sf.style_node(main, fn() { @sf.panel_words_in_node(main).then(machine_said_box) })
         main.pick(fn() { said.get() is Some(_) }, fn(p, read) {
           if !read {
-            p.show(at_once=true, fn() { error.get() == "" }, fn(w) {
-              w.box(fn(b) {
-                @sf.style_node(b, fn() { machine_said_wait })
-                @sf.wait_line_node(b, fn() { tr("common.reading") }) |> ignore
-              })
-              |> ignore
+            p.show(at_once=true, fn() { error.get() == "" }, fn(b) {
+              @sf.style_node(b, fn() { machine_said_wait })
+              @sf.wait_line_node(b, fn() { tr("common.reading") }) |> ignore
             })
           } else {
             @sf.style_node(p, fn() { machine_said_box })
@@ -426,12 +422,9 @@ fn look_at_machine_session(core : Core, station : String, s : Json) -> Unit {
         })
       })
       |> ignore
-      v.show(at_once=true, fn() { error.get() != "" }, fn(e) {
-        e.box(fn(b) {
-          @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(machine_error_box) })
-          @sf.words_node(b, fn() { error.get() }, machine_error_words) |> ignore
-        })
-        |> ignore
+      v.show(at_once=true, fn() { error.get() != "" }, fn(b) {
+        @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(machine_error_box) })
+        @sf.words_node(b, fn() { error.get() }, machine_error_words) |> ignore
       })
       v.box(fn(row) {
         @sf.style_node(row, fn() { @sf.panel_words_in_node(row).then(machine_go_row) })
@@ -715,7 +708,7 @@ fn add_people_body(v : @view.View, core : Core, here : Here, st : AddPeople) -> 
       @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(full_room) })
       @sf.words_node(
         n,
-        fn() { fill("android-settings.add.note", [("name", text(st.view, "name")), ("app", "still.fail")]) },
+        fn() { fill("android-settings.add.note", [("name", text(st.view, "name")), ("app", @sf.product())]) },
         fn() { add_note_words },
       )
       |> ignore
@@ -760,22 +753,20 @@ fn add_people_body(v : @view.View, core : Core, here : Here, st : AddPeople) -> 
     })
     |> ignore
     @sf.sheet_column_node(b, fn(col) {
-      for r in st.roles {
+      col.each(at_once=true, fn() { st.roles }, fn(r) { r }, fn(slot, rv) {
+        let r = rv.untracked()
         @sf.choice_row_node(
-          col,
+          slot,
           fn() { role_label(r) },
           fn() { st.role.get() == r },
           press=fn() { st.role.set(r) },
           note=fn() { role_hint(r) },
         )
-      }
-    })
-    b.show(fn() { st.error.get() != "" }, fn(e) {
-      e.box(fn(n) {
-        @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(add_people_block) })
-        @sf.words_node(n, fn() { st.error.get() }, fn() { add_error_words }) |> ignore
       })
-      |> ignore
+    })
+    b.show(fn() { st.error.get() != "" }, fn(n) {
+      @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(add_people_block) })
+      @sf.words_node(n, fn() { st.error.get() }, fn() { add_error_words }) |> ignore
     })
   })
 }
@@ -847,12 +838,9 @@ fn add_people_slack_node(p : @view.View, core : Core, st : AddPeople) -> Unit {
       |> ignore
     })
   })
-  p.show(fn() { st.problems.get().length() > 0 }, fn(s) {
-    s.box(fn(n) {
-      @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(add_people_block) })
-      @sf.words_node(n, fn() { join(st.problems.get(), tr("android-settings.add.problemSep")) }, fn() { add_error_words }) |> ignore
-    })
-    |> ignore
+  p.show(fn() { st.problems.get().length() > 0 }, fn(n) {
+    @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(add_people_block) })
+    @sf.words_node(n, fn() { join(st.problems.get(), tr("android-settings.add.problemSep")) }, fn() { add_error_words }) |> ignore
   })
 }
 
@@ -976,7 +964,7 @@ fn add_people_go(core : Core, here : Here, st : AddPeople) -> Unit {
               join(
                 [
                   if n("joined") > 0 { fill("android-settings.add.joined", [("n", n("joined").to_string())]) } else { "" },
-                  if n("added") > 0 { fill("android-settings.add.added", [("n", n("added").to_string()), ("app", "still.fail")]) } else { "" },
+                  if n("added") > 0 { fill("android-settings.add.added", [("n", n("added").to_string()), ("app", @sf.product())]) } else { "" },
                   if n("already") > 0 { fill("android-settings.add.already", [("n", n("already").to_string())]) } else { "" },
                   // (the cloud mails each one added; one it could not is sent again as they are added again)
                   if n("unmailed") > 0 { fill("android-settings.add.unmailed", [("n", n("unmailed").to_string())]) } else { "" },
@@ -1010,7 +998,7 @@ let add_people_picked_line : @ui.Style = @ui.css("row w=Full pt=S2_5 gap=S3 alig
 ///|
 /// What takes the rest of a row.
 // kept across runs: a value (no field of it changes)
-let add_people_grow : @ui.Style = @ui.css("w=Grow(1.0)")
+let add_people_grow : @ui.Style = @ui.style(w=@sf.grow)
 
 ///|
 /// A heading of adding people's form (邮箱, 角色): the meta's size, semibold, 18 a line.

@@ -23,7 +23,14 @@ pub fn queue_ms(rtt : Double) -> Double {
 }
 
 ///|
+/// How much longer a key frame on the way may wait (`KEY_QUEUE_MS`).
+pub let key_queue_ms : Double = 25.0
+
+///|
 pub let rtt_window_ms : Double = 10_000.0
+
+///|
+pub let viewer_hold_limit_ms : Double = 100.0
 
 ///|
 pub let delivery_window_ms : Double = 1000.0
@@ -35,13 +42,17 @@ pub let min_rate : Double = 300_000.0
 pub let down : Double = 0.85
 
 ///|
-pub let cut : Double = 0.5
+pub let cut : Double = 0.65
+
+///|
+/// The first lowering of a hold where what went through was under USED of the rate (`LIGHT_CUT`).
+pub let light_cut : Double = 0.8
 
 ///|
 pub let hold_ms : Double = 200.0
 
 ///|
-pub let up : Double = 1.15
+pub let up : Double = 1.2
 
 ///|
 pub let up_fast : Double = 1.3
@@ -57,6 +68,79 @@ pub let up_after_ms : Double = 1000.0
 
 ///|
 pub let start_rate : Double = 1_500_000.0
+
+///|
+/// Where the view's link is known as it opens, a higher start (`startRate`).
+pub let lan_rtt_ms : Double = 12.0
+
+///|
+pub let lan_rate : Double = 25_000_000.0
+
+///|
+pub let near_rtt_ms : Double = 40.0
+
+///|
+pub let near_rate : Double = 12_000_000.0
+
+///|
+pub let far_rtt_ms : Double = 100.0
+
+///|
+pub let direct_rate : Double = 4_000_000.0
+
+///|
+pub let relay_rtt_ms : Double = 35.0
+
+///|
+pub let relay_rate : Double = 4_000_000.0
+
+///|
+fn direct_path(p : LinkPath) -> Bool {
+  (p.relay is None || p.relay is Some("")) && p.ip is Some(ip) && ip != ""
+}
+
+///|
+/// The rate a view starts at by its connection's ways as it opens (`startRate`): the selected way, else the first
+/// direct one, else the first.
+pub fn start_rate_of(paths : Array[LinkPath]) -> Double {
+  if paths.length() == 0 {
+    return start_rate
+  }
+  let p = match paths.search_by(w => w.selected) {
+    Some(i) => paths[i]
+    None =>
+      match paths.search_by(direct_path) {
+        Some(i) => paths[i]
+        None => paths[0]
+      }
+  }
+  let rtt = match p.rtt_ms {
+    Some(ms) if !ms.is_nan() && !ms.is_inf() && ms > 0.0 => Some(ms)
+    _ => None
+  }
+  if direct_path(p) {
+    match rtt {
+      Some(ms) if ms <= lan_rtt_ms => lan_rate
+      Some(ms) if ms <= near_rtt_ms => near_rate
+      Some(ms) if ms > far_rtt_ms => start_rate
+      _ => direct_rate
+    }
+  } else {
+    match rtt {
+      Some(ms) if ms <= relay_rtt_ms => relay_rate
+      _ => start_rate
+    }
+  }
+}
+
+///|
+/// `start_rate_of` of the ways as JSON says them (`[{selected, relay?, ip?, rttMs?}]`; none: START_RATE).
+pub fn start_rate_for(paths : Json?) -> Double {
+  match paths {
+    Some(Array(xs)) => start_rate_of(xs.map(LinkPath::of_json))
+    _ => start_rate
+  }
+}
 
 ///|
 pub let measured_ms : Double = 500.0
@@ -94,14 +178,31 @@ pub fn own_rate(width : Double, height : Double) -> Double {
 }
 
 ///|
-pub let max_rate : Double = 60_000_000.0
+pub let max_rate : Double = 100_000_000.0
 
 ///|
-/// The most a picture of this size is asked at (its 画质: "smooth", "hd", "original"; None for 自动).
-pub fn rate_ceiling(width : Double, height : Double, quality : String?) -> Double {
+pub let fps_scale_most : Double = 1.6
+
+///|
+/// How much more a picture is asked at for a 帧率 over 60 (`fpsScale`).
+pub fn fps_scale(fps : Double?) -> Double {
+  match fps {
+    Some(f) if f > 60.0 => dmin(fps_scale_most, 1.0 + (f - 60.0) / 120.0)
+    _ => 1.0
+  }
+}
+
+///|
+/// The most a picture of this size is asked at (its 画质: "smooth", "hd", "qhd", "original"; None for 自动), at the
+/// 帧率 `fps` (None: 自动).
+pub fn rate_ceiling(width : Double, height : Double, quality : String?, fps? : Double? = None) -> Double {
   let own = own_rate(width, height)
-  let per = if quality is Some("smooth") { 6.0 } else { 16.0 }
-  dmax(own, dmin(max_rate, width * height * per))
+  let per = match quality {
+    Some("smooth") => 6.0
+    Some("qhd" | "original") => 20.0
+    _ => 16.0
+  }
+  dmax(own, dmin(max_rate, width * height * per * fps_scale(fps)))
 }
 
 ///|
@@ -180,6 +281,7 @@ pub struct Out {
   bytes : Double
   at : Double
   stall : Double
+  key : Bool
 }
 
 ///|
@@ -199,6 +301,7 @@ pub struct Through {
 pub struct Pacer {
   out : Array[Out]
   trips : Array[Trip]
+  viewer_waits : Array[Trip]
   through : Array[Through]
   mut rate : Double?
   mut ceiling : Double?
@@ -220,6 +323,7 @@ pub fn Pacer::new(now : () -> Double, start? : Double? = None, fps? : Double? = 
   {
     out: [],
     trips: [],
+    viewer_waits: [],
     through: [],
     rate: start,
     ceiling: None,
@@ -265,39 +369,72 @@ pub fn Pacer::set_ceiling(self : Pacer, rate : Double) -> Unit {
 }
 
 ///|
-pub fn Pacer::sent(self : Pacer, ts : Double, bytes : Double) -> Unit {
+/// A frame went (`key`: a key frame).
+pub fn Pacer::sent(self : Pacer, ts : Double, bytes : Double, key? : Bool = false) -> Unit {
   let now = (self.now)()
-  self.out.push({ ts, bytes, at: now, stall: (self.stalled)() })
+  self.out.push({ ts, bytes, at: now, stall: (self.stalled)(), key })
   if self.gap is Some(gap) {
     self.due = dmax(self.due + gap, now + gap / 2.0)
   }
 }
 
 ///|
+/// The viewer gave up these frames and asked for a key frame. Do not count them as delivered.
+fn Pacer::lost(self : Pacer) -> Unit {
+  self.out.clear()
+}
+
+///|
 /// The client decoded every frame up to `ts`; the newest of them gives a round trip.
-pub fn Pacer::acked(self : Pacer, ts : Double) -> Unit {
+/// `viewer_wait_ms`: how long (ms) the client held the frame before showing or dropping it.
+pub fn Pacer::acked(self : Pacer, ts : Double, viewer_wait_ms? : Double = 0.0) -> Unit {
   let now = (self.now)()
   let mut newest : Out? = None
+  let mut key = false
   while self.out.length() > 0 && self.out[0].ts <= ts {
     let f = self.out.remove(0)
     self.through.push({ at: now, bytes: f.bytes })
     newest = Some(f)
+    key = key || f.key
   }
   guard newest is Some(newest) else { return }
   self.first = dmin(self.first, now)
   while self.through.length() > 0 && self.through[0].at < now - delivery_window_ms {
     self.through.remove(0) |> ignore
   }
-  let trip = dmax(0.0, now - newest.at - ((self.stalled)() - newest.stall))
+  let total_trip = dmax(0.0, now - newest.at - ((self.stalled)() - newest.stall))
+  let wait = if !viewer_wait_ms.is_nan() && !viewer_wait_ms.is_inf() && viewer_wait_ms > 0.0 && viewer_wait_ms <= total_trip {
+    viewer_wait_ms
+  } else {
+    0.0
+  }
+  self.viewer_waits.push({ at: now, ms: wait })
+  while self.viewer_waits.length() > 1 && self.viewer_waits[0].at < now - rtt_window_ms {
+    self.viewer_waits.remove(0) |> ignore
+  }
+  let net_trip = dmax(0.0, total_trip - wait)
   let base = self.rtt()
-  self.trips.push({ at: now, ms: trip })
+  self.trips.push({ at: now, ms: net_trip })
   while self.trips.length() > 1 && self.trips[0].at < now - rtt_window_ms {
     self.trips.remove(0) |> ignore
   }
   match base {
-    Some(b) if trip > b + queue_ms(b) => self.queuing(now)
+    Some(b) if net_trip > b + queue_ms(b) + (if key { key_queue_ms } else { 0.0 }) => self.queuing(now)
     _ => self.steady(now)
   }
+}
+
+///|
+/// Recent viewer hold time (ms) credited to the in-flight window, capped at `viewer_hold_limit_ms`.
+pub fn Pacer::viewer_wait(self : Pacer) -> Double {
+  if self.viewer_waits.length() == 0 {
+    return 0.0
+  }
+  let mut m = 0.0
+  for w in self.viewer_waits {
+    m = dmax(m, w.ms)
+  }
+  dmin(viewer_hold_limit_ms, m)
 }
 
 ///|
@@ -316,13 +453,9 @@ pub fn Pacer::rtt(self : Pacer) -> Double? {
 ///|
 /// Whether the next frame may go now; when not, a queue is building.
 pub fn Pacer::may(self : Pacer) -> Bool {
-  if self.out.length() == 0 {
-    return true
-  }
-  guard self.rtt() is Some(rtt) else { return self.out.length() < start_unacked }
-  let now = (self.now)()
-  let may = self.out.length() < max_unacked && self.waited(now) <= rtt + queue_ms(rtt)
-  if !may {
+  let may = self.free()
+  if !may && self.rtt() is Some(_) {
+    let now = (self.now)()
     if self.since is None {
       self.since = Some(now)
     }
@@ -333,13 +466,29 @@ pub fn Pacer::may(self : Pacer) -> Bool {
 }
 
 ///|
+/// Whether the next frame may go now, as `may` says, asking nothing of the pace (`free`).
+pub fn Pacer::free(self : Pacer) -> Bool {
+  if self.out.length() == 0 {
+    return true
+  }
+  guard self.rtt() is Some(rtt) else { return self.out.length() < start_unacked }
+  self.out.length() < max_unacked && self.waited((self.now)()) <= rtt + self.viewer_wait() + self.queue(rtt)
+}
+
+///|
+/// The queue a view lets build in front of the link: a key frame's more while one is on the way.
+fn Pacer::queue(self : Pacer, rtt : Double) -> Double {
+  queue_ms(rtt) + (if self.out.iter().any(f => f.key) { key_queue_ms } else { 0.0 })
+}
+
+///|
 /// Whether the frames on the way wait in front of the link.
 pub fn Pacer::backlogged(self : Pacer) -> Bool {
   if self.out.length() <= 1 {
     return false
   }
   match self.rtt() {
-    Some(rtt) => self.waited((self.now)()) > rtt + queue_ms(rtt)
+    Some(rtt) => self.waited((self.now)()) > rtt + self.viewer_wait() + self.queue(rtt)
     None => false
   }
 }
@@ -389,11 +538,14 @@ fn Pacer::queuing(self : Pacer, now : Double) -> Unit {
   if now - self.first < measured_ms {
     return
   }
+  let light = self.down < since
   self.down = now
   let through = self.delivered(now)
-  if through > 0.0 {
-    self.rate = Some(dmax(min_rate, dmin(rate, dmax(rate * cut, through * down))))
+  if through <= 0.0 {
+    return
   }
+  let to = if light && through < rate * used { rate * light_cut } else { dmax(rate * cut, through * down) }
+  self.rate = Some(dmax(min_rate, dmin(rate, to)))
 }
 
 ///|
@@ -427,34 +579,64 @@ fn Pacer::steady(self : Pacer, now : Double) -> Unit {
 }
 
 ///|
-pub let still_ms : Double = 500.0
+pub let still_ms : Double = 250.0
 
 ///|
 pub let sharper : Double = 1.1
 
 ///|
-/// When a still screen's picture is sent again sharper (`Sharpener`).
+pub let moving_sharpen_ms : Double = 2000.0
+
+///|
+pub let moving_sharpen_up : Double = 2.0
+
+///|
+/// When a still screen's picture is sent again sharper, and a moving one's key frame asked again (`Sharpener`).
 pub struct Sharpener {
   mut at : Double
   mut rate : Double?
+  mut key : Bool
+  mut key_at : Double
+  mut key_rate : Double?
 }
 
 ///|
 pub fn Sharpener::new() -> Sharpener {
-  { at: @double.neg_infinity, rate: None }
+  { at: @double.neg_infinity, rate: None, key: false, key_at: @double.neg_infinity, key_rate: None }
 }
 
 ///|
-/// A frame went at `now`, encoded at `rate` (None: a source with no rate of its own).
-pub fn Sharpener::sent(self : Sharpener, now : Double, rate : Double?) -> Unit {
+/// A frame went at `now`, encoded at `rate` (None: a source with no rate of its own); `key`: a key frame.
+pub fn Sharpener::sent(self : Sharpener, now : Double, rate : Double?, key? : Bool = false) -> Unit {
   self.at = now
   self.rate = rate
+  self.key = key
+  if rate is None {
+    self.key_at = @double.neg_infinity
+    self.key_rate = None
+  } else if key || self.key_rate is None {
+    self.key_at = now
+    self.key_rate = rate
+  }
 }
 
 ///|
-/// How long until the screen has been still for STILL_MS.
+/// Whether a moving screen's key frame is to be asked now, the pace asking `rate` (`dueMoving`): taken as asked.
+pub fn Sharpener::due_moving(self : Sharpener, now : Double, rate : Double?) -> Bool {
+  match (rate, self.key_rate) {
+    (Some(r), Some(was)) if now - self.key_at >= moving_sharpen_ms && r >= was * moving_sharpen_up => {
+      self.key_at = now
+      self.key_rate = Some(r)
+      true
+    }
+    _ => false
+  }
+}
+
+///|
+/// How long until the screen has been still for STILL_MS, or UP_EVERY_MS after a key frame.
 pub fn Sharpener::left(self : Sharpener, now : Double) -> Double {
-  dmax(0.0, self.at + still_ms - now)
+  dmax(0.0, self.at + (if self.key { dmax(still_ms, up_every_ms) } else { still_ms }) - now)
 }
 
 ///|
@@ -506,7 +688,7 @@ pub struct Sizer {
 
 ///|
 pub fn Sizer::new(now : () -> Double, asked : Bounds, quality? : String? = None) -> Sizer {
-  { now, asked, low: false, since: None, whole: quality is Some("original") }
+  { now, asked, low: false, since: None, whole: quality is Some("original" | "qhd") }
 }
 
 ///|
@@ -609,6 +791,12 @@ pub fn FrameLatency::sent(self : FrameLatency, ts : Double) -> Unit {
 }
 
 ///|
+/// Frames the viewer gave up will not contribute latency samples.
+fn FrameLatency::lost(self : FrameLatency) -> Unit {
+  self.out.clear()
+}
+
+///|
 /// The client drew every frame up to `ts`; `rtt`: the link's quickest round trip (ms).
 pub fn FrameLatency::acked(self : FrameLatency, ts : Double, rtt : Double) -> Unit {
   let now = (self.now)()
@@ -679,18 +867,20 @@ pub(all) struct LinkPath {
   selected : Bool
   relay : String?
   ip : String?
+  rtt_ms : Double?
   tx_packets : Double
   lost_packets : Double
 }
 
 ///|
-/// A way as JSON says it (`{id?, selected, relay?, ip?, txPackets, lostPackets}`).
+/// A way as JSON says it (`{id?, selected, relay?, ip?, rttMs?, txPackets, lostPackets}`).
 pub fn LinkPath::of_json(v : Json) -> LinkPath {
   {
     id: str_of(field(v, "id")),
     selected: field(v, "selected") is Some(True),
     relay: str_of(field(v, "relay")),
     ip: str_of(field(v, "ip")),
+    rtt_ms: num_of(field(v, "rttMs")),
     tx_packets: num_of(field(v, "txPackets")).unwrap_or(0.0),
     lost_packets: num_of(field(v, "lostPackets")).unwrap_or(0.0),
   }

@@ -32,7 +32,7 @@
 pub fn decide_mode(mode : String) -> Bool {
   [
     "history", "history-reading", "history-failed", "history-older", "history-older-failed", "history-details",
-    "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid", "chat-peek", "chat-jobs", "chat-job", "home-jobs", "home-jobs-screens", "history-link",
+    "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-working", "chat-agent-unsaid", "chat-agent-context", "chat-agent-compacted", "chat-peek", "chat-jobs", "chat-job", "home-jobs", "home-jobs-screens", "history-link",
     "chat-letters-info", "chat-letters", "chat-letters-many", "chat-letters-open", "chat-letters-pop", "chat-letters-side", "chat-jobs-pop",
     "chat-jobs-bar", "chat-things", "chat-things-side", "chat-info-pulls", "chat-info-bare",
     "chat-jobs-side", "chat-history-side", "chat-history-side-working", "chat-service-side", "chat-tabs-side", "chat-model-pop", "chat-model-accounts", "chat-find", "chat-agent-card",
@@ -150,6 +150,45 @@ pub fn fix_context_actions(chat : Json) -> Json {
               }
               session["canCompact"] = Json::boolean(true)
               session["canClear"] = Json::boolean(true)
+              ao["session"] = Json::object(session)
+              Json::object(ao)
+            }
+            other => other
+          }
+        }),
+      )
+      Json::object(o)
+    }
+    other => other
+  }
+}
+
+///|
+/// Its agent working with a long status line and long model name (`chat-agent-working`).
+pub fn fix_agent_working(chat : Json) -> Json {
+  match chat {
+    Object(m) => {
+      let o = m.copy()
+      o["agents"] = Json::array(
+        items(Some(chat), "agents").map(fn(a) {
+          match a {
+            Object(am) => {
+              let ao = am.copy()
+              ao["status"] = Json::string("running")
+              ao["badge"] = Json::string("run")
+              ao["wait"] = { "since": -77000, "seconds": 360 }
+              let session = match am.get("session") {
+                Some(Object(sm)) => sm.copy()
+                _ => Map([])
+              }
+              session["runtime"] = Json::string("agy")
+              session["maker"] = { "id": "google", "name": "Google" }
+              session["agentText"] = Json::string("Gemini 4 Neon · high")
+              session["model"] = Json::string("gemini-4-neon")
+              session["modelName"] = Json::string("Gemini 4 Neon")
+              session["effort"] = Json::string("high")
+              session["tone"] = Json::string("amber")
+              session["statusText"] = Json::string("等待：Wave 8+9+10 终极 6 端全量集成验收与 ViewBlock 实测加速比基准")
               ao["session"] = Json::object(session)
               Json::object(ao)
             }
@@ -365,7 +404,7 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
       }
       let base = fixture_chat_topic(f, name, params)
       let base = if f.mode.has_prefix("chat-letters") { base.map(fix_with_letters) } else { base }
-      if session == "s-c1" && f.mode == "chat-agent-unsaid" {
+      if session == "s-c1" && (f.mode == "chat-agent-unsaid" || f.mode.has_prefix("chat-agent-c")) {
         Some(base.map(fn(b) { fix_context_actions(fix_detailed_chat(b)) }))
       } else if session == "s-c1" && (f.mode == "chat-station-tag" || f.mode == "chat-actions") {
         // no agent in it yet: its station's tag in its bar (pressed by the film's step: its card beside it)
@@ -374,6 +413,8 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
         Some(base.map(fn(b) { with_chat_remote(fix_detailed_chat(b), false, f.test_channel) }))
       } else if session == "s-c1" && f.mode == "chat-history-side-working" {
         Some(base.map(fn(b) { with_working(fix_detailed_chat(b)) }))
+      } else if session == "s-c1" && f.mode == "chat-agent-working" {
+        Some(base.map(fn(b) { fix_agent_working(fix_detailed_chat(b)) }))
       } else if session == "s-c1" {
         Some(base.map(fix_detailed_chat))
       } else {
@@ -420,6 +461,23 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
         j => Some(Some(j))
       }
     "history" => Some(Some(fix_history()))
+    // (its context's tile opening what can be done to it, 31% full; compacted 3 times by its runtime session, or never)
+    "agentCard" if f.mode == "chat-agent-context" || f.mode == "chat-agent-compacted" => {
+      let context : Map[String, Json] = { "percent": 31, "text": "62K / 200K", "level": "ok" }
+      if f.mode == "chat-agent-compacted" {
+        context["compacted"] = Json::string("当前会话已压缩 3 次")
+      }
+      Some(
+        Some({
+          "work": "共工作 1 小时 12 分",
+          "cost": "$4.20",
+          "cache": { "percent": 91, "text": "91%", "level": "ok" },
+          "context": Json::object(context),
+          "latest": [{ "key": "k1", "text": "读了 src/ui/list.mbt" }, { "key": "k2", "text": "跑了列表的测试" }],
+          "attention": [],
+        }),
+      )
+    }
     "agentCard" if f.mode == "chat-agent-unsaid" =>
       Some(
         Some({
@@ -430,6 +488,22 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
             { "key": "k3", "text": "改了 src/ui/list.mbt" },
           ],
           "attention": [],
+        }),
+      )
+    "agentCard" if f.mode == "chat-agent-working" =>
+      Some(
+        Some({
+          "work": "共工作 1 小时 12 分",
+          "cost": "$4.20",
+          "cache": { "percent": 91, "text": "91%", "level": "ok" },
+          "context": { "percent": 64, "text": "64%", "level": "ok" },
+          "jobs": "服务在线：web · 在盯着：CI",
+          "latest": [
+            { "key": "k1", "text": "编辑 ledger.md" },
+            { "key": "k2", "text": "Waiting for final 6-platform integration verification" },
+            { "key": "k3", "text": "处理中", "now": true },
+          ],
+          "attention": [{ "level": "amber", "text": "磁盘剩 84 GB" }],
         }),
       )
     "agentCard" =>
@@ -450,7 +524,7 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
       )
     "host" => Some(Some({ "identity": "MacBook Pro · macOS 26 · M1 Pro" }))
     "chatJobs" =>
-      if f.mode.has_prefix("chat-jobs") || f.mode == "chat-job" || f.mode == "chat-agent" {
+      if f.mode.has_prefix("chat-jobs") || f.mode == "chat-job" || f.mode == "chat-agent" || f.mode == "chat-agent-working" {
         Some(Some(fix_chat_jobs()))
       } else {
         None
@@ -828,7 +902,8 @@ pub fn fix_with_letters(v : Json) -> Json {
 ///|
 /// What wants the viewer in 待处理 (home-attention: the core's `workspaceMarks`): a decision waiting in 整理发布清单,
 /// to be let go, a failure in another chat, looked at, and a chat unread.
-pub fn fix_attention_marks() -> Json {
+/// `login`: with another chat's login card waiting for the viewer, first, as the core says it (需要你登录 gh).
+pub fn fix_attention_marks(login? : Bool = false) -> Json {
   let item = fn(kind : String, title : String, what : String, station : String, name : String, thread : Double) {
     let m : Map[String, Json] = {
       "kind": Json::string(kind),
@@ -856,7 +931,17 @@ pub fn fix_attention_marks() -> Json {
         "wait": 1,
         "unread": 1,
         "tone": "alert",
-        "items": [Json::object(wait), Json::object(failed), Json::object(unread)],
+        "items": if login {
+          let ask = item("wait", "部署到测试环境", "需要你登录 gh", "ws1/st1", "Willow", 13.0)
+          ask["session"] = Json::string("s-c2")
+          ask["seq"] = Json::number(4.0)
+          ask["login"] = Json::string("login-9")
+          // (the fixture's now is 0: 12 and a half minutes left of its 15)
+          ask["loginEnds"] = Json::number(750000.0)
+          [Json::object(ask), Json::object(wait), Json::object(failed), Json::object(unread)]
+        } else {
+          [Json::object(wait), Json::object(failed), Json::object(unread)]
+        },
         "others": "done",
       },
     },

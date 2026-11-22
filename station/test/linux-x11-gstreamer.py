@@ -49,7 +49,7 @@ def run():
         log = pathlib.Path(scratch, "events")
         env = {**os.environ, "GDK_BACKEND": "x11", "SF_X11_TEST_LOG": str(log)}
         target = subprocess.Popen([sys.executable, "-c", target_code], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        helper = subprocess.Popen([sys.executable, "-u", str(station / "src/screens/linux-x11.py")], env=env,
+        helper = subprocess.Popen([sys.executable, "-u", str(station / "assets/screens/linux-x11.py")], env=env,
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         messages, last_jpeg = [], [None]
 

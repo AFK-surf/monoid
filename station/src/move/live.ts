@@ -1,14 +1,13 @@
 // Migrations as a part of the station (move/AGENTS.md): made of what the composition root gives (parts.ts), the
 // workspace's connects once they are made, `handover.*` and `move.*` answered, station_move given, its card chosen.
 import { Effect, Layer } from "effect";
-import { Fibers } from "../ops/fibers.ts";
+import { Fibers, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { AdminApi, ControlPlane, Events, Key, Parts, Paths, Peers, Previous, Store } from "../services.ts";
 import { Agents } from "../sessions/agents.ts";
 import { chatCards } from "../replica/retire-asks.ts";
 import { gitHere, gitRun } from "../replica/retire.ts";
-import { MoveAsks, moveTools } from "../tools/move.ts";
-import { stationMoveOn } from "../features.ts";
+import { ANSWER_SOON_MS, MoveAsks, moveTools } from "../tools/move.ts";
 import { Moves } from "./station.ts";
 import { moveRoutes } from "./routes.ts";
 import { plainStore } from "../vault/plain.ts";
@@ -18,7 +17,7 @@ type Json = any;
 
 export const MovesLive = Layer.effectDiscard(
   Effect.gen(function* () {
-    const { app, data } = yield* Paths;
+    const { data } = yield* Paths;
     const store = yield* Store;
     const bus = yield* Peers;
     const cloud = (yield* ControlPlane).state;
@@ -98,8 +97,6 @@ export const MovesLive = Layer.effectDiscard(
       hasGit: gitHere,
       changed: () => changed(),
       config: agents.config,
-      // (a beta feature of the station's: features.ts stationMoveOn)
-      moveOn: () => stationMoveOn(agents.config.raw(), app),
       keptSends: (threads) => admin.keptSends(threads),
       keepSends: (sends) => admin.keepSends(sends),
       vault: {
@@ -153,6 +150,10 @@ export const MovesLive = Layer.effectDiscard(
       refusal: (ws, station) => moves.refusal(ws, station),
       room: (ws, station, ids) => moves.room(ws, station, ids),
       told: moves.told,
+      soon: (what) => new Promise((resolve, reject) => {
+        const off = wall.after(ANSWER_SOON_MS, () => resolve(null)); // timer: a deadline (a chat's station_move answers it is under way)
+        what.then((value) => (off(), resolve({ value })), (e) => (off(), reject(e)));
+      }),
     });
     bus.on("move.tool", async (peer, request, workspace) => {
       if (!inWorkspace(peer) || typeof workspace !== "string") throw new Error("not a station of this workspace");

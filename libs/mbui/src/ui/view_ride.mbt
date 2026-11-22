@@ -909,9 +909,14 @@ fn Ctx::ride_kept_for(
 fn Ctx::ride_again(self : Ctx, k : RideKept, dx : Double, dy : Double) -> Unit {
   ride_drawn.val = ride_drawn.val + 1
   ride_caps.clear()
-  self.segs_whole()
-  let seg_by = (self.segs.length() / 4 - k.seg0).to_double()
-  self.segs_put(k.segs, k.pack)
+  let seg_by = if k.segs.is_empty() {
+    0.0
+  } else {
+    self.segs_whole()
+    let by = (self.segs.length() / 4 - k.seg0).to_double()
+    self.segs_put(k.segs, k.pack)
+    by
+  }
   // (in what is being drawn to be kept, all of it that one's as well, as were it drawn anew: ride_into_outer)
   let outer = match riding_now() {
     Some(r) if !r.spoiled => Some(r)
@@ -1099,6 +1104,26 @@ fn ride_put(
       s.unsafe_set(b + 20, -now.to_double())
       if kind == 5.0 {
         glass_paint.frost_run = now
+        glass_paint.liquid_run = 0
+        glass_paint.liquid_first = -1
+      } else if kind == 6.0 && s.unsafe_get(b + 23) <= 0.0 {
+        let blur = s.unsafe_get(b + 7)
+        let eff_blur = if blur < 0.0 { 0.0 } else { blur }
+        let iy0 = s.unsafe_get(b + 1)
+        let iy1 = iy0 + s.unsafe_get(b + 3)
+        if glass_paint.liquid_run == now && glass_paint.liquid_first >= 0 {
+          glass_paint.liquid_y0 = dmin(glass_paint.liquid_y0, iy0)
+          glass_paint.liquid_y1 = dmax(glass_paint.liquid_y1, iy1)
+        } else {
+          glass_paint.liquid_run = now
+          glass_paint.liquid_blur = eff_blur
+          glass_paint.liquid_first = at + i
+          glass_paint.liquid_y0 = iy0
+          glass_paint.liquid_y1 = iy1
+        }
+      } else if kind == 6.0 {
+        glass_paint.liquid_run = 0
+        glass_paint.liquid_first = -1
       }
       glass_paint.run_start = -1
       glass_paint.run_len = 0
@@ -1145,7 +1170,7 @@ fn ride_spoil() -> Unit {
 /// times running with nothing of it changed, where it was and as opaque (it would be drawn as it was; what changes or
 /// moves each time it is drawn never kept, its recording never drawn again), holding others or drawing words (a
 /// paragraph's node of words, alone or alone in what holds it: else its glyphs set and drawn again each time what holds
-/// it is gone through, as a message streamed into does at its every word; a box drawing a ground alone is not worth
+/// it is gone through, as a rapidly updating text node does on every edit; a box drawing a ground alone is not worth
 /// keeping); not an old view, in its bones, glass, what a column scrolls by its offset alone, nor what was found holding
 /// such (ride_unkept). Each node gone through is marked so; one that changed lets go of what it kept.
 fn ride_holder(
@@ -1270,9 +1295,18 @@ fn island_still(id : @view.NodeId, built : Int) -> Bool {
 /// (as the frame's paint follows what it reads: a frame asked for as it changes, that paint read anew), and the glyphs
 /// it draws from kept for it (held in the atlas while it is drawn again: view_glyphs_held).
 fn Ctx::island_painted(self : Ctx, c : @view.Content, paint : () -> Unit) -> Unit {
-  // (its pieces from an instance's first on, whether it is kept or drawn anew: Ctx::segs_whole)
+  // (its pieces from an instance's first on, whether it is kept or drawn anew: Ctx::segs_whole; rolled back where it
+  // put none, as Ctx::segs_whole_at adds none)
+  let seg_before = self.segs.length()
   self.segs_whole()
-  guard riding_now() is Some(r) && r.island && r.id == c.id else { return paint() }
+  let seg_padded = self.segs.length()
+  guard riding_now() is Some(r) && r.island && r.id == c.id else {
+    paint()
+    if self.segs.length() == seg_padded {
+      self.segs_cut(seg_before)
+    }
+    return
+  }
   let w = match island_watches.get(c.id) {
     Some(w) => w
     None => {
@@ -1305,6 +1339,9 @@ fn Ctx::island_painted(self : Ctx, c : @view.Content, paint : () -> Unit) -> Uni
   self.wake_at = -1.0
   self.cycling = false
   w.watch.read(paint)
+  if self.segs.length() == seg_padded {
+    self.segs_cut(seg_before)
+  }
   let asked = self.wants_frame ||
     self.wake_at >= 0.0 ||
     self.cycling ||
@@ -1896,9 +1933,14 @@ fn Ctx::list_again(
   dy : Double,
   hc : FixedArray[Double],
 ) -> Unit {
-  self.segs_whole()
-  let seg_by = (self.segs.length() / 4 - k.seg0).to_double()
-  self.segs_put(k.segs, k.pack)
+  let seg_by = if k.segs.is_empty() {
+    0.0
+  } else {
+    self.segs_whole()
+    let by = (self.segs.length() / 4 - k.seg0).to_double()
+    self.segs_put(k.segs, k.pack)
+    by
+  }
   let n = k.out
   let at = self.ninst
   self.ride_copy(k, 0, n, 0.0, 0.0, seg_by)

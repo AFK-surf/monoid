@@ -6,6 +6,8 @@
 # (scripts/apple_text_test.m).
 D="$(cd "$(dirname "$0")" && pwd)"
 "$D/detlint" || exit 1
+# every call mbui's film makes of a native host answered by Apple's film, Linux's and the hosts' with none
+sh "$D/film_calls.sh" || exit 1
 # the H.264 conversion the hosts share (src/host/avc.h), as still.fail's Android AvcTest tests it
 mkdir -p "$D/../out"
 cc -Wall -I "$D/../src/host" "$D/avc_test.c" -o "$D/../out/avc_test" && "$D/../out/avc_test" || exit 1
@@ -26,6 +28,9 @@ if [ "$(uname)" = Darwin ]; then
     -o "$D/../out/apple_text_test" && "$D/../out/apple_text_test" ${MBUI_TEST_FACE:+"$MBUI_TEST_FACE"} || exit 1
   cc -Wall -Werror -fobjc-arc -I "$D/../src/host" "$D/ios_ime_test.m" \
     -framework Foundation -framework CoreGraphics -o "$D/../out/ios_ime_test" && "$D/../out/ios_ime_test" || exit 1
+  cc -Wall -Werror -fobjc-arc -I "$D/../src/host" -I "$MOON_HOME/include" "$D/mac_app_test.m" \
+    -framework Cocoa -framework QuartzCore -framework Metal -framework UserNotifications -framework Security \
+    -o "$D/../out/mac_app_test" && "$D/../out/mac_app_test" || exit 1
 fi
 # the GLES renderer's window path (src/host/gles_render.h: Android's and Linux's), on EGL's surfaceless platform
 if [ "$(uname)" = Linux ] && pkg-config --exists epoxy zlib; then

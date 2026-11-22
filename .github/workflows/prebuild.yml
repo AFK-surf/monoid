@@ -50,7 +50,7 @@ jobs:
         include: ${{ fromJSON(needs.what.outputs.builds) }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write # the release native-artifacts' assets
     defaults:

@@ -381,18 +381,15 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
     gs.length() > 1 || gs.iter().any(fn(g) { g.0 != w.id })
   }
   let next = fn(before : Bool) { if before { @ui.Space::S1_5.px() } else { 0.0 } }
-  v.show(at_once=true, fn() { groups().length() == 0 && trouble() == "" && !jobs() }, fn(e) {
-    e.box(fn(b) {
-      @sf.style_node(b, fn() { att_empty })
-      @sf.words_node(b, fn() { @sf.t("web-main.attention.empty") }, fn() { att_empty_words }) |> ignore
-    })
-    |> ignore
+  v.show(at_once=true, fn() { groups().length() == 0 && trouble() == "" && !jobs() }, fn(b) {
+    @sf.style_node(b, fn() { att_empty })
+    @sf.words_node(b, fn() { @sf.t("web-main.attention.empty") }, fn() { att_empty_words }) |> ignore
   })
   v.show(at_once=true, fn() { trouble() != "" }, fn(t) {
     @sf.panel_group_node(t, fn() { "Station" }, fn(rows) {
       attention_item_node(rows, src, fn() { { "kind": "alert", "title": Json::string(trouble()) } }, fn() {
         close()
-        @sfbase.go_place("stations") |> ignore
+        @sfbase.go_place("stations", kept=true) |> ignore
       })
     })
   })
@@ -425,12 +422,9 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
   })
   |> ignore
   // (what is left up long under what waits on the viewer, 6 under it)
-  v.show(at_once=true, jobs, fn(j) {
-    j.box(fn(b) {
-      b.padding(By(fn() { (0.0, next(trouble() != "" || groups().length() > 0), 0.0, 0.0) })) |> ignore
-      open_jobs_node(b, src, w, close)
-    })
-    |> ignore
+  v.show(at_once=true, jobs, fn(b) {
+    b.padding(By(fn() { (0.0, next(trouble() != "" || groups().length() > 0), 0.0, 0.0) })) |> ignore
+    open_jobs_node(b, src, w, close)
   })
 }
 
@@ -441,6 +435,8 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
 /// its note its tip. Pressed, `go`.
 fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -> Unit) -> Unit {
   let v = fn() { Some(i()) }
+  // the time, said again as each minute of a login's time left goes (attention_left's)
+  let now = @sf.countdown_now_node(row, src.now, fn() { number(v(), "loginEnds") })
   let title = fn() {
     match text(v(), "title") {
       "" => @sf.t("web-main.attention.untitled")
@@ -484,7 +480,7 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
         fn(d) {
           @sf.action_box_node(d, fn() { @sf.t("web-main.attention.dismiss") }, fn(_) {
             match attention_dismiss(src, @signals.untracked(i)) {
-              Some(f) => f()
+              Some(f) => @view.transition(within=d.transitions_root(), f)
               None => ()
             }
           }, fn(x) {
@@ -507,16 +503,13 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
       )
     })
     |> ignore
-    r.show(at_once=true, fn() { attention_line(v()) != "" }, fn(l) {
-      l.box(fn(u) {
-        @sf.style_node(u, fn() { att_under })
-        // (the dot's column, empty: the line starts where the title does)
-        u.box(fn(m) { @sf.style_node(m, fn() { att_mark }) }) |> ignore
-        u.box(fn(words) {
-          @sf.style_node(words, fn() { att_text }, in_row=true)
-          @sf.words_node(words, fn() { attention_line(v()) }, fn() { att_line }) |> ignore
-        })
-        |> ignore
+    r.show(at_once=true, fn() { attention_line(v(), now()) != "" }, fn(u) {
+      @sf.style_node(u, fn() { att_under })
+      // (the dot's column, empty: the line starts where the title does)
+      u.box(fn(m) { @sf.style_node(m, fn() { att_mark }) }) |> ignore
+      u.box(fn(words) {
+        @sf.style_node(words, fn() { att_text }, in_row=true)
+        @sf.words_node(words, fn() { attention_line(v(), now()) }, fn() { att_line }) |> ignore
       })
       |> ignore
     })
@@ -565,19 +558,19 @@ fn attention_link_node(parent : @view.View, label : () -> String, press : () -> 
 let att_ws_mark : Double = 14.0
 
 ///|
-/// Nothing waiting (empty): 10 round, 13, muted.
+/// Nothing waiting (empty): 10 by 16 in, 13, muted.
 // kept across runs: a value (no field of it changes)
-let att_empty : @ui.Style = @ui.css("w=Full p=S2_5")
+let att_empty : @ui.Style = @ui.css("w=Full px=S4 py=S2_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
 let att_empty_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, leading=L6)
 
 ///|
-/// A row (item): 6 by 10 in, its corner the panel's inner (--panel-in); pointed at, on the pointer's ground. Its first
+/// A row (item): 6 by 16 in, its corner the panel's inner (--panel-in); pointed at, on the pointer's ground. Its first
 /// line (att_head) over the line under it (att_under).
 // kept across runs: a value (no field of it changes)
-let att_item : @ui.Style = @ui.style(w=Full, px=S2_5, py=S1_5, radius=@sf.panel_in)
+let att_item : @ui.Style = @ui.style(w=Full, px=S4, py=S1_5, radius=@sf.panel_in)
 
 ///|
 /// A row's first line: its dot's column, its title and 忽略, 10 apart, their middles on one line. Its words start where
@@ -640,14 +633,14 @@ let att_dismiss_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, l
 let att_dismiss_on_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, leading=L4_75, wrap=false)
 
 ///|
-/// The foot (foot): its words 12 apart, 8 by 10 in and 4 under, 4 more over it.
+/// The foot (foot): its words 12 apart, 8 by 16 in and 4 under, 4 more over it.
 // kept across runs: a value (no field of it changes)
-let att_foot : @ui.Style = @ui.css("row w=Full gap=S3 px=S2_5 pt=S3 pb=S1")
+let att_foot : @ui.Style = @ui.css("row w=Full gap=S3 px=S4 pt=S3 pb=S1")
 
 ///|
 /// The foot beside the bell: as att_foot, its room over it the panel's foot's (8) and 4 more, 12 under what scrolls.
 // kept across runs: a value (no field of it changes)
-let att_foot_beside : @ui.Style = @ui.css("row w=Full gap=S3 px=S2_5 pt=S1 pb=S1")
+let att_foot_beside : @ui.Style = @ui.css("row w=Full gap=S3 px=S4 pt=S1 pb=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -660,10 +653,31 @@ let att_link_on : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, leading=L4
 ///|
 /// A wanting chat's line without its lead (the core's `what`: 要你帮忙：, 出问题：, 待处理 · taken off; the dot before it
 /// says that), else its station's name.
-fn attention_line(v : Json?) -> String {
-  match text(v, "what") {
+/// A login's (`loginEnds`: when it runs out of time) with how long is left as of `now`: 需要你登录 gh · 剩 12 分钟.
+fn attention_line(v : Json?, now : Double) -> String {
+  let line = match text(v, "what") {
     "" => text(v, "stationName")
     s => s
+  }
+  match attention_left(v, now) {
+    "" => line
+    left => line + " · " + left
+  }
+}
+
+///|
+/// How long is left of a login waiting for the viewer (`loginEnds`), in whole minutes rounded up, as of `now`: 剩 12
+/// 分钟, 不到 1 分钟; "" where it is not known or has gone by.
+fn attention_left(v : Json?, now : Double) -> String {
+  let ends = number(v, "loginEnds")
+  guard ends > 0.0 else { return "" }
+  let minutes = ((ends - now + 59999.0) / 60000.0).floor().to_int()
+  if minutes <= 0 {
+    ""
+  } else if minutes <= 1 {
+    @sf.t("web-main.attention.loginLast")
+  } else {
+    @sf.t("web-main.attention.loginLeft", args=[("minutes", minutes.to_string())])
   }
 }
 

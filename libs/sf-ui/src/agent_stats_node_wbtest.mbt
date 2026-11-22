@@ -90,3 +90,68 @@ test "a stats card: not there while it says nothing; a part come later opens its
   assert_true(y1 > y0, msg="\{y0} \{y1}")
   assert_eq(t.audit(), [])
 }
+
+///|
+test "a quiet card: each label (Meta) on the baseline of its value's first line (Ui), a row on its middle or on its top, its value on one line or two, lines as the web's or the host's, the system's size of words 1 or 1.3" {
+  let long = "一个很长很长的值它要折到下一行去还要再长一些"
+  let wraps : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, w=Full)
+  for web in [true, false] {
+    @ui.set_web_lines(web)
+    for scale in [1.0, 1.3] {
+      presenters_reset()
+      let t = @ui.Tester::new(fn(_c) {  }, w=260.0, h=600.0, platform=if web { 0 } else { 2 })
+      t.check_looks(false)
+      @ui.set_view_app(fn(root) {
+        quiet_card_node(root, fn(k) {
+          let labels = ["账号", "模型", "说明"]
+          let across = fn() { labels_across(k, labels) }
+          u13_row(k, "账号", "甲", across, under="本周还剩 62%", fn() {  })
+          u13_row(k, "模型", "乙", across, fn() {  })
+          quiet_row_node(k, fn() { "说明" }, look=quiet_row_top, press=fn() {  }, fn(row) {
+            row_label_node(row, "说明", across)
+            row.box(fn(w) {
+              w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              words_node(w, fn() { long }, fn() { wraps }) |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+      })
+      if scale != 1.0 {
+        t.set_font_scale(scale)
+      }
+      t.draw()
+      let runs = t.text_runs()
+      // (the baseline of the first line `words` are drawn on, and on how many lines; -1 not drawn)
+      let base_of = fn(words : String) -> (Double, Int) {
+        let mut first : @ui.TextRun? = None
+        let mut n = 0
+        for r in runs {
+          if r.text != "" && words.contains(r.text) {
+            n += 1
+            match first {
+              Some(f) if f.top <= r.top => ()
+              _ => first = Some(r)
+            }
+          }
+        }
+        match first {
+          Some(f) => (f.base, n)
+          None => (-1.0, 0)
+        }
+      }
+      for pair in [("账号", "甲"), ("模型", "乙"), ("说明", long)] {
+        let (lb, ln) = base_of(pair.0)
+        let (vb, n) = base_of(pair.1)
+        assert_true(ln > 0 && n > 0, msg="web=\{web} scale=\{scale}: \{pair.0} or its value not drawn")
+        if pair.1 == long {
+          assert_true(n > 1, msg="web=\{web} scale=\{scale}: the long value on one line")
+        }
+        assert_true((lb - vb).abs() <= 0.01, msg="web=\{web} scale=\{scale} \{pair.0}: label base=\{lb} value base=\{vb}")
+      }
+      assert_eq(t.audit(), [])
+    }
+  }
+  @ui.set_web_lines(false)
+}

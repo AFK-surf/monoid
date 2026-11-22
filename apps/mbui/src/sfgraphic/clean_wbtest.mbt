@@ -1,14 +1,16 @@
 ///|
-fn check_clean_card(view : (@ui.Ctx) -> Unit, alignment : Bool, alternate : Bool) -> Unit raise {
-  let started = Ref(false)
-  let t = @ui.Tester::new(fn(c) {
-    if !started.val {
+fn check_clean_card(view : (@view.View) -> Unit, alignment : Bool, alternate : Bool) -> Unit raise {
+  let t = @ui.Tester::tree(
+    fn(root) {
       @sf.set_dark(Some(true))
-      started.val = true
-    }
-    view(c)
-  }, w=clean_canvas_width, h=clean_canvas_height, corners_held=false)
-  let boxes = t.boxes()
+      view(root)
+    },
+    w=clean_canvas_width,
+    h=clean_canvas_height,
+    corners_held=false,
+    theme=@sf.ui_theme_now,
+  )
+  let boxes = t.boxes_held()
   let ground = @sf.theme().p.card
   let cards = boxes.filter(fn(b) { b.bg == ground && (b.w - clean_card_width).abs() < 0.001 })
   assert_eq(cards.length(), 1)

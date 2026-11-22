@@ -9,9 +9,12 @@
 /// the dialog's corners, reaching across the room its column stands in from its padding too (its words' line,
 /// column_in_now's), and down past its padding to there; each row round, its words back that far in. None elsewhere.
 pub fn dialog_rows_node(v : @view.View, row_h : Double) -> (@ui.Style, @ui.Style) {
-  guard panel_in_of(v).centred else { return (no_style, no_style) }
+  let at = panel_in_of(v)
+  let k = if at.centred { 1.0 } else { (at.round_foot)() }
+  guard k > 0.001 else { return (no_style, no_style) }
   // (from its column: its padding, and the room its column stands in from that: panel_words less dialog_pad)
-  let out = @ui.capsule_in(dialog_r, row_h) - dialog_pad
-  let side = out - (panel_words - dialog_pad)
-  (@ui.style(mx=room(side), mb=room(out)), @ui.style(radius=Full, px=room(-side)))
+  let out = (@ui.capsule_in(dialog_r, row_h) - dialog_pad) * k
+  let side = out - (panel_words - dialog_pad) * k
+  let row_s = if k > 0.5 { @ui.style(radius=Full, px=room(-side)) } else { @ui.style(px=room(-side)) }
+  (@ui.style(mx=room(side), mb=room(out)), row_s)
 }

@@ -192,7 +192,7 @@ test("profile_recovery_follows_states_and_clears_after_success", () => {
   assert.equal(q.trouble, null);
   q.quota.state = "blocked";
   q = p.profile(q);
-  assert.equal(q.trouble.title, "账号被停用");
+  assert.equal(q.trouble.title, "服务商拒绝了这个账号");
   assert.equal(q.checkTone, "red");
 });
 
@@ -326,7 +326,7 @@ test("a_sessions_context_is_compacted_or_cleared_by_hand_between_turns_once_it_h
 test("an_account_its_provider_refuses_says_so_whatever_its_check_found", () => {
   let q: J = { check: { state: "ok" }, quota: { state: "blocked", windows: [] } };
   q = p.profile(q);
-  assert.deepEqual([q.checkText, q.checkTone], ["已停用", "red"]);
+  assert.deepEqual([q.checkText, q.checkTone], ["账号被拒", "red"]);
   let ok: J = { check: { state: "ok" }, quota: { state: "unavailable", windows: [] } };
   ok = p.profile(ok);
   assert.equal(ok.checkText, "可用");
@@ -436,6 +436,18 @@ test("a_decision_agent_passes_the_chat_shape", () => {
   assert.equal(checked.ok.session.statusText, "需要你处理");
   const legacy = { ...checked.ok, status: "decision" };
   assert.equal((conform("ChatAgent", legacy) as J).ok.status, "decision");
+});
+
+test("a failed start with undelivered messages is failed until another attempt starts", () => {
+  const lastTurn = { outcome: "completed", ending: "waiting", declared: "waiting", endedAt: 5, waitFor: "old work" };
+  const failed = { process: "cold", pending: 1, startFailed: true, lastTurn };
+  assert.equal(p.sessionStatus(failed), "failed");
+  assert.equal(p.waiting(failed), null);
+  assert.equal(p.markOf(failed), "failed");
+  assert.equal(p.session(failed).statusText, "出错：无法启动 agent");
+  assert.equal(p.sessionStatus({ ...failed, startFailed: false }), "running");
+  assert.equal(p.sessionStatus({ ...failed, process: "running" }), "running");
+  assert.equal(p.sessionStatus({ process: "cold", pending: 1, lastTurn: null }), "queued");
 });
 
 test("a_chat_with_nothing_left_is_settled_and_says_where_it_stands", () => {
@@ -722,6 +734,10 @@ test("what_the_clients_show_is_put_in_here", () => {
   const members = [{ email: "a@x.com", name: "阿一", picture: "https://p/a" }];
   assert.equal(p.mentions("<@UBOT> 和 <@U9> 看下", [["UBOT", "ds-ember"]], members), "@ds-ember 和 @U9 看下");
   assert.equal(p.mentions("<@UBOT> 和 <@U9> 看下", [["UBOT", "ds-ember"], ["U9", "Mia"]], members), "@ds-ember 和 @Mia 看下");
+  // A connect named with its `@` (`@Gemini-Monoid`) is said with that one; a bot named nothing yet goes by the next name.
+  assert.equal(p.mentions("<@U1> 你好", [["U1", "@Gemini-Monoid"]], []), "@Gemini-Monoid 你好");
+  assert.equal(p.mentions("<@U1>", [["U1", ""], ["U1", "Bot"]], members), "@Bot");
+  assert.equal(p.mentions("<@U1>", [["U1", ""]], []), "@U1");
   let me: J = { id: "a@x.com", email: "a@x.com", name: "A" };
   me = p.person(me, { id: "a@x.com", email: "a@x.com" }, members);
   assert.deepEqual(me.shown, { name: "阿一", display: "你", picture: "https://p/a", mine: true });
@@ -873,6 +889,40 @@ test("a_windows_stations_running_as_administrator_is_said_with_how_a_change_goes
   assert.equal(shown({ ...base, manage: false }).canChange, false);
   // Not Windows, or a station from before it: none.
   assert.equal("elevation" in (p.decorate(topic, { counts: {} }, c) as J), false);
+});
+
+test("a_windows_stations_screen_service_is_said_with_how_a_change_goes_and_how_it_failed", () => {
+  const c = { now: 0, offsetMin: 0 };
+  const topic = { topic: "overview", station: "w/s" };
+  const shown = (screenService: J): J => (p.decorate(topic, { screenService }, c) as J).screenService;
+  const base = { on: false, running: false, canChange: true, available: true, manage: true };
+  let o = shown(base);
+  assert.deepEqual(o, {
+    on: false,
+    busy: false,
+    line: "远程查看屏幕时可显示并点击 UAC 弹窗、管理员窗口和锁屏界面；仅人工远程操作生效，agent 保持普通权限",
+    canChange: true,
+  });
+  assert.ok("ok" in conform("StationScreenService", o), JSON.stringify(conform("StationScreenService", o)));
+  // Windows UAC prompt up: switch moves to target, waiting.
+  o = shown({ ...base, step: "asking", want: true });
+  assert.deepEqual([o.on, o.busy, o.canChange], [true, true, false]);
+  assert.match(o.line, /需要有人在这台电脑前点「是」/);
+  assert.equal(shown({ ...base, on: true, running: true, step: "applying", want: false }).line, "正在应用系统服务更改");
+  // Installed but service not running.
+  assert.match(shown({ ...base, on: true, running: false }).line, /当前未运行/);
+  // Failed states.
+  o = shown({ ...base, failed: "unanswered", want: true });
+  assert.deepEqual([o.on, o.busy, o.canChange], [false, false, true]);
+  assert.match(o.failed, /^2 分钟内没人确认 UAC/);
+  assert.equal(shown({ ...base, failed: "declined" }).failed, "UAC 被拒绝，设置没有改变");
+  assert.equal(shown({ ...base, failed: "error", message: "拒绝访问" }).failed, "切换失败，设置没有改变：拒绝访问");
+  // Non-admin, missing binary, or non-manager cannot toggle.
+  assert.deepEqual([shown({ ...base, canChange: false }).canChange, shown({ ...base, canChange: false }).line], [false, "运行 station 的 Windows 账号不是管理员，无法安装系统服务"]);
+  assert.deepEqual([shown({ ...base, canChange: false, available: false }).canChange, shown({ ...base, canChange: false, available: false }).line], [false, "当前 station 版本不含系统屏幕服务组件，请先更新 station"]);
+  assert.equal(shown({ ...base, manage: false }).canChange, false);
+  // Not Windows, or older station: omitted.
+  assert.equal("screenService" in (p.decorate(topic, { counts: {} }, c) as J), false);
 });
 
 test("a_connect_says_where_it_is_reached_how_it_runs_and_what_switching_it_does", () => {
@@ -1095,4 +1145,14 @@ test("devin_fusion_pairings_factor_by_lead_and_sidekick_stay_removable_when_tick
     sides: [{ id: "swe-2-medium", name: "SWE-2 · 中", maker: { id: "devin", name: "Cognition" } }],
   });
   assert.equal(p.buildFusion(null), null);
+});
+
+test("colab CU credits balance keeps CU suffix with formatted decimal", () => {
+  const c = { now: 1_900_000_000_000, offsetMin: 480 };
+  const whole = p.times({ state: "ok", windows: [], credits: { balance: "2500.00 CU" } }, c) as Record<string, unknown>;
+  assert.equal(whole.creditsText, "2,500 CU");
+  const frac = p.times({ state: "ok", windows: [], credits: { balance: "2489.95 CU" } }, c) as Record<string, unknown>;
+  assert.equal(frac.creditsText, "2,489.95 CU");
+  const dollar = p.times({ state: "ok", windows: [], credits: { balance: "12.5" } }, c) as Record<string, unknown>;
+  assert.equal(dollar.creditsText, t("core-views.present.credits.balance", { balance: "12.5" }));
 });

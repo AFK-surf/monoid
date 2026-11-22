@@ -85,7 +85,7 @@ pub fn sandbox_bridge_of(argv : Array[String]) -> Bool {
 /// The shell's place for a bridge: its station's data directory's (the spec's `root`), else the system's temporary one.
 pub fn sandbox_bridge_shell(argv : Array[String]) -> String {
   let spec = (try { Ok(@json.parse(argv[3])) } catch { e => Err(e) }).unwrap_or(Json::null())
-  match p53_str(p53_get(spec, "root"), "path") {
+  match jtext(jfield(spec, "root"), "path") {
     Some(root) if root != "" => @nodepath.join(sep(), [root, "shell"])
     _ => @nodepath.join(sep(), [tmpdir(), "stillfail-bridge-shell"])
   }
@@ -197,7 +197,7 @@ fn p53_within(dir : String, path : String) -> Bool {
 ///|
 /// What `fs.lstat` says of a path (links not followed), None where nothing is.
 async fn p53_sbx_lstat(host : @host.Host, path : String) -> Json? {
-  match (try { Ok(host.shell("fs.lstat", { "path": p53_s(path) })) } catch { e => Err(e) }) {
+  match (try { Ok(host.shell("fs.lstat", { "path": jstr(path) })) } catch { e => Err(e) }) {
     Ok((Object(_) as o, _)) => Some(o)
     _ => None
   }
@@ -205,7 +205,7 @@ async fn p53_sbx_lstat(host : @host.Host, path : String) -> Json? {
 
 ///|
 async fn p53_realpath(host : @host.Host, path : String) -> String? {
-  match (try { Ok(host.shell("fs.realpath", { "path": p53_s(path) })) } catch { e => Err(e) }) {
+  match (try { Ok(host.shell("fs.realpath", { "path": jstr(path) })) } catch { e => Err(e) }) {
     Ok((String(s), _)) => Some(s)
     _ => None
   }
@@ -220,7 +220,7 @@ async fn p53_sbx_scan(host : @host.Host, entry : Json, base : String, root : Str
     Some(r) => Some(p53_realpath(host, r).unwrap_or(r))
     None => None
   }
-  let skip = match p53_get(entry, "skip") {
+  let skip = match jfield(entry, "skip") {
     Array(xs) => xs.filter_map(x => if x is String(s) { Some(s) } else { None })
     _ => []
   }
@@ -228,28 +228,25 @@ async fn p53_sbx_scan(host : @host.Host, entry : Json, base : String, root : Str
   while todo.pop() is Some((path, depth)) {
     guard p53_sbx_lstat(host, path) is Some(st0) else { continue }
     let mut st = st0
-    if p53_str(st, "kind") == Some("link") {
-      let target = match (try { Ok(host.shell("fs.readlink", { "path": p53_s(path) })) } catch { e => Err(e) }) {
+    if jtext(st, "kind") == Some("link") {
+      let target = match (try { Ok(host.shell("fs.readlink", { "path": jstr(path) })) } catch { e => Err(e) }) {
         Ok((String(t), _)) => t
         _ => ""
       }
       guard p53_realpath(host, path) is Some(real) else { continue }
       if root is Some(r) && p53_within(r, real) {
-        out[path] = Json::array([p53_s("l"), p53_i(0), p53_i(0), p53_s(target)])
+        out[path] = Json::array([jstr("l"), ji(0), ji(0), jstr(target)])
         continue
       }
       guard p53_sbx_lstat(host, real) is Some(followed) else { continue }
       st = followed
     }
-    match p53_str(st, "kind") {
+    match jtext(st, "kind") {
       Some("dir") => {
         if depth > 32 {
           continue
         }
-        let names = match (try { Ok(host.shell("fs.readdir", { "path": p53_s(path) })) } catch { e => Err(e) }) {
-          Ok((Array(xs), _)) => xs.filter_map(x => if x is String(s) { Some(s) } else { None })
-          _ => []
-        }
+        let names = host_readdir_names(host, path).unwrap_or([])
         // (in the order Node's walk goes: the first name first)
         for i = names.length() - 1; i >= 0; i = i - 1 {
           if !skip.contains(names[i]) {
@@ -258,10 +255,10 @@ async fn p53_sbx_scan(host : @host.Host, entry : Json, base : String, root : Str
         }
       }
       Some("file") => {
-        let size = p53_num(st, "size").unwrap_or(0.0)
+        let size = jnum_of(st, "size").unwrap_or(0.0)
         if size <= p53_sbx_max_file {
-          let mode = p53_num(st, "mode").unwrap_or(0.0).to_int()
-          out[path] = Json::array([p53_s("f"), p53_n(size), p53_n(p53_num(st, "mtimeMs").unwrap_or(0.0)), Json::null(), p53_b((mode & 64) != 0)])
+          let mode = jnum_of(st, "mode").unwrap_or(0.0).to_int()
+          out[path] = Json::array([jstr("f"), jn(size), jn(jnum_of(st, "mtimeMs").unwrap_or(0.0)), Json::null(), jb((mode & 64) != 0)])
         }
       }
       _ => ()
@@ -273,8 +270,8 @@ async fn p53_sbx_scan(host : @host.Host, entry : Json, base : String, root : Str
 ///|
 /// A file's bytes, whole.
 async fn p53_file_bytes(host : @host.Host, path : String) -> Bytes? {
-  match host.shell("fs.bytes", { "path": p53_s(path) }) {
-    (String(h), _) => Some(p53_unhex(h))
+  match host.shell("fs.bytes", { "path": jstr(path) }) {
+    (String(h), _) => Some(unhex_lenient(h))
     (_, Some(raw)) => Some(raw)
     _ => None
   }
@@ -285,10 +282,10 @@ async fn p53_file_bytes(host : @host.Host, path : String) -> Bytes? {
 async fn p53_set_exec(host : @host.Host, path : String, exec : Json) -> Unit {
   guard exec is (True | False) else { return }
   guard p53_sbx_lstat(host, path) is Some(st) else { return }
-  let mode = p53_num(st, "mode").unwrap_or(0.0).to_int() & 4095
+  let mode = jnum_of(st, "mode").unwrap_or(0.0).to_int() & 4095
   let want = if exec is True { mode | ((mode & 292) >> 2) } else { mode & (4095 ^ 73) }
   if want != mode {
-    ignore(try { Ok(host.shell("fs.chmod", { "path": p53_s(path), "mode": p53_i(want) })) } catch { e => Err(e) })
+    ignore(try { Ok(host.shell("fs.chmod", { "path": jstr(path), "mode": ji(want) })) } catch { e => Err(e) })
   }
 }
 
@@ -302,7 +299,7 @@ async fn p53_place(host : @host.Host, path : String, bytes : Bytes, mtime : Doub
       match p53_realpath(host, @nodepath.dirname("/", path)) {
         Some(d) => p53_pjoin(d, @nodepath.basename("/", path))
         None => {
-          ignore(host.shell("fs.mkdir", { "path": p53_s(@nodepath.dirname("/", path)) }))
+          ignore(host.shell("fs.mkdir", { "path": jstr(@nodepath.dirname("/", path)) }))
           path
         }
       }
@@ -310,12 +307,12 @@ async fn p53_place(host : @host.Host, path : String, bytes : Bytes, mtime : Doub
   let there = p53_sbx_lstat(host, target) is Some(_)
   match offset {
     Some(at) if there =>
-      ignore(host.shell("fs.put", { "path": p53_s(target), "offset": p53_n(at), "truncate": p53_b(true) }, bytes~))
+      ignore(host.shell("fs.put", { "path": jstr(target), "offset": jn(at), "truncate": jb(true) }, bytes~))
     _ => {
       let tmp = "\{target}.sbx-\{@drive.pid()}"
-      ignore(host.shell("fs.remove", { "path": p53_s(tmp) })) catch { _ => () }
-      ignore(host.shell("fs.put", { "path": p53_s(tmp), "offset": p53_i(0), "truncate": p53_b(true) }, bytes~))
-      ignore(host.shell("fs.rename", { "from": p53_s(tmp), "to": p53_s(target) }))
+      ignore(host.shell("fs.remove", { "path": jstr(tmp) })) catch { _ => () }
+      ignore(host.shell("fs.put", { "path": jstr(tmp), "offset": ji(0), "truncate": jb(true) }, bytes~))
+      ignore(host.shell("fs.rename", { "from": jstr(tmp), "to": jstr(target) }))
     }
   }
   p53_set_exec(host, target, exec)
@@ -324,20 +321,20 @@ async fn p53_place(host : @host.Host, path : String, bytes : Bytes, mtime : Doub
 
 ///|
 async fn p53_place_link(host : @host.Host, path : String, target : String) -> Unit raise {
-  ignore(host.shell("fs.mkdir", { "path": p53_s(@nodepath.dirname("/", path)) }))
+  ignore(host.shell("fs.mkdir", { "path": jstr(@nodepath.dirname("/", path)) }))
   match p53_sbx_lstat(host, path) {
     Some(st) => {
-      if p53_str(st, "kind") == Some("link") {
-        match host.shell("fs.readlink", { "path": p53_s(path) }) {
+      if jtext(st, "kind") == Some("link") {
+        match host.shell("fs.readlink", { "path": jstr(path) }) {
           (String(t), _) if t == target => return
           _ => ()
         }
       }
-      ignore(host.shell("fs.remove", { "path": p53_s(path), "recursive": p53_b(true) }))
+      host_remove_tree(host, path)
     }
     None => ()
   }
-  ignore(host.shell("fs.symlink", { "path": p53_s(path), "target": p53_s(target) }))
+  ignore(host.shell("fs.symlink", { "path": jstr(path), "target": jstr(target) }))
 }
 
 ///|
@@ -347,7 +344,7 @@ async fn p53_lend_gh(host : @host.Host, env : Map[String, String]) -> Unit {
   if env.contains("GH_TOKEN") || env.contains("GITHUB_TOKEN") {
     return
   }
-  let token = match p53_run(host, "gh", ["auth", "token", "-h", "github.com"], timeout_ms=10000) {
+  let token = match shell_proc_run(host, "gh", ["auth", "token", "-h", "github.com"], timeout_ms=10000) {
     Some(t) => t.trim(chars=" \n\r\t").to_string()
     None => ""
   }
@@ -371,7 +368,7 @@ async fn p53_lend_gh(host : @host.Host, env : Map[String, String]) -> Unit {
 /// exit code: the program's, LOST_EXIT where the connection was lost, 255 where the sandbox was not reached.
 pub async fn run_sandbox_bridge(host : @host.Host, argv : Array[String]) -> Int {
   let spec = (try { Ok(@json.parse(argv[3])) } catch { e => Err(e) }).unwrap_or(Json::null())
-  match p53_get(spec, "create") {
+  match jfield(spec, "create") {
     Array(create) if create.length() > 0 => {
       let words = create.filter_map(x => if x is String(s) { Some(s) } else { None })
       let made = spawn(host, words[0], words[1:].to_array(), stdout=Piped, stderr=Piped) catch {
@@ -396,7 +393,7 @@ pub async fn run_sandbox_bridge(host : @host.Host, argv : Array[String]) -> Int 
 ///|
 /// Starts the far side through ssh and stands in for the program (`connect`).
 async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> Int {
-  let source = match (try { Ok(host.shell("fs.read", { "path": p53_s(bridge) })) } catch { e => Err(e) }) {
+  let source = match (try { Ok(host.shell("fs.read", { "path": jstr(bridge) })) } catch { e => Err(e) }) {
     Ok((String(s), _)) => s
     _ => {
       err_write("sandbox: the bridge \{bridge} does not read\n")
@@ -405,7 +402,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
   }
   // (the far side's own file, given on its command line: nothing to install in the sandbox)
   let remote = "exec node --input-type=module -e \"$(printf %s \{@base64.encode(@utf8.encode(source))} | base64 -d)\" remote"
-  let ssh_words = match p53_get(spec, "ssh") {
+  let ssh_words = match jfield(spec, "ssh") {
     Array(xs) => xs.filter_map(x => if x is String(s) { Some(s) } else { None })
     _ => []
   }
@@ -425,16 +422,16 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
     env[kv.0] = kv.1
   }
   env.remove("STILLFAIL_SANDBOX_BRIDGE")
-  let run = !(p53_get(spec, "program") is Null)
-  if p53_true(spec, "gh") && run {
+  let run = !(jfield(spec, "program") is Null)
+  if jtrue(spec, "gh") && run {
     p53_lend_gh(host, env)
   }
-  let silent = p53_num(spec, "silentMs").map(n => n.to_int()).unwrap_or(p53_silent_ms)
-  let sync = match p53_get(spec, "sync") {
-    Array(xs) => xs.map(e => if p53_get(e, "to") is String(_) { e } else { p53_with(e, "to", p53_get(e, "path")) })
+  let silent = jnum_of(spec, "silentMs").map(n => n.to_int()).unwrap_or(p53_silent_ms)
+  let sync = match jfield(spec, "sync") {
+    Array(xs) => xs.map(e => if jfield(e, "to") is String(_) { e } else { jwith(e, "to", jfield(e, "path")) })
     _ => []
   }
-  let root = match p53_str(p53_get(spec, "root"), "path") {
+  let root = match jtext(jfield(spec, "root"), "path") {
     Some(r) => Some(r)
     None => None
   }
@@ -442,59 +439,57 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
   // (or one not made yet) is watched there as one; a single file (one fetched) is not.
   let prepared = []
   for e in sync {
-    let dir = match p53_get(e, "dir") {
+    let dir = match jfield(e, "dir") {
       True => true
       False => false
       _ =>
-        match p53_sbx_lstat(host, p53_text(e, "path")) {
+        match p53_sbx_lstat(host, jtext_or_empty(e, "path")) {
           None => true
           Some(_) =>
-            (try { Ok(host.shell("fs.stat", { "path": p53_get(e, "path") })) } catch { e => Err(e) }) is Ok((String("dir"), _))
+            (try { Ok(host.shell("fs.stat", { "path": jfield(e, "path") })) } catch { e => Err(e) }) is Ok((String("dir"), _))
         }
     }
-    let fields : Array[(String, Json)] = [("path", p53_get(e, "to")), ("mode", p53_get(e, "mode")), ("dir", p53_b(dir))]
+    let fields : Array[(String, Json)] = [("path", jfield(e, "to")), ("mode", jfield(e, "mode")), ("dir", jb(dir))]
     for k in ["skip", "back"] {
-      match p53_get(e, k) {
+      match jfield(e, k) {
         Null => ()
         v => fields.push((k, v))
       }
     }
-    prepared.push(p53_obj(fields))
+    prepared.push(jobj_of(fields))
   }
   send(
     p53_t_prepare,
     0,
     @utf8.encode(
-      p53_obj([
-        ("root", p53_get(spec, "root")),
-        ("dirs", match p53_get(spec, "dirs") { Array(_) as d => d; _ => Json::array([]) }),
+      jobj_of([
+        ("root", jfield(spec, "root")),
+        ("dirs", match jfield(spec, "dirs") { Array(_) as d => d; _ => Json::array([]) }),
         ("sync", Json::array(prepared)),
       ]).stringify(),
     ),
   )
-  let heard = Ref(wall_ms().to_double())
+  let heard = Ref(@host.now().to_double())
   let reached = Ref(false)
   let synced = Ref(false)
   let exit : Ref[Json?] = Ref(None)
   let done = Ref(false)
   // (until the far side is first heard, SILENT_MS at the least: a shortened silence is for a connection once made)
-  ignore(
-    host.rt.fork(name="the bridge's pings", async fn() {
-      let every = if silent / 3 < p53_ping_ms { silent / 3 } else { p53_ping_ms }
-      while !done.val {
-        @effect.sleep(if every < 1 { 1 } else { every }) // timer: a heartbeat that keeps the connection, and measures it
-        if done.val {
-          break
-        }
-        let limit = if reached.val { silent } else if silent > p53_silent_ms { silent } else { p53_silent_ms }
-        if wall_ms().to_double() - heard.val > limit.to_double() {
-          ignore(kill(ssh.pid, "SIGKILL"))
-        } else {
-          send(p53_t_ping, 0, b"")
-        }
+  fork_bg(host, "the bridge's pings", async fn() {
+    let every = if silent / 3 < p53_ping_ms { silent / 3 } else { p53_ping_ms }
+    while !done.val {
+      @effect.sleep(if every < 1 { 1 } else { every }) // timer: a heartbeat that keeps the connection, and measures it
+      if done.val {
+        break
       }
-    }),
-  )
+      let limit = if reached.val { silent } else if silent > p53_silent_ms { silent } else { p53_silent_ms }
+      if @host.now().to_double() - heard.val > limit.to_double() {
+        ignore(kill(ssh.pid, "SIGKILL"))
+      } else {
+        send(p53_t_ping, 0, b"")
+      }
+    }
+  })
   if run {
     // (a job's stdin is nothing: its end said at once)
     send(p53_t_stdin_end, 0, b"")
@@ -502,10 +497,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
       send(p53_t_signal, 0, @utf8.encode(name))
     })
   }
-  let ports = match p53_get(spec, "ports") {
-    Array(xs) => xs
-    _ => []
-  }
+  let ports = jitems(jfield(spec, "ports"))
   let sockets : Map[Int, Int64] = Map([])
   let pending = @buffer.Buffer()
   let mut ended : (Int?, String?) = (None, None)
@@ -530,7 +522,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
           let stream = p53_u32_at(all, at + 1)
           let payload = all[at + 9:at + 9 + length].to_bytes()
           at += 9 + length
-          heard.val = wall_ms().to_double()
+          heard.val = @host.now().to_double()
           reached.val = true
           if t == p53_t_stdout {
             ignore(fd_write(1, payload))
@@ -542,22 +534,24 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
             if run {
               let env_json : Map[String, Json] = Map([])
               for k, v in env {
-                env_json[k] = p53_s(v)
+                env_json[k] = jstr(v)
+              }
+              let init_fields : Array[(String, Json)] = [
+                ("program", jfield(spec, "program")),
+                ("args", jfield(spec, "args")),
+                ("cwd", jfield(spec, "cwd")),
+                ("env", Json::object(env_json)),
+                ("ports", jfield(spec, "ports")),
+                ("agent", jb(jtrue(spec, "agent"))),
+                ("silentMs", ji(silent)),
+              ]
+              if jtext(spec, "own") == Some("all") {
+                init_fields.push(("own", jstr("all")))
               }
               send(
                 p53_t_init,
                 0,
-                @utf8.encode(
-                  p53_obj([
-                    ("program", p53_get(spec, "program")),
-                    ("args", p53_get(spec, "args")),
-                    ("cwd", p53_get(spec, "cwd")),
-                    ("env", Json::object(env_json)),
-                    ("ports", p53_get(spec, "ports")),
-                    ("agent", p53_b(p53_true(spec, "agent"))),
-                    ("silentMs", p53_i(silent)),
-                  ]).stringify(),
-                ),
+                @utf8.encode(jobj_of(init_fields).stringify()),
               )
             } else {
               send(p53_t_synced, 0, b"")
@@ -579,7 +573,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
             let port = ports
               .filter_map(p => match p {
                 Number(n, ..) => Some((n.to_int(), n.to_int()))
-                Object(_) => Some((p53_num(p, "sandbox").unwrap_or(-1.0).to_int(), p53_num(p, "here").unwrap_or(-1.0).to_int()))
+                Object(_) => Some((jnum_of(p, "sandbox").unwrap_or(-1.0).to_int(), jnum_of(p, "here").unwrap_or(-1.0).to_int()))
                 _ => None
               })
               .iter()
@@ -587,25 +581,26 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
             match port {
               None => send(p53_t_close, stream, b"")
               Some((_, here)) =>
-                match (try { Ok(host.shell("tcp.open", { "port": p53_i(here) })) } catch { e => Err(e) }) {
-                  Ok((said, _)) => {
-                    let id = p53_num(said, "id").unwrap_or(0.0).to_int64()
+                match (try { Ok(host.tcp_open(here)) } catch { e => Err(e) }) {
+                  Ok(conn) => {
+                    let id = match conn.id {
+                      Number(n, ..) => n.to_int64()
+                      _ => 0L
+                    }
                     sockets[stream] = id
-                    ignore(
-                      host.rt.fork(name="a connection through the bridge", async fn() {
-                        while true {
-                          match (try { Ok(host.shell("tcp.read", { "id": Json::number(id.to_double()) })) } catch { e => Err(e) }) {
-                            Ok((_, Some(b))) if b.length() > 0 => send(p53_t_data, stream, b)
-                            _ => break
-                          }
+                    fork_bg(host, "a connection through the bridge", async fn() {
+                      while true {
+                        match (try { Ok(host.tcp_read(Json::number(id.to_double()))) } catch { e => Err(e) }) {
+                          Ok(Some(b)) if b.length() > 0 => send(p53_t_data, stream, b)
+                          _ => break
                         }
-                        if sockets.get(stream) == Some(id) {
-                          sockets.remove(stream)
-                          send(p53_t_close, stream, b"")
-                        }
-                        ignore(try { Ok(host.shell("tcp.close", { "id": Json::number(id.to_double()) })) } catch { e => Err(e) })
-                      }),
-                    )
+                      }
+                      if sockets.get(stream) == Some(id) {
+                        sockets.remove(stream)
+                        send(p53_t_close, stream, b"")
+                      }
+                      host.tcp_close(Json::number(id.to_double()))
+                    })
                   }
                   Err(_) => send(p53_t_close, stream, b"")
                 }
@@ -613,14 +608,18 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
           } else if t == p53_t_data {
             match sockets.get(stream) {
               Some(id) =>
-                ignore(try { Ok(host.shell("tcp.write", { "id": Json::number(id.to_double()) }, bytes=payload)) } catch { e => Err(e) })
+                host.tcp_write(Json::number(id.to_double()), payload) catch {
+                  _ => ()
+                }
               None => ()
             }
           } else if t == p53_t_close {
             match sockets.get(stream) {
               Some(id) => {
                 sockets.remove(stream)
-                ignore(try { Ok(host.shell("tcp.end", { "id": Json::number(id.to_double()) })) } catch { e => Err(e) })
+                host.tcp_end(Json::number(id.to_double())) catch {
+                  _ => ()
+                }
               }
               None => ()
             }
@@ -647,8 +646,8 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
   match exit.val {
     None if reached.val => {
       err_write("\{@agent_runtimes.connection_lost} (ssh exited \{code_said})\n")
-      match p53_str(spec, "lostFile") {
-        Some(f) if f != "" => ignore(try { Ok(host.shell("fs.put", { "path": p53_s(f), "offset": p53_i(0), "truncate": p53_b(true) }, bytes=b"")) } catch { e => Err(e) })
+      match jtext(spec, "lostFile") {
+        Some(f) if f != "" => ignore(try { Ok(host.shell("fs.put", { "path": jstr(f), "offset": ji(0), "truncate": jb(true) }, bytes=b"")) } catch { e => Err(e) })
         _ => ()
       }
       @agent_runtimes.lost_exit
@@ -658,11 +657,11 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
       255
     }
     Some(said) => {
-      match p53_str(said, "signal") {
+      match jtext(said, "signal") {
         Some(sig) if sig != "" => ignore(kill(@drive.pid(), sig))
         _ => ()
       }
-      p53_num(said, "code").map(n => n.to_int()).unwrap_or(1)
+      jnum_of(said, "code").map(n => n.to_int()).unwrap_or(1)
     }
   }
 }
@@ -679,14 +678,14 @@ async fn p53_bridge_exchange(
   let mut pushed = 0.0
   let seconds = (ms : Double) => (ms / 1000.0).floor()
   for e in sync {
-    let here = p53_text(e, "path")
-    let to = p53_text(e, "to")
-    let append = p53_str(e, "mode") == Some("append")
-    let push = !(p53_get(e, "push") is False)
-    let back = !(p53_get(e, "back") is False)
+    let here = jtext_or_empty(e, "path")
+    let to = jtext_or_empty(e, "to")
+    let append = jtext(e, "mode") == Some("append")
+    let push = !(jfield(e, "push") is False)
+    let back = !(jfield(e, "back") is False)
     let mine = p53_sbx_scan(host, e, here, root)
     let there : Map[String, Json] = Map([])
-    match p53_get(theirs, to) {
+    match jfield(theirs, to) {
       Object(o) => for k, v in o { there[k] = v }
       _ => ()
     }
@@ -697,10 +696,7 @@ async fn p53_bridge_exchange(
       Array(xs) if i < xs.length() => xs[i]
       _ => Json::null()
     }
-    let num = (v : Json) => match v {
-      Number(n, ..) => n
-      _ => 0.0
-    }
+    let num = (v : Json) => as_num(v).unwrap_or(0.0)
     for path, v in mine {
       let kind = at(v, 0)
       let other = there.get(map(path))
@@ -711,7 +707,7 @@ async fn p53_bridge_exchange(
           None => false
         }
         if push && !same {
-          send(p53_t_put, 0, p53_packed(p53_obj([("path", p53_s(map(path))), ("link", link)]), b""))
+          send(p53_t_put, 0, p53_packed(jobj_of([("path", jstr(map(path))), ("link", link)]), b""))
         }
         continue
       }
@@ -745,7 +741,7 @@ async fn p53_bridge_exchange(
         }
         match (try { Ok(p53_file_bytes(host, path)) } catch { e => Err(e) }) {
           Ok(Some(bytes)) => {
-            send(p53_t_put, 0, p53_packed(p53_obj([("path", p53_s(map(path))), ("mtime", p53_n(mtime)), ("exec", exec)]), bytes))
+            send(p53_t_put, 0, p53_packed(jobj_of([("path", jstr(map(path))), ("mtime", jn(mtime)), ("exec", exec)]), bytes))
             pushed += size
           }
           _ => ()
@@ -770,7 +766,7 @@ async fn p53_bridge_exchange(
       } else {
         0.0
       }
-      send(p53_t_want, 0, @utf8.encode(p53_obj([("path", p53_s(path)), ("have", p53_n(have))]).stringify()))
+      send(p53_t_want, 0, @utf8.encode(jobj_of([("path", jstr(path)), ("have", jn(have))]).stringify()))
     }
   }
 }
@@ -778,17 +774,17 @@ async fn p53_bridge_exchange(
 ///|
 /// A file copied back (`receive`): to its place here.
 async fn p53_bridge_receive(host : @host.Host, sync : Array[Json], header : Json, bytes : Bytes) -> Unit {
-  let path_there = p53_text(header, "path")
-  guard sync.iter().find_first(x => p53_within(p53_text(x, "to"), path_there) && !(p53_get(x, "back") is False))
+  let path_there = jtext_or_empty(header, "path")
+  guard sync.iter().find_first(x => p53_within(jtext_or_empty(x, "to"), path_there) && !(jfield(x, "back") is False))
     is Some(e) else {
     return
   }
-  let path = p53_pjoin(p53_text(e, "path"), p53_relative(p53_text(e, "to"), path_there))
+  let path = p53_pjoin(jtext_or_empty(e, "path"), p53_relative(jtext_or_empty(e, "to"), path_there))
   let placed = try {
     Ok(
-      match p53_get(header, "link") {
+      match jfield(header, "link") {
         String(link) => p53_place_link(host, path, link)
-        _ => p53_place(host, path, bytes, p53_num(header, "mtime").unwrap_or(0.0), p53_num(header, "offset"), p53_get(header, "exec"))
+        _ => p53_place(host, path, bytes, jnum_of(header, "mtime").unwrap_or(0.0), jnum_of(header, "offset"), jfield(header, "exec"))
       },
     )
   } catch {

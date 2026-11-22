@@ -144,9 +144,12 @@ pub fn relay_tools(
           _ => ""
         }
         let url = match
-          b.ask("mesh/ways.relayUrl", [js(raw), jbool(origin.has_prefix("http:"))]) {
-          Str(u) => u
-          _ =>
+          @cloud_net.relay_url(
+            Json::string(raw),
+            insecure=origin.has_prefix("http:"),
+          ) {
+          Some(u) => u
+          None =>
             raise Failed(
               "url: https://host[:port][/path], with no account, query or fragment",
             )
@@ -179,10 +182,9 @@ pub fn relay_tools(
               None => raise e
             }
         }
-        let removed = match b.ask("mesh/ways.relayUrl", [js(raw), jbool(true)]) {
-          Null => js(raw)
-          x if is_undef(x) => js(raw)
-          x => x
+        let removed = match @cloud_net.relay_url(Json::string(raw), insecure=true) {
+          Some(u) => js(u)
+          None => js(raw)
         }
         return stringify(jobj([("removed", removed), ..list()]))
       }

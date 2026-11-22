@@ -1,0 +1,11 @@
+{
+  "counts": {
+    "at-rest-wait": {
+      "src/sfapp_pages_test/service_link_test.mbt": 1
+    },
+    "frame-walk": {
+      "src/sfapp_pages_test/files_favorite_motion_test.mbt": 1,
+      "src/sfapp_pages_test/model_pop_test.mbt": 1
+    }
+  }
+}

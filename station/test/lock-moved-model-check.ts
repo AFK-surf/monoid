@@ -19,7 +19,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { type Entry, canonical } from "../src/cloud/lock.ts";
+import { type Entry, canonical } from "../../shared/lock.ts";
 import { Cloud, personChainsOf, writeState } from "../src/cloud/state.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { bodiesGiven } from "../src/mesh/person-sync.ts";

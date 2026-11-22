@@ -97,7 +97,11 @@ function faults(read: ChatRead<J>, steps: Step[]): string[] {
     }
     // (one that names no JSON is of columns alone: walked of a covering index, no row of the table read for each row it
     // passes, the window's rows of other stations, of agents' leading, of others' among them)
-    if (!/\bjson\b/i.test(read.sql)) for (const a of chat) if (!a.covering) out.push(`reads rows of the table as it walks: ${a.step.detail}`);
+    // One that reads its rows' JSON by their rowids after its walk (the archive: its first rows found of an index, then
+    // what it shows of each read of the table) walks of a covering index all the same: the rows it walks past (another
+    // station's, one read apart, those past its LIMIT tied on its order) read no page of the table, only those it found.
+    const byRowid = chat.some((a) => a.byRowid);
+    if (!/\bjson\b/i.test(read.sql) || byRowid) for (const a of chat) if (!a.byRowid && !a.covering) out.push(`reads rows of the table as it walks: ${a.step.detail}`);
   } else {
     for (const a of chat) if (!a.covering) out.push(`reads rows of the table: ${a.step.detail}`);
   }
@@ -158,6 +162,10 @@ test("a_plan_that_walks_a_station_or_sorts_a_walk_whole_is_found", () => {
   assert.ok(faults(first, [{ id: 2, parent: 0, detail: "SEARCH c USING COVERING INDEX chat_recent (archived=?)" }, { id: 9, parent: 0, detail: "SCAN s VIRTUAL TABLE INDEX 1:" }, { id: 10, parent: 0, detail: "USE TEMP B-TREE FOR ORDER BY" }]).some((f) => f.startsWith("sorts a walk whole")));
   assert.deepEqual(faults(first, [{ id: 2, parent: 0, detail: "SEARCH c USING COVERING INDEX chat_recent (archived=?)" }, { id: 10, parent: 0, detail: "USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY" }]), []);
   assert.equal(faults(first, [{ id: 2, parent: 0, detail: "SEARCH c USING INDEX chat_recent (archived=?)" }, { id: 10, parent: 0, detail: "USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY" }]).length, 1);
+  // (the archive's, its JSON read by rowid after a walk of an index that is not covering: chat_archive before 2026-11-19)
+  const looked = { bound: "first", sql: "SELECT json_extract(c.json, '$.x') FROM (SELECT c.rowid AS r FROM chat AS c WHERE c.archived = 1 ORDER BY coalesce(c.archived_at, 0) DESC LIMIT ?) AS w JOIN chat AS c ON c.rowid = w.r" } as ChatRead<J>;
+  assert.equal(faults(looked, [{ id: 2, parent: 0, detail: "CO-ROUTINE w" }, { id: 3, parent: 2, detail: "SEARCH c USING INDEX chat_archive (archived=?)" }, { id: 4, parent: 0, detail: "SCAN w" }, { id: 5, parent: 0, detail: "SEARCH c USING INTEGER PRIMARY KEY (rowid=?)" }]).length, 1);
+  assert.deepEqual(faults(looked, [{ id: 2, parent: 0, detail: "CO-ROUTINE w" }, { id: 3, parent: 2, detail: "SEARCH c USING COVERING INDEX chat_archive (archived=? AND archived_mark=?)" }, { id: 4, parent: 0, detail: "SCAN w" }, { id: 5, parent: 0, detail: "SEARCH c USING INTEGER PRIMARY KEY (rowid=?)" }]), []);
   const count = { bound: "count", sql: "SELECT count(*) FROM chat WHERE station = ? AND archived = 0" } as ChatRead<J>;
   assert.equal(faults(count, [{ id: 2, parent: 0, detail: "SEARCH chat USING INDEX chat_ord (station=? AND archived=?)" }]).length, 1);
   assert.deepEqual(faults(count, [{ id: 2, parent: 0, detail: "SEARCH chat USING COVERING INDEX chat_listed (station=? AND archived=?)" }]), []);

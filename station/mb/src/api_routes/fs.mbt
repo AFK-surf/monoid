@@ -47,7 +47,7 @@ pub async fn Admin::fs(self : Admin, call : String, args : Array[JV]) -> JV {
 
 ///|
 pub async fn Admin::read_file(self : Admin, path : String) -> Bytes {
-  bytes_of(self.fs("readFile", [js(path)])).unwrap_or(b"")
+  self.backend.ask_bytes("fs.readFile", [js(path)]).unwrap_or(b"")
 }
 
 ///|
@@ -57,24 +57,24 @@ pub async fn Admin::mkdirs(self : Admin, path : String) -> Unit {
 
 ///|
 /// What an error says as station/src/read/sessions.ts `ioMessage` says it.
-pub async fn Admin::io_message(self : Admin, e : Error) -> String {
+pub fn Admin::io_message(self : Admin, e : Error) -> String {
+  ignore(self)
   let said = match e {
     Thrown(_, said) => said
     _ => jobj([("message", js(message_of(e)))])
   }
-  jstr(Some(self.backend.ask("read/sessions.ioMessage", [said]))).unwrap_or("")
+  match jstr(said.get("code")) {
+    Some("ENOENT") => "No such file or directory (os error 2)"
+    Some("EACCES") => "Permission denied (os error 13)"
+    Some("EISDIR") => "Is a directory (os error 21)"
+    Some("EPERM") => "Operation not permitted (os error 1)"
+    _ => jstr(said.get("message")).unwrap_or("")
+  }
 }
 
 ///|
 /// A stream's next piece, as the backend gives it (`{"$stream": id}` read on with `$stream.next`).
 pub fn Admin::stream_of(self : Admin, v : JV) -> async () -> Bytes? {
   let id = v.get("$stream").unwrap_or(Null)
-  async fn() {
-    let piece = self.backend.ask("$stream.next", [id])
-    if nullish(piece) {
-      None
-    } else {
-      bytes_of(piece)
-    }
-  }
+  async fn() { self.backend.ask_bytes("$stream.next", [id]) }
 }

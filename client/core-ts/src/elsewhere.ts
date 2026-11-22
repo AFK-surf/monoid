@@ -5,6 +5,7 @@
 // transcripts being read again to find them.
 import { args, epochMs, toolName } from "./activity.ts";
 import { parsePrompt } from "./history.ts";
+import { sentHead } from "./sent-from.ts";
 import * as format from "./format.ts";
 import { isOwnChannel } from "./titles.ts";
 
@@ -110,7 +111,10 @@ export function readItem(i: number, e: J): { said: Said[] } | { result: { call: 
   if (e?.kind === "tool_result") return { result: { call: typeof e.callId === "string" ? e.callId : null, ...outcome(e) } };
   if (e?.kind === "user" && typeof e.text === "string") {
     const said = parsePrompt(e.text)[0].flatMap((m, k): Said[] => {
-      if (!m.slack || m.text.trim() === "") return [];
+      // Another chat's agent's letter (session_send) is given as if from the thread, but was never said in Slack; the
+      // first message of a chat it opened (chat_create) was.
+      const sent = m.agent ? sentHead(m.text) : null;
+      if (!m.slack || m.text.trim() === "" || (sent !== null && !sent.opened)) return [];
       // When it was said in Slack (its ts), else when the agent was given it.
       const ts = Number(m.ts);
       const to = m.thread ?? "";

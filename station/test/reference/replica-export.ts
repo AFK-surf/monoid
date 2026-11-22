@@ -541,14 +541,15 @@ export class Exporter {
   #hashed(path: string): { hash: string; size: number } | null {
     let st;
     try {
-      st = statSync(path); // sync: in the export's own thread (worker.ts)
+      st = statSync(path, { bigint: true }); // sync: in the export's own thread (worker.ts)
     } catch {
       return null;
     }
     if (!st.isFile()) return null;
     const known = this.#state.prepare("SELECT size, mtime, hash FROM files WHERE path = ?").get(path) as { size: number; mtime: number; hash: string } | undefined;
-    const mtime = Math.floor(st.mtimeMs);
-    if (known !== undefined && known.size === st.size && known.mtime === mtime) return { hash: known.hash, size: known.size };
+    const size = Number(st.size);
+    const mtime = Number(st.mtimeNs / 1_000_000n);
+    if (known !== undefined && known.size === size && known.mtime === mtime) return { hash: known.hash, size: known.size };
     const h = createHash("sha256");
     const fd = openSync(path, "r"); // sync: in the export's own thread (worker.ts)
     try {
@@ -558,8 +559,8 @@ export class Exporter {
       closeSync(fd); // sync: in the export's own thread (worker.ts)
     }
     const hash = h.digest("hex");
-    this.#state.prepare("INSERT INTO files (path, size, mtime, hash) VALUES (?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, hash = excluded.hash").run(path, st.size, mtime, hash);
-    return { hash, size: st.size };
+    this.#state.prepare("INSERT INTO files (path, size, mtime, hash) VALUES (?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, hash = excluded.hash").run(path, size, mtime, hash);
+    return { hash, size };
   }
 
   /// Batches of what `out` says (as many as BATCH_BYTES makes it), then the head that names them; folded as batches

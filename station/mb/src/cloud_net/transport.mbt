@@ -274,7 +274,7 @@ pub(all) struct WsIO {
 /// The cloud's transport: the pending dials, and whether it is closed. What it is given: the current entry (config.json
 /// read anew at each use) and the dial's IO.
 pub struct CloudTransport {
-  entry : () -> CloudEntry?
+  entry : () -> CloudEntry? raise NetError
   io : DialIO
   pending : Map[Int, () -> Unit]
   mut next : Int
@@ -282,7 +282,10 @@ pub struct CloudTransport {
 }
 
 ///|
-pub fn CloudTransport::new(entry : () -> CloudEntry?, io : DialIO) -> CloudTransport {
+pub fn CloudTransport::new(
+  entry : () -> CloudEntry? raise NetError,
+  io : DialIO,
+) -> CloudTransport {
   { entry, io, pending: {}, next: 0, closed: false }
 }
 
@@ -297,12 +300,19 @@ pub fn CloudTransport::dial(
     done(Err({ message: "cloud transport closed", errors: [] }))
     return fn() {  }
   }
+  // An entry config.json names wrongly fails the dial: never a direct socket in its place.
+  let entry = (self.entry)() catch {
+    e => {
+      done(Err({ message: error_words(e), errors: [] }))
+      return fn() {  }
+    }
+  }
   self.next += 1
   let id = self.next
   let cancel : Ref[() -> Unit] = Ref(fn() {  })
   let held = fn() { (cancel.val)() }
   self.pending[id] = held
-  cancel.val = dial_cloud(self.io, cloud_origin, (self.entry)(), budget, r => {
+  cancel.val = dial_cloud(self.io, cloud_origin, entry, budget, r => {
     self.pending.remove(id)
     done(r)
   })
@@ -310,7 +320,8 @@ pub fn CloudTransport::dial(
 }
 
 ///|
-/// Whether `url` goes by the entry: still.fail's canonical origin with an entry named. Raised where `url` is none.
+/// Whether `url` goes by the entry: still.fail's canonical origin with an entry named. Raised where `url` is none, and
+/// where config.json names an entry wrongly (never a direct socket in its place).
 pub fn CloudTransport::eligible(
   self : CloudTransport,
   url : String,
@@ -448,4 +459,75 @@ pub fn CloudTransport::close(self : CloudTransport) -> Unit {
 /// How many dials are pending (tests).
 pub fn CloudTransport::pending_dials(self : CloudTransport) -> Int {
   self.pending.length()
+}
+
+///|
+/// Node's `http.STATUS_CODES` reason phrase for an HTTP status code.
+pub fn http_status_text(status : Int) -> String {
+  match status {
+    100 => "Continue"
+    101 => "Switching Protocols"
+    102 => "Processing"
+    103 => "Early Hints"
+    200 => "OK"
+    201 => "Created"
+    202 => "Accepted"
+    203 => "Non-Authoritative Information"
+    204 => "No Content"
+    205 => "Reset Content"
+    206 => "Partial Content"
+    207 => "Multi-Status"
+    208 => "Already Reported"
+    226 => "IM Used"
+    300 => "Multiple Choices"
+    301 => "Moved Permanently"
+    302 => "Found"
+    303 => "See Other"
+    304 => "Not Modified"
+    305 => "Use Proxy"
+    307 => "Temporary Redirect"
+    308 => "Permanent Redirect"
+    400 => "Bad Request"
+    401 => "Unauthorized"
+    402 => "Payment Required"
+    403 => "Forbidden"
+    404 => "Not Found"
+    405 => "Method Not Allowed"
+    406 => "Not Acceptable"
+    407 => "Proxy Authentication Required"
+    408 => "Request Timeout"
+    409 => "Conflict"
+    410 => "Gone"
+    411 => "Length Required"
+    412 => "Precondition Failed"
+    413 => "Payload Too Large"
+    414 => "URI Too Long"
+    415 => "Unsupported Media Type"
+    416 => "Range Not Satisfiable"
+    417 => "Expectation Failed"
+    418 => "I'm a Teapot"
+    421 => "Misdirected Request"
+    422 => "Unprocessable Entity"
+    423 => "Locked"
+    424 => "Failed Dependency"
+    425 => "Too Early"
+    426 => "Upgrade Required"
+    428 => "Precondition Required"
+    429 => "Too Many Requests"
+    431 => "Request Header Fields Too Large"
+    451 => "Unavailable For Legal Reasons"
+    500 => "Internal Server Error"
+    501 => "Not Implemented"
+    502 => "Bad Gateway"
+    503 => "Service Unavailable"
+    504 => "Gateway Timeout"
+    505 => "HTTP Version Not Supported"
+    506 => "Variant Also Negotiates"
+    507 => "Insufficient Storage"
+    508 => "Loop Detected"
+    509 => "Bandwidth Limit Exceeded"
+    510 => "Not Extended"
+    511 => "Network Authentication Required"
+    _ => ""
+  }
 }

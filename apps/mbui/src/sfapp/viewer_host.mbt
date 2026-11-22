@@ -4,10 +4,10 @@
 
 ///|
 /// What the app gives its viewers over `src`.
-fn viewer_host_of(src : Source) -> @sf.ViewerHost {
+fn viewer_host_of(src : Source, window_w : () -> Double) -> @sf.ViewerHost {
   {
     // (in every tier: a tablet's status bar and navigation bar are over the viewer as a phone's are)
-    room: fn() { (status_top(), nav_foot()) },
+    room: fn() { (status_top_now(window_w()), nav_foot()) },
     // (at a press: kept then, what the host says of it told as it says)
     keep: fn(name, mime, bytes) { keep_bytes_now(name, mime, bytes) },
     say: fn(words) { toast_later(words) },

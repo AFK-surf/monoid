@@ -136,9 +136,7 @@ test "composer notice: a choice among a few, a quiet capsule concentric with its
           fn() { "wait" },
           fn() { "缓存已过期" },
           fn() { 24.5 },
-          choices=fn() { [("go_on", "接着聊"), ("afresh", "换新上下文")] },
-          chosen=fn() { chosen.get() },
-          choose=fn(v) { picked.push(v) },
+          choice={ choices: fn() { [("go_on", "接着聊"), ("afresh", "换新上下文")] }, chosen: fn() { chosen.get() }, choose: fn(v) { picked.push(v) }, on_open: None },
           held=fn() { held.get() },
         ),
       )

@@ -67,18 +67,20 @@ fn rail_menus_reset() -> Unit {
 /// in its place gone at once.
 fn rail_menu_node(v : @view.View, src : Source) -> Unit {
   v.reacts(fn() { wide.rail_menu.get() }, fn(m) {
-    match m {
-      Some((place, from)) => {
-        rail_menu_count.val += 1
-        let n = rail_menu_count.val
-        // (those gone their way out let go of as another opens: never as one goes, what it is let go in)
-        let left = rail_menus.untracked().filter(fn(x) { !rail_menus_gone.contains(x.n) })
-        rail_menus_gone.clear()
-        rail_menus.set(left + [{ n, place, from }])
-        rail_menu_now.set(n)
+    @view.transition(within=v, fn() {
+      match m {
+        Some((place, from)) => {
+          rail_menu_count.val += 1
+          let n = rail_menu_count.val
+          // (those gone their way out let go of as another opens: never as one goes, what it is let go in)
+          let left = rail_menus.untracked().filter(fn(x) { !rail_menus_gone.contains(x.n) })
+          rail_menus_gone.clear()
+          rail_menus.set(left + [{ n, place, from }])
+          rail_menu_now.set(n)
+        }
+        None => rail_menu_now.set(0)
       }
-      None => rail_menu_now.set(0)
-    }
+    })
   })
   v.each(fn() { rail_menus.get() }, fn(o) { o.n }, fn(cell, o) {
     // (over the window, as what it holds is)

@@ -260,7 +260,7 @@ pub fn drive_pane_node(
 /// to open it (pressed, it opens). A picture or a text no taller than 60% of the window; under a list (`fixed`), a
 /// quarter of it.
 fn fpane_body_node(parent : @view.View, e : DvEntry, way : String, open : () -> Unit, fixed : Bool) -> Unit {
-  let room = fn() { parent.window().1 * (if fixed { fpane_below_tall } else { fpane_most_tall }) }
+  let room = fn() { parent.window_h() * (if fixed { fpane_below_tall } else { fpane_most_tall }) }
   parent.pick(fn() { if fpane.failed.get() { "failed" } else { way } }, at_once=true, fn(b, w) {
     match w {
       "failed" =>
@@ -510,26 +510,6 @@ let fpane_actions : @ui.Style = @ui.css("row w=Full gap=S1_5")
 ///|
 /// A kind's mark's corner (the field's: Xl, 12), its press rippling round it.
 let fpane_mark_corner : Double = 12.0
-
-///|
-/// What the file is shown as in a preview (fpane_way's: "picture", "text", or ""), for a chat's 文件 tab's (sfdesk's).
-pub fn preview_way(e : DvEntry) -> String {
-  fpane_way(e)
-}
-
-///|
-/// The file read as a preview shows it (fpane_read's), once a file: for a chat's 文件 tab's (sfdesk's), from what is
-/// told once its build is over.
-pub fn preview_read(src : Source, station : String, root : String, path : String, e : DvEntry, way : String) -> Unit {
-  fpane_read(src, station, root, path, e, way)
-}
-
-///|
-/// What the preview has read of the file shown, as it is now: its picture's key ("" none yet), its text's start, whether
-/// it could not be read.
-pub fn preview_read_now() -> (String, String?, Bool) {
-  (fpane.picture.get(), fpane.text.get(), fpane.failed.get())
-}
 
 ///|
 /// The start of a text a preview shows (TEXT_PART).

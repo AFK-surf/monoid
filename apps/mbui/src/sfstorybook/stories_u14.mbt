@@ -2,6 +2,24 @@
 // how this device reaches a station in both looks, and a card of the stations' list, each beside its states.
 
 ///|
+/// A relay of the workspace's own, named by its whole address.
+fn u14_net_relay() -> Json {
+  u14_net("中继 relay.pvg-office-4.monoid-afk.dev", "3%", "420 ms", "amber")
+}
+
+///|
+/// `net` in `look` in boxes as wide as a phone's card's words are: 326 (a phone 390 wide), 256 (one 320 wide).
+fn u14_net_phones(card : @view.View, net : Json, look : @sf.NetLook) -> Unit {
+  for w in [326.0, 256.0] {
+    card.box(fn(phone) {
+      phone.width(Is(Some(w))) |> ignore
+      @sf.station_net_line_node(phone, fn() { Some(net) }, look~)
+    })
+    |> ignore
+  }
+}
+
+///|
 /// A connection as the core says it: `path`, its loss and round trip at `level`.
 fn u14_net(path : String, loss : String, rtt : String, level : String) -> Json {
   let o : Map[String, Json] = { "path": Json::string(path), "up": "1.2 KB/s", "down": "36 KB/s" }
@@ -27,7 +45,7 @@ fn stories_u14() -> Array[Story] {
         ("station_net_node.mbt", "level_figure_style"),
       ],
       play: None,
-      about: "本设备到一台 station 的连接：左边是怎么连的、丢包和往返延迟，右边是上下行速度；一行放不下时速度折到下一行，数字不截断，只截「当前延迟」几个字。数字按级别着色：amber 用警示墨色，red 用危险色。Card 是 station 列表卡片上的样子，Page 是 station 页资源区里的样子，Peek 是对话里悬停 station 时卡片上的样子；还没读到时画一条假的，作骨架。",
+      about: "本设备到一台 station 的连接：左边是怎么连的、丢包和往返延迟，右边是上下行速度；一行放不下时速度折到下一行，数字和速度不截断，一行里只截一处：路径长（自建中继，带地址，超过 6 个字）时只截路径，否则只截「当前延迟」几个字，「直连」「中继」这样的短路径不截。数字按级别着色：amber 用警示墨色，red 用危险色。Card 是 station 列表卡片上的样子，Page 是 station 页资源区里的样子，Peek 是对话里悬停 station 时卡片上的样子；还没读到时画一条假的，作骨架。",
       cases: [
         (
           "分级数字",
@@ -53,15 +71,26 @@ fn stories_u14() -> Array[Story] {
           },
         ),
         (
-          "Page（station 页的资源区）",
+          "Card（自建中继长地址 / 326 / 256 手机卡）",
           fn(card) {
-            @sf.station_net_line_node(card, fn() { Some(u14_net("中继", "3%", "420 ms", "amber")) }, look=Page)
+            @sf.station_net_line_node(card, fn() { Some(u14_net_relay()) })
+            u14_net_phones(card, u14_net_relay(), Card)
           },
         ),
         (
-          "Peek（读到的 / 骨架）",
+          "Page（station 页的资源区）",
+          fn(card) {
+            @sf.station_net_line_node(card, fn() { Some(u14_net("中继", "3%", "420 ms", "amber")) }, look=Page)
+            @sf.station_net_line_node(card, fn() { Some(u14_net_relay()) }, look=Page)
+            u14_net_phones(card, u14_net_relay(), Page)
+          },
+        ),
+        (
+          "Peek（读到的 / 自建中继长地址 / 骨架）",
           fn(card) {
             @sf.station_net_line_node(card, fn() { Some(u14_net("中继", "3%", "420 ms", "amber")) }, look=Peek)
+            @sf.station_net_line_node(card, fn() { Some(u14_net_relay()) }, look=Peek)
+            u14_net_phones(card, u14_net_relay(), Peek)
             @sf.waiting_node(card, fn(w) { @sf.station_net_line_node(w, fn() { None }, look=Peek) })
           },
         ),

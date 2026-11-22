@@ -11,7 +11,8 @@
 // large picture of a still screen) lowers nothing. It goes up again a step at a time while nothing
 // is lowered, to the source's own. A view starts at START_RATE (its first frame, a whole picture, is its largest: on a
 // narrow link one at the source's own rate held the view up for a second) and goes up by START_UP each step until it
-// is first lowered.
+// is first lowered; a link known to carry more as the view opens (`startRate`: a direct way of a short round trip, a
+// near relay) starts higher, its first picture sharp at once.
 import { wall } from "../ops/fibers.ts";
 
 /// Frames sent and not acknowledged, at most: before the link's round trip is known, and however short it is.
@@ -23,25 +24,61 @@ export const MAX_UNACKED = 16;
 export const QUEUE_MS = 30;
 export const QUEUE_SHARE = 0.5;
 export const queueMs = (rtt: number) => Math.max(QUEUE_MS, rtt * QUEUE_SHARE);
+/// How much longer a key frame on the way (sent and not acknowledged, or acknowledged now) may wait: a whole picture
+/// (a game's scene cut, a key frame asked) is many times a moving one's, and its taking longer to go is its size, not
+/// a queue in front of the link.
+export const KEY_QUEUE_MS = 25;
 /// How long a round trip counts towards the quickest (the link changes: another way, a relay).
 export const RTT_WINDOW_MS = 10_000;
+/// Most client-side jitter hold time (ms) credited to the viewer's in-flight budget before pacing pauses.
+export const VIEWER_HOLD_LIMIT_MS = 100;
 /// What went through is counted over this long.
 export const DELIVERY_WINDOW_MS = 1000;
 /// The lowest bit rate asked; down to `DOWN` of what went through (and no lower than `CUT` of what it was) once frames
 /// stayed held back for two round trips and `HOLD_MS` (a packet lost and sent again holds the frames behind it for
 /// about a round trip, then they all come: that is not the link being too slow), and again each round trip and
 /// `HOLD_MS` it stays; up by `UP` each `UP_EVERY_MS` once nothing queued for `UP_AFTER_MS`, by `UP_FAST` once nothing
-/// queued for `UP_FAST_AFTER_MS` (a link with room climbs back sooner).
+/// queued for `UP_FAST_AFTER_MS` (a link with room climbs back sooner). Where what went through was under `USED` of the
+/// rate (a dark or still scene made little, then one large picture held the rest back), what went through says how
+/// little the screen needed, not how little the link carries: the first lowering of such a hold goes only to
+/// `LIGHT_CUT` of the rate (a game's scene cut after a menu was halved, then sharpened again, and so on); held still
+/// after it, the link is too slow, and it goes down by what went through again.
 export const MIN_RATE = 300_000;
 export const DOWN = 0.85;
-export const CUT = 0.5;
+export const CUT = 0.65;
+export const LIGHT_CUT = 0.8;
 export const HOLD_MS = 200;
-export const UP = 1.15;
+export const UP = 1.2;
 export const UP_FAST = 1.3;
 export const UP_FAST_AFTER_MS = 2000;
 export const UP_EVERY_MS = 500;
 export const UP_AFTER_MS = 1000;
 export const START_RATE = 1_500_000;
+/// Where the view's link is known as it opens (its connection's selected way, else its first direct one, else its
+/// first): a direct way within LAN_RTT_MS starts at LAN_RATE (a LAN, a near direct link), within NEAR_RTT_MS at
+/// NEAR_RATE, within FAR_RTT_MS (or not measured yet) at DIRECT_RATE; a relay within RELAY_RTT_MS at RELAY_RATE; else
+/// START_RATE. A link that carries less lowers it as before (the pace's `#queuing`), a few round trips on.
+export const LAN_RTT_MS = 12;
+export const LAN_RATE = 25_000_000;
+export const NEAR_RTT_MS = 40;
+export const NEAR_RATE = 12_000_000;
+export const FAR_RTT_MS = 100;
+export const DIRECT_RATE = 4_000_000;
+export const RELAY_RTT_MS = 35;
+export const RELAY_RATE = 4_000_000;
+export type StartPath = { selected?: boolean; relay?: string | null; ip?: string | null; rttMs?: number | null };
+const directPath = (p: StartPath) => !p.relay && typeof p.ip === "string" && p.ip !== "";
+export function startRate(paths?: readonly StartPath[]): number {
+  if (!paths || paths.length === 0) return START_RATE;
+  const p = paths.find((w) => w.selected === true) ?? paths.find(directPath) ?? paths[0]!;
+  const rtt = typeof p.rttMs === "number" && Number.isFinite(p.rttMs) && p.rttMs > 0 ? p.rttMs : null;
+  if (directPath(p)) {
+    if (rtt !== null && rtt <= LAN_RTT_MS) return LAN_RATE;
+    if (rtt !== null && rtt <= NEAR_RTT_MS) return NEAR_RATE;
+    return rtt === null || rtt <= FAR_RTT_MS ? DIRECT_RATE : START_RATE;
+  }
+  return rtt !== null && rtt <= RELAY_RTT_MS ? RELAY_RATE : START_RATE;
+}
 /// What went through is counted only once acknowledgements have come for this long.
 export const MEASURED_MS = 500;
 export const START_UP = 1.5;
@@ -49,19 +86,24 @@ export const START_UP = 1.5;
 /// The bit rate a source encodes a picture of this size at when not asked (still.fail Helper's, stillfail-screen's).
 export const ownRate = (width: number, height: number) => Math.max(1_000_000, width * height * 3);
 
-/// The 画质 a view asks (the client's `quality`): none for 自动 or a client from before it.
-export type Quality = "smooth" | "hd" | "original";
-/// The most a view is asked at, whatever its 画质.
-export const MAX_RATE = 60_000_000;
+/// The 画质 a view asks (the client's `quality`): none for 自动 or a client from before it. `qhd` (2K) is 原画's size
+/// (never made smaller) at 4:2:0.
+export type Quality = "smooth" | "hd" | "qhd" | "original";
+export const QUALITIES: readonly Quality[] = ["smooth", "hd", "qhd", "original"];
+/// The most a view is asked at, whatever its 画质 and 帧率.
+export const MAX_RATE = 100_000_000;
 /// The most a picture of this size is asked at: its pixels × 16 a second (at most MAX_RATE, at least its own: 1080p 33
-/// Mbit/s), 流畅 × 6 (12.4). 自动 is the best the link carries, as 原画 and 高清 are (they choose the size alone): the
-/// link lowers it where it carries less. On a LAN a desktop's text at its own rate (× 3, about 0.05 bit a pixel at 60
-/// frames a second) stayed soft as it moved, and at 原画's × 8 too (2026-11-06); Moonlight asks 20 Mbit/s for 1080p
-/// at 60.
-export function rateCeiling(width: number, height: number, quality?: Quality): number {
+/// Mbit/s), 2K and 原画 × 20 (1440p 73.7), 流畅 × 6 (12.4). 自动 is the best the link carries, as 原画 and 高清 are (they
+/// choose the size alone): the link lowers it where it carries less. On a LAN a desktop's text at its own rate (× 3,
+/// about 0.05 bit a pixel at 60 frames a second) stayed soft as it moved, and at 原画's × 8 too (2026-11-06); Moonlight
+/// asks 20 Mbit/s for 1080p at 60. A 帧率 over 60 (`fps`) has as many bits a picture fewer to go by: up by a third of
+/// what it adds over 60 per 60 (90: × 1.25, 120: × 1.5), at most FPS_SCALE_MOST.
+export const FPS_SCALE_MOST = 1.6;
+export const fpsScale = (fps?: number) => (fps !== undefined && fps > 60 ? Math.min(FPS_SCALE_MOST, 1 + (fps - 60) / 120) : 1);
+export function rateCeiling(width: number, height: number, quality?: Quality, fps?: number): number {
   const own = ownRate(width, height);
-  const per = quality === "smooth" ? 6 : 16;
-  return Math.max(own, Math.min(MAX_RATE, width * height * per));
+  const per = quality === "smooth" ? 6 : quality === "qhd" || quality === "original" ? 20 : 16;
+  return Math.max(own, Math.min(MAX_RATE, width * height * per * fpsScale(fps)));
 }
 
 /// The frame rates a view may ask (the client's `fps`, its 帧率): at most this many frames a second, fewer where the
@@ -124,9 +166,11 @@ export const loopStall = new LoopStall();
 export class Pacer {
   /// The frames sent and not acknowledged, oldest first: their timestamps, sizes, when they went and how long the
   /// loop had stood still by then.
-  readonly #out: { ts: number; bytes: number; at: number; stall: number }[] = [];
-  /// Round trips measured, oldest first.
+  readonly #out: { ts: number; bytes: number; at: number; stall: number; key: boolean }[] = [];
+  /// Round trips measured (net of viewer wait), oldest first.
   #trips: { at: number; ms: number }[] = [];
+  /// Client-reported viewer wait times (ms) over RTT_WINDOW_MS, oldest first.
+  #viewerWaits: { at: number; ms: number }[] = [];
   /// The frames acknowledged lately: when, and their sizes.
   #through: { at: number; bytes: number }[] = [];
   /// The bit rate asked of the source, and the most it is asked (its own); null before its size is known.
@@ -173,31 +217,53 @@ export class Pacer {
     this.#rate = Math.min(this.#rate ?? rate, rate);
   }
 
-  sent(ts: number, bytes: number) {
+  /// A frame went (`key`: a key frame, a whole picture).
+  sent(ts: number, bytes: number, key = false) {
     const now = this.#now();
-    this.#out.push({ ts, bytes, at: now, stall: this.#stalled() });
+    this.#out.push({ ts, bytes, at: now, stall: this.#stalled(), key });
     if (this.#gap !== null) this.#due = Math.max(this.#due + this.#gap, now + this.#gap / 2);
   }
 
+  /// The viewer cannot use the frames on the way and asked for a new key frame. Do not count them as delivered, or
+  /// let their missing acknowledgements hold the replacement behind them.
+  lost() {
+    this.#out.length = 0;
+  }
+
   /// The client decoded every frame up to `ts`; the newest of them gives a round trip.
-  acked(ts: number) {
+  /// `viewerWaitMs`: how long (ms) the client held the frame (e.g. jitter buffer) before showing or dropping it.
+  acked(ts: number, viewerWaitMs = 0) {
     const now = this.#now();
     let newest: { at: number; stall: number } | null = null;
+    let key = false;
     while (this.#out.length > 0 && this.#out[0]!.ts <= ts) {
       const f = this.#out.shift()!;
       this.#through.push({ at: now, bytes: f.bytes });
       newest = f;
+      key ||= f.key;
     }
     if (newest === null) return;
     this.#first = Math.min(this.#first, now);
     while (this.#through.length > 0 && this.#through[0]!.at < now - DELIVERY_WINDOW_MS) this.#through.shift();
-    const trip = Math.max(0, now - newest.at - (this.#stalled() - newest.stall));
+    const totalTrip = Math.max(0, now - newest.at - (this.#stalled() - newest.stall));
+    const wait = Number.isFinite(viewerWaitMs) && viewerWaitMs > 0 && viewerWaitMs <= totalTrip ? viewerWaitMs : 0;
+    this.#viewerWaits.push({ at: now, ms: wait });
+    while (this.#viewerWaits.length > 1 && this.#viewerWaits[0]!.at < now - RTT_WINDOW_MS) this.#viewerWaits.shift();
+    const netTrip = Math.max(0, totalTrip - wait);
     const base = this.rtt();
-    this.#trips.push({ at: now, ms: trip });
+    this.#trips.push({ at: now, ms: netTrip });
     // The latest is kept however old: a still screen sends nothing for long.
     while (this.#trips.length > 1 && this.#trips[0]!.at < now - RTT_WINDOW_MS) this.#trips.shift();
-    if (base !== null && trip > base + queueMs(base)) this.#queuing(now);
+    if (base !== null && netTrip > base + queueMs(base) + (key ? KEY_QUEUE_MS : 0)) this.#queuing(now);
     else this.#steady(now);
+  }
+
+  /// Recent viewer hold time (ms) credited to the in-flight window, capped at VIEWER_HOLD_LIMIT_MS.
+  viewerWait(): number {
+    if (this.#viewerWaits.length === 0) return 0;
+    let max = 0;
+    for (const w of this.#viewerWaits) if (w.ms > max) max = w.ms;
+    return Math.min(VIEWER_HOLD_LIMIT_MS, max);
   }
 
   /// The quickest round trip lately, or null before one.
@@ -207,12 +273,9 @@ export class Pacer {
 
   /// Whether the next frame may go now; when not, a queue is building.
   may(): boolean {
-    if (this.#out.length === 0) return true;
-    const rtt = this.rtt();
-    if (rtt === null) return this.#out.length < START_UNACKED;
-    const now = this.#now();
-    const may = this.#out.length < MAX_UNACKED && this.#waited(now) <= rtt + queueMs(rtt);
-    if (!may) {
+    const may = this.free();
+    if (!may && this.rtt() !== null) {
+      const now = this.#now();
       // A frame held back: the link carries less than the frames (an acknowledgement late alone, a screen still or
       // changing little, holds nothing back and lowers nothing).
       this.#since ??= now;
@@ -222,13 +285,27 @@ export class Pacer {
     return may;
   }
 
+  /// Whether the next frame may go now, as `may` says, asking nothing of the pace (a frame asked of the source ahead of
+  /// its going: screens.ts `#pump`).
+  free(): boolean {
+    if (this.#out.length === 0) return true;
+    const rtt = this.rtt();
+    if (rtt === null) return this.#out.length < START_UNACKED;
+    return this.#out.length < MAX_UNACKED && this.#waited(this.#now()) <= rtt + this.viewerWait() + this.#queue(rtt);
+  }
+
+  /// The queue a view lets build in front of the link: a key frame's more while one is on the way.
+  #queue(rtt: number): number {
+    return queueMs(rtt) + (this.#out.some((f) => f.key) ? KEY_QUEUE_MS : 0);
+  }
+
   /// Whether the frames on the way wait in front of the link: the oldest not acknowledged waited longer than the round
   /// trip and the queue a view lets build. Asks nothing of the pace, as `may` does: what else goes on the view's stream
   /// (its sound) is left out while it holds, so that the pictures go first.
   backlogged(): boolean {
     if (this.#out.length <= 1) return false;
     const rtt = this.rtt();
-    return rtt !== null && this.#waited(this.#now()) > rtt + queueMs(rtt);
+    return rtt !== null && this.#waited(this.#now()) > rtt + this.viewerWait() + this.#queue(rtt);
   }
 
   /// How long the oldest frame not acknowledged has waited, the station's own loop standing still left out.
@@ -261,9 +338,13 @@ export class Pacer {
     if (this.#rate === null || now - this.#since < Math.max(HOLD_MS, 2 * rtt) || now - this.#down < rtt + HOLD_MS) return;
     // What went through is not known yet (the first frame, a whole picture, is most of it): nothing to go by.
     if (now - this.#first < MEASURED_MS) return;
+    // The first lowering of this hold (none since it began) where what went through was little of the rate.
+    const light = this.#down < this.#since;
     this.#down = now;
     const through = this.#delivered(now);
-    if (through > 0) this.#rate = Math.max(MIN_RATE, Math.min(this.#rate, Math.max(this.#rate * CUT, through * DOWN)));
+    if (through <= 0) return;
+    const to = light && through < this.#rate * USED ? this.#rate * LIGHT_CUT : Math.max(this.#rate * CUT, through * DOWN);
+    this.#rate = Math.max(MIN_RATE, Math.min(this.#rate, to));
   }
 
   /// Nothing held back for UP_AFTER_MS and two round trips: the queue gone.
@@ -288,35 +369,65 @@ export class Pacer {
 }
 
 /// A still screen sends nothing (a source makes a picture only when the screen changed), so what is shown is the last
-/// frame's picture, encoded at the rate asked then: a view's first at START_RATE, a whole screen in a few kilobytes,
+/// frame's picture, encoded at the rate asked then: a view's first at its start rate, a whole screen in a few kilobytes,
 /// stays a blur while nothing on it moves (on a Mac's desktop left alone, for minutes). Once no frame has gone for
 /// STILL_MS and the rate the pace asks has gone up past SHARPER times the one the last frame was encoded at, the same
 /// picture goes again as a key frame at it (the source's `keyframe`); its acknowledgement lets the rate go up again,
 /// and so on to the source's own: the picture gets as sharp as the link carries a few steps after the screen stopped,
-/// as a still image is refined. A screen that keeps changing never waits STILL_MS; a link that cannot carry it lowers
-/// the rate, and nothing more is sent.
-export const STILL_MS = 500;
+/// as a still image is refined. After a key frame (a picture whole, as each of those steps is) the next waits
+/// UP_EVERY_MS where that is longer: the pace goes up no more often, and a step's acknowledgement that came before it
+/// could go up again would leave the rate as it was, the picture not sent again, and nothing more come to go on from.
+/// A screen that keeps changing (a page scrolled on and on) never waits STILL_MS, and its
+/// pictures, each a change on the last key frame, stay as soft as that key frame: once MOVING_SHARPEN_MS went since
+/// the last key frame and the rate is MOVING_SHARPEN_UP times what it was encoded at, a key frame is asked at the rate
+/// now (`dueMoving`). A link that cannot carry it lowers the rate, and nothing more is sent.
+export const STILL_MS = 250;
 export const SHARPER = 1.1;
+export const MOVING_SHARPEN_MS = 2000;
+export const MOVING_SHARPEN_UP = 2.0;
 
-/// When a still screen's picture is sent again sharper (STILL_MS, SHARPER).
+/// When a still screen's picture is sent again sharper (STILL_MS, SHARPER), and a moving one's key frame asked again
+/// (MOVING_SHARPEN_MS, MOVING_SHARPEN_UP).
 export class Sharpener {
   #at = -Infinity;
   #rate: number | null = null;
+  /// Whether the last frame was a key frame.
+  #key = false;
+  /// The last key frame (or the first frame with a rate, standing for it): when, and at what rate.
+  #keyAt = -Infinity;
+  #keyRate: number | null = null;
 
-  /// A frame went at `now`, encoded at `rate` (null: a source with no rate of its own, a JPEG's).
-  sent(now: number, rate: number | null) {
+  /// A frame went at `now`, encoded at `rate` (null: a source with no rate of its own, a JPEG's); `key`: a key frame.
+  sent(now: number, rate: number | null, key = false) {
     this.#at = now;
     this.#rate = rate;
+    this.#key = key;
+    if (rate === null) {
+      this.#keyAt = -Infinity;
+      this.#keyRate = null;
+    } else if (key || this.#keyRate === null) {
+      this.#keyAt = now;
+      this.#keyRate = rate;
+    }
   }
 
-  /// How long until the screen has been still for STILL_MS (0: it has).
+  /// How long until the screen has been still for STILL_MS, or UP_EVERY_MS after a key frame (0: it has).
   left(now: number): number {
-    return Math.max(0, this.#at + STILL_MS - now);
+    return Math.max(0, this.#at + (this.#key ? Math.max(STILL_MS, UP_EVERY_MS) : STILL_MS) - now);
   }
 
   /// Whether the last frame's picture is to go again now, the pace asking `rate`.
   due(now: number, rate: number | null): boolean {
     return rate !== null && this.#rate !== null && this.left(now) === 0 && rate > this.#rate * SHARPER;
+  }
+
+  /// Whether a moving screen's key frame is to be asked now, the pace asking `rate`: taken as asked (none asked again
+  /// before MOVING_SHARPEN_MS more, however long the key frame takes to come).
+  dueMoving(now: number, rate: number | null): boolean {
+    if (rate === null || this.#keyRate === null || now - this.#keyAt < MOVING_SHARPEN_MS || rate < this.#keyRate * MOVING_SHARPEN_UP) return false;
+    this.#keyAt = now;
+    this.#keyRate = rate;
+    return true;
   }
 }
 
@@ -334,18 +445,18 @@ export const UPSIZE_MS = 3000;
 /// How large a picture a view asks of its source by the rate the pace asks: as the view asked it, or LOW_BOUNDS while
 /// the link carries a quarter or less of what a picture that size is encoded at (fewer pixels, each sharper: text that
 /// a 1080p picture at a few hundred kbit/s blurs stays readable at 720p). Back once the smaller picture's rate stays at
-/// its own. Never smaller when the view asked 原画.
+/// its own. Never smaller when the view asked 原画 or 2K.
 export class Sizer {
   readonly #now: () => number;
   #asked: { maxWidth: number; maxHeight: number };
   #low = false;
   #since: number | null = null;
-  /// 原画 asked: the picture is never made smaller (a link that carries less gets fewer frames of it).
+  /// 原画 or 2K asked: the picture is never made smaller (a link that carries less gets fewer frames of it).
   readonly #whole: boolean;
   constructor(now: () => number, asked: { maxWidth: number; maxHeight: number }, quality?: Quality) {
     this.#now = now;
     this.#asked = asked;
-    this.#whole = quality === "original";
+    this.#whole = quality === "original" || quality === "qhd";
   }
 
   get low(): boolean {
@@ -420,6 +531,11 @@ export class FrameLatency {
     this.#out.set(ts, { capture, sent: now });
   }
 
+  /// Frames the viewer gave up will not contribute latency samples.
+  lost() {
+    this.#out.clear();
+  }
+
   /// The client drew every frame up to `ts`; `rtt`: the link's quickest round trip (ms), the way back its half.
   acked(ts: number, rtt: number) {
     const now = this.#now();
@@ -456,7 +572,7 @@ export const LOSS_EVERY_MS = 1000;
 export const LOSS_WINDOW_MS = 60_000;
 export const LOSS_MIN_PACKETS = 20;
 export const LOSS_MIN_LOST = 3;
-export type LinkPath = { id?: string; selected: boolean; relay?: string | null; ip?: string | null; txPackets: number; lostPackets: number };
+export type LinkPath = { id?: string; selected: boolean; relay?: string | null; ip?: string | null; rttMs?: number | null; txPackets: number; lostPackets: number };
 
 export class LinkLoss {
   readonly #now: () => number;

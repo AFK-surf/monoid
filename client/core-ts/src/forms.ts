@@ -897,8 +897,14 @@ const PLANS: Record<string, { plan: string; provider: string }> = {
 const planOf = (runtime: string) => PLANS[runtime] ?? PLANS.claude!;
 /// Google's tile signs in a company's Google account too (Gemini Enterprise: `login.new` access agy-enterprise).
 const companyPlan = (tile: J): boolean => tile?.id === "google" && tile.hasPlan === true;
-/// How many ways a tile is connected by: a key, a plan, and Google's company plan.
-const waysOf = (tile: J): number => (tile.hasKey === true ? 1 : 0) + (tile.hasPlan === true ? 1 : 0) + (companyPlan(tile) ? 1 : 0);
+/// Google's tile signs in a Google Colab compute account where the station advertises `colab` in `profileServices`.
+const colabPlan = (tile: J): boolean => tile?.id === "google" && tile?.service === "colab";
+/// How many ways a tile is connected by: a key, a plan, Google's company plan, and Google Colab.
+const waysOf = (tile: J): number =>
+  (tile.hasKey === true ? 1 : 0) +
+  (tile.hasPlan === true ? 1 : 0) +
+  (companyPlan(tile) ? 1 : 0) +
+  (colabPlan(tile) ? 1 : 0);
 
 function usesOf(source: providers.Source, endpoint: string | null, protocol: string | null, runtimes: string[]): string[] {
   const own = source.endpointRequired ? (endpoint ?? providers.example(source.id)) : null;
@@ -907,7 +913,7 @@ function usesOf(source: providers.Source, endpoint: string | null, protocol: str
   return at !== null ? usesNames(providers.uses(at, source.id)).filter((u) => u === "decision" || runtimes.includes(u)) : [];
 }
 
-function tileOf(source: providers.Source, hasKey: boolean, hasPlan: boolean, runtimes: string[]): J {
+function tileOf(source: providers.Source, hasKey: boolean, hasPlan: boolean, runtimes: string[], hasColab = false): J {
   const kind = source.legacy === "opencode-go" ? "opencode-go" : source.legacy === "anthropic-api" ? "anthropic-api" : "api-provider";
   // xAI's plan (SuperGrok) runs Grok Build; Google's (a Google account signed in to) the Antigravity CLI.
   const runtime = source.id === "openai" ? "codex" : source.id === "anthropic" ? "claude" : source.id === "xai" && hasPlan ? "grok" : source.id === "google" && hasPlan ? "agy" : null;
@@ -917,10 +923,11 @@ function tileOf(source: providers.Source, hasKey: boolean, hasPlan: boolean, run
   const cn = providers.chinaOf(source.id);
   return {
     id: source.id,
-    name: source.name,
+    name: source.id === "google" ? "Google" : source.name,
     group: source.group,
     mark: source.mark,
     kind,
+    ...(hasColab ? { service: "colab" } : {}),
     hasKey,
     hasPlan,
     runtime,
@@ -929,7 +936,7 @@ function tileOf(source: providers.Source, hasKey: boolean, hasPlan: boolean, run
     protocols: source.protocols ?? [],
     keyOptional: source.keyOptional === true,
     uses,
-    usesText: usesTextOf(uses),
+    usesText: uses.length === 0 && hasColab ? t("core-views.present.uses.colab") : usesTextOf(uses),
     regions: cn !== null ? [{ id: source.id, label: t("core-views.flow.region.global") }, { id: cn, label: t("core-views.flow.region.china") }] : [],
   };
 }
@@ -949,14 +956,15 @@ function planTile(runtime: string): J {
 /// the open platform's key beside it; Kimi Code has no tile of its own). xAI
 /// has a plan (SuperGrok) where the station runs Grok Build, Google one (its account signed in to) where it runs the
 /// Antigravity CLI; Cursor and Devin, last of the makers, where it runs them.
-export function groups(supported: string[] | null, runtimes: string[] = format.RUNTIMES, console = false): J[] {
+export function groups(supported: string[] | null, runtimes: string[] = format.RUNTIMES, console = false, services: string[] = []): J[] {
   const listed = (id: string) => supported !== null && supported.includes(id);
   const out: J[] = [];
   for (const group of providers.GROUPS) {
     const tiles = providers.SOURCES.filter((s) => s.group === group && !providers.isChinaVariant(s.id) && s.id !== "kimi-code").flatMap((s) => {
       const hasKey = s.legacy !== undefined || listed(s.id);
       const hasPlan = s.id === "openai" || s.id === "anthropic" || (s.id === "opencode-go" && console) || (s.id === "moonshotai" && listed("kimi-code")) || (s.id === "xai" && runtimes.includes("grok")) || (s.id === "google" && runtimes.includes("agy"));
-      return hasKey || hasPlan ? [tileOf(s, hasKey, hasPlan, runtimes)] : [];
+      const hasColab = s.id === "google" && services.includes("colab");
+      return hasKey || hasPlan || hasColab ? [tileOf(s, hasKey, hasPlan, runtimes, hasColab)] : [];
     });
     if (group === "labs") for (const r of PLAN_ALONE) if (runtimes.includes(r)) tiles.push(planTile(r));
     if (group === "local") {
@@ -972,6 +980,11 @@ export function groups(supported: string[] | null, runtimes: string[] = format.R
 
 const consoleOf = (overview: J): boolean => get(overview, "consoleSignIn") === true;
 
+function servicesOf(overview: J): string[] {
+  const list = get(overview, "profileServices");
+  return Array.isArray(list) ? list.filter((s): s is string => typeof s === "string" && s !== "") : [];
+}
+
 function supportedOf(overview: J): string[] | null {
   const list = get(overview, "apiProviders");
   return Array.isArray(list) ? list.flatMap((p) => (typeof get(p, "id") === "string" ? [p.id] : [])) : null;
@@ -982,7 +995,7 @@ const blank = () => ({ provider: "", method: "", endpoint: "", protocol: "", reg
 
 function profileView(station: string, draft: J, overview: J, manages = false): J {
   const runtimes = stationRuntimes(overview);
-  const gs = groups(supportedOf(overview), runtimes, consoleOf(overview));
+  const gs = groups(supportedOf(overview), runtimes, consoleOf(overview), servicesOf(overview));
   const tile = typeof draft.provider === "string" ? findTile(gs, draft.provider) : undefined;
   const method = typeof draft.method === "string" && draft.method !== "" ? draft.method : null;
   const out: J = {
@@ -1003,14 +1016,21 @@ function profileView(station: string, draft: J, overview: J, manages = false): J
     const plan = opencode ? "OpenCode Go" : kimi ? "Kimi Code" : planOf(runtime).plan;
     out.step = "method";
     out.choices = [
-      { id: "plan", title: t("core-views.flow.plan", { plan }), hint: t(`core-views.flow.plan_hint.${opencode ? "opencode" : kimi ? "kimi" : runtime}`) },
+      ...(tile.hasPlan === true ? [{ id: "plan", title: t("core-views.flow.plan", { plan }), hint: t(`core-views.flow.plan_hint.${opencode ? "opencode" : kimi ? "kimi" : runtime}`) }] : []),
       ...(companyPlan(tile) ? [{ id: "enterprise", title: t("core-views.flow.enterprise"), hint: t("core-views.flow.enterprise_hint") }] : []),
-      ...(tile.hasKey === true ? [{ id: "key", title: t("core-views.flow.key_card"), hint: t("core-views.flow.key_card_hint", { name }) }] : []),
+      ...(colabPlan(tile) ? [{ id: "colab", title: t("core-views.flow.colab"), hint: t("core-views.flow.colab_hint") }] : []),
+      ...(tile.hasKey === true ? [{ id: "key", title: t("core-views.flow.key_card"), hint: t("core-views.flow.key_card_hint", { name: tile.id === "google" ? "Google Gemini" : name }) }] : []),
     ];
     return out;
   }
   out.step = "connect";
   const kind = str(tile.kind, "api-provider");
+  if (method === "colab" && colabPlan(tile)) {
+    out.title = t("core-views.flow.connect", { name: "Google Colab" });
+    out.signIn = { service: "colab", provider: "Google Colab" };
+    out.usesLine = t("core-views.flow.uses_colab");
+    return out;
+  }
   if (method === "enterprise" && companyPlan(tile)) {
     out.usesLine = t("core-views.flow.uses", { uses: runtimeName(runtime) });
     const install = present.installView(runtime, arr(get(overview, "updates")), manages);
@@ -1117,19 +1137,19 @@ export class ProfileFlows {
     if (action === "edit") {
       if (d.pending) throw CoreError.invalid(t("core-views.flow.wait"));
       const o = overviewOf(this.#store, station);
-      const gs = groups(supportedOf(o), stationRuntimes(o), consoleOf(o));
+      const gs = groups(supportedOf(o), stationRuntimes(o), consoleOf(o), servicesOf(o));
       if (!isObject(patch)) return null;
       if (typeof patch.provider === "string") {
         if (patch.provider === "") d.value = blank();
         else {
           const tile = findTile(gs, patch.provider);
           if (tile === undefined) throw CoreError.invalid(t("core-views.flow.unknown_provider"));
-          const method = waysOf(tile) > 1 ? "" : tile.hasPlan === true ? "plan" : "key";
+          const method = waysOf(tile) > 1 ? "" : tile.hasPlan === true ? "plan" : colabPlan(tile) ? "colab" : "key";
           d.value = { ...blank(), provider: patch.provider, method };
         }
       }
       if (typeof patch.method === "string") {
-        if (!["", "plan", "key", "enterprise"].includes(patch.method)) throw CoreError.invalid(t("core-views.flow.unknown_provider"));
+        if (!["", "plan", "key", "enterprise", "colab"].includes(patch.method)) throw CoreError.invalid(t("core-views.flow.unknown_provider"));
         d.value.method = patch.method;
       }
       if (patch.back === true) {

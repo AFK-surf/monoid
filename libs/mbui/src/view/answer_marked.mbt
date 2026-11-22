@@ -103,10 +103,19 @@ pub fn Tree::on_way_at(self : Tree, at : Int, t : Double, within? : Int = -1) ->
     if q == within {
       return false
     }
-    let p = n.parent
-    if p >= 0 && p < self.nodes.length() {
+    let mut p = n.parent
+    if !n.slot && n.flex.style.position == @flex.PositionType::Absolute {
+      // (laid over what holds it (View::over): placed by the box it is in, past the slots between, never pushed by what
+      // flows beside it or beside them; what moves that box carries it)
+      while p >= 0 && p < self.nodes.length() && self.nodes[p].slot {
+        if p == within {
+          break
+        }
+        p = self.nodes[p].parent
+      }
+    } else if p >= 0 && p < self.nodes.length() {
       for k in self.nodes[p].kids {
-        if k != q && k >= 0 && k < self.nodes.length() && self.comes_end_in(k) > t {
+        if k != q && k >= 0 && k < self.nodes.length() && self.comes_end_flow(k) > t {
           return true
         }
       }
@@ -114,6 +123,25 @@ pub fn Tree::on_way_at(self : Tree, at : Int, t : Double, within? : Int = -1) ->
     q = p
   }
   false
+}
+
+///|
+/// When the last way in or out of node `at`, or of anything in it, in the flow of what holds it, is over (-1 none): what
+/// is laid over what holds it (View::over) takes no room in that flow, so its way carries nothing beside it.
+fn Tree::comes_end_flow(self : Tree, at : Int) -> Double {
+  let n = self.nodes[at]
+  if !n.slot && n.flex.style.position == @flex.PositionType::Absolute {
+    return -1.0
+  }
+  let e = n.flex.style.come_ends
+  let mut end = if e == e { e } else { -1.0 }
+  for k in n.kids {
+    let r = self.comes_end_flow(k)
+    if r > end {
+      end = r
+    }
+  }
+  end
 }
 
 ///|

@@ -1,7 +1,7 @@
 //! One bounded outgoing subscription per approved public root. A subscription
 //! publishes only our descriptor; it never receives the workspace directory.
 use super::{State, restrict};
-use crate::{announcement::Descriptor, global_registration::Registration, identity::Binding, public_service::Subscription, runtime::Peer};
+use crate::{announcement::{Descriptor, bounded_address}, global_registration::Registration, identity::Binding, public_service::Subscription, runtime::Peer};
 use iroh::{Endpoint, EndpointId, Watcher};
 use std::{sync::{Arc, Weak}, time::Duration};
 use tokio::sync::{Mutex, Semaphore};
@@ -47,7 +47,7 @@ pub(super) fn start(state: Weak<Mutex<State>>, root: Endpoint, endpoint: Endpoin
                     current.address.clone()
                 };
                 let mut addresses = endpoint.watch_addr();
-                let own = Descriptor { binding: binding.clone(), address: addresses.get() };
+                let own = Descriptor { binding: binding.clone(), address: bounded_address(addresses.get()) };
                 let permit = opening.acquire().await.map_err(|_| "bootstrap queue closed")?;
                 let subscription = Subscription::open(&root, address, &own, &policy, global.generation).await?;
                 drop(permit);
@@ -58,7 +58,7 @@ pub(super) fn start(state: Weak<Mutex<State>>, root: Endpoint, endpoint: Endpoin
                 let run = subscription.run(own_rx,tx);
                 let publish = async {
                     loop {
-                        let address = addresses.updated().await.map_err(|e| e.to_string())?;
+                        let address = bounded_address(addresses.updated().await.map_err(|e| e.to_string())?);
                         own_tx.send(Descriptor { binding: binding.clone(), address }).map_err(|_| "bootstrap publisher ended")?;
                     }
                     #[allow(unreachable_code)] Ok::<(),String>(())

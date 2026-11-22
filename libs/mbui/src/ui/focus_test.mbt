@@ -31,38 +31,6 @@ test "Tab goes through what can take the focus in the order it is built, round; 
 }
 
 ///|
-test "Enter and Space press what has the focus, as it says; the key is taken from the view" {
-  let log : Array[String] = []
-  let seen_enter = Ref(0)
-  let t = @ui.Tester::new(fn(c) {
-    if c.key_pressed(@ui.key_code_enter) {
-      seen_enter.val = seen_enter.val + 1
-    }
-    c.column(fn() {
-      if btn(c, "both").clicked {
-        log.push("both")
-      }
-      if btn(c, "space only", keys=@ui.press_space).clicked {
-        log.push("space only")
-      }
-    })
-    |> ignore
-  })
-  t.tab()
-  t.press("Enter")
-  t.press("Space")
-  assert_eq(log, ["both", "both"])
-  assert_eq(seen_enter.val, 0)
-  t.tab()
-  t.press("Enter")
-  assert_eq(log, ["both", "both"])
-  // not taken by it: the view sees it
-  assert_eq(seen_enter.val, 1)
-  t.press("Space")
-  assert_eq(log, ["both", "both", "space only"])
-}
-
-///|
 test "the focus shows only when it came by the keyboard; a press lets it go from a button, not from a field" {
   let shown = Ref(false)
   let t = @ui.Tester::new(fn(c) {

@@ -203,14 +203,21 @@ struct Push {
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    // A child of a bridge already kept by a runner. Its controlling terminal is private to the bridge.
+    // A child of a bridge already kept by a runner (its controlling terminal private to the bridge), or a command that
+    // reads only from a terminal (a sign-in's on Windows, where there is no `script`: platform/windows.ts terminalSoon),
+    // on a pseudo-terminal of `--size` (120x36 by default).
     if raw.first().map(String::as_str) == Some("--relay-pty") {
-        match raw.get(1..) {
-            Some([program, args @ ..]) => match relay_pty(program, args) {
+        let (size, rest) = match raw.get(1..) {
+            Some([flag, size, rest @ ..]) if flag == "--size" => (pty_size(size), rest),
+            Some(rest) => (Some((120, 36)), rest),
+            None => (None, &[][..]),
+        };
+        match (size, rest) {
+            (Some((cols, rows)), [program, args @ ..]) => match relay_pty(program, args, cols, rows) {
                 Ok(code) => std::process::exit(code),
                 Err(error) => eprintln!("stillfail-runner: {error}"),
             },
-            _ => eprintln!("stillfail-runner: --relay-pty <program> [args...]"),
+            _ => eprintln!("stillfail-runner: --relay-pty [--size <cols>x<rows>] <program> [args...]"),
         }
         std::process::exit(1);
     }
@@ -245,8 +252,8 @@ fn main() {
 
 /// The bridge's pipes to a real terminal. Closing its input (including when the bridge dies) ends the
 /// terminal's process group. Wait and signal share the same guard so a reaped pid is never signalled.
-fn relay_pty(program: &str, args: &[String]) -> io::Result<i32> {
-    let (proc, agent, mut input, mut output, master) = sys::spawn_pty(program, args, None, 120, 36)?;
+fn relay_pty(program: &str, args: &[String], cols: u16, rows: u16) -> io::Result<i32> {
+    let (proc, agent, mut input, mut output, master) = sys::spawn_pty(program, args, None, cols, rows)?;
     let agent = Arc::new(agent);
     let ended = Arc::new(Mutex::new(false));
     let writing = agent.clone();
@@ -258,14 +265,36 @@ fn relay_pty(program: &str, args: &[String]) -> io::Result<i32> {
             writing.abandon();
         }
     });
+    // Each read passed on as it comes: a terminal's paint seldom ends a line (a ConPTY's moves its cursor instead), and
+    // stdout's own buffer holds what follows the last newline.
+    let (relayed, done) = mpsc::channel::<()>();
     std::thread::spawn(move || {
-        let _ = io::copy(&mut output, &mut io::stdout());
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            let n = match output.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            let mut stdout = io::stdout().lock();
+            if stdout.write_all(&buf[..n]).and_then(|_| stdout.flush()).is_err() {
+                break;
+            }
+        }
+        let _ = relayed.send(());
     });
     let exit = agent.wait(proc, || {
         *ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
         master.close_on_exit();
     });
+    // What it wrote last let out before this process ends (something it started may hold the terminal open).
+    let _ = done.recv_timeout(SETTLE);
     Ok(exit["code"].as_i64().unwrap_or(1) as i32)
+}
+
+/// `<cols>x<rows>`, neither of them 0.
+fn pty_size(size: &str) -> Option<(u16, u16)> {
+    let (c, r) = size.split_once('x')?;
+    Some((c.parse::<u16>().ok()?, r.parse::<u16>().ok()?)).filter(|&(c, r)| c > 0 && r > 0)
 }
 
 fn parse_args(raw: Vec<String>) -> Result<Args, String> {
@@ -280,8 +309,7 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             "--cwd" => cwd = Some(PathBuf::from(value()?)),
             "--pty" => {
                 let size = value()?;
-                let parsed = size.split_once('x').and_then(|(c, r)| Some((c.parse::<u16>().ok()?, r.parse::<u16>().ok()?)));
-                pty = Some(parsed.filter(|&(c, r)| c > 0 && r > 0).ok_or_else(|| format!("--pty needs <cols>x<rows>, not {size:?}"))?);
+                pty = Some(pty_size(&size).ok_or_else(|| format!("--pty needs <cols>x<rows>, not {size:?}"))?);
             }
             // Not for the station: lets tests see the cleanup without waiting a day.
             "--linger-ms" => linger = Duration::from_millis(value()?.parse().map_err(|_| "--linger-ms needs a number of ms")?),

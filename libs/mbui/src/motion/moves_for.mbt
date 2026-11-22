@@ -70,8 +70,9 @@ pub fn[T : Eq] moves_for(
   carry_of? : (T, T) -> Bool,
 ) -> Moves {
   let m = { owner, shapes: [], parts: [] }
-  // (where each stands as a change comes laid out and placed then, whatever changed it before, frame or none)
-  owner.laid_before_causes()
+  // (where each stands as a change comes laid out and placed then, whatever changed it before, frame or none; under
+  // View::transitions_only, settled lazily on frame or @view.transition entry)
+  owner.laid_before_moves()
   // (done first with what `by` is as it is made, none of it said yet, nothing drawn: nothing goes; each change after it
   // with what it changed from, its own)
   let from : Ref[T?] = Ref(None)

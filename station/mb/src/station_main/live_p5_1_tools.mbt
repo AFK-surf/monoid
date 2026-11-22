@@ -62,10 +62,7 @@ priv struct DeviceTools {
 fn tool_str(a : Json, k : String) -> String? {
   match a {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => Some(s)
-        _ => None
-      }
+      opt_str(m.get(k))
     _ => None
   }
 }
@@ -171,6 +168,12 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
       let proc = spawn(host, shell_program(), if is_windows() { ["/c", command] } else { ["-c", command] }, env=env_with(env), cwd~, stdout=Piped, stderr=Piped, group=true) catch {
         SysError(e) => raise ToolFailed("failed", e)
       }
+      let exited = Ref(false)
+      defer {
+        if !exited.val {
+          ignore(kill(proc.pid, "SIGKILL", group=true))
+        }
+      }
       let out = @buffer.new()
       let err = @buffer.new()
       let cut = Ref(false)
@@ -202,11 +205,13 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
         "truncated": Json::boolean(cut.val),
       }
       match ended {
-        Some(code) =>
+        Some(code) => {
+          exited.val = true
           result["exit_code"] = match code {
             Some(c) => Json::number(c.to_double())
             None => Json::null()
           }
+        }
         None => {
           ignore(kill(proc.pid, "SIGKILL", group=true))
           result["timed_out"] = Json::boolean(true)
@@ -229,15 +234,8 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
       let got = if want <= 0 {
         b""
       } else {
-        let said = try {
-          host.shell_sync("fs.bytes", { "path": Json::string(p), "from": Json::number(offset.to_double()), "length": Json::number(want.to_double()) })
-        } catch {
-          e => raise ToolFailed("failed", "\{e}")
-        }
-        match said {
-          String(hex) => @cloud_lock.hex_bytes(hex)
-          _ => b""
-        }
+        let said = host.read_bytes(p, from=offset, length=want) catch { e => raise ToolFailed("failed", "\{e}") }
+        said.unwrap_or(b"")
       }
       Json::object({
         "content_base64": Json::string(@base64.encode(got)),
@@ -251,7 +249,7 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
         Some(c) => try { @base64.decode(c) } catch { _ => raise ToolFailed("invalid_request", "content_base64 is not base64") }
         None => raise ToolFailed("invalid_request", "content_base64 is required")
       }
-      ignore(attempt(() => @drive.mkdir(@nodepath.dirname(sep(), p), true)))
+      host_mkdir_quiet(host, @nodepath.dirname(sep(), p))
       let append = a is { "append": True, .. }
       let offset = if append {
         match (try { Ok(self.p.fs.lstat(p)) } catch { e => Err(e) }) {
@@ -346,20 +344,18 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
           held -= dropped.length()
         }
       }
-      ignore(
-        host.rt.fork(name="device process", async fn() {
-          while true {
-            match proc.events.take() {
-              Out(b) | Err(b) => take(b)
-              Exit(code, _) => {
-                kept.exited = true
-                kept.exit_code = code
-                break
-              }
+      fork_bg(host, "device process", async fn() {
+        while true {
+          match proc.events.take() {
+            Out(b) | Err(b) => take(b)
+            Exit(code, _) => {
+              kept.exited = true
+              kept.exit_code = code
+              break
             }
           }
-        }),
-      )
+        }
+      })
       self.processes.push(kept)
       Json::object({ "process_id": Json::string(id) })
     }
@@ -540,6 +536,6 @@ fn P51::tools_deps(self : P51, plane : Plane) -> @mesh_runtime.ToolsDeps {
         Err(e) => Err(("failed", "\{e}"))
       }
     },
-    said: (op, id, fields) => p51_log("INFO", "tools", "device tool", fields=with_fields(fields, [("op", Json::string(op)), ("id", Json::string(id))])),
+    said: (level, msg, fields) => p51_log(level.to_upper(), "tools", msg, fields~),
   }
 }

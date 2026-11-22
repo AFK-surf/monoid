@@ -25,7 +25,7 @@ fn main {
   let phone = @film.arg("MBUI_MEDIA_PHONE")
   let tablet = @film.arg("MBUI_MEDIA_TABLET")
   let laptop = @film.arg("MBUI_MEDIA_LAPTOP")
-  @film.run(fn(c) {
+  @film.run_legacy_ctx(fn(c) {
     @figure.canvas(c, 1920.0, 1080.0, 0xF3F1EDFFL, fn() {
       @figure.words(c, 889.0, 201.0, "屏幕模型", 38.0, 0x272B31FFL, weight=600)
       @figure.panel(c, 215.0, 282.0, 280.0, 560.0, 0L, 0.0, fn() {

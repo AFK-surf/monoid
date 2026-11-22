@@ -5,7 +5,7 @@
 // and the topics their pages subscribe, the window thread's hangs (mbui's src/ui/journal.mbt). iOS's host takes them
 // too (src/host/apple_reports.m: MetricKit's crash and hang reports; the bar's timing not), and macOS's (the same file:
 // the window thread's hangs and the errors got past, no MetricKit). Where no host takes them (Windows, the web, an
-// Apple build without PostHog's key: host_tell answers 0) only UiFault is set, as the core's span.
+// Apple build without PostHog's key: host_tell answers 0) UiFault and CoreFailed go as the core's `client.error` span.
 
 ///|
 /// Whether the account signed in was told (once a process, as Android's MainActivity does).
@@ -20,6 +20,11 @@ let hang_gate : HangGate = HangGate::new()
 let timed : Map[Int, Bool] = Map([])
 
 ///|
+/// The latest core failure not yet told, where no host takes it: kept as the core fails (its core gone), sent to the core
+/// started after it (`@core.on_restarted`). Only the latest: a core failing again before one takes calls replaces it.
+let pending_core_failed : Ref[String?] = Ref(None)
+
+///|
 /// The host's reports set going, before the app's first frame.
 fn reports_start() -> Unit {
   // what a call in flight as the core failed says (StillFailCore.restartedText)
@@ -31,6 +36,21 @@ fn reports_start() -> Unit {
       let category = ui_fault_category(said)
       @hostapi.log("ui fault: " + category)
       @core.call("client.error", params={ "source": "ui_fault", "message": category })
+    })
+    // (the core failing: told to the core started after it, the one failing being gone; the core sends only its first
+    // 1000 characters)
+    @core.on_failed.val = Some(fn(reason) {
+      @hostapi.log("core failed: " + reason)
+      pending_core_failed.val = Some(reason)
+    })
+    @core.on_restarted.val = Some(fn() {
+      match pending_core_failed.val {
+        Some(reason) => {
+          pending_core_failed.val = None
+          @core.call("client.error", params={ "source": "core_failed", "message": reason })
+        }
+        None => ()
+      }
     })
     return
   }

@@ -128,9 +128,9 @@ fn landing_page_node(parent : @view.View, src : Source, entries : () -> Array[Js
     })
     col.show(fn() { shown() == 1 }, fn(b) {
       landing_column(b)
-      @sf.way_in_title_node(b, fn() { @sf.t("android-misc.invite.onlyInvited", args=[("app", "still.fail")]) }) |> ignore
+      @sf.way_in_title_node(b, fn() { @sf.t("android-misc.invite.onlyInvited", args=[("app", @sf.product())]) }) |> ignore
       @sf.way_in_note_node(b, fn() {
-        @sf.t("android-misc.invite.codeLead", args=[("app", "still.fail"), ("email", text(first(), "email"))])
+        @sf.t("android-misc.invite.codeLead", args=[("app", @sf.product()), ("email", text(first(), "email"))])
       })
       |> ignore
       invite_code_form_node(b, src, first)
@@ -140,7 +140,7 @@ fn landing_page_node(parent : @view.View, src : Source, entries : () -> Array[Js
       landing_column(b)
       @sf.way_in_title_node(b, fn() { @sf.t("android-misc.workspace.none") }) |> ignore
       @sf.way_in_note_node(b, fn() {
-        @sf.t("android-misc.workspace.none.lead", args=[("app", "still.fail"), ("email", text(first(), "email"))])
+        @sf.t("android-misc.workspace.none.lead", args=[("app", @sf.product()), ("email", text(first(), "email"))])
       })
       |> ignore
       @sf.way_in_button_node(
@@ -250,7 +250,7 @@ fn invite_code_form_node(body : @view.View, src : Source, account : () -> Json?)
         // round it, its words 12 and 10 in: code_field_box, as tall as its line laid out and that)
         f.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         @sf.style_node(f, fn() { code_field_box })
-        @ui.field(
+        let field = @ui.field(
           f,
           landing.code,
           placeholder="XXXX-XXXX-XXXX",
@@ -269,11 +269,13 @@ fn invite_code_form_node(body : @view.View, src : Source, account : () -> Json?)
             (p.text, p.subtle, p.accent)
           },
         )
+        field
         .grow(Is(1.0))
         .basis(Is(Some(0.0)))
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
         |> ignore
+        f.edge(By(fn() { @sf.control_edge(hot=f.pointed() || field.focused()) })) |> ignore
       })
       |> ignore
       @sf.button_node(
@@ -340,4 +342,4 @@ pub fn landing_asked() -> Unit {
 /// The code's field's box in its row: on the surface, a hairline round it, 12 round, 12 and 10 in, what it holds along
 /// it in its middle.
 // kept across runs: a value (no field of it changes)
-let code_field_box : @ui.Style = @ui.css("row align=ACenter px=S3 py=S2_5 radius=Xl bg=Surface border=B1 border_color=Line")
+let code_field_box : @ui.Style = @ui.css("row align=ACenter px=S3 py=S2_5 radius=Xl bg=Surface border=B0_5 border_color=Line")

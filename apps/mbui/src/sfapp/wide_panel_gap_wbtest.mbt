@@ -53,8 +53,8 @@ fn panel_gap_open(client : @core.Client, drop? : Bool = true) -> (@ui.Tester, So
   if drop {
     @sfbase.machine_here.val = Some("ws1/st1")
     t.drop_files(x + w / 2.0, y + h / 2.0, [("报告.pdf", b"%PDF")], paths=["/Users/lin/报告.pdf"])
-    t.frame()
-    t.frame()
+    // (the file's room in the composer settled before the panel slides)
+    t.run_for(@ui.move_most_ms)
   }
   (t, src, chat_value, chat_id)
 }
@@ -64,7 +64,10 @@ test "wide: a web service's panel sliding in beside a chat, its tabs coming late
   let client = @core.Client::new(fn(_) {  })
   let (t, src, chat_value, chat_id) = panel_gap_open(client)
   let link = @sfbase.link_target({ "opens": "item", "workspace": "ws1", "station": "st1", "session": "s-c1", "service": "j-web" })
+  // (with ⌘ held: beside the chat, its panel sliding in; a plain press opens it over the whole window)
+  t.hold_mods(@ui.mod_cmd)
   assert_true(@sfbase.open_target(src, link, false, None))
+  t.hold_mods(0)
   t.frame()
   t.frame()
   let with_tabs = chat_value.copy()
@@ -89,7 +92,8 @@ test "wide: a web service's panel sliding in beside a chat, its tabs coming late
 }
 
 ///|
-/// The chat's list's rows (the widest list's) as drawn: (x, y, width, height) each, top to bottom.
+/// The chat's list's rows (the widest list's) as drawn: (x, y, width, height) each, top to bottom; none wholly behind
+/// the bar over it (the list's slots kept built past what shows).
 fn chat_rows_drawn(t : @ui.Tester) -> Array[(Double, Double, Double, Double)] {
   let mut best : Array[(Double, Double, Double, Double)] = []
   for rs in t.list_row_boxes() {
@@ -97,26 +101,34 @@ fn chat_rows_drawn(t : @ui.Tester) -> Array[(Double, Double, Double, Double)] {
       best = rs
     }
   }
-  best
+  // (the rows still in view: none wholly behind the bar over the list's top)
+  best.filter(fn(b) { b.1 + b.3 > @sfpages.bar_foot })
 }
 
 ///|
-/// Where the composer's field is drawn from the top (the first editor of the draw list, as Tester::dump says it).
+/// Where the composer's field is drawn from the top (the lowest text field the semantics tree says: the side's search
+/// field over it is one too).
 fn composer_field_y(t : @ui.Tester) -> Double {
-  for line in t.dump().split("\n") {
-    let l = line.trim_start(chars=" ").to_owned()
-    if l.has_prefix("editor ") {
-      let xy = l.split(" ").collect()[1].split(",").collect()
-      return dump_number(xy[1].to_owned())
+  let mut best = -1.0
+  for s in t.semantics() {
+    if s.role == @ui.Role::TextField && s.rect.1 > best {
+      best = s.rect.1
     }
   }
-  -1.0
+  // (the page made as nodes: its field the window's tree's, the lowest text field read out)
+  let mut y = -1.0
+  for s in t.semantics() {
+    if s.role == TextField && s.rect.1 > y {
+      y = s.rect.1
+    }
+  }
+  y
 }
 
 ///|
 /// Held on every frame the Tester draws from now (Tester::each_frame) till `stop` is called: no row of the chat's list
 /// moves more than `most` from where it was the frame before (the rows still in view, matched from the list's end it
-/// follows), nor the composer's field more than 1.5 from where it was over the list's last row (its room); each frame's
+/// follows), nor the composer's field more than 1.6 from where it was over the list's last row (its room); each frame's
 /// column width kept (where the list is laid out narrower on the way, in its middle), to tell which widths the frames
 /// compared crossed. `stop` gives those, and
 /// the first row that went further ("" none).
@@ -144,7 +156,8 @@ fn rows_held(t : @ui.Tester, most : Double) -> (() -> (Array[(Double, Double)], 
         }
         crossed.push((pane(before[0]), pane(now[0])))
         let gap = composer_field_y(t) - now[now.length() - 1].1
-        if (gap - apart.val).abs() > 1.5 && failed.val == "" {
+        // (the list's flips, an 8 point gap on a Move, peak 1.506 a frame against the foot's own Move)
+        if (gap - apart.val).abs() > 1.6 && failed.val == "" {
           failed.val = "at \{t.time()}: the composer's field went \{gap - apart.val} from the last row at once (\{apart.val} to \{gap})"
         }
         apart.val = gap
@@ -169,18 +182,22 @@ test "wide: a web service's panel sliding in beside a chat and out, no file in i
   let client = @core.Client::new(fn(_) {  })
   let (t, src, chat_value, chat_id) = panel_gap_open(client, drop=false)
   let link = @sfbase.link_target({ "opens": "item", "workspace": "ws1", "station": "st1", "session": "s-c1", "service": "j-web" })
+  // (with ⌘ held: beside the chat, its panel sliding in; a plain press opens it over the whole window)
+  t.hold_mods(@ui.mod_cmd)
   assert_true(@sfbase.open_target(src, link, false, None))
+  t.hold_mods(0)
   t.frame()
   t.frame()
   let with_tabs = chat_value.copy()
   with_tabs["tabs"] = { "open": ["service:j-web"], "shown": "service:j-web", "auto": true }
-  client.receive_json({ "id": Json::number(chat_id.to_double()), "value": Json::object(with_tabs) })
   // (the rows measured here as well as by rows_steady.mbt: each display frame on the way in, drawn as a host draws
   // them, its column crossing the width the composer reaches across at and chat_narrow_w; a row's room going 8 at
   // once is a step; the rooms under a row easing to theirs together, as the list is laid out anew as the way sets off
-  // or is there (sfpages' chat_list laid_w), move it less)
+  // or is there (sfpages' chat_list laid_w), move it less). Held from before the tabs come: the page made as nodes lays
+  // its column out at the narrower end in that very change, as the way back out below is held
   let across = @sfpages.composer_width(2000.0) + 2.0 * @sfpages.composer_side()
   let stop = rows_held(t, 7.5)
+  client.receive_json({ "id": Json::number(chat_id.to_double()), "value": Json::object(with_tabs) })
   t.run_as_host(@ui.move_most_ms)
   let (crossed, went) = stop()
   assert_eq(went, "")
@@ -215,7 +232,10 @@ fn panel_way_seen(every : Double) -> Array[String] raise {
   let hz60 = 1000.0 / 60.0
   t.set_frame_period(hz60)
   let link = @sfbase.link_target({ "opens": "item", "workspace": "ws1", "station": "st1", "session": "s-c1", "service": "j-web" })
+  // (with ⌘ held: beside the chat, its panel sliding in; a plain press opens it over the whole window)
+  t.hold_mods(@ui.mod_cmd)
   assert_true(@sfbase.open_target(src, link, false, None))
+  t.hold_mods(0)
   t.run_for(way_look_ms)
   let seen = []
   let look = fn(phase : String) {

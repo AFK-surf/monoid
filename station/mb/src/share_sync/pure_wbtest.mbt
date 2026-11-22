@@ -1,5 +1,4 @@
-// What the sharing works out by itself, on the values the TypeScript gives (station/test/mb-share-sync.test.ts holds the
-// whole of it to the TypeScript; these say the rules each piece keeps).
+// What the sharing works out by itself, on the values the station gives: these say the rules each piece keeps.
 
 ///|
 fn parse(s : String) -> Json {
@@ -11,7 +10,9 @@ fn parse(s : String) -> Json {
 ///|
 test "a profile's login files, by its runtime and how it signs in" {
   assert_eq(sign_in_files(parse("{\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"}}"), "/"), [".credentials.json", ".claude.json"])
-  assert_eq(sign_in_files(parse("{\"access\":{\"kind\":\"subscription\"}}"), "/"), [".credentials.json", ".claude.json"])
+  assert_eq(sign_in_files(parse("{\"access\":{\"kind\":\"subscription\"}}"), "/"), [])
+  assert_eq(sign_in_files(parse("{\"access\":{\"kind\":\"service\",\"service\":\"colab\"}}"), "/"), ["colab-auth.json"])
+  assert_eq(sign_in_files(parse("{\"access\":{\"kind\":\"service\",\"service\":\"fake-gpu\"}}"), "/"), [])
   assert_eq(sign_in_files(parse("{\"runtime\":\"codex\",\"access\":{\"kind\":\"subscription\"}}"), "/"), ["auth.json"])
   assert_eq(sign_in_files(parse("{\"runtime\":\"devin\",\"access\":{\"kind\":\"subscription\"}}"), "/"), [
     "devin/data/devin/credentials.toml", "devin/account.json",
@@ -35,6 +36,10 @@ test "what goes to another station of a profile: its key only where it is one" {
   assert_eq(
     js_stringify(portable(parse("{\"access\":{\"kind\":\"api-provider\",\"key\":\"s\"}}"))),
     "{\"access\":{\"kind\":\"api-provider\",\"key\":\"s\"}}",
+  )
+  assert_eq(
+    js_stringify(portable(parse("{\"name\":\"n\",\"maxConcurrentSessions\":4,\"newAccountProtection\":true}"))),
+    "{\"name\":\"n\",\"maxConcurrentSessions\":4,\"newAccountProtection\":true}",
   )
 }
 

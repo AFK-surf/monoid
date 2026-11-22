@@ -9,13 +9,15 @@ let answer_over_ms : Double = 3000.0
 
 ///|
 /// The fixture's chat open (the first row's), its calls kept in `calls` and answered by the fixture; `op`, how this
-/// device's 1Password answers (fake_op; None, there is none here), and whether it is slow to (fake_op_pending).
+/// device's 1Password answers (fake_op; None, there is none here), and whether it is slow to (fake_op_pending);
+/// `autofill`, whether its host fills passwords (fake_autofill).
 fn cards_core(
   calls : Array[Made],
   mode? : String = "chat",
   platform? : Int = 2,
   op? : ((Array[String]) -> (Int, String, String))? = None,
   op_pending? : Bool = false,
+  autofill? : Bool = false,
 ) -> @ui.Tester {
   new_run()
   let base = fixture(mode)
@@ -31,11 +33,12 @@ fn cards_core(
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform~)
   // the chat pushed in over Home
   t.run_for(@ui.move_most_ms)
-  // (a password manager here: the host's from the start, as on a device; the Tester's host given it once made, the
-  // chat opened again to be made with it)
-  if op is Some(_) {
+  // (a password manager here, or the host's own filling: the host's from the start, as on a device; the Tester's host
+  // given it once made, the chat opened again to be made with it)
+  if op is Some(_) || autofill {
     @ui.fake_op.val = op
     @ui.fake_op_pending.val = op_pending
+    @ui.fake_autofill.val = autofill
     t.back()
     t.run_for(@ui.move_most_ms)
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })

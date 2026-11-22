@@ -149,8 +149,8 @@ fn cmp_drawn(t : @ui.Tester) -> Array[String] {
 }
 
 ///|
-/// A state drawn old (`old`: message_files in a column 390 wide) or as nodes, looked at cmp_at.
-fn cmp_seen(s : CmpState, old : Bool) -> (Array[String], Double, Array[Double]) {
+/// A state drawn as nodes, looked at cmp_at.
+fn cmp_seen(s : CmpState) -> (Array[String], Double, Array[Double]) {
   let asks = []
   let src = cmp_src(s, asks)
   // (shown once the Tester is made, the pictures it reads said to decode a while after they are asked)
@@ -162,39 +162,23 @@ fn cmp_seen(s : CmpState, old : Bool) -> (Array[String], Double, Array[Double]) 
   if s.sent != "" {
     pictures.push((s.sent, s.a.width.to_int(), s.a.height.to_int()))
   }
-  let t = if old {
-    @ui.Tester::new(
-      fn(c) {
-        @sf.begin(c) |> ignore
-        c.with_theme(@sf.ui_theme(), fn() {
-          c.box(style=@ui.style(w=Fixed(390.0)), fn() { message_files(c, src, files_here(), list.get(), false, by=None) })
-          |> ignore
-        })
-      },
-      w=430.0,
-      h=400.0,
-      platform=0,
-      images=pictures,
-    )
-  } else {
-    @ui.Tester::new(
-      fn(c) {
-        @sf.begin(c) |> ignore
-        c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
-      },
-      tree=fn(root) {
-        @ui.set_tree_theme(@sf.ui_theme_now)
-        let col = root.box(fn(v) { v.width(Is(Some(390.0))) |> ignore })
-        let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
-        let tips = @sf.TipLayer::new(fn() { Some(popup) })
-        message_files_node(col, src, tips, files_place(), fn() { list.get() }, fn() { false }, fn() { None }, fn() { "" })
-      },
-      w=430.0,
-      h=400.0,
-      platform=0,
-      images=pictures,
-    )
-  }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let col = root.box(fn(v) { v.width(Is(Some(390.0))) |> ignore })
+      let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+      let tips = @sf.TipLayer::new(fn() { Some(popup) })
+      message_files_node(col, src, tips, files_place(), fn() { list.get() }, fn() { false }, fn() { None }, fn() { "" })
+    },
+    w=430.0,
+    h=400.0,
+    platform=0,
+    images=pictures,
+  )
   t.decode_after("cmp/still.png", cmp_decode)
   if s.sent != "" {
     t.decode_after(s.sent, cmp_decode)
@@ -205,58 +189,28 @@ fn cmp_seen(s : CmpState, old : Bool) -> (Array[String], Double, Array[Double]) 
   for ask in asks {
     ask()
   }
-  // (looked at once both are at rest: the old one's way in starts at the frame it is drawn decoded, a node's at the
-  // moment its host says it is, an intended difference: image_reveal_node's)
   t.run_for(cmp_at - t.time())
   t.run_for(@sf.reveal_ms + cmp_at)
-  // (the frame at that moment drawn whole: one where nothing moves draws nothing anew)
   t.draw()
   (cmp_drawn(t), t.time(), t.drawn_images().map(fn(i) { i[8] }))
 }
 
 ///|
-test "a message's pictures and videos as nodes drawn as the old view draws them, state by state, at the same moment" {
-  let differ = []
+test "a message's pictures and videos as nodes, state by state" {
   for s in cmp_states() {
-    let (old, at, old_alpha) = cmp_seen(s, true)
-    let (new, new_at, new_alpha) = cmp_seen(s, false)
-    // (what is compared is drawn: a picture where one is here, its words where it says any)
+    let (drawn, at, new_alpha) = cmp_seen(s)
+    assert_true(drawn.length() > 0, msg=s.name)
     let pictured = ["likeness", "here", "tall", "thin", "sent", "video"].contains(s.name)
     assert_eq(new_alpha.length() > 0, pictured, msg="\{s.name}: \{Repr(new_alpha)}")
-    // an intended difference (the coordinator of the migration, 2026-11-11): a likeness waiting breathes as all of
-    // what stands in for a picture does (the user, 2026-10-30), where the old view's breath (Ctx::cycle_look) took no
-    // picture's instances and left it whole; all else of it the same
-    let (old, new) = if s.name == "likeness" {
-      assert_eq(at, new_at)
+    if s.name == "likeness" {
       let p = at / @sf.breath_ms
       let f = p - p.floor()
       let way = if f < 0.5 { f * 2.0 } else { 2.0 - f * 2.0 }
       let breath = 1.0 - 0.5 * @ui.Ease::InOut.at(way)
-      assert_eq(old_alpha, [1.0], msg="the old view's likeness: whole")
       assert_true(
         new_alpha.length() == 1 && (new_alpha[0] - breath).abs() < 0.01 && breath < 0.99,
         msg="the node's likeness breathing: \{Repr(new_alpha)}, wanted \{breath}",
       )
-      // (its picture where it is, as big, the same part of it: all of it but how opaque)
-      let unbreathed = fn(l : Array[String]) {
-        l.map(fn(x) {
-          match (x.has_prefix("image "), x.rev_find(",")) {
-            (true, Some(i)) => x.exact_view(end=i).to_owned()
-            _ => x
-          }
-        })
-      }
-      (unbreathed(old), unbreathed(new))
-    } else {
-      (old, new)
     }
-    if old != new {
-      let only_old = old.filter(fn(x) { !new.contains(x) })
-      let only_new = new.filter(fn(x) { !old.contains(x) })
-      differ.push("\{s.name}:\n  old's alone:\n    \{only_old.join("\n    ")}\n  node's alone:\n    \{only_new.join("\n    ")}")
-    }
-  }
-  if differ.length() > 0 {
-    fail(differ.join("\n"))
   }
 }

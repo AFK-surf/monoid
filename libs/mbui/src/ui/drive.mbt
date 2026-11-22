@@ -292,7 +292,14 @@ fn runner_said(done : Map[String, String], j : String) -> Unit {
 }
 
 ///|
+/// Whether `drive_steps` is acting on the frame just presented: what it hands the app has no host timestamp of its
+/// own and meets the tree at that frame's logic moment (`view_logic_at`), however long presenting the frame took.
+// kept across runs: true only while drive_steps runs in drive_frame
+let drive_acting : Ref[Bool] = Ref(false)
+
+///|
 fn drive_start(script : String, dir : String, done_dir? : String = "") -> Unit {
+  drive_acting.val = false
   // (the answers heard counted from the run's start, as the waits ended are)
   heard_answers.clear()
   let steps = script.split("\n").map(fn(l) { l.trim(chars=" \t\r").to_owned() }).to_array()
@@ -368,9 +375,20 @@ fn on_screen(c : Ctx, what : String) -> Array[(Double, Double)] {
 /// whether it takes a press or not, whatever lies over it (reachable says which of it a finger
 /// reaches). What is seen is the glyphs' to say (Tester::glyphs_seen), not this.
 fn tree_on_screen(c : Ctx, what : String) -> Array[(Double, Double, @view.NodeId)] {
+  tree_on_screen_nodes(c, what).map(fn(p) { (p.0, p.1, p.2) })
+}
+
+///|
+/// tree_on_screen's, each with where it is (x0, y0, x1, y1 in the window: its words in pieces their first line's
+/// words looked for, as on_screen_nodes' box of an old view's rich text; else the node's drawn box): where reachable
+/// looks for a point of it a finger reaches (tree_reach_point).
+fn tree_on_screen_nodes(
+  c : Ctx,
+  what : String,
+) -> Array[(Double, Double, @view.NodeId, (Double, Double, Double, Double))] {
   guard view_app.val is Some(tree) else { return [] }
-  // (each: where, which, and whether by its words, not its label alone)
-  let hits : Array[(Double, Double, @view.NodeId, Bool)] = []
+  // (each: where, which, where it is, and whether by its words, not its label alone)
+  let hits : Array[(Double, Double, @view.NodeId, (Double, Double, Double, Double), Bool)] = []
   for d in tree.drawn() {
     // (none of a page's bones: not there yet, View::bones)
     if d.bones != 0L {
@@ -413,31 +431,41 @@ fn tree_on_screen(c : Ctx, what : String) -> Array[(Double, Double, @view.NodeId
     }
     // (words in pieces by their own middle, as on_screen_nodes finds the words looked for in an old view's rich text:
     // a short message's words in a node as wide as its column are drawn at its start, its middle nothing of them)
-    let (x, y) = match (by_words && hit, d.runs.is_empty()) {
-      (true, false) => tree_words_middle(tree, d.id, what).unwrap_or((d.x + d.w / 2.0, d.y + d.h / 2.0))
-      _ => (d.x + d.w / 2.0, d.y + d.h / 2.0)
+    let whole = (d.x, d.y, d.x + d.w, d.y + d.h)
+    let (x, y, box) = match (by_words && hit, d.runs.is_empty()) {
+      (true, false) =>
+        match tree_words_box(tree, d.id, what) {
+          Some(w) => w
+          None => (d.x + d.w / 2.0, d.y + d.h / 2.0, whole)
+        }
+      _ => (d.x + d.w / 2.0, d.y + d.h / 2.0, whole)
     }
     if hit && !tree.leaving(d.id) && d.w > 0.0 && d.h > 0.0 && x >= 0.0 && x <= c.width && y >= 0.0 && y <= c.height {
-      hits.push((x, y, d.id, by_words))
+      hits.push((x, y, d.id, box, by_words))
     }
   }
   // (one called so that holds words found: those words, once, as an old view's row read out by its words is found by
   // its text alone)
   hits
-  .filter(fn(h) { h.3 || !hits.iter().any(fn(w) { w.3 && w.2 != h.2 && tree.holds(h.2, w.2) }) })
-  .map(fn(h) { (h.0, h.1, h.2) })
+  .filter(fn(h) { h.4 || !hits.iter().any(fn(w) { w.4 && w.2 != h.2 && tree.holds(h.2, w.2) }) })
+  .map(fn(h) { (h.0, h.1, h.2, h.3) })
 }
 
 ///|
 /// The middle of the words `what` (`=WORDS`: all of them) of node `id` of `tree`'s words in pieces where they are drawn,
-/// laid out as it lays them out now (tree_run_rects'), their first line's: None where they hold no such words.
-fn tree_words_middle(tree : @view.Tree, id : @view.NodeId, what : String) -> (Double, Double)? {
-  let mut at : (Double, Double)? = None
+/// laid out as it lays them out now (tree_run_rects'), their first line's, and their box there (x0, y0, x1, y1 in the
+/// window): None where they hold no such words.
+fn tree_words_box(
+  tree : @view.Tree,
+  id : @view.NodeId,
+  what : String,
+) -> (Double, Double, (Double, Double, Double, Double))? {
+  let mut at : (Double, Double, (Double, Double, Double, Double))? = None
   tree.each_drawn_scaled(fn(c, x, y, a, sc) {
     if at is Some(_) || c.id != id || c.runs.is_empty() || a <= 0.0 {
       return
     }
-    let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
+    let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks, tabular=c.words_tabular)
     let (from, to) = if what.has_prefix("=") {
       (0, lay.text.length())
     } else {
@@ -449,7 +477,14 @@ fn tree_words_middle(tree : @view.Tree, id : @view.NodeId, what : String) -> (Do
     match lay.rects(from, to).get(0) {
       Some(r) => {
         let dx = rich_shift_at(lay, r.1 + r.3 / 2.0, if c.words_center { c.w } else { -1.0 })
-        at = Some((x + (r.0 + dx + r.2 / 2.0) * sc, y + (r.1 + r.3 / 2.0) * sc))
+        let (rx0, ry0) = (x + (r.0 + dx) * sc, y + r.1 * sc)
+        at = Some(
+          (
+            x + (r.0 + dx + r.2 / 2.0) * sc,
+            y + (r.1 + r.3 / 2.0) * sc,
+            (rx0, ry0, rx0 + r.2 * sc, ry0 + r.3 * sc),
+          ),
+        )
       }
       None => ()
     }
@@ -482,20 +517,89 @@ fn reachable(c : Ctx, what : String) -> Array[(Double, Double)] {
   // (of the window's tree: where what a press there goes to is it, or holds it, as the tree finds it then)
   match view_app.val {
     Some(tree) =>
-      for p in tree_on_screen(c, what) {
-        match view_presses_at(p.0, p.1) {
-          Some(id) if tree.holds(id, p.2) => at.push((p.0, p.1))
-          // (words that take no press of their own, nothing that does over them: a press there goes to nothing, and
-          // what is found there first is they or what holds them, nothing lying over them)
-          None if !old_root_hit(c, p.0, p.1, pressed=true) &&
-            tree.drop_at(p.0, p.1) is Some(OnNode(id)) &&
-            (tree.holds(id, p.2) || tree.holds(p.2, id)) => at.push((p.0, p.1))
-          _ => ()
+      for p in tree_on_screen_nodes(c, what) {
+        match tree_reach_point(c, tree, p.2, p.0, p.1, p.3) {
+          Some(q) => at.push(q)
+          None => ()
         }
       }
     None => ()
   }
   at
+}
+
+///|
+/// Whether a finger at (x, y) reaches node `target` of the window's tree: what a press there goes to is it, or holds it;
+/// or, where a press goes to nothing (words that take no press of their own, nothing that does over them), what is
+/// found there first is it, what holds it, or what it holds, nothing lying over it. Or words that take no press of
+/// their own over what takes it under them (a sheet's title over the top that drags the sheet): what takes the press
+/// drawn before them, there in its own box (not a small button's finger room grown past its box), and what is drawn
+/// first there them; never a press of something they hold (a card's own ✕) nor of what lies over them.
+fn tree_reaches_at(c : Ctx, tree : @view.Tree, target : @view.NodeId, x : Double, y : Double) -> Bool {
+  match view_presses_at(x, y) {
+    Some(id) =>
+      tree.holds(id, target) ||
+      (
+        !tree.holds(target, id) &&
+        tree_point_in(tree, id, x, y) &&
+        (tree.drop_at(x, y) is Some(OnNode(d)) && (tree.holds(d, target) || tree.holds(target, d))) &&
+        tree.drawn_later(target, id)
+      )
+    None =>
+      !old_root_hit(c, x, y, pressed=true) &&
+      tree.drop_at(x, y) is Some(OnNode(id)) &&
+      (tree.holds(id, target) || tree.holds(target, id))
+  }
+}
+
+///|
+/// Whether (x, y) is in what node `id` of the window's tree takes a finger in, its own (Tree::finger_areas: not the
+/// room a small part's press is given past it).
+fn tree_point_in(tree : @view.Tree, id : @view.NodeId, x : Double, y : Double) -> Bool {
+  match tree.finger_areas(id) {
+    InWindow(rs) => rs.iter().any(fn(r) { x >= r.0 && y >= r.1 && x < r.2 && y < r.3 })
+    AsItHosts => false
+  }
+}
+
+///|
+/// Where a finger reaches node `id` of the window's tree, (x, y) its middle, `box` where it is (tree_on_screen_nodes'),
+/// as reach_point finds an old view's: there, else the point of it in sight (its box cut by what holds it clipping:
+/// Tree::seen_bounds, and by the window) nearest it that a finger reaches it at (a picture half under a page's bar),
+/// the same each run (on a grid of reach_step, the nearest first, then the higher, then the one further left). None:
+/// no point of it in sight is reached.
+fn tree_reach_point(
+  c : Ctx,
+  tree : @view.Tree,
+  id : @view.NodeId,
+  x : Double,
+  y : Double,
+  box : (Double, Double, Double, Double),
+) -> (Double, Double)? {
+  if tree_reaches_at(c, tree, id, x, y) {
+    return Some((x, y))
+  }
+  let (sx0, sy0, sx1, sy1) = tree.seen_bounds(id)
+  let x0 = dmax(dmax(box.0, sx0), 0.0)
+  let y0 = dmax(dmax(box.1, sy0), 0.0)
+  let x1 = dmin(dmin(box.2, sx1), c.width)
+  let y1 = dmin(dmin(box.3, sy1), c.height)
+  let mut best : (Double, Double)? = None
+  let mut best_d = @double.infinity
+  let mut py = y0 + reach_step / 2.0
+  while py < y1 {
+    let mut px = x0 + reach_step / 2.0
+    while px < x1 {
+      let d = (px - x) * (px - x) + (py - y) * (py - y)
+      if d < best_d && tree_reaches_at(c, tree, id, px, py) {
+        best = Some((px, py))
+        best_d = d
+      }
+      px = px + reach_step
+    }
+    py = py + reach_step
+  }
+  best
 }
 
 ///|
@@ -709,7 +813,8 @@ fn not_reachable(c : Ctx, what : String, ms : Double) -> String {
   } else {
     "on screen but under something else to press (what lies over it: a composer, a sheet, a scrim) after " +
     "\{ms.to_int()} ms: " +
-    on_screen_nodes(c, what).map(fn(p) { over_it(c, p.0, p.1) }).join("; ")
+    (on_screen_nodes(c, what).map(fn(p) { over_it(c, p.0, p.1) }) +
+    tree_on_screen(c, what).map(fn(p) { over_it(c, p.0, p.1) })).join("; ")
   }
 }
 
@@ -778,6 +883,7 @@ fn h_drive(kind : Int, text : String) -> Bool {
 fn drive_end(code : Int) -> Unit {
   h_log(if code == 0 { "DRIVE PASS" } else { "DRIVE END \{code}" })
   driver.val = None
+  drive_acting.val = false
   if code == 0 && h_env("MBUI_DRIVE_KEEP_OPEN") == "1" {
     return
   }
@@ -892,7 +998,9 @@ fn drive_frame(c : Ctx) -> Unit {
     Some(d) if d.wid != window_now.now => return
     _ => ()
   }
+  drive_acting.val = true
   drive_steps(c)
+  drive_acting.val = false
   guard driver.val is Some(d) else { return }
   // (on the frames that come after it, none asked for of its own: what the wheel set moving draws them)
   wheel_followed(d)
@@ -1001,7 +1109,7 @@ fn wheel_said(
     words + "; moving: " + (if moving.length() == 0 { "nothing" } else { moving.join("; ") }),
   )
   d.wheel_follow = match near {
-    Some((id, w, wy)) => Some((id, w, wy, wy, h_now()))
+    Some((id, w, wy)) => Some((id, w, wy, wy, view_logic_at.val))
     None => None
   }
 }
@@ -1012,7 +1120,7 @@ fn wheel_said(
 /// moves, so none drawn means nothing moved).
 fn wheel_followed(d : Driver) -> Unit {
   guard d.wheel_follow is Some((id, words, y0, last, t0)) else { return }
-  let after = (h_now() - t0).to_int()
+  let after = (view_logic_at.val - t0).to_int()
   let drawn = match view_app.val {
     Some(tree) => tree.drawn().iter().find_first(fn(e) { e.id == id })
     None => None
@@ -1028,7 +1136,7 @@ fn wheel_followed(d : Driver) -> Unit {
         h_log("DRIVE wheel +\{after} ms: \"\{words}\" at y \{y}")
         d.wheel_follow = Some((id, words, y0, y, t0))
       }
-      if h_now() > t0 + wheel_follow_ms {
+      if view_logic_at.val > t0 + wheel_follow_ms {
         h_log("DRIVE wheel +\{after} ms: \"\{words}\" ends at y \{y}, from \{y0}")
         d.wheel_follow = None
       }
@@ -1043,7 +1151,8 @@ let shot_taker_ms : Double = 1500.0
 ///|
 fn drive_steps(c : Ctx) -> Unit {
   guard driver.val is Some(d) else { return }
-  let now = h_now()
+  // (the frame's logic moment, where it found what it acts on: not the clock after presenting it, h_event_time)
+  let now = view_logic_at.val
   if d.release_at >= 0.0 {
     if now < d.release_at {
       return
@@ -2034,6 +2143,36 @@ fn outside_named(cmd : String, arg : String, what : String) -> Bool {
 /// What a press at (x, y) goes to, for a failure's report: the hit target there, what kind it is, where it is laid out
 /// and the first words in it (or nothing there).
 fn over_it(c : Ctx, x : Double, y : Double) -> String {
+  // (the window's tree's first: a node of it taking the press there, else, where no old view's does, the one found
+  // there first, lying over what is looked for: a scrim, a page's bar)
+  match view_app.val {
+    Some(tree) => {
+      let said = fn(what : String, id : @view.NodeId) {
+        let at = "at \{x.to_int()},\{y.to_int()} \{what}"
+        match tree.drawn().search_by(fn(d) { d.id == id }) {
+          Some(k) => {
+            let d = tree.drawn()[k]
+            let words = tree_first_words(tree, id)
+            "\{at} \{d.x.to_int()},\{d.y.to_int()} \{d.w.to_int()}x\{d.h.to_int()}" +
+            (if words == "" { "" } else { " holding \"" + words + "\"" })
+          }
+          None => "\{at} not drawn this frame"
+        }
+      }
+      match view_presses_at(x, y) {
+        Some(id) => return said("a tree node taking presses", id)
+        None =>
+          if hit_in(c.hit_ids, c.hit_rects, x, y) == 0 && !old_root_hit(c, x, y, pressed=true) {
+            match tree.drop_at(x, y) {
+              Some(OnNode(id)) => return said("a tree node lying over it", id)
+              Some(Shut(id)) => return said("a tree node under a modal layer", id)
+              _ => ()
+            }
+          }
+      }
+    }
+    None => ()
+  }
   let top = hit_in(c.hit_ids, c.hit_rects, x, y)
   if top == 0 {
     return "nothing at \{x.to_int()},\{y.to_int()}"
@@ -2048,6 +2187,21 @@ fn over_it(c : Ctx, x : Double, y : Double) -> String {
     }
   }
   "at \{x.to_int()},\{y.to_int()} \{what} not built this frame"
+}
+
+///|
+/// The first words of node `id` of the window's tree, or of what it holds as drawn in order, else what it is called
+/// (its label): "" when none.
+fn tree_first_words(tree : @view.Tree, id : @view.NodeId) -> String {
+  for d in tree.drawn() {
+    if tree.holds(id, d.id) {
+      let w = view_words_found(d)
+      if w != "" {
+        return w
+      }
+    }
+  }
+  tree.said_label(id)
 }
 
 ///|

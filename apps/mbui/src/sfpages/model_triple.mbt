@@ -19,13 +19,12 @@
 priv struct Triple {
   mut open : String
   mut shown : Int
-  mut asked : String
   mut accounts_asked : Bool
   mut borrow_asking : String
 }
 
 ///|
-let triple : Triple = { open: "", shown: 0, asked: "", accounts_asked: false, borrow_asking: "" }
+let triple : Triple = { open: "", shown: 0, accounts_asked: false, borrow_asking: "" }
 
 ///|
 /// One panel's filter, what it shows and its pick: what is typed in its search (`field`), whether all the models are
@@ -59,6 +58,8 @@ priv struct TriplePanel {
   mut names_most : Double
   /// whether it is a small panel beside what opened it, as its body found as it was made (what its foot goes by)
   mut small : Bool
+  /// the search result index highlighted by ↑/↓ for Enter to pick (0 when typing changes)
+  search_at : @signals.Signal[Int]
 }
 
 ///|
@@ -78,7 +79,6 @@ fn TriplePanel::pick_now(self : TriplePanel, src : Source, station : String, of 
 fn triple_reset() -> Unit {
   triple.open = ""
   triple.shown = 0
-  triple.asked = ""
   triple.accounts_asked = false
   triple.borrow_asking = ""
   triple_ahead_stop()
@@ -134,14 +134,6 @@ fn triple_ask(src : Source, station : String, of : String) -> Unit {
   }
   triple_ahead.of = me
   triple_ahead.lease = Some(src.lease_topic("pick", pick_params(station, of)))
-}
-
-///|
-/// What was asked ahead of the panel of the pick `of` on `station` as it stands, read through what holds it (holding
-/// nothing more: a page's own read of it would hold it while the page is there); None while it is not held.
-fn triple_ahead_read(station : String, of : String) -> @sfbase.TopicState? {
-  guard triple_ahead.of == station + "\u{1}" + of && triple_ahead.lease is Some(l) && l.alive() else { return None }
-  @signals.untracked(fn() { l.read() })
 }
 
 ///|
@@ -263,7 +255,11 @@ fn pick_save(
   for k, v in patch {
     p[k] = v
   }
-  act(src, @sf.t("common.save"), "pick.save/" + station + "/" + of, "pick.save", Json::object(p), done~, ok~, failed~)
+  act(src, @sf.t("common.save"), "pick.save/" + station + "/" + of, "pick.save", Json::object(p), done~, ok=fn(result) {
+    let notice = text(Some(result), "notice")
+    if notice != "" { toast_later(notice) }
+    ok(result)
+  }, failed~)
 }
 
 ///|
@@ -309,6 +305,7 @@ pub fn open_triple_panel(
     up,
     names_most: 0.0,
     small: false,
+    search_at: @signals.signal(0),
   }
   pick_draft(src, station, of, { "open": Json::boolean(true) })
   @sf.panel_nodes(
@@ -346,204 +343,23 @@ pub fn open_triple_panel(
 }
 
 ///|
-/// The control of the pick `of` on `station` (ModelTriple): its line, and its panel under it while open (above it
-/// where the presenters flip it up). `face`: the control as a page draws it closed with itself (a new chat's: its
-/// `pick`, NewChatPick, only where it runs on a model), not read on its own: its panel's own pick is asked as the hand
-/// comes to it and the panel opens once that is answered (open_triple_whole); `small`: in a composer's row (its words
-/// 12). `saved`: what is said once a model picked
-/// (onConfirm's toast: a chat's, from its next turn; a connect's, its model bound; nothing where nothing runs on it yet,
-/// a new chat's or a new connect's). `floating`: over a page rather than in a row (a new chat's over its
-/// composer, narrow): a capsule of the composer's glass. `bound`: what it runs is another's to say (a preset's), its
-/// panel never opened; `on_bound` what a press on it opens instead, beside it.
-pub fn model_triple(
-  c : @ui.Ctx,
-  src : Source,
-  station : String,
-  of : String,
-  face? : Json? = None,
-  small? : Bool = false,
-  floating? : Bool = false,
-  saved? : String = "",
-  bound? : Bool = false,
-  on_bound? : (@sf.Beside) -> Unit,
-) -> Unit {
-  let t = @sf.theme()
-  let v = match face {
-    Some(_) => face
-    None => src.topic("pick", pick_params(station, of)).get().value
+/// Whether what opens from the control `b` goes up from it: where it stands low in the window, short of room under it
+/// for the model's panel (the tallest of a new chat's choices), more over it. Said as it is pressed, where it stands
+/// then: nothing laid out is read back for it.
+fn triple_opens_up(b : @view.View) -> Bool {
+  let (_, y, _, h) = b.placed_window_now()
+  let under = b.window_h() - (y + h)
+  under < triple_up_need && y > under
+}
+
+///|
+/// The side what a new chat's choice (its preset's, its station's, its model's) opens on, beside `from`: up from it as
+/// its model's panel goes (triple_opens_up), so that the row's choices all open the same way.
+fn choice_side(from : @sf.Beside) -> @ui.Side {
+  match from {
+    Node(b) if triple_opens_up(b) => Top
+    _ => Bottom
   }
-  guard v is Some(Object(_)) else { return }
-  let value = field(v, "value")
-  // (a face is drawn only of a control that runs on a model: there are models to pick)
-  let offers = face is Some(_) || items(v, "options").length() > 0 || triple_other_stations(v)
-  let vo = field(v, "valueOption")
-  let account = field(v, "account")
-  let me = station + "\u{1}" + of
-  let dkey = "pick.save/" + station + "/" + of
-  let saving = doing(dkey)
-  let id = c.id("triple/" + me)
-  // (`bound`: what it runs is another's to say, a preset's: shown, not opened, no chevron)
-  let can = offers && !saving && !bound
-  let open = triple.open == me
-  let go = fn() {
-    triple.asked = ""
-    // (in a composer's row, at the window's foot: its panel gone up from it)
-    match face {
-      Some(_) => open_triple_whole(src, station, of, Of(id), saved, up=small)
-      None => open_triple_panel(src, station, of, Of(id), saved~, up=small)
-    }
-  }
-  // (drawn of its face: its panel's pick asked as the hand comes to it, ahead of the press it opens at: a pointer come
-  // to rest over it, a finger or a pointer gone down on it; let go as it leaves, where nothing else holds it)
-  if face is Some(_) && !src.read_only && !c.in_bones() {
-    let hand = can && (c.hovered(id) || (c.press().down && c.press_within(id)))
-    if hand {
-      triple_ask(src, station, of)
-    } else {
-      triple_let_go(me)
-    }
-    // (pressed before it was answered: looked at again once the frame's builds are over, where opening it tells
-    // outside)
-    match triple_ahead.wait {
-      Some(w) => c.after_build("triple-open/" + me, fn() { w.check() })
-      None => ()
-    }
-  }
-  if can && !open {
-    c.on_press(id, fn() {
-      go()
-    })
-  }
-  // (`bound`, pressed: what holds it says so, `on_bound` beside it)
-  match on_bound {
-    Some(f) if bound && offers => c.on_press(id, fn() { f(Of(id)) })
-    _ => ()
-  }
-  // (asked from elsewhere: opened as it is seen)
-  if can && !open && triple.asked == me {
-    go()
-  }
-  let runtime = text(value, "runtime")
-  let (words, muted) = if small { (triple_words_xs, triple_muted_xs) } else { (triple_words, triple_muted) }
-  c.box(
-    style=match (floating, open, small) {
-      // (over the page, not in a row: on the composer's glass, as the page's other choice)
-      (true, _, _) => glass_chooser_box
-      (false, true, false) => triple_on
-      (false, false, false) => triple_style
-      (false, true, true) => triple_small_on
-      (false, false, true) => triple_small
-    },
-    glass?=if floating { Some(@sf.glass_floating()) } else { None },
-    id~,
-    fn() {
-    if !offers {
-      c.text(@sf.t("web-main.model.none"), style=muted) |> ignore
-    } else {
-      let model = text(value, "model")
-      @sf.maker_mark(c, text(field(vo, "maker"), "id"), runtime, 14.0) |> ignore
-      let name = if model == "" {
-        @sf.t("web-main.model.pick")
-      } else {
-        // (a model not among those listed here: the name the core knows it by, never its id)
-        match (text(vo, "name"), text(v, "modelText")) {
-          ("", "") => model
-          ("", n) => n
-          (n, _) => n
-        }
-      }
-      // (within the room it has, the most it can say: what matters least left out first, as the web's DROPS: who
-      // runs it by name, then who runs it, then the runtime, then how hard it thinks; the model never: its name cut
-      // short once all of them have gone)
-      c.text(name, style=if small { triple_name_xs } else { triple_name }, keep=true) |> ignore
-      if !flag(v, "runtimeFixed") && (flag(v, "showRuntime") || items(vo, "runtimes").length() > 1) {
-        c.box(style=triple_part, drop=triple_drop_runtime, fn() {
-          c.text("·", style=muted) |> ignore
-          c.text(@settings.runtime_short(runtime), style=words) |> ignore
-        })
-        |> ignore
-      }
-      let effort = text(value, "effort")
-      if effort != "" || items(v, "efforts").length() > 0 {
-        c.box(style=triple_part, drop=triple_drop_effort, fn() {
-          c.text("·", style=muted) |> ignore
-          c.text(if effort == "" { @sf.t("web-main.model.defaultEffort") } else { effort_text(effort) }, style=words)
-          |> ignore
-        })
-        |> ignore
-      }
-      match text(v, "fastText") {
-        "" => ()
-        f =>
-          c.box(style=triple_part, drop=triple_drop_effort, fn() {
-            c.text("·", style=muted) |> ignore
-            c.text(f, style=words) |> ignore
-          })
-          |> ignore
-      }
-      match text(v, "subagentText") {
-        "" => ()
-        sub =>
-          c.box(style=triple_part, fn() {
-            c.text(sub, style=words) |> ignore
-          })
-          |> ignore
-      }
-      if account is Some(Object(_)) {
-        // (each of its pieces in the control's row: its name the first to go, then the rest of it)
-        let profile = field(account, "profile")
-        let marked = profile is Some(Object(_))
-        // (the dot before it goes with what follows it: its mark where it has one, else its name, never left alone)
-        if marked {
-          c.box(style=triple_part, drop=triple_drop_account, fn() {
-            c.text("·", style=muted) |> ignore
-            @sf.maker_mark(c, text(profile, "mark"), runtime, 14.0) |> ignore
-          })
-          |> ignore
-        }
-        let level = text(account, "level")
-        c.box(style=if marked { triple_alone } else { triple_part }, drop=triple_drop_name, fn() {
-          if !marked {
-            c.text("·", style=muted) |> ignore
-          }
-          c.text(
-            text(account, "text"),
-            style=if level == "amber" {
-              triple_amber
-            } else if level == "red" {
-              triple_red
-            } else {
-              words
-            },
-          )
-          |> ignore
-        })
-        |> ignore
-        if profile is Some(Object(_)) {
-          c.box(style=triple_part, drop=triple_drop_account, fn() {
-            @sf.quota_chips(c, field(profile, "quota"), small=true)
-          })
-          |> ignore
-        }
-      }
-    }
-    // what was picked on its way: a ring in place of the chevron
-    if saving {
-      @sf.spinner(c, size=12.0) |> ignore
-    } else if !bound {
-      @sf.icon(c, "chevron-down", size=12.0, color=t.p.muted) |> ignore
-    }
-    },
-  )
-  |> ignore
-  // (a borrowing asked from its panel: what its own pick says of it, as what the panel asked holds it while it is
-  // asked: triple_let_go)
-  let asking = match face {
-    Some(_) if triple.borrow_asking == me => triple_ahead_read(station, of).bind(fn(s) { s.value })
-    Some(_) => None
-    None => v
-  }
-  borrow_dialog(c, src, station, of, asking)
 }
 
 ///|
@@ -552,12 +368,41 @@ pub fn model_triple(
 /// least first) its runtime, how hard it thinks, how fast, who runs it (its mark, its name, its allowance's chips); a
 /// ring in place of its chevron while what was picked is on its way; on its hover's ground while the hand is on it and
 /// while its panel is open. Pressed, its panel opens beside it (open_triple_panel); borrowing a model from there is
-/// asked in the presenters' confirm. `saved`: as model_triple's. Nothing while the pick is not read.
-pub fn model_triple_node(parent : @view.View, src : Source, station : String, of : String, saved? : String = "") -> Unit {
+/// asked in the presenters' confirm. `saved`: as model_triple's. Nothing while the pick is not read. `face`, `small`,
+/// `floating`, `bound` and `on_bound` as model_triple's: drawn of the face a page has of it (a new chat's), its panel's
+/// own pick asked as the hand comes to it and opened whole once answered (open_triple_whole); its words a composer's
+/// row's; a capsule of the composer's glass over the page; what it runs another's to say, a press `on_bound`'s.
+/// `ask_open`: asked from elsewhere as it is made (a new chat's `model` asked of its page), its panel opened as it is
+/// first placed, as the old one's is as it is seen.
+pub fn model_triple_node(
+  parent : @view.View,
+  src : Source,
+  station : String,
+  of : String,
+  saved? : String = "",
+  face? : () -> Json?,
+  small? : Bool = false,
+  floating? : Bool = false,
+  bound? : () -> Bool = fn() { false },
+  on_bound? : (@sf.Beside) -> Unit,
+  ask_open? : Bool = false,
+) -> Unit {
   let me = station + "\u{1}" + of
   let dkey = "pick.save/" + station + "/" + of
-  let v_held = @sfbase.topic_value_held(src, "pick", pick_params(station, of))
-  let v = fn() { v_held.get() }
+  let v = match face {
+    Some(f) => f
+    None => {
+      let v_held = @sfbase.topic_value_held(src, "pick", pick_params(station, of))
+      fn() { v_held.get() }
+    }
+  }
+  // (a face is drawn only of a control that runs on a model: there are models to pick)
+  let offers = fn() { face is Some(_) || items(v(), "options").length() > 0 || triple_other_stations(v()) }
+  let (name_look, words_look, muted_look) = if small {
+    (triple_name_xs, triple_words_xs, triple_muted_xs)
+  } else {
+    (triple_name, triple_words, triple_muted)
+  }
   let value = fn() { field(v(), "value") }
   let vo = fn() { field(v(), "valueOption") }
   let account = fn() { field(v(), "account") }
@@ -565,26 +410,115 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
   let opened = @signals.signal(false, same=fn(a, b) { a == b })
   // borrowing a model of another station's, asked first (borrow_dialog's, put up by the presenters)
   let asks = fn(borrow : Json?) { borrow_ask(src, station, of, borrow) }
-  parent.show(fn() { v() is Some(Object(_)) }, fn(o) {
-    o.box(fn(b) {
-      @sf.style_node(b, fn() { triple_style }, in_row=true)
+  parent.show(fn() { v() is Some(Object(_)) }, fn(b) {
+      // (the control the node its row holds, its parts the ones it holds itself: where its row leaves out what has not
+      // the room, it is as wide as what it keeps of them, View::fits)
+      @sf.style_node(
+        b,
+        fn() {
+          if floating {
+            glass_chooser_box
+          } else if small {
+            triple_small
+          } else {
+            triple_style
+          }
+        },
+        in_row=true,
+      )
+      // (over the page, not in a row: on the composer's glass, as the page's other choices)
+      if floating {
+        b.glass(By(fn() { Some(@sf.glass_floating()) })) |> ignore
+      }
       // (no wider than its row leaves it: what it says given way within it, its parts left out, its name cut last)
       b
+      .row(Is(true))
+      .gap(Is(triple_gap))
+      .fits(Is(true))
       .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
       |> ignore
-      @sf.hover_ground_node(b, extra=fn() { opened.get() })
-      let can = fn() { (items(v(), "options").length() > 0 || triple_other_stations(v())) && !doing(dkey) }
-      @sf.presses_node(b, fn() {
-        guard @signals.untracked(can) && triple.open != me else { return }
-        triple.asked = ""
+      @sf.hover_ground_node(b, on=fn() { !floating }, extra=fn() { opened.get() })
+      // (`bound`: what it runs is another's to say, a preset's: shown, not opened, no chevron)
+      let can = fn() { offers() && !doing(dkey) && !bound() }
+      // (drawn of its face: its panel's pick asked as the hand comes to it, ahead of the press it opens at: a pointer come
+      // to rest over it, a finger or a pointer gone down on it; let go as it leaves, where nothing else holds it)
+      if face is Some(_) && !src.read_only && !b.in_bones() {
+        b.reacts(fn() { can() && (@sf.hovered_node(b) || b.pressed()) }, fn(hand) {
+          if hand {
+            triple_ask(src, station, of)
+          } else {
+            triple_let_go(me)
+          }
+        })
+      }
+      let go = fn() {
         let (x, y, w, h) = b.placed_window_now()
+        let up = triple_opens_up(b)
+        if @signals.untracked(bound) {
+          match on_bound {
+            Some(f) => if @signals.untracked(offers) { f(Node(b)) }
+            None => ()
+          }
+          return
+        }
+        guard @signals.untracked(can) && triple.open != me else { return }
         opened.set(true)
-        // (its panel gone up from it where it stands low in the window: short of room for it under it, more over it)
-        let under = b.window().1 - (y + h)
-        let up = under < triple_up_need && y > under
-        open_triple_panel(src, station, of, At(x, y, w, h), saved~, gone=fn() { opened.set(false) }, asks~, up~)
-      }, on=can)
+        match face {
+          Some(_) => open_triple_whole(src, station, of, At(x, y, w, h), saved, up~)
+          None => open_triple_panel(src, station, of, At(x, y, w, h), saved~, gone=fn() { opened.set(false) }, asks~, up~)
+        }
+      }
+      // (said to a screen reader as the button it is, by what it shows: its model, then each part shown after it, a dot
+      // between, as the old one's row says them)
+      let said_label = fn() {
+        guard offers() else { return @sf.t("web-main.model.none") }
+        let model = text(value(), "model")
+        let name = if model == "" {
+          @sf.t("web-main.model.pick")
+        } else {
+          match (text(vo(), "name"), text(v(), "modelText")) {
+            ("", "") => model
+            ("", n) => n
+            (n, _) => n
+          }
+        }
+        let parts = [name]
+        if !flag(v(), "runtimeFixed") && (flag(v(), "showRuntime") || items(vo(), "runtimes").length() > 1) {
+          parts.push(@settings.runtime_short(runtime()))
+        }
+        let effort = text(value(), "effort")
+        if effort != "" || items(v(), "efforts").length() > 0 {
+          parts.push(if effort == "" { @sf.t("web-main.model.defaultEffort") } else { effort_text(effort) })
+        }
+        for k in ["fastText", "subagentText"] {
+          if text(v(), k) != "" {
+            parts.push(text(v(), k))
+          }
+        }
+        if account() is Some(Object(_)) && text(account(), "text") != "" {
+          parts.push(text(account(), "text"))
+        }
+        parts.join(" · ")
+      }
+      // (the row itself the button (the library's action box, in its node): pressed, focused and said by it while it can be opened)
+      @sf.action_box_node(
+        b,
+        said_label,
+        fn(_) { go() },
+        fn(_) {  },
+        disabled=fn() { !(can() || (bound() && on_bound is Some(_))) },
+        in_node=true,
+      )
+      |> ignore
+      // (asked from elsewhere as it is made (`ask_open`): opened as it is first placed, as the old one's is as it is seen)
+      if ask_open {
+        @ui.after_frame(fn() {
+          if b.alive() && !@signals.untracked(bound) {
+            go()
+          }
+        })
+      }
       // (each part what its row holds itself, so the row leaves it out where it has not the room: View::drops)
       let part = fn(r : @view.View, drop : Int, shown : () -> Bool, body : (@view.View) -> Unit) {
         r.show(shown, fn(x) {
@@ -593,48 +527,56 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
           body(x)
         })
       }
-      let dot = fn(x : @view.View) { @sf.words_node(x, fn() { "·" }, fn() { triple_muted }) |> ignore }
-      b.pick(fn() { items(v(), "options").length() == 0 }, fn(r, none) {
-        // (its parts in a row, as the capsule's: what has not the room left out of it, View::drops)
-        r
-        .row(Is(true))
-        .gap(Is(triple_gap))
-        .lines_up(Is(Some(Middle)))
-        .fits(Is(true))
-        .shrink(Is(1.0))
-        .min_width(Is(Some(0.0)))
-        |> ignore
-        if none {
-          @sf.words_node(r, fn() { @sf.t("web-main.model.none") }, fn() { triple_muted }) |> ignore
-          return
-        }
-        r.pick(fn() { (text(field(vo(), "maker"), "id"), runtime()) }, fn(m, k) { @sf.maker_mark_node(m, k.0, k.1, 14.0) |> ignore })
-        // (within the room it has, the most it can say: model_triple's; the model never, its name cut short last)
-        @sf.words_node(r, fn() {
-          let model = text(value(), "model")
-          if model == "" {
-            @sf.t("web-main.model.pick")
-          } else {
-            // (a model not among those listed here, none of this station's: the name the core knows it by, never its id)
-            match (text(vo(), "name"), text(v(), "modelText")) {
-              ("", "") => model
-              ("", n) => n
-              (n, _) => n
+      let dot = fn(x : @view.View) { @sf.words_node(x, fn() { "·" }, fn() { muted_look }) |> ignore }
+      let r = b
+      // (none to pick: said so)
+      r.show(fn() { !offers() }, fn(n) { @sf.words_node(n, fn() { @sf.t("web-main.model.none") }, fn() { muted_look }) |> ignore })
+      r.show(offers, fn(m) {
+        m.pick(fn() { (text(field(vo(), "maker"), "id"), runtime()) }, fn(k, x) { @sf.maker_mark_node(k, x.0, x.1, 14.0) |> ignore })
+      })
+      // (within the room it has, the most it can say: model_triple's; the model never, its name stepping to short before effort drops and cut short last)
+      r.show(offers, fn(nm) {
+        // (what may be left out leaving for it first, its name cut short only then: View::fit_whole, its own and its
+        // words')
+        nm.row(Is(true)).fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fit_whole(Is(true)) |> ignore
+        model_name_segments_node(
+          nm,
+          fn() {
+            let model = text(value(), "model")
+            if model == "" {
+              @sf.t("web-main.model.pick")
+            } else {
+              // (a model not among those listed here, none of this station's: the name the core knows it by, never its id)
+              match (text(vo(), "name"), text(v(), "modelText")) {
+                ("", "") => model
+                ("", n) => n
+                (n, _) => n
+              }
             }
-          }
-        }, fn() { triple_name })
-        .shrink(Is(1.0))
-        .min_width(Is(Some(0.0)))
-        .cuts(Is(true))
-        .allow_ellipsis(Is(true))
-        // (what may be left out leaving for it first, its name cut short only then: View::fit_whole)
-        .fit_whole(Is(true))
-        |> ignore
-        part(r, triple_drop_runtime, fn() { !flag(v(), "runtimeFixed") && (flag(v(), "showRuntime") || items(vo(), "runtimes").length() > 1) }, fn(x) {
+          },
+          fn() {
+            let model = text(value(), "model")
+            if model == "" {
+              ""
+            } else {
+              match (text(vo(), "shortName"), text(v(), "modelShort")) {
+                ("", s) => s
+                (s, _) => s
+              }
+            }
+          },
+          fn() { name_look },
+          drop_short=triple_drop_model_short,
+          drop_hide=0,
+          cuts_last=true,
+          fit_whole=true,
+        )
+      })
+        part(r, triple_drop_runtime, fn() { offers() && !flag(v(), "runtimeFixed") && (flag(v(), "showRuntime") || items(vo(), "runtimes").length() > 1) }, fn(x) {
           dot(x)
-          @sf.words_node(x, fn() { @settings.runtime_short(runtime()) }, fn() { triple_words }) |> ignore
+          @sf.words_node(x, fn() { @settings.runtime_short(runtime()) }, fn() { words_look }) |> ignore
         })
-        part(r, triple_drop_effort, fn() { text(value(), "effort") != "" || items(v(), "efforts").length() > 0 }, fn(x) {
+        part(r, triple_drop_effort, fn() { offers() && (text(value(), "effort") != "" || items(v(), "efforts").length() > 0) }, fn(x) {
           dot(x)
           @sf.words_node(x, fn() {
             let effort = text(value(), "effort")
@@ -643,21 +585,29 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
             } else {
               effort_text(effort)
             }
-          }, fn() { triple_words })
+          }, fn() { words_look })
           |> ignore
         })
-        part(r, triple_drop_effort, fn() { text(v(), "fastText") != "" }, fn(x) {
+        part(r, triple_drop_speed, fn() { offers() && text(v(), "fastText") != "" }, fn(x) {
+          // (set off by a dot as the other parts are, the icon as the speed's words were)
           dot(x)
-          @sf.words_node(x, fn() { text(v(), "fastText") }, fn() { triple_words }) |> ignore
+          x.pick(fn() { text(v(), "fastText") }, fn(mark, speed) {
+            if speed == "Fast" || speed == "Ultrafast" {
+              let icon = if speed == "Ultrafast" { "zap-ultrafast" } else { "zap-fast" }
+              @sf.icon_node(mark, icon, 14.0, By(fn() { @sf.theme().p.text })) |> ignore
+            } else {
+              @sf.words_node(mark, fn() { speed }, fn() { words_look }) |> ignore
+            }
+          })
         })
         // (who runs it: its mark where it has one, then its name, then its allowance's chips: model_triple's)
         let profile = fn() { field(account(), "profile") }
         let marked = fn() { profile() is Some(Object(_)) }
-        part(r, triple_drop_account, fn() { account() is Some(Object(_)) && marked() }, fn(x) {
+        part(r, triple_drop_account, fn() { offers() && account() is Some(Object(_)) && marked() }, fn(x) {
           dot(x)
           x.pick(fn() { (text(profile(), "mark"), runtime()) }, fn(m, k) { @sf.maker_mark_node(m, k.0, k.1, 14.0) |> ignore })
         })
-        r.show(fn() { account() is Some(Object(_)) }, fn(x) {
+        r.show(fn() { offers() && account() is Some(Object(_)) }, fn(x) {
           @sf.style_node(x, fn() { if marked() { triple_alone } else { triple_part } }, in_row=true)
           x.drops(Is(triple_drop_name)) |> ignore
           x.show(fn() { !marked() }, dot)
@@ -665,25 +615,22 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
             match text(account(), "level") {
               "amber" => triple_amber
               "red" => triple_red
-              _ => triple_words
+              _ => words_look
             }
           })
           |> ignore
         })
-        part(r, triple_drop_account, fn() { account() is Some(Object(_)) && marked() }, fn(x) {
+        part(r, triple_drop_account, fn() { offers() && account() is Some(Object(_)) && marked() }, fn(x) {
           @sf.quota_chips_node(x, fn() { field(profile(), "quota") }, small=true)
         })
-      })
       // what was picked on its way: a ring in place of the chevron
-      b.pick(fn() { doing(dkey) }, fn(e, saving) {
-        if saving {
+      b.pick(fn() { (doing(dkey), bound()) }, fn(e, k) {
+        if k.0 {
           @sf.spinner_node(e, size=12.0) |> ignore
-        } else {
+        } else if !k.1 {
           @sf.icon_node(e, "chevron-down", 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
         }
       })
-    })
-    |> ignore
   })
 }
 
@@ -766,14 +713,49 @@ fn triple_body_node(
     }
   }
   let searching = fn() { words() != "" }
+  let kinds = fn() { items(v(), "makers") }
   let listed = fn() {
     let w = words()
+    if w == "" {
+      return options()
+    }
+    let maker_titles : Map[String, String] = Map([])
+    for k in kinds() {
+      maker_titles[text(Some(k), "id")] = text(Some(k), "title").to_lower()
+    }
+    let tokens : Array[String] = []
+    for part in w.split(" ") {
+      let s = part.to_owned()
+      if s != "" {
+        tokens.push(s)
+      }
+    }
     options().filter(fn(o) {
-      let o = Some(o)
-      w == "" ||
-      text(o, "name").to_lower().contains(w) ||
-      text(o, "model").to_lower().contains(w) ||
-      items(o, "ids").iter().any(fn(i) { i is String(s) && s.to_lower().contains(w) })
+      let ov = Some(o)
+      let name = text(ov, "name").to_lower()
+      let model = text(ov, "model").to_lower()
+      let family = text(ov, "family").to_lower()
+      let raw_maker = text(field(ov, "maker"), "id")
+      let maker_id = raw_maker.to_lower()
+      let maker_title = maker_titles.get(raw_maker).unwrap_or("")
+      let ids = items(ov, "ids")
+      let runtimes = items(ov, "runtimes")
+      tokens.iter().all(fn(tok) {
+        name.contains(tok) ||
+        model.contains(tok) ||
+        family.contains(tok) ||
+        maker_id.contains(tok) ||
+        maker_title.contains(tok) ||
+        ids.iter().any(fn(i) { i is String(s) && s.to_lower().contains(tok) }) ||
+        runtimes.iter().any(fn(r) {
+          r is String(s) &&
+          (
+            s.to_lower().contains(tok) ||
+            @settings.runtime_short(s).to_lower().contains(tok) ||
+            @settings.runtime_label(s).to_lower().contains(tok)
+          )
+        })
+      })
     })
   }
   let model_of = fn(id : String) { triple_model_of(options(), id) }
@@ -796,7 +778,6 @@ fn triple_body_node(
       }
     })
   }
-  let kinds = fn() { items(v(), "makers") }
   let kind_of = fn(o : Json) -> String { text(field(Some(o), "maker"), "id") }
   // all of them in one list while they are few, no level past it (2026-11-10: a station of six models went through
   // 全部模型 and its makers to reach one); more, those used most and starred first and the rest a level further, by
@@ -907,12 +888,87 @@ fn triple_body_node(
   // configuration under their name (常用搭配), then every starred model, the one picked where it is not starred after
   // them where the rest are a level further, so it is always in sight as a model; each stays where it was while the
   // panel is open, starred or not since (contents' `first`)
+  let combo_selected = fn() -> Bool {
+    combos().iter().any(fn(x) { flag(Some(x), "selected") })
+  }
+  let has_speed = fn() { flag(v(), "fastAvailable") }
+  let all_speeds = fn() -> Array[(String, String)] {
+    let cs = [("standard", @sf.t("web-main.model.standard")), ("fast", "Fast")]
+    if flag(v(), "ultrafastAvailable") {
+      cs.push(("ultrafast", "Ultrafast"))
+    }
+    cs
+  }
+  let speed_now = fn() {
+    let speed = text(field(v(), "draft"), "speed")
+    if speed != "" {
+      speed
+    } else {
+      match field(field(v(), "draft"), "fast") {
+        Some(True) => "fast"
+        Some(False) => "standard"
+        _ => if flag(v(), "fastPlan") { "fast" } else { "standard" }
+      }
+    }
+  }
+  let pick_speed = fn(k : String) {
+    if k == "ultrafast" {
+      pick_save(src, station, of, { "speed": Json::string(k) })
+    } else {
+      pick_save(src, station, of, { "fast": Json::boolean(k == "fast") })
+    }
+  }
+  let all_contexts = fn() -> Array[(String, String)] {
+    items(v(), "contexts").map(fn(o) { (text(Some(o), "id"), text(Some(o), "text")) })
+  }
+  let context_now = fn() { text(v(), "contextNow") }
+  let pick_context = fn(k : String) {
+    pick_save(src, station, of, { "context": if k == "" { Json::null() } else { Json::string(k) } })
+  }
+  let has_params = fn() { !all_efforts().is_empty() || has_speed() || !all_contexts().is_empty() }
+  let pick_model = fn(id : String, oo : Json?) {
+    let vv = @signals.untracked(v)
+    if text(oo, "availability") == "borrowable" {
+      pick_draft(src, station, of, { "model": Json::string(id) })
+    } else {
+      triple.open = ""
+      close()
+      if text(vv, "option") != id || text(field(vv, "value"), "model") != text(field(vv, "draft"), "model") {
+        let p : Map[String, Json] = { "model": Json::string(id) }
+        match field(oo, "usual") {
+          Some(Object(u)) =>
+            for k in ["runtime", "effort", "fast", "speed", "tui", "context"] {
+              if of != "new" || k != "tui" { p[k] = u.get(k).unwrap_or(Json::null()) }
+            }
+          _ => ()
+        }
+        pick_save(src, station, of, p, done=saved)
+      }
+    }
+  }
+  let search_step = fn(delta : Int) {
+    guard @signals.untracked(searching) else { return }
+    let n = @signals.untracked(listed).length()
+    guard n > 0 else { return }
+    let cur = contents.search_at.untracked()
+    let clamped = if cur < 0 || cur >= n { 0 } else { cur }
+    contents.search_at.set((clamped + delta + n) % n)
+  }
+  let search_enter = fn() {
+    guard @signals.untracked(searching) else { return }
+    let ls = @signals.untracked(listed)
+    guard !ls.is_empty() else { return }
+    let cur = contents.search_at.untracked()
+    let idx = if cur < 0 || cur >= ls.length() { 0 } else { cur }
+    let o = ls[idx]
+    pick_model(text(Some(o), "model"), Some(o))
+  }
   let first_ids = fn() -> (Array[String], Array[String]) {
     let f = flat()
     let lk = liked()
     let now_used : Array[String] = []
     match model_of(picked()) {
-      Some(o) if !f && !lk.contains(o) => now_used.push(picked())
+      Some(o) if !f && !lk.contains(o) && !combo_selected() => now_used.push(picked())
       _ => ()
     }
     let now_liked = lk.map(fn(o) { text(Some(o), "model") })
@@ -920,11 +976,6 @@ fn triple_body_node(
       Some(was) => {
         // (one starred a level further is with them once come back; in the one list of a few it stays where it is)
         if !f {
-          for id in now_used {
-            if !was.0.contains(id) && !was.1.contains(id) {
-              was.0.push(id)
-            }
-          }
           for id in now_liked {
             if !was.0.contains(id) && !was.1.contains(id) {
               was.1.push(id)
@@ -967,7 +1018,7 @@ fn triple_body_node(
         (if !items(vv, "sidekicks").is_empty() { 1 } else { 0 }) +
         (if flag(vv, "fastAvailable") { 1 } else { 0 }) +
         (if !items(vv, "contexts").is_empty() { 1 } else { 0 })
-      let foot_two_lines = (foot_chips >= 2 && ww < 340.0) || (foot_chips >= 3 && ww < 440.0) || foot_chips >= 4
+      let foot_two_lines = (foot_chips >= 2 && ww < 364.0) || (foot_chips >= 3 && ww < 464.0) || foot_chips >= 4
       let sheet_rest = (if at == "" { 60.0 } else { 72.0 }) +
         (if at == "" && options().length() > 8 { 42.0 } else { 0.0 }) +
         (if triple_other_stations(vv) { @sf.theme().items.least } else { 0.0 }) +
@@ -985,7 +1036,7 @@ fn triple_body_node(
   // station's 全部模型 as each level was as tall as it held). The way to all of them then at the room's foot, the models
   // from its top (2026-11-02 用户「全部模型的位置需要讲究一下」: level with the last of the levels beside them, as a
   // list's 「查看全部」 is).
-  let level_h = fn() { !sheet && !flat() }
+  let level_h = fn() { false }
   // a step in, in a sheet or a dialog in steps: what `to` names of the models, its foot as every step's
   let step = fn(title : String, to : String) {
     @sf.panel_go_nodes(
@@ -1046,7 +1097,7 @@ fn triple_body_node(
   }
   // a scroller of the models: `most` tall at most, giving way where the panel has less room for it
   let scroll = fn(parent : @view.View, most : () -> Double, body : (@view.View) -> Unit) {
-    @sf.capped_node(parent, most, fn(col) {
+    @sf.capped_node(parent, most, bleed=false, fn(col) {
       @sf.style_node(col, fn() { triple_rows })
       body(col)
     })
@@ -1054,8 +1105,28 @@ fn triple_body_node(
     .min_height(Is(Some(0.0)))
     |> ignore
   }
-  let model_row = fn(r : @view.View, id : String) {
-    triple_model_row_node(r, src, station, of, v, fn() { model_of(id) }, id, picked, names_w, saved, close, tips)
+  let model_row = fn(
+    r : @view.View,
+    id : String,
+    show_picked : () -> Bool,
+    active : () -> Bool,
+  ) {
+    triple_model_row_node(
+      r,
+      src,
+      station,
+      of,
+      v,
+      fn() { model_of(id) },
+      id,
+      picked,
+      names_w,
+      saved,
+      close,
+      tips,
+      show_picked~,
+      active~,
+    )
     brought(r, "model/" + id)
   }
   // a level's models (all that match what is typed), scrolling by themselves, under their series' names where those
@@ -1078,12 +1149,27 @@ fn triple_body_node(
         }
         out
       }
+      let active_is = col.selected(fn() {
+        if searching() {
+          let ls = listed()
+          if ls.is_empty() {
+            None
+          } else {
+            let cur = contents.search_at.get()
+            let idx = if cur < 0 || cur >= ls.length() { 0 } else { cur }
+            Some(text(Some(ls[idx]), "model"))
+          }
+        } else {
+          None
+        }
+      })
       col.each(keys, fn(k) { k }, at_once=true, fn(r, k) {
         let k = k.untracked()
         if k.has_prefix("series/") {
           triple_column_head_node(r, k.exact_view(start=7).to_owned())
         } else if k.has_prefix("model/") {
-          model_row(r, k.exact_view(start=6).to_owned())
+          let id = k.exact_view(start=6).to_owned()
+          model_row(r, id, fn() { true }, fn() { active_is(id) })
         } else {
           r.box(fn(e) {
             @sf.style_node(e, fn() { triple_empty })
@@ -1248,19 +1334,26 @@ fn triple_body_node(
         leaving.set(lv)
         held_back.set(held_back.untracked() + came)
         room.at_moment(room.cause_at() + @sf.leave_ms, fn() {
-          let lv = leaving.untracked().copy()
-          for g in gone {
-            lv.remove(g.0)
-          }
-          leaving.set(lv)
-          held_back.set(held_back.untracked().filter(fn(k) { !came.contains(k) }))
+          @view.transition(within=room.transitions_root(), fn() {
+            let lv = leaving.untracked().copy()
+            for g in gone {
+              lv.remove(g.0)
+            }
+            leaving.set(lv)
+            held_back.set(held_back.untracked().filter(fn(k) { !came.contains(k) }))
+          })
         })
         |> ignore
       })
       room.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      // (beside what opened it as tall as the column beside it where that is taller, the way to all of them at its
+      // foot: its line over it level with the panel foot's, as far over it as under it, never left over the rows)
+      if !sheet {
+        room.grow(Is(1.0)) |> ignore
+      }
       room
       .height(By(fn() { if level_h() { Some(triple_list_h) } else { None } }))
-      .lies_along(By(fn() { if level_h() { Between } else { Start } }))
+      .lies_along(By(fn() { if level_h() || (!sheet && !flat()) { Between } else { Start } }))
       |> ignore
       scroll(room, fn() { if flat() { list_most() } else { list_most() - row_h() } }, fn(scrolled) {
         // (the room between them each row's own: triple_first_gap)
@@ -1298,7 +1391,7 @@ fn triple_body_node(
             } else if k.has_prefix("apart/") {
               r.box(fn(a) { @sf.style_node(a, fn() { triple_apart }) }) |> ignore
             } else if k.has_prefix("model/") {
-              model_row(r, k.exact_view(start=6).to_owned())
+              model_row(r, k.exact_view(start=6).to_owned(), fn() { !combo_selected() }, fn() { false })
             } else {
               let combo = fn() {
                 match combos_by.get(k) {
@@ -1331,16 +1424,37 @@ fn triple_body_node(
           })
         })
       })
-      room.show(fn() { !flat() }, to_all)
+      room.show(fn() { !flat() }, fn(ta) {
+        ta.show(at_once=true, fn() { !first_keys().is_empty() }, fn(d) {
+          @sf.style_node(d, fn() { triple_to_all_rule })
+          triple_across(d, sheet, has_params)
+          d.box(fn(l) { @sf.style_node(l, fn() { triple_panel_rule_h }) }) |> ignore
+        })
+        to_all(ta)
+      })
     })
     |> ignore
   }
   // all of them: typed, those that match; else beside what opened it the makers and a maker's models side by side, a
   // way back over them to the first level where there is one; in a sheet the makers, a maker's models a step past them
+  let param_min_h = fn() {
+    guard !sheet && has_params() else { return None }
+    let mut rows = all_efforts().length()
+    if has_speed() {
+      rows += all_speeds().length() + (if rows > 0 { 1 } else { 0 })
+    }
+    if !all_contexts().is_empty() {
+      rows += all_contexts().length() + (if rows > 0 { 1 } else { 0 })
+    }
+    Some(dmin(list_most(), rows.to_double() * row_h() + 24.0))
+  }
   let all_level = fn(parent : @view.View) {
     parent.box(fn(room) {
       @sf.style_node(room, fn() { triple_room })
-      room.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      room.shrink(Is(1.0)).min_height(By(fn() { param_min_h().unwrap_or(0.0) |> Some })) |> ignore
+      if !sheet {
+        room.grow(Is(1.0)) |> ignore
+      }
       room.height(By(fn() { if level_h() { Some(triple_list_h) } else { None } })) |> ignore
       // (the way back: beside what opened it a row over them; a step's head has its back key)
       let back_to = fn() { !searching() && !sheet && has_first() }
@@ -1358,23 +1472,43 @@ fn triple_body_node(
         )
         |> ignore
       })
-      let most = fn() { if back_to() { list_most() - row_h() } else { list_most() } }
+      // (beside what opened it, browsing makers, the line under the way back over them as well: its room taken from theirs)
+      let most = fn() {
+        (if back_to() { list_most() - row_h() } else { list_most() }) -
+        (if !sheet && !searching() { 2.0 * @sf.panel_pad + triple_rule_thick } else { 0.0 })
+      }
       room.pick(at_once=true, fn() { (searching(), sheet && kind_asked() == triple_no_kind) }, fn(x, k) {
         x.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        if !sheet {
+          x.grow(Is(1.0)) |> ignore
+        }
         match k {
           (true, _) => model_rows(x, most)
           (false, true) => kind_rows(x, most)
           (false, false) if sheet => model_rows(x, most)
-          (false, false) =>
+          (false, false) => {
+            // (a line under the way back across the column, from the panel's left edge to the line between the
+            // columns, as the one over 全部模型 › is; the one between the makers and their models down from it to the
+            // panel foot's, meeting both)
+            x.box(fn(d) {
+              @sf.style_node(d, fn() { triple_browse_rule_h })
+              triple_across(d, sheet, has_params)
+              d.box(fn(l) { @sf.style_node(l, fn() { triple_panel_rule_h }) }) |> ignore
+            })
+            |> ignore
             x.box(fn(br) {
               @sf.style_node(br, fn() { triple_browse })
-              br.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+              br.grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
               br.box(fn(kc) {
                 @sf.style_node(kc, fn() { triple_kinds_column }, in_row=true)
                 kind_rows(kc, most)
               })
               |> ignore
-              br.box(fn(r) { @sf.style_node(r, fn() { triple_rule_v }, in_row=true) }) |> ignore
+              br.box(fn(r) {
+                @sf.style_node(r, fn() { triple_rule_v }, in_row=true)
+                r.margin(Is((0.0, -@sf.panel_pad, 0.0, -@sf.panel_pad))) |> ignore
+              })
+              |> ignore
               br.box(fn(mc) {
                 @sf.style_node(mc, fn() { triple_models_column }, in_row=true)
                 model_rows(mc, most)
@@ -1382,14 +1516,18 @@ fn triple_body_node(
               |> ignore
             })
             |> ignore
+          }
         }
       })
     })
     |> ignore
   }
   let models = fn(parent : @view.View) {
-    parent.pick(at_once=true, all, fn(x, a) {
+    parent.pick(at_once=sheet, all, fn(x, a) {
       x.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      if !sheet {
+        x.grow(Is(1.0)) |> ignore
+      }
       if a {
         all_level(x)
       } else {
@@ -1400,7 +1538,10 @@ fn triple_body_node(
   let plain_head = fn(parent : @view.View) {
     parent.pick(fn() { options().length() > 8 }, fn(x, finds) {
       if finds {
-        @sf.panel_head_node(x, fn() { @sf.t("android-chat.new.model") }, end=fn(e) { triple_find_node(e, contents) }) |> ignore
+        @sf.panel_head_node(x, fn() { @sf.t("android-chat.new.model") }, end=fn(e) {
+          triple_find_node(e, contents, on_enter=search_enter, on_step=search_step)
+        })
+        |> ignore
       } else {
         @sf.panel_head_node(x, fn() { @sf.t("android-chat.new.model") }) |> ignore
       }
@@ -1424,20 +1565,23 @@ fn triple_body_node(
   let models_head = fn(parent : @view.View) {
     parent.pick(fn() { triple_other_stations(v()) }, fn(y, scoped) {
       if scoped {
-        // (the choice on the title's line; the search, where there is one, on a line of its own under it, the
-        // column's width: beside the choice it had not the room)
+        // (the choice and the search on one wrapping row: search sits immediately to the right of the scope choice
+        // and fills remaining width when there is room, wrapping cleanly below only on narrow widths / large English text)
         y.box(fn(h) {
           @sf.style_node(h, fn() { triple_scope_head })
-          h.box(fn(c) { @sf.style_node(c, fn() { triple_scope_choice }, in_row=true); scope_node(c) }) |> ignore
-        })
-        |> ignore
-        y.show(fn() { options().length() > 8 }, fn(e) {
-          e.box(fn(f) {
-            @sf.style_node(f, fn() { triple_search })
-            triple_find_node(f, contents)
+          h.wraps(Is(Some(@ui.Space::px(S1_5)))) |> ignore
+          h.box(fn(c) {
+            @sf.style_node(c, fn() { triple_scope_choice }, in_row=true)
+            c.shrink(Is(0.0)) |> ignore
+            scope_node(c)
           })
           |> ignore
+          h.show(fn() { options().length() > 8 }, fn(f) {
+            f.grow(Is(1.0)).basis(Is(Some(140.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            triple_find_node(f, contents, on_enter=search_enter, on_step=search_step)
+          })
         })
+        |> ignore
         return
       }
       plain_head(y)
@@ -1454,15 +1598,35 @@ fn triple_body_node(
     names_w() + 14.0 + @sf.icon_button_side + 4.0 * @ui.Space::px(S1_5) + 2.0 * @ui.Space::px(S2_5) + @ui.Space::px(S3_5)
   }
   let h_effort = @sf.t("web-main.model.effort")
-  let effort_w = fn() {
-    let efforts = all_efforts()
-    guard !efforts.is_empty() else { return 0.0 }
+  let h_speed = @sf.t("web-main.model.speed")
+  let h_context = @sf.t("web-main.model.context")
+  let param_w = fn() {
+    guard has_params() else { return 0.0 }
     b.words_redone() |> ignore
     let size = @sf.node_sp(b, @sf.theme().t.ui)
-    let title = @sf.node_words_w(h_effort, size, weight=600)
-    let choice = efforts.fold(init=0.0, fn(w, e) { dmax(w, @sf.node_words_w(e.1, size, weight=500)) })
-    let padding = 2.0 * @ui.Space::px(S2_5)
-    dmax(title + padding, choice + padding + @ui.Space::px(S1_5) + @ui.Space::px(S3_5)).ceil()
+    let padding = 2.0 * @ui.Space::px(S4)
+    let check_room = @ui.Space::px(S1_5) + @ui.Space::px(S3_5)
+    let mut w = 0.0
+    if !all_efforts().is_empty() {
+      w = dmax(w, @sf.node_words_w(h_effort, size, weight=600) + padding)
+      for e in all_efforts() {
+        w = dmax(w, @sf.node_words_w(e.1, size, weight=500) + padding + check_room)
+      }
+    }
+    if has_speed() {
+      w = dmax(w, @sf.node_words_w(h_speed, size, weight=600) + padding)
+      for s in all_speeds() {
+        let ic = if s.0 == "standard" { 0.0 } else { 14.0 + @ui.Space::px(S1_5) }
+        w = dmax(w, @sf.node_words_w(s.1, size, weight=500) + padding + ic + check_room)
+      }
+    }
+    if !all_contexts().is_empty() {
+      w = dmax(w, @sf.node_words_w(h_context, size, weight=600) + padding)
+      for c in all_contexts() {
+        w = dmax(w, @sf.node_words_w(c.1, size, weight=500) + padding + check_room)
+      }
+    }
+    w.ceil()
   }
   let side_mode = fn() {
     if sheet {
@@ -1498,59 +1662,50 @@ fn triple_body_node(
       if sheet {
         // (the search, where the panel's head has none: a sheet's, its head its own)
         if at == "" {
-          body.show(fn() { options().length() > 8 }, fn(s) {
-            s.box(fn(sb) {
-              @sf.style_node(sb, fn() { triple_search })
-              triple_find_node(sb, contents)
-            })
-            |> ignore
+          body.show(fn() { options().length() > 8 }, fn(sb) {
+            @sf.style_node(sb, fn() { triple_search })
+            triple_find_node(sb, contents, on_enter=search_enter, on_step=search_step)
           })
         }
         // (whose models it lists, over them, where another station could lend some: models_head's choice)
-        body.show(fn() { triple_other_stations(v()) }, fn(sh) {
-          sh.box(fn(h) {
-            @sf.style_node(h, fn() { triple_scope_head })
-            scope_node(h)
-          })
-          |> ignore
+        body.show(fn() { triple_other_stations(v()) }, fn(h) {
+          @sf.style_node(h, fn() { triple_scope_head })
+          scope_node(h)
         })
         models(body)
         // its name and a stop for each level on one row across the sheet, the one it is at said in the thumb (stops):
         // as many levels as a model has on one line in any language, nothing opened over the sheet to pick one
-        body.show(fn() { all_efforts().length() > 0 }, fn(eb) {
-          eb.box(fn(row) {
-            @sf.style_node(row, fn() { triple_effort_block })
-            @sf.words_node(row, fn() { h_effort }, fn() { triple_head }) |> ignore
-            let stops = match contents.effort_stops.get(at) {
-              Some(st) => st
-              None => {
-                let st = @sf.Stops::new()
-                contents.effort_stops[at] = st
-                st
-              }
+        body.show(fn() { all_efforts().length() > 0 }, fn(row) {
+          @sf.style_node(row, fn() { triple_effort_block })
+          @sf.words_node(row, fn() { h_effort }, fn() { triple_head }) |> ignore
+          let stops = match contents.effort_stops.get(at) {
+            Some(st) => st
+            None => {
+              let st = @sf.Stops::new()
+              contents.effort_stops[at] = st
+              st
             }
-            @sf.stops_node(
-              row,
-              fn() { all_efforts().map(fn(e) { e.1 }) },
-              fn() {
-                let now = effort_now()
-                all_efforts().search_by(fn(e) { e.0 == now }).unwrap_or(-1)
-              },
-              stops,
-              said=h_effort,
-              on_pick=fn(i) {
-                match @signals.untracked(all_efforts).get(i) {
-                  Some(e) => pick_effort(e.0)
-                  None => ()
-                }
-              },
-            )
-            |> ignore
-          })
+          }
+          @sf.stops_node(
+            row,
+            fn() { all_efforts().map(fn(e) { e.1 }) },
+            fn() {
+              let now = effort_now()
+              all_efforts().search_by(fn(e) { e.0 == now }).unwrap_or(-1)
+            },
+            stops,
+            said=h_effort,
+            on_pick=fn(i) {
+              match @signals.untracked(all_efforts).get(i) {
+                Some(e) => pick_effort(e.0)
+                None => ()
+              }
+            },
+          )
           |> ignore
         })
       } else {
-        // (the models and how hard it thinks side by side, each titled alike over it, the line between them up to the
+        // (the models and model parameters side by side, each titled alike over it, the line between them up to the
         // panel's top: 「上面的分割线试试到顶」)
         body.box(fn(side) {
           @sf.style_node(side, fn() { triple_side_by_side })
@@ -1563,9 +1718,9 @@ fn triple_body_node(
             if !browsing_makers() {
               None
             } else {
-              let efforts = effort_w()
-              let makers = @ui.Space::px(S48) + 2.0 * @ui.Space::px(S1_5) + 1.0
-              let beside = if efforts > 0.0 { efforts + @ui.Space::px(S2) } else { 0.0 }
+              let params = param_w()
+              let makers = @ui.Space::px(S40) + 2.0 * @ui.Space::px(S1_5) + triple_rule_thick
+              let beside = if params > 0.0 { params + @ui.Space::px(S2) } else { 0.0 }
               Some(dmin(makers + row_least() + beside, room_w()))
             }
           }))
@@ -1577,27 +1732,88 @@ fn triple_body_node(
             models(mc)
           })
           |> ignore
-          side.show(fn() { all_efforts().length() > 0 }, fn(ec) {
-            ec.box(fn(col) {
-              @sf.style_node(col, fn() { triple_effort_column }, in_row=true)
-              col.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              // (as tall as the models beside it, its line from the panel's top to its foot's)
-              let measured_effort_w : @view.Live[Double?] = By(fn() { if browsing_makers() { Some(effort_w()) } else { None } })
-              col.grow(Is(1.0)).width(measured_effort_w).max_width(measured_effort_w) |> ignore
-              // (the line between them out of their flow, in the middle of the room between them, from the panel's top
-              // down to the line over its foot, meeting it: 「竖的那根怎么没跟横的接起来呢」)
-              col.box(fn(rule) {
-                @sf.style_node(rule, fn() { triple_rule_v })
-                rule
-                .over(Is(true))
-                .width(Is(Some(1.0)))
-                .margin(Is((-triple_between_rule, -@sf.panel_pad, 0.0, -@sf.panel_pad)))
-                |> ignore
+          side.show(has_params, fn(col) {
+            @sf.style_node(col, fn() { triple_effort_column }, in_row=true)
+            let pw : @view.Live[Double?] = By(fn() { Some(param_w()) })
+            col.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).width(pw).max_width(pw) |> ignore
+            // (the line between them out of their flow, in the middle of the room between them, from the panel's top
+            // down to the line over its foot, meeting it: 「竖的那根怎么没跟横的接起来呢」)
+            col.box(fn(rule) {
+              @sf.style_node(rule, fn() { triple_rule_v })
+              rule
+              .over(Is(true))
+              .width(Is(Some(triple_rule_thick)))
+              .margin(Is((-triple_between_rule, -@sf.panel_pad, 0.0, -@sf.panel_pad)))
+              |> ignore
+            })
+            |> ignore
+            // (a section: its line over it where one is over it, from the line between the columns to the panel's right
+            // edge, meeting both; its title and choices where the column's are, in by as much as the line is out)
+            let param_section = fn(
+              parent : @view.View,
+              title : String,
+              first : () -> Bool,
+              choices : (@view.View) -> Unit,
+            ) {
+              parent.show(at_once=true, fn() { !first() }, fn(d) {
+                @sf.style_node(d, fn() { triple_param_rule })
+                d.box(fn(l) { @sf.style_node(l, fn() { triple_panel_rule_h }) }) |> ignore
+              })
+              parent.box(fn(sec) {
+                sec.padding(Is((triple_rule_side, 0.0, @sf.panel_pad, 0.0))) |> ignore
+                sec.pick(at_once=true, first, fn(h, is_first) {
+                  if is_first {
+                    @sf.panel_head_node(h, fn() { title }) |> ignore
+                  } else {
+                    h.box(fn(b) {
+                      @sf.style_node(b, fn() { triple_param_head_box })
+                      @sf.words_node(b, fn() { title }, fn() { triple_param_title }) |> ignore
+                    })
+                    |> ignore
+                  }
+                })
+                choices(sec)
               })
               |> ignore
-              @sf.panel_head_node(col, fn() { h_effort }) |> ignore
-              triple_choices_node(col, h_effort, all_efforts, effort_now, pick_effort)
+            }
+            // (as wide as the column and as far past it as the lines across it reach: to the line between the columns
+            // and to the panel's right edge, what it holds in as far)
+            // (its sections end to end: the room round each line its box's own, as far over it as under it)
+            @sf.capped_node(col, fn() { triple_list_h + 44.0 }, bleed=false, fn(sc) {
+              sc.show(at_once=true, fn() { !all_efforts().is_empty() }, fn(sec) {
+                param_section(sec, h_effort, fn() { true }, fn(sec) {
+                  triple_choices_node(sec, h_effort, all_efforts, effort_now, pick_effort)
+                })
+              })
+              sc.show(at_once=true, has_speed, fn(sec) {
+                param_section(sec, h_speed, fn() { all_efforts().is_empty() }, fn(sec) {
+                  triple_choices_node(
+                    sec,
+                    h_speed,
+                    all_speeds,
+                    speed_now,
+                    pick_speed,
+                    icon_of=fn(w) { if w == "Fast" || w == "Ultrafast" { "zap" } else { "" } },
+                    tip_of=fn(w) {
+                      match w {
+                        "Fast" => @sf.t("web-main.model.fastNote")
+                        "Ultrafast" => @sf.t("web-main.model.ultrafastNote")
+                        _ => ""
+                      }
+                    },
+                    tips?,
+                  )
+                })
+              })
+              sc.show(at_once=true, fn() { !all_contexts().is_empty() }, fn(sec) {
+                param_section(sec, h_context, fn() { all_efforts().is_empty() && !has_speed() }, fn(sec) {
+                  triple_choices_node(sec, h_context, all_contexts, context_now, pick_context)
+                })
+              })
             })
+            .shrink(Is(1.0))
+            .min_height(Is(Some(0.0)))
+            .margin(Is((-triple_rule_side, 0.0, -@sf.panel_pad, 0.0)))
             |> ignore
           })
         })
@@ -1605,19 +1821,16 @@ fn triple_body_node(
       }
     })
     // the model picked is another station's: said over the foot, which borrows it rather than confirming
-    all_of.show(fn() { field(v(), "borrow") is Some(Object(_)) }, fn(bw) {
-      bw.box(fn(n) {
-        @sf.style_node(n, fn() { triple_borrow })
-        @sf.words_node(n, fn() {
-          let borrow = field(v(), "borrow")
-          if flag(borrow, "allowed") {
-            text(borrow, "note")
-          } else {
-            text(borrow, "why")
-          }
-        }, fn() { triple_note })
-        |> ignore
-      })
+    all_of.show(fn() { field(v(), "borrow") is Some(Object(_)) }, fn(n) {
+      @sf.style_node(n, fn() { triple_borrow })
+      @sf.words_node(n, fn() {
+        let borrow = field(v(), "borrow")
+        if flag(borrow, "allowed") {
+          text(borrow, "note")
+        } else {
+          text(borrow, "why")
+        }
+      }, fn() { triple_note })
       |> ignore
     })
   })
@@ -1679,8 +1892,42 @@ fn triple_names_w(v : @view.View, pick : Json?, combos : Array[Json], efforts : 
 /// The models' search where there are more than 8 of them in node `parent`: round, on the words' tint, no line round it,
 /// its glass before its words, its ground deeper pointed at or typed in (2026-10-30 用户「搜索也优化一下」「感觉它不应该
 /// 单独一行」: beside what opened it, at the end of the panel's head, beside its title), as tall as a small panel's rows.
-fn triple_find_node(parent : @view.View, contents : TriplePanel) -> Unit {
+fn triple_find_node(
+  parent : @view.View,
+  contents : TriplePanel,
+  on_enter~ : () -> Unit,
+  on_step~ : (Int) -> Unit,
+) -> Unit {
   parent.box(fn(f) {
+    // (↓/↑ from inside the field come via Finder keymap actions; Escape clears text first before closing the panel)
+    f
+    .key_context("Finder")
+    .on_action("finder.down", fn(_) {
+      if contents.field.text() != "" {
+        on_step(1)
+        true
+      } else {
+        false
+      }
+    })
+    .on_action("finder.up", fn(_) {
+      if contents.field.text() != "" {
+        on_step(-1)
+        true
+      } else {
+        false
+      }
+    })
+    .on_key(fn(k) {
+      if k.code == @ui.key_escape && contents.field.text() != "" {
+        contents.field.set("")
+        contents.search_at.set(0)
+        true
+      } else {
+        false
+      }
+    })
+    |> ignore
     @sf.icon_node(f, "search", triple_find_icon, By(fn() { @sf.theme().p.muted })) |> ignore
     let field = @ui.field(
       f,
@@ -1689,6 +1936,9 @@ fn triple_find_node(parent : @view.View, contents : TriplePanel) -> Unit {
       line=@sf.theme().t.ui_line,
       max_lines=1,
       enter_sends=true,
+      leaves=[@ui.key_escape],
+      edited=fn(_) { contents.search_at.set(0) },
+      submitted=fn(_) { on_enter() },
       size_by=fn() { @sf.theme().t.ui },
       colors_by=fn() {
         let th = @ui.tree_theme()
@@ -1696,6 +1946,25 @@ fn triple_find_node(parent : @view.View, contents : TriplePanel) -> Unit {
       },
     )
     field.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    // (typed into as the panel opens beside its control with keys and a mouse; never on a sheet or by touch, where an
+    // input method raised would cover the models: 2026-11-19 用户「点开模型选择框时，编辑器焦点应该默认聚焦到输入框上」)
+    @sf.panel_search_at_hand_node(field)
+    f.show(at_once=true, fn() { contents.field.text() != "" }, fn(cl) {
+      // (concentric with the pill's right end: same inset from the right edge as from top and bottom)
+      cl.margin(By(fn() { (0.0, 0.0, (@sf.menu_row_min - 20.0) / 2.0 - @ui.Space::px(S3), 0.0) })) |> ignore
+      @sf.icon_button_node(
+        cl,
+        "close",
+        fn() { @sf.t("web-pages.drive.pickClear") },
+        fn() {
+          contents.field.set("")
+          contents.search_at.set(0)
+        },
+        size=20.0,
+        icon_size=12.0,
+      )
+      |> ignore
+    })
     // (its ground deeper pointed at or typed in)
     @sf.style_node(f, fn() {
       (if @sf.hovered_node(f) || field.focused() { triple_find_hot } else { triple_find }).then(@ui.style(h=Fixed(@sf.menu_row_min)))
@@ -1719,11 +1988,9 @@ fn triple_chip_node(
   maker? : () -> String = fn() { "" },
   look? : () -> @ui.TextStyle = fn() { triple_who_name },
 ) -> @view.View {
-  parent.box(fn(b) {
+  @sf.action_box_node(parent, words, press, fn(b) {
     @sf.style_node(b, fn() { triple_who(hot=@sf.lit_node(b)) }, in_row=true)
     b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    b.says(By(fn() { Some(@view.said(Button, label=words())) })) |> ignore
-    @sf.presses_node(b, fn() { press(b) })
     @sf.words_node(b, fn() { head }, fn() { triple_who_lead }) |> ignore
     // (its mark where it has one; none, nor the room after it: the capsule as wide as its words make it)
     b.box(fn(mb) {
@@ -1762,7 +2029,7 @@ fn triple_foot_node(
   // (what the pick says as it is now)
   let o = f
     o.box(fn(row) {
-      @sf.style_node(row, fn() { if flag(v(), "claudeModeAvailable") { triple_mode_room } else { triple_who_room } }, in_row=true)
+      @sf.style_node(row, fn() { if sheet || flag(v(), "claudeModeAvailable") { triple_mode_room } else { triple_who_room } }, in_row=true)
       row.wraps(Is(Some(@ui.Space::px(S2)))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       // who runs it, at the foot's start (the web's panel's foot, the phone's sheet's)
       let revert_none = fn() {
@@ -1862,10 +2129,8 @@ fn triple_foot_node(
         )
         |> ignore
       })
-      // how fast it runs (2026-11-02 用户「速度放在面板下面，跟账号差不多的位置」): its name and how fast it runs; pressed,
-      // the speeds the station offers in a pick. None picked, how fast its account runs it, said as that (`fastPlan`; 2026-11-02 用户
-      // 「谁知道订阅是什么，应该直接显示具体值」)
-      row.show(fn() { flag(v(), "fastAvailable") }, fn(x) {
+      // how fast it runs: on 小屏 a footer capsule; on 中屏/大屏 shown directly in the right parameter column
+      row.show(fn() { sheet && flag(v(), "fastAvailable") }, fn(x) {
         let head = @sf.t("web-main.model.speed")
         let choices = fn() {
           let cs = [
@@ -1923,10 +2188,8 @@ fn triple_foot_node(
         })
         |> ignore
       })
-      // how much context it is kept to, after how fast (2026-11-03 用户「把 opus5.5 上下文长度限制在 500k 或者 300k」
-      // 「直接放最下面跟速度一样吧」): its name and the step picked; pressed, the steps in a pick, its whole window first,
-      // as the core offers them (none where its runtime cannot)
-      row.show(fn() { !items(v(), "contexts").is_empty() }, fn(x) {
+      // how much context it is kept to: on 小屏 a footer capsule; on 中屏/大屏 shown directly in the right parameter column
+      row.show(fn() { sheet && !items(v(), "contexts").is_empty() }, fn(x) {
         let head = @sf.t("web-main.model.context")
         let choices = fn() { items(v(), "contexts").map(fn(o) { @sf.choice(text(Some(o), "id"), text(Some(o), "text")) }) }
         let now = fn() { text(v(), "contextNow") }
@@ -2111,7 +2374,7 @@ fn triple_sidekick_node(
         @sf.style_node(rule, fn() { triple_rule_v })
         rule
         .over(Is(true))
-        .width(Is(Some(1.0)))
+        .width(Is(Some(triple_rule_thick)))
         .margin(Is((-triple_between_rule, if sheet { 0.0 } else { -@sf.panel_pad }, 0.0, -@sf.panel_pad)))
         |> ignore
       })
@@ -2184,8 +2447,11 @@ fn triple_model_row_node(
   saved : String,
   close : () -> Unit,
   tips : @sf.TipLayer?,
+  show_picked? : () -> Bool = fn() { true },
+  active? : () -> Bool = fn() { false },
 ) -> Unit {
-  let picked = fn() { picked_id() == id }
+  let is_current = fn() { picked_id() == id }
+  let picked = fn() { is_current() && show_picked() }
   let name = fn() { text(o(), "name") }
   let runs = fn() {
     match items(o(), "runtimes").get(0) {
@@ -2196,7 +2462,7 @@ fn triple_model_row_node(
   // how it would run picked, after its name (the core's: as it last ran here; one never run here, how it was set by
   // hand in the panel since it opened; the user, 2026-11-10: 「常用模型按理说是包括思考深度的」); nothing after the one
   // picked, whose own is what the panel shows beside the models
-  let usual = fn() { if picked() { "" } else { text(o(), "usualText") } }
+  let usual = fn() { if is_current() { "" } else { text(o(), "usualText") } }
   let liked = fn() { flag(o(), "liked") }
   // pressed: picked
   let go = fn() {
@@ -2239,20 +2505,20 @@ fn triple_model_row_node(
             @sf.style_node(nc, fn() { triple_name_column.then(@ui.style(w=Fixed(names_w()))) }, in_row=true)
             nc.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             nc.box(fn(nl) {
-              @sf.style_node(nl, fn() { triple_name_line })
+              @sf.style_node(nl, fn() { triple_model_name_line })
               nl.min_width(Is(Some(0.0))) |> ignore
               @sf.words_node(nl, name, fn() { if picked() { triple_row_picked } else { triple_row_name } })
               .shrink(Is(1.0))
               .min_width(Is(Some(0.0)))
               |> ignore
               // (giving way to the name where the row is short: what the name leaves of it, cut short)
-              nl.show(fn() { usual() != "" }, fn(u) {
-                u.box(fn(ur) {
-                  @sf.style_node(ur, fn() { triple_usual_room }, in_row=true)
-                  ur.shrink(Is(1.0)).min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
-                  @sf.words_node(ur, usual, fn() { triple_usual }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
-                })
+              nl.show(fn() { usual() != "" }, fn(ur) {
+                @sf.style_node(ur, fn() { triple_usual_room }, in_row=true)
+                @sf.on_baseline(ur, Ui, Meta)
+                .min_width(Is(Some(0.0)))
+                .clips(Is(true))
                 |> ignore
+                @sf.words_node(ur, usual, fn() { triple_usual }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
               }, along_row=true)
             })
             |> ignore
@@ -2282,8 +2548,7 @@ fn triple_model_row_node(
             })
           })
         },
-        tip=fn() { items(o(), "ids").filter_map(fn(i) { if i is String(s) { Some(s) } else { None } }).join("\n") },
-        tips?,
+        active~,
         press=go,
       )
       |> ignore
@@ -2401,16 +2666,13 @@ fn triple_combo_row_node(
               |> ignore
               // (giving way to the name where the row is short: cut short, all of it where the name leaves no room; its
               // capsule's sides too, which would else stand over what is at the row's end)
-              nl.show(fn() { how() != "" }, fn(h) {
-                h.box(fn(cr) {
-                  @sf.style_node(cr, fn() { triple_combo_room }, in_row=true)
-                  cr.shrink(Is(1.0)).min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
-                  cr.box(fn(cap) {
-                    @sf.style_node(cap, fn() { triple_combo }, in_row=true)
-                    cap.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                    @sf.words_node(cap, how, fn() { triple_combo_words }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
-                  })
-                  |> ignore
+              nl.show(fn() { how() != "" }, fn(cr) {
+                @sf.style_node(cr, fn() { triple_combo_room }, in_row=true)
+                cr.min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
+                cr.box(fn(cap) {
+                  @sf.style_node(cap, fn() { triple_combo }, in_row=true)
+                  cap.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                  @sf.words_node(cap, how, fn() { triple_combo_words }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
                 })
                 |> ignore
               }, along_row=true)
@@ -2490,12 +2752,20 @@ fn triple_choices_node(
   choices : () -> Array[(String, String)],
   now : () -> String,
   pick : (String) -> Unit,
+  icon_of? : (String) -> String = fn(_) { "" },
+  tip_of? : (String) -> String = fn(_) { "" },
+  tips? : @sf.TipLayer,
 ) -> Unit {
   // (@sf.radio_rows_node's: one radio group named by its column's head, one stop of Tab's, ↑ ↓ picking along it; its
   // rows the column's hair apart, triple_effort_column's)
   @sf.radio_rows_node(parent, fn() { label }, choices, now, pick, gap=@ui.Space::SPx.px(), fn(b, words, row) {
     @sf.style_node(b, fn() { triple_option_look(row.picked() || row.lit()) })
     b.min_width(Is(Some(0.0))) |> ignore
+    let w0 = @signals.untracked(words)
+    let ic = icon_of(w0)
+    if ic != "" {
+      @sf.icon_node(b, ic, 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+    }
     @sf.words_node(b, words, fn() { if row.picked() { triple_picked } else { triple_words } }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
     b.box(fn(e) {
       @sf.style_node(e, fn() { triple_end }, in_row=true)
@@ -2509,6 +2779,13 @@ fn triple_choices_node(
       })
     })
     |> ignore
+    let tip_text = tip_of(w0)
+    if tip_text != "" {
+      match tips {
+        Some(layer) => @sf.tip_node(layer, b, fn() { tip_text }) |> ignore
+        None => ()
+      }
+    }
   })
   |> ignore
 }
@@ -2538,19 +2815,16 @@ fn triple_option_node(
   tip? : () -> String,
   tips? : @sf.TipLayer,
   checks? : Bool = true,
+  active? : () -> Bool = fn() { false },
   press~ : () -> Unit,
   able? : () -> Bool = fn() { true },
 ) -> @view.View {
-  parent.box(fn(b) {
+  @sf.action_box_node(parent, label, fn(_) { press() }, disabled=fn() { !able() }, fn(b) {
     // (across its column, as wide as its words need at least: what the column needs, the panel's columns laid out by it)
-    @sf.style_node(b, fn() { triple_option_look(on() || @sf.lit_node(b)) })
+    @sf.style_node(b, fn() { triple_option_look(on() || active() || @sf.lit_node(b)) })
     b.min_width(Is(Some(0.0))) |> ignore
-    b.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
-    @sf.presses_node(b, press, on=able)
     body(b)
-    // what is at its end, at the end: the room left, never less than it needs; the check's room kept while it is not
-    // picked
-    let small = @sf.in_small_panel_node(b)
+    // what is at its end, at the end: the room left, never less than it needs
     b.box(fn(e) {
       @sf.style_node(e, fn() { triple_end }, in_row=true)
       // (never less than what it holds: the words before it give way first)
@@ -2563,10 +2837,6 @@ fn triple_option_node(
         e.pick(on, fn(x, checked) {
           if checked {
             @sf.icon_node(x, "check", 14.0, By(fn() { @sf.theme().p.accent })) |> ignore
-          } else if small {
-            // (its room kept beside what opened the panel, which is as wide as its rows; a sheet's rows are the sheet's
-            // width, and the room goes to their words)
-            x.box(fn(k) { @sf.style_node(k, fn() { triple_check_room }, in_row=true) }) |> ignore
           }
         })
       }
@@ -2669,7 +2939,7 @@ fn triple_accounts_node(n : @view.View, src : Source, station : String, of : Str
   )
   n.show(fn() { !accounts().is_empty() }, fn(d) {
     @sf.style_node(d, fn() { triple_accounts_rule })
-    d.box(fn(l) { @sf.style_node(l, fn() { triple_rule_h }) }) |> ignore
+    d.box(fn(l) { @sf.style_node(l, fn() { triple_panel_rule_h }) }) |> ignore
   })
   n.each(accounts, fn(a) { text(Some(a), "id") }, fn(row, a) {
     let id = text(Some(a.untracked()), "id")
@@ -2687,6 +2957,9 @@ fn triple_accounts_node(n : @view.View, src : Source, station : String, of : Str
       compact=true,
       disabled=single_only,
       lead=fn(l) { @sf.check_mark_node(l, checked, dimmed=single_only) },
+      tag=fn(t) {
+        t.show(fn() { text(av(), "planText") != "" }, fn(a) { @sf.row_tag_node(a, fn() { text(av(), "planText") }) })
+      },
       note=fn() { text(field(av(), "quotaLine"), "text") },
       note_ink=fn() {
         match text(field(av(), "quotaLine"), "level") {
@@ -2726,35 +2999,6 @@ fn triple_accounts_node(n : @view.View, src : Source, station : String, of : Str
         }
       },
     )
-  })
-}
-
-///|
-/// Borrowing the picked model's account from another station, asked first: what it does,
-/// 取消 and its action.
-fn borrow_dialog(c : @ui.Ctx, src : Source, station : String, of : String, v : Json?) -> Unit {
-  let me = station + "\u{1}" + of
-  let borrow = field(v, "borrow")
-  let dkey = "pick.borrow/" + station + "/" + of
-  let open = triple.borrow_asking == me && borrow is Some(Object(_))
-  let lines = items(borrow, "lines").map(fn(l) {
-    match l {
-      String(s) => s
-      _ => ""
-    }
-  })
-  wide_confirm(c, "borrow/" + me, open, text(borrow, "title"), lines, text(borrow, "action"), doing(dkey), flag(borrow, "allowed"), fn(
-    yes,
-  ) {
-    if yes {
-      act(src, text(borrow, "action"), dkey, "pick.borrow", Json::object(pick_params(station, of)), done=@sf.t("web-main.model.borrowed"), ok=fn(_) {
-        triple.borrow_asking = ""
-        triple_let_go(me)
-      })
-    } else {
-      triple.borrow_asking = ""
-      triple_let_go(me)
-    }
   })
 }
 
@@ -2806,70 +3050,6 @@ fn borrow_ask(src : Source, station : String, of : String, borrow : Json?) -> Un
 }
 
 ///|
-/// A dialog that asks before something is done (the web's Confirm, Dialog): its title, its lines, 取消 and `action`
-/// (`danger`: in red). `said` told true as the action is pressed, false as 取消 is, or as Esc or a press outside closes
-/// it.
-fn wide_confirm(
-  c : @ui.Ctx,
-  key : String,
-  open : Bool,
-  title : String,
-  lines : Array[String],
-  action : String,
-  busy : Bool,
-  allowed : Bool,
-  said : (Bool) -> Unit,
-) -> Unit {
-  let d = @sf.dialog(
-    c,
-    key,
-    open,
-    title,
-    w=dmin(confirm_w, c.width - 32.0),
-    close_label=@sf.t("common.close"),
-    on_close=fn() { said(false) },
-    fn() {
-      for l in lines {
-        c.text(l, style=confirm_line) |> ignore
-      }
-      c.box(style=confirm_foot, fn() {
-        small_button(c, key + "/cancel", @sf.t("common.cancel"), false, true, on_press=fn() { said(false) })
-        if busy {
-          @sf.spinner(c, size=14.0) |> ignore
-        }
-        small_button(c, key + "/ok", action, true, allowed && !busy, on_press=fn() { said(true) })
-      })
-      |> ignore
-    },
-  )
-  // (closed by Esc or a press outside: what the dialog says as it is built)
-  if open && !d {
-    said(false)
-  }
-}
-
-///|
-/// A small panel's small pill: 24 high, 10 in, its words in 12; `primary` dark with light
-/// words, else quiet with the ground on hover; not pressed while `on` is false. `on_press` as it is pressed.
-fn small_button(c : @ui.Ctx, key : String, words : String, primary : Bool, on : Bool, on_press? : () -> Unit) -> Unit {
-  let id = c.id(key)
-  let b = c.box(
-    style=match (primary, on) {
-      (true, true) => small_primary
-      (true, false) => small_primary_off
-      (false, _) => small_quiet
-    },
-    id~,
-    fn() { c.text(words, style=if primary { small_primary_words } else { small_quiet_words }) |> ignore },
-  )
-  c.semantics(b, Button, id~, label=words)
-  match on_press {
-    Some(f) if on => c.on_press(id, f)
-    _ => ()
-  }
-}
-
-///|
 /// How wide a dialog that asks is (Dialog: 420).
 let confirm_w : Double = 420.0
 
@@ -2885,17 +3065,24 @@ let triple_alone : @ui.Style = @ui.css("row align=ACenter")
 
 ///|
 /// The order the control's line leaves its parts out in, short of room: who runs it by name
-/// (in its part), who runs it, how hard it thinks and how fast, then the runtime.
+/// (in its part), who runs it, model short name, how hard it thinks and how fast, then the runtime.
 let triple_drop_name : Int = 1
 
 ///|
 let triple_drop_account : Int = 2
 
 ///|
-let triple_drop_effort : Int = 3
+let triple_drop_model_short : Int = 3
 
 ///|
-let triple_drop_runtime : Int = 4
+let triple_drop_effort : Int = 4
+
+///|
+let triple_drop_runtime : Int = 5
+
+///|
+/// Keep the compact speed mark after the other optional details when the row narrows.
+let triple_drop_speed : Int = 6
 
 ///|
 /// The triple as a row's value (28 high at its end, in its middle): a capsule, as the round controls beside it are, its
@@ -2907,10 +3094,6 @@ let triple_style : @ui.Style = @ui.css("row h=S7 px=S2_5 gap=S1_5 align=ACenter 
 ///|
 /// The room between a model control's parts (triple_style's gap=S1_5), as nodes: the row of them in the capsule.
 let triple_gap : Double = 6.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let triple_on : @ui.Style = @ui.css("row h=S7 px=S2_5 gap=S1_5 align=ACenter radius=Full bg=Hover")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -2933,7 +3116,7 @@ let triple_muted_lines : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, 
 /// The head of the models where whose models they are is a choice (models_head's): the choice at its start, the
 /// search at its end.
 // kept across runs: a value (no field of it changes)
-let triple_scope_head : @ui.Style = @ui.css("row w=Full pb=S1_5 gap=S3 align=ACenter")
+let triple_scope_head : @ui.Style = @ui.css("row w=Full pb=S2 gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -2984,8 +3167,8 @@ let triple_find_hot : @ui.Style = @ui.css("row w=Full px=S3 gap=S2 align=ACenter
 let triple_find_icon : Double = 14.0
 
 ///|
-/// A line across (a history's under its figures; the panel's over its foot is the presenters', `ruled`: kept,
-/// 2026-10-25 用户「这两个的分割线可以保留」).
+/// A line across (a history's under its figures; the model panel's own are triple_panel_rule_h, over its foot the
+/// presenters', `ruled`: kept, 2026-10-25 用户「这两个的分割线可以保留」).
 // kept across runs: a value (no field of it changes)
 pub let triple_rule_h : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
 
@@ -3054,16 +3237,25 @@ let triple_browse : @ui.Style = @ui.css("row w=Full gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let triple_kinds_column : @ui.Style = @ui.css("w=S48")
+let triple_kinds_column : @ui.Style = @ui.css("w=S40")
 
 ///|
 // kept across runs: a value (no field of it changes)
 let triple_models_column : @ui.Style = @ui.style(w=@sf.grow)
 
 ///|
-/// The line between them (the panel's columns', 2026-10-25 用户 kept them).
+/// How thick the panel's lines are: a hairline (用户「分割线细一点淡一点」), as its foot's (sf's foot_rule).
+let triple_rule_thick : Double = 0.5
+
+///|
+/// A line across the panel: a hairline, the line's colour faded, as its foot's.
 // kept across runs: a value (no field of it changes)
-let triple_rule_v : @ui.Style = @ui.css("w=SPx bg=Line")
+let triple_panel_rule_h : @ui.Style = @ui.style(w=Full, h=@sf.hairline, bg=A(Line, O60))
+
+///|
+/// The line between them (the panel's columns', 2026-10-25 用户 kept them), as thin and faint as those across.
+// kept across runs: a value (no field of it changes)
+let triple_rule_v : @ui.Style = @ui.style(w=@sf.hairline, bg=A(Line, O60))
 
 ///|
 /// The models and how hard it thinks side by side, 8 apart, the line between them in the middle of that.
@@ -3071,8 +3263,14 @@ let triple_rule_v : @ui.Style = @ui.css("w=SPx bg=Line")
 let triple_side_by_side : @ui.Style = @ui.css("row w=Full gap=S2")
 
 ///|
-/// Where the line between them starts, from how hard it thinks' start: in the middle of the 8 between them.
-let triple_between_rule : Double = 4.5
+/// Where the line between them starts, from how hard it thinks' start: in the middle of the 8 between them (4.25).
+let triple_between_rule : Double = (@ui.Space::S2.px() + triple_rule_thick) / 2.0
+
+///|
+/// How far the line between them stands off either column: 3.75 each side (its hairline the rest of the 8). The lines
+/// across a column reach that far past it to meet the line between them, end to end and never over it (`Line` is
+/// seen through: a hair over another is drawn darker where they cross).
+let triple_rule_side : Double = (@ui.Space::S2.px() - triple_rule_thick) / 2.0
 
 ///|
 /// How hard it thinks beside the models: as wide as its words need.
@@ -3106,7 +3304,13 @@ let triple_combo_room : @ui.Style = triple_usual_room.then(@ui.css("min_w=S0 cli
 ///|
 /// Its room: right after the name, what the name leaves of the row.
 // kept across runs: a value (no field of it changes)
-let triple_usual_room : @ui.Style = @ui.style(row=true, w=@sf.grow)
+let triple_usual_room : @ui.Style = @ui.css("row")
+
+///|
+/// A model's name with its `usualText` right after it, aligned from the top so `usualText` sits on the first line's
+/// baseline.
+// kept across runs: a value (no field of it changes)
+let triple_model_name_line : @ui.Style = @ui.css("row gap=S1_5 align=AStart")
 
 ///|
 /// A model's name with how it runs right after it, on its words' line.
@@ -3123,12 +3327,52 @@ let triple_borrow : @ui.Style = @ui.css("w=Full px=S2_5 py=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-// Keep the first and last capsules at the panel's side insets when the body is wider than their words.
-let triple_who_room : @ui.Style = @ui.style(row=true, w=@sf.grow, align=ACenter, justify=JBetween, gap=S2)
+let triple_who_room : @ui.Style = @ui.style(row=true, w=@sf.grow, align=ACenter, justify=JStart, gap=S2)
 
 ///|
 // kept across runs: a value (no field of it changes)
+// Keep the first and last capsules at the panel's side insets on 小屏 sheets (where 速度/上下文 stay in the foot)
+// and when the Claude mode capsule is shown, so changing 账号's width does not shift the trailing capsule.
 let triple_mode_room : @ui.Style = triple_who_room.then(@ui.css("justify=JBetween"))
+
+///|
+/// Hairline separator between the first-level list and 「全部模型 >」.
+// kept across runs: a value (no field of it changes)
+let triple_to_all_rule : @ui.Style = @ui.css("w=Full py=S1_5")
+
+///|
+/// Hairline separator between sections (`思考深度` / `速度` / `上下文`) in the wide right column.
+// kept across runs: a value (no field of it changes)
+let triple_param_rule : @ui.Style = @ui.css("w=Full py=S1_5")
+
+///|
+/// Subsequent section heading in the wide right parameter column (`速度`, `上下文`): as far under its line as the first
+/// one's (`panel_head_box`) is under the panel's top.
+// kept across runs: a value (no field of it changes)
+let triple_param_head_box : @ui.Style = @ui.css("w=Full px=S4 pt=S1_5 pb=S1")
+
+///|
+/// A line's box `d` across the models' column, reaching out to meet what is round it: beside what opened it from the
+/// panel's left edge to the line between the columns (to its right edge where how it runs is not beside them); in a
+/// sheet, its sides, as the sheet foot's line does.
+fn triple_across(d : @view.View, sheet : Bool, has_params : () -> Bool) -> Unit {
+  if sheet {
+    // (a sheet opened by a press holds its rows this far in from its sides: sf's sheet_row_sides)
+    d.margin(Is((-@sf.panel_card_in, 0.0, -@sf.panel_card_in, 0.0))) |> ignore
+  } else {
+    d.margin(By(fn() { (-@sf.panel_pad, 0.0, if has_params() { -triple_rule_side } else { -@sf.panel_pad }, 0.0) }))
+    |> ignore
+  }
+}
+
+///|
+/// The line under ‹ 全部模型 over the makers and their models, as far from each as the one over 全部模型 ›.
+// kept across runs: a value (no field of it changes)
+let triple_browse_rule_h : @ui.Style = @ui.css("w=Full py=S1_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let triple_param_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Semibold, color=Fg, wrap=false)
 
 ///|
 /// Who runs it, a capsule at the foot's start as tall as the foot's buttons (@sf.button_height), so standing in the
@@ -3165,28 +3409,6 @@ let triple_who_red : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, co
 ///|
 // kept across runs: a value (no field of it changes)
 let triple_dropped_box : @ui.Style = @ui.css("w=Full pb=S1_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_primary : @ui.Style = @ui.css("h=S6 px=S2_5 align=ACenter justify=JCenter radius=Full bg=Primary")
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_primary_off : @ui.Style = @ui.css((
-  #|h=S6 px=S2_5 align=ACenter justify=JCenter radius=Full bg=Primary opacity=O50
-))
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_quiet : @ui.Style = @ui.css("h=S6 px=S2_5 align=ACenter justify=JCenter radius=Full hovered{bg=Hover}")
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_primary_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=OnPrimary, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_quiet_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3261,10 +3483,6 @@ let triple_small : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter ra
 
 ///|
 // kept across runs: a value (no field of it changes)
-let triple_small_on : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter radius=Lg bg=Hover")
-
-///|
-// kept across runs: a value (no field of it changes)
 pub let triple_words_xs : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
 
 ///|
@@ -3283,7 +3501,8 @@ pub let triple_muted_xs : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted,
 ///|
 /// The control of the pick `of` on `station` with its panel open (a screen's fixture).
 pub fn open_triple(station : String, of : String) -> Unit {
-  triple.asked = station + "\u{1}" + of
+  ignore(station)
+  ignore(of)
 }
 
 ///|

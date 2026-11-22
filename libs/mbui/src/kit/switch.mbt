@@ -170,7 +170,7 @@ fn knob_key(key : String) -> String {
 pub fn switch_held(c : @ui.Ctx, key : String, pressed : Bool) -> Double {
   let on = pressed && @ui.pointing() is Finger
   // (read as it is built: the lens it grows is a capsule as wide and as high as it says, laid out so)
-  @motion.animate(c, "\u{2}switch/" + key + "/held", if on { 1.0 } else { 0.0 }, spec=@motion.lift_spring)
+  @motion.animate(c, "\u{2}switch/" + key + "/held", if on { 1.0 } else { 0.0 }, spec=@motion.tactile_bounce)
 }
 
 ///|

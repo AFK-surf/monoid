@@ -120,9 +120,9 @@ fn rail_label(src : Source, place : String) -> String {
 }
 
 ///|
-/// Whether the place has no sidebar: its page is the pane's whole (连接).
+/// Whether the place has no sidebar: its page is the pane's whole (连接, 用量, 密钥: an iPhone Duo's tab of it).
 pub fn place_bare(place : String) -> Bool {
-  place == "connects" || place == "usage"
+  place == "connects" || place == "usage" || place == "vault"
 }
 
 ///|
@@ -466,8 +466,9 @@ fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () 
       } else if app.nav.pages()[0] == Home && lit_place() == "chats" && !app.nav.pages().contains(Archived) {
         ()
       } else {
-        @sfbase.go_place("chats") |> ignore
+        @sfbase.go_place("chats", kept=true) |> ignore
         wide.landed.set("")
+        land_chat(src, w)
       }
     }
     "archive" => {
@@ -475,7 +476,7 @@ fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () 
       archive_side.landed = false
       app.nav.replace_above(1, [Archived])
     }
-    p => @sfbase.go_place(p) |> ignore
+    p => @sfbase.go_place(p, kept=true) |> ignore
   }
 }
 

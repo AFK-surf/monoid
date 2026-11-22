@@ -1010,6 +1010,8 @@ fn frame_drawn(c : Ctx, w : Double, h : Double, scale : Double, t : Double) -> D
   view_arrived()
   // (the hand as the frame sees it: what read what changed of it told, hand.mbt)
   hand_arrive(c)
+  // (the focused field's floating editing bar state published before layout/paint: tree_field_menu.mbt)
+  c.sync_field_menu_now()
   // (what reads the clock and the host's settings read so: what read them is stale where they changed; what a part or
   // a list's row kept read of the frame and of a moment, told: kept_part.mbt's KeptClock)
   frame_clock.val.set(t)

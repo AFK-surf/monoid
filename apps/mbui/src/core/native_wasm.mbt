@@ -42,6 +42,13 @@ fn ffi_wall_ms() -> Double = "mbhost" "mbc_wall_ms"
 
 fn ffi_screen_ack(call : Double, ts : Double) -> Int = "mbhost" "mbc_screen_ack"
 
+fn mbw_mbc_screen_input(call : Double, input : Int) -> Int = "mbhost" "mbc_screen_input"
+
+///|
+fn ffi_screen_input(call : Double, input : String) -> Int {
+  mbw_mbc_screen_input(call, @wasmrt.string_addr(input))
+}
+
 fn mbw_mbc_auth_scheme() -> Int = "mbhost" "mbc_auth_scheme"
 
 ///|

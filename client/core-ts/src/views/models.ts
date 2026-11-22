@@ -138,9 +138,11 @@ export function choices(overview: J, session: J, now: number): J[] {
   return keys.map((key) => {
     const offered = byKey.get(key)!;
     const [m, ids] = spellings(key, offered.ids);
+    const short = model.shortIfShorter(m);
     return {
       model: m,
       name: model.name(m),
+      ...(short !== null ? { shortName: short } : {}),
       ids,
       ...makerFamily(m, madeBy(overview, ids)),
       runtimes: [runtime],
@@ -255,6 +257,8 @@ function profileLines(profiles: J[], runtime: string, m: string | null, current:
       quotaLine: quotaLine(quota),
     };
     if (typeof get(p, "providerMark") === "string") line.mark = p.providerMark;
+    const plan = present.profilePlanText(p);
+    if (plan !== "") line.planText = plan;
     return line;
   });
 }
@@ -318,7 +322,8 @@ export function models(overview: J, now: number): J[] {
       contexts[r] = contextSteps(overview, r, spelled);
       accounts[r] = profileLines(offered, r, m, null, now);
     }
-    return { model: m, name: model.name(m), ids: spelled, runtimes: rts, ...makerFamily(m, madeBy(overview, spelled)), efforts, contexts, ...windowOf(overview, spelled), accounts, spent: spent !== null ? spentView(spent, now) : null };
+    const short = model.shortIfShorter(m);
+    return { model: m, name: model.name(m), ...(short !== null ? { shortName: short } : {}), ids: spelled, runtimes: rts, ...makerFamily(m, madeBy(overview, spelled)), efforts, contexts, ...windowOf(overview, spelled), accounts, spent: spent !== null ? spentView(spent, now) : null };
   });
 }
 
@@ -473,6 +478,7 @@ export function borrowable(stations: J, here: string, have: J[], runtime: string
     for (const p of profilesOf(s.overview)) {
       if (!lent(p, ownHere)) continue;
       const share = get(p, "share");
+      const planText = present.profilePlanText(p);
       for (const o of lentModels(s.overview, p, now)) {
         if (runtime !== null && !arr(o.runtimes).includes(runtime)) continue;
         const key = model.key(o.model);
@@ -495,6 +501,7 @@ export function borrowable(stations: J, here: string, have: J[], runtime: string
             stationName: s.name,
             profile: str(get(p, "id")) ?? "",
             profileName: str(get(p, "name")) ?? "",
+            ...(planText !== "" ? { planText } : {}),
             subscription: get(get(p, "access"), "kind") === "subscription",
             // Every station may use it already (its copy not here yet): nothing to ask.
             pending: shared && allow === null,
@@ -524,6 +531,21 @@ function lentModels(overview: J, p: J, now: number): readonly J[] {
   if (was !== undefined && was.minute === minute) return was.list;
   const list = sharedValue(lone());
   byProfile.set(p, { minute, list });
+  return list;
+}
+
+/// A station's models (`models` of its overview), made once for that overview, the same objects, while the minute of
+/// `now` is the one they were made at: a preset that names a model asked each station up whether it runs it, every
+/// station's models made again (six times) each time the new chat's page was, 40 ms in Hermes on a Mac with four
+/// stations of eight accounts, against 2 ms with no preset: a second and more on a phone before its model showed.
+const stationMade = new WeakMap<object, { minute: number; list: readonly J[] }>();
+export function stationModels(overview: J, now: number): readonly J[] {
+  if (!isObject(overview)) return models(overview, now);
+  const minute = Math.floor(now / 60_000);
+  const was = stationMade.get(overview);
+  if (was !== undefined && was.minute === minute) return was.list;
+  const list = sharedValue(models(overview, now));
+  stationMade.set(overview, { minute, list });
   return list;
 }
 

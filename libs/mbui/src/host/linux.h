@@ -35,11 +35,18 @@ void mb_render_setup(void);
 // what the frame is drawn into: the framebuffer bound, pw × ph pixels, w × h points at `scale`
 void mb_render_target(int pw, int ph, double w, double h, double scale);
 void mb_render_present(const double *inst, int32_t count, double r, double g, double b);
+void mb_render_set_fixed_dt(double dt);
+void mb_render_adaptive_reset(void);
+int mb_render_adaptive_settling(void);
+int mb_render_adaptive_step(void);
 // The frame each window of the run keeps (its size and scale, its last frame's instances, the canvas it is drawn into
 // and what of it differs: linux_app.c's windows, all drawn in the first canvas's context): window `wid`'s put in place
 // for what mb_render_* do next; let go of as it closes (the context current)
 void mb_render_use(int wid);
 void mb_render_forget(int wid);
+// What drawing holds beyond its frames given back (no window of the run's on the screen; the context current): glass's
+// textures, the read back's framebuffer (gles_render.h). Made again as a frame needs them.
+void mb_render_trim(void);
 // the frame presented last drawn again and written as a PNG: 1 when written
 int mb_render_snapshot(const char *path);
 // a glyph's picture put in its atlas (colour: the colour glyphs' RGBA one, else the words' one byte a pixel), uploaded

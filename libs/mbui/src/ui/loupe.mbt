@@ -8,6 +8,10 @@
 /// the finger, its handle under it), or a long press's word slid on (under the finger itself). None else. Read as the
 /// hand changes (hand.mbt): what a node of the window's tree binds a loupe by.
 pub fn finger_reads() -> (Double, Double)? {
+  match tree_finger_read.val.get() {
+    Some(p) => return Some(p)
+    None => ()
+  }
   let c = g()
   // (read so: hand.mbt; where the finger is, only while it drags what needs seeing)
   hand.down.get() |> ignore

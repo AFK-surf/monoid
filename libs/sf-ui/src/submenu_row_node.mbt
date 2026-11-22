@@ -63,10 +63,10 @@ pub fn submenu_row_node(
   let layer = parent.lent(submenu_layer_lent).unwrap_or(parent)
   // (opened by the keyboard: its first item's the focus as it opens)
   let by_key = Ref(false)
-  let small = fn() { layout(parent.window().0) is Small }
+  let small = fn() { layout(parent.window_w()) is Small }
   let open = fn(r : @view.View, key : Bool) {
     if small() {
-      present(Menu(items(), label(), Start), Node(r))
+      present(Menu(items(), label(), Start, Bottom), Node(r))
       return
     }
     by_key.val = key

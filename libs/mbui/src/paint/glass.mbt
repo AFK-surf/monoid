@@ -35,8 +35,13 @@ pub(all) struct Glass {
   // liquid: where the pointer is over it, in points from its own top left (View::pointer_here's), a light drawn
   // there along its rim and over its face; None: none
   spot : (Double, Double)?
-  // zero for the meniscus, one for Backdrop’s default highlight, two for ambient
-  backdrop_highlight : Int
+  // liquid: optical magnification factor of the backdrop inside a clear lens (1.0: none, up to 3.0; active when
+  // `liquid` is true and `blur <= 0.0`)
+  zoom : Double
+  // continuous materialisation strength in [0.0, 1.0] (0.0: fully flat / no glass emitted; 1.0: full glass)
+  strength : Double
+  // frosted: progressive / variable blur modulated by the node's `View::fades` ramp (0 -> blur, 0 -> tint/sat)
+  progressive : Bool
 }
 
 ///|
@@ -51,6 +56,8 @@ pub fn Glass::frosted(
   rim_back? : Double = 0.0,
   shares_capture? : Bool = false,
   contained? : Bool = false,
+  progressive? : Bool = false,
+  strength? : Double = 1.0,
 ) -> Glass {
   {
     blur,
@@ -70,7 +77,9 @@ pub fn Glass::frosted(
     shares_capture,
     contained,
     spot: None,
-    backdrop_highlight: 0,
+    zoom: 1.0,
+    strength: dclamp(strength, 0.0, 1.0),
+    progressive,
   }
 }
 
@@ -82,12 +91,12 @@ pub fn Glass::sharing(self : Glass) -> Glass {
 }
 
 ///|
-/// Liquid glass: nearly clear, what is under it bent along its rim (a bezel
-/// `bezel` wide moving it by up to `refraction` px, the colours split by
-/// `chroma`), a light rim, text in it inked by what is under it
-/// (`adaptive`); shapes of one `glass_group` within `merge` of each other
-/// flow into one; `spot`, where the pointer is over it (points from its
-/// top left), lights its rim and face round that point.
+/// Liquid glass (iOS 27 optical model, ported from flutter_liquid_glass): uniform blurred backdrop across center and
+/// rim, quarter-circle bevel refraction (`bezel` wide, up to `refraction` px displacement, chromatic dispersion
+/// `chroma`), adaptive iOS 27 light/dark/clear color transfer, inner bevel shadow, glint (`rim`), and 0.75pt external
+/// contour; text in it inked by what is under it (`adaptive`); shapes of one `glass_group` within `merge` of each
+/// other flow into one; `spot`, where the pointer is over it (points from its top left), lights its rim and face round
+/// that point.
 pub fn Glass::liquid(
   blur? : Double = 1.0,
   tint? : Int64 = 0xFFFFFF1AL,
@@ -100,6 +109,8 @@ pub fn Glass::liquid(
   merge? : Double = 16.0,
   adaptive? : Bool = true,
   spot? : (Double, Double)? = None,
+  zoom? : Double = 1.0,
+  strength? : Double = 1.0,
 ) -> Glass {
   {
     blur,
@@ -119,29 +130,68 @@ pub fn Glass::liquid(
     shares_capture: false,
     contained: false,
     spot,
-    backdrop_highlight: 0,
+    zoom,
+    strength: dclamp(strength, 0.0, 1.0),
+    progressive: false,
   }
 }
 
+///|
+/// Scale this glass's materialisation continuously by `t` in `[0.0, 1.0]` for smooth flat-to-glass transitions
+/// (clamping spring overshoots). `bezel` keeps its full width so the bevel never collapses into a sharp hairline,
+/// while optical effects (`blur`, `refraction`, `rim`, `chroma`, `saturation`, `zoom`) and `strength` scale smoothly.
+pub fn Glass::at_strength(self : Glass, t : Double) -> Glass {
+  let t = dclamp(t, 0.0, 1.0)
+  if t >= 0.9999 {
+    return self
+  }
+  {
+    ..self,
+    blur: self.blur * t,
+    refraction: self.refraction * t,
+    rim: self.rim * t,
+    chroma: self.chroma * t,
+    rim_edge: self.rim_edge * t,
+    rim_lit: self.rim_lit * t,
+    rim_back: self.rim_back * t,
+    saturation: 1.0 + (self.saturation - 1.0) * t,
+    zoom: 1.0 + (self.zoom - 1.0) * t,
+    strength: self.strength * t,
+  }
+}
 
 ///|
-/// A single rounded Backdrop lens with Kyant’s circular refraction and optional dispersion; `inner_shadow` the
-/// radius of its InnerShadow (black at 15% times `highlight`, a sixth of the radius lower; 0 none), carried where a
-/// group's merge is (a lens of its own merges with nothing).
-pub fn Glass::backdrop_lens(
-  height~ : Double,
-  amount~ : Double,
-  blur~ : Double,
-  tint~ : Int64,
-  solid~ : Int64,
-  highlight~ : Double,
-  ambient? : Bool = false,
-  dispersion? : Bool = false,
-  inner_shadow? : Double = 0.0,
+/// Clear liquid glass (iOS 27 standalone translucent variant over media/photos): zero backdrop blur with a subtle
+/// +0.126 white micro-veil (`tint` alpha ≈ 0.102) and pronounced edge refraction (`refraction=16.0`), distinct from
+/// pure zero-veil optical lenses (`tint=0xFFFFFF00L`).
+pub fn Glass::clear(
+  blur? : Double = 0.0,
+  tint? : Int64 = 0xFFFFFF1AL,
+  solid? : Int64 = 0xECECF0FFL,
+  saturation? : Double = 1.0,
+  rim? : Double = 0.6,
+  bezel? : Double = 14.0,
+  refraction? : Double = 16.0,
+  chroma? : Double = 0.0,
+  merge? : Double = 16.0,
+  adaptive? : Bool = true,
+  spot? : (Double, Double)? = None,
+  zoom? : Double = 1.0,
+  strength? : Double = 1.0,
 ) -> Glass {
-  {
-    ..Glass::liquid(blur~, tint~, solid~, saturation=1.0, rim=highlight, bezel=height,
-      refraction=amount, chroma=if dispersion { 1.0 } else { 0.0 }, merge=inner_shadow, adaptive=false),
-    backdrop_highlight: if ambient { 2 } else { 1 },
-  }
+  Glass::liquid(
+    blur~,
+    tint~,
+    solid~,
+    saturation~,
+    rim~,
+    bezel~,
+    refraction~,
+    chroma~,
+    merge~,
+    adaptive~,
+    spot~,
+    zoom~,
+    strength~,
+  )
 }

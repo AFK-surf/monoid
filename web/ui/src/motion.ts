@@ -56,32 +56,7 @@ export function followMotion(choice: () => string | undefined = () => undefined)
   };
   apply();
   system.addEventListener("change", apply);
-  stepSpokes();
   return apply;
-}
-
-/** What shows the spokes (styles/spokes.ts): a chat's mark at work, an agent's badge, the ring round an agent at work. */
-const SPOKES_SHOWN = '[data-tone="busy"], [data-badge="run"], [data-spokes]';
-let spokesStepping = false;
-
-/**
- * The spokes' one clock: a step every 100 ms said on the root as `data-spoke`, while any
- * show and the page is seen; with motion reduced, none said (they stand at the first step).
- */
-function stepSpokes(): void {
-  if (spokesStepping) return;
-  spokesStepping = true;
-  const root = document.documentElement;
-  let step = 0;
-  setInterval(() => {
-    if (document.hidden) return;
-    if (reducedMotion() || !document.querySelector(SPOKES_SHOWN)) {
-      if (root.dataset.spoke) delete root.dataset.spoke;
-      return;
-    }
-    step = (step + 1) % 8;
-    root.dataset.spoke = String(step);
-  }, 100);
 }
 
 /**

@@ -103,13 +103,13 @@ fn new_profile_flow_node(
   }
   let sign = fn() { field(d(), "signIn") }
   let install = fn() { field(d(), "install") }
-  let plan = fn() { step() == "connect" && (text(d(), "method") == "plan" || text(d(), "method") == "enterprise") }
+  let plan = fn() { step() == "connect" && (text(d(), "method") == "plan" || text(d(), "method") == "enterprise" || text(d(), "method") == "colab") }
   let planning = fn() { plan() && !(install() is Some(Object(_))) && sign() is Some(Object(_)) }
   // a plan's sign-in starts as its step comes; left unfinished, let go as it goes
   v.reacts(planning, fn(on) {
     if on && !n.asked {
       let sv = @signals.untracked(sign)
-      @settings.start_login(core, station, n, text(sv, "runtime"), text(sv, "access"))
+      @settings.start_login(core, station, n, text(sv, "runtime"), text(sv, "access"), service=text(sv, "service"))
     } else if !on && n.asked {
       @settings.drop_login(core, station, n)
     }
@@ -338,15 +338,16 @@ fn provider_group_node(b : @view.View, g : () -> Json?, pick : (String) -> Unit)
         }
       }
       @sf.provider_mark_node(m, fn() {
+        let kind = match text(pv(), "kind") {
+          "" => "api-provider"
+          k => k
+        }
         (
           match text(pv(), "runtime") {
-            "" => "claude"
+            "" => if kind == "service" { "" } else { "claude" }
             rt => rt
           },
-          match text(pv(), "kind") {
-            "" => "api-provider"
-            k => k
-          },
+          kind,
           text(pv(), "mark"),
         )
       }, ap_tile_glyph)
@@ -380,6 +381,9 @@ fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -
     choose,
     mark=fn(m, id) {
       @sf.provider_mark_node(m, fn() {
+        if id == "colab" {
+          return ("", "service", "colab")
+        }
         let t = tile()
         let kind = if (id == "plan" || id == "enterprise") && text(t, "kind") != "opencode-go" && text(t, "id") != "moonshotai" {
           "subscription"
@@ -439,7 +443,7 @@ fn new_profile_plan_node(
               // let go, then asked again at once
               @settings.drop_login(core, station, n)
               let sv = field(@signals.untracked(d), "signIn")
-              @settings.start_login(core, station, n, text(sv, "runtime"), text(sv, "access"))
+              @settings.start_login(core, station, n, text(sv, "runtime"), text(sv, "access"), service=text(sv, "service"))
             })
             |> ignore
           })
@@ -502,23 +506,20 @@ fn install_step_node(b : @view.View, core : Core, station : String, install : ()
         },
         bad=fn() { opt_text(install(), "detail").unwrap_or("") },
       )
-      k.show(fn() { text(install(), "state") == "installing" }, fn(x) {
-        x.box(fn(bar) {
-          @sf.style_node(bar, fn() { ap_bar })
-          @sf.progress_node(
-            bar,
-            fn() {
-              if has(install(), "percent") && !(field(install(), "percent") is Some(Null)) {
-                Some(number(install(), "percent") / 100.0)
-              } else {
-                None
-              }
-            },
-            fn() { @ui.tree_theme().line },
-            fn() { @sf.theme().p.accent },
-          )
-          |> ignore
-        })
+      k.show(fn() { text(install(), "state") == "installing" }, fn(bar) {
+        @sf.style_node(bar, fn() { ap_bar })
+        @sf.progress_node(
+          bar,
+          fn() {
+            if has(install(), "percent") && !(field(install(), "percent") is Some(Null)) {
+              Some(number(install(), "percent") / 100.0)
+            } else {
+              None
+            }
+          },
+          fn() { @ui.tree_theme().line },
+          fn() { @sf.theme().p.accent },
+        )
         |> ignore
       })
       if footed {
@@ -768,7 +769,7 @@ fn machine_offers_node(
                     if usable {
                       @sf.t("web-pages.profiles.useMachineTip")
                     } else {
-                      @sf.t("web-pages.profiles.keychainTip", args=[("name", "still.fail")])
+                      @sf.t("web-pages.profiles.keychainTip", args=[("name", @sf.product())])
                     }
                   })
                   |> ignore
@@ -809,7 +810,7 @@ pub fn profiles_first_node(
     @sf.first_one_node(
       b,
       fn() { @sf.t("web-pages.settings.profiles.addFirst") },
-      lead=fn() { @sf.t("web-pages.settings.profiles.lead", args=[("name", "still.fail")]) },
+      lead=fn() { @sf.t("web-pages.settings.profiles.lead", args=[("name", @sf.product())]) },
       art=fn(a) { a.pick(fn() { @sf.theme().dark }, fn(x, dark) { @sf.drawable_node(x, if dark { "illus_no_profile_dark" } else { "illus_no_profile" }, pf_first_art_w) |> ignore }) },
       fn(a) {
         a.box(fn(l) {

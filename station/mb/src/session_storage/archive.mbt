@@ -120,7 +120,7 @@ pub async fn Files::pack_file_if(self : Files, path : String, ready : async () -
     if !ready() {
       return
     }
-    self.rename(temp, dest)
+    self.rename_retrying(temp, dest)
     self.unlink(path)
   }, async fn() { self.gone(temp) })
 }
@@ -140,7 +140,7 @@ pub async fn Files::segment_file(self : Files, path : String) -> Bool {
     if !(get(said, "segmented") is Some(True)) {
       return false
     }
-    self.rename(temp, source)
+    self.rename_retrying(temp, source)
     true
   }, async fn() { self.gone(temp) })
 }
@@ -156,7 +156,7 @@ pub async fn Files::restore_file(self : Files, path : String) -> Unit {
   let temp = self.with_extension(path, "jsonl.restoring")
   ensure(async fn() {
     ignore(self.packed("restore", [("source", js(source)), ("temp", js(temp))]))
-    self.rename(temp, path)
+    self.rename_retrying(temp, path)
     self.unlink(source)
   }, async fn() { self.gone(temp) })
 }
@@ -280,8 +280,11 @@ async fn Files::lock_worktrees(self : Files, dir : String, marker : String, lock
 }
 
 ///|
+pub let archive_worktree_lock_prefix : String = "still.fail archived workspace: "
+
+///|
 fn marker_of(room : String) -> String {
-  "still.fail archived workspace: \{room}\n"
+  "\{archive_worktree_lock_prefix}\{room}\n"
 }
 
 ///|
@@ -308,7 +311,123 @@ pub async fn Files::unlock_worktrees(self : Files, room : String) -> Unit {
   self.unlink(path)
 }
 
+///|
+/// Collects worktree registration directories (`<common>/worktrees/<name>`) owned by `room`:
+/// from `.git` files under `room` and from `workspace-locks.json` for packed rooms.
+pub async fn Files::collect_worktree_registrations(self : Files, room : String) -> Array[String] {
+  let found : Array[String] = []
+  let add = async fn(candidate : String) {
+    guard self.realpath(candidate) is Some(resolved) else { return }
+    if self.basename(self.dirname(resolved)) != "worktrees" {
+      return
+    }
+    if !found.contains(resolved) {
+      found.push(resolved)
+    }
+  }
+  let visited = Ref(0)
+  async fn walk(dir : String, depth : Int) -> Unit {
+    if depth > 64 || visited.val >= 200_000 {
+      return
+    }
+    let entries = self.readdir_types(dir) catch { _ => return }
+    for entry in entries {
+      visited.val += 1
+      if visited.val >= 200_000 {
+        return
+      }
+      let (name, kind) = entry
+      let path = self.join([dir, name])
+      if name == ".git" && kind == "file" {
+        let said = self.read_text(path).unwrap_or("").trim().to_owned()
+        if said.strip_prefix("gitdir: ") is Some(rest) {
+          let named = rest.to_owned()
+          let resolved = if @nodepath.is_absolute(self.sep, named) { self.join([named]) } else { self.join([dir, named]) }
+          add(resolved)
+        }
+      } else if kind == "dir" {
+        walk(path, depth + 1)
+      }
+    }
+  }
+  walk(room, 0)
+  let locks_path = self.join([room, "workspace-locks.json"])
+  if self.there(locks_path) {
+    for locked in strings_in(self.read_text(locks_path)) {
+      if locked != "" {
+        add(self.dirname(locked))
+      }
+    }
+  }
+  found
+}
+
+///|
+/// Removes only the exact worktree registration directories in `admin_dirs` that belong to one of `room_paths`,
+/// whose target `.git` file no longer exists, and that have no `locked` file remaining.
+pub async fn Files::remove_worktree_registrations(
+  self : Files,
+  admin_dirs : Array[String],
+  room_paths : Array[String],
+) -> Array[String] {
+  let rooms = room_paths.map(r => @nodepath.join(self.sep, [r]))
+  let removed : Array[String] = []
+  for admin_dir in admin_dirs {
+    if self.basename(self.dirname(admin_dir)) != "worktrees" {
+      continue
+    }
+    if self.lkind(admin_dir) != Some("dir") {
+      continue
+    }
+    if self.lkind(self.join([admin_dir, "locked"])) is Some(_) {
+      continue
+    }
+    let raw_target = self.read_text(self.join([admin_dir, "gitdir"])).unwrap_or("").trim().to_owned()
+    if raw_target == "" || !@nodepath.is_absolute(self.sep, raw_target) {
+      continue
+    }
+    let target = @nodepath.join(self.sep, [raw_target])
+    let in_room = rooms.iter().any(r => target != r && self.within(target, r))
+    if !in_room {
+      continue
+    }
+    if self.lkind(target) is Some(_) {
+      continue
+    }
+    try {
+      self.remove_tree(admin_dir, force=true)
+      removed.push(admin_dir)
+    } catch {
+      _ => ()
+    }
+  }
+  removed
+}
+
 // ── workspaces ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+///|
+/// Moves `workspace` aside after the archive is in place; on failure removes the archive and unlocks worktrees so the
+/// next round does not treat the unretired workspace as already packed.
+async fn retire_workspace_by(
+  rename : async () -> Unit,
+  rm_archive : async () -> Unit,
+  unlock : async () -> Unit,
+) -> Unit {
+  rename() catch {
+    e => {
+      // The workspace is still whole where it was: the archive goes again, or the next round would find it, take the
+      // workspace for packed (the first line here) and never retire it.
+      rm_archive() catch {
+        _ => ()
+      }
+      unlock() catch {
+        _ => ()
+      }
+      raise e
+    }
+  }
+}
 
 ///|
 pub async fn Files::pack_workspace(self : Files, room : String) -> Unit {
@@ -343,12 +462,16 @@ pub async fn Files::pack_workspace_if(self : Files, room : String, ready : async
       self.unlock_worktrees(room)
       return
     }
-    self.rename(temp, archive)
+    self.rename_retrying(temp, archive)
     let retiring = self.join([room, "workspace.retiring"])
     if self.there(retiring) {
       raise failed("an earlier workspace retirement needs restoration")
     }
-    self.rename(workspace, retiring)
+    retire_workspace_by(
+      async fn() { self.rename_retrying(workspace, retiring, backoff=workspace_rename_backoff) },
+      async fn() { self.gone(archive) },
+      async fn() { self.unlock_worktrees(room) },
+    )
     self.mkdir(workspace)
     match self.lstat(retiring) {
       Some(s) => self.chmod(workspace, s.mode & 0o7777)
@@ -435,9 +558,9 @@ pub async fn Files::restore_workspace(self : Files, room : String) -> Unit {
     self.remove_tree(old)
   }
   if self.there(workspace) {
-    self.rename(workspace, old)
+    self.rename_retrying(workspace, old, backoff=workspace_rename_backoff)
   }
-  self.rename(stage, workspace)
+  self.rename_retrying(stage, workspace, backoff=workspace_rename_backoff)
   for path, target in refused {
     let rel = if path.has_prefix(stage + self.sep) { cut(path, stage.length() + 1) } else { path }
     let at = self.join([workspace, rel])
@@ -462,6 +585,9 @@ pub async fn Files::restore_workspace(self : Files, room : String) -> Unit {
 pub async fn Files::empty_workspace(self : Files, room : String) -> Unit {
   let workspace = self.join([room, "workspace"])
   let archive = self.workspace_archive(room)
+  let raw_room = @nodepath.join(self.sep, [room])
+  let real_room = self.realpath(room).unwrap_or(raw_room)
+  let worktrees = self.collect_worktree_registrations(room)
   self.mkdirs(workspace)
   if self.there(archive) {
     let stage = self.join([room, "workspace.emptying"])
@@ -489,6 +615,8 @@ pub async fn Files::empty_workspace(self : Files, room : String) -> Unit {
   }
   self.readings_gone(room)
   self.unlock_worktrees(room)
+  let room_paths = if raw_room == real_room { [real_room] } else { [real_room, raw_room] }
+  ignore(self.remove_worktree_registrations(worktrees, room_paths))
 }
 
 ///|
@@ -500,7 +628,7 @@ async fn Files::take_uploads(self : Files, from : String, workspace : String) ->
   self.mkdirs(into)
   for entry in self.readdir_strict(self.join([from, "uploads"])) {
     if self.lkind(self.join([into, entry])) is None {
-      self.rename(self.join([from, "uploads", entry]), self.join([into, entry]))
+      self.rename_retrying(self.join([from, "uploads", entry]), self.join([into, entry]))
     }
   }
 }

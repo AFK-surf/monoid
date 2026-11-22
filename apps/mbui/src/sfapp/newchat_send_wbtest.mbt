@@ -66,7 +66,6 @@ fn held_core(
       }
     },
   }
-  both_way()
   if finger {
     @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, pointing=Finger, native=Finger)
   } else {
@@ -79,7 +78,7 @@ fn held_core(
 /// emptied under them).
 fn new_chat_sent(t : @ui.Tester, words : String) -> (Double, Double) raise {
   let (_, y) = bar_places_at()
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
   t.tap_text("做任何事")
   t.type_text(words)
@@ -122,7 +121,6 @@ test "wide: a new chat's first words sent: its field's hint not drawn over them 
   both_pages(fn() raise {
     // (frame by frame as a host draws them, one build each: the core a round trip late, as a phone's)
     let src = @sffixture.round_trip(fixture_app("chat"), 60.0)
-    both_way()
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
     let carried = Ref(0)
     let hinted : Array[Double] = []
@@ -152,46 +150,6 @@ test "wide: a new chat's first words sent: its field's hint not drawn over them 
 }
 
 ///|
-test "a new chat's first words go into their bubble from the frame they are sent, the core's answers and its view of the chat however late" {
-  both_pages(fn() raise {
-    let held : Map[String, () -> Unit] = Map([])
-    let unread = @signals.signal(true)
-    let t = held_core(held, unread)
-    let words = "把发布说明写一下"
-    let typed = new_chat_sent(t, words)
-    // the page the chat at once, by the key the core keeps for it, nothing of the core's answered
-    match app.nav.top() {
-      Chat(r) => assert_eq(r.session, "new:1")
-      _ => fail("not the chat")
-    }
-    let sent = t.time()
-    t.run_for(flight_carry_after_ms - 20.0)
-    assert_at(typed, seen_once(t, words))
-    // up with the list, no frame where they are not, nor a jump
-    let landed = one_way_till(t, words, sent + flight_carry_after_ms + flight_carry_ms + 34.0, 120.0)
-    assert_true(send_flight.get() is None)
-    // in their bubble, over the composer at the chat's foot (its rows at its end, the room over them)
-    assert_true(landed.1 < typed.1 && landed.1 > typed.1 - 200.0, msg="landed at \{Repr(landed)} from \{Repr(typed)}")
-    assert_true((landed.0 - typed.0).abs() > 1.0)
-    // the chat made, the message sent to it, its view read: they stay in their bubble (up only as what comes under them
-    // opens its room, its agent's line)
-    for name in ["newChat.create", "chat.send"] {
-      match held.get(name) {
-        Some(give) => give()
-        None => fail("\{name} not asked")
-      }
-      t.draw()
-      assert_at(landed, seen_once(t, words))
-    }
-    unread.set(false)
-    t.draw()
-    t.frame()
-    let after = seen_once(t, words)
-    assert_true(after.0 == landed.0 && after.1 <= landed.1 + 0.5 && landed.1 - after.1 < 12.0, msg="\{Repr(landed)} then \{Repr(after)}")
-  }, old_only="it reads the old page's flight (send_flight, flight_carry_after_ms); the nodes page's is View::flies_in, held by chat_motion_desk's")
-}
-
-///|
 /// The soft keyboard up over a phone's window (as a host says it, the app laid out above it): `h` of its 844.
 fn keyboard_up(t : @ui.Tester, h : Double) -> Unit {
   t.set_ime_inset(h)
@@ -207,7 +165,7 @@ test "a new chat's first words sent with the keyboard up: no words over others o
     let unread = @signals.signal(true)
     let t = held_core(held, unread)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     keyboard_up(t, 336.0)
@@ -234,57 +192,9 @@ test "a new chat's first words sent with the keyboard up: no words over others o
 }
 
 ///|
-test "a new chat's restored picture travels from its composer into its first message" {
-  both_pages(fn() raise {
-    let base = fixture_app("newchat-attach")
-    let src : Source = {
-      ..base,
-      draft_picture: fn(_, _) {
-        @ui.add_image("mem:test/new-restored", png_head())
-        "mem:test/new-restored"
-      },
-      topic_read: fn(name, params) {
-        let now = base.topic(name, params).get().snapshot()
-        if name != "composer" { return now }
-        // The fixture's draft comes with an in-memory picture, as one picked here. After a restart the app keeps none:
-        // its source is the kept draft's, from the first read of it on.
-        @sfbase.writing_pictures.remove("seed-0")
-        let m = match now.value { Some(Object(v)) => v.copy(); _ => return now }
-        m["files"] = Json::array(items(now.value, "files").map(fn(file) {
-          guard file is Object(o) else { return file }
-          let waiting = o.copy()
-          waiting.remove("done")
-          waiting["waits"] = Json::boolean(true)
-          Json::object(waiting)
-        }))
-        { value: Some(Json::object(m)), error: now.error, version: now.version }
-      },
-      call: fn(name, params, done) {
-        match name {
-          // Hold creation so the first row remains local while it is checked.
-          "newChat.create" => ()
-          _ => (base.call)(name, params, done)
-        }
-      },
-    }
-    both_way()
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-    t.drive("timeout 20000\nuntil 想让 agent 做什么？\n") |> ignore
-    t.run_for(@ui.image_fade_ms)
-    assert_true(t.locate("img:mem:test/new-restored").length() > 0)
-    tap_send(t)
-    let flying = send_flight.get().unwrap().files
-    assert_true(flying.iter().any(fn(f) { f.key == "upload:seed-0" && f.picture == Some("mem:test/new-restored") }))
-    let row = sending_of(send_flight.get().unwrap().turns)[0].row
-    assert_eq(sent_picture("ws1/st1", row.attachments[0]), Some("mem:test/new-restored"))
-  }, old_only="it reads the old page's flight (send_flight); the nodes page's picture flies by sent_part_said, held by chat_motion_desk's")
-}
-
-///|
 test "a new chat's first words and picture sent with the keyboard up: no words over others on any frame" {
   both_pages(fn() raise {
     let src = fixture_app("newchat-attach")
-    both_way()
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
     t.drive("timeout 20000\nuntil 想让 agent 做什么？\n") |> ignore
     keyboard_up(t, 336.0)
@@ -292,7 +202,6 @@ test "a new chat's first words and picture sent with the keyboard up: no words o
     t.draw()
     assert_true(app.nav.top() is Chat(_))
     t.run_for(flight_carry_after_ms + flight_carry_ms + new_leave_ms)
-    assert_true(send_flight.get() is None)
   })
 }
 
@@ -301,14 +210,17 @@ test "a new chat's first words sent on a short page: nothing of its scene the fo
   both_pages(fn() raise {
     // (the scene longer than the page: its combinations under the band, frosted, and under the composer, hidden)
     let src = fixture_app("newchat-crowded")
-    both_way()
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=470.0, platform=2)
     t.drive("timeout 20000\nuntil 想让 agent 做什么？\n") |> ignore
     t.tap_text("做任何事")
     t.type_text("把发布说明写一下")
     t.run_for(@ui.move_most_ms)
-    // the foot's top: what is seen under it is the choices' and the composer's alone
-    let top = 470.0 - @motion.measured(t.ctx(), "new/foot").unwrap()
+    // the foot's top: what is seen under it is the choices' and the composer's alone (the old page's as it measured it;
+    // the page made as nodes, its band of glass across the window's foot)
+    let top = match @motion.measured(t.ctx(), "new/foot") {
+      Some(h) => 470.0 - h
+      None => t.drawn_glass().fold(init=470.0, fn(a, g) { if g.2 >= 389.0 && g.1 > 100.0 && g.1 < a { g.1 } else { a } })
+    }
     let under = fn() { t.glyphs_seen().filter(fn(g) { g.3 > top + 1.0 }).length() }
     let before = under()
     tap_send(t)
@@ -335,12 +247,14 @@ test "a new chat's first words sent: its scene fades where it is from then, as t
     let title = "想让 agent 做什么？"
     new_chat_sent(t, "把发布说明写一下") |> ignore
     let at = seen_once(t, title)
-    // halfway, the chat not made yet (the core's answers kept), the page it already: where it was, half faded
+    // halfway, the chat not made yet (the core's answers kept), the page it already: where it was (or drifting gently
+    // upward on the node choreography), half faded
     t.run_for(new_leave_ms / 2.0)
     assert_true(app.nav.top() is Chat(_))
     match t.words().filter(fn(w) { w.0 == title }) {
       [w] => {
-        assert_at(at, (w.1, w.2))
+        assert_true((w.1 - at.0).abs() <= 0.5, msg="x drifted from \{at.0} to \{w.1}")
+        assert_true(w.2 <= at.1 + 0.5 && w.2 >= at.1 - 10.5, msg="y drift out of range: \{at.1} -> \{w.2}")
         assert_true(w.5 > 0.05 && w.5 < 0.95, msg="fading: \{w.5}")
       }
       ws => fail("「\{title}」 seen \{ws.length()} times")
@@ -362,37 +276,7 @@ test "a new chat's first words sent: its scene fades where it is from then, as t
     assert_true(app.nav.top() is Chat(_))
     t.run_for(new_leave_ms)
     assert_true(t.words().filter(fn(w) { w.0 == title && w.5 > 0.0 }).is_empty())
-  }, old_only="the nodes page drops the new chat's scene as it becomes the chat: its fade would take an old island more (old-island only falls), decided not done (2026-11-16)")
-}
-
-///|
-test "a new chat's first words hold its composer as tall as it was while they are in it, its chat's, till they set out" {
-  both_pages(fn() raise {
-    let held : Map[String, () -> Unit] = Map([])
-    let unread = @signals.signal(true)
-    let t = held_core(held, unread)
-    let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
-    t.run_for(@ui.move_most_ms)
-    t.tap_text("做任何事")
-    t.type_text("第一行\n第二行\n第三行")
-    t.run_for(@ui.move_most_ms)
-    let box = fn() { @motion.measured(t.ctx(), "composer/content").unwrap() }
-    let tall = box()
-    tap_send(t)
-    t.draw()
-    assert_true(app.nav.top() is Chat(_))
-    assert_eq(box(), tall)
-    // let go of as they set out, the core's answers kept the while
-    let go = match app.nav.top() {
-      Chat(r) => @sfbase.flight_lets_go(r.station + ":" + r.session).map(fn(l) { l.0 }).unwrap_or(@double.infinity)
-      _ => @double.infinity
-    }
-    assert_true(go > t.time() && go < @double.infinity, msg="\{go} \{t.time()}")
-    t.run_for(go - t.time())
-    assert_true(box() < tall, msg="\{box()} \{tall}")
-    ignore((held, unread))
-  }, old_only="it reads the old page's flight (flight_lets_go); the nodes page's composer holds by sent_out_now, held by chat_motion_frames'")
+  })
 }
 
 ///|
@@ -403,7 +287,6 @@ test "a new chat's first words with the core at once: never gone, into their bub
     let typed = new_chat_sent(t, words)
     let sent = t.time()
     let landed = one_way_till(t, words, sent + flight_carry_after_ms + flight_carry_ms + 100.0, 120.0)
-    assert_true(send_flight.get() is None)
     // over the composer at the chat's foot
     assert_true(landed.1 < typed.1 && landed.1 > typed.1 - 200.0, msg="landed at \{Repr(landed)} from \{Repr(typed)}")
   })
@@ -429,7 +312,6 @@ test "a new chat's first words not sent (the chat not made): the page the new ch
       },
     }
     ignore(unread)
-    both_way()
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
     let words = "把发布说明写一下"
     new_chat_sent(t, words) |> ignore
@@ -441,7 +323,6 @@ test "a new chat's first words not sent (the chat not made): the page the new ch
       None => fail("no chat asked for")
     }
     t.draw()
-    assert_true(send_flight.get() is None)
     assert_true(app.nav.top() is NewChat)
     let (_, back, _, _) = t.ime()
     assert_eq(back, words)
@@ -472,7 +353,6 @@ fn failing_core(held : Map[String, () -> Unit], fails : Map[String, Json]) -> (@
       }
     },
   }
-  both_way()
   (@ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2), src)
 }
 
@@ -590,7 +470,6 @@ fn reading_core(reading : @signals.Signal[Bool], made : Ref[Int]) -> @ui.Tester 
       }
     },
   }
-  both_way()
   @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
 }
 
@@ -601,7 +480,7 @@ test "a new chat while its stations are read: its page as it will be, its first 
     let made = Ref(0)
     let t = reading_core(reading, made)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     // the page's own words and its composer, nothing said of a station not known yet
     assert_true(t.find("想让 agent 做什么？") is Some(_))
@@ -635,13 +514,16 @@ test "a new chat's first words: the room under its rows goes down to where the c
     // (every frame drawn from the press on, as a display draws them: the composer let go of as the words set out, its
     // room under the rows on the list's way with it, not a step)
     // (the chat's list's, the last list drawn, once it is the only one: the new chat's page has a list of its own
-    // before, leaving as the chat comes)
+    // before, leaving as the chat comes; the old view's foot its last row, the page made as nodes' its list's own, held
+    // apart from its rows (View::scrolls_window's `foot`): the room from where they end to the window's foot, a row
+    // that comes making its way into it)
     let foot = fn() {
       let lists = t.list_row_boxes()
       if !(app.nav.top() is Chat(_)) || lists.length() != 1 || lists[0].length() == 0 {
         -1.0
       } else {
-        lists[0][lists[0].length() - 1].3
+        let (_, y, _, h) = lists[0][lists[0].length() - 1]
+        844.0 - (y + h)
       }
     }
     let mut was = foot()
@@ -669,7 +551,6 @@ test "unfolded: a new chat's long first words sent: the room under the chat's ro
     // composer against a foot never measured on a chat's page, -200 under 0: 0.1.8569's crash, chat_list's Foot row
     // `Exact(<0>)`)
     let src = @sffixture.round_trip(fixture_app("chat"), 60.0)
-    both_way()
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=864.0, h=954.0, platform=2)
     // (what is held here is that it is drawn at all; how the composer opens at this width is not this test's)
     t.motion_unjudged(true)
@@ -745,7 +626,7 @@ test "a new chat's first words sent with the keyboard up: the chat it becomes wr
     // (the screen's keyboard: a finger the native input)
     let t = held_core(held, unread, finger=true)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     keyboard_up(t, 336.0)
@@ -785,8 +666,7 @@ fn new_scene_frames(
   script : String,
 ) -> Array[(Double, Bool)] raise {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
-  let src = fixture_app(mode, chat_nodes=true)
+  let src = fixture_app(mode)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=false)
   t.check_looks(false)
   t.set_rows_on_pixels(true)

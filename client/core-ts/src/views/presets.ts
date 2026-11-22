@@ -22,6 +22,7 @@
 // person's preset is looked at (`preset`), opened a chat with and copied into one's own (`preset.copy`); never changed
 // or deleted from here (each person's are carried by their own devices alone; the lead, 2026-11-14).
 import { Effect } from "effect";
+import { presetMeta } from "../choose.ts";
 import type { Inner } from "../core.ts";
 import type { Call } from "../core/calls.ts";
 import { type Handler, handlers } from "../core/execute.ts";
@@ -380,10 +381,21 @@ export class PresetViews implements Owner {
         all.set(r.id, was === undefined ? r : newerRecord(was, r));
       }
     }
-    const names = new Map(stationsOf(inner, ws).map((s) => [s.id, s.name]));
+    const names = new Map<string, string>();
+    for (const s of stationsOf(inner, ws)) {
+      names.set(s.id, s.name);
+      names.set(s.address, s.name);
+    }
     const presets = [...all.values()]
       .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))
-      .map((r) => ({ id: r.id, name: r.name, whose: whoseOf(inner, ws, r), station: `${ws}/${r.home}`, stationName: names.get(r.home) ?? "" }));
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        whose: whoseOf(inner, ws, r),
+        station: `${ws}/${r.home}`,
+        stationName: names.get(r.home) ?? "",
+        ...presetMeta(r, names),
+      }));
     return { reading: (read?.reading.size ?? 0) > 0, presets };
   }
 
@@ -400,8 +412,13 @@ export class PresetViews implements Owner {
       if ((this.#others.get(ws)?.reading.size ?? 0) > 0) return undefined;
       return { err: new CoreError("http_404", t("core-misc.presets.none"), 404) };
     }
-    const names = new Map(stationsOf(inner, ws).map((s) => [s.address, s.name]));
+    const names = new Map<string, string>();
+    for (const s of stationsOf(inner, ws)) {
+      names.set(s.id, s.name);
+      names.set(s.address, s.name);
+    }
     const nameOf = (address: string) => names.get(address) ?? stationId(address);
+    const meta = presetMeta(r, names);
     return {
       ok: {
         id: r.id,
@@ -412,6 +429,8 @@ export class PresetViews implements Owner {
         station: r.station ?? "",
         stations: r.stations ?? [],
         ...(r.model ? { model: r.model } : {}),
+        ...(meta.summary !== undefined ? { summary: meta.summary } : {}),
+        ...(meta.maker !== undefined ? { maker: meta.maker } : {}),
         mine: own !== null,
         whose: whoseOf(inner, ws, r),
         home: `${ws}/${r.home}`,

@@ -6,13 +6,6 @@
 // computer ＋ is the system's picker at once (composer.mbt attach).
 
 ///|
-/// ＋'s panel for draft `key`, opened by ＋ (`plus`): the gallery's recent photos read again as it opens.
-fn attach_open(plus : @sf.Anchor, src : Source, key : String) -> Unit {
-  @sf.panel_nodes("", fn(v, close) { attach_body_node(v, src, key, close) }, from=plus, w=attach_w)
-  recent_opened()
-}
-
-///|
 /// What the panel holds, in its body's node `v`: the strip, then the three tiles (添加 n 个 in their place while photos
 /// are chosen in the strip), each pressed shutting it (`close`) for what it asks.
 fn attach_body_node(v : @view.View, src : Source, key : String, close : () -> Unit) -> Unit {
@@ -54,30 +47,27 @@ fn attach_body_node(v : @view.View, src : Source, key : String, close : () -> Un
     }
     let corner = attach_block_corner(small)
     p.box(fn(row) {
-      @sf.style_node(row, fn() { attach_tiles.then(@ui.style(pb=@sf.room_of(attach_foot(small)))) })
-      for item in [
-        ("android-chat.attach.photos", "photo", fn() { ask(Photos) }),
-        ("android-chat.attach.files", "file", fn() { ask(Files) }),
-        (
-          "web-pages.chat.files",
-          "server",
-          fn() {
-            close()
-            (@sfbase.station_files_asked.val)(src, key)
-          },
-        ),
-      ] {
-        let (words, icon, press) = item
+      @sf.style_node(row, fn() {
+        let base = attach_tiles.then(@ui.style(pb=@sf.room_of(attach_foot(small))))
+        if small { base } else { base.then(@sf.panel_card_out_node(row)).then(@sf.panel_card_last_node(row)) }
+      })
+      let tile_node = fn(words : String, icon : String, press : () -> Unit) {
         let label = fn() { @sf.t(words) }
         row.box(fn(tile) {
           @sf.style_node(tile, fn() { attach_tile.then(@ui.style(radius=attach_block_radius(small))) }, in_row=true)
           @sf.icon_node(tile, icon, attach_icon, By(fn() { @sf.theme().p.text })) |> ignore
-          @sf.words_node(tile, label, fn() { attach_words }) |> ignore
+          @sf.words_node(tile, label, fn() { attach_words }).words_centered(Is(true)) |> ignore
           // (Attach.kt: clip(Smooth(14)).clickable; the ladder's block corner here, or a small panel's)
           @sf.rippled_node(tile, press, corner, label)
         })
         |> ignore
       }
+      tile_node("android-chat.attach.photos", "photo", fn() { ask(Photos) })
+      tile_node("android-chat.attach.files", "file", fn() { ask(Files) })
+      tile_node("web-pages.chat.files", "server", fn() {
+        close()
+        (@sfbase.station_files_asked.val)(src, key)
+      })
     })
     |> ignore
   })
@@ -106,7 +96,7 @@ let attach_tile_h : Double = 70.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let attach_words : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false)
+let attach_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, leading=L4, center=true, balance=true)
 
 ///|
 let attach_icon : Double = 22.0

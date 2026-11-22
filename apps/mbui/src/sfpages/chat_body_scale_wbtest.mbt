@@ -1,6 +1,6 @@
 // A chat's page made as nodes (chat_page_body_node) as the core's keyed deltas change its chat (src/core delta.mbt
-// apply_delta, as a device applies them): a streamed word patched into its last message, a message put at its end. What
-// the tree does for each (bindings looked at, nodes made and let go, laid out and measured) is that of the rows the
+// apply_delta, as a device applies them): an in-place edit patched into its last message, a message put at its end.
+// What the tree does for each (bindings looked at, nodes made and let go, laid out and measured) is that of the rows the
 // change reached, the same in a chat of 50 messages as in one of 500: nothing along the way (the delta, chat_read,
 // chat_view_of, its entries, chat_body_rows, each row's computed) works through the chat's other messages again
 // so as to wake what shows them.
@@ -48,9 +48,9 @@ fn scale_words(back : Int) -> String {
 }
 
 ///|
-/// The last message's words with a word streamed in.
+/// The last message's words after an in-place edit.
 // kept across runs: a value
-let scale_streamed : String = "倒数第 0 条，又来一个字"
+let scale_patched : String = "倒数第 0 条，已编辑"
 
 ///|
 /// The words of the message put at a chat's end.
@@ -78,7 +78,7 @@ fn scale_did(a : @view.Work, b : @view.Work) -> (Int, Int, Int, Int, Int) {
 }
 
 ///|
-/// What the tree did as a chat of `n` messages, open on 小屏 at its end, took a word streamed into its last message
+/// What the tree did as a chat of `n` messages, open on 小屏 at its end, took an in-place edit to its last message
 /// and then a message put at its end, each as the core's delta says it.
 fn scale_run(n : Int) -> ((Int, Int, Int, Int, Int), (Int, Int, Int, Int, Int)) raise {
   @sfbase.reset()
@@ -117,7 +117,7 @@ fn scale_run(n : Int) -> ((Int, Int, Int, Int, Int), (Int, Int, Int, Int, Int)) 
   )
   t.run_for(@ui.move_most_ms)
   assert_true(t.find(scale_words(0)) is Some(_), msg="\{n}: its last message shown")
-  // a word streamed into the last message: its words patched, its lines as many
+  // an in-place edit to the last message: its words patched, its lines as many
   let w0 = scale_work()
   chat.set(
     @core.apply_delta(chat.get(), [
@@ -126,15 +126,15 @@ fn scale_run(n : Int) -> ((Int, Int, Int, Int, Int), (Int, Int, Int, Int, Int)) 
         "key": Json::array([Json::string("seq"), Json::string("outgoing")]),
         "patch": scale_key(n),
         "ops": Json::array([
-          Json::object({ "path": Json::array([Json::string("text")]), "set": Json::string(scale_streamed) }),
-          Json::object({ "path": Json::array([Json::string("md")]), "set": body_md(scale_streamed) }),
+          Json::object({ "path": Json::array([Json::string("text")]), "set": Json::string(scale_patched) }),
+          Json::object({ "path": Json::array([Json::string("md")]), "set": body_md(scale_patched) }),
         ]),
       }),
     ]),
   )
   t.run_for(@ui.move_most_ms)
   let patched = scale_did(w0, scale_work())
-  assert_true(t.find(scale_streamed) is Some(_), msg="\{n}: the word streamed in shown")
+  assert_true(t.find(scale_patched) is Some(_), msg="\{n}: the patched text shown")
   // a message put at its end
   let w1 = scale_work()
   chat.set(
@@ -153,11 +153,11 @@ fn scale_run(n : Int) -> ((Int, Int, Int, Int, Int), (Int, Int, Int, Int, Int)) 
 }
 
 ///|
-test "a word streamed into a chat's last message and a message put at its end do the same work in a chat of 50 messages as in one of 500" {
+test "an in-place edit to a chat's last message and a message put at its end do the same work in a chat of 50 messages as in one of 500" {
   let (patched50, put50) = scale_run(50)
   let (patched500, put500) = scale_run(500)
   // (bound, made, let go, laid, measured)
-  assert_true(patched500 == patched50, msg="a word streamed in: 500 messages \{Repr(patched500)}, 50 \{Repr(patched50)}")
+  assert_true(patched500 == patched50, msg="an in-place edit: 500 messages \{Repr(patched500)}, 50 \{Repr(patched50)}")
   // (a message put: the same but for the list's scroll bar, whose thumb grows shorter with the chat while it is longer
   // than its least (50 messages: its three nodes laid out again), at its least in a chat of 500)
   assert_true(
@@ -165,12 +165,12 @@ test "a word streamed into a chat's last message and a message put at its end do
     msg="a message put: 500 messages \{Repr(put500)}, 50 \{Repr(put50)}",
   )
   // (only what showed the patched message looked at again: none made, none let go)
-  assert_eq(patched50.1, 0, msg="a word streamed in made \{patched50.1} nodes")
-  assert_eq(patched50.2, 0, msg="a word streamed in let go \{patched50.2} nodes")
+  assert_eq(patched50.1, 0, msg="an in-place edit made \{patched50.1} nodes")
+  assert_eq(patched50.2, 0, msg="an in-place edit let go \{patched50.2} nodes")
 }
 
 ///|
-test "a word streamed into a chat's last message reads that message alone again: the rest of the chat's view as it was" {
+test "an in-place edit to a chat's last message reads that message alone again: the rest of the chat's view as it was" {
   @sfbase.reset()
   reset()
   let chat = @signals.signal(scale_chat(50))
@@ -195,8 +195,8 @@ test "a word streamed into a chat's last message reads that message alone again:
         "key": Json::array([Json::string("seq"), Json::string("outgoing")]),
         "patch": scale_key(50),
         "ops": Json::array([
-          Json::object({ "path": Json::array([Json::string("text")]), "set": Json::string(scale_streamed) }),
-          Json::object({ "path": Json::array([Json::string("md")]), "set": body_md(scale_streamed) }),
+          Json::object({ "path": Json::array([Json::string("text")]), "set": Json::string(scale_patched) }),
+          Json::object({ "path": Json::array([Json::string("md")]), "set": body_md(scale_patched) }),
         ]),
       }),
     ]),
@@ -205,7 +205,7 @@ test "a word streamed into a chat's last message reads that message alone again:
   watch.stop()
   guard v1 is Some(v1) else { fail("no view after") }
   assert_eq(v1.messages.length(), 50)
-  assert_eq(v1.messages[49].text, scale_streamed)
+  assert_eq(v1.messages[49].text, scale_patched)
   for i in 0..<49 {
     assert_true(physical_equal(v1.messages[i], v0.messages[i]), msg="message \{i} read again")
   }
@@ -213,7 +213,7 @@ test "a word streamed into a chat's last message reads that message alone again:
   assert_eq(list1.length(), list0.length())
   for i, e in list1 {
     match (e, list0[i]) {
-      (Said(a), Said(b)) if a.seq == 50.0 => assert_true(!physical_equal(a, b) && a.text == scale_streamed)
+      (Said(a), Said(b)) if a.seq == 50.0 => assert_true(!physical_equal(a, b) && a.text == scale_patched)
       (Said(a), Said(b)) => assert_true(physical_equal(a, b), msg="entry \{i} made again")
       _ => ()
     }

@@ -179,3 +179,217 @@ test "a renewal that ends the connection: answered its line, later streams reset
   assert_eq(@door.closed_with(dev), Some(("application", "credential_revoked")))
   assert_eq(door_ended.val, "revoked")
 }
+
+///|
+test "compressed stream compresses +json, calls finish once on normal EOF (including empty), never on stop or error" {
+  let log = []
+  let packer : @door.Packer = {
+    whole: async fn(b, _) { b },
+    stream: async fn() {
+      {
+        push: async fn(b) {
+          log.push("push:" + text(b))
+          b
+        },
+        finish: async fn() {
+          log.push("finish")
+          b"<END>"
+        },
+        close: () => log.push("close"),
+      }
+    },
+  }
+  let asks = [("accept-encoding", "zstd")]
+  let batch_lines = ["application/vnd.stillfail.batch-lines+json"]
+  let errors = on_clock(0, _ => {
+    // 0. Arbitrary +json is NOT compressed; only explicit extra_types are.
+    let other = @door.compressed(
+      packer,
+      {
+        status: 200,
+        headers: [("content-type", "application/problem+json")],
+        body: Coming({ next: async fn() { None }, stop: () => () }),
+      },
+      asks,
+      "/batch",
+      extra_types=batch_lines,
+    )
+    assert_eq(@door.header_of(other.headers, "content-encoding"), None)
+    // 1. Non-empty explicit batch-lines stream: compressed, finish called once on EOF, tail emitted, then closed.
+    let items = [b"a\n", b"b\n"]
+    let ans = @door.compressed(
+      packer,
+      {
+        status: 200,
+        headers: [("content-type", "application/vnd.stillfail.batch-lines+json")],
+        body: Coming({
+          next: async fn() { if items.length() > 0 { Some(items.remove(0)) } else { None } },
+          stop: () => log.push("src_stop"),
+        }),
+      },
+      asks,
+      "/batch",
+      extra_types=batch_lines,
+    )
+    assert_eq(@door.header_of(ans.headers, "content-encoding"), Some("zstd"))
+    match ans.body {
+      Coming(c) => {
+        let got = []
+        while (c.next)() is Some(p) {
+          got.push(text(p))
+        }
+        // Second EOF call is a no-op; finish is not called again.
+        assert_eq((c.next)(), None)
+        assert_eq(got, ["a\n", "b\n", "<END>"])
+      }
+      Whole(_) => fail("expected Coming")
+    }
+    // 2. Empty stream: finish still called once on normal EOF.
+    log.push("---")
+    let empty_ans = @door.compressed(
+      packer,
+      {
+        status: 200,
+        headers: [("content-type", "application/vnd.stillfail.batch-lines+json")],
+        body: Coming({ next: async fn() { None }, stop: () => () }),
+      },
+      asks,
+      "/batch",
+      extra_types=batch_lines,
+    )
+    match empty_ans.body {
+      Coming(c) => {
+        assert_eq((c.next)().map(text), Some("<END>"))
+        assert_eq((c.next)(), None)
+      }
+      Whole(_) => fail("expected Coming")
+    }
+    // 3. Cancelled stream: stop closes without calling finish.
+    log.push("---")
+    let cancel_ans = @door.compressed(
+      packer,
+      {
+        status: 200,
+        headers: [("content-type", "application/vnd.stillfail.batch-lines+json")],
+        body: Coming({ next: async fn() { Some(b"x\n") }, stop: () => log.push("cancel_stop") }),
+      },
+      asks,
+      "/batch",
+      extra_types=batch_lines,
+    )
+    match cancel_ans.body {
+      Coming(c) => {
+        assert_eq((c.next)().map(text), Some("x\n"))
+        (c.stop)()
+        assert_eq((c.next)(), None)
+      }
+      Whole(_) => fail("expected Coming")
+    }
+    // 4. Errored source: closes without calling finish.
+    log.push("---")
+    let fail_ans = @door.compressed(
+      packer,
+      {
+        status: 200,
+        headers: [("content-type", "application/x-ndjson")],
+        body: Coming({ next: async fn() { raise @door.WireError("boom") }, stop: () => () }),
+      },
+      asks,
+      "/batch",
+    )
+    match fail_ans.body {
+      Coming(c) => {
+        let mut threw = false
+        ignore((c.next)()) catch { _ => threw = true }
+        assert_eq(threw, true)
+      }
+      Whole(_) => fail("expected Coming")
+    }
+  })
+  assert_eq(errors, [])
+  assert_eq(log, [
+    "push:a\n", "push:b\n", "finish", "close",
+    "---",
+    "finish", "close",
+    "---",
+    "push:x\n", "close", "cancel_stop",
+    "---",
+    "close",
+  ])
+}
+
+///|
+test "compressed stream returns None without emitting bytes if stopped during push or finish" {
+  let rt = @effect.Runtime::new()
+  let push_gate : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let finish_gate : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let push_res : Ref[String] = Ref("unset")
+  let finish_res : Ref[String] = Ref("unset")
+  let batch_lines = ["application/vnd.stillfail.batch-lines+json"]
+  let asks = [("accept-encoding", "zstd")]
+  let packer : @door.Packer = {
+    whole: async fn(b, _) { b },
+    stream: async fn() {
+      {
+        push: async fn(b) {
+          push_gate.wait()
+          b
+        },
+        finish: async fn() {
+          finish_gate.wait()
+          b"<END>"
+        },
+        close: () => (),
+      }
+    },
+  }
+  ignore(rt.fork(() => {
+    let ans = @door.compressed(
+      packer,
+      {
+        status: 200,
+        headers: [("content-type", "application/vnd.stillfail.batch-lines+json")],
+        body: Coming({ next: () => Some(b"chunk"), stop: () => () }),
+      },
+      asks,
+      "/batch",
+      extra_types=batch_lines,
+    )
+    match ans.body {
+      Coming(c) => {
+        ignore(rt.fork(() => {
+          push_res.val = match (c.next)() { Some(b) => text(b); None => "none" }
+        }))
+        (c.stop)()
+        ignore(push_gate.succeed(()))
+      }
+      Whole(_) => ()
+    }
+  } catch { _ => () }))
+  ignore(rt.fork(() => {
+    let ans = @door.compressed(
+      packer,
+      {
+        status: 200,
+        headers: [("content-type", "application/vnd.stillfail.batch-lines+json")],
+        body: Coming({ next: () => None, stop: () => () }),
+      },
+      asks,
+      "/batch",
+      extra_types=batch_lines,
+    )
+    match ans.body {
+      Coming(c) => {
+        ignore(rt.fork(() => {
+          finish_res.val = match (c.next)() { Some(b) => text(b); None => "none" }
+        }))
+        (c.stop)()
+        ignore(finish_gate.succeed(()))
+      }
+      Whole(_) => ()
+    }
+  } catch { _ => () }))
+  ignore(rt.run_ready())
+  assert_eq(push_res.val, "none")
+  assert_eq(finish_res.val, "none")
+}

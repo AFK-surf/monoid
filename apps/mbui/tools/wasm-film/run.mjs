@@ -179,6 +179,7 @@ const mbhost = {
   mbc_now_ms: () => performance.now(),
   mbc_wall_ms: () => Date.now(),
   mbc_screen_ack: () => 0,
+  mbc_screen_input: () => 0,
   mbc_auth_scheme() { throw new Error('a film signs in to nothing: no auth scheme'); },
 };
 const imports = { probe, film, mbhost, __moonbit_fs_unstable: fsUnstable, __moonbit_sys_unstable: { exit(code) { throw new Exit(code); } },

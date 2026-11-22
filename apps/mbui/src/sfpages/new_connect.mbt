@@ -103,7 +103,7 @@ pub fn new_connect_dialog(src : Source, core : Core, here : Here, station : Stri
     live=fn() { nc_words_at(f, view, 0) },
     fn(v, _) {
       // (the dialog's steps brought to the wizard's as the core says its step)
-      v.reacts(fn() { nc_step_of(view()) }, fn(step) { nc_follow(src, core, f, view, step, first, close, back) })
+      v.reacts(fn() { nc_step_of(view()) }, fn(step) { nc_follow(src, core, f, view, step, first, v, close, back) })
       v.pick(fn() { first.get() }, fn(p, step) {
         if step == "" {
           @sf.wait_line_node(p, fn() { @sf.t("common.reading") }) |> ignore
@@ -179,6 +179,7 @@ fn nc_follow(
   view : () -> Json?,
   step : String,
   first : @signals.Signal[String],
+  within : @view.View,
   close : () -> Unit,
   back : () -> Unit,
 ) -> Unit {
@@ -191,7 +192,7 @@ fn nc_follow(
     ()
   } else if n == 0 {
     f.pages.push(step)
-    first.set(step)
+    @view.transition(within=within.transitions_root(), fn() { first.set(step) })
   } else if f.pages[n - 1] == step {
     ()
   } else if n >= 2 && f.pages[n - 2] == step {
@@ -420,7 +421,7 @@ fn nc_body_node(
           nc_made_steps_node(k, core, made)
           k.show(fn() { opt_text(view(), "iconError").unwrap_or("") != "" }, fn(e) {
             @sf.words_node(e, fn() { @sf.t("web-pages.connect.iconFailed", args=[("error", text(view(), "iconError"))]) }, fn() {
-              desk_note_bad
+              @sf.list_note_bad
             })
             |> ignore
           })
@@ -428,7 +429,7 @@ fn nc_body_node(
           token_fields_node(k, core, tk, install=opt_text(@signals.untracked(made), "install") is Some(_))
         }
         "manual" => {
-          create_app_steps_node(k, core, f.station, fn() { "still.fail" })
+          create_app_steps_node(k, core, f.station, fn() { @sf.product() })
           token_fields_node(k, core, nc_tokens(core, f, ""))
         }
         _ => ()
@@ -441,7 +442,7 @@ fn nc_body_node(
 ///|
 /// What went wrong (`error`, as it is now), in red, while it says something.
 fn nc_bad_node(k : @view.View, error : () -> String) -> Unit {
-  k.show(fn() { error() != "" }, fn(e) { @sf.words_node(e, error, fn() { desk_note_bad }) |> ignore })
+  k.show(fn() { error() != "" }, fn(e) { @sf.words_node(e, error, fn() { @sf.list_note_bad }) |> ignore })
 }
 
 ///|
@@ -521,19 +522,16 @@ fn nc_team_node(k : @view.View, core : Core, f : NcFlow, view : () -> Json?, clo
     if getting {
       p.box(fn(s) {
         @sf.style_node(s, fn() { nc_token_start })
-        @sf.words_node(s, fn() { @sf.t("web-pages.connect.tokenWhy", args=[("name", "still.fail")]) }, fn() { desk_muted }) |> ignore
+        @sf.words_node(s, fn() { @sf.t("web-pages.connect.tokenWhy", args=[("name", @sf.product())]) }, fn() { @sf.card_muted }) |> ignore
         config_token_form_node(s, core, f.station, "nc-config/" + f.form, fn() {  }, flow=(
           view,
           fn() { nc_act(core, f, "config") },
           fn(token) { nc_edit(core, f, obj([("config", str(token))])) },
         ))
-        s.show(fn() { teams().length() == 0 }, fn(m) {
-          m.box(fn(l) {
-            @sf.style_node(l, fn() { nc_manual_line })
-            @sf.words_node(l, fn() { @sf.t("web-pages.connect.noToken") }, fn() { nc_meta }) |> ignore
-            @sf.quiet_action_node(l, fn() { @sf.t("web-pages.connect.manualApp") }, fn() { nc_go(core, f, "manual", close) }) |> ignore
-          })
-          |> ignore
+        s.show(fn() { teams().length() == 0 }, fn(l) {
+          @sf.style_node(l, fn() { nc_manual_line })
+          @sf.words_node(l, fn() { @sf.t("web-pages.connect.noToken") }, fn() { nc_meta }) |> ignore
+          @sf.quiet_action_node(l, fn() { @sf.t("web-pages.connect.manualApp") }, fn() { nc_go(core, f, "manual", close) }) |> ignore
         })
       })
       |> ignore
@@ -593,27 +591,24 @@ fn nc_team_icon_node(m : @view.View, core : Core, f : NcFlow, owner : () -> Json
 /// Whose configuration token it is there (TokenOwner: their picture 16, their name and email, the workspace's address
 /// muted, 6 apart), `owner` as it is now, in the words' box `m` of its choice.
 fn nc_token_owner_node(m : @view.View, core : Core, f : NcFlow, owner : () -> Json?) -> Unit {
-  m.show(fn() { owner() is Some(Object(_)) }, fn(s) {
-    s.box(fn(l) {
-      @sf.style_node(l, fn() { nc_owner_line })
-      // (the workspace's address on a line of its own where the name and email leave it no room: the old row's flow)
-      l.wraps(Is(Some(0.0))) |> ignore
-      l.show(fn() { opt_text(owner(), "image").unwrap_or("") != "" }, fn(a) {
-        @sf.avatar_node(a, fn() { text(owner(), "image") }, fn() { text(owner(), "user") }, fn() {
-          (core.picture)(text(owner(), "image"), f.stint)
-        }, nc_owner_size)
-      })
-      @sf.words_node(l, fn() {
-        let o = owner()
-        let email = text(o, "email")
-        text(o, "user") + (if email != "" { "（" + email + "）" } else { "" })
-      }, fn() { nc_meta_ink })
-      |> ignore
-      l.show(fn() { opt_text(owner(), "teamDomain").unwrap_or("") != "" }, fn(d) {
-        @sf.words_node(d, fn() { text(owner(), "teamDomain") + ".slack.com" }, fn() { nc_meta }) |> ignore
-      })
+  m.show(fn() { owner() is Some(Object(_)) }, fn(l) {
+    @sf.style_node(l, fn() { nc_owner_line })
+    // (the workspace's address on a line of its own where the name and email leave it no room: the old row's flow)
+    l.wraps(Is(Some(0.0))) |> ignore
+    l.show(fn() { opt_text(owner(), "image").unwrap_or("") != "" }, fn(a) {
+      @sf.avatar_node(a, fn() { text(owner(), "image") }, fn() { text(owner(), "user") }, fn() {
+        (core.picture)(text(owner(), "image"), f.stint)
+      }, nc_owner_size)
     })
+    @sf.words_node(l, fn() {
+      let o = owner()
+      let email = text(o, "email")
+      text(o, "user") + (if email != "" { "（" + email + "）" } else { "" })
+    }, fn() { nc_meta_ink })
     |> ignore
+    l.show(fn() { opt_text(owner(), "teamDomain").unwrap_or("") != "" }, fn(d) {
+      @sf.words_node(d, fn() { text(owner(), "teamDomain") + ".slack.com" }, fn() { nc_meta }) |> ignore
+    })
   })
 }
 
@@ -731,13 +726,13 @@ fn nc_scan_node(k : @view.View, core : Core, fe : () -> Json?) -> Unit {
         ) {
           @sf.spinner_node(s, size=cd_icon) |> ignore
         })
-        @sf.words_node(l, fn() { text(fe(), "stateText") }, fn() { if failing() { nc_scan_bad } else { desk_words } }) |> ignore
+        @sf.words_node(l, fn() { text(fe(), "stateText") }, fn() { if failing() { nc_scan_bad } else { @sf.card_body } }) |> ignore
       })
       |> ignore
       nc_bad_node(w, fn() { opt_text(fe(), "error").unwrap_or("") })
       w.show(waiting, fn(s) {
         @sf.style_node(s, fn() { nc_scan_waits })
-        @sf.words_node(s, fn() { @sf.t("web-pages.connect.feishu.scanHint") }, fn() { desk_muted }) |> ignore
+        @sf.words_node(s, fn() { @sf.t("web-pages.connect.feishu.scanHint") }, fn() { @sf.card_muted }) |> ignore
         @sf.button_node(s, fn() { @sf.t("web-pages.connect.feishu.openInFeishu") }, fn() { (core.open_link)(text(r(), "url")) }, icon="external")
         |> ignore
       })
@@ -753,7 +748,7 @@ fn nc_feishu_app_node(k : @view.View, core : Core, f : NcFlow, fe : () -> Json?,
   let lark = fn() { flag(fe(), "lark") }
   k.box(fn(l) {
     @sf.style_node(l, fn() { nc_hint_line })
-    @sf.words_node(l, fn() { @sf.t("web-pages.connect.feishu.appHint") }, fn() { desk_muted }).shrink(Is(1.0)) |> ignore
+    @sf.words_node(l, fn() { @sf.t("web-pages.connect.feishu.appHint") }, fn() { @sf.card_muted }).shrink(Is(1.0)) |> ignore
     @sf.link_node(l, fn() { @sf.t("web-pages.connect.feishu.openConsole") }, fn() {
       (core.open_link)(if @signals.untracked(lark) { "https://open.larksuite.com/app" } else { "https://open.feishu.cn/app" })
     })

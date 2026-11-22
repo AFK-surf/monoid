@@ -276,7 +276,7 @@ export class ScreenHub implements Screens {
     const source = this.get(id);
     if (source === undefined) throw new ScreenRefused(404, "station.screen.notFound");
     if (source.userTab) throw new ScreenRefused(403, "station.screen.userOnly");
-    const view = await source.open(options);
+    const view = await source.open({ ...options, agent: true });
     const leave = this.join(id, { name: who.name, control: who.control, agent: true, tell: () => {} });
     return {
       next: () => view.next(),

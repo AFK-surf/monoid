@@ -61,14 +61,6 @@ pub fn Store::session_key_by_token(self : Store, token : String) -> Json raise {
 }
 
 ///|
-pub fn Store::session_by_token(self : Store, token : String) -> Json raise {
-  match self.one("SELECT * FROM sessions WHERE token = ?", [jstr(token)]) {
-    Some(r) => to_session(r)
-    None => Json::null()
-  }
-}
-
-///|
 /// store.ts ARCHIVED_WORKSPACE_BATCH.
 let archived_workspace_batch : Int32 = 64
 
@@ -131,6 +123,35 @@ pub fn Store::next_archived_at(self : Store, after : Json) -> Json raise {
     Some(r) => col(r, "archived_at")
     None => Json::null()
   }
+}
+
+///|
+/// Bounded page of idle unarchived, non-running sessions with `last_active_at <= through`, oldest activity first,
+/// using the `sessions_live` partial index.
+pub fn Store::idle_unarchived_sessions(
+  self : Store,
+  after : Json,
+  through : Json,
+  limit : Int,
+) -> Array[Json] raise {
+  let sql = StringBuilder::new()
+  sql.write_string(
+    "SELECT key, workspace, last_active_at FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL AND running = 0 AND last_active_at <= ?",
+  )
+  let args : Array[Json] = [through]
+  if !(after is Null) {
+    sql.write_string(" AND last_active_at >= ? AND (last_active_at > ? OR key > ?)")
+    let at = field(after, "lastActiveAt").unwrap_or(Json::null())
+    let k = field(after, "key").unwrap_or(Json::null())
+    args.push(at)
+    args.push(at)
+    args.push(k)
+  }
+  sql.write_string(" ORDER BY last_active_at ASC, key ASC LIMIT ?")
+  args.push(jint(limit.to_int64()))
+  self
+  .all(sql.to_string(), args)
+  .map(r => { "key": col(r, "key"), "workspace": col(r, "workspace"), "lastActiveAt": col(r, "last_active_at") })
 }
 
 ///|
@@ -251,6 +272,21 @@ pub fn Store::sessions_in_use(self : Store) -> Array[Json] raise {
     }
   }
   out
+}
+
+///|
+/// What `sessions_in_use` gives of a session for its directories: its key, workspace (`""` for none) and cwd (its
+/// workspace for none), as `to_session`'s `key`, `workspace` and `cwd` read as strings.
+fn place_of_session(r : Map[String, Json]) -> (String, String, String) {
+  let ws = str_of(col(r, "workspace")).unwrap_or("")
+  (str_of(col(r, "key")).unwrap_or(""), ws, str_of(col(r, "cwd")).unwrap_or(ws))
+}
+
+///|
+/// The sessions of `sessions_in_use`, each its key, workspace and cwd only (no row made whole): what cold storage asks
+/// of each session of an upkeep round.
+pub fn Store::in_use_places(self : Store) -> Array[(String, String, String)] raise {
+  self.all(in_use_places, []).map(place_of_session)
 }
 
 ///|
@@ -609,6 +645,16 @@ pub fn Store::set_session_context_before(
 }
 
 ///|
+/// store.ts `noteCompacted`: its runtime session compacted its context once more.
+pub fn Store::note_compacted(self : Store, key : String) -> Unit raise {
+  self.update_session(
+    key,
+    "UPDATE sessions SET compactions = COALESCE(compactions, 0) + 1 WHERE key = ?1",
+    [jstr(key)],
+  )
+}
+
+///|
 pub fn Store::set_session_afresh(
   self : Store,
   key : String,
@@ -691,7 +737,7 @@ pub fn Store::set_runtime_session_id(
 ) -> Unit raise {
   self.with_changes(changes => {
     ignore(
-      self.run("UPDATE sessions SET runtime_session_id = ?1 WHERE key = ?2", [
+      self.run("UPDATE sessions SET compactions = CASE WHEN runtime_session_id IS ?1 THEN compactions ELSE NULL END, runtime_session_id = ?1 WHERE key = ?2", [
         id,
         jstr(key),
       ]),
@@ -716,15 +762,6 @@ pub fn Store::conversation_since(self : Store, key : String) -> Json raise {
         or_else(col(r, "at"), jnum(0.0))
       }
   }
-}
-
-///|
-pub fn Store::set_transcript_length(
-  self : Store,
-  key : String,
-  n : Json,
-) -> Unit raise {
-  self.set_transcript_lengths([(key, n)])
 }
 
 ///|
@@ -854,6 +891,32 @@ pub fn Store::put_model_stars(
 }
 
 ///|
+pub fn Store::board_drafts(self : Store, ws : Json, sub : Json) -> Json raise {
+  match
+    self.one("SELECT drafts FROM board_drafts WHERE ws = ?1 AND sub = ?2", [
+      ws, sub,
+    ]) {
+    None => Json::null()
+    Some(r) => jstr(js_string(col(r, "drafts")))
+  }
+}
+
+///|
+pub fn Store::put_board_drafts(
+  self : Store,
+  ws : Json,
+  sub : Json,
+  drafts : Json,
+) -> Unit raise {
+  ignore(
+    self.run(
+      "INSERT INTO board_drafts (ws, sub, drafts) VALUES (?1, ?2, ?3) ON CONFLICT (ws, sub) DO UPDATE SET drafts = excluded.drafts",
+      [ws, sub, drafts],
+    ),
+  )
+}
+
+///|
 /// Since when this station keeps the devices' builds: `now` the first time it is asked, the same ever after. Read
 /// without the write lock where it is kept; the first write waits for no other writer (store.ts `#tryNow`: the mesh
 /// tries again after a failed start), refused "device builds write is busy" where one holds the lock.
@@ -926,11 +989,6 @@ pub fn Store::unpriced_usage_sessions(self : Store) -> Array[String] raise {
   self
   .all("SELECT session FROM session_usage WHERE json_extract(usage, '$.unpricedCalls') > 0", [])
   .map(r => js_string(col(r, "session")))
-}
-
-///|
-pub fn Store::session_keys(self : Store) -> Array[Json] raise {
-  self.all("SELECT key FROM sessions", []).map(r => col(r, "key"))
 }
 
 ///|
@@ -1123,6 +1181,22 @@ pub fn Store::opener_of(self : Store, child : Json) -> Json raise {
 }
 
 ///|
+pub fn Store::opened_record(
+  self : Store,
+  child_station : Json,
+  child : Json,
+) -> Json raise {
+  match
+    self.one(
+      "SELECT * FROM opened_chats WHERE child_station = ? AND child = ?",
+      [child_station, child],
+    ) {
+    Some(r) => to_opened(r)
+    None => Json::null()
+  }
+}
+
+///|
 pub fn Store::models_used_by(
   self : Store,
   created_by : Json,
@@ -1169,6 +1243,200 @@ pub fn Store::set_opened_state(
       }
     }
   })
+}
+
+///|
+pub fn Store::set_opened_led(
+  self : Store,
+  child_station : Json,
+  child : Json,
+  led : Bool,
+) -> Json raise {
+  let mut changed = false
+  let mut prev : Json = Json::null()
+  self.with_changes(changes => {
+    match
+      self.one(
+        "SELECT * FROM opened_chats WHERE child_station = ? AND child = ?",
+        [child_station, child],
+      ) {
+      None => ()
+      Some(existing) => {
+        let p = to_opened(existing)
+        prev = p
+        let cur_led = match p {
+          Object(m) => m.get("led")
+          _ => None
+        }
+        let already = match cur_led {
+          Some(True) => led
+          Some(False) => !led
+          _ => false
+        }
+        if !already {
+          ignore(
+            self.run(
+              "UPDATE opened_chats SET led = ? WHERE child_station = ? AND child = ?",
+              [flag(led), child_station, child],
+            ),
+          )
+          changed = true
+          if child_station is String("") {
+            changes.push({
+              "type": "chatMark",
+              "thread": Json::null(),
+              "session": child,
+            })
+            changes.push(session_change(child))
+          }
+          let prev_ps = col(existing, "parent_station")
+          let prev_parent = col(existing, "parent")
+          if prev_ps is String("") {
+            changes.push({
+              "type": "chatMark",
+              "thread": Json::null(),
+              "session": prev_parent,
+            })
+            changes.push(session_change(prev_parent))
+          }
+        }
+      }
+    }
+  })
+  { "changed": Json::boolean(changed), "prev": prev }
+}
+
+///|
+pub fn Store::adopt_opened(self : Store, o : Json) -> Json raise {
+  let get = (k : String) => match o {
+    Object(m) => m.get(k).unwrap_or(Json::null())
+    _ => Json::null()
+  }
+  let child_station = get("childStation")
+  let child = get("child")
+  let parent_station = get("parentStation")
+  let parent = get("parent")
+  let title = get("title")
+  let link = get("link")
+  let opener_title = get("openerTitle")
+  let mut changed = false
+  let mut prev : Json = Json::null()
+  self.with_changes(changes => {
+    match
+      self.one(
+        "SELECT * FROM opened_chats WHERE child_station = ? AND child = ?",
+        [child_station, child],
+      ) {
+      Some(existing) => {
+        let p = to_opened(existing)
+        prev = p
+        let prev_ps = col(existing, "parent_station")
+        let prev_parent = col(existing, "parent")
+        let already = match p {
+          Object(m) =>
+            m.get("led") is Some(True) &&
+            prev_ps == parent_station &&
+            prev_parent == parent
+          _ => false
+        }
+        if already {
+          let title_changed = !(title is Null) && title != col(existing, "title")
+          let link_changed = !(link is Null) && link != col(existing, "link")
+          if title_changed || link_changed {
+            ignore(
+              self.run(
+                "UPDATE opened_chats SET title = COALESCE(?, title), link = COALESCE(?, link) WHERE child_station = ? AND child = ?",
+                [title, link, child_station, child],
+              ),
+            )
+            if child_station is String("") {
+              changes.push({
+                "type": "chatMark",
+                "thread": Json::null(),
+                "session": child,
+              })
+              changes.push(session_change(child))
+            }
+            if parent_station is String("") {
+              changes.push({
+                "type": "chatMark",
+                "thread": Json::null(),
+                "session": parent,
+              })
+              changes.push(session_change(parent))
+            }
+          }
+        } else {
+          ignore(
+            self.run(
+              "UPDATE opened_chats SET parent_station = ?, parent = ?, title = COALESCE(?, title), link = COALESCE(?, link), opener_title = ?, led = 1 WHERE child_station = ? AND child = ?",
+              [
+                parent_station, parent, title, link, opener_title, child_station,
+                child,
+              ],
+            ),
+          )
+          changed = true
+          if child_station is String("") {
+            changes.push({
+              "type": "chatMark",
+              "thread": Json::null(),
+              "session": child,
+            })
+            changes.push(session_change(child))
+          }
+          if parent_station is String("") {
+            changes.push({
+              "type": "chatMark",
+              "thread": Json::null(),
+              "session": parent,
+            })
+            changes.push(session_change(parent))
+          }
+          if prev_ps is String("") &&
+            (prev_parent != parent || prev_ps != parent_station) {
+            changes.push({
+              "type": "chatMark",
+              "thread": Json::null(),
+              "session": prev_parent,
+            })
+            changes.push(session_change(prev_parent))
+          }
+        }
+      }
+      None => {
+        let at = self.now()
+        let key = Json::string("adopt:" + js_string(child))
+        ignore(
+          self.run(
+            "INSERT INTO opened_chats (child_station, child, parent_station, parent, key, title, link, opener_title, led, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+            [
+              child_station, child, parent_station, parent, key, title, link, opener_title,
+              at,
+            ],
+          ),
+        )
+        changed = true
+        if child_station is String("") {
+          changes.push({
+            "type": "chatMark",
+            "thread": Json::null(),
+            "session": child,
+          })
+          changes.push(session_change(child))
+        }
+        if parent_station is String("") {
+          changes.push({
+            "type": "chatMark",
+            "thread": Json::null(),
+            "session": parent,
+          })
+          changes.push(session_change(parent))
+        }
+      }
+    }
+  })
+  { "changed": Json::boolean(changed), "prev": prev }
 }
 
 // ── runtime sessions ──
@@ -1343,6 +1611,27 @@ pub fn Store::transcript_in_use(
   except : Json,
 ) -> Bool raise {
   self.one(transcript_in_use, [id, runtime, except]) is Some(_)
+}
+
+///|
+pub fn Store::transcript_referenced(
+  self : Store,
+  runtime : Json,
+  id : Json,
+  except : Json,
+) -> Bool raise {
+  self.one(transcript_referenced, [id, runtime, except]) is Some(_)
+}
+
+///|
+pub fn Store::session_paths_page(
+  self : Store,
+  after : Json,
+  limit : Int,
+) -> Array[Json] raise {
+  self
+  .all(session_paths_page, [after, jint(limit.to_int64())])
+  .map(r => { "key": col(r, "key"), "workspace": col(r, "workspace"), "cwd": col(r, "cwd"), "archivedAt": col(r, "archived_at") })
 }
 
 ///|

@@ -170,6 +170,27 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.close();
   });
 
+  test("a copy of another station's profile is listed only to the workspaces that station lends it in", async () => {
+    const data = temp("routes");
+    writeFileSync(join(data, "config.json"), JSON.stringify({
+      profiles: [
+        { id: "cc", runtime: "claude", home: "homes/cc", withheld: ["W2"] },
+        { id: "cx", runtime: "codex", home: "homes/cx" },
+        { id: "sh-cue", runtime: "claude", access: { kind: "subscription" }, home: "homes/sh-cue", share: { id: "sh-cue", borrowed: true, host: "6".repeat(64), email: "cue@example.com", workspaces: ["W2"] } },
+      ],
+      connects: [],
+    }));
+    const t = await rig({ data, workspaces: ["W1", "W2", "W3"] });
+    try {
+      const at = (workspace: string) => ({ ...viewer("guest@example.com", "admin"), workspace, home: false });
+      assert.deepEqual(t.accounts.profilesView({ ...owner, workspace: "W1", home: true }).map((p) => p.id), ["cc", "cx"]);
+      // The station's own withheld one stays listed, so its admins can turn it on.
+      assert.deepEqual(t.accounts.profilesView(at("W2")).map((p) => [p.id, p.serves]), [["cc", false], ["cx", true], ["sh-cue", true]]);
+      assert.deepEqual(t.accounts.profilesView(at("W3")).map((p) => p.id), ["cc", "cx"]);
+      assert.deepEqual(t.accounts.profilesView().map((p) => p.id), ["cc", "cx", "sh-cue"]);
+    } finally { await t.close(); }
+  });
+
   test("invalid edits are refused and leave the config unchanged", async () => {
     const t = await rig();
     const before = readFileSync(t.path, "utf8");
@@ -505,7 +526,7 @@ describe("the accounts routes", { concurrency: true }, () => {
       data,
       store,
       check: async (o) => {
-        checked.push(o.runtime);
+        checked.push(o.runtime ?? "");
         return { state: "ok", detail: "fake", models: o.runtime === "claude" ? ["claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5"] : ["gpt-6.1-sol"], checkedAt: 0 };
       },
     });
@@ -1358,6 +1379,17 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.close();
   });
 
+  test("automatic chat allowlist is opt-in and for a workspace manager to change", async () => {
+    const t = await rig();
+    assert.deepEqual(await t.call("PUT", "/auto-chats", { enabled: true }, member), [403, { error: "只有 workspace 管理员能修改自动分配白名单" }]);
+    assert.deepEqual(await t.call("PUT", "/auto-chats", { enabled: "yes" }), [400, { error: "自动分配白名单的设置不正确" }]);
+    assert.equal((await t.call("PUT", "/auto-chats", { enabled: true }))[0], 200);
+    assert.equal(t.config.raw().acceptAutoChats, true);
+    assert.equal((await t.call("PUT", "/auto-chats", { enabled: false }))[0], 200);
+    assert.equal(t.config.raw().acceptAutoChats, false);
+    await t.close();
+  });
+
   test("the archive policy page: its options with the chats last put there, who changed it, and edits by managers", async () => {
     const store = Store.open(":memory:", null);
     store.insertSession({ key: "titled", connect: "ds", runtime: "claude", profile: "cc", workspace: "/w/a", token: "t", createdAt: 1, lastActiveAt: 1 });
@@ -1568,4 +1600,66 @@ test("a Hermes profile offers discovered models and keeps a manual selection whe
     assert.deepEqual(r.profile(id)?.models,["custom:model-b","openrouter:model-a"]);
     assert.match(check.detail,/provider unavailable/);
   } finally {await r.close();}
+});
+
+test("Claude askQuota strips recheck, triggers check once when ok, and recovers check on later ok quota", async () => {
+  const data = temp("claude-recheck");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{ id: "cc", runtime: "claude", home: "homes/cc", access: { kind: "subscription" } }],
+    connects: [],
+  }));
+  let checks = 0;
+  let checkState = "ok";
+  let quotaResult: any = { state: "ok", windows: [{ label: "5 小时", usedPercent: 10, resetsAt: null }], detail: null, checkedAt: 0 };
+  const t = await rig({
+    data,
+    check: async () => {
+      checks++;
+      return { state: checkState, detail: checkState === "ok" ? "signed in" : "renew failed", models: null, checkedAt: 0 };
+    },
+    readQuota: async () => quotaResult,
+  });
+  try {
+    await t.accounts.check("cc");
+    await until(() => t.accounts.health("cc").quota?.state === "ok", "initial quota seeded");
+    await settle();
+    assert.equal(checks, 1);
+    assert.equal(t.accounts.health("cc").check?.state, "ok");
+
+    // 1. Quota returns recheck:true while check is ok -> strips recheck, spawns check -> check becomes failed.
+    checkState = "failed";
+    quotaResult = { state: "unavailable", windows: [], detail: "Claude 登录续期请求失败，请稍后重试", checkedAt: 0, recheck: true };
+    const first = await t.accounts.refreshQuota("cc");
+    assert.equal(first?.state, "unavailable");
+    assert.equal((first as any)?.recheck, undefined, "transient recheck flag must be stripped");
+    await until(() => t.accounts.health("cc").check?.state === "failed", "recheck marks profile failed");
+    await settle();
+    assert.equal(checks, 2);
+
+    // 2. Subsequent quota with recheck:true while already failed does not re-trigger check.
+    await t.accounts.refreshQuota("cc");
+    await settle();
+    assert.equal(checks, 2, "already failed profile is not rechecked on every quota poll");
+
+    // 3. Subsequent quota returning ok recovers a failed or login Claude subscription back to ok.
+    checkState = "ok";
+    quotaResult = { state: "ok", windows: [{ label: "5 小时", usedPercent: 10, resetsAt: null }], detail: null, checkedAt: 0 };
+    await t.accounts.refreshQuota("cc");
+    await until(() => t.accounts.health("cc").check?.state === "ok", "ok quota triggers recovery check from failed");
+    await settle();
+    assert.equal(checks, 3);
+
+    // Also recover from login state.
+    checkState = "login";
+    await t.accounts.check("cc");
+    assert.equal(t.accounts.health("cc").check?.state, "login");
+    assert.equal(checks, 4);
+    checkState = "ok";
+    await t.accounts.refreshQuota("cc");
+    await until(() => t.accounts.health("cc").check?.state === "ok", "ok quota triggers recovery check from login");
+    await settle();
+    assert.equal(checks, 5);
+  } finally {
+    await t.close();
+  }
 });

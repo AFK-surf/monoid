@@ -2,13 +2,11 @@
 # Screenshots of still.fail's screens in mbui on macOS (the Mac's host: a window each) and in a browser, to look at:
 # out/shots/<name>.png. Not a check, and no references kept for them: what still.fail's screens are held to is
 # Android's app, the original.
-#   apps/mbui/scripts/shots.sh [kit home chat composer drive decide glass newchat preview settings web-kit web-home …]
+#   apps/mbui/scripts/shots.sh [home chat composer drive decide newchat preview settings web-home …]
 # Each one-picture shot is of the frame at a declared moment of the app's own clock, SHOT_MS (1000 ms: mbui's
 # MBUI_SHOT_MS, the web's shot_at; the frames 1/60 s apart from 0, the clock still while the app awaits its host), the
 # same picture each run whatever the machine.
-# `kit` (macOS) and `web-kit` are the kit (APP=sfkit, a phone's window: rich text, Markdown, pages): kit gives mac-kit
-# (its first page) and mac-kit-swipe (the next page pushed, then swiped halfway back from the left edge). `home` (macOS)
-# and `web-home` are still.fail's Home over made-up chats (APP=sffix, src/sfapp/fixture.mbt) in a phone's window: home
+# `home` (macOS) and `web-home` are still.fail's Home over made-up chats (APP=sffix, src/sfapp/fixture.mbt) in a phone's window: home
 # gives mac-home (the list) and its dark look (mac-home-dark); the screens a press or a scroll comes to are the media
 # jobs' (scripts/media-job.sh: a drive script in the Tester). `chat` and `web-chat` are a made-up chat open over it
 # (MBUI_FIXTURE=chat, src/sfapp/chat_fixture.mbt): chat gives mac-chat (at its end) and mac-chat-loading (being read),
@@ -16,8 +14,7 @@
 # sending|failed); `cards` and `web-cards` its cards answered from it, Markdown's tables and code, picking words, a link's menu
 # (MBUI_FIXTURE=chat-cards|answering|md|pick|link-menu). `drive` and `web-drive` the drive's pages over a made-up drive (src/sfapp/drive_fixture.mbt);
 # `decide` and `web-decide` src/sfapp/decide_fixture.mbt's modes; `settings` and `web-settings` the settings' pages
-# (src/sfapp/settings/fixture.mbt); `glass` and `web-glass` frosted and liquid glass over bands of colour (APP=sfkit
-# MBUI_SCREEN=glass), light and dark; `newchat` and `web-newchat` a new chat, its sheets, the bottom bar's panel and a
+# (src/sfapp/settings/fixture.mbt); `newchat` and `web-newchat` a new chat, its sheets, the bottom bar's panel and a
 # place (src/sfapp/newchat_fixture.mbt); `preview` and `web-preview` a file of a chat open in the preview; `wide` the
 # wide frame of a desktop's window (WIDE_WIN, 1280x800) over sffix's modes (WIDE_MODES), light and dark.
 D="$(cd "$(dirname "$0")" && pwd)"
@@ -27,7 +24,7 @@ mkdir -p out/shots
 # (the moment each picture is of, on the app's clock)
 SHOT_MS=1000
 export SHOT_MS
-PLATFORMS=${*:-kit home chat cards composer drive decide glass newchat preview settings wide web-kit web-home web-chat web-cards web-composer web-drive web-decide web-glass web-newchat web-preview web-settings}
+PLATFORMS=${*:-home chat cards composer drive decide newchat preview settings wide web-home web-chat web-cards web-composer web-drive web-decide web-newchat web-preview web-settings}
 DRIVE_MODES="files drive drive-sub drive-upload drive-download drive-empty reader reader-bars reader-contents reader-layout reader-md chat-station-files chat-station-ref chat-station-file chat-station-sheet"
 DECIDE="history history-details chat-info chat-agent chat-jobs chat-job home-jobs chat-letters-info chat-letters chat-letters-open"
 PLAYER_MODES="video audio ended opening"
@@ -66,8 +63,7 @@ since() { echo "$(( $(date +%s) - $1 )) s"; }
 t_all=$(date +%s)
 # The macOS platforms MAC_JOBS (3) at a time, each its own app's run and window (the apps built first, once); a
 # platform's names said in out/names/<platform>. The browser's only queue theirs here.
-case " $PLATFORMS " in *" kit "*|*" glass "*) build_mac sfkit ;; esac
-for p in $PLATFORMS; do case $p in web-*|kit|glass) ;; *) build_mac sffix; break ;; esac; done
+for p in $PLATFORMS; do case $p in web-*) ;; *) build_mac sffix; break ;; esac; done
 rm -rf out/names; mkdir -p out/names
 # One platform's shots (its names to out/names/<platform>)
 shoot() {
@@ -75,13 +71,6 @@ shoot() {
   names=$p
   t_p=$(date +%s)
   case $p in
-    kit)
-      build_mac sfkit
-      rm -rf out/shot-kit; mkdir -p out/shot-kit
-      MBUI_BENCH=-1 MBUI_SCREEN=kit MBUI_WIN=390x844 MBUI_SCRIPT=kit MBUI_SHOT_DIR=$PWD/out/shot-kit on_screen ./_build/native/release/build/stillfail/sfkit/sfkit.exe >/dev/null
-      cp out/shot-kit/kit-1-root.png out/shots/mac-kit.png
-      cp out/shot-kit/kit-3-swipe.png out/shots/mac-kit-swipe.png
-      names="mac-kit mac-kit-swipe" ;;
     home)
       build_mac sffix
       rm -rf out/shot-home; mkdir -p out/shot-home
@@ -102,17 +91,6 @@ shoot() {
       cp out/shot-chat/dark.png out/shots/mac-chat-dark.png
       cp out/shot-chat/solid.png out/shots/mac-chat-solid.png
       names="mac-chat mac-chat-loading mac-chat-dark mac-chat-solid" ;;
-    glass)
-      build_mac sfkit
-      rm -rf out/shot-glass; mkdir -p out/shot-glass
-      MBUI_BENCH=-1 MBUI_SCREEN=glass MBUI_WIN=390x844 MBUI_SCRIPT=shot MBUI_SHOT_MS=$SHOT_MS MBUI_SHOT_NAME=glass MBUI_SHOT_DIR=$PWD/out/shot-glass on_screen ./_build/native/release/build/stillfail/sfkit/sfkit.exe >/dev/null
-      MBUI_BENCH=-1 MBUI_SCREEN=glass MBUI_DARK=1 MBUI_WIN=390x844 MBUI_SCRIPT=shot MBUI_SHOT_MS=$SHOT_MS MBUI_SHOT_NAME=glass-dark MBUI_SHOT_DIR=$PWD/out/shot-glass on_screen ./_build/native/release/build/stillfail/sfkit/sfkit.exe >/dev/null
-      cp out/shot-glass/glass.png out/shots/mac-glass.png
-      cp out/shot-glass/glass-dark.png out/shots/mac-glass-dark.png
-      names="mac-glass mac-glass-dark" ;;
-    web-glass)
-      WAPP=sfkit
-      web_shot "MBUI_SCREEN=glass" out/shots/web-glass.png ;;
     composer)
       # the composer's states over the made-up chat (src/sfapp/chat_fixture.mbt's modes): words of several lines, a
       # picture and a file with them, a quote, a message sending, one failed
@@ -324,9 +302,6 @@ shoot() {
     web-home)
       WAPP=sffix
       web_shot "" out/shots/web-home.png ;;
-    web-kit)
-      WAPP=sfkit
-      web_shot "MBUI_SCREEN=kit" out/shots/web-kit.png ;;
   esac
   echo "$names" > out/names/$p
   echo "$p: $(since $t_p)" >&2

@@ -3,8 +3,8 @@
 // the pointer is on the row or on the card, gone hover_close_ms after it has left both, at once by Escape or a press
 // elsewhere; a finger shows none, nothing of the hand put on the row) beside its row on its `side`, over all of the
 // window (over a sheet's modal layer too: a layer of its own, View::over_all). What it holds as link_card's: a pull
-// request's or an issue's card (320 wide), a page's tile (as wide as it holds), the bones of the one it will be while
-// it is read, its address to copy at its foot's end, drawn by the library's (@sf.peek_page_tile_node,
+// request's or an issue's card (320 wide), a page's tile (content-sized, or 320 wide if pictured), the bones of the
+// one it will be while it is read, its address to copy at its foot's end, drawn by the library's (@sf.peek_page_tile_node,
 // @sf.peek_change_node); this is what is read for it and what that says. Read as peek_read reads it: as the pointer
 // comes onto the row and while the card is there, let go of once neither, so the next time it shows it is read again;
 // the pictures its value names asked as it is read (@sfbase.link_pictures_ask), the card showing as it does while it
@@ -65,9 +65,9 @@ pub fn web_peek_node(
     },
     fn(v) { @sfbase.link_pictures_ask(src, station, @signals.untracked(href), v) },
   )
-  // (as wide as a page's tile holds (220 to 420), a pull request's or an issue's card 320: by what the core says it is
-  // as it opens, said once; on a mouse's pointer resting on the row while it is a web link, nothing of the hand put on
-  // the row: what holds it says that)
+  // (a page's tile is content-sized, or 320 wide if pictured; a pull request's or an issue's card is 320: by what the
+  // core says it is as it opens, said once; on a mouse's pointer resting on the row while it is a web link, nothing of
+  // the hand put on the row: what holds it says that)
   let hand = @sf.hover_card_node(
     tips,
     row,
@@ -191,6 +191,16 @@ fn link_card_node(
       // (while it is read: a made-up one's, in its bones)
       Sample(pr) => @sf.waiting_node(b, fn(bones) { change_card_node(bones, peek_sample, pr, fn(_) {  }, fn() { "" }) })
       Page => {
+        // A content-sized hover cannot measure an aspect-ratio picture before it has a width. Give pictured pages
+        // the normal card width, limited to the room available, so the scroll viewport includes the picture and tile.
+        let pictured_width = fn() {
+          if picture("image") != "" {
+            Some(peek_change_w - 2.0 * @ui.Space::px(S2_5))
+          } else {
+            None
+          }
+        }
+        b.width(By(pictured_width)).max_width(By(pictured_width), within=true) |> ignore
         // (what the core read of the page, where it says it is one)
         let page = fn() {
           let v = value()

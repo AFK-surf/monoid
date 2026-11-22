@@ -47,3 +47,17 @@ test "words as a regular expression's letters and numbers split them" {
     assert_eq(@jscase.has_word(c.0, c.1), c.2, msg="\{c.0}")
   }
 }
+
+///|
+test "trim_start and trim_end for JS space vs Unicode White_Space" {
+  // U+FEFF is JS \s but not Unicode White_Space; U+0085 is Unicode White_Space but not JS \s
+  assert_eq(@jscase.trim_start(" \t\u{feff}abc \n"), "abc \n")
+  assert_eq(@jscase.trim_end(" \t\u{feff}abc \n\u{3000}"), " \t\u{feff}abc")
+  assert_eq(@jscase.trim_start("\u{0085}abc"), "\u{0085}abc")
+  assert_eq(@jscase.trim_start_white("\u{0085} abc "), "abc ")
+  assert_eq(@jscase.trim_end_white(" abc\u{0085}\n"), " abc")
+  assert_eq(@jscase.trim_start_white("\u{feff}abc"), "\u{feff}abc")
+  assert_eq(@jscase.trim_end_white("abc\u{feff}"), "abc\u{feff}")
+  assert_eq(@jscase.trim_start("   "), "")
+  assert_eq(@jscase.trim_end("   "), "")
+}

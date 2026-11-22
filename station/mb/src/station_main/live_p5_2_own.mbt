@@ -22,7 +22,7 @@ fn own_runtime_driver(
 
 ///|
 /// Where a script the station ships beside its program is (package.json's `build` copies them into dist/, which a
-/// release puts at `<app>/station/`): a release's, else the checkout's (`station/src/agents`) above the program.
+/// release puts at `<app>/station/`): a release's, else the checkout's (`station/assets/agents`) above the program.
 fn station_script(app : String, argv0 : String, name : String) -> String {
   let s = sep()
   let candidates = [
@@ -34,8 +34,8 @@ fn station_script(app : String, argv0 : String, name : String) -> String {
     attempt(() => @drive.realpath(argv0)).unwrap_or(argv0),
   )
   for _ in 0..<8 {
-    candidates.push(path([dir, "station", "src", "agents", name]))
-    candidates.push(path([dir, "src", "agents", name]))
+    candidates.push(path([dir, "station", "assets", "agents", name]))
+    candidates.push(path([dir, "assets", "agents", name]))
     dir = @nodepath.dirname(s, dir)
   }
   match
@@ -80,8 +80,13 @@ fn bridged_runtime_driver(
   let open = async fn(
     options : Json,
     events : (@jsjson.JValue) -> Unit,
+    cancelled : () -> Bool,
   ) -> Agent {
-    let o = @agent_runtimes.Options::of(jv_of(options))
+    // (given up before it started: no process)
+    if cancelled() {
+      raise LiveError(open_aborted + ": cancelled")
+    }
+    let o = @agent_runtimes.Options::of(to_jv(options))
     let env = agent_env(ctx)
     let base = fields_of_env(env)
     let host = ctx.host
@@ -109,10 +114,7 @@ fn bridged_runtime_driver(
         )
       }
       _ => {
-        let id = match o.resume {
-          Some(r) => r
-          None => @drive.random_uuid()
-        }
+        let id = o.resume.unwrap_or(@drive.random_uuid())
         (@agent_runtimes.pi_start(host, o, base, "pi", bridge, id, None), id)
       }
     }
@@ -145,7 +147,7 @@ fn bridged_runtime_driver(
     kind,
     open,
     adopt: async fn(options, snap, events) {
-      agent_of(pump.wait(d.adopt(jv_of(options), snap.map(jv_of), events)))
+      agent_of(pump.wait(d.adopt(to_jv(options), snap.map(to_jv), events)))
     },
     shutdown: async fn(again) {
       ignore(pump.wait(d.own.shutdown(again~))) catch {
@@ -165,7 +167,7 @@ fn bridged_runtime_driver(
 fn fields_of_env(pairs : Array[(String, String)]) -> @agent_runtimes.Fields {
   let f = @agent_runtimes.Fields::new()
   for kv in pairs {
-    f.set(kv.0, @jsjson.JValue::Str(@jsjson.units(kv.1)))
+    f.set(kv.0, @jsjson.JValue::Str(kv.1))
   }
   f
 }
@@ -205,8 +207,13 @@ fn acp_runtime_driver(
     options : Json,
     events : (@jsjson.JValue) -> Unit,
     probe : Bool,
+    cancelled : () -> Bool,
   ) -> Agent {
-    let o = @agent_runtimes.Options::of(jv_of(options))
+    // (given up before it started: no process)
+    if cancelled() {
+      raise LiveError(open_aborted + ": cancelled")
+    }
+    let o = @agent_runtimes.Options::of(to_jv(options))
     let base = fields_of_env(agent_env(ctx))
     let start = match kind {
       "grok" => @agent_runtimes.grok_start(ctx.host, o, base, "grok")
@@ -252,7 +259,7 @@ fn acp_runtime_driver(
       ),
     )
     let meta = match start.meta {
-      Some(mt) => [("_meta", p52_json_of_jv(mt))]
+      Some(mt) => [("_meta", of_jv(mt))]
       None => []
     }
     let opened = try {
@@ -261,7 +268,7 @@ fn acp_runtime_driver(
           session.request(
             "init",
             "initialize",
-            jv_of(
+            to_jv(
               jobj_of(
                 [
                   ("protocolVersion", ji(1)),
@@ -286,12 +293,12 @@ fn acp_runtime_driver(
             if probe {
               Json::array([])
             } else {
-              p52_json_of_jv(@agent_drivers.mcp_servers(o.mcp_url, o.mcp_token))
+              of_jv(@agent_drivers.mcp_servers(o.mcp_url, o.mcp_token))
             },
           ),
           ..match start.opening {
             Some(op) =>
-              match p52_json_of_jv(op) {
+              match of_jv(op) {
                 Object(fs) => fs.iter().to_array()
                 _ => []
               }
@@ -311,13 +318,13 @@ fn acp_runtime_driver(
             }
             other => other
           }
-          pump.wait(session.request("open", "session/load", jv_of(load)))
+          pump.wait(session.request("open", "session/load", to_jv(load)))
         }
         None => {
           let answer = pump.wait(
-            session.request("open", "session/new", jv_of(opening)),
+            session.request("open", "session/new", to_jv(opening)),
           )
-          match jtext(jfield(p52_json_of_jv(answer), "result"), "sessionId") {
+          match jtext(jfield(of_jv(answer), "result"), "sessionId") {
             Some(id) if id != "" => {
               session.named(id)
               session.began(o.cwd)
@@ -331,12 +338,12 @@ fn acp_runtime_driver(
         }
       }
       session.opened(
-        match p52_json_of_jv(answer) {
-          Object(_) as a => Some(jv_of(jfield(a, "result")))
+        match of_jv(answer) {
+          Object(_) as a => Some(to_jv(jfield(a, "result")))
           _ => None
         },
       )
-      Ok(jfield(jfield(p52_json_of_jv(answer), "result"), "models"))
+      Ok(jfield(jfield(of_jv(answer), "result"), "models"))
     } catch {
       e => Err(e)
     }
@@ -357,7 +364,9 @@ fn acp_runtime_driver(
       }
     }
   }
-  let open = async fn(options : Json, events : (@jsjson.JValue) -> Unit) -> Agent { open_as(options, events, false) }
+  let open = async fn(options : Json, events : (@jsjson.JValue) -> Unit, cancelled : () -> Bool) -> Agent {
+    open_as(options, events, false, cancelled)
+  }
   // hermes.ts `models`: a session opened only to ask, asked again only while a fresh HERMES_HOME waits on another
   // launch's update of the shared checkout (`hermes_models_again`), then ended
   let models = async fn(profile : Json) -> Json {
@@ -369,7 +378,7 @@ fn acp_runtime_driver(
       if stopping.val {
         raise LiveError("Hermes driver is shutting down")
       }
-      let key = "models-\{id}-\{p53_uuid()}"
+      let key = "models-\{id}-\{@drive.random_uuid()}"
       let options : Json = {
         "key": jstr(key),
         "profile": profile,
@@ -379,11 +388,11 @@ fn acp_runtime_driver(
         "mcpUrl": jstr(""),
         "route": jstr("model-discovery"),
       }
-      match (try { Ok(open_as(options, _ => (), true)) } catch { e => Err(e) }) {
+      match (try { Ok(open_as(options, _ => (), true, () => false)) } catch { e => Err(e) }) {
         Ok(_) => {
           guard probes.get(key) is Some((session, said)) else { raise LiveError("Hermes Agent opened no session") }
           probes.remove(key)
-          let found = @agent_runtimes.hermes_catalog(Some(jv_of(said)), jv_of(profile))
+          let found = @agent_runtimes.hermes_catalog(Some(to_jv(said)), to_jv(profile))
           pump.wait(session.own.dispose())
           return Json::array(found.map(Json::string))
         }
@@ -404,7 +413,7 @@ fn acp_runtime_driver(
     adopt: async fn(options, _snap, events) {
       let id = (sessions.length(), jtext(options, "resume"))
       ignore(id)
-      open(options, events)
+      open(options, events, () => false)
     },
     shutdown: async fn(again) {
       stopping.val = true

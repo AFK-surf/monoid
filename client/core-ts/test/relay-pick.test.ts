@@ -95,6 +95,29 @@ test("who_replies_in_the_place_picked_and_where_each_bot_of_its_workspace_stands
   assert.equal(relayVia(cs, "nowhere", null), null);
 });
 
+test("a_group_connects_spaces_are_offered_each_a_new_topic_its_bot_in_them_or_not", () => {
+  const space = (id: string, name: string, used?: number): RelayPlace => ({ id, name, kind: "space", ...(used === undefined ? {} : { used }) });
+  const cs = [
+    bot("s", [channel("dev")]),
+    bot("g1", [space("s_a", "Team", 3), space("s_b", "设计")], { kind: "group", team: null, teamId: "anchor-1" }),
+    bot("g2", [space("s_a", "Team")], { kind: "group", team: null, teamId: "anchor-1", preferred: true }),
+  ];
+  const v = relayView(cs, "", false, null, zh);
+  // Team once though both bots of that anchor are in it, relayed to before: first; its replier the chat's own (g2)
+  assert.deepEqual(v.rows.map((r) => [r.name, r.connect, r.kind, r.note, r.aside]), [
+    ["Team", "g2", "group", zh("web-main.relay.kind.space"), zh("web-main.relay.kind.space")],
+    ["#dev", "s", "slack", zh("web-main.relay.kind.channel"), "AFK"],
+    ["设计", "g1", "group", zh("web-main.relay.kind.space"), zh("web-main.relay.kind.space")],
+  ]);
+  assert.equal(tr("en", "web-main.relay.kind.space"), "Group space · new topic");
+  // Who replies there: the bots of that anchor alone, in it or not (none joins a space, none is invited)
+  const design = v.rows.find((r) => r.name === "设计")!.key;
+  assert.deepEqual(relayVia(cs, design, "g2"), { bot: "g1", joins: false, bots: [{ id: "g1", label: "g1", state: "in" }, { id: "g2", label: "g2", state: "out" }] });
+  // As the station answers it, given back by a client: its kind and its spaces kept
+  const read = readConnects([{ id: "g", kind: "group", name: "Claude", team: null, teamId: "anchor-1", places: [{ id: "s_a", name: "Team", kind: "space", used: 5 }, { id: "x", name: "?", kind: "nope" }] }]);
+  assert.deepEqual(read, [{ id: "g", kind: "group", name: "Claude", team: null, teamId: "anchor-1", places: [{ id: "s_a", name: "Team", kind: "space", used: 5 }, { id: "x", name: "?", kind: "channel" }] }]);
+});
+
 test("a_client_asks_the_core_what_the_picker_shows", async () => {
   const connects = [bot("a", [channel("dev")])];
   assert.deepEqual(parseCall("chat.relayView", { connects, query: "d" }), { kind: "relayView", connects: readConnects(connects), query: "d", all: false, bot: null, place: null });

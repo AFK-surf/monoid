@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { type Entry, apply as applyLock, entryHash, genesis, signedBytes as lockBytes } from "../src/cloud/lock.ts";
+import { type Entry, apply as applyLock, entryHash, genesis, signedBytes as lockBytes } from "../../shared/lock.ts";
 import { routes as requestRoutes } from "../src/api/routes/vault-requests.ts";
 import { routes as vaultRoutes } from "../src/api/routes/vault.ts";
 import { type BoxCert, type Deny, type Grant, type Item, type Request, type Sig, type Vault, TAG, encryptWith, grantContext, itemContext, keyContext, newBoxPair, openSeal, saveContext, seal, signedBytes } from "../src/vault/crypto.ts";

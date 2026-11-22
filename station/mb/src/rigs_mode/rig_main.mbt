@@ -53,9 +53,19 @@ pub fn disk_soft(total : Double) -> Double {
 }
 
 ///|
+/// The low mark of a disk of `total` bytes (ops/disk.ts `diskLow`): a tenth of it where that is less.
+pub fn disk_low(total : Double) -> Double {
+  if total / 10.0 < disk_low_bytes {
+    total / 10.0
+  } else {
+    disk_low_bytes
+  }
+}
+
+///|
 /// Where a disk with `free` of `total` bytes free stands (ops/disk.ts `diskTier`): "ok", "soft" or "low".
 pub fn disk_tier(free : Double, total : Double) -> String {
-  if free < disk_low_bytes {
+  if free < disk_low(total) {
     "low"
   } else if free < disk_soft(total) {
     "soft"

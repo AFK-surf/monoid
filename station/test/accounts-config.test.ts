@@ -42,6 +42,13 @@ test("a config is filled in from what it says", () => {
   assert.equal(config.warmMs, 300_000);
 });
 
+test("maxConcurrentTurns defaults to 0 (unlimited) and honors explicit positive override", () => {
+  assert.equal(hubConfig({}, "/data").maxConcurrentTurns, 0);
+  assert.equal(hubConfig({ maxConcurrentTurns: 0 }, "/data").maxConcurrentTurns, 0);
+  assert.equal(hubConfig({ maxConcurrentTurns: -3 }, "/data").maxConcurrentTurns, 0);
+  assert.equal(hubConfig({ maxConcurrentTurns: 7.9 }, "/data").maxConcurrentTurns, 7);
+});
+
 test("what cannot run is refused in words", () => {
   assert.equal(err({ profiles: [{ id: "A", home: "h" }] }), 'profile id "A": use lowercase letters, digits and dashes');
   assert.equal(err({ profiles: [{ id: "a", home: "h" }] }), "profile a: env needs a runtime (claude, codex or dsh)");
@@ -50,6 +57,9 @@ test("what cannot run is refused in words", () => {
   assert.equal(err({ profiles: [{ id: "a", home: "h", runtime: "codex", access: { kind: "anthropic-api", key: "k" } }] }), "accepted", "an Anthropic key runs Claude Code whatever runtime is named");
   assert.equal(err({ connects: [{ id: "c", bind: { runtime: "claude", effort: "minimal" } }] }), "connect c: claude has no effort minimal; use low, medium, high, xhigh, max");
   assert.equal(err({ connects: [{ id: "c", bind: { runtime: "codex", effort: "ultra" } }] }), "accepted", "codex's levels are its models' own");
+  assert.equal(err({ connects: [{ id: "c", bind: { runtime: "agy", effort: "high" } }] }), "accepted", "agy accepts thinking levels from AGY_LEVELS");
+  assert.equal(err({ connects: [{ id: "c", bind: { runtime: "agy", effort: "ultra" } }] }), "connect c: agy has no effort ultra; use none, minimal, low, medium, high, xhigh, max");
+  assert.equal(err({ connects: [{ id: "c", bind: { runtime: "cursor", effort: "high" } }] }), "connect c: cursor has no effort high");
   assert.equal(err({ connects: [{ id: "c", bind: { runtime: "claude" } }, { id: "c", bind: { runtime: "claude" } }] }), "duplicate connect id c");
   assert.equal(err({ profiles: [{ id: "a", home: "h", runtime: "claude" }, { id: "a", home: "h", runtime: "claude" }] }), "duplicate profile id a");
   assert.equal(err({ connects: [{ id: "c", kind: "teams", bind: { runtime: "claude" } }] }), "connect c: unknown kind teams");

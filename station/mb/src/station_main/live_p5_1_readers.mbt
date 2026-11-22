@@ -34,67 +34,65 @@ priv struct MbProc {
 fn mb_spawn(host : @host.Host, program : String, args : Array[String], stderr? : Sink = Ignored) -> MbProc raise SysError {
   let proc = spawn(host, program, args, stdin_piped=true, stdout=Piped, stderr~)
   let p : MbProc = { proc, said: @effect.Queue::unbounded(), ended: @effect.Deferred::new(), gone: false }
-  ignore(
-    host.rt.fork(name="mb program", async fn() {
-      let carry = @buffer.new()
-      let mut head : Json? = None
-      let mut wanted = 0
-      let body = @buffer.new()
-      while true {
-        match proc.events.take() {
-          Out(bytes) => {
-            let mut at = 0
-            while at < bytes.length() {
-              match head {
-                Some(h) => {
-                  let take = if wanted - body.length() < bytes.length() - at { wanted - body.length() } else { bytes.length() - at }
-                  body.write_bytesview(bytes[at:at + take])
-                  at += take
-                  if body.length() >= wanted {
-                    ignore(p.said.try_offer((h, Some(body.to_bytes()))))
-                    body.reset()
-                    head = None
+  fork_bg(host, "mb program", async fn() {
+    let carry = @buffer.new()
+    let mut head : Json? = None
+    let mut wanted = 0
+    let body = @buffer.new()
+    while true {
+      match proc.events.take() {
+        Out(bytes) => {
+          let mut at = 0
+          while at < bytes.length() {
+            match head {
+              Some(h) => {
+                let take = if wanted - body.length() < bytes.length() - at { wanted - body.length() } else { bytes.length() - at }
+                body.write_bytesview(bytes[at:at + take])
+                at += take
+                if body.length() >= wanted {
+                  ignore(p.said.try_offer((h, Some(body.to_bytes()))))
+                  body.reset()
+                  head = None
+                }
+              }
+              None => {
+                let mut nl = -1
+                for i = at; i < bytes.length(); i = i + 1 {
+                  if bytes[i] == b'\n' {
+                    nl = i
+                    break
                   }
                 }
-                None => {
-                  let mut nl = -1
-                  for i = at; i < bytes.length(); i = i + 1 {
-                    if bytes[i] == b'\n' {
-                      nl = i
-                      break
+                if nl < 0 {
+                  carry.write_bytesview(bytes[at:])
+                  at = bytes.length()
+                } else {
+                  carry.write_bytesview(bytes[at:nl])
+                  at = nl + 1
+                  let line = @utf8.decode_lossy(carry.to_bytes())
+                  carry.reset()
+                  match (try { Ok(@json.parse(line)) } catch { e => Err(e) }) {
+                    Ok({ "bytes": Number(n, ..), .. } as h) if n > 0.0 => {
+                      head = Some(h)
+                      wanted = n.to_int()
                     }
-                  }
-                  if nl < 0 {
-                    carry.write_bytesview(bytes[at:])
-                    at = bytes.length()
-                  } else {
-                    carry.write_bytesview(bytes[at:nl])
-                    at = nl + 1
-                    let line = @utf8.decode_lossy(carry.to_bytes())
-                    carry.reset()
-                    match (try { Ok(@json.parse(line)) } catch { e => Err(e) }) {
-                      Ok({ "bytes": Number(n, ..), .. } as h) if n > 0.0 => {
-                        head = Some(h)
-                        wanted = n.to_int()
-                      }
-                      Ok({ "bytes": Number(_, ..), .. } as h) => ignore(p.said.try_offer((h, Some(b""))))
-                      Ok(h) => ignore(p.said.try_offer((h, None)))
-                      Err(_) => ()
-                    }
+                    Ok({ "bytes": Number(_, ..), .. } as h) => ignore(p.said.try_offer((h, Some(b""))))
+                    Ok(h) => ignore(p.said.try_offer((h, None)))
+                    Err(_) => ()
                   }
                 }
               }
             }
           }
-          Err(_) => ()
-          Exit(_, _) => break
         }
+        Err(_) => ()
+        Exit(_, _) => break
       }
-      p.gone = true
-      ignore(p.ended.succeed(()))
-      p.said.shutdown()
-    }),
-  )
+    }
+    p.gone = true
+    ignore(p.ended.succeed(()))
+    p.said.shutdown()
+  })
   p
 }
 
@@ -200,9 +198,24 @@ let reads_worded : Array[String] = [
 
 ///|
 let reads_interactive : Array[String] = [
-  "thread", "chats", "chatMarks", "session", "summary", "latestMessages", "openedChatSaid", "chatHistoryMessages",
+  "thread", "chats", "sharedChats", "chatMarks", "session", "summary", "latestMessages", "openedChatSaid", "chatHistoryMessages",
   "historyPendingCard", "stateQuestion", "statePendingCard", "deliveryCardState", "job",
 ]
+
+///|
+fn is_interactive_read(op : String, ask : Json) -> Bool {
+  if reads_interactive.contains(op) || op == "checkpoint" {
+    return true
+  }
+  if op == "changed" {
+    match ask {
+      { "args": { "op": String("sharedChats"), .. }, .. } => true
+      _ => false
+    }
+  } else {
+    false
+  }
+}
 
 ///|
 fn words_in(op : String, lang : String) -> Json {
@@ -319,53 +332,45 @@ fn Readers::start(self : Readers, line : Line) -> Slot? {
   }
   let slot : Slot = { proc, held: None, idle_since: @host.now(), catalog_version: 0.0 }
   line.slots.push(slot)
-  ignore(
-    self.host.rt.fork(name="reader", async fn() {
-      while proc.next() is Some((said, body)) {
-        if said is { "ready": _, .. } {
-          continue
-        }
-        guard slot.held is Some(asked) else { continue }
-        let id = match said {
-          { "id": Number(n, ..), .. } => n.to_int()
-          _ => -1
-        }
-        if id != asked.id {
-          continue
-        }
-        slot.held = None
-        slot.idle_since = @host.now()
-        let answer : Result[Bytes, (Int, String)] = match (body, said) {
-          (Some(b), _) => Ok(b)
-          (None, { "text": String(t), .. }) => Ok(@utf8.encode(t))
-          (None, _) => {
-            let status = match said {
-              { "status": Number(s, ..), .. } => s.to_int()
-              _ => 500
-            }
-            let m = match said {
-              { "error": String(e), .. } => e
-              _ => "read failed"
-            }
-            Err((status, m))
-          }
-        }
-        ignore(asked.answer.succeed(answer))
-        self.pump(line)
+  fork_bg(self.host, "reader", async fn() {
+    while proc.next() is Some((said, body)) {
+      if said is { "ready": _, .. } {
+        continue
       }
-      // (it ended: what it held failed, the next read starts another)
-      match line.slots.search_by(s => physical_equal(s, slot)) {
-        Some(i) => ignore(line.slots.remove(i))
-        None => ()
+      guard slot.held is Some(asked) else { continue }
+      let id = match said {
+        { "id": Number(n, ..), .. } => n.to_int()
+        _ => -1
       }
-      match slot.held {
-        Some(asked) => ignore(asked.answer.succeed(Err((500, "the reader stopped"))))
-        None => ()
+      if id != asked.id {
+        continue
       }
       slot.held = None
+      slot.idle_since = @host.now()
+      let answer : Result[Bytes, (Int, String)] = match (body, said) {
+        (Some(b), _) => Ok(b)
+        (None, { "text": String(t), .. }) => Ok(@utf8.encode(t))
+        (None, _) => {
+          let status = match said {
+            { "status": Number(s, ..), .. } => s.to_int()
+            _ => 500
+          }
+          let m = match said {
+            { "error": String(e), .. } => e
+            _ => "read failed"
+          }
+          Err((status, m))
+        }
+      }
+      ignore(asked.answer.succeed(answer))
       self.pump(line)
-    }),
-  )
+    }
+    // (it ended: what it held failed, the next read starts another)
+    if line.slots.search_by(s => physical_equal(s, slot)) is Some(i) { ignore(line.slots.remove(i)) }
+    if slot.held is Some(asked) { ignore(asked.answer.succeed(Err((500, "the reader stopped")))) }
+    slot.held = None
+    self.pump(line)
+  })
   Some(slot)
 }
 
@@ -376,7 +381,7 @@ fn Readers::pump(self : Readers, line : Line) -> Unit {
     return
   }
   while line.waiting.length() > 0 {
-    let first = line.waiting.search_by(a => !a.background && (reads_interactive.contains(a.op) || a.op == "checkpoint"))
+    let first = line.waiting.search_by(a => !a.background && is_interactive_read(a.op, a.ask))
     let fore = line.waiting.search_by(a => !a.background)
     let at = match (first, fore) {
       (Some(i), _) => i
@@ -491,7 +496,7 @@ fn Readers::checkpoint_soon(self : Readers) -> Unit {
   self.checkpointing = true
   self.again = false
   ignore(
-    self.host.rt.fork(name="checkpoint", async fn() {
+    self.host.rt.fork_quiet(name="checkpoint", async fn() {
       @effect.sleep(2000) // timer: a debounce of a burst (pool.ts CHECKPOINT_MS)
       ignore(self.read("checkpoint", Json::object({}), "en")) catch {
         e => p51_log("WARN", "readers", "the database's log not written into it", fields={ "error": Json::string("\{e}") })
@@ -514,10 +519,7 @@ fn Readers::let_go_idle(self : Readers) -> Unit {
       if line.name == "moved" && line.slots.length() > 0 && physical_equal(line.slots[0], s) {
         continue
       }
-      match line.slots.search_by(x => physical_equal(x, s)) {
-        Some(i) => ignore(line.slots.remove(i))
-        None => ()
-      }
+      if line.slots.search_by(x => physical_equal(x, s)) is Some(i) { ignore(line.slots.remove(i)) }
       s.proc.stop()
     }
   }
@@ -540,10 +542,7 @@ fn Readers::trim_idle(self : Readers) -> Int {
       continue
     }
     for s in line.slots.filter(s => s.held is None) {
-      match line.slots.search_by(x => physical_equal(x, s)) {
-        Some(i) => ignore(line.slots.remove(i))
-        None => ()
-      }
+      if line.slots.search_by(x => physical_equal(x, s)) is Some(i) { ignore(line.slots.remove(i)) }
       s.proc.stop()
       trimmed += 1
     }
@@ -653,10 +652,7 @@ async fn Requested::ready(self : Requested, items : Array[Json]) -> Unit {
   }
   self.run()
   for d in waits {
-    match d.wait() {
-      Ok(_) => ()
-      Err(e) => raise ReadFailed(503, e)
-    }
+    if d.wait() is Err(e) { raise ReadFailed(503, e) }
   }
 }
 
@@ -667,112 +663,110 @@ fn Requested::run(self : Requested) -> Unit {
   }
   self.running = true
   let host = self.readers.host
-  ignore(
-    host.rt.fork(name="old-state builder", async fn() {
-      defer {
-        self.running = false
+  fork_bg(host, "old-state builder", async fn() {
+    defer {
+      self.running = false
+    }
+    // (the process before holds what only one process may build, until it is gone)
+    (self.readers.previous_gone.val)()
+    let mut pause = 250
+    while self.waiting.length() > 0 && !self.readers.closed {
+      let (item, d) = self.waiting[0]
+      let proc = match self.proc {
+        Some(p) if !p.gone => p
+        _ =>
+          match (try { Ok(mb_spawn(host, self.readers.program, self.args)) } catch { e => Err(e) }) {
+            Ok(p) => {
+              self.proc = Some(p)
+              p
+            }
+            Err(SysError(e)) => {
+              for w in self.waiting {
+                ignore(w.1.succeed(Err(e)))
+              }
+              self.waiting.clear()
+              return
+            }
+          }
       }
-      // (the process before holds what only one process may build, until it is gone)
-      (self.readers.previous_gone.val)()
-      let mut pause = 250
-      while self.waiting.length() > 0 && !self.readers.closed {
-        let (item, d) = self.waiting[0]
-        let proc = match self.proc {
-          Some(p) if !p.gone => p
-          _ =>
-            match (try { Ok(mb_spawn(host, self.readers.program, self.args)) } catch { e => Err(e) }) {
-              Ok(p) => {
-                self.proc = Some(p)
-                p
-              }
-              Err(SysError(e)) => {
-                for w in self.waiting {
-                  ignore(w.1.succeed(Err(e)))
-                }
-                self.waiting.clear()
-                return
-              }
-            }
-        }
-        if !proc.post((self.message)(item)) {
-          self.proc = None
-          continue
-        }
-        // Its answer, the permit it asks for given on the way.
-        let mut result : Json = Json::null()
-        while proc.next() is Some((said, _)) {
-          match said {
-            { "take": True, .. } => ignore(proc.post({ "permit": true }))
-            { "give": True, .. } => ()
-            _ => {
-              result = said
-              break
-            }
-          }
-        }
-        // (the station stopping while it answered: `close` already told everyone waiting and emptied the queue, so
-        // what it said last, a done or not, is nobody's)
-        if self.readers.closed || self.waiting.length() == 0 {
-          return
-        }
-        self.last = @host.now()
-        match result {
-          { "done": True, .. } | { "complete": True, .. } | { "id": _, "error": Null, .. } => {
-            pause = 250
-            ignore(self.waiting.remove(0))
-            for w in self.waiting.filter(w => w.0 == item) {
-              ignore(w.1.succeed(Ok(())))
-            }
-            self.waiting.retain(w => w.0 != item)
-            ignore(d.succeed(Ok(())))
-          }
-          { "error": String(e), .. } => {
-            let failed = self.waiting.filter(w => w.0 == item)
-            self.waiting.retain(w => w.0 != item)
-            for w in failed {
-              ignore(w.1.succeed(Err(e)))
-            }
-          }
-          { "fallback": True, .. } =>
-            match self.repair {
-              Some(repair) =>
-                repair() catch {
-                  e => {
-                    // (the database busy with another's write: asked again after a pause)
-                    if !@sql.busy(e) {
-                      let failed = self.waiting.filter(w => w.0 == item)
-                      self.waiting.retain(w => w.0 != item)
-                      for w in failed {
-                        ignore(w.1.succeed(Err("\{e}")))
-                      }
-                    }
-                    @effect.sleep(pause) // timer: a retry after a failure (the writer busy), with a backoff
-                  }
-                }
-              None => {
-                let failed = self.waiting.filter(w => w.0 == item)
-                self.waiting.retain(w => w.0 != item)
-                for w in failed {
-                  ignore(w.1.succeed(Err("the store needs a repair this builder cannot make")))
-                }
-              }
-            }
-          Null => {
-            // (it ended: started again after a growing wait)
-            self.proc = None
-            @effect.sleep(pause) // timer: a retry after a failure, with a backoff
-            pause = if pause * 2 > 30000 { 30000 } else { pause * 2 }
-          }
+      if !proc.post((self.message)(item)) {
+        self.proc = None
+        continue
+      }
+      // Its answer, the permit it asks for given on the way.
+      let mut result : Json = Json::null()
+      while proc.next() is Some((said, _)) {
+        match said {
+          { "take": True, .. } => ignore(proc.post({ "permit": true }))
+          { "give": True, .. } => ()
           _ => {
-            // Not done: to the back, after a pause.
-            ignore(self.waiting.remove(0))
-            self.waiting.push((item, d))
-            @effect.sleep(250) // timer: a retry after a failure (a batch not done), with a pause
+            result = said
+            break
           }
         }
       }
-    }),
-  )
+      // (the station stopping while it answered: `close` already told everyone waiting and emptied the queue, so
+      // what it said last, a done or not, is nobody's)
+      if self.readers.closed || self.waiting.length() == 0 {
+        return
+      }
+      self.last = @host.now()
+      match result {
+        { "done": True, .. } | { "complete": True, .. } | { "id": _, "error": Null, .. } => {
+          pause = 250
+          ignore(self.waiting.remove(0))
+          for w in self.waiting.filter(w => w.0 == item) {
+            ignore(w.1.succeed(Ok(())))
+          }
+          self.waiting.retain(w => w.0 != item)
+          ignore(d.succeed(Ok(())))
+        }
+        { "error": String(e), .. } => {
+          let failed = self.waiting.filter(w => w.0 == item)
+          self.waiting.retain(w => w.0 != item)
+          for w in failed {
+            ignore(w.1.succeed(Err(e)))
+          }
+        }
+        { "fallback": True, .. } =>
+          match self.repair {
+            Some(repair) =>
+              repair() catch {
+                e => {
+                  // (the database busy with another's write: asked again after a pause)
+                  if !@sql.busy(e) {
+                    let failed = self.waiting.filter(w => w.0 == item)
+                    self.waiting.retain(w => w.0 != item)
+                    for w in failed {
+                      ignore(w.1.succeed(Err("\{e}")))
+                    }
+                  }
+                  @effect.sleep(pause) // timer: a retry after a failure (the writer busy), with a backoff
+                }
+              }
+            None => {
+              let failed = self.waiting.filter(w => w.0 == item)
+              self.waiting.retain(w => w.0 != item)
+              for w in failed {
+                ignore(w.1.succeed(Err("the store needs a repair this builder cannot make")))
+              }
+            }
+          }
+        Null => {
+          // (it ended: started again after a growing wait)
+          self.proc = None
+          @effect.sleep(pause) // timer: a retry after a failure, with a backoff
+          pause = if pause * 2 > 30000 { 30000 } else { pause * 2 }
+        }
+        _ => {
+          // Not done: to the back, after a pause.
+          ignore(self.waiting.remove(0))
+          self.waiting.push((item, d))
+          @effect.sleep(250) // timer: a retry after a failure (a batch not done), with a pause
+        }
+      }
+    }
+  })
 }
 
 ///|
@@ -794,10 +788,7 @@ fn Requested::close(self : Requested) -> Unit {
     ignore(w.1.succeed(Err("station stopping")))
   }
   self.waiting.clear()
-  match self.proc {
-    Some(p) => p.stop()
-    None => ()
-  }
+  if self.proc is Some(p) { p.stop() }
 }
 
 ///|
@@ -818,7 +809,7 @@ async fn p51_requested_close_in_flight(host : @host.Host, data : String, program
   )
   let answered : @effect.Deferred[String] = @effect.Deferred::new()
   ignore(
-    host.rt.fork(name="close-in-flight ask", async fn() {
+    host.rt.fork_quiet(name="close-in-flight ask", async fn() {
       let what = b.ready([Json::string("s1")]) catch { e => "\{e}" } noraise { _ => "ready" }
       ignore(answered.succeed(what))
     }),
@@ -827,10 +818,7 @@ async fn p51_requested_close_in_flight(host : @host.Host, data : String, program
   readers.close()
   let answer = answered.wait()
   // (the builder's process ends once it said its last; the builder's fiber is let run to its end after)
-  match b.proc {
-    Some(p) => p.ended.wait()
-    None => ()
-  }
+  if b.proc is Some(p) { p.ended.wait() }
   while b.running {
     @effect.pause()
   }
@@ -852,10 +840,7 @@ fn Readers::prepare_for(self : Readers, refusal : String, args : Json) -> (async
   }
   let thread = (flag : String?) => (t : Json) => {
     let m : Map[String, Json] = { "thread": t }
-    match flag {
-      Some(f) => m[f] = Json::boolean(true)
-      None => ()
-    }
+    if flag is Some(f) { m[f] = Json::boolean(true) }
     Json::object(m)
   }
   let field = (k : String) => (t : Json) => {
@@ -949,10 +934,7 @@ fn Readers::repair_edits(self : Readers) -> Unit raise {
       let db = p.bus.db
       let timeout = match db.all("PRAGMA busy_timeout", []) {
         [row, ..] =>
-          match row.values().next() {
-            Some(Number(n, ..)) => n.to_int()
-            _ => 5000
-          }
+          opt_num(row.values().next()).map(n => n.to_int()).unwrap_or(5000)
         _ => 5000
       }
       db.exec("PRAGMA busy_timeout = 0")
@@ -975,13 +957,13 @@ fn P51::readers_live(self : P51) -> Readers {
   r.previous_gone.val = bus.previous_gone
   r.catalog = () => (bus.model_catalog.val)()
   r.processes = async fn() {
-    match (bus.hub_ask.val)("processes", Json::null()) {
+    match bus.hub_processes() {
       Array(_) as a => a
       _ => Json::array([])
     }
   }
   r.client_keys = async fn() {
-    match (bus.hub_ask.val)("clientKeys", Json::null()) {
+    match bus.hub_client_keys() {
       Array(_) as a => a
       _ => Json::array([])
     }
@@ -1031,7 +1013,7 @@ async fn Readers::legacy_lookups(self : Readers, bus : LiveBus) -> Unit {
   (bus.previous_gone)()
   let kinds = [
     "legacy-said", "legacy-agent", "legacy-login", "legacy-edits", "legacy-policy", "legacy-decision-time", "legacy-decision-session",
-    "legacy-decision-session-repair", "page-letter-gc",
+    "legacy-decision-session-repair", "conversation-backfill", "page-letter-gc",
   ]
   let wake : @effect.Queue[Unit] = @effect.Queue::unbounded()
   self.stops.push(

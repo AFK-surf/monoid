@@ -47,6 +47,9 @@ export function reboxIndexComplete(db: DatabaseSync): boolean {
 
 /// Fill at most `limit` old IDs. The cursor and lookup commit together; triggers cover writes on either side of it.
 export function backfillReboxIndex(db: DatabaseSync, limit = 32): boolean {
+  // Done already: read without the write lock, which another process (the station before) may hold past the busy
+  // timeout as this one starts. Looked at again inside the transaction.
+  if (reboxIndexComplete(db)) return true;
   db.exec("BEGIN IMMEDIATE");
   try {
     const state = db.prepare("SELECT after_ws, after_id, done FROM vault_rebox_backfill WHERE id = 1").get() as

@@ -59,9 +59,9 @@ fn daily_new_chat(s : Screen, scale : Double, words : String) -> Unit raise {
   if daily_has(t, "新建对话") {
     t.click(Button, label="新建对话")
   } else {
-    // (小屏: the bar's 令, at its middle, as newchat_send_wbtest's new_chat_sent)
+    // (小屏: the bar's ＋, the circle at its right, as newchat_send_wbtest's new_chat_sent)
     let (_, y) = bar_places_at()
-    t.tap(s.w / 2.0, y - 28.0 - 4.0)
+    t.tap(s.w - 22.0 - act_size / 2.0, y)
   }
   t.run_for(@ui.move_most_ms)
   t.tap_text("做任何事")
@@ -78,7 +78,11 @@ fn daily_new_chat(s : Screen, scale : Double, words : String) -> Unit raise {
 /// Words sent in a chat: its field empty once they have flown, and they are seen.
 fn daily_chat_send(s : Screen, scale : Double) -> Unit raise {
   let t = daily_open("chat", s, scale)
-  t.tap_text("发消息")
+  // (the composer's field: made as nodes it draws no hint to tap on a wide one, composer_field's)
+  match composer_field(t) {
+    Some((x, y, w, h)) => t.tap(x + w / 2.0, y + h / 2.0)
+    None => t.tap_text("发消息")
+  }
   t.run_for(@ui.move_most_ms)
   let words = "看下进度"
   t.type_text(words)
@@ -117,7 +121,11 @@ fn daily_side(s : Screen, scale : Double) -> Unit raise {
 /// resized; the send button whole in the window each time.
 fn daily_shorter(s : Screen, scale : Double) -> Unit raise {
   let t = daily_open("chat", s, scale)
-  t.tap_text("发消息")
+  // (the composer's field: made as nodes it draws no hint to tap on a wide one, composer_field's)
+  match composer_field(t) {
+    Some((x, y, w, h)) => t.tap(x + w / 2.0, y + h / 2.0)
+    None => t.tap_text("发消息")
+  }
   t.run_for(@ui.move_most_ms)
   let kb = 300.0
   if s.platform == 0 {

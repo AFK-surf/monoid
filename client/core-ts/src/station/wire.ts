@@ -4,12 +4,12 @@ import { Effect, Scope } from "effect";
 import { CoreError, asCoreError } from "../error.ts";
 import type { Host, Pull } from "../host.ts";
 import { t } from "../i18n.ts";
-import type { LinkNet, RequestHead, SocketOut } from "../mesh.ts";
+import type { LinkNet, PeerDiag, RequestHead, SocketOut } from "../mesh.ts";
 import type { StationAddr } from "./addr.ts";
 
 /// A request's head as it goes to a station, how a link to one runs and the client's half of a socket stream: the
 /// mesh's own (mesh.ts), said here for what asks a station.
-export type { LinkNet, RequestHead, SocketOut };
+export type { LinkNet, PeerDiag, RequestHead, SocketOut };
 
 /// A station's answer: status, headers, and the body as it arrives (open while the request's scope is); how it came
 /// (`relay`, `direct`), when known.
@@ -51,8 +51,10 @@ export function readAll(body: Pull<Uint8Array>, each?: (chunk: Uint8Array) => vo
 
 /// A socket stream as it opened: the station's reply (101 once the service took it), and where the client's frames go;
 /// a screen view's, `tap`: its picture and sound read by the host and said to the app itself (IrohStream.tap), where
-/// it can: whether it does; `replaced`: succeeds once the specific link this stream opened on is replaced by another.
-export type WireSocket = { reply: WireReply; send: SocketOut; tap?: (call: number) => Effect.Effect<boolean>; replaced?: () => Effect.Effect<void> };
+/// it can: whether it does ("cursor": the pointer said to the page too, `cursor` asked); `replaced`: succeeds once the
+/// specific link this stream opened on is replaced by another; `datagrams`: its video and audio frames come as datagrams
+/// (put back among its frames by the host).
+export type WireSocket = { reply: WireReply; send: SocketOut; tap?: (call: number, cursor?: boolean) => Effect.Effect<boolean | "cursor">; replaced?: () => Effect.Effect<void>; datagrams?: boolean };
 
 /// How requests reach a station. A request for an event stream carries `accept: text/event-stream`. What is open (a
 /// reply's body, a socket) closes with the scope it was asked in.
@@ -75,6 +77,10 @@ export interface StationWire {
   healthChange?(station: StationAddr, was: boolean): Effect.Effect<boolean>;
   /// How the connection to the station runs now; null where there is none of its own.
   net?(station: StationAddr): LinkNet | null;
+  /// Number of fast bulk lanes available to the station for concurrent striped transfers.
+  bulkLanes?(station: StationAddr): number;
+  /// Local connection diagnostics for the station; null where there is no mesh.
+  diag?(station: StationAddr): PeerDiag | null;
   /// Measures the ways to the station now.
   measure?(station: StationAddr): Effect.Effect<void, CoreError>;
   /// A preview page's WebSocket. Only the mesh carries one.
@@ -105,8 +111,11 @@ export type TerminalAsk = { cols: number; rows: number; control: boolean; taken?
 /// `fps`: the 帧率 chosen (none: 自动): the most frames a second the station sends (a station before it lets it be).
 /// `audio`: the computer's sound; `opus` with it: as Opus where the station's source encodes it (a station before it,
 /// and one whose source encodes none, sends PCM).
-export type ScreenAsk = { maxWidth: number; maxHeight: number; codecs: string[]; control: boolean; peek?: boolean; audio?: "pcm_s16le"; opus?: true; quality?: ScreenQuality; fps?: ScreenFps; fit?: { width: number; height: number; scale: number }; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean };
-export type ScreenQuality = "smooth" | "hd" | "original";
+/// `datagrams`: the token its video and audio frames may come under as datagrams (client/shell screen_dgram.rs), taken
+/// already (mesh-wire.ts `screen`); a station that sends them so says `x-screen-dgram` with it (one before it sends them
+/// on the stream).
+export type ScreenAsk = { maxWidth: number; maxHeight: number; codecs: string[]; control: boolean; peek?: boolean; audio?: "pcm_s16le"; opus?: true; quality?: ScreenQuality; fps?: ScreenFps; fit?: { width: number; height: number; scale: number }; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean; datagrams?: number; privateClip?: true; chroma444?: true };
+export type ScreenQuality = "smooth" | "hd" | "qhd" | "original";
 export const SCREEN_FPS = [120, 90, 60, 30, 15] as const;
 export type ScreenFps = (typeof SCREEN_FPS)[number];
 

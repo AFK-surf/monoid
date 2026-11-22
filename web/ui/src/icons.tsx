@@ -133,6 +133,10 @@ export function Cursor(props: IconProps) {
   return <Svg {...props}><path d="M5.5 3.5L18.5 10.5L12.5 12.5L10 18.5Z M12.5 12.5L18 18" /></Svg>;
 }
 
+export function Cut(props: IconProps) {
+  return <Svg {...props}><circle cx="6.5" cy="6.5" r="3" /><circle cx="6.5" cy="17.5" r="3" /><path d="M8.62 15.38L19.5 4.5 M8.62 8.62L12 12 M14.5 14.5L19.5 19.5" /></Svg>;
+}
+
 export function Devices(props: IconProps) {
   return <Svg {...props}><path d="M12 15.5H6.5Q3 15.5 3 12V7Q3 3.5 6.5 3.5H15Q18.5 3.5 18.5 7V7.5 M8 20H12 M9.5 15.5V20 M17 10H19.5Q21.5 10 21.5 12V18.5Q21.5 20.5 19.5 20.5H17Q15 20.5 15 18.5V12Q15 10 17 10Z" /></Svg>;
 }
@@ -279,6 +283,14 @@ export function LogIn(props: IconProps) {
 
 export function LogOut(props: IconProps) {
   return <Svg {...props}><path d="M11 3.5H8Q4 3.5 4 7.5V16.5Q4 20.5 8 20.5H11 M10 12H20.5 M16 7.5L20.5 12L16 16.5" /></Svg>;
+}
+
+export function MicOff(props: IconProps) {
+  return <Svg {...props}><path d="M9 9.5V6.5A3 3 0 0 1 15 6.5V7 M9 9.5A3 3 0 0 0 9.9 11.6" /><path d="M5.5 10.5V11.5A6.5 6.5 0 0 0 6.5 14.9 M9.1 17.3A6.5 6.5 0 0 0 18.5 11.5V10.5 M12 18V20.5 M9 20.5H15 M3.5 20.5L20.5 3.5" /></Svg>;
+}
+
+export function Mic(props: IconProps) {
+  return <Svg {...props}><rect x="9" y="3.5" width="6" height="9" rx="3" /><path d="M5.5 10.5V11.5A6.5 6.5 0 0 0 18.5 11.5V10.5 M12 18V20.5 M9 20.5H15" /></Svg>;
 }
 
 export function Minus(props: IconProps) {
@@ -462,7 +474,7 @@ export function Said(props: IconProps) {
 }
 
 export function ScreenRotate(props: IconProps) {
-  return <Svg {...props}><rect x="8" y="6.5" width="8" height="11" rx="1.75" /><path d="M3.5 12a8.5 8.5 0 0 1 5-7.75" /><path d="M5.75 3.5l2.75 .75-.75 2.75" /><path d="M20.5 12a8.5 8.5 0 0 1-5 7.75" /><path d="M18.25 20.5l-2.75-.75.75-2.75" /></Svg>;
+  return <Svg {...props}><path d="M6 8.5H10Q12.5 8.5 12.5 11V18Q12.5 20.5 10 20.5H6Q3.5 20.5 3.5 18V11Q3.5 8.5 6 8.5Z M7.5 4.5H11.5Q19.5 4.5 19.5 12.5V15 M17 12.5L19.5 15L22 12.5" /></Svg>;
 }
 
 export function Scribble(props: IconProps) {
@@ -471,6 +483,10 @@ export function Scribble(props: IconProps) {
 
 export function Search(props: IconProps) {
   return <Svg {...props}><path d="M17.5 10.5C17.5 15 15 17 11 17C6.5 17 3.5 14.6 3.5 10.5C3.5 6.3 6.1 3.5 10.5 3.5C14.7 3.5 17.5 6 17.5 10.5Z M16 16L20.5 20.5" /></Svg>;
+}
+
+export function SelectAll(props: IconProps) {
+  return <Svg {...props}><path d="M4 8.5V6.5Q4 4 6.5 4H8.5 M15.5 4H17.5Q20 4 20 6.5V8.5 M20 15.5V17.5Q20 20 17.5 20H15.5 M8.5 20H6.5Q4 20 4 17.5V15.5 M8 10H16 M8 14H14" /></Svg>;
 }
 
 export function Send(props: IconProps) {
@@ -601,12 +617,20 @@ export function ViewTree(props: IconProps) {
   return <Svg {...props}><path d="M4 5.5H11 M10 12H20 M10 18.5H20 M6.5 8V16Q6.5 18.5 9 18.5H10 M6.5 12H10" /></Svg>;
 }
 
+export function VolumeDown(props: IconProps) {
+  return <Svg {...props}><path d="M5.5 8.5H6.8Q7.6 8.5 8.2 8L9.9 6.5Q12 4.7 12 7.4V16.6Q12 19.3 9.9 17.5L8.2 16Q7.6 15.5 6.8 15.5H5.5Q3 15.5 3 13V11Q3 8.5 5.5 8.5Z M15.5 12H20.5" /></Svg>;
+}
+
+export function VolumeUp(props: IconProps) {
+  return <Svg {...props}><path d="M5.5 8.5H6.8Q7.6 8.5 8.2 8L9.9 6.5Q12 4.7 12 7.4V16.6Q12 19.3 9.9 17.5L8.2 16Q7.6 15.5 6.8 15.5H5.5Q3 15.5 3 13V11Q3 8.5 5.5 8.5Z M15.5 12H20.5 M18 9.5V14.5" /></Svg>;
+}
+
 export function VolumeX(props: IconProps) {
-  return <Svg {...props}><path d="M4.5 9H7.5L12 5V19L7.5 15H4.5Q3 15 3 13.5V10.5Q3 9 4.5 9Z M16 9.5L21 14.5 M21 9.5L16 14.5" /></Svg>;
+  return <Svg {...props}><path d="M5.5 8.5H6.8Q7.6 8.5 8.2 8L9.9 6.5Q12 4.7 12 7.4V16.6Q12 19.3 9.9 17.5L8.2 16Q7.6 15.5 6.8 15.5H5.5Q3 15.5 3 13V11Q3 8.5 5.5 8.5Z M16 10L20 14 M20 10L16 14" /></Svg>;
 }
 
 export function Volume(props: IconProps) {
-  return <Svg {...props}><path d="M4.5 9H7.5L12 5V19L7.5 15H4.5Q3 15 3 13.5V10.5Q3 9 4.5 9Z M15.5 9Q17 10.3 17 12Q17 13.7 15.5 15 M18 6.5Q21 8.8 21 12Q21 15.2 18 17.5" /></Svg>;
+  return <Svg {...props}><path d="M5.5 8.5H6.8Q7.6 8.5 8.2 8L9.9 6.5Q12 4.7 12 7.4V16.6Q12 19.3 9.9 17.5L8.2 16Q7.6 15.5 6.8 15.5H5.5Q3 15.5 3 13V11Q3 8.5 5.5 8.5Z M15.5 9.5Q16.75 10.5 16.75 12Q16.75 13.5 15.5 14.5 M18 7Q20.75 9 20.75 12Q20.75 15 18 17" /></Svg>;
 }
 
 export function Wait(props: IconProps) {
@@ -623,6 +647,14 @@ export function Web(props: IconProps) {
 
 export function Wrap(props: IconProps) {
   return <Svg {...props}><path d="M3.5 6H20.5 M3.5 12H16.5Q20.5 12 20.5 15Q20.5 18 16.5 18H12.5 M14.5 16L12.5 18L14.5 20 M3.5 18H8.5" /></Svg>;
+}
+
+export function ZapFast(props: IconProps) {
+  return <Svg {...props}><path d="M11.9125 21.4125C11.5292 21.8625 11.0292 22.0958 10.4125 22.1125C9.79586 22.1291 9.29586 21.9208 8.91252 21.4875C8.53752 21.0541 8.45836 20.4541 8.67503 19.6875L9.68752 16H4.57502C4.00836 16 3.56669 15.8375 3.25002 15.5125C2.93336 15.1791 2.77502 14.7791 2.77502 14.3125C2.77502 13.8375 2.92919 13.4125 3.23752 13.0375L12.1375 2.47497C12.5209 2.02497 13.0209 1.79164 13.6375 1.77497C14.2542 1.75831 14.75 1.96664 15.125 2.39997C15.5084 2.83331 15.5917 3.43331 15.375 4.19997L14.3125 7.99998H19.425C19.9917 7.99998 20.4334 8.16664 20.75 8.49997C21.075 8.83331 21.2375 9.23748 21.2375 9.71247C21.2375 10.1791 21.0792 10.5958 20.7625 10.9625L11.9125 21.4125Z" fill="currentColor" stroke="none" /></Svg>;
+}
+
+export function ZapUltrafast(props: IconProps) {
+  return <Svg {...props}><path d="M 14.722909 2.782276 C 15.629018 1.975397 17.090618 2.813978 16.794 4.039385 L 15.694582 8.575604 H 20.796436 C 21.876545 8.575898 22.464218 9.838265 21.769091 10.664738 L 13.361455 20.649164 C 13.103345 20.955382 12.645164 20.994436 12.338727 20.736436 C 12.0324 20.478327 11.993335 20.020145 12.251345 19.713709 L 20.409709 10.0266 H 17.679273 C 17.671636 10.324396 17.571164 10.62684 17.350145 10.88952 L 8.992495 20.814218 C 8.127938 21.840873 6.468884 21 6.785105 19.6956 L 7.820618 15.4236 H 3.011673 C 1.815135 15.4236 1.163875 14.024945 1.934609 13.109673 L 10.292215 3.184975 C 11.156738 2.158807 12.815345 2.999509 12.499636 4.303582 L 11.46408 8.575604 H 14.200909 L 15.224727 4.352585 L 15.029782 4.559269 C 14.754109 4.850051 14.294618 4.862585 14.003891 4.586967 C 13.713382 4.311316 13.701709 3.852785 13.977273 3.562113 L 14.636618 2.865371 L 14.722909 2.782276 Z" fill="currentColor" stroke="none" /></Svg>;
 }
 
 export function Zap(props: IconProps) {
@@ -665,6 +697,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "compose": Compose,
   "copy": Copy,
   "cursor": Cursor,
+  "cut": Cut,
   "devices": Devices,
   "disk": Disk,
   "download-ring": DownloadRing,
@@ -702,6 +735,8 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "list": List,
   "log-in": LogIn,
   "log-out": LogOut,
+  "mic-off": MicOff,
+  "mic": Mic,
   "minus": Minus,
   "monitor": Monitor,
   "moon": Moon,
@@ -750,6 +785,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "screen-rotate": ScreenRotate,
   "scribble": Scribble,
   "search": Search,
+  "select-all": SelectAll,
   "send": Send,
   "server": Server,
   "settings": Settings,
@@ -782,12 +818,16 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "users": Users,
   "view-columns": ViewColumns,
   "view-tree": ViewTree,
+  "volume-down": VolumeDown,
+  "volume-up": VolumeUp,
   "volume-x": VolumeX,
   "volume": Volume,
   "wait": Wait,
   "watch": Watch,
   "web": Web,
   "wrap": Wrap,
+  "zap-fast": ZapFast,
+  "zap-ultrafast": ZapUltrafast,
   "zap": Zap,
   "zou": Zou,
 };

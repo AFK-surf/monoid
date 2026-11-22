@@ -57,7 +57,6 @@ pub fn markdown_node(
   code? : (String) -> ((@view.View, () -> String) -> Unit)? = fn(_) { None },
   files? : (String) -> PlacedNode?,
   screens? : ScreensNode,
-  glyphs? : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)? = None,
   piece? : MdPiece? = None,
   piece_by? : () -> MdPiece?,
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
@@ -113,7 +112,6 @@ pub fn markdown_node(
       files: files.unwrap_or(fn(_) { None }),
       places: files is Some(_),
       screens,
-      glyphs,
       block_at: -1,
       table_rows: piece.bind(fn(p) { p.rows }),
       rows_by: match (piece.bind(fn(p) { p.rows }), piece_by) {
@@ -342,16 +340,13 @@ priv struct MdNode {
   /// is images, so nothing is made to choose between them (md_cell_images)
   places : Bool
   screens : ScreensNode?
-  /// how each glyph of its words is drawn, by a state as it is now (markdown_node's `glyphs`: words coming a glyph at a
-  /// time; View::glyphs_by), none: as laid
-  glyphs : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)?
   /// which of the blocks it is drawn for (md_blocks_node's: none, -1)
   block_at : Int
   /// the rows of its table or the items of its list it draws where it is a piece of one (markdown_node's `piece`):
   /// none, all of them; none in what a block holds (a list's item, a quote)
   table_rows : (Int, Int)?
   /// those rows or items as they are now, where the piece is told as it changes (markdown_node's `piece_by`: a message's
-  /// table streamed in, the piece of its rows after the first growing as rows come), none: table_rows all along
+  /// table updated in place, with later slices growing as rows are added), none: table_rows all along
   rows_by : (() -> (Int, Int)?)?
   /// what the table at a block scrolls across with (markdown_node's `across_of`: the pieces of one table as one)
   across_of : (Int) -> @view.Scroll
@@ -1025,11 +1020,6 @@ fn md_words_node(
     |> ignore
     // (what a go-to brings before the eyes in them, where they have it: sought_part)
     w.sought(fn() { sought_part(runs(), found(), (md.lit)().0).map(fn(r) { @ui.runs_piece(w, r.0, r.1) }) }) |> ignore
-    // (each glyph as it comes, where it is told so: markdown_node's `glyphs`)
-    match md.glyphs {
-      Some((state, f)) => w.glyphs_by(By(fn() { state(w) }), f) |> ignore
-      None => ()
-    }
     // (on one line as wide as they are, cut short with an ellipsis where the column is narrower: one_line's)
     match one_line {
       Some(f) =>
@@ -1156,7 +1146,8 @@ fn md_list_node(
   // (all its items, or those of them its piece draws (`items`), each by its place among all)
   let count = fn() {
     let n = list().map(fn(l) { l.items.length() }).unwrap_or(0)
-    // (those its piece draws as it is now, where it is told so: more come as the list is streamed in)
+    // (those its piece draws as it is now, where it is told so: more items may be added when the list is edited in
+    // place)
     let items = match items_by {
       Some(f) => f()
       None => items
@@ -1425,8 +1416,8 @@ pub fn code_block_node(
     b.box(fn(k) {
       k
       .row(Is(true))
-      .height(Is(Some(code_key_h)))
-      .padding(Is((7.0, 0.0, 7.0, 0.0)))
+      .min_height(Is(Some(code_key_h)))
+      .padding(Is((7.0, 1.0, 7.0, 1.0)))
       .gap(Is(4.0))
       .lines_up(Is(Some(Middle)))
       .radius(Is(code_key_h / 2.0))
@@ -1475,7 +1466,7 @@ pub fn code_block_node(
   let bar = fn(b : @view.View) {
     b
     .row(Is(true))
-    .height(Is(Some(key_inset + code_key_h)))
+    .min_height(Is(Some(key_inset + code_key_h)))
     .padding(Is((key_inset, key_inset, key_inset, 0.0)))
     .lies_along(Is(End))
     .lines_up(Is(Some(Middle)))
@@ -1495,8 +1486,8 @@ pub fn code_block_node(
     b.box(fn(k) {
       k
       .row(Is(true))
-      .height(Is(Some(code_key_h)))
-      .padding(Is((7.0, 0.0, 7.0, 0.0)))
+      .min_height(Is(Some(code_key_h)))
+      .padding(Is((7.0, 1.0, 7.0, 1.0)))
       .lines_up(Is(Some(Middle)))
       .radius(Is(code_key_h / 2.0))
       .ground(By(fn() { alpha(theme().p.canvas, 0.8) }))
@@ -1580,7 +1571,7 @@ pub fn code_block_node(
 
 ///|
 /// A code block's tray key's hairline (code_block's).
-let code_tray_key_look : @ui.Style = @ui.css("bg=Surface border=B1 border_color=Line")
+let code_tray_key_look : @ui.Style = @ui.css("bg=Surface border=B0_5 border_color=Line")
 
 ///|
 /// How far apart a code block's keys stand (code_keys_apart's 4).

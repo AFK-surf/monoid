@@ -82,6 +82,43 @@ fn build_version(app : String) -> String? {
 }
 
 ///|
+/// A release's build timestamp (Unix ms) from its `<app>/BUILT_AT`, none where absent or invalid (ops/version.ts
+/// `stationBuiltAt`).
+fn build_built_at(app : String) -> Double? {
+  guard read_text(path([app, "BUILT_AT"])) is Some(t) else { None }
+  let raw = t.trim().to_owned()
+  if raw != "" && raw.iter().all(c => c >= '0' && c <= '9') {
+    match attempt(() => @string.parse_int64(raw[:])) {
+      Ok(ms) if ms > 0L && ms <= 9007199254740991L => Some(ms.to_double())
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+///|
+/// This station's build timestamp (ops/version.ts `builtAt`): the release `--app` names, else the one this program is
+/// in (`<app>/station/stillfail-reader`: two up from it), else None in development.
+pub fn station_built_at(args : Array[String], argv0 : String) -> Double? {
+  let given = match flag(args, "--app") {
+    Some(app) => build_built_at(app)
+    None => None
+  }
+  match given {
+    Some(ms) => Some(ms)
+    None => {
+      if argv0 == "" {
+        return None
+      }
+      let s = sep()
+      let real = attempt(() => @drive.realpath(argv0)).unwrap_or(argv0)
+      build_built_at(@nodepath.dirname(s, @nodepath.dirname(s, real)))
+    }
+  }
+}
+
+///|
 /// This station's version (ops/version.ts `version`): the release `--app` names, else the one this program is in
 /// (`<app>/station/stillfail-reader`: two up from it), else 0.1.0.
 pub fn station_version(args : Array[String], argv0 : String) -> String {
@@ -134,18 +171,12 @@ pub fn loopback_answer(path : String, query : String?, ready : Bool, place : Jso
   }
   let text = (k : String) => match place {
     Some(Object(m)) =>
-      match m.get(k) {
-        Some(String(s)) => s
-        _ => ""
-      }
+      opt_str(m.get(k)).unwrap_or("")
     _ => ""
   }
   let removed_at = match place {
     Some(Object(m)) =>
-      match m.get("removed_at") {
-        Some(Number(n, ..)) => Some(n)
-        _ => None
-      }
+      opt_num(m.get("removed_at"))
     _ => None
   }
   if place is Some(_) && removed_at is None && text("origin") != "" && text("workspace") != "" {
@@ -267,7 +298,7 @@ fn Station::say_health(self : Station) -> Unit {
   if !self.health_said {
     return
   }
-  let health : Json = {
+  let health : Map[String, Json] = {
     "pid": Json::number(@drive.pid().to_double()),
     "updatedAt": Json::number(wall_ms().to_double()),
     "heldMaxMs": Json::number(self.held_ms.round()),
@@ -275,7 +306,14 @@ fn Station::say_health(self : Station) -> Unit {
     "presenceOnline": Json::boolean(match self.bus { Some(b) => (b.cloud_reached.val)(); None => false }),
     "relayConflict": Json::boolean(match self.bus { Some(b) => (b.mesh_relay_conflict.val)(); None => false }),
   }
-  write_whole(path([self.data, "run", "health.json"]), health.stringify() + "\n")
+  // Its descriptors and resident memory, where the system says them (a leak, a drift seen from outside).
+  if open_fds() is Some(n) {
+    health["openFds"] = Json::number(n.to_double())
+  }
+  if self_rss_bytes() is Some(rss) {
+    health["rssBytes"] = Json::number(rss.round())
+  }
+  write_whole(path([self.data, "run", "health.json"]), Json::object(health).stringify() + "\n")
 }
 
 ///|
@@ -340,10 +378,7 @@ fn Station::status(self : Station) -> Json {
       match (b.status_agents.val)() {
         Some(Object(m)) =>
           for k in ["agents", "waiting", "tasks"] {
-            match m.get(k) {
-              Some(v) => status[k] = v
-              None => ()
-            }
+            if m.get(k) is Some(v) { status[k] = v }
           }
         _ => ()
       }
@@ -389,10 +424,7 @@ async fn Station::mcp(self : Station, r : Request) -> Reply {
   // (the agents' side's own, where it says it: its auth, listings, what is outward, `station_tool`)
   match self.bus {
     Some(b) =>
-      match b.mcp_handle.val {
-        Some(h) => return h(r)
-        None => ()
-      }
+      if b.mcp_handle.val is Some(h) { return h(r) }
     None => ()
   }
   guard r.meth == "POST" else { return plain(405, "") }
@@ -499,16 +531,15 @@ async fn Station::status_reply(self : Station, r : Request, conn : Json) -> Repl
 async fn listen_on(host : @host.Host, fd : Int?, tries : Array[Int]) -> (Json, Int)? {
   match fd {
     Some(f) =>
-      match (try { Ok(host.shell("tcp.listen", { "fd": Json::number(f.to_double()) })) } catch { e => Err(e) }) {
-        Ok(({ "id": id, "port": Number(p, ..), .. }, _)) => Some((id, p.to_int()))
-        _ => None
+      match (try { Ok(host.tcp_listen_fd(f)) } catch { e => Err(e) }) {
+        Ok(listening) => Some((listening.id, listening.port))
+        Err(_) => None
       }
     None => {
       for port in tries {
-        // (127.0.0.1 only: the shell binds no other address)
-        match (try { Ok(host.shell("tcp.listen", { "port": Json::number(port.to_double()) })) } catch { e => Err(e) }) {
-          Ok(({ "id": id, "port": Number(p, ..), .. }, _)) => return Some((id, p.to_int()))
-          _ => ()
+        match (try { Ok(host.tcp_listen_local(port)) } catch { e => Err(e) }) {
+          Ok(listening) => return Some((listening.id, listening.port))
+          Err(_) => ()
         }
       }
       None
@@ -523,18 +554,25 @@ fn own_data(data : String) -> Bool {
 }
 
 ///|
-/// Stops the process: what it says of itself no longer said, its sessions' file let go of where it is its own.
+/// Stops the process: what it says of itself no longer said. Its sessions' file stays until `run` has let go of the
+/// sessions (`release_hub`): a station started meanwhile waits for it there.
 fn Station::stop(self : Station, why : String) -> Unit {
   if self.stopped.is_done() {
     return
   }
   self.health_said = false
-  err_write("station: stopping (\{why})\n")
-  match read_json(path([self.data, "run", "hub.json"])) {
-    Some({ "pid": Number(p, ..), .. }) if p.to_int() == @drive.pid() => @drive.rm_force(path([self.data, "run", "hub.json"]))
+  p51_log("INFO", "station", "stopping", fields={ "why": Json::string(why) })
+  ignore(self.stopped.succeed(why))
+}
+
+///|
+/// Its sessions' file let go of where it is this process's own, once the sessions and their processes are let go of
+/// (agents.ts's stop: hub.json removed after `hub.handOver()` / `hub.shutdown()`): the next station takes up only then.
+fn release_hub(data : String) -> Unit {
+  match read_json(path([data, "run", "hub.json"])) {
+    Some({ "pid": Number(p, ..), .. }) if p.to_int() == @drive.pid() => @drive.rm_force(path([data, "run", "hub.json"]))
     _ => ()
   }
-  ignore(self.stopped.succeed(why))
 }
 
 ///|
@@ -572,7 +610,7 @@ fn Station::told(self : Station, line : String) -> Unit {
     Ok(j) => j
     Err(_) => {
       // (not the line itself: one carried over holds secrets)
-      err_write("launcher: unreadable line from the launcher (\{line.length()} long)\n")
+      p51_log("WARN", "launcher", "unreadable line from the launcher", fields={ "length": Json::number(line.length().to_double()) })
       return
     }
   }
@@ -588,22 +626,20 @@ fn Station::told(self : Station, line : String) -> Unit {
       // inside a task", at the handover from 0.1.9977 to 0.1.9984, so the next process started over as after a crash.
       match what {
         Object(kept) =>
-          ignore(self.host.rt.fork(name="carried", async fn() { self.parts.take_up(kept) }))
+          fork_bg(self.host, "carried", async fn() { self.parts.take_up(kept) })
         _ => ()
       }
     }
     { "op": String("stop"), .. } => self.stop("asked to stop")
-    { "op": String("handover"), .. } => ignore(self.host.rt.fork(name="handover", async fn() { self.hand_over() }))
+    { "op": String("handover"), .. } => fork_bg(self.host, "handover", async fn() { self.hand_over() })
     { "op": String("drain"), .. } =>
-      ignore(
-        self.host.rt.fork(name="drain", async fn() {
-          let d = match self.bus {
-            Some(b) => (b.drain_wait.val)()
-            None => "idle"
-          }
-          self.control.say({ "drained": Json::string(d) })
-        }),
-      )
+      fork_bg(self.host, "drain", async fn() {
+        let d = match self.bus {
+          Some(b) => (b.drain_wait.val)()
+          None => "idle"
+        }
+        self.control.say({ "drained": Json::string(d) })
+      })
     { "op": String("hup"), .. } => {
       self.lang = station_lang(self.data)
       self.read_place()
@@ -611,8 +647,8 @@ fn Station::told(self : Station, line : String) -> Unit {
       match self.bus {
         Some(b) =>
           ignore(
-            self.host.rt.fork(name="channel ask", async fn() {
-              ignore((b.coord_ask.val)("updates.hup", Json::null())) catch {
+            self.host.rt.fork_quiet(name="channel ask", async fn() {
+              b.coord_updates_hup() catch {
                 _ => ()
               }
             }),
@@ -659,12 +695,12 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     return 1
   }
   // The launcher's channel.
-  let pipe_conn : Ref[Json?] = Ref(None)
+  let pipe_conn : Ref[@host.Conn?] = Ref(None)
   match pipe {
     Some(p) =>
-      match (try { Ok(host.shell("unix.open", { "path": Json::string(p) })) } catch { e => Err(e) }) {
-        Ok(({ "id": id, .. }, _)) => pipe_conn.val = Some(id)
-        _ => {
+      match (try { Ok(host.unix_open(p)) } catch { e => Err(e) }) {
+        Ok(conn) => pipe_conn.val = Some(conn)
+        Err(_) => {
           err_write("the launcher's pipe \{p} does not open\n")
           return 1
         }
@@ -725,36 +761,31 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   }
   match pipe_conn.val {
     Some(conn) => {
-      ignore(
-        host.rt.fork(name="launcher pipe out", async fn() {
-          while true {
-            let line = writes.take()
-            ignore(host.shell("tcp.write", { "id": conn }, bytes=@utf8.encode(line))) catch {
-              _ => ()
+      fork_bg(host, "launcher pipe out", async fn() {
+        while true {
+          let line = writes.take()
+          conn.socket.write(@utf8.encode(line)) catch {
+            _ => ()
+          }
+        }
+      })
+      fork_bg(host, "launcher pipe in", async fn() {
+        let carry = StringBuilder()
+        while true {
+          let bytes = conn.socket.read() catch { _ => break }
+          guard bytes is Some(bytes) else { break }
+          for ch in @utf8.decode_lossy(bytes) {
+            if ch == '\n' {
+              s.told(carry.to_string())
+              carry.reset()
+            } else {
+              carry.write_char(ch)
             }
           }
-        }),
-      )
-      ignore(
-        host.rt.fork(name="launcher pipe in", async fn() {
-          let carry = StringBuilder()
-          while true {
-            let (said, bytes) = host.shell("tcp.read", { "id": conn }) catch { _ => break }
-            if said is { "end": True, .. } {
-              break
-            }
-            for ch in @utf8.decode_lossy(bytes.unwrap_or(b"")) {
-              if ch == '\n' {
-                s.told(carry.to_string())
-                carry.reset()
-              } else {
-                carry.write_char(ch)
-              }
-            }
-          }
-          s.stop("the launcher is gone")
-        }),
-      )
+        }
+        conn.socket.destroy()
+        s.stop("the launcher is gone")
+      })
     }
     None => ()
   }
@@ -774,6 +805,8 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   before_store_p5_1(host, data, db_path)
   let opened = try {
     let db = @sql.Db::create(host, db_path, wait=5000)
+    // (its statements timed, the slow said: store/timed.ts)
+    db.timed(Some(main_query_said))
     @store_schema.open(db, host, db_path, wall_ms())
     Ok((db, @store_sessions.Store::open(db, () => wall_ms(), 0L)))
   } catch {
@@ -858,10 +891,15 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     start_live_p5_4(bus)
     start_live_p5_5(bus)
   }
+  start_live_p5_1_mesh(bus)
   s.say_health()
   s.up = true
   control.say({ "ready": Json::boolean(true), "version": Json::string(s.version) })
-  err_write("station: station up (\{s.version}, \{data})\n")
+  p51_log("INFO", "station", if bus.as_rig() { "rig up" } else { "station up" }, fields={ "version": Json::string(s.version), "data": Json::string(data) })
+  // What the launcher did to recover while none was up (launcher_events.mbt): said in this log, once.
+  ignore(report_launcher_events(data))
+  // What ended the Node station before, if a fatal error did (launcher_events.mbt): said in this log, once.
+  ignore(report_node_crash(data))
   // The loopback port: the launcher's, or 4760 on the machine's own data directory, else any free one.
   let named_port = match flag(args, "--port") {
     Some(p) => attempt(() => @string.parse_int(p)).to_option()
@@ -881,66 +919,71 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
       s.admin_port = Some(shown)
       write_whole(path([data, "run", "ports.json"]), "{\"admin\":\{shown}}\n")
       control.say({ "serving": Json::string("admin"), "port": Json::number(port.to_double()) })
-      ignore(
-        host.rt.fork(name="loopback", async fn() {
-          serve_http(host, id, async fn(r, _conn) {
-            Some(loopback_answer(r.path(), r.query(), s.up && !s.stopped.is_done(), s.place, lang_of_browser(r)))
-          })
-        }),
-      )
+      fork_bg(host, "loopback", async fn() {
+        serve_http(host, id, async fn(r, _conn) {
+          Some(loopback_answer(r.path(), r.query(), s.up && !s.stopped.is_done(), s.place, lang_of_browser(r)))
+        })
+      })
     }
-    None => err_write("station: the loopback port is not had\n")
+    None => p51_log("WARN", "station", "the loopback port is not had")
   }
   // The local status's socket (Unix's: a path in the data directory, the station's user's alone).
   if !is_windows() {
     let sock = path([data, "run", "status.sock"])
-    match (try { Ok(host.shell("unix.listen", { "path": Json::string(sock) })) } catch { e => Err(e) }) {
-      Ok(({ "id": id, .. }, _)) =>
-        ignore(host.rt.fork(name="status", async fn() { serve_http(host, id, async fn(r, conn) { s.status_reply(r, conn) }) }))
-      _ => err_write("station: the local status's socket is not had\n")
+    match (try { Ok(host.unix_listen(sock)) } catch { e => Err(e) }) {
+      Ok(listening) =>
+        ignore(
+          host.rt.fork_daemon("status", on_error=e => @host.note("status failed: \{e}"), async fn() { serve_http(host, listening.id, async fn(r, conn) { s.status_reply(r, conn) }) }),
+        )
+      Err(_) => p51_log("WARN", "station", "the local status's socket is not had")
     }
   }
   // The agents' door, once the process before is gone (the one handing over writes its handover first).
-  ignore(
-    host.rt.fork(name="agents' door", async fn() {
-      let mut waited = 0
-      // (as the bus's `previous_gone`: the process before gone by its pid, PREVIOUS_LIMIT_MS at most)
-      while (previous_pid.map(pid_alive).unwrap_or(false) || held_by_hub(data) is Some(_)) && waited < 200 && !s.stopped.is_done() {
-        // (still taking over, and getting on with it: said now and then, the launcher's limit far off)
-        if waited % 25 == 0 {
-          control.say({ "taking": Json::boolean(true) })
-        }
-        waited += 1
-        @effect.sleep(200) // timer: a retry until the process before is gone (it says nothing when it ends)
-      }
-      if s.stopped.is_done() {
-        return
-      }
-      write_whole(path([data, "run", "hub.json"]), "{\"pid\":\{@drive.pid()}}\n")
-      let handover = path([data, "run", "handover.json"])
-      let handed_over = read_json(handover)
-      if read_text(handover) is Some(_) {
+  fork_bg(host, "agents' door", async fn() {
+    let mut waited = 0
+    // (as the bus's `previous_gone`: the process before gone by its pid, PREVIOUS_LIMIT_MS at most)
+    while (previous_pid.map(pid_alive).unwrap_or(false) || held_by_hub(data) is Some(_)) && waited < 200 && !s.stopped.is_done() {
+      // (still taking over, and getting on with it: said now and then, the launcher's limit far off)
+      if waited % 25 == 0 {
         control.say({ "taking": Json::boolean(true) })
-        @drive.rm_force(handover)
       }
-      let remembered = match read_json(path([data, "run", "mcp.json"])) {
-        Some({ "port": Number(p, ..), .. }) if p > 0.0 && p < 65536.0 => Some(p.to_int())
-        _ => None
-      }
-      let tries = match control.ports {
-        Some(_) => [0]
-        None => {
-          let t = []
-          match remembered {
-            Some(r) => t.push(r)
-            None => ()
-          }
-          if own_data(data) {
-            t.push(4750)
-          }
-          t.push(0)
-          t
+      waited += 1
+      @effect.sleep(200) // timer: a retry until the process before is gone (it says nothing when it ends)
+    }
+    if s.stopped.is_done() {
+      return
+    }
+    write_whole(path([data, "run", "hub.json"]), "{\"pid\":\{@drive.pid()}}\n")
+    let handover = path([data, "run", "handover.json"])
+    let handed_over = read_json(handover)
+    if read_text(handover) is Some(_) {
+      control.say({ "taking": Json::boolean(true) })
+      @drive.rm_force(handover)
+    }
+    let remembered = match read_json(path([data, "run", "mcp.json"])) {
+      Some({ "port": Number(p, ..), .. }) if p > 0.0 && p < 65536.0 => Some(p.to_int())
+      _ => None
+    }
+    let tries = match control.ports {
+      Some(_) => [0]
+      None => {
+        let t = []
+        if remembered is Some(r) { t.push(r) }
+        if own_data(data) {
+          t.push(4750)
         }
+        t.push(0)
+        t
+      }
+    }
+    let door_opening = Ref(false)
+    let open_agents_door : async () -> String = async fn() {
+      if door_opening.val {
+        return bus.door_ready.wait()
+      }
+      door_opening.val = true
+      if s.stopped.is_done() {
+        return ""
       }
       match listen_on(host, control.mcp_fd, tries) {
         Some((id, port)) => {
@@ -949,55 +992,82 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
             None => port
           }
           s.mcp_port = Some(shown)
+          bus.door_ports.val = if shown == port { [port] } else { [shown, port] }
           let url = "http://127.0.0.1:\{shown}/mcp"
           s.parts.door_open(url)
           write_whole(path([data, "run", "mcp.json"]), "{\"port\":\{shown}}\n")
+          fork_bg(host, "agents' door http", async fn() {
+            serve_http(host, id, async fn(r, conn) { s.door(r, conn) })
+          })
           control.say({ "serving": Json::string("mcp"), "port": Json::number(port.to_double()) })
           ignore(bus.door_ready.succeed(url))
-          ignore(host.rt.fork(name="take handover", async fn() { (bus.take_handover.val)(handed_over) }))
-          serve_http(host, id, async fn(r, conn) { s.door(r, conn) })
+          url
         }
         None => {
           control.say({ "failed": Json::string("the agents' door is not had") })
           s.stop("the agents' door is not had")
+          ""
         }
       }
-    }),
-  )
+    }
+    bus.open_door.val = open_agents_door
+    (bus.take_handover.val)(handed_over) catch {
+      e => @host.note("take handover failed: \{e}")
+    }
+    if !bus.door_ready.is_done() && !s.stopped.is_done() {
+      ignore(open_agents_door())
+    }
+  })
   // How it is, said every HELD_EVERY_MS from its loop: health.json, the launcher's heartbeat, `stillfail heap`.
-  ignore(
-    host.rt.fork(name="heartbeat", async fn() {
-      let every = held_every_ms()
-      while !s.stopped.is_done() {
-        let started = @host.now()
-        @effect.sleep(every) // timer: a sample of this thread (main.ts HELD_EVERY_MS)
-        let late = (@host.now() - started).to_double() - every.to_double()
-        s.held_ms = if late > 0.0 { late } else { 0.0 }
-        if s.stopped.is_done() {
-          break
-        }
-        if control.heartbeats {
-          control.say({ "heartbeat": Json::boolean(true) })
-        }
-        s.say_health()
-        ignore(answer_heap_request(data, () => s.heap()))
+  fork_bg(host, "heartbeat", async fn() {
+    let every = held_every_ms()
+    let forewarn = @ops_platform.Forewarn::new()
+    while !s.stopped.is_done() {
+      let started = @host.now()
+      @effect.sleep(every) // timer: a sample of this thread (main.ts HELD_EVERY_MS)
+      let late = (@host.now() - started).to_double() - every.to_double()
+      s.held_ms = if late > 0.0 { late } else { 0.0 }
+      if s.stopped.is_done() {
+        break
       }
-    }),
-  )
+      s.sampled(late, every)
+      s.forewarned(forewarn)
+      if control.heartbeats {
+        control.say({ "heartbeat": Json::boolean(true) })
+      }
+      s.say_health()
+      ignore(answer_heap_request(data, () => s.heap()))
+    }
+  })
+  // Where the memory goes, and what runs out: every ten minutes, or every ten seconds with STILLFAIL_MEMLOG (main.ts).
+  fork_bg(host, "memory", async fn() {
+    let every = if env_get("STILLFAIL_MEMLOG") is Some(_) { 10_000 } else { 600_000 }
+    while !s.stopped.is_done() {
+      @effect.sleep(every) // timer: a sample of this process and its machine (main.ts `memory: now`)
+      if s.stopped.is_done() {
+        break
+      }
+      s.memory_now()
+    }
+  })
   // A heap request left while no station ran.
   ignore(answer_heap_request(data, () => s.heap()))
   let why = s.stopped.wait()
   ignore(why)
+  // (the log's last lines sent first, 5 s at most: why it stopped, what it handed over)
+  flush_live_p5_1_log()
   // (what the live parts started let go of before the process ends: their processes, what they hand over)
   stop_live_p5_1()
   live_p5_1_handed()
   // (what the agents' side ends as the station stops, not handing over: its sessions' processes)
   match s.bus {
-    Some(b) => ignore(@effect.timeout(10_000, async fn() { ignore((b.hub_ask.val)("shutdown", Json::null())) }))
+    Some(b) => ignore(@effect.timeout(10_000, async fn() { b.hub_shutdown() }))
     None => ()
   }
   // (the P5-5 parts closed on their own as it stopped: their processes ended before this one, not after)
   wait_live_p5_5_closed()
+  // (only now the next station may take the sessions up)
+  release_hub(data)
   0
 }
 

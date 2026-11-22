@@ -7,7 +7,7 @@
 fn main {
   let scene = @ui.env("MBUI_PACE_SCENE")
   let pi = 3.141592653589793
-  @ui.run("pacedemo", fn(_c) {  }, tree=fn(root) {
+  @ui.run("pacedemo", fn(root) {
     root.box(fn(page) {
       page.grow(Is(1.0)).ground(Is(0xFFFFFFFFL)) |> ignore
       match scene {

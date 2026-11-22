@@ -200,3 +200,112 @@ test("a chat's people hear of its turns and of each other, once, gathered", asyn
   assert.deepEqual(posted[1]!.map((n) => [n.session, n.text]), [["j", "在吗"]]);
   notifier.close();
 });
+
+test("what a login's card asks says how long is left to log in; another card's, a login of another station's or one ended, as it is", async (t) => {
+  const scope = Effect.runSync(Scope.make());
+  t.after(() => Effect.runPromise(Scope.close(scope, Exit.void)));
+  const clock = Effect.runSync(Scope.provide(TestClock.make(), scope));
+  // A turn of each session ended just now, asking by the card its thread's post has.
+  let told: (change: any) => void = () => {};
+  const cards = new Map<number, any>([
+    [1, { type: "login", login: "L1" }],
+    [2, { type: "login", login: "L1", station: "b".repeat(64) }],
+    [3, { type: "options", options: [{ label: "好" }] }],
+    [4, { type: "login", login: "gone" }],
+    [5, { type: "login", login: "L2" }],
+  ]);
+  const store: any = {
+    subscribe: (f: (change: any) => void) => ((told = f), () => {}),
+    lastTurn: () => ({ endedAt: 1 }),
+    openerOf: () => null,
+    pendingCardHeader: (thread: number) => (cards.has(thread) ? [{ n: 2, ts: "1.2" }, cards.get(thread)] : null),
+    sessionWs: () => "ws",
+  };
+  const notice = (thread: number) => ({ to: ["ada@x.com"], kind: "block", session: `s${thread}`, thread, seq: 2, title: "部署", by: "k", text: "要你登录 gh", at: 1 });
+  const readers: any = { read: async (_op: string, a: any) => JSON.stringify({ notices: [notice(Number(a.key.slice(1)))] }) };
+  const cloud: any = Object.assign(Object.create(Cloud.prototype), { state: { origin: "http://x", station: "s", workspace: "ws", workspace_name: "ws", name: "s", peers: [], revocations: [], joined: [] }, lock: null });
+  const now = 1_000_000;
+  // L1 runs out in 14 minutes and a bit; L2 in under one.
+  const ends: Record<string, number> = { L1: now + 14 * 60_000 + 5_000, L2: now + 20_000 };
+  const notifier = new Notifier(store, readers, cloud, null as any, { clock, now: () => now, deadline: (login) => ends[login] ?? null });
+  const posted: any[] = [];
+  notifier.post = async (n) => void posted.push(...n);
+  const settle = () => new Promise((r) => setImmediate(r));
+  for (const thread of cards.keys()) told({ type: "session", key: `s${thread}` });
+  for (let i = 0; i < 5; i++) await settle();
+  for (let i = 0; i < 100 && posted.length < cards.size; i++) {
+    await Effect.runPromise(clock.adjust("1 second"));
+    for (let j = 0; j < 5; j++) await settle();
+  }
+  assert.deepEqual(posted.map((n) => [n.thread, n.text]).sort(), [
+    [1, "要你登录 gh（15 分钟内完成登录）"],
+    [2, "要你登录 gh"],
+    [3, "要你登录 gh"],
+    [4, "要你登录 gh"],
+    [5, "要你登录 gh（1 分钟内完成登录）"],
+  ]);
+  notifier.close();
+});
+
+test("billed-fallback notices cool down per workspace and runtime for 4 hours and strip internal ws before posting", async (t) => {
+  const scope = Effect.runSync(Scope.make());
+  t.after(() => Effect.runPromise(Scope.close(scope, Exit.void)));
+  const clock = Effect.runSync(Scope.provide(TestClock.make(), scope));
+  const store: any = { subscribe: () => () => {}, sessionWs: () => null };
+  const readers: any = { read: async () => "[]" };
+  const cloud: any = Object.assign(Object.create(Cloud.prototype), {
+    state: {
+      origin: "http://x",
+      station: "s",
+      workspace: "ws-home",
+      workspace_name: "Home",
+      name: "willow",
+      peers: [],
+      revocations: [],
+      joined: [{ workspace: "ws-joined", workspace_name: "Joined", name: "willow-joined", peers: [], revocations: [] }],
+    },
+    lock: null,
+  });
+  const posted: { notices: any[]; ws: string | undefined }[] = [];
+  const notifier = new Notifier(store, readers, cloud, async (notices, ws) => {
+    posted.push({ notices, ws });
+  }, { clock });
+  const settle = () => new Promise((r) => setImmediate(r));
+  const t0 = 1_790_000_000_000;
+  // First fallback in home workspace for claude -> accepted.
+  assert.equal(notifier.notifyBilledFallback({ workspace: null, runtime: "claude", runtimeTitle: "Claude Code", profile: "OpenRouter", at: t0 }), true);
+  // Second within 4h for same (ws-home, claude) -> suppressed.
+  assert.equal(notifier.notifyBilledFallback({ workspace: "ws-home", runtime: "claude", runtimeTitle: "Claude Code", profile: "OpenRouter", at: t0 + 3 * 60 * 60 * 1000 }), false);
+  // Different runtime in same workspace -> accepted.
+  assert.equal(notifier.notifyBilledFallback({ workspace: "ws-home", runtime: "codex", runtimeTitle: "Codex", profile: "API Key", at: t0 + 1_000 }), true);
+  // Different workspace (joined) for claude -> accepted and routed with explicit workspace.
+  assert.equal(notifier.notifyBilledFallback({ workspace: "ws-joined", runtime: "claude", runtimeTitle: "Claude Code", profile: "OpenRouter", at: t0 + 2_000 }), true);
+  // After 4 hours -> accepted again.
+  assert.equal(notifier.notifyBilledFallback({ workspace: "ws-home", runtime: "claude", runtimeTitle: "Claude Code", profile: "OpenRouter", at: t0 + 4 * 60 * 60 * 1000 }), true);
+
+  for (let i = 0; i < 10 && posted.length < 2; i++) {
+    await Effect.runPromise(clock.adjust("1 second"));
+    for (let j = 0; j < 5; j++) await settle();
+  }
+  const homeBatch = posted.find((p) => p.ws === undefined);
+  const joinedBatch = posted.find((p) => p.ws === "ws-joined");
+  assert.ok(homeBatch);
+  assert.ok(joinedBatch);
+  assert.equal(homeBatch.notices.length, 3);
+  assert.equal(joinedBatch.notices.length, 1);
+  assert.deepEqual(homeBatch.notices[0], {
+    to: [],
+    audience: "managers",
+    kind: "billed",
+    session: "billed:claude",
+    thread: 0,
+    seq: null,
+    title: "willow",
+    by: "Claude Code",
+    text: "OpenRouter",
+    at: t0,
+  });
+  assert.equal("ws" in homeBatch.notices[0], false, "internal ws routing field stripped on wire");
+  assert.equal(joinedBatch.notices[0].title, "willow-joined");
+  notifier.close();
+});

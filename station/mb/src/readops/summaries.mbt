@@ -13,7 +13,7 @@ fn profiles_of(r : Map[String, Json]) -> Json {
     match (try { Some(@jsjson.parse(raw)) } catch { _ => None }) {
       Some(Arr(xs)) => {
         let list = xs.filter_map(x => match x {
-          Str(s) if @jsjson.text(s) != "" => Some(Json::string(@jsjson.text(s)))
+          Str(s) if @jsjson.sanitize_str(s) != "" => Some(Json::string(@jsjson.sanitize_str(s)))
           _ => None
         })
         if list.length() > 0 {
@@ -31,8 +31,8 @@ fn profiles_of(r : Map[String, Json]) -> Json {
 }
 
 ///|
-/// sessions.ts `sessionJson` of rows.ts `toSession`: the token skipped, `cwd`, `profiles`, `context`, `contextBefore`
-/// left out when none.
+/// sessions.ts `sessionJson` of rows.ts `toSession`: the token skipped, `cwd`, `profiles`, `context`, `contextBefore`,
+/// `compactions` left out when none.
 fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
   let flag = (k : String) => match field(r, k) {
     Null => Json::null()
@@ -69,6 +69,9 @@ fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
   if field(r, "context_before") is (Number(_, ..) as c) {
     v["contextBefore"] = c
   }
+  if field(r, "compactions") is (Number(n, ..) as c) && n > 0.0 {
+    v["compactions"] = c
+  }
   v["running"] = Json::boolean(field(r, "running") == Json::number(1.0))
   v["createdAt"] = field(r, "created_at")
   v["lastActiveAt"] = field(r, "last_active_at")
@@ -79,6 +82,9 @@ fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
   // it there, as that station may never tell it (sessions.ts `sessionJson`, rows.ts `toSession`: none where empty).
   if field(r, "came_from") is String(from) && from != "" {
     v["from"] = Json::string(from)
+  }
+  if field(r, "conv") is String(conv) && conv != "" && Json::string(conv) != field(r, "key") {
+    v["conv"] = Json::string(conv)
   }
   v
 }
@@ -225,7 +231,11 @@ fn summary_with(db : @sql.Db, known : Known, key : String, l : Lists) -> Json ra
   }
   let v = summary_session_json(row)
   v["boundTo"] = Json::array(l.bindings.get(key).unwrap_or([]))
-  v["process"] = Json::string(known.processes.get(key).unwrap_or("cold"))
+  let process = known.processes.get(key).unwrap_or("cold")
+  v["process"] = Json::string(if process == "warmFailed" { "warm" } else if process == "coldFailed" { "cold" } else { process })
+  if process == "warmFailed" || process == "coldFailed" {
+    v["startFailed"] = true
+  }
   let stat = l.stats.get(key)
   let s = (k : String, none : Json) => match stat { Some(r) => field(r, k); None => none }
   v["turns"] = s("turns", Json::number(0.0))

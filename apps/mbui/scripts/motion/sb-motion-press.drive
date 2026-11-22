@@ -1,0 +1,17 @@
+wait 200
+hover 下载
+wait 220
+hover 分享
+wait 220
+hover 复制
+wait 220
+hover 编辑
+wait 220
+hover 删除
+wait 220
+tap 发送
+wait 220
+wheelat 360 当前工具
+wait 150
+tap 触发抖动
+wait 400

@@ -658,20 +658,21 @@ fn rs_heads_node(
     @sf.style_node(h, fn() { (if lay().stacked { rs_head_row_stacked } else { rs_head_row }).then(@sf.row_least_h()) })
     h.show(fn() { !lay().stacked }, fn(first) {
       first.row(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
-      let heads = if flat {
-        ["web-main.resources.column.process", "web-main.resources.column.whose"]
-      } else {
-        ["web-main.resources.column.name"]
-      }
-      for i, key in heads {
+      let head_cell = fn(key : String, style : @ui.Style) {
         let look = fn(cell : @view.View) {
-          @sf.style_node(cell, fn() { if i == 0 { rs_name_cell } else { rs_whose_cell } }, in_row=true)
+          @sf.style_node(cell, fn() { style }, in_row=true)
           @sf.words_node(cell, fn() { @sf.t(key) }, fn() { rs_head }) |> ignore
         }
         match tr {
           Some(tr) => tr.head(first, look) |> ignore
           None => first.box(look) |> ignore
         }
+      }
+      if flat {
+        head_cell("web-main.resources.column.process", rs_name_cell)
+        head_cell("web-main.resources.column.whose", rs_whose_cell)
+      } else {
+        head_cell("web-main.resources.column.name", rs_name_cell)
       }
     })
     h.each(fn() { columns().mapi(fn(k, col) { (k, col.0) }) }, fn(c) { c.1 }, fn(cell, c) {
@@ -840,7 +841,7 @@ fn rs_foot_node(r : @view.View, v : () -> Json?, basis : Bool) -> Unit {
 /// its figures where the line has the room for all of them, else over them; the network's figure where the station
 /// reads it. Pressed, `processes` (its page's choice's press of 进程).
 fn station_uses_node(p : @view.View, uv : () -> Json?, processes : () -> Unit) -> Unit {
-  let name = fn() { @sf.t("web-pages.stations.uses", args=[("name", "still.fail")]) }
+  let name = fn() { @sf.t("web-pages.stations.uses", args=[("name", @sf.product())]) }
   p.box(fn(b) {
     @sf.style_node(b, fn() { rs_uses })
     @sf.presses_node(b, processes)
@@ -865,14 +866,11 @@ fn station_uses_node(p : @view.View, uv : () -> Json?, processes : () -> Unit) -
       }
       figure(fn() { "CPU" }, fn() { shown.get().0 })
       figure(fn() { @sf.t("web-main.resources.column.memory") }, fn() { shown.get().1 })
-      f.show(fn() { shown.get().3 }, fn(x) {
-        x.box(fn(w) {
-          w
-          .words_runs(By(fn() { [@ui.span(@sf.t("web-main.resources.column.net") + " "), @ui.span(shown.get().2, weight=500, color=@sf.theme().p.text)] }))
-          .words_look(Is(@ui.style_words(rs_uses_words)))
-          .ink(By(fn() { @ui.style_ink(rs_uses_words) }))
-          |> ignore
-        })
+      f.show(fn() { shown.get().3 }, fn(w) {
+        w
+        .words_runs(By(fn() { [@ui.span(@sf.t("web-main.resources.column.net") + " "), @ui.span(shown.get().2, weight=500, color=@sf.theme().p.text)] }))
+        .words_look(Is(@ui.style_words(rs_uses_words)))
+        .ink(By(fn() { @ui.style_ink(rs_uses_words) }))
         |> ignore
       })
     }

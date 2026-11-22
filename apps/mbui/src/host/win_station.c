@@ -268,7 +268,17 @@ static WCHAR *local_run(WCHAR *command, const WCHAR *channel) {
   PROCESS_INFORMATION pi;
   // (the beta's channel for the installer: STILLFAIL_CHANNEL, in what it is started with)
   if (channel) SetEnvironmentVariableW(L"STILLFAIL_CHANNEL", channel);
+  // (and this app's own station's data, named: never one a STILLFAIL_DATA the app was started with names, nor
+  // still.fail's where this is another product's app; this process's own put back as it was once it started)
+  WCHAR data[MAX_PATH], *before = NULL;
+  local_data(data, MAX_PATH);
+  DWORD had = GetEnvironmentVariableW(L"STILLFAIL_DATA", NULL, 0);
+  if (had && (before = (WCHAR *)calloc(had, sizeof(WCHAR)))) GetEnvironmentVariableW(L"STILLFAIL_DATA", before, had);
+  int named = !had || before;
+  if (named) SetEnvironmentVariableW(L"STILLFAIL_DATA", data);
   BOOL started = CreateProcessW(NULL, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+  if (named) SetEnvironmentVariableW(L"STILLFAIL_DATA", before);
+  free(before);
   if (channel) SetEnvironmentVariableW(L"STILLFAIL_CHANNEL", NULL);
   CloseHandle(w);
   if (!started) {

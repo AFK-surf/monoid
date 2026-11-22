@@ -11,13 +11,13 @@
 //   frosted: 12-14 the rim's hairline, its lit top-left, its back (white's
 //  alpha, Bar.kt rim) · 15 opacity · 21-23 a notch in its top
 //            edge (its box's notch_*: the circle's middle below the top,
-//            its radius, its fillets'; scene.mbt)
+//            its radius, its fillets'; scene.mbt); or slot 22 == -1.0 when
+//            `progressive` (variable blur modulated by slots 52-59 fade ramp)
 //   liquid:  12 the rim's light · 13 the bezel's width · 14 where the pointer
 //            lights it (Glass::spot, from its rect's top left: glass_spot's
-//            packing; 0 none; -1 and -2 are Backdrop’s default and ambient rim)
-//            15 opacity · 21 how far the bezel bends what is under it
-//            (px) · 22 the colours' split (0-1) · 23 the smooth-min radius
-//            two shapes of one group merge within
+//            packing; 0 none) · 15 opacity · 21 how far the bezel bends what
+//            is under it (px) · 22 the colours' split · 23 the smooth-min
+//            radius two shapes of one group merge within
 //   20 the capture it shares: -1, -2, … (negative, so a run of glass is a run
 //      of its own for the renderers' image runs): glass one after another
 //      with nothing drawn between, the same blur and kind, not over each
@@ -41,6 +41,12 @@ priv struct GlassPaint {
   mut run : Int
   // the last capture of frosted glass (0 none): what glass `shares_capture` takes
   mut frost_run : Int
+  // the last capture of unmerged liquid glass (merge <= 0, 0 none): what `shares_capture` takes (same blur)
+  mut liquid_run : Int
+  mut liquid_blur : Double
+  mut liquid_first : Int
+  mut liquid_y0 : Double
+  mut liquid_y1 : Double
   mut run_start : Int
   mut run_len : Int
   mut solid : Bool
@@ -56,6 +62,11 @@ priv struct GlassPaint {
 let glass_paint : GlassPaint = {
   run: 0,
   frost_run: 0,
+  liquid_run: 0,
+  liquid_blur: 0.0,
+  liquid_first: -1,
+  liquid_y0: 0.0,
+  liquid_y1: 0.0,
   run_start: -1,
   run_len: 0,
   solid: false,
@@ -74,16 +85,39 @@ let glass_paint : GlassPaint = {
 let glass_forced_said : Ref[@signals.Signal[Int]] = Ref(@signals.signal(-1, same=fn(a, b) { a == b }))
 
 ///|
+/// Global ambient light axis angle (radians, default `0.0`: top-down light axis) for liquid glass specular glint,
+/// inner bevel shadow, and external contour rotation. Per-window kept (`window_kept.mbt`), reset by `reset_glass`.
+let glass_light_angle_said : Ref[@signals.Signal[Double]] = Ref(@signals.signal(0.0, same=fn(a, b) { a == b }))
+
+///|
 fn reset_glass() -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
+  glass_paint.liquid_run = 0
+  glass_paint.liquid_blur = 0.0
+  glass_paint.liquid_first = -1
+  glass_paint.liquid_y0 = 0.0
+  glass_paint.liquid_y1 = 0.0
   glass_paint.run_start = -1
   glass_paint.run_len = 0
   glass_paint.solid = false
   glass_paint.forced = -1
   @signals.untracked(fn() { glass_forced_said.val.set(-1) })
+  @signals.untracked(fn() { glass_light_angle_said.val.set(0.0) })
   glass_paint.in_group = 0
   glass_paint.ink_r = 0.0
+}
+
+///|
+/// Set the global ambient light axis angle (in radians, `0.0` = default top-down) for liquid glass surfaces.
+pub fn set_glass_light_angle(radians : Double) -> Unit {
+  glass_light_angle_said.val.set(radians)
+}
+
+///|
+/// Read the current global ambient light axis angle (in radians) for liquid glass surfaces.
+pub fn glass_light_angle() -> Double {
+  glass_light_angle_said.val.get()
 }
 
 ///|
@@ -117,6 +151,11 @@ pub fn Ctx::glass_solid(self : Ctx) -> Bool {
 fn Ctx::glass_frame(self : Ctx) -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
+  glass_paint.liquid_run = 0
+  glass_paint.liquid_blur = 0.0
+  glass_paint.liquid_first = -1
+  glass_paint.liquid_y0 = 0.0
+  glass_paint.liquid_y1 = 0.0
   glass_paint.run_start = -1
   glass_paint.run_len = 0
   glass_paint.in_group = 0
@@ -125,23 +164,24 @@ fn Ctx::glass_frame(self : Ctx) -> Unit {
 }
 
 ///|
-fn rects_meet(a : Int, b : Int, inst : FixedArray[Double]) -> Bool {
+fn rects_meet_by(a : Int, b : Int, inst : FixedArray[Double], pad : Double) -> Bool {
   let pa = a * inst_size
   let pb = b * inst_size
-  inst[pa] < inst[pb] + inst[pb + 2] &&
-  inst[pb] < inst[pa] + inst[pa + 2] &&
-  inst[pa + 1] < inst[pb + 1] + inst[pb + 3] &&
-  inst[pb + 1] < inst[pa + 1] + inst[pa + 3]
+  inst[pa] - pad < inst[pb] + inst[pb + 2] + pad &&
+  inst[pb] - pad < inst[pa] + inst[pa + 2] + pad &&
+  inst[pa + 1] - pad < inst[pb + 1] + inst[pb + 3] + pad &&
+  inst[pb + 1] - pad < inst[pa + 1] + inst[pa + 3] + pad
 }
 
 ///|
 /// The glass instance of node `n` (its frame), at `alpha`.
 fn Ctx::emit_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
-  self.glass_inst(n.x, n.y, n.fw, n.fh, n.radius, gl, alpha)
-  // (frosted: its corners each its own; liquid merges shapes of one corner each, the renderers' groups: its roundest)
-  if !gl.liquid {
-    self.corners_last(n)
+  if gl.strength <= 0.001 {
+    return
   }
+  self.glass_inst(n.x, n.y, n.fw, n.fh, n.radius, gl, alpha * gl.strength)
+  // (frosted, unmerged liquid, and merged liquid all keep each shape's 4 independent corner radii in 36..39)
+  self.corners_last(n)
   self.glass_capture(self.ninst - 1, gl.liquid, gl.shares_capture)
 }
 
@@ -159,6 +199,13 @@ fn Ctx::glass_inst(
   alpha : Double,
 ) -> Unit {
   let kind = if gl.liquid { 6.0 } else { 5.0 }
+  let blur_slot = if !gl.liquid {
+    if gl.contained { -gl.blur } else { gl.blur }
+  } else if gl.blur <= 0.0 && gl.zoom > 1.0001 {
+    -(dmin(gl.zoom, 3.0) - 1.0)
+  } else {
+    dmax(gl.blur, 0.0)
+  }
   self.push_inst(
     x,
     y,
@@ -167,18 +214,23 @@ fn Ctx::glass_inst(
     radius,
     kind,
     gl.saturation,
-    if gl.contained && !gl.liquid { -gl.blur } else { gl.blur },
+    blur_slot,
     gl.tint,
     1.0,
     if gl.liquid { gl.rim } else { gl.rim_edge },
     if gl.liquid { gl.bezel } else { gl.rim_lit },
-    if gl.backdrop_highlight > 0 { -gl.backdrop_highlight.to_double() } else if gl.liquid { glass_spot(gl.spot) } else { gl.rim_back },
+    if gl.liquid {
+      let spot_v = glass_spot(gl.spot)
+      if gl.adaptive { -(spot_v + 1.0) } else { spot_v }
+    } else {
+      gl.rim_back
+    },
     alpha,
   )
   let b = (self.ninst - 1) * inst_size
   let a = self.inst
   a[b + 21] = gl.refraction
-  a[b + 22] = gl.chroma
+  a[b + 22] = if gl.liquid { gl.chroma } else if gl.progressive { -1.0 } else { 0.0 }
   a[b + 23] = gl.merge
 }
 
@@ -206,6 +258,67 @@ fn glass_spot(spot : (Double, Double)?) -> Double {
 }
 
 ///|
+/// Whether any non-shadow, non-data instance in kept ride `group`'s `[first, first + count)` (offset by `dx, dy`)
+/// intersects `[kx0, ky0, kx1, ky1]`, handling nested `kind == 13.0` headers without reading unwritten slots.
+fn glass_ride_blocks(
+  group : Int,
+  first : Int,
+  count : Int,
+  dx : Double,
+  dy : Double,
+  kx0 : Double,
+  ky0 : Double,
+  kx1 : Double,
+  ky1 : Double,
+) -> Bool {
+  match ride_groups.get(group) {
+    None => true
+    Some(rk) => {
+      let (rx0, ry0, rx1, ry1) = rk.reach
+      if rx1 + dx <= kx0 || kx1 <= rx0 + dx || ry1 + dy <= ky0 || ky1 <= ry0 + dy {
+        return false
+      }
+      let ra = rk.inst
+      let mut i = first
+      let end = first + count
+      while i < end {
+        let p = i * inst_size
+        let ik = ra[p + 5]
+        if ik == 13.0 {
+          let sub_n = ra[p + 14].to_int()
+          if glass_ride_blocks(
+              ra[p + 12].to_int(),
+              ra[p + 13].to_int(),
+              sub_n,
+              dx + ra[p],
+              dy + ra[p + 1],
+              kx0,
+              ky0,
+              kx1,
+              ky1,
+            ) {
+            return true
+          }
+          i = i + (if sub_n > 0 { sub_n } else { 1 })
+          continue
+        }
+        if ik != 2.0 && ik != 12.0 && ra[p + 2] > 0.0 && ra[p + 3] > 0.0 {
+          let ix0 = ra[p] + dx
+          let iy0 = ra[p + 1] + dy
+          let ix1 = ix0 + ra[p + 2]
+          let iy1 = iy0 + ra[p + 3]
+          if ix0 < kx1 && kx0 < ix1 && iy0 < ky1 && ky0 < iy1 {
+            return true
+          }
+        }
+        i = i + 1
+      }
+      false
+    }
+  }
+}
+
+///|
 /// The capture glass instance `k` (just put into the frame, its kind and blur said) takes, as the frame is composed: the
 /// last frosted capture's where it `shares` one; else that of the glass just before it, where it may share it; else one
 /// of its own. Told of each glass as it goes into the frame, whoever made it (a node of the old view's as it is painted,
@@ -215,37 +328,135 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
   let a = self.inst
   let kind = a[b + 5]
   let blur = a[b + 7]
-  if shares && !liquid && glass_paint.frost_run != 0 {
+  // For liquid glass (kind 6), a negative slot 7 encodes clear-lens optical zoom (-(zoom - 1.0)) with effective blur 0.0.
+  let eff_blur = if liquid && blur < 0.0 { 0.0 } else { blur }
+  let is_single_liquid = liquid && a[b + 23] <= 0.0
+  let is_progressive = !liquid && a[b + 22] < -0.5
+  if shares && !liquid && !is_progressive && glass_paint.frost_run != 0 {
     // the last frosted capture's (liquid glass's is no frost, and only of what is under its shapes), the run as it was
     a[b + 20] = -glass_paint.frost_run.to_double()
     return
   }
+  if shares &&
+    is_single_liquid &&
+    eff_blur >= 0.0 &&
+    glass_paint.liquid_run != 0 &&
+    glass_paint.liquid_blur == eff_blur &&
+    glass_paint.liquid_first >= 0 {
+    let kx0 = a[b]
+    let ky0 = a[b + 1]
+    let kx1 = kx0 + a[b + 2]
+    let ky1 = ky0 + a[b + 3]
+    let dy_gap = dmax(0.0, dmax(ky0 - glass_paint.liquid_y1, glass_paint.liquid_y0 - ky1))
+    if dy_gap <= 64.0 {
+      let run_tag = -glass_paint.liquid_run.to_double()
+      let mut blocked = false
+      let mut j = glass_paint.liquid_first
+      while j < k {
+        let pj = j * inst_size
+        let jk = a[pj + 5]
+        if jk == 13.0 {
+          let sub_n = a[pj + 14].to_int()
+          if glass_ride_blocks(
+              a[pj + 12].to_int(),
+              a[pj + 13].to_int(),
+              sub_n,
+              a[pj],
+              a[pj + 1],
+              kx0,
+              ky0,
+              kx1,
+              ky1,
+            ) {
+            blocked = true
+            break
+          }
+          j = j + (if sub_n > 0 { sub_n } else { 1 })
+          continue
+        }
+        if jk != 2.0 &&
+          jk != 12.0 &&
+          a[pj + 20] != run_tag &&
+          a[pj + 2] > 0.0 &&
+          a[pj + 3] > 0.0 &&
+          rects_meet_by(j, k, a, 0.0) {
+          blocked = true
+          break
+        }
+        j = j + 1
+      }
+      if !blocked {
+        a[b + 20] = run_tag
+        glass_paint.liquid_y0 = dmin(glass_paint.liquid_y0, ky0)
+        glass_paint.liquid_y1 = dmax(glass_paint.liquid_y1, ky1)
+        return
+      }
+    }
+  }
   // one capture with the glass just before it: right after it, as it is,
-  // the same blur, not over it, and (liquid) a group of fewer than 8; glass
-  // contained (blur below 0) a capture of its own box alone
+  // the same blur, not over it, and (merged liquid) a group of fewer than 8; frosted glass
+  // contained (blur below 0) or progressive (slot 22 < -0.5) takes a capture of its own
   let prev = glass_paint.run_start + glass_paint.run_len
+  let prev_is_single = liquid && k > 0 && a[(k - 1) * inst_size + 23] <= 0.0
+  let prev_is_progressive = !liquid && k > 0 && a[(k - 1) * inst_size + 22] < -0.5
+  let prev_eff_blur = if k > 0 {
+    let pb = a[(k - 1) * inst_size + 7]
+    if liquid && pb < 0.0 { 0.0 } else { pb }
+  } else {
+    0.0
+  }
   let mut same = glass_paint.run != 0 &&
     prev == k &&
-    blur >= 0.0 &&
+    !is_progressive &&
+    !prev_is_progressive &&
+    eff_blur >= 0.0 &&
     a[(k - 1) * inst_size + 5] == kind &&
-    a[(k - 1) * inst_size + 7] == blur &&
-    (!liquid || (glass_paint.run_len < 8 && a[b + 14] >= 0.0 && a[(k - 1) * inst_size + 14] >= 0.0))
-  if same && !liquid {
-    for j in glass_paint.run_start..<k {
-      if rects_meet(j, k, a) {
+    prev_eff_blur == eff_blur &&
+    (!liquid ||
+      (is_single_liquid && prev_is_single) ||
+      (!is_single_liquid && !prev_is_single && glass_paint.run_len < 8))
+  if same && (!liquid || is_single_liquid) {
+    let pad = if is_single_liquid { 2.0 } else { 0.0 }
+    if is_single_liquid && glass_paint.liquid_run == glass_paint.run && glass_paint.liquid_first >= 0 {
+      let ky0 = a[b + 1]
+      let ky1 = ky0 + a[b + 3]
+      let dy_gap = dmax(0.0, dmax(ky0 - glass_paint.liquid_y1, glass_paint.liquid_y0 - ky1))
+      if dy_gap > 64.0 {
         same = false
-        break
+      }
+    }
+    if same {
+      for j in glass_paint.run_start..<k {
+        if rects_meet_by(j, k, a, pad) {
+          same = false
+          break
+        }
       }
     }
   }
   if same {
     glass_paint.run_len = glass_paint.run_len + 1
+    if is_single_liquid && glass_paint.liquid_run == glass_paint.run {
+      glass_paint.liquid_y0 = dmin(glass_paint.liquid_y0, a[b + 1])
+      glass_paint.liquid_y1 = dmax(glass_paint.liquid_y1, a[b + 1] + a[b + 3])
+    }
   } else {
     glass_paint.run = glass_paint.run + 1
     glass_paint.run_start = k
     glass_paint.run_len = 1
-    if !liquid {
+    if !liquid && !is_progressive {
       glass_paint.frost_run = glass_paint.run
+      glass_paint.liquid_run = 0
+      glass_paint.liquid_first = -1
+    } else if is_single_liquid && eff_blur >= 0.0 {
+      glass_paint.liquid_run = glass_paint.run
+      glass_paint.liquid_blur = eff_blur
+      glass_paint.liquid_first = k
+      glass_paint.liquid_y0 = a[b + 1]
+      glass_paint.liquid_y1 = a[b + 1] + a[b + 3]
+    } else {
+      glass_paint.liquid_run = 0
+      glass_paint.liquid_first = -1
     }
   }
   a[b + 20] = -glass_paint.run.to_double()
@@ -284,11 +495,17 @@ fn Ctx::emit_group_glass(self : Ctx, i : Int, alpha_in : Double) -> Unit {
 /// drop of a liquid group's (drawn as its group's one shape) casts none of
 /// its own.
 fn Ctx::paint_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
+  if gl.strength <= 0.001 {
+    if n.shadow > 0.0 {
+      self.paint_shadow(n, alpha, n.shadow_out)
+    }
+    return
+  }
   if glass_paint.solid {
     if n.shadow > 0.0 {
       self.paint_shadow(n, alpha, false)
     }
-    self.emit_rect(n.x, n.y, n.fw, n.fh, n.radius, gl.solid, 0.0, 0L, alpha)
+    self.emit_rect(n.x, n.y, n.fw, n.fh, n.radius, gl.solid, 0.0, 0L, alpha * gl.strength)
     self.notch_last(n)
     self.corners_last(n)
     return

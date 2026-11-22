@@ -8,6 +8,7 @@ import { type Head, type Rec, type Row, Folded, OWN_LOG, RESTORE_ORDER, THREAD_C
 import { headFile } from "./replica-export.ts";
 import { FORMER_OWN_NAMES, STILLFAIL_CONNECT, STILLFAIL_SURFACE } from "../../src/store/rows.ts";
 import { NotEmpty, type Outcome, type Ready, copyDir, moved, outcomeFile, readyFile, restoreDir } from "../../src/replica/restore.ts";
+import { settleConversationInTx } from "../../src/store/conversations.ts";
 export * from "../../src/replica/restore.ts";
 
 /// A generation folded: its head, and what its batches say now. Throws where a batch the head names is not there.
@@ -153,6 +154,9 @@ export function build(db: string, dir: string, files: string, dataDir: string, n
         } finally {
           folded.close();
           rmSync(work, { force: true }); // sync: the tests' reference only
+        }
+        if (merging) {
+          for (const id of new Set(ids.values())) settleConversationInTx(d, id, now, null);
         }
         for (const table of RESTORE_ORDER) if (has(table)) rows[table] = merging ? (put[table] ?? 0) : (d.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
         d.prepare("INSERT INTO replica_restored (origin, gen, at, rows) VALUES (?, ?, ?, ?)").run(head.origin, head.gen, now, JSON.stringify(rows));

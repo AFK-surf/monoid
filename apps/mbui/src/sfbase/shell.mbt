@@ -24,9 +24,13 @@ pub(all) struct Shell {
   detail : (Source, ChatRef, String) -> Unit
   /// a file asked to be opened beside the page (its `view:` tab: viewer_tab.mbt) put there where the layout has a side
   /// panel for the page in view (the wide frame's chat), in front: the tab it put there (that file's tab there
-  /// already, by whatever key it was opened with), none where it has nowhere (what asked opens it over the whole
-  /// window). What open_preview calls, never a page itself
-  beside : (String) -> String?
+  /// already, by whatever key it was opened with) and whether it was put there new, none where it has nowhere (what
+  /// asked opens it over the whole window). `beside(tab, full)`: `full`, put there to go over the whole window at once
+  /// (tab_full.mbt), a new one put there with no slide of the panel. What open_preview calls, never a page itself
+  beside : (String, Bool) -> (String, Bool)?
+  /// a file's tab put in the place of another of the page in view's side panel (`beside_for(tab, was)`: a picture's tab
+  /// stepped to the one beside it, viewer_tab.mbt), in front: the tab it put there, none where it has no such panel
+  beside_for : (String, String) -> String?
   /// whether the layout has such a side panel for the page in view now: what offers to open a file there asks
   beside_room : () -> Bool
   /// what back does where the layout has it (the tiers' table), none where back is the
@@ -58,7 +62,8 @@ pub fn bare_shell() -> Shell {
     open: stack_open,
     open_over: stack_open,
     detail: fn(_, _, _) {  },
-    beside: fn(_) { None },
+    beside: fn(_, _) { None },
+    beside_for: fn(_, _) { None },
     beside_room: fn() { false },
     back: stack_back,
     show: fn() {  },
@@ -232,7 +237,7 @@ pub fn place_page(place : String) -> Page {
 /// place; `way` the side it comes in from (the bar's order: -1 its left, 1 its right, 0 none). The same place again
 /// changes nothing. Whether it went. `kept`: the page that leaves the root put on the stack's shelf and the place's taken
 /// back from it (nav_root_kept: the bottom bar's on 小屏), not let go and made anew.
-pub fn go_place(place : String, way? : Int = 0, kept? : Bool = false) -> Bool {
+pub fn go_place(place : String, way? : Int = 0, kept? : Bool = false, tab_ms? : Double = 0.0) -> Bool {
   let page = place_page(place)
   if app.nav.depth() == 1 && app.nav.top() == page {
     return false
@@ -241,7 +246,9 @@ pub fn go_place(place : String, way? : Int = 0, kept? : Bool = false) -> Bool {
     (shell.val.close_overlays)()
     app.switch_way = way
     nav_home()
-    if kept {
+    if tab_ms > 0.0 {
+      app.nav.replace_tab(page, way~, dur=tab_ms, kept~)
+    } else if kept {
       nav_root_kept(page)
     } else {
       app.nav.replace(page)

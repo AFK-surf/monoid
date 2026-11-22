@@ -7,6 +7,7 @@ import { activity, hint, parsePrompt, parseTasks, presentHistory, type Context }
 import { holdLanguage } from "../src/i18n.ts";
 import { markdown } from "../src/markdown.ts";
 import { heardFiles, readItem } from "../src/elsewhere.ts";
+import { sentHead } from "../src/sent-from.ts";
 
 holdLanguage();
 // deno-lint-ignore no-explicit-any
@@ -127,6 +128,36 @@ test("another_chats_letter_goes_by_that_chats_name_without_its_heading", () => {
     assert.deepEqual([letter.from.name, letter.text], ["废弃 station", "**job** 停了"]);
     assert.deepEqual(letter.md, markdown("**job** 停了"));
   }
+});
+
+test("a_letter_from_a_chat_titled_with_a_mention_goes_by_its_title_without_it", () => {
+  // station messages.ts `chatNamed`: in a Slack thread the title's `&`, `<` and `>` are escaped.
+  const link = "https://app.still.fail/o/w/s/chat%3Ac-src";
+  const head = `来自 <${link}|&lt;@U0CHCD9FPKQ&gt; 你来领导 UIUX &amp; 设计>：`;
+  assert.deepEqual(sentHead(`${head}\n\n同步`), { title: "<@U0CHCD9FPKQ> 你来领导 UIUX & 设计", link, rest: "同步", opened: false });
+  const text = `<message via="slack" thread="C_EXT/1.0" from="<@U0CHCD9FPKQ> 你来领导 UIUX &amp; 设计" bot ts="1.1">\n${head}\n\n同步（cc <@UBOT>）\n</message>`;
+  const h = presentHistory({ timeline: [{ kind: "user", text }], steps: [] }, cx([], [], []));
+  const [letter] = h.items[0].body.content.messages;
+  assert.deepEqual([letter.from.name, letter.text], ["你来领导 UIUX & 设计", "同步（cc @ds-ember）"]);
+  // Only mentions: named as they are.
+  const bare = `<message via="slack" thread="C_EXT/1.0" from="x" bot ts="1.1">\n来自 <${link}|&lt;@UBOT&gt;>：\n\n好\n</message>`;
+  assert.equal(presentHistory({ timeline: [{ kind: "user", text: bare }], steps: [] }, cx([], [], [])).items[0].body.content.messages[0].from.name, "ds-ember");
+});
+
+test("another_chats_letter_given_from_a_slack_thread_is_not_kept_as_said_in_slack", () => {
+  const at = "2026-11-19T10:15:00Z";
+  const link = "https://app.still.fail/o/w/s/chat%3Ac-src";
+  const given = (from: string, bot: boolean, body: string) => `<message via="slack" thread="C_EXT/1795000000.000100" from="${from}"${bot ? " bot" : ""} ts="1795083300.000000">\n${body}\n</message>`;
+  // session_send: never said in Slack.
+  assert.equal(readItem(0, { kind: "user", at, text: given("<@U0CHCD9FPKQ> 你来领导 UIUX", true, `来自 <${link}|&lt;@U0CHCD9FPKQ&gt; 你来领导 UIUX>：\n\n同步一个问题`) }), null);
+  assert.equal(readItem(0, { kind: "user", at, text: given("another agent", true, `From [UIUX](${link}):\n\nsync`) }), null);
+  // chat_create's first message was posted there; and a bot's or a person's own words are as they were.
+  const opened = readItem(0, { kind: "user", at, text: given("x", true, `由 <${link}|标题> 开的 chat：\n\n开场`) }) as J;
+  assert.equal(opened.said.length, 1);
+  const bot = readItem(0, { kind: "user", at, text: given("<@U0CHCD9FPKQ>", true, "收到，我先跟 <@U0CHCD9FPKQ> 确认一下复现用例。") }) as J;
+  assert.deepEqual(bot.said.map((s: J) => [s.user, s.who, s.text]), [["<@U0CHCD9FPKQ>", null, "收到，我先跟 <@U0CHCD9FPKQ> 确认一下复现用例。"]]);
+  const person = readItem(0, { kind: "user", at, text: given("Mia (U9)", false, `来自 <${link}|x>：\n\n转一下`) }) as J;
+  assert.equal(person.said.length, 1, "a person's words are theirs whatever they begin with");
 });
 
 test("an_agents_letter_reads_as_markdown_a_persons_words_as_they_wrote_them", () => {
@@ -315,18 +346,22 @@ test("boundaries_stand_alone_and_the_work_between_folds_into_a_group", () => {
   // What it waited for (chat_state's `for`) leads its words, and goes with the wait for the pages' running count.
   const ci = waits('{"kind":"waiting","seconds":600,"for":"CI 跑完"}', "2026-09-27T00:05:00.000Z");
   assert.deepEqual([ci.text, ci.wait.what], ["CI 跑完 · 等待了 5m / 10m", "CI 跑完"]);
-  // An agent that went on working after its mark waits no more from its next call (another mark is one); what it posts
-  // as its turn ends, and a sub-agent's work, do not end it.
-  const then = (...more: J[]) => {
-    const timeline: J[] = [{ kind: "tool_call", tool: "mcp__stillfail__chat_state", text: '{"kind":"waiting","seconds":600}', at: "2026-09-27T00:00:00.000Z" }, ...more];
-    return presentHistory({ loaded: true, timeline }, cx(threads, members, slack)).items[0].body.content.wait.until;
-  };
+  // An agent that went on working after its mark never waited: no row says it did (another mark stands in its place).
+  // What it posts as its turn ends, and a sub-agent's work, do not end the wait.
+  const mark: J = { kind: "tool_call", tool: "mcp__stillfail__chat_state", text: '{"kind":"waiting","seconds":600}', at: "2026-09-27T00:00:00.000Z" };
+  const waitRows = (more: J[], turnOpen = false) =>
+    presentHistory({ loaded: true, timeline: [mark, ...more] }, { ...cx(threads, members, slack), turnOpen }).items.filter((i: J) => i.body.content.wait != null);
   const later = (k: number) => `2026-09-27T00:00:0${k}.000Z`;
-  assert.equal(then({ kind: "assistant", text: "checking", at: later(1) }, { kind: "tool_call", tool: "Bash", text: '{"command":"gh pr checks"}', at: later(3) }), Date.parse(later(3)));
-  assert.equal(then({ kind: "tool_call", tool: "mcp__stillfail__chat_state", text: '{"kind":"waiting","seconds":60}', at: later(4) }), Date.parse(later(4)));
-  assert.equal(then({ kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"C/1","text":"waiting on CI"}', at: later(2) }, { kind: "assistant", text: "waiting", at: later(3) }), null);
-  assert.equal(then({ kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"C/1","text":"done","kind":"all_done"}', at: later(2) }), Date.parse(later(2)));
-  assert.equal(then({ kind: "tool_call", tool: "Bash", text: '{"command":"ls"}', at: later(5), subagent: true }), null);
+  assert.equal(waitRows([{ kind: "assistant", text: "checking", at: later(1) }, { kind: "tool_call", tool: "Bash", text: '{"command":"gh pr checks"}', at: later(3) }]).length, 0);
+  assert.equal(waitRows([{ kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"C/1","text":"done","kind":"all_done"}', at: later(2) }]).length, 0);
+  const second = waitRows([{ kind: "tool_call", tool: "mcp__stillfail__chat_state", text: '{"kind":"waiting","seconds":60}', at: later(4) }]);
+  assert.deepEqual(second.map((i: J) => [i.body.content.wait.seconds, i.body.content.wait.until]), [[60, null]]);
+  assert.equal(waitRows([{ kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"C/1","text":"waiting on CI"}', at: later(2) }, { kind: "assistant", text: "waiting", at: later(3) }])[0].body.content.wait.until, null);
+  assert.equal(waitRows([{ kind: "tool_call", tool: "Bash", text: '{"command":"ls"}', at: later(5), subagent: true }])[0].body.content.wait.until, null);
+  // Said in a turn still running, it shows only once that turn ends as a wait; one a prompt ended stays.
+  assert.equal(waitRows([], true).length, 0);
+  assert.equal(waitRows([], false).length, 1);
+  assert.equal(waitRows([{ kind: "user", text: '<message via="ember">done</message>', at: later(2) }], true).length, 1);
   assert.deepEqual(h.live, [{ id: "s", text: "正在思考…" }]);
   assert.equal(h.phase.text, "正在启动 Codex");
   // The model answering is said in the person's language, as the chat's activity says it.
@@ -425,6 +460,26 @@ test("a_post_read_from_the_transcript_stands_where_it_was_made", () => {
   const items = presentHistory({ loaded: true, timeline }, cx([], [], [])).items;
   assert.deepEqual(items.map((i: J) => i.body.kind), ["group", "post", "text"]);
   assert.equal(items[1].body.content.text, "done");
+});
+
+test("a_post_held_back_by_a_new_message_is_marked_unsent_until_sent_by_its_id", () => {
+  const held = "Not posted: a message you had not read came in CHAT/1.0 (ts 1.5), and it comes to you next; no state was recorded. Held as held-3. After reading it, …";
+  const timeline: J[] = [
+    { kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"CHAT/1.0","text":"done","kind":"all_done"}', callId: "p" },
+    { kind: "tool_result", callId: "p", ok: true, text: held },
+    { kind: "user", text: '<message via="web" from="Ada (a@x.com)" ts="1.5" thread="CHAT/1.0">\nwait\n</message>' },
+  ];
+  const posts = (t: J[]) => presentHistory({ loaded: true, timeline: t }, cx([], [], [])).items.filter((i: J) => i.body.kind === "post").map((i: J) => i.body.content);
+  const [dropped] = posts(timeline);
+  assert.equal(dropped.unsent, true);
+  assert.equal(dropped.ends, undefined, "its state was not recorded");
+  // Another post in its place: the held one stays unsent.
+  const other = [...timeline, { kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"CHAT/1.0","text":"ok, waiting","kind":"all_done"}', callId: "q" }, { kind: "tool_result", callId: "q", ok: true, text: "Posted to CHAT/1.0." }];
+  assert.deepEqual(posts(other).map((p: J) => p.unsent), [true, false]);
+  // Sent as written by its id: it went out.
+  const sent = [...timeline, { kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"CHAT/1.0","send":"held-3","kind":"all_done"}', callId: "s" }, { kind: "tool_result", callId: "s", ok: true, text: "Posted to CHAT/1.0." }];
+  const [went] = posts(sent);
+  assert.equal(went.unsent, false);
 });
 
 test("each_prompt_that_woke_the_agent_begins_a_turn_and_merges_times_within_five_minutes", () => {

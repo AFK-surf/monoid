@@ -3,8 +3,8 @@
 ///|
 fn init {
   let asked =
-    #|{"topic":"vaultItems","workspace":"ws-friends","vault":"plain"}
+    #|{"topic":"vaultItems","workspace":"ws-friends","vault":"v_01JAAAAAAAAAAAAAAAAAAAAAAA"}
   let messages =
-    #|[[{"path":["items"],"key":["id"],"patch":"item-0","ops":[{"path":["lastUse","command"],"set":"gh pr merge 5244 --squash"},{"path":["lastUse","hosts"],"append":["api.github.com","github.com","uploads.github.com"]},{"path":["lastUse","howText"],"set":"gh pr merge 5244 --squash · 代理"},{"path":["lastUse","mode"],"set":"proxy"}]}]]
+    #|[[{"path":["items"],"key":["id"],"patch":"i_01JAAAAAAAAAAAAAAAAAAAAA00","ops":[{"path":["lastUse","command"],"set":"gh pr merge 5244 --squash"},{"path":["lastUse","hosts"],"append":["api.github.com","github.com","uploads.github.com"]},{"path":["lastUse","howText"],"set":"gh pr merge 5244 --squash · 代理"},{"path":["lastUse","mode"],"set":"proxy"}]}]]
   put_changes(asked, "used", messages)
 }

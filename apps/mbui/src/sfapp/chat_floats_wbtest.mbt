@@ -4,18 +4,20 @@
 // rail, its ticks there before held where they are drawn as a message comes, never a jump.
 
 ///|
-/// How opaque the way back to the newest is drawn, by its ground's (its round button's, inside `rect`), 0 to 255; none
-/// where nothing of it is drawn there.
+/// How opaque the way back to the newest is drawn, by its liquid glass surface's alpha (the `kind == 6` instance it is
+/// drawn on, its own or the capsule's it shares with 对话目录, over the middle of `rect`), 0 to 255; none where nothing
+/// of it is drawn there.
 fn to_newest_alpha(t : @ui.Tester, rect : (Double, Double, Double, Double)) -> Int64? {
   let (x, y, w, h) = rect
+  let (mx, my) = (x + w / 2.0, y + h / 2.0)
   let mut most : Int64? = None
-  for d in t.drawn_rects() {
-    let (sx, sy, sw, sh, c) = d
-    let (cx, cy) = (sx + sw / 2.0, sy + sh / 2.0)
-    if cx > x && cx < x + w && cy > y && cy < y + h {
-      let a = c & 0xFFL
-      if most is None || a > most.unwrap() {
-        most = Some(a)
+  for a in t.drawn_instances() {
+    if a.length() > 15 && a[5] == 6.0 {
+      if a[0] <= mx && mx <= a[0] + a[2] && a[1] <= my && my <= a[1] + a[3] {
+        let alpha = (a[15] * 255.0).round().to_int64()
+        if most is None || alpha > most.unwrap() {
+          most = Some(alpha)
+        }
       }
     }
   }
@@ -132,7 +134,6 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: opened aga
 fn rail_told_tester(outline : @signals.Signal[Json?]) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
   let base = fixture("chat-outline-away")
   let told = Ref(0)
   let src : Source = {

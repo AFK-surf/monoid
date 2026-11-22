@@ -3,10 +3,13 @@
 // advances.
 
 ///|
-// generation_asks and view_reads are read by tests alone
-#warnings("-unused_field")
+// generation_asks and view_reads are read by tests alone; present_ms is set by tests alone
+#warnings("-unused_field-unused_mut")
 struct FakeHost {
   mut time : Double
+  /// how long presenting a frame takes (its clock moved on by it as each is presented, as a device's GPU may hold a
+  /// frame's present: 0 by default, presenting taking no time)
+  mut present_ms : Double
   /// how late the frame drawn at `late_after` reached the screen, as said of it (Tester::frame_late, a run's LATE line):
   /// what the first frame drawn after then says (frame `late_frame`, once it is drawn); every other frame's was on time
   mut late : Double
@@ -178,6 +181,10 @@ struct FakeHost {
   window_ids_closed : Array[Int]
   /// the number on the app's icon as last told (@ui.set_badge)
   mut badge : Int
+  /// whether the app is registered for login auto-launch (@hostapi.auto_launch / set_auto_launch)
+  mut auto_launch : Bool
+  /// active global hotkeys registered by id (@hostapi.hotkey_set / hotkey_clear)
+  hotkeys : Map[String, String]
   /// what the app's own native calls say, by name, as its host would hand them on (Tester::set_app_said), and what
   /// the app told them, name and argument (Tester::app_told)
   app_said : Map[String, String]
@@ -294,6 +301,10 @@ struct FakeHost {
   /// (@hostapi.perf_open; Tester::perf_opened)
   mut perf_opens : Bool
   mut perf_opened : Int
+  /// whether a file can be shown in its folder (@hostapi.reveals_files; Tester::set_reveals), and those shown
+  /// (@hostapi.reveal_file; Tester::revealed), oldest first
+  mut reveals : Bool
+  revealed : Array[String]
   /// the record's files' bytes (@hostapi.perf_size; Tester::set_perf_size)
   mut perf_bytes : Double
   /// what a real host said of its views as a run recorded it (Tester::view_said): a video's frames' times, by (view,
@@ -508,12 +519,14 @@ fn h_event_finger() -> Int {
 ///|
 /// When the input event being handled happened (the host's, else now; in a frame the frame's logic's moment,
 /// view_logic_at: the frame goes no further than that however long its work takes, on a device's host as under a
-/// Tester's, whose clock does not move in a frame).
+/// Tester's, whose clock does not move in a frame). So too a scripted run's step acting on the frame just presented
+/// (drive_frame, drive_acting): what it hands the app has no host time of its own and meets the tree at that frame's
+/// moment, where it found what it acts on, however long presenting the frame took.
 fn h_event_time() -> Double {
   let t = @hostapi.event_time()
   if t >= 0.0 {
     t
-  } else if in_frame.val {
+  } else if in_frame.val || drive_acting.val {
     view_logic_at.val
   } else {
     @hostapi.now()
@@ -704,9 +717,23 @@ fn h_present(buf : FixedArray[Double], count : Int) -> Unit {
   let (r, gg, b) = c.clear
   // what of it differs from the frame presented before, the part a host that keeps its picture draws again
   let t0 = h_now()
+  let la = @signals.untracked(glass_light_angle)
+  @hostapi.set_glass_light_angle(la)
   // (a frame of its looks alone with only lists moved by their headers (looks_frame): those headers compared alone)
   let moved = if looks_heads_only.val {
-    presented.moved(buf, count, c.window_w, c.window_h, c.scale, r, gg, b, list_heads.map(fn(h) { h.at }), known=damage_known)
+    presented.moved(
+      buf,
+      count,
+      c.window_w,
+      c.window_h,
+      c.scale,
+      r,
+      gg,
+      b,
+      list_heads.map(fn(h) { h.at }),
+      known=damage_known,
+      light_angle=la,
+    )
   } else {
     None
   }
@@ -726,6 +753,7 @@ fn h_present(buf : FixedArray[Double], count : Int) -> Unit {
         b,
         groups=!ride_spans.is_empty(),
         known=damage_known,
+        light_angle=la,
       )
   }
   damage_known.clear()

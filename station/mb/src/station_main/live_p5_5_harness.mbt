@@ -12,6 +12,16 @@
 //   hub}: answered once the agents' side was asked that (what a choice set going comes to);
 // - {step: "card", key, call: "may"|"chosen", viewer, card, option, at}: a part's card choice, as the admin API asks it;
 // - {step: "stop"}.
+// Asked with no parts made (live_p5_5_platforms.mbt as the connects use it):
+// - {step: "keepalive"}: how Feishu's and Comma's sockets are pinged and taken for dead ({feishu, comma}: {pingMs,
+//   staleMs});
+// - {step: "socket", url}: a platform's socket on the shell (`p55_shell_socket`) to the test's WebSocket server:
+//   whether it is open before it opened, once opened, and once the server closed it after its ping
+//   ({before, opened, said, after}), and a second socket cut off once opened ({cutOpened, cut});
+// - {step: "pageBase", state, channel}: where the session pages are as Comma's part is given them (`page_base_of`).
+// - {step: "fetchVia", via, url, manual}: a GET as the part `via` names asks the shell for it (Slack's `host_net`,
+//   Feishu's, the updates' `fetch_on`, Farview's release download `host_fetch_bytes`, the accounts' `host_io` with its
+//   `manual`), its answer ({status, redirected?, body}; Farview's: {body} or null).
 
 ///|
 let p5_5_harnessed : Ref[LiveBus?] = Ref(None)
@@ -34,10 +44,24 @@ async fn p5_5_harness(host : @host.Host, ask : Json) -> Result[Json, String] {
 
 ///|
 async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
-  match p55_jtext(ask, "step") {
+  match jtext_or_empty(ask, "step") {
+    "keepalive" => {
+      let said = (o : @connects_hub.SurfaceOptions) => ({ "pingMs": Json::number(o.ping_ms), "staleMs": Json::number(o.stale_ms) } : Json)
+      { "feishu": said(feishu_surface_options(host, "f1", None)), "comma": said(comma_surface_options(host, "c1", None)) }
+    }
+    "socket" => p5_5_socket_probe(host, jtext_or_empty(ask, "url"))
+    "fetchVia" => p5_5_fetch_via(host, jtext_or_empty(ask, "via"), jtext_or_empty(ask, "url"), jfield(ask, "manual") is True)
+    "pageBase" =>
+      page_base_of(
+        match jfield(ask, "state") {
+          Null => None
+          st => Some(st)
+        },
+        jtext_or_empty(ask, "channel"),
+      )
     "start" => {
-      let data = p55_jtext(ask, "data")
-      let app = p55_jtext(ask, "app")
+      let data = jtext_or_empty(ask, "data")
+      let app = jtext_or_empty(ask, "app")
       ignore(attempt(() => @drive.mkdir(path([data, "run"]), true)))
       let key = @cloud_lock.load_key(host, data)
       let db_path = path([data, "stillfail.db"])
@@ -55,7 +79,7 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
     step => {
       guard p5_5_harnessed.val is Some(bus) else { raise BusError("start first") }
       match step {
-        "overview" => Json::object(bus.parts.overview_of(p55_jfield(ask, "viewer"), lang_in(ask)))
+        "overview" => Json::object(bus.parts.overview_of(jfield(ask, "viewer"), lang_in(ask)))
         "route" =>
           match answer_route(bus.parts.all_routes(Json::null()), ask) {
             Some(a) => a
@@ -63,34 +87,34 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
           }
         "tools" => Json::array(bus.parts.all_tools().map(t => Json::string(t.name)))
         "call" =>
-          match bus.parts.all_tools().search_by(t => t.name == p55_jtext(ask, "name")) {
-            Some(i) => (bus.parts.all_tools()[i].call)(p55_jfield(ask, "args"), p55_jfield(ask, "context"))
-            None => raise BusError("no such tool offered: \{p55_jtext(ask, "name")}")
+          match bus.parts.all_tools().search_by(t => t.name == jtext_or_empty(ask, "name")) {
+            Some(i) => (bus.parts.all_tools()[i].call)(jfield(ask, "args"), jfield(ask, "context"))
+            None => raise BusError("no such tool offered: \{jtext_or_empty(ask, "name")}")
           }
-        "coord" => (bus.coord_ask.val)(p55_jtext(ask, "name"), p55_jfield(ask, "arg"))
+        "coord" => (bus.coord_ask.val)(jtext_or_empty(ask, "name"), jfield(ask, "arg"))
         "peers" =>
           {
             "methods": Json::array(bus.peer_handlers.keys().map(Json::string(_)).collect()),
             "prefixes": Json::array(bus.peer_prefixes.map(p => Json::string(p.0))),
           }
         "peer" => {
-          let (v, _) = bus.dispatch_peer(p55_jtext(ask, "from"), p55_jstr(ask, "workspace"), p55_jtext(ask, "method"), p55_jfield(ask, "params"), None)
+          let (v, _) = bus.dispatch_peer(jtext_or_empty(ask, "from"), jtext(ask, "workspace"), jtext_or_empty(ask, "method"), jfield(ask, "params"), None)
           v
         }
         "platform" => {
-          let args = match p55_jfield(ask, "args") {
+          let args = match jfield(ask, "args") {
             Array(xs) => xs
             _ => []
           }
-          updates_platform(bus.host, bus.data, p55_jtext(ask, "name"), args).unwrap_or(Json::null())
+          updates_platform(bus.host, bus.data, jtext_or_empty(ask, "name"), args).unwrap_or(Json::null())
         }
         "config" => {
-          let next = p55_jfield(ask, "config")
+          let next = jfield(ask, "config")
           (bus.config_update.val)(_ => next)
         }
         "standIn" => {
-          let hub = p55_jfield(ask, "hub")
-          let peers = p55_jfield(ask, "peers")
+          let hub = jfield(ask, "hub")
+          let peers = jfield(ask, "peers")
           bus.hub_ask.val = fn(name, arg) {
             p5_5_stood_asked.push({ "hub": Json::string(name), "args": arg })
             for w in p5_5_stood_waits {
@@ -98,12 +122,12 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
                 ignore(w.1.succeed(()))
               }
             }
-            p55_jfield(hub, name)
+            jfield(hub, name)
           }
           bus.peer_call.val = fn(target, ws, meth, params, _bytes) raise {
-            p5_5_stood_asked.push({ "peer": Json::string(target), "workspace": p55_jopt(ws), "method": Json::string(meth), "params": params })
+            p5_5_stood_asked.push({ "peer": Json::string(target), "workspace": jopt(ws), "method": Json::string(meth), "params": params })
             match peers {
-              Object(m) if m.contains(meth) => (p55_jfield(peers, meth), None)
+              Object(m) if m.contains(meth) => (jfield(peers, meth), None)
               _ => raise BusError("\{meth}: not answered by the test's stations")
             }
           }
@@ -111,8 +135,8 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
         }
         "asked" => Json::array(p5_5_stood_asked.copy())
         "heard" => {
-          let name = p55_jtext(ask, "hub")
-          if !p5_5_stood_asked.iter().any(x => p55_jstr(x, "hub") == Some(name)) {
+          let name = jtext_or_empty(ask, "hub")
+          if !p5_5_stood_asked.iter().any(x => jtext(x, "hub") == Some(name)) {
             let heard : @effect.Deferred[Unit] = @effect.Deferred::new()
             p5_5_stood_waits.push((name, heard))
             heard.wait()
@@ -120,11 +144,11 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
           Json::null()
         }
         "card" => {
-          guard bus.parts.card_choice_named(p55_jtext(ask, "key")) is Some(choice) else { raise BusError("no card choice") }
-          match p55_jtext(ask, "call") {
-            "may" => p55_jopt((choice.may)(p55_jfield(ask, "viewer"), p55_jfield(ask, "card"), p55_jfield(ask, "at")))
+          guard bus.parts.card_choice_named(jtext_or_empty(ask, "key")) is Some(choice) else { raise BusError("no card choice") }
+          match jtext_or_empty(ask, "call") {
+            "may" => jopt((choice.may)(jfield(ask, "viewer"), jfield(ask, "card"), jfield(ask, "at")))
             _ => {
-              (choice.chosen)(p55_jfield(ask, "viewer"), p55_jfield(ask, "card"), p55_jtext(ask, "option"), p55_jfield(ask, "at"))
+              (choice.chosen)(jfield(ask, "viewer"), jfield(ask, "card"), jtext_or_empty(ask, "option"), jfield(ask, "at"))
               Json::null()
             }
           }
@@ -136,5 +160,85 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
         _ => raise BusError("no such step: \{step}")
       }
     }
+  }
+}
+
+///|
+/// The next thing a socket says, named; a bound only on what must come (one that never comes fails the test, saying so).
+async fn p5_5_socket_said(sock : @connects_hub.Socket) -> String {
+  guard @effect.timeout(10000, () => sock.events.take()) is Some(ev) else {
+    raise BusError("the socket said nothing within 10s")
+  }
+  match ev {
+    Opened => "opened"
+    Said(_, _) => "said"
+    Pong => "pong"
+    Pinged => "pinged"
+    Closed => "closed"
+    Failed(e) => "failed: \{e}"
+    Refused(n, _) => "refused \{n}"
+  }
+}
+
+///|
+async fn p5_5_socket_probe(host : @host.Host, url : String) -> Json {
+  let open = p55_shell_socket(host)
+  let sock = open(url, [])
+  let before = (sock.is_open)()
+  let first = p5_5_socket_said(sock)
+  guard first == "opened" else { raise BusError("the socket did not open: \{first}") }
+  let opened = (sock.is_open)()
+  (sock.ping)()
+  let said = []
+  while true {
+    let next = p5_5_socket_said(sock)
+    said.push(Json::string(next))
+    if next == "closed" || next.has_prefix("failed") {
+      break
+    }
+  }
+  let after = (sock.is_open)()
+  let other = open(url, [])
+  let o = p5_5_socket_said(other)
+  guard o == "opened" else { raise BusError("the second socket did not open: \{o}") }
+  let cut_opened = (other.is_open)()
+  (other.terminate)()
+  {
+    "before": Json::boolean(before),
+    "opened": Json::boolean(opened),
+    "said": Json::array(said),
+    "after": Json::boolean(after),
+    "cutOpened": Json::boolean(cut_opened),
+    "cut": Json::boolean((other.is_open)()),
+  }
+}
+
+///|
+/// The step "fetchVia": `url` asked as the part `via` asks the shell for it.
+async fn p5_5_fetch_via(host : @host.Host, via : String, url : String, manual : Bool) -> Json {
+  let text = (b : Bytes) => Json::string(@utf8.decode_lossy(b))
+  match via {
+    "slack" => {
+      let r = (@slack.host_net(host, @slack.Wall::new(0.0)).fetch)("GET", url, [], None, 10_000)
+      { "status": Json::number(r.status.to_double()), "redirected": Json::boolean(r.redirected), "body": text(r.body) }
+    }
+    "feishu" => {
+      let r = (@feishu.host_net(host).fetch)({ url, verb: "GET", headers: [], body: None, timeout_ms: 10_000 })
+      { "status": Json::number(r.status.to_double()), "body": text(r.body) }
+    }
+    "updates" => {
+      let r = @updates.fetch_on(host, url)
+      { "status": Json::number(r.status.to_double()), "body": text(r.bytes()) }
+    }
+    "farview" =>
+      match (@browser.host_fetch_bytes(host, tmpdir()))(url) {
+        Some(b) => { "body": text(b) }
+        None => Json::null()
+      }
+    "oauth" => {
+      let r = (@accounts_oauth.host_io(host).fetch)({ url, method_: "GET", headers: [], body: None, timeout_ms: 10_000, manual })
+      { "status": Json::number(r.status.to_double()), "body": Json::string(r.body) }
+    }
+    other => raise LiveError("no part \{other} fetches")
   }
 }

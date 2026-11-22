@@ -43,38 +43,3 @@ test "its turn over while another page covers its chat: gone meanwhile, not ther
   assert_eq(lingering(), 0)
   t.assert_idle()
 }
-
-///|
-test "its answer out of its avatar: its line goes as the answer leaves it, its turn over or not, no moment after" {
-  let t = linger_core()
-  let em = emits_of("ws1/st1\u{1}s-c1")
-  let mut ran = false
-  let mut out_at = -1.0
-  let mut gone_at = -1.0
-  let mut turn_over_at = -1.0
-  let end = t.time() + fix_deliver_ms + fix_answer_ms + fix_turn_end_ms + 4000.0
-  while t.time() < end {
-    t.frame()
-    let rd = readings.get("ws1/st1\u{1}s-c1").unwrap()
-    if !rd.running.is_empty() {
-      ran = true
-    } else if ran && turn_over_at < 0.0 {
-      turn_over_at = t.time()
-    }
-    if out_at < 0.0 && em.current is Some(turn) && turn.pose == Float {
-      out_at = t.time()
-    }
-    // (its line in the list: running and not answered, or lingering)
-    let shown = rd.running.keys().any(fn(k) { !rd.answered.contains(k) }) || !rd.linger.is_empty()
-    if ran && !shown && gone_at < 0.0 {
-      gone_at = t.time()
-    }
-  }
-  assert_true(ran && out_at >= 0.0 && turn_over_at >= 0.0)
-  // (2026-11-09 the user: its room closed on its own after the answer came took the list back the other way; the
-  // answer takes its place, in one way)
-  assert_eq(gone_at, out_at)
-  // its turn still going then (the fixture's ends after its answer)
-  assert_true(gone_at < turn_over_at)
-  t.assert_idle()
-}

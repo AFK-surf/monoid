@@ -24,6 +24,10 @@ export type Health = {
   /// Whether a relay holds its endpoint inactive for another of its id (mesh/native.ts `relayConflict`): another
   /// station on its key. None from a release from before it said it.
   relayConflict?: boolean;
+  /// Its open file descriptors (handles on Windows), and its resident memory in bytes, where the system says them: a
+  /// leak or a drift seen from outside. None from a release from before it said them, or where it could not read them.
+  openFds?: number;
+  rssBytes?: number;
 };
 
 /// What written longer ago than this is taken for the word of a process that no longer runs its loop: some six windows
@@ -46,7 +50,7 @@ export function healthOf(text: unknown): Health | null {
   const h = text as Partial<Health> | null;
   if (h === null || typeof h !== "object") return null;
   if (!Number.isInteger(h.pid) || typeof h.updatedAt !== "number" || !["ok", "reconnecting", "direct"].includes(h.front as string)) return null;
-  return { pid: h.pid!, updatedAt: h.updatedAt, heldMaxMs: typeof h.heldMaxMs === "number" ? h.heldMaxMs : 0, front: h.front!, presenceOnline: h.presenceOnline === true, ...(h.relayConflict === true ? { relayConflict: true } : {}) };
+  return { pid: h.pid!, updatedAt: h.updatedAt, heldMaxMs: typeof h.heldMaxMs === "number" ? h.heldMaxMs : 0, front: h.front!, presenceOnline: h.presenceOnline === true, ...(h.relayConflict === true ? { relayConflict: true } : {}), ...(Number.isInteger(h.openFds) && h.openFds! >= 0 ? { openFds: h.openFds } : {}), ...(typeof h.rssBytes === "number" && Number.isFinite(h.rssBytes) && h.rssBytes >= 0 ? { rssBytes: h.rssBytes } : {}) };
 }
 
 /// How the station works, for `stillfail status`: from whether it runs (station.json's launcher there), what its process

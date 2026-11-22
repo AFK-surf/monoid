@@ -20,7 +20,12 @@ export const wanted = (name: string) => [".mp4", ".m4v", ".mov", ".webm", ".ogv"
 
 const run = (file: string, args: string[]) =>
   new Promise<boolean>((resolve) => {
-    execFile(file, args, { timeout: MAKING_MS, windowsHide: true }, (error) => resolve(error === null));
+    try {
+      execFile(file, args, { timeout: MAKING_MS, windowsHide: true }, (error) => resolve(error === null));
+    } catch {
+      // Spawning can throw before execFile returns (Windows' `spawn UNKNOWN`): none made, as when it fails.
+      resolve(false);
+    }
   });
 
 /// Posters being made, by where they go: asked again meanwhile, the same one is waited on.

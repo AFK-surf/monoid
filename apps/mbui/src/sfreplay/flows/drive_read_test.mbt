@@ -39,4 +39,4 @@ test "17-drive-read" {
 ///|
 /// How long the reader's contents' sheet (sf's sheet_node, the window's tree's) takes to come or go at most: a way as far
 /// as the window is tall or its scrim's fade, whichever is longer.
-let reader_sheet_ms : Double = @kit.sheet_scrim_ms.max(@ui.move_ms(844.0)) + 2.0 * @ui.input_step_ms
+let reader_sheet_ms : Double = @motion.sheet_scrim_ms.max(@ui.move_ms(844.0)) + 2.0 * @ui.input_step_ms

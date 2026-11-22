@@ -3,7 +3,6 @@
 
 ///|
 fn owned_row_left_case(
-  node : Bool,
   another_owner : Bool,
   row_owned : Bool,
   cancel? : Bool = false,
@@ -53,7 +52,6 @@ fn owned_row_left_case(
   let page_entry : Ref[@view.View?] = Ref(None)
   let page_shows = @signals.signal(!page_after_release)
   let page_disposed = Ref(0)
-  let opened = Ref(false)
   let disposed_during_open = Ref(false)
   let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=320.0, h=240.0, platform=2, pointing=Finger, native=Finger)
   let external_source : Ref[Source?] = Ref(None)
@@ -64,15 +62,9 @@ fn owned_row_left_case(
     @ui.set_tree_theme(@sf.ui_theme_now)
     let row_src = if row_view_ends_after_up || row_view_ends_during_open { external_source.val.unwrap() } else if row_owned { src.owned_by(root) } else { src }
     row_source.val = Some(row_src)
-    if node {
-      let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
-      let tips = @sf.TipLayer::new(fn() { Some(popup) })
-      @sfpages.chat_row_node(root, row_src, tips, fn() { item }, "agents", fn() { false }, Whole, fn() { 0 }) |> ignore
-    } else {
-      @ui.old(root, fn(c) {
-        @sfpages.chat_row(c, row_src, item, "agents", at=Whole, opened=fn(r) { opened.val = true; @sfbase.open_page(Chat(r)) }) |> ignore
-      }).height(Is(Some(100.0))) |> ignore
-    }
+    let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+    let tips = @sf.TipLayer::new(fn() { Some(popup) })
+    @sfpages.chat_row_node(root, row_src, tips, fn() { item }, "agents", fn() { false }, Whole, fn() { 0 }) |> ignore
     root.show(fn() { page_shows.get() }, fn(page) {
       page.laid_nowhere(Is(true)) |> ignore
       page_entry.val = Some(page)
@@ -96,14 +88,12 @@ fn owned_row_left_case(
   let (x, y) = t.find(item.title).unwrap()
   let before_press = sent.filter(fn(s) { s.contains("\"subscribe\":") }).length()
   t.press_at(x, y)
-  if node {
-    assert_eq(sent.filter(fn(s) { s.contains("\"subscribe\":") }).length(), before_press, msg="the retained row waits for its press to show")
-    t.run_for(@ui.tap_indication_ms)
-  }
+  assert_eq(sent.filter(fn(s) { s.contains("\"subscribe\":") }).length(), before_press, msg="the retained row waits for its press to show")
+  t.run_for(@ui.tap_indication_ms)
   guard client.peek_topic("chat", params~) is Some(sub) else {
     let asked = sent.filter(fn(s) { s.contains("\"subscribe\":") }).length()
     let ended = sent.filter(fn(s) { s.contains("\"unsubscribe\":true") }).length()
-    fail("the row did not keep its prefetch, node=\{node}, subscribe=\{asked}, unsubscribe=\{ended}")
+    fail("the row did not keep its prefetch, subscribe=\{asked}, unsubscribe=\{ended}")
   }
   if legacy is Some(old) { assert_true(physical_equal(old, sub), msg="the row shared the legacy reader's subscription") }
   if cancel {
@@ -181,7 +171,7 @@ fn owned_row_left_case(
   let (serial, _) = app.nav.top_stay()
   let page_reads = @sfbase.page_chat_reader(page_source.val.unwrap(), page_entry.val.unwrap(), serial)
   page_reads(Chat(chat))
-  assert_true(if node { app.nav.top() is Chat(_) } else { opened.val }, msg="the real row opened")
+  assert_true(app.nav.top() is Chat(_), msg="the real row opened")
   chat_left(row_source.val.unwrap(), chat)
   assert_true(physical_equal(sub, client.peek_topic("chat", params~).unwrap()), msg="the page still owns the prefetched subscription")
   assert_eq(sent.filter(fn(s) { s.contains("\"unsubscribe\":true") }).length(), 0)
@@ -207,216 +197,111 @@ fn owned_row_left_case(
 }
 
 ///|
-test "an old row can hand over after its own view ends before the page starts" {
-  owned_row_left_case(false, false, true, page_after_release=true, row_view_ends_after_up=true)
-}
-
-///|
 test "a retained row can hand over after its own view ends before the page starts" {
-  owned_row_left_case(true, false, true, page_after_release=true, row_view_ends_after_up=true)
-}
-
-///|
-test "an old row can hand over when its view ends inside the open callback" {
-  owned_row_left_case(false, false, true, page_after_release=true, row_view_ends_during_open=true)
+  owned_row_left_case(false, true, page_after_release=true, row_view_ends_after_up=true)
 }
 
 ///|
 test "a retained row can hand over when its view ends inside the open callback" {
-  owned_row_left_case(true, false, true, page_after_release=true, row_view_ends_during_open=true)
-}
-
-///|
-test "the old row and chat_left hand prefetch to the page" {
-  owned_row_left_case(false, false, true)
+  owned_row_left_case(false, true, page_after_release=true, row_view_ends_during_open=true)
 }
 
 ///|
 test "the retained row and chat_left hand prefetch to the page" {
-  owned_row_left_case(true, false, true)
-}
-
-///|
-test "the old row leaves another chat owner in place" {
-  owned_row_left_case(false, true, true)
+  owned_row_left_case(false, true)
 }
 
 ///|
 test "the retained row leaves another chat owner in place" {
-  owned_row_left_case(true, true, true)
-}
-
-///|
-test "the old row's base source hands prefetch to the page" {
-  owned_row_left_case(false, false, false)
+  owned_row_left_case(true, true)
 }
 
 ///|
 test "the retained row's base source hands prefetch to the page" {
-  owned_row_left_case(true, false, false)
-}
-
-///|
-test "the old row's base leave keeps another owner" {
-  owned_row_left_case(false, true, false)
+  owned_row_left_case(false, false)
 }
 
 ///|
 test "the retained row's base leave keeps another owner" {
-  owned_row_left_case(true, true, false)
-}
-
-///|
-test "the old row cancels a view-owned prefetch" {
-  owned_row_left_case(false, false, true, cancel=true)
+  owned_row_left_case(true, false)
 }
 
 ///|
 test "the retained row cancels a view-owned prefetch" {
-  owned_row_left_case(true, false, true, cancel=true)
-}
-
-///|
-test "the old row cancels a base source prefetch" {
-  owned_row_left_case(false, false, false, cancel=true)
+  owned_row_left_case(false, true, cancel=true)
 }
 
 ///|
 test "the retained row cancels a base source prefetch" {
-  owned_row_left_case(true, false, false, cancel=true)
-}
-
-///|
-test "the old row cancels without releasing another view" {
-  owned_row_left_case(false, true, true, cancel=true)
+  owned_row_left_case(false, false, cancel=true)
 }
 
 ///|
 test "the retained row cancels without releasing another view" {
-  owned_row_left_case(true, true, true, cancel=true)
-}
-
-///|
-test "the old row's base cancellation keeps another view" {
-  owned_row_left_case(false, true, false, cancel=true)
+  owned_row_left_case(true, true, cancel=true)
 }
 
 ///|
 test "the retained row's base cancellation keeps another view" {
-  owned_row_left_case(true, true, false, cancel=true)
-}
-
-///|
-test "the old row's page takes the prefetch after release with no frame" {
-  owned_row_left_case(false, false, true, page_after_release=true)
+  owned_row_left_case(true, false, cancel=true)
 }
 
 ///|
 test "the retained row's page takes the prefetch after release with no frame" {
-  owned_row_left_case(true, false, true, page_after_release=true)
-}
-
-///|
-test "the old row's base prefetch is taken after release with no frame" {
-  owned_row_left_case(false, false, false, page_after_release=true)
+  owned_row_left_case(false, true, page_after_release=true)
 }
 
 ///|
 test "the retained row's base prefetch is taken after release with no frame" {
-  owned_row_left_case(true, false, false, page_after_release=true)
-}
-
-///|
-test "an old row cancelled while its chat is open releases after that page leaves" {
-  owned_row_left_case(false, false, true, cancel=true, page_already_open=true)
+  owned_row_left_case(false, false, page_after_release=true)
 }
 
 ///|
 test "a retained row cancelled while its chat is open releases after that page leaves" {
-  owned_row_left_case(true, false, true, cancel=true, page_already_open=true)
-}
-
-///|
-test "an old row's base prefetch cancelled while its chat is open releases after that page leaves" {
-  owned_row_left_case(false, false, false, cancel=true, page_already_open=true)
+  owned_row_left_case(false, true, cancel=true, page_already_open=true)
 }
 
 ///|
 test "a retained row's base prefetch cancelled while its chat is open releases after that page leaves" {
-  owned_row_left_case(true, false, false, cancel=true, page_already_open=true)
-}
-
-///|
-test "a held old row releases its prefetch without releasing another view" {
-  owned_row_left_case(false, true, true, cancel=true, long_hold=true)
+  owned_row_left_case(false, false, cancel=true, page_already_open=true)
 }
 
 ///|
 test "a held retained row releases its prefetch without releasing another view" {
-  owned_row_left_case(true, true, true, cancel=true, long_hold=true)
-}
-
-///|
-test "the old row's cancelled owned read needs no later release" {
-  owned_row_left_case(false, false, true, cancel=true, page_already_open=true, release_row_after=true)
+  owned_row_left_case(true, true, cancel=true, long_hold=true)
 }
 
 ///|
 test "the retained row's cancelled owned read needs no later release" {
-  owned_row_left_case(true, false, true, cancel=true, page_already_open=true, release_row_after=true)
-}
-
-///|
-test "the old row's cancelled base read needs no later release" {
-  owned_row_left_case(false, false, false, cancel=true, page_already_open=true, release_row_after=true)
+  owned_row_left_case(false, true, cancel=true, page_already_open=true, release_row_after=true)
 }
 
 ///|
 test "the retained row's cancelled base read needs no later release" {
-  owned_row_left_case(true, false, false, cancel=true, page_already_open=true, release_row_after=true)
+  owned_row_left_case(false, false, cancel=true, page_already_open=true, release_row_after=true)
 }
 
 ///|
-test "the held old row's cancelled read needs no later release" {
-  owned_row_left_case(false, true, true, cancel=true, long_hold=true, release_row_after=true)
-}
-
-///|
-test "an old row's base prefetch cancellation preserves an independent legacy reader" {
-  owned_row_left_case(false, false, false, cancel=true, legacy_owner=true)
+test "the held retained row's cancelled read needs no later release" {
+  owned_row_left_case(true, true, cancel=true, long_hold=true, release_row_after=true)
 }
 
 ///|
 test "a retained row's base prefetch cancellation preserves an independent legacy reader" {
-  owned_row_left_case(true, false, false, cancel=true, legacy_owner=true)
-}
-
-///|
-test "an old row's view prefetch cancellation preserves an independent legacy reader" {
-  owned_row_left_case(false, false, true, cancel=true, legacy_owner=true)
+  owned_row_left_case(false, false, cancel=true, legacy_owner=true)
 }
 
 ///|
 test "a retained row's view prefetch cancellation preserves an independent legacy reader" {
-  owned_row_left_case(true, false, true, cancel=true, legacy_owner=true)
-}
-
-///|
-test "an old row with an open page cancels independently of a legacy reader" {
-  owned_row_left_case(false, false, true, cancel=true, page_already_open=true, legacy_owner=true)
+  owned_row_left_case(false, true, cancel=true, legacy_owner=true)
 }
 
 ///|
 test "a retained row with an open page cancels independently of a legacy reader" {
-  owned_row_left_case(true, false, true, cancel=true, page_already_open=true, legacy_owner=true)
-}
-
-///|
-test "an old row's base prefetch with an open page cancels independently of a legacy reader" {
-  owned_row_left_case(false, false, false, cancel=true, page_already_open=true, legacy_owner=true)
+  owned_row_left_case(false, true, cancel=true, page_already_open=true, legacy_owner=true)
 }
 
 ///|
 test "a retained row's base prefetch with an open page cancels independently of a legacy reader" {
-  owned_row_left_case(true, false, false, cancel=true, page_already_open=true, legacy_owner=true)
+  owned_row_left_case(false, false, cancel=true, page_already_open=true, legacy_owner=true)
 }

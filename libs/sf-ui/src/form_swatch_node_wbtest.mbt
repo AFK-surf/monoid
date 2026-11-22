@@ -179,11 +179,12 @@ test "the avatars: each pressed by its name picks it, the one picked read out se
 ///|
 test "a colour's swatch beside its field, and the icon's well pressed for a picture" {
   let hex = @ui.Field::new(text="#3B82F6")
+  let shown = @signals.signal("")
   let pressed = Ref(0)
   let t = u5_case(fn(root) {
     root.box(fn(r) {
       r.row(Is(true)).gap(Is(16.0)) |> ignore
-      icon_well_node(r, fn() { "上传图标" }, fn() { pressed.val += 1 }, fn() { 0x3B82F6FFL }, fn() { 0xFFFFFFFFL }, fn() { "" }, fn() {
+      icon_well_node(r, fn() { "上传图标" }, fn() { pressed.val += 1 }, fn() { 0x3B82F6FFL }, fn() { 0xFFFFFFFFL }, fn() { shown.get() }, fn() {
         "上传"
       }, app_icon_px)
       |> ignore
@@ -195,6 +196,15 @@ test "a colour's swatch beside its field, and the icon's well pressed for a pict
   t.click(Button, label="上传图标")
   t.draw()
   assert_eq(pressed.val, 1)
+  @ui.add_image("mem:well-icon/1", b"\xFF\xD8\xFF\xD9")
+  t.add_image("mem:well-icon/1", 1024, 1024)
+  shown.set("mem:well-icon/1")
+  t.draw()
+  t.draw()
+  assert_true(t.drawlist_images().iter().any(fn(i) { i.1 == "mem:well-icon/1" }), msg="well icon missing from drawlist")
+  let drawn = t.drawn_images()
+  assert_eq(drawn.length(), 1)
+  assert_true(drawn[0][2] >= 120.0 && drawn[0][3] >= 120.0, msg="icon image must fill well, got \{drawn[0][2]}×\{drawn[0][3]}")
   assert_eq(t.fixed_outgrown(), [])
 }
 

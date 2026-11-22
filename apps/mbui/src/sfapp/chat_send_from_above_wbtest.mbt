@@ -33,11 +33,9 @@ let csa_after_ms : Double = 1500.0
 fn csa_open(screen : (String, Double, Double, Int)) -> @ui.Tester {
   let (_, w, h, platform) = screen
   new_run()
-  both_way()
   fix_pace.val = csa_pace
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  both_way()
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
   t.set_rows_on_pixels(true)
   nav_rested(t)
@@ -142,7 +140,7 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏, read above
       t.run_for(@ui.move_most_ms)
       csa_sent_lands(t, name, fn() { tap_send(t) })
     }
-  }, nodes_only="it reads the page's list made as nodes (csa_list: View::scrolls_window's), which the old page has not")
+  })
 }
 
 ///|
@@ -173,7 +171,7 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: the list h
       assert_true(after.at_foot && t.drawn_of(rp_next) is Some(_), msg="\{name}: the next message not followed (at \{after.at})")
     }
     fix_clock.val = None
-  }, nodes_only="it reads the page's list made as nodes (csa_list: View::scrolls_window's), which the old page has not")
+  })
 }
 
 ///|
@@ -203,5 +201,5 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: the list h
       assert_false(held.at_foot, msg="\{name}: at its foot, the answer's top not holding it (at \{held.at})")
     }
     fix_clock.val = None
-  }, nodes_only="it reads the page's list made as nodes (csa_list: View::scrolls_window's), which the old page has not")
+  })
 }

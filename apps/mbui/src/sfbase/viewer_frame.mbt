@@ -156,7 +156,7 @@ fn vf_native(v : Viewer, c : @ui.Ctx, src : Source) -> Unit {
       })
       vf_native_share(v)
       if !downloading(v.download(src)) {
-        @sf.native_over_act("download", @sf.t("android-chat.file.download"), "download", fn() { v.ask_save(c) })
+        @sf.native_over_act("download", @sf.t("android-chat.file.download"), "download", fn() { v.ask_save() })
       }
     }
     return
@@ -170,20 +170,17 @@ fn vf_native(v : Viewer, c : @ui.Ctx, src : Source) -> Unit {
     })
   }
   match v.bytes.get() {
-    Some(b) => {
+    Some(_) => {
       // (marked where its picture is shown, the window's tree's: one too big to show, told of, none)
       if v.markable() {
         @sf.native_over_act("mark", @sf.t("web-main.annotate.image"), "edit", fn() { marks_start() })
       }
-      @sf.native_over_act("copy", @sf.t("common.copy"), "copy", fn() {
-        c.copy_image(b)
-        v.copied += 1
-      })
+      @sf.native_over_act("copy", @sf.t("common.copy"), "copy", fn() { v.ask_copy() |> ignore })
     }
     None => ()
   }
   vf_native_share(v)
-  vf_native_download(v, c, src, v.bytes.get() is Some(_) || (v.told_of() && !v.asked))
+  vf_native_download(v, src, v.bytes.get() is Some(_) || (v.told_of() && !v.asked))
 }
 
 ///|
@@ -213,7 +210,7 @@ fn vf_native_media(v : Viewer, c : @ui.Ctx, src : Source, width : Double) -> Uni
     }
     _ => ()
   }
-  vf_native_download(v, c, src, true)
+  vf_native_download(v, src, true)
 }
 
 ///|
@@ -227,7 +224,7 @@ fn vf_native_share(v : Viewer) -> Unit {
 ///|
 /// Download among the actions in the system's bars, where there is something to keep (`there`) and it is not on its
 /// way already: into the photo album for a picture or a film on a phone, said so.
-fn vf_native_download(v : Viewer, c : @ui.Ctx, src : Source, there : Bool) -> Unit {
+fn vf_native_download(v : Viewer, src : Source, there : Bool) -> Unit {
   if !there || downloading(v.download(src)) {
     return
   }
@@ -236,7 +233,7 @@ fn vf_native_download(v : Viewer, c : @ui.Ctx, src : Source, there : Bool) -> Un
   } else {
     @sf.t("android-chat.file.download")
   }
-  @sf.native_over_act("download", label, "download", fn() { v.ask_save(c) })
+  @sf.native_over_act("download", label, "download", fn() { v.ask_save() })
 }
 
 ///|

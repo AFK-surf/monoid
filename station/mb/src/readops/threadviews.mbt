@@ -125,11 +125,11 @@ fn shares_of(db : @sql.Db, ids : Array[String], now : Double) -> Map[String, Jso
       }
       if now - used < 6.0 * 3600000.0 {
         let name = match jget(Some(t), "name") {
-          None | Some(Null) => @jsjson.text(ws)
-          Some(Str(n)) => @jsjson.text(n)
+          None | Some(Null) => @jsjson.sanitize_str(ws)
+          Some(Str(n)) => @jsjson.sanitize_str(n)
           Some(other) => js_string(to_json(other))
         }
-        live.push({ "workspace": Json::string(@jsjson.text(ws)), "name": Json::string(name) })
+        live.push({ "workspace": Json::string(@jsjson.sanitize_str(ws)), "name": Json::string(name) })
       }
     }
     if live.length() > 0 {
@@ -147,15 +147,7 @@ fn shares_of(db : @sql.Db, ids : Array[String], now : Double) -> Map[String, Jso
 ///|
 /// JavaScript's `String(v)` of a value JSON.parse made.
 fn js_string(v : Json) -> String {
-  match v {
-    Number(n, ..) => js_text(Json::number(n))
-    True => "true"
-    False => "false"
-    Array(xs) => xs.map(x => if x is Null { "" } else { js_string(x) }).join(",")
-    Object(_) => "[object Object]"
-    String(s) => s
-    Null => "null"
-  }
+  @jsjson.json_js_str(Some(v))
 }
 
 ///|

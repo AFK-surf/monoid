@@ -32,7 +32,8 @@ pub fn appearance_node(
     if @ui.takes_drops() {
       k.push("drop")
     }
-    if wide() {
+    // (not beside the system's bars, an iPhone Duo's: its places are the tab bar's, set in 下方栏)
+    if wide() && !@sf.native_on() {
       k.push("rail")
     }
     k

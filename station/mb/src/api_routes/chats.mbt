@@ -84,7 +84,11 @@ fn Admin::chats_routes(self : Admin) -> Array[Route] {
         return self.read(
           r,
           "chatMarks",
-          jobj([("viewer", r.viewer), ("scope", scope)]),
+          jobj([
+            ("viewer", r.viewer),
+            ("scope", scope),
+            ("own", jbool(r.param("own") == Some("1"))),
+          ]),
         )
       }
       if r.param("shared") == Some("1") {
@@ -106,6 +110,14 @@ fn Admin::chats_routes(self : Admin) -> Array[Route] {
     }),
     route("POST", "^\\/changed\\/chats$", async fn(r, _) {
       self.changed(r, "chats", chats_of(r), "id")
+    }),
+    route("POST", "^\\/changed\\/shared$", async fn(r, _) {
+      self.changed(
+        r,
+        "sharedChats",
+        jobj([("viewer", r.viewer), ("sessions", Null), ("threads", Null)]),
+        "id",
+      )
     }),
     route("GET", "^\\/threads\\/([^/]+)\\/entries$", async fn(r, m) {
       let id = m[0].unwrap()

@@ -166,8 +166,27 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ag
       fn() { state_of_badge(text(agent(), "badge")) },
     )
     h.box(fn(n) {
-      n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      @sf.words_node(n, fn() { text(s(), "agentText") }, fn() { history_name_words }) |> ignore
+      n
+      .row(Is(true))
+      .fits(Is(true))
+      .gap(Is(4.0))
+      .lines_up(Is(Some(Middle)))
+      .grow(Is(1.0))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      |> ignore
+      @sfpages.model_agent_segments_node(
+        n,
+        fn() { text(s(), "modelName") },
+        fn() { text(s(), "modelShort") },
+        fn() { text(s(), "effort") },
+        fn() { text(s(), "agentText") },
+        fn() { history_name_words },
+        drop_short=1,
+        drop_effort=2,
+        drop_hide=0,
+        cuts_last=true,
+      )
     })
     |> ignore
     h.box(fn(e) {
@@ -237,7 +256,7 @@ fn history_actions_node(v : @view.View, src : Source, r : ChatRef, agent : () ->
 /// A model's mark as the history's head has it (model_mark_big's, as nodes): its maker's mark on a tile with a
 /// hairline, `size` across, and its state's badge over the corner (solid accent waiting on someone, an accent ring at
 /// work, red failed) ringed in the page's ground (or `around`: what it stands on, a sheet's); `plain`: no tile, the
-/// maker's mark alone (an agent's card's head), as tall as that mark (`size` across still), its badge on its corner.
+/// maker's mark alone (an agent's card's head), as wide and tall as that mark, with a smaller badge on its corner.
 fn model_mark_big_node(
   v : @view.View,
   maker : () -> String,
@@ -249,11 +268,12 @@ fn model_mark_big_node(
 ) -> Unit {
   let xs = size < 30.0
   let glyph = size * (if xs { 0.6 } else { 0.56 })
-  // (no tile: as tall as the mark alone, so it stands on a line as its words do)
+  // (no tile: as wide and tall as the mark alone, so it stands on a line as its words do without extra side padding)
+  let wide = if plain { glyph } else { size }
   let tall = if plain { glyph } else { size }
   v.box(fn(m) {
     m
-    .width(Is(Some(size)))
+    .width(Is(Some(wide)))
     .height(Is(Some(tall)))
     .radius(Is(if xs { 6.0 } else { @sf.small_corner }))
     .lines_up(Is(Some(Middle)))
@@ -265,8 +285,8 @@ fn model_mark_big_node(
     m.pick(at_once=true, fn() { (maker(), runtime()) }, fn(i, mr) {
       @sf.maker_mark_node(i, mr.0, mr.1, glyph) |> ignore
     })
-    let b = if xs { 11.0 } else { 15.0 }
-    let ring = if xs { 1.5 } else { 2.0 }
+    let b = if xs || plain { 12.0 } else { 15.0 }
+    let ring = if xs || plain { 1.5 } else { 2.0 }
     let inner = b - ring * 2.0
     m.box(fn(o) {
       o.over(Is(true)) |> ignore
@@ -275,7 +295,7 @@ fn model_mark_big_node(
         .width(Is(Some(b)))
         .height(Is(Some(b)))
         .radius(Is(b / 2.0))
-        .offset(Is((size - b + 3.0, tall - b + 3.0)))
+        .offset(Is((wide - b + 3.0, tall - b + 3.0)))
         .ground(By(around))
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))

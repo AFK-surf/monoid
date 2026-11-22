@@ -203,6 +203,103 @@ test("a station left out of a share's stations does not get it, and refuses to b
   await assert.rejects(a.sharing.handle(B, { method: "share.get", id }), /not for this station/);
 });
 
+test("a station left out is told so, though its host forgot it had told it of the share (the cloud's list left it out a while)", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const a = station(cloud, A, () => all, [KEY]);
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  await a.sharing.shareProfile("deepseek", true, null);
+  await settle(a, b);
+  assert.equal(b.config.raw().profiles.length, 1);
+  // B gone a while from the stations A goes by: A forgets it told B of it.
+  const both = cloud.peers;
+  cloud.peers = [both[0]!];
+  await settle(a);
+  cloud.peers = both;
+  await a.sharing.shareProfile("deepseek", true, [A]);
+  await settle(a, b);
+  assert.equal(b.config.raw().profiles.length, 0, "told it is not for it, its copy taken away");
+  assert.deepEqual(a.sharing.profileView(a.config.raw().profiles[0])!.users, []);
+});
+
+test("a copy its host says who may use it leaves out is taken away as it asks again, and nothing lent before is used", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const a = station(cloud, A, () => all, [SUB]);
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  await a.sharing.shareProfile("max", true, null);
+  await settle(a, b);
+  const copy = b.config.raw().profiles[0];
+  assert.equal((await b.sharing.lendClaude(copy)).token, "token-of-max");
+  // Left out while B does not answer, then gone a while from the stations A goes by: back, it is told nothing.
+  all.delete(B);
+  await a.sharing.shareProfile("max", true, [A]);
+  await settle(a);
+  const both = cloud.peers;
+  cloud.peers = [both[0]!];
+  await settle(a);
+  cloud.peers = both;
+  all.set(B, b);
+  await settle(a, b);
+  assert.equal(b.config.raw().profiles.length, 1, "nothing told it");
+  // Its host says B is left out: the token lent before is not used, and the copy, asked of again, goes.
+  a.lent.length = 0;
+  await assert.rejects(b.sharing.lendClaude(copy), (e: Error) => !/token-of-max/.test(e.message));
+  assert.deepEqual(a.lent, [], "nothing lent");
+  await settle(b);
+  assert.equal(b.config.raw().profiles.length, 0, "its copy taken away");
+});
+
+/// A borrower of A's "max" (every station may use it) that was lent its token once and paused its copy here.
+async function pausedBorrower() {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const a = station(cloud, A, () => all, [SUB]);
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  await a.sharing.shareProfile("max", true, null);
+  await settle(a, b);
+  const copy = b.config.raw().profiles[0];
+  assert.equal((await b.sharing.lendClaude(copy)).token, "token-of-max");
+  b.config.update((raw) => { raw.profiles[0].share.paused = true; raw.profiles[0].enabled = false; });
+  a.lent.length = 0;
+  /// What B has of it after a lend and a run's first ask of its host (share.version), as its host answers now.
+  const asked = async () => {
+    const token = (await b.sharing.lendClaude(copy)).token;
+    (b.sharing as any).checked.clear();
+    await settle(b);
+    const [kept] = b.config.raw().profiles;
+    return { token, lent: [...a.lent], copies: b.config.raw().profiles.length, paused: kept?.share.paused ?? null };
+  };
+  return { a, b, asked };
+}
+
+test("a host that does not know its stations yet does not make a borrower drop its copy, nor its pause", async () => {
+  const { a, asked } = await pausedBorrower();
+  // A's cloud has not said its stations (restarted, or the cloud is down): rosters() is null on A.
+  (a.sharing as any).deps.cloud.peersCurrent = false;
+  assert.deepEqual(await asked(), { token: "token-of-max", lent: [], copies: 1, paused: true }, "as with its host not answering");
+});
+
+test("a station its host's list of stations leaves out a while keeps its copy and its pause: that is the cloud's word, not the host's", async () => {
+  const { a, b, asked } = await pausedBorrower();
+  // The cloud's list, as A has it, leaves B out (the transport still lets B's requests through).
+  const aCloud = (a.sharing as any).deps.cloud;
+  const memberships = aCloud.memberships.bind(aCloud);
+  aCloud.memberships = () => memberships().map((m: any) => ({ ...m, peers: m.peers.filter((p: any) => p.id !== B) }));
+  await settle(a);
+  const id = a.config.raw().profiles[0].share.id;
+  await assert.rejects(a.sharing.handle(B, { method: "share.version", id }), /not for this station's workspaces/);
+  assert.deepEqual(await asked(), { token: "token-of-max", lent: [], copies: 1, paused: true }, "as with its host not answering");
+  // B in A's list again: told of it again, the copy as it was, its pause kept.
+  delete aCloud.memberships;
+  await settle(a, b);
+  assert.equal(b.config.raw().profiles[0].share.paused, true);
+  assert.deepEqual(a.sharing.profileView(a.config.raw().profiles[0])!.users, [B]);
+});
+
 const H = "c".repeat(64);
 const O = "d".repeat(64);
 const R1 = "e".repeat(64);
@@ -471,6 +568,33 @@ test("a borrowed Antigravity CLI subscription's sign-in is written in its home w
   await assert.rejects(b.sharing.lendAgy({ ...copy, home }, true), /未能借出/);
   writeFileSync(agyToken(home), signIn("old", 5));
   await assert.rejects(b.sharing.lendAgy({ ...copy, home }), /未能借出/);
+});
+
+test("a borrowed Antigravity CLI sign-in its host says who may use it leaves out is not used, and its copy goes", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const AGY = { id: "gem", name: "Google AI Pro", runtime: "agy", access: { kind: "subscription" }, home: "homes/gem", env: {} };
+  const signIn = (access: string) => JSON.stringify({ token: { access_token: access, token_type: "Bearer", refresh_token: "refresh-here", expiry: new Date(Date.now() + 57 * 60_000).toISOString() }, auth_method: "consumer", id_token_email: "someone@gmail.test" });
+  const a = station(cloud, A, () => all, [AGY]);
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  const hostHome = join(a.data, "homes", "gem");
+  mkdirSync(join(hostHome, "agy", ".gemini", "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(hostHome), signIn("first"));
+  await a.sharing.shareProfile("gem", true, null);
+  await settle(a, b);
+  const copy = b.config.raw().profiles[0];
+  const home = join(b.data, copy.home);
+  assert.ok((await b.sharing.lendAgy({ ...copy, home })) > Date.now() + 55 * 60_000);
+  // Left out while B does not answer: the word of it has not got there yet.
+  all.delete(B);
+  await a.sharing.shareProfile("gem", true, [A]);
+  await settle(a);
+  all.set(B, b);
+  // Its host says B is left out: the sign-in lent before, good for 57 minutes, is not used, and the copy goes.
+  await assert.rejects(b.sharing.lendAgy({ ...copy, home }), /未能借出/);
+  await settle(b);
+  assert.equal(b.config.raw().profiles.length, 0, "its copy taken away");
 });
 
 test("an Antigravity CLI subscription signed in again on its host reaches its copies: each told, its new sign-in lent there", async () => {

@@ -1,0 +1,7 @@
+wait 200
+tap 主按钮
+wait 300
+tap 涟漪按压行
+wait 400
+tap 普通按钮
+wait 350

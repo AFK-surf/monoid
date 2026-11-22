@@ -18,6 +18,8 @@ test "73-pick-words" {
     // the agent's post under the person's words (the same words in both)
     f.see_n(2, "选词测试 201409")
     f.see("icon:archive")
+    // (the list come to rest on its way to its end first: held while it still moves, the words go from under the finger)
+    f.run_for(@sfapp.flight_ms)
     f.hold("可以单独选中的词语", @ui.long_press_ms)
     f.see("=复制")
     f.tap("=复制")

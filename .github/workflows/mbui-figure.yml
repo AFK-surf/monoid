@@ -6,6 +6,7 @@ on:
     paths:
       - "apps/mbui/src/**"
       - "libs/mbui/src/**"
+      - "libs/liquid-glass/src/**"
       - "libs/sf-ui/src/**"
       - "libs/mbui/tools/**"
       - "libs/mbui/scripts/**"
@@ -13,6 +14,7 @@ on:
       - "apps/mbui/moon.mod"
       - "apps/mbui/moon.work"
       - "libs/mbui/moon.mod"
+      - "libs/liquid-glass/moon.mod"
       - "libs/sf-ui/moon.mod"
       - "apps/mbui/scripts/env.sh"
       - "apps/mbui/scripts/mbui.sh"

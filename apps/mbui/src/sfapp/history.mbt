@@ -199,19 +199,22 @@ fn agent_tiles_node(v : @view.View, card : () -> Json?, top : Double, tips? : @s
 ///|
 /// What is wrong (agent_notes', as nodes) in `v`, `top` over it, as `card` says it now: a line each in its level's
 /// colour. Nothing while nothing is.
-fn agent_notes_node(v : @view.View, card : () -> Json?, top : Double) -> Unit {
+fn agent_notes_node(
+  v : @view.View,
+  card : () -> Json?,
+  top : Double,
+  px? : Double = @sf.text_in,
+  pb? : Double = 8.0,
+) -> Unit {
   let notes = fn() { items(card(), "attention") }
-  v.show(at_once=true, fn() { notes().length() > 0 }, fn(o) {
-    o.box(fn(b) {
-      b.padding(Is((@sf.text_in, top, @sf.text_in, 8.0))).gap(Is(2.0)) |> ignore
-      b.each(fn() { Array::makei(notes().length(), fn(i) { i }) }, fn(i) { i }, fn(x, i) {
-        let k = i.untracked()
-        let n = fn() { notes().get(k) }
-        @sf.words_node(x, fn() { text(n(), "text") }, fn() { if text(n(), "level") == "amber" { note_amber } else { note_red } })
-        |> ignore
-      })
+  v.show(at_once=true, fn() { notes().length() > 0 }, fn(b) {
+    b.padding(Is((px, top, px, pb))).gap(Is(2.0)) |> ignore
+    b.each(fn() { Array::makei(notes().length(), fn(i) { i }) }, fn(i) { i }, fn(x, i) {
+      let k = i.untracked()
+      let n = fn() { notes().get(k) }
+      @sf.words_node(x, fn() { text(n(), "text") }, fn() { if text(n(), "level") == "amber" { note_amber } else { note_red } })
+      |> ignore
     })
-    |> ignore
   })
 }
 
@@ -272,9 +275,10 @@ fn run_row_node(v : @view.View, a : () -> Json?, press : (@sf.Anchor) -> Unit) -
     " · " + effort + " · " + account
   }
   let quota = fn() { field(field(a(), "account"), "quota") }
+  let plan = fn() { text(field(a(), "account"), "planText") }
   v.box(fn(o) {
     o.padding(Is((0.0, 6.0, 0.0, 0.0))) |> ignore
-    @sf.action_box_node(o, fn() { model() + rest() }, fn(b) {
+    @sf.action_box_node(o, fn() { @settings.join([model() + rest(), plan()], " · ") }, fn(b) {
       let (x, y, w, h) = b.placed_window_now()
       press(At(x, y, w, h))
     }, fn(b) {
@@ -284,23 +288,38 @@ fn run_row_node(v : @view.View, a : () -> Json?, press : (@sf.Anchor) -> Unit) -
       .gap(Is(6.0))
       .radius(Is(10.0))
       .edge(By(fn() { (1.0, @sf.theme().p.line) }))
-      .lines_up(Is(Some(Middle)))
+      .lines_up(Is(Some(Start)))
       |> ignore
-      b.pick(at_once=true, fn() { (text(field(s(), "maker"), "id"), text(s(), "runtime")) }, fn(m, k) {
-        @sf.maker_mark_node(m, k.0, k.1, 15.0) |> ignore
+      @sf.first_line_node(b, Ui, fn(l) {
+        l.pick(at_once=true, fn() { (text(field(s(), "maker"), "id"), text(s(), "runtime")) }, fn(m, k) {
+          @sf.maker_mark_node(m, k.0, k.1, 15.0) |> ignore
+        })
       })
+      |> ignore
       // how it runs on its line, its account's allowance under it, a line of its own
       b.box(fn(w) {
         w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
         // (the model's name whole, what follows it giving way first: cut short itself only beside the least of that)
-        @sf.name_line_node(w, model, fn() { run_model }, rest, fn() { run_rest }) |> ignore
+        // (its account's tier after the line, as a profile row's title_after: the line giving way first)
+        w.box(fn(line) {
+          line.row(Is(true)).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))) |> ignore
+          @sf.name_line_node(line, model, fn() { run_model }, rest, fn() { run_rest }).shrink(Is(1.0)) |> ignore
+          line.show(fn() { plan() != "" }, fn(a) {
+            a.margin(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
+            @sf.row_tag_node(a, plan)
+          })
+        })
+        |> ignore
         w.show(at_once=true, fn() { @sf.has_quota(quota()) }, fn(q) {
           q.row(Is(true)).padding(Is((0.0, 4.0, 0.0, 0.0))) |> ignore
           @sf.quota_chips_node(q, quota)
         })
       })
       |> ignore
-      @sf.icon_node(b, "chevron-down", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+      @sf.first_line_node(b, Ui, fn(l) {
+        @sf.icon_node(l, "chevron-down", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+      })
+      |> ignore
     })
     |> ignore
   })
@@ -324,7 +343,7 @@ let boxed_n : Ref[Int] = { val: 0 }
 let tool_parts : Map[String, Json] = Map([])
 
 ///|
-/// Its turns' value with the mark of its work past its turns after it (work_mark): one line, its words cut short only
+/// Its turns' value with the mark of its work past its turns after it (work_mark_node): one line, its words cut short only
 /// once the mark has given way.
 // kept across runs: a value (no field of it changes)
 let details_turns : @ui.Style = @ui.style(row=true, w=@sf.grow, align=ACenter)

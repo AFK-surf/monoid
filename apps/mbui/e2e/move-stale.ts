@@ -8,11 +8,10 @@
 //   node e2e/move-stale.ts <the station's checkout> <data> <session key> <workspace> <tag> <file that differs> <file it lacks> <retired station's id> <its name>
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { openMoveDb } from "./move-db.ts";
 
-const [src, data, key, ws, tag, differs, lacks, origin, originName] = process.argv.slice(2);
-const { Store } = await import(pathToFileURL(join(src!, "station/src/store/store.ts")).href);
-const store = Store.open(join(data!, "stillfail.db"));
+const [_src, data, key, ws, tag, differs, lacks, origin, originName] = process.argv.slice(2);
+const store = openMoveDb(join(data!, "stillfail.db"));
 const row = store.db.prepare("SELECT ws, workspace FROM sessions WHERE key = ?").get(key) as { ws: string | null; workspace: string } | undefined;
 if (row === undefined) throw new Error(`no session ${key} in ${data}`);
 store.db.prepare("UPDATE sessions SET ws = ? WHERE key = ?").run(`retired:${ws}`, key);

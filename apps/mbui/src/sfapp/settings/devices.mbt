@@ -122,20 +122,17 @@ pub fn station_devices_node(b : @view.View, core : Core, here : () -> Here, stat
         g.show(fn() { mine().length() == 0 && !can_add() }, fn(o) {
           @sf.link_row_node(o, fn() { @sf.t("web-pages.devices.none") }, fn() {  }, goes=false, chevron=false, lacks=true)
         })
-        g.show(fn() { can_add() && mine().length() == 0 }, fn(o) {
-          o.box(fn(holder) {
-            @sf.link_row_node(
-              holder,
-              fn() { @sf.t("web-pages.devices.add") },
-              fn() {
-                let (x, y, w, h) = holder.placed_window_now()
-                add_device(core, @signals.untracked(here), station, rig, At(x, y, w, h))
-              },
-              note=fn() { @sf.t("web-pages.devices.addNote") },
-              lead=LeadLine(fn(l) { @sf.icon_node(l, "plus", devices_row_glyph, By(fn() { @sf.theme().p.muted })) |> ignore }),
-            )
-          })
-          |> ignore
+        g.show(fn() { can_add() && mine().length() == 0 }, fn(holder) {
+          @sf.link_row_node(
+            holder,
+            fn() { @sf.t("web-pages.devices.add") },
+            fn() {
+              let (x, y, w, h) = holder.placed_window_now()
+              add_device(core, @signals.untracked(here), station, rig, At(x, y, w, h))
+            },
+            note=fn() { @sf.t("web-pages.devices.addNote") },
+            lead=LeadLine(fn(l) { @sf.icon_node(l, "plus", devices_row_glyph, By(fn() { @sf.theme().p.muted })) |> ignore }),
+          )
         })
       })
     },

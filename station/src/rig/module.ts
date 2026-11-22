@@ -13,7 +13,9 @@ import type { Duplex } from "node:stream";
 import { reachDevice } from "../devices/connect.ts";
 import { DeviceRefused } from "../mesh/peer-http.ts";
 import type { Json } from "../store/store.ts";
-import type { Cloud } from "../cloud/state.ts";
+import { type Cloud, pendingLockPath } from "../cloud/state.ts";
+import { pendingLock } from "../cloud/presence.ts";
+import { writePrivateSoon } from "../ops/files.ts";
 import { Refused, type PeerBus } from "../mesh/bus.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -159,6 +161,19 @@ export class Rig {
     }
   }
 
+  /// Its person took it into a workspace in safe mode naming the workspace's lock (FB-45, grants.ts `added`): where it
+  /// pins none, and was named none to pin, that one is named, as `enroll --lock` names one, and the control plane is
+  /// asked for it at once (presence.ts `pendingAsks`): pinned once a chain holding that entry comes. A lock pinned or
+  /// named already is never replaced from here.
+  async #added(lock: string | null): Promise<Json> {
+    const cloud = this.#d.cloud;
+    if (lock !== null && cloud.chain(null) === null && pendingLock(this.#d.data) === null) {
+      await writePrivateSoon(pendingLockPath(this.#d.data), JSON.stringify({ hash: lock }));
+      cloud.lockNamed();
+    }
+    return { ok: true };
+  }
+
   #heard(peer: string, request: Json, workspace: string): Json {
     const method = typeof request?.method === "string" ? request.method : "";
     const self = this.self();
@@ -181,8 +196,7 @@ export class Rig {
           this.grants.device(request.signed, request.chain);
           return { ok: true };
         case "rig.added":
-          this.grants.added(request.signed);
-          return { ok: true };
+          return this.#added(this.grants.added(request.signed, request.pin, request.chain).lock);
         case "rig.full": {
           // Its person signed it whole again: kept until the control plane lists it as a station (cloud/presence.ts),
           // which alone makes it one. A station's again: the control plane's word, as a station's enrollment is.

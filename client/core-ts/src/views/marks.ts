@@ -61,6 +61,11 @@ function stateText(row: J): [string, string] {
 
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
 
+/// What a login's card waiting for them says in 待处理: 需要你登录 gh (only 需要你登录 where its program is not told yet).
+function loginWords(name: string | null): string {
+  return name !== null ? tr(current(), "core-views.marks.login", { name }) : tr(current(), "core-views.marks.loginAny");
+}
+
 /// What a message that did not go says in 待处理 (未发送：…, as its row's line: views.ts #unsentRow), and without its lead.
 function unsentText(m: J): [string, string] {
   const said = format.cleanText(format.plainText(str(get(m, "text")) ?? ""));
@@ -169,6 +174,8 @@ type RowMade = {
   failure: string | null;
   watch: boolean;
   block: boolean;
+  /// The login its card asking them is of, where it is a login's.
+  login: string | null;
   byPerson: boolean;
   text: [string, string];
 };
@@ -193,6 +200,7 @@ function rowMade(station: string, row: J, me: J): RowMade {
     seq: get(d, "seq"),
     tone,
     failure: tone === "alert" ? failureOf(station, row) : null,
+    login: decisions.kind(get(d, "card")) === "login" ? (str(get(get(d, "card"), "login")) ?? null) : null,
     watch: present.rowWatch(agents) !== null,
     block: get(row, "mine") === true && present.rowState(agents) === "block",
     byPerson: saidByPerson(row),
@@ -267,7 +275,10 @@ export function workspaceMark(views: Views, local: Local, id: string, prefs: J):
     // until answered or let go, looked at or not (2026-11-16: one looked at and not answered left the list while the
     // sidebar still counted it); its unread the badge counts, so every number on it can be found there.
     if ((tone === "alert" && kinds.failed) || (tone === "wait" && kinds.wait) || (!seen && tone === "done" && (byPerson ? kinds.message : kinds.done))) {
-      const [text, what] = unsent !== undefined ? unsentText(unsent) : made.text;
+      // (a login's card: what it asks in its own words, 需要你登录 gh, the program as its station told it)
+      const login = waits && unsent === undefined && made.login !== null ? views.loginOf(address, made.login) : null;
+      const loginAsk = waits && unsent === undefined && made.login !== null ? loginWords(login?.name ?? null) : null;
+      const [text, what] = unsent !== undefined ? unsentText(unsent) : loginAsk !== null ? [loginAsk, loginAsk] : made.text;
       const item: J = {
         kind: tone,
         workspace: id,
@@ -281,6 +292,9 @@ export function workspaceMark(views: Views, local: Local, id: string, prefs: J):
         at: typeof get(row, "lastActiveAt") === "number" ? row.lastActiveAt : 0,
       };
       if (waits && typeof made.seq === "number") item.seq = made.seq;
+      if (waits && made.login !== null) item.login = made.login;
+      // (when it runs out of time: the app says how long is left as it goes, 剩 12 分钟)
+      if (waits && typeof login?.ends === "number") item.loginEnds = login.ends;
       else if (tone === "done" && typeof get(get(row, "last"), "seq") === "number") item.seq = get(row, "last").seq;
       if (tone === "alert" && failure !== null) item.failure = failure;
       items.push(item);
@@ -305,9 +319,9 @@ export function workspaceMark(views: Views, local: Local, id: string, prefs: J):
       });
     }
   }
-  // Most urgent first, the latest first within.
-  const urgency = (kind: string) => ["alert", "wait", "done"].indexOf(kind);
-  items.sort((a, b) => urgency(a.kind) - urgency(b.kind) || b.at - a.at);
+  // A login waiting first (it ends by itself in minutes), then the most urgent, the latest first within.
+  const urgency = (item: J) => (typeof item.login === "string" ? -1 : ["alert", "wait", "done"].indexOf(item.kind));
+  items.sort((a, b) => urgency(a) - urgency(b) || b.at - a.at);
   const badge = badgeOf(prefs, fresh, said);
   // (its name and mark once, for 待处理's group of it: not on each of its items, 2026-11-16)
   const mark: J = { alert: counts.alert, unread: counts.unread, badge, items, workspaceName: name, ...look };

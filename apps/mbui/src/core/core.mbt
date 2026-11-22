@@ -201,6 +201,15 @@ pub fn screen_ack(call : Int, ts : Double) -> Bool {
 }
 
 ///|
+/// The app's input to a remote screen (`input`: the JSON `screen.input` says in its `input`) sent straight to its
+/// station, in order, where the engine's shell reads the view of call `call` itself (client/shell
+/// `sf_shell_screen_input`): no message to the core, no answer. Only the engine's (none while a made-up core serves).
+/// False: not so (not a pointer's, the wheel's, a key's or a controller's, or not tapped: the app calls `screen.input`).
+pub fn screen_input(call : Int, input : String) -> Bool {
+  serving.val == 0 && ffi_screen_input(call.to_double(), input) != 0
+}
+
+///|
 /// The values of call `name` for which `f` says true change nothing a frame reads: taken as they come, they build
 /// nothing (Client::quiet). Said once, as the app starts.
 pub fn quiet(name : String, f : (Json) -> Bool) -> Unit {
@@ -636,6 +645,11 @@ fn take(msg : Json, bytes : Bytes?) -> Unit {
 pub let on_failed : Ref[((String) -> Unit)?] = { val: None }
 
 ///|
+/// Told once another core was started after one failed (`restart`) and takes calls: what was kept of the failure as it
+/// happened (on_failed, when the core it would go to was the one gone) is sent then.
+pub let on_restarted : Ref[(() -> Unit)?] = { val: None }
+
+///|
 /// What the app times of its topics as they are subscribed and first read (Client::time_topics).
 pub fn time_topics(f : ((Int, String, Json?, Bool) -> Unit)?) -> Unit {
   client.time_topics(f)
@@ -666,6 +680,12 @@ fn restart() -> Unit {
   client.restarted()
   // (a core started anew runs on real time until told the app's clock again)
   clock_again()
+  if engine.started {
+    match on_restarted.val {
+      Some(f) => f()
+      None => ()
+    }
+  }
 }
 
 ///|

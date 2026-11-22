@@ -20,7 +20,7 @@ import { t } from "./i18n.ts";
 import { relativeTime } from "./format.ts";
 import { encode } from "./ops.ts";
 import { unavailable } from "./permissions.ts";
-import { CLIP_PNG_MAX, CLIP_TEXT_MAX, type ClipType, FrameReader, type Region, ackFrame, clipboardFrame, inputFrame, keyframeFrame, lookFrame, soundFrame } from "./screen-frames.ts";
+import { CLIP_PNG_MAX, CLIP_TEXT_MAX, type ClipPrivacy, type ClipType, FrameReader, privacyOf, type Region, ackFrame, clipboardFrame, inputFrame, keyframeFrame, lookFrame, MIC_PCM_MAX, micFrame, micOnFrame, soundFrame } from "./screen-frames.ts";
 import { StationAddr } from "./station/addr.ts";
 import { SCREEN_FPS, type ScreenAsk, type ScreenFps, type ScreenQuality, type WireSocket } from "./station/wire.ts";
 import type { ClientId, RequestId } from "./protocol.ts";
@@ -56,11 +56,18 @@ const PASSKEY_CLIENT_MAX = 49_152;
 export type ScreenCall =
   /// `ask.control` as asked; `auto` (none asked): control unless someone else drives it as it opens.
   /// `sound`: its sound on as it opens (false: muted on the page, as `screen.sound` says it).
-  | { kind: "view"; station: string; screen: string; view: string; ask: ScreenAsk; auto: boolean; sound: boolean }
-  | { kind: "ack"; view: string; ts: number }
+  /// `cursorUpdates`: the page takes the pointer as `{cursor}` alone as it moves, not a whole state each time.
+  /// `chroma444`: the UI decodes full-chroma video: asked of the station while the 画质 is 原画, as it opens and as it changes.
+  | { kind: "view"; station: string; screen: string; view: string; ask: ScreenAsk; auto: boolean; sound: boolean; cursorUpdates?: true; chroma444?: true }
+  | { kind: "ack"; view: string; ts: number; waitUs?: number }
   | { kind: "keyframe"; view: string }
   /// The view's sound on, or off (muted here: the station sends none till it is on again).
   | { kind: "sound"; view: string; on: boolean }
+  /// The person shares their microphone into the screen's virtual one, or no more (said again to each stream while on).
+  | { kind: "micOn"; view: string; on: boolean }
+  /// One packet of it (48 kHz mono s16le, the call's bytes) for the recording `epoch` the state's `mic` said: sent only
+  /// while driving, shared, and that recording goes on; else let be.
+  | { kind: "mic"; view: string; epoch: number; data: Uint8Array }
   | { kind: "input"; view: string; input: J }
   | { kind: "control"; view: string; control: boolean }
   /// The size the view's pictures are asked to fit in from now on, and the 画质 and 帧率 asked (another chosen; none: 自动).
@@ -68,7 +75,8 @@ export type ScreenCall =
   /// The part of the screen the page shows (null: the whole), in `width`×`height` of this device's pixels.
   | { kind: "look"; view: string; region: Region | null; width: number; height: number }
   /// The screen's clipboard set to text or a PNG (its bytes), then pasted where its focus is unless `paste` is false.
-  | { kind: "clipboard"; view: string; type: ClipType; data: Uint8Array; paste: boolean };
+  /// `privacy`: what this device's clipboard marked it (a password manager's copy), for the screen's to mark it so too.
+  | { kind: "clipboard"; view: string; type: ClipType; data: Uint8Array; paste: boolean; privacy: ClipPrivacy | null };
 
 /// A PNG's first bytes.
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -84,7 +92,7 @@ function text(params: unknown, field: string): string {
 
 /// A 画质 said (`quality`), or null (自动, or not one).
 function qualityOf(q: unknown): ScreenQuality | null {
-  return q === "smooth" || q === "hd" || q === "original" ? q : null;
+  return q === "smooth" || q === "hd" || q === "qhd" || q === "original" ? q : null;
 }
 
 /// A 帧率 said (`fps`: 120, 90, 60, 30 or 15), or null (自动, or not one).
@@ -119,20 +127,26 @@ export function parseScreen(name: string, params: unknown, bytes?: Uint8Array): 
       // The UI shows a video tagged Display P3 as such: the station may send wider colours than sRGB's.
       const p3 = get(params, "gamut") === "p3";
       const passkeys = get(params, "passkeys");
+      // Text sharp to the pixel (full-chroma video): asked with 原画 alone, where the UI decodes it.
+      const decodes444 = !peek && get(params, "chroma444") === true;
+      const chroma444 = quality === "original" && decodes444;
       return {
         kind: "view",
         station,
         screen: text(params, "screen"),
         view: text(params, "view"),
-        ask: { maxWidth: size("maxWidth", MAX_WIDTH), maxHeight: size("maxHeight", MAX_HEIGHT), codecs, control: control !== false && !peek, ...(peek ? { peek: true } : {}), ...(get(params, "audio") === "pcm_s16le" && !peek ? { audio: "pcm_s16le" as const } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(p3 ? { gamut: "p3" as const } : {}), ...(!peek && typeof passkeys === "boolean" ? { passkeys } : {}) },
+        ask: { maxWidth: size("maxWidth", MAX_WIDTH), maxHeight: size("maxHeight", MAX_HEIGHT), codecs, control: control !== false && !peek, ...(peek ? { peek: true } : {}), ...(get(params, "audio") === "pcm_s16le" && !peek ? { audio: "pcm_s16le" as const } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(p3 ? { gamut: "p3" as const } : {}), ...(!peek && typeof passkeys === "boolean" ? { passkeys } : {}), ...(!peek ? { privateClip: true as const } : {}), ...(chroma444 ? { chroma444: true as const } : {}) },
         auto: !peek && typeof control !== "boolean",
         sound: get(params, "sound") !== false,
+        ...(get(params, "cursorUpdates") === true ? { cursorUpdates: true as const } : {}),
+        ...(decodes444 ? { chroma444: true as const } : {}),
       };
     }
     case "screen.ack": {
       const ts = get(params, "ts");
       if (!finite(ts) || ts < 0) throw CoreError.invalid(t("core-misc.params.missing", { field: "ts" }));
-      return { kind: "ack", view: text(params, "view"), ts };
+      const waitUs = get(params, "waitUs");
+      return { kind: "ack", view: text(params, "view"), ts, ...(finite(waitUs) && waitUs > 0 ? { waitUs } : {}) };
     }
     case "screen.keyframe":
       return { kind: "keyframe", view: text(params, "view") };
@@ -141,23 +155,37 @@ export function parseScreen(name: string, params: unknown, bytes?: Uint8Array): 
       if (typeof on !== "boolean") throw CoreError.invalid(t("core-misc.params.missing", { field: "on" }));
       return { kind: "sound", view: text(params, "view"), on };
     }
+    case "screen.micOn": {
+      const on = get(params, "on");
+      if (typeof on !== "boolean") throw CoreError.invalid(t("core-misc.params.missing", { field: "on" }));
+      return { kind: "micOn", view: text(params, "view"), on };
+    }
+    case "screen.mic": {
+      const view = text(params, "view");
+      const epoch = get(params, "epoch");
+      if (typeof epoch !== "number" || !Number.isInteger(epoch) || epoch < 0 || epoch > 0xffffffff) throw CoreError.invalid(t("core-misc.params.missing", { field: "epoch" }));
+      const data = bytes ?? null;
+      if (data === null || data.length < 2 || data.length > MIC_PCM_MAX || data.length % 2 !== 0) throw CoreError.invalid(t("core-misc.params.missing", { field: "bytes" }));
+      return { kind: "mic", view, epoch, data };
+    }
     case "screen.input":
       return { kind: "input", view: text(params, "view"), input: checkInput(get(params, "input")) };
     case "screen.clipboard": {
       const view = text(params, "view");
       const paste = get(params, "paste") !== false;
+      const privacy = privacyOf(get(params, "privacy"));
       const said = get(params, "text");
       if (typeof said === "string") {
         if (said === "") throw CoreError.invalid(t("core-misc.params.missing", { field: "text" }));
         const data = utf8(said);
         if (data.length > CLIP_TEXT_MAX) throw CoreError.invalid(t("core-misc.screen.clipTooLarge"));
-        return { kind: "clipboard", view, type: "text", data, paste };
+        return { kind: "clipboard", view, type: "text", data, paste, privacy };
       }
       const data = get(params, "png") === true ? (bytes ?? null) : null;
       if (data === null || data.length === 0) throw CoreError.invalid(t("core-misc.params.missing", { field: "text" }));
       if (data.length > CLIP_PNG_MAX) throw CoreError.invalid(t("core-misc.screen.clipTooLarge"));
       if (!PNG_SIGNATURE.every((b, i) => data[i] === b)) throw CoreError.invalid(t("core-misc.screen.notPng"));
-      return { kind: "clipboard", view, type: "png", data, paste };
+      return { kind: "clipboard", view, type: "png", data, paste, privacy };
     }
     case "screen.look": {
       const view = text(params, "view");
@@ -231,7 +259,23 @@ export function checkInput(input: unknown): J {
     case "pointer": {
       if (input.kind !== "down" && input.kind !== "up" && input.kind !== "move") throw bad();
       const buttons = finite(input.buttons) && input.buttons >= 0 ? Math.floor(input.buttons) & 31 : 0;
-      return { t: "pointer", kind: input.kind, ...at(), buttons };
+      // How far the pointer moved (this device's pixels of the screen): a move's; `relative` where an app on the screen
+      // holds the pointer (the view's `pointerLock`), posted as only that.
+      // A press with `relative`: where the pointer is.
+      const relative = input.relative === true ? { relative: true } : {};
+      if (input.kind !== "move") return { t: "pointer", kind: input.kind, ...at(), buttons, ...relative };
+      if (!finite(input.dx) || !finite(input.dy)) return { t: "pointer", kind: input.kind, ...at(), buttons };
+      const d = (n: number) => Math.max(-10_000, Math.min(10_000, n));
+      return { t: "pointer", kind: input.kind, ...at(), buttons, dx: d(input.dx), dy: d(input.dy), ...relative };
+    }
+    // A game controller's whole state (the W3C Standard Gamepad's): its slot 0..3, its 17 buttons' bits, its sticks
+    // -1..1 and triggers 0..1; `connected: false` lets go of it.
+    case "gamepad": {
+      if (!finite(input.index) || !Number.isInteger(input.index) || input.index < 0 || input.index > 3) throw bad();
+      if (input.connected === false) return { t: "gamepad", index: input.index, connected: false, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
+      const n = (v: unknown, lo: number) => (finite(v) ? Math.max(lo, Math.min(1, v)) : 0);
+      const buttons = finite(input.buttons) && input.buttons >= 0 ? Math.floor(input.buttons) & 0x1ffff : 0;
+      return { t: "gamepad", index: input.index, connected: true, buttons, lx: n(input.lx, -1), ly: n(input.ly, -1), rx: n(input.rx, -1), ry: n(input.ry, -1), lt: n(input.lt, 0), rt: n(input.rt, 0) };
     }
     case "wheel":
       if (!finite(input.dx) || !finite(input.dy)) throw bad();
@@ -526,15 +570,17 @@ export function accessOf(v: unknown): J | null {
 type Open = {
   station: string;
   screen: string;
-  ack(ts: number): void;
+  ack(ts: number, waitUs?: number): void;
   keyframe(): void;
   sound(on: boolean): void;
+  micOn(on: boolean): void;
+  mic(epoch: number, data: Uint8Array): void;
   input(input: J): void;
   control(on: boolean): void;
   bounds(maxWidth: number, maxHeight: number, quality: ScreenQuality | null, fps: ScreenFps | null): void;
   look(region: Region | null, width: number, height: number): void;
   /// Fails (why, in words) while the view does not drive the screen, or the screen carries no such clipboard.
-  clipboard(type: ClipType, data: Uint8Array, paste: boolean): CoreError | null;
+  clipboard(type: ClipType, data: Uint8Array, paste: boolean, privacy: ClipPrivacy | null): CoreError | null;
   /// The station's list changed: who is on it may have.
   listed(): void;
 };
@@ -559,7 +605,7 @@ export function screensChanged(inner: Inner, station: string): void {
 
 /// Whether two asks are of the same size, 画质 and 帧率 (what `screen.bounds` changes).
 function sameAsk(a: ScreenAsk, b: ScreenAsk): boolean {
-  return a.maxWidth === b.maxWidth && a.maxHeight === b.maxHeight && a.quality === b.quality && a.fps === b.fps;
+  return a.maxWidth === b.maxWidth && a.maxHeight === b.maxHeight && a.quality === b.quality && a.fps === b.fps && a.chroma444 === b.chroma444;
 }
 
 /// A view's next stream, opened before the one it takes the place of closed: its socket, the scope it closes with, and
@@ -589,17 +635,24 @@ export function install(): void {
     const c = (call as Extract<import("./core/calls.ts").Call, { kind: "screen" }>).call;
     if (c.kind === "view") return view(inner, c, progress, at, ctx);
     const target = openIn(inner).get(key(at[0], c.view));
-    // A frame acknowledged, a key frame asked, its sound switched or a part looked at, after the view went: nothing to do.
-    if (!target) return c.kind === "ack" || c.kind === "keyframe" || c.kind === "sound" || c.kind === "look" ? Effect.succeed(null) : Effect.fail(new CoreError("not_found", t("core-misc.screen.closed")));
+    // A frame acknowledged, a key frame asked, its sound or microphone switched, a microphone's packet or a part looked
+    // at, after the view went: nothing to do.
+    if (!target) return c.kind === "ack" || c.kind === "keyframe" || c.kind === "sound" || c.kind === "micOn" || c.kind === "mic" || c.kind === "look" ? Effect.succeed(null) : Effect.fail(new CoreError("not_found", t("core-misc.screen.closed")));
     switch (c.kind) {
       case "ack":
-        target.ack(c.ts);
+        target.ack(c.ts, c.waitUs);
         break;
       case "keyframe":
         target.keyframe();
         break;
       case "sound":
         target.sound(c.on);
+        break;
+      case "micOn":
+        target.micOn(c.on);
+        break;
+      case "mic":
+        target.mic(c.epoch, c.data);
         break;
       case "input":
         target.input(c.input);
@@ -614,7 +667,7 @@ export function install(): void {
         target.look(c.region, c.width, c.height);
         break;
       case "clipboard": {
-        const refused = target.clipboard(c.type, c.data, c.paste);
+        const refused = target.clipboard(c.type, c.data, c.paste, c.privacy);
         if (refused) return Effect.fail(refused);
         break;
       }
@@ -652,7 +705,10 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     // device it is on (who is on the screen, for those who look).
     const client = deviceName(inner.data);
     const app = deviceApp(inner.data);
-    let bounds: ScreenAsk = { ...c.ask, ...(client ? { client } : {}), ...(app ? { app } : {}) };
+    // A page that takes the pointer alone (`cursorUpdates`) has the station send it as `cursor` frames (a station from
+    // before them sends it in a state, taken the same way below), and the pictures of the pointers of apps' own
+    // (`customCursor`: a station from before them says those "default").
+    let bounds: ScreenAsk & { binaryCursor?: true; customCursor?: true } = { ...c.ask, ...(client ? { client } : {}), ...(app ? { app } : {}), ...(c.cursorUpdates === true && !c.ask.peek ? { binaryCursor: true as const, customCursor: true as const } : {}) };
     // The stream open now: where acks, key frames and input go (in order, one writer); null between streams.
     let out: Queue.Queue<Uint8Array> | null = null;
     let reopen: Deferred.Deferred<void> | null = null;
@@ -748,6 +804,8 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     let looking: Look = whole;
     // The view's sound as the page last said (`screen.sound`): off, each stream is told so as it opens.
     let soundOn = c.sound;
+    // The person shares their microphone (`screen.micOn`): each stream that drives is told so as it opens.
+    let micOn = false;
     let asked = JSON.stringify(whole);
     const looks = yield* Queue.unbounded<void>();
     const ask = () => {
@@ -773,7 +831,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     open.set(name, {
       station,
       screen: c.screen,
-      ack: (ts) => write(ackFrame(ts)),
+      ack: (ts, waitUs) => write(ackFrame(ts, waitUs ?? 0)),
       keyframe: () => write(keyframeFrame()),
       // Said to each stream as it opens too, while off.
       sound: (on) => {
@@ -781,14 +839,23 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         soundOn = on;
         write(soundFrame(on));
       },
+      micOn: (on) => {
+        if (micOn === on) return;
+        micOn = on;
+        write(micOnFrame(on));
+      },
+      // Only while driving, shared, and something on the screen records its virtual microphone in that recording.
+      mic: (epoch, data) => {
+        if (state.control && micOn && state.mic?.active === true && state.mic.epoch === epoch) write(micFrame(data, epoch));
+      },
       // Only while driving: what the view only looks at takes no input (but which of a desktop's windows it shows).
       input: (input) => {
         if (state.control || input.t === "window") write(inputFrame(input));
       },
-      clipboard: (type, data, paste) => {
+      clipboard: (type, data, paste, privacy) => {
         if (!state.control || out === null) return new CoreError("invalid_params", t("core-misc.screen.notDriving"));
         if (!clipTypesOf(get(listedItem(), "clipboard")).includes(type)) return new CoreError("unsupported", t("core-misc.screen.noClipboard"));
-        write(clipboardFrame(type, data, paste));
+        write(clipboardFrame(type, data, paste, privacy));
         return null;
       },
       // Shown as large as the page shows it, no larger than the view asked for the whole screen.
@@ -810,7 +877,10 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         const next: ScreenAsk = { ...bounds, maxWidth, maxHeight };
         delete next.quality;
         delete next.fps;
+        delete next.chroma444;
         if (quality && !c.ask.peek) next.quality = quality;
+        // (text sharp with 原画 alone: asked as it is chosen, and no more as another is)
+        if (quality === "original" && c.chroma444 && !c.ask.peek) next.chroma444 = true;
         if (fps && !c.ask.peek) next.fps = fps;
         if (sameAsk(next, bounds)) return;
         bounds = next;
@@ -889,6 +959,9 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
           asked = JSON.stringify(whole);
           ask();
           if (!soundOn) write(soundFrame(false));
+          if (micOn && control) write(micOnFrame(true));
+          // (its virtual microphone said by this stream anew)
+          delete state.mic;
           yield* Effect.addFinalizer(() => Effect.sync(() => (out = out === queue ? null : out)));
           // Its writer goes with the stream (the attempt's scope).
           yield* Effect.forkScoped(Effect.ignore(Effect.forever(Effect.flatMap(Queue.take(queue), (bytes) => socket.send.write(bytes))), { log: "Unhandled", message: "screen input sent" }));
@@ -904,7 +977,9 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
           tell();
           // Its picture and sound read by the host and said to the app itself where it can (Apple's shell: no frame
           // through here), what it leaves here the config (its size, for the state) and a video frame's head after it.
-          const tapped = socket.tap === undefined ? false : yield* socket.tap(at[1]);
+          // A page that takes the pointer alone has it said by the host too where it taps the view ("cursor"), the core
+          // given only the newest before whatever comes next for it.
+          const tapped = socket.tap === undefined ? false : yield* socket.tap(at[1], c.cursorUpdates === true);
           const reader = new FrameReader();
           let seen = false;
           let pcm = false;
@@ -968,15 +1043,42 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 // A copy made on the screen, for the page to put on this device's clipboard (only while driving it).
                 if (!state.control) continue;
                 const clip = frame.clipboard;
+                // (marked private on the screen: the page marks this device's copy so, out of its clipboard history)
+                const mark = clip.privacy ? { privacy: clip.privacy } : {};
                 if (clip.type === "text") {
-                  if (clip.data.length > 0 && clip.data.length <= CLIP_TEXT_MAX) progress({ clipboard: { type: "text", text: fromUtf8(clip.data) } });
-                } else if (clip.data.length > 0 && clip.data.length <= CLIP_PNG_MAX) progress({ clipboard: { type: "png", size: clip.data.length } }, clip.data);
+                  if (clip.data.length > 0 && clip.data.length <= CLIP_TEXT_MAX) progress({ clipboard: { type: "text", text: fromUtf8(clip.data), ...mark } });
+                } else if (clip.data.length > 0 && clip.data.length <= CLIP_PNG_MAX) progress({ clipboard: { type: "png", size: clip.data.length, ...mark } }, clip.data);
+              } else if ("cursor" in frame) {
+                // The pointer, as it moves (60 times a second): what is kept of it so that the next whole state has it,
+                // and to a page that takes it alone, only it.
+                const k = frame.cursor;
+                if (k === null) delete state.cursor;
+                else state.cursor = { x: k.x, y: k.y, ...(k.shape !== undefined ? { shape: k.shape } : {}) };
+                if (c.cursorUpdates !== true) tell();
+                else if (tapped !== "cursor") progress({ cursor: state.cursor ?? null });
+              } else if ("cursorImage" in frame) {
+                // A pointer of an app's own, before the first that names it: its picture to the page, kept there by
+                // its shape.
+                const { shape, w, h, hx, hy, data } = frame.cursorImage;
+                progress({ cursorImage: { shape, w, h, hx, hy } }, data);
               } else if ("state" in frame) {
                 const s = frame.state;
                 if (!isObject(s)) continue;
                 if (isObject(s.cursor) && finite(s.cursor.x) && finite(s.cursor.y)) state.cursor = { x: unit(s.cursor.x), y: unit(s.cursor.y), ...(typeof s.cursor.shape === "string" ? { shape: s.cursor.shape } : {}) };
                 else if (s.cursor === null) delete state.cursor;
+                // A state of the pointer alone (a station from before `cursor` frames), to a page that takes it alone:
+                // only it, no whole state made and sent for it.
+                if (c.cursorUpdates === true && Object.keys(s).length === 1 && Object.prototype.hasOwnProperty.call(s, "cursor")) {
+                  progress({ cursor: state.cursor ?? null });
+                  continue;
+                }
                 if (typeof s.title === "string" && s.title !== "") state.title = s.title;
+                // Whether an app on the screen holds the pointer (a game's), while driving it: the page sends moves
+                // relative then.
+                if (typeof s.pointerLock === "boolean") {
+                  if (s.pointerLock && state.control) state.pointerLock = true;
+                  else delete state.pointerLock;
+                }
                 // How a simulator's picture is turned: its case is drawn turned with it.
                 if (s.turn === 0 || s.turn === 1 || s.turn === 2 || s.turn === 3) state.turn = s.turn;
                 // A desktop's windows (the viewer's tabs), and the one shown alone (none: the whole display).
@@ -987,6 +1089,14 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 if (s.login === null) delete state.login;
                 else if (state.control && isObject(s.login) && typeof s.login.host === "string" && s.login.host !== "" && s.login.host.length <= 253 && (s.login.field === "username" || s.login.field === "password")) {
                   state.login = { host: s.login.host, field: s.login.field, ...(s.login.filled === true ? { filled: true } : {}) };
+                }
+                // The screen's virtual microphone, while driving it: this device's microphone goes (`screen.mic`) only
+                // while it is active, in the recording it says.
+                if (s.mic === null) delete state.mic;
+                else if (state.control && isObject(s.mic)) {
+                  const e = s.mic.epoch;
+                  const available = s.mic.available === true;
+                  state.mic = { available, active: available && s.mic.active === true, epoch: typeof e === "number" && Number.isInteger(e) && e >= 0 && e <= 0xffffffff ? e : 0 };
                 }
                 // A page's passkey sign-in, while driving it: this device's passkeys may answer it (`passkey`).
                 if (s.passkey === null) delete state.passkey;
@@ -1036,6 +1146,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 if (!state.control) {
                   delete state.login;
                   delete state.passkey;
+                  delete state.mic;
                 }
                 if (typeof s.site === "string") {
                   if (s.site !== "" && s.site.length <= 253) state.site = s.site;

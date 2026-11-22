@@ -44,6 +44,9 @@ export const agyAccountFile = (home: string) => join(agyHome(home), "account.jso
 /// Where `agy acp` keeps its conversation databases under `--gemini-dir` once a signed-in session opens.
 export const agyConversations = (home: string) => join(geminiDir(home), "antigravity-cli", "conversations");
 
+/// How many conversations this process brought in (`agyBringIn`): the names it copies beside under.
+let bringSeq = 0;
+
 /// Conversation `id` brought into the CLI's store of profile home `home` from another home beside it (the station's
 /// `homes/`) that kept it last: its database (and `-wal`), `annotations/<id>.pbtxt` and `brain/<id>/`
 /// (replica/carry.ts `cliKept`). A chat moved from another station comes with what its CLI kept under the id of the
@@ -73,9 +76,13 @@ export async function agyBringIn(home: string, id: string): Promise<string | nul
   const db = join(here, "conversations", `${id}.db`);
   await mkdir(join(here, "conversations"), { recursive: true });
   const fromWal = (await there(join(cli, "conversations", `${id}.db-wal`))) ? join(cli, "conversations", `${id}.db-wal`) : null;
-  // (copied beside first, so that what was here goes only once all of it came)
-  await cp(join(cli, "conversations", `${id}.db`), `${db}.bringing`, { preserveTimestamps: true });
-  if (fromWal !== null) await cp(fromWal, `${db}-wal.bringing`, { preserveTimestamps: true });
+  // (copied beside first, so that what was here goes only once all of it came; under names of its own, so that two
+  // bringing it at once, or one left by a failed one, are not each other's)
+  const n = ++bringSeq;
+  const dbBringing = `${db}.${process.pid}.${n}.bringing`;
+  const walBringing = `${db}-wal.${process.pid}.${n}.bringing`;
+  await cp(join(cli, "conversations", `${id}.db`), dbBringing, { preserveTimestamps: true });
+  if (fromWal !== null) await cp(fromWal, walBringing, { preserveTimestamps: true });
   for (const [dir, entry] of [["annotations", `${id}.pbtxt`], ["brain", id]] as const) {
     await rm(join(here, dir, entry), { recursive: true, force: true });
     if (!(await there(join(cli, dir, entry)))) continue;
@@ -84,8 +91,8 @@ export async function agyBringIn(home: string, id: string): Promise<string | nul
   }
   await rm(`${db}-wal`, { force: true });
   await rm(`${db}-shm`, { force: true });
-  await rename(`${db}.bringing`, db);
-  if (fromWal !== null) await rename(`${db}-wal.bringing`, `${db}-wal`);
+  await rename(dbBringing, db);
+  if (fromWal !== null) await rename(walBringing, `${db}-wal`);
   log.info("agy", "a conversation brought into the profile's CLI from another home of the station", { id, from: name, to: home });
   return name;
 }
@@ -218,30 +225,31 @@ export function agyCompany(text: string): boolean {
   }
 }
 
-/// The plan a Google account is on, as people know it, from the tier `agy` says (ACP session/new's
-/// `_meta.antigravity.tier.id`, or its sign-in's `user_tier`); a company's account whose tier is not one of these is
-/// Enterprise. Null where nothing says.
-export function agyPlan(tier: string | null | undefined, company = false): string | null {
-  const id = typeof tier === "string" ? tier.trim().toLowerCase() : "";
+/// Google can return the same display name for both Ultra tiers. Use the ID first, then Google's display name.
+export function agyPlan(tier: { id?: unknown; name?: unknown } | null | undefined, company = false): string | null {
+  const id = typeof tier?.id === "string" ? tier.id.trim().toLowerCase() : "";
   const known: Record<string, string> = {
-    "g1-ultra-tier": "Ultra",
-    "g1-pro-tier": "Pro",
     "free-tier": "Free",
-    "gcp-ge-ultra-tier": "Enterprise Ultra",
-    "gcp-ge-plus-tier": "Enterprise Plus",
+    "g1-plus-tier": "Plus",
+    "g1-pro-tier": "Pro",
+    "g1-ultra-lite-tier": "Ultra 5x",
+    "g1-ultra-tier": "Ultra 20x",
     "gcp-ge-standard-tier": "Enterprise",
-    "gcp-standard-tier": "Enterprise",
+    "gcp-ge-plus-tier": "Enterprise Plus",
+    "gcp-ge-ultra-tier": "Enterprise Ultra",
   };
-  if (known[id] !== undefined) return known[id]!;
+  if (Object.hasOwn(known, id)) return known[id]!;
+  const name = typeof tier?.name === "string" ? tier.name.trim() : "";
+  if (name !== "" && name.toLowerCase() !== "unknown") return name;
   if (id.startsWith("gcp-") || company) return "Enterprise";
   return null;
 }
 
-/// The plan of a profile's sign-in as its file says it (`user_tier`, its way of signing in).
+/// The plan in a profile's sign-in file.
 export function agyPlanIn(text: string, enterprise = false): string | null {
   try {
     const parsed = JSON.parse(text);
-    return agyPlan(typeof parsed?.user_tier === "string" ? parsed.user_tier : null, enterprise || agyCompany(text));
+    return agyPlan({ id: parsed?.user_tier, name: parsed?.tier_display_name }, enterprise || companyMethod(parsed?.auth_method));
   } catch {
     return enterprise ? "Enterprise" : null;
   }
@@ -312,18 +320,19 @@ export function agyLentFile(lent: { token: Json; email?: string | null; auth_met
 /// shared: each becomes `mcp_stillfail_<name>`, its description given "This is a tool from the stillfail MCP server.\n"
 /// (46 B) and its parameters a required `toolSummary` (275 B), so about AGY_TOOL_WRAP more a tool; and one pool holds
 /// them with the workspace's skills, workflows and subagents (`.agent/skills`, which #6685 fills with the workspace's
-/// skills: 37 of them, some 16-18 KB), and with 1.5.8/1.5.9's tools of their own (`swarm`, `run_workflow`). Measured
-/// 2026-11-16 on 1.5.8: the 45,000 this was (40 tools listed, 43,877 B) came to about 56.7 KB as `agy` declared them,
-/// and with the skills #6685 put beside them it dropped chat_post (4,704 B, the largest) again, every session answered
-/// `unknown tool: "mcp_stillfail_chat_post"`. So the list is fitted to this, and what it comes to in `agy` (each tool's
-/// AGY_TOOL_WRAP added) is held under AGY_TOOL_CEILING (test/agy.test.ts): with some 20 KB of skills beside it, within
-/// 54 KB. side/agy-real.test.ts holds it on the real CLI with 37 skills of that size.
-export const AGY_TOOL_BUDGET = 26_000;
+/// skills: 37 of them, some 16-18 KB), and with 1.5.8/1.5.9's tools of their own (`swarm`, `run_workflow`, `schedule`,
+/// `manage_task`, `send_message`). Measured on 1.5.8/1.5.9: 45,000 (40 tools listed, 43,877 B, ~56.7 KB wrapped) and
+/// 26,000 on Windows (longer `.agent/skills` paths plus 1.5.9's extra built-ins) pushed the combined pool past ~58 KB
+/// and dropped `chat_post` (4,704 B, the largest), every session answered `unknown tool: "mcp_stillfail_chat_post"`.
+/// So the list is fitted to this, and what it comes to in `agy` (each tool's AGY_TOOL_WRAP added) is held under
+/// AGY_TOOL_CEILING (test/agy.test.ts): with some 20 KB of skills beside it, well within the pool.
+/// side/agy-real.test.ts holds it on the real CLI with 37 skills of that size.
+export const AGY_TOOL_BUDGET = 22_000;
 /// What `agy` adds to each tool it is declared, rounded up (46 B of description and 275 B of `toolSummary`, 2026-11-16).
 export const AGY_TOOL_WRAP = 350;
 /// The most the station's list may come to as `agy` declares it, its AGY_TOOL_WRAP a tool counted: what leaves room in
 /// `agy`'s pool for the workspace's skills (some 20 KB) and its own tools.
-export const AGY_TOOL_CEILING = 36_000;
+export const AGY_TOOL_CEILING = 31_000;
 
 /// Where the station keeps its sessions' transcripts.
 export const SESSIONS = "sessions";
@@ -333,7 +342,7 @@ const SESSION_ID = /^[a-zA-Z0-9_-]+$/;
 
 /// What failed a turn, from what it said of it.
 export const classifyFailure = (text: string): FailureReason =>
-  failureOf(text, { auth: ["authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant", "unauthenticated", "token expired"], limit: ["resource_exhausted", "quota"] });
+  failureOf(text, { auth: ["authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant", "unauthenticated", "token expired", "verification required"], limit: ["resource_exhausted", "quota"] });
 
 /// A failure Antigravity CLI tells only in words: a turn whose answer is end_turn, all it said one line of its own
 /// notice (⚠). Its spent quota came so on 1.5.9 (2026-11-15: "⚠ Individual quota reached. Please upgrade your
@@ -355,14 +364,18 @@ export function noticeFailure(said: string): FailureReason | null {
     const reason = classifyFailure(last);
     return reason === "model" ? "other" : reason;
   }
+  if (lower.startsWith(AGY_UNAUTHENTICATED)) return "auth";
+  if (lower.startsWith(AGY_VERIFICATION_REQUIRED)) return "auth";
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   const reason = classifyFailure(text);
   return reason === "model" ? null : reason;
 }
 
-/// What Antigravity CLI says of a turn its executor ended on an error (1.5.8: unnamed; 1.5.9: named).
+/// What Antigravity CLI says of a turn its executor ended on an error (1.5.8: unnamed; 1.5.9: named or HTTP 401; 1.5.14: verification gate).
 const AGY_TERMINATED = "⚠ agent execution terminated due to error.";
 const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
+const AGY_UNAUTHENTICATED = "⚠ unauthenticated (code 401):";
+const AGY_VERIFICATION_REQUIRED = "⚠ verification required";
 
 /// The process's arguments: the profile's files, no approvals, no telemetry.
 export const agyArgs = (home: string) => ["acp", "--gemini-dir", geminiDir(home), "--dangerously-skip-permissions", "--disable-telemetry"];
@@ -490,13 +503,12 @@ export function agyBaseModel(id: string): { model: string; effort?: string } {
   return effort === undefined ? { model: trimmed } : { model: trimmed.slice(0, -effort.length - 1), effort };
 }
 
-/// `tier`: the plan's tier as session/new said it (`_meta.antigravity.tier.id`), where it did.
-export type AgyCatalog = { models: string[]; efforts: Record<string, string[]>; defaults: Record<string, string>; tier?: string };
+/// `plan`: the subscription label from the Antigravity session, when available.
+export type AgyCatalog = { models: string[]; efforts: Record<string, string[]>; defaults: Record<string, string>; plan?: string };
 
-/// The tier session/new or session/load said the account is on (`_meta.antigravity.tier`, `{ id, name }`), or null.
-export function agyTierIn(result: Json): string | null {
-  const id = result?._meta?.antigravity?.tier?.id;
-  return typeof id === "string" && id !== "" ? id : null;
+/// The account's plan from session/new or session/load.
+export function agySessionPlan(result: Json): string | null {
+  return agyPlan(result?._meta?.antigravity?.tier);
 }
 
 /// The base models, their thinking levels (`[]` where at most one variant is offered, e.g. `gpt-oss-120b-medium`), and
@@ -606,6 +618,13 @@ export class AgyNoCatalog extends Error {
 export const AGY_LENT_RENEW_MS = 40 * 60_000;
 /// What `agy` needs left of a sign-in to start on it (it asks to sign in under 5 minutes, 1.5.9), with a margin.
 const AGY_LENT_LEAST_MS = 10 * 60_000;
+/// Margin before a borrowed sign-in's recorded expiry within which an auth failure is taken as that token running out
+/// (covers host/borrower clock skew and early expiry; well below AGY_LENT_LEAST_MS so a freshly opened process does
+/// not match it immediately).
+const AGY_LENT_EXPIRE_MARGIN_MS = 5 * 60_000;
+/// Minimum time a process must have been open on its borrowed sign-in before another mid-turn expiry reopens it past
+/// the one-shot `auth_retried` guard, so even severe clock skew cannot loop retries.
+const AGY_LENT_MIN_RUN_MS = 5 * 60_000;
 
 export class AgyDriver extends AcpDriver<AgySession> {
   protected readonly keepsTranscript = true;
@@ -659,7 +678,7 @@ export class AgyDriver extends AcpDriver<AgySession> {
     const session = await this.begin({ key: `models-${profile.id}-${uuid()}`, profile, cwd: agyHome(profile.home), instructions: "", mcpToken: "", mcpUrl: "", route: "model-discovery" }, () => {}, true);
     try {
       const catalog = agyCatalog(session.availableModels, session.currentModelId);
-      return session.tier !== null ? { ...catalog, tier: session.tier } : catalog;
+      return session.plan !== null ? { ...catalog, plan: session.plan } : catalog;
     } finally {
       await session.dispose();
     }
@@ -676,16 +695,23 @@ export class AgyDriver extends AcpDriver<AgySession> {
 
   /// One opening, opened again after `AGY_CATALOG_RETRY_MS` while its process offers no models (`AgyNoCatalog`); any
   /// other failure is the caller's at once.
+  /// Given up (`OpenOptions.signal`: timed out, stopped, suspended, closed), it opens nothing again and starts no process.
   protected async begin(options: OpenOptions, events: Events, probe: boolean): Promise<AgySession> {
+    const signal = options.signal;
     for (let attempt = 0; ; attempt++) {
+      if (signal?.aborted) throw new Error("open aborted");
       try {
         return await this.beginOnce(options, events, probe);
       } catch (error) {
+        if (signal?.aborted) throw error;
         const wait = AGY_CATALOG_RETRY_MS[attempt];
         if (!(error instanceof AgyNoCatalog) || wait === undefined) throw error;
         log.warn("agents::agy", "its process offered no models (its network not up?); opened again after a wait", { key: options.key, attempt: attempt + 1, waitMs: wait });
-        // timer: retry after a failure
-        await Effect.runPromise(this.#clock.sleep(Duration.millis(wait)));
+        // timer: retry after a failure (its wait interrupted as the opening is given up)
+        const waited = Effect.runPromise(this.#clock.sleep(Duration.millis(wait)), signal === undefined ? undefined : { signal });
+        await waited.catch((error: unknown) => {
+          if (!signal?.aborted) throw error;
+        });
       }
     }
   }
@@ -702,8 +728,11 @@ export class AgyDriver extends AcpDriver<AgySession> {
       await agyHooks(options.profile.home);
       if (options.skills !== undefined) await agySkills(options.cwd, options.skills);
     }
+    // (given up while it was made ready: no process started)
+    if (options.signal?.aborted) throw new Error("open aborted");
     const session = await super.begin(options, events, probe);
     session.signInUntil = until;
+    session.signInOpenedAt = borrowed ? wall.now() : null;
     return session;
   }
 
@@ -716,8 +745,15 @@ export class AgyDriver extends AcpDriver<AgySession> {
     const session = await super.adopt(options, snapshot, events);
     // One handed over says the token it opened on (`kept`); one taken up after a crash, or from a station from before,
     // does not, and is opened again before its next turn: the file may hold a token lent since, for another process.
-    if (this.lent?.borrowed(options.profile) !== true) session.signInUntil = null;
-    else if (session.signInUntil === null) session.signInUntil = 0;
+    if (this.lent?.borrowed(options.profile) !== true) {
+      session.signInUntil = null;
+      session.signInOpenedAt = null;
+    } else if (session.signInUntil === null) {
+      session.signInUntil = 0;
+      session.signInOpenedAt = null;
+    } else if (session.signInOpenedAt === null && session.signInUntil > 0) {
+      session.signInOpenedAt = session.signInUntil - 60 * 60_000;
+    }
     if (session.id() !== id) {
       try {
         await this.ensureConversation(options.profile.home, session.id());
@@ -770,13 +806,15 @@ export class AgySession extends AcpSession {
   currentModelId: string | null = null;
   /// The raw ACP `modelId` the process opened on before any `session/set_model`.
   defaultModelId: string | null = null;
-  /// The account's tier, as session/new or session/load said it (`agyTierIn`).
-  tier: string | null = null;
+  /// The account's plan, as session/new or session/load said it.
+  plan: string | null = null;
   /// The context its last call had and the model's window, as usage_update says them.
   private context = { used: 0, size: 0 };
   /// When the borrowed sign-in its process opened on runs out (ms); null on a sign-in of this station's own, which
   /// `agy` renews itself.
   signInUntil: number | null = null;
+  /// When the process opened on its borrowed sign-in (ms); null on a sign-in of this station's own or unknown.
+  signInOpenedAt: number | null = null;
   private readonly agyDriver: AgyDriver;
 
   constructor(driver: AgyDriver, events: Events, options: OpenOptions) {
@@ -789,10 +827,10 @@ export class AgySession extends AcpSession {
     super.named(id);
   }
 
-  opened(result: Json) {
-    super.opened(result);
+  opened(result: Json, resumed = false) {
+    super.opened(result, resumed);
     this.availableModels = agyModels(result);
-    this.tier = agyTierIn(result) ?? this.tier;
+    this.plan = agySessionPlan(result) ?? this.plan;
     const current = result?.models?.currentModelId;
     if (typeof current === "string" && current !== "") {
       this.currentModelId = current;
@@ -802,7 +840,14 @@ export class AgySession extends AcpSession {
   }
 
   protected kept() {
-    return { availableModels: this.availableModels, currentModelId: this.currentModelId, defaultModelId: this.defaultModelId, context: this.context, signInUntil: this.signInUntil };
+    return {
+      availableModels: this.availableModels,
+      currentModelId: this.currentModelId,
+      defaultModelId: this.defaultModelId,
+      context: this.context,
+      signInUntil: this.signInUntil,
+      signInOpenedAt: this.signInOpenedAt,
+    };
   }
 
   protected taken(snapshot: Json) {
@@ -812,6 +857,7 @@ export class AgySession extends AcpSession {
     const c = snapshot.context;
     if (c && typeof c === "object") this.context = { used: typeof c.used === "number" ? c.used : 0, size: typeof c.size === "number" ? c.size : 0 };
     this.signInUntil = typeof snapshot.signInUntil === "number" ? snapshot.signInUntil : null;
+    this.signInOpenedAt = typeof snapshot.signInOpenedAt === "number" ? snapshot.signInOpenedAt : null;
   }
 
   /// Its process's borrowed sign-in has less than AGY_LENT_RENEW_MS left: it takes no turn on it, but is ended and
@@ -824,10 +870,19 @@ export class AgySession extends AcpSession {
   }
 
   /// When a turn ends on `AGY_TERMINATED` (1.5.8), whether its process's borrowed sign-in has already run out under the
-  /// turn (within a minute's clock margin; 0 when taken up without a known expiry): `actor_run.mbt` then answers it as
-  /// `auth`, ending the process and going on once in a new one on a sign-in lent anew (`auth_retry`).
+  /// turn (within AGY_LENT_EXPIRE_MARGIN_MS; 0 when taken up without a known expiry): `actor_run.mbt` then answers it
+  /// as `auth`, ending the process and going on in a new one on a sign-in lent anew (`auth_retry`).
   signInExpired() {
-    return this.signInUntil !== null && this.signInUntil - wall.now() <= 60_000;
+    return this.signInUntil !== null && this.signInUntil - wall.now() <= AGY_LENT_EXPIRE_MARGIN_MS;
+  }
+
+  /// Whether this process opened on a known borrowed sign-in, ran for at least AGY_LENT_MIN_RUN_MS, and that sign-in
+  /// has now reached expiry: lets a long-running turn reopen on a newly lent token across multiple hourly expiries
+  /// while stopping immediately on a broken login or severe clock skew.
+  lentExpired() {
+    if (this.signInUntil === null || this.signInUntil <= 0 || this.signInOpenedAt === null) return false;
+    const now = wall.now();
+    return this.signInUntil - now <= AGY_LENT_EXPIRE_MARGIN_MS && now - this.signInOpenedAt >= AGY_LENT_MIN_RUN_MS;
   }
 
   protected updated(update: Json, _owner: string | null) {

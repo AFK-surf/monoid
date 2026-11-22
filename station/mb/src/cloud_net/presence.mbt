@@ -168,12 +168,18 @@ pub fn joined_of(raw : Json?) -> Array[Json] {
       "workspace_name": Json::string(
         text_of(field(j, "workspace_name")).unwrap_or(ws),
       ),
-      "name": Json::string(text_of(field(j, "name")).unwrap_or("")),
-      "peers": Json::array(array_of(field(j, "peers")).unwrap_or([])),
-      "revocations": Json::array(
-        array_of(field(j, "revocations")).unwrap_or([]).filter(is_revocation),
-      ),
     }
+    if text_of(field(j, "workspace_emoji")) is Some(e) && e != "" {
+      m["workspace_emoji"] = Json::string(e)
+    }
+    if text_of(field(j, "workspace_icon")) is Some(ic) && ic != "" {
+      m["workspace_icon"] = Json::string(ic)
+    }
+    m["name"] = Json::string(text_of(field(j, "name")).unwrap_or(""))
+    m["peers"] = Json::array(array_of(field(j, "peers")).unwrap_or([]))
+    m["revocations"] = Json::array(
+      array_of(field(j, "revocations")).unwrap_or([]).filter(is_revocation),
+    )
     if field(j, "locked") is Some(True) {
       m["locked"] = Json::boolean(true)
     }
@@ -464,6 +470,14 @@ fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit
     }
   }
   let locked = (lock.pinned)(None)
+  let wrong_home = match s.state {
+    Some(st) =>
+      locked &&
+      named_ws is Some(w) &&
+      Some(w) != text_of(st.get("workspace")) &&
+      !took
+    None => false
+  }
   if locked && s.state is Some(st) {
     let moved_ws = named_ws is Some(w) &&
       Some(w) != text_of(st.get("workspace")) &&
@@ -495,6 +509,16 @@ fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit
       match field(body, k) {
         Some(String(_)) as v => st[k] = v.unwrap()
         _ => ()
+      }
+    }
+    if !wrong_home {
+      match text_of(field(body, "workspace_emoji")) {
+        Some(e) if e != "" => st["workspace_emoji"] = Json::string(e)
+        _ => st.remove("workspace_emoji")
+      }
+      match text_of(field(body, "workspace_icon")) {
+        Some(ic) if ic != "" => st["workspace_icon"] = Json::string(ic)
+        _ => st.remove("workspace_icon")
       }
     }
     match field(body, "relay_urls") {
@@ -865,9 +889,20 @@ fn take_from_plane(
 
 ///|
 /// The joined workspaces whose lock, named by joining, is to be asked for now: not pinned yet, the plane having one
-/// there, not asked for on this connection (`asked`).
-pub fn pending_asks(p : PlaneCloud, asked : Map[String, Bool]) -> Array[String] {
-  let out = []
+/// there, not asked for on this connection (`asked`); the home workspace's (None) too, where a lock to pin was named
+/// there since the plane's last frame (a rig its person took in naming the workspace's lock, FB-45).
+pub fn pending_asks(p : PlaneCloud, asked : Map[String, Bool]) -> Array[String?] {
+  let out : Array[String?] = []
+  let plane_home = p.plane_lock_seq.unwrap_or(-1)
+  if !(p.lock.pinned)(None) && plane_home >= 0 {
+    match (p.lock.pending)(None) {
+      Some(home) if !asked.contains("/\{home}") => {
+        asked["/\{home}"] = true
+        out.push(None)
+      }
+      _ => ()
+    }
+  }
   let joined = match p.cloud.state {
     Some(st) => array_of(st.get("joined")).unwrap_or([])
     None => []
@@ -887,7 +922,7 @@ pub fn pending_asks(p : PlaneCloud, asked : Map[String, Bool]) -> Array[String] 
       continue
     }
     asked[key] = true
-    out.push(ws)
+    out.push(Some(ws))
   }
   out
 }
@@ -907,7 +942,10 @@ pub fn plane_teller(
       return
     }
     for ws in pending_asks(p, asked) {
-      send({ "type": "lock.get", "after": -1, "workspace": Json::string(ws) })
+      match ws {
+        Some(w) => send({ "type": "lock.get", "after": -1, "workspace": Json::string(w) })
+        None => send({ "type": "lock.get", "after": -1 })
+      }
     }
   }
   let tell = fn() {

@@ -104,13 +104,16 @@ fn cover_cut(tree : @view.Tree, v : @view.View) -> (Double, Double, Double, Doub
 
 ///|
 /// A page's list 400 by 800 under a bar 60 tall (`top_covered`), its foot 50 tall (a composer) pinned over its foot, at
-/// its foot: a block 400 tall, a thumbnail 100 by 40 that stays, another block 400 tall; over all of it while `open` is
-/// said a picture 300 by 200 at (50, 100) that moves, going by `route`. The tree, open, the thumbnail, the picture, the
-/// foot's box.
+/// its foot: a block 400 tall, a thumbnail 100 by 40 that stays, another block `last` tall; over all of it while `open` is
+/// said a picture 300 by 200 at (50, 100) that moves, going by `route`; a bar 400 by 60 over the list's top (`bar`'s),
+/// drawn after the list. With `button`, a round button 44 by 44 (its) in the foot before its box, that foot's top as tall
+/// as it (`foot_clear`) hiding nothing. The tree, open, the thumbnail, the picture, the foot's box.
 fn route_scene(
   route : @view.FlightRoute,
   mark? : Ref[@view.View?] = Ref(None),
-  button? : Ref[@view.View?]? = None,
+  last? : Double = 400.0,
+  bar? : Ref[@view.View?] = Ref(None),
+  button? : Ref[@view.View?],
 ) -> (@view.Tree, @signals.Signal[Bool], Ref[@view.View?], Ref[@view.View?], Ref[@view.View?]) {
   let open = @signals.signal(false)
   let thumb : Ref[@view.View?] = Ref(None)
@@ -127,14 +130,13 @@ fn route_scene(
           est=100.0,
           follows=fn() { true },
           top_covered=fn() { 60.0 },
+          foot_clear=fn() { if button is Some(_) { 44.0 } else { 0.0 } },
           foot=fn(f) {
-            // (`button`: a round button standing over the list made in the foot before what covers the list's foot,
-            // which says what flies under the foot is drawn just under it: View::flights_under)
             match button {
               Some(r) =>
-                f.box(fn(u) {
-                  r.val = Some(u)
-                  u.width(Is(Some(30.0))).height(Is(Some(30.0))).ground(Is(blue)) |> ignore
+                f.box(fn(c) {
+                  r.val = Some(c)
+                  c.width(Is(Some(44.0))).height(Is(Some(44.0))).ground(Is(red)) |> ignore
                 })
                 |> ignore
               None => ()
@@ -142,9 +144,6 @@ fn route_scene(
             f.box(fn(b) {
               foot.val = Some(b)
               b.height(Is(Some(50.0))).ground(Is(green)) |> ignore
-              if button is Some(_) {
-                b.flights_under() |> ignore
-              }
             })
             |> ignore
           },
@@ -157,11 +156,18 @@ fn route_scene(
                   |> ignore
                 })
                 |> ignore
-              _ => b.height(Is(Some(400.0))) |> ignore
+              0 => b.height(Is(Some(400.0))) |> ignore
+              _ => b.height(Is(Some(last))) |> ignore
             }
           },
         )
         |> ignore
+      })
+      |> ignore
+      // (the bar over the list's top, drawn after it)
+      p.box(fn(h) {
+        bar.val = Some(h)
+        h.over(Is(true)).width(Is(Some(400.0))).height(Is(Some(60.0))).ground(Is(green)) |> ignore
       })
       |> ignore
       p.show(fn() { open.get() }, fn(o) {
@@ -206,7 +212,7 @@ test "a flight whose route its picture says: drawn where that says along its way
       (a.0 + (b.0 - a.0) * q, a.1 + (b.1 - a.1) * q, a.2 + (b.2 - a.2) * q, a.3 + (b.3 - a.3) * q)
     },
     opened: fn(_, p) { p },
-    level: fn(_, _) { Held },
+    in_stays: fn(_, _) { false },
   }
   let (tree, open, thumb, big, _) = route_scene(route)
   tree.frame(400.0, 800.0, now=0.0) |> ignore
@@ -222,7 +228,7 @@ test "a flight whose route its picture says: drawn where that says along its way
   assert_eq(seen[0].to, (50.0, 100.0, 300.0, 200.0))
   assert_true(seen[0].from_stays)
   assert_true(seen[0].clear is Some((60.0, _)), msg="\{Repr(seen[0].clear)}")
-  // (as it sets out: cut where what holds the thumbnail cuts it, the foot over it not taken off)
+  // (as it sets out: cut to what is seen of the thumbnail, what covers its column taken off, as far as the thumbnail goes)
   let b = big.val.unwrap()
   match cover_cut(tree, b) {
     Some((_, _, _, foot)) => assert_true(foot >= ty + th - 0.01, msg="\{foot} \{ty} \{th}")
@@ -247,69 +253,108 @@ test "a flight whose route its picture says: drawn where that says along its way
 }
 
 ///|
-test "a flight whose route says it goes under the list's foot: put in the order just before that foot (over the list's rows, the foot over it), where it is held once the route says so, at that moment" {
-  let route : @view.FlightRoute = {
+/// A route straight from one end to the other, none of what is seen of the end that stays opened for the first half of
+/// the way from it (drawn there under what covers its column: `in_stays`), then all of it by the other end.
+fn half_under_route() -> @view.FlightRoute {
+  let q_of = fn(ends : @view.FlightEnds, p : Double) { if ends.from_stays { p } else { 1.0 - p } }
+  {
     far: fn(_) { 100.0 },
     place: fn(ends, p) {
       let (a, b) = (ends.from, ends.to)
       (a.0 + (b.0 - a.0) * p, a.1 + (b.1 - a.1) * p, a.2 + (b.2 - a.2) * p, a.3 + (b.3 - a.3) * p)
     },
-    opened: fn(_, _) { 1.0 },
-    level: fn(ends, p) { if (if ends.from_stays { p } else { 1.0 - p }) < 0.5 { UnderFoot } else { Held } },
+    opened: fn(ends, p) {
+      let q = q_of(ends, p)
+      if q < 0.5 {
+        0.0
+      } else {
+        (q - 0.5) * 2.0
+      }
+    },
+    in_stays: fn(ends, p) { q_of(ends, p) < 0.5 },
   }
-  let (tree, open, thumb, big, foot) = route_scene(route)
-  tree.frame(400.0, 800.0, now=0.0) |> ignore
-  let t = thumb.val.unwrap()
-  let f = foot.val.unwrap()
-  assert_true(drawn_index(tree, t) < drawn_index(tree, f), msg="the thumbnail under the foot")
-  tree.event(1000.0, fn() { open.set(true) })
-  tree.frame(400.0, 800.0, now=1050.0) |> ignore
-  let b = big.val.unwrap()
-  // (a quarter of the way out: under the foot, over the list's rows)
-  let (bi, fi) = (drawn_index(tree, b), drawn_index(tree, f))
-  assert_true(bi >= 0 && bi < fi, msg="under the foot: \{bi} \{fi}")
-  // (three quarters: where it is held, over all of the list and its foot)
-  tree.frame(400.0, 800.0, now=1150.0) |> ignore
-  let (bi, fi) = (drawn_index(tree, b), drawn_index(tree, f))
-  assert_true(bi > fi, msg="where it is held: \{bi} \{fi}")
-  tree.frame(400.0, 800.0, now=1300.0) |> ignore
-  // (closed: the thumbnail flown back, under the foot for the last half of the way, there at rest under it)
-  tree.event(2000.0, fn() { open.set(false) })
-  tree.frame(400.0, 800.0, now=2050.0) |> ignore
-  assert_true(drawn_index(tree, t) > drawn_index(tree, f), msg="over all as it sets out back")
-  tree.frame(400.0, 800.0, now=2150.0) |> ignore
-  assert_true(drawn_index(tree, t) < drawn_index(tree, f), msg="under the foot as it comes in")
-  tree.frame(400.0, 800.0, now=2300.0) |> ignore
-  assert_true(!t.flies())
-  assert_true(drawn_index(tree, t) < drawn_index(tree, f), msg="at rest under the foot")
 }
 
 ///|
-test "a flight under the list's foot where a part of that foot says what flies under it is drawn just under it: over what the foot holds made before that part, that part over it" {
-  let route : @view.FlightRoute = {
-    far: fn(_) { 100.0 },
-    place: fn(ends, p) {
-      let (a, b) = (ends.from, ends.to)
-      (a.0 + (b.0 - a.0) * p, a.1 + (b.1 - a.1) * p, a.2 + (b.2 - a.2) * p, a.3 + (b.3 - a.3) * p)
-    },
-    opened: fn(_, _) { 1.0 },
-    level: fn(ends, p) { if (if ends.from_stays { p } else { 1.0 - p }) < 0.5 { UnderFoot } else { Held } },
-  }
-  let button : Ref[@view.View?] = Ref(None)
-  let (tree, open, thumb, big, foot) = route_scene(route, button=Some(button))
+test "a thumbnail half under what covers the top of its column: drawn under that, as what holds it cuts it, while its route has it slide out from under it, over all from there, opened as that says; under it again as it comes back" {
+  // (the thumbnail at 30 to 70, its top 30 under the 60 the bar covers)
+  let bar : Ref[@view.View?] = Ref(None)
+  let (tree, open, thumb, big, foot) = route_scene(half_under_route(), last=680.0, bar~)
   tree.frame(400.0, 800.0, now=0.0) |> ignore
   let t = thumb.val.unwrap()
-  let (f, u) = (foot.val.unwrap(), button.val.unwrap())
-  assert_true(drawn_index(tree, t) < drawn_index(tree, u), msg="the thumbnail under the button at rest")
+  let (h, f) = (bar.val.unwrap(), foot.val.unwrap())
+  assert_eq(drawn_as(tree, t).map(fn(d) { (d.1, d.3) }), Some((30.0, 40.0)))
+  tree.event(1000.0, fn() { open.set(true) })
+  tree.frame(400.0, 800.0, now=1000.0) |> ignore
+  let b = big.val.unwrap()
+  assert_true(b.flies(), msg="flown from the thumbnail")
+  // (as it sets out and a quarter of the way out: in the list, under its foot's box and its bar, all of the thumbnail
+  // seen as it was under that bar, its corners its own)
+  for now in [1000.0, 1050.0] {
+    tree.frame(400.0, 800.0, now~) |> ignore
+    let (bi, hi, fi) = (drawn_index(tree, b), drawn_index(tree, h), drawn_index(tree, f))
+    assert_true(bi >= 0 && bi < fi && fi < hi, msg="at \{now}: \{bi} \{fi} \{hi}")
+    match (cover_cut(tree, b), cover_drawn(tree)) {
+      (Some((_, y0, _, _)), Some((_, fy, _, _))) => assert_true((y0 - fy).abs() < 0.01, msg="at \{now}: \{y0} \{fy}")
+      _ => fail("not cut")
+    }
+    assert_eq(tree.lift_cut_corners(b.id()), tree.flight_drawn("a").map(fn(f) { f.1 }))
+  }
+  // (three quarters: over the bar, half way opened to the window from what held the thumbnail (its top 30))
+  tree.frame(400.0, 800.0, now=1150.0) |> ignore
+  assert_true(drawn_index(tree, b) > drawn_index(tree, h), msg="over the bar")
+  match (cover_cut(tree, b), cover_drawn(tree)) {
+    (Some((_, y0, _, _)), Some((_, fy, _, _))) => {
+      let open_top = if fy > 15.0 { fy } else { 15.0 }
+      assert_true((y0 - open_top).abs() < 0.01, msg="\{y0} \{fy}")
+    }
+    _ => fail("not cut")
+  }
+  tree.frame(400.0, 800.0, now=1300.0) |> ignore
+  assert_true(!b.flies())
+  // (closed: flown back, over the bar the first half of the way, under it again as it comes in, cut as the list cuts it,
+  // landed there)
+  tree.event(2000.0, fn() { open.set(false) })
+  tree.frame(400.0, 800.0, now=2050.0) |> ignore
+  assert_true(t.flies(), msg="flown back")
+  assert_true(drawn_index(tree, t) > drawn_index(tree, h), msg="over the bar as it sets out back")
+  tree.frame(400.0, 800.0, now=2150.0) |> ignore
+  let (ti, hi, fi) = (drawn_index(tree, t), drawn_index(tree, h), drawn_index(tree, f))
+  assert_true(ti >= 0 && ti < fi && fi < hi, msg="under the bar coming in: \{ti} \{fi} \{hi}")
+  match (cover_cut(tree, t), cover_drawn(tree)) {
+    (Some((_, y0, _, _)), Some((_, fy, _, _))) => assert_true((y0 - fy).abs() < 0.01, msg="\{y0} \{fy}")
+    _ => fail("not cut")
+  }
+  tree.frame(400.0, 800.0, now=2300.0) |> ignore
+  assert_true(!t.flies())
+  assert_true(drawn_index(tree, t) < drawn_index(tree, h), msg="landed under the bar")
+}
+
+///|
+test "a thumbnail flown from a list whose foot holds a round button before its box that hides: drawn over the button and under the box and the bar while it slides out, over all from there, the same way back" {
+  let bar : Ref[@view.View?] = Ref(None)
+  let button : Ref[@view.View?] = Ref(None)
+  let (tree, open, thumb, big, foot) = route_scene(half_under_route(), bar~, button~)
+  tree.frame(400.0, 800.0, now=0.0) |> ignore
+  let t = thumb.val.unwrap()
+  let (h, f, c) = (bar.val.unwrap(), foot.val.unwrap(), button.val.unwrap())
+  assert_true(drawn_index(tree, c) >= 0 && drawn_index(tree, c) < drawn_index(tree, f), msg="the button before the box")
   tree.event(1000.0, fn() { open.set(true) })
   tree.frame(400.0, 800.0, now=1050.0) |> ignore
   let b = big.val.unwrap()
-  // (a quarter of the way out: over the button, under what covers the foot)
-  let (bi, ui, fi) = (drawn_index(tree, b), drawn_index(tree, u), drawn_index(tree, f))
-  assert_true(ui >= 0 && ui < bi && bi < fi, msg="between: button \{ui}, flight \{bi}, cover \{fi}")
+  assert_true(b.flies(), msg="flown from the thumbnail")
+  let (bi, ci, fi, hi) = (drawn_index(tree, b), drawn_index(tree, c), drawn_index(tree, f), drawn_index(tree, h))
+  assert_true(ci < bi && bi < fi && fi < hi, msg="sliding out: \{ci} \{bi} \{fi} \{hi}")
   tree.frame(400.0, 800.0, now=1150.0) |> ignore
-  let (bi, fi) = (drawn_index(tree, b), drawn_index(tree, f))
-  assert_true(bi > fi, msg="where it is held: \{bi} \{fi}")
+  assert_true(drawn_index(tree, b) > drawn_index(tree, h), msg="out: over the bar")
+  tree.frame(400.0, 800.0, now=1300.0) |> ignore
+  tree.event(2000.0, fn() { open.set(false) })
+  tree.frame(400.0, 800.0, now=2050.0) |> ignore
+  assert_true(t.flies(), msg="flown back")
+  assert_true(drawn_index(tree, t) > drawn_index(tree, h), msg="back: over the bar first")
+  tree.frame(400.0, 800.0, now=2150.0) |> ignore
+  let (ti, ci, fi, hi) = (drawn_index(tree, t), drawn_index(tree, c), drawn_index(tree, f), drawn_index(tree, h))
+  assert_true(ci < ti && ti < fi && fi < hi, msg="coming in: \{ci} \{ti} \{fi} \{hi}")
 }
 
 ///|
@@ -375,7 +420,7 @@ test "a mark over a thumbnail that stays (a film's length) flown back with it: a
 }
 
 ///|
-test "a mark over a picture flying by a route that puts it under the list's foot and then where it is held: carried at its own size by its corner all the way, no step in its place where the order changes" {
+test "a mark over a picture flying by a route its picture says: carried at its own size by its corner all the way, no step in its place" {
   let route : @view.FlightRoute = {
     far: fn(_) { 100.0 },
     place: fn(ends, p) {
@@ -383,7 +428,7 @@ test "a mark over a picture flying by a route that puts it under the list's foot
       (a.0 + (b.0 - a.0) * p, a.1 + (b.1 - a.1) * p, a.2 + (b.2 - a.2) * p, a.3 + (b.3 - a.3) * p)
     },
     opened: fn(_, _) { 1.0 },
-    level: fn(_, p) { if p < 0.5 { UnderFoot } else { Held } },
+    in_stays: fn(_, _) { false },
   }
   let mark : Ref[@view.View?] = Ref(None)
   let (tree, open, _, _, _) = route_scene(route, mark~)
@@ -405,4 +450,276 @@ test "a mark over a picture flying by a route that puts it under the list's foot
     t = t + 4.0
   }
   assert_true(ys.length() > 20, msg="\{ys.length()}")
+}
+
+///|
+/// A window: a column `side` wide at its left (none at 0), then a column that scrolls, `covered` of its top under a bar
+/// (Scroll::top_covered), holding `room` of nothing then a thumbnail 100 by 40 at its left, rounded 12, that stays; over all of it while `open` is said a picture 2000 by 1400 at (-400, -300) that moves, past
+/// every edge of the window (a picture zoomed past it). The tree, open, the thumbnail.
+fn zoomed_scene(
+  side : Double,
+  covered : Double,
+  room : Double,
+) -> (@view.Tree, @signals.Signal[Bool], Ref[@view.View?]) {
+  let open = @signals.signal(false)
+  let thumb : Ref[@view.View?] = Ref(None)
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.grow(Is(1.0)).row(Is(true)) |> ignore
+      if side > 0.0 {
+        p.box(fn(s) { s.width(Is(Some(side))).shrink(Is(0.0)) |> ignore }) |> ignore
+      }
+      p.box(fn(c) {
+        c.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        c.scrolls(@view.Scroll::new(), top_covered=fn() { covered }, fn(held) {
+          held.box(fn(r) { r.height(Is(Some(room))).shrink(Is(0.0)) |> ignore }) |> ignore
+          held.box(fn(t) {
+            thumb.val = Some(t)
+            t
+            .width(Is(Some(100.0)))
+            .height(Is(Some(40.0)))
+            .shrink(Is(0.0))
+            .radius(Is(12.0))
+            .ground(Is(red))
+            .shared(Is("a"), straight, stays=true)
+            |> ignore
+          })
+          |> ignore
+          held.box(fn(r) { r.height(Is(Some(2000.0))).shrink(Is(0.0)) |> ignore }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      p.show(fn() { open.get() }, fn(o) {
+        o.over(Is(true)) |> ignore
+        o.box(fn(b) {
+          b
+          .offset(Is((-400.0, -300.0)))
+          .width(Is(Some(2000.0)))
+          .height(Is(Some(1400.0)))
+          .ground(Is(blue))
+          .shared(Is("a"), straight, with_stays=true)
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  (tree, open, thumb)
+}
+
+///|
+/// The corners of the thumbnail of zoomed_scene flying back from its picture opened and closed in a window `w` wide, a
+/// quarter, half and three quarters of its way gone (its flight 200 long).
+fn zoomed_back_corners(
+  w : Double,
+  side : Double,
+  covered : Double,
+  room : Double,
+) -> Array[(Double, Double, Double, Double)] raise {
+  let (tree, open, thumb) = zoomed_scene(side, covered, room)
+  tree.frame(w, 800.0, now=0.0) |> ignore
+  tree.event(1000.0, fn() { open.set(true) })
+  tree.frame(w, 800.0, now=1000.0) |> ignore
+  tree.frame(w, 800.0, now=1300.0) |> ignore
+  tree.event(2000.0, fn() { open.set(false) })
+  tree.frame(w, 800.0, now=2000.0) |> ignore
+  let t = thumb.val.unwrap()
+  let out = []
+  for now in [2050.0, 2100.0, 2150.0] {
+    tree.frame(w, 800.0, now~) |> ignore
+    assert_true(t.flies(), msg="flying back at \{now}")
+    out.push(tree.lift_cut_corners(t.id()).unwrap())
+  }
+  out
+}
+
+///|
+test "a thumbnail that stays flown back from its picture zoomed past every edge of the window, in all the window or in a column beside another: round all the way, rounder as it comes" {
+  for side in [0.0, 280.0] {
+    let w = 400.0 + side
+    let cs = zoomed_back_corners(w, side, 0.0, 300.0)
+    let mut was = 0.0
+    for c in cs {
+      let (a, b, d, e) = c
+      assert_true(a > 0.0 && b > 0.0 && d > 0.0 && e > 0.0, msg="beside \{side}: \{Repr(cs)}")
+      assert_true(a > was, msg="beside \{side}: rounder each time \{Repr(cs)}")
+      was = a
+    }
+  }
+}
+
+///|
+test "a thumbnail 30 under the bar over its column flown back from its picture zoomed past the window: its foot's corners round, its top's square as they go in under the bar" {
+  let cs = zoomed_back_corners(400.0, 0.0, 60.0, 30.0)
+  for c in cs {
+    let (a, b, d, e) = c
+    assert_true(d > 0.0 && e > 0.0, msg="its foot's: \{Repr(cs)}")
+    assert_true(a == 0.0 && b == 0.0, msg="its top's: \{Repr(cs)}")
+  }
+}
+
+///|
+/// A card 300 wide and `card_h` tall `top` down the window, its corners `corners`, cutting what it holds to them
+/// (View::clips), holding what `kid` makes (one that stays, of id `id`); over all of it while `open` is said a picture
+/// 390 by 260 100 down the window that moves, of that id. The tree, open, what `kid` made, the picture.
+fn clip_corner_scene(
+  top : Double,
+  card_h : Double,
+  corners : (Double, Double, Double, Double),
+  id : String,
+  kid : (@view.View) -> Unit,
+) -> (@view.Tree, @signals.Signal[Bool], Ref[@view.View?], Ref[@view.View?]) {
+  let open = @signals.signal(false)
+  let held : Ref[@view.View?] = Ref(None)
+  let big : Ref[@view.View?] = Ref(None)
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.width(Is(Some(390.0))).height(Is(Some(844.0))) |> ignore
+      p.box(fn(r) { r.height(Is(Some(top))).shrink(Is(0.0)) |> ignore }) |> ignore
+      p.box(fn(c) {
+        c
+        .width(Is(Some(300.0)))
+        .height(Is(Some(card_h)))
+        .shrink(Is(0.0))
+        .corners(Is(Some(corners)))
+        .clips(Is(true))
+        |> ignore
+        c.box(fn(k) {
+          held.val = Some(k)
+          kid(k)
+        })
+        |> ignore
+      })
+      |> ignore
+      p.show(fn() { open.get() }, fn(o) {
+        o.over(Is(true)) |> ignore
+        o.box(fn(r) { r.height(Is(Some(100.0))).shrink(Is(0.0)) |> ignore }) |> ignore
+        o.box(fn(b) {
+          big.val = Some(b)
+          b
+          .width(Is(Some(390.0)))
+          .height(Is(Some(260.0)))
+          .shrink(Is(0.0))
+          .ground(Is(blue))
+          .shared(Is(id), straight, with_stays=true)
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  (tree, open, held, big)
+}
+
+///|
+/// Four corners to a hundredth of a point.
+fn corners_near(c : (Double, Double, Double, Double)?) -> (Double, Double, Double, Double)? {
+  let r = fn(x : Double) { (x * 100.0).round() / 100.0 }
+  c.map(fn(c) { (r(c.0), r(c.1), r(c.2), r(c.3)) })
+}
+
+///|
+test "a thumbnail that stays in a card that cuts it to corners of its own: round as the card has it where their corners meet, as it rests, as it sets out and as it lands back" {
+  let (tree, open, thumb, big) = clip_corner_scene(0.0, 225.0, (40.0, 10.0, 30.0, 20.0), "a", fn(t) {
+    t
+    .width(Is(Some(300.0)))
+    .height(Is(Some(225.0)))
+    .shrink(Is(0.0))
+    .ground(Is(red))
+    .radius(Is(26.0))
+    .clips(Is(true))
+    .shared(Is("a"), straight, stays=true)
+    |> ignore
+  })
+  let seen = Some((40.0, 26.0, 30.0, 26.0))
+  let half = Some((20.0, 13.0, 15.0, 13.0))
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  assert_eq(corners_near(tree.stays_drawn("a").map(fn(f) { f.1 })), seen)
+  tree.event(1000.0, fn() { open.set(true) })
+  tree.frame(390.0, 844.0, now=1000.0) |> ignore
+  let b = big.val.unwrap()
+  assert_true(b.flies(), msg="flown from the thumbnail")
+  assert_eq(corners_near(tree.flight_drawn("a").map(fn(f) { f.1 })), seen)
+  assert_eq(corners_near(tree.lift_cut_corners(b.id())), seen)
+  tree.frame(390.0, 844.0, now=1100.0) |> ignore
+  assert_eq(corners_near(tree.flight_drawn("a").map(fn(f) { f.1 })), half)
+  assert_eq(corners_near(tree.lift_cut_corners(b.id())), half)
+  tree.frame(390.0, 844.0, now=1300.0) |> ignore
+  assert_true(!b.flies())
+  // (closed: flown back to the thumbnail, half way as round as half the card's, as it lands all of it)
+  tree.event(2000.0, fn() { open.set(false) })
+  tree.frame(390.0, 844.0, now=2000.0) |> ignore
+  let t = thumb.val.unwrap()
+  assert_true(t.flies(), msg="flown back")
+  let end = tree.flight_ends_at("a").unwrap()
+  tree.frame(390.0, 844.0, now=2100.0) |> ignore
+  assert_eq(corners_near(tree.flight_drawn("a").map(fn(f) { f.1 })), half)
+  tree.frame(390.0, 844.0, now=end - 0.01) |> ignore
+  assert_true(t.flies(), msg="not yet landed")
+  assert_eq(corners_near(tree.flight_drawn("a").map(fn(f) { f.1 })), seen)
+  assert_eq(corners_near(tree.lift_cut_corners(t.id())), seen)
+  tree.frame(390.0, 844.0, now=end + 100.0) |> ignore
+  assert_true(!t.flies())
+  assert_eq(corners_near(tree.stays_drawn("a").map(fn(f) { f.1 })), seen)
+}
+
+///|
+test "a picture that stays in a card's corner, and one reaching past the card's top that cuts it: round as the card only where their corners meet, the card's corners kept as it lands back" {
+  // (the top left of a grid two by two, 147 by 110 with 6 between: only the corner it shares with the card the card's)
+  let (tree, _, _, _) = clip_corner_scene(0.0, 225.0, (40.0, 40.0, 40.0, 40.0), "tl", fn(g) {
+    g.width(Is(Some(300.0))).height(Is(Some(225.0))).shrink(Is(0.0)) |> ignore
+    for row in 0..<2 {
+      g.box(fn(r) {
+        r.row(Is(true)).width(Is(Some(300.0))).height(Is(Some(110.0))).shrink(Is(0.0)) |> ignore
+        if row == 1 {
+          r.margin(Is((0.0, 5.0, 0.0, 0.0))) |> ignore
+        }
+        for col in 0..<2 {
+          r.box(fn(c) {
+            c.width(Is(Some(147.0))).height(Is(Some(110.0))).shrink(Is(0.0)).ground(Is(red)).radius(Is(6.0)) |> ignore
+            if col == 1 {
+              c.margin(Is((6.0, 0.0, 0.0, 0.0))) |> ignore
+            }
+            if row == 0 && col == 0 {
+              c.shared(Is("tl"), straight, stays=true) |> ignore
+            }
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    }
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  assert_eq(corners_near(tree.stays_drawn("tl").map(fn(f) { f.1 })), Some((40.0, 6.0, 6.0, 6.0)))
+  // (a card 175 tall 50 down the window holding a picture 200 tall reaching 25 past its top: cut by the card there)
+  let (tree, open, crop, _) = clip_corner_scene(50.0, 175.0, (40.0, 40.0, 40.0, 40.0), "crop", fn(k) {
+    k
+    .width(Is(Some(300.0)))
+    .height(Is(Some(200.0)))
+    .shrink(Is(0.0))
+    .margin(Is((0.0, -25.0, 0.0, 0.0)))
+    .ground(Is(red))
+    .radius(Is(0.0))
+    .shared(Is("crop"), straight, stays=true)
+    |> ignore
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  tree.event(1000.0, fn() { open.set(true) })
+  tree.frame(390.0, 844.0, now=1000.0) |> ignore
+  tree.frame(390.0, 844.0, now=1300.0) |> ignore
+  tree.event(2000.0, fn() { open.set(false) })
+  tree.frame(390.0, 844.0, now=2000.0) |> ignore
+  let t = crop.val.unwrap()
+  assert_true(t.flies(), msg="flown back")
+  let end = tree.flight_ends_at("crop").unwrap()
+  tree.frame(390.0, 844.0, now=end - 0.01) |> ignore
+  assert_true(t.flies(), msg="not yet landed")
+  match corners_near(tree.lift_cut_corners(t.id())) {
+    Some((a, b, _, _)) => assert_true(a == 40.0 && b == 40.0, msg="its top's the card's: \{a} \{b}")
+    None => fail("not cut")
+  }
 }

@@ -195,13 +195,17 @@ export class StationTopics implements Owner {
       const evicted = this.#core.data.opened("entry", station, String(id), true);
       const entries = entriesOf(station, id);
       const known = this.summary(station, id) !== null;
+      const openingBring = !evicted && known ? this.#opening(station, id).bring : null;
       if (evicted || !known) this.#sync.channels.bring(entries, Priority.shown);
       // Its latest not on the device yet: that page alone, at once. What is before it comes with the station's history,
       // in batches behind (sync.ts #history), or as it is scrolled back to.
       // Not where it opens to be read itself (#opening's `bring`, read at once by #thread): that read goes alone.
-      else if (this.#sync.channels.latestMissing(entries) && this.#opening(station, id).bring === null) this.#sync.channels.bring(entries, Priority.shown, "latest");
+      else if (this.#sync.channels.latestMissing(entries) && openingBring === null) this.#sync.channels.bring(entries, Priority.shown, "latest");
       // No summary held: the chat waits on it (views.ts `#chat`), read with its entries.
       if (!known) this.#sync.summaryOf(station, id);
+      // Opened while the station is catching up: prioritize its summary and bounded continuation pages on the existing
+      // lane (deduplicated per catching epoch and thread) without altering the opening window or unread line.
+      else this.#sync.prioritizeOpenedThread(station, id, !evicted && openingBring === null);
       this.#moveOldPlace(station, id);
       // Used now: its agents' histories are brought whole, behind the rest (channel-kinds.ts `whole`).
       for (const key of membersOf(this.summary(station, id))) this.#wholeHistory(station, key);
@@ -257,6 +261,10 @@ export class StationTopics implements Owner {
     if (topic.topic === "messagePeek") this.#sync.messagePeekShown(station, topic.thread as number, topic.seq as number);
   }
 
+  idle(topic: Topic): void {
+    if (topic.topic === "stationSearch") this.#sync.searchPaused(topic);
+  }
+
   stop(topic: Topic): void {
     const station = this.#stationOf(topic);
     if (station === null) return;
@@ -282,9 +290,28 @@ export class StationTopics implements Owner {
   }
 
   /// Whether a topic with no value yet waits on its station for what it shows (store.ts `waits`): a chat's messages
-  /// none of which it opens with are on the device.
+  /// none of which it opens with are on the device, or a login/job card whose station has not answered yet.
   waits(topic: Topic): boolean {
-    return topic.topic === "thread" && typeof topic.station === "string" && typeof topic.thread === "number" && this.#waits(topic);
+    if (topic.topic === "thread" && typeof topic.station === "string" && typeof topic.thread === "number") {
+      return this.#waits(topic);
+    }
+    if (topic.topic === "machineLogin" && typeof topic.station === "string") {
+      const link = this.#sync.link(topic.station);
+      const held = logins.held(link);
+      return held.supported === null && link !== undefined && !down(link.state) && !link.errors.has(logins.LIST_KEY);
+    }
+    if (topic.topic === "job" && typeof topic.station === "string" && typeof topic.id === "string") {
+      const link = this.#sync.link(topic.station);
+      return (
+        this.#core.data.shared(topic) === undefined &&
+        link !== undefined &&
+        !link.errors.has(topicKey(topic)) &&
+        !down(link.state) &&
+        !link.jobsRead &&
+        !(link.state.state !== "online" && this.#core.data.listed(topic.station, "jobs"))
+      );
+    }
+    return false;
   }
 
   compute(topic: Topic): Value | undefined {

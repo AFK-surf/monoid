@@ -1,34 +1,49 @@
 // This device's passkeys for the Windows host (host_native.mbt `wa_*`, hostapi/passkeys.mbt): Windows' WebAuthn API
 // (webauthn.dll, Windows 10 1903 and later), asked to sign the client data the app gives for a relying party as a
-// browser asks it. Windows asks the person itself (Windows Hello, a phone, a security key, or a passkey provider such as
-// 1Password) in its own window over the app's; the ask runs on a thread of its own, its answer kept until the app takes
-// it: win_passwords.c's way.
+// browser asks it. Windows asks the person itself (Windows Hello, a phone, a security key, or a passkey provider such
+// as 1Password) in its own window over the app's; the ask runs on a thread of its own, its answer kept until the app
+// takes it. An unowned hidden helper window on the UI thread anchors the OS dialog so CredentialUIBroker does not
+// modal-disable the app's main window, and `mb_host_passkeys_end` cancels the OS operation via
+// WebAuthNCancelCurrentOperation so dismissed or superseded prompts never leave Windows WebAuthn stuck.
 #include <windows.h>
+#include <objbase.h>
 #include <webauthn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "win.h"
 
-void mb_host_request_frame(void);
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "user32.lib")
 
+typedef DWORD(WINAPI *api_version_fn)(void);
 typedef HRESULT(WINAPI *get_assertion_fn)(HWND, LPCWSTR, PCWEBAUTHN_CLIENT_DATA, PCWEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS,
                                           PWEBAUTHN_ASSERTION *);
 typedef void(WINAPI *free_assertion_fn)(PWEBAUTHN_ASSERTION);
+typedef HRESULT(WINAPI *get_cancel_id_fn)(GUID *);
+typedef HRESULT(WINAPI *cancel_op_fn)(const GUID *);
 typedef PCWSTR(WINAPI *error_name_fn)(HRESULT);
 
+static api_version_fn api_version;
 static get_assertion_fn get_assertion;
 static free_assertion_fn free_assertion;
+static get_cancel_id_fn get_cancel_id;
+static cancel_op_fn cancel_op;
 static error_name_fn error_name;
+static DWORD webauthn_ver;
 static INIT_ONCE loaded = INIT_ONCE_STATIC_INIT;
 
 static BOOL CALLBACK load(PINIT_ONCE once, PVOID p, PVOID *ctx) {
   (void)once, (void)p, (void)ctx;
   HMODULE m = LoadLibraryExW(L"webauthn.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (m) {
+    api_version = (api_version_fn)(void *)GetProcAddress(m, "WebAuthNGetApiVersionNumber");
     get_assertion = (get_assertion_fn)(void *)GetProcAddress(m, "WebAuthNAuthenticatorGetAssertion");
     free_assertion = (free_assertion_fn)(void *)GetProcAddress(m, "WebAuthNFreeAssertion");
+    get_cancel_id = (get_cancel_id_fn)(void *)GetProcAddress(m, "WebAuthNGetCancellationId");
+    cancel_op = (cancel_op_fn)(void *)GetProcAddress(m, "WebAuthNCancelCurrentOperation");
     error_name = (error_name_fn)(void *)GetProcAddress(m, "WebAuthNGetErrorName");
+    webauthn_ver = api_version ? api_version() : 0;
   }
   return TRUE;
 }
@@ -40,6 +55,8 @@ static BOOL able(void) {
 
 typedef struct ask {
   int id;
+  BOOL has_cancel;
+  GUID cancel_id;
   // How it ended, once it has: "<code>\x1f<credential>\x1f<authenticator data>\x1f<signature>\x1f<user>\x1f<why>\x1f"
   // (hex, UTF-8).
   char *done;
@@ -56,18 +73,45 @@ static ask *find(int id) {
   return NULL;
 }
 
-/// What the thread asks with: the window to ask over, the relying party, the client data (UTF-8), the verification,
-/// the credentials taken.
+/// What the thread asks with: the anchor window (and an unowned helper window to destroy once done), the relying party,
+/// the client data (UTF-8), the verification, the credentials taken, and the cancellation id.
 typedef struct asking {
   int id;
   HWND window;
+  HWND helper;
   WCHAR *rp;
   char *client;
   DWORD uv;
   WEBAUTHN_CREDENTIAL *creds;
   BYTE *ids;
   DWORD count;
+  BOOL has_cancel;
+  GUID cancel_id;
 } asking;
+
+static void destroy_helper(void *p) {
+  HWND h = (HWND)p;
+  if (h && IsWindow(h)) DestroyWindow(h);
+}
+
+/// An invisible unowned popup created on the UI thread at the center of `anchor`: its messages are pumped by the UI
+/// loop, and CredentialUIBroker disables only this helper instead of locking the app's main window.
+static HWND make_helper(HWND anchor) {
+  int cx = GetSystemMetrics(SM_CXSCREEN) / 2;
+  int cy = GetSystemMetrics(SM_CYSCREEN) / 2;
+  RECT rc;
+  if (anchor && IsWindow(anchor) && IsWindowVisible(anchor) && !IsIconic(anchor) && GetWindowRect(anchor, &rc)) {
+    cx = (rc.left + rc.right) / 2;
+    cy = (rc.top + rc.bottom) / 2;
+  }
+  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE, L"STATIC", L"",
+                           WS_POPUP, cx, cy, 1, 1, NULL, NULL, GetModuleHandleW(NULL), NULL);
+  if (h) {
+    SetLayeredWindowAttributes(h, 0, 1, LWA_ALPHA);
+    ShowWindow(h, SW_SHOWNOACTIVATE);
+  }
+  return h;
+}
 
 static void hex(char *out, const BYTE *b, DWORD n) {
   static const char d[] = "0123456789abcdef";
@@ -84,55 +128,66 @@ static void keep(int id, char *done) {
   if (a && !a->done) a->done = done;
   else free(done);
   ReleaseSRWLockExclusive(&lock);
-  mb_host_request_frame();
+  mb_app_wake();
 }
 
 static DWORD WINAPI run_ask(LPVOID p) {
   asking *w = p;
-  WEBAUTHN_CLIENT_DATA client = {WEBAUTHN_CLIENT_DATA_CURRENT_VERSION, (DWORD)strlen(w->client), (PBYTE)w->client,
-                                 WEBAUTHN_HASH_ALGORITHM_SHA_256};
-  WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS options = {0};
-  options.dwVersion = WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS_VERSION_1;
-  options.dwTimeoutMilliseconds = 120000;
-  options.CredentialList.cCredentials = w->count;
-  options.CredentialList.pCredentials = w->creds;
-  options.dwUserVerificationRequirement = w->uv;
-  PWEBAUTHN_ASSERTION got = NULL;
-  HRESULT hr = get_assertion(w->window, w->rp, &client, &options, &got);
-  char *done;
-  if (SUCCEEDED(hr) && got) {
-    size_t len = 2 * ((size_t)got->Credential.cbId + got->cbAuthenticatorData + got->cbSignature + got->cbUserId) + 32;
-    done = malloc(len);
-    size_t at = 0;
-    done[at++] = '0';
-    done[at++] = 0x1f;
-    hex(done + at, got->Credential.pbId, got->Credential.cbId);
-    at += 2 * (size_t)got->Credential.cbId;
-    done[at++] = 0x1f;
-    hex(done + at, got->pbAuthenticatorData, got->cbAuthenticatorData);
-    at += 2 * (size_t)got->cbAuthenticatorData;
-    done[at++] = 0x1f;
-    hex(done + at, got->pbSignature, got->cbSignature);
-    at += 2 * (size_t)got->cbSignature;
-    done[at++] = 0x1f;
-    hex(done + at, got->pbUserId, got->cbUserId);
-    at += 2 * (size_t)got->cbUserId;
-    done[at++] = 0x1f;
-    done[at++] = 0x1f;
-    done[at] = 0;
-    free_assertion(got);
-  } else {
-    // The person said no, or none of the device's passkeys is the site's: as a browser says it (NotAllowedError).
-    BOOL no = hr == NTE_USER_CANCELLED || hr == NTE_NOT_FOUND || hr == HRESULT_FROM_WIN32(ERROR_CANCELLED);
-    char why[256] = "";
-    PCWSTR name = error_name ? error_name(hr) : NULL;
-    if (name) WideCharToMultiByte(CP_UTF8, 0, name, -1, why, sizeof why, NULL, NULL);
-    else snprintf(why, sizeof why, "0x%08lx", (unsigned long)hr);
-    size_t len = strlen(why) + 16;
-    done = malloc(len);
-    snprintf(done, len, "%d\x1f\x1f\x1f\x1f\x1f%s\x1f", no ? 1 : -1, why);
+  AcquireSRWLockShared(&lock);
+  BOOL active = find(w->id) != NULL;
+  ReleaseSRWLockShared(&lock);
+  if (active) {
+    HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    WEBAUTHN_CLIENT_DATA client = {WEBAUTHN_CLIENT_DATA_CURRENT_VERSION, (DWORD)strlen(w->client), (PBYTE)w->client,
+                                   WEBAUTHN_HASH_ALGORITHM_SHA_256};
+    WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS options = {0};
+    options.dwVersion = w->has_cancel ? WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS_VERSION_3
+                                      : WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS_VERSION_1;
+    options.dwTimeoutMilliseconds = 120000;
+    options.CredentialList.cCredentials = w->count;
+    options.CredentialList.pCredentials = w->creds;
+    options.dwUserVerificationRequirement = w->uv;
+    if (w->has_cancel) options.pCancellationId = &w->cancel_id;
+    PWEBAUTHN_ASSERTION got = NULL;
+    HRESULT hr = get_assertion(w->window, w->rp, &client, &options, &got);
+    char *done;
+    if (SUCCEEDED(hr) && got) {
+      size_t len = 2 * ((size_t)got->Credential.cbId + got->cbAuthenticatorData + got->cbSignature + got->cbUserId) + 32;
+      done = malloc(len);
+      size_t at = 0;
+      done[at++] = '0';
+      done[at++] = 0x1f;
+      hex(done + at, got->Credential.pbId, got->Credential.cbId);
+      at += 2 * (size_t)got->Credential.cbId;
+      done[at++] = 0x1f;
+      hex(done + at, got->pbAuthenticatorData, got->cbAuthenticatorData);
+      at += 2 * (size_t)got->cbAuthenticatorData;
+      done[at++] = 0x1f;
+      hex(done + at, got->pbSignature, got->cbSignature);
+      at += 2 * (size_t)got->cbSignature;
+      done[at++] = 0x1f;
+      hex(done + at, got->pbUserId, got->cbUserId);
+      at += 2 * (size_t)got->cbUserId;
+      done[at++] = 0x1f;
+      done[at++] = 0x1f;
+      done[at] = 0;
+      free_assertion(got);
+    } else {
+      // The person said no, timed out, or none of the device's passkeys is the site's: as a browser says it (NotAllowedError).
+      BOOL no = hr == NTE_USER_CANCELLED || hr == NTE_NOT_FOUND || hr == NTE_DEVICE_NOT_FOUND ||
+                hr == HRESULT_FROM_WIN32(ERROR_CANCELLED) || hr == HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+      char why[256] = "";
+      PCWSTR name = error_name ? error_name(hr) : NULL;
+      if (name) WideCharToMultiByte(CP_UTF8, 0, name, -1, why, sizeof why, NULL, NULL);
+      else snprintf(why, sizeof why, "0x%08lx", (unsigned long)hr);
+      size_t len = strlen(why) + 16;
+      done = malloc(len);
+      snprintf(done, len, "%d\x1f\x1f\x1f\x1f\x1f%s\x1f", no ? 1 : -1, why);
+    }
+    if (SUCCEEDED(co)) CoUninitialize();
+    keep(w->id, done);
   }
-  keep(w->id, done);
+  if (w->helper) mb_app_call(destroy_helper, w->helper);
   free(w->rp);
   free(w->client);
   free(w->creds);
@@ -207,20 +262,42 @@ int32_t mb_host_passkeys_get(moonbit_string_t ask_) {
     }
   }
   w->count = k;
-  // asked over the window the person pressed in
-  w->window = GetForegroundWindow();
+  // Let CredentialUIBroker and third-party passkey providers (such as 1Password) take foreground focus cleanly, and
+  // anchor them on an unowned helper window centered on the active app window so the app itself stays responsive.
+  AllowSetForegroundWindow(ASFW_ANY);
+  HWND anchor = (HWND)mb_app_hwnd_now();
+  if (!anchor || !IsWindow(anchor)) anchor = (HWND)mb_app_hwnd();
+  if (!anchor || !IsWindow(anchor)) anchor = GetForegroundWindow();
+  w->helper = make_helper(anchor);
+  w->window = w->helper ? w->helper : anchor;
+  if (webauthn_ver >= WEBAUTHN_API_VERSION_1 && get_cancel_id && cancel_op && SUCCEEDED(get_cancel_id(&w->cancel_id))) {
+    w->has_cancel = TRUE;
+  }
+  // Cancel any still-running prior WebAuthn operation so Windows does not reject or stall behind a stale prompt.
+  GUID stale[8];
+  int nstale = 0;
   ask *a = calloc(1, sizeof *a);
   AcquireSRWLockExclusive(&lock);
+  for (ask *prev = asks; prev; prev = prev->next) {
+    if (prev->has_cancel && !prev->done && nstale < 8) {
+      stale[nstale++] = prev->cancel_id;
+      prev->has_cancel = FALSE;
+    }
+  }
   a->id = ++ask_next;
+  a->has_cancel = w->has_cancel;
+  a->cancel_id = w->cancel_id;
   a->next = asks;
   asks = a;
   w->id = a->id;
   ReleaseSRWLockExclusive(&lock);
+  for (int i = 0; i < nstale; i++) cancel_op(&stale[i]);
   int id = w->id;
   HANDLE t = CreateThread(NULL, 0, run_ask, w, 0, NULL);
   if (t) {
     CloseHandle(t);
   } else {
+    if (w->helper) DestroyWindow(w->helper);
     char *done = _strdup("-1\x1f\x1f\x1f\x1f\x1fno thread\x1f");
     keep(id, done);
     free(w->rp);
@@ -249,17 +326,23 @@ moonbit_string_t mb_host_passkeys_out(int32_t id) {
   return out;
 }
 
-/// Forgets it: an ask still open with Windows ends by itself (its window closed by the person, or its time out), its
-/// answer then dropped.
+/// Cancels any active Windows WebAuthn operation for `id` and forgets its state.
 void mb_host_passkeys_end(int32_t id) {
+  BOOL do_cancel = FALSE;
+  GUID cid = {0};
   AcquireSRWLockExclusive(&lock);
   for (ask **p = &asks; *p; p = &(*p)->next) {
     if ((*p)->id != id) continue;
     ask *a = *p;
     *p = a->next;
+    if (a->has_cancel && !a->done) {
+      do_cancel = TRUE;
+      cid = a->cancel_id;
+    }
     free(a->done);
     free(a);
     break;
   }
   ReleaseSRWLockExclusive(&lock);
+  if (do_cancel && cancel_op) cancel_op(&cid);
 }

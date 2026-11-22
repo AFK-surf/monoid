@@ -8,8 +8,8 @@
 // to end reaching the session as a file alone; and what was said while the link was down (or the station stopped)
 // taken once.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ConfigFile } from "../src/ops/config.ts";
@@ -20,7 +20,9 @@ import { codeOf, groupEntryIn } from "../src/api/routes/group.ts";
 import { showEnded } from "../src/connects/card-ends.ts";
 import { fingerprint } from "../src/connects/workspace.ts";
 import { canonicalJson, deviceOfKey, directId, eventId, moonOrder, signEvent, signedText, signingKey, stampedOf, verified } from "../src/group/event.ts";
-import { cardWords, decisionBody, imageSize, mentions } from "../src/group/surface.ts";
+import { FILE_MOST, type GroupSurface, PIECE, cardWords, decisionBody, imageSize, mentions, topicTitle } from "../src/group/surface.ts";
+import { relay, relayPlaces } from "../src/sessions/relay.ts";
+import { titleOf } from "../src/read/views.ts";
 import { GroupThreads } from "../src/group/threads.ts";
 import { parseThreadAddress } from "../src/agents/instructions.ts";
 import type { ChatEvent } from "../src/sessions/chat.ts";
@@ -38,6 +40,15 @@ async function until(what: string, f: () => boolean) {
     await settle(2);
   }
   throw new Error(`never: ${what}`);
+}
+
+/// Once the surface has heard of `space` (it offers it to relay to).
+async function known(surface: GroupSurface, space: string) {
+  let ids: string[] = [];
+  await until(`${space} heard`, () => {
+    void surface.places().then((p) => (ids = p.map((x) => x.id)));
+    return ids.includes(space);
+  });
 }
 
 /// A station's hub and its group connect `g` to an anchor of the test's, joined by a code.
@@ -325,6 +336,138 @@ test("joined by its code, then as its key alone; a direct space's every message 
     w.server.remove(me);
     await until("let go", () => w.group().state("g")?.state !== "connected");
     assert.equal(w.server.hellos.at(-1)?.credential ?? "", "", "its key alone: the code was used");
+  } finally {
+    await w.close();
+  }
+});
+
+test("a file over a piece goes a piece at a time, from what the anchor has of it on, none of it held whole; one of a piece whole in one ask; more than 512 MiB refused before it is read; an anchor from before pieces takes 32 MiB whole", { timeout: 60_000 }, async () => {
+  const w = await world();
+  try {
+    const me = w.me();
+    const team = w.server.group("Team", w.ada, [w.bo, me]);
+    const surface = w.group().chat("g") as unknown as GroupSurface;
+    await known(surface, team);
+    const room = join(w.rig.dir, "files");
+    mkdirSync(room, { recursive: true });
+    const lobby = { channel: team, threadTs: team };
+    const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+    const putAsks = () => w.server.asked.filter((a) => a.startsWith(`POST /spaces/${team}/files`) || a.startsWith(`GET /spaces/${team}/uploads/`));
+    const fromOf = (a: string) => new URL(a.split(" ")[1]!, "im://a").searchParams.get("from");
+    const posted = (name: string) => w.server.messages(team).at(-1)!.files.find((f: Json) => f.name === name);
+
+    // ── one piece at most: whole, in one ask, as before
+    const small = randomBytes(PIECE);
+    writeFileSync(join(room, "small.bin"), small);
+    await surface.post(lobby, "small", [{ name: "small.bin", path: join(room, "small.bin") } as Json]);
+    assert.deepEqual(putAsks(), [`POST /spaces/${team}/files?name=small.bin&mime=application%2Foctet-stream`]);
+    assert.equal(posted("small.bin").sha256, sha(small));
+
+    // ── two and a half pieces: hashed, asked what the anchor has (none), put a piece at a time; a picture's sides kept
+    const big = Buffer.concat([pngOf(320, 200), randomBytes(PIECE * 2 + PIECE / 2)]);
+    writeFileSync(join(room, "big.png"), big);
+    let before = putAsks().length;
+    w.server.largestPut = 0;
+    await surface.post(lobby, "big", [{ name: "big.png", path: join(room, "big.png") } as Json]);
+    const bigAsks = putAsks().slice(before);
+    assert.equal(bigAsks[0], `GET /spaces/${team}/uploads/${sha(big)}`);
+    assert.deepEqual(bigAsks.slice(1).map(fromOf), ["0", String(PIECE), String(PIECE * 2)]);
+    assert.ok(bigAsks.slice(1).every((a) => a.includes(`&sha256=${sha(big)}&size=${big.length}&`) && a.endsWith("&width=320&height=200")), bigAsks.join("\n"));
+    assert.equal(w.server.largestPut, PIECE, "no ask carried more than a piece");
+    assert.deepEqual([posted("big.png").sha256, posted("big.png").size, posted("big.png").width, posted("big.png").height], [sha(big), big.length, 320, 200]);
+    assert.ok(w.server.spaces.get(team)!.files.get(sha(big))!.bytes.equals(big));
+    assert.equal(w.server.parts.size, 0);
+
+    // ── put before as far as a piece and a little: gone on from there
+    const resumed = randomBytes(PIECE * 3);
+    writeFileSync(join(room, "resumed.bin"), resumed);
+    w.server.parts.set(`${sha(resumed)}.part.${me}`, resumed.subarray(0, PIECE + 100));
+    before = putAsks().length;
+    await surface.post(lobby, "resumed", [{ name: "resumed.bin", path: join(room, "resumed.bin") } as Json]);
+    assert.deepEqual(putAsks().slice(before + 1).map(fromOf), [String(PIECE + 100), String(PIECE * 2 + 100)]);
+    assert.ok(w.server.spaces.get(team)!.files.get(sha(resumed))!.bytes.equals(resumed));
+
+    // ── one the anchor has whole already (put by another): taken at the first piece's ask, nothing more sent
+    before = putAsks().length;
+    await surface.post(lobby, "again", [{ name: "again.bin", path: join(room, "resumed.bin") } as Json]);
+    assert.deepEqual(putAsks().slice(before).map(fromOf), [null, "0"]);
+    assert.equal(posted("again.bin").sha256, sha(resumed));
+
+    // ── more than 512 MiB: refused before a byte of it is read or asked (a sparse file of that size)
+    writeFileSync(join(room, "huge.bin"), "");
+    truncateSync(join(room, "huge.bin"), FILE_MOST + 1);
+    before = putAsks().length;
+    await assert.rejects(surface.post(lobby, "huge", [{ name: "huge.bin", path: join(room, "huge.bin") } as Json]), /huge\.bin is 536870913 bytes, more than the anchor takes \(536870912\)/);
+    assert.equal(putAsks().length, before);
+
+    // ── an anchor from before pieces: what it takes whole (32 MiB) in one ask, a larger one refused with what to do
+    w.server.noPieces = true;
+    const older = randomBytes(PIECE * 2);
+    writeFileSync(join(room, "older.bin"), older);
+    before = putAsks().length;
+    await surface.post(lobby, "older", [{ name: "older.bin", path: join(room, "older.bin") } as Json]);
+    assert.deepEqual(putAsks().slice(before), [`GET /spaces/${team}/uploads/${sha(older)}`, `POST /spaces/${team}/files?name=older.bin&mime=application%2Foctet-stream`]);
+    assert.ok(w.server.spaces.get(team)!.files.get(sha(older))!.bytes.equals(older));
+    writeFileSync(join(room, "large.bin"), "");
+    truncateSync(join(room, "large.bin"), 32 * 1024 * 1024 + 1);
+    await assert.rejects(surface.post(lobby, "large", [{ name: "large.bin", path: join(room, "large.bin") } as Json]), /more than this anchor takes \(33554432\): it takes larger files once it is updated/);
+  } finally {
+    await w.close();
+  }
+});
+
+test("a chat relayed to a group space goes on in a topic of its own there, called as the chat is: its first message the station's, what people say there the agent's", { timeout: 60_000 }, async () => {
+  const w = await world();
+  try {
+    const me = w.me();
+    assert.equal(topicTitle("  发布\n慢\u200b了  "), "发布 慢了");
+    assert.equal(topicTitle("\u0007"), "");
+    assert.equal(Array.from(topicTitle("长".repeat(80))).length, 60);
+    const dm = w.server.direct(w.ada, me);
+    w.server.say(dm, w.ada, "帮我看下 CI");
+    const dmKey = sessionKey("g", dm, dm);
+    await until("the direct space's session", () => w.rig.store.getSession(dmKey) !== null);
+    await w.rig.quiet();
+    w.rig.claude.last().complete();
+    await w.rig.quiet();
+    const team = w.server.group("Team", w.ada, [w.bo, me]);
+    w.server.direct(w.bo, me);
+    await known(w.group().chat("g") as unknown as GroupSurface, team);
+    await w.rig.quiet();
+
+    // ── where it can go: its spaces (no direct one), each a new topic
+    const from = w.rig.store.threadAt("group:g", dm, dm)!;
+    let places: Json[] = [];
+    await until("its spaces offered", () => {
+      void relayPlaces(w.rig.hub, from).then((p) => (places = p));
+      return places.length > 0 && places[0].places.length > 0;
+    });
+    assert.deepEqual(places.map((c) => [c.id, c.kind, c.places]), [["g", "group", [{ id: team, name: "Team", kind: "space" }]]]);
+
+    // ── relayed: a topic opened, called as the chat is, the station's first message in it, the session following it
+    const relayed = await relay(w.rig.hub, from, { name: "Ada", email: "ada@x" }, { connect: "g", channel: team }, "");
+    const topics = [...w.server.spaces.get(team)!.topics.entries()];
+    assert.equal(topics.length, 1);
+    const [topic, opened] = topics[0]!;
+    assert.match(topic, /^t_[0-9a-f]{16}$/);
+    assert.equal(opened.title, topicTitle(titleOf(from, null, null)));
+    assert.notEqual(opened.title, "");
+    assert.deepEqual([relayed.to, relayed.link], [`${team}/${topic}`, null]);
+    const first = w.server.messages(team, topic);
+    assert.equal(first.length, 1);
+    assert.ok(first[0]!.author === me && first[0]!.text.includes("Ada"), first[0]!.text);
+    assert.deepEqual(w.server.messages(team), [], "nothing said in the lobby");
+    const there = w.rig.store.threadAt("group:g", team, topic)!;
+    assert.deepEqual(w.rig.store.threadSessions(there.id).map((m) => m.session), [dmKey]);
+    await w.rig.quiet();
+    const agent = w.rig.claude.last();
+    assert.ok([...agent.prompts, ...agent.steers].some((p) => p.includes(`relayed the chat`) && p.includes(`a new topic in the group space Team`) && p.includes(`to=${team}/${topic}`)));
+
+    // ── what people say in the topic, mentioning it or not, goes to the chat's agent
+    w.server.say(team, w.bo, "我接着说：CI 红在 lint", { topic });
+    await until("heard in the topic", () => w.texts(team, topic).includes("我接着说：CI 红在 lint"));
+    await w.rig.quiet();
+    assert.ok([...w.rig.claude.last().prompts, ...w.rig.claude.last().steers].some((p) => p.includes("CI 红在 lint")));
   } finally {
     await w.close();
   }

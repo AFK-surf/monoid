@@ -1,7 +1,7 @@
 // A chat read by key (the core's own way: client/core-ts AGENTS.md, rule 6): its head (all its view says but its
 // messages) worked out of the topic's value as anything but a message changes it, and its messages kept by key as the
 // core changes them item by item (@core.Sub::keyed's @signals.KeyedList), each read as a Message only as its item
-// changes. So a word streamed into one message tells what reads that message and nothing else: no reader walks the
+// changes. So an in-place update to one message tells what reads that message and nothing else: no reader walks the
 // chat, and what one change costs is the same in a chat of 50 messages as in one of 5,000. What reads the chat whole
 // (view_of_chat: the old page, a chat's sheets) reads it as before.
 
@@ -58,22 +58,6 @@ pub fn ChatMessages::peek(self : ChatMessages, k : String) -> Message? {
 /// How many it holds, read by nothing.
 pub fn ChatMessages::count(self : ChatMessages) -> Int {
   self.list.count()
-}
-
-///|
-/// The last of its messages from the end that `pick` takes (none where none does), read by what it reads of each:
-/// looked at from the end no further than to find it (the newest, the last that is no system line).
-pub fn ChatMessages::last_where(self : ChatMessages, pick : (Message) -> Bool) -> Message? {
-  let keys = self.keys()
-  let mut i = keys.length() - 1
-  while i >= 0 {
-    match self.get(keys[i]) {
-      Some(m) if pick(m) => return Some(m)
-      _ => ()
-    }
-    i = i - 1
-  }
-  None
 }
 
 ///|
@@ -288,6 +272,7 @@ fn chat_head_same(a : ChatView, b : ChatView) -> Bool {
   physical_equal(a.cc, b.cc) &&
   physical_equal(a.screens, b.screens) &&
   physical_equal(a.opener, b.opener) &&
+  physical_equal(a.openers, b.openers) &&
   physical_equal(a.opened, b.opened) &&
   a.opened_text == b.opened_text
 }
@@ -397,6 +382,8 @@ pub fn chat_head_json(src : Source, r : ChatRef) -> Json? {
 /// as view_of_chat works it out (sent_here_view's the same). Told as the head changes, not as a word
 /// comes into a message.
 pub fn chat_view_now(src : Source, r : ChatRef) -> ChatView? {
+  // (no chat yet, a new chat's composer's: none, its topic never asked)
+  guard r.session != "" else { return None }
   // (the head read first: what holds the topic, whose messages by key are then there; what is on its way from here
   // answering its last card, as the core will say once it has it)
   match chat_head(src, r).0 {
@@ -444,18 +431,30 @@ pub let chat_read_made : Ref[Int] = Ref(0)
 /// person's words after it, they answer it at once (no more asked, its decision theirs, the chat's asks without it,
 /// where it stands gone as its agent has words to take), as the core will say once it has them. The head so, and the
 /// card's message so by its key (none where they answer none). Looked for from the newest back no further than that card
-/// or a person's words after it.
+/// or a person's words after it. Answering none, words on their way end the turn before's line of where it stands (one
+/// asking nothing of the viewer) at once.
 pub fn chat_sent_here(
   r : ChatRef,
   head : ChatView,
   ms : ChatMessages,
 ) -> (ChatView, (String, Message)?) {
-  guard chat_sent_card(r, ms) is Some((k, m)) else { return (head, None) }
-  let asks = head.asks.filter(fn(seq) { seq != m.seq })
-  (
-    { ..head, asks, ask_clear: head.ask_clear && !asks.is_empty(), state: None, state_ask: None },
-    Some((k, chat_card_answered(m))),
-  )
+  match chat_sent_card(r, ms) {
+    Some((k, m)) => {
+      let asks = head.asks.filter(fn(seq) { seq != m.seq })
+      (
+        { ..head, asks, ask_clear: head.ask_clear && !asks.is_empty(), state: None, state_ask: None },
+        Some((k, chat_card_answered(m))),
+      )
+    }
+    None =>
+      // (new words sent from here end the turn before's line of where it stands (done, nothing asked of the viewer) at
+      // once, never leaving it under the words flying in till the core says it gone)
+      if !sending_now(r.station + "\u{1}" + r.session).is_empty() && head.state is Some(_) && head.state_ask is None {
+        ({ ..head, state: None }, None)
+      } else {
+        (head, None)
+      }
+  }
 }
 
 ///|
@@ -492,4 +491,3 @@ pub fn chat_card_answered(m : Message) -> Message {
   let said = @sf.t("core-logic.decisions.replied", args=[("name", @sf.t("core-logic.decisions.you"))])
   { ..m, asked: false, decision: Some({ resolved: true, dismissed: false, text: Some(said), chosen: None }) }
 }
-

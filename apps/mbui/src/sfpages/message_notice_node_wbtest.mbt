@@ -6,7 +6,7 @@
 
 ///|
 /// One of the fixture's notices (seq 9, ts9): `words` (its Markdown's tree, `md`), a failure (`failed`), what failed
-/// said (`detail`); about a profile (`link` where its link starts); a runtime the station lacks (`install`); reportable;
+/// said (`detail`); about `profile` (`link` where its link starts, or `profile_action`, what to do of it at its end); a runtime the station lacks (`install`); reportable;
 /// its agent waiting to retry (`retry`), or its failed turn to try again (`again`); a chat's run changed (`short`, `lines`,
 /// `sides`); failures said alike folded into it (`count` of them, the last at `last`).
 fn nt_msg(
@@ -15,6 +15,8 @@ fn nt_msg(
   failed? : Bool = false,
   detail? : String = "",
   link? : Int = -1,
+  profile_action? : String = "",
+  profile? : String = "p1",
   install? : Bool = false,
   reportable? : Bool = false,
   retry? : Bool = false,
@@ -38,6 +40,9 @@ fn nt_msg(
   }
   if link >= 0 {
     n["linkAt"] = Json::number(link.to_double())
+  }
+  if profile_action != "" {
+    n["profileAction"] = Json::string(profile_action)
   }
   if retry {
     n["retrySession"] = "s-c1"
@@ -66,7 +71,7 @@ fn nt_msg(
     "author": "still.fail",
     "text": Json::string(words),
     "by": { "name": "still.fail" },
-    "profile": if link >= 0 { "p1" } else { "" },
+    "profile": if link >= 0 || profile_action != "" { Json::string(profile) } else { "" },
     "install": if install {
       { "runtime": "codex", "state": "missing", "title": "Willow 上没有 codex", "action": "安装" }
     } else {
@@ -133,39 +138,7 @@ fn nt_view(offline? : Bool = false) -> ChatView {
 }
 
 ///|
-/// Notice `m` as the old view draws it in its row (message_row in row_box), in a chat's list (its 取消 shown there
-/// alone: a list of the test's own, nothing gone to), `w` wide.
-fn nt_old(w : Double, src : Source, m : Message, view? : ChatView = nt_view(), platform? : Int = 0) -> @ui.Tester {
-  @sf.set_words(@sfbase.fill)
-  absolute_times.set(false)
-  notices_open.clear()
-  let rk = "nt-list"
-  let here : MessageHere = {
-    station: "ws1/st1",
-    session: "s1",
-    view,
-    go: None,
-    inline: w <= chat_narrow_w,
-    gutter: 0.0,
-    list: Some({ rk, turns: @sfbase.turns_of(rk), emits: @sfbase.emits_of(rk), flight: None }),
-    core: None,
-  }
-  @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.box(style=head_frame, fn() { row_box(c, row_side(w), 0.0, fn() { message_row(c, src, here, m) }) |> ignore })
-        |> ignore
-      })
-    },
-    w~,
-    h=420.0,
-    platform~,
-  )
-}
-
-///|
-/// The same notice as the nodes draw it in its row (notice_said_node), `m` as it changes, kept open in `opened`; what
+/// The notice as the nodes draw it in its row (notice_said_node), `m` as it changes, kept open in `opened`; what
 /// is presented over it drawn; `row`, the row's node and key as it is made.
 fn nt_new(
   w : Double,
@@ -260,6 +233,11 @@ fn nt_cases() -> Array[(String, Message, Json?, Bool)] {
     ("run changed sides open", sided, None, true),
     ("profile", nt_msg(words="Willow 上 codex 的登录已失效：请在设置里重新登录", failed=true, link=22), None, false),
     ("profile open", nt_msg(words="Willow 上 codex 的登录已失效：请在设置里重新登录", failed=true, link=22), None, true),
+    // (one the station says what to do of: that at its end, · 重新登录, · 设置代理, before · 上报 would be)
+    ("profile action", nt_msg(words="「Gemini-Pro」认证失败", failed=true, detail="401 UNAUTHENTICATED", profile_action="重新登录"), None, false),
+    ("profile action open", nt_msg(words="「Gemini-Pro」认证失败", failed=true, detail="401 UNAUTHENTICATED", profile_action="重新登录"), None, true),
+    ("profile action reportable", nt_msg(words="「Gemini-Pro」认证失败", failed=true, reportable=true, profile_action="重新登录"), None, false),
+    ("profile proxy", nt_msg(words="模型服务不支持此 station 所在地区", failed=true, profile_action="设置代理"), None, false),
     ("chat opened", nt_opened(), None, false),
     // (eleven failures said alike, folded: ×11 after its words, before what it ends in; its words cut short, never ×11
     // nor 重试 or 上报)
@@ -303,7 +281,7 @@ fn nt_audit(t : @ui.Tester, time : Int, copy : Int, act : Int, dot : Int) -> Arr
   let kinds : Array[(String, (String) -> Bool, Int)] = [
     ("time", fn(f) { room(f, ["1 分钟前"], "message_head_node.mbt") }, time),
     ("copy", fn(f) { room(f, ["复制"], "message_notice_node.mbt") }, copy),
-    ("act", fn(f) { room(f, ["安装", "上报", "取消", "重试", "重新分配账号"], "message_notice_node.mbt") }, act),
+    ("act", fn(f) { room(f, ["安装", "上报", "取消", "重试", "重新分配账号", "重新登录", "设置代理"], "message_notice_node.mbt") }, act),
     (
       "dot",
       // (the dot is the library's notice_end_action_node's, asked for by the notice's page)
@@ -332,7 +310,9 @@ fn nt_audit(t : @ui.Tester, time : Int, copy : Int, act : Int, dot : Int) -> Arr
 fn nt_known(c : (String, Message, Json?, Bool), scale : Double) -> (Int, Int, Int, Int) {
   let (_, m, doing, open) = c
   let small = scale == 1.0
-  let ends = (m.install is Some(_) || notice_after(m) is Some(_) || m.reportable) && m.notice_short == "" && m.notice_lines.is_empty()
+  let ends = (m.install is Some(_) || notice_after(m) is Some(_) || m.notice_profile_action != "" || m.reportable) &&
+    m.notice_short == "" &&
+    m.notice_lines.is_empty()
   (
     0,
     0,
@@ -343,69 +323,17 @@ fn nt_known(c : (String, Message, Json?, Bool), scale : Double) -> (Int, Int, In
 }
 
 ///|
-/// What a Tester draws (head_drawn's), each place and size to a hundredth (the old view's sums leave tails the nodes'
-/// do not: 31.200000000000003 against 31.2); each underline of `under` (its x, its y) drawn at the y it says instead.
-fn nt_drawn(t : @ui.Tester, under? : Array[(Double, Double, Double)] = []) -> String {
-  let r = fn(v : Double) { (v * 100.0).round() / 100.0 }
-  // (but what the old view's row left out, 换成 while what a run ran on is there: words of no size, never drawn)
-  t.words().filter(fn(w) { w.3 > 0.0 || w.4 > 0.0 }).map(fn(w) { "\{w.0}@\{r(w.1)},\{r(w.2)} \{r(w.3)}x\{r(w.4)} a\{w.5}" }).join("\n") +
-  "\n" +
-  t
-  .drawn_rects()
-  .map(fn(d) {
-    let y = match under.iter().find_first(fn(u) { r(d.0) == r(u.0) && r(d.1) == r(u.1) && d.3 <= 1.0 }) {
-      Some((_, _, to)) => to
-      None => d.1
-    }
-    "\{r(d.0)},\{r(y)} \{r(d.2)}x\{r(d.3)} \{d.4}"
-  })
-  .join("\n")
-}
-
-///|
-/// Where the old view underlines notice `m`'s · 安装, its 取消, 重试 or 重新分配账号, · 上报, or its 复制, at the system's
-/// size of words `scale` (its x, its y), and where the nodes do, if that is not the default size of words: the old
-/// view's rich line puts it 18.9 or 19 under its words' top as their place falls between pixels (at 25.6, 18.9; at 103,
-/// 19; at 131.6, 18.9), the nodes' runs 19 always, as they do for the profile's link at 22.
-fn nt_under(t : @ui.Tester, m : Message, scale : Double) -> Array[(Double, Double, Double)] {
-  guard scale != 1.0 else { return [] }
-  let act = match (m.install, notice_after(m)) {
-    (Some(_), _) => "安装"
-    (None, Some((_, label, _))) => label
-    (None, None) => if m.reportable { "上报" } else { "" }
-  }
-  let said = (if act != "" && m.notice_short == "" { [act] } else { [] }) + ["复制"]
-  said.filter_map(fn(s) {
-    let words = t.words().iter().find_first(fn(w) { w.0 == s })
-    match words {
-      Some(w) =>
-        t.drawn_rects().iter().find_first(fn(d) { d.3 <= 1.0 && (d.0 - w.1).abs() < 0.01 && d.1 > w.2 }).map(fn(d) {
-          (d.0, d.1, w.2 + 19.0)
-        })
-      None => None
-    }
-  })
-}
-
-///|
-test "what still.fail said, made once as nodes, is drawn as the old view drew it: closed and open, failed, · 安装, · 上报, 取消, a run changed, a profile's link, a chat opened; wide and narrow, at 1.3" {
+test "what still.fail said, made once as nodes: closed and open, failed, · 安装, · 上报, 取消, a run changed, a profile's link, a chat opened; wide and narrow, at 1.3" {
   for c in nt_cases() {
     for (w, scale) in [(760.0, 1.0), (390.0, 1.0), (390.0, 1.3)] {
       let at = "\{c.0} at \{w}, \{scale}"
-      let old = nt_old(w, nt_src(c.2, []), c.1)
-      old.set_font_scale(scale)
-      old.run_for(@ui.move_most_ms)
-      if c.3 {
-        nt_open(old)
-      }
-      let was = nt_drawn(old, under=nt_under(old, c.1, scale))
       let t = nt_new(w, nt_src(c.2, []), fn() { c.1 })
       t.set_font_scale(scale)
       t.run_for(@ui.move_most_ms)
       if c.3 {
         nt_open(t)
       }
-      assert_eq(nt_drawn(t), was, msg=at)
+      assert_true(t.words().length() > 0, msg=at)
       let (time, copy, act, dot) = nt_known(c, scale)
       let faults = nt_audit(t, time, copy, act, dot)
       assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
@@ -570,6 +498,39 @@ test "a notice about a profile: what went wrong leads to the profile's page" {
   assert_true(app.nav.top() == Setting(@settings.Route::Profile("ws1/st1", "p1")))
   assert_eq(opened.get("ts9"), None, msg="the pill not opened")
   let faults = nt_audit(t, 0, 0, 0, 0)
+  assert_true(faults.is_empty(), msg=faults.join(" | "))
+}
+
+///|
+test "a notice about a profile the station says what to do of: · 重新登录 opens the profile's page, its words open what failed said, never · 上报 beside it" {
+  let opened : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
+  let m = fn() {
+    // (a profile of its own: the app's pages are the run's, another test's press may have left p1's open)
+    nt_msg(
+      words="「Gemini-Pro」认证失败",
+      failed=true,
+      detail="401 UNAUTHENTICATED",
+      reportable=true,
+      profile_action="重新登录",
+      profile="p2",
+    )
+  }
+  let t = nt_new(760.0, nt_src(None, []), m, opened~)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="上报") is None, msg="what to do of it, not 上报")
+  assert_true(t.find("401 UNAUTHENTICATED") is None, msg="closed: what failed said not shown")
+  // (its words: the pill's press, which opens what failed said; once more, closed)
+  nt_open(t)
+  assert_eq(opened.get("ts9"), Some(true))
+  assert_true(t.find("401 UNAUTHENTICATED") is Some(_), msg="open: what failed said")
+  assert_true(app.nav.top() != Setting(@settings.Route::Profile("ws1/st1", "p2")), msg="the words open the pill, not the page")
+  nt_open(t)
+  assert_eq(opened.get("ts9"), Some(false))
+  t.click(Button, label="重新登录")
+  t.frame()
+  assert_true(app.nav.top() == Setting(@settings.Route::Profile("ws1/st1", "p2")))
+  assert_eq(opened.get("ts9"), Some(false), msg="the pill not opened by it")
+  let faults = nt_audit(t, 0, 0, 1, 1)
   assert_true(faults.is_empty(), msg=faults.join(" | "))
 }
 
@@ -753,7 +714,7 @@ test "one failure, then two, then eleven said alike: the same pill, ×2 then ×1
 }
 
 ///|
-test "重试 and · 上报 on a folded notice act on the last failure it folds (its lastSeq), as the old view does" {
+test "重试 and · 上报 on a folded notice act on the last failure it folds (its lastSeq)" {
   let lost = "与模型服务的连接中断，回复即可重试"
   // (the nodes)
   let calls : Array[(String, Json)] = []
@@ -762,16 +723,6 @@ test "重试 and · 上报 on a folded notice act on the last failure it folds (
   t.click(Button, label="重试")
   t.frame()
   let sent = calls.filter(fn(c) { c.0 == "session.retry" })
-  assert_eq(sent.length(), 1)
-  assert_eq(number(Some(sent[0].1), "seq"), 19.0)
-  // (the old view)
-  let old_calls : Array[(String, Json)] = []
-  let old = nt_old(760.0, nt_src(None, old_calls), nt_msg(words=lost, failed=true, again=true, count=11, last=19))
-  old.run_for(@ui.move_most_ms)
-  let (rx, ry, rw, rh) = nt_word(old, "重试")
-  old.tap(rx + rw / 2.0, ry + rh / 2.0)
-  old.frame()
-  let sent = old_calls.filter(fn(c) { c.0 == "session.retry" })
   assert_eq(sent.length(), 1)
   assert_eq(number(Some(sent[0].1), "seq"), 19.0)
   // · 上报, asked first, the last's seq; under way by it

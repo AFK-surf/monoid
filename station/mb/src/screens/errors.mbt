@@ -72,29 +72,6 @@ fn field_of(e : Error, k : String) -> J? {
 }
 
 ///|
-/// An error as a test is told it: its kind, its message and what it carries.
-pub fn error_j(e : Error) -> J {
-  match e {
-    ScreenRefused(status~, key~, args~, access~, message~) =>
-      jsome([
-        ("kind", Some(js("ScreenRefused"))),
-        ("message", Some(js(message))),
-        ("status", Some(ji(status))),
-        ("key", Some(js(key))),
-        ("args", Some(args)),
-        ("access", access.map(a => a.to_j())),
-      ])
-    GrantRefused(key) => jo([("kind", js("GrantRefused")), ("message", js(key)), ("key", js(key))])
-    e =>
-      jsome([
-        ("kind", Some(js("Error"))),
-        ("message", Some(js(message_of(e)))),
-        ("code", text(field_of(e, "code")).map(js)),
-      ])
-  }
-}
-
-///|
 /// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
 pub impl Show for GrantRefused with output(self, logger) {
   match self {

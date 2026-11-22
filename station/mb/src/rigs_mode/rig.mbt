@@ -37,10 +37,13 @@ let again_for_ms : Double = 3600000.0
 let log_max : Double = 200.0
 
 ///|
-/// A connection to a device of this rig (devices/connect.ts `reachDevice`'s socket): ended here, and told as it closes.
+/// A connection to a device of this rig (devices/connect.ts `reachDevice`'s socket): ended here, told as it closes,
+/// and carried both ways with a chat's tunnel to it (mesh/peer-http.ts's pipe of the stream and the socket), the
+/// tunnel handed as its program holds it (the stream and what came with its ask), until either ends.
 pub(all) struct Socket {
   destroy : () -> Unit
   on_close : (() -> Unit) -> Unit
+  pipe : async (Json) -> Unit
 }
 
 ///|
@@ -109,12 +112,7 @@ pub struct Rig {
 
 ///|
 fn truthy(v : Json?) -> Bool {
-  match v {
-    None | Some(Null) | Some(False) => false
-    Some(String(s)) => s != ""
-    Some(Number(n, ..)) => n != 0.0 && n == n
-    _ => true
-  }
+  @jsjson.json_truthy(v)
 }
 
 ///|
@@ -345,6 +343,28 @@ pub fn Rig::guarded(self : Rig, workspace : String, peer : String, request : Jso
 }
 
 ///|
+/// Its person took it into a workspace in safe mode naming the workspace's lock (rig/module.ts `#added`, FB-45): where
+/// it pins none and was named none to pin, that one is named, as `enroll --lock` names one, and the control plane is
+/// asked for it at once (presence.ts `pendingAsks`). A lock pinned or named already is never replaced from here.
+fn Rig::pin_named(self : Rig, lock : String?) -> Unit {
+  guard lock is Some(hash) else { return }
+  let cloud = self.d.cloud
+  let path = @cloud_lock.pending_lock_path(self.d.data)
+  let named = match (self.d.files.read)(path).bind(@cloud_lock.parse) {
+    Some({ "hash": String(h), .. }) => @cloud_lock.is_hex32(h)
+    _ => false
+  }
+  if cloud.chain() is Some(_) || named {
+    return
+  }
+  (self.d.files.mkdir)(@cloud_lock.dirname(path))
+  (self.d.files.write)(path, ({ "hash": Json::string(hash) } : Json).stringify()) catch {
+    _ => return
+  }
+  cloud.lock_named()
+}
+
+///|
 /// What a station asks of `rig.` (`bus.on("rig.")`).
 pub async fn Rig::heard(self : Rig, peer : String, request : Json, workspace : String) -> Json {
   let r = Some(request)
@@ -378,7 +398,8 @@ pub async fn Rig::heard(self : Rig, peer : String, request : Json, workspace : S
       jobj([("ok", jbool(true))])
     }
     "rig.added" => {
-      self.grants.added(get(r, "signed"))
+      let lock = self.grants.added(get(r, "signed"), pin=get(r, "pin"), chain=get(r, "chain"))
+      self.pin_named(lock)
       jobj([("ok", jbool(true))])
     }
     "rig.full" => {

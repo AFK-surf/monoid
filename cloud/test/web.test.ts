@@ -36,6 +36,10 @@ test("a console's request to add a station lets only a listed console in its for
   const taken = await serveWeb(ask("https://console.example/connect/station"), listed, files);
   assert.equal(taken.status, 200);
   assert.match(csp(taken), /form-action 'self' https:\/\/console\.example https:\/\/accounts\.google\.com;/);
+  // A console asking for a provisioning key (`mode=provision`, web/src/pages/connect.tsx) is let in as the same console.
+  const provision = await serveWeb(new Request(`${env.PUBLIC_ORIGIN}/connect/station?return=${encodeURIComponent("https://console.example/connect/station")}&state=sc_2&name=fleet&mode=provision`), listed, files);
+  assert.equal(provision.status, 200);
+  assert.match(csp(provision), /form-action 'self' https:\/\/console\.example https:\/\/accounts\.google\.com;/);
 
   for (const back of ["https://evil.example/connect/station", "https://console.example/other", "https://console.example/connect/station?x=1", "nonsense"]) {
     const refused = await serveWeb(ask(back), listed, files);

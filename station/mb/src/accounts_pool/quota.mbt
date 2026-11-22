@@ -80,97 +80,18 @@ fn digits_at(s : String, i : Int, n : Int) -> Int? {
 }
 
 ///|
-/// Days from 1970-01-01 to a civil date (proleptic Gregorian).
-fn days_from_civil(y : Int, m : Int, d : Int) -> Double {
-  let y2 = if m <= 2 { y - 1 } else { y }
-  let era = (if y2 >= 0 { y2 } else { y2 - 399 }) / 400
-  let yoe = y2 - era * 400
-  let mp = (m + 9) % 12
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  (era * 146097 + doe - 719468).to_double()
-}
-
-///|
 /// `Date.parse` of a date and time as ISO 8601 writes it (V8's: a fraction of any length cut to milliseconds, `Z`,
 /// `z`, `±HH:MM` or `±HHMM`, `24:00:00` the next day, a day up to 31 whatever the month; no zone: local time, by
 /// `tz_offset_ms`). None for anything else.
 pub fn date_parse(text : String, tz_offset_ms : (Double) -> Double) -> Double? {
-  guard digits_at(text, 0, 4) is Some(y) else { return None }
-  guard text.length() >= 16 else { return None }
-  if text.unsafe_charcode_at(4) != '-'.to_int() ||
-    text.unsafe_charcode_at(7) != '-'.to_int() ||
-    text.unsafe_charcode_at(10) != 'T'.to_int() ||
-    text.unsafe_charcode_at(13) != ':'.to_int() {
+  guard text.length() >= 16 &&
+    text.unsafe_get(4).to_int() == '-' &&
+    text.unsafe_get(7).to_int() == '-' &&
+    text.unsafe_get(10).to_int() == 'T' &&
+    text.unsafe_get(13).to_int() == ':' else {
     return None
   }
-  guard digits_at(text, 5, 2) is Some(mo) else { return None }
-  guard digits_at(text, 8, 2) is Some(d) else { return None }
-  guard digits_at(text, 11, 2) is Some(h) else { return None }
-  guard digits_at(text, 14, 2) is Some(mi) else { return None }
-  let mut i = 16
-  let mut s = 0
-  let mut ms = 0
-  if i < text.length() && text.unsafe_charcode_at(i) == ':'.to_int() {
-    guard digits_at(text, 17, 2) is Some(sec) else { return None }
-    s = sec
-    i = 19
-    if i < text.length() && text.unsafe_charcode_at(i) == '.'.to_int() {
-      i += 1
-      let from = i
-      while i < text.length() &&
-            text.unsafe_charcode_at(i) >= '0'.to_int() &&
-            text.unsafe_charcode_at(i) <= '9'.to_int() {
-        if i - from < 3 {
-          ms = ms * 10 + (text.unsafe_charcode_at(i) - '0'.to_int())
-        }
-        i += 1
-      }
-      if i == from {
-        return None
-      }
-      let got = i - from
-      if got == 1 {
-        ms = ms * 100
-      } else if got == 2 {
-        ms = ms * 10
-      }
-    }
-  }
-  if mo < 1 || mo > 12 || d < 1 || d > 31 || h > 24 || mi > 59 || s > 59 {
-    return None
-  }
-  if h == 24 && (mi != 0 || s != 0 || ms != 0) {
-    return None
-  }
-  let local = days_from_civil(y, mo, d) * 86_400_000.0 +
-    h.to_double() * 3_600_000.0 +
-    mi.to_double() * 60_000.0 +
-    s.to_double() * 1000.0 +
-    ms.to_double()
-  if i == text.length() {
-    return Some(local - tz_offset_ms(local))
-  }
-  let c = text.unsafe_charcode_at(i)
-  if (c == 'Z'.to_int() || c == 'z'.to_int()) && i + 1 == text.length() {
-    return Some(local)
-  }
-  if c == '+'.to_int() || c == '-'.to_int() {
-    guard digits_at(text, i + 1, 2) is Some(oh) else { return None }
-    let (om, end) = if i + 3 < text.length() &&
-      text.unsafe_charcode_at(i + 3) == ':'.to_int() {
-      (digits_at(text, i + 4, 2), i + 6)
-    } else {
-      (digits_at(text, i + 3, 2), i + 5)
-    }
-    guard om is Some(om) else { return None }
-    if end != text.length() || oh > 23 || om > 59 {
-      return None
-    }
-    let off = (oh * 60 + om).to_double() * 60_000.0
-    return Some(if c == '+'.to_int() { local - off } else { local + off })
-  }
-  None
+  @jsjson.js_parse_iso(text, tz_offset_ms~)
 }
 
 ///|
@@ -447,13 +368,18 @@ pub async fn claude_with_refresh(
     return first
   }
   let renewed = claude_oauth_token(ctx, home, Some(token.0), token_url, lang)
-  claude_usage_response(
+  let (second, still_unauthorized) = claude_usage_response(
     ctx,
     ctx.url("anthropic").unwrap_or(""),
     renewed.0,
     lang,
     version,
-  ).0
+  )
+  if still_unauthorized {
+    jset(second, "signedOut", jbool(true))
+  } else {
+    second
+  }
 }
 
 ///|
@@ -511,7 +437,12 @@ async fn claude_usage_response(
     quota_timeout_ms,
   )
   if !response.ok() {
-    return (refused(ctx, "Anthropic ", response, lang), response.status == 401)
+    // An account the provider refuses stays blocked; otherwise a 401 or a 403 is the OAuth token refused (one revoked
+    // is answered 403, FB-44): renewed and asked again, then the login is over.
+    if !blocked(chars(response.text, 500)) && (response.status == 401 || response.status == 403) {
+      return (quota("unavailable", [], Some(ctx.tr(lang, "station.quota.signInExpired"))), true)
+    }
+    return (refused(ctx, "Anthropic ", response, lang), false)
   }
   let body = response.json()
   let windows = match body {
@@ -982,19 +913,22 @@ async fn check_quota_inner(
   if kind == "anthropic-api" || kind == "api-provider" {
     return quota("unsupported", [], Some(ctx.tr(lang, "station.quota.payAsYouGo")))
   }
+  if kind == "service" {
+    return quota("unsupported", [], None)
+  }
   if kind == "env" {
     return quota("unsupported", [], Some(ctx.tr(lang, "station.quota.envUnsupported")))
   }
-  if profile.runtime == "grok" {
+  if kind == "subscription" && profile.runtime == Some("grok") {
     return grok_quota(ctx, profile, lang)
   }
-  if profile.runtime == "cursor" {
+  if kind == "subscription" && profile.runtime == Some("cursor") {
     return quota("unsupported", [], Some(ctx.tr(lang, "station.quota.cursorUnsupported")))
   }
-  if profile.runtime == "devin" {
+  if kind == "subscription" && profile.runtime == Some("devin") {
     return quota("unsupported", [], Some(ctx.tr(lang, "station.quota.devinUnsupported")))
   }
-  if profile.runtime == "agy" {
+  if kind == "subscription" && profile.runtime == Some("agy") {
     let env = station_env(ctx)
     let source = match p.get("env") {
       Some(Obj(_) as e) => jspread(env, e)
@@ -1002,7 +936,7 @@ async fn check_quota_inner(
     }
     return agy_quota(ctx, profile.home, source, lang)
   }
-  if profile.runtime == "claude" {
+  if kind == "subscription" && profile.runtime == Some("claude") {
     return claude_with_refresh(
       ctx,
       if profile.machine {
@@ -1012,11 +946,24 @@ async fn check_quota_inner(
       },
       lang,
       claude_version,
-    )
+    ) catch {
+      e => {
+        let q = failed(ctx, e, lang)
+        if q.get("unanswered") != Some(Bool(true)) &&
+          q.get("signedOut") != Some(Bool(true)) {
+          jset(q, "recheck", jbool(true))
+        } else {
+          q
+        }
+      }
+    }
   }
-  codex_quota_of(ctx, profile, codex, lang) catch {
-    e => codex_failed(ctx, e, lang)
+  if kind == "subscription" && profile.runtime == Some("codex") {
+    return codex_quota_of(ctx, profile, codex, lang) catch {
+      e => codex_failed(ctx, e, lang)
+    }
   }
+  quota("unsupported", [], None)
 }
 
 ///|

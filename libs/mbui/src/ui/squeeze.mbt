@@ -111,6 +111,7 @@ fn Ctx::squeeze_said(self : Ctx) -> Array[(Int, String)] {
   // again: what it holds runs past it on purpose), and whether a fault was said of it
   let room = Array::make(n * 2, 0.0)
   let said = Array::make(n, false)
+  let ground_said = Array::make(n, false)
   // where each node may be seen at all, by the boxes that clip round it (x0, y0, x1, y1), and whether it is drawn off its
   // place on purpose inside the nearest of them (it, or what holds it there: Ctx::squeeze_aside_at): words so moved
   // wholly out of sight are not judged as cut (on their way in or out, over what holds them); words laid in the flow
@@ -224,11 +225,13 @@ fn Ctx::squeeze_said(self : Ctx) -> Array[(Int, String)] {
       }
     }
     // the outermost box that runs past the window's edge, partly in it, where nothing it is in cuts it
+    let mut reported_edge = false
     if !cut[i] && b.fw > 0.0 && b.x < w && b.x + b.fw > 0.0 {
       let past = b.squeeze_past(w)
       let p = b.parent
       let parent_past = p >= 0 && p < n && self.nodes[p].squeeze_past(w) > squeeze_slack
       if past > squeeze_slack && !parent_past && !self.squeeze_aside_at(i) {
+        reported_edge = true
         out.push((i, "\{self.named(i)} runs \{past.round()} past the window's edge"))
       }
     }
@@ -242,6 +245,44 @@ fn Ctx::squeeze_said(self : Ctx) -> Array[(Int, String)] {
       if off > squeeze_slack && b.x < hi && b.x + b.fw > lo && !(p >= 0 && p < n && said[p]) {
         said[i] = true
         out.push((i, "\{self.named(i)} is cut off \{off.round()} by what clips it"))
+      }
+    }
+    // visible content running horizontally past its nearest unclipped visible container (shows_ground)
+    if !reported_edge && !said[i] && self.squeeze_shows_at(i) && b.fw > 0.0 && !self.squeeze_aside_at(i) {
+      let mut k = b.parent
+      let mut g = -1
+      let mut neg_l = b.mar_l < 0.0
+      let mut neg_r = b.mar_r < 0.0
+      let mut suppressed = false
+      while k >= 0 && k < n {
+        let nk = self.nodes[k]
+        if nk.shows_ground() && !nk.squeeze_cuts() && !nk.sideways && !self.squeeze_scaled(k) {
+          g = k
+          break
+        }
+        if self.squeeze_aside_at(k) || self.squeeze_scaled(k) || nk.squeeze_cuts() || nk.sideways {
+          break
+        }
+        if ground_said[k] {
+          suppressed = true
+        }
+        if nk.mar_l < 0.0 {
+          neg_l = true
+        }
+        if nk.mar_r < 0.0 {
+          neg_r = true
+        }
+        k = nk.parent
+      }
+      if g >= 0 && !suppressed {
+        let ng = self.nodes[g]
+        let over_l = if neg_l { 0.0 } else { ng.x - b.x }
+        let over_r = if neg_r { 0.0 } else { b.x + b.fw - (ng.x + ng.fw) }
+        let past_g = dmax(over_l, over_r)
+        if past_g > squeeze_slack && b.x < ng.x + ng.fw && b.x + b.fw > ng.x {
+          ground_said[i] = true
+          out.push((i, "\{self.named(i)} runs \{past_g.round()} past \{self.named(g)}"))
+        }
       }
     }
     let p = b.parent
@@ -661,10 +702,10 @@ fn Ctx::shows_after(self : Ctx, k : Int) -> Bool {
 
 ///|
 /// Whether words `i` that go on in lines are a line under a title (in a column of words, after what stands over them)
-/// beside what keeps its width standing across the middle of the whole column, not on their line (a switch, a
-/// button at a row's end, across the middle of a title and its note: settings' rows, @sf.switch_row): there they
-/// may take the lines the row leaves them, as a note beside a control does. A title itself, words beside words that
-/// give way too, or what is on the line of its words are not.
+/// beside what keeps its width standing across the middle of the whole column or of its first line of words, not on
+/// a line of their own (a switch, a button at a row's end, across the middle of a title and its note, or of the
+/// title alone: settings' rows, @sf.switch_row): there they may take the lines the row leaves them, as a note beside
+/// a control does. A title itself, words beside words that give way too, or what only shares their top are not.
 fn Ctx::sub_lines_beside(self : Ctx, i : Int) -> Bool {
   let n = self.count
   let mut k = i
@@ -679,14 +720,17 @@ fn Ctx::sub_lines_beside(self : Ctx, i : Int) -> Bool {
       guard under else { return false }
       let words = self.nodes[k]
       let middle = words.y + words.fh / 2.0
+      let first_mid = self.first_words_middle(k)
       let mut beside = false
       let mut ch = words.next
       while ch >= 0 {
         let cn = self.nodes[ch]
         if !self.squeeze_aside_at(ch) && cn.fw > squeeze_slack && cn.opacity > 0.01 && (cn.first >= 0 || self.squeeze_shows_at(ch)) {
-          // (what gives way too, or stands on a line of the words, not across their middle: as before)
-          if self.squeeze_gives(ch) || cn.fh + squeeze_slack >= words.fh ||
-            (cn.y + cn.fh / 2.0 - middle).abs() > squeeze_slack {
+          // (what gives way too, or stands at neither the middle of the words nor that of their first line: as before)
+          let cn_mid = cn.y + cn.fh / 2.0
+          let across = (cn_mid - middle).abs() <= squeeze_slack ||
+            (first_mid is Some(fm) && (cn_mid - fm).abs() <= squeeze_slack)
+          if self.squeeze_gives(ch) || cn.fh + squeeze_slack >= words.fh || !across {
             return false
           }
           beside = true
@@ -705,6 +749,34 @@ fn Ctx::sub_lines_beside(self : Ctx, i : Int) -> Bool {
     p = a.parent
   }
   false
+}
+
+///|
+/// The middle of the first line of the first words shown in node `k` (its own, or the first in what it holds, in
+/// order), drawn, not apart from the flow: where what stands beside a title is put on its line (@sf.switch_row).
+fn Ctx::first_words_middle(self : Ctx, k : Int) -> Double? {
+  let b = self.nodes[k]
+  if self.squeeze_aside_at(k) || b.opacity <= 0.01 || b.fw <= squeeze_slack || b.fh <= squeeze_slack {
+    return None
+  }
+  if b.kind == kind_text || b.kind == kind_rich {
+    if b.text.trim().length() == 0 {
+      return None
+    }
+    let line = match b.tl {
+      Some(tl) if tl.line_h > 0.0 => dmin(b.fh, tl.line_h)
+      _ => if b.line_h > 0.0 { dmin(b.fh, b.line_h) } else { b.fh }
+    }
+    return Some(b.y + line / 2.0)
+  }
+  let mut ch = b.first
+  while ch >= 0 {
+    if self.first_words_middle(ch) is Some(m) {
+      return Some(m)
+    }
+    ch = self.nodes[ch].next
+  }
+  None
 }
 
 ///|

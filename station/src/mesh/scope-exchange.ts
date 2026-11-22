@@ -16,13 +16,15 @@ function revisions(records: Announcement[], field: "revision" | "generation"): M
   return new Map(records.map((r) => { const value = JSON.parse(r.body); return [value.node, value[field]]; }));
 }
 export function exchangeScope(directory: ScopeDirectory, scope: string, send: (request: ExchangeRequest) => Promise<unknown>): Promise<void> {
-  return exchangeSignedRecords(() => directory.records(scope), (records) => directory.take(scope, records), send, "revision");
+  return exchangeSignedRecords(() => directory.records(scope), (records) => directory.take(scope, records), send, "revision", (id) => directory.admits(scope, id));
 }
-export async function exchangeSignedRecords(records: () => Announcement[], take: (records: Announcement[]) => Promise<void>, send: (request: ExchangeRequest) => Promise<unknown>, field: "revision" | "generation"): Promise<void> {
+export async function exchangeSignedRecords(records: () => Announcement[], take: (records: Announcement[]) => Promise<void>, send: (request: ExchangeRequest) => Promise<unknown>, field: "revision" | "generation", admits: (id: string) => boolean = () => true): Promise<void> {
   let theirs = response(await send({}));
   if (theirs.records.length) throw new Error("unsolicited mesh records");
   const ours = revisions(records(), field);
-  const want = Object.keys(theirs.versions).filter((id) => (ours.get(id) ?? 0) < theirs.versions[id]!);
+  // A node the peer keeps but this station's roster does not have yet (their rosters briefly differ) is not asked for:
+  // `take` would refuse the whole page for it.
+  const want = Object.keys(theirs.versions).filter((id) => admits(id) && (ours.get(id) ?? 0) < theirs.versions[id]!);
   for (let i = 0; i < want.length; i += 16) {
     const requested = want.slice(i, i + 16);
     const page = response(await send({ want: requested }));

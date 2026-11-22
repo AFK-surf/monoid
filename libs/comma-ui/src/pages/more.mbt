@@ -125,6 +125,7 @@ fn more_page(root : @view.View, layer : @cm.Layer, open : String) -> Unit {
       })
       section(right, "Radio group · Checkbox group", fn(s) {
         row(s, fn(r) {
+          r.lines_up(Is(Some(Start))) |> ignore
           r.box(fn(b) {
             b.width(Is(Some(220.0))) |> ignore
             @cm.radio_group_node(

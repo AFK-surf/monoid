@@ -3,11 +3,15 @@
 // stations and the relays their issuers registered; a healthy peer is asked only when a roster or a record changes.
 
 ///|
-/// A workspace's scope (enrollment-door.ts `workspaceScope`).
+/// A workspace's scope (enrollment-door.ts `workspaceScope`): app.monoid.build is still.fail's cloud too, so its scope
+/// is named by still.fail's origin.
 pub fn workspace_scope(c : Crypto, origin : String, workspace : String) -> String {
   let mut o = origin
   while o.has_suffix("/") {
     o = o[:o.length() - 1].to_owned()
+  }
+  if o == "https://app.monoid.build" {
+    o = "https://app.still.fail"
   }
   (c.sha256)(utf8("mesh-workspace/v1\u{0}" + o + "\u{0}" + workspace))
 }
@@ -38,12 +42,14 @@ fn versions_of(records : Array[Json], name : String) -> Map[String, Int64] {
 
 ///|
 /// One exchange of signed records with a peer (scope-exchange.ts `exchangeSignedRecords`): what it has newer asked for
-/// sixteen at a time and taken, then what this one has newer given it.
+/// sixteen at a time and taken, then what this one has newer given it. Only nodes `admits` names are asked for: one on
+/// the peer's roster and not yet on this station's would have `take` refuse the whole page.
 pub async fn exchange_signed_records(
   records : () -> Array[Json],
   take : async (Array[Json]) -> Unit,
   send : async (Json) -> Json,
   name : String,
+  admits? : (String) -> Bool = _ => true,
 ) -> Unit {
   let mut theirs = exchange_reply(send(Json::object(Map([]))))
   guard field(theirs, "records") is Array(rs) && rs.length() == 0 else { fail("unsolicited mesh records") }
@@ -51,7 +57,7 @@ pub async fn exchange_signed_records(
   let want = []
   guard field(theirs, "versions") is Object(vs) else { fail("invalid mesh exchange reply") }
   for id, v in vs {
-    if ours.get(id).unwrap_or(0L) < safe_int(v).unwrap_or(0L) {
+    if admits(id) && ours.get(id).unwrap_or(0L) < safe_int(v).unwrap_or(0L) {
       want.push(id)
     }
   }
@@ -239,7 +245,7 @@ pub fn ScopeSync::new(
   }
   changed.val = s => sync.changed(s)
   failed.val = e => sync.failed(e)
-  let again = () => ignore(rt.fork(name="mesh roster", async fn() { sync.roster() }))
+  let again = () => ignore(rt.fork_daemon("mesh roster", on_error=e => sync.failed(e), async fn() { sync.roster() }))
   sync.offs = [(parts.cloud.listen)(again), parts.ways.listen(_ => again())]
   again()
   sync
@@ -394,7 +400,7 @@ fn ScopeSync::retry_roster(self : ScopeSync, epoch : Int, e : Error) -> Unit {
   }
   // timer: a retry after a failure, with a backoff (the endpoint's directory not applied)
   self.roster_retry = Some(
-    (self.parts.after)(self.roster_wait, () => ignore(self.rt.fork(name="mesh roster", async fn() { self.roster() }))),
+    (self.parts.after)(self.roster_wait, () => ignore(self.rt.fork_daemon("mesh roster", on_error=e => self.failed(e), async fn() { self.roster() }))),
   )
 }
 
@@ -452,7 +458,7 @@ fn ScopeSync::pump(self : ScopeSync) -> Unit {
       (self.parts.call)(job.peer, job.workspace, Json::object(body))
     }
     ignore(
-      self.rt.fork(name="mesh exchange", async fn() {
+      self.rt.fork_daemon("mesh exchange", on_error=e => self.failed(e), async fn() {
         let result = try {
           // (who may relay arrives before any relay's address)
           exchange_signed_records(
@@ -466,6 +472,7 @@ fn ScopeSync::pump(self : ScopeSync) -> Unit {
             async fn(records) { self.directory.take(job.scope, records) },
             send("meshScopes.exchange"),
             "revision",
+            admits=id => self.directory.admits(job.scope, id),
           )
           Ok(())
         } catch {

@@ -3,11 +3,11 @@
 
 ///|
 /// How something stands, at a glance (status_dot's and a job's JobDot, as a node): a dot `size` round, online the online
-/// green, busy amber, error red, waiting the muted ink; a job's tones the theme's (up green, restart amber breathing to
-/// .35 and back, fail red, off the strong line's grey), live green with its breath out round it (from .6 to 1.15 and
-/// back, fading); else (offline) a ring 1.5 in it; `state` as it is now, the breaths on the resident clock's steps, only
-/// where it `breathes` (a job's: made anew as its state changes, in `parent`, whatever `in_node` says). Made in a box
-/// of its own in `parent`, or `in_node` of `parent` itself (a box given for it alone).
+/// green, busy amber, error red, waiting the muted ink; a job's tones the theme's (up or live green, restart amber
+/// breathing to .35 and back, fail red, off the strong line's grey); else (offline) a ring 1.5 in it; `state` as it is
+/// now, the breath on the resident clock's steps, only where it `breathes` (a job's: made anew as its state changes, in
+/// `parent`, whatever `in_node` says). Made in a box of its own in `parent`, or `in_node` of `parent` itself (a box
+/// given for it alone).
 #callsite(autofill(loc))
 pub fn state_dot_node(
   parent : @view.View,
@@ -43,45 +43,14 @@ pub fn state_dot_node(
   // (one that breathes: made anew as its state changes, what a state has bound only in it (the old view's job_dot,
   // a box each state), so a job up, failed or off binds its colour alone; a job's tones are each a ground, no ring)
   if breathes {
-    parent.pick(loc~, state, fn(p, st) {
-      p.box(fn(d) {
-        round(d)
-        d.ground(By(fn() { look_of(st).0 })) |> ignore
-        // (restarting: breathing to .35 and back)
-        if st == "restart" {
-          d
-          .alpha(By(fn() {
-            let f = d.cycle_resident(breath_ms)
-            let way = if f < 0.5 { f * 2.0 } else { 2.0 - f * 2.0 }
-            1.0 - (1.0 - state_breath_low) * @ui.Ease::InOut.at(way)
-          }))
-          |> ignore
-        }
-        // (alive: its breath out round it, over what is beside it)
-        if st == "live" {
-          d.box(fn(halo) {
-            halo
-            .over(Is(true))
-            .offset(Is((-state_halo_out, -state_halo_out)))
-            .width(Is(Some(size + state_halo_out * 2.0)))
-            .height(Is(Some(size + state_halo_out * 2.0)))
-            .radius(Is(1.0e6))
-            .ground(By(fn() { @ui.tree_theme().color(Positive) }))
-            |> ignore
-            let way = fn() {
-              let f = halo.cycle_resident(state_live_ms)
-              if f < 0.5 {
-                f * 2.0
-              } else {
-                2.0 - f * 2.0
-              }
-            }
-            halo.scale(By(fn() { 0.6 + 0.55 * way() })).alpha(By(fn() { 0.35 * (1.0 - way()) })) |> ignore
-          })
-          |> ignore
-        }
-      })
-      |> ignore
+    parent.pick(loc~, state, fn(d, st) {
+      round(d)
+      d.ground(By(fn() { look_of(st).0 })) |> ignore
+      // (restarting: breathing to .35 and back)
+      if st == "restart" {
+        let breathe = @motion.breathe_alpha(d, period_ms=breath_ms, low=state_breath_low, resident=true)
+        d.alpha(By(breathe)) |> ignore
+      }
     })
     return
   }
@@ -112,14 +81,6 @@ let dot_across : Double = 7.0
 ///|
 /// How faint a restarting dot breathes (breathe's `low` in job_dot).
 let state_breath_low : Double = 0.35
-
-///|
-/// How long an alive dot's breath out takes (jobLive 2.4 s).
-pub let state_live_ms : Double = 2400.0
-
-///|
-/// How far an alive dot's breath reaches past it (inset -4).
-pub let state_halo_out : Double = 4.0
 
 ///|
 /// What is before a station's name in its row (the web's StationRow): wide, whether it is online, then its mark where it

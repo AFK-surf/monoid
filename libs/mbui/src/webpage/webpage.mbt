@@ -13,6 +13,13 @@ pub fn set_title(title : String) -> Unit {
 }
 
 ///|
+/// The page's own title as it loaded (its `<title>`: what the site calls itself, before the run gave the page a title
+/// of its own), "" where the app is in no page or the page had none.
+pub fn loaded_title() -> String {
+  @hostapi.app_said("mbui.page.loaded_title")
+}
+
+///|
 /// The colour of what the browser draws round the page (its bar, what shows past the page's edges), a CSS colour; ""
 /// the page's own again.
 pub fn set_theme_color(color : String) -> Unit {

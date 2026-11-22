@@ -22,7 +22,7 @@ import { type StoreChange, type UsageGroup, Store, newMessage } from "../src/sto
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { UsageCounter } from "../src/usage/counter.ts";
-import { type CallState, GEN_MOST, callsOf, claudeFiles, claudeProject, readFrom, speedOf, speedText } from "./usage-counter-reference.ts";
+import { type CallState, AGY_MAX_ID_BYTES, AGY_MAX_SPEED_BYTES, AGY_MAX_TOOLS, AGY_MAX_TPS, AGY_MAX_USAGES, GEN_MOST, callsOf, claudeFiles, claudeProject, readFrom, speedOf, speedText } from "./usage-counter-reference.ts";
 import type { UsageCall, UsageFor } from "../src/store/usage.ts";
 import { keepUsage } from "../src/usage/module.ts";
 import { testClock } from "./hub-fakes.ts";
@@ -149,6 +149,208 @@ test("a Codex call's time is from what asked it to the last item it wrote before
     count(8100, 200, 40),
   ].join("\n"), false, state);
   assert.deepEqual(calls.map((c) => [c.id, c.genMs]), [["codex::100", 3000], ["codex::100", 0], ["codex::200", 3000]]);
+});
+
+test("an Antigravity call's time is settled at turn end minus the union of tool intervals, across chunks, steering, and crossing tools", () => {
+  const user = (time: number, steered = false) => JSON.stringify(steered ? { type: "user", steered: true, time } : { type: "user", time });
+  const tool = (startedAt: number, time: number) => JSON.stringify({ type: "tool", startedAt, time });
+  const agyUsage = (run: string, time: number, outputTokens: number) =>
+    JSON.stringify({ type: "usage", run, time, model: "gemini-4-neon", calls: 1, usage: { inputTokens: 100, outputTokens } });
+  const end = (time: number) => JSON.stringify({ type: "end", time });
+
+  // 1) Parallel overlapping + realistic out-of-order completion (earlier-started tool finishes last) + crossing tool + steering.
+  const state = fresh();
+  const chunk1 = callsOf("agy", [
+    user(1000),
+    // Realistic out-of-order completion: [1800, 2200] finishes first, [2000, 2600] second, earlier-started [1500, 3000] finishes last -> union [1500, 3000] (1500ms).
+    tool(1800, 2200),
+    tool(2000, 2600),
+    tool(1500, 3000),
+    // Usage 1 at 5000 (crossing tool [4000, 6000] has not finished yet).
+    agyUsage("r1", 5000, 100),
+    // Duplicate usage for r1 must not split or double-consume the interval.
+    agyUsage("r1", 5000, 100),
+    // Steered user must not reset the turn.
+    user(5100, true),
+  ].join("\n"), false, state);
+  // Before end: usages are emitted with genMs = 0 (never premature timing).
+  assert.deepEqual(chunk1.map((c) => [c.id, c.calls, c.genMs ?? 0]), [["agy:r1", 1, 0], ["agy:r1", 1, 0]]);
+  // Simulate restart persistence via speedText/speedOf.
+  const persisted = speedText(state.speed!);
+  assert.ok(persisted !== null && persisted.startsWith("v1:"), "agy in-flight speed is versioned");
+  const resumed: CallState = { model: state.model, codexId: null, speed: speedOf(persisted) };
+  const chunk2 = callsOf("agy", [
+    // Crossing tool finishes after r1: [4000, 6000] overlaps [1000, 5000] by 1000ms and [5000, 9000] by 1000ms.
+    tool(4000, 6000),
+    agyUsage("r2", 9000, 200),
+    end(9100),
+  ].join("\n"), false, resumed);
+  // r1 settled as timing-only update (calls=0): wall=4000 - (1500 + 1000) = 1500ms.
+  // r2 settled in-place (calls=1): wall=4000 - 1000 = 3000ms.
+  assert.deepEqual(chunk2.map((c) => [c.id, c.calls, c.genMs ?? 0]), [["agy:r2", 1, 3000], ["agy:r1", 0, 1500]]);
+
+  // 2) GEN_MOST applies per continuous non-tool generation gap (not whole multi-tool prompt sum).
+  const longTool = fresh();
+  const longCalls = callsOf("agy", [
+    user(0),
+    // Long tool wait (> GEN_MOST) is excluded; two short generation gaps (1000ms + 1000ms) -> 2000ms.
+    tool(1000, 1000 + GEN_MOST + 500_000),
+    agyUsage("ok", GEN_MOST + 502_000, 50),
+    // Single uninterrupted non-tool gap > GEN_MOST -> untimed.
+    agyUsage("too-long-gap", 2 * GEN_MOST + 503_000, 60),
+    end(2 * GEN_MOST + 503_100),
+    // Total net > GEN_MOST (3 * 700_000 = 2_100_000 > 1_800_000) across multiple short gaps (each <= GEN_MOST) -> valid!
+    user(5_000_000),
+    tool(5_700_000, 5_710_000),
+    tool(6_410_000, 6_420_000),
+    agyUsage("multi-step-long", 7_120_000, 100_000),
+    end(7_120_100),
+  ].join("\n"), false, longTool);
+  assert.deepEqual(longCalls.map((c) => [c.id, c.genMs ?? 0]), [
+    ["agy:ok", 2000], ["agy:too-long-gap", 0], ["agy:multi-step-long", 2_100_000],
+  ]);
+
+  // 2b) Outlier sample guard (> 500 tok/s): replay (1927 tok / 15ms) and steer overlap (951 tok / 257ms) are skipped
+  //     without affecting tokens/calls or neighboring normal segments; legacy 2-tuple (unknown output) also skips timing.
+  const outlier = fresh();
+  const outlierCalls = callsOf("agy", [
+    // Replay: 711ms wall - 696ms tool = 15ms net, 1927 output tokens -> 128,467 tok/s > 500 tok/s -> genMs = 0.
+    user(100_000),
+    tool(100_015, 100_711),
+    agyUsage("replay-1927", 100_711, 1927),
+    end(100_711),
+    // Steer overlap: normal segment + 951 tok / 257ms (3700 tok/s) + normal segment.
+    user(200_000),
+    agyUsage("norm-before", 205_000, 250),
+    tool(204_933, 208_029),
+    user(208_276, true),
+    agyUsage("steer-951", 208_286, 951),
+    agyUsage("norm-after", 212_286, 200),
+    end(212_300),
+  ].join("\n"), false, outlier);
+  assert.deepEqual(outlierCalls.map((c) => [c.id, c.output, c.calls, c.genMs ?? 0]), [
+    ["agy:replay-1927", 1927, 1, 0],
+    ["agy:norm-before", 250, 1, 4933],
+    ["agy:steer-951", 951, 1, 0],
+    ["agy:norm-after", 200, 1, 4000],
+  ]);
+  // Legacy 2-tuple persisted state (unknown output) must skip timing that segment rather than assuming output=0.
+  const legacyState: CallState = { model: null, codexId: null, speed: speedOf('v1:{"s":1000,"u":[["agy:legacy",3000]],"t":[]}') };
+  const legacySettled = callsOf("agy", [agyUsage("after-legacy", 5000, 100), end(5100)].join("\n"), false, legacyState);
+  assert.deepEqual(legacySettled.map((c) => [c.id, c.genMs ?? 0]), [["agy:after-legacy", 2000]]);
+  assert.equal(AGY_MAX_TPS, 500);
+
+  // 2c) Tool negative clock skew tolerance: <= 5ms ignored as 0ms; > 5ms invalidates turn.
+  //     Same-ms usage skips 0ms segment without poisoning other valid segments; reversed usage still invalidates turn.
+  const jitter = fresh();
+  const jitterCalls = callsOf("agy", [
+    user(1000),
+    tool(1501, 1500), // -1ms jitter -> ignored as 0ms
+    tool(2005, 2000), // -5ms jitter -> ignored as 0ms
+    agyUsage("same-0", 1000, 10), // 0ms segment (same ms as turn_start) -> skipped
+    agyUsage("valid-1", 3000, 100), // 2000ms valid
+    agyUsage("same-1", 3000, 10), // 0ms segment (same ms as valid-1) -> skipped
+    agyUsage("valid-2", 6000, 150), // 3000ms valid
+    end(6100),
+    // -6ms skew exceeds 5ms tolerance -> invalidates whole turn.
+    user(10_000),
+    tool(10_506, 10_500),
+    agyUsage("skew-6ms", 12_000, 50),
+    end(12_100),
+  ].join("\n"), false, jitter);
+  assert.deepEqual(jitterCalls.map((c) => [c.id, c.genMs ?? 0]), [
+    ["agy:same-0", 0], ["agy:valid-1", 2000], ["agy:same-1", 0], ["agy:valid-2", 3000], ["agy:skew-6ms", 0],
+  ]);
+
+  // 3) Invalid/missing times, fractional/>MAX_SAFE_INTEGER times, incomplete turns, and orphan usages never fabricate speed.
+  const bad = fresh();
+  const badCalls = callsOf("agy", [
+    // Orphan usage without user.
+    agyUsage("orphan", 1000, 10),
+    // Incomplete turn interrupted by new normal user.
+    user(2000),
+    agyUsage("unended", 3000, 20),
+    user(4000),
+    // Invalid tool (startedAt - time = 100ms > 5ms) invalidates the turn.
+    tool(4600, 4500),
+    agyUsage("bad-tool", 5000, 30),
+    end(5100),
+    // Missing tool startedAt invalidates the turn.
+    user(6000),
+    JSON.stringify({ type: "tool", time: 6500 }),
+    agyUsage("missing-start", 7000, 40),
+    end(7100),
+    // Out-of-order (decreasing) usage timestamps invalidate the entire turn.
+    user(7200),
+    agyUsage("rev-1", 7600, 10),
+    agyUsage("rev-2", 7500, 10),
+    agyUsage("rev-3", 7800, 10),
+    end(7900),
+    // End earlier than usage invalidates the entire turn.
+    user(8000),
+    agyUsage("end-early", 8500, 10),
+    end(8400),
+    // End earlier than tool completion invalidates the entire turn.
+    user(8600),
+    tool(8700, 9100),
+    agyUsage("tool-past-end", 8900, 10),
+    end(9000),
+    // Fractional timestamp invalidates turn (safe integers only).
+    user(9200.5),
+    agyUsage("frac-time", 9800, 10),
+    end(9900),
+    // Unsafe integer (> MAX_SAFE_INTEGER) invalidates turn.
+    user(1e20),
+    agyUsage("huge-time", 1e20 + 1000, 10),
+    end(1e20 + 2000),
+    // Valid turn after invalid turns recovers cleanly.
+    user(10000),
+    agyUsage("good", 11500, 50),
+    end(11600),
+  ].join("\n"), false, bad);
+  assert.deepEqual(badCalls.map((c) => [c.id, c.genMs ?? 0]), [
+    ["agy:orphan", 0], ["agy:unended", 0], ["agy:bad-tool", 0], ["agy:missing-start", 0],
+    ["agy:rev-1", 0], ["agy:rev-2", 0], ["agy:rev-3", 0], ["agy:end-early", 0], ["agy:tool-past-end", 0],
+    ["agy:frac-time", 0], ["agy:huge-time", 0],
+    ["agy:good", 1500],
+  ]);
+
+  // 4) > 256 disjoint tools (e.g. 300) stay valid across chunk/restart; 2049 disjoint tools (> AGY_MAX_TOOLS=2048) overflow.
+  const largeValidLines: string[] = [user(0)];
+  for (let i = 0; i < 300; i++) largeValidLines.push(tool(i * 100 + 10, i * 100 + 60));
+  largeValidLines.push(agyUsage("many-300", 40_000, 1000));
+  const singleChunk300 = callsOf("agy", [...largeValidLines, end(40_100)].join("\n"), false, fresh());
+  // 40000 - 300 * 50 = 25000ms.
+  assert.deepEqual(singleChunk300.map((c) => [c.id, c.genMs ?? 0]), [["agy:many-300", 25_000]]);
+  const splitState = fresh();
+  callsOf("agy", largeValidLines.slice(0, 150).join("\n"), false, splitState);
+  const resumed300: CallState = { model: null, codexId: null, speed: speedOf(speedText(splitState.speed!)) };
+  const splitSettled300 = callsOf("agy", [...largeValidLines.slice(150), end(40_100)].join("\n"), false, resumed300);
+  assert.deepEqual(splitSettled300.map((c) => [c.id, c.genMs ?? 0]), [["agy:many-300", 25_000]]);
+
+  const overflow = fresh();
+  const manyTools: string[] = [user(0)];
+  for (let i = 0; i <= AGY_MAX_TOOLS; i++) manyTools.push(tool(i * 10 + 1, i * 10 + 5));
+  manyTools.push(agyUsage("over-tools", 30_000, 10));
+  callsOf("agy", manyTools.join("\n"), false, overflow);
+  assert.equal(speedText(overflow.speed!), "v1:!", "2049 disjoint tools overflow to invalid marker");
+  const afterOverflow = callsOf("agy", [end(30_100), user(40_000), agyUsage("recovered", 41_200, 20), end(41_300)].join("\n"), false, { model: null, codexId: null, speed: speedOf(speedText(overflow.speed!)) });
+  assert.deepEqual(afterOverflow.map((c) => [c.id, c.genMs ?? 0]), [["agy:recovered", 1200]]);
+
+  const manyUsages: string[] = [user(0)];
+  for (let i = 0; i <= AGY_MAX_USAGES; i++) manyUsages.push(agyUsage(`u${i}`, (i + 1) * 100, 1));
+  manyUsages.push(end(100_000));
+  assert.ok(callsOf("agy", manyUsages.join("\n"), false, fresh()).every((c) => (c.genMs ?? 0) === 0), "usage overflow stays untimed");
+
+  // Oversized run id stays untimed even when settled in the same chunk (chunk-split invariant).
+  const hugeId = "x".repeat(AGY_MAX_ID_BYTES + 1);
+  const hugeCalls = callsOf("agy", [user(0), agyUsage(hugeId, 1000, 10), end(1100)].join("\n"), false, fresh());
+  assert.deepEqual(hugeCalls.map((c) => c.genMs ?? 0), [0], "oversized run id stays untimed in single chunk");
+  // Oversized or unsorted/overlapping persisted speed text is rejected cleanly.
+  const oversized = `v1:{"s":0,"u":[["agy:${"a".repeat(AGY_MAX_SPEED_BYTES)}",1,1]],"t":[]}`;
+  assert.equal(speedOf(oversized).agy?.invalid, true, "oversized speed text deserializes as invalid");
+  assert.equal(speedOf('v1:{"s":0,"u":[],"t":[[10,20],[20,30]]}').agy?.invalid, true, "touching tools rejected by O(N) validator");
+  assert.equal(speedOf('v1:{"s":0,"u":[],"t":[[20,30],[10,15]]}').agy?.invalid, true, "unsorted tools rejected by O(N) validator");
 });
 
 test("a turn told at once is the calls it says, with the context it ended with; dsh's window comes before its calls", () => {

@@ -163,9 +163,13 @@ pub fn way_in_button_node(
     .row(Is(true))
     .width_share(Is(1.0))
     .max_width(Is(Some(if bare { sign_in_desk_w } else { sign_in_touch_w })))
-    .height(Is(Some(sign_in_button_h)))
-    // (a pill: as round as it can be, as the old one's radius=Full)
-    .radius(By(fn() { theme().corner(Full) }))
+    // (50 high at least, taller where its words take two lines: at a large size of words a long label, 「Create my own
+    // workspace instead」 at 1.3, is wider than the pill and goes on to a second line in it, never past its end)
+    .min_height(Is(Some(sign_in_button_h)))
+    .padding(Is((sign_in_button_padx, sign_in_button_pady, sign_in_button_padx, sign_in_button_pady)))
+    // (a pill: as round as one line's height, as the old one's radius=Full and its press's ripple (press_look below);
+    // grown to two lines, its corners keep that round, never rounder than its words' corners leave room for)
+    .radius(Is(sign_in_button_h / 2.0))
     .lines_up(Is(Some(Middle)))
     .ground(By(ground))
     |> ignore
@@ -192,8 +196,17 @@ pub fn way_in_button_node(
       )
       |> ignore
     })
+    // (giving way in the row where it is wider than the pill's room, its lines in their middle)
     let words = v.box(fn(w) {
-      w.words(By(label), look=way_in_words(Title, 600, Some(Font), false)).ink(By(ink)) |> ignore
+      // (its look as the theme has it as it is made, as button_node's words' is)
+      let look = @signals.untracked(fn() { way_in_words(Title, 600, Some(Font), true) })
+      w
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .words(By(label), look~)
+      .words_centered(Is(true))
+      .ink(By(ink))
+      |> ignore
     })
     v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     // (a press's ripple from where it went down, the pill sinking under it: SignIn.kt's clip(CircleShape).clickable)

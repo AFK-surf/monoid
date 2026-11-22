@@ -13,7 +13,7 @@
 //   agents go by; none when it has none.
 // Words are in the language the request asks in (`stillfail-lang`, else Accept-Language, else Chinese).
 import type { Viewer } from "../../src/mesh/credential.ts";
-import { sees } from "../../src/store/rows.ts";
+import { sees, seesMissing } from "../../src/store/rows.ts";
 import * as store from "./store.ts";
 import { Refused as HttpError } from "../../src/api/request.ts";
 import * as titles from "../../../client/core-ts/src/titles.ts";
@@ -384,7 +384,7 @@ export function sharedOf(station: Store, sessions: string[] | null, threads: num
 /// opened from each and its opener (`opened`, `openers`), who each is shared with (`shares`), client keys, the Slack
 /// teams' names by connect (`teams`) and the Slack users the viewer is (`selves`). Of the shown sessions' chats, or of
 /// those `threads` and `sessions` alone.
-export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: string[]; threads: number[] } | null = null): Json {
+export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: string[]; threads: number[] } | null = null, ownOnly = false): Json {
   // What a slow one spent where: 5.7 s for one new chat's on a station (2026-11-03), unsaid where.
   const started = performance.now();
   const stages: Record<string, number> = {};
@@ -397,16 +397,57 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
   useNames(station);
   const api = apiOf(station);
   const s = api.store;
+  const seesThread = (id: number): boolean => {
+    const members = store.threadSessions(s, id);
+    if (members.length === 0) return sees(viewer, null);
+    return members.some((m) => {
+      const x = store.getSession(s, m.session);
+      return x !== null && sees(viewer, x.ws);
+    });
+  };
+  const seesPin = (rawKey: string, anchor: string): boolean => {
+    const row = store.getSession(s, anchor) ?? (rawKey !== anchor ? store.getSession(s, rawKey) : null);
+    return row !== null ? sees(viewer, row.ws) : seesMissing(viewer, anchor);
+  };
   const shown = (scope === null ? store.shownSessions(s) : scope.sessions.flatMap((k) => store.getSession(s, k) ?? []).filter((x) => x.archivedAt === null)).filter((x) => sees(viewer, x.ws));
   const keys = shown.map((x) => x.key);
-  const threadIds = [...new Set([...(scope?.threads ?? []), ...store.threadsOfSessions(s, keys)])];
+  const threadIds = [...new Set([...(scope?.threads ?? []).filter(seesThread), ...store.threadsOfSessions(s, keys)])];
   // The chats themselves and who is in them, by their keys alone: their summaries (latest message, unread, people) are
   // the device's already, and read with them, this read took up to 73 s on a station short of memory (2026-11-03).
   const own = threadIds.flatMap((id) => {
     const thread = store.getThread(s, id);
-    return thread !== null && thread.surface === STILLFAIL_SURFACE && thread.hiddenAt === null ? [{ thread, sessions: store.threadSessions(s, id) }] : [];
+    return thread !== null && thread.surface === STILLFAIL_SURFACE && thread.hiddenAt === null ? [{ thread, sessions: ownOnly ? [] : store.threadSessions(s, id) }] : [];
   });
   stage("found");
+  const ids = own.map((t) => t.thread.id);
+  const dismissed = store.dismissed(s, viewer.email, ids);
+  const kept = [...store.keptChats(s, viewer.email, ids)];
+  const pinMap = new Map<string, number>();
+  const pinScope = scope === null ? null : (() => {
+    const out = new Set(keys);
+    if (keys.length > 0) {
+      for (const r of s.db.prepare("SELECT key FROM sessions INDEXED BY sessions_conv_grouped WHERE conv IS NOT NULL AND conv != key AND conv IN (SELECT value FROM json_each(?))").all(JSON.stringify(keys)) as { key: string }[]) {
+        out.add(r.key);
+      }
+    }
+    return [...out];
+  })();
+  for (const [k, at] of store.pins(s, viewer.email, pinScope)) {
+    const row = store.getSession(s, k);
+    const anchor = typeof row?.conv === "string" && row.conv !== "" ? row.conv : k;
+    if (!seesPin(k, anchor)) continue;
+    const prev = pinMap.get(anchor);
+    if (prev === undefined || at < prev) pinMap.set(anchor, at);
+  }
+  const pins = Object.fromEntries(pinMap);
+  const selves = store.slackIdentities(s, viewer.email);
+  // What is the viewer's own of the chat list (client/core-ts/src/chat-row.ts): the cards they let go, where they read.
+  const reads = Object.fromEntries(store.readsOf(s, viewer.email, ids));
+  const hidden = [...store.hiddenChats(s, viewer.email, ids)];
+  const muted = [...store.mutedChats(s, viewer.email, ids)];
+  if (ownOnly) {
+    return { kept, hidden, muted, pins, selves, dismissed: [...dismissed], reads };
+  }
   const listed = new Set(keys);
   const listedOne = (key: string) => {
     if (scope === null) return listed.has(key);
@@ -418,14 +459,12 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
     if (!lastTurns.has(key)) lastTurns.set(key, store.lastTurn(s, key));
     return lastTurns.get(key) ?? null;
   };
-  const dismissed = store.dismissed(s, viewer.email, own.map((t) => t.thread.id));
   const mine = isMine(api, viewer);
   const card: Json = {};
   const need: Json = {};
   const suggested: number[] = [];
   const verdicts: Json = {};
   // The review's marks of these chats, by its two small tables: a chat's last entry read only where one has any.
-  const ids = own.map((t) => t.thread.id);
   const reviewed = ids.length === 0 ? new Set<number>() : new Set<number>(store.reviewedThreads(s, ids));
   // The cards they wait on as kept; a chat with a card from before they were kept, worked out as it was.
   const cards = store.pendingCards(s, ids);
@@ -463,8 +502,6 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
     (answered[a.question.thread] ??= []).push(answeredView(a));
   }
   stage("answered");
-  const kept = [...store.keptChats(s, viewer.email, own.map((t) => t.thread.id))];
-  const pins = Object.fromEntries(store.pins(s, viewer.email, scope === null ? null : keys));
   const named = (o: { station: string | null; session: string; title: string | null; led?: true; active?: true }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}), ...(o.led === true ? { led: true } : {}), ...(o.active === true ? { active: true } : {}) });
   const openers = Object.fromEntries([...store.openers(s, keys)].map(([k, o]) => [k, named(o)]));
   const opened = Object.fromEntries([...store.openedChats(s, keys)].map(([k, list]) => [k, list.map(named)]));
@@ -474,14 +511,9 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
     const name = teamName(s, c.id);
     return name === null ? [] : [[c.id, name]];
   }));
-  const selves = store.slackIdentities(s, viewer.email);
   stage("rest");
   const ms = Math.round(performance.now() - started);
   if (ms >= 1_000) log.warn("readers", "a chat marks read's stages", { ms, chats: own.length, scoped: scope !== null, ...(scope !== null ? { sessions: scope.sessions.length, threads: scope.threads.length } : {}), ...stages });
-  // What is the viewer's own of the chat list (client/core-ts/src/chat-row.ts): the cards they let go, where they read.
-  const reads = Object.fromEntries(store.readsOf(s, viewer.email, ids));
-  const hidden = [...store.hiddenChats(s, viewer.email, ids)];
-  const muted = [...store.mutedChats(s, viewer.email, ids)];
   return { card, need, answered, suggested, verdicts, reviews: api.reviews, kept, hidden, muted, pins, openers, opened, shares, clientKeys, teams, selves, dismissed: [...dismissed], reads };
 }
 
@@ -516,7 +548,20 @@ export function chats(station: Store, viewer: Viewer, archived: boolean, scope: 
     hidden: store.hiddenChats(s, viewer.email, threads),
     muted: store.mutedChats(s, viewer.email, threads),
     // When the viewer pinned each to the top of their list.
-    pins: store.pins(s, viewer.email, scope === null ? null : keys),
+    pins: (() => {
+      const m = new Map<string, number>();
+      const pinScope = scope === null ? null : [...new Set([
+        ...keys,
+        ...rows.flatMap((row) => (Array.isArray(row.agents) ? row.agents.flatMap((a: any) => (typeof a?.key === "string" ? [a.key as string] : [])) : [])),
+      ])];
+      for (const [k, at] of store.pins(s, viewer.email, pinScope)) {
+        const row = store.getSession(s, k);
+        const anchor = typeof row?.conv === "string" && row.conv !== "" ? row.conv : k;
+        const prev = m.get(anchor);
+        if (prev === undefined || at < prev) m.set(anchor, at);
+      }
+      return m;
+    })(),
   };
   return rows.map((row) => chatRow.rowFor(row, own));
 }
@@ -539,8 +584,19 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
       ? (archived ? store.listSessions(s) : store.shownSessions(s))
       : [...scope.sessions].flatMap((key) => store.getSession(s, key) ?? []).sort((a, b) => b.lastActiveAt - a.lastActiveAt)
   );
+  const convOf = (x: store.SessionRow) => (typeof x.conv === "string" && x.conv !== "" ? x.conv : x.key);
+  const groupedAnchors = new Set<string>();
+  for (const x of sessions) {
+    const a = convOf(x);
+    if (a !== x.key) groupedAnchors.add(a);
+  }
   const shown = new Map(sessions.filter((x) => (x.archivedAt !== null) === archived).map((x) => [x.key, x]));
-  const order = sessions.filter((x) => (x.archivedAt !== null) === archived && (scope === null || scope.rows.has(x.key))).map((x) => x.key);
+  if (scope !== null) {
+    for (const x of sessions) {
+      if (scope.rows.has(x.key)) scope.rows.add(convOf(x));
+    }
+  }
+  const order = sessions.filter((x) => (x.archivedAt !== null) === archived && (scope === null || scope.rows.has(x.key) || scope.rows.has(convOf(x)))).map((x) => x.key);
   // In the archive, a chat of its own shows its agents whatever they are doing elsewhere.
   const all = new Map(sessions.map((x) => [x.key, x]));
   // (a chat's own session, its thread's `home`: one put away with it, archived or hidden, whichever of the two says so;
@@ -561,6 +617,10 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
       key, runtime: x.runtime, model: x.model, effort: x.effort, process: s.processes.get(x.key) ?? "cold",
       pending: stat?.pending ?? 0, lastTurn: stat?.lastTurn ? turnSummary(stat.lastTurn) : null,
     };
+    if (v.process === "coldFailed" || v.process === "warmFailed") {
+      v.startFailed = true;
+      v.process = v.process === "warmFailed" ? "warm" : "cold";
+    }
     const watch = watches.get(key);
     if (watch !== undefined) v.watch = watch;
     // (it waits on work it started that is not a watch: client/core-ts chat-stage.ts keeps such a chat at work)
@@ -587,8 +647,10 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
   // in its Slack threads (a row is mine for them).
   const origins = new Map<string, ListedThread>();
   const chatted = new Set<string>();
+  const chattedConvs = new Set<string>();
   const spoke = new Map<string, Json[]>();
   for (const t of threads) {
+    if (t.thread.surface === STILLFAIL_SURFACE && listed(t) && t.thread.home !== null) chattedConvs.add(t.thread.home);
     const writers = t.thread.surface !== STILLFAIL_SURFACE && t.summary !== null ? people(t.summary.people) : [];
     for (const m of t.sessions) {
       if (t.thread.surface === STILLFAIL_SURFACE) {
@@ -638,7 +700,7 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
     const lastMessage = t.summary?.lastMessage ?? null;
     const lastView = names === null || lastMessage === null ? null : messageView(lastMessage, names, api.store);
     const starters = agents.map((a) => creator(all.get(a.key)?.createdBy ?? null));
-    const key = agents[0].key;
+    const key = t.thread.home !== null && all.has(t.thread.home) && groupedAnchors.has(t.thread.home) ? t.thread.home : agents[0].key;
     // with no name of its own, the Slack thread its agent came from names it
     const named = from !== null && origin_ !== null && given(t.thread) === null
       ? { thread: from.thread, firstText: nameText(from), channelName: origin_.channelName }
@@ -674,7 +736,7 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
       creator: creator_,
       people: people_,
     };
-    row.ws = all.get(key)?.ws ?? null;
+    row.ws = (all.get(key) ?? all.get(agents[0].key))?.ws ?? null;
     row.named = named;
     row.mineOf = [creator_, ...people_, ...starters, ...agents.flatMap((a) => spoke.get(a.key) ?? [])].filter((p) => p !== null);
     row.said = said;
@@ -717,38 +779,69 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
     }
     rows.push(row);
   }
-  for (const key of order.filter((k) => !chatted.has(k))) {
+  const convOrder: string[] = [];
+  const convMembers = new Map<string, string[]>();
+  for (const key of order) {
     const x = shown.get(key)!;
-    const from = origins.get(key) ?? null;
+    const anchor = convOf(x);
+    if (chatted.has(key) || chattedConvs.has(anchor)) continue;
+    let ms = convMembers.get(anchor);
+    if (ms === undefined) { convOrder.push(anchor); convMembers.set(anchor, (ms = [])); }
+    if (!ms.includes(key)) ms.push(key);
+  }
+  for (const anchor of convOrder) {
+    const rawMs = convMembers.get(anchor)!;
+    const ms = [...rawMs].sort((a, b) => {
+      const ca = all.get(a)?.createdAt ?? 0;
+      const cb = all.get(b)?.createdAt ?? 0;
+      if (ca !== cb) return ca - cb;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    const x = shown.get(anchor) ?? all.get(anchor) ?? shown.get(ms[0]!)!;
+    const from = origins.get(anchor) ?? ms.map((k) => origins.get(k)).find((o) => o !== undefined) ?? null;
     const origin_ = from === null ? null : origin(from);
     const own = x.title === null ? "" : trim(x.title);
     const named = own !== "" ? { thread: { surface: STILLFAIL_SURFACE, title: own } } : from !== null && origin_ !== null ? { thread: from.thread, firstText: nameText(from), channelName: origin_.channelName } : { thread: { surface: STILLFAIL_SURFACE } };
     const starter = creator(x.createdBy);
+    let lastActiveAt = x.lastActiveAt;
+    const mineOf: Json[] = [];
+    for (const mk of ms) {
+      const mx = shown.get(mk)!;
+      if (mx.lastActiveAt > lastActiveAt) lastActiveAt = mx.lastActiveAt;
+      const st = creator(mx.createdBy);
+      if (st !== null) mineOf.push(st);
+      mineOf.push(...(spoke.get(mk) ?? []));
+    }
+    const peopleArr = ms.length === 1 ? (starter === null ? [] : [starter]) : from !== null && from.summary !== null && from.summary.people.length > 0 ? people(from.summary.people) : starter === null ? [] : [starter];
     const row: Json = {
-      id: key, session: key, thread: null,
+      id: anchor, session: anchor, thread: null,
       title: "",
-      agents: [agent(key)],
+      agents: ms.map(agent),
       last: null,
       unread: false,
-      // No chat yet: mine if the viewer started the session or wrote in its Slack thread.
       mine: false,
-      lastActiveAt: x.lastActiveAt,
+      lastActiveAt,
       connect: x.connect === STILLFAIL_CONNECT ? null : x.connect,
       origin: origin_,
-      // No one has written yet: only who started it.
-      people: starter === null ? [] : [starter],
+      people: peopleArr,
       creator: starter,
     };
     row.ws = x.ws;
     row.named = named;
-    row.mineOf = [starter, ...(spoke.get(key) ?? [])].filter((p) => p !== null);
+    row.mineOf = mineOf.filter((p) => p !== null);
     if (archived) row.archived = archivedOf(x);
     rows.push(row);
   }
   // A job uses only the name and agents; its chat's links and shares are not part of that answer.
   if (titlesOnly) return scope === null ? rows : rows.filter((row) => scope.rows.has(String(row.id)));
   // Of the items read alone (a change's), theirs alone.
-  const ids = scope === null ? null : rows.flatMap((row) => (typeof row.id === "string" && scope.rows.has(row.id) ? [row.id as string] : []));
+  const rowKeys = (row: Json): string[] => {
+    const out: string[] = [];
+    if (typeof row.id === "string") out.push(row.id);
+    if (Array.isArray(row.agents)) for (const a of row.agents) if (typeof a?.key === "string" && !out.includes(a.key)) out.push(a.key);
+    return out;
+  };
+  const ids = scope === null ? null : rows.flatMap((row) => (typeof row.id === "string" && scope.rows.has(row.id) ? rowKeys(row) : []));
   // When a viewer pinned it is theirs (chat-row.ts).
   for (const row of rows) row.pinned = null;
   // The chat an agent opened it from (chat_create), for its way back there: that chat's station (left out: this one),
@@ -760,16 +853,28 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
   const named = (o: { station: string | null; session: string; title: string | null; led?: true; active?: true }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}), ...(o.led === true ? { led: true } : {}), ...(o.active === true ? { active: true } : {}) });
   for (const row of rows) {
     if (typeof row.id !== "string") continue;
-    const o = openers.get(row.id);
-    if (o) row.opener = named(o);
-    const children = opened.get(row.id);
-    if (children) row.opened = children.map(named);
+    const mkeys = rowKeys(row);
+    for (const mk of mkeys) {
+      const o = openers.get(mk);
+      if (o) { row.opener = named(o); break; }
+    }
+    const children: Json[] = [];
+    for (const mk of mkeys) {
+      for (const c of opened.get(mk) ?? []) {
+        const nc = named(c);
+        if (!children.some((x) => JSON.stringify(x) === JSON.stringify(nc))) children.push(nc);
+      }
+    }
+    if (children.length > 0) row.opened = children;
   }
   // Which other workspaces each is shared with, only those that are.
   const shares = store.chatShares(s, ids);
   for (const row of rows) {
-    const shared = typeof row.id === "string" ? shares.get(row.id) : undefined;
-    if (shared) row.xshare = { to: shared.to.map((t) => t.workspace), write: shared.write };
+    if (typeof row.id !== "string") continue;
+    for (const mk of rowKeys(row)) {
+      const shared = shares.get(mk);
+      if (shared) { row.xshare = { to: shared.to.map((t) => t.workspace), write: shared.write }; break; }
+    }
   }
   return scope === null ? rows : rows.filter((row) => scope.rows.has(String(row.id)));
 }

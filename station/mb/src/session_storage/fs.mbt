@@ -9,11 +9,25 @@ pub struct Files {
   held : Map[String, Array[@effect.Deferred[Unit]]]
   /// The path separator (`/`, or `\` on Windows).
   sep : String
+  /// Where the packing is asked (an ask `{op, …}` answered as `@packed.answer` would, its refusal raised): a process
+  /// of its own where the station runs it (sessions/packed-mb.ts), so none of the bytes are on the station's thread;
+  /// None, this program's own `@packed.answer` (a harness, a builder).
+  priv packed_by : (async (Json) -> Json)?
+  /// Where a directory's size is measured (`@footprint.answer`'s ask, answered as it answers): a backgrounded process
+  /// of its own where the station runs it (sessions/footprint.ts); None, this program's own.
+  priv footprint_by : (async (String) -> Json)?
 }
 
 ///|
-pub fn Files::new(host : @host.Host, sep? : String = "/") -> Files {
-  { host, held: {}, sep }
+/// `packed` and `footprint`: what asks the packing and a directory's measure of another process (a station's, which
+/// must not walk or pack on its own thread); left out, this program does both itself.
+pub fn Files::new(
+  host : @host.Host,
+  sep? : String = "/",
+  packed? : async (Json) -> Json,
+  footprint? : async (String) -> Json,
+) -> Files {
+  { host, held: {}, sep, packed_by: packed, footprint_by: footprint }
 }
 
 ///|
@@ -42,12 +56,28 @@ pub fn code_of(e : Error) -> String {
   match n {
     1 => "EPERM"
     2 => "ENOENT"
+    5 if m.contains("Access is denied") => "EACCES"
     13 => "EACCES"
+    16 | 32 | 33 => "EBUSY"
     17 => "EEXIST"
     20 => "ENOTDIR"
     21 => "EISDIR"
     39 | 66 => "ENOTEMPTY"
-    _ => if m.contains("No such file") { "ENOENT" } else { "EIO" }
+    _ =>
+      if m.contains("No such file") {
+        "ENOENT"
+      } else if m.contains("Access is denied") || m.contains("Permission denied") {
+        "EACCES"
+      } else if m.contains("Operation not permitted") {
+        "EPERM"
+      } else if m.contains("resource busy") ||
+        m.contains("Resource busy") ||
+        m.contains("being used by another process") ||
+        m.contains("locked a portion") {
+        "EBUSY"
+      } else {
+        "EIO"
+      }
   }
 }
 
@@ -254,6 +284,54 @@ pub async fn Files::rename(self : Files, from : String, to : String) -> Unit {
 }
 
 ///|
+/// How long a rename waits, attempt by attempt, for a Windows transient file or directory lock (`rename_retrying`).
+let rename_backoff : Array[Int] = [20, 40, 80, 160]
+
+///|
+/// How long moving a whole workspace directory aside waits for a lock to clear (1.55 s in all): on Windows an agent's
+/// process just stopped (`evict`), a scanner or the indexer keeps a handle in it a moment after.
+let workspace_rename_backoff : Array[Int] = [50, 100, 200, 400, 800]
+
+///|
+/// Renames `from` to `to`, waiting briefly on Windows transient file or directory locks (`EPERM`, `EBUSY`, `EACCES`).
+async fn rename_retrying_by(
+  rename : async (String, String) -> Unit,
+  from : String,
+  to : String,
+  backoff? : Array[Int] = rename_backoff,
+  wait? : async (Int) -> Unit = async fn(ms) {
+    // timer: retry backoff for Windows transient file/directory locks on rename
+    @effect.sleep(ms)
+  },
+) -> Unit {
+  for attempt = 0; ; attempt = attempt + 1 {
+    try {
+      rename(from, to)
+      return
+    } catch {
+      e => {
+        let code = code_of(e)
+        if attempt >= backoff.length() || (code != "EPERM" && code != "EBUSY" && code != "EACCES") {
+          raise e
+        }
+        wait(backoff[attempt])
+      }
+    }
+  }
+}
+
+///|
+/// `rename`, waiting out Windows transient file or directory locks (`EPERM`, `EBUSY`, `EACCES`).
+async fn Files::rename_retrying(
+  self : Files,
+  from : String,
+  to : String,
+  backoff? : Array[Int] = rename_backoff,
+) -> Unit {
+  rename_retrying_by(async fn(a, b) { self.rename(a, b) }, from, to, backoff~)
+}
+
+///|
 pub async fn Files::copy(self : Files, from : String, to : String) -> Unit {
   ignore(self.sh("fs.copy", jo([("from", js(from)), ("to", js(to))])))
 }
@@ -327,7 +405,10 @@ pub async fn Files::link(self : Files, target : String, path : String) -> String
 /// What `packedProgram().ask(op, args)` answers: station/packed's, in this program.
 pub async fn Files::packed(self : Files, op : String, args : Array[(String, Json)]) -> Json {
   args.push(("op", js(op)))
-  @packed.answer(self.host, jo(args))
+  match self.packed_by {
+    Some(ask) => ask(jo(args))
+    None => @packed.answer(self.host, jo(args))
+  }
 }
 
 ///|

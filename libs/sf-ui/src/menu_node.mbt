@@ -17,7 +17,8 @@
 /// A menu in `parent` while `open()` (let go of once drawn back, pop_out_ms after: closing, nothing of it pressed):
 /// what `content` holds as it is now (None a line between parts: its rows, what can be chosen of them, the keys' way
 /// along them and what a choice does, all from the same of it, read again as it is told changed, the menu open as it
-/// was, its focus where it was), headed by `title` ("" none), beside what `anchor` makes in its layer (what opened it,
+/// was, its focus where it was), headed by `title` ("" none; none drawn over a heading of its own first, still its
+/// name to a screen reader), beside what `anchor` makes in its layer (what opened it,
 /// where that is drawn), `offset` off it, lined up `along` it; `by_key`: opened by the keyboard (the focus on its first
 /// row); `keep_field`: opened by a finger with a field focused (kit's dropdown_menu: its input method left in place):
 /// the focus left in that field, what is typed still its (View::leaves_typing), every key, the wheel and every press
@@ -146,8 +147,15 @@ fn menu_node_by(
       let t = theme()
       // (how far in it is, from the moment it opened; out from the moment it closed, back into the side it grew from,
       // as panel_node's)
-      let look = @motion.presence_look(layer, @kit.pop_in, exit=@kit.pop_out)
-      let live = fn() { !layer.leaving() }
+      let (enter, exit) = @signals.untracked(fn() { (pop_in_for(layer), pop_out_for(layer)) })
+      let (look, live) = @motion.overlay_presence(layer, enter~, exit~)
+      if modal && layout(layer.window_w()) is Small {
+        let rest_end = Ref(0.0)
+        layer.reacts(fn() { layer.leaving() }, fn(going) {
+          rest_end.val = layer.cause_at() + (if going { @motion.pop_out_ms } else { @motion.pop_ms })
+        })
+        presented_sheet_rest(layer, fn(_) { rest_end.val })
+      }
       // (its words and icons as far in as its look says: its ground first, then they, as pop_in has it)
       let words_in = fn() { look().words }
       // (its rows that can be chosen, by their index: the one with the focus is lit; the keyboard moves the focus along
@@ -190,12 +198,16 @@ fn menu_node_by(
       // (its panel, once made, and what opened it: what a press outside it is outside of, where it is not modal)
       let panel : Ref[@view.View?] = Ref(None)
       let opener : Ref[@view.View?] = Ref(None)
+      // (said before it is modal: the field the focus is in kept as the layer takes what is under it, never cleared)
+      if keep_field {
+        // (what is typed the field's it leaves the focus in: kit's dropdown_menu's initial focus none)
+        layer.leaves_typing() |> ignore
+      }
       layer
       .over(Is(true))
-      // (modal while open: closing, what is under it its own again as it begins to go)
+      // (modal while open: closing, what is under it its own again as it begins to go;
+      // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
       .modal(By(fn() { modal && live() }))
-      // (going, nothing of it read out, as panel_node's)
-      .hides(By(fn() { layer.leaving() }))
       .held_back_goes_on()
       |> ignore
       if !modal {
@@ -220,10 +232,6 @@ fn menu_node_by(
             cancel()
           }
         })
-      }
-      if keep_field {
-        // (what is typed the field's it leaves the focus in: kit's dropdown_menu's initial focus none)
-        layer.leaves_typing() |> ignore
       }
       // (not modal: the key back toward what opened it)
       let back = match side {
@@ -311,7 +319,7 @@ fn menu_node_by(
           match (if k.mods == 0 || k.mods == @ui.mod_shift_key { typed_char(k.code) } else { None }) {
             Some(ch) => {
               // (a second's worth together: the same letter again moves on to the next it starts)
-              let s = if k.at < typed_at.val + @kit.typeahead_ms { typed.val + ch.to_string() } else { ch.to_string() }
+              let s = if k.at < typed_at.val + @headless.typeahead_ms { typed.val + ch.to_string() } else { ch.to_string() }
               typed.val = s
               typed_at.val = k.at
               match typeahead_to(items, s, now) {
@@ -385,8 +393,7 @@ fn menu_node_by(
           roving=true,
           in_node=true,
           fn(p, menu) {
-            p
-            .beside(at.id(), side~, along=view_along(along), offset~, padding=8.0)
+            anchored_popover_shell(p, at.id(), look, side~, along~, offset~, holds_side=false)
             .min_width(Is(Some(min_w)))
             .max_width(By(fn() { Some(over_room(layer).0 - 16.0) }))
             .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
@@ -396,24 +403,20 @@ fn menu_node_by(
                 (panel_pad - reach, if first_row() { panel_pad - reach } else { panel_pad }, panel_pad - reach, if last_row() { panel_pad - reach } else { panel_pad })
               }),
             )
-            .radius(Is(r_menu))
-            .ground(By(fn() { panel_ground() }))
-            .edge(By(fn() { (1.0, panel_edge()) }))
-            .shadow(By(fn() { float_shadow() }))
-            .clips(Is(true))
-            .alpha(By(fn() { look().alpha }))
-            .scale(By(fn() { look().sx }), about=FromBeside)
-            // (a press on it its own: on what of it takes none (its padding, a heading, a line, a row not to be chosen),
-            // nothing, not outside it)
-            |> ground_node
             |> ignore
             p.box(fn(body) {
               // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
               // grounds, checks, marks and words, its headings and lines, the same, Look's `words` as a surface's are)
-              body.alpha(By(words_in)) |> ignore
+              let side = panel_pad - reach
+              body.margin(Is((-side, 0.0, -side, 0.0))).alpha(By(words_in)) |> ignore
               body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+                b.padding(Is((side, 0.0, side, 0.0))) |> ignore
+                // (its title over its rows, in a heading's look: none over a heading of its own first, two headings
+                // one over the other reading as one more of them; a sheet of it still titled by it, sheet_shows_node's)
                 if title != "" {
-                  menu_heading_node(b, fn() { title }, past, reach)
+                  b.show(fn() { !(content().get(0) is Some(Some(i)) && i.heading) }, fn(h) {
+                    menu_heading_node(h, fn() { title }, past, reach)
+                  })
                 }
                 // (each of what it holds by its place and its kind: one changing what it is (a line, a heading, a row) made
                 // anew there; a row's words, icon, check and whether it can be chosen read again as they change, the row the
@@ -458,7 +461,7 @@ fn menu_node_by(
       })
       |> ignore
     },
-    leave=@kit.pop_out_ms,
+    leave=@motion.pop_out_ms,
   )
 }
 

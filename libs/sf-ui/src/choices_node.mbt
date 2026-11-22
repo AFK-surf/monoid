@@ -79,34 +79,43 @@ pub fn choices_node(
       }
       hit.box(fn(w) {
         style_node(w, fn() { choice_words }, in_row=true)
-        words_node(w, title, fn() { choice_title }) |> ignore
+        // (title and radio share the first line so a description below spans the full width without narrowing for the radio)
+        w.box(fn(head) {
+          style_node(head, fn() { choice_head })
+          words_node(head, title, fn() { choice_title })
+          .grow(Is(1.0))
+          .shrink(Is(1.0))
+          .basis(Is(Some(0.0)))
+          .min_width(Is(Some(0.0)))
+          |> ignore
+          // (its radio at its end, on its title's line, clear of the card's round corner: a circle by a corner's arc
+          // stands concentric with it or clear of it, and this one's corner is too square for a circle 14 in to follow it)
+          on_first_line(head, fn(m) {
+            m.box(fn(r) {
+              style_node(r, fn() { if on() { radio_mark_on } else { radio_mark } })
+              r.margin(Is((0.0, 0.0, choice_mark_clear(in_panel), 0.0))) |> ignore
+              r.show(on, at_once=true, fn(dot) { style_node(dot, fn() { radio_dot }) })
+            })
+            |> ignore
+          })
+        })
+        |> ignore
         match note_made {
           Some(f) => f(w)
           None => w.show(fn() { note() != "" }, at_once=true, fn(n) { words_node(n, note, fn() { choice_note }) |> ignore })
         }
       })
       |> ignore
-      // (its radio at its end, on its title's line)
-      on_first_line(hit, fn(m) {
-        m.box(fn(r) {
-          style_node(r, fn() { if on() { radio_mark_on } else { radio_mark } })
-          r.show(on, at_once=true, fn(d) { d.box(fn(dot) { style_node(dot, fn() { radio_dot }) }) |> ignore })
-        })
-        |> ignore
-      })
     })
     |> ignore
     // (parts.css.ts choiceExtra: under its words while it is chosen; narrow, its rows a step of the ladder in)
     match extra {
       Some(f) =>
-        card.show(on, fn(s) {
-          s.box(fn(o) {
-            style_node(o, fn() { if narrow { choice_extra_rows } else { choice_extra } })
-            o.box(fn(i) {
-              style_node(i, fn() { if narrow { choice_extra_rows_in } else { choice_extra_in } })
-              f(i)
-            })
-            |> ignore
+        card.show(on, fn(o) {
+          style_node(o, fn() { if narrow { choice_extra_rows } else { choice_extra } })
+          o.box(fn(i) {
+            style_node(i, fn() { if narrow { choice_extra_rows_in } else { choice_extra_in } })
+            f(i)
           })
           |> ignore
         })
@@ -119,7 +128,7 @@ pub fn choices_node(
       b,
       label,
       value,
-      fn(v) { if v != @signals.untracked(value) { choose(v) } },
+      fn(v) { if v != @signals.untracked(value) { @view.transition(within=b.transitions_root(), fn() { choose(v) }) } },
       axis=Vertical,
       fn(g, rg) {
         style_node(g, fn() { choices_list.then(@ui.style(gap=room(choice_gap))) })
@@ -150,5 +159,22 @@ pub fn choices_node(
 let choices_list : @ui.Style = @ui.css("w=Full")
 
 ///|
+/// A choice card's title beside its radio mark on the first line.
+// kept across runs: a value (no field of it changes)
+let choice_head : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
+
+///|
 /// How far a disabled choice is seen (choice_card's `disabled{opacity=O55}`).
 let choice_disabled_alpha : Double = 0.55
+
+///|
+/// How much further in than its words a choice's radio stands from the card's end, so that it stands as far in as the
+/// card's corner is round (clear of its arc): a card's corner less a card's padding in a panel, a row's corner less
+/// choice_hit's 14 elsewhere.
+fn choice_mark_clear(in_panel : Bool) -> Double {
+  if in_panel {
+    dmax(0.0, card_corner - card_pad)
+  } else {
+    dmax(0.0, row_corner - @ui.Space::px(S3_5))
+  }
+}

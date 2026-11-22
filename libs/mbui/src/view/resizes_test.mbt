@@ -320,3 +320,162 @@ test "resizes: a look of what it holds given, where it is drawn, how tall it sho
     assert_true(got[1].1 > 40.0 && got[1].1 < 100.0, msg="at \{rate} a second: on its way")
   }
 }
+
+///|
+test "resizes(uncut=true): does not enable clips_self during animation and come_share_of matches across frame rates" {
+  let looks = rc_looks(rc_at + 600.0)
+  let base : Array[Double] = []
+  for rate in rc_rates {
+    let h = @signals.signal(0.0, same=fn(a, b) { a == b })
+    let room_ref : Ref[@view.View?] = Ref(None)
+    let item_ref : Ref[@view.View?] = Ref(None)
+    let tree = @view.Tree::new(fn(root) {
+      root.box(fn(col) {
+        col.width(Is(Some(300.0))) |> ignore
+        col.box(fn(room) {
+          room_ref.val = Some(room)
+          room.shrink(Is(0.0)) |> ignore
+          room.box(fn(item) {
+            item_ref.val = Some(item)
+            item.height(By(fn() { Some(h.get()) })).shrink(Is(0.0)).words(Is("项")) |> ignore
+            item.scale(By(fn() { room.come_share_of(item) })) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 844.0) |> ignore
+    let room = room_ref.val.unwrap()
+    let item = item_ref.val.unwrap()
+    let got = rc_walk(tree, [(rc_at, fn() {
+      room.resizes(uncut=true) |> ignore
+      h.set(80.0)
+    })], looks, rate, fn() {
+      let room_d = tree.drawn_of(room.id()).unwrap()
+      (room_d.clips_self, item.drawn_scale())
+    })
+    assert_true(got.iter().all(fn(g) { !g.0 }), msg="at \{rate} a second: uncut=true must not clip self during animation")
+    let scales = got.map(fn(g) { g.1 })
+    assert_true(scales[1] > 0.0 && scales[1] < 1.0, msg="at \{rate} a second: come_share_of mid-flight \{scales[1]}")
+    assert_true((scales[scales.length() - 1] - 1.0).abs() < 1.0e-6, msg="at \{rate} a second: settled at 1.0")
+    if base.is_empty() {
+      base.append(scales)
+    } else {
+      assert_true(rc_near(scales, base), msg="at \{rate} a second: \{Repr(scales)} vs \{Repr(base)}")
+    }
+  }
+}
+
+///|
+test "resizes: not blocked when a descendant has shared(stays=true)" {
+  let looks = rc_looks(rc_at + 600.0)
+  let h = @signals.signal(40.0, same=fn(a, b) { a == b })
+  let room_ref : Ref[@view.View?] = Ref(None)
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(col) {
+      col.width(Is(Some(300.0))) |> ignore
+      col.box(fn(room) {
+        room_ref.val = Some(room)
+        room.height(By(fn() { Some(h.get()) })).shrink(Is(0.0)) |> ignore
+        room.box(fn(tile) {
+          tile.width(Is(Some(40.0))).height(Is(Some(40.0))) |> ignore
+          tile.shared(Is("stay-anchor"), straight, stays=true) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      col.box(fn(b) { b.height(Is(Some(20.0))).shrink(Is(0.0)).words(Is("下")) |> ignore }) |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0) |> ignore
+  let got = rc_walk(tree, [(rc_at, fn() {
+    room_ref.val.unwrap().resizes(uncut=true) |> ignore
+    h.set(100.0)
+  })], looks, 60.0, fn() { rz_under(tree) })
+  assert_true(got[1] > 40.0 && got[1] < 100.0, msg="stays=true descendant must not block resizes: \{Repr(got)}")
+}
+
+///|
+test "each(pop_leave=true): removing the last item still runs pop_leave when slot is not leaving" {
+  let keys = @signals.signal([1], same=fn(a, b) { a == b })
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(col) {
+      col.width(Is(Some(300.0))) |> ignore
+      col.each(leave=200.0, pop_leave=true, fn() { keys.get() }, fn(k) { k }, fn(item, k) {
+        item.height(Is(Some(40.0))).shrink(Is(0.0)).words(Is("项\{k.get()}")) |> ignore
+      })
+    })
+    |> ignore
+  })
+  tree.at(0.0)
+  tree.frame(390.0, 844.0) |> ignore
+  tree.event(100.0, fn() { keys.set([]) })
+  tree.at(150.0)
+  tree.frame(390.0, 844.0) |> ignore
+  let mid = tree.drawn().filter(fn(d) { d.words == "项1" })
+  assert_eq(mid.length(), 1, msg="last item should remain fading via pop_leave at 50ms")
+  assert_true(mid[0].alpha > 0.0 && mid[0].alpha < 1.0, msg="last item should fade via pop_leave: alpha=\{mid[0].alpha}")
+  tree.at(350.0)
+  tree.frame(390.0, 844.0) |> ignore
+  let after = tree.drawn().filter(fn(d) { d.words == "项1" })
+  assert_eq(after.length(), 0, msg="last item should be gone after leave_ms")
+}
+
+///|
+test "come_share_of: with trailing bottom padding (r > 1), smoothly caps to 1.0 at whole without overflowing shown_h, identical across frame rates" {
+  let looks = rc_looks(rc_at + 600.0)
+  let base : Array[Double] = []
+  for rate in rc_rates {
+    let on = @signals.signal(false, same=fn(a, b) { a == b })
+    let room_ref : Ref[@view.View?] = Ref(None)
+    let item_ref : Ref[@view.View?] = Ref(None)
+    let tree = @view.Tree::new(fn(root) {
+      root.box(fn(col) {
+        col.width(Is(Some(300.0))) |> ignore
+        col.box(fn(room) {
+          room_ref.val = Some(room)
+          room.shrink(Is(0.0)) |> ignore
+          room.box(fn(inner) {
+            inner
+            .padding(By(fn() { if on.get() { (0.0, 0.0, 0.0, 10.0) } else { (0.0, 0.0, 0.0, 0.0) } }))
+            |> ignore
+            inner.box(fn(item) {
+              item_ref.val = Some(item)
+              item.height(By(fn() { if on.get() { Some(56.0) } else { Some(0.0) } })).shrink(Is(0.0)).words(Is("卡")) |> ignore
+              item.scale(By(fn() { room.come_share_of(item) })) |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 844.0) |> ignore
+    let room = room_ref.val.unwrap()
+    let item = item_ref.val.unwrap()
+    let got = rc_walk(tree, [(rc_at, fn() {
+      room.resizes(uncut=true) |> ignore
+      on.set(true)
+    })], looks, rate, fn() {
+      let rh = room.rect().3
+      let sc = item.drawn_scale()
+      (sc, rh)
+    })
+    let scales = got.map(fn(g) { g.0 })
+    // Never overflows shown height
+    assert_true(got.iter().all(fn(g) { g.0 * 56.0 <= g.1 + 0.01 }), msg="at \{rate} a second: scale*56 overflowed shown_h: \{Repr(got)}")
+    // Smoothly lands at 1.0
+    assert_true(scales[1] > 0.0 && scales[1] < 1.0, msg="at \{rate} a second: mid-flight scale \{scales[1]}")
+    assert_true((scales[scales.length() - 1] - 1.0).abs() < 1.0e-6, msg="at \{rate} a second: settled at 1.0")
+    if base.is_empty() {
+      base.append(scales)
+    } else {
+      assert_true(rc_near(scales, base), msg="at \{rate} a second: \{Repr(scales)} vs \{Repr(base)}")
+    }
+  }
+}

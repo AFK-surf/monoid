@@ -12,8 +12,8 @@ import { apnsKeys, apnsPushAny } from "./apns";
 import { fcmPushAny, serviceAccounts } from "./fcm";
 import { langOf, requestLang, type Lang } from "./i18n.ts";
 import { line, noticeBodyFor, shown, showsOf, type Shows } from "./noticeText";
-import { stationSender } from "./tracing";
-import { validAuthSecret, validPoint, webPush, type Outcome, type Vapid } from "./webpush";
+import { cloudLogToTelemetry, stationSender } from "./tracing";
+import { errorText, validAuthSecret, validPoint, webPush, type Outcome, type PushFailure, type Vapid } from "./webpush";
 
 const MAX_BYTES = 256 * 1024;
 /** Notices one request may carry, people one notice may name, and pushes one request may make in all. */
@@ -89,6 +89,7 @@ export async function registration(request: Request, env: Env, sub: string, sid:
 
 interface Notice {
   to: string[];
+  audience?: "managers";
   kind: string;
   session: string;
   title: string;
@@ -104,12 +105,14 @@ function notice(value: unknown): Notice | null {
   if (!value || typeof value !== "object") return null;
   const n = value as Record<string, unknown>;
   const to = Array.isArray(n.to) ? n.to.filter((e): e is string => typeof e === "string" && e.includes("@") && e.length <= 320).slice(0, MAX_TO) : [];
-  if (!to.length || typeof n.kind !== "string" || !/^[a-z_]{1,32}$/.test(n.kind)) return null;
-  if (typeof n.session !== "string" || !n.session || n.session.length > 512) return null;
+  const audience = n.audience === "managers" ? "managers" : undefined;
+  if ((!to.length && audience !== "managers") || typeof n.kind !== "string" || !/^[a-z_]{1,32}$/.test(n.kind)) return null;
+  const allowEmptySession = audience === "managers" && n.kind === "billed";
+  if (typeof n.session !== "string" || (!allowEmptySession && !n.session) || n.session.length > 512) return null;
   if (typeof n.text !== "string" || (n.title !== undefined && typeof n.title !== "string") || (n.by !== undefined && n.by !== null && typeof n.by !== "string")) return null;
   const at = typeof n.at === "number" && Number.isFinite(n.at) ? Math.floor(n.at) : clock.now();
   const seq = typeof n.seq === "number" && Number.isSafeInteger(n.seq) && n.seq >= 0 ? n.seq : undefined;
-  return { to, kind: n.kind, session: n.session, title: (n.title as string | undefined) ?? "", by: (n.by as string | null | undefined) || undefined, text: n.text, at, seq };
+  return { to, ...(audience ? { audience } : {}), kind: n.kind, session: n.session, title: (n.title as string | undefined) ?? "", by: (n.by as string | null | undefined) || undefined, text: n.text, at, seq };
 }
 
 /** POST /v1/stations/notify `{ notices, workspace? }`: a station's notices, pushed to the members they name → `{ sent }`. */
@@ -138,32 +141,59 @@ export async function stationNotify(request: Request, env: Env): Promise<Respons
     return reply({ error: "invalid_request" }, 400);
   }
   const dir = env.DIRECTORY.getByName("primary");
-  const targets = await dir.pushTargets(station, notices.flatMap((n) => n.to), workspace);
+  const includeManagers = notices.some((n) => n.audience === "managers");
+  const targets = await dir.pushTargets(station, notices.flatMap((n) => n.to), workspace, includeManagers);
   // Enrolled (stationSender says so), but not in the workspace it named.
   if (!targets) return workspace ? reply({ error: "not_in_workspace" }, 403) : reply({ error: "invalid_signature" }, 401);
   const keys = vapid(env);
   const fcm = serviceAccounts(env.FCM_SERVICE_ACCOUNT, env.FCM_SERVICE_ACCOUNT_MORE);
   const apns = apnsKeys(env.APNS_KEY, env.APNS_KEY_MORE);
   const pushes: Promise<{ device: PushRegistration; outcome: Outcome; app?: string }>[] = [];
+  // (the push services' failures worth the operator's eye, by service and status or error: one line each, PushFailure)
+  const failures = new Map<string, { provider: string; failure: PushFailure; count: number }>();
+  const failedBy = (provider: string) => (failure: PushFailure) => {
+    const key = `${provider} ${failure.status ?? ""} ${failure.error ?? ""}`;
+    const was = failures.get(key);
+    if (was) was.count++;
+    else failures.set(key, { provider, failure, count: 1 });
+  };
   for (const n of notices) {
     const base = `${targets.workspace}/${station}`;
     // In each device's language, saying what was said only where it shows that.
-    const payload = (lang: Lang, shows: Shows | null): Record<string, string> => ({
-      type: "notice",
-      kind: n.kind,
-      title: line(n.title),
-      body: noticeBodyFor(shows, n.kind, n.text, n.by, lang),
-      tag: `${base}/${n.session}`,
-      url: `/o/${base}/${encodeURIComponent(n.session)}${n.seq === undefined ? "" : `?message=${n.seq}`}`,
-      workspace: targets.workspace,
-      station,
-      session: n.session,
-      at: String(n.at),
-      ...(n.seq === undefined ? {} : { seq: String(n.seq) }),
-    });
+    const payload = (lang: Lang, shows: Shows | null): Record<string, string> =>
+      n.kind === "billed"
+        ? {
+            type: "notice",
+            kind: n.kind,
+            title: line(n.title),
+            body: noticeBodyFor(shows, n.kind, n.text, n.by, lang),
+            tag: `${base}/${n.session || "billed"}`,
+            url: `/w/${targets.workspace}/s/${station}/profiles`,
+            workspace: targets.workspace,
+            station,
+            at: String(n.at),
+          }
+        : {
+            type: "notice",
+            kind: n.kind,
+            title: line(n.title),
+            body: noticeBodyFor(shows, n.kind, n.text, n.by, lang),
+            tag: `${base}/${n.session}`,
+            url: `/o/${base}/${encodeURIComponent(n.session)}${n.seq === undefined ? "" : `?message=${n.seq}`}`,
+            workspace: targets.workspace,
+            station,
+            session: n.session,
+            at: String(n.at),
+            ...(n.seq === undefined ? {} : { seq: String(n.seq) }),
+          };
     // A device signed in with several of the people named gets it once.
     const devices = new Map<string, PushRegistration>();
-    for (const email of n.to) for (const device of targets.devices[email.toLowerCase()] ?? []) devices.set(device.kind === "web" ? `web ${device.endpoint}` : `${device.kind} ${device.token}`, device);
+    const addDevice = (device: PushRegistration) => devices.set(device.kind === "web" ? `web ${device.endpoint}` : `${device.kind} ${device.token}`, device);
+    if (n.audience === "managers") {
+      for (const device of targets.managers ?? []) addDevice(device);
+    } else {
+      for (const email of n.to) for (const device of targets.devices[email.toLowerCase()] ?? []) addDevice(device);
+    }
     for (const device of devices.values()) {
       if (pushes.length >= MAX_PUSHES) break;
       // (a kind it does not show, or of a workspace it turned off, is not sent)
@@ -171,17 +201,20 @@ export async function stationNotify(request: Request, env: Env): Promise<Respons
       const said = payload(device.lang, device.shows);
       // (an app's push: by whichever of its product's credentials takes its token, the one that took it last first)
       const push: Promise<{ outcome: Outcome; app?: string }> | null =
-        device.kind === "web" ? (keys ? webPush(keys, device, JSON.stringify(said), said.tag!).then((outcome) => ({ outcome })) : null)
-        : device.kind === "apns" ? (apns.length ? apnsPushAny(apns, device.token, device.sandbox, device.app, said) : null)
-        : fcm.length ? fcmPushAny(fcm, device.token, device.app, said) : null;
+        device.kind === "web" ? (keys ? webPush(keys, device, JSON.stringify(said), said.tag!, undefined, failedBy("webpush")).then((outcome) => ({ outcome })) : null)
+        : device.kind === "apns" ? (apns.length ? apnsPushAny(apns, device.token, device.sandbox, device.app, said, failedBy("apns")) : null)
+        : fcm.length ? fcmPushAny(fcm, device.token, device.app, said, failedBy("fcm")) : null;
       if (!push) continue;
       pushes.push(push.then(({ outcome, app }) => ({ device, outcome, app }), (error) => {
         console.warn(`push: ${error}`);
+        failedBy(device.kind === "web" ? "webpush" : device.kind)({ error: errorText(error) });
         return { device, outcome: "failed" as const };
       }));
     }
   }
   const results = await Promise.all(pushes);
+  await Promise.all([...failures.values()].map(({ provider, failure, count }) =>
+    cloudLogToTelemetry(env, "WARN", "push", "push delivery failed", { provider, status: failure.status, error: failure.error, count })));
   const gone = results.filter((r) => r.outcome === "gone").map((r) => r.device);
   if (gone.length) await dir.dropPush(gone);
   // What took each app's token, where it is not the one kept: tried first next time.

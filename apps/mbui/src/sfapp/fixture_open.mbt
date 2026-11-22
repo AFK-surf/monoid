@@ -134,17 +134,20 @@ pub fn open_fixture(mode : String) -> Unit {
       app.nav.push(History(r, "s-c1", None))
       if mode == "history-details" {
         history_tab.set(1)
+        @sfdesk.set_history_shut(false)
       } else {
         @sfpages.history_open(r.station, r.session, ["h2/group", "h2/group/e3", "h4/group", "h4/group/e7"])
       }
     }
     // the wide frame's (wide_panel.mbt): the chat's "…" open, its services' popover, what is opened beside it
     "chat-letters-pop" | "chat-opener-pop" | "chat-opened-pop" => @sfdesk.open_info_pop()
+    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" =>
+      @sfdesk.open_subchats_pop()
     "chat-jobs-pop" => {
       @sfdesk.open_jobs_pop()
       @sfdesk.open_job_pop("j-ci")
     }
-    "home-attention" | "home-shared-bell" => @sfdesk.open_attention()
+    "home-attention" | "home-attention-login" | "home-shared-bell" => @sfdesk.open_attention()
     // (what is beside it: the made-up core keeps it so, fixture.mbt fixture_chat_tabs)
     "chat-letters-side" => {
       @sfdesk.letters_to_list(r)
@@ -203,8 +206,10 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
       open_letters(src, r, 7.0)
       @sfdesk.letters_open_at(r, @sffixture.fix_letters_link)
     }
-    "chat-agent" | "chat-agent-unsaid" | "chat-agent-screens" => open_agent(src, r, "s-c1")
+    "chat-agent" | "chat-agent-working" | "chat-agent-unsaid" | "chat-agent-context" | "chat-agent-compacted" | "chat-agent-screens" => open_agent(src, r, "s-c1")
     "chat-jobs" => open_chat_jobs(src, r)
+    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" =>
+      open_subchats(src, r)
     "chat-job" => {
       dui.job_tab = 0
       open_job(src, r, "j-ci")
@@ -348,6 +353,9 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   if mode == "home-update-offered" || mode == "home-station-updates-app" || mode == "station-updates-app" {
     @sffixture.fixture_update("0.1.5640")
   }
+  if mode == "home-stale-build" {
+    @sffixture.fixture_updates()
+  }
   if mode == "home-update-coming" {
     @sffixture.fixture_update("0.1.5640")
     @sffixture.fixture_update_goes("0.1.5640", "downloading", percent=40)
@@ -410,6 +418,16 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" || mode == "lock-restart-security" || mode == "lock-rebound-security" || mode == "lock-replaced-security" {
     open_setting(@settings.fixture_page("settings-security"))
   }
+  // the board with its first card's chat (整理发布清单) open beside it, at rest, its edge untouched (board-side:
+  // 大屏's and 中屏's where there is the room, the chat's page over the board where there is none)
+  if mode == "board-side" {
+    @sfbase.board_pick.set(Some(rich))
+  }
+  // the board with its new draft composer open
+  if mode == "board-add" {
+    @sfbase.board_lane.set("draft")
+    @sfbase.board_adding.set(true)
+  }
   // ⌘/'s shortcuts at a glance
   if mode == "keys-dialog" {
     @sfdesk.wide.keys_open.set(true)
@@ -427,13 +445,8 @@ pub fn open_fixture_mode(mode : String) -> Unit {
 /// The run before let go of first: its window's tree, still there till the next Tester is made, followed what this one
 /// opens (⌘/'s `keys_open`) and put up a panel of its own in this run's presenters, closed (open said false) as that
 /// tree was let go (switches_still_wbtest's keys-dialog, on 中屏 and 大屏 after 小屏; run_begins_wbtest).
-pub fn fixture_app(mode : String, chat_nodes? : Bool = false) -> Source {
+pub fn fixture_app(mode : String) -> Source {
   new_run()
-  // (the chat's page made as nodes, as one who turned 实验性功能's 试用新对话页 on has it: said before the mode opens a chat,
-  // which is made as the choice stands then)
-  if chat_nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
   let src = @sffixture.fixture(mode)
   open_fixture_over(mode, src)
   src
@@ -489,7 +502,7 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   // (what is wrong with it under its field)
   // the stations' newer releases waiting for this person: their key over Home (home-station-updates); their dialog open
   // over it (station-updates)
-  if mode == "station-updates" || mode == "station-updates-app" {
+  if mode == "station-updates" || mode == "station-updates-app" || mode == "station-updates-stale" {
     @sfpages.station_updates_dialog(src, settings_core(src, { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" }), "ws1")
   }
   if mode == "new-workspace" {
@@ -619,12 +632,16 @@ pub fn open_mode(mode : String) -> Unit {
   if mode == "newchat-preset-theirs" || mode == "newchat-preset-theirs-long" {
     @sffixture.new_fix.preset = "p-ops"
   }
+  if mode == "newchat-preset-many" {
+    @sffixture.new_fix.presets.clear()
+    @sffixture.new_fix.presets.push_iter(@sffixture.fix_preset_many().iter())
+    @sffixture.new_fix.preset = "p-arch"
+  }
   // (as long a name as a person gives one: its 复制「X」为我的预设 cut as 编辑「X」 is)
   if mode == "newchat-preset-theirs-long" {
     @sffixture.fix_other_rename("p-ops", "线上排障：告警、回滚与值班交接的完整手册")
   }
   if mode.has_prefix("newchat") {
-    app.nav.rise(NewChat)
     // (newchat-station-models-many: more of this station's than the panel shows without its search)
     if mode == "newchat-station-models" || mode == "newchat-station-empty" || mode == "newchat-station-models-many" {
       @sffixture.new_fix.station_models = true
@@ -644,7 +661,7 @@ pub fn open_mode(mode : String) -> Unit {
       n.d_runtime = n.runtime
     }
     if mode == "newchat-tui-model" { @sffixture.new_fix.claude_mode = true }
-    if mode == "newchat-ultrafast-model" {
+    if mode == "newchat-ultrafast-model" || mode.has_prefix("newchat-speed-") {
       let n = @sffixture.new_fix
       n.crowded = true
       n.ultrafast = true
@@ -652,6 +669,8 @@ pub fn open_mode(mode : String) -> Unit {
       n.runtime = "codex"
       n.d_model = n.model
       n.d_runtime = n.runtime
+      if mode == "newchat-speed-fast" { n.speed = "fast" }
+      if mode == "newchat-speed-ultrafast" { n.speed = "ultrafast" }
     }
     // (with models starred: under 喜欢 in its model's panel)
     if mode.has_suffix("-liked") {
@@ -673,7 +692,7 @@ pub fn open_mode(mode : String) -> Unit {
     }
     match mode {
       "newchat-station" => @sfpages.new_chat_ask("station")
-      "newchat-preset" => @sfpages.new_chat_ask("preset")
+      "newchat-preset" | "newchat-preset-many" => @sfpages.new_chat_ask("preset")
       "newchat-preset-new" => @sfpages.new_chat_ask("preset-new")
       "newchat-preset-edit" => @sfpages.new_chat_ask("preset-edit")
       "newchat-preset-add" => @sfpages.new_chat_ask("preset-add")
@@ -736,6 +755,9 @@ pub fn open_mode(mode : String) -> Unit {
         @sfpages.new_chat_ask("model")
       _ => ()
     }
+    // (risen once what it is over is said: the core's newChat it asks as it comes on top (page_opens_node) the
+    // mode's, a page made once as nodes reading it then)
+    app.nav.rise(NewChat)
   } else if mode == "home-bars" {
     bar.open_panel(true, at=0.0)
   } else if mode == "place" {
@@ -947,4 +969,104 @@ fn open_share_fixture(mode : String) -> Unit {
     }
     _ => ()
   }
+}
+
+///|
+/// The screens: every mode sffix opens (fixture_open.mbt open_fixture_mode, settings/fixture.mbt fixture_page).
+/// Built on demand so shipping builds strip it out completely with zero startup cost.
+pub fn fixture_corner_modes() -> Array[String] {
+  let modes = [
+    // (webdemo: the web's demo workspace, its chats' rows with people's faces, which chat's fixture has none)
+    "webdemo", "home", "board", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu", "landing", "landing-invited", "blocked", "place",
+    "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
+    "chat-agent-working", "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose", "chat-download", "chat-failed", "chat-feedback", "chat-image-coming",
+    "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice", "chat-history-side",
+    // (its agent at work: what the history's head shows only then, #6246's stop among its keys)
+    "chat-history-side-working", "chat-info", "chat-info-bare", "chat-job",
+    "chat-jobs", "chat-jobs-pop", "chat-jobs-side", "chat-letters", "chat-letters-info", "chat-letters-open",
+    "chat-letters-pop", "chat-letters-side", "chat-things", "chat-things-side", "chat-info-pulls", "chat-link-menu", "chat-loading", "chat-login", "chat-long", "chat-md",
+    "chat-model-pop", "chat-model-accounts", "chat-need", "chat-peek", "chat-pick", "chat-preview-apk", "chat-preview-audio",
+    "chat-preview-code", "chat-preview-csv", "chat-preview-html", "chat-preview-image", "chat-preview-md",
+    "chat-preview-none", "chat-preview-pdf", "chat-preview-step", "chat-preview-swipe", "chat-preview-video",
+    "chat-publish", "chat-quote", "chat-screens", "chat-sending", "chat-service-side", "chat-station-file", "chat-station-files",
+    "chat-station-ref", "chat-station-sheet", "chat-tabs-side", "chat-view-side", "chat-view-side-image", "chat-view-side-video", "chat-view-side-audio", "chat-update", "chat-vault-typed", "chat-viz", "chat-working", "chat-rig",
+    // (对话目录: the long chat away from its end, its rail or round button; its outline open; words found in it)
+    "chat-outline-away", "chat-outline", "chat-outline-find", "archived",
+    "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload",
+    "files", "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split", "files-transfers",
+    "files-tree", "place-stations", "place-profiles", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
+    "newchat-model", "newchat-profiles", "newchat-reading", "newchat-station",
+    "newchat-station-models", "newchat-station-empty",
+    // (a preset's dialog and its steps further in: 添加目录, the folder picker at a station's home and in a folder of
+    // repositories, 从 Git 克隆, a clone under way and one failed among its folders)
+    "newchat-preset-new", "newchat-preset-new-add", "newchat-preset-new-browse", "newchat-preset-new-browse-repos",
+    "newchat-preset-new-clone", "newchat-preset-new-clones",
+    // (the presets' menu: one's own; many with search; the other members', a level further in, and none of them; someone else's picked)
+    "newchat-preset", "newchat-preset-many", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
+    "newchat-preset-theirs-long", "player-audio", "player-audio-failed", "player-ended",
+    "player-failed", "player-opening", "player-video", "service", "service-restart", "service-sized", "service-stopped", "share-in",
+    "share-in-files", "share-in-stations", "lock-checking", "lock-confirming", "lock-code", "lock-failed", "lock-finding", "lock-nocode",
+    "lock-none", "lock-security", "lock-upgrade", "lock-waiting", "lock-wrong",
+    // (a web page left out of an upgraded workspace that nobody can approve there: its waiting page, its 安全)
+    "lock-needs-app", "lock-needs-app-security", "lock-out", "lock-out-security",
+    // (its person's own lock: none of their devices answering, 我的其它设备都不在了 offered; made their only trusted
+    // device, whom to ask; begun anew on another device, 是我做的，继续; each its waiting page and its 安全)
+    "lock-restart", "lock-restart-security", "lock-rebound", "lock-rebound-security", "lock-replaced",
+    "lock-replaced-security", "screen-agent-driving",
+    "screen-agent-paused", "screen-clipboard-driving", "screen-clipboard-old-station", "screen-connecting",
+    "screen-denied", "screen-ended", "screen-failed", "screen-files-done", "screen-files-going", "screen-full",
+    "screen-full-tools", "screen-gone", "screen-keys", "screen-live", "screen-login-fill", "screen-login-pick", "screen-not-drivable", "screen-outdated", "screen-pages", "screen-read-only",
+    "screen-reconnecting", "screen-trackpad", "screen-trackpad-command", "screen-user-pages", "screen-user-tabs", "screen-windows", "screen-window", "settings-home", "settings-appearance", "settings-experimental",
+    "settings-me", "settings-me-reading", "settings-workspace", "settings-security", "settings-vault",
+    "settings-vault-items", "settings-vault-item", "settings-stations", "settings-stations-unprotected", "settings-station", "settings-station-unprotected", "settings-station-terminals", "settings-station-offline", "settings-station-env", "settings-station-processes",
+    "settings-station-mark", "settings-station-lower", "settings-station-versions", "settings-station-updated", "settings-station-network", "settings-station-copies", "settings-station-copies-alone",
+    "settings-station-restore", "settings-station-restore-offer", "settings-station-restore-confirm", "settings-station-restore-confirm-long",
+    "settings-station-restored",
+    // (a station retired: its panel, Maple chosen, two up and none chosen, none up, a joined workspace's, a long name;
+    // then 迁移's steps as it goes, sending, all sent waiting for the hand-over, back there after one failed, paused,
+    // failed, its accounts moving, done, done with accounts left; and a
+    // station taking retired ones' chats in)
+    "settings-station-retire-panel", "settings-station-retire-panel-pick", "settings-station-retire-panel-none", "settings-station-retire-panel-joined", "settings-station-retire-panel-long", "settings-station-retire-sending", "settings-station-retire-sent", "settings-station-retire-sent-failed", "settings-station-retire-quiet", "settings-station-retire-failed", "settings-station-retire-accounts", "settings-station-retire-done", "settings-station-retire-done-left", "settings-station-taking", "settings-station-move", "settings-station-move-chats", "settings-station-move-ended", "settings-station-move-empty", "settings-station-move-none", "settings-station-move-all", "settings-station-move-section", "settings-station-move-offered", "settings-profile-move", "settings-profile-move-key",
+    "settings-stations-add",
+    "settings-stations-existing", "settings-stations-command", "settings-first-station", "settings-adb", "settings-adb-unpaired", "settings-adb-pairing", "settings-adb-connected", "settings-adb-failed", "settings-adb-chats", "settings-adb-chats-long", "settings-adb-lock-two", "settings-adb-idle", "settings-adb-desk",
+    // (a request for the phone waiting on a phone that lacks something; granted, the card under it for each kind of step
+    // left: the switch off, Developer options, Wi-Fi, Wireless debugging (refused the app), the pairing dialog, the code,
+    // the phone's own prompt; and connected)
+    "chat-phone-lacks", "chat-phone-step-off", "chat-phone-step-developer", "chat-phone-step-wifi", "chat-phone-step-wireless",
+    "chat-phone-step-refused", "chat-phone-step-code", "chat-phone-linked-unpaired", "chat-phone-linked-unauthorized",
+    "chat-phone-linked-connected",
+    "settings-profiles", "settings-profiles-monthly", "settings-profiles-fable", "settings-profiles-own3", "settings-profiles-week-fable", "settings-profiles-several",
+    "settings-profile-account", "settings-profiles-station",
+    "settings-profile", "settings-profile-fable", "settings-profile-own3", "settings-profile-week-fable", "settings-profile-quota", "settings-profile-quota-kinds",
+    "settings-profile-lower", "settings-profile-unshareable", "settings-profile-login", "settings-profile-login-failed", "settings-profile-quota-failed", "settings-profile-verify", "settings-profile-copy",
+    "settings-profile-blocked", "settings-profile-signin", "settings-profile-key", "settings-new-profile",
+    // (添加账号 with three stations up to choose from, #6030; a key's form with a region and a protocol to choose)
+    "settings-new-profile-stations", "settings-new-profile-key",
+    "settings-connects", "settings-connect", "settings-connect-menu", "settings-connect-mode", "settings-connect-run",
+    "settings-new-connect", "settings-new-connect-platform", "settings-new-connect-scan", "settings-new-connect-app",
+    // (a Comma connect's model step, and the pages of a Comma and a Feishu connect, none of their sessions yet)
+    "settings-new-connect-comma", "settings-connect-comma", "settings-connect-feishu",
+    // (Group offered and picked, a new group connect's server filled in, and a group connect's page)
+    "settings-new-connect-platform-group", "settings-new-connect-group", "settings-connect-group",
+    "settings-slack-app", "settings-memory", "settings-memory-doc", "settings-usage", "settings-archive", "settings-kept",
+    "settings-kept-many", "settings-vault-off", "settings-vault-plain", "settings-vault-waits", "settings-vault-confirm", "settings-vault-syncing", "settings-vault-words", "settings-vault-add",
+    "settings-vault-editor", "settings-vault-recover", "settings-lock-prompt", "settings-lock-prompt-role", "settings-add-people",
+    "settings-workspace-mark", "settings-local-fonts", "settings-policy", "settings-policy-text",
+    "settings-policy-option", "settings-security-join", "settings-security-off", "settings-security-open", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices",
+    "settings-fonts", "settings-fonts-code",
+    "settings-decisions", "settings-completion", "settings-bars", "settings-about", "settings-changelog", "settings-prices",
+    "settings-notify-off", "settings-notify-denied",
+    // (the stations' newer releases waiting: their key over Home, their dialog open: sfpages station_updates.mbt)
+    "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app",
+    // (a terminal's page, typed into here and by someone else: terminal_wbtest.mbt; its station's list is settings-station-terminals, beside settings-station)
+    "terminal", "terminal-taken",
+    // (the board with a card's chat open beside it, its edge at rest: last, so the real size's sweep gives the shell's
+    // ways a chat reads (chatRow) to chat's screen first, as before it came: sfapp_realsize real_size_test.mbt real_size_given_here)
+    "board-side", "board-add",
+  ]
+  // (and the card to share in each of its other looks: share_looks.mbt)
+  for k in @sfpages.share_look_keys()[1:] {
+    modes.push("share-card-" + k)
+  }
+  modes
 }

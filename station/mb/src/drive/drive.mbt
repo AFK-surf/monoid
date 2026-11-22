@@ -31,7 +31,13 @@ pub(all) struct DriveFailure {
 ///|
 pub(all) suberror DriveError {
   DriveError(DriveFailure)
-} derive(Show)
+}
+
+///|
+pub impl Show for DriveError with output(self, logger) {
+  let DriveError(f) = self
+  logger.write_string(f.message)
+}
 
 ///|
 pub fn drive_error(code : String, message : String, have? : Double) -> DriveError {
@@ -147,7 +153,7 @@ pub fn safe_integer(x : Double) -> Bool {
 ///|
 /// Math.round.
 pub fn js_round(x : Double) -> Double {
-  (x + 0.5).floor()
+  @jsjson.js_round(x)
 }
 
 // ── the machine's paths (platform.paths, POSIX) ────────────────────────────────────────────────────────────────

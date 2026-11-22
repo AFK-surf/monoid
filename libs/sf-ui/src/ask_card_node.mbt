@@ -21,6 +21,7 @@ pub fn ask_card_node(
     .radius(Is(card_corner))
     .ground(By(ground))
     |> ignore
+    corner_card_node(k, fn() { card_corner }, inset=fn() { card_pad })
     body(k)
   })
 }

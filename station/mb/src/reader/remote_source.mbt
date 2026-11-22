@@ -444,14 +444,32 @@ async fn Actors::own_id(self : Actors) -> String {
 }
 
 ///|
-/// The id of the station an agent names: by its name or its id, either taken; a sandbox by `sandbox:<name>` or its
-/// name. A name no station of the workspace has goes on as given, to be refused or reached as an id.
+/// Parses an explicit cross-station sandbox id `sandbox:<hostId>:<name>`.
+fn parse_remote_sandbox_id(named : String) -> (String, String)? {
+  if !named.has_prefix("sandbox:") {
+    return None
+  }
+  let rest = named.view(start_offset=8).to_string()
+  match rest.find(":") {
+    Some(i) if i > 0 && i < rest.length() - 1 => {
+      let host_id = rest.view(end_offset=i).to_string()
+      let name = rest.view(start_offset=i + 1).to_string()
+      if name.contains(":") { None } else { Some((host_id, name)) }
+    }
+    _ => None
+  }
+}
+
+///|
+/// The id of the station an agent names: by its name or its id, either taken; a local sandbox by `sandbox:<name>` or
+/// its name; a remote sandbox by `sandbox:<hostId>:<name>` or advertised name. A name no station of the workspace has
+/// goes on as given, to be refused or reached as an id.
 async fn Actors::station_named(self : Actors, workspace : String, named : String) -> String raise {
   if named == "" {
     return named
   }
   let lower = named.to_lower()
-  match self.rnode("sandboxes", []) {
+  match self.rnode("sandboxes", [jstr(workspace)]) {
     Array(list) =>
       for d in list {
         let name = text_of(d, "name")
@@ -470,6 +488,14 @@ async fn Actors::station_named(self : Actors, workspace : String, named : String
   for k in ["stations", "rigs", "unprotected"] {
     if field_of(roster, k) is Array(l) {
       stations.push_iter(l.iter())
+    }
+  }
+  if parse_remote_sandbox_id(named) is Some((host_id, sb_name)) {
+    if host_id == self.own_id() {
+      return "sandbox:" + sb_name
+    }
+    if stations.iter().any(s => text_of(s, "id") == host_id) {
+      return "sandbox:\{host_id}:\{sb_name}"
     }
   }
   if stations.iter().any(s => text_of(s, "id") == named) {
@@ -493,6 +519,23 @@ async fn Actors::station_named(self : Actors, workspace : String, named : String
         }
         None => ()
       }
+    _ => ()
+  }
+  match (self.rnode("remoteSandboxes", [jstr(workspace)]) catch { _ => Json::null() }) {
+    Array(list) => {
+      let matches = list.filter(d => {
+        let id = text_of(d, "id").to_lower()
+        let name = text_of(d, "name").to_lower()
+        id == lower || ("sandbox:" + name) == lower || name == lower
+      })
+      if matches.length() > 1 {
+        let ids = matches.map(d => text_of(d, "id")).join(", ")
+        raise refusal("\{matches.length()} stations offer sandbox \{named}; give the full id station_list shows (\{ids})")
+      }
+      if matches.length() == 1 {
+        return text_of(matches[0], "id")
+      }
+    }
     _ => ()
   }
   named

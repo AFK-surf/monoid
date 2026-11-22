@@ -208,14 +208,14 @@ pub fn batch_span(name : String) -> (Int64, Int64)? {
 /// The paths of the files a row's attachments name (entries' and letters' `attachments`, JSON: [{path, …}]).
 pub fn attached_paths(row : JValue) -> Array[String] {
   guard get(row, "attachments") is Some(Str(units)) else { return [] }
-  let a = @jsjson.text(units)
+  let a = @jsjson.sanitize_str(units)
   if a == "" || a == "[]" {
     return []
   }
   let list = @jsjson.parse(a) catch { _ => return [] }
   guard list is Arr(items) else { return [] }
   items.filter_map(x => match get(x, "path") {
-    Some(Str(p)) if p.length() > 0 => Some(@jsjson.text(p))
+    Some(Str(p)) if p.length() > 0 => Some(@jsjson.sanitize_str(p))
     _ => None
   })
 }
@@ -265,11 +265,11 @@ fn Runs::finish(self : Runs) -> Unit raise {
 fn batch_text(gen : String, from : Int64, to : Int64, made : Double, lines : Array[String]) -> String {
   let out = StringBuilder::new()
   let header : JValue = Obj([
-    (@jsjson.units("v"), Num(version.to_double())),
-    (@jsjson.units("gen"), str(gen)),
-    (@jsjson.units("from"), Num(from.to_double())),
-    (@jsjson.units("to"), Num(to.to_double())),
-    (@jsjson.units("made"), Num(made)),
+    ("v", Num(version.to_double())),
+    ("gen", str(gen)),
+    ("from", Num(from.to_double())),
+    ("to", Num(to.to_double())),
+    ("made", Num(made)),
   ])
   out.write_string(stringify(header))
   out.write_char('\n')
@@ -380,10 +380,10 @@ pub fn Folded::apply(self : Folded, line : String) -> Unit raise {
     }
     let session = match lookup(session_of, table) {
       None => Json::null()
-      Some(_) if table == "opened_chats" && !(get(row, "child_station") is Some(Str([]))) => Json::null()
+      Some(_) if table == "opened_chats" && !(get(row, "child_station") is Some(Str(""))) => Json::null()
       Some(c) => param(get(row, c))
     }
-    let message = table == "entries" && get(row, "kind") is Some(Str(k)) && @jsjson.text(k) == "message"
+    let message = table == "entries" && get(row, "kind") is Some(Str(k)) && @jsjson.sanitize_str(k) == "message"
     ignore(
       db.run(
         "INSERT INTO rows (tbl, k, seq, line, thread, session, message) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tbl, k) DO UPDATE SET seq = excluded.seq, line = excluded.line, thread = excluded.thread, session = excluded.session, message = excluded.message",
@@ -414,7 +414,7 @@ pub fn Folded::apply(self : Folded, line : String) -> Unit raise {
       ]),
     )
   } else if get(rec, "gone") is Some(g) {
-    let (column, value, list) = if g is Str(u) && @jsjson.text(u) == "session" {
+    let (column, value, list) = if g is Str(u) && @jsjson.sanitize_str(u) == "session" {
       ("session", param(get(rec, "key")), session_of)
     } else {
       ("thread", param(get(rec, "id")), thread_of)
@@ -507,7 +507,7 @@ pub fn Folded::each_named_file(self : Folded, f : (String, String, Double) -> Un
 
 ///|
 fn file_line(path : String, hash : String, size : Double) -> String {
-  stringify(Obj([(@jsjson.units("file"), str(hash)), (@jsjson.units("size"), Num(size)), (@jsjson.units("path"), str(path))]))
+  stringify(Obj([("file", str(hash)), ("size", Num(size)), ("path", str(path))]))
 }
 
 ///|

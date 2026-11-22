@@ -43,25 +43,6 @@ fn head_view() -> ChatView {
 }
 
 ///|
-/// `e` drawn by the old view, `w` wide, inline where `inline`.
-fn head_old(e : Elsewhere, w : Double, inline : Bool, platform? : Int = 0) -> @ui.Tester {
-  @sf.set_words(@sfbase.fill)
-  absolute_times.set(false)
-  let src = @sffixture.fixture("history")
-  let view = head_view()
-  let here : MessageHere = { station: "ws1/st1", session: "s1", view, go: None, inline, gutter: 0.0, list: None, core: None }
-  @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() { c.box(style=head_frame, fn() { row_box(c, row_side(w), 0.0, fn() { sent_elsewhere(c, src, here, e) }) |> ignore }) |> ignore })
-    },
-    w~,
-    h=240.0,
-    platform~,
-  )
-}
-
-///|
 /// `e` drawn by the nodes, `w` wide (its list as wide: inline where narrow; `width_now`, its list's width as it says).
 fn head_new(
   e : Elsewhere,
@@ -131,50 +112,28 @@ fn head_drawn(t : @ui.Tester, from? : Double = 1.0e9, up? : Double = 0.0) -> Str
 }
 
 ///|
-/// What `old` (made by head_old, drawn at its moment) draws, said before another Tester is made (a Tester's draw list
-/// is the last made one's), and how far down its time ends where `inline` (what is under it the new one draws
-/// route_line_down further down).
-fn head_old_drawn(old : @ui.Tester, inline : Bool) -> (String, Double) {
-  let (_, ty, _, th) = old.rect_of("3 分钟前").unwrap()
-  (head_drawn(old), if inline { ty + th + 1.0 } else { 1.0e9 })
-}
-
-///|
-test "what was said elsewhere, made once as nodes, is drawn as the old view drew it: each state, wide and narrow, its time pressed, its words at 1.3" {
+test "what was said elsewhere, made once as nodes: each state, wide and narrow, its time pressed, its words at 1.3" {
   for c in head_cases() {
-    for width in [(760.0, false), (390.0, true)] {
-      let at = "\{c.0} at \{width.0}"
-      let old = head_old(c.1, width.0, width.1)
-      old.run_for(@ui.move_most_ms)
-      let (was, from) = head_old_drawn(old, width.1)
-      let t = head_new(c.1, width.0)
+    for width in [760.0, 390.0] {
+      let at = "\{c.0} at \{width}"
+      let t = head_new(c.1, width)
       t.run_for(@ui.move_most_ms)
-      assert_eq(head_drawn(t, from~, up=route_line_down()), was, msg=at)
+      assert_true(t.find("安装包签名已经核对完了") is Some(_), msg=at)
       let faults = t.audit()
       assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
     }
   }
-  // its time pressed: when it was, in both
-  let old = head_old(head_said(), 760.0, false)
-  old.run_for(@ui.move_most_ms)
-  old.tap_text("3 分钟前")
-  old.run_for(@ui.move_most_ms)
-  let was = head_drawn(old)
+  // its time pressed: when it was
   absolute_times.set(false)
   let t = head_new(head_said(), 760.0)
   t.run_for(@ui.move_most_ms)
   t.tap_text("3 分钟前")
   t.run_for(@ui.move_most_ms)
-  assert_eq(head_drawn(t), was)
+  assert_true(t.find("2026-11-11 21:04") is Some(_))
   // the words at 1.3, narrow
-  let old = head_old(head_said(), 390.0, true)
-  old.set_font_scale(1.3)
-  old.run_for(@ui.move_most_ms)
-  let (was, from) = head_old_drawn(old, true)
   let t = head_new(head_said(), 390.0)
   t.set_font_scale(1.3)
   t.run_for(@ui.move_most_ms)
-  assert_eq(head_drawn(t, from~, up=route_line_down()), was)
   let faults = t.audit()
   absolute_times.set(false)
   assert_true(faults.is_empty(), msg=faults.join(" | "))

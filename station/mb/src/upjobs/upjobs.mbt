@@ -14,20 +14,12 @@ let first : String = "SELECT CAST(rowid AS TEXT) AS position FROM jobs INDEXED B
 let next : String = "SELECT CAST(rowid AS TEXT) AS position FROM jobs INDEXED BY jobs_by_session WHERE session_key = ? AND rowid > CAST(? AS INTEGER) AND rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?"
 
 ///|
-fn value(row : Map[String, Json], name : String) -> Json {
-  match row.get(name) {
-    Some(j) => j
-    None => Json::null()
-  }
-}
-
-///|
 /// Whether the session's are prepared (all are, on a station that had none running when its index was made).
 fn ready(db : @sql.Db, session : String) -> Bool raise {
   let meta = db.all("SELECT version, fresh FROM session_up_job_meta WHERE id = 1", [])
   guard meta is [meta, ..] && meta.get("version") is Some(Number(v, ..)) && v.to_int() == version else {
     let had = match meta {
-      [m, ..] => value(m, "version").stringify()
+      [m, ..] => @sql.row_val(m, "version").stringify()
       _ => "missing"
     }
     fail("session up jobs index version \{had} is incompatible with \{version}")
@@ -61,17 +53,17 @@ pub fn step(db : @sql.Db, session : String, limit? : Int = 256) -> Bool raise {
     [s],
   )
   guard scope is [scope, ..] else { fail("session up jobs scope is missing") }
-  let last = value(scope, "last_rowid")
-  let end = value(scope, "end_rowid")
+  let last = @sql.row_val(scope, "last_rowid")
+  let end = @sql.row_val(scope, "end_rowid")
   let lim = Json::number(limit.to_double())
   let rows = if last is Null { db.all(first, [s, end, lim]) } else { db.all(next, [s, last, end, lim]) }
   let put = "INSERT INTO session_up_job_rows (session, job_rowid) SELECT j.session_key, j.rowid FROM jobs j WHERE j.rowid = CAST(? AS INTEGER) AND \{up} AND NOT EXISTS (SELECT 1 FROM session_up_job_rows i WHERE i.session = j.session_key AND i.job_rowid = j.rowid)"
   for row in rows {
-    ignore(db.run(put, [value(row, "position")]))
+    ignore(db.run(put, [@sql.row_val(row, "position")]))
   }
   let done = rows.length() < limit
   let reached = match rows.last() {
-    Some(row) => value(row, "position")
+    Some(row) => @sql.row_val(row, "position")
     None => last
   }
   ignore(
@@ -131,7 +123,7 @@ pub fn workspace_step(db : @sql.Db, limit? : Int = 256) -> Bool raise {
   let meta = db.all("SELECT version, ready FROM workspace_up_meta WHERE id = 1", [])
   guard meta is [meta, ..] && meta.get("version") is Some(Number(v, ..)) && v.to_int() == workspace_version else {
     let had = match meta {
-      [m, ..] => value(m, "version").stringify()
+      [m, ..] => @sql.row_val(m, "version").stringify()
       _ => "missing"
     }
     fail("workspace up jobs index version \{had} is incompatible with \{workspace_version}")
@@ -245,7 +237,7 @@ pub fn job_name_first_step(db : @sql.Db, owner : String, thread : Int64, limit? 
   let meta = db.all("SELECT version FROM job_name_first_meta WHERE id=1", [])
   guard meta is [meta, ..] && meta.get("version") is Some(Number(v, ..)) && v.to_int() == job_name_first_version else {
     let had = match meta {
-      [m, ..] => value(m, "version").stringify()
+      [m, ..] => @sql.row_val(m, "version").stringify()
       _ => "missing"
     }
     fail("job name first index version \{had} is incompatible with \{job_name_first_version}")

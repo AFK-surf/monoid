@@ -72,7 +72,7 @@ fn center_opened(r : ScreenRig) -> Unit {
 }
 
 ///|
-test "控制中心 on 小屏: a sheet from the foot, each word and each thing to press where it is" {
+test "控制中心 on 小屏: beside its top-bar button, each word and each thing to press where it is" {
   let r = screen_rig()
   center_opened(r)
   assert_eq(center_words_off(r.t, center_phone_words) + center_said_off(r.t, center_phone_said), [])
@@ -309,11 +309,7 @@ test "控制中心 whole, nothing scrolled, with all it can hold: on 小屏, on 
     r.t.run_for(@ui.move_most_ms)
     native_pressed(r, "over/screen-center")
     assert_eq(center_whole(r, h), "", msg="\{w}×\{h}")
-    // (but on its side, its title and labels 16 in where its rows' words are 22: a small panel's (its title and its
-    // groups' labels on one line, panel_head_box, panel_label_at), rule 8, said once the spacing rules saw the window's
-    // tree's words, 2026-11-15; the library's, left for its own change)
-    let labels = fn(f : String) { f.has_prefix("rule 8: ") && f.contains("stands 16 in from") && f.has_suffix("its rows' words 22") }
-    assert_eq(r.t.audit().filter(fn(f) { !labels(f) }), [], msg="\{w}×\{h}")
+    assert_eq(r.t.audit(), [], msg="\{w}×\{h}")
     shut(r)
     screen_done(r.t)
   }
@@ -388,37 +384,37 @@ test "the tiles stand on the panel's words' edges, its labels' and rows': 控制
 ///|
 // kept across runs: the recording, never written
 let center_phone_words : Array[(String, Double, Double, Double, Double)] = [
-    ("控制中心", 24.0, 175.0, 64.0, 24.0),
-    ("快捷操作", 26.0, 215.0, 338.0, 18.0),
-    ("全屏", 67.5, 276.0, 24.0, 16.0),
-    ("粘贴", 183.0, 276.0, 24.0, 16.0),
-    ("发送文件", 286.5, 276.0, 48.0, 16.0),
-    ("触控板", 61.5, 348.0, 36.0, 16.0),
-    ("画面", 26.0, 385.0, 338.0, 18.0),
-    ("画质", 32.0, 417.0, 266.0, 20.0),
-    ("自动", 308.0, 418.0, 26.0, 18.0),
-    ("帧率", 32.0, 461.0, 266.0, 20.0),
-    ("自动", 308.0, 462.0, 26.0, 18.0),
-    ("缩放", 32.0, 505.0, 266.0, 20.0),
-    ("100%", 308.0, 506.0, 26.0, 18.0),
-    ("分辨率", 32.0, 549.0, 233.5, 20.0),
-    ("1920×1080", 275.5, 550.0, 58.5, 18.0),
-    ("连接", 62.0, 669.0, 210.0, 20.0),
-    ("00:00:01", 282.0, 670.0, 52.0, 18.0),
-    ("控制 · 李雷也在看", 26.0, 701.0, 338.0, 18.0),
-    ("断开其他连接（1）", 62.0, 731.0, 296.0, 20.0),
-    ("断开", 62.0, 788.0, 296.0, 20.0),
+    ("控制中心", 108.0, 66.0, 252.0, 20.0),
+    ("快捷操作", 108.0, 96.0, 252.0, 18.0),
+    ("全屏", 135.5, 157.0, 24.0, 16.0),
+    ("粘贴", 222.0, 157.0, 24.0, 16.0),
+    ("发送文件", 296.5, 157.0, 48.0, 16.0),
+    ("触控板", 132.0, 229.0, 36.0, 16.0),
+    ("画面", 108.0, 266.0, 252.0, 18.0),
+    ("画质", 108.0, 298.0, 192.0, 20.0),
+    ("自动", 310.0, 299.0, 26.0, 18.0),
+    ("帧率", 108.0, 342.0, 192.0, 20.0),
+    ("自动", 310.0, 343.0, 26.0, 18.0),
+    ("缩放", 108.0, 386.0, 192.0, 20.0),
+    ("100%", 310.0, 387.0, 26.0, 18.0),
+    ("分辨率", 108.0, 430.0, 159.5, 20.0),
+    ("1920×1080", 277.5, 431.0, 58.5, 18.0),
+    ("连接", 138.0, 518.0, 136.0, 20.0),
+    ("00:00:01", 284.0, 519.0, 52.0, 18.0),
+    ("控制 · 李雷也在看", 108.0, 550.0, 252.0, 18.0),
+    ("断开其他连接（1）", 138.0, 580.0, 222.0, 20.0),
+    ("断开", 138.0, 637.0, 222.0, 20.0),
   ]
 
 ///|
 // kept across runs: the recording, never written
 let center_wide_words : Array[(String, Double, Double, Double, Double)] = [
-    ("控制中心", 992.0, 56.0, 264.0, 20.0),
-    ("快捷操作", 992.0, 86.0, 264.0, 18.0),
-    ("全屏", 1022.5, 147.0, 22.0, 16.0),
+    ("控制中心", 998.0, 56.0, 252.0, 20.0),
+    ("快捷操作", 998.0, 86.0, 252.0, 18.0),
+    ("全屏", 1026.5, 147.0, 22.0, 16.0),
     ("粘贴", 1113.0, 147.0, 22.0, 16.0),
-    ("发送文件", 1192.5, 147.0, 44.0, 16.0),
-    ("画面", 992.0, 184.0, 264.0, 18.0),
+    ("发送文件", 1188.5, 147.0, 44.0, 16.0),
+    ("画面", 998.0, 184.0, 252.0, 18.0),
     ("画质", 998.0, 212.0, 194.0, 20.0),
     ("自动", 1202.0, 213.5, 24.0, 17.0),
     ("帧率", 998.0, 248.0, 194.0, 20.0),
@@ -429,7 +425,7 @@ let center_wide_words : Array[(String, Double, Double, Double, Double)] = [
     ("1920×1080", 1172.0, 321.5, 54.0, 17.0),
     ("连接", 1028.0, 392.0, 140.0, 20.0),
     ("00:00:01", 1178.0, 393.5, 48.0, 17.0),
-    ("控制 · 李雷也在看", 992.0, 420.0, 264.0, 18.0),
+    ("控制 · 李雷也在看", 998.0, 420.0, 252.0, 18.0),
     ("断开其他连接（1）", 1028.0, 446.0, 222.0, 20.0),
     ("断开", 1028.0, 495.0, 222.0, 20.0),
   ]
@@ -437,43 +433,43 @@ let center_wide_words : Array[(String, Double, Double, Double, Double)] = [
 ///|
 // kept across runs: the recording, never written
 let center_looking_words : Array[(String, Double, Double, Double, Double)] = [
-    ("控制中心", 24.0, 335.0, 64.0, 24.0),
-    ("快捷操作", 26.0, 375.0, 338.0, 18.0),
-    ("全屏", 67.5, 436.0, 24.0, 16.0),
-    ("画面", 26.0, 473.0, 338.0, 18.0),
-    ("画质", 32.0, 505.0, 266.0, 20.0),
-    ("自动", 308.0, 506.0, 26.0, 18.0),
-    ("帧率", 32.0, 549.0, 266.0, 20.0),
-    ("自动", 308.0, 550.0, 26.0, 18.0),
-    ("连接", 62.0, 669.0, 210.0, 20.0),
-    ("00:00:01", 282.0, 670.0, 52.0, 18.0),
-    ("只看 · 李雷也在看", 26.0, 701.0, 338.0, 18.0),
-    ("断开其他连接（1）", 62.0, 731.0, 296.0, 20.0),
-    ("断开", 62.0, 788.0, 296.0, 20.0),
+    ("控制中心", 108.0, 66.0, 252.0, 20.0),
+    ("快捷操作", 108.0, 96.0, 252.0, 18.0),
+    ("全屏", 138.0, 157.0, 24.0, 16.0),
+    ("画面", 108.0, 194.0, 252.0, 18.0),
+    ("画质", 108.0, 226.0, 192.0, 20.0),
+    ("自动", 310.0, 227.0, 26.0, 18.0),
+    ("帧率", 108.0, 270.0, 192.0, 20.0),
+    ("自动", 310.0, 271.0, 26.0, 18.0),
+    ("连接", 138.0, 358.0, 136.0, 20.0),
+    ("00:00:01", 284.0, 359.0, 52.0, 18.0),
+    ("只看 · 李雷也在看", 108.0, 390.0, 252.0, 18.0),
+    ("断开其他连接（1）", 138.0, 420.0, 222.0, 20.0),
+    ("断开", 138.0, 477.0, 222.0, 20.0),
   ]
 
 ///|
 // kept across runs: the recording, never written
 let center_phone_said : Array[(String, String, Double, Double, Double, Double)] = [
-    ("Button", "全屏", 26.0, 239.0, 107.5, 64.0),
-    ("Button", "粘贴", 141.5, 239.0, 107.5, 64.0),
-    ("Button", "发送文件", 256.5, 239.0, 107.5, 64.0),
-    ("Button", "触控板", 26.0, 311.0, 107.5, 64.0),
-    ("Button", "画质 自动", 16.0, 405.0, 358.0, 44.0),
-    ("Button", "帧率 自动", 16.0, 449.0, 358.0, 44.0),
-    ("Button", "缩放 100%", 16.0, 493.0, 358.0, 44.0),
-    ("Button", "分辨率 1920×1080", 16.0, 537.0, 358.0, 44.0),
-    ("Button", "连接 00:00:01", 16.0, 657.0, 358.0, 44.0),
-    ("Button", "断开其他连接（1）", 16.0, 719.0, 358.0, 44.0),
-    ("Button", "断开", 16.0, 776.0, 358.0, 44.0),
+    ("Button", "全屏", 108.0, 120.0, 78.5, 64.0),
+    ("Button", "粘贴", 194.5, 120.0, 78.5, 64.0),
+    ("Button", "发送文件", 281.5, 120.0, 78.5, 64.0),
+    ("Button", "触控板", 108.0, 192.0, 84.0, 64.0),
+    ("Button", "画质 自动", 92.0, 286.0, 284.0, 44.0),
+    ("Button", "帧率 自动", 92.0, 330.0, 284.0, 44.0),
+    ("Button", "缩放 100%", 92.0, 374.0, 284.0, 44.0),
+    ("Button", "分辨率 1920×1080", 92.0, 418.0, 284.0, 44.0),
+    ("Button", "连接 00:00:01", 92.0, 506.0, 284.0, 44.0),
+    ("Button", "断开其他连接（1）", 92.0, 568.0, 284.0, 44.0),
+    ("Button", "断开", 92.0, 625.0, 284.0, 44.0),
   ]
 
 ///|
 // kept across runs: the recording, never written
 let center_wide_said : Array[(String, String, Double, Double, Double, Double)] = [
-    ("Button", "全屏", 992.0, 110.0, 82.5, 64.0),
-    ("Button", "粘贴", 1082.5, 110.0, 82.5, 64.0),
-    ("Button", "发送文件", 1173.5, 110.0, 82.5, 64.0),
+    ("Button", "全屏", 998.0, 110.0, 78.5, 64.0),
+    ("Button", "粘贴", 1084.5, 110.0, 78.5, 64.0),
+    ("Button", "发送文件", 1171.5, 110.0, 78.5, 64.0),
     ("Button", "画质 自动", 982.0, 204.0, 284.0, 36.0),
     ("Button", "帧率 自动", 982.0, 240.0, 284.0, 36.0),
     ("Button", "缩放 100%", 982.0, 276.0, 284.0, 36.0),
@@ -482,3 +478,43 @@ let center_wide_said : Array[(String, String, Double, Double, Double, Double)] =
     ("Button", "断开其他连接（1）", 982.0, 438.0, 284.0, 36.0),
     ("Button", "断开", 982.0, 487.0, 284.0, 36.0),
   ]
+
+///|
+test "控制中心's 麦克风: there driving a screen with a virtual microphone, lit while this device's is shared, the panel open still" {
+  // (a browser's: its microphone taken)
+  let r = screen_rig(platform=4)
+  r.live(others=[])
+  open_center(r)
+  let mic = tr("web-pages.screen.mic")
+  assert_false(center_tile(r, mic))
+  shut(r)
+  // a desktop whose app records its virtual microphone (the fixture's screen-center-mic)
+  let more : Map[String, Json] = {
+    "kind": Json::string("desktop"),
+    "mic": { "available": true, "active": true, "epoch": 1.0 },
+  }
+  r.state("live", others=[], clipboard=["text", "png"], drop={ "folder": "/Users/alice/Downloads", "reveal": true }, more~)
+  open_center(r)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(pressed_of(r, mic), Some(false))
+  assert_eq(r.t.audit(), [])
+  r.tap_label(mic)
+  r.t.draw()
+  assert_true(r.sess().mic_on.get())
+  assert_eq(pressed_of(r, mic), Some(true))
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":true"))
+  assert_true(@sf.presenting())
+  assert_eq(r.t.audit(), [])
+  r.tap_label(mic)
+  r.t.draw()
+  assert_eq(pressed_of(r, mic), Some(false))
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":false"))
+  // only looking: none
+  shut(r)
+  r.state("live", control=false, others=[])
+  r.t.run_for(@ui.move_most_ms)
+  open_center(r)
+  assert_false(center_tile(r, mic))
+  shut(r)
+  screen_done(r.t)
+}

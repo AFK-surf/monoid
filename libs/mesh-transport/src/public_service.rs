@@ -1,7 +1,7 @@
 //! A global relay exposes only a root-key bootstrap protocol. Each request joins
 //! one opaque scope with the caller's own descriptor, never its member roster.
 //! The resulting neighbor endpoint carries packets independently of cloud APIs.
-use crate::{announcement::Descriptor, identity::{Binding,neighbor_secret}, routing::{Node,Scope}, runtime::{Runtime,Peer,ALPN}, policy::TransitPolicy};
+use crate::{announcement::{Descriptor, bounded_address}, identity::{Binding,neighbor_secret}, routing::{Node,Scope}, runtime::{Runtime,Peer,ALPN}, policy::TransitPolicy};
 use iroh::{Endpoint,EndpointId,RelayMode,RelayUrl,SecretKey,Watcher,endpoint::{Connection,presets::Minimal}};
 use std::{collections::BTreeMap,sync::Arc,time::Duration};
 use tokio::{sync::Mutex,time::timeout};
@@ -173,9 +173,9 @@ impl Scopes {
         };
         let writer=async move {
             let mut addresses=endpoint.watch_addr();
-            write(&mut send,&Descriptor {binding:binding.clone(),address:addresses.get()}).await?;
+            write(&mut send,&Descriptor {binding:binding.clone(),address:bounded_address(addresses.get())}).await?;
             loop {
-                let address=addresses.updated().await.map_err(|e|e.to_string())?;
+                let address=bounded_address(addresses.updated().await.map_err(|e|e.to_string())?);
                 write(&mut send,&Descriptor {binding:binding.clone(),address}).await?;
             }
             #[allow(unreachable_code)] Ok::<(),String>(())

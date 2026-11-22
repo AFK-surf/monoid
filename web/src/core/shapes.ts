@@ -3,7 +3,7 @@
 */
 
 /** Whose account a profile runs on. */
-export type AccessKind = "subscription" | "opencode-go" | "anthropic-api" | "env" | "api-provider";
+export type AccessKind = "subscription" | "opencode-go" | "anthropic-api" | "env" | "api-provider" | "service";
 
 /** How the pages look: as the system does (the default), or always light, or always dark. */
 export type Appearance = "system" | "light" | "dark";
@@ -305,7 +305,7 @@ export interface Job {
 }
 
 /** An action keys do (keymap.ts ACTIONS). */
-export type KeyActionName = "chat.switch" | "chat.new" | "chat.prev" | "chat.next" | "sidebar.toggle" | "nav.back" | "nav.forward" | "settings" | "shortcuts" | "zoom.in" | "zoom.out" | "zoom.reset" | "composer.focus" | "composer.file" | "chat.stop" | "chat.history" | "chat.jobs" | "chat.screen" | "chat.latest" | "chat.find" | "chat.outline" | "chat.said.prev" | "chat.said.next" | "chat.archive" | "panel.close" | "files.preview";
+export type KeyActionName = "chat.switch" | "chat.new" | "chat.prev" | "chat.next" | "sidebar.toggle" | "nav.back" | "nav.forward" | "settings" | "shortcuts" | "zoom.in" | "zoom.out" | "zoom.reset" | "composer.focus" | "composer.file" | "chat.stop" | "chat.history" | "chat.jobs" | "chat.screen" | "chat.latest" | "chat.find" | "chat.outline" | "chat.said.prev" | "chat.said.next" | "chat.archive" | "panel.close" | "panel.tab.close" | "panel.tab.reopen" | "panel.tab.prev" | "panel.tab.next" | "files.preview";
 
 /** Where an action works: anywhere in the app, in a chat, or in a folder of the files. */
 export type KeyGroupName = "global" | "chat" | "files";
@@ -390,7 +390,8 @@ export type RuntimeKind = "claude" | "codex" | "dsh" | "grok" | "cursor" | "devi
 
 export interface LoginJob {
 	profile: string;
-	runtime: RuntimeKind;
+	runtime?: RuntimeKind;
+	service?: string;
 	/**
 	 * opencode: a sign-in to the OpenCode Console (an OpenCode Go profile); kimi: to Kimi (a Kimi Code profile); none: the
 	 * runtime's subscription.
@@ -541,6 +542,13 @@ export interface ArchivingView {
 	modeNote?: string;
 }
 
+export interface AutoChatsView {
+	/** Whether this station accepts automatically assigned new chats and presets (opt-in, default false). */
+	enabled: boolean;
+	/** The viewer manages the station: may change it (`autoChats.save`). */
+	canEdit: boolean;
+}
+
 /** Who is looking: local | access (`email`) | mesh (`email`, `name`, `sub`, `role`, `workspace`, `device`). */
 export interface Viewer {
 	via: string;
@@ -574,6 +582,8 @@ export interface FeishuApp {
 	domain: string;
 	/** Thread mode: each thread of a group its own conversation, answered in it. */
 	threads?: boolean;
+	/** A direct chat in threads: each message there begins one, its own conversation, answered in it. */
+	directThreads?: boolean;
 	/** The app's page in the developer console (core). */
 	console?: string;
 }
@@ -666,6 +676,14 @@ export interface Connect {
 	createdBy?: Owner;
 	sessions: number;
 	session?: string;
+	/** The station of its workspace its new conversations start on (null: this one). */
+	startsOn?: string;
+	/** The allowlisted stations of its workspace its new conversations balance across (null: this one). */
+	startsOnStations?: string[];
+	/** Whether new conversations follow the workspace auto-assign allowlist. */
+	startsOnAuto?: boolean;
+	/** Whether this station lets the connect be moved to another station of its workspace. */
+	moves?: boolean;
 	statusText: string;
 	/** online | busy | error | offline */
 	presence: Presence;
@@ -686,11 +704,13 @@ export interface Connect {
 }
 
 export interface Access {
-	/** subscription | opencode-go | anthropic-api | env | api-provider */
+	/** subscription | opencode-go | anthropic-api | env | api-provider | service */
 	kind: AccessKind;
 	key: string;
 	/** The provider of an `api-provider` (shapes/providers.ts); an older core reads such a profile as `env` and drops this. */
 	provider?: string;
+	/** The service id of a `service` profile (e.g. a non-agent service account). */
+	service?: string;
 	/** Its address, where the provider has none of its own (Azure, Cloudflare, custom). */
 	endpoint?: string;
 	/** At such an address, the protocol it speaks there: chat_completions, responses or anthropic. */
@@ -856,7 +876,8 @@ export interface Profile {
 	name: string;
 	/** The signed-in subscription identity; independent of the editable display name. */
 	email?: string;
-	runtime: RuntimeKind;
+	runtime?: RuntimeKind;
+	service?: string;
 	runtimes: RuntimeKind[];
 	access: Access;
 	home: string;
@@ -881,6 +902,10 @@ export interface Profile {
 	 * station older than the setting.
 	 */
 	backgroundOnMessage?: boolean;
+	/** Optional active-session concurrency cap for this profile; None when unlimited or from an older station. */
+	maxConcurrentSessions?: number;
+	/** True while the default new-account protection cap is active; absent otherwise. */
+	newAccountProtection?: boolean;
 	/** Whether this profile may be used; absent on stations from before disabling profiles. */
 	enabled?: boolean;
 	fast?: boolean;
@@ -1051,7 +1076,8 @@ export interface DiskRoom {
 
 export interface PendingLogin {
 	id: string;
-	runtime: RuntimeKind;
+	runtime?: RuntimeKind;
+	service?: string;
 	job?: LoginJob;
 	created?: string;
 	/** Why a sign-in that succeeded made no profile. */
@@ -1313,6 +1339,23 @@ export interface StationElevation {
 	canChange: boolean;
 }
 
+/** Whether a Windows station has the optional LocalSystem screen service installed, as its page shows it. */
+export interface StationScreenService {
+	/** Where its switch stands: installed, or what a change under way goes to (`screenService.set`). */
+	on: boolean;
+	/** A change is under way (Windows' UAC prompt up, installing or uninstalling): the switch waits. */
+	busy: boolean;
+	/** What it means, or how the change under way goes. */
+	line: string;
+	/** How the last change failed (nothing changed then), in a line; none when it did not. */
+	failed?: string;
+	/**
+	 * The viewer may switch it now (one of the workspace's owners and admins, binary present, Windows user an
+	 * administrator, no change under way).
+	 */
+	canChange: boolean;
+}
+
 /** A backup of a station no longer there that a station with no chats could restore. */
 export interface CopyOffer {
 	/** The lost station's id: `copies.restore`'s `origin`. */
@@ -1410,6 +1453,8 @@ export interface Overview {
 	automaticDecisions?: AutomaticDecisionView;
 	/** How its chats go to the archive on their own (`archiving.save`). Absent from stations before it. */
 	archiving?: ArchivingView;
+	/** Whether this station accepts automatically assigned new chats and presets (`autoChats.save`). Absent from stations before it. */
+	autoChats?: AutoChatsView;
 	viewer: Viewer;
 	connects: Connect[];
 	profiles: Profile[];
@@ -1474,24 +1519,34 @@ export interface Overview {
 	 * then shows nothing).
 	 */
 	elevation?: StationElevation;
+	/**
+	 * Whether the optional LocalSystem Windows screen service is installed for remote control of UAC, elevated
+	 * windows and the lock screen (a Windows station only; none from one older than it, which then shows nothing).
+	 */
+	screenService?: StationScreenService;
 	/** The copies of its chats kept off it (copies.ts). None from a station older than them, which then shows nothing. */
 	copies?: StationCopies;
 	/** Whether moving its things to another station is offered on it (move.ts). None from a station older than it: not offered. */
 	move?: StationMoveOffer;
 	/** The `beta` features it runs, by id (client/core-ts/src/features.ts `station: true`: its own channel decides them). None from a station older than it: none. */
 	features?: string[];
+	/** When this station build was built, in Unix ms (`BUILT_AT`). Absent in dev or from older stations. */
+	builtAt?: number;
 }
 
 /** How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it. */
 export type BoardGroup = "state" | "station" | "person";
 
-/** A queued task's file, named by its composer id; its bytes stay in the device's draft store. */
+/**
+ * A queued task's file, named by its composer id; its bytes are the device's draft store's where it was added,
+ * kept by the station the task is to run on for the person's other devices.
+ */
 export interface BoardFile {
 	id: string;
 	name: string;
 }
 
-/** An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name. */
+/** An unstarted task of a workspace's 待派发 column: its key, its words, the station it is to run on and that station's name. */
 export interface BoardDraft {
 	id: string;
 	title: string;
@@ -1515,10 +1570,18 @@ export interface OpenChat {
 	key: string;
 }
 
-/** A chat's history tabs as last left: which are open, which is in front. */
+/** A batch of closed tabs kept for reopening (`chat.tabs.reopen`). */
+export interface ClosedTabBatch {
+	tabs: string[];
+	at: number;
+	active?: string;
+}
+
+/** A chat's history tabs as last left: which are open, which is in front, and recent closed batches. */
 export interface KeptTabs {
 	tabs: string[];
 	active?: string;
+	closed?: ClosedTabBatch[];
 }
 
 /** What the badge counts (`prefs.set {badgeKinds}`, always whole): each kind of chat that wants them, on or off. */
@@ -1681,7 +1744,7 @@ export interface RailView {
 
 /** One experimental feature shown in 设置 › 实验性功能. */
 export interface ExperimentalItem {
-	/** The feature's id in `FEATURES` (`chatPage`, `farviewNative`, `board`, …). */
+	/** The feature's id in `FEATURES` (`farviewNative`, `board`, …). */
 	id: string;
 	/** Whether this feature is currently turned on on this device. */
 	enabled: boolean;
@@ -1699,7 +1762,10 @@ export interface PrefsView {
 	boardGroups?: Record<string, BoardGroup>;
 	/** A workspace's board leaving out its empty columns on this device, by workspace: `false`; none: shown. */
 	boardShowEmpty?: Record<string, boolean>;
-	/** Unstarted tasks kept in a workspace's 待派发 column on this device, by workspace, newest first (at most 200). */
+	/**
+	 * Unstarted tasks a workspace's 待派发 kept on this device before they were carried (by workspace):
+	 * taken into the `boardDrafts` topic's once and left out of here.
+	 */
 	boardDrafts?: Record<string, BoardDraft[]>;
 	/**
 	 * The list filter chosen in each workspace, by workspace; one not there goes by `only_mine` and `only_watching`
@@ -1790,6 +1856,11 @@ export interface PrefsView {
 	 * key for it (`night`, `poster`, …; none or one the app does not know: its first).
 	 */
 	shareLook?: string;
+	/**
+	 * How a machine's CPU dial says it on this device (its page's 资源, the dial pressed to turn it): `busy`, how much
+	 * of it is used; or (none) how much is idle.
+	 */
+	cpuDial?: string;
 	/** How files dragged into a chat go unless the chat says otherwise (`dropFiles`): file, or (none) path. */
 	dropAs?: string;
 	/**
@@ -1887,6 +1958,8 @@ export interface PrefsView {
 	 * its own cloud); none: it sends nothing, and the app tells it nothing of it.
 	 */
 	counted?: boolean;
+	/** Whether this app build is older than 7 days (`STALE_BUILD_MS`). Absent when fresh or in dev. */
+	staleBuild?: boolean;
 	/** The product's name on this app's channel: still.fail or youdid.wtf (monoid or monoid.zone on monoid's cloud). */
 	productName?: string;
 	/**
@@ -2008,6 +2081,11 @@ export interface NoticeShown {
 	 * profile's page. Absent otherwise.
 	 */
 	linkAt?: number;
+	/**
+	 * One about a profile the station says what to do of: that, as the short action at the end of the pill
+	 * (重新登录, 设置代理), which opens that profile's page; `words` then say what went wrong alone. Absent otherwise.
+	 */
+	profileAction?: string;
 	/**
 	 * A failure's own words, as what failed said them (a provider's, a process's): shown when the notice is
 	 * opened, under `words`. Absent otherwise.
@@ -2157,6 +2235,10 @@ export interface VaultSave {
 	 * place of the field, `vault.oauthBegin` with the request, which approves it as the browser comes back.
 	 */
 	oauth?: string;
+	/** The vault it will be saved into (for shared workspace vaults). */
+	vaultName?: string;
+	/** Whether the secret will be saved into a shared workspace vault. */
+	shared?: boolean;
 }
 
 /**
@@ -2170,6 +2252,33 @@ export interface VaultDescribe {
 	about: string;
 	/** Its about as it was when asked ("": none). */
 	wasAbout: string;
+}
+
+/** A cross-workspace personal secret browse request or its approved counts. */
+export interface VaultBrowse {
+	/** Optional workspace hint requested by the agent. */
+	workspace?: string;
+	/** Number of distinct source workspaces shared once approved. */
+	workspaces?: number;
+	/** Number of personal secret listings shared once approved. */
+	items?: number;
+}
+
+/** Source workspace and personal vault metadata for a cross-workspace secret request. */
+export interface VaultCross {
+	/** Source workspace id holding the personal secret. */
+	workspace: string;
+	/** Source workspace display name. */
+	workspaceName: string;
+	/** Source personal vault display name. */
+	vaultName: string;
+}
+
+/** A keyed vault a secret_save card may save into. */
+export interface VaultTarget {
+	id: string;
+	name: string;
+	workspace?: boolean;
 }
 
 /** An agent's request to use a vault item, or to keep one, as its card in the chat says it (station/src/vault/secrets.ts). */
@@ -2210,16 +2319,28 @@ export interface VaultAsk {
 	 * one to keep (`answer` approve or setUp).
 	 */
 	remove?: boolean;
+	/** A request to list the person's personal secrets from other workspaces for this chat (`secret_list` other_workspaces). */
+	browse?: VaultBrowse;
+	/** A request to use a personal secret from another workspace. */
+	cross?: VaultCross;
+	/** With `browse` pending: how many other workspaces have eligible personal secrets on this device. */
+	browseWorkspaces?: number;
+	/** With `browse` pending: how many eligible personal secrets exist across other workspaces on this device. */
+	browseItems?: number;
 	/** Another station of the workspace its commands run on (a secret to keep: the one its command read it on), by name. */
 	station?: string;
 	/**
 	 * How it is answered on this device, from the vault as the core holds it (views/vault.ts askAnswers): approve
 	 * (允许 / 存入), setUp (a secret to keep while this device's vault is not on: 开启密钥库 first), elsewhere (approved only in an
-	 * app that keeps keys), notHere (a secret to keep not sealed to this device: approved on another, VaultRequest `notHere`). The chat's cards; absent on a core from before.
+	 * app that keeps keys), notHere (a secret to keep not sealed to this device: approved on another, VaultRequest `notHere`), noKey
+	 * (this device does not hold a key to this encrypted vault yet: cannot approve/save/change/remove here, VaultRequest `noKey`),
+	 * empty (browse request with no eligible personal secrets in other workspaces on this device). The chat's cards; absent on a core from before.
 	 */
 	answer?: string;
 	/** With answer approve, a use: the longest it may be given for (once | hour | chat). */
 	lasts?: string;
+	/** With answer approve, a save when more than one keyed vault exists: personal vaults first, workspace vaults after. */
+	saveTargets?: VaultTarget[];
 }
 
 /** A site's sign-in asked of the person on a card, as it stands. */

@@ -92,6 +92,24 @@ pub(all) struct VizHears {
 }
 
 ///|
+/// Small back-and-forth height reports on an inline page (viz_said): once a page reverses direction
+/// `viz_osc_limit` times within 64 px (a ResizeObserver / sub-pixel feedback loop), hold it at the
+/// tallest height seen until a larger genuine resize arrives.
+priv struct VizOsc {
+  mut dir : Int
+  mut flips : Int
+  mut hi : Int
+  mut held : Bool
+}
+
+///|
+// kept across runs: cleared on viz_close and viz_pages_reset
+let viz_osc : Map[Int, VizOsc] = Map([])
+
+///|
+let viz_osc_limit : Int = 6
+
+///|
 /// What a page's view says, read (it says what it likes: a field that is not what it should be is let go).
 pub fn viz_said(f : VizFrame, hears : VizHears, words : String) -> Unit {
   let m = match (try Some(@json.parse(words)) catch { _ => None }) {
@@ -104,9 +122,53 @@ pub fn viz_said(f : VizFrame, hears : VizHears, words : String) -> Unit {
         match m.get("height") {
           Some(Number(h, ..)) if h == h && h < 1.0e9 && h > 0.0 => {
             let tall = h.ceil().to_int()
+            if f.shown && tall == f.said_height {
+              return
+            }
             // held, it stays so until its content is shorter than where it was held
             if f.grown > viz_runaway && tall >= f.said_height {
               return
+            }
+            let id = f.view.id()
+            match viz_osc.get(id) {
+              Some(o) if o.held =>
+                if (tall - o.hi).abs() <= 64 {
+                  return
+                } else {
+                  viz_osc.remove(id)
+                }
+              _ => ()
+            }
+            if f.said_height > 0 {
+              let delta = tall - f.said_height
+              if delta.abs() <= 64 {
+                let step_dir = if delta > 0 { 1 } else { -1 }
+                let o = match viz_osc.get(id) {
+                  Some(o) => o
+                  None => {
+                    let o : VizOsc = { dir: 0, flips: 0, hi: f.said_height, held: false }
+                    viz_osc[id] = o
+                    o
+                  }
+                }
+                if tall > o.hi {
+                  o.hi = tall
+                }
+                if o.dir != 0 && o.dir != step_dir {
+                  o.flips += 1
+                }
+                o.dir = step_dir
+                if o.flips >= viz_osc_limit {
+                  o.held = true
+                  f.said_height = o.hi
+                  f.height = o.hi
+                  f.shown = true
+                  f.said.set(o.hi)
+                  return
+                }
+              } else {
+                viz_osc.remove(id)
+              }
             }
             f.grown = if f.said_height > 0 && tall > f.said_height && tall - f.said_height <= 64 {
               f.grown + 1
@@ -117,8 +179,12 @@ pub fn viz_said(f : VizFrame, hears : VizHears, words : String) -> Unit {
               return
             }
             f.said_height = tall
-            // only a height it did not creep to is kept: one kept mid-run would start the next load's run further on
-            if f.grown == 0 {
+            // only a height it did not creep or oscillate to is kept: one kept mid-run would start the next load's run further on
+            let oscillating = match viz_osc.get(id) {
+              Some(o) => o.flips > 0
+              None => false
+            }
+            if f.grown == 0 && !oscillating {
               viz_heights[f.html] = tall
             }
             f.height = tall
@@ -162,119 +228,7 @@ pub fn viz_said(f : VizFrame, hears : VizHears, words : String) -> Unit {
 }
 
 ///|
-/// The page of `html` (what its widget kept: `state`) drawn as `key`: as tall as its content (`fill`: the room it is
-/// given), shown once it has drawn itself. Made once per place: a new page would lose what it holds; the theme is told
-/// to it as it changes.
-pub fn viz_frame(
-  c : @ui.Ctx,
-  key : String,
-  html : String,
-  state : Json?,
-  hears : VizHears,
-  fill? : Bool = false,
-  ground? : Int64 = @sf.theme().p.bg,
-) -> Unit {
-  let dark = @sf.theme().dark
-  // (by the page it is drawn in, not by an id of where it is built: a chat's row is scoped by its index, and older
-  // messages come in before it as its chat is read back, which made the page again, loaded anew, the one before kept
-  // hidden; outside a page, by where it is built)
-  let owner = if c.page_owner() != 0 { c.page_owner() } else { c.id("viz/owner/" + key) }
-  let f = viz_frame_of(key, html, state, hears, owner, fill~, ground~)
-  if f.owner != Some(owner) {
-    f.owner = Some(owner)
-    c.on_page_release("viz/owner/" + key, fn() {
-      if f.owner == Some(owner) {
-        f.owner = None
-      }
-    })
-  }
-  // the theme told only when it changes (a page told it as it loads draws again: a chart redrawn)
-  if viz_theme_news(f, dark, ground) {
-    c.tell("viz/theme/" + key + "/" + owner.to_string(), fn() { viz_theme_tell(f, dark, ground) })
-  }
-  // a whole page (or a fragment that never says its height) is shown once it has loaded
-  if f.view.state() == 1 && (f.page || f.height == 0) {
-    f.shown = true
-  }
-  // what is under it shows till it has drawn itself: the ground (a page's paper), drawn over it; and till its host has
-  // drawn it (host_done: its first frame on the screen), as a page that has loaded, or said its height, is not drawn
-  // yet: the empty view showed through for a frame or more
-  let cover = fn(style : @ui.Style) {
-    if !f.shown || !f.view.host_done() {
-      c.layer(fn() { c.box(style~, fn() {  }) |> ignore }) |> ignore
-    }
-  }
-  if fill {
-    c.box(style=viz_fill, fn() {
-      c.native(f.view) |> ignore
-      cover(viz_ground)
-    })
-    |> ignore
-  } else if f.page {
-    // a whole page sizes itself to its window: in a message a screen-shaped one (16:9 of the message's width, at most
-    // 80% of the screen's height), its corners the card's, on the paper
-    let box = c.id("viz/box/" + key)
-    let w = match c.laid_size(box) {
-      Some((w, _)) => w
-      None => c.width
-    }
-    let h = dmin((w * viz_page_ratio).floor(), (c.height * viz_page_most).floor())
-    c.box(style=viz_page_frame.then(@ui.style(h=Fixed(h))), id=box, taps=false, fn() {
-      c.native(f.view) |> ignore
-      cover(viz_paper_cover)
-      viz_reveal(c, f, w, h, fn(w, h) {
-        c.box(style=viz_paper_cover.then(@ui.style(w=Fixed(w), h=Fixed(h))), fn() {  })
-      })
-    })
-    |> ignore
-  } else {
-    let said = (if f.height > 0 { f.height } else { viz_first_height }).to_double()
-    // as tall as it said, from the height it had as it says another: a move for its cause, so what is over and under
-    // it in a list goes there with it, not in one frame (rows_steady.mbt); on the list's way where it has one (a row's
-    // own content, as under_post's)
-    let tall = @motion.anim(c, "viz-h/" + key + "/" + owner.to_string(), said, global=true)
-    if tall.target() != said {
-      match c.row_way() {
-        Some(way) => on_row_way(c, tall, said, way)
-        None => tall.animate(c, said, @motion.moved(over=(said - tall.get(c)).abs()))
-      }
-    }
-    let h = tall.get(c)
-    // till it has drawn itself, its place as while its file came (the line's grey, breathing, its corners the
-    // placeholder's, the view's hole cut to them): not an empty gap (the user, 2026-10-29)
-    let waiting = !f.shown || !f.view.host_done()
-    let frame = @ui.style(w=Full, h=Fixed(h))
-    let box = c.id("viz/box/" + key)
-    let w = match c.laid_size(box) {
-      Some((w, _)) => w
-      None => c.width
-    }
-    c.box(style=frame, id=box, fn() {
-      // (its corners the placeholder's till what it waited on has gone from over it)
-      let rounded = waiting || f.reveal is Some(_)
-      c.native(f.view, radius=if rounded { c.theme().corner(Xl) } else { 0.0 }) |> ignore
-      viz_reveal(c, f, w, h, fn(w, h) {
-        c.box(style=viz_wait_ground.then(@ui.style(w=Fixed(w), h=Fixed(h))), fn() {
-          c.box(style=viz_wait_fill, fn() {  }) |> ignore
-        })
-      })
-      if waiting {
-        c.layer(fn() {
-          c.box(style=viz_wait_ground, fn() {
-            let i = c.box(style=viz_wait_fill, fn() {  })
-            @sf.breathe(c, i)
-          })
-          |> ignore
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-  }
-}
-
-///|
-/// The frame of `html` drawn as `key` by `owner` (viz_frame's, and a node's: viz_node): the one it has, else one no
+/// The frame of `html` drawn as `key` by `owner` (a node's: viz_node): the one it has, else one no
 /// other has now (a chat's kept as it was left: the same view, not loaded again), else one made, a view of its own for
 /// each copy drawn at once.
 pub fn viz_frame_of(
@@ -370,70 +324,13 @@ pub fn viz_theme_tell(f : VizFrame, dark : Bool, ground : Int64) -> Unit {
 }
 
 ///|
-/// A page come in once it has drawn itself, as a message's image once decoded (sfpages image_reveal, the web's
-/// msgImageReveal; the user, 2026-10-29: inline html 的渲染显示要参考图片的展示逻辑): what it waited under (`waited`,
-/// `w` by `h`) brushed off from its top, an edge half its height deep going down it over 1100 ms (the ease out), and
-/// fading out from 800 ms (300 ms). A view drawn by its host is neither blurred nor scaled, as the image is: the
-/// edge alone brings it in. One drawn already as it is first shown again (its chat kept) comes as it is.
-fn viz_reveal(c : @ui.Ctx, f : VizFrame, w : Double, h : Double, waited : (Double, Double) -> Int) -> Unit {
-  let a = match f.reveal {
-    Some(a) => a
-    None => return
-  }
-  if !f.shown || !f.view.host_done() {
-    return
-  }
-  if a.target() == 0.0 {
-    a.animate(c, 1.0, @motion.tween(viz_reveal_ms, ease=Linear))
-  }
-  let p = a.get(c)
-  if p >= 1.0 {
-    f.reveal = None
-    return
-  }
-  let e = @ui.Out.at(p)
-  let gone = 1.0 - dmin(1.0, dmax(0.0, (p * viz_reveal_ms - viz_reveal_wait_after_ms) / viz_reveal_wait_out_ms))
-  if gone <= 0.0 {
-    return
-  }
-  // (each step on the screen's pixels: one meets the next with no seam)
-  let px_of = fn(y : Double) { (y * c.scale).round() / c.scale }
-  let strip = fn(y0 : Double, y1 : Double, alpha : Double) {
-    let y0 = px_of(dmax(0.0, y0))
-    let y1 = px_of(dmin(h, y1))
-    if y1 <= y0 || alpha <= 0.0 {
-      return
-    }
-    // (each laid out from the page's top, as a layer is: not under the one before)
-    c.layer(fn() {
-      if y0 > 0.0 {
-        c.box(style=@ui.style(w=Full, h=Fixed(y0)), fn() {  }) |> ignore
-      }
-      let s = c.box(style=@ui.style(w=Full, h=Fixed(y1 - y0), clip=true), fn() {
-        c.look(waited(w, h), @ui.look(dy=-y0))
-      })
-      c.look(s, @ui.look(alpha=alpha * gone))
-    })
-    |> ignore
-  }
-  let band = h * 0.5
-  let top = -band + (h + band) * e
-  let step = band / viz_reveal_steps.to_double()
-  for k in 0..<viz_reveal_steps {
-    let y = top + k.to_double() * step
-    strip(y, y + step, (k.to_double() + 0.5) / viz_reveal_steps.to_double())
-  }
-  strip(top + band, h, 1.0)
-}
-
-///|
 /// A page come in once it has drawn itself as nodes, over its frame in `parent` (a layer of the frame's room, what goes
 /// past it cut): viz_reveal's, set out at `from` (the moment it was told drawn) for viz_reveal_ms, what it waited under
 /// (the placeholder: a whole page's paper, else the line's grey on the chat's ground, their corners the placeholder's)
 /// brushed off from its top, an edge half its height deep going down it (the ease out) in viz_reveal_steps steps, and
 /// fading out from 800 ms (300 ms). Each strip on the screen's pixels, one meeting the next with no seam; each worked out
 /// of the frame's height as it is drawn (View::moved_by), nothing laid out again for it.
-pub fn viz_reveal_node(parent : @view.View, page : Bool, from : Double) -> Unit {
+pub fn viz_reveal_node(parent : @view.View, page : Bool, _from : Double) -> Unit {
   // (cut to the frame, its corners the placeholder's where it is a fragment's)
   parent
   .over(Is(true))
@@ -442,45 +339,17 @@ pub fn viz_reveal_node(parent : @view.View, page : Bool, from : Double) -> Unit 
   .clips(Is(true))
   .radius(By(fn() { if page { 0.0 } else { @ui.tree_theme().corner(Xl) } }))
   |> ignore
-  let way = @motion.Eased::new(0.0)
-  way.go(parent, 1.0, viz_reveal_ms, ease=Linear)
-  // (how far in at `t`, eased out: viz_reveal's `e`)
-  let e_at = fn(t : Double) { @ui.Out.at(dmin(1.0, dmax(0.0, (t - from) / viz_reveal_ms))) }
-  let ends = fn(_w : Double, _h : Double) { from + viz_reveal_ms }
-  // (how much of what it waited under is still there as it is drawn)
-  let gone = fn(n : @view.View) {
-    let p = way.shown(n)
-    1.0 - dmin(1.0, dmax(0.0, (p * viz_reveal_ms - viz_reveal_wait_after_ms) / viz_reveal_wait_out_ms))
-  }
-  let steps = viz_reveal_steps.to_double()
-  // strip `k` of the edge (`k` = steps: all of it under the edge), a share of the frame's height (`share`: the frame
-  // `share`'s inverse times as tall as it), at `alpha` of what is left: what it waited under (a whole page's paper, a
-  // fragment's line grey), its top worked out of the frame's height as it is drawn
-  let strip = fn(k : Int, share : Double, alpha : Double) {
-    parent.box(fn(s) {
-      s.over(Is(true)).fills_across(Is(true)).height_share(Is(share)) |> ignore
-      s
-      .ground(By(fn() {
-        @ui.tree_theme().color(if !page { Line } else if @sf.theme().dark { @sf.viz_paper_dark } else { @sf.viz_paper })
-      }))
-      .alpha(By(fn() { alpha * gone(s) }))
-      // (its top, from the frame's: the edge's top, k steps down it, on the screen's pixels)
-      .moved_by(
-        fn(_w, h, t) {
-          let frame = h / share
-          let y = frame * (-0.5 + 1.5 * e_at(t)) + k.to_double() * frame * 0.5 / steps
-          (0.0, (y * s.pixel_scale()).round() / s.pixel_scale())
-        },
-        ends,
-      )
-      |> ignore
-    })
-    |> ignore
-  }
-  for k in 0..<viz_reveal_steps {
-    strip(k, 0.5 / steps, (k.to_double() + 0.5) / steps)
-  }
-  strip(viz_reveal_steps, 1.0, 1.0)
+  @motion.curtain_reveal(
+    parent,
+    fn() { true },
+    fn() {
+      @ui.tree_theme().color(if !page { Line } else if @sf.theme().dark { @sf.viz_paper_dark } else { @sf.viz_paper })
+    },
+    duration_ms=viz_reveal_ms,
+    wait_after_ms=viz_reveal_wait_after_ms,
+    wait_out_ms=viz_reveal_wait_out_ms,
+    steps=viz_reveal_steps,
+  )
 }
 
 ///|
@@ -534,9 +403,14 @@ pub fn viz_close(prefix : String) -> Unit {
   let gone = []
   for k, f in viz_frames {
     if k.has_prefix(prefix) {
+      viz_osc.remove(f.view.id())
       f.view.close()
       match viz_extra_frames.get(k) {
-        Some(extras) => for extra in extras { extra.view.close() }
+        Some(extras) =>
+          for extra in extras {
+            viz_osc.remove(extra.view.id())
+            extra.view.close()
+          }
         None => ()
       }
       gone.push(k)
@@ -582,19 +456,6 @@ fn viz_shown_again(key : String) -> Unit {
   }
 }
 
-///|
-/// One of the ways under a page: a 22 box (corners Smooth 6), a 14 icon in the frame's subtle grey; named
-/// `label`, said over it while it is pointed at.
-pub fn viz_icon(c : @ui.Ctx, id : Int, icon : String, label : String, subtle : Int64) -> Unit {
-  let b = c.box(style=viz_way, id~, fn() {
-    @sf.icon(c, icon, size=14.0, color=subtle) |> ignore
-    // VizFiles.kt: clip(Smooth(6)).clickable
-    @motion.ripple(c, id, 6.0)
-  })
-  c.semantics(b, Button, id~, label~)
-  @sf.tip(c, "viz-way/" + id.to_string(), id, label)
-}
-
 // ── in a message ─────────────────────────────────
 
 ///|
@@ -605,76 +466,6 @@ pub fn viz_follow_up(station : String, session : String) -> (String) -> Bool {
   fn(words) {
     draft_give(station + ":" + session, Followed(words))
     true
-  }
-}
-
-
-///|
-/// The visualization a message of chat `session` on `station` places, kept by session `key`, drawn there; the ways
-/// under it in `subtle` (the frame's grey).
-pub fn viz_file_of(
-  c : @ui.Ctx,
-  src : Source,
-  station : String,
-  session : String,
-  key : String,
-  ts : String,
-  a : Attachment,
-  failed : () -> Unit,
-  subtle : Int64,
-) -> Unit {
-  let t = @sf.theme()
-  match viz_load(c, src, station, key, a.path, size=a.size) {
-    Some(Err(_)) => failed()
-    // its place, breathing as every wait's shapes, till the page comes
-    None =>
-      c.box(style=viz_wait_under, fn() {
-        let i = c.box(style=viz_wait, fn() {  })
-        @sf.breathe(c, i)
-      })
-      |> ignore
-    Some(Ok((html, state))) => {
-      let place = "chat/" + station + ":" + session + "/" + ts + "/" + a.path
-      c.box(style=viz_file_box, fn() {
-        match viz_mbui_parse(a.name, html) {
-          Some(widget) =>
-            viz_mbui_ctx(c, place, widget, state.unwrap_or(Json::null()), {
-              keep: Some(fn(s) { viz_keep(src, station, key, a.path, s) }),
-              failed: None,
-              follow_up: Some(viz_follow_up(station, session)),
-            })
-          None => {
-            if is_mbui_viz(a.name) {
-              failed()
-              return
-            }
-            viz_frame(c, place, html, state, {
-              keep: Some(fn(s) { viz_keep(src, station, key, a.path, s) }),
-              failed: None,
-              follow_up: Some(viz_follow_up(station, session)),
-            })
-          }
-        }
-        // under the page, out of its way: the ways to open it on its own, icons in the chat's grey
-        c.box(style=viz_ways, fn() {
-          let full = c.id("viz/full/" + place)
-          c.on_press(full, fn() { viz_open_full(a.name, station, key, a.path, session) })
-          viz_icon(c, full, "expand", viz_tr("android-misc.viz.fullscreen"), subtle)
-          let aside = c.id("viz/aside/" + place)
-          c.on_press(aside, fn() {
-            if is_mbui_viz(a.name) {
-              open_preview(station, key, a, steps=InChat(None, session), beside=true)
-            } else {
-              open_page(PreviewFile(station, key, a.path, a.name))
-            }
-          })
-          viz_icon(c, aside, "panel-open", viz_tr("android-misc.viz.openAside"), subtle)
-        })
-        |> ignore
-      })
-      |> ignore
-      ignore(t)
-    }
   }
 }
 
@@ -742,8 +533,8 @@ pub let viz_full : @signals.Signal[VizFull?] = @signals.signal(None)
 ///|
 /// Visualization `name` (at `path`, sent by session `key` of chat `session` on `station`) opened as a press asks: where
 /// the shell has a side panel for the page in view, a tab there (a page's: PreviewFile; a `.mbui` / `.wasm` mini-program
-/// a file's), over the whole window as that tab where `full` asks it (its 全屏; by default the command key held:
-/// full_held); else, or beside the system's bars (an iPhone Duo's), over the whole window on its own (`linked`: opened
+/// a file's), over the whole window as that tab where `full` asks it (its 全屏; by default unless the command key is
+/// held: full_asked); else, or beside the system's bars (an iPhone Duo's), over the whole window on its own (`linked`: opened
 /// by a link in a sentence, its wait said under the words).
 pub fn viz_open(
   name : String,
@@ -754,7 +545,7 @@ pub fn viz_open(
   linked? : Bool = false,
   full? : Bool,
 ) -> Unit {
-  let full = full.unwrap_or(full_held())
+  let full = full.unwrap_or(full_asked())
   if is_mbui_viz(name) || is_mbui_viz(path) {
     let a : Attachment = {
       name: if name != "" { name } else { base_name(path) },
@@ -888,7 +679,7 @@ fn viz_full_shown(n : @view.View, src : Source, full : VizFull, html : String, s
       })
     }
   })
-  let width = fn() { n.window().0 }
+  let width = fn() { n.window_w() }
   let room = fn() { (@sf.viewer_host().room)() }
   n.box(fn(page) {
     @sf.style_node(page, fn() { viz_ground })
@@ -1039,7 +830,12 @@ pub fn viz_pages_reset() -> Unit {
   viz_extra_frames.clear()
   viz_left_chats.clear()
   viz_heights.clear()
+  viz_osc.clear()
   viz_mbui_states_clear()
   viz_full.set(None)
   mermaid_charts.clear()
+  mermaid_used.clear()
+  mermaid_shown.clear()
+  mermaid_tick.val = 0
+  mermaid_bytes.val = 0
 }

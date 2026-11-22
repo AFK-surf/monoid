@@ -4,25 +4,67 @@
 ///|
 /// What style `look` says (its base, the theme's as it is now: read again as that changes) laid on node `v`: a row or a
 /// column, its size (`in_row`: what holds it lays what it holds in a row, so `w=Full` takes what is left along it, else
-/// fills it across; `h=Full` the other way; `w=Cut` cut short where it has not the room), its least and most, its
+/// fills it across; `h=Full` the other way; when omitted, read from `v.in_row()` only where `w` or `h` is `Full` or
+/// `Grow(_)`; `w=Cut` cut short where it has not the room), its least and most, its
 /// padding and margin, the room between what it holds and how that lines up across it and lies along it (spread
 /// between its ends too), its corner, its ground, its border (an edge round its ground) and whether it cuts what it
 /// holds. What no node is laid out by is a fault (style_of). What it has never said is left as the node has it; what it
 /// said once and says no more is put back to none (no ground, a corner of 0, ...).
 #callsite(autofill(loc))
-pub fn style_node(v : @view.View, look : () -> @ui.Style, in_row? : Bool = false, loc~ : SourceLoc) -> Unit {
+pub fn style_node(v : @view.View, look : () -> @ui.Style, in_row? : Bool, loc~ : SourceLoc) -> Unit {
   // (all of it set together, in one binding, set again where it comes out otherwise as what it reads changes (the
   // theme, mostly): a binding each would be made and let go with every node for what changes with the theme alone.
   // What it has said so far, at any time, decides what it sets: `was`'s `says`)
   let was : Ref[StyleSet?] = Ref(None)
+  let at = v.container_corner()
   v
-  .sets_together(fn() { style_of(look().base, in_row, loc) }, fn(s) {
-    style_set(v, was.val, s, loc)
-    was.val = Some(match was.val {
-      Some(w) => { ..s, says: w.says.joined(s.says) }
-      None => s
-    })
-  })
+  .sets_together(
+    fn() {
+      let q = look().base
+      style_of(q, style_in_row(v, q, in_row), at, loc)
+    },
+    fn(s) {
+      style_set(v, was.val, s, loc)
+      was.val = Some(match was.val {
+        Some(w) => { ..s, says: w.says.joined(s.says) }
+        None => s
+      })
+    },
+  )
+  |> ignore
+}
+
+///|
+/// style_node's, with what `also` says set by `set_also` in the same one binding (a property of the node's own the style
+/// says nothing of: a message's picture held at a top as it is laid out in the margin, none inline): what every row of
+/// a list sets so binds nothing more for it.
+#callsite(autofill(loc))
+pub fn[T : Eq] style_node_and(
+  v : @view.View,
+  look : () -> @ui.Style,
+  also : () -> T,
+  set_also : (T) -> Unit,
+  in_row? : Bool,
+  loc~ : SourceLoc,
+) -> Unit {
+  let was : Ref[StyleSet?] = Ref(None)
+  let at = v.container_corner()
+  v
+  .sets_together(
+    fn() {
+      let q = look().base
+      (style_of(q, style_in_row(v, q, in_row), at, loc), also())
+    },
+    fn(p) {
+      let (s, a) = p
+      style_set(v, was.val, s, loc)
+      was.val = Some(match was.val {
+        Some(w) => { ..s, says: w.says.joined(s.says) }
+        None => s
+      })
+      set_also(a)
+    },
+  )
   |> ignore
 }
 
@@ -34,24 +76,47 @@ fn style_node_ring(
   v : @view.View,
   look : () -> @ui.Style,
   ring : () -> (Double, Double, Int64),
-  in_row? : Bool = false,
+  in_row? : Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   let was : Ref[StyleSet?] = Ref(None)
   let rung : Ref[(Double, Double, Int64)?] = Ref(None)
+  let at = v.container_corner()
   v
-  .sets_together(fn() { (style_of(look().base, in_row, loc), ring()) }, fn(sr) {
-    style_set(v, was.val, sr.0, loc)
-    was.val = Some(match was.val {
-      Some(w) => { ..sr.0, says: w.says.joined(sr.0.says) }
-      None => sr.0
-    })
-    if rung.val != Some(sr.1) {
-      v.ring(loc~, Is(sr.1)) |> ignore
-      rung.val = Some(sr.1)
-    }
-  })
+  .sets_together(
+    fn() {
+      let q = look().base
+      (style_of(q, style_in_row(v, q, in_row), at, loc), ring())
+    },
+    fn(sr) {
+      style_set(v, was.val, sr.0, loc)
+      was.val = Some(match was.val {
+        Some(w) => { ..sr.0, says: w.says.joined(sr.0.says) }
+        None => sr.0
+      })
+      if rung.val != Some(sr.1) {
+        v.ring(loc~, Is(sr.1)) |> ignore
+        rung.val = Some(sr.1)
+      }
+    },
+  )
   |> ignore
+}
+
+///|
+/// Whether `v` is laid out in a row for patch `q`: an explicit `in_row` wins; otherwise read `v.in_row()` only when `q`
+/// asks for `Full` or `Grow(_)` on `w` or `h` (the only branch `in_row` changes), avoiding a `row_cell` signal on nodes
+/// that only set spacing, colour or borders.
+fn style_in_row(v : @view.View, q : @ui.Patch, in_row : Bool?) -> Bool {
+  match in_row {
+    Some(b) => b
+    None =>
+      if q.w is Some(Full | Grow(_)) || q.h is Some(Full | Grow(_)) {
+        v.in_row()
+      } else {
+        false
+      }
+  }
 }
 
 ///|
@@ -73,7 +138,7 @@ priv struct StyleSet {
   min_h : Double?
   padding : (Double, Double, Double, Double)
   gap : Double
-  lines_up : @view.Along?
+  lines_up : @ui.Align?
   lies_along : @view.Lies
   margin : (Double, Double, Double, Double)
   corner : Double
@@ -143,7 +208,7 @@ fn StyleSays::joined(self : StyleSays, more : StyleSays) -> StyleSays {
 /// them now: the same tokens are another corner and colour in another. What of it a node cannot be laid out by (a share
 /// of what holds it as a size or a bound, a least across as a size) is a fault of the style said at `loc`
 /// (style_wrong), the node laid out as though it had not said it.
-fn style_of(q : @ui.Patch, in_row : Bool, loc : SourceLoc) -> StyleSet {
+fn style_of(q : @ui.Patch, in_row : Bool, at : @view.ContainerCorner?, loc : SourceLoc) -> StyleSet {
   let along = if in_row { q.w } else { q.h }
   let across = if in_row { q.h } else { q.w }
   let fills = across is Some(Full | Grow(_))
@@ -209,12 +274,7 @@ fn style_of(q : @ui.Patch, in_row : Bool, loc : SourceLoc) -> StyleSet {
     min_h,
     padding: style_sides(false, q.p, q.px, q.py, q.pl, q.pt, q.pr, q.pb),
     gap: style_room(q.gap).unwrap_or(0.0),
-    lines_up: match q.align {
-      Some(AStart) => Some(Start)
-      Some(ACenter) => Some(Middle)
-      Some(AEnd) => Some(End)
-      Some(AStretch) | None => None
-    },
+    lines_up: q.align,
     lies_along: match q.justify {
       Some(JStart) | None => Start
       Some(JCenter) => Middle
@@ -223,14 +283,8 @@ fn style_of(q : @ui.Patch, in_row : Bool, loc : SourceLoc) -> StyleSet {
     },
     margin: style_sides(true, q.m, q.mx, q.my, q.ml, q.mt, q.mr, q.mb),
     corner: match q.radius {
-      Some(Inner) => {
-        @view.fault("style_node at \{loc}: radius=Inner is laid on no node")
-        0.0
-      }
-      Some(InnerOr(_)) => {
-        @view.fault("style_node at \{loc}: radius=InnerOr is laid on no node")
-        0.0
-      }
+      Some(Inner) => concentric_fit(at, fn() { 0.0 }, 0.0)
+      Some(InnerOr(own)) => concentric_fit(at, fn() { @ui.tree_theme().corner(own) }, 0.0)
       Some(Around) => {
         @view.fault("style_node at \{loc}: radius=Around is laid on no node")
         0.0
@@ -325,8 +379,8 @@ fn style_set(v : @view.View, was : StyleSet?, s : StyleSet, loc : SourceLoc) -> 
   }
   if style_first(new, before.grow, now.grow) || (before.grow && w.grow != s.grow) {
     v.grow(loc~, Is(s.grow)) |> ignore
-    if style_first(new, before.grow, now.grow) {
-      v.basis(loc~, Is(Some(0.0))) |> ignore
+    if style_first(new, before.grow, now.grow) || (w.grow > 0.0) != (s.grow > 0.0) {
+      v.basis(loc~, Is(if s.grow > 0.0 { Some(0.0) } else { None })) |> ignore
     }
   }
   if style_first(new, before.fills, now.fills) || (before.fills && w.fills != s.fills) {
@@ -353,7 +407,14 @@ fn style_set(v : @view.View, was : StyleSet?, s : StyleSet, loc : SourceLoc) -> 
     v.gap(loc~, Is(s.gap)) |> ignore
   }
   if style_first(new, before.lines_up, now.lines_up) || (before.lines_up && w.lines_up != s.lines_up) {
-    v.lines_up(loc~, Is(s.lines_up)) |> ignore
+    match s.lines_up {
+      Some(AFirstLine) => v.lines_up_first_line(loc~, Is(true)) |> ignore
+      Some(ABaseline) => v.lines_up_baseline(loc~, Is(true)) |> ignore
+      Some(AStart) => v.lines_up(loc~, Is(Some(Start))) |> ignore
+      Some(ACenter) => v.lines_up(loc~, Is(Some(Middle))) |> ignore
+      Some(AEnd) => v.lines_up(loc~, Is(Some(End))) |> ignore
+      Some(AStretch) | None => v.lines_up(loc~, Is(None)) |> ignore
+    }
   }
   if style_first(new, before.lies_along, now.lies_along) || (before.lies_along && w.lies_along != s.lies_along) {
     v.lies_along(loc~, Is(s.lies_along)) |> ignore

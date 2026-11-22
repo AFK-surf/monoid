@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { canonical, entryText } from "../src/lock-form.ts";
-import { lowerRole } from "../../../station/src/cloud/lock.ts";
+import { lowerRole } from "../../../shared/lock.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as rules from "../../../rules/js/rules.js";
 

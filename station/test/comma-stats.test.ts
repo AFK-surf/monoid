@@ -332,8 +332,8 @@ test("the Task index says what a chat asks of whom now, within Comma's bounds, a
   try {
     const many = Array.from({ length: 12 }, (_, i) => `P${i}@X`);
     stats.apply([here([], {}, [
-      { ...chat(7, "need_human"), attention: { kind: "need", waitsFor: ["Bob@X", "bob@x", "not an email", "x".repeat(200) + "@x"], note: "Should 1389 ship?" }, url: "https://still.fail/o/ws/st/a" },
-      { ...chat(8, "all_done"), attention: { kind: "done", waitsFor: ["ann@x"], note: "\u{1F600}".repeat(400) } },
+      { ...chat(7, "need_human"), attention: { kind: "need", card: "login", waitsFor: ["Bob@X", "bob@x", "not an email", "x".repeat(200) + "@x"], note: "Should 1389 ship?" }, url: "https://still.fail/o/ws/st/a" },
+      { ...chat(8, "all_done"), attention: { kind: "done", card: "options", waitsFor: ["ann@x"], note: "\u{1F600}".repeat(400) } },
       { ...chat(9, "ended"), attention: { kind: "failed", waitsFor: many, note: null }, url: "http://localhost/o/ws/st/c" },
       { ...chat(10, "all_done"), archived: true, attention: { kind: "done", waitsFor: ["ann@x"], note: "Merged" }, url: "https://still.fail/o/ws/st/d" },
       { ...chat(11, "working"), attention: { kind: "nudge", waitsFor: ["ann@x"], note: "hi" }, url: `https://still.fail/${"x".repeat(500)}` },
@@ -341,9 +341,9 @@ test("the Task index says what a chat asks of whom now, within Comma's bounds, a
     ])], [], FROM);
     const wire = new Map(stats.tasks.since(0, 10).map(taskWire).map((w: Json) => [w.task, w]));
     const need = wire.get("7");
-    assert.deepEqual([need.attention, need.waits_for, need.note, need.url, need.status], ["need", ["bob@x"], "Should 1389 ship?", "https://still.fail/o/ws/st/a", "needs_review"]);
+    assert.deepEqual([need.attention, need.waits_for, need.note, need.url, need.status, need.labels], ["need", ["bob@x"], "Should 1389 ship?", "https://still.fail/o/ws/st/a", "needs_review", ["card:login"]]);
     const done = wire.get("8");
-    assert.deepEqual([done.attention, done.waits_for, [...done.note].length, done.url], ["done", ["ann@x"], 300, undefined], "a note of 300 characters at most, by code point");
+    assert.deepEqual([done.attention, done.waits_for, [...done.note].length, done.url, done.labels], ["done", ["ann@x"], 300, undefined, []], "a note of 300 characters at most, by code point");
     const failed = wire.get("9");
     assert.deepEqual([failed.attention, failed.waits_for, "note" in failed, "url" in failed], ["failed", many.slice(0, 8).map((m) => m.toLowerCase()), false, false], "8 at most; a link only https");
     const archived = wire.get("10");

@@ -11,7 +11,11 @@ fn whole_long_words(t : @ui.Tester, fragment : String) -> Unit raise {
 ///|
 test "a long station name can be read at the top of its sheet" {
   let t = screen_in("chat-peek", corner_windows[0], "zh", said=true)
-  whole_long_words(t, "Willow — 后面")
+  // Exclude the composer-top capsule's single-line truncated station chip at the bottom.
+  let sheet_titles = t.words().filter(fn(w) { w.0.contains("Willow — 后面") && w.2 < 600.0 && w.5 > 0.5 })
+  assert_eq(sheet_titles.length(), 1, msg="sheet station title: \{Repr(sheet_titles)}")
+  assert_true(sheet_titles[0].4 > 40.0, msg="multi-line sheet station title: \{Repr(sheet_titles[0])}")
+  assert_true(sheet_titles[0].0.contains("wide"), msg="full sheet station title: \{Repr(sheet_titles[0])}")
 }
 
 ///|

@@ -9,7 +9,7 @@
 
 ///|
 /// How the trees kept are read: markdown.ts `MD_READING`, its number raised as what reading makes of a text changes.
-pub let md_reading : Int = 11
+pub let md_reading : Int = 14
 
 ///|
 /// The earliest reading whose trees can still be drawn while read again: markdown.ts `MD_DRAWABLE_FROM`.

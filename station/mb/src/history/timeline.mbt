@@ -59,7 +59,7 @@ fn get(v : @jsjson.JValue?, key : String) -> @jsjson.JValue? {
 ///|
 fn string_of(v : @jsjson.JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.raw_text(s))
+    Some(Str(s)) => Some(s)
     _ => None
   }
 }
@@ -117,15 +117,15 @@ fn pretty(v : @jsjson.JValue?) -> String {
 /// transcript.ts `toText`.
 fn to_text(v : @jsjson.JValue) -> String {
   match v {
-    Str(s) => @jsjson.raw_text(s)
+    Str(s) => s
     Arr(items) =>
       items
       .map(item => {
-        if get(Some(item), "type") is Some(Str(t)) && @jsjson.raw_text(t) == "image" {
+        if get(Some(item), "type") is Some(Str(t)) && t == "image" {
           return "[image]"
         }
         match get(Some(item), "text") {
-          Some(Str(t)) => @jsjson.raw_text(t)
+          Some(Str(t)) => t
           Some(t) => @jsjson.stringify(t)
           None => to_text(item)
         }
@@ -148,35 +148,10 @@ fn kept_whole(tool : String) -> Bool {
 ///|
 /// `new Date(time).toISOString()` of a finite number; raises as it throws past the dates JavaScript has.
 pub fn date_iso(time : Double) -> String raise {
-  let t = if time < 0.0 { -(-time).floor() } else { time.floor() }
-  if t.abs() > 8.64e15 {
-    fail("Invalid time value")
+  match @jsjson.js_iso_checked(time) {
+    Some(s) => s
+    None => fail("Invalid time value")
   }
-  let ms = t.to_int64()
-  let day = 86_400_000L
-  let days = if ms >= 0L { ms / day } else { -((-ms + day - 1L) / day) }
-  let rest = ms - days * day
-  let z = days + 719_468L
-  let era = if z >= 0L { z / 146_097L } else { (z - 146_096L) / 146_097L }
-  let doe = z - era * 146_097L
-  let yoe = (doe - doe / 1460L + doe / 36_524L - doe / 146_096L) / 365L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  let y = yoe + era * 400L + (if m <= 2L { 1L } else { 0L })
-  let pad = (n : Int64, w : Int) => {
-    let s = n.to_string()
-    "0".repeat(if w > s.length() { w - s.length() } else { 0 }) + s
-  }
-  let year = if y >= 0L && y <= 9999L {
-    pad(y, 4)
-  } else if y < 0L {
-    "-" + pad(-y, 6)
-  } else {
-    "+" + pad(y, 6)
-  }
-  "\{year}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(rest / 3_600_000L, 2)}:\{pad(rest / 60_000L % 60L, 2)}:\{pad(rest / 1000L % 60L, 2)}.\{pad(rest % 1000L, 3)}Z"
 }
 
 ///|
@@ -205,7 +180,7 @@ fn dsh_text(content : @jsjson.JValue?) -> String {
   match content {
     Some(Arr(parts)) =>
       parts
-      .map(c => if get(Some(c), "type") is Some(Str(t)) && @jsjson.raw_text(t) == "image" {
+      .map(c => if get(Some(c), "type") is Some(Str(t)) && t == "image" {
         "[image]"
       } else {
         string_of(get(Some(c), "text")).unwrap_or("")
@@ -259,7 +234,7 @@ fn grok_query(text : String) -> String {
 fn cursor_result(result : @jsjson.JValue?) -> String {
   let mut r = result
   if result is Some(Str(s)) {
-    let text = @jsjson.raw_text(s)
+    let text = s
     match (try { Ok(@jsjson.parse(text)) } catch { e => Err(e) }) {
       Ok(v) => r = Some(v)
       Err(_) => return text
@@ -285,7 +260,7 @@ fn cursor_result(result : @jsjson.JValue?) -> String {
   }
   match r {
     None | Some(Null) => ""
-    Some(Str(s)) => @jsjson.raw_text(s)
+    Some(Str(s)) => s
     Some(x) => @jsjson.stringify_pretty(x)
   }
 }
@@ -374,7 +349,7 @@ fn wrapped(text : String) -> Bool {
 /// transcript.ts `typedParts`.
 fn typed_parts(content : @jsjson.JValue?) -> String {
   match content {
-    Some(Str(s)) => @jsjson.raw_text(s)
+    Some(Str(s)) => s
     Some(Arr(blocks)) =>
       blocks
       .filter_map(b => string_of(get(Some(b), "text")))

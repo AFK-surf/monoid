@@ -127,8 +127,7 @@ fn usage_ranks_node(parent : @view.View, core : Core, v : () -> Json?) -> Unit {
       // (out across its room to @sf.corner_inset from its edges, their words in line with its title: ug_rows)
       // (a breakdown in another's place, as a tab's: one pick by the breakdown, its rows going as one with it, never
       // each row of one going as the other's come, which a press saw change twice: switches_still's settings-usage)
-      k.pick(fn() { usage_pick.rank.get() }, fn(ranked, rk) {
-        ranked.box(fn(rows) {
+      k.pick(fn() { usage_pick.rank.get() }, fn(rows, rk) {
         let out = @sf.corner_inset - @sf.card_pad
         rows.margin(Is((out, 0.0, out, 0.0))) |> ignore
         rows.each(
@@ -157,8 +156,6 @@ fn usage_ranks_node(parent : @view.View, core : Core, v : () -> Json?) -> Unit {
           })
           |> ignore
         })
-        })
-        |> ignore
       })
     })
   })
@@ -317,7 +314,7 @@ fn usage_overview_node(parent : @view.View, core : Core, v : () -> Json?, chart 
         |> ignore
         f.show(fn() { items(shown_v(), "tiles").length() >= 4 }, fn(right) {
           right.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(16.0)).padding(Is((0.0, 0.0, 0.0, 2.0))).lines_up(Is(Some(Start))).wraps(Is(Some(10.0))) |> ignore
-          for idx in [2, 3, 1] {
+          let tile_box = fn(idx : Int) {
             right.box(fn(m) {
               let tile = fn() { items(shown_v(), "tiles").get(idx) }
               m.shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(2.0)) |> ignore
@@ -339,6 +336,9 @@ fn usage_overview_node(parent : @view.View, core : Core, v : () -> Json?, chart 
             })
             |> ignore
           }
+          tile_box(2)
+          tile_box(3)
+          tile_box(1)
         })
       })
       |> ignore
@@ -372,20 +372,30 @@ fn usage_prices_link_node(parent : @view.View, core : Core) -> Unit {
 ///|
 /// The days' bars' parts named (with each part's cost) and what they are split by (`按人 | 按模型 | 按账号`).
 fn usage_split_node(parent : @view.View, v : () -> Json?, press : UsagePress) -> Unit {
-  let lists = fn() { items(v(), "lists") }
-  let choices = fn() {
+  let lists_c = @signals.computed(fn(_) { items(v(), "lists") })
+  let choices_c = @signals.computed(fn(_) {
+    let ls = lists_c.get()
     ["people", "models", "profiles"].filter(fn(k) {
-      lists().iter().any(fn(l) { text(Some(l), "key") == k && items(Some(l), "parts").length() > 0 })
+      ls.iter().any(fn(l) { text(Some(l), "key") == k && items(Some(l), "parts").length() > 0 })
     })
-  }
-  let split_labels = fn() {
-    choices().map(fn(k) {
-      match lists().search_by(fn(l) { text(Some(l), "key") == k }) {
-        Some(i) => text(Some(lists()[i]), "title")
+  })
+  let split_labels_c = @signals.computed(fn(_) {
+    let ls = lists_c.get()
+    choices_c.get().map(fn(k) {
+      match ls.search_by(fn(l) { text(Some(l), "key") == k }) {
+        Some(i) => text(Some(ls[i]), "title")
         None => k
       }
     })
-  }
+  })
+  parent.owns(fn() {
+    split_labels_c.dispose()
+    choices_c.dispose()
+    lists_c.dispose()
+  })
+  |> ignore
+  let choices = fn() { choices_c.get() }
+  let split_labels = fn() { split_labels_c.get() }
   // (what each part cost over the days: the core's)
   let series_cost = fn(pv : Json?) -> String { text(pv, "costText") }
   // (the choice beside the legend's first line, its middle on that line's however many lines the legend takes, never
@@ -571,7 +581,7 @@ fn usage_chart_node(parent : @view.View, v : () -> Json?, filtered : () -> Json?
       },
     )
     |> ignore
-    area.show(fn() { area.window().0 >= 380.0 }, fn(scale) {
+    area.show(fn() { area.window_w() >= 380.0 }, fn(scale) {
       let top_val = fn() { number(v(), "top").to_int() }
       scale.height(Is(Some(@sf.usage_plot))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
       @sf.words_node(scale, fn() { "$" + top_val().to_string() }, fn() { ug_scale_label }) |> ignore
@@ -860,7 +870,8 @@ fn usage_body_node(
       } else {
         body.gap(Is(ug_body_gap)) |> ignore
         body.show(details_pending, fn(at) {
-          let sample = fn() { Some(usage_sample()) }
+          let sample_val = Some(usage_sample())
+          let sample = fn() { sample_val }
           @sf.waiting_node(at, fn(s) {
             s.box(fn(details) {
               details.gap(Is(ug_body_gap)) |> ignore
@@ -1035,9 +1046,14 @@ fn usage_year_node(parent : @view.View, av : () -> Json?, weeks : () -> Int, tip
           },
           fn(m) { m.0 },
           fn(b, m) {
-            // (14 high, or as its name's line where the system's size of words draws it higher: a least, which its
-            // words push open)
-            b.grow(By(fn() { m.get().1.to_double() })).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(14.0))).clips(Is(true)) |> ignore
+            // (14 high, or as its name's line where the system's size of words draws it higher: fixed height per row)
+            b
+            .grow(By(fn() { m.get().1.to_double() }))
+            .basis(Is(Some(0.0)))
+            .min_width(Is(Some(0.0)))
+            .height(By(fn() { Some(@cmp.maximum(14.0, @ui.tree_theme().leading(L3).unwrap_or(14.0) * parent.words_scale())) }))
+            .clips(Is(true))
+            |> ignore
             b.show(fn() { m.get().2 != "" }, fn(w) {
               // (none where its weeks have not the room for it: the year's last month, its first week only)
               w.words(By(fn() { m.get().2 })).words_look(Is(@ui.style_words(ug_grid_label))).ink(By(fn() { @ui.style_ink(ug_grid_label) })).shorter(Is([""]))
@@ -1107,17 +1123,15 @@ fn usage_year_node(parent : @view.View, av : () -> Json?, weeks : () -> Int, tip
         p.box(fn(leg) {
           leg.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Middle))) |> ignore
           @sf.words_node(leg, fn() { text(av(), "less") }, fn() { ug_grid_label }) |> ignore
-          for l in 0..<5 {
-            leg.box(fn(c) {
-              c
-              .width(Is(Some(10.0)))
-              .height(Is(Some(10.0)))
-              .radius(By(fn() { @ui.tree_theme().corner(Sm) }))
-              .ground(By(fn() { ink(l) }))
-              |> ignore
-            })
+          leg.each(at_once=true, fn() { [0, 1, 2, 3, 4] }, fn(l) { l }, fn(c, lv) {
+            let l = lv.untracked()
+            c
+            .width(Is(Some(10.0)))
+            .height(Is(Some(10.0)))
+            .radius(By(fn() { @ui.tree_theme().corner(Sm) }))
+            .ground(By(fn() { ink(l) }))
             |> ignore
-          }
+          })
           @sf.words_node(leg, fn() { text(av(), "more") }, fn() { ug_grid_label }) |> ignore
         })
         |> ignore
@@ -1187,7 +1201,7 @@ pub fn usage_node(
   // weeks where it is narrower than 600, as the old view's were by the width it was drawn in)
   let page_w = match width {
     Some(w) => w
-    None => fn() { v.window().0 }
+    None => fn() { v.window_w() }
   }
   let topic_of = fn(ask : (String, Map[String, Json])) { (core.topic)(ask.0, ask.1).get() }
   // (each read as it reads it, saying so where a choice pressed handed it what it asked: sfbase's shown_read)
@@ -1327,7 +1341,8 @@ pub fn usage_node(
               |> ignore
             _ => {
               let quiet = core.quiet()
-              let sample = fn() { Some(usage_sample()) }
+              let sample_val = Some(usage_sample())
+              let sample = fn() { sample_val }
               @sf.waiting_node(p, fn(s) { usage_body_node(s, quiet, sample, sample, fn() { None }, fn() { None }, page_w, choice) })
             }
           }

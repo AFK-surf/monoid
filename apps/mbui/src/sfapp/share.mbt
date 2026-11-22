@@ -101,11 +101,10 @@ let open_app_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, co
 let open_app_box : @ui.Style = @ui.css("px=S5 py=S2 pb=S6")
 
 ///|
-/// Over another app (ShareActivity): what is shared taken, its sheet over that app and nothing else (the window's tree
-/// draws it: share_sheet_node); the toasts.
+/// Over another app (ShareActivity), after the old frame's old views (view_in, which took what is shared before them:
+/// share_in_frame): its sheet over that app and nothing else (the window's tree draws it: share_sheet_node); the toasts.
 fn over_view(c : @ui.Ctx, src : Source) -> Unit {
   ignore(src)
-  share_in_frame(c)
   // a browser's window of its own (the extension's): nothing under the sheet to show, so what it holds is the window's
   // (over_tree's share_window)
   if share_inline() {
@@ -447,7 +446,8 @@ fn share_opened(
     }
     open_page(NewChat)
   } else {
-    app.nav.push(Chat({ station, session, title, station_name: "" }))
+    // (as any chat is opened: the one page of it, its composer once)
+    open_chat({ station, session, title, station_name: "" })
   }
 }
 
@@ -823,7 +823,7 @@ fn shared_words_head_node(h : @view.View, source : String, head : String?, look 
       }
       if alone {
         w.box(fn(b) {
-          @sf.style_node(b, fn() { share_whole.then(@ui.style(pt=@sf.room_of(if look.wide { 0.0 } else { share_alone_over }))) })
+          @sf.style_node(b, fn() { if look.wide { share_whole } else { share_alone_box } })
           @sf.words_node(b, fn() { source }, fn() { share_alone_words }) |> ignore
         })
         |> ignore
@@ -847,6 +847,10 @@ let share_head_row : @ui.Style = @ui.css("row w=Full align=AStart")
 
 ///|
 let share_alone_over : Double = 7.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let share_alone_box : @ui.Style = share_whole.then(@ui.style(pt=@sf.room_of(share_alone_over)))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -933,8 +937,11 @@ let share_tile_px : Int = 512
 let share_files_row : @ui.Style = @ui.css("row w=Full pt=S1 pb=S0_5 gap=S3")
 
 ///|
+let share_files_mark_top : Double = 3.0
+
+///|
 // kept across runs: a value (no field of it changes)
-let share_files_mark : @ui.Style = @ui.css("w=S4 align=ACenter").then(@ui.style(pt=@sf.room_of(3.0)))
+let share_files_mark : @ui.Style = @ui.css("w=S4 align=ACenter").then(@ui.style(pt=@sf.room_of(share_files_mark_top)))
 
 ///|
 let share_files_icon : Double = 16.0

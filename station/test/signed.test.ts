@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { RELEASE_KEYS, Unverified, allowed, expected, keyId, sha256, trustedKeys, verifyFeed, verifySigned } from "../src/updates/signed.ts";
+import { RELEASE_KEYS, Unverified, allowed, expected, keyId, sha256, trustedKeys, verifyFeed, verifySigned } from "../../shared/release-signed.ts";
 import { gunzipSync } from "node:zlib";
 import { storedZip } from "../../scripts/delta.ts";
 import { updateCommand } from "../src/updates/command.ts";

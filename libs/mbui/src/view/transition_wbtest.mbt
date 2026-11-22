@@ -293,3 +293,151 @@ test "transition: what changes outside one after it, before the next frame, is a
     assert_true(!answer_marks_left(), msg="at \{period}: marks left set")
   }
 }
+
+///|
+/// A non-flips page's list in a part said to move only for a cause: a key added outside a transition settles at once,
+/// while one added inside a transition opens on its way.
+fn list_plain_way(period : Double, how : Told) -> Bool {
+  let clock = Ref(0.0)
+  let keys = @signals.signal([1, 2], same=fn(a, b) { a == b })
+  let scroll = Scroll::list()
+  let part : Ref[View?] = Ref(None)
+  let other : Ref[View?] = Ref(None)
+  let added : Ref[View?] = Ref(None)
+  let tree = Tree::new(time=fn() { clock.val }, fn(root) {
+    root.box(fn(col) {
+      col.grow(Is(1.0)) |> ignore
+      col.box(fn(o) { other.val = Some(o) }) |> ignore
+      col.box(fn(p) {
+        part.val = Some(p)
+        p.transitions_only().grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        p.scrolls_window(scroll, fn() { keys.get() }, est=40.0, fn(slot, k) {
+          if k == 3 {
+            added.val = Some(slot)
+          }
+          slot.box(fn(b) { b.height(Is(Some(40.0))) |> ignore }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  while clock.val + period <= 60.0 {
+    clock.val += period
+    tree.frame(390.0, 844.0, now=clock.val) |> ignore
+  }
+  clock.val = 60.0
+  told(how, part.val.unwrap(), other.val.unwrap(), fn() { keys.set([1, 2, 3]) })
+  clock.val += period
+  tree.frame(390.0, 844.0, now=clock.val) |> ignore
+  let way = added.val is Some(_) && part.val.unwrap().comes_end() >= 0.0
+  tree.dispose()
+  way
+}
+
+///|
+test "transition: a non-flips page's list moves only inside a transition" {
+  for period in [1000.0 / 7.0, 1000.0 / 24.0, 1000.0 / 60.0, 1000.0 / 120.0] {
+    assert_true(!list_plain_way(period, Plain), msg="at \{period}: outside a transition, non-flips list row animated")
+    assert_true(list_plain_way(period, Inside), msg="at \{period}: inside a transition, non-flips list row did not animate")
+    assert_true(list_plain_way(period, Within), msg="at \{period}: within its part, non-flips list row did not animate")
+    assert_true(!list_plain_way(period, WithinOther), msg="at \{period}: within another node, non-flips list row animated")
+    assert_true(!answer_marks_left(), msg="at \{period}: marks left set")
+    assert_true(!transition_now(), msg="at \{period}: a transition left told")
+  }
+}
+
+///|
+/// A flips page's list where `comes(k)` is false for an older key (0) prepended in the same transition that removes a
+/// tail key (3): key 0 stays full height (never grows open from 0 as `fresh`).
+fn flip_non_comes_open(period : Double) -> Double {
+  let clock = Ref(0.0)
+  let keys = @signals.signal([1, 2, 3], same=fn(a, b) { a == b })
+  let scroll = Scroll::list()
+  let older_slot : Ref[View?] = Ref(None)
+  let tree = Tree::new(time=fn() { clock.val }, fn(root) {
+    root.transitions_only() |> ignore
+    root.box(fn(p) {
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      p.scrolls_window(
+        scroll,
+        fn() { keys.get() },
+        est=60.0,
+        flips=true,
+        comes=fn(k) { k >= 10 },
+        goes=fn(k) { k == 3 },
+        fn(slot, k) {
+          if k == 0 {
+            older_slot.val = Some(slot)
+          }
+          slot.box(fn(b) { b.height(Is(Some(60.0))) |> ignore }) |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  while clock.val + period <= 60.0 {
+    clock.val += period
+    tree.frame(390.0, 844.0, now=clock.val) |> ignore
+  }
+  clock.val = 60.0
+  transition(fn() { keys.set([0, 1, 2]) })
+  clock.val += period
+  tree.frame(390.0, 844.0, now=clock.val) |> ignore
+  let open_h = match older_slot.val {
+    Some(s) => s.placed_window_now().3
+    None => 0.0
+  }
+  tree.dispose()
+  open_h
+}
+
+///|
+test "transition: flips list never pops open a new key whose comes(k) is false" {
+  for period in [1000.0 / 7.0, 1000.0 / 24.0, 1000.0 / 60.0, 1000.0 / 120.0] {
+    let h = flip_non_comes_open(period)
+    assert_true((h - 60.0).abs() < 0.5, msg="at \{period}: non-comes key popped open at height \{h} instead of 60")
+    assert_true(!answer_marks_left(), msg="at \{period}: marks left set")
+    assert_true(!transition_now(), msg="at \{period}: a transition left told")
+  }
+}
+
+///|
+test "transition: scrolls_window inside laid_nowhere makes no blocks while hidden and lays them out when shown again" {
+  let clock = Ref(0.0)
+  let nowhere = @signals.signal(false, same=fn(a, b) { a == b })
+  let keys = @signals.signal([1, 2, 3], same=fn(a, b) { a == b })
+  let built : Array[Int] = []
+  let tree = Tree::new(time=fn() { clock.val }, fn(root) {
+    root.transitions_only() |> ignore
+    root.box(fn(page) {
+      page.laid_nowhere(By(fn() { nowhere.get() })).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      page.scrolls_window(Scroll::list(), fn() { keys.get() }, est=40.0, fn(slot, k) {
+        built.push(k)
+        slot.box(fn(b) { b.height(Is(Some(40.0))).words(Is("row-\{k}")) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  assert_eq(built, [1, 2, 3])
+  nowhere.set(true)
+  clock.val = 20.0
+  tree.frame(390.0, 844.0, now=clock.val) |> ignore
+  built.clear()
+  keys.set([0, 1, 2, 3])
+  clock.val = 40.0
+  tree.frame(390.0, 844.0, now=clock.val) |> ignore
+  assert_eq(built, [], msg="hidden scrolls_window built blocks while laid_nowhere")
+  nowhere.set(false)
+  clock.val = 60.0
+  tree.frame(390.0, 844.0, now=clock.val) |> ignore
+  assert_true(built.contains(0), msg="uncovered scrolls_window laid out key 0")
+  assert_true(tree.drawn().iter().any(fn(d) { d.words == "row-0" }), msg="row-0 drawn once shown again")
+  tree.dispose()
+}

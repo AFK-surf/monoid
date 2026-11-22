@@ -50,13 +50,22 @@ pub let kimi_token_file : String = "kimi-code.token"
 pub let kimi_code : String = "kimi-code"
 
 ///|
-/// `accessKind`: "subscription", "opencode-go", "anthropic-api", "env" or "api-provider" (another value as it is).
+/// `accessKind`: "subscription", "opencode-go", "anthropic-api", "env", "api-provider" or "service" (another value as it is).
 pub fn access_kind(p : J) -> String {
   match get(access(p), "kind") {
     None | Some(Null) => "env"
     Some(Str(s)) => t(s)
-    Some(other) => stringify(other)
+    Some(other) => @jsjson.jv_js_string(Some(other))
   }
+}
+
+///|
+/// `profileService`: the service id of a `service` profile (None for non-service profiles).
+pub fn profile_service(p : J) -> String? {
+  if access_kind(p) != "service" {
+    return None
+  }
+  nonempty(get(access(p), "service"))
 }
 
 ///|
@@ -417,6 +426,9 @@ pub fn pi_route(p : J) -> PiRoute? {
 /// `profileRuntimes`: the runtimes an account runs.
 pub fn profile_runtimes(p : J) -> Array[String] {
   let kind = access_kind(p)
+  if kind == "service" {
+    return []
+  }
   if kind == "api-provider" {
     guard api_source(profile_via(p)) is Some((source, at)) else { return [] }
     if kimi_signed_in(p) {
@@ -480,4 +492,43 @@ pub fn expand_route(env : Fields, route : String) -> Fields {
     }
   }
   out
+}
+
+///|
+/// accounts/profiles.ts `accessKinds`: the access kinds each runtime can use.
+pub fn access_kinds(runtime : String) -> Array[String] {
+  match runtime {
+    "hermes" => ["env"]
+    "agy" | "grok" => ["subscription", "api-provider", "env"]
+    "claude" => ["subscription", "opencode-go", "anthropic-api", "api-provider", "env"]
+    "dsh" | "pi" => ["opencode-go", "anthropic-api", "api-provider", "env"]
+    "cursor" | "devin" => ["subscription", "env"]
+    _ => ["subscription", "opencode-go", "api-provider", "env"]
+  }
+}
+
+///|
+/// accounts/profiles.ts `keyed`: access kinds that authenticate with a key the profile stores.
+pub fn keyed(kind : String) -> Bool {
+  kind == "opencode-go" || kind == "anthropic-api" || kind == "api-provider"
+}
+
+///|
+/// accounts/profiles.ts `runtimesOf`: the runtimes an access kind runs without its provider.
+pub fn runtimes_of_kind(kind : String, runtime : String?) -> Array[String] {
+  match kind {
+    "service" => []
+    "opencode-go" => ["claude", "codex", "dsh", "pi"]
+    "anthropic-api" => ["claude", "dsh", "pi"]
+    "api-provider" => []
+    _ =>
+      if kind == "subscription" && (runtime == Some("dsh") || runtime == Some("pi")) {
+        []
+      } else {
+        match runtime {
+          Some(r) if r != "" => [r]
+          _ => []
+        }
+      }
+  }
 }

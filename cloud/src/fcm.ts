@@ -7,7 +7,7 @@
 // accounts are FCM_SERVICE_ACCOUNT_MORE (one, or a list): a token is tried with the project it was last sent by, then
 // with the others, and the project that took it is kept with its registration (push.ts).
 import { accessToken, dropToken, serviceAccount, type ServiceAccount } from "./google";
-import type { Outcome } from "./webpush";
+import { errorText, failureWorthTelling, type Outcome, type PushFailed } from "./webpush";
 
 const SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
 
@@ -31,9 +31,12 @@ export function serviceAccounts(json: string | undefined, more: string | undefin
  * chat's notification itself, by its tag). The token is gone when FCM says so (404, UNREGISTERED); "other" when it is
  * another project's app's (SENDER_ID_MISMATCH).
  */
-export async function fcmPush(account: ServiceAccount, token: string, data: Record<string, string>): Promise<Outcome | "other"> {
+export async function fcmPush(account: ServiceAccount, token: string, data: Record<string, string>, told?: PushFailed): Promise<Outcome | "other"> {
   const access = await accessToken(account, SCOPE);
-  if (!access) return "failed";
+  if (!access) {
+    told?.({ error: "no access token" });
+    return "failed";
+  }
   const response = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(account.project_id)}/messages:send`, {
     method: "POST",
     headers: { authorization: `Bearer ${access}`, "content-type": "application/json" },
@@ -48,6 +51,7 @@ export async function fcmPush(account: ServiceAccount, token: string, data: Reco
   if (text.includes("SENDER_ID_MISMATCH")) return "other";
   if (response.status === 404 || text.includes("UNREGISTERED")) return "gone";
   console.warn(`fcm push: ${response.status} ${text.slice(0, 200)}`);
+  if (failureWorthTelling(response.status)) told?.({ status: response.status });
   return "failed";
 }
 
@@ -56,13 +60,14 @@ export async function fcmPush(account: ServiceAccount, token: string, data: Reco
  * came of it, and the project that took it. Gone only when none took it and one said gone; one project's "gone" for a
  * token of another's moves on to the next.
  */
-export async function fcmPushAny(accounts: ServiceAccount[], token: string, known: string | undefined, data: Record<string, string>): Promise<{ outcome: Outcome; app?: string }> {
+export async function fcmPushAny(accounts: ServiceAccount[], token: string, known: string | undefined, data: Record<string, string>, told?: PushFailed): Promise<{ outcome: Outcome; app?: string }> {
   const order = [...accounts.filter((a) => a.project_id === known), ...accounts.filter((a) => a.project_id !== known)];
   let failed = false, gone = false;
   for (const account of order) {
     // A transport failure for one project must still let the token reach its own project.
-    const outcome = await fcmPush(account, token, data).catch((error) => {
+    const outcome = await fcmPush(account, token, data, told).catch((error) => {
       console.warn(`fcm push: ${error}`);
+      told?.({ error: errorText(error) });
       return "failed" as const;
     });
     if (outcome === "sent") return { outcome, app: account.project_id };

@@ -5,32 +5,11 @@
 // `dep.splitDevinFusion`, `dep.devinFusionBase`), which the station gives.
 
 ///|
-pub let runtime_kinds : Array[String] = ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi"]
+pub let runtime_kinds : Array[String] = @agent_runtimes.runtime_kinds
 
 ///|
-/// agents/runtime.ts `runtimeKind`.
-pub fn runtime_kind(v : J?) -> String? {
-  match str_of(v) {
-    Some(s) => if runtime_kinds.contains(s) { Some(s) } else { None }
-    None => None
-  }
-}
-
-///|
-/// agents/runtime.ts `runtimeLabel`: how people call a runtime.
-pub fn runtime_title(r : String) -> String {
-  match r {
-    "claude" => "Claude Code"
-    "codex" => "Codex"
-    "dsh" => "DeepSeek Harness"
-    "grok" => "Grok Build"
-    "cursor" => "Cursor"
-    "hermes" => "Hermes Agent"
-    "agy" => "Antigravity CLI"
-    "pi" => "Pi"
-    _ => "Devin"
-  }
-}
+/// agents/runtime.ts `runtimeKind` and `runtimeLabel`.
+pub using @agent_runtimes {runtime_kind, runtime_label as runtime_title}
 
 ///|
 fn is_absolute(p : String) -> Bool {
@@ -47,12 +26,7 @@ fn under(data_dir : String, path : String) -> String {
 }
 
 ///|
-fn non_empty(v : J?) -> String? {
-  match str_of(v) {
-    Some(s) => if s != "" { Some(s) } else { None }
-    None => None
-  }
-}
+using @jsjson {jval_nonempty as non_empty, js_trunc}
 
 ///|
 /// `String(v)` for what a config's field may be.
@@ -62,7 +36,7 @@ pub fn js_string_of(v : J?) -> String {
     Some(Null) => "null"
     Some(Bool(b)) => if b { "true" } else { "false" }
     Some(Num(d)) => num_text(d)
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(Arr(xs)) => xs.map(x => if x is Null { "" } else { js_string_of(Some(x)) }).join(",")
     Some(Obj(_)) => "[object Object]"
   }
@@ -105,20 +79,9 @@ fn num_or(v : J?, d : Double) -> Double {
 }
 
 ///|
-fn js_trunc(x : Double) -> Double {
-  if x.is_nan() || x.is_inf() {
-    x
-  } else if x < 0.0 {
-    -(-x).floor()
-  } else {
-    x.floor()
-  }
-}
-
-///|
 /// config.json (parsed) as the hub reads it: parse_config's defaults and derivations. `found`: the models a profile's
 /// last check found (by its id).
-pub async fn hub_config(w : World, raw : J, data_dir : String, found : (String) -> Array[String]?) -> J {
+pub async fn hub_config(_w : World, raw : J, data_dir : String, found : (String) -> Array[String]?) -> J {
   let profiles = []
   for p in arr_of(at(Some(raw), "profiles")).unwrap_or([]) {
     let seen : Array[String] = []
@@ -131,18 +94,18 @@ pub async fn hub_config(w : World, raw : J, data_dir : String, found : (String) 
       }
     }
     let base = spread(p, jo([("home", js(under(data_dir, js_string_of(match at(Some(p), "home") { Some(Null) | None => Some(js("")); v => v }))))]))
-    let runtimes = arr_of(Some(w.dep("profileRuntimes", [base]))).unwrap_or([])
+    let runtimes = @agent_runtimes.profile_runtimes(base)
     let runs = models.copy()
     if runtimes.length() > 0 {
       let has : Array[String] = []
       for m in models {
-        has.push(str_of(Some(w.dep("modelKey", [js(m)]))).unwrap_or(""))
+        has.push(@readops.model_key(m))
       }
       for m in found(js_string_of(at(Some(p), "id"))).unwrap_or([]) {
         if m == "" {
           continue
         }
-        let k = str_of(Some(w.dep("modelKey", [js(m)]))).unwrap_or("")
+        let k = @readops.model_key(m)
         if has.contains(k) {
           continue
         }
@@ -165,8 +128,9 @@ pub async fn hub_config(w : World, raw : J, data_dir : String, found : (String) 
     let mut out = base
     out = put(out, "id", at(Some(p), "id"))
     out = put(out, "name", Some(name))
-    out = put(out, "runtime", Some(if runtimes.length() > 0 { runtimes[0] } else { js("claude") }))
-    out = put(out, "runtimes", Some(ja(runtimes)))
+    out = put(out, "runtime", if runtimes.length() > 0 { Some(js(runtimes[0])) } else { None })
+    out = put(out, "service", match @agent_runtimes.profile_service(base) { Some(s) => Some(js(s)); None => None })
+    out = put(out, "runtimes", Some(jsa(runtimes)))
     out = put(out, "models", Some(jsa(runs)))
     out = put(out, "named", Some(jsa(models)))
     out = put(out, "model", match non_empty(at(Some(p), "model")) { Some(m) => Some(js(m)); None => None })
@@ -258,6 +222,10 @@ pub async fn hub_config(w : World, raw : J, data_dir : String, found : (String) 
     Some(Num(x)) if !x.is_nan() && !x.is_inf() && x >= 0.0 => x
     _ => 1.0
   }
+  let max_concurrent_turns = match at(Some(raw), "maxConcurrentTurns") {
+    Some(Num(x)) if !x.is_nan() && !x.is_inf() && x > 0.0 => js_trunc(x)
+    _ => 0.0
+  }
   jo([
     ("dataDir", js(data_dir)),
     ("agentHome", js(agent_home)),
@@ -279,6 +247,7 @@ pub async fn hub_config(w : World, raw : J, data_dir : String, found : (String) 
     ),
     ("warmMs", jn(js_trunc(num_or(at(Some(raw), "warmMinutes"), 30.0) * 60000.0))),
     ("maxWarmClaude", jn(num_or(at(Some(raw), "maxWarmClaude"), 4.0))),
+    ("maxConcurrentTurns", jn(max_concurrent_turns)),
     ("autoArchiveMs", jn(days("autoArchiveDays", 1.0))),
     ("slackArchiveMs", jn(days("slackArchiveDays", 3.0))),
     ("autoArchiveReviewed", jb(at(Some(raw), "autoArchiveReviewed") is Some(Bool(true)))),
@@ -295,61 +264,14 @@ fn strings(v : J?) -> Array[String] {
 
 ///|
 /// shapes model.rs `same`: two spellings are one model.
-pub async fn same_model(w : World, a : String, b : String) -> Bool {
-  a == b || str_of(Some(w.dep("modelKey", [js(a)]))) == str_of(Some(w.dep("modelKey", [js(b)])))
-}
-
-///|
-async fn find_model(models : Array[String], ok : async (String) -> Bool) -> String? {
-  for m in models {
-    if ok(m) {
-      return Some(m)
-    }
-  }
-  None
+pub async fn same_model(_w : World, a : String, b : String) -> Bool {
+  @session_hub.same_model(a, b)
 }
 
 ///|
 /// Its own spelling of a model it runs, however the model is spelled.
-pub async fn spelling(w : World, profile : J, model : String) -> String? {
-  let models = strings(at(Some(profile), "models"))
-  let runtimes = strings(at(Some(profile), "runtimes"))
-  match find_model(models, async fn(m) { m == model }) {
-    Some(d) => return Some(d)
-    None => ()
-  }
-  match find_model(models, async fn(m) { same_model(w, m, model) }) {
-    Some(d) => return Some(d)
-    None => ()
-  }
-  if runtimes.contains("agy") {
-    let base = str_of(at(Some(w.dep("agyBaseModel", [js(model)])), "model")).unwrap_or("")
-    return find_model(models, async fn(m) {
-      m == base ||
-      same_model(w, m, base) ||
-      str_of(at(Some(w.dep("agyBaseModel", [js(m)])), "model")) == Some(base)
-    })
-  }
-  if runtimes.contains("devin") {
-    let split = w.dep("splitDevinFusion", [js(model)])
-    if split is Obj(_) {
-      let lead = str_of(at(Some(split), "lead")).unwrap_or("")
-      let side = str_of(at(Some(split), "side")).unwrap_or("")
-      let base = "fusion-\{lead}-sidekick-\{side}"
-      let matched = find_model(models, async fn(m) {
-        m == base ||
-        same_model(w, m, base) ||
-        str_of(at(Some(w.dep("devinFusionBase", [js(m)])), "model")) == Some(base)
-      })
-      if matched is Some(_) {
-        return Some(base)
-      }
-      if find_model(models, async fn(m) { m == lead || same_model(w, m, lead) }) is Some(_) {
-        return Some(base)
-      }
-    }
-  }
-  None
+pub async fn spelling(_w : World, profile : J, model : String) -> String? {
+  @session_hub.spelling(profile.to_json(), model)
 }
 
 ///|
@@ -361,24 +283,7 @@ pub async fn runs(w : World, profile : J, model : String) -> Bool {
 ///|
 /// Whether sessions of workspace `ws` (None: the home one's) may run on a profile.
 pub fn allowed_in(profile : J, ws : String?, home : String?) -> Bool {
-  let share = at(Some(profile), "share")
-  let only = if at(share, "borrowed") is Some(Bool(true)) {
-    arr_of(at(share, "workspaces"))
-  } else {
-    None
-  }
-  let at_ = match ws {
-    Some(w) => Some(w)
-    None => home
-  }
-  match (only, at_) {
-    (Some(list), Some(a)) => if !list.iter().any(x => x is Str(u) && @jsjson.text(u) == a) { return false }
-    _ => ()
-  }
-  match (ws, home) {
-    (None, _) | (_, None) => true
-    (Some(w), Some(h)) => w == h || !strings(at(Some(profile), "withheld")).contains(w)
-  }
+  @session_hub.allowed_in(profile.to_json(), ws, home)
 }
 
 ///|

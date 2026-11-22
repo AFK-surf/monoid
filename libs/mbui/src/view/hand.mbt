@@ -31,6 +31,9 @@ pub fn Tree::lit_all(self : Tree, on : Bool) -> Unit {
     }
   }
   @signals.end_batch()
+  if !on && !self.eager_settle() && self.moves_causes > 0 {
+    self.settle_layout_at(self.logic)
+  }
 }
 
 ///|

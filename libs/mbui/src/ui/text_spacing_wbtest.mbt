@@ -426,3 +426,16 @@ test "view_made glyph_x uses glyph_origin_x for words_halo, glyphs_by, inline dr
     }
   }
 }
+
+///|
+test "glyph phase: whole-pixel shifts keep phase across non-dyadic scales on half-point coordinates" {
+  for sc in [1.5, 2.5, 2.625, 3.0, 3.25] {
+    for base in [10.5, 137.5, 259.5] {
+      let want = glyph_sub_at(77, base, sc, 1.0)
+      for k in -200..=200 {
+        let shifted = base + k.to_double() / sc
+        assert_eq(glyph_sub_at(77, shifted, sc, 1.0), want)
+      }
+    }
+  }
+}

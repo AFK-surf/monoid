@@ -878,3 +878,38 @@ test "安全, at each width and with either hand: none of its person's devices a
     }
   }
 }
+
+///|
+test "安全, at each width and with either hand: trusted here, its person's own lock begun elsewhere not naming it: 完成此设备的批准 and 发送批准请求 offered, nothing waiting in front, lock.pair asked (FB-45)" {
+  for (w, platform) in page_cases {
+    let asked : Array[(String, Json)] = []
+    let answers : Array[(Result[Json, Json]) -> Unit] = []
+    let t = lock_held_tester("settings-security-own-outside", w, platform, asked, answers)
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} platform \{platform}"
+    // (still trusted here: its settings page, not the page that waits)
+    assert_true(t.find("安全模式已开启") is Some(_), msg=at)
+    assert_true(drawn_whole(t, "完成此设备的批准"), msg=at)
+    assert_true(lock_said_from(t, "你的其他设备更新了受信任设备列表"), msg=at)
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+    scrolled_to(t, w, "发送批准请求")
+    tap_words(t, "发送批准请求")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(asked.length(), 1, msg=at)
+    assert_eq(asked[0].0, "lock.pair", msg=at)
+    assert_eq(asked[0].1, { "workspace": "ws1" }, msg=at)
+  }
+}
+
+///|
+test "安全 trusted here, its own lock not naming it, at 1.3x words on a narrow window: nothing cut or overlapping (FB-45)" {
+  let asked : Array[(String, Json)] = []
+  let answers : Array[(Result[Json, Json]) -> Unit] = []
+  let t = lock_held_tester("settings-security-own-outside", 390.0, 2, asked, answers)
+  t.set_font_scale(1.3)
+  t.run_for(@ui.move_most_ms)
+  assert_true(drawn_whole(t, "完成此设备的批准"))
+  let faults = t.audit()
+  assert_true(faults.is_empty(), msg=faults.join(" | "))
+}

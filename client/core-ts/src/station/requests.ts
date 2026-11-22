@@ -7,6 +7,7 @@ import type { Inner } from "../core.ts";
 import { CoreError, HostError, asCoreError, failedIn } from "../error.ts";
 import { FileRanges } from "./file-ranges.ts";
 import { FileSource } from "../file-source.ts";
+import { SPEED_MIN_BYTES } from "../mesh.ts";
 import type { Host, Pull, Unzstd } from "../host.ts";
 import { current, t } from "../i18n.ts";
 import { encode } from "../ops.ts";
@@ -30,8 +31,15 @@ export const IDEMPOTENT = "stillfail-idempotent";
 /// never asked twice at once on another way when slow (mesh-wire.ts), only again where its way is gone. Said to the wire
 /// alone, never sent.
 export const NO_HEDGE = "stillfail-no-hedge";
+/// A large transfer (file parts, whole file downloads, upload parts): routed on the highest-throughput way when
+/// available (mesh-wire.ts), keeping interactive requests on the lowest-latency way. Said to the wire alone, never sent.
+export const BULK = "stillfail-bulk";
+/// Lane index for striped multi-way bulk transfers (mesh-wire.ts). Said to the wire alone, never sent.
+export const BULK_LANE = "stillfail-bulk-lane";
 /// What a batch's answer is as a station streams it (station/src/api/admin.ts `batchLines`): a line of JSON a read,
-/// in order.
+/// in order. New clients ask for `BATCH_LINES` so older stations whose streaming zstd encoder did not finish its frame
+/// fall back to whole `application/json`; `NDJSON` stays recognised for streams that reply with it.
+export const BATCH_LINES = "application/vnd.stillfail.batch-lines+json";
 export const NDJSON = "application/x-ndjson";
 export const LANG_HEADER = "stillfail-lang";
 export const EVENT_STREAM = "text/event-stream";
@@ -56,6 +64,8 @@ export const UPLOAD_WHOLE_MAX = 50 * 1024 * 1024;
 export const SOCKET_OPEN_MS = 30_000;
 /// JSON reads may be slow, but cannot own a scheduler slot forever without receiving bytes.
 export const JSON_IDLE_MS = 60_000;
+/// Finite binary/part reads cannot stall indefinitely between chunks.
+export const BODY_IDLE_MS = 20_000;
 const within = <A, E, R>(work: Effect.Effect<A, E, R>, ms: number) => ms > 0
   ? Effect.timeoutOrElse(work, { duration: ms, orElse: () => Effect.fail(new CoreError("timeout", t("core-logic.mesh.timed_out"))) })
   : work;
@@ -196,7 +206,10 @@ export class Requests {
     const h: [string, string][] = [...headers, ["traceparent", span.context.traceparent()], [LANG_HEADER, current()]];
     // (a host that says none, a test's, a scripted run's: an unnumbered build, held to no floor)
     h.push([BUILD_HEADER, ownBuild() || "0.1.0"]);
-    if (!path.startsWith("/preview/")) h.push(["stillfail-runtimes", RUNTIMES.join(",")]);
+    if (!path.startsWith("/preview/")) {
+      h.push(["stillfail-runtimes", RUNTIMES.join(",")]);
+      h.push(["stillfail-profile-services", "1"]);
+    }
     if (!path.startsWith("/preview/") && !headers.some(([k]) => k.toLowerCase() === "accept-encoding")) h.push(["accept-encoding", ZSTD]);
     // A write carries a key of its own: a station that keeps writes to once does it once however often it arrives. A
     // request that only reads (READS) is none.
@@ -218,7 +231,9 @@ export class Requests {
   /// Not `quiet`, it is in a person's sight: the station's background waits while it is under way, and what is idle
   /// there gives way (scheduler.ts `foregroundBegin`).
   exchange(station: StationAddr, method: string, path: string, headers: [string, string][], body: Uint8Array, quiet: boolean, ctx: SpanContext | null, heard?: (loaded: number) => void, wrote?: (sent: number) => void, sink?: (piece: Uint8Array) => void, onHead?: (status: number, headers: [string, string][]) => void, json = false, flushCut = false): Effect.Effect<{ status: number; headers: [string, string][]; body: Uint8Array; json?: unknown }, CoreError> {
-    const idleMs = json ? JSON_IDLE_MS : 0;
+    const isRead = (method.toUpperCase() === "GET" || method.toUpperCase() === "HEAD") && !path.startsWith("/preview/");
+    const headIdleMs = json ? JSON_IDLE_MS : isRead ? BODY_IDLE_MS : 0;
+    const bodyIdleMs = json ? JSON_IDLE_MS : BODY_IDLE_MS;
     return Effect.scoped(
       Effect.gen({ self: this }, function* () {
         const status = this.#status(station);
@@ -237,17 +252,24 @@ export class Requests {
           }
           wrote(n);
         });
+        let came = 0;
+        let ended = false;
+        const endSpan = () => {
+          if (!ended) {
+            ended = true;
+            span.end();
+          }
+        };
         const result = yield* Effect.result(
           Effect.gen({ self: this }, function* () {
-            const reply = yield* within(this.wire.request(station, head, body, gone), idleMs);
+            const reply = yield* within(this.wire.request(station, head, body, gone), headIdleMs);
             span.set("stillfail.head_ms", Math.round(host.monotonicMs() - began));
             answered(span, reply);
             const tooOld = stationTooOld(reply.headers, path);
             if (tooOld !== null) return yield* Effect.fail(tooOld);
             onHead?.(reply.status, reply.headers);
             // What came over the link is counted (and said in the span); what it says, decompressed.
-            let came = 0;
-            const counted = { ...reply, body: { take: Effect.tap(within(reply.body.take, idleMs), (chunk) => Effect.sync(() => chunk && ((came += chunk.length), waiting ? waiting.received(chunk.length) : status.received(null, chunk.length)))) } };
+            const counted = { ...reply, body: { take: Effect.tap(within(reply.body.take, bodyIdleMs), (chunk) => Effect.sync(() => chunk && ((came += chunk.length), waiting ? waiting.received(chunk.length) : status.received(null, chunk.length)))) } };
             let loaded = 0;
             let told = 0;
             // An error's body is read as any other's: what it says is the error.
@@ -275,17 +297,26 @@ export class Requests {
             }
             if (reply.status >= 200 && reply.status < 300) this.onAnswered(station);
             return { status: reply.status, headers: reply.headers, body: bytes, ...(json ? { json: parsed } : {}) };
-          }).pipe(Effect.ensuring(Effect.sync(() => {
-            waiting?.end();
-            endForeground?.();
-          }))),
+          }).pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                span.set("stillfail.cancelled", true);
+                if (came > 0) span.set("http.response.body.size", came);
+                endSpan();
+              }),
+            ),
+            Effect.ensuring(Effect.sync(() => {
+              waiting?.end();
+              endForeground?.();
+            })),
+          ),
         );
         if (result._tag === "Failure") {
           failed(span, result.failure);
-          span.end();
+          endSpan();
           return yield* Effect.fail(result.failure);
         }
-        span.end();
+        endSpan();
         return result.success;
       }),
     );
@@ -324,7 +355,7 @@ export class Requests {
       Effect.gen({ self: this }, function* () {
         const status = this.#status(station);
         const bytes = toJsonBytes({ gets });
-        const [span, head] = this.#head(station, "POST", "/batch", [["content-type", "application/json"], [READS, "1"], [NO_HEDGE, "1"], ["accept", `${NDJSON}, application/json`]], bytes.length, ctx);
+        const [span, head] = this.#head(station, "POST", "/batch", [["content-type", "application/json"], [READS, "1"], [NO_HEDGE, "1"], ["accept", `${BATCH_LINES}, application/json`]], bytes.length, ctx);
         const result = yield* Effect.result(
           Effect.gen({ self: this }, function* () {
             const reply = yield* within(this.wire.request(station, head, bytes), JSON_IDLE_MS);
@@ -347,8 +378,9 @@ export class Requests {
               out.push(item);
               return Effect.void;
             });
-            if ((replyHeader(reply, "content-type") ?? "").startsWith(NDJSON)) {
-              // A line at a time as it comes: what is left of a line goes on with the next piece.
+            const mediaType = (replyHeader(reply, "content-type") ?? "").split(";", 1)[0]!.trim().toLowerCase();
+            if (mediaType === BATCH_LINES || mediaType === NDJSON) {
+              // A line at a time as it comes: every line the station produces ends with '\n'.
               let rest: Uint8Array = empty;
               const line = (bytes: Uint8Array) => {
                 const parsed = timed("reply.parse", () => parseJson(bytes));
@@ -360,14 +392,15 @@ export class Requests {
                 const piece = rest.length === 0 ? chunk : concat([rest, chunk]);
                 let from = 0;
                 for (let nl = piece.indexOf(10, from); nl >= 0; nl = piece.indexOf(10, from)) {
-                  if (nl > from) yield* line(piece.subarray(from, nl));
+                  if (nl === from) return yield* Effect.fail(bad());
+                  yield* line(piece.subarray(from, nl));
                   from = nl + 1;
                 }
                 rest = from === 0 ? piece : piece.slice(from);
               }
-              if (rest.length > 0) yield* line(rest);
+              if (rest.length > 0) return yield* Effect.fail(bad());
             } else {
-              // (a station from before streams: all of them in one)
+              // (a station from before streams, or one that answered whole JSON: all of them in one)
               const whole = yield* readAll(pull);
               const answers = get(timed("reply.parse", () => parseJson(whole)), "answers");
               if (!Array.isArray(answers) || answers.length !== gets.length) return yield* Effect.fail(bad());
@@ -435,9 +468,11 @@ export class Requests {
     });
   }
 
-  /// POST /uploads?name= with the raw bytes: the file waits on the station, in no chat, until a message sends it.
+  /// POST /uploads?name= with the raw bytes: the file waits on the station, in no chat, until a message sends it. One
+  /// large enough to be timed goes as a bulk transfer, as its parts would (`uploadPart`).
   upload(station: StationAddr, name: string, bytes: Uint8Array, ctx: SpanContext | null): Effect.Effect<unknown, CoreError> {
-    return Effect.flatMap(this.exchange(station, "POST", `/uploads?name=${encode(name)}`, [["content-type", "application/octet-stream"]], bytes, false, ctx), (r) => {
+    const headers: [string, string][] = bytes.length >= SPEED_MIN_BYTES ? [["content-type", "application/octet-stream"], [BULK, "1"]] : [["content-type", "application/octet-stream"]];
+    return Effect.flatMap(this.exchange(station, "POST", `/uploads?name=${encode(name)}`, headers, bytes, false, ctx), (r) => {
       const parsed = parseJson(r.body);
       const data = parsed === undefined ? {} : parsed;
       return r.status >= 200 && r.status < 300 ? Effect.succeed(data as unknown) : Effect.fail(httpError(r.status, data));
@@ -451,7 +486,8 @@ export class Requests {
   /// far, as they go.
   uploadPart(station: StationAddr, q: { id: string; name: string; size: number; offset: number; sha256?: string }, bytes: Uint8Array, ctx: SpanContext | null, wrote?: (sent: number) => void): Effect.Effect<{ have: number; file?: unknown }, CoreError> {
     const path = `/uploads/parts?id=${encode(q.id)}&name=${encode(q.name)}&size=${q.size}&offset=${q.offset}${q.sha256 ? `&sha256=${q.sha256}` : ""}`;
-    return Effect.flatMap(this.exchange(station, "POST", path, [["content-type", "application/octet-stream"]], bytes, false, ctx, undefined, wrote), (r) => {
+    const headers: [string, string][] = bytes.length > 0 ? [["content-type", "application/octet-stream"], [BULK, "1"]] : [["content-type", "application/octet-stream"]];
+    return Effect.flatMap(this.exchange(station, "POST", path, headers, bytes, false, ctx, undefined, wrote), (r) => {
       const parsed = parseJson(r.body);
       const data = parsed === undefined ? {} : parsed;
       if (r.status === 404 || r.status === 405) return this.#wholeUpload(station, q, bytes, ctx);
@@ -512,44 +548,50 @@ export class Requests {
   /// size (when the station gives it), now and then. `thumb` "preview" (thumb=2): the whole-window viewer's preview, or
   /// the file itself where there is none (and from a station from before).
   file(station: StationAddr, key: string, name: string, thumb: boolean | "preview", progress: (loaded: number, total: number | null) => void, ctx: SpanContext | null): Effect.Effect<[string, Uint8Array], CoreError> {
-    return Effect.scoped(
-      Effect.gen({ self: this }, function* () {
-        const path = `/sessions/${encode(key)}/files?name=${encode(name)}${thumb === "preview" ? "&thumb=2" : thumb ? "&thumb=1" : ""}`;
-        const status = this.#status(station);
-        const waiting = status.begin({ station: station.toString() }, stationWhat("GET", path), false);
-        const [span, head] = this.#head(station, "GET", path, [], 0, ctx);
-        const result = yield* Effect.result(
-          Effect.gen({ self: this }, function* () {
-            const reply = yield* this.wire.request(station, head, empty);
-            answered(span, reply);
-            if (reply.status !== 200) return yield* Effect.fail(new CoreError(`http_${reply.status}`, t("station.core.fileUnreadable"), reply.status));
-            const kind = replyHeader(reply, "content-type") ?? "";
-            const length = Number(replyHeader(reply, "content-length")?.trim());
-            const total = Number.isInteger(length) && length >= 0 ? length : null;
-            // (every hundredth, else every 64 KB, a small one's every twentieth: a chat's thumbnail is 11-13 KB, and
-            // every 64 KB showed 0% until it came; its size not said, every 64 KB: 256 KB showed 0 B until it came)
-            const step = total === null ? 64 * 1024 : Math.max(Math.floor(total / 100), Math.min(64 * 1024, Math.ceil(total / 20)));
-            progress(0, total);
-            let loaded = 0;
-            let told = 0;
-            const counted = { ...reply, body: { take: Effect.tap(reply.body.take, (chunk) => Effect.sync(() => chunk && waiting.received(chunk.length))) } };
-            const bytes = yield* readAll(yield* plain(this.#core.host, counted), (chunk) => {
-              loaded += chunk.length;
-              if (loaded - told >= step) {
-                progress(loaded, total);
-                told = loaded;
-              }
-            });
-            span.set("http.response.body.size", bytes.length);
-            return [kind, bytes] as [string, Uint8Array];
-          }).pipe(Effect.ensuring(Effect.sync(() => waiting.end()))),
-        );
-        if (result._tag === "Failure") failed(span, result.failure);
-        span.end();
-        if (result._tag === "Failure") return yield* Effect.fail(result.failure);
-        return result.success;
-      }),
-    );
+    return Effect.gen({ self: this }, function* () {
+      const path = `/sessions/${encode(key)}/files?name=${encode(name)}${thumb === "preview" ? "&thumb=2" : thumb ? "&thumb=1" : ""}`;
+      const status = this.#status(station);
+      const waiting = status.begin({ station: station.toString() }, stationWhat("GET", path), false);
+      const isBulk = thumb === false || thumb === "preview";
+      const [span, head] = this.#head(station, "GET", path, isBulk ? [[BULK, "1"]] : [], 0, ctx);
+      const attempt = (): Effect.Effect<[string, Uint8Array], CoreError, Scope.Scope> =>
+        Effect.gen({ self: this }, function* () {
+          const reply = yield* within(this.wire.request(station, head, empty), BODY_IDLE_MS);
+          answered(span, reply);
+          if (reply.status !== 200) return yield* Effect.fail(new CoreError(`http_${reply.status}`, t("station.core.fileUnreadable"), reply.status));
+          const kind = replyHeader(reply, "content-type") ?? "";
+          const length = Number(replyHeader(reply, "content-length")?.trim());
+          const total = Number.isInteger(length) && length >= 0 ? length : null;
+          // (every hundredth, else every 64 KB, a small one's every twentieth: a chat's thumbnail is 11-13 KB, and
+          // every 64 KB showed 0% until it came; its size not said, every 64 KB: 256 KB showed 0 B until it came)
+          const step = total === null ? 64 * 1024 : Math.max(Math.floor(total / 100), Math.min(64 * 1024, Math.ceil(total / 20)));
+          progress(0, total);
+          let loaded = 0;
+          let told = 0;
+          const counted = { ...reply, body: { take: Effect.tap(within(reply.body.take, BODY_IDLE_MS), (chunk) => Effect.sync(() => chunk && waiting.received(chunk.length))) } };
+          const bytes = yield* readAll(yield* plain(this.#core.host, counted), (chunk) => {
+            loaded += chunk.length;
+            if (loaded - told >= step) {
+              progress(loaded, total);
+              told = loaded;
+            }
+          });
+          span.set("http.response.body.size", bytes.length);
+          return [kind, bytes] as [string, Uint8Array];
+        });
+      const result = yield* Effect.result(
+        Effect.gen(function* () {
+          const first = yield* Effect.result(Effect.scoped(attempt()));
+          if (first._tag === "Success") return first.success;
+          if (isBulk && (first.failure.cause === "bulk_crawl" || first.failure.code === "timeout")) return yield* Effect.scoped(attempt());
+          return yield* Effect.fail(first.failure);
+        }).pipe(Effect.ensuring(Effect.sync(() => waiting.end()))),
+      );
+      if (result._tag === "Failure") failed(span, result.failure);
+      span.end();
+      if (result._tag === "Failure") return yield* Effect.fail(result.failure);
+      return result.success;
+    });
   }
 
   /// GET /sessions/:key/parts?name=&offset=&length=: a part of a file and its whole size, for a big one fetched a part at
@@ -558,12 +600,12 @@ export class Requests {
   /// `said`: what the station says it is, as its answer begins (before its bytes). `quiet`: in the background, not said
   /// to be waited on; `noHedge`: never asked twice at once (NO_HEDGE). A final short batch is handed to readers even
   /// when the transfer is interrupted.
-  filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, noHedge = false): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
+  filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
     return this.#chatParts.read(JSON.stringify([station.toString(), key, name]), offset, length,
-      (at, count, take, head) => this.#filePart(station, key, name, at, count, ctx, take, head, quiet, noHedge), heard, sink, said);
+      (at, count, take, head) => this.#filePart(station, key, name, at, count, ctx, take, head, quiet, noHedge, lane), heard, sink, said, noHedge);
   }
 
-  #filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, noHedge = false): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
+  #filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
     const path = `/sessions/${encode(key)}/parts?name=${encode(name)}&offset=${offset}&length=${length}`;
     const onHead = said && ((status: number, headers: [string, string][]) => {
       if (status !== 200) return;
@@ -572,7 +614,9 @@ export class Requests {
     });
     let received = 0;
     const take = (bytes: Uint8Array) => { received += bytes.length; sink(bytes); };
-    return Effect.flatMap(this.exchange(station, "GET", path, noHedge ? [[NO_HEDGE, "1"]] : [], empty, quiet, ctx, undefined, undefined, take, onHead, false, true), (r) => {
+    const headers: [string, string][] = noHedge ? [[NO_HEDGE, "1"], [BULK, "1"]] : [[BULK, "1"]];
+    if (lane !== undefined) headers.push([BULK_LANE, String(lane)]);
+    return Effect.flatMap(this.exchange(station, "GET", path, headers, empty, quiet, ctx, undefined, undefined, take, onHead, false, true), (r) => {
       if (r.status === 404 && isNoRoute(r.body)) return Effect.fail(new CoreError("unsupported", t("station.core.fileOldStation"), 404));
       if (r.status !== 200) {
         const data = parseJson(r.body);
@@ -621,12 +665,12 @@ export class Requests {
 
   /// GET /drive/read?root=&path=&offset=&length=: a part of a file of the station's drive, its whole size and time.
   /// `heard`, `sink`, `said`, `quiet`, `noHedge`: as filePart's.
-  driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, version?: readonly [number, number], noHedge = false): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
+  driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, version?: readonly [number, number], noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
     return this.#driveParts.read(JSON.stringify([station.toString(), root, path, version]), offset, length,
-      (at, count, take, head) => this.#driveRead(station, root, path, at, count, ctx, take, head, quiet, noHedge), heard, sink, said);
+      (at, count, take, head) => this.#driveRead(station, root, path, at, count, ctx, take, head, quiet, noHedge, lane), heard, sink, said, noHedge);
   }
 
-  #driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, noHedge = false): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
+  #driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
     const asked = `/drive/read?root=${encode(root)}&path=${encode(path)}&offset=${offset}&length=${length}`;
     const onHead = said && ((status: number, headers: [string, string][]) => {
       if (status !== 200) return;
@@ -636,7 +680,9 @@ export class Requests {
     });
     let received = 0;
     const take = (bytes: Uint8Array) => { received += bytes.length; sink(bytes); };
-    return Effect.flatMap(this.exchange(station, "GET", asked, noHedge ? [[NO_HEDGE, "1"]] : [], empty, quiet, ctx, undefined, undefined, take, onHead, false, true), (r) => {
+    const headers: [string, string][] = noHedge ? [[NO_HEDGE, "1"], [BULK, "1"]] : [[BULK, "1"]];
+    if (lane !== undefined) headers.push([BULK_LANE, String(lane)]);
+    return Effect.flatMap(this.exchange(station, "GET", asked, headers, empty, quiet, ctx, undefined, undefined, take, onHead, false, true), (r) => {
       if (r.status === 404 && isNoRoute(r.body)) return Effect.fail(new CoreError("unsupported", t("station.core.driveOldStation"), 404));
       if (r.status !== 200) {
         const data = parseJson(r.body);
@@ -654,7 +700,8 @@ export class Requests {
   /// with how much the station has (`have` on the error's answer: the next part starts there).
   driveUploadPart(station: StationAddr, q: { root: string; path: string; id: string; offset: number; total: number; replace: boolean }, bytes: Uint8Array, ctx: SpanContext | null): Effect.Effect<{ have: number; entry: unknown | null }, CoreError> {
     const asked = `/drive/upload?root=${encode(q.root)}&path=${encode(q.path)}&id=${encode(q.id)}&offset=${q.offset}&total=${q.total}${q.replace ? "&replace=1" : ""}`;
-    return Effect.flatMap(this.exchange(station, "PUT", asked, [["content-type", "application/octet-stream"]], bytes, false, ctx), (r) => {
+    const headers: [string, string][] = bytes.length > 0 ? [["content-type", "application/octet-stream"], [BULK, "1"]] : [["content-type", "application/octet-stream"]];
+    return Effect.flatMap(this.exchange(station, "PUT", asked, headers, bytes, false, ctx), (r) => {
       const parsed = parseJson(r.body);
       const data = parsed === undefined ? {} : parsed;
       if (r.status === 409 && get(data, "code") === "upload_lost") {
@@ -686,6 +733,17 @@ export class Requests {
     const path = `/sessions/${encode(key)}/poster?name=${encode(name)}`;
     return Effect.flatMap(this.exchange(station, "GET", path, [], empty, true, ctx), (r) => {
       if (r.status === 200) return Effect.succeed(r.body);
+      if (r.status === 404) return Effect.succeed(null);
+      const data = parseJson(r.body);
+      return Effect.fail(httpError(r.status, data === undefined ? {} : data));
+    });
+  }
+
+  /// GET /board/files?draft=&file=: a file of one of the person's drafts of 待派发 as its station keeps it, and its type;
+  /// null where it keeps none (sessions/board-drafts.ts).
+  boardFile(station: StationAddr, draft: string, file: string, ctx: SpanContext | null): Effect.Effect<{ type: string; bytes: Uint8Array } | null, CoreError> {
+    return Effect.flatMap(this.exchange(station, "GET", `/board/files?draft=${encode(draft)}&file=${encode(file)}`, [], empty, true, ctx), (r) => {
+      if (r.status === 200) return Effect.succeed({ type: r.headers.find(([k]) => k.toLowerCase() === "content-type")?.[1] ?? "", bytes: r.body });
       if (r.status === 404) return Effect.succeed(null);
       const data = parseJson(r.body);
       return Effect.fail(httpError(r.status, data === undefined ? {} : data));

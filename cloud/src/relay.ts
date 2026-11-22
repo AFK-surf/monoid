@@ -27,11 +27,14 @@ export type Quota = {
   counting?: number;
 };
 
-/** 4: a count begun anew added all a relay up for days had counted (2026-10-30, `readOnce`); 3 was that, begun anew.
+/** 5: only bytes sent are counted (what Containers charge for, 2026-11-20). A running process's new count is below the
+ * one last seen (both ways), so kept it would look like a process started again and add all it had sent once more; a
+ * day counted both ways also ran out early (16:32 in Beijing, 4.92 GiB sent): that day starts over.
+ * 4: a count begun anew added all a relay up for days had counted (2026-10-30, `readOnce`); 3 was that, begun anew.
  * 3: reads answered out of order counted traffic again (2026-10-30, `read`): that day's count starts over too.
  * Before 2 (2026-10-25) a failed read forgot `seen`, and the next read added all the process had counted since it
  * started once more: the day's budget ran out hours early. A day counted that way may hold traffic twice and starts over. */
-const COUNTING = 4;
+const COUNTING = 5;
 
 /** How often traffic is read from the relay process while connections are open; the daily budget may overshoot by what flows in this time. */
 const POLL_MS = 60_000;

@@ -21,12 +21,13 @@ import { readKimi } from "./kimi.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { claudeOAuthToken } from "./oauth.ts";
 import { RenewRefused } from "./console.ts";
-import { type ProfileQuota, type QuotaWindow, URLS, type Urls } from "./profiles.ts";
+import { claudeAuthStatus, type ProfileQuota, type QuotaWindow, URLS, type Urls } from "./profiles.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { codexQuotaFailure } from "../../../client/core-ts/src/codex-quota.ts";
 import { claudeHeaders, claudeResets, type QuotaReset, USAGE_PATH } from "./claude-reset.ts";
 import { unanswered } from "../ops/unanswered.ts";
 import { agyQuota } from "./agy-quota.ts";
+import { DEFAULT_SERVICES, serviceOf, type ServiceRegistry } from "./services.ts";
 
 type Json = any;
 
@@ -99,11 +100,19 @@ function message(text: string): string | undefined {
 
 /// A provider's refusal as a quota: the account refused (blocked), or its sign-in no longer good.
 export async function refused(provider: string, response: Response, lang: Lang): Promise<ProfileQuota> {
-  const status = response.status;
-  let text = "";
+  return refusedSaying(provider, response.status, await refusalText(response), lang);
+}
+
+/// The first of what a refusal says (500 characters at most).
+async function refusalText(response: Response): Promise<string> {
   try {
-    text = [...(await response.text())].slice(0, 500).join("");
-  } catch {}
+    return [...(await response.text())].slice(0, 500).join("");
+  } catch {
+    return "";
+  }
+}
+
+function refusedSaying(provider: string, status: number, text: string, lang: Lang): ProfileQuota {
   if (blocked(text) || status === 403) {
     const said = message(text);
     const detail = said !== undefined ? tr(lang, "station.quota.refusedSaying", { provider, status, said }) : tr(lang, "station.quota.refused", { provider, status });
@@ -144,7 +153,8 @@ export async function claudeWithRefresh(env: Env, home: string | null, urls: Url
   const [first, unauthorized] = await claudeUsageResponse(urls.anthropic, token, lang, version);
   if (!unauthorized) return first;
   const [renewed] = await claudeOAuthToken(env, home, token, urls.claudeToken, lang);
-  return (await claudeUsageResponse(urls.anthropic, renewed, lang, version))[0];
+  const [second, stillUnauthorized] = await claudeUsageResponse(urls.anthropic, renewed, lang, version);
+  return stillUnauthorized ? { ...second, signedOut: true } : second;
 }
 
 /// A Claude subscription's allowance, by its access token: what /usage shows.
@@ -154,7 +164,13 @@ export async function claudeUsage(base: string, token: string, lang: Lang = stat
 
 async function claudeUsageResponse(base: string, token: string, lang: Lang, version: string | null): Promise<[ProfileQuota, boolean]> {
   const response = await get(`${base}${version !== null ? USAGE_PATH : "/api/oauth/usage"}`, claudeHeaders(token, version));
-  if (!response.ok) return [await refused("Anthropic ", response, lang), response.status === 401];
+  if (!response.ok) {
+    const text = await refusalText(response);
+    // An account the provider refuses stays blocked; otherwise a 401 or a 403 is the OAuth token refused (one revoked is
+    // answered 403, FB-44): renewed and asked again, then the login is over.
+    if (!blocked(text) && claudeAuthStatus(response.status)) return [quota("unavailable", [], tr(lang, "station.quota.signInExpired")), true];
+    return [refusedSaying("Anthropic ", response.status, text, lang), false];
+  }
   const body: Json = await response.json();
   const labels: Record<string, string> = { five_hour: "5 小时", seven_day: "每周", seven_day_opus: "每周 · Opus", seven_day_sonnet: "每周 · Sonnet" };
   const windows: QuotaWindow[] =
@@ -267,9 +283,15 @@ function codexFailed(error: unknown, lang: Lang): ProfileQuota {
 /// Asks the provider. `codexRateLimits` reaches the profile's codex app-server; `env` is the station's (for a machine
 /// profile's login). Never throws: what went wrong is an unavailable (or blocked) allowance.
 /// `claudeVersion`: the installed Claude Code's (claudeWithRefresh).
-export async function checkQuota(profile: Profile, env: Env, codexRateLimits: CodexRateLimits | undefined, urls: Urls = URLS, lang: Lang = stationLang(), claudeVersion: string | null = null): Promise<ProfileQuota> {
+export async function checkQuota(profile: Profile, env: Env, codexRateLimits: CodexRateLimits | undefined, urls: Urls = URLS, lang: Lang = stationLang(), claudeVersion: string | null = null, services: ServiceRegistry = DEFAULT_SERVICES): Promise<ProfileQuota> {
   try {
     const kind = accessKind(profile);
+    if (kind === "service") {
+      const id = serviceOf(profile);
+      const adapter = id !== undefined ? services.get(id) : undefined;
+      if (!adapter) return quota("unsupported", [], null);
+      return await adapter.quota(profile, { env, lang });
+    }
     if (kind === "opencode-go") return await opencode(urls, String((profile.access as Json)?.key ?? "").trim(), lang);
     if (kind === "api-provider" && (profile.access as Json)?.provider === KIMI_CODE) {
       const key = kimiSignedIn(profile) ? ((await readKimi(profile.home))?.access ?? "") : String((profile.access as Json)?.key ?? "").trim();
@@ -277,28 +299,38 @@ export async function checkQuota(profile: Profile, env: Env, codexRateLimits: Co
     }
     if (kind === "anthropic-api" || kind === "api-provider") return quota("unsupported", [], tr(lang, "station.quota.payAsYouGo"));
     if (kind === "env") return quota("unsupported", [], tr(lang, "station.quota.envUnsupported"));
-    if (profile.runtime === "grok") return await grokQuota(profile, env, lang);
+    if (kind === "subscription" && profile.runtime === "grok") return await grokQuota(profile, env, lang);
     // Cursor's API says no allowance of an account's plan to a key.
-    if (profile.runtime === "cursor") return quota("unsupported", [], tr(lang, "station.quota.cursorUnsupported"));
+    if (kind === "subscription" && profile.runtime === "cursor") return quota("unsupported", [], tr(lang, "station.quota.cursorUnsupported"));
     // Nor does the Devin CLI say its account's quota to a program (only its own /usage shows it).
-    if (profile.runtime === "devin") return quota("unsupported", [], tr(lang, "station.quota.devinUnsupported"));
-    if (profile.runtime === "agy") return await agyQuota(profile.home, { ...env, ...(isObject(profile.env) ? profile.env : {}) }, urls, lang);
-    if (profile.runtime === "claude") return await claudeWithRefresh(env, profile.machine === true ? null : profile.home, urls, lang, claudeVersion);
-    try {
-      if (!codexRateLimits) throw new Error("no codex app-server to ask");
-      const q = codexQuota(await codexRateLimits(profile), lang);
-      // An app-server may return only the count (or a capped list). Ask for the missing details using the same
-      // profile's login; use that complete reading rather than mix it with a possibly older app-server login.
-      if (q.resetCount && (q.resetExpiries?.length ?? 0) < q.resetCount) {
-        const authFile = profile.machine === true ? codexAuthFile(env) : join(profile.home, "auth.json");
-        const direct = await codexUsage(authFile, urls, lang).catch(() => null);
-        if (direct?.state === "ok" && direct.resetCount !== undefined &&
-          (direct.resetCount !== q.resetCount || (direct.resetExpiries?.length ?? 0) > (q.resetExpiries?.length ?? 0))) return direct;
+    if (kind === "subscription" && profile.runtime === "devin") return quota("unsupported", [], tr(lang, "station.quota.devinUnsupported"));
+    if (kind === "subscription" && profile.runtime === "agy") return await agyQuota(profile.home, { ...env, ...(isObject(profile.env) ? profile.env : {}) }, urls, lang);
+    if (kind === "subscription" && profile.runtime === "claude") {
+      try {
+        return await claudeWithRefresh(env, profile.machine === true ? null : profile.home, urls, lang, claudeVersion);
+      } catch (e) {
+        const q = failed(e, lang);
+        return !q.unanswered && !q.signedOut ? { ...q, recheck: true } : q;
       }
-      return q;
-    } catch (e) {
-      return codexFailed(e, lang);
     }
+    if (kind === "subscription" && profile.runtime === "codex") {
+      try {
+        if (!codexRateLimits) throw new Error("no codex app-server to ask");
+        const q = codexQuota(await codexRateLimits(profile), lang);
+        // An app-server may return only the count (or a capped list). Ask for the missing details using the same
+        // profile's login; use that complete reading rather than mix it with a possibly older app-server login.
+        if (q.resetCount && (q.resetExpiries?.length ?? 0) < q.resetCount) {
+          const authFile = profile.machine === true ? codexAuthFile(env) : join(profile.home, "auth.json");
+          const direct = await codexUsage(authFile, urls, lang).catch(() => null);
+          if (direct?.state === "ok" && direct.resetCount !== undefined &&
+            (direct.resetCount !== q.resetCount || (direct.resetExpiries?.length ?? 0) > (q.resetExpiries?.length ?? 0))) return direct;
+        }
+        return q;
+      } catch (e) {
+        return codexFailed(e, lang);
+      }
+    }
+    return quota("unsupported", [], null);
   } catch (e) {
     return failed(e, lang);
   }

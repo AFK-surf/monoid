@@ -7,8 +7,9 @@ import { afreshThreshold } from "../../../client/core-ts/src/cache-policy.ts";
 import { agyBaseModel } from "../agents/agy.ts";
 import { devinFusionBase, splitDevinFusion } from "../agents/devin.ts";
 import { runtimeKind, runtimeLabel, type Profile as RuntimeProfile } from "../agents/runtime.ts";
-import { profileRuntimes, type Runtime } from "../agents/profiles.ts";
+import { profileRuntimes, profileService, type Runtime } from "../agents/profiles.ts";
 import { modelKey } from "../read/usage.ts";
+import { tr, type Lang } from "../ops/i18n.ts";
 
 export type { Runtime };
 
@@ -17,6 +18,8 @@ export type Profile = RuntimeProfile & {
   name: string;
   /// The runtimes it can run.
   runtimes: Runtime[];
+  /// The service id for a non-agent service profile (`access.kind === "service"`).
+  service?: string;
   /// Models it runs: those named by hand (`named`), then the rest its check found (each once, in either spelling).
   models: string[];
   /// Models named in config.json (trimmed, each once): by hand where its provider lists none, or ticked on before every
@@ -29,6 +32,10 @@ export type Profile = RuntimeProfile & {
   enabled?: boolean;
   /// The joined workspaces kept from it: every workspace the station is in runs on it but these.
   withheld?: string[];
+  /// Optional active-session concurrency cap for this profile (positive integer; absent/0: unlimited).
+  maxConcurrentSessions?: number;
+  /// Whether this profile is currently in new-account protection (auto-set on new subscription sign-in).
+  newAccountProtection?: boolean;
 };
 
 export type ConnectMode = "multi-session" | "single-session";
@@ -66,10 +73,12 @@ export type HubConfig = {
   /// Whether an agent whose turn ends with its chat untitled is asked once to name it.
   askToName: boolean;
   automaticDecisions: { completion: DecisionRule };
-  /// Idle claude processes kept alive at most this long before they may be evicted.
+  /// Idle claude processes kept alive at most this long (when > 0) before they are evicted.
   warmMs: number;
-  /// Idle claude processes beyond this count are evicted, oldest first, once past warmMs.
+  /// Maximum number of idle claude processes kept warm; any beyond this count are evicted immediately, oldest first.
   maxWarmClaude: number;
+  /// Maximum number of concurrent running turns across all sessions on this station; 0: unlimited.
+  maxConcurrentTurns: number;
   /// Chats idle this long, and done (auto archive), are archived by the station; 0: never.
   autoArchiveMs: number;
   /// Sessions heard only in Slack idle this long are archived even when stopped at a block for someone (nobody sees
@@ -107,7 +116,14 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       .map((m: unknown) => String(m).trim())
       .filter((m: string) => m !== "" && !seen.has(m) && (seen.add(m), true));
     const base: RuntimeProfile = { ...p, home: under(dataDir, String(p.home ?? "")) };
+    delete (base as any).maxConcurrentSessions;
+    const maxConcurrentSessions =
+      typeof p.maxConcurrentSessions === "number" && Number.isInteger(p.maxConcurrentSessions) && p.maxConcurrentSessions > 0
+        ? p.maxConcurrentSessions
+        : undefined;
     const runtimes = profileRuntimes(base);
+    const service = profileService(base);
+    if (runtimes[0] === undefined) delete base.runtime;
     const runs = [...models];
     if (runtimes.length > 0) {
       const has = new Set(models.map(modelKey));
@@ -121,8 +137,8 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       ...base,
       id: p.id,
       name: (p.machine === true ? machineName(str(p.name)) : str(p.name))?.trim() || p.id,
-      // One that runs neither runtime (a provider of chat completions only) is Claude's in name.
-      runtime: runtimes[0] ?? "claude",
+      ...(runtimes[0] !== undefined ? { runtime: runtimes[0] } : {}),
+      ...(service !== undefined ? { service } : {}),
       runtimes,
       models: runs,
       named: models,
@@ -130,6 +146,8 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       backgroundOnMessage: p.backgroundOnMessage !== false,
       enabled: p.enabled !== false,
       ...(Array.isArray(p.withheld) ? { withheld: p.withheld.filter((w: unknown): w is string => typeof w === "string" && w !== "") } : {}),
+      ...(maxConcurrentSessions !== undefined ? { maxConcurrentSessions } : {}),
+      ...(p.newAccountProtection === true && maxConcurrentSessions !== undefined ? { newAccountProtection: true } : {}),
     };
   });
   const connects: Connect[] = (Array.isArray(raw?.connects) ? raw.connects : []).map((c: any): Connect => {
@@ -167,6 +185,7 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
     automaticDecisions: { completion: { enabled: completion.enabled === true, model: str(completion.model) ?? null } },
     warmMs: Math.trunc((typeof raw?.warmMinutes === "number" ? raw.warmMinutes : 30) * 60_000),
     maxWarmClaude: typeof raw?.maxWarmClaude === "number" ? raw.maxWarmClaude : 4,
+    maxConcurrentTurns: typeof raw?.maxConcurrentTurns === "number" && Number.isFinite(raw.maxConcurrentTurns) ? Math.max(0, Math.trunc(raw.maxConcurrentTurns)) : 0,
     autoArchiveMs: Math.trunc(Math.max(0, typeof raw?.autoArchiveDays === "number" ? raw.autoArchiveDays : 1) * 86_400_000),
     slackArchiveMs: Math.trunc(Math.max(0, typeof raw?.slackArchiveDays === "number" ? raw.slackArchiveDays : 3) * 86_400_000),
     autoArchiveReviewed: raw?.autoArchiveReviewed === true,
@@ -214,6 +233,17 @@ export const allowedIn = (profile: Profile, ws: string | null, home: string | nu
   if (only !== null && at !== null && !only.includes(at)) return false;
   return ws === null || home === null || ws === home || !(profile.withheld ?? []).includes(ws);
 };
+
+/// Why no profile of `runtime` among `all` (those of the station that run it) serves a workspace's chats, said for
+/// what to do: each one on (`enabled`) a copy another station lends (share/index.ts), which serves only the workspaces
+/// its host is in, so no admin here can allow it; else one withheld from the workspace, for an admin to allow.
+export function noProfileHere(lang: Lang, runtime: Runtime, all: Profile[]): string {
+  const on = all.filter((p) => p.enabled !== false);
+  const lent = on.length > 0 && on.every((p) => (p.share as { borrowed?: unknown } | undefined)?.borrowed === true);
+  return lent
+    ? tr(lang, "station.session.noProfileLent", { runtime: runtimeLabel(runtime), profiles: on.map((p) => p.name).join(", ") })
+    : tr(lang, "station.session.noProfileHere", { runtime: runtimeLabel(runtime) });
+}
 
 /// The profiles a connect's sessions can run on: every profile of its runtime allowed in its workspace.
 export const profilesFor = (config: HubConfig, connect: Connect, home: string | null = null): Profile[] =>

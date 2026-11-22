@@ -30,6 +30,10 @@ pub let fx_key_actions : Array[(String, String, Array[String], Array[String], St
   ("chat.said.next", "chat", ["Alt+Shift+Down"], [], "empty"),
   ("chat.archive", "chat", ["Shift+Mod+E"], [], "yes"),
   ("panel.close", "chat", ["Escape"], [], "yes"),
+  ("panel.tab.close", "chat", [], ["Shift+Mod+W"], "yes"),
+  ("panel.tab.reopen", "chat", [], ["Shift+Mod+T"], "yes"),
+  ("panel.tab.prev", "chat", ["Alt+Shift+Left"], ["Shift+Mod+["], "yes"),
+  ("panel.tab.next", "chat", ["Alt+Shift+Right"], ["Shift+Mod+]"], "yes"),
   ("files.preview", "files", ["Shift+Mod+P"], [], "yes"),
 ]
 

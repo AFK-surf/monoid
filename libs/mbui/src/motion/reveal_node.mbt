@@ -88,3 +88,85 @@ pub fn reveal_node(
     |> ignore
   })
 }
+
+///|
+/// Soft-edged curtain reveal overlay in `parent`: while `active()` triggers a reveal, sweeps a multi-strip gradient
+/// curtain downward across `parent` over `duration_ms` (default 1100 ms) using a `NodeWay` and pixel-snapped
+/// `View::moved_by` (zero Flex relayout), fading out after `wait_after_ms` (default 800 ms) over `wait_out_ms`
+/// (default 300 ms). Unmounts its strips automatically once complete so zero animation overhead remains at rest.
+pub fn curtain_reveal(
+  parent : @view.View,
+  active : () -> Bool,
+  color : () -> Int64,
+  duration_ms? : Double = 1100.0,
+  wait_after_ms? : Double = 800.0,
+  wait_out_ms? : Double = 300.0,
+  steps? : Int = 16,
+) -> Unit {
+  let n_steps = if steps > 0 { steps } else { 1 }
+  let steps_d = n_steps.to_double()
+  let way = NodeWay::new(0.0)
+  parent.box(fn(v) {
+    v
+    .over(Is(true))
+    .fills_across(Is(true))
+    .height_share(Is(1.0))
+    .presses(Is(false))
+    .points(Is(false))
+    |> ignore
+    v.reacts(active, fn(on) {
+      if on {
+        way.go_from(v, 0.0, 1.0, tween(duration_ms, ease=Linear))
+      } else {
+        way.put(0.0)
+      }
+    })
+    let ends = fn(_w : Double, _h : Double) {
+      way.target() |> ignore
+      way.end()
+    }
+    let gone = fn(n : @view.View) {
+      let p = way.shown(n)
+      if wait_out_ms <= 0.0 {
+        if p * duration_ms >= wait_after_ms { 0.0 } else { 1.0 }
+      } else {
+        1.0 - dmin(1.0, dmax(0.0, (p * duration_ms - wait_after_ms) / wait_out_ms))
+      }
+    }
+    v.show(at_once=true, fn() { active() && way.goes(v) }, fn(overlay) {
+      overlay
+      .over(Is(true))
+      .fills_across(Is(true))
+      .height_share(Is(1.0))
+      .clips(Is(true))
+      .presses(Is(false))
+      .points(Is(false))
+      |> ignore
+      let strip = fn(k : Int, share : Double, alpha : Double) {
+        overlay.box(fn(s) {
+          s.over(Is(true)).fills_across(Is(true)).height_share(Is(share)) |> ignore
+          s
+          .ground(By(color))
+          .alpha(By(fn() { alpha * gone(s) }))
+          .moved_by(
+            fn(_w, h, t) {
+              let e = @ui.Out.at(dmin(1.0, dmax(0.0, way.value_at(t))))
+              let frame = h / share
+              let y = frame * (-0.5 + 1.5 * e) + k.to_double() * frame * 0.5 / steps_d
+              let ps = s.pixel_scale()
+              (0.0, if ps > 0.0 { (y * ps).round() / ps } else { y })
+            },
+            ends,
+          )
+          |> ignore
+        })
+        |> ignore
+      }
+      for k in 0..<n_steps {
+        strip(k, 0.5 / steps_d, (k.to_double() + 0.5) / steps_d)
+      }
+      strip(n_steps, 1.0, 1.0)
+    })
+  })
+  |> ignore
+}

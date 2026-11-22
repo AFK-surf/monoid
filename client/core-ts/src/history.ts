@@ -10,6 +10,7 @@ import * as present from "./present.ts";
 import { money } from "./views/usage.ts";
 import { isStationAuthor } from "./titles.ts";
 import { sentFrom } from "./sent-from.ts";
+import { withoutMentions } from "./titles.ts";
 import { cleanCommand, cleanPath, closeCut, isOpaqueId, summaryCommand } from "./tool-step.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -34,6 +35,8 @@ export type Context = {
   stations?: ReadonlyMap<string, string>;
   /// Where the trees of its Markdown are kept on the device (markdown.ts); absent: read here only.
   md?: MdStore;
+  /// Its latest turn has not ended: a waiting state it said may still be taken back.
+  turnOpen?: boolean;
 };
 
 /// An entry in this device's words: a call's result that is in its script's output, which its station leaves the
@@ -781,7 +784,11 @@ function made(live: J, cx: Context, keep: boolean): J {
       if (pages.length > PAGES_KEPT) pages.pop();
     }
   }
-  const { shown, base } = page;
+  const { base } = page;
+  // A wait said in a turn still running is not one yet: the agent may read what just came and go on.
+  const tail = page.shown[page.shown.length - 1];
+  const unsettled = cx.turnOpen === true && tail?.body?.kind === "mark" && isOpenWait(tail.body.content);
+  const shown = unsettled ? page.shown.slice(0, -1) : page.shown;
 
   const pushedNow = pushed(live, cx.runtime);
   const liveSteps = pushedNow.liveSteps.map(({ id, text }) => ({ id, text }));
@@ -801,6 +808,11 @@ function made(live: J, cx: Context, keep: boolean): J {
   else if (base > 0) [edge, empty] = [t("core-logic.history.edge.earlier"), false];
   else [edge, empty] = [t("core-logic.history.edge.start"), false];
   return { items: shown, live: liveSteps, phase, usage, usageLine, edge, empty, loaded, more: base > 0, ...(failed !== null && !loaded && shown.length === 0 ? { failed } : {}), ...(base > 0 && older !== null ? { older } : {}) };
+}
+
+function isOpenWait(mark: J): boolean {
+  const wait = mark?.wait;
+  return wait !== null && typeof wait === "object" && typeof wait.until !== "number";
 }
 
 /// Where a waiting mark's wait is over: what moves the agent on, a prompt bringing it back or a call of its own after
@@ -915,7 +927,10 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
         const sec = a?.seconds;
         const what = arg("for")?.trim() || null;
         const why = (arg("done") ?? arg("need"))?.trim() || null;
-        items.push([{ kind: "mark", mark: arg("kind") ?? "", seconds: typeof sec === "number" ? Math.trunc(Math.max(sec, 0)) : null, what, why }, i, i]);
+        // A wait its agent went on working past (its next call, no prompt between) was never waited: no row says it was.
+        const end = arg("kind") === "waiting" ? waitEnd(timeline, i) : -1;
+        if (end >= 0 && s(timeline[end], "kind") === "tool_call") cover(i);
+        else items.push([{ kind: "mark", mark: arg("kind") ?? "", seconds: typeof sec === "number" ? Math.trunc(Math.max(sec, 0)) : null, what, why }, i, i]);
         grouping = false;
         groupSteps = 0;
         groupPhase = null;
@@ -995,6 +1010,23 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
   const isFailedResult = (rIdx: number | null) =>
     rIdx !== null && (timeline[rIdx]?.ok === false || /^Failed to call [\w.-]+:/.test(s(timeline[rIdx], "text")));
   const failedOf = (step: Step) => isFailedResult(step.result);
+  // A post the station held back because a message the agent had not read came first (conversations.ts `NOT_POSTED`):
+  // it went out only if a later chat_post sent it by its id. Else what the agent wrote here never reached the chat.
+  // [whether it never went out, the entries that say so]
+  const unsentOf = (step: Step): [boolean, unknown[]] => {
+    if (step.result === null || failedOf(step)) return [false, []];
+    const held = /\bNot posted: [\s\S]*?\bHeld as (held-\d+)\b/.exec(s(timeline[step.result], "text"));
+    if (held === null) return [false, []];
+    for (let j = step.result + 1; j < timeline.length; j++) {
+      const e = timeline[j];
+      if (s(e, "kind") !== "tool_call" || flag(e, "subagent") || toolName(s(e, "tool")) !== "chat_post" || argsOf(s(e, "text"))?.send !== held[1]) continue;
+      const sent = stepAt.get(j);
+      const r = sent !== undefined ? steps[sent].result : null;
+      // Its answer not yet in: it is being sent.
+      if (r === null || (!isFailedResult(r) && !/\bNot posted: /.test(s(timeline[r], "text")))) return [false, [j, e, r === null ? null : timeline[r]]];
+    }
+    return [true, [timeline.length]];
+  };
   for (let idx = items.length - 1; idx >= 0; idx--) {
     const [cur, cFirst, cLast] = items[idx];
     if (cur.kind !== "text" || flag(timeline[cur.i], "subagent")) continue;
@@ -1027,7 +1059,7 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
         break;
       case "post": {
         const st = steps[item.step];
-        deps.push(st.call, st.result, timeline[st.call], st.result !== null ? timeline[st.result] : undefined);
+        deps.push(st.call, st.result, timeline[st.call], st.result !== null ? timeline[st.result] : undefined, ...unsentOf(st)[1]);
         break;
       }
       case "mark": {
@@ -1115,7 +1147,8 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
             const sent = m.agent ? sentFrom(m.text) : null;
             if (sent !== null) {
               const said = mentions(sent[2], cx);
-              return [{ key: m.ts, from: { name: sent[0], slackUser: null, bound: false }, text: said, place: place(m.thread, m.slack ? m.ts : null), md: mdOf(said) }];
+              const title = withoutMentions(sent[0]).replace(/\s+/g, " ").trim() || mentions(sent[0], cx).replace(/^@/, "");
+              return [{ key: m.ts, from: { name: title, slackUser: null, bound: false }, text: said, place: place(m.thread, m.slack ? m.ts : null), md: mdOf(said) }];
             }
             let from: J;
             if (m.slack) {
@@ -1145,8 +1178,9 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
         const kind = text("kind");
         const said = mentions(text("text") ?? "", cx);
         const isFailed = failedOf(steps[item.step]);
-        v = { kind: "post", text: said, md: mdOf(said), place: place(text("to")), block: kind === "block" || kind === "need_help" || kind === "need_decision", failed: isFailed };
-        const ends = isFailed ? null : endsOf(kind);
+        const unsent = unsentOf(steps[item.step])[0];
+        v = { kind: "post", text: said, md: mdOf(said), place: place(text("to")), block: kind === "block" || kind === "need_help" || kind === "need_decision", failed: isFailed, unsent };
+        const ends = isFailed || unsent ? null : endsOf(kind);
         if (ends !== null && ends !== "waiting") v.ends = ends;
         break;
       }

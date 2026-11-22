@@ -576,7 +576,7 @@ pub async fn ScreenHub::open_as(
   if source.user_tab {
     raise self.io.refused(403, "station.screen.userOnly")
   }
-  let view = (source.open)(options)
+  let view = (source.open)({ ..options, agent: true })
   let leave = self.join(id, Watcher::new(name, control, _ => (), agent=true))
   ScreenView::bare(
     async fn() { (view.next)() },

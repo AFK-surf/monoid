@@ -7,12 +7,72 @@ fn is_sep(c : Int, win : Bool) -> Bool {
 }
 
 ///|
+fn is_alpha(c : Int) -> Bool {
+  (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+///|
+fn is_drive(path : String) -> Bool {
+  path.length() >= 2 && is_alpha(path.unsafe_get(0).to_int()) && path.unsafe_get(1).to_int() == ':'
+}
+
+///|
+fn is_win_reserved_name(s : String, colon : Int) -> Bool {
+  if colon != 3 && colon != 4 {
+    return false
+  }
+  let up = (i : Int) => {
+    let c = s.unsafe_charcode_at(i)
+    if c >= 'a' && c <= 'z' { c - 32 } else { c }
+  }
+  let c0 = up(0)
+  let c1 = up(1)
+  let c2 = up(2)
+  if colon == 3 {
+    (c0 == 'C' && c1 == 'O' && c2 == 'N') ||
+    (c0 == 'P' && c1 == 'R' && c2 == 'N') ||
+    (c0 == 'A' && c1 == 'U' && c2 == 'X') ||
+    (c0 == 'N' && c1 == 'U' && c2 == 'L')
+  } else {
+    let c3 = s.unsafe_charcode_at(3)
+    let digit = (c3 >= '1' && c3 <= '9') || c3 == 0xB9 || c3 == 0xB2 || c3 == 0xB3
+    digit && ((c0 == 'C' && c1 == 'O' && c2 == 'M') || (c0 == 'L' && c1 == 'P' && c2 == 'T'))
+  }
+}
+
+///|
+fn has_win_reserved_part(joined : String) -> Bool {
+  let n = joined.length()
+  let mut i = 0
+  while i < n {
+    while i < n && joined.unsafe_charcode_at(i) == '\\' {
+      i += 1
+    }
+    let start = i
+    let mut colon = -1
+    while i < n && joined.unsafe_charcode_at(i) != '\\' {
+      if colon < 0 && joined.unsafe_charcode_at(i) == ':' {
+        colon = i - start
+      }
+      i += 1
+    }
+    if colon > 0 && is_win_reserved_name(joined.exact_view(start=start, end=i).to_owned(), colon) {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// Node's path.join: the parts joined, then normalized.
 pub fn join(sep : String, parts : Array[String]) -> String {
   let given = parts.filter(p => p != "")
   let mut joined = given.join(sep)
   if sep == "\\" && given.length() > 0 {
     joined = not_a_share(given[0], joined)
+    if has_win_reserved_part(joined) {
+      return joined.replace_all(old="/", new="\\")
+    }
   }
   normalize(sep, if joined == "" { "." } else { joined })
 }
@@ -50,30 +110,64 @@ fn not_a_share(first : String, joined : String) -> String {
 fn normalize(sep : String, path : String) -> String {
   let win = sep == "\\"
   let n = path.length()
-  let mut root = ""
+  if n == 0 {
+    return "."
+  }
+  let mut device = ""
+  let mut is_abs = false
   let mut at = 0
-  if win && n >= 2 && path.unsafe_charcode_at(1) == ':' {
-    root = path.exact_view(end=2).to_owned()
-    at = 2
-    if n > 2 && is_sep(path.unsafe_charcode_at(2), true) {
-      root = root + "\\"
-      at = 3
+  if win {
+    if is_sep(path.unsafe_get(0).to_int(), true) {
+      is_abs = true
+      if n >= 2 && is_sep(path.unsafe_get(1).to_int(), true) {
+        // UNC root: \\host\share (only when char 2 is not a separator and two non-empty segments follow)
+        if n > 2 && !is_sep(path.unsafe_get(2).to_int(), true) {
+          let mut j = 2
+          while j < n && !is_sep(path.unsafe_get(j).to_int(), true) {
+            j += 1
+          }
+          let host = path.exact_view(start=2, end=j).to_owned()
+          let sep_start = j
+          while j < n && is_sep(path.unsafe_get(j).to_int(), true) {
+            j += 1
+          }
+          if j > sep_start && j < n {
+            let share_start = j
+            while j < n && !is_sep(path.unsafe_get(j).to_int(), true) {
+              j += 1
+            }
+            let share = path.exact_view(start=share_start, end=j).to_owned()
+            device = "\\\\" + host + "\\" + share
+            at = j
+          } else {
+            at = 2
+          }
+        } else {
+          at = 2
+        }
+      } else {
+        at = 1
+      }
+    } else if is_drive(path) {
+      device = path.exact_view(end=2).to_owned()
+      if n > 2 && is_sep(path.unsafe_get(2).to_int(), true) {
+        is_abs = true
+        at = 3
+      } else {
+        at = 2
+      }
     }
-  } else if win && n >= 2 && is_sep(path.unsafe_charcode_at(0), true) && is_sep(path.unsafe_charcode_at(1), true) {
-    root = "\\\\"
-    at = 2
-  } else if n > 0 && is_sep(path.unsafe_charcode_at(0), win) {
-    root = sep
+  } else if path.unsafe_get(0).to_int() == '/' {
+    is_abs = true
     at = 1
   }
-  let absolute = root != "" && (root.length() != 2 || !win || root == "\\\\")
   let parts : Array[String] = []
   let mut start = at
   for i = at; i <= n; i = i + 1 {
-    if i < n && !is_sep(path.unsafe_charcode_at(i), win) {
+    if i < n && !is_sep(path.unsafe_get(i).to_int(), win) {
       continue
     }
-    let part = path.view(start_offset=start, end_offset=i).to_owned()
+    let part = path.exact_view(start=start, end=i).to_owned()
     start = i + 1
     if part == "" || part == "." {
       continue
@@ -81,20 +175,41 @@ fn normalize(sep : String, path : String) -> String {
     if part == ".." {
       if parts.length() > 0 && parts[parts.length() - 1] != ".." {
         ignore(parts.pop())
-      } else if !absolute {
+      } else if !is_abs {
         parts.push(part)
       }
       continue
     }
     parts.push(part)
   }
-  let body = parts.join(sep)
-  let trailing = n > at && is_sep(path.unsafe_charcode_at(n - 1), win) && body != ""
-  let out = root + body + (if trailing { sep } else { "" })
-  if out == "" {
-    "."
+  let mut tail = parts.join(sep)
+  let trailing = n > 0 && is_sep(path.unsafe_get(n - 1).to_int(), win)
+  if tail == "" && !is_abs {
+    tail = "."
+  }
+  if tail != "" && trailing {
+    tail = tail + sep
+  }
+  if win && device == "" && !is_abs && path.contains(":") {
+    // Node's path.win32.normalize (CVE-2024-36139): prefix `.\` if relative normalization could be
+    // interpreted as a Windows drive/device path (tail starts with `<alpha>:` or any `:` in path
+    // is at end-of-string or followed by a separator).
+    if is_drive(tail) {
+      return ".\\" + tail
+    }
+    for k in 0..<n {
+      if path.unsafe_get(k).to_int() == ':' &&
+        (k == n - 1 || is_sep(path.unsafe_get(k + 1).to_int(), true)) {
+        return ".\\" + tail
+      }
+    }
+  }
+  if device == "" {
+    if is_abs { sep + tail } else { tail }
+  } else if is_abs {
+    device + "\\" + tail
   } else {
-    out
+    device + tail
   }
 }
 
@@ -105,21 +220,21 @@ fn normalize(sep : String, path : String) -> String {
 fn root_length(path : String, win : Bool) -> Int {
   let n = path.length()
   if !win {
-    return if n > 0 && path.unsafe_charcode_at(0) == '/' { 1 } else { 0 }
+    return if n > 0 && path.unsafe_get(0).to_int() == '/' { 1 } else { 0 }
   }
-  if n >= 2 && path.unsafe_charcode_at(1) == ':' {
-    return if n > 2 && is_sep(path.unsafe_charcode_at(2), true) { 3 } else { 2 }
+  if is_drive(path) {
+    return if n > 2 && is_sep(path.unsafe_get(2).to_int(), true) { 3 } else { 2 }
   }
-  if n == 0 || !is_sep(path.unsafe_charcode_at(0), true) {
+  if n == 0 || !is_sep(path.unsafe_get(0).to_int(), true) {
     return 0
   }
-  if n >= 2 && is_sep(path.unsafe_charcode_at(1), true) {
+  if n >= 2 && is_sep(path.unsafe_get(1).to_int(), true) {
     // (a share: two names after the separators, its root ending after the second's separator)
     let mut i = 2
     let mut names = 0
     while i < n && names < 2 {
       let start = i
-      while i < n && !is_sep(path.unsafe_charcode_at(i), true) {
+      while i < n && !is_sep(path.unsafe_get(i).to_int(), true) {
         i += 1
       }
       if i == start {
@@ -147,32 +262,36 @@ pub fn dirname(sep : String, path : String) -> String {
   let root = root_length(path, win)
   let mut i = path.length() - 1
   // (separators after the last part, then the last part)
-  while i >= root && is_sep(path.unsafe_charcode_at(i), win) {
+  while i >= root && is_sep(path.unsafe_get(i).to_int(), win) {
     i -= 1
   }
-  while i >= root && !is_sep(path.unsafe_charcode_at(i), win) {
+  while i >= root && !is_sep(path.unsafe_get(i).to_int(), win) {
     i -= 1
   }
   if i < root {
-    return if root > 0 { path.view(end_offset=root).to_string() } else { "." }
+    return if root > 0 { path.exact_view(end=root).to_owned() } else { "." }
   }
-  path.view(end_offset=i).to_string()
+  if !win && root == 1 && i == 1 {
+    return "//"
+  }
+  path.exact_view(end=i).to_owned()
 }
 
 ///|
 /// Node's path.basename: the last part, its trailing separators left out ("" for a root).
 pub fn basename(sep : String, path : String) -> String {
   let win = sep == "\\"
-  let root = root_length(path, win)
+  // Node's path.win32.basename only skips a drive letter prefix (`C:`), not a UNC share (`\\srv\share` -> `share`).
+  let start_min = if win && is_drive(path) { 2 } else { 0 }
   let mut end = path.length()
-  while end > root && is_sep(path.unsafe_charcode_at(end - 1), win) {
+  while end > start_min && is_sep(path.unsafe_get(end - 1).to_int(), win) {
     end -= 1
   }
   let mut start = end
-  while start > root && !is_sep(path.unsafe_charcode_at(start - 1), win) {
+  while start > start_min && !is_sep(path.unsafe_get(start - 1).to_int(), win) {
     start -= 1
   }
-  path.view(start_offset=start, end_offset=end).to_string()
+  path.exact_view(start=start, end=end).to_owned()
 }
 
 ///|

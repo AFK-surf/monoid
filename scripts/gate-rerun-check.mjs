@@ -1,17 +1,22 @@
 #!/usr/bin/env node
 // A branch's run attempted again (GitHub's "Re-run jobs") goes through its gate (pipeline.yml) only where every job
-// that failed or was cancelled in the attempts before it failed for GitHub's or the network's sake: a check that failed
-// and passes on the same commit let something uncontrolled in, and is found and taken out, never rerun green (the root
+// that failed or was cancelled before stopped before doing its work, or failed for GitHub or the network.
+// A check that fails and passes on the same commit let something uncontrolled in. Find and remove it, never rerun green (the root
 // AGENTS.md). Let through, a job of an attempt before:
 //   - that never ran what it is for: no runner took it, it has no steps, or what failed of it is only the job's setting
 //     up (its runner's own steps, the checkout, the caches and artifacts, the toolchains: INFRA_STEP);
+//   - stopped at native.ts's exact missing-prebuild diagnostic, with no other failed step or failure in its log.
+//     The native build or test never started. Supplying its artifact lets that work start on the next attempt;
 //   - cancelled with its whole run (a push after it, by hand, a dead runner's queue given up), before a job's time;
 //   - whose step failed with GitHub's or the network's failure in its log (INFRA_LOG), and nothing in it that is the
 //     change's own for certain (HARD_FAILED). Its log is read in that order: what is the change's for certain, then
 //     GitHub's or the network's, then a check's summary of a failure (SOFT_FAILED: scripts/check.sh's `… FAILED`, which
 //     it says of a step that met a 504 too).
 // Never one that ran its time out: 285 s or more (a job's 5 minutes, less what its runner takes to cut it), or a limit
-// said in its log (scripts/with-timeout.sh's, the job's own). What cannot be read (a log gone) is not let through.
+// said in its log (scripts/with-timeout.sh's, the job's own), unless its setting up took 120 s or more of it for
+// GitHub's or the network's sake (said in its log, nothing of the change's beside it) and its own steps were left well
+// short of the time (a checkout's SYN lost to github.com, 135 s on Linux's retries: #7395's check-station (1)). What
+// cannot be read (a log gone) is not let through.
 // The attempts' jobs are read from GitHub's API (GH_TOKEN, actions: read), or, for the tests, from
 // GATE_RERUN_FIXTURE_DIR: attempt-<n>.json ({ run: { conclusion }, jobs: [...] }, the API's shapes) and
 // logs/<job id>.txt.
@@ -32,6 +37,7 @@ export const INFRA_LOG = [
   /TLS handshake timeout/i,
   /\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up)\b.*\b(github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b/,
   /\b(github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b.*\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up)\b/,
+  /Failed to connect to (github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b/i,
 ];
 /** The runner shut down under the job: GitHub's, but only before the job's time (after it, the job ran out). */
 const SHUTDOWN = /The runner has received a shutdown signal/i;
@@ -49,6 +55,13 @@ export const HARD_FAILED = [
 /** A check's summary of a failure: the change's, unless GitHub's or the network's failure is said beside it. */
 export const SOFT_FAILED = [/\bFAILED\b/, /\btest\b.*\bfailed\b/i, /^✖ /m, /^not ok \d/m];
 
+/** native.ts's CI refusal before a build starts. Match the full diagnostic, including the same part and target twice. */
+const MISSING_PREBUILD = /^native: ([a-z][a-z0-9-]*) ([a-z0-9]+(?:-[a-z0-9]+)+) [a-f0-9]{24} is not prebuilt: run the prebuild workflow on the branch, gh workflow run prebuild\.yml -R AFK-surf\/monoid --ref \S+ \(or on a Mac, node scripts\/native\.ts prebuild \1:\2\)$/;
+
+/** Seconds of setting up that, with GitHub's or the network's failure in its log, leave a job that ran its time out
+ * let through, its own steps having had less than its time (RAN_OUT_S less a minute). */
+export const STARVED_S = 120;
+
 const seconds = (j) => (j.started_at && j.completed_at ? (Date.parse(j.completed_at) - Date.parse(j.started_at)) / 1000 : 0);
 const BAD = new Set(["failure", "timed_out", "cancelled"]);
 
@@ -62,8 +75,24 @@ const lines = (log) => log.replace(/^\d{4}-\d\d-\d\dT[0-9:.]+Z /gm, "");
 export async function judge(job, run, log) {
   const took = Math.round(seconds(job));
   if (!job.runner_name) return { ok: true, why: "no runner took it" };
-  if (job.conclusion === "timed_out" || took >= RAN_OUT_S) return { ok: false, why: `ran its time out (${took} s)` };
   const steps = job.steps ?? [];
+  if (job.conclusion === "timed_out" || took >= RAN_OUT_S) {
+    const sum = (list) => Math.round(list.reduce((n, s) => n + seconds(s), 0));
+    const infraTook = sum(steps.filter((s) => INFRA_STEP.test(s.name)));
+    const ownTook = sum(steps.filter((s) => !INFRA_STEP.test(s.name)));
+    if (job.conclusion !== "timed_out" && infraTook >= STARVED_S && ownTook < RAN_OUT_S - 60) {
+      const text = await log();
+      if (text != null) {
+        const said = lines(text);
+        // (GitHub's cut at the job's 5 minutes says it exceeded the maximum execution time: that alone is not the change's)
+        const hard = HARD_FAILED.filter((p) => !/exceeded the maximum execution time/.test(p.source)).find((p) => p.test(said));
+        const p = INFRA_LOG.find((q) => q.test(said));
+        const infra = p && (said.split("\n").find((l) => p.test(l))?.trim().slice(0, 160) ?? String(p));
+        if (!hard && infra) return { ok: true, why: `setting up took ${infraTook} s (${infra}), leaving ${ownTook} s` };
+      }
+    }
+    return { ok: false, why: `ran its time out (${took} s)` };
+  }
   if (steps.length === 0) return { ok: true, why: "it ran no step" };
   const failed = steps.filter((s) => BAD.has(s.conclusion));
   const own = failed.filter((s) => !INFRA_STEP.test(s.name));
@@ -81,6 +110,19 @@ export async function judge(job, run, log) {
   };
   const hard = first(HARD_FAILED);
   if (hard) return { ok: false, why: `${names} failed: ${hard}` };
+  const logLines = said.split(/\r?\n/);
+  const missing = logLines.find((line) => MISSING_PREBUILD.test(line));
+  if (missing) {
+    // Only the exact diagnostic and its exit-code wrapper can explain this failure. In particular, a network
+    // error beside an unrelated test summary must not hide that summary through the INFRA_LOG branch below.
+    const other = logLines.find((line) => !MISSING_PREBUILD.test(line) &&
+      (SOFT_FAILED.some((p) => p.test(line)) ||
+        (/^(?:##\[error\]|::error::|\w*Error:|error:|fatal:)/i.test(line) && line !== "##[error]Process completed with exit code 1.")));
+    if (job.conclusion !== "failure" || failed.length !== 1 || other) {
+      return { ok: false, why: `${names} failed beside a missing prebuild: ${other || "another step failed or the job was cancelled"}` };
+    }
+    return { ok: true, why: `${names} stopped before its work: ${missing}` };
+  }
   const infra = first([...INFRA_LOG, SHUTDOWN]);
   if (infra) return { ok: true, why: `${names} failed for GitHub's or the network's sake: ${infra}` };
   const soft = first(SOFT_FAILED);

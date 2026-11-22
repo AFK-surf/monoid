@@ -6,10 +6,14 @@
 fn panel_test_body(said : Array[String]) -> (@view.View, () -> Unit) -> Unit {
   fn(v, close) {
     @sf.words_node(v, fn() { "面板里的话，长一些，好看它怎么折行" }, fn() { @sf.paragraph }) |> ignore
-    @sf.button_node(v, fn() { "好的" }, fn() {
-      said.push("ok")
-      close()
-    }, tone=Primary)
+    v.box(fn(f) {
+      @sf.style_node(f, @sf.panel_corner_foot)
+      @sf.button_node(f, fn() { "好的" }, fn() {
+        said.push("ok")
+        close()
+      }, tone=Primary)
+      |> ignore
+    })
     |> ignore
   }
 }
@@ -28,28 +32,28 @@ test "a panel's words, controls and surface fade out together" {
   let t = menu_tester(1280.0, 800.0, 0)
   @sf.panel_nodes("面板", from=At(600.0, 300.0, 0.0, 0.0), fade_out_together=true, panel_marked_body())
   t.run_for(@ui.move_most_ms)
-  let original = t.drawn_rects().filter(fn(r) { r.0 == 600.0 && r.1 == 306.0 && r.2 > 200.0 })[0]
+  let original = t.drawn_instances().filter(fn(a) { a.length() > 15 && a[5] == 6.0 && a[0] == 600.0 && a[1] == 306.0 && a[2] > 200.0 })[0]
   t.key(@ui.key_escape)
   let mut previous = 255L
   for _ in 0..<5 {
-    t.run_for(@kit.pop_out_ms / 6.0)
-    let surface = t.drawn_rects().filter(fn(r) {
-      r.4 >> 8 == original.4 >> 8 &&
-      (r.0 - original.0).abs() < 10.0 && (r.1 - original.1).abs() < 10.0 &&
-      r.2 > original.2 * 0.96 && r.3 > original.3 * 0.96
+    t.run_for(@motion.pop_out_ms / 6.0)
+    let surface = t.drawn_instances().filter(fn(a) {
+      a.length() > 15 && a[5] == 6.0 &&
+      (a[0] - original[0]).abs() < 10.0 && (a[1] - original[1]).abs() < 10.0 &&
+      a[2] > original[2] * 0.96 && a[3] > original[3] * 0.96
     })
     let mark = t.drawn_rects().filter(fn(r) { r.4 >> 8 == 0x23A1DFL })
     let glyphs = t.drawn_glyphs().filter(fn(g) { g.2 >> 8 == 0xB45A29L })
     assert_eq(surface.length(), 1, msg="the surface remains during its fade")
     assert_eq(mark.length(), 1, msg="the control remains during its fade")
     assert_true(!glyphs.is_empty(), msg="the words remain during their fade")
-    let alpha = surface[0].4 & 0xFFL
+    let alpha = (surface[0][15] * 255.0).round().to_int64()
     assert_true(alpha > 0L && alpha < previous, msg="the panel fades continuously")
     assert_eq(mark[0].4 & 0xFFL, alpha, msg="the control and surface fade together")
     assert_true(glyphs.iter().all(fn(g) { (g.2 & 0xFFL) == alpha }), msg="the words and surface fade together")
     previous = alpha
   }
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_false(@sf.presenter_visible())
 }
 
@@ -57,7 +61,7 @@ test "a panel's words, controls and surface fade out together" {
 test "a panel closed while opening fades from its current appearance" {
   let t = menu_tester(1280.0, 800.0, 0)
   @sf.panel_nodes("面板", from=At(600.0, 300.0, 0.0, 0.0), fade_out_together=true, panel_marked_body())
-  t.run_for(@kit.pop_ms / 2.0)
+  t.run_for(@motion.pop_ms / 2.0)
   let painted = fn() {
     (t.drawn_rects().filter(fn(r) { r.4 >> 8 == 0x23A1DFL }), t.drawn_glyphs().filter(fn(g) { g.2 >> 8 == 0xB45A29L }))
   }
@@ -65,7 +69,7 @@ test "a panel closed while opening fades from its current appearance" {
   assert_true(!before.0.is_empty() && !before.1.is_empty())
   t.key(@ui.key_escape)
   assert_eq(painted(), before, msg="closing does not change the current appearance")
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_false(@sf.presenter_visible())
 }
 
@@ -150,12 +154,12 @@ test "panel, 大屏 keyboard and mouse: its way out, closed by Escape, by a pres
       _ => t.tap(bx + bw / 2.0, by + bh / 2.0)
     }
     let at_once = panel_out_said(t, gone, said)
-    t.run_for(@kit.pop_out_ms / 2.0)
+    t.run_for(@motion.pop_out_ms / 2.0)
     let mid = panel_out_said(t, gone, said)
     // (pressed midway where its button was: what that does)
     t.tap(bx + bw / 2.0, by + bh / 2.0)
     let mid_pressed = panel_out_said(t, gone, said)
-    t.run_for(@kit.pop_out_ms)
+    t.run_for(@motion.pop_out_ms)
     let end = panel_out_said(t, gone, said)
     out.push("\{how}: once {\{at_once}} mid {\{mid}} pressed {\{mid_pressed}} end {\{end}}")
   }
@@ -180,12 +184,13 @@ test "panel, 大屏 keyboard and mouse: at a point, where it was beside the old 
     (tenth4(t.get(Dialog, label="面板").rect), w("面板"), w("面板里的话，长一些，好看它怎么折行"), tenth4(t.get(Button, label="好的").rect), t.focused().map(fn(s) { s.label })),
     content=(
       #|(
-      #|  (600, 306, 296, 100),
-      #|  [(616, 318, 264, 20)],
+      #|  (600, 306, 296, 98),
+      #|  [(622, 318, 252, 20)],
       #|  [(606, 342, 284, 22)],
-      #|  (606, 364, 284, 36),
+      #|  (608, 364, 280, 32),
       #|  None,
       #|)
+
     ),
   )
 }
@@ -208,11 +213,11 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out as it was beside
     // (its button's words as they are drawn: there, and how opaque)
     let drawn = fn() { t.words().filter(fn(w) { w.0 == "好的" }).length() }
     let once = (@sf.presenting(), @sf.presenter_visible(), t.query(Dialog, label="面板") is Some(_), gone.val, said.copy(), drawn())
-    t.run_for(@kit.pop_out_ms / 2.0)
+    t.run_for(@motion.pop_out_ms / 2.0)
     let mid = (@sf.presenting(), @sf.presenter_visible(), gone.val, drawn())
     t.tap(bx + bw / 2.0, by + bh / 2.0)
     let pressed = (said.copy(), gone.val)
-    t.run_for(@kit.pop_out_ms)
+    t.run_for(@motion.pop_out_ms)
     out.push((once, mid, pressed, (@sf.presenter_visible(), gone.val, drawn())))
   }
   debug_inspect(out, content=(
@@ -264,7 +269,10 @@ fn panel_out_drawn(t : @ui.Tester) -> String {
   }
   let fading = glyphs.filter(fn(g) { (g.2 & 0xFF) != 0xFF }).map(fn(g) { (f(g.0), f(g.1)) })
   let rects = t.drawn_rects().filter(fn(q) { inside(q.0, q.1) })
-  let ground = rects.filter(fn(q) { q.0 == x && q.1 == y && (q.4 & 0xFF) != 0 }).map(fn(q) { (q.4 & 0xFF).to_int() })
+  let ground = t
+    .drawn_instances()
+    .filter(fn(a) { a.length() > 15 && a[5] == 6.0 && a[0] == x && a[1] == y && a[15] > 0.0 })
+    .map(fn(a) { (a[15] * 255.0).round().to_int() })
   let button = rects.filter(fn(q) { q.0 > 800.0 && q.2 > 40.0 && q.2 < 50.0 }).map(fn(q) { (f(q.0), f(q.1), f(q.2), f(q.3)) })
   "alphas {\{alphas.to_array().map(fn(e) { "\{e.0}: \{e.1}" }).join(", ")}} ground \{@ui.list_text(ground)} button \{@ui.list_text(button.map(@ui.rect_text))} fading \{@ui.some_text(fading.get(0).map(fn(p) { "(\{p.0}, \{p.1})" }))}..\{@ui.some_text(fading.last().map(fn(p) { "(\{p.0}, \{p.1})" }))}"
 }
@@ -285,7 +293,7 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out drawn as it was 
     }
     let seen = [panel_out_drawn(t)]
     for _ in 0..<4 {
-      t.run_for(@kit.pop_out_ms / 4.0)
+      t.run_for(@motion.pop_out_ms / 4.0)
       seen.push(panel_out_drawn(t))
     }
     out.push(seen)
@@ -293,14 +301,17 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out drawn as it was 
   // (each way the same)
   assert_eq(out[1], out[0])
   assert_eq(out[2], out[0])
+  // (360 wide, its farthest edge kept within @sf's pop_max_shift, 8, as it shrinks: View::scale's max_shift)
   debug_inspect(out[0], content=(
     #|[
-    #|  "alphas {255: 45} ground [255] button [] fading None..None",
-    #|  "alphas {255: 24, 205: 21} ground [255] button [] fading Some((615.953, 320.956))..Some((747.562, 374.796))",
-    #|  "alphas {255: 24, 89: 21} ground [255] button [] fading Some((615.844, 320.854))..Some((746.558, 374.328))",
-    #|  "alphas {255: 24} ground [189] button [] fading None..None",
-    #|  "alphas {255: 24} ground [] button [] fading None..None",
+    #|  "alphas {255: 21} ground [255] button [] fading None..None",
+    #|  "alphas {222: 21} ground [222] button [] fading Some((621.923, 320.948))..Some((747.483, 372.766))",
+    #|  "alphas {128: 21} ground [128] button [] fading Some((621.703, 320.797))..Some((746, 372.095))",
+    #|  "alphas {33: 21} ground [33] button [] fading Some((621.482, 320.647))..Some((744.517, 371.423))",
+    #|  "alphas {} ground [] button [] fading None..None",
     #|]
+
+
   ))
 }
 
@@ -395,39 +406,42 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
   // (each frame built as a host builds it: none of the looks alone drawn whole after it as well, Tester::check_looks;
   // this test's alone)
   t.check_looks(false)
+  let bg = words().0
+  let open_n = bg + 21
   let open_at = t.time()
   @sf.panel_nodes("面板", body, from=At(600.0, 300.0, 0.0, 0.0))
   // (the frame it opens in, and those after it of its own: then its way in, the clock alone, past its end)
   t.frames_owed()
   let opened = built.val
-  let way_in = frames_till(open_at + @kit.pop_ms + 2.0 * t.frame_period())
+  let way_in = frames_till(open_at + @motion.pop_ms + 2.0 * t.frame_period())
   let after_in = built.val
   let close_at = t.time()
   t.key(@ui.key_escape)
   t.frames_owed()
   let closed = built.val
-  let way_out = frames_till(close_at + @kit.pop_out_ms + 2.0 * t.frame_period())
+  let way_out = frames_till(close_at + @motion.pop_out_ms + 2.0 * t.frame_period())
   println("PANELBUILT in \{Repr(way_in)} out \{Repr(way_out)}")
   let alphas = fn(frames : Array[(Double, Bool, (Int, Int))]) { frames.map(fn(f) { f.2 }) }
   // (its way in: some frame of it drawn part way, its words whole by its end)
-  let part_in = alphas(way_in).iter().any(fn(w) { w.0 == 45 && w.1 > 0 && w.1 < 255 })
-  let whole_in = way_in.last().map(fn(f) { f.2 }) == Some((45, -1))
+  let part_in = alphas(way_in).iter().any(fn(w) { w.0 == open_n && w.1 > 0 && w.1 < 255 })
+  let whole_in = way_in.last().map(fn(f) { f.2 }) == Some((open_n, -1))
   // (its way out: its words no more opaque frame by frame, some frame part way, then gone, from the first frame at or
   // after its end, and gone thereafter)
   let out_a = alphas(way_out)
-  let part_out = out_a.iter().any(fn(w) { w.0 == 45 && w.1 > 0 && w.1 < 255 })
-  let fading = out_a.filter(fn(w) { w.0 == 45 }).map(fn(w) { if w.1 < 0 { 255 } else { w.1 } })
+  let part_out = out_a.iter().any(fn(w) { w.0 == open_n && w.1 > 0 && w.1 < 255 })
+  let fading = out_a.filter(fn(w) { w.0 == open_n }).map(fn(w) { if w.1 < 0 { 255 } else { w.1 } })
   let mut falls = true
   for i in 1..<fading.length() {
     falls = falls && fading[i] <= fading[i - 1]
   }
-  let gone_from = out_a.search((24, -1)).unwrap_or(out_a.length())
+  let gone_from = out_a.search((bg, -1)).unwrap_or(out_a.length())
   let gone_at = way_out.get(gone_from).map(fn(f) { f.0 - close_at })
-  let gone_stays = out_a.iter().drop(gone_from).all(fn(w) { w == (24, -1) })
-  // (its words faded out by the time half its way out is over, before its ground (kit's pop_out), the frame at or
+  let gone_stays = out_a.iter().drop(gone_from).all(fn(w) { w == (bg, -1) })
+  // (its words fade out together with its liquid glass over pop_out_ms (glass_pop_out), the frame at or
   // after that the first they are gone in)
   let in_time = match gone_at {
-    Some(ms) => ms >= @kit.pop_out_ms / 2.0 && ms < @kit.pop_out_ms / 2.0 + t.frame_period()
+    // (to a thousandth of a frame: the moments are sums of frame periods)
+    Some(ms) => ms >= @motion.pop_out_ms && ms <= @motion.pop_out_ms + t.frame_period() + 0.001
     None => false
   }
   // (what is built meanwhile, the page under it as what it reads says (its own motions), built none of it)
@@ -454,9 +468,10 @@ test "panel, 大屏 keyboard and mouse: at a point, back (the system's): closed 
   }
   debug_inspect(out, content=(
     #|[
-    #|  "focus true: once {presenting false visible true dialog None button [1] gone 1 said [] focused Some(TextField 按空格输入) ime (true, , 0, 0)} end {presenting false visible false dialog None button [] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)}",
+    #|  "focus true: once {presenting false visible true dialog None button [1] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)} end {presenting false visible false dialog None button [] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)}",
     #|  "focus false: once {presenting false visible true dialog None button [1] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)} end {presenting false visible false dialog None button [] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)}",
     #|]
+
   ))
 }
 
@@ -492,7 +507,8 @@ test "panel, 大屏 keyboard and mouse: at a point, held short of what it holds 
   let top = at()
   let said = "\{first} || wheel middle \{middle} || wheel side \{side} || wheel top padding \{top}"
   inspect(said, content=(
-    #|dialog (600, 8, 296, 484) title [(616, 20, 264, 20)] row0 [(606, 44, 284, 22)] row10 [(606, 264, 284, 22)] button Some((606, 924, 284, 36)) || wheel middle title [(616, 20, 264, 20)] row0 [(606, -76, 284, 22)] row10 [(606, 144, 284, 22)] button Some((606, 804, 284, 36)) || wheel side title [(616, 20, 264, 20)] row0 [(606, -196, 284, 22)] row10 [(606, 24, 284, 22)] button Some((606, 684, 284, 36)) || wheel top padding title [(616, 20, 264, 20)] row0 [(606, -196, 284, 22)] row10 [(606, 24, 284, 22)] button Some((606, 684, 284, 36))
+    #|dialog (600, 8, 296, 484) title [(622, 20, 252, 20)] row0 [(606, 44, 284, 22)] row10 [(606, 264, 284, 22)] button Some((606, 924, 284, 32)) || wheel middle title [(622, 20, 252, 20)] row0 [(606, -76, 284, 22)] row10 [(606, 144, 284, 22)] button Some((606, 804, 284, 32)) || wheel side title [(622, 20, 252, 20)] row0 [(606, -196, 284, 22)] row10 [(606, 24, 284, 22)] button Some((606, 684, 284, 32)) || wheel top padding title [(622, 20, 252, 20)] row0 [(606, -196, 284, 22)] row10 [(606, 24, 284, 22)] button Some((606, 684, 284, 32))
+
   ))
 }
 
@@ -599,7 +615,8 @@ test "panel, 大屏 keyboard and mouse: tall 0.5, at a point: its title, words a
   t.run_for(@ui.move_most_ms)
   assert_true(tree_said(Dialog, "面板") is Some(_))
   inspect(panel_said(t), content=(
-    #|dialog Some((600, 106, 296, 400)) title [(616, 118, 264, 20)] words [(606, 142, 284, 22)] button Some((606, 164, 284, 36)) focus None
+    #|dialog Some((600, 106, 296, 400)) title [(622, 118, 252, 20)] words [(606, 142, 284, 22)] button Some((608, 164, 280, 32)) focus None
+
   ))
 }
 
@@ -648,11 +665,12 @@ test "panel, 大屏 keyboard and mouse: tall 0.5 with a foot of its own, its bod
   }
   debug_inspect(out, content=(
     #|[
-    #|  "800: dialog (600, 106, 296, 400) row0 [(606, 142, 284, 22)] foot Some((832, 464, 58, 36)) | wheel: row0 [(606, 22, 284, 22)]",
-    #|  "800 to 500: dialog (600, 106, 296, 250) row0 [(606, 142, 284, 22)] foot Some((832, 314, 58, 36)) | wheel: row0 [(606, 22, 284, 22)]",
-    #|  "500 to 800: dialog (600, 106, 296, 400) row0 [(606, 142, 284, 22)] foot Some((832, 464, 58, 36)) | wheel: row0 [(606, 22, 284, 22)]",
-    #|  "opened at 500: dialog (600, 106, 296, 250) row0 [(606, 142, 284, 22)] foot Some((832, 314, 58, 36)) | wheel: row0 [(606, 22, 284, 22)]",
+    #|  "800: dialog (600, 106, 296, 400) row0 [(606, 142, 284, 22)] foot Some((834, 466, 54, 32)) | wheel: row0 [(606, 22, 284, 22)]",
+    #|  "800 to 500: dialog (600, 106, 296, 250) row0 [(606, 142, 284, 22)] foot Some((834, 316, 54, 32)) | wheel: row0 [(606, 22, 284, 22)]",
+    #|  "500 to 800: dialog (600, 106, 296, 400) row0 [(606, 142, 284, 22)] foot Some((834, 466, 54, 32)) | wheel: row0 [(606, 22, 284, 22)]",
+    #|  "opened at 500: dialog (600, 106, 296, 250) row0 [(606, 142, 284, 22)] foot Some((834, 316, 54, 32)) | wheel: row0 [(606, 22, 284, 22)]",
     #|]
+
   ))
 }
 
@@ -708,9 +726,10 @@ test "panel, 大屏 keyboard and mouse: tall 0.5 and not, a foot's button in its
   }
   debug_inspect(out, content=(
     #|[
-    #|  "tall foot: (832, 464, 58, 36) shows [(832, 464, 890, 500)] pressed [1, 1]",
-    #|  "foot: (832, 172, 58, 36) shows [(832, 172, 890, 208)] pressed [1, 1]",
+    #|  "tall foot: (834, 466, 54, 32) shows [(834, 466, 888, 498)] pressed [1, 1]",
+    #|  "foot: (834, 172, 54, 32) shows [(834, 172, 888, 204)] pressed [1, 1]",
     #|]
+
   ))
 }
 

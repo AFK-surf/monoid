@@ -11,10 +11,12 @@ import { readJsonFile } from "../ops/json-file.ts";
 import { log } from "../ops/log.ts";
 import { setStationCloud } from "../ops/i18n.ts";
 import { createHash } from "node:crypto";
-import { type Entry, type LockState, apply, asEntry, bodyHash, canonical, entryHash, fold, genesis, lockChain, roster4Moved, sayWord, state4, state4Moved, wsTag } from "./lock.ts";
+import { type Entry, type LockState, apply, asEntry, bodyHash, canonical, entryHash, fold, genesis, lockChain, roster4Moved, sayWord, state4, state4Moved, wsTag } from "../../../shared/lock.ts";
 import { type BodyRefused, LockBodies } from "./lock-bodies.ts";
-import { type Kept, type LogRules, type OffChain, hashOf, keep, rechoose } from "./log-keep.ts";
+import { type Kept, type LogRules, type OffChain, hashOf, keep, rechoose } from "../../../shared/log-keep.ts";
 import { PersonChains } from "../mesh/person-chains.ts";
+import { SeenDevices } from "../mesh/seen-devices.ts";
+import { type VaultsHeld, personalVaultChains, personalVaultLock } from "./vault-lock.ts";
 import { type Provider, providerOf } from "./provider.ts";
 
 export type Revocation = { kind: string; id: string; at: number };
@@ -23,7 +25,7 @@ export type Revocation = { kind: string; id: string; at: number };
 /// stations there and what that workspace takes back.
 /// `locked`: that workspace is in security mode, as the control plane says (its lock is pinned here before any of its
 /// members is taken).
-export type Joined = { workspace: string; workspace_name: string; name: string; peers: any[]; revocations: Revocation[]; locked?: true; rigs?: Rig[]; ways?: WaysSaid };
+export type Joined = { workspace: string; workspace_name: string; workspace_emoji?: string; workspace_icon?: string; name: string; peers: any[]; revocations: Revocation[]; locked?: true; rigs?: Rig[]; ways?: WaysSaid };
 
 /// A workspace's own relays and the ways its members' devices do not take to its stations (`lan`, `tailnet`, `direct`,
 /// a relay's URL), as still.fail cloud kept them before the stations did: what a station takes as its first of them
@@ -55,6 +57,8 @@ export type CloudState = {
   station: string;
   workspace: string;
   workspace_name: string;
+  workspace_emoji?: string;
+  workspace_icon?: string;
   name: string;
   relay_url: string;
   /// Every relay, still.fail's (`relay_url`) first; missing from files of before there were several.
@@ -82,8 +86,8 @@ export type CloudState = {
   /// `rig_due` below; never by the control plane's word alone).
   rig?: RigSelf;
   /// A whole station asked to run only tasks from now on, by a member's device that reached it itself (rigs/module.ts
-  /// `POST /mode`): whose it will be (who asked; the control plane lets only its owner list it so), and their own
-  /// lock to pin. Good for `MODE_PENDING_S` from `at`.
+  /// `POST /mode`): whose it will be (who asked; the control plane lets only its adder or a workspace owner or admin
+  /// list it so, as the asker's), and their own lock to pin. Good for `MODE_PENDING_S` from `at`.
   rig_pending?: RigSelf & { at: number };
   /// The control plane lists it as that person's rig now (cloud/presence.ts): it stops what it runs as a station and
   /// becomes one (sessions/agents.ts).
@@ -165,6 +169,15 @@ export function personChainsOf(cloud: Cloud): PersonChains {
     if (cloud instanceof Cloud) cloud.heardPersons(c);
   }
   return c;
+}
+
+/// The members' devices that came to this station, by workspace (mesh/seen-devices.ts), made on first use as
+/// `personChainsOf`'s are.
+const seens = new WeakMap<object, SeenDevices>();
+export function seenDevicesOf(cloud: Cloud): SeenDevices {
+  let s = seens.get(cloud);
+  if (s === undefined) seens.set(cloud, (s = new SeenDevices(cloud.data === undefined ? null : join(meshDir(cloud.data), "seen-devices.json"))));
+  return s;
 }
 
 /// A workspace's state where its chain moved, as made last (Cloud `forceOf`): of which kept lock, which logs and
@@ -315,6 +328,10 @@ export function readState(data: string): CloudState | null {
   if (!existsSync(statePath(data))) return null;
   const raw = readJsonFile(statePath(data));
   const state: CloudState = { ...raw, relay_urls: raw.relay_urls ?? [], peers: raw.peers ?? [], revocations: raw.revocations ?? [] };
+  if (typeof raw.workspace_emoji === "string" && raw.workspace_emoji !== "") state.workspace_emoji = raw.workspace_emoji;
+  else delete state.workspace_emoji;
+  if (typeof raw.workspace_icon === "string" && raw.workspace_icon !== "") state.workspace_icon = raw.workspace_icon;
+  else delete state.workspace_icon;
   if (raw.joined !== undefined) state.joined = joinedOf(raw.joined);
   if (raw.provider !== undefined) state.provider = providerOf(raw.provider);
   if (raw.rigs !== undefined) state.rigs = rigsOf(raw.rigs);
@@ -364,7 +381,10 @@ export function writeState(data: string, s: CloudState) {
 function stateText(s: CloudState): string {
   const out: Record<string, unknown> = {
     ...(s.provider !== undefined ? { provider: s.provider } : {}),
-    origin: s.origin, station: s.station, workspace: s.workspace, workspace_name: s.workspace_name, name: s.name,
+    origin: s.origin, station: s.station, workspace: s.workspace, workspace_name: s.workspace_name,
+    ...(typeof s.workspace_emoji === "string" && s.workspace_emoji !== "" ? { workspace_emoji: s.workspace_emoji } : {}),
+    ...(typeof s.workspace_icon === "string" && s.workspace_icon !== "" ? { workspace_icon: s.workspace_icon } : {}),
+    name: s.name,
     relay_url: s.relay_url, relay_urls: s.relay_urls, grant_keys: s.grant_keys, peers: s.peers, revocations: s.revocations,
   };
   if (s.stillfail_relays !== undefined) out.stillfail_relays = s.stillfail_relays;
@@ -390,6 +410,8 @@ export function joinedOf(raw: unknown): Joined[] {
       ? [{
           workspace: j.workspace,
           workspace_name: typeof j.workspace_name === "string" ? j.workspace_name : j.workspace,
+          ...(typeof j.workspace_emoji === "string" && j.workspace_emoji !== "" ? { workspace_emoji: j.workspace_emoji } : {}),
+          ...(typeof j.workspace_icon === "string" && j.workspace_icon !== "" ? { workspace_icon: j.workspace_icon } : {}),
           name: typeof j.name === "string" ? j.name : "",
           peers: Array.isArray(j.peers) ? j.peers : [],
           revocations: Array.isArray(j.revocations) ? j.revocations.filter(isRevocation) : [],
@@ -600,6 +622,27 @@ export class Cloud {
     if (root === undefined) return l;
     const f = this.forceOf(ws ?? null, l, root);
     return f.on === "off" ? null : f.out;
+  }
+
+  /// The lock workspace `ws`'s vault goes by: the workspace's lock in force where it is in security mode (`locked`:
+  /// one broken or waiting as it is, admitting nobody), else its members' own locks as one (cloud/vault-lock.ts),
+  /// the same object while what it is made of stands. Null for none: a station in no workspace (`ws` naming none).
+  /// `held`: the vault's own records, whose owners it names and whose signatures choose among a person's logs.
+  vaultLock(ws?: string | null, held?: VaultsHeld): LockState | null {
+    const at = ws === undefined || ws === null || ws === this.home() ? null : ws;
+    const id = this.idOf(at);
+    if (id === "") return null;
+    const l = this.locked(at);
+    if (l !== null) return l.state;
+    return personalVaultLock(this, id, { chains: personChainsOf(this), members: seenDevicesOf(this) }, held);
+  }
+
+  /// The personal chains selected for each member outside security mode (GET /vault/boxes); empty in security mode.
+  vaultChains(ws?: string | null, held?: VaultsHeld): Record<string, unknown[]> {
+    const at = ws === undefined || ws === null || ws === this.home() ? null : ws;
+    const id = this.idOf(at);
+    if (id === "" || this.locked(at) !== null) return {};
+    return personalVaultChains(id, { chains: personChainsOf(this), members: seenDevicesOf(this) }, held);
   }
 
   /// What says which of the stations the control plane lists in `ws` are the workspace's: the lock in force, or, where
@@ -1185,7 +1228,16 @@ export class Cloud {
   }
 
   private homeMembership(s: CloudState): Membership {
-    return { workspace: s.workspace, workspace_name: s.workspace_name, name: s.name, peers: s.peers, revocations: s.revocations, home: true };
+    return {
+      workspace: s.workspace,
+      workspace_name: s.workspace_name,
+      ...(typeof s.workspace_emoji === "string" && s.workspace_emoji !== "" ? { workspace_emoji: s.workspace_emoji } : {}),
+      ...(typeof s.workspace_icon === "string" && s.workspace_icon !== "" ? { workspace_icon: s.workspace_icon } : {}),
+      name: s.name,
+      peers: s.peers,
+      revocations: s.revocations,
+      home: true,
+    };
   }
 
   private joinedMembership(j: Joined, home: string): Membership | null {
@@ -1290,6 +1342,12 @@ export class Cloud {
   /// A rig of a workspace signed for here (rigs/adds.ts `take`): what follows the rigs `rigs` gives told, as a roster's
   /// change is (lock-sync.ts and person-sync.ts bring it the chain and, where it moved, the logs and bodies).
   rigsChanged(): void {
+    if (this.listeners !== undefined) this.tell();
+  }
+
+  /// A lock to pin named on this machine since it started (rig/module.ts `#added`): what follows it told, so the
+  /// control plane is asked for that lock at once (presence.ts `pendingAsks`).
+  lockNamed(): void {
     if (this.listeners !== undefined) this.tell();
   }
 

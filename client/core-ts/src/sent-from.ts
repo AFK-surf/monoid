@@ -35,7 +35,8 @@ export function sentHead(text: string): { title: string; link: string; rest: str
     const cut = inner.indexOf("|");
     if (cut < 0) return null;
     link = inner.slice(0, cut);
-    title = inner.slice(cut + 1);
+    // (a Slack surface's heading escapes the title's `&`, `<` and `>`: station messages.ts `chatNamed`)
+    title = inner.slice(cut + 1).replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
   } else return null;
   if (title === "" || !link.startsWith("http") || /\s/.test(link)) return null;
   return { title, link, rest, opened };

@@ -16,7 +16,8 @@ import { createSocket } from "node:dgram";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { Store } from "../src/store/store.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
+import { Store, newMessage } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
@@ -347,8 +348,14 @@ test("resources, accounts, search, the memory and the shares: on StationParts an
   mkdirSync(join(data, "transcript-marks"), { recursive: true });
   writeFileSync(join(data, "transcript-marks", "gone.json"), JSON.stringify({ state: { path: join(data, "nowhere.jsonl") } }));
   writeFileSync(join(data, "transcript-marks", "kept.json"), JSON.stringify({ state: { path: join(data, "config.json") } }));
+  mkdirSync(join(data, "board-files", "p1", ".gone", "d1"), { recursive: true });
+  writeFileSync(join(data, "board-files", "p1", ".gone", "d1", "old"), "x");
+  utimesSync(join(data, "board-files", "p1", ".gone", "d1", "old"), new Date(Date.now() - 2 * 86_400_000), new Date(Date.now() - 2 * 86_400_000));
+  writeFileSync(join(data, "board-files", "p1", ".gone", "d1", "fresh"), "y");
+  mkdirSync(join(data, "board-files", "p1", "d2"), { recursive: true });
+  writeFileSync(join(data, "board-files", "p1", "d2", "live"), "z");
   // (no allowance read off this machine: a login of the test's is never sent out)
-  const a = await launch(data, app, { STILLFAIL_PARTS_DOOR: "1", HOME: home, STILLFAIL_ANTHROPIC_API: "http://127.0.0.1:9" });
+  const a = await launch(data, app, { STILLFAIL_PARTS_DOOR: "1", STILLFAIL_SEARCH_WALK: "1", HOME: home, STILLFAIL_ANTHROPIC_API: "http://127.0.0.1:9" });
   await a.next("ready", (m) => m.ready === true);
   const door = (await a.next("mcp", (m) => m.serving === "mcp")).port as number;
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
@@ -400,6 +407,26 @@ test("resources, accounts, search, the memory and the shares: on StationParts an
       }
     }
 
+    // ── A profile's Codex files as the decisions read them (decision.ts `readLately`): kept as last read, not read
+    // again at every ask; read again now by a check (`profileFilesRead`, which a discovery does first) ──
+    const cxHome = join(data, "homes", "cx");
+    mkdirSync(cxHome, { recursive: true });
+    const toml = (base: string) => `model_provider = "own"\n[model_providers.own]\nbase_url = "${base}"\nenv_key = "OWN_KEY"\n`;
+    const cx = { id: "cx", runtimes: ["codex"], home: cxHome, env: { OWN_KEY: "k-own" } };
+    const fp = async () => {
+      const r = await parts(door, "POST", "/hub/decision.fingerprint", [cx]);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      return r.body as string;
+    };
+    writeFileSync(join(cxHome, "config.toml"), toml("http://127.0.0.1:9/a"));
+    const first = await fp();
+    writeFileSync(join(cxHome, "config.toml"), toml("http://127.0.0.1:9/b"));
+    assert.equal(await fp(), first, "the file as read a moment ago, not read again");
+    const discovered = await parts(door, "POST", "/hub/decision.discover", [cx, { state: "failed" }]);
+    assert.equal(discovered.status, 200, JSON.stringify(discovered.body));
+    assert.notEqual(discovered.body.fingerprint, first, "a check reads the profile's files again");
+    assert.equal(await fp(), discovered.body.fingerprint, "and what it read is kept");
+
     // ── Resources: the machine, and a chat's job's processes put to its chat ──
     const machine = await parts(door, "GET", "/overview/machine");
     assert.equal(machine.status, 200);
@@ -440,6 +467,8 @@ test("resources, accounts, search, the memory and the shares: on StationParts an
     assert.deepEqual(readdirSync(data).filter((n) => n.startsWith("config.json.bak-")).sort(), ["config.json.bak-2", "config.json.bak-3", "config.json.bak-4"]);
     assert.equal(existsSync(join(data, "node", ".part-1")), false);
     assert.deepEqual(readdirSync(join(data, "transcript-marks")), ["kept.json"]);
+    assert.deepEqual(readdirSync(join(data, "board-files", "p1", ".gone", "d1")), ["fresh"]);
+    assert.deepEqual(readdirSync(join(data, "board-files", "p1", "d2")), ["live"]);
 
     // ── Remote: station_list, this station from its load ──
     const listed = JSON.parse((await tool(door, "t1", "station_list")).text);
@@ -642,7 +671,7 @@ test("a sandbox's task through the program's own bridge, skill_read and skill.re
   // the bridge where a release puts it (package.json `build`: beside the program in <app>/station/), wherever the
   // program the test runs was built
   mkdirSync(join(app, "station"), { recursive: true });
-  copyFileSync(fileURLToPath(new URL("../src/agents/sandbox-bridge.mjs", import.meta.url)), join(app, "station", "sandbox-bridge.mjs"));
+  copyFileSync(fileURLToPath(new URL("../assets/agents/sandbox-bridge.mjs", import.meta.url)), join(app, "station", "sandbox-bridge.mjs"));
   mkdirSync(join(data, "mesh"), { recursive: true });
   writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "http://127.0.0.1:9", station: "st-here", workspace: "w1", workspace_name: "W", name: "here", relay_url: "", relay_urls: [], grant_keys: null, peers: [], revocations: [] }));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [], sandboxes: [{ name: "box", target: "{name}.ws@host", size: "large" }] }));
@@ -739,4 +768,237 @@ test("a sandbox's task through the program's own bridge, skill_read and skill.re
   }
   a.tell({ op: "stop" });
   assert.equal(await a.ended, 0);
+});
+
+test("a directory followed as the shared skills' logins are (Watching.dir, fs.watch's): an entry made, changed and removed told by its name, what was there at first not; once let go its fiber ends and nothing more is told; one not there told as failed", { skip: skip || (mbHarnessBinary() === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false) }, async () => {
+  const child = spawn(mbHarnessBinary()!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"], env: noNode() });
+  children.push(child);
+  let seq = 0;
+  let stderr = "";
+  child.stderr!.on("data", (d) => (stderr += d));
+  const waiting = new Map<number, (v: any) => void>();
+  createInterface({ input: child.stdout! }).on("line", (line) => {
+    const m = JSON.parse(line);
+    waiting.get(m.id)?.(m);
+    waiting.delete(m.id);
+  });
+  child.on("exit", (code) => {
+    for (const w of waiting.values()) w({ error: `the harness ended (${code}): ${stderr}` });
+  });
+  const ok = (a: Record<string, unknown>) =>
+    new Promise<any>((resolve) => {
+      seq += 1;
+      waiting.set(seq, resolve);
+      child.stdin!.write(`${JSON.stringify({ id: seq, ...a })}\n`);
+    }).then((said) => {
+      assert.equal(said.error, undefined, `${JSON.stringify(a)}: ${said.error} ${stderr}`);
+      return said.ok;
+    });
+  const dir = fresh("watched");
+  writeFileSync(join(dir, "auth.json"), "{}");
+  const handle = await ok({ op: "watchDir", dir, every: 20 });
+  // (what was there as it began is not a change: the first thing told is the file made after)
+  await ok({ op: "watchDirSaid", handle, count: 0 });
+  writeFileSync(join(dir, "new.json"), "1");
+  assert.deepEqual(await ok({ op: "watchDirSaid", handle, count: 1 }), ["new.json"]);
+  writeFileSync(join(dir, "auth.json"), '{"token":"t"}');
+  assert.deepEqual(await ok({ op: "watchDirSaid", handle, count: 2 }), ["new.json", "auth.json"]);
+  rmSync(join(dir, "new.json"));
+  assert.deepEqual(await ok({ op: "watchDirSaid", handle, count: 3 }), ["new.json", "auth.json", "new.json"]);
+  // let go: answered once its fiber ended, so nothing can tell what changes after
+  assert.deepEqual(await ok({ op: "watchDirClose", handle }), ["new.json", "auth.json", "new.json"]);
+  writeFileSync(join(dir, "after.json"), "2");
+  assert.deepEqual(await ok({ op: "watchDirSaid", handle, count: 0 }), ["new.json", "auth.json", "new.json"]);
+  // a directory not there (a profile's home before it is signed in): told as failed, and its fiber ends by itself
+  const missing = await ok({ op: "watchDir", dir: join(dir, "absent"), every: 20 });
+  assert.deepEqual(await ok({ op: "watchDirSaid", handle: missing, count: 1 }), ["!failed"]);
+  assert.deepEqual(await ok({ op: "watchDirClose", handle: missing }), ["!failed"]);
+  child.stdin!.end();
+  assert.equal(await new Promise((r) => child.on("exit", r)), 0);
+});
+
+test("search: GET /search & search.query keep options/asker isolation, prepare search-scope completes, only_files skips DB, Spotlight and again=1 cache work", { skip }, async () => {
+  const data = fresh("p53-search");
+  const app = fresh("app");
+  const work = fresh("work");
+  const home = fresh("home");
+  const pinned = join(home, "pinned");
+  const secret = join(home, "secret");
+  mkdirSync(pinned, { recursive: true });
+  mkdirSync(secret, { recursive: true });
+  writeFileSync(join(pinned, "roprobe-pinned.txt"), "ok\n");
+  writeFileSync(join(secret, "roprobe-secret.txt"), "nope\n");
+  writeFileSync(join(app, "BUILD"), "9501\n");
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(
+    join(data, "mesh", "cloud.json"),
+    JSON.stringify({
+      origin: "http://127.0.0.1:9",
+      station: "st-here",
+      workspace: "w1",
+      workspace_name: "W",
+      name: "here",
+      relay_url: "",
+      relay_urls: [],
+      grant_keys: null,
+      peers: [{ id: "st-here", name: "here" }],
+      revocations: [],
+    }),
+  );
+  writeFileSync(join(data, "config.json"), JSON.stringify({ drive: { roots: [pinned] } }));
+
+  const a = await launch(data, app, {
+    STILLFAIL_PARTS_DOOR: "1",
+    STILLFAIL_LOCAL_ADMIN: "1",
+    STILLFAIL_SEARCH_WALK: "1",
+    HOME: home,
+    STILLFAIL_ANTHROPIC_API: "http://127.0.0.1:9",
+  });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("mcp", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    const now = Date.now();
+    const hasSearchBuilder = () => {
+      const out = spawnSync("ps", ["-axo", "ppid=,command="], { encoding: "utf8" }).stdout ?? "";
+      return out.split("\n").some((line) => {
+        const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+        return m !== null && Number(m[1]) === a.child.pid && m[2]!.includes("--builder search");
+      });
+    };
+    // 1. only_files (`kinds: ["file"]`) must NOT spawn `--builder search` before any DB search runs.
+    assert.equal(hasSearchBuilder(), false, "no --builder search before any query");
+    const onlyFiles = await parts(door, "POST", "/ask/search.query", [
+      "roprobe",
+      { workspace: "w1", home: true, scopes: ["write"], typist: "dev-cache" },
+      { kinds: ["file"], limit: 5 },
+    ]);
+    assert.equal(onlyFiles.status, 200, JSON.stringify(onlyFiles.body));
+    assert.equal(hasSearchBuilder(), false, "kinds=file must not spawn --builder search");
+
+    // 2. again=1 cache hit within ASKED_AGAIN_MS: adding a new matching file must not re-walk when again=true.
+    writeFileSync(join(pinned, "roprobe-later.txt"), "added after cache\n");
+    const cached = await parts(door, "POST", "/ask/search.query", [
+      "roprobe",
+      { workspace: "w1", home: true, scopes: ["write"], typist: "dev-cache", again: true },
+      { kinds: ["file"], limit: 5 },
+    ]);
+    assert.equal(cached.status, 200, JSON.stringify(cached.body));
+    const cachedPaths = (cached.body.groups?.[0]?.hits ?? []).map((h: any) => h.path);
+    assert.ok(cachedPaths.includes(join(pinned, "roprobe-pinned.txt")), JSON.stringify(cachedPaths));
+    assert.equal(cachedPaths.includes(join(pinned, "roprobe-later.txt")), false, `again=1 should reuse cached file hits: ${JSON.stringify(cachedPaths)}`);
+
+    // 3. Read-only asker via 3-arg search.query sees ONLY pinned root, never non-pinned home files.
+    const roFiles = await parts(door, "POST", "/ask/search.query", [
+      "roprobe",
+      { workspace: "w1", home: true, scopes: [] },
+      { kinds: ["file"], limit: 10 },
+    ]);
+    assert.equal(roFiles.status, 200, JSON.stringify(roFiles.body));
+    const roPaths = (roFiles.body.groups?.[0]?.hits ?? []).map((h: any) => h.path);
+    assert.ok(roPaths.includes(join(pinned, "roprobe-pinned.txt")), JSON.stringify(roPaths));
+    assert.equal(roPaths.includes(join(secret, "roprobe-secret.txt")), false, `read-only asker leaked non-pinned file: ${JSON.stringify(roPaths)}`);
+
+    // 4. Insert active & archived chats (sessions + threads) in home workspace w1 and another workspace w2.
+    const addChat = (key: string, title: string, ws: string | null, at: number, archived = false) => {
+      store.insertSession({ key, connect: "ember", runtime: "claude", profile: "sub", workspace: work, ws, token: `t-${key}`, title, createdAt: at, lastActiveAt: at });
+      const t = store.openThreadOf("ember", "ember", key, title, "a@x", key);
+      store.joinThread(t.id, key, "ember");
+      if (archived) store.setArchived(key, true, "a@x");
+      return t.id;
+    };
+    const actThread = addChat("s-act", "mbsearchreg active one", null, now - 4000, false);
+    addChat("s-arch1", "mbsearchreg archived one", null, now - 3000, true);
+    addChat("s-arch2", "mbsearchreg archived two", null, now - 2000, true);
+    addChat("s-w2", "mbsearchreg other ws", "w2", now - 1000, false);
+    const db = (store as any).db;
+    store.insertMessage(newMessage(actThread, "1", "person", "a@x", "mbsearchreg msg body"));
+
+    // 5. GET /admin-api/search passes kinds, limit, offset, archived=1 through api_routes -> search.query without dropping options.
+    const adminRes = await http(door, "/admin-api/search?q=mbsearchreg&kinds=chat&archived=1&limit=1&offset=1");
+    assert.equal(adminRes.status, 200, adminRes.body);
+    const adminBody = JSON.parse(adminRes.body);
+    assert.equal(adminBody.groups.length, 1, JSON.stringify(adminBody));
+    assert.equal(adminBody.groups[0].kind, "chat", JSON.stringify(adminBody));
+    assert.equal(adminBody.groups[0].hits.length, 1, JSON.stringify(adminBody));
+    assert.equal(adminBody.groups[0].hits[0].archived, true, JSON.stringify(adminBody));
+
+    // 6. Cross-workspace isolation via 3-arg search.query: w2 asker must not see w1 chats.
+    const w2Res = await parts(door, "POST", "/ask/search.query", [
+      "mbsearchreg",
+      { workspace: "w2", home: false, scopes: ["write"] },
+      { kinds: ["chat"], limit: 10 },
+    ]);
+    assert.equal(w2Res.status, 200, JSON.stringify(w2Res.body));
+    const w2Chats = (w2Res.body.groups?.[0]?.hits ?? []).map((h: any) => h.chat);
+    assert.ok(w2Chats.includes("s-w2"), JSON.stringify(w2Chats));
+    assert.equal(w2Chats.includes("s-act"), false, `cross-workspace asker leaked w1 chat: ${JSON.stringify(w2Chats)}`);
+
+    // 7. Fallback GET /parts/route/search also honors archived=1, limit, offset, kinds.
+    const routeRes = await parts(door, "GET", "/route/search?q=mbsearchreg&kinds=chat&archived=1&limit=1&offset=1");
+    assert.equal(routeRes.status, 200, JSON.stringify(routeRes.body));
+    assert.equal(routeRes.body.groups.length, 1, JSON.stringify(routeRes.body));
+    assert.equal(routeRes.body.groups[0].kind, "chat", JSON.stringify(routeRes.body));
+    assert.equal(routeRes.body.groups[0].hits.length, 1, JSON.stringify(routeRes.body));
+    assert.equal(routeRes.body.groups[0].hits[0].archived, true, JSON.stringify(routeRes.body));
+
+    // 8. Message search triggers `prepare("search-scope")`, which drives `--builder search-scope` to completion.
+    const msgRes = await http(door, "/admin-api/search?q=mbsearchreg&kinds=message&limit=5");
+    assert.equal(msgRes.status, 200, msgRes.body);
+    await within("search_scope_meta prepared by --builder search-scope", 15_000, () => {
+      try {
+        const row = db.prepare("SELECT threads_done, members_done FROM search_scope_meta WHERE id = 1").get() as { threads_done: number; members_done: number } | undefined;
+        return row && row.threads_done === 1 && row.members_done === 1 ? row : null;
+      } catch {
+        return null;
+      }
+    });
+  } finally {
+    store.close();
+  }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0);
+
+  // 9. macOS Spotlight (`mdfind`) path: without STILLFAIL_SEARCH_WALK=1 and with an empty HOME,
+  // searching for a system app ("Calculator") finds `/System/Applications/Calculator.app` via Spotlight.
+  if (process.platform === "darwin") {
+    const spotData = fresh("p53-spot");
+    const spotHome = fresh("spot-home");
+    mkdirSync(join(spotData, "mesh"), { recursive: true });
+    writeFileSync(
+      join(spotData, "mesh", "cloud.json"),
+      JSON.stringify({
+        origin: "http://127.0.0.1:9",
+        station: "st-spot",
+        workspace: "w1",
+        workspace_name: "W",
+        name: "spot",
+        relay_url: "",
+        relay_urls: [],
+        grant_keys: null,
+        peers: [{ id: "st-spot", name: "spot" }],
+        revocations: [],
+      }),
+    );
+    const s = await launch(spotData, app, {
+      STILLFAIL_PARTS_DOOR: "1",
+      HOME: spotHome,
+      STILLFAIL_ANTHROPIC_API: "http://127.0.0.1:9",
+    });
+    await s.next("ready", (m) => m.ready === true);
+    const spotDoor = (await s.next("mcp", (m) => m.serving === "mcp")).port as number;
+    const spotRes = await parts(spotDoor, "POST", "/ask/search.query", [
+      "Calculator",
+      { workspace: "w1", home: true, scopes: ["write"] },
+      { kinds: ["file"], limit: 10 },
+    ]);
+    assert.equal(spotRes.status, 200, JSON.stringify(spotRes.body));
+    const spotPaths = (spotRes.body.groups?.[0]?.hits ?? []).map((h: any) => h.path);
+    assert.ok(
+      spotPaths.some((p: string) => p.startsWith("/System/Applications/") && p.endsWith(".app")),
+      `macOS Spotlight should find /System/Applications/Calculator.app with empty HOME: ${JSON.stringify(spotPaths)}`,
+    );
+    s.tell({ op: "stop" });
+    assert.equal(await s.ended, 0);
+  }
 });

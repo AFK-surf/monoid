@@ -22,11 +22,17 @@ pub impl Show for Thrown with fn output(self, logger) {
 /// The station's parts, as the routes ask them.
 pub struct Backend {
   call : async (String, Array[JV]) -> JV
+  // A part's bytes as they are (a file's piece, a stream's next, a reader's answer), where the station gives them
+  // without the `{"$bytes": base64}` round trip `call` takes: `ask_bytes`.
+  call_bytes : (async (String, Array[JV]) -> Bytes?)?
 }
 
 ///|
-pub fn Backend::new(call : async (String, Array[JV]) -> JV) -> Backend {
-  { call, }
+pub fn Backend::new(
+  call : async (String, Array[JV]) -> JV,
+  call_bytes? : async (String, Array[JV]) -> Bytes?,
+) -> Backend {
+  { call, call_bytes }
 }
 
 ///|
@@ -37,6 +43,27 @@ pub async fn Backend::ask(
   args : Array[JV],
 ) -> JV {
   (self.call)(name, args)
+}
+
+///|
+/// A call of the part `name` whose answer is bytes: `call_bytes`'s where the station gives them so, else `call`'s
+/// answer decoded (`bytes_of`); `None` where it answered undefined or null.
+pub async fn Backend::ask_bytes(
+  self : Backend,
+  name : String,
+  args : Array[JV],
+) -> Bytes? {
+  match self.call_bytes {
+    Some(f) => f(name, args)
+    None => {
+      let got = (self.call)(name, args)
+      if nullish(got) {
+        None
+      } else {
+        bytes_of(got)
+      }
+    }
+  }
 }
 
 ///|
@@ -56,28 +83,9 @@ pub fn jref(name : String) -> JV {
 }
 
 ///|
-/// JavaScript's undefined, as an argument.
-pub let jundef : JV = Obj([("$undef", Num(1.0))])
-
-///|
-pub fn is_undef(v : JV) -> Bool {
-  v is Obj([(k, Num(_))]) && k == "$undef"
-}
-
-///|
 /// An answer that is undefined or null (`?? fallback`).
 pub fn nullish(v : JV) -> Bool {
   v is Null || is_undef(v)
-}
-
-///|
-/// The answer as an option: None for undefined (and null when `null_too`).
-pub fn defined(v : JV) -> JV? {
-  if is_undef(v) {
-    None
-  } else {
-    Some(v)
-  }
 }
 
 ///|

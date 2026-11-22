@@ -17,6 +17,9 @@ export { DROPPED, GONE, NETWORK };
 export const REQUEST_AWAY_MS = 10_000;
 export const QUIET_MS = 3_000;
 export const STREAM_AWAY_MS = 30_000;
+/// Away this long, a frozen app sent no keepalive for as long as a path may stay silent (3 s on both sides): its
+/// connections may have lost their ways, though not long enough to take them for gone.
+export const CHECK_AWAY_MS = 3_000;
 
 export class Wake {
   readonly at: number;
@@ -47,6 +50,11 @@ export class Wake {
   /// Long enough away that the connections under the core are taken for gone.
   suspectsConnections(): boolean {
     return this.network || this.retry || this.away >= STREAM_AWAY_MS;
+  }
+  /// Away long enough that the connections are worth asking whether they still answer, and not so long they are taken
+  /// for gone.
+  checksConnections(): boolean {
+    return !this.suspectsConnections() && this.away >= CHECK_AWAY_MS;
   }
   reason(): string {
     return this.network ? NETWORK : GONE;
@@ -189,6 +197,7 @@ export class WakingHost<Message = never> implements HostOf<Message> {
   readonly report?: HostOf<Message>["report"];
   readonly legacyRead?: HostOf<Message>["legacyRead"];
   readonly secureGet?: HostOf<Message>["secureGet"];
+  readonly secureGetMany?: HostOf<Message>["secureGetMany"];
   readonly secureSet?: HostOf<Message>["secureSet"];
   readonly secureDelete?: HostOf<Message>["secureDelete"];
   readonly securePast?: HostOf<Message>["securePast"];
@@ -215,6 +224,7 @@ export class WakingHost<Message = never> implements HostOf<Message> {
     if (inner.legacyRead) this.legacyRead = (range) => inner.legacyRead!(range);
     // So is what the system keeps sealed; a read may wait on the person, never on a UI coming back.
     if (inner.secureGet) this.secureGet = (key, opts) => inner.secureGet!(key, opts);
+    if (inner.secureGetMany) this.secureGetMany = (keys, opts) => inner.secureGetMany!(keys, opts);
     if (inner.secureSet) this.secureSet = (key, value, opts) => inner.secureSet!(key, value, opts);
     if (inner.secureDelete) this.secureDelete = (key) => inner.secureDelete!(key);
     if (inner.securePast) this.securePast = (key) => inner.securePast!(key);

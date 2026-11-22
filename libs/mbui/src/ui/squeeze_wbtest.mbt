@@ -686,6 +686,39 @@ test "beside_faults: a note under its title, beside a control across their middl
 }
 
 ///|
+/// As note_beside's, its title's line 30 high (`titled`: else the note alone), the row's parts at their top, and the
+/// switch across the middle of a box as high as that line: across the middle of the title's line, not of the column.
+fn note_beside_first_line(titled~ : Bool) -> (Ctx) -> Unit {
+  fn(c) {
+    c.box(dir=Row, w=Px(140.0), gap=12.0, align=AStart, fn() {
+      c.box(w=Fill(1.0), fn() {
+        if titled {
+          c.text("Title", size=10.0, line=30.0, wrap=false) |> ignore
+        }
+        c.text("a note of some length", size=10.0) |> ignore
+      })
+      |> ignore
+      c.box(dir=Row, w=Px(44.0), h=Px(30.0), align=ACenter, fn() {
+        c.box(w=Px(44.0), h=Px(26.0), bg=0x00FF00FFL, fn() {  }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+}
+
+///|
+test "beside_faults: a note under its title, beside a control across the middle of the title's line, takes the lines the row leaves it; with no title, said as before" {
+  let faults = fn(view) {
+    let t = Tester::new(view, w=400.0, h=200.0)
+    t.draw()
+    t.beside_faults()
+  }
+  assert_eq(faults(note_beside_first_line(titled=true)), [])
+  assert_true(faults(note_beside_first_line(titled=false)).iter().any(fn(f) { f.contains("lines for what shares their row") }))
+}
+
+///|
 test "balance: wrapped words broken on as many lines, as even as they may be: none left a letter or two on its last; on one line as they are" {
   let laid = fn(balance : Bool, words : String) {
     let t = Tester::new(fn(c) { c.box(w=Px(84.0), fn() { c.text(words, size=10.0, balance~) |> ignore }) |> ignore }, w=400.0, h=200.0)

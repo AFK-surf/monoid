@@ -30,7 +30,7 @@
 // without).
 import { createHash } from "node:crypto";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { type Entry, type LockState, apply, canonical, entryHash, genesis, signedBytes, signer } from "../src/cloud/lock.ts";
+import { type Entry, type LockState, apply, canonical, entryHash, genesis, signedBytes, signer } from "../../shared/lock.ts";
 import { type Key, Rng, START, WS, after, eve, eveKey, genesisOf, key, mal, said, signers, spare, stationKeys } from "./lock-world-sim.ts";
 
 export type Variant = {

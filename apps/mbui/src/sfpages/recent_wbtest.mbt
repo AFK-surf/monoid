@@ -72,9 +72,14 @@ test "recent photos: the same time by id, and no more than asked" {
 ///|
 /// The strip over `n` photos of the gallery (all of it read), across a phone, 添加 n 个 under it while some are chosen;
 /// the tiles tapped to `tapped`.
-fn strip_tester(n : Int, tapped : Array[Int]) -> @ui.Tester {
+fn strip_tester(
+  n : Int,
+  tapped : Array[Int],
+  w? : Double = 430.0,
+  access? : @hostapi.GalleryAccess = Whole,
+) -> @ui.Tester {
   recent_reset()
-  recent.access.set(Whole)
+  recent.access.set(access)
   for i in 1..=n {
     recent.photos.push(photo(i.to_int64(), recent_now - i.to_int64(), -1, -1))
   }
@@ -88,7 +93,7 @@ fn strip_tester(n : Int, tapped : Array[Int]) -> @ui.Tester {
       |> ignore
     },
     // (wide enough for its first tiles whole, the strip on its words' line: recent_in)
-    w=430.0,
+    w~,
     platform=2,
   )
   t.draw()
@@ -96,8 +101,8 @@ fn strip_tester(n : Int, tapped : Array[Int]) -> @ui.Tester {
 }
 
 ///|
-/// Where tile `i` of the strip is (0 the camera): its start and top, the row as far in as recent_in has it, a tile 92
-/// wide and 6 apart.
+/// Where tile `i` of the strip is (0 the camera): its start and top, the row as far in as recent_in has it, a tile 108
+/// wide and 8 apart.
 fn strip_tile(i : Int) -> (Double, Double) {
   let (side, top) = recent_in(false)
   (side + i.to_double() * recent_step, top)
@@ -108,6 +113,8 @@ test "recent photos: a tap puts one in alone; its ring chooses it, then a tap an
   let tapped = []
   let t = strip_tester(4, tapped)
   let src = fn(i : Int) { recent.photos[i - 1].src }
+  let corner = attach_block_corner(false)
+  let ring_center = recent_mark_in(corner) + recent_mark_side / 2.0
   // none chosen: a tap on a photo is it alone
   let (x1, y1) = strip_tile(1)
   t.tap(x1 + 40.0, y1 + 90.0)
@@ -115,7 +122,7 @@ test "recent photos: a tap puts one in alone; its ring chooses it, then a tap an
   assert_eq(recent.chosen.length(), 0)
   // its ring in its top end corner chooses it
   let (x2, y2) = strip_tile(2)
-  t.tap(x2 + recent_tile_w - 10.0, y2 + 10.0)
+  t.tap(x2 + recent_tile_w - ring_center, y2 + ring_center)
   assert_eq(recent.chosen.copy(), [src(2)])
   // some chosen: a tap anywhere on a tile chooses it, or not
   let (x3, y3) = strip_tile(3)
@@ -125,7 +132,7 @@ test "recent photos: a tap puts one in alone; its ring chooses it, then a tap an
   // each numbered in the order chosen, in its ring
   let ring_at = fn(i : Int) {
     let (x, _) = strip_tile(i)
-    x + recent_tile_w - recent_mark_in(@sf.row_corner) - recent_mark_side
+    x + recent_tile_w - recent_mark_in(corner) - recent_mark_side
   }
   match (t.rect_of("1"), t.rect_of("2")) {
     (Some((a, _, aw, _)), Some((b, _, bw, _))) => {
@@ -147,8 +154,10 @@ test "recent photos: a tap puts one in alone; its ring chooses it, then a tap an
 test "recent photos: 添加 n 个 stands where the tiles under the strip were, while some are chosen" {
   let tapped = []
   let t = strip_tester(3, tapped)
+  let corner = attach_block_corner(false)
+  let ring_center = recent_mark_in(corner) + recent_mark_side / 2.0
   let (x1, y1) = strip_tile(1)
-  t.tap(x1 + recent_tile_w - 10.0, y1 + 10.0)
+  t.tap(x1 + recent_tile_w - ring_center, y1 + ring_center)
   let (x2, y2) = strip_tile(2)
   t.tap(x2 + 40.0, y2 + 90.0)
   assert_eq(recent.chosen.length(), 2)
@@ -157,5 +166,99 @@ test "recent photos: 添加 n 个 stands where the tiles under the strip were, w
   t.tap(195.0, recent_in(false).1 + recent_tile_h + 12.0 + recent_add_h / 2.0)
   assert_eq(recent.chosen.length(), 0)
   assert_eq(tapped, [])
+  recent_reset()
+}
+
+///|
+/// The strip's tiles where they are drawn now, in its order (0 the camera, 1… the photos, the asking tile last).
+fn strip_tiles(t : @ui.Tester) -> Array[(Double, Double, Double, Double)] {
+  t.all(Button).filter(fn(b) { b.rect.1 < recent_tile_h }).map(fn(b) { b.rect })
+}
+
+///|
+/// What a finger's drag across the strip glides for after it is let go, over by then.
+let strip_glide_over_ms : Double = 3000.0
+
+///|
+/// The strip dragged across from `x0` to `x1` by a finger on its tiles, its glide let run out.
+fn strip_dragged(t : @ui.Tester, x0 : Double, x1 : Double) -> Unit {
+  let y = recent_in(false).1 + recent_tile_h / 2.0
+  t.drag(x0, y, x1, y, steps=20)
+  t.run_for(strip_glide_over_ms)
+}
+
+///|
+/// Whether `r` (start, top, width, height) lies across the screen `w` wide, whole.
+fn across_screen(r : (Double, Double, Double, Double), w : Double) -> Bool {
+  r.0 >= 0.0 && r.0 + r.2 <= w
+}
+
+///|
+test "recent photos: across a small screen the strip scrolls to its later photos and its last tile, none cut off" {
+  @sf.set_words(@sfbase.fill)
+  let w = 380.0
+  let tapped = []
+  // the camera, 8 photos and 选择更多照片: far wider than the screen
+  let t = strip_tester(8, tapped, w~, access=Chosen)
+  let src = fn(i : Int) { recent.photos[i - 1].src }
+  let corner = attach_block_corner(false)
+  let ring_center = recent_mark_in(corner) + recent_mark_side / 2.0
+  assert_eq(strip_tiles(t).length(), 10)
+  assert_eq(t.audit(), [])
+  // dragged on till its 4th and 5th photos are across the screen
+  strip_dragged(t, 300.0, 100.0)
+  let tiles = strip_tiles(t)
+  assert_true(across_screen(tiles[4], w) && across_screen(tiles[5], w))
+  assert_eq(t.audit(), [])
+  // the 4th, tapped, is it alone
+  let (x4, y4, _, _) = tiles[4]
+  t.tap(x4 + 40.0, y4 + 90.0)
+  assert_eq(tapped, [4])
+  // the 5th's ring chooses it, numbered in it, on the screen
+  let (x5, y5, _, _) = tiles[5]
+  let ring_x = x5 + recent_tile_w - recent_mark_in(corner) - recent_mark_side
+  t.tap(x5 + recent_tile_w - ring_center, y5 + ring_center)
+  assert_eq(recent.chosen.copy(), [src(5)])
+  match t.rect_of("1") {
+    Some((a, _, aw, _) as r) => {
+      assert_true(a >= ring_x && a + aw <= ring_x + recent_mark_side)
+      assert_true(across_screen(r, w))
+    }
+    None => fail("the chosen is not numbered")
+  }
+  assert_eq(t.audit(), [])
+  // dragged on to its end: 选择更多照片 on the screen, its words drawn there, and pressed
+  strip_dragged(t, 360.0, 20.0)
+  strip_dragged(t, 360.0, 20.0)
+  let more = strip_tiles(t)[9]
+  assert_true(across_screen(more, w))
+  match t.rect_of(@sf.t("android-chat.attach.recent.more")) {
+    Some(r) => assert_true(across_screen(r, w))
+    None => fail("选择更多照片 is not drawn")
+  }
+  assert_eq(t.audit(), [])
+  let (xm, ym, mw, mh) = more
+  t.tap(xm + mw / 2.0, ym + mh / 2.0)
+  assert_true(tapped.contains(-1))
+  recent_reset()
+}
+
+///|
+test "recent photos: with none to show, a small screen's strip is the camera and 显示最近照片" {
+  @sf.set_words(@sfbase.fill)
+  let w = 380.0
+  let tapped = []
+  let t = strip_tester(0, tapped, w~, access=Refused)
+  let tiles = strip_tiles(t)
+  assert_eq(tiles.length(), 2)
+  assert_true(across_screen(tiles[0], w) && across_screen(tiles[1], w))
+  match t.rect_of(@sf.t("android-chat.attach.recent.allow")) {
+    Some(r) => assert_true(across_screen(r, w))
+    None => fail("显示最近照片 is not drawn")
+  }
+  assert_eq(t.audit(), [])
+  let (x, y, tw, th) = tiles[1]
+  t.tap(x + tw / 2.0, y + th / 2.0)
+  assert_eq(tapped, [-1])
   recent_reset()
 }

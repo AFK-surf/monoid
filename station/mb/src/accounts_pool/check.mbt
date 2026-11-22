@@ -5,7 +5,7 @@
 
 ///|
 let check_access_kinds : Array[String] = [
-  "subscription", "opencode-go", "anthropic-api", "env", "api-provider",
+  "subscription", "opencode-go", "anthropic-api", "env", "api-provider", "service",
 ]
 
 ///|
@@ -274,7 +274,11 @@ pub fn check_sandboxes(raw : JV) -> Unit raise Thrown {
 
 ///|
 /// `checkConfig`: throws what parse_config refuses in `raw` (config.json as written).
-pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
+pub fn check_config(
+  raw : JV?,
+  _data : String,
+  services? : Array[String] = ["colab"],
+) -> Unit raise Thrown {
   guard raw is Some(Obj(_) as raw) else {
     raise check_fail("invalid type: \{describe(raw)}, expected struct RawConfig")
   }
@@ -314,7 +318,7 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
     }
   }
   let profiles = match raw.get("profiles") {
-    None | Some(Null) => Arr([])
+    None | Some(Null) => JV::Arr([])
     Some(p) => p
   }
   guard profiles is Arr(profile_list) else {
@@ -349,15 +353,24 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
         raise check_fail("missing field `kind`")
       }
       variant(a.get("kind"), check_access_kinds, "an access kind")
-      for f in ["key", "provider", "endpoint", "protocol"] {
+      for f in ["key", "provider", "service", "endpoint", "protocol"] {
         optional(a.get(f), "string", "a string")
       }
     }
-    for f in ["machine", "backgroundOnMessage", "fast", "enabled"] {
+    for f in ["machine", "backgroundOnMessage", "fast", "enabled", "newAccountProtection"] {
       optional(p.get(f), "boolean", "a boolean")
     }
     optional(p.get("name"), "string", "a string")
     optional(p.get("model"), "string", "a string")
+    if present(p.get("maxConcurrentSessions")) {
+      match p.get("maxConcurrentSessions") {
+        Some(Num(n)) if is_integer(n) && n >= 0.0 => ()
+        _ =>
+          raise check_fail(
+            "profile \{id}: maxConcurrentSessions must be a non-negative integer",
+          )
+      }
+    }
     if present(p.get("models")) && !strings_only(p.get("models")) {
       raise check_fail("invalid type: expected a sequence of strings")
     }
@@ -392,12 +405,23 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
     }
     let runtimes = runtimes_for(access, p.get("runtime"))
     let provider = nonempty_str(jget(access, "provider"))
+    let service = nonempty_str(jget(access, "service"))
     let endpoint = match jget(access, "endpoint") {
       Some(Str(e)) => clean_endpoint(e)
       _ => None
     }
     let protocol = nonempty_str(jget(access, "protocol"))
-    if kind == "api-provider" {
+    if kind == "service" {
+      if present(p.get("runtime")) {
+        raise check_fail("profile \{id}: service profile must not set runtime")
+      }
+      guard service is Some(svc) && id_ok(svc) else {
+        raise check_fail("profile \{id}: service access needs a valid service id")
+      }
+      if !services.contains(svc) {
+        raise check_fail("profile \{id}: unknown service \{svc}")
+      }
+    } else if kind == "api-provider" {
       let s = match provider {
         None => None
         Some(pid) => find_source(pid)
@@ -435,7 +459,7 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
   }
   unique_ids("profile", profile_ids)
   let connects = match raw.get("connects") {
-    None | Some(Null) => Arr([])
+    None | Some(Null) => JV::Arr([])
     Some(c) => c
   }
   guard connects is Arr(connect_list) else {
@@ -495,10 +519,11 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
     let runtime = js_string(bind.get("runtime"))
     match bind.get("effort") {
       Some(Str(effort)) if effort != "" => {
-        let legacy = fallback_efforts(runtime)
-        if runtime != "codex" && !legacy.contains(effort) {
+        let allowed = if runtime == "agy" { agy_levels } else { fallback_efforts(runtime) }
+        if runtime != "codex" && !allowed.contains(effort) {
+          let hint = if allowed.length() > 0 { "; use \{allowed.join(", ")}" } else { "" }
           raise check_fail(
-            "connect \{id}: \{runtime} has no effort \{effort}; use \{legacy.join(", ")}",
+            "connect \{id}: \{runtime} has no effort \{effort}\{hint}",
           )
         }
       }

@@ -16,6 +16,7 @@
 #include <android/log.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,7 +59,7 @@ static jmethodID m_request_frame, m_wake_after, m_frames_paced, m_set_ime, m_cli
     m_pk_end, m_drive, m_ref_begin, m_ref_text, m_ref_end, m_ref_frame, m_text_key, m_v_open, m_v_site_name, m_v_place, m_v_close,
     m_v_control, m_v_info, m_v_read_next, m_v_read_answer, m_v_site_next, m_v_site_body, m_v_site_head,
     m_v_site_chunk, m_v_site_end, m_v_site_state, m_v_site_load, m_v_tell, m_pdf_open, m_pdf_pages, m_pdf_size, m_pdf_load, m_pdf_close,
-    m_save, m_system_dark, m_font_scale, m_native_pointing, m_keyboard, m_a11y_on, m_a11y_tree, m_set_dark, m_nt_show, m_nt_cancel, m_nt_state, m_nt_text, m_set_sideways, m_set_turnable, m_word_at,
+    m_save, m_system_dark, m_font_scale, m_native_pointing, m_keyboard, m_a11y_tree, m_set_dark, m_nt_show, m_nt_cancel, m_nt_state, m_nt_text, m_set_sideways, m_set_turnable, m_word_at,
     m_open_url, m_open_tab, m_hold_words, m_clipboard_secret, m_clipboard_secret_off, m_over_done, m_text_scale, m_img_hold, m_img_pump;
 static jclass updates_cls, shares_cls, keeps_cls, holds_cls;
 static jclass gallery_cls, marks_cls;
@@ -82,6 +83,7 @@ static int want_frame;
 // frame being drawn (or the last one) was given.
 static int own_clock;
 static double frame_now;
+static atomic_int g_a11y_enabled = 0;
 
 int mbui_main(int argc, char **argv);  // the MoonBit program's main (renamed)
 
@@ -121,8 +123,9 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *v, void *reserved) {
   m_font_scale = (*env)->GetStaticMethodID(env, host_cls, "fontScale", "()F");
   m_native_pointing = (*env)->GetStaticMethodID(env, host_cls, "nativePointing", "()I");
   m_keyboard = (*env)->GetStaticMethodID(env, host_cls, "keyboard", "()I");
-  m_a11y_on = (*env)->GetStaticMethodID(env, host_cls, "a11yOn", "()Z");
   m_a11y_tree = (*env)->GetStaticMethodID(env, host_cls, "a11yTree", "(Ljava/lang/String;)V");
+  const char *a11y_env = getenv("MBUI_A11Y");
+  if (a11y_env && strcmp(a11y_env, "1") == 0) atomic_store_explicit(&g_a11y_enabled, 1, memory_order_release);
   m_set_dark = (*env)->GetStaticMethodID(env, host_cls, "setDark", "(Z)V");
   m_set_sideways = (*env)->GetStaticMethodID(env, host_cls, "setSideways", "(Z)V");
   m_set_turnable = (*env)->GetStaticMethodID(env, host_cls, "setTurnable", "(Z)Z");
@@ -442,6 +445,10 @@ void mb_host_render_dirty(double x, double y, double w, double h) {
   else fm_said(x, y, w, h);
 }
 
+void mb_host_glass_light_angle(double rad) {
+  gl_set_glass_light_angle(rad);
+}
+
 // (the frame as the app gave it, its groups' headers drawn out as it is taken: groups.h)
 void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   JNIEnv *env = env_();
@@ -474,6 +481,13 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_dropPending(JNIEnv *env, jclass c) {
 // (GL thread) the frame taken drawn (gl_present_kept: straight onto the surface or through the canvas)
 JNIEXPORT void JNICALL Java_dev_mbui_Native_draw(JNIEnv *env, jclass c) { gl_present_kept(kept_count, kept_r, kept_g, kept_b); }
 
+JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_adaptiveSettling(JNIEnv *env, jclass c) {
+  return gl_adaptive_settling() ? JNI_TRUE : JNI_FALSE;
+}
+
+// (MBView.trim, GL thread, its context current: the view paused, the system short of memory)
+JNIEXPORT void JNICALL Java_dev_mbui_Native_trim(JNIEnv *env, jclass c) { mb_render_trim(); }
+
 // (MBView.onDrawFrame, GL thread: only a native view's picture changed since the last frame, or nothing to draw but the
 // surface to fill)
 JNIEXPORT void JNICALL Java_dev_mbui_Native_redraw(JNIEnv *env, jclass c) {
@@ -483,6 +497,10 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_redraw(JNIEnv *env, jclass c) {
     glDisable(GL_SCISSOR_TEST);
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
+    return;
+  }
+  if (gl_adaptive_settling()) {
+    gl_adaptive_step();
     return;
   }
   draw_kept();
@@ -621,6 +639,11 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_start(JNIEnv *env, jclass c) {
 // how late the frame before reached the screen, as MBView said with this one (mb_host_frame_late)
 static double frame_late;
 
+// Whether the app is to be told of what was posted and has not been yet (mb_post_wake): set as it is asked to be,
+// cleared as it is told (Native.posted) and as a frame begins (which takes all posted: messages_arrive), each before
+// what was posted is taken, so a post after the take finds it clear and asks again.
+static atomic_int post_woken;
+
 JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_frame(JNIEnv *env, jclass c, jfloat w, jfloat h,
                                                      jfloat scale, jdouble now, jdouble late) {
   frame_late = late;
@@ -635,6 +658,9 @@ JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_frame(JNIEnv *env, jclass c, jfl
   }
   want_frame = 0;
   frame_now = now;
+  // (the frame takes all that was posted as it begins: what is posted after asks to be told again; Host.posted, which
+  // tells nothing while there is no view, left none owed)
+  atomic_store_explicit(&post_woken, 0, memory_order_release);
   if (cb.frame) cb.frame(w, h, scale, now);
   return want_frame ? JNI_TRUE : JNI_FALSE;
 }
@@ -747,21 +773,40 @@ void mb_host_request_frame(void) {
   (*env)->CallStaticVoidMethod(env, host_cls, m_request_frame);
 }
 
+// A thread the VM did not know that posts (a core's own, the shell's): attached once, as it first posts, and let go
+// as it ends (a thread that ends attached aborts the process), not attached and let go at every post (a Java thread
+// made and let go each time, under the VM's locks: 0.3-1.5 ms a post on a phone). One the VM knew stays as it was.
+static pthread_key_t post_attached;
+static pthread_once_t post_attached_once = PTHREAD_ONCE_INIT;
+static void post_detach(void *unused) {
+  (void)unused;
+  (*vm)->DetachCurrentThread(vm);
+}
+static void post_attached_key(void) { pthread_key_create(&post_attached, post_detach); }
+
+static JNIEnv *post_env(void) {
+  JNIEnv *env = NULL;
+  if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) == JNI_OK) return env;
+  JavaVMAttachArgs args = {JNI_VERSION_1_6, "mbui post", NULL};
+  if ((*vm)->AttachCurrentThread(vm, &env, &args) != JNI_OK) return NULL;
+  pthread_once(&post_attached_once, post_attached_key);
+  pthread_setspecific(post_attached, (void *)1);
+  return env;
+}
+
 // A message posted from outside the frames (post.h), on whatever thread: the app told on its thread, between frames
 // (Host.posted: Native.posted, below), and it takes what changes only signals then (ui's messages_between), a frame
-// asked for only where something is left for one. A thread the VM does not know is attached for the call and let go
-// after.
+// asked for only where something is left for one. Asked once till it is told (post_woken).
 static void mb_post_wake(void) {
   if (!vm || !host_cls) return;
-  JNIEnv *env = NULL;
-  int attached = 0;
-  if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
-    if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return;
-    attached = 1;
+  if (atomic_exchange_explicit(&post_woken, 1, memory_order_acq_rel)) return;
+  JNIEnv *env = post_env();
+  if (!env) {
+    atomic_store_explicit(&post_woken, 0, memory_order_release);
+    return;
   }
   (*env)->CallStaticVoidMethod(env, host_cls, m_posted);
   if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-  if (attached) (*vm)->DetachCurrentThread(vm);
 }
 
 // Whether the system is in night mode (@hostapi.system_dark), as MainActivity keeps it (Host.systemDark: the
@@ -771,11 +816,16 @@ int32_t mb_host_system_dark(void) {
   return (*env)->CallStaticBooleanMethod(env, host_cls, m_system_dark) ? 1 : 0;
 }
 
-// Whether an accessibility service is on (@hostapi.a11y_on: Host.a11yOn, AccessibilityManager's say, a frame asked as it
-// changes), and what the app's widgets are now for it (@hostapi.a11y_tree: MBView's A11y, the view's virtual nodes).
+// Whether a screen reader is on (@hostapi.a11y_on: cached in g_a11y_enabled by A11y.refresh via Native.a11yEnabled,
+// zero JNI per frame), and what the app's widgets are now for it (@hostapi.a11y_tree: MBView's A11y, the view's virtual nodes).
+JNIEXPORT void JNICALL Java_dev_mbui_Native_a11yEnabled(JNIEnv *env, jclass c, jboolean enabled) {
+  (void)env;
+  (void)c;
+  atomic_store_explicit(&g_a11y_enabled, enabled ? 1 : 0, memory_order_release);
+}
+
 int32_t mb_host_a11y_on(void) {
-  JNIEnv *env = env_();
-  return (*env)->CallStaticBooleanMethod(env, host_cls, m_a11y_on) ? 1 : 0;
+  return atomic_load_explicit(&g_a11y_enabled, memory_order_acquire);
 }
 
 void mb_host_a11y_tree(moonbit_string_t s) {
@@ -1204,6 +1254,8 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_outside(JNIEnv *env, jclass c, jint 
 // Something posted since (mb_post_wake, Host.posted: on the app's thread, between frames): the app told (MB_OUTSIDE_POSTED),
 // or, before it has said where it is told, a frame asked for.
 JNIEXPORT void JNICALL Java_dev_mbui_Native_posted(JNIEnv *env, jclass c) {
+  // (cleared before what was posted is taken: a post after the take asks again)
+  atomic_store_explicit(&post_woken, 0, memory_order_release);
   if (outside_cb) outside_cb(MB_OUTSIDE_POSTED, 0, 0);
   else mb_host_request_frame();
 }
@@ -1362,6 +1414,8 @@ void mb_host_set_perf(int32_t on) { (void)on; }
 void mb_host_perf_line(moonbit_string_t line) { (void)line; }
 moonbit_string_t mb_host_perf_where(void) { return moonbit_make_string_raw(0); }
 int32_t mb_host_perf_open(int32_t go) { (void)go; return 0; }
+// A file shown in its folder (@hostapi.reveal_file): no file manager the app can point into here.
+int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) { (void)s; (void)go; return 0; }
 double mb_host_perf_size(void) { return 0; }
 moonbit_bytes_t mb_host_perf_read(void) { return moonbit_make_bytes(0, 0); }
 
@@ -1389,6 +1443,15 @@ double mb_host_cpu_ms(void) {
   struct rusage u;
   if (getrusage(RUSAGE_SELF, &u) != 0) return -1;
   return (u.ru_utime.tv_sec + u.ru_stime.tv_sec) * 1000.0 + (u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1000.0;
+}
+
+// The CPU time of the calling thread (@hostapi.thread_cpu_ms), in ms (-1: unsupported or own_clock).
+double mb_host_thread_cpu_ms(void) {
+  if (own_clock) return -1.0;
+  struct timespec ts;
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0)
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+  return -1.0;
 }
 
 double mb_host_mem_bytes(void) {
@@ -2157,11 +2220,20 @@ void mb_host_set_cursor(int32_t kind) { (void)kind; }
 void mb_host_set_badge(int32_t n) { (void)n; }
 // The menu bar (@hostapi.menu_setup): none here.
 void mb_host_menu_setup(moonbit_string_t json) { (void)json; }
+int32_t mb_host_auto_launch(void) { return 0; }
+int32_t mb_host_set_auto_launch(int32_t enabled) { (void)enabled; return 0; }
+int32_t mb_host_hotkey_set(moonbit_string_t id, moonbit_string_t accel) { (void)id; (void)accel; return 0; }
+void mb_host_hotkey_clear(moonbit_string_t id) { (void)id; }
 // (the phone's faces are the files given: no family of the machine's, no list of them)
 int32_t mb_host_face_add_family(int32_t face, moonbit_string_t family) { (void)face; (void)family; return 0; }
 moonbit_string_t mb_host_local_font_families(void) { return moonbit_make_string_raw(0); }
 // The keys held now (@hostapi.mods_held): none read here.
 int32_t mb_host_mods_held(void) { return 0; }
+// The pointer held by the window and game controllers (@hostapi.set_pointer_lock, gamepads): none here.
+void mb_host_pointer_lock(int32_t on) { (void)on; }
+int32_t mb_host_pointer_locked(void) { return 0; }
+void mb_host_pointer_delta(double *out) { out[0] = 0; out[1] = 0; }
+int32_t mb_host_gamepads(double *out) { (void)out; return 0; }
 
 // ---------------------------------------------------------------------------
 // Streams (src/hostapi/stream.mbt): dev.mbui.Streams decodes (MediaCodec, BitmapFactory) and draws each frame the app

@@ -32,7 +32,14 @@ final class Pdfs {
 
     static final ConcurrentHashMap<Integer, Doc> docs = new ConcurrentHashMap<>();
     static final AtomicInteger next = new AtomicInteger();
-    static final ExecutorService draw = Executors.newSingleThreadExecutor();
+    static final ExecutorService draw = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(() -> {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+            r.run();
+        }, "mbui-pdf");
+        t.setDaemon(true);
+        return t;
+    });
 
     static int open(byte[] data) {
         int id = next.incrementAndGet();

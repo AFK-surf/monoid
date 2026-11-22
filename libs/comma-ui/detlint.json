@@ -93,9 +93,7 @@
     "old-island": {},
     "old-panel": {},
     "old-set-theme": {},
-    "old-empty-around": {
-      "src/gallery/main.mbt": 1
-    },
+    "old-empty-around": {},
     "click-read": {},
     "key-read": {},
     "submitted-read": {},
@@ -124,7 +122,8 @@
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   },
   "excused": {
     "frame-request": {},
@@ -212,6 +211,7 @@
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   }
 }

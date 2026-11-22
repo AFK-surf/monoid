@@ -61,7 +61,7 @@ export type Call =
   | { kind: "decisionReply"; station: string; thread: number; seq: number; text: string; attachments: unknown; uploads?: { id: string; name: string; size: number; width?: number; height?: number }[]; quotes: unknown }
   | { kind: "decisionDismiss"; op: ops.Request; station: string; thread: number; seq: number }
   /// A chat's side-panel tabs changed (chat-tabs.ts): by the key they are kept under, the tab.
-  | { kind: "chatTabs"; chat: string; action: "open" | "close" | "front" | "clear"; tab: string | null; auto: boolean }
+  | { kind: "chatTabs"; chat: string; action: "open" | "close" | "closeOthers" | "closeRight" | "move" | "reopen" | "front" | "clear" | "replace"; tab: string | null; auto: boolean; was?: string; to?: number }
   | { kind: "chatRetryIn"; station: string; session: string; id: string }
   | { kind: "chatDiscardIn"; station: string; session: string; id: string }
   | { kind: "chatRetry"; station: string; thread: number; id: string }
@@ -99,7 +99,7 @@ export type Call =
   | { kind: "stationFile"; station: string; key: string; name: string; thumb: boolean; progress: boolean; keep: number | null; preview?: true; from?: unknown }
   /// `quiet`: the core's own (fill.ts), in the background: not waited on, and nothing a viewer let go; `noHedge`: brought
   /// after all else, never asked twice at once (requests.ts NO_HEDGE).
-  | { kind: "stationFilePart"; station: string; key: string; name: string; offset: number; length: number; progress: boolean; stream: boolean; keep: number | null; quiet?: boolean; noHedge?: boolean; from?: unknown }
+  | { kind: "stationFilePart"; station: string; key: string; name: string; offset: number; length: number; progress: boolean; stream: boolean; keep: number | null; quiet?: boolean; noHedge?: boolean; lane?: number; from?: unknown }
   | { kind: "stationPoster"; station: string; key: string; name: string }
   /// A link's card's picture, or a file's peek's, its bytes beside: out of what the topic's read brought (peek-pictures.ts).
   | { kind: "linkPicture"; station: string; url: string; which: LinkPicture }
@@ -108,7 +108,7 @@ export type Call =
   /// `keep`: what is read kept on the device and what is kept answered (drive-kept.ts), the file as its folder said it
   /// is (`mtime`, `size`; neither said, nothing kept).
   /// `quiet`: as a chat's file's part's.
-  | { kind: "driveRead"; station: string; root: string; path: string; offset: number; length: number; progress: boolean; stream: boolean; keep: KeepKind | null; mtime: number | null; size: number | null; quiet?: boolean; noHedge?: boolean; from?: unknown }
+  | { kind: "driveRead"; station: string; root: string; path: string; offset: number; length: number; progress: boolean; stream: boolean; keep: KeepKind | null; mtime: number | null; size: number | null; quiet?: boolean; noHedge?: boolean; lane?: number; from?: unknown }
   | { kind: "driveUploadPart"; station: string; root: string; path: string; id: string; offset: number; total: number; replace: boolean; bytes: Uint8Array }
   | { kind: "driveRefresh"; station: string; root: string; path: string }
   /// A login's page to open: a loopback login's callback listened for here first, unless the
@@ -198,12 +198,15 @@ export type Call =
   /// A person's own preset made, changed, deleted, or someone else's copied into theirs (views/presets.ts): on this
   /// device at once, carried to the workspace's stations after; `station` the page's (a new one's `home`).
   | { kind: "presets"; name: "add" | "put" | "delete" | "copy"; station: string; params: Record<string, unknown> }
+  /// The board's drafts of 待派发 in a workspace as it has them now (views/board-drafts.ts): kept on this device at once,
+  /// carried to the workspace's stations after.
+  | { kind: "boardDrafts"; workspace: string; drafts: unknown }
   | { kind: "driveTransfer"; action: "start" | "cancel" | "retry"; params: Record<string, unknown> }
   /// A station's files as they are browsed (views/browse.ts): `drive.browse` and the rest of drive-browse.ts's CALLS,
   /// with what each takes.
   | { kind: "browse"; name: string; params: Record<string, unknown> }
   /// A chat's file downloaded to this device (views/downloads.ts): its params read there.
-  | { kind: "download"; action: "start" | "retry" | "take" | "read" | "done" | "cancel"; params: Record<string, unknown> }
+  | { kind: "download"; action: "start" | "retry" | "take" | "read" | "done" | "cancel" | "saved"; params: Record<string, unknown> }
   /// What was opened and let go, brought after everything else, and what a person asked to load, before it (fill.ts): a
   /// chat's file to load (`fill.want {station, key, name, size, from?}`), one no longer brought (`fill.stop {id}`), or
   /// all (`fill.stopAll`), what was kept of each kept.
@@ -244,6 +247,8 @@ export function callStation(call: Call): string | null {
     }
     case "adb":
       return call.call.kind === "share" ? call.call.offer.station : null;
+    case "rig":
+      return call.call.kind === "setMode" ? `${call.call.workspace}/${call.call.station}` : call.call.kind === "decide" ? call.call.station : null;
     case "screen":
       return call.call.kind === "view" ? call.call.station : null;
     case "terminal":
@@ -310,12 +315,14 @@ export function counts(call: Call, name: string): boolean {
       return name === "dev.signIn";
     case "adb":
       return call.call.kind === "pair" || call.call.kind === "grant";
+    case "rig":
+      return call.call.kind !== "log";
     case "lock":
       return call.name !== "state" && call.name !== "toggle" && call.name !== "dismiss" && call.name !== "pair" && call.name !== "pairCode" && call.name !== "pairCancel";
     case "lockPrompt":
       return false;
     case "vault":
-      return call.name !== "state" && call.name !== "lock" && call.name !== "open";
+      return call.name !== "state" && call.name !== "lock" && call.name !== "open" && call.name !== "browseCandidates";
     case "ways":
     case "stationMark":
     case "presets":
@@ -330,7 +337,7 @@ const S = "string" as const;
 const FILE_OPEN_PART = 4 * 1024 * 1024;
 
 /// The vault's calls (views/vault.ts).
-export const VAULT_CALLS = ["state", "lock", "setup", "create", "delete", "addDevice", "ask", "hidePrompt", "prompts", "putItem", "deleteItem", "open", "recover", "approve", "deny", "setLasts", "migrate", "oauthBegin", "oauthComplete"];
+export const VAULT_CALLS = ["state", "lock", "setup", "create", "delete", "addDevice", "setMembers", "ask", "hidePrompt", "prompts", "putItem", "deleteItem", "open", "recover", "approve", "deny", "setLasts", "migrate", "oauthBegin", "oauthComplete", "browseCandidates"];
 
 /// The workspace lock's calls (views/lock.ts).
 export const LOCK_CALLS = ["state", "open", "toggle", "dismiss", "pendingDismiss", "addStation", "joinStation", "renew", "removeDevice", "disable", "pair", "pairCode", "pairCancel", "handOver", "confirmSigner", "restartOwn", "forgetOwn"];
@@ -410,13 +417,17 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
   // A station's files as they are browsed (views/browse.ts): their params read there.
   if (BROWSE_CALLS.includes(name)) return { kind: "browse", name, params: isObject(params) ? (params as Record<string, unknown>) : {} };
   // A chat's file downloaded to this device (views/downloads.ts): its params read there.
-  if (name === "download.start" || name === "download.retry" || name === "download.take" || name === "download.read" || name === "download.done" || name === "download.cancel") {
-    return { kind: "download", action: name.slice(9) as "start" | "retry" | "take" | "read" | "done" | "cancel", params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  if (name === "download.start" || name === "download.retry" || name === "download.take" || name === "download.read" || name === "download.done" || name === "download.cancel" || name === "download.saved") {
+    return { kind: "download", action: name.slice(9) as "start" | "retry" | "take" | "read" | "done" | "cancel" | "saved", params: isObject(params) ? (params as Record<string, unknown>) : {} };
   }
   if (name === "fill.want" || name === "fill.stop" || name === "fill.stopAll") return { kind: "fill", action: name === "fill.want" ? "want" : name === "fill.stop" ? "stop" : "stopAll", params: isObject(params) ? (params as Record<string, unknown>) : {} };
   if (name === "workspace.renameStation") {
     const p = read(params, [["workspace", S, "req"], ["station", S, "req"]]);
     return { kind: "stationMark", workspace: p.workspace as string, station: p.station as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  }
+  if (name === "board.drafts") {
+    const p = read(params, [["workspace", S, "req"]]);
+    return { kind: "boardDrafts", workspace: p.workspace as string, drafts: get(params, "drafts") };
   }
   if (name === "preset.add" || name === "preset.put" || name === "preset.delete" || name === "preset.copy") {
     const p = read(params, [["station", S, "req"]]);
@@ -588,17 +599,34 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
     }
     case "chat.tabs.open":
     case "chat.tabs.close":
+    case "chat.tabs.closeOthers":
+    case "chat.tabs.closeRight":
+    case "chat.tabs.move":
+    case "chat.tabs.reopen":
     case "chat.tabs.front":
-    case "chat.tabs.clear": {
-      const action = name.slice("chat.tabs.".length) as "open" | "close" | "front" | "clear";
+    case "chat.tabs.clear":
+    case "chat.tabs.replace": {
+      const action = name.slice("chat.tabs.".length) as "open" | "close" | "closeOthers" | "closeRight" | "move" | "reopen" | "front" | "clear" | "replace";
+      const needsTab = action !== "clear" && action !== "reopen";
       const p = read(params, [
         ["chat", S, "req"],
-        ["tab", S, action === "clear" ? "opt" : "req"],
+        ["tab", S, needsTab ? "req" : "opt"],
+        ["was", S, action === "replace" ? "req" : "opt"],
+        ["to", "u32", action === "move" ? "req" : "opt"],
         ["auto", "bool", "opt"],
       ]);
       if (p.chat === "") throw CoreError.invalid(t("core-misc.params.missing", { field: "chat" }));
-      if (action !== "clear" && p.tab === "") throw CoreError.invalid(t("core-misc.params.missing", { field: "tab" }));
-      return { kind: "chatTabs", chat: p.chat as string, action, tab: action === "clear" ? null : (p.tab as string), auto: p.auto !== false };
+      if (needsTab && p.tab === "") throw CoreError.invalid(t("core-misc.params.missing", { field: "tab" }));
+      if (action === "replace" && p.was === "") throw CoreError.invalid(t("core-misc.params.missing", { field: "was" }));
+      return {
+        kind: "chatTabs",
+        chat: p.chat as string,
+        action,
+        tab: needsTab ? (p.tab as string) : null,
+        auto: p.auto !== false,
+        ...(action === "replace" ? { was: p.was as string } : {}),
+        ...(action === "move" ? { to: p.to as number } : {}),
+      };
     }
     case "chat.retry":
     case "chat.discard": {

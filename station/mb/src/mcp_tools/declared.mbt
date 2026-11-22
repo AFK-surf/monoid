@@ -6,13 +6,13 @@
 let decl_chat_post : String =
   #|{
   #|  "name": "chat_post",
-  #|  "description": "Post a message to one of your conversations, in Markdown (Slack and Feishu draw it too; Formatting in your instructions says what differs). kind ends your turn with it; card carries what people answer by choosing or typing (skill stillfail-chats: cards, held posts). With only to and title it names the conversation, nothing posted or ended.",
+  #|  "description": "Post a message to one of your conversations, in Markdown (Formatting in your instructions says what differs by platform). kind ends your turn with it; card carries what people answer by choosing or typing (skill stillfail-chats: cards, held posts). With only to and title it names the conversation, nothing posted or ended.",
   #|  "inputSchema": {
   #|    "type": "object",
   #|    "properties": {
   #|      "to": {
   #|        "type": "string",
-  #|        "description": "CHANNEL/THREAD_TS: the thread attribute of the message you are answering."
+  #|        "description": "CHANNEL/THREAD_TS: the thread attribute of the message you are answering; or a Feishu chat_id (oc_…) to begin a conversation there."
   #|      },
   #|      "send": {
   #|        "type": "string",
@@ -59,7 +59,7 @@ let decl_chat_post : String =
   #|      },
   #|      "card": {
   #|        "type": "object",
-  #|        "description": "What people answer this message with, in the chat and in their 待处理: options, text (a value they type) or login (one the login tool started). It does not end your turn: end need_human. A newer card replaces the previous one. A person's next message closes it, a decision or not: ask again with a new card if it is still needed.",
+  #|        "description": "What people answer this message with, in the chat and in their 待处理: options, text (a value they type) or login (one the login tool started). It does not end your turn: end need_human. A newer card replaces the previous one. A person's next message closes it, a decision or not: ask again with a new card if still needed.",
   #|        "properties": {
   #|          "type": {
   #|            "type": "string",
@@ -273,13 +273,29 @@ let decl_chat_history : String =
 let decl_chat_list : String =
   #|{
   #|  "name": "chat_list",
-  #|  "description": "List the conversations on this station (still.fail chats and Slack threads), the latest first: each with its address, title, agents (session keys), last message and, on a station of a workspace, its link (the one to give people); then the chats other workspaces share with this one, by their links. Use it to find a chat people refer to.",
+  #|  "description": "List conversations on this station (or another/all stations of the workspace), latest first: each with address, title, agents (runtime, model, effort, creator, running), last message and link; then chats shared by other workspaces. Filter by query, model, created_by or archived.",
   #|  "inputSchema": {
   #|    "type": "object",
   #|    "properties": {
   #|      "query": {
   #|        "type": "string",
   #|        "description": "Only conversations whose title, last message or agents contain this (case-insensitive)."
+  #|      },
+  #|      "model": {
+  #|        "type": "string",
+  #|        "description": "Only conversations with an agent whose model contains this (case-insensitive, e.g. carbon)."
+  #|      },
+  #|      "created_by": {
+  #|        "type": "string",
+  #|        "description": "Only conversations started by this email (or \"me\" for whoever started your chat)."
+  #|      },
+  #|      "archived": {
+  #|        "type": "boolean",
+  #|        "description": "false: only active (unarchived) chats; true: only archived chats. Omit for both."
+  #|      },
+  #|      "station": {
+  #|        "type": "string",
+  #|        "description": "Another station of the workspace (name or id), or \"all\" for every station. Omit for this station."
   #|      },
   #|      "limit": {
   #|        "type": "integer",
@@ -460,6 +476,70 @@ let decl_chat_archive : String =
   #|    "required": [
   #|      "chat"
   #|    ],
+  #|    "additionalProperties": false
+  #|  }
+  #|}
+
+///|
+let decl_chat_configure : String =
+  #|{
+  #|  "name": "chat_configure",
+  #|  "description": "Read or change a session's runtime, model, effort, speed, context, preset or ownership (for), on this station or another station of the workspace. Omit change fields to inspect its current config; omit chat (or pass \"self\") for your own session. Changes take effect on the next turn (or once the running turn ends) and post a notice in that chat. Skill stillfail-chats says more.",
+  #|  "inputSchema": {
+  #|    "type": "object",
+  #|    "properties": {
+  #|      "chat": {
+  #|        "type": "string",
+  #|        "description": "Target chat: its link (…/chats/<key>, …/o/…/<key>), session key, or local thread address CHANNEL/THREAD_TS. Omit or \"self\" for this session."
+  #|      },
+  #|      "runtime": {
+  #|        "type": "string",
+  #|        "enum": "$RUNTIME_KINDS",
+  #|        "description": "New runtime. Default: current, or inferred from model."
+  #|      },
+  #|      "model": {
+  #|        "type": "string",
+  #|        "description": "New model id (e.g. gemini-4-neon, claude-opus-5-5), or empty string for the runtime's default."
+  #|      },
+  #|      "effort": {
+  #|        "type": "string",
+  #|        "description": "New reasoning effort, or empty string for the model's default."
+  #|      },
+  #|      "speed": {
+  #|        "type": "string",
+  #|        "enum": [
+  #|          "standard",
+  #|          "fast",
+  #|          "ultrafast"
+  #|        ],
+  #|        "description": "Generation speed."
+  #|      },
+  #|      "fast": {
+  #|        "type": "boolean",
+  #|        "description": "Fast mode."
+  #|      },
+  #|      "context": {
+  #|        "type": "integer",
+  #|        "minimum": 0,
+  #|        "description": "Max context tokens (0 resets to the model's full window)."
+  #|      },
+  #|      "preset": {
+  #|        "type": "string",
+  #|        "description": "Apply a preset's model config from this station by name or id (cannot combine with runtime/model/effort/speed/fast/context)."
+  #|      },
+  #|      "repick": {
+  #|        "type": "boolean",
+  #|        "description": "Hand account selection back to the station and repick now."
+  #|      },
+  #|      "for": {
+  #|        "type": "string",
+  #|        "enum": [
+  #|          "me",
+  #|          "person"
+  #|        ],
+  #|        "description": "Change ownership: \"me\" to lead this chat as your sub-chat, \"person\" to hand it back to people."
+  #|      }
+  #|    },
   #|    "additionalProperties": false
   #|  }
   #|}

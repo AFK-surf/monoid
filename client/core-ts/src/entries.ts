@@ -20,7 +20,7 @@ export function nOf(entry: unknown): number | null {
 /// The messages of a run of entries, in thread order (`seq` is the message's n). `source`, when supplied, hears each
 /// message and each edit changing its words; the last entry it hears for a message supplied its current words. Where
 /// nothing hears them, the same entries (each the object it was, data.ts) give back the very list they gave the last
-/// time it was asked of that list: a chat is made again on each change while its reply streams, its entries the same,
+/// time it was asked of that list: a chat is made again on each change while its agent is working, its entries the same,
 /// and those who read the list never write on it. (By what the list holds, not by the list alone: a list a page holds
 /// may be the one it held, put together again in place.)
 export function merge(entries: unknown[], source?: (seq: number, entry: object) => void): Record<string, unknown>[] {

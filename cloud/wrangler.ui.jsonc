@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // ui.monoid.build: official site, docs, and live WebGL2 mbui Storybook & Liquid Glass embeds
+  // (built by website/ui/build.mjs into dist/ui). monoid's Cloudflare account alone (STILLFAIL_CLOUD=monoid),
+  // never deployed to still.fail's account.
+  "name": "monoid-ui-site",
+  "compatibility_date": "2026-09-08",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "ui.monoid.build", "custom_domain": true }],
+  "assets": {
+    "directory": "../dist/ui",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page",
+  },
+}

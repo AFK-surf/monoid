@@ -126,9 +126,25 @@ export class TestTime implements HostTime {
 /// that no sleep of the clock shows, which `pass` gives its turns rather than skip them.
 const busy = () => process.getActiveResourcesInfo().some((r) => r === "Immediate" || r === "Timeout");
 
+/// Out-of-process test harnesses (test/mb-harness.ts) register here so `flush` waits for in-flight RPCs before
+/// `TestTime` advances the virtual clock. Each returns true when it waited, so continuations run before checking again.
+const flushWaiters = new Set<() => Promise<boolean>>();
+export function onFlush(wait: () => Promise<boolean>): () => void {
+  flushWaiters.add(wait);
+  return () => void flushWaiters.delete(wait);
+}
+
 /// Lets what is ready run: promise continuations and the runtime's scheduled fibers.
 export async function flush(rounds = 6): Promise<void> {
-  for (let i = 0; i < rounds; i++) await new Promise<void>((r) => setImmediate(r));
+  for (let attempt = 0; attempt < 32; attempt++) {
+    for (let i = 0; i < rounds; i++) await new Promise<void>((r) => setImmediate(r));
+    if (flushWaiters.size === 0) break;
+    let waited = false;
+    for (const w of flushWaiters) {
+      if (await w()) waited = true;
+    }
+    if (!waited) break;
+  }
 }
 
 type Responder = (request: HttpRequest) => HttpResponse | Promise<HttpResponse>;
@@ -369,6 +385,15 @@ export class FakeHost implements Host {
         if (this.secureRefused) return Effect.fail(new HostError("the person did not confirm"));
       }
       return Effect.succeed(kept.value.slice());
+    });
+  secureGetMany?: (keys: readonly string[], opts: { user: boolean; reason?: string }) => Effect.Effect<(Uint8Array | null)[], HostError> = (keys, opts) =>
+    Effect.suspend(() => {
+      const found = keys.map((key) => this.secure.get(key));
+      if (found.some((kept) => kept !== undefined && (kept.user || opts.user))) {
+        this.secureAsked.push({ key: keys.join(","), ...(opts.reason !== undefined ? { reason: opts.reason } : {}) });
+        if (this.secureRefused) return Effect.fail(new HostError("the person did not confirm"));
+      }
+      return Effect.succeed(found.map((kept) => (kept === undefined ? null : kept.value.slice())));
     });
   secureSet?: (key: string, value: Uint8Array, opts: { user: boolean }) => Effect.Effect<void, HostError> = (key, value, opts) =>
     Effect.sync(() => void this.secure.set(key, { value: value.slice(), user: opts.user }));

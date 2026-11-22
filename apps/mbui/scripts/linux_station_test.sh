@@ -3,7 +3,8 @@
 # home of the run's own: one started by hand said so, with its release, its data and its workspace, and stopped from
 # here; the installer's systemd service said as what runs it, and a machine that only runs tasks taken out of its
 # workspace said so; that service stopped for good (disabled), started again (enabled), and the station taken away
-# (卸载本机 Station: its service, its launcher, its link and its release gone, its data kept and said so). systemctl is
+# (卸载本机 Station: its service, its launcher, its link and its release gone, its data kept and said so); another
+# product's app started with another station's STILLFAIL_DATA telling its installer and service its own. systemctl is
 # a stand-in of the run's, saying what it was asked: nothing of this machine's own. On Linux, with GTK 4's development
 # files and MoonBit (MOON_HOME) for its runtime.
 set -eu
@@ -99,4 +100,21 @@ case "$after" in "STATIONCHECK after ") ;; *) echo "station (linux): with no dat
 [ ! -e "$S/.config/systemd/user/stillfail-station.service" ] || { echo "station (linux): with no data, its unit left"; exit 1; }
 [ ! -e "$S/.stillfail" ] || { echo "station (linux): with no data, its data made anew"; exit 1; }
 [ ! -e "$K/stillfail-station-Ubuntu.vbs" ] && [ -e "$K/stillfail-station-Debian.vbs" ] || { echo "station (linux): WSL's keeper of this distribution not the one taken away"; exit 1; }
-echo "station (linux): one started by hand said and stopped; the service's said as running it, stopped for good, started and restarted enabled; taken away, its data kept; taken away with only its unit left, WSL's keeper with it"
+
+# another product's app (monoid's: MBUI_STATION_ID) started with a STILLFAIL_DATA naming another station's data (a
+# shell's, still.fail's station's agents'): its installer and its service's commands told its own data, never that one
+# (curl the run's, giving an installer that says what it was told)
+M="$O/monoid"
+mkdir -p "$M/.monoid/app" "$M/.monoid/mesh" "$M/.config/systemd/user" && : > "$M/.config/systemd/user/monoid-station.service"
+printf '{"workspace":"ws1","station":"st1","removed_at":null}' > "$M/.monoid/mesh/cloud.json"
+printf '#!/bin/sh\necho "systemctl $* STILLFAIL_DATA=$STILLFAIL_DATA" >> "%s/said"\n' "$M" > "$O/bin/systemctl"
+printf '#!/bin/sh\necho %s\n' "'echo \"install.sh STILLFAIL_DATA=\$STILLFAIL_DATA\" >> \"$M/said\"'" > "$O/bin/curl"
+chmod +x "$O/bin/systemctl" "$O/bin/curl"
+mrun() { HOME=$M XDG_CONFIG_HOME=$M/.config MBUI_STATION_ID=monoid STILLFAIL_DATA=$S/.stillfail PATH="$O/bin:$PATH" "$O/linux_station_test" "$1" | grep -a "STATIONCHECK after"; }
+msaid() { cat "$M/said" 2> /dev/null; }
+after=$(mrun 'update {"origin":"https://app.monoid.build"}'); echo "$after"
+after=$(mrun restart); echo "$after"
+case "$(msaid)" in *"install.sh STILLFAIL_DATA=$M/.monoid"*"systemctl --user restart monoid-station.service STILLFAIL_DATA=$M/.monoid"*) ;;
+  *) echo "station (linux): monoid's app, not told its own data: $(msaid)"; exit 1 ;; esac
+case "$(msaid)" in *"$S/.stillfail"*|*stillfail-station*) echo "station (linux): monoid's app, told another's: $(msaid)"; exit 1 ;; esac
+echo "station (linux): one started by hand said and stopped; the service's said as running it, stopped for good, started and restarted enabled; taken away, its data kept; taken away with only its unit left, WSL's keeper with it; another product's app tells its installer and service its own data"

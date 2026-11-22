@@ -42,6 +42,9 @@ priv struct Mesh {
   /// given it as it is, another binds anew.
   mut endpoint : Json?
   mut identity : String
+  /// The secret key's hex the endpoint bound now holds ("" before the first): the station's own, which no Node of
+  /// another key takes from it (`foreign_key_bind`).
+  mut bound_key : String
   /// Its relays and its congestion controller as they are on it: as the last bind named them, then as a Node's own
   /// `insertRelay`, `removeRelay` and `setCongestion` changed them. What a later bind changes in place.
   mut bound_relays : Array[String]
@@ -56,6 +59,9 @@ priv struct Mesh {
   /// a fresh front side by side (a handover's new Node and the old Node's `#watch` linking again) never both run
   /// `iroh.bind` and leave an unclosed endpoint of the same key on the relays.
   bind_lock : @effect.Semaphore
+  /// What is done once the endpoint bound now gives no more connections (`accepting`): by default the program ends, so
+  /// the launcher starts another front (front.rs) and the Nodes bind it anew.
+  on_accept_end : () -> Unit
 }
 
 ///|
@@ -65,8 +71,7 @@ let waiting_most : Int = 256
 ///|
 /// Serves the mesh on the Unix socket at `path`, until it fails.
 pub async fn mesh(host : @host.Host, path : String) -> Unit {
-  let (said, _) = host.shell("unix.listen", { "path": Json::string(path) })
-  guard said is { "id": listening, .. } else { fail("the shell gave no listening socket") }
+  let listening = host.unix_listen(path)
   let mesh : Mesh = {
     host,
     endpoint: None,
@@ -74,49 +79,55 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
     bound_relays: [],
     bound_congestion: default_congestion,
     bound_alpns: "",
+    bound_key: "",
     said: Json::null(),
     waiting: [],
     clients: [],
     binds: 0,
     bind_lock: @effect.Semaphore::new(1),
+    on_accept_end: () => @host.exit(1),
   }
-  // `streams`: how it hands Node the streams the other end opens and what it does (front.rs `STREAMS`): 5, each with
-  // its index, a route Node gave it (`route`, a segment `*` any one) to what answers it, and the mesh's scopes and
-  // leaves (`meshConfigure`, `meshRemove`, `meshAttachLeaf`, `meshDetachLeaf`).
-  host.say(({ "listening": Json::string(path), "streams": 5 } : Json).stringify())
+  // `streams`: how it hands Node the streams the other end opens and what it does (front.rs `STREAMS`): 8, each with
+  // its index, a route Node gave it (`route`, a segment `*` any one) to what answers it, the mesh's scopes and
+  // leaves (`meshConfigure`, `meshRemove`, `meshAttachLeaf`, `meshDetachLeaf`), `iroh.probeRelay`, the shell's
+  // stream and noq path fixes, the noq-proto BBRv3 (#852/#802) and 4 MiB stream_receive_window (#8093) fixes, and
+  // BBRv3 loss_thresh(0.30) + gated lower-bound adaptation (a front of 7 is replaced so it takes them up).
+  host.say(({ "listening": Json::string(path), "streams": 8 } : Json).stringify())
   // Its stdin is the launcher's: ended (the launcher gone, or stopping the station), the endpoint goes with it.
   ignore(
-    host.rt.fork(name="mesh parent", () => {
+    host.rt.fork_daemon("mesh parent", on_error=e => @host.note("mesh parent failed: \{e}"), () => {
       while host.line() is Some(_) {
         ()
       }
       @host.exit(0)
     }),
   )
-  while true {
-    let accepted = try { Ok(host.shell("tcp.accept", { "id": listening })) } catch { e => Err(e) }
-    guard accepted is Ok(({ "id": id, .. }, _)) else {
-      if accepted is Err(e) {
-        @host.note("mesh: accept failed: \{message(e)}")
-        @effect.sleep(100)
+  // (a failed accept tried again after 100 ms, one that says the listening socket is gone ending it; what serving a
+  // Node fails with noted, never a defect)
+  host
+  .listener_of(listening.id)
+  .serve(
+    host.rt.root(),
+    async fn(accepted) {
+      let client : Client = {
+        conn: { host, id: accepted.id },
+        bound: 0,
+        streams: "",
+        front: Json::array([]),
+        routes: Json::array([]),
+        alpn: Json::null(),
+        coming: @effect.Queue::unbounded(),
+        conns: Map([]),
+        calls: Map([]),
+        gone: false,
       }
-      continue
-    }
-    let client : Client = {
-      conn: { host, id },
-      bound: 0,
-      streams: "",
-      front: Json::array([]),
-      routes: Json::array([]),
-      alpn: Json::null(),
-      coming: @effect.Queue::unbounded(),
-      conns: Map([]),
-      calls: Map([]),
-      gone: false,
-    }
-    mesh.clients.push(client)
-    ignore(host.rt.fork(name="mesh client", () => mesh.serve(client)))
-  }
+      mesh.clients.push(client)
+      mesh.serve(client) catch {
+        e => @host.note("mesh: a Node's socket failed: \{message(e)}")
+      }
+    },
+    on_error=e => @host.note("mesh: accept failed: \{message(e)}"),
+  )
 }
 
 ///|
@@ -124,11 +135,13 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
 async fn Mesh::serve(self : Mesh, client : Client) -> Unit {
   let lines = @wire.Lines::new()
   while true {
-    let read = try { Ok(self.host.shell("tcp.read", { "id": client.conn.id })) } catch { e => Err(e) }
-    guard read is Ok((said, Some(bytes))) && !(said is { "end": true, .. }) else { break }
+    let read = try { Ok(self.host.tcp_read(client.conn.id)) } catch { e => Err(e) }
+    guard read is Ok(Some(bytes)) else { break }
     for line in lines.push(bytes[:]) {
       let asked = @json.parse(line) catch { _ => continue }
-      ignore(self.host.rt.fork(name="mesh ask", () => self.answer(client, asked)))
+      ignore(
+        self.host.rt.fork_daemon("mesh ask", () => self.answer(client, asked), on_error=e => @host.note("mesh: an ask failed: \{message(e)}")),
+      )
     }
   }
   self.part(client)
@@ -192,7 +205,7 @@ fn Mesh::give(self : Mesh, conn : Json) -> Unit {
     None => {
       if self.waiting.length() >= waiting_most {
         if self.waiting.remove(0) is { "conn": id, .. } {
-          ignore(self.host.rt.fork(name="mesh drop", () => self.forget(id, "station starting")))
+          ignore(self.host.rt.fork_quiet(name="mesh drop", () => self.forget(id, "station starting")))
         }
       }
       self.waiting.push(conn)
@@ -214,8 +227,28 @@ fn Mesh::seen(self : Mesh, id : Json) -> Json raise {
 }
 
 ///|
-/// The connections coming to `endpoint`, each given a Node, till it closes.
+/// The connections coming to `endpoint`, each given a Node, till it closes. Where it is still the endpoint bound when
+/// it gives no more (its driver ended), nothing comes to this station again while the Nodes go on asking of it and its
+/// relays look well: so this program ends (`on_accept_end`) for the launcher to start another. One let go after another
+/// was bound in its place ends quietly.
 async fn Mesh::accepting(self : Mesh, endpoint : Json) -> Unit {
+  self.accepted(endpoint)
+  if accept_ended_unbidden(self.endpoint, endpoint) {
+    @host.note("mesh endpoint accept ended; exiting front")
+    (self.on_accept_end)()
+  }
+}
+
+///|
+/// Whether an endpoint that gives no more connections ended unbidden: it is the one bound now, not one let go after
+/// another was bound in its place (`Mesh::bind`).
+fn accept_ended_unbidden(bound : Json?, endpoint : Json) -> Bool {
+  bound is Some(e) && e == endpoint
+}
+
+///|
+/// The connections coming to `endpoint`, each given a Node, till it gives no more.
+async fn Mesh::accepted(self : Mesh, endpoint : Json) -> Unit {
   while true {
     // (an endpoint let go after another was bound in its place is no handle any more: its end)
     let (got, _) = self.host.shell("iroh.accept", { "id": endpoint }) catch {
@@ -225,7 +258,7 @@ async fn Mesh::accepting(self : Mesh, endpoint : Json) -> Unit {
     let seen = self.seen(id) catch {
       _ => {
         // (gone as it came: let go, or the shell keeps it)
-        ignore(self.host.rt.fork(name="mesh drop", () => self.forget(id, "")))
+        ignore(self.host.rt.fork_quiet(name="mesh drop", () => self.forget(id, "")))
         continue
       }
     }
@@ -323,9 +356,17 @@ fn fixed_port(options : Json) -> Bool {
 /// (`identity_of`) is kept as it is, its connections with it: the next Node of a handover binds with the relays and
 /// the congestion controller the station has now, which a running station changes on its endpoint as they change
 /// (relays.ts, mesh.ts `applyNetwork`), so those are changed on it in place, never by binding anew. Another identity
-/// (another key) binds anew, the old endpoint let go at the shell entirely: after the new one is bound, so a bind that
-/// fails leaves the old as it was, unless a fixed port says only one of them can hold it.
+/// (the same key, its discovery, address, relays alone or DSCP changed) binds anew, the old endpoint let go at the
+/// shell entirely: after the new one is bound, so a bind that fails leaves the old as it was, unless a fixed port says
+/// only one of them can hold it. A bind with another key is refused while an endpoint is bound (`foreign_key_bind`):
+/// a front is its station's, and a process that found its socket by the environment it inherited (a test an agent
+/// ran, with a key of its own) would otherwise close the station's endpoint and take it off the mesh.
 async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
+  let key_hex = hex(key)
+  if foreign_key_bind(self.endpoint, self.bound_key, key_hex) {
+    @host.note("mesh: refused bind for another key")
+    fail("another station's key: front already holds an endpoint")
+  }
   let identity = identity_of(options, key)
   if self.endpoint is Some(endpoint) && self.identity == identity {
     let relays = relays_of(options)
@@ -370,11 +411,13 @@ async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
   }
   let (bound, _) = self.host.shell("iroh.bind", options, bytes=key)
   guard bound is { "id": endpoint, .. } else { fail("the shell bound no endpoint") }
+  // (the new one bound before the old is let go: the old one's accepting, ending as it goes, finds it replaced)
+  self.endpoint = Some(endpoint)
   if old is Some(o) {
     self.let_go(o)
   }
-  self.endpoint = Some(endpoint)
   self.identity = identity
+  self.bound_key = key_hex
   self.bound_relays = relays_of(options)
   self.bound_congestion = congestion_of(options)
   self.bound_alpns = field(options, "alpns").stringify()
@@ -382,8 +425,15 @@ async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
     "id": self.host.shell_sync("iroh.endpointId", { "id": endpoint }),
     "sockets": self.host.shell_sync("iroh.sockets", { "id": endpoint }),
   }
-  ignore(self.host.rt.fork(name="mesh accept", () => self.accepting(endpoint)))
+  ignore(self.host.rt.fork_daemon("mesh accept", on_error=e => @host.note("mesh accept failed: \{e}"), () => self.accepting(endpoint)))
   self.said
+}
+
+///|
+/// Whether a bind with `key` (its hex) would take the endpoint bound now (`bound`, of `bound_key`) from the key that
+/// holds it: refused, the endpoint neither replaced nor let go.
+fn foreign_key_bind(bound : Json?, bound_key : String, key : String) -> Bool {
+  bound is Some(_) && bound_key != "" && bound_key != key
 }
 
 ///|
@@ -399,7 +449,7 @@ async fn Mesh::let_go(self : Mesh, endpoint : Json) -> Unit {
 /// (`conn.hand`: its head the ids, a 2 and the stream's index), till the connection is gone.
 fn Mesh::taking(self : Mesh, client : Client, conn : Json, alpn : Json) -> Unit {
   ignore(
-    self.host.rt.fork(name="mesh streams", () => {
+    self.host.rt.fork_daemon("mesh streams", on_error=e => @host.note("mesh streams failed: \{e}"), () => {
       let routed = alpn == client.alpn
       let asked : Json = {
         "id": conn,
@@ -431,7 +481,7 @@ fn Mesh::hand(self : Mesh, client : Client, conn : Json, id : Json) -> Unit {
   }
   head[16] = b'\x01'
   ignore(
-    self.host.rt.fork(name="mesh stream", () => {
+    self.host.rt.fork_quiet(name="mesh stream", () => {
       ignore(
         self.host.shell("istream.hand", { "id": id, "path": Json::string(client.streams) }, bytes=Bytes::from_array(head)),
       ) catch {
@@ -471,7 +521,7 @@ async fn Mesh::answer(self : Mesh, client : Client, asked : Json) -> Unit {
   }
   // (a Node that closed the endpoint is told it is closed, then nothing more)
   if !client.gone || op == "close" {
-    ignore(self.host.shell("tcp.write", { "id": client.conn.id }, bytes=@utf8.encode(line.stringify() + "\n"))) catch {
+    self.host.tcp_write(client.conn.id, @utf8.encode(line.stringify() + "\n")) catch {
       _ => ()
     }
   }
@@ -590,6 +640,9 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
     }
     "stopped" => self.host.shell("istream.stopped", { "id": arg("stream") }).0
     "reset" => self.host.shell("istream.reset", { "id": arg("stream"), "code": arg("code") }).0
+    // A view's frames as datagrams from now on (client/shell `istream.mediaDatagrams`): asked by the Node before its
+    // reply's head goes (front.ts `FrontStream.mediaDatagrams`).
+    "mediaDatagrams" => self.host.shell("istream.mediaDatagrams", { "id": arg("stream"), "token": arg("token") }).0
     "conn.close" => {
       let conn = arg("conn")
       client.conns.remove(conn.stringify())
@@ -633,8 +686,9 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
         }
         said
       })
-    // (not under `bind_lock`: `online` waits up to 15 s for a relay, which a bind must not wait behind)
-    "online" | "publicRelays" | "keep" | "holdIncoming" | "setRelayEntries" | "networkChange" | "disabledRelays" | "meshConfigure" | "meshRemove" | "meshAttachLeaf" | "meshDetachLeaf" => {
+    // (not under `bind_lock`: `online` waits up to 15 s for a relay, and `probeRelay` up to 20 s for its probe, which a
+    // bind must not wait behind)
+    "online" | "publicRelays" | "keep" | "holdIncoming" | "setRelayEntries" | "networkChange" | "disabledRelays" | "probeRelay" | "meshConfigure" | "meshRemove" | "meshAttachLeaf" | "meshDetachLeaf" => {
       let args = match asked_args(arg) {
         Object(m) => {
           m["id"] = self.bound()
@@ -661,26 +715,12 @@ fn asked_args(arg : (String) -> Json) -> Json {
 
 ///|
 fn hex(b : Bytes) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder::new()
-  for x in b {
-    out.write_char(digits[x.to_int() >> 4].unsafe_to_char())
-    out.write_char(digits[x.to_int() & 15].unsafe_to_char())
-  }
-  out.to_string()
+  @codec.hex_encode(b)
 }
 
 ///|
 fn unhex(s : String) -> Bytes {
-  let nibble = (c : Int) => if c >= '0'.to_int() && c <= '9'.to_int() {
-    c - '0'.to_int()
-  } else if c >= 'a'.to_int() && c <= 'f'.to_int() {
-    c - 'a'.to_int() + 10
-  } else if c >= 'A'.to_int() && c <= 'F'.to_int() {
-    c - 'A'.to_int() + 10
-  } else {
-    0
-  }
+  let nibble = (c : Int) => @codec.hex_digit(c).unwrap_or(0)
   let out = FixedArray::make(s.length() / 2, b'\x00')
   for i = 0; i < out.length(); i = i + 1 {
     out[i] = (nibble(s[2 * i].to_int()) * 16 + nibble(s[2 * i + 1].to_int())).to_byte()

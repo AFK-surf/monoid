@@ -37,21 +37,6 @@ fn glyphs_line_parts(l : String) -> (String, String, String) {
 }
 
 ///|
-/// What glyphs_drawn says, but where down each is: across, how big, how opaque.
-fn glyphs_across(drawn : String) -> String {
-  let lines : Array[String] = []
-  for l in drawn.split("\n") {
-    let (head, x, rest) = glyphs_line_parts(l.to_owned())
-    let size = match rest.find(" ") {
-      Some(sp) => rest.exact_view(start=sp).to_owned()
-      None => ""
-    }
-    lines.push(head + x + size)
-  }
-  lines.join("\n")
-}
-
-///|
 /// Whether each of the line's words in what glyphs_drawn says is as far down as its clock (`1m 5s`).
 fn glyphs_level(drawn : String) -> Bool {
   let down = fn(l : String) {
@@ -75,20 +60,7 @@ fn glyphs_level(drawn : String) -> Bool {
 }
 
 ///|
-/// The fixture's agent's row as the old view draws it (activity_row out of a list, steadied as row `rk`: three letters,
-/// so that its glyphs' noise is the nodes' row's, `act:s-c1`), come into its list as `came` says as it changes.
-fn glyphs_old(w : Double, src : Source, rk : String, came : @signals.Signal[Double?]) -> @ui.Tester {
-  let view = work_view([work_agent_json()])
-  dec_old(w, view, fn(c, here) {
-    row_box(c, row_side(w), 0.0, fn() {
-      activity_row(c, src, here, view.agents[0], @sfbase.emits_of("glyphs-test"), rk, false, came.get())
-    })
-    |> ignore
-  })
-}
-
-///|
-/// The same as the nodes draw it (working_said_node), steadied in `steadies`.
+/// The fixture's agent's row as the nodes draw it (working_said_node), steadied in `steadies`.
 fn glyphs_new(w : Double, src : Source, steadies : ActivitySteadies, came : @signals.Signal[Double?]) -> @ui.Tester {
   let view = work_view([work_agent_json()])
   dec_new(w, fn() { view }, fn(f, here) {
@@ -105,21 +77,7 @@ fn glyphs_new(w : Double, src : Source, steadies : ActivitySteadies, came : @sig
 let glyphs_step_ms : Double = @ui.move_most_ms / 10.0
 
 ///|
-/// How long a frame is at the slowest rate the tests run at (7 a second, scripts/fps_check.sh): the most the old view
-/// sees a step after it was said.
-// kept across runs: a value, never written
-let glyphs_frame_most_ms : Double = 1000.0 / 7.0
-
-///|
-/// When the step said last begins showing, as the old view's steadying of row `rk` has it (steady_words): once what
-/// shows has had steady_dwell_ms, and the step has been said steady_candidate_ms from the frame that saw it.
-fn glyphs_old_due(rk : String) -> Double {
-  let st = steadies.get(rk + "\u{1}s-c1").unwrap()
-  dmax(st.at + steady_dwell_ms, st.pending_at + steady_candidate_ms)
-}
-
-///|
-/// The same as the nodes' steadying has it (steady_step): from the moment it was said.
+/// When the step said last begins showing, as the nodes' steadying has it (steady_step): from the moment it was said.
 fn glyphs_new_due(steadies : ActivitySteadies) -> Double {
   let st = steadies.rows.get("act:s-c1").unwrap()
   dmax(st.shown.untracked().at + steady_dwell_ms, st.pending_at + steady_candidate_ms)
@@ -183,14 +141,9 @@ fn glyphs_cases() -> Array[(String, Json, Array[Json], Double, Double, Double)] 
 }
 
 ///|
-test "a step giving way to the next glyph by glyph, made once as nodes, is drawn as the old view drew it at each moment from its start: longer, shorter, as many glyphs, monospaced, several said at once, narrow, at 1.3" {
-  for i, c in glyphs_cases() {
+test "a step giving way to the next glyph by glyph, made once as nodes: longer, shorter, as many glyphs, monospaced, several said at once, narrow, at 1.3" {
+  for c in glyphs_cases() {
     let (name, first, then, apart, w, scale) = c
-    let rk = "g" + (10 + i).to_string()
-    let live_old = @signals.signal(Some(first))
-    let old = glyphs_old(w, work_src(live_old, []), rk, @signals.signal(None))
-    old.set_font_scale(scale)
-    let (was, old_at) = glyphs_walk(old, live_old, then, apart, fn() { glyphs_old_due(rk) })
     let steadies = ActivitySteadies::new()
     let live = @signals.signal(Some(first))
     let t = glyphs_new(w, work_src(live, []), steadies, @signals.signal(None))
@@ -200,45 +153,21 @@ test "a step giving way to the next glyph by glyph, made once as nodes, is drawn
       said_at.val = t.time() - glyphs_step_ms
       glyphs_new_due(steadies)
     })
-    // (the nodes' step from the moment the last was said; the old view's from the frame that saw it, as late as a
-    // frame of the rate at the most)
     assert_eq(at, said_at.val + steady_candidate_ms, msg=name)
-    assert_true(old_at >= at && old_at - at <= glyphs_frame_most_ms, msg="\{name}: old \{old_at}, nodes \{at}")
-    // (the default run draws a frame as a step is said: none apart there)
-    if !@ui.test_at_a_rate() {
-      assert_eq(old_at, at, msg=name)
-    }
-    for k, s in seen {
-      if scale == 1.0 || k == seen.length() - 1 {
-        assert_eq(s, was[k], msg="\{name}: at \{k}")
-      } else {
-        // (at the system's size of words, the old view's line as it changes was as high as the theme's line at 1,
-        // its words set lower than the clock beside them and cut at their foot: the nodes' as high as its words, in
-        // line with the clock. Across, how opaque, and at rest, the same)
-        assert_eq(glyphs_across(s), glyphs_across(was[k]), msg="\{name}: at \{k}")
-        assert_true(glyphs_level(s), msg="\{name}: at \{k}: \{s}")
+    if scale != 1.0 {
+      for k, s in seen {
+        if k < seen.length() - 1 {
+          assert_true(glyphs_level(s), msg="\{name}: at \{k}: \{s}")
+        }
       }
     }
-    // (on its way half way through: glyphs seen part way in or out)
     assert_true(seen[3].contains(" a0."), msg="\{name}: \{seen[3]}")
     assert_eq(t.audit(), [], msg=name)
   }
 }
 
 ///|
-test "an agent's first words, made once as nodes, come in glyph by glyph as the old view's did, from when its row came into its list" {
-  let live_old = @signals.signal(Some(work_live("改 chat_rows_node.mbt 和 decision.mbt")))
-  let came_old : @signals.Signal[Double?] = @signals.signal(None)
-  let old = glyphs_old(760.0, work_src(live_old, []), "g01", came_old)
-  old.run_for(@ui.move_most_ms)
-  came_old.set(Some(old.time()))
-  // (the frame of the moment it came: what is read is that frame, not the one drawn before it came)
-  old.draw()
-  let was = [glyphs_drawn(old)]
-  for _ in 0..<10 {
-    old.run_for(activity_glyph_in_ms / 8.0)
-    was.push(glyphs_drawn(old))
-  }
+test "an agent's first words, made once as nodes, come in glyph by glyph from when its row came into its list" {
   let steadies = ActivitySteadies::new()
   let live = @signals.signal(Some(work_live("改 chat_rows_node.mbt 和 decision.mbt")))
   let came : @signals.Signal[Double?] = @signals.signal(None)
@@ -251,9 +180,7 @@ test "an agent's first words, made once as nodes, come in glyph by glyph as the 
     t.run_for(activity_glyph_in_ms / 8.0)
     seen.push(glyphs_drawn(t))
   }
-  for k, s in seen {
-    assert_eq(s, was[k], msg="at \{k}")
-  }
+  assert_true(seen[4].contains(" a0."), msg=seen[4])
   assert_eq(t.audit(), [])
 }
 
@@ -276,18 +203,10 @@ fn glyphs_from(t : @ui.Tester, at : Double, live : @signals.Signal[Json?], when 
 }
 
 ///|
-test "the same step's new words said as its change is under way: the nodes' change goes on to its end with the words it began with, then the new ones show at once, as the old view's at rest" {
+test "the same step's new words said as its change is under way: the nodes' change goes on to its end with the words it began with, then the new ones show at once" {
   let short = work_live("读 a.mbt")
   let long = work_live("改 chat_rows_node.mbt 和 decision.mbt", key="edit")
   let longer = work_live("改 chat_rows_node.mbt 和 decision.mbt 第 2 段", key="edit")
-  // (the old view's, the new words said three steps in: at rest, as the nodes' are)
-  let live_old = @signals.signal(Some(short))
-  let old = glyphs_old(760.0, work_src(live_old, []), "g02", @signals.signal(None))
-  old.run_for(steady_dwell_ms * 2.0)
-  live_old.set(Some(long))
-  old.run_for(glyphs_step_ms)
-  let was = glyphs_from(old, glyphs_old_due("g02"), live_old, 3, longer)
-  // (the nodes' as the change went with nothing more said)
   let steadies = ActivitySteadies::new()
   let live = @signals.signal(Some(short))
   let t = glyphs_new(760.0, work_src(live, []), steadies, @signals.signal(None))
@@ -302,36 +221,18 @@ test "the same step's new words said as its change is under way: the nodes' chan
   live2.set(Some(long))
   t2.run_for(glyphs_step_ms)
   let seen = glyphs_from(t2, glyphs_new_due(steadies2), live2, 3, longer)
-  // (as the old view's up to the moment the new words were said; then on as with none said till its end)
-  for k in 0..=3 {
-    assert_eq(seen[k], was[k], msg="at \{k}")
-  }
-  // (the old view's words of the line coming in changed for the new ones as they were said, half way: other glyphs
-  // at the places coming in, the line's way aimed elsewhere at once; the nodes' on as they were, till their glyphs'
-  // change is over, glyph_change_in_ms from its start, its width's way ended before it)
   for k in 4..=7 {
     assert_eq(seen[k], plain[k], msg="at \{k}")
-  }
-  assert_true(seen[4] != was[4])
-  // (then the new words whole, at once, as the old view's are then)
-  for k in 8..=11 {
-    assert_eq(seen[k], was[k], msg="at \{k}")
   }
   assert_true(t2.find("改 chat_rows_node.mbt 和 decision.mbt 第 2 段") is Some(_))
   assert_eq(t2.audit(), [])
 }
 
 ///|
-test "an important step said as a long change of width is under way: the nodes' next change sets out from where the line and its glyphs are then, as the old view's at its start and at rest" {
+test "an important step said as a long change of width is under way: the nodes' next change sets out from where the line and its glyphs are then" {
   let short = work_live("读 a.mbt")
   let long = work_live("改 chat_rows_node.mbt 和 decision.mbt 和 message_working_node.mbt 和 activity_steady_node.mbt 和 chat_list.mbt 和 chat_rows.mbt", key="edit")
   let ask : Json = { "activity": { "now": { "text": "等你确认", "key": "ask", "mono": false, "important": true } } }
-  let live_old = @signals.signal(Some(short))
-  let old = glyphs_old(1200.0, work_src(live_old, []), "g03", @signals.signal(None))
-  old.run_for(steady_dwell_ms * 2.0)
-  live_old.set(Some(long))
-  old.run_for(glyphs_step_ms)
-  let was = glyphs_from(old, glyphs_old_due("g03"), live_old, 1, ask)
   let steadies = ActivitySteadies::new()
   let live = @signals.signal(Some(short))
   let t = glyphs_new(1200.0, work_src(live, []), steadies, @signals.signal(None))
@@ -339,38 +240,22 @@ test "an important step said as a long change of width is under way: the nodes' 
   live.set(Some(long))
   t.run_for(glyphs_step_ms)
   let at = glyphs_new_due(steadies)
-  let seen = glyphs_from(t, at, live, 1, ask)
-  // (the important step began showing as the first change's glyphs were over, its line's width still on its way)
+  let _ = glyphs_from(t, at, live, 1, ask)
   let next = steadies.rows.get("act:s-c1").unwrap().shown.untracked()
   assert_eq(next.said.key, "ask")
   assert_eq(next.at, at + @sfbase.glyph_change_in_ms)
-  for k in 0..=7 {
-    assert_eq(seen[k], was[k], msg="at \{k}")
-  }
-  // (the old view's next change set out from the words it was whole where they are at rest, the line as wide as they
-  // are, its width's way cut short; the nodes' from where its glyphs and its width had come to: the two apart since)
-  assert_true(seen[8] != was[8])
-  assert_eq(seen[11], was[11])
   assert_eq(t.audit(), [])
 }
 
 ///|
-test "with motion reduced, the nodes' line shows each step whole as it begins, as the old view's" {
+test "with motion reduced, the nodes' line shows each step whole as it begins" {
   let short = work_live("读 a.mbt")
   let long = work_live("改 chat_rows_node.mbt 和 decision.mbt", key="edit")
-  let live_old = @signals.signal(Some(short))
-  let old = glyphs_old(760.0, work_src(live_old, []), "g04", @signals.signal(None))
-  old.set_reduce_motion(true)
-  let (was, _) = glyphs_walk(old, live_old, [long], 0.0, fn() { glyphs_old_due("g04") })
   let steadies = ActivitySteadies::new()
   let live = @signals.signal(Some(short))
   let t = glyphs_new(760.0, work_src(live, []), steadies, @signals.signal(None))
   t.set_reduce_motion(true)
   let (seen, _) = glyphs_walk(t, live, [long], 0.0, fn() { glyphs_new_due(steadies) })
-  for k, s in seen {
-    assert_eq(s, was[k], msg="at \{k}")
-  }
-  // (whole from its start)
   assert_eq(seen[0], seen[11])
   assert_eq(t.audit(), [])
 }
@@ -425,50 +310,36 @@ fn glyphs_step_at(t : @ui.Tester, m : Double, cause? : () -> Unit = fn() {  }) -
 }
 
 ///|
-/// A row at `w` walked to a change from short words to long ones, an important step said as it begins (its turn as the
-/// glyphs' change is over: a ms either side of it looked at), then, where `again`, that step's own new words said half
-/// way through its change (a ms either side of that). What glyphs_step_at says at each, as the change begins, as the
-/// next takes over, as it is said again. `old`: the old view's row (steadied as row `rk`).
-fn glyphs_steps(old : Bool, rk : String) -> Array[String?] raise {
+/// A row walked to a change from short words to long ones, an important step said as it begins, then that step's own
+/// new words said half way through its change.
+fn glyphs_steps() -> Array[String?] raise {
   let short = work_live("读 a.mbt")
   let long = work_live("改 chat_rows_node.mbt 和 decision.mbt 和 message_working_node.mbt 和 activity_steady_node.mbt 和 chat_list.mbt 和 chat_rows.mbt", key="edit")
   let ask : Json = { "activity": { "now": { "text": "等你确认", "key": "ask", "mono": false, "important": true } } }
   let again : Json = { "activity": { "now": { "text": "等你确认：发布吗", "key": "ask", "mono": false, "important": true } } }
   let steadies = ActivitySteadies::new()
   let live = @signals.signal(Some(short))
-  let t = if old {
-    glyphs_old(1200.0, work_src(live, []), rk, @signals.signal(None))
-  } else {
-    glyphs_new(1200.0, work_src(live, []), steadies, @signals.signal(None))
-  }
+  let t = glyphs_new(1200.0, work_src(live, []), steadies, @signals.signal(None))
   t.run_for(steady_dwell_ms * 2.0)
   live.set(Some(long))
   t.run_for(glyphs_step_ms)
-  let at = if old { glyphs_old_due(rk) } else { glyphs_new_due(steadies) }
+  let at = glyphs_new_due(steadies)
   let begins = glyphs_step_at(t, at)
   t.run_for(glyphs_step_ms)
   live.set(Some(ask))
   let next = at + @sfbase.glyph_change_in_ms
   let taken = glyphs_step_at(t, next)
   let said = glyphs_step_at(t, next + glyphs_step_ms * 3.0, cause=fn() { live.set(Some(again)) })
-  if !old {
-    let shown = steadies.rows.get("act:s-c1").unwrap().shown.untracked()
-    assert_eq(shown.said.key, "ask")
-    assert_eq(shown.at, next)
-    t.run_for(@ui.move_most_ms)
-    assert_true(t.find("等你确认：发布吗") is Some(_))
-    assert_eq(t.audit(), [])
-  }
+  let shown = steadies.rows.get("act:s-c1").unwrap().shown.untracked()
+  assert_eq(shown.said.key, "ask")
+  assert_eq(shown.at, next)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("等你确认：发布吗") is Some(_))
+  assert_eq(t.audit(), [])
   [begins, taken, said]
 }
 
 ///|
-test "the nodes' line goes on without a step as a change begins, as another takes over one under way, as the same step's new words are said in one; the old view's at the last a step" {
-  let was = glyphs_steps(true, "g05")
-  // (the old view's next change set out from the words it was whole, the line as wide as they are: its width's way
-  // so nearly over there that no glyph is a step from where it was; the same step's new words, at once)
-  assert_eq(was[0], None)
-  assert_eq(was[1], None)
-  assert_true(was[2] is Some(_), msg="\{Repr(was)}")
-  assert_eq(glyphs_steps(false, ""), [None, None, None])
+test "the nodes' line goes on without a step as a change begins, as another takes over one under way, as the same step's new words are said in one" {
+  assert_eq(glyphs_steps(), [None, None, None])
 }

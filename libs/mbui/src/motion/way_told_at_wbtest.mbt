@@ -27,7 +27,7 @@ test "a frame built again for a Way gone on or put names the line that said it, 
   t.check_looks(false)
   t.draw()
   t.frame()
-  let went = way_told_place(); way.go(1.0, lift_spring, at=t.time())
+  let went = way_told_place(); way.go(1.0, tactile_bounce, at=t.time())
   t.frame()
   let why_go = t.built_why()
   // (put while it goes: there at once, from any moment)

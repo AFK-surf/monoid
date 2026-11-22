@@ -174,7 +174,7 @@ test "a choice of a few as nodes, the system's size of words changed while it sh
   t.draw()
   t.run_for(@ui.move_most_ms)
   let c = @ui.current()
-  let w = choice_words_w(c, "预览", c.sp(theme().t.ui), weight=500) + 2.0 * segmented_in
+  let w = node_words_w("预览", c.sp(theme().t.ui), weight=500) + 2.0 * segmented_in
   assert_true(w > 58.0, msg="its words wider than item_w at 2: \{w}")
   assert_eq(widths(), [w, w], msg="as wide as its words")
 }
@@ -189,10 +189,10 @@ test "a choice of a few as nodes short of room, its words made smaller to fit (t
   t.run_for(@ui.move_most_ms)
   let c = @ui.current()
   let size = c.sp(theme().t.ui)
-  let words = choice_words_w(c, "预览", size, weight=500)
+  let words = node_words_w("预览", size, weight=500)
   // (room for their words at 0.8 of their size with the least either side: less than whole, more than the smallest)
   let inner = 0.8 * 2.0 * words + 4.0 * segmented_least
-  let f = fitted(c, ["预览", "源码"], inner, theme().t.ui, 500, segmented_in, segmented_least)
+  let f = fitted_by(fn(x) { c.sp(x) }, @ui.tree_theme().tabular, ["预览", "源码"], inner, theme().t.ui, 500, segmented_in, segmented_least)
   guard f.fit is Smaller(k) else { fail("not made smaller: \{Repr(f.fit)}") }
   room.set(inner + 2.0 * segmented_pad + segmented_gap)
   t.draw()
@@ -203,16 +203,16 @@ test "a choice of a few as nodes short of room, its words made smaller to fit (t
   for r in radios {
     let (ox, _, ow, _) = r.rect
     let drawn = t.words().filter(fn(w) { w.0 == r.label })
-    let least = choice_words_w(c, r.label, size * k, weight=if r.check == Some(@ui.Check::On) { 500 } else { 400 })
+    let least = node_words_w(r.label, size * k, weight=if r.check == Some(@ui.Check::On) { 500 } else { 400 })
     assert_true(
       drawn.length() == 1 && drawn[0].3 >= least - 0.5 && drawn[0].1 >= ox - 0.5 && drawn[0].1 + drawn[0].3 <= ox + ow + 0.5,
       msg="\{r.label} whole in its option \{Repr(r.rect)}, \{least} at \{k}: \{Repr(drawn)}",
     )
   }
   // (the thumb: the theme's lifted, as high as an option, where the chosen one is and as wide)
-  let thumb = t.drawn_rects().filter(fn(d) { d.4 == @ui.tree_theme().lifted && d.3 == segmented_h })
   let on = radios.filter(fn(s) { s.check == Some(@ui.Check::On) })
   assert_eq(on.map(fn(s) { s.label }), ["源码"])
+  let thumb = t.drawn_rects().filter(fn(d) { d.4 == @ui.tree_theme().lifted && d.3 == on[0].rect.3 })
   assert_eq(thumb.map(fn(d) { (d.0, d.2) }), [(on[0].rect.0, on[0].rect.2)], msg="the thumb under 源码: \{Repr(thumb)}")
 }
 
@@ -260,7 +260,8 @@ test "a choice of a few as nodes short of room with unequal fitted option widths
   let w0 = radios[0].rect.2
   let w1 = radios[1].rect.2
   let thumb_w = fn() {
-    t.drawn_rects().filter(fn(d) { d.4 == @ui.tree_theme().lifted && d.3 == segmented_h })[0].2
+    let rgb = @ui.tree_theme().lifted >> 8
+    t.drawn_rects().filter(fn(d) { (d.4 >> 8) == rgb && d.3 == segmented_h })[0].2
   }
   assert_true((thumb_w() - w0).abs() < 0.5)
   let (rx, ry, rw, rh) = radios[1].rect
@@ -270,4 +271,84 @@ test "a choice of a few as nodes short of room with unequal fitted option widths
   assert_true(mid_w > w0 + 1.0 && mid_w < w1 - 1.0, msg="thumb width mid-move \{mid_w} between \{w0} and \{w1}")
   t.run_for(@ui.move_most_ms)
   assert_true((thumb_w() - w1).abs() < 0.5)
+}
+
+///|
+test "seg_node: thumb slide animation causes zero relayout (laid == 0)" {
+  let chosen = @signals.signal(0)
+  let said = []
+  let t = seg_tester(chosen, said)
+  t.click(@ui.Role::Radio, label="源码")
+  t.draw()
+  t.tree_frames_from_now()
+  t.run_for(@ui.move_most_ms)
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="seg_node thumb slide relaid out: \{Repr(f)}")
+  }
+}
+
+///|
+test "seg_node: 1.0x keeps exact 30pt option / 36pt track; 2.0x scales height with zero fixed_outgrown or squeeze_faults" {
+  let chosen = @signals.signal(0)
+  let t = @ui.Tester::new(fn(_c) {  }, w=600.0, h=200.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(
+    fn(root) {
+      root.row(Is(true)).padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
+      seg_node(root, fn() { ["Overview", "Processes", "Settings"] }, fn() { chosen.get() }, fn(k) { chosen.set(k) })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  assert_eq(seg_shown(t, RadioGroup).map(fn(s) { s.rect.3 }), [36.0], msg="1.0x track height exact 36pt")
+  assert_eq(seg_shown(t, Radio).map(fn(s) { s.rect.3 }), [30.0, 30.0, 30.0], msg="1.0x option height exact 30pt")
+  assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  t.set_font_scale(1.3)
+  t.draw()
+  assert_eq(seg_shown(t, RadioGroup).map(fn(s) { s.rect.3 }), [36.0], msg="1.3x keeps 36pt track concentric with r_menu")
+  assert_eq(t.fixed_outgrown(), [], msg="1.3x fixed_outgrown")
+  t.set_font_scale(2.0)
+  t.draw()
+  let track_h = seg_shown(t, RadioGroup)[0].rect.3
+  let opt_hs = seg_shown(t, Radio).map(fn(s) { s.rect.3 })
+  assert_true(track_h > 36.0, msg="2.0x track grew: \{track_h}")
+  assert_true(opt_hs.iter().all(fn(h) { h > 30.0 }), msg="2.0x options grew: \{Repr(opt_hs)}")
+  assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
+}
+
+///|
+test "seg_fill_node: 1.0x/1.3x keep exact 34pt track / 30pt option; 2.0x scales height with zero fixed_outgrown or squeeze_faults" {
+  let chosen = @signals.signal(0)
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=200.0, platform=2)
+  t.check_looks(false)
+  @ui.set_view_app(
+    fn(root) {
+      root.padding(Is((16.0, 20.0, 16.0, 20.0))) |> ignore
+      seg_fill_node(root, fn() { ["跟随系统", "浅色", "深色"] }, fn() { chosen.get() }, fn(k) { chosen.set(k) })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  assert_eq(seg_shown(t, RadioGroup).map(fn(s) { s.rect.3 }), [34.0], msg="1.0x track height exact 34pt")
+  assert_eq(seg_shown(t, Radio).map(fn(s) { s.rect.3 }), [30.0, 30.0, 30.0], msg="1.0x option height exact 30pt")
+  assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  t.set_font_scale(1.3)
+  t.draw()
+  assert_eq(seg_shown(t, RadioGroup).map(fn(s) { s.rect.3 }), [34.0], msg="1.3x track height exact 34pt")
+  assert_eq(seg_shown(t, Radio).map(fn(s) { s.rect.3 }), [30.0, 30.0, 30.0], msg="1.3x option height exact 30pt")
+  assert_eq(t.fixed_outgrown(), [], msg="1.3x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.3x squeeze_faults")
+  t.set_font_scale(2.0)
+  t.draw()
+  let track_h = seg_shown(t, RadioGroup)[0].rect.3
+  let opt_hs = seg_shown(t, Radio).map(fn(s) { s.rect.3 })
+  assert_true(track_h > 34.0, msg="2.0x track grew: \{track_h}")
+  assert_true(opt_hs.iter().all(fn(h) { h > 30.0 }), msg="2.0x options grew: \{Repr(opt_hs)}")
+  assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
 }

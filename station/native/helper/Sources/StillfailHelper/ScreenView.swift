@@ -35,9 +35,9 @@
 //                             {windows: [...]} as the windows change (looked at each second); {window: id | null} as the
 //                             one shown alone changes (asked, or it closed: the whole display again)
 //        5 clipboard 1 byte type (1 text, 2 PNG), the bytes: what was copied, while watched
-//        6 cursor    JSON     {x, y, shape} (x, y 0..1 of the display; shape a CSS cursor's name) as it moves or
-//                             changes: a video's pictures leave the pointer out (the client draws it, or shows its own in
-//                             its shape); a JPEG's have it drawn in
+//        6 cursor    JSON     {x, y, shape} (x, y 0..1 of the display; shape a CSS cursor's name, or "custom:<id>"
+//                             for one of an app's own: message 11) as it moves or changes: a video's pictures leave the
+//                             pointer out (the client draws it, or shows its own in its shape); a JPEG's have it drawn in
 //        7 region    JSON     {region: {x, y, w, h} | null}: the part of the display the frames from the next one on
 //                             show, as it was framed (0..1 of the display; null the whole), said before a frame whose
 //                             part is another than the last one's (that frame a key frame)
@@ -45,6 +45,9 @@
 //                             (no more audio); `opus` to a view opened with `audioCodec: "opus"` where the Mac encodes it
 //        9 audio     8 bytes timestamp (µs, the frames' clock), then 3840 bytes: 960 frames of stereo PCM16 little-endian;
 //                             or one Opus packet of those 960 frames
+//       11 cursor image       a pointer of an app's own, before the first message 6 that names it on this connection:
+//                             1 byte width, 1 byte height (points, 1…128), 1 byte hot spot x, 1 byte y (0…width,
+//                             0…height, from the top left), the id's 16 lowercase hex digits, then a PNG (at most 64 KiB)
 // The view ends when the connection does. `synthetic: "moving"|"still"` encodes made-up pictures instead of capturing
 // (the side test's measurement of the encoder and the link), and with `audio` a made-up tone: never what a person sees.
 import AppKit
@@ -75,6 +78,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   var transfer: VTPixelTransferSession?
   var pool: CVPixelBufferPool?
   var poolSize = (0, 0)
+  var poolFormat: OSType = 0
   /// The most frames a second (the view's 帧率, `fps`: 1…120; none asked, 60): what ScreenCaptureKit captures at most
   /// (`minimumFrameInterval`); the encoder's rate control expects no more than 60 of them (`ExpectedFrameRate`: fewer
   /// than 90 or 120 are often encoded, and each picture's bits would be sized for that many). A display that draws
@@ -92,6 +96,10 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   /// view, a client without either).
   let jpeg: Bool
   let hevc: Bool
+  /// Text sharp to the pixel asked (`chroma: "444"`, an H.265 view's): captured whole-chroma (BGRA) and encoded HEVC
+  /// 4:4:4 where this Mac's encoder takes it (`full`), else 4:2:0 as any (the encoder's name says which).
+  let chroma444: Bool
+  var full = false
   /// The pictures in Display P3 (`gamut: "p3"`, a video's only), else in sRGB: never the display's own space (a
   /// wide-gamut display's colours, shown as sRGB, come out washed out).
   let p3: Bool
@@ -116,6 +124,12 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   let queue = DispatchQueue(label: "fail.still.helper.screen", qos: .userInteractive)
   let input: ScreenInput
   lazy var clipboard = Clipboard(channel: channel, input: input)
+  /// Whether an app holds the pointer, looked at while a video's view lasts (PointerLock.swift).
+  let pointerLock: PointerLockWatch
+  /// The Mac's virtual microphone while the station watches it (messages 11, 12; Microphone.swift).
+  let microphone: ViewMicrophone
+  /// It is of a display of the helper's own (VirtualDisplay.swift), counted among its views.
+  var onDisplayOfItsOwn = false
   var stream: SCStream?
   var configuration: SCStreamConfiguration?
   /// The made-up pictures' size (`synthetic`), as the bounds have it.
@@ -126,6 +140,9 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   var cursorSaid: [String: Any] = [:]
   var cursorTicks = 0
   var cursorShape = "default"
+  /// The picture of the shape looked at last where it is an app's own, and the ids of those said on this connection.
+  var cursorImage: CursorShapes.Custom?
+  var sentCursorImages: Set<String> = []
   var session: VTCompressionSession?
   var size = (0, 0)
   var encoder = ""
@@ -137,6 +154,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   var wanted = 0
   var encoding = false
   var forceKey = true
+  /// Its display's mode changes are followed (`followDisplay`), until it stops.
+  var following = false
   /// The key frame asked is of the picture last encoded (the screen at rest, sent again sharper: docs/remote-screens.md
   /// "Still"), and whether the session encodes finer now: its QP at most `stillQP`, at twice the bit rate, where that is
   /// `stillFrom` or more (a narrow link's would take seconds to go). The next moving picture as before.
@@ -159,6 +178,9 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   /// The windows said last, and what looks at them again each second while the view lasts.
   var windowsSaid: [[String: Any]] = []
   var windowsTimer: DispatchSourceTimer?
+  /// The windows as Core Graphics listed them when the said ones were last asked of ScreenCaptureKit (nil: to be
+  /// asked at the next look), on `queue`.
+  var windowsSeen: [WindowSeen]?
 
   init(channel: Channel, options: [String: Any]) {
     self.channel = channel
@@ -172,11 +194,15 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     opus = (options["audioCodec"] as? String) == "opus"
     jpeg = (options["codec"] as? String) == "jpeg"
     hevc = (options["codec"] as? String) == "h265"
+    chroma444 = hevc && (options["chroma"] as? String) == "444"
     p3 = !jpeg && (options["gamut"] as? String) == "p3"
     windowID = (options["window"] as? NSNumber).map { CGWindowID($0.uint32Value) }
     input = ScreenInput(channel: channel, displayID: displayID)
+    pointerLock = PointerLockWatch(channel: channel)
+    microphone = ViewMicrophone(say: { said in channel.sendJSON(4, said) })
     super.init()
     input.area = { [weak self] in self?.area() ?? CGDisplayBounds(CGMainDisplayID()) }
+    input.moved = { [weak self] in self?.pointerLock.moved() }
   }
 
   /// The window shown alone and its frame as last looked at (none: the whole display).
@@ -253,6 +279,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
         if let b = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any] {
           show((b["window"] as? NSNumber).map { CGWindowID($0.uint32Value) })
         }
+      case 11: microphone.watch(payload.first == 1)
+      case 12: microphone.feed(payload)
       case 7: if payload.count == 4 { rate(Int(payload.withUnsafeBytes { UInt32(bigEndian: $0.loadUnaligned(as: UInt32.self)) })) }
       default: break
       }
@@ -302,13 +330,15 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     if transfer == nil {
       VTPixelTransferSessionCreate(allocator: nil, pixelTransferSessionOut: &transfer)
       // NV12 made (a made-up picture's) with the BT.709 matrix the encoder tags; the colours themselves left as they are.
-      if let transfer, !jpeg {
+      // (BGRA for a JPEG, and for HEVC 4:4:4, which the encoder takes as it is)
+      if let transfer, !jpeg, !full {
         VTSessionSetProperty(transfer, key: kVTPixelTransferPropertyKey_DestinationYCbCrMatrix, value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
       }
     }
-    if pool == nil || poolSize != size {
+    let format = jpeg || full ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    if pool == nil || poolSize != size || poolFormat != format {
       let attributes: [CFString: Any] = [
-        kCVPixelBufferPixelFormatTypeKey: jpeg ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        kCVPixelBufferPixelFormatTypeKey: format,
         kCVPixelBufferWidthKey: size.0,
         kCVPixelBufferHeightKey: size.1,
         kCVPixelBufferIOSurfacePropertiesKey: [:] as [CFString: Any],
@@ -316,6 +346,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       pool = nil
       CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pool)
       poolSize = size
+      poolFormat = format
     }
     guard let transfer, let pool else { return nil }
     var made: CVPixelBuffer?
@@ -380,6 +411,10 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
 
   func start() {
     let display = Status.display(displayID)
+    if VirtualDisplays.shared.owns(displayID) {
+      VirtualDisplays.shared.opened()
+      onDisplayOfItsOwn = true
+    }
     if let mode = synthetic {
       let (width, height) = fitted(display["width"] as! Int, display["height"] as! Int)
       startSynthetic(width, height, moving: mode != "still")
@@ -402,7 +437,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
         let configuration = SCStreamConfiguration()
         configuration.width = width
         configuration.height = height
-        configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        // (whole-chroma for 4:4:4: ScreenCaptureKit makes no 4:4:4 YCbCr, the encoder takes BGRA as it is)
+        configuration.pixelFormat = chroma444 ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         // The space the stream says it is in (`p3`), not the display's own.
         configuration.colorSpaceName = p3 ? CGColorSpace.displayP3 : CGColorSpace.sRGB
         configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
@@ -437,9 +473,14 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
           self.configuration = configuration
           self.sound = sound
           self.opened(width, height)
-          if !self.jpeg { self.followCursor() }
+          if !self.jpeg {
+            self.followCursor()
+            let watch = self.pointerLock
+            DispatchQueue.main.async { watch.begin() }
+          }
           self.followWindows()
         }
+        followDisplay()
       } catch {
         channel.sendJSON(1, ["error": error.localizedDescription, "code": "capture", "capture": CGPreflightScreenCaptureAccess()])
       }
@@ -473,7 +514,22 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   }
 
   func stop() {
+    // (before `queue`: a callback under way waits for nothing of it)
+    if following {
+      CGDisplayRemoveReconfigurationCallback(displayChanged, Unmanaged.passUnretained(self).toOpaque())
+      following = false
+    }
     sound?.end()
+    pointerLock.end()
+    microphone.end()
+    // (the last view of a display of the helper's own takes it away)
+    if onDisplayOfItsOwn {
+      onDisplayOfItsOwn = false
+      VirtualDisplays.shared.ended()
+    }
+    // (what its controllers hold let go of, after the input before it)
+    let input = self.input
+    input.queue.async { input.pads.release() }
     queue.sync {
       ended = true
       timer?.cancel()
@@ -594,6 +650,19 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
 
   // MARK: encoding
 
+  /// HEVC Main 4:4:4 (Range Extensions, 8 bits): VideoToolbox names no constant of it in its headers, the encoder of an
+  /// Apple silicon Mac takes it by this name where it encodes it (one that does not refuses it: Main then).
+  static let hevcMain444 = "HEVC_Main444_AutoLevel" as CFString
+
+  /// The profiles a session of `kind` asks for, best first (the first the encoder takes is kept); `full`: 4:4:4 first.
+  static func profiles(_ kind: String, full: Bool = false) -> [CFString] {
+    if kind == "h265" { return (full ? [hevcMain444] : []) + [kVTProfileLevel_HEVC_Main_AutoLevel] }
+    return [
+      kVTProfileLevel_H264_High_AutoLevel, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel, kVTProfileLevel_H264_Main_AutoLevel,
+      kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel, kVTProfileLevel_H264_Baseline_AutoLevel,
+    ]
+  }
+
   func makeSession(_ width: Int, _ height: Int) -> Bool {
     if let session { VTCompressionSessionInvalidate(session) }
     session = nil
@@ -616,18 +685,22 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       let set = { (key: CFString, value: Any) in VTSessionSetProperty(made, key: key, value: value as CFTypeRef) }
       _ = set(kVTCompressionPropertyKey_RealTime, kCFBooleanTrue!)
       _ = set(kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse!)
-      // H.264: Baseline, as every decoder takes it (constrained where the system has it); Main if neither is taken.
-      // H.265: Main.
+      // Each picture out before the next goes in (an encoder that takes no such setting keeps its own).
+      _ = set(kVTCompressionPropertyKey_MaxFrameDelayCount, 0)
+      // H.264: High first (CABAC and 8×8 transforms: small text finer at the same rate), still with no frames
+      // reordered (no B-frames, above); Constrained High where the low-latency encoder takes only that; then Main, then
+      // Baseline (constrained where the system has it). H.265: Main.
       var profile = "default"
-      let profiles = kind == "h265" ? [kVTProfileLevel_HEVC_Main_AutoLevel] : [kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel, kVTProfileLevel_H264_Baseline_AutoLevel, kVTProfileLevel_H264_Main_AutoLevel]
+      let profiles = ScreenView.profiles(kind, full: chroma444)
       for p in profiles
       where set(kVTCompressionPropertyKey_ProfileLevel, p) == noErr {
         profile = p as String
         break
       }
       let rate = bitrate ?? max(1_000_000, width * height * 3)
-      _ = set(kVTCompressionPropertyKey_AverageBitRate, rate)
-      _ = set(kVTCompressionPropertyKey_ExpectedFrameRate, min(fps, 60))
+      ScreenView.setRate(made, rate)
+      // As many a second as asked (at 120 set for 60, each picture was sized for 60 and twice the rate went).
+      _ = set(kVTCompressionPropertyKey_ExpectedFrameRate, fps)
       // A key frame when asked for, and at least every 10 s besides.
       _ = set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 10)
       // The pictures' colours in the stream's VUI (as each picture is tagged: `colors`).
@@ -637,7 +710,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       session = made
       size = (width, height)
       codec = kind
-      encoder = "\(name), \(profile), \(rate) bps"
+      full = profile == ScreenView.hevcMain444 as String
+      encoder = "\(name), \(profile)\(full ? ", 4:4:4" : ""), \(rate) bps"
       return true
     }
     return false
@@ -779,7 +853,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   }
 
   /// The pointer said (message 6) as it moves or changes shape, while the view lasts: where it is on the display (0..1),
-  /// and its shape as CSS names it (the standard cursors; any other "default"). A shape is looked at 10 times a second.
+  /// and its shape as CSS names it (the standard cursors; an app's own "custom:<id>", its picture said first as message
+  /// 11 once a connection; any other "default"). A shape is looked at 10 times a second.
   func followCursor() {
     let timer = DispatchSource.makeTimerSource(queue: .main)
     timer.schedule(deadline: .now(), repeating: .milliseconds(16))
@@ -789,12 +864,17 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let at = CGEvent(source: nil)?.location else { return }
         let b = self.area()
         guard b.width > 0, b.height > 0 else { return }
-        if self.cursorTicks % 6 == 0 { self.cursorShape = CursorShapes.name(of: NSCursor.currentSystem) }
+        if self.cursorTicks % 6 == 0 { (self.cursorShape, self.cursorImage) = CursorShapes.shape(of: NSCursor.currentSystem) }
         self.cursorTicks += 1
         let x = min(1, max(0, (at.x - b.minX) / b.width)), y = min(1, max(0, (at.y - b.minY) / b.height))
         let said: [String: Any] = ["x": (x * 10000).rounded() / 10000, "y": (y * 10000).rounded() / 10000, "shape": self.cursorShape]
         if NSDictionary(dictionary: said).isEqual(to: self.cursorSaid) { return }
         self.cursorSaid = said
+        if let custom = self.cursorImage, !self.sentCursorImages.contains(custom.id) {
+          if self.sentCursorImages.count >= CursorShapes.most { self.sentCursorImages.removeAll() }
+          self.sentCursorImages.insert(custom.id)
+          self.channel.send(11, custom.payload)
+        }
         self.channel.sendJSON(6, said)
       }
     }
@@ -830,40 +910,84 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
 
   /// The windows looked at each second while the view lasts (macOS tells nothing of them coming, going or moving): said
   /// as they change (message 4 `windows`); the one shown alone followed where it moves or is resized (its capture's
-  /// size with it), the whole display again where it closed. Called on `queue` (from `start`'s `queue.sync`): a
-  /// `queue.sync` here again would trap.
+  /// size with it), the whole display again where it closed. Each look is Core Graphics' list of the windows on screen
+  /// (`look`: in the process, no WindowServer round trip of ScreenCaptureKit's); ScreenCaptureKit is asked for the
+  /// windows said only when that list's windows, apps or titles changed, so a still desktop wakes neither the
+  /// WindowServer nor replayd. Called on `queue` (from `start`'s `queue.sync`): a `queue.sync` here again would trap.
   func followWindows() {
     dispatchPrecondition(condition: .onQueue(queue))
     let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
     timer.schedule(deadline: .now() + 1, repeating: 1)
     timer.setEventHandler { [weak self] in
-      guard let self else { return }
+      guard let self,
+        let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+      else { return }
+      let (shown, frame) = self.shownWindow()
+      // nil: the view ended (`stop`), its channel closed or closing
+      guard let look = self.queue.sync(execute: { () -> WindowsLook? in
+        if self.ended { return nil }
+        let look = ScreenView.look(infos, own: getpid(), shown: shown, frame: frame, seen: self.windowsSeen)
+        self.windowsSeen = look.seen
+        return look
+      }) else { return }
+      switch look.shown {
+      case .gone: self.show(nil)
+      case .moved(let now, let resized):
+        self.moved(now)
+        if resized { self.bounds(self.maxWidth, self.maxHeight, region: self.region) }
+      case .same: break
+      }
+      guard look.ask else { return }
       Task {
-        guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return }
-        let windows = ScreenView.windows(content)
-        let said = ScreenView.said(windows)
+        guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else {
+          // asked again at the next look
+          self.queue.sync { self.windowsSeen = nil }
+          return
+        }
+        let said = ScreenView.said(ScreenView.windows(content))
         let changed = self.queue.sync { () -> Bool in
-          if NSArray(array: said).isEqual(to: self.windowsSaid) { return false }
+          if self.ended || NSArray(array: said).isEqual(to: self.windowsSaid) { return false }
           self.windowsSaid = said
           return true
         }
         if changed { self.channel.sendJSON(4, ["windows": said]) }
-        let (shown, frame) = self.shownWindow()
-        guard let shown else { return }
-        guard let w = windows.first(where: { $0.windowID == shown }) else {
-          self.show(nil)
-          return
-        }
-        if w.frame != frame {
-          self.moved(w.frame)
-          if frame?.size != w.frame.size { self.bounds(self.maxWidth, self.maxHeight, region: self.region) }
-        }
       }
     }
     timer.resume()
     windowsTimer = timer
   }
 
+  /// What a look at Core Graphics' list of the windows on screen (`infos`) asks of the view: whether the windows said
+  /// are to be asked of ScreenCaptureKit again (the windows `ScreenView.windows` could say, by id, app and title, are
+  /// not those `seen` when they were asked last: none yet, one came or went, an app or a title changed; where they
+  /// are or how big is not said, so a window dragged asks nothing), and what became of window `shown` (its frame last
+  /// `frame`): gone from the screen, or moved or resized.
+  static func look(_ infos: [[String: Any]], own: pid_t, shown: CGWindowID?, frame: CGRect?, seen: [WindowSeen]?) -> WindowsLook {
+    var now: [WindowSeen] = []
+    var shownAt: CGRect?
+    for info in infos {
+      guard let id = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+        let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+        let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary)
+      else { continue }
+      if id == shown { shownAt = rect }
+      let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
+      // As ScreenView.windows picks them (a superset: a window of no app there is here), so nothing said is missed.
+      guard (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0, pid != own, rect.width >= 80, rect.height >= 60 else { continue }
+      now.append(WindowSeen(
+        id: id, pid: pid, title: info[kCGWindowName as String] as? String ?? "", app: info[kCGWindowOwnerName as String] as? String ?? ""))
+    }
+    now.sort { $0.id < $1.id }
+    var step = ShownStep.same
+    if shown != nil {
+      if let shownAt {
+        if shownAt != frame { step = .moved(shownAt, resized: shownAt.size != frame?.size) }
+      } else {
+        step = .gone
+      }
+    }
+    return WindowsLook(seen: now, ask: now != seen, shown: step)
+  }
   /// The pictures from now on fitted into `width`×`height`, of `region` of the display alone (nil: the whole): the
   /// capture asked for the size that takes (its next picture is that size, and the encoder is made anew for it, from a
   /// key frame); another part sent at once, the screen still or not.
@@ -892,12 +1016,33 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     }
   }
 
+  /// Its display's mode changes followed (a resolution set while it is viewed): `reconfigured` at each.
+  func followDisplay() {
+    following = CGDisplayRegisterReconfigurationCallback(displayChanged, Unmanaged.passUnretained(self).toOpaque()) == .success
+  }
+
+  /// Its display's mode changed: the capture asked for the size that takes now (its pictures from then on that size,
+  /// the encoder made anew for them by `pump`, from a key frame with its config), the view going on as it was.
+  func reconfigured() {
+    queue.async {
+      guard !self.ended, let stream = self.stream, let configuration = self.configuration else { return }
+      let (w, h) = self.captureSize()
+      if configuration.width == w && configuration.height == h { return }
+      configuration.width = w
+      configuration.height = h
+      self.forceKey = true
+      stream.updateConfiguration(configuration) { error in
+        if let error { self.channel.sendJSON(4, ["display": error.localizedDescription]) }
+      }
+    }
+  }
+
   /// From the next frame on, about this many bits a second.
   func rate(_ bits: Int) {
     queue.async {
       self.bitrate = max(100_000, bits)
       if let session = self.session {
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: (self.finer ? self.bitrate! * 2 : self.bitrate!) as CFTypeRef)
+        ScreenView.setRate(session, self.finer ? self.bitrate! * 2 : self.bitrate!)
       }
     }
   }
@@ -909,8 +1054,19 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     finer = on
     VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxAllowedFrameQP, value: (on ? stillQP : 51) as CFTypeRef)
     if let bitrate {
-      VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: (on ? bitrate * 2 : bitrate) as CFTypeRef)
+      ScreenView.setRate(session, on ? bitrate * 2 : bitrate)
     }
+  }
+
+  /// The bit rate a session encodes at, and the most any second of it may carry: `ratePeak` times it. A scene cut's key
+  /// frame (a game's, a window's) came at many times a moving picture's size, held the pictures behind it in front of
+  /// the link, and the station's pace took that for a slower link.
+  static let ratePeak = 1.5
+  static func setRate(_ session: VTCompressionSession, _ bits: Int) {
+    VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bits as CFTypeRef)
+    // [bytes, seconds] (an encoder that takes no such limit keeps the average alone).
+    let limits = [NSNumber(value: Double(bits) / 8 * ratePeak), NSNumber(value: 1.0)] as CFArray
+    VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: limits)
   }
 
   func keyframe() {
@@ -926,15 +1082,60 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   }
 }
 
+/// A display's configuration changed (Core Graphics' callback, `ScreenView.followDisplay`): a mode set on the view's
+/// display, once it is done, is the view's to follow.
+private func displayChanged(_ display: CGDirectDisplayID, _ flags: CGDisplayChangeSummaryFlags, _ info: UnsafeMutableRawPointer?) {
+  guard let info, flags.contains(.setModeFlag), !flags.contains(.beginConfigurationFlag) else { return }
+  let view = Unmanaged<ScreenView>.fromOpaque(info).takeUnretainedValue()
+  if display == view.displayID { view.reconfigured() }
+}
+
+/// A window as Core Graphics lists it, by what is said of it (`ScreenView.said`): no frame, as where it is is not said.
+struct WindowSeen: Equatable {
+  let id: CGWindowID
+  let pid: pid_t
+  let title: String
+  let app: String
+}
+
+/// What became of the window shown alone at a look (`ScreenView.look`).
+enum ShownStep: Equatable {
+  case same
+  /// No longer on screen: the whole display again.
+  case gone
+  /// At this frame now; `resized`: its size changed too (the capture's with it).
+  case moved(CGRect, resized: Bool)
+}
+
+/// A look at the windows (`ScreenView.look`): those seen, whether ScreenCaptureKit is asked for the windows said, what
+/// became of the one shown alone.
+struct WindowsLook: Equatable {
+  let seen: [WindowSeen]
+  let ask: Bool
+  let shown: ShownStep
+}
+
 /// The system's standard cursors by the CSS names a client shows them with, told apart by their hot spots and pixels
-/// (an NSCursor is made anew each time it is asked for: the same object it never is). One not told apart (a picture
-/// macOS draws itself, an app's own) is "default".
+/// (an NSCursor is made anew each time it is asked for: the same object it never is). Any other (an app's own, one
+/// macOS draws itself) is "custom:<id>", its picture said to the client (`Custom`), where it is 1…128 points a side and
+/// fits a PNG of 64 KiB; else "default".
 @MainActor
 enum CursorShapes {
   struct Look: Equatable {
     let hotSpot: NSPoint
     let pixels: Data
   }
+
+  /// A pointer of an app's own: its id (the FNV-1a hash of its pixels, size and hot spot, as 16 lowercase hex digits)
+  /// and message 11's payload (its size and hot spot in points, the id, its picture as a PNG).
+  struct Custom: Equatable {
+    let id: String
+    let payload: Data
+  }
+
+  /// The most pictures kept here, and said on a connection before it says them again.
+  static let most = 64
+  static let pngMost = 65536
 
   static func look(_ cursor: NSCursor) -> Look? {
     guard let image = cursor.image.cgImage(forProposedRect: nil, context: nil, hints: nil), let data = image.dataProvider?.data else { return nil }
@@ -948,8 +1149,42 @@ enum CursorShapes {
     (NSCursor.iBeamCursorForVerticalLayout, "vertical-text"), (NSCursor.arrow, "default"),
   ].compactMap { cursor, name in look(cursor).map { ($0, name) } }
 
-  static func name(of cursor: NSCursor?) -> String {
-    guard let cursor, let seen = look(cursor) else { return "default" }
-    return known.first { $0.0 == seen }?.1 ?? "default"
+  /// The pictures made, by id: each encoded once, not each time it is looked at.
+  static var made: [String: Custom] = [:]
+
+  static func shape(of cursor: NSCursor?) -> (String, Custom?) {
+    guard let cursor, let image = cursor.image.cgImage(forProposedRect: nil, context: nil, hints: nil), let data = image.dataProvider?.data else { return ("default", nil) }
+    let seen = Look(hotSpot: cursor.hotSpot, pixels: data as Data)
+    if let name = known.first(where: { $0.0 == seen })?.1 { return (name, nil) }
+    guard let custom = custom(cursor, image: image, pixels: seen.pixels) else { return ("default", nil) }
+    return ("custom:\(custom.id)", custom)
+  }
+
+  static func custom(_ cursor: NSCursor, image: CGImage, pixels: Data) -> Custom? {
+    let size = cursor.image.size
+    let w = Int(size.width.rounded()), h = Int(size.height.rounded())
+    guard (1...128).contains(w), (1...128).contains(h) else { return nil }
+    let hx = min(w, max(0, Int(cursor.hotSpot.x.rounded()))), hy = min(h, max(0, Int(cursor.hotSpot.y.rounded())))
+    let head = [UInt8(w), UInt8(h), UInt8(hx), UInt8(hy)]
+    let id = String(format: "%016llx", fnv1a(pixels + Data(head)))
+    if let made = made[id] { return made }
+    let png = NSMutableData()
+    guard let out = CGImageDestinationCreateWithData(png as CFMutableData, "public.png" as CFString, 1, nil) else { return nil }
+    CGImageDestinationAddImage(out, image, nil)
+    guard CGImageDestinationFinalize(out), png.length >= 1, png.length <= pngMost else { return nil }
+    let custom = Custom(id: id, payload: Data(head) + Data(id.utf8) + (png as Data))
+    if made.count >= most { made.removeAll() }
+    made[id] = custom
+    return custom
+  }
+
+  /// 64-bit FNV-1a.
+  static func fnv1a(_ data: Data) -> UInt64 {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    for byte in data {
+      hash ^= UInt64(byte)
+      hash = hash &* 0x0000_0100_0000_01b3
+    }
+    return hash
   }
 }

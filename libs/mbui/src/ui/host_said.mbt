@@ -80,11 +80,15 @@ fn snap_said_new() -> HostSaid[Int] {
 let dark_said : HostSaid[Bool] = host_said(false, fn() { @hostapi.system_dark() })
 
 ///|
-/// The system's size of words (font_scale); the window's tree's words measured again as it changes.
+/// The system's size of words (font_scale), or the program's over it (set_font_scale); the window's tree's words
+/// measured again as it changes.
 // kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
 let words_size_said : HostSaid[Double] = host_said(
   1.0,
   fn() {
+    if said_font_scale.val is Some(s) {
+      return s
+    }
     let fs = @hostapi.font_scale()
     if fs > 0.0 {
       fs

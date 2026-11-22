@@ -228,6 +228,9 @@ pub(all) struct VaultAsk {
   /// How it is given, including the allowed hosts, as the core says it.
   how_text : String
   save_kind : String
+  save_vault_name : String
+  save_shared : Bool
+  save_targets : Array[(String, String, Bool)]
   username : String
   /// a file's name, where the agent gave one
   filename : String
@@ -242,6 +245,15 @@ pub(all) struct VaultAsk {
   was_about : String
   /// one to delete the item (secret_delete)
   remove : Bool
+  /// a request to list personal secrets from other workspaces (`secret_list` other_workspaces)
+  browse : Bool
+  browse_hint : String
+  browse_workspaces : Int
+  browse_items : Int
+  /// source workspace and vault metadata for a cross-workspace personal secret request
+  cross_workspace : String
+  cross_workspace_name : String
+  cross_vault_name : String
   status : String
   scope : String
   /// another station of the workspace its commands run on, by name (empty: the chat's)
@@ -446,6 +458,9 @@ pub(all) struct Message {
   notice_failed : Bool
   notice_words : String
   notice_link : Int
+  /// one about `profile` the station says what to do of: that, at the pill's end (重新登录, 设置代理), opening the
+  /// profile's page; "" otherwise
+  notice_profile_action : String
   notice_md : Json?
   /// the agent whose capacity retry this notice can cancel, while that retry waits
   notice_retry_session : String
@@ -556,6 +571,11 @@ pub fn message_of(m : Json) -> Message {
                 command: text(a, "command"),
                 how_text: text(a, "howText"),
                 save_kind: text(field(a, "save"), "kind"),
+                save_vault_name: text(field(a, "save"), "vaultName"),
+                save_shared: flag(field(a, "save"), "shared"),
+                save_targets: items(a, "saveTargets").map(fn(t) {
+                  (text(Some(t), "id"), text(Some(t), "name"), flag(Some(t), "workspace"))
+                }),
                 username: text(field(a, "save"), "username"),
                 filename: text(field(a, "save"), "filename"),
                 typed: flag(field(a, "save"), "typed"),
@@ -565,6 +585,19 @@ pub fn message_of(m : Json) -> Message {
                 new_about: text(field(a, "describe"), "about"),
                 was_about: text(field(a, "describe"), "wasAbout"),
                 remove: flag(a, "remove"),
+                browse: field(a, "browse") is Some(_),
+                browse_hint: text(field(a, "browse"), "workspace"),
+                browse_workspaces: {
+                  let decided = count(field(a, "browse"), "workspaces")
+                  if decided > 0 { decided } else { count(a, "browseWorkspaces") }
+                },
+                browse_items: {
+                  let decided = count(field(a, "browse"), "items")
+                  if decided > 0 { decided } else { count(a, "browseItems") }
+                },
+                cross_workspace: text(field(a, "cross"), "workspace"),
+                cross_workspace_name: text(field(a, "cross"), "workspaceName"),
+                cross_vault_name: text(field(a, "cross"), "vaultName"),
                 status: text(a, "status"),
                 scope: text(a, "scope"),
                 station: text(a, "station"),
@@ -659,6 +692,7 @@ pub fn message_of(m : Json) -> Message {
       Some(n) => n.to_int()
       None => -1
     },
+    notice_profile_action: text(field(s, "notice"), "profileAction"),
     notice_md: field(field(s, "notice"), "md"),
     notice_retry_session: text(field(s, "notice"), "retrySession"),
     notice_again_session: text(field(s, "notice"), "againSession"),
@@ -749,6 +783,9 @@ pub(all) struct Agent {
   runtime : String
   maker : String
   who : String
+  model_name : String
+  model_short : String
+  effort : String
   /// block | run | failed, or "" (done)
   badge : String
   /// running while its turn runs
@@ -773,6 +810,9 @@ pub fn agent_of(a : Json) -> Agent {
     runtime: text(session, "runtime"),
     maker: text(field(session, "maker"), "id"),
     who: text(session, "agentText"),
+    model_name: text(session, "modelName"),
+    model_short: text(session, "modelShort"),
+    effort: text(session, "effort"),
     badge: text(s, "badge"),
     status: text(s, "status"),
     since: opt_number(s, "since"),
@@ -853,6 +893,8 @@ pub(all) struct ChatView {
   screens : Array[ChatScreen]
   /// the chat an agent opened it from: before its title in its bar, the way back there
   opener : Opener?
+  /// the chain of led parent chats (`opener.led == true`), root first, ending with its direct opener
+  openers : Array[Opener]
   /// the chats its agent made, the first first, and how many in words (创建了 3 个对话): its info's list of them
   opened : Array[OpenedChat]
   opened_text : String
@@ -891,6 +933,7 @@ pub(all) struct ChatTabs {
   open : Array[String]
   shown : String?
   auto : Bool
+  can_reopen : Bool
 }
 
 ///|
@@ -910,7 +953,7 @@ fn chat_view(v : Json) -> ChatView {
 ///|
 /// Part `name` of a chat's view `v` read by `make`, or as it was read (`kept`, of `was`'s view) where it is the same
 /// JSON as in the value `was` was read from: the core's deltas keep what they do not touch (src/core delta.mbt), so a
-/// streamed word reads none of the chat's people, agents, outbox and the rest again.
+/// patched message reads none of the chat's people, agents, outbox and the rest again.
 fn[T] chat_part(v : Json, was : (Json, ChatView)?, name : String, kept : (ChatView) -> T, make : () -> T) -> T {
   match was {
     Some((raw, view)) =>
@@ -1001,6 +1044,7 @@ fn chat_view_of(v : Json, messages : Array[Message], was : (Json, ChatView)?) ->
         open: items(field(s, "tabs"), "open").filter_map(fn(t) { if t is String(k) { Some(k) } else { None } }),
         shown: opt_text(field(s, "tabs"), "shown"),
         auto: flag(field(s, "tabs"), "auto"),
+        can_reopen: flag(field(s, "tabs"), "canReopen"),
       }
     }),
     cc: chat_part(v, was, "cc", fn(w) { w.cc }, fn() {
@@ -1015,7 +1059,25 @@ fn chat_view_of(v : Json, messages : Array[Message], was : (Json, ChatView)?) ->
         { id: text(o, "id"), kind: text(o, "kind"), title: text(o, "title"), line: text(o, "line"), agent: flag(o, "agent") }
       })
     }),
-    opener: chat_part(v, was, "opener", fn(w) { w.opener }, fn() { opener_of(s) }),
+    opener: {
+      let o = chat_part(v, was, "opener", fn(w) { w.opener }, fn() { opener_of(s) })
+      o
+    },
+    openers: {
+      let o = chat_part(v, was, "opener", fn(w) { w.opener }, fn() { opener_of(s) })
+      match field(s, "openers") {
+        Some(_) => chat_part(v, was, "openers", fn(w) { w.openers }, fn() { openers_of(s) })
+        None =>
+          match was {
+            Some((_, w)) if physical_equal(w.opener, o) => w.openers
+            _ =>
+              match o {
+                Some(op) if op.led => [op]
+                _ => []
+              }
+          }
+      }
+    },
     opened: chat_part(v, was, "opened", fn(w) { w.opened }, fn() { opened_of(s) }),
     opened_text: text(s, "openedText"),
   }
@@ -1203,17 +1265,23 @@ pub fn chat_opens(r : ChatRef, ask : (String, Map[String, Json]) -> TopicState, 
     match a {
       LinkAsk(to) =>
         match link_card_ask(to) {
-          Some((name, params)) => all = opens_answered(ask(name, params)) && all
+          Some((name, params)) => {
+            let s = ask(name, params)
+            all = (opens_answered(s) || s.waiting) && all
+          }
           None => ()
         }
       LoginAsk(station, id) => {
         let (name, params) = machine_login_ask(station, id)
         let l = ask(name, params)
         if !opens_answered(l) {
-          all = false
+          if !l.waiting {
+            all = false
+          }
         } else if flag(l.value, "active") {
           let (name, params) = machine_logins_ask(station)
-          all = opens_answered(ask(name, params)) && all
+          let s = ask(name, params)
+          all = (opens_answered(s) || s.waiting) && all
         }
       }
     }

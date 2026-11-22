@@ -12,6 +12,7 @@ priv struct LineProgram {
   argv0 : String
   args : Array[String]
   name : String
+  background : Bool
   mut proc : Proc?
   waiting : Array[@effect.Deferred[Result[Json, String]]]
   mut idle : @effect.Fiber[Unit]?
@@ -19,8 +20,8 @@ priv struct LineProgram {
 }
 
 ///|
-fn LineProgram::new(host : @host.Host, argv0 : String, args : Array[String], name : String, idle_ms? : Int) -> LineProgram {
-  { host, argv0, args, name, proc: None, waiting: [], idle: None, idle_ms }
+fn LineProgram::new(host : @host.Host, argv0 : String, args : Array[String], name : String, idle_ms? : Int, background? : Bool = false) -> LineProgram {
+  { host, argv0, args, name, background, proc: None, waiting: [], idle: None, idle_ms }
 }
 
 ///|
@@ -32,53 +33,34 @@ fn LineProgram::started(self : LineProgram) -> Proc raise {
     }
     None => ()
   }
-  match self.proc {
-    Some(p) => return p
-    None => ()
+  if self.proc is Some(p) { return p }
+  let (program, args) = if self.background {
+    backgrounded(self.argv0, self.args)
+  } else {
+    (self.argv0, self.args)
   }
-  let p = spawn(self.host, self.argv0, self.args, stdin_piped=true, stdout=Piped)
-  self.proc = Some(p)
-  ignore(
-    self.host.rt.fork(name=self.name + "'s lines", async fn() {
-      let held = @buffer.Buffer()
-      let mut ended = false
-      while !ended {
-        match p.events.take() {
-          Out(b) => {
-            held.write_bytes(b)
-            let lines = @utf8.decode_lossy(held.to_bytes()).split("\n").map(l => l.to_owned()).collect()
-            held.reset()
-            held.write_bytes(@utf8.encode(lines[lines.length() - 1]))
-            for line in lines[:lines.length() - 1] {
-              if line == "" {
-                continue
-              }
-              let answer = @json.parse(line) catch { _ => Json::string(line) }
-              if self.waiting.length() > 0 {
-                ignore(self.waiting.remove(0).succeed(Ok(answer)))
-              }
-              self.idle_soon()
-            }
-          }
-          Err(_) => ()
-          Exit(code, _) => {
-            ended = true
-            match self.proc {
-              Some(now) if physical_equal(now, p) => {
-                self.proc = None
-                let why = "\{self.name} stopped (exit \{match code { Some(c) => c.to_string(); None => "null" }})"
-                for w in self.waiting {
-                  ignore(w.succeed(Err(why)))
-                }
-                self.waiting.clear()
-              }
-              _ => ()
-            }
-          }
-        }
+  let p = spawn_lines(
+    self.host,
+    program,
+    args,
+    self.name + "'s lines",
+    (_, line) => {
+      if line == "" { return }
+      let answer = @json.parse(line) catch { _ => Json::string(line) }
+      if self.waiting.length() > 0 {
+        ignore(self.waiting.remove(0).succeed(Ok(answer)))
       }
-    }),
+      self.idle_soon()
+    },
+    (p, code) =>
+      if self.proc is Some(now) && physical_equal(now, p) {
+        self.proc = None
+        let why = "\{self.name} stopped (exit \{match code { Some(c) => c.to_string(); None => "null" }})"
+        for w in self.waiting { ignore(w.succeed(Err(why))) }
+        self.waiting.clear()
+      },
   )
+  self.proc = Some(p)
   p
 }
 
@@ -130,14 +112,17 @@ fn LineProgram::pid(self : LineProgram) -> Int? {
 }
 
 ///|
-fn LineProgram::close(self : LineProgram) -> Unit {
-  match self.proc {
-    Some(p) => {
-      self.proc = None
-      p.end_input()
-      ignore(kill(p.pid, "SIGTERM"))
-    }
-    None => ()
+/// Its process let go and what waits on it failed. `force`: killed at once (the station stopping or handing over, as
+/// `LiveLocator::retire`), not left to end on SIGTERM.
+fn LineProgram::close(self : LineProgram, force? : Bool = false) -> Unit {
+  if self.idle is Some(f) {
+    f.interrupt()
+    self.idle = None
+  }
+  if self.proc is Some(p) {
+    self.proc = None
+    p.end_input()
+    ignore(kill(p.pid, if force { "SIGKILL" } else { "SIGTERM" }))
   }
   for w in self.waiting {
     ignore(w.succeed(Err("\{self.name} stopped")))
@@ -176,10 +161,7 @@ fn take_transcript_hints(found : Json) -> Unit {
   for pair in jitems(jfield(found, "elsewhere")) {
     match pair {
       Array([String(key), p]) => {
-        let path = match p {
-          String(s) => Some(s)
-          _ => None
-        }
+        let path = as_text(p)
         if h.elsewhere.get(key) != Some(path) {
           h.elsewhere[key] = path
           h.changed(id_of(key))
@@ -285,10 +267,7 @@ fn drain_usage_chat_dirty(db : @sql.Db, limit : Int) -> Json raise {
 fn try_stop_usage_indexes(db : @sql.Db) -> Bool raise {
   let timeout = match db.all("PRAGMA busy_timeout", []).get(0) {
     Some(r) =>
-      match r.get("timeout") {
-        Some(Number(n, ..)) => n.to_int()
-        _ => 5000
-      }
+      opt_num(r.get("timeout")).map(n => n.to_int()).unwrap_or(5000)
     None => 5000
   }
   db.exec("PRAGMA busy_timeout = 0")
@@ -299,7 +278,7 @@ fn try_stop_usage_indexes(db : @sql.Db) -> Bool raise {
           raise e
         }
         // (even where the contexts cannot be kept, the old per-call writers are not left running)
-        live_log("warn", "usage", "the usage contexts could not be installed", { "error": jstr(said_of(e)) })
+        slice_log("warn", "usage", "the usage contexts could not be installed", { "error": jstr(said_of(e)) })
       }
     }
     @store_schema.stop_usage_indexes(db)
@@ -326,6 +305,10 @@ async fn P52::usage_ask(self : P52, what : String, args : Json) -> Json {
   let db_path = path([self.data, "stillfail.db"])
   match what {
     "usage.read" => {
+      // (none started again once the station stopped or handed over: close_helpers let the last one go)
+      if self.closed {
+        raise LiveError("the station is closed")
+      }
       let program = match usage_counter_program.val {
         Some(p) => p
         None => {
@@ -335,6 +318,7 @@ async fn P52::usage_ask(self : P52, what : String, args : Json) -> Json {
             ["--builder", "usage-counter", "--db", db_path, "--sep", sep()],
             "the usage counter's program",
             idle_ms=60000,
+            background=true,
           )
           usage_counter_program.val = Some(p)
           p
@@ -368,10 +352,13 @@ async fn P52::usage_ask(self : P52, what : String, args : Json) -> Json {
     // (the station's store is a file: what a database in memory cannot have retired does not arise)
     "usage.inMemory" => Json::boolean(false)
     "usage.retireStep" => {
+      if self.closed {
+        raise LiveError("the station is closed")
+      }
       let program = match usage_retire_program.val {
         Some(p) => p
         None => {
-          let p = LineProgram::new(self.host, self.bus.argv0, ["--builder", "usage-retire", "--db", db_path], "usage retirement")
+          let p = LineProgram::new(self.host, self.bus.argv0, ["--builder", "usage-retire", "--db", db_path], "usage retirement", background=true)
           usage_retire_program.val = Some(p)
           p
         }
@@ -396,18 +383,14 @@ async fn P52::usage_ask(self : P52, what : String, args : Json) -> Json {
 /// chats drained and the old statistics retired.
 async fn P52::start_usage(self : P52) -> Unit {
   guard self.hub is Some(hub) else { return }
-  ignore(@session_hub.hub_call(hub, "usageStart", [])) catch {
-    e => live_log("warn", "usage", "the usage counter did not start", { "error": jstr(said_of(e)) })
+  hub.usage_start() catch {
+    e => slice_log("warn", "usage", "the usage counter did not start", { "error": jstr(said_of(e)) })
   }
-  ignore(
-    self.host.rt.fork(name="usage after the station before", async fn() {
-      (self.bus.previous_gone)()
-      ignore(@session_hub.hub_call(hub, "usageDrain", [])) catch {
-        e => live_log("warn", "usage", "the chats of moved sessions are not counted again", { "error": jstr(said_of(e)) })
-      }
-      ignore(@session_hub.hub_call(hub, "retireUsage", [])) catch {
-        e => live_log("warn", "usage", "the old usage statistics were not retired", { "error": jstr(said_of(e)) })
-      }
-    }),
-  )
+  fork_bg(self.host, "usage after the station before", async fn() {
+    (self.bus.previous_gone)()
+    hub.usage_drain()
+    hub.retire_usage() catch {
+      e => slice_log("warn", "usage", "the old usage statistics were not retired", { "error": jstr(said_of(e)) })
+    }
+  })
 }

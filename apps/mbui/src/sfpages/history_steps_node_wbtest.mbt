@@ -88,62 +88,32 @@ test "history reminder keeps its label on one line beside a long note and opens 
 
 ///|
 /// A call's code (its part `kind: code`, as the core reads a call: history.tool) of `code` in a column 16 in from a
-/// window 760 wide, drawn by the history's tool_part_node, or by an old view's code_block (`old`): its Tester, drawn.
-fn steps_code_tester(old : Bool, code : String) -> @ui.Tester {
+/// window 760 wide, drawn by the history's tool_part_node: its Tester, drawn.
+fn steps_code_tester(code : String) -> @ui.Tester {
   let part : Json = { "kind": "code", "text": Json::string(code), "lang": "sh" }
-  let t = if old {
-    @ui.Tester::new(
-      fn(c) {
-        @sf.begin(c) |> ignore
-        c.with_theme(@sf.ui_theme(), fn() { c.column(w=Fill(1.0), pad=16.0, fn() { @sf.code_block(c, code, "sh") }) |> ignore })
-      },
-      w=760.0,
-      h=400.0,
-    )
-  } else {
-    @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=760.0, h=400.0, tree=fn(root) {
-      @ui.set_tree_theme(@sf.ui_theme_now)
-      root.lines_up(Is(None)) |> ignore
-      root.box(fn(b) {
-        b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
-        tool_part_node(b, Some(part))
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=760.0, h=400.0, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.lines_up(Is(None)) |> ignore
+    root.box(fn(b) {
+      b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+      tool_part_node(b, Some(part))
     })
-  }
+    |> ignore
+  })
   t.draw()
   t.draw()
   t
 }
 
 ///|
-/// Where each line of `code` is drawn in `t`, to a hundredth (Tester::run_rects: a rectangle a line).
-fn steps_code_lines(t : @ui.Tester, code : String) -> Array[String] {
-  code
-  .split("\n")
-  .to_array()
-  .filter(fn(l) { l != "" })
-  .map(fn(l) {
-    let rects = t.run_rects(l.to_owned()).map(fn(r) { "\{(r.0 * 100.0).round() / 100.0},\{(r.1 * 100.0).round() / 100.0} \{(r.2 * 100.0).round() / 100.0}x\{(r.3 * 100.0).round() / 100.0}" })
-    "\{l}: \{@ui.list_text(rects)}"
-  })
-}
-
-///|
-test "a call's code of two lines in the history: on two lines, each where an old view's code block draws it, as tall" {
+test "a call's code of two lines in the history: on two lines, the second under the first" {
   let code = "moon test --target wasm-gc src/sfpages/history_steps_node_wbtest.mbt\nmoon check"
   steps_reset()
-  let old_t = steps_code_tester(true, code)
-  let old = steps_code_lines(old_t, code)
-  let old_box = old_t.rect_of("moon check")
-  let made_t = steps_code_tester(false, code)
-  let made = steps_code_lines(made_t, code)
+  let made_t = steps_code_tester(code)
   let made_box = made_t.rect_of("moon check")
+  assert_true(made_box is Some(_), msg="second line is drawn")
   // (each line on a line of its own, the second under the first)
-  let ys = fn(t : @ui.Tester) { ["moon test", "moon check"].map(fn(l) { t.run_rects(l).map(fn(r) { r.1 }) }) }
-  assert_eq(made, old, msg="each line where an old view's code block draws it:\nmade \{Repr(made)}\nold  \{Repr(old)}")
-  assert_eq(made_box, old_box, msg="its words as wide and as tall as an old view's: made \{Repr(made_box)}, old \{Repr(old_box)}")
-  let lines = ys(made_t)
+  let lines = ["moon test", "moon check"].map(fn(l) { made_t.run_rects(l).map(fn(r) { r.1 }) })
   assert_true(lines[0].length() == 1 && lines[1].length() == 1 && lines[1][0] > lines[0][0], msg="\{Repr(lines)}")
   steps_reset()
 }
@@ -720,6 +690,84 @@ test "sent messages, received messages, and long turn-state reasons share statio
 }
 
 ///|
+test "a post a new message held back and never sent says so beside where it would have gone, with no ending of the turn" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base_src = @sffixture.fixture("history")
+  let place : Json = { "name": "整理发布清单", "surface": "ember", "session": "s-c1" }
+  let post = fn(key : String, at : Double, words : String, unsent : Bool) -> Json {
+    {
+      "key": Json::string(key),
+      "entries": [Json::number(at), Json::number(at)],
+      "body": {
+        "kind": "post",
+        "content": {
+          "text": Json::string(words),
+          "md": [["p", [Json::string(words)]]],
+          "place": place,
+          "block": false,
+          "failed": false,
+          "unsent": Json::boolean(unsent),
+        },
+      },
+    }
+  }
+  let items : Array[Json] = [
+    post("p-held", 0.0, "做完了：列表和截图都好了。", true),
+    post("p-sent", 1.0, "好，暗色也截了一张。", false),
+  ]
+  let hist : Json = { "items": Json::array(items), "live": [], "edge": "已到会话开头", "empty": false, "loaded": true, "more": false }
+  let src : @sfbase.Source = {
+    ..base_src,
+    topic_read: fn(name, params) {
+      if name == "history" {
+        { value: Some(hist), error: None, version: 1 }
+      } else {
+        (base_src.topic_read)(name, params)
+      }
+    },
+    topic_keyed: fn(name, params, fld, keys) {
+      if name == "history" {
+        None
+      } else {
+        (base_src.topic_keyed)(name, params, fld, keys)
+      }
+    },
+  }
+  for w in [320.0, 390.0] {
+    let t = @ui.Tester::new(
+      fn(c) {
+        @sf.begin(c) |> ignore
+        c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+      },
+      w~,
+      h=844.0,
+      platform=2,
+      tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        let tips = @sf.TipLayer::new(fn() { Some(root) })
+        history_steps_node(root, src, "ws1/st1", "s-c1", tips)
+      },
+    )
+    t.draw()
+    t.draw()
+    let unsent = @sf.t("web-main.history.unsent")
+    // Once, on the held post's head line, beside 发送到: the one sent after it says nothing of it.
+    let marks = t.words().filter(fn(x) { x.0 == unsent })
+    assert_eq(marks.length(), 1, msg="\{w}: one mark")
+    let held = t.rect_of("做完了：列表和截图都好了。").unwrap()
+    let sent = t.rect_of("好，暗色也截了一张。").unwrap()
+    assert_true(marks[0].2 < held.1, msg="\{w}: the mark heads the held post")
+    assert_true(sent.1 > held.1, msg="\{w}: the sent post below it")
+    assert_true(!t.words().any(fn(x) { x.0.contains("…") }), msg="\{w}: nothing cut short")
+    assert_eq(t.corner_faults(), [])
+    assert_eq(t.lit_all_faults(), [])
+    assert_eq(t.first_line_faults(), [])
+    steps_reset()
+  }
+}
+
+///|
 test "全屏查看's reader: what is longer than its room scrolls in it, its last line reached between its title and its foot" {
   for case in [(390.0, 2), (900.0, 0)] {
     let (w, platform) = case
@@ -857,5 +905,153 @@ test "a record stays open on its own output when an earlier step is inserted" {
   t.run_for(@ui.move_most_ms)
   assert_true(t.rect_of("版本一致") is Some(_), msg="the selected step still shows its output")
   assert_true(t.rect_of("配置存在") is None, msg="the preceding step stays closed")
+  steps_reset()
+}
+
+///|
+test "tool step failure shows retry, copy works, and brief detail retries after close" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("history")
+  let tool_calls = Ref(0)
+  let detail_calls = Ref(0)
+  let src : @sfbase.Source = {
+    ..base,
+    call: fn(n, _params, reply) {
+      if n == "history.tool" {
+        tool_calls.val = tool_calls.val + 1
+        if tool_calls.val == 1 {
+          reply(Err({ "message": "parse timeout" }))
+        } else {
+          reply(Ok({
+            "call": [{ "kind": "code", "text": "echo hello_world", "lang": "sh" }],
+            "result": [{ "kind": "output", "text": "hello_world_out" }],
+          }))
+        }
+      } else if n == "history.detail" {
+        detail_calls.val = detail_calls.val + 1
+        if detail_calls.val == 1 {
+          reply(Err({ "message": "offline" }))
+        } else {
+          reply(Ok(Json::null()))
+        }
+      } else {
+        (base.call)(n, _params, reply)
+      }
+    },
+  }
+  let rows : Array[Json] = [
+    {
+      "kind": "step",
+      "content": {
+        "name": "Bash",
+        "said": "测试工具失败",
+        "call": "{\"command\":\"echo hello_world\"}",
+        "result": "hello_world_out",
+        "entries": [1, 2],
+      },
+    },
+    {
+      "kind": "step",
+      "content": {
+        "name": "Read",
+        "said": "测试摘要重开",
+        "brief": true,
+        "entries": [3, 4],
+      },
+    },
+  ]
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    group_rows_each_node(root, src, "ws/st1", "s1", fn() { "retry-grp" }, fn() { rows })
+  }, w=390.0, h=600.0, platform=2)
+  t.draw()
+  // 1. Non-brief step: first history.tool fails -> shows 重试 -> tap 重试 -> renders result + 复制 button
+  t.tap_text("测试工具失败")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(tool_calls.val, 1)
+  assert_true(t.query(Button, label="重试") is Some(_), msg="failed history.tool must show retry button instead of infinite spinner")
+  t.click(Button, label="重试")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(tool_calls.val, 2)
+  assert_true(t.rect_of("hello_world_out") is Some(_), msg="retried history.tool renders result")
+  let copy_btns = t.all(Button, label="复制")
+  assert_true(copy_btns.length() >= 1, msg="tool step offers quick copy")
+  let cr = copy_btns[0].rect
+  t.tap(cr.0 + cr.2 / 2.0, cr.1 + cr.3 / 2.0)
+  t.frame()
+  assert_true(t.query(Button, label="已复制") is Some(_), msg="quick copy button flips to 已复制")
+  // 2. Brief step: first history.detail fails -> closing clears error -> reopening retries
+  t.tap_text("测试摘要重开")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(detail_calls.val, 1)
+  assert_true(t.query(Button, label="重试") is Some(_), msg="failed history.detail shows retry")
+  t.tap_text("测试摘要重开")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("测试摘要重开")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(detail_calls.val, 2, msg="reopening a failed brief step retries history.detail")
+  steps_reset()
+}
+
+///|
+test "clip_lines_node shows bottom 查看完整内容 affordance when overflowing 14 lines" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let lines = Array::makei(24, fn(i) { "line \{i + 1}: overflow verification text for clip_lines_node" }).join("\n")
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    card_plain_or_clip_node(root, "长输出", lines, h_output, mono=true)
+  }, w=340.0, h=600.0, platform=0)
+  t.draw()
+  t.frame()
+  assert_true(t.rect_of("查看完整内容") is Some(_), msg="clipped 24-line block must show bottom 查看完整内容 strip")
+  steps_reset()
+}
+
+///|
+test "floating jump-to-bottom button restores auto-follow after entry jump" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("history")
+  let hist_items : Array[Json] = Array::makei(25, fn(i) {
+    {
+      "key": Json::string("item-\{i}"),
+      "entries": [Json::number((i * 2 + 1).to_double()), Json::number((i * 2 + 2).to_double())],
+      "body": {
+        "kind": "received",
+        "content": {
+          "note": "",
+          "tasks": [],
+          "messages": [{ "from": { "name": "林", "bound": false }, "text": Json::string("第 \{i} 轮消息内容用于填充足够高度以触发滚动与回底按钮") }],
+        },
+      },
+    }
+  })
+  let history : Json = { "items": Json::array(hist_items), "edge": "开始", "loaded": true, "more": false }
+  let src : @sfbase.Source = {
+    ..base,
+    topic_read: fn(n, params) {
+      if n == "history" { { value: Some(history), error: None, version: 1 } } else { (base.topic_read)(n, params) }
+    },
+    topic_keyed: fn(_, _, _, _) { None },
+  }
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    let tips = @sf.TipLayer::new(fn() { Some(root) })
+    history_steps_node(root, src, "ws/st1", "s-jump", tips)
+  }, w=360.0, h=420.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let lkey = "history-steps/ws/st1/s-jump"
+  // Jump to the earliest entry: sets went[lkey] and shows floating jump-to-bottom button.
+  history_focus("ws/st1", "s-jump", 1)
+  t.run_for(@ui.move_most_ms + 300.0)
+  assert_true(steps_own.went.contains(lkey), msg="entry jump pauses auto-follow")
+  let jump_btn = t.query(Button, label=@sf.t("web-main.chat.toLatest"))
+  assert_true(jump_btn is Some(_), msg="floating jump-to-bottom button appears when away from foot")
+  let r = jump_btn.unwrap().rect
+  t.tap(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+  t.run_for(@ui.move_most_ms + 400.0)
+  assert_true(!steps_own.went.contains(lkey), msg="jumping back to bottom resumes auto-follow")
   steps_reset()
 }

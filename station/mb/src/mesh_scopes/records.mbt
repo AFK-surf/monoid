@@ -45,13 +45,7 @@ fn hex128(s : String) -> Bool {
 
 ///|
 pub fn hex_of(b : BytesView) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder()
-  for x in b {
-    out.write_char(digits.get_char(x.to_int() >> 4).unwrap())
-    out.write_char(digits.get_char(x.to_int() & 15).unwrap())
-  }
-  out.to_string()
+  @codec.hex_encode(b)
 }
 
 ///|
@@ -84,12 +78,7 @@ pub fn text(o : Json) -> String? {
 /// A number that is a safe integer (`Number.isSafeInteger`).
 pub fn safe_int(j : Json) -> Int64? {
   match j {
-    Number(n, ..) =>
-      if n == n.floor() && n.abs() <= 9007199254740991.0 {
-        Some(n.to_int64())
-      } else {
-        None
-      }
+    Number(n, ..) if @jsjson.is_safe_integer(n) => Some(n.to_int64())
     _ => None
   }
 }

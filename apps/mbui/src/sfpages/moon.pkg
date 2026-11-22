@@ -15,11 +15,11 @@ import {
   "stillfail/sfapp/settings",
   "mbui/motion",
   "mbui/codec",
+  "mbui/zip",
   "mbui/signals",
   "mbui/view",
-  "mbui/headless",
   "stillfail/gallery",
   "fvclient/stage",
 }
 
-import { "stillfail/sffixture", "stillfail/sfkept", "stillfail/core", "mbui/halt", "fvclient/proto", "fvclient/html", "fvclient/doc" } for "wbtest"
+import { "stillfail/sffixture", "stillfail/sfkept", "stillfail/core", "mbui/halt", "mbui/headless", "fvclient/proto", "fvclient/html", "fvclient/doc" } for "wbtest"

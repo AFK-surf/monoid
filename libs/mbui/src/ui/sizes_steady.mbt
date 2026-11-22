@@ -92,7 +92,11 @@ const MEASURE_LEFT : Int = 3
 /// where they say another thing: their place across seen anew); which slots this frame measured (`touched`, as of
 /// `at`): one it did not is let go as the frame ends, as one never seen. And for each slot whether the frame of its
 /// second sample came with nothing to cause it (`first_unasked`: frame_quiet), its first two frames its first ever
-/// (`ever`: the slots seen so far, a slot seen anew after a gap no node's first frame).
+/// (`ever`: the slots seen so far, a slot seen anew after a gap no node's first frame). And how big it was drawn across and
+/// down (its holders' scales and its own, as one) in its last frame and the one before, the frames as its samples have
+/// them (a frame laid out again in half a period the same frame, `scale_at` when that frame began, `scale_end` when it was
+/// last seen): what holds it grown or shrunk about a point since carries what is in it by as much more as it is further
+/// from that holder's edge (Ctx::sizes_faults' carried).
 priv struct SizesSeen {
   seen : FixedArray[Array[(Double, Double, Double)]]
   turned : FixedArray[Double]
@@ -101,6 +105,13 @@ priv struct SizesSeen {
   mut touched : Int
   first_unasked : FixedArray[Bool]
   mut ever : Int
+  mut scale_at : Double
+  mut scale_end : Double
+  mut scale_prev : (Double, Double)
+  mut scale_now : (Double, Double)
+  /// how many times the block of a page's list it is in had been taken for another key when it was last seen
+  /// (Tree::reused_epoch_of, one more; 0 in none; -1 not seen yet): another count, it shows another key, seen anew
+  mut reused : Int
 }
 
 ///|
@@ -113,6 +124,11 @@ fn SizesSeen::new(text : String) -> SizesSeen {
     touched: 0,
     first_unasked: FixedArray::make(6, false),
     ever: 0,
+    scale_at: -1.0e9,
+    scale_end: -1.0e9,
+    scale_prev: (1.0, 1.0),
+    scale_now: (1.0, 1.0),
+    reused: -1,
   }
 }
 
@@ -329,12 +345,14 @@ let stop_jerk : Double = 1.5
 /// (what is in such a row is measured from its top) nor by rows_steady, which walks only the old view's lists
 /// (rows_steady.mbt's rows_steady_faults: a list node of an old view's with its state); it is said today only where a
 /// drawn box round its cause steps. A round that only prints comes before the chat's page is switched.
+///|
 fn sizes_steady_fault(
   all : Array[(Double, Double, Double)],
   period : Double,
   turned~ : Double,
   set_out? : Double = -1.0,
   unasked? : Bool = true,
+  px? : Double = 0.0,
 ) -> (String?, Double) {
   // (the last four; the one before them, where there is one, for whether they set out from rest)
   let seen = if all.length() > 4 { all[all.length() - 4:].to_owned() } else { all }
@@ -349,9 +367,17 @@ fn sizes_steady_fault(
     seen[1].1 - seen[0].1 <= 1.5 * period &&
     seen[2].1 - seen[1].1 <= 1.5 * period &&
     !(set_out > seen[0].1 && set_out <= seen[2].1) {
-    let v0 = (seen[1].2 - seen[0].2) / (seen[1].1 - seen[0].1) * period
-    let v1 = (seen[2].2 - seen[1].2) / (seen[2].1 - seen[1].1) * period
-    if v0.abs() > rows_speed_least && v1.abs() <= 0.25 {
+    let dt0 = seen[1].1 - seen[0].1
+    let dt1 = seen[2].1 - seen[1].1
+    let v0 = (seen[1].2 - seen[0].2) / dt0 * period
+    let v1 = (seen[2].2 - seen[1].2) / dt1 * period
+    let toward = if v0 > 0.0 { 1.0 } else { -1.0 }
+    let eps0 = if px > 0.0 { px * period / dt0 } else { 0.0 }
+    let eps1 = if px > 0.0 { px * period / dt1 } else { 0.0 }
+    let sliver = px > 0.0 &&
+      dt1 < 0.5 * period &&
+      v1 * toward + eps1 >= 0.2 * dmax(0.0, v0 * toward - eps0)
+    if !sliver && v0.abs() > rows_speed_least && v1.abs() <= 0.25 {
       return (
         Some("stepped \{v0} in its first frame then stood (\{v1}) at \{seen[1].1} seen=[\{all.map(fn(s) { "(\{s.0}, \{s.1}, \{s.2})" }).join(", ")}]"),
         turned,
@@ -366,6 +392,12 @@ fn sizes_steady_fault(
     let v2 = speed(2)
     let least = rows_speed_least
     let at = seen[2].1
+    let dt0 = seen[1].1 - seen[0].1
+    let dt1 = seen[2].1 - seen[1].1
+    let dt2 = seen[3].1 - seen[2].1
+    let eps0 = if px > 0.0 { px * period / dt0 } else { 0.0 }
+    let eps1 = if px > 0.0 { px * period / dt1 } else { 0.0 }
+    let eps2 = if px > 0.0 { px * period / dt2 } else { 0.0 }
     // (from rest, going on its way: a way set out, eased out from its speed; set out between two frames, the first of
     // them partly)
     let rest_before = all.length() > 4 &&
@@ -374,12 +406,16 @@ fn sizes_steady_fault(
     let on = v1 * v2 > 0.0 && v2.abs() >= 0.25 * v1.abs() && v2.abs() <= v1.abs()
     let sets_out = on && (v0.abs() < 0.5 || (rest_before && v0 * v1 > 0.0 && v0.abs() < v1.abs()))
     let off = (v1 - (v0 + v2) / 2.0).abs()
+    let toward_v1 = if v1 > 0.0 { 1.0 } else { -1.0 }
+    let sliver_end = px > 0.0 &&
+      dt2 < 0.5 * period &&
+      v2 * toward_v1 + eps2 >= 0.2 * dmax(0.0, v1 * toward_v1 - eps1)
     // (stopped dead: going, then all but still in a frame, the speed it lost that frame more than stop_jerk times what
     // it lost in either frame before (the lesser of the two, a frame further back where there is one: where its slowing
     // set in falls between frames as it likes); slowing at one rate to rest, whatever frame its rest falls on, none
     // (the coordinator of the migration, 2026-11-11: what stops dead is a step in how fast it slows, not where its rest
     // falls among the frames; what it does after, turning back or not, no part of it))
-    if v0.abs() > least && v1.abs() > least && v0 * v1 > 0.0 && v2.abs() < 0.2 * v1.abs() {
+    if !sliver_end && v0.abs() > least && v1.abs() > least && v0 * v1 > 0.0 && v2.abs() < 0.2 * v1.abs() {
       let toward = if v1 > 0.0 { 1.0 } else { -1.0 }
       // (each loss of speed over the time between the middles of the two frames it is between, in two frames' time: a
       // slowing at one rate loses as much over the same time, a frame twice as long as the rest between them or not;
@@ -414,8 +450,16 @@ fn sizes_steady_fault(
     }
     // (at rest, or all but, then setting out: none)
     let resting = v0.abs() < least && v1.abs() < least
-    if !sets_out && !resting && (v1 - v0) * (v1 - v2) > 0.0 && (v1 - v0).abs() > least && (v1 - v2).abs() > least &&
-      off > 0.5 * dmax(v0.abs(), v2.abs()) {
+    let has_sliver = px > 0.0 && (dt1 < 0.5 * period || dt2 < 0.5 * period)
+    let dv01 = if has_sliver { dmax(0.0, (v1 - v0).abs() - (eps0 + eps1)) } else { (v1 - v0).abs() }
+    let dv12 = if has_sliver { dmax(0.0, (v1 - v2).abs() - (eps1 + eps2)) } else { (v1 - v2).abs() }
+    let off_net = if has_sliver { dmax(0.0, off - (0.5 * eps0 + eps1 + 0.5 * eps2)) } else { off }
+    if !sets_out &&
+      !resting &&
+      (v1 - v0) * (v1 - v2) > 0.0 &&
+      dv01 > least &&
+      dv12 > least &&
+      off_net > 0.5 * dmax(v0.abs(), v2.abs()) {
       return (Some("went \{v1} a frame between \{v0} and \{v2} at \{at} seen=[\{all.map(fn(s) { "(\{s.0}, \{s.1}, \{s.2})" }).join(", ")}]"), turned)
     }
   }
@@ -459,7 +503,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
   let hand_now = rows_steady.hand != sizes_steady.hand
   sizes_steady.hand = rows_steady.hand
   let here : Set[(Int, Int, Int64)] = Set([])
-  self.with_tree_nodes(fn() {
+  self.with_tree_nodes(ground_drawn=false, fn() {
     let tree = view_tree()
     // (one ident twice in the frame: who either is, unsaid)
     let count : Map[Int, Int] = Map([])
@@ -477,6 +521,13 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
     // what shows held where it was by it: worked out from what holds it)
     let k = self.count
     let ya = Array::make(k, 1.0)
+    // (and how big it is drawn across and down, its holders' scales and its own (corner_scale_at for a node of the
+    // window's tree, as the tree's walk worked it out; else its holder's by its look's); its drawn edges, left and top, in
+    // the window's terms; and how big it was drawn in the frame before over how big now, across and down)
+    let sx_at = Array::make(k, 1.0)
+    let sy_at = Array::make(k, 1.0)
+    let drawn_pos : Array[(Double, Double)] = Array::make(k, (0.0, 0.0))
+    let scale_ratio : Array[(Double, Double)] = Array::make(k, (1.0, 1.0))
     let yb = Array::make(k, 0.0)
     let al = Array::make(k, 1.0)
     let c_top = Array::make(k, -1.0e9)
@@ -505,6 +556,14 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
     // (and whether it shakes across now, itself or what holds it (View::shakes_while, motion's ShakeWay::shakes): where
     // its left edge is drawn is that way's while it goes, turning back on purpose; its top and its sizes judged as ever)
     let shaken = Array::make(k, false)
+    // (and whether it is held at a top as what scrolls it moves, itself or what holds it in its row (View::sticky):
+    // where it is down its row is the hold's, stopping as it is caught and going on as it is let go on purpose; its
+    // sizes, where it is across and where it is down out of a row judged as ever)
+    let stuck = Array::make(k, false)
+    // (and how many times the block of a page's list it is in was taken for another key (Tree::reused_epoch_of), one
+    // more; 0 in none: what is drawn in a block taken for another key is that key's, never the one before stepping, even
+    // where the block was out of sight between, put by)
+    let reused_ep = Array::make(k, 0)
     let puts_now : Map[Int, (Double, Double)] = Map([])
     let laids_now : Map[Int, Double] = Map([])
     // (what holds each before it: a node of the window's tree put among the frame's may come after what it holds)
@@ -527,15 +586,31 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       let n = self.nodes[i]
       let p = n.parent
       let (pa, pb, palpha) = if p >= 0 && p < k { (ya[p], yb[p], al[p]) } else { (1.0, 0.0, 1.0) }
-      let (la, lb, lalpha, ldx) = match self.drawn_entry(i) {
+      let (la, lb, lalpha, ldx, lax) = match self.drawn_entry(i) {
         Some(e) => {
           let l = e.look_now()
           let oy = n.y + l.oy * n.fh
-          (l.sy, oy * (1.0 - l.sy) + l.dy, l.alpha, l.dx)
+          (l.sy, oy * (1.0 - l.sy) + l.dy, l.alpha, l.dx, l.sx)
         }
-        None => (1.0, 0.0, 1.0, 0.0)
+        None => (1.0, 0.0, 1.0, 0.0, 1.0)
+      }
+      if tree_frame_ids.contains(i) {
+        let ts = corner_scale_at.get(i).unwrap_or(1.0)
+        sx_at[i] = ts
+        sy_at[i] = ts
+      } else {
+        sx_at[i] = (if p >= 0 && p < k { sx_at[p] } else { 1.0 }) * lax
+        sy_at[i] = (if p >= 0 && p < k { sy_at[p] } else { 1.0 }) * la
       }
       xb[i] = (if p >= 0 && p < k { xb[p] } else { 0.0 }) + ldx
+      reused_ep[i] = match (tree, tree_frame_ids.get(i)) {
+        (Some(tr), Some(id)) =>
+          match tr.reused_epoch_of(id.at) {
+            Some(ep) => ep + 1
+            None => 0
+          }
+        _ => if p >= 0 && p < k { reused_ep[p] } else { 0 }
+      }
       ya[i] = pa * la
       yb[i] = pa * lb + pb
       al[i] = palpha * n.opacity * lalpha
@@ -573,6 +648,10 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       }
       if p >= 0 && p < k && put_now[p] {
         put_now[i] = true
+      }
+      match (tree, tree_frame_ids.get(i)) {
+        (Some(tr), Some(id)) if tr.sticks_any() && tr.is_sticky(id) => stuck[i] = true
+        _ => ()
       }
       shaken[i] = (p >= 0 && p < k && shaken[p]) ||
         (match (tree, tree_frame_ids.get(i)) {
@@ -625,6 +704,18 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           col_at[i] = col_at[p]
           in_row[i] = in_row[p]
           set_out[i] = set_out[p]
+          stuck[i] = stuck[i] || stuck[p]
+        }
+        // (on a flight's way: drawn in the window's terms, in no row of what it is drawn among (shared.mbt), what it
+        // holds measured from it as ever)
+        match (tree, tree_frame_ids.get(i)) {
+          (Some(tr), Some(id)) if tr.lifted_at(id.at) => {
+            row_at[i] = 0.0
+            col_at[i] = 0.0
+            in_row[i] = false
+            set_out[i] = -1.0
+          }
+          _ => ()
         }
       }
     }
@@ -782,10 +873,54 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           s
         }
       }
+      drawn_pos[i] = (left0, top0)
+      // (its block taken for another key since it was last seen: another key's, seen anew from this frame, its first)
+      if ns.reused != reused_ep[i] {
+        if ns.reused >= 0 {
+          ns.text = n.text
+          ns.ever = 0
+          ns.scale_at = -1.0e9
+          ns.scale_end = -1.0e9
+          ns.scale_prev = (sx_at[i], sy_at[i])
+          ns.scale_now = (sx_at[i], sy_at[i])
+          for s in 0..<6 {
+            ns.seen[s].clear()
+            ns.turned[s] = -1.0e9
+            ns.first_unasked[s] = false
+          }
+        }
+        ns.reused = reused_ep[i]
+      }
       if ns.at != now {
         ns.at = now
         ns.touched = 0
+        // (how big it is drawn, its frames as its samples': once a frame)
+        let scale = (sx_at[i], sy_at[i])
+        let scale_gap = ns.scale_end > -1.0e8 && now - ns.scale_end > 2.5 * period
+        if scale_gap || resized || !shows || self.down || view_holds() || (hand_now && by_scroll[i]) || put_now[i] {
+          ns.scale_at = -1.0e9
+          ns.scale_end = -1.0e9
+          ns.scale_prev = scale
+          ns.scale_now = scale
+        } else if ns.scale_at < -1.0e8 {
+          ns.scale_at = now
+          ns.scale_end = now
+          ns.scale_prev = scale
+          ns.scale_now = scale
+        } else if now - ns.scale_at < 0.5 * period {
+          ns.scale_end = now
+          ns.scale_now = scale
+        } else {
+          ns.scale_at = now
+          ns.scale_end = now
+          ns.scale_prev = ns.scale_now
+          ns.scale_now = scale
+        }
       }
+      scale_ratio[i] = (
+        if sx_at[i] > 0.0 { ns.scale_prev.0 / sx_at[i] } else { 1.0 },
+        if sy_at[i] > 0.0 { ns.scale_prev.1 / sy_at[i] } else { 1.0 },
+      )
       // (words saying another thing: new words where they stand across)
       if words && !physical_equal(ns.text, n.text) && ns.text != n.text {
         ns.text = n.text
@@ -803,6 +938,10 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         // (what the hand's scroll moves by its offset alone, in the frame it did: as far as the hand took it; and in the
         // frame its column was put at once, or its list's keys changed by data, as far as that took it)
         if gap || resized || !shows || self.down || view_holds() || (hand_now && by_scroll[i]) || put_now[i] {
+          // (shown while a hand holds it: seen, not new, as it is let go)
+          if shows && (self.down || view_holds()) {
+            ns.ever = ns.ever | (1 << slot)
+          }
           seen.clear()
           ns.first_unasked[slot] = false
           continue
@@ -810,6 +949,14 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         // (its left edge while it shakes across: the shake's, there and back on purpose; seen anew from its first frame
         // at rest, as one never seen)
         if shaken[i] && m.0 == MEASURE_LEFT {
+          seen.clear()
+          ns.turned[slot] = -1.0e9
+          ns.first_unasked[slot] = false
+          continue
+        }
+        // (where it is down its row while it is held at a top (View::sticky): the hold's, caught and let go on purpose;
+        // seen anew from its first frame at rest)
+        if stuck[i] && in_row && m.0 == MEASURE_TOP {
           seen.clear()
           ns.turned[slot] = -1.0e9
           ns.first_unasked[slot] = false
@@ -834,12 +981,14 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           seen.remove(0) |> ignore
         }
         let turned = ns.turned[slot]
+        let px = if self.scale > 0.0 { 1.0 / self.scale } else { 0.0 }
         let (fault, turn) = sizes_steady_fault(
           seen,
           period,
           turned~,
           set_out=set_out[i],
           unasked=ns.first_unasked[slot],
+          px~,
         )
         ns.turned[slot] = turn
         match fault {
@@ -858,7 +1007,9 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       }
     }
     // (what goes as what holds it went, by as far in the frame, carried by it: that one said, the outermost so carried,
-    // not each thing in it; down by its top, across by its left edge)
+    // not each thing in it; down by its top, across by its left edge. What holds it drawn grown or shrunk about a point
+    // since the frame before, from s0 to s1, carries it by as far again as it stands from that holder's edge times
+    // 1 - s0 / s1, where it is now: what is further in goes further as it grows, nothing of its own)
     let placed : Map[(Int, Bool), Double] = Map([])
     for f in faults {
       if measure_place(f.2) {
@@ -870,14 +1021,21 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       if !measure_place(f.2) {
         continue
       }
+      let across = measure_across(f.2)
+      let cpos = if across { drawn_pos[f.0].0 } else { drawn_pos[f.0].1 }
       let mut p = self.nodes[f.0].parent
       while p >= 0 {
-        match placed.get((p, measure_across(f.2))) {
-          Some(w) if (w - f.3).abs() < 0.01 => {
-            carried.add(k)
-            break
+        match placed.get((p, across)) {
+          Some(w) => {
+            let ppos = if across { drawn_pos[p].0 } else { drawn_pos[p].1 }
+            let ratio = if across { scale_ratio[p].0 } else { scale_ratio[p].1 }
+            let expected = w + (cpos - ppos) * (1.0 - ratio)
+            if (expected - f.3).abs() < 0.01 {
+              carried.add(k)
+              break
+            }
           }
-          _ => ()
+          None => ()
         }
         p = self.nodes[p].parent
       }

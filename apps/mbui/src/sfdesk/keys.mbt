@@ -12,7 +12,7 @@
 /// has it. Esc goes to what the frame opened over the page, the one on top first, then to the open chat's; what took
 /// none of it passes it on to the page.
 pub fn frame_actions(v : @view.View, src : Source) -> Unit {
-  let framed = fn() { !(@sf.layout(v.window().0) is Small) || @sf.native_able() }
+  let framed = fn() { !(@sf.layout(v.window_w()) is Small) || @sf.native_able() }
   let blur = fn() { v.focus_let_go() }
   let act = fn(action : String, f : (Workspace) -> Bool) {
     v.on_action(action, fn(_) {

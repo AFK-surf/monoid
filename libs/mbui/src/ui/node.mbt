@@ -29,6 +29,10 @@ pub(all) enum Align {
   ACenter
   AEnd
   AStretch
+  /// Inline icons or controls align to the center of the first line of sibling text.
+  AFirstLine
+  /// Words of different sizes align to the same first-line baseline.
+  ABaseline
 }
 
 ///|

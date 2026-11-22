@@ -174,64 +174,6 @@ pub fn Store::complete_router_write(self : Store, id : Json) -> Json raise {
 }
 
 ///|
-fn pending_of(r : Map[String, Json], message : Json) -> Json {
-  {
-    "message": message,
-    "surface": col(r, "surface"),
-    "channel": col(r, "channel"),
-    "threadTs": col(r, "thread_ts"),
-    "connect": col(r, "connect"),
-  }
-}
-
-///|
-fn created_at(p : Json) -> Double {
-  match p {
-    Object(o) =>
-      match o.get("message") {
-        Some(Object(m)) => num(m.get("createdAt").unwrap_or(Json::null()))
-        _ => 0.0
-      }
-    _ => 0.0
-  }
-}
-
-///|
-pub fn Store::pending_messages(self : Store, session : Json) -> Json raise {
-  let said = self
-    .all(
-      "SELECT m.*, t.surface, t.channel, t.thread_ts, ts.connect FROM deliveries d\n       JOIN merged m ON m.thread = d.thread AND m.n = d.n JOIN threads t ON t.id = d.thread\n       JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session\n       WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid",
-      [session],
-    )
-    .map(r => pending_of(r, message_of(r)))
-  let letters = self
-    .all(
-      "SELECT l.*, t.surface, t.channel, t.thread_ts, ts.connect FROM letter_deliveries d\n       JOIN letters l ON l.thread = d.thread AND l.n = d.n JOIN threads t ON t.id = d.thread\n       JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session\n       WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid",
-      [session],
-    )
-    .map(r => pending_of(r, letter_message_of(r)))
-  if letters.is_empty() {
-    return Json::array(said)
-  }
-  if said.is_empty() {
-    return Json::array(letters)
-  }
-  let out = []
-  let mut i = 0
-  let mut j = 0
-  while i < said.length() || j < letters.length() {
-    if j >= letters.length() || (i < said.length() && created_at(said[i]) <= created_at(letters[j])) {
-      out.push(said[i])
-      i += 1
-    } else {
-      out.push(letters[j])
-      j += 1
-    }
-  }
-  Json::array(out)
-}
-
-///|
 pub fn Store::pending_before(self : Store, session : Json, thread : Json, n : Json) -> Json raise {
   Json::array(
     self
@@ -480,34 +422,8 @@ fn utf8_compare(a : Array[Int], b : Array[Int]) -> Int {
 
 ///|
 fn utf8_of(units : Array[Int]) -> Array[Int] {
-  let out = []
-  let mut i = 0
-  while i < units.length() {
-    let mut c = units[i]
-    if c >= 0xD800 && c <= 0xDBFF && i + 1 < units.length() && units[i + 1] >= 0xDC00 && units[i + 1] <= 0xDFFF {
-      c = 0x10000 + ((c - 0xD800) << 10) + (units[i + 1] - 0xDC00)
-      i += 1
-    } else if c >= 0xD800 && c <= 0xDFFF {
-      c = 0xFFFD
-    }
-    if c < 0x80 {
-      out.push(c)
-    } else if c < 0x800 {
-      out.push(0xC0 | (c >> 6))
-      out.push(0x80 | (c & 0x3F))
-    } else if c < 0x10000 {
-      out.push(0xE0 | (c >> 12))
-      out.push(0x80 | ((c >> 6) & 0x3F))
-      out.push(0x80 | (c & 0x3F))
-    } else {
-      out.push(0xF0 | (c >> 18))
-      out.push(0x80 | ((c >> 12) & 0x3F))
-      out.push(0x80 | ((c >> 6) & 0x3F))
-      out.push(0x80 | (c & 0x3F))
-    }
-    i += 1
-  }
-  out
+  let b = @jsjson.utf8(@jsjson.raw_text(units))
+  Array::makei(b.length(), i => b[i].to_int())
 }
 
 ///|
@@ -583,11 +499,6 @@ pub fn Store::pins(self : Store, viewer : Json) -> Json raise {
 }
 
 ///|
-pub fn Store::pinned_sessions(self : Store) -> Json raise {
-  Json::array(self.all("SELECT DISTINCT session FROM pins", []).map(r => col(r, "session")))
-}
-
-///|
 /// archive-mark-index.ts `archiveMarksReady`.
 fn archive_marks_ready(db : @sql.Db) -> Bool raise {
   let rows = db.all(
@@ -611,7 +522,16 @@ pub fn Store::archive_marks(self : Store, sessions : Json, threads : Json) -> Js
   let ready = archive_marks_ready(self.db)
   let pinned : Map[String, Json] = Map([])
   for s in strings(sessions) {
-    pinned[js_text(s)] = jbool(!ready || self.one(archive_pin_exists_sql, [s]) is Some(_))
+    let k = js_text(s)
+    let is_pinned = if !ready {
+      true
+    } else {
+      let anchor = @sql.conversation_of(self.db, k)
+      let members = @sql.members_of(self.db, anchor)
+      let list = if members.is_empty() { [k] } else { members }
+      list.iter().any(m => self.one(archive_pin_exists_sql, [jstr(m)]) is Some(_))
+    }
+    pinned[k] = jbool(is_pinned)
   }
   let kept : Map[String, Json] = Map([])
   for t in strings(threads) {
@@ -623,20 +543,34 @@ pub fn Store::archive_marks(self : Store, sessions : Json, threads : Json) -> Js
 ///|
 pub fn Store::set_pin(self : Store, viewer : Json, session : Json, pinned : Json) -> Json raise {
   self.with_(changes => {
+    let key = js_text(session)
+    let anchor = @sql.conversation_of(self.db, key)
+    let anchor_j = jstr(anchor)
     if pinned is True {
-      ignore(self.run("INSERT OR IGNORE INTO pins (viewer, session, at) VALUES (?, ?, ?)", [viewer, session, self.now_json()]))
+      ignore(self.run("INSERT OR IGNORE INTO pins (viewer, session, at) VALUES (?, ?, ?)", [viewer, anchor_j, self.now_json()]))
     } else {
-      ignore(self.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [viewer, session]))
+      let targets : Array[String] = [anchor]
+      if !targets.contains(key) {
+        targets.push(key)
+      }
+      for m in @sql.members_of(self.db, anchor) {
+        if !targets.contains(m) {
+          targets.push(m)
+        }
+      }
+      for m in targets {
+        ignore(self.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [viewer, jstr(m)]))
+      }
     }
     let at = if pinned is True {
-      match self.one("SELECT at FROM pins WHERE viewer = ? AND session = ?", [viewer, session]) {
+      match self.one("SELECT at FROM pins WHERE viewer = ? AND session = ?", [viewer, anchor_j]) {
         Some(r) => col(r, "at")
         None => Json::null()
       }
     } else {
       Json::null()
     }
-    changes.push({ "type": "pins", "viewer": viewer, "session": session, "at": at })
+    changes.push({ "type": "pins", "viewer": viewer, "session": anchor_j, "at": at })
     undefined
   })
 }

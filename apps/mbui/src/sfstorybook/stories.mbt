@@ -48,7 +48,7 @@ let code_sample : String =
 
 ///|
 /// Every part shown, in the order of the list: `tips` the layer an icon button's name is shown in.
-fn stories(tips : @sf.TipLayer) -> Array[Story] {
+fn stories(tips : @sf.TipLayer, layer? : () -> @view.View? = fn() { None }) -> Array[Story] {
   [
     {
       key: "button",
@@ -210,9 +210,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
               fn() { "clock" },
               fn() { "缓存已过期，接着聊会重新读一遍" },
               fn() { 24.5 },
-              choices=fn() { [("keep", "接着聊"), ("fresh", "换新上下文")] },
-              chosen=fn() { "keep" },
-              choose=fn(_) {  },
+              choice={ choices: fn() { [("keep", "接着聊"), ("fresh", "换新上下文")] }, chosen: fn() { "keep" }, choose: fn(_) {  }, on_open: None },
             )
             |> ignore
           },
@@ -1126,5 +1124,8 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
   stories_u5(tips) +
   stories_u9() +
   stories_u13(tips) +
-  stories_u19(tips)
+  stories_u19(tips) +
+  stories_wave1(tips) +
+  stories_wave2(tips) +
+  stories_wave3(tips, layer~)
 }

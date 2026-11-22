@@ -2,7 +2,7 @@
 // lock or not, following the head or not; signed with Ed25519 and P-256 app keys and with passkeys (WebAuthn), as
 // devices sign. What rules-lock.test.ts (station) and lock-rules.test.ts (the core) fold.
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign as nodeSign } from "node:crypto";
-import { type Entry, type Sig, entryHash, signedBytes } from "../src/cloud/lock.ts";
+import { type Entry, type Sig, entryHash, signedBytes } from "../../shared/lock.ts";
 
 export function rng(seed: number) {
   let s = seed >>> 0;

@@ -106,3 +106,34 @@ test "every part at rest, light and dark, holds to mbui's audit" {
   }
   assert_eq(faults, [])
 }
+
+///|
+test "button_node keeps exact heights at 1.0x and grows cleanly at 2.0x font scale with zero audit faults" {
+  let t = cm_case(fn(p) {
+    // (each size in its own row: what is pressed in one row is of one height)
+    button_node(p, fn() { "BtnXs" }, fn() {  }, size=Xs) |> ignore
+    button_node(p, fn() { "BtnSm" }, fn() {  }, size=Sm) |> ignore
+    button_node(p, fn() { "BtnMd" }, fn() {  }, size=Md) |> ignore
+    button_node(p, fn() { "BtnLg" }, fn() {  }, size=Lg) |> ignore
+  })
+  t.run_for(ui_move_most)
+  let h1 = (
+    t.get(Button, label="BtnXs").rect.3,
+    t.get(Button, label="BtnSm").rect.3,
+    t.get(Button, label="BtnMd").rect.3,
+    t.get(Button, label="BtnLg").rect.3,
+  )
+  assert_eq(h1, (32.0, 36.0, 40.0, 44.0))
+  assert_eq(t.audit(), [])
+  t.set_font_scale(2.0)
+  t.draw()
+  t.run_for(ui_move_most)
+  let h2 = (
+    t.get(Button, label="BtnXs").rect.3,
+    t.get(Button, label="BtnSm").rect.3,
+    t.get(Button, label="BtnMd").rect.3,
+    t.get(Button, label="BtnLg").rect.3,
+  )
+  assert_true(h2.0 > 32.0 && h2.1 > 36.0 && h2.2 > 40.0 && h2.3 > 44.0, msg="2.0x button heights: \{h2.0}, \{h2.1}, \{h2.2}, \{h2.3}")
+  assert_eq(t.audit(), [])
+}

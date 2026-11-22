@@ -415,20 +415,7 @@ fn station_key(s : String) -> Bool {
 ///|
 /// The bytes of a string in UTF-8 (`Buffer.byteLength`).
 fn utf8_length(s : String) -> Int {
-  let mut n = 0
-  for c in s {
-    let p = c.to_int()
-    n += if p < 0x80 {
-      1
-    } else if p < 0x800 {
-      2
-    } else if p < 0x10000 {
-      3
-    } else {
-      4
-    }
-  }
-  n
+  @jsjson.js_utf8_len(s)
 }
 
 ///|
@@ -600,24 +587,7 @@ pub fn place_figures(text : String, files : Array[Json]) -> String {
 ///|
 /// encodeURIComponent.
 pub fn encode_uri_component(s : String) -> String {
-  let b = StringBuilder()
-  let hex = "0123456789ABCDEF"
-  let bytes = @utf8.encode(s)
-  for byte in bytes {
-    let c = byte.to_int()
-    let keep = (c >= 'A'.to_int() && c <= 'Z'.to_int()) ||
-      (c >= 'a'.to_int() && c <= 'z'.to_int()) ||
-      (c >= '0'.to_int() && c <= '9'.to_int()) ||
-      "-_.!~*'()".contains_char(Int::unsafe_to_char(c))
-    if keep {
-      b.write_char(Int::unsafe_to_char(c))
-    } else {
-      b.write_char('%')
-      b.write_char(hex.get_char(c >> 4).unwrap())
-      b.write_char(hex.get_char(c & 15).unwrap())
-    }
-  }
-  b.to_string()
+  @url.encode_uri_component(s)
 }
 
 ///|

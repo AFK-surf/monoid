@@ -6,19 +6,19 @@ import {
 }
 
 // Values
-pub fn acp_call(Array[Int32], @jsjson.JValue) -> (Array[Int32], @jsjson.JValue)
+pub fn acp_call(String, @jsjson.JValue) -> (String, @jsjson.JValue)
 
-pub fn acp_named(@jsjson.JValue?) -> (Array[Int32], @jsjson.JValue)
+pub fn acp_named(@jsjson.JValue?) -> (String, @jsjson.JValue)
 
 pub fn acp_outcome(String, @jsjson.JValue?) -> @jsjson.JValue
 
 pub fn agy_update(@jsjson.JValue?) -> @jsjson.JValue?
 
-pub fn classify(String, Array[Int32]) -> String
+pub fn classify(String, String) -> String
 
 pub fn hermes_update(@jsjson.JValue?) -> @jsjson.JValue?
 
-pub fn notice_failure(Array[Int32]) -> String?
+pub fn notice_failure(String) -> String?
 
 pub fn plan_of(@jsjson.JValue?) -> @jsjson.JValue?
 
@@ -28,19 +28,19 @@ pub fn turn_step(@jsjson.JValue?) -> Bool
 
 // Types and methods
 pub(all) struct Call {
-  name : Array[Int32]
+  name : String
   input : @jsjson.JValue
   started_at : Double?
 }
 
 pub(all) struct Child {
   live : Live
-  parent : Array[Int32]?
+  parent : String?
 }
 
 pub(all) struct Live {
-  open : Array[Array[Int32]]
-  mut said : Array[Int32]?
+  open : Array[String]
+  mut said : String?
   mut n : Int32
   mut phase : String?
 }
@@ -48,7 +48,7 @@ pub fn Live::ended(Self) -> Array[@jsjson.JValue]
 pub fn Live::feed(Self, @jsjson.JValue?) -> Array[@jsjson.JValue]
 pub fn Live::new() -> Self
 pub fn Live::of_state(@jsjson.JValue?) -> Self
-pub fn Live::open_call(Self) -> Array[Int32]?
+pub fn Live::open_call(Self) -> String?
 pub fn Live::prompted(Self) -> Array[@jsjson.JValue]
 pub fn Live::state(Self) -> @jsjson.JValue
 
@@ -60,7 +60,7 @@ pub(all) struct Replay {
 }
 pub fn Replay::finish(Self, () -> Double) -> Array[@jsjson.JValue]
 pub fn Replay::line(Self, @jsjson.JValue) -> Unit
-pub fn Replay::new(String, kept~ : Bool, Array[Int32]) -> Self
+pub fn Replay::new(String, kept~ : Bool, String) -> Self
 pub fn Replay::opened(Self) -> @jsjson.JValue?
 pub fn Replay::session(Self) -> Session
 
@@ -72,28 +72,28 @@ pub(all) struct Said {
 pub(all) struct Session {
   flavor : String
   kept : Bool
-  mut session : Array[Int32]
+  mut session : String
   mut loading : Bool
   turn : Turn
   mut live : Live
-  calls : Array[(Array[Int32], Call)]
-  mut said_last : Array[Int32]
-  mut said : (String, Array[Int32])?
-  children : Array[(Array[Int32], Child)]
+  calls : Array[(String, Call)]
+  mut said_last : String
+  mut said : (String, String)?
+  children : Array[(String, Child)]
 }
 pub fn Session::cut_short(Self) -> Array[@jsjson.JValue]
-pub fn Session::injected(Self, Array[Int32], Bool, Array[Int32]) -> Array[@jsjson.JValue]
+pub fn Session::injected(Self, String, Bool, String) -> Array[@jsjson.JValue]
 pub fn Session::line(Self, @jsjson.JValue, () -> Double) -> Said
 pub fn Session::new(String, kept~ : Bool) -> Self
 pub fn Session::of_state(String, kept~ : Bool, @jsjson.JValue?, @jsjson.JValue?) -> Self
-pub fn Session::prompted(Self, Array[Int32], Array[Int32]) -> Array[@jsjson.JValue]
+pub fn Session::prompted(Self, String, String) -> Array[@jsjson.JValue]
 pub fn Session::state(Self) -> @jsjson.JValue
 
 pub(all) struct Turn {
   mut busy : Bool
   mut aborting : Bool
-  mut owner : Array[Int32]?
-  steering : Array[Array[Int32]]
+  mut owner : String?
+  steering : Array[String]
 }
 pub fn Turn::json(Self) -> @jsjson.JValue
 pub fn Turn::of_json(@jsjson.JValue?) -> Self

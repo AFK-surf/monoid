@@ -3,16 +3,20 @@
 // keeps its first place and its last value, an object's integer-like keys come first in ascending order.
 
 ///|
+#derive(Eq)
 pub(all) enum JValue {
   Null
   Bool(Bool)
   Num(Double)
-  /// UTF-16 code units
-  Str(Array[Int])
+  /// UTF-16 code units (lone surrogates preserved, as JavaScript strings hold them)
+  Str(String)
   Arr(Array[JValue])
-  /// keys (code units) and values, in insertion order
-  Obj(Array[(Array[Int], JValue)])
+  /// keys (UTF-16 strings) and values, in insertion order
+  Obj(Array[(String, JValue)])
 }
+
+///|
+pub type JV = JValue
 
 ///|
 pub(all) suberror SyntaxError {
@@ -86,14 +90,33 @@ fn hex(c : Int) -> Int {
 }
 
 ///|
-fn Parser::string(self : Parser) -> Array[Int] raise SyntaxError {
+fn Parser::string(self : Parser) -> String raise SyntaxError {
   self.expect("\"")
-  // (as long as what is up to its closing quote at most: a string of MBs is not copied again as its array grows)
+  // (fast path: no escapes -> slice directly without StringBuilder; with escapes -> size-hinted StringBuilder)
+  let start = self.at
   let mut end = self.at
-  while end < self.text.length() && self.text.unsafe_charcode_at(end) != 0x22 {
-    end += if self.text.unsafe_charcode_at(end) == 0x5c { 2 } else { 1 }
+  let mut has_escape = false
+  while end < self.text.length() {
+    let c = self.text.unsafe_charcode_at(end)
+    if c == 0x22 {
+      break
+    }
+    if c == 0x5c {
+      has_escape = true
+      end += 2
+    } else {
+      if !has_escape && c < 0x20 {
+        self.at = end
+        raise self.fail()
+      }
+      end += 1
+    }
   }
-  let out = Array::new(capacity=end - self.at)
+  if !has_escape && end < self.text.length() && self.text.unsafe_charcode_at(end) == 0x22 {
+    self.at = end + 1
+    return self.text.unsafe_substring(start=start, end=end)
+  }
+  let out = StringBuilder::new(size_hint=if end > start { end - start } else { 0 })
   while true {
     let c = self.peek()
     if c < 0 || c < 0x20 {
@@ -104,18 +127,18 @@ fn Parser::string(self : Parser) -> Array[Int] raise SyntaxError {
       break
     }
     if c != 0x5c {
-      out.push(c)
+      out.write_char(c.unsafe_to_char())
       continue
     }
     let e = self.peek()
     self.at += 1
     match e {
-      0x22 | 0x5c | 0x2f => out.push(e)
-      0x62 => out.push(0x08)
-      0x66 => out.push(0x0c)
-      0x6e => out.push(0x0a)
-      0x72 => out.push(0x0d)
-      0x74 => out.push(0x09)
+      0x22 | 0x5c | 0x2f => out.write_char(e.unsafe_to_char())
+      0x62 => out.write_char('\u{08}')
+      0x66 => out.write_char('\u{0c}')
+      0x6e => out.write_char('\n')
+      0x72 => out.write_char('\r')
+      0x74 => out.write_char('\t')
       0x75 => {
         let mut v = 0
         for _ in 0..<4 {
@@ -126,12 +149,12 @@ fn Parser::string(self : Parser) -> Array[Int] raise SyntaxError {
           v = v * 16 + h
           self.at += 1
         }
-        out.push(v)
+        out.write_char(v.unsafe_to_char())
       }
       _ => raise self.fail()
     }
   }
-  out
+  out.to_string()
 }
 
 ///|
@@ -191,12 +214,25 @@ fn Parser::number(self : Parser) -> Double raise SyntaxError {
 }
 
 ///|
-fn Parser::value(self : Parser) -> JValue raise SyntaxError {
+let max_parse_depth : Int = 1024
+
+///|
+/// Keys an object holds before its repeats are found by a map rather than by a scan (747 KB objects of ten thousand
+/// keys came out quadratic).
+let seen_from : Int = 16
+
+///|
+fn Parser::value(self : Parser, depth : Int) -> JValue raise SyntaxError {
+  if depth > max_parse_depth {
+    raise SyntaxError("maximum nesting depth exceeded at \{self.at}")
+  }
   self.skip()
   match self.peek() {
     0x7b => {
       self.at += 1
-      let entries : Array[(Array[Int], JValue)] = []
+      let entries : Array[(String, JValue)] = []
+      // (a repeated key keeps its first place and takes the last value; past `seen_from` keys, found by a map)
+      let mut seen : Map[String, Int]? = None
       self.skip()
       if self.peek() == 0x7d {
         self.at += 1
@@ -207,10 +243,30 @@ fn Parser::value(self : Parser) -> JValue raise SyntaxError {
         let key = self.string()
         self.skip()
         self.expect(":")
-        let v = self.value()
-        match entries.search_by(e => e.0 == key) {
-          Some(i) => entries[i] = (key, v)
-          None => entries.push((key, v))
+        let v = self.value(depth + 1)
+        match seen {
+          Some(m) =>
+            match m.get(key) {
+              Some(i) => entries[i] = (key, v)
+              None => {
+                m.set(key, entries.length())
+                entries.push((key, v))
+              }
+            }
+          None =>
+            match entries.search_by(e => e.0 == key) {
+              Some(i) => entries[i] = (key, v)
+              None => {
+                entries.push((key, v))
+                if entries.length() >= seen_from {
+                  let m : Map[String, Int] = Map::new(capacity=entries.length() * 2)
+                  for i, e in entries {
+                    m.set(e.0, i)
+                  }
+                  seen = Some(m)
+                }
+              }
+            }
         }
         self.skip()
         if self.peek() == 0x2c {
@@ -231,7 +287,7 @@ fn Parser::value(self : Parser) -> JValue raise SyntaxError {
         return Arr(items)
       }
       while true {
-        items.push(self.value())
+        items.push(self.value(depth + 1))
         self.skip()
         if self.peek() == 0x2c {
           self.at += 1
@@ -263,7 +319,7 @@ fn Parser::value(self : Parser) -> JValue raise SyntaxError {
 /// `text` as JSON.parse reads it.
 pub fn parse(text : String) -> JValue raise SyntaxError {
   let p = { text, at: 0 }
-  let v = p.value()
+  let v = p.value(0)
   p.skip()
   if p.at != text.length() {
     raise p.fail()
@@ -275,9 +331,8 @@ pub fn parse(text : String) -> JValue raise SyntaxError {
 /// A property of an object (as `value.name`), if the value is one.
 pub fn JValue::get(self : JValue, name : String) -> JValue? {
   guard self is Obj(entries) else { return None }
-  let key = units(name)
   for e in entries {
-    if e.0 == key {
+    if e.0 == name {
       return Some(e.1)
     }
   }
@@ -285,8 +340,62 @@ pub fn JValue::get(self : JValue, name : String) -> JValue? {
 }
 
 ///|
+/// Whether every UTF-16 surrogate in `s` is paired (`String.prototype.isWellFormed`).
+pub fn is_well_formed(s : String) -> Bool {
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let c = s.unsafe_charcode_at(i)
+    if c >= 0xd800 && c <= 0xdbff {
+      if i + 1 < n {
+        let d = s.unsafe_charcode_at(i + 1)
+        if d >= 0xdc00 && d <= 0xdfff {
+          i += 2
+          continue
+        }
+      }
+      return false
+    } else if c >= 0xdc00 && c <= 0xdfff {
+      return false
+    }
+    i += 1
+  }
+  true
+}
+
+///|
+/// Well-formed UTF-16 string: lone surrogates replaced with U+FFFD, valid surrogate pairs kept.
+/// Zero-allocation fast path when no lone surrogate is present.
+pub fn sanitize_str(s : String) -> String {
+  if is_well_formed(s) {
+    return s
+  }
+  let n = s.length()
+  let out = StringBuilder::new(size_hint=n)
+  let mut i = 0
+  while i < n {
+    let c = s.unsafe_charcode_at(i)
+    i += 1
+    if c >= 0xd800 && c <= 0xdbff && i < n {
+      let d = s.unsafe_charcode_at(i)
+      if d >= 0xdc00 && d <= 0xdfff {
+        out.write_char((0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00)).unsafe_to_char())
+        i += 1
+        continue
+      }
+    }
+    if c >= 0xd800 && c <= 0xdfff {
+      out.write_char('\u{fffd}')
+    } else {
+      out.write_char(c.unsafe_to_char())
+    }
+  }
+  out.to_string()
+}
+
+///|
 pub fn units(s : String) -> Array[Int] {
-  let out = []
+  let out = Array::new(capacity=s.length())
   for i in 0..<s.length() {
     out.push(s.unsafe_charcode_at(i))
   }
@@ -296,7 +405,7 @@ pub fn units(s : String) -> Array[Int] {
 ///|
 /// Code units as UTF-16LE bytes (Buffer.from(s, "utf16le")).
 pub fn utf16le(s : Array[Int]) -> Array[Int] {
-  let out = []
+  let out = Array::new(capacity=s.length() * 2)
   for c in s {
     out.push(c & 0xff)
     out.push((c >> 8) & 0xff)
@@ -326,16 +435,18 @@ pub fn text(s : Array[Int]) -> String {
 }
 
 ///|
-/// An array index's number (a canonical integer below 2^32 - 1), which JavaScript orders before other keys.
-fn index_of(key : Array[Int]) -> Double? {
-  if key.length() == 0 || key.length() > 10 {
+/// A canonical array index (`0`, `12`, not `012`), below 2^32 - 1: what JavaScript puts first in an object, ascending.
+pub fn index_key(key : String) -> Double? {
+  let n = key.length()
+  if n == 0 || n > 10 {
     return None
   }
-  if key.length() > 1 && key[0] == 0x30 {
+  if n > 1 && key.unsafe_charcode_at(0) == 0x30 {
     return None
   }
   let mut v = 0.0
-  for c in key {
+  for i in 0..<n {
+    let c = key.unsafe_charcode_at(i)
     if c < 0x30 || c > 0x39 {
       return None
     }
@@ -345,7 +456,7 @@ fn index_of(key : Array[Int]) -> Double? {
 }
 
 ///|
-fn quote(out : StringBuilder, s : Array[Int]) -> Unit {
+fn quote(out : StringBuilder, s : String) -> Unit {
   let hexd = "0123456789abcdef"
   let escape4 = (c : Int) => {
     out.write_string("\\u")
@@ -357,7 +468,7 @@ fn quote(out : StringBuilder, s : Array[Int]) -> Unit {
   let n = s.length()
   let mut i = 0
   while i < n {
-    let c = s[i]
+    let c = s.unsafe_charcode_at(i)
     i += 1
     match c {
       0x22 => out.write_string("\\\"")
@@ -370,8 +481,8 @@ fn quote(out : StringBuilder, s : Array[Int]) -> Unit {
       _ =>
         if c < 0x20 {
           escape4(c)
-        } else if c >= 0xd800 && c <= 0xdbff && i < n && s[i] >= 0xdc00 && s[i] <= 0xdfff {
-          out.write_char((0x10000 + ((c - 0xd800) << 10) + (s[i] - 0xdc00)).unsafe_to_char())
+        } else if c >= 0xd800 && c <= 0xdbff && i < n && s.unsafe_charcode_at(i) >= 0xdc00 && s.unsafe_charcode_at(i) <= 0xdfff {
+          out.write_char((0x10000 + ((c - 0xd800) << 10) + (s.unsafe_charcode_at(i) - 0xdc00)).unsafe_to_char())
           i += 1
         } else if c >= 0xd800 && c <= 0xdfff {
           escape4(c)
@@ -401,11 +512,8 @@ fn write(out : StringBuilder, v : JValue) -> Unit {
       out.write_char(']')
     }
     Obj(entries) => {
-      let indexed = entries.filter(e => index_of(e.0) is Some(_))
-      indexed.sort_by((a, b) => index_of(a.0).unwrap().compare(index_of(b.0).unwrap()))
-      let ordered = indexed + entries.filter(e => index_of(e.0) is None)
       out.write_char('{')
-      for i, e in ordered {
+      for i, e in ordered(entries) {
         if i > 0 {
           out.write_char(',')
         }
@@ -454,7 +562,7 @@ fn ascii(out : @buffer.Buffer, s : String) -> Unit {
 }
 
 ///|
-fn quote_utf8(out : @buffer.Buffer, s : Array[Int]) -> Unit {
+fn quote_utf8(out : @buffer.Buffer, s : String) -> Unit {
   let hexd = "0123456789abcdef"
   let escape4 = (c : Int) => {
     ascii(out, "\\u")
@@ -466,7 +574,7 @@ fn quote_utf8(out : @buffer.Buffer, s : Array[Int]) -> Unit {
   let n = s.length()
   let mut i = 0
   while i < n {
-    let c = s[i]
+    let c = s.unsafe_charcode_at(i)
     i += 1
     match c {
       0x22 => ascii(out, "\\\"")
@@ -481,8 +589,8 @@ fn quote_utf8(out : @buffer.Buffer, s : Array[Int]) -> Unit {
       _ =>
         if c < 0x20 {
           escape4(c)
-        } else if c >= 0xd800 && c <= 0xdbff && i < n && s[i] >= 0xdc00 && s[i] <= 0xdfff {
-          utf8_point(out, 0x10000 + ((c - 0xd800) << 10) + (s[i] - 0xdc00))
+        } else if c >= 0xd800 && c <= 0xdbff && i < n && s.unsafe_charcode_at(i) >= 0xdc00 && s.unsafe_charcode_at(i) <= 0xdfff {
+          utf8_point(out, 0x10000 + ((c - 0xd800) << 10) + (s.unsafe_charcode_at(i) - 0xdc00))
           i += 1
         } else if c >= 0xd800 && c <= 0xdfff {
           escape4(c)
@@ -530,7 +638,7 @@ pub fn write_utf8(out : @buffer.Buffer, v : JValue) -> Unit {
 
 ///|
 /// An object's keys as `Object.keys` gives them (integer-like ones first, ascending); none for what is not an object.
-pub fn JValue::keys(self : JValue) -> Array[Array[Int]] {
+pub fn JValue::keys(self : JValue) -> Array[String] {
   match self {
     Obj(entries) => ordered(entries).map(e => e.0)
     _ => []
@@ -538,10 +646,20 @@ pub fn JValue::keys(self : JValue) -> Array[Array[Int]] {
 }
 
 ///|
-fn ordered(entries : Array[(Array[Int], JValue)]) -> Array[(Array[Int], JValue)] {
-  let indexed = entries.filter(e => index_of(e.0) is Some(_))
-  indexed.sort_by((a, b) => index_of(a.0).unwrap().compare(index_of(b.0).unwrap()))
-  indexed + entries.filter(e => index_of(e.0) is None)
+fn ordered(entries : Array[(String, JValue)]) -> Array[(String, JValue)] {
+  let mut has_index = false
+  for e in entries {
+    if index_key(e.0) is Some(_) {
+      has_index = true
+      break
+    }
+  }
+  if !has_index {
+    return entries
+  }
+  let indexed = entries.filter(e => index_key(e.0) is Some(_))
+  indexed.sort_by((a, b) => index_key(a.0).unwrap().compare(index_key(b.0).unwrap()))
+  indexed + entries.filter(e => index_key(e.0) is None)
 }
 
 ///|
@@ -610,23 +728,15 @@ pub fn raw_text(s : Array[Int]) -> String {
 ///|
 /// The value as `String(v)` says it: a number as JSON.stringify writes it, an array's items joined with commas (null
 /// as nothing), an object as "[object Object]".
-pub fn js_string(v : JValue) -> Array[Int] {
+pub fn js_string(v : JValue) -> String {
   match v {
     Str(s) => s
-    Null => units("null")
-    Arr(items) => {
-      let out = []
-      for i, item in items {
-        if i > 0 {
-          out.push(0x2c)
-        }
-        if !(item is Null) {
-          out.append(js_string(item))
-        }
-      }
-      out
-    }
-    Obj(_) => units("[object Object]")
-    v => units(stringify(v))
+    Null => "null"
+    Arr(items) =>
+      items
+      .map(item => if item is Null { "" } else { js_string(item) })
+      .join(",")
+    Obj(_) => "[object Object]"
+    v => stringify(v)
   }
 }

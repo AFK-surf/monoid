@@ -36,11 +36,11 @@ fn bar_rested(t : @ui.Tester) -> Unit {
 }
 
 ///|
-/// Frames on to where sheet `key` said it is at rest (its springs and its scrim's fade: @kit.sheet_rest).
+/// Frames on to where sheet `key` said it is at rest (its springs and its scrim's fade: presented_rest).
 fn sheet_rested(t : @ui.Tester, key : String) -> Unit {
   t.draw()
   // (the presenters' own, whichever kind draws it: presented_rest)
-  let e = if key == "sf-present" { @sf.presented_rest() } else { @kit.sheet_rest(key) }
+  let e = if key == "sf-present" { @sf.presented_rest() } else { -1.0 }
   if e > t.time() && e < 1.0e300 {
     t.run_for(e - t.time())
   }
@@ -170,12 +170,12 @@ test "a text read: where it was left, a tap brings its bars, the contents go to 
   assert_true(t.find("上一章") is Some(_))
   assert_true(t.find("目录") is Some(_))
   t.tap_text("目录")
-  sheet_rested(t, "dv-reader-sheet")
+  t.draw()
   // The same title can already be in the text behind the contents sheet; tap the sheet on top.
   guard t.find_last("第四章 回程") is Some((x, y)) else { fail("chapter not in contents") }
   t.tap(x, y)
   // the panel sunk away, the jump made, where it is kept once it is still
-  sheet_rested(t, "dv-reader-sheet")
+  t.draw()
   t.run_for(@sf.reader_still_ms)
   assert_true(t.find("第四章 回程") is Some(_))
   // left: where it was, kept on this device

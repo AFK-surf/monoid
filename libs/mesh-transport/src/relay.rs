@@ -45,7 +45,7 @@ impl Forwarder {
         if control.id()!=key.public() {return Err("relay control identity mismatch".into());}
         Self::bind(key,scope,issuer,generation).await
     }
-    pub fn descriptor(&self) -> Descriptor { Descriptor { binding: self.binding.clone(), address: self.endpoint.addr() } }
+    pub fn descriptor(&self) -> Descriptor { Descriptor { binding: self.binding.clone(), address: crate::announcement::bounded_address(self.endpoint.addr()) } }
     pub fn endpoint(&self) -> Endpoint { self.endpoint.clone() }
     pub async fn linked_nodes(&self) -> Vec<crate::routing::Node> { self.state.lock().await.runtime.linked_nodes().await }
     /// Use this only for snapshots from the authenticated issuer stream or the

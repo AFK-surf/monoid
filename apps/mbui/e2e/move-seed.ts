@@ -1,6 +1,6 @@
-// The move drill's chats of a real station's size (e2e/move.ts, part 5), put into a stopped station's database by the
-// station's own store (station/src/store/store.ts: insertSession, openThread, joinThread, insertMessage, as its hub
-// makes a chat), each with a room of its own: a live one's a small file in its working directory, an archived one's
+// The move drill's chats of a real station's size (e2e/move.ts, part 5), put into a stopped station's database by
+// e2e/move-db.ts (insertSession, openThread, joinThread, insertMessage, matching how the station's hub makes a chat),
+// each with a room of its own: a live one's a small file in its working directory, an archived one's
 // its packed workspace (`workspace.tar.zst` in its room, a tar compressed with zstd, as sessions/archive.ts keeps it)
 // and no working directory. What is not made: transcripts, turns, usage (a chat of these has never had its agent run).
 //   node e2e/move-seed.ts <the station's checkout> <data> <home workspace> <live> <archived> <tag>
@@ -8,12 +8,11 @@ import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { zstdCompressSync } from "node:zlib";
+import { openMoveDb } from "./move-db.ts";
 
-const [src, data, ws, live, archived, tag] = process.argv.slice(2);
-const { Store } = await import(pathToFileURL(join(src!, "station/src/store/store.ts")).href);
-const store = Store.open(join(data!, "stillfail.db"));
+const [_src, data, ws, live, archived, tag] = process.argv.slice(2);
+const store = openMoveDb(join(data!, "stillfail.db"));
 const scratch = join(data!, `.seed-${tag}`);
 mkdirSync(scratch, { recursive: true });
 writeFileSync(join(scratch, "notes.txt"), "an archived chat's file\n");

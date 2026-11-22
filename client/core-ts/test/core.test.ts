@@ -772,6 +772,11 @@ test("a_screen_s_picture_size_is_kept_on_the_device", async () => {
   await host.settle();
   apply(host, values);
   assert.equal(v(values, 1).screenQuality, "original");
+  // 超清 (2K) is one of them
+  call(core, ui, 65, "prefs.set", { screenQuality: "qhd" });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).screenQuality, "qhd");
   // only the sizes there are; none again is as the window is
   call(core, ui, 3, "prefs.set", { screenQuality: "8k" });
   await host.settle();

@@ -75,6 +75,28 @@ END;
 CREATE TRIGGER IF NOT EXISTS vault_use_ambiguous_drop_v2 AFTER DELETE ON vault_requests BEGIN
   DELETE FROM vault_use_ambiguous_v2 WHERE ws = OLD.ws AND id = OLD.id;
 END;
+CREATE TABLE IF NOT EXISTS vault_cross_use_lookup (
+  ws TEXT NOT NULL, id TEXT NOT NULL, owner TEXT NOT NULL, at INTEGER,
+  PRIMARY KEY (ws, id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS vault_cross_use_owner ON vault_cross_use_lookup (ws, owner, at DESC, id DESC);
+CREATE TRIGGER IF NOT EXISTS vault_cross_use_add AFTER INSERT ON vault_requests BEGIN
+  DELETE FROM vault_cross_use_lookup WHERE ws = NEW.ws AND id = NEW.id;
+  INSERT OR REPLACE INTO vault_cross_use_lookup
+    SELECT NEW.ws, NEW.id, json_extract(NEW.body, '$.owner'), json_extract(NEW.body, '$.at')
+    WHERE NEW.status IN ('granted', 'denied') AND json_valid(NEW.body) AND json_type(NEW.body, '$.cross') = 'object' AND json_type(NEW.body, '$.owner') = 'text';
+END;
+CREATE TRIGGER IF NOT EXISTS vault_cross_use_change AFTER UPDATE ON vault_requests
+  WHEN OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR OLD.status IS NOT NEW.status OR OLD.body IS NOT NEW.body BEGIN
+  DELETE FROM vault_cross_use_lookup WHERE ws = OLD.ws AND id = OLD.id;
+  DELETE FROM vault_cross_use_lookup WHERE ws = NEW.ws AND id = NEW.id;
+  INSERT OR REPLACE INTO vault_cross_use_lookup
+    SELECT NEW.ws, NEW.id, json_extract(NEW.body, '$.owner'), json_extract(NEW.body, '$.at')
+    WHERE NEW.status IN ('granted', 'denied') AND json_valid(NEW.body) AND json_type(NEW.body, '$.cross') = 'object' AND json_type(NEW.body, '$.owner') = 'text';
+END;
+CREATE TRIGGER IF NOT EXISTS vault_cross_use_drop AFTER DELETE ON vault_requests BEGIN
+  DELETE FROM vault_cross_use_lookup WHERE ws = OLD.ws AND id = OLD.id;
+END;
 INSERT OR IGNORE INTO vault_use_backfill_all (id, after_ws, done) VALUES (1, NULL, 0);
 `;
 
@@ -85,6 +107,9 @@ export const VAULT_USES = `SELECT r.body FROM vault_use_lookup u INDEXED BY vaul
 export const PLAIN_USES = `SELECT r.body FROM vault_use_lookup u INDEXED BY vault_use_lookup_owner
   JOIN vault_requests r ON r.ws = u.ws AND r.id = u.id
   WHERE u.ws = ?1 AND u.vault = ?2 AND u.owner = ?3 ORDER BY u.at DESC, u.id DESC LIMIT ?4`;
+export const CROSS_USES = `SELECT r.body FROM vault_cross_use_lookup u INDEXED BY vault_cross_use_owner
+  JOIN vault_requests r ON r.ws = u.ws AND r.id = u.id
+  WHERE u.ws = ?1 AND u.owner = ?2 ORDER BY u.at DESC, u.id DESC LIMIT ?3`;
 // Merge each indexed page in SQLite so the limit and tie order apply across normal and corrected requests.
 export const VAULT_USES_AMBIGUOUS = `SELECT r.body AS body, u.at AS at, u.id AS id FROM vault_use_lookup u INDEXED BY vault_use_lookup_vault
     JOIN vault_requests r ON r.ws = u.ws AND r.id = u.id

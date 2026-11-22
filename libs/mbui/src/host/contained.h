@@ -7,7 +7,7 @@ typedef struct {
 static int mb_contained_make(MBContained *c, const float *a, float x, float y, float dx, float dy) {
   int rounded = a[4] > 0;
   for (int i = 0; i < 4; i++) rounded |= a[24 + i] > 0 || a[44 + i] > 0;
-  if (a[7] >= 0 || !rounded) return 0;
+  if ((int)(a[5] + 0.5f) != 5 || a[7] >= 0 || !rounded) return 0;
   c->map[0] = x; c->map[1] = y; c->map[2] = dx; c->map[3] = dy;
   c->box[0] = a[0]; c->box[1] = a[1]; c->box[2] = a[0] + a[2]; c->box[3] = a[1] + a[3];
   for (int i = 0; i < 4; i++) {

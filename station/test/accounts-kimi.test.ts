@@ -115,7 +115,7 @@ test("a profile signed in to Kimi runs Claude Code on a token renewed in its hom
     const made = await upon((wake) => accounts.onChange(wake), () => accounts.loginsView().find((l) => l.id === login)?.created, "profile");
     assert.equal(made, "kimi-code");
     // No token in config.json: it is in the profile's home.
-    assert.deepEqual(raw(made), { id: made, name: "Kimi Code", access: { kind: "api-provider", provider: "kimi-code", login: true }, home: "homes/kimi-code", env: {} });
+    assert.deepEqual(raw(made), { id: made, name: "Kimi Code", access: { kind: "api-provider", provider: "kimi-code", login: true }, home: "homes/kimi-code", env: {}, maxConcurrentSessions: 8, newAccountProtection: true });
     const profile = accounts.profiles().find((p) => p.id === made)!;
     assert.deepEqual(profileRuntimes(profile), ["claude"]);
     assert.deepEqual([view(made)!.access.login, view(made)!.loginCommand], [true, ""]);

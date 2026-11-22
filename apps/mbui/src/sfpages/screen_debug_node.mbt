@@ -82,7 +82,7 @@ fn debug_logs_copy_node(k : @view.View, d : DebugLogs) -> Unit {
     k,
     fn() { @sf.t(if copied() { "web-pages.screen.stat.copied" } else { "web-pages.screen.debug.logsCopy" }) },
     fn() {
-      @ui.clipboard_set(d.copied_text(), label="still.fail")
+      @ui.clipboard_set(d.copied_text(), label=@sf.product())
       copied_now()
     },
     tone=Quiet,
@@ -182,10 +182,10 @@ fn debug_device_node(t : @view.View, s : ScreenSess, u : ScreenUi, beside~ : Boo
   @sf.panel_group_node(t, fn() { "" }, fn(g) {
     if !beside {
       @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.volumeUp") }, fn() { debug_device_input(s, "volume_up") }, icon=fn() {
-        "volume"
+        "volume-up"
       })
       @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.volumeDown") }, fn() { debug_device_input(s, "volume_down") }, icon=fn() {
-        "volume-x"
+        "volume-down"
       })
     }
     @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.memoryWarning") }, fn() {

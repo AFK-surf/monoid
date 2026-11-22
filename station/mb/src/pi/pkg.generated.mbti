@@ -6,16 +6,16 @@ import {
 }
 
 // Values
-pub fn classify_failure(Array[Int32]) -> String
+pub fn classify_failure(String) -> String
 
-pub fn outcome_of(Bool, Array[Int32]?) -> @jsjson.JValue
+pub fn outcome_of(Bool, String?) -> @jsjson.JValue
 
 // Errors
 
 // Types and methods
 pub(all) struct Live {
-  open : Array[(Array[Int32], String)]
-  calls : Array[(Array[Int32], Array[Int32])]
+  open : Array[(String, String)]
+  calls : Array[(String, String)]
   mut message : Int32
   mut phase : String?
 }
@@ -40,7 +40,7 @@ pub(all) struct Said {
 pub(all) struct Session {
   turn : Turn
   live : Live
-  calls : Array[Array[Int32]]
+  calls : Array[String]
 }
 pub fn Session::cut_short(Self) -> Array[@jsjson.JValue]
 pub fn Session::line(Self, @jsjson.JValue) -> Said
@@ -51,7 +51,7 @@ pub(all) struct Turn {
   mut busy : Bool
   mut prompted : Bool
   mut aborting : Bool
-  mut error : Array[Int32]?
+  mut error : String?
 }
 pub fn Turn::json(Self) -> @jsjson.JValue
 pub fn Turn::new() -> Self

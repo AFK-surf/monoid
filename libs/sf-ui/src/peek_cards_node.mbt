@@ -73,6 +73,9 @@ pub fn peek_page_tile_node(
     |> ignore
   }
   parent.pick(fn() { picture() != "" }, fn(b, pictured) {
+    // (in a hover card's room: its words the panel's padding and theirs in from the card's edges, what reaches out to its
+    // corners concentric with it)
+    corner_card_node(b, fn() { r_menu }, inset=fn() { panel_pad + peek_words_in })
     if pictured {
       // (its picture over it, 16:9, in the card's top corners as the thumb is in its corner without one)
       style_node(b, fn() { peek_with_picture })
@@ -80,7 +83,9 @@ pub fn peek_page_tile_node(
         style_node(i, fn() { peek_picture })
         i
         .aspect(Is(peek_picture_aspect))
-        .radius(Is(peek_picture_r))
+        |> ignore
+        concentric_radius_node(i, fn() { peek_picture_r }, extra_inset=fn() { peek_thumb_out })
+        i
         .ground(By(fn() { theme().p.hover }))
         .image(By(fn() { Some((picture(), "", peek_image_most)) }))
         .image_covers(Is(true))
@@ -133,7 +138,7 @@ pub fn peek_change_node(
         words_node(r, where_, fn() { peek_meta_words }) |> ignore
       })
       |> ignore
-      meta.show(fn() { ago() != "" }, fn(a) { words_node(a, ago, fn() { peek_meta_words }) |> ignore })
+      meta.show(fn() { ago() != "" }, fn(a) { peek_ago_node(a, ago) })
     })
     |> ignore
     // (its title as wide as it is, cut to its lines where it has not the room, as an old view's words in a column are:
@@ -424,7 +429,7 @@ pub fn peek_file_head_node(
         words_node(r, fn() { if dir() { name() + "/" } else { name() } }, fn() { peek_title }) |> ignore
       })
       |> ignore
-      t.show(fn() { ago() != "" }, fn(a) { words_node(a, ago, fn() { peek_meta_words }) |> ignore })
+      t.show(fn() { ago() != "" }, fn(a) { peek_ago_node(a, ago) })
     })
     |> ignore
     peek_mono_node(h, fn() { [@ui.span(path(), mono=true)] }, peek_file_path, loc~)
@@ -619,7 +624,7 @@ pub fn peek_chat_head_node(
       words_node(r, title, fn() { peek_title }) |> ignore
     })
     |> ignore
-    t.show(fn() { ago() != "" }, fn(a) { words_node(a, ago, fn() { peek_meta_words }) |> ignore })
+    t.show(fn() { ago() != "" }, fn(a) { peek_ago_node(a, ago) })
   })
   |> ignore
 }
@@ -860,6 +865,20 @@ let peek_capsule_in : Double = @ui.capsule_in(r_menu, peek_capsule_h) - panel_pa
 ///|
 /// A capsule's height: a state's, a fact's, a face.
 let peek_capsule_h : Double = 20.0
+
+///|
+/// How long ago, at a head's end, in `a` (what a head's `show` made for it): kept whole where what is before it gives
+/// way (peek_ref, from nothing), cut short itself only where it alone is longer than the line.
+#callsite(autofill(loc))
+fn peek_ago_node(a : @view.View, ago : () -> String, loc~ : SourceLoc) -> Unit {
+  style_node(a, fn() { peek_ago_cut }, in_row=true, loc~)
+  words_node(a, ago, fn() { peek_meta_words }, loc~) |> ignore
+}
+
+///|
+/// What holds how long ago at a head's end: cut short along its row where the line has not the room.
+// kept across runs: a value (no field of it changes)
+let peek_ago_cut : @ui.Style = @ui.css("row w=Cut")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -1,6 +1,6 @@
 // A panel whose body and foot are nodes (panel_nodes) as a sheet from the foot of the window (小屏's: @kit.sheet's, the
 // host's present_sheet), as nodes of the window's tree: a modal layer over the window, what is under it dimmed by the
-// sheet's scrim (black at 28%, in and out over @kit.sheet_scrim_ms, CSS's ease), the sheet in the window's foot as
+// sheet's scrim (black at 28%, in and out over @motion.sheet_scrim_ms, CSS's ease), the sheet in the window's foot as
 // tall as what it holds (sheet_most of the window at most, what it holds scrolling in it past that; one a share of the
 // window tall, `tall`, that share, what it holds filling the room it leaves and laid out in it), its top corners
 // the pane's, on the frosted glass of a sheet; its grabber over its title (none where what it holds heads itself,
@@ -19,6 +19,10 @@ let sheet_drag_close : Double = 80.0
 ///|
 /// How tall a sheet's top stands, that drags it (@kit.sheet's `drag_h`: the grabber and the head).
 let sheet_drag_h : Double = 64.0
+
+///|
+/// How far in from the window's sides (and foot, where the system bar is shorter) a floating sheet's island stands.
+let sheet_float_inset : Double = window_in
 
 ///|
 /// A page of a sheet (sheet_node's `pages`): its number in its sheet (the first, the sheet's own, 0), its panel (what it
@@ -187,7 +191,7 @@ fn sheet_node(
         }
         if in_ime { 0.0 } else { kb }
       }
-      let win_h = fn() { layer.window().1 + ime_under() }
+      let win_h = fn() { layer.window_h() + ime_under() }
       let body_win_h = fn() {
         let wh = win_h()
         if live() {
@@ -206,6 +210,29 @@ fn sheet_node(
       // worked out by for @kit.sheet_rest, as moved_by works them out; and as tall as it was seen then, on its way from
       // as tall as it stood: where its height sets out from as it comes to another of its own)
       let drawn : Ref[(Double, Double, Double)] = Ref((0.0, 0.0, 0.0))
+      // (while a finger drags the sheet down or it springs back, dim the scrim with its drag progress; once leaving,
+      // `dim` fades out from the release alpha)
+      let drag_dim_factor = fn() -> Double {
+        if layer.leaving() {
+          1.0
+        } else if @signals.untracked(fn() { top().x.grows }) {
+          match tall_held.get() {
+            Some(h) => {
+              let lo = sheet_grows_to[0] * win_h()
+              if lo > 0.0 { dclamp(h / lo, 0.0, 1.0) } else { 1.0 }
+            }
+            None => 1.0
+          }
+        } else {
+          let down = match held.get() {
+            Some(y) => y
+            None => back.shown(layer)
+          }
+          let own = dmax(drawn.val.1, sheet_drag_close)
+          dclamp(1.0 - down / own, 0.0, 1.0)
+        }
+      }
+      let live_dim = fn() -> Double { dim.shown(layer) * drag_dim_factor() }
       // (its foot drawn back by how far it is drawn off its place on its way from as tall as it stood (as tall as it was
       // last drawn): staying at the window's foot as its top goes, as the host's sheet's foot does)
       // (how far its foot was drawn back as it closed on its way from as tall as it stood: carried's; none else)
@@ -363,7 +390,7 @@ fn sheet_node(
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
           gate.stop()
-          dim.go_ms(layer, 0.0, @kit.sheet_scrim_ms, ease=Out)
+          dim.go_ms(layer, 0.0, @motion.sheet_scrim_ms, ease=Out)
           // (closed on its way from as tall as it stood: it sinks away from where it is seen then, as fast as it went)
           let carried_off = carried()
           let inset = if had_ime.val { @signals.untracked(fn() { layer.keyboard_inset() }) } else { 0.0 }
@@ -374,7 +401,7 @@ fn sheet_node(
           let rise = fn() {
             // (how tall it rises, for a sheet under it to step back out of its way: covered_by's there)
             rises(own_now())
-            dim.go_ms(layer, 1.0, @kit.sheet_scrim_ms, ease=Out)
+            dim.go_ms(layer, 1.0, @motion.sheet_scrim_ms, ease=Out)
             below.go(sheet_box, layer, 0.0, reach.untracked(), late=false)
           }
           if in_place is Some(_) {
@@ -416,10 +443,24 @@ fn sheet_node(
         }
       }
       // (each page's slide: where it is off to the sheet's side, in the sheet's widths (0 in place, -1 off to its
-      // start, 1 off to its end), from where, to where, from when and how long, said as a page is put on or taken off)
-      let ways : Map[Int, @signals.Signal[(Double, Double, Double, Double)]] = Map([])
-      let way_at = fn(w : (Double, Double, Double, Double), t : Double) {
-        w.1 + @ui.move_path(w.0 - w.1, 0.0, t - w.2, w.3).0
+      // start, 1 off to its end), from where, to where, from when, how long and initial velocity (sheet-widths/ms),
+      // said as a page is put on or taken off)
+      let ways : Map[Int, @signals.Signal[(Double, Double, Double, Double, Double)]] = Map([])
+      let way_state_at = fn(w : (Double, Double, Double, Double, Double), t : Double) -> (Double, Double) {
+        if w.3 <= 0.0 {
+          (w.1, 0.0)
+        } else if w.4 * (w.1 - w.0) < 0.0 {
+          // (turned back mid-slide: slow at one rate first and return, as placed_path does, avoiding a sharp brake)
+          let sw = dmax(@signals.untracked(fn() { layer.window_w() }), 1.0)
+          let (px, pv) = @ui.come_way_by(w.0 * sw, w.4 * sw, w.1 * sw, w.1 * sw, t - w.2)
+          (px / sw, pv / sw)
+        } else {
+          let (dx, dv) = @ui.move_path(w.0 - w.1, w.4, t - w.2, w.3)
+          (w.1 + dx, dv)
+        }
+      }
+      let way_at = fn(w : (Double, Double, Double, Double, Double), t : Double) {
+        way_state_at(w, t).0
       }
       // (each page off to a side once its slide there is over: laid out nowhere then, drawn and read out not at all,
       // kept as it was left; told at that moment, and taken back at the cause of its way back)
@@ -429,7 +470,7 @@ fn sheet_node(
       let page_views : Map[Int, @view.View] = Map([])
       let page_stood : Map[Int, @signals.Signal[Double?]] = Map([])
       let dues : Map[Int, () -> Unit] = Map([])
-      let away_after = fn(n : Int, w : (Double, Double, Double, Double)) {
+      let away_after = fn(n : Int, w : (Double, Double, Double, Double, Double)) {
         match dues.get(n) {
           Some(d) => d()
           None => ()
@@ -441,6 +482,14 @@ fn sheet_node(
           dues[n] = layer.at_moment(w.2 + w.3, fn() { a.set(true) })
         }
       }
+      let sheet_target_float_t = fn(pg : SheetPage) -> Double {
+        if capped_of(pg.x) && !hugs_of(pg) {
+          dclamp((0.80 - pg.x.tall) / 0.14, 0.0, 1.0)
+        } else {
+          1.0
+        }
+      }
+      let float_way = @motion.NodeWay::new(@signals.untracked(fn() { sheet_target_float_t(top()) }))
       let made_with : Ref[Bool] = Ref(true)
       let shown_was : Ref[Array[Int]] = Ref(@signals.untracked(fn() { pages().map(fn(pg) { pg.n }) }))
       layer.reacts(at_start=false, fn() { pages().map(fn(pg) { pg.n }) }, fn(ids) {
@@ -448,7 +497,8 @@ fn sheet_node(
         shown_was.val = ids
         guard ids.length() > 0 && was.length() > 0 && ids[ids.length() - 1] != was[was.length() - 1] else { return }
         let at = layer.cause_at()
-        let dur = @ui.move_ms(layer.window().0)
+        let dur = @ui.move_ms(layer.window_w())
+        float_way.go_ms(layer, sheet_target_float_t(top()), dur)
         // (as tall as it stood as its page was put on or taken off (`stood`, said where that was done, before
         // anything of it is laid out anew): where the page that shows from now sets out from)
         let stood = stood()
@@ -476,7 +526,15 @@ fn sheet_node(
         let go = fn(n : Int, to : Double) {
           match ways.get(n) {
             Some(w) => {
-              w.set((way_at(w.untracked(), at), to, at, dur))
+              let (pos, vel) = way_state_at(w.untracked(), at)
+              let v0 = dclamp(vel, -0.02, 0.02)
+              let sw = dmax(layer.window_w(), 1.0)
+              let way_dur = if v0 * (to - pos) < 0.0 {
+                @ui.come_way_ms(pos * sw, v0 * sw, to * sw)
+              } else {
+                dur
+              }
+              w.set((pos, to, at, way_dur, v0))
               away_after(n, w.untracked())
             }
             None => ()
@@ -491,7 +549,7 @@ fn sheet_node(
               go(n, 1.0)
             } else {
               match ways.get(n) {
-                Some(w) => w.set((1.0, 1.0, at, 0.0))
+                Some(w) => w.set((1.0, 1.0, at, 0.0, 0.0))
                 None => ()
               }
             }
@@ -517,7 +575,7 @@ fn sheet_node(
           Some((stood, at, least, v)) => placed_path(own, stood, v, t - at, least).0
           None => 0.0
         }
-        Some((layer.window().1 - own + below.shown(own, t) + off, own))
+        Some((layer.window_h() - own + below.shown(own, t) + off, own))
       }
       tree_sheet_place.val = Some(place)
       layer.owns(fn() {
@@ -532,11 +590,11 @@ fn sheet_node(
       // the sheet)
       .scrim_under()
       .margin(By(fn() { (0.0, 0.0, 0.0, -ime_under()) }))
-      // (modal while open: closing, what is under it its own again as it begins to go)
+      // (modal while open: closing, what is under it its own again as it begins to go;
+      // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
       .modal(By(live))
-      .hides(By(fn() { layer.leaving() }))
       .held_back_goes_on()
-      .ground(By(fn() { @ui.alpha(sheet_scrim, if vanished() || !dims() { 0.0 } else { dim.shown(layer) }) }))
+      .ground(By(fn() { @ui.alpha(sheet_scrim, if vanished() || !dims() { 0.0 } else { live_dim() }) }))
       // (a press on what is above it its own, nothing under it pressed: closing it as it goes down)
       .presses(Is(true))
       .on_drag(fn(d) {
@@ -590,7 +648,7 @@ fn sheet_node(
           // it holds up to its share (`hugs`), no taller than that share)
           let pg = top()
           let under = reach.get()
-          let wh = win_h()
+          let wh = body_win_h()
           let most = wh * (if pg.x.grows { 1.0 } else { sheet_most }) + under
           Some(if capped_of(pg.x) && hugs_of(pg) { dmin(most, pg.x.tall * wh + under) } else { most })
         }))
@@ -662,7 +720,7 @@ fn sheet_node(
             let v = way.untracked()
             e = dmax(e, v.2 + v.3)
           }
-          for x in [dim, back, tall, recede] {
+          for x in [dim, back, tall, recede, float_way] {
             e = dmax(e, x.end())
           }
           // (what it holds making its way in or out, growing or shrinking it: each way's end as it was said)
@@ -673,14 +731,70 @@ fn sheet_node(
         // drawn from as tall as it stood, moved_by: what it draws only moves with it, never another height a frame
         // later); stepped back under a sheet over it, as tall as it is, its foot over that one's (another glass in its
         // place at that cause: it comes to no other height under it))
-        let ground = fn(make : (@view.View) -> Unit) {
-          sheet.pick(at_once=true, fn() { covered_by() is Some(_) }, fn(g, covered) {
-            g.over(Is(true)).radius(Is(pane_corner)) |> ignore
-            if !covered {
-              g.height(By(fn() { Some(layer.window().1 * 2.0) })) |> ignore
+        let sheet_float_t = fn(v : @view.View) -> Double {
+          let wh = win_h()
+          match tall_held.get() {
+            Some(h) => dclamp((0.80 - (if wh > 0.0 { h / wh } else { 0.0 })) / 0.14, 0.0, 1.0)
+            None =>
+              if sized.get() {
+                dclamp((0.80 - (if wh > 0.0 { tall.shown(v) / wh } else { 0.0 })) / 0.14, 0.0, 1.0)
+              } else {
+                float_way.shown(v)
+              }
+          }
+        }
+        let sheet_foot_clear = fn(ft : Double) -> Double {
+          if ft <= 0.001 {
+            0.0
+          } else {
+            dmax(sheet_float_inset, @ui.system_bars().bottom) * ft
+          }
+        }
+        let sheet_float_drawn = fn(v : @view.View, h : Double, is_ground : Bool) -> @view.GroundShape {
+          @signals.untracked(fn() {
+            let own = dmax(0.0, h - reach.get())
+            let float_t = sheet_float_t(v)
+            let fb = foot_back(layer.drawn_at(), own)
+            if float_t <= 0.001 {
+              if is_ground {
+                let dh = if @signals.untracked(covered_by) is Some(_) {
+                  -reach.get()
+                } else {
+                  -(reach.get() - sheet_under) + dmax(0.0, -fb)
+                }
+                return { dx: 0.0, dy: 0.0, dw: 0.0, dh, corners: None }
+              } else {
+                return @view.ground_as_laid
+              }
             }
+            let inset = sheet_float_inset * float_t
+            let foot_clear = sheet_foot_clear(float_t)
+            let bottom_r = pane_corner * float_t
+            let extra = if is_ground { dmax(0.0, -fb) * (1.0 - float_t) } else { 0.0 }
+            let dh = if is_ground {
+              -(reach.get() - sheet_under * (1.0 - float_t) + foot_clear) - fb * float_t + extra
+            } else {
+              -(reach.get() * float_t + foot_clear) - fb * float_t
+            }
+            {
+              dx: inset,
+              dy: 0.0,
+              dw: -2.0 * inset,
+              dh,
+              corners: Some((pane_corner, pane_corner, bottom_r, bottom_r)),
+            }
+          })
+        }
+        let ground = fn(make : (@view.View) -> Unit) {
+          sheet.box(fn(g) {
+            g
+            .over(Is(true))
+            .radius(Is(pane_corner))
+            .shown_by(sheet, fn(h) { sheet_float_drawn(g, h, true) })
+            |> ignore
             make(g)
           })
+          |> ignore
         }
         ground(fn(g) {
           g
@@ -689,9 +803,10 @@ fn sheet_node(
               return None
             }
             let t = theme()
-            Some({ ..glass_sheet(), solid: over(over(t.p.bg, alpha(0x000000FFL, 0.28 * dim.shown(layer))), alpha(t.p.card, 0.8)) })
+            Some({ ..glass_sheet(), solid: over(over(t.p.bg, alpha(0x000000FFL, 0.28 * live_dim())), alpha(t.p.card, 0.8)) })
           }))
-          .shadow(Is((sheet_raised.sigma, sheet_raised.dy, sheet_raised.color)))
+          .shadow(By(glass_overlay_shadow))
+          .shadow_outside(Is(true))
           |> ignore
         })
         // its top (sheet_drag_h: the grabber and the head) drags it, a node of its own over its glass and under what it
@@ -738,6 +853,11 @@ fn sheet_node(
                 Down => ()
                 Moved => tall_held.set(Some(now))
                 Up | Off => {
+                  let cur_dim = @signals.untracked(fn() {
+                    let lo = sheet_grows_to[0] * win_h()
+                    let f = if lo > 0.0 { dclamp(now / lo, 0.0, 1.0) } else { 1.0 }
+                    dim.value_at(layer.cause_at()) * f
+                  })
                   tall_held.set(None)
                   let at = if d.kind == Up && dy.abs() < @ui.touch_slop() { from_h.val } else { now }
                   tall.put(at)
@@ -748,12 +868,14 @@ fn sheet_node(
                       let (lo, hi) = (sheet_grows_to[0], sheet_grows_to[1])
                       tall.go(sheet, if at > (lo + hi) / 2.0 * total { lo * total } else { hi * total }, @motion.moved())
                     }
-                  } else if @kit.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below) is None {
+                  } else if @motion.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below) is None {
+                    // (hand the live scrim alpha to `dim` before leaving fades it to 0, avoiding a jump back to 1)
+                    dim.put(cur_dim)
                     // (sinking away from where it is, as fast as it was going down)
                     let_go_speed.val = Some(dmax(0.0, speed))
                     cancel()
                   } else {
-                    let f = @kit.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below).unwrap_or(sheet_grows_to[0])
+                    let f = @motion.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below).unwrap_or(sheet_grows_to[0])
                     // (its height, up: its speed the other way, a second's)
                     tall.go(sheet, f * total, @motion.moved(), velocity=-speed * 1000.0)
                   }
@@ -767,9 +889,15 @@ fn sheet_node(
                 Down => held.set(Some(0.0))
                 Moved => held.set(Some(down))
                 Up | Off => {
+                  let cur_dim = @signals.untracked(fn() {
+                    let own = dmax(drawn.val.1, sheet_drag_close)
+                    dim.value_at(layer.cause_at()) * dclamp(1.0 - down / own, 0.0, 1.0)
+                  })
                   held.set(None)
                   back.put(down)
-                  if d.kind == Up && @kit.sheet_drag_closes(down, speed, sheet_drag_close) {
+                  if d.kind == Up && @motion.sheet_drag_closes(down, speed, sheet_drag_close) {
+                    // (hand the live scrim alpha to `dim` before leaving fades it to 0, avoiding a jump back to 1)
+                    dim.put(cur_dim)
                     // (closed from where it is: it sinks away from there, as fast as it was going down)
                     let_go_speed.val = Some(dmax(0.0, speed))
                     cancel()
@@ -794,8 +922,14 @@ fn sheet_node(
           .grow(Is(1.0))
           .shrink(Is(1.0))
           .min_height(Is(Some(0.0)))
-          .padding(By(fn() { (0.0, 0.0, 0.0, reach.get()) }))
+          .padding(By(fn() {
+            let ft = sheet_float_t(cut)
+            let inset = sheet_float_inset * ft
+            let foot_clear = sheet_foot_clear(ft)
+            (inset, 0.0, inset, reach.get() + foot_clear)
+          }))
           .radius(Is(pane_corner))
+          .shown_by(sheet, fn(h) { sheet_float_drawn(cut, h, false) })
           .clips(Is(true))
           |> ignore
           // (what it holds, as tall as the sheet less its foot's room past the window: what is read out as the sheet, a
@@ -853,18 +987,18 @@ fn sheet_node(
                 }
                   // (made with the sheet: the one that shows in place, those before it off to its start; put on since: in
                   // from the sheet's end, from its cause's moment)
-                  let slide = (layer.cause_at(), @ui.move_ms(layer.window().0))
+                  let slide = (layer.cause_at(), @ui.move_ms(layer.window_w()))
                   let way = @signals.signal(
                     if made_with.val {
                       // (the one that shows: the last of them)
                       let all = @signals.untracked(pages)
                       if all.length() == 0 || all[all.length() - 1].n == k {
-                        (0.0, 0.0, 0.0, 0.0)
+                        (0.0, 0.0, 0.0, 0.0, 0.0)
                       } else {
-                        (-1.0, -1.0, 0.0, 0.0)
+                        (-1.0, -1.0, 0.0, 0.0, 0.0)
                       }
                     } else {
-                      (1.0, 0.0, slide.0, slide.1)
+                      (1.0, 0.0, slide.0, slide.1, 0.0)
                     },
                     same=fn(a, b) { a == b },
                   )
@@ -974,6 +1108,16 @@ fn sheet_node(
                       title_words(at)
                     })
                     |> ignore
+                    // (what stands at the end of its line: PanelNodes' `head_end`, its title taking the room up to it)
+                    match x.nodes.head_end {
+                      Some(f) =>
+                        r.box(fn(e) {
+                          e.shrink(Is(0.0)).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+                          f(e)
+                        })
+                        |> ignore
+                      None => ()
+                    }
                   }
                   // (a step further in: its back key before its title, as a step's head has it (step_head), the row no
                   // taller for it)
@@ -1023,7 +1167,7 @@ fn sheet_node(
                         col.min_height(Is(Some(0.0))) |> ignore
                         // (laid out as the host's sheet lays out a capped panel's body: narrow, its words a sheet's own in,
                         // sheet_step's; sheet_capped_room: none in from its sides)
-                        panel_in_lend(col, Narrow, sheet_panel_sides, sides=0.0)
+                        panel_in_lend(col, Narrow, sheet_panel_sides, sides=0.0, round_foot=fn() { sheet_float_t(col) })
                         col.lends(sheet_win_lent, body_win_h) |> ignore
                         // (what it holds come to another height for a cause of its own: the sheet from as tall as it is
                         // seen, where it shows, panel_reshaped_node)
@@ -1045,10 +1189,14 @@ fn sheet_node(
                         // else as its words)
                         let flush = x.nodes.flush
                         let own_sides = x.tall > 0.0 || flush
+                        let float_plain = !own_sides && !footed && !x.grows
+                        let float_held = pressed && float_plain
                         let room = if x.tall > 0.0 || (flush && footed) {
                           full_width
                         } else if flush {
                           if pressed { sheet_flush_held } else { sheet_flush_panel }
+                        } else if float_held {
+                          sheet_held.then(@ui.style(px=room(sheet_panel_sides)))
                         } else if pressed {
                           if footed { sheet_held_sides } else { sheet_held }
                         } else {
@@ -1063,7 +1211,9 @@ fn sheet_node(
                           // sheet's rows leave of its words' in one a press opened, its rows out to its words' in one opened
                           // by nothing)
                           if own_sides {
-                            panel_in_lend(col, Narrow, sheet_panel_sides, sides=0.0)
+                            panel_in_lend(col, Narrow, sheet_panel_sides, sides=0.0, round_foot=fn() { sheet_float_t(col) })
+                          } else if float_held {
+                            panel_in_lend(col, Narrow, 0.0, sides=sheet_panel_sides, rows_out=0.0, round_foot=fn() { sheet_float_t(col) })
                           } else {
                             panel_in_lend(
                               col,
@@ -1071,7 +1221,8 @@ fn sheet_node(
                               if pressed { sheet_panel_sides - sheet_row_sides } else { 0.0 },
                               // (sheet_held's, sheet_panel's px)
                               sides=if pressed { sheet_row_sides } else { sheet_panel_sides },
-                              rows_out=dmax(0.0, (if pressed { sheet_row_sides } else { sheet_panel_sides }) - panel_card_in),
+                              rows_out=if float_plain { 0.0 } else { dmax(0.0, (if pressed { sheet_row_sides } else { sheet_panel_sides }) - panel_card_in) },
+                              round_foot=fn() { sheet_float_t(col) },
                             )
                           }
                           col.lends(sheet_win_lent, body_win_h) |> ignore
@@ -1096,7 +1247,20 @@ fn sheet_node(
                         |> ignore
                       }
                       page.box(fn(row) {
-                        style_node(row, fn() { if x.ruled { sheet_ruled_foot_at } else { sheet_foot_at } })
+                        style_node(row, fn() {
+                          let base = if x.ruled { sheet_ruled_foot_at } else { sheet_foot_at }
+                          let ft = sheet_float_t(row)
+                          if ft > 0.001 {
+                            let at = @ui.capsule_in(pane_corner, button_height())
+                            let base_px = 20.0
+                            let base_pb = if x.ruled { 16.0 } else { 24.0 }
+                            let px = base_px + (at - base_px) * ft
+                            let pb = base_pb + (at - base_pb) * ft
+                            base.then(@ui.style(px=room(px), pb=room(pb)))
+                          } else {
+                            base
+                          }
+                        })
                         foot_stays(row, shows, own_height)
                         // (its buttons across it, each its share, in a thumb's reach: the host's sheet's foot_fills; where they have not the
                         // room each as wide as its words, a line each, as the old foot's flow and line_gap: ask_foot_lines)
@@ -1113,7 +1277,7 @@ fn sheet_node(
             })
             |> ignore
             // (under it, the navigation bar's room: sheet_foot)
-            col.box(fn(nav) { nav.height(By(fn() { Some(@ui.system_bars().bottom) })) |> ignore }) |> ignore
+            col.box(fn(nav) { nav.height(By(fn() { Some(@ui.system_bars().bottom * (1.0 - sheet_float_t(nav))) })) |> ignore }) |> ignore
           })
           |> ignore
         })
@@ -1123,6 +1287,7 @@ fn sheet_node(
           v
           .over(Is(true))
           .radius(Is(pane_corner))
+          .shown_by(sheet, fn(h) { sheet_float_drawn(v, h, true) })
           // (none of it drawn while it dims nothing)
           .alpha(By(fn() { if recede.shown(layer) > 0.0 { 1.0 } else { 0.0 } }))
           .ground(By(fn() { @ui.alpha(sheet_scrim, recede.shown(layer)) }))
@@ -1142,7 +1307,7 @@ fn sheet_node(
       }
     },
     // (its scrim's fade; and its sinking away, which holds it: View::moved_by)
-    leave=@kit.sheet_scrim_ms,
+    leave=@motion.sheet_scrim_ms,
   )
 }
 
@@ -1227,15 +1392,21 @@ fn SheetRise::top_at(self : SheetRise, h : Double, hv : Double, t : Double) -> (
   match self.way {
     None => if self.risen { (h, hv) } else { (0.0, 0.0) }
     Some(w) => {
-      let goal = if w.up { h } else { 0.0 }
       let plan = if w.plan.is_nan() { h } else { w.plan }
-      let (u, uv) = @ui.come_way_by(w.u0, w.v0, goal, if w.up { plan } else { 0.0 }, t - w.at, kept=w.kept)
-      // (rising: its end as tall as it comes to, as much of how fast that goes as its way has got there)
-      if w.up && hv != 0.0 {
-        let (u1, _) = @ui.come_way_by(w.u0, w.v0, goal + 1.0, plan, t - w.at, kept=w.kept)
-        (u, uv + (u1 - u) * hv)
+      if w.up && !w.plan.is_nan() {
+        let (u, uv) = @ui.come_way_by(w.u0, w.v0, plan, plan, t - w.at, kept=w.kept)
+        // Rise distance stays anchored to the planned height so mid-rise height growth never pushes the foot back down.
+        (u + (h - plan), uv + hv)
       } else {
-        (u, uv)
+        let goal = if w.up { h } else { 0.0 }
+        let (u, uv) = @ui.come_way_by(w.u0, w.v0, goal, if w.up { plan } else { 0.0 }, t - w.at, kept=w.kept)
+        // (rising: its end as tall as it comes to, as much of how fast that goes as its way has got there)
+        if w.up && hv != 0.0 {
+          let (u1, _) = @ui.come_way_by(w.u0, w.v0, goal + 1.0, plan, t - w.at, kept=w.kept)
+          (u, uv + (u1 - u) * hv)
+        } else {
+          (u, uv)
+        }
       }
     }
   }

@@ -12,16 +12,22 @@
 priv struct HistoryOwn {
   shut : @signals.Signal[Bool]
   transcripts : Map[String, @signals.Signal[String?]]
-  opening : Map[String, @sfbase.PressWait]
+  opening : Map[String, (String, @sfbase.PressWait)]
 }
 
 ///|
 // kept across runs: put back as a run begins (history_reset)
-let history_own : HistoryOwn = { shut: @signals.signal(false, same=fn(a, b) { a == b }), transcripts: {}, opening: {} }
+let history_own : HistoryOwn = { shut: @signals.signal(true, same=fn(a, b) { a == b }), transcripts: {}, opening: {} }
+
+///|
+/// Sets whether the wide history's details start folded (used by fixtures and tests inspecting unfolded details).
+pub fn set_history_shut(shut : Bool) -> Unit {
+  history_own.shut.set(shut)
+}
 
 ///|
 fn history_reset() -> Unit {
-  history_own.shut.set(false)
+  history_own.shut.set(true)
   history_own.transcripts.clear()
   history_own.opening.clear()
 }
@@ -117,6 +123,9 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ti
                 return
               }
               pressed.set(true)
+              if !src.read_only && (src.switches_ahead)() {
+                wh_transcript(src, station, key) |> ignore
+              }
               waiting.val = Some(
                 @sfpages.history_details_open(
                   src,
@@ -321,7 +330,12 @@ fn wh_details_node(
         |> ignore
       },
       fn(e) {
-        let low = fn() { items(host(), "meters").filter(fn(m) { text(Some(m), "level") != "ok" }) }
+        // (as this device says a CPU: idle or busy, @settings.meters_said)
+        let low = fn() {
+          @settings.meters_said(items(host(), "meters"), @settings.cpu_busy_of(src.topic("prefs", {}).get().value)).filter(fn(m) {
+            text(Some(m), "level") != "ok"
+          })
+        }
         e.show(at_once=true, fn() { low().length() > 0 }, fn(x) { @sf.meter_chips_node(x, low, tips~) })
       },
     )
@@ -377,27 +391,29 @@ fn wh_evict_node(v : @view.View, src : Source, station : String, key : String, t
 }
 
 ///|
-/// Agent `key`'s history opened in chat `r`'s side panel (its mark pressed: side_toggle): where its runtime keeps the
-/// transcript asked of `src` now (wh_transcript, the one thing its first screen asks by a call, not a topic), the chat
-/// as it is meanwhile; once it is answered (at once where it is already, a path or none), `open` puts it in front,
-/// whole: its line is there from its first frame or never, nothing pushed down under the head after it opened (the
-/// coordinator of the migration, 2026-11-14: over a core 120 or 400 ms late the line came in 28 under the head ~270 ms
-/// after the panel opened). Given up (press_wait: the page left, the workspace switched, something else put up; or its
-/// mark pressed again meanwhile, which then does nothing more). Made in the press's handler; a replay of a run from
-/// before asks nothing ahead (opened at once, the line coming as it did).
+/// Agent `key`'s history opened in chat `r`'s side panel (its mark or activity row pressed: side_toggle): asks `src`
+/// for the runtime transcript path (wh_transcript) and waits at most `@sf.open_hold_ms` before calling `open`, so a
+/// fast answer avoids a post-open row shift while a slow or offline station never blocks opening. Pressing the same
+/// agent again while waiting opens it immediately instead of cancelling; pressing another agent cancels the first wait
+/// and opens the new one. A replay of an older run skips the wait.
 fn history_side_open(src : Source, r : ChatRef, key : String, open : () -> Unit) -> Unit {
   let chat = chat_key(r)
   match history_own.opening.get(chat) {
-    Some(w) => {
+    Some((was_key, w)) => {
       history_own.opening.remove(chat)
       if w.waiting() {
+        if was_key == key {
+          w.end()
+          open()
+          return
+        }
         w.give_up()
-        return
       }
     }
     None => ()
   }
-  if src.read_only || !(src.switches_ahead)() {
+  // When details are folded (the default), the transcript line is not on screen, so open immediately.
+  if history_own.shut.untracked() || src.read_only || !(src.switches_ahead)() {
     open()
     return
   }
@@ -409,9 +425,10 @@ fn history_side_open(src : Source, r : ChatRef, key : String, open : () -> Unit)
       open()
     },
     let_go=fn() { history_own.opening.remove(chat) },
+    most=@sf.open_hold_ms,
   )
   if w.waiting() {
-    history_own.opening[chat] = w
+    history_own.opening[chat] = (key, w)
   }
 }
 
@@ -426,11 +443,13 @@ fn wh_transcript(src : Source, station : String, key : String) -> @signals.Signa
       let p : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
       history_own.transcripts[me] = p
       (src.call)("session.transcript", { "station": Json::string(station), "key": Json::string(key) }, fn(res) {
-        match res {
-          Ok(j) => p.set(Some(text(Some(j), "path")))
-          // not written yet, or a station from before it: nothing said
-          Err(_) => p.set(Some(""))
-        }
+        @view.answering(fn() {
+          match res {
+            Ok(j) => p.set(Some(text(Some(j), "path")))
+            // not written yet, or a station from before it: nothing said
+            Err(_) => p.set(Some(""))
+          }
+        })
       })
       p
     }
@@ -527,12 +546,6 @@ fn wh_line_node(
 let wh_mark_side : Double = 16.0
 
 ///|
-/// A station's workspace, from its address (ws/station: sfpages' history_station_scope).
-fn scope_of(station : String) -> String {
-  @sfpages.history_station_scope(station)
-}
-
-///|
 /// The head (historyHead): 45 high, 16 in at its start, 8 at its end.
 // kept across runs: a value (no field of it changes)
 let wh_head : @ui.Style = @ui.css("row w=Full h=S11 pl=S4 pr=S2 pb=SPx gap=S2 align=ACenter justify=JBetween")
@@ -558,7 +571,7 @@ let wh_details_box : @ui.Style = @ui.css("w=Full px=S4 pt=S0_5 pb=S3_5 gap=S2_5"
 let wh_quiet_box : @ui.Style = @ui.css("w=Full").then(@sf.outset_top(4.0))
 
 ///|
-/// The quiet line with the mark of its work past its turns after it (work_mark): one line, its words cut short only
+/// The quiet line with the mark of its work past its turns after it (work_mark_node): one line, its words cut short only
 /// once the mark has given way.
 // kept across runs: a value (no field of it changes)
 let wh_quiet_line : @ui.Style = wh_quiet_box.then(@ui.css("row align=ACenter"))

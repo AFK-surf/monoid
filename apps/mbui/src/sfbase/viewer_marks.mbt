@@ -298,10 +298,42 @@ pub let marking : Marking = {
 }
 
 ///|
+/// Marking begun in the whole window's viewer.
 pub fn marks_start() -> Unit {
   marks_leave()
   marking.on = true
+  match viewer.untracked() {
+    Some(v) => v.request_whole()
+    None => ()
+  }
   marks_changed()
+}
+
+///|
+/// The viewer of a tab beside a chat that marks (viewer_tab.mbt: its picture, its tools' row, the foot under it),
+/// none where the whole window's does or none marks. One marks at a time: the whole window's viewer opened leaves it
+/// (close_now), as its tab closing, stepping or no longer shown does.
+// kept across runs: put back by marks_leave
+pub let marks_tab : Ref[Viewer?] = Ref(None)
+
+///|
+/// Marking begun in viewer `vw`'s tab.
+pub fn Viewer::marks_start_here(self : Viewer) -> Unit {
+  marks_leave()
+  marking.on = true
+  marks_tab.val = Some(self)
+  self.request_whole()
+  marks_changed()
+}
+
+///|
+/// Whether viewer `vw`'s tab marks now. As marking is told.
+pub fn Viewer::marks_here(self : Viewer) -> Bool {
+  marks_said()
+  match marks_tab.val {
+    Some(v) => marking.on && physical_equal(v, self)
+    None => false
+  }
 }
 
 ///|
@@ -325,7 +357,16 @@ pub fn marks_said() -> Unit {
 
 ///|
 pub fn marks_leave() -> Unit {
+  match viewer.untracked() {
+    Some(v) => v.marks_after = None
+    None => ()
+  }
+  match marks_tab.val {
+    Some(v) => v.marks_after = None
+    None => ()
+  }
   marking.on = false
+  marks_tab.val = None
   marking.tool = Rect
   marking.palette = false
   marking.shapes = []
@@ -845,70 +886,6 @@ pub fn marks_any() -> Bool {
 }
 
 ///|
-/// In the top bar while marking: why it failed, 取消, 下载标注后的图片, 添加到对话 (when
-/// there is a chat's draft to put it in). True on the frame one of them is tapped: `go(draft)`.
-/// `ink`: what its words and icons are drawn in (a desktop's bar is the page's).
-pub fn marks_actions(c : @ui.Ctx, can_draft : Bool, go : (Bool) -> Unit, ink? : Int64 = dark_muted) -> Unit {
-  let ready = !marking.busy && marks_any()
-  // as wide as they are: the file's name before them cut short instead
-  c.box(dir=Row, gap=4.0, align=ACenter, keep=true, fn() {
-    if marking.error != "" {
-      c.box(padx=6.0, max_w=140.0, clip=true, fn() {
-        c.text(marking.error, size=@sf.theme().t.meta, color=0xFF7B6BFFL, wrap=false) |> ignore
-      })
-      |> ignore
-    }
-    let cancel = c.id("marks/cancel")
-    c.on_press(cancel, fn() {
-      marks_leave()
-    })
-    let cancel_box = c.box(h=Px(32.0), padx=10.0, radius=picture_key, justify=JCenter, id=cancel, fn() {
-      c.text(pv("common.cancel"), size=@sf.theme().t.meta, color=ink, wrap=false) |> ignore
-    })
-    c.semantics(cancel_box, Button, id=cancel, label=pv("common.cancel"))
-    picture_button(c, "marks/download", "download", ink, true, enabled=ready, said=pv("android-chat.marks.downloadMarked"), on_press=fn() {
-      go(false)
-    })
-    if can_draft {
-      let put = c.id("marks/put")
-      c.on_press(put, fn() {
-        if ready {
-          go(true)
-        }
-      })
-      // 4 further from the rest (ImageMarks.kt: padding(start = 4) outside its ground)
-      c.box(style=marks_put_room, fn() {
-        c.box(
-          dir=Row,
-          h=Px(32.0),
-          padx=12.0,
-          gap=5.0,
-          radius=picture_key,
-          bg=0xE5704AFFL,
-          align=ACenter,
-          opacity=if ready { 1.0 } else { 0.4 },
-          id=if ready { put } else { 0 },
-          fn() {
-            @sf.icon(c, "send", size=12.0, color=0xFFFFFFFFL) |> ignore
-            c.text(
-              pv(if marking.busy { "android-chat.marks.making" } else { "android-chat.preview.put" }),
-              size=@sf.theme().t.meta,
-              weight=600,
-              color=0xFFFFFFFFL,
-              wrap=false,
-            )
-            |> ignore
-          },
-        )
-        |> ignore
-      })
-      |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
 /// The corner of what is on the viewer's bars: round, half their 32 (in the middle of a
 /// bar's capsule ends, 6 in, concentric with them: picture_bar_corner).
 pub let picture_key : Double = 16.0
@@ -1050,7 +1027,7 @@ pub fn marks_pick_color(col : Int64) -> Unit {
 ///|
 /// Where what is being written (or the open note's box) ends on the stage, the picture at `r` (where it is at a moment
 /// of the caller's).
-pub fn marks_writing_bottom_in(z : @kit.Zoom, r : (Double, Double, Double, Double)?) -> Double? {
+pub fn marks_writing_bottom_in(z : @motion.Zoom, r : (Double, Double, Double, Double)?) -> Double? {
   marks_said()
   if !marking.on {
     return None

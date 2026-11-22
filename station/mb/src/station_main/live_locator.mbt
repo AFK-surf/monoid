@@ -39,10 +39,7 @@ fn TranscriptHints::listen(self : TranscriptHints, f : (String) -> Unit) -> () -
   let n = self.next
   self.listeners.push((n, f))
   () => {
-    match self.listeners.search_by(l => l.0 == n) {
-      Some(i) => ignore(self.listeners.remove(i))
-      None => ()
-    }
+    if self.listeners.search_by(l => l.0 == n) is Some(i) { ignore(self.listeners.remove(i)) }
   }
 }
 
@@ -105,17 +102,11 @@ fn transcript_location_hints(data : String, profiles : Array[(String, String)], 
   }
   let before_elsewhere : Map[String, String?] = {}
   for key in claude {
-    match h.elsewhere.get(key) {
-      Some(p) => before_elsewhere[key] = p
-      None => ()
-    }
+    if h.elsewhere.get(key) is Some(p) { before_elsewhere[key] = p }
   }
   let before_rollouts : Map[String, String] = {}
   for key, _ in codex {
-    match h.rollouts.get(key) {
-      Some(p) => before_rollouts[key] = p
-      None => ()
-    }
+    if h.rollouts.get(key) is Some(p) { before_rollouts[key] = p }
   }
   let before_said : Map[String, Map[String, SaidRollout]] = {}
   let before_seen : Map[String, Map[String, Bool]] = {}
@@ -285,10 +276,7 @@ fn same_identity(found : Json, row : Json) -> Bool {
 
 ///|
 fn LiveLocator::send(self : LiveLocator, message : Json) -> Unit {
-  match self.proc {
-    Some(p) => ignore(p.write(@utf8.encode(message.stringify() + "\n")))
-    None => ()
-  }
+  if self.proc is Some(p) { ignore(p.write(@utf8.encode(message.stringify() + "\n"))) }
 }
 
 ///|
@@ -301,49 +289,19 @@ fn LiveLocator::started(self : LiveLocator) -> Unit raise {
     }
     None => ()
   }
-  if self.proc is Some(_) {
-    return
-  }
-  let p = spawn(
+  if self.proc is Some(_) { return }
+  let p = spawn_lines(
     self.host,
     self.argv0,
     ["--builder", "live-locator", "--db", path([self.data, "stillfail.db"]), "--data", self.data, "--sep", sep()],
-    stdin_piped=true,
-    stdout=Piped,
+    "live locator's lines",
+    (p, line) => if attempt(() => @json.parse(line)) is Ok(m) { self.heard(p, m) },
+    (p, code) =>
+      if self.proc is Some(now) && physical_equal(now, p) {
+        self.retire("live locator exited (\{match code { Some(c) => c.to_string(); None => "null" }})")
+      },
   )
   self.proc = Some(p)
-  ignore(
-    self.host.rt.fork(name="live locator's lines", async fn() {
-      let held = @buffer.Buffer()
-      let mut ended = false
-      while !ended {
-        match p.events.take() {
-          Out(b) => {
-            held.write_bytes(b)
-            let text = @utf8.decode_lossy(held.to_bytes())
-            let lines = text.split("\n").map(l => l.to_owned()).collect()
-            held.reset()
-            held.write_bytes(@utf8.encode(lines[lines.length() - 1]))
-            for line in lines[:lines.length() - 1] {
-              match (try { Ok(@json.parse(line)) } catch { e => Err(e) }) {
-                Ok(m) => self.heard(p, m)
-                Err(_) => ()
-              }
-            }
-          }
-          Err(_) => ()
-          Exit(code, _) => {
-            ended = true
-            match self.proc {
-              Some(now) if physical_equal(now, p) =>
-                self.retire("live locator exited (\{match code { Some(c) => c.to_string(); None => "null" }})")
-              _ => ()
-            }
-          }
-        }
-      }
-    }),
-  )
 }
 
 ///|

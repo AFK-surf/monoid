@@ -70,6 +70,38 @@ fn pair_word(t : @ui.Tester, words : String, under? : Double = -1.0) -> (Double,
 }
 
 ///|
+/// The code's two groups of three (`482`, `915`, as @ui.code_field_node groups them): on one line, 24 apart. Their
+/// box together: left, top, width and height.
+fn pair_code(t : @ui.Tester) -> (Double, Double, Double, Double) raise {
+  let left = pair_word(t, "482")
+  let right = pair_word(t, "915")
+  assert_true((left.1 - right.1).abs() < 1.0, msg="the code's groups on one line: \{Repr(left)} \{Repr(right)}")
+  assert_true(((right.0 - (left.0 + left.2)) - 24.0).abs() < 1.0, msg="the code's groups 24 apart: \{Repr(left)} \{Repr(right)}")
+  (left.0, left.1, right.0 + right.2 - left.0, @cmp.maximum(left.3, right.3))
+}
+
+///|
+test "on a narrow phone, its words as set and 1.3 times as large: the code's two groups whole, side by side" {
+  // (the pair asked over settings as the screen sweeps open it, settings-lock-prompt: squeeze_wbtest.mbt's screen_in.
+  // At 1.3 held to what words_large_wbtest.mbt holds every screen to: at that size the settings page under the panel
+  // breaks the corner rule by itself, its account card, which is not this panel's)
+  for screen in [(320.0, 690.0, 1.0), (360.0, 740.0, 1.3)] {
+    let (w, h, scale) = screen
+    let about = "\{w}x\{h} at \{scale}"
+    let t = screen_in("settings-lock-prompt", ("narrow", w, h, 2, ""), "zh", font_scale=scale)
+    assert_true(@sf.presenting(), msg=about)
+    let code = pair_code(t)
+    assert_true(code.0 >= 0.0 && code.0 + code.2 <= w, msg="\{about}: the code within the window: \{Repr(code)}")
+    let faults = if scale == 1.0 {
+      t.audit() + t.corner_faults()
+    } else {
+      t.squeeze_faults() + t.words_over_now() + t.fixed_outgrown()
+    }
+    assert_true(faults.is_empty(), msg="\{about}:\n" + faults.join("\n"))
+  }
+}
+
+///|
 test "done or turned away on another device: its panel goes by itself, nothing asked of the core" {
   for screen in [(2, false), (0, false), (0, true)] {
     let t = pair_asked(platform=screen.0, wide=screen.1)
@@ -101,7 +133,7 @@ test "asked into one more workspace meanwhile: named too, its mark before it; th
   assert_true(open.1 >= star.1 + star.3, msg="开源 \{Repr(open)}, 星火工作室 \{Repr(star)}")
   assert_true(emoji.0 + emoji.2 <= open.0 && (emoji.1 + emoji.3 / 2.0 - (open.1 + open.3 / 2.0)).abs() < 2.0, msg="🌲 \{Repr(emoji)}, 开源 \{Repr(open)}")
   // (the code still under them all)
-  let code = pair_word(t, "4\u{2009}8\u{2009}2\u{2009}9\u{2009}1\u{2009}5")
+  let code = pair_code(t)
   assert_true(code.1 > open.1 + open.3, msg="the code \{Repr(code)}, 开源 \{Repr(open)}")
 }
 
@@ -175,7 +207,7 @@ test "where its words stand on each screen: whose and what, where it asks in, th
     let body = pair_word(t, "Pixel 9。确认申请人和设备后，在新设备上输入下方安全码；无法确认请拒绝。")
     let head = pair_word(t, "申请访问")
     let (star, mine) = (pair_word(t, "星火工作室", under=head.1), pair_word(t, "个人", under=head.1))
-    let code = pair_word(t, "4\u{2009}8\u{2009}2\u{2009}9\u{2009}1\u{2009}5")
+    let code = pair_code(t)
     let (until, note) = (pair_word(t, "14:05 前有效"), pair_word(t, "安全码只显示在此设备上，不会发送给任何人"))
     let deny = t.get(Button, label="拒绝").rect
     let foot = fn(r : (Double, Double, Double, Double)) { r.1 + r.3 }

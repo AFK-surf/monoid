@@ -23,30 +23,8 @@ pub let urls : Urls = {
 }
 
 ///|
-/// The access kinds each runtime can use.
-pub fn access_kinds(runtime : String) -> Array[String] {
-  match runtime {
-    "hermes" => ["env"]
-    // Antigravity CLI: a Google account signed in to, a Gemini key, or its own variables.
-    "agy" => ["subscription", "api-provider", "env"]
-    "claude" => ["subscription", "opencode-go", "anthropic-api", "api-provider", "env"]
-    // DeepSeek Harness and Pi have no subscription to sign in to here.
-    "dsh" | "pi" => ["opencode-go", "anthropic-api", "api-provider", "env"]
-    // Grok Build: SuperGrok signed in to, an xAI key, or its own variables.
-    "grok" => ["subscription", "api-provider", "env"]
-    // Cursor: a Cursor account signed in to, or its own variables (CURSOR_API_KEY).
-    "cursor" => ["subscription", "env"]
-    // Devin: a Devin account signed in to, or its own variables (WINDSURF_API_KEY).
-    "devin" => ["subscription", "env"]
-    _ => ["subscription", "opencode-go", "api-provider", "env"]
-  }
-}
-
-///|
-/// Access kinds that authenticate with a key the profile stores.
-pub fn keyed(kind : String) -> Bool {
-  kind == "opencode-go" || kind == "anthropic-api" || kind == "api-provider"
-}
+/// The access kinds each runtime can use, keyed kinds, and runtimes per access kind.
+pub using @agent_runtimes {access_kinds, keyed, runtimes_of_kind as runtimes_of}
 
 ///|
 /// What these checks ask of the station's other parts.
@@ -95,25 +73,6 @@ pub fn needs_key(deps : ProfileDeps, kind : String, provider : String?) -> Bool 
 }
 
 ///|
-/// The runtimes an access kind runs without its provider.
-pub fn runtimes_of(kind : String, runtime : String?) -> Array[String] {
-  match kind {
-    "opencode-go" => ["claude", "codex", "dsh", "pi"]
-    "anthropic-api" => ["claude", "dsh", "pi"]
-    "api-provider" => []
-    _ =>
-      if kind == "subscription" && (runtime == Some("dsh") || runtime == Some("pi")) {
-        []
-      } else {
-        match runtime {
-          Some(r) if r != "" => [r]
-          _ => []
-        }
-      }
-  }
-}
-
-///|
 /// The runtimes of an access as config.json has it (with its provider and address).
 pub fn runtimes_for(deps : ProfileDeps, access : Json, runtime : Json?) -> Array[String] {
   (deps.profile_runtimes)(access, runtime)
@@ -121,9 +80,7 @@ pub fn runtimes_for(deps : ProfileDeps, access : Json, runtime : Json?) -> Array
 
 ///|
 /// agents/devin.ts `devinData`; agents/agy.ts `agyHome`, `agyToken`, `agyTokenIn`.
-pub fn devin_data(home : String) -> String {
-  join([home, "devin", "data"])
-}
+pub using @agent_runtimes {devin_data}
 
 ///|
 pub fn agy_home(home : String) -> String {
@@ -181,6 +138,15 @@ pub(all) struct CheckOptions {
   machine_token : (async (Env) -> String)?
   urls : Urls?
   lang : String
+  /// Asked again because a runtime on it was refused (Accounts `recheck_profile`): a Claude subscription's login is
+  /// renewed even when not due, so a refresh token revoked with its access token still listing models is found over.
+  recheck : Bool
+}
+
+///|
+/// Whether Anthropic's answer refuses a Claude subscription's OAuth token: a revoked one is answered 401 or 403.
+pub fn claude_auth_status(status : Int?) -> Bool {
+  status == Some(401) || status == Some(403)
 }
 
 ///|
@@ -323,13 +289,69 @@ async fn check_inner(
       return check("login", t("station.profile.signedOut", []), None)
     }
     // What the subscription runs, as Anthropic lists it for the account's own token.
-    let token = match machine_token {
-      Some(tk) => Some(tk)
+    let (token, renew_error) = match machine_token {
+      Some(tk) => (Some(tk), None)
       None => profile_token(io, auth, o, at, lang)
     }
-    let models = match token {
-      None => None
+    let (first_models, models_status) = match token {
+      None => (None, None)
       Some(tk) => claude_models(io, at, tk)
+    }
+    let mut models = first_models
+    // (its login renewed against the token just refused: a refresh token refused too is a login over)
+    let renew = async fn(tk : String) -> String raise {
+      auth.token(o.env, if o.machine { None } else { Some(o.home) }, Some(tk), at.claude_token, lang).0
+    }
+    let mut renewed_here = false
+    match renew_error {
+      Some(err) =>
+        if models is None {
+          return check("failed", err, None)
+        }
+      None =>
+        if claude_auth_status(models_status) {
+          if token is Some(tk) {
+            let renewed = renew(tk) catch {
+              RenewRefused(_, _) as e => raise e
+              e => return check("failed", message_of(e), None)
+            }
+            renewed_here = true
+            let (retry_models, retry_status) = claude_models(io, at, renewed)
+            if claude_auth_status(retry_status) {
+              return check("login", t("station.quota.signInExpired", []), None)
+            }
+            models = retry_models
+          }
+        }
+    }
+    // Asked again after a runtime on it was refused: Anthropic can go on listing models for an access token whose login
+    // was revoked (FB-44), so its refresh token is what is asked. One refused is over; one not reached now leaves a
+    // listing that worked standing, and one that did not a failed check.
+    if o.recheck && !renewed_here && renew_error is None && token is Some(tk) {
+      let renewed : String? = try {
+        Some(renew(tk))
+      } catch {
+        RenewRefused(status, _) =>
+          // (none to renew with: a token that still lists models is not taken for one revoked)
+          if !(status is None && models_status == Some(200)) {
+            return check("login", t("station.quota.signInExpired", []), None)
+          } else {
+            None
+          }
+        e =>
+          if models_status != Some(200) {
+            return check("failed", message_of(e), None)
+          } else {
+            None
+          }
+      }
+      if renewed is Some(r) && models is None {
+        let (retry_models, retry_status) = claude_models(io, at, r)
+        if claude_auth_status(retry_status) {
+          return check("login", t("station.quota.signInExpired", []), None)
+        }
+        models = retry_models
+      }
     }
     // For a profile in its own home Claude keeps the more specific tier beside its token.
     let credentials = if o.machine {
@@ -622,17 +644,17 @@ pub fn grok_email_in(text : String) -> String? raise JsonError {
 ///|
 /// A Claude profile's token as it signs in now, renewed first when due: a login that can no longer be renewed fails
 /// (to sign in again); one not renewed now for another reason is the one kept.
-async fn profile_token(io : Io, auth : ClaudeAuth, o : CheckOptions, at : Urls, lang : String) -> String? {
+async fn profile_token(io : Io, auth : ClaudeAuth, o : CheckOptions, at : Urls, lang : String) -> (String?, String?) {
   let got = auth.token(o.env, Some(o.home), None, at.claude_token, lang) catch {
     RenewRefused(_, _) as e => raise e
-    _ => return claude_token(io, o.home)
+    e => return (claude_token(io, o.home), Some(message_of(e)))
   }
-  Some(got.0)
+  (Some(got.0), None)
 }
 
 ///|
 /// The models a Claude subscription's OAuth token may use; none when Anthropic does not say.
-async fn claude_models(io : Io, at : Urls, token : String) -> Array[String]? {
+async fn claude_models(io : Io, at : Urls, token : String) -> (Array[String]?, Int?) {
   try {
     let response = profile_get(io, "\{at.anthropic}/v1/models?limit=100", [
       ("authorization", "Bearer \{token}"),
@@ -640,12 +662,12 @@ async fn claude_models(io : Io, at : Urls, token : String) -> Array[String]? {
       ("anthropic-beta", "oauth-2025-04-20"),
     ])
     if response.ok() {
-      Some(model_ids(response))
+      (Some(model_ids(response)), Some(response.status))
     } else {
-      None
+      (None, Some(response.status))
     }
   } catch {
-    _ => None
+    _ => (None, None)
   }
 }
 

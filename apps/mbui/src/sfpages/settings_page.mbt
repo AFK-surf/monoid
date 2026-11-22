@@ -9,27 +9,11 @@ using @sf {
   desk_lane_in,
   desk_column_most,
   desk_column_in,
-  desk_card_row,
-  desk_card_text,
-  desk_strong,
-  desk_words,
-  desk_muted,
-  desk_note_bad,
 }
-
-///|
-// kept across runs: a value (no field of it changes)
-pub let desk_note : @ui.TextStyle = @sf.wide_list_note
 
 ///|
 // kept across runs: a value (no field of it changes)
 pub let desk_said_line : @ui.Style = @ui.css("row w=Full align=ACenter")
-
-///|
-/// How the page being drawn is laid out, by the width of its box (a page still drawing one arrangement's pieces).
-pub fn look_of(c : @ui.Ctx) -> @sf.Look {
-  @sf.look_for(c.width)
-}
 
 ///|
 // kept across runs: a value (no field of it changes)

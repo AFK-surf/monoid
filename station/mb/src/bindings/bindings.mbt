@@ -14,14 +14,6 @@ let next : String = "SELECT CAST(rowid AS TEXT) AS position FROM bindings WHERE 
 let put : String = "INSERT INTO session_binding_rows (session, binding_rowid, connect) SELECT b.session_key, b.rowid, b.connect FROM bindings b WHERE b.rowid = CAST(? AS INTEGER) AND NOT EXISTS (SELECT 1 FROM session_binding_rows i WHERE i.session = b.session_key AND i.binding_rowid = b.rowid)"
 
 ///|
-fn value(row : Map[String, Json], name : String) -> Json {
-  match row.get(name) {
-    Some(j) => j
-    None => Json::null()
-  }
-}
-
-///|
 /// One batch of at most `limit` old bindings; whether all are copied then.
 pub fn step(db : @sql.Db, limit? : Int = 256) -> Bool raise {
   db.exec("BEGIN IMMEDIATE")
@@ -40,16 +32,16 @@ pub fn step(db : @sql.Db, limit? : Int = 256) -> Bool raise {
     db.exec("COMMIT")
     return true
   }
-  let last = value(meta, "last_rowid")
-  let end = value(meta, "end_rowid")
+  let last = @sql.row_val(meta, "last_rowid")
+  let end = @sql.row_val(meta, "end_rowid")
   let lim = Json::number(limit.to_double())
   let rows = if last is Null { db.all(first, [end, lim]) } else { db.all(next, [last, end, lim]) }
   for row in rows {
-    ignore(db.run(put, [value(row, "position")]))
+    ignore(db.run(put, [@sql.row_val(row, "position")]))
   }
   let done = rows.length() < limit
   let reached = match rows.last() {
-    Some(row) => value(row, "position")
+    Some(row) => @sql.row_val(row, "position")
     None => last
   }
   ignore(

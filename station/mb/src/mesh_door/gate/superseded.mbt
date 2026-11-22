@@ -41,7 +41,7 @@ pub async fn Superseded::arrived(self : Superseded, conn : @door.Connection) -> 
   let before = mine.filter(c => !(c.is_closed)())
   mine.push(conn)
   let rt = @effect.runtime()
-  ignore(rt.fork(name="superseded forget", () => {
+  ignore(rt.fork_daemon("superseded forget", on_error=_ => (), () => {
     ignore((conn.closed)()) catch {
       _ => ()
     }

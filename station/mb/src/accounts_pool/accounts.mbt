@@ -85,7 +85,7 @@ pub fn Background::now(self : Background) -> Double {
 pub fn Background::track(self : Background, f : async () -> Unit) -> Unit {
   self.active += 1
   ignore(
-    self.rt.fork(async fn() {
+    self.rt.fork_daemon("accounts background", on_error=e => (self.log)(message_of(e)), async fn() {
       f() catch {
         e => (self.log)(message_of(e))
       }
@@ -213,6 +213,9 @@ pub(all) struct Given {
   shared_lend_claude : Bool
   shared_login_updated : Bool
   shared_host_name : Bool
+  /// Whether a login newly over is told the workspace's managers (`accounts.profileLogin`, P5-2's notifier) and one
+  /// good again clears its cooldown (`accounts.profileLoginCleared`).
+  login_notices : Bool
   /// Whether config.json's edits pass `checkConfig` (ops/config.ts `check`, as the station sets it).
   config_checked : Bool
 }
@@ -250,6 +253,7 @@ pub fn Given::of_jv(v : JV, data : String) -> Given {
     shared_lend_claude: b("sharedLendClaude"),
     shared_login_updated: b("sharedLoginUpdated"),
     shared_host_name: b("sharedHostName"),
+    login_notices: b("loginNotices"),
     config_checked: b("configChecked"),
   }
 }
@@ -257,7 +261,8 @@ pub fn Given::of_jv(v : JV, data : String) -> Given {
 ///|
 /// A sign-in with no profile yet (`Pending`).
 struct Pending {
-  runtime : String
+  runtime : String?
+  service : String?
   access : String?
   home : String
   by : JV
@@ -304,7 +309,7 @@ pub struct Accounts {
   pending : Map[String, Pending]
   making : Map[String, Unit]
   codex_accounts : Map[String, (String, String?)]
-  codex_account_reads : Map[String, @effect.Deferred[Unit]]
+  codex_account_reads : Map[String, (String, @effect.Deferred[Unit])]
   homes : Map[String, (String, HomeSays)]
   mut homes_read : Double
   mut homes_reading : Bool
@@ -317,6 +322,10 @@ pub struct Accounts {
   mut pace_rev : Int
   mut unchecking : @effect.Deferred[Unit]?
   machine_said : Ref[Map[String, String]?]
+  /// Logins a runtime was refused on and a recheck found over (FB-44), with what is said and the allowance kept then
+  /// (index.ts `authRevoked`): signed out through checks that say otherwise till it signs in anew, its share changes,
+  /// or an allowance read after says it works.
+  auth_revoked : Map[String, (String, JV?, Double)]
 }
 
 ///|
@@ -356,7 +365,7 @@ pub async fn Accounts::new(
   catalog : Catalog,
 ) -> Accounts {
   let background = Background::new(rt, clock, message => ignore(
-    rt.fork(async fn() {
+    rt.fork_quiet(name="accounts warn", async fn() {
       ignore(
         b.ask("log.warn", [
           js("accounts"),
@@ -400,8 +409,9 @@ pub async fn Accounts::new(
     pace_rev: 0,
     unchecking: None,
     machine_said: Ref(None),
+    auth_revoked: Map::new(),
   }
-  for entry in jitems(Some(b.ask("store.profileStatus", []))) {
+  for entry in jitems(Some(json_to_jv(b.with_store(s => s.profile_status())))) {
     let items = jitems(Some(entry))
     let id = js_string(items.get(0))
     let status = items.get(1)
@@ -460,22 +470,7 @@ pub fn Accounts::start(self : Accounts) -> Unit {
   match self.hub_accounts {
     Some(h) => {
       h.set_health(id => self.health(id))
-      h.set_recheck(async fn(id) {
-        match self.profile(id) {
-          Some(p) if p.runtime == "codex" && access_kind(p.raw) == "subscription" => {
-            let generation = self.login_generation.get(id).unwrap_or(0)
-            let read = self.read_quota(id, true)
-            if self.login_generation.get(id).unwrap_or(0) != generation {
-              return
-            }
-            if jget(read, "state") != Some(Str("ok")) &&
-              jget(self.checks.get(id), "state") != Some(Str("login")) {
-              self.codex_login(id, true, self.ctx.station_lang)
-            }
-          }
-          _ => ignore(self.check(id, self.ctx.station_lang))
-        }
-      })
+      h.set_recheck(async fn(id, force) { self.recheck_profile(id, force~) })
       h.set_quota_again(async fn(id) {
         match self.quota_busy.get(id) {
           Some(busy) => busy.wait()
@@ -585,9 +580,13 @@ pub async fn Accounts::machine_changed(self : Accounts) -> Unit {
           continue
         }
         let check = self.checks.get(p.id)
-        let login = logins
-          .iter()
-          .find_first(l => l.get("runtime") == Some(Str(p.runtime)) && is_truthy(l.get("loggedIn")))
+        let login = match p.runtime {
+          Some(r) =>
+            logins
+            .iter()
+            .find_first(l => l.get("runtime") == Some(Str(r)) && is_truthy(l.get("loggedIn")))
+          None => None
+        }
         match (jget(check, "state"), jget(login, "plan")) {
           (Some(Str("ok")), Some(plan)) if is_truthy(Some(plan)) &&
             jget(check, "plan") != Some(plan) => self.after_sign_in(p.id)
@@ -597,8 +596,9 @@ pub async fn Accounts::machine_changed(self : Accounts) -> Unit {
     }
     Some(b) =>
       for p in self.profiles() {
-        if p.machine && b.get(p.runtime) != last.get(p.runtime) {
-          self.after_sign_in(p.id)
+        match p.runtime {
+          Some(r) if p.machine && b.get(r) != last.get(r) => self.after_sign_in(p.id)
+          _ => ()
         }
       }
   }
@@ -647,24 +647,18 @@ pub fn Accounts::hub_config(self : Accounts) -> HubConfig {
 }
 
 ///|
-/// Only the profile asked is made: `health` asks it once a profile, and a view goes through every profile's health
-/// (and `health_of` each other's too), so making all of them each time made the overview cubic in the profiles
-/// (21 profiles held a station's thread at 100%). A profile is made of its own entry alone, its id `js_string` of
-/// the entry's, as `hub_config` makes each.
+/// The profile asked, of `hub_config()` as kept: `health` asks it once a profile, and a view goes through every
+/// profile's health (and `health_of` each other's too), so making even the one asked each time made the overview
+/// quadratic in the profiles (29 profiles, 841 made a view, 0.1.10401). The first of that id, as `hub_config` makes each.
 fn Accounts::profile(self : Accounts, id : String) -> Profile? {
-  for p in jitems(self.config_raw.get("profiles")) {
-    if js_string(p.get("id")) == id {
-      return Some(profile_of(p, self.given.data, id => self.found(id)))
-    }
-  }
-  None
+  self.hub_config().profiles.iter().find_first(p => p.id == id)
 }
 
 ///|
 /// `health`: how a profile is doing, for the pool.
 pub fn Accounts::health(self : Accounts, id : String) -> Health {
   let account = match self.profile(id) {
-    Some(p) if p.runtime == "codex" && access_kind(p.raw) == "subscription" =>
+    Some(p) if p.runtime == Some("codex") && access_kind(p.raw) == "subscription" =>
       self.codex_account(p)
     _ => None
   }
@@ -695,16 +689,16 @@ async fn Accounts::codex_account_read(
 ) -> Unit {
   let under = self.codex_account_reads.get(profile.id)
   match under {
-    Some(u) if !again => {
+    Some((u_home, u)) if !again && u_home == profile.home => {
       u.wait()
       return
     }
     _ => ()
   }
   let read = @effect.Deferred::new()
-  self.codex_account_reads[profile.id] = read
+  self.codex_account_reads[profile.id] = (profile.home, read)
   match under {
-    Some(u) => u.wait() catch { _ => () }
+    Some((_, u)) => u.wait() catch { _ => () }
     None => ()
   }
   let account = self.ask("codex.accountIdentity", [js(profile.home)]) catch {
@@ -720,7 +714,7 @@ async fn Accounts::codex_account_read(
     )
   }
   match self.codex_account_reads.get(profile.id) {
-    Some(r) if physical_equal(r, read) => self.codex_account_reads.remove(profile.id)
+    Some((_, r)) if physical_equal(r, read) => self.codex_account_reads.remove(profile.id)
     _ => ()
   }
   ignore(read.succeed(()))
@@ -729,15 +723,22 @@ async fn Accounts::codex_account_read(
 ///|
 /// `codexAccountsRead`: every Codex subscription profile's account read again.
 pub async fn Accounts::codex_accounts_read(self : Accounts) -> Unit {
-  let codex = self.profiles().filter(p => p.runtime == "codex" && access_kind(p.raw) == "subscription")
+  let codex = self.profiles().filter(p => p.runtime == Some("codex") && access_kind(p.raw) == "subscription")
   for p in codex {
     self.codex_account_read(p, true)
   }
 }
 
 ///|
-/// `lentHealth`: how a profile is doing, told to a station borrowing it.
-pub async fn Accounts::lent_health(self : Accounts, id : String) -> Health {
+/// `lentHealth`: how a profile is doing, told to a station borrowing it; `recheck`: the borrower was refused on it, so
+/// it is asked of its provider again first (`recheck_profile`).
+pub async fn Accounts::lent_health(self : Accounts, id : String, recheck? : Bool = false) -> Health {
+  if recheck {
+    self.recheck_profile(id) catch {
+      _ => ()
+    }
+    return self.health(id)
+  }
   if !self.quotas.contains(id) ||
     self.background.now() - self.quota_asked_at(id) >= quota_every_ms {
     ignore(self.refresh_quota(id)) catch {
@@ -781,7 +782,7 @@ pub async fn Accounts::claude_token(
     None | Some(Null) => ""
     h => js_string(h)
   }
-  let joined = js_string(Some(self.ask("paths.join", [js(self.given.data), js(home)])))
+  let joined = @nodepath.join(self.b.sep, [self.given.data, home])
   let (token, expires_at) = claude_oauth_token(
     self.ctx,
     Some(joined),
@@ -1022,7 +1023,7 @@ pub async fn Accounts::put_profile(
     let existing = list.iter().find_first(p => p.get("id") == Some(Str(id)))
     let machine = jget(existing, "machine") == Some(Bool(true))
     let get = (key : String) => if machine &&
-      !["model", "models", "backgroundOnMessage", "fast"].contains(key) {
+      !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions", "newAccountProtection"].contains(key) {
       None
     } else {
       match given.get(key) {
@@ -1151,6 +1152,29 @@ pub async fn Accounts::put_profile(
           _ => None
         }
     }
+    let given_max_sessions = get("maxConcurrentSessions")
+    let max_concurrent_sessions : Int? = match given_max_sessions {
+      None =>
+        match jget(existing, "maxConcurrentSessions") {
+          Some(Num(n)) if is_integer(n) && n > 0.0 => Some(n.to_int())
+          _ => None
+        }
+      Some(Null) => None
+      Some(Num(n)) if is_integer(n) && n == 0.0 => None
+      Some(Num(n)) if is_integer(n) && n > 0.0 => Some(n.to_int())
+      Some(_) =>
+        raise refusal(400, "maxConcurrentSessions must be a positive integer or null")
+    }
+    let given_protection = get("newAccountProtection")
+    let new_account_protection = match given_protection {
+      Some(Bool(false)) | Some(Null) => false
+      Some(Bool(true)) => given_max_sessions is None && max_concurrent_sessions is Some(_)
+      Some(_) => raise refusal(400, "newAccountProtection must be a boolean")
+      None =>
+        given_max_sessions is None &&
+        max_concurrent_sessions is Some(_) &&
+        jget(existing, "newAccountProtection") == Some(Bool(true))
+    }
     let withheld : Array[String] = match given_workspaces {
       Some(Arr(ws)) => joined.filter(w => !ws.contains(Str(w)))
       Some(Null) => joined
@@ -1174,43 +1198,24 @@ pub async fn Accounts::put_profile(
       Some(n) if n != "" => fields.push(("name", js(n)))
       _ => ()
     }
-    let runtime = match runtime_kind(get("runtime")) {
-      Some(r) => Some(r)
-      None => runtime_kind(jget(existing, "runtime"))
-    }
+    let (runtime, built_access) = put_profile_runtime_and_access(
+      existing,
+      get("runtime"),
+      access,
+      keep,
+      kind,
+      key,
+      provider,
+      endpoint,
+      protocol,
+      given_key,
+    )
     match runtime {
       Some(r) => fields.push(("runtime", js(r)))
       None => ()
     }
-    match kind {
-      Some(k) => {
-        let a = [("kind", js(k))]
-        match key {
-          Some(kv) => a.push(("key", js(kv)))
-          None => ()
-        }
-        if api {
-          match provider {
-            Some(p) => a.push(("provider", js(p)))
-            None => ()
-          }
-          match endpoint {
-            Some(e) => a.push(("endpoint", js(e)))
-            None => ()
-          }
-          match protocol {
-            Some(p) => a.push(("protocol", js(p)))
-            None => ()
-          }
-        }
-        let signs_in = k == "opencode-go" || (api && provider == Some(kimi_code))
-        if signs_in &&
-          jget(keep, "login") == Some(Bool(true)) &&
-          given_key is None {
-          a.push(("login", jbool(true)))
-        }
-        fields.push(("access", jobj(a)))
-      }
+    match built_access {
+      Some(a) => fields.push(("access", a))
       None => ()
     }
     fields.push(("home", js(home)))
@@ -1232,6 +1237,15 @@ pub async fn Accounts::put_profile(
     }
     if background == Some(false) {
       fields.push(("backgroundOnMessage", jbool(false)))
+    }
+    match max_concurrent_sessions {
+      Some(n) => {
+        fields.push(("maxConcurrentSessions", jint(n)))
+        if new_account_protection {
+          fields.push(("newAccountProtection", jbool(true)))
+        }
+      }
+      None => ()
     }
     if fast == Some(true) {
       fields.push(("fast", jbool(true)))
@@ -1288,7 +1302,7 @@ pub fn manages_station(viewer : JV) -> Bool {
 /// `#keepQuota`: an allowance read kept, and as its hour's.
 fn Accounts::keep_quota(self : Accounts, id : String, quota : JV) -> Unit {
   self.background.track(async fn() {
-    ignore(self.ask("store.setProfileQuota", [js(id), quota]))
+    self.b.with_store(s => s.set_profile_quota(Json::string(id), jv_to_json(quota)))
   })
   self.pace_rev += 1
 }
@@ -1309,7 +1323,7 @@ pub async fn Accounts::delete_profile(
     }
     jset(raw, "profiles", jarr(list.filter(p => p.get("id") != Some(Str(id)))))
   })
-  ignore(self.ask("store.forgetProfileHours", [js(id)]))
+  self.b.with_store(s => s.forget_profile_hours(Json::string(id)))
   self.pace_rev += 1
   if self.given.hub_profile_gone {
     self.background.track(async fn() {
@@ -1433,4 +1447,70 @@ async fn Accounts::profile_gone(self : Accounts, id : String, what : String) -> 
   run() catch {
     e => self.log("warn", what, [("profile", js(id)), ("error", js(message_of(e)))])
   }
+}
+
+///|
+/// Pure helper for `Accounts::put_profile`: resolves `service`, `runtime` (omitted for `service` profiles),
+/// and the serialized `access` object so edits to `service` profiles never drop `access.service` or write `runtime`.
+fn put_profile_runtime_and_access(
+  existing : JV?,
+  given_runtime : JV?,
+  access : JV?,
+  keep : JV?,
+  kind : String?,
+  key : String?,
+  provider : String?,
+  endpoint : String?,
+  protocol : String?,
+  given_key : String?,
+) -> (String?, JV?) {
+  let service = match jget(access, "service") {
+    Some(Str(s)) if trim_js(s) != "" && access is Some(Obj(_)) => Some(trim_js(s))
+    _ => jstr(jget(keep, "service"))
+  }
+  let runtime = if kind == Some("service") {
+    None
+  } else {
+    match runtime_kind(given_runtime) {
+      Some(r) => Some(r)
+      None => runtime_kind(jget(existing, "runtime"))
+    }
+  }
+  let api = kind == Some("api-provider")
+  let built_access = match kind {
+    Some(k) => {
+      let a = [("kind", js(k))]
+      match key {
+        Some(kv) => a.push(("key", js(kv)))
+        None => ()
+      }
+      if k == "service" {
+        match service {
+          Some(s) => a.push(("service", js(s)))
+          None => ()
+        }
+      }
+      if api {
+        match provider {
+          Some(p) => a.push(("provider", js(p)))
+          None => ()
+        }
+        match endpoint {
+          Some(e) => a.push(("endpoint", js(e)))
+          None => ()
+        }
+        match protocol {
+          Some(p) => a.push(("protocol", js(p)))
+          None => ()
+        }
+      }
+      let signs_in = k == "opencode-go" || (api && provider == Some(kimi_code))
+      if signs_in && jget(keep, "login") == Some(Bool(true)) && given_key is None {
+        a.push(("login", jbool(true)))
+      }
+      Some(jobj(a))
+    }
+    None => None
+  }
+  (runtime, built_access)
 }

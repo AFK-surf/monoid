@@ -3,42 +3,8 @@
 // `failure_of`), and so is what says the tools are out of reach (`unreachable`): taken from there, one text for both.
 
 ///|
-/// The runtimes a station runs, in the order they are offered.
-let runtime_kinds : Array[String] = [
-  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi",
-]
-
-///|
-/// A runtime as stored or sent, none for anything else (`runtimeKind`).
-pub fn runtime_kind(v : JValue?) -> String? {
-  match v {
-    Some(Str(u)) => {
-      let t = @jsjson.text(u)
-      if runtime_kinds.contains(t) {
-        Some(t)
-      } else {
-        None
-      }
-    }
-    _ => None
-  }
-}
-
-///|
-/// How a runtime is named to people (`runtimeLabel`).
-pub fn runtime_label(r : String) -> String {
-  match r {
-    "claude" => "Claude Code"
-    "codex" => "Codex"
-    "dsh" => "DeepSeek Harness"
-    "grok" => "Grok Build"
-    "cursor" => "Cursor"
-    "hermes" => "Hermes Agent"
-    "agy" => "Antigravity CLI"
-    "pi" => "Pi"
-    _ => "Devin"
-  }
-}
+/// A runtime as stored or sent (`runtimeKind`) and how it is named to people (`runtimeLabel`).
+pub using @agent_runtimes {runtime_kind, runtime_label}
 
 ///|
 /// The station's tools by their server's name.
@@ -47,7 +13,7 @@ let tool_servers : Array[String] = ["stillfail"]
 ///|
 /// A tool call's error that says the station's tools could not be reached at all.
 pub fn tools_unreachable(text : String) -> Bool {
-  @claude.unreachable(@jsjson.units(text))
+  @claude.unreachable(text)
 }
 
 ///|
@@ -65,7 +31,7 @@ pub fn failure_of(
   limit_codes? : Array[String] = [],
   limit? : Array[String] = [],
 ) -> String {
-  @claude.failure_of(@jsjson.units(text), auth_codes~, auth~, limit_codes~, limit~)
+  @claude.failure_of(text, auth_codes~, auth~, limit_codes~, limit~)
 }
 
 ///|
@@ -74,7 +40,7 @@ pub fn chars(text : String, count : Int) -> String {
   if text.length() <= count {
     return text
   }
-  @jsjson.text(@claude.chars(@jsjson.units(text), count))
+  @jsjson.sanitize_str(@claude.chars(text, count))
 }
 
 ///|

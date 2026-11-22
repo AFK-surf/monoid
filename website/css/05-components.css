@@ -38,12 +38,13 @@
 /* An agent as an avatar: its maker's 12 logo on a disc of ink at 7.5%. */
 .mk-av { position: relative; display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 50%; background: var(--nb); }
 .mk-av > .mk-lg { --s: 12px; }
-/* Chat marks, in a 10 slot before the title: done / your turn (blue), needs you (red), working (yellow spokes, stepping). */
+/* Chat marks, in a 10 slot before the title: done / your turn (blue), needs you (red), working (the app's amber spokes,
+   stepping). The page and its pictures are light only: the app's day ink. */
 .mk-dot { flex: none; width: 8px; height: 8px; margin: 0 1px; border-radius: 50%; background: #3B82F6; }
 .mk-dot.r { background: #E5484D; }
 .mk-slot { flex: none; width: 10px; }
 .mk-busy { --spokes: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.9' stroke-linecap='round'><path d='M12 7.2V2.4'/><path d='M15.39 8.61l3.4-3.4' stroke-opacity='.2'/><path d='M16.8 12h4.8' stroke-opacity='.2'/><path d='M15.39 15.39l3.4 3.4' stroke-opacity='.25'/><path d='M12 16.8v4.8' stroke-opacity='.32'/><path d='M8.61 15.39l-3.4 3.4' stroke-opacity='.42'/><path d='M7.2 12H2.4' stroke-opacity='.55'/><path d='M8.61 8.61l-3.4-3.4' stroke-opacity='.75'/></svg>");
-  display: inline-block; flex: none; width: 10px; height: 10px; background: #F2B01E;
+  display: inline-block; flex: none; width: 10px; height: 10px; background: #E08A00;
   -webkit-mask: var(--spokes) center / 100% no-repeat; mask: var(--spokes) center / 100% no-repeat; }
 /* The running ring: eight dashes 3px outside the avatar in the product's orange, the lead bright and the tail fading. */
 .mk-av.ag::after { content: ""; position: absolute; inset: -3px; background: #DC5929;

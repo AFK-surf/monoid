@@ -103,21 +103,7 @@ pub fn login_tool() -> J {
 ///|
 /// JavaScript's `\s`.
 fn js_space(c : Int) -> Bool {
-  c == 0x09 ||
-  c == 0x0a ||
-  c == 0x0b ||
-  c == 0x0c ||
-  c == 0x0d ||
-  c == 0x20 ||
-  c == 0xa0 ||
-  c == 0x1680 ||
-  (c >= 0x2000 && c <= 0x200a) ||
-  c == 0x2028 ||
-  c == 0x2029 ||
-  c == 0x202f ||
-  c == 0x205f ||
-  c == 0x3000 ||
-  c == 0xfeff
+  @jsjson.is_js_space(c)
 }
 
 ///|
@@ -155,15 +141,7 @@ fn hide_links(s : String) -> String {
 ///|
 /// `text.split(sub).join(with)`.
 fn replace_all(s : String, sub : String, with_ : String) -> String {
-  if sub == "" {
-    // (split("") is every unit apart: each joined with `with`)
-    let units = []
-    for i in 0..<s.length() {
-      units.push(String::from_array([Int::unsafe_to_char(s.code_unit_at(i).to_int())]))
-    }
-    return units.join(with_)
-  }
-  s.split(sub).map(v => v.to_string()).collect().join(with_)
+  @jsjson.js_replace_all(s, sub, with_)
 }
 
 ///|
@@ -171,21 +149,69 @@ fn replace_all(s : String, sub : String, with_ : String) -> String {
 fn hidden(login : J, s : String) -> String {
   let out = hide_links(s)
   match get(Some(login), "code") {
-    Some(Str(c)) if c.length() > 0 => replace_all(out, @jsjson.raw_text(c), "<code>")
+    Some(Str(c)) if c.length() > 0 => replace_all(out, c, "<code>")
     _ => out
   }
 }
 
 ///|
+/// A line of the screen as its agent reads it: its text, the row it ends on as the terminal has it, and whether the
+/// cursor is on it.
+priv struct ShownLine {
+  mut text : String
+  mut raw_end : String
+  mut cursor : Bool
+}
+
+///|
 /// The screen as its agent reads it: the lines with something on them (the last 30), the page's address and the code
-/// hidden, the line the cursor is on marked.
+/// hidden, the line the cursor is on marked. A line the terminal wrapped (`wrapped`) and a link the program broke over
+/// lines itself (`url_continuation`) are put together first: hidden whole, no part of the page's address is left to
+/// read.
 pub fn screen_for(screen : Screen?, login : J) -> String {
   guard screen is Some(screen) else { return "" }
-  let hide = (line : String) => js_trim_end(hidden(login, line))
-  let lines = screen.rows.mapi((y, row) => if y == screen.cursor.1 && screen.live {
-    hide(row) + "▏"
-  } else {
-    hide(row)
+  let wrapped : Array[ShownLine] = []
+  for y, row in screen.rows {
+    let here = y == screen.cursor.1 && screen.live
+    if wrapped.last() is Some(prev) &&
+      y < screen.wrapped.length() &&
+      screen.wrapped[y] {
+      prev.text = prev.text + row
+      prev.raw_end = row
+      prev.cursor = prev.cursor || here
+    } else {
+      wrapped.push({ text: row, raw_end: row, cursor: here })
+    }
+  }
+  let logical : Array[ShownLine] = []
+  let mut i = 0
+  while i < wrapped.length() {
+    let first = wrapped[i]
+    let line : ShownLine = { text: first.text, raw_end: first.raw_end, cursor: first.cursor }
+    let mut wrap_width : Int? = None
+    while i + 1 < wrapped.length() {
+      let trimmed = js_trim_end(line.text)
+      let next = wrapped[i + 1]
+      guard @ops_platform.url_continuation(line.raw_end, trimmed, next.text, COLS, wrap_width)
+        is Some(width) else {
+        break
+      }
+      line.text = trimmed + @jscase.trim_start(next.text)
+      line.raw_end = next.raw_end
+      line.cursor = line.cursor || next.cursor
+      wrap_width = Some(width)
+      i += 1
+    }
+    logical.push(line)
+    i += 1
+  }
+  let lines = logical.map(line => {
+    let shown = js_trim_end(hidden(login, line.text))
+    if line.cursor {
+      shown + "▏"
+    } else {
+      shown
+    }
   })
   let mut end = lines.length()
   while end > 0 && @jscase.trim(lines[end - 1]) == "" {
@@ -282,7 +308,7 @@ pub fn told_with(shown_screen : Screen?, login : J, link : String?, where_? : Wh
       "It was cancelled."
     } else {
       let error = match get(l, "error") {
-        Some(Str(e)) if e.length() > 0 => ": " + hidden(login, @jsjson.raw_text(e))
+        Some(Str(e)) if e.length() > 0 => ": " + hidden(login, e)
         _ => "."
       }
       "It failed\{if get(l, "timedOut") is Some(Bool(true)) { " (out of time)" } else { "" }}\{error}"
@@ -325,8 +351,8 @@ pub fn told_with(shown_screen : Screen?, login : J, link : String?, where_? : Wh
         Obj(xs) => xs.copy()
         _ => []
       }
-      out.push((@jsjson.units("station"), js(w.station)))
-      out.push((@jsjson.units("stationName"), js(w.name)))
+      out.push(("station", js(w.station)))
+      out.push(("stationName", js(w.name)))
       J::Obj(out)
     }
     None => state_json
@@ -351,7 +377,7 @@ pub async fn act(logins : Logins, args : J, o : Acting) -> String {
   let a = Some(args)
   match get(a, "id") {
     Some(Str(u)) if u.length() > 0 => {
-      let id = @jsjson.raw_text(u)
+      let id = u
       if logins.get(id) is None ||
         (match o.mine {
           Some(m) => !m(id)
@@ -366,7 +392,7 @@ pub async fn act(logins : Logins, args : J, o : Acting) -> String {
       } else if get(a, "input") is Some(Str(_)) || get(a, "key") is Some(Str(_)) {
         let key = match get(a, "key") {
           Some(Str(k)) => {
-            let low = @jscase.lower(@jsjson.raw_text(k))
+            let low = @jscase.lower(k)
             match tool_keys.search_by(p => p.0 == low) {
               Some(i) => Some(tool_keys[i].1)
               None => raise Failure("key: one of " + tool_keys.map(p => p.0).join(", "))
@@ -429,11 +455,11 @@ pub(all) struct LoginToolDeps {
 /// The tool's call by `session`.
 pub async fn run_login_tool(deps : LoginToolDeps, session : String, args : J) -> String {
   match get(Some(args), "station") {
-    Some(Str(u)) if @jscase.trim(@jsjson.raw_text(u)) != "" => {
+    Some(Str(u)) if @jscase.trim(u) != "" => {
       guard deps.remote is Some(remote) else {
         raise Failure("logging in another station is not there yet: log in on this station")
       }
-      return remote(@jscase.trim(@jsjson.raw_text(u)), session, args)
+      return remote(@jscase.trim(u), session, args)
     }
     _ => ()
   }
@@ -459,7 +485,7 @@ pub fn ended_notice(login : J, link : String?, where_? : Where) -> String {
   } else {
     let error = match get(l, "error") {
       Some(Str(e)) if e.length() > 0 => {
-        let lines = @jsjson.raw_text(e).split("\n").map(x => x.to_string()).collect()
+        let lines = e.split("\n").map(x => x.to_string()).collect()
         ": " + hidden(login, lines[@cmp.maximum(0, lines.length() - 9):].to_array().join(" / "))
       }
       _ => ""

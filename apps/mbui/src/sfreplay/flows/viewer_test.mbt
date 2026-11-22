@@ -28,6 +28,8 @@ test "96-viewer" {
       f.run_to(fn() { rows_end })
     }
     f.tap("两张图片 201493")
+    // (the chat pushed and its reads waited for (open_hold) before its bar is looked for)
+    f.run_for(@ui.move_most_ms)
     f.see("=willow")
     f.see("img:e2e-photo.jpg")
     f.tap("img:e2e-photo.jpg")
@@ -54,6 +56,8 @@ test "96-viewer" {
     f.gone("=完成")
     f.t.marks_make(marked)
     f.tap("icon:download")
+    // (its marks drawn and kept by the host before the toast says so: frames of its own at a test's host)
+    f.run_for(@ui.move_most_ms)
     // (a phone's: into its photo album, said so: keep_way_of)
     f.see("已保存到相册")
     let kept = f.t.kept().filter(fn(k) { k.0.has_prefix("e2e-photo-标注-") && k.0.has_suffix(".png") })
@@ -65,6 +69,7 @@ test "96-viewer" {
     f.check(f.t.marks_drawn().length() >= 1, "no marks drawn onto the picture")
     f.t.marks_make(marked)
     f.tap("添加到对话")
+    f.run_for(@ui.move_most_ms)
     f.gone("=添加到对话")
     f.see("发消息")
     // the quote and the picture in the composer long enough to be kept as the chat's draft (draft.put), in the run as

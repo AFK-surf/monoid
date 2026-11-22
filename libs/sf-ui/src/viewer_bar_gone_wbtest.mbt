@@ -1,5 +1,5 @@
-// The bar across the top of a file opened (viewer_bar), told to go up out of the way: it goes as each frame is painted,
-// told once as it is built, nothing built again for its way up; it takes no press from the moment it is told to go.
+// The bar across the top of a file opened as nodes (viewer_bar_node), told to go up out of the way: it goes as each
+// frame is painted, nothing built again for its way up.
 
 ///|
 test "the viewer's bar going up out of the way: drawn higher each frame as it is painted, nothing built for its way" {
@@ -12,11 +12,8 @@ test "the viewer's bar going up out of the way: drawn higher each frame as it is
     chosen: 0x2427E71FL,
   }
   let hidden = @signals.signal(false, same=fn(a, b) { a == b })
-  let t = @ui.Tester::new(
-    fn(c) { viewer_bar(c, "bar", "整理发布清单", "a.png", "18 KB", hidden.get(), ink, fn() {  }) |> ignore },
-    w=1280.0,
-    h=800.0,
-  )
+  let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0)
+  @ui.set_view_app(fn(root) { viewer_bar_test_node(root, ink, fn() { hidden.get() }) })
   t.check_looks(false)
   t.draw()
   // (the bar's glass, across the window: where its top is drawn)
@@ -24,7 +21,7 @@ test "the viewer's bar going up out of the way: drawn higher each frame as it is
   let rest = top()
   assert_true(rest.length() == 1, msg="\{Repr(t.drawn_glass())}")
   // (told to go: built for that)
-  hidden.set(true)
+  @ui.view_tree().unwrap().event(t.time(), fn() { hidden.set(true) })
   t.draw()
   let end = t.time() + viewer_bar_ms
   let built : Array[String] = []

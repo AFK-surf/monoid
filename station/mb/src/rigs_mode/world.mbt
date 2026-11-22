@@ -3,13 +3,14 @@
 // `remote.ask`..., with its arguments as the TypeScript gives them, answered as it answers: a value (undefined said
 // `{"$u": 1}`), or what it threw (`Thrown(kind, message)`, a refusal of the mesh `Refused`). A function given as an
 // argument (a card made again from the one it was, a write done inside another) is a callback the station may call back
-// while it is asked (`World::callback`). The program's own station gives its parts; the harness asks the test, which
+// while it is asked (`World::callback`), at once: a write runs inside the station's own transaction, so it never waits
+// on anything. The program's own station gives its parts; the harness asks the test, which
 // answers from the same fakes the TypeScript runs against.
 
 ///|
 pub(all) struct World {
   call : async (String, Array[Json]) -> Json
-  callback : (async (Array[Json]) -> Json) -> Json
+  callback : ((Array[Json]) -> Json raise) -> Json
 }
 
 ///|

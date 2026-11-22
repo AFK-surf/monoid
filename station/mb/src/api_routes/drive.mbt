@@ -19,18 +19,7 @@ pub impl Show for DriveErr with output(self, logger) {
 
 ///|
 fn drive_status(code : String) -> Int32 {
-  match code {
-    "invalid_request" => 400
-    "not_a_root" | "not_found" => 404
-    "path_escape" | "protected" | "permission" => 403
-    "is_a_directory"
-    | "not_a_directory"
-    | "exists"
-    | "upload_lost"
-    | "no_trash" => 409
-    "too_large" => 413
-    _ => 500
-  }
+  @drive.code_status(code)
 }
 
 ///|
@@ -53,23 +42,14 @@ const GRANT_MS : Double = 604800000.0
 
 ///|
 fn base_name(p : String) -> String {
-  // node:path basename (POSIX), no suffix
-  let mut end = p.length()
-  while end > 0 && p.unsafe_charcode_at(end - 1) == '/' {
-    end -= 1
-  }
-  let trimmed = p.unsafe_substring(start=0, end~)
-  match trimmed.rev_find("/") {
-    Some(at) => trimmed.unsafe_substring(start=at + 1, end=trimmed.length())
-    None => trimmed
-  }
+  @nodepath.basename("/", p)
 }
 
 ///|
 /// A refusal in the asker's words.
 fn Admin::drive_refused(self : Admin, e : Error, lang : String) -> Answer {
   let (code, message, said) = match e {
-    DriveErr(code, message) => (code, message, Obj([]))
+    DriveErr(code, message) => (code, message, JV::Obj([]))
     Thrown("DriveError", said) =>
       (js_string(said.get("code")), message_of(e), said)
     _ => ("io", message_of(e), Obj([]))
@@ -291,7 +271,7 @@ fn Admin::drive_routes(self : Admin) -> Array[Route] {
             jset(was, "roots", jarr(roots))
           } else {
             let workspaces = match was.get("workspaces") {
-              None | Some(Null) => Obj([])
+              None | Some(Null) => JV::Obj([])
               v => spread_of(v)
             }
             jset(
@@ -559,7 +539,7 @@ fn conflicts_of(v : JV?) -> JV raise DriveErr {
   match v {
     None | Some(Null) => Obj([])
     Some(Obj(fields)) => {
-      let mut out = Obj([])
+      let mut out = JV::Obj([])
       for f in fields {
         match f.1 {
           Str("replace" | "keep" | "skip") => out = jset(out, f.0, f.1)

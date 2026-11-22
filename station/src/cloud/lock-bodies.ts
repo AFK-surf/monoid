@@ -7,7 +7,7 @@
 // entry drops a body). Pure but for its file: who is told is the caller's.
 import { existsSync, readFileSync } from "node:fs";
 import { writePrivate } from "../ops/files.ts";
-import { type Entry, bodyHash, bodyRefusal, canonical } from "./lock.ts";
+import { type Entry, bodyHash, bodyRefusal, canonical } from "../../../shared/lock.ts";
 
 /// The longest body taken, in its canonical form: a statement says a person, a key, the settings.
 export const BODY_MOST = 16 * 1024;

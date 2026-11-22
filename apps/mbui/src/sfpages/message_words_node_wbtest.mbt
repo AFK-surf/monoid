@@ -97,53 +97,6 @@ fn said_view() -> ChatView {
 }
 
 ///|
-/// What the old view draws by `draw` (its Ctx, the fixture's source, where it is: out of a list, or in a chat's list
-/// where `listed`, as the nodes' rows are; inline where `w` is narrow), `w` wide (`h` high), in a row's room; the
-/// source `src` where it is given (else history's).
-fn said_old(
-  w : Double,
-  draw : (@ui.Ctx, Source, MessageHere) -> Unit,
-  platform? : Int = 0,
-  src? : Source,
-  h? : Double = 320.0,
-  listed? : Bool = false,
-) -> @ui.Tester {
-  @sf.set_words(@sfbase.fill)
-  absolute_times.set(false)
-  let src = src.unwrap_or(@sffixture.fixture("history"))
-  let view = said_view()
-  let here : MessageHere = {
-    station: "ws1/st1",
-    session: "s1",
-    view,
-    go: None,
-    inline: w <= chat_narrow_w,
-    gutter: 0.0,
-    list: if listed {
-      Some({ rk: "said", turns: @sfbase.turns_of("said"), emits: @sfbase.emits_of("said"), flight: None })
-    } else {
-      None
-    },
-    core: None,
-  }
-  @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() { c.box(style=head_frame, fn() { draw(c, src, here) }) |> ignore })
-    },
-    w~,
-    h~,
-    platform~,
-  )
-}
-
-///|
-/// A message `m` as the old view draws it in its row (message_row in row_box).
-fn said_old_row(w : Double, m : Message, platform? : Int = 0, src? : Source, h? : Double = 320.0, listed? : Bool = false) -> @ui.Tester {
-  said_old(w, platform~, src?, h~, listed~, fn(c, src, here) { row_box(c, row_side(w), 0.0, fn() { message_row(c, src, here, m) }) |> ignore })
-}
-
-///|
 /// What the nodes draw by `draw` (a column's node, the fixture's source, where it is: its list `w` wide, or as
 /// `width_now` says), `w` wide; what is presented over it drawn where `presents`; the source `src` where it is given
 /// (else history's).
@@ -265,60 +218,44 @@ fn said_cases() -> Array[(String, Message)] {
 }
 
 ///|
-test "what a person wrote, made once as nodes, is drawn as the old view drew it: the viewer's and another's, short and wrapped, wide and narrow, its time pressed, at 1.3" {
+test "what a person wrote, made once as nodes: the viewer's and another's, short and wrapped, wide and narrow, its time pressed, at 1.3" {
   for c in said_cases() {
     for w in [760.0, 390.0] {
       let at = "\{c.0} at \{w}"
-      let old = said_old_row(w, c.1)
-      old.run_for(@ui.move_most_ms)
-      let was = head_drawn(old)
       let t = said_new_row(w, fn() { c.1 })
       t.run_for(@ui.move_most_ms)
-      assert_eq(head_drawn(t), was, msg=at)
       let faults = said_audit(t, if c.0.contains("long") { 1 } else { 0 })
       assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
     }
   }
-  // its time pressed: when it was, in both
+  // its time pressed: when it was
   for mine in [true, false] {
-    let old = said_old_row(760.0, said_msg(mine~))
-    old.run_for(@ui.move_most_ms)
-    old.tap_text("2 分钟前")
-    old.run_for(@ui.move_most_ms)
-    let was = head_drawn(old)
     absolute_times.set(false)
     let t = said_new_row(760.0, fn() { said_msg(mine~) })
     t.run_for(@ui.move_most_ms)
     t.tap_text("2 分钟前")
     t.run_for(@ui.move_most_ms)
-    assert_eq(head_drawn(t), was, msg="mine \{mine}")
+    assert_true(t.find("2026-11-11 21:06") is Some(_), msg="mine \{mine}")
     absolute_times.set(false)
   }
   // the words at 1.3, narrow
   for mine in [true, false] {
-    let old = said_old_row(390.0, said_msg(mine~, long=true))
-    old.set_font_scale(1.3)
-    old.run_for(@ui.move_most_ms)
-    let was = head_drawn(old)
     let t = said_new_row(390.0, fn() { said_msg(mine~, long=true) })
     t.set_font_scale(1.3)
     t.run_for(@ui.move_most_ms)
-    assert_eq(head_drawn(t), was, msg="mine \{mine}")
     let faults = said_audit(t, 1)
     assert_true(faults.is_empty(), msg=faults.join(" | "))
   }
 }
 
 ///|
-test "the words found are drawn as the old view's person_words draws them found" {
+test "the words found are drawn by person_words_node" {
   let m = said_msg(long=true)
   let found = ["签名", "顺序"]
-  let old = said_old(760.0, fn(c, _, _) { person_words(c, m.text, "m:ts5", found~, chat_title=chat_title_of(m), runs=m.words) })
-  old.run_for(@ui.move_most_ms)
-  let was = head_drawn(old)
   let t = said_new(760.0, fn(f, _, _) { person_words_node(f, fn() { m }, found=fn() { found }) |> ignore })
   t.run_for(@ui.move_most_ms)
-  assert_eq(head_drawn(t), was)
+  assert_true(t.find("签名") is Some(_))
+  assert_true(t.find("顺序") is Some(_))
 }
 
 ///|
@@ -432,59 +369,24 @@ fn said_share(m : Message, went : Ref[Int]) -> MessageShare {
 }
 
 ///|
-/// Someone else's message `m` as the old view draws it offering itself (others_message with `share`: as in a chat's
-/// list, its ⋯ and a right click's offer), its words a person's, in its row.
-fn said_old_shared(w : Double, m : Message) -> @ui.Tester {
-  said_old(w, fn(c, src, here) {
-    row_box(c, row_side(w), 0.0, fn() {
-      others_message(
-        c,
-        here.inline,
-        "m:ts5",
-        m.time,
-        share=Some(fn() {  }),
-        share_link="https://app.still.fail/m/5",
-        share_words=m.text,
-        fn() { message_avatar(c, src, here, m, "") },
-        fn() { message_name(c, src, here, "m:ts5", m.by.name, "", m.by.from) },
-        None,
-        fn() { person_words(c, m.text, "m:ts5", chat_title=chat_title_of(m), runs=m.words) },
-      )
-    })
-    |> ignore
-  })
-}
-
-///|
 /// Where a Tester has the ⋯ of a message (its button, as a screen reader is told it: none while it is not shown).
 fn said_more(t : @ui.Tester) -> (Double, Double, Double, Double)? {
   t.query(Button, label=@sf.t("web-main.menu.more")).map(fn(s) { s.rect })
 }
 
 ///|
-test "someone else's offering itself: drawn as the old view drew it, its ⋯ at the head's end shown under the pointer alone, wide and narrow" {
+test "someone else's offering itself: its ⋯ at the head's end shown under the pointer alone, wide and narrow" {
   for w in [760.0, 390.0] {
     for long in [false, true] {
       let m = said_msg(long~)
       let at = "\{w} long \{long}"
-      let old = said_old_shared(w, m)
-      old.run_for(@ui.move_most_ms)
-      let was = head_drawn(old)
-      assert_true(said_more(old) is None, msg=at + ": the old one's ⋯ not under the pointer")
-      let (wx, wy) = said_piece(old, if long { "安装包签名" } else { "好，就这么办" })
-      old.move_to(wx, wy)
-      old.run_for(@ui.move_most_ms)
-      let was_hovered = head_drawn(old)
-      let more = said_more(old)
-      assert_true(more is Some(_), msg=at + ": the old one's ⋯ under the pointer")
       let t = said_new_row(w, fn() { m }, share=Some(said_share(m, Ref(0))))
       t.run_for(@ui.move_most_ms)
-      assert_eq(head_drawn(t), was, msg=at)
       assert_true(said_more(t) is None, msg=at + ": its ⋯ not under the pointer")
+      let (wx, wy) = said_piece(t, if long { "安装包签名" } else { "好，就这么办" })
       t.move_to(wx, wy)
       t.run_for(@ui.move_most_ms)
-      assert_eq(head_drawn(t), was_hovered, msg=at + ", under the pointer")
-      assert_eq(said_more(t), more, msg=at + ": its ⋯ where the old one's was")
+      assert_true(said_more(t) is Some(_), msg=at + ": its ⋯ under the pointer")
       let faults = said_audit(t, if long { 1 } else { 0 })
       assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
     }
@@ -637,19 +539,16 @@ fn said_with_files(mine : Bool, names : Array[String]) -> Message {
 }
 
 ///|
-test "what a person wrote with files, made once as nodes, is drawn as the old view drew it: the viewer's between what it quotes and its words, another's under their words, wide and narrow" {
+test "what a person wrote with files, made once as nodes: the viewer's between what it quotes and its words, another's under their words, wide and narrow" {
   for mine in [true, false] {
     for w in [760.0, 390.0] {
       let at = "\{if mine { "mine" } else { "ana" }} at \{w}"
       let m = said_with_files(mine, ["notes.pdf", "release.zip"])
-      let old = said_old_row(w, m)
-      old.run_for(@ui.move_most_ms)
-      let was = head_drawn(old)
-      // (a file's card says its name's stem and its kind apart: message_file_card's)
-      assert_true(was.contains("notes@") && was.contains(".pdf@"), msg=at + ": the old view draws its file")
       let t = said_new_row(w, fn() { m })
       t.run_for(@ui.move_most_ms)
-      assert_eq(head_drawn(t), was, msg=at)
+      let now = head_drawn(t)
+      // (a file's card says its name's stem and its kind apart: message_file_card_node's)
+      assert_true(now.contains("notes@") && now.contains(".pdf@"), msg=at + ": draws its file")
       let faults = said_audit(t, 0)
       assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
     }

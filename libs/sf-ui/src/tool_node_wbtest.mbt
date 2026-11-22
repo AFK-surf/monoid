@@ -1,5 +1,5 @@
-// A bar's tool as a node of the window's tree (tool_node) beside the old one (viewer_tool), each in the same state:
-// drawn the same where they are (their instances, in their own terms), read out the same; the node pressed by each
+// A bar's tool as a node of the window's tree (tool_node), in each state: drawn as that state is, read out as it is
+// (an old view's icon button beside it, sharing the window's tip with it); the node pressed by each
 // way in as the host gives it (a click, a finger's tap, Enter and Space with the focus, a screen reader's Activate) at
 // its moment, no frame drawn; said unable to be pressed between frames, by none of them; its ring as the keyboard's
 // focus comes to it and goes.
@@ -12,8 +12,8 @@ let enter_code : Int = 7
 let space_code : Int = 1032
 
 ///|
-/// The old tool ("… old", an old view's) and the node's ("… new") side by side, each saying what `said` says in the ink
-/// `ink` says: how many times each was pressed, in `pressed`. The node's holder taking presses while `held` says; the
+/// An old view's icon button ("… old", its tip the old view's) and the node's tool ("… new") side by side, each saying
+/// what `said` says (the node's in the ink `ink` says): how many times each was pressed, in `pressed`. The node's holder taking presses while `held` says; the
 /// node there while `there`; a modal layer of the tree's over all of it while `modal`.
 fn tools_tester(
   said : @signals.Signal[ToolSaid],
@@ -31,20 +31,10 @@ fn tools_tester(
     root.row(Is(true)) |> ignore
     // (room before them: what goes beside either kept in the window by none of its edges)
     root.box(fn(g) { g.width(Is(Some(60.0))) |> ignore }) |> ignore
-    root.box(fn(h) {
-      h.width(Is(Some(100.0))).height(Is(Some(100.0))) |> ignore
-      @ui.old(h, fn(c) {
-        let s = said.get()
-        viewer_tool(c, "old", s.icon, s.label + " old", ink.get(), on=s.on, disabled=s.disabled, on_press=fn() {
-          count("old")
-        })
-      }).grow(Is(1.0))
-      |> ignore
-    })
-    |> ignore
-    // (the layer over all of it the node's tip is drawn in: made last, over the rest)
+    // (the layer over all of it the nodes' tips are drawn in: made last, over the rest)
     let layer : Ref[@view.View?] = Ref(None)
     let tips = TipLayer::new(fn() { layer.val })
+    let other_tips = TipLayer::new(fn() { layer.val })
     tips_made.val = Some(tips)
     root.box(fn(b) {
       b.width(Is(Some(100.0))).height(Is(Some(100.0))).presses(By(fn() { held.get() })) |> ignore
@@ -62,6 +52,21 @@ fn tools_tester(
       )
       |> ignore
       })
+    })
+    |> ignore
+    root.box(fn(h) {
+      h.width(Is(Some(100.0))).height(Is(Some(100.0))) |> ignore
+      icon_button_node(
+        h,
+        "copy",
+        fn() { said.get().label + " old" },
+        fn() { count("old") },
+        tips=other_tips,
+        icon_now=fn() { said.get().icon },
+        on=fn() { said.get().on },
+        disabled=fn() { said.get().disabled },
+      )
+      |> ignore
     })
     |> ignore
     root.show(fn() { modal.get() }, fn(m) { m.over(Is(true)).modal(Is(true)) |> ignore })
@@ -164,13 +169,12 @@ let night_ink : ViewerInk = {
 }
 
 ///|
-test "a tool as a node beside the old one, in each state and as what it says changes once made (at rest, pointed at, on, on and pointed at, unable; another icon and words; another ink): drawn the same, as big, read out as it is (what can be done to it said, as the old one does not)" {
+test "a tool as a node in each state and as what it says changes once made (at rest, pointed at, on, on and pointed at, unable; another icon and words; another ink): a square of tool_side, drawn as each state is, read out as it is (what can be done to it said)" {
   let said = @signals.signal({ icon: "copy", label: "复制", on: false, disabled: false }, same=fn(a, b) { a == b })
   let ink = @signals.signal(page_viewer_ink())
   let t = tools_tester(said, ink, {})
-  let old = t.get(Button, label="复制 old")
   let new = t.get(Button, label="复制 new")
-  assert_eq((old.rect.2, old.rect.3), (new.rect.2, new.rect.3), msg="as big")
+  assert_eq((new.rect.2, new.rect.3), (tool_side, tool_side), msg="as big")
   let copy = { icon: "copy", label: "复制", on: false, disabled: false }
   let states : Array[(String, ToolSaid, ViewerInk, Bool)] = [
     ("at rest", copy, page_viewer_ink(), false),
@@ -181,27 +185,27 @@ test "a tool as a node beside the old one, in each state and as what it says cha
     ("another icon and words", { icon: "check", label: "已复制", on: false, disabled: false }, page_viewer_ink(), false),
     ("another ink", copy, night_ink, true),
   ]
+  let drawn : Array[Array[String]] = []
   for st in states {
     let (name, s, k, over) = st
     said.set(s)
     ink.set(k)
     t.draw()
-    let o = t.get(Button, label=s.label + " old")
     let n = t.get(Button, label=s.label + " new")
-    // (the pointer over each in turn, or over neither)
+    // (the pointer over it, or away)
     if over {
-      t.move_to(o.rect.0 + 16.0, o.rect.1 + 16.0)
+      t.move_to(n.rect.0 + 16.0, n.rect.1 + 16.0)
     } else {
       t.leave()
     }
-    let old_drawn = drawn_within(t, o.rect)
-    if over {
-      t.move_to(n.rect.0 + 16.0, n.rect.1 + 16.0)
+    let now = drawn_within(t, n.rect)
+    assert_true(!now.is_empty(), msg="\{name}: drawn")
+    // (each state drawn otherwise than every one before it)
+    for i, was in drawn {
+      assert_true(now != was, msg="\{name}: drawn as \{states[i].0} is: \{Repr(now)}")
     }
-    let new_drawn = drawn_within(t, n.rect)
-    assert_eq(new_drawn, old_drawn, msg="\{name}: new \{Repr(new_drawn)} old \{Repr(old_drawn)}")
-    assert_eq((n.role, n.pressed, n.disabled), (o.role, o.pressed, o.disabled), msg="\{name}: read out")
-    // (what can be done to it said as it is: the old one says none of it though a screen reader's Activate presses it)
+    drawn.push(now)
+    assert_eq((n.pressed, n.disabled), (Some(s.on), s.disabled), msg="\{name}: read out")
     let can : Array[@ui.Action] = if s.disabled { [] } else { [Activate, Focus] }
     assert_eq(n.actions, can, msg="\{name}: what can be done to it")
   }
@@ -280,20 +284,11 @@ test "a tool as a node lit as the keyboard's focus comes to it as where the hand
 }
 
 ///|
-test "a tool as a node's tip: shown as the pointer rests on it tip_delay_ms, not before; drawn as the old one's is, beside it as that is beside its own; gone as the pointer leaves" {
+test "a tool as a node's tip: shown as the pointer rests on it tip_delay_ms, not before; drawn, under it; gone as the pointer leaves" {
   let said = @signals.signal({ icon: "copy", label: "复制", on: false, disabled: false }, same=fn(a, b) { a == b })
   let t = tools_tester(said, @signals.signal(page_viewer_ink()), {})
-  let o = t.get(Button, label="复制 old")
   let n = t.get(Button, label="复制 new")
   let tip_of = fn(label : String) { t.semantics().filter(fn(s) { s.role == Tooltip && s.label == label }) }
-  // (the old one's, rested on long enough)
-  t.move_to(o.rect.0 + 16.0, o.rect.1 + 16.0)
-  t.run_for(tip_delay_ms + tip_settled_ms)
-  assert_eq(tip_of("复制 old").length(), 1, msg="the old one's shown")
-  let old_tip = tip_of("复制 old")[0]
-  let old_drawn = drawn_within(t, old_tip.rect)
-  t.leave()
-  t.run_for(tip_settled_ms)
   // (the node's: not yet a moment before its time, shown at it)
   t.move_to(n.rect.0 + 16.0, n.rect.1 + 16.0)
   t.run_for(tip_delay_ms - tip_short_ms)
@@ -301,14 +296,11 @@ test "a tool as a node's tip: shown as the pointer rests on it tip_delay_ms, not
   t.run_for(tip_short_ms + tip_settled_ms)
   assert_eq(tip_of("复制 new").length(), 1, msg="shown")
   let new_tip = tip_of("复制 new")[0]
-  // (beside its button as the old one is beside its own)
-  assert_eq(
-    (new_tip.rect.0 - n.rect.0, new_tip.rect.1 - n.rect.1, new_tip.rect.2, new_tip.rect.3),
-    (old_tip.rect.0 - o.rect.0, old_tip.rect.1 - o.rect.1, old_tip.rect.2, old_tip.rect.3),
-    msg="where, how big: new \{Repr(new_tip.rect)} by \{Repr(n.rect)}; old \{Repr(old_tip.rect)} by \{Repr(o.rect)}",
-  )
-  let new_drawn = drawn_within(t, new_tip.rect)
-  assert_eq(new_drawn, old_drawn, msg="drawn: new \{Repr(new_drawn)} old \{Repr(old_drawn)}")
+  // (under its button, across its middle)
+  assert_true(new_tip.rect.1 >= n.rect.1 + n.rect.3, msg="under it: \{Repr(new_tip.rect)} by \{Repr(n.rect)}")
+  let mid = n.rect.0 + n.rect.2 / 2.0
+  assert_true(new_tip.rect.0 <= mid && new_tip.rect.0 + new_tip.rect.2 >= mid, msg="across its middle: \{Repr(new_tip.rect)} by \{Repr(n.rect)}")
+  assert_true(!drawn_within(t, new_tip.rect).is_empty(), msg="drawn")
   t.leave()
   t.run_for(tip_settled_ms)
   assert_eq(tip_of("复制 new").length(), 0, msg="gone as the pointer left")
@@ -596,7 +588,7 @@ test "a tip coming in and going as kit's does: its ground the first half of the 
 }
 
 ///|
-/// Where the tip of tool `which` ("old" or "new", tools_tester's) is drawn and how big, as its ground is drawn (the
+/// Where the tip of tool `which` ("new", tools_tester's) is drawn and how big, as its ground is drawn (the
 /// biggest box drawn under its tool, beside it), in its tool's terms: at each turn of the hand on it and away (shown
 /// whole; half way gone; back on it a moment; whole again; most of the way gone).
 fn tip_drawn_turns(which : String) -> Array[String] raise {
@@ -633,7 +625,7 @@ fn tip_drawn_turns(which : String) -> Array[String] raise {
   t.run_for(tip_delay_ms + 400.0)
   out.push(look("whole"))
   t.move_to(380.0, 190.0)
-  t.run_for(@kit.pop_out_ms / 2.0)
+  t.run_for(@motion.pop_out_ms / 2.0)
   out.push(look("half way gone"))
   t.move_to(cx, cy)
   t.run_for(a_moment_ms)
@@ -641,18 +633,21 @@ fn tip_drawn_turns(which : String) -> Array[String] raise {
   t.run_for(tip_settled_ms)
   out.push(look("whole again"))
   t.move_to(380.0, 190.0)
-  t.run_for(@kit.pop_out_ms * 0.75)
+  t.run_for(@motion.pop_out_ms * 0.75)
   out.push(look("most of the way gone"))
   out
 }
 
 ///|
-test "a tip going as kit's goes, drawn smaller as it fades about its edge toward its tool (pop_out), whole as it comes back from wherever it was turned: where and how big it is drawn at each turn, as the old one's" {
-  let old = tip_drawn_turns("old")
+test "a tip going fades out symmetrically without shrinking, matching its resting box across turns" {
   let new = tip_drawn_turns("new")
-  assert_eq(new, old, msg="new \{Repr(new)} old \{Repr(old)}")
-  // (going, smaller than whole: the scale itself, not only the fade)
-  assert_true(new[1] != new[0], msg="half way gone as big as whole: \{Repr(new)}")
+  assert_true(new[0] != "whole: none", msg="whole: \{Repr(new)}")
+  // (pure fade exit: position and size stay identical throughout fade-out and turn-back)
+  for i in 1..<new.length() {
+    let want = new[0].split(":").collect()[1]
+    let got = new[i].split(":").collect()[1]
+    assert_eq(got, want, msg="turn \{i} changed size/position: \{Repr(new)}")
+  }
 }
 
 ///|
@@ -684,11 +679,11 @@ fn finger_held_tip(wait : Double, then_press : Bool) -> (Bool, Bool, Bool, Int) 
 
 ///|
 test "a tool as a node's tip held open by a finger, as kit's tooltip: shown once held long_press_ms, the press then no tap; on a while after it is let go, gone tooltip_lifted_ms after, or at the next press wherever it lands" {
-  let (held, lifted, later, pressed) = finger_held_tip(@kit.tooltip_lifted_ms / 2.0, false)
+  let (held, lifted, later, pressed) = finger_held_tip(@headless.tooltip_lifted_ms / 2.0, false)
   assert_eq((held, lifted, later, pressed), (true, true, true, 0), msg="held, let go, half its while after: still: \{Repr((held, lifted, later, pressed))}")
-  let (_, _, gone, _) = finger_held_tip(@kit.tooltip_lifted_ms + @kit.pop_out_ms * 2.0, false)
+  let (_, _, gone, _) = finger_held_tip(@headless.tooltip_lifted_ms + @motion.pop_out_ms * 2.0, false)
   assert_true(!gone, msg="its while over: gone")
-  let (_, _, pressed_off, _) = finger_held_tip(@kit.pop_out_ms * 2.0, true)
+  let (_, _, pressed_off, _) = finger_held_tip(@motion.pop_out_ms * 2.0, true)
   assert_true(!pressed_off, msg="the next press, elsewhere: gone")
 }
 
@@ -743,10 +738,10 @@ fn held_then(then : (@ui.Tester, @signals.Signal[ToolSaid], Double, Double) -> U
   t.run_for(@ui.long_press_ms + 50.0)
   let held = shown()
   then(t, said, cx, cy)
-  t.run_for(@kit.pop_out_ms * 2.0)
+  t.run_for(@motion.pop_out_ms * 2.0)
   let gone = !shown()
   after(t, said)
-  t.run_for(@kit.pop_out_ms * 2.0)
+  t.run_for(@motion.pop_out_ms * 2.0)
   (held, gone, !shown())
 }
 

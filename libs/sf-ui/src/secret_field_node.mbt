@@ -289,6 +289,8 @@ pub fn record_row_node(
   loc~ : SourceLoc,
 ) -> Unit {
   style_node(row, fn() { record_row }, loc~)
+  // (when, on the first line's baseline of what used it, as it is drawn)
+  row.lines_up_baseline(loc~, Is(true)) |> ignore
   row.box(made_for=loc, fn(t) {
     style_node(t, fn() { record_text }, in_row=true, loc~)
     t.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
@@ -302,8 +304,7 @@ pub fn record_row_node(
     how(t)
   })
   |> ignore
-  // (when, on its first line)
-  first_line_node(loc~, row, Ui, leading=L6, fn(w) { words_node(loc~, w, when, fn() { record_when }) |> ignore }) |> ignore
+  words_node(loc~, row, when, fn() { record_when }).shrink(Is(0.0)) |> ignore
 }
 
 ///|
@@ -397,7 +398,8 @@ let record_rows : @ui.Style = @ui.css("w=Full gap=S3_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let record_row : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
+// (its items on one baseline: lines_up_baseline, record_row_node)
+let record_row : @ui.Style = @ui.css("row w=Full gap=S3")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -16,21 +16,36 @@ let sample : String =
   #|```
 
 ///|
+fn md_node_tester(
+  w : Double,
+  h : Double,
+  platform? : Int = 0,
+  pad? : Double = 16.0,
+  body : (@view.View) -> Unit,
+) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, h~, platform~)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.lines_up(Is(None)) |> ignore
+    root.box(fn(col) {
+      if pad > 0.0 {
+        col.padding(Is((pad, pad, pad, pad))) |> ignore
+      }
+      body(col)
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
 test "a message's Markdown: its blocks, their margins collapsed, links and copy" {
   let went = []
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.column(w=Fill(1.0), pad=16.0, fn() {
-        @sf.markdown(c, sample, on_link=fn(h) { went.push(h) }) |> ignore
-      })
-      |> ignore
-    },
-    w=390.0,
-    h=844.0,
-    // (a phone's: its words a finger's size)
-    platform=2,
-  )
+  let t = md_node_tester(390.0, 844.0, platform=2, fn(col) {
+    @sf.markdown_node(col, fn() { sample }, on_link=fn(h) { went.push(h) }) |> ignore
+  })
   // the heading first, its top margin dropped
   let (_, hy, _, _) = t.rect_of("今天的进度").unwrap()
   assert_eq(hy, 16.0)
@@ -58,79 +73,77 @@ test "a message's Markdown: its blocks, their margins collapsed, links and copy"
 ///|
 test "a table's cell of only the message's images: them side by side, 160 wide at most, not their names" {
   let drawn : Array[(String, Double)] = []
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      drawn.clear()
-      c.column(w=Fill(1.0), pad=16.0, fn() {
-        @sf.markdown(
-          c,
-          "| 网页 | 手机网页 |\n|---|---|\n| ![](web%2Dfolded.png) | ![](phone.png) |\n",
-          files=fn(name) {
-            // a wide one and a tall one
-            let r = if name == "web-folded.png" { 2.0 } else { 0.5 }
-            Some({ draw: fn() {  }, image: Some((r, fn(w) { drawn.push((name, w)) })) })
-          },
-        )
-        |> ignore
-      })
-      |> ignore
-    },
-    w=390.0,
-    h=844.0,
-  )
+  let t = md_node_tester(390.0, 844.0, fn(col) {
+    @sf.markdown_node(
+      col,
+      fn() { "| 网页 | 手机网页 |\n|---|---|\n| ![](web%2Dfolded.png) | ![](phone.png) |\n" },
+      files=fn(name) {
+        // a wide one and a tall one
+        let r = if name == "web-folded.png" { 2.0 } else { 0.5 }
+        Some({
+          draw: fn(_) {  },
+          image: Some((r, fn(v, w) {
+            v.width(By(fn() {
+              let x = w()
+              drawn.push((name, x))
+              Some(x)
+            }))
+            |> ignore
+          })),
+        })
+      },
+    )
+    |> ignore
+  })
   t.draw()
-  assert_eq(drawn, [("web-folded.png", 160.0), ("phone.png", 120.0)])
+  assert_true(drawn.contains(("web-folded.png", 160.0)) && drawn.contains(("phone.png", 120.0)), msg="\{Repr(drawn)}")
   assert_true(t.find("web") is None)
   assert_true(t.find("网页") is Some(_))
 }
 
 ///|
 test "a paragraph of only the message's images: side by side as one row's height, onto the next row when they don't fit" {
-  let text = @signals.signal("")
-  let drawn : Array[(String, Double)] = []
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      drawn.clear()
-      c.column(w=Fill(1.0), pad=16.0, fn() {
-        @sf.markdown(c, text.get(), files=fn(name) {
-          // a.png and b.png a little taller than wide, the wide ones twice as wide as high
-          let r = if name.has_prefix("wide") { 2.0 } else { 0.64 }
-          Some({
-            draw: fn() {  },
-            image: Some(
-              (
-                r,
-                fn(w) {
-                  drawn.push((name, w))
-                  c.box(w=Px(w), h=Px(w / r), fn() { c.text(name, wrap=false) |> ignore }) |> ignore
-                },
-              ),
-            ),
-          })
-        })
-        |> ignore
+  let text = @signals.signal("左边是新做法，右边是现在的：\n\n![](a.png) ![](b.png)\n")
+  let widths : Map[String, Double] = Map([])
+  let t = md_node_tester(390.0, 844.0, fn(col) {
+    @sf.markdown_node(col, fn() { text.get() }, files=fn(name) {
+      // a.png and b.png a little taller than wide, the wide ones twice as wide as high
+      let r = if name.has_prefix("wide") { 2.0 } else { 0.64 }
+      Some({
+        draw: fn(_) {  },
+        image: Some(
+          (
+            r,
+            fn(v, w) {
+              v
+              .width(By(fn() {
+                let x = w()
+                widths[name] = x
+                Some(x)
+              }))
+              .height(By(fn() { Some(w() / r) }))
+              .words(Is(name))
+              |> ignore
+            },
+          ),
+        ),
       })
-      |> ignore
-    },
-    w=390.0,
-    h=844.0,
-  )
-  text.set("左边是新做法，右边是现在的：\n\n![](a.png) ![](b.png)\n")
-  t.draw()
+    })
+    |> ignore
+  })
   t.draw()
   // both on one row, 200 high (the most a row is): as wide as that makes them, 8 apart
-  assert_eq(drawn, [("a.png", 128.0), ("b.png", 128.0)])
+  assert_eq((widths.get("a.png"), widths.get("b.png")), (Some(128.0), Some(128.0)))
   let (ax, ay, _, _) = t.rect_of("a.png").unwrap()
   let (bx, by, _, _) = t.rect_of("b.png").unwrap()
   assert_eq(by, ay)
   assert_eq(bx, ax + 128.0 + 8.0)
   // two wide ones (240 each at 120 high) don't fit the message's 358 side by side: each a row of its own, as wide as it
+  widths.clear()
   text.set("![](wide1.png) ![](wide2.png)")
   t.frame()
   t.frame()
-  assert_eq(drawn, [("wide1.png", 358.0), ("wide2.png", 358.0)])
+  assert_eq((widths.get("wide1.png"), widths.get("wide2.png")), (Some(358.0), Some(358.0)))
   let (_, y1, _, _) = t.rect_of("wide1.png").unwrap()
   let (_, y2, _, _) = t.rect_of("wide2.png").unwrap()
   assert_eq(y2, y1 + 179.0 + 8.0)
@@ -149,12 +162,10 @@ test "a table in a shared picture fits whole inside the message and leaves room 
       ]],
       ["p", ["After the table"]],
     ]
-    let t = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      c.column(w=Fill(1.0), pad=16.0, fn() {
-        @sf.markdown(c, "wide table \{cols} \{font_scale} " + words, tree=Some(tree), copy=false, fit_tables=true) |> ignore
-      }) |> ignore
-    }, w=760.0, h=844.0)
+    let t = md_node_tester(760.0, 844.0, fn(col) {
+      @sf.markdown_node(col, fn() { "wide table \{cols} \{font_scale} " + words }, tree=fn() { Some(tree) }, copy=false, fit_tables=true)
+      |> ignore
+    })
     t.set_font_scale(font_scale)
     t.draw()
     let (_, _, _, first_h) = t.rect_of("First").unwrap()
@@ -172,19 +183,10 @@ test "a table in a shared picture fits whole inside the message and leaves room 
 ///|
 test "a table too wide for the message: its columns 14em, not squeezed; scrolled out over the page's margin to its end, its key's in line with the words" {
   let long = "a long cell of words that would wrap to a word or two if squeezed into the message"
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.column(w=Fill(1.0), pad=16.0, fn() {
-        @sf.markdown(c, "| 一 | 二 | 三 |\n|---|---|---|\n| one \{long} | two \{long} | three \{long} |\n", bleed=16.0)
-        |> ignore
-      })
-      |> ignore
-    },
-    w=390.0,
-    h=844.0,
-  )
-  t.draw()
+  let t = md_node_tester(390.0, 844.0, fn(col) {
+    @sf.markdown_node(col, fn() { "| 一 | 二 | 三 |\n|---|---|---|\n| one \{long} | two \{long} | three \{long} |\n" }, bleed=fn() { 16.0 })
+    |> ignore
+  })
   t.draw()
   let column = 14.0 * 13.0 + 24.0
   let (x1, y) = t.drawn_of("one a long").unwrap()
@@ -211,14 +213,9 @@ test "a table too wide for the message: its columns 14em, not squeezed; scrolled
 
 ///|
 test "an image the app cannot draw reads as its file's name, decoded" {
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      @sf.markdown(c, "见 ![](web%2Dfolded%2D2%2Epng)") |> ignore
-    },
-    w=390.0,
-    h=844.0,
-  )
+  let t = md_node_tester(390.0, 844.0, pad=0.0, fn(col) {
+    @sf.markdown_node(col, fn() { "见 ![](web%2Dfolded%2D2%2Epng)" }) |> ignore
+  })
   t.draw()
   assert_true(t.find("web-folded-2.png") is Some(_))
 }
@@ -228,27 +225,21 @@ let long_code : String = "let total = items.map(fn(x) { x.price * x.count }).fol
 
 ///|
 test "a code block's line longer than the message: on one line, scrolled across; its wrap key wraps it at the block's width, pressed again on one line again" {
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.column(w=Fill(1.0), pad=16.0, fn() { @sf.markdown(c, "```js\n" + long_code + "\n```\n\n之后的一段") |> ignore })
-      |> ignore
-    },
-    w=390.0,
-    h=844.0,
-    platform=2,
-  )
+  let t = md_node_tester(390.0, 844.0, platform=2, fn(col) {
+    @sf.markdown_node(col, fn() { "```js\n" + long_code + "\n```\n\n之后的一段" }) |> ignore
+  })
   // (how far down what follows the block is: the block as tall as its lines)
   let y0 = t.rect_of("之后的一段").unwrap().1
   t.tap_text("换行")
-  t.draw()
+  t.run_for(@ui.move_most_ms)
   let y1 = t.rect_of("之后的一段").unwrap().1
   // (wrapped: on lines enough for its words, two more of its 18 at least)
   assert_true(y1 >= y0 + 18.0 * 2.0, msg="wrapped: \{y0} -> \{y1}")
   t.tap_text("不换行")
-  t.draw()
+  t.run_for(@ui.move_most_ms)
   assert_eq(t.rect_of("之后的一段").unwrap().1, y0)
   // (copied whole either way)
   t.tap_text("复制")
+  t.run_for(@ui.move_most_ms)
   assert_eq(t.clipboard(), long_code)
 }

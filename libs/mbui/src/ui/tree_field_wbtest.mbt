@@ -1203,6 +1203,44 @@ test "a field of the tree's of a size and colours followed: as each changes alon
 }
 
 ///|
+test "a field of the tree's colours read off the clock (a way that ends, drawn_while): painted in them as each frame is, no frame more asked at the same moment as it ends" {
+  let f = Field::new(text="abc")
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  let until = @signals.signal(-1.0, same=fn(a, b) { a == b })
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))) |> ignore
+      field(h, f, label="字", max_lines=1, font_size=10.0, colors_by=fn() {
+        let u = until.get()
+        let k = if h.drawn_while(fn(at) { at < u }) < u { 0xFF0000FFL } else { 0x00FF00FFL }
+        (k, k, k)
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let inks = fn() { t.drawn_glyphs().map(fn(gl) { gl.2 }) }
+  // (red till 100 from now, then green: told so in a change, as words sent from a composer tell its caret)
+  let end = t.time() + 100.0
+  until.set(end)
+  let seen : Array[(Double, Array[Int64])] = []
+  t.each_frame(Some(fn() { seen.push((t.time(), inks())) }))
+  t.run_shown(200.0)
+  t.each_frame(None)
+  let times = seen.map(fn(s) { s.0 })
+  for i in 1..<times.length() {
+    assert_true(times[i] > times[i - 1], msg="two frames at one moment: \{Repr(times)}")
+  }
+  guard seen.last() is Some((_, last)) else { fail("no frame drawn: \{Repr(times)}") }
+  assert_eq(last, [0x00FF00FFL, 0x00FF00FFL, 0x00FF00FFL])
+  assert_true(
+    seen.iter().all(fn(s) { s.0 >= end || s.1.iter().all(fn(k) { k == 0xFF0000FFL }) }),
+    msg="red before its end: \{Repr(seen)}",
+  )
+}
+
+///|
 test "a field of the tree's focus asked before its node is made: given it as the node is, words typed in the first frame its; the tree's focus and the window's one" {
   let on = @signals.signal(false, same=fn(a, b) { a == b })
   let f = Field::new()
@@ -1696,4 +1734,352 @@ test "whether a field has the focus, read before its field of the tree is made, 
   f.let_go()
   t.draw()
   assert_eq(seen, [true, false])
+}
+
+///|
+test "a field of the tree's placeholder measured by gaps_steady as faded as it is painted: by its colour's alpha, none of it with words in the field" {
+  let f = Field::new()
+  let hint_alpha = @signals.signal(0xFFL, same=fn(a, b) { a == b })
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))) |> ignore
+      field(h, f, label="字", max_lines=1, font_size=10.0, placeholder="写点什么", colors_by=fn() {
+        (0x000000FFL, 0x88888800L | hint_alpha.get(), 0x000000FFL)
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let said = fn() {
+    t.gaps_words().filter(fn(w) { w.0 == "写点什么" }).map(fn(w) { (w.5 * 100.0).round() / 100.0 })
+  }
+  let whole = said()
+  hint_alpha.set(0L)
+  t.frame()
+  let clear = said()
+  // (found all the same, as faded as its node is drawn: Tester::words, for what finds it and follows it frame by frame)
+  let found = t.words().filter(fn(w) { w.0 == "写点什么" }).map(fn(w) { w.5 })
+  hint_alpha.set(0xFFL)
+  t.frame()
+  f.set("ab")
+  t.frame()
+  let written = said()
+  assert_eq((whole, clear, written, found), ([1.0], [0.0], [0.0], [1.0]))
+}
+
+///|
+test "a field of the tree's right clicked: wins over an ancestor's on_menu, focuses it, tells on_field_menu, skips when disabled; field_edit_now repaints and tells paste_limit" {
+  let f = Field::new(text="hello world")
+  let disabled = @signals.signal(false)
+  let ancestor_menus = Ref(0)
+  let asked : Array[(Int, Int)] = []
+  let pasted : Array[String] = []
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=0)
+  set_view_app(fn(root) {
+    on_field_menu(root, fn(id, _x, _y, can) { asked.push((id, can)) })
+    root.box(fn(h) {
+      h.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))).on_menu(fn(_) { ancestor_menus.val += 1 }) |> ignore
+      let fv = field(
+        h,
+        f,
+        label="输入框",
+        font_size=12.0,
+        max_lines=1,
+        paste_limit=5,
+        pasted=fn(s) { pasted.push(s) },
+      )
+      fv.presses(By(fn() { !disabled.get() })).focusable(By(fn() { !disabled.get() }), keys=0) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // right click inside the field: ancestor's on_menu does not steal it, field gets focus and on_field_menu fires
+  t.right_click(40.0, 26.0)
+  assert_eq(ancestor_menus.val, 0)
+  assert_eq(asked.length(), 1)
+  assert_true(f.focused())
+  let (fid, can) = asked[0]
+  assert_true((can & @hostapi.text_menu_paste) != 0 && (can & @hostapi.text_menu_select_all) != 0)
+  // field_edit_now select all updates selection and repaints selection rect (hiding the independent caret)
+  field_edit_now(fid, @hostapi.text_menu_select_all)
+  t.frame()
+  assert_eq(f.selection(), (0, 11))
+  assert_true(t.drawn_rects().iter().any(fn(r) { r.2 > 20.0 }), msg="select all painted selection rect")
+  // field_edit_now paste exceeding paste_limit triggers pasted callback via tree_field_told
+  t.clipboard_gives("123456")
+  field_edit_now(fid, @hostapi.text_menu_paste)
+  t.frame()
+  t.frame()
+  assert_eq(pasted, ["123456"])
+  // disabled field: right click does not open its menu (falls through to ancestor)
+  disabled.set(true)
+  t.draw()
+  t.right_click(40.0, 26.0)
+  assert_eq(asked.length(), 1)
+  assert_eq(ancestor_menus.val, 1)
+}
+
+///|
+test "a field of the tree's on Android: long press picks the word there instead of being stolen by its context menu" {
+  let f = Field::new(text="alpha beta")
+  let asked = Ref(0)
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=2)
+  set_view_app(fn(root) {
+    on_field_menu(root, fn(_id, _x, _y, _can) { asked.val += 1 })
+    root.box(fn(h) {
+      h.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))) |> ignore
+      field(h, f, label="输入框", font_size=14.0, max_lines=1) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.touch(0, 32.0, 28.0)
+  t.run_for(long_press_ms + 50.0)
+  t.touch(2, 32.0, 28.0)
+  t.frame()
+  assert_eq(asked.val, 0)
+  assert_true(f.focused())
+  let (a, b) = f.st.sel()
+  assert_true(b > a, msg="Android long press selected a word: (\{a}, \{b})")
+}
+
+///|
+test "a field of the tree's selection highlight stays painted while a modal layer parks its focus" {
+  let f = Field::new(text="selected text")
+  let open = @signals.signal(false)
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=0)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))) |> ignore
+      field(h, f, label="输入框", font_size=14.0, max_lines=1, caret_color=0x0A84FFFFL) |> ignore
+    })
+    |> ignore
+    root.show(fn() { open.get() }, fn(layer) {
+      layer.over(Is(true)).modal(Is(true)).width(Is(Some(300.0))).height(Is(Some(200.0))) |> ignore
+      let btn = layer.box(fn(b) { b.width(Is(Some(40.0))).height(Is(Some(20.0))).focusable(Is(true)) |> ignore })
+      layer.focus_opens(btn) |> ignore
+    })
+  })
+  t.draw()
+  f.focus()
+  t.draw()
+  t.key(key_select_all)
+  t.draw()
+  let sel_color = (0x0A84FFFFL & 0xFFFFFF00L) | 0x40L
+  let focused_sels = t.drawn_rects().filter(fn(r) { r.4 == sel_color }).length()
+  assert_true(focused_sels > 0, msg="selection painted while focused")
+  open.set(true)
+  t.draw()
+  assert_true(f.parked(), msg="focus parked under modal")
+  let parked_sels = t.drawn_rects().filter(fn(r) { r.4 == sel_color }).length()
+  assert_eq(parked_sels, focused_sels, msg="selection stayed painted while focus is parked")
+}
+
+///|
+test "one Field in two branches that take each other's place, what moves of the first flying to the second: handed over, no fault; typed into in the second, still its once the flight is over; two fields of it shown at once still a fault" {
+  let flight : @view.Flight = { way: fn(_) { (move_most_ms, fn(ms) { ms / move_most_ms }) } }
+  let f = Field::new()
+  let two = @signals.signal(false, same=fn(a, b) { a == b })
+  let card : Ref[@view.View?] = Ref(None)
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=300.0)
+  set_view_app(fn(root) {
+    root.show(fn() { !two.get() }, at_once=true, fn(b) {
+      b.over(Is(true)).width(Is(Some(200.0))) |> ignore
+      field(b, f, label="字", font_size=10.0, max_lines=1) |> ignore
+      b.box(fn(th) {
+        th.width(Is(Some(20.0))).height(Is(Some(20.0))).shared(Is("thumb"), flight, stays=true) |> ignore
+      })
+      |> ignore
+      b.box(fn(c) { c.width(Is(Some(40.0))).height(Is(Some(40.0))).shared(Is("card"), flight) |> ignore }) |> ignore
+    })
+    root.show(fn() { two.get() }, at_once=true, fn(b) {
+      b.over(Is(true)).offset(Is((0.0, 100.0))).width(Is(Some(200.0))) |> ignore
+      field(b, f, label="字", font_size=10.0, max_lines=1) |> ignore
+      b.box(fn(c) {
+        card.val = Some(c)
+        c.width(Is(Some(100.0))).height(Is(Some(100.0))).shared(Is("card"), flight) |> ignore
+      })
+      |> ignore
+    })
+  })
+  t.draw()
+  two.set(true)
+  t.draw()
+  // (the card flies from the first branch's: that branch put by till the change is committed whole, its field handing
+  // the Field over to the second's)
+  assert_true(card.val.unwrap().flies())
+  f.focus()
+  t.draw()
+  t.type_text("好")
+  t.draw()
+  assert_eq(f.text(), "好")
+  t.run_for(move_most_ms)
+  assert_false(card.val.unwrap().flies())
+  assert_true(f.focused())
+  t.type_text("的")
+  t.draw()
+  assert_eq(f.text(), "好的")
+  // (two fields of one Field shown at once: a fault still)
+  let g = Field::new()
+  let fell : Ref[String?] = Ref(None)
+  @view.faults_stop.val = false
+  let t2 = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  set_view_app(fn(root) {
+    root.boundary(
+      fn(b) {
+        field(b, g, label="一", font_size=10.0, max_lines=1) |> ignore
+        field(b, g, label="二", font_size=10.0, max_lines=1) |> ignore
+      },
+      fn(_v, said) { fell.val = Some(said) },
+    )
+  })
+  t2.draw()
+  t2.draw()
+  @view.faults_stop.val = true
+  assert_eq(fell.val, Some("field: one Field given to two fields of the tree's: a Field is one editor's"))
+}
+
+///|
+test "tree field inside a clipped parent: caret handle and selection handles are unclipped and raised to top" {
+  let f = Field::new(text="hello world")
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=2)
+  set_view_app(fn(root) {
+    root.box(fn(box) {
+      box.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))).height(Is(Some(24.0))).clips(Is(true)) |> ignore
+      field(box, f, label="字", font_size=14.0, max_lines=1) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Tap to place caret and show caret handle
+  t.tap(50.0, 30.0)
+  t.draw()
+  let st = g().editors.get(g().focus).unwrap()
+  assert_true(st.handle_on)
+  // Find the caret handle circle (2*handle_r x 2*handle_r) and verify its clip bottom extends beyond the 44pt clipped box
+  let circles = insts().filter(fn(a) { a[5] == 0.0 && (a[2] - 2.0 * handle_r).abs() < 0.5 && (a[3] - 2.0 * handle_r).abs() < 0.5 })
+  assert_true(circles.length() >= 1, msg="expected caret handle circle")
+  for c in circles {
+    assert_true(c[19] > 100.0, msg="caret handle clipped by parent: clip_y1=\{c[19]}")
+  }
+  // Long-press to select a word and show selection handles
+  t.press_at(45.0, 30.0)
+  t.run_for(long_press_ms + 20.0)
+  t.release(45.0, 30.0)
+  t.draw()
+  assert_true(st.sel_on)
+  let sel_circles = insts().filter(fn(a) { a[5] == 0.0 && (a[2] - 2.0 * handle_r).abs() < 0.5 && (a[3] - 2.0 * handle_r).abs() < 0.5 })
+  assert_eq(sel_circles.length(), 2, msg="expected two selection handle circles")
+  for c in sel_circles {
+    assert_true(c[19] > 100.0, msg="selection handle clipped by parent: clip_y1=\{c[19]}")
+  }
+}
+
+///|
+test "selection without IME composition hides the independent blinking caret" {
+  let f = Field::new(text="hello world")
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=0)
+  set_view_app(fn(root) {
+    root.box(fn(box) {
+      box.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))) |> ignore
+      field(box, f, label="字", font_size=14.0, max_lines=1) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.tap(40.0, 28.0)
+  t.draw()
+  let carets_empty = insts().filter(fn(a) { a[5] == 0.0 && a[2] == caret_w })
+  assert_eq(carets_empty.length(), 1, msg="expected 1 caret when selection is empty")
+  // Select a range
+  f.st.anchor = 0
+  f.st.caret = 5
+  tree_field_redraw()
+  t.draw()
+  let carets_sel = insts().filter(fn(a) { a[5] == 0.0 && a[2] == caret_w })
+  assert_eq(carets_sel.length(), 0, msg="expected 0 independent carets while range is selected")
+}
+
+///|
+test "tree field long-press word drag drives finger_reads loupe" {
+  let f = Field::new(text="hello world again")
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=2, pointing=Finger, native=Finger)
+  set_view_app(fn(root) {
+    root.box(fn(box) {
+      box.over(Is(true)).offset(Is((20.0, 40.0))).width(Is(Some(220.0))) |> ignore
+      field(box, f, label="字", font_size=14.0, max_lines=1) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.press_at(45.0, 48.0)
+  t.run_for(long_press_ms + 20.0)
+  t.move_to(90.0, 48.0)
+  t.draw()
+  assert_true(finger_reads() is Some(_), msg="expected finger_reads() to be Some during tree_field word drag")
+  t.release(90.0, 48.0)
+  t.draw()
+  assert_eq(finger_reads(), None)
+}
+
+///|
+test "field_menu_bar takes over system text_menu, keeps_field_menu preserves bar, outside tap dismisses" {
+  let f = Field::new(text="hello world")
+  let copied_pressed = Ref(false)
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=2, pointing=Finger, native=Finger)
+  set_view_app(fn(root) {
+    field_menu_bar(root) |> ignore
+    root.box(fn(box) {
+      box.over(Is(true)).offset(Is((20.0, 80.0))).width(Is(Some(220.0))) |> ignore
+      field(box, f, label="字", font_size=14.0, max_lines=1) |> ignore
+    })
+    |> ignore
+    root.show(at_once=true, fn() { field_menu_now() is Some(_) }, fn(bar) {
+      keeps_field_menu(bar)
+      .over(Is(true))
+      .offset(Is((20.0, 20.0)))
+      .width(Is(Some(120.0)))
+      .height(Is(Some(36.0)))
+      .presses(Is(true))
+      .on_press(fn() {
+        copied_pressed.val = true
+        match @signals.untracked(field_menu_now) {
+          Some(m) => field_edit_now(m.field, @hostapi.text_menu_copy)
+          None => ()
+        }
+      })
+      |> ignore
+    })
+  })
+  t.draw()
+  // Long-press word -> menu opens, system text_menu stays false, field_menu_now is Some
+  t.press_at(45.0, 88.0)
+  t.run_for(long_press_ms + 20.0)
+  t.release(45.0, 88.0)
+  t.draw()
+  t.draw()
+  assert_false(t.text_menu().0, msg="system text_menu must be suppressed when field_menu_bar is active")
+  let m = field_menu_now()
+  assert_true(m is Some(_), msg="field_menu_now must be Some")
+  assert_true(m.unwrap().selected)
+  assert_true((m.unwrap().can & @hostapi.text_menu_copy) != 0)
+  // Tapping keeps_field_menu bar triggers copy and closes menu
+  t.tap(50.0, 38.0)
+  t.draw()
+  t.draw()
+  assert_true(copied_pressed.val)
+  assert_eq(field_menu_now(), None)
+  // Re-open menu via long-press, then tap outside -> menu dismisses immediately
+  t.press_at(45.0, 88.0)
+  t.run_for(long_press_ms + 20.0)
+  t.release(45.0, 88.0)
+  t.draw()
+  t.draw()
+  assert_true(field_menu_now() is Some(_))
+  t.tap(250.0, 170.0)
+  t.draw()
+  t.draw()
+  assert_eq(field_menu_now(), None)
 }

@@ -6,7 +6,8 @@
 // it has no use for them, and so never posts them to Slack or a chat. Nothing types a secret: a prompt read without echo is
 // refused.
 import type { Logins, Login, Starter } from "./index.ts";
-import type { Screen } from "./run.ts";
+import { COLS, type Screen } from "./run.ts";
+import { urlContinuation } from "../ops/command-output.ts";
 import type { Tool } from "../tools/mcp.ts";
 
 
@@ -77,11 +78,42 @@ function hidden(login: Login, text: string): string {
 }
 
 /// The screen as its agent reads it: the lines with something on them (the last 30), the page's address and the code
-/// hidden, the line the cursor is on marked.
+/// hidden, the line the cursor is on marked. A line the terminal wrapped (`wrapped`) and a link the program broke over
+/// lines itself (`urlContinuation`) are put together first: hidden whole, no part of the page's address is left to read.
 export function screenFor(screen: Screen | null, login: Login): string {
   if (screen === null) return "";
-  const hide = (line: string) => hidden(login, line).trimEnd();
-  const lines = screen.rows.map((row, y) => (y === screen.cursor.y && screen.live ? `${hide(row)}▏` : hide(row)));
+  type Line = { text: string; rawEnd: string; cursor: boolean };
+  const wrapped: Line[] = [];
+  screen.rows.forEach((row, y) => {
+    const here = y === screen.cursor.y && screen.live;
+    const prev = wrapped.at(-1);
+    if (prev !== undefined && screen.wrapped?.[y] === true) {
+      prev.text += row;
+      prev.rawEnd = row;
+      prev.cursor ||= here;
+    } else wrapped.push({ text: row, rawEnd: row, cursor: here });
+  });
+  const logical: Line[] = [];
+  for (let i = 0; i < wrapped.length; i++) {
+    const line = { ...wrapped[i]! };
+    let wrapWidth: number | null = null;
+    while (i + 1 < wrapped.length) {
+      const trimmed = line.text.trimEnd();
+      const next = wrapped[i + 1]!;
+      const width = urlContinuation(line.rawEnd, trimmed, next.text, COLS, wrapWidth);
+      if (width === null) break;
+      line.text = trimmed + next.text.trimStart();
+      line.rawEnd = next.rawEnd;
+      line.cursor ||= next.cursor;
+      wrapWidth = width;
+      i++;
+    }
+    logical.push(line);
+  }
+  const lines = logical.map((line) => {
+    const shown = hidden(login, line.text).trimEnd();
+    return line.cursor ? `${shown}▏` : shown;
+  });
   let end = lines.length;
   while (end > 0 && lines[end - 1]!.trim() === "") end--;
   const shown = lines.slice(0, end).filter((l, i, all) => l.trim() !== "" || (i > 0 && all[i - 1]!.trim() !== ""));
@@ -105,6 +137,11 @@ export function told(logins: Logins, login: Login, link: string | null, where: W
     ...(login.paste ? { paste: true } : {}),
     ...(link ? { link } : {}),
   };
+  // What is posted for the person's browser step: its card; for one started again from its card, nothing more (that
+  // card follows it).
+  const post = login.from !== undefined
+    ? `its card in the chat (of login ${login.from}) follows this login already: do not post another card for it; chat_post a line telling who should log in that its card is ready again, and end need_human. You get a station notice when it ends.`
+    : `chat_post with card ${cardOf(login, where)} (card.assignee: who should log in) and a sentence saying who should log in to what ${placeOf(where)} and why, without the link in still.fail chats (the card opens the page); in Slack or Feishu, include the link${link ? ` ${link}` : ""} in the text with that same card; end need_human. You get a station notice when it ends.`;
   const screen = screenFor(logins.screen(login.id), login);
   const active = login.endedAt === undefined;
   const next = !active
@@ -114,11 +151,11 @@ export function told(logins: Logins, login: Login, link: string | null, where: W
       : login.state === "verifying"
         ? "What came back (the code the person entered, or the browser's callback) is being checked: you get a station notice when it ends."
       : login.paste
-        ? `The person's browser step is ready: they open the page and enter what it gives (a code) in the login card's field, which types it here; do not answer its prompt yourself. chat_post with card ${cardOf(login, where)} (card.assignee: who should log in) and a sentence saying who should log in to what ${placeOf(where)} and why, without the link in still.fail chats (the card opens the page); in Slack or Feishu, include the link${link ? ` ${link}` : ""} in the text with that same card; end need_human. You get a station notice when it ends.`
+        ? `The person's browser step is ready: they open the page and enter what it gives (a code) in the login card's field, which types it here; do not answer its prompt yourself. ${post}`
       : login.waiting
         ? `It waits on the prompt above: answer it with login {id${where ? ", station" : ""}, input and/or key} (the tool's default, usually key enter, or what the task needs)${login.step === "open" ? `, unless it asks for what the page it gave hands out (a code to paste back): then do not answer it; login {id${where ? ", station" : ""}, paste: true} gives the login card a field for the person, and post the card as below` : ""}. If you truly cannot decide, ask the person in the chat.`
         : login.step === "device" || login.step === "loopback" || login.step === "open"
-          ? `The person's browser step is ready${login.step === "open" ? ` (if the screen says the page gives a code to paste back here, first login {id${where ? ", station" : ""}, paste: true}: the card gets a field for it; never type it yourself)` : ""}: chat_post with card ${cardOf(login, where)} (card.assignee: who should log in) and a sentence saying who should log in to what ${placeOf(where)} and why, without the link in still.fail chats (the card opens the page); in Slack or Feishu, include the link${link ? ` ${link}` : ""} in the text with that same card; end need_human. You get a station notice when it ends.`
+          ? `The person's browser step is ready${login.step === "open" ? ` (if the screen says the page gives a code to paste back here, first login {id${where ? ", station" : ""}, paste: true}: the card gets a field for it; never type it yourself)` : ""}: ${post}`
           : `It is still working: look again with login {id${where ? ", station" : ""}}.`;
   const shown = where ? { ...state, station: where.station, stationName: where.name } : state;
   return `${JSON.stringify(shown, null, 2)}\n\nScreen:\n${screen === "" ? "(nothing yet)" : screen}\n\n${next}`;
@@ -178,6 +215,13 @@ export function endedNotice(login: Login, link: string | null, where: Where = nu
     : login.state === "cancelled" ? "was cancelled. Ask whether it is still wanted before starting another"
     : `failed${login.error ? `: ${hidden(login, login.error.split("\n").slice(-9).join(" / "))}` : ""}. Start it again if it is still needed`;
   return `The login ${placeOf(where)} you started or posted a card for, ${which}, ${how}.${login.state === "done" ? "" : link ? ` (Its link was ${link}.)` : ""} Its card was closed.`;
+}
+
+/// What the agent a login is for is told as a person starts it again from its card (`from` the one that failed): to
+/// drive the new one as it would one it started, its card in the chat already following it.
+export function againNotice(from: Login, login: Login, by: { email: string; name: string }, where: Where = null): string {
+  const who = by.name || by.email || "A person";
+  return `${who} started the login ${placeOf(where)} ${from.command.join(" ")} (login ${from.id}, which ${from.timedOut ? "ran out of time" : "failed"}) again from its card: it is login ${login.id} now. Drive it as one you started: answer what it asks with login {id: "${login.id}"${where ? ", station" : ""}}, look at it first. Its card in the chat follows the new login already: do not post another card for it; when it reaches the person's browser step, tell them in a line that the card is ready again and end need_human. You get a station notice when it ends.`;
 }
 
 /// What its agent is told when, after its person's browser step, the command asks something again.

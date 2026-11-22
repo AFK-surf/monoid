@@ -44,10 +44,10 @@ pub fn chooser_button_node(
       let padx = if card_words { card_foot_words_in(height) } else { button_padx }
       v
       .row(Is(true))
-      .height(Is(Some(height)))
-      .padding(Is((padx, 0.0, padx, 0.0)))
+      .min_height(Is(Some(height)))
+      .padding(Is((padx, 2.0, padx, 2.0)))
       .lines_up(Is(Some(Middle)))
-      .radius(Is(height / 2.0))
+      .radius(Is(1.0e6))
       .ground(By(fn() { alpha(theme().p.hover, hand.shown(v)) }))
       |> ignore
       menu.keys(v, fn() { true }, fn() {
@@ -57,8 +57,9 @@ pub fn chooser_button_node(
       // (what it holds in its middle, as a button's: the old one's justify=JCenter)
       v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       let w = v.box(fn(w) {
+        let th = @signals.untracked(theme)
         w
-        .words(By(words), look={ size: theme().t.ui, weight: if theme().touch { 600 } else { 500 }, line: theme().t.ui_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 })
+        .words(By(words), look={ size: th.t.ui, weight: if th.touch { 600 } else { 500 }, line: th.t.ui_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 })
         .ink(By(ink))
         |> ignore
       })

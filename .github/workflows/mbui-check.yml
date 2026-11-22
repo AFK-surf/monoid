@@ -21,7 +21,7 @@ on:
       rates: { type: string, default: "" }
   push:
     branches: [main]
-    paths: ["apps/mbui/**", "libs/mbui/**", "libs/sf-ui/**", ".github/workflows/mbui-check.yml"]
+    paths: ["apps/mbui/**", "libs/mbui/**", "libs/liquid-glass/**", "libs/sf-ui/**", ".github/workflows/mbui-check.yml"]
   # (once a day: sfapp's page tests all in one process, below)
   schedule:
     - cron: "53 3 * * *"
@@ -101,13 +101,28 @@ jobs:
       OWN: ${{ github.event_name == 'workflow_run' && 'a-' || github.ref == 'refs/heads/main' && 'm-' || 'b-' }}
     steps: &native-steps
       # (when the job is cut, its timeout-minutes (the day's run's native 10, app-build's and replay-build's always 5), for the tests' own limit to the second (scripts/with-timeout.sh); and the
-      # runner's image (GitHub's ImageVersion; on ci-1: own), for the units' store, each image's kept apart: GitHub gives
-      # a push one of two images while it moves to a newer one, and one store over both kept only the last run's image's
-      # units, preview.yml's jobs say how)
-      - name: The job's end and its image
+      # runner's compiler (IMG: cc and 12 hex digits of clang, its --version and the C standard headers as it
+      # preprocesses them, not linux-libc-dev's version, which moves each week with the kernel; on ci-1: own), for the
+      # units' store, each compiler's kept apart, units of another clang or headers being other units. Not
+      # the image's ImageVersion: ubuntu-24.04 ran four at once (20261111.127.1, .370.1, 20261116.133.1, .376.1) with
+      # one clang and libc, and main's store, torn in four, left a push's image's part hours behind main and its app
+      # build cut at its 221 s (exit 124). pipeline.yml's check-sf-ui reckons it as here, to take this store)
+      - name: The job's end and its compiler
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ (github.event_name != 'schedule' || env.GROUP == 'build') && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
-          echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
+          if [ -z "${ImageVersion:-}" ]; then
+            img=own
+          else
+            cc_bin=$(command -v clang || true)
+            img="cc$({
+              [ -n "$cc_bin" ] && sha256sum "$cc_bin" && "$cc_bin" --version &&
+                printf '#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <limits.h>\n' | "$cc_bin" -E -x c - 2>/dev/null || true
+            } | sha256sum | cut -c1-12)"
+          fi
+          echo "IMG=$img" >> "$GITHUB_ENV"
+          echo "IMG=$img (image=${ImageVersion:-own}, cc=$(${cc_bin:-clang} --version 2>/dev/null | head -1))"
+          # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again: 44991143294)
+          [ "${{ runner.environment }}" = self-hosted ] || sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         # (arch/next's commit, on main's ref: workflow_run, above)
         with: { ref: "${{ github.event.workflow_run.head_sha || github.sha }}" }
@@ -162,6 +177,7 @@ jobs:
           restore-keys: |
             mbui-moon-${{ env.GROUP == 'pkgs' && 'pkgs' || 'build' }}-${{ env.PART }}-
             mbui-moon-build-${{ env.PART }}-
+            mbui-moon-build-app-
       # (each file an mtime of its content: moon builds again only what changed since that build, not all of it after
       # the checkout's new mtimes: the replay's 170 tasks over main's last build, 0b0e29e8, 41381222307, 2026-11-02)
       - run: bash apps/mbui/scripts/moon-mtimes.sh
@@ -203,6 +219,10 @@ jobs:
             ${{ env.CACHE_PREFIX }}m-
             mbui-linux-store-${{ env.PART }}-m-${{ env.IMG }}-
             mbui-linux-store-${{ env.PART }}-m-
+            mbui-linux-store-app-realsize-m-${{ env.IMG }}-
+            mbui-linux-store-app-realsize-m-
+            mbui-linux-store-app-sfapp-m-${{ env.IMG }}-
+            mbui-linux-store-app-sfapp-m-
       - if: runner.environment != 'self-hosted' && env.OWN != 'm-'
         run: |
           mkdir -p "$MBC_STORE"
@@ -295,8 +315,10 @@ jobs:
       # moon, mbc and clang went on writing the store as the cache's tar read it, and the save failed, `tar` exit 1, none
       # of the hundreds of units compiled kept, the next push as far behind: 43839505847, 2026-11-16. Cut before the job
       # is (JOB_END, scripts/with-timeout.sh, its 5 s for setting up the job taken off): 45 s, the stop, the units' tar
-      # and upload and the save some 40; the replay part's 65, its upload, the app's check (23-32 s) and main's moon
-      # save after it some 50-62 (cut at 300-312 s inside the store's save, 44071439638, 2026-11-17); a run cut so goes
+      # and upload and the save some 40; the replay part's 65 on main, its upload, the app's check (23-32 s) and main's
+      # moon save after it some 50-62 (cut at 300-312 s inside the store's save, 44071439638, 2026-11-17), 45 on a branch,
+      # which saves no moon cache (its upload 3 s, the check 25, the store's save 3, the units for main skipped with 45 s
+      # or less left: 20 s more of its build, release/2026-11-22 44919782303); a run cut so goes
       # no further, the rates after it not begun. On a branch a run cut before its programs were all built keeps none of
       # its units (MBUI_BUILT_MARK, below): a build that needs more than one push's five minutes is made faster, never
       # finished by pushing or running it again (the owner: no CI needs a rerun to pass))
@@ -344,7 +366,7 @@ jobs:
           code=0
           for r in ${FPS:-default}; do
             if [ $r = default ]; then unset MBUI_TEST_FPS; else export MBUI_TEST_FPS=$r; echo "=== at $r frames a second"; fi
-            TIMES=1 MBC_REAL_CC=clang TARGETS=native PARTS=${{ env.PART }} APP_GROUP=${{ env.GROUP == 'build' && '1/4' || env.GROUP }} APP_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'app' && format('{0}/app-test', runner.temp) || '' }} PKGS_BUILD_OUT=${{ env.GROUP == 'pkgs' && format('{0}/pkgs-test', runner.temp) || '' }} REPLAY_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'replay' && format('{0}/replay-test', runner.temp) || '' }} SFAPP_SHARDS=${{ github.event_name == 'schedule' && 1 || 4 }} LINES_OUT=40 bash scripts/with-timeout.sh @$((JOB_END - ${{ env.PART == 'replay' && 65 || env.GROUP == 'build' && env.OWN != 'm-' && 35 || 25 }})) bash apps/mbui/scripts/test.sh 2>&1 | tee -a "$RUNNER_TEMP/mbui-test.log" || { s=$?; [ $s != 124 ] || exit 124; code=1; }
+            TIMES=1 MBC_REAL_CC=clang TARGETS=native PARTS=${{ env.PART }} APP_GROUP=${{ env.GROUP == 'build' && '1/4' || env.GROUP }} APP_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'app' && format('{0}/app-test', runner.temp) || '' }} REALSIZE_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'realsize' && format('{0}/realsize-test', runner.temp) || '' }} PAGES_TEST_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'pages_test' && format('{0}/pages-test', runner.temp) || '' }} PKGS_BUILD_OUT=${{ env.GROUP == 'pkgs' && format('{0}/pkgs-test', runner.temp) || '' }} REPLAY_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'replay' && format('{0}/replay-test', runner.temp) || '' }} SFAPP_SHARDS=${{ github.event_name == 'schedule' && 1 || 4 }} LINES_OUT=40 bash scripts/with-timeout.sh @$((JOB_END - ${{ env.PART == 'replay' && (env.OWN == 'm-' && 65 || 45) || env.GROUP == 'build' && env.OWN != 'm-' && 35 || 25 }})) bash apps/mbui/scripts/test.sh 2>&1 | tee -a "$RUNNER_TEMP/mbui-test.log" || { s=$?; [ $s != 124 ] || exit 124; code=1; }
           done
           exit $code
       # (sfapp's test program and its tests' list, for the app job's runs; stripped & zstd -6 so home upload takes ~3 s,
@@ -358,6 +380,12 @@ jobs:
       - if: env.GROUP == 'build' && env.PART == 'app'
         uses: actions/upload-artifact@v4
         with: { name: "mbui-app-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/app-test", retention-days: 1, compression-level: 6 }
+      - if: env.GROUP == 'build' && env.PART == 'realsize'
+        uses: actions/upload-artifact@v4
+        with: { name: "mbui-realsize-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/realsize-test", retention-days: 1, compression-level: 6 }
+      - if: env.GROUP == 'build' && env.PART == 'pages_test'
+        uses: actions/upload-artifact@v4
+        with: { name: "mbui-pages-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/pages-test", retention-days: 1, compression-level: 6 }
       # (the small packages' test programs and their tests' lists, for app-rates' 1/4's runs: after red tests too, the
       # programs put there before they ran, so the rates' runs still say what they find; none put, the build failed.
       # A branch's too, for rates-changed's runs of the packages' test files it changed: some 2 s of upload)
@@ -405,10 +433,11 @@ jobs:
       # (a branch's: the units it has that main's store lacks, for main's run once it is merged (above). Its own cache
       # is its branch's alone; main's run is helped by it, never waits on it: a failed upload fails nothing. Only after
       # the tests went through: main takes them from a merged pull request's last run, never a red or cut one, whose
-      # 25-30 s of tar and upload pushed the store's save past the job's end, 44071439638 attempt 4)
+      # 25-30 s of tar and upload pushed the store's save past the job's end, 44071439638 attempt 4. Never a release/*
+      # branch's: it is never merged into main, and its whole app's programs are built light, test.sh)
       - name: The units this run compiled, for main's
         id: queue-units
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && steps.tests.outcome == 'success'
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && steps.tests.outcome == 'success' && !startsWith(github.ref, 'refs/heads/release/')
         run: |
           # (the store's save after it comes first: with 45 s or less left, none put for main)
           if [ "$((JOB_END - $(date +%s)))" -le 45 ]; then
@@ -503,6 +532,8 @@ jobs:
           if [ '${{ steps.tests.outcome }}' != success ]; then
             case "$PART" in
               app) c=apps/mbui/_build/native/release/test/stillfail/sfapp/sfapp.whitebox_test.c ;;
+              realsize) c=apps/mbui/_build/native/release/test/stillfail/sfapp_realsize/sfapp_realsize.blackbox_test.c ;;
+              pages_test) c=apps/mbui/_build/native/release/test/stillfail/sfapp_pages_test/sfapp_pages_test.blackbox_test.c ;;
               replay) c=apps/mbui/_build/native/release/test/stillfail/sfreplay/flows/flows.blackbox_test.c ;;
               *) c= ;;
             esac
@@ -574,6 +605,34 @@ jobs:
       OWN: ${{ github.event_name == 'workflow_run' && 'a-' || github.ref == 'refs/heads/main' && 'm-' || 'b-' }}
     steps: *native-steps
 
+  # sfapp_realsize's blackbox test program built in parallel with app-build (scripts/test.sh REALSIZE_BUILD_OUT),
+  # keeping sfrealsize payloads and static budget tables out of sfapp.whitebox_test.
+  realsize-build:
+    name: native (realsize build)
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    timeout-minutes: 5
+    env:
+      PART: realsize
+      GROUP: build
+      MBC_STORE: ${{ github.workspace }}/apps/mbui/_build/native/release/mbc-store
+      CACHE_PREFIX: mbui-linux-store-app-realsize-
+      OWN: ${{ github.event_name == 'workflow_run' && 'a-' || github.ref == 'refs/heads/main' && 'm-' || 'b-' }}
+    steps: *native-steps
+
+  # sfapp_pages_test's blackbox test program built in parallel with app-build and realsize-build
+  # (scripts/test.sh PAGES_TEST_BUILD_OUT), keeping pages/settings/files/viewer tests out of sfapp.whitebox_test.
+  pages-test-build:
+    name: native (pages test build)
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    timeout-minutes: 5
+    env:
+      PART: pages_test
+      GROUP: build
+      MBC_STORE: ${{ github.workspace }}/apps/mbui/_build/native/release/mbc-store
+      CACHE_PREFIX: mbui-linux-store-app-pages-test-
+      OWN: ${{ github.event_name == 'workflow_run' && 'a-' || github.ref == 'refs/heads/main' && 'm-' || 'b-' }}
+    steps: *native-steps
+
   # The flows' test program built once for their runs at the other rates (scripts/test.sh REPLAY_BUILD_OUT): each
   # rate's runner built the same program again, 104-177 s apiece of their 200-300, replay at 60 fps 300 s of its five
   # minutes on main 097da882 (42644588583), 2026-11-10; sfapp's is built once the same way (app-build, as asked
@@ -613,6 +672,8 @@ jobs:
       MBUI_TEST_BARS: ${{ matrix.fps == '' && inputs.rates != 'no' && github.event_name != 'workflow_run' && '1' || '' }}
       MOTION_OUT: ${{ github.workspace }}/motion.txt
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { ref: "${{ github.event.workflow_run.head_sha || github.sha }}" }
       - uses: actions/download-artifact@v4
@@ -680,6 +741,8 @@ jobs:
       MBUI_TEST_BARS: ${{ matrix.fps == '' && inputs.rates != 'no' && github.event_name != 'workflow_run' && '1' || '' }}
       MOTION_OUT: ${{ github.workspace }}/motion.txt
     steps: &app-steps
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-linux
@@ -811,6 +874,146 @@ jobs:
           - { group: 4/4, fps: "7" }
     env: *app-env
     steps: *app-steps
+
+  # Real-size sweep and budget tests (src/sfapp_realsize), run on realsize-build's program at the default rate.
+  realsize:
+    name: native (realsize${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }})
+    needs: realsize-build
+    if: github.event_name != 'workflow_run' && inputs.rates != 'only'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        fps: [""]
+    env: &realsize-env
+      FPS: ${{ matrix.fps }}
+      MBUI_TEST_MOTION: ${{ (matrix.fps == '120' || matrix.fps == '60') && 'count' || '' }}
+      MBUI_TEST_BARS: ${{ matrix.fps == '' && inputs.rates != 'no' && github.event_name != 'workflow_run' && '1' || '' }}
+      MOTION_OUT: ${{ github.workspace }}/motion.txt
+    steps: &realsize-steps
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.event.workflow_run.head_sha || github.sha }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "mbui-realsize-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/realsize-test" }
+      - name: The real-size tests (native${{ matrix.fps && format(', at {0} fps', matrix.fps) || '' }}, on realsize-build's program)
+        run: |
+          set -o pipefail
+          chmod +x "$RUNNER_TEMP/realsize-test/sfapp_realsize.blackbox_test.exe" "$RUNNER_TEMP/realsize-test/testexe"
+          code=0
+          for r in ${FPS:-default}; do
+            if [ $r = default ]; then unset MBUI_TEST_FPS; else export MBUI_TEST_FPS=$r; echo "=== at $r frames a second"; fi
+            TESTEXE="$RUNNER_TEMP/realsize-test/testexe" \
+            REALSIZE_EXE="$RUNNER_TEMP/realsize-test/sfapp_realsize.blackbox_test.exe" \
+            REALSIZE_INFO="$RUNNER_TEMP/realsize-test/__blackbox_test_info.json" \
+              TIMES=1 TARGETS=native PARTS=realsize LINES_OUT=40 \
+              bash apps/mbui/scripts/test.sh 2>&1 | tee -a "$RUNNER_TEMP/mbui-test.log" || code=1
+          done
+          exit $code
+      - name: How what moves goes
+        if: always() && (env.MBUI_TEST_MOTION == 'count' || env.MBUI_TEST_BARS == '1')
+        run: |
+          [ "$MBUI_TEST_MOTION" != count ] || bash libs/mbui/scripts/motion_said.sh "$MOTION_OUT" "how what moves goes at $FPS fps" >> "$GITHUB_STEP_SUMMARY"
+          echo "MOTION_NAME=motion-realsize-$(echo "${FPS:-default}" | tr ' ' '_')" >> "$GITHUB_ENV"
+          touch "$MOTION_OUT"
+      - if: always() && (env.MBUI_TEST_MOTION == 'count' || env.MBUI_TEST_BARS == '1')
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with: { name: "${{ env.MOTION_NAME }}", path: "${{ env.MOTION_OUT }}", retention-days: 7 }
+      - name: What failed
+        if: failure()
+        run: |
+          failed=$(grep -a 'test .* failed' "$RUNNER_TEMP/mbui-test.log" | sed 's/^\[stillfail[^]]*\] test //; s/ failed.*//' | sort -u)
+          ended=$(awk '/^\[[^]]*\] test .* failed/ { on = 1; h = $0; next } on && /^  / { if (h != "") { print h; h = "" } print; next } { on = 0; h = "" }' "$RUNNER_TEMP/mbui-test.log" | head -40)
+          [ -z "$ended" ] || { echo '#### failure details'; echo '```'; printf '%s\n' "$ended" | cut -c1-400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          why=$(grep -a '^flow: \|assert_idle: not\|^test\.sh: ' "$RUNNER_TEMP/mbui-test.log" | grep -v 'not checked idle\|^test\.sh: \(a run of \|run in \|built in \|what failed, whole\|still running after \)\|^test\.sh: .* put in ' | sort -u | head -10)
+          echo "::error title=check-mbui (realsize${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }}) failed at ${GITHUB_SHA:0:9}::$(printf '%s' "${failed:-${why:-(no test named: see the job summary)}}" | tr '\n' ';')"
+
+  # Real-size non-sweep tests at 120, 60, 24 and 7 frames a second on main and the day's run.
+  realsize-rates:
+    name: native (realsize at ${{ matrix.fps }} fps)
+    needs: realsize-build
+    if: ${{ !cancelled() && needs.realsize-build.result == 'success' && github.event_name != 'workflow_run' && inputs.rates != 'no' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        fps: ["120", "60", "24 7"]
+    env: *realsize-env
+    steps: *realsize-steps
+
+  # Pages, settings, stations, files and viewer tests (src/sfapp_pages_test), run on pages-test-build's program at the default rate.
+  pages-test:
+    name: native (pages test${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }})
+    needs: pages-test-build
+    if: github.event_name != 'workflow_run' && inputs.rates != 'only'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        fps: [""]
+    env: &pages-test-env
+      FPS: ${{ matrix.fps }}
+      MBUI_TEST_MOTION: ${{ (matrix.fps == '120' || matrix.fps == '60') && 'count' || '' }}
+      MBUI_TEST_BARS: ${{ matrix.fps == '' && inputs.rates != 'no' && github.event_name != 'workflow_run' && '1' || '' }}
+      MOTION_OUT: ${{ github.workspace }}/motion.txt
+    steps: &pages-test-steps
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.event.workflow_run.head_sha || github.sha }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "mbui-pages-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/pages-test" }
+      - name: The pages tests (native${{ matrix.fps && format(', at {0} fps', matrix.fps) || '' }}, on pages-test-build's program)
+        run: |
+          set -o pipefail
+          chmod +x "$RUNNER_TEMP/pages-test/sfapp_pages_test.blackbox_test.exe" "$RUNNER_TEMP/pages-test/testexe"
+          code=0
+          for r in ${FPS:-default}; do
+            if [ $r = default ]; then unset MBUI_TEST_FPS; else export MBUI_TEST_FPS=$r; echo "=== at $r frames a second"; fi
+            TESTEXE="$RUNNER_TEMP/pages-test/testexe" \
+            PAGES_TEST_EXE="$RUNNER_TEMP/pages-test/sfapp_pages_test.blackbox_test.exe" \
+            PAGES_TEST_INFO="$RUNNER_TEMP/pages-test/__blackbox_test_info.json" \
+              TIMES=1 TARGETS=native PARTS=pages_test LINES_OUT=40 \
+              bash apps/mbui/scripts/test.sh 2>&1 | tee -a "$RUNNER_TEMP/mbui-test.log" || code=1
+          done
+          exit $code
+      - name: How what moves goes
+        if: always() && (env.MBUI_TEST_MOTION == 'count' || env.MBUI_TEST_BARS == '1')
+        run: |
+          [ "$MBUI_TEST_MOTION" != count ] || bash libs/mbui/scripts/motion_said.sh "$MOTION_OUT" "how what moves goes at $FPS fps" >> "$GITHUB_STEP_SUMMARY"
+          echo "MOTION_NAME=motion-pages-test-$(echo "${FPS:-default}" | tr ' ' '_')" >> "$GITHUB_ENV"
+          touch "$MOTION_OUT"
+      - if: always() && (env.MBUI_TEST_MOTION == 'count' || env.MBUI_TEST_BARS == '1')
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with: { name: "${{ env.MOTION_NAME }}", path: "${{ env.MOTION_OUT }}", retention-days: 7 }
+      - name: What failed
+        if: failure()
+        run: |
+          failed=$(grep -a 'test .* failed' "$RUNNER_TEMP/mbui-test.log" | sed 's/^\[stillfail[^]]*\] test //; s/ failed.*//' | sort -u)
+          ended=$(awk '/^\[[^]]*\] test .* failed/ { on = 1; h = $0; next } on && /^  / { if (h != "") { print h; h = "" } print; next } { on = 0; h = "" }' "$RUNNER_TEMP/mbui-test.log" | head -40)
+          [ -z "$ended" ] || { echo '#### failure details'; echo '```'; printf '%s\n' "$ended" | cut -c1-400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          why=$(grep -a '^flow: \|assert_idle: not\|^test\.sh: ' "$RUNNER_TEMP/mbui-test.log" | grep -v 'not checked idle\|^test\.sh: \(a run of \|run in \|built in \|what failed, whole\|still running after \)\|^test\.sh: .* put in ' | sort -u | head -10)
+          echo "::error title=check-mbui (pages test${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }}) failed at ${GITHUB_SHA:0:9}::$(printf '%s' "${failed:-${why:-(no test named: see the job summary)}}" | tr '\n' ';')"
+
+  # Pages tests at 120, 60, 24 and 7 frames a second on main and the day's run.
+  pages-test-rates:
+    name: native (pages test at ${{ matrix.fps }} fps)
+    needs: pages-test-build
+    if: ${{ !cancelled() && needs.pages-test-build.result == 'success' && github.event_name != 'workflow_run' && inputs.rates != 'no' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        fps: ["120", "60", "24 7"]
+    env: *pages-test-env
+    steps: *pages-test-steps
   # A branch's own test files of sfapp and of the small packages (sfpages, settings, gallery, player, sfgraphic) at 120,
   # 60 and 24 frames a second
   # (the user, 2026-11-14: 「PR 上也跑改到文件的帧率检查」): main's runs at the rates found what a pull request's own changed test files did at them, after it merged,
@@ -828,7 +1031,12 @@ jobs:
     outputs:
       files: ${{ steps.files.outputs.files }}
       pkg_files: ${{ steps.files.outputs.pkg_files }}
+      realsize_files: ${{ steps.files.outputs.realsize_files }}
+      pages_test_files: ${{ steps.files.outputs.pages_test_files }}
+      matrix: ${{ steps.files.outputs.matrix }}
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - run: bash scripts/git-history.sh main
       - id: files
@@ -836,28 +1044,56 @@ jobs:
           changed=$(git diff --name-only --diff-filter=d "$(git merge-base origin/main HEAD)" HEAD)
           files=$(echo "$changed" | sed -n 's|^apps/mbui/\(src/sfapp/[^/]*_wbtest\.mbt\)$|\1|p' | LC_ALL=C sort -u | tr '\n' ' ')
           pkg_files=$(echo "$changed" | sed -n -E 's#^apps/mbui/(src/(sfpages|sfapp/settings|gallery|player|sfgraphic)/[^/]*test\.mbt)$#\1#p' | LC_ALL=C sort -u | tr '\n' ' ')
+          realsize_files=$(echo "$changed" | sed -n 's|^apps/mbui/\(src/sfapp_realsize/[^/]*_test\.mbt\)$|\1|p' | grep -vE '^src/sfapp_realsize/real_size_test\.mbt$|_known_test\.mbt$' | LC_ALL=C sort -u | tr '\n' ' ')
+          pages_test_files=$(echo "$changed" | sed -n 's|^apps/mbui/\(src/sfapp_pages_test/[^/]*_test\.mbt\)$|\1|p' | grep -vE '_known_test\.mbt$|^src/sfapp_pages_test/(kept|using|viz_helpers|motion_counted)_test\.mbt$' | LC_ALL=C sort -u | tr '\n' ' ')
           echo "files: ${files:-(none)}"
           echo "the packages' files: ${pkg_files:-(none)}"
+          echo "realsize files: ${realsize_files:-(none)}"
+          echo "pages_test files: ${pages_test_files:-(none)}"
           echo "files=$files" >> "$GITHUB_OUTPUT"
           echo "pkg_files=$pkg_files" >> "$GITHUB_OUTPUT"
+          echo "realsize_files=$realsize_files" >> "$GITHUB_OUTPUT"
+          echo "pages_test_files=$pages_test_files" >> "$GITHUB_OUTPUT"
+          # (at 120 and 60 a second in two parts where the files' seconds at 120 by scripts/page-seconds.txt (90 for one it
+          # has not) are ten minutes or more, or 35+ pages_test files changed: one runner's five could not hold them; in
+          # four, and 24 in two, where they are twenty minutes or more, or 70+ pages_test files: #7620's part 2/2 at 120
+          # and at 60 were cut at their five minutes in two)
+          secs=$(printf '%s\n' $files | awk -v tbl=apps/mbui/scripts/page-seconds.txt 'BEGIN { while ((getline < tbl) > 0) if ($1 !~ /^#/ && NF >= 5) t[$1] = ($4 ~ /^[0-9]+$/ ? ($4 == 0 ? 1 : $4) : 90) } NF { sub(/^src\/sfapp\//, ""); sum += ($1 in t ? t[$1] : 90) } END { print sum + 0 }')
+          pt_count=$(printf '%s\n' $pages_test_files | awk 'NF { n++ } END { print n + 0 }')
+          if [ "$secs" -ge 1200 ] || [ "$pt_count" -ge 70 ]; then
+            matrix='[{"fps":"120","part":"1/4"},{"fps":"120","part":"2/4"},{"fps":"120","part":"3/4"},{"fps":"120","part":"4/4"},{"fps":"60","part":"1/4"},{"fps":"60","part":"2/4"},{"fps":"60","part":"3/4"},{"fps":"60","part":"4/4"},{"fps":"24","part":"1/2"},{"fps":"24","part":"2/2"}]'
+          elif [ "$secs" -ge 600 ] || [ "$pt_count" -ge 35 ]; then
+            matrix='[{"fps":"120","part":"1/2"},{"fps":"120","part":"2/2"},{"fps":"60","part":"1/2"},{"fps":"60","part":"2/2"},{"fps":"24","part":""}]'
+          else
+            matrix='[{"fps":"120","part":""},{"fps":"60","part":""},{"fps":"24","part":""}]'
+          fi
+          echo "their seconds at 120 a second: $secs (pages_test files: $pt_count)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
   rates-changed:
-    name: native (the branch's changed test files at ${{ matrix.fps }} fps)
-    needs: [app-build, native, rates-files]
-    if: ${{ !cancelled() && (needs.rates-files.outputs.files != '' || needs.rates-files.outputs.pkg_files != '') && (needs.rates-files.outputs.files == '' || needs.app-build.result == 'success') && (needs.rates-files.outputs.pkg_files == '' || needs.native.result == 'success') }}
+    name: native (the branch's changed test files at ${{ matrix.fps }} fps${{ matrix.part && format(' part {0}', matrix.part) || '' }})
+    needs: [app-build, realsize-build, pages-test-build, native, rates-files]
+    if: ${{ !cancelled() && (needs.rates-files.outputs.files != '' || needs.rates-files.outputs.pkg_files != '' || needs.rates-files.outputs.realsize_files != '' || needs.rates-files.outputs.pages_test_files != '') && (needs.rates-files.outputs.files == '' || needs.app-build.result == 'success') && (needs.rates-files.outputs.realsize_files == '' || needs.realsize-build.result == 'success') && (needs.rates-files.outputs.pages_test_files == '' || needs.pages-test-build.result == 'success') && (needs.rates-files.outputs.pkg_files == '' || needs.native.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
-        fps: ["120", "60", "24"]
+        include: ${{ fromJSON(needs.rates-files.outputs.matrix) }}
     env:
       FPS: ${{ matrix.fps }}
+      # (a part of them where they are dealt in two: rates-files' matrix)
+      APP_PART: ${{ matrix.part }}
+      PAGES_TEST_PART: ${{ matrix.part }}
       MBUI_TEST_MOTION: ${{ (matrix.fps == '120' || matrix.fps == '60') && 'count' || '' }}
       MOTION_OUT: ${{ github.workspace }}/motion.txt
       # (none: no sfapp file, test.sh's APP_FILES=none)
       APP_FILES: ${{ needs.rates-files.outputs.files || 'none' }}
       PKGS_FILES: ${{ needs.rates-files.outputs.pkg_files }}
+      REALSIZE_FILES: ${{ needs.rates-files.outputs.realsize_files }}
+      PAGES_TEST_FILES: ${{ needs.rates-files.outputs.pages_test_files }}
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - if: env.APP_FILES != 'none'
         uses: actions/download-artifact@v4
@@ -865,17 +1101,40 @@ jobs:
       - if: env.PKGS_FILES != ''
         uses: actions/download-artifact@v4
         with: { name: "mbui-pkgs-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/pkgs-test" }
-      - name: The branch's changed test files (native, at ${{ matrix.fps }} frames a second, on app-build's and native's programs)
+      - if: env.REALSIZE_FILES != ''
+        uses: actions/download-artifact@v4
+        with: { name: "mbui-realsize-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/realsize-test" }
+      - if: env.PAGES_TEST_FILES != ''
+        uses: actions/download-artifact@v4
+        with: { name: "mbui-pages-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/pages-test" }
+      - name: The branch's changed test files (native, at ${{ matrix.fps }} frames a second, on app-build's, realsize-build's, pages-test-build's and native's programs)
         run: |
           set -o pipefail
-          app="$RUNNER_TEMP/app-test" pk="$RUNNER_TEMP/pkgs-test"
-          find "$app" "$pk" -type f \( -name '*.exe' -o -name testexe \) -exec chmod +x {} + 2>/dev/null || true
-          if [ "$APP_FILES" != none ]; then t=$app/testexe; e=$app/sfapp.whitebox_test.exe; else t=$pk/testexe; e=none; fi
+          app="$RUNNER_TEMP/app-test" pk="$RUNNER_TEMP/pkgs-test" rs="$RUNNER_TEMP/realsize-test" pt="$RUNNER_TEMP/pages-test"
+          find "$app" "$pk" "$rs" "$pt" -type f \( -name '*.exe' -o -name testexe \) -exec chmod +x {} + 2>/dev/null || true
+          if [ "$APP_FILES" != none ]; then t=$app/testexe; e=$app/sfapp.whitebox_test.exe
+          elif [ -n "$REALSIZE_FILES" ]; then t=$rs/testexe; e=none
+          elif [ -n "$PAGES_TEST_FILES" ]; then t=$pt/testexe; e=none
+          else t=$pk/testexe; e=none; fi
           [ -n "$PKGS_FILES" ] && p=$pk || p=
-          echo "=== $APP_FILES $PKGS_FILES"
+          parts=app
+          re= ri= pe= pi=
+          if [ -n "$REALSIZE_FILES" ]; then
+            parts="$parts realsize"
+            re=$rs/sfapp_realsize.blackbox_test.exe
+            ri=$rs/__blackbox_test_info.json
+          fi
+          if [ -n "$PAGES_TEST_FILES" ]; then
+            parts="$parts pages_test"
+            pe=$pt/sfapp_pages_test.blackbox_test.exe
+            pi=$pt/__blackbox_test_info.json
+          fi
+          echo "=== $APP_FILES $PKGS_FILES $REALSIZE_FILES $PAGES_TEST_FILES"
           MBUI_TEST_FPS=$FPS TESTEXE="$t" PKGS_EXE="$p" \
           APP_EXE="$e" APP_INFO="$app/__whitebox_test_info.json" \
-            TIMES=1 TARGETS=native PARTS=app APP_GROUP=1/1 SFAPP_SHARDS=4 LINES_OUT=40 \
+          REALSIZE_EXE="$re" REALSIZE_INFO="$ri" \
+          PAGES_TEST_EXE="$pe" PAGES_TEST_INFO="$pi" \
+            TIMES=1 TARGETS=native PARTS="$parts" APP_GROUP=1/1 SFAPP_SHARDS=4 LINES_OUT=40 \
             bash apps/mbui/scripts/test.sh 2>&1 | tee -a "$RUNNER_TEMP/mbui-test.log"
       - name: How what moves goes
         if: always() && env.MBUI_TEST_MOTION == 'count'
@@ -923,11 +1182,13 @@ jobs:
     name: native (the app's bars against what was found)
     # (the builds too: one cut leaves app, app-rates and switches skipped, not failed, and the bars set beside the
     # nothing found then were all said to fall, main 44078243110)
-    needs: [native, app-build, replay-build, replay-fps, app, app-rates, switches]
+    needs: [native, app-build, realsize-build, pages-test-build, replay-build, replay-fps, app, app-rates, realsize, realsize-rates, pages-test, pages-test-rates, switches]
     if: ${{ always() && github.event_name != 'workflow_run' && inputs.rates != 'no' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { sparse-checkout: libs/mbui/scripts }
       - uses: actions/download-artifact@v4
@@ -957,12 +1218,14 @@ jobs:
   # through, the likeliest first (scripts/rates-said.sh), for whoever brought it to mend forward. Red here holds no pull
   # request back. (actions: read: this run's jobs and main's runs before it; its callers grant it)
   rates-said:
-    needs: [native, app-build, replay-build, replay-fps, app, app-rates, switches, motion-bars]
+    needs: [native, app-build, realsize-build, pages-test-build, replay-build, replay-fps, app, app-rates, realsize, realsize-rates, pages-test, pages-test-rates, switches, motion-bars]
     if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     permissions: { contents: read, actions: read }
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - env: { GH_TOKEN: "${{ github.token }}" }
         run: bash scripts/rates-said.sh mbui-check

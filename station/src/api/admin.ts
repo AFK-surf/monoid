@@ -29,6 +29,7 @@ import { pageRestart } from "../ops/restart.ts";
 import { routes as contextSettings } from "./routes/context.ts";
 import { routes as presetRoutes } from "./routes/presets.ts";
 import { routes as starRoutes } from "./routes/stars.ts";
+import { routes as boardRoutes } from "./routes/board.ts";
 import { routes as diagnosticsSettings } from "./routes/diagnostics.ts";
 import { routes as drive } from "./routes/drive.ts";
 import { routes as workspaces } from "./routes/workspaces.ts";
@@ -56,7 +57,7 @@ import { tr } from "../ops/i18n.ts";
 /// dismissed), which change nothing anyone else sees.
 const OWN_MARKS = /^\/*threads\/+[^/]+\/+(read|hidden|muted|dismissed|closed-card)(?:\/.*)?$/;
 /// Reads that send what the client holds (routes/changed.ts), and several reads in one (`batch`).
-const READS = /^\/*(changed\/+(chats|threads|sessions)|batch)$/;
+const READS = /^\/*(changed\/+(chats|threads|sessions|shared)|batch)$/;
 /// What a batch may read (POST /batch): the history a client brings onto its device in the background, each a read
 /// whose answer is JSON. At most BATCH_MOST of them, BATCH_AT_ONCE at a time.
 const BATCHED = [/^\/threads\/\d+\/entries$/, /^\/threads\/\d+\/letters$/, /^\/threads\/\d+$/, /^\/sessions\/[^/]+$/, /^\/sessions\/[^/]+\/timeline$/];
@@ -448,7 +449,8 @@ export class Admin {
     const paths = gets as string[];
     if (r.signal?.aborted) return error(503, "read cancelled");
     const accept = Object.entries(r.headers).find(([k]) => k.toLowerCase() === "accept")?.[1] ?? "";
-    if (accept.toLowerCase().includes(NDJSON)) return this.batchLines(r, paths);
+    const streamType = batchStreamType(accept);
+    if (streamType !== null) return this.batchLines(r, paths, streamType);
     const answers: string[] = [];
     let next = 0;
     const work = async () => {
@@ -468,7 +470,7 @@ export class Admin {
   /// and starts none after it. Each line is as a client from before takes it (runtime-compat.ts, as the whole batch's
   /// answers are: that one sees a stream, and leaves it as it is). Written by hand: an async generator's `return`
   /// would wait for the read under way.
-  private batchLines(r: Request, paths: string[]): Answer {
+  private batchLines(r: Request, paths: string[], contentType: string): Answer {
     const stop = new AbortController();
     const signal = r.signal === undefined ? stop.signal : AbortSignal.any([r.signal, stop.signal]);
     const done = { done: true as const, value: undefined };
@@ -495,7 +497,7 @@ export class Admin {
         return done;
       },
     };
-    return { status: 200, headers: { "content-type": NDJSON, "cache-control": "no-store" }, body: it };
+    return { status: 200, headers: { "content-type": contentType, "cache-control": "no-store" }, body: it };
   }
 
   /// One read of a batch, as its GET is answered, in the background.
@@ -508,7 +510,17 @@ export class Admin {
 }
 
 /// A batch's answers a line at a time (`batchLines`).
+const BATCH_LINES = "application/vnd.stillfail.batch-lines+json";
 const NDJSON = "application/x-ndjson";
+function batchStreamType(accept: string): string | null {
+  let sawNdjson = false;
+  for (const part of accept.split(",")) {
+    const token = part.split(";", 1)[0]!.trim().toLowerCase();
+    if (token === BATCH_LINES) return BATCH_LINES;
+    if (token === NDJSON) sawNdjson = true;
+  }
+  return sawNdjson ? NDJSON : null;
+}
 const pathOf = (p: string) => (p.indexOf("?") < 0 ? p : p.slice(0, p.indexOf("?")));
 /// One answer of a batch as it is said: its body as it is where it is JSON, else as a string.
 function batchLine(a: Answer): string {
@@ -538,6 +550,7 @@ export function agentsRoutes(agents: AgentsParts, deps: { store?: Store; events?
     ...(agents.config ? agentEnv({ config: agents.config, changed: () => deps.events?.overviewChanged(), restart: () => agents.hub.everyChanged() }) : []),
     ...(agents.hub ? presetRoutes({ presets: agents.hub.presets, reposDir: () => agents.hub.reposDir(), index: agents.hub.repoIndex, clones: agents.hub.clones, changed: () => deps.events?.presetsChanged() }) : []),
     ...(agents.hub ? starRoutes({ kept: agents.hub.store, told: (ws, sub) => deps.events?.tell("stars", { workspace: ws }, `stars\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }) }) : []),
+    ...(agents.hub ? boardRoutes({ drafts: agents.hub.boardDrafts, told: (ws, sub) => deps.events?.tell("boardDrafts", { workspace: ws }, `boardDrafts\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }) }) : []),
     ...(agents.config ? contextSettings({ config: agents.config, changed: () => deps.events?.overviewChanged() }) : []),
     ...(agents.config ? diagnosticsSettings({ config: agents.config, changed: () => deps.events?.overviewChanged() }) : []),
     ...(agents.xshare ? xshare({ xshare: agents.xshare, store: deps.store }) : []),

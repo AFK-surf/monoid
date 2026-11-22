@@ -16,14 +16,14 @@ let home_workspace_order_page : String = "SELECT thread, at, said_at, created_at
 
 ///|
 fn threads_of(rows : Array[Map[String, Json]]) -> Array[Json] {
-  rows.map(r => get(r, "thread"))
+  rows.map(r => @sql.row_val(r, "thread"))
 }
 
 ///|
 fn total_of(row : Map[String, Json]?) -> Double {
   match row {
     Some(r) =>
-      match get(r, "total") {
+      match @sql.row_val(r, "total") {
         Number(n, ..) => n
         _ => 0.0
       }
@@ -33,7 +33,7 @@ fn total_of(row : Map[String, Json]?) -> Double {
 
 ///|
 fn number(row : Map[String, Json], name : String) -> Double {
-  match get(row, name) {
+  match @sql.row_val(row, name) {
     Number(n, ..) => n
     _ => 0.0
   }
@@ -65,7 +65,7 @@ pub fn page(db : @sql.Db, ws : String?, home : String?, limit : Int) -> (Array[J
           return None
         }
         let meta = one(db, "SELECT total, complete FROM recent_chat_meta WHERE id = 1", [])
-        if int(meta, "complete") != 1 || exists(db, "SELECT 1 FROM recent_chat_dirty LIMIT 1", []) {
+        if @sql.row_int(meta, "complete") != 1 || exists(db, "SELECT 1 FROM recent_chat_dirty LIMIT 1", []) {
           return None
         }
         Some((threads_of(db.all(global_page, [num(limit)])), total_of(Some(meta))))
@@ -75,16 +75,16 @@ pub fn page(db : @sql.Db, ws : String?, home : String?, limit : Int) -> (Array[J
         if !installed(db, "overlap") {
           return None
         }
-        if int(one(db, "SELECT scan_done FROM recent_home_overlap_meta WHERE id = 1", []), "scan_done") != 1 ||
+        if @sql.row_int(one(db, "SELECT scan_done FROM recent_home_overlap_meta WHERE id = 1", []), "scan_done") != 1 ||
           exists(db, "SELECT 1 FROM recent_home_overlap_dirty LIMIT 1", []) {
           return None
         }
         if !default_home_ready(db) || !workspace_total_ready(db, w) {
           return None
         }
-        let defaults = total_of(first(db, "SELECT total FROM recent_home_meta WHERE id = 1", []))
-        let workspace = total_of(first(db, "SELECT total FROM recent_scope_tracked WHERE kind = 1 AND ws = ?", [text(w)]))
-        let overlap = total_of(first(db, "SELECT total FROM recent_home_overlap_totals WHERE ws = ?", [text(w)]))
+        let defaults = total_of(db.first("SELECT total FROM recent_home_meta WHERE id = 1", []))
+        let workspace = total_of(db.first("SELECT total FROM recent_scope_tracked WHERE kind = 1 AND ws = ?", [text(w)]))
+        let overlap = total_of(db.first("SELECT total FROM recent_home_overlap_totals WHERE ws = ?", [text(w)]))
         let left = db.all(home_order_page, [num(limit)])
         let right = db.all(home_workspace_order_page, [text(w), num(limit)])
         let ids : Array[Json] = []
@@ -99,7 +99,7 @@ pub fn page(db : @sql.Db, ws : String?, home : String?, limit : Int) -> (Array[J
             j += 1
             right[j - 1]
           }
-          let thread = get(item, "thread")
+          let thread = @sql.row_val(item, "thread")
           if seen.contains(thread) {
             continue
           }
@@ -113,7 +113,7 @@ pub fn page(db : @sql.Db, ws : String?, home : String?, limit : Int) -> (Array[J
         if !workspace_total_ready(db, w) {
           return None
         }
-        let total = total_of(first(db, "SELECT total FROM recent_scope_tracked WHERE kind = 1 AND ws = ?", [text(w)]))
+        let total = total_of(db.first("SELECT total FROM recent_scope_tracked WHERE kind = 1 AND ws = ?", [text(w)]))
         Some((threads_of(db.all(workspace_page, [text(w), num(limit)])), total))
       })
   }

@@ -51,12 +51,6 @@ fn open_chat() -> ChatRef? {
 }
 
 ///|
-/// Room in a list, `h` high (for the bar over it, at its foot).
-fn list_space(c : @ui.Ctx, h : Double) -> Unit {
-  c.box(style=@ui.style(h=Fixed(h)), fn() {  }) |> ignore
-}
-
-///|
 let illustration_w : Double = 240.0
 
 ///|
@@ -108,7 +102,13 @@ pub fn filter_menu_open() -> Bool {
 /// given which: where it goes is the frame's (a filter its list, 已归档 its page or list). `in_board`: the board's, which
 /// narrows to 全部会话 or 我参与的 alone (its 监控中 is a column of its own), 已隐藏 and 已归档 lists off it
 /// (board_filter_go).
-pub fn filter_menu(from : @sf.Beside, shown : String, go : (String) -> Unit, in_board? : Bool = false) -> Unit {
+pub fn filter_menu(
+  from : @sf.Beside,
+  shown : String,
+  go : (String) -> Unit,
+  in_board? : Bool = false,
+  along? : @ui.Along = End,
+) -> Unit {
   let item = fn(key : String, words : String) -> @sf.MenuItem? {
     Some(@sf.menu_item_of(@sf.t(words), chosen=shown == key, fn() { go(key) }))
   }
@@ -133,7 +133,7 @@ pub fn filter_menu(from : @sf.Beside, shown : String, go : (String) -> Unit, in_
   @sf.menu(
     items,
     from~,
-    along=End,
+    along~,
   )
   filter_menu_serial.val = @sf.last_presented()
   filter_menu_opened.set(filter_menu_opened.untracked() + 1)

@@ -11,9 +11,9 @@ test "48-share" {
   @sfreplay.orders(fn(seed) {
     let f = @sfreplay.Flow::start(@sfreplay.trace("share"), seed~)
     f.share_in("https://www.youtube.com/watch?v=e2e105609", title="列表视频105609")
-    // the sheet of chats raised
-    f.run_to(@sf.presented_rest)
+    // the sheet of chats raised (seen first: run to its rest once it rises, as share_new_chat's)
     f.see("发到")
+    f.run_to(@sf.presented_rest)
     f.see("列表视频105609")
     f.see("新建对话")
     f.tap("端到端测试")
@@ -34,9 +34,9 @@ test "48-share" {
     f.tap("=e2e-105609")
     f.run_to(@ui.nav_rest)
     f.right_click("说明.txt")
-    f.run_for(@kit.presence_in_ms)
+    f.run_for(@motion.presence_in_ms)
     f.tap("分享")
-    f.run_for(@kit.presence_out_ms)
+    f.run_for(@motion.presence_out_ms)
     // the file, read through the core, handed to the system's share sheet as it is
     f.until(fn() { f.t.shared_out().length() > 0 })
     let shared = f.t.shared_out()

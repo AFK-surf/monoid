@@ -7,6 +7,11 @@
 pub let screen_type : String = "application/x-stillfail-screen"
 
 ///|
+/// The header of a view's reply that says its frames go as datagrams, with the client's token (mesh/screens.ts
+/// `DGRAM_HEADER`).
+pub let dgram_header : String = "x-screen-dgram"
+
+///|
 pub let kind_config : Int = 1
 
 ///|
@@ -25,6 +30,24 @@ pub let kind_audio_config : Int = 5
 pub let kind_audio : Int = 6
 
 ///|
+/// The pointer in a few bytes (`cursor_payload`), to a client that asked `binaryCursor`.
+pub let kind_cursor : Int = 7
+
+///|
+/// A pointer of an app's own, before the first `cursor` or state naming it "custom:<id>", to a client that asked
+/// `customCursor` (screens/source.mbt `cursor_image_shape`).
+pub let kind_cursor_image : Int = 8
+
+///|
+/// How many pictures of pointers a view sends before it sends them again.
+pub let cursor_images_most : Int = 64
+
+///|
+/// A copy an app marked private (a password manager's), its mark first (`private_clip_payload`), to a client that asked
+/// `privateClip`; to one before it, a `clipboard` frame.
+pub let kind_private_clipboard : Int = 9
+
+///|
 pub let kind_input : Int = 16
 
 ///|
@@ -41,6 +64,17 @@ pub let kind_look : Int = 20
 
 ///|
 pub let kind_sound : Int = 21
+
+///|
+/// The person shares their microphone into the screen's virtual one (1 byte: 1 on, 0 off), and a packet of it.
+pub let kind_mic_on : Int = 22
+
+///|
+pub let kind_mic : Int = 23
+
+///|
+/// The most bytes of one microphone packet (source.ts `MIC_PCM_MAX`).
+pub let mic_pcm_max : Int = 3840
 
 ///|
 /// A client's frame is an input event at most: one larger ends the view.
@@ -82,6 +116,34 @@ pub fn frame(kind : Int, payload : Bytes) -> Bytes {
   b.write_byte(kind.to_byte())
   b.write_uint_be(payload.length().reinterpret_as_uint())
   b.write_bytes(payload)
+  b.to_bytes()
+}
+
+///|
+/// The most of a pointer's shape a `cursor` frame carries (its UTF-8): a longer one goes without it.
+pub let cursor_shape_max : Int = 64
+
+///|
+/// A `cursor` frame's payload (`cursorPayload`): none for no pointer (null); else x and y (0..1, each in 16 bits,
+/// big-endian, of 65535) and the shape's UTF-8.
+pub fn cursor_payload(cursor : Json) -> Bytes {
+  if cursor is Null {
+    return b""
+  }
+  let shape = match field(cursor, "shape") {
+    Some(String(t)) => @utf8.encode(t)
+    _ => b""
+  }
+  let q = (k : String) => js_round(unit(finite(field(cursor, k)).unwrap_or(0.0)) * 65535.0).to_int()
+  let (x, y) = (q("x"), q("y"))
+  let b = @buffer.Buffer(size_hint=4 + shape.length())
+  b.write_byte((x >> 8).to_byte())
+  b.write_byte((x & 255).to_byte())
+  b.write_byte((y >> 8).to_byte())
+  b.write_byte((y & 255).to_byte())
+  if shape.length() <= cursor_shape_max {
+    b.write_bytes(shape)
+  }
   b.to_bytes()
 }
 
@@ -181,6 +243,33 @@ pub fn clip_payload(clip : Clip, flags? : Int? = None) -> Bytes {
 }
 
 ///|
+/// A clip's mark as its code (screens/source.ts `PRIVACY_CODE`): 0 none, 1 concealed, 2 transient, 3 auto.
+pub fn privacy_name(code : Int) -> String? {
+  match code {
+    1 => Some("concealed")
+    2 => Some("transient")
+    3 => Some("auto")
+    _ => None
+  }
+}
+
+///|
+/// A `privateClipboard` frame's payload: the clip's mark (1..3), its type byte, its bytes.
+pub fn private_clip_payload(clip : Clip, privacy : Int) -> Bytes {
+  clip_payload(clip, flags=Some(privacy))
+}
+
+///|
+/// The mark a client's `clipboard` frame gives its clip (its flags' bits 1..2): 0 none.
+pub fn parse_clip_privacy(payload : Bytes) -> Int {
+  if payload.length() < 1 {
+    0
+  } else {
+    (payload[0].to_int() >> 1) & 3
+  }
+}
+
+///|
 /// A client's `clipboard` frame: the clip (within its bounds) and whether to paste it; None when it is none.
 pub fn parse_clip(payload : Bytes) -> (Clip, Bool)? {
   if payload.length() < 3 {
@@ -223,6 +312,21 @@ pub fn parse_scale(v : Json) -> Double? {
     return None
   }
   Some(p)
+}
+
+///|
+/// What a client's input frame asks of the device's media volume (`{t: "volume"}` to read it again, `{t: "volume",
+/// level}` to set it): Some(None) to read it, Some(Some(level)) to set it, None when it is not that.
+pub fn parse_volume(v : Json) -> Double?? {
+  guard input_of(v, "volume") is Some(m) else { return None }
+  match m.get("level") {
+    None => Some(None)
+    Some(_) =>
+      match int_field(m, "level") {
+        Some(l) if l >= 0.0 && l <= 1000.0 => Some(Some(l))
+        _ => None
+      }
+  }
 }
 
 ///|
@@ -331,20 +435,30 @@ fn payload_json(payload : Bytes) -> Json? {
 ///|
 /// A value as JavaScript read it, as JSON here.
 pub fn json_of(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => jnum(n)
-    Str(s) => jstr(@jsjson.text(s))
-    Arr(xs) => Json::array(xs.map(json_of))
-    Obj(kvs) => {
-      let m : Map[String, Json] = Map([])
-      for kv in kvs {
-        m[@jsjson.text(kv.0)] = json_of(kv.1)
-      }
-      Json::object(m)
-    }
+  v.to_json_lossy()
+}
+
+///|
+/// A client's `mic` frame (screens.ts `parseMic`): flags (bit 0 clear), the recording's epoch (u32 big-endian), then
+/// an even number of bytes of samples, none and at most `mic_pcm_max`; else None.
+pub fn parse_mic(payload : Bytes) -> (UInt, Bytes)? {
+  let n = payload.length()
+  if n < 7 || n > 5 + mic_pcm_max || (payload[0].to_int() & 1) != 0 || (n - 5) % 2 != 0 {
+    return None
   }
+  let epoch = (payload[1].to_uint() << 24) | (payload[2].to_uint() << 16) | (payload[3].to_uint() << 8) | payload[4].to_uint()
+  Some((epoch, Bytes::from_array(payload[5:].to_array())))
+}
+
+///|
+/// A number as JavaScript's `>>> 0` makes it.
+pub fn js_u32(d : Double) -> UInt {
+  if d - d != 0.0 {
+    return 0U
+  }
+  let t = if d < 0.0 { -(-d).floor() } else { d.floor() }
+  let m = t - (t / 4294967296.0).floor() * 4294967296.0
+  m.to_uint64().to_uint()
 }
 
 ///|
@@ -475,7 +589,68 @@ pub fn parse_input(v : Json) -> Json? {
         Some(b) => masked(b, 7)
         None => 0.0
       }
-      Some(jobj([("t", jstr("pointer")), ("kind", jstr(kind)), ("x", jnum(unit(x))), ("y", jnum(unit(y))), ("buttons", jnum(buttons))]))
+      let out = [("t", jstr("pointer")), ("kind", jstr(kind)), ("x", jnum(unit(x))), ("y", jnum(unit(y))), ("buttons", jnum(buttons))]
+      // How far the person's pointer moved (a move's alone), posted as only that where it says `relative`; a press
+      // with it is where the pointer is.
+      let relative = m.get("relative") is Some(True)
+      if kind != "move" {
+        if relative {
+          out.push(("relative", Json::boolean(true)))
+        }
+      } else if finite(m.get("dx")) is Some(dx) && finite(m.get("dy")) is Some(dy) {
+        let d = (n : Double) => dmax(-10_000.0, dmin(10_000.0, n))
+        out.push(("dx", jnum(d(dx))))
+        out.push(("dy", jnum(d(dy))))
+        if relative {
+          out.push(("relative", Json::boolean(true)))
+        }
+      }
+      Some(jobj(out))
+    }
+    "gamepad" => {
+      guard int_field(m, "index") is Some(index) && index >= 0.0 && index < 4.0 else { return None }
+      let zero = jnum(0.0)
+      if m.get("connected") is Some(False) {
+        return Some(
+          jobj([
+            ("t", jstr("gamepad")),
+            ("index", jnum(index)),
+            ("connected", Json::boolean(false)),
+            ("buttons", zero),
+            ("lx", zero),
+            ("ly", zero),
+            ("rx", zero),
+            ("ry", zero),
+            ("lt", zero),
+            ("rt", zero),
+          ]),
+        )
+      }
+      guard int_field(m, "buttons") is Some(buttons) &&
+        finite(m.get("lx")) is Some(lx) &&
+        finite(m.get("ly")) is Some(ly) &&
+        finite(m.get("rx")) is Some(rx) &&
+        finite(m.get("ry")) is Some(ry) &&
+        finite(m.get("lt")) is Some(lt) &&
+        finite(m.get("rt")) is Some(rt) else {
+        return None
+      }
+      let axis = (n : Double) => dmax(-1.0, dmin(1.0, n))
+      let trigger = (n : Double) => dmax(0.0, dmin(1.0, n))
+      Some(
+        jobj([
+          ("t", jstr("gamepad")),
+          ("index", jnum(index)),
+          ("connected", Json::boolean(true)),
+          ("buttons", jnum(masked(buttons, 0x1ffff))),
+          ("lx", jnum(axis(lx))),
+          ("ly", jnum(axis(ly))),
+          ("rx", jnum(axis(rx))),
+          ("ry", jnum(axis(ry))),
+          ("lt", jnum(trigger(lt))),
+          ("rt", jnum(trigger(rt))),
+        ]),
+      )
     }
     "wheel" => {
       guard finite(m.get("x")) is Some(x) &&
@@ -634,7 +809,7 @@ pub fn asked(screen : Json) -> Json {
     _ => None
   }
   let quality = match m.get("quality") {
-    Some(String("smooth" | "hd" | "original" as q)) if !peek => Some(q)
+    Some(String("smooth" | "hd" | "qhd" | "original" as q)) if !peek => Some(q)
     _ => None
   }
   let fps = if is_fps(m.get("fps")) && !peek { num_of(m.get("fps")) } else { None }
@@ -675,6 +850,25 @@ pub fn asked(screen : Json) -> Json {
   }
   if m.get("taken") is Some(True) {
     out.push(("taken", Json::boolean(true)))
+  }
+  if m.get("binaryCursor") is Some(True) && !peek {
+    out.push(("binaryCursor", Json::boolean(true)))
+  }
+  if m.get("customCursor") is Some(True) && !peek {
+    out.push(("customCursor", Json::boolean(true)))
+  }
+  // (the token the client takes the video and audio frames under as datagrams: client/shell screen_dgram.rs)
+  match m.get("datagrams") {
+    Some(Number(t, ..)) if !peek && t >= 1.0 && t <= 4294967295.0 && js_round(t) == t =>
+      out.push(("datagrams", jnum(t)))
+    _ => ()
+  }
+  // (it reads `privateClipboard` frames; it wants text sharp, with 原画 alone)
+  if m.get("privateClip") is Some(True) && !peek {
+    out.push(("privateClip", Json::boolean(true)))
+  }
+  if m.get("chroma444") is Some(True) && quality == Some("original") {
+    out.push(("chroma444", Json::boolean(true)))
   }
   jobj(out)
 }

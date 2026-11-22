@@ -15,6 +15,7 @@ import { access, copyFile, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { log } from "../ops/log.ts";
+import { defaultWindowsTask } from "../platform/windows.ts";
 
 /// How long Windows' prompt is waited for before the change is given up.
 export const ASK_MS = 120_000;
@@ -182,7 +183,7 @@ export class Elevation {
       now = this.#d.now();
       const deadline = now + ASK_MS;
       const kept = windowsJsonIn(await readOrNull(join(this.#d.data, "windows.json")));
-      const task = typeof kept.task === "string" && kept.task !== "" ? kept.task : "still.fail station";
+      const task = typeof kept.task === "string" && kept.task !== "" ? kept.task : defaultWindowsTask(this.#d.data);
       // Copied out of <app>: what runs from there is stopped as the station is.
       const runner = join(this.#run, "stillfail-elevation-w.exe");
       await copyFile(hidden, runner);

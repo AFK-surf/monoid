@@ -73,33 +73,6 @@ int32_t sflive_write(moonbit_bytes_t path, moonbit_bytes_t data, int32_t mode) {
   return 0;
 }
 
-int32_t sflive_write_flags(moonbit_bytes_t path, moonbit_bytes_t data, int32_t mode, int32_t excl) {
-  (void)mode;
-  wchar_t *w = sfl_wide((const char *)path);
-  HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, excl ? CREATE_NEW : CREATE_ALWAYS,
-                         FILE_ATTRIBUTE_NORMAL, NULL);
-  free(w);
-  if (h == INVALID_HANDLE_VALUE) {
-    DWORD e = GetLastError();
-    if (e == ERROR_FILE_EXISTS || e == ERROR_ALREADY_EXISTS) return 17; // EEXIST
-    if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return 2; // ENOENT
-    if (e == ERROR_ACCESS_DENIED) return 13; // EACCES
-    return e == 0 ? 5 : (int32_t)e;
-  }
-  size_t len = (size_t)Moonbit_array_length(data), at = 0;
-  while (at < len) {
-    DWORD n = 0;
-    if (!WriteFile(h, data + at, (DWORD)(len - at), &n, NULL)) {
-      int32_t e = sfl_err();
-      CloseHandle(h);
-      return e;
-    }
-    at += n;
-  }
-  CloseHandle(h);
-  return 0;
-}
-
 int32_t sflive_symlink(moonbit_bytes_t target, moonbit_bytes_t path) {
   wchar_t *t = sfl_wide((const char *)target), *p = sfl_wide((const char *)path);
   DWORD attrs = GetFileAttributesW(t);
@@ -118,48 +91,6 @@ int32_t sflive_link(moonbit_bytes_t from, moonbit_bytes_t to) {
   int32_t e = ok ? 0 : sfl_err();
   free(f);
   free(t);
-  return e;
-}
-
-static int32_t sfl_rm_tree_w(const wchar_t *path) {
-  DWORD attrs = GetFileAttributesW(path);
-  if (attrs == INVALID_FILE_ATTRIBUTES) return 0;
-  if ((attrs & FILE_ATTRIBUTE_DIRECTORY) && !(attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
-    size_t n = wcslen(path);
-    wchar_t *pattern = (wchar_t *)malloc(sizeof(wchar_t) * (n + 3));
-    if (pattern == NULL) return ENOMEM;
-    memcpy(pattern, path, sizeof(wchar_t) * n);
-    pattern[n] = L'\\';
-    pattern[n + 1] = L'*';
-    pattern[n + 2] = 0;
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW(pattern, &fd);
-    free(pattern);
-    if (h != INVALID_HANDLE_VALUE) {
-      do {
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-        size_t m = wcslen(fd.cFileName);
-        wchar_t *child = (wchar_t *)malloc(sizeof(wchar_t) * (n + m + 2));
-        if (child == NULL) break;
-        memcpy(child, path, sizeof(wchar_t) * n);
-        child[n] = L'\\';
-        memcpy(child + n + 1, fd.cFileName, sizeof(wchar_t) * (m + 1));
-        sfl_rm_tree_w(child);
-        free(child);
-      } while (FindNextFileW(h, &fd));
-      FindClose(h);
-    }
-    return RemoveDirectoryW(path) ? 0 : sfl_err();
-  }
-  if (attrs & FILE_ATTRIBUTE_READONLY) SetFileAttributesW(path, attrs & ~FILE_ATTRIBUTE_READONLY);
-  if (attrs & FILE_ATTRIBUTE_DIRECTORY) return RemoveDirectoryW(path) ? 0 : sfl_err();
-  return DeleteFileW(path) ? 0 : sfl_err();
-}
-
-int32_t sflive_rm_tree(moonbit_bytes_t path) {
-  wchar_t *w = sfl_wide((const char *)path);
-  int32_t e = sfl_rm_tree_w(w);
-  free(w);
   return e;
 }
 
@@ -233,16 +164,6 @@ int32_t sflive_write(moonbit_bytes_t path, moonbit_bytes_t data, int32_t mode) {
   return e;
 }
 
-int32_t sflive_write_flags(moonbit_bytes_t path, moonbit_bytes_t data, int32_t mode, int32_t excl) {
-  int flags = O_WRONLY | O_CREAT | O_CLOEXEC | (excl ? O_EXCL : O_TRUNC);
-  int fd = open((const char *)path, flags, mode > 0 ? (mode_t)mode : 0644);
-  if (fd < 0) return errno;
-  if (mode > 0) fchmod(fd, (mode_t)mode);
-  int32_t e = sfl_write_all(fd, data, (size_t)Moonbit_array_length(data));
-  close(fd);
-  return e;
-}
-
 int32_t sflive_symlink(moonbit_bytes_t target, moonbit_bytes_t path) {
   return symlink((const char *)target, (const char *)path) == 0 ? 0 : errno;
 }
@@ -250,32 +171,6 @@ int32_t sflive_symlink(moonbit_bytes_t target, moonbit_bytes_t path) {
 int32_t sflive_link(moonbit_bytes_t from, moonbit_bytes_t to) {
   return link((const char *)from, (const char *)to) == 0 ? 0 : errno;
 }
-
-static int32_t sfl_rm_tree(const char *path) {
-  struct stat st;
-  if (lstat(path, &st) != 0) return errno == ENOENT ? 0 : errno;
-  if (!S_ISDIR(st.st_mode)) return unlink(path) == 0 || errno == ENOENT ? 0 : errno;
-  DIR *d = opendir(path);
-  if (d != NULL) {
-    struct dirent *e;
-    size_t n = strlen(path);
-    while ((e = readdir(d)) != NULL) {
-      if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-      size_t m = strlen(e->d_name);
-      char *child = (char *)malloc(n + m + 2);
-      if (child == NULL) break;
-      memcpy(child, path, n);
-      child[n] = '/';
-      memcpy(child + n + 1, e->d_name, m + 1);
-      sfl_rm_tree(child);
-      free(child);
-    }
-    closedir(d);
-  }
-  return rmdir(path) == 0 || errno == ENOENT ? 0 : errno;
-}
-
-int32_t sflive_rm_tree(moonbit_bytes_t path) { return sfl_rm_tree((const char *)path); }
 
 double sflive_start_time(int32_t pid) {
 #ifdef __APPLE__

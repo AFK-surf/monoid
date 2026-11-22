@@ -14,9 +14,15 @@ on:
       - "libs/mbui/src/kitdemo/gallery/a11ycheck.mbt"
       - "libs/mbui/src/kitdemo/gallery/fontscalecheck.mbt"
       - "libs/mbui/src/host/win_*"
+      - "libs/mbui/src/host/glass_damage.h"
       - "libs/mbui/src/host/win.h"
       - "libs/mbui/src/host/log_files.h"
       - "libs/mbui/scripts/win_logs_test.c"
+      - "libs/mbui/scripts/win_stack_test.c"
+      - "libs/mbui/scripts/win_a11y_test.cpp"
+      - "libs/mbui/scripts/win_vbuf_test.cpp"
+      - "libs/mbui/scripts/win_atlas_test.cpp"
+      - "libs/mbui/scripts/win_text_test.cpp"
       - "libs/mbui/scripts/win_keys_test.c"
       - "libs/mbui/scripts/win_clip_test.c"
       - "libs/mbui/scripts/win_sound_test.c"
@@ -103,6 +109,31 @@ jobs:
           grep -q 'crt line password=hunter2' out/logs/stderr.txt
           grep -q 'handle line https://a.example/p?token=hunter3' out/logs/stderr.txt
           grep -q 'after the stall' out/logs/stderr.txt
+      - name: "Hang stack sampling: unwinds a spinning thread without deadlock and survives log redaction (src/host/win_stack.h)"
+        run: |
+          mkdir -p out/stack
+          cl.exe -nologo -O2 -W4 -WX -Isrc/host scripts/win_stack_test.c -Foout/stack/ -Feout/stack/win_stack_test.exe
+          out/stack/win_stack_test.exe
+      - name: "UI Automation updates defer notifications out of draw_frame and survive COM re-entrancy (src/host/win_a11y.cpp)"
+        run: |
+          mkdir -p out/a11y
+          cl.exe -nologo -EHsc -W4 -WX -Isrc/host scripts/win_a11y_test.cpp -Foout/a11y/ -Feout/a11y/win_a11y_test.exe -link user32.lib oleaut32.lib uiautomationcore.lib runtimeobject.lib
+          out/a11y/win_a11y_test.exe
+      - name: "D3D11 dynamic vertex buffer handles overflow and CreateBuffer failure without crashing and recovers (src/host/win_render.cpp)"
+        run: |
+          mkdir -p out/vbuf
+          cl.exe -nologo -EHsc -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host scripts/win_vbuf_test.cpp -Foout/vbuf/ -Feout/vbuf/win_vbuf_test.exe -link d3d11.lib d3dcompiler.lib dcomp.lib dwmapi.lib gdi32.lib user32.lib windowscodecs.lib ole32.lib
+          out/vbuf/win_vbuf_test.exe
+      - name: "D3D11 glyph atlas coalesces adjacent shelf uploads and flushes before draw (src/host/win_render.cpp)"
+        run: |
+          mkdir -p out/atlas
+          cl.exe -nologo -EHsc -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host scripts/win_atlas_test.cpp -Foout/atlas/ -Feout/atlas/win_atlas_test.exe -link d3d11.lib d3dcompiler.lib dcomp.lib dwmapi.lib gdi32.lib user32.lib windowscodecs.lib ole32.lib
+          out/atlas/win_atlas_test.exe
+      - name: "DirectWrite glyph fine downsampling, non-blocking drawn_ahead, and single-phase preheating (src/host/win_text.cpp)"
+        run: |
+          mkdir -p out/text
+          cl.exe -nologo -EHsc -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host scripts/win_text_test.cpp -Foout/text/ -Feout/text/win_text_test.exe -link dwrite.lib d2d1.lib windowscodecs.lib user32.lib ole32.lib
+          out/text/win_text_test.exe
 
   kitdemo:
     runs-on: windows-latest

@@ -14,7 +14,9 @@
     "noEmit": true
   },
   "include": [
+    "shared/**/*.ts",
     "test/**/*.ts",
-    "scripts/**/*.ts"
+    "scripts/**/*.ts",
+    "bin/**/*.ts"
   ]
 }

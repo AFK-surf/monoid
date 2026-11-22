@@ -1,4 +1,6 @@
 import {
+  "base/codec",
+  "base/url",
   "station/host",
   "station/wire",
   "station/jsjson",
@@ -10,5 +12,4 @@ import {
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/double",
   "moonbitlang/core/buffer",
-  "moonbitlang/core/encoding/base64",
 }

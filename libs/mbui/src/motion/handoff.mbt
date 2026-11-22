@@ -99,7 +99,16 @@ pub fn HandPart::draws(self : HandPart, v : @view.View, carries? : @view.View) -
   |> ignore
   v.ground_drawn(By(fn() { self.ground(v) })) |> ignore
   match carries {
-    Some(c) => c.drawn_off(By(fn() { (self.ways[4].shown_on(c), self.ways[5].shown_on(c)) })) |> ignore
+    Some(c) => {
+      // (what it carries cut to its ground while that is on its way to another's shape: never past it, over what is
+      // under it; at rest, not cut)
+      v.clips(By(fn() {
+        let g = self.ground(v)
+        g.dx != 0.0 || g.dy != 0.0 || g.dw != 0.0
+      }))
+      |> ignore
+      c.drawn_off(By(fn() { (self.ways[4].shown_on(c), self.ways[5].shown_on(c)) })) |> ignore
+    }
     None => ()
   }
   self.start(v)

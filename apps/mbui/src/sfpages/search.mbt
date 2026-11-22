@@ -24,6 +24,8 @@ priv struct Search {
   /// told as it opens, goes back or closes (search_told): what reads it, the shell's bar and what is over another
   /// page among it, built again wherever that was
   said : @signals.Signal[Int]
+  /// the mounted search page node, for letting go of focus on close without @ui.current()
+  mut node : @view.View?
 }
 
 ///|
@@ -36,6 +38,7 @@ let search : Search = {
   offered: fn() { [] },
   fly: 0,
   said: @signals.signal(0),
+  node: None,
 }
 
 ///|
@@ -76,6 +79,7 @@ fn search_reset() -> Unit {
   search.over = false
   search.offered = fn() { [] }
   search.fly = 0
+  search.node = None
   search_told()
 }
 
@@ -261,7 +265,11 @@ fn search_field_shorter() -> Array[String] {
 ///|
 /// The search at the top of a list made once (search_field's) in its line `line`: a quiet field; pressed, the search
 /// opens from it. Not seen while the search's field is it. It stands on the list's line (`at`).
-fn search_field_node(line : @view.View, at : @sf.ListAt) -> @view.View {
+fn search_field_node(
+  line : @view.View,
+  at : @sf.ListAt,
+  reveal? : () -> Double = fn() { 1.0 },
+) -> @view.View {
   let field : Ref[@view.View?] = Ref(None)
   line.box(fn(l) {
     @sf.style_node(l, fn() {
@@ -271,13 +279,20 @@ fn search_field_node(line : @view.View, at : @sf.ListAt) -> @view.View {
         Whole => search_field_line.then(@ui.style(px=@sf.room_of(band.band_in)))
       }
     })
-    @sf.action_box_node(l, fn() { @sf.t("android-chat.search.field") }, fn(f) {
-      let (_, y, _, _) = f.placed_window_now()
-      search_open_from(y)
-    }, fn(f) {
-      field.val = Some(f)
-      @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
-      f.alpha(By(fn() { if search_read().open { 0.0 } else { 1.0 } })) |> ignore
+    @sf.action_box_node(
+      l,
+      fn() { @sf.t("android-chat.search.field") },
+      fn(f) {
+        let (_, y, _, _) = f.placed_window_now()
+        search_open_from(y)
+      },
+      fn(f) {
+        field.val = Some(f)
+        @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
+        f
+        .alpha(By(fn() { if search_read().open { 0.0 } else { reveal() } }))
+        .presses(By(fn() { !search_read().open && reveal() > 0.001 }))
+        |> ignore
       @sf.icon_node(f, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
       @sf.words_node(f, fn() { @sf.t("android-chat.search.field") }, fn() {
         @sf.theme().chat_list.band_words.then(search_field_words)
@@ -335,6 +350,13 @@ pub fn search_page_node(
     }
   }
   // (how it came up said for what goes away under it too (search_away_node): let go as it closes, search_gone)
+  search.node = Some(v)
+  v.owns(fn() {
+    if search.node is Some(cur) && physical_equal(cur, v) {
+      search.node = None
+    }
+  })
+  |> ignore
   fly()
   v.reacts(fn() { search_read().leaving }, fn(leaving) {
     if leaving {
@@ -380,7 +402,7 @@ pub fn search_page_node(
     @sf.style_node(bar, fn() { search_bar_row })
     // (取消's room beside the field as it comes in: its words' width and the room before them)
     let cancel_w = fn() {
-      @ui.text_advance(@sf.t("android-chat.search.cancel"), size=@ui.current().sp(@sf.theme().t.title)) + 12.0
+      @ui.text_advance(@sf.t("android-chat.search.cancel"), size=@sf.node_sp(bar, @sf.theme().t.title)) + 12.0
     }
     bar.box(fn(slot) {
       slot
@@ -441,7 +463,7 @@ pub fn search_page_node(
       // phone's screen by its width)
       fn() {
         match at {
-          Whole => found_stacked(l.window().0 - 2.0 * @sf.list_line_in(at))
+          Whole => found_stacked(l.window_w() - 2.0 * @sf.list_line_in(at))
           Side | Tape => true
         }
       },
@@ -459,7 +481,10 @@ fn search_close_now() -> Unit {
   if !search.open || search.leaving {
     return
   }
-  @ui.current().blur()
+  match search.node {
+    Some(n) => n.focus_let_go()
+    None => ()
+  }
   if search.summoned {
     search_gone()
     return

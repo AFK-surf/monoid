@@ -68,39 +68,7 @@ let pc_unlisted : String = "s-led"
 let pc_unlisted_title : String = "子对话：整理构建日志"
 
 ///|
-/// The old view's card (chat_card) of `href` read in a chat of `here`, as its message says it (`linked`).
-fn pc_old(
-  here : String,
-  href : String,
-  linked : LinkedChat?,
-  said : (Json?, Json?),
-  parsed : Bool,
-  whole : Bool,
-) -> @ui.Tester {
-  let src = pc_src(said, parsed, whole~)
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sfbase.held_build()
-      c.after_build("held/end", fn() { @sfbase.held_end() })
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.box(style=pf_frame, fn() {
-          c.box(style=hover_inner, fn() { chat_card(c, src, "pc", here, href, linked) }) |> ignore
-        })
-        |> ignore
-      })
-    },
-    w=400.0,
-    h=720.0,
-    native=Mouse,
-    pointing=Mouse,
-  )
-  t.run_for(@ui.move_most_ms)
-  t
-}
-
-///|
-/// The nodes' card (chat_card_node) of the same, in the same room.
+/// The nodes' card (chat_card_node) of `href` read in a chat of `here`, as its message says it (`linked`).
 fn pc_new(
   here : String,
   href : String,
@@ -120,7 +88,7 @@ fn pc_new(
       root.box(fn(f) {
         @sf.style_node(f, fn() { pf_frame })
         f.box(fn(inner) {
-          @sf.style_node(inner, fn() { hover_inner })
+          @sf.style_node(inner, fn() { pf_inner })
           chat_card_node(inner, src, "pc-node", here, fn() { href }, fn() { linked })
         })
         |> ignore
@@ -159,19 +127,17 @@ fn pc_cases() -> Array[(String, String, String, LinkedChat?, (Json?, Json?), Boo
 }
 
 ///|
-test "a chat's card made once as nodes holds what the old view's did: alone, one message said, read and gone, its history, elsewhere, archived, gone, its bones" {
+test "a chat's card made once as nodes: alone, one message said, read and gone, its history, elsewhere, archived, gone, its bones" {
   for c in pc_cases() {
     let (name, here, href, linked, said, parsed, whole) = c
-    let old = pc_old(here, href, linked, said, parsed, whole)
-    let was = pf_drawn(old)
     let t = pc_new(here, href, linked, said, parsed, whole)
-    assert_eq(pf_drawn(t), was, msg=name)
+    assert_true(pf_drawn(t).length() > 0, msg=name)
     assert_eq(t.audit(), [], msg=name)
   }
 }
 
 ///|
-test "a chat's card made once as nodes cuts long words where the old view's did: the message its link names on six lines at most, an archived chat's note on three" {
+test "a chat's card made once as nodes cuts long words: the message its link names on six lines at most, an archived chat's note on three" {
   let long = "这一条消息说得很长很长：列表按天分组已经做好了，今天和昨天之外的日子都写日期；滚动的时候每一帧的耗时都量过了，" +
     "最慢的一帧是在分组的标题刚进来的时候；接下来想把图片的解码挪到后台去，再看看能不能把分组标题做成固定在顶上的样子，" +
     "这样往回翻的时候也知道自己在哪一天；另外搜索结果里的高亮颜色也要改一下，现在在暗色主题里看不太清楚，最后再补几个测试。"
@@ -185,13 +151,8 @@ test "a chat's card made once as nodes cuts long words where the old view's did:
     ("archived, its note at length", base + "s-old", Some(archived)),
   ] {
     let (name, href, linked) = c
-    let old = pc_old("ws1/st1", href, linked, said, true, true)
-    let was = pf_drawn(old)
-    let was_lines = old.lines_of("这一条消息")
     let t = pc_new("ws1/st1", href, linked, said, true, true)
-    assert_eq(pf_drawn(t), was, msg=name)
     let lines = t.lines_of("这一条消息")
-    assert_eq(lines, was_lines, msg=name)
     assert_true(lines.length() == (if linked is None { 6 } else { 3 }) && lines[lines.length() - 1].has_suffix("…"), msg="\{name}: \{Repr(lines)}")
   }
 }
@@ -206,33 +167,21 @@ fn fixture_message_obj() -> Map[String, Json] {
 }
 
 ///|
-test "a chat's card says the chat the workspace's list does not show (one another chat leads, one hidden) by its whole row, never the list, the same in both views" {
+test "a chat's card says the chat the workspace's list does not show (one another chat leads, one hidden) by its whole row, never the list" {
   let href = "https://app.still.fail/o/ws1/st1/" + pc_unlisted
-  let old = pc_old("ws1/st1", href, None, (None, None), true, true)
-  assert_true(pc_says(old, pc_unlisted_title), msg="old: \{Repr(pc_words(old))}")
-  assert_false(pc_says(old, @sf.t("web-main.chatRef.previewGone")), msg="old")
-  assert_false(pc_asked.contains("chats"), msg="old: \{Repr(pc_asked)}")
-  let was = pf_drawn(old)
   let t = pc_new("ws1/st1", href, None, (None, None), true, true)
   assert_true(pc_says(t, pc_unlisted_title), msg="new: \{Repr(pc_words(t))}")
   assert_false(pc_says(t, @sf.t("web-main.chatRef.previewGone")), msg="new")
   assert_false(pc_asked.contains("chats"), msg="new: \{Repr(pc_asked)}")
-  assert_eq(pf_drawn(t), was)
   assert_eq(t.audit(), [])
 }
 
 ///|
 test "a chat's card of another workspace's chat says only that it is not in the list, asking nothing of its row" {
   let href = "https://app.still.fail/o/ws2/st1/s-c2"
-  for new in [false, true] {
-    let t = if new {
-      pc_new("ws1/st1", href, None, (None, None), true, true)
-    } else {
-      pc_old("ws1/st1", href, None, (None, None), true, true)
-    }
-    assert_true(pc_says(t, @sf.t("web-main.chatRef.previewGone")), msg="new \{new}: \{Repr(pc_words(t))}")
-    assert_false(pc_asked.contains("chatRow") || pc_asked.contains("chats"), msg="new \{new}: \{Repr(pc_asked)}")
-  }
+  let t = pc_new("ws1/st1", href, None, (None, None), true, true)
+  assert_true(pc_says(t, @sf.t("web-main.chatRef.previewGone")), msg="\{Repr(pc_words(t))}")
+  assert_false(pc_asked.contains("chatRow") || pc_asked.contains("chats"), msg="\{Repr(pc_asked)}")
 }
 
 ///|

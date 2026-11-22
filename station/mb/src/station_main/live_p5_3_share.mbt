@@ -30,7 +30,7 @@ fn P53Share::new(bus : LiveBus, accounts : P53Accounts) -> P53Share {
     bus,
     accounts,
     files: { host: bus.host, sep: sep() },
-    log: { say: (level, part, message, fields) => p53_log(level, part, message, fields~) },
+    log: { say: (level, part, message, fields) => slice_log(level, part, message, fields) },
     clock: { ..@share_sync.Clock::live(bus.host.rt), now: () => p5_epoch_ms().to_double() },
     sharing: None,
     memory: None,
@@ -43,12 +43,9 @@ fn P53Share::new(bus : LiveBus, accounts : P53Accounts) -> P53Share {
 /// A membership as cloud.json says it (cloud/state.ts `homeMembership`, `joinedMembership`).
 fn p53_membership(m : Json) -> @share_sync.Membership {
   {
-    workspace: p53_text(m, "workspace"),
-    workspace_name: p53_text(m, "workspace_name"),
-    peers: match p53_get(m, "peers") {
-      Array(xs) => xs
-      _ => []
-    },
+    workspace: jtext_or_empty(m, "workspace"),
+    workspace_name: jtext_or_empty(m, "workspace_name"),
+    peers: jitems(jfield(m, "peers")),
   }
 }
 
@@ -58,13 +55,13 @@ fn P53Share::cloud(self : P53Share) -> @share_sync.Cloud {
   let bus = self.bus
   let state = () => (bus.cloud_state.val)()
   let removed = () => match state() {
-    Some(s) => p53_num(s, "removed_at") is Some(_)
+    Some(s) => jnum_of(s, "removed_at") is Some(_)
     None => false
   }
   let memberships = () => match state() {
-    Some(s) if p53_text(s, "workspace") != "" && !removed() => {
+    Some(s) if jtext_or_empty(s, "workspace") != "" && !removed() => {
       let out = [p53_membership(s)]
-      match p53_get(s, "joined") {
+      match jfield(s, "joined") {
         Array(js) => for j in js { out.push(p53_membership(j)) }
         _ => ()
       }
@@ -74,13 +71,13 @@ fn P53Share::cloud(self : P53Share) -> @share_sync.Cloud {
   }
   {
     has_state: () => state() is Some(_),
-    station: () => match state() { Some(s) => p53_str(s, "station"); None => None },
-    name: () => match state() { Some(s) => p53_str(s, "name"); None => None },
-    rig: () => match state() { Some(s) => !(p53_get(s, "rig") is Null); None => false },
+    station: () => match state() { Some(s) => jtext(s, "station"); None => None },
+    name: () => match state() { Some(s) => jtext(s, "name"); None => None },
+    rig: () => match state() { Some(s) => !(jfield(s, "rig") is Null); None => false },
     peers_current: () => state() is Some(_) && !removed() && (bus.cloud_reached.val)(),
     memberships,
     membership: ws => memberships().iter().find_first(m => m.workspace == ws),
-    home: () => if removed() { None } else { p53_home(bus) },
+    home: () => if removed() { None } else { bus_home(bus) },
     removed,
     listen: f => (bus.cloud_listen.val)(_ => f()),
   }
@@ -109,10 +106,7 @@ fn P53Share::config(self : P53Share) -> @share_sync.Config {
 ///|
 /// The agents' home (sessions/agents.ts `settings().agentHome`): config.json's, else `<data>/agent`.
 fn P53Share::agent_home(self : P53Share) -> String {
-  match p53_str((self.bus.config_raw.val)(), "agentHome") {
-    Some(h) if h != "" => h
-    _ => @nodepath.join(sep(), [self.bus.data, "agent"])
-  }
+  bus_agent_home(self.bus)
 }
 
 ///|
@@ -124,68 +118,182 @@ fn P53Share::watching(self : P53Share) -> @share_sync.Watching {
   {
     tree: (root, into, most, changed, _failed) => {
       let gone = Ref(false)
-      let marks : Ref[Map[String, String]?] = Ref(None)
-      let look = async fn() -> String? {
+      // Empty, not unknown, at first: a file written after its follower last read the tree (MemorySync::look) and
+      // before this first look ends is told like any other, as the TypeScript's watch set before its listing tells it
+      // (each follower settles what it is told and reads by content, so files told again change nothing).
+      let marks : Ref[Map[String, String]] = Ref(Map([]))
+      // One look at a time (the sampling fiber's and each scan's): one asked while another runs runs after it.
+      let busy = Ref(false)
+      let again = Ref(false)
+      let once = async fn() -> Unit {
         let now : Map[String, String] = Map([])
-        let queue = [(root, 0)]
+        let queue = [(root, "", 0)]
         let mut seen = 0
-        while queue.pop() is Some((dir, depth)) {
-          for e in p53_readdir_types(host, dir) {
+        while queue.pop() is Some((dir, rel_dir, depth)) {
+          for e in host_readdir_types(host, dir).unwrap_or([]) {
             let (name, kind) = e
             let full = @nodepath.join(sep(), [dir, name])
+            let rel = if rel_dir == "" { name } else { "\{rel_dir}/\{name}" }
             seen += 1
             if seen > 20000 {
               break
             }
             if kind == "dir" {
-              if depth < most && into(full) {
-                queue.push((full, depth + 1))
+              if depth < most && into(rel) {
+                queue.push((full, rel, depth + 1))
               }
               continue
             }
-            match (try { Ok(host.shell("fs.meta", { "path": p53_s(full) })) } catch { e => Err(e) }) {
-              Ok((m, _)) => now[full] = "\{p53_num(m, "size").unwrap_or(0.0)}:\{p53_num(m, "mtimeMs").unwrap_or(0.0)}"
+            match (try { Ok(host.shell("fs.meta", { "path": jstr(full) })) } catch { e => Err(e) }) {
+              Ok((m, _)) => now[rel] = "\{jnum_of(m, "size").unwrap_or(0.0)}:\{jnum_of(m, "mtimeMs").unwrap_or(0.0)}"
               Err(_) => ()
             }
           }
         }
-        match marks.val {
-          Some(before) => {
-            for k, v in now {
-              if before.get(k) != Some(v) {
-                changed(k)
-              }
-            }
-            for k, _ in before {
-              if !now.contains(k) {
-                changed(k)
-              }
-            }
-          }
-          None => ()
+        let before = marks.val
+        marks.val = now
+        if gone.val || stopped.is_done() {
+          return
         }
-        marks.val = Some(now)
+        for k, v in now {
+          if before.get(k) != Some(v) {
+            changed(k)
+          }
+        }
+        for k, _ in before {
+          if !now.contains(k) {
+            changed(k)
+          }
+        }
+      }
+      let look = async fn() -> String? {
+        if busy.val {
+          again.val = true
+          return None
+        }
+        busy.val = true
+        defer {
+          busy.val = false
+        }
+        while !gone.val && !stopped.is_done() {
+          again.val = false
+          once()
+          if !again.val {
+            break
+          }
+        }
         None
       }
-      ignore(
-        host.rt.fork(name="a followed tree", async fn() {
+      fork_bg(host, "a followed tree", async fn() {
+        ignore(look())
+        while !gone.val && !stopped.is_done() {
+          @effect.sleep(p53_follow_ms) // timer: a sample of this machine (its own files: the shell keeps no watch)
           ignore(look())
-          while !gone.val && !stopped.is_done() {
-            @effect.sleep(p53_follow_ms) // timer: a sample of this machine (its own files: the shell keeps no watch)
-            ignore(look())
-          }
-        }),
-      )
+        }
+      })
       { close: () => gone.val = true, scan: look }
     },
-    dir: (_dir, _changed, _failed) => None,
+    dir: (dir, changed, failed) => Some(p53_watch_dir(host, stopped, dir, changed, failed)),
   }
+}
+
+///|
+/// One directory followed for its own entries, as `fs.watch(dir)` (not recursive) follows it: its listing and each
+/// entry's size and time looked at every `every` ms, an entry made, changed or removed told by its name. A directory
+/// that cannot be listed (not there yet, or gone) is told once (`failed`, the watch's `error`) and no longer looked
+/// at, as is one let go (`close`) or once the station stops; `began` is told once its first look is done, `ended` as its
+/// fiber ends.
+fn p53_watch_dir(
+  host : @host.Host,
+  stopped : @effect.Deferred[String],
+  dir : String,
+  changed : (String?) -> Unit,
+  failed : () -> Unit,
+  every? : Int = p53_follow_ms,
+  began? : @effect.Deferred[Unit],
+  ended? : @effect.Deferred[Unit],
+) -> @share_sync.Watcher {
+  let gone = Ref(false)
+  let marks : Ref[Map[String, String]?] = Ref(None)
+  let busy = Ref(false)
+  let again = Ref(false)
+  let still = () => !gone.val && !stopped.is_done()
+  // One look: false once the directory cannot be listed (it is then told, and let go).
+  let once = async fn() -> Bool {
+    guard host_readdir_types(host, dir) is Some(entries) else {
+      if still() {
+        gone.val = true
+        failed()
+      }
+      return false
+    }
+    let now : Map[String, String] = Map([])
+    for e in entries {
+      let (name, kind) = e
+      let mark = match (try { Ok(host.shell("fs.meta", { "path": jstr(@nodepath.join(sep(), [dir, name])) })) } catch { e => Err(e) }) {
+        Ok((m, _)) => "\{kind}:\{jnum_of(m, "size").unwrap_or(0.0)}:\{jnum_of(m, "mtimeMs").unwrap_or(0.0)}"
+        Err(_) => kind
+      }
+      now[name] = mark
+    }
+    let before = marks.val
+    marks.val = Some(now)
+    // (the first look is where the watch begins: what was there then is not a change)
+    guard before is Some(before) && still() else { return true }
+    for k, v in now {
+      if before.get(k) != Some(v) {
+        changed(Some(k))
+      }
+    }
+    for k, _ in before {
+      if !now.contains(k) {
+        changed(Some(k))
+      }
+    }
+    true
+  }
+  let look = async fn() -> String? {
+    if busy.val {
+      again.val = true
+      return None
+    }
+    busy.val = true
+    defer {
+      busy.val = false
+    }
+    while still() {
+      again.val = false
+      if !once() {
+        return Some("\{dir} cannot be listed")
+      }
+      if !again.val {
+        break
+      }
+    }
+    None
+  }
+  fork_bg(host, "a followed directory", async fn() {
+    defer {
+      if ended is Some(d) {
+        ignore(d.succeed(()))
+      }
+    }
+    ignore(look())
+    if began is Some(b) {
+      ignore(b.succeed(()))
+    }
+    while still() {
+      @effect.sleep(every) // timer: a sample of this machine (its own files: the shell keeps no watch)
+      ignore(look())
+    }
+  })
+  { close: () => gone.val = true, scan: look }
 }
 
 ///|
 /// A request to station `peer` of workspace `ws` (None: the first both are in), as the peers' bus carries it.
 async fn P53Share::ask(self : P53Share, peer : String, ws : String?, request : Json) -> Json {
-  let meth = p53_text(request, "method")
+  let meth = jtext_or_empty(request, "method")
   let (answer, _) = self.bus.call_peer(peer, ws, meth, request)
   answer
 }
@@ -210,33 +318,39 @@ fn P53Share::attach(self : P53Share) -> Unit {
       machine_email: None,
       claude_token: async fn(profile, rejected) {
         let accounts = self.accounts.made()
-        let got = p53_json(accounts.claude_token(p53_jv(profile), rejected, true))
-        (p53_text(got, "token"), p53_num(got, "expiresAt").unwrap_or(0.0))
+        // (a login that can no longer be renewed, said so to the sharing: it tells its borrowers, LOGIN_OVER)
+        let got = p53_json(accounts.claude_token(to_jv(profile), rejected, true)) catch {
+          @accounts_pool.Thrown("RenewRefused", said) =>
+            raise @share_sync.over(match said.get("message") { Some(Str(m)) => m; _ => "" })
+          @accounts_oauth.RenewRefused(_, m) => raise @share_sync.over(m)
+          e => raise e
+        }
+        (jtext_or_empty(got, "token"), jnum_of(got, "expiresAt").unwrap_or(0.0))
       },
       codex_renew_running: async fn(profile) {
-        (bus.hub_ask.val)("codex.renewRunning", p53_obj([("profile", p53_s(profile))])) is True
+        bus.hub_codex_renew_running(profile)
       },
-      agy_renew: Some(async fn(profile) { ignore((bus.hub_ask.val)("agy.renew", p53_obj([("profile", p53_s(profile))]))) }),
-      status: async fn(id) {
+      agy_renew: Some(async fn(profile) { bus.hub_agy_renew(profile) }),
+      status: async fn(id, recheck) {
         let accounts = self.accounts.made()
-        p53_json(accounts.health(id).to_jv())
+        // (a borrower refused on it: asked of its provider again first, accounts `lent_health`)
+        if recheck {
+          p53_json(accounts.lent_health(id, recheck=true).to_jv())
+        } else {
+          p53_json(accounts.health(id).to_jv())
+        }
       },
+      login_expired: Some(id => match self.accounts.accounts { Some(a) => a.mark_login_expired(id); None => () }),
       changed: () => (bus.overview_changed.val)(),
       recheck: Some(() => match self.accounts.accounts { Some(a) => a.recheck_borrowed(); None => () }),
       profile_changed: Some(async fn(id, login) {
-        match self.accounts.accounts {
-          Some(a) => a.shared_changed(id, login)
-          None => ()
-        }
+        if self.accounts.accounts is Some(a) { a.shared_changed(id, login) }
       }),
       quota_reset: Some(async fn(id) {
-        match self.accounts.accounts {
-          Some(a) => a.shared_quota_reset(id)
-          None => ()
-        }
+        if self.accounts.accounts is Some(a) { a.shared_quota_reset(id) }
       }),
-      profile_gone: Some(async fn(id) { ignore((bus.hub_ask.val)("profileGone", p53_obj([("profile", p53_s(id))]))) }),
-      itself: Some(station => station == p53_station_id(bus)),
+      profile_gone: Some(async fn(id) { bus.hub_profile_gone(id) }),
+      itself: Some(station => station == bus_station_id(bus)),
       codex_token_url: @share_sync.codex_token_url,
       fetch: async fn(url, body) {
         let answer = (self.accounts.oauth_io.fetch)({
@@ -268,16 +382,13 @@ fn P53Share::attach(self : P53Share) -> Unit {
   // (agents.ts `readers.onTrim`: the shares' and the memory's programs let go short of memory)
   bus.on_trim(() => {
     let mut n = sharing.trim_idle()
-    match self.memory {
-      Some(m) => n += m.trim_idle()
-      None => ()
-    }
+    if self.memory is Some(m) { n += m.trim_idle() }
     n
   })
   // (a login home again, by any route: the share a trip made for it undone; move/live.ts `sharing.onHosted`)
   sharing.set_on_hosted(
     Some((share, from) => ignore(
-      bus.host.rt.fork(name="share came home", async fn() {
+      bus.host.rt.fork_quiet(name="share came home", async fn() {
         ignore((bus.coord_ask.val)("move.shareCameHome", Json::array([Json::string(share), Json::string(from)]))) catch {
           _ => ()
         }
@@ -295,7 +406,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
       agent_home: () => self.agent_home(),
       workspace_agent_home: async fn(agent_home, ws, home) {
         let dir = @share_sync.workspace_agent_home_path(sep(), agent_home, ws, home)
-        ignore(bus.host.shell("fs.mkdir", { "path": p53_s(dir), "recursive": p53_b(true) }))
+        ignore(bus.host.shell("fs.mkdir", { "path": jstr(dir), "recursive": jb(true) }))
         dir
       },
       still: false,
@@ -311,7 +422,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
   // ── chats shared across workspaces ──
   let sql = @share_sync.SqlChatShares::new(bus.db, () => bus.store.now().to_double())
   let gone : @effect.Deferred[Bool] = @effect.Deferred::new()
-  ignore(rt.fork(name="the station before gone", async fn() {
+  ignore(rt.fork_daemon("the station before gone", on_error=e => @host.note("the station before gone failed: \{e}"), async fn() {
     (bus.previous_gone)()
     ignore(gone.succeed(true))
   }))
@@ -322,18 +433,48 @@ fn P53Share::attach(self : P53Share) -> Unit {
       data: bus.data,
       store: sql.store(),
       cloud,
-      chat_ws: Some(session => match p53_session_row(bus, session) { Null => None; row => p53_either(p53_str(row, "ws"), p53_home(bus)) }),
-      ask: async fn(station, request) { self.ask(station, None, request) },
-      link: session => match p53_home(bus) {
+      chat_ws: Some(session => match bus_session_row(bus, session) { Null => None; row => either(jtext(row, "ws"), bus_home(bus)) }),
+      ask: async fn(station, request) { self.ask(station, jtext(request, "workspace"), request) },
+      link: session => match bus_home(bus) {
         Some(ws) => match p53_origin(bus) {
-          Some(o) => Some("\{o}/o/\{ws}/\{p53_station_id(bus)}/\{session}")
+          Some(o) => Some("\{o}/o/\{ws}/\{bus_station_id(bus)}/\{session}")
           None => None
         }
         None => None
       },
-      title: session => p53_text(p53_session_row(bus, session), "title"),
-      touches: entry => match p53_get(entry, "session") { String(s) => [s]; _ => [] },
-      inbox: async fn(station, request) { (bus.hub_ask.val)("inbox", p53_obj([("station", p53_s(station)), ("request", request)])) },
+      title: session => jtext_or_empty(bus_session_row(bus, session), "title"),
+      touches: entry => {
+        let key_of = (raw : String) => {
+          let trimmed = raw.trim().to_string()
+          if trimmed == "" {
+            ""
+          } else {
+            let no_q = match trimmed.find("?") {
+              Some(i) => trimmed[:i].to_owned()
+              None => trimmed
+            }
+            let tail = match no_q.rev_find("/") {
+              Some(i) => no_q[i + 1:].to_owned()
+              None => no_q
+            }
+            @api_routes.decode_uri_component(tail).unwrap_or(tail)
+          }
+        }
+        let target = match jtext_or_empty(entry, "method") {
+          "session.read" => jtext(jfield(entry, "args"), "chat")
+          "session.file" => jtext(entry, "chat")
+          "session.message" | "session.put" => jtext(entry, "to")
+          _ => jtext(entry, "session")
+        }
+        match target {
+          Some(s) => {
+            let k = key_of(s)
+            if k == "" { [] } else { [k] }
+          }
+          None => []
+        }
+      },
+      inbox: async fn(station, request) { bus.hub_inbox(station, request) },
       prepare_index: Some(() => index.request()),
       clock: self.clock,
       log: self.log,
@@ -343,24 +484,41 @@ fn P53Share::attach(self : P53Share) -> Unit {
   )
   self.shares = Some(shares)
   bus.on_peer_prefix("xshare.", async fn(peer, ws, _meth, request, _bytes) { (shares.inside(peer, request, workspace=ws), None) })
+  bus.peer_outside.val = Some(async fn(peer, request, bytes, ws) {
+    let req = match bytes {
+      Some(b) => jwith(request, "$bytes", jstr(@base64.encode(b)))
+      None => request
+    }
+    let answer = shares.outside(peer, req, workspace=Some(ws)) catch {
+      e => raise @gate.PeerRefused(p53_words(e))
+    }
+    match answer {
+      Object(m) if m.get("$bytes") is Some(String(b)) => {
+        let c = m.copy()
+        c.remove("$bytes")
+        (Json::object(c), Some(@base64.decode(b)))
+      }
+      _ => (answer, None)
+    }
+  })
   bus.outside_reaches.val = (target, ws) => match ws {
     Some(w) => shares.reaches(target, w)
     None => false
   }
   // (each loaded and set going once the station before is gone, as main.ts starts them)
   ignore(
-    rt.fork(name="shares", async fn() {
+    rt.fork_daemon("shares", on_error=e => @host.note("shares failed: \{e}"), async fn() {
       (bus.previous_gone)()
       sharing.load() catch {
-        e => p53_log("warn", "share", "the shared profiles were not loaded", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+        e => slice_log("warn", "share", "the shared profiles were not loaded", jobj_of([("error", jstr(p53_words(e)))]))
       }
       sharing.start()
       memory.start()
       shares.load() catch {
-        e => p53_log("warn", "xshare", "the chats shared were not loaded", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+        e => slice_log("warn", "xshare", "the chats shared were not loaded", jobj_of([("error", jstr(p53_words(e)))]))
       }
       shares.start() catch {
-        e => p53_log("warn", "xshare", "the chats shared were not set going", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+        e => slice_log("warn", "xshare", "the chats shared were not set going", jobj_of([("error", jstr(p53_words(e)))]))
       }
     }),
   )
@@ -370,30 +528,30 @@ fn P53Share::attach(self : P53Share) -> Unit {
       meth: "POST",
       path: "/profiles/:id/share",
       answer: async fn(r) {
-        let body = p53_get(r, "body")
-        sharing.share_profile(p53_param(r, "id", 2), p53_true(body, "shared"), p53_get(r, "viewer"))
-        p53_obj([("ok", p53_b(true))])
+        let body = jfield(r, "body")
+        sharing.share_profile(p53_param(r, "id", 2), jtrue(body, "shared"), jfield(r, "viewer"))
+        jobj_of([("ok", jb(true))])
       },
     },
     {
       meth: "POST",
       path: "/skills/:name/share",
       answer: async fn(r) {
-        sharing.share_skill(p53_param(r, "name", 2), p53_true(p53_get(r, "body"), "shared"), p53_get(r, "viewer"))
-        p53_obj([("ok", p53_b(true))])
+        sharing.share_skill(p53_param(r, "name", 2), jtrue(jfield(r, "body"), "shared"), jfield(r, "viewer"))
+        jobj_of([("ok", jb(true))])
       },
     },
     {
       meth: "GET",
       path: "/memory/kept",
-      answer: async fn(r) { self.memory_kept(p53_either(p53_str(p53_get(r, "query"), "workspace"), p53_home(bus)).unwrap_or("")) },
+      answer: async fn(r) { self.memory_kept(either(jtext(jfield(r, "query"), "workspace"), bus_home(bus)).unwrap_or("")) },
     },
   ])
 }
 
 ///|
 fn P53Share::state(self : P53Share) -> Json {
-  p53_obj([
+  jobj_of([
     ("sharing", match self.sharing { Some(s) => s.state_json(); None => Json::null() }),
     ("xshare", self.xshare_state()),
   ])
@@ -425,10 +583,7 @@ fn P53Share::memory_kept(self : P53Share, ws : String) -> Json {
 
 ///|
 async fn P53Share::level_now(self : P53Share) -> Unit {
-  match self.memory {
-    Some(m) => m.level_now()
-    None => ()
-  }
+  if self.memory is Some(m) { m.level_now() }
 }
 
 ///|
@@ -441,36 +596,8 @@ fn P53Share::reaches(self : P53Share, target : String, ws : String?) -> Bool {
 
 ///|
 async fn P53Share::close(self : P53Share) -> Unit {
-  match self.memory {
-    Some(m) => m.stop()
-    None => ()
-  }
-  match self.sharing {
-    Some(s) => s.close()
-    None => ()
-  }
-  match self.shares {
-    Some(s) => s.close()
-    None => ()
-  }
-  match self.index {
-    Some(i) => i.close()
-    None => ()
-  }
-}
-
-///|
-/// A directory's entries with their kinds (`fs.readdir` with types), none where it is not read.
-async fn p53_readdir_types(host : @host.Host, dir : String) -> Array[(String, String)] {
-  let listed = try { Ok(host.shell("fs.readdir", { "path": Json::string(dir), "types": Json::boolean(true) })) } catch { e => Err(e) }
-  match listed {
-    Ok((Array(entries), _)) =>
-      entries.filter_map(e => match e {
-        Array([String(n), String(k), ..]) => Some((n, k))
-        Object(_) => Some((p53_text(e, "name"), p53_text(e, "kind")))
-        String(n) => Some((n, ""))
-        _ => None
-      })
-    _ => []
-  }
+  if self.memory is Some(m) { m.stop() }
+  if self.sharing is Some(s) { s.close() }
+  if self.shares is Some(s) { s.close() }
+  if self.index is Some(i) { i.close() }
 }

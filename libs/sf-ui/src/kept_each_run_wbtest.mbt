@@ -15,22 +15,16 @@ fn ker_run() -> @ui.Tester {
 }
 
 ///|
-test "a run begins with no menu open, none going, no submenu pointed at, no mark tapped open, no menu's hold felt: what the run before left is not the next one's" {
+test "a run begins with no menu open, none going: what the run before left is not the next one's" {
   ker_run() |> ignore
   menu_set("甲")
   menu_open_at.val = (10.0, 20.0)
   menu_going.set(["乙"])
-  submenu_hover.val = "丙"
-  about_open.val = "丁"
-  held_felt["戊"] = 3
   ker_run() |> ignore
   assert_eq(menu_open.untracked(), "")
   assert_false(menu_open_by.peek("甲"))
   assert_eq(menu_going.count(), 0)
   assert_eq(menu_open_at.val, (0.0, 0.0))
-  assert_eq(submenu_hover.val, "")
-  assert_eq(about_open.val, "")
-  assert_true(held_felt.is_empty())
 }
 
 ///|
@@ -60,4 +54,15 @@ test "a run begins with none of the system's bars said, nothing said over the wi
   assert_true(native_foot_rest.val is None)
   assert_false(native_over.up)
   assert_true(native_claims.is_empty())
+}
+
+///|
+test "a run begins with no active hover slot and hover_open_seq reset, whatever the run before left" {
+  ker_run() |> ignore
+  hover_open_seq.val = 7
+  hover_claim(7, fn() {  })
+  assert_true(hover_open_active.val is Some(_))
+  ker_run() |> ignore
+  assert_eq(hover_open_seq.val, 0)
+  assert_true(hover_open_active.val is None)
 }

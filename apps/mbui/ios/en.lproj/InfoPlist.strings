@@ -1,0 +1,4 @@
+"NSPhotoLibraryAddUsageDescription" = "Save images and videos from your chats to your photo library.";
+"NSPhotoLibraryUsageDescription" = "Browse recent photos so you can choose images to send in your chats.";
+"NSCameraUsageDescription" = "Take photos to send in your chats.";
+"NSFaceIDUsageDescription" = "Confirm your identity before viewing vault credentials or approving agent access.";

@@ -122,6 +122,7 @@ test "the history's details: its turns' line says its work after it, none withou
   let src = work_source("chat-history-side", on~)
   decide_src.val = Some(src)
   open_fixture_over("chat-history-side", src)
+  @sfdesk.set_history_shut(false)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
   t.run_for(@ui.move_most_ms)
   let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.5 }) }
@@ -146,7 +147,7 @@ test "the history's details: its turns' line says its work after it, none withou
   assert_eq(word("后台进行中").length(), 0)
   // pressed: all of it beside it
   t.tap(mark[0].1 + 4.0, mark[0].2 + mark[0].4 / 2.0)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(word("后台进行中").length() == 1 && word("4").length() >= 1)
   assert_eq(word("vite --config web/vite.demo.config.ts").length(), 1)
   assert_eq(word("4m 12s").length(), 1)
@@ -169,7 +170,7 @@ test "the history's details: its turns' line says its work after it, none withou
   assert_true(word("后台进行中")[0].2 > mark[0].2, msg="under it")
   // Escape: gone
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   assert_eq(word("后台进行中").length(), 0)
 }
 
@@ -189,7 +190,7 @@ test "on a phone, its details' turns say its work after them, its head as it was
   assert_true((mark[0].2 + mark[0].4 / 2.0 - turns[0].2 - turns[0].4 / 2.0).abs() < 2.0, msg="\{Repr((mark, turns))}")
   assert_eq(word("后台进行中").length(), 0)
   t.tap(mark[0].1 + 4.0, mark[0].2 + mark[0].4 / 2.0)
-  t.run_for(@kit.presence_in_ms * 2.0)
+  t.run_for(@motion.presence_in_ms * 2.0)
   assert_eq(word("后台进行中").length(), 1)
   assert_eq(word("跑检查并提交").length(), 1)
   // from the foot: its lists low in the window
@@ -198,20 +199,33 @@ test "on a phone, its details' turns say its work after them, its head as it was
 
 ///|
 test "the mark of an agent's work: at work's spokes before it while something runs in the background, none for a checklist alone" {
-  let cycles = fn(running : Bool) -> Array[String] {
+  // (how many drawings it makes over a turn of its spokes, a step of the resident clock at a time)
+  let drawings = fn(running : Bool) -> Int {
     new_run()
     let src = work_source("chat-history-side", running~)
-    let t = @ui.Tester::new(
-      fn(c) { @sfpages.work_mark(c, src, "ws1/st1", "s-c1", @sfdesk.side_tab_words, @sfdesk.side_tab_words, lead=" · ") },
-      w=400.0,
-      h=40.0,
-    )
-    t.run_for(@sf.spoke_step_ms)
-    t.cycles()
+    let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=400.0, h=40.0)
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.box(fn(row) {
+        row.row(Is(true)) |> ignore
+        @sfpages.work_mark_node(row, src, "ws1/st1", "s-c1", @sfdesk.side_tab_words, @sfdesk.side_tab_words, lead=" · ")
+      })
+      |> ignore
+    })
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    let seen : Set[String] = Set([])
+    let mut ms = 0.0
+    while ms < 8.0 * @sf.spoke_step_ms {
+      t.run_for(@view.resident_step_ms)
+      seen.add(t.drawlist())
+      ms = ms + @view.resident_step_ms
+    }
+    seen.length()
   }
-  // the spokes' step, on the resident clock (10 a second)
-  assert_true(cycles(true).iter().any(fn(c) { c.has_prefix("800 ms") }), msg="\{Repr(cycles(true))}")
-  assert_eq(cycles(false), [])
+  // the spokes turning, a step at a time on the resident clock (10 a second)
+  assert_true(drawings(true) > 1, msg="\{drawings(true)}")
+  assert_eq(drawings(false), 1)
 }
 
 ///|
@@ -358,6 +372,9 @@ fn aw_tester(card : AwCard, platform~ : Int, wide~ : Bool, scale? : Double = 1.0
   let src = aw_source(mode, card)
   decide_src.val = Some(src)
   open_fixture_over(mode, src)
+  if wide {
+    @sfdesk.set_history_shut(false)
+  }
   let (w, h) = if wide { (1200.0, 800.0) } else { (390.0, 844.0) }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
   if scale != 1.0 {
@@ -565,6 +582,7 @@ test "its panel closes as the card comes to say neither (none left in the backgr
     let seen = ["后台进行中", "审阅 live.ts 的改动", "清单", "跑检查并提交"]
     let places = fn() { seen.map(fn(s) { t.words().iter().find_first(fn(w) { w.0 == s && w.5 > 0.0 }).map(fn(w) { w.2 }) }) }
     let was = places()
+    let is_sheet = scrim_drawn(t).length() > 0
     // (both at once, as the core says the card)
     @signals.start_batch()
     card.tasks.set([])
@@ -578,11 +596,22 @@ test "its panel closes as the card comes to say neither (none left in the backgr
       let drawn = now.filter(fn(p) { p is Some(_) }).length()
       assert_true(drawn == 0 || drawn == seen.length(), msg="\{at}: frame \{n}: \{drawn} of \{Repr(seen)}")
       if drawn > 0 && !wide {
-        // (a sheet goes down whole)
-        for i in 1..<now.length() {
-          let d = now[i].unwrap() - now[0].unwrap()
-          let d0 = was[i].unwrap() - was[0].unwrap()
-          assert_true((d - d0).abs() <= 0.01, msg="\{at}: frame \{n}: \{seen[i]} \{d} under \{seen[0]}, \{d0} before")
+        if is_sheet {
+          // (a sheet goes down whole)
+          for i in 1..<now.length() {
+            let d = now[i].unwrap() - now[0].unwrap()
+            let d0 = was[i].unwrap() - was[0].unwrap()
+            assert_true((d - d0).abs() <= 0.01, msg="\{at}: frame \{n}: \{seen[i]} \{d} under \{seen[0]}, \{d0} before")
+          }
+        } else {
+          // (an upper-half popover scales down uniformly as it exits, with no internal reflow)
+          let s0 = (now[1].unwrap() - now[0].unwrap()) / (was[1].unwrap() - was[0].unwrap())
+          assert_true(s0 >= 0.96 && s0 <= 1.01, msg="\{at}: frame \{n}: popover exit scale \{s0}")
+          for i in 1..<now.length() {
+            let d = now[i].unwrap() - now[0].unwrap()
+            let d0 = was[i].unwrap() - was[0].unwrap()
+            assert_true((d / d0 - s0).abs() <= 0.01, msg="\{at}: frame \{n}: \{seen[i]} ratio \{d / d0} vs \{s0}")
+          }
         }
       }
       n += 1

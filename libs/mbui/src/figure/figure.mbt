@@ -57,3 +57,119 @@ pub fn words(
   })
   |> ignore
 }
+
+///|
+/// A fixed-size canvas as a tree node. The builder may place panels and words with `panel_node`, `auto_panel_node`
+/// and `words_node`, and may use any other mbui or app node components inside it.
+#callsite(autofill(loc))
+pub fn canvas_node(
+  parent : @view.View,
+  w : Double,
+  h : Double,
+  ground : Int64,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.box(made_for=loc, fn(v) {
+    v.width(Is(Some(w))).height(Is(Some(h))).ground(Is(ground)) |> ignore
+    body(v)
+  })
+  |> ignore
+}
+
+///|
+/// A panel node at (`x`, `y`) within its parent, with mbui's smooth corner of `radius`. Its children are positioned
+/// from this panel's own top left. A zero ground leaves it transparent.
+#callsite(autofill(loc))
+pub fn panel_node(
+  parent : @view.View,
+  x : Double,
+  y : Double,
+  w : Double,
+  h : Double,
+  ground : Int64,
+  radius : Double,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.box(made_for=loc, fn(v) {
+    v
+    .over(Is(true), edges=(Some(x), Some(y), None, None))
+    .width(Is(Some(w)))
+    .height(Is(Some(h)))
+    .ground(Is(ground))
+    .radius(Is(radius))
+    |> ignore
+    body(v)
+  })
+  |> ignore
+}
+
+///|
+/// A panel node as wide as `w`, whose height follows its contents. Like `panel_node`, its children are positioned
+/// within it.
+#callsite(autofill(loc))
+pub fn auto_panel_node(
+  parent : @view.View,
+  x : Double,
+  y : Double,
+  w : Double,
+  ground : Int64,
+  radius : Double,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.box(made_for=loc, fn(v) {
+    v
+    .over(Is(true), edges=(Some(x), Some(y), None, None))
+    .width(Is(Some(w)))
+    .ground(Is(ground))
+    .radius(Is(radius))
+    |> ignore
+    body(v)
+  })
+  |> ignore
+}
+
+///|
+/// Words node at (`x`, `y`) within its parent. With a positive `width` they wrap within it; otherwise they stay on one
+/// line. The caller chooses ink and size so graphics can have their own visual hierarchy without changing app themes.
+#callsite(autofill(loc))
+pub fn words_node(
+  parent : @view.View,
+  x : Double,
+  y : Double,
+  s : String,
+  size : Double,
+  ink : Int64,
+  weight? : Int = 400,
+  width? : Double = 0.0,
+  line? : Double = 0.0,
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.box(made_for=loc, fn(v) {
+    v.over(Is(true), edges=(Some(x), Some(y), None, None)) |> ignore
+    if width > 0.0 {
+      v.width(Is(Some(width))) |> ignore
+    }
+    v.box(fn(t) {
+      t
+      .words(
+        Is(s),
+        ink~,
+        look={
+          size,
+          weight,
+          line: if line > 0.0 { line } else { size * 1.25 },
+          wrap: width > 0.0,
+          tracking: @view.letters_own,
+          balance: false,
+          max_lines: 0,
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}

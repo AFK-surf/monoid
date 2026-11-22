@@ -6,6 +6,9 @@
 pub let read_method = "session.read"
 
 ///|
+pub let list_method = "session.list"
+
+///|
 /// What an agent named: a conversation, or a session (maybe one entry of its execution history).
 pub enum Named {
   Thread(Json)
@@ -147,18 +150,18 @@ fn sessions_of(v : Json) -> Array[String] {
 
 ///|
 /// The key a thread goes by where it is shared: its own session's, else its first agent's.
-async fn Storage::chat_key_of(self : Storage, t : Json) -> String {
+fn Storage::chat_key_of(self : Storage, t : Json) -> String raise {
   match str(t, "home") {
     Some(h) => h
-    None => sessions_of(self.ask("store.threadSessions", [get(t, "id").unwrap_or(Json::null())])).get(0).unwrap_or("")
+    None => sessions_of(self.st.threads.thread_sessions(get(t, "id").unwrap_or(Json::null()))).get(0).unwrap_or("")
   }
 }
 
 ///|
 /// The chats session `key` is in, by the keys they are shared by.
-async fn Storage::chats_of(self : Storage, key : String) -> Array[String] {
+fn Storage::chats_of(self : Storage, key : String) -> Array[String] raise {
   let out = [key]
-  for t in items(Some(self.ask("store.sessionThreads", [js(key)]))) {
+  for t in items(Some(self.st.threads.session_threads(js(key), Json::null()))) {
     let c = self.chat_key_of(thread_of(t))
     if !out.contains(c) {
       out.push(c)
@@ -168,8 +171,8 @@ async fn Storage::chats_of(self : Storage, key : String) -> Array[String] {
 }
 
 ///|
-async fn Storage::in_workspace(self : Storage, key : String, ws : String) -> Bool {
-  self.ask("hub.inWorkspace", [js(key), js(ws)]) is True
+fn Storage::in_workspace(self : Storage, key : String, ws : String) -> Bool {
+  self.st.hub.get_session(key) is Some(_) && self.st.hub.ws_of(Some(key)) == Some(ws)
 }
 
 ///|
@@ -181,7 +184,7 @@ pub async fn Storage::reachable(self : Storage, key : String, ws : String?, writ
   }
   let shared = []
   for c in self.chats_of(key) {
-    let share = self.ask("store.chatShare", [js(c)])
+    let share = self.st.store.chat_share(js(c))
     if share is Null {
       continue
     }
@@ -191,14 +194,14 @@ pub async fn Storage::reachable(self : Storage, key : String, ws : String?, writ
     }
   }
   for c in shared {
-    self.st.tell("store.usedChatShare", [js(c), ja([js(w)])])
+    self.st.store.used_chat_share(js(c), [js(w)])
   }
   shared.length() > 0
 }
 
 ///|
-async fn Storage::ws_of(self : Storage, key : String?) -> String? {
-  as_str(Some(self.ask("hub.wsOf", [jopt(key)])))
+fn Storage::ws_of(self : Storage, key : String?) -> String? {
+  self.st.hub.ws_of(key)
 }
 
 ///|
@@ -207,7 +210,7 @@ pub async fn Storage::thread_in(self : Storage, thread : Json, ws : String?) -> 
   guard ws is Some(w) else { return true }
   let keys = match str(thread, "home") {
     Some(h) => [h]
-    None => sessions_of(self.ask("store.threadSessions", [get(thread, "id").unwrap_or(Json::null())]))
+    None => sessions_of(self.st.threads.thread_sessions(get(thread, "id").unwrap_or(Json::null())))
   }
   if keys.length() == 0 {
     return self.ws_of(None) == Some(w)
@@ -223,7 +226,7 @@ pub async fn Storage::thread_in(self : Storage, thread : Json, ws : String?) -> 
 ///|
 /// The workspace whose chats and stations session `key` reaches: its chat's; None on a station in no workspace.
 pub async fn Storage::scope_of(self : Storage, key : String) -> String? {
-  if items(Some(self.ask("hub.workspaces", []))).length() == 0 {
+  if self.st.hub.workspaces().length() == 0 {
     None
   } else {
     self.ws_of(Some(key))
@@ -262,7 +265,7 @@ pub fn from_before(refusal : String) -> Bool {
 ///|
 /// The other station of the workspace a chat's link is on; None when it is on this one.
 pub async fn Storage::elsewhere(self : Storage, key : String, reference : String) -> String? {
-  let here = match as_str(Some(self.ask("hub.link", [js(key)]))) {
+  let here = match (self.st.hub.world.link)(key) {
     Some(link) => linked_station(link)
     None => None
   }
@@ -353,9 +356,9 @@ pub async fn Storage::for_peer(self : Storage, peer : String, request : Json, ws
 ///|
 /// The chats a session.* request of another station reads or writes in (others.ts `chatsTouched`).
 pub async fn Storage::chats_touched(self : Storage, request : Json) -> Array[String] {
-  let of_session = async fn(key : String) {
+  let of_session = fn(key : String) raise {
     let out = []
-    for t in items(Some(self.ask("store.sessionThreads", [js(key)]))) {
+    for t in items(Some(self.st.threads.session_threads(js(key), Json::null()))) {
       out.push(self.chat_key_of(thread_of(t)))
     }
     out
@@ -472,7 +475,7 @@ pub async fn Storage::named(self : Storage, given : String, ws : String?, write?
       if known && !self.reachable(key, ws) && there is Some(t) && Some(t) != ws {
         if ws is Some(w) {
           for c in self.chats_of(key) {
-            if self.ask("store.chatShareLapsed", [js(c), ja([js(w)])]) is True {
+            if self.st.store.chat_share_lapsed(js(c), ja([js(w)])) {
               raise failed("\{reference} is a chat of another workspace: \{lapsed}")
             }
           }
@@ -491,7 +494,7 @@ pub async fn Storage::named(self : Storage, given : String, ws : String?, write?
   }
   match parse_thread_address(reference) {
     Some((channel, ts)) => {
-      for t in items(Some(self.ask("store.threadsAt", [js(channel), js(ts)]))) {
+      for t in items(Some(self.st.threads.threads_at(js(channel), js(ts)))) {
         if self.thread_in(t, ws) {
           return Thread(t)
         }
@@ -509,11 +512,11 @@ pub async fn Storage::named(self : Storage, given : String, ws : String?, write?
 ///|
 /// The conversation a session is best read in: its own chat on the pages, else the one it last heard from.
 pub async fn Storage::session_thread_of(self : Storage, key : String) -> Json {
-  let home = self.ask("store.sessionHomeThread", [js(key)])
+  let home = self.st.threads.session_home_thread(js(key))
   if !nullish(Some(home)) {
     return home
   }
-  let latest = self.ask("store.latestThread", [js(key)])
+  let latest = self.with_threads(t => t.latest_thread(js(key)))
   if nullish(Some(latest)) {
     raise failed("session \{key} has no conversation yet")
   }
@@ -533,8 +536,30 @@ fn limit_arg(v : Json?, low : Double, high : Double, fallback : Double) -> Doubl
 }
 
 ///|
-/// chat_list: the station's conversations of session `key`'s workspace, the latest first, each with its agents.
-pub async fn Storage::chat_list(self : Storage, key : String, args : Json) -> String {
+async fn Storage::resolve_creator(self : Storage, key : String, raw : String) -> String {
+  let s = js_trim(raw)
+  if s == "" {
+    return ""
+  }
+  if s.to_lower() == "me" {
+    if key == "" {
+      return ""
+    }
+    let from_thread : String? = (try Some(self.session_thread_of(key)) catch { _ => None }).bind(st => str(thread_of(st), "createdBy"))
+    let creator = match from_thread {
+      Some(c) if c != "" => Some(c)
+      _ => self.session(key).bind(row => str(row, "createdBy"))
+    }
+    guard creator is Some(c) && c != "" else {
+      raise failed("cannot determine who started this chat: pass an email in created_by")
+    }
+    return c
+  }
+  s
+}
+
+///|
+async fn Storage::chat_list_here(self : Storage, key : String, args : Json, ws : String?) -> String {
   let limit = match get(args, "limit") {
     None => 20
     Some(x) =>
@@ -547,21 +572,54 @@ pub async fn Storage::chat_list(self : Storage, key : String, args : Json) -> St
     None => ""
     Some(q) => js_trim(js_string(q)).to_lower()
   }
-  let ws = self.scope_of(key)
+  let model = match get(args, "model") {
+    None => ""
+    Some(m) => js_trim(js_string(m)).to_lower()
+  }
+  let created_by = match get(args, "created_by") {
+    None => ""
+    Some(c) => self.resolve_creator(key, js_string(c)).to_lower()
+  }
+  let archived : Bool? = match get(args, "archived") {
+    Some(True) => Some(true)
+    Some(False) => Some(false)
+    _ => None
+  }
+  let has_filter = model != "" || created_by != "" || !(archived is None)
+  let filter_json : Json = if has_filter {
+    let fs : Array[(String, Json)] = []
+    if model != "" { fs.push(("model", js(model))) }
+    if created_by != "" { fs.push(("createdBy", js(created_by))) }
+    if archived is Some(a) { fs.push(("archived", jb(a))) }
+    jo(fs)
+  } else {
+    Json::null()
+  }
   let home = self.ws_of(None)
   let has = async fn(name : String) { self.ask("hub.has", [js(name)]) is True }
-  let listed : Json? = if query == "" {
+  let listed : Json? = if query == "" && !has_filter {
     if has("recentChatList") {
       Some(self.ask("hub.recentChatList", [jopt(ws), jopt(home), ji(limit)]))
     } else if !has("threadList") {
-      Some(self.ask("store.recentChatList", [jopt(ws), jopt(home), ji(limit)]))
+      Some(self.st.threads.recent_chat_list(jopt(ws), jopt(home), ji(limit)))
     } else {
       None
     }
   } else if has("searchChatList") {
-    Some(self.ask("hub.searchChatList", [jopt(ws), jopt(home), ji(limit), js(query)]))
+    Some(
+      self.ask(
+        "hub.searchChatList",
+        if has_filter { [jopt(ws), jopt(home), ji(limit), js(query), filter_json] } else { [jopt(ws), jopt(home), ji(limit), js(query)] },
+      ),
+    )
   } else if !has("threadList") {
-    Some(self.ask("store.searchChatList", [jopt(ws), jopt(home), ji(limit), js(query)]))
+    Some(
+      if has_filter {
+        self.st.threads.search_chat_list(jopt(ws), jopt(home), ji(limit), js(query), filter=filter_json)
+      } else {
+        self.st.threads.search_chat_list(jopt(ws), jopt(home), ji(limit), js(query))
+      },
+    )
   } else {
     None
   }
@@ -571,7 +629,7 @@ pub async fn Storage::chat_list(self : Storage, key : String, args : Json) -> St
   }
   let rows = match listed {
     Some(l) if get(l, "sessions") is Some(Array(_)) => items(get(l, "sessions"))
-    _ => items(Some(self.ask("store.listSessions", [])))
+    _ => self.st.store.list_sessions()
   }
   let sessions : Map[String, Json] = {}
   for s in rows {
@@ -590,7 +648,7 @@ pub async fn Storage::chat_list(self : Storage, key : String, args : Json) -> St
       let all = if has("threadList") {
         items(Some(self.ask("hub.threadList", [])))
       } else {
-        items(Some(self.ask("store.listThreads", [js(""), Json::null(), Json::null(), js("none")])))
+        items(Some(self.st.threads.list_threads(js(""), Json::null(), Json::null(), js("none"))))
       }
       all.filter(t => {
         let th = thread_of(t)
@@ -625,13 +683,42 @@ pub async fn Storage::chat_list(self : Storage, key : String, args : Json) -> St
       Some(Object(_) as m) => str(m, "text").unwrap_or("")
       _ => ""
     }
-    if query != "" && listed is None {
-      let haystack = "\{titles.join(" ")} \{last} \{members.join(" ")}".to_lower()
-      if !haystack.contains(query) {
-        continue
-      }
-    }
     if listed is None {
+      if archived is Some(want_archived) {
+        let hidden = !nullish(get(th, "hiddenAt"))
+        let home_archived = match str(th, "home") {
+          Some(h) => match sessions.get(h) { Some(s) => !nullish(get(s, "archivedAt")); None => false }
+          None => false
+        }
+        if (hidden || home_archived) != want_archived {
+          continue
+        }
+      }
+      if model != "" {
+        if !members.iter().any(m => match sessions.get(m) { Some(s) => str(s, "model").unwrap_or("").to_lower().contains(model); None => false }) {
+          continue
+        }
+      }
+      if created_by != "" {
+        let tc = str(th, "createdBy").unwrap_or("").to_lower()
+        let ok = (tc != "" && tc.contains(created_by)) ||
+          members.iter().any(m => match sessions.get(m) {
+            Some(s) => {
+              let c = str(s, "createdBy").unwrap_or("").to_lower()
+              c != "" && c.contains(created_by)
+            }
+            None => false
+          })
+        if !ok {
+          continue
+        }
+      }
+      if query != "" {
+        let haystack = "\{titles.join(" ")} \{last} \{members.join(" ")}".to_lower()
+        if !haystack.contains(query) {
+          continue
+        }
+      }
       matched += 1
     }
     if lines.length() >= limit {
@@ -642,11 +729,11 @@ pub async fn Storage::chat_list(self : Storage, key : String, args : Json) -> St
     let title = if titles.length() > 0 { one_line(titles[0], 80) } else { "(untitled)" }
     let agents = members.map(m => {
       let you = if m == key { " (you)" } else { "" }
-      let archived = match sessions.get(m) {
+      let archived_tag = match sessions.get(m) {
         Some(s) => if nullish(get(s, "archivedAt")) { "" } else { " archived" }
         None => ""
       }
-      "\{m}\{you}\{archived}"
+      "\{m}\{you}\{archived_tag}"
     })
     let at = iso(when(t))
     let hidden = if nullish(get(th, "hiddenAt")) { "" } else { ", archived" }
@@ -654,18 +741,59 @@ pub async fn Storage::chat_list(self : Storage, key : String, args : Json) -> St
     if last != "" {
       entry += ": \{one_line(last, 120)}"
     }
+    let run_info : Array[String] = []
+    for m in members {
+      if sessions.get(m) is Some(s) {
+        if str(s, "runtime") is Some(rt) && rt != "" {
+          let m_name = match str(s, "model") { Some(mm) if mm != "" => "/\{mm}"; _ => "" }
+          let eff = match str(s, "effort") { Some(ef) if ef != "" => " (\{ef})"; _ => "" }
+          let running_tag = match get(s, "running") { Some(True) => " running"; Some(Number(n, ..)) if n != 0.0 => " running"; _ => "" }
+          run_info.push("\{rt}\{m_name}\{eff}\{running_tag}")
+        }
+      }
+    }
+    let creator : String? = match str(th, "createdBy") {
+      Some(c) if c != "" => Some(c)
+      _ => {
+        let mut found : String? = None
+        for m in members {
+          if found is None {
+            if sessions.get(m) is Some(s) {
+              if str(s, "createdBy") is Some(c) && c != "" {
+                found = Some(c)
+              }
+            }
+          }
+        }
+        found
+      }
+    }
+    let details : Array[String] = []
+    if run_info.length() > 0 {
+      details.push("model: \{run_info.join(", ")}")
+    }
+    if creator is Some(c) {
+      details.push("by: \{c}")
+    }
+    if details.length() > 0 {
+      entry += "\n  \{details.join("; ")}"
+    }
     if members.length() > 0 {
-      match as_str(Some(self.ask("hub.link", [js(members[0])]))) {
+      match (self.st.hub.world.link)(members[0]) {
         Some(link) if link != "" => entry += "\n  link: \{link}"
         _ => ()
       }
     }
     lines.push(entry)
   }
-  let outside = items(Some(self.ask("hub.outsideChats", [jopt(ws)]))).filter(c => {
-    query == "" ||
-    "\{str(c, "title").unwrap_or("")} \{str(c, "workspaceName").unwrap_or("")} \{str(c, "link").unwrap_or("")}".to_lower().contains(query)
-  })
+  let outside = if has_filter {
+    []
+  } else {
+    items(Some(self.ask("hub.outsideChats", [jopt(ws)]))).filter(c => {
+      query == "" ||
+      "\{str(c, "title").unwrap_or("")} \{str(c, "workspaceName").unwrap_or("")} \{str(c, "link").unwrap_or("")}".to_lower().contains(query)
+    })
+  }
   let shown = outside[:if outside.length() < limit { outside.length() } else { limit }].to_array()
   let shared = shown.map(c => {
     let can = if get(c, "write") is Some(True) { "you may send to it" } else { "read only" }
@@ -678,10 +806,128 @@ pub async fn Storage::chat_list(self : Storage, key : String, args : Json) -> St
     ""
   }
   if lines.length() == 0 {
-    return (if query == "" { "No conversations on this station." } else { "No conversation matches \{quoted(query)}." }) + shared_part
+    let empty = if query == "" && !has_filter {
+      "No conversations on this station."
+    } else if query != "" && !has_filter {
+      "No conversation matches \{quoted(query)}."
+    } else {
+      "No conversation matches the filter."
+    }
+    return empty + shared_part
   }
   let more = if matched > lines.length() { "\n(\{matched - lines.length()} more; raise limit or narrow query)" } else { "" }
   "\{lines.join("\n")}\{more}\{shared_part}"
+}
+
+///|
+/// chat_list: the station's conversations of session `key`'s workspace, or another/all stations of the workspace.
+pub async fn Storage::chat_list(self : Storage, key : String, args : Json) -> String {
+  let ws = self.scope_of(key)
+  let station = match get(args, "station") {
+    Some(String(s)) => js_trim(s)
+    _ => ""
+  }
+  if station == "" {
+    return self.chat_list_here(key, args, ws)
+  }
+  let resolved_creator = match get(args, "created_by") {
+    None => ""
+    Some(c) => self.resolve_creator(key, js_string(c))
+  }
+  let fwd : Array[(String, Json)] = []
+  if get(args, "query") is Some(v) { fwd.push(("query", v)) }
+  if get(args, "model") is Some(v) { fwd.push(("model", v)) }
+  if resolved_creator != "" { fwd.push(("created_by", js(resolved_creator))) }
+  if get(args, "archived") is Some(v) && (v is True || v is False) { fwd.push(("archived", v)) }
+  if get(args, "limit") is Some(v) { fwd.push(("limit", v)) }
+  let forwarded = jo(fwd)
+  let here = (self.st.hub.world.link)(key).bind(linked_station)
+  if here == Some(station) {
+    return self.chat_list_here(key, forwarded, ws)
+  }
+  guard self.peers_of(key) is Some(call) else {
+    if station.to_lower() == "all" {
+      return self.chat_list_here(key, forwarded, ws)
+    }
+    raise failed("other stations cannot be reached from this one yet: leave station out to list this station")
+  }
+  let roster = call("", jo([("method", js("peers"))]))
+  let stations : Array[(String, String)] = []
+  for s in items(get(roster, "stations")) {
+    if str(s, "id") is Some(id) && id != "" {
+      let name = match str(s, "name") { Some(n) if n != "" => n; _ => id }
+      stations.push((id, name))
+    }
+  }
+  if station.to_lower() == "all" {
+    let targets = if stations.iter().any(p => Some(p.0) == here) {
+      stations
+    } else {
+      [(here.unwrap_or(""), "this station"), ..stations]
+    }
+    let parts : Array[String] = []
+    for t in targets {
+      let is_here = t.0 == "" || Some(t.0) == here
+      let header = if is_here { "## \{t.1} (this station)" } else { "## \{t.1}" }
+      if is_here {
+        parts.push("\{header}\n\{self.chat_list_here(key, forwarded, ws)}")
+      } else {
+        let out = try {
+          let answer = call(t.0, jo([("method", js(list_method)), ("session", js(key)), ("args", forwarded)]))
+          match str(answer, "text") {
+            Some(txt) => "\{header}\n\{txt}"
+            None => "\{header}\nNot listed: station answered without a list"
+          }
+        } catch {
+          e => {
+            let why = message_of(e)
+            if is_kind(e, "Refused") && from_before(why) {
+              "\{header}\nNot listed: station is not updated yet"
+            } else {
+              "\{header}\nNot listed: \{why}"
+            }
+          }
+        }
+        parts.push(out)
+      }
+    }
+    return parts.join("\n\n")
+  }
+  let lower = station.to_lower()
+  let found = match stations.iter().find_first(p => p.0 == station) {
+    Some(p) => Some(p)
+    None => stations.iter().find_first(p => p.1.to_lower() == lower)
+  }
+  guard found is Some((id, name)) else {
+    let names = stations.map(p => p.1)
+    let suffix = if names.length() > 0 { "; its stations: \{names.join(", ")}" } else { "" }
+    raise failed("no station \{station} in this workspace\{suffix}")
+  }
+  if Some(id) == here {
+    return self.chat_list_here(key, forwarded, ws)
+  }
+  let answer = call(id, jo([("method", js(list_method)), ("session", js(key)), ("args", forwarded)])) catch {
+    e => {
+      let why = message_of(e)
+      if is_kind(e, "Refused") && from_before(why) {
+        raise failed("station \{name} is not updated yet: its chats cannot be listed from here")
+      }
+      raise failed("not listed from station \{name}: \{why}")
+    }
+  }
+  guard str(answer, "text") is Some(text) else {
+    raise failed("station \{name} answered without a list")
+  }
+  text
+}
+
+///|
+pub async fn Storage::list_for_peer(self : Storage, request : Json, ws : String?) -> Json {
+  let args = match get(request, "args") {
+    Some(Object(_) as a) => a
+    _ => jo([])
+  }
+  jo([("text", js(self.chat_list_here("", args, ws)))])
 }
 
 ///|
@@ -696,15 +942,15 @@ pub async fn Storage::chat_read(self : Storage, key : String, args : Json, seen 
   let mut note = ""
   let (thread, connect) = match what {
     Thread(t) => {
-      let members = items(Some(self.ask("store.threadSessions", [get(t, "id").unwrap_or(Json::null())])))
+      let members = items(Some(self.st.threads.thread_sessions(get(t, "id").unwrap_or(Json::null()))))
       (t, match members.get(0) { Some(m) => str(m, "connect").unwrap_or(""); None => "" })
     }
     Session(k, _) => {
       let found = self.session_thread_of(k)
       let ft = thread_of(found)
-      let recent = self.ask("store.recentSessionThreads", [js(k)])
+      let recent = self.with_threads(t => t.recent_session_threads(js(k), Json::null()))
       let rest = items(get(recent, "threads")).filter(t => get(thread_of(t), "id") != get(ft, "id"))
-      let others = items(Some(self.ask("fn.threadsToldOf", [js(k), jo([("threads", ja(rest)), ("more", get(recent, "more").unwrap_or(jb(false)))])]))).filter_map(x => if x is String(s) { Some(s) } else { None })
+      let others = self.st.hub.threads_told_of(k, recent=(rest, get(recent, "more") is Some(True)))
       if others.length() > 0 {
         note = "\n(Session \{k} also takes part in \{others.join(", ")}; read them with chat_read chat=<address>.)"
       }
@@ -718,8 +964,8 @@ pub async fn Storage::chat_read(self : Storage, key : String, args : Json, seen 
     None => ()
   }
   let text = str(read, "text").unwrap_or("")
-  let agents = sessions_of(self.ask("store.threadSessions", [get(thread, "id").unwrap_or(Json::null())]))
-  let link = if agents.length() > 0 { as_str(Some(self.ask("hub.link", [js(agents[0])]))) } else { None }
+  let agents = sessions_of(self.st.threads.thread_sessions(get(thread, "id").unwrap_or(Json::null())))
+  let link = if agents.length() > 0 { (self.st.hub.world.link)(agents[0]) } else { None }
   let linked = match link {
     Some(l) if l != "" => " (\{l})"
     _ => ""
@@ -737,7 +983,7 @@ pub async fn Storage::session_history(self : Storage, args : Json, ws : String?)
   let (session, entry) = match self.named(reference, ws) {
     Session(k, e) => (k, e)
     Thread(t) => {
-      let agents = sessions_of(self.ask("store.threadSessions", [get(t, "id").unwrap_or(Json::null())]))
+      let agents = sessions_of(self.st.threads.thread_sessions(get(t, "id").unwrap_or(Json::null())))
       if agents.length() == 0 {
         raise failed("\{reference} has no agent, so no execution history")
       }

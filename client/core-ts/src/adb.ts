@@ -12,7 +12,7 @@ import { current, t } from "./i18n.ts";
 import type { IrohStream } from "./iroh.ts";
 import type { CredentialSource, Link, Mesh } from "./mesh.ts";
 import type { Runner } from "./runtime.ts";
-import { PersonalLock, grantHolds } from "./personal-lock.ts";
+import { PersonalLock, type SignedRevoke, grantHolds, revokeHolds } from "./personal-lock.ts";
 import { StationAddr } from "./station/addr.ts";
 import { Retold } from "./station/retold.ts";
 import { LANG_HEADER } from "./station/requests.ts";
@@ -27,6 +27,11 @@ type J = any;
 function grantChat(g: J): string {
   return typeof g.chat === "string" && g.chat !== "" ? g.chat : typeof g.session === "string" && g.session !== "" ? g.session : g.id;
 }
+
+/// The failures that are a station's answer (it refused), not its being out of reach (askAt).
+const answered = new WeakSet<CoreError>();
+/// How many signed takings back heard of an account are held at most until they can be checked (#pendingRevokes).
+const REVOKES_HELD = 256;
 
 const RETRY_MS = 1_000;
 /// How much of a file the station sends is asked at once (as a chat's file's download asks: views/downloads.ts).
@@ -77,6 +82,9 @@ export type AdbEnv = {
   /// they bound it (views/lock.ts `takeOffBound`, `withBound`): the removal's own answer. None, the removal alone.
   tookOff?: <A, E>(sub: string, id: string, removal: Effect.Effect<A, E>) => Effect.Effect<A, E>;
   subOf: (workspace: string) => string | null;
+  /// Every station of `sub`'s workspaces (`<workspace>/<station>`): where a grant taken back, signed, is carried besides
+  /// its own station, which may never say it ended.
+  stationsOf?: (sub: string) => string[];
   /// The accounts signed in here: each has a lock of its own.
   subs: () => { sub: string; email: string }[];
   pair: { begin(subs: string[]): Effect.Effect<unknown, CoreError>; code(typed: string): Effect.Effect<unknown, CoreError>; cancel(): void; state(sub: string): J };
@@ -520,7 +528,9 @@ class Lend {
       // (the station's code where it gives one, which an app goes by: `adb_grant_refused`, station/src/adb/link.ts)
       const code = (parseJson(utf8(body)) as J)?.code;
       const words = said === "" ? t("core-misc.adb.failed", { status: reply.status }) : said;
-      return yield* Effect.fail(typeof code === "string" && code !== "" ? new CoreError(code, words) : CoreError.invalid(words));
+      const refused = typeof code === "string" && code !== "" ? new CoreError(code, words) : CoreError.invalid(words);
+      answered.add(refused);
+      return yield* Effect.fail(refused);
     });
   }
 }
@@ -531,6 +541,8 @@ class Lend {
 export class Adb {
   /// How a grant is checked (a test of the lending itself takes every grant as the station says it).
   check: typeof grantHolds = grantHolds;
+  /// How a signed taking back is checked.
+  checkRevoke: typeof revokeHolds = revokeHolds;
   readonly #env: AdbEnv;
   readonly #legacy: Lend;
   readonly #lends = new Map<string, Lend>();
@@ -544,6 +556,11 @@ export class Adb {
   #on = false;
   #switched = false;
   readonly #revoked = new Map<string, number>();
+  /// Signed takings back heard that the lock pinned here could not check yet (none read yet, or signed by a device it
+  /// does not name yet), by account: checked again as that lock changes (#recheck). Never trusted before.
+  readonly #pendingRevokes = new Map<string, { signed: J; at: string | null }[]>();
+  /// The head of each account's lock its held takings back were last checked against.
+  readonly #pendingChecked = new Map<string, string | null>();
   /// The stations from before signatures.
   readonly #old = new Set<string>();
   /// What wakes #sync as the next grant ends by what was signed for it (a station that does not say so lends no longer).
@@ -670,21 +687,126 @@ export class Adb {
         return this.#of(call.sub, (sub) => this.#env.personal.restart(sub, t("core-misc.personal.reason.restart")));
       case "personalConfirm":
         return this.#confirm();
-      case "revoke": {
-        // One list row represents the whole chat, including multiple agents' grants in that chat.
-        const selected = this.#grants.get(call.station)?.get(call.request);
-        const matching = selected === undefined ? [] : this.#allGrants()
-          .filter((g) => g.station === call.station && grantChat(g) === grantChat(selected))
-          .map((g) => g.id as string);
-        const ids = matching.length > 0 ? matching : [call.request];
-        // Off this phone at once, whatever the station answers or goes on saying.
-        for (const id of ids) this.#revoked.set(id, this.#grants.get(call.station)?.get(id)?.exp ?? Math.floor(this.#env.host.nowMs() / 1000) + 30 * 86400);
-        this.#keepRevoked();
-        this.#sync();
-        return Effect.as(Effect.forEach(ids, (request) => Effect.map(this.#legacy.askAt(call.station, { op: "revoke", request }), (r) => {
-          this.heard(call.station, (r as J)?.request);
-        }), { discard: true }), null);
+      case "revoke":
+        return this.#revoke(call.station, call.request);
+    }
+  }
+
+  /// A chat's row taken back: every grant behind it off this phone, and where it is this person's device on their lock,
+  /// signed, so that their phones end it whatever its own station goes on saying: told to it and carried to every other
+  /// station of theirs (`adb-revoke`). Refused to sign (the person said no), nothing is taken back.
+  #revoke(station: string, request: string): Effect.Effect<null, CoreError> {
+    return Effect.gen({ self: this }, function* () {
+      // One list row represents the whole chat, including multiple agents' grants in that chat.
+      const selected = this.#grants.get(station)?.get(request);
+      const matching = selected === undefined ? [] : this.#allGrants()
+        .filter((g) => g.station === station && grantChat(g) === grantChat(selected))
+        .map((g) => g.id as string);
+      const ids = matching.length > 0 ? matching : [request];
+      const now = Math.floor(this.#env.host.nowMs() / 1000);
+      // Until when the taking back must hold: the grant's end as signed for it, checked here; else the longest a grant
+      // lasts at the least (a station's own word can only make it longer: one saying the grant ends in seconds would
+      // have a taking back signed that ends long before the grant it holds does).
+      const ends = (id: string) => {
+        const g = this.#grants.get(station)?.get(id);
+        const held = g === undefined ? null : this.#holds({ ...g, station });
+        if (held !== null && held > now) return held;
+        return Math.max(typeof g?.exp === "number" ? g.exp : 0, now + 30 * 86400);
+      };
+      const sub = this.#subAt(station);
+      // (a request waiting lends nothing: no signature for it; a station from before signatures drops it)
+      const live = ids.map((id) => this.#grants.get(station)?.get(id)).filter((g): g is J => g !== undefined && g.status === "granted");
+      const signs = live.length > 0 && sub !== null && this.#env.host.appKeys === true && this.#env.personal.standing(sub) === "member" && !this.#old.has(station);
+      const signed = new Map<string, SignedRevoke>();
+      if (signs) {
+        const list = yield* this.#env.personal.signRevokes(sub!, live.map((g) => ({ station, request: g.id as string, exp: ends(g.id) })), t("core-misc.personal.reason.revoke"), station);
+        for (const s of list) signed.set(s.body.request, s);
       }
+      // Off this phone at once, whatever the station answers or goes on saying.
+      for (const id of ids) this.#revoked.set(id, Math.max(this.#revoked.get(id) ?? 0, ends(id)));
+      this.#keepRevoked();
+      this.#sync();
+      // Carried to the person's other stations meanwhile: what they keep, the phones read and are told.
+      const others = signed.size === 0 || sub === null ? [] : (this.#env.stationsOf?.(sub) ?? []).filter((s) => s !== station);
+      const carried = Deferred.makeUnsafe<boolean>();
+      this.#env.runner.fork(Effect.andThen(
+        Effect.forEach(others, (other) => Effect.result(Effect.forEach([...signed.values()], (s) => this.#legacy.askAt(other, { op: "revoke", request: s.body.request, signed: s, relay: true }), { discard: true })), { concurrency: "unbounded" }),
+        (results) => Deferred.succeed(carried, results.some((r) => r._tag === "Success")),
+      ));
+      const told = yield* Effect.result(Effect.forEach(ids, (id) => {
+        const s = signed.get(id);
+        return Effect.map(this.#legacy.askAt(station, { op: "revoke", request: id, ...(s !== undefined ? { signed: s } : {}) }), (r) => {
+          this.heard(station, (r as J)?.request);
+        });
+      }, { discard: true }));
+      if (told._tag === "Success") return null;
+      // Its station out of reach: taken back all the same where another station of theirs keeps what was signed for
+      // every grant of it (their phones hear of it there). One that refused says why.
+      if (answered.has(told.failure) || signed.size === 0 || signed.size < live.length || others.length === 0) return yield* Effect.fail(told.failure);
+      return (yield* Deferred.await(carried)) ? null : yield* Effect.fail(told.failure);
+    });
+  }
+
+  /// A signed taking back a station told (`adb-revoke`) or gave with the grants (`revokes`): checked here against the
+  /// lock pinned here, as a grant is, and only then the grant off this phone; one that does not check is dropped.
+  heardRevoke(station: string, signed: unknown): void {
+    const sub = this.#subAt(station);
+    if (sub === null) return;
+    if (this.#applyRevokes(sub, [signed], station)) {
+      this.#keepRevoked();
+      this.#sync();
+    }
+  }
+
+  /// Whether any of `items` took a grant off this phone; those the lock here cannot check yet held (#pendingRevokes).
+  #applyRevokes(sub: string, items: unknown[], at: string | null): boolean {
+    const chain = this.#env.personal.chain(sub);
+    const now = Math.floor(this.#env.host.nowMs() / 1000);
+    let changed = false;
+    for (const signed of items) {
+      const key = (signed as J)?.sig?.key;
+      if (chain === null || (typeof key === "string" && !chain.devices.has(key))) {
+        // (bounded: the newest kept; a station gives them again as it is read)
+        const held = this.#pendingRevokes.get(sub) ?? [];
+        held.push({ signed, at });
+        if (held.length > REVOKES_HELD) held.splice(0, held.length - REVOKES_HELD);
+        this.#pendingRevokes.set(sub, held);
+        continue;
+      }
+      const b = this.checkRevoke(signed, sub, chain.devices, now);
+      if (b === null) continue;
+      if ((this.#revoked.get(b.request) ?? 0) >= b.exp) continue;
+      this.#revoked.set(b.request, b.exp);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /// The takings back held unchecked, checked again where their account's lock changed.
+  #recheck(): void {
+    let changed = false;
+    for (const [sub, held] of [...this.#pendingRevokes]) {
+      const chain = this.#env.personal.chain(sub);
+      if (chain === null) continue;
+      const head = chain.hash ?? null;
+      if (this.#pendingChecked.has(sub) && this.#pendingChecked.get(sub) === head) continue;
+      this.#pendingChecked.set(sub, head);
+      this.#pendingRevokes.delete(sub);
+      const now = Math.floor(this.#env.host.nowMs() / 1000);
+      const still = held.filter((h) => Number.isSafeInteger((h.signed as J)?.body?.exp) && (h.signed as J).body.exp > now);
+      for (const h of still) {
+        const key = (h.signed as J)?.sig?.key;
+        if (typeof key === "string" && !chain.devices.has(key)) {
+          // (still unknown to this lock: held for its next change)
+          const again = this.#pendingRevokes.get(sub) ?? [];
+          again.push(h);
+          this.#pendingRevokes.set(sub, again);
+        } else if (this.#applyRevokes(sub, [h.signed], h.at)) changed = true;
+      }
+    }
+    if (changed) {
+      this.#keepRevoked();
+      this.#sync();
     }
   }
 
@@ -767,7 +889,10 @@ export class Adb {
 
   /// (`at`: as that station is reached, read of it alone)
   #readPersonal(sub: string, at?: string): void {
-    this.#env.runner.fork(Effect.ensuring(Effect.ignore(this.#env.personal.refresh(sub, at), { log: "Unhandled", message: "personal lock read" }), Effect.sync(() => this.#sync())));
+    this.#env.runner.fork(Effect.ensuring(Effect.ignore(this.#env.personal.refresh(sub, at), { log: "Unhandled", message: "personal lock read" }), Effect.sync(() => {
+      this.#recheck();
+      this.#sync();
+    })));
   }
 
   #keepRevoked(): void {
@@ -825,6 +950,9 @@ export class Adb {
         this.#grants.set(station, new Map(list.filter((g) => typeof g?.id === "string").map((g) => [g.id as string, g])));
         // A change heard while the read was out is newer than the snapshot it brought.
         for (const { data } of this.#retold.since(read, station)) this.#putGrant(station, data as J);
+        // (what the person's devices signed to take grants back, any station's: a phone that was away hears of it here)
+        const revokes = (r as J)?.revokes;
+        if (sub !== null && Array.isArray(revokes) && revokes.length > 0 && this.#applyRevokes(sub, revokes.slice(0, REVOKES_HELD), station)) this.#keepRevoked();
         this.#keep();
         this.#sync();
       }).pipe(Effect.ensuring(Effect.sync(() => this.#retold.over(read))));
@@ -836,7 +964,7 @@ export class Adb {
     const now = this.#env.host.nowMs() / 1000;
     const out: J[] = [];
     for (const [station, at] of this.#grants)
-      for (const g of at.values()) if (g.status === "pending" || (g.status === "granted" && (g.exp ?? 0) > now)) out.push({ ...g, station });
+      for (const g of at.values()) if (!this.#revoked.has(g.id) && (g.status === "pending" || (g.status === "granted" && (g.exp ?? 0) > now))) out.push({ ...g, station });
     return out.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
   }
 
@@ -937,6 +1065,7 @@ export class Adb {
   /// What the lending shows changed elsewhere (a pairing, a personal lock): what shows it is made again.
   touched(): void {
     seenOf(this.#env.store).touch();
+    if (this.#pendingRevokes.size > 0) this.#recheck();
   }
 
   deviceTold(): void {

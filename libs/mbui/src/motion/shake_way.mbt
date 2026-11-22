@@ -16,12 +16,13 @@ pub struct ShakeWay {
   duration_ms : Double
   cycles : Double
   priv started_at : @signals.Signal[Double?]
+  priv ended : @signals.Signal[Int]
 }
 
 ///|
 /// A shake not set off, swinging `amplitude` points at most, over `duration_ms`, `cycles` times there and back.
 pub fn ShakeWay::new(amplitude? : Double = 4.0, duration_ms? : Double = 280.0, cycles? : Double = 3.0) -> ShakeWay {
-  { amplitude, duration_ms, cycles, started_at: @signals.signal(None) }
+  { amplitude, duration_ms, cycles, started_at: @signals.signal(None), ended: @signals.signal(0) }
 }
 
 ///|
@@ -61,10 +62,56 @@ pub fn ShakeWay::shakes(self : ShakeWay, v : @view.View, reduced_motion? : Bool,
       None => self.active_at(t)
     }
   }
+  let due : Ref[(() -> Unit)?] = Ref(None)
+  let stop_due = fn() {
+    match due.val {
+      Some(f) => {
+        due.val = None
+        f()
+      }
+      None => ()
+    }
+  }
+  v.reacts(fn() { self.started_at.get() }, fn(st) {
+    stop_due()
+    let reduced = match reduced_motion {
+      Some(r) => r
+      None => @ui.reduced_motion()
+    }
+    guard !reduced && st is Some(start) && self.duration_ms > 0.0 && v.alive() else { return }
+    let unkeep : Ref[(() -> Unit)?] = Ref(None)
+    let drop_unkeep = fn() {
+      match unkeep.val {
+        Some(f) => {
+          unkeep.val = None
+          f()
+        }
+        None => ()
+      }
+    }
+    let stop_moment = v.at_moment(start + self.duration_ms, fn() {
+      drop_unkeep()
+      due.val = None
+      self.ended.set(self.ended.untracked() + 1, loc~)
+    })
+    unkeep.val = Some(
+      v.owns_while(fn() {
+        unkeep.val = None
+        stop_moment()
+        due.val = None
+      }),
+    )
+    due.val = Some(fn() {
+      drop_unkeep()
+      stop_moment()
+      due.val = None
+    })
+  })
   v
   .shakes_while(goes)
   .offset(
     By(fn() {
+      self.ended.get() |> ignore
       let at = v.drawn_while(goes)
       let x = match reduced_motion {
         Some(r) => self.offset_at(at, reduced_motion=r)

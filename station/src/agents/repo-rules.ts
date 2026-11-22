@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { platform } from "../platform/index.ts";
 
-export const REPO_RULES_HOOK = fileURLToPath(new URL("./repo-rules-hook.mjs", import.meta.url));
+export const REPO_RULES_HOOK = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/agents/repo-rules-hook.mjs", import.meta.url) : new URL("./repo-rules-hook.mjs", import.meta.url));
 const quoted = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 const cmdQuoted = (s: string) => `"${s.replaceAll('"', "")}"`;
 

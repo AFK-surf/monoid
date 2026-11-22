@@ -44,7 +44,7 @@ export const SESSIONS = "dsh-sessions";
 const DEEPSEEK_MODEL = "deepseek-v4-flash";
 /// The station's driver plugin: beside this module (src/agents/ from source; the bundle's directory, where the build
 /// copies it).
-export const BRIDGE = fileURLToPath(new URL("./dsh-bridge.mjs", import.meta.url));
+export const BRIDGE = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/agents/dsh-bridge.mjs", import.meta.url) : new URL("./dsh-bridge.mjs", import.meta.url));
 
 /// The patch's entry for the station's tools (dsh's MCP client).
 const TOOLS = "stillfail-tools";

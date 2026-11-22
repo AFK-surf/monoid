@@ -4,10 +4,13 @@
 // (native/screen's input.rs: `{op: "mouse" | "wheel" | "key" | "text"}`); it only posts. Windows counts double clicks
 // itself, and keeps which modifiers are down: a key that comes with modifiers not pressed before it (a phone's keys
 // row: ⌃ then c) has them pressed round it.
-import type { ScreenInput } from "./source.ts";
+import { type ScreenInput, gamepadReleased } from "./source.ts";
 
 export type WinOp =
-  | { op: "mouse"; type: "move" | "down" | "up"; x: number; y: number; button: number }
+  | { op: "mouse"; type: "move" | "down" | "up"; x: number; y: number; button: number; dx?: number; dy?: number; relative?: boolean }
+  /// A controller's state (source.ts `Gamepad`): a virtual Xbox 360 controller where ViGEmBus is installed, else the
+  /// desktop driven with it (gamepad.rs).
+  | { op: "gamepad"; index: number; connected: boolean; buttons: number; lx: number; ly: number; rx: number; ry: number; lt: number; rt: number }
   | { op: "wheel"; x: number; y: number; dx: number; dy: number }
   | { op: "key"; scan: number; ext: boolean; vk: number; down: boolean }
   | { op: "text"; text: string };
@@ -78,12 +81,18 @@ export class WinInput {
   #held = new Set<string>();
   #at = { x: 0, y: 0 };
   #wheel = { x: 0, y: 0 };
+  #pads = new Set<number>();
 
   /// What lets go of all this view holds down: its buttons at the pointer's last place, then its modifier keys.
   release(): WinOp[] {
     const ops: WinOp[] = [];
     for (const bit of [1, 2, 4]) if ((this.#buttons & bit) !== 0) ops.push({ op: "mouse", type: "up", x: this.#at.x, y: this.#at.y, button: BUTTON_OF_BIT[bit]! });
     for (const code of this.#held) ops.push(keyOp(KEYS[code]!, false));
+    for (const index of this.#pads) {
+      const { t: _, ...pad } = gamepadReleased(index);
+      ops.push({ op: "gamepad", ...pad });
+    }
+    this.#pads.clear();
     this.#buttons = 0;
     this.#held.clear();
     return ops;
@@ -95,15 +104,15 @@ export class WinInput {
         const before = this.#buttons;
         this.#buttons = e.buttons & 7;
         this.#at = { x: e.x, y: e.y };
-        if (e.kind === "move") return [{ op: "mouse", type: "move", x: e.x, y: e.y, button: 0 }];
+        if (e.kind === "move") return [{ op: "mouse", type: "move", x: e.x, y: e.y, button: 0, ...(e.dx !== undefined && e.dy !== undefined ? { dx: e.dx, dy: e.dy, ...(e.relative ? { relative: true } : {}) } : {}) }];
         if (e.kind === "down") {
           const bit = lowestBit(this.#buttons & ~before) || 1;
           this.#buttons |= bit;
-          return [{ op: "mouse", type: "down", x: e.x, y: e.y, button: BUTTON_OF_BIT[bit] ?? 0 }];
+          return [{ op: "mouse", type: "down", x: e.x, y: e.y, button: BUTTON_OF_BIT[bit] ?? 0, ...(e.relative ? { relative: true } : {}) }];
         }
         const bit = lowestBit(before & ~this.#buttons) || lowestBit(before) || 1;
         this.#buttons &= ~bit;
-        return [{ op: "mouse", type: "up", x: e.x, y: e.y, button: BUTTON_OF_BIT[bit] ?? 0 }];
+        return [{ op: "mouse", type: "up", x: e.x, y: e.y, button: BUTTON_OF_BIT[bit] ?? 0, ...(e.relative ? { relative: true } : {}) }];
       }
       case "wheel": {
         // Whole units only; what is left goes with the next turn the same way (a trackpad's many small ones).
@@ -133,6 +142,12 @@ export class WinInput {
       }
       case "text":
         return e.text === "" ? [] : [{ op: "text", text: e.text }];
+      case "gamepad": {
+        if (e.connected) this.#pads.add(e.index);
+        else this.#pads.delete(e.index);
+        const { t: _, ...pad } = e;
+        return [{ op: "gamepad", ...pad }];
+      }
       case "pose":
       case "device":
       case "button":

@@ -58,7 +58,9 @@ export type LoginState = "starting" | "needs_code" | "needs_project" | "needs_ap
 
 export type LoginJob = {
   profile: string;
-  runtime: Runtime;
+  runtime?: Runtime;
+  /// Service id when signing in a non-agent service profile.
+  service?: string;
   /// Signing in to OpenCode (an OpenCode Go profile) or Kimi (a Kimi Code profile) rather than the runtime's
   /// subscription (absent: the runtime's).
   provider?: "opencode" | "kimi";
@@ -119,7 +121,26 @@ export type LoginProfile = { id: string; runtime: Runtime; home: string; email?:
 /// A sign-in under way: its command (none for OpenCode's, which `stop` ends), and the file its stand-in browser writes
 /// the pages it opens to.
 /// `said`: what Claude's command said since its code went in (absent before), read for its refusal.
-type Running = { run: number; job: LoginJob; child: ChildProcess | null; raw: string; output: string; cancelTimer: () => void; exited: boolean; lang: Lang; stop?: () => void; opened?: string; back?: string; home?: string; chose?: boolean; agy?: AgySteps; said?: string };
+type Running = {
+  run: number;
+  job: LoginJob;
+  child: ChildProcess | null;
+  raw: string;
+  output: string;
+  cancelTimer: () => void;
+  exited: boolean;
+  lang: Lang;
+  stop?: () => void;
+  opened?: string;
+  back?: string;
+  home?: string;
+  chose?: boolean;
+  agy?: AgySteps;
+  said?: string;
+  validateCode?: (rawCode: string, lang: Lang) => string;
+  onCode?: (code: string, lang: Lang) => Promise<void>;
+  callbackCode?: (tabUrl: string | null) => string | null;
+};
 
 /// Where an Antigravity CLI sign-in is in its menus: which it answered, and what it said since its code (or project)
 /// went in (`after`, null before), which is where its licences, how to pay and the project are asked. `stage`: its HOME,
@@ -189,8 +210,13 @@ export class LoginManager {
       if (running === undefined) return;
       // The Antigravity CLI's page come back with its code in the station's browser: taken from there, its tab closed,
       // nothing to paste (its code goes to antigravity.google alone, never back to this machine).
-      if (running.job.runtime === "agy" && running.job.state === "needs_code") {
-        const code = agyCallbackCode(pages.urlOf(key), running.job.url);
+      if (running.job.state === "needs_code") {
+        const code =
+          running.callbackCode !== undefined
+            ? running.callbackCode(pages.urlOf(key))
+            : running.job.runtime === "agy"
+              ? agyCallbackCode(pages.urlOf(key), running.job.url)
+              : null;
         if (code !== null) {
           pages.close(key);
           void this.submitCode(profile, code, running.lang).catch((error) => log.warn("login", "a code read off the station's browser was not taken", { profile, error: (error as Error).message }));
@@ -301,6 +327,8 @@ export class LoginManager {
       [command, args] = terminal;
     } else if (stage !== null) {
       env.HOME = stage;
+      // (Windows: its home is USERPROFILE's, HOME aside)
+      env.USERPROFILE = stage;
       // Its sign-in kept in a file in that HOME, none of the keychain's (as a remote session's: it then asks the terminal
       // what it is, which `agyAnswer` answers).
       Object.assign(env, AGY_FILE_TOKENS);
@@ -369,12 +397,25 @@ export class LoginManager {
     }
     // The browser stand-ins must stay ahead of any Node bin added for the login command.
     if (foundEnv !== env) env = platform.prependPath(foundEnv, noBrowser) as Record<string, string>;
-    const r = await platform.runnableSoon(command, args, env);
-    if (this.jobs.get(id) !== running) {
-      await dropStage();
-      return { ...job, state: "cancelled" };
+    let child: ChildProcess;
+    try {
+      const r = await platform.runnableSoon(command, args, env);
+      if (this.jobs.get(id) !== running) {
+        await dropStage();
+        return { ...job, state: "cancelled" };
+      }
+      child = spawn(r.file, r.args, { cwd: stage ?? profile.home, env, stdio: ["pipe", "pipe", "pipe"], windowsVerbatimArguments: r.windowsVerbatimArguments, windowsHide: true });
+    } catch (e) {
+      if (this.jobs.get(id) !== running) {
+        await dropStage();
+        return { ...job, state: "cancelled" };
+      }
+      void dropStage();
+      running.exited = true;
+      const error = tr(lang, "station.login.cannotRun", { error: (e as Error).message });
+      this.finish(id, "failed", error);
+      return { ...job, state: "failed", error };
     }
-    const child = spawn(r.file, r.args, { cwd: stage ?? profile.home, env, stdio: ["pipe", "pipe", "pipe"], windowsVerbatimArguments: r.windowsVerbatimArguments, windowsHide: true });
     running.child = child;
     running.exited = false;
     // Its HOME goes with it, whatever its end (what it signed in is copied out before it is stopped).
@@ -450,7 +491,7 @@ export class LoginManager {
     this.finished.delete(profile.id);
     const id = profile.id;
     const now = this.background.now();
-    const job: LoginJob = { profile: id, runtime: "claude", provider, state: "starting", url: null, userCode: null, error: null, startedAt: now, expiresAt: now + TIMEOUT_MS };
+    const job: LoginJob = { profile: id, provider, state: "starting", url: null, userCode: null, error: null, startedAt: now, expiresAt: now + TIMEOUT_MS };
     const run = ++this.runs;
     const running: Running = { run, job, child: null, raw: "", output: "", exited: true, lang, home: profile.home, cancelTimer: () => {} };
     this.jobs.set(id, running);
@@ -570,10 +611,63 @@ export class LoginManager {
     return { ...job };
   }
 
-  /// A sign-in that cannot be started here, recorded like any other failure, so the page shows why.
-  private refused(id: string, runtime: Runtime, error: string): LoginJob {
+  /// Starts an OAuth2 authorization-code sign-in for a service profile (no CLI child process).
+  async startOAuthCode(
+    profile: { id: string; home: string; service: string },
+    flow: {
+      authUrl: string;
+      validate?: (rawCode: string, lang: Lang) => string;
+      exchange: (code: string, lang: Lang) => Promise<void>;
+      callbackCode?: (tabUrl: string | null) => string | null;
+    },
+    lang: Lang = stationLang(),
+  ): Promise<LoginJob> {
+    this.cancel(profile.id);
+    this.finished.delete(profile.id);
+    const id = profile.id;
     const now = this.background.now();
-    const failed: LoginJob = { profile: id, runtime, state: "failed", url: null, userCode: null, error, startedAt: now, expiresAt: now };
+    const job: LoginJob = {
+      profile: id,
+      service: profile.service,
+      state: "needs_code",
+      url: flow.authUrl,
+      userCode: null,
+      error: null,
+      startedAt: now,
+      expiresAt: now + TIMEOUT_MS,
+    };
+    const run = ++this.runs;
+    const running: Running = {
+      run,
+      job,
+      child: null,
+      raw: "",
+      output: "",
+      exited: true,
+      lang,
+      home: profile.home,
+      ...(flow.validate !== undefined ? { validateCode: flow.validate } : {}),
+      onCode: flow.exchange,
+      ...(flow.callbackCode !== undefined ? { callbackCode: flow.callbackCode } : {}),
+      cancelTimer: this.background.after(TIMEOUT_MS, () => this.failRun(id, run, tr(lang, "station.login.timedOut"))),
+    };
+    this.jobs.set(id, running);
+    try {
+      await mkdir(profile.home, { recursive: true });
+    } catch (e) {
+      if (this.jobs.get(id) === running) this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+      return this.get(id)!;
+    }
+    if (this.jobs.get(id) !== running) return this.get(id) ?? { ...job, state: "cancelled" };
+    log.info("login", "OAuth code sign-in started", { profile: id, service: profile.service });
+    this.emit(id);
+    return { ...job };
+  }
+
+  /// A sign-in that cannot be started here, recorded like any other failure, so the page shows why.
+  private refused(id: string, runtime: Runtime | undefined, error: string, service?: string): LoginJob {
+    const now = this.background.now();
+    const failed: LoginJob = { profile: id, ...(runtime !== undefined ? { runtime } : {}), ...(service !== undefined ? { service } : {}), state: "failed", url: null, userCode: null, error, startedAt: now, expiresAt: now };
     this.finished.set(id, failed);
     this.emit(id);
     return { ...failed };
@@ -586,6 +680,23 @@ export class LoginManager {
     if (!running || (running.job.state !== "needs_code" && running.job.state !== "needs_project")) throw new Error(tr(lang, "station.login.notWaitingForCode"));
     const trimmed = code.trim();
     if (trimmed === "") throw new Error(tr(lang, "station.login.emptyCode"));
+    if (running.onCode !== undefined) {
+      const clean = running.validateCode ? running.validateCode(trimmed, lang) : trimmed;
+      running.stop?.();
+      running.stop = this.background.after(VERIFY_WAIT_MS, () => { // timer: a deadline for OAuth code exchange
+        if (this.jobs.get(profile) === running && running.job.state === "verifying") this.finish(profile, "failed", tr(running.lang, "station.login.verifyTimedOut"));
+      });
+      running.job.state = "verifying";
+      const job = { ...running.job };
+      this.emit(profile);
+      try {
+        await running.onCode(clean, lang);
+        if (this.jobs.get(profile) === running && running.job.state === "verifying") this.finish(profile, "done", null);
+      } catch (e) {
+        if (this.jobs.get(profile) === running && running.job.state === "verifying") this.finish(profile, "failed", (e as Error).message);
+      }
+      return this.get(profile) ?? job;
+    }
     // Claude's is checked before it goes in: one it would not take is refused here, the sign-in still waiting for a code.
     const clean = running.job.runtime === "claude" ? claudeCodeOf(trimmed, running.job.url, lang) : trimmed;
     // What it says from here on is read for what comes next (its question for the project, which was said, not again).

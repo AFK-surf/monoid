@@ -13,6 +13,8 @@ fn check_model_accounts(t : @ui.Tester, name : String, max_row_h : Double) -> Un
 
   // Middle row with 3-window quota line stays on two single lines (never wraps to 3-4 lines).
   let backup_init = t.get(Button, label="Claude 备用订阅").rect
+  let tier = t.find("Max 5x").unwrap()
+  assert_true(tier.1 >= backup_init.1 && tier.1 < backup_init.1 + backup_init.3, msg="\{name}: tier on the account row")
   assert_true(backup_init.3 <= max_row_h, msg="\{name}: middle row height \{backup_init.3} <= \{max_row_h}")
 
   // 1) 全选 -> 全不选 -> 点一个: tapping 全选 while all are checked clears all checkboxes into 全不选,
@@ -78,7 +80,13 @@ fn check_model_accounts(t : @ui.Tester, name : String, max_row_h : Double) -> Un
 ///|
 test "model accounts: 全不选 + 点一个, subset toggling, single-line quota rows, and reverting incomplete 全不选 on close" {
   let wide = screen_in("chat-history-side", corner_windows[5], "zh")
-  let ctrl = words_exactly_at(wide, "Opus 5.5").unwrap()
+  // Right side panel's model control (x=953, y=55.5; skip left chat composer capsule at x<800 and top tab bar at y<40).
+  let opus_words = wide.words().filter(fn(w) { (w.0 == "Opus 5.5" || w.0 == "Opus") && w.1 > 800.0 && w.2 > 40.0 && w.2 < 600.0 })
+  guard opus_words is [w, ..] else {
+    let all_opus = wide.words().filter(fn(w) { w.0.contains("Opus") })
+    fail("no side-panel Opus control: \{Repr(all_opus)}")
+  }
+  let ctrl = (w.1, w.2, w.3, w.4)
   wide.tap(ctrl.0 + ctrl.2 / 2.0, ctrl.1 + ctrl.3 / 2.0)
   wide.run_for(@ui.move_most_ms)
   let model_panel = wide.get(Dialog, label="模型").rect

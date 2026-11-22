@@ -1759,6 +1759,169 @@ test "update, then pass, then more fails, less fails" {
 }
 
 ///|
+fn Tree::sharded(files : Array[(String, String)]) -> Tree {
+  let t = Tree::new(files)
+  let conf = conf_value().remove("counts").set("counts_dir", Str("detlint.counts"))
+  t.write("detlint.json", @rjson.dumps(conf, ensure_ascii=false, indent=2) + "\n")
+  t
+}
+
+///|
+fn Tree::read(self : Tree, rel : String) -> String? {
+  @sys.read_text(@sys.join(self.root, rel))
+}
+
+///|
+test "shard_of maps package and directory prefixes deterministically" {
+  assert_eq(shard_of("src/sfapp/chat.mbt"), "sfapp")
+  assert_eq(shard_of("src/sfapp/settings/core.mbt"), "sfapp")
+  assert_eq(shard_of("src/sfpages/board_node.mbt"), "sfpages")
+  assert_eq(shard_of("src/tokens.mbt"), "src")
+  assert_eq(shard_of("e2e/android-flow.sh"), "e2e")
+  assert_eq(shard_of("scripts/test.sh"), "scripts")
+  assert_eq(shard_of("top.sh"), "_root")
+}
+
+///|
+test "sharded counts: update, pass, raise fails, lower updates only its shard and removes empty shards" {
+  let t = Tree::sharded([
+    (
+      "src/app/view.mbt",
+      "fn v(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n  c.request_frame()\n}\n",
+    ),
+    (
+      "src/pages/home.mbt",
+      "fn h(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n}\n",
+    ),
+    ("flows/01.drive", "tap send\nwait 500\n"),
+  ])
+  // no rules registered yet: fails
+  assert_eq(t.run([]).0, 1)
+  assert_eq(t.run(["--update"]).0, 0)
+  let (code, out) = t.run([])
+  if code != 0 {
+    fail(out)
+  }
+  // each package/directory wrote its own shard; detlint.json holds rules, not inline counts
+  let conf_after = t.read("detlint.json").unwrap_or("")
+  assert_true(conf_after.contains("\"counts_dir\": \"detlint.counts\""))
+  assert_true(conf_after.contains("\"rules\":"))
+  assert_true(!conf_after.contains("\"counts\":"))
+  let app_shard = t.read("detlint.counts/app.json").unwrap_or("")
+  let pages_shard = t.read("detlint.counts/pages.json").unwrap_or("")
+  let flows_shard = t.read("detlint.counts/flows.json").unwrap_or("")
+  assert_has(app_shard, "\"src/app/view.mbt\": 2")
+  assert_has(pages_shard, "\"src/pages/home.mbt\": 1")
+  assert_has(flows_shard, "\"flows/01.drive\": 1")
+
+  // raising a count in one shard fails, and --update refuses to raise it
+  t.append("src/app/view.mbt", "fn w(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n}\n")
+  let (code, out) = t.run([])
+  assert_eq(code, 1)
+  assert_has(out, "src/app/view.mbt: 3 > 2")
+  assert_eq(t.run(["--update"]).0, 0)
+  assert_eq(t.run([]).0, 1)
+  assert_eq(t.read("detlint.counts/app.json").unwrap_or(""), app_shard)
+  assert_eq(t.read("detlint.counts/pages.json").unwrap_or(""), pages_shard)
+
+  // lowering src/app to 1 updates only app.json, leaving pages.json and detlint.json untouched
+  t.write("src/app/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n}\n")
+  let (code, out) = t.run([])
+  assert_eq(code, 1)
+  assert_has(out, "lower it")
+  assert_eq(t.run(["--update"]).0, 0)
+  let (code, out) = t.run([])
+  if code != 0 {
+    fail(out)
+  }
+  assert_has(t.read("detlint.counts/app.json").unwrap_or(""), "\"src/app/view.mbt\": 1")
+  assert_eq(t.read("detlint.counts/pages.json").unwrap_or(""), pages_shard)
+  assert_eq(t.read("detlint.json").unwrap_or(""), conf_after)
+
+  // clearing src/app removes app.json completely while keeping pages.json
+  t.write("src/app/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.text(\"x\")\n}\n")
+  assert_eq(t.run(["--update"]).0, 0)
+  let (code, out) = t.run([])
+  if code != 0 {
+    fail(out)
+  }
+  assert_true(t.read("detlint.counts/app.json") is None)
+  assert_eq(t.read("detlint.counts/pages.json").unwrap_or(""), pages_shard)
+  t.clear()
+}
+
+///|
+test "sharded counts: excused ratchet and empty counts_dir when all rules reach zero" {
+  let t = Tree::sharded([
+    (
+      "src/app/view.mbt",
+      "fn v(c : @ui.Ctx) -> Unit {\n  c.request_frame() // det-ok(frame-request): a\n}\n",
+    ),
+  ])
+  assert_eq(t.run(["--update"]).0, 0)
+  let (code, out) = t.run([])
+  if code != 0 {
+    fail(out)
+  }
+  let shard = t.read("detlint.counts/app.json").unwrap_or("")
+  assert_has(shard, "\"excused\"")
+  assert_has(shard, "\"src/app/view.mbt\": 1")
+
+  // adding another det-ok fails
+  t.append(
+    "src/app/view.mbt",
+    "fn w(c : @ui.Ctx) -> Unit {\n  c.request_frame() // det-ok(frame-request): b\n}\n",
+  )
+  let (code, out) = t.run([])
+  assert_eq(code, 1)
+  assert_has(out, "exceptions only go down")
+
+  // clearing the last excused entry deletes the shard; missing counts_dir still passes
+  t.write("src/app/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.text(\"ok\")\n}\n")
+  assert_eq(t.run(["--update"]).0, 0)
+  assert_true(t.read("detlint.counts/app.json") is None)
+  let _ = @sys.remove(@sys.join(t.root, "detlint.counts"))
+  let (code, out) = t.run([])
+  if code != 0 {
+    fail(out)
+  }
+  assert_has(out, "forbidden")
+  t.clear()
+}
+
+///|
+test "sharded counts: cross-shard move fails and misplaced file in wrong shard is rejected" {
+  let t = Tree::sharded([
+    ("src/app/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n}\n"),
+  ])
+  assert_eq(t.run(["--update"]).0, 0)
+  // moving the finding from src/app to src/pages fails ratchet
+  t.write("src/app/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.text(\"ok\")\n}\n")
+  t.write("src/pages/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n}\n")
+  let (code, out) = t.run([])
+  assert_eq(code, 1)
+  assert_has(out, "src/pages/view.mbt: 1 > 0")
+  assert_has(out, "lower it")
+
+  // placing src/pages/view.mbt inside app.json is rejected with exit 2
+  t.write(
+    "detlint.counts/app.json",
+    "{\"counts\": {\"frame-request\": {\"src/pages/view.mbt\": 1}}}\n",
+  )
+  let (code, out) = t.run([])
+  assert_eq(code, 2)
+  assert_has(out, "belongs in detlint.counts/pages.json")
+
+  // combining counts_dir with inline counts is rejected with exit 2
+  let bad_conf = conf_value().set("counts_dir", Str("detlint.counts"))
+  t.write("detlint.json", @rjson.dumps(bad_conf, ensure_ascii=false, indent=2) + "\n")
+  let (code, out) = t.run([])
+  assert_eq(code, 2)
+  assert_has(out, "cannot be combined with inline counts")
+  t.clear()
+}
+
+///|
 test "host-delay" {
   found(
     [
@@ -2002,7 +2165,7 @@ test "motion-spring" {
         "  a.animate(0.0, @motion.spring(ratio=1.0, stiffness=400.0))\n" +
         "  let k = c.spring(\"bars\", 1.0, stiffness=600.0, damping=50.0)\n" +
         "  a.animate(0.0, @motion.motion_spring(0.3, bounce=0.2))\n" +
-        "  a.animate(0.0, @motion.sheet_spring)\n" +
+        "  a.animate(0.0, @motion.carousel_spring)\n" +
         "}\n",
       ),
       ("src/app/sheet_wbtest.mbt", "test \"t\" {\n  a.animate(0.0, @motion.spring())\n}\n"),
@@ -2324,22 +2487,22 @@ test "old-set-theme" {
 
 ///|
 test "old-empty-around" {
-  // a tree's window run with an empty old frame round it (`@ui.run(t, fn(_c) {  }, tree=w)`, a bare `run` too):
-  // counted (a call each); one whose frame builds, one passing its frame on (`view, tree?`), run_tree, one in a test,
-  // in the framework (src/host here) not
+  // a tree's window run with an empty old frame round it (`@ui.run_legacy_ctx(t, fn(_c) {  }, tree=w)`, a bare `run_legacy_ctx` too):
+  // counted (a call each); one whose frame builds, one passing its frame on (`view, tree?`), pure-tree run / run_tree,
+  // one in a test, in the framework (src/host here) not
   let fs = found(
     [
       (
         "src/sfpages/page.mbt",
-        "fn main {\n  @ui.run(\"title\", fn(_c) {  }, tree=window)\n  @ui.run(\"title\", fn(c) { @ui.old_views_here(c) }, tree=window)\n  @ui.run(\"title\", view, tree?)\n  @ui.run_tree(\"title\", window)\n  run(\"t\", fn(_ : @ui.Ctx) -> Unit { () }, tree=fn(root) { page(root) })\n  @ui.run(\"title\", fn(_c) {  })\n}\n",
+        "fn main {\n  @ui.run_legacy_ctx(\"title\", fn(_c) {  }, tree=window)\n  @ui.run_legacy_ctx(\"title\", fn(c) { @ui.old_views_here(c) }, tree=window)\n  @ui.run_legacy_ctx(\"title\", view, tree?)\n  @ui.run(\"title\", window)\n  @ui.run_tree(\"title\", window)\n  run_legacy_ctx(\"t\", fn(_ : @ui.Ctx) -> Unit { () }, tree=fn(root) { page(root) })\n  @ui.run_legacy_ctx(\"title\", fn(_c) {  })\n}\n",
       ),
-      ("src/kit/x_wbtest.mbt", "test \"t\" {\n  @ui.run(\"title\", fn(_c) {  }, tree=window)\n}\n"),
-      ("src/host/y.mbt", "fn y() -> Unit {\n  @ui.run(\"title\", fn(_c) {  }, tree=window)\n}\n"),
+      ("src/kit/x_wbtest.mbt", "test \"t\" {\n  @ui.run_legacy_ctx(\"title\", fn(_c) {  }, tree=window)\n}\n"),
+      ("src/host/y.mbt", "fn y() -> Unit {\n  @ui.run_legacy_ctx(\"title\", fn(_c) {  }, tree=window)\n}\n"),
     ],
     "old-empty-around",
     2,
   )
-  assert_eq(lines(fs), [2, 6])
+  assert_eq(lines(fs), [2, 7])
 }
 
 ///|
@@ -3392,4 +3555,305 @@ test "page-control-by-hand" {
     cfg=pages_cfg(),
   )
   assert_eq(lines(fs), [2, 4, 5, 10, 11])
+}
+
+///|
+test "structure-box" {
+  // single bare x.box(...) in show/pick/switch_by is flagged; part calls, multi-statement bodies, and tests are not
+  let src =
+    #|fn view(v : @view.View) -> Unit {
+    #|  v.show(fn() { true }, fn(x) { x.box(fn(l) { l.words(Is("a")) |> ignore }) |> ignore })
+    #|  v.pick(fn() { 1 }, fn(x, _) { ignore(x.box(fn(l) { l.words(Is("b")) |> ignore })) })
+    #|  v.switch_by(fn() { 1 }, fn(x, _) { let _ = x.box(fn(l) { l.words(Is("c")) |> ignore }) })
+    #|  v.show(fn() { true }, fn(x) { words_node(x, "ok") })
+    #|  v.show(fn() { true }, fn(x) {
+    #|    x.box(fn(a) { a.words(Is("1")) |> ignore }) |> ignore
+    #|    x.box(fn(b) { b.words(Is("2")) |> ignore }) |> ignore
+    #|  })
+    #|  v.show(fn() { true }, fn(x) {
+    #|    x.row(Is(true)) |> ignore
+    #|    x.box(fn(a) { a.words(Is("3")) |> ignore }) |> ignore
+    #|  })
+    #|}
+    #|test "t" {
+    #|  v.show(fn() { true }, fn(x) { x.box(fn(l) { l.words(Is("t")) |> ignore }) |> ignore })
+    #|}
+    #|
+  let fs = found([("src/app/view.mbt", src)], "structure-box", 3)
+  assert_eq(lines(fs), [2, 3, 4])
+}
+
+///|
+test "scroll-each" {
+  let hits =
+    #|fn list_node(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
+    #|  v.scrolls(s, fn(body) {
+    #|    body.each(xs, fn(x) { x }, fn(r, x) { r.words(By(fn() { x.get() })) |> ignore })
+    #|  }) |> ignore
+    #|  v.scrolls(fn(body) {
+    #|    body.box(fn(col) {
+    #|      col.each_of(xs, fn(r, x) { r.words(Is(x)) |> ignore })
+    #|    }) |> ignore
+    #|  }) |> ignore
+    #|}
+  let fs = found([("src/app/list.mbt", hits)], "scroll-each", 2)
+  assert_eq(lines(fs), [3, 7])
+  let misses =
+    #|fn list_node(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
+    #|  v.each(xs, fn(x) { x }, fn(r, x) { r.words(By(fn() { x.get() })) |> ignore })
+    #|  v.scrolls_window(s, xs, fn(r, x) { r.words(Is(x)) |> ignore }) |> ignore
+    #|  v.scrolls(s, fn(body) {
+    #|    let arr = [1, 2, 3]
+    #|    arr.each(fn(n) { ignore(n) })
+    #|    body.on_press(fn() { body.each(xs, fn(x) { x }, fn(_, _) {  }) }) |> ignore
+    #|    // det-ok(scroll-each): fixed 3 settings rows
+    #|    body.each(xs, fn(x) { x }, fn(r, _) { r.words(Is("a")) |> ignore })
+    #|  }) |> ignore
+    #|}
+  found(
+    [("src/app/ok.mbt", misses), ("src/app/list_wbtest.mbt", hits)],
+    "scroll-each",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "bare-on-press" {
+  let hits =
+    #|fn view(v : @view.View) -> Unit {
+    #|  v.box(fn(b) {
+    #|    b.on_press(fn() { go() }) |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.says(Is(Some(@view.said(Button, label="ok")))) |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.on_press(fn() { go() }) |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) { b.words(Is("x")) |> ignore }).on_press(fn() { go() }) |> ignore
+    #|}
+  let fs = found([("src/app/view.mbt", hits)], "bare-on-press", 3)
+  assert_eq(lines(fs), [3, 9, 11])
+  let misses =
+    #|fn view(v : @view.View) -> Unit {
+    #|  v.box(fn(b) {
+    #|    b.says(Is(Some(@view.said(Button, label="Save")))).on_press(fn() { go() }) |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.on_press(fn() { go() }).as_ground() |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.says(Is(Some(@view.said(Button, label="Save")))) |> ignore
+    #|    b.on_press(fn() { go() }) |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.on_press(fn() { go() }) |> ignore
+    #|  }).says(Is(Some(@view.said(Button, label="Outer")))) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.as_ground() |> ignore
+    #|  }).on_press(fn() { go() }) |> ignore
+    #|  // det-ok(bare-on-press): scrim dismisses overlay
+    #|  v.box(fn(b) { b.on_press(fn() { close() }) |> ignore }) |> ignore
+    #|}
+  found(
+    [
+      ("src/app/ok.mbt", misses),
+      ("src/headless/button.mbt", hits),
+      ("src/app/view_wbtest.mbt", hits),
+      ("src/app/view_test.mbt", hits),
+    ],
+    "bare-on-press",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "old-run-ctx" {
+  let hits =
+    #|fn main {
+    #|  @ui.run_legacy_ctx("app", fn(_c) {  })
+    #|  @film.run_legacy_ctx(fn(_c) {  })
+    #|  @film.picture_legacy_ctx(fn(_c) {  })
+    #|  @film.film_legacy_ctx(fn(_c) {  })
+    #|}
+    #|test "t" {
+    #|  let _ = Tester::new(fn(_c) {  })
+    #|  let _ = @ui.Tester::new(fn(_c) {  })
+    #|}
+  let fs = found([("src/app/main.mbt", hits)], "old-run-ctx", 6)
+  assert_eq(lines(fs), [2, 3, 4, 5, 8, 9])
+  let misses =
+    #|fn run_legacy_ctx(s : String) -> Unit { ignore(s) }
+    #|fn main {
+    #|  @ui.run("app", fn(_v) {  })
+    #|  @film.run(fn(_v) {  })
+    #|  @film.picture(fn(_v) {  })
+    #|  @film.film(fn(_v) {  })
+    #|  @ui.run_tree("app", fn(_v) {  })
+    #|  @film.run_tree(fn(_v) {  })
+    #|  @film.picture_tree(fn(_v) {  })
+    #|  @film.film_tree(fn(_v) {  })
+    #|  x.run_legacy_ctx("ok")
+    #|  run_legacy_ctx("ok")
+    #|}
+    #|test "t" {
+    #|  let _ = Tester::tree(fn(_v) {  })
+    #|  let _ = @ui.Tester::tree(fn(_v) {  })
+    #|}
+  found([("src/app/ok.mbt", misses)], "old-run-ctx", 0) |> ignore
+}
+
+///|
+let preset_tree_seq : Ref[Int] = { val: 0 }
+
+///|
+fn make_raw_tree(files : Array[(String, String)]) -> String {
+  preset_tree_seq.val += 1
+  let root = "/tmp/detlint_preset_\{preset_tree_seq.val}"
+  let t : Tree = { root, }
+  t.clear()
+  @sys.makedirs(root)
+  for x in files {
+    let p = @sys.join(root, x.0)
+    @sys.makedirs(@sys.dirname(p))
+    let _ = @sys.write_text(p, x.1)
+  }
+  root
+}
+
+///|
+fn run_cli(argv : Array[String]) -> (Int, String, String) {
+  let out = []
+  let err = []
+  let code = run(argv, out, err)
+  (code, out.join("\n"), err.join("\n"))
+}
+
+///|
+test "preset=tree: zero-config clean, hits, skip, det-ok, list orders, unknown preset" {
+  // 1. Clean pure-tree repo with no detlint.json (and skipped vendor/monoid/libs/mbui dirs containing violations)
+  let clean_root = make_raw_tree([
+    (
+      "src/main.mbt",
+      "fn main {\n  @ui.run(\"app\", fn(v) {\n    v.box(fn(b) { b.says(Is(Some(@view.said(Button, label=\"Go\")))).on_press(fn() {  }) |> ignore }) |> ignore\n  })\n}\n",
+    ),
+    (
+      "libs/mbui/src/legacy.mbt",
+      "fn main {\n  @ui.run_legacy_ctx(\"ignored\", fn(_c) {  })\n}\n",
+    ),
+    (
+      "monoid/libs/mbui/src/legacy.mbt",
+      "fn main {\n  @ui.run_legacy_ctx(\"ignored\", fn(_c) {  })\n}\n",
+    ),
+    (
+      "vendor/dep/main.mbt",
+      "fn main {\n  @ui.run_legacy_ctx(\"ignored\", fn(_c) {  })\n}\n",
+    ),
+  ])
+  let (c1, o1, _) = run_cli(["--preset=tree", clean_root])
+  assert_eq(c1, 0)
+  assert_has(o1, "preset=tree")
+  let (c2, _, _) = run_cli([clean_root, "--preset=tree"])
+  assert_eq(c2, 0)
+
+  // 2. Violations: scroll-each, bare-on-press, old-run-ctx, width-structure, at-rest-wait
+  let dirty_root = make_raw_tree([
+    (
+      "src/app.mbt",
+      (
+        #|fn main {
+        #|  @ui.run_legacy_ctx("bad", fn(_c) {  })
+        #|}
+        #|fn page(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
+        #|  v.scrolls(s, fn(body) {
+        #|    body.each(xs, fn(x) { x }, fn(r, _) { r.words(Is("a")) |> ignore })
+        #|  }) |> ignore
+        #|  v.box(fn(b) { b.on_press(fn() {  }) |> ignore }) |> ignore
+        #|  v.by_room(fn(o, room) {
+        #|    o.show(fn() { room.width() < 300.0 }, fn(_) {  })
+        #|  }) |> ignore
+        #|}
+        #|
+      ),
+    ),
+    ("flows/a.drive", "rest\n"),
+  ])
+  let (dc, dout, _) = run_cli(["--preset=tree", dirty_root])
+  assert_eq(dc, 1)
+  assert_has(dout, "old-run-ctx: src/app.mbt: 1 > 0")
+  assert_has(dout, "scroll-each: src/app.mbt: 1 > 0")
+  assert_has(dout, "bare-on-press: src/app.mbt: 1 > 0")
+  assert_has(dout, "width-structure: src/app.mbt: 1 > 0")
+  assert_has(dout, "at-rest-wait: flows/a.drive: 1 > 0")
+
+  // 3. --preset=tree --list [RULE] <ROOT> in arbitrary argument orders
+  let (lc1, lout1, _) = run_cli(["--preset=tree", "--list", dirty_root])
+  assert_eq(lc1, 0)
+  assert_has(lout1, "scroll-each\tsrc/app.mbt:6")
+  assert_has(lout1, "bare-on-press\tsrc/app.mbt:8")
+  assert_has(lout1, "old-run-ctx\tsrc/app.mbt:2")
+  assert_has(lout1, "width-structure\tsrc/app.mbt:10")
+  assert_has(lout1, "at-rest-wait\tflows/a.drive:1")
+
+  let (lc2, lout2, _) = run_cli(["--preset=tree", "--list", "scroll-each", dirty_root])
+  assert_eq(lc2, 0)
+  assert_has(lout2, "scroll-each\tsrc/app.mbt:6")
+  assert_eq(lout2.contains("bare-on-press"), false)
+
+  let (lc3, lout3, _) = run_cli(["--preset=tree", dirty_root, "--list", "scroll-each"])
+  assert_eq(lc3, 0)
+  assert_eq(lout3, lout2)
+
+  let (lc4, lout4, _) = run_cli([dirty_root, "--list", "--preset=tree"])
+  assert_eq(lc4, 0)
+  assert_eq(lout4, lout1)
+
+  // 4. det-ok(<rule>): <reason> passes and prints [det-ok: ...]; det-ok without reason fails
+  let ok_exc_root = make_raw_tree([
+    (
+      "src/app.mbt",
+      (
+        #|fn page(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
+        #|  v.scrolls(s, fn(body) {
+        #|    // det-ok(scroll-each): fixed 3 items
+        #|    body.each(xs, fn(x) { x }, fn(r, _) { r.words(Is("a")) |> ignore })
+        #|  }) |> ignore
+        #|}
+        #|
+      ),
+    ),
+  ])
+  let (ec1, eout1, _) = run_cli(["--preset=tree", ok_exc_root])
+  assert_eq(ec1, 0)
+  assert_has(eout1, "[det-ok: fixed 3 items]")
+
+  let bad_exc_root = make_raw_tree([
+    (
+      "src/app.mbt",
+      (
+        #|fn page(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
+        #|  v.scrolls(s, fn(body) {
+        #|    // det-ok(scroll-each):
+        #|    body.each(xs, fn(x) { x }, fn(r, _) { r.words(Is("a")) |> ignore })
+        #|  }) |> ignore
+        #|}
+        #|
+      ),
+    ),
+  ])
+  let (ec2, eout2, _) = run_cli(["--preset=tree", bad_exc_root])
+  assert_eq(ec2, 1)
+  assert_has(eout2, "det-ok without a reason")
+
+  // 5. Unknown preset returns exit 2
+  let (uc, _, uerr) = run_cli(["--preset=foo", clean_root])
+  assert_eq(uc, 2)
+  assert_has(uerr, "unknown preset")
+
+  ({ root: clean_root, } : Tree).clear()
+  ({ root: dirty_root, } : Tree).clear()
+  ({ root: ok_exc_root, } : Tree).clear()
+  ({ root: bad_exc_root, } : Tree).clear()
 }

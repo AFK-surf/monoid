@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=@APP_NAME@
+Comment=@APP_NAME@
+Exec=env MBUI_APP_ID=@APP_ID@ "MBUI_APP_NAME=@APP_NAME@" @EXTRA_ENV@ "@EXE@" %u
+Icon=@APP_ID@
+Terminal=false
+Categories=@CATEGORIES@
+StartupWMClass=@APP_ID@
+MimeType=@MIME_TYPES@

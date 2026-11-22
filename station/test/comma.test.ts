@@ -9,8 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
-import { commaLine } from "../src/comma/index.ts";
-import { CommaSurface, connectUrl, questionOf } from "../src/comma/surface.ts";
+import { commaConnects, commaLine } from "../src/comma/index.ts";
+import { type CommaWorkspaceMeta, CommaSurface, OwnerActivity, connectUrl, questionOf, workspaceMetaOf } from "../src/comma/surface.ts";
 import { CommaTasks, threadTsOf } from "../src/comma/tasks.ts";
 import { Rig, settle } from "./hub-fakes.ts";
 
@@ -100,6 +100,15 @@ test("the line Comma shows reads as its server and token; anything else does not
   assert.equal(commaLine("comma https://api.comma.surf short"), null);
   assert.equal(connectUrl("https://api.comma.surf", "mac").replace(/&os=.*/, ""), "wss://api.comma.surf/v1/connect?name=mac");
   assert.equal(new URL(connectUrl("https://api.comma.surf", "mac", "ws_1")).searchParams.get("stillfail_workspace"), "ws_1");
+  assert.deepEqual(
+    commaConnects({
+      connects: [
+        { id: "c1", kind: "comma", comma: { server: "https://api.comma.surf", token: "tok123456" }, createdBy: { id: "  Peng@Example.COM ", name: "Peng" } },
+        { id: "c2", kind: "comma", comma: { server: "https://api.comma.surf", token: "tok123456" }, createdBy: { id: "local", name: "local" } },
+      ],
+    }).map((c) => [c.id, c.ownerEmail]),
+    [["c1", "peng@example.com"], ["c2", null]],
+  );
 });
 
 test("an options card is Comma's question card, the recommended one marked; a text card or one option is words alone", () => {
@@ -120,7 +129,7 @@ test("a Comma Task is a thread its agent works in: invited, its Messages heard f
   let seq = 10;
   fake.answer = (f) => (f.method === "task.post" ? { seq: ++seq } : {});
   const surface = new CommaSurface({
-    connect: "cm", server: fake.base, token: "salix_conn_test123", name: "mac", tasks, store: rig.store,
+    connect: "cm", server: fake.base, token: "salix_conn_test123", name: "mac", ownerEmail: "Ada@Example.Test", tasks, store: rig.store,
     models: () => rig.hub.modelsFor("cm"),
   });
   try {
@@ -133,6 +142,7 @@ test("a Comma Task is a thread its agent works in: invited, its Messages heard f
     assert.equal(fake.auth, "Bearer salix_conn_test123");
     const meta = fake.frames.find((f) => f.type === "metadata");
     assert.equal(meta.capabilities.tasks, 2);
+    assert.equal(meta.capabilities.stillfail_owner_email, "ada@example.test");
     assert.ok("claude" in meta.capabilities.task_models);
     // Comma's heartbeat is answered.
     fake.socket!.send(JSON.stringify({ type: "heartbeat" }));
@@ -197,4 +207,216 @@ test("a Comma Task is a thread its agent works in: invited, its Messages heard f
     await fake.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("workspaceMetaOf includes self, deduplicates, omits empty marks, and caps at 100 stations while keeping self", () => {
+  const peers = Array.from({ length: 120 }, (_, i) => ({ id: `peer_${i}`, name: `Station ${i}` }));
+  peers.push({ id: "peer_0", name: "Duplicate" });
+  const meta = workspaceMetaOf(
+    { workspace: "ws_1", workspace_name: "Team", name: "SelfHost", peers },
+    "self_id",
+    "fallback-host",
+  );
+  assert.equal(meta.id, "ws_1");
+  assert.equal(meta.name, "Team");
+  assert.equal(meta.station, "SelfHost");
+  assert.equal("emoji" in meta, false);
+  assert.equal("icon" in meta, false);
+  assert.equal(meta.stations.length, 100);
+  assert.equal(meta.stations.filter((s) => s.id === "peer_0").length, 1);
+  assert.deepEqual(meta.stations.find((s) => s.id === "self_id"), { id: "self_id", name: "SelfHost" });
+
+  // When self is already in peers with an outdated name, its name is normalized to selfName (or fallbackHost).
+  const withSelf = workspaceMetaOf(
+    {
+      workspace: "ws_2",
+      workspace_name: "Lab",
+      workspace_emoji: "🧪",
+      workspace_icon: "glyph:beaker",
+      name: "",
+      peers: [{ id: "self_id", name: "old-name" }, { id: "other", name: "" }],
+    },
+    "self_id",
+    "my-mac",
+  );
+  assert.deepEqual(withSelf, {
+    id: "ws_2",
+    name: "Lab",
+    station: "my-mac",
+    emoji: "🧪",
+    icon: "glyph:beaker",
+    stations: [
+      { id: "self_id", name: "my-mac" },
+      { id: "other", name: "other" },
+    ],
+  });
+});
+
+test("CommaSurface sends capabilities.stillfail_workspace on connect and pushes updates on the same socket without duplicates", async () => {
+  const fake = await FakeComma.start();
+  const rig = new Rig();
+  const dir = mkdtempSync(join(tmpdir(), "comma-meta-"));
+  const tasks = new CommaTasks(join(dir, "tasks.json"));
+  let currentMeta: CommaWorkspaceMeta | null = {
+    id: "ws_1",
+    name: "Alpha",
+    station: "mac-1",
+    emoji: "🚀",
+    icon: "glyph:rocket",
+    stations: [{ id: "st_1", name: "mac-1" }, { id: "st_2", name: "linux-1" }],
+  };
+  let notify: (() => void) | null = null;
+  let unsubscribed = 0;
+  const surface = new CommaSurface({
+    connect: "cm",
+    server: fake.base,
+    token: "salix_conn_test123",
+    name: "Alpha · mac-1",
+    workspace: "ws_1",
+    tasks,
+    store: rig.store,
+    models: () => [],
+    workspaceMeta: () => currentMeta,
+    onWorkspaceMetaChange: (changed) => {
+      notify = changed;
+      return () => {
+        notify = null;
+        unsubscribed++;
+      };
+    },
+  });
+  try {
+    await surface.start(async () => {});
+    await fake.until("first metadata", () => fake.frames.some((f) => f.type === "metadata"));
+    const firstSocket = fake.socket;
+    const metas = () => fake.frames.filter((f) => f.type === "metadata");
+    assert.equal(metas().length, 1);
+    assert.deepEqual(metas()[0].capabilities.stillfail_workspace, currentMeta);
+
+    // Firing with unchanged metadata sends nothing.
+    notify!();
+    await settle();
+    assert.equal(metas().length, 1);
+
+    // Updating metadata pushes a new metadata frame on the exact same open socket.
+    currentMeta = {
+      id: "ws_1",
+      name: "Alpha Renamed",
+      station: "mac-1",
+      stations: [{ id: "st_1", name: "mac-1" }],
+    };
+    notify!();
+    await fake.until("second metadata", () => metas().length === 2);
+    assert.equal(fake.socket, firstSocket);
+    assert.deepEqual(metas()[1].capabilities.stillfail_workspace, currentMeta);
+    assert.equal("emoji" in metas()[1].capabilities.stillfail_workspace, false);
+    assert.equal("icon" in metas()[1].capabilities.stillfail_workspace, false);
+
+    // Stopping unsubscribes the listener cleanly.
+    await surface.stop();
+    assert.equal(unsubscribed, 1);
+    assert.equal(notify, null);
+  } finally {
+    await surface.stop();
+    await rig.close();
+    await fake.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CommaSurface quantizes capabilities.stillfail_owner_active_at to 30s buckets and pushes updates on bucket change", async () => {
+  const fake = await FakeComma.start();
+  const rig = new Rig();
+  const dir = mkdtempSync(join(tmpdir(), "comma-active-"));
+  const tasks = new CommaTasks(join(dir, "tasks.json"));
+  let activeAt: number | null = 1_795_200_012_345;
+  let notify: (() => void) | null = null;
+  let unsubscribed = 0;
+  const surface = new CommaSurface({
+    connect: "cm-active",
+    server: fake.base,
+    token: "salix_conn_test123",
+    name: "Alpha · mac-1",
+    workspace: "ws_1",
+    ownerEmail: "ada@example.test",
+    tasks,
+    store: rig.store,
+    models: () => [],
+    lang: "en",
+    ownerActiveAt: () => activeAt,
+    onOwnerActiveChange: (cb) => {
+      notify = cb;
+      return () => {
+        notify = null;
+        unsubscribed++;
+      };
+    },
+  });
+  try {
+    await surface.start(async () => {});
+    const metas = () => fake.frames.filter((f) => f.type === "metadata");
+    await fake.until("first metadata", () => metas().length >= 1);
+    assert.equal(metas().length, 1);
+    assert.equal(metas()[0].capabilities.stillfail_owner_active_at, 1_795_200_000_000);
+
+    // Same 30s bucket sends no duplicate frame.
+    activeAt = 1_795_200_029_999;
+    notify!();
+    await settle();
+    assert.equal(metas().length, 1);
+
+    // Next 30s bucket sends an updated metadata frame on the same socket.
+    activeAt = 1_795_200_035_000;
+    notify!();
+    await fake.until("second metadata", () => metas().length === 2);
+    assert.equal(metas()[1].capabilities.stillfail_owner_active_at, 1_795_200_030_000);
+
+    await surface.stop();
+    assert.equal(unsubscribed, 1);
+    assert.equal(notify, null);
+  } finally {
+    await surface.stop();
+    await rig.close();
+    await fake.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("OwnerActivity merges cross-station peer reads monotonically without re-gossiping or leaking other workspaces", () => {
+  const peer = new OwnerActivity();
+  const host = new OwnerActivity();
+
+  // No local reads yet: nothing to attach to comma.changed.
+  assert.equal(peer.localPayload(), null);
+
+  // Local read on peer station (e.g. Windows desktop) quantizes to 30s and exports only allowed workspace viewers.
+  assert.equal(peer.recordLocal("Peng@Example.com", 1_795_200_012_345), true);
+  assert.equal(peer.recordLocal("other@workspace.test", 1_795_200_045_000), true);
+  assert.deepEqual(peer.localPayload(new Set(["peng@example.com"])), {
+    at: 1_795_200_000_000,
+    byViewer: { "peng@example.com": 1_795_200_000_000 },
+  });
+
+  // Host station (holding the Comma socket) merges peer activity and reports it for the owner without re-exporting it.
+  const wire = peer.localPayload(new Set(["peng@example.com"]));
+  assert.equal(host.mergePeer(wire, 1_795_200_020_000), true);
+  assert.equal(host.get("peng@example.com"), 1_795_200_000_000);
+  assert.equal(host.get("someone-else@example.com"), null);
+  assert.equal(host.get(null), 1_795_200_000_000);
+  assert.equal(host.localPayload(), null);
+
+  // Duplicate or older peer buckets do not advance state or regress newer timestamps.
+  assert.equal(host.mergePeer(wire, 1_795_200_025_000), false);
+  assert.equal(host.mergePeer({ at: 1_795_199_970_000, byViewer: { "peng@example.com": 1_795_199_970_000 } }, 1_795_200_025_000), false);
+  assert.equal(host.get("peng@example.com"), 1_795_200_000_000);
+
+  // Wildly future peer clocks (>5m ahead) and malformed payloads are ignored.
+  assert.equal(host.mergePeer({ at: 1_795_201_000_000, byViewer: { "peng@example.com": 1_795_201_000_000 } }, 1_795_200_025_000), false);
+  assert.equal(host.mergePeer(null, 1_795_200_025_000), false);
+  assert.equal(host.mergePeer("bad", 1_795_200_025_000), false);
+  assert.equal(host.get("peng@example.com"), 1_795_200_000_000);
+
+  // Unattributed peer payload (e.g. MoonBit station without per-viewer read info) advances single-owner lookups.
+  assert.equal(host.mergePeer({ at: 1_795_200_065_000 }, 1_795_200_070_000), true);
+  assert.equal(host.get("peng@example.com"), 1_795_200_060_000);
 });

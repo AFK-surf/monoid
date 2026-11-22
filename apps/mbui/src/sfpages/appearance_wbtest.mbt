@@ -120,19 +120,14 @@ test "外观: files dragged into a chat can be sent as files or paths (prefs dro
 ///|
 test "外观: wide setting titles have the same weight as the rows in 自动决策" {
   for platform in [0, 2] {
-    let decision = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      @sf.link_row(c, "decision", "结束时") |> ignore
-    }, w=900.0, platform~)
+    let decision = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=900.0, platform~, tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.link_row_node(root, fn() { "结束时" }, fn() {  })
+    })
     decision.draw()
     let weight = decision.census().weight
     assert_eq(weight, ["500"])
-    let plain = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      @sf.setting(c, "主题", fn() {  })
-    }, w=900.0, platform~)
-    plain.draw()
-    assert_eq(plain.census().weight, weight)
+    assert_eq([setting_title_look("主题", 900.0, platform).0.to_string()], weight)
     // 外观's settings laid out wide (主题's choice, 字体's row going to its page): their titles as strong
     let page = setting_tester(Appearance, 1280.0, platform~)
     for title in ["主题", "字体", "震动"] {
@@ -140,10 +135,10 @@ test "外观: wide setting titles have the same weight as the rows in 自动决�
       assert_eq(found.map(fn(b) { b.weight }), [500], msg="\{platform}: \{title} \{Repr(found.map(fn(b) { (b.x, b.y, b.w, b.h) }))}")
     }
     // a switch's row in a group (分享给其他 station over 可用的 station): its title no lighter than the rows by it
-    let switch = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      @sf.group(c, fn() { @sf.switch_row(c, "share", "分享给其他 station", true) |> ignore })
-    }, w=900.0, platform~)
+    let switch = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=900.0, platform~, tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.group_node(root, fn(g) { @sf.switch_row_node(g, fn() { "分享给其他 station" }, fn() { true }, fn(_) {  }) })
+    })
     switch.draw()
     assert_eq(switch.census().weight, weight)
   }
@@ -152,24 +147,22 @@ test "外观: wide setting titles have the same weight as the rows in 自动决�
 ///|
 test "setting rows keep their title prominent at every width and with either input" {
   for (w, platform) in page_cases {
-    let t = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      @sf.group(c, fn() {
-        @sf.link_row(c, "plain", "Plain title") |> ignore
-        @sf.link_row(c, "value", "Title with value", value="Current") |> ignore
-        @sf.link_row(c, "note", "Title with note", note="More detail") |> ignore
-        @sf.link_row(c, "summary", "Summary title", value="Selected", note="Explanation") |> ignore
-        @sf.link_row(c, "custom", "Custom title", title_style=@sf.desk_list_title.then(@ui.text_style(weight=Normal))) |> ignore
-        @sf.switch_row(c, "switch", "Switch title", false) |> ignore
-        @sf.link_row(c, "strong", "Strong title", strong=true) |> ignore
-        @sf.setting(c, "Setting title", fn() {  })
+    let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, platform~, tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.group_node(root, fn(g) {
+        @sf.link_row_node(g, fn() { "Plain title" }, fn() {  })
+        @sf.link_row_node(g, fn() { "Title with value" }, fn() {  }, value=fn() { "Current" })
+        @sf.link_row_node(g, fn() { "Title with note" }, fn() {  }, note=fn() { "More detail" })
+        @sf.link_row_node(g, fn() { "Summary title" }, fn() {  }, value=fn() { "Selected" }, note=fn() { "Explanation" })
+        @sf.switch_row_node(g, fn() { "Switch title" }, fn() { false }, fn(_) {  })
+        @sf.link_row_node(g, fn() { "Strong title" }, fn() {  }, strong=true)
       })
-      @sf.switch_row(c, "outside", "Standalone switch", false) |> ignore
-    }, w~, platform~)
+      @sf.switch_row_node(root, fn() { "Standalone switch" }, fn() { false }, fn(_) {  })
+    })
     t.draw()
-    let boxes = t.boxes()
+    let boxes = t.boxes_held()
     let at = "\{w} platform \{platform}"
-    for title in ["Plain title", "Title with value", "Title with note", "Summary title", "Custom title", "Switch title", "Setting title", "Standalone switch"] {
+    for title in ["Plain title", "Title with value", "Title with note", "Summary title", "Switch title", "Standalone switch"] {
       let found = boxes.filter(fn(b) { b.text == title })
       assert_eq(found.length(), 1, msg="\{at}: \{title}")
       assert_eq(found[0].weight, 500, msg="\{at}: \{title}")
@@ -177,7 +170,29 @@ test "setting rows keep their title prominent at every width and with either inp
     }
     assert_eq(boxes.filter(fn(b) { b.text == "Strong title" })[0].weight, 700, msg=at)
     assert_eq(boxes.filter(fn(b) { b.text == "Explanation" })[0].weight, 400, msg=at)
+    // (a setting's row as nodes: its title as strong, in the same ink)
+    let strong = boxes.filter(fn(b) { b.text == "Strong title" })[0].color
+    assert_eq(setting_title_look("Setting title", w, platform), (500, strong), msg="\{at}: Setting title")
   }
+}
+
+///|
+/// A setting's row as nodes (setting_node) titled `title`, alone in a window `w` wide started as `platform`, laid out as
+/// a wide page lays it out (the old `setting`'s look where none was said): its title's weight and ink.
+fn setting_title_look(title : String, w : Double, platform : Int) -> (Int, Int64) {
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, platform~)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(b) {
+      @sf.look_lent(b, Wide)
+      @sf.setting_node(b, fn() { title }, fn(_) {  })
+    })
+    |> ignore
+  })
+  t.draw()
+  let found = t.boxes_held().filter(fn(b) { b.text == title })
+  guard found.length() == 1 else { @halt.saying("\{title}: \{found.length()} drawn") }
+  (found[0].weight, found[0].color)
 }
 
 ///|
@@ -229,7 +244,8 @@ test "下方栏, at each width on either screen: its bars a card each, the one i
     // a place's "−" takes it off its bar
     assert_true(t.query(Button, label="从此栏移除Station") is Some(_), msg=at)
     t.click(Button, label="从此栏移除Station")
-    t.frame()
+    // (its row leaves the list card as a row goes: gone once that is done)
+    t.run_for(@ui.move_most_ms)
     assert_true(t.query(Button, label="从此栏移除Station") is None, msg=at)
   }
 }

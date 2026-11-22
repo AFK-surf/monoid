@@ -364,48 +364,10 @@ pub async fn output_at(host : @host.Host, path : String) -> Double? {
 /// bytes copied to `<path>.1` (through `<path>.1.tmp`), then the file truncated to nothing, its inode the same.
 pub async fn rotate_in_place(host : @host.Host, path : String, cap : Double, keep? : Double) -> Bool raise {
   let keep = keep.unwrap_or(cap)
-  let size_of = async fn() -> Double? {
-    match try_ask(host, "fs.meta", { "path": jstr(path) }) {
-      Some(Object(_) as m) => num(field(m, "size"))
-      _ => None
-    }
+  match ask(host, "fs.rotate", { "path": jstr(path), "cap": jnum(cap), "keep": jnum(keep) }) {
+    True => true
+    _ => false
   }
-  guard size_of() is Some(first) else { return false }
-  let mut size = first
-  if size <= cap {
-    return false
-  }
-  let tmp = path + ".1.tmp"
-  try {
-    ignore(put(host, tmp, b"", offset=0.0, truncate=true, mode=0o600))
-    let mut at = if size - keep > 0.0 { size - keep } else { 0.0 }
-    let mut written = 0.0
-    for pass in 0..<2 {
-      ignore(pass)
-      while at < size {
-        let n = if size - at < 1048576.0 { (size - at).to_int() } else { 1048576 }
-        let piece = match ask(host, "fs.bytes", { "path": jstr(path), "from": jnum(at), "length": jint(n) }) {
-          String(h) => @hex.decode(h)
-          _ => b""
-        }
-        if piece.length() == 0 {
-          break
-        }
-        ignore(put(host, tmp, piece, offset=written))
-        written += piece.length().to_double()
-        at += piece.length().to_double()
-      }
-      size = size_of().unwrap_or(size)
-    }
-    rename(host, tmp, path + ".1")
-    ignore(put(host, path, b"", offset=0.0, truncate=true))
-  } catch {
-    e => {
-      remove(host, tmp)
-      raise e
-    }
-  }
-  true
 }
 
 ///|
@@ -419,10 +381,10 @@ pub(all) struct Processes {
 }
 
 ///|
-/// The machine's own, through `kill` and `ps`; a process's start by `wall` (ms since the epoch; the host's clock where
-/// none is given).
+/// The machine's own, through `kill` and `ps`; a process's start by `wall` (ms since the epoch; the system's wall clock
+/// where none is given).
 pub fn Processes::shell(host : @host.Host, wall? : () -> Double) -> Processes {
-  let wall = wall.unwrap_or(() => @host.now().to_double())
+  let wall = wall.unwrap_or(() => @host.wall_ms().to_double())
   {
     signal_group: async fn(pgid, signal) {
       let sig = if starts(signal, "SIG") { from(signal, 3) } else { signal }
@@ -543,7 +505,7 @@ pub async fn JobsHost::new(
     notify_url: "",
     closing: false,
     ended: async fn(_, _, _, _) {  },
-    now: now.unwrap_or(() => @host.now().to_double()),
+    now: now.unwrap_or(() => @host.epoch_ms().to_double()),
   }
 }
 
@@ -627,6 +589,18 @@ pub fn JobsHost::job_env(self : JobsHost, job : JobStart, extra : Map[String, St
 }
 
 ///|
+/// The `/bin/sh -c` script that starts a job (`$0` its inner script, then its directory, command, exit file and log):
+/// in a group of its own (setsid where the system has it, else perl's setpgrp; its pid its group's), `nice` lower than
+/// the station, and never with the launcher's front, which `proc.run` passes on from the station's own environment
+/// (a job that found it would bind its own key on the station's endpoint).
+fn spawn_script(nice : Int) -> String {
+  "unset STILLFAIL_MESH_FRONT; cd \"$1\" || exit 1; shift; set -f; " +
+  "if command -v setsid >/dev/null 2>&1; then g='setsid'; else g='perl -e setpgrp(0,0);exec{$ARGV[0]}@ARGV --'; fi; " +
+  "n=''; if [ \{nice} -gt 0 ] && [ -x /usr/bin/nice ]; then n='/usr/bin/nice -n \{nice}'; fi; " +
+  "$g $n /bin/sh -c \"$0\" \{sh_quoted(job_command_name)} \"$@\" </dev/null >/dev/null 2>&1 & echo $!"
+}
+
+///|
 /// Runs a job's command in a group of its own, its output appended to its log by its shell, lower than the station
 /// (nice), and follows it to its end: its group's id.
 pub async fn JobsHost::spawn(
@@ -643,11 +617,7 @@ pub async fn JobsHost::spawn(
   remove(self.host, self.lost_file(job.id))
   let env = self.job_env(job, extra, @env.get_env_var("PATH").unwrap_or(""))
   let inner = "exec >>\"$3\" 2>&1; \{wrapper}"
-  // (a group of its own: setsid where the system has it, else perl's setpgrp; its pid its group's)
-  let start = "cd \"$1\" || exit 1; shift; set -f; " +
-    "if command -v setsid >/dev/null 2>&1; then g='setsid'; else g='perl -e setpgrp(0,0);exec{$ARGV[0]}@ARGV --'; fi; " +
-    "n=''; if [ \{nice} -gt 0 ] && [ -x /usr/bin/nice ]; then n='/usr/bin/nice -n \{nice}'; fi; " +
-    "$g $n /bin/sh -c \"$0\" \{sh_quoted(job_command_name)} \"$@\" </dev/null >/dev/null 2>&1 & echo $!"
+  let start = spawn_script(nice)
   let e : Map[String, Json] = Map([])
   for k, v in env {
     e[k] = jstr(v)
@@ -672,8 +642,18 @@ pub async fn JobsHost::spawn(
 pub fn JobsHost::follow(self : JobsHost, id : String, pgid : Int, began : Double) -> Unit {
   let running = { pgid, gone: @effect.Deferred::new(), settled: @effect.Deferred::new() }
   self.running[id] = running
+  // (a follower that failed lets its job go from `running` as an end would, so nothing waits on it for ever)
+  let failed = (e : Error) => {
+    @host.note("job \{id} no longer followed: \{e}")
+    ignore(running.gone.succeed(()))
+    match self.running.get(id) {
+      Some(r) if physical_equal(r, running) => self.running.remove(id)
+      _ => ()
+    }
+    ignore(running.settled.succeed(()))
+  }
   ignore(
-    self.rt.fork(async fn() {
+    self.rt.fork_daemon("job followed", on_error=failed, async fn() {
       let exit = self.exit_file(id)
       while true {
         if there(self.host, exit) || !(self.procs.pid_alive)(pgid) {

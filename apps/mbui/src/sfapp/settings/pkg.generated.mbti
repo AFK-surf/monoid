@@ -121,6 +121,8 @@ pub fn fixture_draft_followed() -> Unit
 
 pub fn fixture_elevation(@json.Json?) -> Unit
 
+pub fn fixture_screen_service(@json.Json?) -> Unit
+
 pub fn fixture_followed() -> Unit
 
 pub fn fixture_key_ask_ended() -> String

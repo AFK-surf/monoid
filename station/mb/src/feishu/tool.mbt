@@ -239,55 +239,10 @@ fn unescaped(s : String) -> String {
 ///|
 /// decodeURIComponent: each %XX run as UTF-8, well formed or the URIError.
 pub fn decode_uri_component(s : String) -> String raise FeishuError {
-  let out = StringBuilder::new()
-  let n = s.length()
-  let mut i = 0
-  let byte_at = (k : Int) => {
-    if k + 2 >= n || s.unsafe_charcode_at(k) != '%' {
-      None
-    } else {
-      match (hex_digit(s.unsafe_charcode_at(k + 1)), hex_digit(s.unsafe_charcode_at(k + 2))) {
-        (Some(h), Some(l)) => Some(h * 16 + l)
-        _ => None
-      }
-    }
+  match @url.decode_uri_component(s) {
+    Some(v) => v
+    None => raise FeishuError("URI malformed")
   }
-  while i < n {
-    let c = s.unsafe_charcode_at(i)
-    if c != '%' {
-      out.write_char(c.unsafe_to_char())
-      i += 1
-      continue
-    }
-    guard byte_at(i) is Some(b) else { raise FeishuError("URI malformed") }
-    i += 3
-    if b < 0x80 {
-      out.write_char(b.unsafe_to_char())
-      continue
-    }
-    let (need, init, min) = if (b & 0xe0) == 0xc0 {
-      (1, b & 0x1f, 0x80)
-    } else if (b & 0xf0) == 0xe0 {
-      (2, b & 0x0f, 0x800)
-    } else if (b & 0xf8) == 0xf0 {
-      (3, b & 0x07, 0x10000)
-    } else {
-      raise FeishuError("URI malformed")
-    }
-    let mut cp = init
-    for _ in 0..<need {
-      guard byte_at(i) is Some(x) && (x & 0xc0) == 0x80 else {
-        raise FeishuError("URI malformed")
-      }
-      cp = (cp << 6) | (x & 0x3f)
-      i += 3
-    }
-    if cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) {
-      raise FeishuError("URI malformed")
-    }
-    out.write_char(cp.unsafe_to_char())
-  }
-  out.to_string()
 }
 
 ///|
@@ -445,35 +400,7 @@ fn reactions_path(path : String) -> Bool {
 ///|
 /// read/transcript.ts `iso`: an ISO timestamp of milliseconds since the epoch, as toISOString writes it.
 pub fn iso(ms : Int64) -> String {
-  let div_floor = (a : Int64, b : Int64) => {
-    let q = a / b
-    if a % b != 0L && (a < 0L) != (b < 0L) {
-      q - 1L
-    } else {
-      q
-    }
-  }
-  let pad = (n : Int64, w : Int) => if n < 0L {
-    "-" + (-n).to_string().pad_start(w - 1, '0')
-  } else {
-    n.to_string().pad_start(w, '0')
-  }
-  let days = div_floor(ms, 86_400_000L)
-  let rest = ms - days * 86_400_000L
-  let z = days + 719_468L
-  let era = div_floor(z, 146_097L)
-  let doe = z - era * 146_097L
-  let yoe = (doe - doe / 1460L + doe / 36_524L - doe / 146_096L) / 365L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  let y = yoe + era * 400L + (if m <= 2L { 1L } else { 0L })
-  let h = rest / 3_600_000L
-  let mi = rest / 60_000L % 60L
-  let s = rest / 1000L % 60L
-  let milli = rest % 1000L
-  "\{pad(y, 4)}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(h, 2)}:\{pad(mi, 2)}:\{pad(s, 2)}.\{pad(milli, 3)}Z"
+  @time.format_iso_ms(ms)
 }
 
 ///|

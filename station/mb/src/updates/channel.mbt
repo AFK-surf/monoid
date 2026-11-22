@@ -46,7 +46,7 @@ async fn alive(w : World, pid : Double) -> Bool {
     ignore(w.call("process.kill", [jn(pid), ji(0)]))
     true
   } catch {
-    e => field_of(e, "code") is Some(Str(u)) && @jsjson.text(u) == "EPERM"
+    e => field_of(e, "code") is Some(Str(u)) && @jsjson.sanitize_str(u) == "EPERM"
   })
 }
 
@@ -83,7 +83,7 @@ pub async fn set_channel(
     None => async fn(pid) { w.call("platform.isLauncher", [jn(pid)]) is Bool(true) }
   }
   let run_dir = pjoin([data, "run"])
-  w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+  w.mkdir(run_dir)
   let said = read_json(w, pjoin([run_dir, "station.json"]))
   let pid = match get(said, "pid") {
     Some(Num(p)) if is_safe_integer(Some(Num(p))) && p > 0.0 => Some(p)
@@ -99,7 +99,7 @@ pub async fn set_channel(
   let pid = pid.unwrap()
   // (the channel its config already says: nothing to ask)
   match get(read_json(w, config_path(data)), "updateChannel") {
-    Some(Str(u)) if @jsjson.text(u) == channel => return
+    Some(Str(u)) if @jsjson.sanitize_str(u) == channel => return
     _ => ()
   }
   let answer = pjoin([run_dir, channel_answer])
@@ -212,7 +212,7 @@ pub async fn channel_command(w : World, args : Array[String], data : String) -> 
     let path = config_path(data)
     let t = (try Some(w.read_text(path)) catch {
       e =>
-        if field_of(e, "code") is Some(Str(u)) && @jsjson.text(u) == "ENOENT" {
+        if field_of(e, "code") is Some(Str(u)) && @jsjson.sanitize_str(u) == "ENOENT" {
           None
         } else {
           raise e

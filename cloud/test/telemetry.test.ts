@@ -333,3 +333,42 @@ test("a traced refresh's span says what became of the session, and the answer ca
     await h.close();
   }
 });
+
+test("an answer of still.fail cloud's own failing (5xx) is a log line of stillfail-cloud, its route without ids, never telemetry's own", async () => {
+  const google = fakeGoogle(500);
+  const h = await harness({ telemetry: google.answer });
+  try {
+    const tokens = await h.login("alice");
+    // (telemetry's own 502, Google refusing: not logged through it)
+    assert.equal((await post(h, batch(), { authorization: `Bearer ${tokens.access_token}` })).status, 502);
+    // A browser's subscription with no VAPID key here: 503.
+    const pair = (await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"])) as CryptoKeyPair;
+    const b64url = (b: ArrayBuffer | Uint8Array) => Buffer.from(b instanceof Uint8Array ? b : new Uint8Array(b)).toString("base64url");
+    const p256dh = b64url((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer);
+    const auth = b64url(crypto.getRandomValues(new Uint8Array(16)));
+    const response = await h.fetch("/v1/push", {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.access_token}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "web", endpoint: "https://push.example/send/secret-subscription", keys: { p256dh, auth } }),
+    });
+    assert.equal(response.status, 503);
+    const line = await google.until((got) => got.find((g) => g.url === "https://telemetry.googleapis.com/v1/logs"));
+    const logs = google.got.filter((g) => g.url === "https://telemetry.googleapis.com/v1/logs");
+    assert.equal(logs.length, 1, "only the push's 503 was logged");
+    const resource = line.body.resourceLogs[0];
+    assert.deepEqual(resource.resource.attributes.find((a: any) => a.key === "service.name"), { key: "service.name", value: { stringValue: "stillfail-cloud" } });
+    const record = resource.scopeLogs[0].logRecords[0];
+    assert.equal(record.severityNumber, 17);
+    assert.equal(record.severityText, "ERROR");
+    assert.equal(record.body.stringValue, "worker returned 5xx");
+    assert.deepEqual(Object.fromEntries(record.attributes.map((a: any) => [a.key, a.value.stringValue ?? a.value.intValue])), {
+      "log.target": "http",
+      "log.method": "POST",
+      "log.path": "/v1/push",
+      "log.status": "503",
+    });
+    assert.ok(!JSON.stringify(line.body).includes("secret-subscription"));
+  } finally {
+    await h.close();
+  }
+});

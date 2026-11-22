@@ -464,3 +464,111 @@ test "a computed reading what is built for it after it ran, and what another rea
   assert_eq(runs.val, 3)
   assert_eq(other.get(), 102)
 }
+
+// ── writes from inside a running effect to what it reads ────────────────────────────────────────────────────
+
+///|
+test "effect wakes on external write after multiple inner writes through computed" {
+  let s = signal(0)
+  let c = computed(fn(_) { s.get() })
+  let seen : Array[Int] = []
+  effect(fn() {
+    let v = c.get()
+    seen.push(v)
+    if v == 1 {
+      s.set(2)
+      s.set(3)
+    }
+  })
+  |> ignore
+  s.set(1)
+  s.set(4)
+  s.set(5)
+  assert_eq(seen, [0, 1, 4, 5])
+  assert_eq(c.get(), 5)
+}
+
+///|
+test "effect wakes on external write after inner write through diamond" {
+  let s = signal(0)
+  let a = computed(fn(_) { s.get() })
+  let b = computed(fn(_) { s.get() })
+  let c = computed(fn(_) { a.get() + b.get() })
+  let seen : Array[Int] = []
+  effect(fn() {
+    let v = c.get()
+    seen.push(v)
+    if v == 2 {
+      s.set(10)
+    }
+  })
+  |> ignore
+  s.set(1)
+  s.set(20)
+  assert_eq(seen, [0, 2, 40])
+}
+
+///|
+test "deep stacked diamond inner write stays linear and wakes on external write" {
+  let s = signal(0)
+  let mut l : Computed[Int] = computed(fn(_) { s.get() })
+  let mut r : Computed[Int] = computed(fn(_) { s.get() })
+  for i = 0; i < 30; i = i + 1 {
+    let pl = l
+    let pr = r
+    l = computed(fn(_) { (pl.get() + pr.get()) / 2 + 1 })
+    r = computed(fn(_) { (pl.get() + pr.get()) / 2 + 2 })
+  }
+  let tl = l
+  let tr = r
+  let top = computed(fn(_) { tl.get() + tr.get() })
+  let seen : Array[Int] = []
+  effect(fn() {
+    seen.push(top.get())
+    if seen.length() == 2 {
+      s.set(10)
+      s.set(11)
+    }
+  })
+  |> ignore
+  s.set(1)
+  s.set(20)
+  assert_eq(seen.length(), 3)
+  assert_eq(seen[2], top.get())
+}
+
+///|
+test "effect wakes on external write after inner shallow_propagate marks it dirty" {
+  // (a computed read again inside the run after an inner write marks the running effect dirty through
+  // shallow_propagate; once the run ends that mark is spent: a later write whose computed comes out the same wakes
+  // no run, one that changes it does)
+  let t = signal(0)
+  let tc = computed(fn(_) { t.get() })
+  let p = signal(0)
+  let pc = computed(fn(_) { p.get() })
+  let ext = signal(0)
+  let ext_c = computed(fn(_) { ext.get() / 2 })
+  let seen : Array[(Int, Int, Int)] = []
+  effect(fn() {
+    let tv = tc.get()
+    let pv = pc.get()
+    let xv = ext_c.get()
+    seen.push((tv, pv, xv))
+    if tv == 1 {
+      p.set(1)
+      pc.get() |> ignore
+    }
+  })
+  |> ignore
+  t.set(1)
+  assert_eq(seen, [(0, 0, 0), (1, 0, 0)])
+  ext.set(1)
+  assert_eq(seen, [(0, 0, 0), (1, 0, 0)])
+  start_batch()
+  ext.set(2)
+  ext_c.get() |> ignore
+  end_batch()
+  assert_eq(seen, [(0, 0, 0), (1, 0, 0), (1, 1, 1)])
+  t.set(4)
+  assert_eq(seen, [(0, 0, 0), (1, 0, 0), (1, 1, 1), (4, 1, 1)])
+}

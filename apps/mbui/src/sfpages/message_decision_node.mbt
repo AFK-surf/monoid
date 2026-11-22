@@ -132,8 +132,8 @@ fn decision_login_node(
     // (who is to finish it goes with the card as the login ends, as the old view's does (decision.mbt): not left over
     // its line till the post is settled)
     let ended = fn() {
-      let l = login_of(core, login().0, login().1)
-      l is Some(_) && !flag(l, "active")
+      let l = login_followed(core, login().0, login().1)
+      l is Some(_) && !login_carded(l)
     }
     b.show(fn() { open() && !ended() && m().card.bind(fn(c) { c.assignee_text }) is Some(_) }, fn(w) {
       @sf.words_node(w, fn() { m().card.bind(fn(c) { c.assignee_text }).unwrap_or("") }, fn() { settled_line }) |> ignore
@@ -146,7 +146,7 @@ fn decision_login_node(
       s.pick(login, fn(c, at) {
         c
         .width_share(Is(1.0))
-        .lines_up(By(fn() { if flag(login_of(core, at.0, at.1), "active") { None } else { Some(Start) } }))
+        .lines_up(By(fn() { if login_carded(login_followed(core, at.0, at.1)) { None } else { Some(Start) } }))
         |> ignore
         login_card_node(c, core, at.0, at.1)
       })
@@ -520,6 +520,8 @@ fn ask_dismiss_node(
   let live = fn() { shown() && !resolved() }
   v.show(shown, fn(s) {
     @sf.style_node(s, fn() { if lead { under_post_room_lead } else { under_post_room } })
+    // (忽略 as wide as its words at the start, not drawn across the column)
+    s.lines_up(Is(Some(Start))) |> ignore
     @sf.action_box_node(s, fn() { @sf.t("web-main.chat.asks.dismiss") }, disabled=fn() { !live() }, fn(_) {
       if @signals.untracked(live) {
         let_go(src, here, @signals.untracked(seq))
@@ -575,9 +577,25 @@ fn chat_state_node(
   rest : () -> String,
 ) -> Unit {
   let ask = fn() { (here.view)().state_ask }
-  v.pick(fn() { lead() == "need" && ask() is Some(_) }, fn(p, need) {
-    if need {
-      need_card_node(p, src, here, words, rest, fn() { ask().unwrap_or(0.0) })
+  // (the card let go, its line in its place: one thing changing look, the card fading where it is while its room gives
+  // way, as decision_rooms_node's)
+  let done = fn() { !(lead() == "need" && ask() is Some(_)) }
+  ends_on_way(v, done)
+  v.pick(done, leave=msg_part_leave_ms, fn(p, is_done) {
+    if !is_done {
+      // (what it says as it was before it was let go, held so as it leaves: never the line's words in it as it fades)
+      let held : Ref[(String, String, Double)?] = Ref(None)
+      let shown = fn() -> (String, String, Double) {
+        match held.val {
+          Some(h) if done() => h
+          _ => {
+            let now = (words(), rest(), ask().unwrap_or(0.0))
+            held.val = Some(now)
+            now
+          }
+        }
+      }
+      need_card_node(p, src, here, fn() { shown().0 }, fn() { shown().1 }, fn() { shown().2 })
     } else {
       p.box(fn(s) {
         chat_state_line_node(s, words, lead, rest) |> ignore

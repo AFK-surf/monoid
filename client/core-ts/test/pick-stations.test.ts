@@ -82,9 +82,10 @@ test("drafts_changed_in_an_open_panel_make_no_lent_model_again", async () => {
   }
   const makes = (made.get("pick") ?? 0) - before;
   assert.equal(makes, 10, "the panel made again for each draft");
-  // (its own station's models once each time, and the new chat's page's, made again with it; main made every model of
-  // every profile each other station lends again too)
-  assert.equal(workSince(from).models, makes + (made.get("newChat") ?? 0) - pages, "its own station's models alone");
+  // (the new chat's page's models alone, made again with it: its own station's, as the panel has them, made once for
+  // its overview while the minute is the same; main made every model of every profile each other station lends again
+  // too)
+  assert.equal(workSince(from).models, (made.get("newChat") ?? 0) - pages, "the page's models alone");
   const after = t.store.get(PICK) as J;
   assert.deepEqual(after.options.filter((o: J) => o.availability === "borrowable").map((o: J) => [o.model, o.borrow]), lendable.map((o: J) => [o.model, o.borrow]));
 });

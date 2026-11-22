@@ -97,5 +97,27 @@ test "a row's mark come while a page covers Home (工作中 as a chat opened ove
     @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_back() |> ignore })
     t.run_for(kept_switch_over_ms)
     assert_eq(row_mark_lines_seen(t), 8, msg="the spokes drawn, over \{said}, back after \{back_ms}")
+    // (their ink as the theme is now: amber by day, #f2b01e at night, told again in place as the theme changes)
+    // (the theme the system's, its night come while the chats show: bar_moment_wbtest's bar_theme_switch_drawlist)
+    assert_eq(row_mark_inked(t, day_ink), 1, msg="the brightest spoke by day, over \{said}")
+    (src.call)("prefs.set", { "appearance": Json::string("system") }, @sfbase.answer_unread)
+    t.set_dark(true)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(row_mark_inked(t, day_ink), 0, msg="at night, over \{said}")
+    assert_eq(row_mark_inked(t, night_ink), 1, msg="the brightest spoke at night, over \{said}")
   }
 }
+
+///|
+/// The pieces of lines drawn now in `ink` (RRGGBBAA): a working mark's brightest spoke, in at work's ink.
+fn row_mark_inked(t : @ui.Tester, ink : Int64) -> Int {
+  t.drawn_lines().filter(fn(l) { l.5 == ink }).length()
+}
+
+///|
+/// At work's ink by day and at night (@sf.mark_yellow's).
+let day_ink : Int64 = 0xE08A00FFL
+
+///|
+let night_ink : Int64 = 0xF2B01EFFL

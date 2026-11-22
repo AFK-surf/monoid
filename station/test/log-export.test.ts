@@ -63,7 +63,7 @@ test("lines wait for the control plane, go in batches with the station, and stop
   let on = true;
   let station: string | null = null;
   const out = new LogExport();
-  out.configure({ enabled: () => on, station: () => station, version: () => "0.1.9", home: HOME });
+  out.configure({ enabled: () => on, station: () => station, version: () => "0.1.9", home: HOME, os: "darwin", arch: "arm64", runtime: "nodejs", role: "rig" });
   const sent: any[] = [];
   out.add(line("before the mesh"));
   await out.flush();
@@ -76,7 +76,10 @@ test("lines wait for the control plane, go in batches with the station, and stop
   await out.flush();
   assert.equal(sent.length, 1);
   const resource = Object.fromEntries(sent[0].resourceLogs[0].resource.attributes.map((a: any) => [a.key, a.value.stringValue]));
-  assert.deepEqual(resource, { "service.name": "stillfail-station", "service.version": "0.1.9", "stillfail.station": "st1" });
+  assert.deepEqual(resource, {
+    "service.name": "stillfail-station", "service.version": "0.1.9", "stillfail.station": "st1",
+    "os.type": "darwin", "host.arch": "arm64", "process.runtime.name": "nodejs", "stillfail.role": "rig",
+  });
   assert.deepEqual(sent[0].resourceLogs[0].scopeLogs[0].logRecords.map((r: any) => r.body.stringValue), ["before the mesh", "presence: online"]);
   on = false;
   out.add(line("after it is off"));
@@ -122,4 +125,39 @@ test("a batch that cannot go goes next round; one refused is dropped, and lines 
   assert.equal(said?.attributes.find((a: any) => a.key === "log.dropped")?.value.intValue, "11");
   assert.equal(records.filter((r: any) => r.body.stringValue.startsWith("n")).length, 5_000);
   await out.shutdown();
+});
+
+test("past what waits, the oldest INFO lines go before any warning or error", async () => {
+  const out = new LogExport();
+  out.configure({ enabled: () => true, station: () => "st1", version: () => "0.1.9", home: HOME });
+  const sent: any[] = [];
+  out.sendWith(async (body) => void sent.push(JSON.parse(body)));
+  const records = () => sent.flatMap((b) => b.resourceLogs[0].scopeLogs[0].logRecords);
+  for (let i = 0; i < 3; i++) out.add(line(`w${i}`, {}, "WARN"));
+  for (let i = 0; i < 4_999; i++) out.add(line(`i${i}`));
+  out.add(line("e0", {}, "ERROR"));
+  out.add(line("i-last"));
+  await out.flush();
+  const dropped = (rs: any[]) => rs.find((r: any) => r.body.stringValue === "log lines dropped before they could be sent")?.attributes.find((a: any) => a.key === "log.dropped")?.value.intValue;
+  const said = records().map((r: any) => r.body.stringValue).filter((t: string) => !t.startsWith("log lines dropped"));
+  // Four over: the four oldest INFO lines went, every warning and error stayed, in their order.
+  assert.deepEqual(said.slice(0, 4), ["w0", "w1", "w2", "i4"]);
+  assert.deepEqual(said.slice(-2), ["e0", "i-last"]);
+  assert.equal(said.length, 5_000);
+  assert.equal(dropped(records()), "4");
+  // Only warnings and errors: the oldest of them go.
+  sent.length = 0;
+  for (let i = 0; i < 5_002; i++) out.add(line(`x${i}`, {}, i % 2 === 0 ? "WARN" : "ERROR"));
+  await out.flush();
+  assert.equal(records()[0].body.stringValue, "x2");
+  assert.equal(dropped(records()), "2");
+  await out.shutdown();
+});
+
+test("a line of a trace carries its id as the record's own traceId, beside log.trace", () => {
+  const id = "0af7651916cd43dd8448eb211c80319c";
+  const r = record(line("a span's line", { trace: id }), HOME) as ReturnType<typeof record> & { traceId?: string };
+  assert.equal(r.traceId, id);
+  assert.equal(attrs(r)["log.trace"], id);
+  for (const not of ["0".repeat(32), id.toUpperCase(), id.slice(1), 12]) assert.equal((record(line("x", { trace: not }), HOME) as { traceId?: string }).traceId, undefined, String(not));
 });

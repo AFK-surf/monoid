@@ -4,106 +4,24 @@
 // byte. And the few things of Node's they lean on: Buffer's base64, a Set's live order.
 
 ///|
-pub using @jsjson {type JValue as J}
-
-///|
-pub fn js(s : String) -> J {
-  Str(@jsjson.units(s))
+pub using @jsjson {
+  type JValue as J, jval_str as js, jval_num as jn, jval_int as ji, jval_bool as jb, jval_obj as jo,
+  jval_array as ja, jval_strs as jstrs, jval_at as get, jval_str_raw_of as text, jval_num_of as num, stringify,
+  parse, stringify_pretty as pretty, jval_js_str_raw as js_string_of, utf8 as utf8_of, utf8_text,
 }
 
 ///|
-pub fn jn(d : Double) -> J {
-  Num(d)
-}
+using @jsjson {jval_or_null as or_null}
 
 ///|
-pub fn ji(i : Int) -> J {
-  Num(i.to_double())
-}
+pub using @codec {base64_decode_loose as from_base64}
 
 ///|
-pub fn jb(b : Bool) -> J {
-  Bool(b)
-}
+pub using @jscase {trim_end as js_trim_end}
 
 ///|
-pub fn jo(pairs : Array[(String, J)]) -> J {
-  Obj(pairs.map(p => (@jsjson.units(p.0), p.1)))
-}
-
-///|
-pub fn ja(items : Array[J]) -> J {
-  Arr(items)
-}
-
-///|
-pub fn jstrs(items : Array[String]) -> J {
-  Arr(items.map(js))
-}
-
-///|
-/// `o[k]` where `o` is an object (None where it is not one, or has no `k`).
-pub fn get(o : J?, k : String) -> J? {
-  match o {
-    Some(Obj(_) as obj) => obj.get(k)
-    _ => None
-  }
-}
-
-///|
-pub fn text(j : J?) -> String? {
-  match j {
-    Some(Str(u)) => Some(@jsjson.raw_text(u))
-    _ => None
-  }
-}
-
-///|
-pub fn num(j : J?) -> Double? {
-  match j {
-    Some(Num(d)) => Some(d)
-    _ => None
-  }
-}
-
-///|
-pub fn stringify(j : J) -> String {
-  @jsjson.stringify(j)
-}
-
-///|
-pub fn parse(s : String) -> J raise {
-  @jsjson.parse(s)
-}
-
-///|
-/// `JSON.stringify(v, null, 2)`.
-pub fn pretty(j : J) -> String {
-  @jsjson.stringify_indent(j, 2)
-}
-
-///|
-/// `String(v)`.
-pub fn js_string_of(v : J) -> String {
-  @jsjson.raw_text(@jsjson.js_string(v))
-}
-
-///|
-/// `v ?? null`.
-fn or_null(v : J?) -> J {
-  match v {
-    Some(x) => x
-    None => Null
-  }
-}
-
-///|
-/// `Number.isInteger(n) && lo <= n && n <= hi`.
 fn within(v : J?, lo : Int, hi : Int) -> Bool {
-  match v {
-    Some(Num(d)) => d == d.floor() && d >= lo.to_double() && d <= hi.to_double() && !d.is_inf()
-    _ => false
-  }
+  v is Some(Num(d)) && @jsjson.is_integer(d) && d >= lo.to_double() && d <= hi.to_double()
 }
 
 ///|
@@ -115,90 +33,7 @@ fn int_of(v : J?) -> Int {
 }
 
 ///|
-let b64_chars : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-///|
-/// `bytes.toString("base64")`.
-pub fn base64_of(b : Bytes) -> String {
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  while i + 2 < n {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8) | b[i + 2].to_int()
-    out.write_char(b64_chars.get_char((v >> 18) & 63).unwrap())
-    out.write_char(b64_chars.get_char((v >> 12) & 63).unwrap())
-    out.write_char(b64_chars.get_char((v >> 6) & 63).unwrap())
-    out.write_char(b64_chars.get_char(v & 63).unwrap())
-    i += 3
-  }
-  if n - i == 1 {
-    let v = b[i].to_int() << 16
-    out.write_char(b64_chars.get_char((v >> 18) & 63).unwrap())
-    out.write_char(b64_chars.get_char((v >> 12) & 63).unwrap())
-    out.write_string("==")
-  } else if n - i == 2 {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8)
-    out.write_char(b64_chars.get_char((v >> 18) & 63).unwrap())
-    out.write_char(b64_chars.get_char((v >> 12) & 63).unwrap())
-    out.write_char(b64_chars.get_char((v >> 6) & 63).unwrap())
-    out.write_char('=')
-  }
-  out.to_string()
-}
-
-///|
-fn b64_value(c : Int) -> Int {
-  if c >= 'A'.to_int() && c <= 'Z'.to_int() {
-    c - 'A'.to_int()
-  } else if c >= 'a'.to_int() && c <= 'z'.to_int() {
-    c - 'a'.to_int() + 26
-  } else if c >= '0'.to_int() && c <= '9'.to_int() {
-    c - '0'.to_int() + 52
-  } else if c == '+'.to_int() || c == '-'.to_int() {
-    62
-  } else if c == '/'.to_int() || c == '_'.to_int() {
-    63
-  } else {
-    -1
-  }
-}
-
-///|
-/// `Buffer.from(s, "base64")`: either alphabet, what is not of it passed over, ended at the first `=`.
-pub fn from_base64(s : String) -> Bytes {
-  let out = @buffer.new()
-  let mut acc = 0
-  let mut bits = 0
-  for i in 0..<s.length() {
-    let c = s.code_unit_at(i).to_int()
-    if c == '='.to_int() {
-      break
-    }
-    let v = b64_value(c)
-    if v < 0 {
-      continue
-    }
-    acc = ((acc << 6) | v) & 0xFFFFFF
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      out.write_byte(((acc >> bits) & 0xFF).to_byte())
-    }
-  }
-  out.to_bytes()
-}
-
-///|
-/// `Buffer.from(s)` (UTF-8, a lone surrogate as U+FFFD).
-pub fn utf8_of(s : String) -> Bytes {
-  @utf8.encode(s)
-}
-
-///|
-/// `bytes.toString("utf8")`.
-pub fn utf8_text(b : Bytes) -> String {
-  @utf8.decode_lossy(b)
-}
+pub fn base64_of(b : Bytes) -> String { @codec.base64_encode(b[:]) }
 
 ///|
 /// Listeners as a Set keeps them: in the order added, a call going over them seeing one added meanwhile and not one
@@ -252,14 +87,4 @@ pub fn[T] Listeners::each(self : Listeners[T], f : (T) -> Unit) -> Unit {
   if self.live == 0 {
     self.entries.clear()
   }
-}
-
-///|
-/// `s.trimEnd()`.
-pub fn js_trim_end(s : String) -> String {
-  let mut j = s.length()
-  while j > 0 && js_space(s.code_unit_at(j - 1).to_int()) {
-    j -= 1
-  }
-  s.unsafe_substring(start=0, end=j)
 }

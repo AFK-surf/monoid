@@ -1,6 +1,6 @@
 #!/bin/bash
 # The Linux apps: mbui's scripts/linux.sh (build | run | script NAME | shot) on this module's apps (APP=stillfail by
-# default; sffix, sfkit), on Linux with MoonBit, clang and GTK 4's development files (mbui's linux.sh says which).
+# default; sffix), on Linux with MoonBit, clang and GTK 4's development files (mbui's linux.sh says which).
 # stillfail has the still.fail core in it (src/stillfail/linux_engine.c → src/host/linux_core.c): the engine and the
 # shell prebuilt for Linux (this checkout's scripts/native.ts parts `engine` and `shell`, linux-x64 or linux-arm64, this
 # machine's: from the release native-artifacts, or built here), linked by name and found beside the app as it loads

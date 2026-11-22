@@ -271,6 +271,31 @@ export async function relayToTelemetry(env: Env, url: string, minute: object | n
   await toGoogle(env, "logs", value).catch(() => false);
 }
 
+const SEVERITY = { INFO: 9, WARN: 13, ERROR: 17 } as const;
+
+/**
+ * A line of still.fail cloud's own (`stillfail-cloud` in Cloud Logging, its fields `log.<name>` as a station's lines'
+ * are): a call it failed (5xx, or a throw), a scheduled task that failed, a push service refusing. Only what is about
+ * the Worker (a route with its ids as `:id`, a status, an error's text), never a person's token, device or address.
+ * Dropped if that fails, as spans are: it never throws.
+ */
+export async function cloudLogToTelemetry(env: Env, level: keyof typeof SEVERITY, target: string, message: string, fields: Record<string, string | number | boolean | undefined> = {}): Promise<void> {
+  if (!env.GCP_TELEMETRY) return;
+  const attribute = (key: string, value: string | number | boolean) => ({ key, value: typeof value === "number" && Number.isSafeInteger(value) ? { intValue: String(value) } : typeof value === "number" ? { doubleValue: value } : typeof value === "boolean" ? { boolValue: value } : { stringValue: value.slice(0, 500) } });
+  const record = {
+    timeUnixNano: (BigInt(clock.now()) * 1_000_000n).toString(),
+    severityNumber: SEVERITY[level],
+    severityText: level,
+    body: { stringValue: message.slice(0, 500) },
+    attributes: [attribute("log.target", target), ...Object.entries(fields).flatMap(([k, v]) => (v === undefined ? [] : [attribute(`log.${k}`, v)]))],
+  };
+  const value = { resourceLogs: [{ resource: { attributes: [attribute("service.name", "stillfail-cloud")] }, scopeLogs: [{ scope: { name: "stillfail-cloud" }, logRecords: [record] }] }] };
+  await toGoogle(env, "logs", value).catch(() => false);
+}
+
+/** An error's text for a log line: its message (no stack), short. */
+export const errorMessage = (error: unknown) => (error instanceof Error ? `${error.name}: ${error.message}` : String(error)).slice(0, 300);
+
 /** The span of a /v1/* call made in a recorded trace, sent to Google Cloud (dropped if that fails). */
 export async function recordCall(env: Env, parent: TraceParent, request: Request, response: Response, startMs: number, endMs: number, notes: SpanNotes = {}): Promise<void> {
   if (!env.GCP_TELEMETRY) return;

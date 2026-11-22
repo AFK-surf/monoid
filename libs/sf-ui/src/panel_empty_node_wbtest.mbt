@@ -10,7 +10,11 @@
 /// window). Closed after, gone.
 fn panel_empty_drawn(at : (Int, Double, Double), pressed : Bool, full : Bool) -> Array[String] raise {
   let open = fn(from : Anchor) {
-    let from = if pressed { from } else { Unanchored }
+    let from = if pressed {
+      if layout(at.1) is Small { Anchor::At(40.0, at.2 - 80.0, 60.0, 32.0) } else { from }
+    } else {
+      Unanchored
+    }
     panel_nodes(
       "一个",
       from~,
@@ -71,100 +75,98 @@ test "a panel's body holding nothing takes none of its room; holding something, 
   }
   inspect(seen.join("\n"), content=(
     #|sheet opened by nothing, empty:
-    #|rect 40,40 310x36 3907312895
+    #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,671 38x5 841819172
-    #|rect 20,784 350x36 606546943
-    #|words 一个@24,688 32x24 a1
-    #|words 打开@180,47 30x22 a1
-    #|words 好@187.5,791 15x22 a1
-    #|words 它说的话@24,722 342x20 a1
+    #|rect 176,667 38x5 841819172
+    #|rect 32,780 326x32 606546943
+    #|words 一个@30,684 32x24 a1
+    #|words 打开@180,45 30x22 a1
+    #|words 好@187.5,785 15x22 a1
+    #|words 它说的话@30,718 330x20 a1
     #|sheet opened by nothing, holding words:
-    #|rect 40,40 310x36 3907312895
+    #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,629 38x5 841819172
-    #|rect 20,784 350x36 606546943
-    #|words 一个@24,646 32x24 a1
-    #|words 打开@180,47 30x22 a1
-    #|words 好@187.5,791 15x22 a1
-    #|words 它说的话@24,680 342x20 a1
-    #|words 它里面的话@24,718 342x18 a1
+    #|rect 176,625 38x5 841819172
+    #|rect 32,780 326x32 606546943
+    #|words 一个@30,642 32x24 a1
+    #|words 打开@180,45 30x22 a1
+    #|words 好@187.5,785 15x22 a1
+    #|words 它说的话@30,676 330x20 a1
+    #|words 它里面的话@30,714 330x18 a1
     #|sheet opened by a press, empty:
-    #|rect 40,40 310x36 3907312895
+    #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,671 38x5 841819172
-    #|rect 20,784 350x36 606546943
-    #|words 一个@24,688 32x24 a1
-    #|words 打开@180,47 30x22 a1
-    #|words 好@187.5,791 15x22 a1
-    #|words 它说的话@24,722 342x20 a1
+    #|rect 176,667 38x5 841819172
+    #|rect 32,780 326x32 606546943
+    #|words 一个@30,684 32x24 a1
+    #|words 打开@180,45 30x22 a1
+    #|words 好@187.5,785 15x22 a1
+    #|words 它说的话@30,718 330x20 a1
     #|sheet opened by a press, holding words:
-    #|rect 40,40 310x36 3907312895
+    #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,653 38x5 841819172
-    #|rect 20,784 350x36 606546943
-    #|words 一个@24,670 32x24 a1
-    #|words 打开@180,47 30x22 a1
-    #|words 好@187.5,791 15x22 a1
-    #|words 它说的话@24,704 342x20 a1
-    #|words 它里面的话@24,742 342x18 a1
+    #|rect 176,649 38x5 841819172
+    #|rect 32,780 326x32 606546943
+    #|words 一个@30,666 32x24 a1
+    #|words 打开@180,45 30x22 a1
+    #|words 好@187.5,785 15x22 a1
+    #|words 它说的话@30,700 330x20 a1
+    #|words 它里面的话@30,738 330x18 a1
     #|sheet opened by a press, with a mouse, empty:
-    #|rect 40,40 310x36 3907312895
+    #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,671 38x5 841819172
-    #|rect 20,784 350x36 606546943
-    #|words 一个@24,688 32x24 a1
-    #|words 打开@182,48 26x20 a1
-    #|words 好@188.5,792 13x20 a1
-    #|words 它说的话@24,722 342x20 a1
+    #|rect 176,667 38x5 841819172
+    #|rect 32,780 326x32 606546943
+    #|words 一个@30,684 32x24 a1
+    #|words 打开@182,46 26x20 a1
+    #|words 好@188.5,786 13x20 a1
+    #|words 它说的话@30,718 330x20 a1
     #|sheet opened by a press, with a mouse, holding words:
-    #|rect 40,40 310x36 3907312895
+    #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,653 38x5 841819172
-    #|rect 20,784 350x36 606546943
-    #|words 一个@24,670 32x24 a1
-    #|words 打开@182,48 26x20 a1
-    #|words 好@188.5,792 13x20 a1
-    #|words 它说的话@24,704 342x20 a1
-    #|words 它里面的话@24,742 342x18 a1
+    #|rect 176,649 38x5 841819172
+    #|rect 32,780 326x32 606546943
+    #|words 一个@30,666 32x24 a1
+    #|words 打开@182,46 26x20 a1
+    #|words 好@188.5,786 13x20 a1
+    #|words 它说的话@30,700 330x20 a1
+    #|words 它里面的话@30,738 330x18 a1
     #|small panel, empty:
-    #|rect 40,40 720x36 3907312895
-    #|rect 40,82 296x86 4294967295
-    #|rect 285,126 45x36 606546943
-    #|rect 40,82 296x86 0
-    #|words 一个@56,94 264x20 a1
-    #|words 好@301,134 13x20 a1
-    #|words 打开@387,48 26x20 a1
+    #|rect 40,40 720x32 3907312895
+    #|rect 287,122 41x32 606546943
+    #|words 一个@62,90 252x20 a1
+    #|words 好@301,128 13x20 a1
+    #|words 打开@387,46 26x20 a1
     #|small panel, holding words:
-    #|rect 40,40 720x36 3907312895
-    #|rect 40,82 296x104 4294967295
-    #|rect 285,144 45x36 606546943
-    #|rect 40,82 296x104 0
-    #|words 一个@56,94 264x20 a1
-    #|words 好@301,152 13x20 a1
-    #|words 打开@387,48 26x20 a1
-    #|words 它里面的话@62,118 252x18 a1
+    #|rect 40,40 720x32 3907312895
+    #|rect 287,140 41x32 606546943
+    #|words 一个@62,90 252x20 a1
+    #|words 好@301,146 13x20 a1
+    #|words 打开@387,46 26x20 a1
+    #|words 它里面的话@62,114 252x18 a1
     #|dialog, empty:
-    #|rect 40,40 720x36 3907312895
+    #|rect 40,40 720x32 3907312895
     #|rect 0,0 800x600 320215859
-    #|rect 140,216.5 520x167 4294967295
-    #|rect 591,323.5 45x36 606546943
-    #|rect 140,216.5 520x167 0
-    #|words 打开@387,48 26x20 a1
-    #|words 好@607,331.5 13x20 a1
-    #|words 一个@164,242.5 44x30 a1
-    #|words 它说的话@164,279.5 472x20 a1
+    #|rect 140,217.5 520x165 4294967295
+    #|rect 593,324.5 41x32 606546943
+    #|rect 140,217.5 520x165 0
+    #|words 打开@387,46 26x20 a1
+    #|words 好@607,330.5 13x20 a1
+    #|words 一个@164,243.5 44x30 a1
+    #|words 它说的话@164,280.5 472x20 a1
     #|dialog, holding words:
-    #|rect 40,40 720x36 3907312895
+    #|rect 40,40 720x32 3907312895
     #|rect 0,0 800x600 320215859
-    #|rect 140,198.5 520x203 4294967295
-    #|rect 591,341.5 45x36 606546943
-    #|rect 140,198.5 520x203 0
-    #|words 打开@387,48 26x20 a1
-    #|words 好@607,349.5 13x20 a1
-    #|words 一个@164,224.5 44x30 a1
-    #|words 它说的话@164,261.5 472x20 a1
-    #|words 它里面的话@164,299.5 472x18 a1
+    #|rect 140,199.5 520x201 4294967295
+    #|rect 593,342.5 41x32 606546943
+    #|rect 140,199.5 520x201 0
+    #|words 打开@387,46 26x20 a1
+    #|words 好@607,348.5 13x20 a1
+    #|words 一个@164,225.5 44x30 a1
+    #|words 它说的话@164,262.5 472x20 a1
+    #|words 它里面的话@164,300.5 472x18 a1
+
+
   ))
 }
 

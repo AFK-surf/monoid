@@ -1,0 +1,18 @@
+import {
+  "moonbitlang/core/cmp",
+  "moonbitlang/core/double",
+  "moonbitlang/core/json",
+  "mbui/halt",
+  "mbui/signals",
+  "mbui/ui",
+  "mbui/view",
+  "stillfail/core",
+  "stillfail/sf",
+  "stillfail/sfapp",
+  "stillfail/sfapptest",
+  "stillfail/sfbase",
+  "stillfail/sffixture",
+  "stillfail/sfkept",
+  "stillfail/sfpages",
+  "stillfail/sfrealsize",
+} for "test"

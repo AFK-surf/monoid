@@ -82,8 +82,8 @@ pub fn mcp_url_of(args : Array[String]) -> String? {
 
 ///|
 /// What a frame says of the station's tools being out of reach (`toolsLostIn`): the reading's (mb/src/claude).
-pub fn tools_lost_in(frame : JValue, calls : Array[Array[Int]]) -> String? {
-  @claude.tools_lost_in(frame, calls).map(@jsjson.text)
+pub fn tools_lost_in(frame : JValue, calls : Array[String]) -> String? {
+  @claude.tools_lost_in(frame, calls).map(@jsjson.sanitize_str)
 }
 
 ///|
@@ -792,7 +792,7 @@ pub fn ClaudeSession::make(
         return false
       }
       let request = match get(Some(e), "requestId") {
-        Some(Str(u)) => @jsjson.text(u)
+        Some(Str(u)) => @jsjson.sanitize_str(u)
         Some(Num(x)) => @jsjson.stringify(Num(x))
         Some(Bool(x)) => x.to_string()
         Some(Null) | None => ""

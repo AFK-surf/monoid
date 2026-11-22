@@ -208,10 +208,22 @@ test "the disclosure mark is centred on the result's first line" {
     t.set_font_scale(font_scale)
     t.run_for(@ui.move_most_ms)
     let (x, y, w, h) = t.rect_of("未存入 测试服务登录").unwrap()
-    let mark = t.shape_boxes().iter().find_first(fn(s) {
-      s.0.has_prefix("sf/icon/chevron-right/12") && s.1 >= x && s.1 <= x + w + 20.0 && (s.2 - y).abs() < 20.0
-    }).unwrap()
-    assert_true((mark.2 + mark.4 / 2.0 - y - h / 2.0).abs() < 0.5, msg="the mark and the words share the first line's centre: \{Repr(mark)}, \{Repr((x, y, w, h))}")
+    // (the mark as the tree draws it: the card's made as nodes)
+    guard @ui.view_tree() is Some(tree) else { fail("no tree") }
+    guard tree
+      .drawn()
+      .iter()
+      .find_first(fn(d) {
+        tree.drawn_name(d.id).has_prefix("/icon/chevron-right/") &&
+        d.x >= x &&
+        d.x <= x + w + 20.0 &&
+        (d.y - y).abs() < 20.0
+      })
+      is Some(mark) else {
+      fail("no disclosure mark beside \{Repr((x, y, w, h))}")
+    }
+    let (mx, my, mw, mh) = (mark.x, mark.y, mark.w, mark.h)
+    assert_true((my + mh / 2.0 - y - h / 2.0).abs() < 0.5, msg="the mark and the words share the first line's centre: \{Repr((mx, my, mw, mh))}, \{Repr((x, y, w, h))}")
   }
 }
 
@@ -255,14 +267,19 @@ test "a request decided in its chat: its card closes on screen to how it went, n
   for words in ["存入密码 测试服务登录", "把测试服务密码安全保存，方便以后登录", "存入", "不存"] {
     assert_true(t.find(words) is Some(_), msg=words)
   }
-  let (nx, ny) = t.find("不存").unwrap()
+  // (where the card's title stood: clear of how it went's 详情 and its touch's room, its buttons under it in that room)
+  let (gx, gy) = t.find("存入密码 测试服务登录").unwrap()
+  let buttons = fn() {
+    t.semantics().filter(fn(s) { s.role == Button && !s.hidden && (s.label == "存入" || s.label == "不存") }).length()
+  }
   tap_now(t, "不存")
   assert_eq(calls.filter(fn(n) { n.has_prefix("vault.") }), ["vault.deny"])
   // decided: how it went in its place, the room going to it as what else changes does (mbui's view/list_motion.mbt)
   t.run_for(answer_over_ms)
   assert_true(t.find("未存入 测试服务登录") is Some(_))
-  t.press_at(nx, ny)
-  t.release(nx, ny)
+  assert_eq(buttons(), 0)
+  t.press_at(gx, gy)
+  t.release(gx, gy)
   assert_eq(calls.filter(fn(n) { n.has_prefix("vault.") }), ["vault.deny"])
   t.assert_idle()
   // the chat opened again: the same, at once

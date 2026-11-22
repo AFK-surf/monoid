@@ -35,7 +35,26 @@ test "a draw list over a host's kept text that lacks what was drawn: said (drawl
   assert_eq(
     t.drawlist_said(),
     Some(
-      "Tester::drawlist: the host's kept text lacks 9 of what was drawn (record its text again): shape 15|400|0|never kept, metrics 15|400|0, glyph 110, glyph 101, glyph 118",
+      "Tester::drawlist: the host's kept text lacks 2 of what was drawn (record its text again): shape 15|400|0|never kept, metrics 15|400|0",
     ),
   )
+}
+
+///|
+test "FakeHost fallback glyph keys for unrecorded shapes do not collide with recorded textrec glyph IDs" {
+  // Recorded textrec contains glyph ID 51 (ASCII code point of '3') with a huge 27x27 box (top=-23),
+  // but no recorded shape for "3".
+  let kept =
+    #|TEXTREC {"g":51,"r":[0,0,27,27,0,-23,0]}
+  let t = @ui.Tester::new(
+    fn(c) { c.text("3", size=12.0, wrap=false) |> ignore },
+    w=200.0,
+    h=100.0,
+    text=kept,
+  )
+  let glyphs = t.glyphs_shown()
+  assert_eq(glyphs.length(), 1)
+  let (_, y, w, h) = glyphs[0]
+  assert_true(w < 20.0 && h < 20.0, msg="fallback glyph collided with textrec glyph 51: w=\{w}, h=\{h}, y=\{y}")
+  assert_true(y >= 0.0, msg="fallback glyph used textrec glyph 51 top=-23: y=\{y}")
 }

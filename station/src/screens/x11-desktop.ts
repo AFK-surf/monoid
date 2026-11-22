@@ -7,9 +7,11 @@ import { hostname } from "node:os";
 import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
+import { LinuxGamepads } from "./linux-gamepad.ts";
 import { ScreenRefused } from "./hub.ts";
 import { executable, type LinuxScreenTools, type LinuxToolPair } from "./linux-tools.ts";
-import type { Frame, ScreenAccess, ScreenInput, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
+import { LinuxMicPart } from "./linux-mic.ts";
+import type { Frame, ScreenAccess, ScreenInput, ScreenMic, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
 import { X11H264 } from "./x11-h264.ts";
 
 const run = promisify(execFile);
@@ -204,11 +206,14 @@ class X11Input {
   #input: Promise<void> = Promise.resolve();
   #wheel = { x: 0, y: 0 };
   #ended = false;
+  /// Its controllers: virtual ones, else the desktop driven with them through this input.
+  readonly #pads: LinuxGamepads;
 
   constructor(xdotool: string, env: NodeJS.ProcessEnv, screen: Size) {
     this.#xdotool = xdotool;
     this.#env = env;
     this.#screen = { ...screen };
+    this.#pads = new LinuxGamepads((e) => this.input(e), env);
   }
 
   async #command(args: string[], timeout = 3_000): Promise<void> {
@@ -218,11 +223,15 @@ class X11Input {
     await this.#command(["type", "--delay", String(TYPE_DELAY_MS), "--", text], 5_000 + Array.from(text).length * TYPE_DELAY_MS * 3);
   }
   input(event: ScreenInput): Promise<void> {
+    if (event.t === "gamepad") return this.#pads.input(event);
     const next = this.#input.then(async () => {
       if (this.#ended) return;
       const point = (x: number, y: number) => [String(Math.max(0, Math.min(this.#screen.width - 1, Math.round(x * (this.#screen.width - 1))))), String(Math.max(0, Math.min(this.#screen.height - 1, Math.round(y * (this.#screen.height - 1)))))];
       if (event.t === "pointer") {
-        await this.#command(["mousemove", ...point(event.x, event.y)]);
+        // A relative move goes only as far as it says, wherever the pointer is (an app holding it, a controller's stick).
+        if (event.relative === true) {
+          if (event.dx || event.dy) await this.#command(["mousemove_relative", "--", String(Math.round(event.dx ?? 0)), String(Math.round(event.dy ?? 0))]);
+        } else await this.#command(["mousemove", ...point(event.x, event.y)]);
         for (const { bit, button } of BUTTONS) {
           const down = (event.buttons & bit) !== 0, was = this.#buttons.has(button);
           if (down === was) continue;
@@ -230,7 +239,8 @@ class X11Input {
           if (down) this.#buttons.add(button); else this.#buttons.delete(button);
         }
       } else if (event.t === "wheel") {
-        await this.#command(["mousemove", ...point(event.x, event.y)]);
+        // (x below 0: where the pointer is, a controller's stick)
+        if (event.x >= 0) await this.#command(["mousemove", ...point(event.x, event.y)]);
         this.#wheel.x += event.dx / 100;
         this.#wheel.y += event.dy / 100;
         for (const axis of ["x", "y"] as const) {
@@ -267,6 +277,7 @@ class X11Input {
 
   close(): void {
     if (this.#ended) return;
+    this.#pads.close();
     this.#ended = true;
     // Release anything this view pressed even if its client disappeared while dragging or typing.
     void this.#input.then(async () => {
@@ -296,6 +307,8 @@ class X11View implements ScreenView {
   #timer: () => void;
   #stderr = "";
   #why: string | undefined;
+  /// The desktop's virtual microphone (linux-mic.ts) while its driver watches it.
+  readonly #mic = new LinuxMicPart();
 
   constructor(ffmpeg: string, xdotool: string, env: NodeJS.ProcessEnv, screen: Size, options: ViewOptions, gone: () => void) {
     this.#inputs = new X11Input(xdotool, env, screen);
@@ -358,6 +371,8 @@ class X11View implements ScreenView {
   video(): ScreenVideo { return { capture: "X11", encoder: "ffmpeg MJPEG (software)" }; }
 
   input(event: ScreenInput): Promise<void> { return this.#inputs.input(event); }
+  watchMic(heard: (mic: ScreenMic) => void): () => void { return this.#ended ? () => {} : this.#mic.watch(heard); }
+  feedMic(pcm16le: Uint8Array, epoch: number): void { this.#mic.feed(pcm16le, epoch); }
 
   #end(error: Error, closed = false) {
     if (this.#ended) return;
@@ -368,6 +383,7 @@ class X11View implements ScreenView {
     this.#child.kill();
     this.#latest = null;
     for (const waiting of this.#waiting.splice(0)) waiting(null);
+    this.#mic.stop();
     this.#inputs.close();
     this.#gone();
   }
@@ -381,6 +397,7 @@ class X11H264View implements ScreenView {
   readonly #inputs: X11Input;
   readonly #video: X11H264;
   readonly #gone: () => void;
+  readonly #mic = new LinuxMicPart();
   #ended = false;
 
   constructor(ffmpeg: string, xdotool: string, env: NodeJS.ProcessEnv, screen: Size, options: ViewOptions, gone: () => void) {
@@ -396,12 +413,15 @@ class X11H264View implements ScreenView {
   next(): Promise<Frame | null> { return this.#video.next(); }
   input(event: ScreenInput): Promise<void> { return this.#inputs.input(event); }
   rate(bits: number): void { this.#video.rate(bits); }
+  watchMic(heard: (mic: ScreenMic) => void): () => void { return this.#ended ? () => {} : this.#mic.watch(heard); }
+  feedMic(pcm16le: Uint8Array, epoch: number): void { this.#mic.feed(pcm16le, epoch); }
   keyframe(): void { this.#video.keyframe(); }
   video(): ScreenVideo { return this.#video.video(); }
   why(): string | undefined { return this.#video.why(); }
   close(): void {
     if (this.#ended) return;
     this.#ended = true;
+    this.#mic.stop();
     this.#video.close();
     this.#inputs.close();
     this.#gone();

@@ -26,11 +26,17 @@ test "a video taken down fast (its finger's events 20 ms apart) and let go past 
     held: false,
   }
   let t = @ui.Tester::new(
-    fn(c) { @ui.old_views_here(c) },
+    fn(c) { @sf.begin(c) |> ignore },
     tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
       root.box(fn(v) {
         v.grow(Is(1.0)) |> ignore
-        @ui.old(v, fn(c) { chat_file(c, src, a) }).over(Is(true)) |> ignore
+        v.box(fn(col) {
+          col.over(Is(true)).width(Is(Some(300.0))) |> ignore
+          @sfpages.message_files_of_node(col, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() { [a] }, false)
+        })
+        |> ignore
         @sfbase.viewer_node(v, src, fn() { v.window() })
       })
       |> ignore

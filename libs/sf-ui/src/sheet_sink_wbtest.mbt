@@ -35,11 +35,12 @@ fn sink_sheet(tall : @signals.Signal[Bool], body : Double, more : Double, rest? 
 }
 
 ///|
-/// The display's frames drawn till `ms` on from now.
+/// The display's frames drawn till `ms` on from now, as an idle host has them: what nothing asks for not drawn
+/// (Tester::frame_as_host), a frame not drawn showing what the last did, nothing moved.
 fn sink_frames(t : @ui.Tester, ms : Double) -> Unit {
   let till = t.time() + ms
   while t.time() < till {
-    t.frame()
+    t.frame_as_host() |> ignore
   }
 }
 
@@ -107,8 +108,9 @@ fn sink_tops(grow : Bool, c : (Double, Double, Double), walk : Bool) -> Array[Do
   let tops = []
   for ms in sink_moments {
     if walk {
+      // (the display's frames as an idle host has them: Tester::frame_as_host)
       while t.time() + 1000.0 / 60.0 < from + ms {
-        t.frame()
+        t.frame_as_host() |> ignore
       }
     }
     t.run_for(from + ms - t.time())

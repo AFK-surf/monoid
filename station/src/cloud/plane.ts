@@ -48,9 +48,11 @@ export type PlaneParts = {
   up: SubscriptionRef.SubscriptionRef<boolean>;
   /// The provider: fixed, or as cloud.json says (the live station's).
   provider?: Provider;
+  /// What describes the station's spans besides its id (`service.version`, `os.type`, …).
+  traceResource?: [string, string][];
 };
 
-export function makeControlPlane({ state, changes, key, up, provider }: PlaneParts): ControlPlaneShape {
+export function makeControlPlane({ state, changes, key, up, provider, traceResource = [] }: PlaneParts): ControlPlaneShape {
   const spec = () => specOf(provider ?? state.provider());
   const listeners: [CloudSaid["type"], (said: CloudSaid) => void][] = [];
   const said = (event: CloudSaid) => {
@@ -95,7 +97,7 @@ export function makeControlPlane({ state, changes, key, up, provider }: PlanePar
         },
         catch: (e) => e as Error,
       }),
-    traces: (spans) => telemetry((t) => t.path, (station) => otlpBody(station, spans)),
+    traces: (spans) => telemetry((t) => t.path, (station) => otlpBody(station, spans, traceResource)),
     logs: (body) => telemetry((t) => t.logs, () => body),
     releaseBase: () => {
       const origin = state.state?.origin;

@@ -185,7 +185,7 @@ pub fn AndroidInput::new() -> AndroidInput {
 ///|
 pub fn AndroidInput::messages(self : AndroidInput, e : ScreenInput, size : (Double, Double)) -> Array[Bytes] {
   match e {
-    Pointer(kind~, x~, y~, buttons~) => {
+    Pointer(kind~, x~, y~, buttons~, ..) => {
       let left = (buttons & 1) == 1
       if !self.finger {
         if kind != "down" || !left {
@@ -211,7 +211,7 @@ pub fn AndroidInput::messages(self : AndroidInput, e : ScreenInput, size : (Doub
       } else {
         []
       }
-    Pose(_) | Button(..) => []
+    Pose(_) | Button(..) | Gamepad(_) => []
   }
 }
 
@@ -1007,12 +1007,75 @@ pub fn AndroidScreen::gone(self : AndroidScreen) -> Unit {
 }
 
 ///|
+/// What `cmd media_session volume --get` says (`volume is 7 in range [0..15]`): the level and its most; None where it
+/// says none.
+pub fn volume_of(said : String) -> ScreenVolume? {
+  // (the digits at the start of `cs`, at most six, and how many)
+  let digits = (cs : Array[Char]) => {
+    let mut n = 0.0
+    let mut i = 0
+    while i < cs.length() && i < 6 && cs[i] >= '0' && cs[i] <= '9' {
+      n = n * 10.0 + (cs[i].to_int() - '0'.to_int()).to_double()
+      i += 1
+    }
+    if i == 0 {
+      None
+    } else {
+      Some((n, i))
+    }
+  }
+  guard said.find("volume is ") is Some(at) else { return None }
+  let cs = said.unsafe_substring(start=at + 10, end=said.length()).to_array()
+  guard digits(cs) is Some((level, i)) else { return None }
+  let range = " in range [0..".to_array()
+  guard cs.length() >= i + range.length() && cs[i:i + range.length()].iter().zip(range.iter()).all(p => p.0 == p.1) else {
+    return None
+  }
+  let rest = cs[i + range.length():].to_array()
+  guard digits(rest) is Some((max, j)) && j < rest.length() && rest[j] == ']' else { return None }
+  if max > 0.0 && level <= max {
+    Some({ level, max })
+  } else {
+    None
+  }
+}
+
+///|
+/// The device's music stream (3: STREAM_MUSIC), asked of its media service: `media volume` before Android 10.
+fn volume_command(args : String) -> String {
+  "cmd media_session volume --stream 3 \{args} 2>/dev/null || media volume --stream 3 \{args}"
+}
+
+///|
+/// Its music stream set to `level`: by the audio service where it has `set-volume` (Android 16's media service reads
+/// the volume but sets none from a shell), else by the media service (`set-volume` there answering nothing).
+fn volume_set_command(level : Int) -> String {
+  "cmd audio set-volume 3 \{level} >/dev/null 2>&1; " + volume_command("--set \{level}")
+}
+
+///|
+pub async fn AndroidScreen::volume(self : AndroidScreen) -> ScreenVolume? {
+  let said = (self.adb.run)(["shell", volume_command("--get")]) catch { _ => "" }
+  volume_of(said)
+}
+
+///|
+pub async fn AndroidScreen::set_volume(self : AndroidScreen, level : Double) -> ScreenVolume {
+  guard self.volume() is Some(now) else { raise fail("the device says no volume") }
+  let to = level.round().max(0.0).min(now.max).to_int()
+  ignore((self.adb.run)(["shell", volume_set_command(to)]))
+  self.volume().unwrap_or(now)
+}
+
+///|
 pub fn AndroidScreen::source(self : AndroidScreen) -> ScreenSource {
   {
     ..ScreenSource::bare(self.id, SimulatorKind, () => self.title(), () => self.size(), async fn(o) { self.open(o).view() }),
     peek: true,
     panels: Some(self.panels),
     since: Some(() => self.since()),
+    volume: Some(async fn() { self.volume() }),
+    set_volume: Some(async fn(l) { self.set_volume(l) }),
     discard: if self.emulator { Some(async fn() { self.discard() }) } else { None },
   }
 }

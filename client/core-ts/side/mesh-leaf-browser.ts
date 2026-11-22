@@ -12,16 +12,12 @@ import { createRequire } from "node:module";
 import { build } from "esbuild";
 import type { IrohMeshDescriptor } from "../src/iroh.ts";
 import { loadAddon } from "../src/hosts/node-iroh.ts";
-import { Cloud, writeState } from "../../../station/src/cloud/state.ts";
 import { GrantKey } from "../../../station/test/fake-control-plane.ts";
-import { serve } from "../../../station/src/mesh/serve.ts";
-import { LeafAttachments } from "../../../station/src/mesh/leaf.ts";
-import { workspaceScope } from "../../../station/src/mesh/enrollment-door.ts";
+import { startLeafHarness } from "./mb-leaf-harness.ts";
 
 const requireRoot=createRequire(new URL("../../../package.json",import.meta.url));
 const {chromium}=requireRoot("playwright-core");
 const origin="https://mesh.invalid", workspace="01HZZZZZZZZZZZZZZZZZZZZZZZ";
-const scope=workspaceScope(origin,workspace);
 const alpn=Buffer.from("mesh-browser-side/1");
 const pause=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 const root=resolve(import.meta.dirname,"../../..");
@@ -57,9 +53,12 @@ test("browser core authenticates target across ingress and forwarder and loses d
     const deadline=Date.now()+10_000;
     while(!await fetch(relay).then(()=>true,()=>false)){assert.ok(Date.now()<deadline,"local relay starts");await pause(25);}
   }
+  const harness=startLeafHarness();after(()=>harness.close());
+  const scope=await harness.workspaceScope(origin,workspace);
   const nodes:any[]=[];
+  const secretKeys=Array.from({length:3},()=>randomBytes(32));
   after(async()=>{await Promise.all(nodes.map(n=>n.close()));});
-  for(let i=0;i<3;i++)nodes.push(await addon.bind({secretKey:randomBytes(32),alpns:[alpn],relayUrls:i===0?[relay]:[],lookup:false,discovery:false}));
+  for(let i=0;i<3;i++)nodes.push(await addon.bind({secretKey:secretKeys[i],alpns:[alpn],relayUrls:i===0?[relay]:[],lookup:false,discovery:false}));
   const descriptors:(IrohMeshDescriptor & {address:{id:string;addrs:unknown[]}})[]=[];
   for(const n of nodes)descriptors.push(await n.meshConfigure({scope,transit:true,peers:[],relayUrls:[relay]}));
   for(let i=0;i<nodes.length;i++)await nodes[i].meshConfigure({scope,transit:true,relayUrls:[relay],peers:descriptors.flatMap((d,j)=>i===j?[]:[adjacent(d,Math.abs(i-j)===1)])});
@@ -69,12 +68,19 @@ test("browser core authenticates target across ingress and forwarder and loses d
   let heldReady!:()=>void;const heldArrived=new Promise<void>(resolve=>{heldReady=resolve;});
   for(const i of [0,2]) {
     const data=join(temp,`station-${i}`);
-    writeState(data,{origin,station:nodes[i].id(),workspace,workspace_name:"Mesh",name:`station-${i}`,relay_url:relay,relay_urls:[relay],grant_keys:{keys:[grant.jwk]},peers:nodes.filter((_,j)=>j!==i).map(n=>({id:n.id(),name:"peer"})),revocations:[]} as any);
-    const cloud=new Cloud(data);after(()=>cloud.close());
-    const directory={directory:{policy:()=>({nodes:nodes.map(n=>n.id()),relayUrls:[relay],globalRelays:[]}),records:()=>descriptors.map(descriptor=>({body:JSON.stringify({descriptor})}))},listen:()=>()=>{}};
-    const leaves=new LeafAttachments(nodes[i],directory as any,cloud);
-    if(i===2){const view=leaves.view.bind(leaves);leaves.view=(w:string)=>{targetRequests++;return view(w);};}
-    void (async()=>{for(;;){const conn=await nodes[i].accept();if(!conn)return;void serve({cloud,leaves,admin:undefined as any,up:()=>true,streams:(head:any)=>{if(i===2&&head.headers?.["leaf-held"]==="1")heldReady();return undefined;}},conn).catch(e=>console.log("member ended:",String(e)));}})();
+    const station=await harness.createStation({
+      data,
+      state:{origin,station:nodes[i].id(),workspace,workspace_name:"Mesh",name:`station-${i}`,relay_url:relay,relay_urls:[relay],grant_keys:{keys:[grant.jwk]},peers:nodes.filter((_,j)=>j!==i).map(n=>({id:n.id(),name:"peer"})),revocations:[]},
+      stationId:nodes[i].id(),
+      secretKey:secretKeys[i],
+      records:{[scope]:descriptors.map((descriptor,j)=>({descriptor,secretKey:secretKeys[j]}))},
+      node:nodes[i],
+      onLeafView:i===2?()=>{targetRequests++;}:undefined,
+      watchHeaders:i===2?["leaf-held"]:undefined,
+      onWatchedHead:i===2?(head)=>{if(head.headers?.["leaf-held"]==="1")heldReady();}:undefined,
+    });
+    after(()=>station.close());
+    void (async()=>{for(;;){const conn=await nodes[i].accept();if(!conn)return;void station.serveConnection(conn).catch(e=>console.log("member ended:",String(e)));}})();
   }
   const peers=descriptors.map((d,i)=>({...d,address:{id:d.address.id,addrs:i===0?[{Relay:relay}]:[]}}));
   const bundled=await build({stdin:{contents:`

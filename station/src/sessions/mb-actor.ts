@@ -13,6 +13,7 @@ import { SessionsProgram, type ProgramUser } from "../agents/mb-program.ts";
 import type { HostedProcess, Router } from "../agents/mb-agents.ts";
 import { mbReaderBinary } from "../read/mb-reader.ts";
 import { CommandMissing } from "../agents/runner.ts";
+import { RenewRefused } from "../accounts/console.ts";
 import { modelLimitOf, runtimeLabel, type AgentSession, type RuntimeEvent, type RuntimeKind } from "../agents/runtime.ts";
 import { chars } from "../agents/live.ts";
 import * as instructions from "../agents/instructions.ts";
@@ -20,7 +21,7 @@ import { handedOf, type MessageRow, type PendingMessage, type RunChange } from "
 import { runChangeWords } from "./run-change.ts";
 import {
   FALLBACK_MOST, SPENT_BEFORE, cannotStartWords, codexTooOld, compactFailed, compactFailedNotice, failureNotice, formatDelivery,
-  handedWithChoices, lastStationSaid, limitShownNotice, openAgent, personRef, postNotice, promptFor, retuneAgent, shownLimitOf,
+  OpenAborted, handedWithChoices, lastStationSaid, limitShownNotice, openAgent, personRef, postNotice, promptFor, retuneAgent, shownLimitOf,
   t, timed, withSaid, type DeclaredState, type SessionDeps, type Snapshot,
 } from "./actor.ts";
 
@@ -34,12 +35,15 @@ type Mirror = {
   queued: number;
   seen: number;
   turn: string | null;
+  warm: boolean;
+  deferredEnd: boolean;
   codexUpdate: boolean;
   agent: number | null;
   idleSince: number;
   notices: number;
   waiting: boolean;
   refill: boolean;
+  startFailed: boolean;
   unread: [number, number, string][];
   identity: { model: string | null; effort: string | null; runtime: RuntimeKind } | null;
   runtime: RuntimeKind;
@@ -82,7 +86,7 @@ export class ActorsProgram {
 
   readonly #store: { told(changes: any[]): void } | null;
 
-  private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null) {
+  private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null, maxConcurrentTurns = 0) {
     this.#clock = clock;
     this.#store = store;
     // (it ends with its hub, which closes it: the process waits on it only while it has something going)
@@ -94,6 +98,7 @@ export class ActorsProgram {
     // memory (a test's) is this process's alone, asked as the rest is. Said first: the program's actors begin here.
     const main = store === null ? undefined : (store.db.prepare("PRAGMA database_list").all() as { name: string; file: string }[]).find((d) => d.name === "main");
     this.post({ db: main !== undefined && main.file !== "" ? main.file : null });
+    if (maxConcurrentTurns > 0) this.setMaxConcurrentTurns(maxConcurrentTurns);
   }
 
   #lost(code: number) {
@@ -117,9 +122,20 @@ export class ActorsProgram {
   }
 
   /// The program for a hub on `data`, where it is built (none: a checkout that did not build it runs no session).
-  static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null): ActorsProgram | null {
+  static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null, maxConcurrentTurns = 0): ActorsProgram | null {
     if (mbReaderBinary() === null) return null;
-    return new ActorsProgram(data, clock, store);
+    return new ActorsProgram(data, clock, store, maxConcurrentTurns);
+  }
+
+  /// Updates the maximum concurrent running turns in the sessions program without restarting.
+  setMaxConcurrentTurns(n: number) {
+    const limit = typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+    this.post({ maxConcurrentTurns: limit });
+  }
+
+  /// Wakes queued sessions waiting on per-account concurrency caps (e.g. after config or quota changes).
+  drainCapQueue() {
+    this.post({ drainCapQueue: true });
   }
 
   now() {
@@ -292,6 +308,16 @@ function errorOf(error: unknown, runtime: RuntimeKind): Json {
   errors.set(id, error);
   // (those never given back: the oldest let go)
   if (errors.size > 256) errors.delete(errors.keys().next().value!);
+  const cap = (error as any)?.sessionCap === true
+    ? {
+        sessionCap: true,
+        profile: (error as any).profile,
+        profileId: (error as any).profileId,
+        active: (error as any).active,
+        cap: (error as any).cap,
+        protection: Boolean((error as any).protection),
+      }
+    : {};
   return {
     id,
     message,
@@ -300,6 +326,12 @@ function errorOf(error: unknown, runtime: RuntimeKind): Json {
     runtime,
     // (what it is, for the program to tell apart a peer's refusal from a request that did not get through: bus.ts)
     kind: (error as Error)?.constructor?.name ?? "Error",
+    // (given up, and why: the program's own `openAbort`, actor_run.mbt `open_abort_reason`)
+    ...(error instanceof OpenAborted ? { openAbort: error.why } : {}),
+    // (a login over, and on which profile where known: the program goes on on another profile, as after a turn
+    // refused, actor_run.mbt `open_over`)
+    ...(error instanceof RenewRefused ? { auth: true, ...(error.profileId ? { authProfile: error.profileId } : {}) } : {}),
+    ...cap,
   };
 }
 
@@ -331,6 +363,10 @@ export class MbActor {
   #closed = false;
   /// What is being read and formatted for it (`pendingAndFormat`): given up at once on a stop or a suspension.
   #formatAbort: AbortController | null = null;
+  /// Its runtime sessions being opened (`open`), by the program's number for the ask: each given up as the program gives
+  /// it up (`node.cancelOpen`: a stop, a suspension, a close, its deadline), never here before it has (a stop's failure
+  /// read there before its stop, as a start that failed), but for its close (`#closing`).
+  readonly #openAborts = new Map<number, AbortController>();
   /// What marks what people chose told, once what it was handed with is (`withChoices`); a state's write, by its turn's
   /// tool (`stateForTurn`); what its live view reads as a turn ends (`turnEnded`); a Codex update's, as it began.
   readonly #told = new Map<number, () => void>();
@@ -346,7 +382,7 @@ export class MbActor {
     this.key = key;
     this.runtime = runtime;
     this.#deps = deps;
-    this.#mirror = { queued: 0, seen: 0, turn: null, codexUpdate: false, agent: null, idleSince: program.now(), notices: 0, waiting: false, refill: false, unread: [], identity: null, runtime, closed: false };
+    this.#mirror = { queued: 0, seen: 0, turn: null, warm: false, deferredEnd: false, codexUpdate: false, agent: null, idleSince: program.now(), notices: 0, waiting: false, refill: false, startFailed: false, unread: [], identity: null, runtime, closed: false };
     this.#post({ runtime });
   }
 
@@ -386,17 +422,21 @@ export class MbActor {
   }
 
   processState(): "running" | "warm" | "cold" {
-    if (this.#mirror.turn || this.#mirror.codexUpdate || this.#session()?.busy()) return "running";
+    if (this.#mirror.turn || this.#mirror.warm || this.#mirror.deferredEnd || this.#mirror.codexUpdate || this.#session()?.busy()) return "running";
     return this.#mirror.agent !== null ? "warm" : "cold";
+  }
+
+  startFailed(): boolean {
+    return this.#mirror.startFailed && this.processState() !== "running";
   }
 
   idleMs(now: number): number | null {
     const session = this.#session();
-    return session && !session.busy() && !this.#mirror.turn ? now - this.#mirror.idleSince : null;
+    return session && !session.busy() && !this.#mirror.turn && !this.#mirror.warm && !this.#mirror.deferredEnd ? now - this.#mirror.idleSince : null;
   }
 
   holdsState(): boolean {
-    return this.#mirror.codexUpdate || this.#mirror.notices > 0 || this.#mirror.waiting || this.#mirror.refill;
+    return this.#mirror.codexUpdate || this.#mirror.notices > 0 || this.#mirror.waiting || this.#mirror.refill || this.#mirror.warm || this.#mirror.deferredEnd;
   }
 
   unreadIn(thread: number, before: number): PendingMessage[] {
@@ -436,7 +476,7 @@ export class MbActor {
     finally { this.#records.delete(token); }
   }
   toolsAt(url: string) { return this.#call("toolsAt", [url]).then(() => undefined); }
-  declare(state: DeclaredState) { return this.#call("declare", [state]).then(() => undefined); }
+  declare(state: DeclaredState): Promise<boolean> { return this.#call("declare", [state]).then((v) => v === true); }
   waitFor(what: string, watch: boolean) { return this.#call("waitFor", [what, watch]).then(() => undefined); }
   need(what: string) { return this.#call("need", [what]).then(() => undefined); }
   about(about: [number, number, string] | null) { return this.#call("about", [about]).then(() => undefined); }
@@ -453,6 +493,7 @@ export class MbActor {
   goOn() { return this.#call("goOn").then(() => undefined); }
   allowanceReset() { return this.#call("allowanceReset").then(() => undefined); }
   recover() { return this.#call("recover").then(() => undefined); }
+  cutOffByRestart(): Promise<boolean> { return this.#call("cutOffByRestart").then((v) => v === true); }
   takeWait() { return this.#call("takeWait").then(() => undefined); }
   takeRefill() { return this.#call("takeRefill").then(() => undefined); }
   release() { return this.#call("release").then(() => undefined); }
@@ -475,11 +516,14 @@ export class MbActor {
   /// Where it stands, for the next station: its runtime session's own snapshot said in it, that session let go of.
   async snapshot(): Promise<Snapshot> {
     const snap = await this.#call("snapshot");
-    const held = typeof snap.agent === "number" ? this.#agents.get(snap.agent)?.session ?? null : null;
+    const entry = typeof snap.agent === "number" ? this.#agents.get(snap.agent) : undefined;
+    const held = entry?.session ?? null;
+    const deps = this.#deps;
+    const toolsUnheard = entry?.heard !== undefined && this.runtime !== "codex" && deps.toolsHeard !== undefined && deps.toolsHeard(this.key) === entry.heard;
     this.#closing();
     const agent = held?.snapshot() ?? null;
     held?.detach();
-    return { ...snap, agent } as Snapshot;
+    return { ...snap, agent, ...(toolsUnheard ? { toolsUnheard: true } : {}) } as Snapshot;
   }
 
   /// Takes up `snap` with its runtime session `agent`; done once the program has. What the hub reads at once (its
@@ -498,12 +542,30 @@ export class MbActor {
     const pending = this.#adopting?.pending ?? [];
     this.#adopting = null;
     let taken: Json = null;
+    const hasDeferred = snap.deferredEnd != null;
     if (agent) {
-      const handle = ++this.#next;
-      this.#agents.set(handle, { generation: this.#generation, session: agent });
-      taken = { handle, generation: this.#generation };
-      this.#mirror = { ...this.#mirror, agent: handle, turn: snap.turn?.id ?? null, idleSince: this.#program.now() - (snap.idleMs ?? 0), runtime: snap.runtime };
       this.runtime = snap.runtime;
+      const deps = this.#deps;
+      const heard = snap?.toolsUnheard === true && this.runtime !== "codex" && deps.toolsHeard !== undefined ? deps.toolsHeard(this.key) : undefined;
+      const handle = ++this.#next;
+      this.#agents.set(handle, { generation: this.#generation, session: agent, ...(heard === undefined ? {} : { heard }) });
+      taken = { handle, generation: this.#generation };
+      this.#mirror = {
+        ...this.#mirror,
+        agent: handle,
+        turn: snap.turn?.id ?? null,
+        warm: snap.turn == null && hasDeferred,
+        deferredEnd: hasDeferred,
+        idleSince: this.#program.now() - (snap.idleMs ?? 0),
+        runtime: snap.runtime,
+      };
+    } else if (hasDeferred) {
+      this.#mirror = {
+        ...this.#mirror,
+        turn: snap.turn?.id ?? null,
+        warm: snap.turn == null,
+        deferredEnd: true,
+      };
     }
     const adopted = this.#call("adopt", [{ ...snap, agent: null }, taken, profile, this.#deps.store.getSession(this.key)]);
     if (agent) {
@@ -521,7 +583,15 @@ export class MbActor {
   #closing() {
     this.#closed = true;
     this.#formatAbort?.abort();
+    this.#abortOpens();
     this.#program.forget(this.key, this);
+  }
+
+  /// Gives up every runtime session being opened for it (`open`), as `why` (the program's `openAbort`).
+  #abortOpens(why = "closed") {
+    const opening = [...this.#openAborts.values()];
+    this.#openAborts.clear();
+    for (const abort of opening) abort.abort(why);
   }
 
   async dispose() {
@@ -571,7 +641,8 @@ export class MbActor {
       // (the program gives it the actor and the live view once the batch is said taken: here what the station's own parts
       // take of it, its unread cleared and a turn's outcome)
       if (event.type === "live") {
-        if (event.event.kind === "phase" && event.event.phase === "requesting" && this.#mirror.unread.length > 0) {
+        // (cleared whether or not the program's mirror saying it unread has come yet: one coming later is from before)
+        if (event.event.kind === "phase" && event.event.phase === "requesting") {
           this.#mirror = { ...this.#mirror, unread: [] };
           this.#routing.cleared = true;
         }
@@ -584,7 +655,7 @@ export class MbActor {
       const e = event.event;
       if (e.kind === "tasks" || e.kind === "plan" || (e.kind === "delta" && e.field !== "text")) return;
       if (e.kind === "start" && e.step === "thinking") return;
-      if (e.kind === "phase" && e.phase === "requesting" && this.#mirror.unread.length > 0) {
+      if (e.kind === "phase" && e.phase === "requesting") {
         this.#mirror = { ...this.#mirror, unread: [] };
         this.#readAt = this.#sent + 1;
       }
@@ -624,6 +695,14 @@ export class MbActor {
         for (const w of working) deps.chat(w.connect)?.working?.({ channel: w.channel, threadTs: w.threadTs }, w.ts, text, page);
         return;
       }
+      case "node.cancelOpen": {
+        // (given up by the program: its stop, suspension, close or deadline; `open` ends what comes of it)
+        const id = args[0];
+        if (typeof id !== "number") return this.#abortOpens("cancelled");
+        this.#openAborts.get(id)?.abort("cancelled");
+        this.#openAborts.delete(id);
+        return;
+      }
       case "chat.standsAt": {
         const [connect, channel, threadTs, stands] = args;
         deps.chat(connect)?.standsAt?.({ channel, threadTs }, stands);
@@ -645,7 +724,7 @@ export class MbActor {
     }
     if (part === "deps") {
       const d = deps as Json;
-      if (typeof d[name] !== "function") return null;
+      if (typeof d[name] !== "function") return name === "canAuthRetry" ? true : null;
       return await d[name](...args);
     }
     if (part === "agent") {
@@ -733,17 +812,34 @@ export class MbActor {
       }
       case "pendingAndFormat": return this.#pendingAndFormat(args[0] === true);
       case "open": {
-        const [stopped, readBack, profile] = args;
+        const [stopped, readBack, profile, forceCap, asked] = args;
         let generation = 0;
         const heard = deps.toolsHeard?.(this.key);
-        const opened = await openAgent(deps, this.key, {
-          stopped,
-          readBack,
-          profile: profile ?? null,
-          runtime: (runtime) => { this.runtime = runtime; },
-          generation: () => (generation = this.nextGeneration()),
-          listener: (g) => this.listener(g),
-        });
+        // (the program's number for this ask: what it gives it up by, `node.cancelOpen`)
+        const id = typeof asked === "number" ? asked : -(++this.#next);
+        const abort = new AbortController();
+        if (this.#closed) abort.abort("closed");
+        this.#openAborts.set(id, abort);
+        let opened: Awaited<ReturnType<typeof openAgent>>;
+        try {
+          opened = await openAgent(deps, this.key, {
+            stopped,
+            readBack,
+            profile: profile ?? null,
+            forceCap: forceCap === true,
+            signal: abort.signal,
+            runtime: (runtime) => { this.runtime = runtime; },
+            generation: () => (generation = this.nextGeneration()),
+            listener: (g) => this.listener(g),
+          });
+        } finally {
+          if (this.#openAborts.get(id) === abort) this.#openAborts.delete(id);
+        }
+        // (given up as it came: never its actor's, ended at once)
+        if (abort.signal.aborted || this.#closed) {
+          await opened.session.dispose().catch(() => {});
+          throw new OpenAborted(typeof abort.signal.reason === "string" ? abort.signal.reason : "closed");
+        }
         const handle = ++this.#next;
         this.#agents.set(handle, { generation, session: opened.session, ...(heard === undefined ? {} : { heard }) });
         this.#route(opened.session, generation);
@@ -756,7 +852,7 @@ export class MbActor {
         if (!session) return null;
         return retuneAgent(deps, this.key, session, this.runtime, profile, restart, holding);
       }
-      case "profileId": return deps.runOn(this.key, args[0] === true, true).id;
+      case "profileId": return deps.runOn(this.key, args[0] === true, true, args[1] === true).id;
       // A process this station opened whose turn ended saying nothing, that never once reached the station's tools
       // (not even to list them: its MCP connection failed as it opened, 2026-11-19 with the station out of file
       // handles), is one that lost them: why, else null. Not a Codex app-server's, shared by sessions and opened before.

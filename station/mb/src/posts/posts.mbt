@@ -6,27 +6,14 @@
 let size : Int = 64
 
 ///|
-fn get(row : Map[String, Json], name : String) -> Json {
-  row.get(name).unwrap_or(Json::null())
-}
-
-///|
-fn first(db : @sql.Db, sql : String, params : Array[Json]) -> Map[String, Json]? raise {
-  match db.all(sql, params) {
-    [r, ..] => Some(r)
-    _ => None
-  }
-}
-
-///|
 fn block(n : String) -> String {
   "(\{n} / \{size} - CASE WHEN \{n} < 0 AND \{n} % \{size} != 0 THEN 1 ELSE 0 END)"
 }
 
 ///|
 fn fresh(db : @sql.Db) -> Bool raise {
-  match first(db, "SELECT fresh FROM post_blocks_meta WHERE id = 1", []) {
-    Some(r) => get(r, "fresh") is Number(1.0, ..)
+  match db.first("SELECT fresh FROM post_blocks_meta WHERE id = 1", []) {
+    Some(r) => @sql.row_val(r, "fresh") is Number(1.0, ..)
     None => raise Failure("post block metadata is missing")
   }
 }
@@ -35,12 +22,11 @@ fn fresh(db : @sql.Db) -> Bool raise {
 /// A chat's coverage, and whether it covers from `after` on (`covers`): its cursor and completeness as text.
 fn coverage(db : @sql.Db, thread : Json, after : Json) -> (Map[String, Json]?, Bool) raise {
   match
-    first(
-      db,
+    db.first(
       "SELECT CAST(cursor AS TEXT) AS cursor, complete, (complete = 1 OR (cursor IS NOT NULL AND cursor <= ?2 + 1)) AS covers FROM post_blocks_coverage WHERE thread = ?1",
       [thread, after],
     ) {
-    Some(r) => (Some(r), get(r, "covers") is Number(1.0, ..))
+    Some(r) => (Some(r), @sql.row_val(r, "covers") is Number(1.0, ..))
     None => (None, false)
   }
 }
@@ -61,11 +47,11 @@ pub fn step(db : @sql.Db, thread : Int64, after : Int64, limit? : Int = 64) -> B
     return true
   }
   let before_cursor = match before {
-    Some(r) => get(r, "cursor")
+    Some(r) => @sql.row_val(r, "cursor")
     None => Json::null()
   }
   let before_complete = match before {
-    Some(r) => get(r, "complete")
+    Some(r) => @sql.row_val(r, "complete")
     None => Json::number(0.0)
   }
   let rows = if before_cursor is Null {
@@ -80,16 +66,16 @@ pub fn step(db : @sql.Db, thread : Int64, after : Int64, limit? : Int = 64) -> B
     )
   }
   let older = rows.length() < limit &&
-    first(db, "SELECT 1 FROM entries WHERE thread = ? AND n < ? LIMIT 1", [t, a]) is Some(_)
+    db.first("SELECT 1 FROM entries WHERE thread = ? AND n < ? LIMIT 1", [t, a]) is Some(_)
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
   let (current, now_covered) = coverage(db, t, a)
   let current_cursor = match current {
-    Some(r) => get(r, "cursor")
+    Some(r) => @sql.row_val(r, "cursor")
     None => Json::null()
   }
   let current_complete = match current {
-    Some(r) => get(r, "complete")
+    Some(r) => @sql.row_val(r, "complete")
     None => Json::number(0.0)
   }
   if current_cursor != before_cursor || current_complete != before_complete {
@@ -97,11 +83,11 @@ pub fn step(db : @sql.Db, thread : Int64, after : Int64, limit? : Int = 64) -> B
     return now_covered
   }
   for row in rows {
-    if get(row, "kind") == Json::string("message") && get(row, "author_kind") == Json::string("agent") {
+    if @sql.row_val(row, "kind") == Json::string("message") && @sql.row_val(row, "author_kind") == Json::string("agent") {
       ignore(
         db.run(
           "INSERT INTO post_blocks (thread, author, bucket) SELECT e.thread, e.author, \{block("e.n")} FROM entries e WHERE e.thread = ? AND e.n = CAST(? AS INTEGER) AND e.author = ? AND e.kind = 'message' AND e.author_kind = 'agent' AND NOT EXISTS (SELECT 1 FROM post_blocks b WHERE b.thread = e.thread AND b.author = e.author AND b.bucket = \{block("e.n")})",
-          [t, get(row, "n"), get(row, "author")],
+          [t, @sql.row_val(row, "n"), @sql.row_val(row, "author")],
         ),
       )
     }
@@ -109,7 +95,7 @@ pub fn step(db : @sql.Db, thread : Int64, after : Int64, limit? : Int = 64) -> B
   let cursor = if rows.length() < limit {
     a
   } else {
-    get(rows[rows.length() - 1], "n")
+    @sql.row_val(rows[rows.length() - 1], "n")
   }
   let complete = rows.length() < limit && !older
   ignore(
@@ -120,8 +106,8 @@ pub fn step(db : @sql.Db, thread : Int64, after : Int64, limit? : Int = 64) -> B
   )
   let done = complete ||
     (
-      match first(db, "SELECT CAST(? AS INTEGER) <= ? + 1 AS ok", [cursor, a]) {
-        Some(r) => get(r, "ok") is Number(1.0, ..)
+      match db.first("SELECT CAST(? AS INTEGER) <= ? + 1 AS ok", [cursor, a]) {
+        Some(r) => @sql.row_val(r, "ok") is Number(1.0, ..)
         None => false
       }
     )

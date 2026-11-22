@@ -314,14 +314,24 @@ const MOUNTS_FRESH_MS = 2_000;
 
 /// `/sbin/mount` read off the thread, one read at a time however many ask.
 function readMounts(): Promise<string[]> {
-  mounting ??= new Promise<string[]>((resolve) => {
-    execFile("/sbin/mount", { encoding: "utf8" }, (error, out) => {
-      mounting = null;
-      mounted = { at: wall.now(), points: error ? (mounted?.points ?? []) : parseMounts(out) };
+  if (mounting) return mounting;
+  let thrown = false;
+  const read = new Promise<string[]>((resolve) => {
+    try {
+      execFile("/sbin/mount", { encoding: "utf8" }, (error, out) => {
+        mounting = null;
+        mounted = { at: wall.now(), points: error ? (mounted?.points ?? []) : parseMounts(out) };
+        resolve(mounted.points);
+      });
+    } catch {
+      // Spawning threw before execFile returned: a failed read, kept as one (asked again once stale), none left out.
+      thrown = true;
+      mounted = { at: wall.now(), points: mounted?.points ?? [] };
       resolve(mounted.points);
-    });
+    }
   });
-  return mounting;
+  if (!thrown) mounting = read;
+  return read;
 }
 
 /// Platform.mounts: as last read, none before the first read is in (which this starts); read again in the background
@@ -675,9 +685,10 @@ export const unix: Platform = {
     try {
       if (MACOS) {
         const level = (await run("sysctl", ["-n", "kern.memorystatus_vm_pressure_level"])).stdout;
-        if (trim(level) !== "2") return pressureOfLevel(level);
-        // Read without waiting: this is asked every few seconds exactly while the memory is short, when a process
-        // started takes longest (host.memory's three, each waited on, held the main thread).
+        const trimmed = trim(level);
+        if (trimmed !== "1" && trimmed !== "2") return pressureOfLevel(level);
+        // Read without waiting: this is asked every few seconds while memory may be short (level 1 can stay normal
+        // on a 14 GB VM even with <100 MB free, and level 2 can warn with plenty of reclaimable memory).
         const mem = await macMemory();
         return mem.known === false ? pressureOfLevel(level) : pressureOfLevel(level, mem.totalBytes - mem.usedBytes, mem.totalBytes);
       }

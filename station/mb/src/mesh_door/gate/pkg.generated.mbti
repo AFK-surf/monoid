@@ -60,6 +60,8 @@ pub let chain_most : Int32
 
 pub let check_ms : Int32
 
+pub fn chosen_relay(@door.Connection) -> String?
+
 pub fn claimed(@json.Json) -> String
 
 pub fn claimed_ws(String) -> String

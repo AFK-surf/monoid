@@ -77,6 +77,7 @@ fn panel_centred_node(
       // (a press on it its own: not outside it)
       |> ground_node
       |> ignore
+      corner_card_node(d, fn() { dialog_r }, inset=fn() { if top_share > 0.0 { top_pad } else { dialog_pad } })
       // (where what it holds starts: under an untitled one's close button; right under its own head row where it heads
       // itself (`heads_itself`: in the title's place, clear of the close button over its corner), which keeps what space
       // it wants under it; a title's gap else)
@@ -270,6 +271,7 @@ fn panel_centred_node(
             fv.margin(Is((-dialog_pad, 0.0, -dialog_pad, 0.0))).alpha(By(fn() { look().words })) |> ignore
             fv.box(fn(row) {
               style_node(row, fn() { dialog_foot.then(dialog_corner_foot(dialog_pad)) })
+              row.wraps(By(fn() { Some(ask_foot_lines()) })) |> ignore
               f(row, close)
             })
             |> ignore

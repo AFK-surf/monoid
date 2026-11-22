@@ -332,6 +332,7 @@ pub fn OwnSession::hosted_options(
     orphans: false,
     heard: h => self.heard_hosted(h),
     attached: () => (self.hooks.attached)(),
+    handed: () => (),
     exit: (said, stderr) => self.exited(said, stderr),
   }
 }
@@ -503,7 +504,16 @@ pub fn OwnDriver::adopt(
           }
           (self.procs.replay_own)(how.hosting_kind, out, offset.0, extra)
           .bind(replayed => (how.crashed)(replayed, info))
-          .map(session => {
+          .bind(session => {
+            // (one whose station went before its session was open is refused before it is held: own-process.ts
+            // `adoptOn`)
+            if (how.hosting_kind != "pi" && session.session_id == "") ||
+              (how.hosting_kind != "claude" && offset.0 == 0) {
+              return Later::fail(
+                self.m.lp,
+                Failed("\{self.kind} process for \{key} had not opened a session"),
+              )
+            }
             self.m.log(
               "info",
               "agents::\{self.kind}",
@@ -518,7 +528,7 @@ pub fn OwnDriver::adopt(
             if session.busy() {
               events(obj([("type", s("turnStarted"))]))
             }
-            session
+            Later::ok(self.m.lp, session)
           })
         })
       }

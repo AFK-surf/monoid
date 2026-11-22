@@ -276,14 +276,6 @@ pub(all) enum Named {
 }
 
 ///|
-fn named_json(n : Named) -> Json {
-  match n {
-    Beside(b) => { "beside": js(b) }
-    At(a) => { "at": js(a) }
-  }
-}
-
-///|
 let shim_frame : Array[String] = [
   "echo off", "goto start", ":find_dp0", "set dp0=%~dp0", ":start", "setlocal", "call :find_dp0",
 ]
@@ -343,15 +335,6 @@ fn named_of(path : String) -> Named {
 pub(all) enum Shim {
   Node(Named)
   Program(Named)
-}
-
-///|
-fn shim_json(s : Shim?) -> Json {
-  match s {
-    None => Json::null()
-    Some(Node(n)) => { "node": named_json(n) }
-    Some(Program(p)) => { "program": named_json(p) }
-  }
 }
 
 ///|
@@ -616,9 +599,28 @@ pub fn windows_register_script(hidden : String, ps1 : String, run_dir : String, 
 }
 
 ///|
-/// windows.ts `startInstaller`'s task and admin, from windows.json's text (None where it did not read).
-pub fn windows_task_of(kept : String?) -> (String, Bool) {
-  let mut task = "still.fail station"
+/// windows.ts `defaultWindowsTask`: the station's own task where windows.json names none, its data directory's
+/// product's (`.monoid`: monoid's; any other: still.fail's).
+fn default_windows_task(data_dir : String) -> String {
+  let mut end = data_dir.length()
+  let is_sep = (c : Int) => c == 47 || c == 92 // '/' or '\\'
+  while end > 0 && is_sep(cu(data_dir, end - 1)) {
+    end -= 1
+  }
+  let mut start = end
+  while start > 0 && !is_sep(cu(data_dir, start - 1)) {
+    start -= 1
+  }
+  let leaf = lower(sub(data_dir, start, end))
+  let product = if leaf == "." + monoid_product.id { monoid_product } else { stillfail_product }
+  product.name + " station"
+}
+
+///|
+/// windows.ts `startInstaller`'s task and admin, from windows.json's text (None where it did not read) and the data
+/// directory it is in.
+pub fn windows_task_of(kept : String?, data_dir? : String = "") -> (String, Bool) {
+  let mut task = default_windows_task(data_dir)
   let mut admin = false
   match kept {
     Some(text) =>

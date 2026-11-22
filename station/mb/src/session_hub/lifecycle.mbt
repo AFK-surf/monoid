@@ -83,6 +83,51 @@ pub async fn Hub::bind_single(self : Hub, connect_id : String, target : String?,
 }
 
 ///|
+/// `ensureConversationChat`: idempotently ensures the conversation's home chat exists (§3.3).
+pub fn Hub::ensure_conversation_chat(self : Hub, session : String, created_by : String, title : String?) -> Json raise {
+  if (self.world.chat)(internal_connect) is None {
+    raise Refused("still.fail chat is not available")
+  }
+  let row = match self.get_session(session) {
+    Some(r) => r
+    None => raise Refused("unknown session \{session}")
+  }
+  let existing = self.store.home_chat(Json::string(session))
+  if existing != Json::null() {
+    return existing
+  }
+  let anchor = self.store.conversation_of(session)
+  let anchor_row = self.get_session(anchor).unwrap_or(row)
+  let name = match title {
+    Some(t) => Some(t)
+    None => str_of(anchor_row, "title")
+  }
+  let thread = self.tw(() => self.threads.open_thread_of(
+    Json::string(stillfail_surface),
+    Json::string(internal_channel),
+    Json::string(self.next_ts()),
+    opt_str(name),
+    Json::string(created_by),
+    Json::string(anchor),
+  ))
+  let tid = field(thread, "id").unwrap_or(Json::null())
+  let active = self.store.active_conversation_members(anchor, session)
+  let ordered : Array[String] = []
+  if active.contains(anchor) {
+    ordered.push(anchor)
+  }
+  for m in active {
+    if !ordered.contains(m) {
+      ordered.push(m)
+    }
+  }
+  for member in ordered {
+    ignore(self.tw(() => self.threads.join_thread(tid, Json::string(member), Json::string(internal_connect))))
+  }
+  thread
+}
+
+///|
 /// `openChat`: opens a chat on the station's pages with a session in it; the first made with a session is its own.
 pub fn Hub::open_chat(self : Hub, session : String, created_by : String, title : String?) -> Json raise {
   if (self.world.chat)(internal_connect) is None {
@@ -463,18 +508,37 @@ pub async fn Hub::archive_by(self : Hub, key : String, archived : Bool, by : Str
         None => raise Refused("unknown session \{key}")
       }
   }
+  let anchor = self.store.conversation_of(key)
+  let found = self.store.members_of(anchor)
+  let members = if found.is_empty() { [key] } else { found }
   if !archived {
-    ignore((self.world.ask)("cold.restore", Json::string(key)))
+    for m in members {
+      ignore((self.world.ask)("cold.restore", Json::string(m)))
+    }
     self.store.set_archived(key, false, by)
-    ignore((self.world.ask)("fs.rm", { "path": Json::string(self.transcript_copy(key)) }))
+    for m in members {
+      ignore((self.world.ask)("fs.rm", { "path": Json::string(self.transcript_copy(m)) }))
+    }
     return
   }
   self.store.set_archived(key, archived, by)
-  (self.world.tell)("closed", Json::string(key))
-  let actor = self.actor(row)
-  self.act(actor, "putAway")
-  self.act(actor, "evict", args=[Json::boolean(true)])
-  self.act(actor, "cleanArchive")
+  for m in members {
+    if self.idle_measured.contains(m) {
+      self.idle_measured.remove(m)
+      self.idle_measured_dirty = true
+    }
+    (self.world.tell)("closed", Json::string(m))
+    let m_row = if m == key { Some(row) } else { self.get_session(m) }
+    match m_row {
+      Some(r) => {
+        let actor = self.actor(r)
+        self.act(actor, "putAway")
+        self.act(actor, "evict", args=[Json::boolean(true)])
+        self.act(actor, "cleanArchive")
+      }
+      None => ()
+    }
+  }
 }
 
 ///|
@@ -501,7 +565,8 @@ pub async fn Hub::archive_chat(self : Hub, thread : Json, archived : Bool) -> Un
 
 ///|
 /// `deleteSession`: its process ends, its rows go (with the threads only it was in) and its workspace directory,
-/// transcript copy and what the readers kept of its transcripts' reading with them.
+/// transcript copy, exclusive transcripts under `<data>`, and what the readers kept of its transcripts' reading with
+/// them. Transcripts outside `<data>` (a person's own profile home) or referenced by any other session row stay.
 pub async fn Hub::delete_session(self : Hub, key : String) -> Unit {
   let row = match self.get_session(key) {
     Some(r) => r
@@ -510,12 +575,42 @@ pub async fn Hub::delete_session(self : Hub, key : String) -> Unit {
   if self.drop_actor(key) {
     ignore(self.ask_actor(key, "dispose"))
   }
+  // Flush any unread transcript tail into usage statistics before deleting the session row and its transcripts.
+  match self.counter {
+    Some(c) => ignore(c.read(Some([key])))
+    None => ()
+  }
   (self.world.tell)("live.forget", Json::string(key))
+  if self.idle_measured.contains(key) {
+    self.idle_measured.remove(key)
+    self.idle_measured_dirty = true
+  }
   let transcripts = (self.world.ask)("transcripts.of", { "key": Json::string(key), "row": row })
+  let sources = self.store.runtime_session_sources(key, None)
+  let exclusive_sources = []
+  for s in sources {
+    let rt = field(s, "runtime").unwrap_or(Json::null())
+    let id = field(s, "id").unwrap_or(Json::null())
+    if !self.store.transcript_referenced(rt, id, Json::string(key)) {
+      exclusive_sources.push(s)
+    }
+  }
+  let exclusive_files = if exclusive_sources.length() > 0 {
+    (self.world.ask)("transcripts.exclusive", { "key": Json::string(key), "row": row, "sources": Json::array(exclusive_sources) }) catch {
+      _ => Json::array([])
+    }
+  } else {
+    Json::array([])
+  }
   self.store.delete_session(key)
   (self.world.tell)("closed", Json::string(key))
   ignore((self.world.ask)("fs.rm", { "path": Json::string(self.transcript_copy(key)) }))
   ignore((self.world.ask)("marks.forget", transcripts))
+  for file in items(Some(exclusive_files)) {
+    if file is String(p) {
+      ignore((self.world.ask)("fs.rm", { "path": Json::string(p) }) catch { _ => Json::null() })
+    }
+  }
   let data = str_of(self.config(), "dataDir").unwrap_or("")
   let sessions = join_path([data, "sessions"])
   let workspace = str_of(row, "workspace").unwrap_or("")
@@ -911,7 +1006,8 @@ pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? 
   let recommended = (thread : Json) => !reviewed ||
     (completion && self.tw(() => self.threads.archive_suggested(thread)) == Json::boolean(true))
   match look {
-    Some(l) =>
+    Some(l) => {
+      let look_passed : Map[String, Json] = Map([])
       for x in items(field(l, "sessions")) {
         let s = field(x, "row").unwrap_or(Json::null())
         let key = row_key(s)
@@ -964,10 +1060,27 @@ pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? 
         if threads.iter().any(t => kept_list.contains(thread_id(t)) || unread(field(t, "thread").unwrap_or(Json::null()))) {
           continue
         }
-        self.archive_by(key, true, auto, known=s)
+        look_passed[key] = s
       }
+      let archived_look : Array[String] = []
+      for k, _ in look_passed {
+        let anchor = self.store.conversation_of(k)
+        if archived_look.contains(anchor) {
+          continue
+        }
+        archived_look.push(anchor)
+        let members = self.store.members_of(anchor)
+        if members.length() > 0 && members.iter().all(m => look_passed.contains(m)) {
+          match look_passed.get(anchor) {
+            Some(row) => self.archive_by(anchor, true, auto, known=row)
+            None => self.archive_by(anchor, true, auto)
+          }
+        }
+      }
+    }
     None => ()
   }
+  let live_passed : Map[String, Json] = Map([])
   for s in live {
     let key = row_key(s)
     if waiting_bindings || self.store.prepared_session_bound(Json::string(key)) || pinned(key) {
@@ -994,7 +1107,22 @@ pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? 
     if threads.iter().any(t => kept(thread_id(t)) || unread(field(t, "thread").unwrap_or(Json::null()))) {
       continue
     }
-    self.archive_by(key, true, auto, known=s)
+    live_passed[key] = s
+  }
+  let archived_live : Array[String] = []
+  for k, _ in live_passed {
+    let anchor = self.store.conversation_of(k)
+    if archived_live.contains(anchor) {
+      continue
+    }
+    archived_live.push(anchor)
+    let members = self.store.members_of(anchor)
+    if members.length() > 0 && members.iter().all(m => live_passed.contains(m)) {
+      match live_passed.get(anchor) {
+        Some(row) => self.archive_by(anchor, true, auto, known=row)
+        None => self.archive_by(anchor, true, auto)
+      }
+    }
   }
   for t in own {
     let id = field(t, "id").unwrap_or(Json::null())
@@ -1029,10 +1157,157 @@ pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? 
 let archived_workspace_batch : Int = 64
 
 ///|
+/// store.ts `IDLE_UNARCHIVED_BATCH`.
+let idle_unarchived_batch : Int = 64
+
+///|
+/// Minimum interval between periodic archive backfill (`pack_unfinished_archived`) and idle rebuildable cleanup
+/// (`clean_idle_rebuildable`) rounds (10 minutes): packing up to 16 sessions per round clears a backlog of several
+/// hundred sessions within a few hours without contending with the main lifecycle loop.
+pub let archive_upkeep_every_ms : Double = 10.0 * 60000.0
+
+///|
+/// Short startup grace (60 seconds) before `run_archive_upkeep_if_due` may run after hub startup: avoids a startup
+/// burst while allowing persisted `last_archive_upkeep_at` to run promptly after frequent restarts.
+pub let archive_upkeep_startup_grace_ms : Double = 60000.0
+
+///|
+/// Max unfinished archived sessions packed per periodic round.
+pub let pack_backfill_max_per_round : Int = 16
+
+///|
+/// Max archived sessions checked per periodic backfill round before advancing the cross-round cursor.
+pub let pack_backfill_check_max_per_round : Int = 256
+
+///|
+/// Unarchived sessions idle this long have their rebuildable directories cleaned (24 hours: acceptable to reinstall
+/// dependencies when returning the next day).
+pub let idle_rebuild_ms : Double = 24.0 * 3600000.0
+
+///|
+/// Aggressive idle threshold for cleaning rebuildable directories of unarchived sessions when disk is below `diskLow`.
+pub let idle_rebuild_low_ms : Double = 3600000.0
+
+///|
+/// Max idle unarchived sessions measured per periodic round.
+pub let idle_rebuild_max_per_round : Int = 16
+
+///|
+let idle_measured_max : Int = 4096
+
+///|
+fn Hub::record_idle_measured(self : Hub, key : String, last_active_at : Double) -> Unit {
+  self.idle_measured.remove(key)
+  self.idle_measured[key] = last_active_at
+  if self.idle_measured.length() > idle_measured_max {
+    match self.idle_measured.keys().head() {
+      Some(k) => self.idle_measured.remove(k)
+      None => ()
+    }
+  }
+  self.idle_measured_dirty = true
+}
+
+///|
+async fn Hub::ensure_upkeep_state_loaded(self : Hub) -> Unit {
+  match self.upkeep_state_load {
+    Some(d) => d.wait() catch { _ => () }
+    None => {
+      let d : @effect.Deferred[Unit] = @effect.Deferred::new()
+      self.upkeep_state_load = Some(d)
+      defer {
+        ignore(d.succeed(()))
+      }
+      let saved = (self.world.ask)("upkeepState.read", Json::null()) catch { _ => Json::null() }
+      guard saved is Object(m) else { return }
+      match m.get("idleMeasured") {
+        Some(Object(im)) => {
+          let existing : Array[(String, Double)] = []
+          for k, v in self.idle_measured {
+            existing.push((k, v))
+          }
+          self.idle_measured.clear()
+          for k, v in im {
+            match v {
+              Number(ts, ..) => self.idle_measured[k] = ts
+              _ => ()
+            }
+          }
+          for kv in existing {
+            self.idle_measured.remove(kv.0)
+            self.idle_measured[kv.0] = kv.1
+          }
+          while self.idle_measured.length() > idle_measured_max {
+            match self.idle_measured.keys().head() {
+              Some(k) => self.idle_measured.remove(k)
+              None => break
+            }
+          }
+        }
+        _ => ()
+      }
+      if self.last_archive_upkeep_at is None {
+        match m.get("lastArchiveUpkeepAt") {
+          Some(Number(ts, ..)) => self.last_archive_upkeep_at = Some(ts)
+          _ => ()
+        }
+      }
+    }
+  }
+}
+
+///|
+async fn Hub::persist_upkeep_state(self : Hub, include_idle : Bool, include_archive_ts : Bool) -> Unit {
+  let patch : Map[String, Json] = Map([])
+  let mut any = false
+  if include_idle && self.idle_measured_dirty {
+    let im : Map[String, Json] = Map([])
+    for k, v in self.idle_measured {
+      im[k] = num(v)
+    }
+    patch["idleMeasured"] = Json::object(im)
+    any = true
+  }
+  if include_archive_ts {
+    patch["lastArchiveUpkeepAt"] = match self.last_archive_upkeep_at {
+      Some(ts) => num(ts)
+      None => Json::null()
+    }
+    any = true
+  }
+  if !any {
+    return
+  }
+  ignore((self.world.ask)("upkeepState.patch", Json::object(patch)) catch { _ => Json::null() })
+  if include_idle {
+    self.idle_measured_dirty = false
+  }
+}
+
+///|
+/// Earliest timestamp when `run_archive_upkeep_if_due` will next be eligible to run.
+pub fn Hub::next_archive_upkeep_at(self : Hub, every_ms? : Double = archive_upkeep_every_ms) -> Double {
+  let grace = self.started_at + archive_upkeep_startup_grace_ms
+  match self.last_archive_upkeep_at {
+    None => grace
+    Some(last) => {
+      let due = last + every_ms
+      if due > grace { due } else { grace }
+    }
+  }
+}
+
+///|
 /// rows of archived workspaces, a page at a time, through `through` (a time, or the last one as `{key, archivedAt}`),
 /// each given to `each` while `needed` says so.
-async fn Hub::archived_workspaces(self : Hub, through : Json, each : async (Json) -> Bool, needed? : async () -> Bool) -> Unit {
-  let mut after = Json::null()
+async fn Hub::archived_workspaces(
+  self : Hub,
+  through : Json,
+  each : async (Json) -> Bool,
+  needed? : async () -> Bool,
+  start? : Json = Json::null(),
+) -> Unit {
+  let mut after = start
   while true {
     match needed {
       Some(n) => if !n() { return }
@@ -1077,6 +1352,233 @@ pub async fn Hub::expire_archived(self : Hub, now : Double) -> Double? {
 }
 
 ///|
+/// Runs `pack_unfinished_archived` and `clean_idle_rebuildable` on their own cadence (`archive_upkeep_every_ms`),
+/// independent of how frequently `P52::lifecycle` wakes. Respects a short startup grace
+/// (`archive_upkeep_startup_grace_ms`) so startup never runs an immediate burst, then uses persisted
+/// `last_archive_upkeep_at` so frequent restarts do not starve upkeep. Returns whether a round ran.
+pub async fn Hub::run_archive_upkeep_if_due(
+  self : Hub,
+  now : Double,
+  every_ms? : Double = archive_upkeep_every_ms,
+) -> Bool {
+  self.ensure_upkeep_state_loaded()
+  if now - self.started_at < archive_upkeep_startup_grace_ms {
+    return false
+  }
+  match self.last_archive_upkeep_at {
+    Some(last) if now - last < every_ms => return false
+    _ => ()
+  }
+  self.last_archive_upkeep_at = Some(now)
+  ignore(self.pack_unfinished_archived(now) catch {
+    e => {
+      (self.world.tell)("log", { "warn": Json::string("backfilling unfinished archived workspaces failed"), "error": Json::string(e.to_string()) })
+      0
+    }
+  })
+  ignore(self.clean_idle_rebuildable(now, persist=false) catch {
+    e => {
+      (self.world.tell)("log", { "warn": Json::string("cleaning rebuildable files of idle sessions failed"), "error": Json::string(e.to_string()) })
+      0
+    }
+  })
+  self.persist_upkeep_state(true, true)
+  true
+}
+
+///|
+/// `packUnfinishedArchived`: finishes packing archived sessions not yet past `archivedWorkspaceMs` that lack a `cold`
+/// mark, one at a time via each session's actor queue, using a cross-round cursor and capping both checked and packed
+/// sessions per round.
+pub async fn Hub::pack_unfinished_archived(
+  self : Hub,
+  now : Double,
+  limit? : Int = pack_backfill_max_per_round,
+  check_limit? : Int = pack_backfill_check_max_per_round,
+) -> Int {
+  if limit <= 0 || check_limit <= 0 || (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) {
+    return 0
+  }
+  let through = self.store.last_archived_session()
+  if through == Json::null() {
+    self.pack_cursor = Json::null()
+    return 0
+  }
+  let after_ms = num_of(self.config(), "archivedWorkspaceMs").unwrap_or(0.0)
+  let window_start : Json = if after_ms > 0.0 {
+    { "archivedAt": num(now - after_ms), "key": Json::string("") }
+  } else {
+    Json::null()
+  }
+  let through_at = num_of(through, "archivedAt").unwrap_or(0.0)
+  let through_key = str_of(through, "key").unwrap_or("")
+  let saved_in_window = match (num_of(self.pack_cursor, "archivedAt"), str_of(self.pack_cursor, "key")) {
+    (Some(sat), Some(sk)) =>
+      (after_ms <= 0.0 || sat >= now - after_ms) && (sat < through_at || (sat == through_at && sk < through_key))
+    _ => false
+  }
+  let start = if saved_in_window { self.pack_cursor } else { window_start }
+
+  let mut checked = 0
+  let mut attempted = 0
+  let mut packed = 0
+  let mut last_seen = Json::null()
+  let mut stopped_early = false
+  self.archived_workspaces(
+    through,
+    async fn(s) {
+      if checked >= check_limit || attempted >= limit {
+        stopped_early = true
+        return false
+      }
+      checked += 1
+      last_seen = s
+      let key_j = field(s, "key").unwrap_or(Json::null())
+      let key = match key_j {
+        String(k) => k
+        _ => return true
+      }
+      try {
+        if (self.world.ask)("cold.needsPack", key_j) == Json::boolean(true) {
+          let row = self.store.get_session(key)
+          if row != Json::null() && field(row, "archivedAt").unwrap_or(Json::null()) != Json::null() {
+            attempted += 1
+            let actor = self.actor(row)
+            ignore(self.ask_actor(actor, "cleanArchive"))
+            packed += 1
+          }
+        }
+      } catch {
+        e => (self.world.tell)("log", { "warn": Json::string("an archived session's files not put away on backfill"), "session": Json::string(key), "error": Json::string(e.to_string()) })
+      }
+      if checked >= check_limit || attempted >= limit {
+        stopped_early = true
+        return false
+      }
+      true
+    },
+    needed=async fn() { checked < check_limit && attempted < limit },
+    start~,
+  )
+  self.pack_cursor = if stopped_early && last_seen != Json::null() { last_seen } else { Json::null() }
+  packed
+}
+
+///|
+/// `cleanIdleRebuildable`: cleans rebuildable directories of idle unarchived sessions (`last_active_at <= now - idle_ms`),
+/// oldest activity first, capped at `limit` measured sessions per round, skipping sessions whose `last_active_at` has
+/// not changed since they were last measured. Never packs, writes `cold`, or touches transcripts.
+pub async fn Hub::clean_idle_rebuildable(
+  self : Hub,
+  now : Double,
+  idle_ms? : Double = idle_rebuild_ms,
+  limit? : Int = idle_rebuild_max_per_round,
+  persist? : Bool = true,
+) -> Int {
+  if limit <= 0 || (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) {
+    return 0
+  }
+  self.ensure_upkeep_state_loaded()
+  let through = num(now - idle_ms)
+  let mut after = Json::null()
+  let mut measured = 0
+  while measured < limit {
+    let page = self.store.idle_unarchived_sessions(after, through, idle_unarchived_batch)
+    for s in page {
+      if measured >= limit {
+        break
+      }
+      let key_j = field(s, "key").unwrap_or(Json::null())
+      let key = match key_j {
+        String(k) => k
+        _ => continue
+      }
+      let last_active_at = num_of(s, "lastActiveAt").unwrap_or(0.0)
+      if self.idle_measured.get(key) == Some(last_active_at) {
+        continue
+      }
+      try {
+        match (self.world.ask)("cold.cleanIdleRebuildable", key_j) {
+          Number(_, ..) => {
+            self.record_idle_measured(key, last_active_at)
+            measured += 1
+          }
+          _ => ()
+        }
+      } catch {
+        e => (self.world.tell)("log", { "warn": Json::string("rebuildable files of an idle session not cleaned"), "session": key_j, "error": Json::string(e.to_string()) })
+      }
+    }
+    if measured >= limit || page.length() < idle_unarchived_batch {
+      break
+    }
+    after = page[page.length() - 1]
+  }
+  if persist {
+    self.persist_upkeep_state(true, false)
+  }
+  measured
+}
+
+///|
+/// `relieveIdleRebuildable`: low-disk reclamation of rebuildable directories from idle unarchived sessions
+/// (threshold `idle_rebuild_low_ms`, oldest activity first). When `full` is true, cleans all eligible sessions
+/// without stopping early when disk is no longer low. Shares `idle_measured` with `clean_idle_rebuildable`.
+pub async fn Hub::relieve_idle_rebuildable(
+  self : Hub,
+  now : Double,
+  idle_ms? : Double = idle_rebuild_low_ms,
+  full? : Bool = false,
+  persist? : Bool = true,
+) -> Int {
+  if (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) || (!full && !self.disk_free_low()) {
+    return 0
+  }
+  self.ensure_upkeep_state_loaded()
+  let through = num(now - idle_ms)
+  let mut after = Json::null()
+  let mut measured = 0
+  let mut done = false
+  while !done && (full || self.disk_free_low()) {
+    let page = self.store.idle_unarchived_sessions(after, through, idle_unarchived_batch)
+    for s in page {
+      if !full && !self.disk_free_low() {
+        done = true
+        break
+      }
+      let key_j = field(s, "key").unwrap_or(Json::null())
+      let key = match key_j {
+        String(k) => k
+        _ => continue
+      }
+      let last_active_at = num_of(s, "lastActiveAt").unwrap_or(0.0)
+      if self.idle_measured.get(key) == Some(last_active_at) {
+        continue
+      }
+      try {
+        match (self.world.ask)("cold.cleanIdleRebuildable", key_j) {
+          Number(_, ..) => {
+            self.record_idle_measured(key, last_active_at)
+            measured += 1
+          }
+          _ => ()
+        }
+      } catch {
+        e => (self.world.tell)("log", { "warn": Json::string("rebuildable files of an idle session not cleaned"), "session": key_j, "error": Json::string(e.to_string()) })
+      }
+    }
+    if done || page.length() < idle_unarchived_batch {
+      break
+    }
+    after = page[page.length() - 1]
+  }
+  if persist {
+    self.persist_upkeep_state(true, false)
+  }
+  measured
+}
+
+///|
 /// relieve's DISK_LOW_BYTES (ops/disk.ts), as the world says it.
 async fn Hub::disk_free_low(self : Hub) -> Bool {
   (self.world.ask)("disk.low", Json::null()) == Json::boolean(true)
@@ -1084,13 +1586,13 @@ async fn Hub::disk_free_low(self : Hub) -> Bool {
 
 ///|
 /// `relieveArchived`: the disk of the station's data is low: archived workspaces emptied before archivedWorkspaceMs, the
-/// longest archived first, until it is not.
-pub async fn Hub::relieve_archived(self : Hub) -> Unit {
+/// longest archived first (when `full` is true, empties all eligible workspaces without stopping early).
+pub async fn Hub::relieve_archived(self : Hub, full? : Bool = false) -> Unit {
   if num_of(self.config(), "archivedWorkspaceMs").unwrap_or(0.0) <= 0.0 ||
     (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) {
     return
   }
-  if !self.disk_free_low() {
+  if !full && !self.disk_free_low() {
     return
   }
   let through = self.store.last_archived_session()
@@ -1100,7 +1602,7 @@ pub async fn Hub::relieve_archived(self : Hub) -> Unit {
   self.archived_workspaces(
     through,
     async fn(s) {
-      if !self.disk_free_low() {
+      if !full && !self.disk_free_low() {
         return false
       }
       let key = field(s, "key").unwrap_or(Json::null())
@@ -1108,7 +1610,7 @@ pub async fn Hub::relieve_archived(self : Hub) -> Unit {
         if (self.world.ask)("cold.holdsMore", key) != Json::boolean(true) {
           return true
         }
-        if !self.disk_free_low() {
+        if !full && !self.disk_free_low() {
           return false
         }
         ignore((self.world.ask)("cold.expire", { "key": key, "before": field(s, "archivedAt").unwrap_or(Json::null()) }))
@@ -1117,7 +1619,7 @@ pub async fn Hub::relieve_archived(self : Hub) -> Unit {
       }
       true
     },
-    needed=async fn() { self.disk_free_low() },
+    needed=async fn() { full || self.disk_free_low() },
   )
 }
 

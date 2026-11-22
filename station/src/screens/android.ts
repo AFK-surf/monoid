@@ -11,12 +11,12 @@ import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { ScreenRefused } from "./hub.ts";
 import type { Panel } from "./sim-mask.ts";
-import type { Frame, FrameConfig, ScreenInput, ScreenSource, ScreenVideo, ScreenView, Screens, ViewOptions } from "./source.ts";
+import type { Frame, FrameConfig, ScreenInput, ScreenSource, ScreenVideo, ScreenView, ScreenVolume, Screens, ViewOptions } from "./source.ts";
 
 /// The version of ./scrcpy-server: it refuses to run under any other name.
 export const SERVER_VERSION = "5.0.1";
 /// scrcpy's server: beside this module in src, and beside main.js (this module bundled into it) in a release.
-export const SERVER_FILE = fileURLToPath(new URL("./scrcpy-server", import.meta.url));
+export const SERVER_FILE = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/screens/scrcpy-server", import.meta.url) : new URL("./scrcpy-server", import.meta.url));
 /// How long a view's program has to start listening on the device.
 const CONNECT_TIMEOUT = 15_000;
 /// How long a look at a device is given (a phone over Wi-Fi may be slow, one that has gone never answers).
@@ -113,6 +113,7 @@ export class AndroidInput {
         return e.name === "volume_up" ? press(KEY_VOLUME_UP) : e.name === "volume_down" ? press(KEY_VOLUME_DOWN) : [];
       case "pose":
       case "button":
+      case "gamepad":
         return [];
     }
   }
@@ -537,6 +538,21 @@ export class PeekCount {
   }
 }
 
+/// What `cmd media_session volume --get` says (`volume is 7 in range [0..15]`): the level and its most; null where it
+/// says none.
+export function volumeOf(said: string): ScreenVolume | null {
+  const m = /volume is (\d+) in range \[0\.\.(\d+)\]/.exec(said);
+  if (m === null) return null;
+  const level = Number(m[1]), max = Number(m[2]);
+  return max > 0 && level <= max ? { level, max } : null;
+}
+
+/// The device's music stream (3: STREAM_MUSIC), asked of its media service: `media volume` before Android 10.
+const VOLUME = (args: string) => `cmd media_session volume --stream 3 ${args} 2>/dev/null || media volume --stream 3 ${args}`;
+/// Its music stream set to `level`: by the audio service where it has `set-volume` (Android 16's media service reads
+/// the volume but sets none from a shell), else by the media service (`set-volume` there answering nothing).
+const VOLUME_SET = (level: number) => `cmd audio set-volume 3 ${level} >/dev/null 2>&1; ${VOLUME(`--set ${level}`)}`;
+
 /// One device on adb.
 export class AndroidScreen implements ScreenSource {
   readonly id: string;
@@ -579,6 +595,17 @@ export class AndroidScreen implements ScreenSource {
 
   size(): { width: number; height: number } {
     return this.#size;
+  }
+
+  async volume(): Promise<ScreenVolume | null> {
+    return volumeOf(await this.#adb.run(["shell", VOLUME("--get")]).catch(() => ""));
+  }
+
+  async setVolume(level: number): Promise<ScreenVolume> {
+    const now = await this.volume();
+    if (now === null) throw new Error("the device says no volume");
+    await this.#adb.run(["shell", VOLUME_SET(Math.max(0, Math.min(now.max, Math.round(level))))]);
+    return (await this.volume()) ?? now;
   }
 
   async open(options: ViewOptions): Promise<ScreenView> {

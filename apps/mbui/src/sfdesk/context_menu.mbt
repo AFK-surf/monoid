@@ -4,8 +4,8 @@
 // them; nothing where there is none of these (the page's ground). A message of a chat's list right clicked offers its
 // words, link and turn's picture at the end (sfbase's share_offered, the same actions its ⋯ offers).
 // The library's menu (@sf.menu_node) at the pointer, a node of the window's tree over the wide frame
-// (context_menu_node). An old view's field right clicked is told it by the old frame, whose fields they are, and its
-// editing chosen is done there (context_fields): what of it is left the old frame's while its fields are.
+// (context_menu_node). A field right clicked is told it by the window's tree (@ui.on_field_menu), and its editing
+// chosen is done at once (@ui.field_edit_now).
 
 ///|
 /// The menu while it is open: where (the pointer: the right click's place, which says the right click it is open for:
@@ -14,6 +14,7 @@
 /// message right clicked (None: none).
 pub struct ContextMenu {
   mut open : Bool
+  mut window : Int
   mut x : Double
   mut y : Double
   mut link : String
@@ -30,6 +31,7 @@ pub struct ContextMenu {
 ///|
 pub let context : ContextMenu = {
   open: false,
+  window: 0,
   x: 0.0,
   y: 0.0,
   link: "",
@@ -76,12 +78,6 @@ let context_menus_gone : Map[Int, Bool] = Map([])
 let context_count : Ref[Int] = Ref(0)
 
 ///|
-/// An old view's field's editing chosen in the menu (the field, what: text_menu_*), done by the old frame whose field it
-/// is (context_fields); None once done.
-// kept across runs: put back by context_reset
-let context_edit : @signals.Signal[(Int, Int)?] = @signals.signal(None)
-
-///|
 /// The image whose pixels are read for 复制图片 ("" none), put on the clipboard once read (context_menu_node).
 // kept across runs: put back by context_reset
 let context_copying : @signals.Signal[String] = @signals.signal("")
@@ -96,20 +92,24 @@ fn context_told() -> Unit {
 ///|
 /// The menu at (x, y): another opening of it where it is not open for a right click there, else the same told anew.
 fn context_open_at(x : Double, y : Double) -> Unit {
-  let again = context_opened_at(x, y)
+  let wid = @ui.current_window_id()
+  let again = context_opened_at(x, y) && context.window == wid
   context.open = true
+  context.window = wid
   context.x = x
   context.y = y
-  if !again {
-    context_count.val += 1
-    let n = context_count.val
-    // (those gone their way out let go of as another opens: never as one goes, what it is let go in)
-    let left = context_menus.untracked().filter(fn(m) { !context_menus_gone.contains(m) })
-    context_menus_gone.clear()
-    context_menus.set(left + [n])
-    context_now.set(n)
-  }
-  context_told()
+  @view.transition(fn() {
+    if !again {
+      context_count.val += 1
+      let n = context_count.val
+      // (those gone their way out let go of as another opens: never as one goes, what it is let go in)
+      let left = context_menus.untracked().filter(fn(m) { !context_menus_gone.contains(m) })
+      context_menus_gone.clear()
+      context_menus.set(left + [n])
+      context_now.set(n)
+    }
+    context_told()
+  })
 }
 
 ///|
@@ -179,9 +179,11 @@ fn context_share_at(x : Double, y : Double, go : () -> Unit, link : String, word
 /// The menu closed: what it was open for, and the turn a message offered it, let go.
 fn context_closed() -> Unit {
   context.open = false
-  context_now.set(0)
-  @sfbase.share_offered.set(None)
-  context_lit()
+  @view.transition(fn() {
+    context_now.set(0)
+    @sfbase.share_offered.set(None)
+    context_lit()
+  })
 }
 
 ///|
@@ -194,24 +196,11 @@ fn context_reset() -> Unit {
   context_menus.set([])
   context_menus_gone.clear()
   context_count.val = 0
-  context_edit.set(None)
   context_copying.set("")
 }
 
 ///|
-/// A right click in the page (box `page`): the words picked's menu, where words are picked and nothing in the page
-/// that has a menu of its own was right clicked (Ctx::menu_asked: a message's image is its own menu's alone).
-pub fn context_page(c : @ui.Ctx, page : Int) -> Unit {
-  match c.menu_asked(page) {
-    Some((x, y)) if !context_opened_at(x, y) && c.selected_text().trim(chars=" \n\t") != "" =>
-      context_asked(x, y, c.selected_text())
-    _ => ()
-  }
-}
-
-///|
-/// A page made once (node `v`, the tree's), as an old view's page is in its frame (page_one's c.selectable and
-/// context_page): its words in pieces picked with the mouse (@ui.words_picked), and a right click in it the words
+/// A page made once (node `v`, the tree's): its words in pieces picked with the mouse (@ui.words_picked), and a right click in it the words
 /// picked's menu, where nothing in it that takes a press of its own was right clicked (Tree::menu_at: the topmost that
 /// does is asked), as the click's event, at its moment.
 pub fn context_node(v : @view.View) -> Unit {
@@ -226,36 +215,18 @@ pub fn context_node(v : @view.View) -> Unit {
 }
 
 ///|
-/// What the old frame does of the menu (over the wide frame, its island's): an old view's field right clicked anywhere
-/// opens its editing (Ctx::field_right_clicked: the focus given it, what can be done to it then, field_can), and the
-/// editing chosen in the menu is done to it (Ctx::field_edit; 粘贴 as ⌘V: a picture on the clipboard put in as a file,
-/// else its words, Ctx::field_paste), the focus its again.
-pub fn context_fields(c : @ui.Ctx) -> Unit {
-  match c.field_right_clicked() {
-    Some((id, x, y)) => context_field_at(id, x, y, c.field_can(id))
-    None => ()
-  }
-  match context_edit.get() {
-    Some((field, what)) => {
-      context_edit.set(None)
-      if what == @hostapi.text_menu_paste {
-        c.field_paste(field)
-      } else {
-        c.field_edit(field, what)
-      }
-    }
-    None => ()
-  }
-}
-
-///|
-/// The menu, in node `v` (a shell's): each opening of it a menu of the library's at the pointer (@sf.menu_node: Escape,
-/// back and a press beside it close it, a right click beside it closing it and going on to what is under it), what it
-/// holds as context says now (a link's items, an image's, the words', a message's), kept as it was as it closes, while
-/// it goes; chosen, it closes, then what was chosen is done. A message's turn offered by a right click (sfbase's
-/// share_offered, wherever that was) is told to it as it is offered. 复制图片's image read, its pixels put on the
-/// clipboard as a picture (Electron's copyImage: the picture decoded, as PNG).
+/// The menu, in node `v` (the window's root, over shells and modals): each opening of it a menu of the library's at
+/// the pointer (@sf.menu_node: Escape, back and a press beside it close it, a right click beside it closing it and
+/// going on to what is under it), what it holds as context says now (a link's items, an image's, a field's editing,
+/// the words', a message's), kept as it was as it closes, while it goes; chosen, it closes, then what was chosen is
+/// done. Any field of this window right clicked (a field of the tree's or an old view's) tells it at once
+/// (@ui.on_field_menu). A message's turn offered by a right click (sfbase's share_offered, wherever that was) is told
+/// to it as it is offered. 复制图片's image read, its pixels put on the clipboard as a picture (Electron's copyImage:
+/// the picture decoded, as PNG).
 pub fn context_menu_node(v : @view.View) -> Unit {
+  let wid = @ui.current_window_id()
+  // (a field of this window right clicked, tree or old view: its editing menu at once, in every shell and modal)
+  @ui.on_field_menu(v, fn(id, x, y, can) { context_field_at(id, x, y, can) })
   // (told as it is offered, another at another place too, the one before not let go)
   v.reacts(
     fn() {
@@ -266,17 +237,34 @@ pub fn context_menu_node(v : @view.View) -> Unit {
     },
     fn(now) {
       match (now, @sfbase.share_offered.untracked()) {
-        (Some(_), Some((x, y, go, link, words, key))) => context_share_at(x, y, go, link, words, key)
+        (Some(_), Some((x, y, go, link, words, key))) if @ui.current_window_id() == wid =>
+          context_share_at(x, y, go, link, words, key)
         _ => ()
       }
     },
   )
-  v.each(fn() { context_menus.get() }, fn(n) { n }, fn(cell, k) {
+  // (its slots made only once a menu opens or an image is copied in this window: zero nodes at rest on every screen)
+  let mounted = Ref(false)
+  v.reacts(
+    fn() { (!context_menus.get().is_empty() || context_copying.get() != "") && context.window == wid },
+    fn(active) {
+      if active && !mounted.val {
+        mounted.val = true
+        context_menu_slots(v, wid)
+      }
+    },
+  )
+}
+
+///|
+/// The context menu's each-slot and image-copy slot in `v` for window `wid`, mounted on first use (context_menu_node).
+fn context_menu_slots(v : @view.View, wid : Int) -> Unit {
+  v.each(fn() { if context.window == wid { context_menus.get() } else { [] } }, fn(n) { n }, fn(cell, k) {
     // (over the window, as what it holds is)
     cell.over(Is(true)) |> ignore
     let n = k.untracked()
     let (x, y) = (context.x, context.y)
-    let open = fn() { context_now.get() == n }
+    let open = fn() { context_now.get() == n && context.window == wid }
     let kept : Ref[Array[@sf.MenuItem?]?] = Ref(None)
     let live = fn() {
       context_said.get() |> ignore
@@ -324,27 +312,26 @@ pub fn context_menu_node(v : @view.View) -> Unit {
     )
   })
   // (复制图片: the image's pixels read, then onto the clipboard as a picture)
-  v.pick(fn() { context_copying.get() }, fn(p, image) {
-    if image != "" {
-      let pixels = @ui.tree_image_pixels(p, image, image_copy_px)
-      let state = fn() {
-        match pixels() {
-          None => 0
-          Some(@ui.PixelsRead(_, _, _)) => 1
-          Some(_) => 2
-        }
+  v.show(at_once=true, fn() { context_copying.get() != "" && context.window == wid }, fn(p) {
+    let image = context_copying.untracked()
+    let pixels = @ui.tree_image_pixels(p, image, image_copy_px)
+    let state = fn() {
+      match pixels() {
+        None => 0
+        Some(@ui.PixelsRead(_, _, _)) => 1
+        Some(_) => 2
       }
-      p.reacts(state, fn(s) {
-        if s == 0 {
-          return
-        }
-        match @signals.untracked(pixels) {
-          Some(@ui.PixelsRead(w, h, rgba)) => @ui.clipboard_set_png(@pixels.png(w, h, unpremultiplied(rgba)))
-          _ => ()
-        }
-        context_copying.set("")
-      })
     }
+    p.reacts(state, fn(s) {
+      if s == 0 {
+        return
+      }
+      match @signals.untracked(pixels) {
+        Some(@ui.PixelsRead(w, h, rgba)) => @ui.clipboard_set_png(@pixels.png(w, h, unpremultiplied(rgba)))
+        _ => ()
+      }
+      context_copying.set("")
+    })
   })
 }
 
@@ -380,15 +367,14 @@ fn context_items() -> Array[@sf.MenuItem?] {
   if context.field != 0 {
     let (field, can) = (context.field, context.field_can)
     group()
-    // (a field's editing alone: none has a mark of its own, 剪切 and 全选 having none)
     for x in [
-      (@hostapi.text_menu_cut, "desktop.contextMenu.cut"),
-      (@hostapi.text_menu_copy, "desktop.contextMenu.copy"),
-      (@hostapi.text_menu_paste, "desktop.contextMenu.paste"),
-      (@hostapi.text_menu_select_all, "desktop.contextMenu.selectAll"),
+      (@hostapi.text_menu_cut, "desktop.contextMenu.cut", "cut"),
+      (@hostapi.text_menu_copy, "desktop.contextMenu.copy", "copy"),
+      (@hostapi.text_menu_paste, "desktop.contextMenu.paste", "paste"),
+      (@hostapi.text_menu_select_all, "desktop.contextMenu.selectAll", "select-all"),
     ] {
       let what = x.0
-      item(x.1, "", fn() { context_edit.set(Some((field, what))) }, (can & what) == 0)
+      item(x.1, x.2, fn() { @ui.field_edit_now(field, what) }, (can & what) == 0)
     }
   } else if context.words.trim(chars=" \n\t") != "" {
     group()

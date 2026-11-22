@@ -5,13 +5,6 @@
 pub let second_ms : Double = 1000.0
 
 ///|
-/// A clock showing `ms` gone by in whole seconds, drawn again as it shows the next (Ctx::every by how far it is: a
-/// frame where its second changes, said as what comes again, none between).
-pub fn each_second(c : @ui.Ctx, ms : Double) -> Unit {
-  c.every(second_ms, elapsed=if ms > 0.0 { ms } else { 0.0 }) |> ignore
-}
-
-///|
 /// A running clock's reading in short: 45s, 3m 20s, 1h 5m.
 pub fn elapsed(ms : Double) -> String {
   let s = (if ms > 0.0 { ms / 1000.0 } else { 0.0 }).to_int()

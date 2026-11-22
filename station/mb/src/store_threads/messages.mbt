@@ -79,11 +79,6 @@ pub fn Store::last_message_at_for_archive(self : Store, thread : Json) -> Json r
 }
 
 ///|
-pub fn Store::unread_count(self : Store, viewer : Json, thread : Json) -> Json raise {
-  self.unread_count_at(viewer, thread, self.read_position(viewer, thread))
-}
-
-///|
 pub fn Store::message_count(self : Store, thread : Json) -> Json raise {
   self.unread_count_at(jstr(""), thread, jint(-1))
 }
@@ -114,7 +109,7 @@ pub fn Store::unread_for_archive(self : Store, viewer : Json, thread : Json) -> 
     let (known, latest) = if self.legacy_said {
       legacy_said_read_head(self.db, thread)
     } else {
-      (true, self.one(said_latest_sql, [thread]))
+      (true, self.one(@readops.said_latest_sql, [thread]))
     }
     if !known {
       return Json::null()
@@ -126,12 +121,12 @@ pub fn Store::unread_for_archive(self : Store, viewer : Json, thread : Json) -> 
     if col(latest, "author_kind") != jstr("person") || col(latest, "author") != viewer {
       return jbool(true)
     }
-    let (bknown, other) = said_boundary(self.one(said_state_sql, [thread]), latest)
+    let (bknown, other) = said_boundary(self.one(@readops.said_state_sql, [thread]), latest)
     if bknown {
       return jbool(!(other is Null) && num(other) > read)
     }
-    if self.legacy_said && self.one(legacy_said_needs_drain_sql, [thread]) is Some(_) {
-      let near = self.one(legacy_said_boundary_tail_sql, [thread, col(latest, "n"), col(latest, "author")]).unwrap()
+    if self.legacy_said && self.one(@readops.legacy_said_needs_drain_sql, [thread]) is Some(_) {
+      let near = self.one(@readops.legacy_said_boundary_tail_sql, [thread, col(latest, "n"), col(latest, "author")]).unwrap()
       let nknown = !(col(near, "n") is Null) || num(col(near, "count")) < 65.0
       return if nknown {
         jbool(!(col(near, "n") is Null) && num(col(near, "n")) > read)
@@ -139,7 +134,7 @@ pub fn Store::unread_for_archive(self : Store, viewer : Json, thread : Json) -> 
         Json::null()
       }
     }
-    let previous = self.all(if self.legacy_said { legacy_said_scan_sql } else { said_scan_sql }, [
+    let previous = self.all(if self.legacy_said { @readops.legacy_said_scan_sql } else { @readops.said_scan_sql }, [
       thread,
       col(latest, "n"),
       jint(64),
@@ -313,11 +308,6 @@ pub fn Store::last_entry(self : Store, thread : Json) -> Json raise {
 }
 
 ///|
-pub fn Store::entries_after(self : Store, thread : Json, n : Json) -> Json raise {
-  self.entries_between(thread, jnum(num(n) + 1.0), i64_max)
-}
-
-///|
 pub fn Store::entries_before(self : Store, thread : Json, n : Json, limit : Json) -> Json raise {
   let before = if n is Null { i64_max } else { n }
   let rows = self.all("SELECT * FROM entries WHERE thread = ? AND n < ? ORDER BY n DESC LIMIT ?", [thread, before, limit])
@@ -332,7 +322,7 @@ pub fn Store::entries_between(self : Store, thread : Json, from : Json, to : Jso
 
 ///|
 fn is_safe_integer(v : Json) -> Bool {
-  v is Number(n, ..) && n == n.floor() && n.abs() <= 9007199254740991.0
+  v is Number(n, ..) && @jsjson.is_safe_integer(n)
 }
 
 ///|

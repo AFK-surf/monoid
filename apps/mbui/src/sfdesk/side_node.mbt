@@ -5,6 +5,20 @@
 // for theirs (files_side_node.mbt).
 
 ///|
+/// The vertical order of a top-level place in the left rail (side_node's switch direction).
+fn side_place_index(place : String) -> Int {
+  match place {
+    "chats" => 0
+    "remote" => 1
+    "files" => 2
+    "stations" => 3
+    "profiles" => 4
+    "settings" => 5
+    _ => 0
+  }
+}
+
+///|
 /// The sidebar the block holds now in node `n` (as large as what holds the block, over it), where `at` says the block
 /// has it: cut to the block's room, its corners the block's (its line over it, dock_edge_node's); shown while what is in
 /// it is drawn.
@@ -30,25 +44,77 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
         }
       })
       |> ignore
+      let cur_place = fn() { if side_place() == "archive" { "chats" } else { side_place() } }
+      let kept_places : @signals.Signal[Array[String]] = @signals.signal([])
+      let last_ws : Ref[String] = Ref("")
+      side.reacts(
+        fn() { (@sfbase.workspace_in_view(src).0.map_or("", fn(w) { w.id }), cur_place()) },
+        fn(now) {
+          let (ws, place) = now
+          let mut kept = if ws != last_ws.val {
+            last_ws.val = ws
+            []
+          } else {
+            kept_places.untracked()
+          }
+          if !kept.contains(place) {
+            kept = kept.copy()
+            kept.push(place)
+          }
+          kept_places.set(kept)
+        },
+      )
+      // (settings_side_node's own reacts sleeps while parked; keep resetting search when leaving settings)
+      let in_settings = fn() { app.nav.pages().iter().any(fn(p) { p is (Settings | Setting(_)) }) }
+      side.reacts(in_settings, fn(on) { if !on { @sfpages.settings_search_reset() } })
+      let prev_place : Ref[(String, Int)?] = Ref(None)
+      let slide_dir : Ref[Double] = Ref(1.0)
+      let slide_way = @motion.NodeWay::new(1.0)
+      side.reacts(cur_place, fn(place) {
+        let cur_idx = side_place_index(place)
+        match prev_place.val {
+          Some((old_place, old_idx)) if old_place != place && !@ui.reduced_motion() => {
+            if !fold_going(side.cause_at()) {
+              slide_dir.val = if cur_idx >= old_idx { 1.0 } else { -1.0 }
+              slide_way.go_from(side, 0.0, 1.0, @motion.tween(160.0, ease=Out))
+            } else {
+              slide_way.put(1.0)
+            }
+          }
+          _ => ()
+        }
+        prev_place.val = Some((place, cur_idx))
+      })
       side
       .width(By(fn() { Some(at().laid_w) }))
       .height(By(fn() { Some(at().box.3) }))
-      .offset(By(fn() { (at().box.0 - at().block.0, at().box.1 - at().block.1) }))
+      .offset(By(fn() {
+        let dy = slide_dir.val * 10.0 * (1.0 - slide_way.shown(side))
+        (at().box.0 - at().block.0, at().box.1 - at().block.1 + dy)
+      }))
+      .carries_until(fn() { slide_way.ends_at() })
       |> ignore
-      side.pick(at_once=true, fn() { if side_place() == "archive" { "chats" } else { side_place() } }, fn(s, place) {
-        match place {
-          // (the settings' list beside their pages: settings_frame.mbt)
-          "settings" => settings_side_node(s, src, tips, at)
-          // (the files' places: files_side_node.mbt; the rail's Station and Profile places' lists: places_side_node.mbt)
-          "files" => files_side_node(s, src, tips, at)
-          "stations" => stations_side_node(s, src, tips, at)
-          "profiles" => profiles_side_node(s, src, tips, at)
-          // (远程's: its band over the remote list, made as the chats' sidebar is)
-          "remote" => remote_side_node(s, src, tips, at)
-          // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
-          _ => lists_side_node(s, src, tips, at)
-        }
-      })
+      side.each(
+        fn() { [cur_place()] },
+        fn(k) { k },
+        keeps=fn() { kept_places.get() },
+        at_once=true,
+        fn(s, place_sig) {
+          let place = @signals.untracked(fn() { place_sig.get() })
+          match place {
+            // (the settings' list beside their pages: settings_frame.mbt)
+            "settings" => settings_side_node(s, src, tips, at)
+            // (the files' places: files_side_node.mbt; the rail's Station and Profile places' lists: places_side_node.mbt)
+            "files" => files_side_node(s, src, tips, at)
+            "stations" => stations_side_node(s, src, tips, at)
+            "profiles" => profiles_side_node(s, src, tips, at)
+            // (远程's: its band over the remote list, made as the chats' sidebar is)
+            "remote" => remote_side_node(s, src, tips, at)
+            // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
+            _ => lists_side_node(s, src, tips, at)
+          }
+        },
+      )
     })
     |> ignore
   })
@@ -124,7 +190,18 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
         @sf.theme().p.sidebar
       }
     },
-    before: fn(_, _) { [] },
+    before: fn(filter, view) {
+      let parts : Array[@sfpages.NodePart] = @sfpages.restart_interrupted_parts(src, view, fn() {
+        match workspace() {
+          Some(w) => @sfbase.chats_of(src, w.id, filter).0
+          None => None
+        }
+      })
+      if @sfpages.stale_build_card_shown() {
+        parts.push({ key: "stale-build-card", make: fn(p) { @sfpages.stale_build_card_node(p, src) } })
+      }
+      parts
+    },
     after: fn(_, _) { [] },
     others: [
       fn(p) {
@@ -153,7 +230,11 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
     watched: fn() { true },
   }
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
-  s.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  s
+  .grow(Is(1.0))
+  .min_height(Is(Some(0.0)))
+  .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   |> ignore
   // under a finger's search (sfpages' search.mbt): the band and the foot away with the lists, the search over them
   let away = @sfpages.search_away_node(s)
@@ -214,6 +295,21 @@ fn lists_band_node(
       @sf.mix(if a.tape { a.ground } else { apart_ground() }, a.band, @sf.theme().p.sidebar)
     }))
     |> ignore
+    // (its top row the window's title bar where the window's buttons are in the app's top row, under what is in it: as
+    // tall as their row however short the band's own top is (no buttons at its left: a Windows window), not folded)
+    band.box(fn(o) {
+      o.over(Is(true)) |> ignore
+      o.box(fn(row) {
+        row
+        .width(By(fn() { Some(at().laid_w) }))
+        .height(Is(Some(closed_bar_top)))
+        .laid_nowhere(By(fn() { !@ui.window_inset_now() || side_folded() }))
+        .moves_window(By(fn() { @ui.window_inset_now() && !side_folded() }))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
     side_top_node(band, fn() { band_at().brand })
     band.box(fn(line) {
       @sf.style_node(line, fn() {
@@ -245,6 +341,8 @@ fn lists_band_node(
       |> ignore
       // catching up on what changed while away
       line.show(at_once=true, fn() { view().map(fn(v) { v.syncing is Some(_) }).unwrap_or(false) }, fn(k) {
+        native_floating_schedule()
+        k.owns(native_floating_schedule) |> ignore
         @sf.sync_key_node(k, tips, update_key_side, update_key_mark, fn() {
           match view() {
             Some({ syncing: Some(y), .. }) => Some(y)
@@ -252,8 +350,14 @@ fn lists_band_node(
           }
         })
       })
-      // 更新 before the filter where one is offered (brand.mbt update_key_of)
-      line.show(at_once=true, update_shown, fn(k) { update_key_of(k, src, tips) })
+      // 更新 before the filter where one is offered (brand.mbt update_key_of); omitted in the chats band while the
+      // over-7-day upgrade card is already shown right below (still shown in the collapsed bar and other sidebars).
+      let band_update = fn() { update_shown() && !@sfpages.stale_build_card_shown() }
+      line.show(at_once=true, band_update, fn(k) {
+        native_floating_schedule()
+        k.owns(native_floating_schedule) |> ignore
+        update_key_of(k, src, tips)
+      })
       // the stations' newer releases waiting for this person beside it, as the app's own is offered; pressed, their
       // dialog (sfpages station_updates.mbt)
       let stations_said = fn() {
@@ -263,7 +367,9 @@ fn lists_band_node(
         }
       }
       // (the app's own offered too: one key, the app's, opening the dialog of both: update_pressed)
-      line.show(at_once=true, fn() { stations_said() != "" && !update_shown() }, fn(k) {
+      line.show(at_once=true, fn() { stations_said() != "" && !band_update() }, fn(k) {
+        native_floating_schedule()
+        k.owns(native_floating_schedule) |> ignore
         @sf.update_key_node(k, tips, update_key_side, update_key_mark, stations_said, stations_said, fn() { false }, fn() { None }, fn() {
           match @signals.untracked(workspace) {
             Some(w) => @sfpages.station_updates_dialog(src, settings_core(src, w), w.id)
@@ -309,14 +415,11 @@ fn lists_band_node(
           })
           opener.mark()
         }, expanded=fn() { opener.open() }, fn(f) {
-          let hot = @motion.NodeWay::new(0.0)
-          f.reacts(fn() { @sf.lit_node(f) || @sfpages.filter_menu_open() }, fn(on) {
-            hot.go_ms(f, if on { 1.0 } else { 0.0 }, @sf.dur_ms)
-          })
+          let hot = @motion.hover_fade(f, fn() { @sf.lit_node(f) || @sfpages.filter_menu_open() }, duration_ms=@sf.dur_ms)
           @sf.style_node(f, fn() { filter_box })
           // (round as its ground is while it shows one, as an old view's is drawn: at rest nothing of it stands in the
           // panel's corner; in the closed bar's, its corner linked, below)
-          f.radius(By(fn() { if band_at().in_bar || hot.shown(f) > 0.0 { 1.0e6 } else { 0.0 } })) |> ignore
+          f.radius(By(fn() { if band_at().in_bar || hot() > 0.0 { 1.0e6 } else { 0.0 } })) |> ignore
           // (in the closed bar's corner, its ground's corner linked to that corner, concentric with it: filter_box_bar)
           @ui.tree_corners_linked(f, fn() {
             if band_at().in_bar {
@@ -325,10 +428,10 @@ fn lists_band_node(
               None
             }
           })
-          f.ground(By(fn() { @sf.alpha(@sf.theme().p.hover, hot.shown(f)) })) |> ignore
+          f.ground(By(fn() { @sf.alpha(@sf.theme().p.hover, hot()) })) |> ignore
           @sf.icon_node(f, "filter", side_icon, By(fn() {
             let t = @sf.theme()
-            @sf.mix(t.p.text, hot.shown(f), t.p.muted)
+            @sf.mix(t.p.text, hot(), t.p.muted)
           }))
           |> ignore
           @sf.tip_node(tips, f, fn() { @sf.t("web-main.filter.chats") }) |> ignore
@@ -338,38 +441,32 @@ fn lists_band_node(
     })
     |> ignore
     // 待处理 under 新建对话 where the rail has no bell
-    band.show(at_once=true, fn() { workspace().map(fn(w) { todo_shown(src, w) }).unwrap_or(false) }, fn(k) {
-      k.box(fn(t) {
-        @sf.style_node(t, fn() { todo_box })
-        // (what 待处理's panel opens under: attention_node.mbt)
-        side_attention.val = Some(t)
-        t.owns(fn() {
-          match side_attention.val {
-            Some(v) if physical_equal(v, t) => side_attention.val = None
-            _ => ()
-          }
-        })
-        |> ignore
-        let n = fn() { workspace().map(fn(w) { todo_all(src, w) }).unwrap_or(0) }
-        @sf.band_row_node(t, fn() { wide.attention_open.get() }, fn() { @sf.t("web-main.attention.entry") }, fn() {
-          attention_set(!wide.attention_open.untracked())
-        }, list_at, fn(r) {
-          @sf.icon_node(r, "bell", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-          @sf.nav_words_node(r, fn() { @sf.t("web-main.attention.entry") })
-          r.box(fn(slot) {
-            @sf.style_node(slot, fn() { todo_slot })
-            slot.show(at_once=true, fn() { n() > 0 }, fn(c) {
-              c.box(fn(count) {
-                @sf.style_node(count, fn() { todo_count })
-                @sf.words_node(count, fn() { n().to_string() }, fn() { todo_count_words }) |> ignore
-              })
-              |> ignore
-            })
-          })
-          |> ignore
-        })
+    band.show(at_once=true, fn() { workspace().map(fn(w) { todo_shown(src, w) }).unwrap_or(false) }, fn(t) {
+      @sf.style_node(t, fn() { todo_box })
+      // (what 待处理's panel opens under: attention_node.mbt)
+      side_attention.val = Some(t)
+      t.owns(fn() {
+        match side_attention.val {
+          Some(v) if physical_equal(v, t) => side_attention.val = None
+          _ => ()
+        }
       })
       |> ignore
+      let n = fn() { workspace().map(fn(w) { todo_all(src, w) }).unwrap_or(0) }
+      @sf.band_row_node(t, fn() { wide.attention_open.get() }, fn() { @sf.t("web-main.attention.entry") }, fn() {
+        attention_set(!wide.attention_open.untracked())
+      }, list_at, fn(r) {
+        @sf.icon_node(r, "bell", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
+        @sf.nav_words_node(r, fn() { @sf.t("web-main.attention.entry") })
+        r.box(fn(slot) {
+          @sf.style_node(slot, fn() { todo_slot })
+          slot.show(at_once=true, fn() { n() > 0 }, fn(count) {
+            @sf.style_node(count, fn() { todo_count })
+            @sf.words_node(count, fn() { n().to_string() }, fn() { todo_count_words }) |> ignore
+          })
+        })
+        |> ignore
+      })
     })
   })
   |> ignore
@@ -382,11 +479,10 @@ fn lists_band_node(
 /// 新建对话 stands elsewhere: as wide as the row, as high as a band's row; its place handed to the system's glass as it is
 /// read out (native_sidebar_items, by its node's id), what the workspaces' sheet opens beside, let go with it.
 fn workspace_glass_node(r : @view.View, src : Source, workspace : () -> Workspace?) -> Unit {
-  r.box(fn(b) {
+  @sf.host_button_anchor_node(r, fn() { workspace().map(fn(w) { w.name }).unwrap_or("") }, fn(b) {
     b
     .grow(Is(1.0))
     .height(By(fn() { Some(@sf.band_row_h()) }))
-    .says(By(fn() { Some(@view.said(Button, label=workspace().map(fn(w) { w.name }).unwrap_or(""))) }))
     |> ignore
     let id = @ui.tree_read_out_id(b)
     native_workspace_hooked()
@@ -397,6 +493,7 @@ fn workspace_glass_node(r : @view.View, src : Source, workspace : () -> Workspac
         None => native_sidebar_items.remove(id)
       }
       native_workspace_anchor.val = Node(b)
+      native_floating_schedule()
     })
     b.owns(fn() {
       native_sidebar_items.remove(id)
@@ -404,6 +501,7 @@ fn workspace_glass_node(r : @view.View, src : Source, workspace : () -> Workspac
         Node(n) if n.id() == b.id() => native_workspace_anchor.val = Unanchored
         _ => ()
       }
+      native_floating_schedule()
     })
     |> ignore
   })
@@ -422,18 +520,22 @@ fn sidebar_glass_node(
   icon : String,
   menu : () -> Array[(String, String, Bool, String)],
 ) -> Unit {
-  k.box(fn(b) {
+  @sf.host_button_anchor_node(k, title, fn(b) {
     b
     .width(By(fn() { Some(@sf.band_row_h()) }))
     .height(By(fn() { Some(@sf.band_row_h()) }))
-    .says(By(fn() { Some(@view.said(Button, label=title())) }))
     |> ignore
     let id = @ui.tree_read_out_id(b)
     native_workspace_hooked()
     b.reacts(fn() { (title(), menu()) }, fn(now) {
       native_sidebar_items[id] = { id: key, title: now.0, icon: @sf.icon_path(icon), dot: false, prominent: false, menu: now.1 }
+      native_floating_schedule()
     })
-    b.owns(fn() { native_sidebar_items.remove(id) }) |> ignore
+    b.owns(fn() {
+      native_sidebar_items.remove(id)
+      native_floating_schedule()
+    })
+    |> ignore
   })
   |> ignore
 }
@@ -463,6 +565,7 @@ fn remote_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -
   .grow(Is(1.0))
   .min_height(Is(Some(0.0)))
   .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   |> ignore
   s.box(fn(list) {
     list.over(Is(true)) |> ignore

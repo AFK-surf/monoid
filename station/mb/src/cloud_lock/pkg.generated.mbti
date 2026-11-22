@@ -12,6 +12,8 @@ pub fn admit(Crypto, @lock.LockState, Who, Double) -> (@lock.Device, String) rai
 
 pub fn admit_person(Crypto, @lock.LockState, Who, Array[@json.Json]) -> (String, String, @lock.Person) raise Failure
 
+pub fn admit_personal(Crypto, @json.Json, Who) -> (String, String, String?) raise Failure
+
 pub fn answer_bodies(Cloud, @json.Json, String, String?) -> @json.Json raise Failure
 
 pub fn answer_person(Cloud, @json.Json, String) -> @json.Json raise Failure
@@ -69,8 +71,6 @@ pub let fork_words : String
 pub fn genesis(Crypto, @json.Json) -> @lock.LockState raise Failure
 
 pub fn gives_device(Cloud, String?, Viewer) -> Bool
-
-pub async fn harness(@host.Host) -> Unit
 
 pub fn hash_of(@json.Json) -> String
 
@@ -149,6 +149,8 @@ pub fn person_chain(Crypto, Array[@json.Json], String) -> Chain raise Failure
 pub fn person_fold(Crypto, Array[@json.Json], String) -> @lock.Person raise Failure
 
 pub fn person_json(@lock.Person) -> @json.Json
+
+pub fn personal_vault_lock(Crypto, String, Array[(String, Array[@json.Json])], Map[String, String], Array[@json.Json], Array[@json.Json], (@json.Json, @json.Json) -> Bool) -> @json.Json
 
 pub fn pin_brought(Cloud, String?, String, Array[@json.Json], @json.Json?, @json.Json?, Who, String) -> Unit raise Failure
 
@@ -290,6 +292,7 @@ pub fn Cloud::list(Self, String?) -> Locked?
 pub fn Cloud::listen(Self, (CloudState?) -> Unit) -> () -> Unit
 pub fn Cloud::lock_after(Self, Double, ws? : String?) -> Array[@json.Json]
 pub fn Cloud::lock_kept(Self, ws? : String?) -> Array[@json.Json]
+pub fn Cloud::lock_named(Self) -> Unit
 pub fn Cloud::lock_off(Self, ws? : String?) -> Kept?
 pub fn Cloud::locked(Self, ws? : String?) -> Locked?
 pub fn Cloud::logs_of(Self, String?) -> Array[String]
@@ -300,6 +303,7 @@ pub fn Cloud::new(@host.Host, String, Crypto, () -> Double) -> Self raise Failur
 pub fn Cloud::offer_moved(Self, String, Array[@json.Json]) -> Unit
 pub fn Cloud::pending_lock(Self, String) -> String?
 pub fn Cloud::person_chains(Self) -> PersonChains
+pub fn Cloud::personal_vault_lock(Self, ws? : String?, Map[String, String], Array[@json.Json], Array[@json.Json], (@json.Json, @json.Json) -> Bool) -> @json.Json?
 pub fn Cloud::provider(Self) -> String
 pub fn Cloud::relays(Self) -> Array[String]
 pub fn Cloud::reload(Self, tell? : Bool) -> Unit

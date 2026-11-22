@@ -1,6 +1,6 @@
 // Words' links pressed and carded once the words have one (words_links_node): words with none (most of a chat's) make
 // no binding and no node for them, not even a room for their cards, the arrow over them as over words whose links
-// are pressed; a link come into them later (a message streamed) pressed, its card shown and the hand over it, in the
+// are pressed; a link come into them later (edited or updated text) pressed, its card shown and the hand over it, in the
 // same words' node.
 
 ///|
@@ -89,7 +89,7 @@ test "words with no link make no binding and no node for links, not even the roo
 }
 
 ///|
-test "a link come into words with none (streamed): pressed, its card shown under a mouse and the hand over it, in the same words' node" {
+test "a link come into words with none (updated in place): pressed, its card shown under a mouse and the hand over it, in the same words' node" {
   let runs = @signals.signal(wl_plain())
   let tapped : Array[String] = []
   let node : Ref[@view.View?] = Ref(None)

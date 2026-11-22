@@ -5,11 +5,14 @@
 // queue (mb_post), which asks for the frame that takes it (win_app.c); the calls only the app does are
 // answered here, as android_core.c's CoreHost and apple_core.mm do:
 //   secure.* (still.fail hosts/bridge.ts): what the core keeps out of the files it syncs (the lock's signing seed, a vault's
-//     key), sealed with DPAPI for this Windows user (CryptProtectData, no prompt ever) in files of <data>\secure, one a
-//     key (its UTF-8 in hex, `.user` after a `user` one's: read only as it was kept). secure.get {key, user} -> {} + the
-//     bytes, or {none: true}; secure.set {key, user} + the bytes -> {}; secure.delete {key} -> {}; secure.ask {reason}
-//     -> {}. Nothing asks the person here yet (Windows Hello): a `user` value is as safe as the Windows login, and
-//     secure.ask says yes at once, as still.fail's Electron app did on Windows (client/core-ts host.ts `secureAsk`).
+//     key), sealed with DPAPI for this Windows user (CryptProtectData, no prompt of DPAPI's) in files of <data>\secure,
+//     one a key (its UTF-8 in hex, `.user` after a `user` one's: read only as it was kept). secure.get {key, user,
+//     reason} -> {} + the bytes, or {none: true}; secure.set {key, user} + the bytes -> {}; secure.delete {key} -> {};
+//     secure.ask {reason} -> {}. What takes the person asks them with Windows Hello (win_hello.h), as apple_core.mm
+//     asks with LocalAuthentication, one prompt at a time on a thread of its own (the person's: the core's thread goes
+//     on meanwhile): secure.ask; secure.get of a `user` value there is (none asks nobody); secure.set of one. Where Hello
+//     is not set up or not there (no_device_lock: a password-only or local account, a VM, an RDP session) none of them
+//     asks: reads, writes and asks all fall back to DPAPI alone, as safe as this Windows login (as linux_core.c keeps).
 //   kept.read {at, start, end} -> {} + the bytes, or {none: true}: a file the app saved (its path, as mb_host_keep_where
 //     said it) read back, bytes start to end (the core's downloads: drive-kept.ts `saved`).
 //   listen.* (a login's loopback listener, mbui's win_listen.c): listen.open {port, host} -> {id, port};
@@ -40,6 +43,7 @@
 #include "engine.h"
 #include "win_electron_sealed.h"
 #include "win_collate.h"
+#include "win_hello.h"
 
 #pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -51,6 +55,7 @@
 #pragma comment(lib, "stillfail_shell.dll.lib")
 void sf_shell_set_say(const void *shell, void (*say)(void *, const uint8_t *, size_t, const uint8_t *, size_t), void *ctx);
 uint8_t sf_shell_screen_ack(const void *shell, uint64_t call, double ts);
+uint8_t sf_shell_screen_input(const void *shell, uint64_t call, const uint8_t *json, size_t len);
 void sf_shell_set_media(const void *shell, uint8_t (*media)(void *, uint64_t, uint8_t, uint8_t, uint64_t, uint64_t, const uint8_t *, size_t),
                         void *ctx);
 
@@ -220,6 +225,8 @@ static int jtrue(const char *p) { return p && strncmp(p, "true", 4) == 0; }
 const wchar_t *mb_win_app_id(void);
 const wchar_t *mb_win_app_name(void);
 const wchar_t *mb_win_env(const wchar_t *name);
+// the app's window (win_app.c), the one Windows Hello asks over
+void *mb_app_hwnd(void);
 
 // built in still.fail's desktop app's place (MBUI_OWN): that app's userData (%APPDATA%\<its name>, malloc'd), else NULL
 static WCHAR *desktop_app_data(void) {
@@ -319,27 +326,299 @@ static void secure_delete(const char *key) {
   }
 }
 
+// What secure_get reads, else, none here in still.fail's desktop app's place, that app's, the first time asked, sealed
+// again here: 1 and the bytes, 0 none, -1 failed (why in `why`).
+static int secure_read(const char *key, int user, uint8_t **out, size_t *len, char *why, size_t wl) {
+  int got = secure_get(key, user, out, len, why, wl);
+  WCHAR *desktop = got == 0 ? desktop_app_data() : NULL;
+  if (desktop && electron_sealed_get(desktop, key, user, out, len)) {
+    char set_why[200] = "";
+    if (!secure_set(key, user, *out, *len, set_why, sizeof set_why)) fprintf(stderr, "[core] %s\n", set_why);
+    got = 1;
+  }
+  free(desktop);
+  return got;
+}
+
+static void free_strs(char **items, size_t count) {
+  if (!items) return;
+  for (size_t i = 0; i < count; i++) free(items[i]);
+  free(items);
+}
+
+// A JSON array of strings at `p`, as malloc'd UTF-8 strings: 1 on success, 0 when not one.
+static int jstrs(const char *p, char ***out, size_t *count) {
+  *out = NULL;
+  *count = 0;
+  if (!p) return 0;
+  p = ws(p);
+  if (*p != '[') return 0;
+  p = ws(p + 1);
+  if (*p == ']') return 1;
+  size_t cap = 4, n = 0;
+  char **items = malloc(cap * sizeof(char *));
+  if (!items) return 0;
+  for (;;) {
+    if (*p != '"') {
+      free_strs(items, n);
+      return 0;
+    }
+    char *s = jstr(p);
+    const char *next = skip_string(p);
+    if (!s || !next) {
+      free(s);
+      free_strs(items, n);
+      return 0;
+    }
+    if (n == cap) {
+      cap *= 2;
+      char **grown = realloc(items, cap * sizeof(char *));
+      if (!grown) {
+        free(s);
+        free_strs(items, n);
+        return 0;
+      }
+      items = grown;
+    }
+    items[n++] = s;
+    p = ws(next);
+    if (*p == ',') p = ws(p + 1);
+    else if (*p == ']') {
+      *out = items;
+      *count = n;
+      return 1;
+    } else {
+      free_strs(items, n);
+      return 0;
+    }
+  }
+}
+
+// ── the person's thread: what asks the person (Windows Hello), one prompt at a time, the core's thread going on ──
+
+enum { PERSON_ASK, PERSON_GET, PERSON_SET, PERSON_GET_MANY };
+
+typedef struct person_job {
+  struct person_job *next;
+  uint64_t id;
+  int op;
+  char *key, *reason;  // malloc'd (key NULL for an ask/getMany, reason NULL where none was said)
+  char **keys;         // a getMany's, malloc'd
+  size_t nkeys;
+  uint8_t *bytes;      // a set's, malloc'd, wiped once done
+  size_t blen;
+} person_job;
+
+static struct {
+  SRWLOCK lock;
+  CONDITION_VARIABLE more;
+  person_job *head, *tail;
+  int started;
+} P = {SRWLOCK_INIT, CONDITION_VARIABLE_INIT, NULL, NULL, 0};
+
+static void secure_get_many(uint64_t id, char **keys, size_t n, int user, int ask_person, HWND window, const char *reason) {
+  char why[200] = "";
+  uint8_t **vals = n ? calloc(n, sizeof(uint8_t *)) : NULL;
+  size_t *lens = n ? calloc(n, sizeof(size_t)) : NULL;
+  int *gots = n ? calloc(n, sizeof(int)) : NULL;
+  int any = 0, failed = 0;
+  size_t total = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (!keys[i] || !*keys[i]) {
+      snprintf(why, sizeof why, "secure.getMany: bad key");
+      failed = 1;
+      break;
+    }
+    int got = secure_read(keys[i], user, &vals[i], &lens[i], why, sizeof why);
+    if (got < 0) {
+      failed = 1;
+      break;
+    }
+    gots[i] = got;
+    if (got > 0) {
+      any = 1;
+      total += lens[i];
+    }
+  }
+  const char *no = NULL;
+  if (!failed && any && user && ask_person) {
+    no = win_hello_ask(window, reason);
+    if (no && strcmp(no, "no_device_lock") == 0) no = NULL;
+  }
+  if (failed) {
+    answer(id, NULL, why, NULL, 0);
+  } else if (no) {
+    answer(id, NULL, no, NULL, 0);
+  } else {
+    size_t jcap = 16 + n * 24;
+    char *jbuf = malloc(jcap);
+    size_t jlen = (size_t)snprintf(jbuf, jcap, "{\"sizes\":[");
+    uint8_t *all = total ? malloc(total) : NULL;
+    size_t at = 0;
+    for (size_t i = 0; i < n; i++) {
+      if (i > 0) jbuf[jlen++] = ',';
+      if (gots[i] > 0) {
+        jlen += (size_t)snprintf(jbuf + jlen, jcap - jlen, "%zu", lens[i]);
+        if (lens[i]) {
+          memcpy(all + at, vals[i], lens[i]);
+          at += lens[i];
+        }
+      } else {
+        jlen += (size_t)snprintf(jbuf + jlen, jcap - jlen, "-1");
+      }
+    }
+    snprintf(jbuf + jlen, jcap - jlen, "]}");
+    answer(id, jbuf, NULL, all, total);
+    free(jbuf);
+    if (all) SecureZeroMemory(all, total), free(all);
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (vals && vals[i]) SecureZeroMemory(vals[i], lens[i]), free(vals[i]);
+  }
+  free(vals);
+  free(lens);
+  free(gots);
+}
+
+static void person_do(person_job *j) {
+  char why[200] = "";
+  const char *no = NULL;
+  HWND window = (HWND)mb_app_hwnd();
+  if (j->op == PERSON_ASK) {
+    no = win_hello_ask(window, j->reason);
+    if (no && strcmp(no, "no_device_lock") == 0) no = NULL;
+    if (no) answer(j->id, NULL, no, NULL, 0);
+    else answer(j->id, "{}", NULL, NULL, 0);
+  } else if (j->op == PERSON_GET) {
+    uint8_t *out = NULL;
+    size_t len = 0;
+    // none asks nobody (a probe for a key, MBUI_SECURE_TEST's)
+    int got = secure_read(j->key, 1, &out, &len, why, sizeof why);
+    if (got > 0) no = win_hello_ask(window, j->reason);
+    // (no Hello here, no_device_lock: read with DPAPI alone, as safe as the Windows login, as it was kept; a cancel,
+    // a window not in front or Hello's own error still refuses)
+    if (no && strcmp(no, "no_device_lock") == 0) no = NULL;
+    if (got < 0) answer(j->id, NULL, why, NULL, 0);
+    else if (got == 0) answer(j->id, "{\"none\":true}", NULL, NULL, 0);
+    else if (no) answer(j->id, NULL, no, NULL, 0);
+    else answer(j->id, "{}", NULL, out, len);
+    if (out) SecureZeroMemory(out, len), free(out);
+  } else if (j->op == PERSON_GET_MANY) {
+    secure_get_many(j->id, j->keys, j->nkeys, 1, 1, window, j->reason);
+  } else {
+    static const uint8_t none = 0;
+    // no Hello here (no_device_lock): kept with DPAPI alone for this Windows login, as reads and asks fall back, so
+    // password-only and local accounts, VMs and RDP sessions are not refused; where Hello is set up, reads still ask
+    no = win_hello_check();
+    if (no && strcmp(no, "no_device_lock") == 0) no = NULL;
+    if (no) answer(j->id, NULL, no, NULL, 0);
+    else if (secure_set(j->key, 1, j->bytes ? j->bytes : &none, j->bytes ? j->blen : 0, why, sizeof why)) answer(j->id, "{}", NULL, NULL, 0);
+    else answer(j->id, NULL, why, NULL, 0);
+  }
+}
+
+static void person_free(person_job *j) {
+  if (j->bytes) SecureZeroMemory(j->bytes, j->blen), free(j->bytes);
+  free(j->key);
+  free_strs(j->keys, j->nkeys);
+  free(j->reason);
+  free(j);
+}
+
+static DWORD WINAPI person_thread(void *arg) {
+  (void)arg;
+  // (WinRT for Hello's calls, for as long as the process: win_hello.h's own begin finds it begun)
+  RoInitialize(RO_INIT_MULTITHREADED);
+  for (;;) {
+    AcquireSRWLockExclusive(&P.lock);
+    while (!P.head) SleepConditionVariableSRW(&P.more, &P.lock, INFINITE, 0);
+    person_job *j = P.head;
+    P.head = j->next;
+    if (!P.head) P.tail = NULL;
+    ReleaseSRWLockExclusive(&P.lock);
+    person_do(j);
+    person_free(j);
+  }
+}
+
+// The job taken (its strings its own, its bytes copied), to the person's thread, begun the first time.
+static void person_queue_job(person_job *j) {
+  AcquireSRWLockExclusive(&P.lock);
+  if (!P.started) {
+    HANDLE t = CreateThread(NULL, 0, person_thread, NULL, 0, NULL);
+    if (t) CloseHandle(t), P.started = 1;
+  }
+  int started = P.started;
+  if (started) {
+    if (P.tail) P.tail->next = j;
+    else P.head = j;
+    P.tail = j;
+  }
+  ReleaseSRWLockExclusive(&P.lock);
+  if (started) {
+    WakeConditionVariable(&P.more);
+    return;
+  }
+  // (no thread to ask on: nobody asked, said as nowhere to ask)
+  answer(j->id, NULL, "not_in_front", NULL, 0);
+  person_free(j);
+}
+
+static void person_queue(uint64_t id, int op, char *key, char *reason, const uint8_t *bytes, size_t blen) {
+  person_job *j = calloc(1, sizeof *j);
+  j->id = id;
+  j->op = op;
+  j->key = key;
+  j->reason = reason;
+  if (bytes && blen) {
+    j->bytes = malloc(blen);
+    memcpy(j->bytes, bytes, blen);
+    j->blen = blen;
+  }
+  person_queue_job(j);
+}
+
 static void core_secure(uint64_t id, const char *op, const char *json, const uint8_t *bytes, size_t blen) {
-  char *key = jstr(jget(json, "key"));
   int user = jtrue(jget(json, "user"));
   char why[200] = "";
   if (strcmp(op, "secure.ask") == 0) {
-    answer(id, "{}", NULL, NULL, 0);
-  } else if (!key || !*key) {
+    person_queue(id, PERSON_ASK, NULL, jstr(jget(json, "reason")), NULL, 0);
+    return;
+  }
+  if (strcmp(op, "secure.getMany") == 0) {
+    char **keys = NULL;
+    size_t nkeys = 0;
+    if (!jstrs(jget(json, "keys"), &keys, &nkeys)) {
+      answer(id, NULL, "secure.getMany: no keys", NULL, 0);
+      return;
+    }
+    if (user) {
+      person_job *j = calloc(1, sizeof *j);
+      j->id = id;
+      j->op = PERSON_GET_MANY;
+      j->keys = keys;
+      j->nkeys = nkeys;
+      j->reason = jstr(jget(json, "reason"));
+      person_queue_job(j);
+    } else {
+      secure_get_many(id, keys, nkeys, 0, 0, NULL, NULL);
+      free_strs(keys, nkeys);
+    }
+    return;
+  }
+  char *key = jstr(jget(json, "key"));
+  int get = strcmp(op, "secure.get") == 0, set = strcmp(op, "secure.set") == 0;
+  if (!key || !*key) {
     snprintf(why, sizeof why, "%s: no key", op);
     answer(id, NULL, why, NULL, 0);
+  } else if (user && (get || set)) {
+    // (the key handed on, the job's now)
+    person_queue(id, get ? PERSON_GET : PERSON_SET, key, get ? jstr(jget(json, "reason")) : NULL, bytes, blen);
+    return;
   } else if (strcmp(op, "secure.get") == 0) {
     uint8_t *out = NULL;
     size_t len = 0;
-    int got = secure_get(key, user, &out, &len, why, sizeof why);
-    // none here, in still.fail's desktop app's place: that app's, the first time asked, sealed again here
-    WCHAR *desktop = got == 0 ? desktop_app_data() : NULL;
-    if (desktop && electron_sealed_get(desktop, key, user, &out, &len)) {
-      char set_why[200] = "";
-      if (!secure_set(key, user, out, len, set_why, sizeof set_why)) fprintf(stderr, "[core] %s\n", set_why);
-      got = 1;
-    }
-    free(desktop);
+    int got = secure_read(key, user, &out, &len, why, sizeof why);
     if (got > 0) answer(id, "{}", NULL, out, len);
     else if (got == 0) answer(id, "{\"none\":true}", NULL, NULL, 0);
     else answer(id, NULL, why, NULL, 0);
@@ -614,6 +893,15 @@ int mb_core_screen_ack(double call, double ts) {
   if (call < 1) return 0;
   AcquireSRWLockShared(&W.gate);
   if (W.engine && W.shell) done = sf_shell_screen_ack(W.shell, (uint64_t)call, ts) != 0;
+  ReleaseSRWLockShared(&W.gate);
+  return done;
+}
+
+int mb_core_screen_input(double call, const uint8_t *json, size_t len) {
+  int done = 0;
+  if (call < 1 || !json || len == 0) return 0;
+  AcquireSRWLockShared(&W.gate);
+  if (W.engine && W.shell) done = sf_shell_screen_input(W.shell, (uint64_t)call, json, len) != 0;
   ReleaseSRWLockShared(&W.gate);
   return done;
 }

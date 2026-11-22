@@ -13,9 +13,11 @@
 # the same to the byte): 1539 pixels of the capsules' ends at most 25 steps of a channel off, the rest the same.
 # Made again as #3192 eased a capsule's end with no kink in how much it bends (run 41288698800's artifact, its a and b
 # the same to the byte): 1531 pixels of the same ends at most 20 steps of a channel off, the rest the same.
-image ubuntu24 20261012.334.1
+# Made again as #6936 placed each unrotated glyph pixel at its texel centre in GLES (runs 44236895585 and 44457990983,
+# their a and b the same to the byte): 51 pixels of the glyphs' edges at most 6 steps of a channel off, the rest the same.
+image ubuntu24 20261111.127.1
 emulator 37.2.12
 system android-34/default/x86_64 2
 build Android/sdk_phone64_x86_64/emu64x:14/UE1A.230829.036.A1/11228894:userdebug/test-keys
 gl Google (Google Inc.), Android Emulator OpenGL ES Translator (Google SwiftShader), OpenGL ES 3.0 (OpenGL ES 3.0 SwiftShader 4.0.0.1)
-cpu INTEL(R) XEON(R) PLATINUM 8573C
+cpu Intel(R) Xeon(R) 6975P-C

@@ -177,7 +177,8 @@ test("a code mailed through the operator's relay, after STARTTLS and AUTH, signs
     assert.deepEqual([mail.from, mail.to, mail.tls, mail.user], ["FROM:<noreply@side.example.test>", "TO:<grace@example.test>", true, SMTP_USER]);
     assert.match(mail.data, /^Subject: =\?UTF-8\?B\?/m);
     const text = /Content-Type: text\/plain; charset=utf-8\nContent-Transfer-Encoding: base64\n\n([A-Za-z0-9+/=\n]+)\n--/.exec(mail.data)![1]!;
-    const code = /\b(\d{6})\b/.exec(Buffer.from(text.replace(/\n/g, ""), "base64").toString())![1]!;
+    const m = /\b(\d{3}) (\d{3})\b/.exec(Buffer.from(text.replace(/\n/g, ""), "base64").toString())!;
+    const code = m[1]! + m[2]!;
     return post({ via: "code", code });
   });
   assert.equal(tokens.email, "grace@example.test");

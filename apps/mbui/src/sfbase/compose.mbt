@@ -45,6 +45,8 @@ priv struct WritingState {
   mut generation : Int
   /// The committed words when a different core revision arrived during input-method composition.
   mut composing_base : String?
+  mut moves_by_user : Bool
+  mut seen_user_seq : Int
 }
 
 ///|
@@ -52,10 +54,21 @@ priv struct WritingCached {
   source : Source
   key : String
   value : Writing
+  /// when it was last asked for (writing_cache_tick's count)
+  mut used : Int
 }
 
 ///|
 let writing_cache : Ref[Array[WritingCached]] = Ref([])
+
+///|
+/// How many drafts are kept beyond those in use (writing_cache_trim): one each chat opened in a run, else.
+let writing_cache_max : Int = 32
+
+///|
+/// A count of the drafts asked for (WritingCached's `used`).
+// kept across runs: put back by writings_reset (sfbase's reset)
+let writing_cache_tick : Ref[Int] = { val: 0 }
 
 ///|
 /// Each draft by its key, as the page has it.
@@ -109,40 +122,8 @@ let writing_went : Map[String, (String, String, Bytes)] = Map([])
 let writing_unseen : Set[String] = Set([])
 
 ///|
-/// The stills of the videos waiting here the host has no picture of, made from their bytes (bytes_first_frame), each
-/// its tile's picture and its message's once made: called as a composer is built.
-pub fn writing_stills(c : @ui.Ctx) -> Unit {
-  for id in writing_unseen.to_array() {
-    guard writing_went.get(id) is Some((station, name, bytes)) else {
-      writing_unseen.remove(id)
-      continue
-    }
-    match bytes_first_frame(c, "draft/" + id, name, bytes) {
-      "" => ()
-      "!" => writing_unseen.remove(id)
-      still => {
-        writing_unseen.remove(id)
-        writing_picture_put(id, still)
-        sent_picture_kept("upload\u{1}" + id, still)
-        for _, w in writings {
-          for f in writing_files(w) {
-            let o = Some(f)
-            if text(o, "id") == id {
-              let path = text(field(o, "done"), "path")
-              if path != "" {
-                sent_picture_kept(sent_key(station, path), still)
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-///|
 /// The still of video `id` waiting here that the host has no picture of, made from its bytes for a node of the window's
-/// tree `v` (writing_stills', a composer's tile made as nodes): its tile's picture and its message's once made, as it
+/// tree `v` (a composer's tile made as nodes): its tile's picture and its message's once made, as it
 /// comes ("" while it does, none to be had: "!").
 pub fn writing_still_node(v : @view.View, id : String) -> () -> String {
   guard writing_unseen.contains(id) && writing_went.get(id) is Some((station, name, bytes)) else {
@@ -190,6 +171,12 @@ pub fn writing_put_here(id : String) -> Bool {
 let writing_seeds : Map[String, String] = Map([])
 
 ///|
+/// User-initiated draft transition count per draft key (`writing_act` with `moves=true`), shared across wrapped
+/// `Source` handles (e.g. `page_entry_source`) for the same draft key.
+// kept across runs: put back by writings_reset (sfbase's reset)
+let writing_user_seq : Map[String, Int] = Map([])
+
+///|
 /// Whether draft `w` has the file `seed` names already (writing_seeds).
 fn writing_has(w : Writing, seed : String) -> Bool {
   w.state.files.get().iter().any(fn(f) { writing_seeds.get(text(Some(f), "id")) == Some(seed) })
@@ -209,12 +196,14 @@ pub fn writings_reset() -> Unit {
   }
   // Array::clear keeps removed slots alive; drop its backing array when the app releases its drafts.
   writing_cache.val = []
+  writing_cache_tick.val = 0
   writings.clear()
   writing_pictures.clear()
   writing_pictures_tell()
   writing_went.clear()
   writing_unseen.clear()
   writing_seeds.clear()
+  writing_user_seq.clear()
   writing_n.val = 0
 }
 
@@ -227,8 +216,12 @@ fn[T] writing_value(value : @signals.Signal[T], following : @signals.Computed[Un
 ///|
 /// A draft is shared by its source and key, independent of which page or node reads it.
 fn writing_cached(src : Source, key : String) -> Writing {
+  writing_cache_tick.val += 1
   match writing_cache.val.search_by(fn(w) { physical_equal(w.source, src) && w.key == key }) {
-    Some(i) => writing_cache.val[i].value
+    Some(i) => {
+      writing_cache.val[i].used = writing_cache_tick.val
+      writing_cache.val[i].value
+    }
     None => {
       let state : WritingState = {
         field: @ui.Field::new(),
@@ -246,6 +239,8 @@ fn writing_cached(src : Source, key : String) -> Writing {
         adopted: -1,
         generation: -1,
         composing_base: None,
+        moves_by_user: false,
+        seen_user_seq: writing_user_seq.get(key).unwrap_or(0),
       }
       let topic = src.topic("composer", { "key": Json::string(key) })
       // (the draft's own reactions, held while a field of it is read, stopped as the last reader leaves: the
@@ -259,7 +254,7 @@ fn writing_cached(src : Source, key : String) -> Writing {
           let composing = state.field.composing()
           @signals.untracked(fn() {
             let (generation, fresh) = (src.generation)("composer", { "key": Json::string(key) })
-            writing_adopt(state, t.value, t.version, generation, fresh, composing)
+            writing_adopt(key, state, t.value, t.version, generation, fresh, composing)
           })
         })
         |> ignore
@@ -280,11 +275,44 @@ fn writing_cached(src : Source, key : String) -> Writing {
         following,
         taken: None,
       }
-      writing_cache.val.push({ source: src, key, value: w })
+      writing_cache.val.push({ source: src, key, value: w, used: writing_cache_tick.val })
       writings[key] = w
+      writing_cache_trim(w)
       w
     }
   }
+}
+
+///|
+/// The drafts kept beyond writing_cache_max let go of, the least lately asked for first, of those nothing holds: none a
+/// field of which is read (its reactions followed), sent and not yet answered (`taken`), with calls to the core under
+/// way, or written in now; `kept` (the one just made) never. What the core keeps of it stays: asked for again, it is
+/// made anew from the core's composer topic.
+fn writing_cache_trim(kept : Writing) -> Unit {
+  @signals.untracked(fn() {
+    while writing_cache.val.length() > writing_cache_max {
+      let mut oldest = -1
+      for i, cached in writing_cache.val {
+        let w = cached.value
+        if physical_equal(w, kept) ||
+          w.following.watched() ||
+          w.taken is Some(_) ||
+          w.pending.untracked() != 0 ||
+          w.field.focused() {
+          continue
+        }
+        if oldest < 0 || cached.used < writing_cache.val[oldest].used {
+          oldest = i
+        }
+      }
+      guard oldest >= 0 else { break }
+      let cached = writing_cache.val.remove(oldest)
+      cached.value.following.dispose()
+      if writings.get(cached.key) is Some(w) && physical_equal(w, cached.value) {
+        writings.remove(cached.key)
+      }
+    }
+  })
 }
 
 ///|
@@ -297,7 +325,7 @@ pub fn writing(src : Source, key : String) -> Writing {
     let t = src.topic("composer", { "key": Json::string(key) }).get()
     @signals.untracked(fn() {
       let (generation, fresh) = (src.generation)("composer", { "key": Json::string(key) })
-      writing_adopt(w.state, t.value, t.version, generation, fresh, w.field.composing())
+      writing_adopt(key, w.state, t.value, t.version, generation, fresh, w.field.composing())
     })
   }
   w
@@ -306,7 +334,7 @@ pub fn writing(src : Source, key : String) -> Writing {
 ///|
 /// The core's value shown, unless the page has done something it has not answered yet; its own words (a new `rev`:
 /// read back, taken, put back, carried on) into the field.
-fn writing_adopt(w : WritingState, v : Json?, version : Int, generation : Int, fresh : Bool, composing : Bool) -> Unit {
+fn writing_adopt(key : String, w : WritingState, v : Json?, version : Int, generation : Int, fresh : Bool, composing : Bool) -> Unit {
   if w.generation != generation {
     // A restarting client keeps the old value visible until the new core answers. Do not count that old revision as
     // the new core's: its first value can have the same revision but different contents.
@@ -331,8 +359,18 @@ fn writing_adopt(w : WritingState, v : Json?, version : Int, generation : Int, f
   }
   w.adopted = version
   @signals.start_batch()
-  w.quotes.set(items(v, "quotes"))
-  w.files.set(items(v, "files"))
+  let q_new = items(v, "quotes")
+  let f_new = items(v, "files")
+  let u_seq = writing_user_seq.get(key).unwrap_or(0)
+  let from_user_seq = u_seq != w.seen_user_seq
+  if from_user_seq {
+    w.seen_user_seq = u_seq
+    w.moves_by_user = u_seq > 0
+  } else if q_new.length() != w.quotes.untracked().length() || f_new.length() != w.files.untracked().length() {
+    w.moves_by_user = false
+  }
+  w.quotes.set(q_new)
+  w.files.set(f_new)
   // a picture picked here (a quote's too: a mark's screenshot), up: its message drawn from it as picked, by the name
   // the station keeps it under (sent.mbt)
   let files = w.files.get() + w.quotes.get().filter_map(fn(q) { field(Some(q), "own") })
@@ -365,6 +403,9 @@ fn writing_adopt(w : WritingState, v : Json?, version : Int, generation : Int, f
       w.composing_base = None
       w.seen_rev = rev
       if !edited {
+        if !from_user_seq && w.text.untracked() != words {
+          w.moves_by_user = false
+        }
         w.text.set(words)
         if w.field.text() != words {
           w.field.set(words)
@@ -400,8 +441,17 @@ fn writing_act(
     show(w)
   }
   if moves {
+    let next = writing_user_seq.get(w.key).unwrap_or(0) + 1
+    writing_user_seq[w.key] = next
+    w.state.seen_user_seq = next
+    w.state.moves_by_user = true
     @view.transition(act)
   } else {
+    if what == "take" || what == "restore" {
+      writing_user_seq.remove(w.key)
+      w.state.seen_user_seq = 0
+      w.state.moves_by_user = false
+    }
     act()
   }
   @signals.end_batch()
@@ -673,19 +723,14 @@ pub(all) struct FolderPick {
 pub let folder_pick_asked : Ref[(Source, FolderPick) -> Unit] = Ref(fn(_, _) {  })
 
 ///|
-/// Chat `r`'s services and jobs put up (an agent's card's jobs pressed, sfpages): the screen's (sfapp's: the desktop's
-/// popover, the phone's panel).
-// kept across runs: what the app says once as it starts
-pub let chat_jobs_asked : Ref[(@ui.Ctx, Source, ChatRef) -> Unit] = Ref(fn(_, _, _) {  })
-
-///|
 /// A key that is the page's (Space's composer.focus) at moment `at`: the page brought over first where the tape (中屏)
 /// has it behind the sidebar (sfdesk's tape_page_for_key), as the old page's own key did; nothing elsewhere.
 // kept across runs: what the app says once as it starts
 pub let page_for_key : Ref[(Double) -> Unit] = Ref(fn(_) {  })
 
 ///|
-/// The same from what is made once (an agent's card as nodes), the window's width given (what its screen is of).
+/// Chat `r`'s services and jobs put up (an agent's card's jobs pressed, sfpages' agent_card_node), the window's width
+/// given (what its screen is of): the screen's (sfapp's: the desktop's popover, the phone's panel).
 // kept across runs: what the app says once as it starts
 pub let chat_jobs_open : Ref[(Source, ChatRef, Double) -> Unit] = Ref(fn(_, _, _) {  })
 
@@ -882,6 +927,48 @@ pub fn writing_take(src : Source, w : Writing, station? : String = "", done : (J
 }
 
 ///|
+/// Whether the latest attachment, quote, or text change on `w` came from a user draft action (`writing_act` with
+/// `moves=true`) rather than a core topic sync (`writing_adopt`).
+pub fn writing_by_user(w : Writing) -> Bool {
+  let u_seq = writing_user_seq.get(w.key).unwrap_or(0)
+  if u_seq != w.state.seen_user_seq {
+    w.state.seen_user_seq = u_seq
+    w.state.moves_by_user = u_seq > 0
+  }
+  w.state.moves_by_user
+}
+
+///|
+/// What `take` took of `w` gone for good (the message taken into its chat, or into its outbox, which sends it): the
+/// bytes of its files and quotes' own pictures put up from here let go of, never to be put back. Not before: a message
+/// not taken puts them back (writing_restore, writing_back_or_said). The picture each was drawn as stays for its
+/// message (sent_pictures, which lets it go as it lets go of that: sent_picture_let_go).
+pub fn writing_committed(w : Writing) -> Unit {
+  guard w.taken is Some((_, quotes, files)) else { return }
+  w.taken = None
+  let ids = files.map(fn(f) { text(Some(f), "id") }) +
+    quotes.map(fn(q) { text(field(Some(q), "own"), "id") })
+  for id in ids {
+    guard id != "" else { continue }
+    // (a file of the draft as it is now, taken back in meanwhile, kept: what it shows is its own)
+    let now = w.state.files.untracked() + w.state.quotes.untracked().filter_map(fn(q) { field(Some(q), "own") })
+    if now.iter().any(fn(f) { text(Some(f), "id") == id }) {
+      continue
+    }
+    let picture = writing_pictures.get(id)
+    writing_went.remove(id)
+    writing_stations.remove(id)
+    writing_seeds.remove(id)
+    writing_unseen.remove(id)
+    writing_picture_drop(id)
+    match picture {
+      Some(p) => sent_picture_let_go(p)
+      None => ()
+    }
+  }
+}
+
+///|
 /// What `take` took put back (a chat that could not be made, a message never sent), saying why; with `unless_written`,
 /// only while nothing new is written there (`composer.restore`).
 pub fn writing_restore(src : Source, w : Writing, error : String, unless_written? : Bool = false) -> Unit {
@@ -1037,6 +1124,12 @@ pub fn quote_file_into(draft : String, author : String, ts : String, role : Stri
 /// the chat's key; taken by its composer (compose_given.mbt).
 pub fn files_into(chat : String, d : Dragged) -> Unit {
   draft_give(chat, Dropped(d))
+}
+
+///|
+/// Files `ds` let go on chat `chat` together (files_into's, all at once): taken into its draft as one drop.
+pub fn files_into_many(chat : String, ds : Array[Dragged]) -> Unit {
+  draft_give_all(chat, ds.map(fn(d) { Dropped(d) }))
 }
 
 ///|

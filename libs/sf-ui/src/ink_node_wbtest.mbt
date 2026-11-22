@@ -132,32 +132,3 @@ test "code's colours no node reads any more: what told it let go as they come, n
   assert_eq(made, before)
   assert_eq(t.audit(), [])
 }
-
-///|
-test "the old views' read of code's colours asks, keeps and gives them as before, making nothing of a node's" {
-  let seen : Ref[String??] = Ref(None)
-  let asked = []
-  let t = @ui.Tester::new(
-    fn(c) {
-      begin(c) |> ignore
-      // (the core as the run's first frame is built: Tester::new resets what was bound before it)
-      if ink_read.val is None {
-        inkn_core(asked)
-      }
-      seen.val = code_ink(c, inkn_a, "moonbit")
-    },
-    w=400.0,
-    h=400.0,
-  )
-  // (asked once, as its first frame was built; nothing here yet)
-  assert_eq(asked.length(), 1)
-  assert_true(seen.val is None)
-  t.draw()
-  assert_eq(asked.length(), 1)
-  assert_true(inks_told.is_empty())
-  (asked[0].2)(Some(inkn_said))
-  t.draw()
-  assert_eq(seen.val, Some(Some(inkn_said)))
-  assert_eq(asked.length(), 1)
-  assert_true(inks_told.is_empty())
-}

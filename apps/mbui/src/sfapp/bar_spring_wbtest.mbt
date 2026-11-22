@@ -33,21 +33,22 @@ fn bar_back() -> @ui.Tester raise {
 }
 
 ///|
-/// The notch the last frame drew in the bar's glass (Tester::drawn_notches: the frosted glass's, its circle's middle
-/// below its top and its radius), (0, 0) none.
-fn glass_notch(t : @ui.Tester) -> (Double, Double) {
-  for n in t.drawn_notches() {
-    if n.0 == 5 {
-      return (n.2, n.3)
+/// How wide the last frame drew the bar's capsule of glass (Tester::drawn_glass: the glass as high as the bar, the
+/// widest), its right end in by the action's room as far as the notch is open; 0 none.
+fn glass_notch(t : @ui.Tester) -> Double {
+  t.drawn_glass().fold(init=0.0, fn(a, g) {
+    if (g.0 - 22.0).abs() < 1.0 && (g.3 - bar_track).abs() < 1.0 && g.2 > a {
+      g.2
+    } else {
+      a
     }
-  }
-  (0.0, 0.0)
+  })
 }
 
 ///|
-/// The notch with it `k` open, as the bar draws it: where its circle's middle is below the glass's top, its radius.
-fn notch_of(k : Double) -> (Double, Double) {
-  (-lift * k, (drop / 2.0 + notch_gap) * k)
+/// How wide the bar draws its capsule with the notch `k` open, on a 390 window's bar.
+fn notch_of(k : Double) -> Double {
+  bar_capsule_w(390.0 - 44.0, k)
 }
 
 ///|
@@ -61,7 +62,7 @@ fn place_across(t : @ui.Tester, key : String) -> (Double, Double, Double) raise 
   let (x, _, w, _) = said_at(t, place_label(key)).unwrap()
   // The bar may rise or enter from below; find its actual painted glass instead of assuming the distance moved.
   let bottom = t.drawn_glass_corners().fold(init=0.0, fn(a, g) {
-    if (g.2 - told.width).abs() < 1.0 { dmax(a, g.1 + g.3) } else { a }
+    if (g.0 - 22.0).abs() < 1.0 && g.2 > told.width / 2.0 { dmax(a, g.1 + g.3) } else { a }
   })
   assert_true(bottom > 0.0, msg="bar glass not drawn")
   let top = bottom - bar_track - 2.0
@@ -102,8 +103,7 @@ test "bar: back from a chat, the notch opening frame by frame: drawn where it is
   t.check_looks(true)
   // it moves: the notch drawn where it is at each frame's moment
   assert_true(first != second && second != third, msg="\{Repr(first)} \{Repr(second)} \{Repr(third)}")
-  let (cy, r) = notch_of(bar.k_at(at))
-  assert_eq(second, (cy, r))
+  assert_true((second - notch_of(bar.k_at(at))).abs() < 0.01, msg="\{second} \{notch_of(bar.k_at(at))}")
   // and nothing of the bar is built or laid out for it
   assert_eq((p1.nodes, p1.laid, p2.nodes, p2.laid), (0, 0, 0, 0), msg="before: \{warm1} / \{warm2}; counted: \{Repr(p1)} \{why1} / \{Repr(p2)} \{t.built_why()}")
 }
@@ -125,7 +125,7 @@ test "bar: the notch opening, each frame painted so is the frame built whole; th
   assert_true((one.0 - one.2).abs() <= 0.5 && (two.0 - two.2).abs() <= 0.5, msg="\{Repr(one)} \{Repr(two)}")
   // to its end, each frame compared with the frame built whole (looks_check)
   t.run_for(bar_rest() - t.time())
-  assert_eq(glass_notch(t), notch_of(1.0))
+  assert_true((glass_notch(t) - notch_of(1.0)).abs() < 0.01)
 }
 
 ///|
@@ -141,37 +141,32 @@ test "bar: a place pressed where it is drawn as the notch opens is that place" {
 }
 
 ///|
-test "bar: a hold closes the notch and centres the places with it; release brings both back" {
+test "bar: a hold keeps the action's room and the places where they are, held and let go" {
   let during_rise_ms = 100.0
   let held_frame_ms = 1000.0
   let t = tester("home")
   let (xs, y) = bar_places_at()
   let open = glass_notch(t)
   let before = place_across(t, "files")
-  assert_eq(open, notch_of(1.0))
+  assert_true((open - notch_of(1.0)).abs() < 0.01, msg="\{open}")
   t.press_at(xs[0], y)
   t.run_for(bar_hold_ms)
   t.frame()
   t.run_for(during_rise_ms)
-  let middle = glass_notch(t)
+  assert_true((glass_notch(t) - open).abs() < 0.01, msg="\{open} \{glass_notch(t)}")
   let during = place_across(t, "files")
-  assert_true(middle.1 > 0.0 && middle.1 < open.1, msg="\{Repr(open)} \{Repr(middle)}")
-  assert_true((during.0 - during.2).abs() <= 0.5, msg="\{Repr(during)}")
+  assert_true((during.0 - during.2).abs() <= 0.5 && (during.0 - before.0).abs() <= 0.5, msg="\{Repr(before)} \{Repr(during)}")
   t.run_for(held_frame_ms)
-  let held = place_across(t, "files")
-  let closed_x = 22.0 + bar_centres(390.0 - 44.0, 0.0, 4)[1]
-  assert_eq(glass_notch(t), (0.0, 0.0))
-  assert_true((held.0 - closed_x).abs() <= 0.5 && (held.1 - closed_x).abs() <= 2.0, msg="\{Repr(held)} \{closed_x}")
+  assert_true((glass_notch(t) - open).abs() < 0.01)
   t.release(xs[0], y)
   t.run_for(held_frame_ms)
   let after = place_across(t, "files")
-  let restored = glass_notch(t)
-  assert_true((restored.0 - open.0).abs() < 0.001 && (restored.1 - open.1).abs() < 0.001, msg="\{Repr(open)} \{Repr(restored)}")
+  assert_true((glass_notch(t) - open).abs() < 0.001)
   assert_true((after.0 - before.0).abs() <= 0.5 && (after.1 - before.1).abs() <= 0.5, msg="\{Repr(before)} \{Repr(after)}")
 }
 
 ///|
-test "bar: sliding chooses the place under the finger as the notch closes and when it is closed" {
+test "bar: sliding chooses the place under the finger, either side of the line between two places" {
   for ms in [100.0, 1000.0] {
     let t = tester("home")
     let (xs, y) = bar_places_at()
@@ -183,15 +178,192 @@ test "bar: sliding chooses the place under the finger as the notch closes and wh
     t.run_for(bar_hold_ms)
     t.frame()
     t.run_for(ms)
-    let open_boundary = (xs[0] + xs[1]) / 2.0
-    let now_cs = bar_centres(told.width, bar.k_at(t.time()), items.length())
-    let drawn_boundary = 22.0 + (now_cs[0] + now_cs[1]) / 2.0
-    assert_true(drawn_boundary - open_boundary > 1.0, msg="\{ms}: \{open_boundary} \{drawn_boundary}")
-    // This lies on opposite sides of the old and the drawn boundary: the drawn side is chats.
-    let x = (open_boundary + drawn_boundary) / 2.0
-    t.move_to(x, y)
+    let boundary = (xs[0] + xs[1]) / 2.0
+    t.move_to(boundary + 4.0, y)
+    assert_eq(bar.felt, "\{told.cur}/files", msg="\{ms}")
+    t.move_to(boundary - 4.0, y)
     assert_eq(bar.felt, "\{told.cur}/chats", msg="\{ms}")
-    t.release(x, y)
+    t.release(boundary - 4.0, y)
     assert_true(app.nav.top() == Home, msg="\{ms}")
   }
+}
+
+///|
+test "bar: capsule and action circle share one liquid glass backdrop capture" {
+  let t = tester("home")
+  let (_, h) = t.size()
+  let liquids = t.drawn_glass().filter(fn(g) { g.4 == 6 && g.1 >= h / 2.0 })
+  assert_eq(liquids.length(), 2, msg="\{Repr(liquids)}")
+  assert_true(liquids[0].5 > 0, msg="\{Repr(liquids)}")
+  assert_eq(liquids[1].5, liquids[0].5, msg="\{Repr(liquids)}")
+}
+
+///|
+test "glass capture sharing: Small home and chat each use at most 2 distinct liquid glass captures" {
+  for mode in ["home", "chat"] {
+    let t = tester(mode)
+    let runs : Set[Int] = Set([])
+    let liquids = t.drawn_glass().filter(fn(g) { g.4 == 6 })
+    for g in liquids {
+      assert_true(g.5 > 0, msg="\{mode}: \{Repr(liquids)}")
+      runs.add(g.5)
+    }
+    assert_true(liquids.length() >= 3, msg="\{mode}: expected >= 3 liquid glasses, got \{Repr(liquids)}")
+    assert_true(runs.length() <= 2, msg="\{mode}: expected <= 2 distinct liquid captures, got \{runs.length()} in \{Repr(liquids)}")
+  }
+}
+
+///|
+test "bar: dragging panel up and down triggers capillary liquid fuse and split" {
+  let settle_ms = 1000.0
+  let drag_step_ms = 16.0
+  let t = tester("home")
+  let (xs, y) = bar_places_at()
+  // At rest with ＋ separated: merge == 0.0
+  assert_eq(bar_merge_at(t.time()), 0.0)
+  // Drag up to open multi-row panel (＋ fuses into capsule): sample across drag frames + post-release spring
+  let mut touched_open = false
+  let mut early_magnet_open = false
+  let mut peak_fuse_merge = 0.0
+  let record_open = fn(at : Double) {
+    let gap = (act_size + act_gap) * bar.k_at(at) - act_size
+    let m = bar_merge_at(at)
+    if gap <= bar_bond_contact_gap {
+      touched_open = true
+    } else if !touched_open && m > 0.0 {
+      early_magnet_open = true
+    }
+    if gap >= -12.0 && gap <= 0.0 {
+      peak_fuse_merge = dmax(peak_fuse_merge, m)
+    }
+  }
+  t.press_at(xs[1], y)
+  for step in 1..<=10 {
+    let cur_y = y - 80.0 * (step.to_double() / 10.0)
+    t.move_to(xs[1], cur_y)
+    let t0 = t.time()
+    t.run_for(drag_step_ms)
+    let mut s = t0
+    while s <= t.time() {
+      record_open(s)
+      s += 2.0
+    }
+  }
+  t.release(xs[1], y - 80.0)
+  let t_open_end = dmax(bar_rest(), t.time())
+  let mut s = t.time()
+  while s <= t_open_end {
+    record_open(s)
+    s += 2.0
+  }
+  t.run_for(settle_ms)
+  let open_rest = (bar.o.to == 1.0, bar.k_at(t.time()) <= 0.002, bar_merge_at(t.time()) == 0.0)
+  // Drag down to close panel (＋ emerges with liquid bridge, snaps past break_gap back to 0.0)
+  let t_close0 = t.time()
+  t.drag(xs[1], y - 56.0, xs[1], y)
+  let t_close_end = dmax(bar_rest(), t.time())
+  let mut peak_split_bridge = 0.0
+  let mut saw_snap_zero = false
+  let mut c = t_close0
+  while c <= t_close_end {
+    let k = bar.k_at(c)
+    let gap = (act_size + act_gap) * k - act_size
+    let m = bar_merge_at(c)
+    if gap >= 2.0 && gap <= 7.5 {
+      peak_split_bridge = dmax(peak_split_bridge, m)
+    }
+    if peak_split_bridge >= 25.0 && gap >= bar_bond_break_gap && m == 0.0 {
+      saw_snap_zero = true
+    }
+    c += 2.0
+  }
+  t.run_for(settle_ms)
+  let close_rest = (bar.o.to == 0.0, (bar.k_at(t.time()) - 1.0).abs() < 0.001, bar_merge_at(t.time()) == 0.0)
+  assert_eq(
+    (early_magnet_open, peak_fuse_merge >= 18.0, open_rest, peak_split_bridge >= 25.0, saw_snap_zero, close_rest),
+    (false, true, (true, true, true), true, true, (true, true, true)),
+    msg="peak_fuse=\{peak_fuse_merge} peak_split=\{peak_split_bridge}",
+  )
+}
+
+///|
+test "bar: tab switch and slow manual drag obey capillary contact/break hysteresis" {
+  let settle_ms = 1000.0
+  let drag_step_ms = 20.0
+  let bloom_ms = 30.0
+  let t = tester("home")
+  let (xs, y) = bar_places_at()
+  assert_eq((bar.k.to, bar_merge_at(t.time())), (1.0, 0.0))
+  // 1. Tab switch: Chats -> Remote (k: 1 -> 0)
+  let t_tab0 = t.time()
+  assert_true(@sfbase.go_place("remote"))
+  t.draw()
+  assert_eq(bar.k.to, 0.0)
+  let t_tab_end = dmax(bar_rest(), t.time())
+  let mut touched_tab = false
+  let mut early_magnet_tab = false
+  let mut peak_tab_fuse = 0.0
+  let mut s = t_tab0
+  while s <= t_tab_end {
+    let gap = (act_size + act_gap) * bar.k_at(s) - act_size
+    let m = bar_merge_at(s)
+    if gap <= bar_bond_contact_gap {
+      touched_tab = true
+    } else if !touched_tab && m > 0.0 {
+      early_magnet_tab = true
+    }
+    if gap >= -12.0 && gap <= 0.0 {
+      peak_tab_fuse = dmax(peak_tab_fuse, m)
+    }
+    s += 2.0
+  }
+  t.run_for(settle_ms)
+  let tab_closed_rest = (bar.k_at(t.time()) <= 0.002, bar_merge_at(t.time()) == 0.0)
+  // 2. Tab switch back: Remote -> Chats (k: 0 -> 1)
+  let t_back0 = t.time()
+  assert_true(@sfbase.go_place("chats"))
+  t.draw()
+  assert_eq(bar.k.to, 1.0)
+  let t_back_end = dmax(bar_rest(), t.time())
+  let mut peak_tab_split = 0.0
+  let mut tab_snap_zero = false
+  let mut c = t_back0
+  while c <= t_back_end {
+    let gap = (act_size + act_gap) * bar.k_at(c) - act_size
+    let m = bar_merge_at(c)
+    if gap >= 2.0 && gap <= 7.5 {
+      peak_tab_split = dmax(peak_tab_split, m)
+    }
+    if peak_tab_split >= 25.0 && gap >= bar_bond_break_gap && m == 0.0 {
+      tab_snap_zero = true
+    }
+    c += 2.0
+  }
+  t.run_for(settle_ms)
+  let tab_open_rest = ((bar.k_at(t.time()) - 1.0).abs() < 0.001, bar_merge_at(t.time()) == 0.0)
+  assert_eq(
+    (early_magnet_tab, peak_tab_fuse >= 18.0, tab_closed_rest, peak_tab_split >= 25.0, tab_snap_zero, tab_open_rest),
+    (false, true, (true, true), true, true, (true, true)),
+    msg="tab_fuse=\{peak_tab_fuse} tab_split=\{peak_tab_split}",
+  )
+  // 3. Slow manual drag up to gap <= 1.5pt (without releasing) triggers immediate coalescence
+  t.press_at(xs[1], y)
+  let mut dy = 4.0
+  let mut slow_bonded = false
+  let mut slow_merge = 0.0
+  while dy <= 72.0 {
+    t.move_to(xs[1], y - dy)
+    t.run_for(drag_step_ms)
+    let gap = (act_size + act_gap) * bar.k_at(t.time()) - act_size
+    if gap <= bar_bond_contact_gap {
+      slow_bonded = bar.bond_bonded
+      t.run_for(bloom_ms)
+      slow_merge = bar_merge_at(t.time())
+      break
+    }
+    dy += 4.0
+  }
+  t.release(xs[1], y - dy)
+  t.run_for(settle_ms)
+  assert_eq((slow_bonded, slow_merge >= 18.0, bar_merge_at(t.time()) == 0.0), (true, true, true), msg="slow_merge=\{slow_merge}")
 }

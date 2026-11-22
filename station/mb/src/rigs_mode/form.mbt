@@ -273,7 +273,9 @@ pub fn well_formed(kind : String, signed : Json?) -> Bool {
       time_ok(get(b, "seq")) && bool_at(b, "open") is Some(_) && device_ok
     }
     "device" => device_refusal(get(b, "device")) is None && bool_at(b, "removed") is Some(_)
-    "add" | "full" => true
+    // (`lock`: an entry of the workspace's lock to pin, rig-form.ts `AddBody`)
+    "add" => get(b, "lock") is None || hex32_at(get(b, "lock"))
+    "full" => true
     _ => false
   }
 }

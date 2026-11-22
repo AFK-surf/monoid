@@ -138,7 +138,7 @@ async fn door_take(
 /// What the gate needs: the grant's session, the machine's processes, and what of them is whose.
 pub struct GateDeps {
   /// The session holding the grant, with its own directory (`{workspace}`), or Null.
-  session : async (String) -> J
+  session : (String) -> J raise
   /// The machine's processes (`[{pid, ppid, pgid}]`), Null where they were not read.
   table : async () -> J
   /// The session's agent: the pids of its runner and the runtime it runs.
@@ -224,14 +224,9 @@ pub async fn gate(
     return Some(elsewhere)
   }
   let cwds = (d.cwds)(holders)
-  let own = try {
-    match w.ask("fs.realpath", [js(workspace)]) {
-      Str(_) as s => js_text(s)
-      _ => workspace
-    }
-  } catch {
-    _ => workspace
-  }
+  let own = (@host_world.fs_realpath(w.host, workspace) catch { _ => None }).unwrap_or(
+    workspace,
+  )
   let prefix = if own.has_suffix("/") { own } else { own + "/" }
   for pid in holders {
     match cwds.get(pid) {
@@ -249,7 +244,7 @@ pub async fn gate(
 /// None (a process under its agent or in one of its jobs, or working in its own directory), as `gate` decides a phone's.
 pub async fn session_gate(w : World, key : String, holders : Array[Int], elsewhere : String) -> String? {
   let deps : GateDeps = {
-    session: async fn(id) { jo([("workspace", get(w.store("getSession", [js(id)]), "workspace"))]) },
+    session: fn(id) { jo([("workspace", get(w.get_session(id), "workspace"))]) },
     table: async fn() { w.ask("platform.processTable", []) },
     runners: async fn(id) {
       list_of(Some(w.ask("agents.runners", [js(id)]))).map(x => num_of(Some(x)).unwrap_or(-1.0).to_int())
@@ -261,7 +256,7 @@ pub async fn session_gate(w : World, key : String, holders : Array[Int], elsewhe
       })
     },
     cwds: async fn(pids) { cwds_of(w.ask("platform.cwds", [ja(pids.map(ji))])) },
-    self_pid: num_of(Some(w.ask("process.pid", []))).unwrap_or(-1.0).to_int(),
+    self_pid: @host.pid(),
     elsewhere: Some(elsewhere),
   }
   gate(deps, w, key, holders)

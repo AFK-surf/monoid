@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { type Entry, endpointProof, entryHash, sigValid, taggedSigValid, validKeyId } from "../src/cloud/lock.ts";
+import { type Entry, endpointProof, entryHash, sigValid, taggedSigValid, validKeyId } from "../../shared/lock.ts";
 import { key, signed } from "./lock-world-sim.ts";
 import { VARIANTS } from "./lock-fork-choice-model.ts";
 import { pool, print } from "./lock-fork-pool.ts";

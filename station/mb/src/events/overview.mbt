@@ -69,6 +69,8 @@ pub(all) struct OverviewDeps {
   /// The platform's paths: whether one is absolute, and it cleaned (platform.paths `rooted`, `clean`).
   rooted : (String) -> Bool
   clean : (String) -> String
+  /// Unix ms timestamp when this station release was built (ops/version.ts `builtAt`); None in development.
+  built_at : Double?
 }
 
 ///|
@@ -105,19 +107,13 @@ fn either(a : J?, b : J?) -> J? {
 ///|
 /// JavaScript's truthiness.
 fn truthy(v : J?) -> Bool {
-  match v {
-    None | Some(Null) => false
-    Some(Bool(b)) => b
-    Some(Num(n)) => !(n == 0.0 || n.is_nan())
-    Some(Str(s)) => s.length() > 0
-    _ => true
-  }
+  @jsjson.jval_truthy(v)
 }
 
 ///|
 /// Math.round.
 fn js_round(x : Double) -> Double {
-  (x + 0.5).floor()
+  @jsjson.js_round(x)
 }
 
 ///|
@@ -194,6 +190,15 @@ fn archiving_view(raw : J, viewer : Viewer) -> J {
     ("days", jn(days(raw.get("autoArchiveDays"), 1.0))),
     ("slackDays", jn(days(raw.get("slackArchiveDays"), 3.0))),
     ("reviewed", Bool(raw.get("autoArchiveReviewed") is Some(Bool(true)))),
+    ("canEdit", Bool(manages_station(viewer.role))),
+  ])
+}
+
+///|
+/// overview.ts `autoChatsView`.
+fn auto_chats_view(raw : J, viewer : Viewer) -> J {
+  jo([
+    ("enabled", Bool(raw.get("acceptAutoChats") is Some(Bool(true)))),
     ("canEdit", Bool(manages_station(viewer.role))),
   ])
 }
@@ -300,7 +305,7 @@ fn agent_env_view(raw : J) -> J {
     _ => []
   }
   let env = set
-    .map(e => (@jsjson.raw_text(e.0), e.1))
+    .map(e => (e.0, e.1))
     .filter(e => env_name(e.0) && e.1 is Str(_))
     .map(e => (e.0, text_of(Some(e.1)).unwrap()))
   env.sort_by((a, b) => js_compare(a.0, b.0))
@@ -501,7 +506,7 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
     }
   }
   let kind = match c.get("kind") {
-    Some(Str(s)) if s.length() > 0 => @jsjson.raw_text(s)
+    Some(Str(s)) if s.length() > 0 => s
     _ => "slack"
   }
   let profiles : Array[String] = []
@@ -528,6 +533,29 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
   let created_by = match c.get("createdBy") {
     Some(by) if truthy(by.get("id")) => by
     _ => Null
+  }
+  let starts_on_auto = c.get("autoStation") is Some(Bool(true))
+  let starts_on = if starts_on_auto { None } else { non_empty(c.get("station")) }
+  let starts_on_stations_list : Array[String] = []
+  if !starts_on_auto && c.get("stations") is Some(Arr(items)) {
+    for x in items {
+      if text_of(Some(x)) is Some(s) {
+        let t = @jscase.trim(s)
+        if t != "" && !starts_on_stations_list.contains(t) {
+          starts_on_stations_list.push(t)
+        }
+      }
+    }
+  }
+  let starts_on_stations : J = if starts_on_auto {
+    Null
+  } else if starts_on_stations_list.length() > 0 {
+    ja(starts_on_stations_list.map(js))
+  } else {
+    match starts_on {
+      Some(s) => ja([s])
+      None => Null
+    }
   }
   // (its properties as the object has them, one undefined holding its place: what a kind's own sets goes there)
   let shown : Array[(String, J?)] = [
@@ -581,7 +609,9 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
         },
       ),
     ),
-    ("startsOn", Some(non_empty(c.get("station")).unwrap_or(Null))),
+    ("startsOn", Some(starts_on.unwrap_or(Null))),
+    ("startsOnStations", Some(starts_on_stations)),
+    ("startsOnAuto", if starts_on_auto { Some(Bool(true)) } else { None }),
     ("moves", Some(Bool(true))),
   ]
   let put = (name : String, value : J?) => {
@@ -596,7 +626,7 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
   if (d.connect_kind)(kind) is Some(own) {
     if (own.shown)(c) is Obj(entries) {
       for e in entries {
-        put(@jsjson.raw_text(e.0), Some(e.1))
+        put(e.0, Some(e.1))
       }
     }
     put(
@@ -624,7 +654,7 @@ pub fn overview(
     Some(Arr(items)) =>
       items.filter(c => {
         let ws = match c.get("workspace") {
-          Some(Str(s)) if s.length() > 0 => Some(@jsjson.raw_text(s))
+          Some(Str(s)) if s.length() > 0 => Some(s)
           _ => None
         }
         sees_ws(viewer, ws)
@@ -685,7 +715,7 @@ pub fn overview(
                 for e in entries {
                   viewer_shown = with_prop(
                     viewer_shown,
-                    @jsjson.raw_text(e.0),
+                    e.0,
                     e.1,
                   )
                 }
@@ -725,11 +755,17 @@ pub fn overview(
                   }
                 None => None
               }
+              let built_at = match d.built_at {
+                Some(ms) if ms > 0.0 && ms == ms.floor() && ms <= 9007199254740991.0 => Some(jn(ms))
+                _ => None
+              }
               done(
                 Ok(
                   jopt([
+                    ("builtAt", built_at),
                     ("automaticDecisions", Some(decisions)),
                     ("archiving", Some(archiving_view(raw, viewer))),
+                    ("autoChats", Some(auto_chats_view(raw, viewer))),
                     ("viewer", Some(viewer_shown)),
                     ("mesh", Some(mesh_status(d, Some(viewer)))),
                     ("connects", Some(ja(shown_connects))),
@@ -796,6 +832,15 @@ pub fn overview(
                       Some(
                         match d.accounts {
                           Some(a) => or_empty((a.api_providers)())
+                          None => ja([])
+                        },
+                      ),
+                    ),
+                    (
+                      "profileServices",
+                      Some(
+                        match d.accounts {
+                          Some(_) => ja([js("colab")])
                           None => ja([])
                         },
                       ),
@@ -903,7 +948,7 @@ let placeholder_mark : String = "\u{F8FF}\u{0}title\u{0}"
 fn fill(value : J, names : Map[String, String]) -> J {
   match value {
     Str(s) => {
-      let t = @jsjson.raw_text(s)
+      let t = s
       if t.has_prefix(placeholder_mark) {
         match
           names.get(t.view(start_offset=placeholder_mark.length()).to_string()) {
@@ -974,11 +1019,53 @@ fn made_decisions_view(
 ///|
 /// The decisions' stamp: what makes them again when it changes.
 fn decisions_stamp(d : OverviewDeps, a : AccountsDeps) -> String {
-  let automatic : J = match (d.config)().get("automaticDecisions") {
+  decisions_stamp_of((d.decisions_version)(), (d.config)(), (a.decision_models)())
+}
+
+///|
+fn decisions_stamp_of(decisions_version : J, config : J, decision_models : J) -> String {
+  let automatic : J = match config.get("automaticDecisions") {
     None | Some(Null) => Null
     Some(v) => v
   }
-  stringify(ja([(d.decisions_version)(), automatic, (a.decision_models)()]))
+  stringify(ja([decisions_version, automatic, decision_models]))
+}
+
+///|
+/// Whose decisions a view is kept as: whether the viewer manages the station, its home flag and its workspace (never
+/// who it is, so a workspace's managers share one).
+fn decisions_whose(viewer : Viewer) -> String {
+  let manages = if viewer.role == "owner" || viewer.role == "admin" {
+    "1"
+  } else {
+    "0"
+  }
+  let home = match viewer.raw.get("home") {
+    None => "undefined"
+    Some(h) => @jsjson.js_string(h)
+  }
+  let workspace = match viewer.raw.get("workspace") {
+    None | Some(Null) => ""
+    Some(w) => @jsjson.js_string(w)
+  }
+  "\{manages}\u{0}\{home}\u{0}\{workspace}"
+}
+
+///|
+/// Whether `decisions_view` would give the view it keeps for `viewer` at `now`, given these parts of its stamp: what
+/// makes it (the accounts' automatic decisions, the archive policy's checks and view) need not be asked then.
+pub fn OverviewKept::decisions_fresh(
+  self : OverviewKept,
+  viewer : Viewer,
+  decisions_version : J,
+  config : J,
+  decision_models : J,
+  now : Double,
+) -> Bool {
+  let stamp = decisions_stamp_of(decisions_version, config, decision_models)
+  self.decisions.get(decisions_whose(viewer)) is Some((at, s, _)) &&
+  s == stamp &&
+  now - at < decisions_kept_ms
 }
 
 ///|
@@ -991,15 +1078,7 @@ fn decisions_view(
   done : (J) -> Unit,
 ) -> Unit {
   let stamp = decisions_stamp(d, a)
-  let home = match viewer.raw.get("home") {
-    None => "undefined"
-    Some(h) => @jsjson.raw_text(@jsjson.js_string(h))
-  }
-  let workspace = match viewer.raw.get("workspace") {
-    None | Some(Null) => ""
-    Some(w) => @jsjson.raw_text(@jsjson.js_string(w))
-  }
-  let whose = "\{viewer.role}\u{0}\{home}\u{0}\{workspace}\u{0}\{viewer.email}"
+  let whose = decisions_whose(viewer)
   let now = (d.store_now)()
   if kept.decisions.get(whose) is Some((at, s, view)) &&
     s == stamp &&

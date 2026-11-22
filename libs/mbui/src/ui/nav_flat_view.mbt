@@ -23,8 +23,10 @@ priv struct FlatSeen {
   stacked : Bool
   /// what kind of page made once each holds (nav_flat_view's `made`; "" its old view), as what each is then
   kinds : Array[String]
-  /// the entries put by on the stack's kept left (Nav::try_park_left), their nodes put by at rest
+  /// the entries put by on the stack's kept left or covered on the stack, their nodes put by at rest
   kept : Array[Int]
+  /// what kind of page made once each kept entry holds (by `kept`'s order), so pv.pick stays steady while parking
+  kept_kinds : Array[String]
 }
 
 ///|
@@ -103,7 +105,9 @@ fn[P] Nav::flat_entries(self : Nav[P]) -> Array[Int] {
 /// its flow over it, the page in the room left under it). `shown`: told the entries that show (by their numbers) as
 /// the stack stands whole after a change (never the half between a change and its owner's keeping), and as it is made.
 /// `keeps_left`: as nav_view's, an entry that left put by as the stack stands whole once none keeps it shown in place
-/// (Nav::flat_keep), never let go and made again between.
+/// (Nav::flat_keep), never let go and made again between. `keeps_made`: as nav_view's, a root made once that a root is
+/// put in the place of (Nav::replace_kept) put on the shelf once none keeps it shown in place, its nodes put by at rest
+/// and taken in again as it is put back; the shelf emptied, each on it left for good, as this node is let go.
 pub fn[P] nav_flat_view(
   v : @view.View,
   nav : Nav[P],
@@ -119,8 +123,10 @@ pub fn[P] nav_flat_view(
   head? : (@view.View, Int, Bool) -> Unit,
   gone? : (Int) -> Unit = fn(_) {  },
   made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int, Int) -> Unit)? = fn(_) { None },
+  keeps_made? : Bool = false,
   shown? : (Array[Int]) -> Unit = fn(_) {  },
   keeps_left? : (P) -> (String, String)?,
+  transition? : NavTransition = NavTransition::flat(),
 ) -> @view.View {
   // (what shows pushed over the page in place, where what is pushed over is so here)
   let stacked = fn() { stacks() && nav.stacked() }
@@ -132,6 +138,17 @@ pub fn[P] nav_flat_view(
       s.owns(fn() {
         nav.keeps_left = None
         nav.kept_left.clear()
+        nav.kept_left.shrink_to_fit()
+      })
+      |> ignore
+    }
+    if keeps_made {
+      nav.shelves = Some(fn(p) { made(p) is Some(_) })
+      // (its shelf this node's: let go with it, what it put by let go by the each below, each left for good)
+      s.owns(fn() {
+        nav.shelves = None
+        nav.shelf.clear()
+        nav.shelf.shrink_to_fit()
       })
       |> ignore
     }
@@ -190,14 +207,34 @@ pub fn[P] nav_flat_view(
         // (one put on again from the kept left whose owner waits for what it shows (the one before kept shown meanwhile):
         // left put by as it rests, none of it laid out or woken, till it shows, taken in whole then)
         let all = nav.flat_entries()
-        let keys = all.filter(fn(k) { shown.contains(k) || !nav.waiting_taken_back(k) })
-        let kept = nav.kept_left.map(fn(x) { x.2.serial })
+        let is_made = fn(k : Int) {
+          match nav.flat_entry(k) {
+            Some(e) => made(e.page) is Some(_)
+            None => false
+          }
+        }
+        let keys = all.filter(fn(k) { shown.contains(k) || (!is_made(k) && !nav.waiting_taken_back(k)) })
+        // (those on the shelf, on the kept left, and covered on the stack, put by at rest: none of them while it shows,
+        // one kept shown in place as it goes on the shelf put by once its owner lets it go)
+        let kept : Array[Int] = []
+        if keeps_made {
+          for e in nav.shelf {
+            if !keys.contains(e.serial) && !kept.contains(e.serial) {
+              kept.push(e.serial)
+            }
+          }
+        }
+        for x in nav.kept_left {
+          if !keys.contains(x.2.serial) && !kept.contains(x.2.serial) {
+            kept.push(x.2.serial)
+          }
+        }
         for k in all {
-          if !shown.contains(k) && nav.waiting_taken_back(k) && !kept.contains(k) {
+          if !keys.contains(k) && !kept.contains(k) {
             kept.push(k)
           }
         }
-        { keys, shown, stacked: st, kinds: kinds_of(keys), kept }
+        { keys, shown, stacked: st, kinds: kinds_of(keys), kept, kept_kinds: kinds_of(kept) }
       })
     }
     let seen = @signals.signal(seen_now(), same=fn(a, b) { a == b })
@@ -275,7 +312,8 @@ pub fn[P] nav_flat_view(
       at_once=true,
       fn() { seen.get().keys },
       fn(k) { k },
-      keeps?=if keeps_left is Some(_) { Some(fn() { seen.get().kept }) } else { None },
+      keeps=fn() { seen.get().kept },
+      keeps_holds=fn(k) { nav.pages.iter().any(fn(e) { e.serial == k }) && !nav.waiting_taken_back(k) },
       fn(pv, serial) {
         let k = serial.untracked()
         held[k] = true
@@ -287,13 +325,54 @@ pub fn[P] nav_flat_view(
         pv
           .over(Is(true))
           .shift(
-            By(fn() { if seen.get().stacked { nav.shift_of(k, fn() { pv.drawn_at() }) } else { (0.0, 0.0) } }),
+            By(fn() {
+              if seen.get().stacked {
+                nav.shift_of(k, fn() { pv.drawn_at() }, under_parallax=transition.under_parallax)
+              } else {
+                (0.0, 0.0)
+              }
+            }),
             ends=fn() { if @signals.untracked(fn() { seen.get().stacked }) { nav.shift_ends_of(k) } else { -1.0 } },
           )
           .presses(By(fn() { if seen.get().stacked { nav.takes(k) } else { shows() } }))
           |> ignore
+        if transition.rise_under_scale != 1.0 {
+          pv
+            .scale(
+              By(fn() {
+                if seen.get().stacked {
+                  nav.rise_scale_of(k, fn() { nav.slide_moment(pv) }, transition.rise_under_scale)
+                } else {
+                  1.0
+                }
+              }),
+              about=At(0.5, 0.5),
+            )
+            |> ignore
+        }
+        let pv_id = pv.id()
+        if transition.under_dim > 0.0 || transition.rise_dim > 0.0 || transition.edge_shadow {
+          nav_veils[pv_id] = fn(x, y, w, h, now) {
+            if @signals.untracked(fn() { seen.get().stacked }) {
+              nav.veil_of(k, transition, x, y, w, h, now)
+            } else {
+              None
+            }
+          }
+        }
+        if transition.under_parallax < 1.0 {
+          nav_clips[pv_id] = fn(x, w, now) {
+            if @signals.untracked(fn() { seen.get().stacked }) {
+              nav.clip_of(k, transition, x, w, now)
+            } else {
+              None
+            }
+          }
+        }
         // (let go as it leaves the stack, not kept shown: what it made forgotten, the app told)
         pv.owns(fn() {
+          nav_veils.remove(pv_id)
+          nav_clips.remove(pv_id)
           held.remove(k)
           let here = nav.pages.iter().any(fn(e) { e.serial == k }) ||
             (nav.leaving is Some(e) && e.serial == k) ||
@@ -322,7 +401,11 @@ pub fn[P] nav_flat_view(
             let st = seen.get()
             match st.keys.search(k) {
               Some(i) => st.kinds[i]
-              None => ""
+              None =>
+                match st.kept.search(k) {
+                  Some(i) => st.kept_kinds[i]
+                  None => ""
+                }
             }
           },
           fn(pb, kind) {
@@ -345,7 +428,6 @@ pub fn[P] nav_flat_view(
                     m
                     .basis(Is(Some(0.0)))
                     .min_height(Is(Some(0.0)))
-                    .laid_nowhere(By(fn() { !shows() && !nav.is_kept_left(k) }))
                     |> ignore
                     // (back the stack's while it is pushed over the page in place and on the stack, down to that page)
                     let floor = fn() { if takes_back() && stacks() { nav.over_floor() } else { nav.pages.length() } }

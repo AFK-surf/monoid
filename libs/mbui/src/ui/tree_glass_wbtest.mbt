@@ -220,7 +220,7 @@ test "a liquid node's spot bound: its instance's 14 follows it, the node never m
       .width(Is(Some(120.0)))
       .height(Is(Some(44.0)))
       .radius(Is(22.0))
-      .glass(By(fn() { Some(Glass::liquid(spot=spot.get())) }))
+      .glass(By(fn() { Some(Glass::liquid(spot=spot.get(), adaptive=false)) }))
       |> ignore
     })
     |> ignore

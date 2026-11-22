@@ -76,12 +76,67 @@ pub fn Store::thread_of_message(self : Store, surface : Json, channel : Json, ts
 pub fn Store::join_thread(self : Store, thread : Json, session : Json, connect : Json) -> Json raise {
   let connect = own_name(connect)
   self.with_(changes => {
-    let joined = self.run(member_join_if_needed_sql, [thread, session, connect, self.now_json()]) > 0
-    if joined {
-      changes.push({ "type": "session", "key": session })
-      changes.push({ "type": "thread", "id": thread, "entries": [] })
+    if self.one("SELECT 1 FROM thread_sessions WHERE thread = ? AND session = ? AND left_at IS NULL", [thread, session]) is Some(_) {
+      jbool(false)
+    } else {
+      let now = self.now_json()
+      let s_scope = match self.one("SELECT scope FROM sessions WHERE key = ?", [session]) {
+        Some(r) => text_of(r.get("scope").unwrap_or(Json::null())).unwrap_or("")
+        None => ""
+      }
+      let sk = text_of(session).unwrap_or("")
+      let is_birth_candidate = if s_scope == "thread" {
+        match self.one("SELECT channel, thread_ts FROM threads WHERE id = ?", [thread]) {
+          Some(t) => {
+            let ch = text_of(t.get("channel").unwrap_or(Json::null())).unwrap_or("")
+            let ts = text_of(t.get("thread_ts").unwrap_or(Json::null())).unwrap_or("")
+            ch != "" && ts != "" && sk.has_suffix(":\{ch}:\{ts}")
+          }
+          None => false
+        }
+      } else {
+        false
+      }
+      if !is_birth_candidate {
+        let joined = self.run(member_join_if_needed_sql, [thread, session, connect, now]) > 0
+        if joined {
+          changes.push({ "type": "session", "key": session })
+          changes.push({ "type": "thread", "id": thread, "entries": [] })
+        }
+        jbool(joined)
+      } else {
+        let mut joined = false
+        let mut settled_sessions : Array[String] = []
+        let mut settled_threads : Array[Json] = []
+        self.tx(() => {
+          let is_born = self.one("SELECT 1 FROM thread_sessions WHERE session = ? LIMIT 1", [session]) is None &&
+            self.one("SELECT 1 FROM turns WHERE session_key = ? LIMIT 1", [session]) is None &&
+            self.one("SELECT 1 FROM chat_shares WHERE session = ? LIMIT 1", [session]) is None
+          joined = self.run(member_join_if_needed_sql, [thread, session, connect, now]) > 0
+          if joined {
+            let born : String? = if is_born { text_of(session) } else { None }
+            let (ss, ts) = @sql.settle_conversation_in_tx(self.db, thread, now, born~)
+            settled_sessions = ss
+            settled_threads = ts
+          }
+        })
+        if joined {
+          changes.push({ "type": "session", "key": session })
+          changes.push({ "type": "thread", "id": thread, "entries": [] })
+          for s in settled_sessions {
+            if s != sk {
+              changes.push({ "type": "session", "key": jstr(s) })
+            }
+          }
+          for id in settled_threads {
+            if id != thread {
+              changes.push({ "type": "thread", "id": id, "entries": [] })
+            }
+          }
+        }
+        jbool(joined)
+      }
     }
-    jbool(joined)
   })
 }
 
@@ -167,7 +222,11 @@ pub fn Store::session_thread_by_id(self : Store, session : Json, thread : Json) 
 
 ///|
 pub fn Store::session_home_thread(self : Store, session : Json) -> Json raise {
-  opt_row(self.one(session_home_thread_sql, [session]), session_thread_of)
+  let anchor = match text_of(session) {
+    Some(k) => jstr(@sql.conversation_of(self.db, k))
+    None => session
+  }
+  opt_row(self.one(session_home_thread_sql, [anchor, session]), session_thread_of)
 }
 
 ///|
@@ -270,7 +329,11 @@ fn Store::recent_thread_rows(self : Store, session : Json, limit : Int) -> (Arra
   let attempt = self.one(latest_thread_attempt_sql, [session]).unwrap()
   let ready = is_num(col(attempt, "_latest_version"), 1.0) && is_num(col(attempt, "_latest_ready"), 1.0)
   let heard = if ready { self.all(latest_threads_indexed_sql, [session, jint(limit)]) } else { [] }
-  let home = self.one(session_home_thread_sql, [session])
+  let home_anchor = match text_of(session) {
+    Some(k) => jstr(@sql.conversation_of(self.db, k))
+    None => session
+  }
+  let home = self.one(session_home_thread_sql, [home_anchor, session])
   let half = (limit + 1) / 2
   let order : Array[Map[String, Json]] = []
   if home is Some(h) {
@@ -575,7 +638,7 @@ pub fn Store::recent_connect_people(self : Store, connect : Json, limit : Json) 
   let prefix = "slack:\{c}:"
   Json::array(
     self
-    .all(recent_connect_threads_sql, [limit, connect])
+    .all(@readops.recent_connect_threads, [limit, connect])
     .map(r => {
       let people = []
       for person in self.thread_people(col(r, "id"), col(r, "surface")) {
@@ -622,6 +685,15 @@ pub fn Store::recent_chat_list(self : Store, ws : Json, home : Json, limit : Jso
       put_col(out, "title", r, "title")
       put_col(out, "archivedAt", r, "archived_at")
       out["ws"] = col(r, "ws")
+      out["runtime"] = col(r, "runtime")
+      out["model"] = col(r, "model")
+      out["effort"] = col(r, "effort")
+      out["running"] = match col(r, "running") {
+        Number(n, ..) => Json::boolean(n != 0.0)
+        True => Json::boolean(true)
+        _ => Json::boolean(false)
+      }
+      out["createdBy"] = col(r, "created_by")
       sessions.push(Json::object(out))
     }
   }
@@ -647,11 +719,15 @@ fn js_text(v : Json) -> String {
 }
 
 ///|
-pub fn Store::search_chat_list(self : Store, ws : Json, home : Json, limit : Json, query : Json) -> Json raise {
+pub fn Store::search_chat_list(self : Store, ws : Json, home : Json, limit : Json, query : Json, filter? : Json = Json::null()) -> Json raise {
   if is_num(limit, 0.0) {
     return { "threads": [], "sessions": [], "total": 0 }
   }
   let q = text_of(query).unwrap_or("")
+  let fget = (k : String) => match filter { Object(o) => o.get(k); _ => None }
+  let filter_model = match fget("model") { Some(String(s)) if s != "" => Some(@jscase.lower(s)); _ => None }
+  let filter_creator = match fget("createdBy") { Some(String(s)) if s != "" => Some(@jscase.lower(s)); _ => None }
+  let filter_archived = match fget("archived") { Some(True) => Some(true); Some(False) => Some(false); _ => None }
   let threads = []
   let sessions : Array[(String, Json)] = []
   let mut total = 0
@@ -669,29 +745,71 @@ pub fn Store::search_chat_list(self : Store, ws : Json, home : Json, limit : Jso
       Object(o) => o.get(k).unwrap_or(Json::null())
       _ => Json::null()
     }
-    let first_text = col(row, "first_text")
-    let titles = [col(row, "title"), col(row, "auto_title"), first_text, ..members.map(m => field_of(m, "title"))].filter(t => !(t is Null))
-    let said_text = col(row, "said_text")
-    let haystack = @jscase.lower(
-      titles.map(js_text).join(" ") +
-      " " +
-      (if said_text is Null { "" } else { js_text(said_text) }) +
-      " " +
-      members.map(m => js_text(field_of(m, "session"))).join(" "),
-    )
-    if !haystack.contains(q) {
-      continue
+    if filter_archived is Some(want_archived) {
+      let hidden = !(col(row, "hidden_at") is Null)
+      let home_archived = match col(row, "home") {
+        String(h) => members.iter().any(m => js_text(field_of(m, "session")) == h && !(field_of(m, "archivedAt") is Null))
+        _ => false
+      }
+      if (hidden || home_archived) != want_archived {
+        continue
+      }
+    }
+    if filter_model is Some(want_model) {
+      if !members.iter().any(m => @jscase.lower(js_text(field_of(m, "model"))).contains(want_model)) {
+        continue
+      }
+    }
+    if filter_creator is Some(want_creator) {
+      let tc = @jscase.lower(js_text(col(row, "created_by")))
+      let matches_creator = (tc != "" && tc.contains(want_creator)) ||
+        members.iter().any(m => {
+          let c = @jscase.lower(js_text(field_of(m, "createdBy")))
+          c != "" && c.contains(want_creator)
+        })
+      if !matches_creator {
+        continue
+      }
+    }
+    let mut first_text = Json::null()
+    if q != "" {
+      first_text = col(row, "first_text")
+      let titles = [col(row, "title"), col(row, "auto_title"), first_text, ..members.map(m => field_of(m, "title"))].filter(t => !(t is Null))
+      let said_text = col(row, "said_text")
+      let haystack = @jscase.lower(
+        titles.map(js_text).join(" ") +
+        " " +
+        (if said_text is Null { "" } else { js_text(said_text) }) +
+        " " +
+        members.map(m => js_text(field_of(m, "session"))).join(" "),
+      )
+      if !haystack.contains(q) {
+        continue
+      }
     }
     total += 1
     if threads.length().to_double() < num(limit) {
+      if q == "" && col(row, "title") is Null && col(row, "auto_title") is Null {
+        first_text = col(row, "first_text")
+      }
       for m in members {
         if !(field_of(m, "present") is (Number(0.0, ..) | Null | False)) {
           let key = js_text(field_of(m, "session"))
+          let running = match field_of(m, "running") {
+            Number(n, ..) => Json::boolean(n != 0.0)
+            True => Json::boolean(true)
+            _ => Json::boolean(false)
+          }
           let value : Json = {
             "key": field_of(m, "session"),
             "title": field_of(m, "title"),
             "archivedAt": field_of(m, "archivedAt"),
             "ws": field_of(m, "ws"),
+            "runtime": match field_of(m, "runtime") { String(s) => Json::string(s); _ => Json::string("") },
+            "model": field_of(m, "model"),
+            "effort": field_of(m, "effort"),
+            "running": running,
+            "createdBy": field_of(m, "createdBy"),
           }
           match sessions.search_by(s => s.0 == key) {
             Some(i) => sessions[i] = (key, value)

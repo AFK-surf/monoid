@@ -4,7 +4,8 @@
 // made it grow and shrink by a pixel; digits of words said to be one width (style.mbt style_tabular) are, in the
 // system's face and in a face given by its file (the first argument, as an app gives Inter: its tnum); and an ellipsis
 // that cuts Latin words in a CJK face (ui's shape_widths: the piece with it shaped narrow, style_proportional) leaves
-// the letters before it as wide as they were.
+// the letters before it as wide as they were; the glyphs of a page drawn ahead on the queues at every phase as they
+// are drawn on the frames' thread, the phases after their first a phase of every glyph in turn.
 //   cc -Wall -fobjc-arc -I src/host -I "$MOON_HOME/include" scripts/apple_text_test.m -framework Foundation \
 //     -framework AppKit -framework CoreText -framework CoreGraphics -framework ImageIO -o out/apple_text_test &&
 //     out/apple_text_test [face.ttf]
@@ -274,6 +275,114 @@ static void cut_cjk(NSString *family) {
   face_none(1);
 }
 
+// The rest of glyphs' phases in turn (ahead_rests): one more of every glyph before a third of any, each glyph's count
+// of them all the same.
+static void rests_in_turn(void) {
+  NSMutableArray<MBAhead *> *asked = [NSMutableArray new];
+  uint8_t wants[] = {SUB_ALL, SUB_ALL, 0x6, SUB_ALL, 0x3};
+  uint8_t firsts[] = {0x1, 0x2, 0x0, SUB_ALL, 0x1};
+  for (int i = 0; i < 5; i++) {
+    MBAhead *a = [MBAhead new];
+    a.key = i;
+    a.want = wants[i];
+    a.first = firsts[i];
+    [asked addObject:a];
+  }
+  NSMutableString *got = [NSMutableString new];
+  for (MBAhead *a in ahead_rests(asked)) [got appendFormat:@"%d", a.key];
+  printf("rests in turn: %s\n", got.UTF8String);
+  // (0 and 1 three each, 2 two, 3 none, 4 one)
+  CHECK([got isEqualToString:@"0124" @"012" @"01"], "rests in the order %s", got.UTF8String);
+}
+
+// A page of glyphs drawn ahead on the queues at once (mb_host_glyphs_ahead, their first phase where their keys put
+// them, the rest after): each phase of each taken drawn there, as the frames' thread draws it, to the byte.
+static void ahead_page(void) {
+  NSString *page = @"文字渲染横向推入页面每个字形的四分之一像素相位Rendering every glyph's phases ahead 0123456789";
+  int sizes[] = {13, 15, 17};
+  int keys[3 * 128], n = 0;
+  NSMutableSet<NSNumber *> *seen = [NSMutableSet new];
+  for (int si = 0; si < 3; si++) {
+    double out[4 * 128];
+    int k = shape(page, sizes[si], 400, 0, out, 128);
+    for (int i = 0; i < k && n < 3 * 128; i++) {
+      int key = (int)out[i * 4 + 3];
+      // (each once, and none drawn by the tests before)
+      if (key < 0 || entries[key].subs_queued || [seen containsObject:@(key)]) continue;
+      [seen addObject:@(key)];
+      keys[n++] = key | ((i % SUB_COUNT) << 26);
+    }
+  }
+  CHECK(n > 100, "only %d glyphs to draw ahead", n);
+  mb_host_glyphs_ahead(keys, n);
+  // (both queues serial, each item of theirs a dispatch_apply over all it was handed: done when a block after it is)
+  dispatch_sync(ahead_q, ^{
+                });
+  dispatch_sync(ahead_rest_q, ^{
+                });
+  int ahead = 0, same = 0;
+  for (int i = 0; i < n; i++) {
+    int key = key_base(keys[i]);
+    glyph_entry *e = &entries[key];
+    for (int s = 0; s < SUB_COUNT; s++) {
+      MBDrawn *d = drawn_ahead(key, s);
+      if (!d) continue;
+      ahead++;
+      MBDrawn *r =
+          draw_cluster(texts[key], font_for(e->size, e->weight, e->style), e->style, e->dx, sub_dx(s), text_scale);
+      BOOL eq = d.pw == r.pw && d.ph == r.ph && d.color == r.color && CGRectEqualToRect(d.b, r.b) &&
+                (!d.px || !r.px ? d.px == r.px : memcmp(d.px, r.px, (size_t)d.pw * d.ph * (d.color ? 4 : 1)) == 0);
+      if (eq) same++;
+      CHECK(eq, "glyph %d phase %d drawn ahead not as drawn here", key, s);
+    }
+  }
+  printf("ahead page: %d glyphs, %d of their %d phases drawn ahead, %d as drawn here\n", n, ahead, n * SUB_COUNT, same);
+  CHECK(ahead == n * SUB_COUNT, "%d of %d phases drawn ahead", ahead, n * SUB_COUNT);
+  int left = 0;
+  for (int i = 0; i < n; i++) left += ahead_of[@(key_base(keys[i]))] != nil;
+  CHECK(left == 0, "%d glyphs still asked ahead, all their phases taken", left);
+}
+
+// The keys forgotten only where MoonBit reads the generation (keys_sweep): the faces changed in a frame keep them
+// through it (a key made before still draws), and the next read forgets them, the generation moved on, what was asked
+// ahead let go, a key made before drawing nothing, one made after drawing as before; and past KEYS_MOST of them, the
+// same.
+static void keys_bounded(void) {
+  // (what the tests before changed of the faces forgotten as a frame would start)
+  mb_host_atlas_generation();
+  int k = key_of(@"a", 14, 0);
+  CHECK(k >= 0, "no key for a");
+  int g = mb_host_atlas_generation();
+  CHECK(mb_host_atlas_generation() == g, "the generation moved with nothing changed");
+  CHECK(n_entries > 0, "no keys kept");
+  double out[8];
+  mb_host_glyph(k, out);
+  CHECK(out[2] > 0, "a not drawn");
+  int32_t ask[1] = {k};
+  mb_host_glyphs_ahead(ask, 1);
+  faces_changed();
+  // (in the frame the faces changed in: what it shaped still draws)
+  CHECK(n_entries > k, "keys forgotten as the faces changed, in the frame");
+  mb_host_glyph(k, out);
+  CHECK(out[2] > 0, "a not drawn in the frame the faces changed in");
+  int g2 = mb_host_atlas_generation();
+  CHECK(g2 > g, "the generation not moved on");
+  CHECK(n_entries == 0 && keys.count == 0 && texts.count == 0 && n_ascii == 0, "keys kept: %d", n_entries);
+  CHECK(ahead_order.count == 0 && ahead_of.count == 0, "%lu still asked ahead", (unsigned long)ahead_order.count);
+  CHECK(mb_host_atlas_generation() == g2, "the generation moved again");
+  mb_host_glyph(k + 5, out);
+  CHECK(out[2] == 0 && out[3] == 0, "a key made before drew");
+  int k2 = key_of(@"a", 14, 0);
+  CHECK(k2 == 0, "the first key after %d", k2);
+  mb_host_glyph(k2, out);
+  CHECK(out[2] > 0, "a not drawn after");
+  // past KEYS_MOST: forgotten as the generation is next read, not before
+  for (int i = 0; n_entries <= KEYS_MOST; i++) intern(@"b", 10 + i * 0.001, 400, 0);
+  CHECK(n_entries == KEYS_MOST + 1, "%d keys", n_entries);
+  int g3 = mb_host_atlas_generation();
+  CHECK(g3 > g2 && n_entries == 0, "%d keys kept past the most, generation %d", n_entries, g3);
+}
+
 int main(int argc, char **argv) {
   @autoreleasepool {
     text_scale = 2.0;
@@ -287,6 +396,9 @@ int main(int argc, char **argv) {
     moving();
     cut_cjk(@"PingFang SC");
     cut_cjk(@"Hiragino Sans");
+    rests_in_turn();
+    ahead_page();
+    keys_bounded();
   }
   if (failed) return 1;
   printf("apple_text_test: ok\n");

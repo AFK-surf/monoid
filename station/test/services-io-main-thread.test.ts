@@ -12,7 +12,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { type Entry, entryHash, signedBytes } from "../src/cloud/lock.ts";
+import { type Entry, entryHash, signedBytes } from "../../shared/lock.ts";
 import { CommaStats } from "../src/comma/stats.ts";
 import { CommaSurface } from "../src/comma/surface.ts";
 import { CommaTasks } from "../src/comma/tasks.ts";

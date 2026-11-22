@@ -190,3 +190,50 @@ test("a request in flight as the other station's process hands over to its next 
     assert.deepEqual(await given(call(target.id(), "ws", { method: "again" }), "answered by the next process"), { ok: "again" });
   } finally { await Promise.all([source.close(), target.close()]); }
 });
+
+test("a request failed on a connection whose other end neither answers nor closes is not held waiting for its close: let go, the request failed, the next dials anew (FB-34)", { timeout: 20_000 }, async () => {
+  const { source, target } = await pair();
+  serving(target, [source.id()], async (r) => ({ ok: r.method }));
+  // (what the addon says of a connection whose other end is stuck: its streams fail, it is not there, it never closes)
+  const stuck = { now: false };
+  const kept: Connection[] = [];
+  const halfDead = (conn: Connection): Connection => new Proxy(conn, {
+    get(c, prop) {
+      if (stuck.now) {
+        if (prop === "openBi") return async () => { throw new Error("stream failed"); };
+        if (prop === "answers") return async () => false;
+        if (prop === "isClosed") return () => false;
+        if (prop === "closeReason") return () => null;
+        if (prop === "closed") return () => new Promise<string>(() => {});
+      }
+      const v = (c as any)[prop];
+      return typeof v === "function" ? v.bind(c) : v;
+    },
+  });
+  const dialing = new Proxy(source, {
+    get(e, prop) {
+      if (prop === "connect") return async (...args: unknown[]) => {
+        const conn = halfDead(await (e.connect as (...a: unknown[]) => Promise<Connection>)(...args));
+        kept.push(conn);
+        return conn;
+      };
+      const v = (e as any)[prop];
+      return typeof v === "function" ? v.bind(e) : v;
+    },
+  });
+  // (no check by time: what fails here fails by the stream alone, and the close is waited for `heardMs` at most)
+  const call = peerCall(dialing, cloudOf(source.id(), [target.id()]), (id) => ({ id }), undefined, 60_000, { checkMs: 60_000, heardMs: 20 });
+  try {
+    assert.deepEqual(await call(target.id(), "ws", { method: "first" }), { ok: "first" });
+    stuck.now = true;
+    const failed = await settled(call(target.id(), "ws", { method: "stuck" }));
+    assert.ok("e" in failed, "the request failed");
+    assert.ok(!(failed.e instanceof PeerStopped), `its other end said nothing of stopping: ${failed.e.message}`);
+    assert.match(failed.e.message, /stream failed/);
+    // (its letting go, begun as the request failed, done before its other end is there again)
+    await settle();
+    stuck.now = false;
+    assert.deepEqual(await given(call(target.id(), "ws", { method: "again" }), "answered on a new connection"), { ok: "again" });
+    assert.equal(kept.length, 2, "the half-dead connection was let go and a new one dialed");
+  } finally { await Promise.all([source.close(), target.close()]); }
+});

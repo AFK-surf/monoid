@@ -82,6 +82,14 @@ fn tool_run(
       }
     "secret_list" =>
       async fn(key, args, _) {
+        if get(Some(args), "other_workspaces") == Some(Json::boolean(true)) {
+          let ws_hint = if trim(arg_text(args, "workspace")) != "" {
+            Some(trim(arg_text(args, "workspace")))
+          } else {
+            None
+          }
+          return secrets.browse(key, arg_text(args, "reason"), workspace?=ws_hint, person?=person_of(args))
+        }
         let person = person_of(args)
         let items = secrets
           .listings(key, person?)
@@ -95,6 +103,17 @@ fn tool_run(
             fs.push(("hosts", get(Some(l.listing), "hosts").unwrap_or(Json::null())))
             if truthy(get(Some(l.listing), "env")) {
               fs.push(("env", get(Some(l.listing), "env").unwrap()))
+            }
+            if l.vault_name is Some(vn) {
+              fs.push(("vaultName", js(vn)))
+            }
+            if l.scope is Some(sc) {
+              fs.push(("scope", js(sc)))
+            }
+            if l.cross is Some((cws, cws_name, _)) {
+              fs.push(("crossWorkspace", jb(true)))
+              fs.push(("workspace", js(cws)))
+              fs.push(("workspaceName", js(cws_name)))
             }
             obj(fs)
           })

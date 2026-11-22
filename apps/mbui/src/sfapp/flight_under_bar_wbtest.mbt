@@ -14,7 +14,8 @@ fn last_kind_at(t : @ui.Tester, x : Double, y : Double) -> Int {
   let mut kind = -1
   for i in t.drawn_instances() {
     let cut = i[18] <= i[16] || (x >= i[16] && x <= i[18] && y >= i[17] && y <= i[19])
-    if i[11] > 0.5 && x >= i[0] && x <= i[0] + i[2] && y >= i[1] && y <= i[1] + i[3] && cut {
+    let alpha = if i[5] == 5.0 || i[5] == 6.0 { i[15] } else { i[11] }
+    if alpha > 0.5 && x >= i[0] && x <= i[0] + i[2] && y >= i[1] && y <= i[1] + i[3] && cut {
       kind = i[5].to_int()
     }
   }
@@ -29,18 +30,8 @@ fn film_in_chat(
   platform? : Int = 2,
   w? : Double = 390.0,
   answer? : ((@ui.Tester) -> Unit)? = None,
-  nodes? : Bool = false,
-  composed? : Bool = false,
 ) -> (@ui.Tester, Double, Double) {
   new_run()
-  // (the chat's page made as nodes, where `nodes` says so: sfbase's chat_page_nodes; its composer too where
-  // `composed` says so, 试用新输入框: sfbase's composer_nodes)
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
-  if composed {
-    @sfbase.composer_nodes.set(true)
-  }
   let src = fixture("chat-download-on")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let made : Ref[@ui.Tester?] = Ref(None)
@@ -93,8 +84,8 @@ fn film_frame_answered(t : @ui.Tester) -> Unit {
 /// till its top is `top` (under the chat's bar), pressed and let go a little over its foot: what went wrong in the
 /// frames while it went out from under the bar, and back in under it as it is closed (none, as it should be); on a
 /// chat's page made as nodes where `nodes` says so (its thumbnail the end of View::shared's flight that stays).
-fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bool = false, nodes? : Bool = false) -> Array[String] {
-  let (t, x, y) = if film { film_in_chat(platform~, w~, nodes~) } else { image_in_chat("compare.png", platform~, w~, nodes~) }
+fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bool = false) -> Array[String] {
+  let (t, x, y) = if film { film_in_chat(platform~, w~) } else { image_in_chat("compare.png", platform~, w~) }
   // opened once and closed: its whole read and kept, as a picture seen before is (the frame it sets out in again asks
   // the core nothing, built once)
   t.tap(x, y)
@@ -123,7 +114,7 @@ fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bo
   // highest)
   let mut under = -1.0
   for i in t.drawn_instances() {
-    if i[5] == 5.0 && i[0] <= x && x <= i[0] + i[2] && i[3] < 200.0 && (under < 0.0 || i[1] + i[3] / 2.0 < under) {
+    if (i[5] == 5.0 || i[5] == 6.0) && i[0] <= x && x <= i[0] + i[2] && i[3] < 200.0 && (under < 0.0 || i[1] + i[3] / 2.0 < under) {
       under = i[1] + i[3] / 2.0
     }
   }
@@ -187,24 +178,20 @@ fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bo
 ///|
 test "a picture under a chat's bar, the old page's and one made as nodes: the bar over it every frame till it is out from under it" {
   // a wide window, the tape's, and a phone's; its top a little under the bar's, and half of it over the window's top
-  for nodes in [false, true] {
-    for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
-      for top in [10.0, -100.0] {
-        let faults = picture_under_bar_faults(top, screen.0, screen.1, nodes~)
-        assert_true(faults.is_empty(), msg="\{if nodes { "nodes" } else { "old" }}, \{screen.1} wide, its top at \{top}: \{Repr(faults)}")
-      }
+  for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
+    for top in [10.0, -100.0] {
+      let faults = picture_under_bar_faults(top, screen.0, screen.1)
+      assert_true(faults.is_empty(), msg="\{screen.1} wide, its top at \{top}: \{Repr(faults)}")
     }
   }
 }
 
 ///|
 test "a film under a chat's bar, the old page's and one made as nodes: the bar over it every frame till it is out from under it" {
-  for nodes in [false, true] {
-    for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
-      for top in [10.0, -100.0] {
-        let faults = picture_under_bar_faults(top, screen.0, screen.1, film=true, nodes~)
-        assert_true(faults.is_empty(), msg="\{if nodes { "nodes" } else { "old" }}, \{screen.1} wide, its top at \{top}: \{Repr(faults)}")
-      }
+  for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
+    for top in [10.0, -100.0] {
+      let faults = picture_under_bar_faults(top, screen.0, screen.1, film=true)
+      assert_true(faults.is_empty(), msg="\{screen.1} wide, its top at \{top}: \{Repr(faults)}")
     }
   }
 }
@@ -229,9 +216,9 @@ fn film_at(t : @ui.Tester) -> Array[(Double, Double)] {
 /// thumbnail where it was.
 fn tree_flight_faults(film : Bool, platform : Int, w : Double) -> Array[String] {
   let (t, x, y) = if film {
-    film_in_chat(platform~, w~, nodes=true)
+    film_in_chat(platform~, w~)
   } else {
-    image_in_chat("compare.png", platform~, w~, nodes=true)
+    image_in_chat("compare.png", platform~, w~)
   }
   let faults : Array[String] = []
   guard pic_at(t, x, y) is Some((thumb, _)) else { return ["no thumbnail drawn"] }
@@ -378,12 +365,12 @@ fn ground_over_flight(t : @ui.Tester, w0 : Double) -> Double? {
 /// seen once, wheeled till half of it lies under the composer, pressed and let go a little under its top, then closed:
 /// what went wrong in the frames while it flew (the user, 2026-11-17: 「飞行过程中盖在输入框上」). At its own size (going
 /// out from under the composer, or coming back in under it) none of it drawn over the composer: what is drawn last where
-/// the composer's words are is never it then. `composed`: the composer made as nodes too (试用新输入框).
-fn picture_under_composer_faults(platform : Int, w : Double, film? : Bool = false, composed? : Bool = false) -> Array[String] {
+/// the composer's words are is never it then.
+fn picture_under_composer_faults(platform : Int, w : Double, film? : Bool = false) -> Array[String] {
   let (t, x, y) = if film {
-    film_in_chat(platform~, w~, nodes=true, composed~)
+    film_in_chat(platform~, w~)
   } else {
-    image_in_chat("compare.png", platform~, w~, nodes=true, composed~)
+    image_in_chat("compare.png", platform~, w~)
   }
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
@@ -462,16 +449,113 @@ fn picture_under_composer_faults(platform : Int, w : Double, film? : Bool = fals
 
 ///|
 test "a picture and a film half under the composer of a chat's page made as nodes: none of it over the composer at its own size, going out from under it and back in, on 小屏 and 大屏" {
-  // (under the old composer the page hosts, and under the one made as nodes: 试用新输入框)
-  for composed in [false, true] {
-    for screen in [(2, 390.0), (0, 1280.0)] {
-      for film in [false, true] {
-        let faults = picture_under_composer_faults(screen.0, screen.1, film~, composed~)
-        assert_true(
-          faults.is_empty(),
-          msg="\{if composed { "composed" } else { "old composer" }}, \{if film { "film" } else { "picture" }}, \{screen.1} wide: \{Repr(faults)}",
-        )
-      }
+  for screen in [(2, 390.0), (0, 1280.0)] {
+    for film in [false, true] {
+      let faults = picture_under_composer_faults(screen.0, screen.1, film~)
+      assert_true(
+        faults.is_empty(),
+        msg="\{if film { "film" } else { "picture" }}, \{screen.1} wide: \{Repr(faults)}",
+      )
     }
+  }
+}
+
+///|
+/// The chat's compare.png (`film`: its recording) on a phone, seen once, wheeled till all but a strip of it lies under
+/// the composer (its going out from under it further than its growing to the viewer: the flight's going out more than
+/// half its way), pressed on that strip and let go: what went wrong once it is open (the viewer's ground over all the
+/// window, whole; its bars shown) and as it closes (the ground never over the flying picture; gone at the end).
+fn high_lift_faults(film : Bool) -> Array[String] {
+  let (t, x, y) = if film { film_in_chat(platform=2, w=390.0) } else { image_in_chat("compare.png", platform=2, w=390.0) }
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  t.back()
+  if film {
+    film_frame_answered(t)
+  }
+  t.run_for(@ui.move_most_ms)
+  let i = t.drawn_images().filter(fn(i) { i[8] > 0.5 && x >= i[0] && x <= i[0] + i[2] && y >= i[1] && y <= i[1] + i[3] })
+  guard i.length() > 0 else { return ["no thumbnail drawn"] }
+  let (left, was, w0) = (i[0][0], i[0][1], i[0][2])
+  // (on this phone what the bar and composer leave clear ends at 729.25: its top 5 above that, its going out from under
+  // the composer (207 or so) further than its growing to the viewer, 203 a film's, 173 a picture's)
+  let top = 724.0
+  t.wheel(x, y, was - top)
+  t.run_for(@ui.scrollbar_hold_ms + @ui.scrollbar_fade_ms)
+  let moved = t.drawn_images().filter(fn(i) { i[8] > 0.5 && (i[0] - left).abs() < 1.0 && (i[2] - w0).abs() < 1.0 })
+  guard moved.iter().any(fn(m) { (m[1] - top).abs() < 2.0 }) else {
+    return ["not wheeled under the composer: \{Repr(moved.map(fn(m) { m[1] }))}, \{top}"]
+  }
+  let faults : Array[String] = []
+  t.tap(x, top + 3.0)
+  guard viewer.get() is Some(v) else { return ["nothing opened"] }
+  t.run_for(@ui.move_most_ms)
+  let fade = v.fade.value_at(t.time())
+  if fade < 0.99 {
+    faults.push("open: its ground and bars at \{fade}")
+  }
+  // (the viewer's ground: a fill over all the window, whole, drawn over the page's words)
+  let inst = t.drawn_instances()
+  let mut first_words = inst.length()
+  for k, d in inst {
+    if d[5] == 1.0 {
+      first_words = k
+      break
+    }
+  }
+  let mut ground = false
+  for k, d in inst {
+    if k > first_words && d[5] == 0.0 && d[0] <= 0.0 && d[1] <= 0.0 && d[2] >= 389.0 && d[3] >= 843.0 && d[11] >= 0.99 {
+      ground = true
+    }
+  }
+  if !ground {
+    faults.push("open: no ground whole over the page")
+  }
+  // (its bars: a film's time, a picture's name at the top)
+  if film {
+    if !words_show(t, "0:00") {
+      faults.push("open: the player's bars not shown")
+    }
+  } else if !t.words().iter().any(fn(w) { w.0 == "compare.png" && w.2 < 60.0 && w.5 >= 0.99 }) {
+    faults.push("open: the viewer's bar not shown")
+  }
+  // and closed: back in under the composer, the ground never over the flying picture, gone at the end
+  t.back()
+  if film {
+    film_frame_answered(t)
+  }
+  let frame = Ref(0)
+  t.each_frame(
+    Some(fn() {
+      let v = match viewer.get() {
+        Some(v) => Some(v)
+        None => pv_leaving.get()
+      }
+      if v is Some(v) && pic_flies(t, v) {
+        match ground_over_flight(t, w0) {
+          Some(a) => faults.push("closing frame \{frame.val}: the viewer's ground over the flying picture at \{a}")
+          None => ()
+        }
+      }
+      frame.val += 1
+    }),
+  )
+  t.run_shown(@ui.move_most_ms)
+  t.each_frame(None)
+  if viewer.get() is Some(_) || pv_leaving.get() is Some(_) {
+    faults.push("closed: the viewer not gone")
+  }
+  faults
+}
+
+///|
+// A film or a picture opened from under the composer on a phone, its going out further than its growing (the user's
+// phone, 2026-11-22: 视频/图片展开后黑底和控制栏完全消失): its flight's ground and bars were held at none all the way
+// (sfbase viewer.mbt's route_seen, its going out ending at the way's end), the page seen through round it with no bars.
+test "a film and a picture opened from mostly under a phone's composer: the viewer's ground whole and its bars shown once open, gone once closed" {
+  for film in [true, false] {
+    let faults = high_lift_faults(film)
+    assert_true(faults.is_empty(), msg="\{if film { "film" } else { "picture" }}: \{Repr(faults)}")
   }
 }

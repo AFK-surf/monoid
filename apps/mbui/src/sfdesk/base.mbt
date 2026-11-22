@@ -7,12 +7,6 @@ using @sfbase {
   open_page,
   
   open_link,
-  
-  over_flight,
-  flight_frame,
-  flight_files,
-  flight_waiting,
-  reading_of,
   view_of_chat,
   message_of,
   type Agent,
@@ -46,37 +40,18 @@ using @sfbase {
   app,
   writing,
   writing_drop,
-  writing_quote,
   service_key,
   svc,
   service_left,
   fresh,
   fresh_reset,
-  new_fade,
-  new_leave,
-  
-  
-  
-  
   count,
   coming_of,
   keeping_stop,
   download_cancel,
-  
-  
-  download_of_drive,
   download_retry,
-  
-  
-  
   dv_absolute,
-  
-  
-  
-  
-  
   dv_join,
-  dv_kind_icon,
   dv_name,
   
   dv_parent,
@@ -127,17 +102,12 @@ using @settings {
 ///|
 using @sfpages {
   turn_off_dialog,
-  agent_mark,
-  bar_foot,
-  chat_find_list,
   chat_key,
-  chat_list,
   find_chat,
   find_forget,
   find_open,
   find_reset,
   image_copy_px,
-  list_key,
   unpremultiplied,
 }
 

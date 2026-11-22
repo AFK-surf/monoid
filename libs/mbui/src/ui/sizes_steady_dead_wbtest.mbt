@@ -102,3 +102,109 @@ test "stopped dead: slowing at one rate through its top with frames twice as lon
   let (said, _) = sizes_steady_fault(still, period, turned=-1.0)
   assert_true(said is Some(s) && s.contains("stopped dead"), msg="\{Repr(said)}")
 }
+
+///|
+test "stopped dead: a sub-half-frame sliver under one device pixel is not a dead stop or spike; a real stop or jump still is" {
+  // 120 fps: 0.82 ms sliver across the 0.5-period bucket edge where a pixel-snapped coordinate (px = 0.5 pt) moves
+  // only ~0.30 pt (< 1 pixel)
+  let p120 = 1000.0 / 120.0
+  let sliver120 = [
+    (1458.3333333333333, 1458.3333333333333, 28.0),
+    (1465.12158203125, 1466.6666666666667, 24.0),
+    (1474.40771484375, 1475.0, 20.5),
+    (1483.28369140625, 1487.1875, 16.0),
+    (1488.0078125, 1488.0078125, 16.0),
+  ]
+  assert_eq(sizes_steady_fault(sliver120, p120, turned=-1.0, px=0.5).0, None)
+  // once a real display frame elapses without moving, stopped dead still fires
+  let real_stop = sliver120.copy()
+  real_stop[4] = (1488.0078125, 1491.6666666666667, 16.0)
+  let (stop_said, _) = sizes_steady_fault(real_stop, p120, turned=-1.0, px=0.5)
+  assert_true(stop_said is Some(s) && s.contains("stopped dead"), msg="\{Repr(stop_said)}")
+  // 60 fps: 0.022 ms sliver where a fast slide (-47.9 pt/frame) moves only 0.063 pt (< 1 pixel)
+  let p60 = 1000.0 / 60.0
+  let sliver60 = [
+    (5883.855021158854, 5891.446940104166, 368.0),
+    (5897.964518229166, 5900.0, 347.0),
+    (5906.303019205729, 5914.627482096354, 305.0),
+    (5914.649454752604, 5914.649454752604, 305.0),
+  ]
+  assert_eq(sizes_steady_fault(sliver60, p60, turned=-1.0, px=0.5).0, None)
+  // a real jump (42 pt >> 1 pixel) followed by a sub-half-frame tail is still caught
+  let real_jump = [
+    (5485.34, 5493.59, 348.2),
+    (5494.81, 5499.83, 348.2),
+    (5506.05, 5506.26, 306.2),
+    (5514.39, 5514.39, 306.2),
+  ]
+  let (jump_said, _) = sizes_steady_fault(real_jump, p60, turned=-1.0, px=0.5)
+  assert_true(jump_said is Some(_), msg="real jump must still be caught")
+  // n == 3 (first-frame step then stood): 0.06 ms sliver at 120 fps is quantization, not a step-and-stop;
+  // standing still through the next real frame still fires
+  let sliver_n3 = [
+    (2983.333333333333, 2985.0846354166665, 375.5),
+    (2991.666666666667, 2995.7989908854165, 343.0),
+    (2995.8585611979165, 2995.8585611979165, 343.0),
+  ]
+  assert_eq(sizes_steady_fault(sliver_n3, p120, turned=-1.0, px=0.5).0, None)
+  let stood_n3 = sliver_n3.copy()
+  stood_n3[2] = (2995.8585611979165, 3000.0, 343.0)
+  let (stood_said, _) = sizes_steady_fault(stood_n3, p120, turned=-1.0, px=0.5)
+  assert_true(stood_said is Some(s) && s.contains("stepped"), msg="\{Repr(stood_said)}")
+}
+
+///|
+test "stopped dead: scale=1 sub-half-frame pixel quantization band clears real traces and still catches true stops and spikes" {
+  let p60 = 1000.0 / 60.0
+  // mark_read: smooth acceleration where dt2 = 4.758 ms rounds -4 px to -3 px
+  let mark_read = [
+    (3302.8746744791665, 3302.9908854166665, 0.0),
+    (3324.7828776041665, 3325.6647135416665, -9.0),
+    (3357.8326822916665, 3363.8326822916665, -41.0),
+    (3368.5909830729165, 3368.5909830729165, -44.0),
+  ]
+  assert_eq(sizes_steady_fault(mark_read, p60, turned=-1.0, px=1.0).0, None)
+  // pick_words: smooth ease-out tail over dt2 = 4.77 ms rounded to 0 px
+  let pick_words = [
+    (8968.560709635416, 8968.560709635416, 189.00389105058366),
+    (8987.590983072916, 8987.590983072916, 196.00389105058366),
+    (9000.642740885416, 9004.170572916666, 201.00389105058366),
+    (9017.662760416666, 9025.634928385416, 206.00389105058366),
+    (9030.408854166666, 9030.408854166666, 206.00389105058366),
+  ]
+  assert_eq(sizes_steady_fault(pick_words, p60, turned=-1.0, px=1.0).0, None)
+  // share: smooth ease-out tail over dt2 = 5.35 ms rounded to 0 px
+  let share = [
+    (1571.892618815104, 1571.892618815104, 284.48045355058366),
+    (1587.892618815104, 1595.117716471354, 271.48045355058366),
+    (1603.486612955729, 1603.486612955729, 268.48045355058366),
+    (1613.5082194010415, 1617.568155924479, 263.48045355058366),
+    (1622.921183268229, 1622.921183268229, 263.48045355058366),
+  ]
+  assert_eq(sizes_steady_fault(share, p60, turned=-1.0, px=1.0).0, None)
+  // fast motion truly stopping dead over a 7.5 ms (< 0.5 * p60) sliver still fires
+  let fast_stop = [
+    (1000.0, 1000.0, 0.0),
+    (1016.67, 1016.67, 45.0),
+    (1033.33, 1033.33, 90.0),
+    (1040.83, 1040.83, 90.0),
+  ]
+  let (fast_stop_said, _) = sizes_steady_fault(fast_stop, p60, turned=-1.0, px=1.0)
+  assert_true(fast_stop_said is Some(s) && s.contains("stopped dead"), msg="\{Repr(fast_stop_said)}")
+  // mark_read timeline with a +20 px reverse tail jump still fires a velocity spike
+  let mark_read_rev = mark_read.copy()
+  mark_read_rev[3] = (3368.5909830729165, 3368.5909830729165, -21.0)
+  let (rev_said, _) = sizes_steady_fault(mark_read_rev, p60, turned=-1.0, px=1.0)
+  assert_true(rev_said is Some(s) && s.contains("went "), msg="\{Repr(rev_said)}")
+  // mark_read timeline with a real -80 px mid-span jump still fires a velocity spike
+  let mark_read_mid = mark_read.copy()
+  mark_read_mid[2] = (3357.8326822916665, 3363.8326822916665, -89.0)
+  mark_read_mid[3] = (3368.5909830729165, 3368.5909830729165, -92.0)
+  let (mid_said, _) = sizes_steady_fault(mark_read_mid, p60, turned=-1.0, px=1.0)
+  assert_true(mid_said is Some(s) && s.contains("went "), msg="\{Repr(mid_said)}")
+  // pick_words still stopped after a full display frame still fires stopped dead
+  let pick_words_stop = pick_words.copy()
+  pick_words_stop[4] = (9042.31, 9042.31, 206.00389105058366)
+  let (pick_stop_said, _) = sizes_steady_fault(pick_words_stop, p60, turned=-1.0, px=1.0)
+  assert_true(pick_stop_said is Some(s) && s.contains("stopped dead"), msg="\{Repr(pick_stop_said)}")
+}

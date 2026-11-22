@@ -365,12 +365,9 @@ pub fn step_card_node(
           words_node(t, title, fn() { login_title }) |> ignore
         })
         |> ignore
-        h.show(goes, fn(s) {
-          s.box(fn(b) {
-            style_node(b, fn() { login_cancel }, in_row=true)
-            icon_node(b, "chevron-right", login_icon, By(fn() { theme().p.muted })) |> ignore
-          })
-          |> ignore
+        h.show(goes, fn(b) {
+          style_node(b, fn() { login_cancel }, in_row=true)
+          icon_node(b, "chevron-right", login_icon, By(fn() { theme().p.muted })) |> ignore
         })
       })
       |> ignore

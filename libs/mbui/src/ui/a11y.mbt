@@ -97,9 +97,21 @@ fn A11yMirror::apply(self : A11yMirror, full : Bool, focus : Int, told : Array[A
   for n in told {
     match self.nodes.get(n.id) {
       Some(was) =>
-        for k in was.kids {
-          if !n.kids.contains(k) {
-            let_go.push(k)
+        if was.kids.length() > 8 && !n.kids.is_empty() {
+          let now_kids : Map[Int, Bool] = Map([])
+          for k in n.kids {
+            now_kids[k] = true
+          }
+          for k in was.kids {
+            if !now_kids.contains(k) {
+              let_go.push(k)
+            }
+          }
+        } else {
+          for k in was.kids {
+            if !n.kids.contains(k) {
+              let_go.push(k)
+            }
           }
         }
       None => ()
@@ -860,14 +872,17 @@ fn Ctx::a11y_tree_pass(self : Ctx, tree : @view.Tree, full : Bool, out : Array[A
     return 0
   }
   match tree_said_ids.get(self.focus) {
-    Some(id) => {
-      let n = a11y_tree_num(id)
-      if told.mirror.nodes.contains(n) || out.iter().any(fn(o) { o.id == n }) {
-        n
+    Some(id) =>
+      if tree.holds(tree.root().id(), id) && tree.reads_out(id) && tree.stack_of(id) > old_modal {
+        let n = a11y_tree_num(id)
+        if told.mirror.nodes.contains(n) || out.iter().any(fn(o) { o.id == n }) {
+          n
+        } else {
+          0
+        }
       } else {
         0
       }
-    }
     None => self.a11y_old_focus(old, out)
   }
 }

@@ -50,6 +50,7 @@ let inst_size = 60
 pub let film_fps : Int = 60
 
 ///|
+/// LEGACY immediate-mode entry; new apps use `@film.film`.
 /// `script` (drive.mbt's steps) run over `view` in a Tester of this host's text and pictures, `w` × `h` points at
 /// `scale` device pixels a point, playing `platform` (@hostapi.platform's: 0 macOS, 1 iOS, 2 Android), the system
 /// `dark` or not, and filmed: every frame it draws drawn by this host's renderer offscreen and written into `out` (an
@@ -58,7 +59,7 @@ pub let film_fps : Int = 60
 /// script passed, what went wrong said. `prepare` runs against the same view before the first filmed frame; a failed
 /// preparation leaves the previous film untouched. A failed image or a native view cannot be drawn offscreen, so the
 /// film fails rather than omitting it; `allow_incomplete` deliberately films just the parts mbui can draw.
-pub fn film(
+pub fn film_legacy_ctx(
   view : (@ui.Ctx) -> Unit,
   tree? : (@view.View) -> Unit,
   script~ : String,
@@ -77,6 +78,146 @@ pub fn film(
   copied? : String = "",
   allow_incomplete? : Bool = false,
   corners_held? : Bool = true,
+  theme? : () -> @ui.Theme,
+) -> Bool {
+  film_impl(
+    Some(view),
+    tree,
+    script~,
+    out~,
+    w~,
+    h~,
+    scale~,
+    platform~,
+    dark~,
+    inset~,
+    window_corner~,
+    fps~,
+    prepare~,
+    max~,
+    last~,
+    copied~,
+    allow_incomplete~,
+    corners_held~,
+    theme?,
+  )
+}
+
+///|
+/// Films `tree` made once without any legacy `Ctx` view, using `@ui.Tester::tree`.
+pub fn film(
+  tree : (@view.View) -> Unit,
+  script~ : String,
+  out~ : String,
+  w? : Double = 390.0,
+  h? : Double = 844.0,
+  scale? : Double = 2.0,
+  platform? : Int = 0,
+  dark? : Bool = false,
+  inset? : Bool = false,
+  window_corner? : Double = 0.0,
+  fps? : Int = film_fps,
+  prepare? : String = "",
+  max? : Int = 3000,
+  last? : String = "",
+  copied? : String = "",
+  allow_incomplete? : Bool = false,
+  corners_held? : Bool = true,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool = true,
+) -> Bool {
+  film_impl(
+    None,
+    Some(tree),
+    script~,
+    out~,
+    w~,
+    h~,
+    scale~,
+    platform~,
+    dark~,
+    inset~,
+    window_corner~,
+    fps~,
+    prepare~,
+    max~,
+    last~,
+    copied~,
+    allow_incomplete~,
+    corners_held~,
+    theme?,
+    transitions_only~,
+  )
+}
+
+///|
+/// Compatibility alias for `film`.
+pub fn film_tree(
+  tree : (@view.View) -> Unit,
+  script~ : String,
+  out~ : String,
+  w? : Double = 390.0,
+  h? : Double = 844.0,
+  scale? : Double = 2.0,
+  platform? : Int = 0,
+  dark? : Bool = false,
+  inset? : Bool = false,
+  window_corner? : Double = 0.0,
+  fps? : Int = film_fps,
+  prepare? : String = "",
+  max? : Int = 3000,
+  last? : String = "",
+  copied? : String = "",
+  allow_incomplete? : Bool = false,
+  corners_held? : Bool = true,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool = true,
+) -> Bool {
+  film(
+    tree,
+    script~,
+    out~,
+    w~,
+    h~,
+    scale~,
+    platform~,
+    dark~,
+    inset~,
+    window_corner~,
+    fps~,
+    prepare~,
+    max~,
+    last~,
+    copied~,
+    allow_incomplete~,
+    corners_held~,
+    theme?,
+    transitions_only~,
+  )
+}
+
+///|
+fn film_impl(
+  view : ((@ui.Ctx) -> Unit)?,
+  tree : ((@view.View) -> Unit)?,
+  script~ : String,
+  out~ : String,
+  w~ : Double,
+  h~ : Double,
+  scale~ : Double,
+  platform~ : Int,
+  dark~ : Bool,
+  inset~ : Bool,
+  window_corner~ : Double,
+  fps~ : Int,
+  prepare~ : String,
+  max~ : Int,
+  last~ : String,
+  copied~ : String,
+  allow_incomplete~ : Bool,
+  corners_held~ : Bool,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool,
 ) -> Bool {
   if !supported {
     say("film: this host has no film")
@@ -89,7 +230,7 @@ pub fn film(
   let host = @hostapi.host()
   let t = scene_tester(
     view,
-    tree?,
+    tree,
     w~,
     h~,
     scale~,
@@ -100,6 +241,8 @@ pub fn film(
     // (held but where the run is to show what breaks the rule, scripts/corners.sh: MBUI_CORNERS_SHOWN=1)
     corners_held=corners_held && arg("MBUI_CORNERS_SHOWN") != "1",
     words_over_held=false,
+    theme?,
+    transitions_only?,
   )
   defer { t.end_run(host) }
   if !corners_held {
@@ -261,9 +404,40 @@ fn window_frame(t : @ui.Tester, buf : Ref[FixedArray[Double]]) -> (Int, (Double,
 }
 
 ///|
+/// LEGACY immediate-mode entry; new apps use `@film.run`.
 /// A film made of the process's arguments (the head of this file says which), `view` the app's: the process ends
 /// with 0 when it was made and the script passed, 1 when not, 2 when it was not asked for rightly.
-pub fn run(view : (@ui.Ctx) -> Unit, tree? : (@view.View) -> Unit) -> Unit {
+pub fn run_legacy_ctx(view : (@ui.Ctx) -> Unit, tree? : (@view.View) -> Unit, theme? : () -> @ui.Theme) -> Unit {
+  run_impl(Some(view), tree, theme?)
+}
+
+///|
+/// Previews, pictures, or films `tree` made once without a legacy `Ctx` view.
+pub fn run(
+  tree : (@view.View) -> Unit,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool = true,
+) -> Unit {
+  run_impl(None, Some(tree), theme?, transitions_only~)
+}
+
+///|
+/// Compatibility alias for `run`.
+pub fn run_tree(
+  tree : (@view.View) -> Unit,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool = true,
+) -> Unit {
+  run(tree, theme?, transitions_only~)
+}
+
+///|
+fn run_impl(
+  view : ((@ui.Ctx) -> Unit)?,
+  tree : ((@view.View) -> Unit)?,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool,
+) -> Unit {
   // (the app as it runs on a host: what faults shown by its boundary, as there, and said on the log)
   @view.faults_stop.val = false
   @view.fault_told.val = Some(fn(said) { println("fault: " + said) })
@@ -276,11 +450,15 @@ pub fn run(view : (@ui.Ctx) -> Unit, tree? : (@view.View) -> Unit) -> Unit {
       "mouse" => @ui.set_pointing(Some(@ui.Pointing::Mouse))
       _ => ()
     }
-    @ui.run("mbui scene", view, tree?)
+    match (view, tree) {
+      (None, Some(make)) => @ui.run("mbui scene", make, theme?, transitions_only=transitions_only.unwrap_or(true))
+      (Some(v), _) => @ui.run_legacy_ctx("mbui scene", v, tree?, theme?, transitions_only?)
+      (None, None) => @ui.run("mbui scene", fn(_) { () }, theme?, transitions_only=transitions_only.unwrap_or(true))
+    }
     return
   }
   if arg("MBUI_PICTURE") != "" {
-    run_picture(view, tree?)
+    run_picture_impl(view, tree, theme?, transitions_only?)
     return
   }
   // (a tool's arguments, from the process: not an app's reads of where it runs)
@@ -327,9 +505,9 @@ pub fn run(view : (@ui.Ctx) -> Unit, tree? : (@view.View) -> Unit) -> Unit {
   let platform = number(arg("MBUI_FILM_PLATFORM")).unwrap_or(0.0).to_int()
   let max = number(arg("MBUI_FILM_FRAMES")).unwrap_or(3000.0).to_int()
   let window_corner = number(arg("MBUI_FILM_WINDOW_CORNER")).unwrap_or(0.0)
-  let ok = film(
+  let ok = film_impl(
     view,
-    tree?,
+    tree,
     script~,
     out~,
     w~,
@@ -346,6 +524,8 @@ pub fn run(view : (@ui.Ctx) -> Unit, tree? : (@view.View) -> Unit) -> Unit {
     copied=arg("MBUI_FILM_COPIED"),
     allow_incomplete=arg("MBUI_FILM_ALLOW_INCOMPLETE") == "1",
     corners_held=arg("MBUI_FILM_ALLOW_CORNER_FAULTS") != "1",
+    theme?,
+    transitions_only?,
   )
   exit(if ok { 0 } else { 1 })
 }

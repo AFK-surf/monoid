@@ -569,7 +569,7 @@ lock_state() {
   [ -n "$f" ] || { echo "LOCK off"; return; }
   (cd $E/station && node --input-type=module -e "
 import { readFileSync } from 'node:fs';
-const { fold, state4Moved } = await import('./src/cloud/lock.ts');
+const { fold, state4Moved } = await import('../shared/lock.ts');
 const j = JSON.parse(readFileSync(process.argv[1], 'utf8'));
 const chain = fold(j.entries ?? j, null);
 let s = chain;

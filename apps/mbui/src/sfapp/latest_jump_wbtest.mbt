@@ -81,7 +81,7 @@ test "the page before asked for as the reader nears the chat's top (chat.older),
 /// A chat short of its end (3 new messages waiting there) on its page made as nodes, its calls kept in `calls`; the
 /// core's `doing` saying its latest page is under way while `coming` does. Opened, at rest.
 fn latest_nodes_open(calls : Array[Made], coming : Ref[Bool]) -> @ui.Tester {
-  let t = fake_core(calls, nodes=true, over=fn(name, tp) {
+  let t = fake_core(calls, over=fn(name, tp) {
     match name {
       "chat" =>
         match tp.value {

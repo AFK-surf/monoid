@@ -11,19 +11,12 @@
 let kept_switch_over_ms : Double = 1000.0
 
 ///|
-/// What a finger's drag up or down a list glides for after it is let go, over by then (two seconds; three for a long one).
+/// What a finger's drag up or down a list glides for after it is let go, over by then (two seconds).
 let kept_glide_over_ms : Double = 2000.0
-
-///|
-let kept_glide_long_ms : Double = 3000.0
 
 ///|
 /// A few frames: what a change told, or a Tab, takes to be drawn.
 let kept_few_frames_ms : Double = 100.0
-
-///|
-/// Between two Tabs, a frame or so drawn after each.
-let kept_tab_gap_ms : Double = 50.0
 
 ///|
 /// The bar the switches are made on: the three places made as nodes (对话, 连接, 用量) and one old view's (额度).
@@ -32,7 +25,7 @@ let today_bar : Array[String] = ["chats", "connects", "usage", "profiles"]
 ///|
 /// The bar's places' middles in the phone's window (390 by 844), and its middle's height.
 fn today_bar_at() -> (Array[Double], Double) {
-  (bar_centres(390.0 - 44.0, 1.0, 4).map(fn(x) { x + 22.0 }), 844.0 - 22.0 - 28.0)
+  (bar_centres(390.0 - 44.0, bar.k_end(), 4).map(fn(x) { x + 22.0 }), 844.0 - 22.0 - 28.0)
 }
 
 ///|
@@ -179,7 +172,8 @@ let today_baseline : Array[(String, Array[String], Array[String])] = [
       "unsub doing {}", "unsub changelog {\"news\":true}", "unsub driveTransfers {\"workspace\":\"ws1\"}", "unsub longJobs {\"scope\":\"ws1\"}",
       "sub doing {}", "unsub lock {\"workspace\":\"ws1\"}", "unsub stationUpdates {\"scope\":\"ws1\"}",
     ],
-    [],
+    // (dual-ended replace_tab keeps Home mounted during swap so connects subscribes doing {} before Home drops it)
+    ["unsub doing {}", "sub doing {}"],
   ),
   (
     "connects→chats",
@@ -264,7 +258,7 @@ test "bar places today: each switch's nodes made and let go, the stack's entry, 
   bars_picked.set(Some(([today_bar], 0)))
   t.run_for(kept_switch_over_ms)
   to_bar_rest(t)
-  let (xs, y) = today_bar_at()
+  let (_, y) = today_bar_at()
   println("bar-today: at rest on \{today_entry()}")
   let at_rest_heard = heard.length()
   for line in today_wire(heard, 0) {
@@ -275,16 +269,16 @@ test "bar places today: each switch's nodes made and let go, the stack's entry, 
   // (what each switch made and let go of the tree: the first visit of a place made as nodes makes it, a place come back
   // to makes and lets go of nothing but a node of Home's (made while it was away, let go as it is back); 用量 made once,
   // whole, its answer come by the core's channel before the frame that builds it; 额度 too, made once as nodes since
-  // the profiles' list was, kept as the others; its list or 概览 one page, the pick between them two nodes more; 用量's
-  // controls that are a button only while they filter, its rank rows and its legend, each over action_box_while_node's
-  // pick)
-  let works = [(131, 0), (0, 1), (448, 0), (0, 0), (0, 0), (0, 1), (230, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
+  // the profiles' list was, kept as the others, slimmed fill_chip_node + single-branch pooled quota lowering it to 224
+  // (+1 each place for place_top_bar_glass wrapping settings in bar_pill_group_node, +2 for narrow_bar_scrim_node);
+  // 用量's controls that are a button only while they filter, its rank rows and its legend, each over action_box_while_node's pick)
+  let works = [(134, 0), (0, 1), (450, 0), (0, 0), (0, 0), (0, 1), (227, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
   let mut from_place = "chats"
   for k, place in walk {
     let i = today_bar.search(place).unwrap()
     let mark = heard.length()
     let before = today_entry()
-    let (work, made, let_go) = today_work(t, fn() { t.tap(xs[i], y) })
+    let (work, made, let_go) = today_work(t, fn() { t.tap(today_bar_at().0[i], y) })
     to_bar_rest(t)
     println("bar-today: \{from_place}→\{place}: \{work}")
     println("bar-today:   entry \{before} → \{today_entry()}")
@@ -366,10 +360,10 @@ test "bar places today: each place made as nodes left for another and come back 
     bars_picked.set(Some(([today_bar], 0)))
     t.run_for(kept_switch_over_ms)
     to_bar_rest(t)
-    let (xs, y) = today_bar_at()
+    let (_, y) = today_bar_at()
     let i = today_bar.search(place).unwrap()
     if place != "chats" {
-      t.tap(xs[i], y)
+      t.tap(today_bar_at().0[i], y)
       t.run_for(kept_switch_over_ms)
       to_bar_rest(t)
     }
@@ -418,10 +412,14 @@ test "bar places today: each place made as nodes left for another and come back 
     println("bar-keep \{place}: scroll mark \{Repr(marked.map(fn(m) { m.0 }))} at \{left_y} as left")
     println("bar-keep \{place}: as left: \{left} \{choice()} entry \{today_entry()}")
     // to 额度 (an old view's place) and back, by a finger on the bar
-    t.tap(xs[3], y)
+    if bar.collapsed {
+      t.tap(22.0 + bar_track / 2.0, y)
+      to_bar_rest(t)
+    }
+    t.tap(today_bar_at().0[3], y)
     t.run_for(kept_switch_over_ms)
     to_bar_rest(t)
-    t.tap(xs[i], y)
+    t.tap(today_bar_at().0[i], y)
     t.run_for(kept_switch_over_ms)
     to_bar_rest(t)
     let back = today_looks(t, "")
@@ -435,7 +433,7 @@ test "bar places today: each place made as nodes left for another and come back 
     assert_eq(mark_y(), left_y, msg="\{place}: its list where it was left")
     assert_eq(what(back), what(left), msg="\{place}: what shows and what is chosen as left")
     match place {
-      "chats" => assert_eq(mark_y(), "[318]", msg="Home's list where it was left")
+      "chats" => assert_eq(mark_y(), "[324]", msg="Home's list where it was left")
       "usage" => {
         // (scrolled as left: not at its top, where 用量 opens on its activity at 340)
         assert_false(left.has_prefix("mid Some((\"Token 活跃度\", 340))"), msg="用量 scrolled before it was left: \{left}")

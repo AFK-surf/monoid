@@ -326,7 +326,7 @@ async fn exists(io : Io, path : String) -> Bool {
 
 ///|
 fn sha1_hex(s : String) -> String {
-  @jobs_host.sha1_hex(@utf8.encode(s))
+  @hash.sha1_utf8_hex(s)
 }
 
 ///|
@@ -598,7 +598,7 @@ pub fn ChromePictures::to_j(self : ChromePictures) -> J {
 fn ChromePictures::of_j(j : J) -> ChromePictures {
   let buttons = match get(Some(j), "buttons") {
     Some(Obj(ps)) =>
-      ps.map(p => (@jsjson.text(p.0), text(get(Some(p.1), "up")).unwrap_or(""), text(get(Some(p.1), "down"))))
+      ps.map(p => (@jsjson.sanitize_str(p.0), text(get(Some(p.1), "up")).unwrap_or(""), text(get(Some(p.1), "down"))))
     _ => []
   }
   { body: text(get(Some(j), "body")).unwrap_or(""), buttons }
@@ -1259,25 +1259,8 @@ pub fn encode_png(p : Pixels) -> Bytes {
 }
 
 ///|
-let crc_table : FixedArray[Int64] = {
-  let t = FixedArray::make(256, 0L)
-  for n in 0..<256 {
-    let mut c = n.to_int64()
-    for _ in 0..<8 {
-      c = if (c & 1L) != 0L { 0xedb88320L ^ (c >> 1) } else { c >> 1 }
-    }
-    t[n] = c
-  }
-  t
-}
-
-///|
 fn crc32(b : BytesView) -> Int64 {
-  let mut c = 0xffffffffL
-  for v in b {
-    c = crc_table[((c ^ v.to_int64()) & 0xffL).to_int()] ^ (c >> 8)
-  }
-  (c ^ 0xffffffffL) & 0xffffffffL
+  @codec.crc32(b).to_uint64().reinterpret_as_int64()
 }
 
 ///|

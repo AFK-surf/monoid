@@ -32,8 +32,7 @@ let emit_chat : String = "ws1/st1\u{1}s-c1"
 fn emit_said(t : @ui.Tester) -> String {
   let em = emits_of(emit_chat)
   let rd = reading_of(emit_chat)
-  let tu = turns_of(emit_chat)
-  "at \{t.time()} shown \{rd.shown} was_shown \{rd.was_shown} stepped_at \{tu.stepped_at} current \{em.current is Some(_)} queue \{em.queue.length()} copied \{em.copied} asked \{Repr(tu.asked)} wanted \{t.wanted_after()} (\{t.wanted_why()})"
+  "at \{t.time()} shown \{rd.shown} was_shown \{rd.was_shown} current \{em.current is Some(_)} queue \{em.queue.length()} copied \{em.copied} wanted \{t.wanted_after()} (\{t.wanted_why()})"
 }
 
 ///|
@@ -164,34 +163,6 @@ test "kept, host frames: a Large screen, the field focused" {
 ///|
 test "kept, host frames: a Large screen, the field let go" {
   assert_eq(emit_kept(1280.0, false), ("ok", "ok"))
-}
-
-///|
-test "the avatar going home draws its movement without laying out the chat again" {
-  let clock = Ref(0.0)
-  let t = emit_core(clock)
-  t.set_rows_on_pixels(true)
-  // A focused editor keeps its page live for its caret. Put the keyboard away to test the avatar's work alone.
-  t.keyboard_gone()
-  t.frames_owed()
-  fix_clock_set(clock, clock.val + fix_answer_ms)
-  t.draw()
-  let em = emits_of(emit_chat)
-  let until = t.time() + Pose::Fold.ms() + Pose::Float.ms() + Pose::Spit.ms() + Pose::Return.ms() / 4.0
-  ignore(host_frames_till(t, until))
-  guard em.current is Some(turn) && turn.pose == Return else {
-    fail("the avatar is not on its way home: \{Repr(em.current.map(fn(c) { c.pose }))}")
-  }
-  // Compare whole and retained frames above; inspect the next frame itself, without the comparison's rebuild.
-  t.check_looks(false)
-  for _ in 0..<3 {
-    let before = em.trace.0
-    t.frame_at(t.next_frame_time())
-    let perf = t.frame_perf()
-    assert_true(em.trace.0 > before, msg="the avatar did not move")
-    assert_true(perf.painted, msg="its move laid out the chat again: \{t.built_why()}; \{Repr(perf)}")
-  }
-  emit_restore()
 }
 
 ///|

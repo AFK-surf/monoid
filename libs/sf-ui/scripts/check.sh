@@ -19,10 +19,10 @@ empty=""
 [ -n "$(ls src/*_test.mbt 2>/dev/null | grep -v '_wbtest\.mbt$')" ] || empty="$empty sf/sf.blackbox_test"
 [ -n "$(ls src/*_wbtest.mbt 2>/dev/null)" ] || empty="$empty sf/sf.whitebox_test"
 export MBC_EMPTY_TESTS="$empty"
-export MBC_LIGHT_TESTS="sf/sf.internal_test sf/sf.blackbox_test sf/sf.whitebox_test"
+export MBC_LIGHT_TESTS="sf/sf.internal_test sf/sf.blackbox_test sf/sf.whitebox_test sf/studio_pages/studio_pages.whitebox_test"
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
-moon_test_native -p stillfail/sf > "$out" 2>&1
+moon_test_native -p stillfail/sf -p stillfail/sf/studio_pages > "$out" 2>&1
 code=$?
 tail -${LINES_OUT:-40} "$out"
 # (an answer of the core's these tests asked and that is not kept beside them: AGENTS.md says where it comes from)

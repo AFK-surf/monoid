@@ -25,6 +25,10 @@ pub fn line(Array[(Double, Double)], width~ : Double, color~ : Int64, upto? : Do
 
 pub fn meniscus_outline(Double, Double, Double, Double, Double, Double) -> Array[(Array[Double], Bool)]
 
+pub fn rect(Double, Double, Double, Double, color~ : Int64, corners? : (Double, Double, Double, Double)) -> Rect
+
+pub fn rect_of(Double, Double, Double, Double, color~ : Int64, corners? : (Double, Double, Double, Double)) -> Rect
+
 pub fn sd_box(Double, Double, Double, Double, Double) -> Double
 
 pub fn sd_clip(Double, Double, Double, Double, Double, Double, (Double, Double, Double, Double), (Double, Double, Double, Double), band? : Double) -> Double
@@ -96,11 +100,14 @@ pub(all) struct Glass {
   shares_capture : Bool
   contained : Bool
   spot : (Double, Double)?
-  backdrop_highlight : Int
+  zoom : Double
+  strength : Double
+  progressive : Bool
 }
-pub fn Glass::backdrop_lens(height~ : Double, amount~ : Double, blur~ : Double, tint~ : Int64, solid~ : Int64, highlight~ : Double, ambient? : Bool, dispersion? : Bool, inner_shadow? : Double) -> Self
-pub fn Glass::frosted(blur~ : Double, tint~ : Int64, solid~ : Int64, saturation? : Double, rim_edge? : Double, rim_lit? : Double, rim_back? : Double, shares_capture? : Bool, contained? : Bool) -> Self
-pub fn Glass::liquid(blur? : Double, tint? : Int64, solid? : Int64, saturation? : Double, rim? : Double, bezel? : Double, refraction? : Double, chroma? : Double, merge? : Double, adaptive? : Bool, spot? : (Double, Double)?) -> Self
+pub fn Glass::at_strength(Self, Double) -> Self
+pub fn Glass::clear(blur? : Double, tint? : Int64, solid? : Int64, saturation? : Double, rim? : Double, bezel? : Double, refraction? : Double, chroma? : Double, merge? : Double, adaptive? : Bool, spot? : (Double, Double)?, zoom? : Double, strength? : Double) -> Self
+pub fn Glass::frosted(blur~ : Double, tint~ : Int64, solid~ : Int64, saturation? : Double, rim_edge? : Double, rim_lit? : Double, rim_back? : Double, shares_capture? : Bool, contained? : Bool, progressive? : Bool, strength? : Double) -> Self
+pub fn Glass::liquid(blur? : Double, tint? : Int64, solid? : Int64, saturation? : Double, rim? : Double, bezel? : Double, refraction? : Double, chroma? : Double, merge? : Double, adaptive? : Bool, spot? : (Double, Double)?, zoom? : Double, strength? : Double) -> Self
 pub fn Glass::sharing(Self) -> Self
 
 #derive(Eq, @debug.Debug)
@@ -109,6 +116,16 @@ pub(all) struct Line {
   width : Double
   color : Int64
   upto : Double
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Rect {
+  x : Double
+  y : Double
+  w : Double
+  h : Double
+  color : Int64
+  corners : (Double, Double, Double, Double)
 }
 
 #derive(Eq, @debug.Debug)

@@ -218,7 +218,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     const [silent] = settings.hooks.PreToolUse;
     assert.equal(settings.hooks.PreToolUse.length, 1);
     assert.equal(silent.matcher, [...SPEAKS, "slack_api"].map((tool) => `mcp__stillfail__${tool}`).join("|"));
-    assert.equal(silent.matcher, "mcp__stillfail__chat_post|mcp__stillfail__chat_state|mcp__stillfail__session_send|mcp__stillfail__chat_create|mcp__stillfail__chat_leave|mcp__stillfail__chat_archive|mcp__stillfail__slack_api");
+    assert.equal(silent.matcher, "mcp__stillfail__chat_post|mcp__stillfail__chat_state|mcp__stillfail__session_send|mcp__stillfail__chat_create|mcp__stillfail__chat_leave|mcp__stillfail__chat_archive|mcp__stillfail__chat_configure|mcp__stillfail__slack_api");
     // One command, the hook's file by the station's Node, told the Slack methods that write as one quoted word, and
     // given up on (the call let through) after seconds, not Claude Code's ten minutes.
     assert.deepEqual(silent.hooks, [{ type: "command", command: hookCommand(SUBAGENT_HOOK, SLACK_SPOKEN.join(",")), timeout: 10 }]);
@@ -276,7 +276,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     // A release has them beside its bundle: the build copies each there, or a session's command names a file that is not.
     const build: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts.build;
     const copied = build.split("&&").map((step) => step.trim().split(/\s+/)).find((words) => words[0] === "cp" && words.at(-1) === "dist/" && words[1] !== "-R") ?? [];
-    for (const file of ["src/agents/subagent-hook.mjs", "src/agents/repo-rules-hook.mjs"]) assert.ok(copied.includes(file), `${file} is not copied to dist/ by the build: ${copied.join(" ")}`);
+    for (const file of ["assets/agents/subagent-hook.mjs", "assets/agents/repo-rules-hook.mjs"]) assert.ok(copied.includes(file), `${file} is not copied to dist/ by the build: ${copied.join(" ")}`);
     // In a release (<app>/station/<hook>, <app>/node the release's Node) the command names that Node, which the next
     // release's takes the place of; the Node the station runs on is a version's own directory, pruned after an update.
     // Where either installer puts it (bin/node; node.exe on Windows), whichever is there.

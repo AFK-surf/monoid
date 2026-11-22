@@ -143,9 +143,12 @@ priv struct KeptRequest {
 /// An item an agent may ask for: of a vault (its id) or of the plain library (`plain`), whose owner decides.
 pub(all) struct Listed {
   vault : String
+  vault_name : String?
+  scope : String?
   item : String
   owner : String?
   listing : Json
+  cross : (String, String, String)?
 }
 
 ///|
@@ -675,7 +678,7 @@ fn Secrets::restore_row(self : Secrets, original : RestoreRow, first? : Json, fi
     let session = gtext(Some(request), "session")
     let item_id = gtext(Some(request), "item")
     let mut checked : (String?, String, (Json, Json)??)? = None
-    if until_or_exp(saved) > now && !self.ended(session) && (self.w.lock)(Some(r.ws)) is None {
+    if until_or_exp(saved) > now && !self.ended(session) && self.plain_held(r.ws) {
       let snapshot = self.plain.item_snapshot(r.ws, item_id)
       let item = snapshot.map(x => x.0)
       let l = get(item, "listing")
@@ -735,7 +738,7 @@ fn Secrets::restore_row(self : Secrets, original : RestoreRow, first? : Json, fi
           limit_changed ||
           !(until_or_exp(saved) > self.secs()) ||
           self.ended(session) ||
-          (self.w.lock)(Some(r.ws)) is Some(_) {
+          !self.plain_held(r.ws) {
           row = Some({ ..r, body: cur_body })
           continue
         }
@@ -1427,4 +1430,13 @@ fn Secrets::request_live(self : Secrets, r : Json, now : Double) -> Bool {
   }
   let live = coming || self.recoverable(r)
   gn(Some(r), "at").unwrap_or(@double.not_a_number) + pending_secs > now && live
+}
+
+///|
+/// Whether a plain library's grant given before still holds in `ws` (secrets.ts `#plainHeld`): no security mode there.
+fn Secrets::plain_held(self : Secrets, ws : String) -> Bool {
+  match (self.w.lock)(Some(ws)) {
+    None => true
+    Some(l) => l.open_roster()
+  }
 }

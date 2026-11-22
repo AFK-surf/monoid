@@ -365,3 +365,26 @@ test "a pick leaving over a time in a column that stretches what it holds, its s
     assert_false(t.clock_read())
   }
 }
+
+///|
+test "a pick leaving over a time, at once, from a side that holds nothing to one that holds something: what comes seen from the change, never waiting out a fade of nothing" {
+  let shown = @signals.signal(false, same=fn(a, b) { a == b })
+  let t = @view.Tree::new(fn(root) {
+    root.pick(leave=pick_leave_ms, at_once=true, fn() { shown.get() }, fn(v, on) {
+      if on {
+        v.words(Is("显")) |> ignore
+      }
+    })
+  })
+  t.frame(390.0, 844.0) |> ignore
+  assert_eq(pick_leave_alpha(t, "显"), 0.0)
+  t.event(100.0, fn() { shown.set(true) })
+  t.at(101.0)
+  t.frame(390.0, 844.0) |> ignore
+  let soon = pick_leave_alpha(t, "显")
+  assert_true(soon > 0.0, msg="显 unseen at 101 (\{soon}): waiting out a fade of nothing")
+  t.at(100.0 + pick_leave_ms)
+  t.frame(390.0, 844.0) |> ignore
+  assert_eq(pick_leave_alpha(t, "显"), 1.0)
+  assert_false(t.clock_read())
+}

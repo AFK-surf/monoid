@@ -374,7 +374,7 @@ test("a_video_a_message_names_is_played_from_what_was_kept_and_let_go_of_once_it
 
 test("a_windows_file_an_agent_names_in_code_can_be_peeked_and_opened_by_its_marked_path", async () => {
   const { host, core } = await started(base());
-  const paths = ["C:/work/report.md", "C:\\work\\报告.md"];
+  const paths = ["C:/work/report.md", "C:\\work\\报告.md", "D:\\work\\proj\\report.md", ".\\scripts\\deploy.ps1", "src\\main.dart", "analysis.ipynb", "cases.xlsx"];
   const asked: string[] = [];
   stationReplies(host, (req) => {
     const url = new URL(req.url);
@@ -1054,7 +1054,7 @@ test("writes_bring_what_they_touch_up_to_date", async () => {
   // The threads and sessions are not read again for it. (The station's marks of the chats are, which say what only it
   // can of the new chat; and the sync brings the new chat's entries onto the device.)
   assert.deepEqual(
-    host.requests.slice(reads).map((r) => `${r.method} ${r.url.replace("https://stillfail.test/admin/api", "")}`).filter((r) => !r.includes("/threads/9/entries") && r !== "GET /chats?marks=1"),
+    host.requests.slice(reads).map((r) => `${r.method} ${r.url.replace("https://stillfail.test/admin/api", "")}`).filter((r) => !r.includes("/threads/9/entries") && r !== "GET /chats?marks=1&own=1"),
     ["POST /threads"],
   );
   // A read changes nothing.
@@ -1138,6 +1138,45 @@ test("messages_its_agent_takes_leave_it_at_work_until_its_summary_says_the_turn_
   push("session", { ...summary("a", 2), lastTurn: { ...asked, declared: null, ending: null, need: null, outcome: null, startedAt: 3, endedAt: null } });
   await host.time.pass(EVENTS_COALESCE_MS + 100);
   assert.equal(status(), "running");
+  core.close();
+});
+
+test("a new message clears a failed start until the station reports the new attempt", async () => {
+  const failed = { ...summary("a", 1), pending: 1, process: "cold", startFailed: true };
+  const answers: J = { ...base(), "GET /sessions": [failed], "GET /sessions/a": { session: failed, threads: [], turns: [], jobs: [] } };
+  const { host, core, push } = await started(answers);
+  await host.settle();
+  const held = () => core.inner.data.summary(ST, "a") as J;
+  assert.equal(present.sessionStatus(held()), "failed");
+  push("session-pending", { key: "a", pending: 2 });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  assert.equal(present.sessionStatus(held()), "queued");
+  push("session", { ...failed, pending: 2 });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  assert.equal(present.sessionStatus(held()), "failed");
+  push("session-pending", { key: "a", pending: 0 });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  assert.equal(present.sessionStatus(held()), "running");
+  core.close();
+});
+
+test("a chat stops showing its agent at work when the station reports a refused start", async () => {
+  const initial: J = base();
+  const queued = { ...session("k1"), pending: 1 };
+  const row = { ...initial["GET /chats?shared=1"][0], agents: [{ key: "k1", runtime: "claude", model: null, effort: null, process: "cold", pending: 1, lastTurn: null }] };
+  const answers: J = { ...initial, "GET /sessions": [queued], "GET /sessions/k1": { session: queued, threads: [], turns: [], jobs: [] }, "GET /chats?shared=1": [row] };
+  const { host, core, push, ui: id, values, read } = await ui(answers);
+  push("made", { rows: true, marks: true, shared: true });
+  subscribe(core, id, 1, { topic: "chat", station: ST, thread: 7 });
+  await coalesce(host);
+  await read();
+  assert.equal(v(values, 1).agents[0].status, "queued");
+  push("session", { ...queued, startFailed: true });
+  push("chat-shared", { ...row, agents: [{ ...row.agents[0], startFailed: true }] });
+  await coalesce(host);
+  await read();
+  assert.equal(v(values, 1).agents[0].status, "failed");
+  assert.equal(v(values, 1).agents[0].session.pending, 1, "the message remains waiting for a later attempt");
   core.close();
 });
 
@@ -1341,7 +1380,7 @@ test("requests_carry_the_trace_they_are_made_in", async () => {
   for (const [url, parent] of parents) {
     assert.ok(parent.startsWith("00-") && parent.endsWith("-01") && parent.length === 55, `${url}: ${parent}`);
   }
-  const snapshot = ["/events?running=1&views=1&rows=1&shared=1", "/overview", "/sessions", "/threads", "/chats?marks=1", "/jobs?chats=0"].map((p) => parents.find(([u]) => u === `https://stillfail.test/admin/api${p}`)![1]);
+  const snapshot = ["/events?running=1&views=1&rows=1&shared=1", "/overview", "/sessions", "/threads", "/chats?marks=1&own=1", "/jobs?chats=0"].map((p) => parents.find(([u]) => u === `https://stillfail.test/admin/api${p}`)![1]);
   assert.ok(snapshot.every((p) => p.slice(3, 35) === trace), JSON.stringify(snapshot));
   // Each request is a span of its own.
   assert.equal(new Set(snapshot.map((p) => p.slice(36, 52))).size, snapshot.length);
@@ -1528,41 +1567,6 @@ test("a_thread_its_summary_is_made_of_what_is_said_in_it_is_not_read_again", asy
   core.close();
 });
 
-test("a_station_that_keeps_marks_has_its_sidebar_made_here_from_the_summaries_held", async () => {
-  // The station made every row again for every viewer at every change, 3 to 10 s each on a station (2026-11-03): made here
-  // from the sessions' and threads' summaries and what the station keeps beside them, it reads none of its rows.
-  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [] };
-  const answers: J = { ...base(), "GET /chats?marks=1": marks, "GET /sessions": [{ ...session("k1"), creator: { id: "a@x.com", name: "A", email: "a@x.com", via: "cloud" } }] };
-  answers["GET /chats"] = [];
-  const { host, core, push, read } = await ui(answers);
-  await read();
-  const held = () => core.inner.data.chat(ST, "k1") as J;
-  const asked = () => host.requests.filter((r) => r.url.includes("/admin/api/chats?")).map((r) => r.url.replace("https://stillfail.test/admin/api", ""));
-  // Its stream says it keeps the marks: read, and the sidebar made here.
-  push("made", { rows: true, marks: true });
-  await coalesce(host);
-  assert.deepEqual([held().thread, held().title, held().mine, held().agents.map((a: J) => a.key)], [7, "部署", true, ["k1"]]);
-  push("hidden", { thread: 7, hidden: true });
-  await coalesce(host);
-  assert.equal(held().hidden, true);
-  push("hidden", { thread: 7, hidden: false });
-  await coalesce(host);
-  assert.equal(held().hidden, false);
-  // What an agent said: its row's latest, unread; the viewer's pin: in place. Nothing of the sidebar read.
-  push("thread", { id: 7, entries: [{ ...entry(4, "改好了"), authorKind: "agent", author: "k1", authorName: "bot" }] });
-  push("pin", { session: "k1", at: 9 });
-  await coalesce(host);
-  assert.deepEqual([held().last?.text, held().unread, held().pinned], ["改好了", true, 9]);
-  assert.deepEqual(asked(), ["/chats?marks=1"]);
-  // A card posted: that chat's marks read again, the row made with it.
-  answers["GET /chats?marks=1&thread=7"] = { ...marks, card: { 7: { seq: 5, card: { type: "options", options: [] }, message: {}, before: [] } } };
-  push("thread", { id: 7, entries: [{ ...entry(5, "选一个"), authorKind: "agent", author: "k1", card: { type: "options", options: [] } }] });
-  await coalesce(host);
-  assert.deepEqual(asked(), ["/chats?marks=1", "/chats?marks=1&thread=7"]);
-  assert.deepEqual([held().card?.seq, held().decision?.seq], [5, 5]);
-  core.close();
-});
-
 test("a_station_that_makes_the_chat_list_for_everyone_has_the_sidebar_made_of_it_and_what_is_the_viewers", async () => {
   // A row is a chat, named by it: made here of the agents' and the chats' summaries, an agent whose chat the device did
   // not hold was a row of its own named by the agent (none), every chat a 新对话 on a Mac after its update (2026-11-04).
@@ -1635,8 +1639,7 @@ test("a_shared_chat_created_while_the_stream_is_away_is_listed_when_it_cannot_re
     mineOf: [], said: { n: 1, authorKind: "agent", author: "new-chat", other: 1 },
   };
   const answers: J = { ...base(), "GET /chats": [], "GET /chats?marks=1": marks, "GET /chats?shared=1": [] };
-  const { host, core, push, read, end, streams, gate } = await ui(answers);
-  gate.shared = true;
+  const { host, core, push, read, end, streams } = await ui(answers);
   await read();
   push("made", { rows: true, marks: true, shared: true });
   await coalesce(host);
@@ -1676,8 +1679,7 @@ test("a_failed_shared_list_refresh_keeps_the_old_list_and_retries", async () => 
   const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [], dismissed: [], reads: {} };
   const row = (id: string) => ({ id, session: id, thread: 8, agents: [{ key: id, runtime: "claude" }], lastActiveAt: 1, ws: null, named: { thread: { surface: "ember", title: id }, firstText: null, channelName: null }, mineOf: [], said: null });
   const answers: J = { ...base(), "GET /chats": [], "GET /chats?marks=1": marks, "GET /chats?shared=1": [row("old")] };
-  const { host, core, push, read, end, streams, gate } = await ui(answers);
-  gate.shared = true;
+  const { host, core, push, read, end, streams } = await ui(answers);
   await read();
   push("made", { rows: true, marks: true, shared: true });
   await coalesce(host);
@@ -1706,20 +1708,20 @@ test("an_unrelated_read_does_not_reapply_an_older_shared_chat", async () => {
   push("made", { rows: true, marks: true, shared: true });
   await coalesce(host);
   let finishOverview: (() => void) | undefined;
-  let finishSessions: (() => void) | undefined;
+  let finishMarks: (() => void) | undefined;
   stationLater(host, (req) => {
     if (req.url.endsWith("/overview")) return new Promise((resolve) => { finishOverview = () => resolve(jsonResponse(200, answers["GET /overview"])); });
-    if (req.url.endsWith("/sessions")) return new Promise((resolve) => { finishSessions = () => resolve(jsonResponse(200, [])); });
+    if (req.url.endsWith("/chats?marks=1&own=1")) return new Promise((resolve) => { finishMarks = () => resolve(jsonResponse(200, answers["GET /chats?marks=1"])); });
     return undefined;
   });
   answers["GET /chats?shared=1"] = [row("newer")];
   core.inner.stations.snapshot(ST);
   await host.time.pass(300, 20);
   assert.ok(finishOverview);
-  assert.ok(finishSessions);
+  assert.ok(finishMarks);
   push("chat-shared", row("older"));
   await coalesce(host);
-  finishSessions();
+  finishMarks();
   await host.time.pass(500, 20);
   assert.equal((core.inner.data.chat(ST, "k1") as J)?.title, "newer");
   finishOverview();
@@ -1735,14 +1737,14 @@ for (const removed of [false, true]) test(`a_shared_chat_${removed ? "removed" :
     lastActiveAt: 1, ws: null, named: { thread: { surface: "ember", title: "New chat" }, firstText: null, channelName: null },
     mineOf: [], said: null,
   };
-  const answers: J = { ...base(), "GET /chats": [], "GET /chats?marks=1": marks };
+  const answers: J = { ...base(), "GET /chats": [], "GET /chats?marks=1": marks, "GET /chats?shared=1": [] };
   const { host, core, push, read } = await ui(answers);
   await read();
   let answer: (() => void) | undefined;
   stationLater(host, (req) => req.url.endsWith("/chats?shared=1")
     ? new Promise((resolve) => { answer = () => resolve(jsonResponse(200, removed ? [row] : [])); })
     : undefined);
-  push("made", { rows: true, marks: true, shared: true });
+  core.inner.stations.snapshot(ST);
   await host.time.pass(400, 20);
   assert.ok(answer, "the station is answering the list");
   push(removed ? "chat-shared-removed" : "chat-shared", removed ? { id: row.id } : row);
@@ -2078,7 +2080,7 @@ test("a_stream_taking_over_asks_for_what_came_after_the_last_event_its_predecess
 
 test("a_stream_coming_back_after_its_link_went_is_told_what_it_missed_and_reads_nothing_again", async () => {
   const { host, core, push, streams, end, gate } = await started();
-  const reads = () => ["/admin/api/overview", "/admin/api/sessions", "/admin/api/threads", "/admin/api/chats?marks=1"].map((p) => gets(host, p));
+  const reads = () => ["/admin/api/overview", "/admin/api/sessions", "/admin/api/threads", "/admin/api/chats?marks=1&own=1"].map((p) => gets(host, p));
   const said = (id: string, name: string, data: unknown) =>
     Queue.offerUnsafe(streams.at(-1)!.queue, new TextEncoder().encode(`id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`));
   said("1f2e3d4c.9", "overview", { connects: [1] });
@@ -2182,7 +2184,7 @@ test("a_chat_open_is_asked_what_was_said_since_though_its_stream_came_back_told_
 test("a_stream_taking_over_told_it_missed_what_came_since_reads_the_station_again", async () => {
   const { host, core, push, streams } = await started();
   const ui = core.connect();
-  const reads = () => ["/admin/api/overview", "/admin/api/sessions", "/admin/api/threads", "/admin/api/chats?marks=1"].map((p) => gets(host, p));
+  const reads = () => ["/admin/api/overview", "/admin/api/sessions", "/admin/api/threads", "/admin/api/chats?marks=1&own=1"].map((p) => gets(host, p));
   Queue.offerUnsafe(streams.at(-1)!.queue, new TextEncoder().encode(`id: 1f2e3d4c.9\nevent: overview\ndata: {}\n\n`));
   await host.settle();
   const before = reads();
@@ -2877,8 +2879,8 @@ test("a_removed_thread_and_a_removed_sessions_transcript_are_forgotten", async (
 });
 
 test("chat_rows_come_from_the_station_and_follow_what_is_read_and_written", async () => {
-  const row = (session: string, thread: number | null, last: number, unread: boolean) => ({ session, thread, title: session, lastActiveAt: 1, last: last > 0 ? { seq: last, text: "…" } : null, unread });
-  const answers: J = { ...base(), ...chatsOf([row("k1", 7, 12, true), row("k", null, 0, false)]), "PUT /threads/7/read": { n: 12 } };
+  const row = (session: string, thread: number | null, last: number, unread: boolean, at = 1) => ({ session, thread, title: session, lastActiveAt: at, last: last > 0 ? { seq: last, text: "…" } : null, unread });
+  const answers: J = { ...base(), ...chatsOf([row("k1", 7, 12, true, 2), row("k", null, 0, false, 1)]), "PUT /threads/7/read": { n: 12 } };
   const { host, core, push, streams } = await started(answers);
   await host.settle();
   assert.deepEqual(streams.filter((s) => !s.closed).map((s) => s.path), ["/events?running=1&views=1&rows=1&shared=1"]);
@@ -2897,9 +2899,9 @@ test("chat_rows_come_from_the_station_and_follow_what_is_read_and_written", asyn
   assert.ok((core.inner.data.get({ topic: "threads", station: ST }) as J[]).some((t) => t.id === 9));
   // So is saying who one is on Slack: what the station keeps beside the chats read again.
   answers["PUT /me/slack/U7"] = { ...overview, slackUsers: ["U7"] };
-  const before = gets(host, "/admin/api/chats?marks=1");
+  const before = gets(host, "/admin/api/chats?marks=1&own=1");
   await run(core.inner.stations.perform(op("slack.identity", { user: "U7", bound: true }), null));
-  assert.equal(gets(host, "/admin/api/chats?marks=1"), before + 1);
+  assert.equal(gets(host, "/admin/api/chats?marks=1&own=1"), before + 1);
   core.close();
 });
 
@@ -2933,17 +2935,25 @@ test("a_message_read_in_a_chat_looked_at_is_read_on_the_list_at_once_not_after_i
   // Words sent and answered at once: the answer came while the list was still taking the words sent (its end not in
   // view), was the list's and the workspace's unread, and was read on them only once the station took the read, a
   // round trip later (2026-11-08).
-  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [] };
-  const { host, core, push, values, read } = await ui({ ...base(), "GET /chats?marks=1": marks, "GET /chats": [], "GET /sessions": [{ ...session("k1"), creator: { id: "a@x.com", name: "A", email: "a@x.com", via: "cloud" } }] });
+  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [], dismissed: [], reads: { 7: 3 } };
+  const shared = (seq: number, text: string) => ({
+    id: "k1", session: "k1", thread: 7, title: "", agents: [{ key: "k1", runtime: "claude" }],
+    last: { seq, authorKind: "agent", author: "k1", authorName: "bot", text, createdAt: seq },
+    unread: false, mine: false, lastActiveAt: seq, connect: null, origin: null, creator: null, people: [],
+    ws: null, named: { thread: { surface: "ember", title: "部署" }, firstText: null, channelName: null },
+    mineOf: [{ id: "a@x.com", email: "a@x.com", via: "cloud" }],
+    said: { n: seq, authorKind: "agent", author: "k1", other: seq }, pinned: null,
+  });
+  const { host, core, push, values, read } = await ui({ ...base(), "GET /chats?marks=1": marks, "GET /chats?shared=1": [shared(3, "…")], "GET /chats": [], "GET /sessions": [{ ...session("k1"), creator: { id: "a@x.com", name: "A", email: "a@x.com", via: "cloud" } }] });
   // the station slow to take the read
   stationLater(host, (req) => (req.method === "PUT" && req.url.endsWith("/threads/7/read") ? new Promise(() => {}) : undefined));
   subscribe(core, 1, 1, { topic: "chat", station: ST, thread: 7 });
   subscribe(core, 1, 2, { topic: "chats", scope: "ws" });
   call(core, 1, 3, "client.focus", { visible: true, focused: true, chat: { station: ST, thread: 7, end: false } });
-  push("made", { rows: true, marks: true });
   await read();
   const unread = () => (v(values, 2).days as J[]).flatMap((d) => d.items).find((i: J) => i.thread === 7)?.unread;
   push("thread", { id: 7, entries: [{ ...entry(4, "来了"), authorKind: "agent", author: "k1", authorName: "bot" }] });
+  push("chat-shared", shared(4, "来了"));
   await read();
   assert.equal(unread(), true);
   // its end in view: read, on the list too, while the station has not answered
@@ -3782,11 +3792,14 @@ test("a_core_started_again_takes_its_stations_up_from_the_last_event_kept_and_re
     await host.settle();
     const asked = host.requests.slice(before).map((r) => r.url.replace("https://stillfail.test/admin/api", "")).filter((u) => !u.startsWith("http"));
     assert.ok(asked.some((u) => u.startsWith("/events") && u.includes("since=1a.7")), JSON.stringify(asked));
-    const lists = asked.filter((u) => ["/overview", "/chats", "/sessions", "/threads", "/jobs?chats=0"].includes(u) || u.startsWith("/changed/"));
-    // Told what came after it: nothing read again. Not told so (more than an hour later, the station started again):
-    // everything is, as before.
-    if (resumes) assert.deepEqual(lists, [], JSON.stringify(asked));
-    else assert.ok(lists.includes("/overview"), JSON.stringify(asked));
+    const lists = asked.filter((u) => ["/overview", "/chats", "/sessions", "/threads", "/jobs?chats=0"].includes(u) || (u.startsWith("/changed/") && u !== "/changed/shared"));
+    // Told what came after it: only cold-start sidebar reconciliation (`marks=1&own=1` + `/changed/shared`), none of
+    // overview/sessions/threads/jobs. Not told so (more than an hour later): everything is read again.
+    if (resumes) {
+      assert.deepEqual(lists, [], JSON.stringify(asked));
+      assert.ok(asked.includes("/chats?marks=1&own=1"), JSON.stringify(asked));
+      assert.ok(asked.includes("/changed/shared"), JSON.stringify(asked));
+    } else assert.ok(lists.includes("/overview"), JSON.stringify(asked));
     again.close();
   }
 });

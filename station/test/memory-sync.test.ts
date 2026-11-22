@@ -18,7 +18,9 @@ const NAMES: Record<string, string> = { [A]: "ccvm", [B]: "Studio", [C]: "Mini1"
 
 type Station = { id: string; data: string; home: string; sync: MemorySync; up: boolean };
 
-function world(ids: string[], opts: { old?: string[] } = {}) {
+/// `live`: stations set going by themselves (`start()`, brought level by `#bring`), their watches none; `asked`: each
+/// request between them as it goes, handled once what it answers is done, and `answered` told once it is.
+function world(ids: string[], opts: { old?: string[]; live?: string[]; asked?: (from: string, request: any) => Promise<void>; answered?: (request: any) => void } = {}) {
   const stations = new Map<string, Station>();
   const peers = ids.map((id) => ({ id, name: NAMES[id]! }));
   const cloudFor = (station: string) =>
@@ -40,12 +42,16 @@ function world(ids: string[], opts: { old?: string[] } = {}) {
       data,
       cloud: cloudFor(id),
       agentHome: () => home,
-      still: true,
+      still: !opts.live?.includes(id),
+      watch: () => ({ close() {}, on() {} }),
       ask: async (to, ws, request) => {
+        await opts.asked?.(id, request);
         const other = stations.get(to);
         if (!other || !other.up) throw new Error("peer unavailable");
         if (opts.old?.includes(to)) throw new Error(`unsupported peer method: ${request.method}`);
-        return JSON.parse(JSON.stringify(await other.sync.handle(id, request, ws)));
+        const answer = JSON.parse(JSON.stringify(await other.sync.handle(id, request, ws)));
+        opts.answered?.(request);
+        return answer;
       },
     });
     stations.set(id, { id, data, home, sync, up: true });
@@ -81,6 +87,58 @@ test("two stations' memories of before come to one: each line once, a line one a
     assert.match(a!, /^- \[Studio\] UI 改动先出图。$/m);
     assert.equal(a!.match(/全局记忆/g)!.length, 1);
   } finally {
+    await w.done();
+  }
+});
+
+test("an edit looked at while its station's memory.put is under way is given next, not counted as given", async () => {
+  // #bring once counted as given the records' word read after `memory.put` answered: an edit looked at meanwhile (by a
+  // watch, or a peer's `memory.get`) counted as given too, and stayed on its station until the next edit there.
+  type Put = { go: () => void; done: Promise<void>; ended: () => void };
+  const puts: Put[] = [];
+  let gets = 0;
+  let answered = 0;
+  let heard: (() => void) | null = null;
+  const w = world([A, B], {
+    live: [A],
+    asked: async (_from, request) => {
+      if (request?.method === "memory.get") gets++;
+      if (request?.method !== "memory.put") return;
+      const p = { go: () => {}, ended: () => {} } as Put;
+      const go = new Promise<void>((r) => (p.go = r));
+      p.done = new Promise<void>((r) => (p.ended = r));
+      puts.push(p);
+      heard?.();
+      await go;
+    },
+    answered: (request) => {
+      if (request?.method === "memory.put") puts[answered++]!.ended();
+    },
+  });
+  const put = async (n: number) => {
+    while (puts.length < n) await new Promise<void>((r) => (heard = r));
+    heard = null;
+    return puts[n - 1]!;
+  };
+  try {
+    write(w.at(A), "MEMORY.md", "- one\n");
+    w.at(A).sync.start();
+    const first = await put(1);
+    // A's edit, looked at while its first memory.put is under way (B asking for A's records looks at them)
+    write(w.at(A), "MEMORY.md", "- one\n- two\n");
+    await w.at(A).sync.handle(B, { method: "memory.get" }, "w");
+    assert.equal(gets, 1);
+    first.go();
+    await first.done;
+    // (what follows the answer is A's alone, no file or program between: settled within a turn of the loop)
+    await new Promise((r) => setImmediate(r));
+    assert.equal(gets, 2, "A brings B level again once its first memory.put answered");
+    const second = await put(2);
+    second.go();
+    await second.done;
+    assert.equal(read(w.at(B), "MEMORY.md"), "- one\n- two\n");
+  } finally {
+    for (const p of puts) p.go();
     await w.done();
   }
 });

@@ -16,7 +16,7 @@ use windows::Win32::Foundation::{ERROR_SUCCESS, LUID};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFOEXW};
 
 #[cfg(windows)]
-use super::view::main_display;
+use super::display::main_display;
 
 /// The steps Windows has, in percent.
 pub const SCALES: [u32; 12] = [100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500];

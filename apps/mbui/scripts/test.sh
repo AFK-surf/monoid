@@ -46,7 +46,7 @@ for t in $targets; do
   # MBC_LTO says (its link is 30-40 s a test; main's run has it on: mbui-check.yml).)
   mode="--target $t"
   # (mbui's scripts/env.sh native_tests: the C split by mbui's scripts/mbc, units kept by content in MBC_STORE)
-  if [ $t = native ] && [ -z "${APP_EXE:-}" ] && [ -z "${REPLAY_EXE:-}" ]; then native_tests "$A"; mode=$NATIVE; fi
+  if [ $t = native ] && [ -z "${APP_EXE:-}" ] && [ -z "${REPLAY_EXE:-}" ] && [ -z "${REALSIZE_EXE:-}" ] && [ -z "${PAGES_TEST_EXE:-}" ]; then native_tests "$A"; mode=$NATIVE; fi
   # (wasm-gc: --release, as native's; wasm-gc rather than classic Wasm, whose memory is freed by counting alone: what
   # holds itself is never freed, 3.7 MB a screen opened in a Tester, and the corner and contrast sweeps outgrew its
   # 4 GiB (2026-11-03))
@@ -57,7 +57,7 @@ for t in $targets; do
   # 194 s with them apart and 140 s together, 2026-10-22; sfreplay's own two tests there too: its whitebox test was
   # one more program of the whole app, linked with ThinLTO on main in 120 s beside the flows' 118, 2026-10-23)
   pkgs=""
-  if [[ " ${PARTS:-app replay} " = *" app "* ]]; then
+  if [[ " ${PARTS:-app realsize pages_test replay} " = *" app "* ]]; then
     # (the screens' tests in sfapp's own, screens_wbtest.mbt: a package of their own was a second program of the whole
     # app, compiled again on every change, 88 s of a branch's app part with sfapp's own 92, 2026-10-23)
     # (sfpages' own tests too: the pages moved there from sfapp brought theirs, run by nothing until 2026-10-25)
@@ -76,7 +76,13 @@ for t in $targets; do
     # links a part side by side, 35-69 s each after a change, 2026-10-23, 40022031382; their tests run without it)
     [ "${MBC_LTO:-0}" = thin ] && pkgs="-p stillfail/sfapp"
   fi
-  if [[ " ${PARTS:-app replay} " = *" replay "* ]]; then
+  if [[ " ${PARTS:-app realsize pages_test replay} " = *" realsize "* ]] && [ "${MBC_LTO:-0}" != thin ]; then
+    pkgs="$pkgs -p stillfail/sfapp_realsize"
+  fi
+  if [[ " ${PARTS:-app realsize pages_test replay} " = *" pages_test "* ]] && [ "${MBC_LTO:-0}" != thin ]; then
+    pkgs="$pkgs -p stillfail/sfapp_pages_test"
+  fi
+  if [[ " ${PARTS:-app realsize pages_test replay} " = *" replay "* ]]; then
     if [ "${MBC_LTO:-0}" = thin ]; then pkgs="$pkgs -p stillfail/sfreplay/flows"; else
     # (not sfreplay: no test of its own is left there, and its package was two empty programs of the whole app, 29 s
     # of the replay part's compile, 2026-10-24)
@@ -107,17 +113,38 @@ for t in $targets; do
   # whole of mbui in each) compiled without optimising (MBC_LIGHT_TESTS): a change to mbui compiled its units again in
   # each of them beside sfapp's, ~80 s of four programs' compile on CI's four cores, 2026-10-24, 40127533069
   light=""
+  # (a release/* branch's run: yesterday's main, ~24 h behind the 3 h of units main's store keeps, is never merged back
+  # into main and runs only the default rate, so the whole app's programs are light there as before #7350: cold at their
+  # own level its app build ran past 233 s and its replay build past 202 s, 44919782303, 2026-11-22)
+  release_light=0
+  if [ -n "${GITHUB_ACTIONS:-}" ] && [[ "${GITHUB_REF:-}" == refs/heads/release/* ]]; then release_light=1; fi
   for p in $pkgs; do
     case $p in
+      -p) continue ;;
+      stillfail/core) [ "$release_light" = 1 ] || continue ;;
+      stillfail/sfreplay/flows) [ "$release_light" = 0 ] || light="$light sfreplay/flows/flows.blackbox_test"; continue ;;
+      stillfail/sfapp) [ "$release_light" = 0 ] || light="$light sfapp/sfapp.whitebox_test"; continue ;;
+      stillfail/sfapp_realsize) [ "$release_light" = 0 ] || light="$light sfapp_realsize/sfapp_realsize.blackbox_test"; continue ;;
+      stillfail/sfapp_pages_test) [ "$release_light" = 0 ] || light="$light sfapp_pages_test/sfapp_pages_test.blackbox_test"; continue ;;
       # (sfapp's program and the flows' at their own level, a branch's as main's: a branch's built at -O0, its 409 units
       # of sfpages, sfdesk, sfbase and sfapp were none of them main's once merged, which compiled them again at -O2
       # past its app build's budget, 44452414116, 2026-11-19. Their tests' units are test.<unit>, at MBC_TEST_OPT below)
-      -p | stillfail/core | stillfail/sfreplay/* | stillfail/sfapp) continue ;;
+      stillfail/sfreplay/*) continue ;;
     esac
     n=$(basename "$p")
     light="$light ${p#stillfail/}/$n.internal_test ${p#stillfail/}/$n.blackbox_test ${p#stillfail/}/$n.whitebox_test"
   done
   export MBC_LIGHT_TESTS="$light"
+  # (release/*: a whole app's program built alone keeps mbui's and the library's units at its own level (mbc's
+  # MBC_LIGHT_KEEP), which run in every frame of its tests, at -O0 2.5 times as long, 44243493008)
+  if [ "$release_light" = 1 ]; then
+    case " $light " in
+      *" sfapp/sfapp.whitebox_test "*) [ "$pkgs" = "-p stillfail/sfapp" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+      *" sfapp_realsize/sfapp_realsize.blackbox_test "*) [ -n "${REALSIZE_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+      *" sfapp_pages_test/sfapp_pages_test.blackbox_test "*) [ -n "${PAGES_TEST_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+      *" sfreplay/flows/flows.blackbox_test "*) [ -n "${REPLAY_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+    esac
+  fi
   # A test's functions (its *_test.mbt's, *_wbtest.mbt's) in units of their own (mbc's test.<unit>), compiled at -O1 in
   # every program at its own level (mbc's MBC_TEST_OPT), a branch's as main's, so what a branch compiled is what main
   # takes from the store once merged: sfapp's 526 test files are 92% of its source, beside its 43, and at -O2 a change
@@ -128,13 +155,13 @@ for t in $targets; do
   # Built first on its own (TIMES=1, as CI's: each said with how long it took; its errors shown by the run), then run.
   s=$(date +%s)
   # (a build that fails fails the run: the programs a build before it left in _build are not run in their place)
-  if [ -z "${APP_EXE:-}" ] && [ -z "${REPLAY_EXE:-}" ] && ! moon test $mode $pkgs --build-only > "$out.build" 2>&1; then
+  if [ -z "${APP_EXE:-}" ] && [ -z "${REPLAY_EXE:-}" ] && [ -z "${REALSIZE_EXE:-}" ] && [ -z "${PAGES_TEST_EXE:-}" ] && ! moon test $mode $pkgs --build-only > "$out.build" 2>&1; then
     grep -v "$F" "$out.build" | tail -40
     rm -f "$out.build"
     exit 1
   fi
   rm -f "$out.build"
-  [ -z "${TIMES:-}" ] || [ -n "${APP_EXE:-}${REPLAY_EXE:-}" ] || echo "test.sh: built in $(( $(date +%s) - s )) s"
+  [ -z "${TIMES:-}" ] || [ -n "${APP_EXE:-}${REPLAY_EXE:-}${REALSIZE_EXE:-}${PAGES_TEST_EXE:-}" ] || echo "test.sh: built in $(( $(date +%s) - s )) s"
   # (wasm-gc: the whole app's programs (sfapp's, the flows') run as a native one built elsewhere is (APP_EXE, exe_run),
   # their files side by side, each part a moonrun of the program (scripts/wasmtest.mjs): moon test runs a program's
   # tests one after another. UPDATE's are moon test's own, to write the snapshots)
@@ -158,6 +185,28 @@ for t in $targets; do
       cp "$(bash "$D/testexe" path)" "$APP_BUILD_OUT/testexe" || exit 1
     ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$APP_BUILD_OUT/sfapp.whitebox_test.exe" "$APP_BUILD_OUT/testexe" || true
     echo "test.sh: sfapp's test program put in $APP_BUILD_OUT ($(du -h "$APP_BUILD_OUT/sfapp.whitebox_test.exe" | cut -f1))"
+    [ -z "${MBUI_BUILT_MARK:-}" ] || touch "$MBUI_BUILT_MARK"
+    exit 0
+  fi
+  # (sfapp_realsize's test program and its tests' list put where REALSIZE_BUILD_OUT says, for the jobs that run it: nothing run)
+  if [ -n "${REALSIZE_BUILD_OUT:-}" ]; then
+    b=_build/native/release/test/stillfail/sfapp_realsize
+    [ -f $b/sfapp_realsize.blackbox_test.exe ] || { moon test $mode $pkgs --build-only 2>&1 | grep -v "$F" | tail -40; exit 1; }
+    mkdir -p "$REALSIZE_BUILD_OUT" && cp $b/sfapp_realsize.blackbox_test.exe $b/__blackbox_test_info.json "$REALSIZE_BUILD_OUT/" &&
+      cp "$(bash "$D/testexe" path)" "$REALSIZE_BUILD_OUT/testexe" || exit 1
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$REALSIZE_BUILD_OUT/sfapp_realsize.blackbox_test.exe" "$REALSIZE_BUILD_OUT/testexe" || true
+    echo "test.sh: sfapp_realsize's test program put in $REALSIZE_BUILD_OUT ($(du -h "$REALSIZE_BUILD_OUT/sfapp_realsize.blackbox_test.exe" | cut -f1))"
+    [ -z "${MBUI_BUILT_MARK:-}" ] || touch "$MBUI_BUILT_MARK"
+    exit 0
+  fi
+  # (sfapp_pages_test's test program and its tests' list put where PAGES_TEST_BUILD_OUT says, for the jobs that run it: nothing run)
+  if [ -n "${PAGES_TEST_BUILD_OUT:-}" ]; then
+    b=_build/native/release/test/stillfail/sfapp_pages_test
+    [ -f $b/sfapp_pages_test.blackbox_test.exe ] || { moon test $mode $pkgs --build-only 2>&1 | grep -v "$F" | tail -40; exit 1; }
+    mkdir -p "$PAGES_TEST_BUILD_OUT" && cp $b/sfapp_pages_test.blackbox_test.exe $b/__blackbox_test_info.json "$PAGES_TEST_BUILD_OUT/" &&
+      cp "$(bash "$D/testexe" path)" "$PAGES_TEST_BUILD_OUT/testexe" || exit 1
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$PAGES_TEST_BUILD_OUT/sfapp_pages_test.blackbox_test.exe" "$PAGES_TEST_BUILD_OUT/testexe" || true
+    echo "test.sh: sfapp_pages_test's test program put in $PAGES_TEST_BUILD_OUT ($(du -h "$PAGES_TEST_BUILD_OUT/sfapp_pages_test.blackbox_test.exe" | cut -f1))"
     [ -z "${MBUI_BUILT_MARK:-}" ] || touch "$MBUI_BUILT_MARK"
     exit 0
   fi
@@ -195,7 +244,7 @@ for t in $targets; do
   # (MBUI_BUILT_MARK: that file written once every program this run builds is built and put where it goes, whatever
   # their tests say after: check-mbui keeps a branch's units only from a build that came to its end, never one cut or
   # failed half way. APP_BUILD_OUT's, above, before its exit)
-  [ -z "${MBUI_BUILT_MARK:-}" ] || [ -n "${APP_EXE:-}${REPLAY_EXE:-}" ] || touch "$MBUI_BUILT_MARK"
+  [ -z "${MBUI_BUILT_MARK:-}" ] || [ -n "${APP_EXE:-}${REPLAY_EXE:-}${REALSIZE_EXE:-}${PAGES_TEST_EXE:-}" ] || touch "$MBUI_BUILT_MARK"
   s=$(date +%s)
   # The page files FILE... dealt to the runners SPECS (each "programs,cores,others,times": its programs for the pages,
   # its cores, the seconds its other runs take of them, and how many times it runs each page, two where it runs two
@@ -268,17 +317,17 @@ for t in $targets; do
     # 256 s of app 4/4 at 120 fps part 2/3 and 117 s of app 1/4 at 24 7 fps, which its 7 then cut at its 5 minutes,
     # main 0d56014c 43468965521, 2026-11-13) (in five since, its 中屏 and 大屏 a run each: in three, beside the first's
     # pages and packages at 120, its 小屏 pair was 118 s and the others 218 and 224, main af1435b8 43476543010)
-    # Five share-card tests take about 55 s each. They moved to indices 72, 73, 74, 130, and 131 as screens were added.
-    # Give each its own run. Two together made tests 73-82 take 273 s on main (44211717525).
+    # Five share-card tests take about 55 s each. Cut by hand at their indices, new screens moved them on: three fell in
+    # tests 75-82, 202 s (ded934c144 44605217183), 328 s and cut at its 5 minutes on main 67e99adf7 (44602004555).
+    # switches_still is now cut in 32 even runs, its switches_part interleaving the screens so a run's ten tests walk
+    # screens 32 apart: no two of a row of 32 share a run.
     # send_steady has nine tests now, and tests 2-3 (22 and 27 paced sends) walk the most frames. Its 2-9 range ran
     # as one process on app 4/4, which hit the 5-minute limit at 318 s on main f855908e (44401157133). Cut it in five.
-    # (chat_drive_parity's four by its tests' times the same way: 29, 35, 32 and 35 s, where by count 0-10 was 54 of
-    # 130 s; each on one of the app part's four runners, app_group_of)
     sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:6 src/sfapp/squeeze_said_wbtest.mbt:1
-      src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
-      src/sfapp/words_large_wbtest.mbt:2 src/sfapp/duo_side_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:@1@2 src/sfapp/send_steady_wbtest.mbt:@1@2@3@4
-      src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5 src/sfapp/chat_drive_parity_wbtest.mbt:@4@15@27
-      src/sfapp/switches_still_wbtest.mbt:@7@14@23@32@40@48@56@61@66@72@73@74@75@82@87@93@99@113@122@130@131@132@147@176@191@202@213@232@266@288@304)
+      src/sfapp/contrast_wbtest.mbt:1 src/sfapp/preview_tree_wbtest.mbt:@54
+      src/sfapp/words_large_wbtest.mbt:2 src/sfapp/duo_side_wbtest.mbt:2 src/sfapp/send_steady_wbtest.mbt:@1@2@3@4
+      src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5
+      src/sfapp/switches_still_wbtest.mbt:32)
     pages=()
     while IFS= read -r f; do
       [[ " ${sweeps[*]} " = *" $f:"* ]] || pages+=("$f")
@@ -297,13 +346,15 @@ for t in $targets; do
         # screen, its bars set on the default run; 40-102 s a run at the four rates, #5407 42976047326)
         # (duo_side's, every screen's controls held clear of an iPhone Duo's column on its side, at rest: the same)
         # (switches_still's, every screen's switches pressed, its table set on the default run: main's switches job's alone)
-        # (chat_drive_parity's, the old chat page and the one made as nodes walked frame by frame: at a rate each of its
-        # tests returns at once, @ui.test_at_a_rate)
         # (corners' and contrast's too, said here since a branch's changed files at a rate (APP_GROUP=1/1, every run on the
         # one): main's rates never ran them (their groups are the default rate's alone), and a branch that changed
         # corners_wbtest ran its three at 120 and 60 with the motion counted on one runner, cut at its 5 minutes,
         # lock-upgrade-page 43559278519, 2026-11-14)
-        case $f in */screens_wbtest.mbt | */squeeze_said_wbtest.mbt | */words_large_wbtest.mbt | */duo_side_wbtest.mbt | */real_size_wbtest.mbt | */switches_still_wbtest.mbt | */corners_wbtest.mbt | */contrast_wbtest.mbt | */chat_drive_parity_wbtest.mbt) continue ;; esac
+        case $f in */screens_wbtest.mbt | */squeeze_said_wbtest.mbt | */words_large_wbtest.mbt | */duo_side_wbtest.mbt | */switches_still_wbtest.mbt | */corners_wbtest.mbt | */contrast_wbtest.mbt) continue ;; esac
+        # (send_steady's one run: at a rate eight of its nine tests return at once, the file 1 s (page-seconds.txt),
+        # where its five cuts moved the app part's count so that chat_page_nodes' two halves fell on part 3/3 and part
+        # 1/3 and part 3/3 at 60 was cut at 318 s; one run here, part 1/3, the halves on part 2/3 and part 3/3)
+        case $f in */send_steady_wbtest.mbt) k=1 ;; esac
       fi
       # (in k runs of its tests by their index: moon test FILE --index FROM-TO, the tests in the file's order)
       m=$(grep -c '^test "' "$f")
@@ -413,7 +464,9 @@ for t in $targets; do
           # second's 289 s of its 5 minutes on a slow runner with 621, reckoned too few; the third's one program near
           # empty. The first reckoned 320, the second 300, the third 900: by the table the first's pages 418 s, the
           # second's 437, the fourth's 2093 on its twelve)
-          60) specs="4,4,320,1 4,4,300,1 1,4,900,1 12,12,120,1" ;;
+          # (the third's 86 s at 60 with no page, its one program near empty: reckoned 600, it takes 131 s of the table's
+          # pages, the fourth's 2129 s down to 2035 on its twelve, reckoned 160)
+          60) specs="4,4,320,1 4,4,300,1 1,4,600,1 12,12,160,1" ;;
           # (the first's packages' programs at 120 275 s beside its pages' 263, the job 295 s of its 5 minutes, main
           # 436755fc 43074044573, 2026-11-11: reckoned 160 s of its cores, they take some 500 now)
           # (the second's and the fourth's on three runners each at 120, twelve programs (mbui-check.yml's app-rates
@@ -521,9 +574,6 @@ for t in $targets; do
           # half on the second since, each reckoned again as it ran: by the table 658, 546, 364 and 604 s of pages)
           # (real_size's wide half on the fourth since (app_group_of), the second's reckoning raised for what ran there
           # beside it all the same, 43864771728: by the table 715, 503, 393 and 561 s of pages)
-          # (chat_drive_parity's four runs on the four since, some 75 s each of one of its cores (gt1's 29-35 s, CI's
-          # runners some 2.3 times slower), each reckoned at half as the others are, 37 s more; its file, 143 s of
-          # the first's pages by the table, dealt no more: by the table 621, 430, 293 and 500 s of pages)
           # Account for the real_size and kept_rows sweeps on groups 1 and 4.
           # Group 2 now runs its pages on four workers after its sweeps finish. words_large and the second
           # chat_page_nodes run moved to contrast and group 1 (app 2/4 was cut at 292 s with 549 -O0 units,
@@ -532,7 +582,12 @@ for t in $targets; do
           # main f855908e (44401157133) cut app 4/4 at 318 s while contrast took 157 s, 1/4 185 s, 3/4 207 s and
           # 2/4 225 s. kept_rows 3-4 and send_steady's last two ranges moved to contrast. About 145 s of pages
           # moved from group 4 to group 1. By the table: 1103, 643, 763 and 643 s of pages (was 988, 648, 728, 788).
-          *) specs="4,4,220,1 4,4,680,1 4,4,560,1 4,4,680,1" ;;
+          # fdb3787b0 (44553344108, -O0) cut app 1/4 at 308 s: its 101 page files ran 296 s beside 447 s of other
+          # runs (chat_page_nodes 22-44, chat_drive_parity 0-4 and preview_tree's halves), while 2/4 took 176 s,
+          # 3/4 157 s and 4/4 124 s. main b7ddfb6b07 (44553113433, -O2): 205, 172, 235 and 128 s. Group 1 reckoned
+          # 500 and group 4 400 (group 2 600): about 300 s of pages moved from group 1 to groups 4 and 2. By the
+          # table: 757, 657, 697 and 856 s of pages (was 1057, 597, 717, 596).
+          *) specs="4,4,500,1 4,4,600,1 4,4,560,1 4,4,400,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
@@ -556,6 +611,102 @@ for t in $targets; do
     fi
     # (the small packages' programs built once at the default rate, PKGS_EXE: their runs at a rate here, on the first)
     [ -z "${PKGS_EXE:-}" ] || runs+=("@pkgs")
+  fi
+  # Real-size sweep and budget tests (src/sfapp_realsize, blackbox test program): built apart from sfapp so sfapp
+  # carries no sfrealsize payloads or budget tables. real_size_test.mbt runs at the default rate alone, split at @1@2
+  # (indices 0-1, 1-2, 2-end) beside the package's other test files.
+  if [[ " $pkgs " = *" -p stillfail/sfapp_realsize "* ]] && [ "${MBC_LTO:-0}" != thin ]; then
+    rest=()
+    # (a run named by @ (@pkgs, @pages …) kept as it is: one padded with blanks matched none of its names below and ran
+    # as the app's; a run that was the real-size package alone left out)
+    for r in "${runs[@]}"; do
+      case "$r" in
+        @*) rest+=("$r") ;;
+        *)
+          # (rr, not s: s is when the run began, read again as each run's time is said)
+          rr=$(echo " $r " | sed 's| -p stillfail/sfapp_realsize | |')
+          [ -z "${rr// /}" ] || rest+=("$rr")
+          ;;
+      esac
+    done
+    runs=("${rest[@]}")
+    rx=${REALSIZE_EXE:-_build/native/release/test/stillfail/sfapp_realsize/sfapp_realsize.blackbox_test.exe}
+    [ $t = wasm-gc ] && rx=$(wasm_exe sfapp_realsize blackbox)
+    rs_files=(src/sfapp_realsize/*_test.mbt)
+    [ -z "${REALSIZE_FILES:-}" ] || read -r -a rs_files <<< "$REALSIZE_FILES"
+    rs_sweep_runs=0
+    rs_other=()
+    while IFS= read -r f; do
+      if [ "$f" = src/sfapp_realsize/real_size_test.mbt ]; then
+        if [ -z "${MBUI_TEST_FPS:-}" ]; then
+          m=$(grep -c '^test "' "$f")
+          a=0
+          for c in 1 2 $m; do
+            if [ "$c" -gt "$a" ] && [ "$c" -le "$m" ]; then
+              if [ $t != js ] && [ -z "${UPDATE:-}" ] && [ -n "$rx" ] && [ -f "$rx" ]; then
+                runs+=("@realsize_sweep $f --index $a-$c")
+              else
+                runs+=("$f --index $a-$c")
+              fi
+              rs_sweep_runs=$((rs_sweep_runs + 1))
+              a=$c
+            fi
+          done
+        fi
+      else
+        rs_other+=("$f")
+      fi
+    done < <(grep -l '^test "' "${rs_files[@]}" </dev/null 2>/dev/null)
+    if [ ${#rs_other[@]} -gt 0 ]; then
+      if [ $t != js ] && [ -z "${UPDATE:-}" ] && [ -n "$rx" ] && [ -f "$rx" ]; then
+        rs_j=${REALSIZE_JOBS:-4}
+        [ "$rs_sweep_runs" -gt 0 ] && [ "$rs_j" -gt 2 ] && rs_j=2
+        runs+=("@realsize_pages $rs_j ${rs_other[*]}")
+      else
+        runs+=("${rs_other[*]}")
+      fi
+    fi
+  fi
+  # Pages, settings, stations, files and viewer blackbox tests (src/sfapp_pages_test): built apart from sfapp so
+  # sfapp's whitebox C stays smaller and faster to compile.
+  if [[ " $pkgs " = *" -p stillfail/sfapp_pages_test "* ]] && [ "${MBC_LTO:-0}" != thin ]; then
+    rest=()
+    # (a run named by @ kept as it is, as the real-size package's above: "@pages …" padded with a blank matched no
+    # name of it below, APP_PART dealt none of its files and gave every one of them to its last part, #7620's)
+    for r in "${runs[@]}"; do
+      case "$r" in
+        @*) rest+=("$r") ;;
+        *)
+          rr=$(echo " $r " | sed 's| -p stillfail/sfapp_pages_test | |')
+          [ -z "${rr// /}" ] || rest+=("$rr")
+          ;;
+      esac
+    done
+    runs=("${rest[@]}")
+    px=${PAGES_TEST_EXE:-_build/native/release/test/stillfail/sfapp_pages_test/sfapp_pages_test.blackbox_test.exe}
+    [ $t = wasm-gc ] && px=$(wasm_exe sfapp_pages_test blackbox)
+    pt_files=(src/sfapp_pages_test/*_test.mbt)
+    [ -z "${PAGES_TEST_FILES:-}" ] || read -r -a pt_files <<< "$PAGES_TEST_FILES"
+    pt_other=()
+    while IFS= read -r f; do
+      pt_other+=("$f")
+    done < <(grep -l '^test "' "${pt_files[@]}" </dev/null 2>/dev/null)
+    if [ -n "${PAGES_TEST_PART:-}" ] && [ ${#pt_other[@]} -gt 0 ]; then
+      pt_k=${PAGES_TEST_PART%/*} pt_n=${PAGES_TEST_PART#*/}
+      pt_mine=()
+      for ((idx = 0; idx < ${#pt_other[@]}; idx++)); do
+        [ $((idx % pt_n + 1)) -eq "$pt_k" ] && pt_mine+=("${pt_other[idx]}")
+      done
+      pt_other=("${pt_mine[@]}")
+    fi
+    if [ ${#pt_other[@]} -gt 0 ]; then
+      if [ $t != js ] && [ -z "${UPDATE:-}" ] && [ -n "$px" ] && [ -f "$px" ]; then
+        pt_j=${PAGES_TEST_JOBS:-4}
+        runs+=("@pages_test_pages $pt_j ${pt_other[*]}")
+      else
+        runs+=("${pt_other[*]}")
+      fi
+    fi
   fi
   # The flows seen again (src/sfreplay/flows, one program): their files in REPLAY_SHARDS moon tests side by side (3),
   # the core's tests in another. One moon test ran them one after another, 83 s of the replay part's run on CI's four
@@ -638,19 +789,9 @@ for t in $targets; do
       # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
       # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
       # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
-      # At the default rate, contrast runs the wide real_size sweep, four kept_rows ranges, send_steady 3-4 and 4-9,
-      # and both duo_side and words_large runs.
+      # At the default rate, contrast runs the wide real_size sweep, send_steady 3-4 and 4-9, and both duo_side and
+      # words_large runs.
       "src/sfapp/duo_side_wbtest.mbt "*) echo contrast ;;
-      "src/sfapp/real_size_wbtest.mbt --index 2-"*) case "${MBUI_TEST_FPS:-}" in "") echo contrast ;; *) echo 4 ;; esac ;;
-      # At the default rate, group 1 takes the small-screen real_size sweep.
-      # These runs, and contrast's kept_rows ranges, share group 3 at explicit rates.
-      "src/sfapp/real_size_wbtest.mbt --index 1-2") [ -z "${MBUI_TEST_FPS:-}" ] && echo 1 || echo 3 ;;
-      "src/sfapp/real_size_wbtest.mbt --index 0-1") echo 3 ;;
-      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 0-2" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 2-3" | \
-        "src/sfapp/kept_rows_kinds_wbtest.mbt --index 3-4" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 4-5")
-        if [ -z "${MBUI_TEST_FPS:-}" ]; then echo contrast; else echo 3; fi ;;
-      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 8-"*) echo 2 ;;
-      "src/sfapp/kept_rows_kinds_wbtest.mbt "*) echo 3 ;;
       # (preview_tree's two on the fourth, the one with the most programs: at 120 a second APP_PART gives each of its
       # two halves one; at 24 and at 7 the fourth has a runner for each. At the default rate and at 60 on the first:
       # there the fourth's 138 files of pages and preview_tree's two, six processes on its four cores, were 214-273 s
@@ -695,14 +836,6 @@ for t in $targets; do
       # times where the other three's ran 0.6-0.9, app 1/4 286 s of its 5 minutes on mbui-picks-whole 43544698219
       # after #6086, the third's 164 s with its pages on one program)
       "src/sfapp/answers_still_wbtest.mbt "*) case "${MBUI_TEST_FPS:-}" in "" | 60 | 120) echo 3 ;; *) echo 4 ;; esac ;;
-      # (chat_drive_parity's four, its k-th on the k-th of the four, beside each one's pages: one process of its 41
-      # tests, each two pages walked frame by frame side by side, was 288 s of app 1/4's, cut at its 5 minutes on #6837
-      # b68070c9c and main d77015c89, 2026-11-17. Its k-th run is the one from its (k-1)-th cut in sweeps)
-      "src/sfapp/chat_drive_parity_wbtest.mbt --index "*)
-        local k=1 c cut=" ${sweeps[*]} "
-        cut=${cut#* src/sfapp/chat_drive_parity_wbtest.mbt:} cut=${cut%% *}
-        for c in ${cut//@/ }; do [ "${3%-*}" -lt "$c" ] || k=$((k + 1)); done
-        echo $k ;;
       "@pages "*) [ "$2" = 0 ] && echo 1 || echo "$2" ;;
       *) [ $# -gt 2 ] && echo 4 || echo 1 ;;
     esac
@@ -714,8 +847,6 @@ for t in $targets; do
       # (APP_GROUP=contrast, corners, switches: that sweep's runs alone, on a runner of their own, beside the four;
       # switches' on three, APP_PART below)
       if [ "$APP_GROUP" = contrast ] || [ "$APP_GROUP" = corners ] || [ "$APP_GROUP" = switches ]; then [ "$(app_group_of 4 $r)" = "$APP_GROUP" ] && mine+=("$r")
-      # (APP_GROUP=real-size: real_size's two runs alone, whichever of the four each is dealt to)
-      elif [ "$APP_GROUP" = real-size ]; then [ "${r%% *}" = src/sfapp/real_size_wbtest.mbt ] && mine+=("$r")
       else [ "$(app_group_of "${APP_GROUP#*/}" $r)" = "${APP_GROUP%/*}" ] && mine+=("$r"); fi
     done
     runs=("${mine[@]}")
@@ -747,14 +878,19 @@ for t in $targets; do
           # 3/3 148-200 s, main a6881ee25 44395572349, 2026-11-18. At 120 the first two reckoned 250 and 280 were too
           # many: 136-169 s where the third was 294 on a3a444e19 44391836965. By the table, at 60 the parts' pages
           # 645, 644 and 804 s, at 120 512, 491 and 661)
+          # (at 60 since send_steady is one run there: the first part has its 1 s, the second and third each half of
+          # chat_page_nodes' tests (160 s of one core), the three parts some 785 core-s each by the table)
           if [ "${APP_GROUP:-}" = 4/4 ] && [ "${APP_PART#*/}" = 3 ]; then
             case "${MBUI_TEST_FPS:-}" in
-              60) specs="4,4,160,1 4,4,160,1 4,4,0,1" ;;
+              60) specs="4,4,0,1 4,4,160,1 4,4,160,1" ;;
               120) specs="4,4,150,1 4,4,170,1 4,4,0,1" ;;
             esac
           fi
           while read -r g f; do [ "$g" = "${APP_PART%/*}" ] && kept+=("$f"); done < <(page_deal "$specs" "${words[@]:3}")
           [ ${#kept[@]} = 0 ] || mine+=("${words[0]} ${words[1]} ${words[2]} ${kept[*]}")
+        # (the pages_test files' share, PAGES_TEST_PART's already: kept whole, not dealt again)
+        elif [ "${r%% *}" = @pages_test_pages ] && [ -n "${PAGES_TEST_PART:-}" ]; then
+          mine+=("$r")
         else
           [ $((o % ${APP_PART#*/})) = $((${APP_PART%/*} - 1)) ] && mine+=("$r")
           o=$((o + 1))
@@ -766,6 +902,9 @@ for t in $targets; do
   run_name() {
     [ "$1" = @pkgs ] && { echo "the packages$(cd "$PKGS_EXE" && find . -name '*_test.exe' | sed 's|^\./| |; s|/[^/]*$||' | LC_ALL=C sort -u | tr -d '\n')"; return; }
     [ "$1" = @flows ] && shift
+    [ "$1" = @realsize_sweep ] && shift
+    [ "$1" = @realsize_pages ] && shift 2
+    [ "$1" = @pages_test_pages ] && shift 2
     [ "$1" = @pages ] && shift 3
     case " $* " in
       *" -p "*) echo "the packages$(echo " $* " | sed 's| -p stillfail/| |g')" ;;
@@ -861,7 +1000,7 @@ for t in $targets; do
     return $c
   }
   # (the tool, built before the runs side by side, not by each: TESTEXE, or scripts/testexe's)
-  if [ -n "${APP_EXE:-}" ] || [[ " ${runs[*]} " = *" @flows "* ]] || [[ " ${runs[*]} " = *" @pkgs "* ]]; then
+  if [ -n "${APP_EXE:-}" ] || [ -n "${REALSIZE_EXE:-}" ] || [ -n "${PAGES_TEST_EXE:-}" ] || [[ " ${runs[*]} " = *" @flows "* ]] || [[ " ${runs[*]} " = *" @pkgs "* ]] || [[ " ${runs[*]} " = *" @realsize_"* ]] || [[ " ${runs[*]} " = *" @pages_test_"* ]]; then
     # (in development the script itself: its program is Wasm, run by node)
     if [ -n "${GITHUB_ACTIONS:-}" ]; then [ -n "${TESTEXE:-}" ] || TESTEXE=$(bash "$D/testexe" path) || exit 1
     else TESTEXE=${TESTEXE:-$D/testexe}; fi
@@ -875,6 +1014,20 @@ for t in $targets; do
         f=_build/$t/release/test/stillfail/sfreplay/flows
         exe_run "$fx" "${REPLAY_INFO:-$f/__blackbox_test_info.json}" ${REPLAY_SHARDS:-3} stillfail/sfreplay/flows \
           ${runs[i]#@flows } > "$out.$i" 2>&1
+      elif [ "${runs[i]%% *}" = @realsize_sweep ]; then
+        f=_build/$t/release/test/stillfail/sfapp_realsize
+        exe_run "$rx" "${REALSIZE_INFO:-$f/__blackbox_test_info.json}" 1 stillfail/sfapp_realsize \
+          ${runs[i]#@realsize_sweep } > "$out.$i" 2>&1
+      elif [ "${runs[i]%% *}" = @realsize_pages ]; then
+        set -- ${runs[i]}
+        f=_build/$t/release/test/stillfail/sfapp_realsize
+        exe_run "$rx" "${REALSIZE_INFO:-$f/__blackbox_test_info.json}" "${2}each" stillfail/sfapp_realsize \
+          "${@:3}" > "$out.$i" 2>&1
+      elif [ "${runs[i]%% *}" = @pages_test_pages ]; then
+        set -- ${runs[i]}
+        f=_build/$t/release/test/stillfail/sfapp_pages_test
+        exe_run "$px" "${PAGES_TEST_INFO:-$f/__blackbox_test_info.json}" "${2}each" stillfail/sfapp_pages_test \
+          "${@:3}" > "$out.$i" 2>&1
       # (the packages' programs where PKGS_EXE says: built elsewhere, at a rate; put there by this run's build on their
       # own runner, APP_GROUP=pkgs)
       elif [ "${runs[i]}" = @pkgs ]; then

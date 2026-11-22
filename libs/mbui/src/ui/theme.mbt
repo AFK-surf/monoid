@@ -292,7 +292,7 @@ pub fn Theme::light() -> Theme {
     corner_fit: None,
     lit_apart: 0.0,
     lit_reach: 0.0,
-    tabular: false,
+    tabular: true,
   }
 }
 
@@ -456,6 +456,7 @@ pub fn Theme::ios_light() -> Theme {
     corner_fit: None,
     lit_apart: 0.0,
     lit_reach: 0.0,
+    // iOS system theme keeps San Francisco's proportional figures unless opted in.
     tabular: false,
   }
 }
@@ -822,6 +823,18 @@ pub fn over(under : Int64, top : Int64) -> Int64 {
     (u + (t - u) * a).round().to_int64() << sh
   }
   ch(24) | ch(16) | ch(8) | 0xFFL
+}
+
+///|
+/// `a` going to `b` as `t` goes from 0 to 1, channel by channel (alpha too).
+pub fn blend(a : Int64, b : Int64, t : Double) -> Int64 {
+  let k = if t < 0.0 { 0.0 } else if t > 1.0 { 1.0 } else { t }
+  let ch = fn(sh : Int) -> Int64 {
+    let x = ((a >> sh) & 0xFFL).to_double()
+    let y = ((b >> sh) & 0xFFL).to_double()
+    (x + (y - x) * k).round().to_int64() << sh
+  }
+  ch(24) | ch(16) | ch(8) | ch(0)
 }
 
 ///|

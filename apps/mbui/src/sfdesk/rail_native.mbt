@@ -26,6 +26,12 @@ let native_sidebar_items : Map[Int, @hostapi.NavItem] = Map([])
 let floating_bar : Ref[@hostapi.NavBar?] = { val: None }
 
 ///|
+let floating_ctx : Ref[@ui.Ctx?] = { val: None }
+
+///|
+let floating_scheduled : Ref[Bool] = { val: false }
+
+///|
 let native_floating : Ref[Array[@hostapi.NavFloating]] = { val: [] }
 
 ///|
@@ -44,7 +50,7 @@ fn native_workspace_item(src : Source, w : Workspace) -> @hostapi.NavItem {
 }
 
 ///|
-/// What hands the glass's buttons to the host once each frame is laid out, put up once.
+/// What hands the glass's buttons to the host once the frame is laid out, put up once.
 fn native_workspace_hooked() -> Unit {
   if !floating_installed.val {
     floating_installed.val = true
@@ -53,12 +59,33 @@ fn native_workspace_hooked() -> Unit {
 }
 
 ///|
+/// Schedules floating glass placement to re-sync at the end of a paint-only frame (e.g., while the tape slides or
+/// resizes without re-running `on_after_layout`).
+fn native_floating_schedule() -> Unit {
+  if floating_bar.val is None || floating_scheduled.val {
+    return
+  }
+  floating_scheduled.val = true
+  @ui.after_frame(fn() {
+    if floating_scheduled.val {
+      floating_scheduled.val = false
+      match floating_ctx.val {
+        Some(c) => @signals.untracked(fn() { native_workspace_placed(c) })
+        None => ()
+      }
+    }
+  })
+}
+
+///|
 fn native_workspace_placed(c : @ui.Ctx) -> Unit {
+  floating_ctx.val = Some(c)
+  floating_scheduled.val = false
   guard floating_bar.val is Some(bar) else { return }
   let floating : Array[@hostapi.NavFloating] = []
   let blocked = @sf.presenter_visible()
-  let semantics = c.semantics_tree()
   if !bar.bare && !switcher_open() && (!wide.tape.get() || wide.tape_at.get() == Side) {
+    let semantics = c.semantics_tree()
     // Semantic anchors also survive a sidebar drawn from its kept part.
     for s in semantics {
       if !s.hidden || blocked {
@@ -220,6 +247,7 @@ fn bar_chat(
   more : () -> Unit,
   jobs : (() -> Unit, Bool)?,
   screen : (() -> Unit, Bool)?,
+  subchats : (() -> Unit, Bool)?,
   archive : (() -> Unit)?,
 ) -> Bool {
   if !@sf.native_on() {
@@ -232,7 +260,7 @@ fn bar_chat(
     bar_chat_carried.clear()
   }
   // (the short column: its services and screens rows of the "…" (chat_page.mbt), their dot on it)
-  let dot = column_short.get() && (jobs is Some((_, true)) || screen is Some((_, true)))
+  let dot = column_short.get() && (jobs is Some((_, true)) || screen is Some((_, true)) || subchats is Some((_, true)))
   bar_action("chat/more", @sf.t("common.more"), "more", more, rows?=if rows.iter().any(fn(i) { i is Some(_) }) { Some(rows) } else { None }, dot~) |> ignore
   bar_action("chat/info", @sf.t("web-pages.chat.info"), "info", info) |> ignore
   let (tabs, _) = side_now(src, r)
@@ -250,6 +278,10 @@ fn bar_chat(
         side_change(src, r, "open", Some(key))
       }
     }) |> ignore
+  }
+  match subchats {
+    Some((act, has_tone)) => bar_action("chat/subchats", @sf.t("web-pages.chat.subchats"), "spawned", act, dot=has_tone) |> ignore
+    None => ()
   }
   match jobs {
     Some((act, alarm)) => bar_action("chat/jobs", @sf.t("web-pages.chat.services"), "web", act, dot=alarm) |> ignore
@@ -335,7 +367,7 @@ fn histories_ticked() -> Unit {
       nav_page[i] = ({ ..item, icon, title }, act)
     }
   }
-  // (the short column has no switch of its own: the open panel's close there in place of the panel's own (side_panel).
+  // (the short column has no switch of its own: the open panel's close there in place of the panel's own (side_bar_node).
   // Handed last, each frame: short of room the system keeps the last of them whatever its priority, and the page handing
   // its own again puts them after it: the user, 2026-11-04. Only while the panel is the tape's card in use: beside the
   // chat or the sidebar it read as theirs, the user, 2026-11-17)
@@ -356,26 +388,13 @@ fn histories_ticked() -> Unit {
 }
 
 ///|
-/// What opens from one of the page's actions in the system's bars (its info's popover): the mark where it was chosen,
-/// beside the column down the side, under it across the top; `id`, `side` and `along` where the page has its own.
-fn bar_anchor(id : Int, side : @ui.Side, along : @ui.Along) -> (Int, @ui.Side, @ui.Along) {
-  if !@sf.native_on() || native_mark.val == 0 {
-    return (id, side, along)
-  }
-  if @sf.native_side() {
-    (native_mark.val, Left, Start)
-  } else {
-    (native_mark.val, Bottom, End)
-  }
-}
-
-///|
-/// bar_anchor's for a popover of nodes (chat_pops_node's, chat_page_nodes on): the mark where it was chosen; where the
+/// bar_anchor's for a popover of nodes (chat_pops_node's): the mark where it was chosen; where the
 /// page has its own, beside its own button (`own`, a node: as it is drawn) on `side`, lined up `along` it; none where
 /// that is not made.
 fn bar_anchor_node(own : @view.View?, side : @ui.Side, along : @ui.Along) -> (@sf.Anchor, @ui.Side, @ui.Along)? {
-  if @sf.native_on() && native_mark.val != 0 {
-    return Some(if @sf.native_side() { (Of(native_mark.val), Left, Start) } else { (Of(native_mark.val), Bottom, End) })
+  match native_mark_now() {
+    Some(m) => return Some(if @sf.native_side() { (Node(m), Left, Start) } else { (Node(m), Bottom, End) })
+    None => ()
   }
   match own {
     Some(v) if v.alive() => Some((Node(v), side, along))
@@ -384,44 +403,17 @@ fn bar_anchor_node(own : @view.View?, side : @ui.Side, along : @ui.Along) -> (@s
 }
 
 ///|
-/// What opens from one of the page's actions as a menu of the page's (a station's screens): as bar_anchor's. A menu goes
-/// under what opened it, so beside the column down the side it opens from the point left of the item, ending there,
-/// not under the item and over the column (the user, 2026-11-04); `id` where the page has its own.
-fn bar_menu_from(c : @ui.Ctx, id : Int) -> (@sf.Beside, @ui.Along) {
-  if !@sf.native_on() || native_mark.val == 0 {
-    return (Of(id), End)
-  }
-  if @sf.native_side() {
-    let (x, y, _) = native_mark_at(c)
-    (@sf.at_point(x - @sf.panel_offset, y), End)
-  } else {
-    (Of(native_mark.val), End)
-  }
-}
-
-///|
-/// bar_menu_from's for a page made as nodes, in node `v`: where it has no item of the system's bars chosen yet, beside
-/// the page's node.
+/// What opens from one of the page's actions as a menu of the page's (a station's screens), in node `v`: where it has
+/// no item of the system's bars chosen yet, beside the page's node.
 fn bar_menu_from_node(v : @view.View) -> (@sf.Beside, @ui.Along) {
-  if !@sf.native_on() || native_mark.val == 0 {
-    return (Node(v), End)
+  match native_mark_now() {
+    None => (Node(v), End)
+    Some(_) if @sf.native_side() => {
+      let (x, y, _) = native_mark_in(v.window())
+      (@sf.at_point(x - @sf.panel_offset, y), End)
+    }
+    Some(m) => (Node(m), End)
   }
-  if @sf.native_side() {
-    let (x, y, _) = native_mark_in(v.window())
-    (@sf.at_point(x - @sf.panel_offset, y), End)
-  } else {
-    (Of(native_mark.val), End)
-  }
-}
-
-///|
-/// Whether the window turned or was folded since `was` (the width it had) beside the system's tabs: what opened from
-/// their items is elsewhere now, closed as the system's popovers are. False elsewhere, always: nothing closes so.
-fn native_turned(c : @ui.Ctx, was : FixedArray[Double]) -> Bool {
-  let width = c.window_size().0
-  let turned = was[0] > 0.0 && was[0] != width && @sf.native_on()
-  was[0] = width
-  turned
 }
 
 ///|
@@ -567,31 +559,53 @@ fn rail_more() -> Double {
 
 ///|
 /// Where what opens from the column's items is put beside (待处理's panel: attention.mbt, by the rail's ids): a mark at
-/// the window's right edge where 待处理 is, at the column's foot over 新建对话.
-fn rail_native_marks(c : @ui.Ctx) -> Unit {
-  if !@sf.native_on() {
-    return
-  }
-  c.layer(fn() {
-    // (at the bell where the system says it is; else where the column has it: moved there as the system says where
-    // an item was chosen, @sfbase.nav_tapped_place)
-    @sfbase.nav_tapped_place.get() |> ignore
-    let (tx, ty, th) = native_mark_at(c)
-    let id = c.id("rail/attention")
-    native_mark.val = id
-    c.box(style=@ui.style(w=Fixed(native_mark_w), h=Fixed(th)), tx~, ty~, id~, fn() {  }) |> ignore
+/// the window's right edge where 待处理 is, at the column's foot over 新建对话, in node `v` (a shell's, over its panels:
+/// overlays_node), while the system's bars show the rail's places.
+fn rail_native_marks_node(v : @view.View) -> Unit {
+  v.show(at_once=true, @sf.native_on, fn(layer) {
+    layer.over(Is(true)) |> ignore
+    layer.box(fn(m) {
+      // (at the bell where the system says it is; else where the column has it: moved there as the system says where
+      // an item was chosen, @sfbase.nav_tapped_place)
+      let at = fn() {
+        @sfbase.nav_tapped_place.get() |> ignore
+        native_mark_in(m.window())
+      }
+      m
+      .shrink(Is(0.0))
+      .width(Is(Some(native_mark_w)))
+      .height(By(fn() { Some(at().2) }))
+      .offset(By(fn() {
+        let (x, y, _) = at()
+        (x, y)
+      }))
+      |> ignore
+      native_mark_node.val = Some(m)
+      m.owns(fn() {
+        match native_mark_node.val {
+          Some(n) if physical_equal(n, m) => native_mark_node.val = None
+          _ => ()
+        }
+      })
+      |> ignore
+    })
+    |> ignore
   })
-  |> ignore
 }
 
 ///|
-/// Where the mark is: at the item last chosen, else where the column has the bell (its x, y and height).
-fn native_mark_at(c : @ui.Ctx) -> (Double, Double, Double) {
-  native_mark_in(c.window_size())
+/// The mark at the item of the system's bars last chosen (rail_native_marks_node), while it is made and they show the
+/// rail's places: what opens from one is put beside it (a chat's ⋯: chat_page.mbt bar_popovers; 待处理's panel).
+fn native_mark_now() -> @view.View? {
+  match native_mark_node.val {
+    Some(m) if @sf.native_on() && m.alive() => Some(m)
+    _ => None
+  }
 }
 
 ///|
-/// native_mark_at's, in a window of `size` (its width, its height).
+/// native_mark's, in a window of `size` (its width, its height): at the item last chosen, else where the column has the
+/// bell (its x, y and height).
 fn native_mark_in(size : (Double, Double)) -> (Double, Double, Double) {
   let at = @hostapi.nav_tapped_at
   if at[2] > 0.0 {
@@ -603,12 +617,12 @@ fn native_mark_in(size : (Double, Double)) -> (Double, Double, Double) {
 }
 
 ///|
-/// The mark at the item of the system's bars last chosen (rail_native_marks), for what opens from one elsewhere (a
-/// chat's ⋯: chat_page.mbt bar_popovers), its ids scoped there as they are.
-let native_mark : Ref[Int] = { val: 0 }
+/// The mark at the item of the system's bars last chosen (rail_native_marks_node), as it was last made.
+// kept across runs: let go with the node it holds, put back as a run begins (rail_native_reset)
+let native_mark_node : Ref[@view.View?] = { val: None }
 
 ///|
-/// How wide the mark at a chosen item of the system's bars is (rail_native_marks): a line, what opens from it beside it.
+/// How wide the mark at a chosen item of the system's bars is (rail_native_marks_node): a line, what opens from it beside it.
 let native_mark_w : Double = 1.0
 
 ///|
@@ -622,31 +636,36 @@ let native_bell_up : Double = 156.0
 /// other places, the settings, the workspaces), and at its foot what is most wanted, where the thumb rests: 待处理 and
 /// 新建对话 (on the accent's glass). The place lit chosen (更多 for one in it).
 fn rail_nav(src : Source, w : Workspace, _all : Array[Workspace], card : Array[@hostapi.NavItem]) -> @hostapi.NavBar {
-  let places = rail_items(src, w.id)
+  let places = native_places(src, w.id)
   let lit = lit_place()
   let item = fn(id : String, title : String, icon : String) -> @hostapi.NavItem {
     { id, title, icon: @sf.icon_path(icon), dot: false, prominent: false, menu: [] }
   }
-  // 对话, 文件, Station, 待处理 (the chats that want the viewer), 我的 (the settings, the other places' pages in them)
-  let tabs : Array[@hostapi.NavItem] = [item("place/chats", rail_label(src, "chats"), rail_icon("chats"))]
-  if places.contains("files") {
-    tabs.push(item("place/files", rail_label(src, "files"), rail_icon("files")))
+  // the bar's places (对话, 文件, Station by default: native_places), 待处理 (the chats that want the viewer), 我的 (the
+  // settings, the other places' pages in them)
+  let tabs : Array[@hostapi.NavItem] = []
+  for p in places {
+    if p == "stations" {
+      // (its icon the stations at a glance, as the rail's: online ones lit, a dot while one fails)
+      let glance = stations_at_glance(src, w.id).0
+      tabs.push({
+        ..item("place/stations", rail_label(src, "stations"), "stations"),
+        icon: @sf.station_glyph_icon(glance),
+        dot: glance.failing > 0,
+      })
+    } else {
+      // (密钥 is no place of the rail's: its words the bar's)
+      let title = if p == "vault" { @sf.t("android-misc.bar.place.vault") } else { rail_label(src, p) }
+      tabs.push(item("place/" + p, title, @sfbase.place_icon(p)))
+    }
   }
-  // (the workspace's stations, whatever the rail shows: the user, 2026-10-26)
-  // (its icon the stations at a glance, as the rail's: online ones lit, a dot while one fails)
-  let glance = stations_at_glance(src, w.id).0
-  tabs.push({
-    ..item("place/stations", rail_label(src, "stations"), "stations"),
-    icon: @sf.station_glyph_icon(glance),
-    dot: glance.failing > 0,
-  })
   // Workspace selection lives at the list heading; settings remains a separate action.
   let at = if @sf.native_side() { "act/" } else { "lead/" }
   tabs.push(item("settings", @sf.t("android-settings.title"), "settings"))
   // (待处理 a popover over the page, as the bell's: pressed, never chosen; in the column down the side, upright at the
   // bar's lead, left of the top, on the status bar's row: the user 2026-10-27)
   tabs.push({ ..item(at + "attention", rail_label(src, "attention"), "bell"), dot: bell_lit(src, w) })
-  let selected = tab_of_place(lit)
+  let selected = tab_of_place(places, lit)
   let t = @sf.theme()
   {
     floating: native_floating.val,
@@ -669,14 +688,40 @@ fn rail_nav(src : Source, w : Workspace, _all : Array[Workspace], card : Array[@
 }
 
 ///|
-/// The tab the place shown is in (rail_nav's `selected`).
-fn tab_of_place(lit : String) -> String {
+/// The places the system's tabs hold, in their order: this device's bar for the workspace (下方栏, @sfbase.bars_in: one
+/// bar, the one in view), 文件 left out of the one it starts with where the rail has none (as before the bar could be
+/// set), none twice.
+fn native_places(src : Source, ws : String) -> Array[String] {
+  let (sets, cur) = @sfbase.bars_in(src, ws)
+  let raw = sets.get(cur).unwrap_or([])
+  let prefs = src.topic("prefs", {}).get().value
+  let set = @sfbase.bars_picked.get() is Some(_) || field(field(prefs, "barsBy"), ws) is Some(Object(_))
+  let out : Array[String] = []
+  for p in raw {
+    if p == "files" && !set && !rail_items(src, ws).contains("files") {
+      continue
+    }
+    if !out.contains(p) {
+      out.push(p)
+    }
+  }
+  out
+}
+
+///|
+/// The tab the place shown is in (rail_nav's `selected`), of the tabs of `places`: 已归档 its own where it has one, else
+/// the chats'; none where the place has no tab.
+fn tab_of_place(places : Array[String], lit : String) -> String {
+  // (the settings, opened from the workspace's button: no tab of theirs)
+  if lit == "settings" {
+    return ""
+  }
+  if lit == "chats" && places.contains("archive") && app.nav.pages().contains(Archived) {
+    return "place/archive"
+  }
   match lit {
-    "chats" | "mine" | "watching" | "hidden" | "archive" => "place/chats"
-    "files" => "place/files"
-    "stations" => "place/stations"
-    // (the settings, opened from the workspace's button: no tab of theirs)
-    _ => ""
+    "chats" | "mine" | "watching" | "hidden" | "archive" => if places.contains("chats") { "place/chats" } else { "" }
+    p => if places.contains(p) { "place/" + p } else { "" }
   }
 }
 
@@ -698,14 +743,15 @@ fn tab_kept_key(ws : String, tab : String) -> String {
 /// bars since the last frame done.
 fn native_frame(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspace]) -> Unit {
   nav_want.val = Some((src, w, all))
+  // (read so: this island built again as the bar's places change, the tabs handed anew: rail_nav)
+  native_places(src, w.id) |> ignore
   column_short.set(@sf.native_side() && c.window_size().0 < column_short_below)
   // (the host says the screen's corner only where it lays out the tabs, ios_nav.h mb_host_window_corner; said once the
   // window is on the screen, what was kept before it is drawn anew, its corners its own then)
   let now = FixedArray::makei(4, fn(k) { if @sf.native_on() { @ui.window_corner_at(k) } else { 0.0 } })
   if @signals.untracked(fn() { @sf.native_bars.corners.get() }) != now {
-    // (told to what is drawn round by them, the window's tree's too; what was kept of the old frame's drawn anew)
+    // (told to what is drawn round by them, the window's tree's)
     @sf.native_bars.corners.set(now)
-    c.forget_parts()
   }
   rail_native_taps(c, src, w)
 }
@@ -729,12 +775,13 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
     }
     // (a tab left keeps what it showed, given back as it is chosen again; the one shown chosen again changes nothing,
     // as the system's tab apps have it: the user, 2026-10-26)
-    let now = tab_of_place(lit_place())
+    let now = tab_of_place(native_places(src, w.id), lit_place())
     if id.has_prefix("place/") && id != now {
       tabs_kept[tab_kept_key(w.id, now)] = app.nav.pages()
       // (what was open over the tab left closed with it: a chat's ⋯, a menu)
       chat_own.info_open.set(false)
       chat_own.jobs_open.set(false)
+      chat_own.subchats_open.set(false)
       @sf.close_all_presented()
     }
     if id == now {
@@ -768,8 +815,10 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
       match tabs_kept.get(tab_kept_key(w.id, id)) {
         // (its stack as it was left: the chat open in it, the list it showed)
         Some(pages) if pages.length() > 0 => {
-          @sfbase.go_place(place) |> ignore
-          app.nav.replace(pages[0])
+          @sfbase.go_place(place, kept=true) |> ignore
+          if app.nav.top() != pages[0] {
+            @sfbase.nav_root_kept(pages[0])
+          }
           for i in 1..<pages.length() {
             app.nav.push(pages[i])
           }
@@ -868,6 +917,8 @@ fn rail_native_reset() -> Unit {
   nav_untaken.val = false
   native_sidebar_items.clear()
   floating_bar.val = None
+  floating_ctx.val = None
+  floating_scheduled.val = false
   native_floating.val = []
   nav_page.clear()
   bar_chat_of.val = None
@@ -880,7 +931,7 @@ fn rail_native_reset() -> Unit {
   nav_page_before.clear()
   bar_chat_carried.clear()
   top_drawn.val = false
-  native_mark.val = 0
+  native_mark_node.val = None
   // (where the system said an item was last chosen: none yet, what opens from one by the bell till one says so)
   for k in 0..<4 {
     @hostapi.nav_tapped_at[k] = 0.0

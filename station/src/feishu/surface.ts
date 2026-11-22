@@ -72,18 +72,23 @@ export async function verifyFeishuApp(appId: string, appSecret: string, domain: 
 function fileType(name: string): string {
   const ext = extname(name).toLowerCase();
   if (ext === ".opus") return "opus";
-  if ([".mp4", ".mov", ".m4v"].includes(ext)) return "mp4";
+  // Only MP4 itself: Feishu checks the container, so a QuickTime .mov goes as a plain file.
+  if (ext === ".mp4") return "mp4";
   if (ext === ".pdf") return "pdf";
   if ([".doc", ".docx"].includes(ext)) return "doc";
   if ([".xls", ".xlsx", ".csv"].includes(ext)) return "xls";
   if ([".ppt", ".pptx"].includes(ext)) return "ppt";
   return "stream";
 }
+/// The message type a file of that type is sent as: Feishu refuses any other (230055).
+function fileMsgType(kind: string): string {
+  return kind === "mp4" ? "media" : kind === "opus" ? "audio" : "file";
+}
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|ico|tiff?)$/i;
 /// Images Feishu takes as images (larger ones go as files).
 const MAX_IMAGE = 10 * 1024 * 1024;
 
-/// A question posted, kept until it is answered: what it said, for the answered card.
+/// A question posted, kept until it is answered: what it said, for the answered card, and the thread it answers in.
 type Asked = { text: string; card: Json; thread: string; answered: boolean };
 
 export type FeishuSurfaceOptions = {
@@ -95,6 +100,9 @@ export type FeishuSurfaceOptions = {
   /// In a group, one conversation for each thread, begun by an @ and answered in it (「会话怎么分」); else
   /// one for the group.
   threadMode?: boolean;
+  /// In a direct chat, one conversation for each thread, as a group's in thread mode: each message outside a thread
+  /// begins one, answered in it; else one for the chat.
+  directThreads?: boolean;
   /// Keeps names across restarts and lets the admin API ask without waiting (knownPerson, knownChannel).
   book?: NameBook | null;
   /// The client (tests: one pointed at a stand-in).
@@ -121,6 +129,7 @@ export class FeishuSurface extends ConnectedSurface {
   readonly domain: Domain;
   private threads: FeishuThreads;
   private readonly threadMode: boolean;
+  private readonly directThreads: boolean;
   /// The messages that called it, the latest kept: a turn for one of them shows its status card at once.
   private called = new Set<string>();
   /// Chats as Feishu says: their name, whether they are a topic group (each topic its own conversation), a direct one.
@@ -139,6 +148,7 @@ export class FeishuSurface extends ConnectedSurface {
     this.client = options.client ?? new FeishuClient(options.appId, options.appSecret, options.domain);
     this.threads = options.threads;
     this.threadMode = options.threadMode === true;
+    this.directThreads = options.directThreads === true;
   }
 
   protected identify() {
@@ -269,7 +279,8 @@ export class FeishuSurface extends ConnectedSurface {
   }
 
   /// Which thread a message is in (「会话怎么分」): a topic group's topic is its own; in thread mode a
-  /// group's thread is, by its first message (one that @s the bot outside a thread begins one); anything else said in
+  /// group's thread is, by its first message (one that @s the bot outside a thread begins one), and so a direct chat's
+  /// with its threads on (each message there calls the bot); anything else said in
   /// the chat is the chat's conversation now, begun by the first message that @s the bot (or a new one asked for).
   private async heard(m: FeishuMessage, handler: Handler) {
     this.heardIn.set(m.user, m.chat);
@@ -280,7 +291,7 @@ export class FeishuSurface extends ConnectedSurface {
     if (topics) {
       threadTs = m.topic!;
       this.threads.heardTopic(this.connect, m.topic!, m.root ?? m.id);
-    } else if (this.threadMode && !m.p2p) {
+    } else if (m.p2p ? this.directThreads : this.threadMode) {
       threadTs = m.root ?? m.id;
       if (m.topic !== null || m.addressed) this.threads.heardTopic(this.connect, threadTs, threadTs);
     } else {
@@ -301,14 +312,17 @@ export class FeishuSurface extends ConnectedSurface {
   private async answered(event: Json, eventId: string, handler: Handler): Promise<Json> {
     const a = cardAnswerOf(event, eventId);
     const value = (a?.value ?? null) as Answer | null;
-    if (a === null || value?.sf !== "answer" || typeof value.t !== "string") return null;
+    if (a === null || value?.sf !== "answer") return null;
+    const asked = this.asked.get(a.message);
+    // (a button pressed before its card was changed to name its thread, a conversation's first message: the thread kept)
+    const thread = typeof value.t === "string" && value.t !== "" ? value.t : (asked?.thread ?? "");
+    if (thread === "") return null;
     const lang = stationLang();
     const said = typeof value.l === "string" ? value.l : text(a.form?.answer).trim();
     if (said === "") return { toast: { type: "warning", content: tr(lang, "station.feishu.answerEmpty") } };
-    const asked = this.asked.get(a.message);
     if (asked?.answered) return { toast: { type: "info", content: tr(lang, "station.feishu.answeredBefore") } };
     this.wasCalled(`card-${a.event}`);
-    await handler({ type: "message", message: { channel: a.chat, threadTs: value.t, ts: `card-${a.event}`, user: a.user, text: said, addressed: true } });
+    await handler({ type: "message", message: { channel: a.chat, threadTs: thread, ts: `card-${a.event}`, user: a.user, text: said, addressed: true } });
     if (asked) asked.answered = true;
     const who = this.names.get(a.user)?.name || this.knownPerson(a.user)?.name || "";
     const answer: Json = { toast: { type: "success", content: tr(lang, "station.feishu.sent") } };
@@ -328,33 +342,49 @@ export class FeishuSurface extends ConnectedSurface {
     return id;
   }
 
+  /// Each file uploaded, as the message that sends it: an image as one (larger ones as files), any other file as the
+  /// message type its file type takes. All of them before anything is sent (FB-41).
+  private async upload(files: Attachment[]): Promise<[string, string][]> {
+    const uploaded: [string, string][] = [];
+    for (const file of files) {
+      const bytes = await readFile(file.path);
+      if (IMAGE.test(file.name) && bytes.length <= MAX_IMAGE) {
+        const up = await this.client.api("POST", "/open-apis/im/v1/images", { image_type: "message" }, undefined, [{ field: "image", bytes, name: file.name, mime: "application/octet-stream" }]);
+        uploaded.push(["image", JSON.stringify({ image_key: up?.data?.image_key })]);
+      } else {
+        const kind = fileType(file.name);
+        const up = await this.client.api("POST", "/open-apis/im/v1/files", { file_type: kind, file_name: file.name }, undefined, [{ field: "file", bytes, name: file.name, mime: "application/octet-stream" }]);
+        uploaded.push([fileMsgType(kind), JSON.stringify({ file_key: up?.data?.file_key })]);
+      }
+    }
+    return uploaded;
+  }
+
+  /// A question posted as message `id`, kept until it is answered.
+  private ask(id: string, message: string, card: Json, threadTs: string) {
+    this.asked.set(id, { text: message, card, thread: threadTs, answered: false });
+    // The oldest go once there are many: an answer to one of those shows as said, without its card changed.
+    if (this.asked.size > 500) this.asked.delete(this.asked.keys().next().value!);
+  }
+
   /// The agent's words as rich text (a question's as a card, its buttons or field with them), then each file as a message
-  /// of its own. The first message's id stands for the whole.
+  /// of its own. Every file is uploaded before anything is sent, so a file that fails leaves no words posted alone. The
+  /// first message's id stands for the whole.
   async post(thread: ThreadRef, message: string, files: Attachment[], card?: Json | null): Promise<string> {
-    (this.lines.get(`${thread.channel}/${thread.threadTs}`) as FeishuStatus | undefined)?.spoke();
-    let first: string | null = null;
     const lang = stationLang();
     const question = card && (card.type === "options" || card.type === "text") ? card : null;
     const sends: [string, string][] = question ? [["interactive", inline(questionCard(message, question, thread.threadTs, lang))]] : textPosts(message).map((p) => ["post", p]);
+    if (sends.length === 0 && files.length === 0) throw new Error("nothing to post");
+    const uploaded = await this.upload(files);
+    (this.lines.get(`${thread.channel}/${thread.threadTs}`) as FeishuStatus | undefined)?.spoke();
+    let first: string | null = null;
     for (const [msgType, content] of sends) {
       const id = await this.send(thread, msgType, content);
       first ??= id;
-      if (question) {
-        this.asked.set(id, { text: message, card: question, thread: thread.threadTs, answered: false });
-        // The oldest go once there are many: an answer to one of those shows as said, without its card changed.
-        if (this.asked.size > 500) this.asked.delete(this.asked.keys().next().value!);
-      }
+      if (question) this.ask(id, message, question, thread.threadTs);
     }
-    for (const file of files) {
-      const bytes = await readFile(file.path);
-      let id: string;
-      if (IMAGE.test(file.name) && bytes.length <= MAX_IMAGE) {
-        const up = await this.client.api("POST", "/open-apis/im/v1/images", { image_type: "message" }, undefined, [{ field: "image", bytes, name: file.name, mime: "application/octet-stream" }]);
-        id = await this.send(thread, "image", JSON.stringify({ image_key: up?.data?.image_key }));
-      } else {
-        const up = await this.client.api("POST", "/open-apis/im/v1/files", { file_type: fileType(file.name), file_name: file.name }, undefined, [{ field: "file", bytes, name: file.name, mime: "application/octet-stream" }]);
-        id = await this.send(thread, "file", JSON.stringify({ file_key: up?.data?.file_key }));
-      }
+    for (const [msgType, content] of uploaded) {
+      const id = await this.send(thread, msgType, content);
       first ??= id;
     }
     if (first === null) throw new Error("nothing to post");
@@ -409,34 +439,40 @@ export class FeishuSurface extends ConnectedSurface {
     return `${app}/client/chat/open?openChatId=${encodeURIComponent(thread.channel)}`;
   }
 
-  /// A new message in the chat, as the agent's words are (rich text): in a topic group a topic of its own; elsewhere the
-  /// chat's conversation from now on, as a new one asked for in it begins (「会话怎么分」).
-  async begin(chat: string, message: string): Promise<{ thread: ThreadRef; ts: string }> {
-    const { topics } = await this.chatInfo(chat);
-    let first: Json = null;
-    let thread: ThreadRef | null = null;
-    for (const content of textPosts(message)) {
-      if (thread !== null) {
-        await this.send(thread, "post", content);
-        continue;
-      }
-      first = (await this.client.api("POST", "/open-apis/im/v1/messages", { receive_id: chat, msg_type: "post", content }, { receive_id_type: "chat_id" }))?.data ?? {};
-      const id = text(first.message_id);
-      if (id === "") throw new Error("feishu gave no message_id");
-      let topic = topics ? text(first.thread_id) : "";
-      // A topic group's message is a topic, whose id Feishu may leave out of the answer: read the message back.
-      if (topics && topic === "") topic = text((await this.client.api("GET", `/open-apis/im/v1/messages/${encodeURIComponent(id)}`))?.data?.items?.[0]?.thread_id);
-      if (topic !== "") {
-        this.threads.heardTopic(this.connect, topic, id);
-        thread = { channel: chat, threadTs: topic };
-      } else {
-        if (this.threadMode) this.threads.heardTopic(this.connect, id, id);
-        else this.threads.begin(this.connect, chat, id);
-        thread = { channel: chat, threadTs: id };
-      }
+  /// A new message in the chat, as the agent's words are (rich text, or a question's card), its files after it: in a topic
+  /// group a topic of its own; elsewhere the chat's conversation from now on, as a new one asked for in it begins
+  /// (「会话怎么分」), or in thread mode a thread of its own. Every file is uploaded before anything is sent, as `post`'s.
+  async begin(chat: string, message: string, _title?: string, files: Attachment[] = [], card?: Json | null): Promise<{ thread: ThreadRef; ts: string }> {
+    const lang = stationLang();
+    const question = card && (card.type === "options" || card.type === "text") ? card : null;
+    // (a question's buttons name the thread they answer in, known once its message is: changed to it then)
+    const sends: [string, string][] = question ? [["interactive", inline(questionCard(message, question, "", lang))]] : textPosts(message).map((p) => ["post", p]);
+    if (sends.length === 0 && files.length === 0) throw new Error("nothing to post");
+    const uploaded = await this.upload(files);
+    const { topics, p2p } = await this.chatInfo(chat);
+    const all = [...sends, ...uploaded];
+    const first = (await this.client.api("POST", "/open-apis/im/v1/messages", { receive_id: chat, msg_type: all[0]![0], content: all[0]![1] }, { receive_id_type: "chat_id" }))?.data ?? {};
+    const id = text(first.message_id);
+    if (id === "") throw new Error("feishu gave no message_id");
+    let topic = topics ? text(first.thread_id) : "";
+    // A topic group's message is a topic, whose id Feishu may leave out of the answer: read the message back.
+    if (topics && topic === "") topic = text((await this.client.api("GET", `/open-apis/im/v1/messages/${encodeURIComponent(id)}`))?.data?.items?.[0]?.thread_id);
+    let thread: ThreadRef;
+    if (topic !== "") {
+      this.threads.heardTopic(this.connect, topic, id);
+      thread = { channel: chat, threadTs: topic };
+    } else {
+      if (p2p ? this.directThreads : this.threadMode) this.threads.heardTopic(this.connect, id, id);
+      else this.threads.begin(this.connect, chat, id);
+      thread = { channel: chat, threadTs: id };
     }
-    if (thread === null) throw new Error("nothing to post");
-    return { thread, ts: text(first?.message_id) };
+    if (question) {
+      this.ask(id, message, question, thread.threadTs);
+      // (only an options card's buttons name the thread: a text card's field does not)
+      if (question.type === "options") await this.client.api("PATCH", `/open-apis/im/v1/messages/${encodeURIComponent(id)}`, { content: inline(questionCard(message, question, thread.threadTs, lang)) });
+    }
+    for (const [msgType, content] of all.slice(1)) await this.send(thread, msgType, content);
+    return { thread, ts: id };
   }
 
   /// A question that stopped waiting other than by its buttons (connects/card-ends.ts): its card changed to say why,

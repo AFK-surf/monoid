@@ -16,7 +16,7 @@ fn over_sheet(runs : Ref[Int]) -> @ui.Tester {
   sheet_rested(t, "sf-present")
   @sfbase.toast_later(over_words, action="撤销", run=fn() { runs.val = runs.val + 1 })
   t.frame()
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t
 }
 
@@ -38,11 +38,19 @@ fn drawn_over(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Int {
     Some(q) => q
     None => return -1
   }
-  let rects = t.drawn_rects()
+  let insts = t.drawn_instances()
   let mut own = -1
-  for i, d in rects {
-    if d.0 <= wx && d.1 <= wy && d.0 + d.2 >= wx + ww && d.1 + d.3 >= wy + wh && d.0 >= x - 0.5 && d.1 >= y - 0.5 &&
-      d.0 + d.2 <= x + w + 0.5 && d.1 + d.3 <= y + h + 0.5 {
+  for i, d in insts {
+    let kind = d[5].to_int()
+    if (kind == 0 || kind == 5 || kind == 6) &&
+      d[0] <= wx &&
+      d[1] <= wy &&
+      d[0] + d[2] >= wx + ww &&
+      d[1] + d[3] >= wy + wh &&
+      d[0] >= x - 0.5 &&
+      d[1] >= y - 0.5 &&
+      d[0] + d[2] <= x + w + 0.5 &&
+      d[1] + d[3] <= y + h + 0.5 {
       own = i
     }
   }
@@ -50,8 +58,17 @@ fn drawn_over(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Int {
     return -1
   }
   let mut n = 0
-  for i in (own + 1)..<rects.length() {
-    let (dx, dy, dw, dh, _) = rects[i]
+  for i in (own + 1)..<insts.length() {
+    let d = insts[i]
+    let kind = d[5].to_int()
+    if kind != 0 && kind != 5 && kind != 6 {
+      continue
+    }
+    let alpha = if kind == 0 { d[11] } else { d[15] }
+    if alpha <= 0.0 {
+      continue
+    }
+    let (dx, dy, dw, dh) = (d[0], d[1], d[2], d[3])
     let overlaps = dx < x + w && dx + dw > x && dy < y + h && dy + dh > y
     let inside = dx >= x - 0.5 && dy >= y - 0.5 && dx + dw <= x + w + 0.5 && dy + dh <= y + h + 0.5
     if overlaps && !inside {
@@ -87,7 +104,7 @@ test "a toast with its action said while the old frame's modal sheet is up: draw
   let acted = match button {
     Some((bx, by, bw, bh)) => {
       t.tap(bx + bw / 2.0, by + bh / 2.0)
-      t.run_for(@kit.presence_out_ms)
+      t.run_for(@motion.presence_out_ms)
       let once = (runs.val, t.find(over_words) is None)
       t.run_for(@sf.toast_action_ms)
       (once, runs.val)

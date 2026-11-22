@@ -123,7 +123,11 @@ class Sum {
   }
 }
 
-type Item = { key: string; title: string; sub: string | null; extra: Record<string, J>; sum: Sum };
+type Item = { key: string; title: string; sub: string | null; plan?: string; extra: Record<string, J>; sum: Sum };
+
+function itemLabel(item: Item): string {
+  return item.plan ? `${item.title} · ${item.plan}` : item.title;
+}
 
 /// The key of the one row every chat no station names any more is counted in (its station deleted it, or it is of
 /// before the station kept its chats' names): one row, not one a chat that cannot be told apart.
@@ -434,7 +438,8 @@ export function usageView(sources: Source[], daysAsked: number, now: number, off
         const title = typeof atitle === "string" && atitle !== "" ? atitle
           : typeof pname === "string" && pname !== "" ? pname
           : profile === "" ? t("core-views.usage.unknown_account") : t("core-views.usage.deleted_account", { profile });
-        return { key: profileKey, title, sub: place, extra: {}, sum: new Sum() };
+        const plan = get(get(account, "profile"), "planText");
+        return { key: profileKey, title, sub: place, plan: typeof plan === "string" ? plan : undefined, extra: {}, sum: new Sum() };
       }).sum.add(row);
       const placesOf = accountPlaces.get(profileKey) ?? [];
       if (!placesOf.includes(s.name)) placesOf.push(s.name);
@@ -470,13 +475,14 @@ export function usageView(sources: Source[], daysAsked: number, now: number, off
   // an account that spent on several stations: their names under it (its own station's alone where it is one of several)
   for (const [key, item] of profiles) {
     const placesOf = accountPlaces.get(key) ?? [];
-    if (placesOf.length > 1) item.sub = placesOf.join(t("core-views.list_separator"));
+    const place = placesOf.length > 1 ? placesOf.join(t("core-views.list_separator")) : item.sub;
+    item.sub = [item.plan, place].filter(Boolean).join(" · ") || null;
   }
   const lists_: Record<string, Map<string, Item>> = { people, chats, profiles, models };
   const splitAsked = typeof pick.split === "string" && SPLITS.includes(pick.split) ? pick.split : null;
   const split = splitAsked ?? (people.size > 1 ? "people" : "models");
   const ranked = [...lists_[split]].sort((a, b) => b[1].sum.cost - a[1].sum.cost || (a[1].title < b[1].title ? -1 : a[1].title > b[1].title ? 1 : 0));
-  const top = ranked.slice(0, ranked.length > SERIES + 1 ? SERIES : SERIES + 1).map(([k, i]) => [k, i.title] as [string, string]);
+  const top = ranked.slice(0, ranked.length > SERIES + 1 ? SERIES : SERIES + 1).map(([k, i]) => [k, itemLabel(i)] as [string, string]);
   const rest = ranked.length > top.length;
   // each part's cost over the days, as its legend says it beside its name
   const partCost = (key: string | null) => {
@@ -569,7 +575,8 @@ export function usageView(sources: Source[], daysAsked: number, now: number, off
   if (total.unpriced > 0) notes.push(t("core-views.usage.note.unpriced", { n: count(total.unpriced) }));
   const { top: scaleTop, ticks } = scale(max);
   // the one seen alone, by its name in its list (none spent in the days: its key)
-  const onlyShown = only !== null ? { list: only.list, key: only.key, title: lists_[only.list].get(only.key)?.title ?? only.key } : null;
+  const onlyItem = only !== null ? lists_[only.list].get(only.key) : undefined;
+  const onlyShown = only !== null ? { list: only.list, key: only.key, title: onlyItem !== undefined ? itemLabel(onlyItem) : only.key } : null;
   const dayShown = dayOnly !== null ? (dayOnly === today ? t("core-views.usage.today") : dayLabel(dayOnly)) : null;
   const empty = detailsPreparing || total.calls === 0;
   return { days, day: dayOnly, accounts: allowances, split, only: onlyShown, prices: priceTables(sources, first, today), wait: waitNote(waiting, failing, empty), empty, ...(detailsPreparing ? { detailsPreparing: true } : {}), tiles, versus: t("core-views.usage.tile.versus", { n: days }), period: dayShown ?? t("core-views.usage.period", { n: days }), series, daily, many, max, top: scaleTop, ticks, lists, notes, basis: t("core-views.usage.basis") };

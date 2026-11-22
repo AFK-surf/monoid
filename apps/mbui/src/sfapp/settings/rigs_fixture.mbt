@@ -2,7 +2,8 @@
 // says them and as its `rig.*` calls change them: build-box, the viewer's own, reached, one chat using it and one
 // asking; gpu-01, 陈's, open to every chat. settings-stations-tasks: the stations' list with them in it (-outside: on a
 // device its person's trusted devices have not approved, where adding one says so; -theirs: Willow added by another
-// member, not the viewer's to make one; place-stations-tasks: the stations' place on a
+// member, not the viewer's to make one; -doing: Willow and build-box each with its mode changing, under way;
+// place-stations-tasks: the stations' place on a
 // wide frame, build-box picked); settings-station-tasks: build-box's page;
 // -other: gpu-01's; -locked: the workspace in security mode, build-box's code not compared yet.
 
@@ -17,10 +18,15 @@ priv struct RigsFixture {
   mut removed : Bool
   /// On a device its person's trusted devices have not approved: adding one is refused, saying so.
   mut outside : Bool
+  /// Willow's and build-box's modes changing, under way (the core's `doing`).
+  mut mode_doing : Bool
+  /// Willow made one that only runs tasks (`rig.setMode` answered): the workspace's view lists it among its rigs, no
+  /// longer its stations, before the `rigs` topic says it (that topic as it was).
+  mut made : Bool
 }
 
 ///|
-let fx_rigs : RigsFixture = { open: false, revoked: false, answered: false, vouched: false, removed: false, outside: false }
+let fx_rigs : RigsFixture = { open: false, revoked: false, answered: false, vouched: false, removed: false, outside: false, mode_doing: false, made: false }
 
 ///|
 /// Whether the fixture's `mode` is one with the made-up rigs in it.
@@ -37,6 +43,26 @@ fn rigs_fixture_reset() -> Unit {
   fx_rigs.vouched = false
   fx_rigs.removed = false
   fx_rigs.outside = false
+  fx_rigs.mode_doing = false
+  fx_rigs.made = false
+}
+
+///|
+/// Whether Willow was made one that only runs tasks (the stations' lists without it).
+fn rigs_fixture_made() -> Bool {
+  fx_rigs.made
+}
+
+///|
+/// What is under way of the rigs' (settings-stations-tasks-doing): Willow made one that only runs tasks, build-box
+/// whole again, neither answered yet.
+/// (by its mode too: the first frame reads `doing` before the mode's page is set going)
+fn rigs_fixture_doing(mode : String) -> Json? {
+  guard fx_rigs.mode_doing || mode == "settings-stations-tasks-doing" else { None }
+  let item = fn(station : String, mode : String) -> Json {
+    obj([("call", str("rig.setMode")), ("stage", str("running")), ("params", obj([("workspace", str("ws1")), ("station", str(station)), ("mode", str(mode))]))])
+  }
+  Some(obj([("doing", Json::array([item("st1", "tasks"), item("aa11", "full")]))]))
 }
 
 ///|
@@ -47,6 +73,9 @@ fn rigs_fixture_listed(mode : String) -> Json {
     return []
   }
   let out : Array[Json] = []
+  if fx_rigs.made {
+    out.push(obj([("id", str("st1")), ("name", str("Willow")), ("owner", str("u1"))]))
+  }
   if !fx_rigs.removed {
     out.push(obj([("id", str("aa11")), ("name", str("build-box")), ("owner", str("u1"))]))
   }
@@ -205,6 +234,12 @@ fn rigs_fixture_call(name : String, p : Json?) -> Result[Json, Json]? {
     // (made a whole station again: no rig any more; a whole one made a rig: answered, the lists as they were)
     "rig.setMode" if text(p, "station") == "aa11" && text(p, "mode") == "full" => {
       fx_rigs.removed = true
+      fx_changed()
+      Some(Ok(obj([])))
+    }
+    // (Willow made one: the cloud's view as it answers, the `rigs` topic not yet told)
+    "rig.setMode" if text(p, "station") == "st1" && text(p, "mode") == "tasks" => {
+      fx_rigs.made = true
       fx_changed()
       Some(Ok(obj([])))
     }

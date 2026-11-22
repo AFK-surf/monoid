@@ -68,7 +68,7 @@ fn PlayerNode::go(self : PlayerNode, other : String) -> Unit {
 /// folder's `siblings`, as they are listed) read once the folder names one; where it is kept every player_keep_ms
 /// while it plays. Its player, `n`'s: one opened under the key before it (a page gone that played the same file) let go
 /// first; where it is kept and it closed as `n` is let go (player_let_go).
-pub fn player_opened(n : @view.View, key : String, file : ViewerFile, siblings : () -> Array[ViewerEntry]) -> @kit.Media {
+pub fn player_opened(n : @view.View, key : String, file : ViewerFile, siblings : () -> Array[ViewerEntry]) -> @player.Media {
   if playings.get(key) is Some(was) && was.opened.untracked() {
     player_let_go(key)
   }
@@ -235,15 +235,12 @@ fn play_list_rows_node(col : @view.View, pn : PlayerNode, ink : () -> ViewerInk,
             |> ignore
           })
           |> ignore
-          b.show(now, fn(c) {
-            c.box(fn(i) {
-              i
-              .width(Is(Some(desk_check_icon)))
-              .height(Is(Some(desk_check_icon)))
-              .shapes(By(fn() { tool_shapes_sized(if pn.plays() { "play" } else { "check" }, desk_check_icon) }))
-              .tint(By(fn() { ink().ink }))
-              |> ignore
-            })
+          b.show(now, fn(i) {
+            i
+            .width(Is(Some(desk_check_icon)))
+            .height(Is(Some(desk_check_icon)))
+            .shapes(By(fn() { tool_shapes_sized(if pn.plays() { "play" } else { "check" }, desk_check_icon) }))
+            .tint(By(fn() { ink().ink }))
             |> ignore
           })
         })
@@ -372,6 +369,7 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
       top: 0.0,
       most: None,
       flush: false,
+      head_end: None,
     },
   }
   parent.box(made_for=loc, fn(layer) {
@@ -406,6 +404,16 @@ fn ended_card_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, l
       _ => None
     }
   }
+  // 选集 opened over the card (by its own button or the system's bar): the one to play is the person's to pick, so the
+  // next one is let go as 取消 lets it go, the card gone at once and nothing played as 选集 closes. Open as it ended (a
+  // 中屏's or 大屏's docked beside the picture, kept open from one to the next), the card comes and plays on as ever.
+  parent.reacts(fn() { pn.listing.get() }, at_start=false, fn(on) {
+    guard on && @signals.untracked(fn() { pn.phase(pn.status()) == Ended }) else { return }
+    if @signals.untracked(fn() { pn.pl.next() }) is Some(o) && pn.ended_off.untracked() != o {
+      pn.ended_off.set(o)
+      pn.v.ended_off = o
+    }
+  })
   parent.box(made_for=loc, fn(layer) {
     layer.over(Is(true)).presses(By(fn() { other() is Some(_) })) |> ignore
     layer.pick(at_once=true, other, fn(m, o) {

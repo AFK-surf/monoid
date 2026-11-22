@@ -1,6 +1,7 @@
 import {
   "base/shell",
   "moonbitlang/core/json",
+  "moonbitlang/core/string",
 }
 
 import {

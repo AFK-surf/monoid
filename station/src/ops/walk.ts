@@ -84,7 +84,7 @@ export type WalkResult = {
 
 type Pending = { path: string; rel: string; depth: number; root: string; dev: bigint };
 
-const yieldLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+export const yieldLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /// Walks `roots` (one, or several in order), telling `visit` each entry, bounded as WalkOptions say.
 export async function walkBounded(roots: string | readonly string[], visit: (entry: WalkEntry) => Visit | Promise<Visit>, options: WalkOptions = {}): Promise<WalkResult> {

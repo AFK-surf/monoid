@@ -3,7 +3,9 @@
 #pragma once
 #include <stdint.h>
 #include <wchar.h>
+#ifndef MB_NO_MOONBIT_H
 #include "moonbit.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +56,8 @@ int mb_render_init(void *hwnd);
 int mb_render_open(int wid, void *hwnd);
 void mb_render_use(int wid);
 void mb_render_forget(int wid);
+// what drawing holds beyond its frames given back (a window minimized or hidden), made again as it draws
+void mb_render_trim(void);
 // the wait for the compositor (as many of its beats as mb_frame_beats says) once a round of the windows' frames is
 // presented, not after each window's: two windows drawing on did not halve their rate
 void mb_render_pace(void);
@@ -61,6 +65,8 @@ void mb_render_pace(void);
 void mb_render_set_size(int pw, int ph, double w, double h, double scale);
 // 1 when presented (0: nothing drawn, no swap chain)
 int mb_render_present(const double *inst, int32_t count, double r, double g, double b);
+int mb_render_adaptive_settling(int wid);
+int mb_render_adaptive_step(int wid);
 int mb_frame_beats(void);
 // renders the last presented frame again into a texture and writes a PNG
 int mb_render_snapshot(const wchar_t *path);

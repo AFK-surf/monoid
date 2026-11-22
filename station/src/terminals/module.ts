@@ -11,6 +11,7 @@ import { TERMINAL_RUNNER, isTerminalRunner, liveRunners, listeningSoon, startRun
 import { readOnly } from "../mesh/credential.ts";
 import { error, json } from "../api/request.ts";
 import type { Request } from "../api/request.ts";
+import { STATION_INTERNAL } from "../ops/agent-env.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { stationFeature } from "../features.ts";
@@ -29,6 +30,7 @@ function shell(): { program: string; args: string[] } {
 /// and bash executes `PROMPT_COMMAND` when unset.
 function shellEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const name of STATION_INTERNAL) delete env[name];
   if (platform.os === "macos") {
     env.TERM_PROGRAM ??= "Apple_Terminal";
     env.SHELL_SESSIONS_DISABLE ??= "1";

@@ -112,9 +112,17 @@ pub fn take_picture(
     _ => ()
   }
   let held : Ref[@view.View?] = Ref(None)
+  let made : Ref[@view.Tree?] = Ref(None)
+  let measuring_tab = fn() {
+    match made.val {
+      Some(tree) => tree.measuring_tabular()
+      None => None
+    }
+  }
   let tree = @signals.untracked(fn() {
     @view.Tree::new(
       fn(root) {
+        made.val = Some(root.tree)
         root.tree.drawn_by(
           words_scale=fn() { font_scale() },
           pixel_scale=fn() { if scale > 0.0 { scale } else { g().scale } },
@@ -129,12 +137,12 @@ pub fn take_picture(
         })
         |> ignore
       },
-      measure=view_words_measure,
-      measure_runs=view_runs_measure,
-      measure_kept=view_words_measure_kept,
-      measure_runs_kept=view_runs_measure_kept,
-      measure_runs_least=view_runs_least,
-      measure_shorter=view_shorter_measure,
+      measure=fn(words, look, width, scale) { view_words_measure(words, look, width, scale, tabular=measuring_tab()) },
+      measure_runs=fn(runs, look, set, width, scale) { view_runs_measure(runs, look, set, width, scale, tabular=measuring_tab()) },
+      measure_kept=fn(words, look, width, scale) { view_words_measure_kept(words, look, width, scale, tabular=measuring_tab()) },
+      measure_runs_kept=fn(runs, look, set, width, scale) { view_runs_measure_kept(runs, look, set, width, scale, tabular=measuring_tab()) },
+      measure_runs_least=fn(runs, look, set, scale) { view_runs_least(runs, look, set, scale, tabular=measuring_tab()) },
+      measure_shorter=fn(words, shorter, look, width, scale) { view_shorter_measure(words, shorter, look, width, scale, tabular=measuring_tab()) },
       time=fn() { h_event_time() },
     )
   })
@@ -453,20 +461,23 @@ fn shift_inst(a : FixedArray[Double], b : Int, dx : Double, dy : Double) -> Unit
 /// The words node `i` and what it holds show, in the order they are painted (a test's: Tester::shots).
 fn Ctx::shot_words(self : Ctx, i : Int) -> Array[String] {
   let out = []
-  let walk : Ref[(Int) -> Unit] = Ref(fn(_) {  })
-  walk.val = fn(k) {
-    let n = self.nodes[k]
-    if (n.kind == kind_text || n.kind == kind_rich) && n.text != "" {
-      out.push(n.text)
-    }
-    let mut c = n.first
-    while c >= 0 {
-      (walk.val)(c)
-      c = self.nodes[c].next
-    }
-  }
-  (walk.val)(i)
+  self.shot_words_into(i, out)
   out
+}
+
+///|
+/// (Ctx::shot_words' walk, a function of its own: a closure in a cell calling itself is a ring native's counting never
+/// frees)
+fn Ctx::shot_words_into(self : Ctx, k : Int, out : Array[String]) -> Unit {
+  let n = self.nodes[k]
+  if (n.kind == kind_text || n.kind == kind_rich) && n.text != "" {
+    out.push(n.text)
+  }
+  let mut c = n.first
+  while c >= 0 {
+    self.shot_words_into(c, out)
+    c = self.nodes[c].next
+  }
 }
 
 ///|
@@ -483,7 +494,7 @@ fn shot_drawn_of(inst : FixedArray[Double], n : Int, x : Double, y : Double) -> 
     let b = k * inst_size
     Array::makei(inst_size, fn(j) {
       let v = inst[b + j]
-      if inst[b + 5] == 1.0 && (j == 12 || j == 13) {
+      if (inst[b + 5] == 1.0 || inst[b + 5] == 7.0) && (j == 12 || j == 13) {
         "-"
       } else if j == 0 {
         ((v - x) * 100.0).round().to_string()
@@ -578,6 +589,7 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
       }
       clipping.push(c.id)
     }
+    let ground_drawn = tree.ground_drawn_of(c.id)
     let ring_at = self.view_drawn(
       tree,
       c,
@@ -588,23 +600,18 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
       ux,
       uy,
       tree.turn_angle_of(c.id),
-      tree.ground_drawn_of(c.id),
+      ground_drawn,
     )
     let outer_ring_at = self.emit_outer_ring(c, x, y, a, s)
+    // (as the window's tree cuts it (Ctx::view_paint): past its foot as it says, to its ground as it is drawn)
     if c.clips && !c.clips_self {
-      let r = c.radius * s
-      // (said down alone: open across, Content::clips_way)
-      let (cx, cy, cw, ch) = clip_way_box(c.clips_way, x, y, c.w * s, c.h * s)
-      match c.corners {
-        Some((tl, tr, br, bl)) => push_box_clip(cx, cy, cw, ch, tl * s, tr * s, br * s, bl * s)
-        None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
-      }
+      let ch = push_node_clip(c, ground_drawn, x, y, dmax(0.0, c.h + tree.clips_past_of(c.id)) * s, s)
       clipping.push(c.id)
       match tree.cut_across_of(c.id) {
         Some((from, to)) => {
           let from = dclamp(from, 0.0, c.w)
           let to = dclamp(to, 0.0, c.w)
-          push_clip(x + from * s, y, x + dmax(from, to) * s, y + c.h * s)
+          push_clip(x + from * s, y, x + dmax(from, to) * s, y + ch)
           clipping.push(c.id)
         }
         None => ()

@@ -358,30 +358,8 @@ pub fn viz_id(station : String, key : String, path : String) -> String {
 }
 
 ///|
-/// The file's page and what it kept: asked of the core the first time (`station.file`, `widget.state`; what an older
-/// station cannot say is nothing kept), both kept on the device there, the page by its `size` as its message says (none
-/// known: not kept), so it is drawn at once when the chat is next opened, the app run again. None while it comes;
-/// Some(Err) when it cannot be read.
-pub fn viz_load(
-  c : @ui.Ctx,
-  src : Source,
-  station : String,
-  key : String,
-  path : String,
-  size? : Double = 0.0,
-) -> Result[(String, Json?), Unit]? {
-  let id = viz_id(station, key, path)
-  let l = viz_load_of(id)
-  if !l.asked {
-    l.asked = true
-    c.tell("viz/load/" + id, fn() { viz_ask(src, l, station, key, path, size) })
-  }
-  viz_loaded(l)
-}
-
-///|
-/// viz_load for a node of the window's tree `v`: asked as it is made (where not asked yet), read as it comes (a reader
-/// of its signals).
+/// The file's page and what it kept for a node of the window's tree `v`: asked as it is made (where not asked yet),
+/// read as it comes (a reader of its signals).
 pub fn viz_load_node(
   v : @view.View,
   src : Source,

@@ -92,35 +92,6 @@ fn run_card_node(parent : @view.View, value : () -> Json?, href : () -> String, 
 }
 
 ///|
-fn run_card(c : @ui.Ctx, v : Json?, href : String, copy : () -> Unit) -> Unit {
-  let (tone, key) = run_state(text(v, "state"))
-  c.box(style=peek_change_meta, fn() {
-    state_pill(c, tone, None, @sf.t(key), style=run_pill)
-    c.box(style=peek_ref, fn() { c.text(run_workflow(v), style=peek_meta_words) |> ignore }) |> ignore
-    c.text(run_elapsed(v), style=peek_meta_words) |> ignore
-  }) |> ignore
-  c.text(text(v, "title"), style=peek_tile_title) |> ignore
-  c.text(run_source(v), style=peek_meta_words) |> ignore
-  c.box(style=peek_meta, flow=true, line_gap=@ui.Space::S2.px(), fn() {
-    for fact in run_counts(v) { state_pill(c, fact.0, None, fact.1, style=run_pill) }
-  }) |> ignore
-  for job in run_jobs(v) {
-    c.on_press(c.id(job.2), fn() { open_link(job.2) })
-    @kit.button(c, job.0, key=job.2, w=Fill(1.0), look=fn(c, state) {
-      c.box(style=run_job_row, fn() {
-        c.box(style=run_name_column, fn() { c.text(job.0, style=run_name_words(state.hovered || state.focus_shown)) |> ignore }) |> ignore
-        c.box(style=peek_ref, fn() { c.text(job.1, style=run_step_words) |> ignore }) |> ignore
-      }) |> ignore
-    }) |> ignore
-  }
-  c.box(style=run_foot, fn() {
-    @sf.panel_button(c, href + "/all-jobs", @sf.t("web-main.preview.run.allJobs"), tone=Accent, on_press=fn() { open_link(href) }) |> ignore
-    c.box(style=peek_ref, fn() {  }) |> ignore
-    copy()
-  }) |> ignore
-}
-
-///|
 // kept across runs: both buttons sit in a bottom corner, the same inset as the copy button
 let run_foot : @ui.Style = peek_file_foot.then(@ui.style(ml=@sf.room_of(peek_button_in)))
 

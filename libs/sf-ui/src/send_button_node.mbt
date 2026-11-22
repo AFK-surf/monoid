@@ -56,7 +56,8 @@ pub fn send_button_node(
       .ground(By(fn() { send_ground(able.shown(v), lit.shown(v)) }))
       |> ignore
       // (pressed while what is written cannot go (no new chat being made for it), shaken where it is drawn:
-      // refused_shake)
+      // refused_shake; when ready, pressed sink & spring release matches button_node / icon_button_node)
+      @motion.press_feel(v, live=ready, hovers=false) |> ignore
       refused_shake(v, fn() { !ready() && !starting() })
       v.pick(starting, fn(i, turning) {
         if turning {

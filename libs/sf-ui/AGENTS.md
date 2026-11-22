@@ -1,12 +1,12 @@
 # still.fail's parts in mbui (for agents)
 
-still.fail's design system as a component library beside mbui (`libs/mbui`), which it alone imports: `src`, the parts
+still.fail's design system as a component library beside mbui (`libs/mbui`) and `libs/liquid-glass`, which it imports: `src`, the parts
 still.fail's app (`apps/mbui`) is made of, imported as `stillfail/sf` (`@sf`). It lived inside `apps/mbui` till it
 was made a module of its own (`name = "stillfail/sf"`), so that a program outside still.fail's app (a workspace of
-another repository: `moon.work` naming `libs/sf-ui` and `libs/mbui`, `moon.mod` importing `"stillfail/sf@0.1.0"`) uses
+another repository: `moon.work` naming `libs/sf-ui`, `libs/liquid-glass` and `libs/mbui`, `moon.mod` importing `"stillfail/sf@0.1.0"`) uses
 the parts still.fail itself ships and tests (左子健, 2026-11-17: 「感觉最好用有项目用的 UI 吧，不然都没人测」).
 
-- It knows no app: it imports only mbui and MoonBit's core (detlint's `library-import`), and what it needs of an app
+- It knows no app: it imports only mbui, `libs/liquid-glass` and MoonBit's core (detlint's `library-import`), and what it needs of an app
   (its words, the core's answers, its pictures) is given to it as the app starts. The rules of how its parts are made,
   look and move are the app's (`apps/mbui/AGENTS.md`: The component library, Made once as nodes, Motion) and mbui's
   (`libs/mbui/AGENTS.md`): they hold here as there.
@@ -23,3 +23,12 @@ the parts still.fail itself ships and tests (左子健, 2026-11-17: 「感觉最
   counts, as the app's, only fall), its packages type-checked on native and js, its tests on native.
 - A `SourceLoc` of a part made here reads `stillfail/sf/src/<file>`: a test that names one (an audit's fault, what a node
   was made at) says it so.
+- Only general parts and design atoms go in `src`: a part bound to one kind of the app's things (a station, an agent,
+  a vault item, a login's step) is the app's, made in `apps/mbui` from these parts, so the library stays one any
+  program can use.
+- A public part here takes at most 8 arguments. One that needs more is split into a compound part with slots, as
+  `src/row_compound_node.mbt` is (`row_box_node` and its `RowScope`'s parts), never grown further: `link_row_node`
+  takes no new arguments, and a row that needs one more says it in parts.
+- Outlined controls (`input_node`, `textarea_node`, `select_node`, `filter_pill_node`, `choice_card`, `accordion_card`,
+  framed bar fields, swatch and avatar tiles) share one hairline edge (`B0_5`, `control_edge_w` in
+  `src/control_edge.mbt`): `Line` at rest, `Border` pointed at or written in. `B2` in `Fg` is kept for a chosen ring.

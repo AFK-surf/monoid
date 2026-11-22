@@ -6,6 +6,8 @@
 ///|
 /// The page opened on `key` ("" the overview), `w` wide, pointed at with a mouse, the system's words at `scale`.
 fn story_tester(key : String, w : Double, scale? : Double = 1.0, h? : Double = 900.0) -> @ui.Tester {
+  // (the overview's thumbnails: the faces its avatars' parts draw, handed to the host at once)
+  @ui.host_image_bytes_known([("src/sfstorybook/foundations_wbtest.mbt", 9834)])
   @sf.presenters_reset()
   let t = @ui.Tester::new(stories_view, tree=stories_tree(key), w~, h~, platform=0)
   if scale != 1.0 {

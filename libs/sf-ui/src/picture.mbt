@@ -3,38 +3,6 @@
 // CPU (@pixels.Vector::rgba) for a picture to hand on.
 
 ///|
-/// `d` drawn `w` wide (its height as its viewport's) by the GPU (mbui's Ctx::shapes), its shapes kept by `key`, its
-/// curves cut fine enough for the screen's pixels.
-fn draw_drawable(c : @ui.Ctx, key : String, d : @pixels.Vector, w : Double, tint : Int64?) -> Int {
-  let h = w * d.h / d.w
-  // (its curves cut as fine as it is drawn: a shot's own pixels a point where it is in one)
-  let sc = c.drawn_scale()
-  let drawn = match pictures_made.get((key, w, sc, tint)) {
-    Some(m) => m
-    None => {
-      let tk = match tint {
-        Some(t) => t.to_string()
-        None => "-"
-      }
-      let m = {
-        shapes: @ui.vector_shapes(d, w, sc, tint?=tint),
-        name: "sf/pic/\{key}/\{w}/\{sc}/\{tk}",
-      }
-      pictures_made[(key, w, sc, tint)] = m
-      m
-    }
-  }
-  c.shapes(drawn.shapes, w=Px(w), h=Px(h), name=drawn.name)
-}
-
-///|
-/// A picture made by the app (`d`: its viewport and its paths, each in its own colours) drawn `w` wide by the GPU, its
-/// shapes kept by `key`, which says what it is made of (the same picture each time it is asked for by it).
-pub fn vector(c : @ui.Ctx, key : String, d : @pixels.Vector, w : Double) -> Int {
-  draw_drawable(c, "made/" + key, d, w, None)
-}
-
-///|
 /// The picture `name` drawn `px` pixels wide (as tall as it is for that), in its own colours or all in `tint`: its
 /// width, height and pixels (RGBA, straight, rows from the top), to make another picture with; None when there is no
 /// such picture.
@@ -75,20 +43,6 @@ pub fn drawable_vector(name : String) -> @pixels.Vector? {
 }
 
 ///|
-pub fn drawable(c : @ui.Ctx, name : String, w : Double, tint? : Int64) -> Int {
-  match drawables.get(name) {
-    Some(d) => {
-      let b = draw_drawable(c, name, d, w, tint)
-      if tint is None {
-        c.own_colours(b)
-      }
-      b
-    }
-    None => c.box(w=Px(w), h=Px(w), fn() {  })
-  }
-}
-
-///|
 /// Marks drawn in one colour, the page's ink; the others in
 /// their own.
 let mono_makers : Array[String] = [
@@ -99,30 +53,8 @@ let mono_makers : Array[String] = [
 ]
 
 ///|
-/// The mark of the company that made a model: the core's
-/// `maker` id when there is a mark for it, else its runtime's maker's
-/// (codex: OpenAI's, dsh its own, grok xAI's, Cursor's, Devin's, Hermes Agent's, the Antigravity CLI's and Pi's their own,
-/// else Anthropic's).
-pub fn maker_mark(
-  c : @ui.Ctx,
-  maker : String,
-  runtime : String,
-  size : Double,
-) -> Int {
-  let id = maker_of(maker, runtime)
-  let tint = if mono_makers.contains(id) { Some(theme().p.text) } else { None }
-  drawable(c, "maker_" + id.replace_all(old="-", new="_"), size, tint?=tint)
-}
-
-///|
 /// The tools' marks drawn in the page's ink (black ones: white in the dark).
 let ink_tools : Array[String] = ["github", "cursor", "vercel", "openai", "devin"]
-
-///|
-/// Slack's mark (a chat that came from Slack).
-pub fn slack_mark(c : @ui.Ctx, size : Double) -> Int {
-  drawable(c, "slack", size)
-}
 
 ///|
 /// The mark of where a chat came from, by the core's originKind: Feishu's, Comma's for a Comma
@@ -134,12 +66,6 @@ pub fn origin_mark_name(kind : String) -> String {
     "group" => "group"
     _ => "slack"
   }
-}
-
-///|
-/// Feishu's mark (a Feishu connect, SlackMark's "feishu").
-pub fn feishu_mark(c : @ui.Ctx, size : Double) -> Int {
-  drawable(c, "feishu", size)
 }
 
 ///|
@@ -189,10 +115,7 @@ pub fn data_image(url : String) -> String {
     Some(i) => {
       // (named as the stations' were before: what is drawn is said by its key)
       let key = "mem:sf/station/\{url.length()}/\{@ui.stable_hash(url)}"
-      if !made.contains(key) {
-        made[key] = true
-        @ui.add_image(key, @codec.from_base64(url.exact_view(start=i + 7).to_owned()))
-      }
+      data_images_made.ask(key, fn() { @ui.add_image(key, @codec.from_base64(url.exact_view(start=i + 7).to_owned())) })
       key
     }
     None => ""
@@ -200,171 +123,31 @@ pub fn data_image(url : String) -> String {
 }
 
 ///|
-/// Whether a station has anything to be shown by (`station_mark` draws
+/// The pictures given inline kept (MadeImages): every station's icon and every link's card's of a run many times over.
+// kept across runs: let go of as a run begins (on_reset)
+let data_images_made : MadeImages = MadeImages::new(128)
+
+///|
+fn init {
+  @ui.on_reset(fn() { data_images_made.clear() })
+}
+
+///|
+/// Whether a station has anything to be shown by (`station_mark_node` draws
 /// nothing for it otherwise).
 pub fn has_station_mark(emoji : String, icon : String) -> Bool {
   emoji != "" || icon != ""
 }
 
 ///|
-/// Whether a station mark has something to draw now. Ask for a picture's decode even while it is not ready, so a row
-/// that leaves its empty mark out of layout can put it in as soon as the picture arrives.
-pub fn station_mark_visible(c : @ui.Ctx, emoji : String, icon : String, size : Double) -> Bool {
-  if emoji != "" {
-    return true
-  }
-  if icon.has_prefix("glyph:") {
-    let rest = icon.exact_view(start=6).to_owned()
-    let name = match rest.find(":") { Some(i) => rest.exact_view(end=i).to_owned(); None => rest }
-    return glyph_paths(name) is Some(_)
-  }
-  let key = if icon.has_prefix("https://") || icon.has_prefix("http://") {
-    (picture_of.val)(icon, c.page_stint())
-  } else {
-    data_image(icon)
-  }
-  key != "" && c.image_ready(key, size * c.scale)
-}
-
-///|
-/// A station where it is named: its `icon` first, a
-/// glyph (glyph:<name>, glyph:<name>:<colour>, in that colour, else `tint`)
-/// or a picture put up (its address, or a data URL); else its emoji.
-pub fn station_mark(
-  c : @ui.Ctx,
-  emoji : String,
-  icon : String,
-  size : Double,
-  tint : Int64,
-  none? : String,
-  still? : Bool = false,
-  visible_only? : Bool = false,
-) -> Unit {
-  if icon.has_prefix("glyph:") {
-    let rest = icon.exact_view(start=6).to_owned()
-    let (name, colour) = match rest.find(":") {
-      Some(i) =>
-        (
-          rest.exact_view(end=i).to_owned(),
-          rest.exact_view(start=i + 1).to_owned(),
-        )
-      None => (rest, "")
-    }
-    match glyph_paths(name) {
-      Some((lines, dots)) => {
-        let layers : Array[@pixels.VectorPath] = []
-        for d in lines {
-          layers.push({
-            d,
-            fill: 0L,
-            stroke: 0x000000FFL,
-            width: 1.75,
-            even_odd: false,
-            sx: 1.0,
-            sy: 1.0,
-            tx: 0.0,
-            ty: 0.0,
-          })
-        }
-        for d in dots {
-          layers.push({
-            d,
-            fill: 0x000000FFL,
-            stroke: 0L,
-            width: 0.0,
-            even_odd: false,
-            sx: 1.0,
-            sy: 1.0,
-            tx: 0.0,
-            ty: 0.0,
-          })
-        }
-        let color = glyph_color(colour, theme().dark).unwrap_or(tint)
-        draw_drawable(c, "glyph/" + name, { w: 24.0, h: 24.0, layers }, size, Some(color))
-        |> ignore
-        return
-      }
-      None => ()
-    }
-  }
-  // a picture still.fail cloud keeps (cloud/src/icons.ts), by its address: its bytes the core's (`picture`, as
-  // Parts.kt rememberStationPicture), so a GIF among them moves (mbui's gif.mbt); its emoji (below) while it comes
-  if icon.has_prefix("https://") || icon.has_prefix("http://") {
-    let key = (picture_of.val)(icon, c.page_stint())
-    if key != "" && (!visible_only || c.image_ready(key, size * c.scale)) {
-      c.image(key, w=Px(size), h=Px(size), fit=FitCover, radius=size * 0.24, bg=0L, still~, fade=!visible_only) |> ignore
-      return
-    }
-  }
-  match data_image(icon) {
-    "" => ()
-    key if !visible_only || c.image_ready(key, size * c.scale) => {
-      c.image(key, w=Px(size), h=Px(size), radius=size * 0.24, bg=0L, still~, fade=!visible_only) |> ignore
-      return
-    }
-    _ => ()
-  }
-  if emoji != "" {
-    // A mark keeps its natural width, including Windows' wider emoji. A column's
-    // one-line text is otherwise capped to its slot and replaced by an ellipsis.
-    let width = @ui.text_advance(emoji, size=c.sp(size * 0.9))
-    // On the baseline the app's own face gives it, whatever face its words are in: a taller one chosen (思源黑体's
-    // ascent 1.16) set it lower in its line, under the marks beside it.
-    let ty = if @ui.web_lines_on() {
-      let (line, words) = (c.sp(size), c.sp(size * 0.9))
-      @ui.line_baseline(line, size=words, em=mark_em) - @ui.line_baseline(line, size=words)
-    } else {
-      0.0
-    }
-    let draw = fn() { c.text(emoji, size=size * 0.9, wrap=false, line=size, w=Px(width)) |> ignore }
-    if ty == 0.0 {
-      draw()
-    } else {
-      c.box(ty~, draw) |> ignore
-    }
-    return
-  }
-  // none of its own: `none`'s icon, if given
-  match none {
-    Some(n) => icon_named(c, n, size, tint) |> ignore
-    None => ()
-  }
-}
-
-///|
 /// How far the app's own face (Inter 4.001, the wide frame's words with none chosen: sfbase's inter_face.mbt) reaches
 /// above and below its baseline, shares of its size (its 1984 and 494 of 2048): where a station's emoji stands in its
-/// line (station_mark).
+/// line.
 // kept across runs: a value (no field of it changes)
 let mark_em : (Double, Double) = (1984.0 / 2048.0, 494.0 / 2048.0)
 
 ///|
-/// A workspace before its name where it is named among other words (a list's row, a chip, a heading; the web's
-/// WorkspaceMark.tsx WorkspaceBadge): its mark `size` across (station_mark), else its first letter, semibold and muted
-/// in a meta's size, in a square as large (no ground of its own, as the workspaces' rows have it: in a rounded row's
-/// corner a tile would have to be concentric with it). A GIF holds its first frame unless `still` is false (the
-/// workspace in use).
-pub fn workspace_badge(
-  c : @ui.Ctx,
-  name : String,
-  emoji : String,
-  icon : String,
-  size : Double,
-  still? : Bool = true,
-) -> Unit {
-  if has_station_mark(emoji, icon) {
-    station_mark(c, emoji, icon, size, theme().p.text, still~)
-    return
-  }
-  let tile = workspace_badge_tile.then(@ui.style(w=Fixed(size), h=Fixed(size)))
-  c.box(style=tile, fn() {
-    c.text(initial(name), style=workspace_badge_letter) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A workspace's letter's square (workspace_badge): what it holds in its middle.
+/// A workspace's letter's square: what it holds in its middle.
 // kept across runs: a value (no field of it changes)
 let workspace_badge_tile : @ui.Style = @ui.css("align=ACenter justify=JCenter")
 
@@ -374,27 +157,11 @@ let workspace_badge_tile : @ui.Style = @ui.css("align=ACenter justify=JCenter")
 let workspace_badge_letter : @ui.TextStyle = @ui.text_style(size=Meta, leading=Font, weight=Semibold, color=Muted, wrap=false)
 
 ///|
-/// Icon `name` (`icon`, where a parameter of that name hides it).
-fn icon_named(c : @ui.Ctx, name : String, size : Double, color : Int64) -> Int {
-  icon(c, name, size~, color~)
-}
-
-///|
 fn imin(a : Int, b : Int) -> Int {
   if a < b {
     a
   } else {
     b
-  }
-}
-
-///|
-/// A station's mark (StationMark), or where it has none keyboard and mouse's: this machine's a monitor, another's a server.
-pub fn station_icon(c : @ui.Ctx, emoji : String, icon_name : String, size : Double, tint : Int64, here? : Bool = false) -> Unit {
-  if has_station_mark(emoji, icon_name) {
-    station_mark(c, emoji, icon_name, size, tint)
-  } else {
-    icon(c, if here { "monitor" } else { "server" }, size~, color=tint) |> ignore
   }
 }
 
@@ -432,19 +199,6 @@ let opencode_h : Double = 0.6667
 ///|
 // kept across runs: a value (no field of it changes)
 let opencode_frame : @ui.Style = @ui.css("border=B1_5 border_color=Fg")
-
-///|
-/// Rings one inside another (Activity's), `side` across, with the room for `most` of them (as many as are ever drawn
-/// there: fewer stand where those would, the outer ones): each as wide as the hole they leave in their middle is round
-/// (ring_hole), ring_apart of that from the next, so the innermost is a ring still (2026-10-26 用户 of three in 88,
-/// each 12: 「最里面的那个圆点不对吧」, the third a disc, its share a dot), from the outside in: each its track all round in
-/// its colour at `track` (an alpha, 0-255), and as much of it as its share drawn round from its top in its colour, round
-/// at its ends; a share past 1 (two accounts' quota past one's) goes round again over it, each turn past the first
-/// deeper (ring_turn_keep), the last whole one under what is left of it.
-pub fn rings(c : @ui.Ctx, shares : Array[(Double, Int64)], side : Double, track : Int64, most~ : Int) -> Int {
-  let (key, d) = rings_drawn(shares, side, track, most)
-  vector(c, key, d, side)
-}
 
 ///|
 /// The rings (rings') as a node of the window's tree in `parent`, `side` across, of the shares `shares` says as it
@@ -511,52 +265,6 @@ fn rings_drawn(shares : Array[(Double, Int64)], side : Double, track : Int64, mo
   }
   ("rings/\{side}/\{width}/\{gap}/\{track}/" + keys.join(","), { w: side, h: side, layers })
 }
-
-///|
-/// A ring of parts one after another (a donut chart), `side` across and `width` wide, from its top round the way a
-/// clock goes: each as much of the turn as its share of all of them, in its colour, round at its ends, a gap of
-/// donut_apart between them beyond what their round ends take; a part too small for its ends a dot. Nothing to share:
-/// the ring's track alone, in `track`.
-pub fn donut(c : @ui.Ctx, parts : Array[(Double, Int64)], side : Double, width : Double, track : Int64) -> Int {
-  let mid = side / 2.0
-  let r = mid - width / 2.0
-  let total = parts.fold(init=0.0, fn(sum, p) { if p.0 > 0.0 { sum + p.0 } else { sum } })
-  let path = fn(d : String, stroke : Int64) -> @pixels.VectorPath {
-    { d, fill: 0L, stroke, width, even_odd: false, sx: 1.0, sy: 1.0, tx: 0.0, ty: 0.0 }
-  }
-  let circle = "M \{mid - r} \{mid} A \{r} \{r} 0 1 1 \{mid + r} \{mid} A \{r} \{r} 0 1 1 \{mid - r} \{mid}"
-  let layers : Array[@pixels.VectorPath] = []
-  let keys : Array[String] = []
-  let shown = parts.filter(fn(p) { p.0 > 0.0 })
-  if total <= 0.0 {
-    layers.push(path(circle, track))
-  } else if shown.length() == 1 {
-    layers.push(path(circle, shown[0].1))
-    keys.push("\{shown[0].1}")
-  } else {
-    // (the round ends reach width / 2 past each end: the gap is theirs and donut_apart more, as an angle on r)
-    let gap = (width + donut_apart) / r
-    let at = fn(a : Double) { (mid + r * @dmath.sin(a), mid - r * @dmath.cos(a)) }
-    let mut a = 0.0
-    for p in shown {
-      let (share, colour) = p
-      let sweep = share / total * 2.0 * @math.PI
-      let a0 = a + gap / 2.0
-      let a1 = if a + sweep - gap / 2.0 > a0 { a + sweep - gap / 2.0 } else { a0 + 0.001 }
-      let (x0, y0) = at(a0)
-      let (x1, y1) = at(a1)
-      let large = if a1 - a0 > @math.PI { 1 } else { 0 }
-      layers.push(path("M \{x0} \{y0} A \{r} \{r} 0 \{large} 1 \{x1} \{y1}", colour))
-      keys.push("\{share}/\{colour}")
-      a = a + sweep
-    }
-  }
-  vector(c, "donut/\{side}/\{width}/\{track}/" + keys.join(","), { w: side, h: side, layers }, side)
-}
-
-///|
-/// How far apart a donut's parts are past their round ends.
-let donut_apart : Double = 3.0
 
 ///|
 /// The hole in the middle of rings (rings): round as far as a ring is wide (Activity's: three rings, the hole as wide

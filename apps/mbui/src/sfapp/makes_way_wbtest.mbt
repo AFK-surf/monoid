@@ -14,6 +14,11 @@ fn said_by_ana(seq : Int, words : String) -> Unit {
 }
 
 ///|
+/// How long on from its line's coming these tests look: what list_turns.mbt once said an agent's line's turn took
+/// (working_turn_ms).
+let line_turn_ms : Double = 220.0
+
+///|
 /// How soon after it is asked the test's message is said.
 let fix_said_ms : Double = 1.0
 
@@ -23,13 +28,16 @@ test "followed at its end, a message said over the agent's line: the line stays 
   let working = tr("android-chat.chat.working")
   // its line in at the chat's end, the list there
   t.run_for(fix_deliver_ms)
-  let at = turns_of("ws1/st1\u{1}s-c1").started_at("act:s-c1")
-  t.run_for(at - t.time() + line_turn_ms)
+  // (the node page's line comes in by its own queue, not the old page's turns: waited for as it is drawn, then its turn)
+  while t.drawn_of(working) is None && t.time() < 5000.0 {
+    t.frame_as_host() |> ignore
+  }
+  t.run_for(line_turn_ms)
   let rest = t.rest_of("a list")
   if rest > t.time() && rest < @double.infinity {
     t.run_for(rest - t.time())
   }
-  let (_, y0) = t.drawn_of(working).unwrap()
+  guard t.drawn_of(working) is Some((_, y0)) else { fail("no \{working} at \{t.time()}") }
   // someone says something: it comes in over the line
   let words = "我也看看这个"
   said_by_ana(170, words)
