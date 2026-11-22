@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [18c2f2077](https://github.com/AFK-surf/monoid/commit/18c2f207752b73d637d47017bc21cf77ab9cacf9) feat(app): put the shortcuts' search above their l | 2.67 | 3.6 | 14.6 | 36.7 | 55.79 | 32.15 | 65.11 | 100.19 | 123.43 |
 | [a2e9941cc](https://github.com/AFK-surf/monoid/commit/a2e9941cc2cbce8ff638ef7879cd000e90c269a2) feat(mbui): add macOS and Windows crash and main-t | 2.67 | 3.6 | 14.6 | 36.7 | 55.79 | 32.15 | 65.11 | 100.19 | 123.43 |
 | [75c7a178d](https://github.com/AFK-surf/monoid/commit/75c7a178d517259070eca12361d6b1ce6b63fc64) perf(mbui): optimize adaptive liquid glass GPU ren | 2.67 | 3.6 | 14.6 | 36.7 | 55.79 | 32.15 | 65.11 | 100.19 | 123.43 |
 | [f7978a96d](https://github.com/AFK-surf/monoid/commit/f7978a96df78ae0c98b939f5952b478314e9fb0b) fix(test): build the delta C harness without PIE o | 2.67 | 3.6 | 14.59 | 36.69 | 55.74 | 32.14 | 65.08 | 98.93 | 120.95 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [52bd257dc](https://github.com/AFK-surf/monoid/commit/52bd257dcdb8ac5dcb523c765eb879e782c754c3) fix(sfapp): remove nested card background on agent | 2.66 | 3.58 | 14.53 | 36.59 | 55.49 | 32.05 | 64.81 | 98.88 | 121.44 |
 | [1219cfac7](https://github.com/AFK-surf/monoid/commit/1219cfac7016b282e9b0e8b396c06f9cf5c3632e) fix(sf-ui): align floating sheet content corners a | 2.66 | 3.58 | 14.53 | 36.6 | 55.49 | 32.05 | 64.81 | 98.7 | 117.93 |
 | [ff67f8a12](https://github.com/AFK-surf/monoid/commit/ff67f8a125523f64e0779de066d0ef8fa14e8286) fix(station): prevent idle cleanup starvation, det | 2.66 | 3.57 | 14.52 | 36.59 | 55.48 | 32.04 | 64.81 | 98.67 | 115.45 |
-| [abca93fca](https://github.com/AFK-surf/monoid/commit/abca93fcab0d7884f3ed916bcc671558e5f2922c) feat(sf-ui,sfpages): align composer liquid glass w | 2.66 | 3.57 | 14.52 | 36.59 | 55.48 | 32.04 | 64.81 | 98.67 | 115.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [18c2f2077](https://github.com/AFK-surf/monoid/commit/18c2f207752b73d637d47017bc21cf77ab9cacf9) feat(app): put the shortcuts' search above their l | 0.48 | 0.63 | 2.41 | 3.47 | 5.72 | 1.76 | 4.77 | 55.59 |
 | [a2e9941cc](https://github.com/AFK-surf/monoid/commit/a2e9941cc2cbce8ff638ef7879cd000e90c269a2) feat(mbui): add macOS and Windows crash and main-t | 0.47 | 0.62 | 2.4 | 3.45 | 5.69 | 1.75 | 4.73 | 55.25 |
 | [75c7a178d](https://github.com/AFK-surf/monoid/commit/75c7a178d517259070eca12361d6b1ce6b63fc64) perf(mbui): optimize adaptive liquid glass GPU ren | 0.47 | 0.62 | 2.4 | 3.45 | 5.69 | 1.75 | 4.73 | 55.38 |
 | [f7978a96d](https://github.com/AFK-surf/monoid/commit/f7978a96df78ae0c98b939f5952b478314e9fb0b) fix(test): build the delta C harness without PIE o | 0.47 | 0.62 | 2.4 | 3.45 | 5.69 | 1.75 | 4.73 | 54.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [52bd257dc](https://github.com/AFK-surf/monoid/commit/52bd257dcdb8ac5dcb523c765eb879e782c754c3) fix(sfapp): remove nested card background on agent | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.07 |
 | [1219cfac7](https://github.com/AFK-surf/monoid/commit/1219cfac7016b282e9b0e8b396c06f9cf5c3632e) fix(sf-ui): align floating sheet content corners a | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.07 |
 | [ff67f8a12](https://github.com/AFK-surf/monoid/commit/ff67f8a125523f64e0779de066d0ef8fa14e8286) fix(station): prevent idle cleanup starvation, det | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.07 |
-| [abca93fca](https://github.com/AFK-surf/monoid/commit/abca93fcab0d7884f3ed916bcc671558e5f2922c) feat(sf-ui,sfpages): align composer liquid glass w | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
