@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ff67f8a12](https://github.com/AFK-surf/monoid/commit/ff67f8a125523f64e0779de066d0ef8fa14e8286) fix(station): prevent idle cleanup starvation, det | 2.66 | 3.57 | 14.52 | 36.59 | 55.48 | 32.04 | 64.81 | 98.67 | 115.45 |
 | [abca93fca](https://github.com/AFK-surf/monoid/commit/abca93fcab0d7884f3ed916bcc671558e5f2922c) feat(sf-ui,sfpages): align composer liquid glass w | 2.66 | 3.57 | 14.52 | 36.59 | 55.48 | 32.04 | 64.81 | 98.67 | 115.45 |
 | [e3f2606bc](https://github.com/AFK-surf/monoid/commit/e3f2606bc9038868b8f86ab0851828b260724b8e) fix(mbui): composite waiting tiles' ground into th | 2.66 | 3.57 | 14.52 | 36.59 | 55.48 | 32.04 | 64.81 | 99.01 | 112.25 |
 | [3e9d20511](https://github.com/AFK-surf/monoid/commit/3e9d20511428a1cda54c4b0c158f2939513b92aa) fix(screens): set an Android device's volume throu | 2.65 | 3.57 | 14.52 | 36.58 | 55.47 | 32.04 | 64.81 | 98.83 | 129.56 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7518002f5](https://github.com/AFK-surf/monoid/commit/7518002f53d978e3d43b44eb3ac3fadd81445b5b) feat(mbui): add glass_pop_in and glass_pop_out mot | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.44 | 122.33 |
 | [0a1a91c9f](https://github.com/AFK-surf/monoid/commit/0a1a91c9fe56cda87a795d64986aab7344bba06f) feat(sf-ui): unify anchored popovers onto liquid g | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.52 | 123.44 |
 | [2d090b2f5](https://github.com/AFK-surf/monoid/commit/2d090b2f58b82a8b86a30d531a9c0d57ab0b7b0f) fix(station): fail over past revoked OAuth logins  | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.45 | 122.46 |
-| [1ed563f27](https://github.com/AFK-surf/monoid/commit/1ed563f277ba957823051b3e952c87231e3c2a71) fix(station): keep the adb link from writing back  | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.37 | 121.51 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ff67f8a12](https://github.com/AFK-surf/monoid/commit/ff67f8a125523f64e0779de066d0ef8fa14e8286) fix(station): prevent idle cleanup starvation, det | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.07 |
 | [abca93fca](https://github.com/AFK-surf/monoid/commit/abca93fcab0d7884f3ed916bcc671558e5f2922c) feat(sf-ui,sfpages): align composer liquid glass w | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [e3f2606bc](https://github.com/AFK-surf/monoid/commit/e3f2606bc9038868b8f86ab0851828b260724b8e) fix(mbui): composite waiting tiles' ground into th | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [3e9d20511](https://github.com/AFK-surf/monoid/commit/3e9d20511428a1cda54c4b0c158f2939513b92aa) fix(screens): set an Android device's volume throu | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7518002f5](https://github.com/AFK-surf/monoid/commit/7518002f53d978e3d43b44eb3ac3fadd81445b5b) feat(mbui): add glass_pop_in and glass_pop_out mot | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
 | [0a1a91c9f](https://github.com/AFK-surf/monoid/commit/0a1a91c9fe56cda87a795d64986aab7344bba06f) feat(sf-ui): unify anchored popovers onto liquid g | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [2d090b2f5](https://github.com/AFK-surf/monoid/commit/2d090b2f58b82a8b86a30d531a9c0d57ab0b7b0f) fix(station): fail over past revoked OAuth logins  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
-| [1ed563f27](https://github.com/AFK-surf/monoid/commit/1ed563f277ba957823051b3e952c87231e3c2a71) fix(station): keep the adb link from writing back  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
