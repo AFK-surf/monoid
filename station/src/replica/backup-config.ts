@@ -263,6 +263,9 @@ export function applyBackupUpdate(
       seen.add(id);
 
       const prev = existingS3.get(id);
+      const rawAccessKey = typeof item.accessKeyId === "string" ? item.accessKeyId.trim() : "";
+      const accessKeyId = rawAccessKey !== "" ? rawAccessKey : (prev?.accessKeyId ?? "");
+
       const rawSecret = typeof item.secretAccessKey === "string" ? item.secretAccessKey : "";
       const secretAccessKey = rawSecret !== "" ? rawSecret : (prev?.secretAccessKey ?? "");
 
@@ -282,7 +285,7 @@ export function applyBackupUpdate(
           bucket: item.bucket,
           prefix: item.prefix,
           forcePathStyle: item.forcePathStyle,
-          accessKeyId: item.accessKeyId,
+          accessKeyId,
           secretAccessKey,
           encryptionKey,
           includeTranscripts: item.includeTranscripts,

@@ -150,7 +150,7 @@ export const routes = ({
             bucket: b.bucket ?? prev?.bucket,
             prefix: b.prefix ?? prev?.prefix,
             forcePathStyle: b.forcePathStyle ?? prev?.forcePathStyle,
-            accessKeyId: b.accessKeyId ?? prev?.accessKeyId,
+            accessKeyId: typeof b.accessKeyId === "string" && b.accessKeyId.trim() !== "" ? b.accessKeyId.trim() : prev?.accessKeyId,
             secretAccessKey: typeof b.secretAccessKey === "string" && b.secretAccessKey !== "" ? b.secretAccessKey : prev?.secretAccessKey,
             // encryptionKey is not needed to test S3 connectivity; use a valid dummy 64-hex if absent.
             encryptionKey: typeof b.encryptionKey === "string" && b.encryptionKey !== "" ? b.encryptionKey : (prev?.encryptionKey ?? "0".repeat(64)),

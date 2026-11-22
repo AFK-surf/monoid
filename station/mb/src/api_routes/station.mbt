@@ -630,6 +630,36 @@ fn Admin::copies_routes(self : Admin) -> Array[Route] {
       }
       ok(jobj([("ok", jbool(true))]), status=202)
     }),
+    route("GET", "^\\/copies\\/settings$", async fn(r, _) {
+      if !manages_station(r.viewer) {
+        return error(403, "only the workspace's owners and admins manage backup settings")
+      }
+      ok(self.backend.ask("copies.settings", [ws(r)])) catch {
+        e => error(500, message_of(e))
+      }
+    }),
+    route("PUT", "^\\/copies\\/settings$", async fn(r, _) {
+      if !manages_station(r.viewer) {
+        return error(403, "only the workspace's owners and admins manage backup settings")
+      }
+      guard copies_body(r) is Some(Obj(_) as b) else {
+        return error(400, "invalid JSON")
+      }
+      ok(self.backend.ask("copies.setSettings", [ws(r), b])) catch {
+        e => error(400, message_of(e))
+      }
+    }),
+    route("POST", "^\\/copies\\/s3\\/test$", async fn(r, _) {
+      if !manages_station(r.viewer) {
+        return error(403, "only the workspace's owners and admins test backup targets")
+      }
+      guard copies_body(r) is Some(Obj(_) as b) else {
+        return error(400, "invalid JSON")
+      }
+      ok(self.backend.ask("copies.testS3", [b])) catch {
+        e => error(400, message_of(e))
+      }
+    }),
     route("POST", "^\\/copies\\/restore$", async fn(r, _) {
       if !manages_station(r.viewer) {
         return error(

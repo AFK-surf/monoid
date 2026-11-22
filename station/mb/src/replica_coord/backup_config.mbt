@@ -431,6 +431,15 @@ pub fn apply_backup_update(
         seen[id] = true
 
         let prev = existing_s3.get(id)
+        let raw_access_key = str_at(item, "accessKeyId").unwrap_or("").trim().to_string()
+        let access_key_id = if raw_access_key != "" {
+          raw_access_key
+        } else {
+          match prev {
+            Some(p) => p.access_key_id
+            None => ""
+          }
+        }
         let raw_secret = str_at(item, "secretAccessKey").unwrap_or("")
         let secret_access_key = if raw_secret != "" {
           raw_secret
@@ -461,7 +470,7 @@ pub fn apply_backup_update(
           ("bucket", at(item, "bucket").unwrap_or(Null)),
           ("prefix", at(item, "prefix").unwrap_or(Null)),
           ("forcePathStyle", at(item, "forcePathStyle").unwrap_or(Null)),
-          ("accessKeyId", at(item, "accessKeyId").unwrap_or(Null)),
+          ("accessKeyId", js(access_key_id)),
           ("secretAccessKey", js(secret_access_key)),
           ("encryptionKey", js(encryption_key)),
           ("includeTranscripts", at(item, "includeTranscripts").unwrap_or(Null)),

@@ -358,6 +358,97 @@ fn own_profiles(raw : Json) -> Array[Json] {
 }
 
 ///|
+/// Shared implementation for `PUT /copies/settings` and `copies.setSettings`.
+async fn copies_put_settings(bus : LiveBus, copies : @replica_coord.Copies, ws : String, b : Json) -> Result[Json, String] {
+  let crypto = @vault_crypto.Crypto::of_host(bus.host)
+  let rand_hex = (n : Int) => {
+    let bytes = crypto.random(n) catch { _ => b"" }
+    @hash.hex_encode(bytes[:])
+  }
+  let (backup_jv, gen_keys) = @replica_coord.apply_backup_update(to_jv((bus.config_raw.val)()), to_jv(b), rand_hex) catch {
+    e => return Err(message_text_any(e))
+  }
+  let backup_json = of_jv(backup_jv)
+  try {
+    ignore(
+      (bus.config_update.val)(raw => match raw {
+        Object(m) => {
+          let next : Map[String, Json] = {}
+          for k, v in m {
+            next[k] = v
+          }
+          next["backup"] = backup_json
+          Json::object(next)
+        }
+        _ => { "backup": backup_json }
+      }),
+    )
+  } catch {
+    e => return Err(message_text_any(e))
+  }
+  copies.config_changed()
+  (bus.overview_changed.val)()
+  let view = of_jv(copies.backup_view(ws))
+  let gk : Map[String, Json] = {}
+  for p in gen_keys {
+    gk[p.0] = Json::string(p.1)
+  }
+  match view {
+    Object(m) => {
+      m["generatedKeys"] = Json::object(gk)
+      Ok(Json::object(m))
+    }
+    _ => Ok(view)
+  }
+}
+
+///|
+/// Shared implementation for `POST /copies/s3/test` and `copies.testS3`.
+async fn copies_test_s3(bus : LiveBus, b : Json) -> Result[Json, String] {
+  let saved = @replica_coord.read_backup_config(to_jv((bus.config_raw.val)())).s3
+  let id = jtext(b, "id").unwrap_or("")
+  let prev = if id != "" {
+    saved.search_by(t => t.id == id).map(i => saved[i])
+  } else {
+    None
+  }
+  let pick_str = (k : String, fallback : String) => match jtext(b, k) {
+    Some(s) if s.trim().to_string() != "" => s.trim().to_string()
+    _ => fallback
+  }
+  let pick_secret = (k : String, fallback : String) => match jtext(b, k) {
+    Some(s) if s != "" => s
+    _ => fallback
+  }
+  let pick_bool = (k : String, fallback : Bool) => match jfield(b, k) {
+    True => true
+    False => false
+    _ => fallback
+  }
+  let raw_target = @replica_coord.jo([
+    ("id", @replica_coord.js(if id != "" { id } else { "test" })),
+    ("name", @replica_coord.js(pick_str("name", match prev { Some(p) => p.name; None => "test" }))),
+    ("endpoint", @replica_coord.js(pick_str("endpoint", match prev { Some(p) => p.endpoint; None => "" }))),
+    ("region", @replica_coord.js(pick_str("region", match prev { Some(p) => p.region; None => "auto" }))),
+    ("bucket", @replica_coord.js(pick_str("bucket", match prev { Some(p) => p.bucket; None => "" }))),
+    ("prefix", @replica_coord.js(pick_str("prefix", match prev { Some(p) => p.prefix; None => @replica_coord.default_backup_prefix }))),
+    ("forcePathStyle", @replica_coord.jb(pick_bool("forcePathStyle", match prev { Some(p) => p.force_path_style; None => true }))),
+    ("accessKeyId", @replica_coord.js(pick_str("accessKeyId", match prev { Some(p) => p.access_key_id; None => "" }))),
+    ("secretAccessKey", @replica_coord.js(pick_secret("secretAccessKey", match prev { Some(p) => p.secret_access_key; None => "" }))),
+    ("encryptionKey", @replica_coord.js(pick_str("encryptionKey", match prev { Some(p) => p.encryption_key; None => "0".repeat(64) }))),
+    ("includeTranscripts", @replica_coord.jb(pick_bool("includeTranscripts", match prev { Some(p) => p.include_transcripts; None => true }))),
+  ])
+  let target = @replica_coord.normalize_s3_target(raw_target, 0) catch {
+    e => return Err(message_text_any(e))
+  }
+  let client = @replica_coord.S3Client::new(target, bus.host, () => wall_ms().to_double())
+  match (try { Ok(client.test_connection()) } catch { e => Err(e) }) {
+    Ok(_) => Ok({ "ok": Json::boolean(true) })
+    Err(e) => Ok({ "ok": Json::boolean(false), "error": Json::string(message_text_any(e)) })
+  }
+}
+
+///|
 /// api/routes/copies.ts: a retirement started, previewed, called off and tried again; backup settings & S3 test; a lost station's copy taken back.
 fn copies_routes(bus : LiveBus, copies : @replica_coord.Copies, retire : @replica_coord.Retire) -> Array[PartRoute] {
   let managers = "only the workspace's owners and admins retire a station"
@@ -424,46 +515,9 @@ fn copies_routes(bus : LiveBus, copies : @replica_coord.Copies, retire : @replic
       if !manages(viewer) {
         return refused(403, "only the workspace's owners and admins manage backup settings")
       }
-      let b = jfield(r, "body")
-      let crypto = @vault_crypto.Crypto::of_host(bus.host)
-      let rand_hex = (n : Int) => {
-        let bytes = crypto.random(n) catch { _ => b"" }
-        @hash.hex_encode(bytes[:])
-      }
-      let (backup_jv, gen_keys) = @replica_coord.apply_backup_update(to_jv((bus.config_raw.val)()), to_jv(b), rand_hex) catch {
-        e => return refused(400, message_text_any(e))
-      }
-      let backup_json = of_jv(backup_jv)
-      try {
-        ignore(
-          (bus.config_update.val)(raw => match raw {
-            Object(m) => {
-              let next : Map[String, Json] = {}
-              for k, v in m {
-                next[k] = v
-              }
-              next["backup"] = backup_json
-              Json::object(next)
-            }
-            _ => { "backup": backup_json }
-          }),
-        )
-      } catch {
-        e => return refused(400, message_text_any(e))
-      }
-      copies.config_changed()
-      (bus.overview_changed.val)()
-      let view = of_jv(copies.backup_view(jtext_or_empty(viewer, "workspace")))
-      let gk : Map[String, Json] = {}
-      for p in gen_keys {
-        gk[p.0] = Json::string(p.1)
-      }
-      match view {
-        Object(m) => {
-          m["generatedKeys"] = Json::object(gk)
-          answered(200, Json::object(m))
-        }
-        _ => answered(200, view)
+      match copies_put_settings(bus, copies, jtext_or_empty(viewer, "workspace"), jfield(r, "body")) {
+        Ok(v) => answered(200, v)
+        Err(msg) => refused(400, msg)
       }
     }),
     p55_route("POST", "^/copies/s3/test$", async fn(r) {
@@ -471,43 +525,9 @@ fn copies_routes(bus : LiveBus, copies : @replica_coord.Copies, retire : @replic
       if !manages(viewer) {
         return refused(403, "only the workspace's owners and admins test backup targets")
       }
-      let b = jfield(r, "body")
-      let saved = @replica_coord.read_backup_config(to_jv((bus.config_raw.val)())).s3
-      let id = jtext(b, "id").unwrap_or("")
-      let prev = if id != "" {
-        saved.search_by(t => t.id == id).map(i => saved[i])
-      } else {
-        None
-      }
-      let pick_str = (k : String, fallback : String) => match jtext(b, k) {
-        Some(s) if s != "" => s
-        _ => fallback
-      }
-      let pick_bool = (k : String, fallback : Bool) => match jfield(b, k) {
-        True => true
-        False => false
-        _ => fallback
-      }
-      let raw_target = @replica_coord.jo([
-        ("id", @replica_coord.js(if id != "" { id } else { "test" })),
-        ("name", @replica_coord.js(pick_str("name", match prev { Some(p) => p.name; None => "test" }))),
-        ("endpoint", @replica_coord.js(pick_str("endpoint", match prev { Some(p) => p.endpoint; None => "" }))),
-        ("region", @replica_coord.js(pick_str("region", match prev { Some(p) => p.region; None => "auto" }))),
-        ("bucket", @replica_coord.js(pick_str("bucket", match prev { Some(p) => p.bucket; None => "" }))),
-        ("prefix", @replica_coord.js(pick_str("prefix", match prev { Some(p) => p.prefix; None => @replica_coord.default_backup_prefix }))),
-        ("forcePathStyle", @replica_coord.jb(pick_bool("forcePathStyle", match prev { Some(p) => p.force_path_style; None => true }))),
-        ("accessKeyId", @replica_coord.js(pick_str("accessKeyId", match prev { Some(p) => p.access_key_id; None => "" }))),
-        ("secretAccessKey", @replica_coord.js(pick_str("secretAccessKey", match prev { Some(p) => p.secret_access_key; None => "" }))),
-        ("encryptionKey", @replica_coord.js(pick_str("encryptionKey", match prev { Some(p) => p.encryption_key; None => "0".repeat(64) }))),
-        ("includeTranscripts", @replica_coord.jb(pick_bool("includeTranscripts", match prev { Some(p) => p.include_transcripts; None => true }))),
-      ])
-      let target = @replica_coord.normalize_s3_target(raw_target, 0) catch {
-        e => return refused(400, message_text_any(e))
-      }
-      let client = @replica_coord.S3Client::new(target, bus.host, () => wall_ms().to_double())
-      match (try { Ok(client.test_connection()) } catch { e => Err(e) }) {
-        Ok(_) => answered(200, { "ok": Json::boolean(true) })
-        Err(e) => answered(200, { "ok": Json::boolean(false), "error": Json::string(message_text_any(e)) })
+      match copies_test_s3(bus, jfield(r, "body")) {
+        Ok(v) => answered(200, v)
+        Err(msg) => refused(400, msg)
       }
     }),
     p55_route("POST", "^/copies/restore$", async fn(r) {

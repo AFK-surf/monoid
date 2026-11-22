@@ -332,7 +332,7 @@ test "backup_config validation, secret preservation, key generation, and sanitiz
   assert_eq(gen1[0].1, "f".repeat(64))
   check_backup_config(Some(saved1))
 
-  // Update name while omitting secrets -> preserves old secrets, generates no new key
+  // Update name while omitting accessKeyId, secretAccessKey & encryptionKey -> preserves all 3, generates no new key
   let input2 = jo([
     (
       "s3",
@@ -342,9 +342,6 @@ test "backup_config validation, secret preservation, key generation, and sanitiz
           ("name", js("R2 Renamed")),
           ("endpoint", js("https://r2.example.com")),
           ("bucket", js("my-backup")),
-          ("accessKeyId", js("AKIA_TEST_KEY_12345")),
-          ("secretAccessKey", js("")),
-          ("encryptionKey", js("")),
         ]),
       ]),
     ),
@@ -357,6 +354,7 @@ test "backup_config validation, secret preservation, key generation, and sanitiz
   assert_eq(parsed.accept_others, false)
   assert_eq(parsed.s3.length(), 1)
   assert_eq(parsed.s3[0].name, "R2 Renamed")
+  assert_eq(parsed.s3[0].access_key_id, "AKIA_TEST_KEY_12345")
   assert_eq(parsed.s3[0].secret_access_key, "SUPER_SECRET_KEY")
   assert_eq(parsed.s3[0].encryption_key, "f".repeat(64))
 

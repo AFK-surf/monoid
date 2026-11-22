@@ -715,7 +715,7 @@ test("HTTP routes: /copies/settings secret redaction, key generation, secret pre
   assert.ok(!get1Text.includes(s3.secretAccessKey));
   assert.ok(!get1Text.includes(genKey));
 
-  // PUT /copies/settings: update name & prefix while omitting secretAccessKey & encryptionKey -> preserves old secrets!
+  // PUT /copies/settings: update name & prefix while omitting accessKeyId, secretAccessKey & encryptionKey -> preserves all 3!
   const put2 = await call("PUT", "/copies/settings", {
     s3: [
       {
@@ -724,9 +724,6 @@ test("HTTP routes: /copies/settings secret redaction, key generation, secret pre
         endpoint: s3.endpoint,
         bucket: s3.bucket,
         prefix: "renamed-prefix",
-        accessKeyId: s3.accessKeyId,
-        secretAccessKey: "",
-        encryptionKey: "",
       },
     ],
   });
@@ -736,6 +733,7 @@ test("HTTP routes: /copies/settings secret redaction, key generation, secret pre
   assert.equal(put2Body.s3[0].name, "Renamed R2");
   assert.equal(put2Body.s3[0].keyFingerprint, keyFingerprint(genKey));
   const persisted = readBackupConfig(config.raw());
+  assert.equal(persisted.s3[0]!.accessKeyId, s3.accessKeyId);
   assert.equal(persisted.s3[0]!.secretAccessKey, s3.secretAccessKey);
   assert.equal(persisted.s3[0]!.encryptionKey, genKey);
 
@@ -761,10 +759,14 @@ test("HTTP routes: /copies/settings secret redaction, key generation, secret pre
   assert.throws(() => checkBackupConfig({ s3: [{ id: "a", name: "x", endpoint: s3.endpoint, bucket: "bkt", accessKeyId: "ak", secretAccessKey: "sk", encryptionKey: TEST_KEY }, { id: "a", name: "y", endpoint: s3.endpoint, bucket: "bkt", accessKeyId: "ak", secretAccessKey: "sk", encryptionKey: TEST_KEY }] }));
   assert.throws(() => applyBackupUpdate({}, "not-an-object"));
 
-  // POST /copies/s3/test: success with saved id, failure with bad secret
+  // POST /copies/s3/test: success with saved id (including empty accessKeyId/secretAccessKey fallback), failure with bad secret
   const testOk = await call("POST", "/copies/s3/test", { id: targetId });
   assert.equal(testOk.status, 200);
   assert.deepEqual(JSON.parse(testOk.body.toString("utf8")), { ok: true });
+
+  const testFallback = await call("POST", "/copies/s3/test", { id: targetId, accessKeyId: "", secretAccessKey: "" });
+  assert.equal(testFallback.status, 200);
+  assert.deepEqual(JSON.parse(testFallback.body.toString("utf8")), { ok: true });
 
   const testBad = await call("POST", "/copies/s3/test", {
     endpoint: s3.endpoint,
