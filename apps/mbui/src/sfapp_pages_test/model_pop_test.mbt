@@ -853,3 +853,45 @@ test "small: in the model sheet the line over 全部模型 runs as far as the sh
     }
   }
 }
+
+///|
+test "wide: when otherStations scope and search both appear, search sits on the same row to the right of scope with zero new audit faults" {
+  let t = model_pop("newchat-station-models-many")
+  let seg0 = t.get(Radio, label="本机").rect
+  let seg1 = t.get(Radio, label="所有 station").rect
+  let search = t.get(TextField, label="搜索模型").rect
+  assert_true(
+    (search.1 + search.3 / 2.0 - (seg0.1 + seg0.3 / 2.0)).abs() < 2.0,
+    msg="search (\{Repr(search)}) must sit on the same row as scope (\{Repr(seg0)})",
+  )
+  assert_true(
+    search.0 >= seg1.0 + seg1.2,
+    msg="search (\{Repr(search)}) must sit to the right of scope (\{Repr(seg1)})",
+  )
+  // Also verify in "全部模型" wide view
+  t.click(Button, label=@sf.t("web-main.model.allModels"))
+  t.run_for(@ui.move_most_ms)
+  let seg0_all = t.get(Radio, label="本机").rect
+  let seg1_all = t.get(Radio, label="所有 station").rect
+  let search_all = t.get(TextField, label="搜索模型").rect
+  assert_true(
+    (search_all.1 + search_all.3 / 2.0 - (seg0_all.1 + seg0_all.3 / 2.0)).abs() < 2.0 &&
+    search_all.0 >= seg1_all.0 + seg1_all.2,
+    msg="allModels: search (\{Repr(search_all)}) must sit on the same row right of scope (\{Repr(seg0_all)}, \{Repr(seg1_all)})",
+  )
+  // Sweep 7 windows x zh/en x 1.0/1.3 font scales for zero new audit faults.
+  for win in corner_windows {
+    for lang in ["zh", "en"] {
+      for scale in [1.0, 1.3] {
+        let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
+        let held = screen_in("newchat", win, lang, font_scale=scale).audit().map(bare)
+        let tw = screen_in("newchat-station-models-many", win, lang, font_scale=scale)
+        assert_eq(
+          tw.audit().map(bare).filter(fn(f) { !held.contains(f) }),
+          [],
+          msg="newchat-station-models-many \{win.0}-\{lang} \{scale}: \{tw.audit().join("\n")}",
+        )
+      }
+    }
+  }
+}

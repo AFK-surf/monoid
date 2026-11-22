@@ -16,6 +16,7 @@ import {
   "mbui/dmath",
   "mbui/zip",
   "mbui/text",
+  "liquid-glass/lg",
 }
 
 import {

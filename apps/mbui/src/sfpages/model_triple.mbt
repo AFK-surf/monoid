@@ -1541,17 +1541,23 @@ fn triple_body_node(
   let models_head = fn(parent : @view.View) {
     parent.pick(fn() { triple_other_stations(v()) }, fn(y, scoped) {
       if scoped {
-        // (the choice on the title's line; the search, where there is one, on a line of its own under it, the
-        // column's width: beside the choice it had not the room)
+        // (the choice and the search on one wrapping row: search sits immediately to the right of the scope choice
+        // and fills remaining width when there is room, wrapping cleanly below only on narrow widths / large English text)
         y.box(fn(h) {
           @sf.style_node(h, fn() { triple_scope_head })
-          h.box(fn(c) { @sf.style_node(c, fn() { triple_scope_choice }, in_row=true); scope_node(c) }) |> ignore
+          h.wraps(Is(Some(@ui.Space::px(S1_5)))) |> ignore
+          h.box(fn(c) {
+            @sf.style_node(c, fn() { triple_scope_choice }, in_row=true)
+            c.shrink(Is(0.0)) |> ignore
+            scope_node(c)
+          })
+          |> ignore
+          h.show(fn() { options().length() > 8 }, fn(f) {
+            f.grow(Is(1.0)).basis(Is(Some(140.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            triple_find_node(f, contents, on_enter=search_enter, on_step=search_step)
+          })
         })
         |> ignore
-        y.show(fn() { options().length() > 8 }, fn(f) {
-          @sf.style_node(f, fn() { triple_search })
-          triple_find_node(f, contents, on_enter=search_enter, on_step=search_step)
-        })
         return
       }
       plain_head(y)
@@ -3079,7 +3085,7 @@ let triple_muted_lines : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, 
 /// The head of the models where whose models they are is a choice (models_head's): the choice at its start, the
 /// search at its end.
 // kept across runs: a value (no field of it changes)
-let triple_scope_head : @ui.Style = @ui.css("row w=Full pb=S1_5 gap=S3 align=ACenter")
+let triple_scope_head : @ui.Style = @ui.css("row w=Full pb=S2 gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

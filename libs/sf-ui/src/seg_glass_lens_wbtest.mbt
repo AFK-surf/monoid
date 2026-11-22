@@ -287,3 +287,230 @@ test "tabs_node(Pill): clear liquid glass lens on press in light/dark, solid, an
   seg_glass_assert_cycle(t, target, fn() { chosen.get() == "b" }, true, false, "tabs_node(Underline)")
   set_dark(None)
 }
+
+///|
+test "seg_node (each_own=true): pressing unselected option moves lens onto pressed option, mouse drag switches with laid == 0, and keyboard switch keeps 0 glass" {
+  let chosen = @signals.signal(1)
+  let t = @ui.Tester::new(fn(_c) {  }, w=460.0, h=200.0, dark=false, platform=0, pointing=Mouse, native=Mouse)
+  set_dark(Some(false))
+  @ui.set_view_app(
+    fn(root) {
+      root.box(fn(page) {
+        page.grow(Is(1.0)).padding(Is((24.0, 24.0, 24.0, 24.0))).ground(By(fn() { theme().p.bg })) |> ignore
+        seg_node(
+          page,
+          fn() { ["本机", "所有 station"] },
+          fn() { chosen.get() },
+          fn(k) { chosen.set(k) },
+          each_own=true,
+          said="模型范围",
+        )
+        |> ignore
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  let r0 = t.get(Radio, label="本机").rect
+  let r1 = t.get(Radio, label="所有 station").rect
+  let c0x = r0.0 + r0.2 / 2.0
+  let c1x = r1.0 + r1.2 / 2.0
+  let cy = r0.1 + r0.3 / 2.0
+  let mid_x = (c0x + c1x) / 2.0
+  let lens_center = fn() {
+    let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
+    (lenses.length(), if lenses.is_empty() { -1.0 } else { lenses[0][0] + lenses[0][2] / 2.0 })
+  }
+  // 1. Press unselected "本机" while "所有 station" is selected -> lens must move onto "本机".
+  t.press_at(c0x, cy)
+  t.run_for(part_whole_ms)
+  let (n_hold, hold_cx) = lens_center()
+  assert_eq(n_hold, 1, msg="holding unselected seg_node must show 1 clear glass lens")
+  assert_true(
+    (hold_cx - c0x).abs() < 4.0,
+    msg="lens center \{hold_cx} must move onto pressed 本机 (\{c0x}), not stay on 所有 station (\{c1x})",
+  )
+  // 2. Drag continuously to midpoint and back to "所有 station" with zero relayout.
+  t.tree_frames_from_now()
+  t.move_to(mid_x, cy)
+  t.run_for(part_whole_ms / 2.0)
+  let (n_mid, mid_cx) = lens_center()
+  assert_eq(n_mid, 1, msg="mid-drag must keep 1 clear glass lens")
+  assert_true(
+    mid_cx > c0x + 8.0 && mid_cx < c1x - 8.0,
+    msg="mid-drag lens center \{mid_cx} must sit between \{c0x} and \{c1x}",
+  )
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="seg_node drag relaid out: \{Repr(f)}")
+  }
+  t.move_to(c1x, cy)
+  t.run_for(part_whole_ms / 2.0)
+  t.release(c1x, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), 1, msg="releasing on 所有 station keeps 1")
+  assert_eq(t.drawn_glass().length(), 0, msg="settled after drag must have 0 glass")
+  assert_eq(t.audit(), [])
+  // 3. Drag from "所有 station" to "本机" and release -> switches to 0.
+  t.press_at(c1x, cy)
+  t.run_for(part_whole_ms / 2.0)
+  t.move_to(mid_x, cy)
+  t.run_for(part_whole_ms / 2.0)
+  t.move_to(c0x, cy)
+  t.run_for(part_whole_ms / 2.0)
+  t.release(c0x, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), 0, msg="drag from 所有 station to 本机 must switch chosen to 0")
+  assert_eq(t.drawn_glass().length(), 0, msg="settled after switching drag must have 0 glass")
+  assert_eq(t.audit(), [])
+  // 4. Keyboard switch slides solid thumb without mounting glass lens.
+  t.key(@ui.key_tab)
+  t.draw()
+  t.key(@ui.key_code_right)
+  t.run_for(part_whole_ms / 3.0)
+  assert_eq(t.drawn_glass().length(), 0, msg="keyboard switch must keep 0 glass mid-slide")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), 1, msg="keyboard right must switch to 1")
+  assert_eq(t.drawn_glass().length(), 0, msg="keyboard switch settled must keep 0 glass")
+  set_dark(None)
+}
+
+///|
+test "seg_icons_node: pressing unselected icon moves lens onto pressed icon and mouse drag switches" {
+  let chosen = @signals.signal("grid")
+  let t = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, dark=false, platform=0, pointing=Mouse, native=Mouse)
+  set_dark(Some(false))
+  @ui.set_view_app(
+    fn(root) {
+      root.box(fn(page) {
+        page.grow(Is(1.0)).padding(Is((24.0, 24.0, 24.0, 24.0))).ground(By(fn() { theme().p.bg })) |> ignore
+        page.box(fn(row) {
+          row.row(Is(true)).lines_up(Is(Some(Start))) |> ignore
+          row.box(fn(slot) {
+            seg_icons_node(
+              slot,
+              fn() { [("list", "list", "列表"), ("grid", "view-columns", "看板")] },
+              fn() { chosen.get() },
+              fn(k) { chosen.set(k) },
+              said="视图",
+            )
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  let r0 = t.get(Radio, label="列表").rect
+  let r1 = t.get(Radio, label="看板").rect
+  let c0x = r0.0 + r0.2 / 2.0
+  let c1x = r1.0 + r1.2 / 2.0
+  let cy = r0.1 + r0.3 / 2.0
+  t.press_at(c0x, cy)
+  t.run_for(part_whole_ms)
+  let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
+  assert_eq(lenses.length(), 1)
+  let hold_cx = lenses[0][0] + lenses[0][2] / 2.0
+  assert_true((hold_cx - c0x).abs() < 4.0, msg="seg_icons_node lens \{hold_cx} must move onto pressed 列表 (\{c0x})")
+  t.release(c0x, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), "list")
+  t.press_at(c0x, cy)
+  t.run_for(part_whole_ms / 2.0)
+  t.move_to(c1x, cy)
+  t.run_for(part_whole_ms / 2.0)
+  t.release(c1x, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), "grid")
+  assert_eq(t.drawn_glass().length(), 0)
+  assert_eq(t.audit(), [])
+  set_dark(None)
+}
+
+///|
+test "tabs_node(Pill): pressing unselected tab moves lens onto pressed tab and mouse drag switches" {
+  let chosen = @signals.signal("c")
+  let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=240.0, dark=false, platform=0, pointing=Mouse, native=Mouse)
+  set_dark(Some(false))
+  @ui.set_view_app(
+    fn(root) {
+      root.box(fn(page) {
+        page.grow(Is(1.0)).padding(Is((24.0, 24.0, 24.0, 24.0))).ground(By(fn() { theme().p.bg })) |> ignore
+        tabs_node(
+          page,
+          fn() { "分类" },
+          [("a", fn() { "概览" }), ("b", fn() { "文件" }), ("c", fn() { "任务" })],
+          fn() { chosen.get() },
+          fn(k) { chosen.set(k) },
+          fn(p, k) { words_node(p, fn() { k }, fn() { paragraph }) |> ignore },
+          look=Pill,
+        )
+        |> ignore
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  let r0 = t.get(Tab, label="概览").rect
+  let r1 = t.get(Tab, label="文件").rect
+  let c0x = r0.0 + r0.2 / 2.0
+  let c1x = r1.0 + r1.2 / 2.0
+  let cy = r0.1 + r0.3 / 2.0
+  t.press_at(c0x, cy)
+  t.run_for(part_whole_ms)
+  let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
+  assert_eq(lenses.length(), 1)
+  let hold_cx = lenses[0][0] + lenses[0][2] / 2.0
+  assert_true((hold_cx - c0x).abs() < 4.0, msg="tabs_node(Pill) lens \{hold_cx} must move onto pressed 概览 (\{c0x})")
+  t.move_to(c1x, cy)
+  t.run_for(part_whole_ms / 2.0)
+  t.release(c1x, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), "b")
+  assert_eq(t.drawn_glass().length(), 0)
+  assert_eq(t.audit(), [])
+  set_dark(None)
+}
+
+///|
+test "seg_fill_node: mouse press on unselected option moves lens onto pressed option and mouse drag switches" {
+  let chosen = @signals.signal(2)
+  let t = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, dark=false, platform=0, pointing=Mouse, native=Mouse)
+  set_dark(Some(false))
+  @ui.set_view_app(
+    fn(root) {
+      root.box(fn(page) {
+        page.grow(Is(1.0)).padding(Is((24.0, 24.0, 24.0, 24.0))).ground(By(fn() { theme().p.bg })) |> ignore
+        seg_fill_node(page, fn() { ["系统", "浅色", "深色"] }, fn() { chosen.get() }, fn(k) { chosen.set(k) }, said="主题")
+        |> ignore
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  let r0 = t.get(Radio, label="系统").rect
+  let r1 = t.get(Radio, label="浅色").rect
+  let c0x = r0.0 + r0.2 / 2.0
+  let c1x = r1.0 + r1.2 / 2.0
+  let cy = r0.1 + r0.3 / 2.0
+  t.press_at(c0x, cy)
+  t.run_for(part_whole_ms)
+  let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
+  assert_eq(lenses.length(), 1)
+  let hold_cx = lenses[0][0] + lenses[0][2] / 2.0
+  assert_true((hold_cx - c0x).abs() < 4.0, msg="seg_fill_node mouse lens \{hold_cx} must move onto pressed 系统 (\{c0x})")
+  t.move_to(c1x, cy)
+  t.run_for(part_whole_ms / 2.0)
+  t.release(c1x, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), 1)
+  assert_eq(t.drawn_glass().length(), 0)
+  assert_eq(t.audit(), [])
+  set_dark(None)
+}

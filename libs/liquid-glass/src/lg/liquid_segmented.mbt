@@ -1,12 +1,27 @@
-// iOS 26/27 Liquid Glass segmented control: outer floating glass capsule (r = height / 2),
-// 3pt inset, equal-width segments over @headless.radio_group, and a strictly concentric
-// sliding thumb (r = height / 2 - 3pt) driven by DampedDragAnimation (DampedDrag).
-// At rest the thumb is an opaque optical pill (zero glass-on-glass); while held/dragged
-// it cross-fades to a clear refraction loupe.
+// iOS 26/27 Liquid Glass segmented control: outer capsule (`glass_track=true` floating glass capsule, or
+// `glass_track=false` non-glass translucent track for embedding inside glass popovers / content layers with zero
+// glass-on-glass at rest), concentric sliding thumb driven by DampedDragAnimation (DampedDrag).
+// At rest the thumb is an opaque optical pill (zero hidden glass instances); while held/dragged it cross-fades to a
+// clear refraction loupe (`blur == 0`, `zoom = 1.22`) rendered in the paint layer via `ground_drawn` (zero relayout).
+
+///|
+/// Horizontal growth cap (pt) for wide segments so the lifted lens keeps an even optical lip without overflowing.
+let ctrl_seg_max_grow_x : Double = 22.0
+
+///|
+fn dmax(a : Double, b : Double) -> Double {
+  if a > b { a } else { b }
+}
+
+///|
+fn dmin(a : Double, b : Double) -> Double {
+  if a < b { a } else { b }
+}
 
 ///|
 /// A Liquid Glass segmented control in `parent`, displaying `labels` with `selected` active
 /// and calling `on_select` when changed by tap, continuous drag, or keyboard arrows/Home/End.
+/// Set `glass_track=false` when embedded inside a glass popover or content layer to guarantee zero glass-on-glass at rest.
 #callsite(autofill(loc))
 pub fn liquid_segmented_node(
   parent : @view.View,
@@ -16,40 +31,66 @@ pub fn liquid_segmented_node(
   width? : Double,
   height? : Double = 40.0,
   drag? : DampedDrag,
+  glass_track? : Bool = true,
+  pad? : Double = ctrl_seg_pad,
+  gap? : Double = 0.0,
+  widths? : () -> Array[Double],
+  height_by? : () -> Double,
+  text_size? : () -> Double,
+  kind? : @headless.GroupKind = Tab,
+  said? : String = "Segmented Control",
+  shown? : () -> Bool = fn() { true },
+  in_node? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let outer_r = height / 2.0
-  let inner_h = height - 2.0 * ctrl_seg_pad
-  let inner_r = inner_h / 2.0
+  let total_h = match height_by {
+    Some(f) => f
+    None => fn() { height }
+  }
+  let inner_h = fn() { dmax(0.0, total_h() - 2.0 * pad) }
   let init_count = @signals.untracked(labels).length()
   let last_init = if init_count > 1 { (init_count - 1).to_double() } else { 0.0 }
   let first = @signals.untracked(selected).to_double()
   let dd = match drag {
     Some(d) => d
-    None => DampedDrag::new(first, lo=0.0, hi=last_init, held_scale=ctrl_seg_held_scale)
+    None =>
+      DampedDrag::new(
+        first,
+        lo=0.0,
+        hi=last_init,
+        held_scale=if glass_track { ctrl_seg_held_scale } else { 1.15 },
+      )
   }
   let current = Ref(@signals.untracked(selected))
-  let last_x = Ref(0.0)
+  let strip_origin_x = Ref(0.0)
   @headless.radio_group(
     made_for=loc,
     parent,
-    fn() { "Segmented Control" },
+    fn() { said },
     selected,
     on_select,
-    kind=Tab,
+    kind~,
     axis=Horizontal,
+    shown~,
+    in_node~,
     fn(g, rg) {
       dd.attach(g)
       g
-      .height(Is(Some(height)))
+      .height(By(fn() { Some(total_h()) }))
       .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
-      .padding(Is((ctrl_seg_pad, 0.0, ctrl_seg_pad, 0.0)))
-      .radius(Is(outer_r))
-      .shadow(Is(shadow_default))
-      .shadow_outside(Is(true))
-      .glass(By(fn() { Some(ctrl_segmented_track_glass()) }))
+      .padding(Is((pad, 0.0, pad, 0.0)))
+      .radius(By(fn() { total_h() / 2.0 }))
       |> ignore
+      if glass_track {
+        g
+        .shadow(Is(shadow_default))
+        .shadow_outside(Is(true))
+        .glass(By(fn() { Some(ctrl_segmented_track_glass()) }))
+        |> ignore
+      } else {
+        g.ground(By(fn() { alpha(@ui.tree_theme().fg, 0.06) })) |> ignore
+      }
       match width {
         Some(w) => g.width(Is(Some(w))).max_width(Is(Some(w)), within=true) |> ignore
         None => ()
@@ -70,82 +111,192 @@ pub fn liquid_segmented_node(
           let n = count_fn()
           if n > 1 { (n - 1).to_double() } else { 0.0 }
         }
-        let seg_w = fn() { room.width() / count_fn().to_double() }
-        // Sliding concentric thumb (behind text so labels stay razor sharp)
-        inner.box(fn(thumb) {
-          let size = fn() {
-            let (sx, sy) = dd.jelly(thumb, 10.0)
-            (seg_w() * sx, inner_h * sy)
+        let w_of = fn(k : Int) -> Double {
+          match widths {
+            Some(ws_fn) => ws_fn().get(k).unwrap_or(0.0)
+            None => {
+              let n = count_fn()
+              dmax(0.0, (room.width() - gap * (n - 1).to_double()) / n.to_double())
+            }
           }
-          thumb
+        }
+        let x_of = fn(k : Int) -> Double {
+          let mut x = 0.0
+          for i in 0..<k {
+            x = x + w_of(i) + gap
+          }
+          x
+        }
+        // Interpolate (x, w) continuously along segment index `p`, supporting both equal and unequal widths.
+        let rect_at = fn(p : Double) -> (Double, Double) {
+          let n = count_fn()
+          if n <= 1 {
+            return (0.0, w_of(0))
+          }
+          let i = p.floor().to_int()
+          let a = if i < 0 { 0 } else if i > n - 2 { n - 2 } else { i }
+          let f = p - a.to_double()
+          let x0 = x_of(a)
+          let x1 = x_of(a + 1)
+          let w0 = w_of(a)
+          let w1 = w_of(a + 1)
+          (x0 + (x1 - x0) * f, dmax(0.0, w0 + (w1 - w0) * f))
+        }
+        // Map a strip-local x coordinate to continuous segment index [0, n - 1] via adjacent segment centers.
+        let index_at = fn(lx : Double) -> Double {
+          let n = count_fn()
+          if n <= 1 {
+            return 0.0
+          }
+          let mut from = x_of(0) + w_of(0) / 2.0
+          if lx <= from {
+            return 0.0
+          }
+          for k in 1..<n {
+            let to = x_of(k) + w_of(k) / 2.0
+            if lx < to && to > from {
+              return (k - 1).to_double() + clamp((lx - from) / (to - from), 0.0, 1.0)
+            }
+            from = to
+          }
+          (n - 1).to_double()
+        }
+        let no_lens = fn() { inner.glass_solid() || @ui.reduced_motion() }
+        let lens = fn(v : @view.View) -> Double {
+          if no_lens() {
+            0.0
+          } else {
+            dd.pressed(v)
+          }
+        }
+        // Solid concentric pill at rest (behind text, drawn in paint layer via ground_drawn for zero relayout).
+        inner.box(fn(pill) {
+          pill
           .over(Is(true))
           .points(Is(false))
-          .width(By(fn() { Some(size().0) }))
-          .height(By(fn() { Some(size().1) }))
-          .radius(By(fn() { size().1 / 2.0 }))
-          .offset(By(fn() {
-            let (tw, th) = size()
-            let sw = seg_w()
-            (dd.value(thumb) * sw + (sw - tw) / 2.0, (height - th) / 2.0)
+          .offset(Is((0.0, 0.0)))
+          .width(Is(Some(0.0)))
+          .height(By(fn() { Some(inner_h()) }))
+          .radius(By(fn() { inner_h() / 2.0 }))
+          .alpha(By(fn() { 1.0 - clamp(lens(pill), 0.0, 1.0) }))
+          .ground_drawn(By(fn() {
+            let (rx, rw) = rect_at(dd.value(pill))
+            let ih = inner_h()
+            { dx: rx, dy: (total_h() - ih) / 2.0, dw: rw, dh: 0.0, corners: None }
           }))
           |> ignore
-          // Crisp optical pill at rest (fades out as clear loupe lifts on press)
-          thumb.box(fn(pill) {
+          if glass_track {
+            pill.ground(By(ctrl_seg_thumb_idle)) |> ignore
+          } else {
             pill
-            .over(Is(true))
-            .points(Is(false))
-            .radius(By(fn() { size().1 / 2.0 }))
-            .ground(By(ctrl_seg_thumb_idle))
-            .alpha(By(fn() { 1.0 - clamp(dd.pressed(pill), 0.0, 1.0) }))
+            .ground(By(fn() { @ui.tree_theme().lifted }))
+            .edge(By(fn() { (0.5, @ui.tree_theme().line) }))
+            .shadow(By(fn() { (1.0, 0.0, @ui.tree_theme().shadow) }))
             |> ignore
-          })
-          |> ignore
-          // Clear refraction loupe while held/dragged (zero blur, no hidden glass at rest)
-          thumb.box(fn(gl) {
+          }
+        })
+        |> ignore
+        let mount_lens = fn() {
+          inner.box(fn(gl) {
+            let full = fn() { clamp(lens(gl), 0.0, 1.0) }
             gl
             .over(Is(true))
             .points(Is(false))
-            .radius(By(fn() { size().1 / 2.0 }))
-            .shadow(Is(shadow_thumb))
+            .offset(Is((0.0, 0.0)))
+            .width(Is(Some(0.0)))
+            .height(By(fn() { Some(inner_h()) }))
+            .radius(Is(1.0e6))
+            .shadow(By(fn() {
+              if full() > 0.001 {
+                shadow_thumb
+              } else {
+                (0.0, 0.0, clear)
+              }
+            }))
             .shadow_outside(Is(true))
             .glass(By(fn() {
-              let p = dd.pressed(gl)
+              let p = full()
               if p > 0.001 {
-                Some(ctrl_segmented_lens_glass(p))
+                Some(if glass_track { ctrl_segmented_lens_glass(p) } else { ctrl_segmented_compact_lens_glass(p) })
               } else {
                 None
               }
             }))
-            .alpha(By(fn() { clamp(dd.pressed(gl), 0.0, 1.0) }))
+            .alpha(By(full))
+            .ground_drawn(By(fn() {
+              let (rx, rw) = rect_at(dd.value(gl))
+              let ih = inner_h()
+              let (sx, sy) = dd.jelly(gl, 10.0)
+              let lw = if glass_track {
+                let held_grow = ctrl_seg_held_scale - 1.0
+                let eff_w = if held_grow > 0.0 { dmin(rw, ctrl_seg_max_grow_x / held_grow) } else { rw }
+                dmax(0.0, rw + eff_w * (sx - 1.0))
+              } else {
+                dmax(0.0, rw + ih * (sx - 1.0))
+              }
+              let lh = dmax(0.0, ih * sy)
+              {
+                dx: rx + (rw - lw) / 2.0,
+                dy: (total_h() - lh) / 2.0,
+                dw: lw,
+                dh: lh - ih,
+                corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
+              }
+            }))
             |> ignore
           })
           |> ignore
-        })
-        |> ignore
+        }
+        // For standalone glass_track=true, mount the lens behind text so labels stay razor sharp (matching ui.monoid).
+        if glass_track {
+          mount_lens()
+        }
         let stopped = fn() {
-          let to = clamp(dd.target().round(), 0.0, last_fn())
+          let last = last_fn()
+          dd.set_bounds(lo=0.0, hi=last)
+          let to = clamp(dd.target().round(), 0.0, last)
           let i = to.to_int()
           current.val = i
-          dd.animate_to(to)
+          if no_lens() {
+            dd.slide_to(to)
+          } else {
+            dd.animate_to(to)
+          }
           if i != @signals.untracked(selected) {
             on_select(i)
           }
         }
         let on_drag = fn(d : @view.Drag) {
+          let last = last_fn()
+          dd.set_bounds(lo=0.0, hi=last)
           match d.kind {
             Down | Moved => {
-              let dx = d.wx - last_x.val
-              last_x.val = d.wx
-              let sw = seg_w()
-              if sw > 0.0 {
-                dd.update_value(clamp(dd.target() + dx / sw, 0.0, last_fn()))
+              let p = index_at(d.wx - strip_origin_x.val)
+              if no_lens() {
+                dd.slide_to(p)
+              } else {
+                dd.update_value(p)
               }
             }
-            Up | Off => stopped()
+            Up => stopped()
+            Off => {
+              let orig = @signals.untracked(selected)
+              current.val = orig
+              if no_lens() {
+                dd.slide_to(orig.to_double())
+              } else {
+                dd.cancel_to(orig.to_double())
+              }
+            }
           }
         }
         inner.box(fn(row) {
-          row.row(Is(true)).height(Is(Some(height))) |> ignore
+          row
+          .row(Is(true))
+          .gap(Is(gap))
+          .height(By(fn() { Some(total_h()) }))
+          .lines_up(Is(Some(Middle)))
+          |> ignore
           row.each(
             fn() {
               let ls = labels()
@@ -166,53 +317,89 @@ pub fn liquid_segmented_node(
                 fn() { item_sig.get().1 },
                 in_node=true,
                 fn(seg, it) {
+                  if widths is Some(_) {
+                    seg.width(By(fn() { Some(w_of(idx)) })) |> ignore
+                  } else {
+                    seg
+                    .grow(Is(1.0))
+                    .basis(Is(Some(0.0)))
+                    .padding(By(fn() {
+                      let sw = w_of(idx)
+                      let px = if sw > 0.0 && sw < 86.0 { 4.0 } else { ctrl_seg_px }
+                      (px, 0.0, px, 0.0)
+                    }))
+                    |> ignore
+                  }
                   seg
-                  .grow(Is(1.0))
-                  .basis(Is(Some(0.0)))
-                  .height(Is(Some(height)))
-                  .padding(By(fn() {
-                    let sw = seg_w()
-                    let px = if sw > 0.0 && sw < 86.0 { 4.0 } else { ctrl_seg_px }
-                    (px, 0.0, px, 0.0)
-                  }))
+                  .height(By(fn() { Some(if glass_track { total_h() } else { inner_h() }) }))
                   .lines_up(Is(Some(Middle)))
                   .lies_along(Is(Middle))
                   |> ignore
                   seg.box(fn(w) {
                     w
-                    .words(By(fn() { item_sig.get().1 }), look=words_at(ctrl_type_seg, weight=weight_medium))
+                    .words(By(fn() { item_sig.get().1 }))
+                    .words_look(By(fn() {
+                      let sz = match text_size {
+                        Some(f) => f()
+                        None => ctrl_type_seg
+                      }
+                      if glass_track {
+                        words_at(sz, weight=weight_medium)
+                      } else {
+                        {
+                          size: sz,
+                          weight: if it.chosen() { 500 } else { 400 },
+                          line: -@ui.tree_theme().text_line,
+                          wrap: false,
+                          tracking: @view.letters_own,
+                          balance: false,
+                          max_lines: 0,
+                        }
+                      }
+                    }))
                     .ink(By(fn() {
                       let lit = clamp(1.0 - (dd.value(w) - idx_f).abs(), 0.0, 1.0)
-                      lerp_color(ctrl_seg_inactive_ink(), colors().content, lit)
+                      let (off_c, on_c) = if glass_track {
+                        (ctrl_seg_inactive_ink(), colors().content)
+                      } else {
+                        (@ui.tree_theme().muted, @ui.tree_theme().fg)
+                      }
+                      if !glass_track && it.hovered() && lit < 0.5 {
+                        on_c
+                      } else {
+                        lerp_color(off_c, on_c, lit)
+                      }
                     }))
                     |> ignore
                   })
                   |> ignore
-                  // Overlay gesture target for tap + continuous drag (avoids headless-on-drag)
-                  seg.box(fn(hit) {
-                    hit
-                    .over(Is(true))
-                    .gesture(
-                      @ui.touch_slop(),
-                      press=fn(d) {
-                        last_x.val = d.wx
+                  // Gesture target directly on the item (no nested pressable box, keeping 36pt press_room intact)
+                  seg.gesture(
+                    @ui.touch_slop(),
+                    press=fn(d) {
+                      dd.set_bounds(lo=0.0, hi=last_fn())
+                      strip_origin_x.val = d.wx - (x_of(idx) + d.x)
+                      if !no_lens() {
                         dd.press()
-                        if (idx_f - dd.target()).abs() > 0.001 {
+                      }
+                      if (idx_f - dd.target()).abs() > 0.001 {
+                        if no_lens() {
+                          dd.slide_to(idx_f)
+                        } else {
                           dd.update_value(idx_f)
                         }
-                      },
-                      tap=fn(_) { stopped() },
-                      drag=on_drag,
-                    )
-                    |> ignore
-                  })
+                      }
+                    },
+                    tap=fn(_) { stopped() },
+                    drag=on_drag,
+                  )
                   |> ignore
                   seg.show(fn() { it.focus_shown() }, fn(ring) {
                     ring
                     .over(Is(true))
                     .points(Is(false))
-                    .radius(Is(inner_r))
-                    .edge(By(fn() { (ctrl_focus_w, colors().accent) }))
+                    .radius(By(fn() { inner_h() / 2.0 }))
+                    .edge(By(fn() { (ctrl_focus_w, if glass_track { colors().accent } else { @ui.tree_theme().focus }) }))
                     |> ignore
                   })
                 },
@@ -223,6 +410,10 @@ pub fn liquid_segmented_node(
           )
         })
         |> ignore
+        // For embedded glass_track=false, mount the compact refraction loupe above labels while held/dragged.
+        if !glass_track {
+          mount_lens()
+        }
       })
       |> ignore
     },

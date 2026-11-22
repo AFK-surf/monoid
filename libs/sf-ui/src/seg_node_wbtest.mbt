@@ -260,7 +260,8 @@ test "a choice of a few as nodes short of room with unequal fitted option widths
   let w0 = radios[0].rect.2
   let w1 = radios[1].rect.2
   let thumb_w = fn() {
-    t.drawn_rects().filter(fn(d) { d.4 == @ui.tree_theme().lifted && d.3 == segmented_h })[0].2
+    let rgb = @ui.tree_theme().lifted >> 8
+    t.drawn_rects().filter(fn(d) { (d.4 >> 8) == rgb && d.3 == segmented_h })[0].2
   }
   assert_true((thumb_w() - w0).abs() < 0.5)
   let (rx, ry, rw, rh) = radios[1].rect

@@ -85,11 +85,49 @@ pub fn[K : Eq] tabs_node(
             let line = theme().t.ui * (if tl > 0.0 { tl } else { 1.4 })
             dmax(tab_h, node_sp(strip, line).ceil() + 2.0 * 2.0)
           }
+          let n = tabs.length()
+          let last_f = if n > 1 { (n - 1).to_double() } else { 0.0 }
+          let init_idx = place_of(@signals.untracked(chosen))
+          let dd = @lg.DampedDrag::new(init_idx.to_double(), lo=0.0, hi=last_f, held_scale=1.0 + seg_lens_grow)
+          dd.attach(strip)
+          let current = Ref(init_idx)
+          let strip_origin_x = Ref(0.0)
+          let pill_rect = fn(v : @view.View) -> (Double, Double, Double, Double)? {
+            guard n > 0 else { return None }
+            let h = tab_h_now()
+            guard n > 1 else { return Some((x_of(0), 0.0, w_of(0), h)) }
+            let p = dd.value(v)
+            let i = p.floor().to_int()
+            let a = if i < 0 { 0 } else if i > n - 2 { n - 2 } else { i }
+            let f = p - a.to_double()
+            let x0 = x_of(a)
+            let x1 = x_of(a + 1)
+            let w0 = w_of(a)
+            let w1 = w_of(a + 1)
+            Some((x0 + (x1 - x0) * f, 0.0, dmax(0.0, w0 + (w1 - w0) * f), h))
+          }
+          let pill_index_at = fn(lx : Double) -> Double {
+            if n <= 1 {
+              return 0.0
+            }
+            let mut from = x_of(0) + w_of(0) / 2.0
+            if lx <= from {
+              return 0.0
+            }
+            for k in 1..<n {
+              let to = x_of(k) + w_of(k) / 2.0
+              if lx < to && to > from {
+                return (k - 1).to_double() + dclamp((lx - from) / (to - from), 0.0, 1.0)
+              }
+              from = to
+            }
+            last_f
+          }
           let rect = @motion.cover_indicator(
             strip,
             fn() { place_of(chosen()) },
             fn(k) {
-              if k >= 0 && k < tabs.length() {
+              if k >= 0 && k < n {
                 Some((x_of(k), 0.0, w_of(k), tab_h_now()))
               } else {
                 None
@@ -97,11 +135,17 @@ pub fn[K : Eq] tabs_node(
             },
             spec=@motion.snappy_damped,
           )
-          let prev_idx = Ref(place_of(@signals.untracked(chosen)))
+          let prev_idx = Ref(init_idx)
           strip.reacts(chosen, at_start=false, fn(k) {
             let to_k = place_of(k)
             let from_k = prev_idx.val
             prev_idx.val = to_k
+            if to_k != current.val {
+              current.val = to_k
+              if look is Pill {
+                dd.slide_to(to_k.to_double())
+              }
+            }
             if to_k != from_k {
               panel_dir.val = if to_k > from_k { 1.0 } else { -1.0 }
               if !@ui.reduced_motion() {
@@ -109,27 +153,58 @@ pub fn[K : Eq] tabs_node(
               }
             }
           })
-          let held = @motion.NodeWay::new(0.0)
-          let pressed_id : @signals.Signal[@view.NodeId?] = @signals.signal(None)
-          if look is Pill {
-            strip.reacts(
-              fn() { !strip.glass_solid() && !@ui.reduced_motion() && pressed_id.get() is Some(_) },
-              fn(down) { held.go(strip, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring) },
-            )
-          }
+          let no_lens = fn() { !(look is Pill) || strip.glass_solid() || @ui.reduced_motion() }
           let lens = fn() {
-            if !(look is Pill) || strip.glass_solid() || @ui.reduced_motion() {
+            if no_lens() {
               0.0
             } else {
-              held.shown(strip)
+              dd.pressed(strip)
+            }
+          }
+          let pill_stopped = fn() {
+            let to = dclamp(dd.target().round(), 0.0, last_f)
+            let i = to.to_int()
+            current.val = i
+            if no_lens() {
+              dd.slide_to(to)
+            } else {
+              dd.animate_to(to)
+            }
+            match tabs.get(i) {
+              Some((k, _)) => if k != @signals.untracked(chosen) { choose(k) }
+              None => ()
+            }
+          }
+          let on_pill_drag = fn(d : @view.Drag) {
+            match d.kind {
+              Down | Moved => {
+                let p = pill_index_at(d.wx - strip_origin_x.val)
+                if no_lens() {
+                  dd.slide_to(p)
+                } else {
+                  dd.update_value(p)
+                }
+              }
+              Up => pill_stopped()
+              Off => {
+                let orig = place_of(@signals.untracked(chosen))
+                current.val = orig
+                if no_lens() {
+                  dd.slide_to(orig.to_double())
+                } else {
+                  dd.cancel_to(orig.to_double())
+                }
+              }
             }
           }
           strip.box(fn(mark) {
             mark
             .over(Is(true))
+            .points(Is(false))
             .width(Is(Some(0.0)))
             .ground_drawn(By(fn() {
-              match rect() {
+              let r = if look is Pill { pill_rect(mark) } else { rect() }
+              match r {
                 Some((x, _, w, _)) => {
                   dx: x,
                   dy: match look {
@@ -165,10 +240,8 @@ pub fn[K : Eq] tabs_node(
           |> ignore
           for i, tab in tabs {
             let (key, words) = tab
+            let i_f = i.to_double()
             rg.item(strip, fn() { key }, words, made_for=loc, fn(o, item) {
-              if look is Pill {
-                seg_bind_item_press(o, fn() { item.pressed() }, pressed_id)
-              }
               o
               .focus_ring_theme()
               .width(By(fn() { Some(w_of(i)) }))
@@ -193,7 +266,14 @@ pub fn[K : Eq] tabs_node(
                   }
                 }))
                 .ink(By(fn() {
-                  if item.chosen() || (!item.disabled() && (item.hovered() || item.pressed())) {
+                  if look is Pill {
+                    let lit = dclamp(1.0 - (dd.value(w) - i_f).abs(), 0.0, 1.0)
+                    if !item.disabled() && item.hovered() && lit < 0.5 {
+                      theme().p.text
+                    } else {
+                      @ui.blend(theme().p.muted, theme().p.text, lit)
+                    }
+                  } else if item.chosen() || (!item.disabled() && (item.hovered() || item.pressed())) {
                     theme().p.text
                   } else {
                     theme().p.muted
@@ -202,11 +282,32 @@ pub fn[K : Eq] tabs_node(
                 |> ignore
               })
               |> ignore
+              if look is Pill {
+                o.gesture(
+                  @ui.touch_slop(),
+                  press=fn(d) {
+                    strip_origin_x.val = d.wx - (x_of(i) + d.x)
+                    if !no_lens() {
+                      dd.press()
+                    }
+                    if (i_f - dd.target()).abs() > 0.001 {
+                      if no_lens() {
+                        dd.slide_to(i_f)
+                      } else {
+                        dd.update_value(i_f)
+                      }
+                    }
+                  },
+                  tap=fn(_) { pill_stopped() },
+                  drag=on_pill_drag,
+                )
+                |> ignore
+              }
             })
             |> ignore
           }
           if look is Pill {
-            seg_lens_overlay_node(strip, lens, tab_h_now, rect)
+            seg_lens_overlay_node(strip, lens, tab_h_now, fn() { pill_rect(strip) }, jelly=fn(l) { dd.jelly(l, 10.0) })
           }
         })
         |> ignore

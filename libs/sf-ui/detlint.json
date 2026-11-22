@@ -31,6 +31,7 @@
     ],
     "imports": [
       "mbui/",
+      "liquid-glass/",
       "moonbitlang/",
       "stillfail/sf"
     ]

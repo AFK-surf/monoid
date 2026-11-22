@@ -203,11 +203,12 @@ pub fn glass_tab_lens(press : Double) -> @ui.Glass {
     solid=theme().p.raised,
     saturation=1.0,
     rim=0.6 * p,
-    bezel=10.0 * p,
-    refraction=14.0 * p,
-    chroma=-0.06 * p,
+    bezel=6.0 * p,
+    refraction=5.5 * p,
+    chroma=-0.02 * p,
     merge=0.0,
     adaptive=false,
+    zoom=1.0 + 0.08 * p,
   )
 }
 

@@ -443,6 +443,28 @@ fn ctrl_segmented_lens_glass(p : Double) -> @paint.Glass {
 }
 
 ///|
+/// Calibrated clear loupe recipe for compact 30-36pt segmented capsules overlaid above labels (`glass_track=false`).
+/// Keeps maximum inward refraction (~6.75pt) inside the clear margin so top/bottom bevel edges never sample text strokes.
+fn ctrl_segmented_compact_lens_glass(p : Double) -> @paint.Glass {
+  let p = clamp(p, 0.0, 1.0)
+  let c = colors()
+  @paint.Glass::liquid(
+    blur=0.0,
+    tint=0xFFFFFF00L,
+    solid=alpha(c.container, 1.0 / 0.4),
+    saturation=1.0,
+    rim=0.6 * p,
+    bezel=6.0 * p,
+    refraction=5.5 * p,
+    chroma=-0.02 * p,
+    merge=0.0,
+    adaptive=false,
+    spot=None,
+    zoom=1.0 + 0.08 * p,
+  )
+}
+
+///|
 fn ctrl_input_glass() -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
