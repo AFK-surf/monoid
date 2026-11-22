@@ -173,6 +173,10 @@ final class MBText {
     static final HashMap<Long, Clusters> keys = new HashMap<>();
     static final ArrayList<Entry> entries = new ArrayList<>();
     static final HashMap<Long, Paint> paints = new HashMap<>();
+    static long lastPaintKey;
+    static Paint lastPaint;
+    static long lastClustersKey;
+    static Clusters lastClusters;
     static final ArrayList<Placed> placed = new ArrayList<>();
     static int generation;
     // the glyph drawn last (glyph), its picture until it is put in its atlas (glyphPut), and whether it is in colours
@@ -365,6 +369,7 @@ final class MBText {
     /** What was measured and drawn before a face changed: forgotten (MoonBit drops its glyphs as the generation moves on). */
     static void facesChanged() {
         paints.clear();
+        lastPaint = null;
         typefaces.clear();
         faces++;
         reset();
@@ -372,7 +377,13 @@ final class MBText {
     }
 
     static Paint paint(float size, int weight, int style) {
-        return paintIn(paints, size, weight, style);
+        long k = fontKey(size, weight, style);
+        Paint p = lastPaint;
+        if (p != null && lastPaintKey == k) return p;
+        p = paintIn(paints, size, weight, style);
+        lastPaintKey = k;
+        lastPaint = p;
+        return p;
     }
 
     /** The paint of a font at a size in pixels, kept in `paints` (the app's thread's, or the thread ahead's). */
@@ -440,6 +451,7 @@ final class MBText {
             aheadCount = drawing;
         }
         keys.clear();
+        lastClusters = null;
         entries.clear();
         entries.trimToSize();
         dropHeld();
@@ -489,18 +501,26 @@ final class MBText {
         out[5] = 1;
     }
 
+    static final int SCAN_UNITS = 1;
+    static final int SCAN_HAN = 2;
+    static final int SCAN_TAB = 4;
+    static final int MIN_CACHED_HAN_RUN = 4;
+
     static int shape(String text, double size, int weight, int style, double[] out) {
         // measured in pixels, as the screen has them (at the size in points the font's hinting rounds each
         // advance to a whole point: a long word came out a few points wider than the system draws it)
-        float d = density();
-        Paint p = paint((float) size * d, weight, style);
         int n = text.length();
+        if (n == 0) return 0;
+        float d = density();
+        float fsize = (float) size;
+        Paint p = paint(fsize * d, weight, style);
         if (adv.length < n) adv = new float[n * 2];
         if (MBText.chars.length < n) MBText.chars = new char[n * 2];
         char[] chars = MBText.chars;
         text.getChars(0, n, chars, 0);
-        Clusters font = clusters((float) size, weight, style);
-        boolean units = unitClusters(chars, n);
+        Clusters font = clusters(fsize, weight, style);
+        int flags = scanChars(chars, n);
+        boolean units = (flags & SCAN_UNITS) != 0;
         // a run at a time in its own direction (shaped left to right, Arabic came out in letters that do not join,
         // wider than the system draws the word); any pure LTR run reuses cached isolated Han advances even when
         // non-unit clusters (emoji, arrows, math symbols) appear elsewhere in the run
@@ -510,24 +530,54 @@ final class MBText {
                 int rs = b.getRunStart(r), rl = b.getRunLimit(r) - rs;
                 p.getTextRunAdvances(chars, rs, rl, rs, rl, (b.getRunLevel(r) & 1) != 0, adv, rs);
             }
-        } else {
+        } else if ((flags & SCAN_HAN) != 0) {
             measureUnits(p, font, chars, n, d);
+        } else {
+            p.getTextRunAdvances(chars, 0, n, 0, n, false, adv, 0);
         }
         // tabs to the next stop, as android.text.Layout puts them (every 20 pixels from the line's start)
-        float x = 0;
-        for (int i = 0; i < n; i++) {
-            if (chars[i] == '\t') adv[i] = (float) Math.floor((x + 20) / 20) * 20 - x;
-            x += adv[i];
+        if ((flags & SCAN_TAB) != 0) {
+            float x = 0;
+            for (int i = 0; i < n; i++) {
+                if (chars[i] == '\t') adv[i] = (float) Math.floor((x + 20) / 20) * 20 - x;
+                x += adv[i];
+            }
         }
         for (int i = 0; i < n; i++) adv[i] /= d;
+        int cap = out.length / 4;
+        if (units) {
+            int limit = Math.min(n, cap);
+            int prevKey = -1;
+            for (int i = 0; i < limit; i++) {
+                double a = adv[i];
+                char c = chars[i];
+                int key;
+                if (c == '\n') {
+                    a = 0;
+                    key = -1;
+                } else if (c == ' ' || c == '\t') {
+                    key = -1;
+                } else if (a == 0 && i > 0 && prevKey != -1) {
+                    key = -2;
+                } else {
+                    key = unitKey(font, c, fsize, weight, style);
+                }
+                int base = i * 4;
+                out[base] = i;
+                out[base + 1] = 1;
+                out[base + 2] = a;
+                out[base + 3] = key;
+                prevKey = key;
+            }
+            return limit;
+        }
         // (words whose every unit is a cluster of its own, as ASCII's and nearly all of Chinese, Japanese and Korean
         // are, cut a unit at a time; the rest where ICU's grapheme rules cut them)
-        if (!units) graphemes.setText(text);
-        int cap = out.length / 4;
+        graphemes.setText(text);
         int k = 0;
-        int start = units ? 0 : graphemes.first();
-        for (int end = units ? (n > 0 ? 1 : BreakIterator.DONE) : graphemes.next(); end != BreakIterator.DONE && k < cap;
-                start = end, end = units ? (end < n ? end + 1 : BreakIterator.DONE) : graphemes.next()) {
+        int start = graphemes.first();
+        for (int end = graphemes.next(); end != BreakIterator.DONE && k < cap;
+                start = end, end = graphemes.next()) {
             double a = 0;
             for (int i = start; i < end; i++) a += adv[i];
             char c = chars[start];
@@ -543,9 +593,9 @@ final class MBText {
                 // (drawn on its own, "flex" came out "f ɭex")
                 key = -2;
             } else if (end - start == 1) {
-                key = unitKey(font, c, (float) size, weight, style);
+                key = unitKey(font, c, fsize, weight, style);
             } else {
-                key = intern(font.map, text.substring(start, end), (float) size, weight, style);
+                key = intern(font.map, text.substring(start, end), fsize, weight, style);
             }
             out[k * 4] = start;
             out[k * 4 + 1] = end - start;
@@ -569,9 +619,18 @@ final class MBText {
         return isHan(next) || next == ' ' || next == 0x3000;
     }
 
+    static boolean isCachedIsolatedHan(Clusters font, char[] text, int i, int n) {
+        if (!isolatedHan(text, i, n)) return false;
+        char c = text[i];
+        float[] page = font.unitAdv[c >>> 8];
+        return page != null && !Float.isNaN(page[c & 255]);
+    }
+
     /**
      * Reuse the advances of Han characters that Android shapes alone. Keep each other Minikin
-     * piece whole, including kana, Hangul, punctuation, and line feeds.
+     * piece whole, including kana, Hangul, punctuation, and line feeds. Coalesce short interior
+     * cached runs (< MIN_CACHED_HAN_RUN) into surrounding uncached spans so scattered cached Han
+     * characters never fragment a single getTextRunAdvances call into many tiny JNI calls.
      */
     static void measureUnits(Paint p, Clusters font, char[] text, int n, float scale) {
         if (font.advScale != scale || font.advFaces != faces) {
@@ -580,16 +639,26 @@ final class MBText {
             font.advFaces = faces;
         }
         int start = 0;
-        for (int i = 0; i < n; i++) {
-            if (!isolatedHan(text, i, n)) continue;
-            char c = text[i];
-            float[] page = font.unitAdv[c >>> 8];
-            if (page == null || Float.isNaN(page[c & 255])) continue;
-            measureAndRemember(p, font, text, start, i, n);
-            adv[i] = page[c & 255];
-            start = i + 1;
+        int i = 0;
+        while (i < n) {
+            if (!isCachedIsolatedHan(font, text, i, n)) {
+                i++;
+                continue;
+            }
+            int runStart = i;
+            do {
+                i++;
+            } while (i < n && isCachedIsolatedHan(font, text, i, n));
+            if (runStart == start || i == n || i - runStart >= MIN_CACHED_HAN_RUN) {
+                if (runStart > start) measureAndRemember(p, font, text, start, runStart, n);
+                for (int j = runStart; j < i; j++) {
+                    char c = text[j];
+                    adv[j] = font.unitAdv[c >>> 8][c & 255];
+                }
+                start = i;
+            }
         }
-        measureAndRemember(p, font, text, start, n, n);
+        if (start < n) measureAndRemember(p, font, text, start, n, n);
     }
 
     static void measureAndRemember(Paint p, Clusters font, char[] text, int start, int end, int n) {
@@ -611,18 +680,20 @@ final class MBText {
     }
 
     /**
-     * Whether each of `chars[0..n)` is an extended grapheme cluster of its own, whatever is beside it, as ICU's
-     * BreakIterator cuts them (shape): only where every unit is a tab, a line feed, printable ASCII, or of CJK's ranges
-     * below, none of which a rule joins to the unit before or after it. None of a surrogate, a carriage return, a
-     * combining mark (U+0300-036F, U+302A-302F, U+3099-309A), a variation selector, U+200D or U+20E3 is in them; Hangul's
-     * syllables (LV, LVT) join only the jamo, which are not.
+     * Single-pass scan of `chars[0..n)`: returns SCAN_UNITS if every unit is an extended grapheme cluster of its own
+     * (matching unitClusters), SCAN_HAN if any Han ideograph appears, and SCAN_TAB if any tab appears.
      */
-    static boolean unitClusters(char[] chars, int n) {
+    static int scanChars(char[] chars, int n) {
+        int flags = SCAN_UNITS;
         for (int i = 0; i < n; i++) {
             char c = chars[i];
             if (c >= 0x20 && c <= 0x7E) continue;
             if (c < 0x3000) {
-                if (c == '\n' || c == '\t'
+                if (c == '\t') {
+                    flags |= SCAN_TAB;
+                    continue;
+                }
+                if (c == '\n'
                         || c == 0x00A5 || c == 0x00A7 || c == 0x00B0 || c == 0x00B1
                         || c == 0x00B7 || c == 0x00D7 || c == 0x00F7
                         || c == 0x2013 || c == 0x2014 || (c >= 0x2018 && c <= 0x201D)
@@ -630,25 +701,45 @@ final class MBText {
                         || c == 0x2032 || c == 0x2033 || c == 0x20AC || c == 0x2103) {
                     continue;
                 }
-                return false;
-            }
-            if (c <= 0x3029 || (c >= 0x3041 && c <= 0x3096) || (c >= 0x30A1 && c <= 0x30FF)
-                    || isHan(c) || (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xFF01 && c <= 0xFF60)) {
+                flags &= ~SCAN_UNITS;
                 continue;
             }
-            return false;
+            if (isHan(c)) {
+                flags |= SCAN_HAN;
+                continue;
+            }
+            if (c <= 0x3029 || (c >= 0x3041 && c <= 0x3096) || (c >= 0x30A1 && c <= 0x30FF)
+                    || (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xFF01 && c <= 0xFF60)) {
+                continue;
+            }
+            flags &= ~SCAN_UNITS;
         }
-        return true;
+        return flags;
+    }
+
+    /**
+     * Whether each of `chars[0..n)` is an extended grapheme cluster of its own, whatever is beside it, as ICU's
+     * BreakIterator cuts them (shape): only where every unit is a tab, a line feed, printable ASCII, or of CJK's ranges
+     * below, none of which a rule joins to the unit before or after it. None of a surrogate, a carriage return, a
+     * combining mark (U+0300-036F, U+302A-302F, U+3099-309A), a variation selector, U+200D or U+20E3 is in them; Hangul's
+     * syllables (LV, LVT) join only the jamo, which are not.
+     */
+    static boolean unitClusters(char[] chars, int n) {
+        return (scanChars(chars, n) & SCAN_UNITS) != 0;
     }
 
     /** A font's clusters and their keys. */
     static Clusters clusters(float size, int weight, int style) {
         long k = fontKey(size, weight, style);
-        Clusters m = keys.get(k);
+        Clusters m = lastClusters;
+        if (m != null && lastClustersKey == k) return m;
+        m = keys.get(k);
         if (m == null) {
             m = new Clusters();
             keys.put(k, m);
         }
+        lastClustersKey = k;
+        lastClusters = m;
         return m;
     }
 

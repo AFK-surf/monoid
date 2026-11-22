@@ -1020,13 +1020,14 @@ void mb_host_font_metrics(double size, int32_t weight, int32_t style, double *ou
 }
 
 int32_t mb_host_shape(moonbit_string_t text, double size, int32_t weight, int32_t style, double *out) {
+  if (Moonbit_array_length(text) == 0) return 0;
   JNIEnv *env = env_();
   jstring s = jstr(env, text);
   jint n = (*env)->CallStaticIntMethod(env, text_cls, m_shape, s, size, weight, style, shape_buf);
   (*env)->DeleteLocalRef(env, s);
   int32_t cap = Moonbit_array_length(out) / 4;
   if (n > cap) n = cap;
-  (*env)->GetDoubleArrayRegion(env, shape_buf, 0, n * 4, out);
+  if (n > 0) (*env)->GetDoubleArrayRegion(env, shape_buf, 0, n * 4, out);
   return n;
 }
 

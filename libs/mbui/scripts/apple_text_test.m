@@ -367,7 +367,7 @@ static void keys_bounded(void) {
   CHECK(out[2] > 0, "a not drawn in the frame the faces changed in");
   int g2 = mb_host_atlas_generation();
   CHECK(g2 > g, "the generation not moved on");
-  CHECK(n_entries == 0 && keys.count == 0 && texts.count == 0 && n_ascii == 0, "keys kept: %d", n_entries);
+  CHECK(n_entries == 0 && keys.count == 0 && texts.count == 0 && n_bmp == 0, "keys kept: %d", n_entries);
   CHECK(ahead_order.count == 0 && ahead_of.count == 0, "%lu still asked ahead", (unsigned long)ahead_order.count);
   CHECK(mb_host_atlas_generation() == g2, "the generation moved again");
   mb_host_glyph(k + 5, out);
@@ -381,6 +381,190 @@ static void keys_bounded(void) {
   CHECK(n_entries == KEYS_MOST + 1, "%d keys", n_entries);
   int g3 = mb_host_atlas_generation();
   CHECK(g3 > g2 && n_entries == 0, "%d keys kept past the most, generation %d", n_entries, g3);
+}
+
+// Reference implementation of shape_line (unoptimized Core Text baseline: per-cluster
+// rangeOfComposedCharacterSequenceAtIndex, CTLineGetOffsetForStringIndex, and intern_at) used to verify
+// zero-difference parity for shape_line across 50+ diverse strings, fonts, and styles.
+static double ref_offset_at(CTLineRef line, NSString *s, NSUInteger len, NSUInteger i) {
+  while (i < len && takes_no_room([s characterAtIndex:i])) i++;
+  return CTLineGetOffsetForStringIndex(line, (CFIndex)i, NULL);
+}
+
+static int32_t shape_line_ref(const unichar *text, int32_t len, double size, int32_t weight, int32_t style,
+                              double *out, int32_t cap) {
+  NSString *s = [[NSString alloc] initWithCharacters:text length:(NSUInteger)len];
+  CTFontRef f = font_for(size, weight, style);
+  CTLineRef line = make_line(s, f, style);
+  uint8_t *from = calloc((size_t)len + 1, 1);
+  int any_rtl = 0;
+  double *glyph_adv = calloc((size_t)len + 1, sizeof(double));
+  double *glyph_x = malloc(sizeof(double) * ((size_t)len + 1));
+  for (int32_t j = 0; j <= len; j++) glyph_x[j] = NAN;
+  CFArrayRef runs = CTLineGetGlyphRuns(line);
+  for (CFIndex r = 0; r < CFArrayGetCount(runs); r++) {
+    CTRunRef run = CFArrayGetValueAtIndex(runs, r);
+    CFIndex gc = CTRunGetGlyphCount(run);
+    CFIndex *idx = malloc(sizeof(CFIndex) * (size_t)(gc > 0 ? gc : 1));
+    CGPoint *pos = malloc(sizeof(CGPoint) * (size_t)(gc > 0 ? gc : 1));
+    CTRunGetStringIndices(run, CFRangeMake(0, 0), idx);
+    CTRunGetPositions(run, CFRangeMake(0, 0), pos);
+    double w = CTRunGetTypographicBounds(run, CFRangeMake(0, 0), NULL, NULL, NULL);
+    if (CTRunGetStatus(run) & kCTRunStatusRightToLeft) any_rtl = 1;
+    for (CFIndex g = 0; g < gc; g++) {
+      if (idx[g] < 0 || idx[g] >= len) continue;
+      from[idx[g]] = 1;
+      if (isnan(glyph_x[idx[g]]) || pos[g].x < glyph_x[idx[g]]) glyph_x[idx[g]] = pos[g].x;
+      double next = g + 1 < gc ? pos[g + 1].x : pos[0].x + w;
+      glyph_adv[idx[g]] += next - pos[g].x;
+    }
+    free(idx);
+    free(pos);
+  }
+  int32_t k = 0;
+  NSUInteger i = 0;
+  double x0 = ref_offset_at(line, s, (NSUInteger)len, 0);
+  while (i < (NSUInteger)len && k < cap) {
+    NSRange r = [s rangeOfComposedCharacterSequenceAtIndex:i];
+    unichar c = [s characterAtIndex:r.location];
+    if (r.location != i) x0 = ref_offset_at(line, s, (NSUInteger)len, r.location);
+    double start_x = x0;
+    double x1 = ref_offset_at(line, s, (NSUInteger)len, r.location + r.length);
+    double adv = x1 - x0;
+    x0 = x1;
+    if (any_rtl) {
+      adv = 0;
+      for (NSUInteger j = r.location; j < r.location + r.length; j++) adv += glyph_adv[j];
+    }
+    int key;
+    if (c == '\n') {
+      adv = 0;
+      key = -1;
+    } else if (c == ' ' || c == '\t') {
+      key = -1;
+    } else {
+      int drawn = 0;
+      for (NSUInteger j = r.location; j < r.location + r.length; j++) drawn |= from[j];
+      double gx = NAN;
+      for (NSUInteger j = r.location; j < r.location + r.length; j++)
+        if (!isnan(glyph_x[j]) && (isnan(gx) || glyph_x[j] < gx)) gx = glyph_x[j];
+      double dx = any_rtl || isnan(gx) ? 0 : gx - start_x;
+      if (fabs(dx) < 0.01) dx = 0;
+      BOOL after_wide = r.location > 0 && [s characterAtIndex:r.location - 1] >= 0x2E80;
+      if (!drawn && k > 0)
+        key = -2;
+      else if (r.length == 1 && c < 128 && (dx == 0 || !after_wide))
+        key = intern([s substringWithRange:r], size, weight, style);
+      else
+        key = intern_at([s substringWithRange:r], size, weight, style, dx);
+    }
+    out[k * 4] = r.location;
+    out[k * 4 + 1] = r.length;
+    out[k * 4 + 2] = adv < 0 ? 0 : adv;
+    out[k * 4 + 3] = key;
+    k++;
+    i = r.location + r.length;
+  }
+  free(from);
+  free(glyph_adv);
+  free(glyph_x);
+  CFRelease(line);
+  return k;
+}
+
+static void shape_parity(void) {
+  NSArray<NSString *> *corpus = @[
+    @"",
+    @"a",
+    @" ",
+    @"\n",
+    @"\t",
+    @"Hello, world!",
+    @"AVATAR WAVE To The Office official offline difficult",
+    @"fi fl ffi ffl ff fj",
+    @"0123456789 1111 8888 0:01 40:08",
+    @"The quick brown fox jumps over the lazy dog.",
+    @"const x = foo(bar, 123); // comment: a->b != c",
+    @"https://example.com/path/to/file.m?a=1&b=2#L123",
+    @"纯中文段落测试，不包含任何英文字符与数字。",
+    @"汉字连续排版测量性能基准测试中文汉字简体繁体漢字",
+    @"你是Owner，我在macOS 27上测试中英混排自动间距！",
+    @"中文English中文123中文ABC中文",
+    @"你好World世界Hello测试Test2026年11月22日",
+    @"「（中文括号挤压测试）」，《书名号》【方括号】！？：；、。",
+    @"“引号”‘单引号’——破折号……省略号·中点",
+    @"（测试）、「测试」、『测试』、【测试】、《测试》",
+    @"ＡＢＣ１２３！＠＃￥％……＆＊（）",
+    @"日本語のひらがなとカタカナと漢字の混在テストです。",
+    @"いろはにほへとちりぬるを カタカナ・ヴ・ヵ・ヶ",
+    @"한국어 테스트입니다. 한글과 English 123 혼용.",
+    @"完成任务 ✅ 下一步 → 延迟 ≤ 16ms 🎉 汉字缓存命中测试",
+    @"👩🏽‍💻 👪 ❤️ 🏳️‍🌈 👍🏻 🧑‍🤝‍🧑",
+    @"emoji💡中间穿插中文and English🚀",
+    @"e\u0301 cafe\u0301 a\u0308 o\u0302 n\u0303",
+    @"Z\u0300\u0301\u0302\u0303 combining stack",
+    @"中文\u0301组合音标测试",
+    @"zero\u200Bwidth\u200Cjoiner\u200Dword\u2060bom\uFEFFend",
+    @"trailing zero width\u200B",
+    @"\u200Bleading zero width",
+    @"@[mention\u200B]\u200B",
+    @"العربية مرحبا بالعالم",
+    @"שלום עולם 123",
+    @"Mixed العربية and English and 中文 together",
+    @"RTL שלום + LTR hello + 数字 42",
+    @"line1\nline2\n\nline4",
+    @"col1\tcol2\tcol3\t中文\t123",
+    @"CRLF\r\nline\r\nend",
+    @"¥100 §1 20° ±0.5 · × ÷ – — ‘a’ “b” • … ‰ ′ ″ € ℃",
+    @"αβγδε ΑΒΓΔΕ π ≈ 3.14159 ∑ ∫ √ ∞ ≠ ≤ ≥",
+    @"Кириллица привет мир 12345",
+    @"Tiếng Việt có dấu phức tạp hơn",
+    @"ภาษาไทยทดสอบการตัดคำ",
+    @"हिन्दी देवनागरी परीक्षण",
+    @"fail ail hover ver AV To We",
+    @"Hello…",
+    @"中文 Hello…",
+    @"真机 PostHog ui_hang 显示 tree words measured 是当前双端最大的 CPU 卡顿源。",
+    @"perf(mbui): reduce Apple & Android text shaping hotpath overhead (500 rounds).",
+    @"# Heading\n## 二级标题\n- 列表项 1: `code_span` 与 **粗体**",
+    @"   leading and trailing spaces   ",
+    @"\t\t\n\n  "
+  ];
+  int styles[] = {0, 1, 2, 4, 8, 32, 64};
+  int weights[] = {400, 700};
+  int checked = 0;
+  double got[4 * 512], want[4 * 512];
+  for (int si = 0; si < (int)(sizeof(styles) / sizeof(styles[0])); si++) {
+    for (int wi = 0; wi < (int)(sizeof(weights) / sizeof(weights[0])); wi++) {
+      int st = styles[si], wt = weights[wi];
+      for (NSString *s in corpus) {
+        unichar buf[512];
+        NSUInteger n = s.length < 512 ? s.length : 512;
+        [s getCharacters:buf range:NSMakeRange(0, n)];
+        int32_t k_ref = shape_line_ref(buf, (int32_t)n, 15.0, wt, st, want, 512);
+        int32_t k_got = shape_line((moonbit_string_t)buf, (int32_t)n, 15.0, wt, st, got, 512);
+        CHECK(k_got == k_ref, "cluster count mismatch (%d != %d) style=%d weight=%d in \"%s\"", k_got, k_ref, st, wt,
+              s.UTF8String);
+        if (k_got != k_ref) continue;
+        for (int32_t c = 0; c < k_ref; c++) {
+          CHECK(got[c * 4] == want[c * 4] && got[c * 4 + 1] == want[c * 4 + 1],
+                "range mismatch at %d style=%d weight=%d in \"%s\"", c, st, wt, s.UTF8String);
+          double derr = fabs(got[c * 4 + 2] - want[c * 4 + 2]);
+          CHECK(derr < 1e-6, "adv mismatch at %d (%.6f != %.6f, err=%.6f) style=%d weight=%d in \"%s\"", c,
+                got[c * 4 + 2], want[c * 4 + 2], derr, st, wt, s.UTF8String);
+          int gk = (int)got[c * 4 + 3], wk = (int)want[c * 4 + 3];
+          if (gk != wk) {
+            BOOL same_entry = gk >= 0 && wk >= 0 && [texts[gk] isEqualToString:texts[wk]]
+                              && fabs(entries[gk].dx - entries[wk].dx) < 1e-6;
+            CHECK(same_entry, "key mismatch at %d (%d != %d) style=%d weight=%d in \"%s\"", c, gk, wk, st, wt,
+                  s.UTF8String);
+          }
+        }
+        checked++;
+      }
+    }
+  }
+  printf("shape_parity: %d cases matched reference (< 1e-6)\n", checked);
 }
 
 int main(int argc, char **argv) {
@@ -398,6 +582,7 @@ int main(int argc, char **argv) {
     cut_cjk(@"Hiragino Sans");
     rests_in_turn();
     ahead_page();
+    shape_parity();
     keys_bounded();
   }
   if (failed) return 1;
