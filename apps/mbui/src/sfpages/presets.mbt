@@ -534,9 +534,15 @@ fn preset_panel(
           preset_dialog(src, w, address, "", stations)
         }, fn(btn) {
           @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.button_height()))) }, in_row=true)
+          btn.shrink(Is(1.0)).max_width(Is(None), within=true) |> ignore
           @sf.hover_ground_node(btn)
           @sf.icon_node(btn, "plus", 15.0, By(fn() { @sf.theme().p.muted })) |> ignore
-          @sf.words_node(btn, fn() { @sf.t("web-main.preset.newRow") }, fn() { preset_foot_words }) |> ignore
+          @sf.words_node(btn, fn() { @sf.t("web-main.preset.newRow") }, fn() { preset_foot_words })
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .cuts(Is(true))
+          .allow_ellipsis(Is(true))
+          |> ignore
         })
         |> ignore
         @sf.foot_spacer_node(row)
@@ -548,9 +554,15 @@ fn preset_panel(
           }
         }, fn(btn) {
           @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.button_height()))) }, in_row=true)
+          btn.shrink(Is(1.0)).max_width(Is(None), within=true) |> ignore
           @sf.hover_ground_node(btn)
           @sf.icon_node(btn, "users", 15.0, By(fn() { @sf.theme().p.muted })) |> ignore
-          @sf.words_node(btn, fn() { @sf.t("web-main.preset.others") }, fn() { preset_foot_words }) |> ignore
+          @sf.words_node(btn, fn() { @sf.t("web-main.preset.others") }, fn() { preset_foot_words })
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .cuts(Is(true))
+          .allow_ellipsis(Is(true))
+          |> ignore
           @sf.icon_node(btn, "chevron-right", 14.0, By(fn() { @sf.theme().p.subtle })) |> ignore
         })
         |> ignore
@@ -2535,4 +2547,4 @@ let preset_foot_btn : @ui.Style = @ui.css("row align=ACenter gap=S1_5 px=S2_5 ra
 
 ///|
 // kept across runs: a value (no field of it changes)
-let preset_foot_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Fg, wrap=false)
+let preset_foot_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Fg, wrap=false, w=Cut)

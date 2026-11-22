@@ -96,7 +96,7 @@ test "分享给其他 workspace on a phone: its rows a finger's, 完成 across t
   let (x, y, w, h) = t.rect_of("完成").unwrap()
   let (cx, cy) = (x + w / 2.0, y + h / 2.0)
   let grounds = t.drawn_rects().filter(fn(r) { r.0 <= cx && cx <= r.0 + r.2 && r.1 <= cy && cy <= r.1 + r.3 && r.3 < 60.0 })
-  assert_true(grounds.iter().any(fn(r) { r.2 >= 390.0 - 2.0 * 24.0 }), msg="完成 not across the sheet: \{Repr(grounds)}")
+  assert_true(grounds.iter().any(fn(r) { r.2 >= 390.0 - 2.0 * (6.0 + 26.0) }), msg="完成 not across the sheet: \{Repr(grounds)}")
 }
 
 ///|

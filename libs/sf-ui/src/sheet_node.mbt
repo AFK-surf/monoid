@@ -483,9 +483,7 @@ fn sheet_node(
         }
       }
       let sheet_target_float_t = fn(pg : SheetPage) -> Double {
-        if covered_by() is Some(_) {
-          0.0
-        } else if capped_of(pg.x) && !hugs_of(pg) {
+        if capped_of(pg.x) && !hugs_of(pg) {
           dclamp((0.80 - pg.x.tall) / 0.14, 0.0, 1.0)
         } else {
           1.0
@@ -734,9 +732,6 @@ fn sheet_node(
         // later); stepped back under a sheet over it, as tall as it is, its foot over that one's (another glass in its
         // place at that cause: it comes to no other height under it))
         let sheet_float_t = fn(v : @view.View) -> Double {
-          if covered_by() is Some(_) {
-            return 0.0
-          }
           let wh = win_h()
           match tall_held.get() {
             Some(h) => dclamp((0.80 - (if wh > 0.0 { h / wh } else { 0.0 })) / 0.14, 0.0, 1.0)
@@ -762,7 +757,12 @@ fn sheet_node(
             let fb = foot_back(layer.drawn_at(), own)
             if float_t <= 0.001 {
               if is_ground {
-                return { dx: 0.0, dy: 0.0, dw: 0.0, dh: -(reach.get() - sheet_under) + dmax(0.0, -fb), corners: None }
+                let dh = if @signals.untracked(covered_by) is Some(_) {
+                  -reach.get()
+                } else {
+                  -(reach.get() - sheet_under) + dmax(0.0, -fb)
+                }
+                return { dx: 0.0, dy: 0.0, dw: 0.0, dh, corners: None }
               } else {
                 return @view.ground_as_laid
               }
@@ -786,21 +786,15 @@ fn sheet_node(
           })
         }
         let ground = fn(make : (@view.View) -> Unit) {
-          sheet.pick(at_once=true, fn() { covered_by() is Some(_) }, fn(g, covered) {
-            if covered {
-              g
-              .over(Is(true), edges=(Some(0.0), Some(0.0), Some(0.0), Some(0.0)))
-              .radius(Is(pane_corner))
-              |> ignore
-            } else {
-              g
-              .over(Is(true))
-              .radius(Is(pane_corner))
-              .shown_by(sheet, fn(h) { sheet_float_drawn(g, h, true) })
-              |> ignore
-            }
+          sheet.box(fn(g) {
+            g
+            .over(Is(true))
+            .radius(Is(pane_corner))
+            .shown_by(sheet, fn(h) { sheet_float_drawn(g, h, true) })
+            |> ignore
             make(g)
           })
+          |> ignore
         }
         ground(fn(g) {
           g
@@ -935,13 +929,7 @@ fn sheet_node(
             (inset, 0.0, inset, reach.get() + foot_clear)
           }))
           .radius(Is(pane_corner))
-          .shown_by(sheet, fn(h) {
-            if @signals.untracked(covered_by) is Some(_) {
-              @view.ground_as_laid
-            } else {
-              sheet_float_drawn(cut, h, false)
-            }
-          })
+          .shown_by(sheet, fn(h) { sheet_float_drawn(cut, h, false) })
           .clips(Is(true))
           |> ignore
           // (what it holds, as tall as the sheet less its foot's room past the window: what is read out as the sheet, a
@@ -1299,6 +1287,7 @@ fn sheet_node(
           v
           .over(Is(true))
           .radius(Is(pane_corner))
+          .shown_by(sheet, fn(h) { sheet_float_drawn(v, h, true) })
           // (none of it drawn while it dims nothing)
           .alpha(By(fn() { if recede.shown(layer) > 0.0 { 1.0 } else { 0.0 } }))
           .ground(By(fn() { @ui.alpha(sheet_scrim, recede.shown(layer)) }))

@@ -496,7 +496,7 @@ test "a panel a share of the window caps whose body is nodes, as tall as what it
   let dialog = hugging(menu_tester(1280.0, 800.0, 0))
   debug_inspect((sheet, dialog), content=(
     #|(
-    #|  ((0, 704, 40, 36), (310, 788, 60, 32)),
+    #|  ((6, 696, 40, 36), (298, 780, 60, 32)),
     #|  ((396, 378.5, 40, 36), (814, 438.5, 60, 32)),
     #|)
 
