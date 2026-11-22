@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e26266e53](https://github.com/AFK-surf/monoid/commit/e26266e53c18d05a7df86f83486618fac28911a7) feat(mbui): polish text field selection handles, l | 2.66 | 3.59 | 14.56 | 36.64 | 55.61 | 32.09 | 64.93 | 98.85 | 121.55 |
 | [e56b27877](https://github.com/AFK-surf/monoid/commit/e56b2787738fe24ae8fa03b529759bca3c476eba) fix(mbui): preserve outer hugs cap in scroll measu | 2.66 | 3.58 | 14.55 | 36.63 | 55.58 | 32.08 | 64.9 | 98.63 | 111.9 |
 | [1aaa170ed](https://github.com/AFK-surf/monoid/commit/1aaa170ed270f11c2ab1318ad2c578b8576d61b5) fix(core-ts): fix zero-speed video routing, stall  | 2.66 | 3.58 | 14.55 | 36.63 | 55.58 | 32.08 | 64.91 | 98.96 | 127.28 |
 | [e9f727949](https://github.com/AFK-surf/monoid/commit/e9f727949dd1f1e19c91206c5e6893d47926864e) docs: remove misleading chat-message streaming wor | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 99.09 | 116.7 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4f479f697](https://github.com/AFK-surf/monoid/commit/4f479f6976db6b666de085bbf5819148ea33f569) style(sf-ui): tighten default button height to 32p | 2.64 | 3.56 | 14.43 | 36.47 | 55.09 | 31.97 | 64.5 | 98.52 | 116.54 |
 | [cb0becd11](https://github.com/AFK-surf/monoid/commit/cb0becd11ca4fca8f82357c1ae9b660ed94e9fcf) feat(sf-ui,sfapp,sfdesk): add bar_pill_group_node  | 2.64 | 3.56 | 14.43 | 36.47 | 55.09 | 31.97 | 64.5 | 98.67 | 121.65 |
 | [efc9285ad](https://github.com/AFK-surf/monoid/commit/efc9285ad725615312d1077870b4554b6feee666) feat(sf-ui): upgrade sheet to iOS 26 floating liqu | 2.64 | 3.55 | 14.43 | 36.47 | 55.08 | 31.96 | 64.48 | 98.75 | 118.22 |
-| [fb2f2c703](https://github.com/AFK-surf/monoid/commit/fb2f2c7033a956484fc6060aedce9caf9e2f896b) feat(mbui): report Windows UI hangs and handled er | 2.64 | 3.55 | 14.43 | 36.47 | 55.07 | 31.96 | 64.48 | 98.47 | 125.58 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e26266e53](https://github.com/AFK-surf/monoid/commit/e26266e53c18d05a7df86f83486618fac28911a7) feat(mbui): polish text field selection handles, l | 0.47 | 0.62 | 2.39 | 3.44 | 5.65 | 1.73 | 4.68 | 54.48 |
 | [e56b27877](https://github.com/AFK-surf/monoid/commit/e56b2787738fe24ae8fa03b529759bca3c476eba) fix(mbui): preserve outer hugs cap in scroll measu | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.38 |
 | [1aaa170ed](https://github.com/AFK-surf/monoid/commit/1aaa170ed270f11c2ab1318ad2c578b8576d61b5) fix(core-ts): fix zero-speed video routing, stall  | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.4 |
 | [e9f727949](https://github.com/AFK-surf/monoid/commit/e9f727949dd1f1e19c91206c5e6893d47926864e) docs: remove misleading chat-message streaming wor | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.4 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4f479f697](https://github.com/AFK-surf/monoid/commit/4f479f6976db6b666de085bbf5819148ea33f569) style(sf-ui): tighten default button height to 32p | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [cb0becd11](https://github.com/AFK-surf/monoid/commit/cb0becd11ca4fca8f82357c1ae9b660ed94e9fcf) feat(sf-ui,sfapp,sfdesk): add bar_pill_group_node  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [efc9285ad](https://github.com/AFK-surf/monoid/commit/efc9285ad725615312d1077870b4554b6feee666) feat(sf-ui): upgrade sheet to iOS 26 floating liqu | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
-| [fb2f2c703](https://github.com/AFK-surf/monoid/commit/fb2f2c7033a956484fc6060aedce9caf9e2f896b) feat(mbui): report Windows UI hangs and handled er | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
