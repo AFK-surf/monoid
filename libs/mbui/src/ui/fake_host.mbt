@@ -2415,6 +2415,11 @@ impl @hostapi.Host for FakeHost with st_open(self) {
 }
 
 ///|
+impl @hostapi.Host for FakeHost with st_low_latency(self, id, enabled) {
+  fake_fed(self, id, "low_latency \{enabled}")
+}
+
+///|
 impl @hostapi.Host for FakeHost with st_h264(self, id, avcc, w, h) {
   fake_fed(self, id, "h264 \{w}x\{h} avcc=\{avcc.length()}")
 }

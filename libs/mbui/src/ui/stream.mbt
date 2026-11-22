@@ -1052,7 +1052,7 @@ fn fake_said(f : FakeHost, id : Int, e : String) -> Unit {
 ///|
 /// What the app handed stream `id`'s host, oldest first, a line each: "h264 WxH avcc=N" a config, "frame key=K ts=T
 /// bytes=N" ("… hidden": one not to be shown), "flush drain=D", "jpeg ts=T bytes=N", "show ts=T" the frame it shows from
-/// then, "audio bytes=N", "volume V", "close". Frames let go before reaching it
+/// then, "low_latency B", "audio bytes=N", "volume V", "close". Frames let go before reaching it
 /// (before a key frame, nothing to decode them) are not among them.
 pub fn Tester::stream_fed(self : Tester, id : Int) -> Array[String] {
   self.fake.streams_fed.get(id).unwrap_or([]).copy()
