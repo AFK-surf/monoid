@@ -35,6 +35,9 @@ let corners_everywhere_known : Map[String, Int] = {
   // the board's.
   known["wide-win-zh board"] = 4
   known["wide-win-en board"] = 4
+  // The board's same rail with the new draft composer open.
+  known["wide-win-zh board-add"] = 4
+  known["wide-win-en board-add"] = 4
   // The same with a card's chat open beside the board (board-side, its first sweep 2026-11-17): the rail's four as the
   // board's, each said against two nodes of the whole window (170 and 174 then).
   known["wide-win-zh board-side"] = 8
@@ -67,7 +70,7 @@ let corners_everywhere_known : Map[String, Int] = {
 let corners_tape_rail : Array[String] = [
   // (a station's terminals among its screens, a terminal's page over the frame: the rail on the tape under them)
   "settings-station-terminals", "terminal", "terminal-taken",
-  "webdemo", "home", "board", "board-side", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
+  "webdemo", "home", "board", "board-side", "board-add", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
   "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app", "place", "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
   "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose",
   "chat-download", "chat-failed", "chat-feedback", "chat-image-coming", "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice",

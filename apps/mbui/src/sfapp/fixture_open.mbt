@@ -421,6 +421,11 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   if mode == "board-side" {
     @sfbase.board_pick.set(Some(rich))
   }
+  // the board with its new draft composer open
+  if mode == "board-add" {
+    @sfbase.board_lane.set("draft")
+    @sfbase.board_adding.set(true)
+  }
   // ⌘/'s shortcuts at a glance
   if mode == "keys-dialog" {
     @sfdesk.wide.keys_open.set(true)
@@ -1053,7 +1058,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "terminal", "terminal-taken",
     // (the board with a card's chat open beside it, its edge at rest: last, so the real size's sweep gives the shell's
     // ways a chat reads (chatRow) to chat's screen first, as before it came: sfapp_realsize real_size_test.mbt real_size_given_here)
-    "board-side",
+    "board-side", "board-add",
   ]
   // (and the card to share in each of its other looks: share_looks.mbt)
   for k in @sfpages.share_look_keys()[1:] {

@@ -1330,7 +1330,8 @@ fn board_add_room(b : @view.View, own : BoardOwn, tips : @sf.TipLayer) -> Unit {
   // what makes the cards under it, so that what moves for its draft finds both done; opened, mbui's room's way)
   b.pick(fn() { own.room_made.get() }, fn(room, _) {
     @motion.reveal_node(room, open, fn(h) {
-      h.padding(Is((0.0, 0.0, 0.0, 10.0))) |> ignore
+      // (the column's list clips at its sides; leave room for the glass composer's outside contour)
+      h.padding(Is((2.0, 0.0, 2.0, 10.0))) |> ignore
       board_add(h, own, true, tips)
     })
     |> ignore

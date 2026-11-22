@@ -281,9 +281,10 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
   // (Home first: the shell's ways are given there, those it does not read on the first screen that does)
   // These fixtures differ only in their pick topic. The real workspace replaces it with the same value.
   // The test below holds their work to newchat-model exactly, whose opening and changes have their bars here.
-  // (chat-info-bare differs from chat-info only in its chat's and chatThings' values: the same screen here)
+  // (chat-info-bare differs from chat-info only in its chat's and chatThings' values: the same screen here. board-add
+  // is the same board with its composer open; its opening is checked against the board's bar below.)
   let distinct = @sfapptest.corner_modes().filter(fn(m) {
-    m != "newchat-station-models" && m != "newchat-station-empty" && m != "chat-info-bare"
+    m != "newchat-station-models" && m != "newchat-station-empty" && m != "chat-info-bare" && m != "board-add"
   })
   let modes = distinct.filter(fn(m) { m == "home" }) + distinct.filter(fn(m) { m != "home" })
   for mode in modes {
@@ -395,6 +396,15 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
     println("real_size_bindings_known_wbtest.mbt, written so:\n" + bindings_lines.join("\n"))
   }
   assert_eq(faults, [])
+}
+
+///|
+test "the board with a new draft open stays within the board's opening bar" {
+  for win in real_size_windows {
+    let ((made, laid, words), _) = real_size_screen("board-add", win, fn(_) { false })
+    let (m, l, w) = real_size_known["\{win.0} board"]
+    assert_true(!real_size_over(made, m) && !real_size_over(laid, l) && !real_size_over(words, w), msg=win.0)
+  }
 }
 
 ///|
