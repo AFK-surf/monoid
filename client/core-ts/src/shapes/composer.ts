@@ -97,6 +97,7 @@ export const COMPOSER_SHAPES: Record<string, Shape> = {
   ], { doc: "A new chat's model control as its page draws it while its panel is closed (the `newChat` topic's `pick`): the\nmodel, its runtime where it runs on more than one, how hard it thinks, Fast, who runs it. Worked out of the station\nit starts on alone (choose.ts `#face`); what its panel shows (every model the workspace could run there, each as it\nruns picked, the configurations used most, the starred, the makers, the accounts, borrowing) is the `pick` topic's,\nasked as the panel opens (the user, 2026-11-11: a page's topic carries what the page draws; what shows only after a\npress is asked at the press)." }),
   NewChatPickModel: struct([
     ["name", "String", { said: true, doc: "As people call it (Opus 5.5)." }],
+    ["shortName", opt("String"), { said: true, doc: "Shortened model name for tight spaces when shorter than `name`." }],
     ["maker", opt("Maker")],
     ["runtimes", vec("RuntimeKind")],
   ], { doc: "The model a new chat's control names: its name, its maker's mark, whether it runs on more than one runtime." }),

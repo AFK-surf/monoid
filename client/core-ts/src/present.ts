@@ -828,6 +828,7 @@ export function session(s: J): J {
     titleText: title,
     agentText: format.agentLabel(m, effort),
     modelName: m ? model.name(m) : null,
+    modelShort: m ? model.shortIfShorter(m) : null,
     maker: maker(m),
     runtimeText: format.runtimeLabel(runtime),
     processText: process !== null ? format.processText(process) : null,

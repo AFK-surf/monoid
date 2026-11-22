@@ -512,6 +512,7 @@ export const PROFILE_SHAPES: Record<string, Shape> = {
     ["becomes", vec("String")],
     ["force", opt("String")],
     ["modelText", "String", { said: true }],
+    ["modelShort", opt("String"), { said: true, doc: "Shortened `modelText` for tight spaces when shorter than `modelText`." }],
     ["maker", opt("Maker")],
     ["accountText", "String", { said: true }],
     ["accountNote", "String", { said: true }],
@@ -539,6 +540,7 @@ export const PROFILE_SHAPES: Record<string, Shape> = {
   ModelOption: struct([
     ["model", "String", { doc: "The spelling a client sends: the one that is its key when a profile has that, else the first." }],
     ["name", "String", { said: true, doc: "As people call it (Opus 5.5)." }],
+    ["shortName", opt("String"), { said: true, doc: "Shortened model name for tight spaces when shorter than `name`." }],
     ["family", opt("String"), { doc: "Its series (Opus, GPT), what a list groups it under; none when not known. Lists come by series, newest first." }],
     ["ids", vec("String"), { doc: "Every spelling of it the station's profiles run (openai/gpt-6-astra, gpt-6-astra): one model." }],
     ["maker", opt("Maker")],
