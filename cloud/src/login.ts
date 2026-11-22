@@ -2,6 +2,7 @@ import { devicePage, escape } from "./page";
 import { cloudProduct, requestLang, setCloud, tr, type Lang } from "./i18n.ts";
 import { asOrigin } from "./guests.ts";
 import { asProductOf } from "./here.ts";
+import { appleAccount, appleAuthorizeUrl, appleConfigured, appleIdentity, appleName, sealAppleToken } from "./apple";
 import { mailConfigured, sendCode } from "./mail";
 import { passwordAccounts, passwordIdentity } from "./password";
 export { devicePage } from "./page";
@@ -32,10 +33,26 @@ type Attempt = {
   /** The origin it started on: this cloud's, or a guest's (guests.ts), whose links, cookie, Google client and name it
    * goes by. Unset: this cloud's (one from before). */
   origin?: string;
-  /** waiting: a device's, its page not used yet; choosing: the page asks Google or an email; code: a code was sent to
-   * `email`; started: gone to Google. */
-  phase: "waiting" | "choosing" | "code" | "started" | "callback" | "complete" | "used" | "cancelled";
+  /** waiting: a device's, its page not used yet; choosing: the page asks Google, Apple or an email; code: a code was
+   * sent to `email` (plain email login, or linking a first-time Apple sign-in to an existing account); started: gone to
+   * Google or Apple; posted: Apple's form_post stored, waiting for the same-site GET with the login cookie. */
+  phase: "waiting" | "choosing" | "code" | "started" | "posted" | "callback" | "complete" | "used" | "cancelled";
   device?: boolean;
+  /** Signing in with Apple (apple.ts) rather than Google. */
+  provider?: "apple";
+  /** What Apple posted back, kept for the callback's GET: its code (none when cancelled) and the one-time name. */
+  posted?: { code?: string; name: string };
+  /** A verified Apple sign-in whose email matches an existing account: waits for email OTP before linking. */
+  pendingApple?: {
+    appleSub: string;
+    targetSub: string;
+    targetEmail: string;
+    targetName: string;
+    targetPicture: string;
+    email: string;
+    name: string;
+    refreshToken: string | null;
+  };
   nextPoll?: number;
   receipt?: string;
   identity?: Identity;
@@ -55,6 +72,10 @@ type Attempt = {
 /** Google's "G", in its own colours, before 使用 Google 账号继续 (as Google's sign-in buttons have it). */
 const GOOGLE_MARK =
   '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
+
+/** Apple's logo mark, in current text colour, before 使用 Apple 账号继续. */
+const APPLE_MARK =
+  '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>';
 
 /** Wrong codes a code takes before the sign-in ends. */
 const CODE_TRIES = 5;
@@ -149,6 +170,10 @@ export class LoginAttempt extends DurableObject<Env> {
       url.searchParams.set(key, value);
     return redirect(url.toString(), cookie(this.#env.PUBLIC_ORIGIN, id, browser, LOGIN_TTL_SEC));
   }
+  private apple(id: string, attempt: Attempt, browser: string): Response {
+    return redirect(appleAuthorizeUrl(this.#env, id, attempt.nonce, this.#env.PUBLIC_ORIGIN), cookie(this.#env.PUBLIC_ORIGIN, id, browser, LOGIN_TTL_SEC));
+  }
+
   async startDevice(id: string, challenge: string, name: string, origin?: string): Promise<Response> {
     return this.ctx.blockConcurrencyWhile(() => this.#as(origin, async () => {
       if (this.ctx.storage.kv.get("attempt")) return reply({ error: "login_exists" }, 409);
@@ -184,13 +209,13 @@ export class LoginAttempt extends DurableObject<Env> {
         const browser = randomSecret();
         attempt.browserHash = await digest(browser);
         this.ctx.storage.kv.put("attempt", attempt);
-        if (mailConfigured(this.env)) return this.choosePage(lang, id, attempt, browser);
+        if (mailConfigured(this.env) || appleConfigured(this.#env)) return this.choosePage(lang, id, attempt, browser);
         return devicePage(
           lang,
           tr(lang, "cloud.login.device.title"),
           `<p>${tr(lang, "cloud.login.device.signingIn", { name: `<strong>${escape(attempt.name)}</strong>` })}</p><p>${tr(lang, "cloud.login.device.reach")}</p><form method="post"><input type="hidden" name="csrf" value="${browser}"><button class="secondary">${this.continueWith(lang)}</button></form>`,
           cookie(this.#env.PUBLIC_ORIGIN, id, browser, LOGIN_TTL_SEC),
-          await this.providerSource(),
+          await this.providerSources(),
         );
       }
       const browser = cookieOf(request, this.#env.PUBLIC_ORIGIN, id);
@@ -247,12 +272,12 @@ export class LoginAttempt extends DurableObject<Env> {
       return result;
     }));
   }
-  async start(id: string, params: { redirect: string; state: string; challenge: string; name: string }, request: Request): Promise<Response> {
+  async start(id: string, params: { redirect: string; state: string; challenge: string; name: string }, request: Request, provider?: "apple"): Promise<Response> {
     return this.ctx.blockConcurrencyWhile(() => this.#as(new URL(request.url).origin, async () => {
       if (this.ctx.storage.kv.get("attempt")) return reply({ error: "login_exists" }, 409);
       if (!validSecret(id) || !validRedirect(this.#env, params.redirect) || !validSecret(params.state) || !validSecret(params.challenge) || params.name.length > 80) return reply({ error: "invalid_login" }, 400);
       const browser = randomSecret();
-      const choosing = mailConfigured(this.env);
+      const choosing = !provider && (mailConfigured(this.env) || appleConfigured(this.#env));
       const attempt: Attempt = {
         ...params,
         browserHash: await digest(browser),
@@ -261,11 +286,137 @@ export class LoginAttempt extends DurableObject<Env> {
         expires: nowSeconds() + LOGIN_TTL_SEC,
         phase: choosing ? "choosing" : "started",
         origin: this.#env.PUBLIC_ORIGIN,
+        ...(provider ? { provider } : {}),
       };
       this.ctx.storage.kv.put("attempt", attempt);
       await this.ctx.storage.setAlarm(attempt.expires * 1000);
-      // Without a way to send codes, straight to Google, as before there was another way.
+      if (provider === "apple") return this.apple(id, attempt, browser);
+      // Without email codes or Apple, straight to Google, as before there was another way.
       return choosing ? this.choosePage(requestLang(request), id, attempt, browser) : this.google(id, attempt, browser);
+    }));
+  }
+
+  /**
+   * Apple's form_post callback arrives cross-site without the SameSite=Lax login cookie.
+   * Store the one-time authorization code and name, then 303 to the same-site GET callback which carries the cookie.
+   */
+  async applePosted(id: string, form: { code: string | null; error: boolean; user: string | null }, origin?: string): Promise<Response> {
+    return this.ctx.blockConcurrencyWhile(() => this.#as(this.#kept() ?? origin, async () => {
+      const attempt = this.ctx.storage.kv.get<Attempt>("attempt");
+      if (!attempt || attempt.provider !== "apple" || attempt.expires <= nowSeconds() || attempt.phase !== "started") return reply({ error: "invalid_login_state" }, 400);
+      let user: unknown;
+      try {
+        user = JSON.parse(form.user ?? "null");
+      } catch {
+        // Ignore malformed optional user JSON.
+      }
+      attempt.posted = { ...(form.code && form.code.length <= 4096 && !form.error ? { code: form.code } : {}), name: appleName(user) };
+      attempt.phase = "posted";
+      this.ctx.storage.kv.put("attempt", attempt);
+      return new Response(null, {
+        status: 303,
+        headers: { location: `${this.#env.PUBLIC_ORIGIN}/v1/auth/apple/callback?state=${id}`, "cache-control": "no-store", "referrer-policy": "no-referrer" },
+      });
+    }));
+  }
+
+  /**
+   * Same-site GET callback after Apple's form_post 303: verifies the browser cookie, exchanges the code with Apple,
+   * then either signs into the linked account, prompts for email OTP when the email matches an existing account
+   * (Comma-style account linking), or creates a new `apple_` account.
+   */
+  async appleCallback(id: string, request: Request): Promise<Response> {
+    return this.ctx.blockConcurrencyWhile(() => this.#as(new URL(request.url).origin, async () => {
+      const attempt = this.ctx.storage.kv.get<Attempt>("attempt");
+      const value = cookieOf(request, this.#env.PUBLIC_ORIGIN, id);
+      if (!attempt || attempt.provider !== "apple" || attempt.expires <= nowSeconds() || attempt.phase !== "posted" || !validSecret(value) || (await digest(value)) !== attempt.browserHash) {
+        return reply({ error: "invalid_login_state" }, 400);
+      }
+      // Consume before any external I/O; a repeated callback cannot replay Apple.
+      attempt.phase = "callback";
+      this.ctx.storage.kv.put("attempt", attempt);
+      const url = new URL(request.url);
+      const lang = requestLang(request);
+      let finish = this.finish(attempt);
+      let done = false;
+      const code = attempt.posted?.code;
+      if (!code || code.length > 4096) {
+        finish.searchParams.set("error", "login_cancelled");
+      } else {
+        try {
+          const verified = await appleIdentity(this.#env, code, attempt.nonce, attempt.posted?.name ?? "", url.origin);
+          const sealedRefresh = verified.refreshToken ? await sealAppleToken(this.env, verified.refreshToken) : null;
+          const dir = this.env.DIRECTORY.getByName("primary");
+          const match = await dir.appleAccount(verified.appleSub, verified.email);
+          if (match.status === "linked") {
+            await dir.linkApple(verified.appleSub, match.account.sub, verified.email, sealedRefresh);
+            const email = match.account.sub.startsWith("apple_") ? verified.email : match.account.email;
+            finish = await this.complete(id, attempt, {
+              sub: match.account.sub,
+              email,
+              name: verified.name || match.account.name,
+              picture: match.account.picture,
+            });
+            done = true;
+          } else if (match.status === "conflict" && mailConfigured(this.env)) {
+            // Require email OTP before linking a new Apple identity to an existing account with the same email.
+            if (!(await this.env.LOGIN_LIMITS.getByName(await digest(`${this.env.AUTH_SIGNING_KEY}:email:${match.account.email.toLowerCase()}`)).consumeMail())) {
+              attempt.phase = "choosing";
+              delete attempt.provider;
+              delete attempt.posted;
+              this.ctx.storage.kv.put("attempt", attempt);
+              return this.choosePage(lang, id, attempt, value, "", tr(lang, "cloud.login.email.limited"));
+            }
+            const otp = newMailCode();
+            try {
+              await sendCode(this.env, lang, match.account.email, otp, attempt.device ? attempt.name : "", "apple_link");
+            } catch (error) {
+              console.error("login: no apple link code sent", (error as { code?: string }).code ?? String(error));
+              attempt.phase = "choosing";
+              delete attempt.provider;
+              delete attempt.posted;
+              this.ctx.storage.kv.put("attempt", attempt);
+              return this.choosePage(lang, id, attempt, value, "", tr(lang, "cloud.login.email.failed"));
+            }
+            attempt.phase = "code";
+            attempt.email = match.account.email;
+            attempt.mailCode = await digest(`${id}:${otp}`);
+            attempt.mailExpires = nowSeconds() + LOGIN_TTL_SEC;
+            attempt.tries = 0;
+            attempt.expires = Math.max(attempt.expires, attempt.mailExpires);
+            attempt.pendingApple = {
+              appleSub: verified.appleSub,
+              targetSub: match.account.sub,
+              targetEmail: match.account.email,
+              targetName: match.account.name,
+              targetPicture: match.account.picture,
+              email: verified.email,
+              name: verified.name,
+              refreshToken: sealedRefresh,
+            };
+            delete attempt.posted;
+            this.ctx.storage.kv.put("attempt", attempt);
+            await this.ctx.storage.setAlarm(attempt.expires * 1000);
+            return this.codePage(lang, id, attempt, value);
+          } else {
+            // New email (including privaterelay.appleid.com) or mail not configured (never silent-merge without OTP).
+            const sub = appleAccount(verified.appleSub);
+            await dir.linkApple(verified.appleSub, sub, verified.email, sealedRefresh);
+            finish = await this.complete(id, attempt, { sub, email: verified.email, name: verified.name, picture: "" });
+            done = true;
+          }
+        } catch {
+          finish.searchParams.set("error", "apple_login_failed");
+        }
+      }
+      if (attempt.device) {
+        if (!done) {
+          attempt.phase = "cancelled";
+          this.ctx.storage.kv.put("attempt", attempt);
+        }
+        finish.searchParams.delete("state");
+      }
+      return redirect(finish.toString(), cookie(this.#env.PUBLIC_ORIGIN, id, "", 0));
     }));
   }
 
@@ -273,7 +424,7 @@ export class LoginAttempt extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(() => this.#as(new URL(request.url).origin, async () => {
       const attempt = this.ctx.storage.kv.get<Attempt>("attempt");
       const value = cookieOf(request, this.#env.PUBLIC_ORIGIN, id);
-      if (!attempt || attempt.expires <= nowSeconds() || attempt.phase !== "started" || !validSecret(value) || (await digest(value)) !== attempt.browserHash) return reply({ error: "invalid_login_state" }, 400);
+      if (!attempt || attempt.provider === "apple" || attempt.expires <= nowSeconds() || attempt.phase !== "started" || !validSecret(value) || (await digest(value)) !== attempt.browserHash) return reply({ error: "invalid_login_state" }, 400);
       // Consume before any external I/O; a repeated callback cannot replay Google.
       attempt.phase = "callback";
       this.ctx.storage.kv.put("attempt", attempt);
@@ -339,31 +490,40 @@ export class LoginAttempt extends DurableObject<Env> {
     return tr(lang, "cloud.login.oidc.continue", { name: escape(this.#env.OIDC_NAME || new URL(issuer).host) });
   }
 
-  /** Where a page's form may send the browser on to besides Google (page.ts): another provider's sign-in page. */
-  private async providerSource(): Promise<string | undefined> {
-    if (!this.#env.OIDC_ISSUER || !providerConfigured(this.#env)) return undefined;
-    return new URL((await provider(this.#env)).authorization).origin;
+  /** Where a page's form may send the browser on to besides Google (page.ts): another OIDC provider and/or Apple. */
+  private async providerSources(): Promise<string | undefined> {
+    const sources: string[] = [];
+    if (this.#env.OIDC_ISSUER && providerConfigured(this.#env)) sources.push(new URL((await provider(this.#env)).authorization).origin);
+    if (appleConfigured(this.#env)) sources.push("https://appleid.apple.com");
+    return sources.length ? sources.join(" ") : undefined;
   }
 
-  /** The page that asks how to sign in: through the provider (where there is one), or a code sent to an email (`email`
-   * typed, `error` with it). */
+  /** The page that asks how to sign in: through Google/OIDC, Apple, or a code sent to an email (`email` typed, `error` with it). */
   private async choosePage(lang: Lang, id: string, attempt: Attempt, browser: string, email = "", error?: string): Promise<Response> {
     const csrf = `<input type="hidden" name="csrf" value="${browser}">`;
     const action = `/v1/auth/login/${id}`;
     const device = attempt.device ? `<p>${tr(lang, "cloud.login.device.signingIn", { name: `<strong>${escape(attempt.name)}</strong>` })}</p><p>${tr(lang, "cloud.login.device.reach")}</p>` : "";
+    const hasProvider = providerConfigured(this.#env);
+    const hasApple = appleConfigured(this.#env);
+    const hasMail = mailConfigured(this.env);
+    const buttons = [
+      ...(hasProvider ? [`<button class="secondary" name="via" value="google">${this.continueWith(lang)}</button>`] : []),
+      ...(hasApple ? [`<button class="secondary" name="via" value="apple">${APPLE_MARK}${tr(lang, "cloud.login.apple.continue")}</button>`] : []),
+    ];
     return devicePage(
       lang,
       tr(lang, attempt.device ? "cloud.login.device.title" : "cloud.login.choose.title"),
       device +
-        (providerConfigured(this.#env) ? `<form class="wide" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="google"><button class="secondary">${this.continueWith(lang)}</button></form><p class="or">${tr(lang, "cloud.login.choose.or")}</p>` : "") +
-        `<form class="wide" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="email"><input type="email" name="email" value="${escape(email)}" placeholder="${tr(lang, "cloud.login.email.placeholder")}" autocomplete="email" required maxlength="254"><button>${tr(lang, "cloud.login.email.send")}</button></form>` +
+        (buttons.length ? `<form class="wide" method="post" action="${action}">${csrf}${buttons.join("")}</form>` : "") +
+        (buttons.length && hasMail ? `<p class="or">${tr(lang, "cloud.login.choose.or")}</p>` : "") +
+        (hasMail ? `<form class="wide" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="email"><input type="email" name="email" value="${escape(email)}" placeholder="${tr(lang, "cloud.login.email.placeholder")}" autocomplete="email" required maxlength="254"><button>${tr(lang, "cloud.login.email.send")}</button></form>` : "") +
         (error ? `<p class="error">${escape(error)}</p>` : "") +
         // With a password, for the accounts set up for it (password.ts): a page of its own behind a quiet link, as the web's
         // sign-in page folds it away.
         `<p class="links"><button form="password" class="link">${tr(lang, "cloud.login.password.open")}</button></p><form id="password" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="password-page"></form>` +
         `<p class="legal">${tr(lang, "cloud.login.choose.agree", { terms: legalLink(lang, "terms"), privacy: legalLink(lang, "privacy") })}</p>`,
       cookie(this.#env.PUBLIC_ORIGIN, id, browser, LOGIN_TTL_SEC),
-      await this.providerSource(),
+      await this.providerSources(),
     );
   }
 
@@ -384,17 +544,18 @@ export class LoginAttempt extends DurableObject<Env> {
     );
   }
 
-  /** The page that asks for the code sent to the attempt's email. */
+  /** The page that asks for the code sent to the attempt's email (plain email login or Apple account linking). */
   private codePage(lang: Lang, id: string, attempt: Attempt, browser: string, error?: string): Response {
     const csrf = `<input type="hidden" name="csrf" value="${browser}">`;
     const action = `/v1/auth/login/${id}`;
+    const linking = Boolean(attempt.pendingApple);
     return devicePage(
       lang,
-      tr(lang, "cloud.login.code.title"),
-      `<p>${tr(lang, "cloud.login.code.sent", { email: `<strong>${escape(attempt.email ?? "")}</strong>` })}</p>` +
-        `<form class="wide" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="code"><input class="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" placeholder="${tr(lang, "cloud.login.code.placeholder")}" aria-label="${tr(lang, "cloud.login.code.placeholder")}" required autofocus><button>${tr(lang, "cloud.login.code.submit")}</button></form>` +
+      tr(lang, linking ? "cloud.login.appleLink.title" : "cloud.login.code.title"),
+      `<p>${tr(lang, linking ? "cloud.login.appleLink.sent" : "cloud.login.code.sent", { email: `<strong>${escape(attempt.email ?? "")}</strong>` })}</p>` +
+        `<form class="wide" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="code"><input class="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" placeholder="${tr(lang, "cloud.login.code.placeholder")}" aria-label="${tr(lang, "cloud.login.code.placeholder")}" required autofocus><button>${tr(lang, linking ? "cloud.login.appleLink.submit" : "cloud.login.code.submit")}</button></form>` +
         (error ? `<p class="error">${escape(error)}</p>` : "") +
-        `<p class="links"><button form="resend" class="link">${tr(lang, "cloud.login.code.resend")}</button><button form="back" class="link">${tr(lang, "cloud.login.code.other")}</button></p>` +
+        `<p class="links"><button form="resend" class="link">${tr(lang, "cloud.login.code.resend")}</button><button form="back" class="link">${tr(lang, linking ? "cloud.login.password.other" : "cloud.login.code.other")}</button></p>` +
         `<form id="resend" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="resend"></form><form id="back" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="back"></form>`,
       cookie(this.#env.PUBLIC_ORIGIN, id, browser, LOGIN_TTL_SEC),
       // The right code sends the browser back where the attempt returns (choose's redirect): a device's ends here.
@@ -419,7 +580,7 @@ export class LoginAttempt extends DurableObject<Env> {
       const attempt = this.ctx.storage.kv.get<Attempt>("attempt");
       const lang = requestLang(request);
       const ended = (title = "cloud.login.ended.title") => devicePage(lang, tr(lang, title), `<p>${tr(lang, "cloud.login.ended.body")}</p>`, cookie(this.#env.PUBLIC_ORIGIN, id, "", 0));
-      if (!attempt || attempt.expires <= nowSeconds() || !(attempt.phase === "choosing" || attempt.phase === "code" || (attempt.phase === "waiting" && attempt.device)) || !mailConfigured(this.env)) return ended();
+      if (!attempt || attempt.expires <= nowSeconds() || !(attempt.phase === "choosing" || attempt.phase === "code" || (attempt.phase === "waiting" && attempt.device)) || !(mailConfigured(this.env) || appleConfigured(this.#env))) return ended();
       const browser = cookieOf(request, this.#env.PUBLIC_ORIGIN, id);
       let form: URLSearchParams;
       try {
@@ -434,16 +595,18 @@ export class LoginAttempt extends DurableObject<Env> {
         await this.ctx.storage.setAlarm(attempt.expires * 1000);
       };
       const send = async (email: string): Promise<Response> => {
+        const linking = Boolean(attempt.pendingApple);
+        const onFail = (message: string) => (linking ? this.codePage(lang, id, attempt, browser, message) : this.choosePage(lang, id, attempt, browser, email, message));
         // Per address, as starting one is, and per email: nobody fills someone's inbox.
-        if (!(await consumeLoginRate(this.env, request)) || !(await this.env.LOGIN_LIMITS.getByName(await digest(`${this.env.AUTH_SIGNING_KEY}:email:${email}`)).consumeMail()))
-          return this.choosePage(lang, id, attempt, browser, email, tr(lang, "cloud.login.email.limited"));
+        if (!(await consumeLoginRate(this.env, request)) || !(await this.env.LOGIN_LIMITS.getByName(await digest(`${this.env.AUTH_SIGNING_KEY}:email:${email.toLowerCase()}`)).consumeMail()))
+          return onFail(tr(lang, "cloud.login.email.limited"));
         const code = newMailCode();
         try {
           // A device's sign-in names the device in the mail: someone asked to read a code out for another's device can tell.
-          await sendCode(this.env, lang, email, code, attempt.device ? attempt.name : "");
+          await sendCode(this.env, lang, email, code, attempt.device ? attempt.name : "", linking ? "apple_link" : "login");
         } catch (error) {
           console.error("login: no code sent", (error as { code?: string }).code ?? String(error));
-          return this.choosePage(lang, id, attempt, browser, email, tr(lang, "cloud.login.email.failed"));
+          return onFail(tr(lang, "cloud.login.email.failed"));
         }
         attempt.phase = "code";
         attempt.email = email;
@@ -456,11 +619,22 @@ export class LoginAttempt extends DurableObject<Env> {
       };
       const via = form.get("via");
       if (via === "google" && providerConfigured(this.#env)) {
+        delete attempt.provider;
+        delete attempt.posted;
+        delete attempt.pendingApple;
         attempt.phase = "started";
         this.ctx.storage.kv.put("attempt", attempt);
         return this.google(id, attempt, browser);
       }
-      if (via === "email") {
+      if (via === "apple" && appleConfigured(this.#env)) {
+        delete attempt.posted;
+        delete attempt.pendingApple;
+        attempt.provider = "apple";
+        attempt.phase = "started";
+        this.ctx.storage.kv.put("attempt", attempt);
+        return this.apple(id, attempt, browser);
+      }
+      if (via === "email" && mailConfigured(this.env)) {
         const email = (form.get("email") ?? "").trim().toLowerCase();
         if (!EMAIL.test(email) || !email.split("@")[1]!.includes(".")) return this.choosePage(lang, id, attempt, browser, email, tr(lang, "cloud.login.email.invalid"));
         return send(email);
@@ -478,15 +652,20 @@ export class LoginAttempt extends DurableObject<Env> {
         if (attempt.device) finish.searchParams.delete("state");
         return redirect(finish.toString(), cookie(this.#env.PUBLIC_ORIGIN, id, "", 0));
       }
-      if (via === "resend" && attempt.phase === "code" && attempt.email) return send(attempt.email);
+      if (via === "resend" && mailConfigured(this.env) && attempt.phase === "code" && attempt.email) return send(attempt.email);
       if (via === "back") {
         attempt.phase = "choosing";
+        delete attempt.provider;
+        delete attempt.posted;
+        delete attempt.pendingApple;
         delete attempt.email;
         delete attempt.mailCode;
+        delete attempt.mailExpires;
+        delete attempt.tries;
         await save();
         return this.choosePage(lang, id, attempt, browser, "");
       }
-      if (via === "code" && attempt.phase === "code" && attempt.email && attempt.mailCode) {
+      if (via === "code" && mailConfigured(this.env) && attempt.phase === "code" && attempt.email && attempt.mailCode) {
         const code = (form.get("code") ?? "").replace(/\s/g, "");
         if ((attempt.mailExpires ?? 0) <= nowSeconds()) return this.codePage(lang, id, attempt, browser, tr(lang, "cloud.login.code.expired"));
         if (!/^\d{6}$/.test(code) || (await digest(`${id}:${code}`)) !== attempt.mailCode) {
@@ -499,7 +678,21 @@ export class LoginAttempt extends DurableObject<Env> {
           await save();
           return this.codePage(lang, id, attempt, browser, tr(lang, "cloud.login.code.wrong", { n: CODE_TRIES - attempt.tries }));
         }
-        const finish = await this.complete(id, attempt, await this.emailIdentity(attempt.email));
+        let identity: Identity;
+        if (attempt.pendingApple) {
+          const pending = attempt.pendingApple;
+          await this.env.DIRECTORY.getByName("primary").linkApple(pending.appleSub, pending.targetSub, pending.email, pending.refreshToken);
+          delete attempt.pendingApple;
+          identity = {
+            sub: pending.targetSub,
+            email: pending.targetEmail,
+            name: pending.targetName || pending.name,
+            picture: pending.targetPicture,
+          };
+        } else {
+          identity = await this.emailIdentity(attempt.email);
+        }
+        const finish = await this.complete(id, attempt, identity);
         if (attempt.device) finish.searchParams.delete("state");
         return redirect(finish.toString(), cookie(this.#env.PUBLIC_ORIGIN, id, "", 0));
       }
@@ -580,7 +773,7 @@ export class LoginLimiter extends DurableObject<Env> {
   }
 }
 
-export async function googleStart(env: Env, request: Request): Promise<Response> {
+export async function googleStart(env: Env, request: Request, provider?: "apple"): Promise<Response> {
   const url = new URL(request.url);
   const state = url.searchParams.get("state") ?? "";
   const challenge = url.searchParams.get("code_challenge") ?? "";
@@ -589,7 +782,7 @@ export async function googleStart(env: Env, request: Request): Promise<Response>
   if (!(await consumeLoginRate(env, request))) return limited();
   const id = randomSecret();
   const name = (url.searchParams.get("name") ?? cloudProduct().name).slice(0, 80);
-  return env.LOGINS.getByName(id).start(id, { redirect: callback, state, challenge, name }, request);
+  return env.LOGINS.getByName(id).start(id, { redirect: callback, state, challenge, name }, request, provider);
 }
 
 export async function consumeLoginRate(env: Env, request: Request): Promise<boolean> {

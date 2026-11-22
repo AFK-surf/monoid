@@ -120,7 +120,7 @@ fn mine_bubble_node(
             _ => None
           }
         }
-        fly.flies_in(b, sent_words_part, fn(to) { Some((x - bubble_side, y - bubble_top, to.2, to.3)) }, bare_from=true, cut_from~)
+        fly.flies_in(b, sent_words_part, fn(to) { Some((x - bubble_side, y - bubble_top, to.2, to.3)) }, bare_from=true, cut_from~, particle=true)
       }
       None => ()
     }
@@ -681,6 +681,8 @@ fn SentFly::flies_in(
   bare_from? : Bool = false,
   in_list? : Bool = false,
   cut_from? : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?,
+  container? : Bool = false,
+  particle? : Bool = false,
 ) -> Unit {
   let lead = part == self.lead
   let from_fn = if lead {
@@ -695,7 +697,7 @@ fn SentFly::flies_in(
   } else {
     from
   }
-  v.flies_in(self.flight, from_fn, up_late~, bare_from~, far_of=sent_far, lead~, in_list~, cut_from?=cut_from) |> ignore
+  v.flies_in(self.flight, from_fn, up_late~, bare_from~, far_of=sent_far, lead~, in_list~, cut_from?=cut_from, container~, particle~) |> ignore
   if lead {
     (self.led)(v)
   }
@@ -705,9 +707,9 @@ fn SentFly::flies_in(
 /// Part `part` of what was sent (SentFly's keys) made as `v`, flying from the composer's that was shared by `id` as one
 /// box (mbui's View::shared, `container`: a quote's card from the composer's), with the rest of the send: on its flight,
 /// as long as its place is far (sent_far), led by its lead, its rise sent_up_late late.
-fn SentFly::shares(self : SentFly, v : @view.View, part : String, id : String) -> Unit {
+fn SentFly::shares(self : SentFly, v : @view.View, part : String, id : String, particle? : Bool = false) -> Unit {
   let lead = part == self.lead
-  v.shared(Is(id), self.flight, container=true, up_late=sent_up_late, far_of=sent_far, lead~) |> ignore
+  v.shared(Is(id), self.flight, container=true, up_late=sent_up_late, far_of=sent_far, lead~, particle~) |> ignore
   if lead {
     (self.led)(v)
   }
@@ -717,7 +719,7 @@ fn SentFly::shares(self : SentFly, v : @view.View, part : String, id : String) -
 /// How a picture sent from here flies in as part `part` of what was sent (`fly`), from where it stood (`from`; None
 /// where it was not made in the change it was sent in: there as it is): image_reveal_node's `flies`.
 fn sent_flies(fly : SentFly, part : String, from : (Double, Double, Double, Double)?) -> ((@view.View) -> Unit)? {
-  from.map(fn(r) { fn(v : @view.View) { fly.flies_in(v, part, fn(_) { Some(r) }) } })
+  from.map(fn(r) { fn(v : @view.View) { fly.flies_in(v, part, fn(_) { Some(r) }, particle=true) } })
 }
 
 ///|

@@ -28,7 +28,7 @@ let body_room : Double = 96.0
 /// The room under a chat's rows (chat_list's Foot row's): the composer's, the list's foot, and where something waits to be
 /// decided the bell's room over it (ask_clears).
 fn body_foot(v : ChatView) -> Double {
-  body_room + list_foot + (if @sfbase.ask_clears(v) { float_lift + float_side } else { 0.0 })
+  body_room + list_foot + (if @sfbase.ask_clears(v) { float_ask_clear } else { 0.0 })
 }
 
 ///|

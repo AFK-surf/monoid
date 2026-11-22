@@ -17,12 +17,15 @@ test "the window made shorter alone: a chat's page wakes no binding of its width
   let faults : Array[String] = []
   // (screen, width, platform, and each height step's most nodes made and bindings run)
   let screens = [
-    // (at 530 with the 34pt composer-top bar, the fixture's short chat overflows its list and 5 nodes come for it — the
-    // float_button_node, whose liquid glass/edge/shadow bindings add 3 initial bindings on mount: 13 → 16, as on 大屏 below)
-    ("小屏", 390.0, 2, [(590.0, 0, 4), (530.0, 5, 16)]),
-    // (at 530 the fixture's short chat overflows its list and 5 nodes come for it — the float_button_node, whose
-    // liquid glass/edge/shadow bindings add 3 initial bindings on mount: 55 → 58; at 590 no node mounts and it stays 51)
-    ("大屏", 1280.0, 0, [(590.0, 0, 51), (530.0, 5, 58)]),
+    // (at 530 with the 34pt composer-top bar, the fixture's short chat overflows its list and 6 nodes come for it — the
+    // way back to the newest alone on its capsule of glass (chat_floats_node's float_pill_group_node, one
+    // float_pill_item_node in it), whose liquid glass/edge/shadow bindings add 3 initial bindings on mount: 13 → 16, as
+    // on 大屏 below)
+    ("小屏", 390.0, 2, [(590.0, 0, 4), (530.0, 6, 16)]),
+    // (at 530 the fixture's short chat overflows its list and 6 nodes come for it — the way back to the newest on its
+    // capsule, as on 小屏, whose liquid glass/edge/shadow bindings add 3 initial bindings on mount: 55 → 58; at 590 no
+    // node mounts and it stays 51)
+    ("大屏", 1280.0, 0, [(590.0, 0, 51), (530.0, 6, 58)]),
   ]
   for screen in screens {
     let (name, w, platform, steps) = screen

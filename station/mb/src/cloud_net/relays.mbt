@@ -152,6 +152,8 @@ priv struct ProbeWatch {
   params : ProbeParams
   started_at : Int64
   mut failures : Int
+  /// The relays that failed a probe since the last one that reached it, bare.
+  streak_failed : Array[String]
   mut healthy_ticks : Int
   mut unsupported : Bool
   mut last_recover_at : Int64?
@@ -208,6 +210,7 @@ async fn ProbeWatch::tick(
   // (none of the relays answers: this machine's network or the relays', not the endpoint's)
   if !up {
     self.failures = 0
+    self.streak_failed.clear()
     return
   }
   guard reachable is Some(first) else { return }
@@ -226,23 +229,49 @@ async fn ProbeWatch::tick(
     }
   }
   self.healthy_ticks = 0
-  let tried : Array[String] = []
+  let connected : Array[String] = []
+  for s in status {
+    if s is { "connected": True, "url": String(u), .. } {
+      connected.push(bare(u))
+    }
+  }
+  // (relays.ts `probeTick`: on and not failed since, then not failed since, then those that have)
+  let pool : Array[String] = []
+  for u in [first, ..rest] {
+    if !pool.iter().any(p => bare(p) == bare(u)) {
+      pool.push(u)
+    }
+  }
+  let rank = fn(u : String) -> Int {
+    if self.streak_failed.contains(bare(u)) {
+      2
+    } else if connected.contains(bare(u)) {
+      0
+    } else {
+      1
+    }
+  }
+  let candidates : Array[String] = []
+  for r in 0..<3 {
+    for u in pool {
+      if rank(u) == r {
+        candidates.push(u)
+      }
+    }
+  }
   let failed_relays : Array[String] = []
   let offline_relays : Array[String] = []
   let mut first_detail = ""
   let mut probed = 0
-  let mut rest_idx = 0
+  let mut cand_idx = 0
   let mut exhausted = false
   while probed < max_probes_per_tick {
-    // The first that answered its ping, then the next of the rest whose ping answers.
-    let mut next : String? = if probed == 0 { Some(first) } else { None }
-    while next is None && rest_idx < rest.length() {
-      let c = rest[rest_idx]
-      rest_idx += 1
-      if tried.contains(bare(c)) {
-        continue
-      }
-      if ping_once(c) {
+    // The next candidate that answers its ping (`first` answered this check's).
+    let mut next : String? = None
+    while next is None && cand_idx < candidates.length() {
+      let c = candidates[cand_idx]
+      cand_idx += 1
+      if bare(c) == bare(first) || ping_once(c) {
         next = Some(c)
       }
     }
@@ -253,13 +282,13 @@ async fn ProbeWatch::tick(
         break
       }
     }
-    tried.push(bare(relay))
     let res = probe_once(probe, relay)
     probed += 1
     match res {
       Unsupported(words) => {
         // (a front or an addon from before: never restarted for having no probe)
         self.failures = 0
+        self.streak_failed.clear()
         self.unsupported = true
         say("INFO", "the endpoint cannot be probed through a relay; not probed again: relay=\{relay} error=\{words}")
         return
@@ -267,8 +296,11 @@ async fn ProbeWatch::tick(
       Reached => {
         if failed_relays.length() > 0 {
           say("INFO", "the endpoint was not reached through one relay, but answered through another; not the endpoint's: relay=\{failed_relays[0]} okRelay=\{relay} \{first_detail}")
+        } else if self.streak_failed.length() > 0 {
+          say("INFO", "the endpoint answered through another relay after earlier failures; not the endpoint's: okRelay=\{relay} failedBefore=\{self.streak_failed.join(",")}")
         }
         self.failures = 0
+        self.streak_failed.clear()
         let now = @effect.now()
         match self.last_recover_at {
           Some(at) if now - at >= self.cooldown => {
@@ -285,6 +317,9 @@ async fn ProbeWatch::tick(
           first_detail = detail
         }
         failed_relays.push(relay)
+        if !self.streak_failed.contains(bare(relay)) {
+          self.streak_failed.push(bare(relay))
+        }
         // (two relays found it out of reach: the endpoint's)
         if failed_relays.length() >= 2 {
           break
@@ -292,7 +327,8 @@ async fn ProbeWatch::tick(
       }
     }
   }
-  if rest_idx >= rest.length() && failed_relays.length() < 2 {
+  if failed_relays.length() < 2 &&
+    candidates[cand_idx:].iter().all(c => self.streak_failed.contains(bare(c))) {
     exhausted = true
   }
   if failed_relays.length() == 0 {
@@ -336,6 +372,7 @@ async fn ProbeWatch::tick(
   self.last_recover_at = Some(now)
   say("ERROR", "the endpoint failed its end-to-end probes through a relay that answers; recovering it: relay=\{failed_relays[0]}\{also} failures=\{self.failures} cooldownMs=\{self.cooldown}")
   self.failures = 0
+  self.streak_failed.clear()
   on_unhealthy()
 }
 
@@ -400,6 +437,7 @@ pub async fn keep_relays(
     params,
     started_at: @effect.now(),
     failures: 0,
+    streak_failed: [],
     healthy_ticks: 0,
     unsupported: false,
     last_recover_at: None,

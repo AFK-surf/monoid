@@ -75,6 +75,7 @@ typedef struct {
   float cx, cy, hx, hy;
   int is_dark;
   double settle_left;
+  uint64_t settle_serial;
   uint64_t updated_serial;
   uint64_t seen_serial;
 } MBAdSlot;
@@ -96,6 +97,11 @@ typedef struct {
   atomic_int missed;
   id<MTLTexture> ad_tex[2];
   int ad_cur;
+  id<MTLBuffer> ad_rb[3];
+  int ad_rb_i;
+  int ad_rb_prev_copied;
+  uint32_t ad_track_mask;
+  atomic_uint_fast64_t ad_conv_serial[MB_ADAPTIVE_MAX];
   MBAdSlot ad_slots[MB_ADAPTIVE_MAX];
   double ad_last_time;
   uint64_t ad_frame_serial;
@@ -1019,7 +1025,7 @@ static id<MTLRenderPipelineState> make_pipe(id<MTLLibrary> lib, MTLPixelFormat f
 #define MB_KIND_LIQUID_SINGLE 13
 #define MB_KINDS 14
 static int has_own_pipe(int kind) {
-  return (kind >= 0 && kind <= 6) || kind == 10 || kind == 11 || kind == MB_KIND_LIQUID_SINGLE;
+  return (kind >= 0 && kind <= 7) || kind == 10 || kind == 11 || kind == MB_KIND_LIQUID_SINGLE;
 }
 static id<MTLRenderPipelineState> kpipe[MB_KINDS];
 static dispatch_group_t kinds_made;
@@ -1423,22 +1429,26 @@ static void grab_levels(const Grab *m, int lw[4], int lh[4]) {
 
 static float g_light_angle = 0.0f;
 
+static void grab_map_uvc(const Grab *m, id<MTLTexture> bt, float map[4], float uvc[4]) {
+  int lw[4], lh[4];
+  grab_levels(m, lw, lh);
+  int sk = m->progressive ? 0 : m->k;
+  float sc = (float)at_scale;
+  float W = (float)bt.width, H = (float)bt.height, d = (float)(1 << sk);
+  map[0] = sc / d / W; map[1] = sc / d / H;
+  map[2] = -(float)m->px0 / d / W; map[3] = -(float)m->py0 / d / H;
+  uvc[0] = 0.5f / W; uvc[1] = 0.5f / H;
+  uvc[2] = ((float)lw[sk] - 0.5f) / W; uvc[3] = ((float)lh[sk] - 0.5f) / H;
+}
+
 // What the glass shows of a grab's blur in texture `bt` (level k's place in it): gtex and gu, its numbers with where
 // in it it is.
 static void show_blur(const Grab *m, id<MTLTexture> bt) {
-  int lw[4], lh[4];
-  grab_levels(m, lw, lh);
   gu = m->g;
   gu.misc[2] = cosf(g_light_angle);
   gu.misc[3] = sinf(g_light_angle);
   gtex = bt;
-  int sk = m->progressive ? 0 : m->k;
-  float sc = (float)at_scale;
-  float W = (float)gtex.width, H = (float)gtex.height, d = (float)(1 << sk);
-  gu.map[0] = sc / d / W; gu.map[1] = sc / d / H;
-  gu.map[2] = -(float)m->px0 / d / W; gu.map[3] = -(float)m->py0 / d / H;
-  gu.uvc[0] = 0.5f / W; gu.uvc[1] = 0.5f / H;
-  gu.uvc[2] = ((float)lw[sk] - 0.5f) / W; gu.uvc[3] = ((float)lh[sk] - 0.5f) / H;
+  grab_map_uvc(m, bt, gu.map, gu.uvc);
 }
 
 // The level a grab's blur is left in.
@@ -1536,6 +1546,9 @@ static void ad_forget(MBRenderWin *w) {
   if (!w) return;
   memset(w->ad_slots, 0, sizeof w->ad_slots);
   w->ad_last_time = 0.0;
+  w->ad_track_mask = 0;
+  w->ad_rb_prev_copied = 0;
+  for (int i = 0; i < MB_ADAPTIVE_MAX; i++) atomic_store(&w->ad_conv_serial[i], 0);
   atomic_store(&w->ad_settling, 0);
   atomic_store(&w->ad_drawing, 0);
   atomic_store(&w->ad_has_adaptive, 0);
@@ -1554,6 +1567,9 @@ static void ensure_ad_tex(MBRenderWin *w) {
     td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     td.storageMode = MTLStorageModePrivate;
     w->ad_tex[i] = [dev newTextureWithDescriptor:td];
+  }
+  for (int i = 0; i < 3; i++) {
+    if (!w->ad_rb[i]) w->ad_rb[i] = [dev newBufferWithLength:MB_ADAPTIVE_MAX * 4 * 2 options:MTLResourceStorageModeShared];
   }
   w->ad_cur = 0;
 }
@@ -1676,12 +1692,18 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
     }
     MBAdSlot *s = &w->ad_slots[sid];
     if (s->updated_serial == serial) continue;
+    if (!is_new && !backdrop_changed && s->settle_left > 0.0 &&
+        atomic_load(&w->ad_conv_serial[sid]) >= s->settle_serial) {
+      s->settle_left = 0.0;
+    }
     int need = is_new || backdrop_changed || s->settle_left > 0.0;
     if (need) {
       if (is_new) {
         s->settle_left = 0.0;
+        s->settle_serial = serial;
       } else if (backdrop_changed) {
         s->settle_left = MB_AD_SETTLE_SEC;
+        s->settle_serial = serial;
       } else {
         s->settle_left -= dt;
         if (s->settle_left <= 0.0) s->settle_left = 0.0;
@@ -1693,11 +1715,25 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
   return n_upd;
 }
 
-static void ad_run_updates(id<MTLCommandBuffer> cb, MBRenderWin *w, const AdPending *pend, int n_upd, double dt) {
-  if (!w || n_upd <= 0 || !gtex) return;
+typedef struct {
+  AdPending p;
+  __unsafe_unretained id<MTLTexture> tex;
+  float map[4];
+  float uvc[4];
+} AdBatchItem;
+
+static void ad_run_updates_batch(id<MTLCommandBuffer> cb, MBRenderWin *w, const AdBatchItem *items, int n_upd,
+                                 double dt) {
+  if (!w || n_upd <= 0) return;
   ensure_ad_tex(w);
   int cur = w->ad_cur, nxt = 1 - cur;
   id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
+  if (!w->ad_rb_prev_copied && w->ad_rb[w->ad_rb_i]) {
+    [bl copyFromTexture:w->ad_tex[cur] sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceSize:MTLSizeMake(MB_ADAPTIVE_MAX, 1, 1) toBuffer:w->ad_rb[w->ad_rb_i] destinationOffset:0
+      destinationBytesPerRow:MB_ADAPTIVE_MAX * 4 destinationBytesPerImage:MB_ADAPTIVE_MAX * 4];
+    w->ad_rb_prev_copied = 1;
+  }
   [bl copyFromTexture:w->ad_tex[cur] sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
            sourceSize:MTLSizeMake(MB_ADAPTIVE_MAX, 1, 1) toTexture:w->ad_tex[nxt] destinationSlice:0 destinationLevel:0
     destinationOrigin:MTLOriginMake(0, 0, 0)];
@@ -1709,23 +1745,69 @@ static void ad_run_updates(id<MTLCommandBuffer> cb, MBRenderWin *w, const AdPend
   id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
   [e setRenderPipelineState:adpipe];
   [e setViewport:(MTLViewport){0, 0, (double)MB_ADAPTIVE_MAX, 1.0, 0, 1}];
-  [e setFragmentTexture:gtex atIndex:0];
   [e setFragmentTexture:w->ad_tex[cur] atIndex:1];
+  id<MTLTexture> last_tex = nil;
   for (int i = 0; i < n_upd; i++) {
-    [e setScissorRect:(MTLScissorRect){(NSUInteger)pend[i].sid, 0, 1, 1}];
+    if (items[i].tex != last_tex) {
+      last_tex = items[i].tex;
+      [e setFragmentTexture:last_tex atIndex:0];
+    }
+    [e setScissorRect:(MTLScissorRect){(NSUInteger)items[i].p.sid, 0, 1, 1}];
     struct { float map[4]; float uvc[4]; float box[4]; float param[4]; } u;
-    memcpy(u.map, gu.map, sizeof u.map);
-    memcpy(u.uvc, gu.uvc, sizeof u.uvc);
-    u.box[0] = pend[i].cx; u.box[1] = pend[i].cy; u.box[2] = pend[i].hx; u.box[3] = pend[i].hy;
-    u.param[0] = (float)pend[i].is_dark;
-    u.param[1] = (float)pend[i].is_new;
+    memcpy(u.map, items[i].map, sizeof u.map);
+    memcpy(u.uvc, items[i].uvc, sizeof u.uvc);
+    u.box[0] = items[i].p.cx; u.box[1] = items[i].p.cy; u.box[2] = items[i].p.hx; u.box[3] = items[i].p.hy;
+    u.param[0] = (float)items[i].p.is_dark;
+    u.param[1] = (float)items[i].p.is_new;
     u.param[2] = (float)dt;
-    u.param[3] = (float)pend[i].sid;
+    u.param[3] = (float)items[i].p.sid;
     [e setFragmentBytes:&u length:sizeof u atIndex:0];
     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    if (!items[i].p.is_new && dt > 0.0) w->ad_track_mask |= (1u << items[i].p.sid);
   }
   [e endEncoding];
   w->ad_cur = nxt;
+}
+
+static void ad_run_updates(id<MTLCommandBuffer> cb, MBRenderWin *w, const AdPending *pend, int n_upd, double dt) {
+  if (!w || n_upd <= 0 || !gtex) return;
+  AdBatchItem items[MB_ADAPTIVE_MAX];
+  for (int i = 0; i < n_upd; i++) {
+    items[i].p = pend[i];
+    items[i].tex = gtex;
+    memcpy(items[i].map, gu.map, sizeof items[i].map);
+    memcpy(items[i].uvc, gu.uvc, sizeof items[i].uvc);
+  }
+  ad_run_updates_batch(cb, w, items, n_upd, dt);
+}
+
+static void ad_rb_finish(id<MTLCommandBuffer> cb, MBRenderWin *w, uint64_t serial) {
+  if (!w) return;
+  w->ad_rb_prev_copied = 0;
+  if (!w->ad_track_mask) return;
+  uint32_t mask = w->ad_track_mask;
+  id<MTLBuffer> rb = w->ad_rb[w->ad_rb_i];
+  w->ad_track_mask = 0;
+  if (!rb || !w->ad_tex[w->ad_cur]) return;
+  w->ad_rb_i = (w->ad_rb_i + 1) % 3;
+  id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
+  [bl copyFromTexture:w->ad_tex[w->ad_cur] sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+           sourceSize:MTLSizeMake(MB_ADAPTIVE_MAX, 1, 1) toBuffer:rb destinationOffset:MB_ADAPTIVE_MAX * 4
+    destinationBytesPerRow:MB_ADAPTIVE_MAX * 4 destinationBytesPerImage:MB_ADAPTIVE_MAX * 4];
+  [bl endEncoding];
+  [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+    (void)done;
+    const uint8_t *p = (const uint8_t *)rb.contents;
+    const uint8_t *prev = p;
+    const uint8_t *next = p + MB_ADAPTIVE_MAX * 4;
+    for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+      if (!(mask & (1u << i))) continue;
+      if (prev[i * 4 + 0] == next[i * 4 + 0] && prev[i * 4 + 1] == next[i * 4 + 1]) {
+        uint64_t cur = atomic_load(&w->ad_conv_serial[i]);
+        while (serial > cur && !atomic_compare_exchange_weak(&w->ad_conv_serial[i], &cur, serial)) {}
+      }
+    }
+  }];
 }
 
 static double ad_next_dt(MBRenderWin *w) {
@@ -1783,6 +1865,7 @@ static void glass_free(void) {
   for (int i = 0; i < MB_WINS; i++) {
     render_wins[i].ad_tex[0] = nil;
     render_wins[i].ad_tex[1] = nil;
+    for (int b = 0; b < 3; b++) render_wins[i].ad_rb[b] = nil;
     ad_forget(&render_wins[i]);
   }
   glass_forget();
@@ -2062,13 +2145,80 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
                    const MTLScissorRect *part, double ad_dt, uint64_t ad_serial) {
   gtex = nil;
   memset(&gu, 0, sizeof gu);
-  ad_fill_gu(at_win);
   encode_missing = 0;
   const float *f = (const float *)buf.contents;
   seg_base = count;
   while (seg_base > 0 && (int)(f[(seg_base - 1) * MB_INST + 5] + 0.5f) == 12) seg_base--;
   sc_on = part != NULL;
   if (part) sc = *part;
+  // Pre-scan glass captures before opening the main render pass: size blur levels once, and batch adaptive updates for
+  // blur-cache-hit groups into a single pass before begin_pass so the Retina canvas is not Store/Load split mid-pass.
+  int levels_sized = 0;
+  {
+    int max_w = 0, max_h = 0, scan_bound = 0, any_glass = 0;
+    for (int32_t s0 = 0; s0 < count;) {
+      int stid = (int)f[s0 * MB_INST + 20];
+      int32_t e0 = s0 + 1;
+      if (stid < 0) {
+        any_glass = 1;
+        while (e0 < count && (int)f[e0 * MB_INST + 20] == stid) e0++;
+        if (stid != scan_bound) {
+          scan_bound = stid;
+          Grab gm;
+          if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height) && grab_in_part(&gm)) {
+            if (gm.w > max_w) max_w = gm.w;
+            if (gm.h > max_h) max_h = gm.h;
+          }
+        }
+      }
+      s0 = e0;
+    }
+    if (any_glass) {
+      levels_sized = 1;
+      if (max_w > lv_w || max_h > lv_h) ensure_levels(max_w, max_h);
+      if (at_win && ad_dt >= 0.0) {
+        AdBatchItem pre_batch[MB_ADAPTIVE_MAX];
+        int pre_n = 0;
+        double key[7] = {target.width, target.height, at_scale, r, g, b, alpha};
+        int pre_bound = 0;
+        for (int32_t s0 = 0; s0 < count && pre_n < MB_ADAPTIVE_MAX;) {
+          int stid = (int)f[s0 * MB_INST + 20];
+          int32_t e0 = s0 + 1;
+          if (stid < 0) {
+            while (e0 < count && (int)f[e0 * MB_INST + 20] == stid) e0++;
+            if (stid != pre_bound) {
+              pre_bound = stid;
+              if ((int)(f[s0 * MB_INST + 5] + 0.5f) == 6) {
+                Grab gm;
+                if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height) && grab_in_part(&gm) &&
+                    under_take(f, s0, count, seg_base, &gm)) {
+                  int sl = slot_same(&gm, key);
+                  if (sl >= 0 && slot_bt[sl]) {
+                    AdPending tmp[MB_ADAPTIVE_MAX];
+                    int nu = ad_collect_and_match(at_win, f, s0, e0, count, &gm, 0, ad_dt, ad_serial, tmp);
+                    if (nu > 0) {
+                      float map[4], uvc[4];
+                      grab_map_uvc(&gm, slot_bt[sl], map, uvc);
+                      for (int i = 0; i < nu && pre_n < MB_ADAPTIVE_MAX; i++) {
+                        pre_batch[pre_n].p = tmp[i];
+                        pre_batch[pre_n].tex = slot_bt[sl];
+                        memcpy(pre_batch[pre_n].map, map, sizeof map);
+                        memcpy(pre_batch[pre_n].uvc, uvc, sizeof uvc);
+                        pre_n++;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          s0 = e0;
+        }
+        if (pre_n > 0) ad_run_updates_batch(cb, at_win, pre_batch, pre_n, ad_dt);
+      }
+    }
+  }
+  ad_fill_gu(at_win);
   id<MTLRenderCommandEncoder> enc = begin_pass(cb, target, p, buf, part ? 0 : 1, r, g, b, alpha);
   if (part) {
     [enc setRenderPipelineState:hpipe];
@@ -2079,7 +2229,7 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
   // and holes for native views (kind 9) apart, unblended. Glass over a hole
   // sees the hole (the canvas only, not the view under it).
   int32_t start = 0;
-  int bound = 0, shows = 0, levels_sized = 0;
+  int bound = 0, shows = 0;
   unsigned frame_clock = slots_clock;
   while (start < count) {
     int tid = (int)f[start * MB_INST + 20];
@@ -2210,6 +2360,7 @@ static int draw_parts(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLBuff
     missing |= encode_missing;
   }
   if (n != 0) pictures_missing = missing;
+  ad_rb_finish(cb, at_win, ad_serial);
   return n;
 }
 
@@ -2484,12 +2635,14 @@ static int draw_frame(MBRenderWin *w, MBFrame *fr, int tx, int check) {
   id<MTLCommandBuffer> pcb = [queue commandBuffer];
   if (drawable && direct) {
     encode(pcb, drawable.texture, mpipe, buf, count, r, g, b, 1, NULL, ad_dt, ad_serial);
+    ad_rb_finish(pcb, at_win, ad_serial);
     pictures_missing = encode_missing;
   } else if (drawable) {
     int dw = (int)drawable.texture.width, dh = (int)drawable.texture.height;
     if (dw != tw || dh != th) {
       ensure_canvas(w, dw, dh);
       encode(pcb, w->cv, mpipe, buf, count, r, g, b, 1, NULL, ad_dt, ad_serial);
+      ad_rb_finish(pcb, at_win, ad_serial);
       w->cv_ok = 0;
       checked = 0;
     }
@@ -2753,6 +2906,7 @@ static uint8_t *read_of(const float *f, int32_t count, const double bg[3], doubl
   id<MTLBuffer> buf = [dev newBufferWithBytes:f length:(count > 0 ? count : 1) * MB_INST * sizeof(float) options:MTLResourceStorageModeShared];
   id<MTLCommandBuffer> cb = [queue commandBuffer];
   encode(cb, tex, rpipe_off, buf, count, bg[0], bg[1], bg[2], alpha, NULL, ad_dt, ad_serial);
+  ad_rb_finish(cb, at_win, ad_serial);
   if (ad_mode > 0 && at_win) ad_finalize_frame(at_win, 1, ad_serial);
   at_win = NULL;
 #if TARGET_OS_OSX

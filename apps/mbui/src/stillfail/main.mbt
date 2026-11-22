@@ -581,6 +581,7 @@ fn main {
       let accounts = @core.subscribe("accounts")
       @sfcore.frame(accounts)
       report_signed_in(c, accounts)
+      report_bar_tick()
       @sfapp.view(c, core_source)
     },
     tree=@sfapp.app_tree(core_source),

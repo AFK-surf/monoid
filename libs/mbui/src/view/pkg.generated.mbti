@@ -619,6 +619,24 @@ pub fn[K] ListPlace::to_end(Self[K], glide? : Bool) -> Unit
 pub fn[K] ListPlace::wake(Self[K]) -> Unit
 
 #derive(@debug.Debug)
+pub(all) struct LiftParticle {
+  from_x : Double
+  from_y : Double
+  from_w : Double
+  from_h : Double
+  to_x : Double
+  to_y : Double
+  to_w : Double
+  to_h : Double
+  t_lin : Double
+  p : Double
+  bare : Bool
+  old : Bool
+  shared_box : Bool
+  has_old : Bool
+  seed : Int32
+}
+
 pub(all) struct ListSeen {
   list : NodeId
   rows : Array[(Int32, NodeId, (Double, Double, Double, Double))]
@@ -1255,6 +1273,10 @@ pub fn Tree::fault(Self, NodeId, String) -> Unit
 pub fn Tree::finger_areas(Self, NodeId) -> FingerAreas
 pub fn Tree::flight_drawn(Self, String) -> ((Double, Double, Double, Double), (Double, Double, Double, Double))?
 pub fn Tree::flight_ends_at(Self, String) -> Double?
+pub fn Tree::has_particle_flights(Self) -> Bool
+pub fn Tree::in_particle_flight(Self, NodeId) -> Bool
+pub fn Tree::lift_particle_of(Self, NodeId) -> LiftParticle?
+pub fn Tree::same_scroll_foot_split(Self, NodeId, NodeId) -> Bool
 pub fn Tree::focus_asked_takes(Self, NodeId) -> Bool
 pub fn Tree::focus_back_takes(Self, NodeId) -> Bool
 pub fn Tree::focus_in_scroll(Self) -> Bool
@@ -1571,7 +1593,7 @@ pub fn View::flies(Self) -> Bool
 #callsite(autofill(loc))
 pub fn View::flies_apart(Self, loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn View::flies_in(Self, Flight, ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, up_late? : Double, bare_from? : Bool, look_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, in_list? : Bool, cut_from? : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, loc~ : SourceLoc) -> Self
+pub fn View::flies_in(Self, Flight, ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, up_late? : Double, bare_from? : Bool, look_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, in_list? : Bool, cut_from? : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, container? : Bool, particle? : Bool, loc~ : SourceLoc) -> Self
 pub fn View::flight_across_now(Self) -> Double
 pub fn View::flight_ends_now(Self) -> Double?
 pub fn View::flight_land(Self) -> Unit
@@ -1787,7 +1809,7 @@ pub fn View::shakes_while(Self, (Double) -> Bool) -> Self
 #callsite(autofill(loc))
 pub fn View::shapes(Self, Live[Array[@paint.Shape]], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn View::shared(Self, Live[String], Flight, stays? : Bool, with_stays? : Bool, container? : Bool, up_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, loc~ : SourceLoc) -> Self
+pub fn View::shared(Self, Live[String], Flight, stays? : Bool, with_stays? : Bool, container? : Bool, up_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, particle? : Bool, loc~ : SourceLoc) -> Self
 pub fn View::shared_id(Self) -> String?
 #callsite(autofill(loc))
 pub fn View::shift(Self, Live[(Double, Double)], loc~ : SourceLoc) -> Self

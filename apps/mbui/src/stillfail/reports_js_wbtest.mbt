@@ -121,3 +121,62 @@ test "a core failing on a host without its own reporter reaches the core started
   assert_eq(params.get("source"), Some(Json::string("core_failed")))
   assert_eq(params.get("message"), Some(Json::string("core failed: out of memory")))
 }
+
+///|
+extern "js" fn install_mock_mbreports() -> Unit =
+  #|() => {
+  #|  globalThis.__mockReportsPrev = globalThis.__mbreports;
+  #|  globalThis.__mockReportsCalls = [];
+  #|  globalThis.__mbreports = {
+  #|    tell: (what, a, b, n, m) => {
+  #|      globalThis.__mockReportsCalls.push({ what, a, b, n, m });
+  #|      if (what === "hello" || what === "bar_switch_ready" || what === "reporting") return 1;
+  #|      return 0;
+  #|    },
+  #|  };
+  #|}
+
+///|
+extern "js" fn captured_mbreports_calls() -> String =
+  #|() => JSON.stringify(globalThis.__mockReportsCalls)
+
+///|
+extern "js" fn restore_mock_mbreports() -> Unit =
+  #|() => {
+  #|  globalThis.__mbreports = globalThis.__mockReportsPrev;
+  #|  delete globalThis.__mockReportsPrev;
+  #|  delete globalThis.__mockReportsCalls;
+  #|}
+
+///|
+test "with __mbreports installed, reports_start routes bar_switch and faults to the web host" {
+  let previous_fault = @view.fault_told.val
+  let previous_failed = @core.on_failed.val
+  let previous_bar = @sfapp.bar_timing.val
+  let previous_open = @sfbase.open_timing.val
+  let previous_use_mb_bar = use_mb_bar.val
+  install_mock_mbreports()
+  defer {
+    @view.fault_told.val = previous_fault
+    @core.on_failed.val = previous_failed
+    @sfapp.bar_timing.val = previous_bar
+    @sfbase.open_timing.val = previous_open
+    use_mb_bar.val = previous_use_mb_bar
+    @sfapp.reporting_host.set(None)
+    restore_mock_mbreports()
+  }
+  reports_start()
+  assert_eq(use_mb_bar.val, true)
+  guard @sfapp.bar_timing.val is Some(bt) else { fail("expected bar_timing set") }
+  (bt.placed)("", "chats")
+  (bt.built)("chats")
+  let calls = @json.parse(captured_mbreports_calls()) catch { _ => Json::null() }
+  guard calls is Array(a) else { fail("expected list of __mbreports calls") }
+  let bar_calls = a.filter(fn(item) {
+    match item {
+      Object(m) => m.get("what") == Some(Json::string("bar_switch"))
+      _ => false
+    }
+  })
+  assert_eq(bar_calls.length(), 1)
+}

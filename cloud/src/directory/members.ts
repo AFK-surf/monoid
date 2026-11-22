@@ -257,7 +257,7 @@ export class DirectoryMembers {
    * lock requests, bug reports, and what waits for its email (pending, added, invitations). Refused (409 sole_owner)
    * while it is the only owner of a workspace others are in: they would be left with no one to manage it.
    */
-  async deleteAccount(sub: string): Promise<void> {
+  async deleteAccount(sub: string): Promise<{ appleTokens: string[] }> {
     const email = this.#db.one("SELECT email FROM users WHERE sub = ?", sub)?.email as string | undefined;
     const memberships = this.#db.rows("SELECT workspace, role FROM members WHERE sub = ?", sub).map((r) => ({ workspace: r.workspace as string, role: r.role as Role }));
     const alone = memberships.filter((m) => this.#db.members(m.workspace).length === 1).map((m) => m.workspace);
@@ -275,7 +275,12 @@ export class DirectoryMembers {
       this.#host.revoke(workspace, "sub", sub);
       this.#host.changed(workspace, true);
     }
+    const appleTokens: string[] = [];
     this.#db.ctx.storage.transactionSync(() => {
+      for (const row of this.#db.rows("SELECT refresh_token FROM apple_identities WHERE user_sub = ? AND refresh_token IS NOT NULL", sub)) {
+        if (typeof row.refresh_token === "string" && row.refresh_token) appleTokens.push(row.refresh_token);
+      }
+      this.#db.run("DELETE FROM apple_identities WHERE user_sub = ?", sub);
       for (const table of ["push", "devices", "lock_requests"]) this.#db.run(`DELETE FROM ${table} WHERE sub = ?`, sub);
       this.#db.run("DELETE FROM feedback_replies WHERE feedback IN (SELECT id FROM feedback WHERE account = ?)", sub);
       this.#db.run("DELETE FROM feedback WHERE account = ?", sub);
@@ -290,6 +295,7 @@ export class DirectoryMembers {
     this.#host.tell([sub], LIST);
     this.#host.adminChanged("users", "workspaces", "feedback");
     await this.#host.delivered();
+    return { appleTokens };
   }
 
   #keepAnOwner(workspace: string): void {

@@ -396,3 +396,59 @@ test "rooms: an app's rules for its presses' room, its least by a mouse and a fi
   assert_eq(room_least(), 44.0, msg="a finger on a window 400 wide, a large screen's from 500 only: a finger's")
   set_press_rules(was)
 }
+
+///|
+/// rr_bar_over_list's column and bar, the bar of no ground of its own but, beside what it holds and drawn before it, a
+/// scroll edge (an app's bar's: over it from its top, 76 tall, faded out over all of it, its frosted fill taking no
+/// pointer) 16 past its foot.
+fn rr_bar_edge_over_list(v : @view.View) -> Unit {
+  v.box(fn(blk) {
+    blk.width(Is(Some(300.0))).height(Is(Some(200.0))) |> ignore
+    blk.box(fn(l) {
+      l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      l.scrolls(@view.Scroll::new(), fn(held) {
+        for k in 0..<6 {
+          rr_key(held, 300.0, 40.0, "行\{k}")
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+    blk.box(fn(o) {
+      o.over(Is(true)).height(Is(Some(60.0))).padding(Is((250.0, 25.0, 0.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
+      o.box(fn(edge) {
+        edge
+        .over(Is(true), from_top=true)
+        .width_share(Is(1.0))
+        .height(Is(Some(76.0)))
+        .fades(Is((0.0, 0.0, 0.0, 76.0)))
+        |> ignore
+        edge.box(fn(fill) {
+          fill
+          .width_share(Is(1.0))
+          .height_share(Is(1.0))
+          .glass(Is(Some(@paint.Glass::frosted(blur=8.5, tint=0xFFFFFF80L, solid=0xEEEEEEFFL, progressive=true))))
+          .points(Is(false))
+          |> ignore
+          fill.pointed() |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      rr_key(o, 40.0, 30.0, "钥")
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+test "rooms: a row of what scrolls under a bar's scroll edge beside its key, not what holds it, is not drawn over that key; past the bar, in the edge's fading tail, the row takes the press" {
+  let (t, tree) = rr_tester(0, fn(b) { rr_bar_edge_over_list(b) })
+  let (key, (kx0, ky0, kx1, ky1)) = rr_box(tree, "钥")
+  assert_true(rr_on(tree, key, (kx0 + kx1) / 2.0, (ky0 + ky1) / 2.0), msg="the key pressed where it is drawn")
+  assert_eq(rr_faults(t), [])
+  // (the edge's tail, 12 past the bar's foot at 100: nearly faded out, the row under it pressed)
+  let (row, _) = rr_box(tree, "行1")
+  assert_true(rr_on(tree, row, 150.0, 112.0), msg="the row under the edge's tail")
+}

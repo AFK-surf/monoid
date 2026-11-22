@@ -380,9 +380,6 @@ let jobs_pop_w : Double = 360.0
 let subchats_pop_w : Double = 340.0
 
 ///|
-let subchats_pop_most : Double = 420.0
-
-///|
 /// How many pull requests the info names itself (the rest: 全部 N 个).
 let info_pulls_most : Int = 3
 

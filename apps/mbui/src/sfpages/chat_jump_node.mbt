@@ -758,60 +758,6 @@ fn chat_to_end(jump : ChatJump, place : @view.ListPlace[String]) -> Unit {
 }
 
 ///|
-/// A button floating over the list's foot `foot` at its top (a row of no height, the button standing over it: where
-/// the composer is, whatever its height), just over the send button (the composer's column `width` across, `float_in`
-/// in from its side, float_lift over the foot), `lift` higher (over those that show under it: float_above each), while
-/// `shown`; made by `build`.
-fn chat_float_stand(
-  foot : @view.View,
-  jump : ChatJump,
-  chat : String,
-  width : () -> Double,
-  lift : () -> Double,
-  shown : () -> Bool,
-  build : (@view.View) -> @view.View,
-) -> Unit {
-  foot.show(shown, at_once=true, leave=float_ms, fn(stand) {
-    // (as wide as its column is drawn, where it is drawn, as the composer under it is, whatever the column is laid out
-    // at on its way to another width: @sfbase.column_laid; over the composer's send button all the way)
-    stand.row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Start))).height(Is(Some(0.0))) |> ignore
-    // (none at rest: bound once a column has first set off on such a way, at that cause, never before)
-    let bound = Ref(false)
-    stand.reacts(fn() { @sfbase.column_set_off_count() > 0 }, fn(going) {
-      if going && !bound.val && stand.alive() {
-        bound.val = true
-        stand
-        .margin(By(fn() { (0.0, 0.0, -@sfbase.column_laid(chat, stand).by, 0.0) }))
-        .offset(By(fn() { (-@sfbase.column_laid(chat, stand).across, 0.0) }))
-        |> ignore
-      }
-    })
-    // (fading in and out over float_ms (the old page's float_trans), leaving over as long; standing as it is found as
-    // its list is first in sight and as an answer tells it (ChatJump's `sight_from`, @view.answering), coming by
-    // nothing)
-    let settled = stand.cause_at() <= jump.sight_from || @view.answering_now()
-    stand.alpha(By(@motion.presence_in(stand, @motion.tween(float_ms, ease=Out), from=if settled { 1.0 } else { 0.0 }))) |> ignore
-    let reach = @sf.float_button_reach
-    let b = build(stand)
-    b
-    .margin(
-      By(fn() {
-        let c = @sfbase.column_laid(chat, b)
-        let w = width() + c.by
-        let cw = composer_width_on(w, c)
-        (
-          0.0,
-          -(float_side + 2.0 * reach + float_lift - reach + lift()),
-          (w - cw) / 2.0 + float_in - reach,
-          0.0,
-        )
-      }),
-    )
-    |> ignore
-  })
-}
-
-///|
 /// Whether the way to the newest shows: the list away from its end and not on its glide back there, or the window
 /// short of the chat's end.
 fn chat_jumps(jump : ChatJump, view : () -> ChatView) -> Bool {
@@ -826,92 +772,190 @@ fn chat_outlines(src : Source, jump : ChatJump, view : () -> ChatView) -> Bool {
 }
 
 ///|
-/// The way to the newest (to_latest's) in the list's foot `foot` (chat_float_stand's, the composer's column `width`
-/// across): shown while chat_jumps (how many new messages wait at the chat's end said then). Pressed, chat_to_newest.
-fn chat_to_newest_node(
+/// The round buttons floating over the list's foot `foot` at its top (a row of no height, they standing on it: where
+/// the composer is, whatever its height), right over the send button (the composer's column `width` across, `float_in`
+/// in from its side, float_lift over the top of what the composer shows, `drop` under the foot's top as the composer
+/// tells it): 待处理's bell (chat_ask_shown), 对话目录's (chat_outlines) and the way to
+/// the newest (chat_jumps) one over another on one capsule of glass (@sf.float_pill_group_node), as many as show; the
+/// way to the newest under it on a button of its own while it says how many new messages wait (words the capsule has
+/// no room for). Shown while any is, fading in and out over float_ms.
+fn chat_floats_node(
   foot : @view.View,
   src : Source,
   r : ChatRef,
   jump : ChatJump,
   place : @view.ListPlace[String],
   view : () -> ChatView,
+  rows : ChatBodyList,
   width : () -> Double,
   tips : @sf.TipLayer,
+  stint : () -> Int,
+  drop? : (@view.View, Double) -> Double = fn(_, _) { 0.0 },
 ) -> Unit {
   let chat = r.station + "\u{1}" + r.session
+  let ask_shown = chat_ask_shown(jump, view, rows)
+  let outline_shown = fn() { chat_outlines(src, jump, view) }
+  let latest_shown = fn() { chat_jumps(jump, view) }
+  let latest_count = fn() {
+    let cv = view()
+    if cv.newer && cv.unread > 0.0 {
+      @sf.t("web-main.chat.newMessages", args=[("n", cv.unread.to_int().to_string())])
+    } else {
+      ""
+    }
+  }
+  let latest_has_count = fn() { latest_shown() && latest_count() != "" }
+  let latest_in_pill = fn() { latest_shown() && latest_count() == "" }
+  let pill_shown = fn() { ask_shown() || outline_shown() || latest_in_pill() }
   // (not in a replay of a run from before the outline, whose way to the newest went to the end alone: `asks_outline`)
   let back = fn() { (src.asks_outline)() && @sfbase.place_kept(chat) }
-  let press = fn() { chat_to_newest(src, r, jump, place, view) }
-  chat_float_stand(foot, jump, r.station + "\u{1}" + r.session, width, fn() { 0.0 }, fn() { chat_jumps(jump, view) }, fn(o) {
-    @sf.float_button_node(
-      o,
-      "arrow-down",
-      fn() { @sf.t(if back() { "web-main.outline.back" } else { "web-main.chat.toLatest" }) },
-      press,
-      // (its latest page asked and coming: turning, pressed no more meanwhile, as the old page's to_latest)
-      busy=fn() { chat_latest_coming(src, r, jump, view()) },
-      count=fn() {
-        let cv = view()
-        if cv.newer && cv.unread > 0.0 {
-          @sf.t("web-main.chat.newMessages", args=[("n", cv.unread.to_int().to_string())])
+  let latest_label = fn() { @sf.t(if back() { "web-main.outline.back" } else { "web-main.chat.toLatest" }) }
+  let latest_press = fn() { chat_to_newest(src, r, jump, place, view) }
+  // (its latest page asked and coming: turning, pressed no more meanwhile, as the old page's to_latest)
+  let latest_busy = fn() { chat_latest_coming(src, r, jump, view()) }
+  // (the column's right edge where the composer's capsules end, `float_in` in from the composer's side, for what is
+  // drawn of each: the room `reach` round a float_button_node's taken back)
+  let right_in = fn(v : @view.View, reach : Double) {
+    let c = @sfbase.column_laid(chat, v)
+    let w = width() + c.by
+    (w - composer_width_on(w, c)) / 2.0 + float_in - reach
+  }
+  // (which of them show on the capsule, in this order)
+  let pill_keys = fn() {
+    let keys : Array[String] = []
+    if ask_shown() {
+      keys.push("ask")
+    }
+    if outline_shown() {
+      keys.push("outline")
+    }
+    if latest_in_pill() {
+      keys.push("latest")
+    }
+    keys
+  }
+  foot.show(pill_shown, at_once=true, leave=float_ms, fn(stand) {
+    chat_float_stand(stand, jump, chat)
+    // (as found as it comes and as an answer tells it: at once; else one coming or going opens or shuts its room on the
+    // capsule from that cause (View::comes); none left as it fades out, the capsule kept as it was till it is gone)
+    let shown_keys : @signals.Signal[Array[String]] = @signals.signal(@signals.untracked(pill_keys))
+    let g = @sf.float_pill_group_node(stand, fn(g) {
+      // (one slot a button, made once for its key as it comes: a moment's one, two or three)
+      g.each(fn() { shown_keys.get() }, fn(k) { k }, fn(s, k) {
+        match k.untracked() {
+          "ask" =>
+            @sf.float_pill_item_node(s, "bell", fn() { @sf.t("web-main.chat.asks.go") }, chat_ask_press(src, r, jump, place, view), tips~)
+            |> ignore
+          "outline" => chat_outline_item(s, src, r, jump, view, tips, stint)
+          _ =>
+            @sf.float_pill_item_node(s, "arrow-down", latest_label, latest_press, busy=latest_busy, tips~, shortcut="chat.latest")
+            |> ignore
+        }
+      })
+    })
+    stand.reacts(
+      pill_keys,
+      fn(want) {
+        guard !want.is_empty() && stand.alive() else { return }
+        if stand.cause_at() <= jump.sight_from || @view.answering_now() {
+          shown_keys.set(want)
         } else {
-          ""
+          @view.transition(within=g, fn() { shown_keys.set(want) })
         }
       },
-      tips~,
-      shortcut="chat.latest",
+      at_start=false,
     )
+    // (over the way to the newest saying how many wait, float_gap over it, while it shows: moved there from its cause,
+    // found there as it comes and as an answer tells it)
+    let over_at = fn() { if latest_has_count() { @sf.float_button_side + float_gap } else { 0.0 } }
+    let over = @motion.NodeWay::new(@signals.untracked(over_at))
+    stand.reacts(
+      over_at,
+      fn(to) {
+        if stand.cause_at() <= jump.sight_from || @view.answering_now() {
+          over.put(to)
+        } else {
+          over.go(g, to, @motion.move_damped)
+        }
+      },
+      at_start=false,
+    )
+    g.margin(By(fn() { (0.0, 0.0, right_in(g, 0.0), float_lift - drop(g, width()) + over.shown(g)) })) |> ignore
+  })
+  foot.show(latest_has_count, at_once=true, leave=float_ms, fn(stand) {
+    chat_float_stand(stand, jump, chat)
+    let reach = @sf.float_button_reach
+    let o = @sf.float_button_node(stand, "arrow-down", latest_label, latest_press, count=latest_count, busy=latest_busy, tips~, shortcut="chat.latest")
+    o.margin(By(fn() { (0.0, 0.0, right_in(o, reach), float_lift - reach - drop(o, width())) })) |> ignore
   })
 }
 
 ///|
-/// 对话目录's round button (outline_float's) over the way to the newest in the list's foot `foot`, with it
-/// (chat_outlines); pressed, chat `r`'s outline beside it (a sheet on Small), at the message the reader is at
-/// (outline_current: what the list last had in sight, sfbase's Reading); what ⌘G opens it beside while it shows
-/// (`jump`'s outline_at). Its page's time on top `stint`.
-fn chat_outline_node(
-  foot : @view.View,
+/// A stand `stand` of chat_floats_node's over the list's foot: a row of no height, what it holds standing on its foot
+/// at its right, as wide as its column is drawn, where it is drawn, as the composer under it is, whatever the column is
+/// laid out at on its way to another width (@sfbase.column_laid; over the composer's send button all the way), fading
+/// in and out over float_ms.
+fn chat_float_stand(stand : @view.View, jump : ChatJump, chat : String) -> Unit {
+  stand.row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(End))).height(Is(Some(0.0))) |> ignore
+  // (none at rest: bound once a column has first set off on such a way, at that cause, never before)
+  let bound = Ref(false)
+  stand.reacts(fn() { @sfbase.column_set_off_count() > 0 }, fn(going) {
+    if going && !bound.val && stand.alive() {
+      bound.val = true
+      stand
+      .margin(By(fn() { (0.0, 0.0, -@sfbase.column_laid(chat, stand).by, 0.0) }))
+      .offset(By(fn() { (-@sfbase.column_laid(chat, stand).across, 0.0) }))
+      |> ignore
+    }
+  })
+  // (fading in and out over float_ms (the old page's float_trans), leaving over as long; standing as it is found as its
+  // list is first in sight and as an answer tells it (ChatJump's `sight_from`, @view.answering), coming by nothing)
+  let settled = stand.cause_at() <= jump.sight_from || @view.answering_now()
+  stand.alpha(By(@motion.presence_in(stand, @motion.tween(float_ms, ease=Out), from=if settled { 1.0 } else { 0.0 }))) |> ignore
+}
+
+///|
+/// 对话目录's round button (outline_float's) in `o` (chat_floats_node's capsule); pressed, chat `r`'s outline beside it
+/// (a sheet on Small), at the message the reader is at (outline_current: what the list last had in sight, sfbase's
+/// Reading); what ⌘G opens it beside while it shows (`jump`'s outline_at). Its page's time on top `stint`.
+fn chat_outline_item(
+  o : @view.View,
   src : Source,
   r : ChatRef,
   jump : ChatJump,
   view : () -> ChatView,
-  width : () -> Double,
   tips : @sf.TipLayer,
   stint : () -> Int,
 ) -> Unit {
   let chat = r.station + "\u{1}" + r.session
-  chat_float_stand(foot, jump, r.station + "\u{1}" + r.session, width, fn() { float_above }, fn() { chat_outlines(src, jump, view) }, fn(o) {
-    // (beside the button itself, their feet together: its room, not the stand it floats in)
-    let button : Ref[@view.View] = Ref(o)
-    let press = fn() {
-      let cv = @signals.untracked(view)
-      guard cv.thread is Some(th) else { return }
-      let rd = @sfbase.reading_of(chat)
-      let current = outline_current(said_in_view(chat_whole(src, r, cv)), rd.top_seq, rd.at_end)
-      open_outline(src, r, th, current, from=Node(button.val), side=Left, stint=@signals.untracked(stint))
+  let button : Ref[@view.View] = Ref(o)
+  let press = fn() {
+    let cv = @signals.untracked(view)
+    guard cv.thread is Some(th) else { return }
+    let rd = @sfbase.reading_of(chat)
+    let current = outline_current(said_in_view(chat_whole(src, r, cv)), rd.top_seq, rd.at_end)
+    open_outline(src, r, th, current, from=Node(button.val), side=Left, stint=@signals.untracked(stint))
+  }
+  button.val = @sf.float_pill_item_node(o, "list", fn() { @sf.t("web-main.outline.title") }, press, tips~, shortcut="chat.outline")
+  // (⌘G's outline beside it while it shows: chat_body_node's chat.outline)
+  jump.outline_at = Some(button.val)
+  o.owns(fn() { if jump.outline_at.map(fn(b) { b.id() }) == Some(button.val.id()) { jump.outline_at = None } }) |> ignore
+  // (a screen's fixture: the outline opened from it as it shows, its words typed, its field taking the keys, in the
+  // button's moment's turn: outline_presets)
+  match outline_presets.get(chat) {
+    Some(words) => {
+      outline_presets.remove(chat) |> ignore
+      o.at_moment(o.cause_at(), fn() {
+        let cv = @signals.untracked(view)
+        guard cv.thread is Some(th) else { return }
+        let rd = @sfbase.reading_of(chat)
+        let current = outline_current(said_now(src, r, chat_whole(src, r, cv)), rd.top_seq, rd.at_end)
+        open_outline(src, r, th, current, from=Node(button.val), side=Left, keys=true, stint=@signals.untracked(stint), typed=words)
+      })
+      |> ignore
     }
-    button.val = @sf.float_button_node(o, "list", fn() { @sf.t("web-main.outline.title") }, press, tips~, shortcut="chat.outline")
-    // (⌘G's outline beside it while it shows: chat_body_node's chat.outline)
-    jump.outline_at = Some(button.val)
-    o.owns(fn() { if jump.outline_at.map(fn(b) { b.id() }) == Some(button.val.id()) { jump.outline_at = None } }) |> ignore
-    // (a screen's fixture: the outline opened from it as it shows, its words typed, its field taking the keys, in
-    // the button's moment's turn: outline_presets)
-    match outline_presets.get(chat) {
-      Some(words) => {
-        outline_presets.remove(chat) |> ignore
-        o.at_moment(o.cause_at(), fn() {
-          let cv = @signals.untracked(view)
-          guard cv.thread is Some(th) else { return }
-          let rd = @sfbase.reading_of(chat)
-          let current = outline_current(said_now(src, r, chat_whole(src, r, cv)), rd.top_seq, rd.at_end)
-          open_outline(src, r, th, current, from=Node(button.val), side=Left, keys=true, stint=@signals.untracked(stint), typed=words)
-        })
-        |> ignore
-      }
-      None => ()
-    }
-    button.val
-  })
+    None => ()
+  }
 }
 
 ///|
@@ -1401,26 +1445,11 @@ let chat_rail_press : @ui.Style = @ui.style(
 )
 
 ///|
-/// The bell to what waits to be decided in chat `r` (to_ask's: the core's `asks`) over the round buttons that show
-/// under it in the list's foot `foot`, while any of their asks is not among the rows the list has in sight (once it has
-/// any; `rows` its rows): a post's under its words, seen where its last piece is (a long message's ask under the last of
-/// them); pressed, the next one's the next time (ask_turns), the list (`place`) to where it is: the chat's end where it
-/// is the one the chat's end says it stands on (the line saying so, as it is seen there), else the chat to its post
-/// (@sfbase.go_to) with its ask brought before the eyes (ChatJump's ask_to: the post's last piece, the ask marked sought
-/// there), not the post's top, a long report's screens over it.
-fn chat_ask_node(
-  foot : @view.View,
-  r : ChatRef,
-  src : Source,
-  jump : ChatJump,
-  place : @view.ListPlace[String],
-  view : () -> ChatView,
-  rows : ChatBodyList,
-  width : () -> Double,
-  tips : @sf.TipLayer,
-) -> Unit {
-  let chat = r.station + "\u{1}" + r.session
-  let shown = fn() {
+/// Whether 待处理's bell (to_ask's: the core's `asks`) shows in chat_floats_node's capsule: while any of chat `view`'s
+/// asks is not among the rows the list has in sight (once it has any; `rows` its rows): a post's under its words, seen
+/// where its last piece is (a long message's ask under the last of them).
+fn chat_ask_shown(jump : ChatJump, view : () -> ChatView, rows : ChatBodyList) -> () -> Bool {
+  fn() {
     let v = view()
     let asks = asks_of(v)
     guard asks.length() > 0 && jump.sight.get() is Some((first, last, last_slice)) else { return false }
@@ -1455,51 +1484,44 @@ fn chat_ask_node(
     }
     asks.iter().any(fn(a) { !seen.contains(a) })
   }
-  let lift = fn() {
-    (if chat_jumps(jump, view) { float_above } else { 0.0 }) +
-    (if chat_outlines(src, jump, view) { float_above } else { 0.0 })
-  }
-  // (over the round buttons under it: as one comes or goes, it moves there from where it is on a Move, set off at
-  // their cause, as the old page's chat-ask/lift)
-  let lifted = @motion.Way::new(@signals.untracked(lift))
-  foot.reacts(
-    lift,
-    fn(to) {
-      // (as its list is first in sight, or an answer tells it: where it is found, as what it floats over stands)
-      if foot.cause_at() <= jump.sight_from || @view.answering_now() {
-        lifted.put(to)
+}
+
+///|
+/// 待处理's bell pressed, in chat `r`: the next ask the next time (ask_turns), the list (`place`) to where it is: the
+/// chat's end where it is the one the chat's end says it stands on (the line saying so, as it is seen there), else the
+/// chat to its post (@sfbase.go_to) with its ask brought before the eyes (ChatJump's ask_to: the post's last piece, the
+/// ask marked sought there), not the post's top, a long report's screens over it.
+fn chat_ask_press(
+  src : Source,
+  r : ChatRef,
+  jump : ChatJump,
+  place : @view.ListPlace[String],
+  view : () -> ChatView,
+) -> () -> Unit {
+  let chat = r.station + "\u{1}" + r.session
+  fn() {
+    let asks = asks_of(@signals.untracked(view))
+    guard asks.length() > 0 else { return }
+    let turn = ask_turns.get(chat).unwrap_or(0)
+    let seq = asks[turn % asks.length()]
+    ask_turns[chat] = turn + 1
+    let cv = @signals.untracked(view)
+    if cv.state_ask == Some(seq) {
+      // (the one the chat's end stands on: the chat's end, its latest page first where the window is short of it)
+      if @sfbase.chat_latest_now(src, r, cv, @sf.t("web-main.chat.toLatest"), failed=fn() {
+          jump.latest = false
+          jump.latest_asked.set(false)
+        }) {
+        jump.latest = true
+        jump.latest_asked.set(true)
       } else {
-        lifted.go(to, @motion.move_damped, at=foot.cause_at())
+        chat_to_end(jump, place)
       }
-    },
-    at_start=false,
-  )
-  chat_float_stand(foot, jump, chat, width, fn() { lifted.shown_on(foot) }, shown, fn(o) {
-    let press = fn() {
-      let asks = asks_of(@signals.untracked(view))
-      guard asks.length() > 0 else { return }
-      let turn = ask_turns.get(chat).unwrap_or(0)
-      let seq = asks[turn % asks.length()]
-      ask_turns[chat] = turn + 1
-      let cv = @signals.untracked(view)
-      if cv.state_ask == Some(seq) {
-        // (the one the chat's end stands on: the chat's end, its latest page first where the window is short of it)
-        if @sfbase.chat_latest_now(src, r, cv, @sf.t("web-main.chat.toLatest"), failed=fn() {
-            jump.latest = false
-            jump.latest_asked.set(false)
-          }) {
-          jump.latest = true
-          jump.latest_asked.set(true)
-        } else {
-          chat_to_end(jump, place)
-        }
-        return
-      }
-      jump.ask_to = seq
-      @sfbase.go_to(r, seq)
+      return
     }
-    @sf.float_button_node(o, "bell", fn() { @sf.t("web-main.chat.asks.go") }, press, tips~)
-  })
+    jump.ask_to = seq
+    @sfbase.go_to(r, seq)
+  }
 }
 
 ///|

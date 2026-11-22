@@ -9,9 +9,9 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { clock } from "./auth";
 import type { Env } from "./env";
 
-/** Whether this verified email is the admin's; without ADMIN_EMAIL, nobody is. */
-export function isAdmin(env: Env, email: string): boolean {
-  return !!env.ADMIN_EMAIL && email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase();
+/** Whether this verified email is the admin's; without ADMIN_EMAIL, nobody is. Unlinked Apple accounts (`apple_`) are never the admin. */
+export function isAdmin(env: Env, email: string, sub?: string): boolean {
+  return !!env.ADMIN_EMAIL && !sub?.startsWith("apple_") && email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase();
 }
 
 const accessKeys = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
@@ -33,8 +33,8 @@ export async function throughAccess(request: Request, env: Env): Promise<boolean
 }
 
 /** Whether the console answers this signed-in account: through Access where it is set up, else the admin's email. */
-export async function consoleAdmin(request: Request, env: Env, email: string): Promise<boolean> {
-  return env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD ? throughAccess(request, env) : isAdmin(env, email);
+export async function consoleAdmin(request: Request, env: Env, email: string, sub?: string): Promise<boolean> {
+  return env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD ? throughAccess(request, env) : isAdmin(env, email, sub);
 }
 
 export const CODE_TTL_DAYS = 14;

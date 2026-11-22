@@ -62,6 +62,9 @@ fn Ctx::seen_whole_faults(self : Ctx, words : String) -> (String, Double, Double
       continue
     }
     for j in (k + 1)..<self.ninst {
+      if j < inst_owners.mark.length() && inst_owners.mark[j] == particle_inst_mark {
+        continue
+      }
       let oj = inst_by(j)
       // (what is in the words' own node; an old view's over the page by its stratum: the tree has no strata yet,
       // nothing of its over them by one)

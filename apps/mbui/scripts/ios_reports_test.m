@@ -159,6 +159,86 @@ int main(void) {
     SAME(bare[@"properties"][@"release"], @"0.1.0 (38)");
     // the whole event is JSON PostHog takes
     CHECK([NSJSONSerialization isValidJSONObject:e]);
+
+    // macOS MetricKit crash & hang: fingerprint uses "macos:" prefix instead of "ios:"
+    NSDictionary *mac_here = @{@"app" : @"macos", @"$lib" : @"stillfail-macos", @"release" : @"0.1.0 (38)", @"$os" : @"macOS", @"$device_manufacturer" : @"Apple"};
+    NSDictionary *me = sf_report_event(@{@"kind" : @"crash", @"at" : @1794030000123.0, @"diagnostic" : segv()}, rid, @"108123", mac_here);
+    SAME(me[@"properties"][@"$exception_fingerprint"], @"macos:SIGSEGV:mbui + 0x1234|mbui + 0x5678|UIKitCore + 0x9abc");
+    NSDictionary *mh = sf_report_event(@{@"kind" : @"hang", @"at" : @0, @"hang_ms" : @2500, @"diagnostic" : hang}, sf_report_id(@"hang", hang), @"108123", mac_here);
+    CHECK([mh[@"properties"][@"$exception_fingerprint"] hasPrefix:@"macos:Hang:mbui + 0x1234|"]);
+
+    // watchdog_hang event: macOS and iOS formats, valid JSON, requires hang_ms > 0
+    NSString *wd_rid = @"0123456789abcdef0123456789abcdef";
+    NSDictionary *wd_mac = sf_report_event(@{@"kind" : @"watchdog_hang", @"at" : @1794030000500.0, @"hang_ms" : @2600}, wd_rid, @"108123", mac_here);
+    CHECK(wd_mac != nil);
+    CHECK([NSJSONSerialization isValidJSONObject:wd_mac]);
+    SAME(wd_mac[@"event"], @"$exception");
+    SAME(wd_mac[@"distinct_id"], @"108123");
+    SAME(wd_mac[@"uuid"], sf_report_uuid(wd_rid));
+    SAME(wd_mac[@"properties"][@"reason"], @"watchdog_hang");
+    SAME(wd_mac[@"properties"][@"hang_ms"], @2600);
+    SAME(wd_mac[@"properties"][@"$exception_level"], @"error");
+    SAME(wd_mac[@"properties"][@"$exception_fingerprint"], @"macos:MainThreadHang:watchdog");
+    NSDictionary *wdx = [wd_mac[@"properties"][@"$exception_list"] firstObject];
+    SAME(wdx[@"type"], @"MainThreadHang");
+    SAME(wdx[@"value"], @"the main thread did not respond for 2.6 s");
+    SAME(wdx[@"mechanism"][@"type"], @"watchdog");
+    SAME(wdx[@"mechanism"][@"handled"], @NO);
+
+    NSDictionary *wd_ios = sf_report_event(@{@"kind" : @"watchdog_hang", @"at" : @1794030000500.0, @"hang_ms" : @2100}, wd_rid, @"108123", const_here());
+    SAME(wd_ios[@"properties"][@"$exception_fingerprint"], @"ios:MainThreadHang:watchdog");
+    CHECK(sf_report_event(@{@"kind" : @"watchdog_hang", @"at" : @0, @"hang_ms" : @0}, wd_rid, @"108123", mac_here) == nil);
+
+    // watchdog state machine: normal ticks, background reset, >=2s & 2-miss trigger, dedup within stall, 5/10min cap
+    sf_wd_state wd;
+    memset(&wd, 0, sizeof wd);
+    int send_ping = 0;
+    uint64_t hang_ms = 0;
+    // inactive: no ping, no report
+    CHECK(sf_wd_tick(&wd, 0, 1000, 0, &send_ping, &hang_ms) == 0);
+    CHECK(send_ping == 0);
+    // first active tick dispatches ping 1
+    CHECK(sf_wd_tick(&wd, 1, 2000, 0, &send_ping, &hang_ms) == 0);
+    CHECK(send_ping == 1 && wd.ping_seq == 1);
+    // 1st miss (1000ms elapsed): not yet reported
+    CHECK(sf_wd_tick(&wd, 1, 3000, 0, &send_ping, &hang_ms) == 0);
+    CHECK(send_ping == 0);
+    // 2nd miss (2000ms elapsed): reports once
+    CHECK(sf_wd_tick(&wd, 1, 4000, 0, &send_ping, &hang_ms) == 1);
+    CHECK(hang_ms == 2000 && send_ping == 0);
+    // 3rd miss in same stall: deduplicated
+    CHECK(sf_wd_tick(&wd, 1, 5000, 0, &send_ping, &hang_ms) == 0);
+    // main thread recovers (pong == 1): re-arms and dispatches ping 2
+    CHECK(sf_wd_tick(&wd, 1, 6000, 1, &send_ping, &hang_ms) == 0);
+    CHECK(send_ping == 1 && wd.ping_seq == 2);
+    // backgrounding during stall resets counter so sleep/background never false-fires
+    CHECK(sf_wd_tick(&wd, 1, 7000, 1, &send_ping, &hang_ms) == 0);
+    CHECK(sf_wd_tick(&wd, 0, 8000, 1, &send_ping, &hang_ms) == 0);
+    CHECK(sf_wd_tick(&wd, 1, 9000, 1, &send_ping, &hang_ms) == 0);
+    CHECK(wd.consecutive_misses == 1);
+    // rate limit: 4 more stalls within 10 min fire (total 5), 6th is suppressed, then after 10 min fires again
+    uint64_t t = 20000;
+    uint64_t seq = wd.ping_seq;
+    for (int i = 0; i < 4; i++) {
+      CHECK(sf_wd_tick(&wd, 1, t, seq, &send_ping, &hang_ms) == 0);
+      seq = wd.ping_seq;
+      CHECK(sf_wd_tick(&wd, 1, t + 1000, seq - 1, &send_ping, &hang_ms) == 0);
+      CHECK(sf_wd_tick(&wd, 1, t + 2100, seq - 1, &send_ping, &hang_ms) == 1);
+      CHECK(hang_ms == 2100);
+      t += 5000;
+    }
+    // 6th stall within 10 min window: suppressed
+    CHECK(sf_wd_tick(&wd, 1, t, seq, &send_ping, &hang_ms) == 0);
+    seq = wd.ping_seq;
+    CHECK(sf_wd_tick(&wd, 1, t + 1000, seq - 1, &send_ping, &hang_ms) == 0);
+    CHECK(sf_wd_tick(&wd, 1, t + 2200, seq - 1, &send_ping, &hang_ms) == 0);
+    // after 10-minute window expires, allowed again
+    t = 4000 + SF_WD_WINDOW_MS + 1000;
+    CHECK(sf_wd_tick(&wd, 1, t, seq, &send_ping, &hang_ms) == 0);
+    seq = wd.ping_seq;
+    CHECK(sf_wd_tick(&wd, 1, t + 1000, seq - 1, &send_ping, &hang_ms) == 0);
+    CHECK(sf_wd_tick(&wd, 1, t + 2500, seq - 1, &send_ping, &hang_ms) == 1);
+    CHECK(hang_ms == 2500);
   }
   if (!failed) printf("ios reports: ok\n");
   return failed;

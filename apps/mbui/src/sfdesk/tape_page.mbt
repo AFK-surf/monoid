@@ -729,6 +729,7 @@ fn tape_chat_bar_ends(n : @view.View) -> ChatBarEnds {
     },
     linked: fn() { None },
     ground: tape_page_ground,
+    content_offset: fn() { 0.0 },
   }
 }
 

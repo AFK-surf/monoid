@@ -806,7 +806,7 @@ pub fn glass_menu() -> @paint.Glass
 
 pub fn glass_overlay_shadow() -> (Double, Double, Int64)
 
-pub fn glass_scroll_edge() -> @paint.Glass
+pub fn glass_scroll_edge(ground? : Int64) -> @paint.Glass
 
 pub fn glass_sheet() -> @paint.Glass
 

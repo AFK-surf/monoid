@@ -293,8 +293,16 @@ fn back_round_fault(t : @ui.Tester, corner : Double) -> String? {
   let cuts = t.drawn_cut().filter(fn(e) { e.0 == 0 })
   for i, r in t.drawn_rects() {
     let (rx, ry, rw, rh, _) = r
-    // (its caret: a bar as tall as a line, a point or two wide, within its width)
-    guard rw <= 3.0 && rh >= 10.0 && rh <= 40.0 && rx >= x && rx + rw <= x + w && i < cuts.length() else {
+    // (its caret: a bar as tall as a line, a point or two wide, within its width and overlapping its ground's vertical
+    // span — excluding the 1pt divider inside the floating capsule above the composer)
+    guard rw <= 3.0 &&
+      rh >= 10.0 &&
+      rh <= 40.0 &&
+      rx >= x &&
+      rx + rw <= x + w &&
+      ry + rh > y &&
+      ry < y + h &&
+      i < cuts.length() else {
       continue
     }
     let (cx0, cy0, cx1, cy1) = cuts[i].5
@@ -327,6 +335,41 @@ test "a chat's page made as nodes, 小屏 and 大屏, three lines and five sent:
           Some(f) => fail("\{at}, \{t.time() - press} ms after the press: \{f}")
           None => ()
         }
+        t.run_for(sent_nodes_look_ms)
+      }
+    }
+  }
+}
+
+///|
+/// Composed opacity of the first drawn text node containing `words`, or `-1.0` when not drawn.
+fn sent_nodes_text_alpha(words : String) -> Double {
+  let held = @ui.view_tree().unwrap().drawn_held()
+  for e in held {
+    let (d, _, _) = e
+    if d.words.contains(words) {
+      return d.alpha
+    }
+  }
+  -1.0
+}
+
+///|
+test "composer-top capsule stays fully visible with zero words_over during single-line and three-line particle send on wide and small screens" {
+  for screen in [("大屏", 1280.0, 800.0, 0), ("小屏", 390.0, 844.0, 2)] {
+    for lines in [1, 3] {
+      let at = "\{screen.0}, \{lines} lines"
+      let t = back_round_chat(screen.1, screen.2, screen.3, lines)
+      assert_true(sent_nodes_text_alpha("Claude") >= 0.99, msg="\{at}: Claude not visible before send")
+      assert_true(sent_nodes_text_alpha("Willow") >= 0.99, msg="\{at}: Willow not visible before send")
+      tap_send(t)
+      let press = t.time()
+      let span = @ui.move_most_ms + flight_desk_ms
+      while t.time() - press <= span {
+        let ca = sent_nodes_text_alpha("Claude")
+        let wa = sent_nodes_text_alpha("Willow")
+        assert_true(ca >= 0.99, msg="\{at}, \{t.time() - press} ms: Claude alpha \{ca} < 0.99")
+        assert_true(wa >= 0.99, msg="\{at}, \{t.time() - press} ms: Willow alpha \{wa} < 0.99")
         t.run_for(sent_nodes_look_ms)
       }
     }

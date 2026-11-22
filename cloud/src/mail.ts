@@ -18,8 +18,8 @@ export interface Mailer {
 export const mailConfigured = (env: Env) => Boolean(env.EMAIL && env.EMAIL_FROM);
 
 /** Sends `code` to `to`, in `lang`; `device`, what is signing in when it is a device's sign-in (the name it gave), else "". */
-export async function sendCode(env: Env, lang: Lang, to: string, code: string, device: string): Promise<void> {
-  const lead = tr(lang, "cloud.mail.code.lead");
+export async function sendCode(env: Env, lang: Lang, to: string, code: string, device: string, purpose: "login" | "apple_link" = "login"): Promise<void> {
+  const lead = tr(lang, purpose === "apple_link" ? "cloud.mail.appleLink.lead" : "cloud.mail.code.lead");
   const more = [...(device ? [tr(lang, "cloud.mail.code.for", { name: device })] : []), tr(lang, "cloud.mail.code.notYou")];
   // The code on a line of its own, big, to read off or copy; not in the subject, which lock screens and mail lists show.
   // Six digits read as two groups of three, as the app's code boxes group them (the sign-in page takes it with the space).
@@ -29,7 +29,13 @@ export async function sendCode(env: Env, lang: Lang, to: string, code: string, d
     `<p style="margin:16px 0;font-size:32px;font-weight:700;letter-spacing:4px;word-spacing:10px;font-variant-numeric:tabular-nums">${escape(shown)}</p>` +
     more.map((line, i) => `<p${i === more.length - 1 ? ' style="color:#777"' : ""}>${escape(line)}</p>`).join("") +
     "</div>";
-  await env.EMAIL!.send({ from: { email: env.EMAIL_FROM!, name: cloudProduct().name }, to, subject: tr(lang, "cloud.mail.code.subject"), text: [lead, shown, ...more].join("\n\n"), html });
+  await env.EMAIL!.send({
+    from: { email: env.EMAIL_FROM!, name: cloudProduct().name },
+    to,
+    subject: tr(lang, purpose === "apple_link" ? "cloud.mail.appleLink.subject" : "cloud.mail.code.subject"),
+    text: [lead, shown, ...more].join("\n\n"),
+    html,
+  });
 }
 
 /**

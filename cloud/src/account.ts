@@ -174,9 +174,9 @@ export class Account extends DurableObject<Env> {
       // signing in a new one; sign-in has its own limits, login.ts's by address and the sessions an account may have)
       if (data.sessions.length >= LIMITS.sessions) return limited();
       data.email = identity.email;
-      data.name = identity.name;
-      data.picture = identity.picture;
-      await this.env.DIRECTORY.getByName("primary").upsertUser(identity);
+      data.name = identity.name || data.name;
+      data.picture = identity.picture || data.picture;
+      await this.env.DIRECTORY.getByName("primary").upsertUser({ ...identity, name: data.name, picture: data.picture });
       const session: Session = {
         id,
         name,

@@ -984,6 +984,108 @@ fn with_subchats_tall(v : Json?) -> Json? {
 }
 
 ///|
+/// Led sub-chats that ended without a state (chat-subchats-idle): 2 running, 1 waiting on its own work, 5 idle and 4
+/// done, as the core orders them; idle ones fold with done.
+fn with_subchats_idle(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "安卓构建与冒烟测试",
+          "mark": "run",
+          "stateText": "正在运行端到端用例",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-t1",
+          "title": "iOS 弱网断线重连回归",
+          "mark": "run",
+          "stateText": "正在对比重连前后消息序号",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-w1",
+          "title": "等 CI 跑完再合并分支",
+          "stateLead": "wait",
+          "stateText": "在等：PR 检查跑完",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-i1",
+          "title": "排查侧栏偶发白屏",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-i2",
+          "title": "核对英文词条长度",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-i3",
+          "title": "试跑新版离屏渲染脚本",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-i4",
+          "title": "整理旧版测试账号",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-i5",
+          "title": "统计子会话平均耗时",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d1",
+          "title": "给设置页加一个深色模式开关",
+          "stateLead": "done",
+          "stateText": "已完成：开关和三处颜色都改好了",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d2",
+          "title": "排查首页列表滚动掉帧",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d3",
+          "title": "补齐弹窗无障碍语义标签",
+          "stateLead": "done",
+          "stateText": "已完成：已通过全量 audit",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c4",
+          "title": "收尾回归与变更日志核对",
+          "stateLead": "done",
+          "stateText": "已完成：已合入测试分支",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 12 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
 /// Done-only led sub-chats fixture (chat-subchats-done-only): 3 unarchived done + 2 archived, verifying that the Done
 /// group auto-expands when no active sub-chats exist while Archived stays collapsed.
 fn with_subchats_done_only(v : Json?) -> Json? {
@@ -1756,6 +1858,8 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       @settings.profile_said(fixture_topic_inner(f, "profiles", { "scope": Json::string(text(Some(Json::object(params)), "scope")) }), params)
     "chat" if f.mode == "chat-subchats-tall" && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_subchats_tall(value))
+    "chat" if f.mode == "chat-subchats-idle" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_idle(value))
     "chat" if f.mode == "chat-subchats-done-only" && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_subchats_done_only(value))
     "chat" if f.mode == "chat-subchats-many" && params.get("session") is Some(String("s-c1")) =>

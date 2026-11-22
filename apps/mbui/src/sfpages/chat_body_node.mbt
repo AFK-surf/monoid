@@ -1696,14 +1696,16 @@ fn chat_body_node(
           None => ()
         }
         f.box(fn(g) { g.height(By(fn() { Some(foot()) })) |> ignore }) |> ignore
-        // (the round buttons standing on the composer's top, float_lift over it as the old page's float_box: after the
-        // room under the last row, not on its top, which stood them that room (list_foot, and the bell's ask_clear)
-        // higher, over the last message)
+        // (the round buttons standing on the composer's top, float_lift over what it shows there (told by it as it is
+        // made: composer_floats_drop_lent), as the old page's float_box: after the room under the last row, not on its
+        // top, which stood them that room (list_foot, and the bell's ask_clear) higher, over the last message)
+        let floats_drop : Ref[(@view.View, Double) -> Double] = Ref(fn(_, _) { 0.0 })
         match to {
           Some(r) => {
-            chat_to_newest_node(f, src, r, jump, place, here.view, width, here.tips)
-            chat_outline_node(f, src, r, jump, here.view, width, here.tips, here.stint)
-            chat_ask_node(f, r, src, jump, place, here.view, list, width, here.tips)
+            f.lends(composer_floats_drop_lent, floats_drop) |> ignore
+            chat_floats_node(f, src, r, jump, place, here.view, list, width, here.tips, here.stint, drop=fn(u, w) {
+              (floats_drop.val)(u, w)
+            })
           }
           None => ()
         }

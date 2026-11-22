@@ -193,24 +193,35 @@ fn Tree::covers_over(self : Tree, under : NodeId, cover : NodeId) -> Bool {
 
 ///|
 /// Whether press target `under`, where press target `over` is drawn over it on `part` (x0, y0, x1, y1), is out of sight
-/// there under a cover, as the hit test has it (Tree::target_at): `over` or what holds it, not holding `under`, draws
-/// a ground or glass of its own (Node::covers, as opaque as it is drawn) in a layer over `under` (Tree::covers_over: a
+/// there under a cover, as the hit test has it (Tree::target_at): `over`, what holds it, not holding `under`, or what
+/// that holds drawn before `over` (a bar's scroll edge beside its words) draws a ground or glass of its own (Node::covers, as opaque as it is drawn) in a layer over `under` (Tree::covers_over: a
 /// bar's glass over what scrolls under it) and holds all of `part` where it is drawn. A press there is the cover's and
 /// what is in it, never `under`'s: the two are not drawn over each other in one place a press could take for either
 /// (ui's tree_room_faults' `apart:`).
 pub fn Tree::covered_under(self : Tree, under : NodeId, over : NodeId, part : (Double, Double, Double, Double)) -> Bool {
   guard self.alive_id(under) && self.alive_id(over) else { return false }
-  // (what may cover: `over` and what holds it, short of what holds `under` too)
-  let on : Map[Int, Bool] = Map([])
+  // (what may cover: what is in the outermost of `over` and what holds it short of what holds `under` too, drawn
+  // before `over` or `over` itself: a bar's scroll edge, a node of the bar's own beside what holds `over`, as well as
+  // `over`'s own ground)
+  let mut top = -1
   let mut i = over.at
   while i >= 0 && !self.holds({ at: i, gen: self.nodes[i].gen }, under) {
-    on[i] = true
+    top = i
     i = self.nodes[i].parent
   }
+  guard top >= 0 else { return false }
+  let top_id : NodeId = { at: top, gen: self.nodes[top].gen }
   let (px0, py0, px1, py1) = part
   let found = Ref(false)
+  let seen_over = Ref(false)
   self.each_drawn_scaled(fn(c, x, y, a, s) {
-    if found.val || !on.contains(c.id.at) {
+    if found.val || seen_over.val {
+      return
+    }
+    if c.id == over {
+      seen_over.val = true
+    }
+    if c.id != top_id && !self.holds(top_id, c.id) {
       return
     }
     if self.covers_at(c.id, a, (px0 + px1) * 0.5, (py0 + py1) * 0.5) &&

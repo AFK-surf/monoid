@@ -2,7 +2,8 @@
 // unpaused while displays are off, across tell_state, requestFrame and wake_after), all links across windows and the
 // titlebar spring invalidated to zero before fresh ones are bound on wake or screen reconfiguration, DarkWake keeping
 // links paused while displays stay off, reverse wake ordering reporting away time once, wedged display links replaced
-// and drawn without timers, and stale sleep flags cleared once the display is active again:
+// and drawn without timers, stale sleep flags cleared once the display is active again, and the menu bar given again
+// with only its items' enabled changed set in place, made anew for anything else:
 //   cc -Wall -Werror -fobjc-arc -I src/host -I "$MOON_HOME/include" scripts/mac_app_test.m
 //     -framework Cocoa -framework QuartzCore -framework Metal -framework UserNotifications -framework Security -o out/mac_app_test && out/mac_app_test
 #import <Cocoa/Cocoa.h>
@@ -135,6 +136,14 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
 }
 void mb_render_trim(void) { trims_by_wid[active_render_wid]++; }
 void mb_render_set_bands(double top, double bottom, uint32_t ground) { (void)top, (void)bottom, (void)ground; }
+int mb_render_adaptive_settling_of(int wid) {
+  (void)wid;
+  return 0;
+}
+int mb_render_adaptive_step(int wid) {
+  (void)wid;
+  return 0;
+}
 int mb_render_snapshot(const char *path) {
   (void)path;
   return 1;
@@ -304,6 +313,44 @@ static MBWinSlot *attach_test_window(int wid, TestWindow *w) {
   slot.zoom = 1.0;
   win_slots[@(wid)] = slot;
   return slot;
+}
+
+// The menu bar as an app gives it (mb_host_menu_setup): a chat's items enabled or not, its keys, a tray of its own
+static NSArray *test_menus(BOOL in_chat, NSString *find_keys, NSString *go_title, BOOL extra, BOOL tray, BOOL tray_on) {
+  NSMutableArray *go = [@[
+    @{@"title" : @"Previous", @"action" : @"chat.prev", @"keys" : @"Mod+Alt+Up", @"enabled" : @YES},
+    @{@"separator" : @YES},
+    @{@"title" : @"Latest", @"action" : @"chat.latest", @"enabled" : @(in_chat)},
+    @{@"title" : @"Find", @"action" : @"chat.find", @"keys" : find_keys, @"enabled" : @(in_chat)},
+  ] mutableCopy];
+  if (extra) [go addObject:@{@"title" : @"More", @"action" : @"chat.more", @"enabled" : @YES}];
+  NSMutableArray *menus = [@[
+    @{@"title" : @"App", @"role" : @"app", @"items" : @[
+      @{@"title" : @"About {app}", @"role" : @"about"}, @{@"separator" : @YES},
+      @{@"title" : @"Services", @"role" : @"services"}, @{@"separator" : @YES},
+      @{@"title" : @"Quit", @"role" : @"quit", @"enabled" : @(in_chat)},
+    ]},
+    @{@"title" : go_title, @"role" : @"actions", @"items" : go},
+    @{@"title" : @"Chat", @"role" : @"actions", @"items" : @[
+      @{@"title" : @"Stop", @"action" : @"chat.stop", @"enabled" : @(in_chat)},
+    ]},
+    @{@"title" : @"Window", @"role" : @"window", @"items" : @[
+      @{@"title" : @"Minimize", @"role" : @"minimize"}, @{@"separator" : @YES},
+      @{@"title" : @"Front", @"role" : @"front"},
+    ]},
+  ] mutableCopy];
+  [menus addObject:@{@"role" : @"tray", @"macos" : @(tray), @"title" : @"T", @"items" : @[
+    @{@"title" : @"Open", @"role" : @"show"}, @{@"separator" : @YES},
+    @{@"title" : @"New chat", @"action" : @"chat.new", @"enabled" : @(tray_on)},
+  ]}];
+  return menus;
+}
+static void test_menu_setup(NSArray *menus) {
+  NSData *d = [NSJSONSerialization dataWithJSONObject:menus options:0 error:NULL];
+  mb_host_menu_setup(mb_string_from_ns([[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding]));
+}
+static NSMenuItem *test_menu_item(NSMenu *bar, NSInteger menu, NSInteger item) {
+  return [[bar itemAtIndex:menu].submenu itemAtIndex:item];
 }
 
 int main(void) {
@@ -632,6 +679,59 @@ int main(void) {
     [s0.view keyDown:make_key_event(w0.windowNumber, @"3", @"3", NSEventModifierFlagControl, 20)];
     CHECK(key_calls == callsBefore + 3 && last_key_code == 1000 + '3' && last_key_mods == 2);
     s0.view.imeActive = NO;
+  }
+  // 10. The menu bar given again with only its items' enabled changed (a chat opened or closed) keeps every menu and
+  //     item and sets only the app's items; anything else changed (keys, words, items, the tray) makes it anew.
+  @autoreleasepool {
+    test_menu_setup(test_menus(NO, @"Mod+F", @"Go", NO, NO, NO));
+    NSMenu *bar = NSApp.mainMenu;
+    CHECK(bar != nil && bar.numberOfItems == 4);
+    NSMenu *go = [bar itemAtIndex:1].submenu, *window = [bar itemAtIndex:3].submenu;
+    NSMenuItem *latest = test_menu_item(bar, 1, 2), *find = test_menu_item(bar, 1, 3), *quit = test_menu_item(bar, 0, 4);
+    NSMenuItem *stop = test_menu_item(bar, 2, 0);
+    NSMenu *services = NSApp.servicesMenu;
+    CHECK(!latest.enabled && !find.enabled && !stop.enabled && quit.enabled && test_menu_item(bar, 1, 0).enabled);
+    CHECK(NSApp.windowsMenu == window && !go.autoenablesItems && [go isKindOfClass:MBShownKeysMenu.class]);
+    CHECK([find.keyEquivalent isEqualToString:@"f"] && find.keyEquivalentModifierMask == NSEventModifierFlagCommand);
+    CHECK(tray_item == nil);
+
+    // (the system's list of windows after the window menu's own items)
+    [window addItem:[[NSMenuItem alloc] initWithTitle:@"A window" action:@selector(makeKeyAndOrderFront:)
+                                        keyEquivalent:@""]];
+    test_menu_setup(test_menus(YES, @"Mod+F", @"Go", NO, NO, NO));
+    CHECK(NSApp.mainMenu == bar && [bar itemAtIndex:1].submenu == go && test_menu_item(bar, 1, 2) == latest);
+    CHECK(test_menu_item(bar, 1, 3) == find && test_menu_item(bar, 2, 0) == stop && NSApp.windowsMenu == window);
+    CHECK(latest.enabled && find.enabled && stop.enabled && quit.enabled && NSApp.servicesMenu == services);
+    CHECK(window.numberOfItems == 4);
+    test_menu_setup(test_menus(NO, @"Mod+F", @"Go", NO, NO, NO));
+    CHECK(NSApp.mainMenu == bar && !latest.enabled && !find.enabled && !stop.enabled && quit.enabled);
+
+    // keys changed: made anew, with them
+    test_menu_setup(test_menus(YES, @"Mod+Shift+F", @"Go", NO, NO, NO));
+    NSMenu *bar2 = NSApp.mainMenu;
+    CHECK(bar2 != bar && test_menu_item(bar2, 1, 3).enabled);
+    CHECK(test_menu_item(bar2, 1, 3).keyEquivalentModifierMask == (NSEventModifierFlagCommand | NSEventModifierFlagShift));
+    // words changed (another language), an item more: made anew
+    test_menu_setup(test_menus(YES, @"Mod+Shift+F", @"前往", NO, NO, NO));
+    NSMenu *bar3 = NSApp.mainMenu;
+    CHECK(bar3 != bar2 && [[bar3 itemAtIndex:1].title isEqualToString:@"前往"]);
+    test_menu_setup(test_menus(YES, @"Mod+Shift+F", @"前往", YES, NO, NO));
+    NSMenu *bar4 = NSApp.mainMenu;
+    CHECK(bar4 != bar3 && [bar4 itemAtIndex:1].submenu.numberOfItems == 5);
+    // the bar put in place by someone else: made anew
+    NSApp.mainMenu = [NSMenu new];
+    test_menu_setup(test_menus(NO, @"Mod+Shift+F", @"前往", YES, NO, NO));
+    CHECK(NSApp.mainMenu != bar4 && NSApp.mainMenu.numberOfItems == 4 && !test_menu_item(NSApp.mainMenu, 1, 2).enabled);
+
+    // a tray of its own: its items set again in place too; it going makes the bar anew and takes the tray away
+    test_menu_setup(test_menus(NO, @"Mod+F", @"Go", NO, YES, NO));
+    NSMenu *bar5 = NSApp.mainMenu, *tmenu = tray_item.menu;
+    CHECK(tray_item != nil && tmenu.numberOfItems == 3 && ![tmenu itemAtIndex:2].enabled);
+    test_menu_setup(test_menus(YES, @"Mod+F", @"Go", NO, YES, YES));
+    CHECK(NSApp.mainMenu == bar5 && tray_item.menu == tmenu && [tmenu itemAtIndex:2].enabled);
+    CHECK(test_menu_item(bar5, 1, 2).enabled);
+    test_menu_setup(test_menus(YES, @"Mod+F", @"Go", NO, NO, YES));
+    CHECK(NSApp.mainMenu != bar5 && tray_item == nil);
   }
   if (!failed) printf("mac_app_test: ok\n");
   return failed;

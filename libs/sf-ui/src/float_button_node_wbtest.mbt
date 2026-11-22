@@ -1,4 +1,4 @@
-// The round button over a list uses single-layer liquid glass (`glass_menu()`) and layers the hover tint via
+// The round button over a list uses single-layer liquid glass (`glass_floating()`, the composer-top capsules') and layers the hover tint via
 // `hover_ground_node` (`View::ground_over`) in light and dark, both on glass and under `MBUI_GLASS=solid`.
 
 ///|

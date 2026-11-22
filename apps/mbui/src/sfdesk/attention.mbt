@@ -457,7 +457,7 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
             match text(v(), "kind") {
               "alert" => (Data(@sf.theme().p.red), "web-main.attention.alertOne")
               "done" => (@sf.mark_blue, "web-main.chatMark.done")
-              _ => (Data(@sf.theme().p.warn_ink), "web-main.attention.waitOne")
+              _ => (Warn, "web-main.attention.waitOne")
             }
           }
           @sf.style_node(dot, fn() {

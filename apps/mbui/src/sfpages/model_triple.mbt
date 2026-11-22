@@ -21,10 +21,11 @@ priv struct Triple {
   mut shown : Int
   mut accounts_asked : Bool
   mut borrow_asking : String
+  mut borrow_serial : Int
 }
 
 ///|
-let triple : Triple = { open: "", shown: 0, accounts_asked: false, borrow_asking: "" }
+let triple : Triple = { open: "", shown: 0, accounts_asked: false, borrow_asking: "", borrow_serial: 0 }
 
 ///|
 /// One panel's filter, what it shows and its pick: what is typed in its search (`field`), whether all the models are
@@ -1023,7 +1024,7 @@ fn triple_body_node(
         (if at == "" && options().length() > 8 { 42.0 } else { 0.0 }) +
         (if triple_other_stations(vv) { @sf.theme().items.least } else { 0.0 }) +
         (if all_efforts().length() > 0 { 50.0 } else { 0.0 }) +
-        (if field(vv, "borrow") is Some(Object(_)) { 30.0 } else { 0.0 }) +
+        (if field(vv, "borrow") is Some(Object(_)) { 64.0 } else { 0.0 }) +
         85.0 +
         (if foot_two_lines { 52.0 } else { 0.0 })
       dmax(3.0 * row_h(), dmin(triple_sheet_rows * row_h(), wh * @sf.sheet_most - sheet_rest))
@@ -1830,7 +1831,7 @@ fn triple_body_node(
         } else {
           text(borrow, "why")
         }
-      }, fn() { triple_note })
+      }, fn() { triple_borrow_note })
       |> ignore
     })
   })
@@ -2217,11 +2218,19 @@ fn triple_foot_node(
           // control's build, said before it shuts, so what the panel held of the pick is held on for it)
           if contents.asks is None {
             triple.borrow_asking = station + "\u{1}" + of
+            triple.borrow_serial += 1
           }
+          let serial = triple.borrow_serial
           close()
           match contents.asks {
             Some(ask) => ask(borrow)
-            None => ()
+            None => borrow_ask(src, station, of, borrow, gone=fn() {
+              let me = station + "\u{1}" + of
+              if triple.borrow_asking == me && triple.borrow_serial == serial {
+                triple.borrow_asking = ""
+                triple_let_go(me)
+              }
+            })
           }
         },
         tone=Primary,
@@ -3006,7 +3015,7 @@ fn triple_accounts_node(n : @view.View, src : Source, station : String, of : Str
 /// Borrowing a model of another station's asked first (borrow_dialog's), put up by the presenters as its panel's 借用 is
 /// pressed (open_triple_panel's `asks`), what it holds nodes: its title, its lines, 取消 and its action at its foot (a
 /// ring before them while it borrows), closed once it has borrowed it.
-fn borrow_ask(src : Source, station : String, of : String, borrow : Json?) -> Unit {
+fn borrow_ask(src : Source, station : String, of : String, borrow : Json?, gone? : () -> Unit = fn() {  }) -> Unit {
   let dkey = "pick.borrow/" + station + "/" + of
   let lines = items(borrow, "lines").map(fn(l) {
     match l {
@@ -3014,12 +3023,21 @@ fn borrow_ask(src : Source, station : String, of : String, borrow : Json?) -> Un
       _ => ""
     }
   })
-  let action = text(borrow, "action")
+  let confirm_action = text(borrow, "confirmAction")
+  let action = if confirm_action == "" { text(borrow, "action") } else { confirm_action }
   let allowed = flag(borrow, "allowed")
+  let ended = Ref(false)
+  let finish = fn() {
+    if !ended.val {
+      ended.val = true
+      gone()
+    }
+  }
   @sf.panel_nodes(
     text(borrow, "title"),
     from=Unanchored,
     w=confirm_w,
+    gone=finish,
     fn(b, _) {
       for l in lines {
         @sf.words_node(b, fn() { l }, fn() { confirm_line }) |> ignore
@@ -3028,7 +3046,7 @@ fn borrow_ask(src : Source, station : String, of : String, borrow : Json?) -> Un
     foot=fn(f, shut) {
       f.box(fn(r) {
         @sf.style_node(r, fn() { confirm_foot })
-        @sf.button_node(r, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+        @sf.button_node(r, fn() { @sf.t("common.cancel") }, fn() { shut(); finish() }, tone=Ghost) |> ignore
         r.show(fn() { doing(dkey) }, fn(s) { @sf.spinner_node(s, size=14.0) |> ignore })
         @sf.button_node(
           r,
@@ -3036,6 +3054,7 @@ fn borrow_ask(src : Source, station : String, of : String, borrow : Json?) -> Un
           fn() {
             act(src, action, dkey, "pick.borrow", Json::object(pick_params(station, of)), done=@sf.t("web-main.model.borrowed"), ok=fn(_) {
               shut()
+              finish()
             })
           },
           tone=Primary,
@@ -3320,6 +3339,10 @@ let triple_name_line : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 ///|
 // kept across runs: a value (no field of it changes)
 let triple_empty : @ui.Style = @ui.css("px=S2_5 py=S2")
+
+///|
+// kept across runs: a value (no field of it changes)
+let triple_borrow_note : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=true, w=@sf.grow)
 
 ///|
 // kept across runs: a value (no field of it changes)

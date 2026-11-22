@@ -105,6 +105,8 @@ fn chat_subchats_pop_node(host : @view.View, src : Source, r : ChatRef, view : (
     fn(s) { chat_pops.subchats = s },
     side=if own is Some(_) { Top } else { Bottom },
     fn(v) {
+      // (worked out once as it opens: the window turned closes it, and it opens again where it then stands)
+      let room = subchats_pop_room(host, own)
       @sfpages.subchats_list_node(
         v,
         fn() {
@@ -118,10 +120,29 @@ fn chat_subchats_pop_node(host : @view.View, src : Source, r : ChatRef, view : (
           chat_own.subchats_open.set(false)
           side_tab_open(src, r, "subchats")
         },
-        scroll_most=fn() { dmax(120.0, dmin(subchats_pop_most, host.window_h() * 0.6) - 104.0) },
+        scroll_most=fn() { dmax(120.0, room - 104.0) },
       )
     },
   )
+}
+
+///|
+/// How tall the sub-chats popover may stand beside `own` (its pill over the composer; None: the system bar's mark, which
+/// it opens under), as the window has room there when it opens: it scrolls only when what it holds is taller than that,
+/// never at a height of its own (a list folded short of it scrolled one time and not the next).
+fn subchats_pop_room(host : @view.View, own : @view.View?) -> Double {
+  let (_, wh) = host.window()
+  let (top, _, foot, _) = host.clear()
+  // (the gap beside what it opens from and the padding `beside` keeps from the window's edge)
+  let gaps = @sf.panel_offset + 8.0
+  match own {
+    Some(o) if o.alive() => {
+      // (up to under the chat's bar over the page, never over its buttons)
+      let (_, y, _, _) = o.placed_window_now()
+      y - top - @sf.wide_bar_h - gaps
+    }
+    _ => wh - top - foot - 2.0 * gaps
+  }
 }
 
 ///|

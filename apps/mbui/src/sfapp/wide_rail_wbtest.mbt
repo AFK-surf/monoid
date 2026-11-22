@@ -677,7 +677,7 @@ fn bar_title_at(t : @ui.Tester) -> (Double, Double) raise {
 }
 
 ///|
-test "wide: the sidebar shown a while pinned open by its place pressed again, and folded back to shown a while: a chat's bar moves with its page, its title on its way from where it was to where it ends, never off it, as far from the sidebar's edge either way" {
+test "wide: the sidebar shown a while pinned open by its place pressed again, and folded back to shown a while: a chat's bar moves with its page, its title on its way from where it was to where it ends, never off it, where the chat's words start either way" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat")
   let press_lit = fn() {
@@ -689,6 +689,7 @@ test "wide: the sidebar shown a while pinned open by its place pressed again, an
   t.run_for(@ui.move_most_ms)
   assert_true(@sfdesk.wide.folded.get() && @sfdesk.wide.peeking.get())
   let (shown_x, _) = bar_title_at(t)
+  let shown_words = t.rect_of("高度先按 90 估").unwrap().0
   // pressed again: open; halfway there, the title between where it was and where it ends
   press_lit()
   t.run_for(@ui.move_most_ms / 2.0)
@@ -700,10 +701,9 @@ test "wide: the sidebar shown a while pinned open by its place pressed again, an
     mid_x >= dmin(shown_x, open_x) && mid_x <= dmax(shown_x, open_x),
     msg="shown \{shown_x}, halfway \{mid_x}, open \{open_x}",
   )
-  // as far from the sidebar's edge either way (shown a while, the closed bar's 6 from the window's edge and 8 from the
-  // page: its edge 8 short of the open one's)
-  let s = @sfdesk.wide.side_w.get()
-  assert_eq(shown_x - (@sfdesk.closed_bar_in + @sfdesk.rail_closed_w + s), open_x - (@sfdesk.rail_w + s))
+  // where the chat's words start either way (chat_bar_wide_node: the title on the column's words' line, moved with it)
+  let open_words = t.rect_of("高度先按 90 估").unwrap().0
+  assert_true((open_x - open_words).abs() <= 1.0, msg="open: the title from \{open_x}, the words from \{open_words}")
   // pressed once more: folded, shown a while again, the same way back
   press_lit()
   t.run_for(@ui.move_most_ms / 2.0)
@@ -711,6 +711,15 @@ test "wide: the sidebar shown a while pinned open by its place pressed again, an
   t.run_for(@ui.move_most_ms)
   assert_true(@sfdesk.wide.folded.get() && @sfdesk.wide.peeking.get())
   let (again_x, _) = bar_title_at(t)
+  let again_words = t.rect_of("高度先按 90 估").unwrap().0
+  // (shown a while, the bar past the sidebar shown over the page (its edge): the title where the chat's words start,
+  // or, where those start against that edge (the page not moved aside), the bar's 12 and its words' 8 past it)
+  let edge = @sfdesk.closed_bar_in + @sfdesk.rail_closed_w + @sfdesk.wide.side_w.get()
+  let least = edge + @sfdesk.bar_in + 8.0
+  assert_true(
+    (shown_x - dmax(shown_words, least)).abs() <= 1.0 && (again_x - dmax(again_words, least)).abs() <= 1.0,
+    msg="shown: the title from \{shown_x} (words \{shown_words}) and again \{again_x} (words \{again_words}), its least start \{least}",
+  )
   assert_true(
     back_x >= dmin(open_x, again_x) && back_x <= dmax(open_x, again_x),
     msg="open \{open_x}, halfway \{back_x}, shown \{again_x}",
@@ -718,7 +727,7 @@ test "wide: the sidebar shown a while pinned open by its place pressed again, an
 }
 
 ///|
-test "wide, the window's buttons in the app's top row: the sidebar shown a while is under their row, a chat's title stays beside them as folded; pinned open, it goes with the page past the sidebar, and back" {
+test "wide, the window's buttons in the app's top row: the sidebar shown a while is under their row, a chat's title stays beside them as folded; pinned open, it goes with the page past the sidebar, and back where the chat's words start" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat", window_inset=true)
   let press_lit = fn() {
@@ -750,11 +759,17 @@ test "wide, the window's buttons in the app's top row: the sidebar shown a while
   let (open_x, _) = bar_title_at(t)
   assert_true(open_x > @sfdesk.rail_w + @sfdesk.wide.side_w.get(), msg="open at \{open_x}")
   assert_true(mid_x > folded_x && mid_x < open_x, msg="folded \{folded_x}, halfway \{mid_x}, open \{open_x}")
-  // pressed again: shown a while, back beside the window's buttons
+  // pressed again: shown a while, where the chat's words start (the page moved aside as it is from there), never before
+  // where it was beside the window's buttons
   press_lit()
   t.run_for(@ui.move_most_ms)
   assert_true(@sfdesk.wide.peeking.get())
-  assert_true((bar_title_at(t).0 - folded_x).abs() < 0.01, msg="back at \{bar_title_at(t).0}, folded \{folded_x}")
+  let (back_x, _) = bar_title_at(t)
+  let back_words = t.rect_of("高度先按 90 估").unwrap().0
+  assert_true(
+    (back_x - back_words).abs() <= 1.0 && back_x >= folded_x - 0.01,
+    msg="back at \{back_x}, the words from \{back_words}, folded \{folded_x}",
+  )
 }
 
 ///|

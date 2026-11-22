@@ -253,3 +253,139 @@ test("a viewer without host passkeys never hangs credentials.get, settles pendin
   withVault.stop();
   await p.settle();
 });
+
+function childFrame(topContext: any, opts: { origin: string; hostname?: string; parent?: any; crossOrigin?: boolean; runNewDoc?: (src: string) => void } = { origin: "https://example.org" }) {
+  const ctx: any = createContext({ DOMException, AbortController, btoa, atob });
+  const run = (s: string): any => runInContext(s, ctx);
+  ctx.top = opts.crossOrigin
+    ? new Proxy({}, { get() { throw new DOMException("Blocked a frame from accessing a cross-origin frame.", "SecurityError"); } })
+    : topContext;
+  ctx.parent = opts.parent ?? ctx.top;
+  run(`globalThis.window = globalThis;
+    window.location = { origin: ${JSON.stringify(opts.origin)}, hostname: ${JSON.stringify(opts.hostname ?? (opts.origin === "null" ? "" : new URL(opts.origin).hostname))} };
+    window.frames = [];
+    window._listeners = new Map();
+    window.addEventListener = (t, f) => { const a = window._listeners.get(t) || []; a.push(f); window._listeners.set(t, a); };
+    window.fire = (t) => { for (const f of window._listeners.get(t) || []) f(); };
+    window.PublicKeyCredential = class ChildPublicKeyCredential {};
+    window.AuthenticatorAssertionResponse = class ChildAuthenticatorAssertionResponse {};
+    window.nativeCalls = 0;
+    window.navigator = { credentials: { get: async () => { nativeCalls++; return "child-native"; } } };
+    window.ask = (useArrayBuffer = false) => {
+      window.result = "pending";
+      const ch = useArrayBuffer ? new Uint8Array([9, 8, 7]).buffer : new Uint8Array([9, 8, 7]);
+      navigator.credentials.get({ publicKey: { rpId: "example.org", challenge: ch } })
+        .then(v => window.result = v, e => window.result = e);
+    };
+  `);
+  const win = run("window");
+  // Expose the child window object (or a cross-origin restricted proxy when simulating cross-origin access from parent).
+  const exposed = opts.crossOrigin
+    ? new Proxy({}, { get(_, prop) { if (prop === "parent") return ctx.parent; throw new DOMException("Blocked a frame from accessing a cross-origin frame.", "SecurityError"); } })
+    : win;
+  return { ctx: win, run, exposed };
+}
+
+test("same-origin iframes (already loaded, about:blank reused, and after reconnect) forward passkeys using the iframe realm", async () => {
+  const p = page();
+  p.run(`window.location = { origin: "https://example.org", hostname: "example.org" }; window.frames = [];`);
+  const top = p.run("window");
+
+  // 1. An iframe already loaded before any viewer attaches (e.g. Apple Developer sign-in widget).
+  const preloaded = childFrame(top, { origin: "https://example.org", hostname: "example.org" });
+  top.frames.push(preloaded.exposed);
+
+  const v1 = p.viewer();
+  await p.settle();
+  assert.equal(await preloaded.run("PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()"), true);
+  assert.equal(await preloaded.run("PublicKeyCredential.isConditionalMediationAvailable()"), false);
+  // Cross-realm ArrayBuffer challenge from child iframe.
+  preloaded.run("ask(true)");
+  await p.settle();
+  const ask1 = v1.heard.at(-1)!;
+  assert.equal(ask1.rpId, "example.org");
+  assert.equal(ask1.host, "example.org");
+  await v1.view.passkey({ id: ask1.id, credential: "Y3JlZA", authenticatorData: "YQ", signature: "c2ln" });
+  await p.settle();
+  assert.equal(preloaded.run("result.id"), "Y3JlZA");
+  assert.equal(preloaded.run("result instanceof PublicKeyCredential"), true);
+  assert.equal(preloaded.run("result.response instanceof AuthenticatorAssertionResponse"), true);
+  assert.equal(preloaded.run("result.rawId instanceof ArrayBuffer"), true);
+  assert.equal(preloaded.run("nativeCalls"), 0);
+
+  // 2. An iframe created while watched starts as about:blank (origin "null"), runs the new-document hook, and reuses the window for same-origin navigation.
+  const blank = childFrame(top, { origin: "null", hostname: "" });
+  top.frames.push(blank.exposed);
+  for (const src of p.scripts.values()) blank.run(src);
+  blank.run(`window.location = { origin: "https://example.org", hostname: "example.org" };`);
+  blank.run("ask()");
+  await p.settle();
+  const ask2 = v1.heard.at(-1)!;
+  assert.ok(ask2 && ask2.id !== ask1.id);
+  // Child pagehide cancels only that child's pending ask, not top's.
+  p.run("ask()");
+  await p.settle();
+  const topAsk = v1.heard.at(-1)!;
+  blank.run("fire('pagehide')");
+  await p.settle();
+  assert.equal(p.run("result"), "pending", "child pagehide must not drop top frame's request");
+  await v1.view.passkey({ id: topAsk.id, error: "NotAllowedError" });
+  await p.settle();
+  assert.equal(p.run("result"), "NotAllowedError");
+
+  // 3. Iframe created while no viewer is connected is picked up when the next viewer attaches.
+  v1.stop();
+  await p.settle();
+  const late = childFrame(top, { origin: "https://example.org", hostname: "example.org" });
+  top.frames.push(late.exposed);
+  const v2 = p.viewer();
+  await p.settle();
+  late.run("ask()");
+  await p.settle();
+  assert.ok(v2.heard.at(-1), "reconnecting viewer scans and attaches iframes added while detached");
+  await v2.view.passkey({ id: v2.heard.at(-1)!.id, error: "NotAllowedError" });
+  await p.settle();
+  assert.equal(late.run("result instanceof DOMException"), true);
+  assert.equal(late.run("result.name"), "NotAllowedError");
+  v2.stop();
+  await p.settle();
+});
+
+test("cross-origin and sandwiched iframes are ignored, while vault passkeys in same-origin iframes use the iframe's own authenticator", async () => {
+  const p = page();
+  p.run(`window.location = { origin: "https://example.org", hostname: "example.org" }; window.frames = [];`);
+  const top = p.run("window");
+
+  // Direct cross-origin child and A -> B -> A sandwiched grandchild.
+  const cross = childFrame(top, { origin: "https://other.test", crossOrigin: true });
+  const sandwiched = childFrame(top, { origin: "https://example.org", parent: cross.exposed });
+  top.frames.push(cross.exposed);
+  const same = childFrame(top, { origin: "https://example.org" });
+  top.frames.push(same.exposed);
+
+  const v = p.viewer({ passkeys: false, ownPasskey: (rp) => rp === "example.org" });
+  await p.settle();
+  // Running the new-document hook inside cross-origin and sandwiched frames must not attach them.
+  for (const src of p.scripts.values()) {
+    cross.run(src);
+    sandwiched.run(src);
+  }
+  cross.run("ask()");
+  sandwiched.run("ask()");
+  await p.settle();
+  assert.equal(cross.run("result"), "child-native");
+  assert.equal(sandwiched.run("result"), "child-native");
+  assert.equal(v.heard.length, 0);
+
+  // Same-origin iframe with a vault passkey delegates to the iframe's own native credentials.get (not top's).
+  same.run(`window.uvpa = "pending"; PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(v => window.uvpa = v)`);
+  await p.settle();
+  assert.equal(same.run("uvpa"), true);
+  same.run("ask()");
+  await p.settle();
+  assert.equal(same.run("result"), "child-native");
+  assert.equal(same.run("nativeCalls"), 1);
+  assert.equal(p.run("nativeCalls"), 0, "top frame's authenticator was not called for child iframe's vault passkey");
+  v.stop();
+  await p.settle();
+});

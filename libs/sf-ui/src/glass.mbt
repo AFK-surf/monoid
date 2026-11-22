@@ -22,8 +22,9 @@ pub fn glass_foot() -> @ui.Glass {
 /// A capsule floating over the list (mFloating, the composer's): iOS 27 liquid glass (`ios27Dark` / `ios27Light`
 /// neutral tint when `tint` is `None`, or caller-supplied `tint` such as drag-over accent), its blur, bezel and
 /// refraction the small screen's bottom bar's (`glass_tab_bar`) so the composer and the bar read as one glass;
-/// `solid` preserves the opaque raised fallback under `MBUI_GLASS=solid`.
-pub fn glass_floating(tint? : Int64) -> @ui.Glass {
+/// `solid` preserves the opaque raised fallback under `MBUI_GLASS=solid`; `spot`, where a press lights it (points from
+/// its top left: float_pill_group_node's).
+pub fn glass_floating(tint? : Int64, spot? : (Double, Double)? = None) -> @ui.Glass {
   let t = theme()
   let glass_tint = match tint {
     Some(c) => c
@@ -41,6 +42,7 @@ pub fn glass_floating(tint? : Int64) -> @ui.Glass {
     chroma=0.0,
     merge=0.0,
     adaptive=true,
+    spot~,
   )
 }
 
@@ -288,13 +290,15 @@ pub fn glass_sheet() -> @ui.Glass {
 /// Progressive blur soft scroll-edge backdrop (iOS 26 UIScrollEdgeEffect.soft): blurs and veils scrolled content
 /// progressively across the host node's `View::fades` band (blur sigma 0 -> 8.5pt, `p.bg` veil 0 -> 50% with
 /// adaptive contrast boost over opposing-luminance content, vibrancy saturation 1.25), degrading to a solid
-/// `p.bg` alpha fade under `MBUI_GLASS=solid`.
-pub fn glass_scroll_edge() -> @ui.Glass {
+/// `p.bg` alpha fade under `MBUI_GLASS=solid`. `ground`: the ground it veils into where that is not `p.bg` (a page's
+/// panel a step darker behind the one in use); none (0) is `p.bg`.
+pub fn glass_scroll_edge(ground? : Int64 = 0L) -> @ui.Glass {
   let t = theme()
+  let bg = if ground != 0L { ground } else { t.p.bg }
   @ui.Glass::frosted(
     blur=8.5,
-    tint=alpha(t.p.bg, 0.50),
-    solid=t.p.bg,
+    tint=alpha(bg, 0.50),
+    solid=bg,
     saturation=1.25,
     progressive=true,
   )

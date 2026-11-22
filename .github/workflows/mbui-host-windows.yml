@@ -21,6 +21,8 @@ on:
       - "libs/mbui/scripts/win_stack_test.c"
       - "libs/mbui/scripts/win_a11y_test.cpp"
       - "libs/mbui/scripts/win_vbuf_test.cpp"
+      - "libs/mbui/scripts/win_atlas_test.cpp"
+      - "libs/mbui/scripts/win_text_test.cpp"
       - "libs/mbui/scripts/win_keys_test.c"
       - "libs/mbui/scripts/win_clip_test.c"
       - "libs/mbui/scripts/win_sound_test.c"
@@ -122,6 +124,16 @@ jobs:
           mkdir -p out/vbuf
           cl.exe -nologo -EHsc -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host scripts/win_vbuf_test.cpp -Foout/vbuf/ -Feout/vbuf/win_vbuf_test.exe -link d3d11.lib d3dcompiler.lib dcomp.lib dwmapi.lib gdi32.lib user32.lib windowscodecs.lib ole32.lib
           out/vbuf/win_vbuf_test.exe
+      - name: "D3D11 glyph atlas coalesces adjacent shelf uploads and flushes before draw (src/host/win_render.cpp)"
+        run: |
+          mkdir -p out/atlas
+          cl.exe -nologo -EHsc -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host scripts/win_atlas_test.cpp -Foout/atlas/ -Feout/atlas/win_atlas_test.exe -link d3d11.lib d3dcompiler.lib dcomp.lib dwmapi.lib gdi32.lib user32.lib windowscodecs.lib ole32.lib
+          out/atlas/win_atlas_test.exe
+      - name: "DirectWrite glyph fine downsampling, non-blocking drawn_ahead, and single-phase preheating (src/host/win_text.cpp)"
+        run: |
+          mkdir -p out/text
+          cl.exe -nologo -EHsc -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host scripts/win_text_test.cpp -Foout/text/ -Feout/text/win_text_test.exe -link dwrite.lib d2d1.lib windowscodecs.lib user32.lib ole32.lib
+          out/text/win_text_test.exe
 
   kitdemo:
     runs-on: windows-latest

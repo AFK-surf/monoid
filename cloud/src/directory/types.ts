@@ -117,7 +117,7 @@ export type DirectoryLoad = {
 
 /** What each of the directory's calls serves, as its load is counted (adminLoad); "other" for one not listed. */
 export const FAMILIES: Record<string, string> = {
-  accountFor: "signin", upsertUser: "signin", joinBySignIn: "signin", openToSignIn: "admin",
+  accountFor: "signin", appleAccount: "signin", linkApple: "signin", upsertUser: "signin", joinBySignIn: "signin", openToSignIn: "admin",
   me: "me", invitationsFor: "me", setOwnPicture: "me", deleteAccount: "me", revokeSessions: "me",
   isBeta: "beta",
   seen: "sockets", closed: "sockets", stationConnected: "sockets", stationState: "sockets", stationLeft: "sockets", stationSaid: "sockets",

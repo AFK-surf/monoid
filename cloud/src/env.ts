@@ -73,10 +73,15 @@ export interface Env {
   RELAY?: DurableObjectNamespace<Relay>;
   /** Its budget (relay.ts), the day's traffic as it counts it: what says the day ran out once the process is stopped. Unset: not read. */
   RELAY_BUDGET?: DurableObjectNamespace<RelayBudget>;
-  /** The OAuth client people sign in through: Google's, or OIDC_ISSUER's. Unset: only with an email (EMAIL). */
+  /** The OAuth client people sign in through: Google's, or OIDC_ISSUER's. Unset: only with an email (EMAIL) or Apple. */
   GOOGLE_CLIENT_ID: string;
   /** Its secret; another provider's public client (PKCE alone) has none. */
   GOOGLE_CLIENT_SECRET: string;
+  /** Sign in with Apple (apple.ts): the Services ID (web OAuth client_id), Apple Developer Team ID, Key ID and .p8 PEM private key. Unset: no Apple sign-in. */
+  APPLE_CLIENT_ID?: string;
+  APPLE_TEAM_ID?: string;
+  APPLE_KEY_ID?: string;
+  APPLE_PRIVATE_KEY?: string;
   /** An OpenID provider in Google's place (https://auth.example.com, its discovery document under it): a self-hosted
    * cloud's (selfhost/README.md). Unset: Google. */
   OIDC_ISSUER?: string;

@@ -24,7 +24,9 @@ function compile(): { exe: string; sanitized: boolean } | null {
   if (spawnSync("cc", ["--version"]).status !== 0) return null;
   const exe = join(work, "update_delta_test");
   const base = ["-std=c99", "-Wall", "-Wextra", "-Werror", "-pedantic", "-g", "-o", exe, harness];
-  const san = ["-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-fno-omit-frame-pointer"];
+  // (not PIE on Linux: under address randomization, a PIE with GCC 11's ASan can crash before main, about 1 start in 4)
+  const noPie = process.platform === "linux" ? ["-fno-pie", "-no-pie"] : [];
+  const san = ["-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-fno-omit-frame-pointer", ...noPie];
   if (spawnSync("cc", [...san, ...base]).status === 0) return { exe, sanitized: true };
   const plain = spawnSync("cc", ["-O2", ...base], { encoding: "utf8" });
   assert.equal(plain.status, 0, plain.stderr);

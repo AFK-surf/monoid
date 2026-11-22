@@ -6,6 +6,7 @@
 
 use crate::cursor_image;
 use crate::input_queue::{InputOp, MouseKind, SpareKeyPool};
+use crate::x11_key_leases::KeyLeases;
 use std::collections::HashSet;
 use std::os::fd::AsRawFd;
 use std::ptr;
@@ -445,7 +446,7 @@ pub struct X11InputDriver {
     width: u32,
     height: u32,
     pool: SpareKeyPool,
-    syms_per_keycode: u8,
+    leases: KeyLeases,
 }
 
 impl X11InputDriver {
@@ -453,16 +454,15 @@ impl X11InputDriver {
         let (conn, screen_num) =
             RustConnection::connect(None).map_err(|e| format!("x11 input connect: {e}"))?;
         let root = conn.setup().roots[screen_num].root;
+        let leases = KeyLeases::open(&conn, root)?;
         let min_kc = conn.setup().min_keycode;
         let max_kc = conn.setup().max_keycode;
         let count = max_kc.saturating_sub(min_kc).saturating_add(1);
 
         let mut unused = Vec::new();
-        let mut syms_per_keycode = 1u8;
         if let Ok(cookie) = conn.get_keyboard_mapping(min_kc, count) {
             if let Ok(reply) = cookie.reply() {
-                syms_per_keycode = reply.keysyms_per_keycode.max(1);
-                let step = syms_per_keycode as usize;
+                let step = reply.keysyms_per_keycode.max(1) as usize;
                 for i in (0..count as usize).rev() {
                     let start = i * step;
                     let end = (start + step).min(reply.keysyms.len());
@@ -479,7 +479,7 @@ impl X11InputDriver {
             width: width.max(1),
             height: height.max(1),
             pool: SpareKeyPool::new(&unused),
-            syms_per_keycode,
+            leases,
         })
     }
 
@@ -611,21 +611,22 @@ impl X11InputDriver {
                         break;
                     }
                     let keysym = unicode_to_keysym(ch);
-                    if let Some((kc, needs_remap)) = self.pool.acquire(keysym) {
+                    while let Some((kc, needs_remap)) = self.pool.acquire(keysym) {
                         if needs_remap {
-                            let syms = vec![keysym; self.syms_per_keycode as usize];
-                            let _ = self.conn.change_keyboard_mapping(
-                                1,
-                                kc,
-                                self.syms_per_keycode,
-                                &syms,
-                            );
-                            // Synchronize X server via GetInputFocus round-trip (no sleep!).
-                            let _ = self.conn.get_input_focus().ok().and_then(|c| c.reply().ok());
+                            match self.leases.map(&self.conn, kc, keysym) {
+                                Ok(true) => {}
+                                Ok(false) => { self.pool.retire(kc); continue; }
+                                Err(error) => {
+                                    self.pool.retire(kc);
+                                    eprintln!("X11 input: could not map a keycode: {error}");
+                                    break;
+                                }
+                            }
                         }
                         let _ = self.conn.xtest_fake_input(KEY_PRESS_EVENT, kc, CURRENT_TIME, self.root, 0, 0, 0);
                         let _ = self.conn.xtest_fake_input(KEY_RELEASE_EVENT, kc, CURRENT_TIME, self.root, 0, 0, 0);
                         let _ = self.conn.flush();
+                        break;
                     }
                 }
             }
@@ -658,12 +659,8 @@ impl X11InputDriver {
                 0,
             );
         }
-        // Restore any remapped spare keycodes back to NoSymbol.
-        let zeros = vec![0u32; self.syms_per_keycode as usize];
-        for kc in self.pool.dirty_keycodes() {
-            let _ = self
-                .conn
-                .change_keyboard_mapping(1, kc, self.syms_per_keycode, &zeros);
+        if let Err(error) = self.leases.release(&self.conn) {
+            eprintln!("X11 input: could not restore keycodes: {error}");
         }
         let _ = self.conn.flush();
     }

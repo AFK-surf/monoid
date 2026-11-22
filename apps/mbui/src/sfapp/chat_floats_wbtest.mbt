@@ -4,15 +4,16 @@
 // rail, its ticks there before held where they are drawn as a message comes, never a jump.
 
 ///|
-/// How opaque the way back to the newest is drawn, by its liquid glass surface's alpha (its round button's `kind == 6`
-/// instance, inside `rect`), 0 to 255; none where nothing of it is drawn there.
+/// How opaque the way back to the newest is drawn, by its liquid glass surface's alpha (the `kind == 6` instance it is
+/// drawn on, its own or the capsule's it shares with 对话目录, over the middle of `rect`), 0 to 255; none where nothing
+/// of it is drawn there.
 fn to_newest_alpha(t : @ui.Tester, rect : (Double, Double, Double, Double)) -> Int64? {
   let (x, y, w, h) = rect
+  let (mx, my) = (x + w / 2.0, y + h / 2.0)
   let mut most : Int64? = None
   for a in t.drawn_instances() {
     if a.length() > 15 && a[5] == 6.0 {
-      let (cx, cy) = (a[0] + a[2] / 2.0, a[1] + a[3] / 2.0)
-      if cx > x && cx < x + w && cy > y && cy < y + h {
+      if a[0] <= mx && mx <= a[0] + a[2] && a[1] <= my && my <= a[1] + a[3] {
         let alpha = (a[15] * 255.0).round().to_int64()
         if most is None || alpha > most.unwrap() {
           most = Some(alpha)

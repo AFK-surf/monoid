@@ -14,7 +14,7 @@
 
 <template data-product="monoid"><p class="note">此中文版本为便于阅读的译文。与<a href="/en/privacy">英文版</a>不一致时，以英文版为准。</p></template>
 <h1>隐私政策</h1>
-<p class="meta">生效日期：2026 年 11 月 19 日</p>
+<p class="meta">生效日期：2026 年 11 月 22 日</p>
 
 <p>本政策说明 still.fail 托管服务会收集哪些个人信息、怎么用、交给谁、存多久，以及你有哪些权利。请仔细阅读，特别是加粗的部分。</p>
 
@@ -56,7 +56,7 @@
 
 <h2>4. 我们收集哪些信息</h2>
 <ul>
-<li><strong>账号信息</strong>：用 Google 登录时，你的 Google 账号标识、邮箱、名字和头像链接；用邮箱验证码登录时，你的邮箱。另有账号的创建时间、最近活跃时间，以及套餐、资格和封禁状态；</li>
+<li><strong>账号信息</strong>：用 Google 登录时，你的 Google 账号标识、邮箱、名字和头像链接；用 Apple 登录时，你的 Apple 账号标识、邮箱（含你选择隐藏邮箱时 Apple 提供的中继邮箱）、首次授权时提供的名字，以及一份加密保存的 Apple 刷新令牌（仅用于在你注销账号时向 Apple 撤销授权）；用邮箱验证码登录时，你的邮箱。另有账号的创建时间、最近活跃时间，以及套餐、资格和封禁状态；</li>
 <li><strong>登录会话和设备</strong>：设备或客户端的名称（如电脑名、手机在系统设置中的名称）、会话的创建和到期时间、设备首次和最近在线的时间；</li>
 <li><strong>workspace 信息</strong>：workspace 名称、成员和角色、邀请（包括被邀请人的邮箱）、邀请码，以及加入的 station 的名称、图标、版本、在线时间和模式（完整或只执行任务），只执行任务的 station 另有它的所有者；</li>
 <li><strong>推送令牌</strong>：你的设备或浏览器为接收通知而登记的令牌或推送地址，以及这台设备的通知设置（语言、接收哪几类通知、是否显示内容）；</li>
@@ -91,7 +91,7 @@
 <tr><th>服务商</th><th>所在地</th><th>用途</th><th>涉及的信息</th></tr>
 <tr><td>Cloudflare, Inc.</td><td>美国，全球网络</td><td>托管网站、服务器和数据存储，请求日志，发送验证码邮件和加入 workspace 的通知邮件，中继服务器</td><td>第 4 节中服务器保存的全部信息、请求日志、连接元数据</td></tr>
 <tr><td>Google LLC</td><td>美国</td><td>Google 登录；Android 推送（Firebase 云消息）</td><td>Google 账号信息、推送令牌和通知文字</td></tr>
-<tr><td>Apple Inc.</td><td>美国</td><td>iOS 推送（Apple 推送通知服务）</td><td>推送令牌和通知文字</td></tr>
+<tr><td>Apple Inc.</td><td>美国</td><td>Apple 登录；iOS 推送（Apple 推送通知服务）</td><td>Apple 账号信息、推送令牌和通知文字</td></tr>
 <tr><td>你的浏览器的推送服务（如 Google、Mozilla、Apple）</td><td>因浏览器而异</td><td>网页推送通知</td><td>推送地址和加密后的通知内容</td></tr>
 <tr><td>PostHog, Inc.</td><td>美国</td><td>使用统计、错误追踪、会话回放</td><td>账号 ID、使用事件、错误信息、遮盖后的会话回放</td></tr>
 <tr><td>Google LLC（Google Cloud）</td><td>美国</td><td>请求链路追踪、station 运行日志</td><td>账号 ID、会话 ID、请求路径和耗时；station ID 和脱敏后的运行日志</td></tr>
@@ -109,7 +109,7 @@
 <li>邀请：7 天；</li>
 <li>加入 workspace 的通知邮件发给了谁（workspace、邮箱和时间）：用于 24 小时限频，过期记录在下一次添加成员时清理，workspace 删除时也会清理。发送失败时，另存 workspace 和邮箱作为待重试记录，供再次添加时重发，这份记录不含邮件正文或失败原因；重发成功、成员或待加入关系被移除、workspace 被删除或收件人的账号被删除时清除，除此之外仅在该关系仍存在时保留；</li>
 <li>推送令牌：退出登录或设备不再接收时删除；</li>
-<li>账号、workspace 和 station 信息：在你使用本服务期间保存，注销账号或删除 workspace 时立即删除；</li>
+<li>账号、workspace 和 station 信息（含 Apple 登录关联记录与加密保存的 Apple 刷新令牌）：在你使用本服务期间保存，注销账号或删除 workspace 时立即删除（并向 Apple 撤销登录授权）；</li>
 <li>问题反馈及其回复：问题处理完后视需要保存，注销账号时一并删除，你也可以随时要求删除；</li>
 <li>管理操作记录：只保留最近 1000 条，更早的自动删除；注销账号或删除 workspace 不会改写此前已记下的条目，你可以随时要求删除其中与你有关的条目；</li>
 <li>请求日志、使用统计、链路追踪和 station 运行日志：分别按 Cloudflare、PostHog、Google Cloud 的保留期限保存，到期自动删除。</li>
@@ -120,7 +120,7 @@
 <p>你有权查阅、复制、更正、补充、删除你的个人信息，有权要求我们解释说明个人信息处理规则，有权撤回同意和注销账号。</p>
 <ul>
 <li>workspace 的所有者可以在应用中删除 workspace；</li>
-<li><strong>注销账号</strong>：在应用的账号设置中选择“注销账号”。注销后，你的账号信息、登录会话、推送令牌和问题反馈立即删除；只有你一个人的 workspace 一并删除；你所在的其他 workspace 会把你移除。如果你是某个还有其他成员的 workspace 的唯一 owner，需要先把 owner 转给别人或删除这个 workspace。注销无法恢复；</li>
+<li><strong>注销账号</strong>：在应用的账号设置中选择“注销账号”。注销后，你的账号信息、登录会话、推送令牌和问题反馈立即删除，已关联的 Apple 登录授权也会同步向 Apple 撤销；只有你一个人的 workspace 一并删除；你所在的其他 workspace 会把你移除。如果你是某个还有其他成员的 workspace 的唯一 owner，需要先把 owner 转给别人或删除这个 workspace。注销无法恢复；</li>
 <li>关闭使用统计：在应用的设置中关闭“发送使用统计和错误报告”；</li>
 <li>其他请求也请发邮件到 hi@still.fail。我们会在 15 个工作日内答复。</li>
 </ul>
