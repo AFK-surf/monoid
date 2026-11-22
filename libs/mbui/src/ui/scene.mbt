@@ -1431,8 +1431,9 @@ fn Ctx::paint(self : Ctx, i : Int, alpha_in : Double) -> Unit {
   }
   // (what of the tree is over it, View::over_scrim: its instances put after it, under the rest of its layer)
   if !tree_over_scrim.is_empty() && dr.mode != mode_hits && dr.scrims.contains(i) {
-    self.tree_over_scrim_clear()
-    self.raise_ranges(tree_over_scrim)
+    if self.tree_over_scrim_clear(false) {
+      self.raise_ranges(tree_over_scrim)
+    }
     tree_over_scrim.clear()
     tree_over_scrim_cut.clear()
   }

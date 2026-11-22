@@ -2442,15 +2442,16 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     }
     // (its ground a scrim of the tree's (View::scrim_under): what of the tree is drawn over a scrim put over it now, under
     // what it holds, as an old scrim has it as it is painted (scene.mbt's))
-    if dr.mode != mode_hits && tree.scrim_of(c.id) {
+    if dr.mode != mode_hits && tree.scrim_of(c.id) && (c.ground & 0xFFL) != 0L {
       // (and what an old view put over a scrim (Stratum's OverScrim), as an old scrim paints it: Ctx::paint_raised)
       if !dr.raised.is_empty() {
         self.paint_raised()
       }
       raise_close(None)
       if !tree_over_scrim.is_empty() {
-        self.tree_over_scrim_clear()
-        self.raise_ranges(tree_over_scrim)
+        if self.tree_over_scrim_clear(tree.leaving(c.id)) {
+          self.raise_ranges(tree_over_scrim)
+        }
         tree_over_scrim.clear()
         tree_over_scrim_cut.clear()
       }
@@ -2815,7 +2816,7 @@ let over_scrim_clear : Double = 12.0
 /// within it still does). Moved up: clear of it once it is all the way up, as far as it is on its way (what hangs past
 /// the window's foot is not thrown up ahead of it as it starts out from under it, nor left cut off under it once it is
 /// up: a row held at the list's foot, 2026-11-09), its top kept in the window.
-fn Ctx::tree_over_scrim_clear(self : Ctx) -> Unit {
+fn Ctx::tree_over_scrim_clear(self : Ctx, leaving : Bool) -> Bool {
   let a = self.inst
   let mut head = 1.0e300
   let mut foot = -1.0e300
@@ -2837,6 +2838,9 @@ fn Ctx::tree_over_scrim_clear(self : Ctx) -> Unit {
       dmin(0.0, dmax(dmax(top - over_scrim_clear - foot, at_rest * up), -head))
     }
     _ => 0.0
+  }
+  if leaving && dy == 0.0 {
+    return false
   }
   // (what cut each where it lay, the clip round it as it began (tree_over_scrim_cut), lifted off each edge of an
   // instance's clip that is that clip's: what cuts within it (its own round frame, what it holds cut to it) still does,
@@ -2863,6 +2867,7 @@ fn Ctx::tree_over_scrim_clear(self : Ctx) -> Unit {
       }
     }
   }
+  true
 }
 
 ///|

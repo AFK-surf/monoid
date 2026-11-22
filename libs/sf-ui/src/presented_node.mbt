@@ -148,6 +148,10 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
               presented_said.val.get() |> ignore
               p.taken_by != 0
             },
+            chosen=fn() {
+              presented_said.val.get() |> ignore
+              p.chosen && p.taken_by == 0
+            },
             // (dimming what is under it only where no sheet under it does, the host's sheets among them: scrim_owner)
             dims=fn() { scrim_owner(true) == serial },
           )

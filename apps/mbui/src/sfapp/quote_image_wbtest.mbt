@@ -765,3 +765,105 @@ test "an image right clicked: its one menu, again on that menu still the one; in
   assert_true(t.reachable("复制图片").length() > 0)
   assert_eq(quotes(), 0)
 }
+
+///|
+test "quoting a held image on Small never draws the original image above composer, quote card, or floating capsules while the menu sheet dismisses" {
+  let (t, x, y) = image_in_chat("插画参考.png")
+  t.press_at(x, y)
+  t.run_for(@ui.long_press_ms + 20.0)
+  t.release(x, y)
+  t.draw()
+  t.run_for(@sf.presented_rest() - t.time())
+  // While the bottom menu sheet is open at rest, the held message image must be lifted above the scrim.
+  let open_insts = t.drawn_instances()
+  let mut scrim_idx : Int? = None
+  for i, a in open_insts {
+    if scrim_idx is None && a[5] == 0.0 && a[2] >= 390.0 && a[3] >= 844.0 && a[11] > 0.01 && a[11] < 0.99 {
+      scrim_idx = Some(i)
+    }
+  }
+  let open_orig = picture_instances(t, "mem:fixture/插画参考.png").filter(fn(p) { p.1[2] > 100.0 })
+  assert_true(open_orig.length() > 0, msg="original image not drawn while menu is open")
+  assert_true(
+    scrim_idx is Some(si) && open_orig[0].0 > si,
+    msg="held image must be drawn above scrim while menu is open: scrim=\{Repr(scrim_idx)}, image=\{open_orig[0].0}",
+  )
+  // Tap 引用 and simulate the soft keyboard rising while the bottom menu sheet dismisses.
+  t.tap_text("引用")
+  let tap_at = t.time()
+  let mut checked_during_exit = 0
+  let exit_steps : Array[(Double, Double)] = [
+    (@sf.dur_ms * 0.4, 120.0),
+    (@sf.dur_ms * 0.7, 240.0),
+    (@sf.dur_ms, 300.0),
+  ]
+  for step in exit_steps {
+    let (dt, kb) = step
+    t.set_ime_inset(kb)
+    t.run_for(tap_at + dt - t.time())
+    let insts = t.drawn_instances()
+    let pics = picture_instances(t, "mem:fixture/插画参考.png")
+    let orig = pics.filter(fn(p) { p.1[2] > 100.0 })
+    let thumb = pics.filter(fn(p) { p.1[2] > 20.0 && p.1[2] <= 60.0 })
+    assert_true(orig.length() > 0, msg="at +\{dt}ms: original image missing")
+    let orig_idx = orig[0].0
+    if thumb.length() > 0 {
+      if @sf.presented_drawn() {
+        checked_during_exit += 1
+      }
+      let thumb_idx = thumb[0].0
+      assert_true(
+        orig_idx < thumb_idx,
+        msg="at +\{dt}ms: original image (\{orig_idx}) drawn above quote card thumbnail (\{thumb_idx})",
+      )
+      // Composer glass covering the quote card / composer area must be drawn after the original image.
+      let mut composer_glass_idx : Int? = None
+      let thumb_cx = thumb[0].1[0] + thumb[0].1[2] / 2.0
+      let thumb_cy = thumb[0].1[1] + thumb[0].1[3] / 2.0
+      for i, a in insts {
+        if (a[5] == 5.0 || a[5] == 6.0) &&
+          a[11] > 0.01 &&
+          thumb_cx >= a[0] &&
+          thumb_cx <= a[0] + a[2] &&
+          thumb_cy >= a[1] &&
+          thumb_cy <= a[1] + a[3] {
+          composer_glass_idx = Some(i)
+          break
+        }
+      }
+      assert_true(
+        composer_glass_idx is Some(gi) && orig_idx < gi,
+        msg="at +\{dt}ms: original image (\{orig_idx}) drawn above composer glass (\{Repr(composer_glass_idx)})",
+      )
+    }
+    // Floating station capsule ("Willow"), once visible, must also be drawn after the original image.
+    let willow = t.locate("Willow")
+    if willow.length() > 0 {
+      let (wx, wy) = willow[0]
+      let mut capsule_idx : Int? = None
+      for i, a in insts {
+        if (a[5] == 5.0 || a[5] == 6.0 || a[5] == 1.0 || a[5] == 7.0) &&
+          a[11] > 0.01 &&
+          wx >= a[0] &&
+          wx <= a[0] + a[2] &&
+          wy >= a[1] &&
+          wy <= a[1] + a[3] {
+          capsule_idx = Some(i)
+          break
+        }
+      }
+      if capsule_idx is Some(ci) {
+        assert_true(
+          orig_idx < ci,
+          msg="at +\{dt}ms: original image (\{orig_idx}) drawn above floating capsule (\{ci})",
+        )
+      }
+    }
+  }
+  assert_true(
+    checked_during_exit > 0,
+    msg="expected quote card to be visible while the menu sheet is still dismissing",
+  )
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [])
+}

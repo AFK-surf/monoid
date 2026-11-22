@@ -873,6 +873,24 @@ pub fn presented_open_of(serial : Int) -> Bool {
 }
 
 ///|
+/// Whether the one presented as `serial` — or any sheet that took its place (`took_place`) — is still open
+/// (not closing, nor gone), read reactively (`presented_said`).
+pub fn presented_open_chain_of(serial : Int) -> Bool {
+  presented_said.val.get() |> ignore
+  let mut s = serial
+  while true {
+    if presented_now.iter().any(fn(p) { p.serial == s && p.open }) {
+      return true
+    }
+    match took_place.get(s) {
+      Some(n) => s = n
+      None => break
+    }
+  }
+  false
+}
+
+///|
 /// Whether the one presented as `serial` is still drawn (open, or going).
 pub fn presented_drawn_of(serial : Int) -> Bool {
   // (it, or the sheet that took its place, or the one that took that one's: a row's menu, then what its item opened)

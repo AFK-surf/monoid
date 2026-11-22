@@ -1802,7 +1802,7 @@ fn CardLift::node(self : CardLift, w : @view.View) -> () -> Double {
     fn() { self.held.get() },
     fn() {
       match self.menu.get() {
-        Some(s) => @sf.presented_drawn_of(s)
+        Some(s) => @sf.presented_open_chain_of(s)
         None => false
       }
     },
