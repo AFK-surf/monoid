@@ -211,8 +211,15 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
       .presses(Is(true))
       .moves_window(By(fn() { @ui.window_inset() }))
       |> ignore
-      // (as tall as the bar and 16 more, faded out over all of it: the chat under it never cut off at a line)
-      wide_bar_scrim_node(bar, fn(_) { high() + 16.0 }, fn(_) { high() + 16.0 }, ends.ground)
+      // (as tall as the bar and 16 more, faded out over all of it: the chat under it never cut off at a line; where glass
+      // is drawn solid (no blur: less see-through asked for), whole under the bar and faded out over its 16 past it, no
+      // words under it showing through the title)
+      wide_bar_scrim_node(
+        bar,
+        fn(_) { high() + 16.0 },
+        fn(s) { if s.glass_solid() { 16.0 } else { high() + 16.0 } },
+        ends.ground,
+      )
       // (the title's words, chat_bar_title_in into its row, where the column's words start: chat_row_side of the width
       // it is laid out at, moved across as the column is on its way (sfbase's column_laid); none before the bar's start
       // room)

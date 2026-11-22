@@ -560,6 +560,9 @@ priv struct PanelOwn {
   asked : @signals.Signal[String]
   leaving : @signals.Signal[(String, Array[String], String)?]
   goes : Map[String, @motion.Way]
+  // where a chat's rows' words stood across as its panel's column last set off (side_slides): turned back on its way,
+  // from there, not from where they stand at rest at that width (laid_toward's `from_side`)
+  from_side : Map[String, Double]
 }
 
 ///|
@@ -569,6 +572,7 @@ let panel_own : PanelOwn = {
   asked: @signals.signal("", same=fn(a, b) { a == b }),
   leaving: @signals.signal(None, same=fn(a, b) { a == b }),
   goes: {},
+  from_side: {},
 }
 
 ///|
@@ -578,6 +582,7 @@ pub fn side_slide_reset() -> Unit {
   panel_own.asked.set("")
   panel_own.leaving.set(None)
   panel_own.goes.clear()
+  panel_own.from_side.clear()
   side_tab_menu_reset()
 }
 
