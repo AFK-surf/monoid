@@ -751,7 +751,7 @@ fn small_glass_capsule(b : @view.View) -> Unit {
   .radius(Is(999.0))
   .lines_up(Is(Some(Middle)))
   .lies_along(Is(Middle))
-  .glass(By(fn() { Some(@sf.glass_floating()) }))
+  .glass(By(fn() { Some(@sf.glass_floating().sharing()) }))
   .edge(By(fn() { if b.glass_solid() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
   .shadow(By(fn() { @sf.float_shadow() }))
   .shadow_outside(Is(true))

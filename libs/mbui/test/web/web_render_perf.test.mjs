@@ -276,7 +276,7 @@ test('glass allocates tight capture-box levels and reuses cached blur from glass
   }
   const passes1 = b.calls.filter((c) => c.fn === 'drawArrays').length;
   const blits1 = b.calls.filter((c) => c.fn === 'blitFramebuffer').length;
-  assert.ok(passes1 > 0 && blits1 >= 2, 'cold glass ran blur passes and copied into slot');
+  assert.ok(passes1 > 0 && blits1 === 1, 'cold glass ran blur passes and swapped into slot without extra blit');
 
   // Frame 2: identical content under glass -> hits glassSlots cache, 0 blur passes, 0 blitFramebuffer
   b.resetCalls();

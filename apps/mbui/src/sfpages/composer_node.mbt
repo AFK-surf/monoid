@@ -1207,7 +1207,7 @@ fn composer_box_node(
         }) ==
           1
         let dragging = !no_files() && (@sfbase.drag_carried.val)() is Some(_) && (over || @sf.lit_node(box))
-        Some(@sf.glass_floating(tint?=if dragging { Some(@sf.alpha(@sf.theme().p.accent, drag_tint)) } else { None }))
+        Some(@sf.glass_floating(tint?=if dragging { Some(@sf.alpha(@sf.theme().p.accent, drag_tint)) } else { None }).sharing())
       }),
     )
     // (round as a capsule is, or as its box's corner; from one to the other as its height goes its way: drawn, as a

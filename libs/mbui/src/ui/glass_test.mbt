@@ -352,3 +352,93 @@ test "liquid glass clear-lens zoom encodes negative slot 7, shares capture with 
   @ui.set_glass_light_angle(0.0)
   assert_eq(@ui.glass_light_angle(), 0.0)
 }
+
+///|
+test "sharing() unmerged liquid glass shares across shadows and inner glyphs in same band, but splits on occluder or vertical gap > 64pt" {
+  let g = @ui.Glass::liquid(blur=2.5, merge=0.0).sharing()
+  // 1. Same horizontal band with shadows and inner text: shares one capture id
+  let t1 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, fn() {
+      c.box(dir=Row, gap=12.0, fn() {
+        c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, shadow=4.0, fn() {
+          c.text("A", wrap=false) |> ignore
+        })
+        |> ignore
+        c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, shadow=4.0, fn() {
+          c.text("B", wrap=false) |> ignore
+        })
+        |> ignore
+        c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, shadow=4.0, fn() {
+          c.text("C", wrap=false) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs1 = t1.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs1.length(), 3)
+  assert_true(gs1[0][20] < 0.0)
+  assert_eq(gs1[1][20], gs1[0][20])
+  assert_eq(gs1[2][20], gs1[0][20])
+
+  // 2. Occluder / scrim drawn between two same-blur liquid glasses covering the second: must start a new capture
+  let t2 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, fn() {
+      c.layer(fn() {
+        c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+      })
+      |> ignore
+      // full-screen page/scrim covering the second glass
+      c.layer(fn() {
+        c.box(w=Fill(1.0), h=Fill(1.0), bg=0x00000080L, fn() {
+          c.box(dir=Row, fn() {
+            c.box(w=Px(100.0), h=Px(1.0), fn() {  }) |> ignore
+            c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs2 = t2.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs2.length(), 2)
+  assert_true(gs2[0][20] < 0.0 && gs2[1][20] < 0.0)
+  assert_true(gs2[1][20] != gs2[0][20])
+
+  // 3. Two same-blur liquid glasses separated vertically by > 64pt (top bar vs bottom bar): must start a new capture
+  let t3 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, fn() {
+      c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+      c.box(w=Px(1.0), h=Px(100.0), fn() {  }) |> ignore
+      c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+    })
+    |> ignore
+  })
+  let gs3 = t3.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs3.length(), 2)
+  assert_true(gs3[0][20] < 0.0 && gs3[1][20] < 0.0)
+  assert_true(gs3[1][20] != gs3[0][20])
+
+  // 4. Intervening frosted glass (or merged liquid glass) clears liquid_run so the following sharing() liquid starts a new capture
+  let frost = @ui.Glass::frosted(blur=12.0, tint=0xFFFFFF80L, solid=0xFFFFFFFFL)
+  let t4 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, fn() {
+      c.box(dir=Row, gap=12.0, fn() {
+        c.box(w=Px(60.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+        c.box(w=Px(60.0), h=Px(40.0), radius=20.0, glass=frost, fn() {  }) |> ignore
+        c.box(w=Px(60.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs4 = t4.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs4.length(), 2)
+  assert_true(gs4[0][20] < 0.0 && gs4[1][20] < 0.0)
+  assert_true(gs4[1][20] != gs4[0][20])
+}

@@ -806,6 +806,58 @@ int main(void) {
       uint8_t *dd_blue = px_dd[4] + (300 * aw + 400) * 4;
       CHECK(((double)dd_blue[0] - (double)dd_blue[2]) / 255.0 <= 0.28);
       for (int i = 0; i < 5; i++) free(px_dd[i]);
+
+      // Dedicated ONE_KIND=13 (unmerged liquid, merge=0) vs ONE_KIND=6 (merged liquid, merge=1e-7) with large flat
+      // interior (inward >= 23), non-zero bevel/refraction/chroma/rim: must be byte-for-byte identical; and zero-copy
+      // slot swap across frames + glass_free() must preserve identical pixels without aliasing/double-free.
+      dispatch_group_wait(kinds_made, DISPATCH_TIME_FOREVER);
+      CHECK(kpipe[5] != nil && kpipe[6] != nil && kpipe[MB_KIND_LIQUID_SINGLE] != nil);
+      double lp[3 * MB_INST];
+      rect_at(lp, 0, 0, 400, 300, 0, 0.12, 0.24, 0.48, 0);
+      rect_at(lp + MB_INST, 120, 90, 160, 120, 0, 0.92, 0.35, 0.18, 0);
+      rect_at(lp + 2 * MB_INST, 80, 60, 240, 180, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -18);
+      lp[2 * MB_INST + 4] = 28;
+      lp[2 * MB_INST + 6] = 1.0;
+      lp[2 * MB_INST + 7] = 2.5;
+      lp[2 * MB_INST + 11] = 0x67 / 255.0;
+      lp[2 * MB_INST + 12] = 0.6;
+      lp[2 * MB_INST + 13] = 14.0;
+      lp[2 * MB_INST + 15] = 1.0;
+      lp[2 * MB_INST + 21] = 18.0;
+      lp[2 * MB_INST + 22] = 0.4;
+      lp[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(lp, 3, 0.12, 0.24, 0.48);
+      present_drain();
+      uint8_t *px_single = read_texture(canvas, &aw, &ah);
+
+      lp[2 * MB_INST + 23] = 1e-7;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(lp, 3, 0.12, 0.24, 0.48);
+      present_drain();
+      uint8_t *px_merged = read_texture(canvas, &aw, &ah);
+      CHECK(memcmp(px_single, px_merged, (size_t)aw * (size_t)ah * 4) == 0);
+      free(px_merged);
+
+      // Zero-copy slot swap across moving backdrop frames + glass_free() + re-render parity.
+      lp[2 * MB_INST + 23] = 0.0;
+      for (int step = 1; step <= 4; step++) {
+        lp[MB_INST + 0] = 120 + step * 5;
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(lp, 3, 0.12, 0.24, 0.48);
+        present_drain();
+      }
+      dispatch_sync(present_q, ^{ glass_free(); });
+      lp[MB_INST + 0] = 120;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(lp, 3, 0.12, 0.24, 0.48);
+      present_drain();
+      uint8_t *px_after_free = read_texture(canvas, &aw, &ah);
+      CHECK(memcmp(px_single, px_after_free, (size_t)aw * (size_t)ah * 4) == 0);
+      free(px_single);
+      free(px_after_free);
     }
 
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in

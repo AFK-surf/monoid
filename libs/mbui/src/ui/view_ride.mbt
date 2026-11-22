@@ -1104,6 +1104,26 @@ fn ride_put(
       s.unsafe_set(b + 20, -now.to_double())
       if kind == 5.0 {
         glass_paint.frost_run = now
+        glass_paint.liquid_run = 0
+        glass_paint.liquid_first = -1
+      } else if kind == 6.0 && s.unsafe_get(b + 23) <= 0.0 {
+        let blur = s.unsafe_get(b + 7)
+        let eff_blur = if blur < 0.0 { 0.0 } else { blur }
+        let iy0 = s.unsafe_get(b + 1)
+        let iy1 = iy0 + s.unsafe_get(b + 3)
+        if glass_paint.liquid_run == now && glass_paint.liquid_first >= 0 {
+          glass_paint.liquid_y0 = dmin(glass_paint.liquid_y0, iy0)
+          glass_paint.liquid_y1 = dmax(glass_paint.liquid_y1, iy1)
+        } else {
+          glass_paint.liquid_run = now
+          glass_paint.liquid_blur = eff_blur
+          glass_paint.liquid_first = at + i
+          glass_paint.liquid_y0 = iy0
+          glass_paint.liquid_y1 = iy1
+        }
+      } else if kind == 6.0 {
+        glass_paint.liquid_run = 0
+        glass_paint.liquid_first = -1
       }
       glass_paint.run_start = -1
       glass_paint.run_len = 0

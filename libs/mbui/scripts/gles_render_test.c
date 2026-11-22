@@ -739,6 +739,50 @@ int main(void) {
     for (int i = 0; i < 5; i++) free(px_dd[i]);
   }
 
+  // Dedicated ONE_KIND=13 (unmerged liquid, merge=0) vs ONE_KIND=6 (merged liquid, merge=1e-7) with large flat
+  // interior (inward >= 23), non-zero bevel/refraction/chroma/rim: must be byte-for-byte identical; and zero-copy
+  // slot swap across frames + glass_free() must preserve identical pixels.
+  {
+    CHECK(progs[5].p != 0 && progs[6].p != 0 && progs[MB_KIND_LIQUID_SINGLE].p != 0);
+    double lp[3 * MB_INST];
+    rect_at(lp, 0, 0, W, H, 0, 0.12, 0.24, 0.48, 0);
+    rect_at(lp + MB_INST, 20, 15, 60, 50, 0, 0.92, 0.35, 0.18, 0);
+    rect_at(lp + 2 * MB_INST, 8, 6, 84, 68, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -18);
+    lp[2 * MB_INST + 4] = 16;
+    lp[2 * MB_INST + 6] = 1.0;
+    lp[2 * MB_INST + 7] = 2.5;
+    lp[2 * MB_INST + 11] = 0x67 / 255.0;
+    lp[2 * MB_INST + 12] = 0.6;
+    lp[2 * MB_INST + 13] = 14.0;
+    lp[2 * MB_INST + 15] = 1.0;
+    lp[2 * MB_INST + 21] = 18.0;
+    lp[2 * MB_INST + 22] = 0.4;
+    lp[2 * MB_INST + 23] = 0.0;
+    glass_forget();
+    gl_present(lp, 3, 0.12, 0.24, 0.48);
+    unsigned char *px_single = pixels_of_fb(surface);
+
+    lp[2 * MB_INST + 23] = 1e-7;
+    glass_forget();
+    gl_present(lp, 3, 0.12, 0.24, 0.48);
+    unsigned char *px_merged = pixels_of_fb(surface);
+    CHECK(memcmp(px_single, px_merged, (size_t)fb_w * fb_h * 4) == 0);
+    free(px_merged);
+
+    lp[2 * MB_INST + 23] = 0.0;
+    for (int step = 1; step <= 4; step++) {
+      lp[MB_INST + 0] = 20 + step * 3;
+      gl_present(lp, 3, 0.12, 0.24, 0.48);
+    }
+    glass_free();
+    lp[MB_INST + 0] = 20;
+    gl_present(lp, 3, 0.12, 0.24, 0.48);
+    unsigned char *px_after_free = pixels_of_fb(surface);
+    CHECK(memcmp(px_single, px_after_free, (size_t)fb_w * fb_h * 4) == 0);
+    free(px_single);
+    free(px_after_free);
+  }
+
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then
   // made a float, as the app's own instance moved there would be.
   double kept[MB_INST];

@@ -1063,6 +1063,13 @@ fn Ctx::drawn_paint(self : Ctx, i : Int, alpha : Double) -> Bool {
       let i0 = self.ninst
       let (run, run_start, run_len) = (glass_paint.run, glass_paint.run_start, glass_paint.run_len)
       let frost_run = glass_paint.frost_run
+      let (liquid_run, liquid_blur, liquid_first, liquid_y0, liquid_y1) = (
+        glass_paint.liquid_run,
+        glass_paint.liquid_blur,
+        glass_paint.liquid_first,
+        glass_paint.liquid_y0,
+        glass_paint.liquid_y1,
+      )
       dr.mode = mode_hits
       dr.bypass = i
       self.paint(i, alpha)
@@ -1072,6 +1079,11 @@ fn Ctx::drawn_paint(self : Ctx, i : Int, alpha : Double) -> Bool {
       self.spans_cut()
       glass_paint.run = run
       glass_paint.frost_run = frost_run
+      glass_paint.liquid_run = liquid_run
+      glass_paint.liquid_blur = liquid_blur
+      glass_paint.liquid_first = liquid_first
+      glass_paint.liquid_y0 = liquid_y0
+      glass_paint.liquid_y1 = liquid_y1
       glass_paint.run_start = run_start
       glass_paint.run_len = run_len
     }

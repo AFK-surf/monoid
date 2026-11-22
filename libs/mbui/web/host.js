@@ -22,7 +22,8 @@
   };
   let cb = null;
   let modifiersSaid = 0;
-  const MB_KINDS = 12;
+  const MB_KIND_LIQUID_SINGLE = 13;
+  const MB_KINDS = 14;
   const GLASS_SLOTS = 32;
   function makeGlassSlots() {
     return Array.from({ length: GLASS_SLOTS }, () => ({
@@ -862,7 +863,7 @@
     #ifndef ONE_KIND
     #define ONE_KIND -1
     #endif
-    int kind = ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5);
+    int kind = ONE_KIND == 13 ? 6 : (ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5));
     #if ONE_KIND < 0
     if (kind == 9) { vec2 hh = v_rect.zw * 0.5; float rr = min(mb_corner_of(p - v_rect.xy - hh, v_rr), min(hh.x, hh.y)); vec2 q = abs(p - v_rect.xy - hh) - hh + rr; if (length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr > 0.0) discard; o = vec4(0.0); return; }
     #endif
@@ -924,7 +925,7 @@
       return;
     }
     #endif
-    #if ONE_KIND < 0
+    #if ONE_KIND < 0 || ONE_KIND == 6 || ONE_KIND == 13
     if (kind == 6) {
       // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass
       // liquid_glass_final_render_core.glsl, Apache-2.0.
@@ -932,6 +933,10 @@
       vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
       float d;
       float halfMinor = 1e9;
+      #if ONE_KIND == 13
+      d = sd_rr(p, v_rect, s_rr);
+      halfMinor = min(v_rect.z, v_rect.w) * 0.5;
+      #else
       if (k <= 0.0) {
         d = sd_rr(p, v_rect, s_rr);
         halfMinor = min(v_rect.z, v_rect.w) * 0.5;
@@ -952,6 +957,7 @@
           }
         }
       }
+      #endif
       halfMinor = max(halfMinor, 1.0);
       float sd_px = -d * u_scale;
       float materialAlpha = clamp(sd_px + 0.5, 0.0, 1.0);
@@ -960,19 +966,6 @@
       float ext_cov = mb_contour_int(max(outward + 0.5, 0.0), edgeW)
                     - mb_contour_int(max(outward - 0.5, 0.0), edgeW);
       if (materialAlpha < 0.01 && ext_cov < 0.01) discard;
-      float e = 0.5;
-      vec2 grad = k <= 0.0
-        ? vec2(
-            sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),
-            sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)
-          ) / (2.0 * e)
-        : vec2(
-            sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
-            sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)
-          ) / (2.0 * e);
-      float gradLen = length(grad);
-      vec2 surfaceNormal = gradLen > 0.0001 ? grad / gradLen : vec2(0.0, 0.0);
-      float shortening = sqrt(clamp(gradLen, 0.0, 1.0));
       bool is_clear = (v_p.w <= 0.1 && col.a < 0.12);
       bool is_dark = (!is_clear && col.a >= 0.05 && luma(col.rgb) < 0.35);
       float inward = max(-d, 0.0);
@@ -990,20 +983,49 @@
         bevel = rawBevel * lensScale;
         amount = rawAmount * lensScale;
       }
+      vec2 surfaceNormal = vec2(0.0, 0.0);
+      float shortening = 0.0;
       vec2 disp = vec2(0.0, 0.0);
-      if (inward < bevel && bevel > 0.001 && amount > 0.0) {
-        float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);
-        float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;
-        disp = surfaceNormal * (-mag);
+      bool need_grad = (inward < max(bevel, 23.0)) || (ext_cov > 0.0);
+      if (need_grad) {
+        float e = 0.5;
+        #if ONE_KIND == 13
+        vec2 grad = vec2(
+            sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),
+            sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)
+          ) / (2.0 * e);
+        #else
+        vec2 grad = k <= 0.0
+          ? vec2(
+              sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),
+              sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)
+            ) / (2.0 * e)
+          : vec2(
+              sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
+              sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)
+            ) / (2.0 * e);
+        #endif
+        float gradLen = length(grad);
+        surfaceNormal = gradLen > 0.0001 ? grad / gradLen : vec2(0.0, 0.0);
+        shortening = sqrt(clamp(gradLen, 0.0, 1.0));
+        if (inward < bevel && bevel > 0.001 && amount > 0.0) {
+          float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);
+          float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;
+          disp = surfaceNormal * (-mag);
+        }
       }
       float lensZoom = (v_p.w < 0.0) ? clamp(1.0 - v_p.w, 1.0, 3.0) : 1.0;
       vec2 sampleBase = p;
       if (lensZoom > 1.0001) {
+        #if ONE_KIND == 13
+        vec2 zoomC = v_rect.xy + v_rect.zw * 0.5;
+        #else
         vec2 zoomC = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
+        #endif
         sampleBase = zoomC + (p - zoomC) / lensZoom;
       }
       vec3 refractColor;
-      if (abs(v_pad.z) * amount * u_scale <= 0.25) {
+      if (inward >= bevel || abs(v_pad.z) * amount * u_scale <= 0.25) {
         refractColor = backdrop(sampleBase + disp);
       } else {
         float ds = v_pad.z * 0.5;
@@ -1076,12 +1098,16 @@
         spot = 1.0 - smoothstep(gr * 0.1, gr, length(p - gp));
         baseColor = clamp(baseColor + vec3(0.08 * spot), 0.0, 1.0);
       }
-      vec2 la = u_glight;
-      vec2 rn = vec2(
-        surfaceNormal.x * la.x + surfaceNormal.y * la.y,
-        -surfaceNormal.x * la.y + surfaceNormal.y * la.x
-      );
-      float tangency = abs(rn.x);
+      vec2 rn = vec2(0.0, 0.0);
+      float tangency = 0.0;
+      if (need_grad) {
+        vec2 la = u_glight;
+        rn = vec2(
+          surfaceNormal.x * la.x + surfaceNormal.y * la.y,
+          -surfaceNormal.x * la.y + surfaceNormal.y * la.x
+        );
+        tangency = abs(rn.x);
+      }
       vec3 result = baseColor;
       // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -rn.y)
       if (bevelShadowStr >= 0.001 && inward < 23.0) {
@@ -1114,7 +1140,7 @@
       return;
     }
     #endif
-    #if ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 2 || ONE_KIND == 4
+    #if ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 2 || ONE_KIND == 4 || ONE_KIND == 5
     vec2 hs = v_rect.zw * 0.5;
     vec2 c = v_rect.xy + hs;
     // worked out as near the curve as its cover, its edge or its blur reaches
@@ -1122,7 +1148,7 @@
     // (its corner by p: v_rr, each its own)
     float rad = mb_corner_of(p - c, v_rr);
     float d = mb_sd_box(p - c, hs, rad, band);
-    #if ONE_KIND < 0 || ONE_KIND == 0
+    #if ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 5
     if (kind == 0 || kind == 5) d = notch_cut(d, p, v_rect, v_pad);
     #endif
     #if ONE_KIND < 0 || ONE_KIND == 4
@@ -1162,9 +1188,9 @@
       return;
     }
     #endif
-    #if ONE_KIND < 0 || ONE_KIND == 0
+    #if ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 5
     float a = clamp(0.5 - d * u_scale, 0.0, 1.0);
-    #if ONE_KIND < 0
+    #if ONE_KIND < 0 || ONE_KIND == 5
     if (kind == 5) {
       // frosted: the blurred copy, saturated, the tint over it; the rim (a hairline inside the edge, the top left lit,
       // the foot and right less), 0.5 wide
@@ -1185,6 +1211,7 @@
       return;
     }
     #endif
+    #if ONE_KIND < 0 || ONE_KIND == 0
     vec4 fill = vec4(col.rgb, 1.0) * col.a;
     if (v_p.z > 0.0) {
       float inner = clamp(0.5 - (d + v_p.z) * u_scale, 0.0, 1.0);
@@ -1192,6 +1219,7 @@
       fill = mix(bc, fill, inner);
     }
     o = fill * a;
+    #endif
     #endif
     #endif
   }
@@ -1283,7 +1311,7 @@
     return s;
   }
 
-  const hasOwnProg = (kind) => (kind >= 0 && kind <= 4) || kind === 10 || kind === 11;
+  const hasOwnProg = (kind) => (kind >= 0 && kind <= 6) || kind === 10 || kind === 11 || kind === MB_KIND_LIQUID_SINGLE;
 
   function makeProg(vsShader, kind) {
     const src = `#version 300 es\n#define ONE_KIND ${kind}\n` + FS.slice('#version 300 es\n'.length);
@@ -1299,10 +1327,10 @@
       u[n] = gl.getUniformLocation(p, n);
     }
     gl.useProgram(p);
-    gl.uniform1i(u.u_atlas, 0);
-    gl.uniform1i(u.u_img, 1);
-    gl.uniform1i(u.u_bd, 2);
-    gl.uniform1i(u.u_segs, 3);
+    if (u.u_atlas) gl.uniform1i(u.u_atlas, 0);
+    if (u.u_img) gl.uniform1i(u.u_img, 1);
+    if (u.u_bd) gl.uniform1i(u.u_bd, 2);
+    if (u.u_segs) gl.uniform1i(u.u_segs, 3);
     return { p, u, gen: 0 };
   }
 
@@ -1322,14 +1350,14 @@
     const u = k.u;
     // The framebuffer's rounded size may not be exactly cssW*dpr. Mapping to cssW would stretch its pixels by that
     // remainder, sampling glyphs between atlas texels. A point must cover exactly dpr pixels, including at 125% zoom.
-    gl.uniform2f(u.u_vp, canvas.width / dpr, canvas.height / dpr);
-    gl.uniform1f(u.u_scale, dpr);
-    gl.uniform4fv(u.u_map, gmap);
-    gl.uniform4fv(u.u_uvc, guvc);
-    gl.uniform4fv(u.u_gb, ggb);
-    gl.uniform4fv(u.u_shape, gshape);
-    gl.uniform4fv(u.u_rad, grad);
-    gl.uniform1i(u.u_n, gn);
+    if (u.u_vp) gl.uniform2f(u.u_vp, canvas.width / dpr, canvas.height / dpr);
+    if (u.u_scale) gl.uniform1f(u.u_scale, dpr);
+    if (u.u_map) gl.uniform4fv(u.u_map, gmap);
+    if (u.u_uvc) gl.uniform4fv(u.u_uvc, guvc);
+    if (u.u_gb) gl.uniform4fv(u.u_gb, ggb);
+    if (u.u_shape) gl.uniform4fv(u.u_shape, gshape);
+    if (u.u_rad) gl.uniform4fv(u.u_rad, grad);
+    if (u.u_n) gl.uniform1i(u.u_n, gn);
     if (u.u_glight) gl.uniform2f(u.u_glight, Math.cos(glassLightAngle), Math.sin(glassLightAngle));
   }
 
@@ -1461,6 +1489,7 @@
   }
   function postPass(src, sw, sh, dst, w, h, mode, sg, dx, dy) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
+    if (gl.invalidateFramebuffer) gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.COLOR_ATTACHMENT0]);
     gl.viewport(0, 0, w, h);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, src.t);
@@ -1639,6 +1668,7 @@
     gl.disable(gl.SCISSOR_TEST);
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, lv[0].fb);
+    if (gl.invalidateFramebuffer) gl.invalidateFramebuffer(gl.DRAW_FRAMEBUFFER, [gl.COLOR_ATTACHMENT0]);
     gl.blitFramebuffer(m.px0, m.pb0, m.px0 + w, m.pb0 + h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.useProgram(post);
     if (contained) {
@@ -1739,17 +1769,6 @@
     return null;
   }
 
-  function slotCopy(s, L, w, h) {
-    if (!s.bt || s.bw !== L.w || s.bh !== L.h || s.bf !== L.format) {
-      if (s.bt) { gl.deleteFramebuffer(s.bfb); gl.deleteTexture(s.bt); }
-      const made = levelTex(L.format, L.w, L.h);
-      s.bt = made.t; s.bfb = made.fb; s.bw = made.w; s.bh = made.h; s.bf = L.format;
-    }
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, L.fb);
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, s.bfb);
-    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-  }
-
   function slotFill(m, frameClock) {
     const L = grabBlurred(m);
     let t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
@@ -1771,8 +1790,16 @@
     const idx = t0 >= 0 ? t0 : t1 >= 0 ? t1 : t2 >= 0 ? t2 : t3 >= 0 ? t3 : t4 >= 0 ? t4 : fallback;
     const s = glassSlots[idx];
     s.valid = false;
-    const [lw, lh] = grabLevels(m);
-    slotCopy(s, L, lw[m.k], lh[m.k]);
+    if (s.bt && s.bw === L.w && s.bh === L.h && s.bf === L.format) {
+      const tmpT = s.bt, tmpFb = s.bfb;
+      s.bt = L.t; s.bfb = L.fb;
+      L.t = tmpT; L.fb = tmpFb;
+    } else {
+      if (s.bt) { gl.deleteFramebuffer(s.bfb); gl.deleteTexture(s.bt); }
+      s.bt = L.t; s.bfb = L.fb; s.bw = L.w; s.bh = L.h; s.bf = L.format;
+      const made = levelTex(s.bf, s.bw, s.bh);
+      L.t = made.t; L.fb = made.fb;
+    }
     return s;
   }
 
@@ -2293,7 +2320,6 @@
         if (own ? k !== kind : (tid >= 0 && !h && hasOwnProg(k))) break;
         end++;
       }
-      useProg(own ? kind : -1);
       if (tid < 0) {
         glassDrawn = true;
         if (!levelsSized) {
@@ -2327,11 +2353,14 @@
         if (shows) {
           // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
           const mergedLiquid = kind === 6 && f32[start * INST + 23] > 0;
+          const gkind = kind === 5 ? 5 : (kind === 6 ? (mergedLiquid ? 6 : MB_KIND_LIQUID_SINGLE) : -1);
+          useProg(gkind);
           drawRun(start, mergedLiquid ? 1 : end - start);
         }
         start = end;
         continue;
       }
+      useProg(own ? kind : -1);
       // a stream's picture (STREAM_TEX + its id): nothing until a frame of its own shows; a hole's image is its
       // view's (src/hostapi/host.mbt view_tex_base + its id), the element under the canvas here
       // (in a window beside the page, its own texture of each: slotTex)

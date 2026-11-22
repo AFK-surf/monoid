@@ -23,7 +23,7 @@ fn glass_bar_pill(spot? : (Double, Double)? = None) -> @ui.Glass {
     merge=0.0,
     adaptive=false,
     spot~,
-  )
+  ).sharing()
 }
 
 ///|

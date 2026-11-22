@@ -52,38 +52,39 @@ test "styles: the lock's waiting page, every state, drawn as before" {
       }
     }
   }
+  // Top bar `bar_pill_group_node` pills share one liquid glass capture id (slot 20); drawlist lengths unchanged.
   inspect(out.to_string(), content=(
-    #|waiting narrow 36025:4f5b284b
+    #|waiting narrow 36025:a1510ca2
     #|waiting wide 66023:4112183f
-    #|waiting-dark narrow 35941:b172b797
+    #|waiting-dark narrow 35941:4df3f8b2
     #|waiting-dark wide 65852:4a6a3989
-    #|finding narrow 54842:139cbe62
+    #|finding narrow 54842:8fbfc9a5
     #|finding wide 84907:723ded1c
-    #|finding-dark narrow 54893:c53a7280
+    #|finding-dark narrow 54893:1293354b
     #|finding-dark wide 84871:17a7b16a
-    #|code narrow 40603:e4809160
+    #|code narrow 40603:5b9458cf
     #|code wide 70141:42f542a3
-    #|code-dark narrow 40476:459c6460
+    #|code-dark narrow 40476:1ef5154b
     #|code-dark wide 69927:72631d87
-    #|wrong narrow 36106:41951749
+    #|wrong narrow 36106:385ec7bc
     #|wrong wide 66161:2649ae81
-    #|wrong-dark narrow 36206:55fa3b6a
+    #|wrong-dark narrow 36206:1879cccf
     #|wrong-dark wide 66174:f25a5808
-    #|checking narrow 42347:a392cb9c
+    #|checking narrow 42347:1cb761a9
     #|checking wide 74132:54bef3
-    #|checking-dark narrow 42437:1cfab01b
+    #|checking-dark narrow 42437:eb6d4116
     #|checking-dark wide 74135:1e5e7a12
-    #|none narrow 49073:7dfd9db2
+    #|none narrow 49073:229983f5
     #|none wide 77132:a85cd953
-    #|none-dark narrow 48949:3555b39f
+    #|none-dark narrow 48949:a0ab1144
     #|none-dark wide 76921:427c396c
-    #|failed narrow 29524:a917950b
+    #|failed narrow 29524:6e15c162
     #|failed wide 60819:839fa92d
-    #|failed-dark narrow 29524:714fa215
+    #|failed-dark narrow 29524:e4eb07a4
     #|failed-dark wide 60732:1a404b71
-    #|nocode narrow 36025:4f5b284b
+    #|nocode narrow 36025:a1510ca2
     #|nocode wide 66023:4112183f
-    #|nocode-dark narrow 35941:b172b797
+    #|nocode-dark narrow 35941:4df3f8b2
     #|nocode-dark wide 65852:4a6a3989
     #|
 

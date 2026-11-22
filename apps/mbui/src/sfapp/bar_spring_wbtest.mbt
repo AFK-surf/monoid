@@ -199,6 +199,21 @@ test "bar: capsule and action circle share one liquid glass backdrop capture" {
 }
 
 ///|
+test "glass capture sharing: Small home and chat each use at most 2 distinct liquid glass captures" {
+  for mode in ["home", "chat"] {
+    let t = tester(mode)
+    let runs : Set[Int] = Set([])
+    let liquids = t.drawn_glass().filter(fn(g) { g.4 == 6 })
+    for g in liquids {
+      assert_true(g.5 > 0, msg="\{mode}: \{Repr(liquids)}")
+      runs.add(g.5)
+    }
+    assert_true(liquids.length() >= 3, msg="\{mode}: expected >= 3 liquid glasses, got \{Repr(liquids)}")
+    assert_true(runs.length() <= 2, msg="\{mode}: expected <= 2 distinct liquid captures, got \{runs.length()} in \{Repr(liquids)}")
+  }
+}
+
+///|
 test "bar: dragging panel up and down triggers capillary liquid fuse and split" {
   let settle_ms = 1000.0
   let drag_step_ms = 16.0

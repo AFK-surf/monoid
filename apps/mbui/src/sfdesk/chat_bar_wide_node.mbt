@@ -527,7 +527,7 @@ fn wide_glass_capsule(b : @view.View, marked? : () -> Bool = fn() { false }) -> 
   .radius(Is(999.0))
   .lines_up(Is(Some(Middle)))
   .lies_along(Is(Middle))
-  .glass(By(fn() { Some(@sf.glass_floating()) }))
+  .glass(By(fn() { Some(@sf.glass_floating().sharing()) }))
   .edge(By(fn() {
     if marked() {
       (2.0, @sf.theme().p.accent)

@@ -352,7 +352,7 @@ MB_CORNER_SL
 "  if (I.fadex.y > 0.0) cover *= clamp((cp.x - I.fadex.x) / I.fadex.y, 0.0, 1.0);\n"
 "  if (I.fadex.w > 0.0) cover *= clamp((I.fadex.z - cp.x) / I.fadex.w, 0.0, 1.0);\n"
 "  if (cover <= 0.0) discard_fragment();\n"
-"  int kind = one_kind >= 0 ? one_kind : int(I.p.y + 0.5);\n"
+"  int kind = one_kind == 13 ? 6 : (one_kind >= 0 ? one_kind : int(I.p.y + 0.5));\n"
 "  float4 col = I.color;\n"
 "  if (kind == 1 || kind == 3 || kind == 7) {\n"
 "    constexpr sampler s(filter::linear, coord::pixel);\n"
@@ -390,7 +390,8 @@ MB_CORNER_SL
 "    float4 s_rr = max(max(I.rr.x, I.rr.y), max(I.rr.z, I.rr.w)) > 0.0 ? I.rr : float4(I.p.x);\n"
 "    float d;\n"
 "    float halfMinor = 1e9;\n"
-"    if (k <= 0.0) {\n"
+"    bool single_liquid = (one_kind == 13) || (k <= 0.0);\n"
+"    if (single_liquid) {\n"
 "      d = sd_rr(p, I.rect, s_rr);\n"
 "      halfMinor = min(I.rect.z, I.rect.w) * 0.5;\n"
 "    } else {\n"
@@ -419,19 +420,6 @@ MB_CORNER_SL
 "    float ext_cov = mb_contour_int(max(outward + 0.5, 0.0), edgeW)\n"
 "                  - mb_contour_int(max(outward - 0.5, 0.0), edgeW);\n"
 "    if (materialAlpha < 0.01 && ext_cov < 0.01) discard_fragment();\n"
-"    float e = 0.5;\n"
-"    float2 grad = k <= 0.0\n"
-"      ? float2(\n"
-"          sd_rr(p + float2(e, 0.0), I.rect, s_rr) - sd_rr(p - float2(e, 0.0), I.rect, s_rr),\n"
-"          sd_rr(p + float2(0.0, e), I.rect, s_rr) - sd_rr(p - float2(0.0, e), I.rect, s_rr)\n"
-"        ) / (2.0 * e)\n"
-"      : float2(\n"
-"          sd_group(p + float2(e, 0.0), g, k) - sd_group(p - float2(e, 0.0), g, k),\n"
-"          sd_group(p + float2(0.0, e), g, k) - sd_group(p - float2(0.0, e), g, k)\n"
-"        ) / (2.0 * e);\n"
-"    float gradLen = length(grad);\n"
-"    float2 surfaceNormal = gradLen > 0.0001 ? grad / gradLen : float2(0.0, 0.0);\n"
-"    float shortening = sqrt(clamp(gradLen, 0.0, 1.0));\n"
 "    bool is_clear = (I.p.w <= 0.1 && col.a < 0.12);\n"
 "    bool is_dark = (!is_clear && col.a >= 0.05 && luma(col.rgb) < 0.35);\n"
 "    float inward = max(-d, 0.0);\n"
@@ -449,20 +437,38 @@ MB_CORNER_SL
 "      bevel = rawBevel * lensScale;\n"
 "      amount = rawAmount * lensScale;\n"
 "    }\n"
+"    float2 surfaceNormal = float2(0.0, 0.0);\n"
+"    float shortening = 0.0;\n"
 "    float2 disp = float2(0.0, 0.0);\n"
-"    if (inward < bevel && bevel > 0.001 && amount > 0.0) {\n"
-"      float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);\n"
-"      float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
-"      disp = surfaceNormal * (-mag);\n"
+"    bool need_grad = (inward < max(bevel, 23.0)) || (ext_cov > 0.0);\n"
+"    if (need_grad) {\n"
+"      float e = 0.5;\n"
+"      float2 grad = single_liquid\n"
+"        ? float2(\n"
+"            sd_rr(p + float2(e, 0.0), I.rect, s_rr) - sd_rr(p - float2(e, 0.0), I.rect, s_rr),\n"
+"            sd_rr(p + float2(0.0, e), I.rect, s_rr) - sd_rr(p - float2(0.0, e), I.rect, s_rr)\n"
+"          ) / (2.0 * e)\n"
+"        : float2(\n"
+"            sd_group(p + float2(e, 0.0), g, k) - sd_group(p - float2(e, 0.0), g, k),\n"
+"            sd_group(p + float2(0.0, e), g, k) - sd_group(p - float2(0.0, e), g, k)\n"
+"          ) / (2.0 * e);\n"
+"      float gradLen = length(grad);\n"
+"      surfaceNormal = gradLen > 0.0001 ? grad / gradLen : float2(0.0, 0.0);\n"
+"      shortening = sqrt(clamp(gradLen, 0.0, 1.0));\n"
+"      if (inward < bevel && bevel > 0.001 && amount > 0.0) {\n"
+"        float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);\n"
+"        float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
+"        disp = surfaceNormal * (-mag);\n"
+"      }\n"
 "    }\n"
 "    float lensZoom = (I.p.w < 0.0) ? clamp(1.0 - I.p.w, 1.0, 3.0) : 1.0;\n"
 "    float2 sampleBase = p;\n"
 "    if (lensZoom > 1.0001) {\n"
-"      float2 zoomC = (k <= 0.0) ? (I.rect.xy + I.rect.zw * 0.5) : ((g.gb.xy + g.gb.zw) * 0.5);\n"
+"      float2 zoomC = single_liquid ? (I.rect.xy + I.rect.zw * 0.5) : ((g.gb.xy + g.gb.zw) * 0.5);\n"
 "      sampleBase = zoomC + (p - zoomC) / lensZoom;\n"
 "    }\n"
 "    float3 refractColor;\n"
-"    if (abs(I.pad.z) * amount * u.scale <= 0.25) {\n"
+"    if (inward >= bevel || abs(I.pad.z) * amount * u.scale <= 0.25) {\n"
 "      refractColor = backdrop(bd, g, sampleBase + disp);\n"
 "    } else {\n"
 "      float ds = I.pad.z * 0.5;\n"
@@ -535,12 +541,16 @@ MB_CORNER_SL
 "      spot = 1.0 - smoothstep(gr * 0.1, gr, length(p - gp));\n"
 "      baseColor = clamp(baseColor + float3(0.08 * spot), 0.0, 1.0);\n"
 "    }\n"
-"    float2 la = g.misc.zw;\n"
-"    float2 rn = float2(\n"
-"      surfaceNormal.x * la.x + surfaceNormal.y * la.y,\n"
-"      -surfaceNormal.x * la.y + surfaceNormal.y * la.x\n"
-"    );\n"
-"    float tangency = abs(rn.x);\n"
+"    float2 rn = float2(0.0, 0.0);\n"
+"    float tangency = 0.0;\n"
+"    if (need_grad) {\n"
+"      float2 la = g.misc.zw;\n"
+"      rn = float2(\n"
+"        surfaceNormal.x * la.x + surfaceNormal.y * la.y,\n"
+"        -surfaceNormal.x * la.y + surfaceNormal.y * la.x\n"
+"      );\n"
+"      tangency = abs(rn.x);\n"
+"    }\n"
 "    float3 result = baseColor;\n"
 "    // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -rn.y)\n"
 "    if (bevelShadowStr >= 0.001 && inward < 23.0) {\n"
@@ -751,8 +761,11 @@ static id<MTLRenderPipelineState> make_pipe(id<MTLLibrary> lib, MTLPixelFormat f
 // shadows, colour glyphs, images, lines, shapes' bands: what else there is (glass, a native view's hole) the pipeline
 // for any kind draws. Made after the rest, on their own (kinds_made): until they are, that one draws every kind, the
 // same pixels.
-#define MB_KINDS 12
-static int has_own_pipe(int kind) { return (kind >= 0 && kind <= 4) || kind == 10 || kind == 11; }
+#define MB_KIND_LIQUID_SINGLE 13
+#define MB_KINDS 14
+static int has_own_pipe(int kind) {
+  return (kind >= 0 && kind <= 6) || kind == 10 || kind == 11 || kind == MB_KIND_LIQUID_SINGLE;
+}
 static id<MTLRenderPipelineState> kpipe[MB_KINDS];
 static dispatch_group_t kinds_made;
 static int kinds_ready;
@@ -1307,19 +1320,11 @@ static int slot_same(const Grab *m, const double key[7]) {
   return -1;
 }
 
-// `l`'s w × h top left copied into *t (made again at another size or format than l's).
-static void slot_copy(id<MTLBlitCommandEncoder> bl, id<MTLTexture> __strong *t, id<MTLTexture> l, int w, int h) {
-  if (!*t || (*t).width != l.width || (*t).height != l.height || (*t).pixelFormat != l.pixelFormat)
-    *t = level_tex(l.pixelFormat, (int)l.width, (int)l.height);
-  [bl copyFromTexture:l sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
-           sourceSize:MTLSizeMake(w, h, 1) toTexture:*t destinationSlice:0 destinationLevel:0
-    destinationOrigin:MTLOriginMake(0, 0, 0)];
-}
-
-// The blur just made (blur) kept in the slot least lately shown: copied out of the levels.
-// Not yet said to be of anything (valid).
-static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m, unsigned frame_clock) {
-  id<MTLTexture> L = grab_blurred(m);
+// The blur just made (blur) kept in the slot least lately shown by swapping texture handles with the level
+// (zero GPU blit). Not yet said to be of anything (valid).
+static int slot_fill(const Grab *m, unsigned frame_clock) {
+  id<MTLTexture> __strong *Lp = m->contained && m->k == 0 ? &ltmp : &lv[m->k];
+  id<MTLTexture> L = *Lp;
   int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
   for (int j = 0; j < MB_GLASS_SLOTS; j++) {
     if (slots[j].used < slots[fallback].used) fallback = j;
@@ -1342,11 +1347,15 @@ static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m, unsigned frame_cloc
   }
   int i = t0 >= 0 ? t0 : t1 >= 0 ? t1 : t2 >= 0 ? t2 : t3 >= 0 ? t3 : t4 >= 0 ? t4 : fallback;
   slots[i].valid = 0;
-  int lw[4], lh[4];
-  grab_levels(m, lw, lh);
-  id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
-  slot_copy(bl, &slot_bt[i], L, lw[m->k], lh[m->k]);
-  [bl endEncoding];
+  if (slot_bt[i] != nil && slot_bt[i].width == L.width && slot_bt[i].height == L.height &&
+      slot_bt[i].pixelFormat == L.pixelFormat) {
+    id<MTLTexture> old = slot_bt[i];
+    slot_bt[i] = L;
+    *Lp = old;
+  } else {
+    slot_bt[i] = L;
+    *Lp = level_tex(L.pixelFormat, (int)L.width, (int)L.height);
+  }
   return i;
 }
 
@@ -1567,7 +1576,7 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         } else if (shows) {
           [enc endEncoding];
           blur(cb, target, &m);
-          slot = slot_fill(cb, &m, frame_clock);
+          slot = slot_fill(&m, frame_clock);
           // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not
           // kept to be shown again as theirs)
           if (known && !encode_missing) slot_keep(slot, &m, key);
@@ -1577,10 +1586,11 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         }
         bound = tid;
       }
-      [enc setRenderPipelineState:p];
       // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
       if (shows) {
-        int merged_liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6 && f[start * MB_INST + 23] > 0.0f;
+        int merged_liquid = kind == 6 && f[start * MB_INST + 23] > 0.0f;
+        int gkind = kind == 5 ? 5 : (kind == 6 ? (merged_liquid ? 6 : MB_KIND_LIQUID_SINGLE) : -1);
+        [enc setRenderPipelineState:kind_pipe(p, gkind)];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6
                 instanceCount:merged_liquid ? 1 : end - start baseInstance:start];
       }

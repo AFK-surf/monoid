@@ -43,6 +43,9 @@ priv struct GlassPaint {
   // the last capture of unmerged liquid glass (merge <= 0, 0 none): what `shares_capture` takes (same blur)
   mut liquid_run : Int
   mut liquid_blur : Double
+  mut liquid_first : Int
+  mut liquid_y0 : Double
+  mut liquid_y1 : Double
   mut run_start : Int
   mut run_len : Int
   mut solid : Bool
@@ -60,6 +63,9 @@ let glass_paint : GlassPaint = {
   frost_run: 0,
   liquid_run: 0,
   liquid_blur: 0.0,
+  liquid_first: -1,
+  liquid_y0: 0.0,
+  liquid_y1: 0.0,
   run_start: -1,
   run_len: 0,
   solid: false,
@@ -88,6 +94,9 @@ fn reset_glass() -> Unit {
   glass_paint.frost_run = 0
   glass_paint.liquid_run = 0
   glass_paint.liquid_blur = 0.0
+  glass_paint.liquid_first = -1
+  glass_paint.liquid_y0 = 0.0
+  glass_paint.liquid_y1 = 0.0
   glass_paint.run_start = -1
   glass_paint.run_len = 0
   glass_paint.solid = false
@@ -143,6 +152,9 @@ fn Ctx::glass_frame(self : Ctx) -> Unit {
   glass_paint.frost_run = 0
   glass_paint.liquid_run = 0
   glass_paint.liquid_blur = 0.0
+  glass_paint.liquid_first = -1
+  glass_paint.liquid_y0 = 0.0
+  glass_paint.liquid_y1 = 0.0
   glass_paint.run_start = -1
   glass_paint.run_len = 0
   glass_paint.in_group = 0
@@ -240,6 +252,67 @@ fn glass_spot(spot : (Double, Double)?) -> Double {
 }
 
 ///|
+/// Whether any non-shadow, non-data instance in kept ride `group`'s `[first, first + count)` (offset by `dx, dy`)
+/// intersects `[kx0, ky0, kx1, ky1]`, handling nested `kind == 13.0` headers without reading unwritten slots.
+fn glass_ride_blocks(
+  group : Int,
+  first : Int,
+  count : Int,
+  dx : Double,
+  dy : Double,
+  kx0 : Double,
+  ky0 : Double,
+  kx1 : Double,
+  ky1 : Double,
+) -> Bool {
+  match ride_groups.get(group) {
+    None => true
+    Some(rk) => {
+      let (rx0, ry0, rx1, ry1) = rk.reach
+      if rx1 + dx <= kx0 || kx1 <= rx0 + dx || ry1 + dy <= ky0 || ky1 <= ry0 + dy {
+        return false
+      }
+      let ra = rk.inst
+      let mut i = first
+      let end = first + count
+      while i < end {
+        let p = i * inst_size
+        let ik = ra[p + 5]
+        if ik == 13.0 {
+          let sub_n = ra[p + 14].to_int()
+          if glass_ride_blocks(
+              ra[p + 12].to_int(),
+              ra[p + 13].to_int(),
+              sub_n,
+              dx + ra[p],
+              dy + ra[p + 1],
+              kx0,
+              ky0,
+              kx1,
+              ky1,
+            ) {
+            return true
+          }
+          i = i + (if sub_n > 0 { sub_n } else { 1 })
+          continue
+        }
+        if ik != 2.0 && ik != 12.0 && ra[p + 2] > 0.0 && ra[p + 3] > 0.0 {
+          let ix0 = ra[p] + dx
+          let iy0 = ra[p + 1] + dy
+          let ix1 = ix0 + ra[p + 2]
+          let iy1 = iy0 + ra[p + 3]
+          if ix0 < kx1 && kx0 < ix1 && iy0 < ky1 && ky0 < iy1 {
+            return true
+          }
+        }
+        i = i + 1
+      }
+      false
+    }
+  }
+}
+
+///|
 /// The capture glass instance `k` (just put into the frame, its kind and blur said) takes, as the frame is composed: the
 /// last frosted capture's where it `shares` one; else that of the glass just before it, where it may share it; else one
 /// of its own. Told of each glass as it goes into the frame, whoever made it (a node of the old view's as it is painted,
@@ -257,9 +330,61 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
     a[b + 20] = -glass_paint.frost_run.to_double()
     return
   }
-  if shares && is_single_liquid && eff_blur >= 0.0 && glass_paint.liquid_run != 0 && glass_paint.liquid_blur == eff_blur {
-    a[b + 20] = -glass_paint.liquid_run.to_double()
-    return
+  if shares &&
+    is_single_liquid &&
+    eff_blur >= 0.0 &&
+    glass_paint.liquid_run != 0 &&
+    glass_paint.liquid_blur == eff_blur &&
+    glass_paint.liquid_first >= 0 {
+    let kx0 = a[b]
+    let ky0 = a[b + 1]
+    let kx1 = kx0 + a[b + 2]
+    let ky1 = ky0 + a[b + 3]
+    let dy_gap = dmax(0.0, dmax(ky0 - glass_paint.liquid_y1, glass_paint.liquid_y0 - ky1))
+    if dy_gap <= 64.0 {
+      let run_tag = -glass_paint.liquid_run.to_double()
+      let mut blocked = false
+      let mut j = glass_paint.liquid_first
+      while j < k {
+        let pj = j * inst_size
+        let jk = a[pj + 5]
+        if jk == 13.0 {
+          let sub_n = a[pj + 14].to_int()
+          if glass_ride_blocks(
+              a[pj + 12].to_int(),
+              a[pj + 13].to_int(),
+              sub_n,
+              a[pj],
+              a[pj + 1],
+              kx0,
+              ky0,
+              kx1,
+              ky1,
+            ) {
+            blocked = true
+            break
+          }
+          j = j + (if sub_n > 0 { sub_n } else { 1 })
+          continue
+        }
+        if jk != 2.0 &&
+          jk != 12.0 &&
+          a[pj + 20] != run_tag &&
+          a[pj + 2] > 0.0 &&
+          a[pj + 3] > 0.0 &&
+          rects_meet_by(j, k, a, 0.0) {
+          blocked = true
+          break
+        }
+        j = j + 1
+      }
+      if !blocked {
+        a[b + 20] = run_tag
+        glass_paint.liquid_y0 = dmin(glass_paint.liquid_y0, ky0)
+        glass_paint.liquid_y1 = dmax(glass_paint.liquid_y1, ky1)
+        return
+      }
+    }
   }
   // one capture with the glass just before it: right after it, as it is,
   // the same blur, not over it, and (merged liquid) a group of fewer than 8; frosted glass
@@ -282,24 +407,46 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
       (!is_single_liquid && !prev_is_single && glass_paint.run_len < 8))
   if same && (!liquid || is_single_liquid) {
     let pad = if is_single_liquid { 2.0 } else { 0.0 }
-    for j in glass_paint.run_start..<k {
-      if rects_meet_by(j, k, a, pad) {
+    if is_single_liquid && glass_paint.liquid_run == glass_paint.run && glass_paint.liquid_first >= 0 {
+      let ky0 = a[b + 1]
+      let ky1 = ky0 + a[b + 3]
+      let dy_gap = dmax(0.0, dmax(ky0 - glass_paint.liquid_y1, glass_paint.liquid_y0 - ky1))
+      if dy_gap > 64.0 {
         same = false
-        break
+      }
+    }
+    if same {
+      for j in glass_paint.run_start..<k {
+        if rects_meet_by(j, k, a, pad) {
+          same = false
+          break
+        }
       }
     }
   }
   if same {
     glass_paint.run_len = glass_paint.run_len + 1
+    if is_single_liquid && glass_paint.liquid_run == glass_paint.run {
+      glass_paint.liquid_y0 = dmin(glass_paint.liquid_y0, a[b + 1])
+      glass_paint.liquid_y1 = dmax(glass_paint.liquid_y1, a[b + 1] + a[b + 3])
+    }
   } else {
     glass_paint.run = glass_paint.run + 1
     glass_paint.run_start = k
     glass_paint.run_len = 1
     if !liquid {
       glass_paint.frost_run = glass_paint.run
+      glass_paint.liquid_run = 0
+      glass_paint.liquid_first = -1
     } else if is_single_liquid && eff_blur >= 0.0 {
       glass_paint.liquid_run = glass_paint.run
       glass_paint.liquid_blur = eff_blur
+      glass_paint.liquid_first = k
+      glass_paint.liquid_y0 = a[b + 1]
+      glass_paint.liquid_y1 = a[b + 1] + a[b + 3]
+    } else {
+      glass_paint.liquid_run = 0
+      glass_paint.liquid_first = -1
     }
   }
   a[b + 20] = -glass_paint.run.to_double()
