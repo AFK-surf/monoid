@@ -918,6 +918,105 @@ int main(void) {
   CHECK(surface_as_whole(surface));
   mb_host_group_drop(5);
 
+  // IME height sliding hits top-bar glass cache, and gradually growing glass height stays in one 256px level bucket
+  // without rebuilding levels or clearing unchanged glass slots.
+  {
+    int saved_fb_w = fb_w, saved_fb_h = fb_h;
+    double saved_w = cur_w, saved_h = cur_h, saved_scale = cur_scale;
+    GLuint saved_target = target_fb;
+
+    const int BW = 300, BH = 500, BS = 2;
+    fb_w = BW * BS;
+    fb_h = BH * BS;
+    cur_w = BW;
+    cur_h = BH;
+    cur_scale = BS;
+    GLuint big_tex, big_fb;
+    glGenTextures(1, &big_tex);
+    glBindTexture(GL_TEXTURE_2D, big_tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, fb_w, fb_h);
+    glGenFramebuffers(1, &big_fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, big_fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, big_tex, 0);
+    CHECK(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    target_fb = big_fb;
+    glass_free();
+
+    // (1) IME cur_h sliding: top-bar glass stays cached (blurs_made +1 per step, only bottom bar re-blurred)
+    double ime_inst[5 * MB_INST];
+    static const double ime_hs[5] = {460, 420, 380, 420, 460};
+    rect_at(ime_inst, 0, 0, BW, BH, 0, 0.94, 0.94, 0.92, 0);
+    ime_inst[18] = BW; ime_inst[19] = BH;
+    rect_at(ime_inst + 1 * MB_INST, 20, 12, 120, 20, 0, 0.85, 0.20, 0.20, 0);
+    ime_inst[1 * MB_INST + 18] = BW; ime_inst[1 * MB_INST + 19] = BH;
+    rect_at(ime_inst + 2 * MB_INST, 10, 6, 280, 32, 5, 1, 1, 1, -20);
+    ime_inst[2 * MB_INST + 7] = 3;
+    ime_inst[2 * MB_INST + 11] = 0.4;
+    ime_inst[2 * MB_INST + 18] = BW; ime_inst[2 * MB_INST + 19] = BH;
+    rect_at(ime_inst + 3 * MB_INST, 20, 466, 120, 20, 0, 0.20, 0.30, 0.85, 0);
+    ime_inst[3 * MB_INST + 18] = BW; ime_inst[3 * MB_INST + 19] = BH;
+    rect_at(ime_inst + 4 * MB_INST, 10, 460, 280, 32, 5, 1, 1, 1, -21);
+    ime_inst[4 * MB_INST + 7] = 3;
+    ime_inst[4 * MB_INST + 11] = 0.4;
+    ime_inst[4 * MB_INST + 18] = BW; ime_inst[4 * MB_INST + 19] = BH;
+
+    made = blurs_made;
+    gl_present(ime_inst, 5, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 2);
+    CHECK(surface_as_fresh(big_fb));
+    for (int i = 0; i < 5; i++) {
+      cur_h = ime_hs[i];
+      ime_inst[3 * MB_INST + 1] = cur_h - 34;
+      ime_inst[4 * MB_INST + 1] = cur_h - 40;
+      made = blurs_made;
+      gl_present(ime_inst, 5, 0.1, 0.2, 0.3);
+      CHECK(blurs_made == made + 1);
+      CHECK(surface_as_fresh(big_fb));
+    }
+
+    // (2) Glass height growing from 100px to 220px (+12px/step, 10 steps): levels_rebuilt <= 1, unchanged glass hits cache
+    cur_h = BH;
+    glass_free();
+    int rb0 = levels_rebuilt;
+    double grow_inst[5 * MB_INST];
+    rect_at(grow_inst, 0, 0, BW, BH, 0, 0.92, 0.90, 0.88, 0);
+    grow_inst[18] = BW; grow_inst[19] = BH;
+    rect_at(grow_inst + 1 * MB_INST, 20, 14, 100, 24, 0, 0.15, 0.65, 0.25, 0);
+    grow_inst[1 * MB_INST + 18] = BW; grow_inst[1 * MB_INST + 19] = BH;
+    rect_at(grow_inst + 2 * MB_INST, 10, 10, 160, 32, 5, 1, 1, 1, -22);
+    grow_inst[2 * MB_INST + 7] = 2;
+    grow_inst[2 * MB_INST + 11] = 0.4;
+    grow_inst[2 * MB_INST + 18] = BW; grow_inst[2 * MB_INST + 19] = BH;
+    rect_at(grow_inst + 3 * MB_INST, 20, 140, 100, 120, 0, 0.75, 0.25, 0.15, 0);
+    grow_inst[3 * MB_INST + 18] = BW; grow_inst[3 * MB_INST + 19] = BH;
+    rect_at(grow_inst + 4 * MB_INST, 10, 120, 160, 50, 5, 1, 1, 1, -23);
+    grow_inst[4 * MB_INST + 7] = 2;
+    grow_inst[4 * MB_INST + 11] = 0.4;
+    grow_inst[4 * MB_INST + 18] = BW; grow_inst[4 * MB_INST + 19] = BH;
+
+    for (int step = 0; step < 10; step++) {
+      // height in pt: 50 + step * 6 -> 100px..208px (+ margin 16px = 132px..240px, within one 256px bucket)
+      grow_inst[4 * MB_INST + 3] = 50.0 + step * 6.0;
+      made = blurs_made;
+      gl_present(grow_inst, 5, 0.1, 0.2, 0.3);
+      CHECK(blurs_made == made + (step == 0 ? 2 : 1));
+      CHECK(surface_as_whole(big_fb));
+    }
+    CHECK(surface_as_fresh(big_fb));
+    CHECK(levels_rebuilt - rb0 <= 1);
+
+    glass_free();
+    glBindFramebuffer(GL_FRAMEBUFFER, saved_target);
+    glDeleteFramebuffers(1, &big_fb);
+    glDeleteTextures(1, &big_tex);
+    fb_w = saved_fb_w;
+    fb_h = saved_fb_h;
+    cur_w = saved_w;
+    cur_h = saved_h;
+    cur_scale = saved_scale;
+    target_fb = saved_target;
+  }
+
   if (!failed) printf("gles_render: ok\n");
   return failed;
 }

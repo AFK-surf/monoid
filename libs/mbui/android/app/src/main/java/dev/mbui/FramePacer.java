@@ -74,18 +74,32 @@ final class FramePacer {
     // its own, or where its work went past that one, the first after its work)
     private long lastVsync;
     private boolean askedAtEnd;
+    // main-thread state for coalescing CALLBACK_ANIMATION (vsyncCame) with CALLBACK_INSETS_ANIMATION (frameNow)
+    private boolean imeMoving;
+    private boolean deferredVsync;
+    private long deferredVsyncT, deferredVsyncShows;
+    private long lastFrameNowAt;
+
+    private void armImeVsync() {
+        if (imeMoving && wanted.compareAndSet(false, true)) {
+            if (p.onMain()) p.postVsync();
+            else p.postMain(p::postVsync);
+        }
+    }
+
+    /** Whether the soft keyboard's inset animation is under way (main thread). */
+    void setImeMoving(boolean moving) {
+        imeMoving = moving;
+        if (moving) armImeVsync();
+        else if (deferredVsync) flushDeferredVsync();
+    }
 
     /** The vsync the frame beginning now is for (its time, when it is shown; 0: not said). */
     long[] vsyncAt() {
         return vsyncAt;
     }
 
-    /**
-     * A vsync asked for came (main thread), at {@code t}, its frame shown at {@code shows} (vsyncAt): drawn for, where a
-     * frame is wanted; where only the frame drawing now asked for it ahead (askAhead), kept for that frame to take as it
-     * ends (ask), should it want one.
-     */
-    void vsyncCame(long t, long shows) {
+    private void dispatchVsync(long t, long shows) {
         vsyncAt = new long[] {t, shows};
         if (appWanted.get() || picturesOnly.get()) {
             wanted.set(false);
@@ -96,6 +110,32 @@ final class FramePacer {
         wanted.set(false);
         // (a frame wanted as this was kept: the one asking saw it not yet kept, and asked for another vsync, or none)
         if ((appWanted.get() || picturesOnly.get()) && ahead.getAndSet(false)) p.requestRender();
+    }
+
+    private void flushDeferredVsync() {
+        if (!deferredVsync) return;
+        deferredVsync = false;
+        dispatchVsync(deferredVsyncT, deferredVsyncShows);
+    }
+
+    /**
+     * A vsync asked for came (main thread), at {@code t}, its frame shown at {@code shows} (vsyncAt): drawn for, where a
+     * frame is wanted; where only the frame drawing now asked for it ahead (askAhead), kept for that frame to take as it
+     * ends (ask), should it want one.
+     */
+    void vsyncCame(long t, long shows) {
+        if (lastFrameNowAt != 0 && t <= lastFrameNowAt && lastFrameNowAt - t < framePeriod / 2) {
+            wanted.set(false);
+            return;
+        }
+        if (imeMoving) {
+            deferredVsyncT = t;
+            deferredVsyncShows = shows;
+            deferredVsync = true;
+            p.postMain(this::flushDeferredVsync);
+            return;
+        }
+        dispatchVsync(t, shows);
     }
 
     /**
@@ -142,9 +182,18 @@ final class FramePacer {
      */
     void frameNow() {
         appWanted.set(true);
-        vsyncAt = new long[] {p.nanoTime(), 0};
-        wanted.set(false);
+        ahead.set(false);
+        long now = p.nanoTime();
+        lastFrameNowAt = now;
+        if (deferredVsync) {
+            deferredVsync = false;
+            vsyncAt = new long[] {deferredVsyncT, deferredVsyncShows};
+            wanted.set(false);
+        } else {
+            vsyncAt = new long[] {now, 0};
+        }
         p.requestRender();
+        armImeVsync();
     }
 
     /** The last frame drawn again for a view's picture alone (drawing thread): it asked for none after it. */

@@ -342,6 +342,7 @@ final class Host {
                 showOwedIme();
             } else if (!active && was) {
                 imeOwed = false;
+                if (imeVisible) view.imeMovingStarted();
                 imm.hideSoftInputFromWindow(view.getWindowToken(), 0);
             } else if (active) {
                 // the field it has tapped again with no keyboard up (one that did not come, or went): asked for again,

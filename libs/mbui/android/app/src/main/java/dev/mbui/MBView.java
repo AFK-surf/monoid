@@ -152,6 +152,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     @Override
     public void onPause() {
         paused = true;
+        pacer.setImeMoving(false);
         // queued before the GL thread pauses (it takes its queue first): its context still current there
         trim();
         if (!ONE && logic != null) {
@@ -815,6 +816,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /** The field's typing begun or ended (MainActivity, as the keyboard shows or goes): the rate said or let go from now. */
     void typingChanged() {
         onApp(pacer::typingChanged);
+    }
+
+    void setImeMoving(boolean moving) {
+        pacer.setImeMoving(moving);
     }
 
     /**

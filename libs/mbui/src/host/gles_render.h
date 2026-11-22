@@ -873,6 +873,7 @@ static void gl_setup(void) {
 typedef struct { GLuint t, fb; int w, h; GLenum format; } level;
 static level lv[5];
 static int lv_w, lv_h;
+static int levels_rebuilt;
 static GLuint bd_tex;
 static float gmap[4], guvc[4], ggb[4], gshape[32], grad[32];
 static int gn;
@@ -905,8 +906,15 @@ static void ensure_levels(int w, int h) {
       glDeleteTextures(1, &lv[j].t);
       glDeleteFramebuffers(1, &lv[j].fb);
     }
-  lv_w = w > lv_w ? w : lv_w;
-  lv_h = h > lv_h ? h : lv_h;
+  int nw = (w + 255) & ~255;
+  int nh = (h + 255) & ~255;
+  if (fb_w > 0 && nw > fb_w) nw = fb_w;
+  if (fb_h > 0 && nh > fb_h) nh = fb_h;
+  if (nw < w) nw = w;
+  if (nh < h) nh = h;
+  lv_w = nw > lv_w ? nw : lv_w;
+  lv_h = nh > lv_h ? nh : lv_h;
+  levels_rebuilt++;
   // (the blurs kept were shown by where they lie in levels of the old size: one made now would be shown by the new)
   glass_forget();
   for (int j = 0; j < 4; j++)
@@ -1498,7 +1506,9 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
                    double b, unsigned frame_clock) {
   Grab m;
   int shows = grab_of(&m, f, start, end, count);
-  double key[9] = {fb_w, fb_h, cur_scale, cur_w, cur_h, r, g, b, over_other};
+  double stretch_w = ((int)(cur_w * cur_scale + 0.5) != fb_w) ? cur_w : 0.0;
+  double stretch_h = (vhp == fb_h && (int)(cur_h * cur_scale + 0.5) != fb_h) ? cur_h : 0.0;
+  double key[9] = {fb_w, fb_h, cur_scale, r, g, b, over_other, stretch_w, stretch_h};
   if (shows) {
     int known = under_take(f, start, count, pieces, &m);
     glass_slot *s = known ? slot_same(&m, key) : NULL;

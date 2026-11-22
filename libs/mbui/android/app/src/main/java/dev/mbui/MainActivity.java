@@ -171,7 +171,10 @@ public class MainActivity extends Activity {
             public void onPrepare(WindowInsetsAnimation a) {
                 if ((a.getTypeMask() & WindowInsets.Type.ime()) != 0) {
                     imeMoving = true;
-                    if (mbView != null) mbView.imeMovingStarted();
+                    if (mbView != null) {
+                        mbView.setImeMoving(true);
+                        mbView.imeMovingStarted();
+                    }
                 }
             }
 
@@ -189,9 +192,10 @@ public class MainActivity extends Activity {
             @Override
             public void onEnd(WindowInsetsAnimation a) {
                 if ((a.getTypeMask() & WindowInsets.Type.ime()) == 0) return;
-                imeMoving = false;
                 WindowInsets now = root.getRootWindowInsets();
                 if (now != null) keyboardAt(now);
+                imeMoving = false;
+                if (mbView != null) mbView.setImeMoving(false);
                 if (now != null && now.isVisible(WindowInsets.Type.ime())) Host.imeAwaited = false;
             }
         });

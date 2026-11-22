@@ -775,7 +775,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     @sf.window_keys_node(
       root,
       whole=fn() {
-        shell_is(src, root.window().0) is Lone ||
+        shell_is(src, root.window_w()) is Lone ||
           @sfbase.tab_full.get() is Some(_) ||
           @sfbase.preview_open()
       },
