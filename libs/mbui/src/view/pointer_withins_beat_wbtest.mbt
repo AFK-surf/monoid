@@ -1,15 +1,18 @@
 ///|
-test "no pointer skips withins laid_now on signal change, active pointer settles immediately" {
-  let w = @signals.signal(40.0, same=fn(a, b) { a == b })
+test "Tree::at skips withins_owed_now laid_now when no pointer is in window, settles when active" {
+  let open = @signals.signal(false, same=fn(a, b) { a == b })
   let within = Ref(false)
   let near = Ref(false)
   let t = Tree::new(fn(root) {
     root.lines_up(Is(Some(Start))) |> ignore
     root.box(fn(n) {
-      n.width(By(fn() { Some(w.get()) })).height(Is(Some(20.0))) |> ignore
+      n.width(Is(Some(40.0))).height(Is(Some(20.0))) |> ignore
       n.reacts(fn() { n.pointer_within() }, fn(v) { within.val = v })
     })
     |> ignore
+    root.show(fn() { open.get() }, at_once=true, fn(n) {
+      n.width(Is(Some(60.0))).height(Is(Some(20.0))) |> ignore
+    })
     root.box(fn(n) {
       n.width(Is(Some(120.0))).height(Is(Some(80.0))) |> ignore
       n.reacts(fn() { n.bar_near(12.0) }, fn(v) { near.val = v })
@@ -19,48 +22,50 @@ test "no pointer skips withins laid_now on signal change, active pointer settles
   t.frame(300.0, 300.0, now=10.0) |> ignore
   assert_eq(t.pointer_xy, (-1.0, -1.0))
 
-  // No pointer in window: signal change in an event does not trigger laid_now.
+  // No pointer in window: between-frame structural change sets withins_owed,
+  // but Tree::at clears it without running laid_now; frame lays out once.
   let passes0 = t.work().passes
-  t.event(20.0, fn() { w.set(60.0) })
+  open.set(true)
+  assert_true(t.withins_owed, msg="between-frame change records withins_owed")
+  t.at(20.0)
   assert_eq(
     t.work().passes,
     passes0,
-    msg="no pointer in window should skip synchronous withins laid_now in event",
+    msg="Tree::at with no pointer must skip withins_owed_now laid_now",
   )
-  assert_false(t.withins_owed, msg="no pointer in window should not owe withins")
+  assert_false(t.withins_owed, msg="Tree::at with no pointer clears withins_owed")
+  t.frame(300.0, 300.0, now=20.0) |> ignore
+  assert_true(t.work().passes > passes0, msg="subsequent frame still lays out once")
 
-  // Outside an event: signal change does not set withins_owed, and next event does not run laid_now.
-  w.set(70.0)
-  assert_false(t.withins_owed, msg="no pointer in window should not set withins_owed outside event")
-  t.event(25.0, fn() {  })
-  assert_eq(
-    t.work().passes,
-    passes0,
-    msg="withins_owed_now should skip laid_now when pointer is outside window",
-  )
-  t.frame(300.0, 300.0, now=25.0) |> ignore
-
-  // Active pointer inside window: signal change settles immediately via laid_now.
+  // Active pointer inside window: Tree::at settles withins_owed immediately via laid_now.
   t.point_at(10.0, 10.0)
   t.frame(300.0, 300.0, now=30.0) |> ignore
   let passes1 = t.work().passes
-  t.event(40.0, fn() { w.set(90.0) })
+  open.set(false)
+  assert_true(t.withins_owed, msg="between-frame change with active pointer sets withins_owed")
+  t.at(40.0)
   assert_true(
     t.work().passes > passes1,
-    msg="active pointer should still settle withins via laid_now",
+    msg="Tree::at with active pointer should settle withins_owed_now via laid_now",
   )
   t.frame(300.0, 300.0, now=40.0) |> ignore
 
-  // Pointer leaves window: signal changes skip laid_now again.
+  // Pointer leaves window: withins_owed is cleared and Tree::at skips laid_now again.
+  open.set(true)
+  assert_true(t.withins_owed, msg="active pointer sets withins_owed before leaving")
   t.point_at(-1.0, -1.0)
+  assert_false(t.withins_owed, msg="leaving window clears pending withins_owed")
+  t.frame(300.0, 300.0, now=50.0) |> ignore
   let passes2 = t.work().passes
-  t.event(50.0, fn() { w.set(110.0) })
+  open.set(false)
+  assert_true(t.withins_owed, msg="between-frame structural change records withins_owed")
+  t.at(60.0)
   assert_eq(
     t.work().passes,
     passes2,
-    msg="leaving window should resume skipping withins laid_now",
+    msg="Tree::at after pointer leaves window should skip laid_now again",
   )
-  assert_false(t.withins_owed, msg="leaving window should not owe withins")
+  assert_false(t.withins_owed, msg="Tree::at after pointer leaves clears withins_owed")
   t.dispose()
 }
 

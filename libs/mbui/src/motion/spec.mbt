@@ -145,13 +145,19 @@ fn moved_turn_scale(
       None
     }
     (u, along)
-  } else if over > 1.0 && from >= 0.0 && from <= 1.0 && (to == 0.0 || to == 1.0) && v.abs() <= 20.0 {
-    let along = if (to - from).abs() < 1.0 {
-      Some(@flex.ComeWith::{ start: 0.0, ends: @ui.move_ms(over) })
+  } else if from >= 0.0 && from <= 1.0 && (to == 0.0 || to == 1.0) && v.abs() <= 20.0 {
+    if over > 1.0 {
+      let along = if (to - from).abs() < 1.0 {
+        Some(@flex.ComeWith::{ start: 0.0, ends: @ui.move_ms(over) })
+      } else {
+        None
+      }
+      (over, along)
     } else {
-      None
+      // Normalized 0..1 progress with bare `moved()` (forward duration is always `move_least_ms == @ui.move_ms(24.0)`):
+      // map 1.0 unit to 24pt so `@flex.come_move_ms`'s 0.5pt rest cutoff never truncates the return leg to 0ms.
+      (24.0, None)
     }
-    (over, along)
   } else {
     let along = if over >= 0.0 && over > (to - from).abs() + 0.5 {
       Some(@flex.ComeWith::{ start: 0.0, ends: @ui.move_ms(over) })

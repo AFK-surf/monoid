@@ -180,13 +180,26 @@ test "a room as a node turned back half way open: closing from where it was, on 
   on.set(false)
   t.frame_at(t0 + 100.0)
   let (h, _) = room_sizes(room.val.unwrap())
-  // (the same way turned back at 60: from where it is then, as fast as it goes then)
+  // (the same way turned back at 60: from where it is then, as fast as it goes then —
+  // decelerating smoothly at +40ms before reversing past k by +140ms)
   let way = @motion.Way::new(0.0)
   way.go(1.0, @motion.moved().per_unit(natural), at=t0)
   let k = way.value_at(t0 + 60.0)
   way.go(0.0, @motion.moved().per_unit(natural), at=t0 + 60.0)
   let back = way.value_at(t0 + 100.0)
-  assert_eq(((h * 1000.0).round(), back < k), ((natural * back * 1000.0).round(), true), msg="\{k} \{back}")
+  assert_eq(
+    ((h * 1000.0).round(), back > k && back < 1.0),
+    ((natural * back * 1000.0).round(), true),
+    msg="braking at +40ms: \{k} \{back}",
+  )
+  t.frame_at(t0 + 200.0)
+  let (h2, _) = room_sizes(room.val.unwrap())
+  let back2 = way.value_at(t0 + 200.0)
+  assert_eq(
+    ((h2 * 1000.0).round(), back2 < k && back2 > 0.0),
+    ((natural * back2 * 1000.0).round(), true),
+    msg="returning at +140ms: \{k} \{back2}",
+  )
 }
 
 ///|
