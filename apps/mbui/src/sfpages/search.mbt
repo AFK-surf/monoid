@@ -288,32 +288,33 @@ fn search_field_node(
       },
       fn(f) {
         field.val = Some(f)
-        @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
+        match at {
+          Whole => {
+            @sf.style_node_and(
+              f,
+              fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) },
+              fn() {
+                let show = !search_read().open && reveal() > 0.001
+                let glass = if show { Some(@sf.search_capsule_glass()) } else { None }
+                let edge = if show && f.glass_solid() { @sf.overlay_solid_edge() } else { (0.0, 0L) }
+                let shadow = if show { @sf.glass_overlay_shadow() } else { (0.0, 0.0, 0L) }
+                (glass, edge, shadow)
+              },
+              fn(look) {
+                let (glass, edge, shadow) = look
+                f.glass(Is(glass)).edge(Is(edge)).shadow(Is(shadow)) |> ignore
+              },
+            )
+            f.shadow_outside(Is(true)) |> ignore
+          }
+          Side | Tape =>
+            @sf.style_node(f, fn() {
+              search_field_box.then(@ui.style(bg=@sf.search_ground)).then(search_field_room(@sf.theme().chat_list, at))
+            })
+        }
         f
         .alpha(By(fn() { if search_read().open { 0.0 } else { reveal() } }))
         .presses(By(fn() { !search_read().open && reveal() > 0.001 }))
-        .glass(By(fn() {
-          if search_read().open || reveal() <= 0.001 {
-            None
-          } else {
-            Some(@sf.search_capsule_glass())
-          }
-        }))
-        .edge(By(fn() {
-          if !search_read().open && reveal() > 0.001 && f.glass_solid() {
-            @sf.overlay_solid_edge()
-          } else {
-            (0.0, 0L)
-          }
-        }))
-        .shadow(By(fn() {
-          if !search_read().open && reveal() > 0.001 {
-            @sf.glass_overlay_shadow()
-          } else {
-            (0.0, 0.0, 0L)
-          }
-        }))
-        .shadow_outside(Is(true))
         |> ignore
       @sf.icon_node(f, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
       @sf.words_node(f, fn() { @sf.t("android-chat.search.field") }, fn() {

@@ -12,12 +12,12 @@
 /// `switcher_node`), degrading cleanly to opaque `panel_ground()` under `MBUI_GLASS=solid`.
 pub fn dialog_glass() -> @ui.Glass {
   let g = @lg.liquid_dialog_glass(solid=panel_ground())
-  // In Light mode, raise dialog veil density to 80% (`0xCC`, matching liquid_sheet_glass) so muted secondary text
-  // (`#535559`) inside centred dialogs over high-contrast red/dark page backdrops stays >= 4.5:1 WCAG AA.
+  // In Light mode, raise dialog veil density to 82% (`0xD1`) so muted secondary text (`#535559`) inside centred
+  // dialogs over dimmed or high-contrast page backdrops stays >= 4.5:1 WCAG AA (~4.70:1).
   if theme().dark {
     g
   } else {
-    { ..g, tint: 0xFDFCFDCCL }
+    { ..g, tint: 0xFDFCFDD1L }
   }
 }
 
