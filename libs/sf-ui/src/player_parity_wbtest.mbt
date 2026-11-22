@@ -20,6 +20,7 @@ fn either_player(
   kind? : String = "video",
   facts? : FileFacts = no_facts,
   window? : (Double, Double, Int),
+  finish? : Bool = true,
 ) -> (@ui.Tester, @player.Media) {
   if !node {
     let t = player_tester(narrow, name, [], [], backs, kind~, facts~, window?)
@@ -31,7 +32,7 @@ fn either_player(
     args.fold(init=test_words.get(key).unwrap_or(key), fn(said, a) { said.replace_all(old="{" + a.0 + "}", new=a.1) })
   })
   let file = film(name, kind~, facts~)
-  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h~, platform~)
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h~, platform~, finish~)
   // (opened as a chat's viewer opens it, once there is a host to tell: Viewer::fetch)
   let m = new_media("parity-node")
   m.open({ name, mime: file.mime, audio: kind == "audio", read: player_read(file), direct: "" })
@@ -232,6 +233,34 @@ test "both players, a desktop's: at its end, its host still saying it plays, its
     (told.contains("control 1 3 0"), told.iter().any(fn(l) { l.has_prefix("control 1 2") }))
   })
   assert_eq(seen, (true, false))
+}
+
+///|
+test "a player waiting for its first frame shows the action its play key will take" {
+  let (tt, _) = either_player(true, false, "a.webm", [], finish=false)
+  assert_true(tt.view_said("{\"info\":{\"view\":1,\"state\":0,\"at\":[13000,0,1,1280,900,1000,0,1,9000,0]}}"))
+  tt.draw()
+  tt.run_for(@ui.move_most_ms)
+  let before = tt.views().length()
+  tt.click(Button, label=t("web-main.video.pauseKey"))
+  tt.draw()
+  let told = tt.views()[before:].to_owned()
+  assert_true(told.iter().any(fn(l) { l.has_prefix("control 1 2") }))
+  assert_true(tt.view_said("{\"info\":{\"view\":1,\"state\":0,\"at\":[13000,0,0,1280,900,1000,0,0,9000,0]}}"))
+  tt.draw()
+  let before = tt.views().length()
+  tt.click(Button, label=t("web-main.video.playKey"))
+  tt.draw()
+  let told = tt.views()[before:].to_owned()
+  assert_true(told.iter().any(fn(l) { l.has_prefix("control 1 1") }))
+  // A host may say it is waiting on bytes while its clock is not moving.
+  assert_true(tt.view_said("{\"info\":{\"view\":1,\"state\":1,\"at\":[13000,2000,0,1280,900,1000,1,1,9000,0]}}"))
+  tt.draw()
+  let before = tt.views().length()
+  tt.click(Button, label=t("web-main.video.pauseKey"))
+  tt.draw()
+  let told = tt.views()[before:].to_owned()
+  assert_true(told.iter().any(fn(l) { l.has_prefix("control 1 2") }))
 }
 
 ///|

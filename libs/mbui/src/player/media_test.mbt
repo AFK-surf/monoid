@@ -61,6 +61,21 @@ test "a player: let go further on than its last move, to the very frame there be
 }
 
 ///|
+test "a player waiting for bytes resumes after a scrub" {
+  let m = @player.Media::new()
+  let t = @ui.Tester::new(fn(_c) {  }, finish=false)
+  m.open(video("a.webm", "video/webm"))
+  let id = m.native().unwrap().id()
+  assert_true(t.view_said("{\"info\":{\"view\":\{id},\"state\":1,\"at\":[10000,2000,0,640,360,100,1,1,5000,0]}}"))
+  t.draw()
+  m.scrub_to(4000.0)
+  assert_true(m.scrub_resumes())
+  let before = t.views().length()
+  m.scrub_done()
+  assert_true(t.views()[before:].iter().any(fn(s) { s.has_prefix("control \{id} 1 ") }))
+}
+
+///|
 /// Its decoder given up where it has waited media_decode_wait_ms from when all its bytes came by the clock at `now`, as
 /// a player's nodes give it up (at that moment of their own).
 fn decode_waited(m : @player.Media, now : Double) -> Unit {
