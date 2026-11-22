@@ -1121,3 +1121,204 @@ test "desk composer: where 抄送 copies to is said just before send in either s
     assert_true(moved.is_empty(), msg="went across: \{Repr(xs)}")
   })
 }
+
+///|
+/// The composers an input method's words are put in to grow or shrink a line with: a chat's (the desk's window) and a
+/// new chat's in a desk's window (宽排法), each focused and its draft's key.
+fn ime_composers() -> Array[(String, () -> (@ui.Tester, String))] {
+  [
+    (
+      "chat",
+      fn() {
+        let (t, _) = desk_composer_tester([])
+        (t, "ws1/st1:s-c1")
+      },
+    ),
+    ("newchat", fn() { (nodes_new_chat("newchat", wide=true), @sfpages.new_chat_drafts + "ws1") }),
+  ]
+}
+
+///|
+/// The lines draft `key`'s field is laid out on now, what the input method composes in it counted.
+fn ime_lines(key : String) -> Int {
+  match @sfbase.writings.get(key).bind(fn(w) { w.field.lines() }) {
+    Some(l) => l.starts.length()
+    None => 0
+  }
+}
+
+///|
+/// What draft `key`'s composer shows now: its box's top and height, the top of its words' first line (the highest
+/// glyph drawn in its box) and the glyphs in its box cut by what they are drawn in (each its box and its clip's top
+/// and foot).
+fn ime_shown(t : @ui.Tester, key : String) -> (Double, Double, Double, Array[(Double, Double, Double, Double)]) {
+  guard @sfpages.composer_node_box(key) is Some((bx, by, bw, bh)) else { return (0.0, 0.0, 0.0, []) }
+  let mut first = 1.0e9
+  let cut = []
+  for g in t.glyph_clips() {
+    let ((x0, y0, x1, y1), (_, cy0, _, cy1)) = g
+    guard x0 >= bx - 1.0 && x1 <= bx + bw + 1.0 && y0 >= by - 1.0 && y0 < by + bh else { continue }
+    if y0 < first {
+      first = y0
+    }
+    if y0 < cy0 - 0.5 || y1 > cy1 + 0.5 {
+      cut.push((y0, y1, cy0, cy1))
+    }
+  }
+  (by, bh, first, cut)
+}
+
+///|
+/// Draft `key`'s composer focused with Chinese words in it filling its first line, so that the input method's `a`
+/// after them goes on a line of its own, at rest.
+fn ime_fill(t : @ui.Tester, key : String) -> Unit raise {
+  guard @sfbase.writings.get(key) is Some(w) else { fail("no draft \{key}") }
+  w.field.focus()
+  t.draw()
+  t.run_for(2.0 * @ui.move_most_ms)
+  // (how many words fill it, found as its words are set (nothing of them typed, the core asked of none), then typed at
+  // once)
+  let mut words = ""
+  let mut wrapped = false
+  for n = 0; n < 400 && !wrapped; n = n + 1 {
+    w.field.set(words)
+    t.compose("a")
+    wrapped = ime_lines(key) > 1
+    t.compose("")
+    if !wrapped {
+      words = words + "测"
+    }
+  }
+  assert_true(wrapped, msg="never a line more: \{ime_lines(key)}")
+  w.field.set("")
+  t.draw()
+  t.run_for(2.0 * @ui.move_most_ms)
+  t.type_text(words)
+  t.run_for(2.0 * @ui.move_most_ms)
+  assert_eq(ime_lines(key), 1)
+}
+
+///|
+test "an input method's words coming out a line more grow the composer its way, its words kept to its top (输入框 IME 换行抖动)" {
+  for c in ime_composers() {
+    let (name, make) = c
+    let (t, key) = make()
+    ime_fill(t, key)
+    let (top1, h1, first1, _) = ime_shown(t, key)
+    let in1 = first1 - top1
+    // its words composed by the input method a line more: grown its way, its words kept to its top
+    t.compose("a")
+    assert_eq(ime_lines(key), 2, msg=name)
+    let (top0, _, first0, _) = ime_shown(t, key)
+    assert_true((first0 - top0 - in1).abs() < 0.5, msg="\{name}: words moved in it as it sets off: \{first0 - top0} not \{in1}")
+    t.run_for(@ui.row_size_ms / 2.0)
+    let (top_mid, h_mid, first_mid, _) = ime_shown(t, key)
+    assert_true((first_mid - top_mid - in1).abs() < 0.5, msg="\{name}: words moved in it half way: \{first_mid - top_mid} not \{in1}")
+    t.run_for(2.0 * @ui.move_most_ms)
+    let (_, h2, _, cut2) = ime_shown(t, key)
+    assert_true(h1 + 0.5 < h_mid && h_mid < h2 - 0.5, msg="\{name}: half way \{h_mid}, not between \{h1} and \{h2}")
+    assert_eq(cut2, [], msg="\{name}: at rest")
+  }
+}
+
+///|
+test "an input method's words a line more, chosen (the same two lines), move none of its words: nothing goes down, nothing cut, as tall (输入框 IME 换行抖动)" {
+  for c in ime_composers() {
+    let (name, make) = c
+    let (t, key) = make()
+    ime_fill(t, key)
+    t.compose("a")
+    t.run_for(2.0 * @ui.move_most_ms)
+    assert_eq(ime_lines(key), 2, msg=name)
+    let (_, h2, first2, _) = ime_shown(t, key)
+    // chosen (the same two lines): nothing moves, nothing cut, as tall
+    t.type_text("啊")
+    assert_eq(ime_lines(key), 2, msg=name)
+    // (as it is chosen, a quarter of the way a line takes, half and all of it)
+    let moments = [0.0, @ui.row_size_ms / 4.0, @ui.row_size_ms / 4.0, @ui.row_size_ms / 2.0]
+    let mut at = 0.0
+    for ms in moments {
+      if ms > 0.0 {
+        t.run_for(ms)
+      }
+      at = at + ms
+      let (_, h, first, cut) = ime_shown(t, key)
+      assert_true((h - h2).abs() < 0.5, msg="\{name}: \{at} ms after it was chosen \{h} tall, not \{h2}")
+      assert_true((first - first2).abs() < 0.5, msg="\{name}: \{at} ms after it was chosen its first line at \{first}, not \{first2}")
+      assert_eq(cut, [], msg="\{name}: \{at} ms after it was chosen")
+    }
+  }
+}
+
+///|
+/// Draft `key`'s composer, from its words composed a line more and at rest, as `then` leaves it a line fewer: shrinking
+/// its way from where its words were, never at once (half way between), its words kept to its top.
+fn ime_shrinks(t : @ui.Tester, key : String, name : String, h1 : Double, then : () -> Unit) -> Unit raise {
+  assert_eq(ime_lines(key), 2, msg=name)
+  let (top2, h2, first2, _) = ime_shown(t, key)
+  let in2 = first2 - top2
+  then()
+  assert_eq(ime_lines(key), 1, msg=name)
+  let (top0, _, first0, cut0) = ime_shown(t, key)
+  assert_true((first0 - first2).abs() < 0.5, msg="\{name}: its first line at \{first0} as it sets off, not \{first2}")
+  assert_true((first0 - top0 - in2).abs() < 0.5, msg="\{name}: words moved in it as it sets off")
+  assert_eq(cut0, [], msg="\{name}: as it sets off")
+  t.run_for(@ui.row_size_ms / 2.0)
+  let (top_mid, h_mid, first_mid, _) = ime_shown(t, key)
+  assert_true(h1 + 0.5 < h_mid && h_mid < h2 - 0.5, msg="\{name}: half way \{h_mid}, not between \{h1} and \{h2}")
+  assert_true((first_mid - top_mid - in2).abs() < 0.5, msg="\{name}: words moved in it half way")
+  t.run_for(2.0 * @ui.move_most_ms)
+  let (_, h, _, cut) = ime_shown(t, key)
+  assert_true((h - h1).abs() < 0.5, msg="\{name}: \{h} tall at rest, not \{h1}")
+  assert_eq(cut, [], msg="\{name}: at rest")
+}
+
+///|
+test "an input method's words a line more, let go of (composing nothing), shrink the composer back its way" {
+  for c in ime_composers() {
+    let (name, make) = c
+    let (t, key) = make()
+    ime_fill(t, key)
+    let (_, h1, _, _) = ime_shown(t, key)
+    t.compose("a")
+    t.run_for(2.0 * @ui.move_most_ms)
+    ime_shrinks(t, key, name, h1, fn() { t.compose("") })
+  }
+}
+
+///|
+test "a long pinyin a line more, chosen as a short word that fits on the first line, shrinks the composer back its way, nothing going down at once" {
+  for c in ime_composers() {
+    let (name, make) = c
+    let (t, key) = make()
+    ime_fill(t, key)
+    // (room for a word or two at its first line's end, none for the pinyin)
+    t.backspace()
+    t.backspace()
+    t.run_for(2.0 * @ui.move_most_ms)
+    let (_, h1, _, _) = ime_shown(t, key)
+    t.compose("zhongguorenmin")
+    t.run_for(2.0 * @ui.move_most_ms)
+    ime_shrinks(t, key, name, h1, fn() { t.type_text("中") })
+  }
+}
+
+///|
+test "a draft's words set from the core (another device's) a line more lay the composer out as tall at once, nothing grown its way" {
+  for c in ime_composers() {
+    let (name, make) = c
+    let (t, key) = make()
+    ime_fill(t, key)
+    let w = @sfbase.writings.get(key).unwrap()
+    w.field.set(w.field.text() + "测测测测")
+    t.draw()
+    assert_eq(ime_lines(key), 2, msg=name)
+    let (_, h0, first0, cut0) = ime_shown(t, key)
+    assert_eq(cut0, [], msg="\{name}: as it is set")
+    t.run_for(2.0 * @ui.move_most_ms)
+    let (_, h, first, cut) = ime_shown(t, key)
+    assert_true((h - h0).abs() < 0.5, msg="\{name}: \{h0} tall as it is set, \{h} at rest")
+    assert_true((first - first0).abs() < 0.5, msg="\{name}: its first line at \{first0} as it is set, \{first} at rest")
+    assert_eq(cut, [], msg="\{name}: at rest")
+  }
+}

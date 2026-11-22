@@ -1054,22 +1054,28 @@ fn composer_box_node(
   // moment of letting go to a capsule comes due meanwhile, the cursor gone with the page)
   let foot_at_rest = Ref(false)
   foot.on_rest(fn() { foot_at_rest.val = true }, wake=fn() { foot_at_rest.val = false }) |> ignore
-  let resize = fn(way : (Double, (Double) -> Double)?) {
+  // (whether its way was said now: none where another change of the same moment said it first, `reshaped_at`)
+  let resize = fn(way : (Double, (Double) -> Double)?) -> Bool {
     // (none before it is first drawn: what it is as its page comes in is there at once)
-    guard foot.was_placed() && !composing_node.quiet && !foot_at_rest.val else { return }
-    guard foot.cause_at() != reshaped_at.val else { return }
+    guard foot.was_placed() && !composing_node.quiet && !foot_at_rest.val else { return false }
+    guard foot.cause_at() != reshaped_at.val else { return false }
     reshaped_at.val = foot.cause_at()
     // (a chat's kept to its foot as it grows; elsewhere to its top, as a card is)
     match made.val {
       Some(b) => b.resizes(foot=spec.chat, spec?=way) |> ignore
       None => foot.resizes(foot=spec.chat, spec?=way) |> ignore
     }
+    true
   }
   // (a line more or fewer, what waits to go put in or taken out: a Move by how far)
-  let reshape = fn() { resize(None) }
+  let reshape = fn() { resize(None) |> ignore }
   // (said by a person's act on it (a line typed, the cursor come or let go): its way, where the page moves only for a
   // cause, @view.transition)
-  let resize_moved = fn(way : (Double, (Double) -> Double)?) { @view.transition(fn() { resize(way) }) }
+  let resize_moved = fn(way : (Double, (Double) -> Double)?) -> Bool {
+    let said = Ref(false)
+    @view.transition(fn() { said.val = resize(way) })
+    said.val
+  }
   // (opened from a capsule with nothing in it, or let go to one: its foot's height on its shape's way, kept to its foot,
   // said in the change of that cause (the cursor come, its moment let go after it left), the box laid out at once and
   // drawn from the shape it had (`morph`). Nothing where its least (node_open_room) holds it as tall both ways; where
@@ -1117,11 +1123,27 @@ fn composer_box_node(
   // (a line more or fewer, `by` how far: its height its way as any other (resize), its words kept to its top on that way
   // as the old one's field grew, the line it grows by coming out at its words' foot, fading to it pixel by pixel, what
   // showed before untouched (the owner, 2026-10-30: 「带渐隐，但不是整行渐隐」), at the same rate)
+  // (the moment its box was last said to go its way for a line: lines more or fewer said again at that moment (the
+  // input method's words and then its choice in one change) add to the way said then)
+  let regrew_at = Ref(-1.0)
   let regrow = fn(by : Double) {
-    guard foot.was_placed() && !composing_node.quiet else { return }
+    guard foot.was_placed() && !composing_node.quiet && !foot_at_rest.val else { return }
+    // (nothing of its words drawn moving as they leave it, its ground held as it was: sent_from_node)
+    let at = foot.cause_at()
+    guard at != sent_at.val else { return }
     let ms = @ui.row_size_ms
-    let left = grow.value_at(foot.cause_at())
-    resize_moved(Some((ms, fn(p) { @ui.Ease::Move.at(p) })))
+    // (its words go down only with its box going its way: where another change of the moment said the box's way first
+    // (`reshaped_at`), its box laid out at once, so its words too)
+    let armed = if regrew_at.val == at {
+      true
+    } else if resize_moved(Some((ms, fn(p) { @ui.Ease::Move.at(p) }))) {
+      regrew_at.val = at
+      true
+    } else {
+      false
+    }
+    guard armed else { return }
+    let left = grow.value_at(at)
     grew.val = left + by
     grow.put(left + by)
     grow.go_ms(foot, 0.0, ms, ease=Move)
@@ -1599,7 +1621,9 @@ fn composer_box_node(
       sent_at,
       reshaped_at,
       is_user_move,
-      grow,
+      // (only a chat's kept to its foot as it grows: elsewhere its top stays, its words and what is over them with it,
+      // `resize`)
+      fn(v) { if spec.chat { grow.shown(v) } else { 0.0 } },
       morph_dy,
       pad_room,
       quotes_room,
@@ -1711,7 +1735,8 @@ fn composer_box_node(
                 )
               },
             )
-            (x, y + grow.shown(words))
+            // (only a chat's is kept to its foot as it grows: elsewhere its top stays, its words with it, `resize`)
+            (x, y + (if spec.chat { grow.shown(words) } else { 0.0 }))
           }),
         )
         |> ignore
@@ -2122,6 +2147,21 @@ fn composer_field_node(
   let wl = @signals.untracked(fn() { @ui.style_words(@sf.theme().t.words) })
   // (how many lines it shows at most as the system's size of words and the window are now: followed, not as made)
   let live_max_lines = fn() { node_text_lines(scale(), words.window_h()) }
+  // (its lines as shown, what the input method composes in them counted: a line more or fewer as it composes, or as
+  // what it composed is chosen, is a line more or fewer as typed words are, its height its way. What it showed as it
+  // was last told (`shown_was`, `composing_was`, `text_was`); what it showed before the edit `edited` is told of
+  // (`edited_was`): the words alone before it would have it grow by a line its composed words grew it by already)
+  let shown_was = Ref(@signals.untracked(fn() { w.field.composed_said() }))
+  let edited_was = Ref(@signals.untracked(fn() { w.field.composed_said() }))
+  let composing_was = Ref(@signals.untracked(fn() { w.field.composing() }))
+  let text_was = Ref(@signals.untracked(fn() { w.field.text() }))
+  let sync_height = fn(was : String, now : String) {
+    let max_lines = @signals.untracked(live_max_lines)
+    match field_comes_other(w.field, wl, max_lines, was, now) {
+      Some(by) => regrow(by)
+      None => ()
+    }
+  }
   let typed = @ui.field(
     words,
     w.field,
@@ -2141,13 +2181,13 @@ fn composer_field_node(
     },
     edit=fn(e) { @sfbase.refs_edited(src, w.key, w.field, r.station, false, e) },
     edited=fn(now) {
-      // (a line more or fewer: its height its way; the same lines, nothing said, so nothing coming in its column in
-      // the same change is set off with it)
-      let max_lines = @signals.untracked(live_max_lines)
-      match field_comes_other(w.field, wl, max_lines, @signals.untracked(fn() { w.text.get() }), now) {
-        Some(by) => regrow(by)
-        None => ()
+      // (a line more or fewer than it showed before the edit, composed words counted: its height its way; the same
+      // lines, nothing said, so nothing coming in its column in the same change is set off with it)
+      let shown_now = @signals.untracked(fn() { w.field.composed_said() })
+      if !@signals.untracked(fn() { w.starting.get() }) {
+        sync_height(edited_was.val, shown_now)
       }
+      edited_was.val = shown_now
       if now != @signals.untracked(fn() { w.text.get() }) && !@signals.untracked(fn() { w.starting.get() }) {
         writing_text(src, w, now)
         if spec.chat {
@@ -2217,6 +2257,30 @@ fn composer_field_node(
       on_focus_wait_done()
     })
   }
+  // (what the input method composes, its words as they were: `edited` is told of no such change, so its lines are
+  // followed here; told before `edited` of an edit that changes its words, what it showed before that edit kept for it.
+  // Words set from outside (the core's draft, Field::set and Field::follow) are laid out at once, nothing grown)
+  typed.reacts(
+    fn() { (w.field.composed_said(), w.field.composing(), w.field.text()) },
+    fn(now) {
+      let (shown, comp, txt) = now
+      let prev_shown = shown_was.val
+      let prev_comp = composing_was.val
+      let prev_txt = text_was.val
+      shown_was.val = shown
+      composing_was.val = comp
+      text_was.val = txt
+      if txt != prev_txt {
+        edited_was.val = prev_shown
+      } else {
+        edited_was.val = shown
+        if shown != prev_shown && (comp || prev_comp) && !@signals.untracked(fn() { w.starting.get() }) {
+          sync_height(prev_shown, shown)
+        }
+      }
+    },
+    at_start=false,
+  )
   typed.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
   // nothing typed in a chat's: ↑ ↓ the chat above or below, as the list shows them now, before the field sees it
   typed.on_key(fn(k) {
@@ -2236,11 +2300,13 @@ fn composer_field_node(
 
 ///|
 /// Whether field `field` (composer_field_node's: words `wl`, `max_lines` at most) comes out another height with `now` in
-/// it than with `was`, as wide as its words were laid out last: a line more or fewer. Not laid out yet, so.
+/// it than with `was`, as wide as its words were laid out last: a line more or fewer. None where it is not laid out yet
+/// (what it is as it is first laid out is there at once).
 fn field_comes_other(field : @ui.Field, wl : @view.WordsLook, max_lines : Int, was : String, now : String) -> Double? {
-  guard field.lines() is Some(lines) else { return Some(0.0) }
+  guard field.lines() is Some(lines) else { return None }
   let wide = lines.room.2 / (if lines.scale > 0.0 { lines.scale } else { 1.0 })
-  let laid = field.laid(font_size=wl.size, line=wl.line, max_lines~, trim=true)
+  guard wide > 0.0 else { return None }
+  let laid = @signals.untracked(fn() { field.laid(font_size=wl.size, line=wl.line, max_lines~, trim=true) })
   let (_, h0) = { ..laid, words: was }.size(Some(wide))
   let (_, h1) = { ..laid, words: now }.size(Some(wide))
   if (h1 - h0).abs() > 0.01 {
@@ -2461,7 +2527,7 @@ fn composer_extras_node(
   sent_at : Ref[Double],
   reshaped_at : Ref[Double],
   is_user_move : (@view.View) -> Bool,
-  grow : @motion.NodeWay,
+  grown : (@view.View) -> Double,
   morph_dy : (@view.View) -> Double,
   pad_room : Ref[@view.View?],
   quotes_room : Ref[@view.View?],
@@ -2585,8 +2651,8 @@ fn composer_extras_node(
     let f_any = if first_animate { @signals.untracked(fn() { w.files.get().length() > 0 }) } else { false }
     let mounting = Ref(true)
     let build_area = fn() {
-    // (drawn with its words as a line more of them makes its way in (`grow`) and with the morphing glass top (`morph_dy`))
-    area.offset(By(fn() { (0.0, grow.shown(area) + morph_dy(area)) })) |> ignore
+    // (drawn with its words as a line more of them makes its way in (`grown`) and with the morphing glass top (`morph_dy`))
+    area.offset(By(fn() { (0.0, grown(area) + morph_dy(area)) })) |> ignore
     area
     .padding(
       By(fn() {
