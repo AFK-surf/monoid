@@ -5,15 +5,19 @@
 // `float_pill_item_node` each button in it, 32 round, concentric with it.
 
 ///|
-/// The capsule in `parent` holding the round buttons `body` makes, one over another: `width` across (its corners half
-/// that), `pad` round them and `gap` between them. Never nest it in another glass. The node: the capsule.
+/// The room between two buttons on the capsule: half of it over and under each (float_pill_item_node's margin), so a
+/// button coming or going on it (View::comes) opens or shuts its whole room, never a gap stepped at once.
+let float_pill_gap : Double = 2.0
+
+///|
+/// The capsule in `parent` holding the round buttons `body` makes, one over another, float_pill_gap apart: `width`
+/// across (its corners half that), `pad` round them. Never nest it in another glass. The node: the capsule.
 #callsite(autofill(loc))
 pub fn float_pill_group_node(
   parent : @view.View,
   body : (@view.View) -> Unit,
   width? : Double = 36.0,
   pad? : Double = 2.0,
-  gap? : Double = 2.0,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(g) {
@@ -24,8 +28,8 @@ pub fn float_pill_group_node(
     g
     .width(Is(Some(width)))
     .radius(Is(r))
-    .padding(Is((pad, pad, pad, pad)))
-    .gap(Is(gap))
+    // (its buttons' own half gaps over and under them making up its pad there)
+    .padding(Is((pad, dmax(0.0, pad - float_pill_gap / 2.0), pad, dmax(0.0, pad - float_pill_gap / 2.0))))
     .lines_up(Is(Some(Middle)))
     .shrink(Is(0.0))
     .glass(By(fn() { Some(glass_floating(spot=spot_sig.get()).sharing()) }))
@@ -62,6 +66,7 @@ pub fn float_pill_item_node(
     .width(Is(Some(float_button_side)))
     .height(Is(Some(float_button_side)))
     .radius(Is(float_button_side / 2.0))
+    .margin(Is((0.0, float_pill_gap / 2.0, 0.0, float_pill_gap / 2.0)))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .ring(

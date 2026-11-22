@@ -174,19 +174,20 @@ let unread_lead : Double = 92.0
 
 ///|
 /// The round buttons over the list (chatToBottom) on their capsule of glass (chat_floats_node): it 36 across, 2 in from
-/// the composer column's side (the right edge of the capsules over the composer, 2 in as well), standing on the
-/// composer's room (its foot's top, whose composer_over of 12 keeps it 12 over the capsules); the way to the newest
-/// saying how many new messages wait 8 under it; how long they come and go.
-let float_pill_w : Double = 36.0
-
-///|
+/// the composer column's side (the right edge of the capsules over the composer, 2 in as well), 8 over the top of what
+/// the composer shows (those capsules, where it holds them, as it tells: composer_floats_drop_lent); the way to the newest saying how many
+/// new messages wait 8 under it; the room kept under the list's last row while 待处理 shows (as the round bell 12 over
+/// the composer kept it, 12 + 32); how long they come and go.
 let float_in : Double = 2.0
 
 ///|
-let float_lift : Double = 0.0
+let float_lift : Double = 8.0
 
 ///|
 let float_gap : Double = 8.0
+
+///|
+let float_ask_clear : Double = 44.0
 
 ///|
 let float_ms : Double = 160.0

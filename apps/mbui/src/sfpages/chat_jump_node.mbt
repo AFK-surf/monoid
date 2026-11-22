@@ -774,7 +774,8 @@ fn chat_outlines(src : Source, jump : ChatJump, view : () -> ChatView) -> Bool {
 ///|
 /// The round buttons floating over the list's foot `foot` at its top (a row of no height, they standing on it: where
 /// the composer is, whatever its height), right over the send button (the composer's column `width` across, `float_in`
-/// in from its side, float_lift over the foot): 待处理's bell (chat_ask_shown), 对话目录's (chat_outlines) and the way to
+/// in from its side, float_lift over the top of what the composer shows, `drop` under the foot's top as the composer
+/// tells it): 待处理's bell (chat_ask_shown), 对话目录's (chat_outlines) and the way to
 /// the newest (chat_jumps) one over another on one capsule of glass (@sf.float_pill_group_node), as many as show; the
 /// way to the newest under it on a button of its own while it says how many new messages wait (words the capsule has
 /// no room for). Shown while any is, fading in and out over float_ms.
@@ -789,6 +790,7 @@ fn chat_floats_node(
   width : () -> Double,
   tips : @sf.TipLayer,
   stint : () -> Int,
+  drop? : (@view.View, Double) -> Double = fn(_, _) { 0.0 },
 ) -> Unit {
   let chat = r.station + "\u{1}" + r.session
   let ask_shown = chat_ask_shown(jump, view, rows)
@@ -818,54 +820,73 @@ fn chat_floats_node(
     let w = width() + c.by
     (w - composer_width_on(w, c)) / 2.0 + float_in - reach
   }
+  // (which of them show on the capsule, in this order)
+  let pill_keys = fn() {
+    let keys : Array[String] = []
+    if ask_shown() {
+      keys.push("ask")
+    }
+    if outline_shown() {
+      keys.push("outline")
+    }
+    if latest_in_pill() {
+      keys.push("latest")
+    }
+    keys
+  }
   foot.show(pill_shown, at_once=true, leave=float_ms, fn(stand) {
     chat_float_stand(stand, jump, chat)
+    // (as found as it comes and as an answer tells it: at once; else one coming or going opens or shuts its room on the
+    // capsule from that cause (View::comes); none left as it fades out, the capsule kept as it was till it is gone)
+    let shown_keys : @signals.Signal[Array[String]] = @signals.signal(@signals.untracked(pill_keys))
     let g = @sf.float_pill_group_node(stand, fn(g) {
-      // (one slot a button, made once for its key as it comes: a moment's one, two or three, in this order)
-      g.each(
-        at_once=true,
-        fn() {
-          let keys : Array[String] = []
-          if ask_shown() {
-            keys.push("ask")
-          }
-          if outline_shown() {
-            keys.push("outline")
-          }
-          if latest_in_pill() {
-            keys.push("latest")
-          }
-          keys
-        },
-        fn(k) { k },
-        fn(s, k) {
-          match k.untracked() {
-            "ask" =>
-              @sf.float_pill_item_node(s, "bell", fn() { @sf.t("web-main.chat.asks.go") }, chat_ask_press(src, r, jump, place, view), tips~)
-              |> ignore
-            "outline" => chat_outline_item(s, src, r, jump, view, tips, stint)
-            _ =>
-              @sf.float_pill_item_node(s, "arrow-down", latest_label, latest_press, busy=latest_busy, tips~, shortcut="chat.latest")
-              |> ignore
-          }
-        },
-      )
+      // (one slot a button, made once for its key as it comes: a moment's one, two or three)
+      g.each(fn() { shown_keys.get() }, fn(k) { k }, fn(s, k) {
+        match k.untracked() {
+          "ask" =>
+            @sf.float_pill_item_node(s, "bell", fn() { @sf.t("web-main.chat.asks.go") }, chat_ask_press(src, r, jump, place, view), tips~)
+            |> ignore
+          "outline" => chat_outline_item(s, src, r, jump, view, tips, stint)
+          _ =>
+            @sf.float_pill_item_node(s, "arrow-down", latest_label, latest_press, busy=latest_busy, tips~, shortcut="chat.latest")
+            |> ignore
+        }
+      })
     })
-    // (over the way to the newest saying how many wait, float_gap over it, while it shows)
-    g
-    .margin(
-      By(fn() {
-        let over = if latest_has_count() { @sf.float_button_side + float_gap } else { 0.0 }
-        (0.0, 0.0, right_in(g, 0.0), float_lift + over)
-      }),
+    stand.reacts(
+      pill_keys,
+      fn(want) {
+        guard !want.is_empty() && stand.alive() else { return }
+        if stand.cause_at() <= jump.sight_from || @view.answering_now() {
+          shown_keys.set(want)
+        } else {
+          @view.transition(within=g, fn() { shown_keys.set(want) })
+        }
+      },
+      at_start=false,
     )
-    |> ignore
+    // (over the way to the newest saying how many wait, float_gap over it, while it shows: moved there from its cause,
+    // found there as it comes and as an answer tells it)
+    let over_at = fn() { if latest_has_count() { @sf.float_button_side + float_gap } else { 0.0 } }
+    let over = @motion.NodeWay::new(@signals.untracked(over_at))
+    stand.reacts(
+      over_at,
+      fn(to) {
+        if stand.cause_at() <= jump.sight_from || @view.answering_now() {
+          over.put(to)
+        } else {
+          over.go(g, to, @motion.move_damped)
+        }
+      },
+      at_start=false,
+    )
+    g.margin(By(fn() { (0.0, 0.0, right_in(g, 0.0), float_lift - drop(g, width()) + over.shown(g)) })) |> ignore
   })
   foot.show(latest_has_count, at_once=true, leave=float_ms, fn(stand) {
     chat_float_stand(stand, jump, chat)
     let reach = @sf.float_button_reach
     let o = @sf.float_button_node(stand, "arrow-down", latest_label, latest_press, count=latest_count, busy=latest_busy, tips~, shortcut="chat.latest")
-    o.margin(By(fn() { (0.0, 0.0, right_in(o, reach), float_lift - reach) })) |> ignore
+    o.margin(By(fn() { (0.0, 0.0, right_in(o, reach), float_lift - reach - drop(o, width())) })) |> ignore
   })
 }
 

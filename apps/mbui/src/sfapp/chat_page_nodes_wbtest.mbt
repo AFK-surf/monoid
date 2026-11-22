@@ -2556,7 +2556,7 @@ fn float_pill_button(t : @ui.Tester, label : String) -> @ui.SemNode? {
 }
 
 ///|
-test "a chat's 待处理, 对话目录 and the way back to the newest, on 小屏 and 大屏, light and dark: one capsule of the composer capsules' liquid glass and shadow, their right edge, 12 over them on 大屏" {
+test "a chat's 待处理, 对话目录 and the way back to the newest, on 小屏 and 大屏, light and dark: one capsule of the composer capsules' liquid glass and shadow, their right edge, 8 over them" {
   let wins : Array[(String, Double, Double, Int, String)] = [("小屏", 390.0, 844.0, 2, ""), ("大屏", 1280.0, 800.0, 0, "")]
   for win in wins {
     for dark in [false, true] {
@@ -2584,13 +2584,9 @@ test "a chat's 待处理, 对话目录 and the way back to the newest, on 小屏
       // 3. their right edge
       let right = fn(a : Array[Double]) { a[0] + a[2] }
       assert_true((right(ga) - right(gs)).abs() < 0.5, msg="\{at}: right edges capsule \{right(ga)}, 子会话 \{right(gs)}")
-      // 4. 12 over the composer's capsules on 大屏; on 小屏 the closed composer keeps the room it opens to, so further
-      // over them, never on them
+      // 4. 8 over the composer's capsules, the composer closed or not
       let gap = gs[1] - (ga[1] + ga[3])
-      assert_true(
-        if name == "大屏" { (gap - 12.0).abs() < 0.5 } else { gap >= 12.0 - 0.5 },
-        msg="\{at}: capsule to 子会话 \{gap}",
-      )
+      assert_true((gap - 8.0).abs() < 0.5, msg="\{at}: capsule to 子会话 \{gap}")
       // (the side pane's edge over the sidebar and the page by 6 on 大屏, as wide_back_wbtest.mbt's)
       let faults = t
         .audit()
@@ -2626,4 +2622,29 @@ test "a chat's capsule over the composer, on 小屏 and 大屏: 待处理 goes t
     t.run_for(@ui.move_most_ms * 3.0)
     assert_true(float_pill_button(t, @sf.t("web-main.chat.toLatest")) is None, msg="\{name}: 跳到最新 pressed, still shown")
   }
+}
+
+///|
+test "小屏, a chat's capsule over the composer: the composer opened under it, it moves with what the composer shows at its top, never a step, 8 over 子会话 again" {
+  let win : (String, Double, Double, Int, String) = ("小屏", 390.0, 844.0, 2, "")
+  let t = float_pill_read_up(win, false)
+  guard float_pill_button(t, @sf.t("web-main.outline.title")) is Some(_) else { fail("对话目录 not shown read up") }
+  // (the composer's field, the lowest field drawn, tapped: the composer opens)
+  let mut field : (Double, Double, Double, Double)? = None
+  for s in t.semantics() {
+    if s.role == @ui.Role::TextField && (field is None || field.unwrap().1 < s.rect.1) {
+      field = Some(s.rect)
+    }
+  }
+  guard field is Some((fx, fy, fw, fh)) else { fail("no composer's field") }
+  t.tap(fx + fw / 2.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard float_pill_button(t, @sf.t("web-main.outline.title")) is Some(outline) else { fail("对话目录 gone as the composer opened") }
+  guard t.query(Button, label="子会话") is Some(subchats) else { fail("子会话 gone as the composer opened") }
+  guard (float_glass_round(t, outline.rect), float_glass_round(t, subchats.rect)) is (Some(gp), Some(gs)) else {
+    fail("not each on liquid glass as the composer opened")
+  }
+  let gap = gs[1] - (gp[1] + gp[3])
+  assert_true((gap - 8.0).abs() < 0.5, msg="opened: capsule to 子会话 \{gap}")
+  assert_eq(t.audit(), [])
 }

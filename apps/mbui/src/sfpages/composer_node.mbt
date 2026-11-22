@@ -225,6 +225,26 @@ pub fn new_composer_node(
 }
 
 ///|
+/// What a chat's page lends its composer (chat_body_node's foot) to be told, at a column `wide` across and as node `u`
+/// draws it, how far under the composer's foot's top the top of what it shows there is drawn (its 12 over it, the room
+/// its least keeps over a capsule (node_open_room), its ground's way from a capsule to a box or back and as words left
+/// it, its foot's way): the round buttons over the list (chat_floats_node) standing that far over it; written as the
+/// composer is made, read as they are drawn.
+// kept across runs: a kind of value lent, each lender's let go with the node that lent it (View::lends)
+let composer_floats_drop_lent : @view.Lent[Ref[(@view.View, Double) -> Double]] = @view.Lent::new()
+
+///|
+/// What a chat's composer box (composer_box_node's) shares with its foot, made with the composer (composer_node_of's)
+/// so what it tells the page (composer_floats_drop_lent) is there as it is made: whether what waits to go still
+/// shows in it, how far it is drawn a box or a capsule (`morph`) and how much taller than it is laid out as words left
+/// it (`sent_over`).
+priv struct ChatBoxShared {
+  extras_alive : @signals.Signal[Bool]
+  morph : @motion.NodeWay
+  sent_over : @motion.NodeWay
+}
+
+///|
 /// chat_composer_node's and new_composer_node's: chat `r`'s composer, or (`made`) one for what is no chat yet.
 fn composer_node_of(
   v : @view.View,
@@ -316,6 +336,71 @@ fn composer_node_of(
       None => false
     }
   }
+  // (how far what stands in its foot is drawn off where it is laid out, as its foot's room goes its way: below)
+  let foot_shift = @motion.NodeWay::new(0.0)
+  // (a chat's: what its box shares with its foot, made here so the page is told where the top of what it shows is as
+  // it is made (composer_floats_drop_lent), before its foot is first laid out)
+  let shared : ChatBoxShared? = if made is None {
+    let extras_alive = @signals.signal(
+      @signals.untracked(fn() { w.files.get().length() > 0 || w.quotes.get().length() > 0 }),
+      same=fn(a, b) { a == b },
+    )
+    // (opened as its box says, composer_box_node's `multiline` of a chat's: no `own`, never roomy)
+    let multiline = fn() {
+      composer_wants_open(
+        w,
+        roomy=false,
+        focused=w.field.focused(),
+        lingers=composing_node.held.get(draft).unwrap_or(false),
+      ) ||
+      extras_alive.get()
+    }
+    let morph = @motion.NodeWay::new(if @signals.untracked(multiline) { 1.0 } else { 0.0 })
+    let sent_over = @motion.NodeWay::new(0.0)
+    match v.lent(composer_floats_drop_lent) {
+      Some(drop) => {
+        let chat = r.station + "\u{1}" + r.session
+        drop.val = fn(u, wide) {
+          let st : Stand = {
+            wide: fn() { wide },
+            composer_w: fn() { composer_width_on(wide, @signals.untracked(fn() { @sfbase.column_laid(chat, u) })) },
+            scale: fn() { u.words_scale() },
+            apart: fn() { apart() },
+            pane,
+          }
+          // (what stands over its box as tall as its least keeps for it (`over_tall`, its row of capsules), its notices
+          // or an error making it taller than its least, its foot laid out as tall as what it holds: no room over them)
+          let has_extra = w.error.get() != "" || composer_notice_kinds(src, r).length() > 0
+          let slack_and_morph = if has_extra || @ui.system_tabletop() is Some(_) {
+            0.0
+          } else {
+            let (_, _, b) = st.place().capsule_in
+            let one_line = @sf.dmax(@sf.theme().round.side, node_field_line(u.words_scale()))
+            let shut_h = one_line + 2.0 * st.place().capsule_pad
+            let open_h = st.at(fn() { node_open_room(st, wide) - 12.0 - composer_foot_at(wide) })
+            // (a capsule: its least's room over it; on its way from a capsule to a box or back, its ground's top where
+            // it is drawn (composer_box_node's morph_dy))
+            let slack = if multiline() { 0.0 } else { @sf.dmax(0.0, open_h - shut_h - b) }
+            let k = morph.shown(u)
+            let to = morph.target()
+            let mdy = if k != to {
+              let low = fn(t : Double) { b * (1.0 - t) }
+              let high = fn(t : Double) { shut_h + (open_h - shut_h) * t }
+              low(to) + high(to) - low(k) - high(k)
+            } else {
+              0.0
+            }
+            slack + mdy
+          }
+          over + slack_and_morph - sent_over.shown(u) + foot_shift.shown(u)
+        }
+      }
+      None => ()
+    }
+    Some({ extras_alive, morph, sent_over })
+  } else {
+    None
+  }
   // (by the width the column gives it, as it changes: never one worked out of the shell's state)
   v.by_room(fn(foot, room) {
     let chat = r.station + "\u{1}" + r.session
@@ -332,8 +417,6 @@ fn composer_node_of(
       apart: fn() { !roomy() && apart() },
       pane,
     }
-    // (how far what stands in its foot is drawn off where it is laid out, as its foot's room goes its way: below)
-    let foot_shift = @motion.NodeWay::new(0.0)
     // (the width its foot's room is worked out at: as wide as the chat's column is laid out, as its rows are, on the
     // page's way to another width (sfbase's column_laid), else the narrower end its page says, else its own)
     let rest_wide = fn() {
@@ -503,6 +586,7 @@ fn composer_node_of(
       own=made,
       before_take_in~,
       on_over_alpha=fn(f) { over_alpha.val = f },
+      shared?,
     )
     // (what went wrong, under it)
     foot.show(at_once=true, fn() { w.error.get() != "" }, fn(e) {
@@ -676,6 +760,7 @@ fn composer_box_node(
   own? : ComposerNodeFor? = None,
   before_take_in? : Ref[() -> Unit] = Ref(fn() {  }),
   on_over_alpha? : ((@view.View) -> Double) -> Unit = fn(_) { () },
+  shared? : ChatBoxShared,
 ) -> Unit {
   let draft = w.key
   let focused = fn() { w.field.focused() }
@@ -708,10 +793,15 @@ fn composer_box_node(
   // (opened, and whether what is written can go: composer_state.mbt's, the old view's as well; and while what waits to
   // go still shows in it, leaving too: a box till that is gone, its padding and corners as they were, what is in it
   // concentric with it all the way, composer_extras_node's)
-  let extras_alive = @signals.signal(
-    @signals.untracked(fn() { w.files.get().length() > 0 || w.quotes.get().length() > 0 }),
-    same=fn(a, b) { a == b },
-  )
+  // (a chat's made with its foot: composer_node_of's ChatBoxShared)
+  let extras_alive = match shared {
+    Some(sh) => sh.extras_alive
+    None =>
+      @signals.signal(
+        @signals.untracked(fn() { w.files.get().length() > 0 || w.quotes.get().length() > 0 }),
+        same=fn(a, b) { a == b },
+      )
+  }
   // (while a departing new-chat composer is hidden (`away()`), keep its last open/capsule shape so its fading
   // `over_it` choices never snap when clearing the draft triggers `morph.put(0.0)` while `b.resizes` holds height)
   let multiline_was = Ref(false)
@@ -751,7 +841,10 @@ fn composer_box_node(
   // one, a box of one line: laid out at once, its foot's least (node_open_room) keeping what is round it where it
   // stood, its ground, its words, ＋ and send drawn from where they stood in the shape it had, on the old one's clock
   // (composer_shape_ms), never a resize; at its end, as laid out)
-  let morph = @motion.NodeWay::new(@signals.untracked(fn() { shape.target() }))
+  let morph = match shared {
+    Some(sh) => sh.morph
+    None => @motion.NodeWay::new(@signals.untracked(fn() { shape.target() }))
+  }
   // (where its parts stand `k` of the way from its capsule (0) to its box of one line (1), from the left and the foot
   // of the box it is laid in opened: its capsule as far in as its place's capsule_in, its parts as far in as its
   // padding and theirs, as laid out below)
@@ -793,7 +886,10 @@ fn composer_box_node(
   let fresh_fly = Ref(from_at is Some(_))
   // (how much taller than it is laid out its ground is drawn, over it: what it was as words were sent from it, held as
   // long as the old composer's on this page is (sfbase's sent_out_hold_ms), then down to none on their flight's curve)
-  let sent_over = @motion.NodeWay::new(0.0)
+  let sent_over = match shared {
+    Some(sh) => sh.sent_over
+    None => @motion.NodeWay::new(0.0)
+  }
   let sent_flying = @motion.NodeWay::new(0.0)
   // (the moment it goes down from as tall as it was, once the way it was going on as words left it is over: -1 when
   // it is said to go down as they are sent)
