@@ -646,7 +646,7 @@
   "core-views.screenService.failed.errorWhy": "切换失败，设置没有改变：{why}",
   "core-views.permissions.askingHere": "授权窗口已在该 Mac 上打开，可在远程屏幕中点击「允许」",
   "core-views.permissions.askingThere": "授权窗口已在该 Mac 上打开，请在该 Mac 上点击「允许」",
-  "core-views.models.borrowed_from": "借自 {station}",
+  "core-views.models.borrowed_from": "由 {station} 分享",
   "core-views.models.on_station": "在 {station} 上",
   "core-views.search.kind.chat": "对话",
   "core-views.search.kind.message": "消息",

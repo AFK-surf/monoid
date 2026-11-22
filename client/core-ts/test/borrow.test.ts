@@ -39,7 +39,7 @@ test("a_station_offers_its_own_models_says_which_are_borrowed_and_lists_what_oth
   const ws = workspace();
   const here = ws[0].overview;
   const own = sourced(models(here, 0), here, ws);
-  assert.deepEqual(own.map((o: J) => [o.model, o.availability, o.fromText ?? null, o.fromStation ?? null]), [["claude-opus-5-5", "here", null, null], ["kimi-k3", "borrowed", "借自 Office", { name: "Office", emoji: "🖥️" }]]);
+  assert.deepEqual(own.map((o: J) => [o.model, o.availability, o.fromText ?? null, o.fromStation ?? null]), [["claude-opus-5-5", "here", null, null], ["kimi-k3", "borrowed", "由 Office 分享", { name: "Office", emoji: "🖥️" }]]);
   const lend = borrowable(ws, `ws/${HERE}`, own, null, 0);
   // Opus is here already; Kimi is borrowed; TestStation is down.
   assert.deepEqual(lend.map((o: J) => [o.model, o.availability, o.fromText, o.runtimes]), [["gpt-6-astra", "borrowable", "在 Office 上", ["codex"]], ["deepseek-v4-pro", "borrowable", "在 Office 上", ["dsh"]]]);

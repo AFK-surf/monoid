@@ -724,7 +724,7 @@
   "core-views.screenService.failed.errorWhy": "Switching failed; nothing changed: {why}",
   "core-views.permissions.askingHere": "The permission window is open on that Mac; click Allow in it from the remote screen",
   "core-views.permissions.askingThere": "The permission window is open on that Mac; click Allow there",
-  "core-views.models.borrowed_from": "Borrowed from {station}",
+  "core-views.models.borrowed_from": "Shared from {station}",
   "core-views.models.on_station": "On {station}",
   "core-views.search.kind.chat": "Chats",
   "core-views.search.kind.message": "Messages",
