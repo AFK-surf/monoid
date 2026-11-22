@@ -573,14 +573,13 @@ pub fn model_triple_node(
           |> ignore
         })
         part(r, triple_drop_speed, fn() { offers() && text(v(), "fastText") != "" }, fn(x) {
+          // (set off by a dot as the other parts are, the icon as the speed's words were)
+          dot(x)
           x.pick(fn() { text(v(), "fastText") }, fn(mark, speed) {
-            mark.row(Is(true)) |> ignore
             if speed == "Fast" || speed == "Ultrafast" {
               let icon = if speed == "Ultrafast" { "zap-ultrafast" } else { "zap-fast" }
               @sf.icon_node(mark, icon, 14.0, By(fn() { @sf.theme().p.text })) |> ignore
             } else {
-              mark.gap(Is(6.0)) |> ignore
-              dot(mark)
               @sf.words_node(mark, fn() { speed }, fn() { words_look }) |> ignore
             }
           })
