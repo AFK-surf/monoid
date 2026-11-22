@@ -63,11 +63,11 @@ pub fn viewer_head_node(
       }))
       .radius(Is(1.0e6))
       |> ignore
-      @lg.liquid_capsule_decorate(
+      @glass.liquid_capsule_decorate(
         h,
         glass=fn(_) { glass() },
         shadow=glass_control_shadow,
-        solid_edge=@lg.liquid_solid_edge,
+        solid_edge=@glass.liquid_solid_edge,
         clips=true,
       )
       .max_width(By(fn() { Some(most()) }))

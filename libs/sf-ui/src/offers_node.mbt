@@ -322,11 +322,11 @@ pub fn offers_node(
           .beside(anchor.id(), side~, along=Start, offset~, padding=8.0, width=Anchor)
           .max_height(By(fn() { Some(dmax(0.0, over_room(shown).1 - 16.0)) }))
           |> ignore
-          @lg.liquid_panel_surface_decorate(
+          @glass.liquid_panel_surface_decorate(
             p,
             solid=panel_ground,
             shadow=glass_overlay_shadow,
-            solid_edge=@lg.liquid_overlay_solid_edge,
+            solid_edge=@glass.liquid_overlay_solid_edge,
             clips=true,
           )
           .alpha(By(fn() { look().alpha }))

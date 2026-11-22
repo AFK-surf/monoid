@@ -858,13 +858,13 @@ fn reader_found_node(parent : @view.View, r : Reading, paper : () -> ReaderPaper
     frame=fn(b) {
       // (a capsule now its keys are round: they stand in its ends concentric with them, 5 in)
       style_node(b, fn() { desk_found_box.then(desk_found_round) })
-      @lg.liquid_capsule_decorate(
+      @glass.liquid_capsule_decorate(
         b,
         tone=BarPill,
         sharing=true,
         glass=fn(_) { narrow_pill_glass(paper()) },
         shadow=glass_control_shadow,
-        solid_edge=@lg.liquid_solid_edge,
+        solid_edge=@glass.liquid_solid_edge,
         clips=true,
       )
       .presses(Is(true))
@@ -1328,7 +1328,7 @@ fn reader_narrow_chrome(
   parent.show(fn() { r.chrome.get() }, leave=reader_bars_ms, fn(o) {
     o.over(Is(true)) |> ignore
     let top_edge_h = fn(_ : @view.View) { room().0 + narrow_bar_off + @ui.Space::px(S12) + 12.0 }
-    @lg.liquid_scroll_edge_node(o, top_edge_h, top_edge_h, side=Top, bg=fn() { paper().ground }, shield=false)
+    @glass.liquid_scroll_edge_node(o, top_edge_h, top_edge_h, side=Top, bg=fn() { paper().ground }, shield=false)
     .alpha(By(fn() { shown(o) }))
     |> ignore
     o.box(fn(top) { top.height(By(fn() { Some(room().0 + narrow_bar_off) })) |> ignore }) |> ignore
@@ -1337,13 +1337,13 @@ fn reader_narrow_chrome(
       row.box(fn(bar) {
         style_node(bar, fn() { narrow_top_box })
         bar.width(By(fn() { Some(dmin(width() - narrow_bar_side, narrow_top_most)) })) |> ignore
-        @lg.liquid_capsule_decorate(
+        @glass.liquid_capsule_decorate(
           bar,
           tone=BarPill,
           sharing=true,
           glass=fn(_) { narrow_pill_glass(paper()) },
           shadow=glass_control_shadow,
-          solid_edge=@lg.liquid_solid_edge,
+          solid_edge=@glass.liquid_solid_edge,
           clips=true,
         )
         .alpha(By(fn() { shown(bar) }))
@@ -1430,7 +1430,7 @@ fn reader_narrow_chrome(
     style_node(o, fn() { narrow_foot_place })
     o.over(Is(true)) |> ignore
     let foot_edge_h = fn(_ : @view.View) { room().1 + narrow_bar_off + 72.0 }
-    @lg.liquid_scroll_edge_node(o, foot_edge_h, foot_edge_h, side=Bottom, bg=fn() { paper().ground }, shield=false)
+    @glass.liquid_scroll_edge_node(o, foot_edge_h, foot_edge_h, side=Bottom, bg=fn() { paper().ground }, shield=false)
     .alpha(By(fn() { shown(o) }))
     |> ignore
     o.box(fn(row) {
@@ -1439,13 +1439,13 @@ fn reader_narrow_chrome(
         let w = fn() { dmin(width() - narrow_bar_side, narrow_foot_most) }
         style_node(card, fn() { narrow_foot_box })
         card.width(By(fn() { Some(w()) })) |> ignore
-        @lg.liquid_capsule_decorate(
+        @glass.liquid_capsule_decorate(
           card,
           tone=Panel,
           sharing=false,
           glass=fn(_) { narrow_panel_glass(paper()) },
           shadow=glass_overlay_shadow,
-          solid_edge=@lg.liquid_overlay_solid_edge,
+          solid_edge=@glass.liquid_overlay_solid_edge,
           clips=true,
         )
         .alpha(By(fn() { shown(card) }))
@@ -1693,14 +1693,14 @@ fn reader_sheet_note(r : Reading) -> String {
 /// Single-layer liquid glass for a phone reader's floating top bar and search-hit capsules,
 /// preserving the paper's opaque solid fallback under `MBUI_GLASS=solid`.
 fn narrow_pill_glass(p : ReaderPaper) -> @ui.Glass {
-  @lg.liquid_bar_pill_glass(solid=over(p.ground, alpha(p.raised, desk_glass_share)), sharing=true)
+  @glass.liquid_bar_pill_glass(solid=over(p.ground, alpha(p.raised, desk_glass_share)), sharing=true)
 }
 
 ///|
 /// Single-layer liquid glass for a phone reader's floating bottom control panel,
 /// preserving the paper's opaque solid fallback under `MBUI_GLASS=solid`.
 fn narrow_panel_glass(p : ReaderPaper) -> @ui.Glass {
-  @lg.liquid_panel_glass(solid=over(p.ground, alpha(p.raised, desk_glass_share)))
+  @glass.liquid_panel_glass(solid=over(p.ground, alpha(p.raised, desk_glass_share)))
 }
 
 ///|

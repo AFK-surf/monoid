@@ -12,7 +12,7 @@
 /// nothing is read), of what the finger reads.
 #callsite(autofill(loc))
 pub fn loupe_node(root : @view.View, on : () -> Bool, loc~ : SourceLoc) -> Unit {
-  @lg.liquid_loupe_node(
+  @glass.liquid_loupe_node(
     root,
     on,
     @ui.finger_reads,

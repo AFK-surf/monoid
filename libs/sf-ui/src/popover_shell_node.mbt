@@ -4,8 +4,8 @@
 // `glass_overlay_shadow()` (`shadow_outside(Is(true))` so outer shadows never bleed inside glass), `r_menu` corner
 // radius, clipping, `FromBeside` pop motion, and `ground_node` input boundary.
 //
-// Popovers (`menu_node`) anchored to a button inside a liquid glass `bar_pill_group_node` (`@lg.liquid_pill_trigger_lent`)
-// execute the 1:1 CADisplayLink-calibrated iOS 27.0 `LiquidMorphPhysics` engine (`@lg` `liquid_morph_physics.mbt`):
+// Popovers (`menu_node`) anchored to a button inside a liquid glass `bar_pill_group_node` (`@glass.liquid_pill_trigger_lent`)
+// execute the 1:1 CADisplayLink-calibrated iOS 27.0 `LiquidMorphPhysics` engine (`@glass` `liquid_morph_physics.mbt`):
 // - Open (`420ms` linear phase clock driving critically damped `omega0=26.0, zeta=1.0` spring): luminous crystal
 //   droplet (`0x4E`, `blur=1.6`) blooms from the contracting trigger capsule with scaled blurred content (`content_lens`)
 //   and settles with zero `kind == 8` overhead at rest;
@@ -44,13 +44,13 @@ fn pill_morph_eval(
   menu_h : Double,
   closing : Bool,
   t : Double,
-) -> @lg.LiquidMorphFrame {
+) -> @glass.LiquidMorphFrame {
   let align_x = match pm.along {
     Start => -1.0
     End => 1.0
     Middle => 0.0
   }
-  @lg.lm_eval_pill_morph(
+  @glass.lm_eval_pill_morph(
     pm.pill_x,
     pm.pill_y,
     pm.pill_w,
@@ -120,7 +120,7 @@ fn popover_content_motion(p : @view.View, node : @view.View, fallback : () -> Do
         By(fn() {
           let t = pm.t_way.shown(node)
           let closing = pm.is_closing.get()
-          if !closing && t >= @lg.lm_open_duration_ms / 1000.0 - 0.001 {
+          if !closing && t >= @glass.lm_open_duration_ms / 1000.0 - 0.001 {
             1.0
           } else {
             let (px_win, py_win, w, h) = p.placed_window_now()
@@ -139,7 +139,7 @@ fn popover_content_motion(p : @view.View, node : @view.View, fallback : () -> Do
         By(fn() {
           let t = pm.t_way.shown(node)
           let closing = pm.is_closing.get()
-          if !closing && t >= @lg.lm_open_duration_ms / 1000.0 - 0.001 {
+          if !closing && t >= @glass.lm_open_duration_ms / 1000.0 - 0.001 {
             (0.0, 0.0)
           } else {
             let (px_win, py_win, w, h) = p.placed_window_now()
@@ -226,7 +226,7 @@ pub fn anchored_popover_bridge(
   if aw < 16.0 || ah < 16.0 || layer.glass_solid() {
     return
   }
-  match anchor.lent(@lg.liquid_pill_trigger_lent) {
+  match anchor.lent(@glass.liquid_pill_trigger_lent) {
     Some(trig) => {
       match trig.morph_cancel {
         Some(cancel_prev) => cancel_prev()
@@ -262,7 +262,7 @@ pub fn anchored_popover_bridge(
         t_way,
         shell_ref,
       }
-      let eval_trig = fn() -> (Double, Bool, @lg.LiquidMorphFrame) {
+      let eval_trig = fn() -> (Double, Bool, @glass.LiquidMorphFrame) {
         let t = t_way.shown(trig.pill)
         let closing = is_closing.get()
         let (px_win, py_win, mw, mh) = pill_morph_shell_bounds(pm)
@@ -275,18 +275,18 @@ pub fn anchored_popover_bridge(
           if f.open_anchor_scale <= 0.15 {
             None
           } else {
-            let stage = 0.5 * @lg.lm_smoothstep(0.0, 0.06, t)
+            let stage = 0.5 * @glass.lm_smoothstep(0.0, 0.06, t)
             Some(glass_menu_morph(stage, layer=pill_layer, break_gap=32.0))
           }
         } else if f.platter_active {
           if f.blob_a_emerge <= 0.001 {
             None
           } else {
-            let stage = 0.5 * @lg.lm_smoothstep(0.0, 0.12, f.raw_value)
+            let stage = 0.5 * @glass.lm_smoothstep(0.0, 0.12, f.raw_value)
             Some(glass_menu_morph(stage, layer=pill_layer, break_gap=48.0))
           }
         } else {
-          Some(@lg.liquid_bar_pill_glass(solid=panel_ground()))
+          Some(@glass.liquid_bar_pill_glass(solid=panel_ground()))
         }
       })
       trig.morph_shadow.val = Some(fn() {
@@ -314,7 +314,7 @@ pub fn anchored_popover_bridge(
         By(fn() {
           let (t, closing, f) = eval_trig()
           if closing {
-            @lg.lm_impact_scale(t, f.final_dy.abs())
+            @glass.lm_impact_scale(t, f.final_dy.abs())
           } else {
             1.0 + 0.05 * trig.press_way.shown(trig.pill)
           }
@@ -326,15 +326,15 @@ pub fn anchored_popover_bridge(
         By(fn() {
           let (t, closing, f) = eval_trig()
           if !closing {
-            let wp = @lg.lm_open_trigger_width(t)
-            let cw = @lg.lm_lerp(pill_h_eff, pill_w, wp)
-            let cx = @lg.lm_lerp(tx_mid, pill_w * 0.5, wp)
+            let wp = @glass.lm_open_trigger_width(t)
+            let cw = @glass.lm_lerp(pill_h_eff, pill_w, wp)
+            let cx = @glass.lm_lerp(tx_mid, pill_w * 0.5, wp)
             let r = dmin(cw, pill_h_eff) * 0.5
             { dx: cx - cw * 0.5, dy: 0.0, dw: cw - pill_w, dh: 0.0, corners: Some((r, r, r, r)) }
           } else if f.platter_active {
-            let wp = @lg.lm_delayed_close_width(t)
-            let cw = @lg.lm_lerp(pill_h_eff, pill_w, wp)
-            let cx = @lg.lm_lerp(tx_mid, pill_w * 0.5, dclamp(wp, 0.0, 1.0))
+            let wp = @glass.lm_delayed_close_width(t)
+            let cw = @glass.lm_lerp(pill_h_eff, pill_w, wp)
+            let cx = @glass.lm_lerp(tx_mid, pill_w * 0.5, dclamp(wp, 0.0, 1.0))
             let r = dmin(cw, pill_h_eff) * 0.5
             {
               dx: cx - cw * 0.5,
@@ -344,7 +344,7 @@ pub fn anchored_popover_bridge(
               corners: Some((r, r, r, r)),
             }
           } else {
-            let raw_scale = @lg.lm_lerp(pill_h_eff, pill_w, @lg.lm_close_trigger_width(t)) / pill_w
+            let raw_scale = @glass.lm_lerp(pill_h_eff, pill_w, @glass.lm_close_trigger_width(t)) / pill_w
             let cw = pill_w * dclamp(raw_scale, 0.90, 1.04)
             let r = pill_h_eff * 0.5
             { dx: (pill_w - cw) * 0.5, dy: 0.0, dw: cw - pill_w, dh: 0.0, corners: Some((r, r, r, r)) }
@@ -375,9 +375,9 @@ pub fn anchored_popover_bridge(
           By(fn() {
             let t = t_way.shown(child)
             if is_closing.get() {
-              if t < 0.19 { 0.0 } else { @lg.lm_smoothstep(0.19, 0.275, t) }
+              if t < 0.19 { 0.0 } else { @glass.lm_smoothstep(0.19, 0.275, t) }
             } else {
-              1.0 - @lg.lm_smoothstep(0.0, 0.032, t)
+              1.0 - @glass.lm_smoothstep(0.0, 0.032, t)
             }
           }),
         )
@@ -386,12 +386,12 @@ pub fn anchored_popover_bridge(
           By(fn() {
             let t = t_way.shown(child)
             if !is_closing.get() {
-              let wp = @lg.lm_open_trigger_width(t)
+              let wp = @glass.lm_open_trigger_width(t)
               (child_to_tx * (1.0 - wp) * 0.45, 0.0)
             } else {
-              let raw = @lg.lm_close_progress(t)
-              if @lg.lm_close_platter_active(raw) {
-                let blob_a_w = @lg.lm_lerp(pill_h_eff, pill_w, @lg.lm_delayed_close_width(t))
+              let raw = @glass.lm_close_progress(t)
+              if @glass.lm_close_platter_active(raw) {
+                let blob_a_w = @glass.lm_lerp(pill_h_eff, pill_w, @glass.lm_delayed_close_width(t))
                 (-child_cx_off * (1.0 - dclamp(blob_a_w / pill_w, 0.5, 1.0)), 0.0)
               } else {
                 (0.0, 0.0)
@@ -433,15 +433,15 @@ pub fn anchored_popover_bridge(
           t_way.go_from(
             layer,
             0.0,
-            @lg.lm_close_duration_ms / 1000.0,
-            @motion.tween(@lg.lm_close_duration_ms, ease=@ui.Ease::Linear),
+            @glass.lm_close_duration_ms / 1000.0,
+            @motion.tween(@glass.lm_close_duration_ms, ease=@ui.Ease::Linear),
           )
         } else {
           t_way.go_from(
             layer,
             0.0,
-            @lg.lm_open_duration_ms / 1000.0,
-            @motion.tween(@lg.lm_open_duration_ms, ease=@ui.Ease::Linear),
+            @glass.lm_open_duration_ms / 1000.0,
+            @motion.tween(@glass.lm_open_duration_ms, ease=@ui.Ease::Linear),
           )
         }
       })
@@ -514,7 +514,7 @@ pub fn anchored_popover_shell(
   |> ignore
   match p.lent(pill_morph_lent) {
     Some(pm) if !p.glass_solid() =>
-      @lg.liquid_popover_surface_decorate(
+      @glass.liquid_popover_surface_decorate(
         p,
         radius=r_menu,
         solid=panel_ground,
@@ -562,7 +562,7 @@ pub fn anchored_popover_shell(
       )
       |> ignore
     _ =>
-      @lg.liquid_popover_surface_decorate(
+      @glass.liquid_popover_surface_decorate(
         p,
         radius=r_menu,
         solid=panel_ground,

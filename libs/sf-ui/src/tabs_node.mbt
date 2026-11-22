@@ -88,7 +88,7 @@ pub fn[K : Eq] tabs_node(
           let n = tabs.length()
           let last_f = if n > 1 { (n - 1).to_double() } else { 0.0 }
           let init_idx = place_of(@signals.untracked(chosen))
-          let dd = @lg.DampedDrag::new(init_idx.to_double(), lo=0.0, hi=last_f, held_scale=1.0 + seg_lens_grow)
+          let dd = @glass.DampedDrag::new(init_idx.to_double(), lo=0.0, hi=last_f, held_scale=1.0 + seg_lens_grow)
           dd.attach(strip)
           let current = Ref(init_idx)
           let strip_origin_x = Ref(0.0)

@@ -131,7 +131,7 @@ pub fn drawer_node(
         .height(By(fn() { Some(dmax(0.0, layer.window_h() - 2.0 * spec.inset)) }))
         .margin(Is((spec.inset, spec.inset, spec.inset, spec.inset)))
         |> ignore
-        @lg.liquid_drawer_surface_decorate(
+        @glass.liquid_drawer_surface_decorate(
           card,
           radius=spec.radius,
           solid=panel_ground,

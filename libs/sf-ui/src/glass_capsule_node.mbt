@@ -1,5 +1,5 @@
 // Unified single-layer iOS 27 Liquid Glass floating capsule decorator for 30pt/32pt floating pills and overlays:
-// delegates glass material to `@lg.liquid_floating_glass` (or `@lg.liquid_viewer_dark_glass` when `dark=true`),
+// delegates glass material to `@glass.liquid_floating_glass` (or `@glass.liquid_viewer_dark_glass` when `dark=true`),
 // pairs with `glass_control_shadow()` + `shadow_outside(Is(true))`, `MBUI_GLASS=solid` hairline border fallback,
 // and optional press-point GPU `spot` specular highlight (`interactive=true`).
 
@@ -16,7 +16,7 @@ pub fn glass_capsule_node(
   solid? : () -> Int64,
   tint? : () -> Int64,
 ) -> @view.View {
-  @lg.liquid_capsule_decorate(
+  @glass.liquid_capsule_decorate(
     b,
     tone=if dark { ViewerDark } else { Floating },
     min_height~,

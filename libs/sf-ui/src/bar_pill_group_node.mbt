@@ -1,13 +1,13 @@
 // Single-layer iOS 26 / macOS 26 floating liquid glass pill container for top bar action button groups:
-// delegates pill rendering, press feedback, and trigger morph scope to `@lg.liquid_pill_group_node` &
-// `@lg.bind_pill_press` / `@lg.bind_pill_press_by`, adding sf-ui's calibrated outside-only
+// delegates pill rendering, press feedback, and trigger morph scope to `@glass.liquid_pill_group_node` &
+// `@glass.bind_pill_press` / `@glass.bind_pill_press_by`, adding sf-ui's calibrated outside-only
 // `glass_control_shadow()`, `MBUI_GLASS=solid` hairline `panel_edge()` fallback, and automatic
 // concentric corner scope (`corner_card_node`).
 
 ///|
-/// Theme-adaptive press overlay ink for controls inside a liquid glass top bar pill: delegates to `@lg.liquid_pill_press_ink()`.
+/// Theme-adaptive press overlay ink for controls inside a liquid glass top bar pill: delegates to `@glass.liquid_pill_press_ink()`.
 pub fn bar_pill_press_ink() -> Int64 {
-  @lg.liquid_pill_press_ink()
+  @glass.liquid_pill_press_ink()
 }
 
 ///|
@@ -16,7 +16,7 @@ pub fn bar_pill_press_ink() -> Int64 {
 /// GPU `spot` specular highlight to the child's center and springs the pill scale via `@motion.backdrop_press_spring`.
 /// No-op outside a pill group.
 pub fn bind_pill_press(child : @view.View) -> Unit {
-  @lg.bind_pill_press(child)
+  @glass.bind_pill_press(child)
 }
 
 ///|
@@ -24,7 +24,7 @@ pub fn bind_pill_press(child : @view.View) -> Unit {
 /// window's maximize button held down as the host says, @ui.window_snap_state), sharing the pill's press count with
 /// any other press bound to it.
 fn bind_pill_press_by(child : @view.View, down : () -> Bool) -> Unit {
-  @lg.bind_pill_press_by(child, down)
+  @glass.bind_pill_press_by(child, down)
 }
 
 ///|
@@ -76,7 +76,7 @@ fn bar_pill_group_with(
   loc~ : SourceLoc,
 ) -> @view.View {
   let r = height / 2.0
-  @lg.liquid_pill_group_node(
+  @glass.liquid_pill_group_node(
     loc~,
     parent,
     fn(g) {

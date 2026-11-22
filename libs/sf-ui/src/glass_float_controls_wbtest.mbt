@@ -174,7 +174,7 @@ test "float_pill_group_node: one capsule of glass_floating() liquid glass round 
       )
       assert_eq((at, t.audit()), (at, []))
       // each pressed alone; pressed down, the capsule lit there and springing, settled again once let go
-      let scope = pill.val.unwrap().lent(@lg.liquid_pill_trigger_lent).unwrap()
+      let scope = pill.val.unwrap().lent(@glass.liquid_pill_trigger_lent).unwrap()
       for i, r in rects {
         let (cx, cy) = (r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
         t.press_at(cx, cy)

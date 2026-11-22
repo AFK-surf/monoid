@@ -65,7 +65,7 @@ pub fn viewer_bar_node(
           viewer_bar_h + top() + 12.0
         }
       }
-      @lg.liquid_scroll_edge_node(
+      @glass.liquid_scroll_edge_node(
         b,
         edge_h,
         edge_h,
@@ -262,8 +262,8 @@ fn bar_words(size : @ui.TextSize, line : @ui.Leading, weight : Int) -> @view.Wor
 }
 
 ///|
-/// Single-layer liquid glass recipe for floating capsules in `viewer_bar_node`: picks `@lg.liquid_viewer_dark_glass`
-/// on dark media grounds (keeping white ink >= 4.5:1) and `@lg.liquid_viewer_clear_glass` on light/paper grounds.
+/// Single-layer liquid glass recipe for floating capsules in `viewer_bar_node`: picks `@glass.liquid_viewer_dark_glass`
+/// on dark media grounds (keeping white ink >= 4.5:1) and `@glass.liquid_viewer_clear_glass` on light/paper grounds.
 fn viewer_bar_pill_glass(k : ViewerInk, spot? : (Double, Double)? = None) -> @ui.Glass {
   // kept in viewer_bar.mbt (outside Track Q2 file boundary)
   ignore(viewer_bar_share)
@@ -272,9 +272,9 @@ fn viewer_bar_pill_glass(k : ViewerInk, spot? : (Double, Double)? = None) -> @ui
   let b = ((k.ground >> 8) & 0xFFL).to_double()
   let lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
   if lum < 0.35 {
-    @lg.liquid_viewer_dark_glass(spot~, solid=k.ground, sharing=true)
+    @glass.liquid_viewer_dark_glass(spot~, solid=k.ground, sharing=true)
   } else {
-    @lg.liquid_viewer_clear_glass(spot~, solid=k.ground, sharing=true)
+    @glass.liquid_viewer_clear_glass(spot~, solid=k.ground, sharing=true)
   }
 }
 
@@ -309,12 +309,12 @@ fn back_node(
     .shrink(Is(1.0))
     .min_width(Is(Some(0.0)))
     |> ignore
-    @lg.liquid_capsule_decorate(
+    @glass.liquid_capsule_decorate(
       v,
       interactive=true,
       glass=fn(spot) { viewer_bar_pill_glass(ink(), spot~) },
       shadow=glass_control_shadow,
-      solid_edge=@lg.liquid_solid_edge,
+      solid_edge=@glass.liquid_solid_edge,
       clips=true,
     )
     .ground(By(fn() { if lit() { ink().hover } else { 0L } }))

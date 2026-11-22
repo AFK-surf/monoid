@@ -9,7 +9,7 @@
 pub fn small_panel_node(p : @view.View) -> @view.View {
   corner_card_node(p, fn() { r_menu }, inset=fn() { panel_pad })
   p.padding(Is((panel_pad, panel_pad, panel_pad, panel_pad))) |> ignore
-  @lg.liquid_panel_surface_decorate(
+  @glass.liquid_panel_surface_decorate(
     p,
     radius=r_menu,
     solid=panel_ground,

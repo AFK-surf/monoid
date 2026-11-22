@@ -1114,7 +1114,7 @@ let current : Ref[Theme] = {
 /// yet: light).
 pub fn set_dark(dark : Bool?) -> Unit {
   dark_set.set(dark)
-  @lg.set_dark(dark)
+  @glass.set_dark(dark)
 }
 
 ///|

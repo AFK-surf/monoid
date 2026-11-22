@@ -12,13 +12,13 @@
 pub fn glass_floating(tint? : Int64, spot? : (Double, Double)? = None) -> @ui.Glass {
   let t = theme()
   let solid = over(t.p.bg, alpha(tint.unwrap_or(t.p.raised), 0.72))
-  @lg.liquid_floating_glass(tint~, solid~, spot~)
+  @glass.liquid_floating_glass(tint~, solid~, spot~)
 }
 
 ///|
 /// Single-layer iOS 27 liquid glass for anchored popovers (`anchored_popover_shell`: menus, panels, picks, hover panels; `small_panel_node`).
 pub fn glass_menu(merge? : Double = 0.0) -> @ui.Glass {
-  let g = @lg.liquid_panel_glass(solid=panel_ground())
+  let g = @glass.liquid_panel_glass(solid=panel_ground())
   if merge > 0.0 {
     { ..g, merge }
   } else {
@@ -39,7 +39,7 @@ fn glass_menu_morph(
   layer? : Int = 0,
   break_gap? : Double = 0.0,
 ) -> @ui.Glass {
-  @lg.liquid_menu_morph_glass(
+  @glass.liquid_menu_morph_glass(
     stage,
     solid=panel_ground(),
     dark=theme().dark,
@@ -53,7 +53,7 @@ fn glass_menu_morph(
 /// Single-layer iOS 27 liquid glass for floating toast capsules (`toaster_node`): light translucent glass with
 /// dark ink in Light mode, dark translucent glass with light ink in Dark mode.
 pub fn glass_toast() -> @ui.Glass {
-  @lg.liquid_toast_glass()
+  @glass.liquid_toast_glass()
 }
 
 ///|
@@ -62,14 +62,14 @@ pub fn glass_toast() -> @ui.Glass {
 /// turning circular discs into colored stickers while keeping crisp 9/12 bezel refraction, specular rim, and legible
 /// `<` / `>` chevrons in both Light and Dark themes.
 pub fn glass_viewer_clear(spot? : (Double, Double)? = None) -> @ui.Glass {
-  @lg.liquid_viewer_clear_glass(spot~, solid=theme().p.canvas)
+  @glass.liquid_viewer_clear_glass(spot~, solid=theme().p.canvas)
 }
 
 ///|
 /// Dark translucent liquid glass for floating white-ink media viewer capsules (`dark_glass` / `viewer_marks_node`):
 /// neutral dark iOS 27 glass with controlled saturation (`0.65`) and 9/12 liquid bevel refraction.
 pub fn glass_viewer_dark(spot? : (Double, Double)? = None) -> @ui.Glass {
-  @lg.liquid_viewer_dark_glass(spot~)
+  @glass.liquid_viewer_dark_glass(spot~)
 }
 
 ///|
@@ -78,7 +78,7 @@ pub fn glass_viewer_dark(spot? : (Double, Double)? = None) -> @ui.Glass {
 /// adaptive color transfer, inner bevel shadow, glint, and 0.75pt external contour); where glass is drawn solid,
 /// its opaque ground.
 pub fn glass_tab_bar(spot? : (Double, Double)? = None, merge? : Double = 0.0) -> @ui.Glass {
-  @lg.liquid_tab_bar_glass(spot~, merge~)
+  @glass.liquid_tab_bar_glass(spot~, merge~)
 }
 
 ///|
@@ -104,13 +104,13 @@ pub fn glass_selection() -> Int64 {
 /// bending less, as small as it is.
 pub fn glass_knob() -> @ui.Glass {
   let t = theme()
-  @lg.liquid_knob_glass(solid=over(t.p.bg, alpha(t.p.raised, 0.72)))
+  @glass.liquid_knob_glass(solid=over(t.p.bg, alpha(t.p.raised, 0.72)))
 }
 
 ///|
 /// Clear lifted liquid glass lens while a tab bar / segmented control thumb is held (iOS 27 clear loupe).
 pub fn glass_tab_lens(press : Double) -> @ui.Glass {
-  @lg.liquid_tab_lens_glass(press, solid=theme().p.raised)
+  @glass.liquid_tab_lens_glass(press, solid=theme().p.raised)
 }
 
 ///|
@@ -136,7 +136,7 @@ pub let sheet_scrim : Int64 = 0x00000047L
 /// Light, `0x202020CC` in Dark, aligned with PR #8057 symmetric density curve; `blur=12`, `bezel=20`,
 /// `refraction=24`). Degrades to opaque `t.p.bg` under `MBUI_GLASS=solid`.
 pub fn glass_sheet() -> @ui.Glass {
-  @lg.liquid_sheet_glass(solid=theme().p.bg)
+  @glass.liquid_sheet_glass(solid=theme().p.bg)
 }
 
 ///|
@@ -147,11 +147,11 @@ pub fn glass_sheet() -> @ui.Glass {
 /// panel a step darker behind the one in use); none (0) is `p.bg`.
 pub fn glass_scroll_edge(ground? : Int64 = 0L) -> @ui.Glass {
   let bg = if ground != 0L { ground } else { theme().p.bg }
-  @lg.liquid_scroll_edge_glass(bg~)
+  @glass.liquid_scroll_edge_glass(bg~)
 }
 
 ///|
-/// Thin `@sf` floating capsule surface decorator delegating to `@lg.liquid_capsule_decorate` with `glass_floating`
+/// Thin `@sf` floating capsule surface decorator delegating to `@glass.liquid_capsule_decorate` with `glass_floating`
 /// optics (supports dynamic `tint`, `extra_blur`, `sharing`, and opt-in `with_edge`/`with_shadow`/`clips`).
 pub fn floating_capsule_decorate(
   v : @view.View,
@@ -162,7 +162,7 @@ pub fn floating_capsule_decorate(
   with_shadow? : Bool = true,
   clips? : Bool = false,
 ) -> @view.View {
-  @lg.liquid_capsule_decorate(
+  @glass.liquid_capsule_decorate(
     v,
     tone=Floating,
     sharing~,
@@ -180,7 +180,7 @@ pub fn floating_capsule_decorate(
     },
     extra_blur?,
     shadow=glass_control_shadow,
-    solid_edge=@lg.liquid_solid_edge,
+    solid_edge=@glass.liquid_solid_edge,
     with_edge~,
     with_shadow~,
     clips~,
@@ -188,7 +188,7 @@ pub fn floating_capsule_decorate(
 }
 
 ///|
-/// Thin `@sf` floating panel surface decorator delegating to `@lg.liquid_panel_surface_decorate` with
+/// Thin `@sf` floating panel surface decorator delegating to `@glass.liquid_panel_surface_decorate` with
 /// `panel_ground()`, `glass_overlay_shadow`, and `overlay_solid_edge`.
 pub fn panel_surface_decorate(
   v : @view.View,
@@ -198,7 +198,7 @@ pub fn panel_surface_decorate(
   active? : () -> Bool = fn() { true },
   clips? : Bool = false,
 ) -> @view.View {
-  @lg.liquid_panel_surface_decorate(
+  @glass.liquid_panel_surface_decorate(
     v,
     radius?,
     solid=match solid {
@@ -214,7 +214,7 @@ pub fn panel_surface_decorate(
 }
 
 ///|
-/// Thin `@sf` search capsule decorator delegating to `@lg.liquid_capsule_decorate` with `search_capsule_glass`,
+/// Thin `@sf` search capsule decorator delegating to `@glass.liquid_capsule_decorate` with `search_capsule_glass`,
 /// `glass_overlay_shadow`, `overlay_solid_edge`, and `active` gating (zero hidden glass when inactive).
 pub fn search_capsule_decorate(
   v : @view.View,
@@ -222,7 +222,7 @@ pub fn search_capsule_decorate(
   solid? : () -> Int64,
   clips? : Bool = false,
 ) -> @view.View {
-  @lg.liquid_capsule_decorate(
+  @glass.liquid_capsule_decorate(
     v,
     tone=Floating,
     sharing=false,
@@ -241,7 +241,7 @@ pub fn search_capsule_decorate(
 
 ///|
 /// Top-edge progressive blur soft scroll-edge backdrop whose ground depends on the fill node (`(@view.View) -> Int64`),
-/// delegating directly to `@lg.liquid_scroll_edge_node`.
+/// delegating directly to `@glass.liquid_scroll_edge_node`.
 #callsite(autofill(loc))
 pub fn top_scroll_edge_by_node(
   parent : @view.View,
@@ -252,7 +252,7 @@ pub fn top_scroll_edge_by_node(
   shield? : Bool = true,
   loc~ : SourceLoc,
 ) -> @view.View {
-  @lg.liquid_scroll_edge_node(
+  @glass.liquid_scroll_edge_node(
     parent,
     base_h,
     fade_h,

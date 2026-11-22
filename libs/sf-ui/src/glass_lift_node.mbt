@@ -19,7 +19,7 @@ pub fn glass_lift_surface(
   },
   loc~ : SourceLoc,
 ) -> Unit {
-  @lg.liquid_lift_shell_decorate(
+  @glass.liquid_lift_shell_decorate(
     v,
     progress,
     flat_ground~,

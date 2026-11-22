@@ -84,14 +84,14 @@ fn step_disc(
     .radius(By(fn() { disc() / 2.0 }))
     .lines_up(Is(Some(Middle)))
     |> ignore
-    @lg.liquid_capsule_decorate(
+    @glass.liquid_capsule_decorate(
       b,
       tone=ViewerClear,
       sharing=false,
       interactive=true,
       solid=fn() { theme().p.canvas },
       shadow=glass_control_shadow,
-      solid_edge=@lg.liquid_solid_edge,
+      solid_edge=@glass.liquid_solid_edge,
       clips=false,
     )
     .ground(By(fn() { if hot() { @ui.tree_theme().color(Hover) } else { 0L } }))

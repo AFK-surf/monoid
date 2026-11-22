@@ -21,7 +21,7 @@ pub fn float_pill_group_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   let r = width / 2.0
-  @lg.liquid_pill_group_node(
+  @glass.liquid_pill_group_node(
     loc~,
     parent,
     fn(g) {

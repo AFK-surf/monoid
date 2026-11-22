@@ -172,7 +172,7 @@ test "bar_pill_group_node menu performs iOS 27.0 LiquidMorphPhysics with upward 
 
   // Three-anchor optical boundary invariant:
   // stage=0.0 == glass_bar_pill(), stage=0.5 == luminous 0x88/blur=5.0/bezel=18/refr=14, stage=1.0 == glass_menu()
-  let pill_gl = @lg.liquid_bar_pill_glass(solid=panel_ground())
+  let pill_gl = @glass.liquid_bar_pill_glass(solid=panel_ground())
   let clear_gl = glass_menu_morph(0.0)
   let mid_gl = glass_menu_morph(0.5)
   let rest_gl = glass_menu()
@@ -497,7 +497,7 @@ test "rapid close and reopen on same pill trigger preserves morph_owner without 
 
 ///|
 test "tall 8-item pill menu clamps mid-open content scale to min(cur_w/w, cur_h/h)" {
-  let f120 = @lg.lm_eval_pill_morph(300.0, 35.0, 74.0, 36.0, 358.0, 184.0, 35.0, 200.0, 390.0, 20.0, 1.0, false, 0.12)
+  let f120 = @glass.lm_eval_pill_morph(300.0, 35.0, 74.0, 36.0, 358.0, 184.0, 35.0, 200.0, 390.0, 20.0, 1.0, false, 0.12)
   let scale_w = f120.cur_w / 200.0
   let scale_h = f120.cur_h / 390.0
   let clamped = dclamp(dmin(scale_w, scale_h), 0.20, 1.0)

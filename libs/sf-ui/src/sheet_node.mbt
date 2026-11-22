@@ -854,7 +854,7 @@ fn sheet_node(
           |> ignore
         }
         ground(fn(g) {
-          @lg.liquid_sheet_surface_decorate(
+          @glass.liquid_sheet_surface_decorate(
             g,
             active=fn() { !vanished() },
             solid=fn() {

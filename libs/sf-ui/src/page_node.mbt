@@ -1948,7 +1948,7 @@ pub fn switch_node(
       }
       turn(to)
     }
-    @lg.liquid_toggle_node(
+    @glass.liquid_toggle_node(
       at,
       on,
       felt,

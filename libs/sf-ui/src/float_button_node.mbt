@@ -34,7 +34,7 @@ pub fn float_button_node(
     @headless.button(made_for=loc, o, label, fn(_) { press() }, disabled=busy.unwrap_or(fn() { false }), fn(b, btn) {
       style_node(b, fn() { float_button_look })
       hover_ground_node(b)
-      let ih = @lg.liquid_press_glass_decorate(
+      let ih = @glass.liquid_press_glass_decorate(
         b,
         tone=Floating,
         sharing=true,

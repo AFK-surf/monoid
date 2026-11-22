@@ -111,7 +111,7 @@ pub fn seg_node(
           }
         }
         let ink = fn() { theme().p.text }
-        let seg = @lg.liquid_segmented_node(
+        let seg = @glass.liquid_segmented_node(
           inner,
           labels,
           chosen,
@@ -242,7 +242,7 @@ fn seg_lens_overlay_node(
   active? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> Unit {
-  @lg.liquid_lens_overlay_node(
+  @glass.liquid_lens_overlay_node(
     parent,
     lens,
     h,
@@ -263,7 +263,7 @@ pub struct SegThumb {
   priv held : @motion.NodeWay
   priv position : @motion.NodeWay
   priv fingered : @signals.Signal[Double?]
-  priv mouse_dd : @lg.DampedDrag
+  priv mouse_dd : @glass.DampedDrag
   priv mouse_active : @signals.Signal[Bool]
 }
 
@@ -284,7 +284,7 @@ pub fn SegThumb::new(owner : @view.View, chosen : () -> Int) -> SegThumb {
     let spring = if fingered.untracked() is Some(_) { @motion.tactile_bounce } else { @motion.snappy_damped }
     position.go(owner, p, spring)
   })
-  let mouse_dd = @lg.DampedDrag::new(init, lo=0.0, hi=1.0, held_scale=1.0 + seg_lens_grow)
+  let mouse_dd = @glass.DampedDrag::new(init, lo=0.0, hi=1.0, held_scale=1.0 + seg_lens_grow)
   mouse_dd.attach(owner)
   { held, position, fingered, mouse_dd, mouse_active }
 }
@@ -916,7 +916,7 @@ pub fn seg_icons_node(
   let pad = segmented_bar_pad
   let high = icon_button_side - 2.0 * pad
   let at = fn() { ways().search_by(fn(w) { w.0 == chosen() }).unwrap_or(0) }
-  let g = @lg.liquid_segmented_node(
+  let g = @glass.liquid_segmented_node(
     parent,
     fn() { ways().map(fn(w) { w.2 }) },
     at,

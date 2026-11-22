@@ -451,13 +451,13 @@ fn tip_look_node(
   )
   .max_width(Is(Some(tip_widest)))
   |> ignore
-  @lg.liquid_tooltip_surface_decorate(
+  @glass.liquid_tooltip_surface_decorate(
     t,
     radius=tip_round,
     active=fn() { @headless.tip_owns(owner) },
     solid=panel_ground,
     shadow=glass_overlay_shadow,
-    solid_edge=@lg.liquid_overlay_solid_edge,
+    solid_edge=@glass.liquid_overlay_solid_edge,
     panel=true,
   )
   // (its ground in first, its words after, as kit's tip_in and pop_out have them (ground_first): the ground the first

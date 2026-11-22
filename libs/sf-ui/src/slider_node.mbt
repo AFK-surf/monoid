@@ -61,7 +61,7 @@ pub fn value_slider_node(
     disabled~,
     value_text=fn(x) { format(x.round().to_int()) },
     fn(v, sl) {
-      let dd = @lg.DampedDrag::new(@signals.untracked(value), lo=min, hi=max, held_scale=1.5)
+      let dd = @glass.DampedDrag::new(@signals.untracked(value), lo=min, hi=max, held_scale=1.5)
       dd.attach(v)
       let no_lens = fn() { v.glass_solid() || @ui.reduced_motion() }
       let lens = fn(n : @view.View) -> Double { if no_lens() { 0.0 } else { dclamp(dd.pressed(n), 0.0, 1.0) } }
@@ -153,7 +153,7 @@ pub fn value_slider_node(
           |> ignore
         })
         // Lazy-mounted clear liquid glass magnifying lens over the knob while held (0 hidden glass & 0 extra nodes at rest; laid == 0)
-        @lg.liquid_lens_overlay_node(
+        @glass.liquid_lens_overlay_node(
           row,
           fn() { lens(row) },
           fn() { vslider_knob_d },

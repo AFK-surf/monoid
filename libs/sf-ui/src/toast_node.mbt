@@ -207,7 +207,7 @@ fn toast_look(
     .padding(By(fn() { (toast_px, toast_action_in, if acting() { toast_action_in } else { toast_px }, toast_action_in) }))
     .max_width(Is(Some(toast_max)))
     |> ignore
-    @lg.liquid_toast_surface_decorate(
+    @glass.liquid_toast_surface_decorate(
       tb,
       radius=toast_r,
       shadow=glass_overlay_shadow,

@@ -289,7 +289,7 @@ test "window_keys_node: pressing minimize, maximize or close, or the host holdin
       let at = "\{name} dark=\{dark}"
       let (t, pill_ref) = window_keys_tester(w, 8.0, whole, dark, false)
       let pill = pill_ref.val.unwrap()
-      let scope = pill.lent(@lg.liquid_pill_trigger_lent).unwrap()
+      let scope = pill.lent(@glass.liquid_pill_trigger_lent).unwrap()
       assert_eq(scope.fx.untracked().0, None)
       for label in ["desktop.menu.minimize", "desktop.window.maximize", "desktop.menu.close"] {
         let (x, y, kw, kh) = window_key_rect(t, label)

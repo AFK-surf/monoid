@@ -11,5 +11,4 @@ warnings = "@a-33-79-29"
 
 import {
   "mbui@0.1.0",
-  "liquid-glass@0.1.0",
 }
