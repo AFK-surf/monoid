@@ -520,7 +520,7 @@ let wide_doing_mark : Double = 14.0
 
 ///|
 /// Unified iOS 27 single-layer liquid glass floating capsule (30pt) for composer-top controls on Medium/Large screens.
-fn wide_glass_capsule(b : @view.View, marked? : () -> Bool = fn() { false }) -> Unit {
+fn wide_glass_capsule(b : @view.View) -> Unit {
   b
   .row(Is(true))
   .min_height(Is(Some(30.0)))
@@ -529,9 +529,7 @@ fn wide_glass_capsule(b : @view.View, marked? : () -> Bool = fn() { false }) -> 
   .lies_along(Is(Middle))
   .glass(By(fn() { Some(@sf.glass_floating().sharing()) }))
   .edge(By(fn() {
-    if marked() {
-      (2.0, @sf.theme().p.accent)
-    } else if b.glass_solid() {
+    if b.glass_solid() {
       (@sf.control_edge_w, @sf.theme().p.line)
     } else {
       (0.0, 0L)
@@ -626,40 +624,43 @@ fn wide_people(
 }
 
 ///|
-/// One of the chat's agents in the bar (agent_tile's): its mark (20), pressed its history's tab opens (in front,
-/// closes); its card as the pointer rests on it; marked among several while its history shows. The chat's first, one
-/// tile with the station it runs on (`station`: its mark, or its name kept short; how it is reached a dot on the
-/// tile's corner); with touch the tile itself the button, held its card and its station's as one.
-fn wide_agent_tile(
+/// One station group of agents above the composer on Medium / Large screens: a single 30pt liquid glass capsule with
+/// Station first (mark + via dot + name), followed by the main divider and all agents on that station separated by
+/// subtle vertical hairlines. On keyboard-and-mouse each segment hovers and activates independently (and the active
+/// side-panel agent highlights its own segment without framing the whole capsule). On touch a single-agent capsule
+/// stays one whole button (tap for history, hold for agent + station cards); a multi-agent capsule makes each agent
+/// segment its own button (tap for history, hold for agent + station cards).
+fn wide_station_group_tile(
   parent : @view.View,
   src : Source,
   r : ChatRef,
-  a : Agent,
-  badge : () -> String,
-  marked : () -> Bool,
-  is_first : Bool,
+  group : @sfpages.StationAgentGroup,
+  badge_of : (Int, String) -> () -> String,
+  marked_of : (String) -> () -> Bool,
   station_now : () -> Station?,
   via : () -> String,
   tips : @sf.TipLayer,
   stint : () -> Int,
 ) -> Unit {
-  let said = fn() { @sf.t("web-pages.chat.historyOf", args=[("agent", a.who)]) }
-  // (of the chat's head alone: sfbase's chat_head_json, told as its agents change, not as a word comes into a message)
-  let badge_said = fn() { text(field(agent_json(@sfbase.chat_head_json(src, r), a.key), "session"), "badgeText") }
-  let toggle = fn() { side_toggle(src, r, a.key) }
-  // (its card, given the hand's card: what is opened from it stands beside it; kept open while that is)
-  let hand : Ref[@sf.HoverHand?] = Ref(None)
-  let held : Ref[() -> Bool] = Ref(fn() { false })
-  let card = fn() {
-    match hand.val {
-      Some(h) => (h.card)()
-      None => None
+  let n = group.agents.length()
+  guard n > 0 else { return }
+  if @sf.tile_whole() && n == 1 {
+    let a = group.agents[0]
+    let said = fn() { @sf.t("web-pages.chat.historyOf", args=[("agent", a.who)]) }
+    let badge = badge_of(0, a.key)
+    let badge_said = fn() { text(field(agent_json(@sfbase.chat_head_json(src, r), a.key), "session"), "badgeText") }
+    let toggle = fn() { side_toggle(src, r, a.key) }
+    let hand : Ref[@sf.HoverHand?] = Ref(None)
+    let held : Ref[() -> Bool] = Ref(fn() { false })
+    let card = fn() {
+      match hand.val {
+        Some(h) => (h.card)()
+        None => None
+      }
     }
-  }
-  if is_first && @sf.tile_whole() {
-    // (with touch the capsule itself is one button: tapped its history's; held, its card and its station's as one)
+    // (with touch a single-agent capsule is one button: tapped its history's; held, its card and its station's as one)
     @sf.action_box_node(parent, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(t) {
-      wide_glass_capsule(t, marked~)
+      wide_glass_capsule(t)
       @sf.hover_ground_node(t)
       hand.val = Some(
         @sf.hover_card_node(
@@ -682,6 +683,27 @@ fn wide_agent_tile(
           pointed=fn() { t.pointed_in() },
         ),
       )
+      t.show(at_once=true, fn() { station_now() is Some(_) }, fn(p) {
+        p.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
+        p.box(fn(sp) {
+          sp
+          .row(Is(true))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .min_height(Is(Some(30.0)))
+          .padding(Is((10.0, 0.0, 8.0, 0.0)))
+          .gap(Is(6.0))
+          .lines_up(Is(Some(Middle)))
+          |> ignore
+          wide_station_inline(sp, station_now, via, stint)
+        })
+        |> ignore
+        p.box(fn(sep) {
+          sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
+          |> ignore
+        })
+        |> ignore
+      })
       t.box(fn(g) {
         g
         .row(Is(true))
@@ -690,114 +712,157 @@ fn wide_agent_tile(
         .min_height(Is(Some(30.0)))
         .lines_up(Is(Some(Middle)))
         .gap(Is(6.0))
-        .padding(By(fn() { if station_now() is Some(_) { (10.0, 0.0, 8.0, 0.0) } else { (10.0, 0.0, 10.0, 0.0) } }))
+        .padding(By(fn() { if station_now() is Some(_) { (8.0, 0.0, 10.0, 0.0) } else { (10.0, 0.0, 10.0, 0.0) } }))
         |> ignore
         wide_agent_inline(g, a, badge, badge_said)
       })
       |> ignore
-      t.show(at_once=true, fn() { station_now() is Some(_) }, fn(p) {
-        p.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
-        p.box(fn(sep) {
-          sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
-          |> ignore
-        })
-        |> ignore
-        p.box(fn(sp) {
-          sp
-          .row(Is(true))
-          .shrink(Is(1.0))
-          .min_width(Is(Some(0.0)))
-          .min_height(Is(Some(30.0)))
-          .padding(Is((8.0, 0.0, 10.0, 0.0)))
-          .gap(Is(6.0))
-          .lines_up(Is(Some(Middle)))
-          |> ignore
-          wide_station_inline(sp, station_now, via, stint)
-        })
-        |> ignore
-      })
     })
     |> ignore
-  } else if is_first {
+  } else {
     let t = parent
-    wide_glass_capsule(t, marked~)
-    let agent = @sf.action_box_node(t, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(g) {
-      g
-      .row(Is(true))
-      .shrink(Is(1.0))
-      .min_width(Is(Some(0.0)))
-      .min_height(Is(Some(30.0)))
-      .lines_up(Is(Some(Middle)))
-      .gap(Is(6.0))
-      .padding(By(fn() { if station_now() is Some(_) { (10.0, 0.0, 8.0, 0.0) } else { (10.0, 0.0, 10.0, 0.0) } }))
-      |> ignore
-      @sf.hover_ground_node(g)
-      hand.val = Some(
-        @sf.hover_card_node(
-          tips,
-          g,
-          fn(c) { held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card) },
-          tile=true,
-          side=Top,
-          held=fn() { (held.val)() },
-          pointed=fn() { g.pointed_in() },
-        ),
-      )
-      wide_agent_inline(g, a, badge, badge_said)
-    })
+    wide_glass_capsule(t)
+    let touch_multi = @sf.tile_whole()
     t.show(at_once=true, fn() { station_now() is Some(_) }, fn(p) {
       p.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
-      p.box(fn(sep) {
-        sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
-        |> ignore
-      })
-      |> ignore
       p.box(fn(sp) {
-        let hot = fn() { @sf.lit_within_node(sp, yields_to=agent) }
         sp
         .row(Is(true))
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
         .min_height(Is(Some(30.0)))
-        .padding(Is((8.0, 0.0, 10.0, 0.0)))
+        .padding(Is((10.0, 0.0, 8.0, 0.0)))
         .gap(Is(6.0))
         .lines_up(Is(Some(Middle)))
         |> ignore
-        @sf.hover_ground_node(sp, lit=Some(hot))
         sp.says(By(fn() { station_now().map(fn(s) { @view.said(Group, label=s.name) }) })) |> ignore
-        @sf.hover_card_node(tips, sp, fn(c) { @settings.station_peek_card_node(c, r.station, stint) }, tile=true, padded=false, side=Top, yields_to=agent, tapped=fn() {
-          @settings.open_station_peek(r.station, from=Node(sp))
-        })
+        if touch_multi {
+          wide_station_inline(sp, station_now, via, stint)
+        } else {
+          let hot = fn() { @sf.lit_within_node(sp) }
+          @sf.hover_ground_node(sp, lit=Some(hot))
+          @sf.hover_card_node(
+            tips,
+            sp,
+            fn(c) { @settings.station_peek_card_node(c, r.station, stint) },
+            tile=true,
+            padded=false,
+            side=Top,
+            press=fn() { @settings.open_station_peek(r.station, from=Node(sp)) },
+            tapped=fn() { @settings.open_station_peek(r.station, from=Node(sp)) },
+          )
+          |> ignore
+          wide_station_inline(sp, station_now, via, stint)
+        }
+      })
+      |> ignore
+      p.box(fn(sep) {
+        sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
         |> ignore
-        wide_station_inline(sp, station_now, via, stint)
       })
       |> ignore
     })
-  } else {
-    @sf.action_box_node(parent, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(t) {
-      wide_glass_capsule(t, marked~)
-      t.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(6.0)) |> ignore
-      @sf.hover_ground_node(t)
-      hand.val = Some(
-        @sf.hover_card_node(
-          tips,
-          t,
-          fn(c) { held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card) },
-          tile=true,
-          side=Top,
-          held=fn() { (held.val)() },
-          pointed=fn() { t.pointed_in() },
-        ),
-      )
-      wide_agent_inline(t, a, badge, badge_said)
-    })
-    |> ignore
+    for i, a in group.agents {
+      if i > 0 {
+        t.box(fn(sep) {
+          sep
+          .width(Is(Some(1.0)))
+          .height(Is(Some(10.0)))
+          .margin(Is((1.0, 0.0, 1.0, 0.0)))
+          .shrink(Is(0.0))
+          .ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.35) }))
+          |> ignore
+        })
+        |> ignore
+      }
+      let said = fn() { @sf.t("web-pages.chat.historyOf", args=[("agent", a.who)]) }
+      let badge = badge_of(i, a.key)
+      let badge_said = fn() { text(field(agent_json(@sfbase.chat_head_json(src, r), a.key), "session"), "badgeText") }
+      let toggle = fn() { side_toggle(src, r, a.key) }
+      let hand : Ref[@sf.HoverHand?] = Ref(None)
+      let held : Ref[() -> Bool] = Ref(fn() { false })
+      let card = fn() {
+        match hand.val {
+          Some(h) => (h.card)()
+          None => None
+        }
+      }
+      let is_last = i == n - 1
+      @sf.action_box_node(t, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(g) {
+        g
+        .row(Is(true))
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
+        .min_height(Is(Some(30.0)))
+        .lines_up(Is(Some(Middle)))
+        .gap(Is(6.0))
+        |> ignore
+        if i == 0 {
+          let pr = if is_last { 10.0 } else { 8.0 }
+          g.padding(By(fn() { if station_now() is Some(_) { (8.0, 0.0, pr, 0.0) } else { (10.0, 0.0, pr, 0.0) } })) |> ignore
+        } else {
+          g.padding(Is((8.0, 0.0, if is_last { 10.0 } else { 8.0 }, 0.0))) |> ignore
+        }
+        if n > 1 {
+          let marked = marked_of(a.key)
+          g.radius(Is(999.0)) |> ignore
+          @sf.hover_ground_node(g, extra=marked)
+          hand.val = Some(
+            @sf.hover_card_node(
+              tips,
+              g,
+              fn(c) {
+                if touch_multi {
+                  c.box(fn(o) {
+                    @sf.style_node(o, fn() { tile_card_agent })
+                    held.val = @sfpages.agent_card_node(o, src, r, a.key, tips, card, across=true)
+                  })
+                  |> ignore
+                  if @signals.untracked(station_now) is Some(_) {
+                    @settings.station_peek_part_node(c, r.station, stint)
+                  }
+                } else {
+                  held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card)
+                }
+              },
+              tile=true,
+              padded=!touch_multi,
+              side=Top,
+              held=fn() { (held.val)() },
+              pointed=fn() { g.pointed_in() },
+            ),
+          )
+          wide_agent_inline(g, a, badge, badge_said, marked=Some(marked))
+        } else {
+          @sf.hover_ground_node(g)
+          hand.val = Some(
+            @sf.hover_card_node(
+              tips,
+              g,
+              fn(c) { held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card) },
+              tile=true,
+              side=Top,
+              held=fn() { (held.val)() },
+              pointed=fn() { g.pointed_in() },
+            ),
+          )
+          wide_agent_inline(g, a, badge, badge_said)
+        }
+      })
+      |> ignore
+    }
   }
 }
 
 ///|
 /// Agent mark (15pt) + badge + readable agent name inside a composer-top liquid glass capsule.
-fn wide_agent_inline(parent : @view.View, a : Agent, badge : () -> String, said : () -> String) -> Unit {
+fn wide_agent_inline(
+  parent : @view.View,
+  a : Agent,
+  badge : () -> String,
+  said : () -> String,
+  marked? : (() -> Bool)? = None,
+) -> Unit {
   parent.box(fn(m) {
     m
     .width(Is(Some(16.0)))
@@ -815,7 +880,14 @@ fn wide_agent_inline(parent : @view.View, a : Agent, badge : () -> String, said 
     w
     .words(Is(a.who))
     .words_look(By(fn() { @ui.style_words(wide_subchats_words) }))
-    .ink(By(fn() { @ui.style_ink(wide_subchats_words) }))
+    .ink(
+      By(fn() {
+        match marked {
+          Some(is_marked) if is_marked() => @sf.theme().p.accent_text
+          _ => @ui.style_ink(wide_subchats_words)
+        }
+      }),
+    )
     .shrink(Is(1.0))
     .min_width(Is(Some(0.0)))
     .cuts(Is(true))
@@ -1036,55 +1108,60 @@ fn wide_composer_bar_node(
   .gap(Is(6.0))
   .padding(Is((2.0, 0.0, 2.0, 6.0)))
   |> ignore
-  // Left group: frequent Agent + Station controls under a single `each` (no idle show/pick slots)
+  // Left group: frequent Station + Agent controls grouped by station under a single `each` (no idle show/pick slots)
   o.each(
     at_once=true,
     fn() {
       let all = agents()
       if all.length() > 0 {
-        all.mapi(fn(i, a) { (i, Some(a), "") })
+        @sfpages.group_agents_by_station(all, r.station).map(fn(g) { (Some(g), "") })
       } else {
         let sk = station_key()
         if view() is Some(_) && station() is Some(_) {
-          [(-1, None, sk)]
+          [(None, sk)]
         } else {
           []
         }
       }
     },
     fn(item) {
-      match item.1 {
-        Some(a) => "a\u{1}\{item.0}\u{1}\{a.key}\u{1}\{a.maker}\u{1}\{a.runtime}\u{1}\{a.who}"
-        None => "s\u{1}\{item.2}"
+      match item.0 {
+        Some(g) => {
+          let ags = g.agents.map(fn(a) { "\{a.key}\u{1}\{a.maker}\u{1}\{a.runtime}\u{1}\{a.who}" }).join("\u{2}")
+          "g\u{1}\{g.station}\u{1}\{ags}"
+        }
+        None => "s\u{1}\{item.1}"
       }
     },
     fn(k, it) {
       // (each capsule giving way along the row, its names cut only where the row has no room for them)
       k.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      let (i, a_opt, _) = it.untracked()
-      match a_opt {
+      let (group_opt, _) = it.untracked()
+      match group_opt {
         None =>
           match @signals.untracked(station) {
             Some(s) => wide_station_tag(k, r.station, s, via, tips, stint)
             None => ()
           }
-        Some(a) => {
-          let key = a.key
-          let badge = fn() {
-            match it.get().1 {
-              Some(x) => x.badge
-              None => ""
+        Some(group) => {
+          let badge_of = fn(idx : Int, key : String) {
+            fn() {
+              match it.get().0 {
+                Some(g) if idx < g.agents.length() && g.agents[idx].key == key => g.agents[idx].badge
+                _ => ""
+              }
             }
           }
-          let marked = fn() {
-            let front = match view() {
-              Some(v) => side_of(v).1
-              None => ""
+          let marked_of = fn(key : String) {
+            fn() {
+              let front = match view() {
+                Some(v) => side_of(v).1
+                None => ""
+              }
+              agents().length() > 1 && front == key
             }
-            agents().length() > 1 && front == key
           }
-          let s_now = if i == 0 { station } else { fn() { None } }
-          wide_agent_tile(k, src, r, a, badge, marked, i == 0, s_now, via, tips, stint)
+          wide_station_group_tile(k, src, r, group, badge_of, marked_of, station, via, tips, stint)
         }
       }
     },

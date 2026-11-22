@@ -1019,86 +1019,114 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
       let sk = station_key()
       let ags = agents()
       if ags.length() > 0 {
-        ags.mapi(fn(i, ag) { (i, Some(ag), if i == 0 { sk } else { "" }) })
+        @sfpages.group_agents_by_station(ags, r.station).map(fn(g) { (Some(g), sk) })
       } else if view() is Some(_) && station_now() is Some(_) {
-        [(-1, None, sk)]
+        [(None, sk)]
       } else {
         []
       }
     },
     fn(p) {
-      match p.1 {
-        Some(ag) => "a\u{1}\{p.0}\u{1}\{ag.key}\u{1}\{ag.maker}\u{1}\{ag.runtime}\u{1}\{ag.who}\u{1}\{p.2}"
-        None => "s\u{1}\{p.2}"
+      match p.0 {
+        Some(g) => {
+          let ags = g.agents.map(fn(ag) { "\{ag.key}\u{1}\{ag.maker}\u{1}\{ag.runtime}\u{1}\{ag.who}" }).join("\u{2}")
+          "g\u{1}\{g.station}\u{1}\{ags}\u{1}\{p.1}"
+        }
+        None => "s\u{1}\{p.1}"
       }
     },
     fn(slot, p) {
-      let (i, ag_opt, _) = p.untracked()
+      let (group_opt, _) = p.untracked()
       let station = @signals.untracked(station_now)
       // (each capsule gives way rather than the strip running past the window's edge: its words leave it, as its row
-      // fits, the agent's name first; its slot a row that fits too, as wide as what the capsule keeps)
+      // fits, the agents' names first; its slot a row that fits too, as wide as what the capsule keeps)
       slot.row(Is(true)).fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      match ag_opt {
+      match group_opt {
         None =>
           match station {
             Some(s) => station_chip_node(slot, r.station, s, via, stint)
             None => ()
           }
-        Some(ag) => {
-          let key = ag.key
-          let label = match station {
-            Some(s) if i == 0 => ag.who + " · " + s.name
-            _ => ag.who
+        Some(group) => {
+          let n = group.agents.length()
+          guard n > 0 else { return }
+          let label = if n == 1 {
+            let ag = group.agents[0]
+            match station {
+              Some(s) => s.name + " · " + ag.who
+              None => ag.who
+            }
+          } else {
+            let names = group.agents.map(fn(ag) { ag.who }).join("、")
+            match station {
+              Some(s) => s.name + " · " + names
+              None => names
+            }
           }
-          @sf.action_box_node(slot, fn() { label }, label_is=label, fn(_) { open_agent(src, r, key) }, fn(k) {
+          let on_press = if n == 1 {
+            let key = group.agents[0].key
+            fn(_) { open_agent(src, r, key) }
+          } else {
+            let st_addr = group.station
+            fn(_) { open_station_agents(src, r, st_addr) }
+          }
+          @sf.action_box_node(slot, fn() { label }, label_is=label, on_press, fn(k) {
             small_glass_capsule(k)
             k.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(6.0)).fits(Is(true)) |> ignore
             @sf.hover_ground_node(k)
-            k.box(fn(m) {
-              m
-              .width(Is(Some(16.0)))
-              .height(Is(Some(16.0)))
-              .lines_up(Is(Some(Middle)))
-              .lies_along(Is(Middle))
-              .shrink(Is(0.0))
-              |> ignore
-              @sf.maker_mark_node(m, ag.maker, ag.runtime, 15.0) |> ignore
-              badge_slot_node(m, badge_of(key), 16.0)
-            })
-            |> ignore
-            k.box(fn(w) {
-              w
-              .words(Is(ag.who))
-              .words_look(By(fn() { @ui.style_words(small_composer_pill_words) }))
-              .ink(By(fn() { @ui.style_ink(small_composer_pill_words) }))
-              .cuts(Is(true))
-              .allow_ellipsis(Is(true))
-              .drops(Is(1))
-              |> ignore
-            })
-            |> ignore
-            if i == 0 {
-              match station {
-                Some(s) => {
-                  k.box(fn(sep) {
-                    sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
-                    |> ignore
-                  })
+            match station {
+              Some(s) => {
+                @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.text }, stint)
+                let has_mark = @sf.has_station_mark(s.emoji, s.icon)
+                k.box(fn(w) {
+                  w
+                  .words(Is(s.name))
+                  .words_look(By(fn() { @ui.style_words(small_composer_pill_words) }))
+                  .ink(By(fn() { @ui.style_ink(small_composer_pill_words) }))
+                  .cuts(Is(true))
+                  .allow_ellipsis(Is(true))
                   |> ignore
-                  @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.text }, stint)
-                  k.box(fn(w) {
-                    w
-                    .words(Is(s.name))
-                    .words_look(By(fn() { @ui.style_words(small_composer_pill_words) }))
-                    .ink(By(fn() { @ui.style_ink(small_composer_pill_words) }))
-                    .cuts(Is(true))
-                    .allow_ellipsis(Is(true))
-                    .drops(Is(2))
-                    |> ignore
-                  })
+                  if has_mark {
+                    w.drops(Is(2)) |> ignore
+                  } else {
+                    w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                  }
+                })
+                |> ignore
+                k.box(fn(sep) {
+                  sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
                   |> ignore
-                }
-                None => ()
+                })
+                |> ignore
+              }
+              None => ()
+            }
+            for ag in group.agents {
+              let key = ag.key
+              k.box(fn(m) {
+                m
+                .width(Is(Some(16.0)))
+                .height(Is(Some(16.0)))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                .shrink(Is(0.0))
+                |> ignore
+                @sf.maker_mark_node(m, ag.maker, ag.runtime, 15.0) |> ignore
+                badge_slot_node(m, badge_of(key), 16.0)
+              })
+              |> ignore
+              if n == 1 {
+                k.box(fn(w) {
+                  w
+                  .words(Is(ag.who))
+                  .words_look(By(fn() { @ui.style_words(small_composer_pill_words) }))
+                  .ink(By(fn() { @ui.style_ink(small_composer_pill_words) }))
+                  .cuts(Is(true))
+                  .allow_ellipsis(Is(true))
+                  .drops(Is(1))
+                  |> ignore
+                })
+                |> ignore
               }
             }
           })

@@ -237,7 +237,7 @@ fn wide_bar_large(calls : Array[Made]) -> Array[(String, () -> @ui.Tester)] {
       "HOVER-PART",
       fn() {
         let t = wide_bar_at(calls)
-        wide_bar_point(t, suffix="的执行历史", right=8.0)
+        wide_bar_point(t, words="Willow")
         t
       },
     ),
@@ -743,7 +743,7 @@ test "大屏, 中屏: the agent and station halves of the composer-top capsule l
       _ => fail("\{win.0}: no station's half")
     }
     let y = agent.1 + agent.3 / 2.0
-    assert_true(station.0 >= agent.0 + agent.2 - 1.0 && station.0 <= agent.0 + agent.2 + 4.0, msg="\{win.0}: \{Repr(agent)} \{Repr(station)}")
+    assert_true(agent.0 >= station.0 + station.2 - 1.0 && agent.0 <= station.0 + station.2 + 4.0, msg="\{win.0}: \{Repr(station)} \{Repr(agent)}")
     let on_agent = agent.0 + agent.2 / 2.0
     let on_station = station.0 + station.2 / 2.0
     t.move_to(on_agent, y)
@@ -1370,4 +1370,103 @@ test "大屏: the agent's card over the capsule, its context's menu open: a pres
   assert_false(@sf.presenting(), msg="the ask closed")
   assert_eq(t.audit(), before)
   @sf.presenters_reset()
+}
+
+///|
+test "大屏, 中屏: 多模型按 station 分组合并成一颗胶囊，Station 在最左侧，悬停各自独立、点击切换对应模型且仅选中段高亮、无外框蓝边" {
+  for win in wide_bar_windows {
+    // 1) Single agent: Station strictly left of Agent0
+    let calls1 : Array[Made] = []
+    let t1 = wide_bar_at(calls1, w=win.1)
+    let st1 = match t1.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }) {
+      [g, ..] => g.rect
+      _ => fail("\{win.0} single: no station")
+    }
+    let ag1 = match t1.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 }) {
+      [b, ..] => b.rect
+      _ => fail("\{win.0} single: no agent")
+    }
+    assert_true(st1.0 + st1.2 <= ag1.0 + 2.0, msg="\{win.0} single: station left of agent: \{Repr(st1)} \{Repr(ag1)}")
+
+    // 2) Multi-agent (2 agents): single merged capsule, Station < Agent0 < Agent1, independent hover & click
+    let calls2 : Array[Made] = []
+    let t2 = wide_bar_at(calls2, w=win.1, over=wide_bar_agents(2))
+    let sts = t2.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 })
+    assert_eq(sts.length(), 1, msg="\{win.0} 2-agents: one station group")
+    let st = sts[0].rect
+    let ags = t2.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 })
+    assert_eq(ags.length(), 2, msg="\{win.0} 2-agents: two agent segments")
+    let a0 = ags[0].rect
+    let a1 = ags[1].rect
+    assert_true(st.0 + st.2 <= a0.0 + 2.0 && a0.0 - (st.0 + st.2) <= 3.0, msg="\{win.0}: station joined left of a0: \{Repr(st)} \{Repr(a0)}")
+    assert_true(a0.0 + a0.2 <= a1.0 + 2.0 && a1.0 - (a0.0 + a0.2) <= 3.0, msg="\{win.0}: a0 joined left of a1 in one capsule: \{Repr(a0)} \{Repr(a1)}")
+    let y = st.1 + st.3 / 2.0
+    // Hover Station -> only Station lit + Station card
+    t2.move_to(st.0 + st.2 / 2.0, y)
+    t2.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+    assert_true(wide_bar_lit(t2, st), msg="\{win.0}: station lit")
+    assert_false(wide_bar_lit(t2, a0), msg="\{win.0}: a0 not lit when hovering station")
+    assert_false(wide_bar_lit(t2, a1), msg="\{win.0}: a1 not lit when hovering station")
+    assert_true(wide_bar_card_under(t2, st), msg="\{win.0}: station card")
+    // Hover Agent0 -> only Agent0 lit + Agent0 card
+    t2.move_to(a0.0 + a0.2 / 2.0, y)
+    t2.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+    assert_false(wide_bar_lit(t2, st), msg="\{win.0}: station not lit when hovering a0")
+    assert_true(wide_bar_lit(t2, a0), msg="\{win.0}: a0 lit")
+    assert_false(wide_bar_lit(t2, a1), msg="\{win.0}: a1 not lit when hovering a0")
+    assert_true(wide_bar_card_under(t2, a0), msg="\{win.0}: a0 card")
+    // Hover Agent1 -> only Agent1 lit + Agent1 card
+    t2.move_to(a1.0 + a1.2 / 2.0, y)
+    t2.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+    assert_false(wide_bar_lit(t2, st), msg="\{win.0}: station not lit when hovering a1")
+    assert_false(wide_bar_lit(t2, a0), msg="\{win.0}: a0 not lit when hovering a1")
+    assert_true(wide_bar_lit(t2, a1), msg="\{win.0}: a1 lit")
+    assert_true(wide_bar_card_under(t2, a1), msg="\{win.0}: a1 card")
+    // Click Agent0 and Agent1 -> chat.tabs.open with respective keys
+    wide_bar_tap(t2, a0)
+    wide_bar_tap(t2, a1)
+    let opened_tabs = calls2.filter(fn(c) { c.name == "chat.tabs.open" }).map(fn(c) { text(Some(c.params), "tab") })
+    assert_true(opened_tabs.contains("s-c1") && opened_tabs.contains("s-x1"), msg="\{win.0}: opened both agents: \{Repr(opened_tabs)}")
+    // Click Station -> opens station peek
+    @sf.presenters_reset()
+    wide_bar_tap(t2, st)
+    assert_true(@sf.presenting(), msg="\{win.0}: station tap opens peek")
+    t2.key(@ui.key_escape)
+    t2.run_for(@ui.move_most_ms)
+
+    // 3) Side panel active on Agent1: only Agent1 segment is marked/lit
+    let calls3 : Array[Made] = []
+    let side_a1 = wide_bar_both(
+      wide_bar_agents(2),
+      wide_bar_chat_field("tabs", fn(_) { { "open": ["s-x1"], "shown": "s-x1" } }),
+    )
+    let t3 = wide_bar_at(calls3, w=win.1, over=side_a1)
+    let st3 = t3.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 })[0].rect
+    let ags3 = t3.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 })
+    assert_eq(ags3.length(), 2, msg="\{win.0} marked: two agents")
+    assert_false(wide_bar_lit(t3, st3), msg="\{win.0} marked: station not lit")
+    assert_false(wide_bar_lit(t3, ags3[0].rect), msg="\{win.0} marked: a0 not lit")
+    assert_true(wide_bar_lit(t3, ags3[1].rect), msg="\{win.0} marked: a1 lit")
+    assert_eq(t3.audit().filter(fn(f) { f.contains("chat_bar_wide_node") }), [], msg=win.0)
+  }
+}
+
+///|
+test "大屏窄窗(860)与中屏窄窗(600): 3 模型 + 服务按钮 + 子会话下，合并胶囊不越过右侧按钮与窗口边界，零 audit 告警" {
+  for win in [("大屏", 860.0), ("中屏", 600.0)] {
+    let calls : Array[Made] = []
+    let over = wide_bar_both(wide_bar_both(wide_bar_agents(3), wide_bar_jobs("")), bar_leads_one())
+    let t = wide_bar_at(calls, w=win.1, over~)
+    let sts = t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 })
+    let ags = t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 })
+    let services = t.all(Button).filter(fn(b) { b.label == @sf.t("web-pages.chat.services") && b.rect.1 > 400.0 })
+    assert_eq(sts.length(), 1, msg=win.0)
+    assert_eq(ags.length(), 3, msg=win.0)
+    guard services is [s, ..] else { fail("\{win.0}: no services button") }
+    assert_true(sts[0].rect.0 < ags[0].rect.0 && ags[0].rect.0 < ags[1].rect.0 && ags[1].rect.0 < ags[2].rect.0, msg=win.0)
+    let right_most = ags[2].rect.0 + ags[2].rect.2
+    assert_true(right_most <= s.rect.0, msg="\{win.0}: merged capsule before services: \{right_most} vs \{s.rect.0}")
+    assert_true(s.rect.0 + s.rect.2 <= win.1, msg="\{win.0}: services in window: \{Repr(s.rect)}")
+    assert_eq(t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("agent_badge_node") }), [], msg=win.0)
+  }
 }

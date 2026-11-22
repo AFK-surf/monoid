@@ -1298,6 +1298,69 @@ fn open_agent(src : Source, r : ChatRef, key : String) -> Unit {
   @sf.panel_nodes("", from=Unanchored, heads_itself=true, live=fn() { ("", "", "") }, fn(v, close) { agent_node(v, src, r, key, close) })
 }
 
+///|
+/// Bottom sheet listing a station entry and all agents running on it in this chat (opened when tapping a multi-agent
+/// merged capsule above the composer on Small screens).
+fn open_station_agents(src : Source, r : ChatRef, station_addr : String) -> Unit {
+  let addr = if station_addr != "" { station_addr } else { r.station }
+  @sf.panel_nodes(tr("android-chat.agent.station"), from=Unanchored, fn(v, close) { station_agents_node(v, src, r, addr, close) })
+}
+
+///|
+/// Body of `open_station_agents`: a station card leading to `open_station_peek`, followed by a card listing each agent
+/// on that station via `info_agent_row_node` leading to `open_agent`.
+fn station_agents_node(v : @view.View, src : Source, r : ChatRef, addr : String, close : () -> Unit) -> Unit {
+  let chat = fn() { @sfbase.chat_head_json(src, r) }
+  let agents = fn() { items(chat(), "agents") }
+  let station = fn() { station_marks(src, @sfbase.workspace_of(addr)).iter().find_first(fn(st) { st.address == addr }) }
+  let agent_key = fn(a : Json) { text(field(Some(a), "session"), "key") }
+  v.box(fn(col) {
+    @sf.style_node(col, fn() { title_row_whole })
+    col.pick(fn() { station().map(fn(st) { (st.address, st.name, st.emoji, st.icon) }) }, fn(p, said) {
+      guard said is Some((address, name, emoji, icon)) else { return }
+      @sf.quiet_card_node(p, fn(k) {
+        @sf.quiet_row_node(
+          k,
+          fn() { name },
+          fn(row) {
+            if @sf.has_station_mark(emoji, icon) {
+              @sf.station_mark_node(row, fn() { emoji }, fn() { icon }, agent_row_station_mark, fn() { @sf.theme().p.text }, fn() {
+                0
+              })
+            }
+            row.box(fn(w) {
+              @sf.style_node(w, fn() { info_fill }, in_row=true)
+              @sf.words_node(w, fn() { name }, fn() { info_words }) |> ignore
+            })
+            |> ignore
+            @sf.row_chevron_node(row)
+          },
+          press=fn() {
+            close()
+            @settings.open_station_peek(address, from=Unanchored)
+          },
+        )
+        |> ignore
+      })
+    })
+    col.show(fn() { agents().length() > 0 }, fn(p) {
+      info_gap_node(p, fn() { station() is Some(_) })
+      @sf.quiet_card_node(p, fn(k) {
+        let by_key = k.keyed_by(agents, agent_key)
+        k.each(fn() { by_key.keys() }, fn(key) { key }, fn(row, key) {
+          let key = key.untracked()
+          info_agent_row_node(row, src, fn() { by_key.get(key) }, fn() {
+            close()
+            open_agent(src, r, key)
+          })
+        })
+      })
+    })
+    col.box(fn(f) { @sf.style_node(f, fn() { @sf.panel_card_last_node(f) }) }) |> ignore
+  })
+  |> ignore
+}
+
 // ── jobs ─────────────────────────────────────────
 
 ///|

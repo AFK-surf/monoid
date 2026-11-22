@@ -439,13 +439,14 @@ test "小屏输入框上方胶囊：station 有图标（glyph、emoji，1.0x 与
         }
         guard found is [whole, ..] else { fail("\{msg}: no capsule") }
         guard bar_words_in(t, "Willow", whole) is Some(name) else { fail("\{msg}: no name in \{Repr(whole)}") }
-        // (the station's part of it: from past the agent's name (its middle 20 on, about its end) on, or the whole tag)
+        // (the station's part of it: from the capsule's start to past the station's name, before the agent's mark)
         let cap = if alone {
           whole
         } else {
           guard bar_words_in(t, "Claude", whole) is Some(agent) else { fail("\{msg}: no agent's name") }
-          let from = agent.0 + 20.0
-          (from, whole.1, whole.0 + whole.2 - from, whole.3)
+          assert_true(name.0 < agent.0, msg="\{msg}: station left of agent: \{Repr(name)} \{Repr(agent)}")
+          let to = name.0 + 24.0
+          (whole.0, whole.1, to - whole.0, whole.3)
         }
         for v in ["direct", "relay", "offline", "", "direct"] {
           via.set(v)
@@ -681,4 +682,96 @@ test "小屏悬浮液态玻璃底抽屉（+ 附件）：390x844 中文对称内�
   assert_eq(tn.squeeze_faults(), [], msg="zh 320 squeeze_faults: \{Repr(tn.squeeze_faults())}")
   assert_eq(tn.corner_faults(), [], msg="zh 320 corner_faults: \{Repr(tn.corner_faults())}")
   assert_eq(tn.audit(), [], msg="zh 320 audit: \{Repr(tn.audit())}")
+}
+
+///|
+test "小屏输入框上方合并胶囊：单模型与多模型（390 与 320 宽）只渲染一颗合并胶囊且 Station 在最左，390 宽多模型+后台任务下站名完整不截断，点击多模型胶囊弹出 station 抽屉并可进入指定模型详情，零 audit 与触控告警" {
+  let station = "Office-Host-2"
+  let two_agents = fn(n : String, tp : Topic) -> Topic {
+    let tp = bar_station_named(station)(n, tp)
+    guard n == "chat" && tp.value is Some(Object(m)) else { return tp }
+    let o = m.copy()
+    o["agents"] = Json::array([
+      {
+        "session": {
+          "key": "s-c1",
+          "runtime": "agy",
+          "maker": { "id": "google", "name": "Google" },
+          "agentText": "Gemini 4 Neon",
+          "statusText": "做完了",
+          "tone": "green",
+        },
+        "status": "idle",
+      },
+      {
+        "session": {
+          "key": "s-c2",
+          "runtime": "claude",
+          "maker": { "id": "anthropic", "name": "Anthropic" },
+          "agentText": "Opus 5.5",
+          "statusText": "空闲",
+          "tone": "neutral",
+        },
+        "status": "idle",
+      },
+    ])
+    { ..tp, value: Some(Json::object(o)) }
+  }
+  // 1) 390 wide with 2 agents + jobs: single merged capsule, Office-Host-2 complete, tap opens station_agents sheet
+  let (t, _) = chat_bar_node_tester("整理发布清单", has_jobs=true, over=two_agents, w=390.0)
+  let caps = t.all(Button).filter(fn(b) { b.rect.1 > 400.0 && b.label.contains(station) })
+  assert_eq(caps.length(), 1, msg="390 multi-agent: single merged capsule: \{Repr(t.all(Button).filter(fn(b) { b.rect.1 > 400.0 }))}")
+  assert_true(caps[0].label.contains("Gemini 4 Neon") && caps[0].label.contains("Opus 5.5"), msg="merged label: \{caps[0].label}")
+  assert_eq(t.lines_of(station), [station], msg="390 multi-agent: station name complete without truncation")
+  assert_true(caps[0].rect.2 >= 140.0, msg="390 multi-agent: merged capsule not crushed: \{Repr(caps[0].rect)}")
+  assert_true(
+    bar_words_in(t, "Gemini 4 Neon", caps[0].rect) is None && bar_words_in(t, "Opus 5.5", caps[0].rect) is None,
+    msg="390 multi-agent: symmetric icon-only agent group without asymmetric partial agent names",
+  )
+  assert_eq(t.audit().filter(fn(f) { f.contains("chat_bar_node") || f.contains("agent_badge_node") || f.contains("room") }), [], msg="390 multi-agent audit")
+  // Tap merged capsule -> opens station_agents sheet with Station entry and both agent rows
+  @sf.presenters_reset()
+  let (cx, cy, cw, ch) = caps[0].rect
+  t.tap(cx + cw / 2.0, cy + ch / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sf.presenting(), msg="tapping merged capsule opens sheet")
+  assert_true(t.find("Gemini 4 Neon") is Some(_), msg="sheet lists first agent")
+  guard t.find("Opus 5.5") is Some((ag2_x, ag2_y)) else { fail("sheet lists second agent") }
+  assert_eq(t.audit().filter(fn(f) { f.contains("sheets") || f.contains("room") }), [], msg="station_agents sheet audit")
+  // Tap second agent row -> opens open_agent sheet for Opus 5.5
+  t.tap(ag2_x, ag2_y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sf.presenting(), msg="agent detail sheet open")
+  assert_true(t.find("Opus 5.5") is Some(_), msg="agent detail sheet shows Opus 5.5")
+  assert_true(t.find(tr("android-chat.agent.history")) is Some(_), msg="agent detail sheet shows history row")
+
+  // 1b) 320 wide: station name still complete and capsule keeps symmetric icon-only agents
+  let (t_tight, _) = chat_bar_node_tester("整理发布清单", has_jobs=true, over=two_agents, w=320.0)
+  let caps_tight = t_tight.all(Button).filter(fn(b) { b.rect.1 > 400.0 && b.label.contains(station) })
+  assert_eq(caps_tight.length(), 1, msg="320 multi-agent: single merged capsule")
+  assert_eq(t_tight.lines_of(station), [station], msg="320 multi-agent: station name still complete")
+  assert_true(caps_tight[0].rect.2 >= 140.0, msg="320 multi-agent: capsule keeps station + both icons: \{Repr(caps_tight[0].rect)}")
+  assert_true(
+    bar_words_in(t_tight, "Gemini 4 Neon", caps_tight[0].rect) is None &&
+    bar_words_in(t_tight, "Opus 5.5", caps_tight[0].rect) is None,
+    msg="320 multi-agent: symmetric icon-only agent group",
+  )
+
+  // 2) 320 wide + 1.3x font scale + station without icon/via: zero audit/room faults
+  let via_empty = @signals.signal("")
+  let bare_two = fn(n : String, tp : Topic) -> Topic {
+    bar_station_as("", "", via_empty)(n, two_agents(n, tp))
+  }
+  for w in [390.0, 320.0] {
+    for scale in [1.0, 1.3] {
+      let (t2, _) = chat_bar_node_tester("整理发布清单", has_jobs=true, over=bare_two, w~, font_scale=scale)
+      let caps2 = t2.all(Button).filter(fn(b) { b.rect.1 > 400.0 && b.label.contains(station) })
+      assert_eq(caps2.length(), 1, msg="w=\{w} scale=\{scale}: single merged capsule")
+      assert_eq(
+        t2.audit().filter(fn(f) { f.contains("chat_bar_node") || f.contains("agent_badge_node") || f.contains("room") }),
+        [],
+        msg="w=\{w} scale=\{scale} audit",
+      )
+    }
+  }
 }

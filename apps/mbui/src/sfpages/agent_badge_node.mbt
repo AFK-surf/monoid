@@ -1,6 +1,24 @@
 // The badge at the corner of an agent's mark as nodes (agent_mark.mbt's agent_badge), where a chat's bar draws it.
 
 ///|
+/// Agents of a chat grouped by the station they run on, preserving order of appearance.
+#derive(Eq)
+pub(all) struct StationAgentGroup {
+  station : String
+  agents : Array[@sfbase.Agent]
+}
+
+///|
+/// Groups `agents` by their station (`default_station` while `Agent` has no per-agent station field).
+/// Returns an empty array when `agents` is empty so callers render the standalone station capsule.
+pub fn group_agents_by_station(agents : Array[@sfbase.Agent], default_station : String) -> Array[StationAgentGroup] {
+  if agents.length() == 0 {
+    return []
+  }
+  [{ station: default_station, agents }]
+}
+
+///|
 /// The badge at the corner of an agent's mark `side` across (sfpages' agent_badge, as nodes): a dot ringed in the
 /// page's ground (or `ground`: what the mark stands on, as agent_badge's), blue waiting on a person, red failed; yellow
 /// spokes at work. A chat's bar's on every screen (小屏's chat_bar_node, 中屏's and 大屏's chat_bar_wide_node), a chat's

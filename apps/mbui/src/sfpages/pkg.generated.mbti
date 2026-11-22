@@ -247,6 +247,8 @@ pub let fx_policy_up : @ref.Ref[String]
 
 pub let fx_vault_add_up : @ref.Ref[Bool]
 
+pub fn group_agents_by_station(Array[@sfbase.Agent], String) -> Array[StationAgentGroup]
+
 pub fn here_of(@sfbase.ChatRef, @sfbase.ChatView, String, @sfbase.Turns, @sfbase.Emits, @sfbase.SendFlight?, @settings.Core, inline? : Bool, gutter? : Double) -> MessageHere
 
 pub fn history_focus(String, String, Int32) -> Unit
@@ -885,6 +887,11 @@ pub(all) struct SettingsRow {
 }
 
 type SrCover
+
+pub(all) struct StationAgentGroup {
+  station : String
+  agents : Array[@sfbase.Agent]
+} derive(Eq)
 
 // Type aliases
 
