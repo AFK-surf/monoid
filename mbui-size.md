@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4f0b0d29b](https://github.com/AFK-surf/monoid/commit/4f0b0d29bc4e0be898bbbc740f211c3b2b195ece) feat(liquid-glass): add overlay, drawer, and morph | 2.7 | 3.63 | 14.7 | 36.79 | 56.05 | 32.24 | 65.34 | 99.34 | 122.78 |
 | [c2a94eb4a](https://github.com/AFK-surf/monoid/commit/c2a94eb4a98da030645237dd6f56d5fe51faa614) perf(sf-ui): mount the offers overlay only when it | 2.7 | 3.63 | 14.7 | 36.79 | 56.05 | 32.24 | 65.34 | 99.27 | 124.04 |
 | [05e4455a8](https://github.com/AFK-surf/monoid/commit/05e4455a883e2eec552185a7647e3a0603539908) perf(mbui): fix rotated glass cache invalidation a | 2.7 | 3.63 | 14.7 | 36.8 | 56.05 | 32.24 | 65.34 | 99.11 | 124.3 |
 | [54143d819](https://github.com/AFK-surf/monoid/commit/54143d8197007801c1b85fa22acfe3cb341e1f00) fix(mbui): keep frequent model names readable (#81 | 2.7 | 3.63 | 14.7 | 36.8 | 56.04 | 32.24 | 65.34 | 99.21 | 118.59 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5dd4241db](https://github.com/AFK-surf/monoid/commit/5dd4241dbe87bc8d1642e44008795082d3210df0) fix(mbui): smooth Wave 7 adaptive liquid glass tra | 2.66 | 3.59 | 14.56 | 36.65 | 55.64 | 32.09 | 64.98 | 99.06 | 118.66 |
 | [7351c0c94](https://github.com/AFK-surf/monoid/commit/7351c0c940036cb5d446b5ef5d33523ed51b3d2b) fix(mbui): exempt pinned list foot from Android ov | 2.66 | 3.59 | 14.56 | 36.64 | 55.63 | 32.09 | 64.95 | 98.9 | 111.12 |
 | [77b54e068](https://github.com/AFK-surf/monoid/commit/77b54e068e822ba2f99ea47fa0e30694a51e1995) feat(mbui): group composer-top agents by station w | 2.67 | 3.59 | 14.56 | 36.64 | 55.63 | 32.09 | 64.95 | 98.76 | 129.99 |
-| [e26266e53](https://github.com/AFK-surf/monoid/commit/e26266e53c18d05a7df86f83486618fac28911a7) feat(mbui): polish text field selection handles, l | 2.66 | 3.59 | 14.56 | 36.64 | 55.61 | 32.09 | 64.93 | 98.85 | 121.55 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4f0b0d29b](https://github.com/AFK-surf/monoid/commit/4f0b0d29bc4e0be898bbbc740f211c3b2b195ece) feat(liquid-glass): add overlay, drawer, and morph | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [c2a94eb4a](https://github.com/AFK-surf/monoid/commit/c2a94eb4a98da030645237dd6f56d5fe51faa614) perf(sf-ui): mount the offers overlay only when it | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [05e4455a8](https://github.com/AFK-surf/monoid/commit/05e4455a883e2eec552185a7647e3a0603539908) perf(mbui): fix rotated glass cache invalidation a | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [54143d819](https://github.com/AFK-surf/monoid/commit/54143d8197007801c1b85fa22acfe3cb341e1f00) fix(mbui): keep frequent model names readable (#81 | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.56 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5dd4241db](https://github.com/AFK-surf/monoid/commit/5dd4241dbe87bc8d1642e44008795082d3210df0) fix(mbui): smooth Wave 7 adaptive liquid glass tra | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.63 |
 | [7351c0c94](https://github.com/AFK-surf/monoid/commit/7351c0c940036cb5d446b5ef5d33523ed51b3d2b) fix(mbui): exempt pinned list foot from Android ov | 0.47 | 0.62 | 2.39 | 3.44 | 5.65 | 1.73 | 4.68 | 54.38 |
 | [77b54e068](https://github.com/AFK-surf/monoid/commit/77b54e068e822ba2f99ea47fa0e30694a51e1995) feat(mbui): group composer-top agents by station w | 0.47 | 0.62 | 2.39 | 3.44 | 5.65 | 1.73 | 4.68 | 54.48 |
-| [e26266e53](https://github.com/AFK-surf/monoid/commit/e26266e53c18d05a7df86f83486618fac28911a7) feat(mbui): polish text field selection handles, l | 0.47 | 0.62 | 2.39 | 3.44 | 5.65 | 1.73 | 4.68 | 54.48 |
