@@ -775,6 +775,7 @@ test "Wave 20 Phase 1A: liquid_toggle_node zero-relayout drag, lazy lens (0 hidd
   }
   let laid_delta = tree.work().laid - laid0
   t.run_for(springs_out)
+  let dragged_on = on.get()
   let settled_glass = t.drawn_glass().length()
   // Solid guard prevents glass lens even while held
   @ui.set_glass_solid(Some(true))
@@ -785,13 +786,13 @@ test "Wave 20 Phase 1A: liquid_toggle_node zero-relayout drag, lazy lens (0 hidd
   @ui.set_glass_solid(None)
   t.run_for(springs_out)
   assert_eq(
-    ((tr.2, tr.3), rest_glass, held_glass, laid_delta, settled_glass, solid_held_glass, on.get()),
-    ((52.0, 24.0), 0, 1, 0, 0, 0, false),
+    ((tr.2, tr.3), rest_glass, held_glass, laid_delta, dragged_on, settled_glass, solid_held_glass, on.get()),
+    ((52.0, 24.0), 0, 1, 0, true, 0, 0, false),
   )
 }
 
 ///|
-test "Wave 20 Phase 1A: liquid_slider_node discrete stops snap, adaptive thumb_label, value_bubble and zero hidden glass at rest" {
+test "Wave 20 Phase 1A: liquid_slider_node discrete stops snap, live drag preview, adaptive thumb_label, value_bubble and zero hidden glass at rest" {
   let val = @signals.signal(0.0)
   let names = ["Low", "Medium", "High", "Max"]
   let t = lg_case(fn(p) {
@@ -805,8 +806,8 @@ test "Wave 20 Phase 1A: liquid_slider_node discrete stops snap, adaptive thumb_l
         least=0.0,
         most=3.0,
         stops=4,
-        thumb_label=fn() { names[clamp(val.get().round(), 0.0, 3.0).to_int()] },
-        value_bubble=Some(fn() { "\{val.get().round().to_int()}/3" }),
+        thumb_label=fn(v) { names[clamp(v.round(), 0.0, 3.0).to_int()] },
+        value_bubble=Some(fn(v) { "\{v.round().to_int()}/3" }),
       )
       |> ignore
     })
@@ -816,17 +817,23 @@ test "Wave 20 Phase 1A: liquid_slider_node discrete stops snap, adaptive thumb_l
   assert_no_nested_glass(t, "stops slider at rest")
   let sr = t.get(Slider, label="Effort").rect
   let sy = sr.1 + sr.3 / 2.0
-  // Drag from stop 0 toward ~68% (near stop 2 = "High") and release -> snaps to exact stop 2.0
+  // Drag from stop 0 toward ~68% (near stop 2 = "High") and check live preview BEFORE release
   t.touch(0, sr.0 + 12.0, sy)
   t.run_for(a_frame)
   let held_glass = t.drawn_glass().length()
   t.touch(1, sr.0 + sr.2 * 0.68, sy)
   t.run_for(a_frame)
+  let mid_words = t.words_said()
+  let live_preview_ok = (
+    mid_words.iter().any(fn(w) { w.0 == "High" }),
+    mid_words.iter().any(fn(w) { w.0 == "2/3" }),
+    val.get() == 0.0,
+  )
   t.touch(2, sr.0 + sr.2 * 0.68, sy)
   t.run_for(springs_out)
   let snapped = val.get()
   let after_glass = t.drawn_glass().length()
-  assert_eq((rest_glass, held_glass, snapped, after_glass, t.audit()), (0, 1, 2.0, 0, []))
+  assert_eq((rest_glass, held_glass, live_preview_ok, snapped, after_glass, t.audit()), (0, 1, (true, true, true), 2.0, 0, []))
 }
 
 ///|

@@ -70,8 +70,8 @@ pub fn liquid_slider_node(
   track_color? : () -> Int64,
   fill_color? : () -> Int64,
   stops? : Int = 0,
-  thumb_label? : () -> String,
-  value_bubble? : (() -> String)? = None,
+  thumb_label? : (Double) -> String,
+  value_bubble? : ((Double) -> String)? = None,
   drag? : DampedDrag,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -114,14 +114,36 @@ pub fn liquid_slider_node(
   let last_x = Ref(0.0)
   let raw_drag_val = Ref(@signals.untracked(value))
   let felt_stop = Ref(stop_index_of(@signals.untracked(value)))
+  let live_stop : @signals.Signal[Int?] = @signals.signal(None)
+  let live_val = fn() -> Double {
+    if has_stops {
+      match live_stop.get() {
+        Some(i) => value_of_stop(i)
+        None => value()
+      }
+    } else {
+      value()
+    }
+  }
   let hand = fn(d : @view.Drag) {
     if disabled() || d.w <= 0.0 {
       return
     }
     match d.kind {
       Down => {
-        let tx = slider_thumb_x_for(d.w, thumb_w_px, (dd.target() - least) / span, has_label)
-        let hit_thumb = d.x >= tx && d.x <= tx + thumb_w_px
+        let cur_tw = match thumb_label {
+          Some(lbl_fn) =>
+            dmin(
+              d.w,
+              dmax(
+                thumb_w_px,
+                @ui.text_advance(lbl_fn(@signals.untracked(value)), size=ctrl_type_label, weight=weight_medium) + 20.0,
+              ),
+            )
+          None => thumb_w_px
+        }
+        let tx = slider_thumb_x_for(d.w, cur_tw, (dd.target() - least) / span, has_label)
+        let hit_thumb = d.x >= tx && d.x <= tx + cur_tw
         on_thumb.val = true
         did_drag.val = false
         last_x.val = d.wx
@@ -135,6 +157,7 @@ pub fn liquid_slider_node(
           raw_drag_val.val = raw
           let (nearest, leaned) = lean_value_for(raw)
           felt_stop.val = nearest
+          live_stop.set(Some(nearest))
           if !hit_thumb {
             dd.update_value(leaned)
             change(value_of_stop(nearest))
@@ -157,6 +180,7 @@ pub fn liquid_slider_node(
             let (nearest, leaned) = lean_value_for(raw_drag_val.val)
             if nearest != felt_stop.val {
               felt_stop.val = nearest
+              live_stop.set(Some(nearest))
               @ui.haptic(TextHandleMove)
             }
             dd.update_value(leaned)
@@ -168,6 +192,7 @@ pub fn liquid_slider_node(
         if on_thumb.val {
           if has_stops {
             let snapped = value_of_stop(felt_stop.val)
+            live_stop.set(None)
             dd.update_value(snapped)
             change(snapped)
           } else if did_drag.val {
@@ -180,6 +205,7 @@ pub fn liquid_slider_node(
         if on_thumb.val {
           on_thumb.val = false
           if has_stops {
+            live_stop.set(None)
             dd.update_value(@signals.untracked(value))
           }
           dd.release()
@@ -214,7 +240,7 @@ pub fn liquid_slider_node(
           match thumb_label {
             Some(lbl_fn) => {
               inner.words_redone() |> ignore
-              let measured = @ui.text_advance(lbl_fn(), size=ctrl_type_label, weight=weight_medium) + 20.0
+              let measured = @ui.text_advance(lbl_fn(live_val()), size=ctrl_type_label, weight=weight_medium) + 20.0
               dmin(w(), dmax(thumb_w_px, measured))
             }
             None => thumb_w_px
@@ -358,7 +384,7 @@ pub fn liquid_slider_node(
                 |> ignore
                 lbl.box(fn(wt) {
                   wt
-                  .words(By(lbl_fn), look=words_at(ctrl_type_label, weight=weight_medium))
+                  .words(By(fn() { lbl_fn(live_val()) }), look=words_at(ctrl_type_label, weight=weight_medium))
                   .ink(By(fn() { colors().content }))
                   |> ignore
                 })
@@ -401,7 +427,7 @@ pub fn liquid_slider_node(
               |> ignore
               bub.box(fn(wt) {
                 wt
-                .words(By(fmt_fn), look=words_at(ctrl_type_caption, weight=weight_medium))
+                .words(By(fn() { fmt_fn(live_val()) }), look=words_at(ctrl_type_caption, weight=weight_medium))
                 .ink(By(fn() { if is_dark() { black } else { white } }))
                 |> ignore
               })
