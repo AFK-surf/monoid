@@ -13,6 +13,56 @@ pub(all) enum LiquidStatus {
 }
 
 ///|
+/// Decorates an existing toast capsule node `v` in place (zero wrapper nodes) with single-layer
+/// `liquid_toast_glass`, `active` gating (zero hidden glass when inactive), `shadow_outside(Is(true))`,
+/// `MBUI_GLASS=solid` hairline fallback, and optional `radius`. Returns `v` for chaining.
+pub fn liquid_toast_surface_decorate(
+  v : @view.View,
+  radius? : Double,
+  active? : () -> Bool = fn() { true },
+  solid? : () -> Int64,
+  shadow? : () -> (Double, Double, Int64) = fn() { shadow_default },
+  solid_edge? : () -> (Double, Int64) = liquid_overlay_solid_edge,
+) -> @view.View {
+  match radius {
+    Some(r) => v.radius(Is(r)) |> ignore
+    None => ()
+  }
+  v
+  .glass(
+    By(fn() {
+      if !active() {
+        return None
+      }
+      let s = match solid {
+        Some(f) => f()
+        None => clear
+      }
+      Some(liquid_toast_glass(solid=s))
+    }),
+  )
+  .edge(
+    By(fn() {
+      if active() && v.glass_solid() {
+        solid_edge()
+      } else {
+        (0.0, clear)
+      }
+    }),
+  )
+  .shadow(
+    By(fn() {
+      if active() {
+        shadow()
+      } else {
+        shadow_none
+      }
+    }),
+  )
+  .shadow_outside(Is(true))
+}
+
+///|
 /// Composable single-layer Liquid Glass toast capsule shell (`liquid_toast_glass`, `shadow_outside(Is(true))`,
 /// `MBUI_GLASS=solid` 1pt hairline fallback) for custom toast stacks and swipeable toaster layers.
 #callsite(autofill(loc))
@@ -25,22 +75,8 @@ pub fn liquid_toast_shell_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(shell) {
-    shell
-    .radius(Is(radius))
-    .max_width(Is(Some(max_width)))
-    .shadow(Is(shadow_default))
-    .shadow_outside(Is(true))
-    .glass(
-      By(fn() {
-        let s = match solid {
-          Some(f) => f()
-          None => clear
-        }
-        Some(liquid_toast_glass(solid=s))
-      }),
-    )
-    .edge(By(fn() { if shell.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
-    |> ignore
+    shell.max_width(Is(Some(max_width))) |> ignore
+    liquid_toast_surface_decorate(shell, radius~, solid?) |> ignore
     body(shell)
   })
 }
@@ -73,16 +109,12 @@ pub fn liquid_toast_node(
       .lines_up(Is(Some(Start)))
       .gap(Is(ovl_toast_gap))
       .padding(Is((ovl_toast_px, ovl_toast_py, ovl_toast_pr, ovl_toast_py)))
-      .radius(Is(ovl_toast_radius))
-      .shadow(Is(shadow_default))
-      .shadow_outside(Is(true))
-      .glass(By(fn() { Some(liquid_toast_glass()) }))
-      .edge(By(fn() { if s.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
       .alpha(By(fn() { look().alpha * clamp(1.0 - drag_x.shown(s).abs() / 240.0, 0.0, 1.0) }))
       .scale(By(fn() { look().sx }))
       .offset(By(fn() { (drag_x.shown(s), 0.0) }))
       .says(By(fn() { Some(@view.said(Status, label=title(), description=subtitle())) }))
       |> ignore
+      liquid_toast_surface_decorate(s, radius=ovl_toast_radius) |> ignore
       match on_dismiss {
         Some(dismiss) =>
           s

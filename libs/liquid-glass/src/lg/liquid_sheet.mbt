@@ -3,6 +3,57 @@
 // with zero glass-on-glass nesting and concentric close/action buttons.
 
 ///|
+/// Decorates an existing bottom-sheet glass layer node `g` in place (zero wrapper nodes) with single-layer
+/// `liquid_sheet_glass`, `active` gating (returns `None` glass, zero edge, and zero shadow when vanished/inactive),
+/// dynamic `solid` fallback (e.g. scrim-composited solid under `MBUI_GLASS=solid`), `shadow_outside(Is(true))`,
+/// `MBUI_GLASS=solid` hairline fallback, and optional `radius`. Returns `g` for chaining.
+pub fn liquid_sheet_surface_decorate(
+  g : @view.View,
+  radius? : Double,
+  active? : () -> Bool = fn() { true },
+  solid? : () -> Int64,
+  shadow? : () -> (Double, Double, Int64) = fn() { shadow_default },
+  solid_edge? : () -> (Double, Int64) = liquid_overlay_solid_edge,
+) -> @view.View {
+  match radius {
+    Some(r) => g.radius(Is(r)) |> ignore
+    None => ()
+  }
+  g
+  .glass(
+    By(fn() {
+      if !active() {
+        return None
+      }
+      let s = match solid {
+        Some(f) => f()
+        None => clear
+      }
+      Some(liquid_sheet_glass(solid=s))
+    }),
+  )
+  .edge(
+    By(fn() {
+      if active() && g.glass_solid() {
+        solid_edge()
+      } else {
+        (0.0, clear)
+      }
+    }),
+  )
+  .shadow(
+    By(fn() {
+      if active() {
+        shadow()
+      } else {
+        shadow_none
+      }
+    }),
+  )
+  .shadow_outside(Is(true))
+}
+
+///|
 /// A Liquid Glass detached floating sheet in `parent`, open while `open()` holds.
 /// Features a `36pt` concentric liquid glass card, interactive vertical drag-to-dismiss with
 /// upward rubber-band over-pull, optional two-detent (`detents=true`) morphing between floating
