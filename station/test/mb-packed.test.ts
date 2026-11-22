@@ -29,6 +29,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -318,6 +319,7 @@ function manifest(dir: string, rel = ""): string[] {
       out.push(`${r} dir ${(meta.mode & 0o7777).toString(8)}`);
       out.push(...manifest(dir, r));
     } else if (meta.isFIFO()) out.push(`${r} fifo ${(meta.mode & 0o7777).toString(8)}`);
+    else if (meta.isSocket()) out.push(`${r} socket`);
     else out.push(`${r} file ${(meta.mode & 0o7777).toString(8)} ${meta.size} ${sha(readFileSync(path)).slice(0, 16)} ${Math.floor(meta.mtimeMs / 1000)}`);
   }
   return out;
@@ -401,6 +403,45 @@ test("a workspace the shell packs is the tar the reference packed, byte for byte
   assert.deepEqual(readdirSync(join(ws, "uploads")).sort(), ["new.txt", "截图 1.png"]);
   assert.deepEqual(readFileSync(join(ws, "uploads/截图 1.png")), UPLOAD);
   assert.equal(existsSync(mine), false);
+});
+
+test("a workspace's Unix sockets are left out by the shell as by the reference, and one made since does not stop its restore", { skip: unixOnly }, async () => {
+  const dir = fresh();
+  const room = join(dir, "room");
+  const ws = join(room, "workspace");
+  put(join(ws, "a.txt"), "kept");
+  put(join(ws, "sub/b.txt"), "kept too");
+  const servers: Server[] = [];
+  const listen = async (path: string) => {
+    const server = createServer();
+    servers.push(server);
+    await new Promise<void>((done, failed) => server.once("error", failed).listen(path, done));
+  };
+  try {
+    await listen(join(ws, "node-3.sock"));
+    await listen(join(ws, "sub/n.sock"));
+    const before = manifest(ws).filter((l) => !l.endsWith(" socket"));
+    assert.equal(manifest(ws).length - before.length, 2);
+    const theirs = join(dir, "reference.tar.zst");
+    await packTree(ws, theirs);
+    await packWorkspace(room);
+    const mine = workspaceArchive(room);
+    assert.deepEqual(zstdDecompressSync(readFileSync(mine)), zstdDecompressSync(readFileSync(theirs)), "the same tar");
+    const out = join(dir, "by-reference");
+    mkdirSync(out);
+    assert.deepEqual(await unpackArchive(mine, out), new Map());
+    assert.deepEqual(manifest(out), before);
+    // A program started again in the workspace while it was archived left a socket there: the rest comes back.
+    mkdirSync(ws, { recursive: true });
+    put(join(ws, "new.txt"), "new while archived");
+    await listen(join(ws, "again.sock"));
+    await restoreWorkspace(room);
+    assert.equal(existsSync(mine), false);
+    assert.deepEqual(manifest(ws).filter((l) => !l.startsWith("new.txt ")), before, "no socket restored");
+    assert.equal(readFileSync(join(ws, "new.txt"), "utf8"), "new while archived");
+  } finally {
+    for (const server of servers) await new Promise((done) => server.close(done));
+  }
 });
 
 test("an archive another tar wrote (pax names and sizes, ustar's prefix) is restored and read as the reference reads it", { skip: unixOnly }, async () => {

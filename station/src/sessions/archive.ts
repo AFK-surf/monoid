@@ -455,6 +455,8 @@ async function overlay(source: string, dest: string, refused: Refused): Promise<
 
 async function overlayEntries(source: string, dest: string, refused: Refused): Promise<void> {
   for (const entry of await readdir(source, { withFileTypes: true })) {
+    // A Unix domain socket is a running program's endpoint, left out of the archive as it is of the overlay.
+    if (entry.isSocket()) continue;
     const from = join(source, entry.name);
     const into = join(dest, entry.name);
     const there = await lstatOrNull(into);

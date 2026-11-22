@@ -496,6 +496,10 @@ async fn Files::overlay(self : Files, source : String, dest : String, refused : 
     for entry in self.readdir_types(source) {
       let (name, kind) = entry
       let from = self.join([source, name])
+      // A Unix domain socket is a running program's endpoint, left out of the archive as it is of the overlay.
+      if kind == "other" && self.lstat(from) is Some(s) && (s.mode & 0o170000) == 0o140000 {
+        continue
+      }
       let into = self.join([dest, name])
       let there = self.lkind(into)
       refused.remove(into)

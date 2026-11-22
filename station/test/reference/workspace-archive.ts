@@ -138,11 +138,13 @@ async function writeAll(file: import("node:fs/promises").FileHandle, chunk: Buff
 
 // ── what packing compares ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Every path under `dir` with its size and modification time, symlinks not followed.
+/// Every path under `dir` with its size and modification time, symlinks not followed, Unix domain sockets left out
+/// as the tar leaves them.
 async function snapshot(dir: string, files: Map<string, string>): Promise<void> {
   for (const name of await readdir(dir)) {
     const path = join(dir, name);
     const meta = await lstat(path, { bigint: true });
+    if (meta.isSocket()) continue;
     files.set(path, `${meta.size}:${meta.mtimeNs}`);
     if (meta.isDirectory()) await snapshot(path, files);
   }
@@ -270,7 +272,8 @@ async function* tarOf(dir: string): AsyncGenerator<Buffer> {
       if (sent !== size) throw new Error(`${path} changed while archiving`);
       yield padding(size);
     } else if (meta.isSocket()) {
-      throw new Error(`${path}: socket can not be archived`);
+      // A running program's endpoint, gone with it: tar has no entry for it.
+      continue;
     } else {
       const kind = meta.isFIFO() ? "6" : meta.isCharacterDevice() ? "3" : meta.isBlockDevice() ? "4" : null;
       if (kind === null) throw new Error(`${path} has unknown file type`);

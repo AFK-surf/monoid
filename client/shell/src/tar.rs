@@ -250,7 +250,8 @@ fn meta_of(meta: &fs::Metadata, size: u64) -> Meta {
 
 /// Builder::append_dir_all(".", dir) with follow_symlinks(false), then finish: `./` for the directory itself, then
 /// everything under it as `a/b` (directories before what is in them, each directory's names taken in reverse byte
-/// order, as the TypeScript walked them), links as links, special files as headers.
+/// order, as the TypeScript walked them), links as links, special files as headers. Unix domain sockets are left out:
+/// they are a running program's endpoints, gone with it, and tar has no entry for them.
 fn write_tree(dir: &Path, out: &mut impl Write) -> Result<(), String> {
     let mut stack: Vec<(PathBuf, Vec<u8>)> = vec![(dir.to_path_buf(), Vec::new())];
     let mut buf = vec![0u8; 256 * 1024];
@@ -312,7 +313,7 @@ fn write_tree(dir: &Path, out: &mut impl Write) -> Result<(), String> {
             {
                 use std::os::unix::fs::{FileTypeExt, MetadataExt};
                 if kind.is_socket() {
-                    return Err(format!("{}: socket can not be archived", path.display()));
+                    continue;
                 }
                 let code = if kind.is_fifo() {
                     b'6'
@@ -335,7 +336,8 @@ fn write_tree(dir: &Path, out: &mut impl Write) -> Result<(), String> {
     out.write_all(&[0u8; 2 * BLOCK]).map_err(err)
 }
 
-/// Every path under `dir` with its size and modification time, links not followed.
+/// Every path under `dir` with its size and modification time, links not followed, Unix domain sockets left out as
+/// `write_tree` leaves them.
 fn snapshot(dir: &Path) -> Result<BTreeMap<PathBuf, (u64, i128)>, String> {
     let mut out = BTreeMap::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -343,6 +345,13 @@ fn snapshot(dir: &Path) -> Result<BTreeMap<PathBuf, (u64, i128)>, String> {
         for entry in fs::read_dir(&dir).map_err(|e| at(&dir, e))? {
             let path = entry.map_err(|e| at(&dir, e))?.path();
             let meta = fs::symlink_metadata(&path).map_err(|e| at(&path, e))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileTypeExt;
+                if meta.file_type().is_socket() {
+                    continue;
+                }
+            }
             out.insert(path.clone(), (meta.len(), mtime_ns(&meta)));
             if meta.is_dir() {
                 stack.push(path);
@@ -998,13 +1007,33 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_socket_or_a_change_while_packing_keeps_the_originals() {
+    fn unix_sockets_are_left_out_and_the_rest_restores() {
         let root = temp("sock");
         let ws = root.join("ws");
-        fs::create_dir(&ws).unwrap();
-        let _listener = std::os::unix::net::UnixListener::bind(ws.join("s")).unwrap();
-        let err = pack(&ws, &root.join("o.zst")).unwrap_err();
-        assert!(err.ends_with("socket can not be archived"), "{err}");
+        fs::create_dir_all(ws.join("sub")).unwrap();
+        fs::write(ws.join("a.txt"), "kept").unwrap();
+        fs::write(ws.join("sub/b.txt"), "kept too").unwrap();
+        let _top = std::os::unix::net::UnixListener::bind(ws.join("node-3.sock")).unwrap();
+        let _nested = std::os::unix::net::UnixListener::bind(ws.join("sub/n.sock")).unwrap();
+        let before = snapshot(&ws).unwrap();
+        assert!(before.keys().all(|p| !p.to_string_lossy().ends_with(".sock")), "{before:?}");
+        let out = root.join("o.zst");
+        pack(&ws, &out).unwrap();
+        let mut check = unzstd(&out).unwrap();
+        let mut entries = Entries::new(&mut check);
+        let mut names = Vec::new();
+        while let Some(e) = entries.next().unwrap() {
+            names.push(String::from_utf8_lossy(&e.parts.join(&b'/')).into_owned());
+            entries.skip().unwrap();
+        }
+        assert_eq!(names, ["", "sub", "sub/b.txt", "a.txt"]);
+        let dest = root.join("dest");
+        fs::create_dir(&dest).unwrap();
+        unpack(&out, &dest, None).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("a.txt")).unwrap(), "kept");
+        assert_eq!(fs::read_to_string(dest.join("sub/b.txt")).unwrap(), "kept too");
+        assert!(fs::symlink_metadata(dest.join("node-3.sock")).is_err());
+        assert!(fs::symlink_metadata(dest.join("sub/n.sock")).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 }
