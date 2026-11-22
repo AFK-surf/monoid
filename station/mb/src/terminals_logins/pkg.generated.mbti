@@ -8,7 +8,7 @@ import {
 }
 
 // Values
-pub const COLS : Int32 = 200
+pub const COLS : Int32 = 1000
 
 pub const KIND_CONTROL : Int32 = 18
 
@@ -457,6 +457,7 @@ pub(all) enum Said {
 
 pub(all) struct Screen {
   rows : Array[String]
+  wrapped : Array[Bool]
   cursor : (Int32, Int32)
   echo : Bool
   live : Bool
@@ -585,6 +586,7 @@ pub fn Vt::new(Int32, Int32, Int32) -> Self
 pub fn Vt::on_data(Self, (String) -> Unit) -> Unit
 pub fn Vt::osc(Self, Int32, (String) -> Bool) -> Unit
 pub fn Vt::row(Self, Int32) -> String
+pub fn Vt::row_wrapped(Self, Int32) -> Bool
 pub fn Vt::rows(Self) -> Int32
 pub fn Vt::write(Self, String) -> Unit
 

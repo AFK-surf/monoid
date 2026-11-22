@@ -155,15 +155,63 @@ fn hidden(login : J, s : String) -> String {
 }
 
 ///|
+/// A line of the screen as its agent reads it: its text, the row it ends on as the terminal has it, and whether the
+/// cursor is on it.
+priv struct ShownLine {
+  mut text : String
+  mut raw_end : String
+  mut cursor : Bool
+}
+
+///|
 /// The screen as its agent reads it: the lines with something on them (the last 30), the page's address and the code
-/// hidden, the line the cursor is on marked.
+/// hidden, the line the cursor is on marked. A line the terminal wrapped (`wrapped`) and a link the program broke over
+/// lines itself (`url_continuation`) are put together first: hidden whole, no part of the page's address is left to
+/// read.
 pub fn screen_for(screen : Screen?, login : J) -> String {
   guard screen is Some(screen) else { return "" }
-  let hide = (line : String) => js_trim_end(hidden(login, line))
-  let lines = screen.rows.mapi((y, row) => if y == screen.cursor.1 && screen.live {
-    hide(row) + "▏"
-  } else {
-    hide(row)
+  let wrapped : Array[ShownLine] = []
+  for y, row in screen.rows {
+    let here = y == screen.cursor.1 && screen.live
+    if wrapped.last() is Some(prev) &&
+      y < screen.wrapped.length() &&
+      screen.wrapped[y] {
+      prev.text = prev.text + row
+      prev.raw_end = row
+      prev.cursor = prev.cursor || here
+    } else {
+      wrapped.push({ text: row, raw_end: row, cursor: here })
+    }
+  }
+  let logical : Array[ShownLine] = []
+  let mut i = 0
+  while i < wrapped.length() {
+    let first = wrapped[i]
+    let line : ShownLine = { text: first.text, raw_end: first.raw_end, cursor: first.cursor }
+    let mut wrap_width : Int? = None
+    while i + 1 < wrapped.length() {
+      let trimmed = js_trim_end(line.text)
+      let next = wrapped[i + 1]
+      guard @ops_platform.url_continuation(line.raw_end, trimmed, next.text, COLS, wrap_width)
+        is Some(width) else {
+        break
+      }
+      line.text = trimmed + @jscase.trim_start(next.text)
+      line.raw_end = next.raw_end
+      line.cursor = line.cursor || next.cursor
+      wrap_width = Some(width)
+      i += 1
+    }
+    logical.push(line)
+    i += 1
+  }
+  let lines = logical.map(line => {
+    let shown = js_trim_end(hidden(login, line.text))
+    if line.cursor {
+      shown + "▏"
+    } else {
+      shown
+    }
   })
   let mut end = lines.length()
   while end > 0 && @jscase.trim(lines[end - 1]) == "" {

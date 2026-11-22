@@ -898,6 +898,17 @@ pub fn Vt::row(self : Vt, i : Int) -> String {
 }
 
 ///|
+/// Whether row `i` goes on from the row above it (xterm.js's `IBufferLine.isWrapped`): the terminal wrapped a line too
+/// long for its width there.
+pub fn Vt::row_wrapped(self : Vt, i : Int) -> Bool {
+  let b = self.buf()
+  match b.get(b.ybase + i) {
+    Some(l) => l.wrapped
+    None => false
+  }
+}
+
+///|
 pub fn Vt::cursor_x(self : Vt) -> Int {
   self.buf().x
 }
