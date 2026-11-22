@@ -65,9 +65,11 @@ fn chosen_way(ways: &[(bool, bool, u64)]) -> Option<usize> {
 }
 
 /// The connections' transport (the station's addon's `transport`): the congestion controller named, Cubic or BBR (opt
-/// in), each with a 256 KiB initial window; each path kept alive each second and given up after 3 s of silence, so one
-/// connection goes on through another relay as one goes; a link kept 10 minutes in silence (an app frozen in the
-/// background past iroh's 30 s came back to every link timed out).
+/// in; noq-proto includes fixes for n0-computer/noq#852 idle max_bw collapse and n0-computer/noq#802 initial startup
+/// pacing rate), each with a 256 KiB initial window; a 4 MiB per-stream receive window matching 4 MiB transfer chunks;
+/// each path kept alive each second and given up after 3 s of silence, so one connection goes on through another relay
+/// as one goes; a link kept 10 minutes in silence (an app frozen in the background past iroh's 30 s came back to every
+/// link timed out).
 fn transport(congestion: &str) -> Result<QuicTransportConfig, String> {
     let controller: Arc<dyn noq_proto::congestion::ControllerFactory + Send + Sync> = match congestion {
         "cubic" => {
@@ -84,6 +86,7 @@ fn transport(congestion: &str) -> Result<QuicTransportConfig, String> {
     };
     Ok(QuicTransportConfig::builder()
         .congestion_controller_factory(controller)
+        .stream_receive_window(iroh::endpoint::VarInt::from_u32(4 * 1024 * 1024))
         .default_path_keep_alive_interval(std::time::Duration::from_secs(1))
         .default_path_max_idle_timeout(std::time::Duration::from_secs(3))
         .max_idle_timeout(Some(iroh::endpoint::VarInt::from_u32(10 * 60_000).into()))

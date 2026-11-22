@@ -144,8 +144,10 @@ pub struct Endpoint {
     lookup_relays: Option<Arc<StdRwLock<BTreeSet<RelayUrl>>>>,
 }
 
-/// The connections' transport: the congestion controller named (BBR is opt-in: noq 1.3.0 can underestimate bandwidth
-/// after idle, n0-computer/noq#852), the paths kept alive and given up as PATH_KEEP_ALIVE and PATH_IDLE say.
+/// The connections' transport: the congestion controller named (BBR is opt-in; noq-proto includes fixes for
+/// n0-computer/noq#852 idle max_bw collapse and n0-computer/noq#802 initial startup pacing rate), a 4 MiB per-stream
+/// receive window matching 4 MiB transfer chunks, and the paths kept alive and given up as PATH_KEEP_ALIVE and
+/// PATH_IDLE say.
 fn transport(congestion: &str) -> napi::Result<QuicTransportConfig> {
     let controller: Arc<dyn noq_proto::congestion::ControllerFactory + Send + Sync> = match congestion {
         "cubic" => {
@@ -162,6 +164,7 @@ fn transport(congestion: &str) -> napi::Result<QuicTransportConfig> {
     };
     Ok(QuicTransportConfig::builder()
         .congestion_controller_factory(controller)
+        .stream_receive_window(iroh::endpoint::VarInt::from_u32(4 * 1024 * 1024))
         .default_path_keep_alive_interval(PATH_KEEP_ALIVE)
         .default_path_max_idle_timeout(PATH_IDLE)
         .max_idle_timeout(Some(iroh::endpoint::VarInt::from_u32(CONNECTION_IDLE_MS).into()))

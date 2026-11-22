@@ -36,7 +36,7 @@ tokio = { version = "1", features = ["test-util"] }
 [patch.crates-io]
 iroh = { git = "https://github.com/zzj3720/iroh", rev = "9d1903ef653a41444afee1dafd3e6cb2fb3a87d2" }
 iroh-relay = { git = "https://github.com/zzj3720/iroh", rev = "9d1903ef653a41444afee1dafd3e6cb2fb3a87d2" }
-noq-proto = { git = "https://github.com/zzj3720/noq", rev = "4b0448dd90709d9ffc2db1dd2b5887435157477e" }
+noq-proto = { git = "https://github.com/zzj3720/noq", rev = "78ebd973c8863dcd73f3a821035cb4a5e53fe619" }
 noq-udp = { path = "../../vendor/noq-udp" }
 
 [profile.dev]
