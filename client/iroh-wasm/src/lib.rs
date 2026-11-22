@@ -58,7 +58,8 @@ struct RelayEntry {
 }
 
 /// Through a relay a round trip is hundreds of milliseconds: a first window of 256 KB sends what a screen needs in
-/// one (client/core-ts mesh.ts `INITIAL_WINDOW`, the station's too).
+/// one (client/core-ts mesh.ts `INITIAL_WINDOW`, the station's too), and a 4 MiB per-stream receive window matches
+/// 4 MiB transfer chunks across web, native clients, and station (`noq-proto` includes fixes for `noq#852` and `noq#802`).
 fn transport() -> QuicTransportConfig {
     let mut cubic = noq_proto::congestion::CubicConfig::default();
     cubic.initial_window(256 * 1024);
@@ -66,6 +67,7 @@ fn transport() -> QuicTransportConfig {
     // PATH_IDLE): the connection goes on through another relay meanwhile.
     QuicTransportConfig::builder()
         .congestion_controller_factory(Arc::new(cubic))
+        .stream_receive_window(iroh::endpoint::VarInt::from_u32(4 * 1024 * 1024))
         .default_path_keep_alive_interval(std::time::Duration::from_secs(1))
         .default_path_max_idle_timeout(std::time::Duration::from_secs(3))
         // A link kept 10 minutes in silence, as the station's (its CONNECTION_IDLE_MS): a phone's browser freezes a tab
