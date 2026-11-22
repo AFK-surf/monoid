@@ -710,8 +710,9 @@ fn wide_station_group_tile(
         g
         .row(Is(true))
         .fits(Is(true))
-        .shrink(Is(0.0))
+        .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
+        .keeps_held(Is(true))
         .min_height(Is(Some(30.0)))
         .lines_up(Is(Some(Middle)))
         .gap(Is(6.0))
@@ -797,8 +798,9 @@ fn wide_station_group_tile(
         g
         .row(Is(true))
         .fits(Is(true))
-        .shrink(Is(0.0))
+        .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
+        .keeps_held(Is(true))
         .min_height(Is(Some(30.0)))
         .lines_up(Is(Some(Middle)))
         .gap(Is(6.0))
@@ -898,6 +900,7 @@ fn wide_agent_inline(
     drop_short=1,
     drop_effort=2,
     drop_hide=0,
+    cuts_last=true,
   )
 }
 

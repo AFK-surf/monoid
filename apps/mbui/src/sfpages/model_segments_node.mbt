@@ -78,7 +78,7 @@ pub fn model_name_segments_static(
         w.drops(Is(drop_hide)) |> ignore
       }
       if cuts_last {
-        w.min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
+        w.min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)).fit_whole(Is(true)) |> ignore
       }
       if fit_whole {
         w.fit_whole(Is(true)) |> ignore
@@ -176,7 +176,7 @@ pub fn model_agent_segments_static(
         w.drops(Is(drop_hide)) |> ignore
       }
       if cuts_last {
-        w.min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
+        w.min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)).fit_whole(Is(true)) |> ignore
       }
     })
     |> ignore

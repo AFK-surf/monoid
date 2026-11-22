@@ -2356,10 +2356,13 @@ fn fit_item_build(c : Node, cb_w : Double, cb_h : Double, hyp_cap : Double) -> F
     b.w
   } else {
     let kept = kept_of(c, cb_w, cb_h)
-    if known(kept) {
-      fmax(least, kept)
+    let raw = if known(kept) { fmax(least, kept) } else { least }
+    let bs = basis_said(cs, b, true, cb_w)
+    if known(bs) {
+      let hyp = clamp_size(fmax(bs, b.pbw()), least, b.max_w)
+      fmin(hyp, raw)
     } else {
-      least
+      raw
     }
   }
   FitLeaf(w + mar, cs.drop, Ref(cs.drop != -1))
@@ -2698,7 +2701,7 @@ fn fit_least_held(c : Node, cb : Box, cut_kept : Bool) -> Double {
     }
     let k = parts[last]
     let kb = box_for(k, undef, undef)
-    return cb.pbw() + size_node(k, undef, undef, undef, undef, undef, undef, false) + kb.mar_l + kb.mar_r
+    return cb.pbw() + part_least(k, kb, if cut_kept { kept_of(k, undef, undef) } else { undef }) + kb.mar_l + kb.mar_r
   }
   let mut may_leave = false
   for k in parts {
