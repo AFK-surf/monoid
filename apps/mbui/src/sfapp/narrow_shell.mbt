@@ -924,7 +924,11 @@ fn place_top_bar_glass(
   title_alpha? : (@view.View) -> Double = fn(_) { 1.0 },
 ) -> Unit {
   v.box(fn(g) {
-    narrow_bar_scrim_node(g, fn(s) { top_bar_h_at(s.window_w()) + 8.0 }, fn(_) { 48.0 })
+    narrow_bar_scrim_node(
+      g,
+      fn(s) { top_bar_h_at(s.window_w()) + 16.0 },
+      fn(s) { top_bar_h_at(s.window_w()) + 16.0 },
+    )
     g.box(fn(row) {
       row
       .row(Is(true))

@@ -1263,11 +1263,13 @@
       // frosted: the blurred copy, saturated, the tint over it; the rim (a hairline inside the edge, the top left lit,
       // the foot and right less), 0.5 wide
       bool prog_glass = (v_pad.z < -0.5);
-      float ps = prog_glass ? smoothstep(0.0, 1.0, fade_r) : 1.0;
-      float ts = prog_glass ? (fade_r * fade_r) : 1.0;
-      float sat = prog_glass ? mix(1.0, v_p.z, ps) : v_p.z;
-      float ta = prog_glass ? (col.a * ts) : col.a;
       vec3 g3 = backdrop(p);
+      float ps = prog_glass ? smoothstep(0.0, 1.0, fade_r) : 1.0;
+      float ts = prog_glass ? (ps <= 0.0 ? 0.0 : pow(ps, 1.35)) : 1.0;
+      float sat = prog_glass ? mix(1.0, v_p.z, ps) : v_p.z;
+      float bg_diff = prog_glass ? smoothstep(0.22, 0.72, abs(luma(col.rgb) - luma(g3))) : 0.0;
+      float base_a = prog_glass ? mix(col.a, min(0.86, col.a + 0.34), bg_diff) : col.a;
+      float ta = prog_glass ? (base_a * ts) : col.a;
       g3 = max(mix(vec3(luma(g3)), g3, sat), 0.0);
       g3 = g3 * (1.0 - ta) + col.rgb * ta;
       if (v_c2.x + v_c2.y + v_c2.z > 0.0) {
@@ -1365,13 +1367,38 @@
       if (kf < 0.5) { o = texture(u_src, clamp(gl_FragCoord.xy * m0.xy, m0.xy * 0.5, m0.zw)); return; }
       float sig1 = pow(sp, 1.0 / kf);
       float r = clamp(ramp, 0.0, 1.0);
-      float target_px = r <= 0.0 ? 0.0 : sp * pow(r, 1.35);
-      float lv_u;
+      float s_r = smoothstep(0.0, 1.0, r);
+      float target_px = s_r <= 0.0 ? 0.0 : sp * pow(s_r, 1.25);
       if (target_px <= sig1 || kf <= 1.05) {
-        lv_u = clamp(target_px / max(sig1, 1e-4), 0.0, kf);
-      } else {
-        lv_u = clamp(1.0 + (kf - 1.0) * log(target_px / sig1) / max(log(sp / sig1), 1e-4), 0.0, kf);
+        vec2 uv0_min = m0.xy * 0.5, uv0_max = m0.zw;
+        vec2 c_uv = gl_FragCoord.xy * m0.xy;
+        vec4 g_small;
+        if (target_px <= 0.01) {
+          g_small = texture(u_src, clamp(c_uv, uv0_min, uv0_max));
+        } else {
+          vec2 d0 = vec2(target_px, 0.0) * m0.xy;
+          vec2 d1 = vec2(0.0, target_px) * m0.xy;
+          vec2 dd = vec2(target_px * 0.70710678, target_px * 0.70710678) * m0.xy;
+          g_small  = texture(u_src, clamp(c_uv, uv0_min, uv0_max)) * 0.25;
+          g_small += (texture(u_src, clamp(c_uv + d0, uv0_min, uv0_max)) +
+                      texture(u_src, clamp(c_uv - d0, uv0_min, uv0_max)) +
+                      texture(u_src, clamp(c_uv + d1, uv0_min, uv0_max)) +
+                      texture(u_src, clamp(c_uv - d1, uv0_min, uv0_max))) * 0.125;
+          g_small += (texture(u_src, clamp(c_uv + dd, uv0_min, uv0_max)) +
+                      texture(u_src, clamp(c_uv - dd, uv0_min, uv0_max)) +
+                      texture(u_src, clamp(c_uv + vec2(dd.x, -dd.y), uv0_min, uv0_max)) +
+                      texture(u_src, clamp(c_uv + vec2(-dd.x, dd.y), uv0_min, uv0_max))) * 0.0625;
+        }
+        float blend1 = smoothstep(sig1 * 0.65, sig1, target_px);
+        if (blend1 > 0.0) {
+          vec4 c_lv1 = texture(u_lv1, clamp(gl_FragCoord.xy * m1.xy, m1.xy * 1.0, m1.zw));
+          o = mix(g_small, c_lv1, blend1);
+        } else {
+          o = g_small;
+        }
+        return;
       }
+      float lv_u = clamp(1.0 + (kf - 1.0) * log(target_px / sig1) / max(log(sp / sig1), 1e-4), 1.0, kf);
       int idx = min(int(floor(lv_u)), int(kf + 0.5) - 1);
       if (idx < 0) idx = 0;
       float f = lv_u - float(idx);
