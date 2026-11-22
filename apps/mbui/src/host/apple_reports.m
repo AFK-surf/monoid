@@ -144,15 +144,115 @@ static NSString *sf_os_version(NSString *said) {
   return said;
 }
 
+static NSString *sf_platform_prefix(NSDictionary *here) {
+  NSString *app = sf_string(here[@"app"]);
+  if ([app hasPrefix:@"macos"]) return @"macos";
+  if ([app hasPrefix:@"ios"]) return @"ios";
+  NSString *os = sf_string(here[@"$os"]);
+  if (os && [os.lowercaseString hasPrefix:@"mac"]) return @"macos";
+#if TARGET_OS_IPHONE
+  return @"ios";
+#else
+  return @"macos";
+#endif
+}
+
+/// Pure main-thread watchdog state machine (tested under SF_REPORTS_PURE): fires once per stall when the app is
+/// foreground/active, at least 2 consecutive probes went unanswered, and awake uptime (CLOCK_UPTIME_RAW) elapsed
+/// >= 2000 ms; rate-limited to at most 5 reports per 10-minute sliding window.
+static const uint64_t SF_WD_THRESHOLD_MS = 2000;
+static const int SF_WD_MIN_MISSES = 2;
+static const uint64_t SF_WD_WINDOW_MS = 10ULL * 60ULL * 1000ULL;
+#define SF_WD_MAX_PER_WINDOW 5
+
+typedef struct {
+  uint64_t ping_seq;
+  uint64_t last_pong_seq;
+  uint64_t stall_start_ms;
+  int consecutive_misses;
+  int reported_this_stall;
+  uint64_t report_times_ms[SF_WD_MAX_PER_WINDOW];
+  int report_count;
+} sf_wd_state;
+
+/// Advances one watchdog probe tick. Sets `*out_send_ping = 1` when the caller should dispatch a new main-queue ping
+/// with sequence `st->ping_seq`. Returns 1 (and sets `*out_hang_ms`) when a main-thread hang should be reported.
+static int sf_wd_tick(sf_wd_state *st, int active, uint64_t now_uptime_ms, uint64_t current_pong_seq, int *out_send_ping,
+                      uint64_t *out_hang_ms) {
+  if (out_send_ping) *out_send_ping = 0;
+  if (out_hang_ms) *out_hang_ms = 0;
+  if (!active) {
+    st->consecutive_misses = 0;
+    st->stall_start_ms = 0;
+    st->reported_this_stall = 0;
+    st->last_pong_seq = current_pong_seq;
+    return 0;
+  }
+  if (st->ping_seq == 0 || current_pong_seq >= st->ping_seq) {
+    st->last_pong_seq = current_pong_seq;
+    st->consecutive_misses = 0;
+    st->reported_this_stall = 0;
+    st->ping_seq++;
+    st->stall_start_ms = now_uptime_ms;
+    if (out_send_ping) *out_send_ping = 1;
+    return 0;
+  }
+  if (st->stall_start_ms == 0) st->stall_start_ms = now_uptime_ms;
+  st->consecutive_misses++;
+  uint64_t elapsed = now_uptime_ms >= st->stall_start_ms ? (now_uptime_ms - st->stall_start_ms) : 0;
+  if (st->consecutive_misses >= SF_WD_MIN_MISSES && elapsed >= SF_WD_THRESHOLD_MS && !st->reported_this_stall) {
+    int kept = 0;
+    for (int i = 0; i < st->report_count; i++) {
+      if (now_uptime_ms >= st->report_times_ms[i] && (now_uptime_ms - st->report_times_ms[i]) < SF_WD_WINDOW_MS) {
+        st->report_times_ms[kept++] = st->report_times_ms[i];
+      }
+    }
+    st->report_count = kept;
+    st->reported_this_stall = 1;
+    if (st->report_count < SF_WD_MAX_PER_WINDOW) {
+      st->report_times_ms[st->report_count++] = now_uptime_ms;
+      if (out_hang_ms) *out_hang_ms = elapsed;
+      return 1;
+    }
+  }
+  return 0;
+}
+
 /// A kept report as its `$exception` event, as `account` (the signed-in account's id), with `here`'s properties (the
 /// app and device now: what the report itself does not say) under what the report says of the build and device it
-/// came from. kept: {"kind": "crash" | "hang", "at": ms, "hang_ms": ms (a hang's), "diagnostic": MetricKit's JSON}.
+/// came from. kept: {"kind": "crash" | "hang" | "watchdog_hang", "at": ms, "hang_ms": ms, "diagnostic": MetricKit's JSON}.
 static NSDictionary *sf_report_event(NSDictionary *kept, NSString *rid, NSString *account, NSDictionary *here) {
   NSString *kind = sf_string(kept[@"kind"]);
-  NSDictionary *d = sf_dict(kept[@"diagnostic"]);
   NSString *uuid = sf_report_uuid(rid);
-  if (!d || !uuid || !account.length || !([kind isEqual:@"crash"] || [kind isEqual:@"hang"])) return nil;
+  if (!uuid || !account.length) return nil;
+  BOOL watchdog = [kind isEqual:@"watchdog_hang"];
   BOOL crash = [kind isEqual:@"crash"];
+  BOOL hang = [kind isEqual:@"hang"];
+  if (!crash && !hang && !watchdog) return nil;
+  if (watchdog) {
+    double ms = [kept[@"hang_ms"] doubleValue];
+    if (ms <= 0) return nil;
+    NSMutableDictionary *p = [here mutableCopy] ?: [NSMutableDictionary dictionary];
+    p[@"reason"] = @"watchdog_hang";
+    p[@"hang_ms"] = @((long long)ms);
+    NSString *value = [NSString stringWithFormat:@"the main thread did not respond for %.1f s", ms / 1000.0];
+    p[@"$exception_fingerprint"] = [NSString stringWithFormat:@"%@:MainThreadHang:watchdog", sf_platform_prefix(here)];
+    p[@"$exception_list"] = @[ @{
+      @"type" : @"MainThreadHang",
+      @"value" : value,
+      @"mechanism" : @{@"handled" : @NO, @"synthetic" : @NO, @"type" : @"watchdog"},
+    } ];
+    p[@"$exception_level"] = @"error";
+    return @{
+      @"event" : @"$exception",
+      @"distinct_id" : account,
+      @"uuid" : uuid,
+      @"timestamp" : sf_iso([kept[@"at"] doubleValue]),
+      @"properties" : p,
+    };
+  }
+  NSDictionary *d = sf_dict(kept[@"diagnostic"]);
+  if (!d) return nil;
   NSDictionary *meta = sf_dict(d[@"diagnosticMetaData"]) ?: @{};
   NSArray<NSDictionary *> *frames = sf_frames(sf_dict(d[@"callStackTree"]));
   NSMutableDictionary *p = [here mutableCopy] ?: [NSMutableDictionary dictionary];
@@ -212,7 +312,9 @@ static NSDictionary *sf_report_event(NSDictionary *kept, NSString *rid, NSString
   p[@"trace"] = trace.length > SF_TRACE ? [trace substringToIndex:SF_TRACE] : trace;
   p[@"frames"] = frames;
   // no frames PostHog reads (unsymbolicated): what makes two the same issue is where they happened
-  if (top.count) p[@"$exception_fingerprint"] = [NSString stringWithFormat:@"ios:%@:%@", type, [top componentsJoinedByString:@"|"]];
+  if (top.count) {
+    p[@"$exception_fingerprint"] = [NSString stringWithFormat:@"%@:%@:%@", sf_platform_prefix(here), type, [top componentsJoinedByString:@"|"]];
+  }
   NSMutableDictionary *x = [@{@"type" : type,
                               @"mechanism" : @{@"handled" : @NO, @"synthetic" : @NO, @"type" : crash ? @"signalhandler" : @"hang"}} mutableCopy];
   if (value.length) x[@"value"] = value;
@@ -228,19 +330,21 @@ static NSDictionary *sf_report_event(NSDictionary *kept, NSString *rid, NSString
 }
 
 #ifndef SF_REPORTS_PURE
-#if TARGET_OS_IPHONE
 #import <MetricKit/MetricKit.h>
+#if TARGET_OS_IPHONE
+#import <UIKit/UIKit.h>
 #else
+#import <AppKit/AppKit.h>
 #include <sys/sysctl.h>
 #endif
+#include <stdatomic.h>
+#include <time.h>
 #include "moonbit.h"
 
-#if TARGET_OS_IPHONE
 /// At most this many reports kept, and sent each start: the newest.
 static const NSUInteger SF_MOST = 20;
 /// A hang reported from this long on (MetricKit gives shorter ones too: a hitch, not what a person waited through).
 static const double SF_HANG_MS = 2000;
-#endif
 /// At most this many reports' ids remembered as sent (pastDiagnosticPayloads gives them again for a while).
 static const NSUInteger SF_SENT = 200;
 
@@ -405,7 +509,6 @@ static void report_kept(void) {
   });
 }
 
-#if TARGET_OS_IPHONE
 /// One report MetricKit gave kept, unless it was kept or sent already.
 static void sf_keep(NSString *kind, NSData *json, NSDate *at, double hang_ms, NSArray *sent) {
   NSDictionary *diagnostic = json ? sf_dict([NSJSONSerialization JSONObjectWithData:json options:0 error:nil]) : nil;
@@ -421,6 +524,7 @@ static void sf_keep(NSString *kind, NSData *json, NSDate *at, double hang_ms, NS
 
 /// What MetricKit gave kept (only while reports go: turned off, a crash is not kept for later), the newest SF_MOST,
 /// and sent at once when an account is signed in already.
+API_AVAILABLE(macos(12.0), ios(14.0))
 static void keep_payloads(NSArray<MXDiagnosticPayload *> *payloads) {
   if (!sf_has_key() || !sf_reporting()) return;
   NSArray *sent = sf_array(state_read()[@"sent"]) ?: @[];
@@ -436,6 +540,7 @@ static void keep_payloads(NSArray<MXDiagnosticPayload *> *payloads) {
   report_kept();
 }
 
+API_AVAILABLE(macos(12.0), ios(14.0))
 @interface SFReports : NSObject <MXMetricManagerSubscriber>
 @end
 
@@ -447,8 +552,67 @@ static void keep_payloads(NSArray<MXDiagnosticPayload *> *payloads) {
 }
 @end
 
+API_AVAILABLE(macos(12.0), ios(14.0))
 static SFReports *subscriber;
-#endif
+
+static _Atomic uint64_t wd_pong = 0;
+static _Atomic int wd_active = 0;
+static dispatch_queue_t wd_queue;
+static dispatch_source_t wd_timer;
+static sf_wd_state wd_state;
+
+static uint64_t sf_uptime_ms(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000ULL; }
+
+/// Persists a watchdog hang report first (so a force-kill during a deadlock still delivers it on next launch), then
+/// attempts immediate async delivery on `reports_queue` with the same deterministic UUID.
+static void sf_watchdog_record(uint64_t hang_ms) {
+  if (!sf_has_key() || !sf_reporting()) return;
+  double at = floor(NSDate.date.timeIntervalSince1970 * 1000);
+  NSString *rid = [[NSUUID.UUID.UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""] lowercaseString];
+  NSDictionary *kept = @{@"kind" : @"watchdog_hang", @"at" : @(at), @"hang_ms" : @(hang_ms)};
+  NSString *path = [sf_kept_dir() stringByAppendingPathComponent:[rid stringByAppendingPathExtension:@"json"]];
+  [NSFileManager.defaultManager createDirectoryAtPath:sf_kept_dir() withIntermediateDirectories:YES attributes:nil error:nil];
+  NSData *data = [NSJSONSerialization dataWithJSONObject:kept options:0 error:nil];
+  if (data) [data writeToFile:path atomically:YES];
+  dispatch_async(reports_queue, ^{
+    if (![NSFileManager.defaultManager fileExistsAtPath:path]) return;
+    NSString *account = signed_in ?: sf_string(state_read()[@"account"]) ?: sf_anonymous;
+    NSDictionary *ev = sf_report_event(kept, rid, account, sf_here());
+    if (ev && sf_send(@[ ev ])) {
+      [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+      state_change(^(NSMutableDictionary *state) {
+        NSMutableArray *sent = [sf_array(state[@"sent"]) mutableCopy] ?: [NSMutableArray array];
+        if (![sent containsObject:rid]) [sent addObject:rid];
+        if (sent.count > SF_SENT) [sent removeObjectsInRange:NSMakeRange(0, sent.count - SF_SENT)];
+        state[@"sent"] = sent;
+      });
+    }
+    NSArray *all = kept_reports();
+    for (NSUInteger i = 0; i + SF_MOST < all.count; i++) [NSFileManager.defaultManager removeItemAtPath:all[i][@"path"] error:nil];
+  });
+}
+
+static void sf_watchdog_start(void) {
+  wd_queue = dispatch_queue_create("stillfail-watchdog", DISPATCH_QUEUE_SERIAL);
+  wd_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, wd_queue);
+  dispatch_source_set_timer(wd_timer, dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), 1 * NSEC_PER_SEC, 100 * NSEC_PER_MSEC);
+  dispatch_source_set_event_handler(wd_timer, ^{
+    int active = atomic_load(&wd_active);
+    uint64_t pong = atomic_load(&wd_pong);
+    int send_ping = 0;
+    uint64_t hang_ms = 0;
+    if (sf_wd_tick(&wd_state, active, sf_uptime_ms(), pong, &send_ping, &hang_ms)) {
+      sf_watchdog_record(hang_ms);
+    }
+    if (send_ping) {
+      uint64_t seq = wd_state.ping_seq;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        atomic_store(&wd_pong, seq);
+      });
+    }
+  });
+  dispatch_resume(wd_timer);
+}
 
 /// PostHog's project from the Info.plist; MetricKit asked for the reports once the app runs (its delivery comes on a
 /// queue of its own, soon after), and for those it gave before (a start that ended before it kept them).
@@ -459,16 +623,48 @@ __attribute__((constructor)) static void reports_start(void) {
   reports_queue = dispatch_queue_create("stillfail-reports", DISPATCH_QUEUE_SERIAL);
   state_lock = [NSObject new];
   if (!sf_has_key()) return;
-#if TARGET_OS_IPHONE
   dispatch_async(dispatch_get_main_queue(), ^{
-    subscriber = [SFReports new];
-    [MXMetricManager.sharedManager addSubscriber:subscriber];
-    NSArray *past = MXMetricManager.sharedManager.pastDiagnosticPayloads;
-    dispatch_async(reports_queue, ^{
-      keep_payloads(past);
-    });
-  });
+    if (@available(macOS 12.0, iOS 14.0, *)) {
+      if ([MXMetricManager class]) {
+        subscriber = [SFReports new];
+        [MXMetricManager.sharedManager addSubscriber:subscriber];
+        NSArray *past = MXMetricManager.sharedManager.pastDiagnosticPayloads;
+        dispatch_async(reports_queue, ^{
+          keep_payloads(past);
+        });
+      }
+    }
+#if TARGET_OS_IPHONE
+    atomic_store(&wd_active, UIApplication.sharedApplication.applicationState == UIApplicationStateActive ? 1 : 0);
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+      (void)n;
+      atomic_store(&wd_active, 1);
+    }];
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+      (void)n;
+      atomic_store(&wd_active, 0);
+    }];
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+      (void)n;
+      atomic_store(&wd_active, 0);
+    }];
+#else
+    atomic_store(&wd_active, NSApp && NSApp.isActive ? 1 : 0);
+    [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+      (void)n;
+      atomic_store(&wd_active, 1);
+    }];
+    [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+      (void)n;
+      atomic_store(&wd_active, 0);
+    }];
+    [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationWillHideNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+      (void)n;
+      atomic_store(&wd_active, 0);
+    }];
 #endif
+    sf_watchdog_start();
+  });
 }
 
 /// An error the app got past, sent at once as `type` with `value` and `reason` (CoreFailed, UiFault: Android's

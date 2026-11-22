@@ -170,12 +170,131 @@ static void test_reports_json_roundtrip(void) {
   free(fmt2);
 }
 
+static void test_exception_names_and_crash_json(void) {
+  char name[64];
+  sf_win_format_exception_name(0xC0000005u, name, sizeof name);
+  check_eq("access violation name", name, "EXCEPTION_ACCESS_VIOLATION");
+  sf_win_format_exception_name(0xC00000FDu, name, sizeof name);
+  check_eq("stack overflow name", name, "EXCEPTION_STACK_OVERFLOW");
+  sf_win_format_exception_name(0xC0000409u, name, sizeof name);
+  check_eq("stack buffer overrun name", name, "STATUS_STACK_BUFFER_OVERRUN");
+  sf_win_format_exception_name(0xE06D7363u, name, sizeof name);
+  check_eq("unknown exception fallback", name, "EXCEPTION_0xE06D7363");
+
+  sf_win_crash_rec rec;
+  memset(&rec, 0, sizeof rec);
+  snprintf(rec.kind, sizeof rec.kind, "crash");
+  snprintf(rec.uuid, sizeof rec.uuid, "11111111-2222-4333-8444-555555555555");
+  snprintf(rec.at, sizeof rec.at, "2026-11-22T10:00:00.123Z");
+  rec.exception_code = 0xC0000005u;
+  snprintf(rec.exception_name, sizeof rec.exception_name, "EXCEPTION_ACCESS_VIOLATION");
+  snprintf(rec.fault_module, sizeof rec.fault_module, "stillfail.exe");
+  rec.fault_offset = 0x1234;
+  rec.frame_count = 2;
+  snprintf(rec.frames[0].module, sizeof rec.frames[0].module, "stillfail.exe");
+  rec.frames[0].offset = 0x1234;
+  snprintf(rec.frames[1].module, sizeof rec.frames[1].module, "stillfail_shell.dll");
+  rec.frames[1].offset = 0x5678;
+
+  char json_buf[2048];
+  size_t n = sf_win_write_crash_json_buf(&rec, json_buf, sizeof json_buf);
+  check("crash json written", n > 0);
+
+  sf_win_crash_rec parsed;
+  check("crash json parse ok", sf_win_parse_crash_json(json_buf, &parsed) == 1);
+  check_eq("parsed kind", parsed.kind, "crash");
+  check_eq("parsed uuid", parsed.uuid, "11111111-2222-4333-8444-555555555555");
+  check_eq("parsed at", parsed.at, "2026-11-22T10:00:00.123Z");
+  check("parsed exception_code", parsed.exception_code == 0xC0000005u);
+  check_eq("parsed exception_name", parsed.exception_name, "EXCEPTION_ACCESS_VIOLATION");
+  check_eq("parsed fault_module", parsed.fault_module, "stillfail.exe");
+  check("parsed fault_offset", parsed.fault_offset == 0x1234);
+  check("parsed frame_count", parsed.frame_count == 2);
+  check_eq("parsed frame 0 mod", parsed.frames[0].module, "stillfail.exe");
+  check("parsed frame 0 off", parsed.frames[0].offset == 0x1234);
+  check_eq("parsed frame 1 mod", parsed.frames[1].module, "stillfail_shell.dll");
+  check("parsed frame 1 off", parsed.frames[1].offset == 0x5678);
+
+  char fp[256];
+  sf_win_build_crash_fingerprint(&parsed, fp, sizeof fp);
+  check_eq("crash fingerprint", fp, "windows:EXCEPTION_ACCESS_VIOLATION:stillfail.exe + 0x1234|stillfail_shell.dll + 0x5678");
+
+  const char *here = "{\"app\":\"windows\",\"$os\":\"Windows\"}";
+  char *batch = sf_win_build_batch_crash("phc_key", "acct-1", &parsed, here);
+  check("crash batch non-null", batch != NULL);
+  check("crash batch fatal", batch && strstr(batch, "\"$exception_level\":\"fatal\"") != NULL);
+  check("crash batch reason", batch && strstr(batch, "\"reason\":\"crash\"") != NULL);
+  check("crash batch fp", batch && strstr(batch, "\"$exception_fingerprint\":\"windows:EXCEPTION_ACCESS_VIOLATION:stillfail.exe + 0x1234|stillfail_shell.dll + 0x5678\"") != NULL);
+  check("crash batch seh mechanism", batch && strstr(batch, "\"type\":\"seh\"") != NULL);
+  free(batch);
+
+  // watchdog_hang record roundtrip & batch
+  sf_win_crash_rec wd;
+  memset(&wd, 0, sizeof wd);
+  snprintf(wd.kind, sizeof wd.kind, "watchdog_hang");
+  snprintf(wd.uuid, sizeof wd.uuid, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+  snprintf(wd.at, sizeof wd.at, "2026-11-22T10:05:00.000Z");
+  wd.hang_ms = 3100;
+  size_t wn = sf_win_write_crash_json_buf(&wd, json_buf, sizeof json_buf);
+  check("watchdog json written", wn > 0);
+  sf_win_crash_rec wp;
+  check("watchdog json parse ok", sf_win_parse_crash_json(json_buf, &wp) == 1);
+  check_eq("wd kind", wp.kind, "watchdog_hang");
+  check("wd hang_ms", wp.hang_ms == 3100);
+  sf_win_build_crash_fingerprint(&wp, fp, sizeof fp);
+  check_eq("wd fingerprint", fp, "windows:MainThreadHang:watchdog");
+  char *wbatch = sf_win_build_batch_crash("phc_key", "acct-1", &wp, here);
+  check("wd batch non-null", wbatch != NULL);
+  check("wd batch reason", wbatch && strstr(wbatch, "\"reason\":\"watchdog_hang\"") != NULL);
+  check("wd batch hang_ms", wbatch && strstr(wbatch, "\"hang_ms\":3100") != NULL);
+  check("wd batch type", wbatch && strstr(wbatch, "\"type\":\"MainThreadHang\"") != NULL);
+  check("wd batch mechanism", wbatch && strstr(wbatch, "\"type\":\"watchdog\"") != NULL);
+  free(wbatch);
+
+  // Invalid crash JSON rejected
+  check("reject bad kind", sf_win_parse_crash_json("{\"kind\":\"other\",\"uuid\":\"u\",\"at\":\"t\"}", &parsed) == 0);
+  check("reject zero watchdog hang", sf_win_parse_crash_json("{\"kind\":\"watchdog_hang\",\"uuid\":\"u\",\"at\":\"t\",\"hang_ms\":0}", &parsed) == 0);
+}
+
+static void test_watchdog_state(void) {
+  sf_win_wd_state st;
+  memset(&st, 0, sizeof st);
+  uint64_t hang_ms = 0;
+
+  // Inactive window never triggers
+  check("inactive ignored", sf_win_wd_on_probe(&st, 0, 1, 3000, 10000, &hang_ms) == 0);
+  // Short timeout (<2500ms) never triggers
+  check("short timeout ignored", sf_win_wd_on_probe(&st, 1, 1, 2400, 11000, &hang_ms) == 0);
+  // Real >=2500ms foreground hang triggers once
+  check("hang fires", sf_win_wd_on_probe(&st, 1, 1, 2600, 15000, &hang_ms) == 1);
+  check("hang_ms reported", hang_ms == 2600);
+  // Continued stall is deduplicated
+  check("stall deduped", sf_win_wd_on_probe(&st, 1, 1, 2600, 18000, &hang_ms) == 0);
+  // Recovery re-arms
+  check("recovery resets", sf_win_wd_on_probe(&st, 1, 0, 5, 20000, &hang_ms) == 0);
+  // 4 more stalls in 10 min fire (total 5)
+  uint64_t t = 25000;
+  for (int i = 0; i < 4; i++) {
+    check("rate limit allows up to 5", sf_win_wd_on_probe(&st, 1, 1, 2700, t, &hang_ms) == 1);
+    sf_win_wd_on_probe(&st, 1, 0, 5, t + 1000, &hang_ms);
+    t += 5000;
+  }
+  // 6th within 10 min suppressed
+  check("6th suppressed", sf_win_wd_on_probe(&st, 1, 1, 2800, t, &hang_ms) == 0);
+  sf_win_wd_on_probe(&st, 1, 0, 5, t + 1000, &hang_ms);
+  // After 10-minute window passes, allowed again
+  check("after window fires", sf_win_wd_on_probe(&st, 1, 1, 2900, 15000 + SF_WIN_WD_WINDOW_MS + 1000, &hang_ms) == 1);
+  check("after window hang_ms", hang_ms == 2900);
+}
+
 int main(void) {
   test_json_escape();
   test_uuid_and_iso();
   test_batch_exception();
   test_batch_hang();
   test_reports_json_roundtrip();
+  test_exception_names_and_crash_json();
+  test_watchdog_state();
   if (!bad) printf("reports_test_win: ok\n");
   return bad;
 }

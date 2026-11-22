@@ -230,7 +230,7 @@ if [ ! -x "$O/shell" ] || [ "$(cat "$O/shell.src" 2>/dev/null)" != "$shell_src" 
     -framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics \
     -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework WebKit \
     -framework AuthenticationServices -framework SystemConfiguration -framework Security -framework LocalAuthentication \
-    -framework CoreFoundation -framework Foundation -liconv \
+    -framework CoreFoundation -framework Foundation -weak_framework MetricKit -liconv \
     out/core/aarch64-apple-darwin/libmbui_core.a out/core/aarch64-apple-darwin/libstillfail_shell.a \
     out/core/aarch64-apple-darwin/libghostty-vt.a -Fout/core/hermes/Library/Frameworks/macosx -framework hermes -lc++ \
     -Wl,-rpath,"$A/out/core/hermes/Library/Frameworks/macosx"

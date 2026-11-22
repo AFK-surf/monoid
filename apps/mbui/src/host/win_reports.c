@@ -435,6 +435,416 @@ static char *sf_win_format_reports_json(int reporting, const char *account) {
   return sf_buf_take(&b);
 }
 
+// ── crash & watchdog records: pure C serialization, parsing, fingerprinting & rate-limit ──
+
+#define SF_WIN_MAX_FRAMES 32
+#define SF_WIN_MAX_KEPT 20
+#define SF_WIN_WD_THRESHOLD_MS 2500ULL
+#define SF_WIN_WD_WINDOW_MS (10ULL * 60ULL * 1000ULL)
+#define SF_WIN_WD_MAX_PER_WINDOW 5
+
+typedef struct {
+  char module[64];
+  uint64_t offset;
+} sf_win_frame;
+
+typedef struct {
+  char kind[24];
+  char uuid[37];
+  char at[25];
+  uint32_t exception_code;
+  char exception_name[64];
+  char fault_module[64];
+  uint64_t fault_offset;
+  uint64_t hang_ms;
+  size_t frame_count;
+  sf_win_frame frames[SF_WIN_MAX_FRAMES];
+} sf_win_crash_rec;
+
+typedef struct {
+  int reported_this_stall;
+  uint64_t report_times_ms[SF_WIN_WD_MAX_PER_WINDOW];
+  int report_count;
+} sf_win_wd_state;
+
+static const char *sf_win_exception_name(uint32_t code) {
+  switch (code) {
+    case 0xC0000005u: return "EXCEPTION_ACCESS_VIOLATION";
+    case 0xC000001Du: return "EXCEPTION_ILLEGAL_INSTRUCTION";
+    case 0xC00000FDu: return "EXCEPTION_STACK_OVERFLOW";
+    case 0xC0000094u: return "EXCEPTION_INT_DIVIDE_BY_ZERO";
+    case 0xC000008Cu: return "EXCEPTION_ARRAY_BOUNDS_EXCEEDED";
+    case 0xC000008Du: return "EXCEPTION_FLT_DENORMAL_OPERAND";
+    case 0xC000008Eu: return "EXCEPTION_FLT_DIVIDE_BY_ZERO";
+    case 0xC0000090u: return "EXCEPTION_FLT_INVALID_OPERATION";
+    case 0xC0000091u: return "EXCEPTION_FLT_OVERFLOW";
+    case 0xC0000093u: return "EXCEPTION_FLT_UNDERFLOW";
+    case 0xC0000096u: return "EXCEPTION_PRIV_INSTRUCTION";
+    case 0xC0000006u: return "EXCEPTION_IN_PAGE_ERROR";
+    case 0x80000002u: return "EXCEPTION_DATATYPE_MISALIGNMENT";
+    case 0x80000003u: return "EXCEPTION_BREAKPOINT";
+    case 0xC0000409u: return "STATUS_STACK_BUFFER_OVERRUN";
+    case 0xC0000374u: return "STATUS_HEAP_CORRUPTION";
+    default: return NULL;
+  }
+}
+
+static void sf_win_format_exception_name(uint32_t code, char *buf, size_t cap) {
+  if (!buf || cap == 0) return;
+  const char *known = sf_win_exception_name(code);
+  if (known) snprintf(buf, cap, "%s", known);
+  else snprintf(buf, cap, "EXCEPTION_0x%08X", (unsigned)code);
+}
+
+// Fixed-buffer JSON writer (zero heap allocation, safe inside SetUnhandledExceptionFilter).
+typedef struct {
+  char *buf;
+  size_t cap;
+  size_t len;
+  int overflow;
+} sf_fbuf;
+
+static void sf_fbuf_put_char(sf_fbuf *b, char c) {
+  if (b->overflow || b->len + 1 >= b->cap) {
+    b->overflow = 1;
+    return;
+  }
+  b->buf[b->len++] = c;
+  b->buf[b->len] = '\0';
+}
+
+static void sf_fbuf_put_str(sf_fbuf *b, const char *s) {
+  if (!s) return;
+  while (*s) sf_fbuf_put_char(b, *s++);
+}
+
+static void sf_fbuf_put_u64(sf_fbuf *b, uint64_t v) {
+  char tmp[32];
+  snprintf(tmp, sizeof tmp, "%llu", (unsigned long long)v);
+  sf_fbuf_put_str(b, tmp);
+}
+
+static void sf_fbuf_put_json_str(sf_fbuf *b, const char *s) {
+  if (!s) s = "";
+  sf_fbuf_put_char(b, '"');
+  for (; *s; s++) {
+    unsigned char c = (unsigned char)*s;
+    switch (c) {
+      case '"': sf_fbuf_put_str(b, "\\\""); break;
+      case '\\': sf_fbuf_put_str(b, "\\\\"); break;
+      case '\b': sf_fbuf_put_str(b, "\\b"); break;
+      case '\f': sf_fbuf_put_str(b, "\\f"); break;
+      case '\n': sf_fbuf_put_str(b, "\\n"); break;
+      case '\r': sf_fbuf_put_str(b, "\\r"); break;
+      case '\t': sf_fbuf_put_str(b, "\\t"); break;
+      default:
+        if (c < 0x20u) {
+          char esc[7];
+          snprintf(esc, sizeof esc, "\\u00%02x", (unsigned)c);
+          sf_fbuf_put_str(b, esc);
+        } else {
+          sf_fbuf_put_char(b, (char)c);
+        }
+        break;
+    }
+  }
+  sf_fbuf_put_char(b, '"');
+}
+
+static size_t sf_win_write_crash_json_buf(const sf_win_crash_rec *rec, char *buf, size_t cap) {
+  if (!rec || !buf || cap < 2) return 0;
+  sf_fbuf b;
+  b.buf = buf;
+  b.cap = cap;
+  b.len = 0;
+  b.overflow = 0;
+  buf[0] = '\0';
+  sf_fbuf_put_str(&b, "{\"kind\":");
+  sf_fbuf_put_json_str(&b, rec->kind);
+  sf_fbuf_put_str(&b, ",\"uuid\":");
+  sf_fbuf_put_json_str(&b, rec->uuid);
+  sf_fbuf_put_str(&b, ",\"at\":");
+  sf_fbuf_put_json_str(&b, rec->at);
+  if (strcmp(rec->kind, "watchdog_hang") == 0) {
+    sf_fbuf_put_str(&b, ",\"hang_ms\":");
+    sf_fbuf_put_u64(&b, rec->hang_ms);
+  } else {
+    sf_fbuf_put_str(&b, ",\"exception_code\":");
+    sf_fbuf_put_u64(&b, (uint64_t)rec->exception_code);
+    sf_fbuf_put_str(&b, ",\"exception_name\":");
+    sf_fbuf_put_json_str(&b, rec->exception_name);
+    if (rec->fault_module[0]) {
+      sf_fbuf_put_str(&b, ",\"fault_module\":");
+      sf_fbuf_put_json_str(&b, rec->fault_module);
+      sf_fbuf_put_str(&b, ",\"fault_offset\":");
+      sf_fbuf_put_u64(&b, rec->fault_offset);
+    }
+    sf_fbuf_put_str(&b, ",\"frames\":[");
+    size_t n = rec->frame_count > SF_WIN_MAX_FRAMES ? SF_WIN_MAX_FRAMES : rec->frame_count;
+    for (size_t i = 0; i < n; i++) {
+      if (i > 0) sf_fbuf_put_char(&b, ',');
+      sf_fbuf_put_str(&b, "{\"module\":");
+      sf_fbuf_put_json_str(&b, rec->frames[i].module);
+      sf_fbuf_put_str(&b, ",\"offset\":");
+      sf_fbuf_put_u64(&b, rec->frames[i].offset);
+      sf_fbuf_put_char(&b, '}');
+    }
+    sf_fbuf_put_char(&b, ']');
+  }
+  sf_fbuf_put_char(&b, '}');
+  return b.overflow ? 0 : b.len;
+}
+
+static const char *sf_rjson_read_u64(const char *p, uint64_t *out) {
+  p = sf_rjson_ws(p);
+  if (*p < '0' || *p > '9') return NULL;
+  uint64_t v = 0;
+  while (*p >= '0' && *p <= '9') {
+    uint64_t d = (uint64_t)(*p - '0');
+    if (v <= (UINT64_MAX - d) / 10ULL) v = v * 10ULL + d;
+    p++;
+  }
+  if (out) *out = v;
+  return p;
+}
+
+static int sf_win_parse_crash_json(const char *text, sf_win_crash_rec *out) {
+  if (!out) return 0;
+  memset(out, 0, sizeof *out);
+  if (!text) return 0;
+  const char *p = sf_rjson_ws(text);
+  if (*p != '{') return 0;
+  p = sf_rjson_ws(p + 1);
+  while (*p == '"') {
+    char key[64];
+    key[0] = '\0';
+    p = sf_rjson_read_str(p, key, sizeof key);
+    if (!p) return 0;
+    p = sf_rjson_ws(p);
+    if (*p != ':') return 0;
+    p = sf_rjson_ws(p + 1);
+    if (strcmp(key, "kind") == 0 && *p == '"') {
+      p = sf_rjson_read_str(p, out->kind, sizeof out->kind);
+    } else if (strcmp(key, "uuid") == 0 && *p == '"') {
+      p = sf_rjson_read_str(p, out->uuid, sizeof out->uuid);
+    } else if (strcmp(key, "at") == 0 && *p == '"') {
+      p = sf_rjson_read_str(p, out->at, sizeof out->at);
+    } else if (strcmp(key, "exception_name") == 0 && *p == '"') {
+      p = sf_rjson_read_str(p, out->exception_name, sizeof out->exception_name);
+    } else if (strcmp(key, "fault_module") == 0 && *p == '"') {
+      p = sf_rjson_read_str(p, out->fault_module, sizeof out->fault_module);
+    } else if (strcmp(key, "exception_code") == 0) {
+      uint64_t v = 0;
+      p = sf_rjson_read_u64(p, &v);
+      out->exception_code = (uint32_t)v;
+    } else if (strcmp(key, "fault_offset") == 0) {
+      p = sf_rjson_read_u64(p, &out->fault_offset);
+    } else if (strcmp(key, "hang_ms") == 0) {
+      p = sf_rjson_read_u64(p, &out->hang_ms);
+    } else if (strcmp(key, "frames") == 0 && *p == '[') {
+      p = sf_rjson_ws(p + 1);
+      while (*p && *p != ']') {
+        if (*p != '{') return 0;
+        p = sf_rjson_ws(p + 1);
+        sf_win_frame fr;
+        memset(&fr, 0, sizeof fr);
+        while (*p == '"') {
+          char fk[32];
+          fk[0] = '\0';
+          p = sf_rjson_read_str(p, fk, sizeof fk);
+          if (!p) return 0;
+          p = sf_rjson_ws(p);
+          if (*p != ':') return 0;
+          p = sf_rjson_ws(p + 1);
+          if (strcmp(fk, "module") == 0 && *p == '"') {
+            p = sf_rjson_read_str(p, fr.module, sizeof fr.module);
+          } else if (strcmp(fk, "offset") == 0) {
+            p = sf_rjson_read_u64(p, &fr.offset);
+          } else {
+            p = sf_rjson_skip_val(p);
+          }
+          if (!p) return 0;
+          p = sf_rjson_ws(p);
+          if (*p == ',') p = sf_rjson_ws(p + 1);
+          else break;
+        }
+        if (*p != '}') return 0;
+        p = sf_rjson_ws(p + 1);
+        if (out->frame_count < SF_WIN_MAX_FRAMES && fr.module[0]) {
+          out->frames[out->frame_count++] = fr;
+        }
+        if (*p == ',') p = sf_rjson_ws(p + 1);
+        else break;
+      }
+      if (*p != ']') return 0;
+      p++;
+    } else {
+      p = sf_rjson_skip_val(p);
+    }
+    if (!p) return 0;
+    p = sf_rjson_ws(p);
+    if (*p == ',') p = sf_rjson_ws(p + 1);
+    else break;
+  }
+  if (!out->uuid[0] || !out->at[0]) return 0;
+  if (strcmp(out->kind, "crash") != 0 && strcmp(out->kind, "watchdog_hang") != 0) return 0;
+  if (strcmp(out->kind, "watchdog_hang") == 0 && out->hang_ms == 0) return 0;
+  return 1;
+}
+
+static void sf_win_build_crash_fingerprint(const sf_win_crash_rec *rec, char *out, size_t cap) {
+  if (!out || cap == 0) return;
+  out[0] = '\0';
+  if (!rec) return;
+  if (strcmp(rec->kind, "watchdog_hang") == 0) {
+    snprintf(out, cap, "windows:MainThreadHang:watchdog");
+    return;
+  }
+  const char *type = rec->exception_name[0] ? rec->exception_name : "Crash";
+  sf_fbuf b;
+  b.buf = out;
+  b.cap = cap;
+  b.len = 0;
+  b.overflow = 0;
+  if (rec->frame_count > 0) {
+    sf_fbuf_put_str(&b, "windows:");
+    sf_fbuf_put_str(&b, type);
+    sf_fbuf_put_char(&b, ':');
+    size_t lim = rec->frame_count < 6 ? rec->frame_count : 6;
+    for (size_t i = 0; i < lim; i++) {
+      if (i > 0) sf_fbuf_put_char(&b, '|');
+      char seg[96];
+      snprintf(seg, sizeof seg, "%s + 0x%llx", rec->frames[i].module, (unsigned long long)rec->frames[i].offset);
+      sf_fbuf_put_str(&b, seg);
+    }
+  } else if (rec->fault_module[0]) {
+    snprintf(out, cap, "windows:%s:%s + 0x%llx", type, rec->fault_module, (unsigned long long)rec->fault_offset);
+  }
+}
+
+static char *sf_win_build_batch_crash(const char *api_key, const char *distinct_id, const sf_win_crash_rec *rec,
+                                      const char *here_json) {
+  if (!api_key || !*api_key || !distinct_id || !*distinct_id || !rec || !rec->uuid[0] || !rec->at[0]) return NULL;
+  int is_wd = strcmp(rec->kind, "watchdog_hang") == 0;
+  int is_crash = strcmp(rec->kind, "crash") == 0;
+  if (!is_wd && !is_crash) return NULL;
+  const char *h_inner = NULL;
+  size_t h_len = 0;
+  if (here_json && !sf_json_object_inner(here_json, &h_inner, &h_len)) return NULL;
+
+  char fp[512];
+  sf_win_build_crash_fingerprint(rec, fp, sizeof fp);
+
+  sf_buf b;
+  sf_buf_init(&b, 1024);
+  sf_buf_put_str(&b, "{\"api_key\":");
+  sf_buf_put_json_str(&b, api_key);
+  sf_buf_put_str(&b, ",\"batch\":[{\"event\":\"$exception\",\"distinct_id\":");
+  sf_buf_put_json_str(&b, distinct_id);
+  sf_buf_put_str(&b, ",\"uuid\":");
+  sf_buf_put_json_str(&b, rec->uuid);
+  sf_buf_put_str(&b, ",\"timestamp\":");
+  sf_buf_put_json_str(&b, rec->at);
+  sf_buf_put_str(&b, ",\"properties\":{");
+  if (h_len > 0) {
+    sf_buf_put_bytes(&b, h_inner, h_len);
+    sf_buf_put_char(&b, ',');
+  }
+  if (is_wd) {
+    char num[32], val[96];
+    snprintf(num, sizeof num, "%llu", (unsigned long long)rec->hang_ms);
+    snprintf(val, sizeof val, "the main thread did not respond for %.1f s", (double)rec->hang_ms / 1000.0);
+    sf_buf_put_str(&b, "\"reason\":\"watchdog_hang\",\"hang_ms\":");
+    sf_buf_put_str(&b, num);
+    sf_buf_put_str(&b, ",\"$exception_level\":\"error\",\"$exception_fingerprint\":");
+    sf_buf_put_json_str(&b, fp);
+    sf_buf_put_str(&b, ",\"$exception_list\":[{\"type\":\"MainThreadHang\",\"value\":");
+    sf_buf_put_json_str(&b, val);
+    sf_buf_put_str(&b, ",\"mechanism\":{\"handled\":false,\"synthetic\":false,\"type\":\"watchdog\"}}]}}]}");
+  } else {
+    const char *type = rec->exception_name[0] ? rec->exception_name : "Crash";
+    char num[32], val[192];
+    snprintf(num, sizeof num, "%u", (unsigned)rec->exception_code);
+    if (rec->fault_module[0]) {
+      snprintf(val, sizeof val, "%s (0x%08X) at %s + 0x%llx", type, (unsigned)rec->exception_code, rec->fault_module,
+               (unsigned long long)rec->fault_offset);
+    } else {
+      snprintf(val, sizeof val, "%s (0x%08X)", type, (unsigned)rec->exception_code);
+    }
+    sf_buf_put_str(&b, "\"reason\":\"crash\",\"exception_code\":");
+    sf_buf_put_str(&b, num);
+    if (rec->fault_module[0]) {
+      char off_num[32];
+      snprintf(off_num, sizeof off_num, "%llu", (unsigned long long)rec->fault_offset);
+      sf_buf_put_str(&b, ",\"fault_module\":");
+      sf_buf_put_json_str(&b, rec->fault_module);
+      sf_buf_put_str(&b, ",\"fault_offset\":");
+      sf_buf_put_str(&b, off_num);
+    }
+    sf_buf_put_str(&b, ",\"frames\":[");
+    size_t n = rec->frame_count > SF_WIN_MAX_FRAMES ? SF_WIN_MAX_FRAMES : rec->frame_count;
+    for (size_t i = 0; i < n; i++) {
+      if (i > 0) sf_buf_put_char(&b, ',');
+      char off_num[32];
+      snprintf(off_num, sizeof off_num, "%llu", (unsigned long long)rec->frames[i].offset);
+      sf_buf_put_str(&b, "{\"binary\":");
+      sf_buf_put_json_str(&b, rec->frames[i].module);
+      sf_buf_put_str(&b, ",\"offset\":");
+      sf_buf_put_str(&b, off_num);
+      sf_buf_put_char(&b, '}');
+    }
+    sf_buf_put_str(&b, "],\"trace\":");
+    sf_buf trace;
+    sf_buf_init(&trace, 256);
+    sf_buf_put_str(&trace, val);
+    sf_buf_put_str(&trace, "\nCrashed thread:\n");
+    for (size_t i = 0; i < n; i++) {
+      char line[128];
+      snprintf(line, sizeof line, "%-3u %s + 0x%llx\n", (unsigned)i, rec->frames[i].module,
+               (unsigned long long)rec->frames[i].offset);
+      sf_buf_put_str(&trace, line);
+    }
+    char *trace_str = sf_buf_take(&trace);
+    sf_buf_put_json_str(&b, trace_str ? trace_str : "");
+    free(trace_str);
+    if (fp[0]) {
+      sf_buf_put_str(&b, ",\"$exception_fingerprint\":");
+      sf_buf_put_json_str(&b, fp);
+    }
+    sf_buf_put_str(&b, ",\"$exception_level\":\"fatal\",\"$exception_list\":[{\"type\":");
+    sf_buf_put_json_str(&b, type);
+    sf_buf_put_str(&b, ",\"value\":");
+    sf_buf_put_json_str(&b, val);
+    sf_buf_put_str(&b, ",\"mechanism\":{\"handled\":false,\"synthetic\":false,\"type\":\"seh\"}}]}}]}");
+  }
+  return sf_buf_take(&b);
+}
+
+static int sf_win_wd_on_probe(sf_win_wd_state *st, int active, int timed_out, uint64_t elapsed_ms,
+                              uint64_t now_unbiased_ms, uint64_t *out_hang_ms) {
+  if (out_hang_ms) *out_hang_ms = 0;
+  if (!st) return 0;
+  if (!active || !timed_out) {
+    st->reported_this_stall = 0;
+    return 0;
+  }
+  if (elapsed_ms < SF_WIN_WD_THRESHOLD_MS || st->reported_this_stall) return 0;
+  int kept = 0;
+  for (int i = 0; i < st->report_count; i++) {
+    if (now_unbiased_ms >= st->report_times_ms[i] && (now_unbiased_ms - st->report_times_ms[i]) < SF_WIN_WD_WINDOW_MS) {
+      st->report_times_ms[kept++] = st->report_times_ms[i];
+    }
+  }
+  st->report_count = kept;
+  st->reported_this_stall = 1;
+  if (st->report_count < SF_WIN_WD_MAX_PER_WINDOW) {
+    st->report_times_ms[st->report_count++] = now_unbiased_ms;
+    if (out_hang_ms) *out_hang_ms = elapsed_ms;
+    return 1;
+  }
+  return 0;
+}
+
 #ifndef SF_REPORTS_PURE
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -450,6 +860,7 @@ static char *sf_win_format_reports_json(int reporting, const char *account) {
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "user32.lib")
 
 #define SF_WIN_QUEUE_CAP 64
 
@@ -462,7 +873,7 @@ static char *sf_here_cached = NULL;
 
 static SRWLOCK sf_state_lock = SRWLOCK_INIT;
 static int sf_state_loaded = 0;
-static int sf_reporting_on = 1;
+static volatile LONG sf_reporting_on = 1;
 static char sf_persisted_account[256];
 static char sf_signed_in[256];
 
@@ -473,6 +884,15 @@ static size_t sf_queue_head = 0;
 static size_t sf_queue_count = 0;
 static int sf_sender_started = 0;
 static volatile LONG sf_sender_stop = 0;
+static volatile LONG sf_flush_crashes = 0;
+
+static volatile LONG sf_monitor_installed = 0;
+static volatile LONG sf_in_crash = 0;
+static DWORD sf_main_tid = 0;
+static WCHAR sf_crashes_dir[MAX_PATH];
+static LPTOP_LEVEL_EXCEPTION_FILTER sf_prev_exception_filter = NULL;
+static sf_win_crash_rec sf_crash_rec_static;
+static char sf_crash_json_static[8192];
 
 static char *sf_win_wstr_to_utf8_n(const WCHAR *w, int wlen) {
   if (!w || wlen == 0) {
@@ -573,7 +993,9 @@ static void sf_win_state_load_locked(void) {
       DWORD got = 0;
       if (ReadFile(f, buf, (DWORD)sz.QuadPart, &got, NULL)) {
         buf[got] = '\0';
-        sf_win_parse_reports_json(buf, &sf_reporting_on, sf_persisted_account, sizeof sf_persisted_account);
+        int rep = 1;
+        sf_win_parse_reports_json(buf, &rep, sf_persisted_account, sizeof sf_persisted_account);
+        sf_reporting_on = rep ? 1 : 0;
       }
       free(buf);
     }
@@ -585,7 +1007,7 @@ static void sf_win_state_save_locked(void) {
   WCHAR *dir = sf_win_reports_dir();
   if (!dir) return;
   SHCreateDirectoryExW(NULL, dir, NULL);
-  char *json = sf_win_format_reports_json(sf_reporting_on, sf_persisted_account);
+  char *json = sf_win_format_reports_json((int)sf_reporting_on, sf_persisted_account);
   if (!json) {
     free(dir);
     return;
@@ -720,13 +1142,13 @@ static void sf_win_now_iso(char out25[25]) {
                         (int)st.wMilliseconds, out25);
 }
 
-static void sf_win_post_batch(char *body) {
+static int sf_win_post_batch(const char *body) {
   sf_win_cfg_ensure();
-  if (!sf_posthog_host[0] || !body) return;
+  if (!sf_posthog_host[0] || !body) return 0;
   char url_utf8[600];
   snprintf(url_utf8, sizeof url_utf8, "%s/batch/", sf_posthog_host);
   WCHAR wurl[600];
-  if (MultiByteToWideChar(CP_UTF8, 0, url_utf8, -1, wurl, (int)(sizeof wurl / sizeof wurl[0])) <= 0) return;
+  if (MultiByteToWideChar(CP_UTF8, 0, url_utf8, -1, wurl, (int)(sizeof wurl / sizeof wurl[0])) <= 0) return 0;
 
   URL_COMPONENTS uc;
   memset(&uc, 0, sizeof uc);
@@ -736,35 +1158,104 @@ static void sf_win_post_batch(char *body) {
   uc.dwHostNameLength = (DWORD)(sizeof whost / sizeof whost[0]);
   uc.lpszUrlPath = wpath;
   uc.dwUrlPathLength = (DWORD)(sizeof wpath / sizeof wpath[0]);
-  if (!WinHttpCrackUrl(wurl, 0, 0, &uc)) return;
+  if (!WinHttpCrackUrl(wurl, 0, 0, &uc)) return 0;
 
   HINTERNET s = WinHttpOpen(L"stillfail-reports/1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                             WINHTTP_NO_PROXY_BYPASS, 0);
-  if (!s) return;
+  if (!s) return 0;
   WinHttpSetTimeouts(s, 15000, 15000, 15000, 15000);
   HINTERNET c = WinHttpConnect(s, whost, uc.nPort, 0);
   HINTERNET r = c ? WinHttpOpenRequest(c, L"POST", wpath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                        uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
                   : NULL;
+  int ok = 0;
   if (r) {
     DWORD blen = (DWORD)strlen(body);
-    if (WinHttpSendRequest(r, L"Content-Type: application/json\r\n", (DWORD)-1, body, blen, blen, 0)) {
-      WinHttpReceiveResponse(r, NULL);
+    if (WinHttpSendRequest(r, L"Content-Type: application/json\r\n", (DWORD)-1, (LPVOID)body, blen, blen, 0) &&
+        WinHttpReceiveResponse(r, NULL)) {
+      DWORD status = 0;
+      DWORD status_sz = sizeof status;
+      if (WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                              &status, &status_sz, WINHTTP_NO_HEADER_INDEX)) {
+        ok = (status >= 200 && status <= 299) ? 1 : 0;
+      }
     }
     WinHttpCloseHandle(r);
   }
   if (c) WinHttpCloseHandle(c);
   WinHttpCloseHandle(s);
+  return ok;
+}
+
+static void sf_win_flush_crashes(void) {
+  if (!sf_win_has_key() || !sf_win_reporting() || !sf_crashes_dir[0]) return;
+  WCHAR pattern[MAX_PATH];
+  if (swprintf(pattern, MAX_PATH, L"%ls\\*.json", sf_crashes_dir) < 0) return;
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW(pattern, &fd);
+  if (h == INVALID_HANDLE_VALUE) return;
+
+  char distinct_id[256];
+  sf_win_distinct_id(distinct_id, sizeof distinct_id);
+  const char *here = sf_win_here();
+  int handled = 0;
+  do {
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+    WCHAR fpath[MAX_PATH];
+    if (swprintf(fpath, MAX_PATH, L"%ls\\%ls", sf_crashes_dir, fd.cFileName) < 0) continue;
+    if (handled >= SF_WIN_MAX_KEPT) {
+      DeleteFileW(fpath);
+      continue;
+    }
+    HANDLE f = CreateFileW(fpath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) continue;
+    LARGE_INTEGER sz;
+    char *raw = NULL;
+    if (GetFileSizeEx(f, &sz) && sz.QuadPart > 0 && sz.QuadPart < 64 * 1024) {
+      raw = (char *)malloc((size_t)sz.QuadPart + 1);
+      if (raw) {
+        DWORD got = 0;
+        if (ReadFile(f, raw, (DWORD)sz.QuadPart, &got, NULL)) raw[got] = '\0';
+        else {
+          free(raw);
+          raw = NULL;
+        }
+      }
+    }
+    CloseHandle(f);
+    if (!raw) {
+      DeleteFileW(fpath);
+      continue;
+    }
+    sf_win_crash_rec rec;
+    if (!sf_win_parse_crash_json(raw, &rec)) {
+      free(raw);
+      DeleteFileW(fpath);
+      continue;
+    }
+    free(raw);
+    char *body = sf_win_build_batch_crash(sf_posthog_key, distinct_id, &rec, here);
+    if (!body) continue;
+    if (sf_win_post_batch(body)) {
+      DeleteFileW(fpath);
+      handled++;
+    }
+    free(body);
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
 }
 
 static DWORD WINAPI sf_win_sender_thread(LPVOID param) {
   (void)param;
   while (!InterlockedCompareExchange(&sf_sender_stop, 0, 0)) {
     char *body = NULL;
+    int do_flush = 0;
     AcquireSRWLockExclusive(&sf_queue_lock);
-    while (sf_queue_count == 0 && !InterlockedCompareExchange(&sf_sender_stop, 0, 0)) {
+    while (sf_queue_count == 0 && !InterlockedCompareExchange(&sf_flush_crashes, 0, 0) &&
+           !InterlockedCompareExchange(&sf_sender_stop, 0, 0)) {
       SleepConditionVariableSRW(&sf_queue_cv, &sf_queue_lock, INFINITE, 0);
     }
+    if (InterlockedExchange(&sf_flush_crashes, 0)) do_flush = 1;
     if (sf_queue_count > 0) {
       body = sf_queue[sf_queue_head];
       sf_queue[sf_queue_head] = NULL;
@@ -772,27 +1263,39 @@ static DWORD WINAPI sf_win_sender_thread(LPVOID param) {
       sf_queue_count--;
     }
     ReleaseSRWLockExclusive(&sf_queue_lock);
+    if (do_flush) sf_win_flush_crashes();
     if (body) {
-      if (sf_win_reporting()) sf_win_post_batch(body);
+      if (sf_win_reporting()) (void)sf_win_post_batch(body);
       free(body);
     }
   }
   return 0;
 }
 
+static int sf_win_ensure_sender_locked(void) {
+  if (sf_sender_started) return 1;
+  HANDLE th = CreateThread(NULL, 0, sf_win_sender_thread, NULL, 0, NULL);
+  if (!th) return 0;
+  CloseHandle(th);
+  sf_sender_started = 1;
+  return 1;
+}
+
+static void sf_win_trigger_flush_crashes(void) {
+  InterlockedExchange(&sf_flush_crashes, 1);
+  AcquireSRWLockExclusive(&sf_queue_lock);
+  (void)sf_win_ensure_sender_locked();
+  ReleaseSRWLockExclusive(&sf_queue_lock);
+  WakeConditionVariable(&sf_queue_cv);
+}
+
 static void sf_win_enqueue(char *body) {
   if (!body) return;
   AcquireSRWLockExclusive(&sf_queue_lock);
-  if (!sf_sender_started) {
-    HANDLE th = CreateThread(NULL, 0, sf_win_sender_thread, NULL, 0, NULL);
-    if (th) {
-      CloseHandle(th);
-      sf_sender_started = 1;
-    } else {
-      ReleaseSRWLockExclusive(&sf_queue_lock);
-      free(body);
-      return;
-    }
+  if (!sf_win_ensure_sender_locked()) {
+    ReleaseSRWLockExclusive(&sf_queue_lock);
+    free(body);
+    return;
   }
   if (sf_queue_count == SF_WIN_QUEUE_CAP) {
     free(sf_queue[sf_queue_head]);
@@ -805,6 +1308,163 @@ static void sf_win_enqueue(char *body) {
   sf_queue_count++;
   ReleaseSRWLockExclusive(&sf_queue_lock);
   WakeConditionVariable(&sf_queue_cv);
+}
+
+// Writes a crash/watchdog record atomically into `<sf_crashes_dir>\<uuid>.json` without heap allocations.
+static int sf_win_persist_crash_buf(const sf_win_crash_rec *rec, char *json_buf, size_t json_cap) {
+  if (!rec || !sf_crashes_dir[0] || !rec->uuid[0]) return 0;
+  size_t len = sf_win_write_crash_json_buf(rec, json_buf, json_cap);
+  if (len == 0) return 0;
+  WCHAR wuuid[40];
+  if (MultiByteToWideChar(CP_UTF8, 0, rec->uuid, -1, wuuid, (int)(sizeof wuuid / sizeof wuuid[0])) <= 0) return 0;
+  WCHAR tmp[MAX_PATH], dst[MAX_PATH];
+  if (swprintf(tmp, MAX_PATH, L"%ls\\%ls.json.tmp", sf_crashes_dir, wuuid) < 0) return 0;
+  if (swprintf(dst, MAX_PATH, L"%ls\\%ls.json", sf_crashes_dir, wuuid) < 0) return 0;
+  HANDLE f = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (f == INVALID_HANDLE_VALUE) return 0;
+  DWORD put = 0;
+  BOOL ok = WriteFile(f, json_buf, (DWORD)len, &put, NULL) && put == (DWORD)len;
+  CloseHandle(f);
+  if (ok) {
+    if (MoveFileExW(tmp, dst, MOVEFILE_REPLACE_EXISTING)) return 1;
+  }
+  DeleteFileW(tmp);
+  return 0;
+}
+
+static void sf_win_addr_to_mod(void *addr, char *mod_out, size_t mod_cap, uint64_t *off_out) {
+  if (mod_out && mod_cap > 0) mod_out[0] = '\0';
+  if (off_out) *off_out = 0;
+  if (!addr) return;
+  HMODULE hmod = NULL;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          (LPCWSTR)addr, &hmod) ||
+      !hmod) {
+    if (mod_out && mod_cap > 0) snprintf(mod_out, mod_cap, "unknown");
+    if (off_out) *off_out = (uint64_t)(uintptr_t)addr;
+    return;
+  }
+  if (off_out) *off_out = (uint64_t)((uintptr_t)addr - (uintptr_t)hmod);
+  WCHAR wpath[MAX_PATH];
+  DWORD n = GetModuleFileNameW(hmod, wpath, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) {
+    if (mod_out && mod_cap > 0) snprintf(mod_out, mod_cap, "unknown");
+    return;
+  }
+  wpath[n] = L'\0';
+  const WCHAR *base = wpath;
+  for (const WCHAR *p = wpath; *p; p++) {
+    if (*p == L'\\' || *p == L'/') base = p + 1;
+  }
+  if (mod_out && mod_cap > 0) {
+    int got = WideCharToMultiByte(CP_UTF8, 0, base, -1, mod_out, (int)mod_cap, NULL, NULL);
+    if (got <= 0) snprintf(mod_out, mod_cap, "unknown");
+    else mod_out[mod_cap - 1] = '\0';
+  }
+}
+
+static LONG WINAPI sf_win_unhandled_exception_filter(EXCEPTION_POINTERS *ep) {
+  if (InterlockedExchange(&sf_in_crash, 1) == 0 && sf_reporting_on && sf_crashes_dir[0]) {
+    memset(&sf_crash_rec_static, 0, sizeof sf_crash_rec_static);
+    snprintf(sf_crash_rec_static.kind, sizeof sf_crash_rec_static.kind, "crash");
+    sf_win_make_uuid(sf_crash_rec_static.uuid);
+    sf_win_now_iso(sf_crash_rec_static.at);
+    uint32_t code = (ep && ep->ExceptionRecord) ? (uint32_t)ep->ExceptionRecord->ExceptionCode : 0u;
+    sf_crash_rec_static.exception_code = code;
+    sf_win_format_exception_name(code, sf_crash_rec_static.exception_name, sizeof sf_crash_rec_static.exception_name);
+    void *fault_addr = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionAddress : NULL;
+    if (fault_addr) {
+      sf_win_addr_to_mod(fault_addr, sf_crash_rec_static.fault_module, sizeof sf_crash_rec_static.fault_module,
+                         &sf_crash_rec_static.fault_offset);
+    }
+    void *raw_frames[SF_WIN_MAX_FRAMES];
+    USHORT captured = RtlCaptureStackBackTrace(0, SF_WIN_MAX_FRAMES, raw_frames, NULL);
+    size_t out_i = 0;
+    if (fault_addr && (captured == 0 || raw_frames[0] != fault_addr)) {
+      snprintf(sf_crash_rec_static.frames[0].module, sizeof sf_crash_rec_static.frames[0].module, "%s",
+               sf_crash_rec_static.fault_module);
+      sf_crash_rec_static.frames[0].offset = sf_crash_rec_static.fault_offset;
+      out_i = 1;
+    }
+    for (USHORT i = 0; i < captured && out_i < SF_WIN_MAX_FRAMES; i++) {
+      sf_win_addr_to_mod(raw_frames[i], sf_crash_rec_static.frames[out_i].module,
+                         sizeof sf_crash_rec_static.frames[out_i].module, &sf_crash_rec_static.frames[out_i].offset);
+      out_i++;
+    }
+    sf_crash_rec_static.frame_count = out_i;
+    (void)sf_win_persist_crash_buf(&sf_crash_rec_static, sf_crash_json_static, sizeof sf_crash_json_static);
+  }
+  return sf_prev_exception_filter ? sf_prev_exception_filter(ep) : EXCEPTION_CONTINUE_SEARCH;
+}
+
+static BOOL CALLBACK sf_win_find_hwnd_cb(HWND w, LPARAM lp) {
+  if (IsWindowVisible(w)) {
+    *(HWND *)lp = w;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static DWORD WINAPI sf_win_watchdog_thread(LPVOID param) {
+  (void)param;
+  sf_win_wd_state wd;
+  memset(&wd, 0, sizeof wd);
+  while (!InterlockedCompareExchange(&sf_sender_stop, 0, 0)) {
+    Sleep(1000);
+    if (InterlockedCompareExchange(&sf_sender_stop, 0, 0)) break;
+    DWORD tid = sf_main_tid;
+    if (tid == 0) continue;
+    HWND hwnd = NULL;
+    EnumThreadWindows(tid, sf_win_find_hwnd_cb, (LPARAM)&hwnd);
+    int active = (hwnd != NULL && !IsIconic(hwnd) && GetForegroundWindow() == hwnd) ? 1 : 0;
+    uint64_t hang_ms = 0;
+    if (!active) {
+      ULONGLONG now_t = 0;
+      (void)QueryUnbiasedInterruptTime(&now_t);
+      (void)sf_win_wd_on_probe(&wd, 0, 0, 0, (uint64_t)(now_t / 10000ULL), &hang_ms);
+      continue;
+    }
+    ULONGLONG t0 = 0, t1 = 0;
+    (void)QueryUnbiasedInterruptTime(&t0);
+    DWORD_PTR res = 0;
+    LRESULT ok = SendMessageTimeoutW(hwnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG | SMTO_NORMAL, 2500, &res);
+    DWORD err = (ok == 0) ? GetLastError() : 0;
+    (void)QueryUnbiasedInterruptTime(&t1);
+    uint64_t elapsed_ms = (t1 >= t0) ? (uint64_t)((t1 - t0) / 10000ULL) : 0;
+    uint64_t now_ms = (uint64_t)(t1 / 10000ULL);
+    int still_active = (!IsIconic(hwnd) && GetForegroundWindow() == hwnd) ? 1 : 0;
+    int timed_out = (ok == 0 && (err == ERROR_TIMEOUT || err == 0)) ? 1 : 0;
+    if (sf_win_wd_on_probe(&wd, still_active, timed_out, elapsed_ms, now_ms, &hang_ms) && sf_win_reporting()) {
+      sf_win_crash_rec rec;
+      memset(&rec, 0, sizeof rec);
+      snprintf(rec.kind, sizeof rec.kind, "watchdog_hang");
+      sf_win_make_uuid(rec.uuid);
+      sf_win_now_iso(rec.at);
+      rec.hang_ms = hang_ms;
+      char jbuf[512];
+      if (sf_win_persist_crash_buf(&rec, jbuf, sizeof jbuf)) {
+        sf_win_trigger_flush_crashes();
+      }
+    }
+  }
+  return 0;
+}
+
+static void sf_win_install_monitoring(void) {
+  if (!sf_win_has_key()) return;
+  if (InterlockedCompareExchange(&sf_monitor_installed, 1, 0) != 0) return;
+  sf_main_tid = GetCurrentThreadId();
+  (void)sf_win_reporting();
+  WCHAR *dir = sf_win_reports_dir();
+  if (dir) {
+    if (swprintf(sf_crashes_dir, MAX_PATH, L"%ls\\crashes", dir) > 0) {
+      SHCreateDirectoryExW(NULL, sf_crashes_dir, NULL);
+    }
+    free(dir);
+  }
+  sf_prev_exception_filter = SetUnhandledExceptionFilter(sf_win_unhandled_exception_filter);
+  HANDLE wd = CreateThread(NULL, 0, sf_win_watchdog_thread, NULL, 0, NULL);
+  if (wd) CloseHandle(wd);
 }
 
 static void sf_win_handled(const char *type, const char *value, const char *reason) {
@@ -836,7 +1496,11 @@ int32_t mb_stillfail_tell(moonbit_string_t what_, moonbit_string_t a_, moonbit_s
 
   if (strcmp(what, "hello") == 0) {
     free(what);
-    return sf_win_has_key() ? 1 : 0;
+    if (sf_win_has_key()) {
+      sf_win_install_monitoring();
+      return 1;
+    }
+    return 0;
   }
   if (strcmp(what, "reporting") == 0) {
     free(what);
@@ -856,6 +1520,7 @@ int32_t mb_stillfail_tell(moonbit_string_t what_, moonbit_string_t a_, moonbit_s
   if (strcmp(what, "signed_in") == 0) {
     free(what);
     if (!sf_win_has_key()) return 0;
+    sf_win_install_monitoring();
     char *account = sf_win_mb_to_utf8(a_);
     if (account && account[0]) {
       AcquireSRWLockExclusive(&sf_state_lock);
@@ -868,6 +1533,7 @@ int32_t mb_stillfail_tell(moonbit_string_t what_, moonbit_string_t a_, moonbit_s
       ReleaseSRWLockExclusive(&sf_state_lock);
     }
     free(account);
+    sf_win_trigger_flush_crashes();
     return 0;
   }
   if (strcmp(what, "core_failed") == 0) {
