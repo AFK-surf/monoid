@@ -1528,16 +1528,18 @@ test "exported liquid_*_glass recipes match symmetric density, solid override an
     let drg = liquid_drawer_glass(solid=custom_solid)
     let tg = liquid_toast_glass(solid=custom_solid)
     let cg = liquid_capsule_glass(solid=custom_solid)
+    let expected_70 = if dark { 0x202020B3L } else { 0xFDFCFDB3L }
     let expected_75 = if dark { 0x202020BFL } else { 0xFDFCFDBFL }
     let expected_80 = if dark { 0x202020CCL } else { 0xFDFCFDCCL }
     assert_eq(pg.tint, expected_75)
     assert_eq(pg.solid, custom_solid)
     assert_eq(pg.bezel, 16.0)
     assert_eq(pg.refraction, 22.0)
-    assert_eq(dg.tint, expected_80)
-    assert_eq(dg.blur, 12.0)
-    assert_eq(dg.bezel, 20.0)
-    assert_eq(dg.refraction, 28.0)
+    assert_eq(dg.tint, expected_70)
+    assert_eq(dg.blur, 9.0)
+    assert_eq(dg.rim, 0.65)
+    assert_eq(dg.bezel, 22.0)
+    assert_eq(dg.refraction, 32.0)
     assert_eq(dg.solid, custom_solid)
     assert_eq(sg.tint, expected_80)
     assert_eq(sg.refraction, 24.0)
@@ -1755,4 +1757,29 @@ test "liquid_tooltip_node renders shortcut badge via liquid_tooltip_bubble_node 
   t.tap(bx, by)
   t.run_for(springs_out)
   assert_eq(clicked.val, 1)
+}
+
+///|
+test "liquid_dialog_node iOS 26/27 compact geometry passes Tester::audit and corner_faults in light and dark" {
+  for dark in [false, true] {
+    let open = @signals.signal(true)
+    let t = ovl_case(dark~, w=700.0, h=600.0, fn(_page, host) {
+      liquid_dialog_node(
+        host,
+        fn() { open.get() },
+        fn() { open.set(false) },
+        fn() { "Publish ui.monoid" },
+        fn() { "Compile one MoonBit UI tree into native GPU bundles." },
+        cancel=fn() { "Cancel" },
+        action=fn() { "Publish" },
+      )
+      |> ignore
+    })
+    t.run_for(springs_out)
+    let rect = t.get(Dialog, label="Publish ui.monoid").rect
+    assert_true((rect.2 - 320.0).abs() < 1.0, msg="expected default dialog width 320, got \{rect.2}")
+    assert_no_nested_glass(t, "liquid_dialog_ios27 dark=\{dark}")
+    assert_eq(t.audit(), [])
+    assert_eq(t.corner_faults(), [])
+  }
 }

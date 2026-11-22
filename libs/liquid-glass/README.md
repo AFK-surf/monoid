@@ -59,7 +59,7 @@ All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `
 | `liquid_drawer_node`, `DrawerSide` | Floating island side drawer (`Leading`/`Trailing`, 10pt margin, `r=28pt`, optional `show_header=false` & narrow-window width clamp) with horizontal drag-to-dismiss, rubber-band over-pull, and velocity-continuous spring settle. |
 | `liquid_sheet_node` | Detached floating modal glass sheet (`r=36pt`) with interactive vertical drag-to-dismiss and optional `detents=true` morphing to a full-height docked reading surface. |
 | `liquid_action_sheet_node`, `LiquidActionSheetItem` | Separated iOS-style action group with independent Cancel glass capsule. |
-| `liquid_dialog_node`, `liquid_dialog_shell_node` | Modal refractive glass dialog (symmetric 80% dense glass) and composable dialog shell for custom centered panels and switchers. |
+| `liquid_dialog_node`, `liquid_dialog_shell_node` | Modal refractive glass dialog (iOS 26/27 symmetric 70% luminous glass, `320pt` compact alert) and composable dialog shell for custom centered panels and switchers. |
 | `liquid_toast_node`, `liquid_toast_shell_node`, `LiquidStatus` | Floating status capsule (`Info`, `Success`, `Warning`, `Error`) with swipe-to-dismiss, optional action pill, and composable toast shell. |
 | `liquid_progress_bar_node`, `liquid_progress_ring_node` | Determinate (`Some(0..1)`) and closed-form indeterminate (`None`) linear and circular progress indicators. |
 

@@ -23,17 +23,18 @@ pub fn liquid_panel_glass(solid? : Int64 = clear) -> @paint.Glass {
 
 ///|
 /// Liquid glass material for modal dialogs and dialog shells.
-/// Symmetric 80% dense liquid glass (`0xFDFCFDCCL` light / `0x202020CCL` dark) for >= 4.5:1 contrast over dense copy.
+/// Symmetric 70% luminous liquid glass (`0xFDFCFDB3L` light / `0x202020B3L` dark) calibrated to iOS 26/27:
+/// >= 5.7:1–9.7:1 contrast over high-contrast backdrops while preserving crisp bevel refraction and rim glint.
 pub fn liquid_dialog_glass(solid? : Int64 = clear) -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
-    blur=12.0,
-    tint=if d { 0x202020CCL } else { 0xFDFCFDCCL },
+    blur=9.0,
+    tint=if d { 0x202020B3L } else { 0xFDFCFDB3L },
     solid=if solid != clear { solid } else if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
     saturation=1.0,
-    rim=0.6,
-    bezel=20.0,
-    refraction=28.0,
+    rim=0.65,
+    bezel=22.0,
+    refraction=32.0,
     chroma=0.0,
     merge=0.0,
     adaptive=false,
