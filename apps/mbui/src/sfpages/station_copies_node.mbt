@@ -10,7 +10,7 @@ let copies_s3_actions : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let copies_sub_gap : @ui.Style = @ui.css("mt=S3")
+let copies_form_pair : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -247,86 +247,87 @@ fn station_copies_node(
       })
       // B. External object storage (R2 / S3)
       sec.show(fn() { can_edit() && open.get() }, fn(s3_wrap) {
-        s3_wrap.box(fn(box) {
-          @sf.style_node(box, fn() { copies_sub_gap })
-          st_section_node(
-            box,
-            fn() { @sf.t("web-pages.stations.copies.s3Heading") },
-            ends=(fn() { true }, fn(e) {
-              @sf.action_node(e, fn() { @sf.t("web-pages.stations.copies.s3Add") }, fn() {
-                copies_s3_form_dialog(core, address, @signals.untracked(backup), None)
-              }, disabled=saving)
-            }),
-            fn(s3_sec) {
-              @sf.group_node(s3_sec, fn(g) {
-                g.show(fn() { s3_items().length() == 0 }, fn(r) {
-                  said_row_node(r, fn() { @sf.t("web-pages.stations.copies.s3Empty") })
-                })
-                g.each(s3_items, fn(x) { text(Some(x), "id") }, fn(row, x) {
-                  let sv = fn() { Some(x.get()) }
-                  let sid = text(@signals.untracked(sv), "id")
-                  @sf.setting_node(
-                    row,
-                    fn() { text(sv(), "name") },
-                    note=fn() {
-                      let bucket = text(sv(), "bucket")
-                      let status = text(sv(), "statusLine")
-                      let fp = text(sv(), "keyFingerprint")
-                      let parts : Array[String] = []
-                      if bucket != "" {
-                        parts.push(bucket)
-                      }
-                      if status != "" {
-                        parts.push(status)
-                      }
-                      if fp != "" {
-                        parts.push(@sf.t("web-pages.stations.copies.s3KeyFp", args=[("fp", fp)]))
-                      }
-                      parts.join("\n")
-                    },
-                    in_card=true,
-                    fn(c) {
-                      c.box(fn(btns) {
-                        @sf.style_node(btns, fn() { copies_s3_actions })
-                        @sf.button_node(btns, fn() { @sf.t("web-pages.stations.copies.s3Edit") }, fn() {
-                          copies_s3_form_dialog(core, address, @signals.untracked(backup), Some(@signals.untracked(fn() { x.get() })))
-                        }, tone=Ghost, disabled=saving)
-                        |> ignore
-                        @sf.button_node(btns, fn() { @sf.t("web-pages.stations.copies.s3Delete") }, fn() {
-                          let sname = @signals.untracked(fn() { text(sv(), "name") })
-                          @sf.confirm(
-                            @sf.t("web-pages.stations.copies.s3DeleteTitle", args=[("name", sname)]),
-                            @sf.t("web-pages.stations.copies.s3DeleteBody", args=[("name", sname)]),
-                            @sf.t("web-pages.stations.copies.s3Delete"),
-                            fn() {
-                              let kept : Array[Json] = []
-                              for item in items(@signals.untracked(backup), "s3") {
-                                if text(Some(item), "id") != sid {
-                                  kept.push(copies_s3_wire_item(Some(item)))
-                                }
-                              }
-                              @settings.act(
-                                core,
-                                @sf.t("web-pages.stations.copies.saveWhat"),
-                                "copies.setSettings",
-                                obj([("station", str(address)), ("s3", Json::array(kept))]),
-                                done=@sf.t("web-pages.stations.copies.saved"),
-                              )
-                            },
-                            danger=true,
-                          )
-                        }, tone=Ghost, disabled=saving)
-                        |> ignore
-                      })
+        st_section_node(
+          s3_wrap,
+          fn() { @sf.t("web-pages.stations.copies.s3Heading") },
+          ends=(fn() { true }, fn(e) {
+            @sf.action_node(e, fn() { @sf.t("web-pages.stations.copies.s3Add") }, fn() {
+              copies_s3_form_dialog(core, address, @signals.untracked(backup), None)
+            }, disabled=saving)
+          }),
+          fn(s3_sec) {
+            @sf.group_node(s3_sec, fn(g) {
+              g.show(fn() { s3_items().length() == 0 }, fn(r) {
+                said_row_node(r, fn() { @sf.t("web-pages.stations.copies.s3Empty") })
+              })
+              g.each(s3_items, fn(x) { text(Some(x), "id") }, fn(row, x) {
+                let sv = fn() { Some(x.get()) }
+                let sid = text(@signals.untracked(sv), "id")
+                @sf.row_box_node(row, fn() { text(sv(), "name") }, fn(s) {
+                  s.note(fn() {
+                    let bucket = text(sv(), "bucket")
+                    let status = text(sv(), "statusLine")
+                    let fp = text(sv(), "keyFingerprint")
+                    let line1 = if bucket != "" && status != "" {
+                      bucket + " · " + status
+                    } else if bucket != "" {
+                      bucket
+                    } else {
+                      status
+                    }
+                    let line2 = if fp != "" {
+                      @sf.t("web-pages.stations.copies.s3KeyFp", args=[("fp", fp)])
+                    } else {
+                      ""
+                    }
+                    if line1 != "" && line2 != "" {
+                      line1 + "\n" + line2
+                    } else if line1 != "" {
+                      line1
+                    } else {
+                      line2
+                    }
+                  })
+                  s.tail(fn(c) {
+                    c.box(fn(btns) {
+                      @sf.style_node(btns, fn() { copies_s3_actions })
+                      @sf.button_node(btns, fn() { @sf.t("web-pages.stations.copies.s3Edit") }, fn() {
+                        copies_s3_form_dialog(core, address, @signals.untracked(backup), Some(@signals.untracked(fn() { x.get() })))
+                      }, tone=Ghost, disabled=saving)
                       |> ignore
-                    },
-                  )
+                      @sf.button_node(btns, fn() { @sf.t("web-pages.stations.copies.s3Delete") }, fn() {
+                        let sname = @signals.untracked(fn() { text(sv(), "name") })
+                        @sf.confirm(
+                          @sf.t("web-pages.stations.copies.s3DeleteTitle", args=[("name", sname)]),
+                          @sf.t("web-pages.stations.copies.s3DeleteBody", args=[("name", sname)]),
+                          @sf.t("web-pages.stations.copies.s3Delete"),
+                          fn() {
+                            let kept : Array[Json] = []
+                            for item in items(@signals.untracked(backup), "s3") {
+                              if text(Some(item), "id") != sid {
+                                kept.push(copies_s3_wire_item(Some(item)))
+                              }
+                            }
+                            @settings.act(
+                              core,
+                              @sf.t("web-pages.stations.copies.saveWhat"),
+                              "copies.setSettings",
+                              obj([("station", str(address)), ("s3", Json::array(kept))]),
+                              done=@sf.t("web-pages.stations.copies.saved"),
+                            )
+                          },
+                          danger=true,
+                        )
+                      }, tone=Ghost, disabled=saving)
+                      |> ignore
+                    })
+                    |> ignore
+                  })
                 })
               })
-            },
-          )
-        })
-        |> ignore
+            })
+          },
+        )
       })
     },
   )
@@ -378,15 +379,36 @@ pub fn copies_s3_form_dialog(core : Core, address : String, backup : Json?, edit
   open_dialog_nodes(
     title,
     fn(v, _) {
-      @sf.field_node(v, fn() { @sf.t("web-pages.stations.copies.s3FieldName") }, fn(f) {
-        @sf.input_node(
-          f,
-          f_name,
-          placeholder=@sf.t("web-pages.stations.copies.s3FieldNamePh"),
-          label=@sf.t("web-pages.stations.copies.s3FieldName"),
-        )
+      v.box(fn(pair) {
+        @sf.style_node(pair, fn() { copies_form_pair })
+        pair.box(fn(col) {
+          col.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.field_node(col, fn() { @sf.t("web-pages.stations.copies.s3FieldName") }, fn(f) {
+            @sf.input_node(
+              f,
+              f_name,
+              placeholder=@sf.t("web-pages.stations.copies.s3FieldNamePh"),
+              label=@sf.t("web-pages.stations.copies.s3FieldName"),
+            )
+            |> ignore
+          })
+        })
+        |> ignore
+        pair.box(fn(col) {
+          col.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.field_node(col, fn() { @sf.t("web-pages.stations.copies.s3FieldBucket") }, fn(f) {
+            @sf.input_node(
+              f,
+              f_bucket,
+              placeholder=@sf.t("web-pages.stations.copies.s3FieldBucketPh"),
+              label=@sf.t("web-pages.stations.copies.s3FieldBucket"),
+            )
+            |> ignore
+          })
+        })
         |> ignore
       })
+      |> ignore
       @sf.field_node(v, fn() { @sf.t("web-pages.stations.copies.s3FieldEndpoint") }, fn(f) {
         @sf.input_node(
           f,
@@ -396,23 +418,26 @@ pub fn copies_s3_form_dialog(core : Core, address : String, backup : Json?, edit
         )
         |> ignore
       })
-      @sf.field_node(v, fn() { @sf.t("web-pages.stations.copies.s3FieldBucket") }, fn(f) {
-        @sf.input_node(
-          f,
-          f_bucket,
-          placeholder=@sf.t("web-pages.stations.copies.s3FieldBucketPh"),
-          label=@sf.t("web-pages.stations.copies.s3FieldBucket"),
-        )
+      v.box(fn(pair) {
+        @sf.style_node(pair, fn() { copies_form_pair })
+        pair.box(fn(col) {
+          col.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.field_node(col, fn() { @sf.t("web-pages.stations.copies.s3FieldRegion") }, fn(f) {
+            @sf.input_node(f, f_region, placeholder="auto", label=@sf.t("web-pages.stations.copies.s3FieldRegion"))
+            |> ignore
+          })
+        })
+        |> ignore
+        pair.box(fn(col) {
+          col.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.field_node(col, fn() { @sf.t("web-pages.stations.copies.s3FieldPrefix") }, fn(f) {
+            @sf.input_node(f, f_prefix, placeholder="stillfail-backup", label=@sf.t("web-pages.stations.copies.s3FieldPrefix"))
+            |> ignore
+          })
+        })
         |> ignore
       })
-      @sf.field_node(v, fn() { @sf.t("web-pages.stations.copies.s3FieldRegion") }, fn(f) {
-        @sf.input_node(f, f_region, placeholder="auto", label=@sf.t("web-pages.stations.copies.s3FieldRegion"))
-        |> ignore
-      })
-      @sf.field_node(v, fn() { @sf.t("web-pages.stations.copies.s3FieldPrefix") }, fn(f) {
-        @sf.input_node(f, f_prefix, placeholder="stillfail-backup", label=@sf.t("web-pages.stations.copies.s3FieldPrefix"))
-        |> ignore
-      })
+      |> ignore
       @sf.field_node(
         v,
         fn() { @sf.t("web-pages.stations.copies.s3FieldAccessKey") },
