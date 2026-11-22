@@ -190,7 +190,8 @@ struct Core {
   ReadyQueue<Task> queue;
   bool stopping = false;
   bool dead = false;
-  mb_core_message_fn on_message = nullptr;
+  std::atomic<mb_core_message_fn> on_message{nullptr};  // set after ctx: a core started for a push is taken while it runs
+  bool alone = false;  // started for a push (mb_core_start_alone), no app's yet; under alone_mutex
   void *ctx = nullptr;
   std::string dataDir, cloud;
   bool beta = false;
@@ -200,11 +201,14 @@ struct Core {
 Core C;
 
 bool screen_mic_from_core(const char *json, size_t len);
+bool push_from_core(const char *json, size_t len);
 
 void say(const char *json, size_t len, const uint8_t *bytes, size_t blen) {
   // (the answers to the microphone's own calls are not the app's: screen_mic_from_core)
   if (screen_mic_from_core(json, len)) return;
-  if (C.on_message) C.on_message(json, len, bytes, blen, C.ctx);
+  // (nor those to a push's: mb_core_ask)
+  if (push_from_core(json, len)) return;
+  if (mb_core_message_fn on_message = C.on_message.load(std::memory_order_acquire)) on_message(json, len, bytes, blen, C.ctx);
 }
 
 void fatal(const std::string &reason) {
@@ -1186,6 +1190,8 @@ namespace {
 
 /// The ids of the microphone's own calls: past the app's (the same as the web's, web/src/mbui/screen-peripherals.ts).
 constexpr double kMicFirst = 2147483648.0 + 1073741824.0;
+/// The ids of what a push asks (mb_core_ask): past the app's, before the microphone's.
+constexpr double kPushFirst = 2147483648.0;
 [[maybe_unused]] constexpr int kMicSamples = 960;
 
 struct MicView {
@@ -1212,6 +1218,36 @@ Mic M;
 double json_id(const char *json, size_t len) {
   const char *k = static_cast<const char *>(memmem(json, std::min<size_t>(len, 24), "\"id\":", 5));
   return k ? strtod(k + 5, nullptr) : -1;
+}
+
+std::mutex asks_mutex;
+std::map<double, void (^)(int)> asks;
+double next_ask = kPushFirst;
+
+bool push_from_core(const char *json, size_t len) {
+  double id = json_id(json, len);
+  if (id < kPushFirst || id >= kMicFirst) return false;
+  void (^done)(int) = nil;
+  {
+    std::lock_guard<std::mutex> lock(asks_mutex);
+    auto it = asks.find(id);
+    if (it != asks.end()) {
+      done = it->second;
+      asks.erase(it);
+    }
+  }
+  if (done) done(memmem(json, std::min<size_t>(len, 40), "\"ok\":", 5) != nullptr);
+  return true;
+}
+
+/// What was asked and not answered, answered as failed: the core that would have is gone.
+void asks_failed() {
+  std::map<double, void (^)(int)> left;
+  {
+    std::lock_guard<std::mutex> lock(asks_mutex);
+    left.swap(asks);
+  }
+  for (auto &[_, done] : left) done(0);
 }
 
 NSDictionary *json_object(const char *json, size_t len) {
@@ -1431,14 +1467,37 @@ static void screen_mic_from_app(const char *json, size_t len) {
   mic_sync();
 }
 
+// Starting, taking and stopping a core: the app's thread and a push's.
+static std::mutex alone_mutex;
+static void core_stop_now(void);
+static void core_start_now(const char *data_dir, const char *cloud_origin, int beta, mb_core_message_fn on_message, void *ctx);
+
 void mb_core_start(const char *data_dir, const char *cloud_origin, int beta, mb_core_message_fn on_message, void *ctx) {
+  std::lock_guard<std::mutex> alone_lock(alone_mutex);
+  if (C.running && C.alone && on_message) {
+    // One started for a push: the app's from now on, unless it failed (it says so to no one), when one starts anew.
+    if (C.dead) {
+      core_stop_now();
+    } else {
+      C.ctx = ctx;
+      C.on_message.store(on_message, std::memory_order_release);
+      C.alone = false;
+      return;
+    }
+  }
   if (C.running) return;
+  core_start_now(data_dir, cloud_origin, beta, on_message, ctx);
+}
+
+// Under alone_mutex, no core running.
+static void core_start_now(const char *data_dir, const char *cloud_origin, int beta, mb_core_message_fn on_message, void *ctx) {
   probe_taps();
   probe_js();
   static bool at_exit = false;
   if (!at_exit) at_exit = atexit(stop_at_exit) == 0;
-  C.on_message = on_message;
   C.ctx = ctx;
+  C.on_message.store(on_message, std::memory_order_release);
+  C.alone = false;
   C.dead = false;
   C.dataDir = data_dir;
   C.cloud = cloud_origin;
@@ -1576,6 +1635,51 @@ static void probe_taps(void) {
 }
 
 void mb_core_stop(void) {
+  std::lock_guard<std::mutex> alone_lock(alone_mutex);
+  core_stop_now();
+  C.alone = false;
+}
+
+// The core a push needs: the one running, else one with no app's client yet, which the app takes if it starts meanwhile.
+// 1 when one runs.
+extern "C" int mb_core_start_alone(const char *data_dir, const char *cloud_origin, int beta) {
+  std::lock_guard<std::mutex> alone_lock(alone_mutex);
+  if (C.running) return 1;
+  core_start_now(data_dir, cloud_origin, beta, nullptr, nullptr);
+  C.alone = C.running;
+  return C.running ? 1 : 0;
+}
+
+// The push handled: the core started for it stopped, unless the app has taken it.
+extern "C" void mb_core_stop_alone(void) {
+  std::lock_guard<std::mutex> alone_lock(alone_mutex);
+  if (C.running && C.alone) core_stop_now();
+  C.alone = false;
+}
+
+// `call` asked of the core with `params` (JSON) on the UI's client under an id of a push's; `done(1)` when it answered
+// well, `done(0)` when it failed or the core stopped first. On the core's thread, or the caller's when no core runs.
+extern "C" void mb_core_ask(const char *call, const char *params, void (^done)(int)) {
+  double id;
+  {
+    std::lock_guard<std::mutex> lock(asks_mutex);
+    id = next_ask;
+    next_ask = next_ask + 1 >= kMicFirst ? kPushFirst : next_ask + 1;
+    asks[id] = [done copy];
+  }
+  char head[96];
+  snprintf(head, sizeof head, "{\"id\":%.0f,\"call\":\"%s\",\"params\":", id, call);
+  std::string json = std::string(head) + params + "}";
+  bool running;
+  {
+    std::lock_guard<std::mutex> lock(C.mutex);
+    running = C.running && !C.stopping;
+  }
+  if (running) mb_core_send(json.data(), json.size(), nullptr, 0);
+  else asks_failed();
+}
+
+static void core_stop_now(void) {
   // (the views went with the core: this Mac's microphone let go of, a core started again told them anew)
   {
     std::lock_guard<std::mutex> lock(M.mutex);
@@ -1594,10 +1698,13 @@ void mb_core_stop(void) {
     std::lock_guard<std::mutex> lock(C.gate->mutex);
     C.gate->open = false;
   }
-  C.on_message = nullptr;
+  C.on_message.store(nullptr, std::memory_order_release);
   if (C.shell) sf_shell_stop(C.shell);
   C.shell = nullptr;
-  std::lock_guard<std::mutex> lock(C.mutex);
-  C.queue.clear();
-  C.running = false;
+  {
+    std::lock_guard<std::mutex> lock(C.mutex);
+    C.queue.clear();
+    C.running = false;
+  }
+  asks_failed();
 }

@@ -551,6 +551,36 @@ test("a_push_brings_its_chat_onto_the_device_whether_the_stream_told_it_or_not",
   core.close();
 });
 
+test("notice_bring_on_a_core_started_for_the_push_reads_from_its_first_call", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "stillfail-bring-cold-"));
+  const opened: DatabaseSync[] = [];
+  const answers: J = base();
+  try {
+    const first = await started(answers, 0, undefined, (s) => {
+      s.host.openDbHook = () => {
+        const db = new DatabaseSync(join(dir, "account.sqlite"));
+        opened.push(db);
+        return new NodeSql(db, true);
+      };
+    });
+    await first.host.settle();
+    first.core.close();
+    await first.host.settle();
+    answers["GET /threads/7/entries?after=3&limit=50"] = { last: 4, entries: [entry(4, "手机睡着时说的")] };
+    // The process woken by a push: a core on what the last one kept, asked before any time passes.
+    const core = await Core.create(first.host, { clock: first.host.time.clock, sample: 0, wire: () => new HostWire(first.host) });
+    assert.equal(core.inner.stations.online(ST), true, "its links are made from what is kept, before the first call");
+    const ui = core.connect();
+    call(core, ui, 1, "notice.bring", { station: ST, session: "k1", seq: 4 });
+    await first.host.settle();
+    assert.deepEqual([...core.inner.data.logRange("entry", ST, "7", 1, 100).keys()], [1, 2, 3, 4]);
+    core.close();
+  } finally {
+    for (const db of opened) { try { db.close(); } catch {} }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("notice_bring_commits_sqlite_before_answering_even_if_core_stops_at_once", async () => {
   const dir = mkdtempSync(join(tmpdir(), "stillfail-bring-commit-"));
   const dbPath = join(dir, "account.sqlite");
