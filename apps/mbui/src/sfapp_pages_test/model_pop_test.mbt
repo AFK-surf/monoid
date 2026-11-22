@@ -39,7 +39,7 @@ test "a new chat asks before borrowing and sends the request only on confirmatio
     t.click(Button, label="去分享")
     t.run_for(squeeze_opening)
     assert_true(t.find("将账号分享至此 station") is Some(_), msg="\{win.0}: no confirmation")
-    assert_true(t.find("分享后，这个连接的会话也用它的额度。") is Some(_))
+    assert_true(t.find("这是订阅账号") is Some(_))
     assert_eq(calls.length(), 0)
     assert_eq(released.length(), 0, msg="the selection stays held while the confirmation is open")
     t.click(Button, label="取消")

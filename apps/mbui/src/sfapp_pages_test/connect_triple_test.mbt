@@ -92,7 +92,7 @@ test "借用 in a connect's model panel: the panel goes and the ask stays up, it
     t.run_for(@ui.move_most_ms)
     let said = t.words().map(fn(w) { w.0 }).join("|")
     assert_true(t.find("将账号分享至此 station") is Some(_), msg="\{win.0}: the ask gone: \{said}")
-    assert_true(t.find("分享后，这个连接的会话也用它的额度。") is Some(_), msg="\{win.0}: its lines: \{said}")
+    assert_true(t.find("这是订阅账号") is Some(_), msg="\{win.0}: its lines: \{said}")
     assert_true(t.query(Button, label="取消") is Some(_), msg="\{win.0}: its 取消: \{said}")
     // (the panel itself gone: its note over the foot no longer drawn)
     assert_true(t.find("Fable 5.1 在 Maple 上") is None, msg="\{win.0}: the panel still up: \{said}")
