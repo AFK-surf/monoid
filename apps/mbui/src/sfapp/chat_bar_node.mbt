@@ -211,14 +211,15 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
       }
     }
   })
-  // (soft GPU bottom-fade scrim behind floating liquid glass pills: protects title legibility while dissolving
-  // scrolled messages smoothly at the bar's bottom edge without a hard clip or glass-on-glass nesting)
+  // (UIScrollEdgeEffect.soft as home_top_bar_node's: solid behind the status bar, then a full bar_h fade so scrolled
+  // messages refract through the translucent pills; the second row and breadcrumbs, bare words, keep a solid ground
+  // with only a 6pt feather under them)
   narrow_bar_scrim_node(
     g,
     fn(s) {
       status_top_now(s.window_w()) + bar_h + state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get()
     },
-    fn(s) { if state.open_way.shown(s) > 0.0 || state.crumb_h.get() > 0.0 { 6.0 } else { 18.0 } },
+    fn(s) { if state.open_way.shown(s) > 0.0 || state.crumb_h.get() > 0.0 { 6.0 } else { bar_h } },
   )
   g.reacts(can_toggle, fn(ok) {
     if !ok && state.manual_expanded.get() {
@@ -465,75 +466,89 @@ fn bar_middle_node(
   // (made again as what it shows changes, given what it shows)
   row.pick(marks, fn(mid_outer, marks) {
     mid_outer
+    .row(Is(true))
     .grow(Is(1.0))
     .basis(Is(Some(0.0)))
     .min_width(Is(Some(0.0)))
+    .padding(Is((6.0, 0.0, 6.0, 0.0)))
+    .lines_up(Is(Some(Middle)))
     |> ignore
-    mid_outer.by_room(fn(mid, mid_room) {
-      // (giving way before the title, what follows it leaving the row first: View::drops)
-      mid
-      .row(Is(true))
+    // (the title and its people on a liquid glass capsule of their own, as home_top_bar_node's workspace switcher: the
+    // bar's ground fades whole under the pills, so bare words over the messages would be read through them)
+    @sf.bar_pill_group_node(mid_outer, height=40.0, pad=0.0, gap=0.0, fn(pill) {
+      // (the title opened whole on the second row: the capsule fades out with the words it held)
+      pill
+      .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
-      .padding(Is((6.0, 0.0, 6.0, 0.0)))
-      .gap(Is(6.0))
-      .lines_up(Is(Some(Middle)))
-      .fits(Is(true))
+      .alpha(By(fn() { bar_clamp01(1.0 - state.open_way.shown(pill) / 0.45) }))
       |> ignore
-      mid.reacts(fn() { mid_room.width() }, fn(w) {
-        if marks.shown is Some(_) && w > 0.0 && mid_w_sig.get() != w {
-          mid_w_sig.set(w)
-        }
-      })
-      mid.box(fn(t_box) {
-        let tp = fn() { state.open_way.shown(t_box) }
-        @sf.presses_node(
-          t_box,
-          fn() {
-            if !expanded() && can_toggle() && tp() <= 0.0 {
-              state.manual_expanded.set(true)
-            }
-          },
-          on=fn() { !expanded() && can_toggle() && tp() <= 0.0 },
-        )
-        t_box
-        .lies_along(Is(Middle))
-        .fit_whole(By(fn() { !expanded() }))
-        .grow(By(fn() { if expanded() { 1.0 } else { 0.0 } }))
-        .basis(By(fn() { if expanded() { Some(0.0) } else { None } }))
-        .cuts(Is(true))
+      pill.by_room(fn(mid, mid_room) {
+        // (giving way before the title, what follows it leaving the row first: View::drops)
+        mid
+        .row(Is(true))
         .min_width(Is(Some(0.0)))
-        .min_height(By(fn() { if !expanded() && can_toggle() && tp() <= 0.0 { Some(44.0) } else { None } }))
-        .alpha(By(fn() { bar_clamp01(1.0 - tp() / 0.45) }))
-        .offset(By(fn() { (0.0, 5.0 * bar_clamp01(tp() / 0.5)) }))
+        .padding(Is((12.0, 0.0, 12.0, 0.0)))
+        .gap(Is(6.0))
+        .lines_up(Is(Some(Middle)))
+        .fits(Is(true))
         |> ignore
-        t_box.box(fn(t) {
-          t
-          .words(By(fn() {
-            match view() {
-              Some(v) => v.title
-              None => r.title
-            }
-          }))
-          .words_look(By(fn() {
-            let th = @sf.theme()
-            { size: th.t.title, weight: 600, line: chat_title_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-          }))
-          .ink(By(fn() { @sf.theme().p.text }))
+        mid.reacts(fn() { mid_room.width() }, fn(w) {
+          if marks.shown is Some(_) && w > 0.0 && mid_w_sig.get() != w {
+            mid_w_sig.set(w)
+          }
+        })
+        mid.box(fn(t_box) {
+          let tp = fn() { state.open_way.shown(t_box) }
+          @sf.presses_node(
+            t_box,
+            fn() {
+              if !expanded() && can_toggle() && tp() <= 0.0 {
+                state.manual_expanded.set(true)
+              }
+            },
+            on=fn() { !expanded() && can_toggle() && tp() <= 0.0 },
+          )
+          t_box
+          .lies_along(Is(Middle))
           .fit_whole(By(fn() { !expanded() }))
+          .grow(By(fn() { if expanded() { 1.0 } else { 0.0 } }))
+          .basis(By(fn() { if expanded() { Some(0.0) } else { None } }))
           .cuts(Is(true))
-          .allow_ellipsis(Is(true))
           .min_width(Is(Some(0.0)))
+          .min_height(By(fn() { if !expanded() && can_toggle() && tp() <= 0.0 { Some(40.0) } else { None } }))
+          .alpha(By(fn() { bar_clamp01(1.0 - tp() / 0.45) }))
+          .offset(By(fn() { (0.0, 5.0 * bar_clamp01(tp() / 0.5)) }))
+          |> ignore
+          t_box.box(fn(t) {
+            t
+            .words(By(fn() {
+              match view() {
+                Some(v) => v.title
+                None => r.title
+              }
+            }))
+            .words_look(By(fn() {
+              let th = @sf.theme()
+              { size: th.t.title, weight: 600, line: chat_title_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+            }))
+            .ink(By(fn() { @sf.theme().p.text }))
+            .fit_whole(By(fn() { !expanded() }))
+            .cuts(Is(true))
+            .allow_ellipsis(Is(true))
+            .min_width(Is(Some(0.0)))
+            |> ignore
+          })
           |> ignore
         })
         |> ignore
+        guard marks.shown is Some(people) else { return }
+        if people.length() > 0 {
+          let p = @sf.avatar_stack_node(mid, stack_faces(src, people, stint), 16.0, fn() { @sf.theme().p.bg })
+          p.drops(Is(bar_drop_people)).laid_nowhere(By(expanded)) |> ignore
+          slides(p)
+        }
       })
       |> ignore
-      guard marks.shown is Some(people) else { return }
-      if people.length() > 0 {
-        let p = @sf.avatar_stack_node(mid, stack_faces(src, people, stint), 16.0, fn() { @sf.theme().p.bg })
-        p.drops(Is(bar_drop_people)).laid_nowhere(By(expanded)) |> ignore
-        slides(p)
-      }
     })
     |> ignore
   })
