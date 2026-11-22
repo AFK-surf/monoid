@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [abca93fca](https://github.com/AFK-surf/monoid/commit/abca93fcab0d7884f3ed916bcc671558e5f2922c) feat(sf-ui,sfpages): align composer liquid glass w | 2.66 | 3.57 | 14.52 | 36.59 | 55.48 | 32.04 | 64.81 | 98.67 | 115.45 |
 | [e3f2606bc](https://github.com/AFK-surf/monoid/commit/e3f2606bc9038868b8f86ab0851828b260724b8e) fix(mbui): composite waiting tiles' ground into th | 2.66 | 3.57 | 14.52 | 36.59 | 55.48 | 32.04 | 64.81 | 99.01 | 112.25 |
 | [3e9d20511](https://github.com/AFK-surf/monoid/commit/3e9d20511428a1cda54c4b0c158f2939513b92aa) fix(screens): set an Android device's volume throu | 2.65 | 3.57 | 14.52 | 36.58 | 55.47 | 32.04 | 64.81 | 98.83 | 129.56 |
 | [6529ca3f4](https://github.com/AFK-surf/monoid/commit/6529ca3f41c9836795828dff53320d72feeba729) fix(mbui): adapt nested filling children and image | 2.65 | 3.57 | 14.52 | 36.58 | 55.46 | 32.04 | 64.8 | 98.75 | 127.49 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0a1a91c9f](https://github.com/AFK-surf/monoid/commit/0a1a91c9fe56cda87a795d64986aab7344bba06f) feat(sf-ui): unify anchored popovers onto liquid g | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.52 | 123.44 |
 | [2d090b2f5](https://github.com/AFK-surf/monoid/commit/2d090b2f58b82a8b86a30d531a9c0d57ab0b7b0f) fix(station): fail over past revoked OAuth logins  | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.45 | 122.46 |
 | [1ed563f27](https://github.com/AFK-surf/monoid/commit/1ed563f277ba957823051b3e952c87231e3c2a71) fix(station): keep the adb link from writing back  | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.37 | 121.51 |
-| [317842bf2](https://github.com/AFK-surf/monoid/commit/317842bf2ac2dafe455918387235ed2f2634fa08) feat(sfapp): iOS 26 scroll-to-collapse and compact | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.62 | 127.63 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [abca93fca](https://github.com/AFK-surf/monoid/commit/abca93fcab0d7884f3ed916bcc671558e5f2922c) feat(sf-ui,sfpages): align composer liquid glass w | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [e3f2606bc](https://github.com/AFK-surf/monoid/commit/e3f2606bc9038868b8f86ab0851828b260724b8e) fix(mbui): composite waiting tiles' ground into th | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [3e9d20511](https://github.com/AFK-surf/monoid/commit/3e9d20511428a1cda54c4b0c158f2939513b92aa) fix(screens): set an Android device's volume throu | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [6529ca3f4](https://github.com/AFK-surf/monoid/commit/6529ca3f41c9836795828dff53320d72feeba729) fix(mbui): adapt nested filling children and image | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0a1a91c9f](https://github.com/AFK-surf/monoid/commit/0a1a91c9fe56cda87a795d64986aab7344bba06f) feat(sf-ui): unify anchored popovers onto liquid g | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [2d090b2f5](https://github.com/AFK-surf/monoid/commit/2d090b2f58b82a8b86a30d531a9c0d57ab0b7b0f) fix(station): fail over past revoked OAuth logins  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [1ed563f27](https://github.com/AFK-surf/monoid/commit/1ed563f277ba957823051b3e952c87231e3c2a71) fix(station): keep the adb link from writing back  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
-| [317842bf2](https://github.com/AFK-surf/monoid/commit/317842bf2ac2dafe455918387235ed2f2634fa08) feat(sfapp): iOS 26 scroll-to-collapse and compact | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
