@@ -2061,6 +2061,14 @@
     gl.uniform4f(PU.u_b, (sw - 0.5) / src.w, (sh - 0.5) / src.h, dx, dy);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
+  // The post program's other units (u_lv1..3) let go of the levels: a level still bound to an active sampler while a
+  // later pass draws into it is a feedback loop (INVALID_OPERATION on WebGL2, the draw dropped).
+  function unbindPostExtra() {
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE0);
+  }
   // ---- partial redraw ----
   // Whole-screen frames draw straight into the default framebuffer (null) without allocating or blitting cv.
   // Once the app reports partial dirty rects (H.renderDirty), we allocate cv, draw a baseline if !cvOk, and
@@ -2289,6 +2297,7 @@
     if (gl.invalidateFramebuffer) gl.invalidateFramebuffer(gl.DRAW_FRAMEBUFFER, [gl.COLOR_ATTACHMENT0]);
     gl.blitFramebuffer(m.px0, m.pb0, m.px0 + w, m.pb0 + h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.useProgram(post);
+    unbindPostExtra();
     const [lw, lh] = grabLevels(m);
     if (m.progressive) {
       let prevVar = 0;
@@ -2322,7 +2331,7 @@
       gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, lv[2].t); gl.uniform1i(PU.u_lv2, 2);
       gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, lv[3].t); gl.uniform1i(PU.u_lv3, 3);
       postPass(lv[0], w, h, lv[4], w, h, 4, 0, 0, 0);
-      gl.activeTexture(gl.TEXTURE0);
+      unbindPostExtra();
       return;
     }
     if (contained) {
@@ -3035,8 +3044,12 @@
         const pw = Math.min(Math.max(1, Math.ceil(((x1 + margin) - ox) * scF)), Math.max(canvas.width, 2048));
         const ph = Math.min(Math.max(1, Math.ceil(((y1 + margin) - oy) * scF)), Math.max(canvas.height, 2048));
         ensureLensLevels(pw, ph);
+        const prevBd = bdTex;
         // Pass 1: render children into lensLv[0]
         gl.bindFramebuffer(gl.FRAMEBUFFER, lensLv[0].fb);
+        // (u_bd off any lens level: one bound there by a lens before is drawn into now)
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, atlasTex);
         gl.viewport(0, 0, pw, ph);
         gl.disable(gl.SCISSOR_TEST);
         gl.clearColor(0, 0, 0, 0);
@@ -3081,6 +3094,7 @@
         if (sp > 0.25) {
           gl.disable(gl.BLEND);
           gl.useProgram(post);
+          unbindPostExtra();
           postPass(lensLv[0], pw, ph, lensLv[1], pw, ph, 2, sp, 1, 0);
           postPass(lensLv[1], pw, ph, lensLv[0], pw, ph, 2, sp, 0, 1);
         }
@@ -3095,6 +3109,9 @@
         mainState();
         useProg(-1);
         drawRun(start, 1);
+        bdTex = prevBd;
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, bdTex || atlasTex);
         bound = 0;
         start += 1 + childN;
         continue;

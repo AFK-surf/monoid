@@ -1195,6 +1195,15 @@ static void post_pass(level *src, int sw, int sh, level *dst, int w, int h, int 
   glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
+// The post program's other units (u_lv1..3) let go of the levels: a level still bound to an active sampler while a
+// later pass draws into it is a feedback loop (GL_INVALID_OPERATION on WebGL2 and strict GLES 3, the draw dropped).
+static void unbind_post_extra(void) {
+  glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
+  glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, 0);
+  glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, 0);
+  glActiveTexture(GL_TEXTURE0);
+}
+
 // Partial redraw: the surface's frame is drawn into a canvas of its own (canvas_fb), kept
 // across frames, and copied onto the surface (what the surface held is gone once shown); where the app says only some
 // parts differ from the frame before (@hostapi.render_dirty), only those parts of the canvas are drawn again, each cut
@@ -1504,6 +1513,7 @@ static void blur(const Grab *m) {
 #endif
   glBlitFramebuffer(m->px0, m->pb0, m->px0 + w, m->pb0 + h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
   glUseProgram(post);
+  unbind_post_extra();
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
   if (m->progressive) {
@@ -1541,7 +1551,7 @@ static void blur(const Grab *m) {
     glScissor(m->vis_x, m->vis_y, m->vis_w, m->vis_h);
     post_pass(&lv[0], w, h, &lv[4], w, h, 4, 0, 0, 0);
     glDisable(GL_SCISSOR_TEST);
-    glActiveTexture(GL_TEXTURE0);
+    unbind_post_extra();
     return;
   }
   if (contained) {
@@ -3045,8 +3055,12 @@ static void draw_into(GLuint fb, int part) {
       if (pw > max_w) pw = max_w;
       if (ph > max_h) ph = max_h;
       ensure_lens_levels(pw, ph);
+      GLuint prev_bd = bd_tex;
       // Pass 1: render children into lens_lv[0]
       glBindFramebuffer(GL_FRAMEBUFFER, lens_lv[0].fb);
+      // (u_bd off any lens level: one bound there by a lens before is drawn into now)
+      glActiveTexture(GL_TEXTURE2);
+      glBindTexture(GL_TEXTURE_2D, atlas);
       glViewport(0, 0, pw, ph);
       glDisable(GL_SCISSOR_TEST);
       glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -3084,6 +3098,7 @@ static void draw_into(GLuint fb, int part) {
       if (sp > 0.25f) {
         glDisable(GL_BLEND);
         glUseProgram(post);
+        unbind_post_extra();
         post_pass(&lens_lv[0], pw, ph, &lens_lv[1], pw, ph, 2, sp, 1.0f, 0.0f);
         post_pass(&lens_lv[1], pw, ph, &lens_lv[0], pw, ph, 2, sp, 0.0f, 1.0f);
       }
@@ -3098,6 +3113,9 @@ static void draw_into(GLuint fb, int part) {
       main_state();
       use_prog(8);
       draw_run(start, 1);
+      bd_tex = prev_bd;
+      glActiveTexture(GL_TEXTURE2);
+      glBindTexture(GL_TEXTURE_2D, bd_tex ? bd_tex : atlas);
       bound = 0;
       start += 1 + child_n;
       continue;
