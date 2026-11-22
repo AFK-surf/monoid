@@ -1442,13 +1442,22 @@ pub fn chat_jobs_summary_params(r : ChatRef) -> Map[String, Json] {
 }
 
 ///|
-/// Whether a chat has current web services, reading `hasServices` from a summary `chatJobs` payload or falling back to
-/// checking `service: true` items in a full payload.
+/// Whether a chat has current web services, reading `hasServices` from a summary `chatJobs` payload, falling back to
+/// checking `service: true` items in a full payload, or `hasJobs` for legacy summary payloads before `hasServices`
+/// existed.
 pub fn chat_jobs_has_services(j : Json?) -> Bool {
   match field(j, "hasServices") {
     Some(True) => true
     Some(False) => false
-    _ => items(j, "jobs").iter().any(fn(x) { flag(Some(x), "service") })
+    _ => {
+      let list = items(j, "jobs")
+      if list.length() > 0 {
+        list.iter().any(fn(x) { flag(Some(x), "service") })
+      } else {
+        // Legacy summary payload from an older core / replay trace before `hasServices` existed
+        flag(j, "hasJobs")
+      }
+    }
   }
 }
 
@@ -1458,8 +1467,16 @@ pub fn chat_jobs_service_alarm(j : Json?) -> String {
   match field(j, "serviceAlarm") {
     Some(String(s)) => s
     _ => {
+      let list = items(j, "jobs")
+      if list.length() == 0 {
+        // Legacy summary payload (no `hasServices` and no `jobs` list): fall back to `alarm`
+        if field(j, "hasServices") is None {
+          return text(j, "alarm")
+        }
+        return ""
+      }
       let mut restart = false
-      for x in items(j, "jobs") {
+      for x in list {
         if !flag(Some(x), "service") {
           continue
         }

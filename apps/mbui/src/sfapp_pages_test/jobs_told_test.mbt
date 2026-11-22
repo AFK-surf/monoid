@@ -109,7 +109,7 @@ test "大屏: a chat's info's popover dismissed by Escape: closed as the key is 
 ///|
 test "大屏: a chat's services' popover dismissed by a press on the chat: closed as it goes down; the frame after closes nothing more, opened again its own" {
   let down : Array[Bool] = []
-  let seen = chat_pop_dismissed("服务和后台任务", fn(t) {
+  let seen = chat_pop_dismissed("服务", fn(t) {
     t.touch_at(0, 700.0, 500.0, t.time())
     down.push(@sfdesk.chat_pops_open().1)
     t.touch_at(2, 700.0, 500.0, t.time())
@@ -151,10 +151,10 @@ test "大屏: 运行中 pressed again with its popover open, then Escape at once
 }
 
 ///|
-test "大屏: a chat's 服务和后台任务 pressed again with its popover open, then Escape at once: closed as it is let go, and stays closed, a frame between or none" {
+test "大屏: a chat's 服务 pressed again with its popover open, then Escape at once: closed as it is let go, and stays closed, a frame between or none" {
   let open = fn() { @sfdesk.chat_pops_open().1 }
-  let none = button_then_escape(wide_tester([], mode="chat-jobs"), "服务和后台任务", open, false)
-  let framed = button_then_escape(wide_tester([], mode="chat-jobs"), "服务和后台任务", open, true)
+  let none = button_then_escape(wide_tester([], mode="chat-jobs"), "服务", open, false)
+  let framed = button_then_escape(wide_tester([], mode="chat-jobs"), "服务", open, true)
   assert_eq((none, framed), ([false, false, false], [false, false, false]))
 }
 
