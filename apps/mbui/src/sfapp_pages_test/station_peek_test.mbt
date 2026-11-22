@@ -129,7 +129,7 @@ test "an agent's model opens its model picker, where the context limit can be ch
 test "a chat's history opens the same model picker to change the context limit" {
   let calls : Array[Made] = []
   let t = decide_core(calls, "history-details")
-  let row = t.words().iter().find_first(fn(w) { w.0 == "Opus 5.5" }).unwrap()
+  let row = t.words().iter().find_first(fn(w) { w.0 == "Opus 5.5" && w.2 > 60.0 }).unwrap()
   t.tap(row.1 + row.3 / 2.0, row.2 + row.4 / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("完整 · 1M") is Some(_), msg="the model picker offers the current context limit")
