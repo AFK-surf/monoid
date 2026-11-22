@@ -218,10 +218,12 @@ pub async fn FolderPlace::drop(self : FolderPlace, ws : String, origin : String,
   check(ws, origin, gen~)
   let dir = self.dir(ws, origin)
   let head = self.head_at(self.fs.join([dir, gen, "head.json"]))
-  let named = match head {
-    Some(h) => head_batches(h)
-    None => []
-  }
+  let named = set_of(
+    match head {
+      Some(h) => head_batches(h)
+      None => []
+    },
+  )
   for b in batches {
     if is_batch(b) && !named.contains(b) {
       self.fs.files.unlink(self.fs.join([dir, gen, "log", b])) catch {
@@ -344,6 +346,16 @@ pub fn FolderPlace::place(self : FolderPlace) -> Place {
 }
 
 ///|
+/// Each name once, to be looked up in constant time: copies name a hundred thousand files and more.
+fn set_of(xs : Array[String]) -> Map[String, Bool] {
+  let m = Map::new(capacity=xs.length() * 2)
+  for x in xs {
+    m[x] = true
+  }
+  m
+}
+
+///|
 /// The generation of this station's own copy being brought to a place: its head, its batches' bytes, where its files
 /// are now.
 pub struct Own {
@@ -451,19 +463,28 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
       }
     }
   }
+  let k_batches_set = set_of(k.batches)
   for b in head_batches(own.head) {
-    if k.batches.contains(b) {
+    if k_batches_set.contains(b) {
       continue
     }
     (place.put)(ws, origin, gen, "batch", b, (own.batch)(b))
     k.batches.push(b)
+    k_batches_set[b] = true
   }
   let wanted = head_all_files(own.head, include_transcripts~)
   let lacking = wanted.filter(h => !k.files.contains(h))
   let sources = if lacking.length() == 0 { [] } else { (own.sources)(lacking) }
+  // (the first source named for a hash is the one taken)
+  let source_map : Map[String, String] = Map::new(capacity=sources.length() * 2)
+  for p in sources {
+    if !source_map.contains(p.0) {
+      source_map[p.0] = p.1
+    }
+  }
   let mut missing = 0
   for hash in lacking {
-    match pair_get(sources, hash) {
+    match source_map.get(hash) {
       None => missing += 1
       Some(source) => {
         (place.put_file)(ws, origin, hash, source)
@@ -476,9 +497,9 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
     k.to = head_to(own.head)
     k.made = head_made(own.head)
   }
-  let named = wanted
-  let batches = head_batches(own.head)
-  let old_batches = k.batches.filter(b => !batches.contains(b))
+  let named = set_of(wanted)
+  let batch_set = set_of(head_batches(own.head))
+  let old_batches = k.batches.filter(b => !batch_set.contains(b))
   let old_files = []
   for f, _ in k.files {
     if !named.contains(f) && !k.others.contains(f) {
@@ -487,7 +508,8 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
   }
   if old_batches.length() > 0 || old_files.length() > 0 {
     (place.drop)(ws, origin, gen, old_batches, old_files)
-    let left = k.batches.filter(b => !old_batches.contains(b))
+    let dropped_batches = set_of(old_batches)
+    let left = k.batches.filter(b => !dropped_batches.contains(b))
     k.batches.clear()
     k.batches.push_iter(left.iter())
     for f in old_files {
@@ -500,8 +522,9 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
 ///|
 /// Whether `theirs` holds as much as `mine`: each generation as far, and every file.
 pub fn holds_all(mine : Held, theirs : Held) -> Bool {
+  let has = set_of(theirs.files)
   for f in mine.files {
-    if !theirs.files.contains(f) {
+    if !has.contains(f) {
       return false
     }
   }
@@ -526,13 +549,33 @@ pub fn holds_all(mine : Held, theirs : Held) -> Bool {
 /// Brings `to` level with what `from` holds of another station's copies: every generation, nothing dropped. Whether
 /// `to` holds all of it now.
 pub async fn hand_over(from : FolderPlace, to : Place, ws : String, origin : String) -> Bool {
-  let mine = from.held(ws, origin)
+  hand_over_from(
+    from.held(ws, origin),
+    async fn(hash) { from.path_of(ws, origin, None, hash) },
+    async fn(gen, b) { from.read(ws, origin, Some(gen), b) },
+    to,
+    ws,
+    origin,
+  )
+}
+
+///|
+/// `hand_over` from what is held (`mine`), a file's path and a batch's bytes found as `path_of` and `read` say.
+async fn hand_over_from(
+  mine : Held,
+  path_of : async (String) -> String?,
+  read : async (String, String) -> Bytes?,
+  to : Place,
+  ws : String,
+  origin : String,
+) -> Bool {
   let theirs = (to.held)(ws, origin)
+  let has_files = set_of(theirs.files)
   for hash in mine.files {
-    if theirs.files.contains(hash) {
+    if has_files.contains(hash) {
       continue
     }
-    match from.path_of(ws, origin, None, hash) {
+    match path_of(hash) {
       Some(path) => (to.put_file)(ws, origin, hash, path)
       None => ()
     }
@@ -547,15 +590,17 @@ pub async fn hand_over(from : FolderPlace, to : Place, ws : String, origin : Str
     if their_to >= head_to(h) {
       continue
     }
-    let has = match t {
-      Some(x) => x.batches
-      None => []
-    }
+    let has_batches = set_of(
+      match t {
+        Some(x) => x.batches
+        None => []
+      },
+    )
     for b in head_batches(h) {
-      if has.contains(b) {
+      if has_batches.contains(b) {
         continue
       }
-      match from.read(ws, origin, Some(g.gen), b) {
+      match read(g.gen, b) {
         Some(bytes) => (to.put)(ws, origin, g.gen, "batch", b, bytes)
         None => ()
       }

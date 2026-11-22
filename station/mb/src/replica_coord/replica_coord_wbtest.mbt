@@ -586,3 +586,262 @@ test "ExportLoop close invokes close_runner before waiting on an in-flight stuck
   assert_eq(signals, ["SIGTERM"])
   assert_true(eloop.passing is None)
 }
+
+///|
+/// A head of generation `gen` naming `files` and `transcripts` (each an object keyed by hash, as heads have them).
+fn head_naming(gen : String, to : Int, batches : Array[String], files : Array[String], transcripts : Array[String]) -> J {
+  jo([
+    ("v", ji(1)),
+    ("origin", js("s1")),
+    ("workspace", js("W1")),
+    ("gen", js(gen)),
+    ("to", ji(to)),
+    ("made", ji(to * 10)),
+    ("batches", jstrs(batches)),
+    ("files", jo(files.map(f => (f, ji(1))))),
+    ("transcriptFiles", jo(transcripts.map(f => (f, ji(1))))),
+    ("runs", ja([jo([("run", js("r1")), ("from", ji(1))])])),
+  ])
+}
+
+///|
+test "level with a hundred-thousand-scale head: lacking files sent from their first source, old ones dropped, others kept" {
+  let n = 20_000
+  let gen = "lz5x0-0123abcd"
+  let b1 = "0000000001-0000000004-00000000.ndjson.zst"
+  let b2 = "0000000005-0000000009-00000000.ndjson.zst"
+  let transcripts = Array::makei(n, i => "t\{i}")
+  let files = Array::makei(10, i => "f\{i}")
+  // (the place holds every transcript but the last 100, and a file only an older generation names)
+  let held_files = transcripts[0:n - 100].to_array()
+  held_files.push("other")
+  let older = head_naming("lz5w0-0123abcd", 3, [], ["other"], [])
+  let place_held : Held = { gens: [{ gen: "lz5w0-0123abcd", head: Some(older), batches: [] }], files: held_files }
+  let sent : Array[(String, String)] = []
+  let dropped : Array[(Array[String], Array[String])] = []
+  let put = []
+  let place : Place = {
+    held: fn(_, _) { place_held },
+    put: fn(_, _, _, kind, name, _) { put.push("\{kind}:\{name}") },
+    put_file: fn(_, _, hash, source) { sent.push((hash, source)) },
+    drop: fn(_, _, _, batches, files) { dropped.push((batches, files)) },
+  }
+  // (three of the lacking have no source; one is named twice, the first taken)
+  let no_source = ["t\{n - 1}", "t\{n - 2}", "f9"]
+  let sources = (hashes : Array[String]) => {
+    let out = []
+    for h in hashes {
+      if !no_source.contains(h) {
+        out.push((h, "/src/\{h}"))
+      }
+    }
+    out.push(("f0", "/second/f0"))
+    out
+  }
+  let asked = Ref(0)
+  let rt = @effect.Runtime::new()
+  let got : Ref[Levelled?] = Ref(None)
+  let head1 = head_naming(gen, 4, [b1], files, transcripts)
+  ignore(
+    rt.fork(async fn() {
+      got.val = Some(
+        level(place, "W1", {
+          head: head1,
+          batch: b => @utf8.encode(b),
+          sources: async fn(hs) {
+            asked.val += 1
+            sources(hs)
+          },
+        }),
+      )
+    }),
+  )
+  rt.advance(1)
+  guard got.val is Some(Level(to, missing, k)) else { fail("not level") }
+  assert_eq(to, 4.0)
+  assert_eq(missing, 3)
+  assert_eq(asked.val, 1)
+  assert_eq(sent.length(), 107)
+  assert_true(sent.contains(("f0", "/src/f0")))
+  assert_false(sent.contains(("f0", "/second/f0")))
+  assert_eq(put, ["batch:" + b1, "head:head.json"])
+  // (nothing named by an older generation goes)
+  assert_eq(dropped.length(), 0)
+  assert_true(k.files.contains("other"))
+  // Two transcripts let go and the batch compacted: both go, the older generation's file stays.
+  let fewer = transcripts[2:].to_array()
+  let head2 = head_naming(gen, 9, [b2], files, fewer)
+  put.clear()
+  ignore(
+    rt.fork(async fn() {
+      got.val = Some(level(place, "W1", { head: head2, batch: b => @utf8.encode(b), sources: async fn(hs) { sources(hs) } }, known=Some(k)))
+    }),
+  )
+  rt.advance(1)
+  guard got.val is Some(Level(to, missing, k)) else { fail("not level") }
+  assert_eq(to, 9.0)
+  assert_eq(missing, 3)
+  assert_eq(put, ["batch:" + b2, "head:head.json"])
+  assert_eq(dropped.length(), 1)
+  let (old_batches, old_files) = dropped[0]
+  assert_eq(old_batches, [b1])
+  old_files.sort()
+  assert_eq(old_files, ["t0", "t1"])
+  assert_eq(k.batches, [b2])
+  assert_false(k.files.contains("t0"))
+  assert_true(k.files.contains("other"))
+  assert_true(k.files.contains("t2"))
+}
+
+///|
+test "holds_all and hand_over over twenty thousand files: all held, one lacking, only the lacking sent" {
+  let n = 20_000
+  let gen = "lz5x0-0123abcd"
+  let b1 = "0000000001-0000000004-00000000.ndjson.zst"
+  let all = Array::makei(n, i => "h\{i}")
+  let head = head_naming(gen, 4, [b1], all, [])
+  let mine : Held = { gens: [{ gen, head: Some(head), batches: [b1] }], files: all }
+  assert_true(holds_all(mine, mine))
+  let short = all[1:].to_array()
+  assert_false(holds_all(mine, { gens: mine.gens, files: short }))
+  assert_false(holds_all(mine, { gens: [], files: all }))
+  // A place of mine on disk; the other lacks the first file and the generation.
+  let rt = @effect.Runtime::new()
+  let theirs : Ref[Held] = Ref({ gens: [], files: short.copy() })
+  let sent = []
+  let put = []
+  let to : Place = {
+    held: fn(_, _) { theirs.val },
+    put: fn(_, _, g, kind, name, _) {
+      put.push("\{kind}:\{name}")
+      if kind == "head" {
+        theirs.val = { gens: [{ gen: g, head: Some(head), batches: [b1] }], files: theirs.val.files }
+      }
+    },
+    put_file: fn(_, _, hash, _) {
+      sent.push(hash)
+      theirs.val.files.push(hash)
+    },
+    drop: fn(_, _, _, _, _) { () },
+  }
+  let got = Ref(false)
+  let read = []
+  ignore(
+    rt.fork(async fn() {
+      got.val = hand_over_from(
+        mine,
+        async fn(hash) { Some("/files/\{hash}") },
+        async fn(g, b) {
+          read.push("\{g}/\{b}")
+          Some(b"b")
+        },
+        to,
+        "W1",
+        "s1",
+      )
+    }),
+  )
+  rt.advance(1)
+  assert_eq(sent, [all[0]])
+  assert_eq(put, ["batch:" + b1, "head:head.json"])
+  assert_eq(read, [gen + "/" + b1])
+  assert_true(got.val)
+  // (all held there now: nothing sent again)
+  sent.clear()
+  put.clear()
+  ignore(rt.fork(async fn() { got.val = hand_over_from(mine, async fn(_) { None }, async fn(_, _) { None }, to, "W1", "s1") }))
+  rt.advance(1)
+  assert_eq(sent.length(), 0)
+  assert_eq(put.length(), 0)
+  assert_true(got.val)
+}
+
+///|
+test "restore_file_names: the head's files, then the held transcripts, each once, in order" {
+  let head = head_naming("lz5x0-0123abcd", 4, [], ["a", "b", "c"], ["c", "d", "e", "a", "f", "d"])
+  assert_eq(restore_file_names(head, ["a", "c", "d", "f", "z"]), ["a", "b", "c", "d", "f"])
+  assert_eq(restore_file_names(head, []), ["a", "b", "c"])
+  let n = 20_000
+  let files = Array::makei(100, i => "f\{i}")
+  let transcripts = Array::makei(n, i => "t\{i}")
+  // (the first ten files again among the transcripts; every other transcript held)
+  let named = files[0:10].to_array()
+  named.append(transcripts)
+  let held = transcripts.filter(t => t.length() % 2 == 0)
+  held.append(files)
+  let got = restore_file_names(head_naming("lz5x0-0123abcd", 4, [], files, named), held)
+  let want = files.copy()
+  want.append(transcripts.filter(t => t.length() % 2 == 0))
+  assert_eq(got, want)
+}
+
+///|
+test "the export's process: a long line in many pieces, several lines in one piece, newlines at a piece's edges" {
+  let rt = @effect.Runtime::new()
+  let out : @effect.Queue[ExportSaid] = @effect.Queue::unbounded()
+  let written = []
+  let said = (s : String) => ignore(out.try_offer(Said(@utf8.encode(s))))
+  let big = "a".repeat(256 * 16 * 1024 - 20)
+  let start = fn() -> ExportProcess raise {
+    {
+      write: b => {
+        written.push(@utf8.decode_lossy(b))
+        match written.length() {
+          1 => {
+            // (an answer of 4 MB in 256 pieces of 16 KB, no newline but the last, something else between)
+            let line = @utf8.encode("{\"id\":1,\"answer\":\"\{big}\"}\n")
+            let piece = 16 * 1024
+            let mut at = 0
+            while at < line.length() {
+              let end = (at + piece).min(line.length())
+              ignore(out.try_offer(Said(line[at:end].to_owned())))
+              ignore(out.try_offer(Other))
+              at = end
+            }
+          }
+          // (noise and an empty line before it, the next ask's answer after it, its newline not yet come)
+          2 => said("noise\n\n{\"id\":2,\"answer\":2}\n{\"id\":3,\"answer\":3}")
+          // (the newline first in a piece)
+          3 => said("\n")
+          // (the newline last in a piece, an empty piece and something else between)
+          4 => {
+            said("{\"id\":4,")
+            ignore(out.try_offer(Other))
+            said("")
+            said("\"answer\":4}\n")
+          }
+          // (a piece's newline ends one answer and the next is whole after it)
+          5 => {
+            said("{\"id\":5,\"answer\":5}")
+            said("\n{\"id\":6,\"answer\":6}\n")
+          }
+          _ => ()
+        }
+        true
+      },
+      end_input: () => ignore(out.try_offer(Ended(Some(0), None))),
+      kill: _ => (),
+      next: async fn() { out.take() },
+    }
+  }
+  let runner = process_runner(start, () => 7.0)
+  let got = []
+  ignore(
+    rt.fork(async fn() {
+      try {
+        match (runner.pass)(jo([])) {
+          Str(s) => got.push("1:\{s.length()}:\{s == big}")
+          other => got.push("1:" + stringify(other))
+        }
+        for _ in 2..=6 {
+          got.push(stringify((runner.pass)(jo([]))))
+        }
+        (runner.close)()
+      } catch {
+        e => got.push("failed: " + message_of(e))
+      }
+    }),
+  )
+  rt.advance(1)
+  assert_eq(got, ["1:\{big.length()}:true", "2", "3", "4", "5", "6"])
+}

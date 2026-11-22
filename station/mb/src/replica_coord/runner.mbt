@@ -186,10 +186,24 @@ pub(all) struct ExportProcess {
 }
 
 ///|
+/// Where the first `\n` of `b` is.
+fn newline_in(b : Bytes) -> Int? {
+  for i in 0..<b.length() {
+    if b[i] == b'\n' {
+      return Some(i)
+    }
+  }
+  None
+}
+
+///|
 priv struct Running {
   p : ExportProcess
   /// What it said past its last whole line.
   pending : @buffer.Buffer
+  /// Whether `pending` is known to hold no `\n`: a long line coming a piece at a time is then only appended to, never
+  /// copied or scanned again (an answer of megabytes comes in thousands of pieces).
+  mut clean : Bool
   mut ended : Bool
 }
 
@@ -208,31 +222,40 @@ pub fn process_runner(start : () -> ExportProcess raise, now : () -> Double, clo
   let gone = (r : Running) => if proc.val is Some(x) && physical_equal(x, r) { proc.val = None }
   let line_of = async fn(r : Running) -> String {
     while true {
-      let had = r.pending.to_bytes()
-      let mut nl : Int? = None
-      for i = 0; i < had.length(); i = i + 1 {
-        if had[i] == b'\n' {
-          nl = Some(i)
-          break
+      if !r.clean {
+        // (what was left past the last line, a piece at most: it may hold the next one whole)
+        let had = r.pending.to_bytes()
+        match newline_in(had) {
+          Some(i) => {
+            r.pending.reset()
+            r.pending.write_bytes(had[i + 1:])
+            return @utf8.decode_lossy(had[0:i].to_owned())
+          }
+          None => r.clean = true
         }
-      }
-      if nl is Some(i) {
-        let line = @utf8.decode_lossy(had[0:i].to_owned())
-        let rest = had[i + 1:].to_owned()
-        r.pending.reset()
-        r.pending.write_bytes(rest)
-        return line
       }
       if r.ended {
         raise failed("the copies' export ended")
       }
       match (r.p.next)() {
-        Said(b) => r.pending.write_bytes(b)
+        Said(b) =>
+          match newline_in(b) {
+            None => r.pending.write_bytes(b)
+            Some(i) => {
+              r.pending.write_bytes(b[0:i])
+              let line = @utf8.decode_lossy(r.pending.to_bytes())
+              r.pending.reset()
+              r.pending.write_bytes(b[i + 1:])
+              r.clean = false
+              return line
+            }
+          }
         Other => ()
         Ended(code, signal) => {
           r.ended = true
           gone(r)
           r.pending.reset()
+          r.clean = true
           let c = match code {
             Some(c) => c.to_string()
             None => "null"
@@ -275,7 +298,7 @@ pub fn process_runner(start : () -> ExportProcess raise, now : () -> Double, clo
     match proc.val {
       Some(r) => r
       None => {
-        let r : Running = { p: start(), pending: @buffer.new(), ended: false }
+        let r : Running = { p: start(), pending: @buffer.new(), clean: true, ended: false }
         proc.val = Some(r)
         if places.val is Some(pl) {
           ignore(ask_now(r, "places", [("places", pl)]))

@@ -2129,12 +2129,7 @@ async fn Copies::bring(self : Copies, r : Restoring, from : String, from_s3 : Bo
   guard holding is Some({ head: Some(head), .. }) else {
     raise Thrown("CopyGone", jo([("message", js("that copy is not kept there"))]))
   }
-  let names = head_files(head).copy()
-  for h in head_transcript_files(head) {
-    if held.files.contains(h) && !names.contains(h) {
-      names.push(h)
-    }
-  }
+  let names = restore_file_names(head, held.files)
   r.name = text_at(head, "name")
   r.total = head_batches(head).length() + names.length()
   self.changed(0.0)
@@ -2175,4 +2170,25 @@ async fn Copies::bring(self : Copies, r : Restoring, from : String, from_s3 : Bo
     Some(f) => f()
     None => ()
   }
+}
+
+///|
+/// The files a restore brings: the head's own, then those of its transcripts the place holds, each once, in that order.
+fn restore_file_names(head : J, held_files : Array[String]) -> Array[String] {
+  let names = head_files(head).copy()
+  let seen : Map[String, Bool] = Map::new(capacity=names.length() * 2)
+  for n in names {
+    seen[n] = true
+  }
+  let held_set : Map[String, Bool] = Map::new(capacity=held_files.length() * 2)
+  for f in held_files {
+    held_set[f] = true
+  }
+  for h in head_transcript_files(head) {
+    if held_set.contains(h) && !seen.contains(h) {
+      names.push(h)
+      seen[h] = true
+    }
+  }
+  names
 }
