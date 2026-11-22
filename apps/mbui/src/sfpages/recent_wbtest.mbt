@@ -176,11 +176,15 @@ fn strip_tiles(t : @ui.Tester) -> Array[(Double, Double, Double, Double)] {
 }
 
 ///|
+/// What a finger's drag across the strip glides for after it is let go, over by then.
+let strip_glide_over_ms : Double = 3000.0
+
+///|
 /// The strip dragged across from `x0` to `x1` by a finger on its tiles, its glide let run out.
 fn strip_dragged(t : @ui.Tester, x0 : Double, x1 : Double) -> Unit {
   let y = recent_in(false).1 + recent_tile_h / 2.0
   t.drag(x0, y, x1, y, steps=20)
-  t.run_for(3000.0)
+  t.run_for(strip_glide_over_ms)
 }
 
 ///|
