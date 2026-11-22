@@ -2295,11 +2295,77 @@ static MBView *key_view(void) {
 
 static NSStatusItem *tray_item;
 
+// The menus as given, without what their items say of being enabled: two of them alike are the same menu bar but for
+// which items are greyed, as the app gives it again when a chat opens or closes.
+static id menu_shape(id v) {
+  if ([v isKindOfClass:NSArray.class]) {
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:[v count]];
+    for (id e in v) [out addObject:menu_shape(e)];
+    return out;
+  }
+  if ([v isKindOfClass:NSDictionary.class]) {
+    NSMutableDictionary *out = [NSMutableDictionary dictionaryWithCapacity:[v count]];
+    [v enumerateKeysAndObjectsUsingBlock:^(id k, id e, BOOL *stop) {
+      (void)stop;
+      if (![k isEqual:@"enabled"]) out[k] = menu_shape(e);
+    }];
+    return out;
+  }
+  return v;
+}
+
+// What was last made (mb_host_menu_setup): its shape, the bar and the tray's menu
+static NSArray *made_shape;
+static NSMenu *made_bar, *made_tray_menu;
+
+// A menu's items as given again: the app's own greyed or not as they now say (the system's are AppKit's, their
+// `enabled` never read, as menu_item reads none); NO where they are not the items made, to be made again. (The window
+// menu has the system's list of windows after them: those are AppKit's.)
+static BOOL menu_enabled_again(NSMenu *menu, id items) {
+  NSArray *given = [items isKindOfClass:NSArray.class] ? items : @[];
+  if (!menu || menu.numberOfItems < (NSInteger)given.count) return NO;
+  for (NSUInteger j = 0; j < given.count; j++) {
+    NSDictionary *it = given[j];
+    BOOL sep = ![it isKindOfClass:NSDictionary.class] || [it[@"separator"] isEqual:@YES];
+    if ([menu itemAtIndex:(NSInteger)j].isSeparatorItem != sep) return NO;
+  }
+  for (NSUInteger j = 0; j < given.count; j++) {
+    NSDictionary *it = given[j];
+    NSMenuItem *item = [menu itemAtIndex:(NSInteger)j];
+    if (item.action != @selector(menuChosen:) || ![it isKindOfClass:NSDictionary.class]) continue;
+    BOOL want = ![it[@"enabled"] isEqual:@NO];
+    if (item.enabled != want) item.enabled = want;
+  }
+  return YES;
+}
+
+// The menu bar given again with only its items' enabled changed: those set on the items made, nothing made again
+// (making the bar anew costs AppKit 7-13 ms on the main thread, each time a chat opens or closes)
+static BOOL menu_setup_again(NSArray *menus, NSArray *shape) {
+  if (!made_bar || NSApp.mainMenu != made_bar || ![shape isEqual:made_shape]) return NO;
+  NSInteger k = 0;
+  for (NSDictionary *m in menus) {
+    if (![m isKindOfClass:NSDictionary.class]) continue;
+    if ([m[@"role"] isEqual:@"tray"]) {
+      if ([m[@"macos"] isEqual:@YES] && !(tray_item && tray_item.menu == made_tray_menu &&
+                                          menu_enabled_again(made_tray_menu, m[@"items"])))
+        return NO;
+      continue;
+    }
+    if (k >= made_bar.numberOfItems || !menu_enabled_again([made_bar itemAtIndex:k].submenu, m[@"items"])) return NO;
+    k++;
+  }
+  return YES;
+}
+
 void mb_host_menu_setup(moonbit_string_t json_s) {
   [NSApplication sharedApplication];
   NSData *d = [mb_ns_from_string(json_s) dataUsingEncoding:NSUTF8StringEncoding];
   NSArray *menus = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:NULL] : nil;
   if (![menus isKindOfClass:NSArray.class]) return;
+  NSArray *shape = menu_shape(menus);
+  if (menu_setup_again(menus, shape)) return;
+  made_shape = shape;
   NSMenu *bar = [NSMenu new];
   NSDictionary *mac_tray = nil;
   for (NSDictionary *m in menus) {
@@ -2323,6 +2389,8 @@ void mb_host_menu_setup(moonbit_string_t json_s) {
     if ([m[@"role"] isEqual:@"window"]) NSApp.windowsMenu = menu;
   }
   NSApp.mainMenu = bar;
+  made_bar = bar;
+  made_tray_menu = nil;
 
   if (mac_tray) {
     if (!tray_item) {
@@ -2367,6 +2435,7 @@ void mb_host_menu_setup(moonbit_string_t json_s) {
       for (NSDictionary *it in mac_tray[@"items"]) [tmenu addItem:menu_item(it)];
     }
     tray_item.menu = tmenu;
+    made_tray_menu = tmenu;
   } else if (tray_item) {
     [NSStatusBar.systemStatusBar removeStatusItem:tray_item];
     tray_item = nil;
