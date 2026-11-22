@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cfeaf85ae](https://github.com/AFK-surf/monoid/commit/cfeaf85ae8abdc54bad8353cbd0d7fa2f26ec90f) feat(mbui): use liquid_segmented_node in sf-ui and | 2.66 | 3.59 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 98.76 | 116.7 |
 | [f4f4a3969](https://github.com/AFK-surf/monoid/commit/f4f4a3969319607731f19948d861d5dcbce954cc) fix(sf-ui): keep a hover card open when its modal  | 2.66 | 3.58 | 14.53 | 36.6 | 55.52 | 32.06 | 64.86 | 98.68 | 116.7 |
 | [648a3b3c9](https://github.com/AFK-surf/monoid/commit/648a3b3c9d4475c39c5503687109fc748039621b) perf(mbui): fix Android IME pop-up/dismiss frame p | 2.66 | 3.58 | 14.53 | 36.6 | 55.52 | 32.06 | 64.86 | 99.04 | 119.35 |
 | [fde7ce64a](https://github.com/AFK-surf/monoid/commit/fde7ce64a6629f9dbf29117b762ef0810490e51f) mbui, sf-ui, sfapp: Wave 7 adaptive liquid glass w | 2.66 | 3.58 | 14.53 | 36.6 | 55.52 | 32.06 | 64.86 | 98.91 | 124.17 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dcc0e30c5](https://github.com/AFK-surf/monoid/commit/dcc0e30c52ae14fd1619133294a2ca5065c602ae) feat(sfpages): make the mouse quote pill single-la | 2.64 | 3.55 | 14.42 | 36.47 | 55.06 | 31.96 | 64.47 | 98.47 | 122.73 |
 | [c86bcdee8](https://github.com/AFK-surf/monoid/commit/c86bcdee8df51053775ef26ad6b1e855521819f5) perf(cold-start): F4a POST /changed/shared + own m | 2.64 | 3.55 | 14.42 | 36.47 | 55.06 | 31.93 | 64.47 | 98.55 | 120.03 |
 | [7568ac3f7](https://github.com/AFK-surf/monoid/commit/7568ac3f70ffc0765351b1a302077419225c2f85) feat(mbui,sf-ui,sfpages): add continuous Glass.str | 2.64 | 3.55 | 14.42 | 36.44 | 55.05 | 31.93 | 64.47 | 98.55 | 127.18 |
-| [7bc5afc43](https://github.com/AFK-surf/monoid/commit/7bc5afc43ee385ba2b72a960421fb7cdd68fddff) fix(mbui): open file links in the execution histor | 2.64 | 3.55 | 14.42 | 36.44 | 55.04 | 31.93 | 64.45 | 98.24 | 120.63 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cfeaf85ae](https://github.com/AFK-surf/monoid/commit/cfeaf85ae8abdc54bad8353cbd0d7fa2f26ec90f) feat(mbui): use liquid_segmented_node in sf-ui and | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
 | [f4f4a3969](https://github.com/AFK-surf/monoid/commit/f4f4a3969319607731f19948d861d5dcbce954cc) fix(sf-ui): keep a hover card open when its modal  | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
 | [648a3b3c9](https://github.com/AFK-surf/monoid/commit/648a3b3c9d4475c39c5503687109fc748039621b) perf(mbui): fix Android IME pop-up/dismiss frame p | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
 | [fde7ce64a](https://github.com/AFK-surf/monoid/commit/fde7ce64a6629f9dbf29117b762ef0810490e51f) mbui, sf-ui, sfapp: Wave 7 adaptive liquid glass w | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.49 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dcc0e30c5](https://github.com/AFK-surf/monoid/commit/dcc0e30c52ae14fd1619133294a2ca5065c602ae) feat(sfpages): make the mouse quote pill single-la | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
 | [c86bcdee8](https://github.com/AFK-surf/monoid/commit/c86bcdee8df51053775ef26ad6b1e855521819f5) perf(cold-start): F4a POST /changed/shared + own m | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
 | [7568ac3f7](https://github.com/AFK-surf/monoid/commit/7568ac3f70ffc0765351b1a302077419225c2f85) feat(mbui,sf-ui,sfpages): add continuous Glass.str | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
-| [7bc5afc43](https://github.com/AFK-surf/monoid/commit/7bc5afc43ee385ba2b72a960421fb7cdd68fddff) fix(mbui): open file links in the execution histor | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
