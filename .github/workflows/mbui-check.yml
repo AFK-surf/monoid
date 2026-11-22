@@ -121,6 +121,8 @@ jobs:
           fi
           echo "IMG=$img" >> "$GITHUB_ENV"
           echo "IMG=$img (image=${ImageVersion:-own}, cc=$(${cc_bin:-clang} --version 2>/dev/null | head -1))"
+          # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again: 44991143294)
+          [ "${{ runner.environment }}" = self-hosted ] || sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         # (arch/next's commit, on main's ref: workflow_run, above)
         with: { ref: "${{ github.event.workflow_run.head_sha || github.sha }}" }
@@ -670,6 +672,8 @@ jobs:
       MBUI_TEST_BARS: ${{ matrix.fps == '' && inputs.rates != 'no' && github.event_name != 'workflow_run' && '1' || '' }}
       MOTION_OUT: ${{ github.workspace }}/motion.txt
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { ref: "${{ github.event.workflow_run.head_sha || github.sha }}" }
       - uses: actions/download-artifact@v4
@@ -737,6 +741,8 @@ jobs:
       MBUI_TEST_BARS: ${{ matrix.fps == '' && inputs.rates != 'no' && github.event_name != 'workflow_run' && '1' || '' }}
       MOTION_OUT: ${{ github.workspace }}/motion.txt
     steps: &app-steps
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-linux
@@ -886,6 +892,8 @@ jobs:
       MBUI_TEST_BARS: ${{ matrix.fps == '' && inputs.rates != 'no' && github.event_name != 'workflow_run' && '1' || '' }}
       MOTION_OUT: ${{ github.workspace }}/motion.txt
     steps: &realsize-steps
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { ref: "${{ github.event.workflow_run.head_sha || github.sha }}" }
       - uses: actions/download-artifact@v4
@@ -954,6 +962,8 @@ jobs:
       MBUI_TEST_BARS: ${{ matrix.fps == '' && inputs.rates != 'no' && github.event_name != 'workflow_run' && '1' || '' }}
       MOTION_OUT: ${{ github.workspace }}/motion.txt
     steps: &pages-test-steps
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { ref: "${{ github.event.workflow_run.head_sha || github.sha }}" }
       - uses: actions/download-artifact@v4
@@ -1025,6 +1035,8 @@ jobs:
       pages_test_files: ${{ steps.files.outputs.pages_test_files }}
       matrix: ${{ steps.files.outputs.matrix }}
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - run: bash scripts/git-history.sh main
       - id: files
@@ -1080,6 +1092,8 @@ jobs:
       REALSIZE_FILES: ${{ needs.rates-files.outputs.realsize_files }}
       PAGES_TEST_FILES: ${{ needs.rates-files.outputs.pages_test_files }}
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - if: env.APP_FILES != 'none'
         uses: actions/download-artifact@v4
@@ -1173,6 +1187,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { sparse-checkout: libs/mbui/scripts }
       - uses: actions/download-artifact@v4
@@ -1208,6 +1224,8 @@ jobs:
     timeout-minutes: 3
     permissions: { contents: read, actions: read }
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - env: { GH_TOKEN: "${{ github.token }}" }
         run: bash scripts/rates-said.sh mbui-check

@@ -196,6 +196,30 @@ export class Station {
           await stream.finish().catch(() => {});
           return;
         }
+        // A deterministic ranged byte stream: byte at position `p` is `p % 251`, written in 4 KiB chunks.
+        if (parsed.path.startsWith("/admin/api/part")) {
+          const params = new URL(parsed.path, "https://station.test").searchParams;
+          const offset = Number(params.get("offset") ?? 0);
+          const length = Number(params.get("length") ?? 0);
+          const step = Number(params.get("chunk") ?? 4 * 1024);
+          let ok = true;
+          for (let sent = 0; sent < length; sent += step) {
+            const n = Math.min(step, length - sent);
+            const buf = Buffer.allocUnsafe(n);
+            for (let i = 0; i < n; i++) buf[i] = (offset + sent + i) % 251;
+            try {
+              await stream.write(buf);
+            } catch {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) {
+            ended = true;
+            await stream.finish().catch(() => {});
+          }
+          return;
+        }
         if (parsed.path === "/admin/api/events/hold") {
           this.eventOpens++;
           this.#eventStreams.add(stream);

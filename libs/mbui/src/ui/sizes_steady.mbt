@@ -503,7 +503,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
   let hand_now = rows_steady.hand != sizes_steady.hand
   sizes_steady.hand = rows_steady.hand
   let here : Set[(Int, Int, Int64)] = Set([])
-  self.with_tree_nodes(fn() {
+  self.with_tree_nodes(ground_drawn=false, fn() {
     let tree = view_tree()
     // (one ident twice in the frame: who either is, unsaid)
     let count : Map[Int, Int] = Map([])

@@ -1731,33 +1731,37 @@ fn move_dialog(core : Core, s : Json?, p : Json?, targets : Array[Json]) -> Unit
     @sf.t("web-pages.profiles.share.moveTo"),
     description=@sf.t(if shared { "web-pages.profiles.share.moveShared" } else { "web-pages.profiles.share.moveOwn" }, args=[("station", text(s, "name"))]),
     fn(v, shut) {
-      @sf.group_node(v, fn(g) {
-        g.each(fn() { targets.mapi(fn(i, x) { (i, x) }) }, fn(x) { x.0 }, fn(row, x) {
-          let xv = Some(x.untracked().1)
-          let online = flag(xv, "online")
-          @sf.link_row_node(
-            row,
-            fn() { text(xv, "name") },
-            fn() {
-              shut()
-              if !shared {
-                (core.pop)()
-              }
-              @settings.act(
-                core,
-                @sf.t("web-pages.profiles.share.move"),
-                "profile.move",
-                obj([("station", str(address)), ("id", str(id)), ("to", str(text(xv, "id")))]),
-                done=@sf.t("web-pages.profiles.share.moved", args=[("station", text(xv, "name"))]),
-              )
-            },
-            value=fn() { if online { "" } else { @sf.t("web-pages.stations.offline") } },
-            chevron=false,
-            goes=online,
-            lead=LeadLine(fn(l) { @sf.state_dot_node(l, fn() { if online { "online" } else { "offline" } }) }),
-          )
+      v.box(fn(block) {
+        @sf.style_node(block, fn() { @sf.panel_card_last_node(block) })
+        @sf.group_node(block, fn(g) {
+          g.each(fn() { targets.mapi(fn(i, x) { (i, x) }) }, fn(x) { x.0 }, fn(row, x) {
+            let xv = Some(x.untracked().1)
+            let online = flag(xv, "online")
+            @sf.link_row_node(
+              row,
+              fn() { text(xv, "name") },
+              fn() {
+                shut()
+                if !shared {
+                  (core.pop)()
+                }
+                @settings.act(
+                  core,
+                  @sf.t("web-pages.profiles.share.move"),
+                  "profile.move",
+                  obj([("station", str(address)), ("id", str(id)), ("to", str(text(xv, "id")))]),
+                  done=@sf.t("web-pages.profiles.share.moved", args=[("station", text(xv, "name"))]),
+                )
+              },
+              value=fn() { if online { "" } else { @sf.t("web-pages.stations.offline") } },
+              chevron=false,
+              goes=online,
+              lead=LeadLine(fn(l) { @sf.state_dot_node(l, fn() { if online { "online" } else { "offline" } }) }),
+            )
+          })
         })
       })
+      |> ignore
     },
   )
 }

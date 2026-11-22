@@ -45,6 +45,9 @@ const HEDGE_RECHECK_MS = 250;
 const LOST_TRIES = 3;
 /// How long a write gone unanswered is asked again with its key.
 export const RECHECK_MS = 5 * 60 * 1000;
+/// Elapsed time and average throughput below which a crawling bulk body aborts to switch to a clearly better standby.
+export const BULK_CRAWL_MS = 8_000;
+export const BULK_CRAWL_BPS = 32 * 1024;
 
 export function unconfirmed(why: CoreError): CoreError {
   return new CoreError("unconfirmed", t("station.core.unconfirmed", { why: why.message }));
@@ -230,7 +233,36 @@ export class MeshWire implements StationWire {
         replyType === NDJSON;
       // The whole body gone and answered: how fast its way took it.
       if (timesBody && speedVia !== null) mesh.noteSpeed(key, speedVia, body.length, Math.max(1, mesh.now() - askedAt));
-      const timed = speedVia !== null && !streams ? mesh.timed(key, speedVia, reply.body) : reply.body;
+      const timed = speedVia !== null && !streams ? mesh.timed(key, speedVia, reply.body, bulk) : reply.body;
+      let bodyPull = timed;
+      if (bulk && repeats && !noHedge && !streams) {
+        const crawlStarted = mesh.now();
+        let crawlBytes = 0;
+        let crawlNoted = false;
+        bodyPull = {
+          take: Effect.flatMap(timed.take, (chunk) => {
+            if (chunk === null) return Effect.succeed(null);
+            crawlBytes += chunk.length;
+            const elapsed = mesh.now() - crawlStarted;
+            if (elapsed >= BULK_CRAWL_MS && (crawlBytes / elapsed) * 1000 < BULK_CRAWL_BPS) {
+              if (!crawlNoted && speedVia !== null && typeof mesh.noteSpeed === "function") {
+                const curSpeed = typeof mesh.speed === "function" ? mesh.speed(key, speedVia) : null;
+                if (curSpeed === null || curSpeed >= BULK_SLOW_BPS) {
+                  mesh.noteSpeed(key, speedVia, Math.max(crawlBytes, 1), elapsed, true);
+                }
+                crawlNoted = true;
+              }
+              if (typeof mesh.betterBulkStandby === "function" && mesh.betterBulkStandby(key, l) !== null) {
+                reply.cancel();
+                const err = new CoreError("mesh", t("core-logic.mesh.cut"));
+                err.cause = "bulk_crawl";
+                return Effect.fail(err);
+              }
+            }
+            return Effect.succeed(chunk);
+          }),
+        };
+      }
       // Why the station ended the connection it came on, as its close said (shell, iroh-wasm and node-iroh give it).
       const ended = () => {
         const r = l.conn.closeReason();
@@ -238,7 +270,7 @@ export class MeshWire implements StationWire {
       };
       // A stream gone silent takes the way it came on for gone, not every way to the station (`Mesh.dropWay`).
       const drop = () => mesh.dropWay(key, l);
-      return { status: reply.status, headers: reply.headers, body: timed, via: l.path(), relay: relay !== null ? relayHost(relay) : null, ended, drop };
+      return { status: reply.status, headers: reply.headers, body: bodyPull, via: l.path(), relay: relay !== null ? relayHost(relay) : null, ended, drop };
     }), refusedFor);
   }
 

@@ -2271,7 +2271,7 @@
   "web-pages.stations.retire.accounts": "Accounts",
   "web-pages.stations.retire.staying": "Can't be moved",
   "web-pages.stations.retire.jobs": "Running tasks and services",
-  "web-pages.stations.retire.outside": "Working directories outside the station",
+  "web-pages.stations.retire.outside": "Directories outside the station",
   "web-pages.stations.retire.outsideNote": "The chats move; their files stay where they are",
   "web-pages.stations.retire.more": "{names} and more",
   "web-pages.stations.retire.count": "{n}",

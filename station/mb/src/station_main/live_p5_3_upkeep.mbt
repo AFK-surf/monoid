@@ -97,8 +97,12 @@ let p53_upkeep_state_file : String = "upkeep-state.json"
 let p53_idle_measured_max : Int = 4096
 
 ///|
+let p53_idle_measured_version : Int = 2
+
+///|
 fn p53_empty_upkeep_state_map() -> Map[String, Json] {
   Map([
+    ("idleMeasuredVersion", ji(p53_idle_measured_version)),
     ("idleMeasured", Json::object(Map([]))),
     ("lastRepoBranchesAt", Json::null()),
     ("lastOrphanRoomsAt", Json::null()),
@@ -147,8 +151,13 @@ fn p53_normalize_idle_measured(raw : Json?) -> Map[String, Json] {
 fn p53_parse_upkeep_state_map(text : String) -> Map[String, Json] {
   let parsed = @json.parse(text) catch { _ => return p53_empty_upkeep_state_map() }
   guard parsed is Object(m) else { return p53_empty_upkeep_state_map() }
+  let current_version = match m.get("idleMeasuredVersion") {
+    Some(Number(n, ..)) if n == p53_idle_measured_version.to_double() => true
+    _ => false
+  }
   Map([
-    ("idleMeasured", Json::object(p53_normalize_idle_measured(m.get("idleMeasured")))),
+    ("idleMeasuredVersion", ji(if current_version { p53_idle_measured_version } else { 1 })),
+    ("idleMeasured", Json::object(if current_version { p53_normalize_idle_measured(m.get("idleMeasured")) } else { Map([]) })),
     ("lastRepoBranchesAt", p53_num_or_null(m.get("lastRepoBranchesAt"))),
     ("lastOrphanRoomsAt", p53_num_or_null(m.get("lastOrphanRoomsAt"))),
     ("lastFullRelieveAt", p53_num_or_null(m.get("lastFullRelieveAt"))),
@@ -175,6 +184,7 @@ async fn p53_patch_upkeep_state_json(host : @host.Host, data : String, patch : J
     None => p53_empty_upkeep_state_map()
   }
   let next = current.copy()
+  next["idleMeasuredVersion"] = ji(p53_idle_measured_version)
   match pm.get("idleMeasured") {
     Some(im) => next["idleMeasured"] = Json::object(p53_normalize_idle_measured(Some(im)))
     None => ()

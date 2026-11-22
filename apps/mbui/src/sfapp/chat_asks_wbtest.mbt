@@ -59,7 +59,7 @@ test "a list's panel as tall as what it holds, its share of the window the most 
   let t = decide_core(calls, "chat-letters-many")
   sheet_rested(t, "sf-present")
   let (_, _, _, sh) = t.get(@ui.Role::Dialog).rect
-  assert_true((sh - 844.0 * 0.8).abs() < 2.0, msg="capped: \{sh}")
+  assert_true((sh - (844.0 * 0.8 - 6.0)).abs() < 2.0, msg="capped: \{sh}")
   assert_true(t.find("往来的对话 1") is Some(_))
   assert_true(t.find("往来的对话 30") is None, msg="its last under its foot")
 }

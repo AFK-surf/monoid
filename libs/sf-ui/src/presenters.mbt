@@ -1654,13 +1654,13 @@ let sheet_hint : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
 /// A panel's buttons in a sheet (its foot): 20 in, as far under what is over them (the line over a run picker's foot,
 /// a form's last field) as over the sheet's foot, 24, across it (each its share: parts.mbt foot_fills), 8 apart.
 // kept across runs: a value (no field of it changes)
-let sheet_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S6 pb=S6 gap=S2 justify=JEnd")
+let sheet_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S6 pb=S6 gap=S2 align=ACenter justify=JEnd")
 
 ///|
 /// The same under a ruled foot (`sheet_foot_rule`): as far under the rule as the rule is under what is over it, 16 over
 /// the sheet's foot.
 // kept across runs: a value (no field of it changes)
-let sheet_ruled_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S3 pb=S4 gap=S2 justify=JEnd")
+let sheet_ruled_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S3 pb=S4 gap=S2 align=ACenter justify=JEnd")
 
 ///|
 /// The line over a ruled panel's foot (`panel`'s `ruled`), across the panel: a hairline, the line's colour faded.

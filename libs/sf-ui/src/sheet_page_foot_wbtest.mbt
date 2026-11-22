@@ -61,5 +61,9 @@ test "a step further in taller than the page it comes in the place of: the page 
   for i in 1..<went.length() {
     assert_true(went[i] <= went[i - 1], msg="完成 \{Repr(went)}")
   }
-  assert_true(came.length() > 1 && came.iter().all(fn(y) { y == came[came.length() - 1] }), msg="好 \{Repr(came)}")
+  // (the coming docked page eases its foot down from the floating island's bottom to the window's foot, never up)
+  assert_true(came.length() > 1 && (came[0] - (stood * 10.0).round() / 10.0).abs() < 0.5, msg="好 \{stood} \{Repr(came)}")
+  for i in 1..<came.length() {
+    assert_true(came[i] >= came[i - 1] && came[i] <= came[came.length() - 1], msg="好 \{Repr(came)}")
+  }
 }

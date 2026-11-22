@@ -61,11 +61,11 @@ export function rebuiltByName(name: string, beside: ReadonlySet<string>): Rebuil
     case "build":
       return beside.has("build.gradle") || beside.has("build.gradle.kts") ? "named" : null;
     case "_build":
-      return beside.has("mix.exs") || beside.has("moon.mod.json") || beside.has("moon.work") || beside.has("moon.pkg.json") ? "found" : null;
+      return beside.has("mix.exs") || beside.has("moon.mod.json") || beside.has("moon.mod") || beside.has("moon.work") || beside.has("moon.pkg.json") || beside.has("moon.pkg") ? "found" : null;
     case "deps":
       return beside.has("mix.exs") ? "found" : null;
     case ".mooncakes":
-      return beside.has("moon.mod.json") || beside.has("moon.work") ? "found" : null;
+      return beside.has("moon.mod.json") || beside.has("moon.mod") || beside.has("moon.work") ? "found" : null;
   }
   return null;
 }

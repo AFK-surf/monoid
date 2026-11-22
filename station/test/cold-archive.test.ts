@@ -418,10 +418,20 @@ test("what can be made again known by what is in it or beside it, never by a bar
   dir("mb/.mooncakes");
   write(join(p, "work/moon.work"), "x");
   dir("work/_build");
+  // New MoonBit manifest filenames (moon.mod / moon.pkg without .json or moon.work).
+  write(join(p, "mb-new/moon.mod"), 'name: "demo"\n');
+  dir("mb-new/_build");
+  dir("mb-new/.mooncakes");
+  write(join(p, "mb-pkg/moon.pkg"), 'import {}\n');
+  dir("mb-pkg/_build");
   dir("repo/.git");
   write(join(p, "repo/moon.mod.json"), "{}");
   write(join(p, "repo/src/lib/moon.pkg.json"), "{}");
   dir("repo/src/lib/sub/_build");
+  dir("repo-new/.git");
+  write(join(p, "repo-new/moon.mod"), 'name: "demo"\n');
+  write(join(p, "repo-new/src/lib/moon.pkg"), 'import {}\n');
+  dir("repo-new/src/lib/sub/_build");
   // (above the checkout's top: not its; outside a checkout, only beside)
   write(join(p, "outer/moon.mod.json"), "{}");
   dir("outer/inner/.git");
@@ -446,7 +456,12 @@ test("what can be made again known by what is in it or beside it, never by a bar
   dir("bare/_build");
   dir("bare/deps");
   dir("bare/.mooncakes");
-  const found = ["ex/_build", "ex/deps", "mb/_build", "mb/.mooncakes", "work/_build", "repo/src/lib/sub/_build", "DerivedData-App", "rs-a", "rs-b", "rs-c"];
+  const found = [
+    "ex/_build", "ex/deps", "mb/_build", "mb/.mooncakes", "work/_build",
+    "mb-new/_build", "mb-new/.mooncakes", "mb-pkg/_build",
+    "repo/src/lib/sub/_build", "repo-new/src/lib/sub/_build",
+    "DerivedData-App", "rs-a", "rs-b", "rs-c",
+  ];
   const not = ["outer/inner/_build", "outer/loose/_build", "only-products", "rs-tag-only", "other-cache", "no-tag", "bare/_build", "bare/deps", "bare/.mooncakes", "repo/src", "ex"];
   for (const d of found) {
     assert.equal(rebuildableKind(join(p, d)), "found", d);
@@ -475,17 +490,25 @@ test("archive cleanup takes one known by what is in it, inside a checkout, only 
     write(join(p, d, "CACHEDIR.TAG"), TAG);
     write(join(p, d, ".rustc_info.json"), "{}");
   };
-  write(join(p, ".gitignore"), "/ignored-out\n_build/\nlogs/\n");
+  write(join(p, ".gitignore"), "/ignored-out\n_build/\n.mooncakes/\nlogs/\n");
   cargo("ignored-out");
   cargo("kept-out");
   cargo("logs/rs");
   write(join(p, "mix.exs"), "x");
   write(join(p, "_build/dev/x.beam"), "x");
   write(join(p, "deps/jason/mix.exs"), "x");
+  write(join(p, "mb-new/moon.mod"), 'name: "demo"\n');
+  write(join(p, "mb-new/src/lib/moon.pkg"), "import {}\n");
+  write(join(p, "mb-new/_build/a.o"), "x");
+  write(join(p, "mb-new/.mooncakes/core/x.mbt"), "x");
+  write(join(p, "mb-new/src/lib/sub/_build/b.o"), "x");
   // (by its name, as before: untracked, it goes ignored or not)
   write(join(p, "node_modules/dependency.js"), "x");
   assert.equal(await safeToRemove(join(p, "ignored-out")), true, "ignored by its path");
   assert.equal(await safeToRemove(join(p, "_build")), true, "ignored as a directory");
+  assert.equal(await safeToRemove(join(p, "mb-new/_build")), true, "moon.mod _build ignored inside checkout");
+  assert.equal(await safeToRemove(join(p, "mb-new/.mooncakes")), true, "moon.mod .mooncakes ignored inside checkout");
+  assert.equal(await safeToRemove(join(p, "mb-new/src/lib/sub/_build")), true, "moon.pkg nested _build ignored inside checkout");
   assert.equal(await safeToRemove(join(p, "logs/rs")), true, "in an ignored directory");
   assert.equal(await safeToRemove(join(p, "kept-out")), false, "not ignored: the project's own");
   assert.equal(await safeToRemove(join(p, "deps")), false, "not ignored: the project's own");
@@ -494,7 +517,15 @@ test("archive cleanup takes one known by what is in it, inside a checkout, only 
   const q = temp();
   write(join(q, "out/CACHEDIR.TAG"), TAG);
   write(join(q, "out/.rustc_info.json"), "{}");
+  write(join(q, "mb-standalone/moon.mod"), 'name: "demo"\n');
+  write(join(q, "mb-standalone/_build/a.o"), "x");
+  write(join(q, "mb-standalone/.mooncakes/core/x.mbt"), "x");
+  write(join(q, "mb-pkg-only/moon.pkg"), "import {}\n");
+  write(join(q, "mb-pkg-only/_build/a.o"), "x");
   assert.equal(await safeToRemove(join(q, "out")), true);
+  assert.equal(await safeToRemove(join(q, "mb-standalone/_build")), true);
+  assert.equal(await safeToRemove(join(q, "mb-standalone/.mooncakes")), true);
+  assert.equal(await safeToRemove(join(q, "mb-pkg-only/_build")), true);
   rmSync(p, { recursive: true });
   rmSync(q, { recursive: true });
 });

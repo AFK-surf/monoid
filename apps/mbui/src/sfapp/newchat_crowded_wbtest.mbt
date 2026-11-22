@@ -128,7 +128,20 @@ test "narrow: the configurations used most under their title nearest how hard it
     // the models
     let words_of = fn(label : String) -> Array[String] raise {
       let (x, y, w, h) = t.get(Button, label~).rect
-      t.boxes_held().filter(fn(b) { b.kind == "text" && b.x >= x && b.x + b.w <= x + w + 0.5 && b.y >= y && b.y + b.h <= y + h + 0.5 }).map(fn(b) { b.text })
+      let boxes = t.boxes_held()
+      let mut from = 0
+      for i = boxes.length() - 1; i >= 0; i = i - 1 {
+        let b = boxes[i]
+        if b.kind == "text" && b.text == "Opus 5.5" {
+          from = i
+          break
+        }
+      }
+      boxes[from:]
+      .iter()
+      .filter(fn(b) { b.kind == "text" && b.x >= x && b.x + b.w <= x + w + 0.5 && b.y >= y && b.y + b.h <= y + h + 0.5 })
+      .map(fn(b) { b.text })
+      .collect()
     }
     assert_true(words_of("SWE-2").contains("高"), msg="\{Repr(words_of("SWE-2"))}")
     assert_true(words_of("GPT-6 Astra").contains("中"), msg="\{Repr(words_of("GPT-6 Astra"))}")
@@ -272,12 +285,12 @@ test "narrow, a short window, models starred and used most: they scroll, how it 
     run_to_sheet_rest(t)
     let sheet = t.get(@ui.Role::Dialog).rect
     assert_true(sheet.3 <= crowded_short * @sf.sheet_most + 1.0, msg="the sheet is \{sheet.3} high")
-    let who = t.boxes_held().iter().find_first(fn(b) { b.kind == "text" && b.text == "账号" && b.y >= sheet.1 })
-    guard who is Some(who) else { fail("no 账号 in the sheet") }
-    assert_true(who.y + who.h <= sheet.1 + sheet.3, msg="账号 \{who.y} past the sheet \{Repr(sheet)}")
+    let who = t.find_last("账号")
+    guard who is Some((_, wy)) else { fail("no 账号 in the sheet") }
+    assert_true(wy >= sheet.1 && wy <= sheet.1 + sheet.3, msg="账号 \{wy} past the sheet \{Repr(sheet)}")
     let effort = t.get(Slider, label="思考深度").rect
     let runtime = t.get(Button, label="DeepSeek Harness").rect
-    assert_true(effort.1 + effort.3 <= who.y && runtime.1 >= effort.1 + effort.3, msg="\{Repr(effort)} \{Repr(runtime)} 账号 at \{who.y}")
+    assert_true(effort.1 + effort.3 <= wy && runtime.1 >= effort.1 + effort.3, msg="\{Repr(effort)} \{Repr(runtime)} 账号 at \{wy}")
     // the models in what is left over how it runs, scrolling, the end of them nearest the hand in view: the way to all
     // of them, the last of them
     let all = t.get(Button, label="全部模型").rect

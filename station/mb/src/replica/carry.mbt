@@ -452,14 +452,21 @@ fn rebuilt_by_name(name : String, beside : Set[String]) -> Int {
     "_build" =>
       if beside.contains("mix.exs") ||
         beside.contains("moon.mod.json") ||
+        beside.contains("moon.mod") ||
         beside.contains("moon.work") ||
-        beside.contains("moon.pkg.json") {
+        beside.contains("moon.pkg.json") ||
+        beside.contains("moon.pkg") {
         2
       } else {
         0
       }
     "deps" => if beside.contains("mix.exs") { 2 } else { 0 }
-    ".mooncakes" => if beside.contains("moon.mod.json") || beside.contains("moon.work") { 2 } else { 0 }
+    ".mooncakes" =>
+      if beside.contains("moon.mod.json") || beside.contains("moon.mod") || beside.contains("moon.work") {
+        2
+      } else {
+        0
+      }
     _ => 0
   }
 }

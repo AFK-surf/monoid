@@ -21,6 +21,7 @@ priv struct PanelIn {
   centred : Bool
   clear : Double
   listed : Bool
+  round_foot : () -> Double
 }
 
 ///|
@@ -41,9 +42,10 @@ fn panel_in_lend(
   centred? : Bool = false,
   clear? : Double = 0.0,
   listed? : Bool = false,
+  round_foot? : () -> Double = fn() { 0.0 },
 ) -> Unit {
   look_lent(col, look)
-  col.lends(panel_in_lent, { words, sides, rows_out, small, centred, clear, listed }) |> ignore
+  col.lends(panel_in_lent, { words, sides, rows_out, small, centred, clear, listed, round_foot }) |> ignore
 }
 
 ///|
@@ -204,7 +206,16 @@ pub fn panel_search_at_hand_node(field : @view.View) -> Unit {
 ///|
 /// Where node `v` of a panel's body is laid out (none outside a panel).
 fn panel_in_of(v : @view.View) -> PanelIn {
-  v.lent(panel_in_lent).unwrap_or({ words: 0.0, sides: 0.0, rows_out: 0.0, small: false, centred: false, clear: 0.0, listed: false })
+  v.lent(panel_in_lent).unwrap_or({
+    words: 0.0,
+    sides: 0.0,
+    rows_out: 0.0,
+    small: false,
+    centred: false,
+    clear: 0.0,
+    listed: false,
+    round_foot: fn() { 0.0 },
+  })
 }
 
 ///|

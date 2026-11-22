@@ -421,8 +421,8 @@ test "对话目录: on a phone a sheet from the foot titled 对话目录, from t
   t.click(Button, label="对话目录")
   t.run_for(@ui.move_most_ms)
   let (px, _, pw, ph) = outline_panel(t).unwrap()
-  assert_eq(px, 0.0)
-  assert_eq(pw, 390.0)
+  assert_eq(px, 6.0)
+  assert_eq(pw, 390.0 - 12.0)
   assert_true(ph > 300.0)
   assert_eq(outline_faults(t), [])
   // a row above the reader's: 设计说头图周一给 (Ana's, 星期日 17:30, seq 18), not in the list now
@@ -836,8 +836,8 @@ test "对话目录: in the sheet its day headings on the title's line, the rows'
   let grounds = outline_drawn(t, "rect").filter(fn(r) { r.4 == hover && r.2 > 200.0 })
   assert_eq(grounds.length(), 1, msg="\{Repr(grounds)}")
   let (gx, _, gw, _, _, _) = grounds[0]
-  assert_eq(gx, @sf.panel_card_in)
-  assert_eq(gx + gw, 390.0 - @sf.panel_card_in)
+  assert_eq(gx, 6.0 + @sf.panel_card_in)
+  assert_eq(gx + gw, 390.0 - 6.0 - @sf.panel_card_in)
   // (round as a pick's rows are, row_corner, not a card's corner that made a capsule of it)
   let r = @sf.row_corner.to_int()
   let lines = t.frame_export().filter(fn(l) { l.has_prefix("rect ") && l.contains(" " + hover + " ") })

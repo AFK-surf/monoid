@@ -57,7 +57,10 @@ fn open_context(src : Source, r : ChatRef, key : String) -> Unit {
       text(field(card, "context"), "compacted")
     }
     // (quiet, at the rows' words' start: none of them, and no press)
-    v.show(fn() { compacted() != "" }, fn(n) { @sf.words_node(n, compacted, fn() { context_compacted_words }) |> ignore })
+    v.show(fn() { compacted() != "" }, fn(n) {
+      n.padding(By(fn() { if !@sf.in_dialog_node(n) { (12.0, 0.0, 12.0, 0.0) } else { (0.0, 0.0, 0.0, 0.0) } })) |> ignore
+      @sf.words_node(n, compacted, fn() { context_compacted_words }) |> ignore
+    })
     v.show(fn() { flag(s(), "canCompact") }, fn(row) {
       @sf.choice_row_node(
         row,

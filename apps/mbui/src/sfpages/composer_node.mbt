@@ -589,6 +589,11 @@ fn composer_alone_node(v : @view.View, src : Source, station : String, draft : S
 let composer_over : Double = 12.0
 
 ///|
+/// The blur of the composer's glass opened (its capsule's is @sf.glass_floating's, the bottom bar's): its words read
+/// over it clear of what lies behind, where the bar has only marks.
+let composer_open_blur : Double = 4.0
+
+///|
 /// The composer's box in `foot`, `width()` wide: its capsule or its box, its field, ＋, what it says before send, send;
 /// a chat's, or as `spec` says, or a new chat's (`own`) as that says.
 fn composer_box_node(
@@ -1207,9 +1212,29 @@ fn composer_box_node(
         }) ==
           1
         let dragging = !no_files() && (@sfbase.drag_carried.val)() is Some(_) && (over || @sf.lit_node(box))
-        Some(@sf.glass_floating(tint?=if dragging { Some(@sf.alpha(@sf.theme().p.accent, drag_tint)) } else { None }).sharing())
+        let base = @sf.glass_floating(
+          tint?=if dragging { Some(@sf.alpha(@sf.theme().p.accent, drag_tint)) } else { None },
+        )
+        // (frosted more as it opens, on its shape's way: words written over it read clear of what lies behind; as a
+        // capsule the bottom bar's 2.1, shared with the capsule over it)
+        let open = shape.shown(box)
+        let glass = if open > 0.0 {
+          { ..base, blur: base.blur + (composer_open_blur - base.blur) * open }
+        } else {
+          base
+        }
+        Some(glass.sharing())
       }),
     )
+    // (the small screen's bottom bar's shadow round it (@sf.tab_bar_shadow), outside its outline only, as its glass is
+    // the bar's: the glass bends nothing of it)
+    .shadow(
+      By(fn() {
+        let s = @sf.tab_bar_shadow()
+        (s.sigma, s.dy, s.color)
+      }),
+    )
+    .shadow_outside(Is(true))
     // (round as a capsule is, or as its box's corner; from one to the other as its height goes its way: drawn, as a
     // control answering, never laid out again for it)
     .radius(

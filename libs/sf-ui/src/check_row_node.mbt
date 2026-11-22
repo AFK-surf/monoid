@@ -131,10 +131,10 @@ pub fn check_mark_node(
   let card = on_card_node(parent)
   // (a narrow row in a panel is round where it stands in from the panel's sides (panel_row_corner): its mark stands
   // out of its corner there, as on a card)
-  let panel_round = match panel_row_at(at, own=card_pad - corner_inset, card~) {
-    Some(p) => narrow && !card && !at.small && panel_row_corner(at, p.out) > 0.0
-    None => false
-  }
+  let panel_round = narrow && !card && !at.small && (match panel_row_at(at, own=card_pad - corner_inset, card~) {
+    Some(p) => panel_row_corner(at, p.out) > 0.0
+    None => at.sides > 0.5 && panel_row_corner(at, 0.0) > 0.0
+  })
   // (a row of a pane's list on a card reaching out to its edge is round all the same, row_corner, corner_inset in from
   // the card's corner: its mark stands out of both as anywhere else)
   let inset = if narrow && !card && !at.small && !panel_round {
@@ -142,7 +142,7 @@ pub fn check_mark_node(
   } else {
     let pad = match panel_row_at(at, own=if narrow { card_pad - corner_inset } else { desk_list_out }, card~) {
       Some(p) => p.side
-      None => text_in
+      None => if narrow && !card { pg_room_in } else { text_in }
     }
     dmax(0.0, row_corner - pad + 0.001)
   }

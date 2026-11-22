@@ -952,7 +952,7 @@
   "web-main.things.pulls": "Pull requests",
   "web-main.things.pullsAll": "All {n} pull requests",
   "web-main.things.show": "Show in chat",
-  "web-main.things.title": "Media, files and links",
+  "web-main.things.title": "Media, files & links",
   "web-main.tool.exitCode": "Exit code {code}",
   "web-main.tool.lines": {
     "one": "1 line",

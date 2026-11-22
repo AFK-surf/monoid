@@ -243,6 +243,7 @@ fn[T] Ctx::with_tree_nodes(
   laid? : Bool = false,
   fresh? : Bool = false,
   facts? : Bool = false,
+  ground_drawn? : Bool = true,
 ) -> T {
   let tree = match view_app.val {
     Some(t) if !old_whole.val => t
@@ -340,6 +341,23 @@ fn[T] Ctx::with_tree_nodes(
     match d.corners {
       Some((tl, tr, br, bl)) => n.set_radii(FixedArray::from_array([tl, tr, br, bl]))
       None => ()
+    }
+    if !laid && ground_drawn {
+      let gd = tree.ground_drawn_of(d.id)
+      if gd.reshaped() {
+        let s = scales[k]
+        n.x = n.x + gd.dx * s
+        n.y = n.y + gd.dy * s
+        n.fw = dmax(0.0, n.fw + gd.dw * s)
+        n.fh = dmax(0.0, n.fh + gd.dh * s)
+        match gd.corners {
+          Some((tl, tr, br, bl)) => {
+            n.set_radii(FixedArray::from_array([tl * s, tr * s, br * s, bl * s]))
+            n.radius = dmax(dmax(tl, tr), dmax(br, bl)) * s
+          }
+          None => ()
+        }
+      }
     }
     // (linked each where it says so: tree_corners_linked)
     match tree_links.get(d.id) {

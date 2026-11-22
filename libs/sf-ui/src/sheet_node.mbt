@@ -21,6 +21,10 @@ let sheet_drag_close : Double = 80.0
 let sheet_drag_h : Double = 64.0
 
 ///|
+/// How far in from the window's sides (and foot, where the system bar is shorter) a floating sheet's island stands.
+let sheet_float_inset : Double = window_in
+
+///|
 /// A page of a sheet (sheet_node's `pages`): its number in its sheet (the first, the sheet's own, 0), its panel (what it
 /// holds and its foot its nodes), what what it holds is given to close the sheet, what opened it.
 priv struct SheetPage {
@@ -478,6 +482,14 @@ fn sheet_node(
           dues[n] = layer.at_moment(w.2 + w.3, fn() { a.set(true) })
         }
       }
+      let sheet_target_float_t = fn(pg : SheetPage) -> Double {
+        if capped_of(pg.x) && !hugs_of(pg) {
+          dclamp((0.80 - pg.x.tall) / 0.14, 0.0, 1.0)
+        } else {
+          1.0
+        }
+      }
+      let float_way = @motion.NodeWay::new(@signals.untracked(fn() { sheet_target_float_t(top()) }))
       let made_with : Ref[Bool] = Ref(true)
       let shown_was : Ref[Array[Int]] = Ref(@signals.untracked(fn() { pages().map(fn(pg) { pg.n }) }))
       layer.reacts(at_start=false, fn() { pages().map(fn(pg) { pg.n }) }, fn(ids) {
@@ -486,6 +498,7 @@ fn sheet_node(
         guard ids.length() > 0 && was.length() > 0 && ids[ids.length() - 1] != was[was.length() - 1] else { return }
         let at = layer.cause_at()
         let dur = @ui.move_ms(layer.window_w())
+        float_way.go_ms(layer, sheet_target_float_t(top()), dur)
         // (as tall as it stood as its page was put on or taken off (`stood`, said where that was done, before
         // anything of it is laid out anew): where the page that shows from now sets out from)
         let stood = stood()
@@ -635,7 +648,7 @@ fn sheet_node(
           // it holds up to its share (`hugs`), no taller than that share)
           let pg = top()
           let under = reach.get()
-          let wh = win_h()
+          let wh = body_win_h()
           let most = wh * (if pg.x.grows { 1.0 } else { sheet_most }) + under
           Some(if capped_of(pg.x) && hugs_of(pg) { dmin(most, pg.x.tall * wh + under) } else { most })
         }))
@@ -707,7 +720,7 @@ fn sheet_node(
             let v = way.untracked()
             e = dmax(e, v.2 + v.3)
           }
-          for x in [dim, back, tall, recede] {
+          for x in [dim, back, tall, recede, float_way] {
             e = dmax(e, x.end())
           }
           // (what it holds making its way in or out, growing or shrinking it: each way's end as it was said)
@@ -718,53 +731,70 @@ fn sheet_node(
         // drawn from as tall as it stood, moved_by: what it draws only moves with it, never another height a frame
         // later); stepped back under a sheet over it, as tall as it is, its foot over that one's (another glass in its
         // place at that cause: it comes to no other height under it))
-        let sheet_float_drawn = fn(v : @view.View) -> @view.GroundShape {
+        let sheet_float_t = fn(v : @view.View) -> Double {
           let wh = win_h()
-          let pg = top()
-          let h_share = match tall_held.get() {
-            Some(h) => if wh > 0.0 { h / wh } else { 0.0 }
+          match tall_held.get() {
+            Some(h) => dclamp((0.80 - (if wh > 0.0 { h / wh } else { 0.0 })) / 0.14, 0.0, 1.0)
             None =>
               if sized.get() {
-                if wh > 0.0 { tall.shown(v) / wh } else { 0.0 }
-              } else if capped_of(pg.x) && !hugs_of(pg) {
-                pg.x.tall
+                dclamp((0.80 - (if wh > 0.0 { tall.shown(v) / wh } else { 0.0 })) / 0.14, 0.0, 1.0)
               } else {
-                0.5
+                float_way.shown(v)
               }
           }
-          let float_t = dclamp((0.82 - h_share) / 0.14, 0.0, 1.0)
-          if float_t <= 0.001 {
-            return { dx: 0.0, dy: 0.0, dw: 0.0, dh: 0.0, corners: None }
-          }
-          let inset = 8.0 * float_t
-          let bottom_r = pane_corner * float_t
-          {
-            dx: inset,
-            dy: 0.0,
-            dw: -2.0 * inset,
-            dh: -(reach.get() + 8.0) * float_t,
-            corners: Some((pane_corner, pane_corner, bottom_r, bottom_r)),
+        }
+        let sheet_foot_clear = fn(ft : Double) -> Double {
+          if ft <= 0.001 {
+            0.0
+          } else {
+            dmax(sheet_float_inset, @ui.system_bars().bottom) * ft
           }
         }
-        let ground = fn(make : (@view.View) -> Unit) {
-          sheet.pick(at_once=true, fn() { (covered_by() is Some(_), placed.get() is Some(_)) }, fn(g, key) {
-            let covered = key.0
-            let docked = key.0 || key.1
-            if docked {
-              g
-              .over(Is(true), edges=(Some(0.0), Some(0.0), Some(0.0), if covered { Some(0.0) } else { None }))
-              .height(By(fn() { if covered { None } else { Some(win_h() * 2.0) } }))
-              .radius(Is(pane_corner))
-              |> ignore
-            } else {
-              g
-              .over(Is(true))
-              .radius(Is(pane_corner))
-              .ground_drawn(By(fn() { sheet_float_drawn(g) }))
-              |> ignore
+        let sheet_float_drawn = fn(v : @view.View, h : Double, is_ground : Bool) -> @view.GroundShape {
+          @signals.untracked(fn() {
+            let own = dmax(0.0, h - reach.get())
+            let float_t = sheet_float_t(v)
+            let fb = foot_back(layer.drawn_at(), own)
+            if float_t <= 0.001 {
+              if is_ground {
+                let dh = if @signals.untracked(covered_by) is Some(_) {
+                  -reach.get()
+                } else {
+                  -(reach.get() - sheet_under) + dmax(0.0, -fb)
+                }
+                return { dx: 0.0, dy: 0.0, dw: 0.0, dh, corners: None }
+              } else {
+                return @view.ground_as_laid
+              }
             }
+            let inset = sheet_float_inset * float_t
+            let foot_clear = sheet_foot_clear(float_t)
+            let bottom_r = pane_corner * float_t
+            let extra = if is_ground { dmax(0.0, -fb) * (1.0 - float_t) } else { 0.0 }
+            let dh = if is_ground {
+              -(reach.get() - sheet_under * (1.0 - float_t) + foot_clear) - fb * float_t + extra
+            } else {
+              -(reach.get() * float_t + foot_clear) - fb * float_t
+            }
+            {
+              dx: inset,
+              dy: 0.0,
+              dw: -2.0 * inset,
+              dh,
+              corners: Some((pane_corner, pane_corner, bottom_r, bottom_r)),
+            }
+          })
+        }
+        let ground = fn(make : (@view.View) -> Unit) {
+          sheet.box(fn(g) {
+            g
+            .over(Is(true))
+            .radius(Is(pane_corner))
+            .shown_by(sheet, fn(h) { sheet_float_drawn(g, h, true) })
+            |> ignore
             make(g)
           })
+          |> ignore
         }
         ground(fn(g) {
           g
@@ -892,17 +922,14 @@ fn sheet_node(
           .grow(Is(1.0))
           .shrink(Is(1.0))
           .min_height(Is(Some(0.0)))
-          .padding(By(fn() { (0.0, 0.0, 0.0, reach.get()) }))
+          .padding(By(fn() {
+            let ft = sheet_float_t(cut)
+            let inset = sheet_float_inset * ft
+            let foot_clear = sheet_foot_clear(ft)
+            (inset, 0.0, inset, reach.get() + foot_clear)
+          }))
           .radius(Is(pane_corner))
-          .ground_drawn(
-            By(fn() {
-              if covered_by() is Some(_) || placed.get() is Some(_) {
-                @view.ground_as_laid
-              } else {
-                sheet_float_drawn(cut)
-              }
-            }),
-          )
+          .shown_by(sheet, fn(h) { sheet_float_drawn(cut, h, false) })
           .clips(Is(true))
           |> ignore
           // (what it holds, as tall as the sheet less its foot's room past the window: what is read out as the sheet, a
@@ -1140,7 +1167,7 @@ fn sheet_node(
                         col.min_height(Is(Some(0.0))) |> ignore
                         // (laid out as the host's sheet lays out a capped panel's body: narrow, its words a sheet's own in,
                         // sheet_step's; sheet_capped_room: none in from its sides)
-                        panel_in_lend(col, Narrow, sheet_panel_sides, sides=0.0)
+                        panel_in_lend(col, Narrow, sheet_panel_sides, sides=0.0, round_foot=fn() { sheet_float_t(col) })
                         col.lends(sheet_win_lent, body_win_h) |> ignore
                         // (what it holds come to another height for a cause of its own: the sheet from as tall as it is
                         // seen, where it shows, panel_reshaped_node)
@@ -1162,10 +1189,14 @@ fn sheet_node(
                         // else as its words)
                         let flush = x.nodes.flush
                         let own_sides = x.tall > 0.0 || flush
+                        let float_plain = !own_sides && !footed && !x.grows
+                        let float_held = pressed && float_plain
                         let room = if x.tall > 0.0 || (flush && footed) {
                           full_width
                         } else if flush {
                           if pressed { sheet_flush_held } else { sheet_flush_panel }
+                        } else if float_held {
+                          sheet_held.then(@ui.style(px=room(sheet_panel_sides)))
                         } else if pressed {
                           if footed { sheet_held_sides } else { sheet_held }
                         } else {
@@ -1180,7 +1211,9 @@ fn sheet_node(
                           // sheet's rows leave of its words' in one a press opened, its rows out to its words' in one opened
                           // by nothing)
                           if own_sides {
-                            panel_in_lend(col, Narrow, sheet_panel_sides, sides=0.0)
+                            panel_in_lend(col, Narrow, sheet_panel_sides, sides=0.0, round_foot=fn() { sheet_float_t(col) })
+                          } else if float_held {
+                            panel_in_lend(col, Narrow, 0.0, sides=sheet_panel_sides, rows_out=0.0, round_foot=fn() { sheet_float_t(col) })
                           } else {
                             panel_in_lend(
                               col,
@@ -1188,7 +1221,8 @@ fn sheet_node(
                               if pressed { sheet_panel_sides - sheet_row_sides } else { 0.0 },
                               // (sheet_held's, sheet_panel's px)
                               sides=if pressed { sheet_row_sides } else { sheet_panel_sides },
-                              rows_out=dmax(0.0, (if pressed { sheet_row_sides } else { sheet_panel_sides }) - panel_card_in),
+                              rows_out=if float_plain { 0.0 } else { dmax(0.0, (if pressed { sheet_row_sides } else { sheet_panel_sides }) - panel_card_in) },
+                              round_foot=fn() { sheet_float_t(col) },
                             )
                           }
                           col.lends(sheet_win_lent, body_win_h) |> ignore
@@ -1213,7 +1247,20 @@ fn sheet_node(
                         |> ignore
                       }
                       page.box(fn(row) {
-                        style_node(row, fn() { if x.ruled { sheet_ruled_foot_at } else { sheet_foot_at } })
+                        style_node(row, fn() {
+                          let base = if x.ruled { sheet_ruled_foot_at } else { sheet_foot_at }
+                          let ft = sheet_float_t(row)
+                          if ft > 0.001 {
+                            let at = @ui.capsule_in(pane_corner, button_height())
+                            let base_px = 20.0
+                            let base_pb = if x.ruled { 16.0 } else { 24.0 }
+                            let px = base_px + (at - base_px) * ft
+                            let pb = base_pb + (at - base_pb) * ft
+                            base.then(@ui.style(px=room(px), pb=room(pb)))
+                          } else {
+                            base
+                          }
+                        })
                         foot_stays(row, shows, own_height)
                         // (its buttons across it, each its share, in a thumb's reach: the host's sheet's foot_fills; where they have not the
                         // room each as wide as its words, a line each, as the old foot's flow and line_gap: ask_foot_lines)
@@ -1230,7 +1277,7 @@ fn sheet_node(
             })
             |> ignore
             // (under it, the navigation bar's room: sheet_foot)
-            col.box(fn(nav) { nav.height(By(fn() { Some(@ui.system_bars().bottom) })) |> ignore }) |> ignore
+            col.box(fn(nav) { nav.height(By(fn() { Some(@ui.system_bars().bottom * (1.0 - sheet_float_t(nav))) })) |> ignore }) |> ignore
           })
           |> ignore
         })
@@ -1240,6 +1287,7 @@ fn sheet_node(
           v
           .over(Is(true))
           .radius(Is(pane_corner))
+          .shown_by(sheet, fn(h) { sheet_float_drawn(v, h, true) })
           // (none of it drawn while it dims nothing)
           .alpha(By(fn() { if recede.shown(layer) > 0.0 { 1.0 } else { 0.0 } }))
           .ground(By(fn() { @ui.alpha(sheet_scrim, recede.shown(layer)) }))

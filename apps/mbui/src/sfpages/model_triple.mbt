@@ -994,7 +994,7 @@ fn triple_body_node(
         (if !items(vv, "sidekicks").is_empty() { 1 } else { 0 }) +
         (if flag(vv, "fastAvailable") { 1 } else { 0 }) +
         (if !items(vv, "contexts").is_empty() { 1 } else { 0 })
-      let foot_two_lines = (foot_chips >= 2 && ww < 340.0) || (foot_chips >= 3 && ww < 440.0) || foot_chips >= 4
+      let foot_two_lines = (foot_chips >= 2 && ww < 364.0) || (foot_chips >= 3 && ww < 464.0) || foot_chips >= 4
       let sheet_rest = (if at == "" { 60.0 } else { 72.0 }) +
         (if at == "" && options().length() > 8 { 42.0 } else { 0.0 }) +
         (if triple_other_stations(vv) { @sf.theme().items.least } else { 0.0 }) +

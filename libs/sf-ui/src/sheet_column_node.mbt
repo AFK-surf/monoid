@@ -18,7 +18,7 @@ pub fn sheet_column_node(parent : @view.View, body : (@view.View) -> Unit, loc~ 
       let pad = if at.sides + at.words > 0.0 { at.words } else { sheet_panel_sides }
       let sides = at.sides + pad
       style_node(col, fn() { sheet_column_box.then(@ui.style(px=room(pad))) })
-      panel_in_lend(col, look_node(parent), 0.0, sides~, rows_out=dmax(0.0, sides - panel_card_in), small=at.small, clear=at.clear)
+      panel_in_lend(col, look_node(parent), 0.0, sides~, rows_out=dmax(0.0, sides - panel_card_in), small=at.small, clear=at.clear, round_foot=at.round_foot)
     }
     body(col)
   })

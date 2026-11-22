@@ -199,10 +199,16 @@ fn agent_tiles_node(v : @view.View, card : () -> Json?, top : Double, tips? : @s
 ///|
 /// What is wrong (agent_notes', as nodes) in `v`, `top` over it, as `card` says it now: a line each in its level's
 /// colour. Nothing while nothing is.
-fn agent_notes_node(v : @view.View, card : () -> Json?, top : Double) -> Unit {
+fn agent_notes_node(
+  v : @view.View,
+  card : () -> Json?,
+  top : Double,
+  px? : Double = @sf.text_in,
+  pb? : Double = 8.0,
+) -> Unit {
   let notes = fn() { items(card(), "attention") }
   v.show(at_once=true, fn() { notes().length() > 0 }, fn(b) {
-    b.padding(Is((@sf.text_in, top, @sf.text_in, 8.0))).gap(Is(2.0)) |> ignore
+    b.padding(Is((px, top, px, pb))).gap(Is(2.0)) |> ignore
     b.each(fn() { Array::makei(notes().length(), fn(i) { i }) }, fn(i) { i }, fn(x, i) {
       let k = i.untracked()
       let n = fn() { notes().get(k) }

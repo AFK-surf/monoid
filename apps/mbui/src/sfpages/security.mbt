@@ -974,6 +974,7 @@ fn sec_member_panel(
         sec_device_row_node(row, core, ws, fn() { Some(d.get()) }, fn() { false })
       })
     })
+    v.box(fn(f) { @sf.style_node(f, fn() { @sf.panel_card_last_node(f) }) }) |> ignore
   })
 }
 

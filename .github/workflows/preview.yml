@@ -79,7 +79,10 @@ jobs:
       win_build: ${{ steps.what.outputs.win_build }}
     steps:
       # (the history's commits and trees, the files' contents only for beta.sh: what changed is told by the trees)
-      - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again: 44991143294)
+      - run: |
+          git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
+          sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none", sparse-checkout: apps/mbui/scripts }
       - id: what
@@ -161,6 +164,8 @@ jobs:
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
           [ "$GITHUB_REF" = refs/heads/main ] || echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
+          # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again: 44991143294)
+          sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       # (GTK 4 and what the host and the core link beside it: libsoup, libsecret)
       - uses: ./.github/actions/apt
@@ -462,6 +467,9 @@ jobs:
     outputs:
       have: ${{ steps.have.outputs.have }}
     steps:
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again: 44991143294)
+      - if: github.event_name == 'push'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - if: github.event_name == 'push'
         uses: actions/checkout@v5
       - if: github.event_name == 'push'

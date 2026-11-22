@@ -291,4 +291,19 @@ fi
 # Units unused for 12 hours leave the store (mbc touches a unit's directory on each use), as CI's upkeep.sh removes
 # them: where nothing else does (a person's machine, a station whose agents build), it held 35 GiB.
 find "$MBC_STORE" -mindepth 2 -maxdepth 2 -type d -mmin +720 -exec rm -rf {} + 2>/dev/null || true
+if [ -d "$HOME/stillfail-ci/reader-mbc-prepped" ]; then
+  prepped_prune_dir="$HOME/stillfail-ci/reader-mbc-prepped"
+  find "$prepped_prune_dir" -maxdepth 1 \( -name '*.lock' -o -name '*.tmp.*' \) -mmin +30 -exec rm -rf {} + 2>/dev/null || true
+  find "$prepped_prune_dir" -maxdepth 1 -type f -name 'prepped-*.c' -mmin +180 -delete 2>/dev/null || true
+  # Cap kept prepared C files (~300 MB each) so agent build bursts cannot fill the disk within 3 hours.
+  (
+    shopt -s nullglob
+    files=("$prepped_prune_dir"/prepped-*.c)
+    if [ "${#files[@]}" -gt 16 ]; then
+      ls -1t "${files[@]}" 2>/dev/null | tail -n +17 | while IFS= read -r old; do
+        rm -f "$old" 2>/dev/null || true
+      done
+    fi
+  ) || true
+fi
 echo "$out"

@@ -235,3 +235,72 @@ test "a path last followed, failing when followed again, keeps what it was last 
   assert_eq(followed.get("/p"), Some((0.0, Some("/old"))))
   assert_false(follow_due(followed, failed, "/p", now))
 }
+
+///|
+test "collect_due_paths deduplicates and picks unfollowed or expired job cwds so active jobs are followed before has_jobs" {
+  let followed : Map[String, (Double, String?)] = {
+    "/fresh": (1000.0, Some("/real/fresh")),
+    "/stale": (0.0, Some("/real/stale")),
+  }
+  let failed : Map[String, Double] = { "/failed-recent": 1000.0 }
+  let now = followed_ms + 100.0
+  let due = collect_due_paths(
+    followed,
+    failed,
+    ["/fresh", "/new-job", "/new-job", "/stale", "/failed-recent"],
+    now,
+  )
+  assert_eq(due, ["/new-job", "/stale"])
+  run_async(async fn() {
+    for p in due {
+      ignore(follow_kept(followed, failed, p, () => now, async fn(x) { Some("/real" + x) }))
+    }
+  })
+  assert_eq(followed.get("/new-job"), Some((now, Some("/real/new-job"))))
+  assert_eq(followed.get("/stale"), Some((now, Some("/real/stale"))))
+}
+
+///|
+test "parse_rebuild_result and is_incomplete_walk classify complete, duration, entries, and depth walks" {
+  let (r1, c1, why1) = parse_rebuild_result({
+    "size": 100,
+    "complete": true,
+    "rebuild": [["/a/node_modules", 64]],
+  })
+  assert_eq(r1, [("/a/node_modules", 64.0)])
+  assert_true(c1)
+  assert_eq(why1, None)
+  assert_false(is_incomplete_walk(c1, why1, 64.0))
+
+  let (_, c2, why2) = parse_rebuild_result({
+    "size": 100,
+    "complete": false,
+    "reason": "duration",
+    "rebuild": [["/a/node_modules", 64]],
+  })
+  assert_false(c2)
+  assert_eq(why2, Some("duration"))
+  assert_true(is_incomplete_walk(c2, why2, 0.0))
+  assert_true(is_incomplete_walk(c2, why2, 64.0))
+
+  let (_, c3, why3) = parse_rebuild_result({
+    "size": 100,
+    "complete": false,
+    "reason": "entries",
+    "rebuild": [["/a/node_modules", 64]],
+  })
+  assert_false(c3)
+  assert_eq(why3, Some("entries"))
+  assert_false(is_incomplete_walk(c3, why3, 0.0))
+  assert_true(is_incomplete_walk(c3, why3, 64.0))
+
+  let (_, c4, why4) = parse_rebuild_result({
+    "size": 100,
+    "complete": false,
+    "reason": "depth",
+    "rebuild": [],
+  })
+  assert_false(c4)
+  assert_eq(why4, Some("depth"))
+  assert_false(is_incomplete_walk(c4, why4, 64.0))
+}

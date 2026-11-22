@@ -63,7 +63,7 @@ pub fn[K : Hash + Eq] panel_list_node(
           b.padding(Is((inner, 0.0, inner, 0.0))) |> ignore
         }
         // (its rows laid out as the panel's are, their words further in by as far as it reaches out)
-        panel_in_lend(b, look, at.words + out, sides=at.sides - out, small=at.small, clear=at.clear, listed=true)
+        panel_in_lend(b, look, at.words + out, sides=at.sides - out, small=at.small, clear=at.clear, listed=true, round_foot=at.round_foot)
         row(b, k)
       },
       est~,

@@ -217,7 +217,7 @@ fn Measure::moon_above(self : Measure, from : String) -> Bool {
   let mut found = false
   let mut p = from
   for i = 0; i < manifest_up; i = i + 1 {
-    for m in ["moon.mod.json", "moon.work", "moon.pkg.json"] {
+    for m in ["moon.mod.json", "moon.mod", "moon.work", "moon.pkg.json", "moon.pkg"] {
       if !there(p, m) {
         continue
       }
@@ -282,7 +282,7 @@ fn Measure::rebuildable(
       }
     "deps" => if beside("mix.exs") { return true }
     ".mooncakes" =>
-      if beside("moon.mod.json") || beside("moon.work") {
+      if beside("moon.mod.json") || beside("moon.mod") || beside("moon.work") {
         return true
       }
     _ => ()

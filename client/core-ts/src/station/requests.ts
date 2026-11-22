@@ -64,6 +64,8 @@ export const UPLOAD_WHOLE_MAX = 50 * 1024 * 1024;
 export const SOCKET_OPEN_MS = 30_000;
 /// JSON reads may be slow, but cannot own a scheduler slot forever without receiving bytes.
 export const JSON_IDLE_MS = 60_000;
+/// Finite binary/part reads cannot stall indefinitely between chunks.
+export const BODY_IDLE_MS = 20_000;
 const within = <A, E, R>(work: Effect.Effect<A, E, R>, ms: number) => ms > 0
   ? Effect.timeoutOrElse(work, { duration: ms, orElse: () => Effect.fail(new CoreError("timeout", t("core-logic.mesh.timed_out"))) })
   : work;
@@ -229,7 +231,8 @@ export class Requests {
   /// Not `quiet`, it is in a person's sight: the station's background waits while it is under way, and what is idle
   /// there gives way (scheduler.ts `foregroundBegin`).
   exchange(station: StationAddr, method: string, path: string, headers: [string, string][], body: Uint8Array, quiet: boolean, ctx: SpanContext | null, heard?: (loaded: number) => void, wrote?: (sent: number) => void, sink?: (piece: Uint8Array) => void, onHead?: (status: number, headers: [string, string][]) => void, json = false, flushCut = false): Effect.Effect<{ status: number; headers: [string, string][]; body: Uint8Array; json?: unknown }, CoreError> {
-    const idleMs = json ? JSON_IDLE_MS : 0;
+    const headIdleMs = json ? JSON_IDLE_MS : 0;
+    const bodyIdleMs = json ? JSON_IDLE_MS : BODY_IDLE_MS;
     return Effect.scoped(
       Effect.gen({ self: this }, function* () {
         const status = this.#status(station);
@@ -250,7 +253,7 @@ export class Requests {
         });
         const result = yield* Effect.result(
           Effect.gen({ self: this }, function* () {
-            const reply = yield* within(this.wire.request(station, head, body, gone), idleMs);
+            const reply = yield* within(this.wire.request(station, head, body, gone), headIdleMs);
             span.set("stillfail.head_ms", Math.round(host.monotonicMs() - began));
             answered(span, reply);
             const tooOld = stationTooOld(reply.headers, path);
@@ -258,7 +261,7 @@ export class Requests {
             onHead?.(reply.status, reply.headers);
             // What came over the link is counted (and said in the span); what it says, decompressed.
             let came = 0;
-            const counted = { ...reply, body: { take: Effect.tap(within(reply.body.take, idleMs), (chunk) => Effect.sync(() => chunk && ((came += chunk.length), waiting ? waiting.received(chunk.length) : status.received(null, chunk.length)))) } };
+            const counted = { ...reply, body: { take: Effect.tap(within(reply.body.take, bodyIdleMs), (chunk) => Effect.sync(() => chunk && ((came += chunk.length), waiting ? waiting.received(chunk.length) : status.received(null, chunk.length)))) } };
             let loaded = 0;
             let told = 0;
             // An error's body is read as any other's: what it says is the error.
@@ -528,44 +531,50 @@ export class Requests {
   /// size (when the station gives it), now and then. `thumb` "preview" (thumb=2): the whole-window viewer's preview, or
   /// the file itself where there is none (and from a station from before).
   file(station: StationAddr, key: string, name: string, thumb: boolean | "preview", progress: (loaded: number, total: number | null) => void, ctx: SpanContext | null): Effect.Effect<[string, Uint8Array], CoreError> {
-    return Effect.scoped(
-      Effect.gen({ self: this }, function* () {
-        const path = `/sessions/${encode(key)}/files?name=${encode(name)}${thumb === "preview" ? "&thumb=2" : thumb ? "&thumb=1" : ""}`;
-        const status = this.#status(station);
-        const waiting = status.begin({ station: station.toString() }, stationWhat("GET", path), false);
-        const [span, head] = this.#head(station, "GET", path, thumb === false || thumb === "preview" ? [[BULK, "1"]] : [], 0, ctx);
-        const result = yield* Effect.result(
-          Effect.gen({ self: this }, function* () {
-            const reply = yield* this.wire.request(station, head, empty);
-            answered(span, reply);
-            if (reply.status !== 200) return yield* Effect.fail(new CoreError(`http_${reply.status}`, t("station.core.fileUnreadable"), reply.status));
-            const kind = replyHeader(reply, "content-type") ?? "";
-            const length = Number(replyHeader(reply, "content-length")?.trim());
-            const total = Number.isInteger(length) && length >= 0 ? length : null;
-            // (every hundredth, else every 64 KB, a small one's every twentieth: a chat's thumbnail is 11-13 KB, and
-            // every 64 KB showed 0% until it came; its size not said, every 64 KB: 256 KB showed 0 B until it came)
-            const step = total === null ? 64 * 1024 : Math.max(Math.floor(total / 100), Math.min(64 * 1024, Math.ceil(total / 20)));
-            progress(0, total);
-            let loaded = 0;
-            let told = 0;
-            const counted = { ...reply, body: { take: Effect.tap(reply.body.take, (chunk) => Effect.sync(() => chunk && waiting.received(chunk.length))) } };
-            const bytes = yield* readAll(yield* plain(this.#core.host, counted), (chunk) => {
-              loaded += chunk.length;
-              if (loaded - told >= step) {
-                progress(loaded, total);
-                told = loaded;
-              }
-            });
-            span.set("http.response.body.size", bytes.length);
-            return [kind, bytes] as [string, Uint8Array];
-          }).pipe(Effect.ensuring(Effect.sync(() => waiting.end()))),
-        );
-        if (result._tag === "Failure") failed(span, result.failure);
-        span.end();
-        if (result._tag === "Failure") return yield* Effect.fail(result.failure);
-        return result.success;
-      }),
-    );
+    return Effect.gen({ self: this }, function* () {
+      const path = `/sessions/${encode(key)}/files?name=${encode(name)}${thumb === "preview" ? "&thumb=2" : thumb ? "&thumb=1" : ""}`;
+      const status = this.#status(station);
+      const waiting = status.begin({ station: station.toString() }, stationWhat("GET", path), false);
+      const isBulk = thumb === false || thumb === "preview";
+      const [span, head] = this.#head(station, "GET", path, isBulk ? [[BULK, "1"]] : [], 0, ctx);
+      const attempt = (): Effect.Effect<[string, Uint8Array], CoreError, Scope.Scope> =>
+        Effect.gen({ self: this }, function* () {
+          const reply = yield* this.wire.request(station, head, empty);
+          answered(span, reply);
+          if (reply.status !== 200) return yield* Effect.fail(new CoreError(`http_${reply.status}`, t("station.core.fileUnreadable"), reply.status));
+          const kind = replyHeader(reply, "content-type") ?? "";
+          const length = Number(replyHeader(reply, "content-length")?.trim());
+          const total = Number.isInteger(length) && length >= 0 ? length : null;
+          // (every hundredth, else every 64 KB, a small one's every twentieth: a chat's thumbnail is 11-13 KB, and
+          // every 64 KB showed 0% until it came; its size not said, every 64 KB: 256 KB showed 0 B until it came)
+          const step = total === null ? 64 * 1024 : Math.max(Math.floor(total / 100), Math.min(64 * 1024, Math.ceil(total / 20)));
+          progress(0, total);
+          let loaded = 0;
+          let told = 0;
+          const counted = { ...reply, body: { take: Effect.tap(within(reply.body.take, BODY_IDLE_MS), (chunk) => Effect.sync(() => chunk && waiting.received(chunk.length))) } };
+          const bytes = yield* readAll(yield* plain(this.#core.host, counted), (chunk) => {
+            loaded += chunk.length;
+            if (loaded - told >= step) {
+              progress(loaded, total);
+              told = loaded;
+            }
+          });
+          span.set("http.response.body.size", bytes.length);
+          return [kind, bytes] as [string, Uint8Array];
+        });
+      const result = yield* Effect.result(
+        Effect.gen(function* () {
+          const first = yield* Effect.result(Effect.scoped(attempt()));
+          if (first._tag === "Success") return first.success;
+          if (isBulk && first.failure.cause === "bulk_crawl") return yield* Effect.scoped(attempt());
+          return yield* Effect.fail(first.failure);
+        }).pipe(Effect.ensuring(Effect.sync(() => waiting.end()))),
+      );
+      if (result._tag === "Failure") failed(span, result.failure);
+      span.end();
+      if (result._tag === "Failure") return yield* Effect.fail(result.failure);
+      return result.success;
+    });
   }
 
   /// GET /sessions/:key/parts?name=&offset=&length=: a part of a file and its whole size, for a big one fetched a part at

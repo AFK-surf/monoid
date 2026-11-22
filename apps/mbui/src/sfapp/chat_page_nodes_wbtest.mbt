@@ -2338,3 +2338,81 @@ test "小屏, a chat whose title can open its bar's second row, opened again whe
   let wrong = seen.filter(fn(s) { !back.iter().any(fn(n) { n.0 == s.0 && (n.1 - s.1).abs() <= 1.0 }) })
   assert_true(wrong.is_empty(), msg="read at \{Repr(seen)}, shut again at \{Repr(back)}")
 }
+
+///|
+/// The composer's liquid glass on a chat's page (the widest `kind == 6` instance lowest on the window): its rect,
+/// its blur, its bezel's width and how far the bezel bends; its outside-only shadow (`kind == 2`, 12 = 1) laid under
+/// it: its sigma, how far down and its colour.
+fn composer_glass_drawn(
+  t : @ui.Tester,
+) -> ((Double, Double, Double, Double), Double, Double, Double, (Double, Double, Int64)?)? {
+  let mut glass : Array[Double]? = None
+  for a in t.drawn_instances() {
+    if a.length() > 21 && a[5] == 6.0 && a[2] > 200.0 && (glass is None || glass.unwrap()[1] < a[1]) {
+      glass = Some(a)
+    }
+  }
+  guard glass is Some(g) else { return None }
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  let shadow = t
+    .drawn_instances()
+    .iter()
+    .find_first(fn(a) {
+      a.length() > 13 &&
+      a[5] == 2.0 &&
+      a[12] == 1.0 &&
+      (a[0] - g[0]).abs() < 0.5 &&
+      (a[2] - g[2]).abs() < 0.5 &&
+      (a[1] - a[13] - g[1]).abs() < 0.5
+    })
+    .map(fn(a) { (a[7], a[13], (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11])) })
+  Some(((g[0], g[1], g[2], g[3]), g[7], g[13], g[21], shadow))
+}
+
+///|
+test "小屏, a chat's composer: the bottom bar's liquid glass and outside shadow as a capsule, its blur going to 4 as it opens, in light and dark" {
+  for dark in [false, true] {
+    let name = if dark { "dark" } else { "light" }
+    new_run()
+    let src = fixture("chat")
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+    let t = @ui.Tester::new(
+      fn(c) { view(c, src) },
+      tree=app_tree(src),
+      w=390.0,
+      h=844.0,
+      platform=2,
+      env=if dark { [("MBUI_DARK", "1")] } else { [] },
+    )
+    t.run_for(@ui.move_most_ms)
+    let shadow = @sf.tab_bar_shadow()
+    let want_shadow = Some((shadow.sigma, shadow.dy, shadow.color))
+    guard composer_glass_drawn(t) is Some((_, blur, bezel, refraction, drawn_shadow)) else {
+      fail("\{name}: no composer's glass at rest")
+    }
+    assert_eq((blur, bezel, refraction, drawn_shadow), (2.1, 20.0, 28.0, want_shadow), msg="\{name}: at rest")
+    assert_eq(t.audit(), [], msg="\{name}: at rest")
+    // (pressed, the composer opens on its shape's way: its blur on it, between the capsule's and the opened one's)
+    let mut field : (Double, Double, Double, Double)? = None
+    for s in t.semantics() {
+      if s.role == @ui.Role::TextField && (field is None || field.unwrap().1 < s.rect.1) {
+        field = Some(s.rect)
+      }
+    }
+    guard field is Some((fx, fy, fw, fh)) else { fail("\{name}: no composer's field") }
+    t.tap(fx + fw / 2.0, fy + fh / 2.0)
+    if !@ui.test_at_a_rate() {
+      t.run_for_exact(120.0)
+      guard composer_glass_drawn(t) is Some((_, blur, _, _, _)) else {
+        fail("\{name}: no composer's glass opening")
+      }
+      assert_true(blur > 2.1 && blur < 4.0, msg="\{name}: its blur opening \{blur}")
+    }
+    t.run_for(@ui.move_most_ms)
+    guard composer_glass_drawn(t) is Some((_, blur, bezel, refraction, drawn_shadow)) else {
+      fail("\{name}: no composer's glass opened")
+    }
+    assert_eq((blur, bezel, refraction, drawn_shadow), (4.0, 20.0, 28.0, want_shadow), msg="\{name}: opened")
+    assert_eq(t.audit(), [], msg="\{name}: opened")
+  }
+}

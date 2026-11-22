@@ -69,6 +69,21 @@ function partProgress(c: { progress: boolean; stream: boolean }, progress: Progr
 /// changed there since its folder was read), what was kept is not put beside what it brings: the part read again whole
 /// from the station, or (bytes of it gone to `sink` already) not had. The part whole (none with `sink`), what it is,
 /// and the station's last answer (null: all of it was kept).
+const AUTO_STRIPE_MIN_BYTES = 256 * 1024;
+const autoLanes = new WeakMap<Inner, Map<string, number>>();
+
+/// Assigns a round-robin bulk lane for large foreground part reads when multiple fast bulk ways are open.
+function autoLane(inner: Inner, addr: StationAddr, explicit: number | undefined, quiet: boolean, length: number): number | undefined {
+  if (explicit !== undefined || quiet || length < AUTO_STRIPE_MIN_BYTES) return explicit;
+  if ((inner.stations.requests.wire.bulkLanes?.(addr) ?? 1) < 2) return undefined;
+  let byStation = autoLanes.get(inner);
+  if (byStation === undefined) autoLanes.set(inner, (byStation = new Map()));
+  const key = addr.toString();
+  const next = byStation.get(key) ?? 0;
+  byStation.set(key, (next + 1) >>> 0);
+  return next;
+}
+
 export function keptFirst<H extends { type: string; total: number }, G extends H>(
   inner: Inner,
   c: { offset: number; length: number; quiet?: boolean },
@@ -77,25 +92,27 @@ export function keptFirst<H extends { type: string; total: number }, G extends H
   next: (at: number, end: number) => Effect.Effect<number>,
   heard: ((loaded: number) => void) | undefined,
   sink: ((piece: Uint8Array) => void) | undefined,
-  read: (at: number, length: number, before: number, take: (piece: Uint8Array) => void, said: (head: H) => void) => Effect.Effect<G, CoreError>,
+  read: (at: number, length: number, before: number, take: (piece: Uint8Array) => void, said: (head: H) => void, attempt?: number) => Effect.Effect<G, CoreError>,
   keep: (head: H, at: number, bytes: Uint8Array) => Effect.Effect<void>,
   same: (head: H) => boolean,
 ): Effect.Effect<{ type: string; bytes: Uint8Array; got: G | null }, CoreError> {
   const end = Math.max(c.offset, Math.min(c.offset + c.length, size));
   // One stretch not kept, from `at` to `to`, from the station; what comes kept as it comes.
-  const fetch = (at: number, to: number, out: Uint8Array[]) => {
+  const fetch = (at: number, to: number, out: Uint8Array[], attempt: number) => {
     const pieces: Uint8Array[] = [];
     let head: H | null = null;
+    let sent = 0;
     // (the last stretch asked as the part asks, to its end: a station's file longer than said is read as it is)
     const length = to === end ? c.offset + c.length - at : to - at;
     return read(at, length, at - c.offset, (piece) => {
+      sent += piece.length;
       pieces.push(piece);
       out.push(piece);
       // (what goes to the UI is the UI's, moved away on the web (its worker's toPage): a copy, this one kept here)
       sink?.(piece.slice());
     }, (h) => {
       head = h;
-    }).pipe(
+    }, attempt).pipe(
       Effect.onExit((exit) =>
         Effect.suspend(() => {
           const came = joined(pieces);
@@ -107,7 +124,8 @@ export function keptFirst<H extends { type: string; total: number }, G extends H
           return Effect.void;
         }),
       ),
-      Effect.map((got) => [got, joined(pieces).length] as const),
+      Effect.map((got) => [got, sent] as const),
+      Effect.mapError((error) => ({ error, sent, head })),
     );
   };
   return Effect.gen(function* () {
@@ -116,6 +134,7 @@ export function keptFirst<H extends { type: string; total: number }, G extends H
     let got: G | null = null;
     let fromHere = false;
     let at = c.offset;
+    let retries = 0;
     while (at < end) {
       const here = yield* look(at, end - at);
       if (here !== null && here.bytes.length > 0) {
@@ -129,7 +148,18 @@ export function keptFirst<H extends { type: string; total: number }, G extends H
         continue;
       }
       const to = yield* next(at, end);
-      const [answer, came] = yield* fetch(at, Math.max(to, at + 1), out);
+      const res = yield* Effect.result(fetch(at, Math.max(to, at + 1), out, retries));
+      if (res._tag === "Failure") {
+        const { error, sent, head } = res.failure;
+        if ((error.code === "mesh" || error.code === "timeout") && (head === null || same(head)) && retries < 2) {
+          retries++;
+          if (head !== null) type ??= head.type;
+          at += sent;
+          continue;
+        }
+        return yield* Effect.fail(error);
+      }
+      const [answer, came] = res.success;
       got = answer;
       if (!same(answer)) {
         // another file than the one kept: none of what was kept goes with it
@@ -395,13 +425,17 @@ export function install(): void {
     const station = () => {
       if (c.keep === null) {
         return Effect.map(
-          Effect.flatMap(parse(c.station), (addr) => inner.stations.requests.filePart(addr, c.key, c.name, c.offset, c.length, ctx, heard, sink, undefined, quiet, noHedge, c.lane)),
+          Effect.flatMap(parse(c.station), (addr) => {
+            const lane = autoLane(inner, addr, c.lane, quiet, c.length);
+            return inner.stations.requests.filePart(addr, c.key, c.name, c.offset, c.length, ctx, heard, sink, undefined, quiet, noHedge, lane);
+          }),
           (got) => partAnswer(c, { type: got.type, total: got.total }, got.bytes),
         );
       }
       // With `keep`: what is kept of it from here, only what is not from the station (keptFirst), kept as it comes.
       const id = chatKeptId(c.station, c.key, c.name);
       const listed = c.keep;
+      let assignedLane: number | undefined | null = null;
       return Effect.gen(function* () {
         // An old message may have no size. The first range discovers it; keep its bytes under the real size.
         const size = listed || (yield* inner.driveKept.sizeOf(id)) || 0;
@@ -414,10 +448,12 @@ export function install(): void {
           (at, end) => size ? inner.driveKept.nextKept(id, 0, size, at, end) : Effect.succeed(end),
           heard,
           sink,
-          (at, length, before, take, said) =>
-            Effect.flatMap(parse(c.station), (addr) =>
-              inner.stations.requests.filePart(addr, c.key, c.name, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet, noHedge, c.lane),
-            ),
+          (at, length, before, take, said, attempt) =>
+            Effect.flatMap(parse(c.station), (addr) => {
+              if (assignedLane === null) assignedLane = autoLane(inner, addr, c.lane, quiet, c.length);
+              const lane = assignedLane !== undefined ? assignedLane + (attempt ?? 0) : undefined;
+              return inner.stations.requests.filePart(addr, c.key, c.name, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet, noHedge, lane);
+            }),
           (head, at, bytes) => ((!size || head.total === size) && at + bytes.length <= head.total ? inner.driveKept.keep(id, "chat", 0, head.total, head.type, at, bytes) : Effect.void),
           (head) => head.total === size,
         );
@@ -517,11 +553,15 @@ export function install(): void {
     const id = keptId(c.station, c.root, c.path);
     if (c.keep === null || c.mtime === null || c.size === null) {
       return Effect.map(
-        Effect.flatMap(parse(c.station), (addr) => inner.stations.requests.driveRead(addr, c.root, c.path, c.offset, c.length, ctx, heard, sink, undefined, quiet, undefined, noHedge, c.lane)),
+        Effect.flatMap(parse(c.station), (addr) => {
+          const lane = autoLane(inner, addr, c.lane, quiet, c.length);
+          return inner.stations.requests.driveRead(addr, c.root, c.path, c.offset, c.length, ctx, heard, sink, undefined, quiet, undefined, noHedge, lane);
+        }),
         (got) => partAnswer(c, { type: got.type, total: got.total, mtime: got.mtime }, got.bytes),
       );
     }
     const [keep, mtime, size] = [c.keep, c.mtime, c.size];
+    let assignedLane: number | undefined | null = null;
     return Effect.gen(function* () {
       const part = yield* keptFirst<{ type: string; total: number; mtime: number | null }, { type: string; total: number; mtime: number | null; bytes: Uint8Array }>(
         inner,
@@ -531,10 +571,12 @@ export function install(): void {
         (at, end) => inner.driveKept.nextKept(id, mtime, size, at, end),
         heard,
         sink,
-        (at, length, before, take, said) =>
-          Effect.flatMap(parse(c.station), (addr) =>
-            inner.stations.requests.driveRead(addr, c.root, c.path, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet, [mtime, size], noHedge, c.lane),
-          ),
+        (at, length, before, take, said, attempt) =>
+          Effect.flatMap(parse(c.station), (addr) => {
+            if (assignedLane === null) assignedLane = autoLane(inner, addr, c.lane, quiet, c.length);
+            const lane = assignedLane !== undefined ? assignedLane + (attempt ?? 0) : undefined;
+            return inner.stations.requests.driveRead(addr, c.root, c.path, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet, [mtime, size], noHedge, lane);
+          }),
         // (kept as the folder said it is; the station's says it changed: what was kept of it goes)
         (head, at, bytes) => (head.total === size && head.mtime === mtime ? inner.driveKept.keep(id, keep, mtime, size, head.type, at, bytes) : inner.driveKept.forget(id)),
         (head) => head.total === size && head.mtime === mtime,
