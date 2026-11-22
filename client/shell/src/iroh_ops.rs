@@ -66,10 +66,12 @@ fn chosen_way(ways: &[(bool, bool, u64)]) -> Option<usize> {
 
 /// The connections' transport (the station's addon's `transport`): the congestion controller named, Cubic or BBR (opt
 /// in; noq-proto includes fixes for n0-computer/noq#852 idle max_bw collapse and n0-computer/noq#802 initial startup
-/// pacing rate), each with a 256 KiB initial window; a 4 MiB per-stream receive window matching 4 MiB transfer chunks;
-/// each path kept alive each second and given up after 3 s of silence, so one connection goes on through another relay
-/// as one goes; a link kept 10 minutes in silence (an app frozen in the background past iroh's 30 s came back to every
-/// link timed out).
+/// pacing rate, and BBR uses `loss_thresh(0.30)` + `gate_lower_bounds_on_loss_thresh(true)` so cross-border 10–25%
+/// random loss does not collapse long-lived connections to `min_pipe_cwnd` while keeping steady-state zero
+/// retransmissions under shallow-buffer congestion), each with a 256 KiB initial window; a 4 MiB per-stream receive
+/// window matching 4 MiB transfer chunks; each path kept alive each second and given up after 3 s of silence, so one
+/// connection goes on through another relay as one goes; a link kept 10 minutes in silence (an app frozen in the
+/// background past iroh's 30 s came back to every link timed out).
 fn transport(congestion: &str) -> Result<QuicTransportConfig, String> {
     let controller: Arc<dyn noq_proto::congestion::ControllerFactory + Send + Sync> = match congestion {
         "cubic" => {
@@ -79,7 +81,10 @@ fn transport(congestion: &str) -> Result<QuicTransportConfig, String> {
         }
         "bbr" => {
             let mut config = noq_proto::congestion::Bbr3Config::default();
-            config.initial_window(256 * 1024);
+            config
+                .initial_window(256 * 1024)
+                .loss_thresh(0.30)
+                .gate_lower_bounds_on_loss_thresh(true);
             Arc::new(config)
         }
         _ => return Err("congestion: expected cubic or bbr".into()),

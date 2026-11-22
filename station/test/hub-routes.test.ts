@@ -56,7 +56,7 @@ function rig(withAgents = true) {
   const jobs = new Jobs({ store, data, notify: () => {}, link: () => null });
   hub.setJobs(jobs);
   const readers = new Readers(data, 1);
-  readers.processes = () => hub.processes();
+  readers.processes = () => hub.readProcesses();
   const admin = new Admin(readers, { store, agents: withAgents ? ({ hub, jobs } as any) : undefined });
   const ask = async (method: string, path: string, body?: unknown, query: [string, string][] = []) => {
     const raw = Buffer.isBuffer(body) ? body : Buffer.from(body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body));
@@ -75,6 +75,35 @@ function rig(withAgents = true) {
   };
   return { data, store, hub, jobs, readers, claude, codex, ask, answer, close };
 }
+
+test("a refused start is told to the session and chat list without losing the message", async () => {
+  const r = rig();
+  try {
+    r.claude.refuses = "no profile can run here";
+    const [, made] = await r.ask("POST", "/sessions", { runtime: "claude" });
+    assert.equal((await r.ask("POST", `/threads/${made.thread.id}/messages`, { text: "please check this" }))[0], 200);
+    await settle();
+    const summary = (await r.ask("GET", `/sessions/${made.key}`))[1].session;
+    assert.equal(summary.process, "cold");
+    assert.equal(summary.pending, 1);
+    assert.equal(summary.startFailed, true);
+    const shared = (await r.ask("GET", "/chats", undefined, [["shared", "1"]]))[1];
+    const row = shared.find((item: any) => item.thread === made.thread.id);
+    const agent = row.agents.find((item: any) => item.key === made.key);
+    assert.equal(agent.process, "cold");
+    assert.equal(agent.pending, 1);
+    assert.equal(agent.startFailed, true);
+    r.claude.refuses = null;
+    assert.equal((await r.ask("POST", `/threads/${made.thread.id}/messages`, { text: "try again" }))[0], 200);
+    await settle();
+    const running = (await r.ask("GET", `/sessions/${made.key}`))[1].session;
+    assert.equal(running.process, "running");
+    assert.notEqual(running.startFailed, true);
+    assert.equal(running.pending, 0);
+    assert.match(r.claude.last().prompts[0]!, /please check this/);
+    assert.match(r.claude.last().prompts[0]!, /try again/);
+  } finally { await r.close(); }
+});
 
 test("a new chat: its session and its thread, refused without a runtime or with an unknown profile", async () => {
   const r = rig();

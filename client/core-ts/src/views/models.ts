@@ -138,9 +138,11 @@ export function choices(overview: J, session: J, now: number): J[] {
   return keys.map((key) => {
     const offered = byKey.get(key)!;
     const [m, ids] = spellings(key, offered.ids);
+    const short = model.shortIfShorter(m);
     return {
       model: m,
       name: model.name(m),
+      ...(short !== null ? { shortName: short } : {}),
       ids,
       ...makerFamily(m, madeBy(overview, ids)),
       runtimes: [runtime],
@@ -320,7 +322,8 @@ export function models(overview: J, now: number): J[] {
       contexts[r] = contextSteps(overview, r, spelled);
       accounts[r] = profileLines(offered, r, m, null, now);
     }
-    return { model: m, name: model.name(m), ids: spelled, runtimes: rts, ...makerFamily(m, madeBy(overview, spelled)), efforts, contexts, ...windowOf(overview, spelled), accounts, spent: spent !== null ? spentView(spent, now) : null };
+    const short = model.shortIfShorter(m);
+    return { model: m, name: model.name(m), ...(short !== null ? { shortName: short } : {}), ids: spelled, runtimes: rts, ...makerFamily(m, madeBy(overview, spelled)), efforts, contexts, ...windowOf(overview, spelled), accounts, spent: spent !== null ? spentView(spent, now) : null };
   });
 }
 

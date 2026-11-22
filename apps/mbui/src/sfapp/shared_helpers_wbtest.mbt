@@ -441,17 +441,6 @@ fn lease_test_source(client : @core.Client) -> Source {
 }
 
 ///|
-/// Where words that are `s` exactly are drawn now (Tester::words), the first of them.
-fn words_exactly_at(t : @ui.Tester, s : String) -> (Double, Double, Double, Double)? {
-  for w in t.words() {
-    if w.0 == s {
-      return Some((w.1, w.2, w.3, w.4))
-    }
-  }
-  None
-}
-
-///|
 #callsite(autofill(loc))
 fn phone_agent_card(loc~ : SourceLoc) -> @ui.Tester {
   new_run()

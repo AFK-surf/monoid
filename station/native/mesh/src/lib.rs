@@ -145,9 +145,11 @@ pub struct Endpoint {
 }
 
 /// The connections' transport: the congestion controller named (BBR is opt-in; noq-proto includes fixes for
-/// n0-computer/noq#852 idle max_bw collapse and n0-computer/noq#802 initial startup pacing rate), a 4 MiB per-stream
-/// receive window matching 4 MiB transfer chunks, and the paths kept alive and given up as PATH_KEEP_ALIVE and
-/// PATH_IDLE say.
+/// n0-computer/noq#852 idle max_bw collapse and n0-computer/noq#802 initial startup pacing rate, and BBR uses
+/// `loss_thresh(0.30)` + `gate_lower_bounds_on_loss_thresh(true)` so cross-border 10–25% random loss does not collapse
+/// long-lived connections to `min_pipe_cwnd` while keeping steady-state zero retransmissions under shallow-buffer
+/// congestion), a 4 MiB per-stream receive window matching 4 MiB transfer chunks, and the paths kept alive and given
+/// up as PATH_KEEP_ALIVE and PATH_IDLE say.
 fn transport(congestion: &str) -> napi::Result<QuicTransportConfig> {
     let controller: Arc<dyn noq_proto::congestion::ControllerFactory + Send + Sync> = match congestion {
         "cubic" => {
@@ -157,7 +159,10 @@ fn transport(congestion: &str) -> napi::Result<QuicTransportConfig> {
         }
         "bbr" => {
             let mut config = noq_proto::congestion::Bbr3Config::default();
-            config.initial_window(256 * 1024);
+            config
+                .initial_window(256 * 1024)
+                .loss_thresh(0.30)
+                .gate_lower_bounds_on_loss_thresh(true);
             Arc::new(config)
         }
         _ => return Err(failed("congestion: expected cubic or bbr")),

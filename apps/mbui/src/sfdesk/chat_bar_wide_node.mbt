@@ -661,6 +661,7 @@ fn wide_station_group_tile(
     // (with touch a single-agent capsule is one button: tapped its history's; held, its card and its station's as one)
     @sf.action_box_node(parent, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(t) {
       wide_glass_capsule(t)
+      t.fits(Is(true)) |> ignore
       @sf.hover_ground_node(t)
       hand.val = Some(
         @sf.hover_card_node(
@@ -684,10 +685,11 @@ fn wide_station_group_tile(
         ),
       )
       t.show(at_once=true, fn() { station_now() is Some(_) }, fn(p) {
-        p.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
+        p.row(Is(true)).fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
         p.box(fn(sp) {
           sp
           .row(Is(true))
+          .fits(Is(true))
           .shrink(Is(1.0))
           .min_width(Is(Some(0.0)))
           .min_height(Is(Some(30.0)))
@@ -707,8 +709,10 @@ fn wide_station_group_tile(
       t.box(fn(g) {
         g
         .row(Is(true))
+        .fits(Is(true))
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
+        .keeps_held(Is(true))
         .min_height(Is(Some(30.0)))
         .lines_up(Is(Some(Middle)))
         .gap(Is(6.0))
@@ -722,12 +726,14 @@ fn wide_station_group_tile(
   } else {
     let t = parent
     wide_glass_capsule(t)
+    t.fits(Is(true)) |> ignore
     let touch_multi = @sf.tile_whole()
     t.show(at_once=true, fn() { station_now() is Some(_) }, fn(p) {
-      p.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
+      p.row(Is(true)).fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
       p.box(fn(sp) {
         sp
         .row(Is(true))
+        .fits(Is(true))
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
         .min_height(Is(Some(30.0)))
@@ -791,8 +797,10 @@ fn wide_station_group_tile(
       @sf.action_box_node(t, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(g) {
         g
         .row(Is(true))
+        .fits(Is(true))
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
+        .keeps_held(Is(true))
         .min_height(Is(Some(30.0)))
         .lines_up(Is(Some(Middle)))
         .gap(Is(6.0))
@@ -876,25 +884,24 @@ fn wide_agent_inline(
     @sfpages.agent_badge_slot(m, badge, 16.0)
   })
   |> ignore
-  parent.box(fn(w) {
-    w
-    .words(Is(a.who))
-    .words_look(By(fn() { @ui.style_words(wide_subchats_words) }))
-    .ink(
-      By(fn() {
-        match marked {
-          Some(is_marked) if is_marked() => @sf.theme().p.accent_text
-          _ => @ui.style_ink(wide_subchats_words)
-        }
-      }),
-    )
-    .shrink(Is(1.0))
-    .min_width(Is(Some(0.0)))
-    .cuts(Is(true))
-    .allow_ellipsis(Is(true))
-    |> ignore
-  })
-  |> ignore
+  let ink : (() -> Int64)? = match marked {
+    Some(is_marked) =>
+      Some(fn() { if is_marked() { @sf.theme().p.accent_text } else { @ui.style_ink(wide_subchats_words) } })
+    None => None
+  }
+  @sfpages.model_agent_segments_static(
+    parent,
+    a.model_name,
+    a.model_short,
+    a.effort,
+    a.who,
+    fn() { wide_subchats_words },
+    ink~,
+    drop_short=1,
+    drop_effort=2,
+    drop_hide=0,
+    cuts_last=true,
+  )
 }
 
 ///|
@@ -918,6 +925,7 @@ fn wide_station_inline(p : @view.View, station_now : () -> Station?, via : () ->
   .min_width(Is(Some(0.0)))
   .cuts(Is(true))
   .allow_ellipsis(Is(true))
+  .fit_whole(Is(true))
   |> ignore
 }
 
@@ -1103,6 +1111,7 @@ fn wide_composer_bar_node(
   let has_right = fn() { (own() && (has_jobs() || driven())) || has_subchats() }
   o
   .row(Is(true))
+  .fits(Is(true))
   .min_height(Is(Some(36.0)))
   .lines_up(Is(Some(Middle)))
   .gap(Is(6.0))
@@ -1127,7 +1136,7 @@ fn wide_composer_bar_node(
     fn(item) {
       match item.0 {
         Some(g) => {
-          let ags = g.agents.map(fn(a) { "\{a.key}\u{1}\{a.maker}\u{1}\{a.runtime}\u{1}\{a.who}" }).join("\u{2}")
+          let ags = g.agents.map(fn(a) { "\{a.key}\u{1}\{a.maker}\u{1}\{a.runtime}\u{1}\{a.who}\u{1}\{a.model_name}\u{1}\{a.model_short}\u{1}\{a.effort}" }).join("\u{2}")
           "g\u{1}\{g.station}\u{1}\{ags}"
         }
         None => "s\u{1}\{item.1}"
@@ -1135,7 +1144,7 @@ fn wide_composer_bar_node(
     },
     fn(k, it) {
       // (each capsule giving way along the row, its names cut only where the row has no room for them)
-      k.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      k.row(Is(true)).fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       let (group_opt, _) = it.untracked()
       match group_opt {
         None =>

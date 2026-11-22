@@ -909,17 +909,26 @@ pub fn terminal_pane_node(
                 note=fn() { text(tv(), "cwd") },
               )
             })
-            g.show(may, fn(n) {
-              @sf.panel_row_node(
-                n,
-                fn() { @sf.t("web-pages.terminal.new") },
-                fn() {
-                  done()
-                  go_terminal("new", false, @signals.untracked(cwd))
-                },
-                icon=fn() { "plus" },
+            let open_new_browser = fn() {
+              let ids = @signals.untracked(user_browser_ids)
+              let target = @settings.new_browser_tab(
+                src.call,
+                at.station,
+                ids,
+                failed_said(@sf.t("web-pages.screen.openBrowserWhat")),
               )
-            })
+              let nu = screen_ui(screen_key(at.station, target))
+              nu.address_asked.set(nu.address_asked.untracked() + 1)
+              switch_page(Screen({ station: at.station, screen: target, title: "", until_gone: false }))
+            }
+            remote_new_session_rows_node(
+              g,
+              may,
+              can_browser,
+              done,
+              fn() { go_terminal("new", false, @signals.untracked(cwd)) },
+              open_new_browser,
+            )
           })
         })
         @sf.panel_group_node(p, fn() { "" }, fn(g) {

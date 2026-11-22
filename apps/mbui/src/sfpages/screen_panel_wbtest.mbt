@@ -1165,10 +1165,11 @@ test "a person's page as a browser shows it: its tabs over it, ← → ⟳ and i
   )
   r.config()
   r.frame(1000.0)
-  // its tabs, a sleeping one as any other; the agent's tab and the desktop not among them
+  // all browser pages on the station (including sleeping and agent tabs), never the desktop
   assert_true(r.labelled("收件箱 - Proton Mail") is Some(_))
   assert_true(r.labelled("GitHub") is Some(_))
-  assert_true(r.labelled("Sign in · Anthropic") is None)
+  assert_true(r.labelled("Sign in · Anthropic") is Some(_))
+  assert_true(r.labelled("Willow 的屏幕") is None, msg="desktop is not a browser tab")
   assert_true(r.t.find("已休眠") is None, msg="a tab's sleep is the station's own")
   assert_eq(address_of("browser:u_mail"), "https://mail.proton.me/u/0/inbox", msg="its whole address in its bar")
   for label in ["web-pages.screen.back", "web-pages.screen.forward", "web-pages.screen.reload", "web-pages.screen.newTab"] {
@@ -1222,8 +1223,10 @@ test "words typed in the address bar go to the tab on Enter" {
   r.state("live", more={ "kind": Json::string("browser"), "openUrl": Json::boolean(true), "address": Json::string("https://console.anthropic.com/login") })
   r.config()
   r.frame(1000.0)
-  // an agent's tab: its address and ← → ⟳, no tabs of a person's
-  assert_true(r.labelled("收件箱 - Proton Mail") is None)
+  // an agent's tab: its address, ← → ⟳, and all browser pages on the station as tabs (current tab prefers live state title)
+  assert_true(r.labelled("收件箱 - Proton Mail") is Some(_))
+  assert_true(r.labelled("GitHub") is Some(_))
+  assert_true(r.labelled("still.fail — Chrome") is Some(_))
   assert_eq(address_of("browser:tab-1"), "https://console.anthropic.com/login")
   // the keys given it (as ⌘L gives them), its words written over
   let asked = screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).address_asked
@@ -1245,12 +1248,13 @@ test "narrow, the tabs fold into a button counting them; its panel lists them an
   r.state("live", more={ "kind": Json::string("browser"), "openUrl": Json::boolean(true), "userTab": Json::boolean(true) })
   r.config()
   r.frame(1000.0)
-  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 2") is Some(_))
+  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 3") is Some(_))
   assert_true(r.labelled("GitHub") is None, msg="no row of tabs where it is narrow")
-  r.tap_label(tr("web-pages.screen.tabs") + " 2")
+  r.tap_label(tr("web-pages.screen.tabs") + " 3")
   r.t.run_for(@sf.later_ms)
   to_sheet_rest(r.t)
   assert_true(r.t.find("GitHub") is Some(_))
+  assert_true(r.t.find("Sign in · Anthropic") is Some(_))
   assert_true(r.t.find(tr("web-pages.screen.newTab")) is Some(_))
   assert_eq(r.t.audit(), [])
   r.t.tap_text("GitHub")
@@ -1260,6 +1264,187 @@ test "narrow, the tabs fold into a button counting them; its panel lists them an
     Screen(at) => assert_eq(at.screen, "browser:u_gh")
     _ => fail("expected the GitHub tab shown")
   }
+  screen_done(r.t)
+}
+
+///|
+test "non-userTab browser page shows all station browser tabs on wide screen, switches, and handles ⌘T / ⌘W" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0, screen="browser:tab-1", screens=browser_screens())
+  r.state(
+    "live",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("Sign in · Anthropic"),
+      "address": Json::string("https://console.anthropic.com/login"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  assert_true(r.labelled("收件箱 - Proton Mail") is Some(_))
+  assert_true(r.labelled("GitHub") is Some(_))
+  assert_true(r.labelled("Sign in · Anthropic") is Some(_))
+  assert_true(r.labelled("Willow 的屏幕") is None, msg="desktop must not appear in browser tabs")
+  assert_true(r.labelled(tr("web-pages.screen.newTab")) is Some(_))
+  assert_true(
+    r.t.semantics().iter().any(fn(s) { s.label == "Sign in · Anthropic" && s.selected == Some(true) }),
+    msg="current non-userTab should be selected",
+  )
+  assert_eq(r.t.audit(), [])
+  // ⌘W closes current closable tab and switches to neighbor
+  r.key_in(true, "w", "KeyW", mod_meta)
+  r.t.run_for(@ui.move_most_ms)
+  let closed = r.told("screen.close")
+  assert_eq(closed.length(), 1)
+  assert_eq(text(Some(closed[0]), "screen"), "browser:tab-1")
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, "browser:u_gh")
+    _ => fail("expected neighbor tab after ⌘W")
+  }
+  screen_done(r.t)
+
+  // Separate run for clicking GitHub and ⌘T from non-userTab
+  let r2 = screen_rig(w=1280.0, h=800.0, platform=0, screen="browser:tab-1", screens=browser_screens())
+  r2.state(
+    "live",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("Sign in · Anthropic"),
+      "address": Json::string("https://console.anthropic.com/login"),
+    },
+  )
+  r2.config()
+  r2.frame(1000.0)
+  r2.key_in(true, "t", "KeyT", mod_meta)
+  r2.t.run_for(@ui.move_most_ms)
+  assert_eq(r2.told("screen.openBrowser").length(), 1)
+  screen_done(r2.t)
+
+  let r3 = screen_rig(w=1280.0, h=800.0, platform=0, screen="browser:tab-1", screens=browser_screens())
+  r3.state(
+    "live",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("Sign in · Anthropic"),
+      "address": Json::string("https://console.anthropic.com/login"),
+    },
+  )
+  r3.config()
+  r3.frame(1000.0)
+  r3.tap_label("GitHub")
+  r3.t.run_for(@ui.move_most_ms)
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, "browser:u_gh")
+    _ => fail("expected GitHub tab on tap")
+  }
+  screen_done(r3.t)
+}
+
+///|
+test "read-only or non-closable browser tabs show tabs without × or ＋, ignore ⌘T/⌘W, and still switch on click" {
+  let ro_screens : Json = {
+    "browser": true,
+    "control": false,
+    "known": true,
+    "outdated": false,
+    "screens": [
+      { "id": "desktop", "kind": "desktop", "title": "Willow 的屏幕", "width": 1920.0, "height": 1080.0, "line": "1920 × 1080", "link": "" },
+      { "id": "browser:fv-1", "kind": "browser", "closable": false, "openUrl": false, "site": "example.com", "title": "Farview Docs", "width": 1280.0, "height": 800.0, "line": "example.com", "link": "" },
+      { "id": "browser:u_gh", "kind": "browser", "userTab": true, "closable": false, "openUrl": false, "site": "github.com", "title": "GitHub", "width": 1280.0, "height": 800.0, "line": "github.com", "link": "" },
+    ],
+  }
+  let r = screen_rig(w=1280.0, h=800.0, platform=0, screen="browser:fv-1", screens=ro_screens)
+  r.state(
+    "live",
+    control=false,
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(false),
+      "title": Json::string("Farview Docs"),
+      "address": Json::string("https://example.com/docs"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  assert_true(r.labelled("Farview Docs") is Some(_))
+  assert_true(r.labelled("GitHub") is Some(_))
+  assert_true(r.labelled("Willow 的屏幕") is None)
+  assert_true(r.labelled(tr("web-pages.screen.newTab")) is None, msg="no ＋ when control is false")
+  assert_true(r.labelled(tr("web-pages.screen.closeTab")) is None, msg="no × when closable is false")
+  assert_eq(r.t.audit(), [])
+  r.key_in(true, "t", "KeyT", mod_meta)
+  r.key_in(true, "w", "KeyW", mod_meta)
+  r.frame(1100.0)
+  assert_true(r.told("screen.openBrowser").is_empty())
+  assert_true(r.told("screen.close").is_empty())
+  r.tap_label("GitHub")
+  r.t.run_for(@ui.move_most_ms)
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, "browser:u_gh")
+    _ => fail("expected GitHub tab on click in read-only mode")
+  }
+  screen_done(r.t)
+}
+
+///|
+test "narrow screen on non-userTab browser page shows tab count 3 and panel with all tabs, new tab, and close tab" {
+  let r = screen_rig(w=390.0, h=844.0, platform=2, screen="browser:tab-1", screens=browser_screens())
+  r.state(
+    "live",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("Sign in · Anthropic"),
+      "address": Json::string("https://console.anthropic.com/login"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 3") is Some(_))
+  r.tap_label(tr("web-pages.screen.tabs") + " 3")
+  r.t.run_for(@sf.later_ms)
+  to_sheet_rest(r.t)
+  assert_true(r.t.find("收件箱 - Proton Mail") is Some(_))
+  assert_true(r.t.find("GitHub") is Some(_))
+  assert_true(r.t.find("Sign in · Anthropic") is Some(_))
+  assert_true(r.t.find(tr("web-pages.screen.newTab")) is Some(_))
+  assert_true(r.t.find(tr("web-pages.screen.closeTabFull")) is Some(_))
+  assert_eq(r.t.audit(), [])
+  r.t.tap_text("GitHub")
+  r.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r.t)
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, "browser:u_gh")
+    _ => fail("expected GitHub tab from narrow panel")
+  }
+  screen_done(r.t)
+}
+
+///|
+test "browser tab bar keeps current page selected even before screens topic includes it" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0, screen="browser:tab-99", screens=browser_screens())
+  r.state(
+    "live",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("OAuth Login"),
+      "address": Json::string("https://accounts.example.com/oauth"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  assert_true(r.labelled("收件箱 - Proton Mail") is Some(_))
+  assert_true(r.labelled("GitHub") is Some(_))
+  assert_true(r.labelled("Sign in · Anthropic") is Some(_))
+  assert_true(r.labelled("OAuth Login") is Some(_))
+  assert_true(
+    r.t.semantics().iter().any(fn(s) { s.label == "OAuth Login" && s.selected == Some(true) }),
+    msg="unlisted current browser tab should appear and be selected",
+  )
+  assert_eq(r.t.audit(), [])
   screen_done(r.t)
 }
 
@@ -1343,4 +1528,290 @@ test "a Mac that decodes H.265 says it decodes its 4:4:4 too (the core asks it o
   assert_eq(field(Some(asked), "chroma444"), Some(Json::boolean(true)))
   s.pause(s.src)
   screen_done(r.t)
+}
+
+///|
+fn switch_terminals(open : Bool, cwd? : String = "~/still.fail/station") -> Json {
+  {
+    "open": Json::boolean(open),
+    "known": Json::boolean(true),
+    "outdated": Json::boolean(false),
+    "terminals": [
+      { "id": "term-1", "by": "左子健", "at": 1794650000000.0, "cwd": Json::string(cwd), "looking": [] },
+    ],
+  }
+}
+
+///|
+fn switch_screens(browser : Bool, control : Bool) -> Json {
+  {
+    "browser": Json::boolean(browser),
+    "control": Json::boolean(control),
+    "known": Json::boolean(true),
+    "outdated": Json::boolean(false),
+    "screens": [
+      { "id": "desktop", "kind": "desktop", "title": "Willow 的屏幕", "width": 1920.0, "height": 1080.0, "line": "1920 × 1080", "link": "" },
+      {
+        "id": "browser:u_mail",
+        "kind": "browser",
+        "userTab": true,
+        "closable": true,
+        "openUrl": true,
+        "site": "mail.proton.me",
+        "title": "收件箱 - Proton Mail",
+        "width": 1280.0,
+        "height": 800.0,
+        "line": "mail.proton.me",
+        "link": "",
+      },
+    ],
+  }
+}
+
+///|
+test "切换远程会话: with both terminal and browser, 新建 opens submenu with 新建终端 and 新建浏览器" {
+  let r = screen_rig(
+    w=1280.0,
+    h=800.0,
+    platform=0,
+    screen="browser:u_mail",
+    screens=switch_screens(true, true),
+    terminals=switch_terminals(true),
+  )
+  r.state("live", more={ "kind": Json::string("browser"), "openUrl": Json::boolean(true), "userTab": Json::boolean(true) })
+  r.config()
+  r.frame(1000.0)
+  r.tap_label(tr("web-pages.remote.switchSession"))
+  r.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r.t)
+  assert_true(r.t.find(tr("web-pages.remote.newSession")) is Some(_))
+  assert_true(r.t.find(tr("web-pages.terminal.new")) is None)
+  assert_true(r.t.find(tr("web-pages.remote.newBrowser")) is None)
+  assert_eq(r.t.audit(), [])
+  // open submenu -> 新建终端 & 新建浏览器
+  r.t.tap_text(tr("web-pages.remote.newSession"))
+  r.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r.t)
+  assert_true(r.t.find(tr("web-pages.terminal.new")) is Some(_))
+  assert_true(r.t.find(tr("web-pages.remote.newBrowser")) is Some(_))
+  assert_eq(r.t.audit(), [])
+  // pick 新建终端 -> Terminal(terminal="new")
+  r.t.tap_text(tr("web-pages.terminal.new"))
+  r.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r.t)
+  match app.nav.top() {
+    Terminal(at) => {
+      assert_eq(at.station, "ws-1/st-1")
+      assert_eq(at.terminal, "new")
+      assert_false(at.watch)
+    }
+    _ => fail("expected new terminal page")
+  }
+  screen_done(r.t)
+  // pick 新建浏览器 -> screen.openBrowser (u_ id) + immediate switch + address bar focus
+  let r2 = screen_rig(
+    w=1280.0,
+    h=800.0,
+    platform=0,
+    screen="browser:u_mail",
+    screens=switch_screens(true, true),
+    terminals=switch_terminals(true),
+  )
+  r2.state("live", more={ "kind": Json::string("browser"), "openUrl": Json::boolean(true), "userTab": Json::boolean(true) })
+  r2.config()
+  r2.frame(1000.0)
+  r2.tap_label(tr("web-pages.remote.switchSession"))
+  r2.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r2.t)
+  r2.t.tap_text(tr("web-pages.remote.newSession"))
+  r2.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r2.t)
+  r2.t.tap_text(tr("web-pages.remote.newBrowser"))
+  r2.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r2.t)
+  let asked = r2.told("screen.openBrowser")
+  assert_eq(asked.length(), 1)
+  let id = text(Some(asked[0]), "id")
+  assert_true(id.has_prefix("u_") && id.length() == 14, msg=id)
+  let target = "browser:" + id
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, target)
+    _ => fail("expected new browser tab shown immediately")
+  }
+  assert_true(screen_ui(screen_key("ws-1/st-1", target)).address_asked.get() > 0)
+  screen_done(r2.t)
+}
+
+///|
+test "切换远程会话: terminal only shows 新建终端 directly; browser only shows 新建浏览器 directly" {
+  // terminal only (browser=false)
+  let r_term = screen_rig(
+    w=1280.0,
+    h=800.0,
+    platform=0,
+    screen="desktop",
+    screens=switch_screens(false, true),
+    terminals=switch_terminals(true),
+  )
+  r_term.state("live", more={ "kind": Json::string("desktop") })
+  r_term.config()
+  r_term.frame(1000.0)
+  r_term.tap_label(tr("web-pages.remote.switchSession"))
+  r_term.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r_term.t)
+  assert_true(r_term.t.find(tr("web-pages.terminal.new")) is Some(_))
+  assert_true(r_term.labelled(tr("web-pages.remote.newSession")) is None)
+  assert_true(r_term.t.find(tr("web-pages.remote.newBrowser")) is None)
+  assert_eq(r_term.t.audit(), [])
+  r_term.t.tap_text(tr("web-pages.terminal.new"))
+  r_term.t.run_for(@ui.move_most_ms)
+  match app.nav.top() {
+    Terminal(at) => assert_eq(at.terminal, "new")
+    _ => fail("expected new terminal page")
+  }
+  screen_done(r_term.t)
+  // browser only (terminals.open=false)
+  let r_br = screen_rig(
+    w=1280.0,
+    h=800.0,
+    platform=0,
+    screen="browser:u_mail",
+    screens=switch_screens(true, true),
+    terminals=switch_terminals(false),
+  )
+  r_br.state("live", more={ "kind": Json::string("browser"), "openUrl": Json::boolean(true), "userTab": Json::boolean(true) })
+  r_br.config()
+  r_br.frame(1000.0)
+  r_br.tap_label(tr("web-pages.remote.switchSession"))
+  r_br.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r_br.t)
+  assert_true(r_br.t.find(tr("web-pages.remote.newBrowser")) is Some(_))
+  assert_true(r_br.labelled(tr("web-pages.remote.newSession")) is None)
+  assert_true(r_br.t.find(tr("web-pages.terminal.new")) is None)
+  assert_eq(r_br.t.audit(), [])
+  r_br.t.tap_text(tr("web-pages.remote.newBrowser"))
+  r_br.t.run_for(@ui.move_most_ms)
+  let asked = r_br.told("screen.openBrowser")
+  assert_eq(asked.length(), 1)
+  let id = text(Some(asked[0]), "id")
+  let target = "browser:" + id
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, target)
+    _ => fail("expected new browser tab shown immediately")
+  }
+  assert_true(screen_ui(screen_key("ws-1/st-1", target)).address_asked.get() > 0)
+  screen_done(r_br.t)
+}
+
+///|
+test "terminal 控制中心: 切换远程会话 shows 新建 submenu with 新建终端 and 新建浏览器" {
+  @sfbase.reset()
+  reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sf.set_dark(Some(false))
+  let calls : Array[(String, Json)] = []
+  let base = @sfbase.made_source(
+    topic=fn(name, _) {
+      if name == "terminals" {
+        Some(switch_terminals(true, cwd=""))
+      } else if name == "screens" {
+        Some(switch_screens(true, true))
+      } else if name == "prefs" {
+        Some(Json::object({}))
+      } else {
+        None
+      }
+    },
+    call=fn(name, params, done) {
+      calls.push((name, params))
+      done(Ok(Json::null()))
+    },
+  )
+  let src : Source = { ..base, asks_terminals: fn() { true } }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick(at_once=true, fn() {
+        match app.nav.top() {
+          Terminal(at) => Some(at)
+          _ => None
+        }
+      }, fn(p, at) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        match at {
+          Some(at) =>
+            terminal_node(
+              p,
+              src,
+              at,
+              back=fn() { @sf.t("common.back") },
+              on_back=fn() { app.nav.pop() |> ignore },
+              top=fn() { 0.0 },
+            )
+          None => ()
+        }
+      })
+      @ui.old(root, fn(c) { @sf.presented(c) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+      @sf.presented_nodes(root)
+      @sfbase.toasts_node(root, fn() { @sf.toast_bottom }) |> ignore
+    },
+    w=1280.0,
+    h=800.0,
+    platform=0,
+  )
+  t.draw()
+  app.nav.push(Terminal({ station: "ws-1/st-1", terminal: "term-1", watch: false, cwd: "" }))
+  nav_rested(t)
+  // open 控制中心
+  t.click(Button, label=tr("web-pages.screen.panel"))
+  t.run_for(@sf.later_ms + @ui.move_most_ms)
+  to_sheet_rest(t)
+  assert_true(t.find(tr("web-pages.remote.switchSession")) is Some(_))
+  assert_true(t.find(tr("web-pages.remote.newSession")) is Some(_))
+  assert_true(t.find(tr("web-pages.terminal.new")) is None)
+  assert_true(t.find(tr("web-pages.remote.newBrowser")) is None)
+  assert_eq(t.audit(), [])
+  // tap 新建 -> submenu
+  t.tap_text(tr("web-pages.remote.newSession"))
+  t.run_for(@ui.move_most_ms)
+  to_sheet_rest(t)
+  assert_true(t.find(tr("web-pages.terminal.new")) is Some(_))
+  assert_true(t.find(tr("web-pages.remote.newBrowser")) is Some(_))
+  assert_eq(t.audit(), [])
+  // tap 新建终端 -> closes panel and switches to Terminal(new)
+  t.tap_text(tr("web-pages.terminal.new"))
+  t.run_for(@motion.presence_out_ms + @ui.move_most_ms)
+  to_sheet_rest(t)
+  assert_false(@sf.presenting())
+  match app.nav.top() {
+    Terminal(at) => assert_eq(at.terminal, "new")
+    _ => fail("expected new terminal page")
+  }
+  // reopen 控制中心 -> 新建 -> 新建浏览器
+  t.click(Button, label=tr("web-pages.screen.panel"))
+  t.run_for(@sf.later_ms + @ui.move_most_ms)
+  to_sheet_rest(t)
+  t.tap_text(tr("web-pages.remote.newSession"))
+  t.run_for(@ui.move_most_ms)
+  to_sheet_rest(t)
+  t.tap_text(tr("web-pages.remote.newBrowser"))
+  t.run_for(@motion.presence_out_ms + @ui.move_most_ms)
+  to_sheet_rest(t)
+  assert_false(@sf.presenting())
+  let opened = calls.filter(fn(c) { c.0 == "screen.openBrowser" })
+  assert_eq(opened.length(), 1)
+  let id = text(Some(opened[0].1), "id")
+  assert_true(id.has_prefix("u_") && id.length() == 14, msg=id)
+  let target = "browser:" + id
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, target)
+    _ => fail("expected new browser tab shown immediately")
+  }
+  assert_true(screen_ui(screen_key("ws-1/st-1", target)).address_asked.get() > 0)
+  screen_done(t)
 }

@@ -37,6 +37,7 @@ export const HISTORY_SHAPES: Record<string, Shape> = {
     ["titleText", "String", { said: true }],
     ["agentText", "String", { said: true }],
     ["modelName", opt("String"), { said: true, doc: "Its model as people call it (Opus 5.5)." }],
+    ["modelShort", opt("String"), { said: true, doc: "Shortened model name for tight spaces when shorter than `modelName` (Neon for Gemini 4 Neon)." }],
     ["maker", opt("Maker")],
     ["runtimeText", "String"],
     ["processText", opt("String")],

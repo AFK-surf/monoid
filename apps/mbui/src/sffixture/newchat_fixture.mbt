@@ -590,8 +590,15 @@ pub let fix_tall_models : Array[String] = ["gpt-6-1-sol", "gpt-6-1-terra"]
 
 ///|
 /// A model of newchat-crowded's (the ones not the plain fixture's), as the core's `pick` lists it.
-pub fn fix_crowded_model(model : String, name : String, family : String, maker : String, runtimes : Array[String]) -> Json {
-  {
+pub fn fix_crowded_model(
+  model : String,
+  name : String,
+  family : String,
+  maker : String,
+  runtimes : Array[String],
+  short_name? : String = "",
+) -> Json {
+  let obj : Map[String, Json] = {
     "model": Json::string(model),
     "name": Json::string(name),
     "family": Json::string(family),
@@ -600,6 +607,10 @@ pub fn fix_crowded_model(model : String, name : String, family : String, maker :
     "ids": [Json::string(model)],
     "availability": "here",
   }
+  if short_name != "" && short_name != name {
+    obj["shortName"] = Json::string(short_name)
+  }
+  Json::object(obj)
 }
 
 ///|
@@ -638,14 +649,14 @@ fn fix_maker_name(id : String) -> String {
 ///|
 pub fn fix_model(model : String) -> Json {
   match model {
-    "gpt-6.2-sol" => fix_crowded_model(model, "GPT-6.2 Sol", "Sol", "openai", ["codex"])
-    "gpt-6-astra" => fix_crowded_model(model, "GPT-6 Astra", "Astra", "openai", ["codex"])
-    "deepseek-v4-1-flash" => fix_crowded_model(model, "DeepSeek V4.1 Flash", "DeepSeek", "deepseek", ["claude", "codex", "dsh"])
+    "gpt-6.2-sol" => fix_crowded_model(model, "GPT-6.2 Sol", "Sol", "openai", ["codex"], short_name="Sol")
+    "gpt-6-astra" => fix_crowded_model(model, "GPT-6 Astra", "Astra", "openai", ["codex"], short_name="Astra")
+    "deepseek-v4-1-flash" => fix_crowded_model(model, "DeepSeek V4.1 Flash", "DeepSeek", "deepseek", ["claude", "codex", "dsh"], short_name="V4.1 Flash")
     "grok-4-7-build-fast" => fix_crowded_model(model, "Grok 4.7 Build Fast", "Grok", "xai", ["grok"])
-    "kimi-for-coding" => fix_crowded_model(model, "Kimi For Coding", "Kimi", "kimi", ["claude"])
+    "kimi-for-coding" => fix_crowded_model(model, "Kimi For Coding", "Kimi", "kimi", ["claude"], short_name="Kimi")
     "swe-2" => fix_crowded_model(model, "SWE-2", "SWE", "devin", ["devin"])
-    "gpt-6-1-sol" => fix_crowded_model(model, "GPT-6.1 Sol", "Sol", "openai", ["codex"])
-    "gpt-6-1-terra" => fix_crowded_model(model, "GPT-6.1 Terra", "GPT", "openai", ["codex"])
+    "gpt-6-1-sol" => fix_crowded_model(model, "GPT-6.1 Sol", "Sol", "openai", ["codex"], short_name="Sol")
+    "gpt-6-1-terra" => fix_crowded_model(model, "GPT-6.1 Terra", "GPT", "openai", ["codex"], short_name="Terra")
     m if fix_providers.iter().any(fn(p) { p.0 == m }) => {
       let p = fix_providers.iter().find_first(fn(p) { p.0 == m }).unwrap()
       fix_crowded_model(m, p.1, p.1, p.2, ["claude"])
@@ -654,6 +665,7 @@ pub fn fix_model(model : String) -> Json {
       {
         "model": "claude-sonnet-5",
         "name": "Sonnet 5",
+        "shortName": "Sonnet",
         "family": "Sonnet",
         "maker": { "id": "anthropic" },
         "runtimes": ["claude"],
@@ -674,6 +686,7 @@ pub fn fix_model(model : String) -> Json {
       {
         "model": "claude-opus-5-5",
         "name": "Opus 5.5",
+        "shortName": "Opus",
         "family": "Opus",
         "maker": { "id": "anthropic" },
         "runtimes": ["claude"],
@@ -1262,7 +1275,7 @@ fn fix_pick_face() -> Json {
   let vo = field(p, "valueOption")
   if vo is Some(Object(_)) {
     let m : Map[String, Json] = Map([])
-    for k in ["name", "maker", "runtimes"] {
+    for k in ["name", "shortName", "maker", "runtimes"] {
       match field(vo, k) {
         Some(v) => m[k] = v
         None => ()

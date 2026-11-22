@@ -422,6 +422,7 @@ fn Actors::mirror(self : Actors, a : Actor) -> Unit {
     "notices": Json::number(a.notices.length().to_double()),
     "waiting": Json::boolean(a.waiting is Some(_)),
     "refill": Json::boolean(a.refill is Some(_)),
+    "startFailed": Json::boolean(a.failed_handed != "" && !a.paused_cap && !self.turn_wait_queue.contains(a.key)),
     "unread": Json::array(a.unread.map(m => [m.value("thread").unwrap_or(Json::null()), m.value("n").unwrap_or(Json::null()), m.value("ts").unwrap_or(Json::null())])),
     "identity": a.running_identity,
     "runtime": Json::string(a.runtime),

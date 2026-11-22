@@ -166,8 +166,27 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ag
       fn() { state_of_badge(text(agent(), "badge")) },
     )
     h.box(fn(n) {
-      n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      @sf.words_node(n, fn() { text(s(), "agentText") }, fn() { history_name_words }) |> ignore
+      n
+      .row(Is(true))
+      .fits(Is(true))
+      .gap(Is(4.0))
+      .lines_up(Is(Some(Middle)))
+      .grow(Is(1.0))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      |> ignore
+      @sfpages.model_agent_segments_node(
+        n,
+        fn() { text(s(), "modelName") },
+        fn() { text(s(), "modelShort") },
+        fn() { text(s(), "effort") },
+        fn() { text(s(), "agentText") },
+        fn() { history_name_words },
+        drop_short=1,
+        drop_effort=2,
+        drop_hide=0,
+        cuts_last=true,
+      )
     })
     |> ignore
     h.box(fn(e) {

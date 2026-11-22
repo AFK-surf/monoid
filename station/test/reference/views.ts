@@ -617,6 +617,10 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
       key, runtime: x.runtime, model: x.model, effort: x.effort, process: s.processes.get(x.key) ?? "cold",
       pending: stat?.pending ?? 0, lastTurn: stat?.lastTurn ? turnSummary(stat.lastTurn) : null,
     };
+    if (v.process === "coldFailed" || v.process === "warmFailed") {
+      v.startFailed = true;
+      v.process = v.process === "warmFailed" ? "warm" : "cold";
+    }
     const watch = watches.get(key);
     if (watch !== undefined) v.watch = watch;
     // (it waits on work it started that is not a watch: client/core-ts chat-stage.ts keeps such a chat at work)

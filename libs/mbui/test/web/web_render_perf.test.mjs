@@ -203,6 +203,81 @@ function makeRect(buf, idx, x, y, w, h, { r = 0, a = 1, border = 0, rad = 0 } = 
   buf[o + 36] = rad; buf[o + 37] = rad; buf[o + 38] = rad; buf[o + 39] = rad;
 }
 
+test('adaptive settle redraws the entire shared glass capture', () => {
+  const b = makeHost({ w: 400, h: 300, dpr: 2 });
+  const buf = new Float64Array(6 * INST);
+  makeRect(buf, 0, 0, 0, 400, 300, { r: 0.95 });
+  makeRect(buf, 1, 56, 216, 160, 12, { r: 0.1 });
+  makeRect(buf, 2, 40, 116, 140, 32, { r: 0.99 });
+  makeRect(buf, 3, 32, 180, 336, 92, { r: 0.99 });
+  for (const i of [2, 3]) {
+    const o = i * INST;
+    buf[o + 5] = 6; buf[o + 6] = 1; buf[o + 7] = 4;
+    buf[o + 11] = 0x67 / 255; buf[o + 13] = 8; buf[o + 14] = -1;
+    buf[o + 15] = 1; buf[o + 20] = -1; buf[o + 21] = 6;
+  }
+  makeRect(buf, 4, 40, 8, 120, 12, { r: 0.4, a: 0 });
+  makeRect(buf, 5, 0, 0, 0, 0);
+  buf[5 * INST + 5] = 12;
+  b.H.present(buf, 6, 0.95, 0.95, 0.95);
+  b.H.renderDirty(0, 0, 400, 300);
+  buf[8] = 0.93;
+  b.H.present(buf, 6, 0.95, 0.95, 0.95);
+  b.resetCalls();
+  buf[4 * INST + 11] = 0.5;
+  buf[5 * INST + 12] = 1;
+  b.H.renderDirty(32, 0, 144, 32);
+  b.H.present(buf, 6, 0.95, 0.95, 0.95);
+  const draws = b.calls.filter((c) => c.fn === 'drawArraysInstanced' && c.prog?.oneKind === 13 && c.scissorOn);
+  assert.ok(draws.length, 'adaptive glass was redrawn');
+  for (const { scissorBox: [x, y, w, h] } of draws) {
+    assert.ok(x <= 24 && y <= 16 && x + w >= 776 && y + h >= 408, 'the whole capture is redrawn');
+  }
+});
+
+test('adaptive settle merges overlapping captures and draws each glass once', () => {
+  const b = makeHost({ w: 400, h: 300, dpr: 2 });
+  const buf = new Float64Array(7 * INST);
+  makeRect(buf, 0, 0, 0, 400, 300, { r: 0.95 });
+  makeRect(buf, 1, 56, 216, 160, 12, { r: 0.1 });
+  // Two independent adaptive liquid glasses spaced 8pt apart so their captures overlap.
+  makeRect(buf, 2, 40, 128, 140, 32, { r: 0.99 });
+  makeRect(buf, 3, 32, 168, 336, 92, { r: 0.99 });
+  const cfg = [
+    { i: 2, tid: -1, blur: 2.1, refract: 28 },
+    { i: 3, tid: -2, blur: 4.0, refract: 28 },
+  ];
+  for (const { i, tid, blur, refract } of cfg) {
+    const o = i * INST;
+    buf[o + 5] = 6; buf[o + 6] = 1; buf[o + 7] = blur;
+    buf[o + 11] = 0x67 / 255; buf[o + 13] = 8; buf[o + 14] = -1;
+    buf[o + 15] = 1; buf[o + 20] = tid; buf[o + 21] = refract;
+  }
+  // High-contrast blue foreground caret inside the lower glass, drawn after glass.
+  makeRect(buf, 4, 48, 196, 2, 24, { r: 0.05 });
+  buf[4 * INST + 9] = 0.35; buf[4 * INST + 10] = 1.0;
+  // Unrelated top bar that changes during settling.
+  makeRect(buf, 5, 40, 8, 120, 12, { r: 0.4, a: 0 });
+  makeRect(buf, 6, 0, 0, 0, 0);
+  buf[6 * INST + 5] = 12;
+  b.H.present(buf, 7, 0.95, 0.95, 0.95);
+  b.H.renderDirty(0, 0, 400, 300);
+  buf[8] = 0.93;
+  b.H.present(buf, 7, 0.95, 0.95, 0.95);
+  b.resetCalls();
+  buf[5 * INST + 11] = 0.5;
+  buf[6 * INST + 12] = 1;
+  b.H.renderDirty(32, 0, 144, 32);
+  b.H.present(buf, 7, 0.95, 0.95, 0.95);
+  const draws = b.calls.filter((c) => c.fn === 'drawArraysInstanced' && c.prog?.oneKind === 13 && c.scissorOn);
+  assert.equal(draws.length, 2, 'each of the two independent adaptive glasses is drawn exactly once');
+  for (const { scissorBox: [x, y, w, h] } of draws) {
+    // Union of both captures in 2x pixels: x in [0, 800], top pill y=128..160 (margin ~36pt -> y0<=92),
+    // bottom box y=168..260 (margin ~42pt -> y1>=300 -> WebGL bottom y=0, top y=600-184=416).
+    assert.ok(x <= 4 && y <= 2 && x + w >= 796 && y + h >= 416, `scissor covers full union capture: [${x},${y},${w},${h}]`);
+  }
+});
+
 test('whole-screen frames draw straight to null with zero blit; partial dirty builds cv once then scissors', () => {
   const b = makeHost({ w: 351, h: 805, dpr: 3 });
   const ctx = b.calls.find((c) => c.fn === 'getContext');
@@ -343,8 +418,8 @@ test('14 mixed-size/blur glass captures pre-size levels once, hit 100% cache whe
 test('ONE_KIND lazy shader compilation, progFlat for large solid rects, and banded strips for hollow border & occluded shadow', () => {
   const b = makeHost({ w: 400, h: 400, dpr: 2 }); // 800x800 px
   const initLinks = b.calls.filter((c) => c.fn === 'linkProgram');
-  // Startup only links fallback (ONE_KIND -1), progFlat, and post — not eager kind 0..11!
-  assert.equal(initLinks.length, 3, 'startup compiles only fallback, progFlat, and post');
+  // Startup links fallback, progFlat, post and adaptive state, but no per-kind programs.
+  assert.equal(initLinks.length, 4, 'startup compiles only the shared programs');
   assert.ok(initLinks.some((c) => c.prog.oneKind === -1), 'fallback ONE_KIND -1 compiled at startup');
   assert.ok(initLinks.some((c) => c.prog.isFlat), 'progFlat compiled at startup');
 

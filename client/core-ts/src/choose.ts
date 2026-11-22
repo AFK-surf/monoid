@@ -796,7 +796,8 @@ export class Choose implements Owner {
     const lent = this.#lentFor(addr, "new");
     if (view.pick !== null && lent !== undefined) {
       const m = String(lent.model);
-      view.pick = { value: { model: m, runtime: text(lent.runtime) ?? view.pick.value.runtime, effort: text(lent.effort), fast: lent.fast, context: lent.context, profile: null }, valueOption: { name: model.name(m), maker: present.maker(m), runtimes: [] }, efforts: [] };
+      const short = model.shortIfShorter(m);
+      view.pick = { value: { model: m, runtime: text(lent.runtime) ?? view.pick.value.runtime, effort: text(lent.effort), fast: lent.fast, context: lent.context, profile: null }, valueOption: { name: model.name(m), ...(short !== null ? { shortName: short } : {}), maker: present.maker(m), runtimes: [] }, efforts: [] };
     }
     // The person's own presets, to pick from where the page's control opens (its menu: each by its name, and the
     // station it was made on): as the device holds them (views/presets.ts), whatever station is up, and those a station
@@ -840,7 +841,8 @@ export class Choose implements Owner {
         const m = String(pm.model);
         // (`model` stays the station's: the page asks only whether there is one)
         const runtime = text(get(pm, "runtime")) ?? view.runtime;
-        view.pick = { value: { model: m, runtime, effort: text(get(pm, "effort")) }, valueOption: { name: model.name(m), maker: present.maker(m), runtimes: [] }, efforts: [] };
+        const short = model.shortIfShorter(m);
+        view.pick = { value: { model: m, runtime, effort: text(get(pm, "effort")) }, valueOption: { name: model.name(m), ...(short !== null ? { shortName: short } : {}), maker: present.maker(m), runtimes: [] }, efforts: [] };
         if (view.problem === null) view.problem = t("core-logic.choose.problem.preset_model_missing", { name, preset: text(get(picked!.p, "name")) ?? "", model: model.name(m) });
       }
     }
@@ -1792,6 +1794,7 @@ export class Choose implements Owner {
         becomes,
         force,
         modelText: modelName ?? t("core-logic.choose.pick_model"),
+        ...(m ? (() => { const s = model.shortIfShorter(m); return s !== null ? { modelShort: s } : {}; })() : {}),
         maker: option !== undefined ? (option.maker ?? null) : null,
         accountText: chosenText,
         accountNote: nonePicked ? t("core-logic.choose.account.pick_one") : profile !== null ? t("core-logic.choose.account.fixed") : profiles !== null ? t("core-logic.choose.account.subset_note") : t("core-logic.choose.account.auto_note"),

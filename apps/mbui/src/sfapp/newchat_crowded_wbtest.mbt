@@ -68,14 +68,18 @@ test "narrow: the preset's, the station's and the model's controls side by side,
       .filter(fn(b) { b.parent == model.index && b.opacity > 0.0 && b.w > 0.0 })
       .fold(init=0.0, fn(m, b) { if b.x + b.w > m { b.x + b.w } else { m } })
     assert_true(model.x + model.w - kept <= 12.5, msg="\{model.x + model.w - kept} past what it keeps")
-    // what it keeps of itself: the model's name, whole
+    // what it keeps of itself: the model's short name whole (V4.1 Flash) without mid-word ellipsis
     let model_words = runs_in(t, (model.x, model.y, model.w, model.h))
-    assert_true(model_words.iter().any(fn(r) { r.text == "DeepSeek V4.1 Flash" }), msg="\{Repr(model_words.map(fn(r) { r.text }))} in \{model.w}; \{preset.w}, \{station.w}")
+    assert_true(
+      model_words.iter().any(fn(r) { r.text == "V4.1 Flash" || r.text == "DeepSeek V4.1 Flash" }),
+      msg="\{Repr(model_words.map(fn(r) { r.text }))} in \{model.w}; \{preset.w}, \{station.w}",
+    )
+    assert_true(model_words.iter().all(fn(r) { !r.text.contains("…") }), msg="no ellipsis at 320: \{Repr(model_words.map(fn(r) { r.text }))}")
   })
 }
 
 ///|
-test "narrower still: the preset's words and the station's name leave their controls whole after what the model's leaves, the model's name stays, cut short last" {
+test "narrower still: the preset's words and the station's name leave their controls whole after what the model's leaves, the model's short name stays whole without ellipsis" {
   both_pages(fn() raise {
     let t = crowded("newchat-crowded", w=crowded_cramped)
     let glass = crowded_controls(t)
@@ -85,9 +89,10 @@ test "narrower still: the preset's words and the station's name leave their cont
     // no part of their words: their marks and their chevrons (the page says where it starts)
     let words = runs_in(t, (preset.x, preset.y, station.x + station.w - preset.x, station.h))
     assert_true(words.length() == 0, msg="\{Repr(words.map(fn(r) { r.text }))}")
-    // narrower than phones are: the model's name kept, cut short once all else has gone
+    // narrower than phones are: the model's short name (V4.1 Flash) stays whole with zero ellipsis
     let model_words = runs_in(t, (model.x, model.y, model.w, model.h))
-    assert_true(model_words.iter().any(fn(r) { r.text.has_prefix("DeepSeek") }), msg="\{Repr(model_words.map(fn(r) { r.text }))}")
+    assert_true(model_words.iter().any(fn(r) { r.text == "V4.1 Flash" }), msg="\{Repr(model_words.map(fn(r) { r.text }))}")
+    assert_true(model_words.iter().all(fn(r) { !r.text.contains("…") }), msg="no ellipsis at 280: \{Repr(model_words.map(fn(r) { r.text }))}")
     // nothing past what it keeps
     let kept = t
       .boxes_held()
@@ -472,11 +477,16 @@ test "closed capsule uses short runtime label and keeps runtime ahead of effort 
     let roomy_texts = runs_in(roomy, (roomy_model.x, roomy_model.y, roomy_model.w, roomy_model.h)).map(fn(r) { r.text })
     assert_true(roomy_texts.contains("DSH") && roomy_texts.contains("高"), msg="\{Repr(roomy_texts)}")
     assert_true(!roomy_texts.contains("DeepSeek Harness"), msg="\{Repr(roomy_texts)}")
-    // Narrowed to 420, effort (`高`) drops first while short runtime (`DSH`) stays.
-    let squeezed = crowded("newchat-crowded", w=420.0)
+    // Narrowed to 420, model steps to short name (`V4.1 Flash`) first so both runtime (`DSH`) and effort (`高`) still fit.
+    let mid = crowded("newchat-crowded", w=420.0)
+    let mid_model = crowded_controls(mid)[2]
+    let mid_texts = runs_in(mid, (mid_model.x, mid_model.y, mid_model.w, mid_model.h)).map(fn(r) { r.text })
+    assert_true(mid_texts.contains("V4.1 Flash") && mid_texts.contains("DSH") && mid_texts.contains("高"), msg="420: \{Repr(mid_texts)}")
+    // Narrowed further to 380, effort (`高`) drops while short name (`V4.1 Flash`) and short runtime (`DSH`) stay.
+    let squeezed = crowded("newchat-crowded", w=380.0)
     let squeezed_model = crowded_controls(squeezed)[2]
     let squeezed_texts = runs_in(squeezed, (squeezed_model.x, squeezed_model.y, squeezed_model.w, squeezed_model.h)).map(fn(r) { r.text })
-    assert_true(squeezed_texts.contains("DSH") && !squeezed_texts.contains("高"), msg="\{Repr(squeezed_texts)}")
+    assert_true(squeezed_texts.contains("V4.1 Flash") && squeezed_texts.contains("DSH") && !squeezed_texts.contains("高"), msg="380: \{Repr(squeezed_texts)}")
   })
 }
 

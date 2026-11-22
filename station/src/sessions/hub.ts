@@ -200,6 +200,8 @@ export class Hub {
   readonly cold: ColdStorage;
   readonly readUpkeepState: (dataDir: string) => Promise<UpkeepState>;
   readonly accounts: Accounts;
+  /// The last profile access scopes seen by `profilesChanged`, kept apart from config.json's mutable objects.
+  private profileScopes: Profile[] | null = null;
   readonly clock: Clock.Clock;
   readonly places: Places;
   readonly machineRoots: () => Roots;
@@ -1338,6 +1340,44 @@ export class Hub {
     }
   }
 
+  private copyProfileScopes(profiles: Profile[]): Profile[] {
+    return profiles.map((p) => ({ ...p, runtimes: [...p.runtimes], withheld: p.withheld?.slice(), share: structuredClone(p.share) }));
+  }
+
+  /// A profile newly became available to a workspace: retry its failed starts without a second message. A profile
+  /// belonging to another workspace is not available, even when its copy has arrived at this station.
+  profilesChanged() {
+    const before = this.profileScopes;
+    const after = this.config().profiles;
+    this.profileScopes = this.copyProfileScopes(after);
+    if (before === null) return;
+    const scope = (p: Profile) => {
+      const share = p.share as { borrowed?: unknown; workspaces?: unknown } | undefined;
+      return JSON.stringify([p.runtimes, p.enabled !== false, p.withheld ?? [], share?.borrowed, share?.workspaces]);
+    };
+    const previous = new Map(before.map((p) => [p.id, p]));
+    const changed = after.filter((p) => !previous.has(p.id) || scope(previous.get(p.id)!) !== scope(p));
+    if (changed.length === 0) return;
+    const home = this.workspaces()[0] ?? null;
+    for (const actor of this.actors.values()) {
+      const row = this.store.getSession(actor.key);
+      if (!row || row.archivedAt !== null || this.handedOver(row.key) || !this.store.hasPending(row.key) || !this.online(row)) continue;
+      const allowed = (p: Profile) => p.enabled !== false && p.runtimes.includes(actor.runtime) && allowedIn(p, row.ws ?? null, home);
+      const added = new Set(changed.filter((p) => allowed(p) && (!previous.has(p.id) || !allowed(previous.get(p.id)!))).map((p) => p.id));
+      if (added.size === 0) continue;
+      // A start may still be in flight when the profile arrives. Once its queue reaches this barrier, retry only if
+      // it actually failed and the profile still serves the workspace. Ordinary queued wakes retain their deduplication.
+      void actor.flushed().then(() => {
+        const now = this.store.getSession(actor.key);
+        if (!now || now.archivedAt !== null || this.actors.get(actor.key) !== actor || this.handedOver(actor.key) ||
+          !actor.startFailed() || !this.store.hasPending(actor.key) || !this.online(now)) return;
+        const stillAllowed = this.config().profiles.some((p) => added.has(p.id) && p.enabled !== false && p.runtimes.includes(actor.runtime) &&
+          allowedIn(p, now.ws ?? null, this.workspaces()[0] ?? null));
+        if (stillAllowed) return actor.kick();
+      }).catch((error) => log.warn("hub", "could not retry after a profile became available", { session: actor.key, error: (error as Error).message }));
+    }
+  }
+
   // ── warm processes ─────────────────────────────────────────────────────────────────────────────────────────────
 
   /// Ends idle claude and dsh processes (one per session) beyond the warm limit (immediately, oldest first), and any
@@ -1606,6 +1646,15 @@ export class Hub {
   /// Every session's process state that is not cold (what the reads are given).
   processes(): Map<string, string> {
     return new Map([...this.actors].flatMap(([key, a]) => (a.processState() === "cold" ? [] : [[key, a.processState()] as [string, string]])));
+  }
+
+  /// The readers also need to distinguish a failed start from messages still queued for an agent.
+  readProcesses(): Map<string, string> {
+    const states = this.processes();
+    for (const [key, actor] of this.actors) {
+      if (actor.startFailed()) states.set(key, actor.processState() === "warm" ? "warmFailed" : "coldFailed");
+    }
+    return states;
   }
 
   /// The key the client that asked for a session gave it (NewChat.clientKey), while it is kept.

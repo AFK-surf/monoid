@@ -1,14 +1,15 @@
 // A tab of the station's browser, shown as a browser shows one (the user, 2026-11-13: 「更像普通浏览器」「操作太复杂了，
-// 而且不够符合直觉」): over the page, a person's own pages on the station (`userTab`) as a row of tabs, the one shown
-// pressed, each closed by its ×, ＋ a new one; under them ← → ⟳ and the address bar, its whole address shown, the
-// words typed there gone to (or searched for, the station's `addressOrSearch`) on Enter. Where the page is narrow the
-// tabs fold into a button that counts them, its panel listing them. A new tab is there as it is pressed (the user,
-// 2026-11-13: 「会等 station 开了这边才开，点个按钮要半天」): its id made here (@settings.new_browser_tab), its view
-// opened at once on its blank page, its address bar taking the keys, while its station makes it. That a tab sleeps
-// while nobody looks at it is the station's own and never shown: pressed, it is woken.
+// 而且不够符合直觉」): over the page, all browser pages on the station as a row of tabs, the one shown pressed, each
+// closable one closed by its ×, ＋ a new one when the station allows opening browser tabs; under them ← → ⟳ and the
+// address bar, its whole address shown, the words typed there gone to (or searched for, the station's `addressOrSearch`)
+// on Enter. Where the page is narrow the tabs fold into a button that counts them, its panel listing them. A new tab is
+// there as it is pressed (the user, 2026-11-13: 「会等 station 开了这边才开，点个按钮要半天」): its id made here
+// (@settings.new_browser_tab), its view opened at once on its blank page, its address bar taking the keys, while its
+// station makes it. That a tab sleeps while nobody looks at it is the station's own and never shown: pressed, it is
+// woken.
 //
-// With keyboard and mouse, a browser's keys: ⌘L (Ctrl+L) the address bar, ⌘T a new tab, ⌘W this one closed, ⌘[ ⌘]
-// back and forward, ⌘R again (screen_view's screen_keys_in).
+// With keyboard and mouse, a browser's keys: ⌘L (Ctrl+L) the address bar, ⌘T a new tab (when allowed), ⌘W this one
+// closed (when closable), ⌘[ ⌘] back and forward, ⌘R again (screen_view's screen_keys_in).
 
 ///|
 /// Whether the viewer shows the browser's bar: a tab of the station's browser (driven or watch-only, so the bar stays
@@ -19,10 +20,11 @@ fn browser_shown(s : ScreenSess) -> Bool {
 }
 
 ///|
-/// A person's own pages on the station, in the order they were opened (the station's list keeps it).
-fn user_tabs_of(s : ScreenSess) -> Array[Json] {
+/// All browser pages on the station, in the order they were opened (the station's list keeps it), along with the raw
+/// `screens` topic value so callers can inspect station flags (`browser`, `control`).
+fn browser_tabs_of(s : ScreenSess) -> (Json?, Array[Json]) {
   let sc = s.src.topic("screens", { "station": Json::string(s.station) }).get().value
-  items(sc, "screens").filter(fn(item) { is_user_screen(Some(item)) })
+  (sc, items(sc, "screens").filter(fn(item) { is_browser_screen(Some(item)) }))
 }
 
 ///|
@@ -47,9 +49,9 @@ fn address_shown(s : ScreenSess) -> String {
 }
 
 ///|
-/// One of a view's tabs (view_tabs): a person's page on the station's browser, or the whole of a desktop or one of its
-/// windows; its words, what its tip says, whether it is the one shown, what pressing it does, and its × (none: kept).
-/// What is done is said as a value and done by tab_do in the press's handler, never as a frame is built.
+/// One of a view's tabs (view_tabs): a browser page on the station, or the whole of a desktop or one of its windows;
+/// its words, what its tip says, whether it is the one shown, what pressing it does, and its × (none: kept). What is
+/// done is said as a value and done by tab_do in the press's handler, never as a frame is built.
 priv struct ViewTab {
   key : String
   words : String
@@ -60,7 +62,7 @@ priv struct ViewTab {
 }
 
 ///|
-/// What one of the view's tabs does pressed: a person's page shown (its id, its title), a desktop's window shown alone
+/// What one of the view's tabs does pressed: a browser page shown (its id, its title), a desktop's window shown alone
 /// (none: the whole display), a page closed (its id), a new tab.
 priv enum TabAct {
   Show(String, String)
@@ -82,32 +84,54 @@ fn tab_do(s : ScreenSess, u : ScreenUi, act : TabAct, close : () -> Unit) -> Uni
       }
       s.input(s.src, Json::object(p))
     }
-    Close(id) => close_tab(s, u, id, user_tabs_of(s), close)
+    Close(id) => close_tab(s, u, id, browser_tabs_of(s).1, close)
     Add => new_tab_from(s, u)
   }
 }
 
 ///|
-/// The view's tabs (the user, 2026-11-13: 「远程控制也支持按窗口查看，类似浏览器按 tab 查看」): a person's pages on the
-/// station's browser while one is shown, each closed by its × (`add` then 新标签页); a desktop's whole screen and each
-/// window its station says it has (`windows`, `window` the one shown alone), pressed shown alone; else none (an agent's
-/// tab, a simulator: its name in their place).
+/// The view's tabs (the user, 2026-11-13: 「远程控制也支持按窗口查看，类似浏览器按 tab 查看」): all browser pages on
+/// the station while any browser page is shown, each closable one closed by its × (`add` then 新标签页 when allowed);
+/// a desktop's whole screen and each window its station says it has (`windows`, `window` the one shown alone), pressed
+/// shown alone; else none (a simulator: its name in their place).
 fn view_tabs(s : ScreenSess) -> (Array[ViewTab], Bool) {
-  if s.user_tab() {
-    let listed = user_tabs_of(s)
+  if browser_shown(s) {
+    let (sc, listed) = browser_tabs_of(s)
+    guard sc is Some(_) else { return ([], false) }
+    let can_add = flag(sc, "browser") && flag(sc, "control")
     let tabs = listed.map(fn(item) {
       let id = text(Some(item), "id")
-      let title = text(Some(item), "title")
+      let current = id == s.screen
+      let title = if current {
+        match opt_text(s.state, "title") {
+          Some(t) if t != "" => t
+          _ => text(Some(item), "title")
+        }
+      } else {
+        text(Some(item), "title")
+      }
       {
         key: id,
         words: tab_words(title),
         note: text(Some(item), "site"),
-        current: id == s.screen,
+        current,
         press: Show(id, title),
-        close: Some(Close(id)),
+        close: if flag(Some(item), "closable") { Some(Close(id)) } else { None },
       }
     })
-    return (tabs, true)
+    if !tabs.iter().any(fn(t) { t.current }) {
+      let title = opt_text(s.state, "title").unwrap_or("")
+      let closable = (s.user_tab() || s.opens_url()) && flag(sc, "control")
+      tabs.push({
+        key: s.screen,
+        words: tab_words(title),
+        note: text(s.state, "site"),
+        current: true,
+        press: Show(s.screen, title),
+        close: if closable { Some(Close(s.screen)) } else { None },
+      })
+    }
+    return (tabs, can_add)
   }
   let windows = items(s.state, "windows")
   if windows.is_empty() || !s.open_now() {
@@ -178,7 +202,7 @@ fn tabs_row_node(m : @view.View, pg : ScreenPage) -> Unit {
     row.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     @sf.tab_bar_node(
       row,
-      fn() { @sf.t(if s.user_tab() { "web-pages.screen.tabs" } else { "web-pages.screen.windows" }) },
+      fn() { @sf.t(if browser_shown(s) { "web-pages.screen.tabs" } else { "web-pages.screen.windows" }) },
       fn() { tabs().0.map(fn(t) { t.key }) },
       fn() {
         let all = tabs().0
@@ -335,13 +359,14 @@ fn browser_seen(s : ScreenSess) -> Unit {
 
 ///|
 /// Where the bar is narrow, in `k`: the view's tabs folded into one button counting them; pressed, they are listed in a
-/// panel (each pressed shown) with 新标签页 at its head and, a person's page shown, 关闭此标签页 at its foot.
+/// panel (each pressed shown) with 新标签页 at its head (when allowed) and, when the current tab is closable, 关闭此标签页
+/// at its foot.
 fn tabs_button_node(k : @view.View, pg : ScreenPage, side? : Double) -> Unit {
   let s = pg.s
   let u = pg.u
   let label = fn() {
     s.said.get() |> ignore
-    @sf.t(if s.user_tab() { "web-pages.screen.tabs" } else { "web-pages.screen.windows" })
+    @sf.t(if browser_shown(s) { "web-pages.screen.tabs" } else { "web-pages.screen.windows" })
   }
   let count = fn() {
     s.said.get() |> ignore
@@ -377,12 +402,19 @@ fn tabs_button_node(k : @view.View, pg : ScreenPage, side? : Double) -> Unit {
 
 ///|
 /// The tabs' panel (tabs_button's): 新标签页 where a tab is added, then each tab, the one shown ticked; 关闭此标签页 under
-/// them on a person's page.
+/// them when the current tab is closable.
 fn tabs_node(v : @view.View, s : ScreenSess, u : ScreenUi, done : () -> Unit, close : () -> Unit) -> Unit {
   // (made again as the view's state or the station's tabs change)
   let tabs = fn() {
     s.said.get() |> ignore
     view_tabs(s)
+  }
+  let current_closable = fn() {
+    let (all, _) = tabs()
+    match all.search_by(fn(t) { t.current }) {
+      Some(i) => all[i].close is Some(_)
+      None => false
+    }
   }
   @sf.panel_group_node(v, fn() { "" }, fn(g) {
     g.show(at_once=true, fn() { tabs().1 }, fn(n) {
@@ -410,14 +442,14 @@ fn tabs_node(v : @view.View, s : ScreenSess, u : ScreenUi, done : () -> Unit, cl
             None => ()
           }
         },
-        icon=fn() { if s.user_tab() { "web" } else if t.get().0 == "screen" { "monitor" } else { "square" } },
-        note=fn() { if s.user_tab() { t.get().2 } else { "" } },
+        icon=fn() { if browser_shown(s) { "web" } else if t.get().0 == "screen" { "monitor" } else { "square" } },
+        note=fn() { if browser_shown(s) { t.get().2 } else { "" } },
         end=if t.untracked().3 { "check" } else { "" },
       )
     })
   })
-  // (the page's address copied, or sent to the chat open; a person's page closed)
-  v.show(at_once=true, fn() { s.said.get() |> ignore; address_shown(s) != "" || s.user_tab() }, fn(f) {
+  // (the page's address copied, or sent to the chat open; a closable tab closed)
+  v.show(at_once=true, fn() { s.said.get() |> ignore; address_shown(s) != "" || current_closable() }, fn(f) {
     @sf.panel_group_node(f, fn() { "" }, fn(g) {
       g.show(at_once=true, fn() { s.said.get() |> ignore; address_shown(s) != "" }, fn(ub) {
         @sf.panel_row_node(
@@ -446,13 +478,13 @@ fn tabs_node(v : @view.View, s : ScreenSess, u : ScreenUi, done : () -> Unit, cl
           icon=fn() { "send" },
         )
       })
-      g.show(at_once=true, fn() { s.said.get() |> ignore; s.user_tab() }, fn(cl) {
+      g.show(at_once=true, fn() { current_closable() }, fn(cl) {
         @sf.panel_row_node(
           cl,
           fn() { @sf.t("web-pages.screen.closeTabFull") },
           fn() {
             done()
-            close_tab(s, u, s.screen, user_tabs_of(s), close)
+            close_tab(s, u, s.screen, browser_tabs_of(s).1, close)
           },
           icon=fn() { "close" },
           danger=true,
@@ -465,7 +497,7 @@ fn tabs_node(v : @view.View, s : ScreenSess, u : ScreenUi, done : () -> Unit, cl
 ///|
 /// A new tab (＋, ⌘T): there at once on its blank page, its address bar taking the keys, while the station makes it.
 fn new_tab_from(s : ScreenSess, u : ScreenUi) -> Unit {
-  let listed = user_tabs_of(s).map(fn(t) { text(Some(t), "id") })
+  let listed = browser_tabs_of(s).1.map(fn(t) { text(Some(t), "id") })
   let next = @settings.new_browser_tab(s.src.call, s.station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
   let nu = screen_ui(screen_key(s.station, next))
   nu.address_asked.set(nu.address_asked.untracked() + 1)
@@ -507,7 +539,8 @@ fn browser_key(s : ScreenSess, u : ScreenUi, code : String, mods : Int, down : B
   }
   let act : String? = match code {
     "KeyL" | "KeyR" | "BracketLeft" | "BracketRight" if flag(s.state, "openUrl") => Some(code)
-    "KeyT" | "KeyW" if s.user_tab() => Some(code)
+    "KeyT" if view_tabs(s).1 => Some(code)
+    "KeyW" if view_tabs(s).0.iter().any(fn(t) { t.current && t.close is Some(_) }) => Some(code)
     _ => None
   }
   match act {

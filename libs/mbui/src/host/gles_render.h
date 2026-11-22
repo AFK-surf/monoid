@@ -25,6 +25,7 @@
 
 // the numbers of an instance (src/ui/scene.mbt)
 #define MB_INST 60
+#include "glass_damage.h"
 // the glyphs' atlases, square, what goes where in them MoonBit's (hostapi's atlas.mbt): the words' (a byte a texel,
 // how much of it the glyph covers: drawn in the text's colour; as many bytes as one RGBA atlas half as wide) and colour
 // glyphs' (RGBA: an emoji's own). A colour glyph's place across is MB_ATLAS_COLOR_U past its place in its atlas (what
@@ -590,8 +591,8 @@ static const char *FS =
     "    // the foot and right less), 0.5 wide\n"
     "    bool prog_glass = (v_pad.z < -0.5);\n"
     "    vec3 g3 = backdrop(p);\n"
-    "    float ps = prog_glass ? smoothstep(0.0, 1.0, fade_r) : 1.0;\n"
-    "    float ts = prog_glass ? (ps <= 0.0 ? 0.0 : pow(ps, 1.35)) : 1.0;\n"
+    "    float ps = prog_glass ? fade_r : 1.0;\n"
+    "    float ts = prog_glass ? (fade_r <= 0.0 ? 0.0 : pow(fade_r, 1.25)) : 1.0;\n"
     "    float sat = prog_glass ? mix(1.0, v_p.z, ps) : v_p.z;\n"
     "    float bg_diff = prog_glass ? smoothstep(0.22, 0.72, abs(luma(col.rgb) - luma(g3))) : 0.0;\n"
     "    float base_a = prog_glass ? mix(col.a, min(0.86, col.a + 0.34), bg_diff) : col.a;\n"
@@ -697,8 +698,7 @@ static const char *PFS =
     "    if (kf < 0.5) { o = texture(u_src, clamp(gl_FragCoord.xy * m0.xy, m0.xy * 0.5, m0.zw)); return; }\n"
     "    float sig1 = pow(sp, 1.0 / kf);\n"
     "    float r = clamp(ramp, 0.0, 1.0);\n"
-    "    float s_r = smoothstep(0.0, 1.0, r);\n"
-    "    float target_px = s_r <= 0.0 ? 0.0 : sp * pow(s_r, 1.25);\n"
+    "    float target_px = r <= 0.0 ? 0.0 : sp * pow(r, 1.15);\n"
     "    if (target_px <= sig1 || kf <= 1.05) {\n"
     "      vec2 uv0_min = m0.xy * 0.5, uv0_max = m0.zw;\n"
     "      vec2 c_uv = gl_FragCoord.xy * m0.xy;\n"
@@ -706,9 +706,10 @@ static const char *PFS =
     "      if (target_px <= 0.01) {\n"
     "        g_small = texture(u_src, clamp(c_uv, uv0_min, uv0_max));\n"
     "      } else {\n"
-    "        vec2 d0 = vec2(target_px, 0.0) * m0.xy;\n"
-    "        vec2 d1 = vec2(0.0, target_px) * m0.xy;\n"
-    "        vec2 dd = vec2(target_px * 0.70710678, target_px * 0.70710678) * m0.xy;\n"
+    "        float r_tap = target_px * 1.5;\n"
+    "        vec2 d0 = vec2(r_tap, 0.0) * m0.xy;\n"
+    "        vec2 d1 = vec2(0.0, r_tap) * m0.xy;\n"
+    "        vec2 dd = vec2(r_tap * 0.70710678, r_tap * 0.70710678) * m0.xy;\n"
     "        g_small  = texture(u_src, clamp(c_uv, uv0_min, uv0_max)) * 0.25;\n"
     "        g_small += (texture(u_src, clamp(c_uv + d0, uv0_min, uv0_max)) +\n"
     "                    texture(u_src, clamp(c_uv - d0, uv0_min, uv0_max)) +\n"
@@ -2087,6 +2088,8 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
         gl_dirty_add(ad_slots[i].cx - ad_slots[i].hx - 4.0, ad_slots[i].cy - ad_slots[i].hy - 4.0,
                      ad_slots[i].hx * 2.0 + 8.0, ad_slots[i].hy * 2.0 + 8.0);
     }
+    if (!dirty_whole && !mb_glass_damage_expand(fbuf, count, dirty, &dirty_n, fb_w / cur_scale, fb_h / cur_scale,
+                                                 cur_scale)) dirty_whole = 1;
   }
   gl_present_drawn(count, r, g, b);
   ad_finalize_frame(whole, ad_frame_serial);
@@ -2095,12 +2098,8 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
 
 static int gl_adaptive_step(void) {
   if (!ad_settling || kept_count <= 0 || !fbuf) return 0;
-  dirty_told = dirty_whole = dirty_n = 0;
-  for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
-    if (ad_slots[i].active && ad_slots[i].settle_left > 0.0)
-      gl_dirty_add(ad_slots[i].cx - ad_slots[i].hx - 4.0, ad_slots[i].cy - ad_slots[i].hy - 4.0,
-                   ad_slots[i].hx * 2.0 + 8.0, ad_slots[i].hy * 2.0 + 8.0);
-  }
+  dirty_told = 1;
+  dirty_whole = dirty_n = 0;
   gl_present_kept(kept_count, kept_r, kept_g, kept_b);
   return 1;
 }

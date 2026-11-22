@@ -460,7 +460,6 @@ test "小屏输入框上方胶囊：station 有图标（glyph、emoji，1.0x 与
   }
 }
 
-
 ///|
 /// The inks the glyphs of the drawn line `words` inside `cap` are drawn in (each once, sorted; none fully clear).
 fn bar_words_inks(t : @ui.Tester, words : String, cap : (Double, Double, Double, Double)) -> Array[Int64] {
@@ -774,6 +773,103 @@ test "小屏输入框上方合并胶囊：单模型与多模型（390 与 320 �
       )
     }
   }
+}
+
+///|
+fn small_neon_tester(w : Double, has_jobs? : Bool = false, has_subchats? : Bool = false, extra_agents? : Int = 0) -> @ui.Tester {
+  new_run()
+  let base = fixture("chat")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let got = base.topic(name, params).get().snapshot()
+      if name == "chatJobs" && has_jobs {
+        return { ..got, value: Some({ "hasJobs": true, "jobs": [], "alarm": "fail" }) }
+      }
+      guard name == "chat" && got.value is Some(Object(chat)) else { return got }
+      let changed = chat.copy()
+      let agents = items(got.value, "agents").copy()
+      if agents.length() > 0 && agents[0] is Object(a0) {
+        let ao = a0.copy()
+        if a0.get("session") is Some(Object(s)) {
+          let ss = s.copy()
+          ss["runtime"] = Json::string("agy")
+          ss["maker"] = { "id": "gemini", "name": "Google" }
+          ss["model"] = Json::string("gemini-4-neon")
+          ss["modelName"] = Json::string("Gemini 4 Neon")
+          ss["modelShort"] = Json::string("Neon")
+          ss["effort"] = Json::string("high")
+          ss["agentText"] = Json::string("Gemini 4 Neon · high")
+          ao["session"] = Json::object(ss)
+        }
+        agents[0] = Json::object(ao)
+      }
+      for idx in 0..<extra_agents {
+        agents.push({
+          "session": {
+            "key": "s-extra-\{idx}",
+            "runtime": "agy",
+            "maker": { "id": "gemini", "name": "Google" },
+            "model": "gemini-4-neon",
+            "modelName": "Gemini 4 Neon",
+            "modelShort": "Neon",
+            "effort": "high",
+            "agentText": "Gemini 4 Neon · high",
+            "statusText": "未开始",
+            "tone": "neutral",
+          },
+          "status": "idle",
+        })
+      }
+      changed["agents"] = Json::array(agents)
+      if has_subchats {
+        changed["opened"] = Json::array([
+          { "station": "ws1/st1", "session": "s-sub-1", "title": "子会话一", "led": true, "state": "run" },
+        ])
+      }
+      { ..got, value: Some(Json::object(changed)) }
+    },
+  }
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "短标题", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+test "小屏输入框上方胶囊：390/320/280 下 Gemini 4 Neon · 高 逐级降级且零省略号、零 audit 告警" {
+  let pill_texts = fn(t : @ui.Tester) -> Array[String] {
+    match composer_agent_rect(t) {
+      Some((x, y, w, h)) =>
+        t.text_runs().filter(fn(r) { r.base > y && r.base < y + h && r.x1 > x && r.x0 < x + w }).map(fn(r) { r.text })
+      None => []
+    }
+  }
+  // 390 roomy: full "Gemini 4 Neon" + "· 高" + "Willow"
+  let t390 = small_neon_tester(390.0)
+  let w390 = pill_texts(t390)
+  assert_true(w390.contains("Gemini 4 Neon") && w390.contains("· 高") && w390.contains("Willow"), msg="390 roomy: \{Repr(w390)}")
+  assert_true(w390.iter().all(fn(s) { !s.contains("…") }), msg="390: zero ellipsis: \{Repr(w390)}")
+  assert_eq(bar_node_audit(t390), [], msg="390 audit")
+  // 390 with subchats + jobs: steps to "Neon" + "· 高" + "Willow"
+  let t390c = small_neon_tester(390.0, has_jobs=true, has_subchats=true)
+  let w390c = pill_texts(t390c)
+  assert_true(w390c.contains("Neon") && !w390c.contains("Gemini 4 Neon"), msg="390 crowded: stepped to Neon: \{Repr(w390c)}")
+  assert_true(w390c.contains("· 高") && w390c.contains("Willow"), msg="390 crowded: kept effort+station: \{Repr(w390c)}")
+  assert_true(w390c.iter().all(fn(s) { !s.contains("…") }), msg="390 crowded: zero ellipsis: \{Repr(w390c)}")
+  assert_eq(bar_node_audit(t390c), [], msg="390 crowded audit")
+  // 320 with subchats + jobs: steps further (no effort, still Neon, zero ellipsis)
+  let t320 = small_neon_tester(320.0, has_jobs=true, has_subchats=true)
+  let w320 = pill_texts(t320)
+  assert_true(!w320.contains("Gemini 4 Neon"), msg="320: full stepped down: \{Repr(w320)}")
+  assert_true(w320.iter().all(fn(s) { !s.contains("…") }), msg="320: zero ellipsis: \{Repr(w320)}")
+  assert_eq(bar_node_audit(t320), [], msg="320 audit")
+  // 280 with extra agent + subchats + jobs: drops down cleanly without ellipsis or audit faults
+  let t280 = small_neon_tester(280.0, has_jobs=true, has_subchats=true, extra_agents=1)
+  let w280 = pill_texts(t280)
+  assert_true(w280.iter().all(fn(s) { !s.contains("…") }), msg="280: zero ellipsis: \{Repr(w280)}")
+  assert_eq(bar_node_audit(t280), [], msg="280 audit")
 }
 
 ///|

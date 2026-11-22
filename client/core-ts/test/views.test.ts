@@ -319,7 +319,7 @@ function deciding(id: string, th: number, seq: number, at: number, dismissed: bo
 const ids = (v: J): string[] => v.days.flatMap((d: J) => d.items.map((i: J) => i.id));
 
 /// A value without what the clients show of it: what a view puts together, alone.
-const SHOWN = new Set(["trouble", "settled", "archivable", "swipeArchive", "swipeAsk", "stateText", "stateLead", "stateRest", "face", "line", "available", "offered", "connection", "glyph", "note", "time", "statusText", "tone", "badgeText", "titleText", "agentText", "maker", "runtimeText", "processText", "efforts", "modeText", "modeShort", "runText", "presence", "checkText", "checkTone", "preview", "makers", "mark", "order", "left", "level", "refills", "shown", "processesText", "by", "waiting", "since", "originText", "originKind", "summary", "modelsText", "stateBusy", "problems", "changes", "modeWords", "modeLabel", "modeSentence", "placeText"]);
+const SHOWN = new Set(["trouble", "settled", "archivable", "swipeArchive", "swipeAsk", "stateText", "stateLead", "stateRest", "face", "line", "available", "offered", "connection", "glyph", "note", "time", "statusText", "tone", "badgeText", "titleText", "agentText", "modelShort", "shortName", "maker", "runtimeText", "processText", "efforts", "modeText", "modeShort", "runText", "presence", "checkText", "checkTone", "preview", "makers", "mark", "order", "left", "level", "refills", "shown", "processesText", "by", "waiting", "since", "originText", "originKind", "summary", "modelsText", "stateBusy", "problems", "changes", "modeWords", "modeLabel", "modeSentence", "placeText"]);
 function plain(v: J): J {
   if (Array.isArray(v)) return v.map(plain);
   if (v !== null && typeof v === "object") return Object.fromEntries(Object.entries(v).filter(([k, x]) => !SHOWN.has(k) && x !== null && x !== undefined).map(([k, x]) => [k, plain(x)]));
@@ -4428,6 +4428,9 @@ test("an_agent_whose_card_is_answered_from_here_is_at_work_from_the_answer_on_ti
   // here, its turn not begun since: still at work
   const answer = { seq: 6, ts: "t-6", mine: true, quotes, createdAt: 200 };
   assert.equal(answeredAt([agent("final", 50)], [card, answer], [])[0].status, "queued");
+  const failed = { status: "failed", session: { key: "s-1", lastTurn: { startedAt: 50 }, startFailed: true, pending: 1 } };
+  assert.equal(answeredAt([failed], [card, answer], [])[0].status, "failed", "a refused start ends the activity even though the answer is retained");
+  assert.equal(answeredAt([failed], [card], [{ id: "o-2", state: "sending", quotes }])[0].status, "queued", "a new answer can try again");
   // its turn after it begun (and over): as the station says
   assert.equal(answeredAt([agent("final", 250)], [card, answer], [])[0].status, "final");
   // words sent under the card, the chat's last word: they answer it as a pick does

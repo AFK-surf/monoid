@@ -1150,6 +1150,107 @@ int main(void) {
       glass_forget();
     }
 
+    // A selection changes shape data while two adaptive glasses share a capture. Settle regions must contain the
+    // complete capture so they never blur the preceding frame's glass or foreground.
+    {
+      double a[6 * MB_INST];
+      rect_at(a, 0, 0, 400, 300, 0, 0.95, 0.95, 0.95, 0);
+      rect_at(a + MB_INST, 56, 216, 160, 12, 0, 0.1, 0.1, 0.1, 0);
+      rect_at(a + 2 * MB_INST, 40, 116, 140, 32, 6, 0.99, 0.99, 0.99, -1);
+      rect_at(a + 3 * MB_INST, 32, 180, 336, 92, 6, 0.99, 0.99, 0.99, -1);
+      for (int i = 2; i <= 3; i++) {
+        a[i * MB_INST + 4] = 16.0;
+        a[i * MB_INST + 6] = 1.0;
+        a[i * MB_INST + 7] = 4.0;
+        a[i * MB_INST + 11] = 0x67 / 255.0;
+        a[i * MB_INST + 13] = 8.0;
+        a[i * MB_INST + 14] = -1.0;
+        a[i * MB_INST + 15] = 1.0;
+        a[i * MB_INST + 21] = 6.0;
+      }
+      rect_at(a + 4 * MB_INST, 40, 8, 120, 12, 0, 0.4, 0.6, 1.0, 0);
+      a[4 * MB_INST + 11] = 0.0;
+      rect_at(a + 5 * MB_INST, 0, 0, 0, 0, 12, 0, 0, 0, 0);
+      mb_render_set_fixed_dt(1.0 / 60.0);
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(a, 6, 0.95, 0.95, 0.95);
+      present_drain();
+      a[8] = 0.93;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(a, 6, 0.95, 0.95, 0.95);
+      present_drain();
+      CHECK(mb_render_adaptive_settling());
+      a[4 * MB_INST + 11] = 0.5;
+      a[5 * MB_INST + 12] = 1.0;
+      mb_host_render_dirty(32, 0, 144, 32);
+      mb_render_present(a, 6, 0.95, 0.95, 0.95);
+      present_drain();
+      slots_invalidate();
+      CHECK(canvas_as_whole());
+      mb_render_set_fixed_dt(0.0);
+      glass_forget();
+    }
+
+    // Two independent adaptive liquid glasses spaced 8pt apart so their captures overlap, with a high-contrast blue
+    // foreground caret drawn after the lower glass. Three consecutive partial frames updating only the top non-glass
+    // region while settling must stay pixel-identical to a whole redraw, and overlapping settle damage merges to one.
+    {
+      double a[7 * MB_INST];
+      rect_at(a, 0, 0, 400, 300, 0, 0.95, 0.95, 0.95, 0);
+      rect_at(a + MB_INST, 56, 216, 160, 12, 0, 0.1, 0.1, 0.1, 0);
+      rect_at(a + 2 * MB_INST, 40, 128, 140, 32, 6, 0.99, 0.99, 0.99, -1);
+      a[2 * MB_INST + 4] = 16.0;
+      a[2 * MB_INST + 6] = 1.0;
+      a[2 * MB_INST + 7] = 2.1;
+      a[2 * MB_INST + 11] = 0x67 / 255.0;
+      a[2 * MB_INST + 13] = 8.0;
+      a[2 * MB_INST + 14] = -1.0;
+      a[2 * MB_INST + 15] = 1.0;
+      a[2 * MB_INST + 21] = 28.0;
+      rect_at(a + 3 * MB_INST, 32, 168, 336, 92, 6, 0.99, 0.99, 0.99, -2);
+      a[3 * MB_INST + 4] = 16.0;
+      a[3 * MB_INST + 6] = 1.0;
+      a[3 * MB_INST + 7] = 4.0;
+      a[3 * MB_INST + 11] = 0x67 / 255.0;
+      a[3 * MB_INST + 13] = 8.0;
+      a[3 * MB_INST + 14] = -1.0;
+      a[3 * MB_INST + 15] = 1.0;
+      a[3 * MB_INST + 21] = 28.0;
+      rect_at(a + 4 * MB_INST, 48, 196, 2, 24, 0, 0.05, 0.35, 1.0, 0);
+      rect_at(a + 5 * MB_INST, 40, 8, 120, 12, 0, 0.4, 0.6, 1.0, 0);
+      a[5 * MB_INST + 11] = 0.0;
+      rect_at(a + 6 * MB_INST, 0, 0, 0, 0, 12, 0, 0, 0, 0);
+      mb_render_set_fixed_dt(1.0 / 60.0);
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(a, 7, 0.95, 0.95, 0.95);
+      present_drain();
+      a[8] = 0.93;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(a, 7, 0.95, 0.95, 0.95);
+      present_drain();
+      CHECK(mb_render_adaptive_settling());
+      for (int step = 0; step < 3; step++) {
+        a[5 * MB_INST + 11] = 0.3 * (step + 1);
+        a[6 * MB_INST + 12] = (double)(step + 1);
+        mb_host_render_dirty(32, 0, 144, 32);
+        mb_render_present(a, 7, 0.95, 0.95, 0.95);
+        present_drain();
+        slots_invalidate();
+        CHECK(canvas_as_whole());
+      }
+      float f[7 * MB_INST];
+      for (int i = 0; i < 7 * MB_INST; i++) f[i] = (float)a[i];
+      double r[][4] = {{36, 124, 148, 40}, {28, 164, 344, 100}};
+      int rn = 2;
+      CHECK(mb_glass_damage_expand(f, 7, r, &rn, 400, 300, 2));
+      CHECK(rn == 1);
+      CHECK(r[0][1] <= 92 && r[0][1] + r[0][3] >= 298);
+      mb_render_set_fixed_dt(0.0);
+      glass_forget();
+    }
+
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
     // doubles, then made a float, as the app's own instance moved there would be.
     double kept[MB_INST];

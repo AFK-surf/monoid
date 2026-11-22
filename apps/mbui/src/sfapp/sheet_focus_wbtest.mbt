@@ -141,7 +141,7 @@ test "小屏 touch: 新对话's 模型 sheet over the focused composer rises at 
   t.set_ime_inset(300.0)
   t.resize(390.0, 544.0)
   assert_true(t.ime().0, msg="composer has the soft keyboard")
-  t.tap_text("DeepSeek V4.1 Flash")
+  t.tap_text("V4.1 Flash")
   t.draw()
   assert_false(t.ime().0, msg="opening 模型 puts the composer's keyboard away")
   let (_, y0, _, h0) = t.get(@ui.Role::Dialog).rect
@@ -179,7 +179,7 @@ test "小屏 touch: 新对话's 模型 sheet over the focused composer rises at 
   // 搜索模型 inside the open sheet raises the keyboard and keeps the sheet above it
   t.set_ime_inset(300.0)
   t.resize(390.0, 544.0)
-  t.tap_text("DeepSeek V4.1 Flash")
+  t.tap_text("V4.1 Flash")
   t.set_ime_inset(0.0)
   t.resize_next(390.0, 844.0)
   sheet_rested(t, "sf-present")
