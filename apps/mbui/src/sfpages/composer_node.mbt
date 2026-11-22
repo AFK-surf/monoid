@@ -435,6 +435,7 @@ fn composer_node_of(
     // least)
     // (roomy, alone in the page's middle: as tall as its box, nothing round it)
     foot
+    .alpha(By(fn() { if roomy() { 1.0 } else { @sf.sheet_foot_alpha(foot) } }))
     .padding(
       By(fn() {
         if roomy() {
@@ -613,18 +614,14 @@ fn composer_node_of(
 }
 
 ///|
-/// Minimal soft top-fade seam seal pinned to the bottom of `foot`, covering only the `composer_foot_at` gap below the
-/// composer plus `composer_seam_fade` pt of upward feathering so the composer body and floating pill stay 100% open to
-/// transparent liquid glass refraction and adaptive flipping. Reuses `p.bg` with `alpha(254/255)` so `Node::covers`
-/// never blocks selection or wheel scrolling beside the composer and no new palette color is introduced.
+/// The short top-fade seam seal used while the soft keyboard is down. Reuses `p.bg` with `alpha(254/255)` so
+/// `Node::covers` never blocks selection or wheel scrolling beside the composer and no new palette color is introduced.
 let composer_seam_fade : Double = 18.0
 
 ///|
-/// While the soft keyboard is up (someone writing in it on a phone), what the chat holds fades out behind the composer
-/// too, so a picture or a busy message passing under its glass does not drown what is being written: the page's own
-/// ground, as good as solid at the foot and clear `composer_backdrop_fade` above the seam under the composer. It comes
-/// and goes with the keyboard (`composer_backdrop_in_ms`, `composer_backdrop_out_ms`), and is not there with keyboard
-/// and mouse, where the glass stays open as it was made to be.
+/// What the chat holds fades out behind the composer, so a picture or a busy message passing under its glass does not
+/// drown what is being written: the page's own ground, as good as solid at the foot and clear `composer_backdrop_fade`
+/// above the seam. With a soft keyboard it comes and goes with the keyboard; with keyboard and mouse it stays there.
 let composer_backdrop_fade : Double = 220.0
 
 ///|
@@ -643,6 +640,7 @@ fn composer_foot_scrim_node(
   foot.box(fn(scrim) {
     scrim
     .over(Is(true))
+    .presses(Is(false))
     .width_share(Is(1.0))
     .height_share(Is(1.0))
     .lies_along(Is(End))
@@ -660,11 +658,12 @@ fn composer_foot_scrim_node(
         .laid_nowhere(By(fn() { @ui.system_tabletop() is Some(_) }))
         |> ignore
     }
+    let seam_fade = if @sf.soft_keyboard() { composer_seam_fade } else { composer_backdrop_fade }
     scrim.box(fn(band) {
       band
       .width_share(Is(1.0))
-      .height(By(fn() { Some(seam_h() + 6.0 + composer_seam_fade) }))
-      .fades(Is((0.0, composer_seam_fade, 0.0, 0.0)))
+      .height(By(fn() { Some(seam_h() + 6.0 + seam_fade) }))
+      .fades(Is((0.0, seam_fade, 0.0, 0.0)))
       .points(Is(false))
       |> ignore
       band.box(fn(fill) {
@@ -679,8 +678,7 @@ fn composer_foot_scrim_node(
       |> ignore
     })
     |> ignore
-    // (the keyboard's fade: composer_backdrop_fade's, eased in as it comes up and out as it goes; nothing of it with
-    // keyboard and mouse, where no keyboard comes up)
+    // (the soft keyboard's fade: eased in as it comes up and out as it goes; the band above handles keyboard and mouse)
     if !@sf.soft_keyboard() {
       return
     }
@@ -1948,7 +1946,7 @@ let comment_rows_live : Map[String, Int] = Map([])
 
 ///|
 /// What is said over chat `r`'s composer made as nodes, a notice each, in their order (composer_notices_node's): it
-/// archived, its agent's prompt cache over, its station down, a report of the person's answered.
+/// archived, its station down, a report of the person's answered.
 fn composer_notice_kinds(src : Source, r : ChatRef, reports? : () -> Array[Json]) -> Array[String] {
   let reports = match reports {
     Some(f) => f
@@ -1958,9 +1956,6 @@ fn composer_notice_kinds(src : Source, r : ChatRef, reports? : () -> Array[Json]
   let ks : Array[String] = []
   if h.map(fn(h) { h.archived }).unwrap_or(false) {
     ks.push("archive")
-  }
-  if h.map(fn(h) { h.cache_cold is Some(_) && !h.archived }).unwrap_or(false) {
-    ks.push("wait")
   }
   if h.map(fn(h) { h.offline }).unwrap_or(false) {
     ks.push("unplug")
@@ -3177,8 +3172,8 @@ fn preview_waiting(station : String, id : String, name : String, picture : Strin
 ///|
 /// What is said over a chat's composer in `foot` (chat_notices', as nodes), each a capsule of its own over it as the
 /// composer is, coming in and going down its column as what comes does: an archived chat's, with 还原对话 (why it
-/// failed under it; not while its station is down); its agent's prompt cache over, with the choice of how it goes on;
-/// its station down; the still.fail team's reply on a bug report sent from it.
+/// failed under it; not while its station is down); its station down; the still.fail team's reply on a bug report sent
+/// from it.
 fn composer_notices_node(
   foot : @view.View,
   src : Source,
@@ -3252,55 +3247,6 @@ fn composer_notices_node(
             press: fn() { notice_restore(src, r, key) },
           },
           failed=fn() { composing.restore_errors.get(key).unwrap_or("") },
-        )
-        made.offset(By(fn() { (0.0, drawn_off(made)) })) |> ignore
-      }
-      // (its agent's prompt cache over: what going on would read again, and the choice of how it goes on)
-      "wait" => {
-        let cold = fn() { head().bind(fn(h) { h.cache_cold }) }
-        let doing = fn() {
-          match cold() {
-            Some((session, _, _, _)) => "session.settings/" + r.station + "/" + session
-            None => ""
-          }
-      }
-        let held = fn() { @sfbase.doing(doing()) || head().map(fn(h) { h.offline }).unwrap_or(false) }
-        // (drawn with the composer's ground's top as its shape goes, as far over it all the way: where its foot's
-        // room goes its way on the page's too; the notice's own box, its row a slot of the column)
-        let made = @sf.composer_notice_node(
-          n,
-          tips,
-          fn() { "wait" },
-          fn() { cold().map(fn(c) { c.1 }).unwrap_or("") },
-          plus_mid,
-          summary=fn() {
-            match cold() {
-              Some((_, status, detail, _)) if detail != "" => Some((status, detail))
-              _ => None
-            }
-          },
-          held~,
-          choice={
-            choices: fn() { [("go_on", @sf.t("web-main.chat.goOn")), ("afresh", @sf.t("web-main.chat.afresh"))] },
-            chosen: fn() { if cold().map(fn(c) { c.3 }).unwrap_or(false) { "afresh" } else { "go_on" } },
-            // (its menu open: the composer under it kept a box, the cursor gone to the menu (let_go_ms's))
-            on_open: Some(fn(on) {
-              if on {
-                composing_node.choosing_cache.set(key, true)
-              } else if composing_node.choosing_cache.contains(key) {
-                composing_node.choosing_cache.remove(key)
-              }
-            }),
-            choose: fn(value) {
-              guard cold() is Some((session, _, _, afresh)) && !held() else { return }
-              let next = value == "afresh"
-              if next != afresh {
-                let words = if next { "web-main.chat.afresh" } else { "web-main.chat.goOn" }
-                let params : Json = { "station": Json::string(r.station), "key": Json::string(session), "afresh": Json::boolean(next) }
-                @sfbase.act(src, @sf.t(words), doing(), "session.settings", params)
-              }
-            },
-          },
         )
         made.offset(By(fn() { (0.0, drawn_off(made)) })) |> ignore
       }

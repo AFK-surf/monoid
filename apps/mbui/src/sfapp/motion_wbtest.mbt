@@ -251,7 +251,8 @@ test "the chat's sheet going down takes no tap: the field tapped through it is t
   // still going down, drawn over the field
   assert_true(@sf.presented_drawn())
   assert_true(t.find("Claude · Opus 5.5") is Some(_))
-  let (x, y, w, h) = t.rect_of("发消息").unwrap()
+  guard t.query(@ui.Role::TextField) is Some(field) else { fail("composer field not mounted under sinking sheet") }
+  let (x, y, w, h) = field.rect
   t.tap_once(x + w / 2.0, y + h / 2.0)
   let (active, _, _, _) = t.ime()
   assert_true(active)

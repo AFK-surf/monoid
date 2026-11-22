@@ -400,6 +400,9 @@ pub fn presenters_reset() -> Unit {
   presented_sheet_next.val = 0
   presented_sheet_ended.val = -1.0
   sheet_win_h.val = 0.0
+  sheet_foot_covers.clear()
+  sheet_foot_next.val = 0
+  sheet_foot_ver.val.set(0)
 }
 
 ///|

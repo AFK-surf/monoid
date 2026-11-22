@@ -126,7 +126,7 @@ fn chat_body_rows(kept : ChatBodyKept, v : ChatView, all : Array[Entry], sending
     // (where it stood, the turn before's, gone in the very frame words are sent from here and not offline: it goes as
     // what was sent comes, one way of the list's, not a row closing under the words on their way a moment later as
     // the core says so; offline it stays, what was sent waiting)
-    if e is Foot || e is Top || (!still.is_empty() && !v.offline && e is State(_, _, _)) {
+    if e is Foot || e is Top || (!still.is_empty() && !v.offline && (e is State(_, _, _) || e is CacheCold(_, _, _, _))) {
       continue
     }
     list.push(e)
@@ -137,7 +137,7 @@ fn chat_body_rows(kept : ChatBodyKept, v : ChatView, all : Array[Entry], sending
   if still.length() > 0 {
     let mut at = list.length()
     for i, e in list {
-      if e is (State(_, _, _) | Working(_)) {
+      if e is (State(_, _, _) | Working(_) | CacheCold(_, _, _, _)) {
         at = i
         break
       }
@@ -360,6 +360,7 @@ fn chat_entry_same(a : Entry, b : Entry) -> Bool {
     (Out(x), Out(y)) => physical_equal(x, y)
     (State(w1, l1, r1), State(w2, l2, r2)) => w1 == w2 && l1 == l2 && r1 == r2
     (Working(x), Working(y)) => physical_equal(x, y)
+    (CacheCold(s1, st1, d1, a1), CacheCold(s2, st2, d2, a2)) => s1 == s2 && st1 == st2 && d1 == d2 && a1 == a2
     _ => false
   }
 }
@@ -373,7 +374,7 @@ fn chat_entry_in_place(a : Entry, b : Entry) -> Bool {
     (Said(x), Said(y)) => x.ts == y.ts && x.seq == y.seq && x.outgoing == y.outgoing && x.joined == y.joined
     (Sent(x), Sent(y)) => x.key == y.key
     (Working(x), Working(y)) => x.key == y.key
-    (State(_, _, _), State(_, _, _)) | (Older(_), Older(_)) => true
+    (State(_, _, _), State(_, _, _)) | (CacheCold(_, _, _, _), CacheCold(_, _, _, _)) | (Older(_), Older(_)) => true
     _ => false
   }
 }
@@ -422,6 +423,7 @@ fn chat_body_comes(e : Entry) -> Bool {
     Out(_) => true
     Working(a) => a.started
     State(_, _, _) => true
+    CacheCold(_, _, _, _) => true
     _ => false
   }
 }
@@ -541,6 +543,7 @@ priv enum ChatBodyKind {
   KSent
   KState
   KWorking
+  KCacheCold
 }
 
 ///|
@@ -568,6 +571,7 @@ fn chat_body_kind(e : Entry) -> ChatBodyKind {
     Out(_) => KMine
     State(_, _, _) => KState
     Working(_) => KWorking
+    CacheCold(_, _, _, _) => KCacheCold
   }
 }
 
@@ -1272,7 +1276,7 @@ fn chat_body_node(
           }
         // (where the chat stands: in as the words sent land, and as what is held before it sets out: never in under
         // what flies)
-        Some({ entry: State(_, _, _), .. }) if @signals.untracked(fn() { chat_follows_foot(scroll) }) &&
+        Some({ entry: State(_, _, _) | CacheCold(_, _, _, _), .. }) if @signals.untracked(fn() { chat_follows_foot(scroll) }) &&
           !@ui.reduced_motion() => {
           let mut until = sent_lands.val
           for _, p in held {
@@ -1970,7 +1974,7 @@ fn chat_body_node(
         }
       }
       match (list.row)(k).map(fn(r) { r.entry }) {
-        Some(State(_, _, _) | Working(_) | Newer) | None => ()
+        Some(State(_, _, _) | Working(_) | CacheCold(_, _, _, _) | Newer) | None => ()
         Some(Out(_)) => return Some((k, true, came))
         Some(Said(m)) => return Some((k, m.mine, came))
         Some(_) => return Some((k, false, came))
@@ -2353,6 +2357,15 @@ fn chat_body_row(
         )
         |> ignore
       }
+      KCacheCold => {
+        let cold = fn() {
+          match entry() {
+            CacheCold(session, status, detail, afresh) => Some((session, status, detail, afresh))
+            _ => None
+          }
+        }
+        frame(fn(b) { chat_cache_cold_node(b, src, here, cold) })
+      }
     }
   })
 }
@@ -2430,7 +2443,7 @@ fn chat_live_causes(
           Some(Said(m)) => if m.said { 1 } else { 0 }
           Some(Out(_)) => 2
           Some(Working(a)) => if a.started { 3 } else { 4 }
-          Some(State(_, _, _)) => 5
+          Some(State(_, _, _) | CacheCold(_, _, _, _)) => 5
           _ => -1
         }
         kinds[k] = e

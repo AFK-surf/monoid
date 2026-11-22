@@ -265,3 +265,170 @@ test "小屏 capped=true tall=0.62 hugs=true 悬浮滚动抽屉含卡片列表�
   assert_true((gy + gh - (cy + ch) - panel_card_in).abs() < 0.5, msg="bottom \{gy + gh - (cy + ch)}")
   assert_eq(t.audit(), [])
 }
+
+///|
+/// Marker RGB for the simulated bottom floating chrome observer box.
+let foot_obs_rgb : Int64 = 0x1A73E8L
+
+///|
+/// Observed drawn alpha (0.0..1.0) of the simulated bottom chrome box in the last frame.
+fn foot_obs_alpha(t : @ui.Tester) -> Double {
+  let mut best = 0.0
+  for r in t.drawn_rects() {
+    if (r.4 >> 8) == foot_obs_rgb {
+      let a = (r.4 & 0xFFL).to_double() / 255.0
+      if a > best {
+        best = a
+      }
+    }
+  }
+  best
+}
+
+///|
+/// A phone tester with a bottom chrome box driven by `sheet_foot_alpha(obs)` and a button to open a sheet.
+fn foot_alpha_tester(open : (Anchor) -> Unit) -> @ui.Tester {
+  presenters_reset()
+  set_words(fn(key, _) { key })
+  let (platform, w, h) = phone
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h~, platform~)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(box) {
+      box.grow(Is(1.0)).padding(Is((40.0, 40.0, 40.0, 40.0))).lines_up(Is(Some(Start))) |> ignore
+      button_opens_node(box, fn() { "打开" }, fn(b) { open(Node(b)) }) |> ignore
+      box.box(fn(obs) {
+        obs
+        .width(Is(Some(120.0)))
+        .height(Is(Some(44.0)))
+        .ground(Is((foot_obs_rgb << 8) | 0xFFL))
+        .alpha(By(fn() { sheet_foot_alpha(obs) }))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  t
+}
+
+///|
+test "小屏底抽屉打开过程 sheet_foot_alpha 从 1.0 平滑淡出至 0.0，静止时保持 0.0" {
+  let t = foot_alpha_tester(fn(_) {
+    panel_nodes("抽屉标题", from=Unanchored, fn(v, _) {
+      v.box(fn(b) { b.height(Is(Some(240.0))) |> ignore }) |> ignore
+      words_node(v, fn() { "抽屉正文" }, fn() { paragraph }) |> ignore
+    })
+  })
+  assert_true((foot_obs_alpha(t) - 1.0).abs() < 0.01, msg="initial alpha \{foot_obs_alpha(t)}")
+  t.tap_text("打开")
+  let samples : Array[Double] = []
+  let step = @motion.sheet_scrim_ms / 8.0
+  for _ in [0, 1, 2, 3, 4, 5, 6, 7] {
+    t.run_for(step)
+    samples.push(foot_obs_alpha(t))
+  }
+  t.run_for(@ui.move_most_ms)
+  let rest = foot_obs_alpha(t)
+  assert_eq(rest, 0.0, msg="at rest alpha should be 0.0, got \{rest}, samples=\{Repr(samples)}")
+  for i in 1..<samples.length() {
+    assert_true(samples[i] <= samples[i - 1] + 0.01, msg="non-monotonic fade out: \{Repr(samples)}")
+  }
+  assert_true(samples.iter().any(fn(a) { a > 0.0 && a < 1.0 }), msg="expected smooth intermediate fade: \{Repr(samples)}")
+}
+
+///|
+test "小屏底抽屉 1:1 向下拖拽时 sheet_foot_alpha 平滑回升，松手回弹回 0.0，拖过阈值关闭后平滑回到 1.0 并空闲" {
+  let t = foot_alpha_tester(fn(_) {
+    panel_nodes("抽屉标题", from=Unanchored, fn(v, _) {
+      v.box(fn(b) { b.height(Is(Some(240.0))) |> ignore }) |> ignore
+      words_node(v, fn() { "抽屉正文" }, fn() { paragraph }) |> ignore
+    })
+  })
+  open_it(t)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(foot_obs_alpha(t), 0.0)
+  let (x, y0, w, h) = drag_sheet_rect(t)
+  let cx = x + w / 2.0
+  let cy = y0 + 20.0
+  // (1:1 drag past 35% of sheet height so cover drops below 0.65 and alpha begins returning, but keep under close? No: first test spring-back with 50pt then full drag with 55% + 75%)
+  t.press_at(cx, cy)
+  for frac in [0.25, 0.5, 0.75, 1.0] {
+    t.hold_move(cx, cy + 50.0 * frac)
+  }
+  t.advance(@ui.input_step_ms * 6.0)
+  t.release(cx, cy + 50.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(presenting(), msg="sheet stays open after short drag")
+  assert_eq(foot_obs_alpha(t), 0.0, msg="alpha back to 0.0 after spring back")
+  // (drag down 50% then 75% of height: cover = 0.50 -> alpha ~ 0.23, cover = 0.25 -> alpha ~ 0.62)
+  let d50 = h * 0.5
+  let d75 = h * 0.75
+  t.press_at(cx, cy)
+  t.hold_move(cx, cy + d50)
+  let a50 = foot_obs_alpha(t)
+  t.hold_move(cx, cy + d75)
+  let a75 = foot_obs_alpha(t)
+  assert_true(a50 > 0.05 && a50 < 0.9, msg="50% drag mid alpha: \{a50}")
+  assert_true(a75 > a50 + 0.1, msg="75% drag higher alpha: a50=\{a50}, a75=\{a75}")
+  t.release(cx, cy + d75)
+  t.run_for(@ui.move_most_ms)
+  assert_false(presenting(), msg="sheet closed")
+  assert_true((foot_obs_alpha(t) - 1.0).abs() < 0.01, msg="alpha restored to 1.0: \{foot_obs_alpha(t)}")
+  t.assert_idle()
+}
+
+///|
+test "小屏底抽屉多页切换（panel_page）与 in_place 替换全程 sheet_foot_alpha 保持 0.0 无闪烁" {
+  // 1) panel_page (panel -> panel)
+  let t1 = foot_alpha_tester(fn(_) {
+    panel_nodes("第一页", from=Unanchored, fn(v, close) {
+      words_node(v, fn() { "第一页内容" }, fn() { paragraph }) |> ignore
+      button_node(v, fn() { "去第二页" }, fn() {
+        close()
+        panel_nodes("第二页", from=Unanchored, tall=0.6, fn(v2, _) {
+          words_node(v2, fn() { "第二页内容" }, fn() { paragraph }) |> ignore
+        })
+      })
+      |> ignore
+    })
+  })
+  open_it(t1)
+  t1.run_for(@ui.move_most_ms)
+  assert_eq(foot_obs_alpha(t1), 0.0)
+  let step = @motion.sheet_scrim_ms / 8.0
+  t1.tap_text("去第二页")
+  for _ in [0, 1, 2, 3, 4, 5, 6, 7] {
+    assert_eq(foot_obs_alpha(t1), 0.0, msg="panel_page push must not flicker")
+    t1.run_for(step)
+  }
+  t1.key(@ui.key_escape)
+  for _ in [0, 1, 2, 3, 4, 5, 6, 7] {
+    assert_eq(foot_obs_alpha(t1), 0.0, msg="panel_page pop must not flicker")
+    t1.run_for(step)
+  }
+  // 2) in_place replacement (panel -> confirm)
+  let t2 = foot_alpha_tester(fn(_) {
+    panel_nodes("菜单面板", from=Unanchored, fn(v, close) {
+      button_node(v, fn() { "删除" }, fn() {
+        close()
+        confirm("确认删除？", "删除后不可恢复", "删除", fn() {  }, danger=true)
+      })
+      |> ignore
+    })
+  })
+  open_it(t2)
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(foot_obs_alpha(t2), 0.0)
+  t2.tap_text("删除")
+  for _ in [0, 1, 2, 3, 4, 5, 6, 7] {
+    assert_eq(foot_obs_alpha(t2), 0.0, msg="in_place replacement must not flicker")
+    t2.run_for(step)
+  }
+  t2.key(@ui.key_escape)
+  t2.run_for(@ui.move_most_ms)
+  assert_true((foot_obs_alpha(t2) - 1.0).abs() < 0.01, msg="restored after close")
+}

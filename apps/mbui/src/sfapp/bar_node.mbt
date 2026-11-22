@@ -359,11 +359,12 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
   .height(By(fn() { Some(panel()) }))
   .alpha(
     By(fn() {
-      if bar_nav_gesturing() {
+      let vis = if bar_nav_gesturing() {
         app.nav.root_progress(fn() { app.nav.slide_moment(holder) })
       } else {
         bar.vis.at(bar_moment(holder, Vis, bar.vis.end())).0
       }
+      vis * @sf.sheet_foot_alpha(holder)
     }),
   )
   |> ignore
