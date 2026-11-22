@@ -2088,10 +2088,24 @@ test "待派发: a draft's picture the device reads late comes to its tile, and 
   (answer.val.unwrap())(Ok((Json::object({}), Some(@pixels.png(2, 2, FixedArray::make(16, b'\xff'))))))
   t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
   assert_true(t.locate("img:mem:test/board-restored").length() > 0, msg="the restored picture did not come to its tile")
-  // (the video's tile: its still on a video's black, its play mark over it)
+  // (the video's tile: its still on a video's black, that black composited into the still as its matte and cut once
+  // with it, never drawn apart under it where its rounded edge would show through as a rim; its play mark over it)
   guard t.locate("img:" + still).get(0) is Some((vx, vy)) else { fail("the video's still is not drawn") }
   let grounds = t.drawn_rects().filter(fn(r) { vx >= r.0 && vx <= r.0 + r.2 && vy >= r.1 && vy <= r.1 + r.3 }).map(fn(r) { r.4 })
-  assert_true(grounds.contains(0x000000FFL), msg="\{Repr(grounds)}")
+  assert_false(grounds.contains(0x000000FFL), msg="\{Repr(grounds)}")
+  let stills = t
+    .drawn_instances()
+    .filter(fn(i) {
+      i[5] == 4.0 &&
+      (i[2] - 56.0).abs() < 0.5 &&
+      (i[3] - 56.0).abs() < 0.5 &&
+      vx >= i[0] &&
+      vx <= i[0] + i[2] &&
+      vy >= i[1] &&
+      vy <= i[1] + i[3]
+    })
+  guard stills is [s, ..] else { fail("no 56×56 still at \{vx},\{vy}: \{Repr(t.drawn_images())}") }
+  assert_true(s[22] == 1.0 && s[21] == 1.0 && s[8] == 0.0 && s[9] == 0.0 && s[10] == 0.0, msg="\{Repr(s)}")
   let marks = t.locate("icon:play-mark").filter(fn(p) { (p.0 - vx).abs() < 28.0 && (p.1 - vy).abs() < 28.0 })
   assert_true(marks.length() > 0, msg="no play mark on the video's tile: \{Repr(t.locate("icon:play-mark"))} at \{vx},\{vy}")
 }

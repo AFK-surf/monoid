@@ -2519,16 +2519,30 @@ fn waiting_tile_of(
   @sf.waiting_tile_node(
     parent,
     fn(p) {
+      // (a video's black as a message's video draws it, in either theme; a picture's neutral ground. No picture yet: that
+      // ground alone. Once there is one, the ground is its matte, composited into it before the tile's rounded clip cuts
+      // their edge once: the ground drawn apart under it showed through that edge as a rim round a light still)
       p
-      // (a video's black as a message's video draws it, in either theme; a picture's neutral ground)
-      .ground(By(fn() { @ui.tree_theme().color(if video() { @sf.video_ground } else { Neutral }) }))
-      .image(
-        By(fn() {
-          match key() {
-            "" | "!" => None
-            k => Some((k, "", (@sf.waiting_tile_side * p.pixel_scale()).ceil().to_int()))
+      .sets_together(
+        fn() {
+          (
+            key(),
+            @ui.tree_theme().color(if video() { @sf.video_ground } else { Neutral }),
+            (@sf.waiting_tile_side * p.pixel_scale()).ceil().to_int(),
+          )
+        },
+        fn(state) {
+          let (k, ground, px) = state
+          match k {
+            "" | "!" => p.ground(Is(ground)).image(Is(None)).image_in(Is(None)) |> ignore
+            _ =>
+              p
+              .ground(Is(0L))
+              .image(Is(Some((k, "", px))))
+              .image_in(Is(Some(((0.0, 0.0, @sf.waiting_tile_side, @sf.waiting_tile_side), ground))))
+              |> ignore
           }
-        }),
+        },
       )
       .image_for(Is((@sf.waiting_tile_side, @sf.waiting_tile_side)))
       .image_covers(Is(true))

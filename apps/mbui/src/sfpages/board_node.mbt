@@ -1504,12 +1504,26 @@ fn board_files_node(
             p.pick(fn() { picture() != "" && picture() != "!" }, at_once=true, fn(v, has_picture) {
               if has_picture {
                 // (as big as the tile, covering it, decoded for the device's pixels it is drawn at; a video's on its
-                // black, as the composer's)
+                // black, as the composer's: that black its matte, composited into it and cut once with it, never drawn
+                // apart under it where their rounded edge would show it through as a rim)
                 v
                 .width(Is(Some(@sf.waiting_tile_side)))
                 .height(Is(Some(@sf.waiting_tile_side)))
-                .ground(By(fn() { if is_video() { @ui.tree_theme().color(@sf.video_ground) } else { 0L } }))
                 .image(By(fn() { Some((picture(), "", (@sf.waiting_tile_side * v.pixel_scale()).ceil().to_int())) }))
+                .image_in(
+                  By(fn() {
+                    if is_video() {
+                      Some(
+                        (
+                          (0.0, 0.0, @sf.waiting_tile_side, @sf.waiting_tile_side),
+                          @ui.tree_theme().color(@sf.video_ground),
+                        ),
+                      )
+                    } else {
+                      None
+                    }
+                  }),
+                )
                 .image_covers(Is(true))
                 |> ignore
               } else {

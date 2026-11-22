@@ -358,6 +358,47 @@ test "a video waiting is told apart from a picture waiting by its play mark" {
 }
 
 ///|
+test "a waiting picture's and video's ground is composited into their still, never drawn apart under it" {
+  // (a ground drawn alone and the still cut over it at one rounded edge left the ground's dark through as a rim round a
+  // light still: both are one image instance, its matte the ground, cut once)
+  for dark in [false, true] {
+    new_run()
+    let src = fixture("chat-attach-video")
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    t.set_dark(dark)
+    t.run_for(@ui.move_most_ms)
+    t.run_for(@ui.image_fade_ms)
+    let tiles = t
+      .drawn_instances()
+      .filter(fn(i) { i[5] == 4.0 && (i[2] - 56.0).abs() < 0.5 && (i[3] - 56.0).abs() < 0.5 })
+    tiles.sort_by(fn(a, b) { a[0].compare(b[0]) })
+    assert_eq(tiles.length(), 2, msg="dark \{dark}")
+    let neutral = @sf.theme().p.neutral_bg
+    let ch = fn(v : Int64, s : Int) { ((v >> s) & 0xFFL).to_double() / 255.0 }
+    for k, i in tiles {
+      // (no ground of the tile's own size drawn apart where it is)
+      let apart = t
+        .drawn_rects()
+        .filter(fn(r) {
+          (r.0 - i[0]).abs() < 0.5 && (r.1 - i[1]).abs() < 0.5 && (r.2 - 56.0).abs() < 0.5 && (r.3 - 56.0).abs() < 0.5
+        })
+      assert_eq(apart.length(), 0, msg="dark \{dark} tile \{k}: \{Repr(apart)}")
+      // (its matte in it: a video's black whole, a picture's neutral ground as see-through as the theme has it)
+      assert_true(i[22] == 1.0, msg="dark \{dark} tile \{k}: \{Repr(i)}")
+      let want_a = if k == 1 { 1.0 } else { ch(neutral, 0) }
+      assert_true((i[21] - want_a).abs() < 0.003, msg="dark \{dark} tile \{k}: matte alpha \{i[21]}, want \{want_a}")
+      let want = if k == 1 { (0.0, 0.0, 0.0) } else { (ch(neutral, 24), ch(neutral, 16), ch(neutral, 8)) }
+      assert_true(
+        (i[8] - want.0).abs() < 0.003 && (i[9] - want.1).abs() < 0.003 && (i[10] - want.2).abs() < 0.003,
+        msg="dark \{dark} tile \{k}: matte \{i[8]} \{i[9]} \{i[10]}, want \{Repr(want)}",
+      )
+    }
+    assert_eq(t.audit(), [], msg="dark \{dark}")
+  }
+}
+
+///|
 test "the fixture's station: sending, then the message, then an answer; a failure, then 重试" {
   both_pages(fn() raise {
     new_run()
