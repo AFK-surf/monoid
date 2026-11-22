@@ -252,6 +252,14 @@ export class Requests {
           }
           wrote(n);
         });
+        let came = 0;
+        let ended = false;
+        const endSpan = () => {
+          if (!ended) {
+            ended = true;
+            span.end();
+          }
+        };
         const result = yield* Effect.result(
           Effect.gen({ self: this }, function* () {
             const reply = yield* within(this.wire.request(station, head, body, gone), headIdleMs);
@@ -261,7 +269,6 @@ export class Requests {
             if (tooOld !== null) return yield* Effect.fail(tooOld);
             onHead?.(reply.status, reply.headers);
             // What came over the link is counted (and said in the span); what it says, decompressed.
-            let came = 0;
             const counted = { ...reply, body: { take: Effect.tap(within(reply.body.take, bodyIdleMs), (chunk) => Effect.sync(() => chunk && ((came += chunk.length), waiting ? waiting.received(chunk.length) : status.received(null, chunk.length)))) } };
             let loaded = 0;
             let told = 0;
@@ -290,17 +297,26 @@ export class Requests {
             }
             if (reply.status >= 200 && reply.status < 300) this.onAnswered(station);
             return { status: reply.status, headers: reply.headers, body: bytes, ...(json ? { json: parsed } : {}) };
-          }).pipe(Effect.ensuring(Effect.sync(() => {
-            waiting?.end();
-            endForeground?.();
-          }))),
+          }).pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                span.set("stillfail.cancelled", true);
+                if (came > 0) span.set("http.response.body.size", came);
+                endSpan();
+              }),
+            ),
+            Effect.ensuring(Effect.sync(() => {
+              waiting?.end();
+              endForeground?.();
+            })),
+          ),
         );
         if (result._tag === "Failure") {
           failed(span, result.failure);
-          span.end();
+          endSpan();
           return yield* Effect.fail(result.failure);
         }
-        span.end();
+        endSpan();
         return result.success;
       }),
     );

@@ -135,7 +135,9 @@ export const SPEED_SLOW_MIN_MS = 5_000;
 /// What a way's speed is weighed with its round trip by: the time a larger reply (a page of history, an image) takes.
 export const TYPICAL_BYTES = 256 * 1024;
 /// How long the speed seen on a way counts; then it is found out again, from the replies that come through it.
+/// Slow measurements (< BULK_SLOW_BPS) expire much sooner so transient congestion does not poison a way for hours.
 export const SPEED_KEPT_MS = 6 * 3600_000;
+export const SPEED_SLOW_KEPT_MS = 15 * 60_000;
 /// How long the fastest a way was seen at holds against slower replies after it (one slower that came beside others on
 /// the way, or as the station read slowly); past it, a slower reply says how fast the way is now: it got slower (a
 /// line more crowded, a hop further), and is no longer taken to be as fast as it once was.
@@ -1176,7 +1178,9 @@ export class Mesh {
   /// How fast replies from a station came through a relay lately (bytes a second); null if none long enough did.
   speed(addr: string, relay: string): number | null {
     const s = this.#speeds[endpointId(addr)]?.[relayKey(relay)];
-    return s !== undefined && this.#env.host.nowMs() - s.at < SPEED_KEPT_MS ? s.bps : null;
+    if (s === undefined) return null;
+    const ttl = s.bps < BULK_SLOW_BPS ? SPEED_SLOW_KEPT_MS : SPEED_KEPT_MS;
+    return this.#env.host.nowMs() - s.at < ttl ? s.bps : null;
   }
 
   /// `bytes` from a station came through `relay` in `ms`. The fastest seen lately counts (SPEED_FRESH_MS): a reply also
@@ -1216,7 +1220,7 @@ export class Mesh {
     const slower = before === null || nextBps < before;
     of[key] = { bps: nextBps, at: now };
     for (const [sid, relays] of Object.entries(this.#speeds)) {
-      for (const [r, s] of Object.entries(relays)) if (now - s.at >= SPEED_KEPT_MS) delete relays[r];
+      for (const [r, s] of Object.entries(relays)) if (now - s.at >= (s.bps < BULK_SLOW_BPS ? SPEED_SLOW_KEPT_MS : SPEED_KEPT_MS)) delete relays[r];
       if (Object.keys(relays).length === 0) delete this.#speeds[sid];
     }
     this.#env.runner.fork(Effect.ignore(this.#env.host.storageSet(SPEED_KEY, toJsonBytes(this.#speeds)), { log: "Unhandled", message: "speeds kept" }));
@@ -3019,16 +3023,21 @@ export class Mesh {
     return fallback !== null ? [fallback] : [];
   }
 
-  /// Standby link for hedging a slow bulk transfer: never hedges onto a way already known to be below BULK_SLOW_BPS.
+  /// Standby link for hedging or failing over a slow bulk transfer: never hedges a healthy/unmeasured way onto one
+  /// known to be below BULK_SLOW_BPS; when `link` itself is below BULK_SLOW_BPS, allows faster alternatives ordered by
+  /// `#bulkScore`.
   bulkStandby(addr: string, link: Link): Link | null {
     const ways = this.#live(addr);
+    const curSk = link.speedKey();
+    const curBps = curSk !== null ? this.speed(addr, curSk) : null;
+    const floor = curBps !== null && curBps < BULK_SLOW_BPS ? curBps : BULK_SLOW_BPS;
     for (const l of this.bulkLinks(addr)) {
       if (l === link) continue;
       const w = ways.find((x) => x.link === l);
       if (w === undefined || w.missed !== 0) continue;
       const sk = l.speedKey();
       const bps = sk !== null ? this.speed(addr, sk) : null;
-      if (bps !== null && bps < BULK_SLOW_BPS) continue;
+      if (bps !== null && bps < floor) continue;
       return l;
     }
     return null;
