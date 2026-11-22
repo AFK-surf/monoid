@@ -2149,12 +2149,16 @@ fn composer_field_node(
   let live_max_lines = fn() { node_text_lines(scale(), words.window_h()) }
   // (its lines as shown, what the input method composes in them counted: a line more or fewer as it composes, or as
   // what it composed is chosen, is a line more or fewer as typed words are, its height its way. What it showed as it
-  // was last told (`shown_was`, `composing_was`, `text_was`); what it showed before the edit `edited` is told of
-  // (`edited_was`): the words alone before it would have it grow by a line its composed words grew it by already)
+  // was last told, by `edited` or `typed.reacts` whichever is told first (`shown_was`, `composing_was`, `text_was`).
+  // An edit tells `edited` first inside its event's batch, `typed.reacts` as the batch ends; words put in outside one
+  // (tree_words_into, tree_fields_pasting) tell `typed.reacts` first: it keeps what showed before them for the
+  // `edited` of those words (`before_edit`, the words they came to with it), so either way `edited` grows from what
+  // showed before its edit, never from an edit before it or words set from outside since (Field::set, told to no
+  // `edited`))
   let shown_was = Ref(@signals.untracked(fn() { w.field.composed_said() }))
-  let edited_was = Ref(@signals.untracked(fn() { w.field.composed_said() }))
   let composing_was = Ref(@signals.untracked(fn() { w.field.composing() }))
   let text_was = Ref(@signals.untracked(fn() { w.field.text() }))
+  let before_edit : Ref[(String, String)?] = Ref(None)
   let sync_height = fn(was : String, now : String) {
     let max_lines = @signals.untracked(live_max_lines)
     match field_comes_other(w.field, wl, max_lines, was, now) {
@@ -2183,11 +2187,18 @@ fn composer_field_node(
     edited=fn(now) {
       // (a line more or fewer than it showed before the edit, composed words counted: its height its way; the same
       // lines, nothing said, so nothing coming in its column in the same change is set off with it)
+      let was = match before_edit.val {
+        Some((prev, target)) if target == now => prev
+        _ => shown_was.val
+      }
+      before_edit.val = None
       let shown_now = @signals.untracked(fn() { w.field.composed_said() })
       if !@signals.untracked(fn() { w.starting.get() }) {
-        sync_height(edited_was.val, shown_now)
+        sync_height(was, shown_now)
       }
-      edited_was.val = shown_now
+      shown_was.val = shown_now
+      composing_was.val = @signals.untracked(fn() { w.field.composing() })
+      text_was.val = now
       if now != @signals.untracked(fn() { w.text.get() }) && !@signals.untracked(fn() { w.starting.get() }) {
         writing_text(src, w, now)
         if spec.chat {
@@ -2258,8 +2269,10 @@ fn composer_field_node(
     })
   }
   // (what the input method composes, its words as they were: `edited` is told of no such change, so its lines are
-  // followed here; told before `edited` of an edit that changes its words, what it showed before that edit kept for it.
-  // Words set from outside (the core's draft, Field::set and Field::follow) are laid out at once, nothing grown)
+  // followed here. Told of an edit `edited` was told of already (inside its event's batch), nothing left to do; told of
+  // words before their `edited` (put in outside a batch), what showed before them kept for it (`before_edit`). Words
+  // set from outside (the core's draft, Field::set and Field::follow) are laid out at once, nothing grown, and taken
+  // as what shows now, so the next edit grows from them)
   typed.reacts(
     fn() { (w.field.composed_said(), w.field.composing(), w.field.text()) },
     fn(now) {
@@ -2271,10 +2284,13 @@ fn composer_field_node(
       composing_was.val = comp
       text_was.val = txt
       if txt != prev_txt {
-        edited_was.val = prev_shown
+        before_edit.val = Some((prev_shown, txt))
       } else {
-        edited_was.val = shown
-        if shown != prev_shown && (comp || prev_comp) && !@signals.untracked(fn() { w.starting.get() }) {
+        before_edit.val = None
+        if shown != prev_shown &&
+          (comp || prev_comp) &&
+          !@view.answering_now() &&
+          !@signals.untracked(fn() { w.starting.get() }) {
           sync_height(prev_shown, shown)
         }
       }

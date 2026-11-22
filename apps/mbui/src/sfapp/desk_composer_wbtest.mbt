@@ -1322,3 +1322,74 @@ test "a draft's words set from the core (another device's) a line more lay the c
     assert_eq(cut, [], msg="\{name}: at rest")
   }
 }
+
+///|
+/// Draft `key`'s composer held still from now as `then` leaves it: as tall and its box where it is, as it changes and a
+/// quarter, half and all of the way a line takes after, and at rest; its words' first line where it was before, or
+/// `first_in` below its top (its field empty before: nothing of its words shown to measure, what else its box shows
+/// (a wide new chat's pills under it) not its words).
+fn ime_still(
+  t : @ui.Tester,
+  key : String,
+  name : String,
+  first_in? : Double,
+  then : () -> Unit,
+) -> Unit raise {
+  let (top0, h0, first_was, _) = ime_shown(t, key)
+  then()
+  let first0 = match first_in {
+    Some(i) => top0 + i
+    None => first_was
+  }
+  let moments = [0.0, @ui.row_size_ms / 4.0, @ui.row_size_ms / 4.0, @ui.row_size_ms / 2.0, 2.0 * @ui.move_most_ms]
+  let mut at = 0.0
+  for ms in moments {
+    if ms > 0.0 {
+      t.run_for(ms)
+    }
+    at = at + ms
+    let (top, h, first, cut) = ime_shown(t, key)
+    assert_true((h - h0).abs() < 0.5, msg="\{name}: \{at} ms after it \{h} tall, not \{h0}")
+    assert_true((top - top0).abs() < 0.5, msg="\{name}: \{at} ms after it its top at \{top}, not \{top0}")
+    assert_true((first - first0).abs() < 0.5, msg="\{name}: \{at} ms after it its first line at \{first}, not \{first0}")
+    assert_eq(cut, [], msg="\{name}: \{at} ms after it")
+  }
+}
+
+///|
+test "a word typed on the line the composer grew by keeps it as it is: nothing grown again, nothing moved (输入框 IME 换行抖动)" {
+  for c in ime_composers() {
+    let (name, make) = c
+    let (t, key) = make()
+    ime_fill(t, key)
+    // (a word typed a line more: grown its way, then at rest)
+    t.type_text("啊")
+    t.run_for(2.0 * @ui.move_most_ms)
+    assert_eq(ime_lines(key), 2, msg=name)
+    // (another on that line: the same two lines)
+    ime_still(t, key, name, fn() { t.type_text("啊") })
+    assert_eq(ime_lines(key), 2, msg=name)
+  }
+}
+
+///|
+test "words of a line typed after a draft of lines is set empty (sent: writing_take) keep the composer as it is: nothing shrunk (73-pick-words)" {
+  for c in ime_composers() {
+    let (name, make) = c
+    let (t, key) = make()
+    ime_fill(t, key)
+    // (where its words' first line is in it with a line of them)
+    let (top1, _, first1, _) = ime_shown(t, key)
+    t.type_text("啊啊")
+    t.run_for(2.0 * @ui.move_most_ms)
+    assert_eq(ime_lines(key), 2, msg=name)
+    // (set empty as sending takes it: no edit told)
+    let w = @sfbase.writings.get(key).unwrap()
+    w.field.set("")
+    t.draw()
+    t.run_for(2.0 * @ui.move_most_ms)
+    assert_eq(ime_lines(key), 1, msg=name)
+    ime_still(t, key, name, first_in=first1 - top1, fn() { t.type_text("引用了一个词") })
+    assert_eq(ime_lines(key), 1, msg=name)
+  }
+}
