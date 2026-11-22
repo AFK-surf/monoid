@@ -574,6 +574,19 @@ test("retry takes up again the failed turn its notice is about, and only that no
   }
 });
 
+test("a chat an app makes for its first message starts its runtime at once, one made otherwise does not", async () => {
+  const r = rig();
+  try {
+    await r.ask("POST", "/sessions", { runtime: "claude" });
+    await settle();
+    assert.equal(r.claude.count(), 0);
+    await r.ask("POST", "/sessions", { runtime: "claude", clientKey: "new:first-message" });
+    await until("it starts", () => r.claude.count() === 1);
+  } finally {
+    await r.close();
+  }
+});
+
 test("stopping, evicting, warming and changing a session", async () => {
   const r = rig();
   try {

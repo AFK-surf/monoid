@@ -980,11 +980,23 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
           ])
         })
         let pair = jitems(Some(made))
-        self.made(
-          r,
-          jstr(pair.get(0)).unwrap_or(""),
-          jget(pair.get(1), "id").unwrap_or(jundef),
-        )
+        let key = jstr(pair.get(0)).unwrap_or("")
+        // An app makes a chat as its first message is sent (`clientKey`): its runtime starts now, beside that message's
+        // way here, rather than after it.
+        if given("clientKey") is Str(_) {
+          self.later(async fn() {
+            self.backend.tell("hub.warm", [js(key)]) catch {
+              e =>
+                self.log(
+                  "warn",
+                  "admin",
+                  "warming failed",
+                  jobj([("session", js(key)), ("error", js(message_of(e)))]),
+                )
+            }
+          })
+        }
+        self.made(r, key, jget(pair.get(1), "id").unwrap_or(jundef))
       })
     }),
     // Going on in a chat with a session this machine's own Claude Code or Codex kept.

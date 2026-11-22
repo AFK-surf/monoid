@@ -496,6 +496,9 @@ export const routes = (tools: Tools): Route[] => {
               r.lang,
             ),
           );
+          // An app makes a chat as its first message is sent (`clientKey`): its runtime starts now, beside that message's
+          // way here, rather than after it.
+          if (given("clientKey") !== null) a.hub.warm(key).catch((e) => log.warn("admin", "warming failed", { session: key, error: (e as Error).message }));
           return made(r, key, chat.id);
         }),
     },
