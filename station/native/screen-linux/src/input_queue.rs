@@ -224,7 +224,6 @@ struct PoolSlot {
     keycode: u8,
     keysym: Option<u32>,
     last_used: u64,
-    dirty: bool,
 }
 
 pub struct SpareKeyPool {
@@ -233,16 +232,14 @@ pub struct SpareKeyPool {
 }
 
 impl SpareKeyPool {
-    /// Initialize the pool with up to `SPARE_POOL_SIZE` unused X11 keycodes.
+    /// Keep all candidates so a keycode claimed by another view can be skipped.
     pub fn new(unused_keycodes: &[u8]) -> Self {
         let slots = unused_keycodes
             .iter()
-            .take(SPARE_POOL_SIZE)
             .map(|&keycode| PoolSlot {
                 keycode,
                 keysym: None,
                 last_used: 0,
-                dirty: false,
             })
             .collect();
         Self { slots, tick: 0 }
@@ -268,34 +265,31 @@ impl SpareKeyPool {
             return Some((slot.keycode, false));
         }
 
-        // 2. Pick an empty slot, or evict the least-recently-used slot.
-        let idx = self
-            .slots
-            .iter()
-            .position(|s| s.keysym.is_none())
-            .unwrap_or_else(|| {
-                self.slots
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, s)| s.last_used)
-                    .map(|(i, _)| i)
-                    .unwrap_or(0)
-            });
+        // 2. Assign at most 16 keycodes, then evict the least-recently-used one.
+        let assigned = self.slots.iter().filter(|s| s.keysym.is_some()).count();
+        let idx = if assigned < SPARE_POOL_SIZE {
+            self.slots.iter().position(|s| s.keysym.is_none())
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.slots
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.keysym.is_some())
+                .min_by_key(|(_, s)| s.last_used)
+                .map(|(i, _)| i)
+        })?;
 
         let slot = &mut self.slots[idx];
         slot.keysym = Some(keysym);
         slot.last_used = now;
-        slot.dirty = true;
         Some((slot.keycode, true))
     }
 
-    /// Keycodes that were modified and should be restored to `NoSymbol` on exit.
-    pub fn dirty_keycodes(&self) -> Vec<u8> {
-        self.slots
-            .iter()
-            .filter(|s| s.dirty)
-            .map(|s| s.keycode)
-            .collect()
+    /// A different X11 client claimed this candidate before us.
+    pub fn retire(&mut self, keycode: u8) {
+        self.slots.retain(|slot| slot.keycode != keycode);
     }
 }
 
@@ -393,10 +387,10 @@ mod tests {
     }
 
     #[test]
-    fn spare_key_pool_lru_and_dirty_restore() {
+    fn spare_key_pool_lru() {
         let codes: Vec<u8> = (200..220).collect();
         let mut pool = SpareKeyPool::new(&codes);
-        assert_eq!(pool.len(), SPARE_POOL_SIZE);
+        assert_eq!(pool.len(), codes.len());
 
         // Fill 16 slots.
         for i in 0..16u32 {
@@ -408,6 +402,17 @@ mod tests {
         assert_eq!(pool.acquire(0x0100_4e00), Some((200, false)));
         // Next new keysym evicts slot 1 (keycode 201).
         assert_eq!(pool.acquire(0x0100_9999), Some((201, true)));
-        assert_eq!(pool.dirty_keycodes().len(), 16);
+    }
+
+    #[test]
+    fn spare_key_pool_skips_a_keycode_claimed_by_another_view() {
+        let mut pool = SpareKeyPool::new(&(200..220).collect::<Vec<_>>());
+        assert_eq!(pool.acquire(0x61), Some((200, true)));
+        pool.retire(200);
+        assert_eq!(pool.acquire(0x61), Some((201, true)));
+        for i in 0..15u32 {
+            pool.acquire(0x100 + i).unwrap();
+        }
+        assert_eq!(pool.acquire(0x200), Some((201, true)));
     }
 }
