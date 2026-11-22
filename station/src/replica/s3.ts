@@ -25,7 +25,7 @@ export function encodeS3Path(key: string): string {
   return key.split("/").map(rfc3986Encode).join("/");
 }
 
-/// Converts epoch ms to AWS SigV4 `{ amzDate: YYYYMMDDTHHMMSSZ, dateStamp: YYYYMMDD }` without calling `new Date()`.
+/// Converts epoch ms to AWS SigV4 `{ amzDate: YYYYMMDDTHHMMSSZ, dateStamp: YYYYMMDD }` using pure UTC calendar math.
 export function formatAmzDate(ms: number): { amzDate: string; dateStamp: string } {
   const totalSec = Math.floor(ms / 1000);
   const secOfDay = ((totalSec % 86400) + 86400) % 86400;
