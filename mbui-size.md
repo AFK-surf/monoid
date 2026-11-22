@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [aca188733](https://github.com/AFK-surf/monoid/commit/aca18873379823b32ca2853c7c6d8d9289f86df2) fix(mbui,sf-ui,sfapp): smooth small-sigma progress | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 98.9 | 116.7 |
 | [1312352b4](https://github.com/AFK-surf/monoid/commit/1312352b4df793ffc578868bd5019c7405ae0bbc) fix(mbui): tighten liquid glass outer shadows into | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.9 | 98.88 | 116.7 |
 | [cfeaf85ae](https://github.com/AFK-surf/monoid/commit/cfeaf85ae8abdc54bad8353cbd0d7fa2f26ec90f) feat(mbui): use liquid_segmented_node in sf-ui and | 2.66 | 3.59 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 98.76 | 116.7 |
 | [f4f4a3969](https://github.com/AFK-surf/monoid/commit/f4f4a3969319607731f19948d861d5dcbce954cc) fix(sf-ui): keep a hover card open when its modal  | 2.66 | 3.58 | 14.53 | 36.6 | 55.52 | 32.06 | 64.86 | 98.68 | 116.7 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d49869538](https://github.com/AFK-surf/monoid/commit/d49869538f2e2052b6ec776e20bad2eb40bd3d22) perf(mbui): park wide and medium rail root places  | 2.64 | 3.55 | 14.43 | 36.47 | 55.07 | 31.96 | 64.48 | 98.52 | 126.72 |
 | [e45da35ec](https://github.com/AFK-surf/monoid/commit/e45da35ec1e054ea394aa6d692de2c30c5175a8b) feat(mbui,sf-ui,liquid-glass): align dark liquid g | 2.64 | 3.55 | 14.43 | 36.47 | 55.06 | 31.96 | 64.47 | 98.58 | 123.22 |
 | [dcc0e30c5](https://github.com/AFK-surf/monoid/commit/dcc0e30c52ae14fd1619133294a2ca5065c602ae) feat(sfpages): make the mouse quote pill single-la | 2.64 | 3.55 | 14.42 | 36.47 | 55.06 | 31.96 | 64.47 | 98.47 | 122.73 |
-| [c86bcdee8](https://github.com/AFK-surf/monoid/commit/c86bcdee8df51053775ef26ad6b1e855521819f5) perf(cold-start): F4a POST /changed/shared + own m | 2.64 | 3.55 | 14.42 | 36.47 | 55.06 | 31.93 | 64.47 | 98.55 | 120.03 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [aca188733](https://github.com/AFK-surf/monoid/commit/aca18873379823b32ca2853c7c6d8d9289f86df2) fix(mbui,sf-ui,sfapp): smooth small-sigma progress | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.66 |
 | [1312352b4](https://github.com/AFK-surf/monoid/commit/1312352b4df793ffc578868bd5019c7405ae0bbc) fix(mbui): tighten liquid glass outer shadows into | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
 | [cfeaf85ae](https://github.com/AFK-surf/monoid/commit/cfeaf85ae8abdc54bad8353cbd0d7fa2f26ec90f) feat(mbui): use liquid_segmented_node in sf-ui and | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
 | [f4f4a3969](https://github.com/AFK-surf/monoid/commit/f4f4a3969319607731f19948d861d5dcbce954cc) fix(sf-ui): keep a hover card open when its modal  | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d49869538](https://github.com/AFK-surf/monoid/commit/d49869538f2e2052b6ec776e20bad2eb40bd3d22) perf(mbui): park wide and medium rail root places  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [e45da35ec](https://github.com/AFK-surf/monoid/commit/e45da35ec1e054ea394aa6d692de2c30c5175a8b) feat(mbui,sf-ui,liquid-glass): align dark liquid g | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [dcc0e30c5](https://github.com/AFK-surf/monoid/commit/dcc0e30c52ae14fd1619133294a2ca5065c602ae) feat(sfpages): make the mouse quote pill single-la | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
-| [c86bcdee8](https://github.com/AFK-surf/monoid/commit/c86bcdee8df51053775ef26ad6b1e855521819f5) perf(cold-start): F4a POST /changed/shared + own m | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
