@@ -392,6 +392,8 @@ priv struct StageState {
   glass_level : @signals.Signal[Int]
   glass_stops : @sf.Stops
   glass_merge : @glass.LiquidMerge
+  sheet_open : @signals.Signal[Bool]
+  sheet_anchor : Ref[@view.View?]
 }
 
 ///|
@@ -442,6 +444,8 @@ fn StageState::new(first_scene : Int) -> StageState {
     glass_level: @signals.signal(2),
     glass_stops: @sf.Stops::new(),
     glass_merge: @glass.LiquidMerge::new(separated=false),
+    sheet_open: @signals.signal(false),
+    sheet_anchor: Ref(None),
   }
 }
 
@@ -1041,12 +1045,16 @@ fn scene_glass(
               fn() { "Refract Pulse" },
               fn() { st.push_toast("Refraction pulse", description="Quarter-circle bevel active") },
             )
-            @sf.round_key_node(
-              pill,
-              "sliders",
-              fn() { "Optical Tune" },
-              fn() { st.push_toast("Optical parameters", description="blur 2.1pt, bezel 20pt") },
-            )
+            pill.box(fn(opt_slot) {
+              st.sheet_anchor.val = Some(opt_slot)
+              @sf.round_key_node(
+                opt_slot,
+                "sliders",
+                fn() { "Optical Tune" },
+                fn() { st.sheet_open.set(true) },
+              )
+            })
+            |> ignore
           })
           |> ignore
           @sf.float_button_node(
@@ -1177,10 +1185,10 @@ fn scene_glass(
         })
       })
       |> ignore
-      // Merge / Separate trigger row
+      // Merge / Separate trigger row (real @sf.glass_button_node: .glassProminent + .glass)
       right.box(fn(act) {
         act.row(Is(true)).wraps(Is(Some(8.0))).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
-        @sf.button_node(
+        @sf.glass_button_node(
           act,
           fn() { if st.glass_merge.is_separated() { "Merge" } else { "Separate" } },
           fn() {
@@ -1191,18 +1199,18 @@ fn scene_glass(
               description="Smooth-min SDF hysteresis via @glass.liquid_merge_node",
             )
           },
-          tone=Primary,
+          prominent=true,
           icon="zap",
         )
         |> ignore
-        @sf.button_node(
+        @sf.glass_button_node(
           act,
           fn() { "Reset Bond" },
           fn() {
             st.glass_merge.set_separated(false, at=cause_at())
             st.push_toast("Bond reset", description="Returned to fused equilibrium")
           },
-          tone=Ghost,
+          prominent=false,
           icon="refresh",
         )
         |> ignore
@@ -1943,6 +1951,57 @@ pub fn studio(root : @view.View, first_scene? : Int = 0, loc~ : SourceLoc) -> Un
       false,
       fn(item) { (item.select)() },
       fn() { st.menu_open.set(false) },
+    )
+
+    // 4b. Global Anchored Liquid Glass ActionSheet (for Glass scene Optical Tune pill trigger)
+    @sf.action_sheet_node(
+      stage,
+      fn() { st.sheet_open.get() },
+      fn(layer) {
+        match st.sheet_anchor.val {
+          Some(a) => a
+          None => layer
+        }
+      },
+      fn() { "Glass Preset Actions" },
+      fn() { "Tune live refraction optics or restore factory defaults." },
+      fn() {
+        [
+          @sf.sheet_action(
+            "Boost Max Refraction",
+            fn() {
+              st.glass_level.set(3)
+              st.glass_refract.set(true)
+              st.push_toast("Refraction set to Max", description="Clear specular bezel lens active")
+            },
+            icon="zap",
+          ),
+          @sf.sheet_action(
+            "Toggle Capillary Split",
+            fn() {
+              let next = !st.glass_merge.is_separated()
+              st.glass_merge.set_separated(next, at=cause_at())
+              st.push_toast(if next { "Droplets separated" } else { "Droplets fused" })
+            },
+            icon="sliders",
+          ),
+          @sf.sheet_action(
+            "Reset All Optics",
+            fn() {
+              st.glass_level.set(2)
+              st.glass_refract.set(true)
+              st.glass_range.set(0)
+              st.glass_count.set(3)
+              st.glass_merge.set_separated(false, at=cause_at())
+              st.push_toast("All optics reset", description="Restored default iOS 27 calibration")
+            },
+            icon="refresh",
+            danger=true,
+          ),
+        ]
+      },
+      fn() { st.sheet_open.set(false) },
+      along=Start,
     )
 
     // 5. Global Modal Confirm Dialog layers (standard & danger variants)

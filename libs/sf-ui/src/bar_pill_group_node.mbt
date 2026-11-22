@@ -5,9 +5,9 @@
 // concentric corner scope (`corner_card_node`).
 
 ///|
-/// Theme-adaptive press overlay ink for controls inside a liquid glass top bar pill: delegates to `@glass.liquid_pill_press_ink()`.
-pub fn bar_pill_press_ink() -> Int64 {
-  @glass.liquid_pill_press_ink()
+/// Theme-adaptive press overlay ink for controls inside a liquid glass top bar pill: delegates to `@glass.liquid_pill_press_ink(solid~)`.
+pub fn bar_pill_press_ink(solid? : Bool = false) -> Int64 {
+  @glass.liquid_pill_press_ink(solid~)
 }
 
 ///|
@@ -35,7 +35,7 @@ pub fn bar_pill_key_press_node(v : @view.View) -> Unit {
     v,
     color=fn() {
       if v.pressed() {
-        bar_pill_press_ink()
+        bar_pill_press_ink(solid=v.glass_solid())
       } else {
         @ui.tree_theme().color(Hover)
       }

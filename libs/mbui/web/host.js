@@ -1211,7 +1211,10 @@
       // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass
       float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
       if (colChroma > 0.08 && col.a > 0.001) {
-        baseColor = mix(baseColor, col.rgb, col.a * 0.5);
+        float tintW = col.a <= 0.45
+          ? col.a * 0.5
+          : mix(0.225, 0.86, clamp((col.a - 0.45) / 0.45, 0.0, 1.0));
+        baseColor = mix(baseColor, col.rgb, tintW);
       }
       float spot = 0.0;
       if (spot_raw > 0.5) {

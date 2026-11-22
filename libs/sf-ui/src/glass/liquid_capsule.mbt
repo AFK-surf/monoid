@@ -11,6 +11,7 @@ pub(all) enum LiquidCapsuleTone {
   ViewerClear
   ViewerDark
   Panel
+  Prominent
 }
 
 ///|
@@ -55,6 +56,13 @@ fn capsule_tone_glass(
         None => g
       }
     }
+    Prominent =>
+      liquid_prominent_glass(
+        accent=custom_tint.unwrap_or(colors().accent),
+        spot~,
+        solid=sol,
+        sharing~,
+      )
   }
 }
 

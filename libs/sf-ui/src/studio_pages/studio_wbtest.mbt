@@ -136,6 +136,16 @@ test "Glass scene interactive controls: capillary merge/separate, float button c
   t.tap(kx, ky)
   t.run_for(settled_ms)
   assert_true(t.words_said().iter().any(fn(w) { w.0.contains("Refraction pulse") }))
+  // Optical Tune in bar pill opens anchored iOS 26 ActionSheet with 0 audit faults, danger Reset All Optics works
+  let (ox, oy) = mid(t, Button, "Optical Tune")
+  t.tap(ox, oy)
+  t.run_for(settled_ms)
+  assert_true(t.words_said().iter().any(fn(w) { w.0 == "Glass Preset Actions" }))
+  assert_eq(t.audit(), [])
+  let (rx, ry) = mid(t, MenuItem, "Reset All Optics")
+  t.tap(rx, ry)
+  t.run_for(settled_ms)
+  assert_true(t.words_said().iter().any(fn(w) { w.0.contains("All optics reset") }))
 }
 
 ///|

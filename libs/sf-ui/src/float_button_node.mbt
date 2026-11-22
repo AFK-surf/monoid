@@ -33,7 +33,16 @@ pub fn float_button_node(
     |> ignore
     @headless.button(made_for=loc, o, label, fn(_) { press() }, disabled=busy.unwrap_or(fn() { false }), fn(b, btn) {
       style_node(b, fn() { float_button_look })
-      hover_ground_node(b)
+      hover_ground_node(
+        b,
+        color=fn() {
+          if b.pressed() && !b.glass_solid() {
+            0xFFFFFF2EL
+          } else {
+            @ui.tree_theme().color(Hover)
+          }
+        },
+      )
       let ih = @glass.liquid_press_glass_decorate(
         b,
         tone=Floating,

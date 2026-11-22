@@ -69,13 +69,20 @@ pub fn liquid_solid_edge() -> (Double, Int64) {
 }
 
 ///|
-/// Theme-adaptive press overlay ink over translucent glass: bright white veil in Dark mode,
-/// soft dark veil in Light mode so presses stay clearly legible on both surfaces.
-pub fn liquid_press_ink() -> Int64 {
-  if is_dark() {
+/// Theme-adaptive press overlay ink over translucent glass: luminous white highlight over real GPU liquid glass
+/// in both Light and Dark modes (matching Apple `.glassEffect(.interactive())` with zero grey veil), falling back
+/// to subtle dark contrast ink in Light mode when `MBUI_GLASS=solid` disables the GPU spot highlight.
+pub fn liquid_press_ink(solid? : Bool = false) -> Int64 {
+  if !solid {
+    if is_dark() {
+      0xFFFFFF38L
+    } else {
+      0xFFFFFF4CL
+    }
+  } else if is_dark() {
     0xFFFFFF38L
   } else {
-    0x0000001FL
+    0x00000018L
   }
 }
 
@@ -114,7 +121,7 @@ pub fn liquid_bar_pill_glass(
       rim=0.6,
       bezel=14.0,
       refraction=20.0,
-      chroma=0.0,
+      chroma=0.06,
       merge=0.0,
       adaptive~,
       spot~,
@@ -152,7 +159,7 @@ pub fn liquid_floating_glass(
       rim=0.6,
       bezel=20.0,
       refraction=28.0,
-      chroma=0.0,
+      chroma=0.06,
       merge=0.0,
       adaptive=true,
       spot~,
@@ -168,6 +175,7 @@ pub fn liquid_tab_bar_glass(
   merge? : Double = 0.0,
   solid? : Int64 = clear,
   sharing? : Bool = false,
+  adaptive? : Bool = false,
 ) -> @paint.Glass {
   let d = is_dark()
   let tint = if d { 0x20202067L } else { 0xFDFCFD67L }
@@ -187,8 +195,36 @@ pub fn liquid_tab_bar_glass(
       rim=0.6,
       bezel=20.0,
       refraction=28.0,
-      chroma=0.0,
+      chroma=0.06,
       merge~,
+      adaptive~,
+      spot~,
+    ),
+    sharing,
+  )
+}
+
+///|
+/// Prominent accented iOS 26/27 Liquid Glass recipe (`.glassProminent`) with vivid 85% accent tint,
+/// crisp bevel refraction, specular rim, micro chromatic dispersion, and touch-tracked GPU `spot`.
+pub fn liquid_prominent_glass(
+  accent~ : Int64,
+  spot? : (Double, Double)? = None,
+  solid? : Int64 = clear,
+  sharing? : Bool = false,
+) -> @paint.Glass {
+  let sol = if solid != clear { solid } else { accent }
+  maybe_sharing(
+    @paint.Glass::liquid(
+      blur=2.1,
+      tint=alpha(accent, 0.85),
+      solid=sol,
+      saturation=1.15,
+      rim=0.72,
+      bezel=16.0,
+      refraction=22.0,
+      chroma=0.06,
+      merge=0.0,
       adaptive=false,
       spot~,
     ),
@@ -321,7 +357,7 @@ fn ctrl_segmented_track_glass() -> @paint.Glass {
     rim=0.6,
     bezel=16.0,
     refraction=20.0,
-    chroma=0.0,
+    chroma=0.06,
     merge=0.0,
     adaptive=false,
     spot=None,

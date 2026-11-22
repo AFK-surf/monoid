@@ -914,7 +914,20 @@ fn nav_back_pill_node(
     .lies_along(Is(Middle))
     |> ignore
     glass_capsule_node(b, min_height=Some(pg_back_pill_h), radius=Some(pg_back_pill_h / 2.0), sharing=true, interactive=true) |> ignore
-    hover_ground_node(b, color=fn() { if b.pressed() { bar_pill_press_ink() } else { @ui.tree_theme().color(Hover) } })
+    hover_ground_node(
+      b,
+      color=fn() {
+        if b.pressed() {
+          if b.glass_solid() {
+            bar_pill_press_ink(solid=true)
+          } else {
+            0xFFFFFF2EL
+          }
+        } else {
+          @ui.tree_theme().color(Hover)
+        }
+      },
+    )
     pressed_node(b, back, Is(pg_back_pill_h / 2.0), Link, label)
     icon_node(b, "chevron-left", nav_back_icon, By(fn() { theme().p.accent_text })) |> ignore
     b.box(fn(w) {
@@ -2433,7 +2446,7 @@ pub fn round_key_node(
     .lies_along(Is(Middle))
     |> ignore
     hover_ground_node(k)
-    rippled_look(loc~, k, Is(side / 2.0), go, ink=bar_pill_press_ink, pointer=true)
+    rippled_look(loc~, k, Is(side / 2.0), go, ink=fn() { bar_pill_press_ink(solid=k.glass_solid()) }, pointer=true)
     bind_pill_press(k)
     icon_node(k, icon, icon_size, By(ink), name_now?=icon_now, weighed=true) |> ignore
   }

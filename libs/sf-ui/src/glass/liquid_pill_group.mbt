@@ -45,8 +45,8 @@ pub let liquid_pill_trigger_lent : @view.Lent[PillTriggerScope] = @view.Lent::ne
 
 ///|
 /// Theme-adaptive press overlay ink for controls inside a liquid glass pill group.
-pub fn liquid_pill_press_ink() -> Int64 {
-  liquid_press_ink()
+pub fn liquid_pill_press_ink(solid? : Bool = false) -> Int64 {
+  liquid_press_ink(solid~)
 }
 
 ///|

@@ -142,13 +142,17 @@ test "bar_pill_group_node interactive press drives GPU spot highlight, spring sc
       |> ignore
     })
     t.draw()
-    // Dark mode press ink must be bright (non-black) so ripples/overlays are clearly visible over dark glass.
+    // Real liquid glass press ink must be luminous white in both Light and Dark modes (zero grey veil);
+    // solid fallback keeps dark contrast ink in Light mode and bright ink in Dark mode.
     let ink = bar_pill_press_ink()
     let rgb = (ink >> 8) & 0xFFFFFFL
+    assert_true(rgb > 0xE0E0E0L, msg="glass press ink rgb should be luminous white (dark=\{dark}), got \{ink}")
+    let solid_ink = bar_pill_press_ink(solid=true)
+    let solid_rgb = (solid_ink >> 8) & 0xFFFFFFL
     if dark {
-      assert_true(rgb > 0x808080L, msg="dark press ink rgb should be bright, got \{ink}")
+      assert_true(solid_rgb > 0xE0E0E0L, msg="dark solid press ink rgb should be bright, got \{solid_ink}")
     } else {
-      assert_true(rgb < 0x808080L, msg="light press ink rgb should be dark, got \{ink}")
+      assert_true(solid_rgb < 0x808080L, msg="light solid press ink rgb should be dark, got \{solid_ink}")
     }
     let pill = pill_ref.val.unwrap()
     let has_spot = fn() {
