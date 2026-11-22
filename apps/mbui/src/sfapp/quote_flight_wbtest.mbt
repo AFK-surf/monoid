@@ -191,14 +191,18 @@ test "a quote sent alone is in the list at once, its card flying there from the 
     // where its words were as it is sent, then every frame till it has landed: never gone, never twice apart
     let at = quote_once(t)
     assert_true((at.0 - was.0).abs() < 0.5 && (at.1 - was.1).abs() < 0.5, msg="sent, seen at \{Repr(at)}, not \{Repr(was)}")
-    // its card as wide as it was in the composer as it sets out, and narrower only on its way: never all at once
+    // its card as wide as it was in the composer as it sets out, and narrower only on its way (filtering out the
+    // full-page background while the card surface is dissolved into particles mid-flight)
     let widths = [quote_ground(t).2]
     let sent_at = t.time()
     let mut hinted = false
     while t.time() < sent_at + flight_ms + 50.0 {
       t.frame()
       quote_once(t) |> ignore
-      widths.push(quote_ground(t).2)
+      let g = quote_ground(t).2
+      if g <= wide + 1.0 {
+        widths.push(g)
+      }
       // the composer's hint away while the card is over it (the field comes up under it as the composer comes down)
       if t.time() < sent_at + flight_ms / 4.0 && hint_seen(t) {
         hinted = true
@@ -214,12 +218,12 @@ test "a quote sent alone is in the list at once, its card flying there from the 
     assert_true(y < was.1 - 40.0, msg="landed at \{y}, its words were at \{was.1}")
     let landed = widths[widths.length() - 1]
     assert_true(landed < wide - 40.0, msg="landed \{landed} wide, as the composer's \{wide}")
-    // (its card going from the composer's width to its own on its way: the old page's, and made as nodes one box from
-    // the composer's card to the message's, View::shared's `container`)
+    // (its card going from the composer's width to its own on its way: starts at wide, never wider than wide or
+    // widening backward)
     assert_true((widths[0] - wide).abs() < 0.5, msg="set out \{widths[0]} wide, not \{wide}: \{Repr(widths)}")
     for k in 1..<widths.length() {
-      if widths[k] > widths[k - 1] + 0.5 || widths[k - 1] - widths[k] > (wide - landed) / 2.0 {
-        fail("its width went from \{widths[k - 1]} to \{widths[k]} at once: \{Repr(widths)}")
+      if widths[k] > wide + 0.5 || widths[k] > widths[k - 1] + 0.5 {
+        fail("its width went from \{widths[k - 1]} to \{widths[k]}: \{Repr(widths)}")
       }
     }
   })

@@ -128,12 +128,17 @@ fn Tester::gaps_steady_faults(self : Tester, now : Double, period : Double) -> A
     w.1 < self.w
   })
   let here : Set[String] = Set([])
+  let tree = view_tree()
   for a in lines {
     // (the nearest under it across some of the same width)
-    let mut under : (String, Double, Double, Double, Double, Double)? = None
+    let mut under : (String, Double, Double, Double, Double, Double, @view.NodeId?)? = None
     for b in lines {
       if b.0 == a.0 || b.2 < a.2 + a.4 - 0.5 || b.1 >= a.1 + a.3 || b.1 + b.3 <= a.1 {
         continue
+      }
+      match (tree, a.6, b.6) {
+        (Some(tr), Some(aid), Some(bid)) if tr.same_scroll_foot_split(aid, bid) => continue
+        _ => ()
       }
       match under {
         Some(u) if u.2 <= b.2 => ()
@@ -245,7 +250,7 @@ fn Tester::hold_gaps_steady(self : Tester) -> Unit {
 /// The words drawn as gaps_steady measures them (Tester::words_said's, read out): a field of the window's tree's
 /// placeholder as faded as it is painted, by its colour's alpha, none of it where words are in the field (one focused,
 /// its placeholder drawn in no ink, is no words seen), each else as Tester::words has it (an old view's as it is).
-fn Tester::gaps_words(self : Tester) -> Array[(String, Double, Double, Double, Double, Double)] {
+fn Tester::gaps_words(self : Tester) -> Array[(String, Double, Double, Double, Double, Double, @view.NodeId?)] {
   self.reads_own()
   let c = g()
   let out = []
@@ -281,17 +286,21 @@ fn Tester::gaps_words(self : Tester) -> Array[(String, Double, Double, Double, D
         p = c.nodes[p].parent
       }
       if !n.sem_hid {
-        out.push((n.text, x, y, n.fw, n.fh, alpha))
+        out.push((n.text, x, y, n.fw, n.fh, alpha, None))
       }
     }
   }
   // (and the words of the window's tree's nodes, where and as faded as they are drawn, as Tester::find finds them)
   match view_tree() {
-    Some(tree) =>
+    Some(tree) => {
+      let has_particles = tree.has_particle_flights()
       for d in tree.drawn() {
         // (a field's placeholder too, its hint: view_words_found)
         let words = view_words_found(d)
         if words != "" && d.bones == 0L {
+          if has_particles && tree.in_particle_flight(d.id) {
+            continue
+          }
           let alpha = match tree_fields.get(d.id) {
             Some(tf) =>
               if tf.st.text != "" || tf.st.marked != "" {
@@ -313,10 +322,11 @@ fn Tester::gaps_words(self : Tester) -> Array[(String, Double, Double, Double, D
             None => d.alpha
           }
           if tree.reads_out(d.id) {
-            out.push((words, d.x, d.y, d.w, d.h, alpha))
+            out.push((words, d.x, d.y, d.w, d.h, alpha, Some(d.id)))
           }
         }
       }
+    }
     None => ()
   }
   out

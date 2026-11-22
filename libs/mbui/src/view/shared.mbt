@@ -162,6 +162,36 @@ priv struct Lift {
   /// what of where it set out was seen (View::flies_in's `cut_from`, x0, y0, x1, y1 in the window), what is seen of it
   /// opening from that to all of it on its way (Tree::lift_cut); none: all of it
   mut from_cut : (Double, Double, Double, Double)?
+  /// whether this flight dissolves into particles and reassembles at the destination
+  particle : Bool
+  /// true when starting without a background ground (bare words), false for grounded cards
+  bare_ground : Bool
+  /// immutable starting window rect `(x, y, w, h)` captured at departure (updated only on `flights_refresh_now`)
+  mut origin : (Double, Double, Double, Double)
+  /// linear time progress `clamp((t - start) / dur, 0, 1)` updated in `flight_at`
+  mut t_lin : Double
+  /// whether this flight has a paired departing ghost copy (`Tree::paired` = true, `Tree::fly_from` = false)
+  has_old : Bool
+}
+
+///|
+/// Render-layer snapshot of an active particle flight on a lifted node (`Tree::lift_particle_of`).
+pub(all) struct LiftParticle {
+  from_x : Double
+  from_y : Double
+  from_w : Double
+  from_h : Double
+  to_x : Double
+  to_y : Double
+  to_w : Double
+  to_h : Double
+  t_lin : Double
+  p : Double
+  bare : Bool
+  old : Bool
+  shared_box : Bool
+  has_old : Bool
+  seed : Int
 }
 
 ///|
@@ -282,6 +312,7 @@ pub fn View::shared(
   up_late? : Double = 0.0,
   far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double,
   lead? : Bool = false,
+  particle? : Bool = false,
   loc~ : SourceLoc,
 ) -> View {
   guard self.live() is Some(n) else { return self }
@@ -324,8 +355,8 @@ pub fn View::shared(
     Is(_) => None
     By(f) => Some(fn() { set(@signals.untracked(f)) })
   }
-  if !stays && (container || up_late > 0.0 || far_of is Some(_) || lead) {
-    tree.motion_aux().shared_how[at] = { gen, container, late: dclamp(up_late, 0.0, 0.9), far_of, lead, refresh }
+  if !stays && (container || up_late > 0.0 || far_of is Some(_) || lead || particle) {
+    tree.motion_aux().shared_how[at] = { gen, container, late: dclamp(up_late, 0.0, 0.9), far_of, lead, particle, refresh }
   }
   match id {
     Is(s) => set(s)
@@ -347,6 +378,7 @@ priv struct SharedHow {
   late : Double
   far_of : (((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double)?
   lead : Bool
+  particle : Bool
   /// its id said anew as it is now (View::shared's said By), none where it is said Is
   refresh : (() -> Unit)?
 }
@@ -377,6 +409,8 @@ priv struct Incoming {
   cut_from : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)?
   /// flown as a container box: outer box morphs smoothly without stretching children (Lift's `box`)
   container : Bool
+  /// dissolve into particles and reassemble at destination
+  particle : Bool
 }
 
 ///|
@@ -426,6 +460,7 @@ pub fn View::flies_in(
   in_list? : Bool = false,
   cut_from? : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?,
   container? : Bool = false,
+  particle? : Bool = false,
   loc~ : SourceLoc,
 ) -> View {
   ignore(loc)
@@ -442,6 +477,7 @@ pub fn View::flies_in(
     in_list,
     cut_from,
     container,
+    particle,
   })
   self.tree.pairs_due()
   self
@@ -509,6 +545,8 @@ fn Tree::incoming_now(
       from_cut=i.cut_from.bind(fn(c) { c(to) }),
       container=i.container,
       in_list=i.in_list,
+      particle=i.particle,
+      bare_ground=i.bare,
     )
     |> ignore
   }
@@ -708,6 +746,110 @@ pub fn Tree::flight_drawn(
     return Some((self.lift_rect(l), self.look_from(f.node.at, 1.0).corners))
   }
   None
+}
+
+///|
+/// Whether any active flight on this tree uses particle dissolve-and-reassemble rendering.
+pub fn Tree::has_particle_flights(self : Tree) -> Bool {
+  for f in self.flights {
+    if self.alive_id(f.node) && self.nodes[f.node.at].lift is Some(l) && l.particle {
+      return true
+    }
+    match f.ghost {
+      Some(g) if self.alive_id(g) && self.nodes[g.at].lift is Some(l) && l.particle => return true
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+/// Whether `id` or any of its ancestors is currently mid-flight in a particle dissolve-and-reassemble flight
+/// (`lift_particle_of` is `Some`).
+pub fn Tree::in_particle_flight(self : Tree, id : NodeId) -> Bool {
+  guard !self.flights.is_empty() && self.alive_id(id) else { return false }
+  let mut i = id.at
+  while i >= 0 {
+    let n = self.nodes[i]
+    guard n.live else { break }
+    match n.lift {
+      Some(l) if l.particle => return true
+      _ => ()
+    }
+    i = n.parent
+  }
+  false
+}
+
+///|
+/// Whether `a` and `b` lie on opposite Z planes of the same vertical `scrolls_window`: one inside its scrolled content
+/// (`scroll_held`) and the other inside its pinned foot overlay (`foot_at`).
+pub fn Tree::same_scroll_foot_split(self : Tree, a : NodeId, b : NodeId) -> Bool {
+  if self.scrolls_at.is_empty() || !self.alive_id(a) || !self.alive_id(b) {
+    return false
+  }
+  let in_node = fn(at : Int, anc : Int) -> Bool {
+    if anc < 0 {
+      return false
+    }
+    let mut i = at
+    while i >= 0 {
+      if i == anc {
+        return true
+      }
+      i = self.nodes[i].parent
+    }
+    false
+  }
+  let mut i = self.nodes[a.at].parent
+  while i >= 0 {
+    match self.scrolls_at.get(i) {
+      Some(sc) if !sc.across && sc.foot_at >= 0 && self.nodes[i].scroll_held >= 0 => {
+        let held = self.nodes[i].scroll_held
+        let a_foot = self.in_scroll_foot(a.at, sc)
+        let a_held = !a_foot && in_node(a.at, held)
+        if a_foot || a_held {
+          let b_foot = self.in_scroll_foot(b.at, sc)
+          let b_held = !b_foot && in_node(b.at, held)
+          if (a_foot && b_held) || (a_held && b_foot) {
+            return true
+          }
+        }
+      }
+      _ => ()
+    }
+    i = self.nodes[i].parent
+  }
+  false
+}
+
+///|
+/// Render-layer particle flight state for lifted node `id`, or `None` when not mid-flight (`t_lin <= 0.001` or `t_lin >= 0.999`).
+pub fn Tree::lift_particle_of(self : Tree, id : NodeId) -> LiftParticle? {
+  guard self.alive_id(id) && self.nodes[id.at].lift is Some(l) && l.particle else { return None }
+  guard l.t_lin > 0.001 && l.t_lin < 0.999 else { return None }
+  let (fx, fy, fw, fh) = l.origin
+  let (x0, y0, tw, th) = self.placed_window(l.follow)
+  let (hx, hy) = self.held_off(l.follow)
+  let (tx, ty) = (x0 + hx - l.held_off.0, y0 + hy - l.held_off.1)
+  let seed_mul = 0x9E3779B1U.reinterpret_as_int()
+  Some({
+    from_x: fx,
+    from_y: fy,
+    from_w: fw,
+    from_h: fh,
+    to_x: tx,
+    to_y: ty,
+    to_w: tw,
+    to_h: th,
+    t_lin: l.t_lin,
+    p: 1.0 - l.k,
+    bare: l.bare_ground,
+    old: l.old,
+    shared_box: l.box,
+    has_old: l.has_old,
+    seed: id.at * seed_mul + id.gen * 40503,
+  })
 }
 
 ///|
@@ -1676,11 +1818,16 @@ fn colour_mix(a : Int64, b : Int64, p : Double) -> Int64 {
 /// Node `n`'s content as a flight draws it (Node's `lift`): as big as its way has it (in its own terms, `s` as big as
 /// what it holds is drawn), its ground, edge, corners and ink from those it set out from to the one it goes with's.
 fn Tree::lifted_content(self : Tree, n : Node, l : Lift, c : Content) -> Content {
+  let particle_active = l.particle && l.t_lin > 0.001 && l.t_lin < 0.999
   let (_, _, w, h) = self.lift_rect(l)
-  let s = lift_scale(n, l, w)
+  let s = if particle_active { 1.0 } else { lift_scale(n, l, w) }
   let p = lift_look_p(l)
   let to = self.nodes[l.follow].look
-  let (a, b, cc, d) = corners_mix(l.from.corners, self.seen_corners(l.follow), p)
+  let (a, b, cc, d) = if particle_active {
+    self.seen_corners(l.follow)
+  } else {
+    corners_mix(l.from.corners, self.seen_corners(l.follow), p)
+  }
   let ground = colour_mix(l.from.ground, blend_ground(to.ground, to.ground_over), p)
   let edge = ((l.from.edge.0 + (to.edge.0 - l.from.edge.0) * p) / s, colour_mix(l.from.edge.1, to.edge.1, p))
   let ink = colour_mix(l.from.ink, to.ink, p)
@@ -1692,8 +1839,8 @@ fn Tree::lifted_content(self : Tree, n : Node, l : Lift, c : Content) -> Content
   }
   {
     ..c,
-    w: if s > 0.0 { w / s } else { c.w },
-    h: if s > 0.0 { h / s } else { c.h },
+    w: if particle_active { n.lw } else if s > 0.0 { w / s } else { c.w },
+    h: if particle_active { n.lh } else if s > 0.0 { h / s } else { c.h },
     ground,
     edge,
     corners: Some((a / s, b / s, cc / s, d / s)),
@@ -2114,9 +2261,9 @@ fn Tree::paired(
     None => return None
   }
   let how = self.shared_how_of(to.at)
-  let (late, far_of, box) = match how {
-    Some(h) => (h.late, h.far_of, h.container)
-    None => (0.0, None, false)
+  let (late, far_of, box, particle) = match how {
+    Some(h) => (h.late, h.far_of, h.container, h.particle)
+    None => (0.0, None, false, false)
   }
   let to_at = to_v.laid_window_now()
   let (tx, ty, tw, th) = to_at
@@ -2194,6 +2341,11 @@ fn Tree::paired(
     held_off: self.held_off(to.at),
     within,
     from_cut: None,
+    particle,
+    bare_ground: false,
+    origin: d.from,
+    t_lin: 0.0,
+    has_old: true,
   })
   g.lift = Some({
     follow: to.at,
@@ -2215,6 +2367,11 @@ fn Tree::paired(
     held_off: self.held_off(to.at),
     within,
     from_cut: None,
+    particle,
+    bare_ground: false,
+    origin: d.from,
+    t_lin: 0.0,
+    has_old: true,
   })
   self.lifted_order()
   // (drawn as of each frame's moment while it goes; over at its end, a moment of its own)
@@ -2340,6 +2497,8 @@ fn Tree::fly_from(
   from_cut? : (Double, Double, Double, Double)? = None,
   container? : Bool = false,
   in_list? : Bool = false,
+  particle? : Bool = false,
+  bare_ground? : Bool = false,
 ) -> Bool {
   // (one flying in from what is none of the tree's on that way of its own, View::flies_in; else as it flies with
   // another of its id, View::shared)
@@ -2450,6 +2609,11 @@ fn Tree::fly_from(
     held_off: self.held_off(to.at),
     within,
     from_cut,
+    particle,
+    bare_ground,
+    origin: from,
+    t_lin: 0.0,
+    has_old: false,
   })
   // (drawn as it sets out from the frame it does: its look the one it sets out with, not its own till its way is next
   // read (a frame drawn before that, as a host's while its list waits for the old view in its foot, drew its bubble's
@@ -2596,6 +2760,7 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
     match self.nodes[f.node.at].lift {
       Some(l) => {
         l.d = dd
+        l.origin = from
         l.fixed = if l.stays is None && !self.rides_said_way(f.node.at) { Some(from) } else { None }
         l.held_off = self.held_off(l.follow)
       }
@@ -2631,6 +2796,12 @@ fn Tree::flight_at(self : Tree, f : Flying, t : Double) -> Unit {
   let p = at(ms / (1.0 - f.late))
   let k = 1.0 - p
   let ky = 1.0 - at((ms - f.late * f.dur) / (1.0 - f.late))
+  let t_lin = dclamp(ms / dmax(f.dur, 1.0), 0.0, 1.0)
+  // Single-copy particle handoff at t_lin = 0.44 (card background already dissolved at 0.32 and not fading in until
+  // 0.62, glyphs at peak sand dispersion): exactly one copy stays at alpha == 1.0 on every frame (zero blank frame,
+  // zero duplicate-copy overlap).
+  let particle_new_a = if t_lin >= 0.44 { 1.0 } else { 0.0 }
+  let particle_old_a = if t_lin >= 0.44 { 0.0 } else { 1.0 }
   // (the new one in over the first half of the way, the old one under it out over the second: never both half seen;
   // a container one box, the old copy all of it over the first half, what it holds going fainter (its ✕, its hint), the
   // new one all of it from the half on in its place: never two sets of words seen over each other, never none)
@@ -2641,7 +2812,20 @@ fn Tree::flight_at(self : Tree, f : Flying, t : Double) -> Unit {
       Some(l) => {
         l.k = k
         l.ky = ky
-        l.a = if l.box && f.ghost is Some(_) { if p >= 0.5 { 1.0 } else { 0.0 } } else if f.fades { a_in } else { 1.0 }
+        l.t_lin = t_lin
+        l.a = if l.box && f.ghost is Some(_) {
+          if l.particle {
+            particle_new_a
+          } else if p >= 0.5 {
+            1.0
+          } else {
+            0.0
+          }
+        } else if f.fades {
+          a_in
+        } else {
+          1.0
+        }
         // (one with an end that stays whose route says where it goes: drawn under what covers that end's column while it
         // slides out from under it or back (FlightRoute's `in_stays`, Tree::stays_scroll_slot), over the rest of its
         // layer else; the order made again where that changes)
@@ -2675,10 +2859,16 @@ fn Tree::flight_at(self : Tree, f : Flying, t : Double) -> Unit {
         Some(l) => {
           l.k = k
           l.ky = ky
+          l.t_lin = t_lin
           if l.box {
-            l.a = if p >= 0.5 { 0.0 } else { 1.0 }
-            l.kids_a = dmax(0.0, 1.0 - p)
-            self.kids_marked(g.at)
+            if l.particle {
+              l.a = particle_old_a
+              l.kids_a = 1.0
+            } else {
+              l.a = if p >= 0.5 { 0.0 } else { 1.0 }
+              l.kids_a = dmax(0.0, 1.0 - p)
+              self.kids_marked(g.at)
+            }
           } else {
             l.a = a_out
           }
@@ -2758,7 +2948,7 @@ fn Tree::fills_lifted(self : Tree, at : Int) -> (Double, Double)? {
     }
     match h.lift {
       Some(l) => {
-        if l.box {
+        if l.box || (l.particle && l.t_lin > 0.001 && l.t_lin < 0.999) {
           return None
         }
         let (_, _, w, hh) = self.lift_rect(l)

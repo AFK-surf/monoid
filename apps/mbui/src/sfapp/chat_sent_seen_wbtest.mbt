@@ -61,7 +61,21 @@ fn ss_look(t : @ui.Tester, w : String, before : Int) -> SsFrame {
   let field = match composer_field(t) {
     Some((fx, fy, fw, fh)) => {
       let ink = @sf.theme().p.text
-      t.drawn_glyphs().iter().any(fn(g) { g.2 == ink && g.0 >= fx && g.0 <= fx + fw && g.1 >= fy && g.1 <= fy + fh && !in_row(g.0, g.1) })
+      let glyph_in = t.drawn_glyphs().iter().any(fn(g) { g.2 == ink && g.0 >= fx && g.0 <= fx + fw && g.1 >= fy && g.1 <= fy + fh && !in_row(g.0, g.1) })
+      if glyph_in && tree.has_particle_flights() {
+        tree.drawn().iter().any(fn(d) {
+          d.words.has_prefix(w) &&
+            d.bones == 0L &&
+            d.alpha > 0.0 &&
+            d.x >= fx - 2.0 &&
+            d.x <= fx + fw + 2.0 &&
+            d.y >= fy - 2.0 &&
+            d.y <= fy + fh + 2.0 &&
+            !in_row(d.x, d.y)
+        })
+      } else {
+        glyph_in
+      }
     }
     None => false
   }
@@ -358,15 +372,23 @@ test "a chat's page made as nodes, 小屏 and 大屏: a quoted picture with an e
     let rest = seen[seen.length() - 1]
     assert_true(rest.length() == 1 && rest[0].0 > 60.0, msg="\{screen.0}: at rest \{Repr(rest)}")
     assert_true(seen[0].length() == 1 && (seen[0][0].0 - 56.0).abs() < 0.5, msg="\{screen.0}: before the press \{Repr(seen[0])}")
-    // (it flies from its tile to its place, as the old page's does: no frame without it, none at part ink, none smaller
-    // than the frame before)
+    // (particle flight: never blank on any frame, never wider than resting size, and disperses into fine true-color
+    // sand mid-flight before reassembling cleanly to rest)
+    assert_true(rest[0].1 > 0.999, msg="\{screen.0}: at rest alpha \{Repr(rest)}")
+    let mut saw_particles = false
     for i in 1..<seen.length() {
       let s = seen[i]
       assert_true(
-        s.length() == 1 && s[0].0 >= seen[i - 1][0].0 - 0.01 && s[0].0 <= rest[0].0 + 0.01 && s[0].1 > 0.999,
+        s.length() >= 1 &&
+          s.iter().any(fn(p) { p.1 >= 0.5 }) &&
+          s.iter().all(fn(p) { p.0 <= rest[0].0 + 0.5 }),
         msg="\{screen.0}, frame \{i}: \{Repr(s)} after \{Repr(seen[i - 1])}, \{Repr(rest)} at rest",
       )
+      if s.filter(fn(p) { p.0 <= 6.0 && p.1 >= 0.5 }).length() >= 8 {
+        saw_particles = true
+      }
     }
+    assert_true(saw_particles, msg="\{screen.0}: expected fine particle dispersion during flight")
   }
 }
 

@@ -1582,6 +1582,9 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   let stretching : Array[(@view.NodeId, Double, Double, Double, Double, Double)] = []
   // (the nodes what they hold is revealed in, on their way, the innermost last: @view.View::spatial_reveal, RevealAt)
   let unveiling : Array[RevealAt] = []
+  // (lifted nodes currently dissolving/reassembling as particles: @view.Tree::lift_particle_of, ParticleAt)
+  let has_particles = dr.mode != mode_hits && tree.has_particle_flights()
+  let particling : Array[ParticleAt] = []
   // (adaptive liquid glass ink scopes active during the tree walk, innermost last: saved prior (ink_x, ink_y, ink_r))
   let ink_stack : Array[(@view.NodeId, Double, Double, Double)] = []
   // (covered beside pages clipped horizontally during parallax push/pop: (pv_id, cut_left, cut_right, runs0))
@@ -1794,6 +1797,10 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       _ => ()
     }
     close_to(Some(c.id))
+    while particling.length() > 0 && !tree.holds_in_order(particling[particling.length() - 1].id, c.id) {
+      let at = particling.pop().unwrap()
+      self.particle_apply(at, at.k0, self.ninst)
+    }
     raise_close(Some(c.id))
     if !raised.is_empty() {
       lift_to(Some(c.id))
@@ -1877,11 +1884,13 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     if fading.length() == 0 &&
       stretching.length() == 0 &&
       unveiling.length() == 0 &&
+      particling.length() == 0 &&
       glass_paint.ink_r == 0.0 &&
       nav_veil is None &&
       nav_clip is None &&
       !raise_holds(c.id) &&
-      !unsteady(c.id) {
+      !unsteady(c.id) &&
+      !(has_particles && tree.lift_particle_of(c.id) is Some(_)) {
       let row = ridings_rows.val == 0 &&
         ((ride_may(c, x, y) && tree.rides_scroll(c.id)) || island_rides(c))
       if row {
@@ -1945,6 +1954,10 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     if stack >= 0 && tree.root_holds(c.id) {
       ride_spoil()
       close_to(None)
+      while particling.length() > 0 {
+        let at = particling.pop().unwrap()
+        self.particle_apply(at, at.k0, self.ninst)
+      }
       raise_close(None)
       paint_layers_under(stack)
     }
@@ -1957,6 +1970,51 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       }
       let k = clip_top()
       raising.val = Some((c.id, self.ninst, (clip_stack[k], clip_stack[k + 1], clip_stack[k + 2], clip_stack[k + 3])))
+    }
+    if has_particles {
+      match tree.lift_particle_of(c.id) {
+        Some(pf) => {
+          ride_spoil()
+          match list_riding.val {
+            Some(l) => l.spoiled = true
+            None => ()
+          }
+          let vx = pf.to_x - pf.from_x
+          let vy = pf.to_y - pf.from_y
+          let spread = dclamp((vx * vx + vy * vy).sqrt() * 0.13, 12.0, 34.0)
+          let max_w = dmax(pf.from_w, pf.to_w)
+          let max_h = dmax(pf.from_h, pf.to_h)
+          if !shooting.val {
+            damage_known.push(
+              (
+                dmin(pf.from_x, pf.to_x) - spread - 12.0,
+                dmin(pf.from_y, pf.to_y) - spread - 12.0,
+                dmax(pf.from_x, pf.to_x) + max_w + spread + 12.0,
+                dmax(pf.from_y, pf.to_y) + max_h + spread + 12.0,
+              ),
+            )
+          }
+          let ck = clip_top()
+          let outer_clip = FixedArray::makei(24, fn(j) { clip_stack[ck + j] })
+          particling.push({ id: c.id, pf, k0: self.ninst, outer_clip, base_x: x, base_y: y, base_s: s })
+        }
+        None => ()
+      }
+    }
+    // (inside an active particle flight: anchor the entire subtree to its static origin at 1:1 scale so view_blit
+    // never rephases glyphs or snaps subpixels mid-flight; particle_apply maps every emitted instance cleanly)
+    let (x, y, s, ux, uy) = if particling.length() > 0 {
+      let top = particling[particling.length() - 1]
+      if top.base_s > 0.0 {
+        let px = top.pf.from_x + (x - top.base_x) / top.base_s
+        let py = top.pf.from_y + (y - top.base_y) / top.base_s
+        let ps = s / top.base_s
+        (px, py, ps, px, py)
+      } else {
+        (x, y, s, ux, uy)
+      }
+    } else {
+      (x, y, s, ux, uy)
     }
     // (on its way in or out: cut to itself before it draws its own, so its words go no further than its way has got,
     // over nothing beside it; pushed once, for what it holds too, below. Content::clips_self)
@@ -1979,13 +2037,15 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     // whose ends are within a node said View::flights_within, cut to where that node is seen: a board's card going to
     // another column)
     // (what is seen of it rounded as the flight has it, cut to the window or to that room: Tree::lift_cut_corners)
-    match tree.lift_cut(c.id) {
-      Some((x0, y0, x1, y1)) => {
-        let (tl, tr, br, bl) = tree.lift_cut_corners(c.id).unwrap_or((0.0, 0.0, 0.0, 0.0))
-        push_box_clip(x0, y0, dmax(0.0, x1 - x0), dmax(0.0, y1 - y0), tl, tr, br, bl)
-        clipping.push(c.id)
+    if !(particling.length() > 0 && particling[particling.length() - 1].id == c.id) {
+      match tree.lift_cut(c.id) {
+        Some((x0, y0, x1, y1)) => {
+          let (tl, tr, br, bl) = tree.lift_cut_corners(c.id).unwrap_or((0.0, 0.0, 0.0, 0.0))
+          push_box_clip(x0, y0, dmax(0.0, x1 - x0), dmax(0.0, y1 - y0), tl, tr, br, bl)
+          clipping.push(c.id)
+        }
+        None => ()
       }
-      None => ()
     }
     match nav_clip {
       Some((cx0, cx1, from_right)) => {
@@ -2068,6 +2128,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       -1
     } else if (x > clip_stack[k + 2] || y > clip_stack[k + 3] || x + c.w * s < clip_stack[k] || y + c.h * s < clip_stack[k + 1]) &&
       stretching.length() == 0 &&
+      particling.length() == 0 &&
       turn == 0.0 &&
       !ground_drawn.reshaped() &&
       (c.shadow.2 & 0xFFL) == 0L &&
@@ -2244,6 +2305,10 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     glass_paint.ink_r = or_
   }
   close_to(None)
+  while particling.length() > 0 {
+    let at = particling.pop().unwrap()
+    self.particle_apply(at, at.k0, self.ninst)
+  }
   raise_close(None)
   if !raised.is_empty() {
     lift_to(None)

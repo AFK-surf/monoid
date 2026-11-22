@@ -415,7 +415,7 @@ fn mf_drawn_picture_box(t : @ui.Tester) -> (Double, Double, Double, Double)? {
         // (50 across on its longer side: no avatar, but a picture flying from its square tile as its own shape, 56 by 37)
         if d.image is Some(_) && d.bones == 0L && d.alpha > 0.05 && (d.w >= 50.0 || d.h >= 50.0) && d.w >= 24.0 && d.h >= 24.0 {
           match best {
-            Some((_, by, _, _)) if d.y < by => ()
+            Some((_, by, _, _)) if d.y <= by + 2.0 => ()
             _ => best = Some((d.x, d.y, d.w, d.h))
           }
         }
@@ -446,24 +446,6 @@ fn mf_drawn_part_box(t : @ui.Tester, sub : String, whole? : Bool = false) -> (Do
   // drawn around those words
   let mut best = (wx, wy, ww, wh)
   let mut best_area = 1.0e18
-  for r in t.drawn_rects() {
-    let (rx, ry, rw, rh, color) = r
-    if (color & 0xFFL) >= 12L &&
-      rw >= ww + 8.0 &&
-      rh >= wh + 4.0 &&
-      rw < 360.0 &&
-      rh < 140.0 &&
-      rx <= wx + 2.0 &&
-      ry <= wy + 2.0 &&
-      rx + rw >= wx + ww - 2.0 &&
-      ry + rh >= wy + wh - 2.0 {
-      let area = rw * rh
-      if area < best_area {
-        best = (rx, ry, rw, rh)
-        best_area = area
-      }
-    }
-  }
   match @ui.view_tree() {
     Some(tr) => {
       let held = tr.drawn_held()
@@ -491,6 +473,26 @@ fn mf_drawn_part_box(t : @ui.Tester, sub : String, whole? : Bool = false) -> (Do
       }
     }
     None => ()
+  }
+  if best_area == 1.0e18 {
+    for r in t.drawn_rects() {
+      let (rx, ry, rw, rh, color) = r
+      if (color & 0xFFL) >= 12L &&
+        rw >= ww + 8.0 &&
+        rh >= wh + 4.0 &&
+        rw < 360.0 &&
+        rh < 140.0 &&
+        rx <= wx + 2.0 &&
+        ry <= wy + 2.0 &&
+        rx + rw >= wx + ww - 2.0 &&
+        ry + rh >= wy + wh - 2.0 {
+        let area = rw * rh
+        if area < best_area {
+          best = (rx, ry, rw, rh)
+          best_area = area
+        }
+      }
+    }
   }
   Some(best)
 }

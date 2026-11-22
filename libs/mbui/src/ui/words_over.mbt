@@ -186,6 +186,10 @@ fn Ctx::words_over_details(self : Ctx) -> Array[(String, String, Double, Double,
     if by == Nobody {
       continue
     }
+    match (view_app.val, by) {
+      (Some(tree), Node(id)) if tree.in_particle_flight(id) => continue
+      _ => ()
+    }
     let o = match by {
       Nobody => -1
       Old(i) => i

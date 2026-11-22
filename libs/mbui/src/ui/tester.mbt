@@ -3139,6 +3139,9 @@ pub fn Tester::glyphs_shown(self : Tester) -> Array[(Double, Double, Double, Dou
   for k in 0..<c.ninst {
     let b = k * inst_size
     if (a[b + 5] == 1.0 || a[b + 5] == 7.0) && a[b + 11] > 0.0 {
+      if inst_owners_kept() && k < inst_owners.mark.length() && inst_owners.mark[k] == particle_inst_mark {
+        continue
+      }
       let x0 = dmax(a[b], a[b + 16])
       let y0 = dmax(a[b + 1], a[b + 17])
       let x1 = dmin(a[b] + a[b + 2], a[b + 18])
@@ -3163,6 +3166,9 @@ pub fn Tester::glyph_clips(self : Tester) -> Array[((Double, Double, Double, Dou
   for k in 0..<c.ninst {
     let b = k * inst_size
     if (a[b + 5] == 1.0 || a[b + 5] == 7.0) && a[b + 11] > 0.0 {
+      if inst_owners_kept() && k < inst_owners.mark.length() && inst_owners.mark[k] == particle_inst_mark {
+        continue
+      }
       out.push(((a[b], a[b + 1], a[b] + a[b + 2], a[b + 1] + a[b + 3]), (a[b + 16], a[b + 17], a[b + 18], a[b + 19])))
     }
   }
@@ -3181,6 +3187,9 @@ pub fn Tester::glyphs_seen(self : Tester) -> Array[(Double, Double, Double, Doub
   for k in 0..<c.ninst {
     let b = k * inst_size
     if (a[b + 5] == 1.0 || a[b + 5] == 7.0) && a[b + 11] > 0.0 {
+      if inst_owners_kept() && k < inst_owners.mark.length() && inst_owners.mark[k] == particle_inst_mark {
+        continue
+      }
       let x0 = dmax(a[b], a[b + 16])
       let y0 = dmax(a[b + 1], a[b + 17])
       let x1 = dmin(a[b] + a[b + 2], a[b + 18])

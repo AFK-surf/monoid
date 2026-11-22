@@ -88,7 +88,7 @@ fn message_quotes_node(
       // each holds at its own size in it, the composer's going as this one's comes (View::shared's `container`;
       // sf/motion.mbt's kind 4))
       if shared_id != "" {
-        fly.shares(card, sent_quote_part(made_i), shared_id)
+        fly.shares(card, sent_quote_part(made_i), shared_id, particle=true)
       }
     })
     |> ignore
