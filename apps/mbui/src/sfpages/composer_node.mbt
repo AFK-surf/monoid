@@ -368,9 +368,9 @@ fn composer_node_of(
             apart: fn() { apart() },
             pane,
           }
-          // (what stands over its box as tall as its least keeps for it (`over_tall`, its row of capsules), its notices
-          // or an error making it taller than its least, its foot laid out as tall as what it holds: no room over them)
-          let has_extra = w.error.get() != "" || composer_notice_kinds(src, r).length() > 0
+          // (what stands over its box as tall as its least keeps for it (`over_tall`, its row of capsules); an error
+          // under it making it taller than its least, its foot laid out as tall as what it holds: no room over them)
+          let has_extra = w.error.get() != ""
           let slack_and_morph = if has_extra || @ui.system_tabletop() is Some(_) {
             0.0
           } else {
@@ -539,8 +539,7 @@ fn composer_node_of(
     }
     composer_foot_scrim_node(foot, roomy, made, fn() { stand.at(fn() { composer_foot_at(rest_wide()) }) })
     match made {
-      None => {
-        composer_notices_node(foot, src, r, tips, stand, over_drawn)
+      None =>
         match over_it {
           Some(f) => {
             let field_menu_hides = fn() { @ui.field_menu_now() is Some(_) && w.field.focused() }
@@ -571,7 +570,6 @@ fn composer_node_of(
           }
           None => ()
         }
-      }
       Some({ over_it: Some(f), .. }) =>
         foot.show(fn() { !roomy() }, at_once=true, fn(o) {
           o
@@ -940,14 +938,22 @@ fn composer_box_node(
   // (a new chat's, nor while a menu or a panel is put up at all: a press on a choice of its row opened it, the cursor
   // gone from it to that choice, what is under it saying nothing then, as the old composer's held its box)
   // (and flying in from the new chat it was (`from_at`): away till it has landed, then back as at rest)
-  let hint_away = fn() { focused() || w.field.parked() || (own is Some(_) && @sf.presenting()) }
+  let status_hint = fn() {
+    match (own, head()) {
+      (None, Some(h)) if spec.chat => h.updating || h.offline || h.archived
+      _ => false
+    }
+  }
+  let hint_away = fn() {
+    (!status_hint() && (focused() || w.field.parked())) || (own is Some(_) && @sf.presenting())
+  }
   // (and while anything is written in it; kept a box a moment after the cursor left it, while it holds no quote and no
   // file, to be let go to a capsule)
   let has_extras = fn() { w.files.get().length() > 0 || w.quotes.get().length() > 0 }
-  let hint_hidden = fn() { hint_away() || w.text.get() != "" || (held() && !has_extras()) }
+  let hint_hidden = fn() { hint_away() || w.text.get() != "" || (!status_hint() && held() && !has_extras()) }
   let narrow_fresh = over_in is Some(_) && from_at is None
   let hint_in = @motion.NodeWay::new(
-    if from_at is Some(_) || narrow_fresh || @signals.untracked(fn() { hint_away() || held() }) {
+    if from_at is Some(_) || narrow_fresh || @signals.untracked(fn() { hint_hidden() }) {
       0.0
     } else {
       1.0
@@ -1001,10 +1007,9 @@ fn composer_box_node(
   let shape_way = fn() {
     guard foot.was_placed() && !composing_node.quiet && !foot_at_rest.val else { return }
     guard foot.cause_at() != reshaped_at.val else { return }
-    // (taller than its least, opened or not, only with something over it (what is said over it) or under it (what went
-    // wrong): its shape moves it then)
+    // (taller than its least, opened or not, only with something under it (what went wrong): its shape moves it then)
     guard spec.chat &&
-      @signals.untracked(fn() { w.error.get() != "" || composer_notice_kinds(src, r).length() > 0 }) else {
+      @signals.untracked(fn() { w.error.get() != "" }) else {
       return
     }
     reshaped_at.val = foot.cause_at()
@@ -1636,6 +1641,22 @@ fn composer_box_node(
           }),
         )
         |> ignore
+        let chat_placeholder = match own {
+          Some(m) => Some(m.placeholder)
+          None =>
+            if spec.chat {
+              Some(fn() {
+                match head() {
+                  Some(h) if h.updating => @sf.t("web-main.composer.placeholderUpdating")
+                  Some(h) if h.offline => @sf.t("web-main.composer.placeholderOffline")
+                  Some(h) if h.archived => @sf.t("web-main.composer.placeholderArchived")
+                  _ => @sf.t("web-main.composer.placeholder")
+                }
+              })
+            } else {
+              None
+            }
+        }
         composer_field_node(
           words,
           src,
@@ -1667,7 +1688,7 @@ fn composer_box_node(
               @view.transition(opened)
             }
           }
-        }, regrow, placeholder?=own.map(fn(m) { m.placeholder }), locked~, no_files~)
+        }, regrow, placeholder?=chat_placeholder, status_hint~, locked~, no_files~)
       })
       |> ignore
       // (a new chat's choices in its row, after ＋, as far in as ＋ leaves them (＋ concentric with the box's foot corner,
@@ -1945,29 +1966,6 @@ fn composer_box_node(
 let comment_rows_live : Map[String, Int] = Map([])
 
 ///|
-/// What is said over chat `r`'s composer made as nodes, a notice each, in their order (composer_notices_node's): it
-/// archived, its station down, a report of the person's answered.
-fn composer_notice_kinds(src : Source, r : ChatRef, reports? : () -> Array[Json]) -> Array[String] {
-  let reports = match reports {
-    Some(f) => f
-    None => fn() { feedback_reports(src, r) }
-  }
-  let h = @sfbase.chat_view_now(src, r)
-  let ks : Array[String] = []
-  if h.map(fn(h) { h.archived }).unwrap_or(false) {
-    ks.push("archive")
-  }
-  if h.map(fn(h) { h.offline }).unwrap_or(false) {
-    ks.push("unplug")
-  }
-  // (the person's reports read once the chat's view is there: none read for a page still waiting on it)
-  if h is Some(_) && reports().iter().any(fn(f) { !report_dismissed(f) }) {
-    ks.push("said")
-  }
-  ks
-}
-
-///|
 /// The room a chat's composer made as nodes takes opened with one line at the foot of a column `wide` (composer_open_room's,
 /// a node's): its box (its padding, 8 over its field's one line, 10 to its row, its round buttons as far from its foot as
 /// makes them concentric with its corner), 12 over it and its foot's room under it.
@@ -2007,21 +2005,23 @@ fn composer_field_node(
   focus_told : (Bool) -> Unit,
   regrow : (Double) -> Unit,
   placeholder? : () -> String,
+  status_hint? : () -> Bool = fn() { false },
   locked? : () -> Bool = fn() { false },
   no_files? : () -> Bool = fn() { false },
 ) -> Unit {
   let prefs = fn() { src.topic("prefs", {}).get().value }
   let by_command = fn() { @settings.sends_by_command(prefs()) }
   // (what it says while empty: with keyboard and mouse and nothing focused, the key that brings the cursor back
-  // (never while it is locked, nor a new chat's while a menu or a panel is put up over it: the key is that one's then);
-  // else what to write, a new chat's its own as its spec says it)
+  // (never while it is locked, nor while showing a chat status hint, nor a new chat's while a menu or a panel is put
+  // up over it: the key is that one's then); else what to write, a new chat's its own as its spec says it)
   let written = placeholder.unwrap_or(fn() { @sf.t("web-main.composer.placeholder") })
   // (nothing at all where it says nothing: a new chat's while it is away)
   let hint = fn() {
     let said = written()
     if spec.placeholder != "" {
       spec.placeholder
-    } else if said != "" &&
+    } else if !status_hint() &&
+      said != "" &&
       !locked() &&
       // (nothing of a key's while what is presented over it has the keys, or its field put by under it)
       !@sf.presenting() &&
@@ -3170,167 +3170,7 @@ fn preview_waiting(station : String, id : String, name : String, picture : Strin
 }
 
 ///|
-/// What is said over a chat's composer in `foot` (chat_notices', as nodes), each a capsule of its own over it as the
-/// composer is, coming in and going down its column as what comes does: an archived chat's, with 还原对话 (why it
-/// failed under it; not while its station is down); its station down; the still.fail team's reply on a bug report sent
-/// from it.
-fn composer_notices_node(
-  foot : @view.View,
-  src : Source,
-  r : ChatRef,
-  tips : @sf.TipLayer,
-  stand : Stand,
-  drawn_off : (@view.View) -> Double,
-) -> Unit {
-  let key = r.station + ":" + r.session
-  let head = fn() { @sfbase.chat_view_now(src, r) }
-  let width = fn() { stand.at(stand.composer_w) }
-  // (each a notice of its own, in their order: one comes in and goes down the column as what comes does)
-  // (the team's replies as the core says them, what they last were while asked again: sfbase's asked_again.mbt)
-  let reports_held = @sfbase.topic_value_held(src, "chatFeedback", @sfbase.chat_params(r))
-  // (asked once the chat itself has answered: none of its replies read before its head is)
-  let reports = fn() { if head() is Some(_) { items(reports_held.get(), "reports") } else { [] } }
-  let report = fn() { reports().iter().find_first(fn(f) { !report_dismissed(f) }) }
-  // (a notice arriving or leaving while the chat is already open and visible — cache expired, station offline/back,
-  // archived, team reply — is a live cause of its own under the chat page's transitions_only: its column and the list's
-  // foot ease smoothly instead of snapping the messages; opening or waking from rest stays at once)
-  let judged : Ref[Array[String]?] = Ref(None)
-  let had_head = Ref(@signals.untracked(head) is Some(_))
-  let woke_at = Ref(-1.0)
-  foot.on_rest(fn() {  }, wake=fn() {
-    woke_at.val = foot.cause_at()
-    judged.val = None
-  })
-  |> ignore
-  let kinds = fn() {
-    let ks = composer_notice_kinds(src, r, reports~)
-    let has_head = @signals.untracked(head) is Some(_)
-    let was_head = had_head.val
-    had_head.val = has_head
-    match judged.val {
-      Some(was) if was != ks &&
-        was_head &&
-        has_head &&
-        foot.was_placed() &&
-        !@view.answering_now() &&
-        @signals.untracked(@ui.app_visible) &&
-        foot.cause_at() != woke_at.val =>
-        @view.transition(within=foot.transitions_root(), fn() {  })
-      _ => ()
-    }
-    judged.val = Some(ks)
-    ks
-  }
-  // (the ＋'s middle as the composer draws it, from its start: its round control's, a point wider for the capsule's edge
-  // line, its capsule_pad_alone in; where each notice's mark stands)
-  let plus_mid = fn() { capsule_pad_alone + node_capsule_extra((stand.scale)()) + (@sf.theme().round.side + 1.0) / 2.0 }
-  foot.each(kinds, fn(k) { k }, fn(n, kind) {
-    // (as wide as the composer, the library's notice drawn in from its ends)
-    n.width(By(fn() { Some(width()) })) |> ignore
-    match @signals.untracked(fn() { kind.get() }) {
-      // (archived: sending restores it; 还原对话 restores it now)
-      "archive" => {
-        let busy = fn() { composing.restoring.get(key).unwrap_or(false) }
-        let off = fn() { busy() || head().map(fn(h) { h.offline }).unwrap_or(false) || src.read_only }
-        // (drawn with the composer's ground's top as its shape goes, as far over it all the way: where its foot's
-        // room goes its way on the page's too; the notice's own box, its row a slot of the column)
-        let made = @sf.composer_notice_node(
-          n,
-          tips,
-          fn() { "archive" },
-          fn() { @sf.t("web-main.archived.sendRestores") },
-          plus_mid,
-          offer={
-            words: fn() { @sf.t(if busy() { "web-main.archived.restoring" } else { "web-main.archived.restore" }) },
-            name: fn() { @sf.t("web-main.archived.restore") },
-            off,
-            press: fn() { notice_restore(src, r, key) },
-          },
-          failed=fn() { composing.restore_errors.get(key).unwrap_or("") },
-        )
-        made.offset(By(fn() { (0.0, drawn_off(made)) })) |> ignore
-      }
-      // (its station down, or gone for its update)
-      "unplug" => {
-        // (drawn with the composer's ground's top as its shape goes, as far over it all the way: where its foot's
-        // room goes its way on the page's too; the notice's own box, its row a slot of the column)
-        let made = @sf.composer_notice_node(
-          n,
-          tips,
-          fn() { if head().map(fn(h) { h.updating }).unwrap_or(false) { "updating" } else { "unplug" } },
-          fn() {
-            match head().bind(fn(h) { h.offline_note }) {
-              Some(note) => note
-              None =>
-                if r.station_name != "" {
-                  @sf.t("web-main.chat.offline.named", args=[("name", r.station_name)])
-                } else {
-                  @sf.t("web-main.chat.offline")
-                }
-            }
-          },
-          plus_mid,
-        )
-        made.offset(By(fn() { (0.0, drawn_off(made)) })) |> ignore
-      }
-      // (the still.fail team's reply on a bug report sent from it: the chat's people's to read)
-      "said" => {
-        // (drawn with the composer's ground's top as its shape goes, as far over it all the way: where its foot's
-        // room goes its way on the page's too; the notice's own box, its row a slot of the column)
-        let made = @sf.composer_notice_node(
-          n,
-          tips,
-          fn() { "said" },
-          // (whose reply it is and the first line of their latest, as one, as the old composer's notice says it
-          // (feedback_replies.mbt): its words wrapping as one line's do, never its title broken to stand beside them)
-          fn() {
-            let h = report().map(fn(f) { text(Some(f), "heading") }).unwrap_or("")
-            let l = report().map(fn(f) { text(Some(f), "latest") }).unwrap_or("")
-            if l == "" {
-              h
-            } else {
-              h + "：" + l
-            }
-          },
-          plus_mid,
-          offer={
-            words: fn() { @sf.t("web-main.feedback.open") },
-            name: fn() { @sf.t("web-main.feedback.open") },
-            off: fn() { false },
-            press: fn() {
-              match report() {
-                Some(f) => open_feedback(src, r, text(Some(f), "id"))
-                None => ()
-              }
-            },
-          },
-          dismiss={
-            words: fn() { "" },
-            name: fn() { @sf.t("web-main.feedback.dismiss") },
-            off: fn() { false },
-            press: fn() {
-              guard report() is Some(f) else { return }
-              let id = text(Some(f), "id")
-              let latest_id = report_latest_id(f)
-              guard latest_id != "" else { return }
-              feedback_dismissed[id] = latest_id
-              (src.call)(
-                "feedback.dismiss",
-                { "workspace": Json::string(text(Some(f), "workspace")), "id": Json::string(id), "reply": Json::string(latest_id) },
-                @sfbase.answer_unread,
-              )
-            },
-          },
-        )
-        made.offset(By(fn() { (0.0, drawn_off(made)) })) |> ignore
-      }
-      _ => ()
-    }
-  })
-}
-
-///|
-/// An archived chat restored (还原对话 over its composer): told the core, felt as done or refused, why it failed kept.
+/// An archived chat restored (还原对话 at the foot of its list): told the core, felt as done or refused, why it failed kept.
 fn notice_restore(src : Source, r : ChatRef, key : String) -> Unit {
   composing.restoring[key] = true
   composing.restore_errors.remove(key)

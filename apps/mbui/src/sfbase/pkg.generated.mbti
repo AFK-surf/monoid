@@ -2531,6 +2531,8 @@ pub(all) enum Entry {
   State(String, String, String)
   Working(Agent)
   CacheCold(String, String, String, Bool)
+  Archived
+  Feedback
   Foot
 }
 pub fn Entry::id(Self) -> String

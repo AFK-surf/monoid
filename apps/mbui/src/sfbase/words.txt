@@ -905,6 +905,9 @@ web-main.composer.pasteAttachment
 web-main.composer.pasteUploading
 web-main.composer.pastedText
 web-main.composer.placeholder
+web-main.composer.placeholderArchived
+web-main.composer.placeholderOffline
+web-main.composer.placeholderUpdating
 web-main.composer.pressToTypeCjk
 web-main.composer.refFailed
 web-main.composer.removePaste

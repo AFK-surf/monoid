@@ -800,6 +800,204 @@ let cache_cold_status : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium,
 let cache_cold_detail : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=true)
 
 ///|
+// kept across runs: a value (no field of it changes)
+let archived_error_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=true, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let feedback_open_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, wrap=false)
+
+///|
+/// An archived chat's inline card at the foot of its list (in a message_row_frame_node, matching chat_cache_cold_node):
+/// says sending restores it, offers 还原对话, and shows any restore error below in red.
+fn chat_archived_node(
+  v : @view.View,
+  src : Source,
+  here : MessageNodeHere,
+) -> Unit {
+  let key = here.station + ":" + here.session
+  let r : ChatRef = { station: here.station, session: here.session, title: "", station_name: "" }
+  let busy = fn() { composing.restoring.get(key).unwrap_or(false) }
+  let off = fn() { busy() || (here.view)().offline || src.read_only }
+  let failed = fn() { composing.restore_errors.get(key).unwrap_or("") }
+  let meta_line = fn(b : @view.View) { @ui.sp_at(b.words_scale(), @sf.theme().t.meta_line) }
+  let line_h = fn(b : @view.View) { @sf.dmax(meta_line(b), @sf.theme().items.mark) }
+  v.box(fn(card) {
+    @sf.style_node(card, fn() { cache_cold_card })
+    let pad_in = fn() { @ui.capsule_in(@sf.row_corner, @sf.theme().items.mark) }
+    card
+    .radius(Is(@sf.row_corner))
+    .padding(By(fn() { (pad_in(), pad_in(), pad_in(), pad_in()) }))
+    |> ignore
+    card.box(fn(line) {
+      line
+      .row(Is(true))
+      .lines_up(Is(Some(Start)))
+      .gap(Is(@ui.Space::S2.px()))
+      |> ignore
+      line.box(fn(title) {
+        title
+        .row(Is(true))
+        .lines_up(Is(Some(Start)))
+        .grow(Is(1.0))
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
+        .gap(Is(@ui.Space::S1_5.px()))
+        |> ignore
+        title.box(fn(m) {
+          m
+          .width(By(fn() { Some(@sf.theme().items.mark) }))
+          .height(By(fn() { Some(line_h(m)) }))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .shrink(Is(0.0))
+          |> ignore
+          @sf.icon_node(m, "archive", 16.0, By(fn() { @sf.theme().p.muted })) |> ignore
+        })
+        |> ignore
+        title.box(fn(words) {
+          words
+          .grow(Is(1.0))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .padding(By(fn() {
+            let v_pad = @sf.dmax(0.0, (line_h(words) - meta_line(words)) / 2.0)
+            (0.0, v_pad, 0.0, v_pad)
+          }))
+          |> ignore
+          @sf.words_node(words, fn() { @sf.t("web-main.archived.sendRestores") }, fn() { cache_cold_detail }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      @sf.ask_line_button_node(
+        line,
+        fn() { @sf.t(if busy() { "web-main.archived.restoring" } else { "web-main.archived.restore" }) },
+        16.0,
+        off,
+        fn() { notice_restore(src, r, key) },
+      )
+      |> ignore
+    })
+    |> ignore
+    card.show(fn() { failed() != "" }, fn(e) {
+      e.padding(By(fn() { (@sf.theme().items.mark + @ui.Space::S1_5.px(), @ui.Space::S2.px(), 0.0, 0.0) })) |> ignore
+      @sf.words_node(e, failed, fn() { archived_error_words }) |> ignore
+    })
+  })
+  |> ignore
+}
+
+///|
+/// The still.fail team's reply on a bug report sent from this chat, as an inline card at the foot of its list
+/// (in a message_row_frame_node, matching chat_cache_cold_node): heading + latest reply, 查看 and × dismiss.
+fn chat_feedback_node(
+  v : @view.View,
+  src : Source,
+  here : MessageNodeHere,
+  to : ChatRef?,
+  report : () -> Json?,
+) -> Unit {
+  let meta_line = fn(b : @view.View) { @ui.sp_at(b.words_scale(), @sf.theme().t.meta_line) }
+  let head = fn(b : @view.View) { @sf.dmax(meta_line(b), 28.0) }
+  let said = fn() {
+    let h = report().map(fn(f) { text(Some(f), "heading") }).unwrap_or("")
+    let l = report().map(fn(f) { text(Some(f), "latest") }).unwrap_or("")
+    if l == "" {
+      h
+    } else {
+      h + "：" + l
+    }
+  }
+  v.box(fn(card) {
+    @sf.style_node(card, fn() { cache_cold_card })
+    let end_pad = fn() { @sf.dmax(4.0, @ui.capsule_in(@sf.row_corner, head(card))) }
+    let start_pad = fn() { @ui.capsule_in(@sf.row_corner, @sf.theme().items.mark) }
+    card
+    .radius(Is(@sf.row_corner))
+    .padding(By(fn() { (start_pad(), end_pad(), end_pad(), end_pad()) }))
+    |> ignore
+    card.box(fn(line) {
+      line
+      .row(Is(true))
+      .lines_up(Is(Some(Start)))
+      .gap(Is(@ui.Space::S2.px()))
+      |> ignore
+      line.box(fn(m) {
+        m
+        .width(By(fn() { Some(@sf.theme().items.mark) }))
+        .height(By(fn() { Some(head(m)) }))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        .shrink(Is(0.0))
+        |> ignore
+        @sf.icon_node(m, "said", 16.0, By(fn() { @sf.theme().p.muted })) |> ignore
+      })
+      |> ignore
+      line.box(fn(words) {
+        words
+        .grow(Is(1.0))
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
+        .padding(By(fn() {
+          let v_pad = @sf.dmax(0.0, (head(words) - meta_line(words)) / 2.0)
+          (0.0, v_pad, 0.0, v_pad)
+        }))
+        |> ignore
+        @sf.words_node(words, said, fn() { cache_cold_detail }) |> ignore
+      })
+      |> ignore
+      line.box(fn(acts) {
+        acts
+        .row(Is(true))
+        .height(By(fn() { Some(head(acts)) }))
+        .lines_up(Is(Some(Middle)))
+        .gap(Is(@ui.Space::S1.px()))
+        .shrink(Is(0.0))
+        |> ignore
+        @sf.link_node(
+          acts,
+          fn() { @sf.t("web-main.feedback.open") },
+          fn() {
+            match (to, @signals.untracked(report)) {
+              (Some(r), Some(f)) => open_feedback(src, r, text(Some(f), "id"))
+              _ => ()
+            }
+          },
+          style=fn() { feedback_open_words },
+          ink=fn() { @sf.theme().p.text },
+        )
+        |> ignore
+        @sf.icon_button_node(
+          acts,
+          "close",
+          fn() { @sf.t("web-main.feedback.dismiss") },
+          fn() {
+            guard @signals.untracked(report) is Some(f) else { return }
+            let id = text(Some(f), "id")
+            let latest_id = report_latest_id(f)
+            guard latest_id != "" else { return }
+            feedback_dismissed[id] = latest_id
+            (src.call)(
+              "feedback.dismiss",
+              { "workspace": Json::string(text(Some(f), "workspace")), "id": Json::string(id), "reply": Json::string(latest_id) },
+              @sfbase.answer_unread,
+            )
+          },
+          tips=here.tips,
+          size=28.0,
+          icon_size=16.0,
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
 /// What is under a post: the column's width (under_post's room).
 // kept across runs: a value (no field of it changes)
 let under_post_room : @ui.Style = @ui.css("w=Full")

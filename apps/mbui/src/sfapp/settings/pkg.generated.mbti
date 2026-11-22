@@ -249,7 +249,7 @@ pub fn open_machine_sessions(Core, String, String) -> Unit
 
 pub fn open_mark_pick(Core, String, String, String, String, (String, String, (Result[@json.Json, @json.Json]) -> Unit) -> Unit) -> Unit
 
-pub fn open_station_peek(String, from~ : @sf.Anchor) -> Unit
+pub fn open_station_peek(String, from~ : @sf.Anchor, offline_note? : () -> String) -> Unit
 
 pub fn opened_fields(String) -> Array[@json.Json]
 
@@ -340,11 +340,11 @@ pub let station_parts : @sf.LiveMap[String, String]
 
 pub fn station_peek_card(@ui.Ctx, String) -> Unit
 
-pub fn station_peek_card_node(@view.View, String, () -> Int32) -> Unit
+pub fn station_peek_card_node(@view.View, String, () -> Int32, offline_note? : () -> String) -> Unit
 
 pub fn station_peek_part(@ui.Ctx, String) -> Unit
 
-pub fn station_peek_part_node(@view.View, String, () -> Int32) -> Unit
+pub fn station_peek_part_node(@view.View, String, () -> Int32, offline_note? : () -> String) -> Unit
 
 pub fn station_via(@json.Json?) -> String
 

@@ -7,7 +7,7 @@
 /// `from` what was pressed (its tag in a chat's bar: a sheet with touch short of Large, else beside it), what it holds
 /// nodes of the window's tree made once as it opens (@sf.panel_nodes), with the frame's core (panels_core: as it is
 /// said, where it was put up before it was, a fixture's).
-pub fn open_station_peek(address : String, from~ : @sf.Anchor) -> Unit {
+pub fn open_station_peek(address : String, from~ : @sf.Anchor, offline_note? : () -> String = fn() { "" }) -> Unit {
   @sf.panel_nodes(
     "",
     fn(v, close) {
@@ -15,7 +15,7 @@ pub fn open_station_peek(address : String, from~ : @sf.Anchor) -> Unit {
       // anything coming down a column does), made again with another workspace's as that one is said; none, nothing)
       v.pick(fn() { panels_core.get().map(fn(p) { p.0 }) }, fn(b, workspace) {
         match (workspace, panels_core_as_is()) {
-          (Some(_), Some(core)) => station_peek_node(b, core, address, close)
+          (Some(_), Some(core)) => station_peek_node(b, core, address, close, offline_note)
           _ => ()
         }
       })
@@ -380,23 +380,28 @@ pub fn station_via(s : Json?) -> String {
 /// up, its machine in brief (else why it is down), as its stations say it now; then where to go on, the panel's rows at
 /// a dialog's foot (concentric with its foot corners there), their words on its line. Each part followed as what it
 /// shows changes.
-fn station_peek_node(v : @view.View, core : Core, address : String, close : () -> Unit) -> Unit {
+fn station_peek_node(v : @view.View, core : Core, address : String, close : () -> Unit, offline_note : () -> String) -> Unit {
   let stations = (core.topic)("stations", { "scope": str(peek_scope(address)) })
   let screens = (core.topic)("screens", { "station": str(address) })
   let net = (core.topic)("stationNet", { "station": str(address) })
   let s = fn() { peek_station_of(stations.get().value, address) }
   v.box(fn(b) {
     @sf.style_node(b, fn() { peek_body })
-    b.show(fn() { s() is Some(_) }, fn(w) {
+    b.show(fn() { s() is Some(_) || offline_note() != "" }, fn(w) {
       // (its words as far in as its rows' words: a dialog's, a small panel's)
       @sf.style_node(w, fn() { peek_words.then(@sf.panel_words_in_node(w)) })
-      @sf.words_node(w, fn() { text(s(), "summary") }, fn() { peek_said }) |> ignore
+      w.show(fn() { text(s(), "summary") != "" }, at_once=true, fn(sm) {
+        @sf.words_node(sm, fn() { text(s(), "summary") }, fn() { peek_said }) |> ignore
+      })
       // (what its agents' processes are is on its page, a tap away)
-      w.pick(fn() { flag(s(), "online") }, fn(x, online) {
+      w.pick(fn() { flag(s(), "online") && offline_note() == "" }, fn(x, online) {
         if online {
           peek_figures_node(x, core, s, fn() { station_net_of(net.get().value) })
         } else {
-          @sf.words_node(x, fn() { peek_down(s()) }, fn() { peek_said }) |> ignore
+          @sf.words_node(x, fn() {
+            let note = offline_note()
+            if note != "" { note } else { peek_down(s()) }
+          }, fn() { peek_said }) |> ignore
         }
       })
     })

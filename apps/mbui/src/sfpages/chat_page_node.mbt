@@ -166,6 +166,14 @@ pub fn chat_page_body_node(
       None => ()
     }
   })
+  let feedback_held = @sfbase.topic_value_held(src, "chatFeedback", @sfbase.chat_params(r))
+  // (read chatFeedback once the chat head has answered, outside by_room so its subscription order relative to
+  // chat_bar_node's chatRow is deterministic across 7 / 60 / 120 fps rather than racing the first layout frame)
+  v.reacts(fn() { read.get() is Some(_) }, fn(loaded) {
+    if loaded {
+      feedback_held.get() |> ignore
+    }
+  })
   // (its rows by the width it is given, never one worked out of the shell's state)
   v.by_room(fn(b, given) {
     b.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
@@ -258,6 +266,7 @@ pub fn chat_page_body_node(
         // `ask_clear`))
         foot=fn() { foot() + (if @sfbase.ask_clears((here.view)()) { float_ask_clear } else { 0.0 }) },
         foot_clear_extra~,
+        feedback_held~,
         composer?,
         lead~,
         read=fn(place, scroll, rows, reopening, on_reopened) {

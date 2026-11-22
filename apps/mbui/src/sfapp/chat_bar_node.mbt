@@ -760,18 +760,44 @@ fn small_glass_capsule(b : @view.View) -> Unit {
 }
 
 ///|
+/// Compact station offline / updating status inline inside a composer-top station capsule on Small screens.
+fn small_station_status_node(
+  parent : @view.View,
+  is_offline : () -> Bool,
+  is_updating : () -> Bool,
+) -> Unit {
+  parent.show(fn() { is_updating() || is_offline() }, at_once=true, fn(st) {
+    st.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())).shrink(Is(0.0)).drops(Is(5)) |> ignore
+    st.pick(at_once=true, is_updating, fn(x, updating) {
+      if updating {
+        x.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())).shrink(Is(0.0)) |> ignore
+        @sf.updating_mark_node(x, 12.0, fn() { @sf.theme().p.muted })
+        @sf.words_node(x, fn() { @sf.t("web-main.stationUpdate.updating") }, fn() { small_composer_pill_muted })
+        |> ignore
+      } else {
+        @sf.words_node(x, fn() { @sf.t("web-pages.stations.offline") }, fn() { small_composer_pill_offline })
+        |> ignore
+      }
+    })
+  })
+}
+
+///|
 /// The station's tag above the composer while no agent is in the chat: single-layer 30pt liquid glass capsule.
 fn station_chip_node(
   v : @view.View,
   address : String,
   s : Station,
   via : () -> String,
+  is_offline : () -> Bool,
+  is_updating : () -> Bool,
+  offline_note : () -> String,
   stint : () -> Int,
 ) -> Unit {
   v.box(fn(k) {
     @sf.presses_node(k, fn() {
       let (x, y, w, h) = k.placed_window_now()
-      @settings.open_station_peek(address, from=At(x, y, w, h))
+      @settings.open_station_peek(address, from=At(x, y, w, h), offline_note~)
     })
     small_glass_capsule(k)
     k
@@ -795,6 +821,7 @@ fn station_chip_node(
       |> ignore
     })
     |> ignore
+    small_station_status_node(k, is_offline, is_updating)
   })
   |> ignore
 }
@@ -932,6 +959,14 @@ let small_composer_pill_words : @ui.TextStyle = @ui.text_style(size=Meta, color=
 
 ///|
 // kept across runs: a value (no field of it changes)
+let small_composer_pill_muted : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let small_composer_pill_offline : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
 let small_composer_pill_count : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, wrap=false, tabular=true)
 
 ///|
@@ -954,6 +989,31 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
     match station_marks(src, w).iter().find_first(fn(s) { s.address == r.station }) {
       Some(s) => s.via
       None => ""
+    }
+  }
+  let is_offline = fn() {
+    match view() {
+      Some(v) => v.offline
+      None => false
+    }
+  }
+  let is_updating = fn() {
+    match view() {
+      Some(v) => v.updating
+      None => false
+    }
+  }
+  let offline_note = fn() {
+    match view() {
+      Some(v) => v.offline_note.unwrap_or("")
+      None => ""
+    }
+  }
+  let via_now = fn() {
+    if is_offline() && !is_updating() {
+      "offline"
+    } else {
+      via()
     }
   }
   let badge_of = fn(key : String) {
@@ -1034,7 +1094,7 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
       match group_opt {
         None =>
           match station {
-            Some(s) => station_chip_node(slot, r.station, s, via, stint)
+            Some(s) => station_chip_node(slot, r.station, s, via_now, is_offline, is_updating, offline_note, stint)
             None => ()
           }
         Some(group) => {
@@ -1066,7 +1126,7 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
             @sf.hover_ground_node(k)
             match station {
               Some(s) => {
-                @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.text }, stint)
+                @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via_now, fn() { @sf.theme().p.text }, stint)
                 let has_mark = @sf.has_station_mark(s.emoji, s.icon)
                 k.box(fn(w) {
                   w
@@ -1081,6 +1141,7 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
                   }
                 })
                 |> ignore
+                small_station_status_node(k, is_offline, is_updating)
                 k.box(fn(sep) {
                   sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
                   |> ignore

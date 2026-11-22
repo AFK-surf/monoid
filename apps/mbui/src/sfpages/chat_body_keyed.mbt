@@ -246,6 +246,9 @@ fn chat_body_ends(
         None => ()
       }
     }
+    if v.archived && (still.is_empty() || v.offline) {
+      put(under, Entry::Archived, lone())
+    }
   }
   for a in answered {
     put(under, Entry::Working(a), lone())

@@ -774,6 +774,16 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
     })
     let station = fn() { station_marks(src, @sfbase.workspace_of(r.station)).iter().find_first(fn(st) { st.address == r.station }) }
     let chat_cv = fn() { view_of_chat(src, r).0 }
+    let offline_note = fn() {
+      match chat_cv() {
+        Some(cv) => cv.offline_note.unwrap_or("")
+        None => ""
+      }
+    }
+    col.show(fn() { offline_note() != "" }, at_once=true, fn(n) {
+      n.padding(Is((agent_words_in, 0.0, agent_words_in, agent_notes_under))) |> ignore
+      @sf.words_node(n, offline_note, fn() { @sf.meta.then(@sf.full_words) }) |> ignore
+    })
     let has_remote = fn() {
       match chat_cv() {
         Some(cv) => chat_has_remote(cv)
@@ -839,7 +849,7 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
             press=fn() {
               // the station's card in place of this one
               close()
-              @settings.open_station_peek(r.station, from=Unanchored)
+              @settings.open_station_peek(r.station, from=Unanchored, offline_note~)
             },
           )
           |> ignore
@@ -1330,6 +1340,12 @@ fn station_agents_node(v : @view.View, src : Source, r : ChatRef, addr : String,
   let chat = fn() { @sfbase.chat_head_json(src, r) }
   let agents = fn() { items(chat(), "agents") }
   let station = fn() { station_marks(src, @sfbase.workspace_of(addr)).iter().find_first(fn(st) { st.address == addr }) }
+  let offline_note = fn() {
+    match @sfbase.chat_view_now(src, r) {
+      Some(cv) => cv.offline_note.unwrap_or("")
+      None => ""
+    }
+  }
   let agent_key = fn(a : Json) { text(field(Some(a), "session"), "key") }
   v.box(fn(col) {
     @sf.style_node(col, fn() { title_row_whole })
@@ -1354,7 +1370,7 @@ fn station_agents_node(v : @view.View, src : Source, r : ChatRef, addr : String,
           },
           press=fn() {
             close()
-            @settings.open_station_peek(address, from=Unanchored)
+            @settings.open_station_peek(address, from=Unanchored, offline_note~)
           },
         )
         |> ignore

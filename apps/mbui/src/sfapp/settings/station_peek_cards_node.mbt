@@ -9,7 +9,12 @@
 /// (panels_core: none, nothing; another workspace's, made again with that one's): its dot, its mark and its name, what
 /// it says of itself and, up, its machine in brief (else why it is down); then where to go on, rows at the card's
 /// padding. `stint`: the page's time on top, what its mark's picture is asked for on.
-pub fn station_peek_card_node(v : @view.View, address : String, stint : () -> Int) -> Unit {
+pub fn station_peek_card_node(
+  v : @view.View,
+  address : String,
+  stint : () -> Int,
+  offline_note? : () -> String = fn() { "" },
+) -> Unit {
   peek_with_core(v, fn(b, core) {
     let st = peek_station_topics(core, address)
     let t = fn() { @sf.theme() }
@@ -21,27 +26,36 @@ pub fn station_peek_card_node(v : @view.View, address : String, stint : () -> In
           @sf.style_node(h, fn() { peek_card_head })
           // (the same dot as on its tile in the chat's bar: how this device reaches it, not only whether it is up)
           @sf.state_dot_node(h, fn() {
-            match station_via((st.s)()) {
-              "direct" => "online"
-              "relay" => "busy"
-              "offline" => "error"
-              "waiting" => "waiting"
-              _ => "online"
+            if offline_note() != "" {
+              "error"
+            } else {
+              match station_via((st.s)()) {
+                "direct" => "online"
+                "relay" => "busy"
+                "offline" => "error"
+                "waiting" => "waiting"
+                _ => "online"
+              }
             }
           })
           peek_mark_node(h, st, stint, fn() { t().p.muted })
           @sf.words_node(h, st.name, fn() { peek_card_name }) |> ignore
         })
         |> ignore
-        w.show(fn() { (st.s)() is Some(_) }, fn(x) {
+        w.show(fn() { (st.s)() is Some(_) || offline_note() != "" }, fn(x) {
           // (what it says and its machine as far apart as the card's words: peek_card_words' gap)
           @sf.style_node(x, fn() { peek_card_said })
-          @sf.words_node(x, fn() { text((st.s)(), "summary") }, fn() { peek_said }) |> ignore
-          x.pick(fn() { flag((st.s)(), "online") }, fn(y, online) {
+          x.show(fn() { text((st.s)(), "summary") != "" }, at_once=true, fn(sm) {
+            @sf.words_node(sm, fn() { text((st.s)(), "summary") }, fn() { peek_said }) |> ignore
+          })
+          x.pick(fn() { flag((st.s)(), "online") && offline_note() == "" }, fn(y, online) {
             if online {
               peek_figures_by(y, core, st)
             } else {
-              @sf.words_node(y, fn() { peek_down((st.s)()) }, fn() { peek_said }) |> ignore
+              @sf.words_node(y, fn() {
+                let note = offline_note()
+                if note != "" { note } else { peek_down((st.s)()) }
+              }, fn() { peek_said }) |> ignore
             }
           })
         })
@@ -57,10 +71,15 @@ pub fn station_peek_card_node(v : @view.View, address : String, stint : () -> In
 /// The station card's part under its agent's card in one in `v`: its head as an agent card's (its
 /// mark on a square 28 of the neutral ground, or its name's first letter, its name beside it), under it a dot in its
 /// tone (up or not) and what it says of itself (down, why); up, its machine at a glance; then where to go on.
-pub fn station_peek_part_node(v : @view.View, address : String, stint : () -> Int) -> Unit {
+pub fn station_peek_part_node(
+  v : @view.View,
+  address : String,
+  stint : () -> Int,
+  offline_note? : () -> String = fn() { "" },
+) -> Unit {
   peek_with_core(v, fn(b, core) {
     let st = peek_station_topics(core, address)
-    let online = fn() { flag((st.s)(), "online") }
+    let online = fn() { flag((st.s)(), "online") && offline_note() == "" }
     b.box(fn(card) {
       @sf.style_node(card, fn() { peek_card })
       card.box(fn(w) {
@@ -96,7 +115,7 @@ pub fn station_peek_part_node(v : @view.View, address : String, stint : () -> In
           @sf.words_node(h, st.name, fn() { peek_part_name }) |> ignore
         })
         |> ignore
-        w.show(fn() { (st.s)() is Some(_) }, fn(x) {
+        w.show(fn() { (st.s)() is Some(_) || offline_note() != "" }, fn(x) {
           @sf.style_node(x, fn() { peek_card_said })
           x.box(fn(r) {
             @sf.style_node(r, fn() { peek_part_status })
@@ -108,7 +127,14 @@ pub fn station_peek_part_node(v : @view.View, address : String, stint : () -> In
               |> ignore
             })
             |> ignore
-            let said = @sf.words_node(r, fn() { if online() { text((st.s)(), "summary") } else { peek_down((st.s)()) } }, fn() {
+            let said = @sf.words_node(r, fn() {
+              if online() {
+                text((st.s)(), "summary")
+              } else {
+                let note = offline_note()
+                if note != "" { note } else { peek_down((st.s)()) }
+              }
+            }, fn() {
               peek_part_words
             })
             // (what the dot leaves of the row: peek_part_words' w=Full)

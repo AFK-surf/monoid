@@ -22,6 +22,10 @@ pub(all) enum Entry {
   Working(Agent)
   /// its agent's prompt cache over (ChatView's `cache_cold`): session, status, detail, afresh
   CacheCold(String, String, String, Bool)
+  /// the chat is archived (ChatView's `archived`): sending restores it, or restore now
+  Archived
+  /// the still.fail team replied on a bug report sent from this chat (`chatFeedback`)
+  Feedback
   Foot
 }
 
@@ -39,6 +43,8 @@ pub fn Entry::id(self : Entry) -> String {
     State(_, _, _) => state_key
     Working(a) => "act:" + a.key
     CacheCold(_, _, _, _) => "cache_cold"
+    Archived => "archived"
+    Feedback => "feedback"
     Foot => "foot"
   }
 }
@@ -568,6 +574,9 @@ fn chat_entry_tail(out : Array[Entry], v : ChatView) -> Unit {
       Some((session, status, detail, afresh)) => out.push(CacheCold(session, status, detail, afresh))
       None => ()
     }
+  }
+  if !v.newer && v.archived {
+    out.push(Archived)
   }
   out.push(Foot)
 }
