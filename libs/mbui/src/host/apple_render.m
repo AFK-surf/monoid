@@ -2593,11 +2593,11 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
       float sg = sqrtf(fmaxf(sk_f * sk_f - pre, 0.0f));
       if (sp > 0.25f) {
         for (int j = 1; j <= lk; j++) {
-          post_pass(cb, lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0, NULL);
+          post_pass(cb, lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0, NULL, NULL);
         }
         if (sg > 0.3f) {
-          post_pass(cb, lv[lk], lw[lk], lh[lk], ltmp, lw[lk], lh[lk], 2, sg, 1, 0, NULL);
-          post_pass(cb, ltmp, lw[lk], lh[lk], lv[lk], lw[lk], lh[lk], 2, sg, 0, 1, NULL);
+          post_pass(cb, lv[lk], lw[lk], lh[lk], ltmp, lw[lk], lh[lk], 2, sg, 1, 0, NULL, NULL);
+          post_pass(cb, ltmp, lw[lk], lh[lk], lv[lk], lw[lk], lh[lk], 2, sg, 0, 1, NULL, NULL);
         }
       } else {
         lk = 0;
