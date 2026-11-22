@@ -13,6 +13,17 @@ fn trans_word_alpha(t : @ui.Tester, text : String) -> Double {
 }
 
 ///|
+fn trans_word_alpha_near_x(t : @ui.Tester, text : String, x0 : Double) -> Double {
+  let mut best = 0.0
+  for w in t.words() {
+    if w.0 == text && (w.1 - x0).abs() < 12.0 && w.5 > best {
+      best = w.5
+    }
+  }
+  best
+}
+
+///|
 fn trans_word_pos(t : @ui.Tester, text : String) -> (Double, Double)? {
   let mut best : (Double, Double)? = None
   for w in t.words() {
@@ -59,6 +70,10 @@ test "小屏 NewChat -> Chat: 顶栏取消平滑淡出、胶囊平滑淡出、�
   assert_true(trans_word_alpha(t, "取消") > 0.95)
   assert_true(trans_word_alpha(t, "Willow") > 0.95)
   assert_true(trans_word_alpha(t, "想让 agent 做什么？") > 0.95)
+  let willow_x0 = match t.words().iter().find_first(fn(w) { w.0 == "Willow" && w.5 > 0.95 }) {
+    Some(w) => w.1
+    None => fail("Willow capsule not found before send")
+  }
 
   tap_send(t)
   t.draw()
@@ -67,7 +82,7 @@ test "小屏 NewChat -> Chat: 顶栏取消平滑淡出、胶囊平滑淡出、�
   let samples = t.sample_frames(220.0, step=16.0, fn(tt, _) {
     (
       trans_word_alpha(tt, "取消"),
-      trans_word_alpha(tt, "Willow"),
+      trans_word_alpha_near_x(tt, "Willow", willow_x0),
       trans_word_alpha(tt, "想让 agent 做什么？"),
       trans_word_pos(tt, words).unwrap_or((0.0, 0.0)),
     )

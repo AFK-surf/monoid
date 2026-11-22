@@ -576,6 +576,7 @@ export const PROFILE_SHAPES: Record<string, Shape> = {
     ["title", "String", { said: true }],
     ["lines", vec("String"), { doc: "What borrowing does, its account's kind, and that the stations' environments differ: the confirmation's text." }],
     ["action", "String"],
+    ["confirmAction", opt("String"), { doc: "The confirmation button, or `action` on older cores." }],
     ["allowed", "bool", { doc: "The viewer may borrow it now (a manager, and not on its way already)." }],
     ["why", opt("String"), { said: true, doc: "Why not, where not allowed." }],
   ], { doc: "A model control's picked model that another station has: borrowing it, confirmed first." }),

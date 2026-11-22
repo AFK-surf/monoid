@@ -20,6 +20,31 @@ let hang_gate : HangGate = HangGate::new()
 let timed : Map[Int, Bool] = Map([])
 
 ///|
+/// Whether the host takes `bar_switch` JSON directly from MoonBit's `BarSwitchTracker` (iOS, macOS, Windows, Web),
+/// rather than timing switches itself (Android's `BarTiming.java`).
+let use_mb_bar : Ref[Bool] = Ref(false)
+
+///|
+/// Shared `bar_switch` state machine for hosts where `bar_switch_ready` answers 1.
+let bar_tracker : BarSwitchTracker = BarSwitchTracker::new()
+
+///|
+fn emit_bar_switch(json : String?) -> Unit {
+  match json {
+    Some(j) => host_tell("bar_switch", j, "", 0, 0) |> ignore
+    None => ()
+  }
+}
+
+///|
+/// Flushes any timed-out `bar_switch` (3000 ms) when MoonBit owns the state machine.
+fn report_bar_tick() -> Unit {
+  if use_mb_bar.val && bar_tracker.has_pending() {
+    emit_bar_switch(bar_tracker.tick(@core.monotonic_ms()))
+  }
+}
+
+///|
 /// The latest core failure not yet told, where no host takes it: kept as the core fails (its core gone), sent to the core
 /// started after it (`@core.on_restarted`). Only the latest: a core failing again before one takes calls replaces it.
 let pending_core_failed : Ref[String?] = Ref(None)
@@ -77,6 +102,7 @@ fn reports_start() -> Unit {
   )
   @ui.hang_summary_told(
     Some(fn(s) {
+      report_bar_tick()
       let (held, unsent) = hang_gate.flush()
       for h in held {
         host_tell("hang", h.json().stringify(), "", 0, 0) |> ignore
@@ -100,20 +126,35 @@ fn reports_start() -> Unit {
       host_tell("hang_summary", json.stringify(), "", 0, 0) |> ignore
     }),
   )
-  @sfapp.bar_timing.val = Some({
-    placed: fn(from, to) { host_tell("placed", from, to, 0, 0) |> ignore },
-    built: fn(place) { host_tell("built", place, "", 0, 0) |> ignore },
-  })
+  use_mb_bar.val = host_tell("bar_switch_ready", "", "", 0, 0) != 0
+  let on_placed = fn(from : String, to : String) {
+    if use_mb_bar.val {
+      timed.clear()
+      emit_bar_switch(bar_tracker.placed(from, to, @core.monotonic_ms()))
+    } else {
+      host_tell("placed", from, to, 0, 0) |> ignore
+    }
+  }
+  let on_built = fn(place : String) {
+    if use_mb_bar.val {
+      emit_bar_switch(bar_tracker.built(place, @core.monotonic_ms()))
+    } else {
+      host_tell("built", place, "", 0, 0) |> ignore
+    }
+  }
+  @sfapp.bar_timing.val = Some({ placed: on_placed, built: on_built })
   // (an account's page opened by a press, timed as a switch is: its asks the topics followed)
-  @sfbase.open_timing.val = Some({
-    asked: fn(to) { host_tell("placed", "", to, 0, 0) |> ignore },
-    opened: fn(to) { host_tell("built", to, "", 0, 0) |> ignore },
-  })
+  @sfbase.open_timing.val = Some({ asked: fn(to) { on_placed("", to) }, opened: on_built })
   @core.time_topics(
     Some(fn(id, topic, value, first) {
       if !first {
-        // (the host says whether a switch is being timed: a value's size is counted only then)
-        if host_tell("followed", topic, "", id, 0) != 0 {
+        // (the host or MoonBit tracker says whether a switch is being timed: a value's size is counted only then)
+        let take = if use_mb_bar.val {
+          bar_tracker.followed(id, topic, @core.monotonic_ms())
+        } else {
+          host_tell("followed", topic, "", id, 0) != 0
+        }
+        if take {
           timed[id] = true
         }
       } else if timed.contains(id) {
@@ -133,7 +174,11 @@ fn reports_start() -> Unit {
           }
           None => (-1, "")
         }
-        host_tell("decoded", topic, parts, id, bytes) |> ignore
+        if use_mb_bar.val {
+          emit_bar_switch(bar_tracker.decoded(id, bytes, parts, @core.monotonic_ms()))
+        } else {
+          host_tell("decoded", topic, parts, id, bytes) |> ignore
+        }
       }
     }),
   )

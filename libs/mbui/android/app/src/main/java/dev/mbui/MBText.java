@@ -502,17 +502,16 @@ final class MBText {
         Clusters font = clusters((float) size, weight, style);
         boolean units = unitClusters(chars, n);
         // a run at a time in its own direction (shaped left to right, Arabic came out in letters that do not join,
-        // wider than the system draws the word)
+        // wider than the system draws the word); any pure LTR run reuses cached isolated Han advances even when
+        // non-unit clusters (emoji, arrows, math symbols) appear elsewhere in the run
         if (!units && Bidi.requiresBidi(chars, 0, n)) {
             Bidi b = new Bidi(chars, 0, null, 0, n, Bidi.DIRECTION_DEFAULT_LEFT_TO_RIGHT);
             for (int r = 0; r < b.getRunCount(); r++) {
                 int rs = b.getRunStart(r), rl = b.getRunLimit(r) - rs;
                 p.getTextRunAdvances(chars, rs, rl, rs, rl, (b.getRunLevel(r) & 1) != 0, adv, rs);
             }
-        } else if (units) {
-            measureUnits(p, font, chars, n, d);
         } else {
-            p.getTextRunAdvances(chars, 0, n, 0, n, false, adv, 0);
+            measureUnits(p, font, chars, n, d);
         }
         // tabs to the next stop, as android.text.Layout puts them (every 20 pixels from the line's start)
         float x = 0;

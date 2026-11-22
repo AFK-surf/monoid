@@ -3269,15 +3269,15 @@ export class Views implements Owner {
 
   /// The chats a chat's agent opened (its station's row's `opened`), as their lists have them: each on its station, titled
   /// as its row is (else as it was given), where it stands as its row's second line says it (what it needs of the viewer,
-  /// a card, done), its mark; one in its station's archive said so. Ordered by priority (failed, need/block, running,
-  /// other active, done, archived), newest created first within the same priority.
+  /// a card, done), its mark; one in its station's archive said so. Ordered by priority (failed, need/block, at work or
+  /// waiting on its own work, ended, archived), newest created first within the same priority. Ended is done and also
+  /// an agent stopped without saying so (idle, aborted): the app folds all of them away together (`subchat_is_done`).
   #opened(station: string, raw: J): J[] {
     const openedRank = (o: J): number => {
-      if (o.archived === true) return 5;
+      if (o.archived === true) return 4;
       if (o.mark === "failed") return 0;
       if (o.stateLead === "need" || o.stateLead === "decision" || o.mark === "block") return 1;
-      if (o.mark === "run") return 2;
-      if (o.stateLead === "done") return 4;
+      if (o.mark === "run" || o.stateLead === "wait" || o.stateLead === "watch") return 2;
       return 3;
     };
     const items: { item: J; idx: number }[] = [];

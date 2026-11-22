@@ -141,7 +141,7 @@ pub fn open_fixture(mode : String) -> Unit {
     }
     // the wide frame's (wide_panel.mbt): the chat's "…" open, its services' popover, what is opened beside it
     "chat-letters-pop" | "chat-opener-pop" | "chat-opened-pop" => @sfdesk.open_info_pop()
-    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" =>
+    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" | "chat-subchats-idle" =>
       @sfdesk.open_subchats_pop()
     "chat-jobs-pop" => {
       @sfdesk.open_jobs_pop()
@@ -208,7 +208,7 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
     }
     "chat-agent" | "chat-agent-working" | "chat-agent-unsaid" | "chat-agent-context" | "chat-agent-compacted" | "chat-agent-screens" => open_agent(src, r, "s-c1")
     "chat-jobs" => open_chat_jobs(src, r)
-    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" =>
+    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" | "chat-subchats-idle" =>
       open_subchats(src, r)
     "chat-job" => {
       dui.job_tab = 0
@@ -751,6 +751,10 @@ pub fn open_mode(mode : String) -> Unit {
         @sffixture.new_fix.preset = "p-sf"
         @sffixture.new_fix.bound = true
       }
+      "newchat-borrow-model" => {
+        @sffixture.new_fix.borrow = true
+        @sfpages.new_chat_ask("model")
+      }
       "newchat-station-models" | "newchat-station-empty" | "newchat-station-models-many" | "newchat-tui-model" | "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
         @sfpages.new_chat_ask("model")
       _ => ()
@@ -995,7 +999,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload",
     "files", "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split", "files-transfers",
     "files-tree", "place-stations", "place-profiles", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
-    "newchat-model", "newchat-profiles", "newchat-reading", "newchat-station",
+    "newchat-model", "newchat-borrow-model", "newchat-profiles", "newchat-reading", "newchat-station",
     "newchat-station-models", "newchat-station-empty",
     // (a preset's dialog and its steps further in: 添加目录, the folder picker at a station's home and in a folder of
     // repositories, 从 Git 克隆, a clone under way and one failed among its folders)

@@ -493,8 +493,13 @@ fn composer_node_of(
     // (how far its ground's top is drawn off where it is laid out as its shape goes: what is said over it with it)
     // (its box's, said as it is made, after what is over it: read as said, `drawn_top_said`)
     let drawn_top : Ref[(@view.View) -> Double] = Ref(fn(_) { 0.0 })
-    let over_alpha : Ref[(@view.View) -> Double] = Ref(fn(_) { 1.0 })
     let drawn_top_said = @signals.signal(0)
+    let from_fresh = made is None && @signals.untracked(fn() { @sfbase.fresh.became.get() }) == Some(r)
+    let over_in : @motion.NodeWay? = if from_fresh && !@ui.reduced_motion() {
+      Some(@motion.NodeWay::new(0.0))
+    } else {
+      None
+    }
     // (what stands over it drawn with its ground's top: a chat's notices; a new chat's choices where it is not roomy
     // (laid out so at once, as its page is), its page saying its own notices over it)
     let over_drawn = fn(v : @view.View) {
@@ -536,23 +541,33 @@ fn composer_node_of(
       None => {
         composer_notices_node(foot, src, r, tips, stand, over_drawn)
         match over_it {
-          Some(f) =>
+          Some(f) => {
+            let field_menu_hides = fn() { @ui.field_menu_now() is Some(_) && w.field.focused() }
             foot.box(fn(o) {
               o
               .width(By(fn() { Some(stand.at(if over_full { stand.wide } else { stand.composer_w })) }))
               .offset(By(fn() { (0.0, over_drawn(o)) }))
               .alpha(By(fn() {
-                drawn_top_said.get() |> ignore
-                (over_alpha.val)(o)
+                if field_menu_hides() {
+                  0.0
+                } else {
+                  match over_in {
+                    Some(way) => way.shown(o)
+                    None => 1.0
+                  }
+                }
               }))
-              .in_use(By(fn() {
-                drawn_top_said.get() |> ignore
-                (over_alpha.val)(o) > 0.5
-              }))
+              .in_use(By(fn() { !field_menu_hides() }))
               |> ignore
+              match over_in {
+                Some(way) if from_at is None =>
+                  way.go(o, 1.0, @motion.tween(140.0, ease=Out, delay=100.0))
+                _ => ()
+              }
               f(o)
             })
             |> ignore
+          }
           None => ()
         }
       }
@@ -585,7 +600,7 @@ fn composer_node_of(
       from_at~,
       own=made,
       before_take_in~,
-      on_over_alpha=fn(f) { over_alpha.val = f },
+      over_in~,
       shared?,
     )
     // (what went wrong, under it)
@@ -816,7 +831,7 @@ fn composer_box_node(
   from_at? : (Double, Double, Double, Double)? = None,
   own? : ComposerNodeFor? = None,
   before_take_in? : Ref[() -> Unit] = Ref(fn() {  }),
-  on_over_alpha? : ((@view.View) -> Double) -> Unit = fn(_) { () },
+  over_in? : @motion.NodeWay? = None,
   shared? : ChatBoxShared,
 ) -> Unit {
   let draft = w.key
@@ -932,22 +947,22 @@ fn composer_box_node(
   // file, to be let go to a capsule)
   let has_extras = fn() { w.files.get().length() > 0 || w.quotes.get().length() > 0 }
   let hint_hidden = fn() { hint_away() || w.text.get() != "" || (held() && !has_extras()) }
+  let narrow_fresh = over_in is Some(_) && from_at is None
   let hint_in = @motion.NodeWay::new(
-    if from_at is Some(_) || @signals.untracked(fn() { hint_away() || held() }) {
+    if from_at is Some(_) || narrow_fresh || @signals.untracked(fn() { hint_away() || held() }) {
       0.0
     } else {
       1.0
     },
   )
   // (its hint's way back said by that flight: not set off again as it is first made)
-  let fresh_fly = Ref(from_at is Some(_))
+  let fresh_fly = Ref(from_at is Some(_) || narrow_fresh)
   // (how much taller than it is laid out its ground is drawn, over it: what it was as words were sent from it, held as
   // long as the old composer's on this page is (sfbase's sent_out_hold_ms), then down to none on their flight's curve)
   let sent_over = match shared {
     Some(sh) => sh.sent_over
     None => @motion.NodeWay::new(0.0)
   }
-  let sent_flying = @motion.NodeWay::new(0.0)
   // (the moment it goes down from as tall as it was, once the way it was going on as words left it is over: -1 when
   // it is said to go down as they are sent)
   let sent_down_at = Ref(-1.0)
@@ -1201,14 +1216,13 @@ fn composer_box_node(
     if own is None && @signals.untracked(fn() { @sfbase.fresh.became.get() }) == Some(r) {
       let handoff_over = @signals.untracked(fn() { @sfbase.fresh_composer_over.get() })
       @sfbase.fresh_composer_over.set(0.0)
-      if !@ui.reduced_motion() {
-        sent_flying.put(1.0)
-        sent_flying.go(foot, 0.0, @motion.tween(@sf.hint_back_ms, ease=Out, delay=@ui.move_most_ms))
-        if handoff_over > 0.5 {
-          let hold = @sfbase.sent_out_hold_ms
-          sent_over.put(handoff_over)
-          sent_over.go(box, 0.0, @motion.tween(@ui.move_most_ms - hold, ease=Flight, delay=hold))
-        }
+      if !@ui.reduced_motion() && handoff_over > 0.5 {
+        let hold = @sfbase.sent_out_hold_ms
+        sent_over.put(handoff_over)
+        sent_over.go(box, 0.0, @motion.tween(@ui.move_most_ms - hold, ease=Flight, delay=hold))
+      }
+      if narrow_fresh && !@signals.untracked(hint_hidden) {
+        hint_in.go(foot, 1.0, @motion.tween(@sf.hint_back_ms, ease=Out, delay=@sfbase.sent_out_away_ms()))
       }
     }
     // (true container morph from the departing composer's full (fx, fy, fw, fh) on composer_move_flight with
@@ -1231,6 +1245,17 @@ fn composer_box_node(
                 @motion.tween(@sf.hint_back_ms, ease=Out, delay=ms),
                 start_at,
               )
+            }
+            match over_in {
+              Some(way) =>
+                way.put_at(
+                  foot,
+                  0.0,
+                  1.0,
+                  @motion.tween(@sf.hint_back_ms, ease=Out, delay=ms),
+                  start_at,
+                )
+              None => ()
             }
             Some(from)
           },
@@ -1272,8 +1297,6 @@ fn composer_box_node(
       })
       if words_go {
         @sfbase.sent_out_told(draft, at)
-        sent_flying.put(1.0)
-        sent_flying.go(foot, 0.0, @motion.tween(@sf.hint_back_ms, ease=Out, delay=@ui.move_most_ms))
         away_until.val = at + @sfbase.sent_out_away_ms()
         away_said.set(away_said.untracked() + 1)
         hint_in.put(0.0)
@@ -1375,15 +1398,6 @@ fn composer_box_node(
         @view.ground_as_laid
       }
     }
-    on_over_alpha(fn(v) {
-      if sent_over.shown(v) > 0.5 ||
-        sent_flying.shown(v) > 0.5 ||
-        (@ui.field_menu_now() is Some(_) && w.field.focused()) {
-        0.0
-      } else {
-        1.0
-      }
-    })
     drawn_top(fn(v) { ground_now(v).dy })
     box.ground_drawn(By(fn() { ground_now(box) }))
     |> ignore

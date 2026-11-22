@@ -52,7 +52,7 @@ fn message_video_node(
     // in from the moment it lands, as its flight says (View::flying_now: as long as it goes))
     match flies_from {
       Some(from) => {
-        fly.flies_in(f.radius(Is(corner)), part, fn(_) { Some(from) })
+        fly.flies_in(f.radius(Is(corner)), part, fn(_) { Some(from) }, particle=true)
         marks.put(0.0)
         f.reacts(fn() { f.flying_now() }, fn(on) { if !on { marks.go(1.0, @motion.tween(@sf.dur_ms, ease=Out), at=f.cause_at()) } }, at_start=false)
       }

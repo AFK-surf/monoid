@@ -170,7 +170,7 @@ fn message_files_node(
                   match from_now(p) {
                     // (from where its tile stood, at its own size: a card is no tile's square, never drawn
                     // stretched to one on its way)
-                    Some(r) => fly.flies_in(card, part, fn(to) { Some((r.0, r.1, to.2, to.3)) })
+                    Some(r) => fly.flies_in(card, part, fn(_) { Some(r) }, container=true, particle=true)
                     None => ()
                   }
                 }

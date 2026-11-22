@@ -122,20 +122,20 @@ function pageOf(profiles: J[], joined = false): { page: J; pick: J; made: Return
 
 const runs = (id: string, ms: string[], more: J = {}): J => ({ id, name: `${id}@x.com`, runtime: "claude", runtimes: ["claude"], access: { kind: "subscription" }, models: ms, ...more });
 
-test("a_new_chats_page_lists_its_stations_models_once_where_every_profile_enabled_there_serves_its_workspace_and_twice_where_one_does_not", () => {
-  // Every profile enabled there serving it (one disabled, which neither lists): one list, the page's and the control's.
+test("a_new_chat_only_offers_profiles_available_to_its_workspace", () => {
   const all = pageOf([runs("a", ["claude-opus-5-5"]), runs("b", ["claude-sonnet-5"], { serves: true }), runs("c", ["claude-fable-1"], { enabled: false })]);
   assert.equal(all.made.models, 1);
   assert.deepEqual(all.page.pick.value, all.pick.value);
-  // One enabled there that does not serve this workspace (`serves` false): the page's models leave it out, the
-  // control's do not (`pick` of `new`, as it always made them), each made apart, the face as its panel's.
   const not = pageOf([runs("a", ["claude-sonnet-5"]), runs("b", ["claude-opus-5-5"], { serves: false })]);
-  assert.equal(not.made.models, 2);
-  assert.deepEqual(not.page.model.model, "claude-sonnet-5", "the page: what serves it");
-  assert.deepEqual(not.page.pick.value, not.pick.value, "the control: as its panel");
-  assert.ok(not.pick.options.some((o: J) => o.model === "claude-opus-5-5"), "the control's: the one not serving it too");
-  // A station this workspace joined, of before `serves`: its profiles whose `workspaces` do not name it serve it not.
+  assert.deepEqual(not.page.model.model, "claude-sonnet-5");
+  assert.deepEqual(not.page.pick.value, not.pick.value);
+  assert.ok(!not.pick.options.some((o: J) => o.model === "claude-opus-5-5"));
   const joined = pageOf([runs("a", ["claude-sonnet-5"], { workspaces: ["ws"] }), runs("b", ["claude-opus-5-5"], { workspaces: ["home"] })], true);
-  assert.equal(joined.made.models, 2);
   assert.deepEqual(joined.page.pick.value, joined.pick.value);
+  assert.ok(!joined.pick.options.some((o: J) => o.model === "claude-opus-5-5"));
+  const unavailable = pageOf([runs("b", ["claude-opus-5-5"], { serves: false })]);
+  assert.equal(unavailable.page.blocked, "shared");
+  assert.equal(unavailable.page.profileScopeMissing, true);
+  assert.match(unavailable.page.problem, /尚未向此 workspace 开放/);
+  assert.deepEqual(unavailable.pick.options, []);
 });

@@ -758,7 +758,9 @@ export class Choose implements Owner {
     // other station up's overview walked for a profile it would lend, none of their models made (lends).
     const lends = overview !== null && profiles.length === 0 && !joined && this.#lends(scope, addr);
     const disabled = all.some((p) => get(p, "enabled") === false && profileServes(p, scope, joined));
-    view.blocked = overview !== null && profiles.length === 0 ? (lends ? null : disabled ? "disabled" : joined && all.length > 0 ? "shared" : "profile") : overview !== null && options.length === 0 ? "models" : null;
+    const notInWorkspace = all.some((p) => get(p, "enabled") !== false && !profileServes(p, scope, joined));
+    view.profileScopeMissing = !joined && notInWorkspace;
+    view.blocked = overview !== null && profiles.length === 0 ? (lends ? null : disabled ? "disabled" : (joined && all.length > 0) || notInWorkspace ? "shared" : "profile") : overview !== null && options.length === 0 ? "models" : null;
     // This workspace's name: as it is held, else as an account's `/v1/me` lists it.
     const here = get(this.#env.data.shared({ topic: "workspace", workspace: scope }), "name")
       ?? this.#env.data.mes().flatMap(([, me]) => arr(get(me, "workspaces"))).find((w) => get(w, "id") === scope)?.name;
@@ -766,7 +768,9 @@ export class Choose implements Owner {
       ? t("core-logic.choose.problem.not_shared", { name, home: station.home, workspace: typeof here === "string" ? here : "" })
       : t("core-logic.choose.problem.not_shared_elsewhere", { name, workspace: typeof here === "string" ? here : "" });
     view.problem = overview === null ? t("core-logic.choose.problem.loading", { name })
+      : lends && notInWorkspace ? t("core-logic.choose.problem.scope_borrow", { name })
       : lends ? t("core-logic.choose.problem.borrow_only", { name })
+      : view.blocked === "shared" && view.profileScopeMissing ? t("core-logic.choose.problem.scope", { name })
       : view.blocked === "disabled" ? t("core-logic.choose.problem.disabled_profiles", { name })
       : view.blocked === "shared" ? notShared()
       : profiles.length > 0 && options.length === 0 ? t("core-logic.choose.problem.no_models") : null;
@@ -786,12 +790,8 @@ export class Choose implements Owner {
     view.accounts = r.accounts;
     // Its model control as the page draws it closed (none while its profiles are read: the page shows it in its
     // bones); its panel is the `pick` topic, asked as it opens.
-    // Its control runs on the station's models of every profile it has enabled (`#onStation`, as `pick` of `new` has
-    // always made them), the page on those serving this workspace (`servingIn`): the same list, made once, unless a
-    // profile enabled there does not serve it (its `serves` false; or, on a station from before `serves`, one this
-    // workspace joined whose profile's `workspaces` do not name it); then the control's are made apart, as before.
-    const servesAll = arr(get(served, "profiles")).length === arr(get(raw, "profiles")).filter((p) => get(p, "enabled") !== false).length;
-    view.pick = overview !== null ? this.#face(addr, servesAll ? options : (stationModels(raw, this.#env.now()) as J[])) : null;
+    // The closed control and its panel offer the same profiles the new chat can use in this workspace.
+    view.pick = overview !== null ? this.#face(addr, options) : null;
     // A model borrowed from its panel on its way here: its control shows it, not what it ran on before (`#lent`).
     const lent = this.#lentFor(addr, "new");
     if (view.pick !== null && lent !== undefined) {
@@ -852,9 +852,15 @@ export class Choose implements Owner {
 
   #onStation(addr: string): [J[], Resolved] {
     const overview = this.#env.store.get({ topic: "overview", station: addr });
-    const options = stationModels(overview, this.#env.now()) as J[];
+    const scope = ofAddress(addr);
+    const ws = this.#env.store.value({ topic: "workspace", workspace: scope });
+    const row = ws !== undefined && "ok" in ws ? arr(get(ws.ok, "stations")).find((s) => get(s, "id") === stationId(addr)) : undefined;
+    const joined = get(row, "joined") === true;
+    const unserved = arr(get(overview, "profiles")).some((p) => get(p, "enabled") !== false && !profileServes(p, scope, joined));
+    const available = unserved ? servingIn(overview, scope, joined) : overview;
+    const options = stationModels(available, this.#env.now()) as J[];
     const subsets = overview === undefined || get(overview, "accountSubsets") === true;
-    return [options, resolve(options, this.#choice(ofAddress(addr), stationId(addr)), subsets)];
+    return [options, resolve(options, this.#choice(scope, stationId(addr)), subsets)];
   }
 
   /// Where the pick of board draft `id` on station `addr` is kept: the workspace's, by the station and the draft, so a
@@ -880,7 +886,7 @@ export class Choose implements Owner {
   }
 
   /// A new chat's model control as its page draws it closed (NewChatPick), on `station` of `options` (its models as
-  /// `#onStation` makes them: of every profile enabled there): what it runs on now and how
+  /// `#onStation` makes them: of profiles enabled there and available to this workspace): what it runs on now and how
   /// (the model's name, maker and runtimes; whether it says how hard it thinks, Fast; the account kept to), worked out
   /// of that station alone, as `#pick` works out the same of it (`#now`'s, `named`, `runsFast`). Its panel is the `pick`
   /// topic, asked as it opens: every option annotated, the workspace's other stations' models after them, made for
@@ -1436,17 +1442,19 @@ export class Choose implements Owner {
     const name = typeof option.name === "string" ? option.name : String(option.model);
     const vars = { station: b.stationName, account: withAccountPlan(b.profileName, b), model: name };
     const allowed = this.#manages(station);
+    const sharedHere = arr(b.allow).includes(stationId(station));
     return {
-      note: t("core-logic.choose.borrow.note", vars),
-      title: t("core-logic.choose.borrow.title", vars),
+      note: t(sharedHere ? "core-logic.choose.borrow.sharedHere" : "core-logic.choose.borrow.note", vars),
+      title: t(sharedHere ? "core-logic.choose.borrow.retryTitle" : "core-logic.choose.borrow.title", vars),
       lines: [
-        t("core-logic.choose.borrow.body", vars),
+        t(sharedHere ? "core-logic.choose.borrow.retryBody" : "core-logic.choose.borrow.body", vars),
         t(b.subscription ? "core-logic.choose.borrow.subscription" : "core-logic.choose.borrow.key", vars),
         t("core-logic.choose.borrow.environment"),
       ],
-      action: t("core-logic.choose.borrow.action"),
+      action: t(sharedHere ? "core-logic.choose.borrow.retryAction" : "core-logic.choose.borrow.action"),
+      confirmAction: t(sharedHere ? "core-logic.choose.borrow.retryAction" : "core-logic.choose.borrow.confirmAction"),
       allowed: allowed && b.pending !== true,
-      why: b.pending === true ? t("core-logic.choose.borrow.pending", vars) : allowed ? null : t("core-logic.choose.borrow.managers"),
+      why: b.pending === true ? t("core-logic.choose.borrow.pending", vars) : allowed ? null : t(sharedHere ? "core-logic.choose.borrow.managersShared" : "core-logic.choose.borrow.managers", vars),
     };
   }
 
@@ -2185,7 +2193,14 @@ export class Choose implements Owner {
     if (!isObject(b) || v.borrow === null) throw CoreError.invalid(t("core-logic.choose.borrow.nothing"));
     if (v.borrow.allowed !== true) throw CoreError.invalid(v.borrow.why ?? t("core-logic.choose.borrow.managers"));
     const allow = [...new Set([...arr(b.allow), stationId(station)])];
-    const op = ops.request("profile.share", { station: b.station, id: b.profile, on: true, allow });
+    // The overview only names stations visible in this workspace. When the profile is already shared, ask the host to
+    // change this station alone so it retains the allowances hidden from this workspace. For a new share, send the
+    // explicit allow list: `among` on an unshared profile could otherwise turn on sharing for every station.
+    const sourceStation = text(b.station);
+    if (sourceStation === null) throw CoreError.invalid(t("core-logic.choose.borrow.nothing"));
+    const source = arr(this.#profilesShown(sourceStation)).find((p) => get(p, "id") === b.profile);
+    const shared = typeof get(get(source, "share"), "id") === "string";
+    const op = ops.request("profile.share", { station: b.station, id: b.profile, on: true, allow, ...(shared ? { among: [stationId(station)] } : {}) });
     if (op === null) throw CoreError.invalid("profile.share");
     // (its account not named: the copy that comes here is its own profile, run by what the model runs on here)
     const d = v.draft;

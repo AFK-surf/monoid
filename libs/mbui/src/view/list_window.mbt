@@ -4705,6 +4705,25 @@ fn View::scrolls_window_ids(
           let inner = snap_inner.val
           // (set out: what its blocks hold may tell it again from here, at this same moment)
           inner_at.val = -1.0
+          // (told outside a transition where only one moves the list: nothing set out for it, all of it laid out on
+          // the next frame where it rests, a way going let go of (transition.mbt); skip the synchronous laid_now()
+          // unless foot_room must deduct newly arrived tail heights)
+          if quiet_once.val && (foot_room.untracked() <= 0.0 || flip_takes.val.is_empty()) {
+            if !fix {
+              flip_takes.val = []
+            }
+            came_once.val = Some(false)
+            flip_came.clear()
+            moved_now.val = Map([])
+            self.tree.answer_mark(self.at)
+            (flip_end_off.val)()
+            flip_items.clear()
+            flip_new.clear()
+            flip_whole.clear()
+            flip_in_clear()
+            flip_way.set(None)
+            return
+          }
           // (laid out as the change ends before anything is read: one set out inside the change's flush (what a block
           // holds told it) runs before the frame lays out, its nodes just made none tall till then)
           if !fix {
@@ -5349,9 +5368,9 @@ fn View::scrolls_window_ids(
               set_out(false)
             }
           }
-          // (what its blocks hold told it alone (inner), its keys as they were, waits for no old view: what is in its
-          // foot is no part of it, and the frame laid out at the cause is drawn set out from where they were)
-          if foot_old && !pending_inner.val && self.tree.old_builds <= pending_builds.val {
+          // (what its blocks hold told it alone (inner), its keys as they were, or a quiet change outside a transition,
+          // waits for no old view: what is in its foot is no part of it, and quiet changes set out nowhere)
+          if foot_old && !pending_inner.val && !pending_quiet.val && self.tree.old_builds <= pending_builds.val {
             // (meanwhile, a frame drawn before the old view is built is drawn from where each was, on the way that sets
             // out at the cause: never at where it goes for a frame and back (a word sent, the list up by its row for a
             // frame on a host's frames, which build an old view only as it is asked); worked out whole as it is built)

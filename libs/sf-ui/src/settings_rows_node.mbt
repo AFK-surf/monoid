@@ -3,7 +3,7 @@
 
 ///|
 /// How something stands, at a glance (status_dot's and a job's JobDot, as a node): a dot `size` round, online the online
-/// green, busy amber, error red, waiting the muted ink; a job's tones the theme's (up or live green, restart amber
+/// green, busy the bright warning yellow (Warn, never the words' darker warn_ink), error red, waiting the muted ink; a job's tones the theme's (up or live green, restart amber
 /// breathing to .35 and back, fail red, off the strong line's grey); else (offline) a ring 1.5 in it; `state` as it is
 /// now, the breath on the resident clock's steps, only where it `breathes` (a job's: made anew as its state changes, in
 /// `parent`, whatever `in_node` says). Made in a box of its own in `parent`, or `in_node` of `parent` itself (a box
@@ -22,7 +22,7 @@ pub fn state_dot_node(
     let tone = fn(c : @ui.Color) { (@ui.tree_theme().color(c), no_ground) }
     match st {
       "online" => (p.online, no_ground)
-      "busy" => (p.warn_ink, no_ground)
+      "busy" => tone(Warn)
       "error" => (p.red, no_ground)
       "waiting" => (p.muted, no_ground)
       "up" | "live" => tone(Positive)

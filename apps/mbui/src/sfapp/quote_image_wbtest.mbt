@@ -122,13 +122,18 @@ test "an image quoted: its picture in its card in the composer; sent, it grows f
     t.drawn_images().iter().any(fn(i) { (i[0] - tile[0]).abs() < 0.5 && (i[1] - tile[1]).abs() < 0.5 && (i[2] - 56.0).abs() < 0.5 }),
     msg=page + "\{Repr(t.drawn_images())}",
   )
-  // on its way: between its tile's size and its own, drawn at no size it has at rest
+  // on its way: between its tile's size and its own (or dispersed into fine true-color particles), never at rest size
   t.run_for(@sfbase.flight_len(true) * 0.4)
-  let mid = t.drawn_images().map(fn(i) { i[2] })
+  let mid_imgs = t.drawn_images()
+  let mid = mid_imgs.map(fn(i) { i[2] })
   t.run_for(@sfbase.flight_len(true) + @sf.hint_back_ms)
   let rest = t.drawn_images().map(fn(i) { i[2] })
   let between = mid.filter(fn(w) { w > 56.5 && rest.iter().all(fn(r) { (r - w).abs() > 0.5 }) })
-  assert_true(between.length() > 0, msg=page + "drawn \{Repr(mid)} on its way, at rest \{Repr(rest)}")
+  let particles = mid_imgs.filter(fn(i) { i[2] < 56.0 && i[8] > 0.5 })
+  assert_true(
+    between.length() > 0 || particles.length() >= 8,
+    msg=page + "drawn \{Repr(mid)} on its way, at rest \{Repr(rest)}",
+  )
 }
 
 ///|
@@ -342,18 +347,28 @@ test "a quoted picture remains visible over its card as they fly to the message"
   t.run_for(@sfbase.flight_len(true) * 0.4)
   let insts = t.drawn_instances()
   let moving = picture_instances(t, "mem:fixture/quoted-order.png").filter(fn(p) {
-    let a = p.1
-    a[2] > 56.5 && a[11] > 0.9
+    p.1[11] > 0.5
   })
-  assert_eq(moving.length(), 1, msg="the quoted picture on its way: \{Repr(moving)}")
-  let (index, picture) = moving[0]
-  let (x, y) = (picture[0] + picture[2] / 2.0, picture[1] + picture[3] / 2.0)
-  assert_true(corner_cover(picture, x, y, 2.0) > 0.9, msg="the picture is clipped away")
-  let over = insts.mapi(fn(i, a) { (i, a) }).filter(fn(p) {
-    let a = p.1
-    p.0 > index && (a[5] == 0.0 || a[5] == 4.0) && a[11] > 0.9 && corner_cover(a, x, y, 2.0) > 0.9
+  assert_true(moving.length() > 0, msg="the quoted picture on its way: \{Repr(moving)}")
+  let uncovered = moving.filter(fn(entry) {
+    let (index, picture) = entry
+    let (x, y) = (picture[0] + picture[2] / 2.0, picture[1] + picture[3] / 2.0)
+    if corner_cover(picture, x, y, 2.0) <= 0.9 {
+      return false
+    }
+    let over = insts.mapi(fn(i, a) { (i, a) }).filter(fn(p) {
+      let a = p.1
+      p.0 > index &&
+        (a[5] == 0.0 || (a[5] == 4.0 && t.image_src(a[20].to_int()) != "mem:fixture/quoted-order.png")) &&
+        a[11] > 0.9 &&
+        corner_cover(a, x, y, 2.0) > 0.9
+    })
+    over.is_empty()
   })
-  assert_eq(over.length(), 0, msg="the picture is covered on its way: \{Repr(over)}")
+  assert_true(
+    uncovered.length() * 2 > moving.length(),
+    msg="the picture is clipped or covered on its way: \{uncovered.length()}/\{moving.length()} visible",
+  )
 }
 
 ///|
@@ -414,12 +429,15 @@ fn quote_picture_visible(t : @ui.Tester, source : String) -> Bool {
   let instances = t.drawn_instances()
   instances.mapi(fn(i, a) { (i, a) }).iter().any(fn(p) {
     let (index, a) = p
-    if a[5] != 4.0 || t.image_src(a[20].to_int()) != source || a[11] < 0.99 { return false }
+    if a[5] != 4.0 || t.image_src(a[20].to_int()) != source || a[11] < 0.5 { return false }
     let (x, y) = (a[0] + a[2] / 2.0, a[1] + a[3] / 2.0)
     if corner_cover(a, x, y, 2.0) < 0.99 { return false }
     !instances.mapi(fn(i, v) { (i, v) }).iter().any(fn(p) {
       let (i, v) = p
-      i > index && (v[5] == 0.0 || v[5] == 4.0) && v[11] > 0.01 && corner_cover(v, x, y, 2.0) > 0.99
+      i > index &&
+        (v[5] == 0.0 || (v[5] == 4.0 && t.image_src(v[20].to_int()) != source)) &&
+        v[11] > 0.01 &&
+        corner_cover(v, x, y, 2.0) > 0.99
     })
   })
 }
@@ -506,9 +524,12 @@ fn quoted_media_handoff(name : String) -> Unit raise {
   has.set(true)
   t.frame()
   t.run_for(@sfbase.flight_len(true) * 0.4)
-  let images = picture_instances(t, "mem:fixture/" + name).map(fn(p) { p.1 }).filter(fn(a) { a[11] > 0.9 })
-  assert_eq(images.length(), 1, msg="the picture as the core's row takes over: \{Repr(images)}")
-  assert_true(images[0][2] > 56.5 && images[0][2] < 300.0, msg="the picture jumped rather than flying: \{Repr(images)}")
+  let images = picture_instances(t, "mem:fixture/" + name).map(fn(p) { p.1 }).filter(fn(a) { a[11] > 0.5 })
+  assert_true(images.length() > 0, msg="the picture as the core's row takes over: \{Repr(images)}")
+  assert_true(
+    images.iter().all(fn(a) { a[2] < 300.0 }) && (images.length() >= 8 || images[0][2] > 56.5),
+    msg="the picture jumped rather than flying: \{Repr(images)}",
+  )
 }
 
 ///|
@@ -563,9 +584,12 @@ test "a quoted video cover that arrives during the flight is shown on that same 
   t.run_for(@sfbase.flight_len(true) * 0.2 + @ui.image_fade_ms + 50.0)
   t.between_frames(fn() {  })
   assert_true(given.val, msg="the cover did not arrive")
-  let shown = picture_instances(t, "mem:fixture/" + name).filter(fn(p) { p.1[11] > 0.9 })
-  assert_eq(shown.length(), 1, msg="the cover was not drawn on its flight: \{Repr(shown)}")
-  assert_true(shown[0].1[2] > 56.5, msg="the cover remained at its starting tile: \{Repr(shown)}")
+  let shown = picture_instances(t, "mem:fixture/" + name).filter(fn(p) { p.1[11] > 0.5 })
+  assert_true(shown.length() > 0, msg="the cover was not drawn on its flight: \{Repr(shown)}")
+  assert_true(
+    shown.length() >= 8 || shown[0].1[2] > 56.5,
+    msg="the cover remained at its starting tile: \{Repr(shown)}",
+  )
 }
 
 ///|
@@ -632,13 +656,15 @@ test "a video quoted: its still in its card in the composer; sent, it grows from
     t.drawn_images().iter().any(fn(i) { (i[0] - tile[0]).abs() < 0.5 && (i[1] - tile[1]).abs() < 0.5 && (i[2] - 56.0).abs() < 0.5 }),
     msg="\{Repr(t.drawn_images())}",
   )
-  // on its way: between its tile's size and its box's, drawn at no size it has at rest
+  // on its way: between its tile's size and its box's (or dispersed into fine true-color particles)
   t.run_for(@sfbase.flight_len(true) * 0.4)
-  let mid = t.drawn_images().map(fn(i) { i[2] })
+  let mid_imgs = t.drawn_images()
+  let mid = mid_imgs.map(fn(i) { i[2] })
   t.run_for(@sfbase.flight_len(true) + @sf.hint_back_ms)
   let rest = t.drawn_images().map(fn(i) { i[2] })
   let between = mid.filter(fn(w) { w > 56.5 && rest.iter().all(fn(r) { (r - w).abs() > 0.5 }) })
-  assert_true(between.length() > 0, msg="drawn \{Repr(mid)} on its way, at rest \{Repr(rest)}")
+  let particles = mid_imgs.filter(fn(i) { i[2] < 56.0 && i[8] > 0.5 })
+  assert_true(between.length() > 0 || particles.length() >= 8, msg="drawn \{Repr(mid)} on its way, at rest \{Repr(rest)}")
 }
 
 ///|

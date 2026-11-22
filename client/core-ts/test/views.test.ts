@@ -2648,9 +2648,10 @@ test("opened_chats_report_done_when_unread_and_sort_by_priority_newest_first", a
     "c-need",
     "c-run-2",
     "c-run-1",
+    // (ended, done or idle alike, newest first: the app folds them together)
     "c-idle-2",
-    "c-idle-1",
     "c-done-2",
+    "c-idle-1",
     "c-done-unread",
     "c-arch-2",
     "c-arch-1",

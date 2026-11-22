@@ -459,16 +459,20 @@ test "small: single subchat sheet fits card without bottom fade or truncation at
 }
 
 ///|
-test "wide: tall subchats popover caps height, collapses done/archived by default, expands and scrolls to bottom done item" {
+test "wide: tall subchats popover stands in the room above its pill, collapses done/archived by default, scrolls only once expanded past that room" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat-subchats-tall")
   t.draw()
+  guard t.query(Button, label="子会话") is Some(pill) else { fail("expected subchats pill") }
   t.click(Button, label="子会话")
   t.run_for(@ui.move_most_ms)
   let dialogs = t.all(Dialog)
   assert_true(dialogs.length() > 0, msg="expected subchats popover dialog")
   let d = dialogs[dialogs.length() - 1].rect
-  assert_true(d.3 <= 480.0, msg="tall subchats popover must cap height: \{Repr(d)}")
+  assert_true(d.1 >= 0.0 && d.1 + d.3 <= pill.rect.1, msg="tall subchats popover must stand above its pill: \{Repr(d)}")
+  // Folded, what it holds fits the room above the pill: nothing scrolls (the pinned head's line only shows scrolling).
+  guard t.query(Button, label="已归档") is Some(arch_seen) else { fail("expected 已归档") }
+  assert_true(arch_seen.rect.1 + arch_seen.rect.3 <= d.1 + d.3, msg="folded list must show whole: \{Repr(arch_seen.rect)} vs \{Repr(d)}")
   assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
   // 7 active items visible; done (14) and archived (2) collapsed by default
   assert_true(t.query(Button, label="夜里的构建又失败了") is Some(_))
@@ -490,7 +494,7 @@ test "wide: tall subchats popover caps height, collapses done/archived by defaul
   t.run_for(@ui.move_most_ms)
   let dialogs2 = t.all(Dialog)
   let d2 = dialogs2[dialogs2.length() - 1].rect
-  assert_true(d2.3 <= 480.0, msg="expanded tall subchats popover must stay capped: \{Repr(d2)}")
+  assert_true(d2.1 >= 0.0 && d2.1 + d2.3 <= pill.rect.1, msg="expanded tall subchats popover must stay above its pill: \{Repr(d2)}")
   assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
   assert_eq(t.query(Button, label="已完成").unwrap().expanded, Some(true))
   assert_true(t.query(Button, label="给设置页加一个深色模式开关") is Some(_))
@@ -585,4 +589,32 @@ test "small: tall and done-only subchats sheets collapse/auto-expand done, pass 
 
   let t4 = screen_in("chat-subchats-done-only", phone, "zh", font_scale=1.3)
   assert_eq(t4.audit(), [])
+}
+
+///|
+test "wide and small: sub-chats that stopped without a state fold into 已完成 with the done ones; one waiting on its work stays" {
+  fn check(tt : @ui.Tester) -> Unit raise {
+    assert_true(tt.query(Button, label="安卓构建与冒烟测试") is Some(_))
+    assert_true(tt.query(Button, label="等 CI 跑完再合并分支") is Some(_), msg="waiting on its own work stays")
+    assert_true(tt.query(Button, label="排查侧栏偶发白屏") is None, msg="idle folds")
+    assert_true(tt.query(Button, label="给设置页加一个深色模式开关") is None, msg="done folds")
+    guard tt.query(Button, label="已完成") is Some(head) else { fail("expected 已完成") }
+    assert_eq(head.expanded, Some(false))
+    tt.click(Button, label="已完成")
+    tt.run_for(@ui.move_most_ms)
+    // (the first of the group: the small sheet builds only the rows near its view)
+    assert_true(tt.query(Button, label="排查侧栏偶发白屏") is Some(_), msg="idle shows once 已完成 opens")
+  }
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat-subchats-idle")
+  t.draw()
+  t.click(Button, label="子会话")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
+  check(t)
+  let calls2 : Array[Made] = []
+  let t2 = decide_core(calls2, "chat-subchats-idle")
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(t2.audit(), [])
+  check(t2)
 }

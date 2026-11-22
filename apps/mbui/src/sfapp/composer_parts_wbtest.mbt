@@ -809,7 +809,12 @@ test "a freshly picked picture remains visible throughout sending" {
     tap_send(t)
     assert_true(t.drawn_images().iter().any(fn(i) { i[2] >= 55.5 && i[8] > 0.9 }), msg="as it is sent: \{Repr(t.drawn_images())}")
     t.run_for(@sfbase.flight_len(true) * 0.4)
-    assert_true(t.drawn_images().iter().any(fn(i) { i[2] > 56.5 && i[8] > 0.9 }), msg="on its way: \{Repr(t.drawn_images())}")
+    let mid_imgs = t.drawn_images()
+    assert_true(
+      mid_imgs.iter().any(fn(i) { i[2] > 56.5 && i[8] > 0.9 }) ||
+        mid_imgs.filter(fn(i) { i[2] < 56.0 && i[8] > 0.5 }).length() >= 8,
+      msg="on its way: \{Repr(mid_imgs)}",
+    )
     t.run_for(@sfbase.flight_len(true) + @sf.hint_back_ms)
     assert_true(t.drawn_images().iter().any(fn(i) { i[2] > 56.5 && i[8] > 0.9 }), msg="in the message: \{Repr(t.drawn_images())}")
   })

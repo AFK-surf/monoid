@@ -882,11 +882,16 @@ pub fn fix_pick() -> Json {
     // (the model drafted another station's: borrowed first, asked, from the panel's foot)
     "borrow": if n.borrow {
       {
-        "title": "借用 Maple 的 Fable 5.1？",
-        "lines": ["Fable 5.1 由 Maple 上的 Claude 订阅运行。", "借用后，这个连接的会话也用它的额度。"],
-        "action": "借用",
+        "title": "将账号分享至此 station",
+        "lines": [
+          "此 station 当前没有可用于 Fable 5.1 的账号。确认后，会将 Maple 的 Profile「Claude Max」分享至此 station，供此 station 上的对话使用。",
+          "这是订阅账号：此 station 每次启动 agent 都需要连接 Maple 获取登录，Maple 离线时无法使用。",
+          "不同 station 的环境可能不同（已安装的运行时和工具、网络、文件），分享前请确认此 station 能正常使用这个账号。",
+        ],
+        "action": "去分享",
+        "confirmAction": "确认分享",
         "allowed": true,
-        "note": "Fable 5.1 在 Maple 上，借用后这里也能用。",
+        "note": "此 Profile 位于 Maple，尚未分享给此 station。",
       }
     } else {
       Json::null()
@@ -1141,14 +1146,15 @@ fn fix_new_chat_of(f : Fixture) -> Json {
     }
   }
   // Its station has no profile, or its only available profiles are disabled.
-  if f.mode == "newchat-noprofile" || f.mode == "newchat-disabled" {
+  if f.mode == "newchat-noprofile" || f.mode == "newchat-disabled" || f.mode == "newchat-scope" {
     return {
       "kept": Json::string(n.station),
       "stations": [fix_station("st1"), fix_station("st2")],
       "any": true,
       "station": fix_station(n.station),
-      "blocked": Json::string(if f.mode == "newchat-disabled" { "disabled" } else { "profile" }),
-      "problem": Json::string(if f.mode == "newchat-disabled" { "Willow 的可用 Profile 均已停用，请在 Profile 页面重新启用。" } else { "" }),
+      "blocked": Json::string(if f.mode == "newchat-disabled" { "disabled" } else if f.mode == "newchat-scope" { "shared" } else { "profile" }),
+      "profileScopeMissing": Json::boolean(f.mode == "newchat-scope"),
+      "problem": Json::string(if f.mode == "newchat-disabled" { "Willow 的可用 Profile 均已停用，请在 Profile 页面重新启用。" } else if f.mode == "newchat-scope" { "Willow 的 Profile 尚未向此 workspace 开放，请在 Profile 设置中检查分享范围。" } else { "" }),
       "model": Json::null(),
       "runtime": "",
       "waiting": false,

@@ -8,6 +8,7 @@ import { BETA } from "../channel.ts";
 import { PREVIEW_ORIGIN } from "../previewOrigin.ts";
 import { takeShare } from "./share.ts";
 import { ErrorGate, isNoise, thrownText } from "./client-error.ts";
+import { installWebReports } from "./reports.ts";
 import { putBack, take } from "../login/signin.ts";
 import { bootGoesWithFirstFrame, bootMarkOut, fetchedAhead } from "./boot.ts";
 import { ScreenPeripherals } from "./screen-peripherals.ts";
@@ -168,6 +169,8 @@ function stop(): void {
   worker?.terminate();
   worker = null;
 }
+
+installWebReports(String(BUILT_AT));
 
 (globalThis as { __mbcore?: unknown }).__mbcore = {
   start: (_dataDir: string, _cloud: string, _beta: boolean) => start(),
