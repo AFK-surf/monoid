@@ -526,3 +526,49 @@ pub fn liquid_toast_surface_decorate(
   )
   .shadow_outside(Is(true))
 }
+
+///|
+/// Decorates an existing bottom tab bar glass node `v` in place (zero wrapper nodes, one glass binding) with
+/// `liquid_tab_bar_glass`. `glass_spec` is read once per evaluation, inside the binding, and answers the press
+/// `spot` and capillary `merge` (it reads whatever clocks it needs, in its own order). With `share_when_unmerged`,
+/// glass that does not merge is drawn `sharing()` (one backdrop with its neighbours). Returns `v` for chaining.
+pub fn liquid_tab_bar_surface_decorate(
+  v : @view.View,
+  glass_spec : () -> ((Double, Double)?, Double),
+  share_when_unmerged? : Bool = false,
+) -> @view.View {
+  v.glass(
+    By(fn() {
+      let (spot, merge) = glass_spec()
+      let g = liquid_tab_bar_glass(spot~, merge~)
+      Some(if share_when_unmerged && !(merge > 0.0) { g.sharing() } else { g })
+    }),
+  )
+}
+
+///|
+/// Decorates an existing tab bar / segmented control lens node `v` in place (zero wrapper nodes) with the clear
+/// lifted `liquid_tab_lens_glass` as far as `press()` holds it, its `solid` ground where glass is drawn solid, and,
+/// given `shadow` (sigma, dy, ink), that shadow drawn outside only. Returns `v` for chaining.
+pub fn liquid_tab_lens_surface_decorate(
+  v : @view.View,
+  press : () -> Double,
+  solid? : () -> Int64,
+  shadow? : (Double, Double, Int64),
+) -> @view.View {
+  v.glass(
+    By(fn() {
+      let p = press()
+      let s = match solid {
+        Some(f) => f()
+        None => clear
+      }
+      Some(liquid_tab_lens_glass(p, solid=s))
+    }),
+  )
+  |> ignore
+  match shadow {
+    Some(s) => v.shadow(Is(s)).shadow_outside(Is(true))
+    None => v
+  }
+}

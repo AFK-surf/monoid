@@ -82,6 +82,18 @@ pub fn glass_tab_bar(spot? : (Double, Double)? = None, merge? : Double = 0.0) ->
 }
 
 ///|
+/// Thin `@sf` bottom bar glass decorator delegating to `@glass.liquid_tab_bar_surface_decorate`: `v` drawn in the
+/// bottom bar's glass (`glass_tab_bar`'s) at the `spot` and `merge` `glass_spec` answers as each frame is drawn,
+/// `sharing()` where it does not merge given `share_when_unmerged`. Returns `v` for chaining.
+pub fn tab_bar_surface_decorate(
+  v : @view.View,
+  glass_spec : () -> ((Double, Double)?, Double),
+  share_when_unmerged? : Bool = false,
+) -> @view.View {
+  @glass.liquid_tab_bar_surface_decorate(v, glass_spec, share_when_unmerged~)
+}
+
+///|
 /// The bottom bar's shadow by theme: delegates to `glass_control_shadow()` so all persistent liquid glass controls
 /// share one calibrated outside-only shadow.
 pub fn tab_bar_shadow() -> Raised {
@@ -111,6 +123,18 @@ pub fn glass_knob() -> @ui.Glass {
 /// Clear lifted liquid glass lens while a tab bar / segmented control thumb is held (iOS 27 clear loupe).
 pub fn glass_tab_lens(press : Double) -> @ui.Glass {
   @glass.liquid_tab_lens_glass(press, solid=theme().p.raised)
+}
+
+///|
+/// Thin `@sf` bottom bar lens decorator delegating to `@glass.liquid_tab_lens_surface_decorate`: `v` drawn in the
+/// held lens's glass (`glass_tab_lens`'s, its solid ground the theme's raised) as far as `press()` holds it, and
+/// given `shadow`, that shadow outside only. Returns `v` for chaining.
+pub fn tab_lens_surface_decorate(
+  v : @view.View,
+  press : () -> Double,
+  shadow? : (Double, Double, Int64),
+) -> @view.View {
+  @glass.liquid_tab_lens_surface_decorate(v, press, solid=fn() { theme().p.raised }, shadow?)
 }
 
 ///|

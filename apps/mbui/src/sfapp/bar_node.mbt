@@ -397,19 +397,14 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
   let disc_x = fn() { w() - act_size }
   let disc_y = fn() { row_top() }
   let disc = bar_at(holder, disc_x, disc_y, fn() { act_size }, fn() { act_size }, fn(d) {
-    d
-    .radius(Is(act_size / 2.0))
-    .glass(
-      By(fn() {
+    @sf.tab_bar_surface_decorate(
+      d.radius(Is(act_size / 2.0)),
+      fn() {
         let t = bar_moment(d, Notch, bar_k_until())
         let spot = if d.pressed() { Some((act_size / 2.0, act_size / 2.0)) } else { None }
-        let merge = bar_merge_at(t)
-        if merge > 0.0 {
-          Some(@sf.glass_tab_bar(spot~, merge~))
-        } else {
-          Some(@sf.glass_tab_bar(spot~).sharing())
-        }
-      }),
+        (spot, bar_merge_at(t))
+      },
+      share_when_unmerged=true,
     )
     .presses(By(fn() {
       match bar_told_now.get() {
@@ -598,18 +593,14 @@ fn bar_glass_capsule(
 ) -> Unit {
   let h = fn() { bottom() - top() }
   bar_at(holder, fn() { 0.0 }, top, w, h, fn(g) {
-    g
-    .radius(By(fn() { dmin(rad, h() / 2.0) }))
-    .glass(
-      By(fn() {
-        bar_part_said(Notch)
-        let until = dmax(if bar.held.to > 0.01 { bar_ball_until() } else { bar.held.end() }, bar_k_until())
-        let t = bar_moment(g, Ball, until)
-        let a = bar_ball_at(t)
-        let spot = if a.held > 0.01 { Some((a.cx, a.cy - top())) } else { None }
-        Some(@sf.glass_tab_bar(spot~, merge=bar_merge_at(t)))
-      }),
-    )
+    @sf.tab_bar_surface_decorate(g.radius(By(fn() { dmin(rad, h() / 2.0) })), fn() {
+      bar_part_said(Notch)
+      let until = dmax(if bar.held.to > 0.01 { bar_ball_until() } else { bar.held.end() }, bar_k_until())
+      let t = bar_moment(g, Ball, until)
+      let a = bar_ball_at(t)
+      let spot = if a.held > 0.01 { Some((a.cx, a.cy - top())) } else { None }
+      (spot, bar_merge_at(t))
+    })
     // (its top where the panel has it as each frame is drawn, its foot where it is; its right end in by the action's
     // room as far as the notch is open then)
     .ground_drawn(
@@ -785,10 +776,11 @@ fn bar_lens_node(holder : @view.View) -> Unit {
           }
         },
         fn(g) {
-          g
-          .glass(By(fn() { Some(@sf.glass_tab_lens(held(g))) }))
-          .shadow(Is((@sf.tab_lens_raised.sigma, @sf.tab_lens_raised.dy, @sf.tab_lens_raised.color)))
-          .shadow_outside(Is(true))
+          @sf.tab_lens_surface_decorate(
+            g,
+            fn() { held(g) },
+            shadow=(@sf.tab_lens_raised.sigma, @sf.tab_lens_raised.dy, @sf.tab_lens_raised.color),
+          )
           |> ignore
         },
       )
