@@ -4202,6 +4202,63 @@ test("profile_fusion_is_asked_on_demand_and_legacy_tiered_agy_picks_resolve_to_b
 });
 
 
+test("remembered Ultrafast configurations remain selectable when the account loses access", async () => {
+  for (const [of, source] of [["new", "combo"], ["new", "usual"], ["session:k1", "combo"], ["connect-new:preset", "combo"]] as const) {
+    const { host, core } = await choosing(true, false, null, true, false, [], "gpt-6-astra");
+    const ui = core.connect();
+    const at = { station: "ws/st", of };
+    const original = { model: "gpt-6-astra", runtime: "codex", effort: "high", speed: "ultrafast" };
+    core.inner.choose.used("ws/st", original);
+    subscribe(core, ui, 1, { topic: "pick", ...at });
+    await host.settle();
+    const values = new Map();
+    apply(host, values);
+    const pick = v(values, 1);
+    const combo = pick.combos.find((c: J) => c.model === original.model && c.speed === "ultrafast");
+    assert.ok(combo, `${of}: the remembered configuration is still offered`);
+    assert.match(combo.text, /标准（Ultrafast 不可用）/);
+    assert.equal(combo.selected, false);
+    const usual = pick.options.find((o: J) => o.model === original.model);
+    if (source === "usual") assert.match(usual.usualText, /标准（Ultrafast 不可用）/);
+    const chosen = source === "combo" ? combo : { model: original.model, ...usual.usual };
+    const answer = await ask(host, core, ui, 2, "pick.save", { ...at, ...chosen });
+    assert.equal(answer.notice, "Ultrafast 不可用，已改用标准速度。");
+    if (of === "session:k1") {
+      const sent = stationPosted(host, "/sessions/k1/settings").at(-1);
+      assert.deepEqual([sent.model, sent.effort, sent.speed, sent.fast], [original.model, "high", "standard", false]);
+    } else {
+      apply(host, values);
+      assert.deepEqual([v(values, 1).value.model, v(values, 1).value.effort, v(values, 1).value.speed, v(values, 1).value.fast], [original.model, "high", "standard", false]);
+    }
+    assert.equal((core.inner.data.record("choice", "ws:ws:frequent") as J)[0].speed, "ultrafast", "the remembered configuration stays intact");
+    await assert.rejects(ask(host, core, ui, 3, "pick.save", { ...at, speed: "ultrafast" }), /Ultrafast/);
+    core.close();
+  }
+});
+
+test("an unavailable remembered speed works on an older station and its aliased record can be removed", async () => {
+  const { host, core } = await choosing(true, false, null, true, false, false, "gpt-6-astra");
+  const ui = core.connect();
+  const at = { station: "ws/st", of: "session:k1" };
+  core.inner.choose.used("ws/st", { model: "openai/gpt-6-astra", runtime: "codex", effort: "high", speed: "ultrafast" });
+  subscribe(core, ui, 1, { topic: "pick", ...at });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  const combo = v(values, 1).combos.find((c: J) => c.speed === "ultrafast");
+  assert.ok(combo);
+  assert.equal(combo.model, "gpt-6-astra");
+  const answer = await ask(host, core, ui, 2, "pick.save", { ...at, ...combo });
+  const sent = stationPosted(host, "/sessions/k1/settings").at(-1);
+  assert.equal(answer.notice, "Ultrafast 不可用，已改用标准速度。");
+  assert.equal(sent.model, "gpt-6-astra");
+  assert.equal(sent.fast, false);
+  assert.equal(sent.speed, undefined, "the old station receives its Fast switch");
+  await ask(host, core, ui, 3, "pick.forget", { ...at, ...combo });
+  assert.deepEqual(core.inner.data.record("choice", "ws:ws:frequent"), []);
+  core.close();
+});
+
 test("Ultrafast round trips through the picker, new chats and presets; older stations refuse it", async () => {
   for (const [codexModel, speeds, available] of [
     ["gpt-6-astra", true, true],

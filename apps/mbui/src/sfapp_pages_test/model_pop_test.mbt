@@ -119,6 +119,27 @@ test "choosing a frequent model fades the model words with the panel" {
 }
 
 ///|
+test "a model choice shows the speed fallback reported by the core" {
+  let base = fixture_app("newchat-crowded-model")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      (base.call)(name, params, fn(res) {
+        match res {
+          Ok(_) if name == "pick.save" => done(Ok({ "notice": "Ultrafast 不可用，已改用标准速度。" }))
+          _ => done(res)
+        }
+      })
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(squeeze_opening)
+  t.click(Button, label="GPT-6 Astra · 中")
+  t.run_for(squeeze_opening)
+  assert_true(t.find("Ultrafast 不可用，已改用标准速度。") is Some(_))
+}
+
+///|
 test "a frequent model with a different runtime is applied as its panel leaves without the contents jumping" {
   let t = model_pop("newchat-crowded-model")
   let before = t.find("常用搭配").unwrap()

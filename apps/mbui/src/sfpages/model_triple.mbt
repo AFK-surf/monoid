@@ -255,7 +255,11 @@ fn pick_save(
   for k, v in patch {
     p[k] = v
   }
-  act(src, @sf.t("common.save"), "pick.save/" + station + "/" + of, "pick.save", Json::object(p), done~, ok~, failed~)
+  act(src, @sf.t("common.save"), "pick.save/" + station + "/" + of, "pick.save", Json::object(p), done~, ok=fn(result) {
+    let notice = text(Some(result), "notice")
+    if notice != "" { toast_later(notice) }
+    ok(result)
+  }, failed~)
 }
 
 ///|
