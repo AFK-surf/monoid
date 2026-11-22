@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [648a3b3c9](https://github.com/AFK-surf/monoid/commit/648a3b3c9d4475c39c5503687109fc748039621b) perf(mbui): fix Android IME pop-up/dismiss frame p | 2.66 | 3.58 | 14.53 | 36.6 | 55.52 | 32.06 | 64.86 | 99.04 | 119.35 |
 | [fde7ce64a](https://github.com/AFK-surf/monoid/commit/fde7ce64a6629f9dbf29117b762ef0810490e51f) mbui, sf-ui, sfapp: Wave 7 adaptive liquid glass w | 2.66 | 3.58 | 14.53 | 36.6 | 55.52 | 32.06 | 64.86 | 98.91 | 124.17 |
 | [ec183127d](https://github.com/AFK-surf/monoid/commit/ec183127df2b0db0a04b127423177aea5700c910) fix(mesh): bump noq-proto for BBRv3 fixes and rais | 2.66 | 3.58 | 14.53 | 36.6 | 55.49 | 32.06 | 64.83 | 99.03 | 124.49 |
 | [a9d9ce82a](https://github.com/AFK-surf/monoid/commit/a9d9ce82ac3bb38019e98a22651d3c2eb55c77dd) fix(core-ts): fix bulk relay scoring, crawl failov | 2.66 | 3.58 | 14.53 | 36.6 | 55.49 | 32.05 | 64.81 | 98.63 | 120.92 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7568ac3f7](https://github.com/AFK-surf/monoid/commit/7568ac3f70ffc0765351b1a302077419225c2f85) feat(mbui,sf-ui,sfpages): add continuous Glass.str | 2.64 | 3.55 | 14.42 | 36.44 | 55.05 | 31.93 | 64.47 | 98.55 | 127.18 |
 | [7bc5afc43](https://github.com/AFK-surf/monoid/commit/7bc5afc43ee385ba2b72a960421fb7cdd68fddff) fix(mbui): open file links in the execution histor | 2.64 | 3.55 | 14.42 | 36.44 | 55.04 | 31.93 | 64.45 | 98.24 | 120.63 |
 | [4b8bd08a2](https://github.com/AFK-surf/monoid/commit/4b8bd08a2fc920995ab0db535cf4d2b0715744dc) feat(mbui): support keeps_made shelf parking in na | 2.64 | 3.55 | 14.42 | 36.44 | 55.04 | 31.93 | 64.45 | 98.24 | 120.63 |
-| [e38d63d7e](https://github.com/AFK-surf/monoid/commit/e38d63d7e5639f9ac79b61d818c250adef66842d) feat(sf-ui): lift clear liquid glass lens on segme | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.68 | 134 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [648a3b3c9](https://github.com/AFK-surf/monoid/commit/648a3b3c9d4475c39c5503687109fc748039621b) perf(mbui): fix Android IME pop-up/dismiss frame p | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
 | [fde7ce64a](https://github.com/AFK-surf/monoid/commit/fde7ce64a6629f9dbf29117b762ef0810490e51f) mbui, sf-ui, sfapp: Wave 7 adaptive liquid glass w | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.49 |
 | [ec183127d](https://github.com/AFK-surf/monoid/commit/ec183127df2b0db0a04b127423177aea5700c910) fix(mesh): bump noq-proto for BBRv3 fixes and rais | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.65 | 54.05 |
 | [a9d9ce82a](https://github.com/AFK-surf/monoid/commit/a9d9ce82ac3bb38019e98a22651d3c2eb55c77dd) fix(core-ts): fix bulk relay scoring, crawl failov | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.65 | 54.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7568ac3f7](https://github.com/AFK-surf/monoid/commit/7568ac3f70ffc0765351b1a302077419225c2f85) feat(mbui,sf-ui,sfpages): add continuous Glass.str | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
 | [7bc5afc43](https://github.com/AFK-surf/monoid/commit/7bc5afc43ee385ba2b72a960421fb7cdd68fddff) fix(mbui): open file links in the execution histor | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
 | [4b8bd08a2](https://github.com/AFK-surf/monoid/commit/4b8bd08a2fc920995ab0db535cf4d2b0715744dc) feat(mbui): support keeps_made shelf parking in na | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.43 |
-| [e38d63d7e](https://github.com/AFK-surf/monoid/commit/e38d63d7e5639f9ac79b61d818c250adef66842d) feat(sf-ui): lift clear liquid glass lens on segme | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.43 |
