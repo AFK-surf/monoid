@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c65cbf33e](https://github.com/AFK-surf/monoid/commit/c65cbf33ee3de127d64ec400103b7228ed25d7c7) feat(mbui): show only Web services in chat bar, li | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.01 | 129.05 |
 | [4564d7804](https://github.com/AFK-surf/monoid/commit/4564d7804083ceec2e3b30c7603fee7b14c2efcc) feat(ios): bring pushed messages onto the device i | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.01 | 129.05 |
 | [dd5869c8c](https://github.com/AFK-surf/monoid/commit/dd5869c8cb9ceb4ff62cc17ec883ee02ffb12ed9) fix(sf-ui): in-container submenu slide, pill morph | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.16 | 123.14 |
 | [627160f39](https://github.com/AFK-surf/monoid/commit/627160f39bc0c40e1bcab473e7161d2d4789ec48) chore(sf-ui): guard against raw glass outside @lg  | 2.7 | 3.63 | 14.73 | 36.82 | 56.09 | 32.25 | 65.38 | 99.21 | 121.28 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a2ddd8aa2](https://github.com/AFK-surf/monoid/commit/a2ddd8aa24f464260c38c45d0be8b1db9a6de453) feat(liquid-glass): uplift overlay glass recipes,  | 2.67 | 3.6 | 14.59 | 36.68 | 55.74 | 32.13 | 65.06 | 98.88 | 123.68 |
 | [5b7e17f0e](https://github.com/AFK-surf/monoid/commit/5b7e17f0eb53e8a04e5fd1104b3bb3569d6d3eb2) fix(sfapp): uncrowd agent info sheet header with 3 | 2.67 | 3.6 | 14.59 | 36.68 | 55.74 | 32.14 | 65.06 | 99.08 | 122.11 |
 | [1fa4ef07a](https://github.com/AFK-surf/monoid/commit/1fa4ef07a8be5bf44c3ca223cd9e8e6825777442) fix(mbui): keep later photos in the attach strip o | 2.67 | 3.6 | 14.58 | 36.67 | 55.72 | 32.11 | 65.01 | 98.81 | 121.72 |
-| [831ca02c9](https://github.com/AFK-surf/monoid/commit/831ca02c945fd701cc13e872350fb1f06844502a) fix(mbui): redraw complete glass captures during s | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.81 | 114.66 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c65cbf33e](https://github.com/AFK-surf/monoid/commit/c65cbf33ee3de127d64ec400103b7228ed25d7c7) feat(mbui): show only Web services in chat bar, li | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.61 |
 | [4564d7804](https://github.com/AFK-surf/monoid/commit/4564d7804083ceec2e3b30c7603fee7b14c2efcc) feat(ios): bring pushed messages onto the device i | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.76 |
 | [dd5869c8c](https://github.com/AFK-surf/monoid/commit/dd5869c8cb9ceb4ff62cc17ec883ee02ffb12ed9) fix(sf-ui): in-container submenu slide, pill morph | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
 | [627160f39](https://github.com/AFK-surf/monoid/commit/627160f39bc0c40e1bcab473e7161d2d4789ec48) chore(sf-ui): guard against raw glass outside @lg  | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a2ddd8aa2](https://github.com/AFK-surf/monoid/commit/a2ddd8aa24f464260c38c45d0be8b1db9a6de453) feat(liquid-glass): uplift overlay glass recipes,  | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.31 |
 | [5b7e17f0e](https://github.com/AFK-surf/monoid/commit/5b7e17f0eb53e8a04e5fd1104b3bb3569d6d3eb2) fix(sfapp): uncrowd agent info sheet header with 3 | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.31 |
 | [1fa4ef07a](https://github.com/AFK-surf/monoid/commit/1fa4ef07a8be5bf44c3ca223cd9e8e6825777442) fix(mbui): keep later photos in the attach strip o | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.31 |
-| [831ca02c9](https://github.com/AFK-surf/monoid/commit/831ca02c945fd701cc13e872350fb1f06844502a) fix(mbui): redraw complete glass captures during s | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.31 |
