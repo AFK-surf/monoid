@@ -637,6 +637,8 @@ pub fn station_retire_panel(@settings.Core, @settings.Here, @json.Json?, @json.J
 
 pub fn station_state(@ui.Ctx, @json.Json?) -> Unit
 
+pub fn station_via_mark_node(@view.View, () -> String, () -> String, () -> String, () -> Int64, () -> Int32) -> Unit
+
 pub fn station_waiting(@ui.Ctx, @settings.Core, @settings.Here, @sf.PageFrame, String, String) -> Unit
 
 pub fn step_card(@ui.Ctx, String, String, String, go? : (() -> Unit)?) -> Unit

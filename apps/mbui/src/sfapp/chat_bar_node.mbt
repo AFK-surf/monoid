@@ -760,30 +760,6 @@ fn small_glass_capsule(b : @view.View) -> Unit {
 }
 
 ///|
-/// Inline 6x6 station reachability dot inside a composer-top liquid glass capsule.
-fn small_inline_via_dot(parent : @view.View, via : () -> String) -> Unit {
-  parent.box(fn(d) {
-    d
-    .width(Is(Some(6.0)))
-    .height(Is(Some(6.0)))
-    .radius(Is(3.0))
-    .shrink(Is(0.0))
-    .laid_nowhere(By(fn() { via() == "" }))
-    .ground(By(fn() {
-      let p = @sf.theme().p
-      match via() {
-        "direct" => p.online
-        "relay" => @ui.tree_theme().color(Warn)
-        "offline" => p.red
-        _ => p.muted
-      }
-    }))
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
 /// The station's tag above the composer while no agent is in the chat: single-layer 30pt liquid glass capsule.
 fn station_chip_node(
   v : @view.View,
@@ -799,25 +775,23 @@ fn station_chip_node(
     })
     small_glass_capsule(k)
     k
-    .max_width(Is(Some(140.0)))
     .shrink(Is(1.0))
     .min_width(Is(Some(0.0)))
     .padding(Is((10.0, 0.0, 10.0, 0.0)))
-    .gap(Is(5.0))
+    .gap(Is(6.0))
     .says(Is(Some(@view.said(Group, label=s.name))))
     |> ignore
     @sf.hover_ground_node(k)
-    small_inline_via_dot(k, via)
-    if @sf.has_station_mark(s.emoji, s.icon) {
-      @sf.station_mark_node(k, fn() { s.emoji }, fn() { s.icon }, 13.0, fn() { @sf.theme().p.muted }, stint)
-    }
+    @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.muted }, stint)
     k.box(fn(w) {
       w
       .words(Is(s.name))
       .words_look(By(fn() { @ui.style_words(small_composer_pill_muted) }))
       .ink(By(fn() { @ui.style_ink(small_composer_pill_muted) }))
-      .cuts(Is(true))
+      .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
+      .cuts(Is(true))
+      .allow_ellipsis(Is(true))
       |> ignore
     })
     |> ignore
@@ -1091,8 +1065,8 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
               .words(Is(ag.who))
               .words_look(By(fn() { @ui.style_words(small_composer_pill_words) }))
               .ink(By(fn() { @ui.style_ink(small_composer_pill_words) }))
-              .max_width(Is(Some(72.0)))
               .cuts(Is(true))
+              .allow_ellipsis(Is(true))
               .drops(Is(1))
               |> ignore
             })
@@ -1105,17 +1079,14 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
                     |> ignore
                   })
                   |> ignore
-                  small_inline_via_dot(k, via)
-                  if @sf.has_station_mark(s.emoji, s.icon) {
-                    @sf.station_mark_node(k, fn() { s.emoji }, fn() { s.icon }, 13.0, fn() { @sf.theme().p.muted }, stint)
-                  }
+                  @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.muted }, stint)
                   k.box(fn(w) {
                     w
                     .words(Is(s.name))
                     .words_look(By(fn() { @ui.style_words(small_composer_pill_muted) }))
                     .ink(By(fn() { @ui.style_ink(small_composer_pill_muted) }))
-                    .max_width(Is(Some(68.0)))
                     .cuts(Is(true))
+                    .allow_ellipsis(Is(true))
                     .drops(Is(2))
                     |> ignore
                   })

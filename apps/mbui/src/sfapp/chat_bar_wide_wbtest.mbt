@@ -1024,3 +1024,224 @@ test "大屏: hovering Station half opens its card and 屏幕 submenu, moving in
     msg="no hover_card_node or submenu_row_node audit faults",
   )
 }
+
+///|
+/// The chat's station (ws1/st1) marked `icon` and `emoji`, reached as `via` says now (direct, relay, offline; "": not
+/// said how), the rest as the fixture's.
+fn bar_station_as(icon : String, emoji : String, via : @signals.Signal[String]) -> (String, Topic) -> Topic {
+  fn(n, tp) {
+    guard n == "stations" && tp.value is Some(Array(rows)) else { return tp }
+    let v = via.get()
+    let made = rows.map(fn(row) {
+      guard row is Object(m) && m.get("station") is Some(String("ws1/st1")) else { return row }
+      let o = m.copy()
+      o["icon"] = Json::string(icon)
+      o["emoji"] = Json::string(emoji)
+      o["online"] = Json::boolean(v != "offline")
+      o["reconnecting"] = Json::boolean(false)
+      o["way"] = Json::object({ "via": Json::string(if v == "" || v == "offline" { "none" } else { v }) })
+      Json::object(o)
+    })
+    { ..tp, value: Some(Json::array(made)) }
+  }
+}
+
+///|
+/// The station's dots drawn in `cap` (a station's half or tag above the composer): `side` across (6.4 on its mark's
+/// corner, 6 before its name), each with its ink.
+fn bar_via_dots(t : @ui.Tester, cap : (Double, Double, Double, Double), side : Double) -> Array[(Double, Double, Double, Double, Int64)] {
+  let (x, y, w, h) = cap
+  t
+  .drawn_rects()
+  .filter(fn(d) {
+    (d.2 - side).abs() < 0.05 &&
+    (d.3 - side).abs() < 0.05 &&
+    d.0 >= x - 0.5 &&
+    d.0 + d.2 <= x + w + 0.5 &&
+    d.1 >= y - 0.5 &&
+    d.1 + d.3 <= y + h + 0.5
+  })
+}
+
+///|
+/// What a station's dot says `via` in, as the bar inks it.
+fn bar_via_ink(via : String) -> Int64 {
+  let p = @sf.theme().p
+  match via {
+    "direct" => p.online
+    "relay" => @ui.tree_theme().color(Warn)
+    "offline" => p.red
+    _ => p.muted
+  }
+}
+
+///|
+/// Checks of a station's capsule half `cap` (`name` its words' place): with a mark, one dot on the mark's bottom
+/// right (after where the mark starts, under its middle, before the name) and none before it; with none, one before
+/// the name on its middle.
+fn bar_via_placed(t : @ui.Tester, cap : (Double, Double, Double, Double), name : (Double, Double), marked : Bool, via : String, msg : String) -> Unit raise {
+  let corner = bar_via_dots(t, cap, 6.4)
+  let inline = bar_via_dots(t, cap, 6.0)
+  let mid = cap.1 + cap.3 / 2.0
+  if via == "" {
+    assert_eq((corner.length(), inline.length()), (0, 0), msg="\{msg}: no dot while not said how")
+    return
+  }
+  if marked {
+    assert_eq((corner.length(), inline.length()), (1, 0), msg="\{msg}: \{Repr(t.drawn_rects().filter(fn(d) { d.2 < 10.0 && d.1 > cap.1 && d.1 < cap.1 + cap.3 }))}")
+    let d = corner[0]
+    // (its mark starts where the half's padding ends: 8 in a tile's half, 10 in a tag; the dot past most of it)
+    assert_true(d.0 >= cap.0 + 8.0 + 9.0, msg="\{msg}: on the mark's right, not before it: \{Repr(d)} \{Repr(cap)}")
+    assert_true(d.1 + d.3 / 2.0 > mid + 3.0, msg="\{msg}: on the mark's bottom: \{Repr(d)} \{Repr(cap)}")
+    assert_true(d.0 + d.2 < name.0, msg="\{msg}: before the name: \{Repr(d)} \{Repr(name)}")
+    assert_eq(d.4, bar_via_ink(via), msg="\{msg}: its ink")
+  } else {
+    assert_eq((corner.length(), inline.length()), (0, 1), msg="\{msg}: \{Repr(t.drawn_rects().filter(fn(d) { d.2 < 10.0 && d.1 > cap.1 && d.1 < cap.1 + cap.3 }))}")
+    let d = inline[0]
+    assert_true((d.1 + d.3 / 2.0 - mid).abs() < 1.0, msg="\{msg}: on the half's middle: \{Repr(d)} \{Repr(cap)}")
+    assert_true(d.0 + d.2 < name.0, msg="\{msg}: before the name: \{Repr(d)} \{Repr(name)}")
+    assert_eq(d.4, bar_via_ink(via), msg="\{msg}: its ink")
+  }
+}
+
+///|
+/// Where `words` are drawn inside `cap` (their middle), if they are.
+fn bar_words_in(t : @ui.Tester, words : String, cap : (Double, Double, Double, Double)) -> (Double, Double)? {
+  t.locate(words).iter().find_first(fn(p) { p.0 >= cap.0 && p.0 <= cap.0 + cap.2 && p.1 >= cap.1 && p.1 <= cap.1 + cap.3 })
+}
+
+///|
+test "大屏, 中屏: the station's dot above the composer on its mark's corner as the agent's badge (a glyph, an emoji, words 1.3 as large), before its name where it has no mark, with or without an agent; inked as it is reached, gone while not said" {
+  let cases : Array[(String, String, Bool)] = [("glyph:desktop", "", true), ("", "🍁", true), ("", "", false)]
+  for win in wide_bar_windows {
+    for c in cases {
+      for scale in [1.0, 1.3] {
+        for alone in [false, true] {
+          let (icon, emoji, marked) = c
+          let via = @signals.signal("direct")
+          let calls : Array[Made] = []
+          let over = if alone {
+            wide_bar_both(bar_station_as(icon, emoji, via), wide_bar_chat_field("agents", fn(_) { Json::array([]) }))
+          } else {
+            bar_station_as(icon, emoji, via)
+          }
+          let t = wide_bar_at(calls, w=win.1, over~)
+          if scale != 1.0 {
+            t.set_font_scale(scale)
+            t.run_for(@ui.move_most_ms)
+          }
+          let msg = "\{win.0} \{icon}\{emoji} \{scale}x\{if alone { " alone" } else { "" }}"
+          let cap = match t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }) {
+            [g, ..] => g.rect
+            _ => fail("\{msg}: no station's half")
+          }
+          guard bar_words_in(t, "Willow", cap) is Some(name) else { fail("\{msg}: no name in \{Repr(cap)}") }
+          for v in ["direct", "relay", "offline", "", "direct"] {
+            via.set(v)
+            t.run_for(@ui.move_most_ms)
+            bar_via_placed(t, cap, name, marked, v, "\{msg} \{v}")
+          }
+          let audit = t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("agent_badge_node") || f.contains("mark_node") })
+          assert_eq(audit, [], msg~)
+        }
+      }
+    }
+  }
+}
+
+///|
+/// The chat's station (ws1/st1) named `name`, the rest as the fixture's.
+fn bar_station_named(name : String) -> (String, Topic) -> Topic {
+  fn(n, tp) {
+    guard n == "stations" && tp.value is Some(Array(rows)) else { return tp }
+    let made = rows.map(fn(row) {
+      guard row is Object(m) && m.get("station") is Some(String("ws1/st1")) else { return row }
+      let o = m.copy()
+      o["name"] = Json::string(name)
+      Json::object(o)
+    })
+    { ..tp, value: Some(Json::array(made)) }
+  }
+}
+
+///|
+/// The chat's first agent named `name` (its session's agentText), the rest as the fixture's.
+fn bar_agent_named(name : String) -> (String, Topic) -> Topic {
+  wide_bar_chat_field("agents", fn(was) {
+    match was {
+      Some(Array(a)) =>
+        Json::array(
+          a.mapi(fn(i, j) {
+            guard i == 0 && j is Object(m) && m.get("session") is Some(Object(s)) else { return j }
+            let o = m.copy()
+            let ss = s.copy()
+            ss["agentText"] = Json::string(name)
+            o["session"] = Json::object(ss)
+            Json::object(o)
+          }),
+        )
+      Some(other) => other
+      None => Json::array([])
+    }
+  })
+}
+
+///|
+/// The chat leading one sub-chat (its `opened`, led).
+fn bar_leads_one() -> (String, Topic) -> Topic {
+  wide_bar_chat_field("opened", fn(_) {
+    Json::array([{ "station": "ws1/st1", "session": "s-sub1", "title": "子对话", "stateText": "运行中", "led": true }])
+  })
+}
+
+///|
+test "大屏, 中屏: the station's and the agent's names above the composer shown whole where the row has room for them, with or without an agent" {
+  let station = "tokyo-mac-studio-0"
+  let agent = "Opus 5.5 · medium"
+  for win in wide_bar_windows {
+    for alone in [false, true] {
+      let calls : Array[Made] = []
+      let over = if alone {
+        wide_bar_both(bar_station_named(station), wide_bar_chat_field("agents", fn(_) { Json::array([]) }))
+      } else {
+        wide_bar_both(bar_station_named(station), bar_agent_named(agent))
+      }
+      let t = wide_bar_at(calls, w=win.1, over~)
+      let msg = "\{win.0}\{if alone { " alone" } else { "" }}"
+      guard t.all(Group).filter(fn(g) { g.label == station && g.rect.1 > 400.0 }) is [_, ..] else {
+        fail("\{msg}: no station's capsule")
+      }
+      assert_eq(t.lines_of(station), [station], msg="\{msg}: the station's name whole")
+      if !alone {
+        assert_eq(t.lines_of(agent), [agent], msg="\{msg}: the agent's name whole")
+      }
+      let audit = t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("agent_badge_node") || f.contains("mark_node") })
+      assert_eq(audit, [], msg~)
+    }
+  }
+}
+
+///|
+test "大屏, 中屏: a station's name too long for the row above the composer (with its services and a led sub-chat) cut in its capsule, none of it past the services' button or the window" {
+  let station = "这是一台名字非常非常长的机器用来检验输入框上方的胶囊在放不下时会不会把右边的按钮挤出去或者画到窗口外面去了"
+  for win in [("大屏", 860.0), ("中屏", 720.0)] {
+    for alone in [false, true] {
+      let calls : Array[Made] = []
+      let named = wide_bar_both(wide_bar_both(bar_station_named(station), wide_bar_jobs("")), bar_leads_one())
+      let over = if alone { wide_bar_both(named, wide_bar_chat_field("agents", fn(_) { Json::array([]) })) } else { named }
+      let t = wide_bar_at(calls, w=win.1, over~)
+      let msg = "\{win.0}\{if alone { " alone" } else { "" }}"
+      let cap = match t.all(Group).filter(fn(g) { g.label == station && g.rect.1 > 400.0 }) {
+        [g, ..] => g.rect
+        _ => fail("\{msg}: no station's capsule")
+      }
+      let services = t.all(Button).filter(fn(b) { b.label == @sf.t("web-pages.chat.services") && b.rect.1 > 400.0 })
+      guard services is [s, ..] else { fail("\{msg}: no services' button above the composer") }
+      assert_true(cap.0 + cap.2 <= s.rect.0, msg="\{msg}: the station's capsule before the services' button: \{Repr(cap)} \{Repr(s.rect)}")
+      assert_true(s.rect.0 + s.rect.2 <= win.1, msg="\{msg}: the services' button in the window: \{Repr(s.rect)}")
+      assert_true(t.lines_of(station).iter().any(fn(l) { l.has_suffix("…") }), msg="\{msg}: its name cut: \{Repr(t.lines_of(station))}")
+      let audit = t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("agent_badge_node") || f.contains("mark_node") })
+      assert_eq(audit, [], msg~)
+    }
+  }
+}

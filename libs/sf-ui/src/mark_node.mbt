@@ -112,6 +112,8 @@ pub fn glyph_mark_node(parent : @view.View, name : String, size : Double, tint :
 /// (glyph:<name>, glyph:<name>:<colour>, in that colour, else `tint`) or a picture put up (its address: its bytes the
 /// core's, asked for on `stint` as the page's time on top is, a GIF among them moving; or a data URL), covering its
 /// square, its corners a quarter of it round; else, and while that picture comes, its emoji. Each as it changes.
+/// `over` is given the mark's own node once its parts are made, to size it and draw over it (a dot at its corner)
+/// with no node made round it.
 #callsite(autofill(loc))
 pub fn station_mark_node(
   parent : @view.View,
@@ -121,6 +123,7 @@ pub fn station_mark_node(
   tint : () -> Int64,
   stint : () -> Int,
   visible_only? : Bool = false,
+  over? : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
   // (which it shows: a glyph's paths, a picture's key, its emoji, nothing)
@@ -199,6 +202,10 @@ pub fn station_mark_node(
       }))
       |> ignore
     })
+    match over {
+      Some(f) => f(m)
+      None => ()
+    }
   })
   |> ignore
 }

@@ -18,6 +18,8 @@ fn chat_bar_node_tester(
   h? : Double = 844.0,
   msg_count? : Int = 0,
   at? : Double,
+  over? : (String, Topic) -> Topic = fn(_, t) { t },
+  no_agents? : Bool = false,
 ) -> (@ui.Tester, @signals.Signal[String]) {
   new_run()
   let base = fixture("chat")
@@ -25,7 +27,7 @@ fn chat_bar_node_tester(
   let src : Source = {
     ..base,
     topic_read: fn(name, params) {
-      let got = base.topic(name, params).get().snapshot()
+      let got = over(name, base.topic(name, params).get().snapshot())
       // (its services and jobs: some all along, or while `jobs_on` says so, none else: told as the core tells its
       // summary, a value all along, its first never changing to say there are some)
       let jobs_now = match jobs_on {
@@ -61,6 +63,9 @@ fn chat_bar_node_tester(
         )
       }
       changed["archived"] = Json::boolean(false)
+      if no_agents {
+        changed["agents"] = Json::array([])
+      }
       if extra_agents > 0 {
         let agents = items(got.value, "agents").copy()
         for idx in 0..<extra_agents {
@@ -411,4 +416,58 @@ test "小屏顶栏：归档键出现使标题放不下 3 字时，实时出现�
   assert_eq(between, [], msg="at \{w}: an answer's on its way: \{Repr(told)}")
   assert_true(told[told.length() - 1] >= 0.99, msg="at \{w}: \{Repr(told)}")
   assert_eq(bar_node_audit(t), [])
+}
+
+///|
+test "小屏输入框上方胶囊：station 有图标（glyph、emoji，1.0x 与 1.3x 字号）时状态点在图标右下角，无图标时退回名字前的行内圆点；有 agent 与无 agent 两种胶囊皆然，状态点随连接方式变色、未说时隐藏，零 audit 告警" {
+  let cases : Array[(String, String, Bool)] = [("glyph:desktop", "", true), ("", "🍁", true), ("", "", false)]
+  for c in cases {
+    for scale in [1.0, 1.3] {
+      for alone in [false, true] {
+        let (icon, emoji, marked) = c
+        let via = @signals.signal("direct")
+        let (t, _) = chat_bar_node_tester("整理发布清单", font_scale=scale, over=bar_station_as(icon, emoji, via), no_agents=alone)
+        let msg = "\{icon}\{emoji} \{scale}x\{if alone { " alone" } else { "" }}"
+        // (with an agent: its capsule a button named with both; alone: the station's own, a group of its name)
+        let found = if alone {
+          t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }).map(fn(g) { g.rect })
+        } else {
+          match composer_agent_rect(t) {
+            Some(r) => [r]
+            None => []
+          }
+        }
+        guard found is [whole, ..] else { fail("\{msg}: no capsule") }
+        guard bar_words_in(t, "Willow", whole) is Some(name) else { fail("\{msg}: no name in \{Repr(whole)}") }
+        // (the station's part of it: from past the agent's name (its middle 20 on, about its end) on, or the whole tag)
+        let cap = if alone {
+          whole
+        } else {
+          guard bar_words_in(t, "Claude", whole) is Some(agent) else { fail("\{msg}: no agent's name") }
+          let from = agent.0 + 20.0
+          (from, whole.1, whole.0 + whole.2 - from, whole.3)
+        }
+        for v in ["direct", "relay", "offline", "", "direct"] {
+          via.set(v)
+          t.run_for(@ui.move_most_ms)
+          bar_via_placed(t, cap, name, marked, v, "\{msg} \{v}")
+        }
+        let audit = t.audit().filter(fn(f) { f.contains("chat_bar_node") || f.contains("agent_badge_node") || f.contains("mark_node") })
+        assert_eq(audit, [], msg~)
+      }
+    }
+  }
+}
+
+
+///|
+test "小屏输入框上方胶囊：390 宽空间足够时，station 长名字在有 agent 的胶囊和独立 station 胶囊里都完整显示、不截断，零 audit 告警" {
+  let station = "tokyo-mac-studio-0"
+  for alone in [false, true] {
+    let (t, _) = chat_bar_node_tester("整理发布清单", over=bar_station_named(station), no_agents=alone)
+    let msg = if alone { "独立 station 胶囊" } else { "agent + station 胶囊" }
+    assert_eq(t.lines_of(station), [station], msg~)
+    let audit = t.audit().filter(fn(f) { f.contains("chat_bar_node") || f.contains("agent_badge_node") || f.contains("mark_node") })
+    assert_eq(audit, [], msg~)
+  }
 }

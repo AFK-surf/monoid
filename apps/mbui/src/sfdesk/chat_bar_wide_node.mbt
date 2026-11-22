@@ -540,36 +540,14 @@ fn wide_glass_capsule(b : @view.View, marked? : () -> Bool = fn() { false }) -> 
   .shadow(By(fn() { @sf.float_shadow() }))
   .shadow_outside(Is(true))
   .clips(Is(true))
-  |> ignore
-}
-
-///|
-/// Inline 6x6 station reachability dot inside a composer-top liquid glass capsule.
-fn wide_inline_via_dot(parent : @view.View, via : () -> String) -> Unit {
-  parent.box(fn(d) {
-    d
-    .width(Is(Some(6.0)))
-    .height(Is(Some(6.0)))
-    .radius(Is(3.0))
-    .shrink(Is(0.0))
-    .laid_nowhere(By(fn() { via() == "" }))
-    .ground(By(fn() {
-      let p = @sf.theme().p
-      match via() {
-        "direct" => p.online
-        "relay" => @ui.tree_theme().color(Warn)
-        "offline" => p.red
-        _ => p.muted
-      }
-    }))
-    |> ignore
-  })
+  .shrink(Is(1.0))
+  .min_width(Is(Some(0.0)))
   |> ignore
 }
 
 ///|
 /// The machine the chat runs on above the composer while it has no agent to share a capsule with:
-/// single-layer 30pt liquid glass capsule with inline via dot, station mark, and station name.
+/// single-layer 30pt liquid glass capsule with the station's mark and its via dot (@sfpages.station_via_mark_node) and name.
 fn wide_station_tag(
   m : @view.View,
   address : String,
@@ -581,30 +559,29 @@ fn wide_station_tag(
   m.box(fn(k) {
     let hot = fn() { @sf.lit_within_node(k) }
     wide_glass_capsule(k)
-    k.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(5.0)) |> ignore
+    k.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(6.0)) |> ignore
     @sf.hover_ground_node(k, lit=Some(hot))
     k.says(Is(Some(@view.said(Group, label=s.name)))) |> ignore
     @sf.hover_card_node(tips, k, fn(c) { @settings.station_peek_card_node(c, address, stint) }, tile=true, padded=false, side=Top, tapped=fn() {
       @settings.open_station_peek(address, from=Node(k))
     })
     |> ignore
-    wide_inline_via_dot(k, via)
-    if @sf.has_station_mark(s.emoji, s.icon) {
-      @sf.station_mark_node(k, fn() { s.emoji }, fn() { s.icon }, 13.0, fn() {
-        if hot() {
-          @sf.theme().p.text
-        } else {
-          @sf.theme().p.muted
-        }
-      }, stint)
-    }
+    @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() {
+      if hot() {
+        @sf.theme().p.text
+      } else {
+        @sf.theme().p.muted
+      }
+    }, stint)
     k.box(fn(w) {
       w
       .words(Is(s.name))
       .words_look(By(fn() { @ui.style_words(if hot() { chat_station_words_hot } else { chat_station_words }) }))
       .ink(By(fn() { @ui.style_ink(if hot() { chat_station_words_hot } else { chat_station_words }) }))
-      .max_width(Is(Some(100.0)))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
       .cuts(Is(true))
+      .allow_ellipsis(Is(true))
       |> ignore
     })
     |> ignore
@@ -714,6 +691,8 @@ fn wide_agent_tile(
       t.box(fn(g) {
         g
         .row(Is(true))
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
         .min_height(Is(Some(30.0)))
         .lines_up(Is(Some(Middle)))
         .gap(Is(6.0))
@@ -723,14 +702,21 @@ fn wide_agent_tile(
       })
       |> ignore
       t.show(at_once=true, fn() { station_now() is Some(_) }, fn(p) {
-        p.row(Is(true)).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
+        p.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
         p.box(fn(sep) {
           sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
           |> ignore
         })
         |> ignore
         p.box(fn(sp) {
-          sp.row(Is(true)).min_height(Is(Some(30.0))).padding(Is((8.0, 0.0, 10.0, 0.0))).gap(Is(5.0)).lines_up(Is(Some(Middle)))
+          sp
+          .row(Is(true))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .min_height(Is(Some(30.0)))
+          .padding(Is((8.0, 0.0, 10.0, 0.0)))
+          .gap(Is(6.0))
+          .lines_up(Is(Some(Middle)))
           |> ignore
           wide_station_inline(sp, station_now, via, fn() { false }, stint)
         })
@@ -744,6 +730,8 @@ fn wide_agent_tile(
     let agent = @sf.action_box_node(t, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(g) {
       g
       .row(Is(true))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
       .min_height(Is(Some(30.0)))
       .lines_up(Is(Some(Middle)))
       .gap(Is(6.0))
@@ -764,7 +752,7 @@ fn wide_agent_tile(
       wide_agent_inline(g, a, badge, badge_said)
     })
     t.show(at_once=true, fn() { station_now() is Some(_) }, fn(p) {
-      p.row(Is(true)).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
+      p.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
       p.box(fn(sep) {
         sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
         |> ignore
@@ -772,7 +760,14 @@ fn wide_agent_tile(
       |> ignore
       p.box(fn(sp) {
         let hot = fn() { @sf.lit_within_node(sp, yields_to=agent) }
-        sp.row(Is(true)).min_height(Is(Some(30.0))).padding(Is((8.0, 0.0, 10.0, 0.0))).gap(Is(5.0)).lines_up(Is(Some(Middle)))
+        sp
+        .row(Is(true))
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
+        .min_height(Is(Some(30.0)))
+        .padding(Is((8.0, 0.0, 10.0, 0.0)))
+        .gap(Is(6.0))
+        .lines_up(Is(Some(Middle)))
         |> ignore
         @sf.hover_ground_node(sp, lit=Some(hot))
         sp.says(By(fn() { station_now().map(fn(s) { @view.said(Group, label=s.name) }) })) |> ignore
@@ -827,44 +822,42 @@ fn wide_agent_inline(parent : @view.View, a : Agent, badge : () -> String, said 
     .words(Is(a.who))
     .words_look(By(fn() { @ui.style_words(wide_subchats_words) }))
     .ink(By(fn() { @ui.style_ink(wide_subchats_words) }))
-    .max_width(Is(Some(110.0)))
+    .shrink(Is(1.0))
+    .min_width(Is(Some(0.0)))
     .cuts(Is(true))
+    .allow_ellipsis(Is(true))
     |> ignore
   })
   |> ignore
 }
 
 ///|
-/// Station half inside the first agent's liquid glass capsule: inline via dot + station mark (13pt) + station name.
+/// Station half inside the first agent's liquid glass capsule: station mark (15pt) with its via dot on its corner, or
+/// the dot alone before the name for a station with no mark (@sfpages.station_via_mark_node), + station name.
 fn wide_station_inline(p : @view.View, station_now : () -> Station?, via : () -> String, hot : () -> Bool, stint : () -> Int) -> Unit {
-  wide_inline_via_dot(p, via)
-  let has_mark = match @signals.untracked(station_now) {
-    Some(s) => @sf.has_station_mark(s.emoji, s.icon)
-    None => false
-  }
-  if has_mark {
-    @sf.station_mark_node(
-      p,
-      fn() { station_now().map(fn(s) { s.emoji }).unwrap_or("") },
-      fn() { station_now().map(fn(s) { s.icon }).unwrap_or("") },
-      13.0,
-      fn() {
-        if hot() {
-          @sf.theme().p.text
-        } else {
-          @sf.theme().p.muted
-        }
-      },
-      stint,
-    )
-  }
+  @sfpages.station_via_mark_node(
+    p,
+    fn() { station_now().map(fn(s) { s.emoji }).unwrap_or("") },
+    fn() { station_now().map(fn(s) { s.icon }).unwrap_or("") },
+    via,
+    fn() {
+      if hot() {
+        @sf.theme().p.text
+      } else {
+        @sf.theme().p.muted
+      }
+    },
+    stint,
+  )
   @sf.words_node(
     p,
     fn() { station_now().map(fn(s) { s.name }).unwrap_or("") },
     fn() { if hot() { chat_station_words_hot } else { chat_station_words } },
   )
-  .max_width(Is(Some(100.0)))
+  .shrink(Is(1.0))
+  .min_width(Is(Some(0.0)))
   .cuts(Is(true))
+  .allow_ellipsis(Is(true))
   |> ignore
 }
 
@@ -1078,6 +1071,8 @@ fn wide_composer_bar_node(
       }
     },
     fn(k, it) {
+      // (each capsule giving way along the row, its names cut only where the row has no room for them)
+      k.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       let (i, a_opt, _) = it.untracked()
       match a_opt {
         None =>

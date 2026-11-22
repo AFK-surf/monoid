@@ -61,7 +61,8 @@ pub fn agent_badge_in(
 /// The badge at the corner of mark `m` (`side` across) as `badge` says it now: two nodes, its ground's and what is drawn
 /// in it (a dot, or the spokes), each told again in place as it comes to another, laid out nowhere while it has none
 /// (agent_badge_in's looks, by one binding); none made while it has none, as most marks have, till it first comes to
-/// one. Its spokes turned only once it has first been at work.
+/// one. Its spokes turned only once it has first been at work. Its dot ringed in the capsule's ground
+/// (capsule_badge_ground): it is drawn only on a mark in a capsule above a chat's composer.
 pub fn agent_badge_slot(m : @view.View, badge : () -> String, side : Double) -> Unit {
   let k = if side / 20.0 < 1.0 { side / 20.0 } else { 1.0 }
   let made = Ref(false)
@@ -84,7 +85,7 @@ pub fn agent_badge_slot(m : @view.View, badge : () -> String, side : Double) -> 
               "failed" => theme.color(@sf.mark_red)
               _ => @sf.mark_yellow()
             }
-            (now, @sf.theme().p.bg, ink)
+            (now, capsule_badge_ground(), ink)
           },
           fn(said) {
             let (now, ground, ink) = said
@@ -140,4 +141,101 @@ pub fn agent_badge_slot(m : @view.View, badge : () -> String, side : Double) -> 
   } else {
     m.reacts(fn() { badge() != "" }, at_start=false, fn(on) { if on && !made.val && m.alive() { make() } })
   }
+}
+
+///|
+/// What a badge on a mark in a liquid glass capsule above the composer is ringed in, near the capsule's glass (raised
+/// in dark, paper in light) so the ring reads as a cut in the capsule, not a darker or lighter edge round the dot.
+fn capsule_badge_ground() -> Int64 {
+  let t = @sf.theme()
+  if t.dark {
+    t.p.raised
+  } else {
+    t.p.paper
+  }
+}
+
+///|
+/// How a station is reached (`via`: direct, relay, offline; none: "") as a dot's ink: online's, warning's, red's.
+fn station_via_ink(via : String) -> Int64 {
+  let p = @sf.theme().p
+  match via {
+    "direct" => p.online
+    "relay" => @ui.tree_theme().color(Warn)
+    "offline" => p.red
+    _ => p.muted
+  }
+}
+
+///|
+/// A station's mark (15pt in a 16 square, the agent's mark's size beside it) with how it is reached (`via`) as a dot
+/// on its corner, where an agent's badge sits on its mark (agent_badge_slot's place and ring), in a capsule above a
+/// chat's composer (小屏's chat_bar_node, 中屏's and 大屏's chat_bar_wide_node); a station with no mark (no emoji, no
+/// icon) has the dot before its name instead. Which of the two is as the station is when it is made, the capsule made
+/// again as its station changes. No dot while `via` is "".
+pub fn station_via_mark_node(
+  parent : @view.View,
+  emoji : () -> String,
+  icon : () -> String,
+  via : () -> String,
+  tint : () -> Int64,
+  stint : () -> Int,
+) -> Unit {
+  if !@sf.has_station_mark(@signals.untracked(emoji), @signals.untracked(icon)) {
+    station_inline_via_dot(parent, via)
+    return
+  }
+  @sf.station_mark_node(parent, emoji, icon, 15.0, tint, stint, over=fn(m) {
+    // (at least the agent's mark's 16 square, a wider emoji or larger words growing it)
+    m
+    .min_width(Is(Some(16.0)))
+    .min_height(Is(Some(16.0)))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .shrink(Is(0.0))
+    |> ignore
+    // (a 6.4 dot ringed 1.6 in the capsule's ground, 2.4 out past the mark's corner: agent_badge_slot's 12 at 16)
+    m.box(fn(d) {
+      d
+      .over(Is(true), edges=(None, None, Some(-0.8), Some(-0.8)))
+      .width(Is(Some(6.4)))
+      .height(Is(Some(6.4)))
+      .radius(Is(3.2))
+      .shrink(Is(0.0))
+      .sets_together(
+        fn() {
+          let v = via()
+          (v == "", station_via_ink(v), capsule_badge_ground())
+        },
+        fn(s) {
+          let (hidden, ink, bg) = s
+          d
+          .laid_nowhere(Is(hidden))
+          .ground(Is(if hidden { 0L } else { ink }))
+          .ring(Is(if hidden { (0.0, 0.0, 0L) } else { (1.6, 0.0, bg) }))
+          |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+}
+
+///|
+/// How a station with no mark is reached (`via`) as a 6 dot before its name (station_via_mark_node's): none while "".
+fn station_inline_via_dot(parent : @view.View, via : () -> String) -> Unit {
+  parent.box(fn(d) {
+    d
+    .width(Is(Some(6.0)))
+    .height(Is(Some(6.0)))
+    .radius(Is(3.0))
+    .shrink(Is(0.0))
+    .sets_together(fn() { let v = via(); (v == "", station_via_ink(v)) }, fn(s) {
+      let (hidden, ink) = s
+      d.laid_nowhere(Is(hidden)).ground(Is(if hidden { 0L } else { ink })) |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
 }
