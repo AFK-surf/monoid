@@ -1634,13 +1634,14 @@ fn open_chat_jobs(src : Source, r : ChatRef) -> Unit {
 }
 
 ///|
-/// One of the rows of the chat's led sub-chats bottom sheet (`subchats_sheet_node`): empty state, collapsible archived
-/// group heading (`has_active`), or a sub-chat row in either the active or archived card group (`archived`, `key`).
+/// One of the rows of the chat's led sub-chats bottom sheet (`subchats_sheet_node`): empty state, collapsible done or
+/// archived group heading (`has_above`), or a sub-chat row in the active (`0`), done (`1`), or archived (`2`) card group.
 #derive(Eq, Hash)
 priv enum SubchatSheetRow {
   SubchatsEmpty
+  SubchatsDoneHead(Bool)
   SubchatsArchivedHead(Bool)
-  SubchatsOne(Bool, String)
+  SubchatsOne(Int, String)
 }
 
 ///|
@@ -1649,7 +1650,11 @@ fn subchat_sheet_key(o : @sfbase.OpenedChat) -> String {
 }
 
 ///|
-fn subchats_sheet_rows(subchats : Array[@sfbase.OpenedChat], archived_open : Bool) -> Array[SubchatSheetRow] {
+fn subchats_sheet_rows(
+  subchats : Array[@sfbase.OpenedChat],
+  done_open : Bool,
+  archived_open : Bool,
+) -> Array[SubchatSheetRow] {
   let out : Array[SubchatSheetRow] = []
   if subchats.length() == 0 {
     out.push(SubchatsEmpty)
@@ -1657,17 +1662,27 @@ fn subchats_sheet_rows(subchats : Array[@sfbase.OpenedChat], archived_open : Boo
   }
   let mut has_active = false
   for o in subchats {
-    if !o.archived {
+    if !o.archived && !@sfpages.subchat_is_done(o) {
       has_active = true
-      out.push(SubchatsOne(false, subchat_sheet_key(o)))
+      out.push(SubchatsOne(0, subchat_sheet_key(o)))
+    }
+  }
+  let done = subchats.filter(fn(o) { @sfpages.subchat_is_done(o) })
+  let has_done = done.length() > 0
+  if has_done {
+    out.push(SubchatsDoneHead(has_active))
+    if done_open {
+      for o in done {
+        out.push(SubchatsOne(1, subchat_sheet_key(o)))
+      }
     }
   }
   let archived = subchats.filter(fn(o) { o.archived })
   if archived.length() > 0 {
-    out.push(SubchatsArchivedHead(has_active))
+    out.push(SubchatsArchivedHead(has_active || has_done))
     if archived_open {
       for o in archived {
-        out.push(SubchatsOne(true, subchat_sheet_key(o)))
+        out.push(SubchatsOne(2, subchat_sheet_key(o)))
       }
     }
   }
@@ -1676,7 +1691,7 @@ fn subchats_sheet_rows(subchats : Array[@sfbase.OpenedChat], archived_open : Boo
 
 ///|
 /// The chat's led sub-chats bottom sheet on Small screens (`open_subchats`): grouped cards in a virtualized
-/// `panel_list_node` with live running/waiting counts in `head_end` and a collapsible archived group.
+/// `panel_list_node` with live running/waiting counts in `head_end` and collapsible done and archived groups.
 fn open_subchats(src : Source, r : ChatRef) -> Unit {
   let opened = fn() {
     match @sfbase.chat_view_now(src, r) {
@@ -1698,13 +1713,16 @@ fn open_subchats(src : Source, r : ChatRef) -> Unit {
 ///|
 fn subchats_sheet_node(v : @view.View, opened : () -> Array[@sfbase.OpenedChat], close : () -> Unit) -> Unit {
   let subchats = @signals.computed(fn(_) { @sfpages.led_subchats(opened()) })
+  let done_open = @signals.signal(
+    @signals.untracked(fn() { !subchats.get().iter().any(fn(o) { !o.archived && !@sfpages.subchat_is_done(o) }) }),
+  )
   let archived_open = @signals.signal(@signals.untracked(fn() { !subchats.get().iter().any(fn(o) { !o.archived }) }))
-  let rows = @signals.computed(fn(_) { subchats_sheet_rows(subchats.get(), archived_open.get()) })
+  let rows = @signals.computed(fn(_) { subchats_sheet_rows(subchats.get(), done_open.get(), archived_open.get()) })
   v.reacts(at_start=false, fn() { rows.get().length() }, fn(_) { @sf.panel_reshaped_node(v) }) |> ignore
   @sf.panel_list_node(
     v,
     fn() { rows.get() },
-    fn(b, row) { subchats_sheet_row_node(b, row, fn() { subchats.get() }, archived_open, close) },
+    fn(b, row) { subchats_sheet_row_node(b, row, fn() { subchats.get() }, done_open, archived_open, close) },
     est=subchats_row_est,
   )
   |> ignore
@@ -1717,10 +1735,54 @@ fn subchats_sheet_node(v : @view.View, opened : () -> Array[@sfbase.OpenedChat],
 let subchats_row_est : Double = 56.0
 
 ///|
+fn subchats_sheet_group_head_node(
+  b : @view.View,
+  label : () -> String,
+  count : () -> Int,
+  open : @signals.Signal[Bool],
+  has_above : Bool,
+) -> Unit {
+  b.box(fn(slot) {
+    @sf.style_node(slot, fn() { @sf.panel_words_in_node(slot).then(info_fill) })
+    @sf.action_box_node(
+      slot,
+      label,
+      fn(_) { open.set(!open.untracked()) },
+      expanded=fn() { open.get() },
+      fn(h) {
+        @sf.style_node(h, fn() {
+          (if has_above { subchats_archived_head } else { subchats_archived_head_top })
+          .then(subchats_archived_round)
+        })
+        h.min_height(Is(Some(44.0))) |> ignore
+        @sf.hover_ground_node(h)
+        h.box(fn(l) {
+          @sf.style_node(l, fn() { subchats_archived_left }, in_row=true)
+          @sf.words_node(l, label, fn() { jobs_head_words }) |> ignore
+          @sf.words_node(l, fn() { count().to_string() }, fn() { subchats_archived_count_words }) |> ignore
+        })
+        |> ignore
+        @sf.icon_node(
+          h,
+          "",
+          14.0,
+          By(fn() { @sf.theme().p.subtle }),
+          name_now=fn() { if open.get() { "chevron-down" } else { "chevron-right" } },
+        )
+        |> ignore
+      },
+    )
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
 fn subchats_sheet_row_node(
   b : @view.View,
   row : SubchatSheetRow,
   subchats : () -> Array[@sfbase.OpenedChat],
+  done_open : @signals.Signal[Bool],
   archived_open : @signals.Signal[Bool],
   close : () -> Unit,
 ) -> Unit {
@@ -1731,52 +1793,46 @@ fn subchats_sheet_row_node(
         @sf.words_node(n, fn() { tr("web-pages.chat.subchatsNone") }, fn() { jobs_none_words }) |> ignore
       })
       |> ignore
-    SubchatsArchivedHead(has_active) => {
-      let archived_count = fn() {
-        let mut n = 0
-        for o in subchats() {
-          if o.archived {
-            n += 1
+    SubchatsDoneHead(has_above) =>
+      subchats_sheet_group_head_node(
+        b,
+        fn() { tr("web-pages.chat.subchatsDone") },
+        fn() {
+          let mut n = 0
+          for o in subchats() {
+            if @sfpages.subchat_is_done(o) {
+              n += 1
+            }
           }
+          n
+        },
+        done_open,
+        has_above,
+      )
+    SubchatsArchivedHead(has_above) =>
+      subchats_sheet_group_head_node(
+        b,
+        fn() { tr("web-pages.chat.subchatsArchived") },
+        fn() {
+          let mut n = 0
+          for o in subchats() {
+            if o.archived {
+              n += 1
+            }
+          }
+          n
+        },
+        archived_open,
+        has_above,
+      )
+    SubchatsOne(group_kind, key) => {
+      let group = fn() {
+        match group_kind {
+          0 => subchats().filter(fn(o) { !o.archived && !@sfpages.subchat_is_done(o) })
+          1 => subchats().filter(fn(o) { @sfpages.subchat_is_done(o) })
+          _ => subchats().filter(fn(o) { o.archived })
         }
-        n
       }
-      b.box(fn(slot) {
-        @sf.style_node(slot, fn() { @sf.panel_words_in_node(slot).then(info_fill) })
-        @sf.action_box_node(
-          slot,
-          fn() { tr("web-pages.chat.subchatsArchived") },
-          fn(_) { archived_open.set(!archived_open.untracked()) },
-          expanded=fn() { archived_open.get() },
-          fn(h) {
-            @sf.style_node(h, fn() {
-              (if has_active { subchats_archived_head } else { subchats_archived_head_top })
-              .then(subchats_archived_round)
-            })
-            h.min_height(Is(Some(44.0))) |> ignore
-            @sf.hover_ground_node(h)
-            h.box(fn(l) {
-              @sf.style_node(l, fn() { subchats_archived_left }, in_row=true)
-              @sf.words_node(l, fn() { tr("web-pages.chat.subchatsArchived") }, fn() { jobs_head_words }) |> ignore
-              @sf.words_node(l, fn() { archived_count().to_string() }, fn() { subchats_archived_count_words }) |> ignore
-            })
-            |> ignore
-            @sf.icon_node(
-              h,
-              "",
-              14.0,
-              By(fn() { @sf.theme().p.subtle }),
-              name_now=fn() { if archived_open.get() { "chevron-down" } else { "chevron-right" } },
-            )
-            |> ignore
-          },
-        )
-        |> ignore
-      })
-      |> ignore
-    }
-    SubchatsOne(archived, key) => {
-      let group = fn() { subchats().filter(fn(o) { o.archived == archived }) }
       let item_now = @signals.computed(fn(_) { group().iter().find_first(fn(o) { subchat_sheet_key(o) == key }) })
       let piece_now = @signals.computed(fn(_) {
         let g = group()
@@ -1802,7 +1858,7 @@ fn subchat_sheet_item_node(k : @view.View, item : () -> @sfbase.OpenedChat?, clo
   }
   let state_text = fn() {
     match item() {
-      Some(o) => o.state_text
+      Some(o) => @sfpages.subchat_row_state_text(o)
       None => ""
     }
   }
@@ -1847,7 +1903,7 @@ fn subchat_sheet_item_node(k : @view.View, item : () -> @sfbase.OpenedChat?, clo
           @sf.style_node(w, fn() { subchats_sheet_words }, in_row=true)
           w.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
           @sf.words_node(w, title, fn() { if is_archived() { job_name_off } else { job_name } }).allow_ellipsis(Is(true)) |> ignore
-          w.show(at_once=true, fn() { !is_archived() && state_text() != "" }, fn(st) {
+          w.show(at_once=true, fn() { state_text() != "" }, fn(st) {
             @sf.words_node(st, state_text, fn() { subchats_sheet_state }).allow_ellipsis(Is(true)) |> ignore
           })
         })

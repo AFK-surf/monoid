@@ -410,6 +410,7 @@
   "web-pages.chat.subchats": "Sub-chats",
   "web-pages.chat.subchatsRunning": "{n} running",
   "web-pages.chat.subchatsNeed": "{n} waiting",
+  "web-pages.chat.subchatsDone": "Done",
   "web-pages.chat.subchatsArchived": "Archived",
   "web-pages.chat.subchatsNone": "No sub-chats",
   "web-pages.chat.breadcrumbMore": "More parent chats",

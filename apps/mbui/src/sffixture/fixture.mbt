@@ -781,6 +781,266 @@ fn with_subchats_many(v : Json?) -> Json? {
 }
 
 ///|
+/// Tall led sub-chats fixture (chat-subchats-tall): 1 waiting + 6 running + 14 done (mix of bare "已完成" and
+/// summary "已完成：…") + 2 archived, all `led: true`, simulating a leader chat with 23 sub-chats.
+fn with_subchats_tall(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st2",
+          "session": "s-c3",
+          "title": "夜里的构建又失败了",
+          "mark": "block",
+          "stateLead": "need",
+          "stateText": "要你帮忙：测试机的磁盘满了，要不要清理旧的缓存？",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "安卓构建与冒烟测试",
+          "mark": "run",
+          "stateText": "正在运行端到端用例",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-t1",
+          "title": "iOS 弱网断线重连回归",
+          "mark": "run",
+          "stateText": "正在对比重连前后消息序号",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-t2",
+          "title": "桌面端快捷键焦点环自查",
+          "mark": "run",
+          "stateText": "正在运行 4 档帧率测试",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-t3",
+          "title": "Core-TS 主题增量字节预算检查",
+          "mark": "run",
+          "stateText": "正在生成 real-size 报告",
+          "led": true,
+        },
+        {
+          "station": "ws1/st2",
+          "session": "s-t4",
+          "title": "Station 跨站同步冲突合并验证",
+          "mark": "run",
+          "stateText": "正在运行三方合并测试",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-t5",
+          "title": "离屏金属渲染对比视频生成",
+          "mark": "run",
+          "stateText": "正在录制 60fps 交互流",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d1",
+          "title": "给设置页加一个深色模式开关",
+          "stateLead": "done",
+          "stateText": "已完成：开关和三处颜色都改好了",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d2",
+          "title": "排查首页列表滚动掉帧",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d3",
+          "title": "补齐弹窗无障碍语义标签",
+          "stateLead": "done",
+          "stateText": "已完成：已通过全量 audit",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d4",
+          "title": "整理多端字体缩放边界用例",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d5",
+          "title": "压缩首屏静态图标资源体积",
+          "stateLead": "done",
+          "stateText": "已完成：减少 180 KB",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d6",
+          "title": "修复窄屏面包屑截断问题",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d7",
+          "title": "同步英文词条缺失翻译",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d8",
+          "title": "核对安全模式卡片按钮文案",
+          "stateLead": "done",
+          "stateText": "已完成：已对齐最新规范",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d9",
+          "title": "清理旧版日志导出临时脚本",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d10",
+          "title": "优化大附件分片续传重试",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d11",
+          "title": "验证飞书群卡片回调签名",
+          "stateLead": "done",
+          "stateText": "已完成：单测全绿",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d12",
+          "title": "检查平板横屏分栏最小宽度",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d13",
+          "title": "补充工作站迁移回滚说明",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c4",
+          "title": "收尾回归与变更日志核对",
+          "stateLead": "done",
+          "stateText": "已完成：已合入测试分支",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c12",
+          "title": "旧版引导页的截图",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：归档前的残留提示",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c13",
+          "title": "排查消息推送延迟问题",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "出错：额度已用完",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 23 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
+/// Done-only led sub-chats fixture (chat-subchats-done-only): 3 unarchived done + 2 archived, verifying that the Done
+/// group auto-expands when no active sub-chats exist while Archived stays collapsed.
+fn with_subchats_done_only(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c4",
+          "title": "给设置页加一个深色模式开关",
+          "stateLead": "done",
+          "stateText": "已完成：开关和三处颜色都改好了",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d2",
+          "title": "排查首页列表滚动掉帧",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d3",
+          "title": "补齐弹窗无障碍语义标签",
+          "stateLead": "done",
+          "stateText": "已完成：已通过全量 audit",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c12",
+          "title": "旧版引导页的截图",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：归档前的残留提示",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c13",
+          "title": "排查消息推送延迟问题",
+          "archived": true,
+          "note": "已归档",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 5 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
 /// 3-level led ancestor chain plus 2 led sub-chats (chat-lineage): exercises multi-level breadcrumb + sub-chats entry.
 fn with_lineage(v : Json?) -> Json? {
   match v {
@@ -1494,6 +1754,10 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
     "profiles" => @settings.profiles_rows(@settings.profiles_of_stations(value, wholes()))
     "profile" =>
       @settings.profile_said(fixture_topic_inner(f, "profiles", { "scope": Json::string(text(Some(Json::object(params)), "scope")) }), params)
+    "chat" if f.mode == "chat-subchats-tall" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_tall(value))
+    "chat" if f.mode == "chat-subchats-done-only" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_done_only(value))
     "chat" if f.mode == "chat-subchats-many" && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_subchats_many(value))
     "chat" if f.mode == "chat-subchats-one" && params.get("session") is Some(String("s-c1")) =>

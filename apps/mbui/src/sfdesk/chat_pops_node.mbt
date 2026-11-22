@@ -118,6 +118,7 @@ fn chat_subchats_pop_node(host : @view.View, src : Source, r : ChatRef, view : (
           chat_own.subchats_open.set(false)
           side_tab_open(src, r, "subchats")
         },
+        scroll_most=fn() { dmax(120.0, dmin(subchats_pop_most, host.window_h() * 0.6) - 104.0) },
       )
     },
   )

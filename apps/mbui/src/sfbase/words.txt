@@ -1974,6 +1974,7 @@ web-pages.chat.subchats
 web-pages.chat.subchatsRunning
 web-pages.chat.subchatsNeed
 web-pages.chat.subchatsArchived
+web-pages.chat.subchatsDone
 web-pages.chat.subchatsNone
 web-pages.chat.breadcrumbMore
 web-pages.chat.stopAsked
@@ -3035,6 +3036,7 @@ web-main.board.lane.run
 web-main.board.lane.done
 web-main.board.lane.watch
 core-views.new_chat
+core-views.present.done
 web-main.composer.filesLocked
 web-main.composer.filesOffline
 web-main.decisions.reply

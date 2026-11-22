@@ -3269,11 +3269,23 @@ export class Views implements Owner {
 
   /// The chats a chat's agent opened (its station's row's `opened`), as their lists have them: each on its station, titled
   /// as its row is (else as it was given), where it stands as its row's second line says it (what it needs of the viewer,
-  /// a card, done), its mark; one in its station's archive said so. The first opened first.
+  /// a card, done), its mark; one in its station's archive said so. Ordered by priority (failed, need/block, running,
+  /// other active, done, archived), newest created first within the same priority.
   #opened(station: string, raw: J): J[] {
-    return arr(get(raw, "opened")).flatMap((o) => {
+    const openedRank = (o: J): number => {
+      if (o.archived === true) return 5;
+      if (o.mark === "failed") return 0;
+      if (o.stateLead === "need" || o.stateLead === "decision" || o.mark === "block") return 1;
+      if (o.mark === "run") return 2;
+      if (o.stateLead === "done") return 4;
+      return 3;
+    };
+    const items: { item: J; idx: number }[] = [];
+    const rawOpened = arr(get(raw, "opened"));
+    for (let idx = 0; idx < rawOpened.length; idx++) {
+      const o = rawOpened[idx];
       const session = str(get(o, "session"));
-      if (session === null) return [];
+      if (session === null) continue;
       const there = str(get(o, "station"));
       const at = there !== null && there !== "" ? `${ofAddress(station)}/${there}` : station;
       const found = this.#core.data.chatNamed(at, session);
@@ -3293,8 +3305,9 @@ export class Views implements Owner {
         out.note = t("core-views.search.archived");
       }
       if (get(o, "led") === true) out.led = true;
-      return [out];
-    });
+      items.push({ item: out, idx });
+    }
+    return items.sort((a, b) => openedRank(a.item) - openedRank(b.item) || b.idx - a.idx).map((x) => x.item);
   }
 
   /// Where a chat a chat's agent opened stands (#opened): its mark and its row's second line, made of its record alone
@@ -3307,8 +3320,9 @@ export class Views implements Owner {
     const was = this.#openedStates.get(row);
     if (was !== undefined && was.lang === said) return was;
     const agents = arr(row.agents);
-    // (presentRow and the presenting of each agent copy what they change: the record is read, never written)
-    const shown = decisions.presentRow({ ...row, agents: agents.map((a: J) => present.session(a)) });
+    // (presentRow and the presenting of each agent copy what they change: the record is read, never written;
+    // unread is cleared on this shallow copy so led sub-chats read by their leader still report settled done state)
+    const shown = decisions.presentRow({ ...row, unread: false, agents: agents.map((a: J) => present.session(a)) });
     const line = present.rowStateLine(shown);
     const made = { lang: said, mark: present.rowState(agents), text: line === null ? null : line[0], lead: line === null || line[3] === null ? null : line[3].kind };
     this.#openedStates.set(row, made);
