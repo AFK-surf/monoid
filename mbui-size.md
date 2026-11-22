@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a3bb99b79](https://github.com/AFK-surf/monoid/commit/a3bb99b79e38289989ba201374f05971afde59b4) fix(mbui): fix small-screen subchats sheet layout, | 2.65 | 3.57 | 14.5 | 36.57 | 55.4 | 32.02 | 64.75 | 98.81 | 128.53 |
 | [9bfb4f6f4](https://github.com/AFK-surf/monoid/commit/9bfb4f6f4b452857e5e38236232e3e9fc2e89e23) fix(sfapp): keep the capsules above the composer i | 2.65 | 3.56 | 14.48 | 36.55 | 55.32 | 32.01 | 64.7 | 98.9 | 122.36 |
 | [6dd1cca90](https://github.com/AFK-surf/monoid/commit/6dd1cca904d4d4ef8c48b305b84d17d5d8b75d34) fix(mbui): drop the neutral disc under an agent's  | 2.65 | 3.56 | 14.48 | 36.55 | 55.32 | 32.01 | 64.7 | 98.75 | 125.22 |
 | [6fc4680e3](https://github.com/AFK-surf/monoid/commit/6fc4680e3cd3d2313541ff59c9576879eaa9a356) fix(sfapp): fade the narrow chat bar's ground at i | 2.65 | 3.56 | 14.48 | 36.55 | 55.32 | 32.01 | 64.7 | 98.55 | 116.53 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1162dbc1f](https://github.com/AFK-surf/monoid/commit/1162dbc1fc327db65c2924527a020c576824840f) fix(station): preserve binary stream bytes in Moon | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.42 | 119.56 |
 | [db0d63d54](https://github.com/AFK-surf/monoid/commit/db0d63d54ae7550698148b3760c64c83f26f4ae5) fix(mbui): offer quote action on Slack and Feishu  | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.32 | 125.11 |
 | [51b6af01d](https://github.com/AFK-surf/monoid/commit/51b6af01dfaeff7467fea7183dd422143c005b02) fix(ci): chain stable station natives with needs ( | 2.64 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.38 | 98.58 | 122.64 |
-| [5a87a4d8b](https://github.com/AFK-surf/monoid/commit/5a87a4d8b75f2ef7dbfbb826c229882871c1d173) fix(sf-ui,sfapp): make remaining fixed-height text | 2.64 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.38 | 98.47 | 118.47 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a3bb99b79](https://github.com/AFK-surf/monoid/commit/a3bb99b79e38289989ba201374f05971afde59b4) fix(mbui): fix small-screen subchats sheet layout, | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
 | [9bfb4f6f4](https://github.com/AFK-surf/monoid/commit/9bfb4f6f4b452857e5e38236232e3e9fc2e89e23) fix(sfapp): keep the capsules above the composer i | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
 | [6dd1cca90](https://github.com/AFK-surf/monoid/commit/6dd1cca904d4d4ef8c48b305b84d17d5d8b75d34) fix(mbui): drop the neutral disc under an agent's  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
 | [6fc4680e3](https://github.com/AFK-surf/monoid/commit/6fc4680e3cd3d2313541ff59c9576879eaa9a356) fix(sfapp): fade the narrow chat bar's ground at i | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1162dbc1f](https://github.com/AFK-surf/monoid/commit/1162dbc1fc327db65c2924527a020c576824840f) fix(station): preserve binary stream bytes in Moon | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 53.92 |
 | [db0d63d54](https://github.com/AFK-surf/monoid/commit/db0d63d54ae7550698148b3760c64c83f26f4ae5) fix(mbui): offer quote action on Slack and Feishu  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 53.92 |
 | [51b6af01d](https://github.com/AFK-surf/monoid/commit/51b6af01dfaeff7467fea7183dd422143c005b02) fix(ci): chain stable station natives with needs ( | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 53.92 |
-| [5a87a4d8b](https://github.com/AFK-surf/monoid/commit/5a87a4d8b75f2ef7dbfbb826c229882871c1d173) fix(sf-ui,sfapp): make remaining fixed-height text | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 53.92 |
