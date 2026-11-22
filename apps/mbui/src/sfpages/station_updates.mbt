@@ -143,7 +143,7 @@ fn app_update_row_node(row : @view.View, src : @sfbase.Source) -> Unit {
       fn(h) {
         h.lines_up(Is(Some(Start))) |> ignore
         h.box(fn(n) {
-          @sf.style_node(n, fn() { sw_name_line.then(sw_name_grow).then(@ui.css("align=AStart")) }, in_row=true)
+          @sf.style_node(n, fn() { sw_name_line.then(sw_name_grow) }, in_row=true)
           n.min_width(Is(Some(0.0))).wraps(Is(Some(0.0))) |> ignore
           @sf.words_node(n, fn() { @sf.t("web-pages.stationUpdates.app") }, fn() { sw_name }) |> ignore
           @sf.words_node(n, fn() { now().0 }, fn() { sw_note }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
