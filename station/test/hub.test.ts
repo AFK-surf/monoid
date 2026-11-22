@@ -770,6 +770,92 @@ test("a failed start keeps its message for the next successful attempt", async (
   await r.close();
 });
 
+test("a failed start takes its pending message when a profile is made available to its workspace", async () => {
+  const r = new Rig({ workspaces: ["home", "joined"] });
+  r.edit((raw) => { raw.connects[0].workspace = "joined"; });
+  const m = message({ text: "first turn" });
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  await r.call(key, "chat_state", { kind: "all_done", done: "first turn finished" });
+  r.claude.last().complete();
+  await settle();
+  await r.hub.evict(key);
+  r.edit((raw) => { raw.profiles = raw.profiles.filter((p: any) => p.id !== "cc"); });
+  r.hub.profilesChanged();
+  await r.accept(reply(m, "1700000099.000000", "waiting for the account"));
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  assert.equal(r.store.pendingMessages(key).length, 1);
+
+  // A copy lent only to the home workspace cannot wake a chat in the joined workspace.
+  r.edit((raw) => raw.profiles.push({ id: "lent", runtime: "claude", home: "homes/lent", share: { borrowed: true, workspaces: ["home"] } }));
+  r.hub.profilesChanged();
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  assert.equal(r.store.pendingMessages(key).length, 1);
+
+  // The owner's grant is an in-place config edit. It wakes the waiting message without another user reply.
+  r.edit((raw) => raw.profiles.find((p: any) => p.id === "lent").share.workspaces.push("joined"));
+  r.hub.profilesChanged();
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "running");
+  assert.equal(r.store.pendingMessages(key).length, 0);
+  assert.equal(r.claude.last().options.profile.id, "lent");
+  assert.ok(r.claude.last().prompts.some((p) => p.includes("waiting for the account")));
+  await r.close();
+});
+
+test("a profile made available while a start is failing retries after that failure", async () => {
+  const r = new Rig();
+  const open = r.claude.open.bind(r.claude);
+  let rejectStart: (error: Error) => void = () => {};
+  let opened: () => void = () => {};
+  const opening = new Promise<void>((resolve) => { opened = resolve; });
+  r.claude.open = () => { opened(); return new Promise((_, reject) => { rejectStart = reject; }); };
+  const m = message({ text: "still waiting" });
+  await r.accept(m);
+  await opening;
+  const key = sessionKey("cl", "C1", m.threadTs);
+  r.edit((raw) => { raw.profiles = raw.profiles.filter((p: any) => p.id !== "cc"); });
+  r.hub.profilesChanged();
+  r.edit((raw) => raw.profiles.push({ id: "new", runtime: "claude", home: "homes/new" }));
+  r.hub.profilesChanged();
+  r.claude.open = open;
+  rejectStart(new Error("the old profile disappeared"));
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "running");
+  assert.equal(r.store.pendingMessages(key).length, 0);
+  assert.equal(r.claude.last().options.profile.id, "new");
+  assert.ok(r.claude.last().prompts.some((p) => p.includes("still waiting")));
+  await r.close();
+});
+
+test("a new available profile wakes a failure even if another profile was already eligible", async () => {
+  const r = new Rig();
+  const open = r.claude.open.bind(r.claude);
+  let opens = 0;
+  r.claude.open = (o, e) => { opens++; return open(o, e); };
+  r.claude.refuses = "the original account cannot start";
+  const m = message({ text: "try once an account is available" });
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  r.edit((raw) => { raw.profiles[0].name = "renamed"; });
+  r.hub.profilesChanged();
+  await settle();
+  assert.equal(opens, 1, "an unrelated edit does not retry a failure");
+  r.claude.refuses = null;
+  r.edit((raw) => raw.profiles.push({ id: "cc2", runtime: "claude", home: "homes/cc2" }));
+  r.hub.profilesChanged();
+  await settle();
+  assert.equal(opens, 2);
+  assert.equal(r.hub.readProcesses().get(key), "running");
+  assert.equal(r.store.pendingMessages(key).length, 0);
+  await r.close();
+});
+
 test("a retry waiting for a turn slot is queued rather than failed", async () => {
   const r = new Rig({ maxConcurrentTurns: 1 });
   r.claude.refuses = "no profile can run here";

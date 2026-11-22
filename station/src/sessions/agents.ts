@@ -793,7 +793,7 @@ export const AgentsLive = (control: Control) =>
         updates.changes(() => events.overviewChanged()),
         // macOS's grants to still.fail Helper (the station's page shows them as they change).
         grants?.onChange(() => events.overviewChanged()) ?? (() => {}),
-        config.listen(() => (events.overviewChanged(), events.rowsChanged(null))),
+        config.listen(() => (hub.profilesChanged(), events.overviewChanged(), events.rowsChanged(null))),
         cloud.listen(() => events.overviewChanged()),
       ];
 

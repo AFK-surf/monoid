@@ -200,6 +200,8 @@ export class Hub {
   readonly cold: ColdStorage;
   readonly readUpkeepState: (dataDir: string) => Promise<UpkeepState>;
   readonly accounts: Accounts;
+  /// The last profile access scopes seen by `profilesChanged`, kept apart from config.json's mutable objects.
+  private profileScopes: Profile[];
   readonly clock: Clock.Clock;
   readonly places: Places;
   readonly machineRoots: () => Roots;
@@ -354,6 +356,7 @@ export class Hub {
 
   constructor(options: HubOptions) {
     this.options = options;
+    this.profileScopes = this.copyProfileScopes(this.config().profiles);
     this.onBilledFallback = options.onBilledFallback ?? null;
     this.clock = options.clock ?? liveClock;
     this.startedAt = this.now();
@@ -1335,6 +1338,43 @@ export class Hub {
     for (const key of this.store.sessionsWithPending()) {
       const row = this.store.getSession(key);
       if (row && row.runtime === runtime && this.online(row)) void this.actor(row).kick();
+    }
+  }
+
+  private copyProfileScopes(profiles: Profile[]): Profile[] {
+    return profiles.map((p) => ({ ...p, runtimes: [...p.runtimes], withheld: p.withheld?.slice(), share: structuredClone(p.share) }));
+  }
+
+  /// A profile newly became available to a workspace: retry its failed starts without a second message. A profile
+  /// belonging to another workspace is not available, even when its copy has arrived at this station.
+  profilesChanged() {
+    const before = this.profileScopes;
+    const after = this.config().profiles;
+    this.profileScopes = this.copyProfileScopes(after);
+    const scope = (p: Profile) => {
+      const share = p.share as { borrowed?: unknown; workspaces?: unknown } | undefined;
+      return JSON.stringify([p.runtimes, p.enabled !== false, p.withheld ?? [], share?.borrowed, share?.workspaces]);
+    };
+    const previous = new Map(before.map((p) => [p.id, p]));
+    const changed = after.filter((p) => !previous.has(p.id) || scope(previous.get(p.id)!) !== scope(p));
+    if (changed.length === 0) return;
+    const home = this.workspaces()[0] ?? null;
+    for (const actor of this.actors.values()) {
+      const row = this.store.getSession(actor.key);
+      if (!row || row.archivedAt !== null || this.handedOver(row.key) || !this.store.hasPending(row.key) || !this.online(row)) continue;
+      const allowed = (p: Profile) => p.enabled !== false && p.runtimes.includes(actor.runtime) && allowedIn(p, row.ws ?? null, home);
+      const added = changed.some((p) => allowed(p) && (!previous.has(p.id) || !allowed(previous.get(p.id)!)));
+      if (!added) continue;
+      // A start may still be in flight when the profile arrives. Once its queue reaches this barrier, retry only if
+      // it actually failed and the profile still serves the workspace. Ordinary queued wakes retain their deduplication.
+      void actor.flushed().then(() => {
+        const now = this.store.getSession(actor.key);
+        if (!now || now.archivedAt !== null || this.actors.get(actor.key) !== actor || this.handedOver(actor.key) ||
+          !actor.startFailed() || !this.store.hasPending(actor.key) || !this.online(now)) return;
+        const stillAllowed = this.config().profiles.some((p) => p.enabled !== false && p.runtimes.includes(actor.runtime) &&
+          allowedIn(p, now.ws ?? null, this.workspaces()[0] ?? null));
+        if (stillAllowed) return actor.kick();
+      }).catch((error) => log.warn("hub", "could not retry after a profile became available", { session: actor.key, error: (error as Error).message }));
     }
   }
 
