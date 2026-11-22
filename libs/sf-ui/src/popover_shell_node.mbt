@@ -4,20 +4,15 @@
 // `glass_overlay_shadow()` (`shadow_outside(Is(true))` so outer shadows never bleed inside glass), `r_menu` corner
 // radius, clipping, `FromBeside` pop motion, and `ground_node` input boundary.
 //
-// Popovers anchored to a button inside a liquid glass `bar_pill_group_node` (`glass_pill_trigger_lent`) execute the
-// 1:1 CADisplayLink-calibrated iOS 27.0 `LiquidMorphPhysics` engine (`@lg` `liquid_morph_physics.mbt`):
-// - Open (`420ms` linear phase clock driving `omega0=22.0, zeta=0.78` spring): luminous crystal droplet (`0x4E`,
-//   `blur=1.6`) blooms from the contracting trigger capsule with scaled blurred content (`content_lens`) and settles
-//   with zero `kind == 8` overhead at rest;
+// Popovers (`menu_node`) anchored to a button inside a liquid glass `bar_pill_group_node` (`glass_pill_trigger_lent`)
+// execute the 1:1 CADisplayLink-calibrated iOS 27.0 `LiquidMorphPhysics` engine (`@lg` `liquid_morph_physics.mbt`):
+// - Open (`420ms` linear phase clock driving critically damped `omega0=26.0, zeta=1.0` spring): luminous crystal
+//   droplet (`0x4E`, `blur=1.6`) blooms from the contracting trigger capsule with scaled blurred content (`content_lens`)
+//   and settles with zero `kind == 8` overhead at rest;
 // - Close (`610ms` linear phase clock): `0..~285ms` teardrop contraction + gap-gated Blob A emergence & SDF neck
 //   fusion + parallel `-9.5pt` peak upward trigger recoil (`t ≈ 213ms`) and impact scale (`~0.965`), handing off
 //   cleanly at `raw <= 0.045` to the real trigger pill for `285..610ms` recoil return and `+1.6%` horizontal splash.
-
-///|
-/// Lent context key recording the resolved anchor side when `anchored_popover_bridge` attached a non-pill button
-/// anchor on this popover layer, so `anchored_popover_shell` can engage `0.28 <-> 1.00` into-button morphing without
-/// changing its 8-argument public signature.
-let popover_bridge_lent : @view.Lent[@ui.Side] = @view.Lent::new()
+// Non-pill buttons and `1×1` point anchors keep the original `FromBeside` (`0.97..1.0`) pop motion.
 
 ///|
 /// Shared pill-morph state lent from `anchored_popover_bridge` to `anchored_popover_shell` and `popover_content_motion`.
@@ -205,28 +200,11 @@ pub fn popover_bridge_alpha(look : @ui.Look) -> Double {
 }
 
 ///|
-/// Scale origin pointing directly at the anchor button center just past the anchored edge of the popover.
-fn popover_bridge_pivot(side : @ui.Side, along : @ui.Along) -> @view.Pivot {
-  let across = match along {
-    Start => 0.08
-    Middle => 0.5
-    End => 0.92
-  }
-  match side {
-    Bottom => At(across, -0.08)
-    Top => At(across, 1.08)
-    Right => At(-0.08, across)
-    Left => At(1.08, across)
-  }
-}
-
-///|
-/// Configures anchored popover liquid morphing on `layer` immediately before the popover shell:
+/// Configures anchored popover liquid morphing on `layer` immediately before the popover shell (`menu_node`):
 /// - Branch A (liquid glass `bar_pill_group_node` trigger): lends `pill_morph_lent` driving 1:1 iOS 27.0
 ///   `LiquidMorphPhysics` (trigger pill recoil, impact compression, horizontal splash, Blob A/B SDF fusion, and
 ///   `holds_leaving=true` sentinel through `610ms` close settle; 0 new cold-start bindings).
-/// - Branch B (non-glass real button >= 16×16): lends `popover_bridge_lent` for `0.28 <-> 1.00` into-button scaling.
-/// - Branch C (1×1 point anchor or `MBUI_GLASS=solid`): no-op, preserving original `0.97 / pop_max_shift=8.0`.
+/// - Non-pill buttons, `1×1` point anchors, and `MBUI_GLASS=solid`: no-op, preserving original `FromBeside` (`0.97..1.0`).
 #callsite(autofill(loc))
 pub fn anchored_popover_bridge(
   layer : @view.View,
@@ -238,20 +216,12 @@ pub fn anchored_popover_bridge(
   loc~ : SourceLoc,
 ) -> Unit {
   ignore(look)
-  let (ax, ay, aw, ah) = anchor.placed_window_now()
+  ignore(side)
+  ignore(offset)
+  let (ax, _, aw, ah) = anchor.placed_window_now()
   if aw < 16.0 || ah < 16.0 || layer.glass_solid() {
     return
   }
-  let eff_side : @ui.Side = match side {
-    Bottom =>
-      if ay + ah + 140.0 > layer.window_h() && ay > layer.window_h() - (ay + ah) {
-        Top
-      } else {
-        Bottom
-      }
-    _ => side
-  }
-  ignore(offset)
   match anchor.lent(glass_pill_trigger_lent) {
     Some(trig) => {
       let pill_h = trig.height
@@ -350,17 +320,14 @@ pub fn anchored_popover_bridge(
             { dx: cx - cw * 0.5, dy: 0.0, dw: cw - pill_w, dh: 0.0, corners: Some((r, r, r, r)) }
           } else if f.platter_active {
             let wp = @lg.lm_delayed_close_width(t)
-            let blob_a_w = @lg.lm_lerp(pill_h_eff, pill_w, wp)
-            let em = f.blob_a_emerge
-            let cw = dmax(1.0, blob_a_w * em)
-            let ch = dmax(1.0, pill_h_eff * em)
+            let cw = @lg.lm_lerp(pill_h_eff, pill_w, wp)
             let cx = @lg.lm_lerp(tx_mid, pill_w * 0.5, dclamp(wp, 0.0, 1.0))
-            let r = dmin(cw, ch) * 0.5
+            let r = dmin(cw, pill_h_eff) * 0.5
             {
               dx: cx - cw * 0.5,
-              dy: (pill_h_eff - ch) * 0.5,
+              dy: 0.0,
               dw: cw - pill_w,
-              dh: ch - pill_h_eff,
+              dh: 0.0,
               corners: Some((r, r, r, r)),
             }
           } else {
@@ -471,7 +438,7 @@ pub fn anchored_popover_bridge(
       })
       |> ignore
     }
-    None => layer.lends(popover_bridge_lent, eff_side) |> ignore
+    None => ()
   }
 }
 
@@ -479,8 +446,8 @@ pub fn anchored_popover_bridge(
 /// Configures `p` as the shared visual shell for an anchored popover beside `anchor_id`:
 /// single-layer liquid glass (`glass_menu()`), solid hairline fallback when `p.glass_solid()` is true,
 /// outside-only `glass_overlay_shadow()`, `r_menu` corner radius, clipping, `FromBeside` alpha/scale motion from `look`
-/// (or full 1:1 iOS 27.0 `LiquidMorphPhysics` when anchored to `bar_pill_group_node`, or `0.28 <-> 1.00`
-/// into-button morph when anchored to a plain button), and `ground_node` press boundary.
+/// (or full 1:1 iOS 27.0 `LiquidMorphPhysics` when `menu_node` is anchored to `bar_pill_group_node`), and
+/// `ground_node` press boundary.
 /// - `holds_side`: keeps the chosen side while it still fits (default `true`; pass `false` for `menu_node`).
 /// - `concentric_inset`: when `>= 0.0`, registers `corner_card_node(p, fn() { r_menu }, inset=fn() { concentric_inset })`.
 pub fn anchored_popover_shell(
@@ -631,21 +598,13 @@ pub fn anchored_popover_shell(
       )
       |> ignore
     }
-    _ => {
-      p.glass(By(fn() { Some(glass_menu()) })).shadow(By(fn() { glass_overlay_shadow() })) |> ignore
-      match p.lent(popover_bridge_lent) {
-        Some(eff_side) if !p.glass_solid() =>
-          p
-          .alpha(By(fn() { popover_bridge_alpha(look()) }))
-          .scale(By(fn() { popover_bridge_scale(look()) }), about=popover_bridge_pivot(eff_side, along))
-          |> ignore
-        _ =>
-          p
-          .alpha(By(fn() { look().alpha }))
-          .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
-          |> ignore
-      }
-    }
+    _ =>
+      p
+      .glass(By(fn() { Some(glass_menu()) }))
+      .shadow(By(fn() { glass_overlay_shadow() }))
+      .alpha(By(fn() { look().alpha }))
+      .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
+      |> ignore
   }
   if concentric_inset >= 0.0 {
     corner_card_node(p, fn() { r_menu }, inset=fn() { concentric_inset })

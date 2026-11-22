@@ -51,9 +51,10 @@ pub fn lm_step_response(t : Double, omega0 : Double, zeta : Double) -> Double {
 }
 
 ///|
-/// Primary open spring (`omega0 = 22.0 rad/s, zeta = 0.78`, ~+2.0% overshoot, ~185ms contour, ~380ms settle).
+/// Primary open spring (`omega0 = 26.0 rad/s, zeta = 1.0`, critically damped: monotonic with zero overshoot,
+/// smooth zero-velocity settle, ~95% at ~183ms and 99.98% at 420ms, avoiding `sizes_steady` clamp dead-stops).
 pub fn lm_open_progress(t : Double, start? : Double = 0.0) -> Double {
-  start + (1.0 - start) * lm_step_response(t, 22.0, 0.78)
+  start + (1.0 - start) * lm_step_response(t, 26.0, 1.0)
 }
 
 ///|
@@ -364,9 +365,10 @@ pub fn lm_open_content_blur(t : Double) -> Double {
 }
 
 ///|
-/// Menu content opacity on close (linear in `raw_value`).
+/// Menu content opacity on close: fades rows and focus highlights completely to `0.0` by `raw_value <= 0.45`
+/// (`t ≈ 115ms`), matching iOS 27.0 clearing text before droplet contraction and avoiding mid-close corner faults.
 pub fn lm_close_content_opacity(raw_value : Double) -> Double {
-  clamp(raw_value, 0.0, 1.0)
+  lm_smoothstep(0.45, 0.98, clamp(raw_value, 0.0, 1.0))
 }
 
 ///|

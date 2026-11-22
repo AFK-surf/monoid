@@ -5,12 +5,14 @@
 
 ///|
 test "LiquidMorphPhysics open/close springs, recoil pulse, and horizontal splash match CADisplayLink calibration" {
-  // 1. Open spring (omega0=22, zeta=0.78): starts at 0.0, slight overshoot around 0.21s, settled by 0.42s
+  // 1. Open spring (omega0=26, zeta=1.0): critically damped monotonic rise (~95% at 180ms, >99.9% at 420ms, no overshoot)
   assert_eq(lm_open_progress(0.0), 0.0)
-  let open_peak = lm_open_progress(0.21)
-  assert_true(open_peak > 1.01 && open_peak < 1.035, msg="open spring +2% overshoot at 210ms: \{open_peak}")
+  let open_180 = lm_open_progress(0.18)
+  let open_210 = lm_open_progress(0.21)
+  assert_true(open_180 > 0.93 && open_180 < 1.0, msg="open spring ~95% at 180ms: \{open_180}")
+  assert_true(open_210 >= open_180 && open_210 <= 1.0, msg="open spring monotonic without overshoot: \{open_180} -> \{open_210}")
   let open_end = lm_open_progress(0.42)
-  assert_true((open_end - 1.0).abs() < 0.01, msg="open spring settled by 420ms: \{open_end}")
+  assert_true(open_end > 0.999 && open_end <= 1.0, msg="open spring settled by 420ms: \{open_end}")
   // Open mid-phase aspect ratio stays near-circular on 190x265 menu (width leads height: w^0.44 vs h^0.70)
   let f67 = lm_eval_pill_morph(300.0, 35.0, 74.0, 36.0, 358.0, 184.0, 35.0, 190.0, 265.0, 20.0, 1.0, false, 0.067)
   let aspect67 = f67.cur_w / f67.cur_h

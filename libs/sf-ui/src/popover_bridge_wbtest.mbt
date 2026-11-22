@@ -232,7 +232,7 @@ test "bar_pill_group_node menu performs iOS 27.0 LiquidMorphPhysics with upward 
 }
 
 ///|
-test "non-pill plain button anchored popover scales into button without stacking extra glass" {
+test "non-pill plain button anchored popover keeps FromBeside 0.97..1.0 scale without stacking extra glass" {
   defer {
     @ui.set_glass_solid(None)
     set_dark(None)
@@ -242,21 +242,21 @@ test "non-pill plain button anchored popover scales into button without stacking
   open.set(true)
   t.draw()
   t.run_for(@motion.pop_ms * 0.3)
-  assert_eq(t.drawn_glass().length(), 1, msg="non-pill button emits single glass surface without fake droplet")
+  let enter_glass = t.drawn_glass()
+  assert_eq(enter_glass.length(), 1, msg="non-pill button emits single glass surface without fake droplet")
   t.run_for(@motion.pop_ms)
   let rest_glass = t.drawn_glass()
   assert_eq(rest_glass.length(), 1, msg="rest emits 1 liquid glass instance")
   assert_eq(t.audit(), [], msg="clean audit at rest")
-  let rest_y = rest_glass[0].1
   let rest_h = rest_glass[0].3
+  assert_true(enter_glass[0].3 / rest_h >= 0.96, msg="non-pill entrance keeps 0.97..1.0 FromBeside scale: \{enter_glass[0].3 / rest_h}")
   open.set(false)
   t.draw()
   t.run_for(@motion.pop_out_ms * 0.5)
   let exit_glass = t.drawn_glass()
   assert_eq(exit_glass.length(), 1, msg="non-pill exit emits 1 liquid glass instance")
   let exit_scale = exit_glass[0].3 / rest_h
-  assert_true(exit_scale < 0.65, msg="non-pill button popover shrinks substantially into button: scale=\{exit_scale}")
-  assert_true(exit_glass[0].1 < rest_y - 2.0, msg="non-pill popover top pulls upward toward button: exit_y=\{exit_glass[0].1}, rest_y=\{rest_y}")
+  assert_true(exit_scale >= 0.96 && exit_scale <= 1.0, msg="non-pill exit keeps 0.97..1.0 FromBeside scale: scale=\{exit_scale}")
   t.run_for(@motion.pop_out_ms)
   assert_eq(t.drawn_glass().length(), 0, msg="no glass instances after non-pill exit completes")
 }
