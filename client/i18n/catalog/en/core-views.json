@@ -289,6 +289,7 @@
   "core-views.present.host.disk": "Disk",
   "core-views.present.host.disk_short": "Disk",
   "core-views.present.host.disk_value": "{free} free / {total}",
+  "core-views.present.host.egress": "Egress {place}",
   "core-views.present.host.gpu_idle": "{gpu} idle",
   "core-views.present.host.gpu_memory_left": "{gpu} VRAM left",
   "core-views.present.host.gpu_memory_free": "VRAM left {free}/{total}G",

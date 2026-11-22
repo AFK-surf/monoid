@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { Admin } from "./api/admin.ts";
 import { Events as EventStreams, eventsHandoverFile } from "./api/events.ts";
 import { Host } from "./api/host.ts";
+import { EgressLook } from "./api/egress.ts";
 import { jobSeen, sessionSeen, threadSeen } from "./api/seen.ts";
 import { Store as StationStore } from "./store/store.ts";
 import { sees } from "./store/rows.ts";
@@ -304,7 +305,7 @@ export class AdminHost extends Context.Service<AdminHost, Host>()("stillfail/Adm
   static readonly layer = Layer.effect(
     AdminHost,
     Effect.gen(function* () {
-      const host = new Host((yield* Readers).data);
+      const host = new Host((yield* Readers).data, undefined, undefined, new EgressLook());
       yield* Effect.acquireRelease(Effect.sync(() => host.follow()), (stop) => Effect.sync(stop));
       return host;
     }),

@@ -322,7 +322,13 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["madeOf", "String", { said: true, doc: "What the machine is, in a line over its figures: Apple M1 Pro · 10 核 · arm64 · macOS 26.2 · willow.\nNot what it has of it or is using now: the meters say its memory and disk, each GPU's dial says its model." }],
     ["usage", "String", { doc: "Memory and disk in a line, what is used and what is left: 内存 12.3 / 32 GB · 磁盘 剩 45.2 / 460 GB." }],
     ["stationText", "String", { doc: "The station's own memory in a line: still.fail 38 MB." }],
+    ["egress", opt("HostEgress"), { doc: "Where its traffic is seen leaving for the internet, as its agents' requests leave it (stations before it,\nor before they saw it: absent)." }],
+    ["egressText", "String", { default: true, said: true, doc: "That in words, where the network line says it: 出口 美国; empty where it is not known." }],
   ], { doc: "The machine a station runs on, with it in words." }),
+  HostEgress: struct([
+    ["country", "String", { doc: "Two letters (ISO 3166-1): US." }],
+    ["colo", opt("String"), { doc: "Cloudflare's data centre it reached, three letters: SEA." }],
+  ], { doc: "Where a machine's traffic leaves for the internet, as Cloudflare saw it." }),
   ActivityNow: struct([
     ["key", "String"],
     ["text", "String", { said: true }],
@@ -451,7 +457,8 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["identity", "String", { doc: "As Host's." }],
     ["os", "String"],
     ["meters", vec("Meter")],
-  ], { doc: "The machine a station runs on as its row shows it (StationRow): its line and its meters." }),
+    ["egressText", "String", { default: true, said: true, doc: "As Host's." }],
+  ], { doc: "The machine a station runs on as its row shows it (StationRow): its line, its meters and where its traffic\nleaves." }),
   OverviewRow: struct([
     ["viewer", "Viewer"],
     ["counts", "Counts"],

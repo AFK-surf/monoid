@@ -6,6 +6,7 @@ import { current as language, t } from "./i18n.ts";
 import { authorNameOf } from "./entries.ts";
 import { STATION_PARTS, type Topic } from "./protocol.ts";
 import * as brand from "./brand.ts";
+import { countryName } from "./countries.ts";
 import * as decisions from "./decisions.ts";
 import * as drive from "./drive.ts";
 import * as prefsMod from "./prefs.ts";
@@ -1338,6 +1339,10 @@ export function host(h: J): J {
   o.meters = [cpu, memory, disk];
   o.usage = [memory, disk].map((m) => `${m.label} ${m.value}`).join(" · ");
   o.stationText = `${brand.name()} ${format.round(rss / 1024 ** 2)} MB`;
+  // Where its traffic leaves for the internet, by its country (a model's service refusing it refuses it by that).
+  const country = str(get(src.egress, "country"));
+  const place = country === undefined ? null : countryName(country, language());
+  o.egressText = place === null ? "" : t("core-views.present.host.egress", { place });
   return o;
 }
 

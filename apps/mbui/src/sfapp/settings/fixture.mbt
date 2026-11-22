@@ -2641,6 +2641,8 @@ fn fx_station(address : String) -> Json {
           } else {
             "Apple M1 Pro · 10 核 · arm64 · macOS 26.2 · willow"
           })),
+          // where its traffic leaves for the internet (Host's egressText)
+          ("egressText", str("出口 美国")),
         ])
         },
       ),

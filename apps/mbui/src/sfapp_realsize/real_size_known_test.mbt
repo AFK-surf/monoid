@@ -231,7 +231,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone files-split": (713, 573, 74),
   "phone files-transfers": (713, 573, 74),
   "phone files-tree": (844, 689, 81),
-  "phone place-stations": (483, 365, 77),
+  // (raised once, 2026-11-23: each card's network line says where its station's traffic leaves, 出口 …)
+  "phone place-stations": (499, 377, 86),
   "phone place-profiles": (694, 524, 84),
   "phone place-remote": (355, 291, 29),
   "phone place-remote-tabs": (355, 291, 29),
@@ -477,12 +478,14 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-security-upgrade-other": (446, 313, 38),
   "phone settings-security-upgrade-updating": (446, 313, 38),
   "phone settings-stations-tasks": (699, 501, 105),
-  "phone place-stations-tasks": (483, 365, 77),
+  // (raised once, 2026-11-23: each card's network line says where its station's traffic leaves, 出口 …)
+  "phone place-stations-tasks": (499, 377, 86),
   "phone settings-station-tasks": (572, 399, 68),
   "phone settings-station-tasks-other": (572, 399, 68),
   "phone settings-station-tasks-locked": (572, 399, 68),
   "phone settings-stations-devices": (699, 501, 105),
-  "phone place-stations-devices": (483, 365, 77),
+  // (raised once, 2026-11-23: each card's network line says where its station's traffic leaves, 出口 …)
+  "phone place-stations-devices": (499, 377, 86),
   "phone settings-station-devices": (572, 399, 68),
   "phone settings-fonts": (535, 664, 124),
   "phone settings-fonts-code": (515, 636, 116),

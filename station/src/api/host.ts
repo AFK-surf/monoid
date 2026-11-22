@@ -14,6 +14,7 @@ import { wall } from "../ops/fibers.ts";
 import { platform } from "../platform/index.ts";
 import { cpuShare, type Ticks } from "../platform/cpu-share.ts";
 import { type Gpu, Gpus } from "../jobs/gpu.ts";
+import type { EgressLook } from "./egress.ts";
 
 export type { Ticks };
 /// The ticks last seen, and when.
@@ -142,18 +143,22 @@ export class Host {
   private cpu = new CpuWindow();
 
   private read: typeof hostInfo;
+  private egress: Pick<EgressLook, "now" | "follow"> | null;
 
-  /// `dataDir`: where the station keeps its data (the disk it is on is said); `read`, how the machine is read.
-  constructor(dataDir: string, gpus: Pick<Gpus, "read"> & { cached?(): Gpu[] | null } = new Gpus(), read: typeof hostInfo = hostInfo) {
+  /// `dataDir`: where the station keeps its data (the disk it is on is said); `read`, how the machine is read;
+  /// `egress`, where its traffic is seen leaving for the internet (api/egress.ts; none: not said).
+  constructor(dataDir: string, gpus: Pick<Gpus, "read"> & { cached?(): Gpu[] | null } = new Gpus(), read: typeof hostInfo = hostInfo, egress: Pick<EgressLook, "now" | "follow"> | null = null) {
     this.dataDir = dataDir;
     this.gpus = gpus;
     this.read = read;
+    this.egress = process.env.STILLFAIL_TEST_HOST === "1" ? null : egress;
   }
 
   /// Notes the CPUs' ticks now and every CPU_EVERY_MS after, until the returned function is called. Ticks read off the
   /// main thread (/proc/stat) are noted as they come, one read at a time: a beat that finds one still out lets it be,
-  /// and one that comes after the stop is not noted.
+  /// and one that comes after the stop is not noted. Where its traffic leaves is followed as long (EgressLook.follow).
   follow(): () => void {
+    const stopEgress = this.egress?.follow() ?? (() => {});
     let stopped = false;
     let reading = false;
     const note = () => {
@@ -168,6 +173,7 @@ export class Host {
     return () => {
       stopped = true;
       stop();
+      stopEgress();
     };
   }
 
@@ -186,7 +192,10 @@ export class Host {
         ? Promise.resolve([{ name: "Test GPU", cores: 4, busy: 0.25 }])
         : soon(this.gpus.read().catch(() => null), GPU_SAMPLE_MS, () => this.gpus.cached?.() ?? null),
     ])
-      .then(([info, gpus]) => ({ ...info, gpus }))
+      .then(([info, gpus]) => {
+        const egress = this.egress?.now() ?? null;
+        return egress === null ? { ...info, gpus } : { ...info, gpus, egress };
+      })
       .finally(() => (this.sampling = null));
     return this.sampling;
   }

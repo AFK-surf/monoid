@@ -761,6 +761,14 @@ test("what_the_clients_show_is_put_in_here", () => {
   assert.match(h.usage, /^内存 .+ · 磁盘 剩余 50\.0 GB \/ 1000 GB$/);
   assert.equal(h.identity, "Apple M1 Pro · 32 GB · macOS 26");
   assert.equal(h.madeOf, "Apple M1 Pro · 8 核 · arm64 · macOS 26 · willow");
+  // where its traffic leaves, by its country; none said where it is not known (or not a country this core knows)
+  assert.equal(h.egressText, "");
+  assert.equal(p.host({ ...h, egress: { country: "US", colo: "SEA" } }).egressText, "出口 美国");
+  assert.equal(p.host({ ...h, egress: { country: "hk", colo: null } }).egressText, "出口 中国香港");
+  assert.equal(p.host({ ...h, egress: { country: "QQ" } }).egressText, "");
+  setCurrent("en");
+  assert.equal(p.host({ ...h, egress: { country: "JP", colo: "NRT" } }).egressText, "Egress Japan");
+  setCurrent("zh");
   assert.equal(h.uptimeText, "已运行 1 天 1 小时");
   assert.deepEqual([cpu.left, cpu.remaining, cpu.big, cpu.unit, cpu.title, cpu.total], [7, "空闲 7%", "7", "%", "CPU 空闲率", "负载 4.0"]);
   const left = h.meters[2];

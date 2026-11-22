@@ -73,6 +73,27 @@ test "a network line short of room puts its speeds under the rest, the figures w
 }
 
 ///|
+test "where the station's traffic leaves follows its round trip on the left, whole, in every look; none said, nothing" {
+  for each in [(Card, "Card"), (Peek, "Peek"), (Page, "Page")] {
+    let (look, name) = each
+    let t = net_case(fn(b) { station_net_line_node(b, fn() { Some(net_said) }, look~, egress=fn() { "出口 阿拉伯联合酋长国" }) }, w=560.0)
+    let (rx, ry, rw, rh) = t.rect_of("420 ms").unwrap()
+    let (ex, ey, _, eh) = t.rect_of("出口 阿拉伯联合酋长国").unwrap()
+    assert_true(ex > rx + rw, msg="\{name}: after its round trip")
+    assert_eq(ey + eh / 2.0, ry + rh / 2.0, msg=name)
+    let (ux, _, _, _) = t.rect_of("↑").unwrap()
+    assert_true(ux > ex, msg="\{name}: the speeds still right of it")
+    assert_eq(t.audit(), [], msg=name)
+    let none = net_case(fn(b) { station_net_line_node(b, fn() { Some(net_said) }, look~) })
+    assert_eq(none.words().filter(fn(w) { w.0 == "·" }).length(), 1, msg="\{name}: one dot, before its round trip")
+  }
+  // (short of room, the speeds go under and it stays whole)
+  let t = net_case(fn(b) { station_net_line_node(b, fn() { Some(net_said) }, egress=fn() { "出口 美国" }) }, w=200.0)
+  assert_true(t.rect_of("出口 美国") is Some(_))
+  assert_eq(t.audit(), [])
+}
+
+///|
 test "a network line not read yet is the made-up one, as tall as a real one" {
   let real = net_case(fn(b) { station_net_line_node(b, fn() { Some(net_said) }, look=Peek) })
   let (_, _, _, rh) = real.rect_of("中继").unwrap()

@@ -415,7 +415,7 @@ fn sl_station_body_node(card : @view.View, core : Core, s : () -> Json?, shown :
     body.box(fn(n) {
       n.box(fn(x) {
         x.alpha(By(fn() { seen(net() is Some(_)) })) |> ignore
-        @sfbase.station_net_line_node(x, net)
+        @sfbase.station_net_line_node(x, net, egress=fn() { text(host(), "egressText") })
       })
       |> ignore
       n.show(fn() { online() && net() is None }, fn(o) {

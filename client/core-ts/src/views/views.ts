@@ -3843,7 +3843,7 @@ export class Views implements Owner {
       acceptAutoChats: computed(() => get(get(this.#core.data.overviewRow(station), "autoChats"), "enabled") === true),
       hostRow: computed(() => {
         const h = kept!.host.get();
-        return h === null ? null : asShaped("HostRow", { identity: h.identity, os: h.os, meters: h.meters });
+        return h === null ? null : asShaped("HostRow", { identity: h.identity, os: h.os, meters: h.meters, egressText: h.egressText ?? "" });
       }),
       // Its overview is read and this core cannot read it (its page says so): a boolean, so that what reads it is made
       // again only as that changes (reactive.ts: a computed whose value is the same tells its readers nothing), not

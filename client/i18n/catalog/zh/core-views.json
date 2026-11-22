@@ -253,6 +253,7 @@
   "core-views.present.host.disk": "磁盘",
   "core-views.present.host.disk_short": "磁盘",
   "core-views.present.host.disk_value": "剩余 {free} / {total}",
+  "core-views.present.host.egress": "出口 {place}",
   "core-views.present.host.gpu_idle": "{gpu} 空闲率",
   "core-views.present.host.gpu_memory_left": "{gpu} 可用显存",
   "core-views.present.host.gpu_memory_free": "显存剩 {free}/{total}G",

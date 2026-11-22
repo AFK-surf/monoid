@@ -16,7 +16,7 @@ let row_fields : Array[String] = [
 
 ///|
 // kept across runs: a table, never written
-let row_host_fields : Array[String] = ["identity", "os", "meters"]
+let row_host_fields : Array[String] = ["identity", "os", "meters", "egressText"]
 
 ///|
 // kept across runs: a table, never written

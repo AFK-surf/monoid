@@ -564,6 +564,8 @@ export function hostReading(now: number, station: number, load = 0.21 + station 
     cpus: s.cpus, cpuModel: s.cpu, load, cpuBusy: load * 0.8, uptimeSec: 86400 * (3 + station) + 4211,
     memory: { totalBytes: s.memGb * gb, usedBytes: Math.round(s.memGb * gb * (0.42 + station * 0.05)), swapUsedBytes: 512 * 1024 ** 2 },
     disk: { path: "/", totalBytes: 1000e9, freeBytes: (180 + station * 40) * 1e9 }, stationRssBytes: 212 * 1024 ** 2 + station * 1e6, checkedAt: now,
+    // (where its traffic leaves, station/src/api/egress.ts: the longest name said among them)
+    egress: { country: pick(["US", "AE", "SG", "JP", "DE"], station), colo: pick(["SJC", "DXB", "SIN", "NRT", "FRA"], station) },
     // (as station/src/jobs/gpu.ts reads them: a Mac's its chip's, the PC's its card's)
     gpus: s.cpu.startsWith("Apple")
       ? [{ name: s.cpu, cores: pick([40, 20, 80, 0, 16], station), busy: 0.12 + station * 0.05 }]
