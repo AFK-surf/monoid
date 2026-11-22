@@ -47,15 +47,13 @@ pub fn station_updates_dialog(src : @sfbase.Source, core : Core, ws : String) ->
           close()
         }
       })
-      // (its card under the title as a part of a dialog stands, its foot corners concentric with the dialog's)
-      v.box(fn(block) {
-        @sf.style_node(block, fn() { station_updates_block.then(@sf.panel_card_last_node(block)) })
-        @sf.group_node(block, fn(g) {
-          // (the app's own newer build first, where one is offered too: one dialog for both)
-          g.show(fn() { @sfbase.update_as_row() is Some(_) }, fn(r) { app_update_row_node(r, src) })
-          g.each(listed, fn(it) { text(Some(it), "station") }, fn(row, it) {
-            station_update_row_node(row, core, fn() { Some(it.get()) })
-          })
+      // (its rows straight under the title, no card of their own: nothing in them stands in a corner to be concentric with)
+      v.box(fn(g) {
+        @sf.style_node(g, fn() { station_updates_block })
+        // (the app's own newer build first, where one is offered too: one dialog for both)
+        g.show(fn() { @sfbase.update_as_row() is Some(_) }, fn(r) { app_update_row_node(r, src) })
+        g.each(listed, fn(it) { text(Some(it), "station") }, fn(row, it) {
+          station_update_row_node(row, core, fn() { Some(it.get()) })
         })
       })
       |> ignore
@@ -78,7 +76,7 @@ fn station_update_row_node(row : @view.View, core : Core, it : () -> Json?) -> U
       r,
       fn(h) {
         h.box(fn(n) {
-          @sf.style_node(n, fn() { sw_name_line.then(sw_name_grow) }, in_row=true)
+          @sf.style_node(n, fn() { sw_name_line.then(sw_name_grow).then(su_name_baseline) }, in_row=true)
           n.min_width(Is(Some(0.0))) |> ignore
           @sf.words_node(n, fn() { text(it(), "name") }, fn() { sw_name }) |> ignore
           // (what runs and what is out on the same line: dense, the user, 2026-11-14 「信息密度有点低」)
@@ -127,53 +125,51 @@ fn station_update_row_node(row : @view.View, core : Core, it : () -> Json?) -> U
 }
 
 ///|
-/// The dialog's card's block: the room a part of a dialog has over it (composer_ref's ref_block's).
+/// The dialog's rows: the room a part of a dialog has over them (composer_ref's ref_block's) and under the last, their
+/// words out at the title's edge (the rows' own room in at their sides taken back).
 // kept across runs: a value (no field of it changes)
-let station_updates_block : @ui.Style = @ui.css("w=Full pt=S3_5")
+let station_updates_block : @ui.Style = @ui.style(pt=S3_5, pb=S4, mx=@sf.room_of(-@sf.text_in))
 
 ///|
 /// The app's own newer build as a row of the dialog in `row` (sfbase's update_as_row): 当前客户端 (the user,
-/// 2026-11-14: 「你直接叫当前客户端不行么」) and beside it how it stands; at its end what the person's word does
-/// (更新, 重启更新: update_go), while it comes how far. The words wrap where the row has less room.
+/// 2026-11-14: 「你直接叫当前客户端不行么」); at its end what the person's word does
+/// (更新, 重启更新: update_go), while it comes how far; how it stands under it.
 fn app_update_row_node(row : @view.View, src : @sfbase.Source) -> Unit {
   let now = fn() { @sfbase.update_as_row().unwrap_or(("", None, "")) }
   @sf.item_row_node(row, fn(r) {
     @sf.row_lines_node(
       r,
       fn(h) {
-        h.lines_up(Is(Some(Start))) |> ignore
         h.box(fn(n) {
           @sf.style_node(n, fn() { sw_name_line.then(sw_name_grow) }, in_row=true)
-          n.min_width(Is(Some(0.0))).wraps(Is(Some(0.0))) |> ignore
+          n.min_width(Is(Some(0.0))) |> ignore
           @sf.words_node(n, fn() { @sf.t("web-pages.stationUpdates.app") }, fn() { sw_name }) |> ignore
-          @sf.words_node(n, fn() { now().0 }, fn() { sw_note }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         })
         |> ignore
-        @sf.first_line_node(h, Ui, leading=L6, fn(first) {
-          first.pick(fn() { now().2 != "" }, fn(e, pressed) {
-            @sf.style_node(e, fn() { sw_rest })
-            if pressed {
-              @sf.button_node(
-                e,
-                fn() { now().2 },
-                fn() { if @sfbase.stale_build_now() { @sfbase.stale_build_action(src) } else { @sfbase.update_go(src) } },
-                tone=Primary,
-              )
-              |> ignore
-            } else {
-              e.show(fn() { now().1 is Some(_) }, fn(bar) {
-                bar.width(Is(Some(sw_progress_w))) |> ignore
-                @sf.progress_node(bar, fn() { now().1.unwrap_or(None) }, fn() { @ui.tree_theme().line }, fn() {
-                  @sf.theme().p.accent
-                })
-                |> ignore
+        h.pick(fn() { now().2 != "" }, fn(e, pressed) {
+          @sf.style_node(e, fn() { sw_rest })
+          if pressed {
+            @sf.button_node(
+              e,
+              fn() { now().2 },
+              fn() { if @sfbase.stale_build_now() { @sfbase.stale_build_action(src) } else { @sfbase.update_go(src) } },
+              tone=Primary,
+            )
+            |> ignore
+          } else {
+            e.show(fn() { now().1 is Some(_) }, fn(bar) {
+              bar.width(Is(Some(sw_progress_w))) |> ignore
+              @sf.progress_node(bar, fn() { now().1.unwrap_or(None) }, fn() { @ui.tree_theme().line }, fn() {
+                @sf.theme().p.accent
               })
-            }
-          })
+              |> ignore
+            })
+          }
         })
-        |> ignore
       },
-      fn(_) {  },
+      // (how it stands on a line of its own under its name, as a station's under way: whole however long, wrapping
+      // where the row is narrow)
+      fn(u) { @sf.words_node(u, fn() { now().0 }, fn() { sw_note }) |> ignore },
     )
   })
 }
@@ -182,3 +178,9 @@ fn app_update_row_node(row : @view.View, src : @sfbase.Source) -> Unit {
 /// What runs and what is out, beside a row's name: muted, cut short where the row has not the room.
 // kept across runs: a value (no field of it changes)
 let su_version : @ui.TextStyle = sw_version.then(@ui.text_style(w=Cut))
+
+///|
+/// A row's name and its versions (a smaller size) on one baseline, not centred on each other's heights: digits beside a
+/// bolder, larger name stood high when centred.
+// kept across runs: a value (no field of it changes)
+let su_name_baseline : @ui.Style = @ui.css("align=ABaseline")
