@@ -20,6 +20,7 @@ pub fn chat_page_body_node(
   tips~ : @sf.TipLayer,
   stint~ : () -> Int,
   shows~ : () -> Bool,
+  visible? : () -> Bool,
   cover? : () -> Double = fn() { bar_foot },
   cover_to? : () -> Double,
   room? : Double = list_room,
@@ -195,12 +196,13 @@ pub fn chat_page_body_node(
           @sfbase.fresh.became.get() == Some(r) ||
           (@sfbase.fresh.sending.get() && @sfbase.fresh.made.get() == r.session)
         }
+        let visible = visible.unwrap_or(shows)
         let since = o.cause_at()
         let waited = @sf.waited_past_node(
           o,
           fn() { since },
           @sf.later_ms,
-          going=fn() { !from_fresh() && error_text() == "" },
+          going=fn() { visible() && !from_fresh() && error_text() == "" },
         )
         o.show(at_once=true, fn() { error_text() != "" || (!from_fresh() && waited()) }, fn(s) {
           s

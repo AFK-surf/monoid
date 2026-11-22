@@ -633,7 +633,7 @@ fn tape_made(
                 // (behind the sidebar on the tape, nothing of it read out: tape_behind's)
                 col.hides(By(fn() { wide.tape_at.get() != Page })) |> ignore
                 context_node(col)
-                chat_body_nodes(col, s, r, tips, stint, composer, shows, in_pane=true, on_stack~)
+                chat_body_nodes(col, s, r, tips, stint, composer, shows, visible=fn() { tape_page_wait.is_shown(k) }, in_pane=true, on_stack~)
               },
               // (its composer made as nodes in the list's foot, in the page's panel: what stands in its corners concentric
               // with them, sfpages' chat_composer_node)

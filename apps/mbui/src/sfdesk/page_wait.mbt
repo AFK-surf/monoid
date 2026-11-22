@@ -103,3 +103,9 @@ let pane_page_wait : PageWait = page_wait()
 fn PageWait::draws(self : PageWait, serial : Int) -> Bool {
   app.nav.shows(serial) || self.shown.get().0 == serial
 }
+
+///|
+/// Whether entry `serial` is actually in front in the pane (not held behind the previous page by `flat_keep`).
+fn PageWait::is_shown(self : PageWait, serial : Int) -> Bool {
+  self.shown.get().0 == serial || (app.nav.top_over() && app.nav.shows(serial))
+}

@@ -534,7 +534,7 @@ fn pane_made(
                 body=fn(col, s, r, composer, shows, on_stack) {
                   pane_made_chat(col, k)
                   context_node(col)
-                  chat_body_nodes(col, s, r, tips, stint, composer, shows, on_stack~)
+                  chat_body_nodes(col, s, r, tips, stint, composer, shows, visible=fn() { pane_page_wait.is_shown(k) }, on_stack~)
                 },
                 // (its composer made as nodes in the list's foot: sfpages' chat_composer_node)
                 foot_node=fn(n, s, r, shows, laid) {
