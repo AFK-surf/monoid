@@ -39,6 +39,7 @@ fn screen_rig(
   h264? : Bool = false,
   os? : String = "",
   screens? : Json,
+  terminals? : Json,
   in_tab? : Bool = false,
   net? : Json,
 ) -> ScreenRig {
@@ -58,6 +59,8 @@ fn screen_rig(
         Some(Json::object({}))
       } else if name == "screens" {
         screens
+      } else if name == "terminals" {
+        terminals
       } else if name == "stationNet" {
         // how this device reaches the station (`net`), as the core says it; none by default (null, as the core answers
         // a station it has no network for: views.ts stationNet)
@@ -89,6 +92,7 @@ fn screen_rig(
   }
   let src : Source = {
     ..base,
+    asks_terminals: if terminals is Some(_) { fn() { true } } else { base.asks_terminals },
     topic_read: fn(name, params) {
       let tp = base.topic(name, params).get().snapshot()
       if name == "stations" && os != "" {

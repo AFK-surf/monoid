@@ -3095,6 +3095,8 @@ let zh : Map[String, String] = {
   "web-pages.remote.newTab": "新建远程标签",
   "web-pages.remote.urlSent": "已填入对话输入框",
   "web-pages.remote.switchSession": "切换远程会话",
+  "web-pages.remote.newSession": "新建",
+  "web-pages.remote.newBrowser": "新建浏览器",
   "web-pages.remote.newBrowserTab": "新建浏览器标签页",
   "web-pages.remote.newViewOn": "在 {station} 新建视图",
   "core-views.screen.kind.desktop": "桌面",
