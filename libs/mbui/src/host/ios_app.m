@@ -125,7 +125,7 @@ static void say(NSString *s);
 static int frames_drawn;
 // how much later than its time the frame before reached the screen (mb_host_frame_late), and that frame's time (the
 // display link's target it was drawn for; -1: none drawn since the link was paused)
-static double frame_late, last_target = -1;
+static double frame_late, last_target = -1, last_settle_ms = -1;
 // The frame the app waits for (@hostapi.wake_after: a resident cycle's next step), by the time it is for (ms, the
 // display link's targets' clock), or -1; the time of the frame being built (what wake_after counts from), and the
 // display's frame (ms).
@@ -259,6 +259,7 @@ static double drawn_for;
     [self drawFor:MAX(CACurrentMediaTime() * 1000.0, drawn_for)];
     l.presentsWithTransaction = NO;
     last_target = -1;
+    last_settle_ms = -1;
   }
   [self requestFrame];
 }
@@ -281,9 +282,22 @@ static double drawn_for;
     self.wantFrame = YES;
   }
   if (!self.wantFrame) {
-    if (mb_render_adaptive_step(0)) return;
+    // Cap idle adaptive glass settle steps to <= 60 Hz on 120 Hz ProMotion displays (matches Android MBView).
+    double now_ms = l.targetTimestamp * 1000.0;
+    if (last_settle_ms >= 0 && now_ms - last_settle_ms < 15.0) {
+      if (mb_render_adaptive_settling_of(0)) return;
+      l.paused = YES;
+      last_target = -1;
+      last_settle_ms = -1;
+      return;
+    }
+    if (mb_render_adaptive_step(0)) {
+      last_settle_ms = now_ms;
+      return;
+    }
     l.paused = YES;
     last_target = -1;
+    last_settle_ms = -1;
     return;
   }
   // the frame before on the screen since the display's last refresh (the link's timestamp): past the time it was drawn
@@ -291,6 +305,7 @@ static double drawn_for;
   frame_late = last_target >= 0 ? MAX(0, l.timestamp * 1000.0 - last_target) : 0;
   [self drawFor:l.targetTimestamp * 1000.0];
   last_target = l.targetTimestamp * 1000.0;
+  last_settle_ms = -1;
   if (!self.wantFrame && !mb_render_adaptive_settling_of(0)) {
     l.paused = YES;
     last_target = -1;

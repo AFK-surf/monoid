@@ -1280,6 +1280,7 @@ static int take_parts(int kept, int r[MB_PARTS][4]) {
   return k;
 }
 
+static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects);
 static void draw_into(GLuint fb, int part);
 
 // The frame kept drawn into `fb`, only its parts that differ (take_parts) where it holds the frame before (`kept`),
@@ -1287,17 +1288,10 @@ static void draw_into(GLuint fb, int part);
 static void draw_parts(GLuint fb, int kept) {
   int parts[MB_PARTS][4];
   int n = take_parts(kept, parts);
-  int missing = 0;
-  if (n < 0) {
-    draw_into(fb, 0);
-    missing = encode_missing;
-  }
-  for (int i = 0; i < n; i++) {
-    memcpy(cut, parts[i], sizeof cut);
-    draw_into(fb, 1);
-    missing |= encode_missing;
-  }
-  if (n != 0) pictures_missing = missing;
+  if (n == 0) return;
+  if (n < 0) draw_into_rects(fb, NULL, -1);
+  else draw_into_rects(fb, parts, n);
+  pictures_missing = encode_missing;
 }
 
 // The canvas gone with the context it was made in (a new one: gl_setup), nothing of it given back.
@@ -1417,8 +1411,6 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   if (pb0 < vy0) pb0 = vy0;
   if (pb1 > top) pb1 = top;
   if (px1 <= px0 || pb1 <= pb0 || x1 <= x0 || y1 <= y0) return 0;
-  // (a capture outside the part drawn: neither copied nor drawn. One that meets it is in it whole: @damage)
-  if (cut_on && (px1 <= cut[0] || cut[0] + cut[2] <= px0 || pb1 <= cut[1] || cut[1] + cut[3] <= pb0)) return 0;
   m->px0 = px0; m->pb0 = pb0; m->w = px1 - px0; m->h = pb1 - pb0; m->top = top;
   m->contained = is_contained ? mb_contained_make(&m->edge, a, px0 / sc, (top - pb0) / sc, 1.0f / sc, -1.0f / sc) : 0;
   m->progressive = is_progressive;
@@ -2867,13 +2859,67 @@ static void draw_banded(int32_t start, int32_t end, int32_t count) {
   if (end > s) draw_run(s, end - s);
 }
 
-static void draw_into(GLuint fb, int part) {
+// Whether a grab's rectangle meets pixel rect r (GL bottom-left: x, y, w, h).
+static int grab_in_rect(const Grab *m, const int r[4]) {
+  return m->px0 < r[0] + r[2] && r[0] < m->px0 + m->w &&
+         m->pb0 < r[1] + r[3] && r[1] < m->pb0 + m->h;
+}
+
+static int grab_in_cut(const Grab *m) {
+  return !cut_on || grab_in_rect(m, cut);
+}
+
+static int grab_in_any_rect(const Grab *m, const int (*rects)[4], int n_rects) {
+  if (!rects || n_rects < 0) return 1;
+  for (int i = 0; i < n_rects; i++) {
+    if (grab_in_rect(m, rects[i])) return 1;
+  }
+  return 0;
+}
+
+// Conservative CPU scissor test for non-glass instance `b` against top-down pixel rect [rx0, ry0, rx1, ry1).
+// Matches VS grow (kind 2 shadow blur, kind 0/4/5/8 1pt AA), intersects a_clip (16..19) and active a_oclip (40..43
+// when a_orc 44..47 > 0), and keeps all rotated instances (b[32] != 0) plus a +/- 2px safety margin.
+#define MB_CULL_SPLIT_GAP 16
+static int inst_in_px_rect(const float *b, float sx, float sy, int rx0, int ry0, int rx1, int ry1) {
+  int kind = (int)(b[5] + 0.5f);
+  if (kind == 12) return 0;
+  if (b[32] != 0.0f) return 1;
+  float grow = kind == 2 ? fabsf(b[7]) * 3.0f + 2.0f
+             : (kind == 6 && b[23] <= 0.0f) ? 2.0f
+             : ((kind == 0 || kind == 4 || kind == 5 || kind == 8) ? 1.0f : 0.0f);
+  float x0 = fminf(b[0], b[0] + b[2]) - grow;
+  float x1 = fmaxf(b[0], b[0] + b[2]) + grow;
+  float y0 = fminf(b[1], b[1] + b[3]) - grow;
+  float y1 = fmaxf(b[1], b[1] + b[3]) + grow;
+  float cpad = (b[24] > 0.0f || b[25] > 0.0f || b[26] > 0.0f || b[27] > 0.0f) ? 1.0f : 0.0f;
+  float cx0 = b[16] - cpad, cy0 = b[17] - cpad, cx1 = b[18] + cpad, cy1 = b[19] + cpad;
+  if (cx0 > x0) x0 = cx0;
+  if (cy0 > y0) y0 = cy0;
+  if (cx1 < x1) x1 = cx1;
+  if (cy1 < y1) y1 = cy1;
+  if (b[44] > 0.0f || b[45] > 0.0f || b[46] > 0.0f || b[47] > 0.0f) {
+    float ox0 = b[40] - 1.0f, oy0 = b[41] - 1.0f, ox1 = b[42] + 1.0f, oy1 = b[43] + 1.0f;
+    if (ox0 > x0) x0 = ox0;
+    if (oy0 > y0) y0 = oy0;
+    if (ox1 < x1) x1 = ox1;
+    if (oy1 < y1) y1 = oy1;
+  }
+  if (x1 <= x0 || y1 <= y0) return 0;
+  float px0 = x0 * sx - 2.0f, py0 = y0 * sy - 2.0f;
+  float px1 = x1 * sx + 2.0f, py1 = y1 * sy + 2.0f;
+  return px1 > (float)rx0 && px0 < (float)rx1 && py1 > (float)ry0 && py0 < (float)ry1;
+}
+
+static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
   int32_t count = kept_count;
   double r = kept_r, g = kept_g, b = kept_b;
+  int is_partial = (rects != NULL && n_rects > 0);
+  if (rects != NULL && n_rects == 0) return;
   GLuint was = target_fb;
   target_fb = fb;
   encode_missing = 0;
-  cut_on = part == 1;
+  cut_on = 0;
   // the app drawn in the surface's top part, as tall as it was told (the soft keyboard over the rest: MBView)
   int vh = (int)(cur_h * cur_scale + 0.5);
   vy0 = 0;
@@ -2885,13 +2931,13 @@ static void draw_into(GLuint fb, int part) {
   // (where the pieces of the frame's shapes start: what a capture is of, with what is before it)
   int32_t pieces = count;
   while (pieces > 0 && (int)(fbuf[(pieces - 1) * MB_INST + 5] + 0.5f) == 12) pieces--;
-  // Pre-scan glass captures before binding target_fb: size blur levels once, and batch adaptive updates for
-  // blur-cache-hit groups into a single pass so tile-based GPUs do not split the main FBO render pass mid-frame.
+  // Pre-scan glass captures once per frame (covering all dirty rects when partial): size blur levels once, and batch
+  // adaptive updates for blur-cache-hit groups into a single pass so tile-based GPUs do not split the main FBO pass.
   int levels_sized = 0;
   gl_pre_hit pre_hits[16];
   int pre_hits_n = 0;
   if (count > 0) {
-    int max_w = 0, max_h = 0, scan_bound = 0, any_glass = 0;
+    int max_w = 0, max_h = 0, all_max_w = 0, all_max_h = 0, scan_bound = 0, any_glass = 0;
     for (int32_t s0 = 0; s0 < count;) {
       int stid = (int)fbuf[s0 * MB_INST + 20];
       int32_t e0 = s0 + 1;
@@ -2902,8 +2948,12 @@ static void draw_into(GLuint fb, int part) {
           scan_bound = stid;
           Grab gm;
           if (grab_of(&gm, fbuf, s0, e0, count)) {
-            if (gm.w > max_w) max_w = gm.w;
-            if (gm.h > max_h) max_h = gm.h;
+            if (gm.w > all_max_w) all_max_w = gm.w;
+            if (gm.h > all_max_h) all_max_h = gm.h;
+            if (!is_partial || grab_in_any_rect(&gm, rects, n_rects)) {
+              if (gm.w > max_w) max_w = gm.w;
+              if (gm.h > max_h) max_h = gm.h;
+            }
           }
         }
       }
@@ -2913,9 +2963,9 @@ static void draw_into(GLuint fb, int part) {
       levels_sized = 1;
       if (max_w > lv_w || max_h > lv_h) {
         ensure_levels(max_w, max_h);
-      } else if (ad_mode > 0 && lv[0].t && max_w > 0 && max_h > 0) {
-        if (max_w > lv_frame_max_w) lv_frame_max_w = max_w;
-        if (max_h > lv_frame_max_h) lv_frame_max_h = max_h;
+      } else if (ad_mode > 0 && lv[0].t && all_max_w > 0 && all_max_h > 0) {
+        if (all_max_w > lv_frame_max_w) lv_frame_max_w = all_max_w;
+        if (all_max_h > lv_frame_max_h) lv_frame_max_h = all_max_h;
       }
       if (ad_mode > 0 && ad_cur_dt >= 0.0) {
         gl_ad_batch pre_batch[MB_ADAPTIVE_MAX];
@@ -2934,7 +2984,8 @@ static void draw_into(GLuint fb, int part) {
               int skind = (int)(fbuf[s0 * MB_INST + 5] + 0.5f);
               if (skind == 5 || skind == 6) {
                 Grab gm;
-                if (grab_of(&gm, fbuf, s0, e0, count) && under_take(fbuf, s0, count, pieces, &gm)) {
+                if (grab_of(&gm, fbuf, s0, e0, count) && (!is_partial || grab_in_any_rect(&gm, rects, n_rects)) &&
+                    under_take(fbuf, s0, count, pieces, &gm)) {
                   glass_slot *sl = slot_same(&gm, key);
                   if (sl && sl->bt) {
                     if (pre_hits_n < 16) {
@@ -2972,14 +3023,14 @@ static void draw_into(GLuint fb, int part) {
   }
   glBindFramebuffer(GL_FRAMEBUFFER, target_fb);
   glViewport(0, 0, fb_w, fb_h);
-  if (!cut_on) {
+  if (!is_partial) {
     glDisable(GL_SCISSOR_TEST);
     if (over_other) glClearColor(0, 0, 0, 0);
     else glClearColor((float)r, (float)g, (float)b, 1);
     glClear(GL_COLOR_BUFFER_BIT);
   }
   glViewport(0, vy0, fb_w, vhp);
-  if (count <= 0 && !cut_on) {
+  if (count <= 0 && !is_partial) {
     target_fb = was;
     return;
   }
@@ -2993,208 +3044,281 @@ static void draw_into(GLuint fb, int part) {
     gr[8] = (float)r; gr[9] = (float)g; gr[10] = (float)b; gr[11] = 1.0f;
   }
   gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
+  // Upload shape segments and the instance VBO once per frame, shared across all dirty-rect passes.
   segs_upload(count);
-  bd_tex = 0;
-  memset(gmap, 0, sizeof gmap);
-  memset(guvc, 0, sizeof guvc);
-  memset(ggb, 0, sizeof ggb);
-  gn = 0;
-  ad_fill_uniforms();
   glBindVertexArray(vao);
   glBindBuffer(GL_ARRAY_BUFFER, vbo);
   glBufferData(GL_ARRAY_BUFFER, (n + MB_INST) * sizeof(float), fbuf, GL_STREAM_DRAW);
-  main_state();
-  if (cut_on) {
-    for (int i = 0; i < MB_INST / 4; i++)
-      glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, MB_INST * 4, (void *)(intptr_t)(count * MB_INST * 4 + i * 16));
-    glDisable(GL_BLEND);
-    glDrawArraysInstanced(GL_TRIANGLES, 0, 6, 1);
-    glEnable(GL_BLEND);
-  }
-  // one draw per run of instances showing the same image (slot 20; 0: none, the atlas stands in; a native view's
-  // picture where it shows, kind 9: nothing until it has one) of one kind (its program: use_prog), or sharing one
-  // capture of glass (negative); GLES has no base instance, so the attributes start at the run instead
-  int32_t start = 0;
-  int bound = 0, shows = 0;
   unsigned frame_clock = slots_clock;
-  while (start < count) {
-    int tid = (int)fbuf[start * MB_INST + 20];
-    int kind = (int)(fbuf[start * MB_INST + 5] + 0.5f);
-    if (kind == 8) {
-      int32_t child_n = (int32_t)(fbuf[start * MB_INST + 12] + 0.5f);
-      if (child_n < 0) child_n = 0;
-      if (start + 1 + child_n > count) child_n = count - start - 1;
-      const float *hb = fbuf + (size_t)start * MB_INST;
-      if (child_n <= 0 || hb[11] <= 0.001f || hb[2] <= 0.0f || hb[3] <= 0.0f) {
+  int top = vy0 + vhp;
+  float sx = cur_w > 0.0 ? (float)fb_w / (float)cur_w : (float)cur_scale;
+  float sy = cur_h > 0.0 ? (float)vhp / (float)cur_h : (float)cur_scale;
+  int pass_n = is_partial ? n_rects : 1;
+  for (int pi = 0; pi < pass_n; pi++) {
+    cut_on = is_partial;
+    if (is_partial) memcpy(cut, rects[pi], sizeof cut);
+    bd_tex = 0;
+    memset(gmap, 0, sizeof gmap);
+    memset(guvc, 0, sizeof guvc);
+    memset(ggb, 0, sizeof ggb);
+    gn = 0;
+    ad_fill_uniforms();
+    main_state();
+    if (cut_on) {
+      for (int i = 0; i < MB_INST / 4; i++)
+        glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, MB_INST * 4, (void *)(intptr_t)(count * MB_INST * 4 + i * 16));
+      glDisable(GL_BLEND);
+      glDrawArraysInstanced(GL_TRIANGLES, 0, 6, 1);
+      glEnable(GL_BLEND);
+    }
+    int rx0 = cut_on ? cut[0] : 0;
+    int rx1 = cut_on ? cut[0] + cut[2] : fb_w;
+    int ry0 = cut_on ? top - (cut[1] + cut[3]) : 0;
+    int ry1 = cut_on ? top - cut[1] : vhp;
+    // one draw per run of instances showing the same image (slot 20; 0: none, the atlas stands in; a native view's
+    // picture where it shows, kind 9: nothing until it has one) of one kind (its program: use_prog), or sharing one
+    // capture of glass (negative); GLES has no base instance, so the attributes start at the run instead
+    int32_t start = 0;
+    int bound = 0, shows = 0;
+    while (start < count) {
+      int tid = (int)fbuf[start * MB_INST + 20];
+      int kind = (int)(fbuf[start * MB_INST + 5] + 0.5f);
+      if (kind == 8) {
+        int32_t child_n = (int32_t)(fbuf[start * MB_INST + 12] + 0.5f);
+        if (child_n < 0) child_n = 0;
+        if (start + 1 + child_n > count) child_n = count - start - 1;
+        const float *hb = fbuf + (size_t)start * MB_INST;
+        if (child_n <= 0 || hb[11] <= 0.001f || hb[2] <= 0.0f || hb[3] <= 0.0f) {
+          start += 1 + child_n;
+          continue;
+        }
+        glass_drawn = 1;
+        float sc_f = (float)cur_scale;
+        float blur_pt = fmaxf(hb[7], 0.0f);
+        float refr_pt = fmaxf(hb[14], 0.0f);
+        float margin = blur_pt * 3.0f + refr_pt + 4.0f;
+        float x0 = hb[0], y0 = hb[1], x1 = hb[0] + hb[2], y1 = hb[1] + hb[3];
+        for (int32_t ci = start + 1; ci < start + 1 + child_n; ci++) {
+          const float *cb_f = fbuf + (size_t)ci * MB_INST;
+          int ck = (int)(cb_f[5] + 0.5f);
+          if (ck == 12 || cb_f[2] <= 0.0f || cb_f[3] <= 0.0f) continue;
+          if (cb_f[0] < x0) x0 = cb_f[0];
+          if (cb_f[1] < y0) y0 = cb_f[1];
+          if (cb_f[0] + cb_f[2] > x1) x1 = cb_f[0] + cb_f[2];
+          if (cb_f[1] + cb_f[3] > y1) y1 = cb_f[1] + cb_f[3];
+        }
+        float ox = floorf((x0 - margin) * sc_f) / sc_f;
+        float oy = floorf((y0 - margin) * sc_f) / sc_f;
+        int pw = (int)ceilf(((x1 + margin) - ox) * sc_f);
+        int ph = (int)ceilf(((y1 + margin) - oy) * sc_f);
+        int max_w = fb_w > 2048 ? fb_w : 2048;
+        int max_h = fb_h > 2048 ? fb_h : 2048;
+        if (pw < 1) pw = 1;
+        if (ph < 1) ph = 1;
+        if (pw > max_w) pw = max_w;
+        if (ph > max_h) ph = max_h;
+        if (cut_on && hb[32] == 0.0f) {
+          int lx0 = (int)floorf(ox * sx) - 2;
+          int ly0 = (int)floorf(oy * sy) - 2;
+          int lx1 = (int)ceilf((ox + (float)pw / sc_f) * sx) + 2;
+          int ly1 = (int)ceilf((oy + (float)ph / sc_f) * sy) + 2;
+          if (lx1 <= rx0 || lx0 >= rx1 || ly1 <= ry0 || ly0 >= ry1) {
+            start += 1 + child_n;
+            continue;
+          }
+        }
+        ensure_lens_levels(pw, ph);
+        GLuint prev_bd = bd_tex;
+        // Pass 1: render children into lens_lv[0]
+        glBindFramebuffer(GL_FRAMEBUFFER, lens_lv[0].fb);
+        // (u_bd off any lens level: one bound there by a lens before is drawn into now)
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, atlas);
+        glViewport(0, 0, pw, ph);
+        glDisable(GL_SCISSOR_TEST);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glEnable(GL_BLEND);
+        cur_ox = ox; cur_oy = oy; cur_vpw = (float)pw / sc_f; cur_vph = (float)ph / sc_f;
+        prog_gen++;
+        int32_t cs = start + 1, cend_all = start + 1 + child_n;
+        while (cs < cend_all) {
+          int ctid = (int)fbuf[cs * MB_INST + 20];
+          int ck = (int)(fbuf[cs * MB_INST + 5] + 0.5f);
+          if (ck == 5 || ck == 6 || ck == 8 || ck == 9 || ck == 12 || ctid < 0) {
+            cs++;
+            continue;
+          }
+          int cown = has_own_prog(ck);
+          int32_t ce = cs + 1;
+          while (ce < cend_all && (int)fbuf[ce * MB_INST + 20] == ctid) {
+            int kk = (int)(fbuf[ce * MB_INST + 5] + 0.5f);
+            if (kk == 5 || kk == 6 || kk == 8 || kk == 9 || kk == 12) break;
+            if (cown ? kk != ck : has_own_prog(kk)) break;
+            ce++;
+          }
+          GLuint ct = ctid ? image_tex(ctid) : atlas;
+          if (ctid > MB_STREAM_TEX && !ct) { cs = ce; continue; }
+          if (ctid > 0 && ctid <= MB_STREAM_TEX && !ct) encode_missing = 1;
+          glActiveTexture(GL_TEXTURE1);
+          glBindTexture(GL_TEXTURE_2D, ct ? ct : atlas);
+          use_prog(cown ? ck : -1);
+          draw_run(cs, ce - cs);
+          cs = ce;
+        }
+        // Pass 2: separable Gaussian blur in RGBA8
+        float sp = blur_pt * sc_f;
+        if (sp > 0.25f) {
+          glDisable(GL_BLEND);
+          glUseProgram(post);
+          unbind_post_extra();
+          post_pass(&lens_lv[0], pw, ph, &lens_lv[1], pw, ph, 2, sp, 1.0f, 0.0f);
+          post_pass(&lens_lv[1], pw, ph, &lens_lv[0], pw, ph, 2, sp, 0.0f, 1.0f);
+        }
+        // Pass 3: composite refracted & SDF-clipped foreground lens onto target
+        cur_ox = 0.0f; cur_oy = 0.0f; cur_vpw = 0.0f; cur_vph = 0.0f;
+        bd_tex = lens_lv[0].t;
+        float W = (float)lens_lv[0].w, H = (float)lens_lv[0].h;
+        gmap[0] = sc_f / W; gmap[1] = -sc_f / H;
+        gmap[2] = -(ox * sc_f) / W; gmap[3] = ((float)ph + oy * sc_f) / H;
+        guvc[0] = 0.5f / W; guvc[1] = 0.5f / H;
+        guvc[2] = ((float)pw - 0.5f) / W; guvc[3] = ((float)ph - 0.5f) / H;
+        main_state();
+        use_prog(8);
+        draw_run(start, 1);
+        bd_tex = prev_bd;
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, bd_tex ? bd_tex : atlas);
+        bound = 0;
         start += 1 + child_n;
         continue;
       }
-      glass_drawn = 1;
-      float sc_f = (float)cur_scale;
-      float blur_pt = fmaxf(hb[7], 0.0f);
-      float refr_pt = fmaxf(hb[14], 0.0f);
-      float margin = blur_pt * 3.0f + refr_pt + 4.0f;
-      float x0 = hb[0], y0 = hb[1], x1 = hb[0] + hb[2], y1 = hb[1] + hb[3];
-      for (int32_t ci = start + 1; ci < start + 1 + child_n; ci++) {
-        const float *cb_f = fbuf + (size_t)ci * MB_INST;
-        int ck = (int)(cb_f[5] + 0.5f);
-        if (ck == 12 || cb_f[2] <= 0.0f || cb_f[3] <= 0.0f) continue;
-        if (cb_f[0] < x0) x0 = cb_f[0];
-        if (cb_f[1] < y0) y0 = cb_f[1];
-        if (cb_f[0] + cb_f[2] > x1) x1 = cb_f[0] + cb_f[2];
-        if (cb_f[1] + cb_f[3] > y1) y1 = cb_f[1] + cb_f[3];
+      // (kinds without their own program one run, as before)
+      int own = tid >= 0 && has_own_prog(kind);
+      int32_t end = start + 1;
+      while (end < count && (int)fbuf[end * MB_INST + 20] == tid) {
+        int k = (int)(fbuf[end * MB_INST + 5] + 0.5f);
+        if (k == 8 || (own ? k != kind : tid >= 0 && has_own_prog(k))) break;
+        end++;
       }
-      float ox = floorf((x0 - margin) * sc_f) / sc_f;
-      float oy = floorf((y0 - margin) * sc_f) / sc_f;
-      int pw = (int)ceilf(((x1 + margin) - ox) * sc_f);
-      int ph = (int)ceilf(((y1 + margin) - oy) * sc_f);
-      int max_w = fb_w > 2048 ? fb_w : 2048;
-      int max_h = fb_h > 2048 ? fb_h : 2048;
-      if (pw < 1) pw = 1;
-      if (ph < 1) ph = 1;
-      if (pw > max_w) pw = max_w;
-      if (ph > max_h) ph = max_h;
-      ensure_lens_levels(pw, ph);
-      GLuint prev_bd = bd_tex;
-      // Pass 1: render children into lens_lv[0]
-      glBindFramebuffer(GL_FRAMEBUFFER, lens_lv[0].fb);
-      // (u_bd off any lens level: one bound there by a lens before is drawn into now)
-      glActiveTexture(GL_TEXTURE2);
-      glBindTexture(GL_TEXTURE_2D, atlas);
-      glViewport(0, 0, pw, ph);
-      glDisable(GL_SCISSOR_TEST);
-      glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-      glClear(GL_COLOR_BUFFER_BIT);
-      glEnable(GL_BLEND);
-      cur_ox = ox; cur_oy = oy; cur_vpw = (float)pw / sc_f; cur_vph = (float)ph / sc_f;
-      prog_gen++;
-      int32_t cs = start + 1, cend_all = start + 1 + child_n;
-      while (cs < cend_all) {
-        int ctid = (int)fbuf[cs * MB_INST + 20];
-        int ck = (int)(fbuf[cs * MB_INST + 5] + 0.5f);
-        if (ck == 5 || ck == 6 || ck == 8 || ck == 9 || ck == 12 || ctid < 0) {
-          cs++;
-          continue;
-        }
-        int cown = has_own_prog(ck);
-        int32_t ce = cs + 1;
-        while (ce < cend_all && (int)fbuf[ce * MB_INST + 20] == ctid) {
-          int kk = (int)(fbuf[ce * MB_INST + 5] + 0.5f);
-          if (kk == 5 || kk == 6 || kk == 8 || kk == 9 || kk == 12) break;
-          if (cown ? kk != ck : has_own_prog(kk)) break;
-          ce++;
-        }
-        GLuint ct = ctid ? image_tex(ctid) : atlas;
-        if (ctid > MB_STREAM_TEX && !ct) { cs = ce; continue; }
-        if (ctid > 0 && ctid <= MB_STREAM_TEX && !ct) encode_missing = 1;
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, ct ? ct : atlas);
-        use_prog(cown ? ck : -1);
-        draw_run(cs, ce - cs);
-        cs = ce;
-      }
-      // Pass 2: separable Gaussian blur in RGBA8
-      float sp = blur_pt * sc_f;
-      if (sp > 0.25f) {
-        glDisable(GL_BLEND);
-        glUseProgram(post);
-        unbind_post_extra();
-        post_pass(&lens_lv[0], pw, ph, &lens_lv[1], pw, ph, 2, sp, 1.0f, 0.0f);
-        post_pass(&lens_lv[1], pw, ph, &lens_lv[0], pw, ph, 2, sp, 0.0f, 1.0f);
-      }
-      // Pass 3: composite refracted & SDF-clipped foreground lens onto target
-      cur_ox = 0.0f; cur_oy = 0.0f; cur_vpw = 0.0f; cur_vph = 0.0f;
-      bd_tex = lens_lv[0].t;
-      float W = (float)lens_lv[0].w, H = (float)lens_lv[0].h;
-      gmap[0] = sc_f / W; gmap[1] = -sc_f / H;
-      gmap[2] = -(ox * sc_f) / W; gmap[3] = ((float)ph + oy * sc_f) / H;
-      guvc[0] = 0.5f / W; guvc[1] = 0.5f / H;
-      guvc[2] = ((float)pw - 0.5f) / W; guvc[3] = ((float)ph - 0.5f) / H;
-      main_state();
-      use_prog(8);
-      draw_run(start, 1);
-      bd_tex = prev_bd;
-      glActiveTexture(GL_TEXTURE2);
-      glBindTexture(GL_TEXTURE_2D, bd_tex ? bd_tex : atlas);
-      bound = 0;
-      start += 1 + child_n;
-      continue;
-    }
-    // (kinds without their own program one run, as before)
-    int own = tid >= 0 && has_own_prog(kind);
-    int32_t end = start + 1;
-    while (end < count && (int)fbuf[end * MB_INST + 20] == tid) {
-      int k = (int)(fbuf[end * MB_INST + 5] + 0.5f);
-      if (k == 8 || (own ? k != kind : tid >= 0 && has_own_prog(k))) break;
-      end++;
-    }
-    if (tid < 0) {
-      glass_drawn = 1;
-      if (!levels_sized) {
-        levels_sized = 1;
-        int max_w = 0, max_h = 0, scan_bound = 0;
-        for (int32_t s0 = start; s0 < count;) {
-          int stid = (int)fbuf[s0 * MB_INST + 20];
-          int32_t e0 = s0 + 1;
-          if (stid < 0) {
-            while (e0 < count && (int)fbuf[e0 * MB_INST + 20] == stid) e0++;
-            if (stid != scan_bound) {
-              scan_bound = stid;
-              Grab gm;
-              if (grab_of(&gm, fbuf, s0, e0, count)) {
-                if (gm.w > max_w) max_w = gm.w;
-                if (gm.h > max_h) max_h = gm.h;
+      if (tid < 0) {
+        glass_drawn = 1;
+        if (!levels_sized) {
+          levels_sized = 1;
+          int max_w = 0, max_h = 0, scan_bound = 0;
+          for (int32_t s0 = start; s0 < count;) {
+            int stid = (int)fbuf[s0 * MB_INST + 20];
+            int32_t e0 = s0 + 1;
+            if (stid < 0) {
+              while (e0 < count && (int)fbuf[e0 * MB_INST + 20] == stid) e0++;
+              if (stid != scan_bound) {
+                scan_bound = stid;
+                Grab gm;
+                if (grab_of(&gm, fbuf, s0, e0, count) && (!is_partial || grab_in_any_rect(&gm, rects, n_rects))) {
+                  if (gm.w > max_w) max_w = gm.w;
+                  if (gm.h > max_h) max_h = gm.h;
+                }
               }
             }
+            s0 = e0;
           }
-          s0 = e0;
+          if (max_w > lv_w || max_h > lv_h) ensure_levels(max_w, max_h);
         }
-        if (max_w > lv_w || max_h > lv_h) ensure_levels(max_w, max_h);
+        if (tid != bound) {
+          int in_cut = 1;
+          if (cut_on) {
+            Grab gm;
+            int found = 0;
+            for (int h = 0; h < pre_hits_n; h++) {
+              if (pre_hits[h].tid == tid) {
+                gm = pre_hits[h].grab;
+                found = 1;
+                break;
+              }
+            }
+            if (!found) found = grab_of(&gm, fbuf, start, end, count);
+            in_cut = found && grab_in_cut(&gm);
+          }
+          shows = in_cut ? capture(fbuf, start, end, count, pieces, r, g, b, frame_clock, pre_hits, pre_hits_n) : 0;
+          bound = tid;
+        }
+        if (shows) {
+          // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
+          int merged_liquid = kind == 6 && fbuf[start * MB_INST + 23] > 0.0f;
+          int gkind = kind == 5 ? 5 : (kind == 6 ? (merged_liquid ? 6 : MB_KIND_LIQUID_SINGLE) : -1);
+          use_prog(gkind);
+          for (int i = 0; i < MB_INST / 4; i++)
+            glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, MB_INST * 4, (void *)(intptr_t)(start * MB_INST * 4 + i * 16));
+          glDrawArraysInstanced(GL_TRIANGLES, 0, 6, merged_liquid ? 1 : end - start);
+        }
+        start = end;
+        continue;
       }
-      if (tid != bound) {
-        shows = capture(fbuf, start, end, count, pieces, r, g, b, frame_clock, pre_hits, pre_hits_n);
-        bound = tid;
-      }
-      if (shows) {
-        // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
-        int merged_liquid = kind == 6 && fbuf[start * MB_INST + 23] > 0.0f;
-        int gkind = kind == 5 ? 5 : (kind == 6 ? (merged_liquid ? 6 : MB_KIND_LIQUID_SINGLE) : -1);
-        use_prog(gkind);
-        for (int i = 0; i < MB_INST / 4; i++)
-          glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, MB_INST * 4, (void *)(intptr_t)(start * MB_INST * 4 + i * 16));
-        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, merged_liquid ? 1 : end - start);
+      GLuint t = tid ? image_tex(tid) : atlas;
+      if (!t && tid > 0 && tid <= MB_STREAM_TEX) encode_missing = 1;
+      if (t) {  // 0: lost with the context, decoding again; a stream's or a view's with no picture yet
+        if (tid > MB_VIEW_TEX) {
+          view_parts_in(tid, start, end);
+          use_prog(own ? kind : -1);
+          glActiveTexture(GL_TEXTURE1);
+          glBindTexture(GL_TEXTURE_2D, t);
+#ifdef MB_VIEWS_UNDER
+          // (a view under the surface: its picture a white texel, so what kind 9 draws is how much of each pixel it
+          // covers, and that much of the canvas is taken away there: a hole the view shows through, its round edge as
+          // soft as a drawn one's; what is drawn after it draws over it)
+          int under = view_under(tid);
+          if (under) glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+#endif
+          draw_run(start, end - start);
+#ifdef MB_VIEWS_UNDER
+          if (under) glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+#endif
+        } else if (!cut_on) {
+          use_prog(own ? kind : -1);
+          glActiveTexture(GL_TEXTURE1);
+          glBindTexture(GL_TEXTURE_2D, t);
+          if (tid == 0) draw_banded(start, end, count);
+          else draw_run(start, end - start);
+        } else {
+          int bound_run = 0;
+          int32_t cur = start;
+          while (cur < end) {
+            while (cur < end && !inst_in_px_rect(fbuf + (size_t)cur * MB_INST, sx, sy, rx0, ry0, rx1, ry1)) cur++;
+            if (cur >= end) break;
+            int32_t lo = cur, hi = cur + 1;
+            int32_t j = hi;
+            while (j < end) {
+              if (inst_in_px_rect(fbuf + (size_t)j * MB_INST, sx, sy, rx0, ry0, rx1, ry1)) {
+                hi = j + 1;
+              } else if (j - hi + 1 >= MB_CULL_SPLIT_GAP) {
+                break;
+              }
+              j++;
+            }
+            if (!bound_run) {
+              use_prog(own ? kind : -1);
+              glActiveTexture(GL_TEXTURE1);
+              glBindTexture(GL_TEXTURE_2D, t);
+              bound_run = 1;
+            }
+            if (tid == 0) draw_banded(lo, hi, count);
+            else draw_run(lo, hi - lo);
+            cur = j + 1;
+          }
+        }
       }
       start = end;
-      continue;
     }
-    use_prog(own ? kind : -1);
-    GLuint t = tid ? image_tex(tid) : atlas;
-    if (!t && tid > 0 && tid <= MB_STREAM_TEX) encode_missing = 1;
-    if (t) {  // 0: lost with the context, decoding again; a stream's or a view's with no picture yet
-      if (tid > MB_VIEW_TEX) view_parts_in(tid, start, end);
-      glActiveTexture(GL_TEXTURE1);
-      glBindTexture(GL_TEXTURE_2D, t);
-      for (int i = 0; i < MB_INST / 4; i++)
-        glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, MB_INST * 4, (void *)(intptr_t)(start * MB_INST * 4 + i * 16));
-#ifdef MB_VIEWS_UNDER
-      // (a view under the surface: its picture a white texel, so what kind 9 draws is how much of each pixel it covers,
-      // and that much of the canvas is taken away there: a hole the view shows through, its round edge as soft as a
-      // drawn one's; what is drawn after it draws over it)
-      int under = tid > MB_VIEW_TEX && view_under(tid);
-      if (under) glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
-#endif
-      if (tid == 0) draw_banded(start, end, count);
-      else glDrawArraysInstanced(GL_TRIANGLES, 0, 6, end - start);
-#ifdef MB_VIEWS_UNDER
-      if (under) glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-#endif
-    }
-    start = end;
   }
   if (levels_sized && slots_total_bytes() > MB_GLASS_CACHE_MAX_BYTES) slots_evict_budget(-1, frame_clock, 1);
   if (cut_on) glDisable(GL_SCISSOR_TEST);
   cut_on = 0;
   target_fb = was;
+}
+
+static void draw_into(GLuint fb, int part) {
+  if (part == 1) draw_into_rects(fb, (const int (*)[4])&cut, 1);
+  else draw_into_rects(fb, NULL, -1);
 }
 
 // ---------------------------------------------------------------------------

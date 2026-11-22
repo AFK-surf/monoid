@@ -1747,6 +1747,123 @@ int main(void) {
         CHECK(canvas_as_whole());
       }
 
+      // (4) Perf-31: iOS/macOS VRAM cap macro, multi-dirty-rect single MTLRenderCommandEncoder reuse,
+      //     conservative CPU scissor culling, off-rect glass/lens skipping, and byte-for-byte parity.
+      {
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+        CHECK(MB_GLASS_CACHE_MAX_BYTES == (size_t)32 * 1024 * 1024);
+#else
+        CHECK(MB_GLASS_CACHE_MAX_BYTES == (size_t)64 * 1024 * 1024);
+#endif
+        const int GRID_N = 400;
+        const int TOTAL = GRID_N + 8;
+        double *sc = (double *)calloc((size_t)TOTAL * MB_INST, sizeof(double));
+        for (int i = 0; i < GRID_N; i++) {
+          int col = i % 20, row = i / 20;
+          double x = 8.0 + col * 19.0;
+          double y = 60.0 + row * 23.0;
+          rect_at(sc + (size_t)i * MB_INST, x, y, 14.0, 16.0, 0,
+                  0.2 + 0.03 * col, 0.25 + 0.03 * row, 0.55, 0);
+          sc[(size_t)i * MB_INST + 18] = 400;
+          sc[(size_t)i * MB_INST + 19] = 600;
+        }
+        int idx = GRID_N;
+        // Shadow (kind 2)
+        rect_at(sc + (size_t)idx * MB_INST, 26, 100, 24, 20, 2, 0.0, 0.0, 0.0, 0);
+        sc[(size_t)idx * MB_INST + 7] = 6.0;
+        sc[(size_t)idx * MB_INST + 11] = 0.45;
+        sc[(size_t)idx * MB_INST + 18] = 400; sc[(size_t)idx * MB_INST + 19] = 600;
+        idx++;
+        // Clipped + outer-clipped rect
+        rect_at(sc + (size_t)idx * MB_INST, 290, 430, 60, 50, 0, 0.85, 0.25, 0.15, 0);
+        sc[(size_t)idx * MB_INST + 16] = 295; sc[(size_t)idx * MB_INST + 17] = 435;
+        sc[(size_t)idx * MB_INST + 18] = 345; sc[(size_t)idx * MB_INST + 19] = 475;
+        sc[(size_t)idx * MB_INST + 40] = 300; sc[(size_t)idx * MB_INST + 41] = 440;
+        sc[(size_t)idx * MB_INST + 42] = 340; sc[(size_t)idx * MB_INST + 43] = 470;
+        sc[(size_t)idx * MB_INST + 44] = 6.0; sc[(size_t)idx * MB_INST + 45] = 6.0;
+        sc[(size_t)idx * MB_INST + 46] = 6.0; sc[(size_t)idx * MB_INST + 47] = 6.0;
+        idx++;
+        // Rotated rect
+        rect_at(sc + (size_t)idx * MB_INST, 180, 140, 26, 26, 0, 0.15, 0.80, 0.35, 0);
+        sc[(size_t)idx * MB_INST + 18] = 400; sc[(size_t)idx * MB_INST + 19] = 600;
+        sc[(size_t)idx * MB_INST + 32] = 0.6;
+        sc[(size_t)idx * MB_INST + 33] = 193.0;
+        sc[(size_t)idx * MB_INST + 34] = 153.0;
+        idx++;
+        // Glass group 1 at top
+        rect_at(sc + (size_t)idx * MB_INST, 20, 10, 360, 40, 5, 0.96, 0.96, 0.96, -71);
+        sc[(size_t)idx * MB_INST + 7] = 6.0;
+        sc[(size_t)idx * MB_INST + 11] = 0.45;
+        sc[(size_t)idx * MB_INST + 18] = 400; sc[(size_t)idx * MB_INST + 19] = 600;
+        idx++;
+        // Glass group 2 at bottom
+        rect_at(sc + (size_t)idx * MB_INST, 20, 540, 360, 40, 5, 0.96, 0.96, 0.96, -72);
+        sc[(size_t)idx * MB_INST + 7] = 6.0;
+        sc[(size_t)idx * MB_INST + 11] = 0.45;
+        sc[(size_t)idx * MB_INST + 18] = 400; sc[(size_t)idx * MB_INST + 19] = 600;
+        idx++;
+        // Foreground lens (kind 8) with 2 children
+        rect_at(sc + (size_t)idx * MB_INST, 140, 280, 120, 40, 8, 1.0, 1.0, 1.0, 0);
+        sc[(size_t)idx * MB_INST + 4] = 12.0;
+        sc[(size_t)idx * MB_INST + 7] = 2.0;
+        sc[(size_t)idx * MB_INST + 11] = 1.0;
+        sc[(size_t)idx * MB_INST + 12] = 2.0;
+        sc[(size_t)idx * MB_INST + 14] = 4.0;
+        sc[(size_t)idx * MB_INST + 18] = 400; sc[(size_t)idx * MB_INST + 19] = 600;
+        idx++;
+        rect_at(sc + (size_t)idx * MB_INST, 150, 288, 40, 24, 0, 0.90, 0.30, 0.20, 0);
+        sc[(size_t)idx * MB_INST + 18] = 400; sc[(size_t)idx * MB_INST + 19] = 600;
+        idx++;
+        rect_at(sc + (size_t)idx * MB_INST, 200, 288, 45, 24, 0, 0.20, 0.45, 0.90, 0);
+        sc[(size_t)idx * MB_INST + 18] = 400; sc[(size_t)idx * MB_INST + 19] = 600;
+        idx++;
+        CHECK(idx == TOTAL);
+
+        glass_forget();
+        mb_host_render_dirty(0, 0, 400, 600);
+        mb_render_present(sc, TOTAL, 0.92, 0.93, 0.95);
+        present_drain();
+        CHECK(canvas_as_whole());
+
+        // Case A: 4 disjoint small dirty rects away from both glass groups and the lens ->
+        // must reuse ONE MTLRenderCommandEncoder, trigger 0 blurs, cull off-rect instances, and match whole byte-for-byte.
+        slots_invalidate();
+        sc[21 * MB_INST + 8] = 0.95;
+        sc[88 * MB_INST + 9] = 0.90;
+        sc[310 * MB_INST + 10] = 0.10;
+        sc[(GRID_N + 1) * MB_INST + 9] = 0.85;
+        int p0 = encode_passes_made, b0 = blurs_made, inst0 = encode_inst_submitted;
+        mb_host_render_dirty(8, 78, 56, 52);
+        mb_host_render_dirty(155, 130, 60, 50);
+        mb_host_render_dirty(190, 398, 30, 30);
+        mb_host_render_dirty(292, 432, 56, 46);
+        mb_render_present(sc, TOTAL, 0.92, 0.93, 0.95);
+        present_drain();
+        int passes_d = encode_passes_made - p0;
+        int blurs_d = blurs_made - b0;
+        int inst_d = encode_inst_submitted - inst0;
+        printf("apple_render: Perf-31 4-rect partial: encoders=%d blurs=%d inst_submitted=%d (unculled=%d)\n",
+               passes_d, blurs_d, inst_d, 4 * TOTAL);
+        CHECK(passes_d == 1);
+        CHECK(blurs_d == 0);
+        CHECK(inst_d < TOTAL);
+        CHECK(canvas_as_whole());
+
+        // Case B: 2 dirty rects covering top glass + kind 8 lens; bottom glass skipped.
+        slots_invalidate();
+        sc[(GRID_N + 6) * MB_INST + 8] = 0.15;
+        sc[0 * MB_INST + 8] = 0.95;
+        b0 = blurs_made;
+        mb_host_render_dirty(0, 0, 400, 80);
+        mb_host_render_dirty(120, 260, 160, 80);
+        mb_render_present(sc, TOTAL, 0.92, 0.93, 0.95);
+        present_drain();
+        CHECK(blurs_made - b0 == 1);
+        CHECK(canvas_as_whole());
+
+        free(sc);
+      }
+
       mb_render_set_size(400, 300, 2);
       glass_free();
     }

@@ -61,14 +61,25 @@ static void feedback_seen(void) {
   }
   glActiveTexture((GLenum)unit_was);
 }
+static int vbo_uploads;
+static int instanced_draws;
+static int instanced_total;
+static void checked_buffer_data(GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
+  if (target == GL_ARRAY_BUFFER) vbo_uploads++;
+  epoxy_glBufferData(target, size, data, usage);
+}
 static void checked_draw_arrays(GLenum mode, GLint first, GLsizei count) {
   feedback_seen();
   epoxy_glDrawArrays(mode, first, count);
 }
 static void checked_draw_arrays_instanced(GLenum mode, GLint first, GLsizei count, GLsizei n) {
   feedback_seen();
+  instanced_draws++;
+  instanced_total += n;
   epoxy_glDrawArraysInstanced(mode, first, count, n);
 }
+#undef glBufferData
+#define glBufferData checked_buffer_data
 #undef glDrawArrays
 #define glDrawArrays checked_draw_arrays
 #undef glDrawArraysInstanced
@@ -2056,6 +2067,134 @@ int main(void) {
 
       glDeleteFramebuffers(1, &big_fb);
       glDeleteTextures(1, &big_tex);
+    }
+
+    // (5) Perf-31: multi-dirty-rect partial redraw de-amplification (single VBO upload, grab_in_cut skip,
+    //     kind 8 lens skip, conservative CPU scissor culling for non-glass runs, byte-for-byte parity).
+    {
+      int pw_pt = 400, ph_pt = 600, psc = 2;
+      fb_w = pw_pt * psc;
+      fb_h = ph_pt * psc;
+      cur_w = pw_pt;
+      cur_h = ph_pt;
+      cur_scale = psc;
+      target_fb = p30_fb;
+      glBindFramebuffer(GL_FRAMEBUFFER, p30_fb);
+      canvas_ok = 0;
+      glass_free();
+
+      // Build a rich scene: 400 grid rects + 1 shadow + 1 clipped/oclipped rect + 1 rotated rect +
+      // 2 frosted glass groups (top y=10..50, bottom y=540..580) + 1 foreground lens (kind 8 + 2 children at y=280..320).
+      const int GRID_N = 400;
+      const int TOTAL = GRID_N + 8;
+      double *sc = (double *)calloc((size_t)TOTAL * MB_INST, sizeof(double));
+      for (int i = 0; i < GRID_N; i++) {
+        int col = i % 20, row = i / 20;
+        double x = 8.0 + col * 19.0;
+        double y = 60.0 + row * 23.0;
+        rect_at(sc + (size_t)i * MB_INST, x, y, 14.0, 16.0, 0,
+                0.2 + 0.03 * col, 0.25 + 0.03 * row, 0.55, 0);
+        sc[(size_t)i * MB_INST + 18] = pw_pt;
+        sc[(size_t)i * MB_INST + 19] = ph_pt;
+      }
+      int idx = GRID_N;
+      // Shadow (kind 2) near (26, 100)
+      rect_at(sc + (size_t)idx * MB_INST, 26, 100, 24, 20, 2, 0.0, 0.0, 0.0, 0);
+      sc[(size_t)idx * MB_INST + 7] = 6.0;
+      sc[(size_t)idx * MB_INST + 11] = 0.45;
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      // Clipped + outer-clipped rect (active a_orc -> a_oclip clips it inside [300, 440] x [340, 470])
+      rect_at(sc + (size_t)idx * MB_INST, 290, 430, 60, 50, 0, 0.85, 0.25, 0.15, 0);
+      sc[(size_t)idx * MB_INST + 16] = 295; sc[(size_t)idx * MB_INST + 17] = 435;
+      sc[(size_t)idx * MB_INST + 18] = 345; sc[(size_t)idx * MB_INST + 19] = 475;
+      sc[(size_t)idx * MB_INST + 40] = 300; sc[(size_t)idx * MB_INST + 41] = 440;
+      sc[(size_t)idx * MB_INST + 42] = 340; sc[(size_t)idx * MB_INST + 43] = 470;
+      sc[(size_t)idx * MB_INST + 44] = 6.0; sc[(size_t)idx * MB_INST + 45] = 6.0;
+      sc[(size_t)idx * MB_INST + 46] = 6.0; sc[(size_t)idx * MB_INST + 47] = 6.0;
+      idx++;
+      // Rotated rect near (190, 150)
+      rect_at(sc + (size_t)idx * MB_INST, 180, 140, 26, 26, 0, 0.15, 0.80, 0.35, 0);
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      sc[(size_t)idx * MB_INST + 32] = 0.6;
+      sc[(size_t)idx * MB_INST + 33] = 193.0;
+      sc[(size_t)idx * MB_INST + 34] = 153.0;
+      idx++;
+      // Glass group 1 at top (y=10..50)
+      rect_at(sc + (size_t)idx * MB_INST, 20, 10, 360, 40, 5, 0.96, 0.96, 0.96, -71);
+      sc[(size_t)idx * MB_INST + 7] = 6.0;
+      sc[(size_t)idx * MB_INST + 11] = 0.45;
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      // Glass group 2 at bottom (y=540..580)
+      rect_at(sc + (size_t)idx * MB_INST, 20, 540, 360, 40, 5, 0.96, 0.96, 0.96, -72);
+      sc[(size_t)idx * MB_INST + 7] = 6.0;
+      sc[(size_t)idx * MB_INST + 11] = 0.45;
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      // Foreground lens (kind 8) with 2 children at (140, 280, 120, 40)
+      rect_at(sc + (size_t)idx * MB_INST, 140, 280, 120, 40, 8, 1.0, 1.0, 1.0, 0);
+      sc[(size_t)idx * MB_INST + 4] = 12.0;
+      sc[(size_t)idx * MB_INST + 7] = 2.0;
+      sc[(size_t)idx * MB_INST + 11] = 1.0;
+      sc[(size_t)idx * MB_INST + 12] = 2.0; // child_n = 2
+      sc[(size_t)idx * MB_INST + 14] = 4.0;
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      rect_at(sc + (size_t)idx * MB_INST, 150, 288, 40, 24, 0, 0.90, 0.30, 0.20, 0);
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      rect_at(sc + (size_t)idx * MB_INST, 200, 288, 45, 24, 0, 0.20, 0.45, 0.90, 0);
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      CHECK(idx == TOTAL);
+
+      // Whole frame first (primes canvas_ok = 1 via dirty whole).
+      mb_host_render_dirty(0, 0, pw_pt, ph_pt);
+      gl_present(sc, TOTAL, 0.92, 0.93, 0.95);
+      CHECK(surface_as_whole(p30_fb));
+      CHECK(surface_as_fresh(p30_fb));
+
+      // Case A: 4 small disjoint dirty rects away from both glass groups and the lens.
+      // Invalidate glass slots to prove neither off-rect glass group triggers capture()/blur().
+      slots_invalidate();
+      sc[21 * MB_INST + 8] = 0.95; // near (27, 83)
+      sc[88 * MB_INST + 9] = 0.90; // near (160, 152)
+      sc[310 * MB_INST + 10] = 0.10; // near (198, 405)
+      sc[(GRID_N + 1) * MB_INST + 9] = 0.85; // oclipped rect at (300..340, 440..470)
+      int vbo0 = vbo_uploads, blurs0 = blurs_made, draws0 = instanced_draws, inst0 = instanced_total;
+      mb_host_render_dirty(8, 78, 56, 52);      // covers shadow + rect 21 (clear of top glass y<=70)
+      mb_host_render_dirty(155, 130, 60, 50);   // covers rotated rect + rect 88
+      mb_host_render_dirty(190, 398, 30, 30);   // covers rect 310
+      mb_host_render_dirty(292, 432, 56, 46);   // covers oclipped rect
+      gl_present(sc, TOTAL, 0.92, 0.93, 0.95);
+      int vbo_d = vbo_uploads - vbo0;
+      int blurs_d = blurs_made - blurs0;
+      int draws_d = instanced_draws - draws0;
+      int inst_d = instanced_total - inst0;
+      printf("gles_render: Perf-31 4-rect partial: vbo_uploads=%d blurs=%d draws=%d inst_submitted=%d (unculled=%d)\n",
+             vbo_d, blurs_d, draws_d, inst_d, 4 * TOTAL);
+      CHECK(vbo_d == 1);
+      CHECK(blurs_d == 0);
+      CHECK(inst_d < TOTAL); // <25% of 4*TOTAL
+      CHECK(surface_as_whole(p30_fb));
+      CHECK(surface_as_fresh(p30_fb));
+
+      // Case B: 2 dirty rects, one covering top glass + one covering the kind 8 lens; bottom glass remains untouched.
+      slots_invalidate();
+      sc[(GRID_N + 6) * MB_INST + 8] = 0.15; // lens child 1 color change
+      sc[0 * MB_INST + 8] = 0.95;            // rect near top glass
+      vbo0 = vbo_uploads;
+      blurs0 = blurs_made;
+      mb_host_render_dirty(0, 0, 400, 80);    // covers top glass
+      mb_host_render_dirty(120, 260, 160, 80); // covers kind 8 lens
+      gl_present(sc, TOTAL, 0.92, 0.93, 0.95);
+      CHECK(vbo_uploads - vbo0 == 1);
+      CHECK(blurs_made - blurs0 == 1); // only top glass blurred, bottom glass skipped!
+      CHECK(surface_as_whole(p30_fb));
+      CHECK(surface_as_fresh(p30_fb));
+
+      free(sc);
     }
 
     glDeleteFramebuffers(1, &p30_fb);

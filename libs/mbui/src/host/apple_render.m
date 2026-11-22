@@ -1624,7 +1624,11 @@ static void blur(id<MTLCommandBuffer> cb, id<MTLTexture> target, const Grab *m) 
 // into it (its pictures change under the same instances) is blurred anew each frame, as is a frame an image under it
 // had no texture for yet.
 #define MB_GLASS_SLOTS 32
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#define MB_GLASS_CACHE_MAX_BYTES ((size_t)32 * 1024 * 1024)
+#else
 #define MB_GLASS_CACHE_MAX_BYTES ((size_t)64 * 1024 * 1024)
+#endif
 typedef struct {
   float *under;
   size_t under_cap, under_n;
@@ -2348,12 +2352,58 @@ static int take_parts(const MBDirty *d, int tw, int th, int kept, MTLScissorRect
   return k;
 }
 
-// Whether a grab's rectangle meets the part drawn (all of it where the frame is drawn whole).
-static int grab_in_part(const Grab *m) {
-  if (!sc_on) return 1;
-  return m->px0 < (int)(sc.x + sc.width) && (int)sc.x < m->px0 + m->w && m->py0 < (int)(sc.y + sc.height) &&
-         (int)sc.y < m->py0 + m->h;
+// Whether a grab's rectangle meets a scissor rect (or the current part drawn).
+static int grab_in_rect(const Grab *m, const MTLScissorRect *r) {
+  return m->px0 < (int)(r->x + r->width) && (int)r->x < m->px0 + m->w &&
+         m->py0 < (int)(r->y + r->height) && (int)r->y < m->py0 + m->h;
 }
+
+static int grab_in_part(const Grab *m) {
+  return !sc_on || grab_in_rect(m, &sc);
+}
+
+static int grab_in_any_rect(const Grab *m, const MTLScissorRect *rects, int n_rects) {
+  if (!rects || n_rects < 0) return 1;
+  for (int i = 0; i < n_rects; i++) {
+    if (grab_in_rect(m, &rects[i])) return 1;
+  }
+  return 0;
+}
+
+// Conservative CPU scissor test for non-glass instance `b` against top-down pixel rect [rx0, ry0, rx1, ry1).
+#define MB_CULL_SPLIT_GAP 16
+static int inst_in_px_rect(const float *b, float sx, float sy, int rx0, int ry0, int rx1, int ry1) {
+  int kind = (int)(b[5] + 0.5f);
+  if (kind == 12) return 0;
+  if (b[32] != 0.0f) return 1;
+  float grow = kind == 2 ? fabsf(b[7]) * 3.0f + 2.0f
+             : (kind == 6 && b[23] <= 0.0f) ? 2.0f
+             : ((kind == 0 || kind == 4 || kind == 5 || kind == 8) ? 1.0f : 0.0f);
+  float x0 = fminf(b[0], b[0] + b[2]) - grow;
+  float x1 = fmaxf(b[0], b[0] + b[2]) + grow;
+  float y0 = fminf(b[1], b[1] + b[3]) - grow;
+  float y1 = fmaxf(b[1], b[1] + b[3]) + grow;
+  float cpad = (b[24] > 0.0f || b[25] > 0.0f || b[26] > 0.0f || b[27] > 0.0f) ? 1.0f : 0.0f;
+  float cx0 = b[16] - cpad, cy0 = b[17] - cpad, cx1 = b[18] + cpad, cy1 = b[19] + cpad;
+  if (cx0 > x0) x0 = cx0;
+  if (cy0 > y0) y0 = cy0;
+  if (cx1 < x1) x1 = cx1;
+  if (cy1 < y1) y1 = cy1;
+  if (b[44] > 0.0f || b[45] > 0.0f || b[46] > 0.0f || b[47] > 0.0f) {
+    float ox0 = b[40] - 1.0f, oy0 = b[41] - 1.0f, ox1 = b[42] + 1.0f, oy1 = b[43] + 1.0f;
+    if (ox0 > x0) x0 = ox0;
+    if (oy0 > y0) y0 = oy0;
+    if (ox1 < x1) x1 = ox1;
+    if (oy1 < y1) y1 = oy1;
+  }
+  if (x1 <= x0 || y1 <= y0) return 0;
+  float px0 = x0 * sx - 2.0f, py0 = y0 * sy - 2.0f;
+  float px1 = x1 * sx + 2.0f, py1 = y1 * sy + 2.0f;
+  return px1 > (float)rx0 && px0 < (float)rx1 && py1 > (float)ry0 && py0 < (float)ry1;
+}
+
+static int encode_passes_made;
+static int encode_inst_submitted;
 
 static id<MTLRenderCommandEncoder> begin_pass_ex(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
                                                  id<MTLBuffer> buf, int clear, double r, double g, double b, double alpha,
@@ -2388,6 +2438,7 @@ static id<MTLRenderCommandEncoder> begin_pass_ex(id<MTLCommandBuffer> cb, id<MTL
 
 static id<MTLRenderCommandEncoder> begin_pass(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
                                               id<MTLBuffer> buf, int clear, double r, double g, double b, double alpha) {
+  encode_passes_made++;
   return begin_pass_ex(cb, target, p, buf, clear, r, g, b, alpha, 0.0f, 0.0f, (float)at_w, (float)at_h, 1, 0, 0);
 }
 
@@ -2443,21 +2494,24 @@ static NSMutableDictionary<NSNumber *, id> *frame_texs(const float *f, int32_t c
   return d;
 }
 
-// `part`: only that part of the target drawn again, over what it holds (the frame's ground first: the instance after
-// the frame's, ring_put's); NULL, all of it, cleared to the ground.
-static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
-                   id<MTLBuffer> buf, int32_t count, double r, double g, double b, double alpha,
-                   const MTLScissorRect *part, double ad_dt, uint64_t ad_serial) {
+// `parts` (n_parts > 0): only those parts of the target drawn again in a shared render pass, over what it holds (the
+// frame's ground first: the instance after the frame's, ring_put's); NULL (or n_parts < 0): all of it, cleared to the ground.
+static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
+                         id<MTLBuffer> buf, int32_t count, double r, double g, double b, double alpha,
+                         const MTLScissorRect *parts, int n_parts, double ad_dt, uint64_t ad_serial) {
+  int is_partial = (parts != NULL && n_parts > 0);
+  if (parts != NULL && n_parts == 0) return;
   gtex = nil;
   memset(&gu, 0, sizeof gu);
   encode_missing = 0;
   const float *f = (const float *)buf.contents;
   seg_base = count;
   while (seg_base > 0 && (int)(f[(seg_base - 1) * MB_INST + 5] + 0.5f) == 12) seg_base--;
-  sc_on = part != NULL;
-  if (part) sc = *part;
-  // Pre-scan glass captures before opening the main render pass: size blur levels once, and batch adaptive updates for
-  // blur-cache-hit groups into a single pass before begin_pass so the Retina canvas is not Store/Load split mid-pass.
+  sc_on = is_partial;
+  if (is_partial) sc = parts[0];
+  // Pre-scan glass captures once per frame (covering all dirty rects when partial) before opening the main render pass:
+  // size blur levels once, and batch adaptive updates for blur-cache-hit groups into a single pass before begin_pass so
+  // the Retina canvas is not Store/Load split mid-pass.
   int levels_sized = 0;
   struct {
     int tid;
@@ -2480,7 +2534,7 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
           if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height)) {
             if (gm.w > all_max_w) all_max_w = gm.w;
             if (gm.h > all_max_h) all_max_h = gm.h;
-            if (grab_in_part(&gm)) {
+            if (!is_partial || grab_in_any_rect(&gm, parts, n_parts)) {
               if (gm.w > max_w) max_w = gm.w;
               if (gm.h > max_h) max_h = gm.h;
             }
@@ -2512,7 +2566,8 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
               int skind = (int)(f[s0 * MB_INST + 5] + 0.5f);
               if (skind == 5 || skind == 6) {
                 Grab gm;
-                if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height) && grab_in_part(&gm) &&
+                if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height) &&
+                    (!is_partial || grab_in_any_rect(&gm, parts, n_parts)) &&
                     under_take(f, s0, count, seg_base, &gm)) {
                   int sl = slot_same(&gm, key);
                   if (sl >= 0 && slot_bt[sl]) {
@@ -2550,246 +2605,314 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
     }
   }
   ad_fill_gu(at_win);
-  id<MTLRenderCommandEncoder> enc = begin_pass(cb, target, p, buf, part ? 0 : 1, r, g, b, alpha);
-  if (part) {
-    [enc setRenderPipelineState:hpipe];
-    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:1 baseInstance:count];
-  }
-  // one draw per run of instances showing the same image (slot 20; 0:
-  // none, the atlas stands in) of one kind (its pipeline: kind_pipe), or sharing one capture of glass (negative),
-  // and holes for native views (kind 9) apart, unblended. Glass over a hole
-  // sees the hole (the canvas only, not the view under it).
-  int32_t start = 0;
-  int bound = 0, shows = 0;
+  id<MTLRenderCommandEncoder> enc = begin_pass(cb, target, p, buf, is_partial ? 0 : 1, r, g, b, alpha);
   unsigned frame_clock = slots_clock;
-  while (start < count) {
-    int tid = (int)f[start * MB_INST + 20];
-    int kind = (int)(f[start * MB_INST + 5] + 0.5f), hole = kind == 9;
-    if (kind == 8) {
-      int32_t child_n = (int32_t)(f[start * MB_INST + 12] + 0.5f);
-      if (child_n < 0) child_n = 0;
-      if (start + 1 + child_n > count) child_n = count - start - 1;
-      const float *hb = f + (size_t)start * MB_INST;
-      if (child_n <= 0 || hb[11] <= 0.001f || hb[2] <= 0.0f || hb[3] <= 0.0f) {
+  float sx = at_w > 0.0 ? (float)target.width / (float)at_w : (float)at_scale;
+  float sy = at_h > 0.0 ? (float)target.height / (float)at_h : (float)at_scale;
+  int pass_n = is_partial ? n_parts : 1;
+  for (int pi = 0; pi < pass_n; pi++) {
+    if (is_partial) {
+      sc = parts[pi];
+      if (pi > 0) {
+        [enc setScissorRect:sc];
+        gtex = nil;
+        memset(&gu, 0, sizeof gu);
+        ad_fill_gu(at_win);
+        [enc setVertexBytes:&gu length:sizeof gu atIndex:2];
+        [enc setFragmentBytes:&gu length:sizeof gu atIndex:2];
+        [enc setFragmentTexture:atlas atIndex:2];
+        id<MTLTexture> adt = (at_win && at_win->ad_tex[at_win->ad_cur]) ? at_win->ad_tex[at_win->ad_cur] : atlas;
+        [enc setFragmentTexture:adt atIndex:4];
+      }
+      [enc setRenderPipelineState:hpipe];
+      [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:1 baseInstance:count];
+    }
+    int rx0 = is_partial ? (int)sc.x : 0;
+    int ry0 = is_partial ? (int)sc.y : 0;
+    int rx1 = is_partial ? (int)(sc.x + sc.width) : (int)target.width;
+    int ry1 = is_partial ? (int)(sc.y + sc.height) : (int)target.height;
+    // one draw per run of instances showing the same image (slot 20; 0:
+    // none, the atlas stands in) of one kind (its pipeline: kind_pipe), or sharing one capture of glass (negative),
+    // and holes for native views (kind 9) apart, unblended. Glass over a hole
+    // sees the hole (the canvas only, not the view under it).
+    int32_t start = 0;
+    int bound = 0, shows = 0;
+    while (start < count) {
+      int tid = (int)f[start * MB_INST + 20];
+      int kind = (int)(f[start * MB_INST + 5] + 0.5f), hole = kind == 9;
+      if (kind == 8) {
+        int32_t child_n = (int32_t)(f[start * MB_INST + 12] + 0.5f);
+        if (child_n < 0) child_n = 0;
+        if (start + 1 + child_n > count) child_n = count - start - 1;
+        const float *hb = f + (size_t)start * MB_INST;
+        if (child_n <= 0 || hb[11] <= 0.001f || hb[2] <= 0.0f || hb[3] <= 0.0f) {
+          start += 1 + child_n;
+          continue;
+        }
+        float sc_f = (float)at_scale;
+        float blur_pt = fmaxf(hb[7], 0.0f);
+        float refr_pt = fmaxf(hb[14], 0.0f);
+        float margin = blur_pt * 3.0f + refr_pt + 4.0f;
+        float x0 = hb[0], y0 = hb[1], x1 = hb[0] + hb[2], y1 = hb[1] + hb[3];
+        for (int32_t ci = start + 1; ci < start + 1 + child_n; ci++) {
+          const float *cb_f = f + (size_t)ci * MB_INST;
+          int ck = (int)(cb_f[5] + 0.5f);
+          if (ck == 12 || cb_f[2] <= 0.0f || cb_f[3] <= 0.0f) continue;
+          if (cb_f[0] < x0) x0 = cb_f[0];
+          if (cb_f[1] < y0) y0 = cb_f[1];
+          if (cb_f[0] + cb_f[2] > x1) x1 = cb_f[0] + cb_f[2];
+          if (cb_f[1] + cb_f[3] > y1) y1 = cb_f[1] + cb_f[3];
+        }
+        float ox = floorf((x0 - margin) * sc_f) / sc_f;
+        float oy = floorf((y0 - margin) * sc_f) / sc_f;
+        int pw = (int)ceilf(((x1 + margin) - ox) * sc_f);
+        int ph = (int)ceilf(((y1 + margin) - oy) * sc_f);
+        int max_dim_w = (int)target.width > 2048 ? (int)target.width : 2048;
+        int max_dim_h = (int)target.height > 2048 ? (int)target.height : 2048;
+        if (pw < 1) pw = 1;
+        if (ph < 1) ph = 1;
+        if (pw > max_dim_w) pw = max_dim_w;
+        if (ph > max_dim_h) ph = max_dim_h;
+        if (sc_on && hb[32] == 0.0f) {
+          int lx0 = (int)floorf(ox * sx) - 2;
+          int ly0 = (int)floorf(oy * sy) - 2;
+          int lx1 = (int)ceilf((ox + (float)pw / sc_f) * sx) + 2;
+          int ly1 = (int)ceilf((oy + (float)ph / sc_f) * sy) + 2;
+          if (lx1 <= rx0 || lx0 >= rx1 || ly1 <= ry0 || ly0 >= ry1) {
+            start += 1 + child_n;
+            continue;
+          }
+        }
+        [enc endEncoding];
+        ensure_levels(pw, ph);
+        // Pass 1: render child subtree into lv[0] cleared to transparent
+        id<MTLRenderCommandEncoder> lenc = begin_pass_ex(cb, lv[0], p, buf, 1, 0, 0, 0, 0,
+                                                         ox, oy, (float)pw / sc_f, (float)ph / sc_f, 0, pw, ph);
+        int32_t cs = start + 1, cend_all = start + 1 + child_n;
+        while (cs < cend_all) {
+          int ctid = (int)f[cs * MB_INST + 20];
+          int ck = (int)(f[cs * MB_INST + 5] + 0.5f);
+          if (ck == 5 || ck == 6 || ck == 8 || ck == 9 || ck == 12 || ctid < 0) {
+            cs++;
+            continue;
+          }
+          int cown = has_own_pipe(ck);
+          int32_t ce = cs + 1;
+          while (ce < cend_all && (int)f[ce * MB_INST + 20] == ctid) {
+            int kk = (int)(f[ce * MB_INST + 5] + 0.5f);
+            if (kk == 5 || kk == 6 || kk == 8 || kk == 9 || kk == 12) break;
+            if (cown ? kk != ck : has_own_pipe(kk)) break;
+            ce++;
+          }
+          id<MTLTexture> ct = tex_of(ctid);
+          if (ctid > MB_STREAM_TEX && !ct) { cs = ce; continue; }
+          if (ctid > 0 && ctid <= MB_STREAM_TEX && !ct) encode_missing = 1;
+          [lenc setRenderPipelineState:(cown ? kind_pipe(p, ck) : p)];
+          [lenc setFragmentTexture:(ct ?: atlas) atIndex:1];
+          [lenc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:ce - cs baseInstance:cs];
+          cs = ce;
+        }
+        [lenc endEncoding];
+        // Pass 2: optional downsample + separable Gaussian blur
+        int lw[4], lh[4];
+        lw[0] = pw; lh[0] = ph;
+        for (int j = 1; j <= 3; j++) { lw[j] = (lw[j - 1] + 1) / 2; lh[j] = (lh[j - 1] + 1) / 2; }
+        float sp = blur_pt * sc_f;
+        int lk = 0;
+        while (lk < 2 && sp / (float)(1 << (lk + 1)) >= 2.0f) lk++;
+        float sk_f = sp / (float)(1 << lk);
+        float pre = lk > 0 ? 0.75f * (1.0f - powf(0.25f, (float)lk)) / 3.0f + 1.0f / 6.0f : 0.0f;
+        float sg = sqrtf(fmaxf(sk_f * sk_f - pre, 0.0f));
+        if (sp > 0.25f) {
+          for (int j = 1; j <= lk; j++) {
+            post_pass(cb, lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0, NULL, NULL);
+          }
+          if (sg > 0.3f) {
+            post_pass(cb, lv[lk], lw[lk], lh[lk], ltmp, lw[lk], lh[lk], 2, sg, 1, 0, NULL, NULL);
+            post_pass(cb, ltmp, lw[lk], lh[lk], lv[lk], lw[lk], lh[lk], 2, sg, 0, 1, NULL, NULL);
+          }
+        } else {
+          lk = 0;
+        }
+        // Pass 3: composite refracted & SDF-clipped foreground lens onto target
+        id<MTLTexture> ltex = lv[lk];
+        gtex = ltex;
+        memset(&gu, 0, sizeof gu);
+        float W = (float)ltex.width, H = (float)ltex.height, d_lv = (float)(1 << lk);
+        gu.map[0] = sc_f / d_lv / W; gu.map[1] = sc_f / d_lv / H;
+        gu.map[2] = -(ox * sc_f) / d_lv / W; gu.map[3] = -(oy * sc_f) / d_lv / H;
+        gu.uvc[0] = 0.5f / W; gu.uvc[1] = 0.5f / H;
+        gu.uvc[2] = ((float)lw[lk] - 0.5f) / W; gu.uvc[3] = ((float)lh[lk] - 0.5f) / H;
+        enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
+        [enc setRenderPipelineState:kind_pipe(p, 8)];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:1 baseInstance:start];
+        encode_inst_submitted++;
+        bound = 0;
         start += 1 + child_n;
         continue;
       }
-      float sc_f = (float)at_scale;
-      float blur_pt = fmaxf(hb[7], 0.0f);
-      float refr_pt = fmaxf(hb[14], 0.0f);
-      float margin = blur_pt * 3.0f + refr_pt + 4.0f;
-      float x0 = hb[0], y0 = hb[1], x1 = hb[0] + hb[2], y1 = hb[1] + hb[3];
-      for (int32_t ci = start + 1; ci < start + 1 + child_n; ci++) {
-        const float *cb_f = f + (size_t)ci * MB_INST;
-        int ck = (int)(cb_f[5] + 0.5f);
-        if (ck == 12 || cb_f[2] <= 0.0f || cb_f[3] <= 0.0f) continue;
-        if (cb_f[0] < x0) x0 = cb_f[0];
-        if (cb_f[1] < y0) y0 = cb_f[1];
-        if (cb_f[0] + cb_f[2] > x1) x1 = cb_f[0] + cb_f[2];
-        if (cb_f[1] + cb_f[3] > y1) y1 = cb_f[1] + cb_f[3];
+      // (kinds without their own pipeline one run, as before)
+      int own = tid >= 0 && has_own_pipe(kind);
+      int32_t end = start + 1;
+      while (end < count && (int)f[end * MB_INST + 20] == tid) {
+        int k = (int)(f[end * MB_INST + 5] + 0.5f);
+        if (k == 8 || (k == 9) != hole || (own ? k != kind : tid >= 0 && has_own_pipe(k))) break;
+        end++;
       }
-      float ox = floorf((x0 - margin) * sc_f) / sc_f;
-      float oy = floorf((y0 - margin) * sc_f) / sc_f;
-      int pw = (int)ceilf(((x1 + margin) - ox) * sc_f);
-      int ph = (int)ceilf(((y1 + margin) - oy) * sc_f);
-      int max_dim_w = (int)target.width > 2048 ? (int)target.width : 2048;
-      int max_dim_h = (int)target.height > 2048 ? (int)target.height : 2048;
-      if (pw < 1) pw = 1;
-      if (ph < 1) ph = 1;
-      if (pw > max_dim_w) pw = max_dim_w;
-      if (ph > max_dim_h) ph = max_dim_h;
-      [enc endEncoding];
-      ensure_levels(pw, ph);
-      // Pass 1: render child subtree into lv[0] cleared to transparent
-      id<MTLRenderCommandEncoder> lenc = begin_pass_ex(cb, lv[0], p, buf, 1, 0, 0, 0, 0,
-                                                       ox, oy, (float)pw / sc_f, (float)ph / sc_f, 0, pw, ph);
-      int32_t cs = start + 1, cend_all = start + 1 + child_n;
-      while (cs < cend_all) {
-        int ctid = (int)f[cs * MB_INST + 20];
-        int ck = (int)(f[cs * MB_INST + 5] + 0.5f);
-        if (ck == 5 || ck == 6 || ck == 8 || ck == 9 || ck == 12 || ctid < 0) {
-          cs++;
-          continue;
-        }
-        int cown = has_own_pipe(ck);
-        int32_t ce = cs + 1;
-        while (ce < cend_all && (int)f[ce * MB_INST + 20] == ctid) {
-          int kk = (int)(f[ce * MB_INST + 5] + 0.5f);
-          if (kk == 5 || kk == 6 || kk == 8 || kk == 9 || kk == 12) break;
-          if (cown ? kk != ck : has_own_pipe(kk)) break;
-          ce++;
-        }
-        id<MTLTexture> ct = tex_of(ctid);
-        if (ctid > MB_STREAM_TEX && !ct) { cs = ce; continue; }
-        if (ctid > 0 && ctid <= MB_STREAM_TEX && !ct) encode_missing = 1;
-        [lenc setRenderPipelineState:(cown ? kind_pipe(p, ck) : p)];
-        [lenc setFragmentTexture:(ct ?: atlas) atIndex:1];
-        [lenc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:ce - cs baseInstance:cs];
-        cs = ce;
-      }
-      [lenc endEncoding];
-      // Pass 2: optional downsample + separable Gaussian blur
-      int lw[4], lh[4];
-      lw[0] = pw; lh[0] = ph;
-      for (int j = 1; j <= 3; j++) { lw[j] = (lw[j - 1] + 1) / 2; lh[j] = (lh[j - 1] + 1) / 2; }
-      float sp = blur_pt * sc_f;
-      int lk = 0;
-      while (lk < 2 && sp / (float)(1 << (lk + 1)) >= 2.0f) lk++;
-      float sk_f = sp / (float)(1 << lk);
-      float pre = lk > 0 ? 0.75f * (1.0f - powf(0.25f, (float)lk)) / 3.0f + 1.0f / 6.0f : 0.0f;
-      float sg = sqrtf(fmaxf(sk_f * sk_f - pre, 0.0f));
-      if (sp > 0.25f) {
-        for (int j = 1; j <= lk; j++) {
-          post_pass(cb, lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0, NULL, NULL);
-        }
-        if (sg > 0.3f) {
-          post_pass(cb, lv[lk], lw[lk], lh[lk], ltmp, lw[lk], lh[lk], 2, sg, 1, 0, NULL, NULL);
-          post_pass(cb, ltmp, lw[lk], lh[lk], lv[lk], lw[lk], lh[lk], 2, sg, 0, 1, NULL, NULL);
-        }
-      } else {
-        lk = 0;
-      }
-      // Pass 3: composite refracted & SDF-clipped foreground lens onto target
-      id<MTLTexture> ltex = lv[lk];
-      gtex = ltex;
-      memset(&gu, 0, sizeof gu);
-      float W = (float)ltex.width, H = (float)ltex.height, d_lv = (float)(1 << lk);
-      gu.map[0] = sc_f / d_lv / W; gu.map[1] = sc_f / d_lv / H;
-      gu.map[2] = -(ox * sc_f) / d_lv / W; gu.map[3] = -(oy * sc_f) / d_lv / H;
-      gu.uvc[0] = 0.5f / W; gu.uvc[1] = 0.5f / H;
-      gu.uvc[2] = ((float)lw[lk] - 0.5f) / W; gu.uvc[3] = ((float)lh[lk] - 0.5f) / H;
-      enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
-      [enc setRenderPipelineState:kind_pipe(p, 8)];
-      [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:1 baseInstance:start];
-      bound = 0;
-      start += 1 + child_n;
-      continue;
-    }
-    // (kinds without their own pipeline one run, as before)
-    int own = tid >= 0 && has_own_pipe(kind);
-    int32_t end = start + 1;
-    while (end < count && (int)f[end * MB_INST + 20] == tid) {
-      int k = (int)(f[end * MB_INST + 5] + 0.5f);
-      if (k == 8 || (k == 9) != hole || (own ? k != kind : tid >= 0 && has_own_pipe(k))) break;
-      end++;
-    }
-    if (tid < 0) {
-      if (!levels_sized) {
-        levels_sized = 1;
-        int max_w = 0, max_h = 0, all_max_w = 0, all_max_h = 0, scan_bound = 0;
-        for (int32_t s0 = start; s0 < count;) {
-          int stid = (int)f[s0 * MB_INST + 20];
-          int32_t e0 = s0 + 1;
-          if (stid < 0) {
-            while (e0 < count && (int)f[e0 * MB_INST + 20] == stid) e0++;
-            if (stid != scan_bound) {
-              scan_bound = stid;
-              Grab gm;
-              if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height)) {
-                if (gm.w > all_max_w) all_max_w = gm.w;
-                if (gm.h > all_max_h) all_max_h = gm.h;
-                if (grab_in_part(&gm)) {
-                  if (gm.w > max_w) max_w = gm.w;
-                  if (gm.h > max_h) max_h = gm.h;
+      if (tid < 0) {
+        if (!levels_sized) {
+          levels_sized = 1;
+          int max_w = 0, max_h = 0, all_max_w = 0, all_max_h = 0, scan_bound = 0;
+          for (int32_t s0 = start; s0 < count;) {
+            int stid = (int)f[s0 * MB_INST + 20];
+            int32_t e0 = s0 + 1;
+            if (stid < 0) {
+              while (e0 < count && (int)f[e0 * MB_INST + 20] == stid) e0++;
+              if (stid != scan_bound) {
+                scan_bound = stid;
+                Grab gm;
+                if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height)) {
+                  if (gm.w > all_max_w) all_max_w = gm.w;
+                  if (gm.h > all_max_h) all_max_h = gm.h;
+                  if (!is_partial || grab_in_any_rect(&gm, parts, n_parts)) {
+                    if (gm.w > max_w) max_w = gm.w;
+                    if (gm.h > max_h) max_h = gm.h;
+                  }
                 }
               }
             }
+            s0 = e0;
           }
-          s0 = e0;
+          if (max_w > lv_w || max_h > lv_h) {
+            ensure_levels(max_w, max_h);
+          } else if (ad_dt >= 0.0 && lv[0] && all_max_w > 0 && all_max_h > 0) {
+            if (all_max_w > lv_frame_max_w) lv_frame_max_w = all_max_w;
+            if (all_max_h > lv_frame_max_h) lv_frame_max_h = all_max_h;
+          }
         }
-        if (max_w > lv_w || max_h > lv_h) {
-          ensure_levels(max_w, max_h);
-        } else if (ad_dt >= 0.0 && lv[0] && all_max_w > 0 && all_max_h > 0) {
-          if (all_max_w > lv_frame_max_w) lv_frame_max_w = all_max_w;
-          if (all_max_h > lv_frame_max_h) lv_frame_max_h = all_max_h;
-        }
-      }
-      if (tid != bound) {
-        Grab m;
-        double key[7] = {target.width, target.height, at_scale, r, g, b, alpha};
-        int known = 0, slot = -1;
-        for (int h = 0; h < pre_hits_n; h++) {
-          if (pre_hits[h].tid == tid) {
-            int hs = pre_hits[h].slot;
-            if (slots[hs].valid && slot_bt[hs] && slots[hs].gen == pre_hits[h].gen) {
-              m = pre_hits[h].grab;
-              shows = 1;
-              known = 1;
-              slot = hs;
+        if (tid != bound) {
+          Grab m;
+          double key[7] = {target.width, target.height, at_scale, r, g, b, alpha};
+          int known = 0, slot = -1;
+          for (int h = 0; h < pre_hits_n; h++) {
+            if (pre_hits[h].tid == tid) {
+              if (!grab_in_part(&pre_hits[h].grab)) {
+                shows = 0;
+                slot = -2;
+                break;
+              }
+              int hs = pre_hits[h].slot;
+              if (slots[hs].valid && slot_bt[hs] && slots[hs].gen == pre_hits[h].gen) {
+                m = pre_hits[h].grab;
+                shows = 1;
+                known = 1;
+                slot = hs;
+              }
+              break;
             }
-            break;
           }
-        }
-        if (slot < 0) {
-          shows = grab_of(&m, f, start, end, count, (int)target.width, (int)target.height);
-          // (a capture outside the part drawn: neither copied nor drawn, the blur kept as it was. One that meets it is
-          // in it whole: the app's part takes in all a capture it reaches copies, @damage)
-          shows = shows && grab_in_part(&m);
-          known = shows && under_take(f, start, count, seg_base, &m);
-          slot = known ? slot_same(&m, key) : -1;
-        }
-        AdPending ad_pend[MB_ADAPTIVE_MAX];
-        int ad_n_upd = 0;
-        if (slot >= 0) {
-          // what it sees is what a slot holds: shown on in this pass unless an adaptive slot needs a settle step
-          kept_ok = 1;
-          slot_show(&m, slot);
-          ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 0, ad_dt, ad_serial, ad_pend);
-          if (ad_n_upd > 0) {
+          if (slot == -1) {
+            shows = grab_of(&m, f, start, end, count, (int)target.width, (int)target.height);
+            // (a capture outside the part drawn: neither copied nor drawn, the blur kept as it was. One that meets it is
+            // in it whole: the app's part takes in all a capture it reaches copies, @damage)
+            shows = shows && grab_in_part(&m);
+            known = shows && under_take(f, start, count, seg_base, &m);
+            slot = known ? slot_same(&m, key) : -1;
+          }
+          AdPending ad_pend[MB_ADAPTIVE_MAX];
+          int ad_n_upd = 0;
+          if (slot >= 0) {
+            // what it sees is what a slot holds: shown on in this pass unless an adaptive slot needs a settle step
+            kept_ok = 1;
+            slot_show(&m, slot);
+            ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 0, ad_dt, ad_serial, ad_pend);
+            if (ad_n_upd > 0) {
+              [enc endEncoding];
+              ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
+              ad_fill_gu(at_win);
+              enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
+            } else {
+              ad_fill_gu(at_win);
+              [enc setVertexBytes:&gu length:sizeof gu atIndex:2];
+              [enc setFragmentBytes:&gu length:sizeof gu atIndex:2];
+              [enc setFragmentTexture:gtex atIndex:2];
+              id<MTLTexture> adt = (at_win && at_win->ad_tex[at_win->ad_cur]) ? at_win->ad_tex[at_win->ad_cur] : atlas;
+              [enc setFragmentTexture:adt atIndex:4];
+            }
+          } else if (shows) {
             [enc endEncoding];
-            ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
+            blur(cb, target, &m);
+            slot = slot_fill(cb, &m, frame_clock);
+            // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not
+            // kept to be shown again as theirs)
+            if (known && !encode_missing) slot_keep(slot, &m, key);
+            kept_ok = slots[slot].valid;
+            slot_show(&m, slot);
+            ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 1, ad_dt, ad_serial, ad_pend);
+            if (ad_n_upd > 0) ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
             ad_fill_gu(at_win);
             enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
-          } else {
-            ad_fill_gu(at_win);
-            [enc setVertexBytes:&gu length:sizeof gu atIndex:2];
-            [enc setFragmentBytes:&gu length:sizeof gu atIndex:2];
-            [enc setFragmentTexture:gtex atIndex:2];
-            id<MTLTexture> adt = (at_win && at_win->ad_tex[at_win->ad_cur]) ? at_win->ad_tex[at_win->ad_cur] : atlas;
-            [enc setFragmentTexture:adt atIndex:4];
           }
-        } else if (shows) {
-          [enc endEncoding];
-          blur(cb, target, &m);
-          slot = slot_fill(cb, &m, frame_clock);
-          // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not
-          // kept to be shown again as theirs)
-          if (known && !encode_missing) slot_keep(slot, &m, key);
-          kept_ok = slots[slot].valid;
-          slot_show(&m, slot);
-          ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 1, ad_dt, ad_serial, ad_pend);
-          if (ad_n_upd > 0) ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
-          ad_fill_gu(at_win);
-          enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
+          bound = tid;
         }
-        bound = tid;
+        // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
+        if (shows) {
+          int merged_liquid = kind == 6 && f[start * MB_INST + 23] > 0.0f;
+          int gkind = kind == 5 ? 5 : (kind == 6 ? (merged_liquid ? 6 : MB_KIND_LIQUID_SINGLE) : -1);
+          [enc setRenderPipelineState:kind_pipe(p, gkind)];
+          int32_t cnt = merged_liquid ? 1 : end - start;
+          [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:cnt baseInstance:start];
+          encode_inst_submitted += cnt;
+        }
+        start = end;
+        continue;
       }
-      // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
-      if (shows) {
-        int merged_liquid = kind == 6 && f[start * MB_INST + 23] > 0.0f;
-        int gkind = kind == 5 ? 5 : (kind == 6 ? (merged_liquid ? 6 : MB_KIND_LIQUID_SINGLE) : -1);
-        [enc setRenderPipelineState:kind_pipe(p, gkind)];
-        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6
-                instanceCount:merged_liquid ? 1 : end - start baseInstance:start];
+      // (a hole's image is its view's, src/hostapi/host.mbt view_tex_base + its id: the view is under the canvas here)
+      id<MTLTexture> t = hole ? nil : tex_of(tid);
+      // (a stream with no frame of its own yet, or lost: nothing, not the atlas)
+      if (!hole && tid > MB_STREAM_TEX && !t) {
+        start = end;
+        continue;
+      }
+      if (!hole && tid > 0 && tid <= MB_STREAM_TEX && !t) encode_missing = 1;
+      id<MTLRenderPipelineState> kp = own ? kind_pipe(p, kind) : p;
+      if (!sc_on) {
+        [enc setRenderPipelineState:(hole ? hpipe : kp)];
+        [enc setFragmentTexture:(t ?: atlas) atIndex:1];
+        if (hole) [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6
+                          instanceCount:end - start baseInstance:start];
+        else draw_banded(enc, kp, f, start, end, count, (int)target.width, (int)target.height);
+        encode_inst_submitted += end - start;
+      } else {
+        int bound_run = 0;
+        int32_t cur = start;
+        while (cur < end) {
+          while (cur < end && !inst_in_px_rect(f + (size_t)cur * MB_INST, sx, sy, rx0, ry0, rx1, ry1)) cur++;
+          if (cur >= end) break;
+          int32_t lo = cur, hi = cur + 1;
+          int32_t j = hi;
+          while (j < end) {
+            if (inst_in_px_rect(f + (size_t)j * MB_INST, sx, sy, rx0, ry0, rx1, ry1)) {
+              hi = j + 1;
+            } else if (j - hi + 1 >= MB_CULL_SPLIT_GAP) {
+              break;
+            }
+            j++;
+          }
+          if (!bound_run) {
+            [enc setRenderPipelineState:(hole ? hpipe : kp)];
+            [enc setFragmentTexture:(t ?: atlas) atIndex:1];
+            bound_run = 1;
+          }
+          if (hole) [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6
+                            instanceCount:hi - lo baseInstance:lo];
+          else draw_banded(enc, kp, f, lo, hi, count, (int)target.width, (int)target.height);
+          encode_inst_submitted += hi - lo;
+          cur = j + 1;
+        }
       }
       start = end;
-      continue;
     }
-    id<MTLRenderPipelineState> kp = own ? kind_pipe(p, kind) : p;
-    [enc setRenderPipelineState:(hole ? hpipe : kp)];
-    // (a hole's image is its view's, src/hostapi/host.mbt view_tex_base + its id: the view is under the canvas here)
-    id<MTLTexture> t = hole ? nil : tex_of(tid);
-    // (a stream with no frame of its own yet, or lost: nothing, not the atlas)
-    if (!hole && tid > MB_STREAM_TEX && !t) {
-      start = end;
-      continue;
-    }
-    if (!hole && tid > 0 && tid <= MB_STREAM_TEX && !t) encode_missing = 1;
-    [enc setFragmentTexture:(t ?: atlas) atIndex:1];
-    if (hole) [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6
-                      instanceCount:end - start baseInstance:start];
-    else draw_banded(enc, kp, f, start, end, count, (int)target.width, (int)target.height);
-    start = end;
   }
   [enc endEncoding];
   gtex = nil;
@@ -2797,8 +2920,14 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
   sc_on = 0;
 }
 
+static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
+                   id<MTLBuffer> buf, int32_t count, double r, double g, double b, double alpha,
+                   const MTLScissorRect *part, double ad_dt, uint64_t ad_serial) {
+  encode_rects(cb, target, p, buf, count, r, g, b, alpha, part, part ? 1 : -1, ad_dt, ad_serial);
+}
+
 // The frame in `buf` drawn into `target`, only its parts said to differ (`d`, take_parts) where it holds the frame
-// before (`kept`), a pass each, else whole: how many parts (-1 whole, 0 none).
+// before (`kept`), in one shared render pass, else whole: how many parts (-1 whole, 0 none).
 static int draw_parts(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLBuffer> buf, int32_t count, double r,
                       double g, double b, int kept, const MBDirty *d, double ad_dt, uint64_t ad_serial) {
   MTLScissorRect parts[MB_PARTS];
@@ -2807,16 +2936,13 @@ static int draw_parts(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLBuff
       !mb_glass_damage_expand((const float *)buf.contents, count, expanded.r, &expanded.n,
                               target.width / at_scale, target.height / at_scale, at_scale)) expanded.whole = 1;
   int n = take_parts(&expanded, (int)target.width, (int)target.height, kept, parts);
-  int missing = 0;
   if (n < 0) {
-    encode(cb, target, mpipe, buf, count, r, g, b, 1, NULL, ad_dt, ad_serial);
-    missing = encode_missing;
+    encode_rects(cb, target, mpipe, buf, count, r, g, b, 1, NULL, -1, ad_dt, ad_serial);
+    pictures_missing = encode_missing;
+  } else if (n > 0) {
+    encode_rects(cb, target, mpipe, buf, count, r, g, b, 1, parts, n, ad_dt, ad_serial);
+    pictures_missing = encode_missing;
   }
-  for (int i = 0; i < n; i++) {
-    encode(cb, target, mpipe, buf, count, r, g, b, 1, &parts[i], ad_dt, ad_serial);
-    missing |= encode_missing;
-  }
-  if (n != 0) pictures_missing = missing;
   ad_rb_finish(cb, at_win, ad_serial);
   return n;
 }
