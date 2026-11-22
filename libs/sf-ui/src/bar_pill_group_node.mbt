@@ -7,14 +7,18 @@
 ///|
 /// Translucent liquid glass for floating top bar action pills (`36–40pt` tall): matches `glass_tab_bar()`'s
 /// iOS 27 40% tint (`0x20202067L` / `0xFDFCFD67L`) with bevel/refraction tuned for top bar capsules and
-/// live `spot` specular highlight on press.
-fn glass_bar_pill(spot? : (Double, Double)? = None) -> @ui.Glass {
+/// live `spot` specular highlight on press. `tint`: a pill told apart from the neutral ones beside it (the window's own
+/// buttons'), its glass that colour and its solid ground the panel's with a quarter of it over.
+fn glass_bar_pill(spot? : (Double, Double)? = None, tint? : Int64? = None) -> @ui.Glass {
   let t = theme()
-  let tint = if t.dark { 0x20202067L } else { 0xFDFCFD67L }
+  let (glass_tint, solid) = match tint {
+    Some(c) => (c, over(panel_ground(), alpha(c, 0.24)))
+    None => (if t.dark { 0x20202067L } else { 0xFDFCFD67L }, panel_ground())
+  }
   @ui.Glass::liquid(
     blur=2.5,
-    tint~,
-    solid=panel_ground(),
+    tint=glass_tint,
+    solid~,
     saturation=1.0,
     rim=0.6,
     bezel=14.0,
@@ -51,6 +55,14 @@ pub fn bar_pill_press_ink() -> Int64 {
 /// `.glassEffect(.interactive())` response: moves the GPU `spot` specular highlight to the child's center and
 /// springs the pill scale via `@motion.backdrop_press_spring`. No-op outside a `bar_pill_group_node`.
 pub fn bind_pill_press(child : @view.View) -> Unit {
+  bind_pill_press_by(child, fn() { child.pressed() })
+}
+
+///|
+/// bind_pill_press with what holds `child` down said by `down` (a press the host takes rather than the app: the
+/// window's maximize button held down as the host says, @ui.window_snap_state), sharing the pill's press count with
+/// any other press bound to it.
+fn bind_pill_press_by(child : @view.View, down : () -> Bool) -> Unit {
   guard child.lent(pill_press_lent) is Some(scope) else { return }
   let active = Ref(false)
   let release = fn() {
@@ -63,8 +75,8 @@ pub fn bind_pill_press(child : @view.View) -> Unit {
       }
     }
   }
-  child.reacts(fn() { child.pressed() }, fn(down) {
-    if down {
+  child.reacts(down, fn(is_down) {
+    if is_down {
       if !active.val {
         active.val = true
         scope.count += 1
@@ -115,6 +127,21 @@ pub fn bar_pill_group_node(
   gap? : Double = 2.0,
   loc~ : SourceLoc,
 ) -> @view.View {
+  bar_pill_group_with(loc~, parent, body, height~, pad~, gap~)
+}
+
+///|
+/// bar_pill_group_node's pill, its glass `tint()` where said (glass_bar_pill's `tint`), else the neutral one.
+#callsite(autofill(loc))
+fn bar_pill_group_with(
+  parent : @view.View,
+  body : (@view.View) -> Unit,
+  height? : Double = 40.0,
+  pad? : Double = 3.0,
+  gap? : Double = 2.0,
+  tint? : (() -> Int64)? = None,
+  loc~ : SourceLoc,
+) -> @view.View {
   parent.box(made_for=loc, fn(g) {
     let r = height / 2.0
     let spot_sig : @signals.Signal[(Double, Double)?] = @signals.signal(None)
@@ -128,7 +155,7 @@ pub fn bar_pill_group_node(
     .gap(Is(gap))
     .lines_up(Is(Some(Middle)))
     .shrink(Is(0.0))
-    .glass(By(fn() { Some(glass_bar_pill(spot=spot_sig.get())) }))
+    .glass(By(fn() { Some(glass_bar_pill(spot=spot_sig.get(), tint=tint.map(fn(f) { f() }))) }))
     .scale(By(fn() { 1.0 + 0.05 * press_way.shown(g) }), about=At(0.5, 0.5))
     .edge(By(fn() { if g.glass_solid() { (control_edge_w, panel_edge()) } else { (0.0, 0L) } }))
     .shadow(By(fn() { glass_control_shadow() }))
