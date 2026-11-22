@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0259f9d0c](https://github.com/AFK-surf/monoid/commit/0259f9d0cb824eecf48dbb691d6193edd0ed83ff) feat(mbui): add new submenu for terminal and brows | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.65 | 108.33 |
 | [7c4bfea28](https://github.com/AFK-surf/monoid/commit/7c4bfea281f3ac6557d50a19aa787600aea0084f) feat(liquid-glass): uplift controls, optical recip | 2.67 | 3.59 | 14.57 | 36.65 | 55.66 | 32.11 | 65 | 98.96 | 126.87 |
 | [04d8ccd79](https://github.com/AFK-surf/monoid/commit/04d8ccd79d35d2283fcaac60a9ae2397164ea1a8) fix(sfapp): expand narrow chat top-bar blur platea | 2.66 | 3.59 | 14.56 | 36.65 | 55.64 | 32.1 | 64.98 | 99.09 | 123.45 |
 | [33fc6434d](https://github.com/AFK-surf/monoid/commit/33fc6434da852c38759b756b5605c52fa0b5887e) fix(player): match playback controls to the player | 2.66 | 3.59 | 14.56 | 36.65 | 55.64 | 32.1 | 64.98 | 99.26 | 124.87 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d89ca6e6b](https://github.com/AFK-surf/monoid/commit/d89ca6e6b89a7eb916ffed0af79e27f743c2de8e) fix(sf-ui): center chevrons in round keys by their | 2.65 | 3.57 | 14.48 | 36.55 | 55.31 | 32.01 | 64.7 | 98.71 | 119.32 |
 | [42f851327](https://github.com/AFK-surf/monoid/commit/42f851327726e06f5d041c630283d101d6653b65) perf(core): make each station's models once while  | 2.65 | 3.56 | 14.48 | 36.55 | 55.31 | 32 | 64.68 | 98.29 | 127.13 |
 | [b00f2464e](https://github.com/AFK-surf/monoid/commit/b00f2464e9cd59b240967d291c0686b6b9cdb698) feat(chat): sub-chat quick entry, lineage breadcru | 2.65 | 3.56 | 14.48 | 36.54 | 55.31 | 32 | 64.68 | 98.67 | 123.04 |
-| [1cab64c8d](https://github.com/AFK-surf/monoid/commit/1cab64c8da0f59ea430d8cc46f8b290511ee6927) fix(sf-ui,sfpages): move 不用预设 to the preset sheet' | 2.64 | 3.56 | 14.44 | 36.5 | 55.14 | 31.98 | 64.53 | 98.81 | 127.44 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0259f9d0c](https://github.com/AFK-surf/monoid/commit/0259f9d0cb824eecf48dbb691d6193edd0ed83ff) feat(mbui): add new submenu for terminal and brows | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.38 |
 | [7c4bfea28](https://github.com/AFK-surf/monoid/commit/7c4bfea281f3ac6557d50a19aa787600aea0084f) feat(liquid-glass): uplift controls, optical recip | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.38 |
 | [04d8ccd79](https://github.com/AFK-surf/monoid/commit/04d8ccd79d35d2283fcaac60a9ae2397164ea1a8) fix(sfapp): expand narrow chat top-bar blur platea | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.38 |
 | [33fc6434d](https://github.com/AFK-surf/monoid/commit/33fc6434da852c38759b756b5605c52fa0b5887e) fix(player): match playback controls to the player | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.38 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d89ca6e6b](https://github.com/AFK-surf/monoid/commit/d89ca6e6b89a7eb916ffed0af79e27f743c2de8e) fix(sf-ui): center chevrons in round keys by their | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
 | [42f851327](https://github.com/AFK-surf/monoid/commit/42f851327726e06f5d041c630283d101d6653b65) perf(core): make each station's models once while  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
 | [b00f2464e](https://github.com/AFK-surf/monoid/commit/b00f2464e9cd59b240967d291c0686b6b9cdb698) feat(chat): sub-chat quick entry, lineage breadcru | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
-| [1cab64c8d](https://github.com/AFK-surf/monoid/commit/1cab64c8da0f59ea430d8cc46f8b290511ee6927) fix(sf-ui,sfpages): move 不用预设 to the preset sheet' | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
