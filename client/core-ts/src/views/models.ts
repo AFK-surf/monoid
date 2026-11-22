@@ -531,6 +531,21 @@ function lentModels(overview: J, p: J, now: number): readonly J[] {
   return list;
 }
 
+/// A station's models (`models` of its overview), made once for that overview, the same objects, while the minute of
+/// `now` is the one they were made at: a preset that names a model asked each station up whether it runs it, every
+/// station's models made again (six times) each time the new chat's page was, 40 ms in Hermes on a Mac with four
+/// stations of eight accounts, against 2 ms with no preset: a second and more on a phone before its model showed.
+const stationMade = new WeakMap<object, { minute: number; list: readonly J[] }>();
+export function stationModels(overview: J, now: number): readonly J[] {
+  if (!isObject(overview)) return models(overview, now);
+  const minute = Math.floor(now / 60_000);
+  const was = stationMade.get(overview);
+  if (was !== undefined && was.minute === minute) return was.list;
+  const list = sharedValue(models(overview, now));
+  stationMade.set(overview, { minute, list });
+  return list;
+}
+
 /// Whether profile `p` (an enabled one) of another station would be lent to one with copies `ownHere`: its own, not a
 /// copy it borrows itself, and not shared with that one already (its copy on its way, or there and its models with it).
 const lent = (p: J, ownHere: Set<string>): boolean => {

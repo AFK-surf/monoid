@@ -17,7 +17,7 @@ import * as model from "./shapes/model.ts";
 import { Marks } from "./reactive.ts";
 import type { Store, Value } from "./store.ts";
 import { arr as arrU, equal, get as getU, isObject } from "./util.ts";
-import { borrowable, effortDefault, lends, models, quotaLine, servingIn, sourced, subsetEfforts } from "./views/models.ts";
+import { borrowable, effortDefault, lends, models, quotaLine, servingIn, sourced, stationModels, subsetEfforts } from "./views/models.ts";
 import { profileServes } from "./views/profile-scope.ts";
 import { pendingKeyMade } from "./views/local.ts";
 import { type PresetRecord, type Stars, isGone } from "./preset-records.ts";
@@ -790,7 +790,7 @@ export class Choose implements Owner {
     // profile enabled there does not serve it (its `serves` false; or, on a station from before `serves`, one this
     // workspace joined whose profile's `workspaces` do not name it); then the control's are made apart, as before.
     const servesAll = arr(get(served, "profiles")).length === arr(get(raw, "profiles")).filter((p) => get(p, "enabled") !== false).length;
-    view.pick = overview !== null ? this.#face(addr, servesAll ? options : models(raw, this.#env.now())) : null;
+    view.pick = overview !== null ? this.#face(addr, servesAll ? options : (stationModels(raw, this.#env.now()) as J[])) : null;
     // A model borrowed from its panel on its way here: its control shows it, not what it ran on before (`#lent`).
     const lent = this.#lentFor(addr, "new");
     if (view.pick !== null && lent !== undefined) {
@@ -849,7 +849,7 @@ export class Choose implements Owner {
 
   #onStation(addr: string): [J[], Resolved] {
     const overview = this.#env.store.get({ topic: "overview", station: addr });
-    const options = models(overview, this.#env.now());
+    const options = stationModels(overview, this.#env.now()) as J[];
     const subsets = overview === undefined || get(overview, "accountSubsets") === true;
     return [options, resolve(options, this.#choice(ofAddress(addr), stationId(addr)), subsets)];
   }
@@ -871,7 +871,7 @@ export class Choose implements Owner {
   #onStationFor(addr: string, oName: string): [J[], Resolved] {
     if (oName === "new") return this.#onStation(addr);
     const overview = this.#env.store.get({ topic: "overview", station: addr });
-    const options = models(overview, this.#env.now());
+    const options = stationModels(overview, this.#env.now()) as J[];
     const subsets = overview === undefined || get(overview, "accountSubsets") === true;
     return [options, resolve(options, this.#choiceOf(addr, oName), subsets)];
   }
