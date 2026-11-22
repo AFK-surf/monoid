@@ -155,7 +155,7 @@ test "composer over messages: clicking inside its field clears a previous messag
 }
 
 ///|
-test "composer keeps its adaptive glass while fading messages behind it" {
+test "composer adaptive glass steps from 2.1 compact capsule to 4.0 expanded box at 0x67 with minimal 0xFE seam seal" {
   let t = composer_cover_tester()
   let glass_of = fn() -> (Double, Int, Bool) {
     let (gx, gy, gw, gh) = composer_cover_glass_box(t)
@@ -168,19 +168,41 @@ test "composer keeps its adaptive glass while fading messages behind it" {
     }
   }
   assert_eq(glass_of(), (2.1, 0x67, true))
-  // The fade starts at the glass's top (nothing above it dimmed), its fill just translucent enough for the wheel.
-  let (gx, gy, gw, gh) = composer_cover_glass_box(t)
-  let has_backdrop_fade = t.drawn_instances().iter().any(fn(a) {
-    a[5] == 0.0 && a[53] > 0.0 && a[1] <= gy + 0.5 && a[1] + a[3] > gy + gh / 2.0 &&
-    (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw
+  // Minimal bottom-seam 0xFE top-fade seal (only ~30-34pt tall, leaving composer body transparent)
+  let has_seam_seal = t.drawn_instances().iter().any(fn(a) {
+    a[5] == 0.0 && a[53] > 0.0 && a[3] <= 40.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[2] >= 500.0
   })
-  assert_true(has_backdrop_fade, msg="expected messages to fade behind the composer")
+  assert_true(has_seam_seal, msg="expected a minimal bottom-seam top-fading 0xFE seal under the composer")
   // Focusing expands the composer into the 40% (0x67), blur=4.0 adaptive glass recipe (#8086 + Wave 7)
   let (lx, ly) = composer_cover_line_hit(t)
   t.tap(lx, ly)
   t.run_for(@ui.move_most_ms)
   assert_true(composer_focused())
   assert_eq(glass_of(), (4.0, 0x67, true))
+}
+
+///|
+test "the messages fade behind the composer only while the soft keyboard is up, eased in and out, never above it" {
+  let t = composer_cover_tester(pointing=Finger, platform=2)
+  // (the keyboard's fade: the page's ground, nearly opaque, fading in from the top of the composer's foot)
+  let backdrop = fn() {
+    let (gx, gy, gw, gh) = composer_cover_glass_box(t)
+    t.drawn_instances().filter(fn(a) {
+      a[5] == 0.0 && a[53] > 0.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw &&
+      a[1] <= gy + 0.5 && a[1] + a[3] > gy + gh / 2.0
+    })
+  }
+  assert_eq(backdrop().length(), 0, msg="none with the keyboard down")
+  t.set_ime_inset(300.0)
+  t.run_for(@ui.move_most_ms)
+  let (_, gy, _, _) = composer_cover_glass_box(t)
+  guard backdrop() is [a, ..] else { fail("no fade behind the composer with the keyboard up") }
+  // (none of it over the messages standing above the composer's foot: its top no higher than the foot's, the 12 over
+  // the glass and the row standing over its top, 44 high)
+  assert_true(a[1] >= gy - 12.0 - 44.0 - 0.5, msg="the fade starts at \{a[1]}, the glass at \{gy}")
+  t.set_ime_inset(0.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(backdrop().length(), 0, msg="gone as the keyboard goes")
 }
 
 ///|
