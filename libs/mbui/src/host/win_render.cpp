@@ -115,6 +115,10 @@ struct RenderWin {
   double ad_last_time;
   uint64_t ad_frame_serial;
   int ad_settling;
+  UINT last_present_count;
+  UINT last_sync_refresh;
+  int64_t last_present_qpc;
+  int has_frame_stats;
 };
 static RenderWin render_wins[MB_WINS];
 static RenderWin *rw = &render_wins[0];
@@ -2579,6 +2583,143 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
 #define MB_WIN_CREATE_BUFFER(d, desc, init, out) ((d)->CreateBuffer((desc), (init), (out)))
 #endif
 
+// Non-blocking D3D11 GPU timestamp disjoint query ring (4 slots): polls completed oldest slots with
+// D3D11_ASYNC_GETDATA_DONOTFLUSH (zero pipeline stall) and gracefully degrades to -1.0 if CreateQuery fails.
+#define MB_GPU_Q_SLOTS 4
+struct GpuQuerySlot {
+  ID3D11Query *disjoint;
+  ID3D11Query *ts_begin;
+  ID3D11Query *ts_end;
+  int in_flight;
+};
+static GpuQuerySlot gpu_q[MB_GPU_Q_SLOTS];
+static int gpu_q_head = 0;
+static int gpu_q_tail = 0;
+static int gpu_q_init_done = 0;
+static int gpu_q_ok = 0;
+static double last_gpu_ms = -1.0;
+static int32_t present_dropped = 0;
+
+static void gpu_q_free(void) {
+  for (int i = 0; i < MB_GPU_Q_SLOTS; i++) {
+    if (gpu_q[i].disjoint) {
+      gpu_q[i].disjoint->Release();
+      gpu_q[i].disjoint = NULL;
+    }
+    if (gpu_q[i].ts_begin) {
+      gpu_q[i].ts_begin->Release();
+      gpu_q[i].ts_begin = NULL;
+    }
+    if (gpu_q[i].ts_end) {
+      gpu_q[i].ts_end->Release();
+      gpu_q[i].ts_end = NULL;
+    }
+    gpu_q[i].in_flight = 0;
+  }
+  gpu_q_head = 0;
+  gpu_q_tail = 0;
+  gpu_q_init_done = 0;
+  gpu_q_ok = 0;
+}
+
+static int gpu_q_ensure(void) {
+  if (gpu_q_init_done) return gpu_q_ok;
+  gpu_q_init_done = 1;
+  gpu_q_ok = 0;
+  if (!dev || !ctx) return 0;
+  D3D11_QUERY_DESC dq = {};
+  dq.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+  D3D11_QUERY_DESC tq = {};
+  tq.Query = D3D11_QUERY_TIMESTAMP;
+  for (int i = 0; i < MB_GPU_Q_SLOTS; i++) {
+    if (FAILED(dev->CreateQuery(&dq, &gpu_q[i].disjoint)) || !gpu_q[i].disjoint ||
+        FAILED(dev->CreateQuery(&tq, &gpu_q[i].ts_begin)) || !gpu_q[i].ts_begin ||
+        FAILED(dev->CreateQuery(&tq, &gpu_q[i].ts_end)) || !gpu_q[i].ts_end) {
+      gpu_q_free();
+      gpu_q_init_done = 1;
+      gpu_q_ok = 0;
+      return 0;
+    }
+    gpu_q[i].in_flight = 0;
+  }
+  gpu_q_head = 0;
+  gpu_q_tail = 0;
+  gpu_q_ok = 1;
+  return 1;
+}
+
+static void gpu_q_poll(void) {
+  if (!ctx || !gpu_q_ok) return;
+  for (int n = 0; n < MB_GPU_Q_SLOTS; n++) {
+    GpuQuerySlot *s = &gpu_q[gpu_q_head];
+    if (!s->in_flight) break;
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj = {};
+    UINT64 t0 = 0, t1 = 0;
+    HRESULT hr_d = ctx->GetData(s->disjoint, &dj, sizeof dj, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+    if (hr_d == S_FALSE) break;
+    if (FAILED(hr_d)) {
+      s->in_flight = 0;
+      gpu_q_head = (gpu_q_head + 1) % MB_GPU_Q_SLOTS;
+      continue;
+    }
+    HRESULT hr_0 = ctx->GetData(s->ts_begin, &t0, sizeof t0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+    if (hr_0 == S_FALSE) break;
+    HRESULT hr_1 = ctx->GetData(s->ts_end, &t1, sizeof t1, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+    if (hr_1 == S_FALSE) break;
+    if (hr_0 == S_OK && hr_1 == S_OK && !dj.Disjoint && dj.Frequency > 0 && t1 >= t0) {
+      last_gpu_ms = (double)(t1 - t0) * 1000.0 / (double)dj.Frequency;
+    }
+    s->in_flight = 0;
+    gpu_q_head = (gpu_q_head + 1) % MB_GPU_Q_SLOTS;
+  }
+}
+
+static int gpu_q_begin(void) {
+  if (!gpu_q_ensure()) return -1;
+  gpu_q_poll();
+  int idx = gpu_q_tail;
+  if (gpu_q[idx].in_flight) return -1;
+  ctx->Begin(gpu_q[idx].disjoint);
+  ctx->End(gpu_q[idx].ts_begin);
+  return idx;
+}
+
+static void gpu_q_end(int idx) {
+  if (idx < 0 || idx >= MB_GPU_Q_SLOTS || !ctx || !gpu_q_ok) return;
+  ctx->End(gpu_q[idx].ts_end);
+  ctx->End(gpu_q[idx].disjoint);
+  gpu_q[idx].in_flight = 1;
+  gpu_q_tail = (idx + 1) % MB_GPU_Q_SLOTS;
+}
+
+#define MB_WIN_DROPPED_CLAMP 10
+// Pure logic for counting dropped frames from consecutive DXGI_FRAME_STATISTICS samples:
+// counts drops only when consecutive presents are within 2.5 * period_ms (continuous animation/scroll, not idle pauses).
+static int32_t win_count_dropped_step(UINT prev_present, UINT prev_sync, int64_t prev_qpc, int has_prev,
+                                      UINT cur_present, UINT cur_sync, int64_t cur_qpc,
+                                      int64_t qpc_freq, double period_ms) {
+  if (!has_prev || qpc_freq <= 0 || period_ms <= 0.0) return 0;
+  if (cur_qpc <= prev_qpc) return 0;
+  double dt_ms = (double)(cur_qpc - prev_qpc) * 1000.0 / (double)qpc_freq;
+  if (dt_ms >= 2.5 * period_ms) return 0;
+  if (cur_present <= prev_present || cur_sync <= prev_sync) return 0;
+  UINT d_present = cur_present - prev_present;
+  UINT d_sync = cur_sync - prev_sync;
+  if (d_sync <= d_present) return 0;
+  UINT dropped = d_sync - d_present;
+  if (dropped > MB_WIN_DROPPED_CLAMP) dropped = MB_WIN_DROPPED_CLAMP;
+  return (int32_t)dropped;
+}
+
+static double win_display_period_ms(int64_t qpc_freq) {
+  DWM_TIMING_INFO ti = {};
+  ti.cbSize = sizeof ti;
+  if (qpc_freq > 0 && SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &ti)) && ti.qpcRefreshPeriod) {
+    return (double)ti.qpcRefreshPeriod * 1000.0 / (double)qpc_freq * (double)mb_frame_beats();
+  }
+  return 1000.0 / 60.0;
+}
+
 // Ensures `vbuf` can hold at least `room` bytes: doubles when possible, falls back to exact `room`, and always clears
 // `vbuf`/`vbuf_cap` on failure so callers never dereference a stale or NULL buffer.
 static int ensure_vbuf(size_t room) {
@@ -2652,6 +2793,7 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
   last_bg[1] = (float)g;
   last_bg[2] = (float)b;
   // a window's into its canvas; without one, the offscreen target is kept as a canvas is
+  int qslot = gpu_q_begin();
   ID3D11RenderTargetView *target = rtv;
   int *kept = &off_ok;
   if (chain) {
@@ -2659,6 +2801,7 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
     if (!canvas_rtv) {
       dirty_told = dirty_whole = dirty_n = 0;
       encode(rtv, fb_w, fb_h, count, last_bg, last_inst);
+      gpu_q_end(qslot);
       if (parts_out) *parts_out = -1;
       return 1;
     }
@@ -2689,6 +2832,7 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
     ctx->CopyResource(back, canvas);
     back->Release();
   }
+  gpu_q_end(qslot);
   return 1;
 }
 
@@ -2765,6 +2909,25 @@ int mb_render_present(const double *inst, int32_t count, double r, double g, dou
     hr = chain->Present(1, 0);
   }
   commit_presented();
+  if (SUCCEEDED(hr) && hr != DXGI_STATUS_OCCLUDED) {
+    DXGI_FRAME_STATISTICS fs = {};
+    if (SUCCEEDED(chain->GetFrameStatistics(&fs)) && fs.PresentCount > 0) {
+      LARGE_INTEGER now_qpc, freq_qpc;
+      QueryPerformanceCounter(&now_qpc);
+      QueryPerformanceFrequency(&freq_qpc);
+      double period_ms = win_display_period_ms(freq_qpc.QuadPart);
+      present_dropped += win_count_dropped_step(rw->last_present_count, rw->last_sync_refresh,
+                                                rw->last_present_qpc, rw->has_frame_stats,
+                                                fs.PresentCount, fs.SyncRefreshCount,
+                                                now_qpc.QuadPart, freq_qpc.QuadPart, period_ms);
+      rw->last_present_count = fs.PresentCount;
+      rw->last_sync_refresh = fs.SyncRefreshCount;
+      rw->last_present_qpc = now_qpc.QuadPart;
+      rw->has_frame_stats = 1;
+    }
+  } else {
+    rw->has_frame_stats = 0;
+  }
   pace_owed = hr != DXGI_STATUS_OCCLUDED ? 1 : pace_owed ? pace_owed : 2;
   return SUCCEEDED(hr);
 }
@@ -3161,7 +3324,10 @@ int mb_screen_snapshot(void *hwnd, const wchar_t *path) {
   return ok;
 }
 
-// The GPU's time is not measured here.
-extern "C" double mb_host_gpu_ms(void) { return -1; }
-// Each frame drawn as it is made, on the window's thread: none dropped.
-extern "C" int32_t mb_host_frames_dropped(void) { return 0; }
+// The GPU's time for the last completed D3D11 frame (non-blocking timestamp query ring), in ms (-1: none yet).
+extern "C" double mb_host_gpu_ms(void) {
+  gpu_q_poll();
+  return last_gpu_ms;
+}
+// Frames dropped during continuous presentation (DXGI_FRAME_STATISTICS sync-refresh vs present-count delta).
+extern "C" int32_t mb_host_frames_dropped(void) { return present_dropped; }
