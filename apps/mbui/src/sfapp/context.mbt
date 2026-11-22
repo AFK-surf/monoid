@@ -58,7 +58,7 @@ fn open_context(src : Source, r : ChatRef, key : String) -> Unit {
     }
     // (quiet, at the rows' words' start: none of them, and no press)
     v.show(fn() { compacted() != "" }, fn(n) {
-      n.padding(By(fn() { if @sf.look_node(n) is Narrow { (12.0, 0.0, 12.0, 0.0) } else { (0.0, 0.0, 0.0, 0.0) } })) |> ignore
+      n.padding(By(fn() { if !@sf.in_dialog_node(n) { (12.0, 0.0, 12.0, 0.0) } else { (0.0, 0.0, 0.0, 0.0) } })) |> ignore
       @sf.words_node(n, compacted, fn() { context_compacted_words }) |> ignore
     })
     v.show(fn() { flag(s(), "canCompact") }, fn(row) {
