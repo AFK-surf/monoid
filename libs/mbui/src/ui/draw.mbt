@@ -1063,6 +1063,13 @@ fn Ctx::drawn_paint(self : Ctx, i : Int, alpha : Double) -> Bool {
       let i0 = self.ninst
       let (run, run_start, run_len) = (glass_paint.run, glass_paint.run_start, glass_paint.run_len)
       let frost_run = glass_paint.frost_run
+      let (liquid_run, liquid_blur, liquid_first, liquid_y0, liquid_y1) = (
+        glass_paint.liquid_run,
+        glass_paint.liquid_blur,
+        glass_paint.liquid_first,
+        glass_paint.liquid_y0,
+        glass_paint.liquid_y1,
+      )
       dr.mode = mode_hits
       dr.bypass = i
       self.paint(i, alpha)
@@ -1072,6 +1079,11 @@ fn Ctx::drawn_paint(self : Ctx, i : Int, alpha : Double) -> Bool {
       self.spans_cut()
       glass_paint.run = run
       glass_paint.frost_run = frost_run
+      glass_paint.liquid_run = liquid_run
+      glass_paint.liquid_blur = liquid_blur
+      glass_paint.liquid_first = liquid_first
+      glass_paint.liquid_y0 = liquid_y0
+      glass_paint.liquid_y1 = liquid_y1
       glass_paint.run_start = run_start
       glass_paint.run_len = run_len
     }
@@ -1763,14 +1775,6 @@ pub fn Ctx::draw_drawing(self : Ctx, d : Drawing, rel : Int, look : Look, apart?
 /// The number of the frame being made.
 pub fn Ctx::frame_number(self : Ctx) -> Int {
   self.frame_no
-}
-
-///|
-/// The number of the build being made (each of a frame's builds its own, frame_body: a frame built again, as what the
-/// view read changed, is another build): what is kept of a build by its nodes' numbers is kept by this, not by the
-/// frame's (another build's nodes are other nodes).
-pub fn Ctx::build_number(self : Ctx) -> Int {
-  self.build_no
 }
 
 ///|

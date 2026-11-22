@@ -27,18 +27,6 @@ fn base_state(peers : Array[String]) -> Json {
 }
 
 ///|
-fn ok_of(j : Json) -> Json raise {
-  match j {
-    Object(m) =>
-      match m.get("ok") {
-        Some(v) => v
-        None => fail("not ok: \{j.stringify()}")
-      }
-    _ => fail("not an object")
-  }
-}
-
-///|
 fn times_asked(trace : Json, asked : String) -> Array[Int64] {
   array_of(Some(trace))
   .unwrap_or([])
@@ -70,7 +58,7 @@ test "a peer that is down is tried again sooner at first, doubling, and brought 
     "events": [],
     "until": 200_000,
   }
-  let out = ok_of(harness_case(c))
+  let out = follow_case(c)
   let gets = times_asked(field(out, "trace").unwrap(), "ways.get")
   // (asked at 0; failed at 10: again at 5 010, 15 020, 35 030 (down still), 75 040: answered)
   assert_eq(gets, [0L, 5010L, 15020L, 35030L, 75040L])
@@ -95,7 +83,7 @@ test "the waits double up to ten minutes" {
     "events": [{ "at": 1, "do": "mark", "name": "here" }],
     "until": 3_000_000,
   }
-  let out = ok_of(harness_case(c))
+  let out = follow_case(c)
   let gets = times_asked(field(out, "trace").unwrap(), "stationMarks.get")
   let gaps = []
   for i in 1..<gets.length() {
@@ -120,7 +108,7 @@ test "a station from before is left be until this station's record changes again
     "events": [{ "at": 1000, "do": "add", "ws": "w1", "url": "https://own.example" }],
     "until": 100_000,
   }
-  let out = ok_of(harness_case(c))
+  let out = follow_case(c)
   assert_eq(times_asked(field(out, "trace").unwrap(), "ways.get"), [0L, 1000L])
 }
 
@@ -135,7 +123,7 @@ test "no roster current, nothing is asked; a rig asks no marks" {
     "events": [{ "at": 10, "do": "roster", "peersCurrent": true }],
     "until": 1000,
   }
-  let out = ok_of(harness_case(c))
+  let out = follow_case(c)
   assert_eq(times_asked(field(out, "trace").unwrap(), "ways.get"), [10L])
   let rig_state = object_copy(base_state([peer_b]))
   rig_state["rig"] = pending_self
@@ -147,7 +135,7 @@ test "no roster current, nothing is asked; a rig asks no marks" {
     "events": [],
     "until": 1000,
   }
-  let out2 = ok_of(harness_case(c2))
+  let out2 = follow_case(c2)
   assert_eq(times_asked(field(out2, "trace").unwrap(), "stationMarks.get"), [])
 }
 
@@ -173,7 +161,7 @@ test "the newer mark is kept by both, the older not given back" {
     "events": [],
     "until": 1000,
   }
-  let out = ok_of(harness_case(c))
+  let out = follow_case(c)
   let of = field(field(field(out, "mine").unwrap(), "w1").unwrap(), "of").unwrap()
   assert_eq(text_of(field(field(of, peer_b).unwrap(), "name")), Some("peer"))
   assert_eq(text_of(field(field(of, me_id).unwrap(), "name")), Some("mine"))
@@ -307,6 +295,8 @@ test "keep_relays: the wanted put in, the rest taken out; public relays only whi
     keep: (us : Array[String]) => did.push("keep \{us.length()}"),
     home: () => Some("https://r2.still.fail/"),
     public_relays: fn(on : Bool) { did.push("public \{on}") },
+    relay_status: () => Json::array([]),
+    probe_relay: None,
   }
   let pinged = []
   let pinger = {
@@ -343,6 +333,357 @@ test "keep_relays: the wanted put in, the rest taken out; public relays only whi
   assert_eq(did, ["-https://own.example", "keep 2"])
   fiber.interrupt()
   rt.advance(1)
+}
+
+// ── the endpoint's own watch (relays.ts `PROBE`) ──
+
+///|
+/// What a watched endpoint's probes find (`through`: by relay, the rest `probe`) and its relays say now, which answer
+/// their ping (`answering`), and what it was told: when it was probed, through which relay, and recovered.
+priv struct Watched {
+  rt : @effect.Runtime
+  mut probe : Json
+  mut status : Json
+  mut through : Map[String, Json]
+  answering : Array[String]
+  up : Ref[Bool]
+  probes : Array[Int64]
+  probed_through : Array[String]
+  recovered : Array[Int64]
+  fiber : @effect.Fiber[Unit]
+}
+
+///|
+let lost : Json = [{ "url": "https://r2.still.fail/", "connected": false, "access": "" }]
+
+///|
+let connected : Json = [{ "url": "https://r2.still.fail/", "connected": true, "access": "" }]
+
+///|
+let failed : Json = { "ok": false, "stage": "endpoint_failed" }
+
+///|
+let offline_found : Json = { "ok": false, "stage": "probe_offline" }
+
+///|
+/// The relays the watch asks in turn: the one homed on, still.fail's other, the workspace's own.
+let relay_r2 = "https://r2.still.fail"
+
+///|
+let relay_r1 = "https://r1.still.fail"
+
+///|
+let relay_own = "https://own.example"
+
+///|
+/// A watched endpoint on one relay that answers its ping (the one homed on, `relay_r2`), the others not answering.
+fn watched(probe : Json, status : Json) -> Watched {
+  watched_on(probe, status, [relay_r2], [relay_own])
+}
+
+///|
+/// A watched endpoint homed on `relay_r2`, kept on `relay_r1` and the workspace's `owns` too, those of `answering`
+/// answering their ping.
+fn watched_on(
+  probe : Json,
+  status : Json,
+  answering : Array[String],
+  owns : Array[String],
+) -> Watched {
+  let rt = @effect.Runtime::new()
+  let c = StateCloud::new(Some(base_state([peer_b])))
+  let kept : Json = {
+    "w1": {
+      "relays": Json::array(owns.map(u => ({ "url": Json::string(u) } : Json))),
+      "off": [],
+      "at": 5,
+      "station": me_id,
+    },
+  }
+  let ways = Ways::new(c.view(), Kept::memory(text=kept.stringify()).0, () => 10L)
+  let probes = []
+  let probed_through = []
+  let recovered = []
+  let up = Ref(true)
+  let w : Ref[Watched?] = Ref(None)
+  let endpoint = {
+    insert_relay: fn(_ : String) {  },
+    remove_relay: fn(_ : String) {  },
+    keep: _ => (),
+    home: () => Some("https://r2.still.fail/"),
+    public_relays: fn(_ : Bool) {  },
+    relay_status: () => w.val.unwrap().status,
+    probe_relay: Some(fn(url : String) -> Json raise {
+      let at = strip_slashes(url)
+      assert_true([relay_r1, relay_r2, ..owns].contains(at))
+      probes.push(rt.now())
+      probed_through.push(at)
+      let now = w.val.unwrap()
+      match now.through.get(at).unwrap_or(now.probe) {
+        String(words) => fail(words)
+        found => found
+      }
+    }),
+  }
+  let pinger = {
+    ping: fn(u : String) {
+      up.val && w.val.unwrap().answering.contains(strip_slashes(u))
+    },
+    pinged: None,
+  }
+  let fiber = rt.fork(async fn() {
+    keep_relays(endpoint, ways, pinger, on_unhealthy=() => recovered.push(rt.now()))
+  })
+  let made = {
+    rt,
+    probe,
+    status,
+    through: Map([]),
+    answering,
+    up,
+    probes,
+    probed_through,
+    recovered,
+    fiber,
+  }
+  w.val = Some(made)
+  rt.advance(1)
+  made
+}
+
+///|
+fn Watched::ticks(self : Watched, n : Int) -> Unit {
+  for _ in 0..<n {
+    self.rt.advance(relay_check_ms)
+  }
+}
+
+///|
+let minute : Int64 = 60_000L
+
+///|
+test "watch: not recovered in its first two minutes, then after 10, 20, 40 and 60 minutes; well after its cooldown, 10 again" {
+  let w = watched(failed, lost)
+  w.ticks(3)
+  assert_eq(w.probes, [0L, 30_000L, 60_000L, 90_000L])
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered, [2L * minute])
+  w.ticks(380)
+  assert_eq(w.recovered, [2L * minute, 12L * minute, 32L * minute, 72L * minute, 132L * minute, 192L * minute])
+  w.probe = { "ok": true }
+  w.status = connected
+  w.ticks(480)
+  w.probe = failed
+  w.status = lost
+  w.ticks(2)
+  assert_eq(w.recovered.length(), 6)
+  w.ticks(1)
+  assert_eq(w.recovered.length(), 7)
+  w.ticks(20)
+  assert_eq(w.recovered.length(), 8)
+  assert_eq(w.recovered[7] - w.recovered[6], 10L * minute)
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: a probe that cannot get on the relay never recovers it" {
+  let w = watched({ "ok": false, "stage": "probe_offline" }, lost)
+  w.ticks(60)
+  assert_eq(w.probes.length(), 61)
+  assert_eq(w.recovered, [])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: no relay answering: not probed, its failures so far forgotten" {
+  let w = watched({ "ok": true }, connected)
+  w.ticks(5)
+  w.probe = failed
+  w.status = lost
+  w.ticks(2)
+  w.up.val = false
+  let probed = w.probes.length()
+  w.ticks(10)
+  assert_eq(w.probes.length(), probed)
+  w.up.val = true
+  w.ticks(2)
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered.length(), 1)
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: a front from before, with no probe, is never recovered nor probed again" {
+  let w = watched(Json::string("no operation probeRelay"), lost)
+  w.ticks(20)
+  assert_eq(w.probes, [0L])
+  assert_eq(w.recovered, [])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: probed every fourth check while well, every check while on no relay or held off for another of its key" {
+  let w = watched({ "ok": true }, connected)
+  w.ticks(8)
+  assert_eq(w.probes, [90_000L, 210_000L])
+  w.status = [{ "url": "https://r2.still.fail/", "connected": true, "access": "", "conflict": true }]
+  w.ticks(2)
+  assert_eq(w.probes[2:].to_owned(), [270_000L, 300_000L])
+  w.status = lost
+  w.ticks(2)
+  assert_eq(w.probes[4:].to_owned(), [330_000L, 360_000L])
+  assert_eq(w.recovered, [])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: failing through one relay but reached through another never recovers it, and clears the failures so far" {
+  let w = watched_on({ "ok": true }, connected, [relay_r2, relay_r1, relay_own], [relay_own])
+  w.ticks(5)
+  w.status = lost
+  w.probe = failed
+  w.ticks(2)
+  assert_eq(w.recovered, [])
+  w.probe = { "ok": true }
+  w.through = Map::from_array([(relay_r2, failed)])
+  let from = w.probed_through.length()
+  w.ticks(20)
+  assert_eq(w.probed_through[from:from + 4].to_owned(), [relay_r2, relay_r1, relay_r2, relay_r1])
+  assert_eq(w.recovered, [])
+  w.through = Map([])
+  w.probe = failed
+  w.ticks(2)
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered, [w.rt.now() - 1L])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: the first relay letting no probe on, the next two failing: recovered as through one" {
+  let w = watched_on(failed, lost, [relay_r2, relay_r1, relay_own], [relay_own])
+  w.through = Map::from_array([(relay_r2, offline_found)])
+  let from = w.probed_through.length()
+  w.ticks(3)
+  // (the first check failed through r2 and r1, so the one not failed since is asked first)
+  assert_eq(w.probed_through[from:from + 3].to_owned(), [relay_own, relay_r2, relay_r1])
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered, [2L * minute])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: the first relay letting no probe on, the next reaching the endpoint: its failures cleared" {
+  let w = watched_on({ "ok": true }, connected, [relay_r2, relay_r1, relay_own], [relay_own])
+  w.ticks(5)
+  w.status = lost
+  w.probe = failed
+  w.through = Map::from_array([(relay_r2, offline_found)])
+  w.ticks(2)
+  assert_eq(w.recovered, [])
+  w.through = Map::from_array([(relay_r2, offline_found), (relay_r1, { "ok": true })])
+  w.ticks(1)
+  w.through = Map::from_array([(relay_r2, offline_found)])
+  w.ticks(2)
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered, [w.rt.now() - 1L])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: two relays failing in one check count once, on the same timeline; the next check asks the third first" {
+  let w = watched_on(failed, lost, [relay_r2, relay_r1, relay_own], [relay_own])
+  w.ticks(3)
+  assert_eq(w.probes, [0L, 0L, 30_000L, 30_000L, 60_000L, 60_000L, 90_000L, 90_000L])
+  assert_eq(w.probed_through[0:4].to_owned(), [relay_r2, relay_r1, relay_own, relay_r2])
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered, [2L * minute])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: two relays staying bad while a third reaches the endpoint: asked next, failures cleared, never recovered" {
+  let last = "https://d.example"
+  let w = watched_on({ "ok": true }, lost, [relay_r2, relay_r1, relay_own, last], [relay_own, last])
+  w.through = Map::from_array([(relay_r2, failed), (relay_r1, failed)])
+  let from = w.probed_through.length()
+  w.ticks(60)
+  assert_eq(w.probed_through[from:from + 6].to_owned(), [relay_r2, relay_r1, relay_own, relay_r2, relay_r1, relay_own])
+  assert_false(w.probed_through.contains(last))
+  assert_eq(w.recovered, [])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: a relay the endpoint is connected to is asked before those it is not" {
+  let status : Json = [
+    { "url": relay_r2, "connected": false, "access": "" },
+    { "url": relay_r1, "connected": false, "access": "" },
+    { "url": relay_own, "connected": true, "access": "" },
+  ]
+  let w = watched_on({ "ok": true }, status, [relay_r2, relay_r1, relay_own], [relay_own])
+  w.through = Map::from_array([(relay_r2, failed), (relay_r1, failed)])
+  w.ticks(60)
+  assert_true(w.probed_through.length() > 0)
+  assert_true(w.probed_through.iter().all(r => r == relay_own))
+  assert_eq(w.recovered, [])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: two relays failing across checks, the others letting no probe on: still counted and recovered" {
+  let owns = ["https://c.example", "https://d.example", "https://e.example"]
+  let w = watched_on(offline_found, lost, [relay_r2, relay_r1, ..owns], owns)
+  w.through = Map::from_array([(relay_r2, failed), (owns[1], failed)])
+  w.ticks(3)
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered, [2L * minute])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: one relay failing while the next three let no probe on, more left unasked: the next check asks the one left" {
+  let owns = ["https://c.example", "https://d.example", "https://e.example"]
+  let w = watched_on(offline_found, lost, [relay_r2, relay_r1, ..owns], owns)
+  w.through = Map::from_array([(relay_r2, failed)])
+  let from = w.probed_through.length()
+  w.ticks(60)
+  assert_eq(w.probed_through[from:from + 4].to_owned(), [relay_r2, relay_r1, owns[0], owns[1]])
+  assert_eq(w.probed_through[from + 4:from + 8].to_owned(), [relay_r1, owns[0], owns[1], owns[2]])
+  assert_eq(w.probes.length(), 61 * 4)
+  assert_eq(w.recovered, [])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: one relay failing while no other answers its ping: counted, as with one relay" {
+  let w = watched_on(failed, lost, [relay_r2], [relay_own])
+  w.ticks(3)
+  assert_eq(w.probes, [0L, 30_000L, 60_000L, 90_000L])
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered, [2L * minute])
+  w.fiber.interrupt()
+  w.rt.advance(1)
 }
 
 // ── notices ──

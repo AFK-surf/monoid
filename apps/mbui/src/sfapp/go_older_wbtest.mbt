@@ -17,6 +17,6 @@ test "a chat opened at a message older than its first page: the pages before bro
   }
   guard t.find(words) is Some((_, y)) else { fail("not gone to: \{Repr(t.words().map(fn(w) { w.0 }))}") }
   // (its head's line, Claude and its time, under the bar: its words a line under that)
-  assert_true(y > bar_foot() + 14.0 && y < 300.0, msg="\{y}")
+  assert_true(y > bar_foot_at(390.0) + 14.0 && y < 300.0, msg="\{y}")
   assert_true(t.find("做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。") is None)
 }

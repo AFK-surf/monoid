@@ -51,7 +51,7 @@ pub fn station_choice_node(
       let items : Array[MenuItem?] = @signals.untracked(stations).map(fn(s) {
         Some(menu_item_of(s.name, fn() { if s.station != at { choose(s.station) } }, chosen=s.station == at))
       })
-      present(Menu(items, title, Start), Node(b))
+      present(Menu(items, title, Start, Bottom), Node(b))
       opener.mark()
     },
     open=fn() { opener.open() },
@@ -59,7 +59,7 @@ pub fn station_choice_node(
     fn(b, pressed) {
       style_node(b, fn() { if round { station_choice_round } else { station_choice_box } }, in_row=true)
       // (shrinking to its words' least where the line is short: its name cut short, its mark and chevron whole)
-      b.shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(By(fn() { Some(theme().items.least) })) |> ignore
+      b.shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(By(fn() { Some(if round { button_height() } else { theme().items.least }) })) |> ignore
       if pressed {
         hover_ground_node(b)
       }

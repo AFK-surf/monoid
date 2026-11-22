@@ -74,6 +74,10 @@ let dead_pings : Int = 3
 pub let probe_ms : Int = 5_000
 
 ///|
+/// At most how long a missed-ping race holds a newly opened link while the suspect link is still open and probing.
+pub let race_grace_ms : Int = 1_000
+
+///|
 /// How long a link another took the place of stays open: what is under way on it may still end.
 pub let retire_ms : Int = 10_000
 
@@ -862,6 +866,8 @@ async fn Mesh::open(
         says: self.options.says,
         refusal: self.options.refusal,
         named: false,
+        answers: 0,
+        waiting: [],
       }
       control.send(presented.credential, also?=presented.also, traceparent?)
       stages.sent = since()

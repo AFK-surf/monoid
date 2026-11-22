@@ -515,8 +515,10 @@ fn RigGrants::device_grant_of(self : RigGrants, station : String, session : Stri
 ///|
 /// What the person signed taking this rig into a workspace in security mode (rig-form.ts `AddBody`): kept to show the
 /// stations that ask (`proof`). Checked here only for being about this rig; each station checks who signed it against
-/// the workspace's lock, which this rig does not judge.
-pub fn RigGrants::added(self : RigGrants, signed : Json?) -> Unit raise Refused {
+/// the workspace's lock, which this rig does not judge. The workspace lock's hash to pin where the add names one
+/// (grants.ts `added`, FB-45): only from a statement a key on its person's own lock signed, `pin` where the add is the
+/// workspace lock's, with their lock as brought (`chain`); a `pin` that does not hold is refused.
+pub fn RigGrants::added(self : RigGrants, signed : Json?, pin? : Json? = None, chain? : Json? = None) -> String? raise Refused {
   let me = self.self_of()
   if !well_formed("add", signed) {
     raise Refused("not a rig's add")
@@ -530,6 +532,26 @@ pub fn RigGrants::added(self : RigGrants, signed : Json?) -> Unit raise Refused 
   }
   self.add = signed
   self.save()
+  let given = match pin {
+    None | Some(Null) => false
+    _ => true
+  }
+  let candidate = if given { pin } else { signed }
+  guard str_at(get(candidate, "body"), "lock") is Some(_) else {
+    if given {
+      raise Refused("the pin names no lock")
+    }
+    return None
+  }
+  try {
+    match chain {
+      None | Some(Null) => ()
+      _ => self.take_chain(chain)
+    }
+    str_at(get(Some(self.checked("add", candidate)), "body"), "lock")
+  } catch {
+    e => if given { raise e } else { None }
+  }
 }
 
 ///|

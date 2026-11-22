@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { connect as tlsConnect } from "node:tls";
-import { type Entry, entryHash, genesis, signedBytes as lockBytes } from "../src/cloud/lock.ts";
+import { type Entry, entryHash, genesis, signedBytes as lockBytes } from "../../shared/lock.ts";
 import { type BoxCert, type Grant, type Item, type Request, type Sig, type Vault, TAG, encryptWith, grantContext, itemContext, keyContext, newBoxPair, seal, signedBytes } from "../src/vault/crypto.ts";
 import { Keeper, hostAllowed } from "../src/vault/keeper.ts";
 import { Proxy, placeholder, swap } from "../src/vault/proxy.ts";
@@ -71,7 +71,8 @@ function world() {
 const requestOf = (id: string, box: string, o: Partial<Request> = {}): Request => ({ id, ws: WS, vault: VAULT, item: ITEM, session: "s1", chat: "CHAT/1.0", mode: "proxy", reason: "test", box, at: 1000, status: "pending", ...o });
 
 function grantOf(r: Request, by: Person, secret: unknown, o: Partial<Grant> = {}): Grant {
-  const g = { v: 1 as const, ws: WS, request: r.id, vault: VAULT, item: ITEM, mode: r.mode, hosts: ["api.github.com"], scope: "once" as const, exp: 1500, secret: seal(r.box, Buffer.from(JSON.stringify(secret)), grantContext(WS, r.id)), at: 1000, ...o };
+  const mode = r.mode === "browse" ? "proxy" : r.mode;
+  const g = { v: 1 as const, ws: WS, request: r.id, vault: VAULT, item: ITEM, mode, hosts: ["api.github.com"], scope: "once" as const, exp: 1500, secret: seal(r.box, Buffer.from(JSON.stringify(secret)), grantContext(WS, r.id)), at: 1000, ...o };
   return signed(g, TAG.grant, by.signer);
 }
 

@@ -99,10 +99,13 @@ function sessionJson(r: SessionRow): Json {
   if (r.context !== null) v.context = r.context;
   // Held over it until compacted: what it ran with till now (0: the model's whole window).
   if (r.contextBefore !== null) v.contextBefore = r.contextBefore;
+  // Times its runtime session compacted its context: none, never yet.
+  if (r.compactions !== undefined) v.compactions = r.compactions;
   Object.assign(v, { running: r.running, createdAt: r.createdAt, lastActiveAt: r.lastActiveAt, archivedAt: r.archivedAt, archivedBy: r.archivedBy, shownAt: r.shownAt });
   // Handed here from another station (replica/handover.ts): that station, so that a device drops the row it kept of
   // it there, as that station may never tell it.
   if (typeof r.from === "string") v.from = r.from;
+  if (typeof r.conv === "string" && r.conv !== "" && r.conv !== r.key) v.conv = r.conv;
   return v;
 }
 
@@ -122,6 +125,10 @@ function summaryWith(s: Store, key: string, l: Lists): Json {
   v.boundTo = l.bindings.get(key) ?? [];
   // The hub's, as given with the read.
   v.process = s.processes.get(key) ?? "cold";
+  if (v.process === "coldFailed" || v.process === "warmFailed") {
+    v.startFailed = true;
+    v.process = v.process === "warmFailed" ? "warm" : "cold";
+  }
   const stat = l.stats.get(key);
   v.turns = stat?.turns ?? 0;
   // How long its ended turns ran, all added up: the work a device shows with how many turns, without reading them; null

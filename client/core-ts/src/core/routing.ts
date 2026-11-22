@@ -17,6 +17,7 @@ export interface Owner {
   owns(topic: Topic): boolean;
   start?(topic: Topic): void;
   resume?(topic: Topic): void;
+  idle?(topic: Topic): void;
   stop?(topic: Topic): void;
   compute?(topic: Topic): Value | undefined;
   waits?(topic: Topic): boolean;
@@ -81,6 +82,10 @@ export class Router implements Source {
 
   resume(topic: Topic): void {
     this.owners.find((o) => o.owns(topic))?.resume?.(topic);
+  }
+
+  idle(topic: Topic): void {
+    this.owners.find((o) => o.owns(topic))?.idle?.(topic);
   }
 
   opened(topic: Topic): void {

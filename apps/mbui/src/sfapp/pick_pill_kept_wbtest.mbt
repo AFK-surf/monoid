@@ -44,8 +44,18 @@ fn pill_over(t : @ui.Tester, y : Double) -> (Double, Double)? {
 fn pill_mark(t : @ui.Tester, y : Double) -> String {
   guard pill_over(t, y) is Some((qx, _)) else { return "" }
   for (name, x, sy, _, _) in t.shape_boxes() {
-    if name.has_prefix("sf/icon/quote") && x < qx && qx - x < 40.0 && sy < y && sy > y - 60.0 {
+    // (the old view's icon path, sf/icon/…; the page made as nodes draws it by /icon/…, chat_quote_node's)
+    if (name.has_prefix("sf/icon/quote") || name.has_prefix("/icon/quote")) && x < qx && qx - x < 40.0 && sy < y && sy > y - 60.0 {
       return name
+    }
+  }
+  // (the pill made as nodes: its mark as the tree draws it)
+  if @ui.view_tree() is Some(tree) {
+    for d in tree.drawn() {
+      let name = tree.drawn_name(d.id)
+      if name.has_prefix("/icon/quote") && d.x < qx && qx - d.x < 40.0 && d.y < y && d.y > y - 60.0 {
+        return "sf" + name
+      }
     }
   }
   ""
@@ -151,7 +161,7 @@ test "大屏, a mouse picks across two list items of one message and quotes the 
   guard pill_over(t, by) is Some(_) else {
     fail("no 引用 over list items: box=\{Repr(t.ctx().selection_box())}, picked=\{Repr(@sfbase.picked.get())}")
   }
-  assert_true(pill_mark(t, by).has_prefix("sf/icon/quote/"), msg="the pill over the end has a closing quote")
+  assert_true(pill_mark(t, by).contains("/icon/quote/"), msg="the pill over the end has a closing quote")
   // (each fault as it was before, whatever the frame's nodes are numbered now)
   let was = before.map(aw_plain)
   assert_eq(t.audit().filter(fn(f) { !was.contains(aw_plain(f)) }), [])
@@ -160,7 +170,7 @@ test "大屏, a mouse picks across two list items of one message and quotes the 
   mouse_dragged(t, bx + bw - 1.0, by + bh / 2.0, ax + 1.0, ay + ah / 2.0)
   assert_eq(t.ctx().selected_text(), picked)
   guard pill_over(t, ay) is Some(_) else { fail("no 引用 over the start when picked upwards") }
-  assert_true(pill_mark(t, ay).has_prefix("sf/icon/quote-open/"), msg="the pill over the start has an opening quote")
+  assert_true(pill_mark(t, ay).contains("/icon/quote-open/"), msg="the pill over the start has an opening quote")
   t.run_for(@ui.double_click_ms)
   guard t.words().filter(fn(w) { w.0 == "引用" && w.2 < ay && w.2 > ay - 60.0 }) is [(_, qx, qy, qw, qh, _), ..] else {
     fail("no 引用 to press")
@@ -213,4 +223,182 @@ test "中屏's tape, built as a host builds: words a mouse picked in a message h
   t.run_for(@ui.move_most_ms)
   assert_eq(t.ctx().selected_text(), "")
   assert_true(t.words().filter(fn(w) { w.0 == "引用" }).is_empty(), msg="引用 still there after a press")
+}
+
+///|
+/// The fixture's chat that has only been in a Feishu group (sffixture's chat-feishu: what was said there, all it shows),
+/// on 大屏, built as a host builds (FB-37).
+fn feishu_tester(calls : Array[Made]) -> @ui.Tester {
+  let t = wide_tester(calls, mode="chat-feishu")
+  t.check_looks(false)
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// The quote the last composer.quote asked for: its words, its message, as what and whose.
+fn last_quote(calls : Array[Made]) -> (String, String, String, String) raise {
+  let quoted = named(calls, "composer.quote")
+  guard quoted.last() is Some(m) else { fail("no composer.quote: \{Repr(calls.map(fn(c) { c.name }))}") }
+  let q = field(Some(m.params), "quote")
+  (text(q, "text"), text(q, "ts"), text(q, "role"), text(q, "author"))
+}
+
+///|
+/// 引用 over line `y` pressed, as a mouse clicks it.
+fn pill_pressed(t : @ui.Tester, y : Double) -> Unit raise {
+  t.run_for(@ui.double_click_ms)
+  guard t.words().filter(fn(w) { w.0 == "引用" && w.2 < y && w.2 > y - 60.0 }) is [(_, qx, qy, qw, qh, _), ..] else {
+    fail("no 引用 to press over \{y}")
+  }
+  mouse_clicked(t, qx + qw / 2.0, qy + qh / 2.0)
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+test "大屏, a chat only in Feishu, built as a host builds: words a mouse picked in a list item of its agent's reply there have 引用 over them; pressed, quoted as the agent's, of no message" {
+  let calls : Array[Made] = []
+  let t = feishu_tester(calls)
+  let (ax, ay, _, ah) = words_rect(t, "已挂载文本选区标记")
+  let (bx, by, bw, bh) = words_rect(t, "浮层即可正常出现")
+  mouse_dragged(t, ax + 1.0, ay + ah / 2.0, bx + bw - 1.0, by + bh / 2.0)
+  let picked = t.ctx().selected_text()
+  assert_true(picked.has_prefix("已挂载文本选区标记") && picked.has_suffix("浮层即可正常出现"), msg=picked)
+  guard pill_over(t, by) is Some((qx, _)) else {
+    fail("no 引用 over words picked in a Feishu reply: picked=\{Repr(@ui.picked_now())}")
+  }
+  assert_true((qx - (bx + bw)).abs() < 40.0, msg="引用 at \{qx}")
+  pill_pressed(t, by)
+  let (qt, ts, role, author) = last_quote(calls)
+  assert_true(qt != "" && qt == picked.trim(chars=" \n\t").to_owned(), msg=qt)
+  assert_eq((ts, role, author), ("", "agent", "Claude"))
+  assert_true(@ui.picked_now() is None)
+  assert_eq(t.ctx().selected_text(), "")
+  assert_true(t.words().filter(fn(w) { w.0 == "引用" }).is_empty(), msg="引用 still there after a press")
+  // (the draft shows what it quotes over its field, whose words they are before them)
+  let seen = t.words().filter(fn(w) { w.0.contains("已挂载文本选区标记") && w.5 > 0.5 })
+  assert_true(seen.iter().any(fn(w) { w.0.has_prefix("Claude：已挂载文本选区标记") }), msg="no quote shown in the draft: \{Repr(seen)}")
+}
+
+///|
+test "大屏, a chat only in Feishu: words a mouse picked in a person's message there are quoted as theirs; picked across two of its messages, no 引用" {
+  let calls : Array[Made] = []
+  let t = feishu_tester(calls)
+  let (ax, ay, aw, ah) = words_rect(t, "选中回复里的列表项文字")
+  mouse_dragged(t, ax + 1.0, ay + ah / 2.0, ax + aw - 1.0, ay + ah / 2.0)
+  assert_eq(t.ctx().selected_text(), "选中回复里的列表项文字")
+  guard pill_over(t, ay) is Some(_) else { fail("no 引用 over words picked in a Feishu person's message") }
+  pill_pressed(t, ay)
+  assert_eq(last_quote(calls), ("选中回复里的列表项文字", "", "person", "林知夏"))
+  // across the person's and the agent's: two messages, none to quote (where they are now, the draft holding a quote)
+  let (ax, ay, _, ah) = words_rect(t, "选中回复里的列表项文字")
+  let (bx, by, bw, bh) = words_rect(t, "已经定位到飞书接入会话")
+  t.run_for(@ui.double_click_ms)
+  mouse_dragged(t, ax + 1.0, ay + ah / 2.0, bx + bw - 1.0, by + bh / 2.0)
+  guard @ui.picked_now() is Some(p) else { fail("nothing picked across the two") }
+  assert_eq(p.of.length(), 2, msg="picked of \{@ui.list_text(p.of)}")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.words().filter(fn(w) { w.0 == "引用" }).is_empty(), msg="引用 over a pick across two messages")
+  assert_eq(named(calls, "composer.quote").length(), 1)
+}
+
+///|
+test "大屏, a chat only in Feishu, built as a host builds: words a mouse picked within one list item of its agent's reply have 引用 over them; pressed, quoted as the agent's" {
+  let calls : Array[Made] = []
+  let t = feishu_tester(calls)
+  let (ax, ay, aw, ah) = words_rect(t, "已挂载文本选区标记")
+  mouse_dragged(t, ax + 1.0, ay + ah / 2.0, ax + aw - 1.0, ay + ah / 2.0)
+  guard @ui.picked_now() is Some(p) else { fail("nothing picked") }
+  assert_eq(p.text, "已挂载文本选区标记")
+  assert_true(!p.text.contains("\n"), msg=p.text)
+  guard pill_over(t, ay) is Some((qx, _)) else { fail("no 引用 over words picked within one list item") }
+  assert_true((qx - (ax + aw)).abs() < 40.0, msg="引用 at \{qx}")
+  pill_pressed(t, ay)
+  assert_eq(last_quote(calls), ("已挂载文本选区标记", "", "agent", "Claude"))
+  assert_true(@ui.picked_now() is None)
+}
+
+///|
+/// 大屏's chat in `dark` (glass drawn solid where `solid`, as MBUI_GLASS=solid makes it), words of a message a mouse
+/// picked, its 引用 shown: the Tester, the faults it had before the pick and where 引用's words are drawn.
+fn quote_pill_tester(dark : Bool, solid : Bool) -> (@ui.Tester, Array[String], (Double, Double, Double, Double)) raise {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat")
+  @sf.set_dark(Some(dark))
+  @ui.set_glass_solid(if solid { Some(true) } else { None })
+  t.check_looks(false)
+  for _ in 0..<12 {
+    match t.run_rects("做了什么") {
+      [(_, y, _, _), ..] if y > 100.0 && y < 500.0 => break
+      _ => t.wheel(900.0, 400.0, -200.0)
+    }
+  }
+  t.run_for(@ui.move_most_ms)
+  let before = t.audit().map(aw_plain)
+  let (hx, hy, _, hh) = words_rect(t, "做了什么")
+  let (ix, iy, iw, ih) = words_rect(t, "滚动位置记成")
+  mouse_dragged(t, hx + 1.0, hy + hh / 2.0, ix + iw - 1.0, iy + ih / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.words().filter(fn(w) { w.0 == "引用" && w.2 < iy && w.2 > iy - 60.0 }) is [(_, qx, qy, qw, qh, _), ..] else {
+    fail("no 引用 over the pick (dark \{dark}, solid \{solid})")
+  }
+  (t, before, (qx, qy, qw, qh))
+}
+
+///|
+/// Whether (x, y, w, h) holds the middle of `r`.
+fn holds_middle(x : Double, y : Double, w : Double, h : Double, r : (Double, Double, Double, Double)) -> Bool {
+  let cx = r.0 + r.2 / 2.0
+  let cy = r.1 + r.3 / 2.0
+  cx > x && cx < x + w && cy > y && cy < y + h
+}
+
+///|
+test "大屏, light and dark: 引用 over words a mouse picked is one layer of liquid glass with its shadow outside, its mark and words in the ink; under MBUI_GLASS=solid the panel's ground with a hairline edge" {
+  for dark in [false, true] {
+    // glass
+    let (t, before, q) = quote_pill_tester(dark, false)
+    let ink = @sf.theme().p.text
+    let glass = t.drawn_glass().filter(fn(g) { holds_middle(g.0, g.1, g.2, g.3, q) })
+    let liquid = glass.filter(fn(g) { g.4 == 6 })
+    guard liquid is [pill, ..] else { fail("dark \{dark}: no glass under 引用: \{Repr(t.drawn_glass())}") }
+    let (px, py, pw, ph, _, _) = pill
+    // (no solid ground of its own over or under the glass, the size of the pill)
+    let solid_fill = t
+      .drawn_rects()
+      .iter()
+      .any(fn(r) {
+        (r.4 & 0xFFL) != 0L && (r.0 - px).abs() < 1.0 && (r.1 - py).abs() < 1.0 && (r.2 - pw).abs() < 1.0 && (r.3 - ph).abs() < 1.0
+      })
+    let outside_shadow = t
+      .drawn_instances()
+      .iter()
+      .any(fn(a) { a.length() > 12 && a[5] == 2.0 && a[12] == 1.0 && holds_middle(a[0], a[1], a[2], a[3], q) })
+    let words_ink = t.boxes_held().filter(fn(b) { b.text == "引用" }).map(fn(b) { b.color })
+    let edged = t.boxes_held().filter(fn(b) { b.border_w > 0.0 && holds_middle(b.x, b.y, b.w, b.h, q) }).length()
+    // (none new, and none of the pill's: what the page had before the pick is the sidebar's, not this)
+    let new_faults = t.audit().filter(fn(f) { !before.contains(aw_plain(f)) || f.contains("chat_quote_node") })
+    assert_eq(
+      (dark, glass.length(), liquid.length(), solid_fill, outside_shadow, words_ink, edged, new_faults),
+      (dark, 1, 1, false, true, [ink], 0, []),
+    )
+    // solid
+    let (ts, before, q) = quote_pill_tester(dark, true)
+    let panel = @sf.panel_ground()
+    let glass = ts.drawn_glass().filter(fn(g) { holds_middle(g.0, g.1, g.2, g.3, q) }).length()
+    let ground = ts.drawn_rects().iter().any(fn(r) { r.4 == panel && holds_middle(r.0, r.1, r.2, r.3, q) })
+    let edges = ts
+      .boxes_held()
+      .filter(fn(b) { b.border_w > 0.0 && holds_middle(b.x, b.y, b.w, b.h, q) })
+      .map(fn(b) { (b.border_w, b.border_c) })
+    let words_ink = ts.boxes_held().filter(fn(b) { b.text == "引用" }).map(fn(b) { b.color })
+    let new_faults = ts.audit().filter(fn(f) { !before.contains(aw_plain(f)) || f.contains("chat_quote_node") })
+    @ui.set_glass_solid(None)
+    assert_eq(
+      (dark, glass, ground, edges, words_ink, new_faults),
+      (dark, 0, true, [(@sf.control_edge_w, @sf.theme().p.line)], [@sf.theme().p.text], []),
+    )
+  }
+  @ui.set_glass_solid(None)
+  @sf.set_dark(None)
 }

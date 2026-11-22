@@ -2,25 +2,13 @@
 // id beyond 2^53 stays exact; results are never ordered by such a text alias.
 
 ///|
-fn first(
-  db : @sql.Db,
-  sql : String,
-  params : Array[Json],
-) -> Map[String, Json]? raise {
-  match db.all(sql, params) {
-    [r, ..] => Some(r)
-    _ => None
-  }
-}
-
-///|
 /// A statement's one row (an aggregate's, a meta table's).
 fn one(
   db : @sql.Db,
   sql : String,
   params : Array[Json],
 ) -> Map[String, Json] raise {
-  guard first(db, sql, params) is Some(r) else {
+  guard db.first(sql, params) is Some(r) else {
     fail("recent chat index row missing: \{sql}")
   }
   r
@@ -28,21 +16,7 @@ fn one(
 
 ///|
 fn exists(db : @sql.Db, sql : String, params : Array[Json]) -> Bool raise {
-  first(db, sql, params) is Some(_)
-}
-
-///|
-fn get(row : Map[String, Json], name : String) -> Json {
-  row.get(name).unwrap_or(Json::null())
-}
-
-///|
-/// A small integer column (a flag, a count); -1 for NULL.
-fn int(row : Map[String, Json], name : String) -> Int {
-  match row.get(name) {
-    Some(Number(n, ..)) => n.to_int()
-    _ => -1
-  }
+  db.first(sql, params) is Some(_)
 }
 
 ///|
@@ -53,16 +27,6 @@ fn text(s : String) -> Json {
 ///|
 fn num(n : Int) -> Json {
   Json::number(n.to_double())
-}
-
-///|
-/// `f` in a write transaction, rolled back when it fails.
-fn[T] write(db : @sql.Db, f : () -> T raise) -> T raise {
-  db.exec("BEGIN IMMEDIATE")
-  errdefer (db.exec("ROLLBACK") catch { _ => () })
-  let result = f()
-  db.exec("COMMIT")
-  result
 }
 
 ///|

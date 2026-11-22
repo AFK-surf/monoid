@@ -143,3 +143,42 @@ test("cut at 5 minutes after its checkout's SYN to github.com was lost: let thro
   }
   assert.equal((await run([{ run: { conclusion: "failure" }, jobs }], { 12: cut })).ok, false);
 });
+
+// Trimmed from #7864, windows-natives job 136520782682:
+// https://github.com/AFK-surf/monoid/actions/runs/44803265194/job/136520782682
+const missingPrebuild = String.raw`2026-11-20T19:34:41.3524146Z native: engine win32-x64 8a82aa4af46cae64467ef117: downloaded (2.6 MB, 0.5 s)
+2026-11-20T19:34:41.3578846Z C:\Users\runneradmin\AppData\Local\stillfail-native\engine\win32-x64-8a82aa4af46cae64467ef117
+2026-11-20T19:34:42.3166623Z native: shell win32-x64 bea4624b4d0bc846edb816bc is not prebuilt: run the prebuild workflow on the branch, gh workflow run prebuild.yml -R AFK-surf/monoid --ref fix/mesh-prefer-direct (or on a Mac, node scripts/native.ts prebuild shell:win32-x64)
+2026-11-20T19:34:42.3754834Z ##[error]Process completed with exit code 1.
+`;
+const missingJobs = [job(136520782682, "windows-natives", { took: 22, steps: [...setup, step("Fetch Windows natives", "failure")] }), gateFailed];
+const missingAttempt = { run: { conclusion: "failure" }, jobs: missingJobs };
+
+test("a missing native artifact stopped the job before its work: let through", async () => {
+  const r = await run([missingAttempt], { 136520782682: missingPrebuild });
+  assert.equal(r.ok, true, r.said);
+  assert.match(r.said, /stopped before its work: native: shell win32-x64/);
+});
+
+test("a missing prebuild does not excuse another failure, even beside a network error", async () => {
+  for (const failure of ["AssertionError: expected a reply", "error[E0308]: mismatched types", "test/a.test.ts: left running after its tests", "exit code 124", "The job has exceeded the maximum execution time", "not ok 1 - a test", "✖ a test", "tests FAILED", "test foo failed", "##[error]another step failed", "Error: cannot open input"]) {
+    const r = await run([missingAttempt], { 136520782682: missingPrebuild + failure + "\n504 Gateway Time-out\n" });
+    assert.equal(r.ok, false, failure + "\n" + r.said);
+  }
+});
+
+test("prebuilt words, partial diagnostics and inconsistent targets do not excuse failure", async () => {
+  for (const log of ["prebuilt artifact was downloaded", "native: shell win32-x64 key is not prebuilt", missingPrebuild.replace("run the prebuild workflow", "check the prebuilt files"), missingPrebuild.replace("prebuild shell:win32-x64", "prebuild shell:linux-x64"), missingPrebuild.replace("native: shell", "echo native: shell")]) {
+    assert.equal((await run([missingAttempt], { 136520782682: log })).ok, false, log);
+  }
+});
+
+test("a missing prebuild does not excuse a second failed step or an exhausted time limit", async () => {
+  for (const options of [
+    { steps: [...setup, step("Fetch natives", "failure"), step("Another step", "failure")] },
+    { took: 295, steps: [...setup, step("Fetch natives", "failure")] },
+  ]) {
+    const r = await run([{ run: { conclusion: "failure" }, jobs: [job(136520782682, "windows-natives", options)] }], { 136520782682: missingPrebuild });
+    assert.equal(r.ok, false, r.said);
+  }
+});

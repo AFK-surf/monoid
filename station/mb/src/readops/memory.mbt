@@ -97,10 +97,10 @@ fn array_or_null(v : @jsjson.JValue?) -> Json {
 fn sharing(host : @host.Host, data : String, sep : String, raw : @jsjson.JValue, dir : String, name : String) -> Json raise {
   let hosted = jget(jget(Some(raw), "sharedSkills"), name)
   let hosted_id = match hosted {
-    Some(Str(s)) => Some(@jsjson.raw_text(s))
+    Some(Str(s)) => Some(s)
     _ =>
       match jget(hosted, "id") {
-        Some(Str(s)) => Some(@jsjson.raw_text(s))
+        Some(Str(s)) => Some(s)
         _ => None
       }
   }
@@ -139,13 +139,13 @@ fn sharing(host : @host.Host, data : String, sep : String, raw : @jsjson.JValue,
       "users": Json::array(users),
       "missing": Json::array(
         entries_of(missing).filter_map(e => match e.1 {
-          Str(why) => Some({ "station": Json::string(e.0), "why": Json::string(@jsjson.text(why)) })
+          Str(why) => Some({ "station": Json::string(e.0), "why": Json::string(@jsjson.sanitize_str(why)) })
           _ => None
         }),
       ),
     }
     if jget(Some(state), "unread") is Some(Str(u)) {
-      out["unread"] = Json::string(@jsjson.text(u))
+      out["unread"] = Json::string(@jsjson.sanitize_str(u))
     }
     return Json::object(out)
   }
@@ -205,7 +205,7 @@ fn is_hex64(s : String) -> Bool {
 fn rec_of(raw : @jsjson.JValue?) -> MemRec? {
   guard raw is Some(Obj(_)) else { return None }
   let hash = match jget(raw, "hash") {
-    Some(Str(s)) => @jsjson.raw_text(s)
+    Some(Str(s)) => s
     _ => return None
   }
   let at = match jget(raw, "at") {
@@ -213,7 +213,7 @@ fn rec_of(raw : @jsjson.JValue?) -> MemRec? {
     _ => return None
   }
   let by = match jget(raw, "by") {
-    Some(Str(s)) => @jsjson.raw_text(s)
+    Some(Str(s)) => s
     _ => return None
   }
   guard by != "" else { return None }
@@ -221,7 +221,7 @@ fn rec_of(raw : @jsjson.JValue?) -> MemRec? {
     Some(Arr(xs)) =>
       xs.filter_map(x => match x {
         Str(s) => {
-          let t = @jsjson.raw_text(s)
+          let t = s
           if is_hex64(t) { Some(t) } else { None }
         }
         _ => None
@@ -246,9 +246,9 @@ fn newer_rec(a : MemRec, b : MemRec) -> Bool {
 fn peer_name_in(peers : @jsjson.JValue?, station : String) -> String? {
   guard peers is Some(Arr(xs)) else { return None }
   for x in xs {
-    if jget(Some(x), "id") is Some(Str(id)) && @jsjson.raw_text(id) == station {
+    if jget(Some(x), "id") is Some(Str(id)) && id == station {
       if jget(Some(x), "name") is Some(Str(n)) {
-        let trimmed = @jscase.trim(@jsjson.raw_text(n))
+        let trimmed = @jscase.trim(n)
         if trimmed != "" {
           return Some(trimmed)
         }
@@ -262,17 +262,17 @@ fn peer_name_in(peers : @jsjson.JValue?, station : String) -> String? {
 ///|
 fn station_name_of(cloud : @jsjson.JValue, ws : String?, station : String) -> String {
   let self_id = match jget(Some(cloud), "station") {
-    Some(Str(s)) => @jsjson.raw_text(s)
+    Some(Str(s)) => s
     _ => ""
   }
   if ws is Some(w) && jget(Some(cloud), "joined") is Some(Arr(js)) {
     for j in js {
-      if jget(Some(j), "workspace") is Some(Str(jw)) && @jsjson.raw_text(jw) == w {
+      if jget(Some(j), "workspace") is Some(Str(jw)) && jw == w {
         if peer_name_in(jget(Some(j), "peers"), station) is Some(n) {
           return n
         }
         if station == self_id && jget(Some(j), "name") is Some(Str(sn)) {
-          let trimmed = @jscase.trim(@jsjson.raw_text(sn))
+          let trimmed = @jscase.trim(sn)
           if trimmed != "" {
             return trimmed
           }
@@ -285,7 +285,7 @@ fn station_name_of(cloud : @jsjson.JValue, ws : String?, station : String) -> St
     return n
   }
   if station == self_id && jget(Some(cloud), "name") is Some(Str(sn)) {
-    let trimmed = @jscase.trim(@jsjson.raw_text(sn))
+    let trimmed = @jscase.trim(sn)
     if trimmed != "" {
       return trimmed
     }
@@ -403,7 +403,7 @@ pub fn memory(host : @host.Host, data : String, sep : String, args : Json) -> Js
     Some(w) => w
     None =>
       match jget(Some(cloud), "workspace") {
-        Some(Str(s)) => @jsjson.raw_text(s)
+        Some(Str(s)) => s
         _ => ""
       }
   }
@@ -413,7 +413,7 @@ pub fn memory(host : @host.Host, data : String, sep : String, args : Json) -> Js
     None
   }
   let agent = join_path(sep, data, match jget(Some(raw), "agentHome") {
-    Some(Str(h)) => @jsjson.raw_text(h)
+    Some(Str(h)) => h
     _ => "agent"
   })
   let home = match ws {

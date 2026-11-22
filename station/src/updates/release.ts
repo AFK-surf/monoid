@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { type Lang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { platform as machine } from "../platform/index.ts";
-import { type Build, type Release, Unverified, allowed, expected, trustedKeys, verifyFeed } from "./signed.ts";
+import { type Build, type Release, Unverified, allowed, expected, trustedKeys, verifyFeed } from "../../../shared/release-signed.ts";
 import { type Channel, feed, platform, stationVersionSoon } from "./versions.ts";
 
 const UA = { "user-agent": "stillfail-station" };

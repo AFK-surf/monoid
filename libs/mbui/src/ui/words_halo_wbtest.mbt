@@ -9,7 +9,7 @@ fn halo_words(text : @signals.Signal[String], halo : @signals.Signal[(Double, In
   set_view_app(fn(root) {
     root.box(fn(v) {
       v
-      .words(By(fn() { text.get() }), look={ ..@view.words_plain, size: 13.0, line: 18.0, wrap: false })
+      .words(By(fn() { text.get() }), ink=0x000000FFL, look={ ..@view.words_plain, size: 13.0, line: 18.0, wrap: false })
       .words_halo(By(fn() { halo.get() }))
       |> ignore
     })

@@ -17,8 +17,8 @@ mod local;
 mod usage;
 mod verify;
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use iroh::address_lookup::{AddressLookup, AddressLookupBuilder, AddressLookupBuilderError, EndpointData, Error as AddressLookupError, Item as AddressLookupItem};
@@ -66,6 +66,32 @@ fn relay_url(url: &str) -> napi::Result<RelayUrl> {
     url.parse().map_err(failed)
 }
 
+fn build_relay_allowlist(
+    explicit: Option<Vec<RelayUrl>>,
+    lookup: bool,
+    allow_public: bool,
+    relays: &[RelayUrl],
+    entries: &[(RelayUrl, RelayUrl)],
+) -> Option<Vec<RelayUrl>> {
+    if let Some(mut list) = explicit {
+        if lookup {
+            list.extend(relays.iter().cloned());
+        }
+        list.extend(entries.iter().flat_map(|(entry, relay)| [entry.clone(), relay.clone()]));
+        if allow_public {
+            list.extend(iroh::defaults::prod::default_relay_map().relays::<Vec<_>>().into_iter().map(|c| c.url.clone()));
+        }
+        Some(list)
+    } else if lookup && !relays.is_empty() {
+        let mut list = relays.to_vec();
+        list.extend(entries.iter().flat_map(|(entry, relay)| [entry.clone(), relay.clone()]));
+        list.extend(iroh::defaults::prod::default_relay_map().relays::<Vec<_>>().into_iter().map(|c| c.url.clone()));
+        Some(list)
+    } else {
+        None
+    }
+}
+
 #[napi(object)]
 pub struct Options {
     /// The station's 32-byte key (<data>/mesh/secret.key).
@@ -75,6 +101,10 @@ pub struct Options {
     pub relay_urls: Vec<String>,
     /// Alternative addresses into the same relays, used by client endpoints.
     pub relay_entries: Option<Vec<RelayEntry>>,
+    /// Immutable ceiling of relay and entry URLs this endpoint may ever use; none: unrestricted.
+    pub relay_allowlist: Option<Vec<String>>,
+    /// When true with `relay_allowlist`, also admit iroh's built-in default relays for emergency fallback.
+    pub allow_public_relays: Option<bool>,
     /// Found on the LAN and through the DHT, as a station is. Off for tests.
     pub discovery: Option<bool>,
     /// Where to listen; any free port when not said.
@@ -110,10 +140,16 @@ pub struct Endpoint {
     held: Arc<StdMutex<(u32, Vec<iroh::endpoint::Incoming>)>>,
     /// The connections whose handshakes are done, as each finishes (`accept`), once one was first asked for.
     accepted: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<IrohConnection>>>>,
+    /// Relay URLs permitted in DHT/mDNS address lookup responses for `lookup: true` client endpoints.
+    lookup_relays: Option<Arc<StdRwLock<BTreeSet<RelayUrl>>>>,
 }
 
-/// The connections' transport: the congestion controller named (BBR is opt-in: noq 1.3.0 can underestimate bandwidth
-/// after idle, n0-computer/noq#852), the paths kept alive and given up as PATH_KEEP_ALIVE and PATH_IDLE say.
+/// The connections' transport: the congestion controller named (BBR is opt-in; noq-proto includes fixes for
+/// n0-computer/noq#852 idle max_bw collapse and n0-computer/noq#802 initial startup pacing rate, and BBR uses
+/// `loss_thresh(0.30)` + `gate_lower_bounds_on_loss_thresh(true)` so cross-border 10–25% random loss does not collapse
+/// long-lived connections to `min_pipe_cwnd` while keeping steady-state zero retransmissions under shallow-buffer
+/// congestion), a 4 MiB per-stream receive window matching 4 MiB transfer chunks, and the paths kept alive and given
+/// up as PATH_KEEP_ALIVE and PATH_IDLE say.
 fn transport(congestion: &str) -> napi::Result<QuicTransportConfig> {
     let controller: Arc<dyn noq_proto::congestion::ControllerFactory + Send + Sync> = match congestion {
         "cubic" => {
@@ -123,13 +159,17 @@ fn transport(congestion: &str) -> napi::Result<QuicTransportConfig> {
         }
         "bbr" => {
             let mut config = noq_proto::congestion::Bbr3Config::default();
-            config.initial_window(256 * 1024);
+            config
+                .initial_window(256 * 1024)
+                .loss_thresh(0.30)
+                .gate_lower_bounds_on_loss_thresh(true);
             Arc::new(config)
         }
         _ => return Err(failed("congestion: expected cubic or bbr")),
     };
     Ok(QuicTransportConfig::builder()
         .congestion_controller_factory(controller)
+        .stream_receive_window(iroh::endpoint::VarInt::from_u32(4 * 1024 * 1024))
         .default_path_keep_alive_interval(PATH_KEEP_ALIVE)
         .default_path_max_idle_timeout(PATH_IDLE)
         .max_idle_timeout(Some(iroh::endpoint::VarInt::from_u32(CONNECTION_IDLE_MS).into()))
@@ -170,6 +210,49 @@ impl<L: AddressLookup> AddressLookup for Unmade<L> {
     }
 }
 
+/// Strips relay URLs outside `allowed` from DHT/mDNS address lookup responses while keeping IP and custom transports.
+#[derive(Debug)]
+struct FilteredLookup<B>(Arc<StdRwLock<BTreeSet<RelayUrl>>>, B);
+
+#[derive(Debug)]
+struct Filtered<L>(Arc<StdRwLock<BTreeSet<RelayUrl>>>, L);
+
+fn filter_lookup_item(item: AddressLookupItem, allowed: &BTreeSet<RelayUrl>) -> AddressLookupItem {
+    let provenance = item.provenance();
+    let last_updated = item.last_updated();
+    let old = item.endpoint_info();
+    let addrs = old.data.addrs().filter(|a| match a {
+        iroh::TransportAddr::Relay(url) => allowed.contains(url),
+        _ => true,
+    }).cloned();
+    let mut data = EndpointData::new(addrs.collect());
+    if let Some(user_data) = old.data.user_data() {
+        data = data.with_user_data(user_data.clone());
+    }
+    let info = iroh::address_lookup::EndpointInfo::from_parts(old.endpoint_id, data);
+    AddressLookupItem::new(info, provenance, last_updated)
+}
+
+impl<B: AddressLookupBuilder> AddressLookupBuilder for FilteredLookup<B> {
+    fn into_address_lookup(self, endpoint: &IrohEndpoint) -> Result<impl AddressLookup, AddressLookupBuilderError> {
+        Ok(Filtered(self.0, self.1.into_address_lookup(endpoint)?))
+    }
+}
+
+impl<L: AddressLookup> AddressLookup for Filtered<L> {
+    fn publish(&self, data: &EndpointData) {
+        self.1.publish(data);
+    }
+
+    fn resolve(&self, endpoint_id: EndpointId) -> Option<BoxStream<Result<AddressLookupItem, AddressLookupError>>> {
+        let allowed = self.0.clone();
+        self.1.resolve(endpoint_id).map(|stream| {
+            use n0_future::StreamExt;
+            Box::pin(stream.map(move |res| res.map(|item| filter_lookup_item(item, &allowed.read().unwrap())))) as BoxStream<_>
+        })
+    }
+}
+
 #[napi]
 pub async fn bind(options: Options) -> napi::Result<Endpoint> {
     bind_with(options, false).await
@@ -182,6 +265,20 @@ async fn bind_with(options: Options, #[allow(unused_variables)] insecure: bool) 
     let key = SecretKey::from_bytes(&bytes);
     let relays: Vec<RelayUrl> = options.relay_urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
     let entries: Vec<(RelayUrl, RelayUrl)> = options.relay_entries.unwrap_or_default().iter().map(|e| Ok((relay_url(&e.entry)?, relay_url(&e.relay)?))).collect::<napi::Result<_>>()?;
+    let explicit_allowlist: Option<Vec<RelayUrl>> = options
+        .relay_allowlist
+        .as_ref()
+        .map(|urls| urls.iter().map(|u| relay_url(u)).collect::<napi::Result<_>>())
+        .transpose()?;
+    let allow_public = options.allow_public_relays.unwrap_or(false);
+    let lookup = options.lookup.unwrap_or(false);
+    let lookup_active = lookup && !relays.is_empty();
+    let allowlist = build_relay_allowlist(explicit_allowlist, lookup, allow_public, &relays, &entries);
+    let lookup_relays = if lookup_active {
+        allowlist.as_ref().map(|list| Arc::new(StdRwLock::new(list.iter().cloned().collect::<BTreeSet<_>>())))
+    } else {
+        None
+    };
     let relay_map = iroh::RelayMap::from_iter(relays.iter().map(|relay| {
         iroh::RelayConfig::from(relay.clone()).with_entries(entries.iter().filter(|(_, target)| target == relay).map(|(entry, _)| entry.clone()))
     }));
@@ -195,6 +292,11 @@ async fn bind_with(options: Options, #[allow(unused_variables)] insecure: bool) 
         .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
         .home_on_every_relay()
         .transport_config(transport);
+    if !lookup_active {
+        if let Some(allowlist) = allowlist {
+            builder = builder.relay_allowlist(allowlist);
+        }
+    }
     if let Some(addr) = &options.bind_addr {
         builder = builder.bind_addr(addr.parse::<std::net::SocketAddr>().map_err(failed)?).map_err(failed)?;
     }
@@ -205,16 +307,22 @@ async fn bind_with(options: Options, #[allow(unused_variables)] insecure: bool) 
     if insecure {
         builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify());
     }
-    if options.lookup.unwrap_or(false) && !relays.is_empty() {
-        builder = builder
-            .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE).advertise(false)))
-            .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish()));
+    if lookup_active {
+        let mdns = Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE).advertise(false));
+        let dht_lookup = Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish());
+        if let Some(allowed) = lookup_relays.clone() {
+            builder = builder
+                .address_lookup(FilteredLookup(allowed.clone(), mdns))
+                .address_lookup(FilteredLookup(allowed, dht_lookup));
+        } else {
+            builder = builder.address_lookup(mdns).address_lookup(dht_lookup);
+        }
     } else if options.discovery.unwrap_or(true) {
         builder = builder
             .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)))
             .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key)));
     }
-    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, mesh, keepers: Arc::default(), homes: StdMutex::new(relays.clone()), bound: relays, held: Arc::default(), accepted: Arc::default() })
+    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, mesh, keepers: Arc::default(), homes: StdMutex::new(relays.clone()), bound: relays, held: Arc::default(), accepted: Arc::default(), lookup_relays })
 }
 
 #[napi(object)]
@@ -470,6 +578,13 @@ impl Endpoint {
         for entry in entries {
             grouped.entry(relay_url(&entry.relay)?).or_default().push(relay_url(&entry.entry)?);
         }
+        if let Some(allowed) = &self.lookup_relays {
+            let mut guard = allowed.write().unwrap();
+            for (relay, list) in &grouped {
+                guard.insert(relay.clone());
+                guard.extend(list.iter().cloned());
+            }
+        }
         self.inner.set_relay_entries(grouped.into_iter().collect()).await;
         Ok(())
     }
@@ -484,6 +599,15 @@ impl Endpoint {
     #[napi]
     pub fn relay_status(&self) -> Vec<RelayState> {
         self.inner.home_relay_status().get().iter().map(|s| RelayState { url: s.url().to_string(), connected: s.is_connected(), access: s.access_url().to_string(), conflict: s.same_endpoint_id_connected() }).collect()
+    }
+
+    /// Whether it is reached through relay `url` now, end to end (keep.rs `probe`): `ok`, or what failed (`stage`:
+    /// `probe_offline` where the relay is out of this machine's reach, `endpoint_failed` where it is not but this
+    /// endpoint is). An addon from before has none.
+    #[napi]
+    pub async fn probe_relay(&self, url: String) -> napi::Result<ProbeRelayResult> {
+        let relay = relay_url(&url)?;
+        Ok(ProbeRelayResult::of(keep::probe(&self.inner, &relay).await))
     }
 
     /// Whether its streams take a view's frames as datagrams (`Stream.receiveMediaDatagrams`): an addon from before has
@@ -556,6 +680,21 @@ async fn handshake<C, E: std::fmt::Display>(
             crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: given up, not done in {} s", started.elapsed().as_millis(), limit.as_secs()));
             None
         }
+    }
+}
+
+/// What `probe_relay` found.
+#[napi(object)]
+#[derive(Debug, PartialEq)]
+pub struct ProbeRelayResult {
+    pub ok: bool,
+    /// What failed (`probe_offline`, `endpoint_failed`); none where nothing did.
+    pub stage: Option<String>,
+}
+
+impl ProbeRelayResult {
+    fn of(found: keep::ProbeResult) -> Self {
+        ProbeRelayResult { ok: found == keep::ProbeResult::Ok, stage: found.stage().map(str::to_string) }
     }
 }
 
@@ -883,7 +1022,7 @@ impl Stream {
                 read = recv.read(&mut buf) => match read.map_err(failed)? {
                     Some(n) => {
                         let chunk = &buf[..n];
-                        match media.media.stream(chunk) {
+                        match media.media.stream(chunk, tokio::time::Instant::now()) {
                             Some(b) => {
                                 out.extend_from_slice(&chunk[..b]);
                                 media.media.drain_into(&mut out);
@@ -995,6 +1134,14 @@ impl Stream {
 mod tests {
     use super::*;
     use n0_future::StreamExt;
+
+    /// A probe's finding as the station's Node reads it (relays.ts): `ok`, or what failed.
+    #[test]
+    fn a_probe_says_what_failed() {
+        assert_eq!(ProbeRelayResult::of(keep::ProbeResult::Ok), ProbeRelayResult { ok: true, stage: None });
+        assert_eq!(ProbeRelayResult::of(keep::ProbeResult::ProbeOffline), ProbeRelayResult { ok: false, stage: Some("probe_offline".into()) });
+        assert_eq!(ProbeRelayResult::of(keep::ProbeResult::EndpointFailed), ProbeRelayResult { ok: false, stage: Some("endpoint_failed".into()) });
+    }
 
     /// A way of finding stations that cannot be made, as mDNS is with UDP 5353 unavailable.
     #[derive(Debug)]
@@ -1173,6 +1320,8 @@ mod tests {
                 alpns: vec![TEST_ALPN.to_vec().into()],
                 relay_urls: vec![r.to_string(), own.to_string()],
                 relay_entries: None,
+                relay_allowlist: None,
+                allow_public_relays: None,
                 discovery: Some(false),
                 bind_addr: Some("127.0.0.1:0".into()),
                 lookup: None,
@@ -1310,6 +1459,142 @@ mod tests {
         assert!(conn.inner.close_reason().is_none(), "the connection goes on");
         t.station.close().await;
         t.peer.close().await;
+    }
+
+    #[test]
+    fn build_relay_allowlist_covers_explicit_empty_entries_public_lookup_and_discovery() {
+        let r1 = relay_url("https://relay-a.example.test/").unwrap();
+        let e1 = relay_url("https://entry-a.example.test:8443/").unwrap();
+        let unlisted = relay_url("https://relay.pvg-office-4.monoid-afk.dev/").unwrap();
+        let prod: Vec<RelayUrl> = iroh::defaults::prod::default_relay_map().relays::<Vec<_>>().into_iter().map(|c| c.url.clone()).collect();
+        assert!(!prod.is_empty());
+
+        let list = build_relay_allowlist(Some(vec![r1.clone()]), false, false, &[r1.clone()], &[(e1.clone(), r1.clone())]).unwrap();
+        assert!(list.contains(&r1));
+        assert!(list.contains(&e1));
+        assert!(!list.contains(&unlisted));
+        assert!(prod.iter().all(|p| !list.contains(p)));
+
+        let empty = build_relay_allowlist(Some(vec![]), false, false, &[], &[]).unwrap();
+        assert!(empty.is_empty());
+
+        let with_pub = build_relay_allowlist(Some(vec![r1.clone()]), true, true, &[r1.clone()], &[]).unwrap();
+        assert!(with_pub.contains(&r1));
+        assert!(prod.iter().all(|p| with_pub.contains(p)));
+        assert!(!with_pub.contains(&unlisted));
+
+        let lookup_fallback = build_relay_allowlist(None, true, false, &[r1.clone()], &[(e1.clone(), r1.clone())]).unwrap();
+        assert!(lookup_fallback.contains(&r1));
+        assert!(lookup_fallback.contains(&e1));
+        assert!(prod.iter().all(|p| lookup_fallback.contains(p)));
+        assert!(!lookup_fallback.contains(&unlisted));
+
+        assert!(build_relay_allowlist(None, false, false, &[r1.clone()], &[]).is_none());
+        assert!(build_relay_allowlist(None, true, false, &[], &[]).is_none());
+    }
+
+    #[tokio::test]
+    async fn bind_with_enforces_relay_allowlist_and_keeps_unrestricted_station_open() {
+        let allowed = relay_url("https://relay-a.example.test/").unwrap();
+        let entry = relay_url("https://entry-a.example.test:8443/").unwrap();
+        let unlisted = relay_url("https://relay.pvg-office-4.monoid-afk.dev/").unwrap();
+        let prod = iroh::defaults::prod::default_relay_map().relays::<Vec<_>>().into_iter().next().unwrap().url.clone();
+
+        // Client endpoint with explicit allowlist + entry + allow_public_relays: rejects unlisted, admits entry & prod.
+        let client = bind_with(
+            Options {
+                secret_key: vec![21u8; 32].into(),
+                alpns: vec![],
+                relay_urls: vec![allowed.to_string()],
+                relay_entries: Some(vec![RelayEntry { entry: entry.to_string(), relay: allowed.to_string() }]),
+                relay_allowlist: Some(vec![allowed.to_string()]),
+                allow_public_relays: Some(true),
+                discovery: Some(false),
+                bind_addr: Some("127.0.0.1:0".into()),
+                lookup: Some(false),
+                relay_only: Some(false),
+                congestion: None,
+                dscp: None,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+        client.inner.insert_relay(unlisted.clone(), Arc::new(iroh::RelayConfig::from(unlisted.clone()))).await;
+        assert!(client.inner.remove_relay(&unlisted).await.is_none(), "unlisted relay must be rejected");
+        client.inner.insert_relay(entry.clone(), Arc::new(iroh::RelayConfig::from(entry.clone()))).await;
+        assert!(client.inner.remove_relay(&entry).await.is_some(), "entry relay must be accepted");
+        client.inner.insert_relay(prod.clone(), Arc::new(iroh::RelayConfig::from(prod.clone()))).await;
+        assert!(client.inner.remove_relay(&prod).await.is_some(), "prod relay must be accepted when allow_public_relays is true");
+        client.close().await;
+
+        // Station endpoint with no allowlist (unrestricted): insert_relay still works for any relay.
+        let station = bind_with(
+            Options {
+                secret_key: vec![22u8; 32].into(),
+                alpns: vec![],
+                relay_urls: vec![allowed.to_string()],
+                relay_entries: None,
+                relay_allowlist: None,
+                allow_public_relays: None,
+                discovery: Some(false),
+                bind_addr: Some("127.0.0.1:0".into()),
+                lookup: Some(false),
+                relay_only: Some(false),
+                congestion: None,
+                dscp: None,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+        station.inner.insert_relay(unlisted.clone(), Arc::new(iroh::RelayConfig::from(unlisted.clone()))).await;
+        assert!(station.inner.remove_relay(&unlisted).await.is_some(), "unrestricted station endpoint must still admit inserted relays");
+        station.close().await;
+    }
+
+    #[tokio::test]
+    async fn filtered_lookup_strips_unlisted_relays_keeps_ip_and_admits_dynamic_entries() {
+        use iroh::address_lookup::{EndpointInfo, Item};
+
+        #[derive(Debug)]
+        struct FakeLookup(Item);
+        impl AddressLookup for FakeLookup {
+            fn resolve(&self, _endpoint_id: EndpointId) -> Option<BoxStream<Result<Item, AddressLookupError>>> {
+                Some(Box::pin(n0_future::stream::iter([Ok(self.0.clone())])))
+            }
+        }
+
+        let peer_id = SecretKey::from_bytes(&[9; 32]).public();
+        let ip: std::net::SocketAddr = "127.0.0.1:4321".parse().unwrap();
+        let allowed_relay = relay_url("https://relay-a.example.test/").unwrap();
+        let dynamic_entry = relay_url("https://entry-b.example.test:8443/").unwrap();
+        let stale_dht = relay_url("https://relay.pvg-office-4.monoid-afk.dev/").unwrap();
+
+        let info = EndpointInfo::new(peer_id)
+            .with_ip_addrs(vec![ip])
+            .with_relay_url(allowed_relay.clone())
+            .with_relay_url(dynamic_entry.clone())
+            .with_relay_url(stale_dht.clone());
+        let item = Item::new(info, "dht", None);
+
+        let allowed = Arc::new(StdRwLock::new(BTreeSet::from([allowed_relay.clone()])));
+        let filtered = Filtered(allowed.clone(), FakeLookup(item));
+
+        let first = filtered.resolve(peer_id).unwrap().next().await.unwrap().unwrap();
+        let addrs: Vec<_> = first.endpoint_info().data.addrs().cloned().collect();
+        assert!(addrs.contains(&iroh::TransportAddr::Ip(ip)));
+        assert!(addrs.contains(&iroh::TransportAddr::Relay(allowed_relay.clone())));
+        assert!(!addrs.contains(&iroh::TransportAddr::Relay(stale_dht.clone())));
+        assert!(!addrs.contains(&iroh::TransportAddr::Relay(dynamic_entry.clone())));
+
+        allowed.write().unwrap().insert(dynamic_entry.clone());
+        let second = filtered.resolve(peer_id).unwrap().next().await.unwrap().unwrap();
+        let addrs2: Vec<_> = second.endpoint_info().data.addrs().cloned().collect();
+        assert!(addrs2.contains(&iroh::TransportAddr::Ip(ip)));
+        assert!(addrs2.contains(&iroh::TransportAddr::Relay(allowed_relay)));
+        assert!(addrs2.contains(&iroh::TransportAddr::Relay(dynamic_entry)));
+        assert!(!addrs2.contains(&iroh::TransportAddr::Relay(stale_dht)));
     }
 
 }

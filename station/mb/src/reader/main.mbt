@@ -207,7 +207,7 @@ fn Reader::answer_in(self : Reader, db : @sql.Db, op : String, ask : Json) -> Js
     // (what of a list a client does not hold as it is: the list read as its own op reads it, its args those given)
     "changed" =>
       match args.value("op") {
-        Some(String("chats" | "sessions" | "threads" as list)) => {
+        Some(String("chats" | "sharedChats" | "sessions" | "threads" as list)) => {
           let inner = Map::from_iter(ask.as_object().unwrap().iter())
           inner["args"] = args.value("args").unwrap_or(Json::null())
           @readops.changed_of(list, self.answer_in(db, list, Json::object(inner)), args)
@@ -594,7 +594,7 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
       clock.val = now
     }
     let kind = match ask.get("type") {
-      Some(Str(u)) => @jsjson.text(u)
+      Some(Str(u)) => @jsjson.sanitize_str(u)
       _ => ""
     }
     let answer : Result[@jsjson.JValue, String] = try {
@@ -610,7 +610,7 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
         }
         "sources" => {
           let hashes = match ask.get("hashes") {
-            Some(Arr(items)) => items.filter_map(h => if h is Str(u) { Some(@jsjson.text(u)) } else { None })
+            Some(Arr(items)) => items.filter_map(h => if h is Str(u) { Some(@jsjson.sanitize_str(u)) } else { None })
             _ => []
           }
           Ok(exporter.sources(hashes))
@@ -645,11 +645,11 @@ async fn replica_carry(host : @host.Host, sep : String) -> Unit {
   let answer : Result[@jsjson.JValue, String] = try {
     let ask = @jsjson.parse(line)
     let text = (name : String) => match ask.get(name) {
-      Some(Str(u)) => Some(@jsjson.text(u))
+      Some(Str(u)) => Some(@jsjson.sanitize_str(u))
       _ => None
     }
     let texts = (name : String) => match ask.get(name) {
-      Some(Arr(items)) => Some(items.filter_map(v => if v is Str(u) { Some(@jsjson.text(u)) } else { None }))
+      Some(Arr(items)) => Some(items.filter_map(v => if v is Str(u) { Some(@jsjson.sanitize_str(u)) } else { None }))
       _ => None
     }
     let yes = (name : String) => ask.get(name) is Some(Bool(true))
@@ -703,7 +703,7 @@ async fn replica_carry(host : @host.Host, sep : String) -> Unit {
           None => 500000
         }
         let of_text = (v : @jsjson.JValue?) => match v {
-          Some(Str(u)) => Some(@jsjson.text(u))
+          Some(Str(u)) => Some(@jsjson.sanitize_str(u))
           _ => None
         }
         let places = match sizing {
@@ -715,7 +715,7 @@ async fn replica_carry(host : @host.Host, sep : String) -> Unit {
                     of_text(p.get("key")).unwrap_or(""),
                     of_text(p.get("room")),
                     match p.get("transcripts") {
-                      Some(Arr(ts)) => ts.filter_map(v => if v is Str(u) { Some(@jsjson.text(u)) } else { None })
+                      Some(Arr(ts)) => ts.filter_map(v => if v is Str(u) { Some(@jsjson.sanitize_str(u)) } else { None })
                       _ => []
                     },
                   )),
@@ -944,6 +944,7 @@ fn main {
         { "kind": "legacy-decision-time", .. } => Some(@legacy.decision_time_step(db))
         { "kind": "legacy-decision-session", .. } => Some(@legacy.decision_session_step(db))
         { "kind": "legacy-decision-session-repair", .. } => Some(@legacy.decision_session_repair_step(db))
+        { "kind": "conversation-backfill", .. } => Some(@sql.backfill_conversations_step(db, Json::number(@host.now().to_double())))
         { "kind": String(_), .. } => None
         _ => Some(@activity.activity_step(db))
       })

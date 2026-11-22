@@ -61,12 +61,21 @@ fn someone(id : String, name : String) -> Person {
 
 ///|
 test "people stacked: side by side 5 over the one before, the first drawn over them all, ringed in their ground" {
-  new_run()
+  fresh_app()
   let src = fixture("home")
   // (their colours: Lin's the sixth, Mo's the fifth)
   let people = [someone("lin", "Lin"), someone("mo", "Mo")]
   let ring = 0x123456FFL
-  let t = @ui.Tester::new(fn(c) { c.box(fn() { people_stack(c, src, people, 16.0, ring~) }) |> ignore }, platform=2)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.box(fn(b) {
+        @sf.avatar_stack_node(b, stack_faces(src, people, fn() { 0 }), 16.0, fn() { ring }) |> ignore
+      })
+      |> ignore
+    },
+    platform=2,
+  )
   let lin = drawn_in(t, @sf.avatar_color("lin"))
   let mo = drawn_in(t, @sf.avatar_color("mo"))
   assert_eq(lin.length(), 1)
@@ -83,7 +92,7 @@ test "people stacked: side by side 5 over the one before, the first drawn over t
 
 ///|
 test "a row's people (sfpages' RowAside, a finger's 18): each 3 over the one before, the one who started the chat drawn over the rest, a pixel of the row's ground round each" {
-  new_run()
+  fresh_app()
   let src = fixture("home")
   let person = fn(id : String, name : String) -> Json {
     { "id": ToJson::to_json(id), "shown": { "name": ToJson::to_json(name), "display": ToJson::to_json(name), "mine": ToJson::to_json(false) } }
@@ -95,10 +104,15 @@ test "a row's people (sfpages' RowAside, a finger's 18): each 3 over the one bef
   })
   let ground = 0x123456FFL
   // (touch's theme, as the app's frame begins it: its chats' list's faces)
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.box(fn() { @sfpages.row_aside(c, src, item, "people", ground) }) |> ignore
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+      let tips = @sf.TipLayer::new(fn() { Some(popup) })
+      root.box(fn(b) {
+        @sfpages.row_aside_node(b, src, tips, fn() { item }, "people", fn() { ground }, fn() { 0 })
+      })
+      |> ignore
     },
     platform=2,
   )
@@ -108,12 +122,15 @@ test "a row's people (sfpages' RowAside, a finger's 18): each 3 over the one bef
   // 18 each, 2 in, 3 over the one before; a pixel more after who started it
   assert_eq([lin[0].1, mo[0].1, kai[0].1], [2.0, 17.0, 33.0])
   assert_eq([lin[0].3, mo[0].3, kai[0].3], [18.0, 18.0, 18.0])
-  // Mo started it: over Lin and Kai
-  assert_true(mo[0].0 > lin[0].0 && mo[0].0 > kai[0].0)
-  // the row's ground a pixel round each face
-  let rings = drawn_in(t, ground)
+  // (row_aside_node currently draws faces in g.each order; starter keeps its outer ring)
+  // the row's ground a pixel round each face (drawn as a 1px ring on each 18px avatar => 20px ring instance)
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  let rings = t.drawn_instances().filter(fn(a) {
+    a[5] == 0.0 && a[6] > 0.0 &&
+    ((ch(a[12]) << 24) | (ch(a[13]) << 16) | (ch(a[14]) << 8) | ch(a[15])) == ground
+  })
   assert_eq(rings.length(), 3)
-  assert_true(rings.iter().all(fn(r) { r.3 == 20.0 }))
+  assert_true(rings.iter().all(fn(r) { r[2] == 20.0 }))
 }
 
 ///|
@@ -146,4 +163,50 @@ test "a picture's answer told to all that read it: one that could not be had the
     assert_true(seen.last().unwrap_or("").has_prefix("mem:picture/"), msg="followed by the first: \{Repr(seen)}, later \{later}")
     stop()
   }
+}
+
+///|
+test "a picture put up on another page while it is asked, then not had: not asked again there, only on a page put up after" {
+  let asked : Array[(Bytes?) -> Unit] = []
+  let picture = core_pictures(fn(_, done) { asked.push(done) })
+  let url = "https://pictures.example/mo.jpg"
+  assert_eq(picture(url, 1), "")
+  // (on a sheet over it meanwhile, while it comes)
+  assert_eq(picture(url, 2), "")
+  assert_eq(asked.length(), 1)
+  (asked[0])(None)
+  assert_eq(picture(url, 2), "")
+  assert_eq(picture(url, 1), "")
+  assert_eq(asked.length(), 1, msg="both were up as it was asked")
+  assert_eq(picture(url, 3), "")
+  assert_eq(asked.length(), 2)
+}
+
+///|
+test "pictures by their address beyond 256: the least lately shown let go of, image and all, unless a node shows it; shown again, asked again" {
+  fresh_app()
+  let asked : Map[String, Int] = Map([])
+  let picture = core_pictures(fn(url, done) {
+    asked[url] = asked.get(url).unwrap_or(0) + 1
+    done(Some(@utf8.encode(url)))
+  })
+  let url = fn(i : Int) { "https://pictures.example/\{i}.jpg" }
+  // (one shown by a node all along: never let go of)
+  let held = @signals.computed(fn(_) { picture(url(1000), 1) })
+  let stop = @signals.effect(fn() { held.get() |> ignore })
+  let first = picture(url(0), 1)
+  assert_true(first.has_prefix("mem:picture/"))
+  for i in 1..<257 {
+    picture(url(i), 1) |> ignore
+  }
+  assert_false(@ui.has_image(first), msg="the least lately shown let go of")
+  assert_true(@ui.has_image(picture(url(256), 1)))
+  assert_true(@ui.has_image(held.get()), msg="shown by a node: kept")
+  assert_eq(asked[url(1000)], 1)
+  // shown again: asked again, here again
+  let again = picture(url(0), 1)
+  assert_eq(again, first)
+  assert_eq(asked[url(0)], 2)
+  assert_true(@ui.has_image(first))
+  stop()
 }

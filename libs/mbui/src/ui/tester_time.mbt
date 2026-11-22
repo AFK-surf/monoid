@@ -158,6 +158,12 @@ pub fn Tester::rest_of(self : Tester, name : String) -> Double {
 let tester_rested : Map[String, Double] = Map([])
 
 ///|
+/// Where the tree's ways under way last said they end (@view.Tree::ways_end: a flight, a way in or out, a glide), as
+/// tester_rested keeps a mover's: for rest_of(""), what moves on the tree whatever its name.
+// kept across runs: put back as each Tester is made (Tester::new)
+let tester_ways_rested : Ref[Double] = Ref(-1.0)
+
+///|
 /// What is said to move after the frame just drawn, each end as it says it, kept (tester_rested).
 fn tester_rests_seen() -> Unit {
   let c = g()
@@ -180,6 +186,18 @@ fn tester_rests_seen() -> Unit {
   for what in cut {
     tester_rested[what] = c.clock
   }
+  // (the tree's ways: their end as they say it, or cut short to this frame where none goes on)
+  match view_tree() {
+    Some(t) => {
+      let w = t.ways_end()
+      if w >= 0.0 && w < @double.infinity {
+        tester_ways_rested.val = w
+      } else if tester_ways_rested.val > c.clock {
+        tester_ways_rested.val = c.clock
+      }
+    }
+    None => ()
+  }
 }
 
 ///|
@@ -195,12 +213,27 @@ pub fn rest_of(name : String) -> Double {
       }
     }
   }
+  // (all that moves: the tree's ways too, named or not)
+  if name == "" {
+    match view_tree() {
+      Some(t) => {
+        let w = t.ways_end()
+        if w > c.clock && w > last {
+          last = w
+        }
+      }
+      None => ()
+    }
+  }
   // (and those so named already at rest: their ends as they said them, the latest, where none moves now)
   if last < 0.0 {
     for what, r in tester_rested {
       if what.contains(name) && r > last {
         last = r
       }
+    }
+    if name == "" && tester_ways_rested.val > last {
+      last = tester_ways_rested.val
     }
   }
   last
@@ -820,5 +853,16 @@ fn Ctx::waited_by(self : Ctx) -> String {
       Some(tree) if tree.wake_waited_by() != "" => " (the window's tree's, said at \{tree.wake_waited_by()})"
       _ => " (the window's tree's)"
     }
+  }
+}
+
+///|
+/// Run on to the moment the last of the tree's columns gliding on by themselves (a fling, what shows past an end going
+/// back) comes to rest, as each says it now: a press there after is a press again, not one that catches the glide
+/// (view_caught). Nothing run where none glides.
+pub fn Tester::run_past_glides(self : Tester) -> Unit {
+  match tree_glides_end() {
+    Some(end) if end > self.time() => self.run_for(end - self.time())
+    _ => ()
   }
 }

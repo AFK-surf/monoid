@@ -276,7 +276,7 @@ test("notices_show_unless_off_looked_at_or_left_to_a_push_and_each_once", async 
   assert.ok(!attend.noticed([n("n6")], true));
   assert.deepEqual(shown(attend), []);
   const again = await run(Attend.load(host));
-  assert.deepEqual(again.value(), { on: false, asked: true, push: false, kinds: { wait: true, failed: true, done: "away", message: true }, preview: true, muted: [], permission: "unknown", show: [] });
+  assert.deepEqual(again.value(), { on: false, asked: true, push: false, kinds: { wait: true, failed: true, done: "away", message: true, billed: false }, preview: true, muted: [], permission: "unknown", show: [] });
   attend.gone(2);
   assert.ok(!attend.seen());
 });
@@ -295,17 +295,21 @@ test("only_the_kinds_turned_on_are_shown_a_turn_done_by_default_only_while_the_a
   assert.deepEqual(shown(), ["d2"]);
   attend.claim("d2");
   await run(attend.set(null, null, { done: "off", message: false }));
-  attend.noticed([n("d3", "done"), n("m2", "message"), n("f1", "failed")], true);
-  assert.deepEqual(shown(), ["f1"]);
+  attend.noticed([n("d3", "done"), n("m2", "message"), n("f1", "failed"), n("b2", "billed")], true);
+  assert.deepEqual(shown(), ["f1"], "billed is off by default");
   attend.claim("f1");
+  await run(attend.set(null, null, { billed: true }));
+  attend.noticed([n("b3", "billed")], true);
+  assert.deepEqual(shown(), ["b3"]);
+  attend.claim("b3");
   await run(attend.set(null, null, { wait: false }));
-  assert.deepEqual(attend.value().kinds, { wait: false, failed: true, done: "off", message: false }, "each given one changes, the rest stay");
+  assert.deepEqual(attend.value().kinds, { wait: false, failed: true, done: "off", message: false, billed: true }, "each given one changes, the rest stay");
   attend.focus(1, focus({ visible: false }));
   assert.ok(!attend.pushed(null, "block"));
   assert.ok(attend.pushed(null, "failed"));
   assert.ok(attend.pushed(null));
   const again = await run(Attend.load(host));
-  assert.deepEqual(again.value().kinds, { wait: false, failed: true, done: "off", message: false });
+  assert.deepEqual(again.value().kinds, { wait: false, failed: true, done: "off", message: false, billed: true });
 });
 
 test("every_workspace_is_heard_of_unless_turned_off", async () => {
@@ -358,4 +362,39 @@ test("what_is_measured_only_to_be_shown_waits_for_a_page_in_view", async () => {
   attend.focus(1, focus({ visible: false }));
   attend.gone(1);
   assert.equal(attend.shown(), true);
+});
+
+test("F2a: endSeq clamps end-based read advancement across catchup, tall messages, realtime arrival, manual jump, and legacy fallback", async () => {
+  const host = new FakeHost();
+  const attend = await run(Attend.load(host));
+  const msgs = (n: number) => Array.from({ length: n }, (_, i) => [i + 1, 0, false] as [number, number, boolean]);
+
+  // 1. User is at the end of 20 messages (read=20): UI reports end=true, endSeq=20, seen=20.
+  attend.focus(1, focus({ visible: true, focused: true, chat: { station: "ws/st", thread: 7, end: true, endSeq: 20, seen: 20 } }));
+  assert.deepEqual(attend.chat("ws/st", null, chat(20, false, msgs(20))).due, []);
+
+  // 2. 120 new messages arrive in core (first 50 -> newest=70, then 140) BEFORE UI lays out the new view:
+  //    stale end=true with endSeq=20 MUST NOT advance read past 20!
+  assert.deepEqual(attend.chat("ws/st", null, chat(20, false, msgs(70))).due, []);
+  assert.deepEqual(attend.chat("ws/st", null, chat(20, false, msgs(140))).due, []);
+
+  // 3. Tall message (>1 screen) caught up: UI lays out anchored at unread, reporting end=false, seen=20 -> stays at 20.
+  attend.focus(1, focus({ chat: { station: "ws/st", thread: 7, end: false, seen: 20 } }));
+  assert.deepEqual(attend.chat("ws/st", null, chat(20, false, msgs(40))).due, []);
+
+  // 4. User scrolls to the foot of tall message 40 (top scrolled off so seen stays 20, end=true, endSeq=40): advances to 40!
+  attend.focus(1, focus({ chat: { station: "ws/st", thread: 7, end: true, endSeq: 40, seen: 20 } }));
+  assert.deepEqual(attend.chat("ws/st", null, chat(20, false, msgs(40))).due, [{ read: { thread: 7, seq: 40 } }]);
+
+  // 5. Realtime message 41 arrives and UI lays it out with end=true, endSeq=41, seen=41: advances to 41!
+  attend.focus(1, focus({ chat: { station: "ws/st", thread: 7, end: true, endSeq: 41, seen: 41 } }));
+  assert.deepEqual(attend.chat("ws/st", null, chat(40, false, msgs(41))).due, [{ read: { thread: 7, seq: 41 } }]);
+
+  // 6. Manual jump to latest (140): UI lays out at 140 with end=true, endSeq=140, seen=140 -> advances to 140!
+  attend.focus(1, focus({ chat: { station: "ws/st", thread: 7, end: true, endSeq: 140, seen: 140 } }));
+  assert.deepEqual(attend.chat("ws/st", null, chat(41, false, msgs(140))).due, [{ read: { thread: 7, seq: 140 } }]);
+
+  // 7. Legacy client without endSeq (end=true, endSeq=null) still advances to newest for backward compatibility.
+  attend.focus(2, focus({ visible: true, focused: true, chat: { station: "ws/st", thread: 8, end: true } }));
+  assert.deepEqual(attend.chat("ws/st", null, { ...chat(10, false, msgs(25)), thread: { id: 8, read: 10 } }).due, [{ read: { thread: 8, seq: 25 } }]);
 });

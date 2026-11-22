@@ -3,7 +3,7 @@
 - The workspace lock's, a person's and the vault's rules (which entries and versions may follow, who may do what, the
   forms that are hashed and signed) are written once here in MoonBit (`src/`), with what is proved of them
   (`*.mbtp`, `moon prove`, CI's `rules.yml`). `build.sh` builds them to `js/rules.js`, which the station
-  (`station/src/cloud/lock.ts`, `station/src/vault/crypto.ts`), the cloud (through the station's lock) and the core
+  (`shared/lock.ts`, `station/src/vault/crypto.ts`), the cloud (through `shared/lock.ts`) and the core
   take as it is. It is committed: a change to `src/` runs `build.sh` and commits what it made; never edit it by hand.
 - It runs in Node, in a Cloudflare Worker (no random values before a request: `build.sh` defers the hash seed) and in
   Hermes (`hermes-check.sh`). `protocol/` models the lock's and a person's protocols for Tamarin
@@ -13,7 +13,7 @@
   there, their bodies kept by the workspace alone, the list and one `LockState` from the bodies in force) are the
   rules the lock's next sync is built to (the root AGENTS.md, 2026-11-12), written from the model's fourth round
   (`station/test/lock-roster4-model.ts`, its defaults; 2026-11-13). The station and the core go by `lock_chain_js` and
-  `person_chain_js` (`station/src/cloud/log-keep.ts`, `client/core-ts/src/lock-keep.ts`); `fold_person` takes `web`,
+  `person_chain_js` (`shared/log-keep.ts`, `client/core-ts/src/lock-keep.ts`); `fold_person` takes `web`,
   `web.remove` and `ws` and the workspace chain `moved {root}` from this build on, which every part takes as it is:
   an older station or app refuses a chain with a kind it does not know, so a device writes them only once everything
   that keeps or reads that log or workspace runs a build that takes them (client/core-ts/AGENTS.md, A lock held here;
@@ -33,7 +33,7 @@
   rules (the logs alone) still takes out whom it did; someone re-admitted to the log the chain bound them to (or bound
   by an admit where the chain bound them to none) has what the chain carried of theirs again (the lead, 2026-11-14:
   re-admitting is an owner's or admin's own act). Every reader must make the same state, so the build that reads them
-  is a move's floor (`MOVED_FROM_BUILD`, station/src/api/moved-from.ts) and a station says `carried` in its `serves`.
+  is a move's floor (`MOVED_FROM_BUILD`, `shared/moved-from.ts`) and a station says `carried` in its `serves`.
 - A member the chain bound to no log binds a log of their own to themselves (the lead, 2026-11-14): `bind {key, sig}`
   in that log, `sig` the signer's (`key`, one the chain names for an own, signing app device of theirs) over
   `bind_form` (the workspace, the member, the log, the `moved` entry's hash) under `bind_tag`, a tag no other form a

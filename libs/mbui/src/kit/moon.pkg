@@ -2,8 +2,6 @@ import {
   "mbui/ui",
   "mbui/motion",
   "mbui/signals",
-  "mbui/codec",
-  "mbui/hostapi",
   "mbui/dmath",
   "mbui/view",
   "mbui/headless",

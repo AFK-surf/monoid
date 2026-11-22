@@ -1,4 +1,4 @@
-// 30-new-chat (e2e/traces/new-chat.trace): a new chat from the app: 令 in the bottom bar's notch, the new chat rising
+// 30-new-chat (e2e/traces/new-chat.trace): a new chat from the app: the bottom bar's ＋ (a new chat), the new chat rising
 // from the bottom; its first message makes the chat on the station (newChat.create, chat.send by its key) and the
 // page becomes that chat in place; the agent answers and names it; back on Home, its row has that name.
 
@@ -7,7 +7,7 @@ test "30-new-chat" {
   @sfreplay.orders(fn(seed) {
     let f = @sfreplay.Flow::start(@sfreplay.trace("new-chat"), seed~)
     f.see("端到端测试")
-    f.tap("icon:ling")
+    f.tap("icon:plus")
     f.run_for(@ui.move_most_ms)
     f.see("想让 agent 做什么？")
     f.tap("做任何事")

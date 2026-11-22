@@ -46,11 +46,33 @@ let info_title_line : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 let info_title_words : @ui.Style = @ui.css("w=Cut pt=S1")
 
 ///|
-/// An agent's mark, name and where it stands in a line on their tops, its mark and its stop on its name's line
-/// (agent_name_line), what it did under it 16 down (panel_card_in).
+/// An agent's head column: 4 over, 16 under (panel_card_in); its three rows (mark + stop, title, status)
+/// each inset to the sheet's 32pt text axis.
 // kept across runs: a value (no field of it changes)
-let agent_title_line : @ui.Style = @ui.css("row w=Full pt=S1 gap=S3 align=AStart").then(
+let agent_title_head : @ui.Style = @ui.css("w=Full pt=S1").then(
   @ui.style(pb=@sf.room_of(@sf.panel_card_in)),
+)
+
+///|
+/// An agent's head Row 1: its mark on the left and its compact stop pill on the right (32 high, matching the
+/// dialog close key, right edge concentric with the 42pt sheet corner).
+// kept across runs: a value (no field of it changes)
+let agent_title_row1 : @ui.Style = @ui.css("row w=Full align=ACenter").then(
+  @ui.style(min_h=Fixed(agent_stop_h), pl=@sf.room_of(agent_words_in), pr=@sf.room_of(agent_stop_corner_in)),
+)
+
+///|
+/// An agent's head Row 2 (its full-width model title): 8 under Row 1, inset to the 32pt text axis.
+// kept across runs: a value (no field of it changes)
+let agent_title_name_box : @ui.Style = @ui.css("w=Full pt=S2").then(
+  @ui.style(px=@sf.room_of(agent_words_in)),
+)
+
+///|
+/// An agent's head Row 3 (its full-width status line): 6 under the title, inset to the 32pt text axis.
+// kept across runs: a value (no field of it changes)
+let agent_title_status_box : @ui.Style = @ui.css("w=Full pt=S1_5").then(
+  @ui.style(px=@sf.room_of(agent_words_in)),
 )
 
 ///|
@@ -112,8 +134,8 @@ fn agent_tiles_known(card : Json?) -> Bool {
 /// with it is the "…"'s menu, a row of the list's. As tall as what it shows; a row that opens something closes the
 /// panel (`close`) first.
 fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit) -> Unit {
-  // (the chat's head alone, as sfdesk's chat_info_node reads it: told as it changes, not as a word streams into a
-  // message, none of its messages read again)
+  // (the chat's head alone, as sfdesk's chat_info_node reads it: told as it changes, not as a message is patched in
+  // place, none of its messages read again)
   let chat = fn() { @sfbase.chat_head_json(src, r) }
   let view = fn() { @sfbase.chat_head(src, r).0 }
   // archived or offline it is only read: no name to change
@@ -168,7 +190,14 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     @sf.style_node(col, fn() { title_row_whole })
     // its name and ✎, clear of an untitled dialog's close button over its end
     col.box(fn(h) {
-      @sf.style_node(h, fn() { @sf.untitled_clear_node(h).then(title_row_whole) })
+      @sf.style_node(h, fn() {
+        let base = @sf.untitled_clear_node(h).then(title_row_whole)
+        if @sf.in_small_panel_node(h) {
+          base.then(@sf.panel_words_in_node(h)).then(@ui.css("pt=S2"))
+        } else {
+          base
+        }
+      })
       info_title_node(h, src, r, fn() { text(chat(), "title") }, open, fn() { opt_number(thread(), "id") })
     })
     |> ignore
@@ -183,7 +212,9 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
       fn(p, opener) {
         guard opener is Some((to, said)) else { return }
         p.box(fn(b) {
-          @sf.style_node(b, fn() { info_opener })
+          @sf.style_node(b, fn() {
+            if @sf.in_small_panel_node(b) { info_opener.then(@sf.panel_words_in_node(b)) } else { info_opener }
+          })
           b.radius(Is(info_opener_corner)) |> ignore
           @sf.rippled_node(b, fn() {
             close()
@@ -200,7 +231,9 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     // who started it and when, how many take part, when it was last written in: what there is of them, in a line, after
     // their faces
     col.box(fn(line) {
-      @sf.style_node(line, fn() { info_facts_line })
+      @sf.style_node(line, fn() {
+        if @sf.in_small_panel_node(line) { info_facts_line.then(@sf.panel_words_in_node(line)) } else { info_facts_line }
+      })
       let faces = fn() {
         match view() {
           Some(cv) => if cv.people.length() > 5 { cv.people[:5].to_owned() } else { cv.people }
@@ -616,6 +649,21 @@ fn allowance_node(v : @view.View, quota : () -> Json?) -> Unit {
 }
 
 ///|
+/// `value`'s words in `w` with `tag` after them on their line where it says one (an account's tier: the meta's size,
+/// subtle, 8 after, as a profile row's title_after), the words cut short before the tag gives way.
+fn tagged_words_node(w : @view.View, value : () -> String, look : () -> @ui.TextStyle, tag : () -> String) -> Unit {
+  w.box(fn(line) {
+    line.row(Is(true)).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))) |> ignore
+    @sf.words_node(line, value, look).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
+    line.show(fn() { tag() != "" }, fn(a) {
+      a.margin(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
+      @sf.row_tag_node(a, tag)
+    })
+  })
+  |> ignore
+}
+
+///|
 /// A chat's name in its sheet's head (info_title_row's, as nodes) in `h`, as `title` says it now, two lines at most, its
 /// ✎ right after it where it can be renamed (`open`; the chat's thread `thread`): the first line of what its panel holds
 /// (open_info), clear of an untitled dialog's close button.
@@ -630,18 +678,15 @@ fn info_title_node(h : @view.View, src : Source, r : ChatRef, title : () -> Stri
       @sf.words_node(w, title, fn() { info_title }) |> ignore
     })
     |> ignore
-    line.show(at_once=true, open, fn(k) {
-      k.box(fn(b) {
-        @sf.style_node(b, fn() { info_rename.then(@ui.style(bg=Data(@sf.alpha(@sf.theme().p.text, 0.05)))) })
-        @sf.rippled_node(
-          b,
-          fn() { open_rename(src, r, @signals.untracked(thread), @signals.untracked(title), from=Node(b)) },
-          info_rename_side / 2.0,
-          fn() { tr("android-chat.rename.title") },
-        )
-        @sf.icon_node(b, "edit", info_icon, By(fn() { @sf.theme().p.text })) |> ignore
-      })
-      |> ignore
+    line.show(at_once=true, open, fn(b) {
+      @sf.style_node(b, fn() { info_rename.then(@ui.style(bg=Data(@sf.alpha(@sf.theme().p.text, info_rename_ink)))) })
+      @sf.rippled_node(
+        b,
+        fn() { open_rename(src, r, @signals.untracked(thread), @signals.untracked(title), from=Node(b)) },
+        info_rename_side / 2.0,
+        fn() { tr("android-chat.rename.title") },
+      )
+      @sf.icon_node(b, "edit", info_icon, By(fn() { @sf.theme().p.text })) |> ignore
     })
   })
   |> ignore
@@ -650,10 +695,10 @@ fn info_title_node(h : @view.View, src : Source, r : ChatRef, title : () -> Stri
 ///|
 /// The chat's own sheet (chat_info_node) from "…": the library's panel, as tall as what it shows, what it holds nodes of
 /// the window's tree made once as it opens, its name with ✎ beside it its first line.
-fn open_info(src : Source, r : ChatRef) -> Unit {
+fn open_info(src : Source, r : ChatRef, from? : @sf.Anchor = Unanchored, along? : @ui.Along = Start) -> Unit {
   // (its name its head, with its ✎ after it: the user, 2026-11-04, 为啥不做成标题; no title of words, where what it
   // holds draws its name itself)
-  @sf.panel_nodes("", from=Unanchored, heads_itself=true, live=fn() { ("", "", "") }, fn(v, close) { chat_info_node(v, src, r, close) })
+  @sf.panel_nodes("", from~, along~, heads_itself=true, live=fn() { ("", "", "") }, fn(v, close) { chat_info_node(v, src, r, close) })
 }
 
 ///|
@@ -668,6 +713,9 @@ let info_rename : @ui.Style = @ui.css("w=S8 h=S8 radius=Full align=ACenter justi
 
 ///|
 let info_rename_side : Double = 32.0
+
+///|
+let info_rename_ink : Double = 0.05
 
 ///|
 /// An info row's icon (16), and the faces before its facts (16, ringed 1.5).
@@ -709,24 +757,21 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
   // (one column, its parts as close as they are laid out: not the panel's own gap between them)
   v.box(fn(col) {
     @sf.style_node(col, fn() { title_row_whole })
-    // (its head clear of an untitled dialog's close button over its end)
-    col.box(fn(h) {
-      @sf.style_node(h, fn() { @sf.untitled_clear_node(h).then(title_row_whole) })
-      agent_title_node(h, src, r, key, a)
+    // (its head: Row 1 clears an untitled dialog's close button; Row 2 title and Row 3 status span full width)
+    agent_title_node(col, src, r, key, a)
+    // (no outer card around them: its latest lines and what is wrong on the panel's ground, at its figures' words,
+    // its figures each a block of their own out to the panel's cards' sides, the room of its cards under them; each
+    // part opening its room as what it says comes, the card read after the sheet rose: a part there as it is made at
+    // once, one that comes later from none to all of its height, the sheet going with it, never a step, 2026-11-09 the
+    // user: 「好像还存在高度突变的元素」)
+    @sf.reveal_part_node(col, fn() { items(card(), "latest").length() > 0 }, fn(l) { agent_lines_node(l, card) })
+    @sf.reveal_part_node(col, fn() { items(card(), "attention").length() > 0 }, fn(n) {
+      agent_notes_node(n, card, 0.0, px=agent_words_in, pb=agent_notes_under)
     })
-    |> ignore
-    // (its words on the card's 24, its figures blocks at its foot 8 in, a row's corner; each part of it opening its room
-    // as what it says comes (the card read after it rose): the sheet's top not stepping up as its height does, 2026-11-09
-    // the user: 「好像还存在高度突变的元素」)
-    // (each part of it opening its room as what it says comes, the card read after it rose: a part there as it is made
-    // at once, one that comes later from none to all of its height, the card and the sheet going with it, never a step;
-    // the card itself and the room under it only once a part of it shows: group_rows', 2026-11-09 the user:
-    // 「好像还存在高度突变的元素」)
-    @sf.stats_card_node(col, fn() { agent_card_says(card()) }, [
-      (fn() { items(card(), "latest").length() > 0 }, fn(l) { agent_lines_node(l, card) }),
-      (fn() { items(card(), "attention").length() > 0 }, fn(n) { agent_notes_node(n, card, agent_notes_over) }),
-      (fn() { agent_tiles_known(card()) }, fn(t) { card_tiles_node(t, card, agent_tiles_over, entry) }),
-    ])
+    @sf.reveal_part_node(col, fn() { agent_tiles_known(card()) }, look=fn(b) { @sf.panel_card_out_node(b) }, fn(t) {
+      card_tiles_node(t, card, 0.0, entry)
+      t.box(fn(g) { g.height(Is(Some(@sf.panel_card_in))) |> ignore }) |> ignore
+    })
     let station = fn() { station_marks(src, @sfbase.workspace_of(r.station)).iter().find_first(fn(st) { st.address == r.station }) }
     let chat_cv = fn() { view_of_chat(src, r).0 }
     let has_remote = fn() {
@@ -767,6 +812,7 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
         _ => field(a(), "profile")
       }
     }
+    let plan = fn() { text(account(), "planText") }
     @sf.quiet_card_node(
       col,
       fn(list) {
@@ -868,8 +914,9 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
             }
           },
           label_w,
+          tag=plan,
           under=fn(w) { allowance_node(w, fn() { field(account(), "quota") }) },
-          said=fn() { @sf.quota_chips_said(field(account(), "quota")) },
+          said=fn() { @settings.join([plan(), @sf.quota_chips_said(field(account(), "quota"))], " ") },
           fn() {
             close()
             @sfpages.open_triple_panel(src, r.station, "session:" + key, Unanchored, saved=@sf.t("web-pages.chat.pickSaved"), accounts=true)
@@ -957,6 +1004,7 @@ fn agent_row_node(
   label_w : () -> Double,
   under? : (@view.View) -> Unit,
   said? : () -> String = fn() { "" },
+  tag? : () -> String,
   trailing? : (@view.View) -> Unit,
   press : () -> Unit,
 ) -> @view.View {
@@ -974,7 +1022,10 @@ fn agent_row_node(
     @sf.row_label_node(row, label, label_w)
     row.box(fn(w) {
       @sf.style_node(w, fn() { agent_row_body_style }, in_row=true)
-      @sf.words_node(w, value, fn() { agent_row_value }) |> ignore
+      match tag {
+        Some(t) => tagged_words_node(w, value, fn() { agent_row_value }, t)
+        None => @sf.words_node(w, value, fn() { agent_row_value }) |> ignore
+      }
       match under {
         Some(f) => f(w)
         None => ()
@@ -1003,61 +1054,58 @@ let agent_station_line : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter"
 let agent_row_station_mark : Double = 15.0
 
 ///|
-/// How far under what is over them its notes and its figures stand in its card.
-let agent_notes_over : Double = 10.0
+/// Under its notes, over its figures.
+let agent_notes_under : Double = 12.0
 
 ///|
-let agent_tiles_over : Double = 14.0
+/// How far its lines and notes stand in from the column: as far as its figures' words do (a card out of the panel's
+/// sides, panel_card_out, its words 16 in it).
+let agent_words_in : Double = 8.0
 
 ///|
-/// An agent's head in its card (agent_title_row's, as nodes) in `h`, `a` as the chat says it now: its maker's mark
-/// alone, its name and where it stands, its stop where it runs; what it did a card of the panel's under it, 16 in (the
-/// user, 2026-11-03, 面板里可以放卡片).
-fn agent_title_node(h : @view.View, src : Source, r : ChatRef, key : String, a : () -> Json?) -> Unit {
+/// An agent's head in its card (agent_title_row's, as nodes) in `col`, `a` as the chat says it now: three rows aligned
+/// on the sheet's 32pt text axis — Row 1 with its maker's mark on the left and its compact stop pill on the right
+/// (clearing an untitled dialog's close key), Row 2 with its full-width model title (up to 2 lines), Row 3 with its
+/// full-width status line.
+fn agent_title_node(col : @view.View, src : Source, r : ChatRef, key : String, a : () -> Json?) -> Unit {
   let s = fn() { field(a(), "session") }
-  h.box(fn(line) {
-    @sf.style_node(line, fn() { agent_title_line })
-    // (its mark on its name's line, not on the middle of its two lines: the user, 2026-11-14)
-    let mark_at = line.box(fn(m) { agent_name_line(m) })
-    model_mark_big_node(
-      mark_at,
-      fn() { text(field(s(), "maker"), "id") },
-      fn() { text(s(), "runtime") },
-      agent_title_mark,
-      fn() { state_of_badge(text(a(), "badge")) },
-      around=fn() {
-        let t = @sf.theme()
-        @sf.over(t.p.bg, @sf.alpha(t.p.card, 0.8))
-      },
-      plain=true,
-    )
-    line.box(fn(w) {
-      @sf.style_node(w, fn() { agent_title_words }, in_row=true)
-      @sf.words_node(w, fn() { text(s(), "agentText") }, fn() { agent_title_name }) |> ignore
-      @sfpages.agent_status_node(w, src, a)
-    })
-    |> ignore
-    line.show(at_once=true, fn() { text(a(), "status") == "running" || text(a(), "status") == "queued" }, fn(b) {
-      // (its stop on its name's line too)
-      b.box(fn(at) {
-        agent_name_line(at)
-        stop_button_node(at, src, r.station, key)
+  col.box(fn(head) {
+    @sf.style_node(head, fn() { agent_title_head })
+    head.box(fn(clear_wrap) {
+      @sf.style_node(clear_wrap, fn() { @sf.untitled_clear_node(clear_wrap).then(title_row_whole) })
+      clear_wrap.box(fn(row) {
+        @sf.style_node(row, fn() { agent_title_row1 })
+        model_mark_big_node(
+          row,
+          fn() { text(field(s(), "maker"), "id") },
+          fn() { text(s(), "runtime") },
+          agent_title_mark,
+          fn() { state_of_badge(text(a(), "badge")) },
+          around=fn() {
+            let t = @sf.theme()
+            @sf.over(t.p.bg, @sf.alpha(t.p.card, 0.8))
+          },
+          plain=true,
+        )
+        row.box(fn(sp) { sp.grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore }) |> ignore
+        row.show(at_once=true, fn() { text(a(), "status") == "running" || text(a(), "status") == "queued" }, fn(at) {
+          stop_button_node(at, src, r.station, key)
+        })
       })
       |> ignore
     })
+    |> ignore
+    head.box(fn(t) {
+      @sf.style_node(t, fn() { agent_title_name_box })
+      @sf.words_node(t, fn() { text(s(), "agentText") }, fn() { agent_title_name }) |> ignore
+    })
+    |> ignore
+    head.box(fn(st) {
+      @sf.style_node(st, fn() { agent_title_status_box })
+      @sfpages.agent_status_node(st, src, a)
+    })
+    |> ignore
   })
-  |> ignore
-}
-
-///|
-/// Node `c` as tall as the agent's name's line (agent_title_name's, at the system's size of words), what it holds down
-/// its middle, however tall (the stop overhangs it alike over and under).
-fn agent_name_line(c : @view.View) -> Unit {
-  c
-  .height(By(fn() { Some(@sf.theme().t.title_line * c.words_scale()) }))
-  .shrink(Is(0.0))
-  .lies_along(Is(Middle))
-  .lines_up(Is(Some(Middle)))
   |> ignore
 }
 
@@ -1119,26 +1167,17 @@ fn swap_part_node(
 }
 
 ///|
-/// Whether the core's card of an agent says anything its card shows: its latest lines, what is wrong, its figures.
-fn agent_card_says(card : Json?) -> Bool {
-  items(card, "latest").length() > 0 || items(card, "attention").length() > 0 || agent_tiles_known(card)
-}
+/// Its mark in its head (46, glyph 25.76 in plain mode, balanced with the 32pt stop capsule).
+let agent_title_mark : Double = 46.0
 
 ///|
-/// Its mark in its head (40), its name and where it stands 1 apart.
-let agent_title_mark : Double = 40.0
-
-///|
+/// Its name: the title's size, bold, full width, wrapping up to two lines.
 // kept across runs: a value (no field of it changes)
-let agent_title_words : @ui.Style = @ui.css("w=Full gap=SPx")
+let agent_title_name : @ui.TextStyle = @ui.text_style(size=Title, weight=Bold, color=Fg, w=Full, max_lines=2)
 
 ///|
-/// Its name: the title's size, bold, on a line cut short.
-// kept across runs: a value (no field of it changes)
-let agent_title_name : @ui.TextStyle = @ui.text_style(size=Title, weight=Bold, color=Fg, wrap=false, w=Cut)
-
-///|
-/// Stopping its turn, while it works (stop_button's, as a node) in `v`: red on its tint, a spinner while it is asked.
+/// Stopping its turn, while it works (stop_button's, as a node) in `v`: compact red pill on its tint, a spinner while
+/// it is asked.
 fn stop_button_node(v : @view.View, src : Source, station : String, key : String) -> Unit {
   let skey = "stop/" + station + "/" + key
   v.box(fn(b) {
@@ -1175,10 +1214,14 @@ fn stop_button_node(v : @view.View, src : Source, station : String, key : String
 ///|
 /// Its stop: a capsule 32 high, 14 in, its mark and words 6 apart on its middle, on red at 14%.
 // kept across runs: a value (no field of it changes)
-let agent_stop : @ui.Style = @ui.css("row h=S8 px=S3_5 gap=S1_5 radius=Full align=ACenter")
+let agent_stop : @ui.Style = @ui.css("row min_h=S8 px=S3_5 py=S1 gap=S1_5 radius=Full align=ACenter")
 
 ///|
 let agent_stop_h : Double = 32.0
+
+///|
+/// Extra right inset inside Row 1 so the 32pt stop capsule sits concentric with the 42pt sheet top-right corner.
+let agent_stop_corner_in : Double = @ui.capsule_in(@sf.pane_corner, agent_stop_h) - @sf.panel_words
 
 ///|
 let agent_stop_ink : Double = 0.14
@@ -1222,9 +1265,10 @@ fn agent_lines_node(v : @view.View, card : () -> Json?) -> Unit {
 }
 
 ///|
-/// Its lines: 8 over and under, on the card's words' line, 4 apart (on the spacing's scale: 3 was not), on lines of 18.
+/// Its lines: none over, 14 under, 8 in from the column's words (as its figures' words are), 4 apart (on the spacing's
+/// scale: 3 was not), on lines of 18.
 // kept across runs: a value (no field of it changes)
-let agent_lines : @ui.Style = @ui.css("w=Full py=S2").then(@ui.style(px=@sf.room_of(@sf.text_in)))
+let agent_lines : @ui.Style = @ui.css("w=Full px=S2 pt=S0 pb=S3_5")
 
 ///|
 let agent_lines_gap : Double = 4.0
@@ -1269,6 +1313,69 @@ fn card_tiles_node(v : @view.View, card : () -> Json?, top : Double, entry : () 
 fn open_agent(src : Source, r : ChatRef, key : String) -> Unit {
   // (its mark, name and where it stands its head: the user, 2026-11-04, 这个是不是也可以想办法做成标题)
   @sf.panel_nodes("", from=Unanchored, heads_itself=true, live=fn() { ("", "", "") }, fn(v, close) { agent_node(v, src, r, key, close) })
+}
+
+///|
+/// Bottom sheet listing a station entry and all agents running on it in this chat (opened when tapping a multi-agent
+/// merged capsule above the composer on Small screens).
+fn open_station_agents(src : Source, r : ChatRef, station_addr : String) -> Unit {
+  let addr = if station_addr != "" { station_addr } else { r.station }
+  @sf.panel_nodes(tr("android-chat.agent.station"), from=Unanchored, fn(v, close) { station_agents_node(v, src, r, addr, close) })
+}
+
+///|
+/// Body of `open_station_agents`: a station card leading to `open_station_peek`, followed by a card listing each agent
+/// on that station via `info_agent_row_node` leading to `open_agent`.
+fn station_agents_node(v : @view.View, src : Source, r : ChatRef, addr : String, close : () -> Unit) -> Unit {
+  let chat = fn() { @sfbase.chat_head_json(src, r) }
+  let agents = fn() { items(chat(), "agents") }
+  let station = fn() { station_marks(src, @sfbase.workspace_of(addr)).iter().find_first(fn(st) { st.address == addr }) }
+  let agent_key = fn(a : Json) { text(field(Some(a), "session"), "key") }
+  v.box(fn(col) {
+    @sf.style_node(col, fn() { title_row_whole })
+    col.pick(fn() { station().map(fn(st) { (st.address, st.name, st.emoji, st.icon) }) }, fn(p, said) {
+      guard said is Some((address, name, emoji, icon)) else { return }
+      @sf.quiet_card_node(p, fn(k) {
+        @sf.quiet_row_node(
+          k,
+          fn() { name },
+          fn(row) {
+            if @sf.has_station_mark(emoji, icon) {
+              @sf.station_mark_node(row, fn() { emoji }, fn() { icon }, agent_row_station_mark, fn() { @sf.theme().p.text }, fn() {
+                0
+              })
+            }
+            row.box(fn(w) {
+              @sf.style_node(w, fn() { info_fill }, in_row=true)
+              @sf.words_node(w, fn() { name }, fn() { info_words }) |> ignore
+            })
+            |> ignore
+            @sf.row_chevron_node(row)
+          },
+          press=fn() {
+            close()
+            @settings.open_station_peek(address, from=Unanchored)
+          },
+        )
+        |> ignore
+      })
+    })
+    col.show(fn() { agents().length() > 0 }, fn(p) {
+      info_gap_node(p, fn() { station() is Some(_) })
+      @sf.quiet_card_node(p, fn(k) {
+        let by_key = k.keyed_by(agents, agent_key)
+        k.each(fn() { by_key.keys() }, fn(key) { key }, fn(row, key) {
+          let key = key.untracked()
+          info_agent_row_node(row, src, fn() { by_key.get(key) }, fn() {
+            close()
+            open_agent(src, r, key)
+          })
+        })
+      })
+    })
+    col.box(fn(f) { @sf.style_node(f, fn() { @sf.panel_card_last_node(f) }) }) |> ignore
+  })
+  |> ignore
 }
 
 // ── jobs ─────────────────────────────────────────
@@ -1542,6 +1649,325 @@ fn open_chat_jobs(src : Source, r : ChatRef) -> Unit {
     jobs_node(v, src, r, close)
   })
 }
+
+///|
+/// One of the rows of the chat's led sub-chats bottom sheet (`subchats_sheet_node`): empty state, collapsible done or
+/// archived group heading (`has_above`), or a sub-chat row in the active (`0`), done (`1`), or archived (`2`) card group.
+#derive(Eq, Hash)
+priv enum SubchatSheetRow {
+  SubchatsEmpty
+  SubchatsDoneHead(Bool)
+  SubchatsArchivedHead(Bool)
+  SubchatsOne(Int, String)
+}
+
+///|
+fn subchat_sheet_key(o : @sfbase.OpenedChat) -> String {
+  o.chat.station + "\u{1}" + o.chat.session
+}
+
+///|
+fn subchats_sheet_rows(
+  subchats : Array[@sfbase.OpenedChat],
+  done_open : Bool,
+  archived_open : Bool,
+) -> Array[SubchatSheetRow] {
+  let out : Array[SubchatSheetRow] = []
+  if subchats.length() == 0 {
+    out.push(SubchatsEmpty)
+    return out
+  }
+  let mut has_active = false
+  for o in subchats {
+    if !o.archived && !@sfpages.subchat_is_done(o) {
+      has_active = true
+      out.push(SubchatsOne(0, subchat_sheet_key(o)))
+    }
+  }
+  let done = subchats.filter(fn(o) { @sfpages.subchat_is_done(o) })
+  let has_done = done.length() > 0
+  if has_done {
+    out.push(SubchatsDoneHead(has_active))
+    if done_open {
+      for o in done {
+        out.push(SubchatsOne(1, subchat_sheet_key(o)))
+      }
+    }
+  }
+  let archived = subchats.filter(fn(o) { o.archived })
+  if archived.length() > 0 {
+    out.push(SubchatsArchivedHead(has_active || has_done))
+    if archived_open {
+      for o in archived {
+        out.push(SubchatsOne(2, subchat_sheet_key(o)))
+      }
+    }
+  }
+  out
+}
+
+///|
+/// The chat's led sub-chats bottom sheet on Small screens (`open_subchats`): grouped cards in a virtualized
+/// `panel_list_node` with live running/waiting counts in `head_end` and collapsible done and archived groups.
+fn open_subchats(src : Source, r : ChatRef) -> Unit {
+  let opened = fn() {
+    match @sfbase.chat_view_now(src, r) {
+      Some(cv) => cv.opened
+      None => []
+    }
+  }
+  @sf.panel_nodes(
+    tr("web-pages.chat.subchats"),
+    from=Unanchored,
+    tall=0.62,
+    hugs=true,
+    grows=true,
+    head_end=fn(e) { @sfpages.subchats_counts_node(e, opened) },
+    fn(v, close) { subchats_sheet_node(v, opened, close) },
+  )
+}
+
+///|
+fn subchats_sheet_node(v : @view.View, opened : () -> Array[@sfbase.OpenedChat], close : () -> Unit) -> Unit {
+  let subchats = @signals.computed(fn(_) { @sfpages.led_subchats(opened()) })
+  let done_open = @signals.signal(
+    @signals.untracked(fn() { !subchats.get().iter().any(fn(o) { !o.archived && !@sfpages.subchat_is_done(o) }) }),
+  )
+  let archived_open = @signals.signal(@signals.untracked(fn() { !subchats.get().iter().any(fn(o) { !o.archived }) }))
+  let rows = @signals.computed(fn(_) { subchats_sheet_rows(subchats.get(), done_open.get(), archived_open.get()) })
+  v.reacts(at_start=false, fn() { rows.get().length() }, fn(_) { @sf.panel_reshaped_node(v) }) |> ignore
+  @sf.panel_list_node(
+    v,
+    fn() { rows.get() },
+    fn(b, row) { subchats_sheet_row_node(b, row, fn() { subchats.get() }, done_open, archived_open, close) },
+    est=subchats_row_est,
+  )
+  |> ignore
+  v.show(at_once=true, fn() { rows.get().last() is Some(SubchatsOne(_, _)) }, fn(f) {
+    @sf.style_node(f, fn() { @sf.panel_card_last_node(f) })
+  })
+}
+
+///|
+let subchats_row_est : Double = 56.0
+
+///|
+fn subchats_sheet_group_head_node(
+  b : @view.View,
+  label : () -> String,
+  count : () -> Int,
+  open : @signals.Signal[Bool],
+  has_above : Bool,
+) -> Unit {
+  b.box(fn(slot) {
+    @sf.style_node(slot, fn() { @sf.panel_words_in_node(slot).then(info_fill) })
+    @sf.action_box_node(
+      slot,
+      label,
+      fn(_) { open.set(!open.untracked()) },
+      expanded=fn() { open.get() },
+      fn(h) {
+        @sf.style_node(h, fn() {
+          (if has_above { subchats_archived_head } else { subchats_archived_head_top })
+          .then(subchats_archived_round)
+        })
+        h.min_height(Is(Some(44.0))) |> ignore
+        @sf.hover_ground_node(h)
+        h.box(fn(l) {
+          @sf.style_node(l, fn() { subchats_archived_left }, in_row=true)
+          @sf.words_node(l, label, fn() { jobs_head_words }) |> ignore
+          @sf.words_node(l, fn() { count().to_string() }, fn() { subchats_archived_count_words }) |> ignore
+        })
+        |> ignore
+        @sf.icon_node(
+          h,
+          "",
+          14.0,
+          By(fn() { @sf.theme().p.subtle }),
+          name_now=fn() { if open.get() { "chevron-down" } else { "chevron-right" } },
+        )
+        |> ignore
+      },
+    )
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+fn subchats_sheet_row_node(
+  b : @view.View,
+  row : SubchatSheetRow,
+  subchats : () -> Array[@sfbase.OpenedChat],
+  done_open : @signals.Signal[Bool],
+  archived_open : @signals.Signal[Bool],
+  close : () -> Unit,
+) -> Unit {
+  match row {
+    SubchatsEmpty =>
+      b.box(fn(n) {
+        @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(jobs_none) })
+        @sf.words_node(n, fn() { tr("web-pages.chat.subchatsNone") }, fn() { jobs_none_words }) |> ignore
+      })
+      |> ignore
+    SubchatsDoneHead(has_above) =>
+      subchats_sheet_group_head_node(
+        b,
+        fn() { tr("web-pages.chat.subchatsDone") },
+        fn() {
+          let mut n = 0
+          for o in subchats() {
+            if @sfpages.subchat_is_done(o) {
+              n += 1
+            }
+          }
+          n
+        },
+        done_open,
+        has_above,
+      )
+    SubchatsArchivedHead(has_above) =>
+      subchats_sheet_group_head_node(
+        b,
+        fn() { tr("web-pages.chat.subchatsArchived") },
+        fn() {
+          let mut n = 0
+          for o in subchats() {
+            if o.archived {
+              n += 1
+            }
+          }
+          n
+        },
+        archived_open,
+        has_above,
+      )
+    SubchatsOne(group_kind, key) => {
+      let group = fn() {
+        match group_kind {
+          0 => subchats().filter(fn(o) { !o.archived && !@sfpages.subchat_is_done(o) })
+          1 => subchats().filter(fn(o) { @sfpages.subchat_is_done(o) })
+          _ => subchats().filter(fn(o) { o.archived })
+        }
+      }
+      let item_now = @signals.computed(fn(_) { group().iter().find_first(fn(o) { subchat_sheet_key(o) == key }) })
+      let piece_now = @signals.computed(fn(_) {
+        let g = group()
+        match g.search_by(fn(o) { subchat_sheet_key(o) == key }) {
+          Some(i) => @sf.card_piece_of(i, g.length())
+          None => @sf.CardWhole
+        }
+      })
+      @sf.card_piece_node(b, fn() { piece_now.get() }, fn(k) {
+        subchat_sheet_item_node(k, fn() { item_now.get() }, close)
+      })
+    }
+  }
+}
+
+///|
+fn subchat_sheet_item_node(k : @view.View, item : () -> @sfbase.OpenedChat?, close : () -> Unit) -> Unit {
+  let title = fn() {
+    match item() {
+      Some(o) => o.chat.title
+      None => ""
+    }
+  }
+  let state_text = fn() {
+    match item() {
+      Some(o) => @sfpages.subchat_row_state_text(o)
+      None => ""
+    }
+  }
+  let is_archived = fn() {
+    match item() {
+      Some(o) => o.archived
+      None => false
+    }
+  }
+  @sf.quiet_row_node(
+    k,
+    title,
+    look=subchats_sheet_row_look,
+    press=fn() {
+      match @signals.untracked(item) {
+        Some(o) => {
+          close()
+          @sfbase.open_page(Chat(o.chat))
+        }
+        None => ()
+      }
+    },
+    fn(row) {
+      row.box(fn(line) {
+        @sf.style_node(line, fn() { info_more_line }, in_row=true)
+        line.box(fn(d) {
+          d.width(Is(Some(16.0))).lines_up(Is(Some(Middle))) |> ignore
+          @sf.quiet_first_line(d)
+          d.pick(at_once=true, fn() { @sfpages.subchat_mark_kind(item()) }, fn(m, kind) {
+            match kind {
+              0 => @sf.state_dot_node(m, size=8.0, breathes=true, fn() { "live" })
+              1 => @sf.state_dot_node(m, size=8.0, breathes=true, fn() { "restart" })
+              2 => @sf.state_dot_node(m, size=8.0, breathes=false, fn() { "fail" })
+              3 => @sf.icon_node(m, "archive", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+              4 => @sf.icon_node(m, "check", 14.0, By(fn() { @sf.theme().p.green_ink })) |> ignore
+              _ => @sf.icon_node(m, "spawned", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+            }
+          })
+        })
+        |> ignore
+        line.box(fn(w) {
+          @sf.style_node(w, fn() { subchats_sheet_words }, in_row=true)
+          w.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+          @sf.words_node(w, title, fn() { if is_archived() { job_name_off } else { job_name } }).allow_ellipsis(Is(true)) |> ignore
+          w.show(at_once=true, fn() { state_text() != "" }, fn(st) {
+            @sf.words_node(st, state_text, fn() { subchats_sheet_state }).allow_ellipsis(Is(true)) |> ignore
+          })
+        })
+        |> ignore
+        line.box(fn(c) {
+          @sf.quiet_first_line(c)
+          @sf.row_chevron_node(c)
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+  )
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_sheet_row_look : @ui.Style = @sf.quiet_row_style.then(@ui.css("py=S2 align=ACenter"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_sheet_words : @ui.Style = @ui.css("gap=SPx")
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_sheet_state : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, w=Cut)
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_archived_round : @ui.Style = @ui.style(radius=@sf.panel_in)
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_archived_head : @ui.Style = @ui.css("row w=Full mt=S2 align=ACenter justify=JBetween")
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_archived_head_top : @ui.Style = @ui.css("row w=Full align=ACenter justify=JBetween")
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_archived_left : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_archived_count_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, tabular=true, wrap=false)
 
 ///|
 /// The chat's services and jobs to come while they are read (in their bones): made-up ones, two services and a job.
@@ -1819,7 +2245,7 @@ fn job_output_node(v : @view.View, src : Source, r : ChatRef, id : String) -> Un
         )
         let top = @signals.computed(fn(_) { first() == n }, same=fn(a, b) { a == b })
         @sf.style_node(row, fn() {
-          job_output_line.then(@ui.style(pt=@sf.room_of(if top.get() { job_output_end } else { 0.0 })))
+          if top.get() { job_output_first } else { job_output_line }
         })
         job_runs_node(row, fn() { runs.get() }, fn() { job_words(@sf.theme().t.caption, line=job_code_line) }, fn() {
           @sf.theme().p.text
@@ -1938,10 +2364,13 @@ let job_notice_words : @ui.Style = @ui.css("w=Full")
 let job_last : @ui.Style = @ui.css("w=Full gap=S0_5")
 
 ///|
+let job_output_min_h : Double = 120.0
+
+///|
 /// Its output: filling what is left, 120 at least, 16 round, on the ink at 5%, cut at its corners; its lines 14 in, 12
 /// over the first and under the last; a spinner 12 across 14 in and 12 down while it is read.
 // kept across runs: a value (no field of it changes)
-let job_output_box : @ui.Style = @ui.css("w=Full h=Full min_h=Fixed(120.0) radius=Xl1_5 clip")
+let job_output_box : @ui.Style = @ui.css("w=Full h=Full radius=Xl1_5 clip").then(@ui.style(min_h=Fixed(job_output_min_h)))
 
 ///|
 let job_output_ink : Double = 0.05
@@ -1955,18 +2384,22 @@ let job_output_end : Double = 12.0
 
 ///|
 // kept across runs: a value (no field of it changes)
+let job_output_first : @ui.Style = job_output_line.then(@ui.style(pt=@sf.room_of(job_output_end)))
+
+///|
+// kept across runs: a value (no field of it changes)
 let job_output_wait : @ui.Style = @ui.css("px=S3_5 py=S3")
 
 ///|
 let job_output_spin : Double = 12.0
 
 ///|
-/// Stopping it: a capsule across, 46 high, its mark and words 6 apart in its middle, on red at 12%.
-// kept across runs: a value (no field of it changes)
-let job_stop : @ui.Style = @ui.css("row w=Full h=Fixed(46.0) radius=Full gap=S1_5 align=ACenter justify=JCenter")
+let job_stop_h : Double = 46.0
 
 ///|
-let job_stop_h : Double = 46.0
+/// Stopping it: a capsule across, 46 high, its mark and words 6 apart in its middle, on red at 12%.
+// kept across runs: a value (no field of it changes)
+let job_stop : @ui.Style = @ui.css("row w=Full radius=Full py=S2 gap=S1_5 align=ACenter justify=JCenter").then(@ui.style(min_h=Fixed(job_stop_h)))
 
 ///|
 let job_stop_ink : Double = 0.12

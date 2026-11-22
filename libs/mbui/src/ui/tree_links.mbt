@@ -3,7 +3,7 @@
 // them out and draws them: view_runs_laid), the rest of the node passing a finger on to what is under it; a link's
 // runs one after another one link (link_first). Pressed, that link's pressed ground under it alone; tapped (a finger's
 // tap, a mouse's click let go on it), where it leads told; held a long press's time by a finger, or right clicked, told
-// with the piece of line under it, and nothing tapped as it is let go. Each told at its event's moment.
+// with its line where the hand is on it, and nothing tapped as it is let go. Each told at its event's moment.
 
 ///|
 /// What a node's links are as it shows them: which one the pointer is on (by its link's first run; -1 none), as it
@@ -14,8 +14,9 @@ pub struct RunsLinks {
 
 ///|
 /// Node `v`'s links (its words in pieces, `runs` as they are now: what it is told by View::words_runs), pressed:
-/// `tap` told where one leads as it is tapped; `hold` where it leads and the piece of line under the finger or the
-/// pointer (in the window: x, y, w, h) as it is held a long press's time or right clicked; `shown` each link's way,
+/// `tap` told where one leads as it is tapped; `hold` where it leads and its line where the finger or the pointer is
+/// on it (in the window: x, y, 0, h: at the hand across, the piece of line's top and height) as it is held a long
+/// press's time or right clicked; `shown` each link's way,
 /// its words and its first run as they change (what shows over one while it is pointed at: RunsLinks' `pointed`).
 pub fn runs_links(
   v : @view.View,
@@ -42,12 +43,13 @@ pub fn runs_links(
       ""
     }
   }
-  // (the piece in the window: where it is drawn, as big as it is drawn there)
-  let in_window = fn(p : (Int, Double, Double, Double, Double)) {
+  // (the piece's line at `at` across it, in the window: where it is drawn, as tall as it is drawn there, 0 wide, so
+  // what is opened of it stands under the words the hand is on, not at the start of a piece that runs a line long)
+  let in_window = fn(p : (Int, Double, Double, Double, Double), at : Double) {
     let (x, y, w, _) = v.rect()
     let lw = v.laid_size().0
     let s = if lw > 0.0 { w / lw } else { 1.0 }
-    (x + p.1 * s, y + p.2 * s, (p.3 - p.1) * s, (p.4 - p.2) * s)
+    (x + at * s, y + p.2 * s, 0.0, (p.4 - p.2) * s)
   }
   // (a finger taken where its links' pieces are alone)
   v.takes(fn(_, _, _) { pieces().map(fn(p) { (p.1, p.2, p.3, p.4) }) }) |> ignore
@@ -63,7 +65,7 @@ pub fn runs_links(
   let was_held = Ref(false)
   let told = fn(d : @view.Drag, f : (Int, (Double, Double, Double, Double)) -> Unit) {
     match piece_at(d.x, d.y) {
-      Some(p) => f(p.0, in_window(p))
+      Some(p) => f(p.0, in_window(p, d.x))
       None => ()
     }
   }
@@ -124,7 +126,7 @@ pub fn runs_links(
     Some(f) =>
       v.on_menu(fn(m) {
         match piece_at(m.x, m.y) {
-          Some(p) => f(href(p.0), in_window(p))
+          Some(p) => f(href(p.0), in_window(p, m.x))
           None => ()
         }
       })
@@ -197,7 +199,7 @@ pub fn runs_links(
 fn runs_link_pieces(v : @view.View, w : Double) -> Array[(Int, Double, Double, Double, Double)] {
   let (rs, look, set) = v.runs_set_now()
   guard !rs.is_empty() else { return [] }
-  let (r, lay, _) = view_runs_laid(rs, look, set, w, v.tree.words_scale_of(v.id()), kept=v.words_breaks_now())
+  let (r, lay, _) = view_runs_laid(rs, look, set, w, v.tree.words_scale_of(v.id()), kept=v.words_breaks_now(), tabular=v.words_tabular_now())
   rich_link_pieces(r, lay, 0.0, 0.0, center_in=if v.words_centered_now() { w } else { -1.0 })
 }
 
@@ -237,7 +239,7 @@ pub fn runs_piece(v : @view.View, from : Int, to : Int) -> (Double, Double) -> (
   fn(w, _h) {
     let (rs, look, set) = v.runs_set_now()
     guard !rs.is_empty() && from < to else { return None }
-    let (_, lay, _) = view_runs_laid(rs, look, set, w, v.tree.words_scale_of(v.id()), kept=v.words_breaks_now())
+    let (_, lay, _) = view_runs_laid(rs, look, set, w, v.tree.words_scale_of(v.id()), kept=v.words_breaks_now(), tabular=v.words_tabular_now())
     guard to <= lay.text.length() else { return None }
     let center = if v.words_centered_now() { w } else { -1.0 }
     let mut box : (Double, Double, Double, Double)? = None

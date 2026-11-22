@@ -55,7 +55,7 @@ pub fn named(calls : Array[Made], name : String) -> Array[Made] {
 ///|
 pub fn sheet_rested(t : @ui.Tester, key : String) -> Unit {
   t.draw()
-  let e = if key == "sf-present" { @sf.presented_rest() } else { @kit.sheet_rest(key) }
+  let e = if key == "sf-present" { @sf.presented_rest() } else { -1.0 }
   if e > t.time() && e < 1.0e300 {
     t.run_for(e - t.time())
   }
@@ -329,6 +329,7 @@ pub fn cards_core(
   platform? : Int = 2,
   op? : ((Array[String]) -> (Int, String, String))? = None,
   op_pending? : Bool = false,
+  autofill? : Bool = false,
   loc~ : SourceLoc,
 ) -> @ui.Tester {
   @sfapp.new_run()
@@ -342,11 +343,23 @@ pub fn cards_core(
   }
   @sfbase.open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   @sfapp.open_cards_fixture(mode)
-  let t = @ui.Tester::new(fn(c) { @sfapp.view(c, src) }, tree=@sfapp.app_tree(src), w=390.0, h=844.0, platform~, loc~)
+  // a host's password manager is fixed when it starts: set as the run begins, before the cards are made, not after
+  let t = @ui.Tester::new(
+    fn(c) { @sfapp.view(c, src) },
+    tree=@sfapp.app_tree(src),
+    w=390.0,
+    h=844.0,
+    platform~,
+    begun=fn() { if autofill { @ui.fake_autofill.val = true } },
+    loc~,
+  )
   t.run_for(@ui.move_most_ms)
-  if op is Some(_) {
+  // (a password manager here, or the host's own filling: the host's from the start, as on a device; the Tester's host
+  // given it once made, the chat opened again to be made with it)
+  if op is Some(_) || autofill {
     @ui.fake_op.val = op
     @ui.fake_op_pending.val = op_pending
+    @ui.fake_autofill.val = autofill
     t.back()
     t.run_for(@ui.move_most_ms)
     @sfbase.open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -411,15 +424,10 @@ pub fn fake_core(
   made? : Ref[@sfbase.Source?] = Ref(None),
   ups? : Map[String, Json] = Map([]),
   platform? : Int = 2,
-  nodes? : Bool = false,
-  composed? : Bool = false,
   on_call? : (String, Json) -> Unit = fn(_, _) {  },
   loc~ : SourceLoc,
 ) -> @ui.Tester {
   @sfapp.new_run()
-  if nodes || composed {
-    @sfbase.chat_page_nodes.set(true)
-  }
   let drafts_named = Ref(0)
   let base = @sffixture.fixture("chat")
   let src : @sfbase.Source = {

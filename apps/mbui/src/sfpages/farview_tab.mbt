@@ -405,6 +405,11 @@ pub fn farview_pane_node(
           let scs = items(sval, "screens")
           let br_tabs = scs.filter(fn(sc) { text(Some(sc), "kind") == "browser" })
           let other_scs = scs.filter(fn(sc) { text(Some(sc), "kind") != "browser" })
+          let user_ids = scs
+            .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+            .map(fn(sc) { text(Some(sc), "id") })
+          let can_term = flag(tval, "open")
+          let can_browse = flag(sval, "browser") && flag(sval, "control")
           let open_terms = items(tval, "terminals").filter(fn(t) { !flag(Some(t), "ended") })
           let page_here : @sfbase.Page = @sfbase.Page::Screen({ station, screen, title, until_gone: false })
           @sf.panel_nodes(
@@ -538,7 +543,7 @@ pub fn farview_pane_node(
                   danger=true,
                 )
               })
-              if !other_scs.is_empty() || !open_terms.is_empty() || flag(tval, "open") {
+              if !other_scs.is_empty() || !open_terms.is_empty() || can_term || can_browse {
                 @sf.panel_group_node(sheet, fn() { @sf.t("web-pages.remote.switchSession") }, fn(g) {
                   for sc in other_scs {
                     let sid = text(Some(sc), "id")
@@ -564,23 +569,30 @@ pub fn farview_pane_node(
                       fn() { tlabel },
                       fn() {
                         done()
-                        switch_to(@sfbase.Page::Terminal({ station, terminal: tid, watch: !flag(tval, "open"), cwd: tcwd }))
+                        switch_to(@sfbase.Page::Terminal({ station, terminal: tid, watch: !can_term, cwd: tcwd }))
                       },
                       icon=fn() { "terminal" },
                       note=fn() { tcwd },
                     )
                   }
-                  if flag(tval, "open") {
-                    @sf.panel_row_node(
-                      g,
-                      fn() { @sf.t("web-pages.terminal.new") },
-                      fn() {
-                        done()
-                        switch_to(@sfbase.Page::Terminal({ station, terminal: "new", watch: false, cwd: "" }))
-                      },
-                      icon=fn() { "plus" },
-                    )
-                  }
+                  remote_new_session_rows_node(
+                    g,
+                    fn() { can_term },
+                    fn() { can_browse },
+                    done,
+                    fn() { switch_to(@sfbase.Page::Terminal({ station, terminal: "new", watch: false, cwd: "" })) },
+                    fn() {
+                      let next = @settings.new_browser_tab(
+                        src.call,
+                        station,
+                        user_ids,
+                        failed_said(@sf.t("web-pages.screen.openBrowserWhat")),
+                      )
+                      let nu = screen_ui(screen_key(station, next))
+                      nu.address_asked.set(nu.address_asked.untracked() + 1)
+                      switch_to(@sfbase.Page::Screen({ station, screen: next, title: "", until_gone: false }))
+                    },
+                  )
                 })
               }
             },
@@ -660,24 +672,22 @@ pub fn farview_pane_node(
           at.padding(Is((8.0, 0.0, 8.0, 8.0))) |> ignore
           at.box(fn(line) {
             // (the words on one line, cut short where the row has not the room for them and 接管, never wrapped beside
-            // it; 接管's middle on that line's: each stands down from the top by half of what the other is taller)
+            // it; 接管's middle on that line's, concentric capsule round it at any size of words)
             line
             .row(Is(true))
             .gap(Is(8.0))
             .padding(Is((6.0, 6.0, 6.0, 6.0)))
-            .lines_up(Is(Some(Start)))
+            .lines_up(Is(Some(Middle)))
             .ground(By(fn() { @sf.theme().p.neutral_bg }))
             .radius(Is(@sf.button_height() / 2.0 + 6.0))
             |> ignore
-            let first_line = fn() { @sf.node_sp(line, @sf.ui_theme().text_size(Body).1) }
-            let past = fn() { (@sf.button_height() - first_line()) / 2.0 }
             line.box(fn(w) {
               // (its start off the capsule's round end, S3 in as the address's words in theirs: the line's 6 and the rest)
               w
               .grow(Is(1.0))
               .shrink(Is(1.0))
               .min_width(Is(Some(0.0)))
-              .padding(By(fn() { (farview_words_in - 6.0, past().max(0.0), 0.0, 0.0) }))
+              .padding(Is((farview_words_in - 6.0, 0.0, 0.0, 0.0)))
               |> ignore
               @sf.words_node(w, fn() { @sf.t("web-pages.chat.screenAgent") }, fn() { farview_agent_words })
               .cuts(Is(true))
@@ -687,7 +697,6 @@ pub fn farview_pane_node(
             })
             |> ignore
             line.box(fn(b) {
-              b.padding(By(fn() { (0.0, (-past()).max(0.0), 0.0, 0.0) })) |> ignore
               @sf.button_node(b, fn() { @sf.t("android-misc.screen.takeOver") }, fn() { tab.stage.take_over() }, tone=Primary) |> ignore
             })
             |> ignore
@@ -700,7 +709,7 @@ pub fn farview_pane_node(
       @stage.stage_node(
         col,
         tab.stage,
-        height=Some(fn() { (room.height().unwrap_or(col.window().1) - room.tall(chrome)).max(0.0) }),
+        height=Some(fn() { (room.height().unwrap_or(col.window_h()) - room.tall(chrome)).max(0.0) }),
         on_menu=Some(fn(hit) { farview_menu(tab.stage, hit, fn() { find.show(tab.stage) }) }),
       )
       |> ignore

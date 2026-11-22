@@ -285,6 +285,77 @@ impl Inner {
                 .map_err(err)??;
                 Ok(Answer::json(json!({ "size": size })))
             }
+            // A log other processes append to, cut in place once past `cap` (station/src/ops/storage.ts
+            // `rotateInPlace`): its last `keep` bytes (default `cap`) streamed through one 64 KiB buffer into
+            // `<path>.1.tmp` (0600), renamed to `<path>.1`, then `<path>` truncated to 0 keeping its inode.
+            "fs.rotate" => {
+                let path = PathBuf::from(str_of(a, "path")?);
+                let u64_of = |key: &str| -> Option<u64> {
+                    let v = a.get(key)?;
+                    if let Some(n) = v.as_u64() {
+                        Some(n)
+                    } else {
+                        v.as_f64().filter(|n| n.is_finite() && *n >= 0.0).map(|n| n as u64)
+                    }
+                };
+                let cap = u64_of("cap").ok_or_else(|| "no cap".to_string())?;
+                let keep = match a.get("keep") {
+                    None | Some(Value::Null) => cap,
+                    Some(_) => u64_of("keep").ok_or_else(|| "invalid keep".to_string())?,
+                };
+                let rotated = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+                    use std::io::{Read, Seek, SeekFrom, Write};
+                    let Ok(from) = std::fs::File::open(&path) else {
+                        return Ok(false);
+                    };
+                    let Ok(meta) = from.metadata() else {
+                        return Ok(false);
+                    };
+                    let size = meta.len();
+                    if size <= cap {
+                        return Ok(false);
+                    }
+                    let tmp = PathBuf::from(format!("{}.1.tmp", path.display()));
+                    let backup = PathBuf::from(format!("{}.1", path.display()));
+                    let run = |mut from: std::fs::File| -> Result<(), String> {
+                        let mut size = size;
+                        let mut to = own_file(&tmp)?;
+                        let mut buf = vec![0u8; 64 * 1024];
+                        let mut at = size.saturating_sub(keep);
+                        from.seek(SeekFrom::Start(at)).map_err(err)?;
+                        for _ in 0..2 {
+                            while at < size {
+                                let want = ((size - at) as usize).min(buf.len());
+                                let n = match from.read(&mut buf[..want]) {
+                                    Ok(n) => n,
+                                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                                    Err(e) => return Err(err(e)),
+                                };
+                                if n == 0 {
+                                    break;
+                                }
+                                to.write_all(&buf[..n]).map_err(err)?;
+                                at += n as u64;
+                            }
+                            size = from.metadata().map_err(err)?.len();
+                        }
+                        drop(to);
+                        drop(from);
+                        std::fs::rename(&tmp, &backup).map_err(err)?;
+                        let f = std::fs::OpenOptions::new().write(true).open(&path).map_err(err)?;
+                        f.set_len(0).map_err(err)?;
+                        Ok(())
+                    };
+                    if let Err(e) = run(from) {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Err(e);
+                    }
+                    Ok(true)
+                })
+                .await
+                .map_err(err)??;
+                Ok(Answer::json(json!(rotated)))
+            }
             "storage.get" => {
                 let path = storage_path(&self.dir, str_of(a, "key")?);
                 self.disk(move || match std::fs::read(&path) {
@@ -748,9 +819,82 @@ impl Inner {
             }
             return Ok(Some(Value::Array(values)));
         }
-        // A folder and those it is in, made where they are not (mkdirSync's `recursive`).
+        // A folder made where it is not; with `recursive` (default true), its parents too (`mkdirSync`'s `recursive`).
         if op == "fs.mkdir" {
-            std::fs::create_dir_all(str_of(a, "path")?).map_err(err)?;
+            let path = str_of(a, "path")?;
+            let recursive = a.get("recursive").and_then(Value::as_bool).unwrap_or(true);
+            if recursive {
+                std::fs::create_dir_all(path).map_err(err)?;
+            } else {
+                std::fs::create_dir(path).map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        format!("EEXIST: file already exists, mkdir '{path}'")
+                    } else {
+                        err(e)
+                    }
+                })?;
+            }
+            return Ok(Some(Value::Null));
+        }
+        // Update access and modification timestamps of a file or directory (used by OAuth lock heartbeats).
+        if op == "fs.utimes" {
+            let path = str_of(a, "path")?;
+            let mtime_ms = a
+                .get("mtimeMs")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| "no mtimeMs".to_string())?;
+            let atime_ms = a
+                .get("atimeMs")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite())
+                .unwrap_or(mtime_ms);
+            #[cfg(unix)]
+            {
+                let to_ts = |ms: f64| -> libc::timespec {
+                    let secs_f = (ms / 1000.0).floor();
+                    let mut sec = secs_f as i64;
+                    let mut nsec = ((ms - secs_f * 1000.0) * 1_000_000.0).round() as i64;
+                    if nsec >= 1_000_000_000 {
+                        sec += 1;
+                        nsec -= 1_000_000_000;
+                    } else if nsec < 0 {
+                        sec -= 1;
+                        nsec += 1_000_000_000;
+                    }
+                    libc::timespec { tv_sec: sec as libc::time_t, tv_nsec: nsec as _ }
+                };
+                let c_path = std::ffi::CString::new(path).map_err(|_| format!("invalid path: {path}"))?;
+                let times = [to_ts(atime_ms), to_ts(mtime_ms)];
+                let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0) };
+                if rc != 0 {
+                    return Err(err(std::io::Error::last_os_error()));
+                }
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                let to_time = |ms: f64| -> Result<std::time::SystemTime, String> {
+                    if ms >= 0.0 {
+                        std::time::UNIX_EPOCH
+                            .checked_add(std::time::Duration::from_secs_f64(ms / 1000.0))
+                            .ok_or_else(|| "time out of range".to_string())
+                    } else {
+                        std::time::UNIX_EPOCH
+                            .checked_sub(std::time::Duration::from_secs_f64(-ms / 1000.0))
+                            .ok_or_else(|| "time out of range".to_string())
+                    }
+                };
+                let file = std::fs::OpenOptions::new()
+                    .access_mode(0x0100) // FILE_WRITE_ATTRIBUTES
+                    .custom_flags(0x02000000) // FILE_FLAG_BACKUP_SEMANTICS
+                    .open(path)
+                    .map_err(err)?;
+                let times = std::fs::FileTimes::new()
+                    .set_accessed(to_time(atime_ms)?)
+                    .set_modified(to_time(mtime_ms)?);
+                file.set_times(times).map_err(err)?;
+            }
             return Ok(Some(Value::Null));
         }
         // What is at `path` let go, a folder with all it holds with `recursive`; nothing there is no failure (rmSync's

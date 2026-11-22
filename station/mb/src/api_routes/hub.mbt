@@ -156,25 +156,6 @@ pub async fn Admin::upload_path(
 }
 
 ///|
-/// A hash of SHA-256 made by the backend (node:crypto `createHash`): its handle's name.
-async fn Admin::sha256_new(self : Admin) -> JV {
-  self.backend.ask("crypto.createHash", [js("sha256")])
-}
-
-///|
-async fn Admin::sha256_of(self : Admin, body : Bytes) -> String {
-  let h = self.sha256_new()
-  let updated = self.backend.ask(ref_of(h).unwrap_or("") + ".update", [
-    jbytes(body),
-  ])
-  jstr(
-    Some(
-      self.backend.ask(ref_of(updated).unwrap_or("") + ".digest", [js("hex")]),
-    ),
-  ).unwrap_or("")
-}
-
-///|
 fn attachment(name : String, path : String, size : Double) -> JV {
   jobj([("name", js(name)), ("path", js(path)), ("size", jnum(size))])
 }
@@ -195,7 +176,7 @@ async fn Admin::save_upload(
   ignore(
     self.fs("writeFile", [js(path), jbytes(body), jobj([("flag", js("wx"))])]),
   )
-  self.known(dir, self.sha256_of(body), path)
+  self.known(dir, @hash.sha256_hex(body[:]), path)
   attachment(safe, path, body.length().to_double())
 }
 
@@ -396,7 +377,7 @@ async fn Admin::save_part_now(
     let added = body[(have - offset).to_int():].to_bytes()
     if have == 0.0 {
       self.state.naming.remove(id)
-      self.state.naming[id] = self.sha256_new()
+      self.state.naming[id] = @hash.Sha256::new()
       while self.state.naming.length() > NAMING_KEEP {
         let oldest = self.state.naming.keys().next().unwrap()
         self.state.naming.remove(oldest)
@@ -404,10 +385,7 @@ async fn Admin::save_part_now(
     }
     ignore(self.fs("appendFile", [js(part), jbytes(added)]))
     match self.state.naming.get(id) {
-      Some(h) =>
-        ignore(
-          self.backend.ask(ref_of(h).unwrap_or("") + ".update", [jbytes(added)]),
-        )
+      Some(h) => h.update(added[:])
       None => ()
     }
   }
@@ -423,12 +401,7 @@ async fn Admin::save_part_now(
   let named = self.state.naming.get(id)
   self.state.naming.remove(id)
   match named {
-    Some(h) => {
-      let digest = jstr(
-        Some(self.backend.ask(ref_of(h).unwrap_or("") + ".digest", [js("hex")])),
-      ).unwrap_or("")
-      self.known(dir, digest, path)
-    }
+    Some(h) => self.known(dir, h.hex(), path)
     None => ()
   }
   let file = attachment(safe, path, size)
@@ -1124,7 +1097,7 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
           Some(Str(t)) => trim_js(t)
           _ => ""
         }
-        let chat = self.backend.ask("sessions/lifecycle.openChat", [
+        let chat = self.backend.ask("sessions/lifecycle.ensureConversationChat", [
           jref("hub"),
           js(key),
           js(r.email()),
@@ -1236,6 +1209,38 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
     })
   }) +
   [
+    route(
+      "POST",
+      "^\\/*sessions\\/+resume-interrupted\\/*$",
+      async fn(r, _) {
+        self.hub_write(async fn() {
+          let keys = match input(r).get("keys") {
+            Some(Arr(xs)) =>
+              jarr(xs.filter_map(x => match jstr(Some(x)) { Some(s) if s != "" => Some(js(s)); _ => None }))
+            _ => Null
+          }
+          let resumed = self.hub("resumeInterrupted", [r.viewer, keys])
+          self.log("info", "admin", "resumed sessions interrupted by restart", jobj([("resumed", resumed), ("by", js(r.email()))]))
+          ok(jobj([("ok", jbool(true)), ("resumed", resumed)]))
+        })
+      },
+    ),
+    route(
+      "POST",
+      "^\\/*sessions\\/+dismiss-interrupted\\/*$",
+      async fn(r, _) {
+        self.hub_write(async fn() {
+          let keys = match input(r).get("keys") {
+            Some(Arr(xs)) =>
+              jarr(xs.filter_map(x => match jstr(Some(x)) { Some(s) if s != "" => Some(js(s)); _ => None }))
+            _ => Null
+          }
+          let dismissed = self.hub("dismissInterrupted", [r.viewer, keys])
+          self.log("info", "admin", "dismissed sessions interrupted by restart", jobj([("dismissed", dismissed), ("by", js(r.email()))]))
+          ok(jobj([("ok", jbool(true)), ("dismissed", dismissed)]))
+        })
+      },
+    ),
     route(
       "POST",
       "^\\/*sessions\\/+([^/]+)\\/+(stop|cancel-retry|retry|reassign|evict|warm|compact|clear|settings)(?:\\/.*)?$",

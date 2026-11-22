@@ -785,16 +785,28 @@ try {
     log(`  chat ${k2}, room ${room2}, commit ${commit2.slice(0, 10)}, job ${jobsText(tag)}`);
   });
   let item = "";
-  await check("setup: a vault item alice stored (the plain library) and a skill in A's agent home", async () => {
-    item = (await a.call("vault.putItem", {
-      workspace: ws, vault: "plain",
-      plain: { kind: "token", name: `drill-token-${tag}`, fields: { value: `v-${tag}` }, domains: [], notes: "" },
-      listing: { name: `drill-token-${tag}`, kind: "token", modes: ["proxy"], hosts: ["api.example.test"] },
-    }))?.id ?? "";
+  let encrypted = false;
+  await check("setup: a vault item alice stored (the plain library, or in safe mode a vault of hers on A) and a skill in A's agent home", async () => {
+    const plain = { kind: "token", name: `drill-token-${tag}`, fields: { value: `v-${tag}` }, domains: [], notes: "" };
+    const listing = { name: `drill-token-${tag}`, kind: "token", modes: ["proxy"], hosts: ["api.example.test"] };
+    // (a workspace in safe mode keeps no plain library: its secrets go in an encrypted vault, its rows opaque to every
+    // station, the vault module carrying them as they are: move/vault.ts)
+    const put = await a.call("vault.putItem", { workspace: ws, vault: "plain", plain, listing }).catch((e: Error) => {
+      if (!/vault_locked/.test(String(e?.message ?? e))) throw e;
+      return null;
+    });
+    if (put !== null) item = put?.id ?? "";
+    else {
+      encrypted = true;
+      await a.call("vault.setup", { workspace: ws });
+      await a.until({ topic: "vaults", workspace: ws }, (v) => v?.setUp, 60_000);
+      const vault = (await a.call("vault.create", { workspace: ws, name: `drill-${tag}`, station: aId })).id as string;
+      item = (await a.call("vault.putItem", { workspace: ws, vault, plain, listing }))?.id ?? "";
+    }
     const rows = await whenChanged([DATA.A], () => {
-      const r = sql("A", "select id, owner from vault_plain");
+      const r = sql("A", encrypted ? "select id, vault from vault_items" : "select id, owner from vault_plain");
       return r.length > 0 && r;
-    }, 60_000, () => "A keeps no plain item");
+    }, 60_000, () => `A keeps no ${encrypted ? "vault" : "plain"} item`);
     log(`  item ${item}: A keeps ${brief(rows)}`);
     mkdirSync(`${DATA.A}/agent/skills/drill-skill`, { recursive: true });
     writeFileSync(`${DATA.A}/agent/skills/drill-skill/SKILL.md`, `---\nname: drill-skill\ndescription: the move drill's\n---\n${tag}\n`);
@@ -1128,6 +1140,10 @@ try {
         mkdirSync(home, { recursive: true });
         writeFileSync(join(home, "kimi-code.json"), JSON.stringify({ access: `drill-${tag}`, refresh: `drill-${tag}`, expiresAt: Date.now() + 30 * 86_400_000, lifeMs: 15 * 60_000, deviceId: `drill-${tag}` }), { mode: 0o600 });
         writeFileSync(join(home, "kimi-code.token"), `drill-${tag}`, { mode: 0o600 });
+        // (the chats on A before it keep their logins: a Kimi sign-in is paid for already, and the account pool takes a
+        // chat on one billed per use onto it at its next turn (sessions/accounts.ts), which made part 2's chat need this
+        // login and the login's move refused for stopping it: drill 2026-11-20)
+        execFileSync("sqlite3", [`${DATA.A}/stillfail.db`, `UPDATE sessions SET profile_pinned = 1 WHERE profile <> '${kimi}'`]);
       } finally {
         await up("A");
         log("  waiting for A online on alice's device's link");
@@ -1169,12 +1185,12 @@ try {
       if (back) {
         await check("2k: the person is told in the chat that it is stopped and what it waits for", async () => {
           // (the station answers a person's message to a chat a move stopped once, with its own notice in the chat
-          // (author_kind ember, station/src/store/rows.ts STATION_AUTHOR), station.move.stoppedChat: zh 「这个对话在「A」上
+          // (author_kind station, station/src/store/rows.ts STATION_AUTHOR), station.move.stoppedChat: zh 「这个对话在「A」上
           // 暂停了：它在等「Kimi Code」…」; and no turn begins)
           const t0 = Date.now();
           await a.call("chat.send", { station: A, session: kc, text: `drill-recall:${nonce}` });
           await whenChanged([DATA.A], () => sql("A", `select count(*) n from entries where text like ${lit(`%drill-recall:${nonce}%`)}`)[0].n > 0, 60_000, () => "the message is not in A's log");
-          const notices = () => sql("A", `select text from entries e join threads t on t.id = e.thread where t.home = ${lit(kc)} and e.at >= ${t0} and e.author_kind = 'ember'`).map((r) => String(r.text));
+          const notices = () => sql("A", `select text from entries e join threads t on t.id = e.thread where t.home = ${lit(kc)} and e.at >= ${t0} and e.author_kind = 'station'`).map((r) => String(r.text));
           const said = await whenChanged([DATA.A], () => {
             const n = notices().filter((x) => /暂停|在等|paused|stopped|waiting/i.test(x) && /Kimi Code|kimi-code/i.test(x));
             return n.length > 0 && n;
@@ -2051,7 +2067,7 @@ try {
       await check("4: the job, the vault item, the skill, the setting and the account on B", async () => {
         const j = jobs(jobTag);
         if (!(j.length === 1 && j[0]!.on === "B")) throw new Error(`the job: ${jobsText(jobTag)}`);
-        if (sql("B", "select count(*) n from vault_plain")[0].n < 1) throw new Error("no plain item on B");
+        if (sql("B", `select count(*) n from ${encrypted ? "vault_items" : "vault_plain"}`)[0].n < 1) throw new Error(`no ${encrypted ? "vault" : "plain"} item on B`);
         if (!existsSync(`${DATA.B}/agent/skills/drill-skill/SKILL.md`)) throw new Error("no skill on B");
         const cfg = JSON.parse(readFileSync(`${DATA.B}/config.json`, "utf8"));
         if (cfg.maxNudges !== 7) throw new Error(`B's maxNudges ${cfg.maxNudges}`);
@@ -2086,7 +2102,9 @@ try {
         const cfg = JSON.parse(readFileSync(`${DATA.B}/config.json`, "utf8"));
         if (cfg.maxNudges !== undefined) throw new Error(`B kept the setting it was given: maxNudges ${cfg.maxNudges}`);
         // (the skill stays on B: the workspace's skills are every station's, no move's to take back)
-        if (sql("B", "select count(*) n from vault_plain")[0].n > 0) throw new Error("B kept the vault item it was given");
+        // (a vault in safe mode is every station's: alice's device brings it to each station that lacks it, client/core-ts
+        // src/views/vault.ts `spread`, so B keeps it whatever the move did; only the plain library's is the move's alone)
+        if (!encrypted && sql("B", "select count(*) n from vault_plain")[0].n > 0) throw new Error("B kept the vault item it was given");
       });
     }
     log("SKIP 4: a connect moved with `all`: no connect is part of this part's station; a Slack connect's chats and the connect itself are part 4s's, on Slack's stand-in");

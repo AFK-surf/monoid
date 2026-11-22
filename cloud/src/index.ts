@@ -8,7 +8,8 @@ import { installScript, releaseType, sharedRelease } from "./install.ts";
 import { windowsInstallScript } from "./install-windows.ts";
 import { cloudProduct, requestLang, setCloud, tr } from "./i18n.ts";
 import { latestDownload, serveRelease, upstreamRelease } from "./releases.ts";
-import { authConfigured, bearerToken, denied, digest, readJson, reply, validId, validSecret, verifyToken } from "./auth";
+import { appleConfigured } from "./apple";
+import { authConfigured, bearerToken, denied, digest, readJson, readText, reply, validId, validSecret, verifyToken } from "./auth";
 import { devicePage, googleStart, consumeLoginRate, signedInPage } from "./login";
 import { passwordSignIn } from "./password";
 import { adminOrigins, betaOrigin, header, publicOrigins } from "./compat";
@@ -16,7 +17,7 @@ import { asOrigin, forward, served } from "./guests";
 import { isMoveCall, moveApi, moving } from "./move";
 import { asProductOf } from "./here";
 import type { Env } from "./env";
-import { adminApi, api, audited, blockAccount, relayAdmin, FEEDBACK_REPLY_PATH, FEEDBACK_STATUS_PATH, feedbackList, liveOf, notBetaReply, onTestChannel, replyToFeedback, setFeedbackStatus } from "./api";
+import { adminApi, adminKeyApi, api, audited, blockAccount, relayAdmin, FEEDBACK_REPLY_PATH, FEEDBACK_STATUS_PATH, feedbackList, liveOf, notBetaReply, onTestChannel, replyToFeedback, setFeedbackStatus } from "./api";
 import { cloudLogToTelemetry, errorMessage, noted, parseTraceparent, recordCall, relayToTelemetry, route, takeNotes, unverifiedNotes } from "./tracing";
 export { TelemetryLimiter } from "./tracing";
 export { Account } from "./account";
@@ -146,7 +147,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const path = url.pathname;
   if (path === "/healthz" && request.method === "GET") {
     // The Worker's name, which it keeps (Cloudflare knows it by it).
-    return Response.json({ service: "stillfail-cloud", google_login: authConfigured(env) });
+    return Response.json({ service: "stillfail-cloud", google_login: authConfigured(env), apple_login: authConfigured(env) && appleConfigured(env) });
   }
   const onPublic = publicOrigins(env).includes(url.origin);
   const onBeta = url.origin === betaOrigin(env);
@@ -194,14 +195,22 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (ofBeta && !path.startsWith("/v1/auth/") && (await notBeta(request, env))) return notBetaReply(env, request);
   }
   if (onConsole) {
-    if (path === "/v1/auth/google/start" && request.method === "GET") return toPublic(env, url);
-    if (path.startsWith("/v1/admin/")) return adminApi(request, env, path);
+    if ((path === "/v1/auth/google/start" || path === "/v1/auth/apple/start") && request.method === "GET") return toPublic(env, url);
+    if (path.startsWith("/v1/admin/")) {
+      const supplied = bearerToken(request);
+      if (supplied?.startsWith("sfa_")) return adminKeyApi(request, env, path, supplied);
+      return adminApi(request, env, path);
+    }
     if (!CONSOLE_CALLS.has(path)) return notFound();
   }
-  // A browser signing in on an old host, or on the test channel's, goes on to the new one, which Google calls back.
-  if (url.origin !== env.PUBLIC_ORIGIN && request.method === "GET" && (path === "/v1/auth/google/start" || /^\/v1\/auth\/device\/[A-Za-z0-9_-]{43}$/.test(path))) return toPublic(env, url);
+  // A browser signing in on an old host, or on the test channel's, goes on to the new one, which Google and Apple call back.
+  if (url.origin !== env.PUBLIC_ORIGIN && request.method === "GET" && (path === "/v1/auth/google/start" || path === "/v1/auth/apple/start" || /^\/v1\/auth\/device\/[A-Za-z0-9_-]{43}$/.test(path))) return toPublic(env, url);
   if (path === "/v1/auth/google/start" && request.method === "GET") {
     return googleStart(env, request);
+  }
+  if (path === "/v1/auth/apple/start" && request.method === "GET") {
+    if (!appleConfigured(env)) return reply({ error: "apple_login_not_configured" }, 503);
+    return googleStart(env, request, "apple");
   }
   if (path === "/v1/auth/device/complete" && request.method === "GET") {
     const lang = requestLang(request);
@@ -237,6 +246,24 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (!validSecret(state)) return reply({ error: "invalid_login_state" }, 400);
     return env.LOGINS.getByName(state).callback(state, request);
   }
+  if (path === "/v1/auth/apple/callback" && request.method === "POST") {
+    if (!appleConfigured(env)) return reply({ error: "apple_login_not_configured" }, 503);
+    try {
+      if (request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/x-www-form-urlencoded") return reply({ error: "invalid_login_state" }, 400);
+      const form = new URLSearchParams(await readText(request, 8192));
+      const state = form.get("state");
+      if (!validSecret(state)) return reply({ error: "invalid_login_state" }, 400);
+      return env.LOGINS.getByName(state).applePosted(state, { code: form.get("code"), error: form.has("error"), user: form.get("user") }, env.PUBLIC_ORIGIN);
+    } catch {
+      return reply({ error: "invalid_login_state" }, 400);
+    }
+  }
+  if (path === "/v1/auth/apple/callback" && request.method === "GET") {
+    if (!appleConfigured(env)) return reply({ error: "apple_login_not_configured" }, 503);
+    const state = url.searchParams.get("state");
+    if (!validSecret(state)) return reply({ error: "invalid_login_state" }, 400);
+    return env.LOGINS.getByName(state).appleCallback(state, request);
+  }
   if (path === "/v1/auth/token" && request.method === "POST") {
     try {
       const body = await readJson(request);
@@ -265,6 +292,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
     } catch {
       return reply({ error: "invalid_request" }, 400);
     }
+  }
+  if (onPublic && path.startsWith("/v1/admin/")) {
+    const supplied = bearerToken(request);
+    if (supplied?.startsWith("sfa_")) return adminKeyApi(request, env, path, supplied);
   }
   const admin = /^\/v1\/admin\/accounts\/([A-Za-z0-9_-]{1,128})$/.exec(path);
   const deleteWorkspace = /^\/v1\/admin\/workspaces\/([A-Za-z0-9_-]{1,64})\/delete$/.exec(path);

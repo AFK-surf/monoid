@@ -270,19 +270,16 @@ fn bar_card_node(
     // the one held, where the finger has it, over the rest
     r.show(fn() { held.get() is Some(_) }, fn(o) {
       o.over(Is(true)) |> ignore
-      o.pick(fn() { held_key().unwrap_or("") }, fn(p, key) {
-        p.box(fn(slot) {
-          @sf.style_node(slot, fn() { bar_row_held })
-          let raised = @sf.held_raised
-          slot.radius(Is(bar_slot_corner)).shadow(Is((raised.sigma, raised.dy, raised.color))) |> ignore
-          slot
-          .width(By(fn() { held.get().map(fn(h) { Some(h.w) }).unwrap_or(None) }))
-          .offset(By(fn() { held.get().map(fn(h) { (0.0, h.y + h.dy) }).unwrap_or((0.0, 0.0)) }))
-          |> ignore
-          @sf.list_row_face_node(slot, fn(m) { bar_place_mark_node(m, key) }, fn() { bar_place_name(key) })
-          slot.show(fn() { !only() }, fn(k) { bar_remove_look_node(k) })
-        })
+      o.pick(fn() { held_key().unwrap_or("") }, fn(slot, key) {
+        @sf.style_node(slot, fn() { bar_row_held })
+        let raised = @sf.held_raised
+        slot.radius(Is(bar_slot_corner)).shadow(Is((raised.sigma, raised.dy, raised.color))) |> ignore
+        slot
+        .width(By(fn() { held.get().map(fn(h) { Some(h.w) }).unwrap_or(None) }))
+        .offset(By(fn() { held.get().map(fn(h) { (0.0, h.y + h.dy) }).unwrap_or((0.0, 0.0)) }))
         |> ignore
+        @sf.list_row_face_node(slot, fn(m) { bar_place_mark_node(m, key) }, fn() { bar_place_name(key) })
+        slot.show(fn() { !only() }, fn(k) { bar_remove_look_node(k) })
       })
     })
   })

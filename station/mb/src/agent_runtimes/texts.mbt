@@ -233,6 +233,10 @@ pub let notes : Array[(Int, String)] = [
   (176, "relays action enroll (name) now issues a one-use workspace mesh relay enrollment token, valid for 24 hours. Keep it private; it grants forwarding only and is redeemed at the issuing station. list includes registered mesh nodes; revoke (node) asks the issuing station to remove one."),
   (177, "station_version: list shows this station's release, its channel's latest and the earlier releases it can go back to; update installs the latest; back {to} goes back to one of them when the latest broke something (updating by itself pauses until a newer release is out)."),
   (178, "New tool chat_configure: inspect or change a session's runtime, model, effort, speed, context, preset or account (repick) here or on another workspace station; omit chat or pass \"self\" for your own. chat_list now shows each session's model and creator and accepts model, created_by (\"me\" or email), archived and station (name/id or \"all\") filters. Superseded tools (adb_devices, phone_use, secret_reask, station_retire) are hidden from tools/list in favor of device_list/device_use and station_move."),
+  (179, "Moving to another station is on for every station now, stable ones too: station_move and skill stillfail-move are there wherever a station did not offer them before."),
+  (180, "chat_post now takes a Feishu chat_id as to (to=\"oc_…\"): in a Feishu group your bot made or is in, with no conversation yet, it posts the first message there and makes that thread one of your conversations; its answer names the oc_…/… address to use from then on."),
+  (181, "Google Colab GPU sandboxes (colab-g4, colab-l4, colab-t4) are now automatically exposed from Google Colab profiles in Settings → Profiles (设置 → Profiles) and discoverable across stations in the same workspace via station_list and station_task."),
+  (182, "chat_configure now takes for: \"me\" (lead a still.fail chat as your sub-chat) or \"person\" (hand a led sub-chat back to people), and reports led and leader when inspecting a session."),
 ]
 
 ///|

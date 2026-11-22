@@ -36,54 +36,64 @@
 /// rule 4's one fewer in each half: 文件 and a station's drive made once as nodes, its folder 12 in from its frame's sides; chat-remote swept
 /// (a chat whose 远程's menu its bar opens): rule 4's one more in each, its wide chat's head as every wide chat's (its
 /// title 12 in, its faces 6 from its end); 2026-11-18, chat-info-bare swept (the chat's sheet with nothing in its thread,
-/// its station's screen an agent drives): rule 4's one more in each, its wide chat's head as every wide chat's. The
+/// its station's screen an agent drives): rule 4's one more in each, its wide chat's head as every wide chat's;
+/// 2026-11-19, the chat's page made as nodes on the test channel: rule 5's last, gone with the old chat's page, and
+/// rule 8's one fewer in each half of the first windows and the wide ones (a small panel's rows' icons taken as
+/// where their words stand, the panel's own rows lit at rest not counted among its words). The
 /// Chinese odd windows run in two groups to fit the CI time limit.
-/// Their counts add up to the earlier counts for all odd windows.
+/// Their counts add up to the earlier counts for all odd windows. 2026-11-19, rule 8 counting the tree's marks among
+/// the rows' words (Ctx::tree_draws) and taking a row with a ground at rest as wide and as far in as the rows (the one
+/// chosen, one opened in place) for one of them, its words held to their line: one fewer in zh 0/4, zh 1/2 and both
+/// English halves. 2026-11-21, rule 4 taking a bar's end in the window's round corner as that corner has it (its last
+/// button concentric with it, or a capsule past its curve) and asking only where what is seen spans the box (not a
+/// loading chat's half row): the wide chats' heads, 80 fewer in each 1/2. The same day, small-panel titles, labels,
+/// notes and icon columns aligned to text_in (S4=16, panel_row_icon AStart), find_bar_node using symmetric capsule px +
+/// field_in, and screen-keys tile_box padded S1: all 45 entries now 0.
 let gaps_known : Map[String, Int] = {
   "zh 0/4 rule 1": 0,
   "zh 0/4 rule 2": 0,
   "zh 0/4 rule 3": 0,
-  "zh 0/4 rule 4": 2,
-  "zh 0/4 rule 5": 1,
+  "zh 0/4 rule 4": 0,
+  "zh 0/4 rule 5": 0,
   "zh 0/4 rule 6": 0,
   "zh 0/4 rule 7": 0,
-  "zh 0/4 rule 8": 3,
+  "zh 0/4 rule 8": 0,
   "zh 0/4 rule 9": 0,
   "zh 2/4 rule 1": 0,
   "zh 2/4 rule 2": 0,
   "zh 2/4 rule 3": 0,
-  "zh 2/4 rule 4": 1,
+  "zh 2/4 rule 4": 0,
   "zh 2/4 rule 5": 0,
   "zh 2/4 rule 6": 0,
   "zh 2/4 rule 7": 0,
-  "zh 2/4 rule 8": 2,
+  "zh 2/4 rule 8": 0,
   "zh 2/4 rule 9": 0,
   "zh 1/2 rule 1": 0,
   "zh 1/2 rule 2": 0,
   "zh 1/2 rule 3": 0,
-  "zh 1/2 rule 4": 81,
+  "zh 1/2 rule 4": 0,
   "zh 1/2 rule 5": 0,
   "zh 1/2 rule 6": 0,
   "zh 1/2 rule 7": 0,
-  "zh 1/2 rule 8": 5,
+  "zh 1/2 rule 8": 0,
   "zh 1/2 rule 9": 0,
   "en 0/2 rule 1": 0,
   "en 0/2 rule 2": 0,
   "en 0/2 rule 3": 0,
-  "en 0/2 rule 4": 4,
-  "en 0/2 rule 5": 1,
+  "en 0/2 rule 4": 0,
+  "en 0/2 rule 5": 0,
   "en 0/2 rule 6": 0,
   "en 0/2 rule 7": 0,
-  "en 0/2 rule 8": 5,
+  "en 0/2 rule 8": 0,
   "en 0/2 rule 9": 0,
   "en 1/2 rule 1": 0,
   "en 1/2 rule 2": 0,
   "en 1/2 rule 3": 0,
-  "en 1/2 rule 4": 82,
+  "en 1/2 rule 4": 0,
   "en 1/2 rule 5": 0,
   "en 1/2 rule 6": 0,
   "en 1/2 rule 7": 0,
-  "en 1/2 rule 8": 5,
+  "en 1/2 rule 8": 0,
   "en 1/2 rule 9": 0,
 }
 

@@ -84,6 +84,13 @@ pub const TO_AUDIO : Int = 9
 pub const TO_WINDOW : Int = 10
 
 ///|
+/// Watch the virtual microphone (1 on, 0 off), and a packet for it (flags, the recording's epoch, 48 kHz mono s16le).
+pub const TO_WATCH_MIC : Int = 11
+
+///|
+pub const TO_MIC : Int = 12
+
+///|
 fn clip_byte(clip : Clip) -> Byte {
   match clip {
     ClipText(_) => b'\x01'
@@ -159,7 +166,16 @@ pub struct HelperView {
   /// Its connection ended or broke: nothing more reaches the helper.
   priv mut cut : Bool
   priv gone : () -> Unit
-  priv mut clipboard : (Int, (Clip) -> Unit)?
+  /// Who hears the clipboard, with the mark the helper said (message 12; 0 none).
+  priv mut clipboard : (Int, (Clip, Int) -> Unit)?
+  /// Who hears whether an app holds the pointer, and the last it said (message 4 `{pointerLock}`).
+  priv mut pointer_lock : (Int, (Bool) -> Unit)?
+  priv mut last_pointer_lock : Bool
+  /// Who hears the virtual microphone while it is watched, the last the helper said of it, and whether its helper has
+  /// one to watch (a desktop's, not a simulator's).
+  priv mut mic_heard : (Int, (ScreenMic) -> Unit)?
+  priv mut last_mic : ScreenMic?
+  priv mic : Bool
   priv mut cursor : (Int, (ScreenCursor) -> Unit)?
   priv mut last_cursor : ScreenCursor?
   /// The pictures of the pointers of apps' own it said (message 11), by shape.
@@ -183,6 +199,7 @@ pub fn HelperView::new(
   input? : InputOps? = None,
   capture? : String = "ScreenCaptureKit",
   audio? : Bool = false,
+  mic? : Bool = false,
 ) -> HelperView {
   let v = {
     io,
@@ -203,6 +220,11 @@ pub fn HelperView::new(
     cut: false,
     gone,
     clipboard: None,
+    pointer_lock: None,
+    last_pointer_lock: false,
+    mic_heard: None,
+    last_mic: None,
+    mic,
     cursor: None,
     last_cursor: None,
     cursor_images: {},
@@ -361,6 +383,34 @@ fn HelperView::message(self : HelperView, kind : Int, payload : Bytes) -> Unit {
     }
     4 => {
       let said = parse_or_null(payload)
+      // Whether an app holds the pointer, as it changes.
+      if get(Some(said), "pointerLock") is Some(Bool(locked)) {
+        if locked != self.last_pointer_lock {
+          self.last_pointer_lock = locked
+          match self.pointer_lock {
+            Some((_, f)) => f(locked)
+            None => ()
+          }
+        }
+        return
+      }
+      // The virtual microphone, while it is watched.
+      if get(Some(said), "mic") is Some(Obj(_) as m) {
+        let available = get(Some(m), "available") is Some(Bool(true))
+        let epoch = match get(Some(m), "epoch") {
+          Some(Num(n)) if n >= 0.0 && n < 18446744073709551616.0 && n == n.floor() => n.to_uint64().to_uint()
+          _ => 0U
+        }
+        let mic = { available, active: available && get(Some(m), "active") is Some(Bool(true)), epoch }
+        match self.mic_heard {
+          Some((_, f)) => {
+            self.last_mic = Some(mic)
+            f(mic)
+          }
+          None => ()
+        }
+        return
+      }
       // The windows changed, or the one shown alone (asked, or it closed): told; anything else is the helper's log.
       if said is Obj(_) {
         let ws = get(Some(said), "windows")
@@ -444,7 +494,27 @@ fn HelperView::message(self : HelperView, kind : Int, payload : Bytes) -> Unit {
       match clip {
         Some(c) if clip_fits(c) =>
           match self.clipboard {
-            Some((_, f)) => f(c)
+            Some((_, f)) => f(c, 0)
+            None => ()
+          }
+        _ => ()
+      }
+    }
+    12 => {
+      if payload.length() < 2 {
+        return
+      }
+      let privacy = payload[0].to_int()
+      let body = Bytes::from_array(payload[2:].to_array())
+      let clip = match payload[1] {
+        b'\x01' => Some(ClipText(@utf8.decode_lossy(body)))
+        b'\x02' => Some(ClipPng(body))
+        _ => None
+      }
+      match clip {
+        Some(c) if clip_fits(c) =>
+          match self.clipboard {
+            Some((_, f)) => f(c, if privacy >= 1 && privacy <= 3 { privacy } else { 0 })
             None => ()
           }
         _ => ()
@@ -546,8 +616,9 @@ pub fn HelperView::input(self : HelperView, event : ScreenInput) -> Unit {
 }
 
 ///|
-pub fn HelperView::set_clipboard(self : HelperView, clip : Clip, paste : Bool) -> Unit {
-  self.send(TO_CLIPBOARD, payload=helper_clip(clip, flags=Some(if paste { 1 } else { 0 })))
+pub fn HelperView::set_clipboard(self : HelperView, clip : Clip, paste : Bool, privacy? : Int = 0) -> Unit {
+  // (flags: bit 0 paste, bits 1..2 the clip's mark)
+  self.send(TO_CLIPBOARD, payload=helper_clip(clip, flags=Some((if paste { 1 } else { 0 }) | ((privacy & 3) << 1))))
 }
 
 ///|
@@ -558,6 +629,11 @@ fn HelperView::id(self : HelperView) -> Int {
 
 ///|
 pub fn HelperView::watch_clipboard(self : HelperView, heard : (Clip) -> Unit) -> () -> Unit {
+  self.watch_clipboard_marked((c, _) => heard(c))
+}
+
+///|
+pub fn HelperView::watch_clipboard_marked(self : HelperView, heard : (Clip, Int) -> Unit) -> () -> Unit {
   let id = self.id()
   self.clipboard = Some((id, heard))
   self.send(TO_WATCH, payload=b"\x01")
@@ -568,6 +644,49 @@ pub fn HelperView::watch_clipboard(self : HelperView, heard : (Clip) -> Unit) ->
     }
     _ => ()
   }
+}
+
+///|
+pub fn HelperView::watch_pointer_lock(self : HelperView, heard : (Bool) -> Unit) -> () -> Unit {
+  let id = self.id()
+  self.pointer_lock = Some((id, heard))
+  if self.last_pointer_lock {
+    heard(true)
+  }
+  () => match self.pointer_lock {
+    Some((i, _)) if i == id => self.pointer_lock = None
+    _ => ()
+  }
+}
+
+///|
+/// The machine's virtual microphone (Helper's Microphone.swift, stillfail-screen's mic.rs), watched by the helper.
+pub fn HelperView::watch_mic(self : HelperView, heard : (ScreenMic) -> Unit) -> () -> Unit {
+  let id = self.id()
+  self.mic_heard = Some((id, heard))
+  self.last_mic = None
+  self.send(TO_WATCH_MIC, payload=b"\x01")
+  () => match self.mic_heard {
+    Some((i, _)) if i == id => {
+      self.mic_heard = None
+      self.last_mic = None
+      self.send(TO_WATCH_MIC, payload=b"\x00")
+    }
+    _ => ()
+  }
+}
+
+///|
+/// A packet for the virtual microphone, sent only while something records it in that epoch.
+pub fn HelperView::feed_mic(self : HelperView, pcm : Bytes, epoch : UInt) -> Unit {
+  guard self.last_mic is Some(m) && m.active && m.epoch == epoch else { return }
+  let n = pcm.length()
+  if n < 2 || n > MIC_PCM_MAX || n % 2 != 0 {
+    return
+  }
+  let head = FixedArray::make(5, b'\x00')
+  put_u32be(head, 1, epoch.to_int64())
+  self.send(TO_MIC, payload=concat([Bytes::from_array(head), pcm]))
 }
 
 ///|
@@ -693,6 +812,11 @@ pub fn HelperView::view(self : HelperView) -> ScreenView {
     video: Some(() => self.video()),
     set_clipboard: Some(async fn(c, p) { self.set_clipboard(c, p) }),
     watch_clipboard: Some(f => self.watch_clipboard(f)),
+    set_clipboard_marked: Some(async fn(c, p, m) { self.set_clipboard(c, p, privacy=m) }),
+    watch_clipboard_marked: Some(f => self.watch_clipboard_marked(f)),
+    watch_pointer_lock: Some(f => self.watch_pointer_lock(f)),
+    watch_mic: if self.mic { Some(f => self.watch_mic(f)) } else { None },
+    feed_mic: Some((p, e) => self.feed_mic(p, e)),
     reveal: Some(async fn(p) { self.reveal(p) }),
     watch_cursor: Some(f => self.watch_cursor(f)),
     cursor_image: Some(s => self.cursor_image(s)),
@@ -868,6 +992,7 @@ pub async fn Desktop::open(self : Desktop, options : ViewOptions) -> ScreenView 
       ("bitrate", options.bitrate.map(b => jn(js_round(b)))),
       ("fps", options.fps.map(jn)),
       ("gamut", options.gamut.filter(g => g != "").map(js)),
+      ("chroma", options.chroma.filter(c => c != "").map(js)),
       (
         "display",
         match get(self.status(), "display") {
@@ -898,6 +1023,7 @@ pub async fn Desktop::open(self : Desktop, options : ViewOptions) -> ScreenView 
       },
       input=Some(MacInput::new().input_ops()),
       capture="ScreenCaptureKit",
+      mic=true,
       audio~,
     )
     view_ref.val = Some(view)

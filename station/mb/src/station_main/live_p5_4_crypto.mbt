@@ -9,16 +9,6 @@
 // person granted to one command.
 
 ///|
-fn p54_hex(b : Bytes) -> String {
-  @drive.hex(b)
-}
-
-///|
-fn p54_unhex(s : String) -> Bytes {
-  @vault_crypto.unhex(s)
-}
-
-///|
 fn p54_cat(parts : Array[Bytes]) -> Bytes {
   let out = @buffer.new()
   for p in parts {
@@ -130,8 +120,8 @@ fn p54_sha256(host : @host.Host, data : Bytes) -> Bytes {
 
 ///|
 fn p54_hmac256(host : @host.Host, key : Bytes, data : Bytes) -> Bytes {
-  match (try { Ok(host.shell_sync("crypto.hmacSha256", { "key": Json::string(p54_hex(key)), "data": Json::string(p54_hex(data)) })) } catch { e => Err(e) }) {
-    Ok(String(h)) => p54_unhex(h)
+  match (try { Ok(host.shell_sync("crypto.hmacSha256", { "key": Json::string(@drive.hex(key)), "data": Json::string(@drive.hex(data)) })) } catch { e => Err(e) }) {
+    Ok(String(h)) => @vault_crypto.unhex(h)
     _ => b""
   }
 }
@@ -149,8 +139,15 @@ fn p54_hash(host : @host.Host, name : String, data : Bytes) -> Bytes raise {
 // ── P-256 ──
 
 ///|
+/// Zeros in front up to a multiple of 8 bytes: core's `from_octets` reads each word as `u64be`, a plain
+/// `uint64_t` load in the C backend, misaligned (UB, UBSan's abort at zig cc -O0) when the length is not one.
 fn p54_big(b : Bytes) -> @bigint.BigInt {
-  @bigint.BigInt::from_octets(b)
+  let rem = b.length() % 8
+  if b.length() >= 8 && rem != 0 {
+    @bigint.BigInt::from_octets(p54_cat([Bytes::make(8 - rem, b'\x00'), b]))
+  } else {
+    @bigint.BigInt::from_octets(b)
+  }
 }
 
 ///|
@@ -277,7 +274,11 @@ fn p54_mul(k : @bigint.BigInt, x : @bigint.BigInt, y : @bigint.BigInt) -> (@bigi
 ///|
 /// The public point `04‖x‖y` of the private scalar `d`.
 fn p54_p256_public(d : Bytes) -> Bytes raise {
-  match p54_mul(p54_big(d), p54_gx, p54_gy) {
+  let dd = p54_big(d)
+  if dd <= 0N || dd >= p54_n {
+    raise Failure("not a P-256 key")
+  }
+  match p54_mul(dd, p54_gx, p54_gy) {
     Some((x, y)) => p54_cat([b"\x04", p54_octets(x, 32), p54_octets(y, 32)])
     None => raise Failure("not a P-256 key")
   }
@@ -286,16 +287,23 @@ fn p54_p256_public(d : Bytes) -> Bytes raise {
 ///|
 /// P-256's ECDH: the x-coordinate of `d`·Q for the peer's uncompressed point Q (checked on the curve).
 fn p54_p256_shared(d : Bytes, peer : Bytes) -> Bytes raise {
+  let dd = p54_big(d)
+  if dd <= 0N || dd >= p54_n {
+    raise Failure("invalid P-256 scalar")
+  }
   if peer.length() != 65 || peer[0] != b'\x04' {
     raise Failure("not an uncompressed P-256 point")
   }
   let x = p54_big(p54_sub(peer, 1, 33))
   let y = p54_big(p54_sub(peer, 33, 65))
   let p = p54_p
+  if x >= p || y >= p {
+    raise Failure("the point is not on P-256")
+  }
   if p54_mod(y * y, p) != p54_mod(x * x * x - 3N * x + p54_b, p) {
     raise Failure("the point is not on P-256")
   }
-  match p54_mul(p54_big(d), x, y) {
+  match p54_mul(dd, x, y) {
     Some((sx, _)) => p54_octets(sx, 32)
     None => raise Failure("the shared point is at infinity")
   }
@@ -527,8 +535,8 @@ fn p54_key_ref(host : @host.Host, k : P54Key) -> @vault_service.KeyRef raise {
   match k {
     P256(d) => { handle, kind: "p256", public: [p54_p256_public(d)] }
     Ed(seed) => {
-      let said = host.shell_sync("ed25519.sign", { "seed": Json::string(p54_hex(seed)), "message": Json::string("") })
-      { handle, kind: "ed25519", public: [p54_unhex(p54_text(Some(said), "publicKey").unwrap_or(""))] }
+      let said = host.shell_sync("ed25519.sign", { "seed": Json::string(@drive.hex(seed)), "message": Json::string("") })
+      { handle, kind: "ed25519", public: [@vault_crypto.unhex(jtext(said, "publicKey").unwrap_or(""))] }
     }
     Rsa(parts) => { handle, kind: "rsa", public: [p54_strip(parts[1]), p54_strip(parts[0])] }
   }
@@ -610,9 +618,9 @@ fn p54_pkcs8(host : @host.Host, k : P54Key) -> Bytes raise {
 /// DigestInfo's prefix for `hash` (RFC 8017 §9.2).
 fn p54_digest_info(hash : String) -> Bytes raise {
   match hash {
-    "sha1" => p54_unhex("3021300906052b0e03021a05000414")
-    "sha256" => p54_unhex("3031300d060960864801650304020105000420")
-    "sha512" => p54_unhex("3051300d060960864801650304020305000440")
+    "sha1" => @vault_crypto.unhex("3021300906052b0e03021a05000414")
+    "sha256" => @vault_crypto.unhex("3031300d060960864801650304020105000420")
+    "sha512" => @vault_crypto.unhex("3051300d060960864801650304020305000440")
     _ => raise Failure("no RSA signature with \{hash}")
   }
 }
@@ -658,7 +666,7 @@ fn p54_key_ops(host : @host.Host) -> (
     },
     async fn(seed) { p54_key_ref(host, Ed(seed)) },
     async fn(jwk) {
-      let part = (k : String) => @vault_crypto.unb64(p54_text(Some(jwk), k).unwrap_or("").replace_all(old="-", new="+").replace_all(old="_", new="/"))
+      let part = (k : String) => @vault_crypto.unb64(jtext(jwk, k).unwrap_or("").replace_all(old="-", new="+").replace_all(old="_", new="/"))
       p54_key_ref(host, Rsa(["n", "e", "d", "p", "q", "dp", "dq", "qi"].map(k => p54_strip(part(k)))))
     },
     async fn(r) { p54_pem("PRIVATE KEY", p54_pkcs8(host, p54_key_of(r))) },
@@ -669,8 +677,8 @@ fn p54_key_ops(host : @host.Host) -> (
           p54_der_seq([p54_der_uint(p54_sub(raw, 0, 32)), p54_der_uint(p54_sub(raw, 32, 64))])
         }
         Ed(seed) => {
-          let said = host.shell_sync("ed25519.sign", { "seed": Json::string(p54_hex(seed)), "message": Json::string(p54_hex(data)) })
-          p54_unhex(p54_text(Some(said), "signature").unwrap_or(""))
+          let said = host.shell_sync("ed25519.sign", { "seed": Json::string(@drive.hex(seed)), "message": Json::string(@drive.hex(data)) })
+          @vault_crypto.unhex(jtext(said, "signature").unwrap_or(""))
         }
         Rsa(parts) => p54_rsa_sign(host, parts, hash, data)
       }

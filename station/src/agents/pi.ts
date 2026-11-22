@@ -46,7 +46,7 @@ export const SESSIONS = "sessions";
 export const sessionFile = (home: string, id: string) => join(piHome(home), SESSIONS, `${id}.jsonl`);
 /// The station's extension in Pi: beside this module (src/agents/ from source; the bundle's directory, where the build
 /// copies it).
-export const BRIDGE = fileURLToPath(new URL("./pi-bridge.mjs", import.meta.url));
+export const BRIDGE = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/agents/pi-bridge.mjs", import.meta.url) : new URL("./pi-bridge.mjs", import.meta.url));
 /// The id of the request that sees the process up (its extensions loaded, the session opened).
 const OPEN = "open";
 /// The variable the session's token for the station's tools is read from by the extension.

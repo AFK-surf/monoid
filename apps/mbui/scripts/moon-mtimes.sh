@@ -1,6 +1,7 @@
 #!/bin/bash
-# CI, before moon builds over the build main's last run left (the moon cache): each file of apps/mbui, of libs/mbui
-# and of libs/sf-ui (moon.work's other members, mbui itself and still.fail's component library) given an mtime
+# CI, before moon builds over the build main's last run left (the moon cache): each file of apps/mbui, of libs/mbui,
+# of libs/liquid-glass and of libs/sf-ui (moon.work's other members: mbui itself, the liquid glass library and
+# still.fail's component library) given an mtime
 # that is its content's (from its blob's id), the same in every checkout of that content. moon builds again a file whose
 # mtime is not the one it built from, older or newer: a checkout gives every file a new one, and moon built all of it
 # again over the cache each run (80 tasks, 95 s of the Mac job's 243 where three files of two pages had changed: main
@@ -16,12 +17,12 @@
 set -e
 cd "$(git rev-parse --show-toplevel)"
 # (git ls-files -s: mode, blob id, stage, path; 2000-01-01 plus its first 28 bits in seconds, 2000 to 2008: never ahead of the clock)
-git ls-files -s -z apps/mbui libs/mbui libs/sf-ui | perl -0ne '
+git ls-files -s -z apps/mbui libs/mbui libs/liquid-glass libs/sf-ui | perl -0ne '
   my ($meta, $path) = split /\t/, $_, 2; $path =~ s/\0$//;
   my $t = 946684800 + hex(substr((split / /, $meta)[1], 0, 7));
   next if -l $path || ! -e $path;
   utime($t, $t, $path) or die "moon-mtimes: $path: $!\n"; $n++;
-  END { print "moon-mtimes: $n files of apps/mbui, libs/mbui and libs/sf-ui given their content'"'"'s mtime\n" }'
+  END { print "moon-mtimes: $n files of apps/mbui, libs/mbui, libs/liquid-glass and libs/sf-ui given their content'"'"'s mtime\n" }'
 pin=apps/mbui/deps/farview/.pin
 if [ -f "$pin" ]; then
   find apps/mbui/deps/farview -type f -print0 | perl -0ne '

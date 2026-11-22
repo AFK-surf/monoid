@@ -40,6 +40,8 @@ export class FakeFeishu {
   bot = { open_id: "ou_bot", app_name: "Codex 机器人", avatar_url: "https://example.test/bot.png" };
   private waiters: (() => void)[] = [];
   private n = 1;
+  /// Each uploaded file's key and the file_type it went up as: a message sending it as another type is refused, as Feishu does.
+  private uploads = new Map<string, string>();
 
   constructor() {
     this.server = createServer((req, res) => {
@@ -139,6 +141,21 @@ export class FakeFeishu {
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
 
+  /// Whether a message sends an uploaded file as a type other than the one its file_type takes.
+  private mismatched(body: Json): boolean {
+    const msgType = body?.msg_type;
+    if (msgType !== "file" && msgType !== "media" && msgType !== "audio") return false;
+    let key: unknown;
+    try {
+      key = JSON.parse(String(body?.content ?? "null"))?.file_key;
+    } catch {
+      return false;
+    }
+    const kind = typeof key === "string" ? this.uploads.get(key) : undefined;
+    if (kind === undefined) return false;
+    return msgType !== (kind === "mp4" ? "media" : kind === "opus" ? "audio" : "file");
+  }
+
   private async take(req: IncomingMessage): Promise<Json> {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -162,11 +179,17 @@ export class FakeFeishu {
     if (seen.path === "/callback/ws/endpoint") return { code: 0, data: { URL: `${this.base.replace(/^http/, "ws")}/ws?device_id=d1&service_id=7`, ClientConfig: { PingInterval: 120 } } };
     if (seen.path === "/open-apis/bot/v3/info") return { code: 0, bot: this.bot };
     if (seen.path === "/open-apis/tenant/v2/tenant/query") return { code: 0, data: { tenant: { name: "Acme", tenant_key: "tk1" } } };
-    if (seen.path === "/open-apis/im/v1/messages" && seen.method === "POST") return { code: 0, data: { message_id: `om_bot${this.n++}` } };
-    if (/^\/open-apis\/im\/v1\/messages\/[^/]+\/reply$/.test(seen.path)) return { code: 0, data: { message_id: `om_bot${this.n++}` } };
+    if ((seen.path === "/open-apis/im/v1/messages" && seen.method === "POST") || /^\/open-apis\/im\/v1\/messages\/[^/]+\/reply$/.test(seen.path)) {
+      if (this.mismatched(body)) return { code: 230055, msg: "The type of file upload does not match the type of message being sent." };
+      return { code: 0, data: { message_id: `om_bot${this.n++}` } };
+    }
     if (seen.path === "/open-apis/cardkit/v1/cards" && seen.method === "POST") return { code: 0, data: { card_id: `card${this.n++}` } };
     if (seen.path === "/open-apis/im/v1/images") return { code: 0, data: { image_key: "img_1" } };
-    if (seen.path === "/open-apis/im/v1/files") return { code: 0, data: { file_key: "file_1" } };
+    if (seen.path === "/open-apis/im/v1/files") {
+      const key = `file_${this.n++}`;
+      this.uploads.set(key, typeof body?.file_type === "string" ? body.file_type : "stream");
+      return { code: 0, data: { file_key: key } };
+    }
     if (/^\/open-apis\/im\/v1\/chats\/[^/]+$/.test(seen.path)) return { code: 0, data: { name: "项目群", chat_mode: "group", group_message_type: "chat" } };
     if (/^\/open-apis\/contact\/v3\/users\//.test(seen.path)) return { code: 0, data: { user: { name: "Ada", email: "ada@example.test" } } };
     return { code: 0, data: {} };

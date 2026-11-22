@@ -2,12 +2,12 @@
 
 ///|
 /// store/said-state.ts SAID_LATEST.
-let said_latest_sql : String =
+pub let said_latest_sql : String =
   #|SELECT n, author_kind, author FROM entries INDEXED BY entries_said WHERE thread = ?1 AND kind = 'message' AND letter IS NULL ORDER BY n DESC LIMIT 1
 
 ///|
 /// store/said-state.ts SAID_STATE.
-let said_state_sql : String =
+pub let said_state_sql : String =
   #|SELECT s.said_n, s.said_other_n, s.said_other_known,
   #|    g.author AS guard_author, g.other_n AS guard_other_n, g.ready AS guard_ready
   #|  FROM thread_state s LEFT JOIN said_state_guard g ON g.thread = s.thread WHERE s.thread = ?1
@@ -16,13 +16,13 @@ let said_state_sql : String =
 
 ///|
 /// store/said-state.ts SAID_SCAN.
-let said_scan_sql : String =
+pub let said_scan_sql : String =
   #|SELECT n, author_kind, author FROM entries INDEXED BY entries_said
   #|  WHERE thread = ?1 AND kind = 'message' AND letter IS NULL AND n < ?2 ORDER BY n DESC LIMIT ?3
 
 ///|
 /// store/legacy-said-build.ts LEGACY_SAID_LATEST.
-let legacy_said_latest_sql : String =
+pub let legacy_said_latest_sql : String =
   #|WITH dirty_latest AS MATERIALIZED (
   #|    SELECT e.n,e.author_kind,e.author FROM legacy_said_meta m CROSS JOIN legacy_said_dirty d
   #|      CROSS JOIN entries e ON e.thread=d.thread AND e.n=d.n
@@ -48,18 +48,18 @@ let legacy_said_latest_sql : String =
 
 ///|
 /// store/legacy-said-build.ts LEGACY_SAID_SCAN.
-let legacy_said_scan_sql : String =
+pub let legacy_said_scan_sql : String =
   #|SELECT n, author_kind, author FROM legacy_said WHERE thread = ?1 AND n < ?2 ORDER BY n DESC LIMIT ?3
 
 ///|
 /// store/legacy-said-build.ts LEGACY_SAID_NEEDS_DRAIN.
-let legacy_said_needs_drain_sql : String =
+pub let legacy_said_needs_drain_sql : String =
   #|SELECT 1 FROM legacy_said_meta m WHERE m.id=1 AND m.scanned=1 AND EXISTS (
   #|    SELECT 1 FROM legacy_said_dirty WHERE thread=?1 LIMIT 1 OFFSET 64)
 
 ///|
 /// store/legacy-said-build.ts LEGACY_SAID_HEAD_FIRST.
-let legacy_said_head_first_sql : String =
+pub let legacy_said_head_first_sql : String =
   #|SELECT CASE WHEN e.kind='message' AND e.letter IS NULL THEN e.n END AS n,
   #|    CASE WHEN e.kind='message' AND e.letter IS NULL THEN e.author_kind END AS author_kind,
   #|    CASE WHEN e.kind='message' AND e.letter IS NULL THEN e.author END AS author
@@ -67,7 +67,7 @@ let legacy_said_head_first_sql : String =
 
 ///|
 /// store/legacy-said-build.ts LEGACY_SAID_HEAD_TAIL.
-let legacy_said_head_tail_sql : String =
+pub let legacy_said_head_tail_sql : String =
   #|WITH tail AS MATERIALIZED (
   #|      SELECT n,kind,letter,author_kind,author FROM entries WHERE thread=? ORDER BY n DESC LIMIT 65
   #|    ), latest AS MATERIALIZED (
@@ -77,7 +77,7 @@ let legacy_said_head_tail_sql : String =
 
 ///|
 /// store/legacy-said-build.ts LEGACY_SAID_BOUNDARY_TAIL.
-let legacy_said_boundary_tail_sql : String =
+pub let legacy_said_boundary_tail_sql : String =
   #|WITH tail AS MATERIALIZED (
   #|      SELECT n,kind,letter,author_kind,author FROM entries WHERE thread=?1 AND n<?2 ORDER BY n DESC LIMIT 65
   #|    ) SELECT (SELECT n FROM tail WHERE kind='message' AND letter IS NULL
@@ -86,12 +86,12 @@ let legacy_said_boundary_tail_sql : String =
 
 ///|
 /// read/store.ts ASKED_DURING.
-let asked_during_sql : String =
+pub let asked_during_sql : String =
   #|SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at >= ? AND at <= ?
 
 ///|
 /// store/legacy-agent-build.ts LEGACY_ASKED_DURING.
-let legacy_asked_during_sql : String =
+pub let legacy_asked_during_sql : String =
   #|SELECT MAX(n) AS n FROM (
   #|  SELECT e.n FROM legacy_agent_meta m CROSS JOIN entries e
   #|    WHERE m.id=1 AND m.scanned=0 AND e.thread=?1 AND e.kind='message' AND e.author_kind='agent' AND e.at>=?2 AND e.at<=?3

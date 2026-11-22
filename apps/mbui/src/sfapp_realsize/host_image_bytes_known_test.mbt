@@ -4,10 +4,11 @@
 ///|
 fn init {
   @ui.host_image_bytes_known([
+    // (大屏 rail 停驻实测：真实尺寸工作区打开首条对话页的头像解码量，与 medium_switch_corners_test / real_size_new_chat_send_test 一致)
+    ("src/sfapp_realsize/bar_places_kept_test.mbt", 38548),
     // (a chat of real size opened as nodes: the pictures of the rows round what shows, as chat_page_nodes_wbtest's)
     ("src/sfapp_realsize/chat_nodes_open_budget_test.mbt", 40824),
     // (the same chat opened again on each page, old and as nodes: the pictures of the rows round what shows, 2026-11-16)
-    ("src/sfapp_realsize/chat_nodes_vs_old_test.mbt", 38548),
     // (中屏's chat opened, its workspace switched: the chat's pictures handed over as it showed, 2026-11-14)
     ("src/sfapp_realsize/medium_switch_corners_test.mbt", 38548),
     // (a new chat sent on a workspace of real size, its people's pictures on the chats' list: Studio's run, 2026-11-15)

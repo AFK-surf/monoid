@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { type Entry, type LockState, admit as stationAdmit, endpointBytes, endpointProof, entryHash, fold as stationFold, signedBytes, sigValid, validKeyId } from "../src/cloud/lock.ts";
+import { type Entry, type LockState, admit as stationAdmit, endpointBytes, endpointProof, entryHash, fold as stationFold, signedBytes, sigValid, validKeyId } from "../../shared/lock.ts";
 import { WS, bases, genesisOf, nextOf, people, rng, spare } from "./lock-chains.ts";
 import { admit, fold } from "./lock-oracle.ts";
 // @ts-ignore: the MoonBit build's JS, untyped

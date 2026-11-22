@@ -71,15 +71,7 @@ pub fn own_node_home(data : String) -> String {
 ///|
 /// JavaScript's sort of strings (by UTF-16 units).
 fn js_compare(a : String, b : String) -> Int {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = cu(a, i)
-    let y = cu(b, i)
-    if x != y {
-      return x - y
-    }
-  }
-  a.length() - b.length()
+  @jsjson.js_compare(a, b)
 }
 
 ///|
@@ -104,16 +96,15 @@ pub async fn own_node(w : World, data : String, version : String) -> OwnNode? {
 pub async fn put_own_nodes(w : World, env : Env, data : String) -> Unit {
   let build = w.call("platform.nodeBuild", [js("0")])
   guard build is Obj(_) else { return }
-  let names = match (try Some(w.call("fs.readdirSync", [js(own_node_home(data))])) catch { _ => None }) {
-    Some(Arr(xs)) => xs.filter_map(x => text(Some(x))).filter(n => starts_with(n, "node-v"))
-    _ => return
+  let names = match (try Some(w.readdir(own_node_home(data), sync=true)) catch { _ => None }) {
+    Some(xs) => xs.filter(n => starts_with(n, "node-v"))
+    None => return
   }
   let sorted = js_sort(names)
   sorted.rev_in_place()
   for name in sorted {
     let bin = pjoin([own_node_home(data), name, text(get(Some(build), "bin")).unwrap_or("")])
-    let has = w.call("fs.existsSync", [js(pjoin([bin, text(get(Some(build), "npm")).unwrap_or("")]))])
-    if has is Bool(true) {
+    if w.exists(pjoin([bin, text(get(Some(build), "npm")).unwrap_or("")]), sync=true) {
       append_path(env, bin)
     }
   }
@@ -147,12 +138,12 @@ pub async fn remove_own_node_links(w : World, env : Env, data : String) -> Unit 
   let own = own_node_home(data) + path_sep.val
   for name in ["node", "npm", "npx"] + runtime_kinds.map(kind_command) {
     let link = pjoin([bin, name])
-    let st = (try Some(w.call("fs.lstatSync", [js(link)])) catch { _ => None })
+    let st = (try Some(w.lstat(link, sync=true)) catch { _ => None })
     match st {
-      Some(s) if stat_of(s).symlink => {
-        let target = (try text(Some(w.call("fs.readlinkSync", [js(link)]))) catch { _ => None })
+      Some(s) if s.symlink => {
+        let target = (try Some(w.readlink(link, sync=true)) catch { _ => None })
         match target {
-          Some(t) if starts_with(t, own) => ignore(w.call("fs.unlinkSync", [js(link)])) catch { _ => () }
+          Some(t) if starts_with(t, own) => w.rm(link, sync=true) catch { _ => () }
           _ => ()
         }
       }
@@ -272,7 +263,7 @@ pub async fn how_to_update_soon(w : World, kind : String, found : Found, env : E
   // A package manager's of this machine's kind.
   let shim = w.call("platform.shimUpdate", [found.to_j(), js(kind_package(kind)), env_j(env)])
   match shim {
-    Str(u) if @jsjson.text(u) == "no-npm" => return Cannot(unable("station.updates.noNpm", args=[("name", js(name))]))
+    Str(u) if @jsjson.sanitize_str(u) == "no-npm" => return Cannot(unable("station.updates.noNpm", args=[("name", js(name))]))
     Obj(_) => return Can(how_of(shim))
     _ => ()
   }
@@ -547,7 +538,7 @@ pub async fn run_both(
     jo([("env", env_j(env)), ("cwd", tmp), ("stdio", jstrs(["ignore", "pipe", "pipe"]))]),
   ])
   let timed : @effect.Deferred[Unit] = @effect.Deferred::new()
-  let cancel = (w.wall_after)(timeout_ms, fn() { ignore(timed.succeed(())) })
+  let cancel = w.wall_after(timeout_ms, fn() { ignore(timed.succeed(())) })
   let mut said = ""
   let whole = ["", ""]
   let carry = ["", ""]
@@ -573,13 +564,13 @@ pub async fn run_both(
   }
   for ev in events_of(child) {
     match ev {
-      Arr([Str(k), Str(t), ..]) if @jsjson.text(k) == "stdout" => take(0, @jsjson.text(t))
-      Arr([Str(k), Str(t), ..]) if @jsjson.text(k) == "stderr" => take(1, @jsjson.text(t))
-      Arr([Str(k), Str(m), ..]) if @jsjson.text(k) == "error" => {
+      Arr([Str(k), Str(t), ..]) if @jsjson.sanitize_str(k) == "stdout" => take(0, @jsjson.sanitize_str(t))
+      Arr([Str(k), Str(t), ..]) if @jsjson.sanitize_str(k) == "stderr" => take(1, @jsjson.sanitize_str(t))
+      Arr([Str(k), Str(m), ..]) if @jsjson.sanitize_str(k) == "error" => {
         cancel()
-        raise fail(@jsjson.text(m))
+        raise fail(@jsjson.sanitize_str(m))
       }
-      Arr([Str(k), code, ..]) if @jsjson.text(k) == "close" => {
+      Arr([Str(k), code, ..]) if @jsjson.sanitize_str(k) == "close" => {
         end(0)
         end(1)
         cancel()

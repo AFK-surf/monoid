@@ -53,7 +53,7 @@ fn SessionsProgram::ensure(self : SessionsProgram) -> Unit {
     stderr=Appended(path([self.data, "run", "sessions-program.err"])),
   ) catch {
     e => {
-      live_log("error", "agents", "the sessions' program did not start", { "error": jstr(said_of(e)) })
+      slice_log("error", "agents", "the sessions' program did not start", { "error": jstr(said_of(e)) })
       self.ended = true
       return
     }
@@ -63,92 +63,90 @@ fn SessionsProgram::ensure(self : SessionsProgram) -> Unit {
     ignore(p.write(@utf8.encode(line)))
   }
   self.waiting.clear()
-  ignore(
-    self.host.rt.fork_daemon("sessions' program", on_error=e => @host.note("sessions' program failed: \{e}"), async fn() {
-      let carry = @buffer.Buffer()
-      let mut head : Json? = None
-      let mut wanted = 0
-      let body = @buffer.Buffer()
-      while true {
-        match p.events.take() {
-          Out(bytes) => {
-            let mut at = 0
-            let n = bytes.length()
-            while at < n {
-              match head {
-                Some(h) => {
-                  let take = if wanted - body.length() < n - at { wanted - body.length() } else { n - at }
-                  body.write_bytes(bytes[at:at + take].to_owned())
-                  at += take
-                  if body.length() >= wanted {
-                    let b = body.to_bytes()
-                    body.reset()
-                    head = None
-                    self.tell({ head: h, body: Some(b) })
+  fork_bg(self.host, "sessions' program", async fn() {
+    let carry = @buffer.Buffer()
+    let mut head : Json? = None
+    let mut wanted = 0
+    let body = @buffer.Buffer()
+    while true {
+      match p.events.take() {
+        Out(bytes) => {
+          let mut at = 0
+          let n = bytes.length()
+          while at < n {
+            match head {
+              Some(h) => {
+                let take = if wanted - body.length() < n - at { wanted - body.length() } else { n - at }
+                body.write_bytes(bytes[at:at + take].to_owned())
+                at += take
+                if body.length() >= wanted {
+                  let b = body.to_bytes()
+                  body.reset()
+                  head = None
+                  self.tell({ head: h, body: Some(b) })
+                }
+              }
+              None => {
+                let mut end = -1
+                for i = at; i < n; i = i + 1 {
+                  if bytes[i] == b'\n' {
+                    end = i
+                    break
                   }
                 }
-                None => {
-                  let mut end = -1
-                  for i = at; i < n; i = i + 1 {
-                    if bytes[i] == b'\n' {
-                      end = i
-                      break
-                    }
-                  }
-                  if end < 0 {
-                    carry.write_bytes(bytes[at:n].to_owned())
-                    at = n
-                  } else {
-                    carry.write_bytes(bytes[at:end].to_owned())
-                    at = end + 1
-                    let line = @utf8.decode_lossy(carry.to_bytes())
-                    carry.reset()
-                    if line != "" {
-                      match attempt(() => @json.parse(line)) {
-                        Ok(Object(m) as parsed) =>
-                          match m.get("bytes") {
-                            Some(Number(k, ..)) if k >= 0.0 && k == k.floor() => {
-                              let rest : Map[String, Json] = Map([])
-                              for kv in m {
-                                if kv.0 != "bytes" {
-                                  rest[kv.0] = kv.1
-                                }
-                              }
-                              if k == 0.0 {
-                                self.tell({ head: Json::object(rest), body: Some(b"") })
-                              } else {
-                                head = Some(Json::object(rest))
-                                wanted = k.to_int()
+                if end < 0 {
+                  carry.write_bytes(bytes[at:n].to_owned())
+                  at = n
+                } else {
+                  carry.write_bytes(bytes[at:end].to_owned())
+                  at = end + 1
+                  let line = @utf8.decode_lossy(carry.to_bytes())
+                  carry.reset()
+                  if line != "" {
+                    match attempt(() => @json.parse(line)) {
+                      Ok(Object(m) as parsed) =>
+                        match m.get("bytes") {
+                          Some(Number(k, ..)) if k >= 0.0 && k == k.floor() => {
+                            let rest : Map[String, Json] = Map([])
+                            for kv in m {
+                              if kv.0 != "bytes" {
+                                rest[kv.0] = kv.1
                               }
                             }
-                            _ => self.tell({ head: parsed, body: None })
+                            if k == 0.0 {
+                              self.tell({ head: Json::object(rest), body: Some(b"") })
+                            } else {
+                              head = Some(Json::object(rest))
+                              wanted = k.to_int()
+                            }
                           }
-                        Ok(other) => self.tell({ head: other, body: None })
-                        Err(_) =>
-                          live_log("warn", "readers", "a MoonBit program said what is not JSON", { "line": jstr(clip(line, 200)) })
-                      }
+                          _ => self.tell({ head: parsed, body: None })
+                        }
+                      Ok(other) => self.tell({ head: other, body: None })
+                      Err(_) =>
+                        slice_log("warn", "readers", "a MoonBit program said what is not JSON", { "line": jstr(clip(line, 200)) })
                     }
                   }
                 }
               }
             }
           }
-          Err(_) => ()
-          Exit(code, _) => {
-            let asked = self.ended
-            self.ended = true
-            self.proc = None
-            if !asked {
-              for u in self.users.copy() {
-                (u.exited)(code.unwrap_or(-1))
-              }
+        }
+        Err(_) => ()
+        Exit(code, _) => {
+          let asked = self.ended
+          self.ended = true
+          self.proc = None
+          if !asked {
+            for u in self.users.copy() {
+              (u.exited)(code.unwrap_or(-1))
             }
-            break
           }
+          break
         }
       }
-    }),
-  )
+    }
+  })
 }
 
 ///|
@@ -183,10 +181,7 @@ fn SessionsProgram::post(self : SessionsProgram, message : Json) -> Unit {
 ///|
 /// `user` lets it go: it ends once none uses it.
 fn SessionsProgram::release(self : SessionsProgram, actors : Bool) -> Unit {
-  match self.users.search_by(u => u.actors == actors) {
-    Some(i) => ignore(self.users.remove(i))
-    None => ()
-  }
+  if self.users.search_by(u => u.actors == actors) is Some(i) { ignore(self.users.remove(i)) }
   if self.users.length() > 0 || self.ended {
     return
   }
@@ -205,10 +200,7 @@ fn SessionsProgram::release(self : SessionsProgram, actors : Bool) -> Unit {
 /// Ended at once (the station's process ends).
 fn SessionsProgram::kill_now(self : SessionsProgram) -> Unit {
   self.ended = true
-  match self.proc {
-    Some(p) => ignore(kill(p.pid, "SIGKILL"))
-    None => ()
-  }
+  if self.proc is Some(p) { ignore(kill(p.pid, "SIGKILL")) }
   self.proc = None
 }
 
@@ -350,28 +342,7 @@ async fn start_runner(
   if !named && find_command(program, env) is None {
     raise CommandMissing(program)
   }
-  let given = ["--dir", path([data, "run", "runners"]), "--id", id, "--cwd", cwd, "--", program, ..args]
-  // (lower than the station: ops/nice.ts)
-  let nice = agent_nice()
-  let (command, all_args) = if !is_windows() && nice > 0 && attempt(() => @drive.stat("/usr/bin/nice")) is Ok(_) {
-    ("/usr/bin/nice", ["-n", nice.to_string(), runner, ..given])
-  } else {
-    (runner, given)
-  }
-  let child = spawn(host, command, all_args, env~, stdout=Piped, stderr=Piped, group=true)
-  let (_, _, out, err) = child.finished()
-  let text = @utf8.decode_lossy(out)
-  for line in text.split("\n") {
-    let l = line.to_owned()
-    if l.has_prefix("{") {
-      match attempt(() => @json.parse(l)) {
-        Ok({ "ready": True, .. } as ready) => return ready
-        _ => ()
-      }
-    }
-  }
-  let why = @utf8.decode_lossy(err).trim().to_owned()
-  raise LiveError("the runner did not start: \{if why == "" { text.trim().to_owned() } else { why }}")
+  start_runner_proc(host, runner, data, id, program, args, env~, cwd, use_nice=true)
 }
 
 // ── the agents' processes read by the program (mb-agents.ts) ──
@@ -446,28 +417,26 @@ fn AgentsHost::exited(self : AgentsHost, code : Int) -> Unit {
   if self.closed {
     return
   }
-  live_log("warn", "agents", "the program reading agents ended; starting it again", { "code": ji(code) })
+  slice_log("warn", "agents", "the program reading agents ended; starting it again", { "code": ji(code) })
   self.on = false
   self.settle()
   let again = self.sessions.values().to_array()
-  ignore(
-    self.pump.host.rt.fork_daemon("agents' program again", on_error=e => @host.note("agents' program again failed: \{e}"), async fn() {
-      // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
-      @effect.sleep(1000)
-      if self.closed {
-        return
+  fork_bg(self.pump.host, "agents' program again", async fn() {
+    // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
+    @effect.sleep(1000)
+    if self.closed {
+      return
+    }
+    for p in again {
+      if !p.gone {
+        self.attach(p)
       }
-      for p in again {
-        if !p.gone {
-          self.attach(p)
-        }
-      }
-      let held = again.filter(p => !p.gone && self.held.contains(p.n))
-      if held.length() > 0 {
-        self.post({ "freeze": ji(self.number()), "only": Json::array(held.map(p => ji(p.n))) })
-      }
-    }),
-  )
+    }
+    let held = again.filter(p => !p.gone && self.held.contains(p.n))
+    if held.length() > 0 {
+      self.post({ "freeze": ji(self.number()), "only": Json::array(held.map(p => ji(p.n))) })
+    }
+  })
 }
 
 ///|
@@ -475,10 +444,7 @@ fn AgentsHost::said(self : AgentsHost, said : ProgramSaid) -> Unit {
   let h = said.head
   match jnum_of(h, "ownReplayed") {
     Some(id) => {
-      match self.own_replays.get(id.to_int()) {
-        Some(d) => ignore(d.succeed(h))
-        None => ()
-      }
+      if self.own_replays.get(id.to_int()) is Some(d) { ignore(d.succeed(h)) }
       self.own_replays.remove(id.to_int())
       self.idle_if_none()
       return
@@ -589,8 +555,8 @@ fn AgentsHost::attach(self : AgentsHost, p : HostedProcess) -> Unit {
   let m : Map[String, Json] = Map([])
   m["attach"] = ji(p.n)
   m["socket"] = jstr(p.info.socket())
-  m["turn"] = p52_json_of_jv(p.turn)
-  m["live"] = p52_json_of_jv(p.live)
+  m["turn"] = of_jv(p.turn)
+  m["live"] = of_jv(p.live)
   m["kind"] = jstr(p.options.kind)
   match p.options.flavor {
     Some(f) => {
@@ -614,10 +580,7 @@ fn AgentsHost::attach(self : AgentsHost, p : HostedProcess) -> Unit {
 ///|
 fn AgentsHost::forget(self : AgentsHost, p : HostedProcess) -> Unit {
   self.sessions.remove(p.n)
-  match self.held.search(p.n) {
-    Some(i) => ignore(self.held.remove(i))
-    None => ()
-  }
+  if self.held.search(p.n) is Some(i) { ignore(self.held.remove(i)) }
   self.idle_if_none()
 }
 
@@ -677,7 +640,7 @@ async fn AgentsHost::freeze(self : AgentsHost, only : Array[HostedProcess]) -> U
           Ok(n) =>
             match (self.sessions.get(n), kv.1) {
               (Some(p), Object(st)) if st.contains("turn") =>
-                p.froze(jv_of(st.get("turn").unwrap_or(Json::null())), jv_of(st.get("live").unwrap_or(Json::null())))
+                p.froze(to_jv(st.get("turn").unwrap_or(Json::null())), to_jv(st.get("live").unwrap_or(Json::null())))
               _ => ()
             }
           Err(_) => ()
@@ -690,10 +653,7 @@ async fn AgentsHost::freeze(self : AgentsHost, only : Array[HostedProcess]) -> U
 ///|
 fn AgentsHost::thaw(self : AgentsHost, only : Array[HostedProcess]) -> Unit {
   for p in only {
-    match self.held.search(p.n) {
-      Some(i) => ignore(self.held.remove(i))
-      None => ()
-    }
+    if self.held.search(p.n) is Some(i) { ignore(self.held.remove(i)) }
     match self.sessions.get(p.n) {
       Some(q) if physical_equal(q, p) => {
         p.frozen_state = None
@@ -845,7 +805,7 @@ fn HostedProcess::take(self : HostedProcess, heard : Json) -> @agent_drivers.Lat
   }
   match jfield(heard, "turn") {
     Null => ()
-    t => self.turn = jv_of(t)
+    t => self.turn = to_jv(t)
   }
   let batch = jnum_of(heard, "batch").map(b => b.to_int())
   let router = match batch {
@@ -861,7 +821,7 @@ fn HostedProcess::take(self : HostedProcess, heard : Json) -> @agent_drivers.Lat
     _ => heard
   }
   let to = jfield(heard, "to")
-  let taken = (self.options.heard)({ json: jv_of(heard) })
+  let taken = (self.options.heard)({ json: to_jv(heard) })
   let finish = () => {
     if self.gone || self.frozen {
       return
@@ -918,7 +878,8 @@ fn HostedProcess::closed_(self : HostedProcess, stderr : String) -> @agent_drive
     return @agent_drivers.done(lp)
   }
   if pid_alive(self.info.runner()) {
-    live_log("warn", "agents::process", "another station took the runner over; letting go", { "label": jstr(self.options.label) })
+    slice_log("warn", "agents::process", "another station took the runner over; letting go", { "label": jstr(self.options.label) })
+    (self.options.handed)()
     self.frozen = true
     self.gone = true
     self.done()
@@ -937,10 +898,7 @@ fn HostedProcess::closed_(self : HostedProcess, stderr : String) -> @agent_drive
 ///|
 fn HostedProcess::left_(self : HostedProcess) -> Unit {
   self.host.forget(self)
-  match self.left {
-    Some(f) => f()
-    None => ()
-  }
+  if self.left is Some(f) { f() }
 }
 
 ///|
@@ -1007,7 +965,7 @@ async fn HostedProcess::kill(self : HostedProcess, grace_ms : Double) -> Unit {
   exited(1000)
   self.done()
   let mut j = 0
-  while j < 200 && pid_alive(self.info.runner()) {
+  while j < 1000 && pid_alive(self.info.runner()) {
     @effect.sleep(10) // timer: a wait on another process's end
     j += 1
   }
@@ -1030,7 +988,7 @@ fn HostedProcess::proc(self : HostedProcess) -> @agent_drivers.Proc {
     say: (what, fields) => if !self.frozen {
       let m : Map[String, Json] = Map([])
       m[what] = ji(self.n)
-      match p52_json_of_jv(fields) {
+      match of_jv(fields) {
         Object(f) =>
           for kv in f {
             m[kv.0] = kv.1
@@ -1049,7 +1007,7 @@ fn HostedProcess::proc(self : HostedProcess) -> @agent_drivers.Proc {
         return
       }
       let mut i = 0
-      while i < 200 && pid_alive(self.info.runner()) {
+      while i < 1000 && pid_alive(self.info.runner()) {
         @effect.sleep(10) // timer: a wait on another process's end
         i += 1
       }
@@ -1057,7 +1015,7 @@ fn HostedProcess::proc(self : HostedProcess) -> @agent_drivers.Proc {
     has_exited: () => self.exit_said is Some(_),
     handed: () => self.frozen,
     thread: (thread, live, routed) => {
-      let m : Map[String, Json] = { "codexThread": ji(self.n), "id": jstr(thread), "live": p52_json_of_jv(live) }
+      let m : Map[String, Json] = { "codexThread": ji(self.n), "id": jstr(thread), "live": of_jv(live) }
       if routed {
         m["routed"] = jb(true)
       }
@@ -1104,7 +1062,7 @@ fn AgentsHost::procs(self : AgentsHost, runner : () -> String?, data : String, p
         end_runner_now(pump, data, id, options.label)
         raise LiveError("\{options.label} not started: the station's agents were let go")
       }
-      let p = HostedProcess::new(self, { json: jv_of(info) }, options, turn, @jsjson.JValue::Null)
+      let p = HostedProcess::new(self, { json: to_jv(info) }, options, turn, @jsjson.JValue::Null)
       (pre.val)(p)
       self.attach(p)
       p.proc()
@@ -1123,10 +1081,10 @@ fn AgentsHost::procs(self : AgentsHost, runner : () -> String?, data : String, p
       p.proc()
     },
     replay_own: (kind, file, at, extra) => pump.later("output read again", async fn() {
-      jv_of(self.replay_own(kind, file, at, p52_json_of_jv(extra)))
+      to_jv(self.replay_own(kind, file, at, of_jv(extra)))
     }),
     replay: runs => pump.later("app-server read again", async fn() {
-      jv_of(self.replay(runs.map(r => r.map(p52_json_of_jv))))
+      to_jv(self.replay(runs.map(r => r.map(of_jv))))
     }),
     freeze: procs => pump.later("processes held", async fn() {
       let only = procs.filter_map(pr => self.sessions.values().find_first(p => physical_equal(p.info, pr.info)))
@@ -1136,18 +1094,27 @@ fn AgentsHost::procs(self : AgentsHost, runner : () -> String?, data : String, p
       let only = procs.filter_map(pr => self.sessions.values().find_first(p => physical_equal(p.info, pr.info)))
       self.thaw(only)
     },
-    close: () => pump.later("agents let go", async fn() {
-      if self.closed {
-        return
-      }
-      self.closed = true
-      self.settle()
-      if self.on {
-        self.on = false
-        self.program.release(false)
-      }
-    }),
+    // (one program under every driver: a driver's own shutdown leaves it be, `let_go` once all of them are shut down)
+    close: () => @agent_drivers.done(pump.lp),
   }
+}
+
+///|
+/// The agents let go for good: no process started after, the shared program released. The station's stop does it
+/// once every driver has ended its processes (live_p5_2_main `drivers_shut_down`): the drivers share this program, and one
+/// that let it go first would leave another's TERM unsent and its processes behind.
+fn AgentsHost::let_go(self : AgentsHost) -> @agent_drivers.Later[Unit] {
+  self.pump.later("agents let go", async fn() {
+    if self.closed {
+      return
+    }
+    self.closed = true
+    self.settle()
+    if self.on {
+      self.on = false
+      self.program.release(false)
+    }
+  })
 }
 
 ///|

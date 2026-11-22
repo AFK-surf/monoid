@@ -8,9 +8,9 @@ import { core } from "../core/react.ts";
 import { prefs, setPrefs } from "../prefs.ts";
 import { t } from "../i18n.ts";
 import type {  } from "./accounts.ts";
-import type { AddedView, Admission, AdminUser, AdminWorkspace, FeedbackStatus, InvitationView, InviteCodeView, MeView, MemberView, PendingInvitation, Role, UserView, WayView, WorkspaceSummary, WorkspaceView } from "../../../cloud/src/types.ts";
+import type { AddedView, Admission, AdminKeyView, AdminUser, AdminWorkspace, FeedbackStatus, InvitationView, InviteCodeView, MeView, MemberView, PendingInvitation, Role, UserView, WayView, WorkspaceSummary, WorkspaceView } from "../../../cloud/src/types.ts";
 
-export type { AddedView, Admission, AdminUser, AdminWorkspace, FeedbackStatus, InvitationView, InviteCodeView, MeView, MemberView, PendingInvitation, Role, UserView, WayView, WorkspaceSummary, WorkspaceView };
+export type { AddedView, Admission, AdminKeyView, AdminUser, AdminWorkspace, FeedbackStatus, InvitationView, InviteCodeView, MeView, MemberView, PendingInvitation, Role, UserView, WayView, WorkspaceSummary, WorkspaceView };
 
 /** Has the core do `name` (client/core-ts/src/ops.ts) on still.fail cloud as the account `sub`, with `params`. */
 const operations = (account: string) => bindCloudOperations((name, params) => core().call(name, { ...params, account }));
@@ -101,6 +101,11 @@ export const admin = {
     operations(sub).adminRelayPut<{ url: string; name: string; target: string | null }>({ url, name, ...(target ? { target } : {}) }),
   /** A relay, or a way into one, taken off the cloud's list. */
   relayRemove: (sub: string, url: string) => operations(sub).adminRelayRemove<{ removed: true }>({ url }),
+  /** Creates an Admin API key; the plaintext `key` is returned once here. */
+  createKey: (sub: string, name: string, days?: number) =>
+    operations(sub).adminCreateKey<AdminKeyView & { key: string; origin: string; host: string }>({ name, ...(days !== undefined ? { days } : {}) }),
+  /** Revokes an Admin API key immediately. */
+  revokeKey: (sub: string, id: string) => operations(sub).adminRevokeKey<{ ok: true }>({ id }),
 };
 
 // still.fail cloud's invite-code errors in words; the core passes their codes through (see CoreError).

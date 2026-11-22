@@ -10,10 +10,13 @@
 /// a glyph of it at least seen between its dot and its ellipsis, and nothing squeezed of what `made` (a page's file)
 /// made. What is wrong, said with `at`; none, "".
 fn name_line_wrong(t : @ui.Tester, at : String, name : String, rest : String, w : Double, made : String) -> String {
-  let names = t.words().filter(fn(x) { x.0.has_prefix(name) })
   let rests = t.words().filter(fn(x) { x.0.has_prefix(rest) })
-  guard names.length() >= 1 && rests.length() >= 1 else { return "\{at}: \{Repr(names)} \{Repr(rests)}" }
-  let (n, r) = (names[0], rests[0])
+  guard rests.length() >= 1 else { return "\{at}: [] \{Repr(rests)}" }
+  let r = rests[0]
+  // (the name on what follows it's line: the same name elsewhere (the station's above the composer) not it)
+  let names = t.words().filter(fn(x) { x.0.has_prefix(name) && (x.2 - r.2).abs() < 4.0 })
+  guard names.length() >= 1 else { return "\{at}: \{Repr(names)} \{Repr(rests)}" }
+  let n = names[0]
   let seen = t
     .glyphs_seen()
     .filter(fn(g) { (g.0 + g.2) / 2.0 > r.1 && (g.0 + g.2) / 2.0 < r.1 + r.3 && (g.1 + g.3) / 2.0 > r.2 && (g.1 + g.3) / 2.0 < r.2 + r.4 })

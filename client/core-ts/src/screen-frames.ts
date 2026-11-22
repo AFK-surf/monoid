@@ -1,9 +1,11 @@
 // A screen view's frames on its stream (Wire): a kind byte, the payload's length (4 bytes,
 // big-endian), the payload. The station sends `config`, `video` and `state` (and `cursor`, the pointer in a few bytes,
 // to a view that asked `binaryCursor`; `cursorImage`, the picture of a pointer of an app's own, before the first that
-// names it "custom:<id>", to one that asked `customCursor`); the client `input`, `ack`, `keyframe` and
+// names it "custom:<id>", to one that asked `customCursor`); the client `input`, `ack`, `keyframe`, `sound`, `micOn`
+// and `mic` (the person's microphone into the screen's virtual one, only while its state's `mic` is active) and
 // `look` (the part of the screen it shows, zoomed in); the screen's clipboard goes both ways (`clipboard`) while the
-// view drives it.
+// view drives it, a copy an app marked private (a password manager's) as `privateClipboard`, its mark first, to a view
+// that asked `privateClip`.
 // Read as the stream's pieces come, however they are cut: each frame's bytes are copied once, into an array of its own
 // (what goes to the UI, transferred on the web).
 import { fromBase64, fromUtf8, isObject, utf8 } from "./util.ts";
@@ -16,12 +18,19 @@ export const AUDIO_CONFIG = 5;
 export const AUDIO = 6;
 export const CURSOR = 7;
 export const CURSOR_IMAGE = 8;
+export const PRIVATE_CLIPBOARD = 9;
 export const INPUT = 16;
 export const ACK = 17;
 export const KEYFRAME = 18;
 export const SET_CLIPBOARD = 19;
 export const LOOK = 20;
 export const SOUND = 21;
+/// The person shares their microphone into the screen's virtual one (1 on, 0 off), and a packet of it: flags (0: 48
+/// kHz mono s16le), the recording's epoch (u32 big-endian), the samples. A station from before lets both be.
+export const MIC_ON = 22;
+export const MIC = 23;
+/// The most bytes of one microphone packet (40 ms).
+export const MIC_PCM_MAX = 3840;
 /// A packet of sound: 20 ms of PCM16 (3840 bytes), or one Opus packet (at most 1275).
 const AUDIO_MAX = 3840;
 /// A `cursor` frame: x and y (16 bits each, of 65535), then the pointer's shape (UTF-8, at most this many bytes).
@@ -35,6 +44,13 @@ const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 export type ClipType = "text" | "png";
 const CLIP_BYTE: Record<ClipType, number> = { text: 1, png: 2 };
 const CLIP_OF_BYTE: Record<number, ClipType> = { 1: "text", 2: "png" };
+/// What the app that copied a clip marked it (station/src/screens/source.ts `ClipPrivacy`), and its code on the wire.
+export type ClipPrivacy = "concealed" | "transient" | "auto";
+const PRIVACY_CODE: Record<ClipPrivacy, number> = { concealed: 1, transient: 2, auto: 3 };
+const PRIVACY_OF_CODE: Record<number, ClipPrivacy> = { 1: "concealed", 2: "transient", 3: "auto" };
+export function privacyOf(v: unknown): ClipPrivacy | null {
+  return v === "concealed" || v === "transient" || v === "auto" ? v : null;
+}
 /// The most a clipboard carries each way (station/src/screens/source.ts): text's UTF-8 bytes, a picture's.
 export const CLIP_TEXT_MAX = 1024 * 1024;
 export const CLIP_PNG_MAX = 8 * 1024 * 1024;
@@ -59,7 +75,7 @@ export type StationFrame =
   | { audioConfig: { codec: "pcm_s16le" | "opus"; sampleRate: 48000; channels: 2 } }
   | { audio: { ts: number; data: Uint8Array } }
   /// The screen's clipboard, changed: its type and its bytes (text in UTF-8).
-  | { clipboard: { type: ClipType; data: Uint8Array } }
+  | { clipboard: { type: ClipType; data: Uint8Array; privacy?: ClipPrivacy } }
   /// The pointer moved (0..1 of the screen, to a ten-thousandth, and its shape where said), or none shown (null).
   | { cursor: { x: number; y: number; shape?: string } | null }
   /// The picture of a pointer of an app's own, by the shape that names it ("custom:<id>"): its size and hot spot in
@@ -154,6 +170,16 @@ export class FrameReader {
         this.#skip(1);
         return { clipboard: { type, data: this.#take(length - 1) } };
       }
+      case PRIVATE_CLIPBOARD: {
+        const privacy = length > 1 ? PRIVACY_OF_CODE[this.#peek(0)] : undefined;
+        const type = length > 1 ? CLIP_OF_BYTE[this.#peek(1)] : undefined;
+        if (privacy === undefined || type === undefined) {
+          this.#skip(length);
+          return { other: kind };
+        }
+        this.#skip(2);
+        return { clipboard: { type, data: this.#take(length - 2), privacy } };
+      }
       default:
         this.#skip(length);
         return { other: kind };
@@ -233,13 +259,16 @@ export function inputFrame(input: J): Uint8Array {
   return frame(INPUT, utf8(JSON.stringify(input)));
 }
 
-/// The timestamp (µs) of the last frame the client decoded.
-export function ackFrame(ts: number): Uint8Array {
-  const payload = new Uint8Array(8);
+/// The timestamp (µs) of the last frame the client decoded, and optionally how long (µs) the client held it before
+/// showing or dropping it (appended as u32 big-endian when > 0; omitted when 0 for backwards compatibility).
+export function ackFrame(ts: number, waitUs = 0): Uint8Array {
+  const w = Number.isFinite(waitUs) && waitUs > 0 ? Math.min(0xffff_ffff, Math.round(waitUs)) : 0;
+  const payload = new Uint8Array(w > 0 ? 12 : 8);
   const view = new DataView(payload.buffer);
   const t = Math.max(0, Math.floor(ts));
   view.setUint32(0, Math.floor(t / TWO_32));
   view.setUint32(4, t % TWO_32);
+  if (w > 0) view.setUint32(8, w);
   return frame(ACK, payload);
 }
 
@@ -252,16 +281,30 @@ export function soundFrame(on: boolean): Uint8Array {
   return frame(SOUND, new Uint8Array([on ? 1 : 0]));
 }
 
+/// Sharing the person's microphone into the screen's virtual one on (1) or off (0).
+export function micOnFrame(on: boolean): Uint8Array {
+  return frame(MIC_ON, new Uint8Array([on ? 1 : 0]));
+}
+
+/// One packet of the person's microphone (48 kHz mono s16le) for the recording `epoch`.
+export function micFrame(pcm16le: Uint8Array, epoch: number): Uint8Array {
+  const payload = new Uint8Array(5 + pcm16le.length);
+  new DataView(payload.buffer).setUint32(1, epoch >>> 0);
+  payload.set(pcm16le, 5);
+  return frame(MIC, payload);
+}
+
 /// The part of the screen the client shows (null: the whole), and the bounds its pictures are to fit in (the device
 /// pixels it is shown in).
 export function lookFrame(region: Region | null, maxWidth: number, maxHeight: number): Uint8Array {
   return frame(LOOK, utf8(JSON.stringify(region ? { region, maxWidth, maxHeight } : { region: null })));
 }
 
-/// The screen's clipboard set (and pasted, with `paste`): flags, type, the bytes.
-export function clipboardFrame(type: ClipType, data: Uint8Array, paste: boolean): Uint8Array {
+/// The screen's clipboard set (and pasted, with `paste`): flags (bit 0 paste, bits 1..2 its mark: a station from before
+/// reads bit 0 alone), type, the bytes.
+export function clipboardFrame(type: ClipType, data: Uint8Array, paste: boolean, privacy: ClipPrivacy | null = null): Uint8Array {
   const payload = new Uint8Array(2 + data.length);
-  payload[0] = paste ? 1 : 0;
+  payload[0] = (paste ? 1 : 0) | (privacy ? PRIVACY_CODE[privacy] << 1 : 0);
   payload[1] = CLIP_BYTE[type];
   payload.set(data, 2);
   return frame(SET_CLIPBOARD, payload);
@@ -310,15 +353,16 @@ export function cursorImageFrame(image: { w: number; h: number; hx: number; hy: 
   return frame(CURSOR_IMAGE, payload);
 }
 
-export function copiedFrame(type: ClipType, data: Uint8Array): Uint8Array {
-  const payload = new Uint8Array(1 + data.length);
-  payload[0] = CLIP_BYTE[type];
-  payload.set(data, 1);
-  return frame(CLIPBOARD, payload);
+export function copiedFrame(type: ClipType, data: Uint8Array, privacy: ClipPrivacy | null = null): Uint8Array {
+  const head = privacy ? [PRIVACY_CODE[privacy], CLIP_BYTE[type]] : [CLIP_BYTE[type]];
+  const payload = new Uint8Array(head.length + data.length);
+  payload.set(head);
+  payload.set(data, head.length);
+  return frame(privacy ? PRIVATE_CLIPBOARD : CLIPBOARD, payload);
 }
 
 /// What the client sends, read (the test station's side).
-export type ClientFrame = { input: J } | { ack: number } | { keyframe: true } | { sound: boolean } | { look: J } | { clipboard: { type: ClipType | null; paste: boolean; data: Uint8Array } } | { other: number };
+export type ClientFrame = { input: J } | { ack: number; waitUs?: number } | { keyframe: true } | { sound: boolean } | { micOn: boolean } | { mic: { flags: number; epoch: number; data: Uint8Array } } | { look: J } | { clipboard: { type: ClipType | null; paste: boolean; data: Uint8Array; privacy?: ClipPrivacy } } | { other: number };
 
 export function readClientFrames(buf: Uint8Array): [ClientFrame[], Uint8Array] {
   const frames: ClientFrame[] = [];
@@ -334,7 +378,8 @@ export function readClientFrames(buf: Uint8Array): [ClientFrame[], Uint8Array] {
         break;
       case ACK: {
         const p = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-        frames.push({ ack: p.getUint32(0) * TWO_32 + p.getUint32(4) });
+        const ack = p.getUint32(0) * TWO_32 + p.getUint32(4);
+        frames.push(payload.length >= 12 ? { ack, waitUs: p.getUint32(8) } : { ack });
         break;
       }
       case KEYFRAME:
@@ -343,11 +388,19 @@ export function readClientFrames(buf: Uint8Array): [ClientFrame[], Uint8Array] {
       case SOUND:
         frames.push({ sound: payload[0] !== 0 });
         break;
+      case MIC_ON:
+        frames.push({ micOn: payload[0] === 1 });
+        break;
+      case MIC: {
+        const p = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+        frames.push({ mic: { flags: payload[0] ?? 0, epoch: payload.length >= 5 ? p.getUint32(1) : 0, data: payload.slice(5) } });
+        break;
+      }
       case LOOK:
         frames.push({ look: json(payload) });
         break;
       case SET_CLIPBOARD:
-        frames.push({ clipboard: { type: CLIP_OF_BYTE[payload[1] ?? 0] ?? null, paste: ((payload[0] ?? 0) & 1) === 1, data: payload.slice(2) } });
+        frames.push({ clipboard: { type: CLIP_OF_BYTE[payload[1] ?? 0] ?? null, paste: ((payload[0] ?? 0) & 1) === 1, data: payload.slice(2), ...(PRIVACY_OF_CODE[((payload[0] ?? 0) >> 1) & 3] ? { privacy: PRIVACY_OF_CODE[((payload[0] ?? 0) >> 1) & 3]! } : {}) } });
         break;
       default:
         frames.push({ other: buf[at]! });

@@ -20,7 +20,8 @@ import type { Runner } from "../runtime.ts";
 import { timed } from "../spent.ts";
 import { work } from "../work.ts";
 import type { ChatRead } from "./chat-reads.ts";
-import { ChatsStore } from "./chats.ts";
+import type { SharedSidecar } from "../chat-row.ts";
+import { ChatsStore, type SharedMarkKind, type SharedMarksSnapshot, type SharedMeta } from "./chats.ts";
 import {
   Cache,
   type Changes,
@@ -53,7 +54,7 @@ import { JobsStore } from "./jobs.ts";
 import { KEPT_ALL, KeptValues } from "./kept.ts";
 import { KeptCacheStore } from "./kept-cache.ts";
 import { LogsStore } from "./logs.ts";
-import { type ChatColumnsMade, ensureChatColumns, ensureLetters, giveBackRoom, migrate, versionOf } from "./schema.ts";
+import { type ChatColumnsMade, ensureChatColumns, ensureLetters, giveBackRoomStep, migrate, versionOf } from "./schema.ts";
 import { SessionsThreadsStore, counted, placeTurn, sameTurns } from "./sessions-threads.ts";
 import { SlackSaidStore } from "./slack-said.ts";
 
@@ -183,6 +184,7 @@ export class AccountDb {
       if (was === undefined) this.sql.run("INSERT INTO meta (key, value) VALUES ('account', ?)", [sub]);
       ensureLetters(sql);
       this.#chats.openMoved();
+      this.#chats.openSharedSidecar();
       this.#logs.openSaid(false);
       this.#docs.openParts(false);
       // (after the tables they are kept beside, station_part's: ensureOverviewParts)
@@ -196,11 +198,6 @@ export class AccountDb {
       this.#slack.open();
       this.#logs.openEvicted();
       this.#keptCache.openLogBytes();
-      try {
-        giveBackRoom(sql);
-      } catch {
-        // No room to rewrite it in: the file stays as large this time.
-      }
       this.#keptCache.openMediaTables();
     } else {
       this.#logs.openSaid(true);
@@ -359,6 +356,18 @@ export class AccountDb {
   /// `put` null where that is not known (it changed otherwise, or long ago): all of it is to be read again.
   logPutSince(table: LogTable, station: string, id: string, since: number): { rev: number; put: number[] | null } {
     return this.#logs.logPutSince(table, station, id, since);
+  }
+
+  /// One step of giving unused pages back to the device (schema.ts `giveBackRoomStep`). Returns true while more steps
+  /// remain, including when a write transaction is open so the writer commits before vacuum runs.
+  giveBackRoomStep(pages?: number): boolean {
+    if (this.readOnly || this.#closed) return false;
+    if (this.#inTx) return true;
+    try {
+      return giveBackRoomStep(this.sql, pages);
+    } catch {
+      return false;
+    }
   }
 
   /// The burst under way committed now, not as its writer next runs: what a core closing wrote (Data.closing).
@@ -560,6 +569,16 @@ export class AccountDb {
   setChats(station: string, archived: boolean, rows: J[], confirmed: number | null, places?: readonly number[]): void { this.#chats.setChats(station, archived, rows, confirmed, places); }
   putChat(station: string, row: J, place?: number): void { this.#chats.putChat(station, row, place); }
   dropChat(station: string, id: string): void { this.#chats.dropChat(station, id); }
+  sharedMeta(station: string): SharedMeta | null { return this.#chats.sharedMeta(station); }
+  setSharedNoRouteBuild(station: string, build: string | null): void { this.#chats.setSharedNoRouteBuild(station, build); }
+  sharedDigests(station: string): Map<string, string> { return this.#chats.sharedDigests(station); }
+  sharedSidecar(station: string, id: string): SharedSidecar | null { return this.#chats.sharedSidecar(station, id); }
+  sharedSidecars(station: string): Map<string, SharedSidecar> { return this.#chats.sharedSidecars(station); }
+  clearSharedBaseline(station: string): void { this.#chats.clearSharedBaseline(station); }
+  setSharedChats(station: string, rows: J[], confirmed: number | null, places: readonly number[], sidecars: ReadonlyMap<string, SharedSidecar>, marks: SharedMarksSnapshot, meta: SharedMeta): void { this.#chats.setSharedChats(station, rows, confirmed, places, sidecars, marks, meta); }
+  putSharedChat(station: string, row: J, place: number, sidecar: SharedSidecar | null): void { this.#chats.putSharedChat(station, row, place, sidecar); }
+  putSharedBatch(station: string, updates: readonly { row: J; place: number; sidecar: SharedSidecar | null }[], drops: readonly string[], markUpdates: readonly { kind: SharedMarkKind; k: string; v: string | null }[], scopedMarks: { scope: { sessions: readonly string[]; threads: readonly number[] }; marks: SharedMarksSnapshot } | null): void { this.#chats.putSharedBatch(station, updates, drops, markUpdates, scopedMarks); }
+  applySharedChanged(station: string, changed: readonly { row: J; place: number; sidecar: SharedSidecar }[], gone: readonly string[], reprojectAll: boolean, reproject: (row: J, sidecar: SharedSidecar) => { row: J; place: number }, newMarks: SharedMarksSnapshot, confirmed: number | null, meta: SharedMeta, extraReproject?: { ids?: Iterable<string>; threads?: Iterable<number> }): void { this.#chats.applySharedChanged(station, changed, gone, reprojectAll, reproject, newMarks, confirmed, meta, extraReproject); }
   moved(station: string, session: string): MovedTo | undefined { return this.#chats.moved(station, session); }
   movedThread(station: string, thread: number): string | undefined { return this.#chats.movedThread(station, thread); }
   movedFrom(station: string): string[] { return this.#chats.movedFrom(station); }

@@ -6,7 +6,7 @@
 /// refilling in the words the core says: the account's, then `own` of its models' own weeks.
 fn allowance_dials(own : Int) -> Array[Dial] {
   let dial = fn(left : Int, label : String, note : String) -> Dial {
-    { number: left.to_string(), unit: "%", fill: left, level: "ok", label, note, label_short: "", note_short: "" }
+    { number: left.to_string(), unit: "%", fill: left, level: "ok", label, note, label_short: "", note_short: "", turns: false }
   }
   let dials = [dial(62, "5 小时", "3 小时 5 分钟后刷新"), dial(19, "每周", "2 天 4 小时后刷新")]
   for m in [("Fable", 46), ("Opus", 8), ("Sonnet", 100)].iter().take(own) {

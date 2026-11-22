@@ -5,12 +5,15 @@
 // admin's console has its own, `adminApi`, which only the console's host
 // routes to (index.ts).
 import { consoleAdmin, isAdmin } from "./admin";
-import { bearerToken, clock, denied, limited, readJson, reply, verifyToken, type Claims } from "./auth";
+import { revokeAppleToken, unsealAppleToken } from "./apple";
+import { bearerToken, clock, denied, digest, limited, readJson, reply, verifyToken, type Claims } from "./auth";
 import { adminOrigins, betaOrigin, header, publicOrigins, signedMessages } from "./compat";
 import { guestOf, guests } from "./guests";
 import { productOf } from "../../client/i18n/brand.ts";
 import type { Live } from "./account";
 import { EVENTS_PROTOCOLS, ROLES, sockets, type AddedMail, type Role } from "./directory";
+import { PROVISION_KEY_PREFIX } from "./directory/stations";
+import { fail } from "./directory/types";
 import type { Env } from "./env";
 import { requestLang, tr, type Lang } from "./i18n.ts";
 import { mailConfigured, sendAdded } from "./mail";
@@ -35,12 +38,15 @@ const STATUS: Record<string, number> = {
   last_owner: 409, sole_owner: 409, locked_workspace: 409, not_before_owner: 409, rig_enrollment: 409, station_enrollment: 409, station_in_others: 409, last_station: 409,
   too_many_workspaces: 429, too_many_invitations: 429, too_many_members: 429, too_many_stations: 429,
   invite_code_required: 403, invite_code_invalid: 404, invite_code_used: 409, invite_code_expired: 410,
-  invalid_note: 400, invalid_expiry: 400, invalid_limits: 400,
-  feedback_not_found: 404,
+  invalid_note: 400, invalid_expiry: 400, invalid_limits: 400, invalid_days: 400, too_many_keys: 409, key_not_found: 404,
+  feedback_not_found: 404, unauthorized: 401,
   invalid_signature: 401, wrong_relay_kind: 403, too_many_mesh_relays: 409, mesh_registry_capacity: 409, mesh_generation_exhausted: 409, mesh_relay_not_registered: 403, stale_mesh_address: 409, invalid_node: 400, mesh_relay_not_found: 404,
   invalid_target: 400, too_many_relays: 429, relay_not_found: 404, invalid_token: 403, wrong_relay: 403, unknown_relay: 400, invalid_secret: 403, not_from_relay: 403, invalid_request: 400,
   invalid_lock_entries: 400, lock_exists: 409, lock_fork: 409, lock_does_not_follow: 409, lock_refused: 409, invalid_device: 400, invalid_kind: 400,
 };
+
+/** A provisioning key as directory/stations.ts makes it: `sfpk_` and 32 bytes, base64url. */
+const PROVISION_KEY = new RegExp(`^${PROVISION_KEY_PREFIX}[A-Za-z0-9_-]{43}$`);
 
 const FEEDBACK_STATUSES: readonly FeedbackStatus[] = ["new", "triaged", "fixed", "wontfix"];
 
@@ -79,10 +85,10 @@ async function mailAdded(env: Env, lang: Lang, workspace: string, mail: AddedMai
   return failed;
 }
 
-async function directory<T>(run: () => Promise<T> | T): Promise<Response> {
+async function directory<T>(run: () => Promise<T> | T, status = 200): Promise<Response> {
   try {
     const value = await run();
-    return reply(value ?? { ok: true });
+    return reply(value ?? { ok: true }, status);
   } catch (error) {
     const code = error instanceof Error ? error.message : "";
     if (code in STATUS) return reply({ error: code }, STATUS[code]);
@@ -287,6 +293,33 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
   // ── Slack's pictures, for the app in a browser, which may not read them from Slack (pictures.ts) ──
   if (path === "/v1/pictures" && method === "GET") return servePicture(request);
 
+  // ── a console's provisioning key (directory/stations.ts): a station's enrollment at a time, and nothing else ──
+  // Only `Authorization: Bearer sfpk_…` here, and such a key nowhere else (any other route takes it for no account's
+  // token: 401). No account's token is taken here. A key not working (unknown, revoked, expired, its maker no longer
+  // managing the workspace) is 401 `unauthorized`: the console asks someone to connect again.
+  if (path === "/v1/provision/verify" || path === "/v1/provision/enrollments") {
+    const unauthorized = () => reply({ error: "unauthorized" }, 401);
+    const supplied = bearerToken(request);
+    if (!supplied || !PROVISION_KEY.test(supplied)) return unauthorized();
+    const dir = env.DIRECTORY.getByName("primary");
+    const hash = await digest(supplied);
+    if (path === "/v1/provision/verify" && method === "GET") {
+      const found = await dir.verifyProvisionKey(hash);
+      return found ? reply(found) : unauthorized();
+    }
+    if (path === "/v1/provision/enrollments" && method === "POST") {
+      const input = await readJson(request, 4096).catch(() => null);
+      if (!input) return reply({ error: "invalid_request" }, 400);
+      return directory(async () => {
+        const made = (await dir.createProvisionedEnrollment(hash, input.name)) ?? fail(401, "unauthorized");
+        // As an owner's 添加 station has it: on the test channel's host the installer is the test channel's.
+        const beta = betaOrigin(env);
+        return { workspace: made.workspace, ...withCommands(env, { token: made.token, expires_at: made.expires_at }, (beta !== null && url.origin === beta) || header(request, "channel") === "beta") };
+      });
+    }
+    return reply({ error: "not_found" }, 404);
+  }
+
   // ── accounts ────────────────────────────────────────────────────────────
   const isAccountRoute = path === "/v1/me" || path === "/v1/me/personal-lock" || path === "/v1/me/picture" || path.startsWith("/v1/workspaces") || path.startsWith("/v1/invitations/");
   if (!isAccountRoute) return null;
@@ -309,7 +342,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     // 2026-11-15). `console`: asked on the console's host, which serves no workspace's calls (index.ts CONSOLE_CALLS).
     // An operator is noted, to be told when the console's lists change (directory.ts `noteOperator`).
     const onConsole = adminOrigins(env).includes(new URL(request.url).origin);
-    const operator = onConsole && (await consoleAdmin(request, env, claims.email));
+    const operator = onConsole && (await consoleAdmin(request, env, claims.email, sub));
     if (operator) await dir.noteOperator(sub, claims.email);
     return directory(async () => ({ ...(await dir.me(sub)), invitations: await dir.invitationsFor(claims.email), operator, ...(onConsole ? { console: true as const } : {}) }));
   }
@@ -328,11 +361,20 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (method === "PUT") return directory(async () => dir.setOwnPicture(sub, typeof input.picture === "string" && input.picture.startsWith("data:") ? await keptIcon(env, input.picture) : input.picture));
     if (method === "DELETE") return directory(() => dir.setOwnPicture(sub, null));
   }
-  // Deleting the account: the Directory first (it may refuse: 409 sole_owner), then its sessions and all of it.
+  // Deleting the account: the Directory first (it may refuse: 409 sole_owner), then its sessions, and revoke any linked Sign in with Apple tokens.
   if (path === "/v1/me" && method === "DELETE") {
     return directory(async () => {
-      await dir.deleteAccount(sub);
+      const { appleTokens } = await dir.deleteAccount(sub);
       await env.ACCOUNTS.getByName(sub).erase();
+      for (const sealed of appleTokens) {
+        const token = await unsealAppleToken(env, sealed);
+        if (!token) continue;
+        try {
+          await revokeAppleToken(env, token);
+        } catch (error) {
+          console.error("deleteAccount: failed to revoke Apple token", error);
+        }
+      }
       return { deleted: true };
     });
   }
@@ -341,7 +383,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (byId[2] === "accept") return directory(() => dir.acceptById(sub, claims.email, byId[1]!));
     return directory(() => dir.declineById(claims.email, byId[1]!));
   }
-  if (path === "/v1/workspaces" && method === "POST") return directory(() => dir.createWorkspace(sub, text("name"), isAdmin(env, claims.email), input.invite_code));
+  if (path === "/v1/workspaces" && method === "POST") return directory(() => dir.createWorkspace(sub, text("name"), isAdmin(env, claims.email, sub), input.invite_code));
   if (path === "/v1/invitations/preview" && method === "POST") return directory(() => dir.previewInvitation(text("token")));
   if (path === "/v1/invitations/accept" && method === "POST") return directory(() => dir.acceptInvitation(sub, claims.email, text("token")));
 
@@ -395,6 +437,11 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       return withCommands(env, made, (beta !== null && url.origin === beta) || header(request, "channel") === "beta");
     });
   }
+  // The workspace's provisioning keys (directory/stations.ts), its owners' and admins': listed, one made ({ name,
+  // days? }, the key in this answer alone), one revoked.
+  if (kind === "provision-keys" && !target && method === "GET") return directory(async () => ({ keys: await dir.provisionKeys(sub, ws) }));
+  if (kind === "provision-keys" && !target && method === "POST") return directory(() => dir.createProvisionKey(sub, ws, input.name, input.days));
+  if (kind === "provision-keys" && target && !action && method === "DELETE") return directory(() => dir.revokeProvisionKey(sub, ws, target));
   // A rig's enrollment (a station that only runs tasks): the same commands, to which the app adds that it is one with its person's own lock
   // to pin (`rig:<hash>`, `--rig <hash>`), as it adds a workspace lock's hash: the cloud never says whose lock that is.
   if (kind === "rigs" && target === "enrollments" && !action && method === "POST") {
@@ -561,10 +608,74 @@ export async function relayAdmin(env: Env, by: string, path: string, method: str
   return null;
 }
 
+type AdminActor = {
+  sub: string;
+  email: string;
+  auditBy: string;
+  key?: { id: string; name: string; prefix: string };
+};
+
 export async function adminApi(request: Request, env: Env, path: string): Promise<Response> {
   const method = request.method;
   const claims = await account(bearerToken(request), env, request);
-  if (claims instanceof Response || !(await consoleAdmin(request, env, claims.email))) return notFound();
+  if (claims instanceof Response || !(await consoleAdmin(request, env, claims.email, claims.sub))) return notFound();
+  const dir = env.DIRECTORY.getByName("primary");
+  await dir.noteOperator(claims.sub, claims.email);
+  if (path === "/v1/admin/keys" && method === "GET") {
+    return directory(async () => ({ keys: await dir.adminKeys() }));
+  }
+  if (path === "/v1/admin/keys" && method === "POST") {
+    let input: Record<string, unknown>;
+    try {
+      input = await body(request);
+    } catch {
+      return reply({ error: "invalid_request" }, 400);
+    }
+    let made: { name: string; prefix: string } | undefined;
+    const response = await directory(async () => {
+      const created = await dir.createAdminKey(claims.sub, claims.email, input.name, input.days);
+      made = { name: created.name, prefix: created.prefix };
+      return { ...created, origin: env.PUBLIC_ORIGIN, host: new URL(env.PUBLIC_ORIGIN).hostname };
+    }, 201);
+    const createdMeta = made as { name: string; prefix: string } | undefined;
+    if (response.ok && createdMeta) {
+      const detail = [createdMeta.prefix, typeof input.days === "number" ? `days=${input.days}` : "never"].join(" · ");
+      await dir.recordAudit(claims.email, "key.create", createdMeta.name, detail).catch(() => undefined);
+    }
+    return response;
+  }
+  const revokeKey = /^\/v1\/admin\/keys\/([A-Za-z0-9_-]{1,64})\/revoke$/.exec(path);
+  if (revokeKey && method === "POST") {
+    let revoked: { name: string; prefix: string } | undefined;
+    const response = await directory(async () => {
+      const done = await dir.revokeAdminKey(revokeKey[1]!);
+      revoked = { name: done.name, prefix: done.prefix };
+      return { ok: true };
+    });
+    const revokedMeta = revoked as { name: string; prefix: string } | undefined;
+    if (response.ok && revokedMeta) {
+      await dir.recordAudit(claims.email, "key.revoke", revokedMeta.name, revokedMeta.prefix).catch(() => undefined);
+    }
+    return response;
+  }
+  return handleAdmin(request, env, path, { sub: claims.sub, email: claims.email, auditBy: claims.email });
+}
+
+export async function adminKeyApi(request: Request, env: Env, path: string, supplied: string): Promise<Response> {
+  const dir = env.DIRECTORY.getByName("primary");
+  const found = await dir.verifyAdminKey(await digest(supplied));
+  if (!found) return denied();
+  if (path === "/v1/admin/keys" || path.startsWith("/v1/admin/keys/")) return reply({ error: "forbidden" }, 403);
+  return handleAdmin(request, env, path, {
+    sub: found.created_by,
+    email: found.created_by_email,
+    auditBy: `${found.created_by_email} (key:${found.name})`,
+    key: { id: found.id, name: found.name, prefix: found.prefix },
+  });
+}
+
+async function handleAdmin(request: Request, env: Env, path: string, actor: AdminActor): Promise<Response> {
+  const method = request.method;
   let input: Record<string, unknown>;
   try {
     input = await body(request);
@@ -572,19 +683,18 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
     return reply({ error: "invalid_request" }, 400);
   }
   const dir = env.DIRECTORY.getByName("primary");
-  await dir.noteOperator(claims.sub, claims.email);
-  if (path === "/v1/admin/me" && method === "GET") return reply({ email: claims.email });
+  if (path === "/v1/admin/me" && method === "GET") return reply({ email: actor.email, ...(actor.key ? { key: actor.key } : {}) });
   // With the emails given rights before anyone signed in with them (`pending`; a console from before reads no such list).
   if (path === "/v1/admin/users" && method === "GET") return directory(async () => ({ users: await dir.adminUsers(), pending: await dir.adminPending() }));
   // Gives an email the test channel or the standard plan, signed in with or not: { email, beta?: boolean, may_create?: boolean }.
-  const by = claims.email;
+  const by = actor.auditBy;
   const text = (v: unknown) => (typeof v === "string" ? v : "");
   const onOff = (v: unknown) => (v === true ? "on" : v === false ? "off" : "");
   if (path === "/v1/admin/pending" && method === "POST") {
     const right = (v: unknown) => v === undefined || v === null || typeof v === "boolean";
     if (!right(input.beta) || !right(input.may_create)) return reply({ error: "invalid_request" }, 400);
     const rights = [input.beta !== undefined && input.beta !== null ? `beta=${onOff(input.beta)}` : "", input.may_create !== undefined && input.may_create !== null ? `may_create=${onOff(input.may_create)}` : ""].filter(Boolean).join(" ");
-    return audited(env, by, "pending.set", text(input.email).trim().toLowerCase(), rights, () => directory(() => dir.setPending(claims.sub, input.email, input.beta as boolean | null | undefined, input.may_create as boolean | null | undefined)));
+    return audited(env, by, "pending.set", text(input.email).trim().toLowerCase(), rights, () => directory(() => dir.setPending(actor.sub, input.email, input.beta as boolean | null | undefined, input.may_create as boolean | null | undefined)));
   }
   if (path === "/v1/admin/pending/remove" && method === "POST") return audited(env, by, "pending.remove", text(input.email).trim().toLowerCase(), "", () => directory(() => dir.removePending(input.email)));
   // What the operators changed here, the newest first (the console's 操作记录).
@@ -606,14 +716,14 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
   const block = /^\/v1\/admin\/users\/([A-Za-z0-9_-]{1,128})\/block$/.exec(path);
   if (block && method === "POST") {
     if (typeof input.on !== "boolean") return reply({ error: "invalid_request" }, 400);
-    if (block[1] === claims.sub || (await dir.isAdminAccount(block[1]!))) return reply({ error: "forbidden" }, 403);
+    if (block[1] === actor.sub || (await dir.isAdminAccount(block[1]!))) return reply({ error: "forbidden" }, 403);
     return audited(env, by, "user.block", `user:${block[1]!}`, onOff(input.on), () => blockAccount(env, block[1]!, input.on as boolean));
   }
   if (path === "/v1/admin/workspaces" && method === "GET") return directory(async () => ({ workspaces: await dir.adminWorkspaces() }));
   // A workspace made for a company (「企业 workspace」): { name, owners: [email], members, stations }.
   if (path === "/v1/admin/workspaces" && method === "POST") {
     const owners = Array.isArray(input.owners) ? input.owners.map(String).join(", ") : "";
-    return audited(env, by, "workspace.create", text(input.name).trim(), owners, () => directory(() => dir.adminCreateWorkspace(claims.sub, input)));
+    return audited(env, by, "workspace.create", text(input.name).trim(), owners, () => directory(() => dir.adminCreateWorkspace(actor.sub, input)));
   }
   // Its limits: { members, stations }; { reset: true } back to its creator's plan.
   const limits = /^\/v1\/admin\/workspaces\/([A-Za-z0-9_-]{1,64})\/limits$/.exec(path);
@@ -623,7 +733,7 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
   if (owners && method === "POST") {
     const emails = Array.isArray(input.emails) ? input.emails.map(String).join(", ") : "";
     return audited(env, by, "workspace.owners", `workspace:${owners[1]!}`, emails, () => directory(async () => {
-      const { mail, ...made } = await dir.adminAddOwners(claims.sub, owners[1]!, input.emails);
+      const { mail, ...made } = await dir.adminAddOwners(actor.sub, owners[1]!, input.emails);
       return { ...made, unmailed: await mailAdded(env, input.lang === "zh" || input.lang === "en" ? input.lang : requestLang(request), owners[1]!, mail) };
     }));
   }
@@ -633,7 +743,7 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
   // A station's enrollment for a company's workspace before any owner is in it, the admin not in it: { name }. The
   // stable channel's installer.
   const enroll = /^\/v1\/admin\/workspaces\/([A-Za-z0-9_-]{1,64})\/enrollments$/.exec(path);
-  if (enroll && method === "POST") return audited(env, by, "workspace.enroll", `workspace:${enroll[1]!}`, text(input.name).trim(), () => directory(async () => withCommands(env, await dir.adminEnrollment(claims.sub, enroll[1]!, input.name), false)));
+  if (enroll && method === "POST") return audited(env, by, "workspace.enroll", `workspace:${enroll[1]!}`, text(input.name).trim(), () => directory(async () => withCommands(env, await dir.adminEnrollment(actor.sub, enroll[1]!, input.name), false)));
   // Deletes a workspace as its owner would: its stations are let go, its people told.
   const remove = /^\/v1\/admin\/workspaces\/([A-Za-z0-9_-]{1,64})\/delete$/.exec(path);
   if (remove && method === "POST") return audited(env, by, "workspace.delete", `workspace:${remove[1]!}`, "", () => directory(() => dir.adminDeleteWorkspace(remove[1]!)));
@@ -645,7 +755,7 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
     const detail = [text(input.note).trim(), typeof input.days === "number" ? `days=${input.days}` : "", input.beta === true ? "beta" : ""].filter(Boolean).join(" · ");
     let made = "";
     const response = await directory(async () => {
-      const code = await dir.createInviteCode(claims.sub, input.note, input.days, input.beta === true);
+      const code = await dir.createInviteCode(actor.sub, input.note, input.days, input.beta === true);
       made = code.code;
       return { ...code, ...inviteLinks(env, code.code) };
     });
@@ -661,7 +771,7 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
   if (status && method === "POST") return audited(env, by, "feedback.status", `feedback:${status[1]!}`, text(input.status), () => setFeedbackStatus(env, status[1]!, input.status));
   // A reply to the session that reported it: { text }.
   const replied = FEEDBACK_REPLY_PATH.exec(path);
-  if (replied && method === "POST") return audited(env, by, "feedback.reply", `feedback:${replied[1]!}`, "", () => replyToFeedback(env, replied[1]!, claims.email, input.text));
+  if (replied && method === "POST") return audited(env, by, "feedback.reply", `feedback:${replied[1]!}`, "", () => replyToFeedback(env, replied[1]!, actor.email, input.text));
   // One report whole, its logs too, by its id or its number (FB-12): any of them, not only those the list holds.
   const item = /^\/v1\/admin\/feedback\/([A-Za-z0-9_-]{1,32})$/.exec(path);
   if (item && method === "GET") {
@@ -670,7 +780,7 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
   }
   // How loaded the relays are (relay-load.ts).
   if (path === "/v1/admin/relays" && method === "GET") return reply(await relaysLoad(env));
-  const relayCall = await relayAdmin(env, claims.email, path, method, input);
+  const relayCall = await relayAdmin(env, by, path, method, input);
   if (relayCall) return relayCall;
   const revoke = /^\/v1\/admin\/invite-codes\/([A-Za-z0-9-]{1,32})\/revoke$/.exec(path);
   if (revoke && method === "POST") return audited(env, by, "code.revoke", revoke[1]!, "", () => directory(() => dir.revokeInviteCode(revoke[1]!)));

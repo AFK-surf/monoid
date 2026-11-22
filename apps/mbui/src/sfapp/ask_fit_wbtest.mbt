@@ -15,10 +15,15 @@ let ask_long_title : String = "重新命名这个对话，新的名字会同步�
 fn glyph_rows(
   t : @ui.Tester,
   r : (Double, Double, Double, Double),
+  clip_x? : (Double, Double),
 ) -> Array[(Double, Array[((Double, Double, Double, Double), Bool, (Double, Double, Double, Double))])] {
   let rows : Array[(Double, Array[((Double, Double, Double, Double), Bool, (Double, Double, Double, Double))])] = []
   for e in t.glyph_clips() {
     let (b, clip) = e
+    match clip_x {
+      Some((x0, x1)) if clip.0 < x0 - 0.5 || clip.2 > x1 + 0.5 => continue
+      _ => ()
+    }
     let (mx, my) = ((b.0 + b.2) / 2.0, (b.1 + b.3) / 2.0)
     if mx < r.0 || mx > r.0 + r.2 || my < r.1 || my > r.1 + r.3 {
       continue
@@ -40,8 +45,9 @@ fn glyph_rows(
 fn last_line(
   t : @ui.Tester,
   r : (Double, Double, Double, Double),
+  clip_x? : (Double, Double),
 ) -> Array[((Double, Double, Double, Double), Bool, (Double, Double, Double, Double))] {
-  let rows = glyph_rows(t, r)
+  let rows = glyph_rows(t, r, clip_x?)
   guard rows.length() >= 2 else { return [] }
   let apart = rows[1].0 - rows[0].0
   let out = []
@@ -60,7 +66,7 @@ test "大屏, a short window: a question with a long title and a long hint, its 
   t.run_for(@ui.move_most_ms)
   @sf.ask(ask_long_title, "保存", fn(_) {  }, hint=ask_long_hint + ask_long_hint + "说明到此为止。")
   t.run_for(@ui.move_most_ms)
-  let (_, py, _, ph) = t.query(Dialog, label=ask_long_title).unwrap().rect
+  let (px, py, pw, ph) = t.query(Dialog, label=ask_long_title).unwrap().rect
   let within = py >= 24.0 - 0.5 && py + ph <= 340.0 - 24.0 + 0.5
   let no = t.query(Button, label="取消").unwrap().rect
   let ok = t.query(Button, label="保存").unwrap().rect
@@ -75,15 +81,15 @@ test "大屏, a short window: a question with a long title and a long hint, its 
   let field = t.query(TextField).unwrap().rect
   let under_title = field.1 >= title_foot - 0.5
   // (its hint's last line: none of it whole (drawn cut away, or not drawn); then all of it whole, in a clip under
-  // its title and over its buttons: what it holds as it shows)
+  // its title and over its buttons: what it holds as it shows; clip_x excludes background chat glyphs behind the dialog)
   let hint0 = t.rect_of("说明到此为止").unwrap()
-  let end_hidden = last_line(t, hint0).iter().all(fn(g) { !g.1 })
+  let end_hidden = last_line(t, hint0, clip_x=(px, px + pw)).iter().all(fn(g) { !g.1 })
   for _ in 0..<12 {
     t.wheel(640.0, py + ph / 2.0, 120.0)
     t.run_for(@ui.move_most_ms)
   }
   let hint1 = t.rect_of("说明到此为止").unwrap()
-  let last1 = last_line(t, hint1)
+  let last1 = last_line(t, hint1, clip_x=(px, px + pw))
   let foot = dmin(no.1, ok.1)
   let end_shown = last1.length() > 0 && last1.iter().all(fn(g) { g.1 && g.2.1 >= title_foot - 0.5 && g.2.3 <= foot + 0.5 })
   let moved = hint1.1 < hint0.1

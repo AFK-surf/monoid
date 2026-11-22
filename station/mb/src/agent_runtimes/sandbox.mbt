@@ -1,10 +1,24 @@
 // sandbox.ts and sandbox-name.ts: sandboxes as targets of station_task (config.json's `sandboxes`, each an l4es front
-// door), what station_list says of one, and what the shell runs in place of a job's command there (the bridge, carried
-// over ssh). The bridge itself stays ./sandbox-bridge.mjs, which is given by its path (`bridge`).
+// door or a Google Colab VM of kind "colab"), what station_list says of one, and what the shell runs in place of a
+// job's command there (the bridge, carried over ssh, or colab-sandbox.mjs).
 
 ///|
 /// `SANDBOX`: how a sandbox is named as a station of station_task's.
 pub let sandbox_prefix : String = "sandbox:"
+
+///|
+/// `COLAB_GPUS`: GPUs a Colab sandbox may name.
+pub let colab_gpus : Array[String] = ["T4", "L4", "G4", "A100", "H100"]
+
+///|
+/// `COLAB_REAP_MS`: how often idle Colab VMs are reaped.
+pub let colab_reap_ms : Int = 60000
+
+///|
+/// `colabPool`: where the station keeps its bounded-ephemeral Colab CLI venv, synced CLI homes and VM records.
+pub fn colab_pool(data : String) -> String {
+  join([data, "colab"])
+}
 
 ///|
 /// `CONNECTION_LOST`, `LOST_EXIT`.
@@ -14,17 +28,43 @@ pub let connection_lost : String = "sandbox: the connection to the sandbox was l
 pub let lost_exit : Int = 75
 
 ///|
-/// `Sandbox`: its name, its front door, its size, and the key the station signs in with there.
+/// `Sandbox`: an l4es front door (`kind == ""` or `"l4es"`) or a Colab VM (`kind == "colab"`, `gpu`).
 pub(all) struct Sandbox {
   name : String
+  kind : String
   target : String
   size : String?
   identity : String?
+  gpu : String?
+}
+
+///|
+pub fn is_colab(d : Sandbox) -> Bool {
+  d.kind == "colab"
+}
+
+///|
+pub fn default_colab_sandboxes() -> Array[Sandbox] {
+  [
+    { name: "colab-g4", kind: "colab", target: "", size: None, identity: None, gpu: Some("G4") },
+    { name: "colab-l4", kind: "colab", target: "", size: None, identity: None, gpu: Some("L4") },
+    { name: "colab-t4", kind: "colab", target: "", size: None, identity: None, gpu: Some("T4") },
+  ]
 }
 
 ///|
 pub fn Sandbox::json(self : Sandbox) -> J {
+  if is_colab(self) {
+    let f = Fields::of([("name", js(self.name)), ("kind", js("colab"))])
+    if self.gpu is Some(g) {
+      f.set_str("gpu", g)
+    }
+    return f.json()
+  }
   let f = Fields::of([("name", js(self.name)), ("target", js(self.target))])
+  if self.kind == "l4es" {
+    f.set_str("kind", "l4es")
+  }
   if self.size is Some(s) {
     f.set_str("size", s)
   }
@@ -35,9 +75,28 @@ pub fn Sandbox::json(self : Sandbox) -> J {
 }
 
 ///|
-fn sandbox_name_ok(s : String) -> Bool {
+pub fn sandbox_name_ok(s : String) -> Bool {
   let ok = (c : Int) => is_alnum(c) || c == '.'.to_int() || c == '_'.to_int() || c == '-'.to_int()
   s.length() >= 1 && s.length() <= 63 && is_alnum(s.unsafe_charcode_at(0)) && all_units(sub(s, 1), ok)
+}
+
+///|
+/// Parses a cross-station sandbox target `sandbox:<hostId>:<name>`; None for local `sandbox:<name>` or non-sandbox ids.
+pub fn parse_remote_sandbox(station : String) -> (String, String)? {
+  if !station.has_prefix(sandbox_prefix) {
+    return None
+  }
+  let rest = sub(station, sandbox_prefix.length())
+  let colon = index_of(rest, ":")
+  if colon <= 0 || colon == rest.length() - 1 {
+    return None
+  }
+  let host_id = sub(rest, 0, to=colon)
+  let name = sub(rest, colon + 1)
+  if index_of(name, ":") >= 0 || !sandbox_name_ok(name) {
+    return None
+  }
+  Some((host_id, name))
 }
 
 ///|
@@ -62,10 +121,19 @@ fn size_ok(s : String) -> Bool {
 ///|
 /// `sandboxRefusal`: why `s` is no sandbox, or none.
 fn sandbox_refusal(s : J) -> String? {
-  guard s is Obj(_) else { return Some("each is {name, target, size?, identity?}") }
+  guard s is Obj(_) else { return Some("each is {name, target, size?, identity?} or {name, kind: \"colab\", gpu}") }
   let x = Some(s)
   let name = str_of(get(x, "name"))
   guard name is Some(n) && sandbox_name_ok(n) else { return Some("a name of letters, digits, ., _ and -") }
+  match str_of(get(x, "kind")) {
+    Some("colab") =>
+      return match str_of(get(x, "gpu")) {
+        Some(g) if colab_gpus.contains(g) => None
+        _ => Some("\{n}'s gpu is one of Colab's: T4, L4, G4, A100, H100")
+      }
+    Some("l4es") | None => ()
+    Some(_) => return Some("\{n}'s kind is \"colab\", \"l4es\", or none")
+  }
   match str_of(get(x, "target")) {
     Some(target) if front_door_ok(target) => ()
     _ => return Some("\{n}'s target is its front door, like {name}.WORKSPACE@HOST")
@@ -90,13 +158,39 @@ pub fn sandboxes_of(raw : J?) -> Array[Sandbox] {
   .filter(s => sandbox_refusal(s) is None)
   .map(s => {
     let x = Some(s)
-    {
-      name: str_of(get(x, "name")).unwrap(),
-      target: str_of(get(x, "target")).unwrap(),
-      size: str_of(get(x, "size")),
-      identity: str_of(get(x, "identity")),
+    let name = str_of(get(x, "name")).unwrap()
+    match str_of(get(x, "kind")) {
+      Some("colab") =>
+        { name, kind: "colab", target: "", size: None, identity: None, gpu: str_of(get(x, "gpu")) }
+      other =>
+        {
+          name,
+          kind: other.unwrap_or(""),
+          target: str_of(get(x, "target")).unwrap(),
+          size: str_of(get(x, "size")),
+          identity: str_of(get(x, "identity")),
+          gpu: None,
+        }
     }
   })
+}
+
+///|
+/// `effectiveSandboxes`: config.json's `sandboxes`, plus `default_colab_sandboxes()` when `colab_account_count > 0`
+/// and config.json has no explicit `kind: "colab"` entry (skipping names taken by l4es, case-insensitively).
+pub fn effective_sandboxes(raw : J?, colab_account_count : Int) -> Array[Sandbox] {
+  let configured = sandboxes_of(raw)
+  if colab_account_count <= 0 || configured.iter().any(is_colab) {
+    return configured
+  }
+  let taken = configured.map(s => lower(s.name))
+  let out = configured.copy()
+  for d in default_colab_sandboxes() {
+    if !taken.contains(lower(d.name)) {
+      out.push(d)
+    }
+  }
+  out
 }
 
 ///|
@@ -126,7 +220,40 @@ pub fn check_sandboxes(raw : J?) -> String? {
 
 ///|
 /// `sandboxDescribed`: what station_list says of a sandbox.
-pub fn sandbox_described(d : Sandbox) -> J {
+pub fn sandbox_described(d : Sandbox, accounts? : Int = 0, host? : String? = None) -> J {
+  if is_colab(d) {
+    let gpu = d.gpu.unwrap_or("T4")
+    let where_ = match host {
+      Some(h) if h != "" => "station \{h}'s"
+      _ => "this station's"
+    }
+    let plural = if accounts == 1 { "" } else { "s" }
+    let f = Fields::of([
+      ("kind", js("sandbox")),
+      ("sandboxKind", js("colab")),
+      ("gpu", js(gpu)),
+      ("accounts", int(accounts)),
+    ])
+    if host is Some(h) && h != "" {
+      f.set_str("host", h)
+    }
+    f.spread([
+      ("tasks", Bool(true)),
+      ("files", Bool(true)),
+      ("sync", int(1)),
+      ("sessions", Bool(false)),
+      ("messages", Bool(false)),
+      ("reads", Bool(false)),
+      ("chats", Bool(false)),
+      (
+        "note",
+        js(
+          "A Google Colab VM with a \{gpu} GPU (Linux, root, x86-64), from \{where_} Google Colab profile pool (\{accounts} account\{plural}): started for this chat's first task (about 10 s; tasks wait in turn while every account holds its 3 of this GPU), kept 3 minutes after a task for the next, then stopped. Run GPU work there with station_task (dir to sync, back to bring results here); no screen. Manage Colab accounts in Settings → Profiles → Add Account → Google → Google Colab.",
+        ),
+      ),
+    ])
+    return f.json()
+  }
   let f = Fields::of([("kind", js("sandbox")), ("target", js(d.target))])
   if d.size is Some(s) {
     f.set_str("size", s)
@@ -207,11 +334,12 @@ pub(all) struct SandboxPlace {
   sandbox : String
   session : String
   back : Array[String]
+  workspace : String?
 }
 
 ///|
 /// `sandboxCommand`: what the shell runs in place of a job's command in a sandbox. `bridge` the bridge's file
-/// (`BRIDGE`), `node` the Node it runs on.
+/// (`BRIDGE`), `node` the Node (or reader) it runs on.
 pub fn sandbox_command(
   data : String,
   d : Sandbox,
@@ -222,7 +350,25 @@ pub fn sandbox_command(
   lost_file : String,
   node : String,
   bridge : String,
+  colab_script? : String = "",
+  accounts? : Array[(String, String)] = [],
 ) -> String {
+  if is_colab(d) {
+    let spec = Fields::of([
+      ("pool", js(colab_pool(data))),
+      ("data", js(data)),
+      ("gpu", js(d.gpu.unwrap_or("T4"))),
+      ("chat", js(place.session)),
+      ("command", js(command)),
+      ("cwd", js(cwd)),
+      ("ports", Arr(ports.map(Num(_)))),
+      ("lostFile", js(lost_file)),
+      ("back", arr_of(place.back)),
+      ("bridge", js(bridge)),
+      ("accounts", Arr(accounts.map(a => obj([("id", js(a.0)), ("authFile", js(a.1))])))),
+    ])
+    return [node, colab_script, "run", stringify(spec.json())].map(sh_quoted).join(" ")
+  }
   let name = sandbox_of(d, place.session)
   let base = Fields::new()
   base.set("ssh", arr_of(ssh_to(data, replace_first(d.target, "{name}", name), identity=d.identity)))

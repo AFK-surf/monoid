@@ -117,21 +117,22 @@ export type DirectoryLoad = {
 
 /** What each of the directory's calls serves, as its load is counted (adminLoad); "other" for one not listed. */
 export const FAMILIES: Record<string, string> = {
-  accountFor: "signin", upsertUser: "signin", joinBySignIn: "signin", openToSignIn: "admin",
+  accountFor: "signin", appleAccount: "signin", linkApple: "signin", upsertUser: "signin", joinBySignIn: "signin", openToSignIn: "admin",
   me: "me", invitationsFor: "me", setOwnPicture: "me", deleteAccount: "me", revokeSessions: "me",
   isBeta: "beta",
   seen: "sockets", closed: "sockets", stationConnected: "sockets", stationState: "sockets", stationLeft: "sockets", stationSaid: "sockets",
   fetch: "sockets", webSocketMessage: "sockets", webSocketClose: "sockets", webSocketError: "sockets",
-  enroll: "stations", isStation: "stations", pushTargets: "stations", addFeedback: "stations", fixedUntold: "stations", reporterReply: "stations", toldFixed: "stations", markFixed: "stations",
+  enroll: "stations", isStation: "stations", verifyProvisionKey: "stations", createProvisionedEnrollment: "stations", pushTargets: "stations", addFeedback: "stations", fixedUntold: "stations", reporterReply: "stations", toldFixed: "stations", markFixed: "stations",
   registerPush: "push", unregisterPush: "push", dropPush: "push", pushApps: "push",
   tellAll: "broadcast", tellStations: "broadcast", modelsMade: "broadcast", tellAdmins: "broadcast", alarm: "broadcast",
 };
 for (const name of ["workspace", "createWorkspace", "updateWorkspace", "deleteWorkspace", "invite", "previewInvitation", "acceptInvitation", "acceptById", "declineById", "revokeInvitation",
   "feedbackOf", "memberFeedbackReply", "setRole", "removeMember", "addMembers", "mailFailed", "removeAdded", "setRelays", "setWay", "manages", "createEnrollment", "createRigEnrollment", "updateStation", "setStationMode", "removeStation", "memberRole", "recordDevice", "devices",
-  "lock", "appendLock", "clearLock", "requestLock", "lockRequests", "dropLockRequest"]) FAMILIES[name] = "workspaces";
+  "lock", "appendLock", "clearLock", "requestLock", "lockRequests", "dropLockRequest", "provisionKeys", "createProvisionKey", "revokeProvisionKey"]) FAMILIES[name] = "workspaces";
 for (const name of ["adminUsers", "setMayCreate", "adminPending", "setPending", "removePending", "setBlocked", "setBeta", "adminDeleteWorkspace", "adminCreateWorkspace", "adminSetLimits",
   "adminEnrollment", "adminWorkspaces", "inviteCodes", "createInviteCode", "revokeInviteCode", "adminFeedback", "setFeedbackStatus", "replyToFeedback", "adminLoad", "noteOperator", "isAdminAccount",
-  "adminFeedbackItem", "adminAddOwners", "adminRemoveAdded", "recordAudit", "adminAudit", "auditName"]) FAMILIES[name] = "admin";
+  "adminFeedbackItem", "adminAddOwners", "adminRemoveAdded", "recordAudit", "adminAudit", "auditName",
+  "adminKeys", "createAdminKey", "revokeAdminKey", "verifyAdminKey"]) FAMILIES[name] = "admin";
 /** The tables that are this object's own, not moved into another cloud: its sockets' generations, the outbox to the
  * objects (made again as things change), its counts, the views as last told (`#told`: begun again by the next change,
  * at a version above any before), who opened its console (noteOperator: noted again as they open the other's), and

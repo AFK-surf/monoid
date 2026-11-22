@@ -15,16 +15,16 @@ const AGAIN_SECS = 3600;
 export const SEEN_MOST = 4096;
 
 /// One device (an endpoint) of a member's in a workspace, as the cloud's GET /devices said one.
-export type Seen = { workspace: string; sub: string; email: string; device: string; base: string | null; kind: string | null; label: string | null; first_seen: number; last_seen: number };
+export type Seen = { workspace: string; sub: string; email: string; role?: string; device: string; base: string | null; kind: string | null; label: string | null; first_seen: number; last_seen: number };
 
 export class SeenDevices {
   /// Written off the station's thread: a device's connection waits on no disk.
   readonly #file: PrivateFile | null;
   #rows = new Map<string, Seen>();
-  /// Who asked the vault of each workspace here (`remember`), by sub: their email, as their credential said it. Only in
-  /// memory: a device asking again says it again.
-  readonly #viewers = new Map<string, Map<string, string>>();
-  /// Moves on whenever who is known in a workspace may have changed (`members`).
+  /// Who asked the vault of each workspace here (`remember`), by sub: their email and role, as their credential said it.
+  /// Only in memory: a device asking again says it again.
+  readonly #viewers = new Map<string, Map<string, { email: string; role?: string }>>();
+  /// Moves on whenever who is known in a workspace may have changed (`members`, `roles`).
   #version = 0;
 
   constructor(path: string | null = null) {
@@ -38,19 +38,27 @@ export class SeenDevices {
 
   /// A device came with a credential (`at`: unix seconds): kept, or its last use moved on. `said`: what it says of
   /// itself in its hello (its lock proof's `kind` and `label`), its base key from its lock proof.
-  saw(at: number, who: { workspace: string; sub: string; email: string }, device: string, base: string | null, said: unknown): void {
+  saw(at: number, who: { workspace: string; sub: string; email: string; role?: string }, device: string, base: string | null, said: unknown): void {
     const kind = (said as { kind?: unknown } | null)?.kind;
     const label = (said as { label?: unknown } | null)?.label;
     const was = this.#rows.get(`${who.workspace}\0${who.sub}\0${device}`);
+    const role = typeof who.role === "string" && who.role !== "" ? who.role : was?.role;
+    if (typeof who.role === "string" && who.role !== "") {
+      const viewer = this.#viewers.get(who.workspace)?.get(who.sub);
+      if (viewer !== undefined && viewer.role !== who.role) {
+        viewer.role = who.role;
+        this.#version++;
+      }
+    }
     const next: Seen = {
-      workspace: who.workspace, sub: who.sub, email: who.email, device,
+      workspace: who.workspace, sub: who.sub, email: who.email, ...(role !== undefined ? { role } : {}), device,
       base: base ?? was?.base ?? null,
       kind: kind === "app" || kind === "web" ? kind : (was?.kind ?? null),
       label: typeof label === "string" ? label.slice(0, 120) : (was?.label ?? null),
       first_seen: was?.first_seen ?? at,
       last_seen: at,
     };
-    if (was !== undefined && at - was.last_seen < AGAIN_SECS && was.base === next.base && was.kind === next.kind && was.label === next.label && was.email === next.email) return;
+    if (was !== undefined && at - was.last_seen < AGAIN_SECS && was.base === next.base && was.kind === next.kind && was.label === next.label && was.email === next.email && was.role === next.role) return;
     this.#rows.delete(key(next));
     this.#rows.set(key(next), next);
     this.#version++;
@@ -67,15 +75,16 @@ export class SeenDevices {
       .sort((a, b) => (a.sub < b.sub ? -1 : a.sub > b.sub ? 1 : b.last_seen - a.last_seen));
   }
 
-  /// A member who asked the vault here (api/routes/vault.ts), whose email their credential said: known by `members`
-  /// even where no hello of theirs came (a local admin port, a test).
-  remember(ws: string, sub: string, email: string): void {
+  /// A member who asked the vault here (api/routes/vault.ts), whose email and role their credential said: known by
+  /// `members` and `roles` even where no hello of theirs came (a local admin port, a test).
+  remember(ws: string, sub: string, email: string, role?: string): void {
     if (ws === "" || sub === "" || email === "") return;
     let of = this.#viewers.get(ws);
     if (of === undefined) this.#viewers.set(ws, (of = new Map()));
     const was = of.get(sub);
-    if (was === email) return;
-    of.set(sub, email);
+    const nextRole = typeof role === "string" && role !== "" ? role : was?.role;
+    if (was !== undefined && was.email === email && was.role === nextRole) return;
+    of.set(sub, { email, ...(nextRole !== undefined ? { role: nextRole } : {}) });
     this.#version++;
   }
 
@@ -89,7 +98,20 @@ export class SeenDevices {
       if (had === undefined || had.at <= r.last_seen) out.set(r.sub, { email: r.email, at: r.last_seen });
     }
     const said = new Map([...out].map(([sub, { email }]) => [sub, email]));
-    for (const [sub, email] of this.#viewers.get(ws) ?? []) said.set(sub, email);
+    for (const [sub, v] of this.#viewers.get(ws) ?? []) said.set(sub, v.email);
+    return said;
+  }
+
+  /// Every member of workspace `ws` whose role is known here (from their last valid credential), by sub.
+  roles(ws: string): ReadonlyMap<string, string> {
+    const out = new Map<string, { role: string; at: number }>();
+    for (const r of this.#rows.values()) {
+      if (r.workspace !== ws || typeof r.role !== "string" || r.role === "") continue;
+      const had = out.get(r.sub);
+      if (had === undefined || had.at <= r.last_seen) out.set(r.sub, { role: r.role, at: r.last_seen });
+    }
+    const said = new Map([...out].map(([sub, { role }]) => [sub, role]));
+    for (const [sub, v] of this.#viewers.get(ws) ?? []) if (v.role !== undefined && v.role !== "") said.set(sub, v.role);
     return said;
   }
 

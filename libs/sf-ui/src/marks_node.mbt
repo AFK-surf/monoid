@@ -57,7 +57,7 @@ pub fn spokes_turn(v : @view.View) -> Double {
   if @ui.reduced_motion() {
     0.0
   } else {
-    v.cycle_resident(8.0 * spoke_step_ms) * 2.0 * 3.141592653589793
+    @motion.resident_cycle(v, 8.0 * spoke_step_ms) * 2.0 * 3.141592653589793
   }
 }
 
@@ -316,19 +316,20 @@ pub fn provider_logo_node(
   if kind == "env" {
     return icon_node(parent, "sliders", size, By(fn() { theme().p.text }))
   }
-  let maker = if kind == "api-provider" {
+  let maker = if kind == "api-provider" || kind == "service" {
     mark
   } else if runtime == "claude" || kind == "anthropic-api" {
     "anthropic"
   } else {
     match runtime {
+      "codex" => "openai"
       "grok" => "xai"
       "cursor" => "cursor"
       "devin" => "devin"
       "hermes" => "hermes"
       "agy" => "agy"
       "pi" => "pi"
-      _ => "openai"
+      _ => ""
     }
   }
   if maker == "" || !has_drawable("maker_" + maker.replace_all(old="-", new="_")) {

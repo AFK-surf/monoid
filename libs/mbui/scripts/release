@@ -1,0 +1,26 @@
+#!/bin/sh
+# Generic mbui release tool (tools/release, in MoonBit):
+#   release keygen --out <priv.pem> [--seed-hex HEX]
+#   release sign <file> --key <priv.pem> --kind <kind> --version <ver> --build <N> [--raw <raw_file>] [--out <file.sig>]
+#   release verify <latest.json|file.sig> --pubkey <b64> [--kind <kind>]
+#   release delta --old-dir <dir> --new <target_file> --out <out.delta>
+#   release feed --file <artifact> --version <ver> --build <N> [--kind <kind>] [--key <priv.pem>] [--raw <raw_file>] [--delta <from>:<delta_file> ...] --out-dir <dir>
+#   release publish --dir <release-dir> --provider dir|github|s3 --target <dest> [--tag <tag>] [--endpoint <url>] [--dry-run]
+# Built here only when there is none built from these very sources (by content).
+D=$(cd "$(dirname "$0")" && pwd)
+T=$D/../tools
+TOOLS_SCRIPTS=$D; . "$D/tooltarget.sh"
+B=$T/_build/$TT/release/build/release/release.$TX
+src=$(cd "$T" && find release sys rjson moon.mod moon.work -type f | LC_ALL=C sort | xargs cat | cksum)
+# (`key`: what it is built from, said: the key CI keeps the tool by, .github/actions/mbui-moonbit)
+[ "${1:-}" != key ] || { echo "$src" | tr ' ' -; exit 0; }
+# (MBUI_TOOLS_OUT: built there, mbui left as it is, when there is none built here from these sources: scripts/mbc)
+TD=; if [ -n "${MBUI_TOOLS_OUT:-}" ] && [ "$(cat "$B.src" 2>/dev/null)" != "$src" ]; then
+  TD=$(mkdir -p "$MBUI_TOOLS_OUT" && cd "$MBUI_TOOLS_OUT" && pwd) && B=$TD/$TT/release/build/release/release.$TX
+fi
+if [ ! -f "$B" ] || [ "$(cat "$B.src" 2>/dev/null)" != "$src" ]; then
+  (cd "$T" && env -u MOON_CC moon build ${TD:+--target-dir "$TD"} --target $TT --release release >&2) || { echo "release: tools/release did not build" >&2; exit 1; }
+  echo "$src" > "$B.src"
+fi
+[ "${1:-}" != path ] || { echo "$B"; exit 0; }
+tool_exec "$B" "$@"

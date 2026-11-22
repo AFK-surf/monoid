@@ -1,32 +1,16 @@
-// The chat beside the board's page (board.mbt's board_beside, under its own bar): made as nodes where 实验性功能's
-// 试用新对话页 is on (sfbase's chat_page_nodes), its messages chat_body_nodes' and its composer sfpages'
-// chat_composer_node in their list's foot, as the pane's chat page has them (pane_made's, chat_page_made's); else its
-// old view in Home's entry's island, as before. Turned either way while it shows, the one chosen at once in its place.
+// The chat beside the board's page (board.mbt's board_beside, under its own bar): made as nodes, its messages
+// chat_body_nodes' and its composer sfpages' chat_composer_node in their list's foot, as the pane's chat page has them
+// (pane_made's, chat_page_made's).
 
 ///|
-/// Chat `r`'s page beside the board in `page`, Home's entry `serial`'s: as 试用新对话页 says now, made again in its
-/// place as that turns or another chat is shown there.
+/// Chat `r`'s page beside the board in `page`, Home's entry `serial`'s: made again in its place as another chat is
+/// shown there.
 fn board_beside_page(page : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, serial : Int) -> Unit {
   page.pick(
-    fn() { (@sfbase.chat_page_nodes.get(), r.station + "\u{1}" + r.session) },
-    fn(p, made) {
+    fn() { r.station + "\u{1}" + r.session },
+    fn(p, _) {
       p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-      if made.0 {
-        board_beside_nodes(p, src, r, tips, serial)
-      } else {
-        // (its old view in Home's entry's island: let go with it, as a side panel's)
-        app.nav.page_island(p, serial, fn(c, _page) {
-          // (as page_one does for a chat in the pane: a mouse can pick its words and copy or quote them)
-          c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), fn() {
-            match @sfbase.workspace_in_view(src).0 {
-              Some(w) => chat_page(c, src, w, r)
-              None => ()
-            }
-          })
-        }, key=fn() { tape_island_key() + " board " + r.station + ":" + r.session })
-        .grow(Is(1.0))
-        |> ignore
-      }
+      board_beside_nodes(p, src, r, tips, serial)
     },
     at_once=true,
   )
@@ -68,12 +52,19 @@ fn board_beside_nodes(p : @view.View, src : Source, r : ChatRef, tips : @sf.TipL
     chat_body_nodes(col, retained, r, tips, fn() { 0 }, fn(n) {
       n
       .box(fn(at) {
-        @sfpages.chat_composer_node(at, retained, r, shows~, tips~, apart=fn() { false })
+        @sfpages.chat_composer_node(
+          at,
+          retained,
+          r,
+          shows~,
+          tips~,
+          apart=fn() { false },
+          over_it=fn(o) { wide_composer_bar_node(o, retained, r, tips, fn() { 0 }) },
+          over_tall=fn() { 36.0 },
+        )
       })
       |> ignore
     }, shows)
   })
   |> ignore
-  // (a picture flying from its list drawn here while under the bar, the bar over it: viewer_flight_slot)
-  p.box(fn(slot) { @sfbase.viewer_flight_slot(slot, retained, serial, fn() { slot.window() }) }) |> ignore
 }

@@ -18,14 +18,14 @@ fn init {
 
 ///|
 /// Chat s-c1 in fixture mode `mode` opened by its row on screen `s` from s-c2, over a core 400 ms late.
-fn rw_opened(mode : String, s : (String, Double, Double, Int), nodes : Bool) -> Array[String] raise {
-  let t = ow_app(s, nodes, 400.0, ow_c2, mode~)
+fn rw_opened(mode : String, s : (String, Double, Double, Int)) -> Array[String] raise {
+  let t = ow_app(s, 400.0, ow_c2, mode~)
   if s.3 == 2 {
     t.back()
     ow_run(t, 1000.0)
   }
   let missing : Ref[Error?] = Ref(None)
-  let said = ow_watch(t, s, "\{mode} \{ow_name(nodes)} \{s.0}", fn() {
+  let said = ow_watch(t, s, "\{mode} \{ow_name()} \{s.0}", fn() {
     ow_open_by_hand(t, s, ow_c1) catch {
       e => missing.val = Some(e)
     }
@@ -39,10 +39,8 @@ fn rw_opened(mode : String, s : (String, Double, Double, Int), nodes : Bool) -> 
 ///|
 fn rw_case(mode : String) -> Unit raise {
   let all = []
-  for nodes in [false, true] {
-    for s in ow_screens {
-      all.push_iter(rw_opened(mode, s, nodes).iter())
-    }
+  for s in ow_screens {
+    all.push_iter(rw_opened(mode, s).iter())
   }
   if all.length() > 0 {
     fail(all.join("\n"))

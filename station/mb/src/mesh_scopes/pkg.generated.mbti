@@ -21,7 +21,7 @@ pub fn descriptor_of(Crypto, @json.Json, String, String, minimum_generation? : I
 
 pub let enrollment_alpn : String
 
-pub async fn exchange_signed_records(() -> Array[@json.Json], async (Array[@json.Json]) -> Unit, async (@json.Json) -> @json.Json, String) -> Unit
+pub async fn exchange_signed_records(() -> Array[@json.Json], async (Array[@json.Json]) -> Unit, async (@json.Json) -> @json.Json, String, admits? : (String) -> Bool) -> Unit
 
 pub fn field(@json.Json, String) -> @json.Json
 
@@ -159,6 +159,7 @@ pub struct ScopeDirectory {
   signer : String
   // private fields
 }
+pub fn ScopeDirectory::admits(Self, String, String) -> Bool
 pub fn ScopeDirectory::close(Self) -> Unit
 pub async fn ScopeDirectory::exchange(Self, String, @json.Json) -> @json.Json
 pub fn ScopeDirectory::new(MeshEndpoint, Announcements, Crypto, String, (String) -> Unit, (Error) -> Unit, @effect.Runtime) -> Self

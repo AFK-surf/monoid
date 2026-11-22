@@ -5,7 +5,7 @@
 // never named is given nothing.
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import { LockRefusal, endpointBytes, entryHash } from "../src/cloud/lock.ts";
+import { LockRefusal, endpointBytes, entryHash } from "../../shared/lock.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { refusalOf } from "../src/mesh/serve.ts";
 import { WS, bring, dev, ed, handover, station, world } from "./lock-moved-world.ts";

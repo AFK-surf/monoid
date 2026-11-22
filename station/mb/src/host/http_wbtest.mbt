@@ -49,7 +49,18 @@ test "fetch: its status, headers and body; nothing cancelled" {
   assert_eq(r.header("Content-Type"), Some("text/plain"))
   assert_eq(r.header("X-ONE"), Some("1"))
   assert_eq(r.header("x-two"), None)
+  assert_eq(r.redirected, false)
   assert_eq(fake.cancelled, [])
+}
+
+///|
+test "fetch: an answer the shell had by a redirect followed says so" {
+  let fake = FakeFetch::new(1, { "status": 200, "redirected": true }, Some(b"there"))
+  let rt = @effect.Runtime::new()
+  let f = rt.fork(fake.fetch(None))
+  rt.advance(5)
+  guard f.poll() is Some(Succeeded(r)) else { fail("not answered") }
+  assert_eq((r.status, r.redirected, r.text()), (200, true, "there"))
 }
 
 ///|
@@ -103,4 +114,39 @@ test "fetch: interrupted from outside its deadline, cancelled once" {
   rt.advance(1000)
   assert_true(f.poll() is Some(Interrupted))
   assert_eq(fake.cancelled, [1L])
+}
+
+///|
+test "fetch_args: forwards non-empty proxy and ca_pem, omits empty or None" {
+  let with_both = fetch_args(
+    "https://example.test/v1/admin/me",
+    "GET",
+    [],
+    None,
+    None,
+    None,
+    None,
+    Some("http://127.0.0.1:8080"),
+    Some("-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n"),
+  )
+  assert_true(with_both is { "proxy": String("http://127.0.0.1:8080"), "caPem": String(_), .. })
+
+  let with_empty = fetch_args(
+    "https://example.test/v1/admin/me",
+    "GET",
+    [],
+    None,
+    None,
+    None,
+    None,
+    Some(""),
+    Some(""),
+  )
+  match with_empty {
+    Object(m) => {
+      assert_true(m.get("proxy") is None)
+      assert_true(m.get("caPem") is None)
+    }
+    _ => fail("expected object")
+  }
 }

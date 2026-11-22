@@ -61,6 +61,29 @@ priv struct TreeField {
 let tree_fields : Map[@view.NodeId, TreeField] = Map([])
 
 ///|
+/// The fields of the window's tree whose focus was asked while their part of the tree was not in use
+/// (tree_field_kept_asked), in the order asked: the last able to take it is given it once its part is in use
+/// (tree_fields_asked_told).
+// kept across runs: put back as a run begins (view_forget); each let go with its node (tree_field_gone)
+let tree_fields_asked : Array[@view.NodeId] = []
+
+///|
+fn tree_field_ask_drop(id : @view.NodeId) -> Unit {
+  match tree_fields_asked.search(id) {
+    Some(i) => tree_fields_asked.remove(i) |> ignore
+    None => ()
+  }
+}
+
+///|
+/// Whether field node `id`'s asked focus is kept asked, not given now (as island_kept_asked keeps an old view's
+/// editor's): held from the root and taking presses under no modal layer, in a part not in use (View::in_use), to be
+/// given the focus once its part comes into use (tree_fields_asked_told).
+fn tree_field_kept_asked(tree : @view.Tree, id : @view.NodeId) -> Bool {
+  tree.holds(tree.root().id(), id) && tree.takes_presses(id) && !tree.in_use(id)
+}
+
+///|
 /// A field's words', placeholder's and caret's colours as they are now, lent by its node where it said `colors_by` (as
 /// said once where it did not), read as it is painted (paint_tree_field).
 // kept across runs: each lent value let go with the node that lends it
@@ -168,12 +191,23 @@ pub fn field(
     // words are as said, a check's tree says so, View::words_follow_system)
     f.words_follow_system("a field")
     // (one Field, one editor: held by another node still, it is told; an old view's editor given it then, Ctx::editor.
-    // Given so, a fault (the boundary round it shows it), this field taking it over meanwhile)
-    match st.tree_node {
-      Some(other) if other != id && tree_fields.contains(other) =>
-        f.fault("field: one Field given to two fields of the tree's: a Field is one editor's")
-      _ => ()
-    }
+    // Given so, a fault (the boundary round it shows it), this field taking it over meanwhile. One that node no longer
+    // shows (put by till its change is committed whole as what flies from it is (Tree::departs), leaving, laid out
+    // nowhere) hands it over: let go of here, so that its letting go later takes nothing from this one)
+    // (looked for and let go in the window its tree is drawn in: in_tree_window)
+    in_tree_window(f.tree, fn() {
+      match st.tree_node {
+        Some(other) if other != id && tree_fields.contains(other) => {
+          let root = f.tree.root().id()
+          if f.tree.holds(root, other) && !f.tree.leaving(other) && !f.tree.laid_out_nowhere(other) {
+            f.fault("field: one Field given to two fields of the tree's: a Field is one editor's")
+          } else {
+            tree_field_gone(other)
+          }
+        }
+        _ => ()
+      }
+    })
     st.tree_node = Some(id)
     st.color = color
     st.ph_color = placeholder_color
@@ -217,8 +251,8 @@ pub fn field(
     // as `on_change`)
     st.on_change = edited
     st.on_edit = edit
-    tree_fields_rev.val = tree_fields_rev.val + 1
-    tree_fields[id] = {
+    // (said in the window its tree is drawn in, whichever window is in place as it is made: in_tree_window)
+    let entry = {
       st,
       font_size: size,
       line,
@@ -245,13 +279,18 @@ pub fn field(
       handle: 0,
       last_tap: (-1.0e9, 0.0, 0.0),
     }
-    g().editors[tree_said_id(id)] = st
-    // (more lines than it shows: its words scroll in it as an old view's field's do, the wheel, a finger (Ctx::editor's
-    // scroll_state), how far the layout's (Ctx::lay_out_field))
-    if max_lines_by is Some(_) || max_lines > 1 {
-      let sw = @signals.untracked(fn() { g().scroll_state(tree_said_id(id), true) })
-      sw.field = true
-    }
+    // (its editor and the scroll of its words that window's too, g()'s there: in_tree_window)
+    in_tree_window(f.tree, fn() {
+      tree_fields_rev.val = tree_fields_rev.val + 1
+      tree_fields[id] = entry
+      g().editors[tree_said_id(id)] = st
+      // (more lines than it shows: its words scroll in it as an old view's field's do, the wheel, a finger
+      // (Ctx::editor's scroll_state), how far the layout's (Ctx::lay_out_field))
+      if max_lines_by is Some(_) || max_lines > 1 {
+        let sw = @signals.untracked(fn() { g().scroll_state(tree_said_id(id), true) })
+        sw.field = true
+      }
+    })
     f
     // (laid out as what it shows, a secret's dots, what its look makes of its words, worked out here anew as they or what
     // the look reads change: the one working out its layout and its drawing take (EditorState::look_of's, kept);
@@ -283,12 +322,12 @@ pub fn field(
     // (the wheel over it: its words scrolled while they can go that way, else what holds it's, sideways_wheel)
     .on_wheel_moves(fn(w) { tree_field_wheel(id, w) })
     // (its editor no longer the window's as it is let go, whatever lets it go)
-    .owns(fn() { tree_field_gone(id) })
+    .owns(fn() { in_tree_window(f.tree, fn() { tree_field_gone(id) }) })
     |> ignore
     // (the focus asked for it before it was held: given it now, it able to take it, Field::focus)
     if st.focus_asked {
       st.focus_asked = false
-      tree_field_focus(id)
+      in_tree_window(f.tree, fn() { tree_field_focus(id) })
     }
   })
 }
@@ -312,6 +351,10 @@ pub fn Field::focus(self : Field) -> Unit {
 /// focus is elsewhere, it stays.
 pub fn Field::let_go(self : Field) -> Unit {
   self.st.focus_asked = false
+  match self.st.tree_node {
+    Some(n) => tree_field_ask_drop(n)
+    None => ()
+  }
   let c = g()
   let id = match self.st.tree_node {
     Some(n) if tree_fields.contains(n) => tree_said_of.get(n).unwrap_or(0)
@@ -395,11 +438,65 @@ pub fn Ctx::focus_field(self : Ctx, field : Field) -> Unit {
 }
 ///|
 /// Field node `id` given the keyboard's focus where it can take it now (the tree's: under no modal layer that does not
-/// hold it, able to take it); else the focus where it was.
+/// hold it, able to take it); where only its part not being in use keeps it from it (View::in_use), kept asked and given
+/// as that comes into use (tree_fields_asked_told); else the focus where it was.
 fn tree_field_focus(id : @view.NodeId) -> Unit {
-  guard view_app.val is Some(tree) && tree.can_focus(id) else { return }
-  g().focus_moved(tree_said_id(id))
-  tree_field_redraw()
+  guard view_app.val is Some(tree) && tree_fields.get(id) is Some(tf) else { return }
+  tree_field_ask_drop(id)
+  if tree_focus_kept_for(id, tree_said_id(id)) {
+    tf.st.focus_asked = false
+    return
+  }
+  if tree.can_focus(id) {
+    tf.st.focus_asked = false
+    g().focus_moved(tree_said_id(id))
+    tree_field_redraw()
+  } else if tree_field_kept_asked(tree, id) {
+    tf.st.focus_asked = true
+    tree_fields_asked.push(id)
+  } else {
+    tf.st.focus_asked = false
+  }
+}
+
+///|
+/// What may take input in the window's tree settled (view_modals_told): the last field of the tree's whose asked focus
+/// waited on its part coming into use (tree_field_kept_asked) and can now take it, given it at this cause's moment.
+fn tree_fields_asked_told() -> Unit {
+  if tree_fields_asked.is_empty() {
+    return
+  }
+  guard view_app.val is Some(tree) else {
+    tree_fields_asked.clear()
+    return
+  }
+  let root = tree.root().id()
+  let mut give : @view.NodeId? = None
+  let kept : Array[@view.NodeId] = []
+  for id in tree_fields_asked {
+    match tree_fields.get(id) {
+      Some(tf) if tf.st.focus_asked =>
+        if tree.can_focus(id) {
+          tf.st.focus_asked = false
+          give = Some(id)
+        } else if tree.holds(root, id) && tree.presses_here(id) && !tree.in_use(id) {
+          // (still in a part not in use, even while a modal layer opens and closes elsewhere: kept till its part is in use)
+          kept.push(id)
+        } else {
+          tf.st.focus_asked = false
+        }
+      _ => ()
+    }
+  }
+  tree_fields_asked.clear()
+  tree_fields_asked.append(kept)
+  match give {
+    Some(id) => {
+      g().focus_moved(tree_said_id(id))
+      tree_field_redraw()
+    }
+    None => ()
+  }
 }
 
 ///|
@@ -569,15 +666,34 @@ pub fn field_edit_now(id : Int, what : Int) -> Unit {
   let c = g()
   if what == @hostapi.text_menu_paste {
     c.field_paste(id)
-    h_frame_owed()
+    match c.editors.get(id) {
+      Some(st) => {
+        st.menu = false
+        st.sel_handles = false
+      }
+      None => ()
+    }
+    tree_field_redraw()
   } else {
     c.field_edit(id, what)
   }
 }
 
 ///|
+/// field_has_focus, a field focused that is node `v`'s own to answer to: under no modal layer that does not hold `v`
+/// (Ctx::field_focused_here's for a node of the window's tree).
+pub fn field_focused_here_node(v : @view.View) -> Bool {
+  field_has_focus() &&
+  (match view_app.val {
+    Some(t) => @signals.untracked(fn() { t.allows_as_its_own(v.id()) })
+    None => true
+  })
+}
+
+///|
 /// Field node `id` let go: its editor nobody's in the window.
 fn tree_field_gone(id : @view.NodeId) -> Unit {
+  tree_field_ask_drop(id)
   tree_field_focus_told.remove(id)
   match tree_fields.get(id) {
     Some(tf) => {
@@ -585,9 +701,14 @@ fn tree_field_gone(id : @view.NodeId) -> Unit {
       tree_fields_rev.val = tree_fields_rev.val + 1
       match tree_said_of.get(id) {
         Some(k) => {
-          match g().editors.get(k) {
-            Some(st) if physical_equal(st, tf.st) => g().editors.remove(k)
+          let c = g()
+          match c.editors.get(k) {
+            Some(st) if physical_equal(st, tf.st) => c.editors.remove(k)
             _ => ()
+          }
+          if c.word_drag == k {
+            c.word_drag = 0
+            tree_finger_read.val.set(None)
           }
           sideways.remove(k)
         }
@@ -595,9 +716,8 @@ fn tree_field_gone(id : @view.NodeId) -> Unit {
       }
       if tf.st.tree_node == Some(id) {
         tf.st.tree_node = None
-        // (what it told of the person's edits let go with it)
-        tf.st.on_change = None
-        tf.st.on_edit = None
+        // (what it told of the person's edits, sends and looks let go with it)
+        tf.st.clear_handlers()
       }
       if tree_field_hovered.val == Some(id) {
         tree_field_hovered.val = None
@@ -621,6 +741,10 @@ fn tree_field_down(id : @view.NodeId, x : Double, y : Double, at : Double) -> Bo
   tf.strayed = false
   tf.editing = false
   tf.word_drag = false
+  if g().word_drag == tree_said_id(id) {
+    g().word_drag = 0
+  }
+  tree_finger_read.val.set(None)
   tf.handle = 0
   tf.track.reset()
   tf.track.add(at, y)
@@ -673,7 +797,14 @@ fn tree_field_held(id : @view.NodeId) -> Unit {
   let st = tf.st
   tf.editing = true
   match st.local_point(x, y) {
-    Some((lx, ly)) => if st.pick_word(lx, ly, view_moment()) { tf.word_drag = true }
+    Some((lx, ly)) =>
+      if st.pick_word(lx, ly, view_moment()) {
+        tf.word_drag = true
+        c.word_drag = tree_said_id(id)
+        if pointing() is Finger {
+          tree_finger_read.val.set(Some((x, y)))
+        }
+      }
     None => ()
   }
   view_down.val = None
@@ -709,6 +840,9 @@ fn tree_field_handle_down(x : Double, y : Double, at : Double) -> Bool {
   c.handle_which = which
   c.handle_drag = c.focus
   c.handle_dy = dy
+  if pointing() is Finger {
+    tree_finger_read.val.set(Some((x, y - loupe_reach)))
+  }
   if which != 1 {
     st.menu = false
   }
@@ -755,10 +889,16 @@ fn tree_field_moved(id : @view.NodeId, x : Double, y : Double, at : Double) -> B
     }
   } else if tf.handle != 0 {
     handle_move(g(), x, y, at)
+    if pointing() is Finger {
+      tree_finger_read.val.set(Some((x, y - loupe_reach)))
+    }
   } else if tf.word_drag {
     match st.local_point(x, y) {
       Some((lx, ly)) => st.widen_to(lx, ly)
       None => ()
+    }
+    if pointing() is Finger {
+      tree_finger_read.val.set(Some((x, y)))
     }
     st.menu = false
   } else {
@@ -840,6 +980,12 @@ fn tree_field_let_go(id : @view.NodeId, x : Double, y : Double, up : Bool) -> Un
   }
   if tf.handle != 0 {
     c.handle_drag = 0
+  }
+  if tf.word_drag || c.word_drag == tree_said_id(id) {
+    c.word_drag = 0
+  }
+  if tf.handle != 0 || tf.word_drag {
+    tree_finger_read.val.set(None)
   }
   if tf.bar {
     c.bar_let_go()
@@ -1240,6 +1386,7 @@ fn Ctx::paint_tree_field(
   // about its top left and within what cuts it where it is drawn: as a block of the tree's is composed, view_blit)
   let (outer, outer_r, outer_s) = clip_at(clip_top())
   let i0 = self.ninst
+  let tops0 = dr.tops.length()
   push_unclipped()
   // (its bar, where its words scroll in it, found where it is drawn as an old view's field's is (Ctx::bar_at): kept for
   // the pointer with the frame's bars where those are found alone)
@@ -1278,7 +1425,26 @@ fn Ctx::paint_tree_field(
     bar_pointed=fn(b) { tree_field_thumb_pointed(id, bar_drawn_at(b, laid, x, y, s, outer)) },
   )
   pop_clip()
-  self.transform_insts(i0, self.ninst, ux, uy, s, s, x - ux, y - uy, outer, outer_r, outer_s)
+  let body_end = if dr.tops.length() > tops0 { dr.tops[tops0].0 } else { self.ninst }
+  self.transform_insts(i0, body_end, ux, uy, s, s, x - ux, y - uy, outer, outer_r, outer_s)
+  if body_end < self.ninst {
+    let unclipped = (-1.0e9, -1.0e9, 1.0e9, 1.0e9)
+    push_unclipped()
+    self.transform_insts(
+      body_end,
+      self.ninst,
+      ux,
+      uy,
+      s,
+      s,
+      x - ux,
+      y - uy,
+      unclipped,
+      (0.0, 0.0, 0.0, 0.0),
+      (0.0, 0.0, 0.0, 0.0),
+    )
+    pop_clip()
+  }
 }
 
 ///|

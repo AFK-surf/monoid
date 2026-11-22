@@ -135,3 +135,17 @@ test "crc32 taken a piece at a time is crc32 taken at once, whatever the pieces"
   assert_eq(crc, whole)
   assert_eq(@codec.crc32_update(whole, b""), whole)
 }
+
+///|
+test "base64_decode_loose matches Node Buffer.from base64/base64url leniency" {
+  assert_eq(@codec.base64_decode_loose("SGVsbG8="), b"Hello")
+  assert_eq(@codec.base64_decode_loose("SGVs!bG8?==ignored"), b"Hello")
+  assert_eq(@codec.base64_decode_loose("-_8="), b"\xfb\xff")
+  assert_eq(@codec.base64_decode_loose("A"), b"")
+  assert_eq(@codec.base64_decode_loose("SGVsbG8A"), b"Hello\x00")
+  assert_eq(@codec.base64_decode_loose("SGVsbA"), b"Hell")
+  assert_eq(@codec.base64_decode_loose("SGVsb"), b"Hel")
+  // lone surrogates are ignored without aborting on native or js
+  let lone = String::from_array(['S', 'G', 'V', 's', Int::unsafe_to_char(0xD800), 'b', 'G', '8', '='])
+  assert_eq(@codec.base64_decode_loose(lone), b"Hello")
+}

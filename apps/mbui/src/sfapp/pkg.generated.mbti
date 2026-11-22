@@ -3,7 +3,6 @@ package "stillfail/sfapp"
 
 import {
   "mbui/hostapi",
-  "mbui/kit",
   "mbui/motion",
   "mbui/paint",
   "mbui/signals",
@@ -874,7 +873,7 @@ pub let stage_max_scale : Double
 
 pub let stage_min_scale : Double
 
-pub fn stage_zoom() -> @kit.Zoom
+pub fn stage_zoom() -> @motion.Zoom
 
 pub fn stamp_of(@json.Json?, String) -> @sfbase.Stamp?
 

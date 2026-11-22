@@ -22,8 +22,22 @@ import {
   str,
   u64,
 } from "./collection.ts";
+import type { SharedSidecar } from "../chat-row.ts";
 import { KEPT } from "./kept.ts";
-import { ensureMoved } from "./schema.ts";
+import { ensureMoved, ensureSharedSidecar } from "./schema.ts";
+
+/// Per-station identity, language, mark-capability, and verified build no-route metadata paired with `shared_sidecar`.
+export type SharedMeta = { me: string; selves: string[]; lang: string; hiddenKnown: boolean; mutedKnown: boolean; noRouteBuild: string | null };
+/// Keyed viewer marks persisted beside `shared_sidecar` (`shared_mark`).
+export type SharedMarksSnapshot = {
+  reads: ReadonlyMap<number, number>;
+  pins: ReadonlyMap<string, number>;
+  kept: ReadonlySet<number>;
+  hidden?: ReadonlySet<number>;
+  muted?: ReadonlySet<number>;
+  dismissed: ReadonlySet<string>;
+};
+export type SharedMarkKind = "read" | "pin" | "kept" | "hidden" | "muted" | "dismissed";
 
 /// The most rows of a list given that `setChats` compares with what is written by reading them by their keys: more,
 /// and it reads the list once.
@@ -46,6 +60,7 @@ export class ChatsStore {
   readonly #moved = new Map<string, Map<string, MovedTo>>();
   readonly #movedThreads = new Map<string, Map<number, string>>();
   #movedMade = false;
+  #sharedSidecarMade = false;
 
   constructor(env: DbEnv, summaryOf: (station: string, key: string) => J) {
     this.#env = env;
@@ -65,12 +80,26 @@ export class ChatsStore {
     }
   }
 
+  openSharedSidecar(): void {
+    try {
+      ensureSharedSidecar(this.#env.sql);
+      this.#sharedSidecarMade = true;
+    } catch {
+      // No room to make it: shared chats fall back to whole reads.
+    }
+  }
+
   onRollback(): void {
     this.#chatsHeld.clear();
   }
 
   forgetStation(station: string): void {
     for (const list of ["chats", "archived"] as const) this.#chatsHeld.delete(K(list, station));
+    if (this.#sharedSidecarMade) {
+      this.#env.run("DELETE FROM shared_sidecar WHERE station = ?", [station]);
+      this.#env.run("DELETE FROM shared_meta WHERE station = ?", [station]);
+      this.#env.run("DELETE FROM shared_mark WHERE station = ?", [station]);
+    }
   }
 
   /// Chat rows a query found (`found`: station, id), `archived` or not, in its order (account.ts #byKey); `all` the
@@ -232,6 +261,9 @@ export class ChatsStore {
   #deleteChatRow(station: string, archived: number, id: string, before: J | undefined, ordBefore: number): void {
     const kept = this.#env.kept.writing("chat", [station, id]);
     this.#env.run("DELETE FROM chat WHERE station = ? AND archived = ? AND id = ?", [station, archived, id]);
+    if (archived === 0 && this.#sharedSidecarMade) {
+      this.#env.run("DELETE FROM shared_sidecar WHERE station = ? AND id = ?", [station, id]);
+    }
     this.#chatsHeld.get(K(archived ? "archived" : "chats", station))?.delete(id);
     this.#env.cache.delete(K("chat", station, archived, id));
     this.#env.kept.wrote(kept, () => undefined);
@@ -561,5 +593,439 @@ export class ChatsStore {
   /// The chats a station's agents last spoke in, the latest first, from `since` on: at most `most`.
   recentThreads(station: string, since: number, most: number): number[] {
     return this.#env.sql.all("SELECT thread FROM chat WHERE station = ? AND archived = 0 AND thread IS NOT NULL AND last_active >= ? ORDER BY last_active DESC LIMIT ?", [station, since, most]).map((r) => r[0] as number);
+  }
+
+  // ── minimal shared chat sidecar (POST /changed/shared) ──
+
+  #putSidecarRow(station: string, id: string, sc: SharedSidecar): void {
+    if (!this.#sharedSidecarMade) return;
+    this.#env.run(
+      "INSERT OR REPLACE INTO shared_sidecar (station, id, digest, said, named, quoted_only, local_admin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [station, id, sc.digest, sc.said === null ? null : JSON.stringify(sc.said), sc.named === null ? null : JSON.stringify(sc.named), sc.quotedOnly ? 1 : 0, sc.localAdmin ? 1 : 0],
+    );
+  }
+
+  #putSharedMeta(station: string, meta: SharedMeta): void {
+    if (!this.#sharedSidecarMade) return;
+    this.#env.run(
+      "INSERT OR REPLACE INTO shared_meta (station, me, selves, lang, hidden_known, muted_known, no_route_build) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [station, meta.me, JSON.stringify(meta.selves), meta.lang, meta.hiddenKnown ? 1 : 0, meta.mutedKnown ? 1 : 0, meta.noRouteBuild],
+    );
+  }
+
+  #parseSidecar(r: SqlRow): SharedSidecar {
+    return {
+      digest: String(r[0]),
+      said: typeof r[1] === "string" ? (JSON.parse(r[1]) as J) : null,
+      named: typeof r[2] === "string" ? (JSON.parse(r[2]) as J) : null,
+      quotedOnly: r[3] === 1,
+      localAdmin: r[4] === 1,
+    };
+  }
+
+  sharedMeta(station: string): SharedMeta | null {
+    if (!this.#sharedSidecarMade) return null;
+    const r = this.#env.sql.all("SELECT me, selves, lang, hidden_known, muted_known, no_route_build FROM shared_meta WHERE station = ?", [station])[0];
+    if (!r) return null;
+    try {
+      const selves = JSON.parse(String(r[1]));
+      if (!Array.isArray(selves)) return null;
+      return {
+        me: String(r[0]),
+        selves: selves.map(String),
+        lang: String(r[2]),
+        hiddenKnown: r[3] === 1,
+        mutedKnown: r[4] === 1,
+        noRouteBuild: typeof r[5] === "string" && r[5] !== "" ? r[5] : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  setSharedNoRouteBuild(station: string, build: string | null): void {
+    if (!this.#sharedSidecarMade) return;
+    this.#env.write(() => {
+      this.#env.run("UPDATE shared_meta SET no_route_build = ? WHERE station = ?", [build, station]);
+    });
+  }
+
+  #readSharedMarks(station: string): {
+    reads: Map<number, number>;
+    pins: Map<string, number>;
+    kept: Set<number>;
+    hidden: Set<number>;
+    muted: Set<number>;
+    dismissed: Set<string>;
+  } {
+    const reads = new Map<number, number>();
+    const pins = new Map<string, number>();
+    const kept = new Set<number>();
+    const hidden = new Set<number>();
+    const muted = new Set<number>();
+    const dismissed = new Set<string>();
+    if (!this.#sharedSidecarMade) return { reads, pins, kept, hidden, muted, dismissed };
+    for (const r of this.#env.sql.all("SELECT kind, k, v FROM shared_mark WHERE station = ?", [station])) {
+      const kind = String(r[0]);
+      const k = String(r[1]);
+      if (kind === "read") reads.set(Number(k), Number(r[2]));
+      else if (kind === "pin") pins.set(k, Number(r[2]));
+      else if (kind === "kept") kept.add(Number(k));
+      else if (kind === "hidden") hidden.add(Number(k));
+      else if (kind === "muted") muted.add(Number(k));
+      else if (kind === "dismissed") dismissed.add(k);
+    }
+    return { reads, pins, kept, hidden, muted, dismissed };
+  }
+
+  #replaceSharedMarks(station: string, marks: SharedMarksSnapshot): void {
+    if (!this.#sharedSidecarMade) return;
+    this.#env.run("DELETE FROM shared_mark WHERE station = ?", [station]);
+    const put = (kind: SharedMarkKind, k: string, v: string) =>
+      this.#env.run("INSERT OR REPLACE INTO shared_mark (station, kind, k, v) VALUES (?, ?, ?, ?)", [station, kind, k, v]);
+    for (const [t, n] of marks.reads) put("read", String(t), String(n));
+    for (const [s, at] of marks.pins) put("pin", s, String(at));
+    for (const t of marks.kept) put("kept", String(t), "1");
+    for (const t of marks.hidden ?? []) put("hidden", String(t), "1");
+    for (const t of marks.muted ?? []) put("muted", String(t), "1");
+    for (const d of marks.dismissed) put("dismissed", d, "1");
+  }
+
+  /// Diffs `newMarks` against persisted `shared_mark` rows, updates only changed keys in `shared_mark`, and returns
+  /// the exact `ids` (pins) and `threads` (reads/kept/hidden/muted/dismissed) that changed.
+  #diffAndSyncMarks(station: string, marks: SharedMarksSnapshot): { ids: Set<string>; threads: Set<number> } {
+    const ids = new Set<string>();
+    const threads = new Set<number>();
+    if (!this.#sharedSidecarMade) return { ids, threads };
+    const old = this.#readSharedMarks(station);
+    const put = (kind: SharedMarkKind, k: string, v: string) =>
+      this.#env.run("INSERT OR REPLACE INTO shared_mark (station, kind, k, v) VALUES (?, ?, ?, ?)", [station, kind, k, v]);
+    const del = (kind: SharedMarkKind, k: string) =>
+      this.#env.run("DELETE FROM shared_mark WHERE station = ? AND kind = ? AND k = ?", [station, kind, k]);
+
+    for (const [t, n] of marks.reads) {
+      if (old.reads.get(t) !== n) {
+        threads.add(t);
+        put("read", String(t), String(n));
+      }
+    }
+    for (const t of old.reads.keys()) {
+      if (!marks.reads.has(t)) {
+        threads.add(t);
+        del("read", String(t));
+      }
+    }
+    for (const [s, at] of marks.pins) {
+      if (old.pins.get(s) !== at) {
+        ids.add(s);
+        put("pin", s, String(at));
+      }
+    }
+    for (const s of old.pins.keys()) {
+      if (!marks.pins.has(s)) {
+        ids.add(s);
+        del("pin", s);
+      }
+    }
+    const syncThreadSet = (kind: "kept" | "hidden" | "muted", oldSet: Set<number>, newSet: ReadonlySet<number> | undefined) => {
+      const next = newSet ?? new Set<number>();
+      for (const t of next) {
+        if (!oldSet.has(t)) {
+          threads.add(t);
+          put(kind, String(t), "1");
+        }
+      }
+      for (const t of oldSet) {
+        if (!next.has(t)) {
+          threads.add(t);
+          del(kind, String(t));
+        }
+      }
+    };
+    syncThreadSet("kept", old.kept, marks.kept);
+    syncThreadSet("hidden", old.hidden, marks.hidden);
+    syncThreadSet("muted", old.muted, marks.muted);
+
+    const threadOfDismissed = (d: string): number | null => {
+      const at = d.indexOf(":");
+      if (at <= 0) return null;
+      const t = Number(d.slice(0, at));
+      return Number.isInteger(t) ? t : null;
+    };
+    for (const d of marks.dismissed) {
+      if (!old.dismissed.has(d)) {
+        const t = threadOfDismissed(d);
+        if (t !== null) threads.add(t);
+        put("dismissed", d, "1");
+      }
+    }
+    for (const d of old.dismissed) {
+      if (!marks.dismissed.has(d)) {
+        const t = threadOfDismissed(d);
+        if (t !== null) threads.add(t);
+        del("dismissed", d);
+      }
+    }
+    return { ids, threads };
+  }
+
+  sharedDigests(station: string): Map<string, string> {
+    const out = new Map<string, string>();
+    if (!this.#sharedSidecarMade) return out;
+    for (const r of this.#env.sql.all("SELECT id, digest FROM shared_sidecar WHERE station = ?", [station])) {
+      out.set(String(r[0]), String(r[1]));
+    }
+    return out;
+  }
+
+  sharedSidecar(station: string, id: string): SharedSidecar | null {
+    if (!this.#sharedSidecarMade) return null;
+    const r = this.#env.sql.all("SELECT digest, said, named, quoted_only, local_admin FROM shared_sidecar WHERE station = ? AND id = ?", [station, id])[0];
+    return r ? this.#parseSidecar(r) : null;
+  }
+
+  sharedSidecars(station: string): Map<string, SharedSidecar> {
+    const out = new Map<string, SharedSidecar>();
+    if (!this.#sharedSidecarMade) return out;
+    for (const r of this.#env.sql.all("SELECT id, digest, said, named, quoted_only, local_admin FROM shared_sidecar WHERE station = ?", [station])) {
+      out.set(String(r[0]), this.#parseSidecar(r.slice(1)));
+    }
+    return out;
+  }
+
+  clearSharedBaseline(station: string): void {
+    if (!this.#sharedSidecarMade) return;
+    this.#env.write(() => {
+      this.#env.run("DELETE FROM shared_sidecar WHERE station = ?", [station]);
+      this.#env.run("DELETE FROM shared_meta WHERE station = ?", [station]);
+      this.#env.run("DELETE FROM shared_mark WHERE station = ?", [station]);
+    });
+  }
+
+  /// Atomically writes the whole shared chat list along with its minimal sidecars, keyed viewer marks, and viewer/lang
+  /// metadata in one transaction.
+  setSharedChats(station: string, rows: J[], confirmed: number | null, places: readonly number[], sidecars: ReadonlyMap<string, SharedSidecar>, marks: SharedMarksSnapshot, meta: SharedMeta): void {
+    this.#env.write(() => {
+      this.setChats(station, false, rows, confirmed, places);
+      if (!this.#sharedSidecarMade) return;
+      const keep = new Set<string>();
+      for (const row of rows) {
+        const id = idText(get(row, "id"));
+        if (id === null || this.#movedAway(station, row)) continue;
+        keep.add(id);
+        const sc = sidecars.get(id);
+        if (sc !== undefined) this.#putSidecarRow(station, id, sc);
+      }
+      for (const r of this.#env.sql.all("SELECT id FROM shared_sidecar WHERE station = ?", [station])) {
+        const id = String(r[0]);
+        if (!keep.has(id)) this.#env.run("DELETE FROM shared_sidecar WHERE station = ? AND id = ?", [station, id]);
+      }
+      this.#replaceSharedMarks(station, marks);
+      this.#putSharedMeta(station, meta);
+    });
+  }
+
+  /// Atomically writes one sidebar row and its optional sidecar (never invalidates persisted marks).
+  putSharedChat(station: string, row: J, place: number, sidecar: SharedSidecar | null): void {
+    this.#env.write(() => {
+      const id = idText(get(row, "id"));
+      if (id === null || !this.#env.listed(station, "chats")) return;
+      if (this.#movedAway(station, row)) {
+        this.dropChat(station, id);
+        return;
+      }
+      this.putChat(station, row, place);
+      if (sidecar !== null) this.#putSidecarRow(station, id, sidecar);
+    });
+  }
+
+  /// Atomically writes one or more sidebar rows, drops, optional sidecars, and their associated `shared_mark` updates
+  /// in a single SQLite transaction so marks never commit ahead of the rows they affect.
+  putSharedBatch(
+    station: string,
+    updates: readonly { row: J; place: number; sidecar: SharedSidecar | null }[],
+    drops: readonly string[],
+    markUpdates: readonly { kind: SharedMarkKind; k: string; v: string | null }[],
+    scopedMarks: { scope: { sessions: readonly string[]; threads: readonly number[] }; marks: SharedMarksSnapshot } | null,
+  ): void {
+    this.#env.write(() => {
+      if (this.#env.listed(station, "chats")) {
+        for (const u of updates) {
+          const id = idText(get(u.row, "id"));
+          if (id === null) continue;
+          if (this.#movedAway(station, u.row)) {
+            this.dropChat(station, id);
+            continue;
+          }
+          this.putChat(station, u.row, u.place);
+          if (u.sidecar !== null) this.#putSidecarRow(station, id, u.sidecar);
+        }
+        for (const id of drops) this.dropChat(station, id);
+      }
+      if (!this.#sharedSidecarMade) return;
+      for (const m of markUpdates) {
+        if (m.v === null) this.#env.run("DELETE FROM shared_mark WHERE station = ? AND kind = ? AND k = ?", [station, m.kind, m.k]);
+        else this.#env.run("INSERT OR REPLACE INTO shared_mark (station, kind, k, v) VALUES (?, ?, ?, ?)", [station, m.kind, m.k, m.v]);
+      }
+      if (scopedMarks !== null) {
+        const { scope, marks } = scopedMarks;
+        const put = (kind: SharedMarkKind, k: string, v: string) =>
+          this.#env.run("INSERT OR REPLACE INTO shared_mark (station, kind, k, v) VALUES (?, ?, ?, ?)", [station, kind, k, v]);
+        const del = (kind: SharedMarkKind, k: string) =>
+          this.#env.run("DELETE FROM shared_mark WHERE station = ? AND kind = ? AND k = ?", [station, kind, k]);
+        for (const s of scope.sessions) {
+          const at = marks.pins.get(s);
+          if (at === undefined) del("pin", s);
+          else put("pin", s, String(at));
+        }
+        for (const t of scope.threads) {
+          const key = String(t);
+          const r = marks.reads.get(t);
+          if (r === undefined) del("read", key);
+          else put("read", key, String(r));
+          if (marks.kept.has(t)) put("kept", key, "1");
+          else del("kept", key);
+          if (marks.hidden?.has(t)) put("hidden", key, "1");
+          else del("hidden", key);
+          if (marks.muted?.has(t)) put("muted", key, "1");
+          else del("muted", key);
+          this.#env.run("DELETE FROM shared_mark WHERE station = ? AND kind = 'dismissed' AND k LIKE ?", [station, `${t}:%`]);
+        }
+        if (scope.threads.length > 0) {
+          const tSet = new Set(scope.threads);
+          for (const d of marks.dismissed) {
+            const at = d.indexOf(":");
+            if (at > 0 && tSet.has(Number(d.slice(0, at)))) put("dismissed", d, "1");
+          }
+        }
+      }
+    });
+  }
+
+  /// Atomically applies a `POST /changed/shared` delta: deletes `gone` rows, upserts `changed` rows and their sidecars,
+  /// diffs `newMarks` against `shared_mark` (merged with any `extraReproject` keys drained from `rowsWanted`) to
+  /// re-project ONLY the affected unchanged rows by index (or all when `reprojectAll` is true, e.g. language change),
+  /// and updates `shared_meta`. When `gone` and `changed` are empty, `reprojectAll` is false, `extraReproject` is
+  /// empty, and no marks changed, zero `chat` rows are read or written.
+  applySharedChanged(
+    station: string,
+    changed: readonly { row: J; place: number; sidecar: SharedSidecar }[],
+    gone: readonly string[],
+    reprojectAll: boolean,
+    reproject: (row: J, sidecar: SharedSidecar) => { row: J; place: number },
+    newMarks: SharedMarksSnapshot,
+    confirmed: number | null,
+    meta: SharedMeta,
+    extraReproject?: { ids?: Iterable<string>; threads?: Iterable<number> },
+  ): void {
+    this.#env.write(() => {
+      let anyChanged = false;
+      const touched = new Set<string>();
+      for (const id of gone) {
+        touched.add(id);
+        const kept = this.#env.cache.get(K("chat", station, 0, id));
+        if (kept !== undefined && kept !== null) {
+          const r = this.#env.sql.all("SELECT ord FROM chat WHERE station = ? AND archived = 0 AND id = ?", [station, id])[0];
+          if (r) {
+            this.#deleteChatRow(station, 0, id, kept, r[0] as number);
+            anyChanged = true;
+          } else if (this.#sharedSidecarMade) {
+            this.#env.run("DELETE FROM shared_sidecar WHERE station = ? AND id = ?", [station, id]);
+          }
+        } else {
+          const r = this.#env.sql.all("SELECT json, unread, ord FROM chat WHERE station = ? AND archived = 0 AND id = ?", [station, id])[0];
+          if (r) {
+            this.#deleteChatRow(station, 0, id, this.#chatRow(station, 0, id, r[0], r[1]), r[2] as number);
+            anyChanged = true;
+          } else if (this.#sharedSidecarMade) {
+            this.#env.run("DELETE FROM shared_sidecar WHERE station = ? AND id = ?", [station, id]);
+          }
+        }
+      }
+      const upsertRow = (id: string, row: J, place: number): void => {
+        if (this.#movedAway(station, row)) {
+          this.dropChat(station, id);
+          anyChanged = true;
+          return;
+        }
+        const h = this.#chatsHeld.get(K("chats", station))?.get(id);
+        if (h !== undefined && h.row === row && Object.isFrozen(row)) {
+          if (h.ord === place) return;
+          const kept = this.#env.cache.get(K("chat", station, 0, id));
+          this.#placeChatRow(station, 0, id, row, kept !== undefined && kept !== null ? kept : frozen(JSON.parse(JSON.stringify(row))), place, h.ord);
+          return;
+        }
+        const r = this.#env.sql.all("SELECT ord, json, unread FROM chat WHERE station = ? AND archived = 0 AND id = ?", [station, id])[0];
+        const c = this.#chatCols(row);
+        if (r && r[1] === c.json && r[2] === c.unread) {
+          if (r[0] !== place) this.#placeChatRow(station, 0, id, row, this.#chatRow(station, 0, id, r[1], r[2]), place, r[0] as number);
+          if (h !== undefined) h.row = row;
+          return;
+        }
+        anyChanged = true;
+        this.#putChatRow(station, 0, id, row, place, r ? this.#chatRow(station, 0, id, r[1], r[2]) : undefined, r ? (r[0] as number) : undefined, c);
+      };
+      for (const item of changed) {
+        const id = idText(get(item.row, "id"));
+        if (id === null) continue;
+        touched.add(id);
+        upsertRow(id, item.row, item.place);
+        if (!this.#movedAway(station, item.row)) this.#putSidecarRow(station, id, item.sidecar);
+      }
+      const diff = this.#diffAndSyncMarks(station, newMarks);
+      if (extraReproject?.ids) for (const id of extraReproject.ids) diff.ids.add(id);
+      if (extraReproject?.threads) for (const t of extraReproject.threads) diff.threads.add(t);
+      if (this.#sharedSidecarMade) {
+        let targetIds: string[] = [];
+        let sidecars: Map<string, SharedSidecar> | null = null;
+        if (reprojectAll) {
+          sidecars = this.sharedSidecars(station);
+          targetIds = [...sidecars.keys()].filter((id) => !touched.has(id));
+        } else if (diff.ids.size > 0 || diff.threads.size > 0) {
+          const picked = new Set<string>();
+          for (const id of diff.ids) if (!touched.has(id)) picked.add(id);
+          if (diff.threads.size > 0) {
+            for (const r of this.#env.sql.all(
+              "SELECT c.id FROM json_each(?) AS k CROSS JOIN chat AS c WHERE c.station = ? AND c.archived = 0 AND c.thread = k.value",
+              [JSON.stringify([...diff.threads]), station],
+            )) {
+              const id = String(r[0]);
+              if (!touched.has(id)) picked.add(id);
+            }
+          }
+          targetIds = [...picked];
+          if (targetIds.length > 0) {
+            sidecars = new Map();
+            for (const r of this.#env.sql.all(
+              "SELECT s.id, s.digest, s.said, s.named, s.quoted_only, s.local_admin FROM json_each(?) AS k CROSS JOIN shared_sidecar AS s WHERE s.station = ? AND s.id = k.value",
+              [JSON.stringify(targetIds), station],
+            )) {
+              sidecars.set(String(r[0]), this.#parseSidecar(r.slice(1)));
+            }
+          }
+        }
+        if (targetIds.length > 0 && sidecars !== null) {
+          for (const r of this.#env.sql.all(
+            "SELECT c.id, c.ord, c.json, c.unread FROM json_each(?) AS k CROSS JOIN chat AS c WHERE c.station = ? AND c.archived = 0 AND c.id = k.value",
+            [JSON.stringify(targetIds), station],
+          )) {
+            const id = String(r[0]);
+            const sc = sidecars.get(id);
+            if (!sc) continue;
+            const before = this.#chatRow(station, 0, id, r[2], r[3]);
+            const next = reproject(before, sc);
+            const c = this.#chatCols(next.row);
+            if (r[2] === c.json && r[3] === c.unread) {
+              if (r[1] !== next.place) this.#placeChatRow(station, 0, id, next.row, before, next.place, r[1] as number);
+              continue;
+            }
+            anyChanged = true;
+            this.#putChatRow(station, 0, id, next.row, next.place, before, r[1] as number, c);
+          }
+        }
+      }
+      this.#putSharedMeta(station, meta);
+      this.#env.markListed(station, "chats", confirmed, anyChanged);
+    });
   }
 }

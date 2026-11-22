@@ -111,6 +111,17 @@ fn paper_viewer_ink(p : ReaderPaper) -> ViewerInk {
 }
 
 ///|
+/// Where a reader is: a page of its own (the whole window's, a drive's), a tab beside a chat over the whole window or
+/// in a window of its own, or a tab in the chat's panel (its column wider there: panel_column_ems, the panel bounding
+/// it already).
+#derive(Eq)
+pub(all) enum ReaderHost {
+  OwnPage
+  Tab
+  PanelTab
+}
+
+///|
 /// A reader's panel: the contents, the search, the layout.
 #derive(Eq)
 pub(all) enum ReaderPanel {
@@ -166,6 +177,12 @@ pub(all) struct Reading {
   draft : @signals.Signal[Double]
   /// a desktop's bar, gone as the text is read on down (where the list stood when it was last seen: `seen`)
   bar_hidden : @signals.Signal[Bool]
+  /// taller than two screens (what shows could scroll further than its own height): told with what is in sight
+  long : @signals.Signal[Bool]
+  /// further than reader_end_away from its end, told with what is in sight
+  away : @signals.Signal[Bool]
+  /// the moment the column's list was first in sight (none yet: +inf): what floats over it stands as found till then
+  mut sight_from : Double
   mut seen : (Int, Double)
 }
 
@@ -205,6 +222,9 @@ pub fn reading_for(key : String) -> Reading {
         jumped: (-1, 0.0, -1, 0.0),
         draft: @signals.signal(-1.0),
         bar_hidden: @signals.signal(false),
+        long: @signals.signal(false),
+        away: @signals.signal(false),
+        sight_from: @double.infinity,
         seen: (0, 0.0),
       }
       readings[key] = r
@@ -247,6 +267,13 @@ pub fn reader_panel_of(key : String) -> ReaderPanel {
     Some(r) => r.panel.get()
     None => NoPanel
   }
+}
+
+///|
+/// Reading `r` scrolled to its end, at a cause: clears any held jump so `on_sight` records the end.
+fn reader_to_end(r : Reading) -> Unit {
+  r.jumped = (-1, 0.0, -1, 0.0)
+  r.list.to_end()
 }
 
 ///|
@@ -869,6 +896,29 @@ let desk_reader_foot : Double = 72.0
 let desk_column_ems : Double = 34.0
 
 ///|
+/// The column's width in a tab in the panel beside a chat: 48 of the text's size, the panel bounding it already.
+let panel_column_ems : Double = 48.0
+
+///|
+/// How far from its end a reader's list is before its scroll-to-bottom float shows (matches a chat's to_newest_away:
+/// a corner of the screen).
+let reader_end_away : Double = 120.0
+
+///|
+/// How far in from a tab's right edge its floating buttons' drawn circles sit (a chat's float_in = 6 sits inside the
+/// composer column; a tab has no composer).
+let beside_float_in : Double = 16.0
+
+///|
+/// How far up from a tab's bottom edge the scroll-to-bottom floating button's drawn circle sits (a chat's float_lift =
+/// 12 sits over the composer).
+let beside_float_lift : Double = 16.0
+
+///|
+/// How long a tab's scroll-to-bottom floating button fades in and out (matches a chat's float_ms).
+let beside_float_ms : Double = 160.0
+
+///|
 /// The panel's width (PANEL).
 pub let desk_panel_w : Double = 320.0
 
@@ -1038,7 +1088,7 @@ let desk_found_gap : Double = 10.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let desk_found_box : @ui.Style = @ui.css("row h=S10 pl=S3_5 pr=S1_25 gap=S1 align=ACenter radius=Xl1_5")
+let desk_found_box : @ui.Style = @ui.css("row min_h=S10 pl=S3_5 pr=S1_25 py=S1 gap=S1 align=ACenter radius=Xl1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1125,7 +1175,7 @@ let desk_find_place : @ui.Style = @ui.css("w=Full px=S4 pt=S1_5 pb=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let desk_find_field : @ui.Style = @ui.style(w=Full, h=Fixed(desk_field_h), px=S4, justify=JCenter, radius=Full, border=B1)
+let desk_find_field : @ui.Style = @ui.style(w=Full, min_h=Fixed(desk_field_h), px=S4, py=S1, justify=JCenter, radius=Full, border=B0_5)
 
 ///|
 let desk_field_h : Double = 38.0
@@ -1194,7 +1244,7 @@ let desk_layout_half : @ui.Style = @ui.css("gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let desk_swatch_off : @ui.Style = @ui.css("w=Full h=S11 radius=Xl align=ACenter justify=JCenter border=B1")
+let desk_swatch_off : @ui.Style = @ui.css("w=Full min_h=S11 py=S1 radius=Xl align=ACenter justify=JCenter border=B0_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1213,7 +1263,7 @@ let desk_swatch_name : @ui.TextStyle = @ui.text_style(size=Caption, wrap=false, 
 /// round by its next step (Inner: 18 less 8, 10), so as high as they are and that twice.
 // kept across runs: a value (no field of it changes)
 let desk_size_row : @ui.Style = @ui.css("row w=Full align=ACenter radius=Xl2").then(
-  @ui.style(h=Fixed(desk_size_row_h), px=room(corner_inset)),
+  @ui.style(min_h=Fixed(desk_size_row_h), px=room(corner_inset), py=room(corner_inset)),
 )
 
 ///|
@@ -1224,7 +1274,7 @@ let desk_size_row_h : Double = 32.0 + 2.0 * corner_inset
 /// A size's key (sizeKey): its corner its row's next step in, concentric with the row's (desk_size_key_corner).
 // kept across runs: a value (no field of it changes)
 let desk_size_key_box : @ui.Style = @ui.css((
-  #|h=S8 min_w=S11 px=S2_5 align=ACenter justify=JCenter hovered{bg=Tint} disabled{opacity=O35}
+  #|min_h=S8 min_w=S11 px=S2_5 py=S1 align=ACenter justify=JCenter hovered{bg=Tint} disabled{opacity=O35}
 ))
 
 ///|

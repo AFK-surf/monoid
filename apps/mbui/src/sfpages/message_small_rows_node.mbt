@@ -215,14 +215,11 @@ fn blocked_line_node(
     line.show(fn() { b().action != "" }, fn(r) {
       @sf.words_node(r, fn() { "·" }, fn() { blocked_dot }) |> ignore
     })
-    line.show(fn() { b().action != "" }, fn(r) {
-      r.box(fn(a) {
-        a
-        .words_runs(By(fn() { [@ui.span(b().action, underline=can() && @sf.lit_node(line))] }))
-        .words_look(By(fn() { @ui.style_words(blocked_act) }))
-        .ink(By(fn() { @ui.style_ink(blocked_act) }))
-        |> ignore
-      })
+    line.show(fn() { b().action != "" }, fn(a) {
+      a
+      .words_runs(By(fn() { [@ui.span(b().action, underline=can() && @sf.lit_node(line))] }))
+      .words_look(By(fn() { @ui.style_words(blocked_act) }))
+      .ink(By(fn() { @ui.style_ink(blocked_act) }))
       |> ignore
     })
     // (why it failed; its note said only here where it shows its action instead: the note it shows whole, wrapping,

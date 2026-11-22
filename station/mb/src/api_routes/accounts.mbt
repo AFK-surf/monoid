@@ -125,6 +125,14 @@ fn Admin::accounts_routes(self : Admin) -> Array[Route] {
     ),
     route(
       "PUT",
+      "^\\/*auto-chats\\/*$",
+      answer(async fn(r, _) {
+        ignore(self.accounts("putAutoChats", [input(r)] + viewer_lang(r)))
+        ok(self.overview_of(r))
+      }),
+    ),
+    route(
+      "PUT",
       "^\\/*automatic-decisions\\/+policy\\/*$",
       answer(async fn(r, _) {
         if r.who("home") is Some(Bool(false)) {

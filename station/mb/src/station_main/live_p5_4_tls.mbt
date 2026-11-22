@@ -176,7 +176,7 @@ fn p54_gcm_seal(key : Bytes, nonce : Bytes, aad : Bytes, plain : Bytes) -> Bytes
 
 ///|
 fn p54_gcm_open(key : Bytes, nonce : Bytes, aad : Bytes, sealed : Bytes) -> Bytes? {
-  if sealed.length() < 16 {
+  if key.length() != 16 || nonce.length() != 12 || sealed.length() < 16 {
     return None
   }
   let w = p54_aes_keys(key)

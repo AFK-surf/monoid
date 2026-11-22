@@ -126,7 +126,19 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["glyph", opt("StationsGlyph"), { doc: "The stations at a glance, and what the list says with no rows; absent from a core before them." }],
     ["note", opt("ListNote")],
     ["syncing", opt("String"), { said: true, doc: "While what changed since the device was last with the stations is still being brought (station/sync.ts\n`#catching`), what the mark at the list's top beside its filter says (its tip, and to a screen reader): 正在同步 while a\nstation has yet to say what changed, then how many chats are left (正在同步 · 还剩 12 个对话). Stations not reached are\nleft out (the list says so where it says what is wrong with them). Absent once all is here, and from a core before it." }],
+    ["interrupted", opt(vec("InterruptedStation")), { doc: "Stations in this workspace with turns cut off by a non-update restart awaiting manual resume or dismissal. Absent when none." }],
   ], { keepNone: true }),
+  InterruptedChat: struct([
+    ["key", "String"],
+    ["thread", opt("i64"), { client: opt("I54") }],
+    ["title", "String", { said: true }],
+  ], { doc: "A chat whose turn was cut off by a non-update station restart." }),
+  InterruptedStation: struct([
+    ["station", "String"],
+    ["stationName", "String", { said: true }],
+    ["count", "i64", { client: "I54" }],
+    ["chats", vec("InterruptedChat")],
+  ], { doc: "A station's chats cut off by a non-update restart awaiting manual resume or dismissal." }),
   Lead: words(["agents","people"], { doc: "Whose pictures lead the rows of a list (`ChatsView::leading`)." }),
   Attachment: struct([
     ["name", "String", { said: true }],
@@ -321,6 +333,7 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["xshare", opt("ChatShare"), { doc: "Its sharing with the viewer's other workspaces; absent while it has no chat or agent, or\nthe viewer is in no other workspace." }],
     ["publish", opt("ChatPublish"), { doc: "Whether the viewer may draw it as a picture (分享图片); absent while it has no chat." }],
     ["opener", opt("Opener"), { doc: "The chat an agent opened it from, as its row's (`ChatItem.opener`): the way back there over its messages.\nAbsent otherwise." }],
+    ["openers", vec("Opener"), { default: true, doc: "The chain of led parent chats (`opener.led === true`) that led to this one, root first, ending with `opener`. Empty when not led." }],
     ["opened", vec("OpenedChat"), { default: true, doc: "The chats its agent opened, the first first, for its bar's list of them. Empty when none." }],
     ["openedText", opt("String"), { said: true, doc: "With `opened`: how many, in words (创建了 3 个对话). Absent otherwise." }],
     ["tabs", opt("ChatTabs"), { doc: "Its side panel's tabs as this device keeps them for it (prefs `chatTabs`, chat-tabs.ts); absent from a core\nbefore it." }],
@@ -349,10 +362,11 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["on", "bool", { doc: "Ticked: what is sent from here is copied there too, the station's bot saying there who wrote it on still.fail,\nand what. Off until ticked, for as long as the app runs." }],
   ], { doc: "A thread a chat's messages can be copied to ( \"抄送\")." }),
   ChatTabs: struct([
-    ["open", vec("String"), { doc: "The tabs open beside it, in their order, of those kept the ones it has (an agent's history by its session's key,\n`service:<job>` one of its agents' services, `jobs`, `files`, `letters`, `file:[…]` a visualization, `screen:[…]` a station's\nscreen); all kept while its\nagents are not known. None kept: none, or where its agent has no chat yet its history (`auto`)." }],
+    ["open", vec("String"), { doc: "The tabs open beside it, in their order, of those kept the ones it has (an agent's history by its session's key,\n`service:<job>` one of its agents' services, `jobs`, `files`, `letters`, `things`, `subchats`, `file:[…]` a visualization, `screen:[…]` a station's\nscreen); all kept while its\nagents are not known. None kept: none, or where its agent has no chat yet its history (`auto`)." }],
     ["shown", opt("String"), { doc: "The one in front: as kept, else the first; none with none open." }],
     ["auto", opt("bool"), { doc: "None kept: `open` is what the chat opens by itself (its agent's history, it having no chat yet). A client where\nthe panel would lie over the chat shows none, and changes them with `auto: false`." }],
-  ], { doc: "A chat's side panel (`chat.tabs.open/close/front/clear` change it)." }),
+    ["canReopen", opt("bool"), { doc: "Whether closed tabs are kept in history that can be reopened (`chat.tabs.reopen`). Absent when none." }],
+  ], { doc: "A chat's side panel (`chat.tabs.open/close/closeOthers/closeRight/move/reopen/front/clear/replace` change it)." }),
   ChatPublish: struct([
     ["may", "bool", { doc: "The viewer may draw it as a picture (not a read-only member)." }],
   ], { doc: "A chat as a picture, for its \"…\": whether the viewer may draw it." }),
@@ -456,6 +470,7 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["stateLead", opt("StateLead"), { doc: "What leads `stateText`, for a mark of a client's own." }],
     ["archived", opt("bool"), { doc: "It is in its station's archive. Absent otherwise." }],
     ["note", opt("String"), { said: true, doc: "With `archived`: 已归档." }],
+    ["led", opt("bool"), { doc: "This chat's agent leads it (chat_create for me): a sub-chat, shown in the bar's sub-chats entry. Absent for a chat opened for a person." }],
   ], { doc: "A chat a chat's agent opened (chat_create), as the chat that opened it lists them (`ChatView.opened`)." }),
   NoticeShown: struct([
     ["failed", "bool", { doc: "It says something failed (the station began it with ⚠️): drawn in red." }],
@@ -464,6 +479,7 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["reassignSession", opt("String"), { doc: "The session whose turn failed where its allowance, asked again, showed a limit, while this exact notice can move it\nto another account (重新分配账号: `session.reassign`)." }],
     ["againSession", opt("String"), { doc: "The session whose turn failed for the provider or the connection, or that the station stopped asking for a state,\nwhile this exact notice can try it again (重试: `session.retry`)." }],
     ["linkAt", opt("i64"), { client: opt("I54"), doc: "One about a profile: where in `words` (UTF-16 units) what went wrong begins, after its ：: the link to that\nprofile's page. Absent otherwise." }],
+    ["profileAction", opt("String"), { said: true, doc: "One about a profile the station says what to do of: that, as the short action at the end of the pill\n(重新登录, 设置代理), which opens that profile's page; `words` then say what went wrong alone. Absent otherwise." }],
     ["detail", opt("String"), { said: true, doc: "A failure's own words, as what failed said them (a provider's, a process's): shown when the notice is\nopened, under `words`. Absent otherwise." }],
     ["short", opt("String"), { said: true, doc: "A chat's run changed (run-change.ts): what it runs on now in what changed alone (换成 Codex · GPT-6), said in\nplace of `words` where they have not the room on their line. Absent otherwise." }],
     ["lines", opt(vec("String")), { said: true, doc: "A chat's run changed: how it ran and how it runs, whole (之前：…, 现在：…), shown in place of `words` once\nthe notice is opened. Absent otherwise." }],

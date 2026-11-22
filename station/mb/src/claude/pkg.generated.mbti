@@ -6,41 +6,41 @@ import {
 }
 
 // Values
-pub fn auth_outcome(Array[Int32]) -> @jsjson.JValue
+pub fn auth_outcome(String) -> @jsjson.JValue
 
 pub fn background_of(Turn) -> @jsjson.JValue
 
-pub fn chars(Array[Int32], Int32) -> Array[Int32]
+pub fn chars(String, Int32) -> String
 
-pub fn classify_result(Array[Int32]) -> String
+pub fn classify_result(String) -> String
 
-pub fn error_outcome(Array[Int32]) -> @jsjson.JValue
+pub fn error_outcome(String) -> @jsjson.JValue
 
-pub fn failure_of(Array[Int32], auth_codes? : Array[String], auth? : Array[String], limit_codes? : Array[String], limit? : Array[String]) -> String
+pub fn failure_of(String, auth_codes? : Array[String], auth? : Array[String], limit_codes? : Array[String], limit? : Array[String]) -> String
 
 pub fn on_frame(@jsjson.JValue, Turn, (@jsjson.JValue) -> Unit, () -> Unit, () -> Double, (String) -> Unit) -> Unit
 
-pub fn refused(Array[Int32]) -> Bool
+pub fn refused(String) -> Bool
 
-pub fn tools_lost_in(@jsjson.JValue, Array[Array[Int32]]) -> Array[Int32]?
+pub fn tools_lost_in(@jsjson.JValue, Array[String]) -> String?
 
-pub fn unreachable(Array[Int32]) -> Bool
+pub fn unreachable(String) -> Bool
 
 // Errors
 
 // Types and methods
 pub(all) struct Block {
-  id : Array[Int32]
+  id : String
   step : String
-  tool : Array[Int32]?
-  mut input : Array[Int32]?
-  subagent : Array[Int32]?
+  tool : String?
+  mut input : String?
+  subagent : String?
 }
 
 pub(all) struct Live {
-  mut message : Array[Int32]
+  mut message : String
   mut blocks : Array[(Int32, Block)]
-  mut tools : Array[Array[Int32]]
+  mut tools : Array[String]
 }
 pub fn Live::feed(Self, @jsjson.JValue, () -> Double) -> Array[@jsjson.JValue]
 pub fn Live::new() -> Self
@@ -48,9 +48,9 @@ pub fn Live::of_state(@jsjson.JValue) -> Self
 pub fn Live::state(Self) -> @jsjson.JValue
 
 pub(all) struct Task {
-  id : Array[Int32]
+  id : String
   kind : String
-  description : Array[Int32]
+  description : String
   background : Bool
   started_at : Double?
 }
@@ -58,13 +58,13 @@ pub(all) struct Task {
 pub(all) struct Turn {
   mut busy : Bool
   mut aborting : Bool
-  mut auth_failure : Array[Int32]?
+  mut auth_failure : String?
   mut closed : Bool
   mut renews : Bool?
   mut renewed : Bool?
-  mut tasks : Array[(Array[Int32], Task)]?
+  mut tasks : Array[(String, Task)]?
   mut compacting : Bool?
-  mut compact_error : Array[Int32]?
+  mut compact_error : String?
 }
 pub fn Turn::new() -> Self
 

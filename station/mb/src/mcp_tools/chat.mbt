@@ -48,18 +48,11 @@ async fn afar(
   }
   // (a chat handed from here to another station is read where it is now: replica/handover.ts)
   let ref = match args.get("chat") {
-    Some(Str(chat)) => {
-      let linked = b.ask("sessions/others.linkedSession", [js(chat)])
-      match linked {
-        Arr(items) =>
-          match items.get(0) {
-            Some(first) if !is_undef(first) && !(first is Null) =>
-              js_string(Some(first))
-            _ => trim_js(chat)
-          }
-        _ => trim_js(chat)
+    Some(Str(chat)) =>
+      match @session_storage.linked_session(chat) {
+        Some((first, _)) => first
+        None => trim_js(chat)
       }
-    }
     _ => ""
   }
   if ref == "" {

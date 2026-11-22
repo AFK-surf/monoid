@@ -11,11 +11,13 @@ Narrower rules:
 - `station/src/ops/AGENTS.md`: storage manifest, logs, background yielding, bounded walks, self-memory, stdin backpressure
 - `station/src/move/AGENTS.md`, `station/src/replica/AGENTS.md`: migration, chat handovers, backups, retirement (off)
 - `station/mb/src/station_main/AGENTS.md`, `station/docker/AGENTS.md`: MoonBit station, Docker
+- `station/src/screens/AGENTS.md`: clipboard privacy marks, pointer lock, gamepads
 
 ## Its shape
 
 - A release holds the TypeScript station on its own Node (`main.js`, `pnpm run build:node`, `NODE_VERSION` from `cloud/src/install.ts`), the MoonBit reader/builder (`stillfail-reader`), launcher, runner, Helper (`scripts/station-bundle.sh`).
 - The MoonBit program runs the whole station (`station/mb/src/station_main`, `station/test/mb-live-*.test.ts`) when a release omits `main.js` (`station/native/launcher/src/main.rs` `station`) or `config.json` sets `"engine": "moonbit"` (`station_of`). 0.1.9984-0.1.9996 shipped it alone and reverted (chat events, files, peers, accounts fell short): not alone again until those live tests match TypeScript.
+- Changes to `station/src/` production code must also update `station/mb/` or state why in a `Station-parity: <why>` commit trailer (`scripts/station-parity.ts`); `station/test/mb-station-contracts.test.ts` checks `reader` ↔ `station_main` and Node RPC contracts.
 - Processes:
   - Launcher (`station/native/launcher`, Rust) owns the pid, data-dir lock, ports; it starts the next station, then stops the old.
   - Runner (`station/native/runner`) hosts each agent so turns survive restarts (`station/src/agents/runner.ts`, `station/src/agents/mb-agents.ts` `HostedProcess.adopt`); unowned runners end (`ownedRunners`, `station/src/sessions/hub.ts` `takeUp`, `endOrphan`).
@@ -26,7 +28,7 @@ Narrower rules:
 - Helper UI (`station/native/helper`) uses still.fail's design (`web/ui/src/palette.ts`, corners, capsule buttons, `s.` mark), not system controls.
 - `station/src/main.ts` is the composition root: each part an Effect 4 `Layer` (`station/src/services.ts`), no self-registration or globals; scoped fibers, `Schedule` backoff, streams for pushes, plain functions.
 - Mesh wire and door (`station/src/mesh/AGENTS.md`) stay independent of still.fail admission and routes (`scripts/mesh-base.ts`).
-- The main thread waits on nothing: no synchronous `node:fs`, `child_process`, or `zlib` in `station/src/` unless marked `sync:` with a reason (startup or atomic step), except `*worker.ts`, off-main-thread `station/src/read/`, `station/src/cli.ts`, `station/src/updates/command.ts` / `delta.ts` (`scripts/check.sh`; `station/test/main-thread-waits.test.ts` counts only fall; `station/test/src-sync-calls.test.ts`, config writes via `updateSoon`, its list only shrinks).
+- The main thread waits on nothing: no synchronous `node:fs`, `child_process`, or `zlib` in `station/src/` unless marked `sync:` with a reason (startup or atomic step), except `*worker.ts`, off-main-thread `station/src/read/`, `station/src/cli.ts`, `station/src/updates/command.ts` (`scripts/check.sh`; `station/test/main-thread-waits.test.ts` counts only fall; `station/test/src-sync-calls.test.ts`, config writes via `updateSoon`, its list only shrinks).
 - Effect `Clock` (`TestClock` in tests). `Date.now`, `new Date()`, `setTimeout`, `setInterval` only in `station/src/ops/fibers.ts` (`wall`: external mtimes, expiries, deadlines); `scripts/check.sh` rejects them elsewhere.
 
 ## Its data
@@ -43,7 +45,7 @@ Narrower rules:
 - Subagents never speak in a chat; agent plain text is never forwarded; turns end with a state; bug-report replies never reach agents by themselves (`station/src/agents/AGENTS.md`, `station/src/sessions/AGENTS.md`).
 - Workspace `MEMORY.md` and team skills sync to all stations by MoonBit 3-way merges; each person's devices carry presets and starred models (`station/src/share/AGENTS.md`).
 - Relays: kept on stations, added by agents without approval after a probe; disabled ones apply to stations too (`station/src/mesh/AGENTS.md`).
-- Rigs run tasks only under owner-signed grants; only its adding owner changes a station's mode (`station/src/rig/AGENTS.md`).
+- Rigs run tasks only under owner-signed grants; a whole station becomes a rig by its adder or a workspace owner/admin, who then owns it, and only that owner makes it whole again (`station/src/rig/AGENTS.md`).
 - Pinned locks are released only by `disable` or the local CLI, follow fork choice, enforce moved-workspace build floors (`station/src/cloud/AGENTS.md`).
 - Heavy work goes to l4es `sandboxes` via `station_task`; no station or agent runs in one (`station/src/agents/AGENTS.md`).
 

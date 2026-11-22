@@ -7,9 +7,6 @@
 fn crowded(mode : String, w? : Double = crowded_w, h? : Double = crowded_h) -> @ui.Tester {
   new_run()
   // (the chat's page made as both_pages runs it now, its new chat too: none outside one)
-  if both_nodes.val {
-    both_way()
-  }
   let src = fixture(mode)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=2)
   open_mode(mode)
@@ -71,14 +68,18 @@ test "narrow: the preset's, the station's and the model's controls side by side,
       .filter(fn(b) { b.parent == model.index && b.opacity > 0.0 && b.w > 0.0 })
       .fold(init=0.0, fn(m, b) { if b.x + b.w > m { b.x + b.w } else { m } })
     assert_true(model.x + model.w - kept <= 12.5, msg="\{model.x + model.w - kept} past what it keeps")
-    // what it keeps of itself: the model's name, whole
+    // what it keeps of itself: the model's short name whole (V4.1 Flash) without mid-word ellipsis
     let model_words = runs_in(t, (model.x, model.y, model.w, model.h))
-    assert_true(model_words.iter().any(fn(r) { r.text == "DeepSeek V4.1 Flash" }), msg="\{Repr(model_words.map(fn(r) { r.text }))} in \{model.w}; \{preset.w}, \{station.w}")
+    assert_true(
+      model_words.iter().any(fn(r) { r.text == "V4.1 Flash" || r.text == "DeepSeek V4.1 Flash" }),
+      msg="\{Repr(model_words.map(fn(r) { r.text }))} in \{model.w}; \{preset.w}, \{station.w}",
+    )
+    assert_true(model_words.iter().all(fn(r) { !r.text.contains("…") }), msg="no ellipsis at 320: \{Repr(model_words.map(fn(r) { r.text }))}")
   })
 }
 
 ///|
-test "narrower still: the preset's words and the station's name leave their controls whole after what the model's leaves, the model's name stays, cut short last" {
+test "narrower still: the preset's words and the station's name leave their controls whole after what the model's leaves, the model's short name stays whole without ellipsis" {
   both_pages(fn() raise {
     let t = crowded("newchat-crowded", w=crowded_cramped)
     let glass = crowded_controls(t)
@@ -88,9 +89,10 @@ test "narrower still: the preset's words and the station's name leave their cont
     // no part of their words: their marks and their chevrons (the page says where it starts)
     let words = runs_in(t, (preset.x, preset.y, station.x + station.w - preset.x, station.h))
     assert_true(words.length() == 0, msg="\{Repr(words.map(fn(r) { r.text }))}")
-    // narrower than phones are: the model's name kept, cut short once all else has gone
+    // narrower than phones are: the model's short name (V4.1 Flash) stays whole with zero ellipsis
     let model_words = runs_in(t, (model.x, model.y, model.w, model.h))
-    assert_true(model_words.iter().any(fn(r) { r.text.has_prefix("DeepSeek") }), msg="\{Repr(model_words.map(fn(r) { r.text }))}")
+    assert_true(model_words.iter().any(fn(r) { r.text == "V4.1 Flash" }), msg="\{Repr(model_words.map(fn(r) { r.text }))}")
+    assert_true(model_words.iter().all(fn(r) { !r.text.contains("…") }), msg="no ellipsis at 280: \{Repr(model_words.map(fn(r) { r.text }))}")
     // nothing past what it keeps
     let kept = t
       .boxes_held()
@@ -131,7 +133,20 @@ test "narrow: the configurations used most under their title nearest how hard it
     // the models
     let words_of = fn(label : String) -> Array[String] raise {
       let (x, y, w, h) = t.get(Button, label~).rect
-      t.boxes_held().filter(fn(b) { b.kind == "text" && b.x >= x && b.x + b.w <= x + w + 0.5 && b.y >= y && b.y + b.h <= y + h + 0.5 }).map(fn(b) { b.text })
+      let boxes = t.boxes_held()
+      let mut from = 0
+      for i = boxes.length() - 1; i >= 0; i = i - 1 {
+        let b = boxes[i]
+        if b.kind == "text" && b.text == "Opus 5.5" {
+          from = i
+          break
+        }
+      }
+      boxes[from:]
+      .iter()
+      .filter(fn(b) { b.kind == "text" && b.x >= x && b.x + b.w <= x + w + 0.5 && b.y >= y && b.y + b.h <= y + h + 0.5 })
+      .map(fn(b) { b.text })
+      .collect()
     }
     assert_true(words_of("SWE-2").contains("高"), msg="\{Repr(words_of("SWE-2"))}")
     assert_true(words_of("GPT-6 Astra").contains("中"), msg="\{Repr(words_of("GPT-6 Astra"))}")
@@ -252,7 +267,7 @@ test "narrow: a frequent model is applied without rearranging the sheet as it le
     t.click(Button, label="GPT-6 Astra · 中")
     assert_eq(new_fix.model, "gpt-6-astra")
     assert_eq(t.find("常用搭配"), Some(used), msg="the rows stay where they were as the sheet starts to close")
-    t.run_for(@kit.pop_out_ms / 2.0)
+    t.run_for(@motion.pop_out_ms / 2.0)
     let used_out = t.find("常用搭配").unwrap()
     let runtime_out = t.find_last("DeepSeek Harness").unwrap()
     assert_eq(used_out.1 - runtime_out.1, used.1 - runtime.1, msg="the runtime and the rows leave together")
@@ -275,12 +290,12 @@ test "narrow, a short window, models starred and used most: they scroll, how it 
     run_to_sheet_rest(t)
     let sheet = t.get(@ui.Role::Dialog).rect
     assert_true(sheet.3 <= crowded_short * @sf.sheet_most + 1.0, msg="the sheet is \{sheet.3} high")
-    let who = t.boxes_held().iter().find_first(fn(b) { b.kind == "text" && b.text == "账号" && b.y >= sheet.1 })
-    guard who is Some(who) else { fail("no 账号 in the sheet") }
-    assert_true(who.y + who.h <= sheet.1 + sheet.3, msg="账号 \{who.y} past the sheet \{Repr(sheet)}")
+    let who = t.find_last("账号")
+    guard who is Some((_, wy)) else { fail("no 账号 in the sheet") }
+    assert_true(wy >= sheet.1 && wy <= sheet.1 + sheet.3, msg="账号 \{wy} past the sheet \{Repr(sheet)}")
     let effort = t.get(Slider, label="思考深度").rect
     let runtime = t.get(Button, label="DeepSeek Harness").rect
-    assert_true(effort.1 + effort.3 <= who.y && runtime.1 >= effort.1 + effort.3, msg="\{Repr(effort)} \{Repr(runtime)} 账号 at \{who.y}")
+    assert_true(effort.1 + effort.3 <= wy && runtime.1 >= effort.1 + effort.3, msg="\{Repr(effort)} \{Repr(runtime)} 账号 at \{wy}")
     // the models in what is left over how it runs, scrolling, the end of them nearest the hand in view: the way to all
     // of them, the last of them
     let all = t.get(Button, label="全部模型").rect
@@ -462,11 +477,16 @@ test "closed capsule uses short runtime label and keeps runtime ahead of effort 
     let roomy_texts = runs_in(roomy, (roomy_model.x, roomy_model.y, roomy_model.w, roomy_model.h)).map(fn(r) { r.text })
     assert_true(roomy_texts.contains("DSH") && roomy_texts.contains("高"), msg="\{Repr(roomy_texts)}")
     assert_true(!roomy_texts.contains("DeepSeek Harness"), msg="\{Repr(roomy_texts)}")
-    // Narrowed to 420, effort (`高`) drops first while short runtime (`DSH`) stays.
-    let squeezed = crowded("newchat-crowded", w=420.0)
+    // Narrowed to 420, model steps to short name (`V4.1 Flash`) first so both runtime (`DSH`) and effort (`高`) still fit.
+    let mid = crowded("newchat-crowded", w=420.0)
+    let mid_model = crowded_controls(mid)[2]
+    let mid_texts = runs_in(mid, (mid_model.x, mid_model.y, mid_model.w, mid_model.h)).map(fn(r) { r.text })
+    assert_true(mid_texts.contains("V4.1 Flash") && mid_texts.contains("DSH") && mid_texts.contains("高"), msg="420: \{Repr(mid_texts)}")
+    // Narrowed further to 380, effort (`高`) drops while short name (`V4.1 Flash`) and short runtime (`DSH`) stay.
+    let squeezed = crowded("newchat-crowded", w=380.0)
     let squeezed_model = crowded_controls(squeezed)[2]
     let squeezed_texts = runs_in(squeezed, (squeezed_model.x, squeezed_model.y, squeezed_model.w, squeezed_model.h)).map(fn(r) { r.text })
-    assert_true(squeezed_texts.contains("DSH") && !squeezed_texts.contains("高"), msg="\{Repr(squeezed_texts)}")
+    assert_true(squeezed_texts.contains("V4.1 Flash") && squeezed_texts.contains("DSH") && !squeezed_texts.contains("高"), msg="380: \{Repr(squeezed_texts)}")
   })
 }
 

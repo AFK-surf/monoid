@@ -30,19 +30,31 @@ test "a picture of the chat opened on a phone: drawn in each frame from the tap 
   let at = t.locate("img:compare.png")
   assert_true(at.length() > 0)
   let (x, y) = at[0]
-  let big = fn() {
-    t.drawn_images().iter().any(fn(i) { i[0] <= x && x <= i[0] + i[2] && i[1] <= y && y <= i[1] + i[3] && i[2] > 100.0 })
+  // (the picture over a point, wider than an icon: its middle)
+  let big_at = fn(px : Double, py : Double) -> (Double, Double)? {
+    for i in t.drawn_images() {
+      if i[0] <= px && px <= i[0] + i[2] && i[1] <= py && py <= i[1] + i[3] && i[2] > 100.0 {
+        return Some((i[0] + i[2] / 2.0, i[1] + i[3] / 2.0))
+      }
+    }
+    None
   }
-  assert_true(big())
-  // a finger's tap, then the display's frames one by one: in each, the picture there (its thumbnail, or flying out of
-  // it), never a frame of nothing where it was
+  assert_true(big_at(x, y) is Some(_))
+  // a finger's tap, then the display's frames one by one: in each, the picture over where it was the frame before (its
+  // thumbnail, then flying out of it to the viewer's middle, View::shared), never a frame of nothing nor a jump
   t.touch(0, x, y)
   t.touch(2, x, y)
   let end = t.time() + @ui.move_most_ms
   let mut frames = 0
+  let mut cx = x
+  let mut cy = y
   while t.time() < end && frames < 8 {
     t.frame()
-    assert_true(big())
+    guard big_at(cx, cy) is Some((nx, ny)) else {
+      fail("frame \{frames}: no picture over (\{cx}, \{cy}), where it was the frame before")
+    }
+    cx = nx
+    cy = ny
     frames += 1
   }
   assert_true(viewer.get() is Some(_))
@@ -63,9 +75,9 @@ test "a film flying in: its capsule goes with the still as it leaves its thumbna
   assert_false(words_show(t, "0:00"))
   let v = viewer.get().unwrap()
   // nearly in, its ground whole: the player's controls coming with it (their clock showing), not after it lands
-  let nearly = v.fly.end() - @ui.move_most_ms / 8.0
+  let nearly = v.tree_way_end.get() - @ui.move_most_ms / 8.0
   t.run_for(nearly - t.time())
-  assert_true(v.flies && v.flying(t.ctx()) > @sfbase.bars_from)
+  assert_true(v.tree_way.get() && v.fade.value_at(t.time()) > @sfbase.bars_from)
   assert_true(words_show(t, "0:00"))
   t.run_for(@ui.move_most_ms)
   assert_true(words_show(t, "0:00"))
@@ -82,7 +94,7 @@ test "a film closed back into its thumbnail: the player's bars go with it as it 
   assert_true(t.view_said("{\"still\":{\"view\":1},\"b\":\"\{hex_bytes(fixture_file_png("演示录屏.mp4"))}\"}"))
   t.draw()
   let v = pv_leaving.get().unwrap()
-  assert_true(v.flies && v.fly_back)
+  assert_true(v.tree_back.get() && v.tree_way.get())
   // flying back: the controls still there, going as it shrinks
   t.frame()
   assert_true(words_show(t, "0:04"))
@@ -103,9 +115,9 @@ test "a film not come yet, no still of it either, closed: it flies back from whe
   t.back()
   t.draw()
   let v = pv_leaving.get().unwrap()
-  assert_true(v.flies && v.fly_back)
+  assert_true(v.tree_back.get() && v.tree_way.get())
   // from the 16:9 box across the screen it landed as (its size as its message says it)
-  let (_, _, w, h) = v.fly_to.unwrap()
+  guard t.flight_of(v.thumb_id()) is Some(((_, _, w, h), _)) else { fail("no flight back") }
   assert_true((w - 390.0).abs() < 1.0 && (h - 219.375).abs() < 1.0)
 }
 
@@ -136,6 +148,7 @@ test "a chat's picture whose own has not come, opened and read whole in the view
     let t = @ui.Tester::new(
       fn(c) { view(c, src) },
       tree=app_tree(src),
+      // (a desktop's 大屏 and a phone's: pressed, it opens in the whole window's viewer)
       w=if platform == 0 { 1280.0 } else { 390.0 },
       h=6000.0,
       platform~,

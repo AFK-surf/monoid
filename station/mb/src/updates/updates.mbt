@@ -314,7 +314,7 @@ fn refused(lang : String, k : String, args? : Array[(String, J)] = []) -> Error 
 /// `String(error)`.
 fn error_text(e : Error) -> String {
   let name = match field_of(e, "name") {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     _ =>
       match kind_of(e) {
         "TypeError" | "RangeError" | "SyntaxError" => kind_of(e)
@@ -399,6 +399,10 @@ pub struct Updates {
   mut launcher_installer : ((String, Env) -> Unit)?
   priv fibers : Fibers
   priv mut closed : Bool
+  /// updates.ts `progressTold` / `progressLater`: when a download's progress was last told, and the telling of a later
+  /// one held back till then.
+  priv mut progress_told : Double
+  priv mut progress_later : (() -> Unit)?
   priv mut started : Bool
   priv mut tick : @effect.Fiber[Unit]?
   priv mut unlisten : (() -> Unit)?
@@ -414,10 +418,7 @@ pub struct Updates {
 ///|
 /// updates.ts `canonicalNow`: `realpathSync(p)`, none where it throws.
 async fn realpath_now(w : World, p : String) -> String? {
-  match (try Some(w.call("fs.realpathSync", [js(p)])) catch { _ => None }) {
-    Some(Str(u)) => Some(@jsjson.text(u))
-    _ => None
-  }
+  w.realpath_or_null(p, sync=true)
 }
 
 ///|
@@ -440,6 +441,17 @@ fn station_note(app : String, real : String?, installed : String?, origin : Stri
 ///|
 /// updates.ts `FIRST_RETRY_MS`: how long the first reading waits to be tried again after it failed.
 let first_retry_ms : Double = 60000.0
+
+///|
+/// updates.ts `PROGRESS_NOTIFY_MS`: how often a download's progress is told at most. Every `changed` reaches the
+/// overview pushed to each connected stream whole; a download's start, end and every other change are told at once.
+let progress_notify_ms : Double = 2000.0
+
+///|
+/// updates.ts `isDownloadWords`: words saying how much of a download is in (`downloading`).
+fn is_download_words(w : Words?) -> Bool {
+  w is Some(Key("station.updates.downloadingSized" | "station.updates.downloadingSoFar", _))
+}
 
 ///|
 fn origin_given(origin : () -> String?) -> String? {
@@ -516,6 +528,8 @@ pub async fn Updates::new(w : World, o : UpdatesOptions) -> Updates {
     launcher_installer: None,
     fibers: Fibers::new(w, "updates"),
     closed: false,
+    progress_told: -@double.infinity,
+    progress_later: None,
     started: false,
     tick: None,
     unlisten: None,
@@ -606,7 +620,7 @@ pub fn Updates::auto(self : Updates) -> Bool {
 /// itself is off until a newer one than it is out, then on again (resume_auto). Only while it is off.
 pub fn Updates::auto_after(self : Updates) -> String? {
   match get(Some(self.config.raw), "autoUpdateAfter") {
-    Some(Str(u)) if !self.auto() && build_or_none(Some(@jsjson.text(u))) is Some(_) => Some(@jsjson.text(u))
+    Some(Str(u)) if !self.auto() && build_or_none(Some(@jsjson.sanitize_str(u))) is Some(_) => Some(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -692,6 +706,7 @@ pub async fn Updates::close(self : Updates) -> Unit {
     None => ()
   }
   self.following = None
+  self.cancel_progress()
   ignore(self.w.call("CloudTransport.close", []))
   self.fibers.close()
 }
@@ -788,9 +803,64 @@ async fn Updates::look(self : Updates) -> Unit {
 
 ///|
 fn Updates::changed(self : Updates) -> Unit {
+  // (what it tells includes any progress held back)
+  self.cancel_progress()
   for l in self.listeners.copy() {
     (l.1)()
   }
+}
+
+///|
+/// The telling of a download's progress held back, called off.
+fn Updates::cancel_progress(self : Updates) -> Unit {
+  match self.progress_later {
+    Some(cancel) => {
+      self.progress_later = None
+      cancel()
+    }
+    None => ()
+  }
+}
+
+///|
+/// updates.ts `notifyProgress`: tells a download's progress, already kept in `items`: at once when `immediate`, else at
+/// most every `progress_notify_ms`, the latest told when that much has passed.
+fn Updates::notify_progress(self : Updates, immediate? : Bool = false) -> Unit {
+  if immediate {
+    self.progress_told = self.fibers.now()
+    self.changed()
+    return
+  }
+  let wait = self.progress_told + progress_notify_ms - self.fibers.now()
+  if wait <= 0.0 {
+    self.progress_told = self.fibers.now()
+    self.changed()
+  } else if self.progress_later is None {
+    // timer: a debounce of a download's progress.
+    self.progress_later = Some(
+      self.later(wait, fn() {
+        // (none held back before `changed`, which would call this one off)
+        self.progress_later = None
+        if self.closed {
+          return
+        }
+        self.progress_told = self.fibers.now()
+        self.changed()
+      }),
+    )
+  }
+}
+
+///|
+/// updates.ts `sayStationPercent`: how much of the station's own download (a delta, or a release gone back to) is in.
+fn Updates::say_station_percent(self : Updates, percent : Int) -> Unit {
+  let item = self.item("station")
+  if item.updating is None || item.percent == Some(percent) {
+    return
+  }
+  let first = item.percent is None
+  item.percent = Some(percent)
+  self.notify_progress(immediate=first || percent == 0 || percent == 100)
 }
 
 ///|
@@ -1986,7 +2056,7 @@ async fn Updates::place_node(self : Updates, kind : String, node : OwnNode) -> U
     return
   }
   let home = own_node_home(self.data)
-  w.mkdir(home, opts=jo([("recursive", jb(true))]))
+  w.mkdir(home)
   let dist = bget("dist")
   let archive = bget("archive")
   let file = pjoin([home, archive])
@@ -2037,9 +2107,13 @@ fn Updates::say(self : Updates, kind : String, progress : Words, percent : Int?)
   if item.updating is None || (same_words(item.progress, Some(progress)) && item.percent == percent) {
     return
   }
+  let was_download = is_download_words(item.progress)
   item.progress = Some(progress)
   item.percent = percent
-  self.changed()
+  // A download's ticks paced; its first, its end and any other words told at once.
+  self.notify_progress(
+    immediate=!(was_download && is_download_words(Some(progress)) && percent != Some(0) && percent != Some(100)),
+  )
 }
 
 ///|
@@ -2059,7 +2133,7 @@ async fn Updates::fetch_codex(self : Updates, npm : String, env : Env) -> String
     let v = get(Some(self.fetch_json("\{self.registry}/\{pkg}/latest")), "version")
     let u = get(get(Some(self.fetch_json("\{self.registry}/\{pkg}/\{js_string_opt(v)}-\{p}")), "dist"), "tarball")
     match (v, u) {
-      (Some(Str(v)), Some(Str(u))) => Some((@jsjson.text(v), @jsjson.text(u)))
+      (Some(Str(v)), Some(Str(u))) => Some((@jsjson.sanitize_str(v), @jsjson.sanitize_str(u)))
       _ => None
     }
   } catch {
@@ -2261,7 +2335,7 @@ async fn Updates::update_station_rest(self : Updates, lang : String, begun : Beg
   }
   {
     errdefer put_back()
-    w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+    w.mkdir(run_dir)
   }
   // Off the station's thread so cleanup does not delay its other work at every update.
   ignore(
@@ -2288,6 +2362,8 @@ async fn Updates::update_station_rest(self : Updates, lang : String, begun : Beg
     i.step = Some("download")
     i.percent = Some(0)
   })
+  // (told now: the next percent waits progress_notify_ms)
+  self.progress_told = self.fibers.now()
   self.spawn(async fn() {
     if self.start_planned(plan, self.from_delta(plan)) {
       return
@@ -2318,7 +2394,7 @@ async fn Updates::back_station(self : Updates, to : String, lang : String, begun
   }
   let plan = {
     errdefer put_back()
-    w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+    w.mkdir(run_dir)
     ignore(
       @effect.all([
         async fn() { w.rm(pjoin([run_dir, "update.exit"])) },
@@ -2333,6 +2409,8 @@ async fn Updates::back_station(self : Updates, to : String, lang : String, begun
     i.failed = None
     i.done = None
   })
+  // (told now: the next percent waits progress_notify_ms)
+  self.progress_told = self.fibers.now()
   self.spawn(async fn() {
     let handed = self.archive_for(plan) catch {
       e => {
@@ -2404,7 +2482,7 @@ async fn Updates::archive_for(self : Updates, back : Plan) -> Array[(String, Str
         self.w,
         back,
         over,
-        progress=fn(percent) { self.set("station", i => i.percent = Some(percent)) },
+        progress=fn(percent) { self.say_station_percent(percent) },
         self.cloud_request(),
         wait=async fn(ms) { self.fibers.sleep(ms) },
       ),
@@ -2431,7 +2509,7 @@ async fn Updates::from_delta(self : Updates, plan : Plan) -> Array[(String, Stri
         self.app,
         apply_apart(self.w),
         over,
-        progress=fn(percent) { self.set("station", i => i.percent = Some(percent)) },
+        progress=fn(percent) { self.say_station_percent(percent) },
         self.cloud_request(),
         wait=async fn(ms) { self.fibers.sleep(ms) },
       ),
@@ -2633,13 +2711,26 @@ async fn Updates::follow(self : Updates, started : Started) -> Unit {
           let item = self.item("station")
           let running = (self.running)()
           let now_step = if step == "" { None } else { Some(step) }
-          if item.step != now_step ||
-            item.percent != percent ||
-            (step == "drain" && running != last_running.val) {
+          let step_changed = item.step != now_step
+          let drain_changed = step == "drain" && running != last_running.val
+          if step_changed || item.percent != percent || drain_changed {
+            let percent_only = !step_changed && !drain_changed
+            let immediate = !percent_only ||
+              item.percent is None ||
+              percent is None ||
+              percent == Some(0) ||
+              percent == Some(100)
             item.step = now_step
             item.percent = percent
             last_running.val = running
-            self.changed()
+            if percent_only {
+              self.notify_progress(immediate~)
+            } else {
+              if step == "download" && percent is Some(_) {
+                self.progress_told = self.fibers.now()
+              }
+              self.changed()
+            }
           }
           return
         }
@@ -2737,7 +2828,7 @@ async fn Updates::follow(self : Updates, started : Started) -> Unit {
   let look_soon = () => if !over.val && soon.val is None {
     soon.val = Some(self.fibers.after(50.0, async fn() { look() }))
   }
-  w.mkdir(run_dir, opts=jo([("recursive", jb(true))])) catch {
+  w.mkdir(run_dir) catch {
     _ => ()
   }
   if over.val {

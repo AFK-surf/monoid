@@ -28,6 +28,8 @@ pub let busy_ms : Int32
 
 pub fn byte_length(String) -> Int32
 
+pub let changed_method : String
+
 pub fn chat_of(String) -> (Double, String?)?
 
 pub fn chat_ref(Double, String?) -> String
@@ -54,15 +56,15 @@ pub fn day_key(String) -> String
 
 pub fn fail_(String) -> Thrown
 
+pub let fast_settle_ms : Int32
+
 pub fn first_points(String, Int32) -> String
 
 pub fn from_json(@json.Json) -> @jsjson.JValue
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn held_from(@jsjson.JValue?) -> Held?
 
-pub fn hex(Bytes) -> String
+pub fn hex(BytesView) -> String
 
 pub fn host_io(@host.Host, words? : Words, lang? : () -> String, platform? : String, arch? : String, hostname? : String, version? : String, log? : (String, String, @jsjson.JValue) -> Unit) -> Io
 
@@ -84,7 +86,7 @@ pub fn js(String) -> @jsjson.JValue
 
 pub fn js_number(String) -> Double
 
-pub fn js_string(@jsjson.JValue) -> Array[Int32]
+pub fn js_string(@jsjson.JValue) -> String
 
 pub fn js_text(@jsjson.JValue) -> String
 
@@ -92,13 +94,13 @@ pub fn js_trim(String) -> String
 
 pub fn jstr(String) -> @jsjson.JValue
 
-pub fn kind_of(Error) -> String
-
 pub fn make_comma(CommaOptions, Io, @effect.Runtime) -> CommaParts
 
 pub let manual : String
 
 pub fn mask_token(String) -> String
+
+pub let max_peer_active_skew_ms : Double
 
 pub fn message_of(Error) -> String
 
@@ -111,6 +113,8 @@ pub fn num_of(@jsjson.JValue?) -> Double?
 pub fn num_text(Double) -> String
 
 pub fn or_null(@jsjson.JValue?) -> @jsjson.JValue
+
+pub let owner_active_bucket_ms : Double
 
 pub let page_bytes : Int32
 
@@ -127,6 +131,8 @@ pub fn points(String) -> Array[String]
 pub fn probe_page(RevIndex) -> Page raise
 
 pub fn prop(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub fn quantize_owner_active_at(Double?) -> Double?
 
 pub fn question_of(@jsjson.JValue?, String) -> @jsjson.JValue?
 
@@ -176,13 +182,9 @@ pub fn task_rows_of(StationRows) -> Map[String, (String, String)]
 
 pub fn task_wire(IndexRow) -> @jsjson.JValue?
 
-pub fn test_random(Int32, Int32) -> String
-
-pub fn test_uuid(Int32) -> String
-
 pub async fn text_of(async () -> Bytes?) -> String
 
-pub fn text_of_utf8(Bytes) -> String
+pub fn text_of_utf8(BytesView, ignore_bom? : Bool) -> String
 
 pub fn thread_ts_of(String) -> String
 
@@ -198,7 +200,9 @@ pub fn utf8_of(String) -> Bytes
 
 pub fn workspace_db_name(String) -> String
 
-pub fn workspace_index(String, String, () -> Bool, () -> Int32, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime) -> (CommaStats, CommaIndexes) raise
+pub fn workspace_index(String, String, () -> Bool, () -> Int32, async (Double, Double) -> ReadRows, ((Bool) -> Unit) -> () -> Unit, Io, @effect.Runtime) -> (CommaStats, CommaIndexes) raise
+
+pub fn workspace_meta_of(@jsjson.JValue, String, String) -> @jsjson.JValue
 
 pub fn workspace_read(WorkspaceReads) -> async (Double, Double) -> ReadRows
 
@@ -234,6 +238,7 @@ pub(all) struct CommaConnect {
   server : String
   token : String
   workspace : String?
+  owner_email : String?
 }
 pub fn CommaConnect::to_j(Self) -> @jsjson.JValue
 
@@ -248,6 +253,7 @@ pub struct CommaLive {
   empty : CommaIndexes
   // private fields
 }
+pub fn CommaLive::changed_handler(Self, String, @jsjson.JValue, String?) -> @jsjson.JValue raise
 pub fn CommaLive::close(Self) -> Unit
 pub fn CommaLive::make_comma(Self, String, () -> @jsjson.JValue, ((@jsjson.JValue) -> Unit) -> () -> Unit, ((String?) -> Bool)?, SurfaceStore, (String) -> Array[@jsjson.JValue], async () -> Unit, async () -> Unit) -> CommaParts
 pub fn CommaLive::name(Self, String?) -> String
@@ -259,6 +265,7 @@ pub async fn CommaLive::say_handler(Self, String, @jsjson.JValue, String?) -> @j
 pub fn CommaLive::scope(Self, String) -> (CommaIndexes, CommaChats) raise
 pub fn CommaLive::scope_version(Self) -> Int32
 pub fn CommaLive::within(Self, String) -> Bool
+pub fn CommaLive::workspace_meta(Self, String?) -> @jsjson.JValue?
 
 pub(all) struct CommaOptions {
   data : String
@@ -275,6 +282,10 @@ pub(all) struct CommaOptions {
   on_scope_change : (() -> Unit) -> () -> Unit
   previous_exited : async () -> Unit
   name : ((String?) -> String)?
+  workspace_meta : ((String?) -> @jsjson.JValue?)?
+  on_workspace_meta_change : ((() -> Unit) -> (() -> Unit))?
+  owner_active_at : ((String?, String?) -> Double?)?
+  on_owner_active_change : ((() -> Unit) -> (() -> Unit))?
   reconcile : async () -> Unit
   close_connects : async () -> Unit
 }
@@ -293,12 +304,13 @@ pub struct CommaStats {
   // private fields
 }
 pub fn CommaStats::apply(Self, Array[StationRows], Array[String], Double) -> (Int32, Int32) raise
-pub fn CommaStats::at(String, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime, ready? : async () -> Unit, busy? : Int32) -> Self raise
+pub fn CommaStats::at(String, async (Double, Double) -> ReadRows, ((Bool) -> Unit) -> () -> Unit, Io, @effect.Runtime, ready? : async () -> Unit, busy? : Int32) -> Self raise
 pub fn CommaStats::build(Self) -> Unit
 pub fn CommaStats::close(Self) -> Unit
-pub fn CommaStats::in_workspace(String, String, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime) -> Self raise
+pub fn CommaStats::in_workspace(String, String, async (Double, Double) -> ReadRows, ((Bool) -> Unit) -> () -> Unit, Io, @effect.Runtime) -> Self raise
 pub async fn CommaStats::make_dirs(Io, String) -> Unit
-pub fn CommaStats::new(String, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime, ready? : async () -> Unit, busy? : Int32) -> Self raise
+pub fn CommaStats::new(String, async (Double, Double) -> ReadRows, ((Bool) -> Unit) -> () -> Unit, Io, @effect.Runtime, ready? : async () -> Unit, busy? : Int32) -> Self raise
+pub fn CommaStats::nudge(Self) -> Unit
 pub fn CommaStats::remember(Self, String, Double) -> Unit raise
 pub fn CommaStats::said(Self, String) -> Double? raise
 pub async fn CommaStats::settled(Self) -> Unit
@@ -311,14 +323,11 @@ pub struct CommaSurface {
   // private fields
 }
 pub fn CommaSurface::address(Self) -> String raise
-pub fn CommaSurface::chats_now(Self) -> CommaChats?
 pub fn CommaSurface::closed(Self) -> Unit
 pub async fn CommaSurface::download(Self, String, String, Double) -> Bytes
 pub fn CommaSurface::frame(Self, Socket, @jsjson.JValue, () -> Unit) -> Unit
 pub fn CommaSurface::headers(Self) -> Array[(String, String)]
 pub fn CommaSurface::identify(Self) -> @jsjson.JValue
-pub fn CommaSurface::in_scope_now(Self) -> Bool
-pub fn CommaSurface::indexes_now(Self) -> CommaIndexes? raise
 pub async fn CommaSurface::known_person(Self, String) -> @jsjson.JValue
 pub fn CommaSurface::look_up(Self, String) -> @jsjson.JValue
 pub fn CommaSurface::look_up_email(Self, String) -> String?
@@ -329,6 +338,7 @@ pub fn CommaSurface::new(SurfaceOptions, Io, @effect.Runtime) -> Self
 pub fn CommaSurface::of_workspace(Self) -> String?
 pub async fn CommaSurface::post(Self, String, String, String, Array[Attachment], card? : @jsjson.JValue?) -> String
 pub fn CommaSurface::session_link(Self) -> String?
+pub fn CommaSurface::set_handler(Self, async (@jsjson.JValue) -> Unit) -> Unit
 pub fn CommaSurface::stands_at(Self, String, String, String, String?) -> Unit
 
 pub struct CommaTasks {
@@ -423,6 +433,15 @@ pub(all) struct LiveDeps {
   hub : RouterHub
   previous_exited : async () -> Unit
 }
+
+pub struct OwnerActivity {
+  // private fields
+}
+pub fn OwnerActivity::get(Self, String?) -> Double?
+pub fn OwnerActivity::local_payload(Self) -> @jsjson.JValue?
+pub fn OwnerActivity::merge_peer(Self, @jsjson.JValue?, now? : Double?) -> Bool
+pub fn OwnerActivity::new() -> Self
+pub fn OwnerActivity::record_local(Self, String?, Double?) -> Bool
 
 pub(all) struct Page {
   epoch : String
@@ -527,6 +546,7 @@ pub(all) struct SurfaceOptions {
   token : String
   name : String
   workspace : String?
+  owner_email : String?
   tasks : CommaTasks
   store : SurfaceStore
   models : () -> Array[@jsjson.JValue]
@@ -535,6 +555,10 @@ pub(all) struct SurfaceOptions {
   chats : CommaChats?
   previous_exited : async () -> Unit
   in_scope : () -> Bool
+  workspace_meta : (() -> @jsjson.JValue?)?
+  on_workspace_meta_change : ((() -> Unit) -> (() -> Unit))?
+  owner_active_at : (() -> Double?)?
+  on_owner_active_change : ((() -> Unit) -> (() -> Unit))?
 }
 
 pub(all) struct SurfaceStore {

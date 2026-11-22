@@ -53,8 +53,12 @@ test("the MoonBit reader reads the chats a Comma connect sends as the worker doe
   say(need, "agent", "need", "need a key", 1500);
   turn("n1", "need", 1400, 1600, "completed", "need_help");
   const card = chat("card", "Card", ["card", "need"]);
-  const asked = say(card, "agent", "card", "pick", 1700, { card: { type: "options", options: [], assignee: "  Boss@X " } });
+  const asked = say(card, "agent", "card", "pick", 1700, { card: { type: "options", options: [{ label: "Ship", recommended: true }], assignee: "  Boss@X " } });
   turn("c1", "card", 1650, 1750, "completed", "need_decision", `${card},${asked}`);
+  session("secret", { createdBy: "p@x" });
+  const secretChat = chat("secret", "Secret", ["secret"]);
+  say(secretChat, "agent", "secret", "approve vault", 1760, { card: { vault: { request: "req_1" }, assignee: " Sec@X " } });
+  turn("s1", "secret", 1755, 1780, "completed", "need_help");
   const fail = chat("fail", "Fail", ["fail"], null);
   say(fail, "person", "q@x", "try", 1800);
   turn("f1", "fail", 1800, 1900, "failed", null);
@@ -93,7 +97,7 @@ test("the MoonBit reader reads the chats a Comma connect sends as the worker doe
     const first = await all(program);
     assert.deepEqual(first, await all(worker));
     const said = JSON.stringify(first);
-    for (const sign of ["\"state\":\"working\"", "\"kind\":\"done\"", "\"kind\":\"need\"", "\"waitsFor\":[\"boss@x\"]", "\"kind\":\"failed\"", "\"note\":\"it broke\"", "\"archived\":true",
+    for (const sign of ["\"state\":\"working\"", "\"kind\":\"done\"", "\"kind\":\"need\"", "\"waitsFor\":[\"boss@x\"]", "\"card\":\"options\"", "\"waitsFor\":[\"sec@x\"]", "\"card\":\"secret\"", "\"kind\":\"failed\"", "\"note\":\"it broke\"", "\"archived\":true",
       "\"router\":true", "\"title\":\"first line\"", "\"url\":\"https://app.x/o/home ws/st1/", "a%20b%2F%C3%A9%3F", "\"more\":true", "\"next\":", "\"name\":\"Ann\"", "\"surface\":\"stillfail\""])
       assert.ok(said.includes(sign), sign);
   } finally {

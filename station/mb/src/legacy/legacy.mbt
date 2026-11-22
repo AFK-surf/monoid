@@ -23,57 +23,9 @@ pub impl Show for Fallback with output(self, logger) {
 }
 
 ///|
-fn first(db : @sql.Db, sql : String, params : Array[Json]) -> Map[String, Json]? raise {
-  match db.all(sql, params) {
-    [r, ..] => Some(r)
-    _ => None
-  }
-}
-
-///|
-fn exists(db : @sql.Db, kind : String, name : String) -> Bool raise {
-  first(db, "SELECT 1 FROM sqlite_master WHERE type=? AND name=?", [Json::string(kind), Json::string(name)]) is Some(_)
-}
-
-///|
-fn sql_of(db : @sql.Db, kind : String, name : String) -> String? raise {
-  match first(db, "SELECT sql FROM sqlite_master WHERE type=? AND name=?", [Json::string(kind), Json::string(name)]) {
-    Some(r) =>
-      match r.get("sql") {
-        Some(String(s)) => Some(s)
-        _ => Some("")
-      }
-    None => None
-  }
-}
-
-///|
-fn get(row : Map[String, Json], name : String) -> Json {
-  row.get(name).unwrap_or(Json::null())
-}
-
-///|
-fn int(row : Map[String, Json], name : String) -> Int {
-  match row.get(name) {
-    Some(Number(n, ..)) => n.to_int()
-    _ => -1
-  }
-}
-
-///|
-fn write(db : @sql.Db, f : () -> Int raise) -> Int raise {
-  db.exec("BEGIN IMMEDIATE")
-  errdefer (db.exec("ROLLBACK") catch { _ => () })
-  let result = f()
-  db.exec("COMMIT")
-  result
-}
-
-///|
 /// A scan's state (`legacy_edit_meta`, `legacy_said_meta`), its keys as text.
 fn meta(db : @sql.Db, table : String) -> Map[String, Json] raise {
-  guard first(
-      db,
+  guard db.first(
       "SELECT version,scanned,CAST(cursor_thread AS TEXT) cursor_thread,CAST(cursor_n AS TEXT) cursor_n,CAST(end_thread AS TEXT) end_thread,CAST(end_n AS TEXT) end_n FROM \{table} WHERE id=1",
       [],
     )
@@ -87,10 +39,10 @@ fn meta(db : @sql.Db, table : String) -> Map[String, Json] raise {
 /// The next at most `limit` entries' keys after the cursor up to the end the scan began with, in (thread, n) order.
 fn scan_keys(db : @sql.Db, m : Map[String, Json], limit : Int) -> Array[Map[String, Json]] raise {
   let columns = "CAST(e.thread AS TEXT) thread,CAST(e.n AS TEXT) n"
-  let cursor_thread = get(m, "cursor_thread")
-  let cursor_n = get(m, "cursor_n")
-  let end_thread = get(m, "end_thread")
-  let end_n = get(m, "end_n")
+  let cursor_thread = @sql.row_val(m, "cursor_thread")
+  let cursor_n = @sql.row_val(m, "cursor_n")
+  let end_thread = @sql.row_val(m, "end_thread")
+  let end_n = @sql.row_val(m, "end_n")
   let rows = []
   if end_thread is Null {
     return rows
@@ -145,21 +97,21 @@ fn scan_keys(db : @sql.Db, m : Map[String, Json], limit : Int) -> Array[Map[Stri
 /// One batch of a scan: each key's row put (`put`, `?1` thread, `?2` n), the cursor moved with them; the scan's
 /// size then.
 fn scan_step(db : @sql.Db, table : String, put : String, incompatible : (Json) -> String) -> Int raise {
-  write(db, () => {
+  db.write(() => {
     let m = meta(db, table)
-    if int(m, "version") != version {
-      raise Failure(incompatible(get(m, "version")))
+    if @sql.row_int(m, "version") != version {
+      raise Failure(incompatible(@sql.row_val(m, "version")))
     }
-    if int(m, "scanned") == 1 {
+    if @sql.row_int(m, "scanned") == 1 {
       return 0
     }
     let rows = scan_keys(db, m, batch)
     for row in rows {
-      ignore(db.run(put, [get(row, "thread"), get(row, "n")]))
+      ignore(db.run(put, [@sql.row_val(row, "thread"), @sql.row_val(row, "n")]))
     }
     let (thread, n) = match rows.last() {
-      Some(r) => (get(r, "thread"), get(r, "n"))
-      None => (get(m, "cursor_thread"), get(m, "cursor_n"))
+      Some(r) => (@sql.row_val(r, "thread"), @sql.row_val(r, "n"))
+      None => (@sql.row_val(m, "cursor_thread"), @sql.row_val(m, "cursor_n"))
     }
     ignore(
       db.run(
@@ -175,13 +127,13 @@ fn scan_step(db : @sql.Db, table : String, put : String, incompatible : (Json) -
 
 ///|
 fn has_legacy_edits(db : @sql.Db) -> Bool raise {
-  if !exists(db, "table", "legacy_edit_meta") {
+  if !db.has_schema("table", "legacy_edit_meta") {
     return false
   }
-  guard first(db, "SELECT version,scanned,old_index FROM legacy_edit_meta WHERE id=1", []) is Some(m) &&
-    int(m, "version") == version &&
-    (int(m, "scanned") == 0 || int(m, "scanned") == 1) &&
-    (int(m, "old_index") == 0 || int(m, "old_index") == 1) else {
+  guard db.first("SELECT version,scanned,old_index FROM legacy_edit_meta WHERE id=1", []) is Some(m) &&
+    @sql.row_int(m, "version") == version &&
+    (@sql.row_int(m, "scanned") == 0 || @sql.row_int(m, "scanned") == 1) &&
+    (@sql.row_int(m, "old_index") == 0 || @sql.row_int(m, "old_index") == 1) else {
     raise Failure("legacy edit lookup has an unsupported version")
   }
   true
@@ -195,10 +147,10 @@ fn has_old_edit_index(db : @sql.Db) -> Bool raise {
     [],
   )
   guard columns is [a, b] &&
-    get(a, "name") == Json::string("thread") &&
-    get(a, "coll") == Json::string("BINARY") &&
-    get(b, "name") == Json::string("target") &&
-    get(b, "coll") == Json::string("BINARY") else {
+    @sql.row_val(a, "name") == Json::string("thread") &&
+    @sql.row_val(a, "coll") == Json::string("BINARY") &&
+    @sql.row_val(b, "name") == Json::string("target") &&
+    @sql.row_val(b, "coll") == Json::string("BINARY") else {
     return false
   }
   ignore(
@@ -215,7 +167,7 @@ fn has_old_edit_index(db : @sql.Db) -> Bool raise {
 ///|
 /// The edits read through the lookup: the native index absent (`usesLegacyEdits`).
 fn uses_legacy_edits(db : @sql.Db) -> Bool raise {
-  !exists(db, "index", "entries_edits") && has_legacy_edits(db)
+  !db.has_schema("index", "entries_edits") && has_legacy_edits(db)
 }
 
 ///|
@@ -228,47 +180,46 @@ fn edits_ready(db : @sql.Db) -> Bool raise {
 
 ///|
 fn edits_ready_now(db : @sql.Db) -> Bool raise {
-  let view = sql_of(db, "view", "merged").unwrap_or("")
+  let view = db.sqlite_master_sql("view", "merged").unwrap_or("")
   let legacy = view.contains("legacy_edit_meta")
   let old_index = legacy && view.contains("INDEXED BY entries_target")
   if old_index && !has_old_edit_index(db) {
     return false
   }
   if !legacy {
-    return exists(db, "index", "entries_edits")
+    return db.has_schema("index", "entries_edits")
   }
-  guard first(
-      db,
+  guard db.first(
       "SELECT scanned=1 AND NOT EXISTS (SELECT 1 FROM legacy_edit_dirty LIMIT 1 OFFSET 64) AS ready FROM legacy_edit_meta WHERE id=1",
       [],
     )
     is Some(r) else {
     raise Failure("legacy edit lookup metadata is missing")
   }
-  int(r, "ready") == 1
+  @sql.row_int(r, "ready") == 1
 }
 
 ///|
 /// The merged view or the widget sources' trigger must be switched to the indexes there now
 /// (`repairMergedEditLookup` would change something).
 fn needs_repair(db : @sql.Db) -> Bool raise {
-  let view = sql_of(db, "view", "merged").unwrap_or("")
+  let view = db.sqlite_master_sql("view", "merged").unwrap_or("")
   let view_broken = if view.contains("legacy_edit_meta") {
     view.contains("INDEXED BY entries_target") && !has_old_edit_index(db)
   } else {
-    !exists(db, "index", "entries_edits")
+    !db.has_schema("index", "entries_edits")
   }
   if view_broken {
     return true
   }
   // (`widgetSourceBeforeAddNeedsRepair`)
-  guard sql_of(db, "trigger", "widget_source_before_add") is Some(add) else { return false }
+  guard db.sqlite_master_sql("trigger", "widget_source_before_add") is Some(add) else { return false }
   let gated = add.contains("widget_source_before_gate")
-  let gate = exists(db, "view", "widget_source_before_gate")
-  let run = sql_of(db, "trigger", "widget_source_before_gate_run")
+  let gate = db.has_schema("view", "widget_source_before_gate")
+  let run = db.sqlite_master_sql("trigger", "widget_source_before_gate_run")
   let legacy = uses_legacy_edits(db)
   let old_index = legacy &&
-    int(first(db, "SELECT old_index FROM legacy_edit_meta WHERE id=1", []).unwrap_or(Map([])), "old_index") == 1
+    @sql.row_int(db.first("SELECT old_index FROM legacy_edit_meta WHERE id=1", []).unwrap_or(Map([])), "old_index") == 1
   gated != legacy ||
   gate != legacy ||
   (run is Some(_)) != legacy ||
@@ -280,25 +231,24 @@ fn needs_repair(db : @sql.Db) -> Bool raise {
 /// The changed keys folded back into the lookup, at most a batch of work (`legacyEditDrain`): a key's targets proposed
 /// by other writes removed first, then the key itself.
 fn edits_drain(db : @sql.Db) -> Int raise {
-  write(db, () => {
+  db.write(() => {
     let m = meta(db, "legacy_edit_meta")
-    if int(m, "version") != version {
+    if @sql.row_int(m, "version") != version {
       raise Failure("unsupported legacy edit preparation")
     }
-    if int(m, "scanned") != 1 {
+    if @sql.row_int(m, "scanned") != 1 {
       return 0
     }
     let mut visited = 0
     while visited < batch {
-      guard first(
-          db,
+      guard db.first(
           "SELECT CAST(d.thread AS TEXT) thread,CAST(d.n AS TEXT) n FROM legacy_edit_dirty d ORDER BY d.thread,d.n LIMIT 1",
           [],
         )
         is Some(key) else {
         break
       }
-      let k = [get(key, "thread"), get(key, "n")]
+      let k = [@sql.row_val(key, "thread"), @sql.row_val(key, "n")]
       // (the targets stay in SQLite: an old store's can be of any type, or integers beyond 2^53)
       visited += db.run(
         "DELETE FROM legacy_edit_targets WHERE thread=CAST(?1 AS INTEGER) AND n=CAST(?2 AS INTEGER) AND target IN (SELECT target FROM legacy_edit_targets INDEXED BY legacy_edit_targets_by_key WHERE thread=CAST(?1 AS INTEGER) AND n=CAST(?2 AS INTEGER) AND target IS NOT (SELECT target FROM entries WHERE thread=CAST(?1 AS INTEGER) AND n=CAST(?2 AS INTEGER)) ORDER BY target LIMIT ?3)",
@@ -339,7 +289,7 @@ pub fn edits_maintenance(db : @sql.Db) -> Bool raise {
   if !has_legacy_edits(db) {
     return true
   }
-  if int(meta(db, "legacy_edit_meta"), "scanned") != 1 {
+  if @sql.row_int(meta(db, "legacy_edit_meta"), "scanned") != 1 {
     ignore(
       scan_step(
         db,
@@ -371,15 +321,15 @@ pub fn edits_step(db : @sql.Db) -> Bool raise {
 
 ///|
 fn has_legacy_said(db : @sql.Db) -> Bool raise {
-  if !exists(db, "view", "legacy_said") {
+  if !db.has_schema("view", "legacy_said") {
     return false
   }
-  if !exists(db, "table", "legacy_said_meta") {
+  if !db.has_schema("table", "legacy_said_meta") {
     raise Failure("legacy said view has no metadata")
   }
-  guard first(db, "SELECT version,scanned FROM legacy_said_meta WHERE id=1", []) is Some(m) &&
-    int(m, "version") == version &&
-    (int(m, "scanned") == 0 || int(m, "scanned") == 1) else {
+  guard db.first("SELECT version,scanned FROM legacy_said_meta WHERE id=1", []) is Some(m) &&
+    @sql.row_int(m, "version") == version &&
+    (@sql.row_int(m, "scanned") == 0 || @sql.row_int(m, "scanned") == 1) else {
     raise Failure("legacy said view has an unsupported version")
   }
   true
@@ -387,12 +337,12 @@ fn has_legacy_said(db : @sql.Db) -> Bool raise {
 
 ///|
 fn said_scanned(db : @sql.Db) -> Bool raise {
-  guard first(db, "SELECT version,scanned FROM legacy_said_meta WHERE id=1", []) is Some(m) &&
-    int(m, "version") == version &&
-    (int(m, "scanned") == 0 || int(m, "scanned") == 1) else {
+  guard db.first("SELECT version,scanned FROM legacy_said_meta WHERE id=1", []) is Some(m) &&
+    @sql.row_int(m, "version") == version &&
+    (@sql.row_int(m, "scanned") == 0 || @sql.row_int(m, "scanned") == 1) else {
     raise Failure("legacy said lookup metadata is missing or invalid")
   }
-  int(m, "scanned") == 1
+  @sql.row_int(m, "scanned") == 1
 }
 
 ///|
@@ -421,17 +371,17 @@ let said_incompatible : (Json) -> String = v => "legacy said version \{v.stringi
 ///|
 /// The keys older writers changed folded back into the said lookup, at most a batch (`legacySaidDrain`).
 fn said_drain(db : @sql.Db) -> Int raise {
-  write(db, () => {
+  db.write(() => {
     let m = meta(db, "legacy_said_meta")
-    if int(m, "version") != version {
-      raise Failure(said_incompatible(get(m, "version")))
+    if @sql.row_int(m, "version") != version {
+      raise Failure(said_incompatible(@sql.row_val(m, "version")))
     }
     let keys = db.all(
       "SELECT CAST(d.thread AS TEXT) thread,CAST(d.n AS TEXT) n FROM legacy_said_dirty d ORDER BY d.thread,d.n LIMIT ?",
       [Json::number(batch.to_double())],
     )
     for key in keys {
-      let k = [get(key, "thread"), get(key, "n")]
+      let k = [@sql.row_val(key, "thread"), @sql.row_val(key, "n")]
       ignore(db.run("DELETE FROM legacy_said_build WHERE thread=CAST(? AS INTEGER) AND n=CAST(? AS INTEGER)", k))
       ignore(
         db.run(
@@ -466,17 +416,17 @@ pub fn said_maintenance(db : @sql.Db) -> Bool raise {
 ///|
 /// The meta row's state, checked: `complete` (or 2 where `two` allows it), else `unsupported`.
 fn checked_state(db : @sql.Db, table : String, unsupported : String, two? : Bool = false) -> Int raise {
-  guard first(db, "SELECT version,complete FROM \{table} WHERE id=1", []) is Some(m) &&
-    int(m, "version") == version &&
-    (int(m, "complete") == 0 || int(m, "complete") == 1 || (two && int(m, "complete") == 2)) else {
+  guard db.first("SELECT version,complete FROM \{table} WHERE id=1", []) is Some(m) &&
+    @sql.row_int(m, "version") == version &&
+    (@sql.row_int(m, "complete") == 0 || @sql.row_int(m, "complete") == 1 || (two && @sql.row_int(m, "complete") == 2)) else {
     raise Failure(unsupported)
   }
-  int(m, "complete")
+  @sql.row_int(m, "complete")
 }
 
 ///|
 fn has_policy(db : @sql.Db) -> Bool raise {
-  if !exists(db, "table", "archive_policy_lookup_meta") {
+  if !db.has_schema("table", "archive_policy_lookup_meta") {
     return false
   }
   ignore(checked_state(db, "archive_policy_lookup_meta", "archive policy lookup has an unsupported version"))
@@ -485,10 +435,10 @@ fn has_policy(db : @sql.Db) -> Bool raise {
 
 ///|
 fn has_decision_time(db : @sql.Db) -> Bool raise {
-  if !exists(db, "table", "legacy_decision_time_meta") {
+  if !db.has_schema("table", "legacy_decision_time_meta") {
     return false
   }
-  if !exists(db, "table", "legacy_decision_time") {
+  if !db.has_schema("table", "legacy_decision_time") {
     raise Failure("legacy decision-time metadata has no lookup")
   }
   ignore(checked_state(db, "legacy_decision_time_meta", "legacy decision-time lookup has an unsupported version"))
@@ -498,10 +448,10 @@ fn has_decision_time(db : @sql.Db) -> Bool raise {
 ///|
 /// A decision-session lookup's state (`sessionState`): none, or 0/1 (2: the repair's table being emptied).
 fn session_state(db : @sql.Db, table : String) -> Int? raise {
-  if !exists(db, "table", "\{table}_meta") {
+  if !db.has_schema("table", "\{table}_meta") {
     return None
   }
-  if !exists(db, "table", table) {
+  if !db.has_schema("table", table) {
     raise Failure("legacy decision-session metadata has no lookup")
   }
   Some(
@@ -517,7 +467,7 @@ fn session_state(db : @sql.Db, table : String) -> Int? raise {
 ///|
 fn has_session_lookup(db : @sql.Db, table : String) -> Bool raise {
   match session_state(db, table) {
-    Some(s) if s != 2 => exists(db, "index", "\{table}_by_session")
+    Some(s) if s != 2 => db.has_schema("index", "\{table}_by_session")
     _ => false
   }
 }
@@ -537,26 +487,25 @@ fn copy_ids(
   if !gate() {
     return true
   }
-  write(db, () => {
+  db.write(() => {
     if !gate() {
       return 1
     }
-    guard first(
-        db,
+    guard db.first(
         "SELECT version,complete,CAST(cursor AS TEXT) cursor,CAST(end_id AS TEXT) end_id FROM \{meta_table} WHERE id=1",
         [],
       )
       is Some(m) else {
       raise Failure(incompatible)
     }
-    if int(m, "version") != version {
+    if @sql.row_int(m, "version") != version {
       raise Failure(incompatible)
     }
-    if int(m, "complete") == 1 {
+    if @sql.row_int(m, "complete") == 1 {
       return 1
     }
-    let cursor = get(m, "cursor")
-    let end = get(m, "end_id")
+    let cursor = @sql.row_val(m, "cursor")
+    let end = @sql.row_val(m, "end_id")
     let lim = Json::number(limit.to_double())
     let rows = if end is Null {
       []
@@ -572,11 +521,11 @@ fn copy_ids(
       )
     }
     for row in rows {
-      ignore(db.run(put, [get(row, "id")]))
+      ignore(db.run(put, [@sql.row_val(row, "id")]))
     }
     let done = rows.length() < limit
     let reached = match rows.last() {
-      Some(r) => get(r, "id")
+      Some(r) => @sql.row_val(r, "id")
       None => cursor
     }
     ignore(
@@ -673,14 +622,14 @@ pub fn decision_session_repair_step(db : @sql.Db) -> Bool raise {
   }
   if session_state(db, repair) == Some(2) {
     ignore(
-      write(db, () => {
+      db.write(() => {
         if session_state(db, repair) == Some(2) {
           ignore(
             db.run("DELETE FROM \{repair} WHERE id IN (SELECT id FROM \{repair} ORDER BY id LIMIT ?)", [
               Json::number(batch.to_double()),
             ]),
           )
-          if first(db, "SELECT 1 FROM \{repair} LIMIT 1", []) is None {
+          if db.first("SELECT 1 FROM \{repair} LIMIT 1", []) is None {
             db.exec(repair_ddl)
             db.exec(
               "UPDATE \{repair}_meta SET complete=0,cursor=NULL,end_id=(SELECT MAX(id) FROM decision_checks) WHERE id=1",
@@ -707,12 +656,12 @@ pub fn decision_session_repair_step(db : @sql.Db) -> Bool raise {
 
 ///|
 pub fn has_legacy_agent(db : @sql.Db) -> Bool raise {
-  if !exists(db, "table", "legacy_agent_meta") {
+  if !db.has_schema("table", "legacy_agent_meta") {
     return false
   }
-  guard first(db, "SELECT version,scanned FROM legacy_agent_meta WHERE id=1", []) is Some(m) &&
-    int(m, "version") == version &&
-    (int(m, "scanned") == 0 || int(m, "scanned") == 1) else {
+  guard db.first("SELECT version,scanned FROM legacy_agent_meta WHERE id=1", []) is Some(m) &&
+    @sql.row_int(m, "version") == version &&
+    (@sql.row_int(m, "scanned") == 0 || @sql.row_int(m, "scanned") == 1) else {
     raise Failure("legacy agent lookup has an unsupported version")
   }
   true
@@ -725,33 +674,31 @@ let agent_incompatible : (Json) -> String = v => "legacy agent version \{v.strin
 /// The keys older writers changed folded back, at most a batch of work (`legacyAgentDrain`): a key's other times
 /// removed first, then the key itself.
 fn agent_drain(db : @sql.Db) -> Int raise {
-  write(db, () => {
+  db.write(() => {
     let m = meta(db, "legacy_agent_meta")
-    if int(m, "version") != version {
-      raise Failure(agent_incompatible(get(m, "version")))
+    if @sql.row_int(m, "version") != version {
+      raise Failure(agent_incompatible(@sql.row_val(m, "version")))
     }
     // (before the scan has passed a key, folding it could make the scanner stage an older time for it)
-    if int(m, "scanned") != 1 {
+    if @sql.row_int(m, "scanned") != 1 {
       return 0
     }
     let mut visited = 0
     while visited < batch {
-      guard first(
-          db,
+      guard db.first(
           "SELECT CAST(d.thread AS TEXT) thread,CAST(d.n AS TEXT) n,CAST(d.old_at AS TEXT) old_at FROM legacy_agent_dirty d ORDER BY d.thread,d.n LIMIT 1",
           [],
         )
         is Some(key) else {
         break
       }
-      let k = [get(key, "thread"), get(key, "n")]
+      let k = [@sql.row_val(key, "thread"), @sql.row_val(key, "n")]
       let now = match
-        first(
-          db,
+        db.first(
           "SELECT CAST(at AS TEXT) at FROM entries WHERE thread=CAST(? AS INTEGER) AND n=CAST(? AS INTEGER) AND kind='message' AND author_kind='agent'",
           k,
         ) {
-        Some(r) => get(r, "at")
+        Some(r) => @sql.row_val(r, "at")
         None => Json::null()
       }
       visited += db.run(
@@ -761,11 +708,11 @@ fn agent_drain(db : @sql.Db) -> Int raise {
       if visited == batch {
         break
       }
-      if !(get(key, "old_at") is Null) {
+      if !(@sql.row_val(key, "old_at") is Null) {
         ignore(
           db.run(
             "DELETE FROM legacy_agent_build WHERE thread=CAST(? AS INTEGER) AND at=CAST(? AS INTEGER) AND n=CAST(? AS INTEGER)",
-            [k[0], get(key, "old_at"), k[1]],
+            [k[0], @sql.row_val(key, "old_at"), k[1]],
           ),
         )
       }
@@ -796,7 +743,7 @@ pub fn agent_maintenance(db : @sql.Db) -> Bool raise {
   if !has_legacy_agent(db) {
     return true
   }
-  if int(meta(db, "legacy_agent_meta"), "scanned") != 1 {
+  if @sql.row_int(meta(db, "legacy_agent_meta"), "scanned") != 1 {
     ignore(
       scan_step(
         db,
@@ -814,12 +761,12 @@ pub fn agent_maintenance(db : @sql.Db) -> Bool raise {
 
 ///|
 fn has_login_cards(db : @sql.Db) -> Bool raise {
-  if !exists(db, "table", "login_card_meta") {
+  if !db.has_schema("table", "login_card_meta") {
     return false
   }
-  guard first(db, "SELECT version,scanned FROM login_card_meta WHERE id=1", []) is Some(m) &&
-    int(m, "version") == version &&
-    (int(m, "scanned") == 0 || int(m, "scanned") == 1) else {
+  guard db.first("SELECT version,scanned FROM login_card_meta WHERE id=1", []) is Some(m) &&
+    @sql.row_int(m, "version") == version &&
+    (@sql.row_int(m, "scanned") == 0 || @sql.row_int(m, "scanned") == 1) else {
     raise Failure("legacy login-card lookup has an unsupported version")
   }
   true
@@ -860,31 +807,30 @@ fn login_ok(login : String) -> Bool {
 /// At most 64 entries and 64 login tokens of the old cards scanned into the lookup, the cursor (and the offset in a
 /// card left partly scanned) with them (`legacyLoginCardsStep`); whether the scan is done.
 fn login_cards_step(db : @sql.Db) -> Bool raise {
-  write(db, () => {
-    guard first(
-        db,
+  db.write(() => {
+    guard db.first(
         "SELECT version,scanned,CAST(end_thread AS TEXT) end_thread,CAST(end_n AS TEXT) end_n,CAST(cursor_thread AS TEXT) cursor_thread,CAST(cursor_n AS TEXT) cursor_n,offset FROM login_card_meta WHERE id=1",
         [],
       )
       is Some(m) &&
-      int(m, "version") == version &&
-      (int(m, "scanned") == 0 || int(m, "scanned") == 1) else {
+      @sql.row_int(m, "version") == version &&
+      (@sql.row_int(m, "scanned") == 0 || @sql.row_int(m, "scanned") == 1) else {
       raise Failure("unsupported login card preparation")
     }
-    if int(m, "scanned") == 1 {
+    if @sql.row_int(m, "scanned") == 1 {
       return 1
     }
     let fields = "CAST(thread AS TEXT) thread,CAST(n AS TEXT) n,CAST(rowid AS TEXT) entry_rowid,ts,kind,author_kind,CASE WHEN card LIKE '%\"login\"%' THEN CAST(card AS TEXT) END AS card"
-    let from = if exists(db, "index", "entries_login_cards") {
+    let from = if db.has_schema("index", "entries_login_cards") {
       "FROM entries INDEXED BY entries_login_cards WHERE card LIKE '%\"login\"%'"
     } else {
       "FROM entries WHERE 1"
     }
-    let end_thread = get(m, "end_thread")
-    let end_n = get(m, "end_n")
-    let mut cursor_thread = get(m, "cursor_thread")
-    let mut cursor_n = get(m, "cursor_n")
-    let mut offset : Int? = match get(m, "offset") {
+    let end_thread = @sql.row_val(m, "end_thread")
+    let end_n = @sql.row_val(m, "end_n")
+    let mut cursor_thread = @sql.row_val(m, "cursor_thread")
+    let mut cursor_n = @sql.row_val(m, "cursor_n")
+    let mut offset : Int? = match @sql.row_val(m, "offset") {
       Number(o, ..) => Some(o.to_int())
       _ => None
     }
@@ -894,7 +840,7 @@ fn login_cards_step(db : @sql.Db) -> Bool raise {
     while !ready && visited < batch && tokens < batch {
       let row = if offset is Some(_) {
         match
-          first(db, "SELECT \{fields} FROM entries WHERE thread=CAST(?1 AS INTEGER) AND n=CAST(?2 AS INTEGER)", [
+          db.first("SELECT \{fields} FROM entries WHERE thread=CAST(?1 AS INTEGER) AND n=CAST(?2 AS INTEGER)", [
             cursor_thread, cursor_n,
           ]) {
           Some(r) => r
@@ -905,31 +851,27 @@ fn login_cards_step(db : @sql.Db) -> Bool raise {
         }
       } else {
         let mut found = if cursor_thread is Null {
-          first(
-            db,
+          db.first(
             "SELECT \{fields} \{from} AND thread<=CAST(?1 AS INTEGER) ORDER BY entries.thread,entries.n LIMIT 1",
             [end_thread],
           )
         } else {
-          first(
-            db,
+          db.first(
             "SELECT \{fields} \{from} AND thread=CAST(?1 AS INTEGER) AND n>CAST(?2 AS INTEGER) ORDER BY entries.n LIMIT 1",
             [cursor_thread, cursor_n],
           )
         }
         if found is None && !(cursor_thread is Null) {
-          found = first(
-            db,
+          found = db.first(
             "SELECT \{fields} \{from} AND thread>CAST(?1 AS INTEGER) AND thread<=CAST(?2 AS INTEGER) ORDER BY entries.thread,entries.n LIMIT 1",
             [cursor_thread, end_thread],
           )
         }
         guard found is Some(r) &&
-          int(
-            first(
-              db,
+          @sql.row_int(
+            db.first(
               "SELECT CAST(?1 AS INTEGER)>CAST(?2 AS INTEGER) OR (CAST(?1 AS INTEGER)=CAST(?2 AS INTEGER) AND CAST(?3 AS INTEGER)>CAST(?4 AS INTEGER)) AS beyond",
-              [get(r, "thread"), end_thread, get(r, "n"), end_n],
+              [@sql.row_val(r, "thread"), end_thread, @sql.row_val(r, "n"), end_n],
             ).unwrap_or(Map([])),
             "beyond",
           ) ==
@@ -937,15 +879,15 @@ fn login_cards_step(db : @sql.Db) -> Bool raise {
           ready = true
           break
         }
-        cursor_thread = get(r, "thread")
-        cursor_n = get(r, "n")
+        cursor_thread = @sql.row_val(r, "thread")
+        cursor_n = @sql.row_val(r, "n")
         offset = Some(0)
         r
       }
       visited += 1
-      guard get(row, "kind") == Json::string("message") &&
-        get(row, "author_kind") == Json::string("agent") &&
-        get(row, "card") is String(card) else {
+      guard @sql.row_val(row, "kind") == Json::string("message") &&
+        @sql.row_val(row, "author_kind") == Json::string("agent") &&
+        @sql.row_val(row, "card") is String(card) else {
         offset = None
         continue
       }
@@ -966,7 +908,7 @@ fn login_cards_step(db : @sql.Db) -> Bool raise {
           ignore(
             db.run(
               "INSERT INTO login_card_keys(login,thread,n,entry_rowid,ts) SELECT ?1,CAST(?2 AS INTEGER),CAST(?3 AS INTEGER),CAST(?4 AS INTEGER),?5 WHERE NOT EXISTS (SELECT 1 FROM login_card_keys WHERE login=?1 AND thread=CAST(?2 AS INTEGER) AND n=CAST(?3 AS INTEGER))",
-              [Json::string(login), get(row, "thread"), get(row, "n"), get(row, "entry_rowid"), get(row, "ts")],
+              [Json::string(login), @sql.row_val(row, "thread"), @sql.row_val(row, "n"), @sql.row_val(row, "entry_rowid"), @sql.row_val(row, "ts")],
             ),
           )
         }
@@ -1011,11 +953,11 @@ pub fn merged_read_ready(db : @sql.Db) -> Bool raise {
 ///|
 /// legacy-edits-build.ts `legacyMergedNeedsRepair`: the merged view's index is gone; it must be switched first.
 pub fn merged_needs_repair(db : @sql.Db) -> Bool raise {
-  let view = sql_of(db, "view", "merged").unwrap_or("")
+  let view = db.sqlite_master_sql("view", "merged").unwrap_or("")
   if view.contains("legacy_edit_meta") {
     view.contains("INDEXED BY entries_target") && !has_old_edit_index(db)
   } else {
-    !exists(db, "index", "entries_edits")
+    !db.has_schema("index", "entries_edits")
   }
 }
 
@@ -1023,25 +965,25 @@ pub fn merged_needs_repair(db : @sql.Db) -> Bool raise {
 /// legacy-edits-read.ts `boundedEditKey`: a message's latest edit (as text), None when there is none; raises
 /// `Unprepared` when old edits need preparing first.
 pub fn bounded_edit_key(db : @sql.Db, thread : Json, n : Json) -> String? raise {
-  let read = (sql : String) => first(db, sql, [thread, n])
+  let read = (sql : String) => db.first(sql, [thread, n])
   let mut edit = read(
     "WITH tail AS MATERIALIZED (\n    SELECT n,target FROM entries WHERE thread=?1 ORDER BY n DESC LIMIT 65\n  ) SELECT (SELECT CAST(n AS TEXT) FROM tail WHERE target=CAST(?2 AS INTEGER) ORDER BY n DESC LIMIT 1) AS n,\n    (SELECT COUNT(*) FROM tail) AS count",
   )
   let count = (e : Map[String, Json]?) => match e {
-    Some(r) => int(r, "count")
+    Some(r) => @sql.row_int(r, "count")
     None => 0
   }
   let key = (e : Map[String, Json]?) => match e {
-    Some(r) => match get(r, "n") { String(s) => Some(s); _ => None }
+    Some(r) => match @sql.row_val(r, "n") { String(s) => Some(s); _ => None }
     None => None
   }
   if key(edit) is None && count(edit) == 65 {
     let meta = if has_legacy_edits(db) {
-      first(db, "SELECT scanned,old_index FROM legacy_edit_meta WHERE id=1", [])
+      db.first("SELECT scanned,old_index FROM legacy_edit_meta WHERE id=1", [])
     } else {
       None
     }
-    if meta is Some(m) && int(m, "scanned") == 0 && int(m, "old_index") == 1 && has_old_edit_index(db) {
+    if meta is Some(m) && @sql.row_int(m, "scanned") == 0 && @sql.row_int(m, "old_index") == 1 && has_old_edit_index(db) {
       edit = read(
         "WITH edits AS MATERIALIZED (\n    SELECT x.n FROM entries x INDEXED BY entries_target WHERE x.thread=?1 AND x.target=CAST(?2 AS INTEGER)\n      ORDER BY x.rowid DESC LIMIT 65\n  ) SELECT CAST(MAX(n) AS TEXT) AS n,COUNT(*) AS count FROM edits",
       )

@@ -11,7 +11,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type Entry, LockRefusal, endpointBytes, entryHash, genesis as lockGenesis, signedBytes } from "../src/cloud/lock.ts";
+import { type Entry, LockRefusal, endpointBytes, entryHash, genesis as lockGenesis, signedBytes } from "../../shared/lock.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
 import { Refused } from "../src/mesh/bus.ts";

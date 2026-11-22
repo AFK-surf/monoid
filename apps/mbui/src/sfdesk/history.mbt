@@ -330,7 +330,12 @@ fn wh_details_node(
         |> ignore
       },
       fn(e) {
-        let low = fn() { items(host(), "meters").filter(fn(m) { text(Some(m), "level") != "ok" }) }
+        // (as this device says a CPU: idle or busy, @settings.meters_said)
+        let low = fn() {
+          @settings.meters_said(items(host(), "meters"), @settings.cpu_busy_of(src.topic("prefs", {}).get().value)).filter(fn(m) {
+            text(Some(m), "level") != "ok"
+          })
+        }
         e.show(at_once=true, fn() { low().length() > 0 }, fn(x) { @sf.meter_chips_node(x, low, tips~) })
       },
     )
@@ -541,12 +546,6 @@ fn wh_line_node(
 let wh_mark_side : Double = 16.0
 
 ///|
-/// A station's workspace, from its address (ws/station: sfpages' history_station_scope).
-fn scope_of(station : String) -> String {
-  @sfpages.history_station_scope(station)
-}
-
-///|
 /// The head (historyHead): 45 high, 16 in at its start, 8 at its end.
 // kept across runs: a value (no field of it changes)
 let wh_head : @ui.Style = @ui.css("row w=Full h=S11 pl=S4 pr=S2 pb=SPx gap=S2 align=ACenter justify=JBetween")
@@ -572,7 +571,7 @@ let wh_details_box : @ui.Style = @ui.css("w=Full px=S4 pt=S0_5 pb=S3_5 gap=S2_5"
 let wh_quiet_box : @ui.Style = @ui.css("w=Full").then(@sf.outset_top(4.0))
 
 ///|
-/// The quiet line with the mark of its work past its turns after it (work_mark): one line, its words cut short only
+/// The quiet line with the mark of its work past its turns after it (work_mark_node): one line, its words cut short only
 /// once the mark has given way.
 // kept across runs: a value (no field of it changes)
 let wh_quiet_line : @ui.Style = wh_quiet_box.then(@ui.css("row align=ACenter"))

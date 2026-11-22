@@ -112,7 +112,7 @@ test "分享图片's page dismissed by back: closed as back is taken; the frame 
   seen.push(@sfpages.publish_open())
   t.draw()
   seen.push(@sfpages.publish_open())
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   // (opened again as it was)
   open_publish_page()
   t.frame()

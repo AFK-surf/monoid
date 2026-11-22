@@ -54,7 +54,13 @@ fn drawn_within(win : String, w : Double, starts : Array[String]) -> Unit raise 
 test "a connect's model control said at its longest is cut within the window, its name never left out" {
   for win in [corner_windows[0], corner_windows[1], corner_windows[5]] {
     let _ = screen_in("settings-connect", win, "zh", said=true)
-    drawn_within(win.0, win.1, ["Opus 5.5 — "])
+    // Segmented model display steps "Opus 5.5 — …" down to "Opus — …" when squeezed before cutting within the window.
+    let found = drawn_words("Opus 5.5 — ")
+    found.append(drawn_words("Opus — "))
+    assert_true(found.length() > 0, msg="\{win.0}: no Opus 5.5 — or Opus — ")
+    for d in found {
+      assert_true(d.2 > 0.0 && d.0 >= 0.0 && d.0 + d.2 <= win.1, msg="\{win.0}: Opus at \{d.0},\{d.1}, \{d.2} wide")
+    }
     // (who runs it, where it is kept: within the window too)
     for d in drawn_words("自动分配 — ") {
       assert_true(d.2 > 0.0 && d.0 >= 0.0 && d.0 + d.2 <= win.1, msg="\{win.0}: 自动分配 at \{d.0},\{d.1}, \{d.2} wide")

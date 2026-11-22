@@ -93,16 +93,17 @@ test "panel centred a share of the window tall, 大屏 keyboard and mouse: a col
   assert_true(drawn.iter().all(fn(d) { d }))
   debug_inspect(out, content=(
     #|[
-    #|  "column 800: dialog (380, 168.5, 520, 463) row0 [(404, 243.5, 472, 22)] last between Some(第13行) ok Some((818, 571.5, 58, 36)) | wheel: row0 [(404, 123.5, 472, 22)] | end: [true]",
-    #|  "column 500: dialog (380, 93.5, 520, 313) row0 [(404, 168.5, 472, 22)] last between Some(第7行) ok Some((818, 346.5, 58, 36)) | wheel: row0 [(404, 48.5, 472, 22)] | end: [true]",
-    #|  "few 800: dialog (380, 287.5, 520, 225) row0 [(396, 362.5, 488, 22)] last between Some(第2行) ok Some((818, 452.5, 58, 36)) | wheel: row0 [(396, 362.5, 488, 22)] | end: [true]",
-    #|  "many 800: dialog (380, 48.5, 520, 703) row0 [(396, 123.5, 488, 22)] last between Some(第24行) ok Some((818, 691.5, 58, 36)) | wheel: row0 [] | end: [true]",
-    #|  "many 500: dialog (380, 24, 520, 452) row0 [(396, 99, 488, 22)] last between Some(第13行) ok Some((818, 416, 58, 36)) | wheel: row0 [] | end: [true]",
-    #|  "deep 500: dialog (380, 24, 520, 452) row0 [(396, 99, 488, 22)] last between Some(第13行) ok Some((818, 416, 58, 36)) | wheel: row0 [] | end: [true]",
-    #|  "says 800: dialog (380, 35.5, 520, 729) row0 [(396, 136.5, 488, 22)] last between Some(第24行) ok Some((818, 704.5, 58, 36)) | wheel: row0 [] | end: [true]",
-    #|  "grown 800: dialog (380, 287.5, 520, 225) row0 [(396, 362.5, 488, 22)] last between Some(第2行) ok Some((818, 452.5, 58, 36)) | wheel: row0 [(396, 362.5, 488, 22)] | end: [true]",
-    #|  "grown 800 to 60: dialog (380, 48.5, 520, 703) row0 [(396, 123.5, 488, 22)] last between Some(第24行) ok Some((818, 691.5, 58, 36)) | wheel: row0 [] | end: [true]",
-    #|  "grown 800 to 5: dialog (380, 265.5, 520, 269) row0 [(396, 340.5, 488, 22)] last between Some(第4行) ok Some((818, 474.5, 58, 36)) | wheel: row0 [(396, 340.5, 488, 22)] | end: [true]",
+    #|  "column 800: dialog (380, 169.5, 520, 461) row0 [(404, 244.5, 472, 22)] last between Some(第13行) ok Some((820, 572.5, 54, 32)) | wheel: row0 [(404, 124.5, 472, 22)] | end: [true]",
+    #|  "column 500: dialog (380, 94.5, 520, 311) row0 [(404, 169.5, 472, 22)] last between Some(第7行) ok Some((820, 347.5, 54, 32)) | wheel: row0 [(404, 49.5, 472, 22)] | end: [true]",
+    #|  "few 800: dialog (380, 288.5, 520, 223) row0 [(396, 363.5, 488, 22)] last between Some(第2行) ok Some((820, 453.5, 54, 32)) | wheel: row0 [(396, 363.5, 488, 22)] | end: [true]",
+    #|  "many 800: dialog (380, 49.5, 520, 701) row0 [(396, 124.5, 488, 22)] last between Some(第24行) ok Some((820, 692.5, 54, 32)) | wheel: row0 [] | end: [true]",
+    #|  "many 500: dialog (380, 24, 520, 452) row0 [(396, 99, 488, 22)] last between Some(第13行) ok Some((820, 418, 54, 32)) | wheel: row0 [] | end: [true]",
+    #|  "deep 500: dialog (380, 24, 520, 452) row0 [(396, 99, 488, 22)] last between Some(第13行) ok Some((820, 418, 54, 32)) | wheel: row0 [] | end: [true]",
+    #|  "says 800: dialog (380, 36.5, 520, 727) row0 [(396, 137.5, 488, 22)] last between Some(第24行) ok Some((820, 705.5, 54, 32)) | wheel: row0 [] | end: [true]",
+    #|  "grown 800: dialog (380, 288.5, 520, 223) row0 [(396, 363.5, 488, 22)] last between Some(第2行) ok Some((820, 453.5, 54, 32)) | wheel: row0 [(396, 363.5, 488, 22)] | end: [true]",
+    #|  "grown 800 to 60: dialog (380, 49.5, 520, 701) row0 [(396, 124.5, 488, 22)] last between Some(第24行) ok Some((820, 692.5, 54, 32)) | wheel: row0 [] | end: [true]",
+    #|  "grown 800 to 5: dialog (380, 266.5, 520, 267) row0 [(396, 341.5, 488, 22)] last between Some(第4行) ok Some((820, 475.5, 54, 32)) | wheel: row0 [(396, 341.5, 488, 22)] | end: [true]",
     #|]
+
   ))
 }

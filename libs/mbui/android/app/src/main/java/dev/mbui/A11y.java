@@ -1,8 +1,11 @@
 package dev.mbui;
 
+import android.accessibilityservice.AccessibilityServiceInfo;
+import android.content.Context;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewParent;
@@ -45,16 +48,73 @@ final class A11y extends AccessibilityNodeProvider {
     private int focused = HOST_VIEW_ID;
     private int hovered = HOST_VIEW_ID;
 
+    private static final long SCROLL_EVENT_THROTTLE_MS = 100L;
+    private long lastContentEventMs;
+    private boolean contentEventPending;
+    private final Runnable sendContentEvent = () -> {
+        contentEventPending = false;
+        dispatchContentChanged();
+    };
+
+    private static volatile boolean screenReaderOn;
+    private static boolean listening;
+
     A11y(MBView view) {
         this.view = view;
     }
 
-    /** Whether a service reads the screen (@hostapi.a11y_on): the app tells its widgets only then. */
+    /** Cached screen-reader state (TalkBack / Braille / MBUI_A11Y=1); excludes generic accessibility utilities. */
+    static boolean isScreenReaderOn() {
+        return screenReaderOn;
+    }
+
+    /** Whether a service reads the screen (@hostapi.a11y_on): cached, updated by AccessibilityManager listeners. */
     static boolean on() {
-        MainActivity a = Host.activity;
-        if (a == null) return false;
-        AccessibilityManager m = (AccessibilityManager) a.getSystemService(android.content.Context.ACCESSIBILITY_SERVICE);
-        return m != null && m.isEnabled();
+        return screenReaderOn;
+    }
+
+    /** Computes whether an actual screen reader (spoken or braille feedback, touch exploration, or MBUI_A11Y=1) is on. */
+    static boolean computeScreenReaderOn(Context ctx) {
+        if ("1".equals(android.system.Os.getenv("MBUI_A11Y"))) return true;
+        if (ctx == null) return false;
+        AccessibilityManager am = (AccessibilityManager) ctx.getSystemService(Context.ACCESSIBILITY_SERVICE);
+        if (am == null || !am.isEnabled()) return false;
+        if (am.isTouchExplorationEnabled()) return true;
+        List<AccessibilityServiceInfo> services = am.getEnabledAccessibilityServiceList(
+                AccessibilityServiceInfo.FEEDBACK_SPOKEN | AccessibilityServiceInfo.FEEDBACK_BRAILLE);
+        return services != null && !services.isEmpty();
+    }
+
+    /** Recomputes screen-reader state, updates C atomic, and requests full resend/frame on transitions. */
+    static void refresh(Context ctx) {
+        boolean next = computeScreenReaderOn(ctx);
+        boolean prev = screenReaderOn;
+        screenReaderOn = next;
+        Native.a11yEnabled(next);
+        if (next != prev) {
+            if (next) Native.post("a11y", "{\"action\":\"resend\"}");
+            Host.requestFrame();
+        }
+    }
+
+    /** Registers process-wide AccessibilityManager listeners once and syncs initial state. */
+    static void attach(Context ctx) {
+        if (ctx == null) return;
+        Context app = ctx.getApplicationContext();
+        if (app == null) app = ctx;
+        if (!listening) {
+            listening = true;
+            AccessibilityManager am = (AccessibilityManager) app.getSystemService(Context.ACCESSIBILITY_SERVICE);
+            if (am != null) {
+                final Context appCtx = app;
+                am.addAccessibilityStateChangeListener(enabled -> refresh(appCtx));
+                am.addTouchExplorationStateChangeListener(enabled -> refresh(appCtx));
+                if (Build.VERSION.SDK_INT >= 33) {
+                    am.addAccessibilityServicesStateChangeListener(mgr -> refresh(appCtx));
+                }
+            }
+        }
+        refresh(app);
     }
 
     /**
@@ -72,6 +132,7 @@ final class A11y extends AccessibilityNodeProvider {
             Native.post("a11y", "{\"action\":\"resend\"}");
             return;
         }
+        int prevInputFocus = inputFocus;
         if (full) nodes.clear();
         try {
             inputFocus = Integer.parseInt(head[2]);
@@ -108,7 +169,12 @@ final class A11y extends AccessibilityNodeProvider {
                 Node was = nodes.get(n.id);
                 if (was != null) {
                     n.parent = was.parent;
-                    for (int k : was.kids) if (!n.kids.contains(k)) letGo.add(k);
+                    if (was.kids.size() > 8 && !n.kids.isEmpty()) {
+                        Set<Integer> nowKids = new HashSet<>(n.kids);
+                        for (int k : was.kids) if (!nowKids.contains(k)) letGo.add(k);
+                    } else {
+                        for (int k : was.kids) if (!n.kids.contains(k)) letGo.add(k);
+                    }
                 }
                 held.addAll(n.kids);
                 nodes.put(n.id, n);
@@ -130,6 +196,34 @@ final class A11y extends AccessibilityNodeProvider {
         }
         if (focused != HOST_VIEW_ID && !nodes.containsKey(focused)) focused = HOST_VIEW_ID;
         if (hovered != HOST_VIEW_ID && !nodes.containsKey(hovered)) hovered = HOST_VIEW_ID;
+        boolean scrollOnly = !full && !told.isEmpty() && allScrollOnly(told) && inputFocus == prevInputFocus;
+        if (scrollOnly) {
+            long now = SystemClock.uptimeMillis();
+            long elapsed = now - lastContentEventMs;
+            if (elapsed < SCROLL_EVENT_THROTTLE_MS) {
+                if (!contentEventPending) {
+                    contentEventPending = true;
+                    view.postDelayed(sendContentEvent, SCROLL_EVENT_THROTTLE_MS - elapsed); // det-ok(host-delay): 100ms scroll-only a11y event throttle matching Jetpack Compose
+                }
+                return;
+            }
+        }
+        if (contentEventPending) {
+            contentEventPending = false;
+            view.removeCallbacks(sendContentEvent);
+        }
+        dispatchContentChanged();
+    }
+
+    private static boolean allScrollOnly(List<Node> told) {
+        for (Node n : told) {
+            if (!has(n.flags, 'v')) return false;
+        }
+        return true;
+    }
+
+    private void dispatchContentChanged() {
+        lastContentEventMs = SystemClock.uptimeMillis();
         AccessibilityEvent e = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
         e.setContentChangeTypes(AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE);
         e.setPackageName(view.getContext().getPackageName());

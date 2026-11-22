@@ -335,6 +335,7 @@ impl Inner {
                 if let Handle::Zstd(z) = self.handle(id_of(a)?)? {
                     use zstd::stream::raw::{InBuffer, Operation, OutBuffer};
                     let input = bytes.unwrap_or_default();
+                    let finish = a.get("finish").and_then(Value::as_bool).unwrap_or(false);
                     let mut z = z.lock().unwrap();
                     let mut out = Vec::with_capacity(input.len() / 2 + 64);
                     let mut chunk = vec![0u8; 64 * 1024];
@@ -347,7 +348,11 @@ impl Inner {
                     }
                     loop {
                         let mut o = OutBuffer::around(&mut chunk[..]);
-                        let left = z.flush(&mut o).map_err(err)?;
+                        let left = if finish {
+                            z.finish(&mut o, true).map_err(err)?
+                        } else {
+                            z.flush(&mut o).map_err(err)?
+                        };
                         let n = o.pos();
                         out.extend_from_slice(&chunk[..n]);
                         if left == 0 {

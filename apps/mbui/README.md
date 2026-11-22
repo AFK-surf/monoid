@@ -13,7 +13,7 @@ pull request, checked by one run. `moon.work` names it a member beside this modu
 What knows still.fail is the rest of this directory: its component library (`libs/sf-ui/src`, sf/styles.mbt), its pages and
 frames (`src/sfpages`, `src/sfdesk`, `src/sfapp`, over the model in `src/sfbase`), the core client and its engine
 hosts (`src/core`, `src/sfcore`, `src/host/*_core.*`), the apps (`src/stillfail`; `src/sffix` over made-up data,
-`src/sfkit`, `src/coredemo`), a photo's ThumbHash picture (`src/gallery`), the core's bundling (`core/`, from
+`src/coredemo`), a photo's ThumbHash picture (`src/gallery`), the core's bundling (`core/`, from
 this repository's `client/core-ts`), the end-to-end flows against a local still.fail (`e2e/`, scripts/e2e-local.sh), and
 the platforms' projects (`android/`, `ios/`, `windows/`, `linux/`).
 
@@ -39,7 +39,7 @@ repository's docs).
 ```sh
 apps/mbui/scripts/check.sh                          # moon check, js and native
 apps/mbui/scripts/test.sh                           # the library's, the pages' and the core client's tests
-APP=sffix apps/mbui/scripts/mac.sh build            # macOS: sffix (Home over made-up chats), sfkit, stillfail, coredemo…
+APP=sffix apps/mbui/scripts/mac.sh build            # macOS: sffix (Home over made-up chats), stillfail, coredemo…
 apps/mbui/scripts/web-app.sh                        # the web's build of the app (web/mbui.html)
 apps/mbui/scripts/shots.sh home web-home            # screenshots to look at, in out/shots (no references)
 apps/mbui/scripts/android.sh build                  # the Android app, debug (APP=stillfail); VARIANT=release the mbui one

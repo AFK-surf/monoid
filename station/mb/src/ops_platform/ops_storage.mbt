@@ -30,6 +30,10 @@ pub let config_backups_kept : Int = 3
 pub let node_part_ms : Double = day_ms
 
 ///|
+/// storage.ts `BOARD_FILES_GONE_MS`.
+pub let board_files_gone_ms : Double = day_ms
+
+///|
 pub let upkeep_every_ms : Double = 600000.0
 
 ///|
@@ -90,6 +94,7 @@ pub let storage_manifest : Array[StorageEntry] = [
   se("presence.json", "bounded-ephemeral", "whether the station is online (older stations)", max_bytes=mib),
   se("model-catalog.json", "bounded-ephemeral", "the models' catalog as last read", max_bytes=16.0 * mib),
   se("repo-index.json", "bounded-ephemeral", "the repositories found on the machine", max_bytes=64.0 * mib),
+  se("upkeep-state.json", "bounded-ephemeral", "persistent timestamps and idle-rebuildable memo for periodic upkeep", max_bytes=mib, reclaim="Upkeep / Hub: rewritten in place, idleMeasured capped at 4096"),
   se("remote-connects.json", "authoritative", "connects of other stations (connects/keys.ts)"),
   se("comma-tasks.json", "authoritative", "Comma's tasks"),
   se("comma-stats.db", "authoritative", "Comma's statistics"),
@@ -111,13 +116,28 @@ pub let storage_manifest : Array[StorageEntry] = [
   se("browser", "authoritative", "the station's own Chrome profiles (sign-ins)"),
   se("shells", "authoritative", "the agents' shells' settings"),
   se("shell", "authoritative", "the agents' shell's settings"),
-  se("transcripts", "authoritative", "the agents' transcripts"),
+  se("transcripts", "authoritative", "the agents' transcripts", reclaim="sessions/lifecycle.ts deleteSession (exclusive), ops/storage.ts relieveOrphanTranscripts (low disk only)"),
   se("transcripts-segmented", "authoritative", "transcripts put away in segments (sessions/cold.ts)"),
-  se("sessions", "session-bound", "each chat's workspace", reclaim="sessions/lifecycle.ts expireArchived, relieveArchived"),
+  se("sessions", "session-bound", "each chat's workspace", reclaim="sessions/lifecycle.ts expireArchived, packUnfinishedArchived, cleanIdleRebuildable, relieveIdleRebuildable, relieveArchived; Upkeep pruneOrphanRooms"),
   se("archive", "authoritative", "chats put away (store/archive.ts)"),
   se("uploads", "authoritative", "files sent in chats"),
-  se("homes", "authoritative", "the runtimes' homes (accounts' sign-ins, their settings)"),
-  se("repos", "authoritative", "the repositories' shared clones"),
+  se(
+    "board-files",
+    "authoritative",
+    "the files of people's drafts of 待派发 (sessions/board-drafts.ts; those of a draft started or deleted, .gone, a day more, held by Upkeep)",
+    max_age_ms=board_files_gone_ms,
+    reclaim="Upkeep goneBoardFiles",
+  ),
+  se("homes", "authoritative", "the runtimes' homes (accounts' sign-ins, their settings)", reclaim="sessions/lifecycle.ts deleteSession (exclusive transcripts), ops/storage.ts relieveOrphanTranscripts (low disk only)"),
+  se("colab", "bounded-ephemeral", "the Colab sandboxes' CLI venv, synced CLI homes, SSH key and VM records (agents/sandbox.ts colabPool; no authoritative credentials)", reclaim="agents/sandbox.ts reapColab"),
+  se("repos", "session-bound", "the repositories' shared clones", reclaim="Upkeep pruneAllRepoBranches (daily), sessions/lifecycle.ts relieveRepos (low disk only)"),
+  se(
+    "repo-bundles",
+    "bounded-ephemeral",
+    "git bundles of stale unpushed branches pruned from shared clones",
+    max_age_ms=30.0 * day_ms,
+    reclaim="Upkeep pruneExpiredRepoBundles",
+  ),
   se("agent", "authoritative", "the agents' memory and skills"),
   se("share", "authoritative", "the memory's versions shared between stations"),
   se("xshare", "authoritative", "chats shared with other workspaces"),
@@ -299,6 +319,82 @@ pub fn remove_stale(fs : Fs, dir : String, prefix : String, max_age_ms : Double,
 }
 
 ///|
+/// Pure selection for `gone_board_files`: given `(person, draft, [(file, mtime_ms)])` under `<person>/.gone/<draft>`,
+/// returns `(gone_labels_sorted, empty_draft_dirs)`.
+fn gone_board_files_plan(
+  entries : Array[(String, String, Array[(String, Double)])],
+  max_age_ms : Double,
+  now : Double,
+) -> (Array[String], Array[(String, String)]) {
+  let gone = []
+  let empty_dirs = []
+  for entry in entries {
+    let (person, draft, files) = entry
+    let mut left = files.length()
+    for f in files {
+      if now - f.1 < max_age_ms {
+        continue
+      }
+      gone.push(person + "/" + draft + "/" + f.0)
+      left -= 1
+    }
+    if left == 0 {
+      empty_dirs.push((person, draft))
+    }
+  }
+  gone.sort_by(units_order)
+  (gone, empty_dirs)
+}
+
+///|
+/// storage.ts `goneBoardFiles`: the files of drafts of 待派发 started or deleted (`dir` is board-files:
+/// <person>/.gone/<draft>/<file>) put aside `max_age_ms` or longer before `now`, removed, and a draft's folder left
+/// empty: the files removed, as <person>/<draft>/<file>, sorted.
+pub fn gone_board_files(fs : Fs, dir : String, max_age_ms : Double, now : Double) -> Array[String] raise {
+  let entries = []
+  for person in fs.names(dir).unwrap_or([]) {
+    let aside = posix_join([dir, person, ".gone"])
+    for draft in fs.names(aside).unwrap_or([]) {
+      guard fs.names(posix_join([aside, draft])) is Some(files) else { continue }
+      let dated = []
+      for f in files {
+        guard fs.lstat(posix_join([aside, draft, f])) is Some(st) else { continue }
+        dated.push((f, st.mtime_ms))
+      }
+      entries.push((person, draft, dated))
+    }
+  }
+  let (gone, empty_dirs) = gone_board_files_plan(entries, max_age_ms, now)
+  for label in gone {
+    let parts = split_on(label, "/")
+    if parts.length() == 3 {
+      try fs.remove(posix_join([dir, parts[0], ".gone", parts[1], parts[2]]), recursive=true) catch {
+        _ => ()
+      }
+    }
+  }
+  for d in empty_dirs {
+    try fs.remove(posix_join([dir, d.0, ".gone", d.1]), recursive=true) catch {
+      _ => ()
+    }
+  }
+  gone
+}
+
+///|
+/// As JavaScript's sort() compares strings: by their UTF-16 code units (MoonBit's compare puts the shorter first).
+fn units_order(a : String, b : String) -> Int {
+  let n = if a.length() < b.length() { a.length() } else { b.length() }
+  for i in 0..<n {
+    let d = a.unsafe_charcode_at(i) - b.unsafe_charcode_at(i)
+    if d != 0 {
+      return d
+    }
+  }
+  a.length() - b.length()
+}
+
+///|
 /// storage.ts `capByAge`'s choice: of `files` (a path, its bytes, its mtime), those to remove, the longest unchanged
 /// first, until they are `max_bytes` together; and the bytes freed.
 pub fn cap_plan(files : Array[(String, Double, Double)], max_bytes : Double) -> (Array[String], Double) {
@@ -416,7 +512,7 @@ pub fn upkeep_round(runners : Bool, jobs : Bool, remote : Bool, checkpoint : Boo
   if checkpoint {
     out.push("database log")
   }
-  out.push_iter(["thumbs", "node parts", "config backups", "transcript marks"].iter())
+  out.push_iter(["thumbs", "node parts", "config backups", "transcript marks", "board files"].iter())
   out
 }
 

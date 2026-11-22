@@ -15,12 +15,6 @@ fn p52_cold_files(bus : LiveBus) -> @session_storage.Files {
 }
 
 ///|
-/// The program the station runs as (its readers' and builders').
-fn p52_reader_program(bus : LiveBus) -> String {
-  attempt(() => @drive.realpath(bus.argv0)).unwrap_or(bus.argv0)
-}
-
-///|
 /// One ask of a program on its stdin, its first line of output parsed; the process ended if the wait is called off.
 async fn p52_one_ask(bus : LiveBus, program : String, args : Array[String], ask : Json) -> Json {
   let proc = spawn(bus.host, program, args, stdin_piped=true, stdout=Piped, stderr=Ignored) catch {
@@ -51,7 +45,7 @@ async fn p52_one_ask(bus : LiveBus, program : String, args : Array[String], ask 
 async fn p52_packed(bus : LiveBus, ask : Json) -> Json {
   let said = p52_one_ask(
     bus,
-    p52_reader_program(bus),
+    reader_program(bus),
     ["--builder", "packed", "--shell-dir", tmpdir()],
     ask,
   )
@@ -73,7 +67,7 @@ async fn p52_packed(bus : LiveBus, ask : Json) -> Json {
 /// What `--builder footprint` answers a measure, as `@footprint.answer` says it: a builder nobody waits on, so it
 /// yields the machine, its disk too, to the foreground (mb-reader.ts BACKGROUND_BUILDERS).
 async fn p52_footprint(bus : LiveBus, ask : String) -> Json {
-  let (program, args) = backgrounded(p52_reader_program(bus), ["--builder", "footprint", "--sep", sep()])
+  let (program, args) = backgrounded(reader_program(bus), ["--builder", "footprint", "--sep", sep()])
   let parsed = @json.parse(ask) catch { _ => Json::null() }
   p52_one_ask(bus, program, args, parsed) catch {
     e => { "error": Json::string(@session_storage.message_of(e)) }

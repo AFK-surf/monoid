@@ -5,7 +5,7 @@ from pathlib import Path
 import threading
 import unittest
 
-path = Path(__file__).resolve().parents[1] / "src/screens/linux-portal.py"
+path = Path(__file__).resolve().parents[1] / "assets/screens/linux-portal.py"
 spec = importlib.util.spec_from_file_location("linux_portal_frames_test", path)
 portal = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(portal)

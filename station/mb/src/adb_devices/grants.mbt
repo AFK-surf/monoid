@@ -203,7 +203,7 @@ pub struct PhoneGrants {
 ///|
 fn sql_j(v : J) -> Json {
   match v {
-    Str(u) => Json::string(@jsjson.text(u))
+    Str(u) => Json::string(@jsjson.sanitize_str(u))
     Num(d) => Json::number(d)
     Bool(b) => Json::boolean(b)
     _ => Json::null()
@@ -247,15 +247,15 @@ fn PhoneGrants::secs(self : PhoneGrants) -> Double {
 }
 
 ///|
-async fn PhoneGrants::ended(self : PhoneGrants, session : String) -> Bool {
-  let row = self.w.store("getSession", [js(session)])
+fn PhoneGrants::ended(self : PhoneGrants, session : String) -> Bool {
+  let row = self.w.get_session(session)
   row is Null || !nullish(at(Some(row), "archivedAt"))
 }
 
 ///|
 /// A grant belongs to its chat's workspace, not to the chat's directory on disk.
 async fn PhoneGrants::workspace(self : PhoneGrants, r : Req) -> J {
-  let row = self.w.store("getSession", [js(r.session())])
+  let row = self.w.get_session(r.session())
   match at(Some(row), "ws") {
     Some(Null) | None => self.w.ask("grants.home", [])
     Some(ws) => ws
@@ -592,11 +592,11 @@ pub async fn PhoneGrants::live_all(self : PhoneGrants) -> Array[Req] {
 
 ///|
 /// The person a session works for: whoever started its chat.
-pub async fn PhoneGrants::starter(
+pub fn PhoneGrants::starter(
   self : PhoneGrants,
   session : String,
-) -> String? {
-  str_of(Some(self.w.store("starter", [js(session)])))
+) -> String? raise {
+  self.w.starter(session)
 }
 
 ///|
@@ -636,7 +636,12 @@ pub async fn PhoneGrants::ask(
   // latest one: a reasked card goes back to its original place. Older requests may not record that place.
   let original = match pending {
     Some(p) if !nullish(p.get("thread")) =>
-      self.w.store("sessionThreadById", [js(session), p.get("thread").unwrap()])
+      @jsjson.jval_of_json(
+        self.w.threads.session_thread_by_id(
+          Json::string(session),
+          @jsjson.jval_to_json(p.get("thread").unwrap()),
+        ),
+      )
     _ => Null
   }
   let mut thread = original
@@ -663,10 +668,7 @@ pub async fn PhoneGrants::ask(
   let r = match pending {
     Some(p) => p
     None => {
-      let id = match self.w.ask("grants.id", []) {
-        Str(_) as s => s
-        _ => js(fresh_id((self.w.now)()))
-      }
+      let id = js(fresh_id((self.w.now)()))
       let row = get(thread, "thread")
       Req::new(
         jo([
@@ -836,11 +838,7 @@ async fn PhoneGrants::post(
     stillfail_surface &&
     at(Some(get(thread, "thread")), "surface") is Some(Str(_))
   // (asked of someone the chat's agent does not work for: they are named, so the chat sees whose phone it asks)
-  let starter = self.w.store("starter", [js(session)])
-  let starter = match starter {
-    Str(u) => Some(@jsjson.text(u).to_lower())
-    _ => None
-  }
+  let starter = self.w.starter(session).map(u => u.to_lower())
   let whose = if starter == Some(r.owner()) {
     "你的手机"
   } else {
@@ -922,7 +920,13 @@ pub async fn PhoneGrants::linked(
   if !links.contains(link) {
     return
   }
-  for r in self.granted_of_owner(owner) {
+  // Each grant read again as its turn comes: one taken back or run out while an earlier one was told (an `await`)
+  // is not written back as granted from a row read before.
+  let ids = self.granted_of_owner(owner).map(r => r.id())
+  for id in ids {
+    guard self.get(id) is Some(r) && r.status() == "granted" && self.live(r) else {
+      continue
+    }
     if r.get("link") is Some(Str(_)) && r.text("link") == link {
       continue
     }
@@ -1004,7 +1008,8 @@ async fn PhoneGrants::save_and_restate(
       ("close", jb(close)),
       ("outcome", outcome_of(r)),
     ])
-    let saved = (self.w.callback)(fn(_) {
+    // (written in the same transaction as the card's close and its queued outcome: neither without the other)
+    let saved = (self.w.write)(fn(_) raise {
       self.save(r)
       J::Null
     })
@@ -1155,7 +1160,9 @@ pub async fn PhoneGrants::keep_revoke(
     return None
   }
   let owner = email.to_lower()
+  // (one transaction: those ended let go, this one kept, the oldest past the cap let go; the reads write nothing)
   try {
+    self.db.exec("BEGIN IMMEDIATE")
     ignore(
       self.db.run("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?", [
         Json::string(owner),
@@ -1179,8 +1186,14 @@ pub async fn PhoneGrants::keep_revoke(
         [Json::string(owner), Json::number(revokes_per_owner_max.to_double())],
       ),
     )
+    self.db.exec("COMMIT")
   } catch {
-    e => return Some(e.to_string())
+    e => {
+      self.db.exec("ROLLBACK") catch {
+        _ => ()
+      }
+      return Some(e.to_string())
+    }
   }
   match self.told_revoke {
     Some(f) => f(kept, owner, request, workspace)
@@ -1190,25 +1203,18 @@ pub async fn PhoneGrants::keep_revoke(
 }
 
 ///|
-/// The signed takings back of `email`'s grants kept here (those ended let go).
+/// The signed takings back of `email`'s grants kept here, those ended left out. Only reads (grants.ts
+/// `revokesOfOwner`): `keep_revoke` lets the ended go.
 pub fn PhoneGrants::revokes_of_owner(
   self : PhoneGrants,
   email : String,
 ) -> Array[J] raise {
   let owner = email.to_lower()
-  ignore(
-    self.db.run("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?", [
-      Json::string(owner),
-      Json::number(self.secs()),
-    ]),
-  ) catch {
-    e => raise sql_err(e)
-  }
   self
-  .rows("SELECT body FROM adb_revokes WHERE owner = ? ORDER BY exp LIMIT ?", [
-    js(owner),
-    jn(revokes_per_owner_max.to_double()),
-  ])
+  .rows(
+    "SELECT body FROM adb_revokes WHERE owner = ? AND exp > ? ORDER BY exp LIMIT ?",
+    [js(owner), jn(self.secs()), jn(revokes_per_owner_max.to_double())],
+  )
   .map(row => @session_chats.parse_js(text_of(at(Some(row), "body"))))
 }
 
@@ -1336,14 +1342,7 @@ pub fn link_said(r : Req) -> String {
 ///|
 /// `String(v)` of what JSON holds.
 pub fn js_text(v : J) -> String {
-  match v {
-    Str(u) => @jsjson.text(u)
-    Null => "null"
-    Bool(b) => if b { "true" } else { "false" }
-    Num(d) => num_text(d)
-    Arr(xs) => xs.map(x => if x is Null { "" } else { js_text(x) }).join(",")
-    Obj(_) => "[object Object]"
-  }
+  @jsjson.jval_js_str(Some(v))
 }
 
 ///|

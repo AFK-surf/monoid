@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { LinuxDesktop } from "../src/screens/linux-desktop.ts";
+import { LinuxInput } from "../src/screens/linux-input.ts";
+import { LinuxNativeDesktop, type LinuxNativeStart } from "../src/screens/linux-native.ts";
 import { LinuxGstDesktop } from "../src/screens/linux-portal.ts";
 import { ScreenRefused, accessShown } from "../src/screens/hub.ts";
 import { desktopEnvironment, graphicalSession } from "../src/screens/linux-session.ts";
@@ -170,4 +174,127 @@ test("the Linux desktop switches between discovered graphical session types", as
   env = { XDG_SESSION_TYPE: "x11", DISPLAY: ":65535", PATH: "" };
   await desktop.refresh(true);
   assert.equal(desktop.access().capture, true); // No APT or X11 tools: the GStreamer/XTest fallback is selected.
+});
+
+test("LinuxInput translates mouse, relative moves, wheel fractions, evdev keys, modifiers, text, and releases held state", () => {
+  const input = new LinuxInput();
+  assert.deepEqual(input.ops({ t: "pointer", kind: "move", x: 0.25, y: 0.5, buttons: 0 }), [
+    { op: "mouse", type: "move", x: 0.25, y: 0.5, button: 0 },
+  ]);
+  assert.deepEqual(input.ops({ t: "pointer", kind: "move", x: 0.25, y: 0.5, buttons: 0, dx: 7, dy: -4, relative: true }), [
+    { op: "mouse", type: "move", x: 0.25, y: 0.5, button: 0, dx: 7, dy: -4, relative: true },
+  ]);
+  assert.deepEqual(input.ops({ t: "pointer", kind: "down", x: 0.25, y: 0.5, buttons: 1 }), [
+    { op: "mouse", type: "down", x: 0.25, y: 0.5, button: 0 },
+  ]);
+  // Fractional wheel accumulates until a full notch.
+  assert.deepEqual(input.ops({ t: "wheel", x: 0.25, y: 0.5, dx: 0, dy: 60 }), []);
+  assert.deepEqual(input.ops({ t: "wheel", x: 0.25, y: 0.5, dx: 0, dy: 60 }), [
+    { op: "wheel", x: 0.25, y: 0.5, dx: 0, dy: 1 },
+  ]);
+  // Ctrl+A wraps with ControlLeft (29) when Control is not already held.
+  assert.deepEqual(input.ops({ t: "key", kind: "down", key: "a", code: "KeyA", mods: 2 }), [
+    { op: "key", evdev: 29, down: true },
+    { op: "key", evdev: 30, down: true },
+    { op: "key", evdev: 29, down: false },
+  ]);
+  assert.deepEqual(input.ops({ t: "key", kind: "down", key: "Control", code: "ControlLeft", mods: 2 }), [
+    { op: "key", evdev: 29, down: true },
+  ]);
+  assert.deepEqual(input.ops({ t: "text", text: "你好" }), [{ op: "text", text: "你好" }]);
+  assert.deepEqual(input.release(), [
+    { op: "mouse", type: "up", x: 0.25, y: 0.5, button: 0 },
+    { op: "key", evdev: 29, down: false },
+  ]);
+  assert.deepEqual(input.release(), []);
+});
+
+test("LinuxNativeDesktop and LinuxDesktop prefer native helper when capture is available and fall back otherwise", async (t) => {
+  const frame = (kind: number, payload: Buffer = Buffer.alloc(0)) => {
+    const head = Buffer.alloc(5);
+    head[0] = kind;
+    head.writeUInt32BE(payload.length, 1);
+    return Buffer.concat([head, payload]);
+  };
+  let statusReply: any = { ok: true, backend: "x11", display: { id: 0, width: 1280, height: 720 }, capture: true };
+  let receivedEnv: NodeJS.ProcessEnv | null = null;
+  const written: Buffer[] = [];
+  const fakeStart: LinuxNativeStart = (_binary, args, env) => {
+    receivedEnv = env;
+    const child = new EventEmitter() as any;
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = () => {
+      child.exitCode = 0;
+      child.stdout.end();
+      child.emit("close", 0, null);
+    };
+    if (args[0] === "status") {
+      queueMicrotask(() => {
+        child.stdout.write(JSON.stringify(statusReply) + "\n");
+        child.stdout.end();
+        child.exitCode = 0;
+        child.emit("close", 0, null);
+      });
+    } else if (args[0] === "view") {
+      child.stdin.on("data", (chunk: Buffer) => {
+        written.push(chunk);
+        if (written.length === 1) {
+          child.stdout.write(frame(1, Buffer.from(JSON.stringify({ width: 1280, height: 720, encoder: "OpenH264 (software)", codec: "h264", regions: true }))));
+        } else {
+          const cfg = Buffer.alloc(12);
+          cfg.writeUInt32BE(1280, 0);
+          cfg.writeUInt32BE(720, 4);
+          cfg[8] = 1;
+          const pkt = Buffer.alloc(12);
+          pkt[0] = 1;
+          pkt.writeBigUInt64BE(1000n, 1);
+          pkt[9] = 0x65;
+          child.stdout.write(Buffer.concat([frame(2, cfg), frame(3, pkt)]));
+        }
+      });
+    }
+    return child;
+  };
+
+  const dir = await mkdtemp(join(tmpdir(), "stillfail-native-route-"));
+  let env: NodeJS.ProcessEnv = { XDG_SESSION_TYPE: "x11", DISPLAY: ":42" };
+  const desktop = new LinuxDesktop({
+    data: dir,
+    env: {},
+    discover: async () => env,
+    changed: () => {},
+    nativeBinary: "/fake/stillfail-screen-linux",
+    nativeStart: fakeStart,
+  });
+  t.after(async () => { await desktop.close(); await rm(dir, { recursive: true, force: true }); });
+
+  await desktop.refresh(true);
+  assert.equal((receivedEnv as NodeJS.ProcessEnv | null)?.DISPLAY, ":42");
+  assert.deepEqual(desktop.size(), { width: 1280, height: 720 });
+  assert.equal(desktop.access().capture, true);
+
+  const view = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264", "jpeg"], bitrate: 2_000_000 });
+  assert.equal(view.regions?.(), true);
+  assert.equal(view.video?.().encoder, "OpenH264 (software)");
+  const f1 = await view.next();
+  assert.ok(f1?.key);
+  assert.equal(f1?.config?.codec, "h264");
+  assert.equal(f1?.config?.width, 1280);
+  view.close();
+
+  // Wayland without wlr-screencopy falls back to LinuxGstDesktop (portal).
+  env = { XDG_SESSION_TYPE: "wayland", WAYLAND_DISPLAY: "wayland-0" };
+  statusReply = { ok: false, capture: false, unsupported: "waylandNoWlr", error: "no wlr" };
+  await desktop.refresh(true);
+  assert.equal(desktop.access().capture, true);
+  assert.deepEqual(desktop.size(), { width: 0, height: 0 });
+
+  // Direct LinuxNativeDesktop reports unavailable when status says capture: false.
+  const nativeOnly = new LinuxNativeDesktop({ binary: "/fake/stillfail-screen-linux", env, changed: () => {}, start: fakeStart });
+  await nativeOnly.refresh(true);
+  assert.equal(nativeOnly.available(), false);
+  assert.equal(nativeOnly.access().reason, "linuxUnavailable");
 });

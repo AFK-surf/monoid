@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CPU_EVERY_MS, CPU_SPAN_MS, CpuWindow, Host } from "../src/api/host.ts";
-import { Gpus, type Run, appleGpu, macDiscreteGpus, nvidiaGpus, windowsAmdGpus } from "../src/jobs/gpu.ts";
+import { Gpus, type Run, appleGpu, runOn, macDiscreteGpus, nvidiaGpus, windowsAmdGpus } from "../src/jobs/gpu.ts";
 import { Net, OLDER, detailed, measure, summary } from "../src/jobs/load.ts";
 
 test("the CPUs' recent business is an average over about the last minute, not the moment's", () => {
@@ -224,4 +224,48 @@ test("unknown memory is never reported as all available", async () => {
     assert.equal(load.checkedAt, null);
     assert.doesNotMatch(summary(load), /memory .* free/);
   }
+});
+
+test("an nvidia-smi that cannot be started while its last answer is given is no rejection, and is asked again later", async () => {
+  const unhandled: unknown[] = [];
+  const heard = (reason: unknown) => void unhandled.push(reason);
+  process.on("unhandledRejection", heard);
+  try {
+    let now = 0;
+    let asked = 0;
+    const answers: (() => Promise<string>)[] = [
+      async () => "NVIDIA A10, 23028, 0, 10",
+      async () => { throw Object.assign(new Error("spawn UNKNOWN"), { code: "UNKNOWN", syscall: "spawn" }); },
+      async () => "NVIDIA A10, 23028, 0, 70",
+    ];
+    const gpus = new Gpus({ run: async (file) => (file === "nvidia-smi" ? answers[asked++]!() : null), os: "windows", arch: "x64", now: () => now });
+    const busy = async () => (await gpus.read())?.find((g) => g.name === "NVIDIA A10")?.busy;
+    assert.equal(await busy(), 0.1);
+    // Ten seconds on: the last answer is given while it is asked again, and the asking fails.
+    now = 10_000;
+    assert.equal(await busy(), 0.1);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(asked, 2);
+    assert.equal(await busy(), undefined, "a failed asking is none until asked again");
+    // Ten seconds after the failure: asked again, and its answer kept.
+    now = 20_000;
+    await busy();
+    await new Promise((r) => setImmediate(r));
+    assert.equal(asked, 3);
+    assert.equal(await busy(), 0.7);
+  } finally {
+    process.off("unhandledRejection", heard);
+  }
+  assert.deepEqual(unhandled, []);
+});
+
+test("a command that throws as it is spawned is a failed one, and one not installed is none", async () => {
+  const throwing = (code: string) => (() => { throw Object.assign(new Error(`spawn ${code}`), { code, syscall: "spawn" }); }) as unknown as Parameters<typeof runOn>[0];
+  assert.equal(await runOn(throwing("UNKNOWN"))("nvidia-smi", [], 1500), null);
+  assert.equal(await runOn(throwing("ENOENT"))("nvidia-smi", [], 1500), undefined);
+  const answering = ((_f: string, _a: string[], _o: unknown, done: (e: Error | null, out: string) => void) => done(null, "out")) as unknown as Parameters<typeof runOn>[0];
+  assert.equal(await runOn(answering)("nvidia-smi", [], 1500), "out");
+  const failing = ((_f: string, _a: string[], _o: unknown, done: (e: Error | null, out: string) => void) => done(Object.assign(new Error("gone"), { code: "ENOENT" }), "")) as unknown as Parameters<typeof runOn>[0];
+  assert.equal(await runOn(failing)("nvidia-smi", [], 1500), undefined);
 });

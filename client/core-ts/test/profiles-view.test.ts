@@ -6,6 +6,7 @@ import { holdLanguage } from "../src/i18n.ts";
 import { profile as shownProfile } from "../src/present.ts";
 import { choices, models, runtimes, runnableOn, servingIn } from "../src/views/models.ts";
 import { stationProfileSummary, workspaceProfiles } from "../src/views/profiles.ts";
+import { profilesOverview } from "../src/views/profiles-overview.ts";
 
 holdLanguage();
 
@@ -352,12 +353,17 @@ test("a station with two profiles signed in to the same account: its rows named 
 
 test("an account signed in on two stations, signed out on one: the row shows the one that works and names where the other needs a look", () => {
   const signedOut = shownProfile(profile("machine-claude", { email: "z@x.test", runtime: "claude", machine: true, check: { state: "login" } }));
-  const fine = shownProfile(profile("machine-claude", { email: "z@x.test", runtime: "claude", machine: true, check: { state: "ok" } }));
+  const fine = shownProfile(profile("machine-claude", { email: "z@x.test", runtime: "claude", machine: true, check: { state: "ok" },
+    quota: { state: "ok", windows: [{ label: "每周", minutes: 10080, usedPercent: 5 }] } }));
   const view = workspaceProfiles([station(A, "macbook", true, [signedOut]), station(B, "mini", true, [fine])]);
   assert.equal(view.items.length, 1);
   const row = view.items[0];
   assert.equal(row.stationName, "mini", "the copy that works");
   assert.deepEqual([row.look, row.state], [true, { text: "macbook：需要登录", tone: "amber" }]);
+  const pool = profilesOverview(view.items, () => undefined, 0, 0).pools[0]!;
+  assert.deepEqual([pool.ready, pool.total, pool.nowPct], [1, 1, 95]);
+  const unavailable = workspaceProfiles([station(A, "macbook", true, [signedOut]), station(B, "mini", true, [signedOut])]);
+  assert.equal(profilesOverview(unavailable.items, () => undefined, 0, 0).pools[0]!.ready, 0);
   // Both fine: nothing said.
   const both = workspaceProfiles([station(A, "macbook", true, [fine]), station(B, "mini", true, [fine])]);
   assert.deepEqual([both.items[0].look, both.items[0].state, both.items[0].stationName], [false, null, "macbook"]);
@@ -409,4 +415,120 @@ test("Hermes profiles can name models and expose a selected model to new chats",
   assert.ok(listed.available.includes("openrouter:model-a"));
   const selected = {...base,models:["openrouter:model-a"]};
   assert.deepEqual(runtimes({profiles:[selected]}),[{runtime:"hermes",models:["openrouter:model-a"]}]);
+});
+
+test("service profiles decorate without agent runtime, dedup by (service, email), and stay out of model pickers", () => {
+  const raw = {
+    id: "gpu-1",
+    name: "GPU 1",
+    email: "alice@example.com",
+    runtime: null,
+    service: "fake-gpu",
+    runtimes: [],
+    access: { kind: "service", key: "", service: "fake-gpu" },
+    models: [],
+    env: [],
+  };
+  const decorated = shownProfile(raw);
+  assert.equal(decorated.group, "service");
+  assert.equal(decorated.modelsReading, false);
+  assert.equal(decorated.canAddModel, false);
+  assert.equal(decorated.signInProvider, "");
+  assert.deepEqual(decorated.uses, []);
+  assert.deepEqual(runtimes({ profiles: [decorated] }), []);
+
+  // Same service + same email across two stations merge into one account row;
+  // an agy subscription with the same email stays separate; service without email never merges.
+  const svcA = shownProfile({ ...raw, id: "gpu-a" });
+  const svcB = shownProfile({ ...raw, id: "gpu-b" });
+  const agySameEmail = shownProfile({
+    id: "agy-1",
+    name: "AGY",
+    email: "alice@example.com",
+    runtime: "agy",
+    runtimes: ["agy"],
+    access: { kind: "subscription", key: "" },
+    models: [],
+    env: [],
+  });
+  const anonA = shownProfile({ ...raw, id: "gpu-anon-a", email: null });
+  const anonB = shownProfile({ ...raw, id: "gpu-anon-b", email: null });
+  const view = workspaceProfiles([
+    station(A, "office", true, [svcA, agySameEmail, anonA]),
+    station(B, "mini", true, [svcB, anonB]),
+  ]);
+  assert.equal(view.items.length, 4);
+  const merged = view.items.find((i: any) => i.group === "service" && i.members.length === 2);
+  assert.ok(merged, "same (service, email) across stations should merge");
+  assert.equal(merged.title, "alice@example.com");
+  const anon = view.items.find((i: any) => i.group === "service" && i.members.length === 1);
+  assert.ok(anon);
+  assert.equal(anon.title, "GPU 1");
+  assert.ok(view.items.some((i: any) => i.group === "agy" && i.members.length === 1), "agy subscription must not merge with service profile");
+});
+
+test("colab service profile groups under Google without merging with Antigravity CLI or entering Gemini overview pool", () => {
+  const colab = shownProfile({
+    id: "colab-1",
+    name: "lin@example.com",
+    email: "lin@example.com",
+    runtime: null,
+    service: "colab",
+    runtimes: [],
+    access: { kind: "service", key: "", service: "colab" },
+    models: [],
+    env: [],
+    check: { state: "ok", detail: "已登录，lin@example.com", models: null, checkedAt: 1000 },
+    quota: {
+      state: "ok",
+      windows: [],
+      credits: { hasCredits: true, unlimited: false, balance: "2500.00 CU" },
+      detail: "1 台运行中 · 10.05 CU/h",
+      checkedAt: 1000,
+    },
+  });
+  const agy = shownProfile({
+    id: "agy-1",
+    name: "lin@example.com",
+    email: "lin@example.com",
+    runtime: "agy",
+    runtimes: ["agy"],
+    access: { kind: "subscription", key: "" },
+    models: [],
+    env: [],
+    check: { state: "ok", detail: "已登录", models: [], checkedAt: 1000 },
+    quota: { state: "ok", windows: [], checkedAt: 1000 },
+  });
+  assert.equal(colab.group, "agy");
+  assert.equal(colab.groupTitle, "Google");
+  assert.equal(agy.group, "agy");
+  assert.equal(agy.groupTitle, "Google");
+  assert.equal(colab.providerName, "Google Colab");
+  assert.equal(colab.providerMark, "colab");
+  assert.equal(colab.signInProvider, "Google Colab");
+  assert.equal(colab.usesText, "Google Colab GPU 算力");
+
+  const expired = shownProfile({
+    id: "colab-2",
+    name: "expired@example.com",
+    email: "expired@example.com",
+    runtime: null,
+    service: "colab",
+    runtimes: [],
+    access: { kind: "service", key: "", service: "colab" },
+    models: [],
+    env: [],
+    check: { state: "login", detail: "未登录", models: null, checkedAt: 1000 },
+  });
+  assert.equal(expired.trouble?.action, "login");
+
+  // Same email for Antigravity CLI and Colab stay separate rows under Google.
+  const view = workspaceProfiles([station(A, "office", true, [agy, colab, expired])]);
+  const googleRows = view.items.filter((i: any) => i.group === "agy");
+  assert.equal(googleRows.length, 3);
+  assert.ok(googleRows.every((i: any) => i.groupTitle === "Google"));
+
+  // Neither ok nor expired (needsFix) Colab profiles enter the Gemini overview pool.
+  const ov = profilesOverview(view.items, () => null, 1_900_000_000_000, 480);
+  assert.equal(ov.pools.find((p) => p.title === "Gemini"), undefined);
 });

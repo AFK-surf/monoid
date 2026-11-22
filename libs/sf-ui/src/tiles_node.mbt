@@ -97,10 +97,9 @@ fn tile_node(
 }
 
 ///|
-/// Ways to go on, one to be chosen (the ways to connect a vendor that has both), `ways` (an id, its title, what it is)
-/// as they are now; pressed, `choose` given its id. Wide (methods, method): side by side, 12 apart, each its title and
-/// what it is on a card, the hover's ground under the hand. Narrow: a group's card of rows, each `mark` before its title,
-/// what it is under it.
+/// Ways to go on, one to be chosen (the ways to connect a vendor that has more than one), `ways` (an id, its title,
+/// what it is) as they are now; pressed, `choose` given its id. A rounded group card of rows across both wide and narrow
+/// layouts, each with its `mark` aligned to the title's first line and its description below.
 #callsite(autofill(loc))
 pub fn ways_node(
   parent : @view.View,
@@ -109,36 +108,16 @@ pub fn ways_node(
   mark? : (@view.View, String) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  match look_node(parent) {
-    Wide =>
-      parent.box(made_for=loc, fn(r) {
-        style_node(r, fn() { way_cards })
-        r.each(ways, fn(w) { w.0 }, fn(card, w) {
-          let id = @signals.untracked(fn() { w.get().0 })
-          style_node(card, fn() { way_card }, in_row=true)
-          hover_ground_node(card)
-          pressed_node(card, fn() { choose(id) }, By(fn() { @ui.tree_theme().corner(Xl3) }), Button, fn() { w.get().1 })
-          words_node(card, fn() { w.get().1 }, fn() { desk_strong }) |> ignore
-          words_node(card, fn() { w.get().2 }, fn() { desk_muted }) |> ignore
-        })
-      })
-      |> ignore
-    Narrow =>
-      group_node(parent, fn(card) {
-        card.each(ways, fn(w) { w.0 }, fn(r, w) {
-          let id = @signals.untracked(fn() { w.get().0 })
-          let lead = match mark {
-            Some(f) =>
-              LeadMade(fn(l) {
-                l.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-                f(l, id)
-              })
-            None => NoLead
-          }
-          link_row_node(r, fn() { w.get().1 }, fn() { choose(id) }, note=fn() { w.get().2 }, lead~)
-        })
-      })
-  }
+  group_node(parent, loc~, fn(card) {
+    card.each(ways, fn(w) { w.0 }, fn(r, w) {
+      let id = @signals.untracked(fn() { w.get().0 })
+      let lead = match mark {
+        Some(f) => LeadLine(fn(l) { f(l, id) })
+        None => NoLead
+      }
+      link_row_node(r, fn() { w.get().1 }, fn() { choose(id) }, note=fn() { w.get().2 }, strong=true, lead~)
+    })
+  })
 }
 
 ///|
@@ -191,13 +170,3 @@ let tile_group_head_narrow : @ui.Style = @ui.css("w=Full pl=S1_5 pt=S1_5")
 ///|
 // kept across runs: a value (no field of it changes)
 let tile_group_head_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
-
-///|
-/// The ways side by side (methods: 12 apart, as tall as the tallest).
-// kept across runs: a value (no field of it changes)
-let way_cards : @ui.Style = @ui.css("row w=Full gap=S3 align=AStretch")
-
-///|
-/// A way (method: 18 in, 6 apart, on a card, round as Xl3).
-// kept across runs: a value (no field of it changes)
-let way_card : @ui.Style = @ui.style(w=grow).then(@ui.css("p=S4_5 gap=S1_5 radius=Xl3"))

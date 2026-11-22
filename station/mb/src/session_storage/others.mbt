@@ -150,18 +150,18 @@ fn sessions_of(v : Json) -> Array[String] {
 
 ///|
 /// The key a thread goes by where it is shared: its own session's, else its first agent's.
-async fn Storage::chat_key_of(self : Storage, t : Json) -> String {
+fn Storage::chat_key_of(self : Storage, t : Json) -> String raise {
   match str(t, "home") {
     Some(h) => h
-    None => sessions_of(self.ask("store.threadSessions", [get(t, "id").unwrap_or(Json::null())])).get(0).unwrap_or("")
+    None => sessions_of(self.st.threads.thread_sessions(get(t, "id").unwrap_or(Json::null()))).get(0).unwrap_or("")
   }
 }
 
 ///|
 /// The chats session `key` is in, by the keys they are shared by.
-async fn Storage::chats_of(self : Storage, key : String) -> Array[String] {
+fn Storage::chats_of(self : Storage, key : String) -> Array[String] raise {
   let out = [key]
-  for t in items(Some(self.ask("store.sessionThreads", [js(key)]))) {
+  for t in items(Some(self.st.threads.session_threads(js(key), Json::null()))) {
     let c = self.chat_key_of(thread_of(t))
     if !out.contains(c) {
       out.push(c)
@@ -171,8 +171,8 @@ async fn Storage::chats_of(self : Storage, key : String) -> Array[String] {
 }
 
 ///|
-async fn Storage::in_workspace(self : Storage, key : String, ws : String) -> Bool {
-  self.ask("hub.inWorkspace", [js(key), js(ws)]) is True
+fn Storage::in_workspace(self : Storage, key : String, ws : String) -> Bool {
+  self.st.hub.get_session(key) is Some(_) && self.st.hub.ws_of(Some(key)) == Some(ws)
 }
 
 ///|
@@ -184,7 +184,7 @@ pub async fn Storage::reachable(self : Storage, key : String, ws : String?, writ
   }
   let shared = []
   for c in self.chats_of(key) {
-    let share = self.ask("store.chatShare", [js(c)])
+    let share = self.st.store.chat_share(js(c))
     if share is Null {
       continue
     }
@@ -194,14 +194,14 @@ pub async fn Storage::reachable(self : Storage, key : String, ws : String?, writ
     }
   }
   for c in shared {
-    self.st.tell("store.usedChatShare", [js(c), ja([js(w)])])
+    self.st.store.used_chat_share(js(c), [js(w)])
   }
   shared.length() > 0
 }
 
 ///|
-async fn Storage::ws_of(self : Storage, key : String?) -> String? {
-  as_str(Some(self.ask("hub.wsOf", [jopt(key)])))
+fn Storage::ws_of(self : Storage, key : String?) -> String? {
+  self.st.hub.ws_of(key)
 }
 
 ///|
@@ -210,7 +210,7 @@ pub async fn Storage::thread_in(self : Storage, thread : Json, ws : String?) -> 
   guard ws is Some(w) else { return true }
   let keys = match str(thread, "home") {
     Some(h) => [h]
-    None => sessions_of(self.ask("store.threadSessions", [get(thread, "id").unwrap_or(Json::null())]))
+    None => sessions_of(self.st.threads.thread_sessions(get(thread, "id").unwrap_or(Json::null())))
   }
   if keys.length() == 0 {
     return self.ws_of(None) == Some(w)
@@ -226,7 +226,7 @@ pub async fn Storage::thread_in(self : Storage, thread : Json, ws : String?) -> 
 ///|
 /// The workspace whose chats and stations session `key` reaches: its chat's; None on a station in no workspace.
 pub async fn Storage::scope_of(self : Storage, key : String) -> String? {
-  if items(Some(self.ask("hub.workspaces", []))).length() == 0 {
+  if self.st.hub.workspaces().length() == 0 {
     None
   } else {
     self.ws_of(Some(key))
@@ -265,7 +265,7 @@ pub fn from_before(refusal : String) -> Bool {
 ///|
 /// The other station of the workspace a chat's link is on; None when it is on this one.
 pub async fn Storage::elsewhere(self : Storage, key : String, reference : String) -> String? {
-  let here = match as_str(Some(self.ask("hub.link", [js(key)]))) {
+  let here = match (self.st.hub.world.link)(key) {
     Some(link) => linked_station(link)
     None => None
   }
@@ -356,9 +356,9 @@ pub async fn Storage::for_peer(self : Storage, peer : String, request : Json, ws
 ///|
 /// The chats a session.* request of another station reads or writes in (others.ts `chatsTouched`).
 pub async fn Storage::chats_touched(self : Storage, request : Json) -> Array[String] {
-  let of_session = async fn(key : String) {
+  let of_session = fn(key : String) raise {
     let out = []
-    for t in items(Some(self.ask("store.sessionThreads", [js(key)]))) {
+    for t in items(Some(self.st.threads.session_threads(js(key), Json::null()))) {
       out.push(self.chat_key_of(thread_of(t)))
     }
     out
@@ -475,7 +475,7 @@ pub async fn Storage::named(self : Storage, given : String, ws : String?, write?
       if known && !self.reachable(key, ws) && there is Some(t) && Some(t) != ws {
         if ws is Some(w) {
           for c in self.chats_of(key) {
-            if self.ask("store.chatShareLapsed", [js(c), ja([js(w)])]) is True {
+            if self.st.store.chat_share_lapsed(js(c), ja([js(w)])) {
               raise failed("\{reference} is a chat of another workspace: \{lapsed}")
             }
           }
@@ -494,7 +494,7 @@ pub async fn Storage::named(self : Storage, given : String, ws : String?, write?
   }
   match parse_thread_address(reference) {
     Some((channel, ts)) => {
-      for t in items(Some(self.ask("store.threadsAt", [js(channel), js(ts)]))) {
+      for t in items(Some(self.st.threads.threads_at(js(channel), js(ts)))) {
         if self.thread_in(t, ws) {
           return Thread(t)
         }
@@ -512,11 +512,11 @@ pub async fn Storage::named(self : Storage, given : String, ws : String?, write?
 ///|
 /// The conversation a session is best read in: its own chat on the pages, else the one it last heard from.
 pub async fn Storage::session_thread_of(self : Storage, key : String) -> Json {
-  let home = self.ask("store.sessionHomeThread", [js(key)])
+  let home = self.st.threads.session_home_thread(js(key))
   if !nullish(Some(home)) {
     return home
   }
-  let latest = self.ask("store.latestThread", [js(key)])
+  let latest = self.with_threads(t => t.latest_thread(js(key)))
   if nullish(Some(latest)) {
     raise failed("session \{key} has no conversation yet")
   }
@@ -601,7 +601,7 @@ async fn Storage::chat_list_here(self : Storage, key : String, args : Json, ws :
     if has("recentChatList") {
       Some(self.ask("hub.recentChatList", [jopt(ws), jopt(home), ji(limit)]))
     } else if !has("threadList") {
-      Some(self.ask("store.recentChatList", [jopt(ws), jopt(home), ji(limit)]))
+      Some(self.st.threads.recent_chat_list(jopt(ws), jopt(home), ji(limit)))
     } else {
       None
     }
@@ -614,10 +614,11 @@ async fn Storage::chat_list_here(self : Storage, key : String, args : Json, ws :
     )
   } else if !has("threadList") {
     Some(
-      self.ask(
-        "store.searchChatList",
-        if has_filter { [jopt(ws), jopt(home), ji(limit), js(query), filter_json] } else { [jopt(ws), jopt(home), ji(limit), js(query)] },
-      ),
+      if has_filter {
+        self.st.threads.search_chat_list(jopt(ws), jopt(home), ji(limit), js(query), filter=filter_json)
+      } else {
+        self.st.threads.search_chat_list(jopt(ws), jopt(home), ji(limit), js(query))
+      },
     )
   } else {
     None
@@ -628,7 +629,7 @@ async fn Storage::chat_list_here(self : Storage, key : String, args : Json, ws :
   }
   let rows = match listed {
     Some(l) if get(l, "sessions") is Some(Array(_)) => items(get(l, "sessions"))
-    _ => items(Some(self.ask("store.listSessions", [])))
+    _ => self.st.store.list_sessions()
   }
   let sessions : Map[String, Json] = {}
   for s in rows {
@@ -647,7 +648,7 @@ async fn Storage::chat_list_here(self : Storage, key : String, args : Json, ws :
       let all = if has("threadList") {
         items(Some(self.ask("hub.threadList", [])))
       } else {
-        items(Some(self.ask("store.listThreads", [js(""), Json::null(), Json::null(), js("none")])))
+        items(Some(self.st.threads.list_threads(js(""), Json::null(), Json::null(), js("none"))))
       }
       all.filter(t => {
         let th = thread_of(t)
@@ -778,7 +779,7 @@ async fn Storage::chat_list_here(self : Storage, key : String, args : Json, ws :
       entry += "\n  \{details.join("; ")}"
     }
     if members.length() > 0 {
-      match as_str(Some(self.ask("hub.link", [js(members[0])]))) {
+      match (self.st.hub.world.link)(members[0]) {
         Some(link) if link != "" => entry += "\n  link: \{link}"
         _ => ()
       }
@@ -840,7 +841,7 @@ pub async fn Storage::chat_list(self : Storage, key : String, args : Json) -> St
   if get(args, "archived") is Some(v) && (v is True || v is False) { fwd.push(("archived", v)) }
   if get(args, "limit") is Some(v) { fwd.push(("limit", v)) }
   let forwarded = jo(fwd)
-  let here = as_str(Some(self.ask("hub.link", [js(key)]))).bind(linked_station)
+  let here = (self.st.hub.world.link)(key).bind(linked_station)
   if here == Some(station) {
     return self.chat_list_here(key, forwarded, ws)
   }
@@ -941,15 +942,15 @@ pub async fn Storage::chat_read(self : Storage, key : String, args : Json, seen 
   let mut note = ""
   let (thread, connect) = match what {
     Thread(t) => {
-      let members = items(Some(self.ask("store.threadSessions", [get(t, "id").unwrap_or(Json::null())])))
+      let members = items(Some(self.st.threads.thread_sessions(get(t, "id").unwrap_or(Json::null()))))
       (t, match members.get(0) { Some(m) => str(m, "connect").unwrap_or(""); None => "" })
     }
     Session(k, _) => {
       let found = self.session_thread_of(k)
       let ft = thread_of(found)
-      let recent = self.ask("store.recentSessionThreads", [js(k)])
+      let recent = self.with_threads(t => t.recent_session_threads(js(k), Json::null()))
       let rest = items(get(recent, "threads")).filter(t => get(thread_of(t), "id") != get(ft, "id"))
-      let others = items(Some(self.ask("fn.threadsToldOf", [js(k), jo([("threads", ja(rest)), ("more", get(recent, "more").unwrap_or(jb(false)))])]))).filter_map(x => if x is String(s) { Some(s) } else { None })
+      let others = self.st.hub.threads_told_of(k, recent=(rest, get(recent, "more") is Some(True)))
       if others.length() > 0 {
         note = "\n(Session \{k} also takes part in \{others.join(", ")}; read them with chat_read chat=<address>.)"
       }
@@ -963,8 +964,8 @@ pub async fn Storage::chat_read(self : Storage, key : String, args : Json, seen 
     None => ()
   }
   let text = str(read, "text").unwrap_or("")
-  let agents = sessions_of(self.ask("store.threadSessions", [get(thread, "id").unwrap_or(Json::null())]))
-  let link = if agents.length() > 0 { as_str(Some(self.ask("hub.link", [js(agents[0])]))) } else { None }
+  let agents = sessions_of(self.st.threads.thread_sessions(get(thread, "id").unwrap_or(Json::null())))
+  let link = if agents.length() > 0 { (self.st.hub.world.link)(agents[0]) } else { None }
   let linked = match link {
     Some(l) if l != "" => " (\{l})"
     _ => ""
@@ -982,7 +983,7 @@ pub async fn Storage::session_history(self : Storage, args : Json, ws : String?)
   let (session, entry) = match self.named(reference, ws) {
     Session(k, e) => (k, e)
     Thread(t) => {
-      let agents = sessions_of(self.ask("store.threadSessions", [get(t, "id").unwrap_or(Json::null())]))
+      let agents = sessions_of(self.st.threads.thread_sessions(get(t, "id").unwrap_or(Json::null())))
       if agents.length() == 0 {
         raise failed("\{reference} has no agent, so no execution history")
       }

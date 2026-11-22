@@ -9,18 +9,27 @@ export const PREF_SHAPES: Record<string, Shape> = {
   BoardFile: struct([
     ["id", "String"],
     ["name", "String"],
-  ], { doc: "A queued task's file, named by its composer id; its bytes stay in the device's draft store." }),
+  ], { doc: "A queued task's file, named by its composer id; its bytes are the device's draft store's where it was added,\nkept by the station the task is to run on for the person's other devices." }),
   BoardDraft: struct([
     ["id", "String"],
     ["title", "String"],
     ["station", "String"],
     ["stationName", "String"],
     ["files", opt(vec("BoardFile"))],
-  ], { doc: "An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name." }),
+  ], { doc: "An unstarted task of a workspace's 待派发 column: its key, its words, the station it is to run on and that station's name." }),
+  BoardDraftsView: struct([
+    ["drafts", vec("BoardDraft")],
+  ], { doc: "A person's unstarted tasks of a workspace's 待派发 (the `boardDrafts` topic), newest first: the same on all their\ndevices, kept by the workspace's stations and carried by those devices (views/board-drafts.ts)." }),
+  ClosedTabBatch: struct([
+    ["tabs", vec("String")],
+    ["at", "u32"],
+    ["active", opt("String")],
+  ], { doc: "A batch of closed tabs kept for reopening (`chat.tabs.reopen`)." }),
   KeptTabs: struct([
     ["tabs", vec("String")],
     ["active", opt("String")],
-  ], { doc: "A chat's history tabs as last left: which are open, which is in front." }),
+    ["closed", opt(vec("ClosedTabBatch"))],
+  ], { doc: "A chat's history tabs as last left: which are open, which is in front, and recent closed batches." }),
   DeviceView: struct([
     ["app", "String", { default: true, doc: "`web`, `desktop` or `android`; empty until told." }],
     ["phone", "bool", { default: true, doc: "A phone (the Android app, or a phone's browser)." }],
@@ -33,7 +42,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["boardViews", map("String"), { default: true, doc: "How a workspace's chats are shown on this device, by workspace: `board` (by columns), or none (its list)." }],
     ["boardGroups", map("BoardGroup"), { default: true, doc: "How a workspace's board columns are grouped on this device, by workspace; none: `state`." }],
     ["boardShowEmpty", map("bool"), { default: true, doc: "A workspace's board leaving out its empty columns on this device, by workspace: `false`; none: shown." }],
-    ["boardDrafts", map(vec("BoardDraft")), { default: true, doc: "Unstarted tasks kept in a workspace's 待派发 column on this device, by workspace, newest first (at most 200)." }],
+    ["boardDrafts", map(vec("BoardDraft")), { default: true, doc: "Unstarted tasks a workspace's 待派发 kept on this device before they were carried (by workspace):\ntaken into the `boardDrafts` topic's once and left out of here." }],
     ["listFilter", map("ListFilter"), { default: true, doc: "The list filter chosen in each workspace, by workspace; one not there goes by `only_mine` and `only_watching`\n(one filter for all, as devices kept it before)." }],
     ["appearance", "Appearance", { default: true }],
     ["accent", opt("String"), { doc: "The app's colour theme on this device: `blue`, `teal`, `purple`, `pink`, `custom:<hue>` (0 to 359: a theme the app\nmakes of that hue), or none for still.fail's orange." }],
@@ -59,6 +68,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["driveFavorites", map("String"), { default: true, doc: "Folders this person keeps at hand on the files' page, by workspace, on this device: each a station's folder\n(JSON: [{station, path, name}]), whoever else browses there." }],
     ["driveFavoritesHidden", map("String"), { default: true, doc: "Formerly pinned folders the person removed from their shortcuts on this device, by workspace (JSON places).\nThis leaves the station's existing pinned folders and access rules unchanged." }],
     ["shareLook", opt("String"), { doc: "The look the card shared of the agents at work is drawn in, as last chosen under it on this device: the app's\nkey for it (`night`, `poster`, …; none or one the app does not know: its first)." }],
+    ["cpuDial", opt("String"), { doc: "How a machine's CPU dial says it on this device (its page's 资源, the dial pressed to turn it): `busy`, how much\nof it is used; or (none) how much is idle." }],
     ["dropAs", opt("String"), { doc: "How files dragged into a chat go unless the chat says otherwise (`dropFiles`): file, or (none) path." }],
     ["sendKey", opt("String"), { doc: "How the composer sends on this device (快捷键): `mod`, ⌘Enter (Ctrl+Enter elsewhere), Enter and ⇧Enter a new\nline; or (none) Enter, ⇧Enter a new line. A screen's keyboard's Enter is a new line whatever this says." }],
     ["reports", opt("String"), { doc: "Whether what people use is counted and sent from this device where its host keeps no switch of its own\n(设置 → 关于 → 发送使用统计和错误报告: macOS, Windows, Linux, the web; use-counts.ts): `off`, or none for on." }],
@@ -100,7 +110,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["experimentalItems", vec("ExperimentalItem"), { default: true, doc: "Experimental features visible in 设置 › 实验性功能 on this channel, in registry order." }],
   ], { doc: "What this device keeps of how its person likes it (the `prefs` topic, `prefs.set`), and what it is." }),
   ExperimentalItem: struct([
-    ["id", "String", { doc: "The feature's id in `FEATURES` (`chatPage`, `farviewNative`, `board`, …)." }],
+    ["id", "String", { doc: "The feature's id in `FEATURES` (`farviewNative`, `board`, …)." }],
     ["enabled", "bool", { doc: "Whether this feature is currently turned on on this device." }],
   ], { doc: "One experimental feature shown in 设置 › 实验性功能." }),
   KeymapView: struct([
@@ -129,7 +139,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
   ]),
   KeyGroupName: words(["global","chat","files"], { doc: "Where an action works: anywhere in the app, in a chat, or in a folder of the files." }),
   KeyTyping: words(["yes","no","empty"], { doc: "Whether an action works with the cursor in a text field: always (a binding with ⌘ or ⌥ does nothing there),\nnever (it is a key the field types), or when the field is empty (the key moves the cursor in text)." }),
-  KeyActionName: words(["chat.switch","chat.new","chat.prev","chat.next","sidebar.toggle","nav.back","nav.forward","settings","shortcuts","zoom.in","zoom.out","zoom.reset","composer.focus","composer.file","chat.stop","chat.history","chat.jobs","chat.screen","chat.latest","chat.find","chat.outline","chat.said.prev","chat.said.next","chat.archive","panel.close","files.preview"], { doc: "An action keys do (keymap.ts ACTIONS)." }),
+  KeyActionName: words(["chat.switch","chat.new","chat.prev","chat.next","sidebar.toggle","nav.back","nav.forward","settings","shortcuts","zoom.in","zoom.out","zoom.reset","composer.focus","composer.file","chat.stop","chat.history","chat.jobs","chat.screen","chat.latest","chat.find","chat.outline","chat.said.prev","chat.said.next","chat.archive","panel.close","panel.tab.close","panel.tab.reopen","panel.tab.prev","panel.tab.next","files.preview"], { doc: "An action keys do (keymap.ts ACTIONS)." }),
   KeyAction: struct([
     ["action", "KeyActionName"],
     ["group", "KeyGroupName"],
@@ -300,5 +310,6 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["failed", "bool", { default: true }],
     ["done", "String", { default: true, doc: "off | away (only while no page of the app is in front) | always" }],
     ["message", "bool", { default: true, doc: "Someone else said something." }],
-  ], { doc: "Which notices this device shows (`notify.set` `kinds`); what is not given is on (`done`: away)." }),
+    ["billed", "bool", { default: true, doc: "A session automatically fell back to a pay-as-you-go profile (default off)." }],
+  ], { doc: "Which notices this device shows (`notify.set` `kinds`); what is not given is on (`done`: away, `billed`: off)." }),
 };

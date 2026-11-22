@@ -1,6 +1,6 @@
 // 实验性功能 and the test channel's features (src/features.ts): what each stage gives on each channel, a station's own
-// left to it, the switches kept on the device (`prefs.experimental`), ids not registered let go, and 试用新对话页's older
-// `chatPage` read and written over as the switch.
+// left to it, the switches kept on the device (`prefs.experimental`), ids not registered let go, and 试用新对话页's
+// `chatPage` (graduated: the new chat page is the only one) let go of.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as brand from "../src/brand.ts";
@@ -66,14 +66,12 @@ test("unknown_and_graduated_switches_are_ignored", () => {
   assert.deepEqual(experimentalOf(null, REGISTRY), {});
 });
 
-test("the_older_chat_page_choice_reads_as_its_switch", () => {
-  // (試用新对话页 is the test channel's alone: betaOnly)
-  assert.equal(featureEnabled("chatPage", { chatPage: "nodes" }, true), true);
-  assert.equal(featureEnabled("chatPage", { chatPage: "nodes" }, false), false);
-  assert.equal(featureEnabled("chatPage", { chatPage: "nodes", experimental: { board: true } }, true), true);
-  assert.equal(featureEnabled("chatPage", {}, true), false);
-  assert.deepEqual(Object.keys(FEATURES), ["chatPage", "farviewNative", "board", "terminal", "stationMove"]);
-  assert.deepEqual(stationFeatureIds(), ["terminal", "stationMove"]);
+test("the_graduated_chat_page_switch_is_no_feature", () => {
+  // 试用新对话页 graduated: neither its older prefs field nor its switch turns anything on
+  assert.deepEqual(experimentalOf({ chatPage: "nodes" }), {});
+  assert.deepEqual(experimentalOf({ chatPage: "nodes", experimental: { chatPage: true, board: true } }), { board: true });
+  assert.deepEqual(Object.keys(FEATURES), ["farviewNative", "board", "terminal"]);
+  assert.deepEqual(stationFeatureIds(), ["terminal"]);
 });
 
 test("the_switches_are_kept_on_the_device_and_shown_with_the_prefs", async () => {
@@ -89,7 +87,7 @@ test("the_switches_are_kept_on_the_device_and_shown_with_the_prefs", async () =>
   assert.equal(v(values, 1).features.board, false);
   // a station's own are its overview's to say, never the prefs'
   assert.equal("terminal" in v(values, 1).features, false);
-  assert.deepEqual(v(values, 1).experimentalItems.map((i: J) => i.id), test ? ["chatPage", "farviewNative", "board"] : ["board"]);
+  assert.deepEqual(v(values, 1).experimentalItems.map((i: J) => i.id), test ? ["farviewNative", "board"] : ["board"]);
 
   assert.ok((await ask(host, core, ui, 2, "prefs.set", { experimental: { board: true, farviewNative: true } })).ok !== undefined);
   apply(host, values);
@@ -101,6 +99,7 @@ test("the_switches_are_kept_on_the_device_and_shown_with_the_prefs", async () =>
   // refused: an id not registered, a beta one, a value not a switch
   assert.equal((await ask(host, core, ui, 3, "prefs.set", { experimental: { gone: true } })).error.code, "invalid_params");
   assert.equal((await ask(host, core, ui, 4, "prefs.set", { experimental: { terminal: true } })).error.code, "invalid_params");
+  assert.equal((await ask(host, core, ui, 8, "prefs.set", { experimental: { chatPage: true } })).error.code, "invalid_params");
   assert.equal((await ask(host, core, ui, 5, "prefs.set", { experimental: { board: "on" } })).error.code, "invalid_params");
 
   // off: let go of (null or false), the map gone with its last
@@ -112,18 +111,17 @@ test("the_switches_are_kept_on_the_device_and_shown_with_the_prefs", async () =>
   core.close();
 });
 
-test("the_older_chat_page_choice_is_written_over_as_the_switch", () => {
-  // what 外观's 试用新对话页 of 0.1.9524-0.1.9625 kept: the switch on, once the prefs are next written
+test("the_older_chat_page_choice_and_switch_are_let_go_as_the_prefs_are_next_written", () => {
+  // what 外观's 试用新对话页 of 0.1.9524-0.1.9625 kept, and its 实验性功能 switch since: both let go of
   let kept: J = { chatPage: "nodes" };
   const data = { get: () => kept, set: (_: unknown, v: unknown) => (kept = v) } as unknown as Data;
   prefs.set(data, { motion: "reduce" }, false, 0);
-  assert.deepEqual(kept.experimental, { chatPage: true });
   assert.equal("chatPage" in kept, false);
-  // turned off since: off it stays
-  kept = { chatPage: "nodes", experimental: { chatPage: false } };
+  assert.equal("experimental" in kept, false);
+  kept = { chatPage: "nodes", experimental: { chatPage: true, board: true } };
   prefs.set(data, { motion: "reduce" }, false, 0);
   assert.equal("chatPage" in kept, false);
-  assert.equal(kept.experimental?.chatPage === true, false);
+  assert.deepEqual(kept.experimental, { board: true });
   // nothing writes the older field any more
   assert.throws(() => prefs.set(data, { chatPage: "nodes" }, false, 0));
 });

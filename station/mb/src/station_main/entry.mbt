@@ -4,7 +4,7 @@
 
 ///|
 /// The station's own commands.
-let station_commands : Array[String] = ["run", "enroll", "status", "id", "lock", "channel", "update", "heap"]
+let station_commands : Array[String] = ["run", "enroll", "status", "id", "lock", "channel", "update", "heap", "admin"]
 
 ///|
 /// Whether `argv` (its program first) asks for the station rather than a reader or a builder: a hook's file, one of the

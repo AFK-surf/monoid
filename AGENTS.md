@@ -1,10 +1,10 @@
-# Working on still.fail (for agents)
+# Working on monoid (for agents)
 
 These rules apply to the whole repository. Each part has its own `AGENTS.md` beside its code, loaded when tools touch that directory.
 
 ## The parts
 
-still.fail runs coding-agent sessions in team chats (Slack, Feishu, Comma, and still.fail chats) on user-owned **stations** driven by Claude Code, Codex, and other runtimes.
+monoid (also built as still.fail, the same code under its other name: `client/i18n/brand.ts`) runs coding-agent sessions in team chats (Slack, Feishu, Comma, and its own chats) on user-owned **stations** driven by Claude Code, Codex, and other runtimes.
 
 - `station/`: TypeScript station on bundled Node + Effect (`scripts/station-bundle.sh`), prebuilt native parts (`station/native`), and MoonBit program (`station/mb`) for readers, builders, and the whole station (not shipped alone until it matches TypeScript). Holds chats, sessions, agents, jobs, and accounts over the mesh.
 - `cloud/`: Cloudflare Workers for accounts, workspaces, member credentials, and relays. People only.
@@ -35,7 +35,7 @@ still.fail runs coding-agent sessions in team chats (Slack, Feishu, Comma, and s
 
 ### Commit and pull request messages
 
-- Follow `.agents/skills/ste-writing/SKILL.md` for commits and PR text. Use `{type}({scope}): {description}` for commit subjects (for example `feat(server): add mesh routes`).
+- Follow `.agents/skills/ste-writing/SKILL.md` for commits and PR text. Write PR titles and descriptions in English. Use `{type}({scope}): {description}` for commit subjects (for example `feat(server): add mesh routes`).
 - Add trailers only for user-visible changes (`scripts/changelog.ts`): `Changelog:` in Chinese (`修复：…`, `新增：…`, `改进：…`), `Changelog-parts:` (`station`, `web`, `android`, `desktop`, `cloud`), and `Fixes: FB-<n>`.
 - For gated features (`client/core-ts/src/features.ts`), add `Changelog-channel: beta` for `beta` or `betaOnly` experimental features. For experimental features, name where to enable them (`新增：实验性功能「对话列表看板视图」中，…`). Write a stable line when opening to stable. Override prior lines in `docs/changelog-notes.json`.
 

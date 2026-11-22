@@ -33,7 +33,7 @@ const SCRUBBED = ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "CURSOR_BACKEND_URL", "
 /// The package the driver runs on, installed by npm (updates/runtimes.ts).
 export const SDK_PACKAGE = "@cursor/sdk";
 /// The station's driver: beside this module (src/agents/ from source; the bundle's directory, where the build copies it).
-export const BRIDGE = fileURLToPath(new URL("./cursor-bridge.mjs", import.meta.url));
+export const BRIDGE = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/agents/cursor-bridge.mjs", import.meta.url) : new URL("./cursor-bridge.mjs", import.meta.url));
 
 /// What Cursor keeps of a profile, in its home: the sign-in (auth.json, accounts/cursor.ts), the sessions (shared by every
 /// profile that runs Cursor: agent-home.ts links them), the folders of the station's rules.

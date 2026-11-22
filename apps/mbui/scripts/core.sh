@@ -145,7 +145,7 @@ SHA=$(command -v sha256sum > /dev/null && echo sha256sum || echo "shasum -a 256"
 # apps, and the four change about twice a day (station/package.json's packages, 2026-11) without changing the core.
 # One that does change it ships with the next release, its core made anew because the key changed. Do not make the
 # two agree: a file the bundle takes goes in both, a config file here alone (decided in #6106, 2026-11-14).
-HBC_TREES="client/core-ts client/i18n rules/js station/src/updates/keys.ts station/src/api/moved-from.ts web/public/avatars/index.json package.json tsconfig.json station/package.json station/tsconfig.json"
+HBC_TREES="client/core-ts client/i18n rules/js shared/release-keys.ts shared/moved-from.ts web/public/avatars/index.json package.json tsconfig.json"
 # What the key is of in the checkout: HBC_TREES and, for each of them and for this module's core/ where it lies in the
 # checkout, the package.json, tsconfig.json and jsconfig.json of every directory above it, up to the checkout's own:
 # every place the config esbuild makes a file of theirs by can be, now or after a later commit. Worked out of
@@ -196,8 +196,11 @@ posthog_define() {
   fi
 }
 # When this release build was made (Unix ms, client/core-ts/src/station/oldest.ts `__STILLFAIL_BUILT_AT__`): MBUI_BUILT_AT
-# when given; else for a numbered release (MBUI_BUILD >= 1000) the HEAD commit's timestamp in ms; 0 in local dev so dev
-# builds never prompt to upgrade. Part of core.hbc's key and stamp.
+# when given; else for a numbered release (MBUI_BUILD >= 1000) the UTC day the HEAD commit was made on, its midnight in
+# ms; 0 in local dev so dev builds never prompt to upgrade. Part of core.hbc's key and stamp: the day, not the commit's
+# second, keeps a core.hbc in HBC_CACHE for every commit of a day that left its sources as they were (the second made
+# every commit miss it), and a week's staleness (STALE_BUILD_MS) is not told by the hour. Every step of a job that asks
+# for or makes core.hbc gives the same MBUI_BUILD (pipeline.yml desktop-build, desktop-win), or the key is another.
 built_at_define() {
   if [ -n "${MBUI_BUILT_AT:-}" ]; then
     case "$MBUI_BUILT_AT" in
@@ -209,7 +212,7 @@ built_at_define() {
     ct=$(git -C "$SF_SRC" show -s --format=%ct HEAD 2>/dev/null || true)
     case "$ct" in
       ''|*[!0-9]*) echo 0 ;;
-      *) printf '%s000\n' "$ct" ;;
+      *) printf '%s000\n' "$(( (ct / 86400) * 86400 ))" ;;
     esac
   else
     echo 0
@@ -788,13 +791,6 @@ p = u.urlparse(sys.argv[1]); q = u.parse_qs(p.query); back = u.urlparse(q.get("r
 ok = p.scheme == "https" and p.path == "/v1/auth/google/start" and "state" in q and back.scheme == "http" and back.hostname == "127.0.0.1" and back.path == "/oauth/callback"
 print(back.port if ok else 0)' "$url")
   ok "it is still.fail cloud's login page, coming back to 127.0.0.1:$port/oauth/callback" '[ "$port" -gt 0 ]'
-  if [ -f "$SF_SRC/station/src/logins/parse.ts" ]; then
-    local seen=$(node --experimental-strip-types --no-warnings --input-type=module -e "
-const { loopbackOf } = await import('$SF_SRC/station/src/logins/parse.ts');
-const b = loopbackOf(process.argv[1]);
-console.log(b && b.state ? b.host + ':' + b.port + b.path : 'none');" "$url" 2>&1)
-    ok "a station's login takes it as a loopback login with a state ($seen)" '[ "$seen" = "127.0.0.1:$port/oauth/callback" ]'
-  fi
   ok "the app itself listens there (lsof, as the station checks before relaying)" 'lsof -a -p $pid -iTCP:$port -sTCP:LISTEN -n -P | grep -q "127.0.0.1:$port"'
   ok "another path is not taken" '[ "$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:$port/favicon.ico)" = 404 ]'
   ok "nor the callback under another host name" '[ "$(curl -s -o /dev/null -w "%{http_code}" -H "Host: elsewhere.example:$port" "http://127.0.0.1:$port/oauth/callback?code=x&state=y")" = 404 ]'

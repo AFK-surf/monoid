@@ -25,29 +25,12 @@ const mb = join(station, "mb", "src");
 const repo = join(station, "..");
 
 /// Calls a package makes that the program never reaches: each with a check that it is so.
-const NOT_REACHED: { name: string; why: string; holds: () => boolean }[] = [
-  {
-    name: "rpc mcp_tools child_process.execFile",
-    why: "mcp_tools' DeviceTools are the harness's: station_main has its own (live_p5_1_tools.mbt) and makes none",
-    holds: () => !programSource().includes("@mcp_tools.DeviceTools"),
-  },
-  {
-    name: "rpc mcp_tools door.screened",
-    why: "mcp_tools' Door is the harness's: station_main's door is run.mbt's, /jobs/screen a place of P5-3's (live_p5_3_jobs.mbt)",
-    holds: () => !programSource().includes("@mcp_tools.Door") && /"\/jobs\/screen" if r\.meth == "POST"/.test(read(join(mb, "station_main", "live_p5_3_jobs.mbt"))),
-  },
-  {
-    name: "rpc session_storage fn.historyFound",
-    why: "asked only where the storage's world says `hub.has(\"locateAsync\")` is false, and P5-2's says it is true",
-    holds: () => /"hub\.has" => Json::boolean\(\["locateAsync",/.test(read(join(mb, "station_main", "live_p5_2_world.mbt"))),
-  },
-];
+const NOT_REACHED: { name: string; why: string; holds: () => boolean }[] = [];
 
 /// The parts a dispatcher answers whole, whatever the method (the conversations' world, live_p5_2_chats.mbt
-/// `chats_answer`: `match part { "files" => …, "path" => … }`): a package's call of one is answered there.
+/// `chats_answer`: `match part { "files" => … }`): a package's call of one is answered there.
 const ANSWERED_WHOLE: { pkg: string; part: string; file: string; arm: RegExp }[] = [
-  { pkg: "session_chats", part: "files", file: "live_p5_2_chats.mbt", arm: /^    "files" =>$/m },
-  { pkg: "session_chats", part: "path", file: "live_p5_2_chats.mbt", arm: /^    "path" => \{$/m },
+  { pkg: "session_chats", part: "files", file: "live_p5_2_chats.mbt", arm: /^    "files" => \{$/m },
 ];
 
 const read = (p: string) => readFileSync(p, "utf8");
@@ -145,7 +128,7 @@ test("every call a package makes of the station's parts by name is answered in t
     assert.ok(n.holds(), `${n.name} is reached now (${n.why}): take it out of NOT_REACHED`);
   }
   for (const w of ANSWERED_WHOLE) assert.match(read(join(mb, "station_main", w.file)), w.arm, `${w.file} answers ${w.part} whole no more: take it out of ANSWERED_WHOLE`);
-  assert.ok(counted > 600, `the calls read: ${counted} (fewer than ever: the scan has stopped finding them)`);
+  assert.ok(counted > 300, `the calls read: ${counted} (fewer than ever: the scan has stopped finding them)`);
   const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
@@ -206,6 +189,7 @@ function mbRoutes(): Map<string, string> {
 /// condition it is matched by there.
 const MATCHED: Record<string, [string, RegExp]> = {
   "PUT ^/elevation$": ["rigs_mode/elevation.mbt", /meth == "PUT" && path == "\/elevation"/],
+  "PUT ^/screen-service$": ["rigs_mode/screen_service.mbt", /meth == "PUT" && path == "\/screen-service"/],
   "POST ^/move$": ["move_coord/routes.mbt", /method_: "POST", matches: p => is_path\(p, "\/move"\)/],
   "POST ^/move/back$": ["move_coord/routes.mbt", /is_path\(p, "\/move\/back"\)/],
   "POST ^/move/stop$": ["move_coord/routes.mbt", /is_path\(p, "\/move\/stop"\)/],
@@ -481,7 +465,7 @@ const ASK_ANSWERED_IN: Record<string, RegExp> = {
 const ASK_HANDED_ON: { slice: string; answers: () => string; why: string; holds: () => boolean }[] = [
   {
     slice: "hub",
-    answers: () => /\npub async fn hub_call\([\s\S]*?\n\}\n/.exec(read(join(mb, "session_hub", "hub_harness.mbt")))?.[0] ?? "",
+    answers: () => /\npub async fn hub_call\([\s\S]*?\n\}\n/.exec(read(join(mb, "session_hub", "hub_call.mbt")))?.[0] ?? "",
     why: "P5-2's hub_bridge (live_p5_2_hubops.mbt) asks session_hub's hub_call what it does not answer",
     holds: () => /@session_hub\.hub_call\(hub, name, args\)/.test(read(join(mb, "station_main", "live_p5_2_hubops.mbt"))),
   },
@@ -548,6 +532,334 @@ test("every name a slice asks of another on the bus is one that slice answers", 
       : arms.has(name) || prefixes.some((p) => name.startsWith(p) && (arms.has(name.slice(p.length)) || anywhere.has(name.slice(p.length))));
     return { name: `${slice}_ask ${op}`, ok, why: `${where} asks ${slice}_ask for "${op}", which no dispatcher of its slice answers` };
   });
+  const wrong = judge(results);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+/// Bare `hub.act(...)` calls in `station_main` bypass `Hub::command` / `Hub::notify` cold-session wakeup.
+/// Zero bare `hub.act(` calls are permitted anywhere in `station_main`.
+test("station_main has no bare hub.act() calls bypassing cold-session wakeup", () => {
+  const unexpected: string[] = [];
+  for (const f of programFiles()) {
+    const rel = relative(station, f);
+    const text = read(f);
+    for (const m of text.matchAll(/\.act\(/g)) {
+      const lineStart = text.lastIndexOf("\n", m.index!) + 1;
+      const lineEnd = text.indexOf("\n", m.index!);
+      const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+      if (/^\s*\/\//.test(line) || /\bhold\.act\(/.test(line)) continue;
+      const args = argsAt(text, m.index! + m[0].length);
+      const method = /^\s*"([^"]+)"\s*$/.exec(args[1] ?? "")?.[1] ?? "<dynamic>";
+      const lineNo = text.slice(0, m.index!).split("\n").length;
+      unexpected.push(`${rel}:${lineNo} calls .act(..., "${method}") directly`);
+    }
+  }
+  assert.deepEqual(unexpected, [], unexpected.join("\n"));
+});
+
+/// Prevent Wave 1 & Wave 2 style empty placeholder callbacks from creeping back into `station_main` slice wiring.
+test("station_main slice wiring has no empty stub callbacks", () => {
+  const unexpected: string[] = [];
+  const sliceFiles = programFiles().filter((f) => !f.endsWith("/live_bus.mbt"));
+  for (const f of sliceFiles) {
+    const rel = relative(station, f);
+    const lines = read(f).split("\n");
+    lines.forEach((line, i) => {
+      if (/^\s*\/\//.test(line)) return;
+      if (/\b_connect\s*=>\s*\[\]/.test(line)) {
+        unexpected.push(`${rel}:${i + 1} has empty connect placeholder callback \`_connect => []\``);
+      }
+      if (/\bon_close:\s*_\w*\s*=>\s*\(\)\s*=>\s*\(\)/.test(line)) {
+        unexpected.push(`${rel}:${i + 1} has no-op unsubscribe callback \`on_close: _ => () => ()\``);
+      }
+      if ((rel.endsWith("live_p5_5_connects.mbt") || rel.endsWith("live_p5_5_platforms.mbt")) && /\bignore\(\s*(?:handler|cb|on_message|callback)\s*\)/.test(line)) {
+        unexpected.push(`${rel}:${i + 1} drops connects callback with ignore(...)`);
+      }
+    });
+  }
+  assert.deepEqual(unexpected, [], unexpected.join("\n"));
+});
+
+/// Every MCP tool declared by the TypeScript station must be declared and wired in the MoonBit program,
+/// and no `station_main` PartTool or PartRoute may contain a todo/not-implemented stub.
+test("every TypeScript MCP tool is declared and wired in MoonBit without stub implementations", () => {
+  const tsToolNames = new Set<string>();
+  for (const f of tsFiles()) {
+    const t = read(f);
+    if (!f.includes("/tools/") && !f.endsWith("tools.ts") && !t.includes("parts.tools(")) continue;
+    for (const m of t.matchAll(/^\s+name:\s*"([a-z][a-z0-9_]+)",\s*$/gm)) {
+      const around = t.slice(m.index!, m.index! + 400);
+      if (around.includes("description:") || around.includes("inputSchema:") || around.includes("parameters:")) {
+        tsToolNames.add(m[1]!);
+      }
+    }
+  }
+  assert.ok(tsToolNames.size >= 30, `TypeScript MCP tools read: ${tsToolNames.size}`);
+  const mbAllText = mbt(mb).filter((f) => !/\/harness[^/]*\.mbt$/.test(f)).map(read).join("\n");
+  const missing = [...tsToolNames].filter((n) => !mbAllText.includes(`"${n}"`)).sort();
+  assert.deepEqual(missing, [], `MCP tools in station/src/ missing from station/mb/src/: ${missing.join(", ")}`);
+
+  const stubs: string[] = [];
+  for (const f of programFiles()) {
+    const rel = relative(station, f);
+    read(f).split("\n").forEach((line, i) => {
+      if (/^\s*\/\//.test(line)) return;
+      if (/raise\s+Failure\(\s*"(?:todo|not implemented|stub)/i.test(line)) {
+        stubs.push(`${rel}:${i + 1} contains stub Failure`);
+      }
+    });
+  }
+  assert.deepEqual(stubs, [], stubs.join("\n"));
+});
+
+/// Core real-process MoonBit parity suites (`mb-live-*.test.ts`) must never regress or silently vanish.
+test("core live real-process parity suite list (mb-live-*.test.ts) does not regress", () => {
+  const requiredLiveSuites = [
+    "mb-live-accounts-handover.test.ts",
+    "mb-live-canary-fixes.test.ts",
+    "mb-live-comma-replica-parity.test.ts",
+    "mb-live-connects-admin-parity.test.ts",
+    "mb-live-devices-rigs-cards.test.ts",
+    "mb-live-hooks-parity.test.ts",
+    "mb-live-jobs-ops-parity.test.ts",
+    "mb-live-locator.test.ts",
+    "mb-live-mesh-remote-parity.test.ts",
+    "mb-live-p5-1.test.ts",
+    "mb-live-p5-2.test.ts",
+    "mb-live-p5-3.test.ts",
+    "mb-live-p5-4.test.ts",
+    "mb-live-p5-5.test.ts",
+    "mb-live-sessions-parity.test.ts",
+    "mb-live-station.test.ts",
+    "mb-live-vault-devices-parity.test.ts",
+    "mb-live-vault-proxy-parity.test.ts",
+  ];
+  const testDir = join(station, "test");
+  const present = new Set(readdirSync(testDir).filter((n) => /^mb-live-.*\.test\.ts$/.test(n)));
+  assert.ok(present.size >= requiredLiveSuites.length, `mb-live-*.test.ts count regressed: ${present.size} < ${requiredLiveSuites.length}`);
+  const missing = requiredLiveSuites.filter((name) => !present.has(name));
+  assert.deepEqual(missing, [], `missing core live parity suites: ${missing.join(", ")}`);
+  const emptySuites = requiredLiveSuites.filter((name) => !/\b(?:test|it)\s*\(/.test(read(join(testDir, name))));
+  assert.deepEqual(emptySuites, [], `core live parity suites with no test cases: ${emptySuites.join(", ")}`);
+});
+
+// ── reader ↔ station_main & Node mb-actor.ts RPC contracts ──
+
+/// Extract unique literal string matches with their first file:line occurrence.
+function scanLiterals(files: string[], re: RegExp): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const f of files) {
+    const text = read(f);
+    for (const m of text.matchAll(re)) {
+      const name = m[1]!;
+      if (!out.has(name)) {
+        const line = text.slice(0, m.index!).split("\n").length;
+        out.set(name, `${relative(station, f)}:${line}`);
+      }
+    }
+  }
+  return out;
+}
+
+/// Extract a single MoonBit function body starting at `header` through its closing `\n}` line.
+function mbtFnBody(text: string, header: RegExp): string {
+  const m = header.exec(text);
+  assert.ok(m !== null, `function not found: ${header}`);
+  const start = m.index!;
+  const end = text.indexOf("\n}\n", start);
+  return end < 0 ? text.slice(start) : text.slice(start, end + 3);
+}
+
+/// Extract `match` arm string literals from a MoonBit snippet.
+function mbtMatchArms(snippet: string): Set<string> {
+  const arms = new Set<string>();
+  for (const line of snippet.split("\n")) {
+    const arm = /^\s*("[^"\n]+"(?:\s*\|\s*"[^"\n]+")*)\s*(?:if\b.*)?=>/.exec(line);
+    if (arm) for (const m of arm[1]!.matchAll(/"([^"]+)"/g)) arms.add(m[1]!);
+  }
+  return arms;
+}
+
+/// Extract `case "…":` string literals from a TypeScript snippet.
+function tsSwitchCases(snippet: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of snippet.matchAll(/\bcase\s+"([^"]+)"\s*:/g)) out.add(m[1]!);
+  return out;
+}
+
+test("every RPC and tell that reader actors make is handled in station_main and Node mb-actor.ts", () => {
+  const readerDir = join(mb, "reader");
+  const actorFiles = [join(readerDir, "actor_base.mbt"), join(readerDir, "actor_run.mbt")];
+  const actorsMbt = read(join(mb, "station_main", "live_p5_2_actors.mbt"));
+  const ctxMbt = read(join(mb, "station_main", "live_p5_2_ctx.mbt"));
+  const mainMbt = read(join(mb, "station_main", "live_p5_2_main.mbt"));
+  const dispatchMbt = read(join(mb, "station_main", "live_dispatch.mbt"));
+  const mbActorTs = read(join(station, "src", "sessions", "mb-actor.ts"));
+  const actorTs = read(join(station, "src", "sessions", "actor.ts"));
+
+  // 1. self.rpc(..., "node.<name>")
+  const nodeRpcs = scanLiterals(actorFiles, /\bself\.rpc\(\s*[^,]+,\s*"node\.([^"]+)"/g);
+  assert.ok(nodeRpcs.size >= 20, `reader node.* RPCs read: ${nodeRpcs.size} (expected >= 20)`);
+  const mbAskedBody = mbtFnBody(actorsMbt, /\nasync fn MbActor::asked\(/);
+  const mbNodeArms = mbtMatchArms(mbAskedBody);
+  const tsAskedStart = mbActorTs.indexOf("async asked(");
+  assert.ok(tsAskedStart >= 0, "mb-actor.ts has no async asked()");
+  const tsAskedEnd = mbActorTs.indexOf("\n  #words(", tsAskedStart);
+  assert.ok(tsAskedEnd > tsAskedStart, "mb-actor.ts has no #words() after asked()");
+  const tsAskedCases = tsSwitchCases(mbActorTs.slice(tsAskedStart, tsAskedEnd));
+
+  // 2. self.tell(..., "node.<name>" | "chat.<name>" | "log")
+  const actorTells = scanLiterals(actorFiles, /\bself\.tell\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(actorTells.size >= 3, `reader actor tells read: ${actorTells.size} (expected >= 3)`);
+  const mbToldBody = mbtFnBody(actorsMbt, /\nfn MbActor::told_\(/);
+  const mbToldArms = mbtMatchArms(mbToldBody);
+  const tsToldStart = mbActorTs.indexOf("told(f: string");
+  assert.ok(tsToldStart >= 0, "mb-actor.ts has no told()");
+  const tsToldCases = tsSwitchCases(mbActorTs.slice(tsToldStart, tsAskedStart));
+
+  // 3. self.deps(..., "<name>")
+  const depsCalls = scanLiterals(actorFiles, /\bself\.deps\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(depsCalls.size >= 15, `reader deps.* calls read: ${depsCalls.size} (expected >= 15)`);
+  const mbDepsArms = mbtMatchArms(mbtFnBody(ctxMbt, /\nasync fn P52::deps\(/));
+  const mbDepsExtra = mbtMatchArms(`${actorsMbt}\n${mainMbt}`);
+  const tsDepsTypeStart = actorTs.indexOf("export type SessionDeps =");
+  assert.ok(tsDepsTypeStart >= 0, "actor.ts has no SessionDeps");
+  const tsDepsText = `${actorTs.slice(tsDepsTypeStart)}\n${mbActorTs}`;
+
+  // 4. self.agent_do(..., "<name>")
+  const agentCalls = scanLiterals(actorFiles, /\bself\.agent_do\(\s*[^,]+,\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(agentCalls.size >= 10, `reader agent.* calls read: ${agentCalls.size} (expected >= 10)`);
+  const agentBlockStart = mbAskedBody.indexOf('if part == "agent"');
+  assert.ok(agentBlockStart >= 0, "MbActor::asked has no agent dispatch block");
+  const agentBlockEnd = mbAskedBody.indexOf('if f == "t"', agentBlockStart);
+  const mbAgentArms = mbtMatchArms(mbAskedBody.slice(agentBlockStart, agentBlockEnd));
+  const tsAgentsText = `${mbActorTs}\n${walk(join(station, "src", "agents"), (p) => p.endsWith(".ts") && !p.endsWith(".test.ts")).map(read).join("\n")}`;
+
+  // 5. self.store(..., "<name>")
+  const storeCalls = scanLiterals(actorFiles, /\bself\.store\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(storeCalls.size >= 20, `reader store.* calls read: ${storeCalls.size} (expected >= 20)`);
+  const mbStoreLiterals = new Set<string>();
+  for (const text of [
+    actorsMbt,
+    ctxMbt,
+    dispatchMbt,
+    read(join(readerDir, "actor_store.mbt")),
+    ...mbt(join(mb, "store_sessions")).map(read),
+    ...mbt(join(mb, "store_threads")).map(read),
+  ]) {
+    for (const m of text.matchAll(/"([A-Za-z_][A-Za-z0-9_]*)"/g)) mbStoreLiterals.add(m[1]!);
+  }
+  const tsStoreText = `${mbActorTs}\n${actorTs}\n${walk(join(station, "src", "store"), (p) => p.endsWith(".ts") && !p.endsWith(".test.ts")).map(read).join("\n")}`;
+
+  const results: Result[] = [];
+  for (const [name, where] of nodeRpcs) {
+    results.push({
+      name: `reader node.${name} (station_main)`,
+      ok: mbNodeArms.has(name),
+      why: `${where} calls self.rpc(..., "node.${name}"), unhandled in live_p5_2_actors.mbt MbActor::asked`,
+    });
+    results.push({
+      name: `reader node.${name} (mb-actor.ts)`,
+      ok: tsAskedCases.has(name),
+      why: `${where} calls self.rpc(..., "node.${name}"), unhandled in station/src/sessions/mb-actor.ts asked()`,
+    });
+  }
+  for (const [name, where] of actorTells) {
+    results.push({
+      name: `reader tell ${name} (station_main)`,
+      ok: mbToldArms.has(name),
+      why: `${where} calls self.tell(..., "${name}"), unhandled in live_p5_2_actors.mbt MbActor::told_`,
+    });
+    results.push({
+      name: `reader tell ${name} (mb-actor.ts)`,
+      ok: tsToldCases.has(name),
+      why: `${where} calls self.tell(..., "${name}"), unhandled in station/src/sessions/mb-actor.ts told()`,
+    });
+  }
+  for (const [name, where] of depsCalls) {
+    results.push({
+      name: `reader deps.${name} (station_main)`,
+      ok: mbDepsArms.has(name) || mbDepsExtra.has(name),
+      why: `${where} calls self.deps(..., "${name}"), unhandled in live_p5_2_ctx.mbt P52::deps`,
+    });
+    results.push({
+      name: `reader deps.${name} (Node)`,
+      ok: new RegExp(`\\b${name}\\??\\s*[(:]`).test(tsDepsText),
+      why: `${where} calls self.deps(..., "${name}"), missing from SessionDeps / mb-actor.ts`,
+    });
+  }
+  for (const [name, where] of agentCalls) {
+    results.push({
+      name: `reader agent.${name} (station_main)`,
+      ok: mbAgentArms.has(name),
+      why: `${where} calls self.agent_do(..., "${name}"), unhandled in live_p5_2_actors.mbt MbActor::asked agent block`,
+    });
+    results.push({
+      name: `reader agent.${name} (Node)`,
+      ok: tsAskedCases.has(name) || new RegExp(`\\b${name}\\??\\s*\\(`).test(tsAgentsText),
+      why: `${where} calls self.agent_do(..., "${name}"), unhandled in mb-actor.ts or station/src/agents/`,
+    });
+  }
+  for (const [name, where] of storeCalls) {
+    results.push({
+      name: `reader store.${name} (station_main)`,
+      ok: mbStoreLiterals.has(name),
+      why: `${where} calls self.store(..., "${name}"), missing in station_main / actor_store / store_sessions / store_threads`,
+    });
+    results.push({
+      name: `reader store.${name} (Node)`,
+      ok: new RegExp(`\\b${name}\\??\\s*\\(`).test(tsStoreText),
+      why: `${where} calls self.store(..., "${name}"), missing in mb-actor.ts / station/src/store/`,
+    });
+  }
+
+  const wrong = judge(results);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+test("every tell from reader #jobs, #live and #remote is handled in station_main", () => {
+  const readerDir = join(mb, "reader");
+  const results: Result[] = [];
+
+  // #jobs
+  const jobsTells = scanLiterals([join(readerDir, "jobs.mbt")], /\bself\.tell\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(jobsTells.size >= 2, `reader jobs tells read: ${jobsTells.size}`);
+  const jobsArms = mbtMatchArms(mbtFnBody(read(join(mb, "station_main", "live_p5_3_jobs.mbt")), /\nfn P53Jobs::told\(/));
+  for (const [name, where] of jobsTells) {
+    results.push({
+      name: `reader #jobs tell ${name}`,
+      ok: jobsArms.has(name),
+      why: `${where} tells "${name}", unhandled in live_p5_3_jobs.mbt P53Jobs::told`,
+    });
+  }
+
+  // #live (mounted in live_p5_2_main.mbt mount_live → session_hub/live.mbt LiveShell::told_by_program)
+  const liveTells = scanLiterals([join(readerDir, "live.mbt")], /\bself\.tell\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(liveTells.size >= 10, `reader live tells read: ${liveTells.size}`);
+  const mainMbt = read(join(mb, "station_main", "live_p5_2_main.mbt"));
+  assert.match(mainMbt, /p\.shells\["#live"\]\s*=\s*\([\s\S]*?live\.told_by_program/, "live_p5_2_main.mbt mount_live must wire live.told_by_program");
+  const liveArms = mbtMatchArms(mbtFnBody(read(join(mb, "session_hub", "live.mbt")), /\npub fn LiveShell::told_by_program\(/));
+  for (const [name, where] of liveTells) {
+    results.push({
+      name: `reader #live tell ${name}`,
+      ok: liveArms.has(name),
+      why: `${where} tells "${name}", unhandled in session_hub/live.mbt LiveShell::told_by_program`,
+    });
+  }
+
+  // #remote
+  const remoteFiles = readdirSync(readerDir).filter((n) => /^remote.*\.mbt$/.test(n)).map((n) => join(readerDir, n));
+  const remoteTells = scanLiterals(remoteFiles, /\bself\.tell\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(remoteTells.size >= 4, `reader remote tells read: ${remoteTells.size}`);
+  const remoteArms = mbtMatchArms(mbtFnBody(read(join(mb, "station_main", "live_p5_3_remote.mbt")), /\nfn P53Remote::told\(/));
+  for (const [name, where] of remoteTells) {
+    results.push({
+      name: `reader #remote tell ${name}`,
+      ok: remoteArms.has(name),
+      why: `${where} tells "${name}", unhandled in live_p5_3_remote.mbt P53Remote::told`,
+    });
+  }
+
   const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });

@@ -3,7 +3,8 @@
 // `@host.Host::read_bytes`, `fs.put`, `fs.mkdir` and `fs.rename`, the machine's time by `@host.now`, a sleep on the program's runtime.
 
 ///|
-/// HTTP and time on the shell; `stand_in`: $STILLFAIL_FEISHU_API, where a test gives one.
+/// HTTP and time on the shell, redirects followed as Node's `fetch` follows them; `stand_in`: $STILLFAIL_FEISHU_API,
+/// where a test gives one.
 pub fn host_net(host : @host.Host, stand_in? : String? = None) -> Net {
   {
     fetch: async fn(req) {
@@ -13,6 +14,7 @@ pub fn host_net(host : @host.Host, stand_in? : String? = None) -> Net {
         headers=req.headers,
         body?=req.body,
         timeout_ms=req.timeout_ms,
+        redirect="follow",
       ) catch {
         @host.FetchTimeout => raise FeishuError(@host.fetch_timed_out)
         e => raise e

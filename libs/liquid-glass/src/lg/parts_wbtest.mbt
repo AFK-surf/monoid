@@ -160,6 +160,101 @@ test "liquid bottom tabs: a tab is chosen by a press, by the arrow keys and by t
 }
 
 ///|
+test "liquid bottom tabs: pressing an unselected tab lifts the lens there immediately and drags to another tab" {
+  let chosen = @signals.signal(0)
+  let drag = DampedDrag::new(0.0, lo=0.0, hi=2.0, held_scale=tab_lens_held_scale)
+  let t = lg_case(fn(p) {
+    p.box(fn(b) {
+      b.width(Is(Some(408.0))) |> ignore
+      liquid_bottom_tabs_node(b, ["Home", "Search", "Me"], fn() { chosen.get() }, fn(i) { chosen.set(i) }, label="Tabs", drag~)
+      |> ignore
+    })
+    |> ignore
+  })
+  let node = drag.node.val.unwrap()
+  let (x1, y1) = middle(t, Tab, "Search")
+  let (x2, _) = middle(t, Tab, "Me")
+  t.touch(0, x1, y1)
+  t.run_for(held_ms)
+  let lifted = (drag.pressed(node) > 0.5, drag.target() == 1.0, drag.value(node) > 0.5)
+  t.touch(1, x2, y1)
+  t.run_for(a_frame)
+  t.touch(2, x2, y1)
+  t.run_for(springs_out)
+  assert_eq((lifted, chosen.get(), t.get(Tab, label="Me").selected), ((true, true, true), 2, Some(true)))
+}
+
+///|
+test "liquid bottom tabs: external selection change slides the pill without pressing or scaling the bar" {
+  let chosen = @signals.signal(0)
+  let drag = DampedDrag::new(0.0, lo=0.0, hi=2.0, held_scale=tab_lens_held_scale)
+  let t = lg_case(fn(p) {
+    p.box(fn(b) {
+      b.width(Is(Some(408.0))) |> ignore
+      liquid_bottom_tabs_node(b, ["Home", "Search", "Me"], fn() { chosen.get() }, fn(i) { chosen.set(i) }, label="Tabs", drag~)
+      |> ignore
+    })
+    |> ignore
+  })
+  let node = drag.node.val.unwrap()
+  let near = fn(a : Double, b : Double) { (a - b).abs() < 0.01 }
+  // (each moment: unpressed, unsqueezed, one glass (the bar's, no lens) the bar's own size at rest)
+  let unpressed = fn() {
+    let g = t.drawn_glass()
+    drag.pressed(node) == 0.0 &&
+    drag.jelly(node, 10.0) == (1.0, 1.0) &&
+    g.length() == 1 &&
+    near(g[0].2, 408.0) &&
+    near(g[0].3, 64.0)
+  }
+  t.by_hand(fn() { chosen.set(2) })
+  t.run_for(a_frame)
+  let first = unpressed()
+  t.run_for(slide_early_ms - a_frame)
+  let mid = (unpressed(), drag.value(node) > 0.1 && drag.value(node) < 1.9)
+  t.run_for(slide_mid_ms - slide_early_ms)
+  let later = unpressed()
+  t.run_for(slide_late_ms - slide_mid_ms)
+  let latest = unpressed()
+  t.run_for(springs_out)
+  let landed = (unpressed(), near(drag.value(node), 2.0))
+  // (a press on a tab of the bar still squeezes and magnifies it)
+  let (x, y) = middle(t, Tab, "Search")
+  t.touch(0, x, y)
+  t.run_for(held_ms)
+  let g = t.drawn_glass()
+  let pressed = (drag.pressed(node) > 0.5, drag.jelly(node, 10.0).0 > 1.2, g.length() > 0 && g[0].2 > 408.5)
+  assert_eq((first, mid, later, latest, landed, pressed), (true, (true, true), true, true, (true, true), (true, true, true)))
+}
+
+///|
+test "a liquid button's press highlight decays monotonically to zero on release without bouncing back" {
+  let light = InteractiveHighlight::new()
+  let t = lg_case(fn(p) { liquid_button_node(p, fn() { "Send" }, fn() {  }, light~) |> ignore })
+  let (x, y) = middle(t, Button, "Send")
+  let node = light.node.val.unwrap()
+  t.touch(0, x, y)
+  t.run_for(springs_out)
+  let peak = light.pressed(node)
+  t.touch(2, x, y)
+  let mut prev = peak
+  let mut monotonic = true
+  let mut non_negative = true
+  for _ in 0..<35 {
+    t.run_for(a_frame)
+    let cur = light.pressed(node)
+    if cur > prev + 0.000001 {
+      monotonic = false
+    }
+    if cur < -0.000001 {
+      non_negative = false
+    }
+    prev = cur
+  }
+  assert_eq((peak > 0.99, monotonic, non_negative, prev < 0.001), (true, true, true, true))
+}
+
+///|
 test "a liquid dialog is read out a dialog while open, and goes by Escape, by Cancel and by its action" {
   let open = @signals.signal(true)
   let acted = Ref(0)
@@ -322,21 +417,206 @@ fn glass_at() -> Array[String] raise {
 // (the toggle's thumb held, then let go and gone on; the slider's thumb dragged, then at rest; the tabs' lens dragged,
 // grown and squeezed, then on the third tab; the button pulled, stretched, then back)
 let glass_seen : Array[String] = [
-  "32.94,36.97,58.12,34.06 100,92,40,24 40,140,400,64 44,144,98,56 40,228,77,48",
-  "46.59,35.79,61.88,36.42 100,92,40,24 40,140,400,64 44,144,98,56 40,228,77,48",
-  "62,42,40,24 100,92,40,24 40,140,400,64 44,144,98,56 40,228,77,48",
-  "62,42,40,24 275.94,87.49,76.04,33.03 40,140,400,64 44,144,98,56 40,228,77,48",
-  "62,42,40,24 300,92,40,24 40,140,400,64 44,144,98,56 40,228,77,48",
-  "62,42,40,24 300,92,40,24 33.75,138.8,414.95,66.39 209.25,133.81,151.6,76.38 40,228,77,48",
-  "62,42,40,24 300,92,40,24 40,140,400,64 240,144,98,56 40,228,77,48",
-  "62,42,40,24 300,92,40,24 40,140,400,64 240,144,98,56 39.42,227.61,78.75,48.78",
-  "62,42,40,24 300,92,40,24 40,140,400,64 240,144,98,56 40,228,77,48",
+  "32.94,36.97,58.12,34.06 40,140,400,64 40,228,77,48",
+  "46.59,35.79,61.88,36.42 40,140,400,64 40,228,77,48",
+  "40,140,400,64 40,228,77,48",
+  "275.94,87.49,76.04,33.03 40,140,400,64 40,228,77,48",
+  "40,140,400,64 40,228,77,48",
+  "33.75,138.8,414.95,66.39 209.79,133.72,150.55,76.55 40,228,77,48",
+  "40,140,400,64 40,228,77,48",
+  "40,140,400,64 38.95,227.31,79.7,49.37",
+  "40,140,400,64 40,228,77,48",
   "true 70 2",
 ]
 
 ///|
 test "a drag of each glass part is drawn the same at 60, 120, 24 and 7 frames a second" {
   assert_eq(glass_at(), glass_seen)
+}
+
+///|
+test "liquid merge: drag past break_gap auto-separates, near-hover has zero attraction, contact fuses" {
+  let ctrl = LiquidMerge::new(separated=false)
+  let t = lg_case(fn(p) { liquid_merge_node(p, controller=ctrl, label=fn() { "Droplet" }) |> ignore })
+  let (x, y) = middle(t, Group, "Droplet")
+  // Initially merged: bonded with full merge radius
+  assert_eq((ctrl.is_bonded(), ctrl.is_separated(), ctrl.merge_at(t.time()) > 20.0), (true, false, true))
+  // Drag right past break_gap -> snaps and auto-separates to separated_gap (48pt)
+  t.drag(x, y, x + 36.0, y)
+  t.run_for(springs_out)
+  let after_split = (ctrl.is_bonded(), ctrl.is_separated(), (ctrl.gap_at(t.time()) - merge_separated_gap).abs() < 0.5, ctrl.merge_at(t.time()) == 0.0)
+  // Drag left to gap ~4pt and release -> strictly zero attraction, stays separated with merge == 0.0
+  let (sx, sy) = middle(t, Group, "Droplet")
+  t.drag(sx, sy, sx - 44.0, sy)
+  t.run_for(springs_out)
+  let near_hover = (ctrl.is_bonded(), ctrl.is_separated(), ctrl.gap_at(t.time()) > 2.0 && ctrl.gap_at(t.time()) < 6.0, ctrl.merge_at(t.time()) == 0.0)
+  // Drag left past contact (gap <= 0) -> fuses immediately and absorbs back to merged_gap
+  let (nx, ny) = middle(t, Group, "Droplet")
+  t.drag(nx, ny, nx - 14.0, ny)
+  t.run_for(springs_out)
+  let after_fuse = (ctrl.is_bonded(), ctrl.is_separated(), (ctrl.gap_at(t.time()) - merge_merged_gap).abs() < 0.5, ctrl.merge_at(t.time()) > 20.0)
+  assert_eq((after_split, near_hover, after_fuse), ((false, true, true, true), (false, true, true, true), (true, false, true, true)))
+}
+
+///|
+test "liquid merge: programmatic set_separated obeys hysteresis and passes audit" {
+  let ctrl = LiquidMerge::new(separated=false)
+  let t = lg_case(fn(p) { liquid_merge_node(p, controller=ctrl, label=fn() { "Droplet" }) |> ignore })
+  t.by_hand(fn() { ctrl.set_separated(true, at=t.time()) })
+  t.run_for(springs_out)
+  let split_ok = (!ctrl.is_bonded(), ctrl.is_separated(), (ctrl.gap_at(t.time()) - merge_separated_gap).abs() < 0.5, ctrl.merge_at(t.time()) == 0.0)
+  t.by_hand(fn() { ctrl.set_separated(false, at=t.time()) })
+  // Halfway while still approaching (gap > 0): strictly zero magnetic attraction!
+  t.run_for(approach_mid_ms)
+  let mid_ok = if ctrl.gap_at(t.time()) > 0.5 { !ctrl.is_bonded() && ctrl.merge_at(t.time()) == 0.0 } else { true }
+  t.run_for(springs_out)
+  let fused_ok = (ctrl.is_bonded(), !ctrl.is_separated(), (ctrl.gap_at(t.time()) - merge_merged_gap).abs() < 0.5, ctrl.merge_at(t.time()) > 20.0)
+  assert_eq((split_ok, mid_ok, fused_ok, t.audit()), ((true, true, true, true), true, (true, true, true, true), []))
+}
+
+///|
+test "liquid merge: 360-degree 2D continuous free drag never locks pointer across repeated split and fuse" {
+  let ctrl = LiquidMerge::new(separated=false)
+  let t = lg_case(fn(p) {
+    liquid_merge_node(p, controller=ctrl, arena_w=560.0, arena_h=360.0, label=fn() { "Droplet" }) |> ignore
+  })
+  let (x0, y0) = middle(t, Group, "Droplet")
+  // 1. Hold and drag right past break_gap -> triggers Split without releasing pointer
+  t.hold_drag(x0, y0, x0 + 36.0, y0)
+  t.run_for(springs_out)
+  let split_1 = (!ctrl.is_bonded(), ctrl.is_separated(), ctrl.merge_at(t.time()) == 0.0)
+  // 2. Without releasing, drag up (-90pt) and left (-180pt) to directly above the capsule
+  t.hold_move(x0 + 36.0, y0 - 90.0)
+  t.hold_move(x0 - 144.0, y0 - 90.0)
+  let (ax, ay) = ctrl.pos_at(t.time())
+  let above_ok = (ax < -100.0, ay < -70.0, !ctrl.is_bonded(), ctrl.merge_at(t.time()) == 0.0)
+  // 3. Still holding, approach capsule top edge to visual gap ~3pt -> strictly zero magnetic attraction from above
+  t.hold_move(x0 - 144.0, y0 - 60.5)
+  let near_top_gap = ctrl.gap_at(t.time())
+  let near_top_ok = (near_top_gap > 1.5 && near_top_gap < 4.5, !ctrl.is_bonded(), ctrl.merge_at(t.time()) == 0.0)
+  // 4. Still holding, push into top edge (gap <= 0) -> instant capillary fusion while still held
+  t.hold_move(x0 - 144.0, y0 - 50.0)
+  t.run_for(dragged_ms)
+  let fused_top_ok = (ctrl.is_bonded(), !ctrl.is_separated(), ctrl.merge_at(t.time()) > 20.0)
+  // 5. Still holding in the same gesture, pull upward past break_gap -> splits a second time
+  t.hold_move(x0 - 144.0, y0 - 80.0)
+  let split_2 = (!ctrl.is_bonded(), ctrl.is_separated())
+  t.release(x0 - 144.0, y0 - 80.0)
+  t.run_for(springs_out)
+  assert_eq(
+    (split_1, above_ok, near_top_ok, fused_top_ok, split_2),
+    ((true, true, true), (true, true, true, true), (true, true, true), (true, true, true), (true, true)),
+  )
+}
+
+///|
+test "liquid merge: visual contour tangency and bridge pinch-off stay in lockstep" {
+  let ctrl = LiquidMerge::new(separated=false)
+  let t = lg_case(fn(p) {
+    liquid_merge_node(p, controller=ctrl, arena_w=560.0, arena_h=360.0, label=fn() { "Droplet" }) |> ignore
+  })
+  let (x0, y0) = middle(t, Group, "Droplet")
+  // Stretch to visual gap ~ +9.0pt (raw ~ 10.2pt with 0.12 damping -> eff ~ 9.0pt < 9.5pt): still BONDED with thick bridge
+  t.hold_drag(x0, y0, x0 + 18.2, y0)
+  let pre_split = (
+    ctrl.is_bonded(),
+    ctrl.gap_at(t.time()) > 8.2 && ctrl.gap_at(t.time()) < 9.5,
+    ctrl.merge_at(t.time()) > 30.0,
+  )
+  // Pull past 9.5pt -> snaps cleanly to SEPARATED and merge == 0.0
+  t.hold_move(x0 + 24.0, y0)
+  t.run_for(springs_out)
+  let post_split = (!ctrl.is_bonded(), ctrl.is_separated(), ctrl.merge_at(t.time()) == 0.0)
+  // Approach to visual gap +2.5pt -> strictly SEPARATED with merge == 0.0 (zero attraction)
+  t.hold_move(x0 + 10.5, y0)
+  let near_gap = ctrl.gap_at(t.time())
+  let near_ok = (!ctrl.is_bonded(), near_gap > 2.0 && near_gap < 3.0, ctrl.merge_at(t.time()) == 0.0)
+  // Touch visual contour (visual gap <= 0.0pt, geometric gap <= 1.5pt) -> immediate Fused
+  t.hold_move(x0 + 7.5, y0)
+  t.run_for(dragged_ms)
+  let contact_ok = (ctrl.is_bonded(), !ctrl.is_separated(), ctrl.merge_at(t.time()) > 25.0)
+  t.release(x0 + 7.5, y0)
+  t.run_for(springs_out)
+  assert_eq(
+    (pre_split, post_split, near_ok, contact_ok),
+    ((true, true, true), (true, true, true), (true, true, true), (true, true, true)),
+  )
+}
+
+///|
+test "liquid magnifier: caret snaps strictly to glyph_cells character gaps and passes audit" {
+  let sample = "let prism = @paint.Glass::liquid(\n  blur=1.8, bezel=22.0,\n)\n// Metal, Vulkan"
+  let t = lg_case(fn(p) {
+    liquid_magnifier_node(p, fn() { sample }, label=fn() { "Optical Loupe" }, at=(19.0, 84.0)) |> ignore
+  })
+  let look = { ..words_at(type_body), line: 24.0 }
+  let look_15 = { ..words_at(type_body * 1.5), line: 36.0 }
+  let lines = loupe_split_lines(sample)
+  let (row, col, cx, cx15) = loupe_snap(lines, 66.0, 84.0, 24.0, look, look_15)
+  let (s1, s2) = loupe_line_stops(lines[row], look, look_15)
+  let snapped_exact = (
+    row == 3,
+    col >= 0 && col < s1.length(),
+    (cx - s1[col]).abs() < 0.01,
+    (cx15 - s2[col]).abs() < 0.01,
+  )
+  let (lx, ly) = middle(t, Group, "Optical Loupe")
+  t.drag(lx, ly, lx + 48.0, ly - 24.0)
+  t.run_for(springs_out)
+  assert_eq((snapped_exact, t.audit()), ((true, true, true, true), []))
+}
+
+///|
+test "Wave 4A: clear lenses encode zoom (1.10x tabs, 1.22x controls) at full lift and 1.0 at rest" {
+  let near = fn(a : Double, b : Double) { (a - b).abs() < 1.0e-9 }
+  assert_eq(
+    (
+      near(tab_lens_glass(0.0).zoom, 1.0),
+      near(tab_lens_glass(1.0).zoom, 1.10),
+      near(toggle_glass(0.0).zoom, 1.0),
+      near(toggle_glass(1.0).zoom, 1.22),
+      near(slider_glass(0.0).zoom, 1.0),
+      near(slider_glass(1.0).zoom, 1.22),
+      near(ctrl_segmented_lens_glass(0.0).zoom, 1.0),
+      near(ctrl_segmented_lens_glass(1.0).zoom, 1.22),
+    ),
+    (true, true, true, true, true, true, true, true),
+  )
+}
+
+///|
+test "Wave 4A: bottom tabs dual-layer clipped accent row appears only while held and hides in solid glass" {
+  let chosen = @signals.signal(0)
+  let t = lg_case(fn(p) {
+    p.box(fn(b) {
+      b.width(Is(Some(408.0))) |> ignore
+      liquid_bottom_tabs_node(b, ["Home", "Search", "Me"], fn() { chosen.get() }, fn(i) { chosen.set(i) }, label="Tabs")
+      |> ignore
+    })
+    |> ignore
+  })
+  // At rest: only the 3 base tab labels are drawn; zero duplicate a11y Tab nodes
+  let rest_glyphs = t.drawn_glyphs().length()
+  let rest_tabs = t.all(Tab).length()
+  let (x, y) = middle(t, Tab, "Search")
+  t.touch(0, x, y)
+  t.run_for(held_ms)
+  // While held: clipped accent layer adds drawn glyphs inside the lens, still only 2 glass instances (bar + lens)
+  let held_glyphs = t.drawn_glyphs().length()
+  let held_glass = t.drawn_glass().length()
+  let held_tabs = t.all(Tab).length()
+  // Solid glass mode hides the dual-layer clipped accent overlay
+  @ui.set_glass_solid(Some(true))
+  t.draw()
+  let solid_glyphs = t.drawn_glyphs().length()
+  @ui.set_glass_solid(None)
+  t.touch(2, x, y)
+  t.run_for(springs_out)
+  let after_glyphs = t.drawn_glyphs().length()
+  assert_eq(
+    (rest_glyphs > 0, rest_tabs, held_glyphs > rest_glyphs, held_glass, held_tabs, solid_glyphs == rest_glyphs, after_glyphs == rest_glyphs),
+    (true, 3, true, 2, 3, true, true),
+  )
 }
 
 ///|
@@ -354,8 +634,21 @@ let a_frame : Double = @ui.input_step_ms
 let held_ms : Double = 150.0
 
 ///|
+/// Moments into a selection slid there from outside on the value spring: early, midway and late in its way.
+let slide_early_ms : Double = 40.0
+
+///|
+let slide_mid_ms : Double = 80.0
+
+///|
+let slide_late_ms : Double = 150.0
+
+///|
 let letting_go_ms : Double = 90.0
 
 ///|
 let dragged_ms : Double = 120.0
+
+///|
+let approach_mid_ms : Double = 40.0
 

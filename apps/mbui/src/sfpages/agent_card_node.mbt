@@ -65,26 +65,23 @@ pub fn agent_card_node(
     agent_card_head_node(b, a, s, tips, runs, hand)
     agent_card_stands_node(b, src, station, key, a, s, tips)
     // its latest lines, what it does now in the words' colour
-    b.show(fn() { items(card(), "latest").length() > 0 }, fn(x) {
-      x.box(fn(l) {
-        @sf.style_node(l, fn() { agent_card_lines })
-        l.each(fn() { items(card(), "latest") }, fn(line) { text(Some(line), "key") }, fn(row, line) {
-          let k = text(Some(line.untracked()), "key")
-          @sf.action_box_node(row, fn() { text(Some(line.get()), "text") }, fn(_) { history(line_entry(k)) }, fn(n) {
-            @sf.style_node(n, fn() { agent_card_line_box })
-            @sf.words_node(n, fn() { text(Some(line.get()), "text") }, fn() {
-              if flag(Some(line.get()), "now") || @sf.lit_node(n) {
-                agent_card_now
-              } else {
-                agent_card_line
-              }
-            })
-            |> ignore
+    b.show(fn() { items(card(), "latest").length() > 0 }, fn(l) {
+      @sf.style_node(l, fn() { agent_card_lines })
+      l.each(fn() { items(card(), "latest") }, fn(line) { text(Some(line), "key") }, fn(row, line) {
+        let k = text(Some(line.untracked()), "key")
+        @sf.action_box_node(row, fn() { text(Some(line.get()), "text") }, fn(_) { history(line_entry(k)) }, fn(n) {
+          @sf.style_node(n, fn() { agent_card_line_box })
+          @sf.words_node(n, fn() { text(Some(line.get()), "text") }, fn() {
+            if flag(Some(line.get()), "now") || @sf.lit_node(n) {
+              agent_card_now
+            } else {
+              agent_card_line
+            }
           })
           |> ignore
         })
+        |> ignore
       })
-      |> ignore
     })
     // what it has going in the background and its checklist, in a line: to its execution history
     b.show(fn() { text(card(), "workLine") != "" }, fn(w) {
@@ -136,7 +133,7 @@ pub fn agent_card_node(
       @sf.style_node(x, fn() { agent_card_notes })
       x.show(fn() { text(card(), "jobs") != "" }, fn(j) {
         agent_card_link_node(j, fn() { text(card(), "jobs") }, fn() { agent_card_action }, fn() { agent_card_action }, fn() {
-          (@sfbase.chat_jobs_open.val)(src, r, j.window().0)
+          (@sfbase.chat_jobs_open.val)(src, r, j.window_w())
         })
       })
       x.each(fn() { Array::makei(items(card(), "attention").length(), fn(i) { i }) }, fn(i) { i }, fn(row, i) {
@@ -181,6 +178,7 @@ fn agent_card_head_node(
       _ => field(a(), "profile")
     }
   }
+  let plan = fn() { text(account(), "planText") }
   let quota = fn() { field(field(a(), "account"), "quota") }
   let windows = fn() { if text(quota(), "state") == "ok" { items(quota(), "windows") } else { [] } }
   @sf.panel_content_row_node(p, fn() { text(s(), "agentText") }, fn(_) { runs() }, fn(h) {
@@ -194,40 +192,52 @@ fn agent_card_head_node(
     h.box(fn(w) {
       @sf.style_node(w, fn() { agent_card_who }, in_row=true)
       @sf.words_node(w, fn() { text(s(), "agentText") }, fn() { agent_card_label }) |> ignore
-      w.show(fn() { account() is Some(_) || windows().length() > 0 }, fn(x) {
+      w.show(fn() { account() is Some(_) || windows().length() > 0 }, fn(ways) {
         // (beside its account's name where the line has the room for both whole; else under it, at the line's end)
-        x.box(fn(ways) {
-          @sf.style_node(ways, fn() { agent_card_account_ways })
-          ways.one_of(Is(true)) |> ignore
-          let chips = fn(c : @view.View) {
-            c.show(fn() { windows().length() > 0 }, fn(q) {
-              q.pick(fn() { windows().length() > 1 }, fn(m, marked) {
-                @sf.quota_chips_node(m, quota, small=true, marked~, gap=agent_card_chips_gap.px(), tips~, tips_within=true)
-              })
-            })
+        @sf.style_node(ways, fn() { agent_card_account_ways })
+        ways.one_of(Is(true)) |> ignore
+        let identity = fn(n : @view.View, cut : Bool) {
+          // (a row only with a tier: alone, the name keeps the old card's box, the room's width or, cut, its words')
+          let tiered = fn() { plan() != "" }
+          n
+          .row(By(tiered))
+          .gap(By(fn() { if tiered() { 6.0 } else { 0.0 } }))
+          .lines_up(By(fn() { if tiered() { Some(Middle) } else if cut { Some(Start) } else { None } }))
+          |> ignore
+          let name = @sf.words_node(n, fn() { text(account(), "name") }, fn() { if cut { agent_card_line_cut } else { agent_card_line } })
+          if cut {
+            name
+            .shrink(By(fn() { if tiered() { 1.0 } else { 0.0 } }))
+            .min_width(By(fn() { if tiered() { Some(0.0) } else { None } }))
+            |> ignore
           }
-          ways.box(fn(o) {
-            @sf.style_node(o, fn() { agent_card_account }, in_row=true)
-            o.box(fn(n) {
-              @sf.style_node(n, fn() { agent_card_name_room }, in_row=true)
-              @sf.words_node(n, fn() { text(account(), "name") }, fn() { agent_card_line }) |> ignore
+          n.show(tiered, fn(t) { @sf.row_tag_node(t, plan) })
+        }
+        let chips = fn(c : @view.View) {
+          c.show(fn() { windows().length() > 0 }, fn(q) {
+            q.pick(fn() { windows().length() > 1 }, fn(m, marked) {
+              @sf.quota_chips_node(m, quota, small=true, marked~, gap=agent_card_chips_gap.px(), tips~, tips_within=true)
             })
-            |> ignore
-            chips(o)
+          })
+        }
+        ways.box(fn(o) {
+          @sf.style_node(o, fn() { agent_card_account }, in_row=true)
+          o.box(fn(n) {
+            @sf.style_node(n, fn() { agent_card_name_room }, in_row=true)
+            identity(n, false)
           })
           |> ignore
-          ways.box(fn(o) {
-            @sf.style_node(o, fn() { agent_card_account_under }, in_row=true)
-            o.box(fn(n) {
-              @sf.style_node(n, fn() { agent_card_line_box })
-              // (as wide as its words, cut only where the card is narrower: Ctx::text's w=Cut)
-              n.lines_up(Is(Some(Start))) |> ignore
-              @sf.words_node(n, fn() { text(account(), "name") }, fn() { agent_card_line_cut }) |> ignore
-            })
-            |> ignore
-            chips(o)
+          chips(o)
+        })
+        |> ignore
+        ways.box(fn(o) {
+          @sf.style_node(o, fn() { agent_card_account_under }, in_row=true)
+          o.box(fn(n) {
+            @sf.style_node(n, fn() { agent_card_line_box })
+            identity(n, true)
           })
           |> ignore
+          chips(o)
         })
         |> ignore
       })

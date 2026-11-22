@@ -42,7 +42,7 @@ const HEAVIEST = 5_000;
 const SCHEMA = 4_500;
 
 /// What to do about a ceiling passed, said to whoever passed it.
-const TOLD = "Shorten it: a description says what the tool does and when to use it, a format nobody could guess, a warning whose absence loses or leaks something; the details go to the tool's skill in src/skills/, which the description names. Raising a ceiling needs its reason said in the change (station/AGENTS.md, Agents).";
+const TOLD = "Shorten it: a description says what the tool does and when to use it, a format nobody could guess, a warning whose absence loses or leaks something; the details go to the tool's skill in assets/skills/, which the description names. Raising a ceiling needs its reason said in the change (station/AGENTS.md, Agents).";
 
 const schemaBytes = (t: Tool) => Buffer.byteLength(JSON.stringify(t.inputSchema));
 const table = (tools: readonly Tool[]) => [...tools].sort((a, b) => weight(b) - weight(a)).map((t) => `${String(weight(t)).padStart(6)}  ${t.name}`).join("\n");

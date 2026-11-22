@@ -5,8 +5,9 @@
 // and output in still.fail Helper's messages (desktop.ts `HelperView`); it ends as its input does.
 //
 // Nothing is granted on Windows: a station runs in its person's session (a scheduled task at logon), where the display
-// can be captured and driven. What cannot be is what Windows keeps from any app there: the sign-in and UAC's secure
-// desktop, and windows of apps run as administrator (their input).
+// can be captured and driven. When the optional LocalSystem service (stillfail-screen-svc.exe) is installed, human
+// remote views route input and Winlogon capture through it so elevated windows (UIPI), UAC secure desktop prompts, and
+// the lock screen work without running agents elevated. Agent views (`agent: true`) never use the privileged service.
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
@@ -16,7 +17,7 @@ import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { type HelperPipe, HelperView } from "./desktop.ts";
 import { ScreenRefused } from "./hub.ts";
-import { type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenResolution, type ScreenScale, type ScreenSource, type ScreenVideo, type ScreenView, type ViewOptions, codecFor, resolutionOf } from "./source.ts";
+import { type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenMic, type ScreenResolution, type ScreenScale, type ScreenSource, type ScreenVideo, type ScreenView, type ViewOptions, codecFor, resolutionOf } from "./source.ts";
 export { resolutionOf } from "./source.ts";
 import { processUi } from "./ui.ts";
 import { WinInput } from "./win-input.ts";
@@ -249,8 +250,10 @@ export class WindowsDesktop implements ScreenSource {
     await this.refresh();
     if (this.#status?.capture === false) throw new ScreenRefused(501, "station.screen.unsupported", {}, this.access());
     const input = new WinInput();
-    // The system output too, as Opus where the viewer decodes it (stillfail-screen's audio_packets.rs).
-    const ask = { codec, ...(options.audio === true && !options.peek ? { audio: true, ...(options.opus ? { audioCodec: "opus" as const } : {}) } : {}), maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}) };
+    // The system output too, as Opus where the viewer decodes it (stillfail-screen's audio_packets.rs). The colours and
+    // chroma asked go as the Mac's helper is told them (desktop.ts): stillfail-screen lets be what it does not make
+    // (its pictures stay 4:2:0, as their parameter sets say).
+    const ask = { codec, ...(options.audio === true && !options.peek ? { audio: true, ...(options.opus ? { audioCodec: "opus" as const } : {}) } : {}), maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}), ...(options.agent === true ? { agent: true } : {}), ...(options.peek === true ? { peek: true } : {}) };
     let first: HelperView;
     try {
       first = await this.#start(binary, ask, input);
@@ -263,10 +266,10 @@ export class WindowsDesktop implements ScreenSource {
   }
 
   /// One process for a view, answering (its info had); fails with what it said.
-  async #start(binary: string, ask: { codec: Codec; maxWidth: number; maxHeight: number; bitrate?: number; fps?: number; audio?: boolean; audioCodec?: "opus" }, input: WinInput): Promise<HelperView> {
+  async #start(binary: string, ask: { codec: Codec; maxWidth: number; maxHeight: number; bitrate?: number; fps?: number; gamut?: "p3"; chroma?: "444"; audio?: boolean; audioCodec?: "opus"; agent?: boolean; peek?: boolean }, input: WinInput): Promise<HelperView> {
     const child = (this.#o.start ?? start)(binary, ["view"]);
     child.stdin!.write(`${JSON.stringify(ask)}\n`);
-    const view = new HelperView(ask.codec, childPipe(child), () => {}, input, "Windows.Graphics.Capture", ask.audio);
+    const view = new HelperView(ask.codec, childPipe(child), () => {}, input, "Windows.Graphics.Capture", ask.audio, true);
     try {
       await view.ready;
       return view;
@@ -311,6 +314,9 @@ export class LastingView implements ScreenView {
   /// Who hears the pointer, heard again from a process started again.
   #pointer: ((cursor: ScreenCursor) => void) | null = null;
   #unpoint: (() => void) | null = null;
+  /// Who hears the virtual microphone, heard again from a process started again (its recording's epochs its own).
+  #mic: ((mic: ScreenMic) => void) | null = null;
+  #unmic: (() => void) | null = null;
   /// The bit rate and bounds (and part of the display) asked last, asked again of a process started again.
   #rate: number | null = null;
   #bounds: [number, number, Region | null] | null = null;
@@ -360,6 +366,7 @@ export class LastingView implements ScreenView {
       this.#view = view;
       if (this.#heard !== null) this.#unwatch = view.watchClipboard(this.#heard);
       if (this.#pointer !== null) this.#unpoint = view.watchCursor(this.#pointer);
+      if (this.#mic !== null) this.#unmic = view.watchMic?.(this.#mic) ?? null;
       if (this.#rate !== null) view.rate(this.#rate);
       if (this.#bounds !== null) view.bounds(...this.#bounds);
       return true;
@@ -428,6 +435,21 @@ export class LastingView implements ScreenView {
 
   cursorImage(shape: string): Uint8Array | undefined {
     return this.#view.cursorImage(shape);
+  }
+
+  watchMic(heard: (mic: ScreenMic) => void): () => void {
+    this.#mic = heard;
+    this.#unmic = this.#view.watchMic?.(heard) ?? null;
+    return () => {
+      if (this.#mic !== heard) return;
+      this.#mic = null;
+      this.#unmic?.();
+      this.#unmic = null;
+    };
+  }
+
+  feedMic(pcm16le: Uint8Array, epoch: number) {
+    this.#view.feedMic(pcm16le, epoch);
   }
 
   close() {

@@ -17,7 +17,7 @@ test("the session instructions name the session's places, and a project only whe
   assert.ok(!plain.includes("<memory"), "no memory where there is none");
 });
 
-test("stillfail-move is named only where moving is on here (a beta feature of the station's), nothing else changed", () => {
+test("stillfail-move is named only where moving is on here (every station's; a test's may say not), nothing else changed", () => {
   const on = ts.sessionInstructions("/ws/c", null, "/repos", "/m/MEMORY.md", "");
   const off = ts.sessionInstructions("/ws/c", null, "/repos", "/m/MEMORY.md", "", "", "", false);
   assert.ok(on.includes(ts.MOVE_LINE));

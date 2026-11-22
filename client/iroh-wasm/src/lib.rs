@@ -47,6 +47,8 @@ struct Options {
     relay_urls: Vec<String>,
     #[serde(default)]
     relay_entries: Vec<RelayEntry>,
+    #[serde(default)]
+    relay_allowlist: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -56,7 +58,8 @@ struct RelayEntry {
 }
 
 /// Through a relay a round trip is hundreds of milliseconds: a first window of 256 KB sends what a screen needs in
-/// one (client/core-ts mesh.ts `INITIAL_WINDOW`, the station's too).
+/// one (client/core-ts mesh.ts `INITIAL_WINDOW`, the station's too), and a 4 MiB per-stream receive window matches
+/// 4 MiB transfer chunks across web, native clients, and station (`noq-proto` includes fixes for `noq#852` and `noq#802`).
 fn transport() -> QuicTransportConfig {
     let mut cubic = noq_proto::congestion::CubicConfig::default();
     cubic.initial_window(256 * 1024);
@@ -64,6 +67,7 @@ fn transport() -> QuicTransportConfig {
     // PATH_IDLE): the connection goes on through another relay meanwhile.
     QuicTransportConfig::builder()
         .congestion_controller_factory(Arc::new(cubic))
+        .stream_receive_window(iroh::endpoint::VarInt::from_u32(4 * 1024 * 1024))
         .default_path_keep_alive_interval(std::time::Duration::from_secs(1))
         .default_path_max_idle_timeout(std::time::Duration::from_secs(3))
         // A link kept 10 minutes in silence, as the station's (its CONNECTION_IDLE_MS): a phone's browser freezes a tab
@@ -85,17 +89,21 @@ pub fn bind(options: JsValue) -> Promise {
             iroh::RelayConfig::from(relay.clone()).with_entries(entries.iter().filter(|(_, target)| target == relay).map(|(entry, _)| entry.clone()))
         }));
         let mesh = Arc::new(mesh::Scopes::default());
-        let endpoint = IrohEndpoint::builder(Minimal)
+        let mut builder = IrohEndpoint::builder(Minimal)
             .add_custom_transport(mesh.hub.clone())
             .path_selector(Arc::new(mesh_transport::selection::Selector::new(mesh.hub.clone())))
             .secret_key(SecretKey::from_bytes(&bytes))
             .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
             .home_on_every_relay()
-            .transport_config(transport())
-            .bind()
-            .await
-            .map_err(failed)?;
-        Ok(Endpoint { inner: endpoint, mesh }.into())
+            .net_report_config(iroh::NetReportConfig::minimal())
+            .transport_config(transport());
+        if let Some(urls) = options.relay_allowlist {
+            let mut allowlist: Vec<RelayUrl> = urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
+            allowlist.extend(entries.iter().flat_map(|(entry, relay)| [entry.clone(), relay.clone()]));
+            builder = builder.relay_allowlist(allowlist);
+        }
+        let endpoint = builder.bind().await.map_err(failed)?;
+        Ok(Endpoint { inner: endpoint, mesh, entries: Rc::new(Mutex::new(entries)) }.into())
     })
 }
 
@@ -122,6 +130,7 @@ fn endpoint_addr(addr: JsValue) -> Result<EndpointAddr, JsValue> {
 pub struct Endpoint {
     inner: IrohEndpoint,
     mesh: Arc<mesh::Scopes>,
+    entries: Rc<Mutex<Vec<(RelayUrl, RelayUrl)>>>,
 }
 
 #[derive(Serialize)]
@@ -216,13 +225,55 @@ impl Endpoint {
     #[wasm_bindgen(js_name = setRelayEntries)]
     pub fn set_relay_entries(&self, entries: JsValue) -> Promise {
         let endpoint = self.inner.clone();
+        let kept = self.entries.clone();
         future_to_promise(async move {
             let entries: Vec<RelayEntry> = serde_wasm_bindgen::from_value(entries).map_err(failed)?;
+            let entries: Vec<(RelayUrl, RelayUrl)> = entries.iter().map(|e| Ok((relay_url(&e.entry)?, relay_url(&e.relay)?))).collect::<Result<_, JsValue>>()?;
             let mut grouped = BTreeMap::<RelayUrl, Vec<RelayUrl>>::new();
-            for entry in entries {
-                grouped.entry(relay_url(&entry.relay)?).or_default().push(relay_url(&entry.entry)?);
+            for (entry, relay) in &entries {
+                grouped.entry(relay.clone()).or_default().push(entry.clone());
             }
+            let mut kept = kept.lock().await;
             endpoint.set_relay_entries(grouped.into_iter().collect()).await;
+            *kept = entries;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Replace the relay ceiling for one remote endpoint.
+    #[wasm_bindgen(js_name = setDisabledRelays)]
+    pub fn set_disabled_relays(&self, id: String, relays: JsValue) -> Promise {
+        let endpoint = self.inner.clone();
+        future_to_promise(async move {
+            let bytes: [u8; 32] = hex::decode(&id).map_err(failed)?.try_into().map_err(|_| failed("the id is not 32 bytes"))?;
+            let remote = EndpointId::from_bytes(&bytes).map_err(failed)?;
+            let urls: Vec<String> = serde_wasm_bindgen::from_value(relays).map_err(failed)?;
+            let disabled = urls.iter().map(|url| relay_url(url)).collect::<Result<_, _>>()?;
+            endpoint.set_disabled_relays(remote, disabled).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Insert a relay with its latest forwarding entrances.
+    #[wasm_bindgen(js_name = insertRelay)]
+    pub fn insert_relay(&self, url: String) -> Promise {
+        let endpoint = self.inner.clone();
+        let entries = self.entries.clone();
+        future_to_promise(async move {
+            let relay = relay_url(&url)?;
+            let entries = entries.lock().await;
+            let config = iroh::RelayConfig::from(relay.clone()).with_entries(entries.iter().filter(|(_, target)| target == &relay).map(|(entry, _)| entry.clone()));
+            endpoint.insert_relay(relay, Arc::new(config)).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Remove a local relay connection without closing station connections.
+    #[wasm_bindgen(js_name = removeRelay)]
+    pub fn remove_relay(&self, url: String) -> Promise {
+        let endpoint = self.inner.clone();
+        future_to_promise(async move {
+            endpoint.remove_relay(&relay_url(&url)?).await;
             Ok(JsValue::UNDEFINED)
         })
     }

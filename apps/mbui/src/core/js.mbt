@@ -42,6 +42,12 @@ fn ffi_screen_ack(_call : Double, _ts : Double) -> Int {
 }
 
 ///|
+/// (the web's input goes through its core, whose screen peripherals follow what the app says to it)
+fn ffi_screen_input(_call : Double, _input : String) -> Int {
+  0
+}
+
+///|
 /// The scheme the system's browser session comes back on (none here).
 fn auth_scheme() -> String {
   "stillfail"

@@ -50,19 +50,7 @@ pub fn b64(b : BytesView) -> String {
 /// `Buffer.from(s, "base64")` or `"base64url"` (Node reads both alphabets either way): what is of neither skipped, the
 /// first `=` ending it, a last character alone giving nothing.
 pub fn unb64(s : String) -> Bytes {
-  let kept = StringBuilder()
-  for c in s {
-    if c == '=' {
-      break
-    }
-    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || "+/-_".contains_char(c) {
-      kept.write_char(c)
-    }
-  }
-  let kept = kept.to_string()
-  // (a lone letter at the end makes no byte)
-  let n = kept.length() - (if kept.length() % 4 == 1 { 1 } else { 0 })
-  @codec.base64_decode(kept.unsafe_substring(start=0, end=n)).unwrap()
+  @codec.base64_decode_loose(s)
 }
 
 ///|
@@ -128,19 +116,7 @@ pub fn quote(b : StringBuilder, s : String) -> Unit {
 ///|
 /// A number as JS writes it: a whole one below 1e21 without a fraction.
 pub fn js_number(n : Double) -> String {
-  if n != n {
-    "null"
-  } else if n == n.floor() && n.abs() < 1.0e21 {
-    if n == 0.0 {
-      "0"
-    } else {
-      n.to_int64().to_string()
-    }
-  } else if n.abs() == @double.infinity {
-    "null"
-  } else {
-    n.to_string()
-  }
+  @jsjson.jval_stringify_num(n)
 }
 
 ///|
@@ -187,25 +163,7 @@ pub fn stringify(v : Json) -> String {
 }
 
 ///|
-fn of_js(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(@jsjson.raw_text(s))
-    Arr(xs) => Json::array(xs.map(of_js))
-    Obj(kvs) => {
-      let m : Map[String, Json] = Map([])
-      for kv in kvs {
-        m[@jsjson.raw_text(kv.0)] = of_js(kv.1)
-      }
-      Json::object(m)
-    }
-  }
-}
-
-///|
 /// `JSON.parse(text)`: a lone surrogate kept, a duplicate key's last value in its first place, integer-like keys first.
 pub fn parse_js(text : String) -> Json raise {
-  of_js(@jsjson.parse(text))
+  @jsjson.parse(text).to_json()
 }

@@ -5,12 +5,6 @@
 // opens (@sf.panel_nodes), bound to what the draft says of the file.
 
 ///|
-/// The card of file `id` in draft `w` pressed: its panel up, by `card` (its card's id).
-fn ref_panel(src : Source, w : Writing, station : String, id : String, name : String, card : Int) -> Unit {
-  @sf.panel_nodes(name, fn(v, close) { ref_panel_body(v, close, src, w.key, station, id) }, from=Of(card))
-}
-
-///|
 /// The panel of file `id` in draft `key` (`<station>:<chat>`) put up from no card (a screen's fixture: a sheet on a
 /// phone, as from its card).
 pub fn ref_panel_put(src : Source, key : String, station : String, id : String, name : String) -> Unit {

@@ -728,16 +728,7 @@ fn js_number(v : Json?) -> Double {
     Some(True) => 1.0
     Some(False) => 0.0
     Some(Number(n, ..)) => n
-    Some(String(s)) => {
-      let t = s.trim(chars=" \t\n\r\u000b\u000c ﻿").to_string()
-      if t == "" {
-        0.0
-      } else {
-        @string.parse_double(t) catch {
-          _ => @double.not_a_number
-        }
-      }
-    }
+    Some(String(s)) => @jsjson.js_number(s)
     Some(Array([])) => 0.0
     Some(Array([x])) =>
       match x {
@@ -752,15 +743,7 @@ fn js_number(v : Json?) -> Double {
 ///|
 /// Code-unit order, as JavaScript's `<` and default sort order strings.
 pub fn js_compare(a : String, b : String) -> Int {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return x - y
-    }
-  }
-  a.length() - b.length()
+  @jsjson.js_compare(a, b)
 }
 
 ///|
@@ -1266,18 +1249,24 @@ pub fn Cloud::home(self : Cloud) -> String? {
 
 ///|
 fn truthy(v : Json?) -> Bool {
-  match v {
-    None | Some(Null) | Some(False) => false
-    Some(String(s)) => s != ""
-    Some(Number(n, ..)) => n != 0.0 && !n.is_nan()
-    _ => true
-  }
+  @jsjson.json_truthy(v)
 }
 
 ///|
 fn home_membership(s : CloudState) -> Json {
   let out : Map[String, Json] = Map([])
-  for k in ["workspace", "workspace_name", "name", "peers", "revocations"] {
+  for k in ["workspace", "workspace_name"] {
+    if s.get(k) is Some(v) {
+      out[k] = v
+    }
+  }
+  if s.get("workspace_emoji") is Some(String(e)) && e != "" {
+    out["workspace_emoji"] = jstr(e)
+  }
+  if s.get("workspace_icon") is Some(String(ic)) && ic != "" {
+    out["workspace_icon"] = jstr(ic)
+  }
+  for k in ["name", "peers", "revocations"] {
     if s.get(k) is Some(v) {
       out[k] = v
     }
@@ -1469,6 +1458,13 @@ pub fn Cloud::lapsed(self : Cloud) -> Unit {
 ///|
 /// A rig of a workspace signed for here: those who follow the rigs told (state.ts `rigsChanged`).
 pub fn Cloud::rigs_changed(self : Cloud) -> Unit {
+  self.tell()
+}
+
+///|
+/// A lock to pin named on this machine since it started: those who follow the state told, so the control plane is
+/// asked for it at once (state.ts `lockNamed`).
+pub fn Cloud::lock_named(self : Cloud) -> Unit {
   self.tell()
 }
 

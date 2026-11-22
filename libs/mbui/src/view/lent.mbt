@@ -91,6 +91,7 @@ pub fn View::shown_across(self : View, but? : View) -> (Double, Double)? {
     }
     let shows = n.look.words != "" ||
       n.look.runs.length() > 0 ||
+      n.look.rects.length() > 0 ||
       n.look.shapes.length() > 0 ||
       n.look.lines.length() > 0 ||
       n.look.image is Some(_) ||
@@ -109,7 +110,7 @@ pub fn View::shown_across(self : View, but? : View) -> (Double, Double)? {
   }
 
   // (it laid out nowhere, or what holds it: nothing of it shows)
-  if self.tree.out_at(self.at) {
+  if !self.tree.held_from_root(self.at) || self.tree.out_at(self.at) {
     return None
   }
   for k in self.tree.nodes[self.at].kids {

@@ -8,7 +8,7 @@
 // and this plugin both); only a real dsh shows it, which no test here runs.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { driver } from "../src/agents/dsh-bridge.mjs";
+import { driver } from "../assets/agents/dsh-bridge.mjs";
 
 type Json = any;
 /// A plugin as dsh's loader keeps it: its state (Cordis's FiberState) and what waiting for it gives.

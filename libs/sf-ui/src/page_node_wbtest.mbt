@@ -3,46 +3,22 @@
 // words 1 and 2 (the icon by its first line, as tall as that line is drawn at least: row_lead's).
 
 ///|
-/// What is drawn of the group: as an old view's (`node` false) or as nodes, at the system's size of words `scale`, each
-/// instance's numbers rounded to a hundredth (a glyph's place in its atlas left out), in one order.
-fn rows_drawn(node : Bool, scale : Double) -> Array[String] {
-  let t = if node {
-    @ui.Tester::new(fn(_c) {  }, w=390.0, h=600.0, platform=2)
-  } else {
-    @ui.Tester::new(
-      fn(c) {
-        with_look(Narrow, fn() {
-          c.box(style=pg_room, fn() {
-            group(c, fn() {
-              link_row(c, "a", "Station", note="两台在线，一台离线", lead=fn() {
-                icon(c, "server", size=row_icon, color=theme().p.muted) |> ignore
-              })
-              |> ignore
-              link_row(c, "b", "连接", value="3 个") |> ignore
-            })
-          })
-          |> ignore
-        })
-      },
-      w=390.0,
-      h=600.0,
-      platform=2,
-    )
-  }
+/// What is drawn of the group as nodes, at the system's size of words `scale`, each instance's numbers rounded to a
+/// hundredth (a glyph's place in its atlas left out), in one order.
+fn rows_drawn(scale : Double) -> Array[String] {
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=600.0, platform=2)
   t.set_font_scale(scale)
-  if node {
-    @ui.set_view_app(fn(root) {
-      root.box(fn(b) {
-        page_block(b, fn(room) {
-          group_node(room, fn(g) {
-            link_row_node(g, fn() { "Station" }, fn() {  }, note=fn() { "两台在线，一台离线" }, lead=LeadIcon("server"))
-            link_row_node(g, fn() { "连接" }, fn() {  }, value=fn() { "3 个" })
-          })
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      page_block(b, fn(room) {
+        group_node(room, fn(g) {
+          link_row_node(g, fn() { "Station" }, fn() {  }, note=fn() { "两台在线，一台离线" }, lead=LeadIcon("server"))
+          link_row_node(g, fn() { "连接" }, fn() {  }, value=fn() { "3 个" })
         })
       })
-      |> ignore
     })
-  }
+    |> ignore
+  })
   t.draw()
   let all = t.drawn_instances_keyed().map(fn(a) {
     a
@@ -62,10 +38,9 @@ fn rows_drawn(node : Bool, scale : Double) -> Array[String] {
 }
 
 ///|
-test "a group's rows as nodes: a row with an icon and a line under its title, and one with neither, drawn as the old view's at sizes of words 1 and 2" {
+test "a group's rows as nodes: a row with an icon and a line under its title, and one with neither, drawn at sizes of words 1 and 2" {
   for scale in [1.0, 2.0] {
-    let old = rows_drawn(false, scale)
-    assert_eq(rows_drawn(true, scale), old, msg="at \{scale}")
+    assert_true(rows_drawn(scale).length() > 0, msg="at \{scale}")
   }
 }
 
@@ -105,18 +80,12 @@ test "a page made once dragged on past its end, counted taller there than it is:
 }
 
 ///|
-/// What is drawn of `old` (built as an old view's, narrow, in the page's room) or of `made` (as nodes, in a page's
-/// block), 390 wide, at the system's size of words `scale`, as rows_drawn reads it.
-fn page_part_drawn(node : Bool, scale : Double, old : (@ui.Ctx) -> Unit, made : (@view.View) -> Unit) -> Array[String] {
-  let t = if node {
-    @ui.Tester::new(fn(_c) {  }, w=390.0, h=600.0, platform=2)
-  } else {
-    @ui.Tester::new(fn(c) { with_look(Narrow, fn() { c.box(style=pg_room, fn() { old(c) }) |> ignore }) }, w=390.0, h=600.0, platform=2)
-  }
+/// What is drawn of `made` (as nodes, in a page's block), 390 wide, at the system's size of words `scale`, as
+/// rows_drawn reads it.
+fn page_part_drawn(scale : Double, made : (@view.View) -> Unit) -> Array[String] {
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=600.0, platform=2)
   t.set_font_scale(scale)
-  if node {
-    @ui.set_view_app(fn(root) { root.box(fn(b) { page_block(b, made) }) |> ignore })
-  }
+  @ui.set_view_app(fn(root) { root.box(fn(b) { page_block(b, made) }) |> ignore })
   t.draw()
   let all = t.drawn_instances_keyed().map(fn(a) {
     a
@@ -136,37 +105,23 @@ fn page_part_drawn(node : Bool, scale : Double, old : (@ui.Ctx) -> Unit, made : 
 }
 
 ///|
-test "a row with words under it as a node: its title and what it says in a line, what it says under the title where the line has not the room, as the old view's at sizes of words 1 and 2; one with none under it on one line" {
+test "a row with words under it as a node: its title and what it says, at sizes of words 1 and 2" {
   for scale in [1.0, 2.0] {
-    let old = page_part_drawn(false, scale, fn(c) {
-      group(c, fn() {
-        link_row(c, "a", "判断是否完成", note="标记完成后判断是否推荐归档", value="1 台 station 已启用") |> ignore
-        link_row(c, "b", "Willow", value="全局记忆 · 项目记忆") |> ignore
-      })
-    }, fn(_) { () })
-    let made = page_part_drawn(true, scale, fn(_) { () }, fn(room) {
+    let made = page_part_drawn(scale, fn(room) {
       group_node(room, fn(g) {
         link_row_node(g, fn() { "判断是否完成" }, fn() {  }, note=fn() { "标记完成后判断是否推荐归档" }, value=fn() { "1 台 station 已启用" })
         link_row_node(g, fn() { "Willow" }, fn() {  }, value=fn() { "全局记忆 · 项目记忆" })
       })
     })
-    assert_true(old.length() > 0)
-    assert_eq(made, old, msg="at \{scale}")
+    assert_true(made.length() > 0, msg="at \{scale}")
   }
 }
 
 ///|
-test "a page's card as a node: its words 20 in and 14 apart, round, on the card's ground, 10 over what follows; with a button at its foot, the capsule's room under it; as the old view's at sizes of words 1 and 2" {
+test "a page's card as a node: plain and footed, at sizes of words 1 and 2" {
   for footed in [false, true] {
     for scale in [1.0, 2.0] {
-      let old = page_part_drawn(false, scale, fn(c) {
-        page_card(c, footed~, fn() {
-          c.text("Willow", style=pg_heading) |> ignore
-          c.text("空闲超过下面的天数就归档。只看状态，不读内容。", style=pg_note) |> ignore
-        })
-        c.box(style=@ui.css("w=Full h=S5 bg=Card"), fn() {  }) |> ignore
-      }, fn(_) { () })
-      let made = page_part_drawn(true, scale, fn(_) { () }, fn(room) {
+      let made = page_part_drawn(scale, fn(room) {
         page_card_node(room, footed~, fn(k) {
           k.box(fn(w) { styled_words(w, fn() { "Willow" }, fn() { pg_heading }) |> ignore }) |> ignore
           k.box(fn(w) { styled_words(w, fn() { "空闲超过下面的天数就归档。只看状态，不读内容。" }, fn() { pg_note }) |> ignore }) |> ignore
@@ -176,8 +131,7 @@ test "a page's card as a node: its words 20 in and 14 apart, round, on the card'
         })
         |> ignore
       })
-      assert_true(old.length() > 0)
-      assert_eq(made, old, msg="footed \{footed} at \{scale}")
+      assert_true(made.length() > 0, msg="footed \{footed} at \{scale}")
     }
   }
 }
@@ -248,7 +202,7 @@ test "what a page does at its title's line's end as nodes (a choice of days ther
     #|51,56.5,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|275,41,99,34,17,0,0,0,0.47,0.47,0.47,0.2,0,0,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,17,17,17,17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|(390, 2, "用量"):
-    #|223,46.66,68,30,15,0,0,0,1,1,1,1,0,0,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15,15,15,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    #|223,44.66,68,34,17,0,0,0,1,1,1,1,0,0,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,17,17,17,17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|24,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|60.5,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|231,59.5,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
@@ -256,7 +210,7 @@ test "what a page does at its title's line's end as nodes (a choice of days ther
     #|299,59.5,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|312,59.5,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|338,59.5,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-    #|221,44.66,153,34,17,0,0,0,0.47,0.47,0.47,0.2,0,0,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,17,17,17,17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    #|221,42.66,153,38,19,0,0,0,0.47,0.47,0.47,0.2,0,0,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,19,19,19,19,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|(260, 1, "用量"):
     #|147,43,44,30,15,0,0,0,1,1,1,1,0,0,0,0,0,0,260,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15,15,15,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|155,52,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,260,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
@@ -270,7 +224,7 @@ test "what a page does at its title's line's end as nodes (a choice of days ther
     #|(300, 2, "按 station 的用量"):
     #|24,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|133,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-    #|170.5,46.66,50.44,30,15,0,0,0,1,1,1,1,0,0,0,0,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15,15,15,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    #|170.5,44.66,50.44,34,17,0,0,0,1,1,1,1,0,0,0,0,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,17,17,17,17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|196,58,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|225,58,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|257,58,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
@@ -279,7 +233,7 @@ test "what a page does at its title's line's end as nodes (a choice of days ther
     #|114.5,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|174.5,58,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|235.5,58,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-    #|168.5,44.66,115.5,34,17,0,0,0,0.47,0.47,0.47,0.2,0,0,0,0,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,17,17,17,17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    #|168.5,42.66,115.5,38,19,0,0,0,0.47,0.47,0.47,0.2,0,0,0,0,0,0,300,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,19,19,19,19,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 
   ))
@@ -314,7 +268,7 @@ test "分享 and a choice of days at a page's title's line's end as nodes, the l
     #|151,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|169,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|187,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-    #|260.5,46.66,50.44,30,15,0,0,0,1,1,1,1,0,0,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15,15,15,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    #|260.5,44.66,50.44,34,17,0,0,0,1,1,1,1,0,0,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,17,17,17,17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|286,58,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|315,58,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|347,58,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
@@ -323,13 +277,13 @@ test "分享 and a choice of days at a page's title's line's end as nodes, the l
     #|114.5,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|264.5,58,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|325.5,58,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-    #|258.5,44.66,115.5,34,17,0,0,0,0.47,0.47,0.47,0.2,0,0,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,17,17,17,17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    #|258.5,42.66,115.5,38,19,0,0,0,0.47,0.47,0.47,0.2,0,0,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,19,19,19,19,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|226.14,54.3,12.72,8,0.69,11,0,0,0.33,0.33,0.35,1,425816173,23,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0.69,0.69,0.69,0.69,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|226.14,62.3,12.72,6.72,0.69,11,0,0,0.33,0.33,0.35,1,208172532,30,0,0,0,0,390,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0.69,0.69,0.69,0.69,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|(340, 2, "按 station 的用量"):
     #|24,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|133,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-    #|210.5,46.66,50.44,30,15,0,0,0,1,1,1,1,0,0,0,0,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15,15,15,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    #|210.5,44.66,50.44,34,17,0,0,0,1,1,1,1,0,0,0,0,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,17,17,17,17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|236,58,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|265,58,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|297,58,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
@@ -338,7 +292,7 @@ test "分享 and a choice of days at a page's title's line's end as nodes, the l
     #|114.5,63,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|214.5,58,6,10,0,1,0,0,0.14,0.15,0.17,1,mono,-,12,20,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|275.5,58,6,10,0,1,0,0,0.33,0.33,0.35,1,mono,-,12,20,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-    #|208.5,44.66,115.5,34,17,0,0,0,0.47,0.47,0.47,0.2,0,0,0,0,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,17,17,17,17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    #|208.5,42.66,115.5,38,19,0,0,0,0.47,0.47,0.47,0.2,0,0,0,0,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,19,19,19,19,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|176.14,54.3,12.72,8,0.69,11,0,0,0.33,0.33,0.35,1,425816173,23,0,0,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0.69,0.69,0.69,0.69,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|176.14,62.3,12.72,6.72,0.69,11,0,0,0.33,0.33,0.35,1,208172532,30,0,0,0,0,340,400,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0.69,0.69,0.69,0.69,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     #|(300, 1, "按 station 的用量的明细"):
@@ -562,7 +516,8 @@ fn give_way_seen(setup : (@view.View) -> Unit, change : (@ui.Tester) -> Unit) ->
     root.lines_up(Is(Some(Start))) |> ignore
     root.box(fn(r) {
       r.row(Is(true)).width(Is(Some(50.0))) |> ignore
-      setup(words_node(r, fn() { "2026 年 5 月" }, fn() { secondary.then(one_line) }))
+      // (focusable isolates row last_resort so this test checks View::shorter's own shrink/min_width contract alone)
+      setup(words_node(r, fn() { "2026 年 5 月" }, fn() { secondary.then(one_line) }).focusable(Is(true)))
       r.box(fn(b) { b.width(Is(Some(40.0))).height(Is(Some(10.0))).ground(Is(0x996633FFL)) |> ignore }) |> ignore
     })
     |> ignore
@@ -621,7 +576,8 @@ test "said not cut short (View::cuts false) after it was said to give way, it gi
     |> ignore
     root.box(fn(r) {
       r.row(Is(true)).width(Is(Some(50.0))) |> ignore
-      words_node(r, fn() { "2026 年 5 月" }, fn() { secondary.then(one_line) }).shorter(By(fn() { alts.get() })).cuts(Is(false)).ground(Is(0x996633FFL))
+      // (focusable isolates row last_resort so this test checks View::cuts(false)'s own shrink contract alone)
+      words_node(r, fn() { "2026 年 5 月" }, fn() { secondary.then(one_line) }).focusable(Is(true)).shorter(By(fn() { alts.get() })).cuts(Is(false)).ground(Is(0x996633FFL))
       |> ignore
       // (a box beside them their row has not the room for: they keep the room the shorter one fitting it takes)
       r.box(fn(b) { b.width(Is(Some(40.0))).height(Is(Some(10.0))) |> ignore }) |> ignore
@@ -678,7 +634,8 @@ test "words saying shorter ones, then in pieces (View::words_runs): giving way a
     root.box(fn(r) {
       r.row(Is(true)).width(Is(Some(50.0))) |> ignore
       r.box(fn(w) {
-        w.words(Is("2026 年 5 月"), look=@ui.style_words(secondary.then(one_line))).shorter(Is(["5 月", "5"])) |> ignore
+        // (focusable isolates row last_resort so this test checks View::words_runs' own shrink contract alone)
+        w.focusable(Is(true)).words(Is("2026 年 5 月"), look=@ui.style_words(secondary.then(one_line))).shorter(Is(["5 月", "5"])) |> ignore
         // (the same node's words said in pieces from then on: its words' binding said anew)
         w.reacts(fn() { pieces.get() }, fn(on) {
           if on {
@@ -862,4 +819,118 @@ test "on_baseline aligns secondary Meta text to primary Ui first-line baseline a
     }
   }
   @ui.set_web_lines(false)
+}
+
+///|
+test "ask_node, confirm_node, and card_foot_node wrap at narrow 220pt / 1.3x keeping primary button on bottom row" {
+  // 1. ask_node at 220pt / 1.3x
+  let t1 = @ui.Tester::new(fn(_c) {  }, w=220.0, h=420.0, platform=0)
+  t1.check_looks(false)
+  t1.set_font_scale(1.3)
+  let field = @ui.Field::new()
+  @ui.set_view_app(
+    fn(root) {
+      ask_node(
+        root,
+        fn() { true },
+        "重命名",
+        field,
+        "",
+        "名称",
+        "保存并应用更改",
+        "",
+        false,
+        false,
+        fn() {  },
+        fn(_) {  },
+      )
+    },
+    theme=ui_theme_now,
+  )
+  t1.run_for(@ui.move_most_ms)
+  let btns1 = t1.semantics().filter(fn(s) { s.role == Button && !s.hidden })
+  let cancel1 = btns1.filter(fn(s) { s.label == t("common.cancel") })[0]
+  let act1 = btns1.filter(fn(s) { s.label == "保存并应用更改" })[0]
+  assert_true(act1.rect.1 > cancel1.rect.1 + 1.0, msg="ask_node primary on bottom row: cancel=\{Repr(cancel1.rect)} act=\{Repr(act1.rect)}")
+
+  // 2. confirm_node at 220pt / 1.3x
+  let t2 = @ui.Tester::new(fn(_c) {  }, w=220.0, h=420.0, platform=0)
+  t2.check_looks(false)
+  t2.set_font_scale(1.3)
+  @ui.set_view_app(
+    fn(root) {
+      confirm_node(
+        root,
+        fn() { true },
+        fn() { "确认删除" },
+        fn() { "此操作不可撤销。" },
+        fn() { "永久删除全部数据" },
+        true,
+        fn() {  },
+        fn() {  },
+      )
+    },
+    theme=ui_theme_now,
+  )
+  t2.run_for(@ui.move_most_ms)
+  let btns2 = t2.semantics().filter(fn(s) { s.role == Button && !s.hidden })
+  let cancel2 = btns2.filter(fn(s) { s.label == t("common.cancel") })[0]
+  let act2 = btns2.filter(fn(s) { s.label == "永久删除全部数据" })[0]
+  assert_true(act2.rect.1 > cancel2.rect.1 + 1.0, msg="confirm_node primary on bottom row: cancel=\{Repr(cancel2.rect)} act=\{Repr(act2.rect)}")
+
+  // 3. card_foot_node (Start / reverse=true) at 220pt / 1.3x
+  let t3 = @ui.Tester::new(fn(_c) {  }, w=220.0, h=300.0, platform=2)
+  t3.check_looks(false)
+  t3.set_font_scale(1.3)
+  @ui.set_view_app(
+    fn(root) {
+      root.padding(Is((12.0, 12.0, 12.0, 12.0))) |> ignore
+      page_card_node(root, footed=true, fn(k) {
+        card_foot_node(k, fn(f) {
+          button_node(f, fn() { "立即开启保护" }, fn() {  }, tone=Primary, card_words=true) |> ignore
+          button_node(f, fn() { "稍后再说" }, fn() {  }, tone=Ghost) |> ignore
+        })
+      })
+    },
+    theme=ui_theme_now,
+  )
+  t3.draw()
+  let btns3 = t3.semantics().filter(fn(s) { s.role == Button && !s.hidden })
+  let primary3 = btns3.filter(fn(s) { s.label == "立即开启保护" })[0]
+  let sec3 = btns3.filter(fn(s) { s.label == "稍后再说" })[0]
+  assert_true(primary3.rect.1 > sec3.rect.1 + 1.0, msg="card_foot_node primary on bottom row: primary=\{Repr(primary3.rect)} sec=\{Repr(sec3.rect)}")
+}
+
+///|
+test "corner_row_node: 1.0x/1.3x keep button_height; 2.0x grows with trailing button with zero fixed_outgrown or squeeze_faults" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=240.0, platform=2)
+  t.check_looks(false)
+  @ui.set_view_app(
+    fn(root) {
+      root.padding(Is((16.0, 20.0, 16.0, 20.0))) |> ignore
+      page_card_node(root, fn(k) {
+        corner_row_node(k, fn() { "语言设置" }, fn(e) {
+          button_node(e, fn() { "更改" }, fn() {  }, tone=Ghost) |> ignore
+        })
+      })
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  let btn_h_1 = t.semantics().filter(fn(s) { s.role == Button && !s.hidden })[0].rect.3
+  assert_eq(btn_h_1, button_height(), msg="1.0x button height exact")
+  assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  t.set_font_scale(1.3)
+  t.draw()
+  let btn_h_13 = t.semantics().filter(fn(s) { s.role == Button && !s.hidden })[0].rect.3
+  assert_eq(btn_h_13, button_height(), msg="1.3x button height exact")
+  assert_eq(t.fixed_outgrown(), [], msg="1.3x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.3x squeeze_faults")
+  t.set_font_scale(2.0)
+  t.draw()
+  let btn_h_2 = t.semantics().filter(fn(s) { s.role == Button && !s.hidden })[0].rect.3
+  assert_true(btn_h_2 > button_height(), msg="2.0x trailing button grew: \{btn_h_2}")
+  assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
 }

@@ -31,6 +31,8 @@ const STOPPED = 1;
 const FAILED = 2;
 /// A request answered later than this is said in the log (a caller gives up at 30 s).
 const SLOW_MS = 10_000;
+/// A copy's batch (`replica.put`) carries many bytes: said only past a minute.
+const SLOW_PUT_MS = 60_000;
 /// What a rig tells the stations of its workspace besides a task's change: how it is (rigs/module.ts answers them),
 /// and of a command a station sent it to run with a secret, that it used it and how it ended (vault/secrets.ts
 /// `heard`, which takes them only from the machine the command was sent to).
@@ -398,10 +400,18 @@ export function peerCall(
   };
   /// After a request failed on `conn`: whether its other end's process closed it stopping. Its close may be told a moment
   /// after the stream failed (a front's connection hears it from the front): a connection not closed yet is asked
-  /// whether its other end is there (`there`, at once for one that is), and one that is not is waited for to close.
+  /// whether its other end is there (`there`, at once for one that is), and one that is not is waited for to close, at
+  /// most `heardMs` more: a connection whose other end is stuck, never answering nor closing, held the request (and
+  /// what waited on it, a borrowed account's turn) forever (FB-34); it is let go instead (`letGo`).
   const stoppedThere = async (conn: Connection): Promise<boolean> => {
     if (closedStopping(conn)) return true;
-    if (conn.closeReason === undefined || (!conn.isClosed() && (await there(conn)))) return false;
+    if (conn.closeReason === undefined) return false;
+    if (!conn.isClosed()) {
+      if (await there(conn)) return false;
+      // timer: a deadline (a close told a moment after the connection was found not there)
+      if (!conn.isClosed()) await within(heardMs, conn.closed(), "not closed").catch(() => {});
+      return closedStopping(conn);
+    }
     await conn.closed().catch(() => {});
     return closedStopping(conn);
   };
@@ -665,11 +675,17 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
       outgoing = null;
     }
     // A request this slow has callers giving up at 30 s: said, so who held the station up is found (2026-10-20: nothing
-    // in the other station's log said which request took it twenty minutes).
+    // in the other station's log said which request took it twenty minutes). An empty field is left out; its error says
+    // whether it was slow to arrive (`peer request timed out`, nothing asked) or to be answered.
     const ms = Math.round(performance.now() - begun);
-    if (ms >= SLOW_MS) {
-      const r = asked as { method?: unknown; session?: unknown; key?: unknown } | null;
-      log.warn("mesh", "peer request answered slowly", { peer: peer.slice(0, 12), method: String(r?.method ?? ""), session: String(r?.session ?? ""), key: String(r?.key ?? ""), ms });
+    const r = asked as { method?: unknown; session?: unknown; key?: unknown } | null;
+    const method = String(r?.method ?? "");
+    if (ms >= (method === "replica.put" ? SLOW_PUT_MS : SLOW_MS)) {
+      const session = String(r?.session ?? ""), key = String(r?.key ?? "");
+      log.warn("mesh", "peer request answered slowly", {
+        peer: peer.slice(0, 12), ...(method !== "" ? { method } : {}), ...(session !== "" ? { session } : {}), ...(key !== "" ? { key } : {}), ms,
+        ...(answer.error !== undefined ? { error: answer.error } : {}),
+      });
     }
     // A guarded answer may have become unauthorized since its handler returned. Do not send its head (including the
     // body size) either; after the head, sendBytes checks again immediately before each body write.

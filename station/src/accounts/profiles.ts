@@ -22,6 +22,8 @@ import { platform } from "../platform/index.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
 import { claudePlan, codexClaimsSoon } from "./machine.ts";
+import { DEFAULT_SERVICES, type ServiceRegistry } from "./services.ts";
+import type { Profile } from "../sessions/config.ts";
 
 type Json = any;
 
@@ -82,6 +84,8 @@ export type ProfileQuota = {
   /// 5xx). It says nothing of the allowance, so the one read before stands a while (Accounts.askQuota). Not kept in
   /// the allowance.
   unanswered?: boolean;
+  /// Renewal failed during a Claude quota check: trigger a profile check if currently ok. Not kept in the allowance.
+  recheck?: boolean;
 };
 
 /// Where the providers are: the real ones unless a test says otherwise.
@@ -157,8 +161,9 @@ export const runtimesFor = (access: Json, runtime: unknown): Runtime[] => profil
 /// None for DeepSeek Harness, which has no subscription here. One on the machine's own login (`machine`) is signed in
 /// where the machine's is, its usual home (machine-logins.ts): its own home holds no login, so signing that in changes
 /// nothing it uses.
-export const loginCommand = (runtime: Runtime, home: string, machine = false) =>
-  machine ? (runtime === "claude" ? "claude auth login" : runtime === "codex" ? "codex login" : "")
+export const loginCommand = (runtime: Runtime | undefined, home: string, machine = false) =>
+  runtime === undefined ? ""
+  : machine ? (runtime === "claude" ? "claude auth login" : runtime === "codex" ? "codex login" : "")
   : runtime === "claude" ? `CLAUDE_CONFIG_DIR=${home} claude auth login`
   : runtime === "codex" ? `CODEX_HOME=${home} codex login`
   : runtime === "grok" ? `GROK_HOME=${join(home, "grok")} grok login --device-auth`
@@ -168,11 +173,15 @@ export const loginCommand = (runtime: Runtime, home: string, machine = false) =>
 
 /// What a check is given: the account and where it lives.
 export type CheckOptions = {
-  runtime: Runtime;
+  runtime?: Runtime;
   kind: AccessKind;
   key: string;
   /// Of an API-provider profile: which provider and where.
   via: Via;
+  /// Of a service profile: which service adapter id, and the registry to look it up in.
+  service?: string;
+  services?: ServiceRegistry;
+  profile?: Profile;
   home: string;
   /// The station's environment (where a machine login is read, and the CLIs found).
   env: Env;
@@ -182,10 +191,16 @@ export type CheckOptions = {
   /// to Kimi (its key the current token, none once signed out).
   login?: boolean;
   /// The machine login's current token, renewed when about to run out (oauth.ts).
-  machineToken?: (env: Env) => Promise<{ token: string }>;
+  machineToken?: (env: Env, rejected?: string) => Promise<{ token: string }>;
   urls?: Urls;
   lang?: Lang;
+  /// Asked again because a runtime on it was refused (Accounts.recheckProfile): a Claude subscription's login is renewed
+  /// even when not due, so a refresh token revoked with its access token still cached as good is found over now.
+  recheck?: boolean;
 };
+
+/// Whether Anthropic's answer refuses a Claude subscription's OAuth token: a revoked one is answered 401 or 403.
+export const claudeAuthStatus = (status: number | null): boolean => status === 401 || status === 403;
 
 /// `checkedAt`: stamped by whoever keeps it, on its clock (Accounts).
 const check = (state: string, detail: string, models: string[] | null): ProfileCheck => ({ state, detail, models, checkedAt: 0 });
@@ -233,6 +248,22 @@ export async function checkProfile(o: CheckOptions): Promise<ProfileCheck> {
 async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
   const urls = o.urls ?? URLS;
   const t = (key: string, args?: Record<string, unknown>) => tr(lang, key, args);
+  if (o.kind === "service") {
+    const adapter = o.service !== undefined ? (o.services ?? DEFAULT_SERVICES).get(o.service) : undefined;
+    if (!adapter) return check("failed", t("station.profile.unknownProvider"), null);
+    const profile: Profile = o.profile ?? {
+      id: "",
+      name: o.service ?? "",
+      home: o.home,
+      access: { kind: "service", service: o.service },
+      ...(o.service !== undefined ? { service: o.service } : {}),
+      runtimes: [],
+      models: [],
+      named: [],
+      backgroundOnMessage: true,
+    };
+    return await adapter.check(profile, { env: o.env, lang });
+  }
   if (o.kind === "opencode-go") {
     // The model list answers any key; the usage is the key's own, so it is what tells a key that works.
     const usage = await get(`${urls.opencode}/v1/usage`, { authorization: `Bearer ${o.key}` });
@@ -277,8 +308,45 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     const status: Json = JSON.parse(output.stdout);
     if (status?.loggedIn !== true) return check("login", t("station.profile.signedOut"), null);
     // What the subscription runs, as Anthropic lists it for the account's own token.
-    const token = machineToken ?? (await profileToken(o, urls, lang));
-    const models = token === undefined ? null : await claudeModels(urls, token);
+    const { token, renewError } = machineToken !== undefined ? { token: machineToken, renewError: null } : await profileToken(o, urls, lang);
+    let { models, status: modelsStatus } = token === undefined ? { models: null, status: null } : await claudeModels(urls, token);
+    // Its login renewed against the token just refused (`rejected`): a refresh token refused too is a login over.
+    const renew = (rejected: string) =>
+      o.machine ? o.machineToken!(o.env, rejected).then((got) => got.token) : claudeOAuthToken(o.env, o.home, rejected, urls.claudeToken, lang).then((got) => got[0]);
+    let renewedHere = false;
+    if (renewError !== null) {
+      if (models === null) return check("failed", renewError.message, null);
+    } else if (claudeAuthStatus(modelsStatus) && token !== undefined) {
+      let renewed: string;
+      try {
+        renewed = await renew(token);
+      } catch (e) {
+        if (e instanceof RenewRefused) throw e;
+        return check("failed", e instanceof Error ? e.message : String(e), null);
+      }
+      renewedHere = true;
+      const retry = await claudeModels(urls, renewed);
+      if (claudeAuthStatus(retry.status)) return check("login", t("station.quota.signInExpired"), null);
+      models = retry.models;
+    }
+    // Asked again after a runtime on it was refused: Anthropic can go on listing models for an access token whose login
+    // was revoked (FB-44), so its refresh token is what is asked. One refused is over; one not reached now leaves a
+    // listing that worked standing, and one that did not a failed check.
+    if (o.recheck === true && !renewedHere && renewError === null && token !== undefined) {
+      let renewed: string | null = null;
+      try {
+        renewed = await renew(token);
+      } catch (e) {
+        // (none to renew with: a token that still lists models is not taken for one revoked)
+        if (e instanceof RenewRefused && !(e.status === null && modelsStatus === 200)) return check("login", t("station.quota.signInExpired"), null);
+        if (modelsStatus !== 200) return check("failed", e instanceof Error ? e.message : String(e), null);
+      }
+      if (renewed !== null && models === null) {
+        const retry = await claudeModels(urls, renewed);
+        if (claudeAuthStatus(retry.status)) return check("login", t("station.quota.signInExpired"), null);
+        models = retry.models;
+      }
+    }
     // For a profile in its own home Claude keeps the more specific tier beside its token. Read only that metadata
     // into the check; the token itself stays in the home. A machine login's keychain is handled by MachineLogins.
     let credentials: ReturnType<typeof parseClaudeCredentials> = undefined;
@@ -427,21 +495,21 @@ export function grokEmailIn(text: string): string | null {
 /// A Claude profile's token as it signs in now, renewed first when due (oauth.ts): `auth status` says only that a login
 /// is kept, and one that can no longer be renewed throws (RenewRefused: to sign in again). One not renewed now for
 /// another reason (the provider, the network) is the one kept.
-async function profileToken(o: CheckOptions, urls: Urls, lang: Lang): Promise<string | undefined> {
+async function profileToken(o: CheckOptions, urls: Urls, lang: Lang): Promise<{ token: string | undefined; renewError: Error | null }> {
   try {
-    return (await claudeOAuthToken(o.env, o.home, null, urls.claudeToken, lang))[0];
+    return { token: (await claudeOAuthToken(o.env, o.home, null, urls.claudeToken, lang))[0], renewError: null };
   } catch (e) {
     if (e instanceof RenewRefused) throw e;
-    return await tokenOf(o.home);
+    return { token: await tokenOf(o.home), renewError: e instanceof Error ? e : new Error(String(e)) };
   }
 }
 
-async function claudeModels(urls: Urls, token: string): Promise<string[] | null> {
+async function claudeModels(urls: Urls, token: string): Promise<{ models: string[] | null; status: number | null }> {
   try {
     const response = await get(`${urls.anthropic}/v1/models?limit=100`, { authorization: `Bearer ${token}`, "anthropic-version": "2023-06-01", "anthropic-beta": "oauth-2025-04-20" });
-    return response.ok ? await modelIds(response) : null;
+    return { models: response.ok ? await modelIds(response) : null, status: response.status };
   } catch {
-    return null;
+    return { models: null, status: null };
   }
 }
 

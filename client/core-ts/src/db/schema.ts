@@ -181,6 +181,7 @@ export function ensureSaid(sql: Sql): void {
 /// json_each has a hidden column `json` of its own.
 export const overviewPartOf = (j: string) => `json_object(
   'running', ${j} -> '$.counts.running',
+  'interrupted', ${j} -> '$.interrupted',
   'slackUsers', CASE WHEN json_type(${j}, '$.slackUsers') = 'array'
     THEN json((SELECT json_group_array(u.value ORDER BY u.key) FROM json_each(${j}, '$.slackUsers') AS u WHERE u.type = 'text'))
     ELSE json_array() END,
@@ -204,7 +205,7 @@ export const overviewPartOf = (j: string) => `json_object(
 /// station for 0.8-1.1 KB (the real-size workspace), and the list's first answer later by as much.
 export const overviewRowOf = (j: string) => `CASE WHEN json_type(${j}) = 'object'
     THEN json((SELECT json_group_object(o.key, ${j} -> o.fullkey) FROM json_each(${j}) AS o
-      WHERE o.key IN ('viewer', 'counts') OR (o.key IN ('disk', 'drive') AND o.type <> 'null')))
+      WHERE o.key IN ('viewer', 'counts') OR (o.key IN ('disk', 'drive', 'autoChats') AND o.type <> 'null')))
     END`;
 
 /// What a chat's page reads of its station's overview, the JSON `j` (views.ts #chatOverview: its agents' connects,
@@ -559,6 +560,41 @@ export function ensureMoved(sql: Sql): void {
   sql.exec("CREATE TABLE IF NOT EXISTS moved (station TEXT NOT NULL, session TEXT NOT NULL, there_station TEXT NOT NULL, thread INTEGER, there INTEGER, at INTEGER, came INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (station, session)) WITHOUT ROWID");
 }
 
+/// Minimal per-station sidecar for `POST /changed/shared`: only row digest and re-projection inputs (no raw shared row,
+/// no `mineOf`, no `answeredBy`), per-station viewer identity/language/build metadata (`shared_meta`), and keyed viewer
+/// marks (`shared_mark`) so cold-start mark diffs re-project only changed rows by index. Made where missing at every
+/// open, as `said` and `moved`.
+export function ensureSharedSidecar(sql: Sql): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS shared_sidecar (
+      station TEXT NOT NULL,
+      id TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      said TEXT,
+      named TEXT,
+      quoted_only INTEGER NOT NULL DEFAULT 0,
+      local_admin INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (station, id)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS shared_mark (
+      station TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      k TEXT NOT NULL,
+      v TEXT NOT NULL,
+      PRIMARY KEY (station, kind, k)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS shared_meta (
+      station TEXT PRIMARY KEY,
+      me TEXT NOT NULL,
+      selves TEXT NOT NULL,
+      lang TEXT NOT NULL,
+      hidden_known INTEGER NOT NULL DEFAULT 0,
+      muted_known INTEGER NOT NULL DEFAULT 0,
+      no_route_build TEXT
+    ) WITHOUT ROWID;
+  `);
+}
+
 /// What is kept of each log (a thread's entries, `entry`; an agent's transcript, `transcript`) as the device holds
 /// within its room (data.ts KEPT): when its chat was last opened here, and whether its items were let go for room.
 /// Made where missing at every open, as `said`.
@@ -711,22 +747,34 @@ function dropSaidIndex(sql: Sql): void {
   }
 }
 
-/// The room the database's file holds and no longer uses given back to the device, at every open: what is let go (an
-/// earlier core's search index, transcripts past KEPT) left its pages free in the file, which stayed as large as it
-/// ever was (a phone's at 150 MB once the index was gone). A database made before is rewritten once (VACUUM) to keep
-/// its free pages at the end (auto_vacuum INCREMENTAL); then only those free are cut off. The log the rewrite went
-/// through is emptied too, or the room would only have moved there.
-export function giveBackRoom(sql: Sql): void {
+/// How many free pages `giveBackRoomStep` returns to the OS at once (about 1 MB at SQLite's 4 KB page size).
+export const ROOM_BACK_PAGES = 256;
+
+/// One step of giving unused pages back to the device: what is let go (an earlier core's search index, transcripts past
+/// KEPT) left its pages free in the file, which stayed as large as it ever was (a phone's at 150 MB once the index was
+/// gone). A database made before is rewritten once (VACUUM) to keep its free pages at the end (auto_vacuum
+/// INCREMENTAL); then only those free are cut off, `pages` at a time, and the WAL is truncated once no free pages
+/// remain. Answers whether more free pages remain for a following step.
+export function giveBackRoomStep(sql: Sql, pages = ROOM_BACK_PAGES): boolean {
   const one = (q: string) => Number(sql.all(q)[0]?.[0] ?? 0);
   if (one("PRAGMA auto_vacuum") !== 2) {
     sql.exec("PRAGMA auto_vacuum = INCREMENTAL");
     sql.exec("VACUUM");
-  } else if (one("PRAGMA freelist_count") > 0) {
-    sql.exec("PRAGMA incremental_vacuum");
-  } else {
-    return;
+    sql.all("PRAGMA wal_checkpoint(TRUNCATE)");
+    return false;
   }
-  sql.all("PRAGMA wal_checkpoint(TRUNCATE)");
+  const before = one("PRAGMA freelist_count");
+  if (before <= 0) return false;
+  sql.exec(`PRAGMA incremental_vacuum(${Math.max(1, Math.floor(pages))})`);
+  const after = one("PRAGMA freelist_count");
+  if (after > 0 && after < before) return true;
+  if (after < before) sql.all("PRAGMA wal_checkpoint(TRUNCATE)");
+  return false;
+}
+
+/// The room the database's file holds and no longer uses given back to the device whole.
+export function giveBackRoom(sql: Sql): void {
+  while (giveBackRoomStep(sql, 0x7fffffff)) {}
 }
 
 /// The database's version.

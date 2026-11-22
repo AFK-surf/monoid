@@ -100,7 +100,7 @@ test "a sheet of the tree's that grows let go above 30% of the window: closed fl
   assert_false(open, msg="flicked down to 35%: closed")
   // (in 60, 0.38 points a ms: landing at 34%, the nearest detent 55%)
   let (open, tall) = things_let_go(380.0, 60)
-  assert_true(open && (tall - 844.0 * 0.55).abs() < 1.0, msg="let go slowly at 35%: at 55% (\{open}, \{tall})")
+  assert_true(open && (tall - (844.0 * 0.55 - 6.0)).abs() < 1.0, msg="let go slowly at 35%: at 55% (\{open}, \{tall})")
   // (either side of 30% slowly: 400 and 460 down in 80 moves, landing at 32% and 25%)
   let (open, _) = things_let_go(400.0, 80)
   assert_true(open, msg="let go slowly at 33%: open")

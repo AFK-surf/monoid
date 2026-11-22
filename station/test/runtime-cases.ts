@@ -276,6 +276,12 @@ for (const [flavor, kept] of [["grok", false], ["agy", true], ["devin", true], [
     { $prompt: { owner: "prompt:p10c", text: "said an unauthenticated notice after partial text" } },
     update(S, text("agent_message_chunk", "partial\n⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n")),
     answer("prompt:p10c", { stopReason: "end_turn" }),
+    { $prompt: { owner: "prompt:p10d", text: "said verification required" } },
+    update(S, text("agent_message_chunk", "⚠ Verification Required")),
+    answer("prompt:p10d", { stopReason: "end_turn" }),
+    { $prompt: { owner: "prompt:p10e", text: "said verification required after partial text" } },
+    update(S, text("agent_message_chunk", "partial\n⚠ Verification Required\n")),
+    answer("prompt:p10e", { stopReason: "end_turn" }),
     { $prompt: { owner: "prompt:p11", text: "said a notice, two lines" } },
     update(S, text("agent_message_chunk", "⚠ Check the quota:\nit is low.")),
     answer("prompt:p11", { stopReason: "end_turn" }),
@@ -288,6 +294,20 @@ for (const [flavor, kept] of [["grok", false], ["agy", true], ["devin", true], [
     42,
   );
 }
+// agy resumed via session/load: ghost history replay discarded on first prompt, resent once without duplicate user line.
+ACP.push(
+  { $new: { flavor: "agy", kept: true } },
+  { $session: "s-agy-resumed" },
+  { $opened: { resumed: true } },
+  { $prompt: { owner: "prompt:r1", text: "real ask" } },
+  update("s-agy-resumed", { sessionUpdate: "tool_call", toolCallId: "g1", title: "view_file", status: "in_progress", rawInput: { path: "/old" } }),
+  update("s-agy-resumed", { sessionUpdate: "tool_call_update", toolCallId: "g1", status: "completed", content: [{ type: "content", content: { type: "text", text: "old output" } }] }),
+  update("s-agy-resumed", text("agent_message_chunk", "old replayed text")),
+  answer("prompt:r1", { stopReason: "end_turn" }),
+  { $resend: { owner: "prompt:r2" } },
+  update("s-agy-resumed", text("agent_message_chunk", "fresh real answer")),
+  answer("prompt:r2", { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 20 } }),
+);
 
 /// What a crash reads again of an output: the lines, and what the session it read is new with.
 export const DSH_REPLAYS: Json[][] = [
@@ -322,9 +342,10 @@ export function said(kind: "dsh" | "cursor" | "acp", lines: Json[]): Step[] {
     if (line?.$new !== undefined) {
       s = kind === "dsh" ? new DshReference() : kind === "cursor" ? new CursorReference() : new AcpReference(line.$new.flavor, line.$new.kept, () => NOW);
     } else if (line?.$prompt !== undefined) events = s instanceof AcpReference ? s.prompted(line.$prompt.owner, line.$prompt.text) : s.prompted();
+    else if (line?.$resend !== undefined) events = (s as AcpReference).resent(line.$resend.owner);
     else if (line?.$inject !== undefined) events = (s as AcpReference).injected(line.$inject.id, line.$inject.takeOver, line.$inject.text);
     else if (line?.$session !== undefined) (s as AcpReference).session = line.$session;
-    else if (line?.$opened !== undefined) (s as AcpReference).loading = false;
+    else if (line?.$opened !== undefined) (s as AcpReference).opened(line.$opened?.resumed === true);
     else if (line?.$aborting !== undefined) s.turn.aborting = true;
     else if (line?.$cut !== undefined) events = cutShort(s);
     else ({ events, node } = s.line(line));

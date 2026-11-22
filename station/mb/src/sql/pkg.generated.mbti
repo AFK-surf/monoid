@@ -10,6 +10,10 @@ import {
 // Values
 pub fn busy(Error) -> Bool
 
+pub fn row_int(Map[String, @json.Json], String) -> Int32
+
+pub fn row_val(Map[String, @json.Json], String) -> @json.Json
+
 // Errors
 
 // Types and methods
@@ -21,9 +25,14 @@ pub fn Db::attach(@host.Host, String, wait~ : Int32) -> Self raise @wire.ShellEr
 pub fn Db::close(Self) -> Unit
 pub fn Db::create(@host.Host, String, wait~ : Int32) -> Self raise @wire.ShellError
 pub fn Db::exec(Self, String) -> Unit raise @wire.ShellError
+pub fn Db::first(Self, String, Array[@json.Json]) -> Map[String, @json.Json]? raise @wire.ShellError
+pub fn Db::has_schema(Self, String, String) -> Bool raise @wire.ShellError
 pub fn Db::known(Self, String, () -> @json.Json raise) -> @json.Json raise
 pub fn Db::run(Self, String, Array[@json.Json]) -> Int32 raise @wire.ShellError
+pub fn Db::schema_version(Self) -> @json.Json raise @wire.ShellError
+pub fn Db::sqlite_master_sql(Self, String, String) -> String? raise @wire.ShellError
 pub fn Db::timed(Self, ((String, Double, Int32?, String?) -> Unit)?) -> Unit
+pub fn[T] Db::write(Self, () -> T raise) -> T raise
 
 // Type aliases
 

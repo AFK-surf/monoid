@@ -119,8 +119,8 @@ export function recordUsage(db: DatabaseSync, path: string, file: UsageFile, run
     for (const [c, of] of calls) {
       const was = known.get(c.id) as { output: number; gen_ms: number } | undefined;
       const genMs = c.genMs ?? 0;
-      // An old call may grow after the cutover, but an unseen old call is not historical work to fill in.
-      if (was === undefined && options?.minNewAt !== undefined && c.at < options.minNewAt) continue;
+      // An old call may grow after the cutover, and a timing-only update (calls <= 0) only updates an already recorded call.
+      if (was === undefined && (c.calls <= 0 || (options?.minNewAt !== undefined && c.at < options.minNewAt))) continue;
       // The same response can occur in several transcript lines or be replayed after an interrupted read.
       if (was !== undefined && c.output <= was.output && genMs <= was.gen_ms) continue;
       // Seed from the saved summary before the first real change, including a subagent's. A replay that changes no

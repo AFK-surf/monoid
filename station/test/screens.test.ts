@@ -251,6 +251,40 @@ test("an actionable failure after opening is sent in the viewer's language", asy
   await view.served;
 });
 
+test("a key frame requested after unacknowledged frames can recover the view", async () => {
+  class RecoveringView extends FakeView {
+    #requested = false;
+    override keyframe() {
+      super.keyframe();
+      this.#requested = true;
+    }
+    override async next(): Promise<Frame | null> {
+      const next = await super.next();
+      if (next && this.#requested) {
+        this.#requested = false;
+        return { ...next, key: true };
+      }
+      return next;
+    }
+  }
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  source.make = () => new RecoveringView();
+  hub.add(source);
+  const v = await open(hub, member);
+  await until(v.frames, KIND.video);
+  await until(v.frames, KIND.video);
+  // Neither frame was acknowledged. The receiver asks for a new key frame after loss.
+  await v.stream.write(frame(KIND.keyframe, Buffer.alloc(0)));
+  await settle();
+  const view = source.views[0]!;
+  assert.equal(view.keyframes, 1);
+  assert.ok(view.asked >= 3, "the pace must not hold the requested key frame behind lost frames");
+  assert.equal((await until(v.frames, KIND.video))[0], 1);
+  await v.stream.finish();
+  await v.served;
+});
+
 test("frames go unacknowledged while the link keeps up: two before its round trip is known, none once one waits too long", async () => {
   const hub = new ScreenHub();
   const source = new FakeSource();
@@ -279,6 +313,23 @@ test("frames go unacknowledged while the link keeps up: two before its round tri
   await v.stream.write(frame(KIND.ack, Buffer.alloc(3)));
   await settle();
   assert.equal(view.asked, 1 + 2 * MAX_UNACKED);
+  // A 12-byte ack carries optional viewer_wait_us (u32 BE): credited to the in-flight window.
+  const ack12 = (ts: number, waitUs: number) => {
+    const b = Buffer.alloc(12);
+    b.writeBigUInt64BE(BigInt(ts), 0);
+    b.writeUInt32BE(waitUs, 8);
+    return b;
+  };
+  const before12 = view.asked;
+  await time.adjust(60);
+  await v.stream.write(frame(KIND.ack, ack12(before12 * 1000, 60_000)));
+  await settle();
+  assert.equal(view.asked, before12 + MAX_UNACKED);
+  // Waiting 50ms (past QUEUE_MS=30ms, but within viewerWait=60ms + QUEUE_MS=30ms) still lets frames go.
+  await time.adjust(50);
+  await v.stream.write(frame(KIND.ack, ack12((before12 + 1) * 1000, 50_000)));
+  await settle();
+  assert.equal(view.asked, before12 + MAX_UNACKED + 1);
   // A key frame asked for goes to the source.
   await v.stream.write(frame(KIND.keyframe, Buffer.alloc(0)));
   await settle();
@@ -691,14 +742,14 @@ test("a still screen's picture goes again sharper as the rate goes up, a key fra
   await v.served;
 });
 
-test("the rate goes up to its pixels × 16 whatever the 画质 but 流畅, × 6 there", async () => {
-  for (const [quality, top] of [["original", 1920 * 1080 * 16], ["hd", 1920 * 1080 * 16], ["smooth", 1920 * 1080 * 6], [undefined, 1920 * 1080 * 16]] as const) {
+test("the rate goes up to its pixels × 16 (自动, 高清), × 20 (2K, 原画), × 6 (流畅), more over 60 frames a second", async () => {
+  for (const [quality, top, fps] of [["original", 1920 * 1080 * 20], ["qhd", 1920 * 1080 * 20], ["hd", 1920 * 1080 * 16], ["smooth", 1920 * 1080 * 6], [undefined, 1920 * 1080 * 16], ["hd", 1920 * 1080 * 16 * 1.5, 120], ["qhd", 1920 * 1080 * 20 * 1.25, 90]] as const) {
     const hub = new ScreenHub();
     const source = new FakeSource();
     source.make = () => new StillView();
     hub.add(source);
     const time = testClock();
-    const v = await open(hub, member, { maxWidth: 1920, maxHeight: 1080, codecs: ["h264"], control: true, ...(quality ? { quality } : {}) }, undefined, time.clock);
+    const v = await open(hub, member, { maxWidth: 1920, maxHeight: 1080, codecs: ["h264"], control: true, ...(quality ? { quality } : {}), ...(fps ? { fps } : {}) }, undefined, time.clock);
     await until(v.frames, KIND.video);
     const view = source.views[0] as StillView;
     let ts = 1000;
@@ -710,7 +761,7 @@ test("the rate goes up to its pixels × 16 whatever the 画质 but 流畅, × 6 
       if (view.keyframes === i) break;
       ts = Number((await until(v.frames, KIND.video)).readBigUInt64BE(1));
     }
-    assert.equal(Math.max(...view.rates), top, `${quality}`);
+    assert.equal(Math.max(...view.rates), top, `${quality} ${fps ?? ""}`);
     await v.stream.finish();
     await v.served;
   }
@@ -755,11 +806,50 @@ test("a 帧率 asked: its source opened with it, and no more frames a second go 
   }
 });
 
+test("the source's next frame is asked while the last is written, one at most and only where the pace would let it go", async () => {
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  hub.add(source);
+  const time = testClock();
+  // 15 a second: a slot of 66.7 ms between frames.
+  const v = await open(hub, member, { maxWidth: 1920, maxHeight: 1080, codecs: ["h264"], control: true, fps: 15 }, undefined, time.clock);
+  const first = await until(v.frames, KIND.video);
+  assert.equal(Number(first.readBigUInt64BE(1)), 1000);
+  await settle();
+  const view = source.views[0]!;
+  // The second asked as the first went, though its slot has not come: it waits for it.
+  assert.equal(view.asked, 2, "one asked ahead");
+  await time.adjust(30);
+  await settle();
+  assert.equal(view.asked, 2, "no more than one ahead");
+  await time.adjust(40);
+  const second = await until(v.frames, KIND.video);
+  assert.equal(Number(second.readBigUInt64BE(1)), 2000, "the one asked ahead, in its turn");
+  await settle();
+  // Two on the way and no round trip known yet: none may go, so none is asked ahead.
+  assert.equal(view.asked, 2, "none asked while the pace holds them");
+  // Acknowledged: on again, one ahead.
+  await v.stream.write(frame(KIND.ack, ts8(2000)));
+  await settle();
+  await time.adjust(70);
+  const third = await until(v.frames, KIND.video);
+  assert.equal(Number(third.readBigUInt64BE(1)), 3000);
+  await settle();
+  assert.equal(view.asked, 4);
+  await v.stream.finish();
+  await v.served;
+});
+
 test("a view's ask: its 画质 among those known, none for a preview's", () => {
   const ask = { maxWidth: 1920, maxHeight: 1080, codecs: ["h265", "h264"] };
   assert.equal(asked({ ...ask, quality: "original" }).quality, "original");
   assert.equal(asked({ ...ask, quality: "hd" }).quality, "hd");
+  assert.equal(asked({ ...ask, quality: "qhd" }).quality, "qhd");
+  assert.equal(asked({ ...ask, quality: "smooth" }).quality, "smooth");
   assert.equal(asked({ ...ask, quality: "best" }).quality, undefined);
+  // 2K is 4:2:0: full chroma with 原画 alone.
+  assert.equal(asked({ ...ask, quality: "qhd", chroma444: true }).chroma444, undefined);
+  assert.equal(asked({ ...ask, quality: "original", chroma444: true }).chroma444, true);
   assert.equal(asked(ask).quality, undefined);
   assert.equal(asked({ ...ask, quality: "original", peek: true }).quality, undefined);
 });
@@ -912,7 +1002,7 @@ test("a client that takes the frames as datagrams under its token is told so whe
 
 test("a view starts at the rate its link is known to carry as it opens: a LAN's higher; a preview, or no link known, at START_RATE", async () => {
   const way = (o: Partial<LinkPath>): LinkPath => ({ selected: true, relay: null, ip: "192.168.1.9:7000", rttMs: 4, txPackets: 0, lostPackets: 0, ...o });
-  for (const [paths, rate] of [[undefined, START_RATE], [[way({})], 12_000_000], [[way({ rttMs: 30 })], 6_000_000], [[way({ relay: "https://r1/", ip: null, rttMs: 20 })], 4_000_000], [[way({ relay: "https://r1/", ip: null, rttMs: 150 })], START_RATE]] as const) {
+  for (const [paths, rate] of [[undefined, START_RATE], [[way({})], 25_000_000], [[way({ rttMs: 30 })], 12_000_000], [[way({ relay: "https://r1/", ip: null, rttMs: 20 })], 4_000_000], [[way({ relay: "https://r1/", ip: null, rttMs: 150 })], START_RATE]] as const) {
     const hub = new ScreenHub();
     const source = new FakeSource();
     source.make = () => new StillView();
@@ -1707,6 +1797,13 @@ test("Windows' desktop: a stillfail-screen process a view, asked for each frame,
   const capped = await desktop.open({ maxWidth: 1280, maxHeight: 800, codecs: ["h264"], fps: 120 });
   assert.equal(readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1).fps, 120);
   capped.close();
+  // Agent and preview views mark themselves so stillfail-screen keeps privileged service input human-only.
+  const agentView = await desktop.open({ maxWidth: 640, maxHeight: 400, codecs: ["jpeg"], agent: true });
+  assert.equal(readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1).agent, true);
+  agentView.close();
+  const peekView = await desktop.open({ maxWidth: 640, maxHeight: 400, codecs: ["jpeg"], peek: true });
+  assert.equal(readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1).peek, true);
+  peekView.close();
   // One that cannot capture says why.
   await assert.rejects(desktop.open({ maxWidth: 1, maxHeight: 1, codecs: ["jpeg"] }), (e: ScreenRefused) => e.status === 503 && /no display to capture/.test(e.message));
   await desktop.close();
@@ -2905,4 +3002,148 @@ test("unsent pointer moves of the same buttons coalesce to the latest while clic
   ]);
   await v.stream.finish();
   await v.served;
+});
+
+/// A view with a virtual microphone (a tab's, a desktop's): it says it as the test does, and keeps what it is fed.
+class MicView extends FakeView {
+  micHeard: ((mic: { available: boolean; active: boolean; epoch: number }) => void) | null = null;
+  micWatched = 0;
+  micStopped = 0;
+  fed: [number[], number][] = [];
+  watchMic(heard: (mic: { available: boolean; active: boolean; epoch: number }) => void) {
+    this.micWatched++;
+    this.micHeard = heard;
+    return () => {
+      this.micStopped++;
+      if (this.micHeard === heard) this.micHeard = null;
+    };
+  }
+  feedMic(pcm16le: Uint8Array, epoch: number) {
+    this.fed.push([[...pcm16le], epoch]);
+  }
+}
+
+const micPacket = (epoch: number, pcm: number[], flags = 0) => {
+  const b = Buffer.alloc(5 + pcm.length);
+  b[0] = flags;
+  b.writeUInt32BE(epoch >>> 0, 1);
+  Buffer.from(pcm).copy(b, 5);
+  return frame(KIND.mic, b);
+};
+
+test("a driven view's virtual microphone is said as it changes and fed only while shared, recorded, and in its epoch", async () => {
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  source.make = () => new MicView();
+  hub.add(source);
+  const v = await open(hub, member);
+  await until(v.frames, KIND.video);
+  const view = source.views[0] as MicView;
+  assert.equal(view.micWatched, 1, "asked of a view a person drives");
+  // Shared before anything records: dropped.
+  await v.stream.write(frame(KIND.micOn, Buffer.from([1])));
+  await v.stream.write(micPacket(0, [1, 2]));
+  await settle();
+  view.micHeard!({ available: true, active: true, epoch: 3 });
+  for (;;) {
+    const got = await v.frames.next();
+    assert.ok(got, "said to the client");
+    if (got.kind !== KIND.state) continue;
+    const said = json(got.payload);
+    if (said.mic !== undefined) {
+      assert.deepEqual(said, { mic: { available: true, active: true, epoch: 3 } });
+      break;
+    }
+  }
+  // Of its epoch only, flags clear, an even length within bounds.
+  for (const p of [micPacket(3, [1, 2]), micPacket(2, [3, 4]), micPacket(3, [5]), micPacket(3, [6, 6], 1), micPacket(3, []), micPacket(3, new Array(3842).fill(7)), micPacket(3, [8, 9, 10, 11])]) await v.stream.write(p);
+  await settle();
+  assert.deepEqual(view.fed, [[[1, 2], 3], [[8, 9, 10, 11], 3]]);
+  // Not shared: dropped; a micOn of another length lets it be.
+  await v.stream.write(frame(KIND.micOn, Buffer.from([0])));
+  await v.stream.write(micPacket(3, [1, 1]));
+  await v.stream.write(frame(KIND.micOn, Buffer.from([1, 1])));
+  await v.stream.write(micPacket(3, [2, 2]));
+  await settle();
+  assert.equal(view.fed.length, 2);
+  // Nothing records: dropped.
+  await v.stream.write(frame(KIND.micOn, Buffer.from([1])));
+  view.micHeard!({ available: true, active: false, epoch: 4 });
+  await v.stream.write(micPacket(4, [3, 3]));
+  await settle();
+  assert.equal(view.fed.length, 2);
+  view.micHeard!({ available: true, active: true, epoch: 5 });
+  await v.stream.write(micPacket(5, [4, 4]));
+  await settle();
+  assert.deepEqual(view.fed.at(-1), [[4, 4], 5]);
+  // Made to only look: the watch let go of, said gone, and what it sends dropped even shared again.
+  hub.watchOnly("fake", hub.people("fake").views[0]!.id);
+  const after: any[] = [];
+  for (;;) {
+    const got = await v.frames.next();
+    assert.ok(got);
+    if (got.kind === KIND.state) after.push(json(got.payload));
+    if (after.some((s) => s.control === false)) break;
+  }
+  assert.ok(after.some((s) => s.control === false && s.mic === null), "the microphone said gone with control");
+  assert.equal(view.micStopped, 1);
+  await v.stream.write(frame(KIND.micOn, Buffer.from([1])));
+  await v.stream.write(micPacket(5, [5, 5]));
+  await settle();
+  assert.equal(view.fed.length, 3);
+  await v.stream.finish();
+  await v.served;
+  assert.equal(view.micStopped, 1, "let go of once");
+});
+
+test("a view that only looks is never asked of the microphone, and one that ends lets it go", async () => {
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  source.make = () => new MicView();
+  hub.add(source);
+  const looks = await open(hub, reader);
+  await until(looks.frames, KIND.video);
+  assert.equal((source.views[0] as MicView).micWatched, 0);
+  await looks.stream.write(frame(KIND.micOn, Buffer.from([1])));
+  await looks.stream.write(micPacket(0, [1, 2]));
+  await settle();
+  assert.deepEqual((source.views[0] as MicView).fed, []);
+  await looks.stream.finish();
+  await looks.served;
+  const drives = await open(hub, member);
+  await until(drives.frames, KIND.video);
+  const view = source.views[1] as MicView;
+  assert.equal(view.micWatched, 1);
+  await drives.stream.finish();
+  await drives.served;
+  assert.equal(view.micStopped, 1);
+});
+
+test("a helper's view watches the virtual microphone where it has one, and sends its packets only in the epoch it said", async () => {
+  const sent: Buffer[] = [];
+  let data: (chunk: Buffer) => void = () => {};
+  const pipe = { write: (b: Buffer) => void sent.push(b), destroy: () => {}, on: (event: string, f: (chunk: Buffer) => void) => void (event === "data" ? (data = f) : undefined) };
+  const view = new HelperView("h264", pipe as never, () => {}, new MacInput(), "ScreenCaptureKit", false, true);
+  const sim = new HelperView("h264", { write: () => {}, destroy: () => {}, on: () => {} } as never, () => {}, new MacInput(), "CoreSimulator");
+  assert.equal(sim.watchMic, undefined, "a simulator's has none");
+  const heard: unknown[] = [];
+  view.feedMic(new Uint8Array([1, 2]), 0);
+  const stop = view.watchMic!((m) => heard.push(m));
+  assert.deepEqual(sent.splice(0), [helperMessage(TO_HELPER.watchMic, Buffer.from([1]))]);
+  data(helperMessage(4, Buffer.from(JSON.stringify({ mic: { available: true, active: true, epoch: 6 } }))));
+  data(helperMessage(4, Buffer.from(JSON.stringify({ mic: { available: false, active: true, epoch: -1 } }))));
+  data(helperMessage(4, Buffer.from(JSON.stringify({ mic: { available: true, active: true, epoch: 7 } }))));
+  assert.deepEqual(heard, [{ available: true, active: true, epoch: 6 }, { available: false, active: false, epoch: 0 }, { available: true, active: true, epoch: 7 }]);
+  view.feedMic(new Uint8Array([1, 2]), 6);
+  view.feedMic(new Uint8Array([1, 2, 3]), 7);
+  view.feedMic(new Uint8Array(3842), 7);
+  view.feedMic(new Uint8Array([4, 5]), 7);
+  assert.deepEqual(sent.splice(0), [helperMessage(TO_HELPER.mic, Buffer.from([0, 0, 0, 0, 7, 4, 5]))]);
+  stop();
+  assert.deepEqual(sent.splice(0), [helperMessage(TO_HELPER.watchMic, Buffer.from([0]))]);
+  view.feedMic(new Uint8Array([4, 5]), 7);
+  data(helperMessage(4, Buffer.from(JSON.stringify({ mic: { available: true, active: true, epoch: 8 } }))));
+  assert.equal(sent.length, 0);
+  assert.equal(heard.length, 3);
+  view.close();
 });

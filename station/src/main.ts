@@ -15,7 +15,7 @@ import { Effect, Fiber, Layer, SubscriptionRef } from "effect";
 import { enroll, id, isRig, joinWorkspace, lockCommand, staysIn, status } from "./cli.ts";
 import { readState } from "./cloud/state.ts";
 import { loadKey } from "./cloud/key.ts";
-import { shortCode } from "./cloud/lock.ts";
+import { shortCode } from "../../shared/lock.ts";
 import { MeshLive } from "./mesh/mesh.ts";
 import { AwakeLive } from "./ops/awake.ts";
 import { AgentsLive } from "./sessions/agents.ts";
@@ -25,6 +25,7 @@ import { setStationLang, stationLang, tr } from "./ops/i18n.ts";
 import { type Control, launcher } from "./ops/launcher.ts";
 import { HELD, heldBy } from "./ops/held.ts";
 import { hearErrors, hearLines, log } from "./ops/log.ts";
+import { recordNodeCrash, reportLauncherEvents, reportNodeCrash } from "./ops/launcher-events.ts";
 import { stationLog } from "./ops/log-export.ts";
 import { Forewarn, lookAt } from "./ops/forewarn.ts";
 import { ConfigFile } from "./ops/config.ts";
@@ -46,6 +47,7 @@ import { LoginsLive } from "./logins/module.ts";
 import { DriveTransfersLive } from "./drive/module.ts";
 import { UsageLive } from "./usage/module.ts";
 import { ElevationLive } from "./elevation/module.ts";
+import { ScreenServiceLive } from "./screens/service-module.ts";
 import { ResourcesLive } from "./resources/module.ts";
 import { SearchLive } from "./search/module.ts";
 import { SlackLive } from "./slack/module.ts";
@@ -192,9 +194,19 @@ function run() {
   const asRig = readState(data)?.rig !== undefined;
   const control = launcher(args);
   // What brings the process down said in its log first: an exception nobody caught, or a promise's rejection nobody
-  // handled, which Node ends the process with as well (a monitor, so it still ends as it did).
+  // handled, which Node ends the process with as well (a monitor, so it still ends as it did). The log's upload has no
+  // time to send it before the process ends, so the first cause is kept in <data>/run/node-crash.json as well, and the
+  // next station says it (ops/launcher-events.ts `reportNodeCrash`).
+  let crashRecorded = false;
+  const recordCrash = (origin: string, error: string) => {
+    if (crashRecorded) return;
+    crashRecorded = true;
+    recordNodeCrash(data, { origin, error, version: version() });
+  };
   process.on("uncaughtExceptionMonitor", (error, origin) => {
-    log.error("station", origin === "unhandledRejection" ? "unhandled rejection" : "uncaught exception", { error: error instanceof Error ? (error.stack ?? error.message) : String(error) });
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    log.error("station", origin === "unhandledRejection" ? "unhandled rejection" : "uncaught exception", { error: message });
+    recordCrash(origin, message);
   });
   // Runners (agents', jobs') from copies under the data directory on Windows, out of reach of the app's installer.
   keepRunnerIn(join(data, "run", "bin"));
@@ -242,7 +254,7 @@ function run() {
   );
   const station = Layer.mergeAll(MeshLive, Loopback(control), StatusLive, AwakeLive, CheckpointsLive, BecameRig).pipe(
     // The station's parts in its own process (parts.ts), made before the mesh answers anyone: each says what it adds.
-    Layer.provideMerge(Layer.mergeAll(VaultLive, AdbLive, BrowserLive, LinksLive, FeedbackLive, AgentHomeLive, LoginsLive, DriveTransfersLive, UsageLive, ElevationLive, ResourcesLive, SearchLive, SlackLive, FeishuLive, CommaLive, GroupLive, WorkspaceConnectsLive, ModelsLive, RigsLive, DevicesLive, CopiesLive, MovesLive, TerminalsLive, FeaturesLive)),
+    Layer.provideMerge(Layer.mergeAll(VaultLive, AdbLive, BrowserLive, LinksLive, FeedbackLive, AgentHomeLive, LoginsLive, DriveTransfersLive, UsageLive, ElevationLive, ScreenServiceLive, ResourcesLive, SearchLive, SlackLive, FeishuLive, CommaLive, GroupLive, WorkspaceConnectsLive, ModelsLive, RigsLive, DevicesLive, CopiesLive, MovesLive, TerminalsLive, FeaturesLive)),
     Layer.provideMerge(AdminApi.layer),
     Layer.provideMerge(AgentsLive(control)),
     // The drive, the admin API's: the platform's, before the agents.
@@ -297,6 +309,10 @@ function run() {
     });
     control.ready(version());
     log.info("station", asRig ? "rig up" : "station up", { version: version(), data });
+    // What the launcher did to recover while none was up (lifecycle.rs `record`): said in this log, once.
+    void reportLauncherEvents(data).catch(() => {});
+    // What ended the process before this one, if it was a fatal error (`recordCrash` above): said in this log, once.
+    void reportNodeCrash(data).catch(() => {});
     // Where the memory goes, in MB: the main thread's (and resident), and each reader's heap. Every ten minutes, or
     // every ten seconds with STILLFAIL_MEMLOG (for measuring).
     const readers = yield* Readers;
@@ -404,7 +420,9 @@ function run() {
   });
   fiber.addObserver((exit) => {
     if (!stopping) {
-      log.error("station", "the station stopped by itself", { exit: String(exit) });
+      const message = String(exit);
+      log.error("station", "the station stopped by itself", { exit: message });
+      recordCrash("fiberExit", message);
       process.exit(1);
     }
   });

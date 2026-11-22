@@ -303,7 +303,7 @@ export class DirectorySockets {
 
   /** A station's state frame (#sendState); null for one in no workspace. */
   frame(station: string): string | null {
-    const found = this.#db.rows(`SELECT m.workspace, w.name AS workspace_name, m.name, w.relays, w.ways_off, m.rig, m.enrolled_by FROM station_members m JOIN workspaces w ON w.id = m.workspace
+    const found = this.#db.rows(`SELECT m.workspace, w.name AS workspace_name, w.emoji AS workspace_emoji, w.icon AS workspace_icon, m.name, w.relays, w.ways_off, m.rig, m.enrolled_by FROM station_members m JOIN workspaces w ON w.id = m.workspace
       WHERE m.station = ? ORDER BY m.enrolled_at, m.rowid`, station);
     if (!found.length) return null;
     const since = nowSeconds() - REVOCATION_DAYS * 86400;
@@ -316,8 +316,10 @@ export class DirectorySockets {
     const told = relays(this.#db.relays(this.#host.meshRelays()));
     const ours = told.relay_urls.map(sameUrl);
     const theirs = (raw: unknown) => parseRelays(raw).filter((u) => !ours.includes(sameUrl(u)));
-    const [home, ...joined] = found.map(({ relays: wsRelays, ways_off, rig, enrolled_by, ...row }) => ({
+    const [home, ...joined] = found.map(({ relays: wsRelays, ways_off, rig, enrolled_by, workspace_emoji, workspace_icon, ...row }) => ({
       ...(row as { workspace: string; workspace_name: string; name: string }),
+      ...(typeof workspace_emoji === "string" && workspace_emoji !== "" ? { workspace_emoji } : {}),
+      ...(typeof workspace_icon === "string" && workspace_icon !== "" ? { workspace_icon } : {}),
       ways: { relays: theirs(wsRelays), off: parseRelays(ways_off) },
       peers: this.#db.rows("SELECT m.station AS id, m.name, s.version FROM station_members m LEFT JOIN stations s ON s.id = m.station WHERE m.workspace = ? AND m.rig IS NULL ORDER BY m.enrolled_at, m.rowid", row.workspace),
       ...(rig === 1 ? { rig: { owner: enrolled_by as string } } : this.#db.rigsTold(row.workspace as string)),

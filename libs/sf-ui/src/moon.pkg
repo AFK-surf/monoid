@@ -8,6 +8,7 @@ import {
   "mbui/signals",
   "mbui/hostapi",
   "mbui/kit",
+  "mbui/player",
   "mbui/headless",
   "mbui/view",
   "mbui/motion",
@@ -15,6 +16,7 @@ import {
   "mbui/dmath",
   "mbui/zip",
   "mbui/text",
+  "liquid-glass/lg",
 }
 
 import {

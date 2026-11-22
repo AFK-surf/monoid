@@ -1,9 +1,10 @@
-// The workspace sheet's rows (sfpages workspace.mbt workspaces_list): the one in use on its card, the others, 登录其他账号
-// and 新建 workspace: their marks in one column and their words on one line (2026-11-07: the card's row stood 16
-// further in, an action's words 4 less far than a workspace's).
+// The workspace sheet's rows (sfpages workspace.mbt workspaces_list): the workspaces in the core's order, the one in use
+// checked where it stands, 登录其他账号 and 新建 workspace: their marks in one column and their words on one line
+// (2026-11-07: the card's row stood 16 further in, an action's words 4 less far than a workspace's), each row where it
+// was whichever is in use (2026-11-21: 「workspace 会到处跑」).
 
 ///|
-test "the workspace sheet: every row's mark in one column and its words on one line, on the card or not" {
+test "the workspace sheet: every row's mark in one column and its words on one line, checked or not" {
   let t = native_chat(466.0, 678.0, true, side=70.0)
   @sfpages.open_workspaces(fixture("chat"), At(32.0, 16.0, 150.0, 38.0))
   t.run_for(@ui.move_most_ms)
@@ -130,7 +131,7 @@ fn ws_at(t : @ui.Tester, words : String, at : String) -> (Double, Double) raise 
 let ws_screens : Array[(Int, Bool)] = [(2, false), (0, false), (0, true)]
 
 ///|
-test "the workspaces: an invitation that comes while they are up shows under the one in use, before the others; answered, it goes" {
+test "the workspaces: an invitation that comes while they are up shows over the workspaces; answered, it goes" {
   for screen in ws_screens {
     let (platform, wide) = screen
     let at = "platform \{platform} wide \{wide}"
@@ -144,10 +145,10 @@ test "the workspaces: an invitation that comes while they are up shows under the
     invited.set(true)
     t.frame()
     t.run_for(@ui.move_most_ms)
-    guard ws_in_panel(t, "安娜邀请你加入「开源」") is Some((_, iy)) else { fail("\{at}: no invitation") }
+    let (_, iy) = ws_at(t, "安娜邀请你加入「开源」", at)
     let (_, cy) = ws_at(t, "星火工作室", at)
     let (_, oy) = ws_at(t, "个人", at)
-    assert_true(cy < iy && iy < oy, msg="\{at}: \{cy} \{iy} \{oy}")
+    assert_true(iy < cy && cy < oy, msg="\{at}: \{iy} \{cy} \{oy}")
     assert_true(ws_in_panel(t, "邀请") is Some(_), msg=at)
     // 忽略: asked, then answered and told so: gone
     let (x, y) = ws_at(t, "忽略", at)
@@ -166,7 +167,7 @@ test "the workspaces: an invitation that comes while they are up shows under the
 }
 
 ///|
-test "the workspaces: one taken out while they are up goes from the list, and 其他 workspace with the last of them" {
+test "the workspaces: one taken out while they are up goes from the list" {
   for screen in ws_screens {
     let (platform, wide) = screen
     let at = "platform \{platform} wide \{wide}"
@@ -176,22 +177,21 @@ test "the workspaces: one taken out while they are up goes from the list, and �
     let t = ws_list_over(ws_told([], invited, left), platform~, wide~)
     t.run_for(@ui.move_most_ms)
     assert_true(ws_in_panel(t, "个人") is Some(_), msg=at)
-    assert_true(ws_in_panel(t, "其他 workspace") is Some(_), msg=at)
     let (_, foot_was) = ws_at(t, "登录其他账号", at)
     left.set(["ws2"])
     t.frame()
     t.run_for(@ui.move_most_ms)
     assert_true(ws_in_panel(t, "个人") is None, msg=at)
-    assert_true(ws_in_panel(t, "其他 workspace") is None, msg=at)
     assert_true(ws_in_panel(t, "星火工作室") is Some(_), msg=at)
-    // its foot where it was: the panel a share of the window, whatever the list holds
+    // its foot under what is left of the list, no further down than it was: the panel as tall as what it holds
     let (_, foot) = ws_at(t, "登录其他账号", at)
-    assert_eq(foot, foot_was, msg=at)
+    let (_, first) = ws_at(t, "星火工作室", at)
+    assert_true(first < foot && foot <= foot_was, msg="\{at}: 登录其他账号 at \{foot}, was \{foot_was}")
   }
 }
 
 ///|
-test "the workspaces: the one in use changed while they are up is the one on the card, checked, the one before among the others" {
+test "the workspaces: the one in use changed while they are up is the one checked, every row where it was" {
   for screen in ws_screens {
     let (platform, wide) = screen
     let at = "platform \{platform} wide \{wide}"
@@ -200,19 +200,20 @@ test "the workspaces: the one in use changed while they are up is the one on the
     let left : @signals.Signal[Array[String]] = @signals.signal([])
     let t = ws_list_over(ws_told([], invited, left), platform~, wide~)
     t.run_for(@ui.move_most_ms)
-    let (_, a) = ws_at(t, "星火工作室", at)
-    let (_, b) = ws_at(t, "个人", at)
-    assert_true(a < b, msg=at)
+    let was = (ws_at(t, "星火工作室", at), ws_at(t, "个人", at))
+    assert_true(ws_selected(t, "星火工作室") && !ws_selected(t, "个人"), msg=at)
     app.picked.set("ws2")
     t.frame()
     t.run_for(@ui.move_most_ms)
-    let (_, a) = ws_at(t, "星火工作室", at)
-    let (_, b) = ws_at(t, "个人", at)
-    assert_true(b < a, msg="\{at}: 个人 \{b} over 星火工作室 \{a}")
-    let (_, label) = ws_at(t, "当前使用", at)
-    let (_, others) = ws_at(t, "其他 workspace", at)
-    assert_true(label < b && b < others && others < a, msg=at)
+    assert_eq((ws_at(t, "星火工作室", at), ws_at(t, "个人", at)), was, msg=at)
+    assert_true(ws_selected(t, "个人") && !ws_selected(t, "星火工作室"), msg=at)
   }
+}
+
+///|
+/// Whether the workspaces' panel's row named `name` is read out as the one chosen.
+fn ws_selected(t : @ui.Tester, name : String) -> Bool {
+  t.semantics().iter().any(fn(s) { !s.hidden && s.role == @ui.Role::Button && s.label == name && s.selected == Some(true) })
 }
 
 ///|
@@ -271,7 +272,7 @@ test "the workspaces: the one in use pressed closes them; 登录其他账号 clo
 }
 
 ///|
-test "the workspaces, compact: as tall as what they hold, shorter than the share of the window they take else" {
+test "the workspaces, compact or as a sheet: a few as tall as what they hold, no room left empty under them" {
   for screen in ws_screens {
     let (platform, wide) = screen
     let at = "platform \{platform} wide \{wide}"
@@ -288,14 +289,18 @@ test "the workspaces, compact: as tall as what they hold, shorter than the share
       assert_true(foot > others, msg=at)
       p.rect.3
     }
-    let compact = tall(true)
-    let share = tall(false)
-    assert_true(compact < share, msg="\{at}: compact \{compact}, else \{share}")
+    // (less than the share of the window a long list takes: 0.7 of 800, the shortest window here; beside what opened
+    // them, not compact, the popover its share as ever, panel_node's)
+    let kinds = if wide { [true] } else { [true, false] }
+    for compact in kinds {
+      let h = tall(compact)
+      assert_true(h < 0.7 * 800.0 - 100.0, msg="\{at}: compact \{compact}, \{h} tall")
+    }
   }
 }
 
 ///|
-test "the workspaces on each screen: 当前使用 over the card of the one in use, 邀请 and its invitation under it, 其他 workspace and the others, then 登录其他账号 and 新建 workspace at its foot, all in it" {
+test "the workspaces on each screen: 邀请 and its invitation, the workspaces in their order, then 登录其他账号 and 新建 workspace at its foot, all in it" {
   for screen in ws_screens {
     let (platform, wide) = screen
     let at = "platform \{platform} wide \{wide}"
@@ -304,7 +309,7 @@ test "the workspaces on each screen: 当前使用 over the card of the one in us
     let left : @signals.Signal[Array[String]] = @signals.signal([])
     let t = ws_list_over(ws_told([], invited, left), platform~, wide~)
     t.run_for(@ui.move_most_ms)
-    let ys = ["当前使用", "星火工作室", "邀请", "安娜邀请你加入「开源」", "其他 workspace", "个人", "登录其他账号", "新建 workspace"].map(fn(w) {
+    let ys = ["邀请", "安娜邀请你加入「开源」", "星火工作室", "个人", "登录其他账号", "新建 workspace"].map(fn(w) {
       ws_in_panel(t, w).map(fn(p) { p.1 }).unwrap_or(-1.0)
     })
     for i in 1..<ys.length() {
@@ -314,19 +319,17 @@ test "the workspaces on each screen: 当前使用 over the card of the one in us
     let (jx, jy) = ws_in_panel(t, "加入").unwrap()
     let (ix, iy) = ws_in_panel(t, "忽略").unwrap()
     assert_true(jy == iy && jx < ix, msg=at)
-    // the one in use checked: its card's ground under its row
-    let (_, cy) = ws_in_panel(t, "星火工作室").unwrap()
-    let (_, oy) = ws_in_panel(t, "个人").unwrap()
-    assert_true(cy < oy, msg=at)
+    // the one in use checked
+    assert_true(ws_selected(t, "星火工作室"), msg=at)
   }
 }
 
 ///|
 /// The others of ws_many, in their order, after 星火工作室 in use.
-let ws_many_others : Array[String] = ["设计系统", "云端基建", "客户端研发", "算法实验组", "开源社区"]
+let ws_many_others : Array[String] = ["设计系统", "云端基建", "客户端研发", "算法实验组", "开源社区", "数据平台", "运营支持", "市场增长"]
 
 ///|
-/// The fixture's core (home's) telling six workspaces: 星火工作室 in use, then ws_many_others.
+/// The fixture's core (home's) telling nine workspaces: 星火工作室 in use, then ws_many_others.
 fn ws_many() -> Source {
   let base = fixture("home")
   {
@@ -414,7 +417,7 @@ fn ws_dragged(t : @ui.Tester, by : Double) -> Unit raise {
 }
 
 ///|
-test "the workspaces, six on a phone: the fourth other half shown over a line at the list's foot, faded towards it; scrolled, faded at both ends; at its end, the last whole" {
+test "the workspaces, nine on a phone: more than the list's share, a line at its foot, faded towards it; scrolled, faded at both ends; at its end, the last whole" {
   for win in [(390.0, 844.0), (393.0, 852.0)] {
     let at = "\{win.0}x\{win.1}"
     let t = ws_many_over(win.0, win.1, platform=2)
@@ -438,8 +441,9 @@ test "the workspaces, six on a phone: the fourth other half shown over a line at
     // at its end: the last whole over the line, faded at its top alone
     ws_dragged(t, 600.0)
     assert_eq(ws_softs(t), (24.0, 0.0), msg="\{at}: at its end")
-    let (_, last) = ws_at(t, ws_many_others[4], at)
-    assert_true(last < rule - 24.0, msg="\{at}: \{ws_many_others[4]} at \{last}, the line at \{rule}")
+    let last_name = ws_many_others[ws_many_others.length() - 1]
+    let (_, last) = ws_at(t, last_name, at)
+    assert_true(last < rule - 24.0, msg="\{at}: \{last_name} at \{last}, the line at \{rule}")
     assert_eq(ws_rules(t), [rule], msg="\{at}: at its end")
   }
 }
@@ -455,11 +459,12 @@ fn ws_on_first_line(t : @ui.Tester, words : String, at : String) -> Unit raise {
     fail("\{at}: no \{words} in the panel")
   }
   let line = w.2 + w.4 / 2.0
+  // (its own the nearest: a row of the list scrolled under the line over the foot may stand close over it)
   let lead = t
     .boxes_held()
     .filter(fn(b) { b.w == 24.0 && b.h == 24.0 && b.x < w.1 && b.x > w.1 - 60.0 && (b.y + 12.0 - line).abs() < 24.0 })
-  assert_eq(lead.length(), 1, msg="\{at}: the square before \{words}: \{Repr(lead.map(fn(b) { (b.x, b.y) }))}")
-  let off = lead[0].y + 12.0 - line
+  assert_true(lead.length() > 0, msg="\{at}: no square before \{words}")
+  let off = lead.fold(init=lead[0].y + 12.0 - line, fn(o, b) { if (b.y + 12.0 - line).abs() < o.abs() { b.y + 12.0 - line } else { o } })
   assert_true(off.abs() <= 1.5, msg="\{at}: the square before \{words} \{off} off its line's middle")
 }
 
@@ -483,7 +488,7 @@ fn ws_kept(t : @ui.Tester, at : String) -> Unit raise {
 }
 
 ///|
-test "the workspaces, six: on each screen, narrow, in large words and in English, every rule kept and no words cut short" {
+test "the workspaces, nine: on each screen, narrow, in large words and in English, every rule kept and no words cut short" {
   // (the app's run started before its words are read: each screen's own again, ws_many_over)
   new_run()
   for screen in ws_screens {

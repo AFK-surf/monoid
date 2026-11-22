@@ -72,6 +72,78 @@ pub async fn Host::file_sha256(self : Host, path : String) -> String? {
 }
 
 ///|
+/// How long a rename waits, attempt by attempt, for a Windows transient file or directory lock (`rename_retrying`).
+let rename_backoff : Array[Int] = [20, 40, 80, 160]
+
+///|
+/// Whether a rename failure indicates a transient lock (`EPERM`, `EBUSY`, `EACCES`, or Windows sharing/access denied).
+fn is_transient_rename_error(e : Error) -> Bool {
+  let m = e.to_string()
+  m.contains("EPERM") ||
+  m.contains("EBUSY") ||
+  m.contains("EACCES") ||
+  m.contains("(os error 1)") ||
+  m.contains("(os error 13)") ||
+  m.contains("(os error 16)") ||
+  m.contains("(os error 32)") ||
+  m.contains("(os error 33)") ||
+  m.contains("Permission denied") ||
+  m.contains("Access is denied") ||
+  m.contains("Operation not permitted") ||
+  m.contains("Device or resource busy") ||
+  m.contains("Resource busy") ||
+  m.contains("being used by another process") ||
+  m.contains("locked a portion")
+}
+
+///|
+/// Renames `from` to `to`, waiting briefly on Windows transient file or directory locks (`EPERM`, `EBUSY`, `EACCES`):
+/// a virus scanner, the indexer, or a process that has just exited still holding a handle. Any other error, or one
+/// still there once the backoff is spent, is raised as it came.
+async fn rename_retrying_by(
+  rename : async (String, String) -> Unit,
+  from : String,
+  to : String,
+  backoff? : Array[Int] = rename_backoff,
+  wait? : async (Int) -> Unit = async fn(ms) {
+    // timer: retry backoff for Windows transient file/directory locks on rename
+    @effect.sleep(ms)
+  },
+) -> Unit {
+  for attempt = 0; ; attempt = attempt + 1 {
+    try {
+      rename(from, to)
+      return
+    } catch {
+      e => {
+        if attempt >= backoff.length() || !is_transient_rename_error(e) {
+          raise e
+        }
+        wait(backoff[attempt])
+      }
+    }
+  }
+}
+
+///|
+/// `fs.rename`, waiting out Windows transient file or directory locks (`EPERM`, `EBUSY`, `EACCES`).
+pub async fn Host::rename_retrying(
+  self : Host,
+  from : String,
+  to : String,
+  backoff? : Array[Int] = rename_backoff,
+) -> Unit {
+  rename_retrying_by(
+    async fn(a, b) {
+      ignore(self.shell("fs.rename", { "from": Json::string(a), "to": Json::string(b) }))
+    },
+    from,
+    to,
+    backoff~,
+  )
+}
+
+///|
 /// `write_atomic` over `call` (an op, its arguments and bytes, the shell's answer), beside `path` under `tmp(path)`.
 async fn write_atomic_by(
   call : async (String, Json, Bytes?) -> Json,
@@ -82,6 +154,11 @@ async fn write_atomic_by(
   sync : Bool,
   mkdir : Bool,
   sep : String,
+  backoff? : Array[Int] = rename_backoff,
+  wait? : async (Int) -> Unit = async fn(ms) {
+    // timer: retry backoff for Windows transient file/directory locks on rename
+    @effect.sleep(ms)
+  },
 ) -> Unit {
   if mkdir {
     let dir = @nodepath.dirname(sep, path)
@@ -109,7 +186,15 @@ async fn write_atomic_by(
       Some(bytes),
     ),
   )
-  ignore(call("fs.rename", { "from": Json::string(beside), "to": Json::string(path) }, None))
+  rename_retrying_by(
+    async fn(from, to) {
+      ignore(call("fs.rename", { "from": Json::string(from), "to": Json::string(to) }, None))
+    },
+    beside,
+    path,
+    backoff~,
+    wait~,
+  )
 }
 
 ///|

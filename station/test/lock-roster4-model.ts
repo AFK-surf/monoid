@@ -19,7 +19,7 @@
 // Faults: round three's, and bodies on their own (`holdBack`: one body never given to one keeper by anyone).
 import { createHash } from "node:crypto";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { type Entry, type LockState, WEB_DEVICE_SECS, apply, canonical, fold, genesis as lockGenesis, sigValid, signatureOk, signer as lockSigner } from "../src/cloud/lock.ts";
+import { type Entry, type LockState, WEB_DEVICE_SECS, apply, canonical, fold, genesis as lockGenesis, sigValid, signatureOk, signer as lockSigner } from "../../shared/lock.ts";
 import { Keeper, type LogRules, type Variant, hashOf, isRemoval, signed, weight } from "./lock-fork-choice-model.ts";
 import {
   ACCOMPLICE, type Dev3, type Family, Holder, type Job3, type Make3, type PersonState, PersonRules, type Roster, type Step, V3, type V3v, World3, type World3Options,

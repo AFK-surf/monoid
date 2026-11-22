@@ -392,6 +392,295 @@ fn network_failure(text : String) -> Bool {
 }
 
 ///|
+let agy_cloud_code_url : String = "https://daily-cloudcode-pa.googleapis.com"
+
+///|
+let agy_production_url : String = "https://cloudcode-pa.googleapis.com"
+
+///|
+let agy_quota_summary : String = "/v1internal:retrieveUserQuotaSummary"
+
+///|
+let agy_user_agent : String = "antigravity/1.5.12"
+
+///|
+let agy_timeout_ms : Int = 30_000
+
+///|
+/// `agyVerify`: Google holding an account until a person verifies it ("Eligibility check failed: Your current account
+/// is not eligible for Antigravity. Verify your account to continue." and the page to do it on; its backend
+/// `VALIDATION_REQUIRED`): that page, "" when it gives none, None when it is not that.
+pub fn agy_verify(text : String) -> String? {
+  let l = lower(text)
+  if !["verify your account", "validation_required"].iter().any(w => l.contains(w)) {
+    return None
+  }
+  let at = index_of(text, "https://accounts.google.com/")
+  if at < 0 {
+    return Some("")
+  }
+  let mut end = at
+  while end < text.length() && !js_space(text.unsafe_charcode_at(end)) {
+    end += 1
+  }
+  Some(slice(text, at, b=end))
+}
+
+///|
+fn agy_location_ineligible(text : String) -> Bool {
+  let l = lower(text)
+  l.contains("not currently available in your location") ||
+  l.contains("unsupported_location") ||
+  l.contains("not eligible for antigravity")
+}
+
+///|
+/// `agyModelWindows`: 5-hour quota windows derived from `v1internal:fetchAvailableModels` (`models[*].quotaInfo`),
+/// one per pool (`gemini` and `3p`), taking the lowest remaining fraction in each pool.
+fn agy_model_windows(ctx : Ctx, body : JV?) -> Array[JV] {
+  guard jget(body, "models") is Some(Obj(_)) else { return [] }
+  let models = jget(body, "models")
+  let mut gemini_frac : Double? = None
+  let mut gemini_reset : Double? = None
+  let mut p3_frac : Double? = None
+  let mut p3_reset : Double? = None
+  for f in jfields(models) {
+    let model_id = f.0
+    if lower(model_id).has_prefix("tab_") {
+      continue
+    }
+    guard f.1 is Obj(_) else { continue }
+    guard f.1.get("quotaInfo") is Some(Obj(_) as qi) else { continue }
+    let resets_at = at(ctx, coalesce(qi.get("resetTime"), () => qi.get("reset_time")))
+    // Google omits the zero fraction for an exhausted model pool and still gives its reset time.
+    let v = match (qi.get("remainingFraction"), qi.get("remaining_fraction")) {
+      (Some(Num(v)), _) | (_, Some(Num(v))) => v
+      (None | Some(Null), None | Some(Null)) if resets_at is Some(_) => 0.0
+      _ => continue
+    }
+    if agy_scope_for_model(Some(model_id)) == "gemini" {
+      match gemini_frac {
+        None => {
+          gemini_frac = Some(v)
+          gemini_reset = resets_at
+        }
+        Some(prev) => {
+          if v < prev {
+            gemini_frac = Some(v)
+          }
+          if gemini_reset is None && resets_at is Some(_) {
+            gemini_reset = resets_at
+          }
+        }
+      }
+    } else {
+      match p3_frac {
+        None => {
+          p3_frac = Some(v)
+          p3_reset = resets_at
+        }
+        Some(prev) => {
+          if v < prev {
+            p3_frac = Some(v)
+          }
+          if p3_reset is None && resets_at is Some(_) {
+            p3_reset = resets_at
+          }
+        }
+      }
+    }
+  }
+  let out = []
+  let base_label = window_label(Some(300.0), "5 小时")
+  match gemini_frac {
+    Some(v) =>
+      out.push(
+        quota_window(
+          "\{base_label} · Gemini",
+          percent(Some(Num((1.0 - v) * 100.0))),
+          gemini_reset,
+          Some(300.0),
+          scope="gemini",
+        ),
+      )
+    None => ()
+  }
+  match p3_frac {
+    Some(v) =>
+      out.push(
+        quota_window(
+          "\{base_label} · Claude / GPT",
+          percent(Some(Num((1.0 - v) * 100.0))),
+          p3_reset,
+          Some(300.0),
+          scope="3p",
+        ),
+      )
+    None => ()
+  }
+  out
+}
+
+///|
+fn strip_trailing_slashes(s : String) -> String {
+  let mut end = s.length()
+  while end > 0 && s.unsafe_charcode_at(end - 1) == '/'.to_int() {
+    end -= 1
+  }
+  slice(s, 0, b=end)
+}
+
+///|
+async fn agy_post(
+  ctx : Ctx,
+  base : String,
+  path : String,
+  token : String,
+  body : JV,
+) -> JV? {
+  let response = Some(
+    ctx.io.fetch({
+      url: "\{base}\{path}",
+      verb: Some("POST"),
+      headers: [
+        ("authorization", "Bearer \{token}"),
+        ("content-type", "application/json"),
+        ("accept", "application/json"),
+        ("user-agent", agy_user_agent),
+      ],
+      body: Some(stringify(body)),
+      timeout_ms: agy_timeout_ms,
+    }),
+  ) catch {
+    _ => None
+  }
+  guard response is Some(res) && res.ok() else { return None }
+  try_parse(res.text)
+}
+
+///|
+fn agy_base(ctx : Ctx, fallback : String) -> String {
+  let raw_base = match ctx.url("agyQuota") {
+    Some(u) if trim_js(u) != "" => trim_js(u)
+    _ => fallback
+  }
+  strip_trailing_slashes(raw_base)
+}
+
+///|
+priv struct AgyQuotaProject {
+  token : String
+  tier : JV
+  payload : JV
+}
+
+///|
+async fn agy_quota_project(
+  ctx : Ctx,
+  home : String,
+  base : String,
+) -> AgyQuotaProject? {
+  let token_text = ctx.io.read_file_or_none(
+    join_path([home, "agy", ".gemini", "antigravity-cli", "antigravity-oauth-token"]),
+  ).unwrap_or("")
+  let token = match jget(jget(try_parse(token_text), "token"), "access_token") {
+    Some(Str(t)) if t != "" => t
+    _ => return None
+  }
+  let loaded = agy_post(
+    ctx,
+    base,
+    "/v1internal:loadCodeAssist",
+    token,
+    jobj([("metadata", jobj([("ideType", js("ANTIGRAVITY"))]))]),
+  )
+  let tier = match jget(loaded, "paidTier") {
+    Some(Obj(_) as paid) => paid
+    _ =>
+      match jget(loaded, "currentTier") {
+        Some(Obj(_) as current) => current
+        _ => return None
+      }
+  }
+  let payload = match jget(loaded, "cloudaicompanionProject") {
+    Some(Str(p)) if p != "" => jobj([("project", js(p))])
+    _ => jobj([])
+  }
+  Some({ token, tier, payload })
+}
+
+///|
+fn is_gemini_weekly(window : JV) -> Bool {
+  window.get("scope") == Some(Str("gemini")) &&
+  window.get("minutes") == Some(Num(week_minutes))
+}
+
+///|
+async fn agy_gemini_weekly(ctx : Ctx, base : String, project : AgyQuotaProject) -> JV? {
+  let (windows, _) = agy_allowance(
+    ctx,
+    agy_post(ctx, base, agy_quota_summary, project.token, project.payload),
+  )
+  for window in windows {
+    if is_gemini_weekly(window) {
+      return Some(window)
+    }
+  }
+  None
+}
+
+///|
+async fn agy_direct_quota(ctx : Ctx, home : String, lang : String) -> JV? {
+  let base = agy_base(ctx, agy_cloud_code_url)
+  guard agy_quota_project(ctx, home, base) is Some(project) else { return None }
+  let summary = agy_post(ctx, base, agy_quota_summary, project.token, project.payload)
+  let models = agy_post(ctx, base, "/v1internal:fetchAvailableModels", project.token, project.payload)
+  let (windows, scoped) = agy_allowance(ctx, summary)
+  let extra = agy_model_windows(ctx, models).filter(w => !windows.iter().any(reported =>
+    reported.get("scope") == w.get("scope") && reported.get("minutes") == w.get("minutes")
+  ))
+  let production = agy_base(ctx, agy_production_url)
+  if base != production && !windows.iter().any(is_gemini_weekly) {
+    match agy_gemini_weekly(ctx, production, project) {
+      Some(weekly) => windows.insert(0, weekly)
+      None => ()
+    }
+  }
+  let merged = []
+  for w in extra {
+    if w.get("scope") == Some(Str("gemini")) {
+      merged.push(w)
+    }
+  }
+  for w in windows {
+    merged.push(w)
+  }
+  for w in extra {
+    if w.get("scope") != Some(Str("gemini")) {
+      merged.push(w)
+    }
+  }
+  if merged.length() == 0 && scoped.length() == 0 {
+    return None
+  }
+  let mut q = ok_or_unavailable(
+    if merged.length() > 0 {
+      merged
+    } else {
+      scoped
+    },
+    ctx.tr(lang, "station.quota.agyNoWindows"),
+  )
+  if q.get("state") == Some(Str("ok")) && merged.length() > 0 && scoped.length() > 0 {
+    q = jset(q, "scoped", jarr(scoped))
+  }
+  if ctx.io.b.ask("agy.plan", [project.tier]) is Str(plan) {
+    q = jset(q, "plan", js(plan))
+  }
+  Some(q)
+}
+
+///|
 fn auth_failure(text : String) -> Bool {
   let l = lower(text)
   [
@@ -480,6 +769,30 @@ fn agy_status(detail : String) -> Double? {
 }
 
 ///|
+/// At most `most` characters of `text`, but a link the cut falls in kept whole: Google's verification link (`Please
+/// verify your account in your browser to continue: https://accounts.google.com/v3/signin/continue?plt=…`) cut short
+/// opens a 400, and it is what the person is to open.
+fn clip_keeping_links(text : String, most : Int) -> String {
+  if text.length() <= most {
+    return text
+  }
+  let cut = slice(text, 0, b=most)
+  let mut start = cut.length()
+  while start > 0 && !js_space(cut.unsafe_charcode_at(start - 1)) {
+    start -= 1
+  }
+  let tail = slice(cut, start)
+  if !tail.contains("http://") && !tail.contains("https://") {
+    return cut
+  }
+  let mut end = most
+  while end < text.length() && !js_space(text.unsafe_charcode_at(end)) {
+    end += 1
+  }
+  slice(text, 0, b=end)
+}
+
+///|
 /// `agyQuota`. `source`: the environment `agy` is started from (the station's, the profile's own over it).
 pub async fn agy_quota(
   ctx : Ctx,
@@ -528,6 +841,15 @@ pub async fn agy_quota(
   let parsed = parse_json_line(stdout)
   if jget(parsed, "status") == Some(Str("SUCCESS")) {
     let (windows, scoped) = agy_allowance(ctx, parsed)
+    if windows.length() > 0 && !windows.iter().any(is_gemini_weekly) {
+      let base = agy_base(ctx, agy_cloud_code_url)
+      if agy_quota_project(ctx, home, base) is Some(project) {
+        match agy_gemini_weekly(ctx, agy_base(ctx, agy_production_url), project) {
+          Some(weekly) => windows.insert(0, weekly)
+          None => ()
+        }
+      }
+    }
     if windows.length() == 0 && scoped.length() == 0 {
       let token = ctx.io.read_file_or_none(
         join_path([home, "agy", ".gemini", "antigravity-cli", "antigravity-oauth-token"]),
@@ -560,7 +882,31 @@ pub async fn agy_quota(
     Some(Str(e)) if trim_js(e) != "" => trim_js(e)
     _ => if trim_js(stderr) != "" { trim_js(stderr) } else { trim_js(stdout) }
   }
-  let detail = slice(said, 0, b=300)
+  // Google refusing the account until a person verifies it: blocked, saying where to verify it. Its page comes after
+  // the first 300 characters.
+  match agy_verify(said) {
+    Some(url) => {
+      let detail = if url != "" {
+        ctx.tr(lang, "station.quota.agyVerifyAt", args=[("url", url)])
+      } else {
+        ctx.tr(lang, "station.quota.agyVerify")
+      }
+      return jobj([
+        ("state", js("blocked")),
+        ("windows", jarr([])),
+        ("detail", js(detail)),
+        ("checkedAt", jint(0)),
+      ])
+    }
+    None => ()
+  }
+  if agy_location_ineligible(said) {
+    match agy_direct_quota(ctx, home, lang) {
+      Some(q) => return q
+      None => ()
+    }
+  }
+  let detail = clip_keeping_links(said, 300)
   if auth_failure(detail) {
     raise Thrown(
       "RenewRefused",

@@ -297,3 +297,25 @@ test("a background session list keeps a reader free for an interactive read", { 
     assert.equal(Atomics.load(state, 0), 2, "the background session list is still waiting");
   } finally { await open(asked); }
 });
+
+test("changed sharedChats is interactive while legacy changed chats, sessions and threads stay bulk", { timeout: 30_000 }, async () => {
+  const { readers, state, args, started, open } = gated(2);
+  // Two bulk usage reads: one runs, one waits, leaving the second reader reserved for interactive reads.
+  const asked = [readers.read("usage", args(true), "en"), readers.read("usage", args(true), "en")];
+  try {
+    await started(1);
+    // POST /changed/shared (`changed` with `op: "sharedChats"`) takes the reserved interactive reader immediately.
+    assert.equal(await readers.read("changed", { ...args(false), op: "sharedChats" }, "en"), "{}");
+    assert.equal(Atomics.load(state, 0), 2, "sharedChats ran beside the held bulk read");
+    // Legacy POST /changed/chats, /changed/sessions, /changed/threads stay bulk and must NOT jump onto the reserved reader.
+    for (const op of ["chats", "sessions", "threads"] as const) {
+      asked.push(readers.read("changed", { ...args(false), op }, "en"));
+    }
+    assert.equal(await readers.read("thread", args(false), "en"), "{}");
+    assert.equal(Atomics.load(state, 0), 3, "legacy changed lists waited behind bulk while interactive thread ran");
+  } finally {
+    const settled = await open(asked);
+    assert.ok(settled.every((s) => s.status === "fulfilled"));
+  }
+  assert.equal(Atomics.load(state, 0), 7);
+});

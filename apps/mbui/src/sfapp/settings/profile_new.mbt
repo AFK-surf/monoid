@@ -93,10 +93,22 @@ pub fn pending_login(core : Core, station : String, id : String) -> Json? {
 
 ///|
 /// A plan's sign-in started for the page (`login.new` with what it signs in to).
-pub fn start_login(core : Core, station : String, n : NewProfile, runtime : String, access : String) -> Unit {
+pub fn start_login(
+  core : Core,
+  station : String,
+  n : NewProfile,
+  runtime : String,
+  access : String,
+  service? : String = "",
+) -> Unit {
   n.asked = true
   n.error.set("")
-  let p = [("station", str(station)), ("runtime", str(runtime))]
+  let p = [("station", str(station))]
+  if service != "" {
+    p.push(("service", str(service)))
+  } else {
+    p.push(("runtime", str(runtime)))
+  }
   if access != "" {
     p.push(("access", str(access)))
   }

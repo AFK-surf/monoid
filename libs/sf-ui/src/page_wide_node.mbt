@@ -190,16 +190,10 @@ fn wide_head_node(
   }))
   .ground(By(fn() { @ui.tree_theme().color(Bg) }))
   |> ignore
-  col.show(fn() { frame().back is Some(_) }, fn(line) {
-    // (its room under it held inside it, not as its own padding: what comes and goes closes to nothing, and a box's
-    // padding is the least it is laid out, so 8 of it stayed till the way ended and went at once then: the run page's
-    // back from its models, switches_still's screen 32)
-    line.box(fn(r) {
-      // (as wide as its words, its line the rest: what is pressed is back's own)
-      r.row(Is(true)).padding(Is((0.0, 0.0, 0.0, desk_back_foot))) |> ignore
-      desk_back_node(r, fn() { frame().back.unwrap_or("") }, on_back)
-    })
-    |> ignore
+  col.show(fn() { frame().back is Some(_) }, fn(r) {
+    // (as wide as its words, its line the rest: what is pressed is back's own)
+    r.row(Is(true)).padding(Is((0.0, 0.0, 0.0, desk_back_foot))) |> ignore
+    desk_back_node(r, fn() { frame().back.unwrap_or("") }, on_back)
   })
   col.box(made_for=loc, fn(l) {
     l.row(Is(true)).gap(Is(desk_title_gap)).lines_up(Is(Some(Middle))) |> ignore
@@ -378,12 +372,9 @@ pub fn section_node(
       parent.show(fn() { about() != "" }, fn(n) { page_note_node(n, about) })
       match actions {
         Some((shown, make)) =>
-          parent.show(shown, fn(a) {
-            a.box(fn(r) {
-              r.row(Is(true)).padding(Is((pg_note_x, pg_note_top, pg_note_x, pg_note_foot))) |> ignore
-              make(r)
-            })
-            |> ignore
+          parent.show(shown, fn(r) {
+            r.row(Is(true)).padding(Is((pg_note_x, pg_note_top, pg_note_x, pg_note_foot))) |> ignore
+            make(r)
           })
         None => ()
       }
@@ -427,12 +418,9 @@ pub fn section_node(
           |> ignore
           match actions {
             Some((shown, make)) =>
-              line.show(shown, fn(a) {
-                a.box(fn(r) {
-                  r.row(Is(true)).gap(Is(section_actions_gap)).lines_up(Is(Some(Middle))) |> ignore
-                  make(r)
-                })
-                |> ignore
+              line.show(shown, fn(r) {
+                r.row(Is(true)).gap(Is(section_actions_gap)).lines_up(Is(Some(Middle))) |> ignore
+                make(r)
               })
             None => ()
           }
@@ -585,6 +573,7 @@ fn wide_group_node(
         .gap(Is(page_card_gap))
         .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
         |> ignore
+        corner_card_node(k, fn() { @ui.tree_theme().corner(Xl3) }, inset=fn() { card_pad })
       } else {
         // (in a panel of its own a card of the panel's: its rows the ladder's inset in, a card's corner; desk_list_card)
         let (pad, corner) = list_card_in(k)
@@ -592,6 +581,7 @@ fn wide_group_node(
         let ends = if in_pane_node(k) { card_pad - wide_row_over } else { pad }
         k.padding(Is((pad, ends, pad, ends))).gap(Is(desk_list_gap)).radius(Is(corner))
         |> ignore
+        corner_card_node(k, fn() { corner }, inset=fn() { pad })
       }
       k.ground(By(fn() { @ui.tree_theme().color(Card) })).lends(part_at, { ..at, list: !card, card }) |> ignore
       rows(k)
@@ -896,7 +886,7 @@ fn wide_control_row_node(
     |> ignore
     r.box(fn(words) {
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(desk_list_gap)) |> ignore
-      led_title_node(words, title, title_look, lead)
+      led_title_node(words, title, title_look, lead) |> ignore
       words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, note_look) |> ignore })
     })
     |> ignore

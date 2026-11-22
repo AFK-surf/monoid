@@ -4,7 +4,7 @@ import {
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/json",
   "mbui/ui",
-  "mbui/kit",
+  "mbui/player",
   "stillfail/sf",
   "stillfail/sfapp/settings",
   "stillfail/sfbase",

@@ -67,7 +67,7 @@ fn file_card_node(
       Bones => @sf.waiting_node(b, fn(bones) { file_shown_node(bones, fn() { "" }, fn() { file_sample(path) }) })
       Refused =>
         @sf.peek_rich_node(b, fn(rich) {
-          file_head_node(rich, fn() { base_of(path) }, fn() { path.has_suffix("/") }, fn() { path }, fn() { "" })
+          file_head_node(rich, fn() { base_of(path) }, fn() { is_dir_path(path) }, fn() { path }, fn() { "" })
           @sf.peek_note_node(rich, fn() { text(read.get().error, "message") })
           file_foot_node(rich, fn() { path }, fn() { "" })
         })

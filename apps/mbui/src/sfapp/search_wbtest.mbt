@@ -142,7 +142,7 @@ test "a message found opens its chat at it, with the words to mark there" {
       // chat opened from a found message, below)
       let words = "改好后的样子："
       guard t.drawn_of(words) is Some((_, y)) else { fail("the message gone to is not drawn") }
-      assert_true(y > bar_foot() && y < 844.0, msg="the message gone to at \{y}")
+      assert_true(y > bar_foot_at(t.ctx().window_size().0) && y < 844.0, msg="the message gone to at \{y}")
       assert_eq(lit_over(t, words), 0.0)
     }
     _ => fail("not a chat")

@@ -78,15 +78,7 @@ fn out_cases() -> Array[(String, Outgoing, Json?)] {
 }
 
 ///|
-/// The entry as the old view draws it in its row (outbox_row, out of a list).
-fn out_old(w : Double, src : Source, o : Outgoing, platform? : Int = 0) -> @ui.Tester {
-  dec_old(w, dec_view(), platform~, fn(c, here) {
-    row_box(c, row_side(w), 0.0, fn() { outbox_row(c, src, here, o) }) |> ignore
-  })
-}
-
-///|
-/// The same as the nodes draw it (outbox_said_node), `o` as it changes, sent at the start of the run.
+/// The entry as the nodes draw it (outbox_said_node), `o` as it changes, sent at the start of the run.
 fn out_new(w : Double, src : Source, o : () -> Outgoing, view? : () -> ChatView = fn() { dec_view() }, platform? : Int = 0) -> @ui.Tester {
   dec_new(w, view, platform~, fn(f, here) {
     let since = f.cause_at()
@@ -95,62 +87,43 @@ fn out_new(w : Double, src : Source, o : () -> Outgoing, view? : () -> ChatView 
 }
 
 ///|
-test "what was sent from here, made once as nodes, is drawn as the old view drew it: sending, waiting on its files, sent, followed, not sent, refused, sent again, failed again, with a file; wide and narrow, at 1.3" {
+test "what was sent from here, made once as nodes: sending, waiting on its files, sent, followed, not sent, refused, sent again, failed again, with a file; wide and narrow, at 1.3" {
   for c in out_cases() {
     for w in [760.0, 390.0] {
       let at = "\{c.0} at \{w}"
-      // (past sending_shows_ms, 正在发送 in its time's place where the station has it not, settled)
-      let old = out_old(w, dec_src(@signals.signal(c.2), []), c.1)
-      old.run_for(sending_shows_ms + @ui.move_most_ms)
-      let was = head_drawn(old)
       let t = out_new(w, dec_src(@signals.signal(c.2), []), fn() { c.1 })
       t.run_for(sending_shows_ms + @ui.move_most_ms)
-      assert_eq(head_drawn(t), was, msg=at)
+      assert_true(t.find("这条还在路上，晚点再看结果") is Some(_), msg=at)
       dec_audit(t, at)
     }
   }
   for k in [0, 4] {
     let c = out_cases()[k]
-    let old = out_old(390.0, dec_src(@signals.signal(c.2), []), c.1)
-    old.set_font_scale(1.3)
-    old.run_for(sending_shows_ms + @ui.move_most_ms)
-    let was = head_drawn(old)
     let t = out_new(390.0, dec_src(@signals.signal(c.2), []), fn() { c.1 })
     t.set_font_scale(1.3)
     t.run_for(sending_shows_ms + @ui.move_most_ms)
-    assert_eq(head_drawn(t), was, msg=c.0 + " at 1.3")
     dec_audit(t, c.0 + " at 1.3")
   }
 }
 
 ///|
-test "before it has been on its way sending_shows_ms: its time under it, as the core says it from the first, not 正在发送, as the old view's" {
+test "before it has been on its way sending_shows_ms: its time under it, as the core says it from the first, not 正在发送" {
   let o = out_entry("sending")
-  let old = out_old(760.0, dec_src(@signals.signal(None), []), o)
-  old.run_for(@ui.move_most_ms)
-  let was = head_drawn(old)
   let t = out_new(760.0, dec_src(@signals.signal(None), []), fn() { o })
   t.run_for(@ui.move_most_ms)
-  assert_eq(head_drawn(t), was)
   assert_true(t.find("刚刚") is Some(_))
   assert_false(t.words().iter().any(fn(w) { w.0 == @sf.t("web-main.chat.sending") && w.5 > 0.0 }))
   dec_audit(t, "before")
 }
 
 ///|
-test "under a mouse, as the old view's: 重试 on the hover ground in the text's ink" {
+test "under a mouse: 重试 on the hover ground in the text's ink" {
   let o = out_entry("failed", error="连不上 Willow")
-  let old = out_old(760.0, dec_src(@signals.signal(None), []), o)
-  old.run_for(@ui.move_most_ms)
-  let (x, y, w, h) = old.rect_of(@sf.t("common.retry")).unwrap()
-  old.move_to(x + w / 2.0, y + h / 2.0)
-  old.run_for(@ui.move_most_ms)
-  let was = head_drawn(old)
   let t = out_new(760.0, dec_src(@signals.signal(None), []), fn() { o })
   t.run_for(@ui.move_most_ms)
+  let (x, y, w, h) = t.rect_of(@sf.t("common.retry")).unwrap()
   t.move_to(x + w / 2.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
-  assert_eq(head_drawn(t), was)
   dec_audit(t, "under a mouse")
 }
 

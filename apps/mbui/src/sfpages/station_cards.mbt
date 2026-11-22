@@ -4,19 +4,50 @@
 
 ///|
 /// A meter as its dial: what is left large, filled as far as is used, its name and its total under (each its short
-/// words too).
-fn meter_dial(m : Json) -> @sf.Dial {
+/// words too). The CPU's (`short` CPU) turns: `busy`, how much of it is used large instead, as its cells are filled.
+fn meter_dial(m : Json, busy : Bool) -> @sf.Dial {
   let mv = Some(m)
-  {
-    number: text(mv, "big"),
-    unit: text(mv, "unit"),
-    fill: 100 - count(mv, "left"),
-    level: text(mv, "level"),
-    label: text(mv, "title"),
-    note: text(mv, "total"),
-    label_short: text(mv, "titleShort"),
-    note_short: text(mv, "totalShort"),
+  let cpu = text(mv, "short") == "CPU"
+  if cpu && busy {
+    let used = count(mv, "percent")
+    {
+      number: used.to_string(),
+      unit: "%",
+      fill: used,
+      level: text(mv, "level"),
+      label: @sf.t("web-pages.stations.page.cpuBusy"),
+      note: text(mv, "total"),
+      label_short: @sf.t("web-pages.stations.page.cpuBusyShort"),
+      note_short: text(mv, "totalShort"),
+      turns: true,
+    }
+  } else {
+    {
+      number: text(mv, "big"),
+      unit: text(mv, "unit"),
+      fill: 100 - count(mv, "left"),
+      level: text(mv, "level"),
+      label: text(mv, "title"),
+      note: text(mv, "total"),
+      label_short: text(mv, "titleShort"),
+      note_short: text(mv, "totalShort"),
+      turns: cpu,
+    }
   }
+}
+
+///|
+/// Whether this device shows its machines' CPU as how much of it is used (the prefs' `cpuDial` busy), not how much is
+/// idle: pressing the CPU's dial turns it, kept on this device alone.
+fn cpu_busy(src : Source) -> Bool {
+  @settings.cpu_busy_of(src.topic("prefs", {}).get().value)
+}
+
+///|
+/// The CPU's dial pressed: the other way kept on this device.
+fn cpu_dial_turn(src : Source) -> Unit {
+  let to = if cpu_busy(src) { Json::null() } else { Json::string("busy") }
+  (src.call)("prefs.set", { "cpuDial": to }, @sfbase.answer_unread)
 }
 
 ///|
@@ -30,14 +61,16 @@ fn station_dials_of(meters : Array[Json], gpus : Array[Json]) -> (Array[Json], A
 }
 
 ///|
-/// The machine's dials, as `host` says them now.
-fn station_dials_node(p : @view.View, host : () -> Json?) -> Unit {
+/// The machine's dials, as `host` says them now, the CPU's turned by a press (cpu_dial_turn).
+fn station_dials_node(p : @view.View, src : Source, host : () -> Json?) -> Unit {
+  let busy = @signals.computed(fn(_) { cpu_busy(src) })
+  let press = fn(_i : Int) { cpu_dial_turn(src) }
   p.pick(fn() { items(host(), "gpus").length() > 0 }, fn(d, gpus) {
     if gpus {
       let both = fn() { station_dials_of(items(host(), "meters"), items(host(), "gpus")) }
-      @sf.dials_node(d, fn() { both().0.map(meter_dial) }, details=fn() { both().1 }, columns=3)
+      @sf.dials_node(d, fn() { both().0.map(fn(m) { meter_dial(m, busy.get()) }) }, details=fn() { both().1 }, columns=3, press~)
     } else {
-      @sf.dials_node(d, fn() { items(host(), "meters").map(meter_dial) })
+      @sf.dials_node(d, fn() { items(host(), "meters").map(fn(m) { meter_dial(m, busy.get()) }) }, press~)
     }
   })
 }
@@ -49,14 +82,8 @@ fn quota_dials_of(windows : Array[Json]) -> Array[@sf.Dial] {
   windows.map(fn(w) {
     let wv = Some(w)
     let left = count(wv, "left")
-    { number: left.to_string(), unit: "%", fill: left, level: text(wv, "level"), label: text(wv, "label"), note: text(wv, "refills"), label_short: "", note_short: "" }
+    { number: left.to_string(), unit: "%", fill: left, level: text(wv, "level"), label: text(wv, "label"), note: text(wv, "refills"), label_short: "", note_short: "", turns: false }
   })
-}
-
-///|
-/// A figure (Figure): bold in the words' ink, in its level's colour when off.
-pub fn figure(c : @ui.Ctx, f : Json?) -> Unit {
-  c.text(text(f, "text"), style=@sf.level_figure_style(text(f, "level"), nt_figure)) |> ignore
 }
 
 ///|
@@ -95,10 +122,6 @@ fn software_call(core : Core, station : String, name : String, params : Array[(S
 let st_logins_open : @sf.LiveMap[String, String] = @sf.LiveMap::new()
 
 // ── styles ──────────────────────────────────────────────────────────────
-
-///|
-// kept across runs: a value (no field of it changes)
-let nt_figure : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Medium, color=Fg, wrap=false)
 
 ///|
 /// The rest of a machine (hostDetails: its labels beside each, 14 apart, rows 8 apart, the meta's 12 muted).

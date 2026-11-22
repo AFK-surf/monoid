@@ -77,6 +77,8 @@ pub fn[K : Eq] radio_group(@view.View, () -> String, () -> K, (K) -> Unit, (@vie
 #callsite(autofill(loc))
 pub fn slider(@view.View, () -> String, () -> Double, min~ : Double, max~ : Double, step~ : Double, (Double) -> Unit, (@view.View, Slider) -> Unit, thumb_room? : Double, disabled? : () -> Bool, value_text? : (Double) -> String, drag? : (@view.Drag) -> Unit, vertical? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
+pub fn slider_snap(Double, Double, Double, Double) -> Double
+
 #callsite(autofill(loc))
 pub fn split(@view.View, () -> String, () -> Double, min~ : Double, max~ : Double, step~ : Double, (Double) -> Unit, (@view.View, Split) -> Unit, axis? : SplitAxis, span? : () -> Double, reset? : () -> Unit, said_value? : (Double) -> String, disabled? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
@@ -84,6 +86,14 @@ pub fn stroke_caps(@view.Stroke, apple~ : Bool) -> Array[String]
 
 #callsite(autofill(loc))
 pub fn table(@view.View, (@view.View, Table) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub fn tip_claim(TipOwner) -> Unit
+
+pub fn tip_node_owner() -> TipOwner
+
+pub fn tip_owns(TipOwner) -> Bool
+
+pub fn tip_slot_reset() -> Unit
 
 #callsite(autofill(loc))
 pub fn[T : Eq] toaster(@view.View, () -> Array[T], (T) -> String, (T) -> (String, String), (T) -> Double, (@view.View) -> Unit, (@view.View, ToastItem[T]) -> Unit, (String) -> Unit, (String) -> Unit, key? : String, label? : String, leave? : Double, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
@@ -100,7 +110,15 @@ pub fn tooltip_bubble(@view.View, () -> String, (@view.View) -> Unit, made_for? 
 
 pub let tooltip_close : String
 
+pub let tooltip_delay_ms : Double
+
 pub let tooltip_keys : Array[@view.Binding]
+
+pub let tooltip_lifted_ms : Double
+
+pub let tooltip_skip_ms : Double
+
+pub let typeahead_ms : Double
 
 // Errors
 
@@ -376,6 +394,12 @@ pub fn TableRow::cell(Self, @view.View, (@view.View) -> Unit, label? : () -> Str
 #callsite(autofill(loc))
 pub fn TableRow::header(Self, @view.View, (@view.View) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 pub fn TableRow::node(Self) -> @view.View
+
+#derive(Eq, @debug.Debug)
+pub(all) enum TipOwner {
+  Built(Int32)
+  Node(Int32)
+}
 
 pub struct ToastItem[T] {
   // private fields

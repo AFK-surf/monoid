@@ -262,8 +262,15 @@ async fn Actors::update_json(self : Actors, path : String, edit : (Json) -> Json
 ///|
 /// Path::components as a transfer takes them (remote.ts `filePath`): relative as the station's system has it
 /// (ops/paths.ts `relativeParts`: on Windows `\` separates too, and a drive, a share or a stream is not relative), no
-/// `.` first, no `..`, nothing through a link; its folders made with `create`.
-async fn Actors::file_path(self : Actors, root : String, relative : String, create : Bool) -> String raise {
+/// `.` first, no `..`, nothing through a link; its folders made with `create`. `allow_leaf_link`: the last part may be a
+/// link itself, for a caller that only replaces or removes it, never reads or writes through it.
+async fn Actors::file_path(
+  self : Actors,
+  root : String,
+  relative : String,
+  create : Bool,
+  allow_leaf_link? : Bool = false,
+) -> String raise {
   match self.lstat(root) {
     Some(st) if kind_of_stat(st) == "link" => raise FsError("transfer root is a symbolic link")
     Some(_) => ()
@@ -288,9 +295,10 @@ async fn Actors::file_path(self : Actors, root : String, relative : String, crea
     raise FsError("file path must be relative, without . or ..")
   }
   let mut out = root
-  for part in parts {
+  let last = parts.length() - 1
+  for i, part in parts {
     out = self.rjoin([out, part])
-    if self.lstat(out) is Some(st) && kind_of_stat(st) == "link" {
+    if (i < last || !allow_leaf_link) && self.lstat(out) is Some(st) && kind_of_stat(st) == "link" {
       raise FsError("file path contains a symbolic link")
     }
   }

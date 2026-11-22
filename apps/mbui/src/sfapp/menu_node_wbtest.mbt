@@ -95,7 +95,7 @@ test "大屏, keyboard and mouse, a short window: a menu taller than it: its pan
 ///|
 test "小屏: a menu presented: a sheet still, the old frame's, nothing of it the window's tree's" {
   let t = menu_tester(390.0, 844.0, 2)
-  @sf.menu(menu_items_counting(["复制", "重命名", "删除"], []), from=@sf.at_point(200.0, 300.0))
+  @sf.menu(menu_items_counting(["复制", "重命名", "删除"], []), from=@sf.at_point(200.0, 700.0))
   t.run_for(@ui.move_most_ms)
   assert_eq((tree_said(Menu, "") is None, t.find("重命名") is Some(_)), (true, true))
 }
@@ -165,6 +165,7 @@ test "大屏, touch: the chat's message field typed in, a menu presented over it
   t.type_text("改")
   t.run_for(@ui.move_most_ms)
   @sf.menu(menu_items_counting(["一项", "二项"], []), from=@sf.at_point(600.0, 300.0))
+  t.frame()
   t.run_for(@ui.move_most_ms)
   let (keyboard, words, _, _) = t.ime()
   let open = (said(), keyboard, words, @sf.presenting())
@@ -496,9 +497,9 @@ test "大屏, keyboard and mouse: a menu's row lit, Tab to its panel, then that 
 }
 
 ///|
-test "大屏, keyboard and mouse: a menu presented beside what was never drawn: beside the window's corner, as the old menu (its panel at 8, 8, as main has it)" {
+test "大屏, keyboard and mouse: a menu presented beside the window's corner stays inside the margin (its panel at 8, 8)" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.menu(menu_items_counting(["复制", "重命名", "删除"], []), from=Of(987654321))
+  @sf.menu(menu_items_counting(["复制", "重命名", "删除"], []), from=@sf.at_point(0.0, 0.0))
   t.run_for(@ui.move_most_ms)
   let (x, y, _, _) = t.get(Menu).rect
   assert_eq((x, y), (8.0, 8.0))

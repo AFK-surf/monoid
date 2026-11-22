@@ -5,7 +5,7 @@
 - A bottom-bar place never opens on bones when the device has its data: list every opening list in both `lasting` (shown immediately) and `place_reads` (pre-requested), verified by `apps/mbui/src/sfapp/place_first_wbtest.mbt`. Sole exception: `stationNet` (Station network line) samples stations only after pressing the Station tab, so that line alone may show bones on first open.
 - Read-only page, panel, and card topics (`views_kept`) stay cached in the client and display immediately on re-open until the core answers (`@core.Client::show_kept`, `MBUI_SWR_VIEWS`). Chat values wait for the core, bar lists replay via `last_said`, and `station_marks` never uses kept values.
 - Cards, panels, sheets, and dialogs opening for the first time wait up to `open_hold_ms` for local topic reads made during construction, never waiting on a station (`libs/sf-ui/src/open_gate.mbt`, `Source::topic`, `MBUI_OPEN_WHOLE`, `apps/mbui/src/sfapp/open_whole_wbtest.mbt`).
-- On 小屏, keep switched-away bottom-bar places parked on the stack shelf (`nav_root_kept`: bar, chats, history, while rail, wide frames, and legacy views replace normally) and release them only on workspace or tier change (`@settings.left`). Parked places automatically preserve scroll, 连接's 我的, Home's list/filter/search, and 用量's days (keyboard focus still clears).
+- On 小屏 bottom bar and 中屏/大屏 rail, keep switched-away root places parked on the stack shelf (`nav_root_kept` + `keeps_made=true`) and release them only on workspace switch, tier change (`@settings.left`), or explicit `kept=false`. Parked places automatically preserve scroll, 连接's 我的, Home's list/filter/search, and 用量's days (keyboard focus still clears).
 
 ## Workspace switch, ahead reads, and press waits
 
@@ -17,7 +17,7 @@
 
 ## Unified beside-chat tabs
 
-- Everything opening beside a chat (files, web services, visualizations, mini-programs) shares one interaction (`apps/mbui/src/sfbase/tab_full.mbt`, `apps/mbui/src/sfdesk/tab_full_node.mbt`, `apps/mbui/src/sfbase/window.mbt`): a chat side-panel tab by default on wide screens, fullscreen over the window on Cmd+click or 全屏, and an independent window as its third host, rendered by the same nodes everywhere. Route every new beside-chat kind through it. Pictures, videos, and audio stay in the whole-window viewer until tabs support flight, marking, and stepping.
+- Everything opening beside a chat (files, web services, visualizations, mini-programs) shares one interaction (`apps/mbui/src/sfbase/tab_full.mbt`, `apps/mbui/src/sfdesk/tab_full_node.mbt`, `apps/mbui/src/sfbase/window.mbt`): fullscreen over the window by default on wide screens (as a side-panel tab put there only for it, closed with it), a chat side-panel tab on Cmd/Ctrl+click, 在侧边打开 or 移到侧边, and an independent window as its third host, rendered by the same nodes everywhere. Route every new beside-chat kind through it. Pictures, videos, and audio open as beside-chat tabs on Cmd/Ctrl+click, 在侧边打开 or 移到侧边: a picture tab supports in-place marking (`apps/mbui/src/sfbase/viewer_tab.mbt`) and stepping via `chat.tabs.replace`. Pressed plainly they open in the whole-window viewer instead, flying from their thumbnail and back (`opens_in_viewer`), as on 小屏 and for draft files.
 
 ## Topic subscriptions, unread calls, and feature registry
 
@@ -27,3 +27,8 @@
   - Accounts: lists use `profiles`, detail pages use `profile` (`@settings.profile_read`, `@settings.profile_by_key_read`), opened after local answer via `open_answered`/`show_answered`/`hand_over`/`hand_over_shown` (`apps/mbui/src/sfapp_pages_test/account_open_test.mbt`).
 - Fire-and-forget calls omit `on_done` (`answer_unread` in `apps/mbui/src/sfbase/source.mbt`). Detlint `empty-on-done` rejects empty callbacks.
 - All unreleased features live in the single core registry (`client/core-ts/src/features.ts`, `scripts/features-check.ts`). The app reads `features`, `experimentalItems`, and station overview `features` (`apps/mbui/src/sfapp/settings/features.mbt`) with no local copy. `beta` follows the channel where its code runs (station features follow station channel). `experimental` starts off on both channels and toggles per device in 设置 › 实验性功能 (`betaOnly` offered on test channel only). Turning a feature off reverts UI immediately without restart. Remove the registry entry and all branches together when graduating or dropping.
+
+## Pictures kept for a run
+
+- Every map of image keys kept across pages is bounded (least lately used let go of, `@ui.forget_image` with it) and never lets go of a picture something still shows: one a node reads (its told signal watched), a viewer open, going or beside a chat shows (`preview_shown`), or a draft's tile shows (`writing_pictures`). Shown again, it is asked for again.
+- A draft's taken files keep their bytes (`writing_went`) until the message is taken into its chat or its outbox (`writing_committed`): a refused send puts them back (`writing_restore`, `writing_back_or_said`), so never let them go at `writing_take`.

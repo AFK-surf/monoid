@@ -417,7 +417,7 @@ test("a_chat_opening_is_one_trace_its_requests_carry_and_ember_cloud_gets", asyn
   assert.ok(said.some((m) => m.id === 1 && "value" in m), JSON.stringify(said).slice(0, 500));
   // (but its agent's history brought whole behind every other read, the sync's: topics.ts `#wholeHistory`)
   assert.equal(host.requests.slice(before).filter((r) => !r.url.includes("/timeline?")).length, 0, "opening a chat asks nothing");
-  const reads = ["/events?running=1&views=1&rows=1&shared=1", "/overview", "/sessions", "/threads", "/chats?marks=1", "/jobs?chats=0"].map((p) => host.requests.find((r) => r.url === `https://stillfail.test/admin/api${p}`)!);
+  const reads = ["/events?running=1&views=1&rows=1&shared=1", "/overview", "/sessions", "/threads", "/chats?marks=1&own=1", "/jobs?chats=0"].map((p) => host.requests.find((r) => r.url === `https://stillfail.test/admin/api${p}`)!);
   const parents = reads.map((r) => header(r, "traceparent")!);
   const trace = parents[0].slice(3, 35);
   assert.ok(parents.every((p) => p.slice(3, 35) === trace && p.endsWith("-01")), JSON.stringify(parents));
@@ -2286,7 +2286,7 @@ test("notifications_are_on_until_turned_off_and_kept_so_with_no_pushes", async (
   apply(host, values);
   // (the workspaces the accounts are in apart: as the fixture's are)
   const settings = (x: J) => Object.fromEntries(Object.entries(x).filter(([k]) => k !== "workspaces"));
-  assert.deepEqual(settings(v(values, 1)), { on: true, asked: false, push: true, kinds: { wait: true, failed: true, done: "away", message: true }, preview: true, muted: [], permission: "unknown", show: [] });
+  assert.deepEqual(settings(v(values, 1)), { on: true, asked: false, push: true, kinds: { wait: true, failed: true, done: "away", message: true, billed: false }, preview: true, muted: [], permission: "unknown", show: [] });
   // What the system allows, as the app finds it: shown to every UI, not kept.
   call(core, ui, 4, "notify.permission", { state: "denied" });
   call(core, ui, 5, "notify.set", { preview: false });
@@ -2299,7 +2299,7 @@ test("notifications_are_on_until_turned_off_and_kept_so_with_no_pushes", async (
   call(core, ui, 3, "push.register", { kind: "fcm", token: "t" });
   await host.settle();
   apply(host, values);
-  assert.deepEqual(settings(v(values, 1)), { on: false, asked: true, push: false, kinds: { wait: true, failed: true, done: "away", message: true }, preview: false, muted: [], permission: "denied", show: [] });
+  assert.deepEqual(settings(v(values, 1)), { on: false, asked: true, push: false, kinds: { wait: true, failed: true, done: "away", message: true, billed: false }, preview: false, muted: [], permission: "denied", show: [] });
   assert.equal(host.stored(PUSH_KEY), undefined);
   // Kept across a restart.
   core.close();
@@ -2328,7 +2328,7 @@ test("a_push_registration_says_what_this_device_shows_and_is_given_again_as_that
   const ui = core.connect();
   call(core, ui, 1, "push.register", { kind: "fcm", token: "t" });
   await host.settle();
-  assert.deepEqual(posted.map((p) => [p.token, p.preview, p.kinds]), [["t", true, { wait: true, failed: true, done: "away", message: true }]]);
+  assert.deepEqual(posted.map((p) => [p.token, p.preview, p.kinds]), [["t", true, { wait: true, failed: true, done: "away", message: true, billed: false }]]);
   // Its preview off, people's messages off: given again saying so (the cloud makes its pushes so), not waited on.
   call(core, ui, 2, "notify.set", { preview: false, kinds: { message: false } });
   await host.settle();
@@ -4201,6 +4201,63 @@ test("profile_fusion_is_asked_on_demand_and_legacy_tiered_agy_picks_resolve_to_b
   core.close();
 });
 
+
+test("remembered Ultrafast configurations remain selectable when the account loses access", async () => {
+  for (const [of, source] of [["new", "combo"], ["new", "usual"], ["session:k1", "combo"], ["connect-new:preset", "combo"]] as const) {
+    const { host, core } = await choosing(true, false, null, true, false, [], "gpt-6-astra");
+    const ui = core.connect();
+    const at = { station: "ws/st", of };
+    const original = { model: "gpt-6-astra", runtime: "codex", effort: "high", speed: "ultrafast" };
+    core.inner.choose.used("ws/st", original);
+    subscribe(core, ui, 1, { topic: "pick", ...at });
+    await host.settle();
+    const values = new Map();
+    apply(host, values);
+    const pick = v(values, 1);
+    const combo = pick.combos.find((c: J) => c.model === original.model && c.speed === "ultrafast");
+    assert.ok(combo, `${of}: the remembered configuration is still offered`);
+    assert.match(combo.text, /标准（Ultrafast 不可用）/);
+    assert.equal(combo.selected, false);
+    const usual = pick.options.find((o: J) => o.model === original.model);
+    if (source === "usual") assert.match(usual.usualText, /标准（Ultrafast 不可用）/);
+    const chosen = source === "combo" ? combo : { model: original.model, ...usual.usual };
+    const answer = await ask(host, core, ui, 2, "pick.save", { ...at, ...chosen });
+    assert.equal(answer.notice, "Ultrafast 不可用，已改用标准速度。");
+    if (of === "session:k1") {
+      const sent = stationPosted(host, "/sessions/k1/settings").at(-1);
+      assert.deepEqual([sent.model, sent.effort, sent.speed, sent.fast], [original.model, "high", "standard", false]);
+    } else {
+      apply(host, values);
+      assert.deepEqual([v(values, 1).value.model, v(values, 1).value.effort, v(values, 1).value.speed, v(values, 1).value.fast], [original.model, "high", "standard", false]);
+    }
+    assert.equal((core.inner.data.record("choice", "ws:ws:frequent") as J)[0].speed, "ultrafast", "the remembered configuration stays intact");
+    await assert.rejects(ask(host, core, ui, 3, "pick.save", { ...at, speed: "ultrafast" }), /Ultrafast/);
+    core.close();
+  }
+});
+
+test("an unavailable remembered speed works on an older station and its aliased record can be removed", async () => {
+  const { host, core } = await choosing(true, false, null, true, false, false, "gpt-6-astra");
+  const ui = core.connect();
+  const at = { station: "ws/st", of: "session:k1" };
+  core.inner.choose.used("ws/st", { model: "openai/gpt-6-astra", runtime: "codex", effort: "high", speed: "ultrafast" });
+  subscribe(core, ui, 1, { topic: "pick", ...at });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  const combo = v(values, 1).combos.find((c: J) => c.speed === "ultrafast");
+  assert.ok(combo);
+  assert.equal(combo.model, "gpt-6-astra");
+  const answer = await ask(host, core, ui, 2, "pick.save", { ...at, ...combo });
+  const sent = stationPosted(host, "/sessions/k1/settings").at(-1);
+  assert.equal(answer.notice, "Ultrafast 不可用，已改用标准速度。");
+  assert.equal(sent.model, "gpt-6-astra");
+  assert.equal(sent.fast, false);
+  assert.equal(sent.speed, undefined, "the old station receives its Fast switch");
+  await ask(host, core, ui, 3, "pick.forget", { ...at, ...combo });
+  assert.deepEqual(core.inner.data.record("choice", "ws:ws:frequent"), []);
+  core.close();
+});
 
 test("Ultrafast round trips through the picker, new chats and presets; older stations refuse it", async () => {
   for (const [codexModel, speeds, available] of [

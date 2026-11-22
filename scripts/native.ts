@@ -16,18 +16,19 @@
 //   node scripts/native.ts key <part> [target]         its key
 //   node scripts/native.ts fetch <part> [target]       into the cache, never building (fails when not prebuilt)
 //   node scripts/native.ts build <part> [target]       built here, into the cache, whatever is there
-//   node scripts/native.ts trim                        the cache within STILLFAIL_NATIVE_CACHE_MAX_BYTES (unset: nothing)
+//   node scripts/native.ts trim                        the cache within STILLFAIL_NATIVE_CACHE_MAX_BYTES (unset: 10 GiB)
 //   node scripts/native.ts run <part>… -- <command…>   the command, with each part's variable set (STILLFAIL_MESH_NATIVE, …)
 //   node scripts/native.ts iroh-pkg [dir]              the web's iroh (iroh-wasm) put in web/src/core/iroh-pkg
 //   node scripts/native.ts status                      every part and target: key, and whether cached / published
-//   node scripts/native.ts missing [--windows] [part[:target]…]    those (default: all of ours) the release lacks, one a line
+//   node scripts/native.ts missing [--windows] [--mac] [--linux] [part[:target]…]    those (default: all of ours) the release
+//        and the store lack, one a line: every flag's and every part named, each once
 //   node scripts/native.ts parts [--windows|--mac|--linux]      what missing and ensure take by default, one a line
 //   node scripts/native.ts missing --prebuilt          the prebuilt ones (`msvc`: the shell and engine, Android's,
 //        Windows' and Linux', which the mbui app's jobs only fetch; `prebuilt`: ghostty-vt) in neither the store nor
 //        the release, one a line
 //   node scripts/native.ts ensure [--windows] [--publish] [--outbox DIR] [part[:target]…]
-//        CI: each (default: all) in the cache, built when not prebuilt; --publish uploads what the release lacks
-//        (gh, main only), then prunes those parts and targets to the newest 20; --outbox copies the artifacts the
+//        CI: each (default: all) in the cache, built when not prebuilt; --publish uploads what the release and the
+//        store lack (gh, main only), then prunes those parts and targets to the newest 20; --outbox copies the artifacts the
 //        release lacks there (a branch's run artifact)
 //        The default leaves out what only Windows builds (MSVC's: the mbui app's shell and engine); --windows is those.
 //        Never what only Linux builds (the mbui app's Linux shell and engine: the prebuild workflow's alone), nor
@@ -43,7 +44,10 @@
 //   node scripts/native.ts store-sync                  CI on main: each prebuilt part at its key that the release has and
 //        the store lacks, copied there (release-put.sh, CLOUDFLARE_API_TOKEN); never built. (Every part, not only the
 //        Windows ones: the release's download answered GitHub's runners 504 again and again on 2026-11-08, iroh-wasm's,
-//        failing every branch's bundle, static and check-linux; the store is asked first.)
+//        failing every branch's bundle, static and check-linux; the store is asked first. And the readers: the release
+//        keeps 20 of a part, a few hours of main's, so a stable release of the day before found its readers gone and
+//        built all four in its station job, past its 10 minutes. scripts/release-prune.ts deletes a reader there after
+//        14 days. Not reader-harness, the tests' alone.)
 //
 // STILLFAIL_NATIVE=build never downloads (builds what the cache lacks); STILLFAIL_NATIVE=offline neither downloads nor
 // builds. Builds go to $CARGO_TARGET_DIR/native/<part> when it is set (station crates add the target to the part),
@@ -251,6 +255,21 @@ function withHidden(part: Part): Part {
   };
 }
 
+/// The Windows screen helper's part: ships its LocalSystem service binary beside stillfail-screen.exe.
+function withScreenService(part: Part): Part {
+  const svc = "stillfail-screen-svc.exe";
+  return {
+    ...part,
+    targets: ["win32-x64"],
+    env: "STILLFAIL_SCREEN",
+    files: (t) => [...part.files(t), svc],
+    build(t, out) {
+      part.build(t, out);
+      copyFileSync(join(stationTargetDir("station/native/screen", t), TRIPLE(t), "release", svc), join(out, svc));
+    },
+  };
+}
+
 const MESH_LIB = (t: Target) => (t === "darwin-arm64" ? "libstillfail_mesh.dylib" : t === "win32-x64" ? "stillfail_mesh.dll" : "libstillfail_mesh.so");
 
 /// libghostty-vt (the app's terminal, the runner's copy of one's screen): Ghostty's source and dependency tarballs of a
@@ -359,13 +378,15 @@ function mbuiRenderer(app: string, launcher: string): Part {
     publish: [],
     rust: false,
     // Generated interface summaries are not compiler inputs; `moon check` can rewrite them without changing a scene.
-    inputs: ["apps/mbui/src", "libs/mbui/src", "libs/mbui/tools", "libs/mbui/scripts", "libs/sf-ui/src",
+    inputs: ["apps/mbui/src", "libs/mbui/src", "libs/mbui/tools", "libs/mbui/scripts", "libs/liquid-glass/src", "libs/sf-ui/src",
       "apps/mbui/moon.mod", "apps/mbui/moon.work", "apps/mbui/farview.pin", "apps/mbui/scripts/farview.sh", "libs/mbui/moon.mod",
-      "libs/sf-ui/moon.mod",
+      "libs/liquid-glass/moon.mod", "libs/sf-ui/moon.mod",
       "apps/mbui/scripts/env.sh", "apps/mbui/scripts/mbui.sh", "apps/mbui/scripts/mac.sh", `apps/mbui/scripts/${launcher}`,
       ":(exclude,glob)apps/mbui/**/*_test.mbt", ":(exclude,glob)apps/mbui/**/*_wbtest.mbt",
       ":(exclude,glob)apps/mbui/**/pkg.generated.mbti", ":(exclude,glob)libs/mbui/**/*_test.mbt",
       ":(exclude,glob)libs/mbui/**/*_wbtest.mbt", ":(exclude,glob)libs/mbui/**/pkg.generated.mbti",
+      ":(exclude,glob)libs/liquid-glass/**/*_test.mbt", ":(exclude,glob)libs/liquid-glass/**/*_wbtest.mbt",
+      ":(exclude,glob)libs/liquid-glass/**/pkg.generated.mbti",
       ":(exclude,glob)libs/sf-ui/**/*_test.mbt", ":(exclude,glob)libs/sf-ui/**/*_wbtest.mbt",
       ":(exclude,glob)libs/sf-ui/**/pkg.generated.mbti"],
     recipe: () => ({ app, target: "native", mode: "release", host: "macOS", scene: 1 }),
@@ -422,8 +443,11 @@ const PARTS: Record<string, Part> = {
   launcher: withHidden(stationCrate("station/native/launcher", exe("stillfail-station"), exe("stillfail-station"))),
   // With libghostty-vt linked (macOS, Linux, Windows), the screen of a terminal it keeps (its build.rs, src/ghostty.rs).
   runner: withGhosttyVt({ ...stationCrate("station/native/runner", exe("stillfail-runner"), exe("stillfail-runner")), targets: STATION_BINS, env: "STILLFAIL_RUNNER" }),
-  // Windows' display as the station's desktop screen, what still.fail Helper is on macOS.
-  screen: { ...stationCrate("station/native/screen", () => "stillfail-screen.exe", "stillfail-screen.exe"), targets: ["win32-x64"], env: "STILLFAIL_SCREEN" },
+  // Windows' display as the station's desktop screen, what still.fail Helper is on macOS,
+  // with its optional LocalSystem service binary beside it for UAC / elevated windows / lock screen.
+  screen: withScreenService(stationCrate("station/native/screen", () => "stillfail-screen.exe", "stillfail-screen.exe")),
+  // Linux's native display capture, OpenH264/JPEG encoding, and input helper.
+  "screen-linux": { ...stationCrate("station/native/screen-linux", () => "stillfail-screen-linux", "stillfail-screen-linux"), targets: ["linux-x64", "linux-arm64"], env: "STILLFAIL_SCREEN_LINUX" },
   // For the station's tests: the Rust station's cold storage as a command (test/cold-compat.test.ts), and a member's
   // client asking a station over iroh (tools/load: test/e2e.sh, compare.sh). This machine's only.
   "archive-rs": {
@@ -948,35 +972,110 @@ const defaultTarget = (part: string): Target => {
 
 // ── keys ──
 
-function git(args: string[], input?: string): string {
-  return execFileSync("git", args, { cwd: ROOT, encoding: "utf8", input, maxBuffer: 64 << 20 });
+function git(args: string[], input?: string, cwd = ROOT): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", input, maxBuffer: 64 << 20 });
 }
 /// Each input file and its content's git hash: as committed or staged, and as it is in the worktree when it differs
-/// there (an edit not yet committed is another key), new files not ignored included.
+/// there (an edit not yet committed is another key), new files not ignored included. Read off one listing of the
+/// whole checkout (`tree`), not two git processes a part and target: `missing --linux` and `--mac` asked git 75 times
+/// and took 20-40 s of plan's natives step (main 44674271258, 2026-11-20). A pathspec that listing cannot answer
+/// exactly (`pathspec`) is still git's.
 function inputs(paths: string[]): [string, string][] {
   if (paths.length === 0) return [];
+  checkout ??= tree(ROOT);
+  return inputsIn(checkout, paths) ?? inputsByGit(paths);
+}
+/// What git lists of the checkout, once a process, and the worktree's hashes of its changed files as they are asked
+/// for. Dropped after a build (`buildHere`), which may write into the checkout.
+export type Tree = { root: string; staged: [string, string][]; dirty: string[]; hashes: Map<string, string> };
+let checkout: Tree | null = null;
+export function tree(root: string): Tree {
+  const staged: [string, string][] = [];
+  for (const line of git(["ls-files", "-s", "-z"], undefined, root).split("\0")) {
+    if (!line) continue;
+    const [meta, path] = line.split("\t");
+    staged.push([path!, meta!.split(" ")[1]!]);
+  }
+  const dirty = git(["ls-files", "-m", "-o", "--exclude-standard", "-z"], undefined, root).split("\0").filter(Boolean);
+  return { root, staged, dirty, hashes: new Map() };
+}
+/// inputs() from a listing; null where a pathspec is not one `pathspec` answers as git does.
+export function inputsIn(t: Tree, paths: string[]): [string, string][] | null {
+  if (paths.length === 0) return [];
+  const match = pathspec(paths);
+  if (!match) return null;
   const files = new Map<string, string>();
-  for (const line of git(["ls-files", "-s", "-z", "--", ...paths]).split("\0")) {
+  for (const [path, hash] of t.staged) if (match(path)) files.set(path, hash);
+  const dirty = t.dirty.filter(match);
+  const present = [...new Set(dirty)].filter((p) => existsSync(join(t.root, p)) && statSync(join(t.root, p)).isFile());
+  for (const p of dirty) if (!present.includes(p)) files.delete(p);
+  const unhashed = present.filter((p) => !t.hashes.has(p));
+  if (unhashed.length > 0) {
+    const hashes = git(["hash-object", "--stdin-paths"], unhashed.join("\n") + "\n", t.root).trim().split("\n");
+    unhashed.forEach((p, i) => t.hashes.set(p, hashes[i]!));
+  }
+  for (const p of present) files.set(p, t.hashes.get(p)!);
+  return settle(files);
+}
+/// inputs() asked of git with the pathspecs themselves: two processes a call.
+export function inputsByGit(paths: string[], root = ROOT): [string, string][] {
+  if (paths.length === 0) return [];
+  const files = new Map<string, string>();
+  for (const line of git(["ls-files", "-s", "-z", "--", ...paths], undefined, root).split("\0")) {
     if (!line) continue;
     const [meta, path] = line.split("\t");
     files.set(path!, meta!.split(" ")[1]!);
   }
-  const dirty = git(["ls-files", "-m", "-o", "--exclude-standard", "-z", "--", ...paths]).split("\0").filter(Boolean);
-  const present = [...new Set(dirty)].filter((p) => existsSync(join(ROOT, p)) && statSync(join(ROOT, p)).isFile());
+  const dirty = git(["ls-files", "-m", "-o", "--exclude-standard", "-z", "--", ...paths], undefined, root).split("\0").filter(Boolean);
+  const present = [...new Set(dirty)].filter((p) => existsSync(join(root, p)) && statSync(join(root, p)).isFile());
   for (const p of dirty) if (!present.includes(p)) files.delete(p);
   if (present.length > 0) {
-    const hashes = git(["hash-object", "--stdin-paths"], present.join("\n") + "\n").trim().split("\n");
+    const hashes = git(["hash-object", "--stdin-paths"], present.join("\n") + "\n", root).trim().split("\n");
     present.forEach((p, i) => files.set(p, hashes[i]!));
   }
+  return settle(files);
+}
+function settle(files: Map<string, string>): [string, string][] {
   // A crate's tests, benches and examples are not in what it builds: changed, it is the same part (a test-only change
   // built the launcher and runner again for three platforms on 2026-10-04).
   for (const p of [...files.keys()]) if (/(^|\/)(tests|benches|examples)\//.test(p)) files.delete(p);
   return [...files].sort(([a], [b]) => (a < b ? -1 : 1));
 }
-function key(part: string, target: Target): string {
+/// Whether a file is in the pathspecs as `git ls-files -- <paths>` takes them, for the two kinds the parts use: a file
+/// or a directory named as it is, and `:(exclude,glob)` with `*`, `?` and `**/` (git's wildmatch with WM_PATHNAME).
+/// Anything else (other magic, a wildcard in a plain path, `.`, `./`, a trailing slash, a class): null, for git.
+export function pathspec(paths: string[]): ((file: string) => boolean) | null {
+  const named: string[] = [], excluded: RegExp[] = [];
+  for (const p of paths) {
+    if (p.startsWith(":(exclude,glob)")) {
+      const re = globRe(p.slice(":(exclude,glob)".length));
+      if (!re) return null;
+      excluded.push(re);
+    } else if (!p || p.startsWith(":") || /[*?[\\]/.test(p) || p.endsWith("/") || p.startsWith("/")
+      || p.split("/").some((s) => s === "" || s === "." || s === "..")) {
+      return null;
+    } else named.push(p);
+  }
+  if (named.length === 0) return null;
+  return (file) => named.some((p) => file === p || file.startsWith(p + "/")) && !excluded.some((re) => re.test(file));
+}
+function globRe(glob: string): RegExp | null {
+  if (!glob || /[[\\]/.test(glob) || glob.startsWith(":")) return null;
+  let re = "";
+  for (let i = 0; i < glob.length;) {
+    if (glob.startsWith("**/", i) && (i === 0 || glob[i - 1] === "/")) { re += "(?:.*/)?"; i += 3; }
+    else if (glob.startsWith("**", i) && i + 2 === glob.length && i > 0 && glob[i - 1] === "/") { re += ".*"; i += 2; }
+    else if (glob.startsWith("**", i)) return null;
+    else if (glob[i] === "*") { re += "[^/]*"; i++; }
+    else if (glob[i] === "?") { re += "[^/]"; i++; }
+    else { re += glob[i]!.replace(/[.+^${}()|\\/]/g, "\\$&"); i++; }
+  }
+  return new RegExp(`^${re}$`);
+}
+export function key(part: string, target: Target, of: (paths: string[]) => [string, string][] = inputs): string {
   const p = P(part);
   const zig = target.startsWith("linux") || (target === "win32-x64" && !onWindows(part, target)) ? (p.zig ?? ZIG) : undefined;
-  const what = { part, target, toolchain: p.rust === false ? undefined : TOOLCHAIN, zig, recipe: p.recipe(target), files: p.files(target), inputs: inputs(inputsFor(p, target)) };
+  const what = { part, target, toolchain: p.rust === false ? undefined : TOOLCHAIN, zig, recipe: p.recipe(target), files: p.files(target), inputs: of(inputsFor(p, target)) };
   return createHash("sha256").update(JSON.stringify(what)).digest("hex").slice(0, 24);
 }
 const asset = (part: string, target: Target, k: string) => `${part}-${target}-${k}.tar.gz`;
@@ -1007,6 +1106,10 @@ const cacheBudget = () => {
   const bytes = Number(process.env.STILLFAIL_NATIVE_CACHE_MAX_BYTES);
   return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : 0;
 };
+// Without a budget (a person's machine, a station whose agents build), what a new version was built or downloaded into
+// is trimmed to this after it: unbounded, a Mac whose agents built every commit held 398 reader versions, 51 GiB, its
+// disk down to 34 GiB free (2026-11-20). Only then, so a cache hit walks nothing.
+const LOCAL_BUDGET_BYTES = 10 * 1024 ** 3;
 
 /// One process at a time gets or builds a key on this machine (the others wait for it): a directory made atomically,
 /// holding the pid, taken over when that process is gone.
@@ -1288,7 +1391,7 @@ async function download(part: string, target: Target, k: string): Promise<string
   let url = "";
   let bytes: Buffer | null = null;
   // (set from inside each try, below)
-  const release = { failed: false };
+  const release = { failed: false, notFound: false };
   const releaseUrl = `${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`;
   // (each place in turn: one that answers and then breaks off is said so, and the next one asked: a body cut short
   // failed the whole job with only the socket's error, 39431384793)
@@ -1322,7 +1425,10 @@ async function download(part: string, target: Target, k: string): Promise<string
       const r = direct ? await fetchNative(at, { redirect: "follow", signal }) : await fetch(at, { redirect: "follow", signal });
       moved();
       if (!r.ok) {
-        if (at === releaseUrl && r.status !== 404) release.failed = true;
+        if (at === releaseUrl) {
+          if (r.status === 404) release.notFound = true;
+          else release.failed = true;
+        }
         if (r.status !== 404) log(`${part} ${target}: ${at} answered ${r.status}`);
         await r.body?.cancel().catch(() => {});
         return passing(r.status) ? "again" : "next";
@@ -1349,7 +1455,10 @@ async function download(part: string, target: Target, k: string): Promise<string
       await pause(RETRY_MS * n);
     }
   }
-  if (!bytes && release.failed) {
+  // A 404 there is asked of the API too in CI's consumer jobs (STILLFAIL_NATIVE_INBOX, set by .github/actions/natives):
+  // the download endpoint's edge kept answering 404 for a part 47 s after the natives job had published it, while the
+  // API had it (check-station 44892476775); elsewhere a 404 spends no API request.
+  if (!bytes && (release.failed || (release.notFound && Boolean(process.env.STILLFAIL_NATIVE_INBOX)))) {
     const fromApi = await releaseThroughApi(name);
     if (fromApi !== null) { bytes = fromApi.bytes; url = fromApi.url; }
   }
@@ -1374,6 +1483,8 @@ function buildHere(part: string, target: Target, k: string): string {
   } catch (e) {
     rmSync(tmp, { recursive: true, force: true });
     throw e;
+  } finally {
+    checkout = null;
   }
   const final = cached(part, target, k);
   install(tmp, final, { part, target, key: k, from: "built", host: hostname(), builtAt: new Date().toISOString(), toolchain: TOOLCHAIN, commit: git(["rev-parse", "HEAD"]).trim() });
@@ -1388,8 +1499,10 @@ async function getKey(part: string, target: Target, k: string, mode: "any" | "fe
   const budget = cacheBudget();
   if (!budget && mode !== "build" && complete(dir, part, target)) { noteUse(dir); return dir; }
   const policy = process.env.STILLFAIL_NATIVE ?? "";
+  let made = false;
   const result = await lockedAsync(dir, async () => {
     if (mode !== "build" && complete(dir, part, target)) { noteUse(dir); return dir; }
+    made = true;
     // Room before a download or a build writes tens of MB: on a disk near full the write failed (ENOSPC) before the
     // trim after it was reached (44253499545, 2026-11-18).
     if (budget) try { trimCache(budget); } catch (e) { log(`could not trim the cache: ${(e as Error).message}`); }
@@ -1410,7 +1523,8 @@ async function getKey(part: string, target: Target, k: string, mode: "any" | "fe
     noteUse(built);
     return built;
   });
-  if (budget) try { trimCache(budget); } catch (e) { log(`could not trim the cache: ${(e as Error).message}`); }
+  const after = budget || (made ? LOCAL_BUDGET_BYTES : 0);
+  if (after) try { trimCache(after); } catch (e) { log(`could not trim the cache: ${(e as Error).message}`); }
   return result;
 }
 
@@ -1569,30 +1683,67 @@ async function published(): Promise<Set<string> | null> {
   const out = gh(["api", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", ".assets[].name"], { allowFail: true });
   return out ? new Set(out.split("\n").filter(Boolean)) : null;
 }
-async function exists(name: string): Promise<boolean> {
-  const r = await fetch(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`, { method: "HEAD", redirect: "manual" });
-  return r.status === 302 || r.status === 200;
-}
-/// Whether the store of prebuilt parts has it.
-async function inStore(name: string): Promise<boolean> {
-  try {
-    // (its first byte: the store answers HEAD 404 for what it has)
-    const r = await fetchNative(`${STORE}/${name}`, { headers: { Range: "bytes=0-0" }, redirect: "follow", signal: AbortSignal.timeout(30_000) });
-    await r.body?.cancel();
-    return r.ok;
-  } catch {
-    return false;
+/// A fetch asked again, ATTEMPTS times in all and RETRY_MS × the tries so far between, when it threw (a connection or
+/// its body broken off: one `fetch failed` ended main's store-sync after seven parts downloaded, none put, 44669202703,
+/// 2026-11-20) or answered 5xx or 429; read takes an answer's body inside the try, so a body cut short is asked again
+/// too. Each try is given its own init (a fresh AbortSignal.timeout). What still fails is thrown, or answered.
+async function fetchRetry<T>(url: string, init: () => RequestInit, read: (r: Response) => Promise<T>, attempts = ATTEMPTS): Promise<{ response: Response; value: T | null }> {
+  for (let n = 1; ; n++) {
+    try {
+      const response = await fetch(url, init());
+      if (passing(response.status) && n < attempts) await response.body?.cancel().catch(() => {});
+      else if (!response.ok) { await response.body?.cancel().catch(() => {}); return { response, value: null }; }
+      else return { response, value: await read(response) };
+    } catch (e) {
+      if (n >= attempts) throw e;
+    }
+    await pause(RETRY_MS * n);
   }
 }
+async function exists(name: string): Promise<boolean> {
+  const { response } = await fetchRetry(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`,
+    () => ({ method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(30_000) }), async () => null);
+  return response.status === 302 || response.status === 200;
+}
+/// Whether the store of prebuilt parts has it (asked twice when the first try threw: one break taken for its lack sent
+/// the part to be downloaded and put again).
+async function inStore(name: string): Promise<boolean> {
+  for (let n = 1; ; n++) {
+    try {
+      // (its first byte: the store answers HEAD 404 for what it has)
+      const r = await fetchNative(`${STORE}/${name}`, { headers: { Range: "bytes=0-0" }, redirect: "follow", signal: AbortSignal.timeout(30_000) });
+      await r.body?.cancel();
+      return r.ok;
+    } catch {
+      if (n >= 2) return false;
+    }
+    await pause(RETRY_MS * n);
+  }
+}
+/// Each of items through f, at most `width` at once, the answers in the items' order.
+async function inTurn<T, U>(items: T[], width: number, f: (item: T) => Promise<U>): Promise<U[]> {
+  const out: U[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(width, items.length) }, async () => {
+    while (next < items.length) { const i = next++; out[i] = await f(items[i]!); }
+  }));
+  return out;
+}
+// pigz gzips on every core (a reader's package took ~10 s of one with tar's gzip): the same .tar.gz, read by tar -xzf
+// and gunzipSync. --use-compress-program, which GNU tar and bsdtar both take (bsdtar's -I is -T); not on Windows;
+// STILLFAIL_NO_PIGZ=1 turns it off.
+let pigzHere: boolean | undefined;
+const pigz = (): boolean =>
+  (pigzHere ??= osPlatform() !== "win32" && process.env.STILLFAIL_NO_PIGZ !== "1" && spawnSync("pigz", ["--version"], { stdio: "ignore" }).status === 0);
 function pack(dir: string, name: string, into: string): string {
   const file = join(into, name);
-  run(TAR, ["-czf", file, "-C", dir, "."]);
+  run(TAR, pigz() ? ["--use-compress-program=pigz", "-cf", file, "-C", dir, "."] : ["-czf", file, "-C", dir, "."]);
   return file;
 }
 
 // ── commands ──
 
-const pair = (args: string[]): [string, Target] => {
+export const pair = (args: string[]): [string, Target] => {
   const part = args[0] ?? fail("which part?");
   P(part);
   const target = (args[1] as Target) ?? defaultTarget(part);
@@ -1623,7 +1774,7 @@ async function main(argv: string[]) {
     }
     case "fetch": { const [p, t] = pair(args); console.log(await get(p, t, "fetch")); return; }
     // The cache within STILLFAIL_NATIVE_CACHE_MAX_BYTES, for jobs that get no part (.github/actions/setup-mac/prune-disk.sh).
-    case "trim": { const budget = cacheBudget(); if (budget) trimCache(budget); return; }
+    case "trim": { trimCache(cacheBudget() || LOCAL_BUDGET_BYTES); return; }
     case "build": { const [p, t] = pair(args); console.log(await get(p, t, "build")); return; }
     case "run": {
       const at = args.indexOf("--");
@@ -1673,7 +1824,8 @@ async function main(argv: string[]) {
     case "missing": {
       // Each part (default: all of ours) the release lacks, one a line: CI's plan skips the natives job when none is.
       // --windows: those only Windows builds (the natives-win job's); --mac: Apple's (natives-mac); --linux: the rest
-      // that CI builds on ci-1 (natives); without them, all of ours that CI builds.
+      // that CI builds on ci-1 (natives); without them, all of ours that CI builds. Flags and parts named together are
+      // all of them, each once (`missingWanted`): plan asks once for every list it splits (pipeline.yml's natives step).
       // --prebuilt: the prebuilt ones (`msvc`) that neither the store nor the release has (the prebuild workflow's).
       if (args.includes("--prebuilt")) {
         for (const [p, t] of ours()) {
@@ -1683,12 +1835,13 @@ async function main(argv: string[]) {
         }
         return;
       }
-      const windows = args.includes("--windows"), mac = args.includes("--mac"), linux = args.includes("--linux");
-      const wanted: [string, Target][] = [];
-      for (const a of args.filter((a) => !["--windows", "--mac", "--linux"].includes(a))) { const [p, t] = a.split(":"); wanted.push(pair(t ? [p!, t] : [p!])); }
-      if (wanted.length === 0) wanted.push(...defaults(windows, mac, linux));
+      const wanted = missingWanted(args);
       const remote = (await published()) ?? fail("the release's assets could not be listed");
-      for (const [p, t] of wanted) if (!remote.has(asset(p, t, key(p, t)))) console.log(`${p}:${t}`);
+      // (one the release pruned, KEEP of its group, but the store keeps (store-sync): not missing. The store asked only
+      // of those the release lacks, side by side)
+      const lacking = wanted.filter(([p, t]) => !remote.has(asset(p, t, key(p, t))));
+      const stored = await Promise.all(lacking.map(([p, t]) => inStore(asset(p, t, key(p, t)))));
+      lacking.forEach(([p, t], i) => { if (!stored[i]) console.log(`${p}:${t}`); });
       return;
     }
     case "ensure": {
@@ -1723,11 +1876,16 @@ async function main(argv: string[]) {
       // 2026-11-12). What two of them share (shell-apple, a reader's moon build) one takes and the other waits for
       // (`get`'s lock, moon's).
       const todo = wanted.filter(([p, t]) => !complete(cached(p, t, key(p, t)), p, t));
+      // The readers sharing the cores are those built here, not those asked for: a caller counts what the store and the
+      // release lack, one of which may be in this machine's cache (stable's reader:linux-x64 on ci-1, its linux-arm64
+      // left alone at -j 8 of 16, 130 s, the job cut at its 5 minutes, 44770813931).
+      const readersToBuild = Math.max(1, Math.min(3, todo.filter(([p]) => p === "reader").length));
+      if (todo.length <= 1 && !process.env.STILLFAIL_NATIVE_ONE) process.env.STILLFAIL_NATIVE_READERS = "1";
       if (todo.length > 1 && !process.env.STILLFAIL_NATIVE_ONE) {
         const flags = [...(publish ? ["--publish"] : []), ...(outbox ? ["--outbox", outbox] : []), ...(windows ? ["--windows"] : []), ...(mac ? ["--mac"] : []), ...(linux ? ["--linux"] : [])];
         const one = (p: string, t: Target) => new Promise<number>((done) => {
           const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "ensure", ...flags, `${p}:${t}`],
-            { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, STILLFAIL_NATIVE_ONE: "1" } });
+            { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, STILLFAIL_NATIVE_ONE: "1", STILLFAIL_NATIVE_READERS: String(readersToBuild) } });
           child.on("exit", (code) => done(code ?? 1));
         });
         const queue = [...wanted];
@@ -1745,10 +1903,14 @@ async function main(argv: string[]) {
       for (const [p, t] of wanted) {
         const k = key(p, t);
         const name = asset(p, t, k);
-        const there = remote.has(name);
+        // (in the store, where store-sync keeps what the release pruned: not published again)
+        const there = remote.has(name) || (await inStore(name));
         const before = complete(cached(p, t, k), p, t);
         const started = Date.now();
-        const dir = await get(p, t);
+        // Known absent from the release and the store, and not in the inbox: built without asking the download endpoint
+        // first, whose 404 its edge then kept serving to the jobs fetching the part just published (44892476775).
+        const inboxed = Boolean(process.env.STILLFAIL_NATIVE_INBOX && existsSync(join(process.env.STILLFAIL_NATIVE_INBOX, name)));
+        const dir = await get(p, t, !before && listed !== null && !there && !inboxed ? "build" : "any");
         const took = ((Date.now() - started) / 1000).toFixed(0);
         const how = before ? "cached" : JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).from === "built" ? "built" : "downloaded";
         let note = "";
@@ -1801,14 +1963,26 @@ async function main(argv: string[]) {
       mkdirSync(join(work, "natives"), { recursive: true });
       let any = false;
       try {
-        for (const [p, t] of ours()) {
-          const name = asset(p, t, key(p, t));
-          if (await inStore(name)) { console.log(`${name}: in the store`); continue; }
-          if (!(await exists(name))) { console.log(`${name}: in neither (prebuild it: the prebuild workflow, or node scripts/native.ts prebuild ${p}:${t})`); continue; }
-          const r = await fetch(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`, { redirect: "follow", signal: AbortSignal.timeout(300_000) });
+        // (not the tests' program, reader-harness: only check-station runs it, from the release)
+        const parts = ours().filter(([p]) => p !== "reader-harness").map(([p, t]) => ({ p, t, name: asset(p, t, key(p, t)) }));
+        // (the store asked 8 at a time, and the release once for all it lacks, by its API: each asked in turn, a HEAD
+        // a part for the release, was ~45 s of the job, 44669202703)
+        const stored = await inTurn(parts, 8, ({ name }) => inStore(name));
+        const release = stored.every(Boolean) ? null : await published();
+        for (const [i, { p, t, name }] of parts.entries()) {
+          if (stored[i]) { console.log(`${name}: in the store`); continue; }
           // (one the release does not give now is left for main's next run, as prune leaves one GitHub dropped)
-          if (!r.ok) { console.log(`${name}: the release answered ${r.status}; the next run copies it`); continue; }
-          writeFileSync(join(work, "natives", name), Buffer.from(await r.arrayBuffer()));
+          try {
+            if (!(release ? release.has(name) : await exists(name))) { console.log(`${name}: in neither (prebuild it: the prebuild workflow, or node scripts/native.ts prebuild ${p}:${t})`); continue; }
+            const { response, value } = await fetchRetry(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`,
+              () => ({ redirect: "follow", signal: AbortSignal.timeout(300_000) }), async (r) => Buffer.from(await r.arrayBuffer()));
+            if (value === null) { console.log(`${name}: the release answered ${response.status}; the next run copies it`); continue; }
+            writeFileSync(join(work, "natives", name), value);
+          } catch (e) {
+            const cause = (e as Error & { cause?: Error }).cause?.message;
+            console.log(`${name}: the release failed (${(e as Error).message}${cause ? `: ${cause}` : ""}); the next run copies it`);
+            continue;
+          }
           console.log(`${name}: from the release, to the store`);
           any = true;
         }
@@ -1826,9 +2000,21 @@ async function main(argv: string[]) {
   }
 }
 
+/// What `missing` asks of the release: each flag's defaults (--windows, --mac, --linux) and each part named, in that
+/// order, each once; with neither, all of ours CI builds. One flag and no part, or parts and no flag, is what it was.
+export function missingWanted(args: string[]): [string, Target][] {
+  const flags = ["--windows", "--mac", "--linux"];
+  const wanted: [string, Target][] = [];
+  for (const f of flags) if (args.includes(f)) wanted.push(...defaults(f === "--windows", f === "--mac", f === "--linux"));
+  for (const a of args.filter((a) => !flags.includes(a))) { const [p, t] = a.split(":"); wanted.push(pair(t ? [p!, t] : [p!])); }
+  if (wanted.length === 0) wanted.push(...defaults(false, false, false));
+  const seen = new Set<string>();
+  return wanted.filter(([p, t]) => !seen.has(`${p}:${t}`) && !!seen.add(`${p}:${t}`));
+}
+
 /// What `ensure` and `missing` take where no part is named: all of ours that this kind of machine builds (--windows:
 /// MSVC's; --mac: Apple's; --linux: ci-1's; none of them: all but MSVC's), never what is prebuilt by hand.
-function defaults(windows: boolean, mac: boolean, linux: boolean): [string, Target][] {
+export function defaults(windows: boolean, mac: boolean, linux: boolean): [string, Target][] {
   const wanted: [string, Target][] = [];
   for (const [p, t] of ours()) {
     if (onWindows(p, t) !== windows || onLinux(p, t) || P(p).prebuilt) continue;
@@ -1846,6 +2032,8 @@ function ours(): [string, Target][] {
   return all;
 }
 
+/// Every part's name.
+export const partNames = (): string[] => Object.keys(PARTS);
 /// What a part is made of, as paths in the repository: for every target.
 export const inputsOf = (part: string): string[] => [...new Set(P(part).targets.flatMap((t) => inputsFor(P(part), t)))];
 /// The targets a part is built for.

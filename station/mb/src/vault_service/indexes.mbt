@@ -107,6 +107,18 @@ let pending_own : String =
   #|  WHERE p.ws = ? AND p.owner_decides = 1 AND p.decider = ?
 
 ///|
+let pending_cross_own : String =
+  #|SELECT r.id, r.body FROM vault_pending_owner_v4 p INDEXED BY vault_pending_owner_v4_owner
+  #|  JOIN vault_requests r ON r.ws = p.ws AND r.id = p.id
+  #|  WHERE p.ws = ? AND p.owner = ?
+
+///|
+let cross_uses_sql : String =
+  #|SELECT r.body FROM vault_cross_use_lookup u INDEXED BY vault_cross_use_owner
+  #|  JOIN vault_requests r ON r.ws = u.ws AND r.id = u.id
+  #|  WHERE u.ws = ?1 AND u.owner = ?2 ORDER BY u.at DESC, u.id DESC LIMIT ?3
+
+///|
 let pending_member : String =
   #|SELECT r.id, r.body FROM vault_member_lookup m
   #|  CROSS JOIN vault_pending_lookup p INDEXED BY vault_pending_decider

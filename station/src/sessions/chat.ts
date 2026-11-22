@@ -140,8 +140,9 @@ export interface ChatSurface {
   /// can mention.
   peopleIn?(channel: string): Promise<Member[]>;
   /// Starts a conversation in one of its places with `message`, as the station: the thread it is from now on. `title`:
-  /// what the conversation is called where the platform names one (a group space's topic).
-  begin?(channel: string, message: string, title?: string): Promise<{ thread: ThreadRef; ts: string }>;
+  /// what the conversation is called where the platform names one (a group space's topic). `files` and `card`: as a
+  /// post's, where the platform takes them in a conversation's first message (Feishu's: an agent's chat_post to a chat).
+  begin?(channel: string, message: string, title?: string, files?: Attachment[], card?: Json | null): Promise<{ thread: ThreadRef; ts: string }>;
   /// Changes a message the bot posted to `message`, when it fits in one message; false, with nothing changed, when it
   /// does not.
   edit?(thread: ThreadRef, ts: string, message: string): Promise<boolean>;

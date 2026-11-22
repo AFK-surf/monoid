@@ -18,6 +18,7 @@
 /// How the rail is drawn where the block's move has got: the closed bar's or open; its width, its padding at its left,
 /// top and foot, its top row's height (the space over its first place); what it stands on (its marks' discs); how far
 /// in the lists' marks hung on its places are (as the sidebar folds).
+#derive(Eq)
 priv struct RailAt {
   bar : Bool
   w : Double
@@ -206,7 +207,7 @@ fn rail_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailA
     // the workspaces (sfpages' workspace.mbt), giving way and scrolling where the window is short
     rail_workspaces_node(r, src, tips, at)
     // settings
-    rail_key_node(r, tips, at, fn() { lit_place() == "settings" }, fn() { @sf.t("web-pages.settings.title") }, rail_gear, fn(k) {
+    rail_key_node(r, tips, at, fn() { lit_place() == "settings" }, fn() { @sf.t("web-pages.settings.title") }, fn() { rail_gear(src) }, fn(k) {
       @sf.icon_node(k.sq, "settings", rail_icon_size, By(k.ink)) |> ignore
     })
     |> ignore
@@ -217,7 +218,7 @@ fn rail_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailA
 ///|
 /// The settings' gear pressed: lit (in the settings), back out of them, to the chat last open; their list folded for the
 /// page's room: shown over the page, or folded again (返回会话 at its top goes back).
-fn rail_gear() -> Unit {
+fn rail_gear(src : Source) -> Unit {
   let lit = lit_place()
   if lit == "settings" && wide.crowded {
     wide.peeking.set(!wide.peeking.get())
@@ -229,6 +230,10 @@ fn rail_gear() -> Unit {
       }
     }
     wide.landed.set("")
+    match @sfbase.workspace_in_view(src).0 {
+      Some(w) => land_chat(src, w)
+      None => ()
+    }
   } else {
     open_settings()
     wide.peek_next.set(wide.crowded)
@@ -266,14 +271,13 @@ fn rail_key_node(
   // focus ring round it)
   @sf.action_box_node(parent, label, fn(_) { press() }, fn(item) {
     @sf.style_node(item, fn() { if square { rail_sq } else { rail_item } })
-    let hover = @motion.NodeWay::new(0.0)
-    let chosen = @motion.NodeWay::new(if lit && @signals.untracked(on) { 1.0 } else { 0.0 })
-    let ink = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-    item.reacts(fn() { @sf.lit_node(item) }, fn(h) { hover.go_ms(item, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
-    if lit {
-      item.reacts(on, fn(o) { chosen.go_ms(item, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let hover = @motion.hover_fade(item, fn() { @sf.lit_node(item) }, duration_ms=@sf.dur_ms)
+    let chosen = if lit {
+      @motion.hover_fade(item, on, duration_ms=@sf.dur_ms)
+    } else {
+      fn() { 0.0 }
     }
-    item.reacts(fn() { on() || @sf.lit_node(item) }, fn(k) { ink.go_ms(item, if k { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let ink = @motion.hover_fade(item, fn() { on() || @sf.lit_node(item) }, duration_ms=@sf.dur_ms)
     if tipped {
       @sf.tip_node(tips, item, label, side=Right) |> ignore
     }
@@ -284,8 +288,8 @@ fn rail_key_node(
       sq.ground(By(fn() {
         let t = @sf.theme()
         let lit = if wide.closed.get() { @sf.alpha(t.p.text, lit_in_bar) } else { t.p.selected }
-        let h = dmax(hover.shown(item), if rest() { 1.0 } else { 0.0 })
-        let o = chosen.shown(item)
+        let h = dmax(hover(), if rest() { 1.0 } else { 0.0 })
+        let o = chosen()
         if h <= 0.0 && o <= 0.0 {
           0L
         } else {
@@ -297,7 +301,7 @@ fn rail_key_node(
         sq,
         ink: fn() {
           let t = @sf.theme()
-          @sf.mix(t.p.text, ink.shown(item), t.p.muted)
+          @sf.mix(t.p.text, ink(), t.p.muted)
         },
       })
     }
@@ -311,6 +315,16 @@ fn rail_key_node(
       |> ignore
     }
   })
+}
+
+///|
+/// How round the rail's grounds are drawn now (rail_round_of), linked or not: what a box filling one draws within it.
+fn rail_drawn_corner(bar : Bool) -> Double {
+  let r = rail_round_of(bar)
+  match r.links() {
+    Some(l) => l[0].radius(@ui.tree_corner_roots_now())
+    None => @ui.tree_theme().corner(r)
+  }
 }
 
 ///|
@@ -634,15 +648,8 @@ fn rail_card_node(anchor : @view.View, src : Source, tips : @sf.TipLayer, place 
     holder.show(fn() { open.get() }, fn(k) {
       card.val = Some(k)
       k.beside(anchor.id(), side=Right, along=Start, offset=rail_card_off) |> ignore
-      k
+      @sf.small_panel_node(k)
       .width(Is(Some(rail_card_w)))
-      // (a small panel's: @sf.small_panel)
-      .ground(By(fn() { @sf.panel_ground() }))
-      .radius(Is(@sf.r_menu))
-      .edge(By(fn() { (1.0, @sf.panel_edge()) }))
-      .shadow(By(fn() { @sf.float_shadow() }))
-      .clips(Is(true))
-      .padding(Is((@sf.panel_pad, @sf.panel_pad, @sf.panel_pad, @sf.panel_pad)))
       // (a press on it its own: a ground, the arrow over it)
       |> @sf.ground_node
       |> ignore
@@ -780,7 +787,7 @@ let transfers_from : Ref[(Double, Double, Double, Double)?] = Ref(None)
 
 ///|
 /// The workspaces at the rail's foot (workspaceItem) in `r`, under the ＋, where `at` says the rail is drawn: each on a
-/// 30 square of its own, 6 apart (a letter on the places' ground, a mark on nothing, the places' ground under the
+/// 30 square of its own, 6 apart (a letter in a hairline ring, a mark on nothing, the places' ground under the
 /// pointer); the one in view a short bar at its left; another with what waits in it (the core's marks' tone) its mark on
 /// its corner, said beside its name. The ＋ (making one, another account, invitations; the accent's dot on its corner
 /// while one waits) always seen (the web's only as the pointer comes over them), lit while its menu is open; pressed,
@@ -869,9 +876,26 @@ fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : 
                 }
               },
               square=true,
-              rest=fn() { !marked() },
               lit=false,
               fn(k) {
+                // a letter's square: ringed at rest (an outlined control's hairline, Border pointed at), never the
+                // pointer's ground, so resting and pointed at read apart; a mark stands on nothing. The ring a box of
+                // its own under what is hung on its corner (an edge is drawn over what its node holds), as round as
+                // the square it fills: linked again, it would follow the window's corner as if it stood apart.
+                k.sq.box(fn(ring) {
+                  ring.over(Is(true)) |> ignore
+                  @sf.style_node(ring, fn() { rail_sq })
+                  ring.radius(By(fn() { rail_drawn_corner(at().bar) })) |> ignore
+                  ring.edge(By(fn() {
+                    if marked() {
+                      (0.0, 0L)
+                    } else {
+                      @sf.control_edge(hot=@sf.lit_node(k.sq))
+                    }
+                  }))
+                  |> ignore
+                })
+                |> ignore
                 // its mark, else its letter (sfpages' workspace_mark)
                 k.sq.pick(fn() { if marked() { 1 } else { 0 } }, fn(m, which) {
                   if which == 1 {

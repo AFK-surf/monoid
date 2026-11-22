@@ -20,30 +20,13 @@ pub fn Found::to_j(self : Found) -> J {
 ///|
 /// percent_decode_str(..).decode_utf8_lossy().
 pub fn percent_decode(text : String) -> String {
-  let raw = utf8(text)
-  let out = @buffer.new()
-  let mut i = 0
-  while i < raw.length() {
-    let b = raw[i].to_int()
-    if b == 0x25 &&
-      i + 2 < raw.length() &&
-      @codec.hex_digit(raw[i + 1].to_int()) is Some(hi) &&
-      @codec.hex_digit(raw[i + 2].to_int()) is Some(lo) {
-      out.write_byte((hi * 16 + lo).to_byte())
-      i += 3
-    } else {
-      out.write_byte(raw[i])
-      i += 1
-    }
-  }
-  let bytes = out.to_bytes()
+  let decoded = @url.percent_decode_lossy(text)
   // TextDecoder takes a leading BOM away.
-  let start = if bytes.length() >= 3 && bytes[0] == b'\xef' && bytes[1] == b'\xbb' && bytes[2] == b'\xbf' {
-    3
+  if decoded.has_prefix("\u{feff}") {
+    decoded.unsafe_substring(start=1, end=decoded.length())
   } else {
-    0
+    decoded
   }
-  @utf8.decode_lossy(bytes[start:], ignore_bom=true)
 }
 
 ///|

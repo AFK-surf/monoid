@@ -13,7 +13,7 @@ import { toolCall, toolResult, type ToolPart } from "./tool-step.ts";
 import * as fonts from "./fonts.ts";
 import { MermaidAbsent, mermaidChart, provideMermaid } from "./mermaid.ts";
 import { parseCall, cancellable, callStation, counts, type Call } from "./core/calls.ts";
-import { execute, handlers, hooks } from "./core/execute.ts";
+import { execute, handlers, hooks, rereadAfterWrite } from "./core/execute.ts";
 import { Router } from "./core/routing.ts";
 import { importFormer } from "./db/import.ts";
 import { Data, holds } from "./data.ts";
@@ -71,7 +71,7 @@ import { Rigs } from "./rigs.ts";
 import { Devices } from "./devices.ts";
 import { Signer } from "./lock.ts";
 import { PersonalLock } from "./personal-lock.ts";
-import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personStations, personalStations, refusedAgain, safeNow, signerKnown, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
+import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personStations, personalStations, pinHash, refusedAgain, safeNow, signerKnown, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
 import { personalBegin, personalCancel, personalPairState, personalProve } from "./views/pair.ts";
 import { envOf, Views } from "./views/views.ts";
 import * as xshare from "./views/xshare.ts";
@@ -83,6 +83,7 @@ import * as vaultCalls from "./views/vault.ts";
 import * as waysCalls from "./views/ways-stations.ts";
 import * as stationMarkCalls from "./views/station-marks.ts";
 import * as presetCalls from "./views/presets.ts";
+import * as boardDraftCalls from "./views/board-drafts.ts";
 import * as movedChats from "./views/moved.ts";
 import { MOVED } from "./station/requests.ts";
 import * as transferCalls from "./views/transfers.ts";
@@ -156,6 +157,8 @@ export class Inner {
   choose!: Choose;
   /// A person's presets and starred models as their devices carry them (views/presets.ts).
   presets!: presetCalls.PresetViews;
+  /// A person's drafts of 待派发 as their devices carry them (views/board-drafts.ts).
+  boardDrafts!: boardDraftCalls.BoardDraftViews;
   changelog!: Changelog;
   forms!: Forms;
   adb!: Adb;
@@ -297,6 +300,7 @@ export class Core {
       waysCalls.install(inner);
       stationMarkCalls.install(inner);
       inner.presets = presetCalls.install(inner);
+      inner.boardDrafts = boardDraftCalls.install(inner);
       movedChats.install(inner);
       transferCalls.install(inner);
       browseCalls.install(inner);
@@ -389,12 +393,17 @@ export class Core {
         subOf: (workspace) => inner.workspaces.owner(workspace),
         view: (workspace) => inner.data.shared({ topic: "workspace", workspace }),
         call: (station, method, path, body) => inner.stations.requests.call(station, method, path, body, { quiet: true }),
-        cloud: (sub, method, path, body) => inner.provider.request(sub, method, path, body),
+        // (a station's mode changed: the workspace's view it answers with is held at once, as a write through `op` is,
+        // so its page follows with no event of the cloud's; core/execute.ts)
+        cloud: (sub, method, path, body) =>
+          Effect.tap(inner.provider.request(sub, method, path, body), (answer) =>
+            method === "PATCH" ? rereadAfterWrite(inner, inner.cloudSync.afterWrite(sub, method, path, answer), null) : Effect.void),
         first: (asks, at) => answersOf(inner, asks, tookOrRefused, at),
         lock: {
           locked: (workspace) => signsAs(inner, workspace).locked,
           enrolled: (sub, workspace, made) => enrolled(inner, sub, workspace, made),
           signsAs: (workspace) => signsAs(inner, workspace).as,
+          pinHash: (workspace) => pinHash(inner, workspace),
           signAdd: (_workspace, bytes) =>
             Effect.flatMap(Signer.load(inner.host), (signer) =>
               signer === null ? Effect.fail(new CoreError("lock_no_signer", t("core-misc.rig.notSigner"))) : Effect.succeed({ key: signer.id, sig: signer.signBytes(bytes) })),

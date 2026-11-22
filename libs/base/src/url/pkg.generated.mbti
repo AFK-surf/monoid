@@ -10,6 +10,8 @@ pub fn encode_uri_component(String) -> String
 
 pub fn encode_uri_component_strict(String) -> String?
 
+pub fn percent_decode_lossy(String, plus_space? : Bool) -> String
+
 pub fn percent_encode(String, (Int32) -> Bool, space_plus? : Bool) -> String
 
 // Errors

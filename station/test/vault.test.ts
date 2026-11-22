@@ -6,7 +6,7 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync, sign as nodeSig
 import { readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { type Entry, apply, entryHash, genesis, signedBytes as lockBytes } from "../src/cloud/lock.ts";
+import { type Entry, apply, entryHash, genesis, signedBytes as lockBytes } from "../../shared/lock.ts";
 import { bring, handover, station as movedStation, world as movedWorld } from "./lock-moved-world.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
 import { routes } from "../src/api/routes/vault.ts";

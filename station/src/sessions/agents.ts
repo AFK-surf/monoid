@@ -8,7 +8,7 @@ import { stationAddr } from "../mesh/relays.ts";
 // over (run/handover.json) and the next takes them up, runtimes and all, from their runners. Under the launcher the
 // next process is up before the previous one hands over: it takes up only once that one is gone (run/hub.json says
 // which process holds the sessions), and opens the agents' door only then, so no call reaches a hub without its session.
-import { sandboxesOf } from "../agents/sandbox.ts";
+import { COLAB_REAP_MS, allColabAccounts, colabAccountsFor, effectiveSandboxes, reapColab } from "../agents/sandbox.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { rm } from "node:fs/promises";
@@ -30,7 +30,7 @@ import { liveMemory } from "../jobs/memory.ts";
 import { WorkspaceWatch, workspaceWorking, type WorkspaceReading } from "../jobs/workspace-size.ts";
 import { Remote, followRoster } from "../jobs/remote.ts";
 import { ConfigFile } from "../ops/config.ts";
-import { DISK_EVERY_MS, DISK_LOW_BYTES, diskEvery, diskFree, diskSoft, diskTier } from "../ops/disk.ts";
+import { DISK_EVERY_MS, DISK_LOW_BYTES, diskEvery, diskFree, diskLow, diskSoft, diskTier } from "../ops/disk.ts";
 import { Upkeep, diskOf } from "../ops/storage.ts";
 import { sweepRunners } from "../agents/runner.ts";
 import type { Control } from "../ops/launcher.ts";
@@ -40,7 +40,7 @@ import { AdminHost, ControlPlane, Events, Grants, HelperFolders, Key, Own, Parts
 import { claudeCredentialsFile, codexAuthFile } from "../agents/machine-logins.ts";
 import { permissionsView } from "../api/routes/permissions.ts";
 import { Net, measure } from "../jobs/load.ts";
-import { Notifier } from "../cloud/notify.ts";
+import { BilledCooldown, Notifier, ProfileLoginCooldown } from "../cloud/notify.ts";
 import { type Cloud as CloudState, rigGrantsPath } from "../cloud/state.ts";
 import { screenTools } from "../tools/screen.ts";
 import { permissionTools } from "../tools/permissions.ts";
@@ -62,7 +62,7 @@ import { workspaceSizeTools } from "../tools/workspace-size.ts";
 import { relayTools } from "../tools/relays.ts";
 import { versionTools } from "../tools/version.ts";
 import { waysOf } from "../mesh/ways.ts";
-import { type Accounts, checkConfig, makeAccounts } from "../accounts/index.ts";
+import { type Accounts, checkConfig, type LoginLost, makeAccounts } from "../accounts/index.ts";
 import { Sharing } from "../share/index.ts";
 import { MemorySync } from "../share/memory.ts";
 import { ChatShares } from "../xshare/index.ts";
@@ -78,7 +78,7 @@ import type { Viewer } from "../mesh/credential.ts";
 import { stationLang, tr, type Lang } from "../ops/i18n.ts";
 import { type Updates, makeUpdates } from "../updates/updates.ts";
 import { channelOf } from "../updates/versions.ts";
-import { type Connect, hubConfig } from "./config.ts";
+import { allowedIn, type Connect, hubConfig, runtimeTitle } from "./config.ts";
 import type { TailState } from "../read/transcript.ts";
 import { followLatestThreadRequests } from "../read/latest-thread-requests.ts";
 import { ColdRooms } from "./cold.ts";
@@ -86,11 +86,12 @@ import { Hub } from "./hub.ts";
 import { LiveLocator } from "./live-locator.ts";
 import { peekPackedProgram } from "./packed-mb.ts";
 import { buildWorkspaceActivity } from "./workspace-activity-builder.ts";
+import { buildConversationBackfill } from "./conversation-backfill.ts";
 import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
 import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
-import { expireArchived, relieveArchived, startAutoArchiveTimer } from "./lifecycle.ts";
+import { ARCHIVE_UPKEEP_STARTUP_GRACE_MS, expireArchived, nextArchiveUpkeepAt, relieveLowDiskFull, runArchiveUpkeepIfDue, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
 import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, CREATE_PRESET_TUI, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
@@ -101,7 +102,6 @@ import { reviewUndecided, startReview } from "./review.ts";
 import { readAgentEnvFrom } from "../ops/agent-env.ts";
 import { CardOutcomeWorker } from "../store/card-outbox-worker.ts";
 import { type PageBase, pageOrigin, sessionPage } from "./page.ts";
-import { stationMoveOn } from "../features.ts";
 
 /// server.rs `encode` (encodeURIComponent).
 const encode = encodeURIComponent;
@@ -292,7 +292,6 @@ export const AgentsLive = (control: Control) =>
       const hub = new Hub({
         config: settings,
         siteInstructions,
-        moveOn: () => stationMoveOn(config.raw(), app),
         taking: () => control.taking(),
         store,
         previous,
@@ -339,6 +338,10 @@ export const AgentsLive = (control: Control) =>
         (builder) => Effect.promise(() => builder.close()),
       );
       hub.waitForWorkspaceActivity = () => workspaceActivity.ready;
+      yield* Effect.acquireRelease(
+        Effect.sync(() => buildConversationBackfill(store, previous)),
+        (builder) => Effect.promise(() => builder.close()),
+      );
       const sessionCounts = yield* Effect.acquireRelease(
         Effect.sync(() => buildSessionCounts(store, previous)),
         (builder) => Effect.promise(() => builder.close()),
@@ -371,10 +374,8 @@ export const AgentsLive = (control: Control) =>
         },
       });
       const meshBus = yield* Peers;
-      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus });
-      // Its sandboxes (config.json's `sandboxes`): targets of station_task whose tasks run there as this station's jobs.
-      remote.setSandboxes(() => sandboxesOf(config.raw()));
-      jobs.setSandboxes((name) => sandboxesOf(config.raw()).find((s) => s.name === name) ?? null);
+      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true });
+      // Its sandboxes (config.json's `sandboxes` + default Colab sandboxes when Colab profiles exist): wired once `accounts` is created below.
       // Measure only working chats, and only station-owned workspaces. A chat's remote workspaces are measured on the
       // machines that hold them; an offline or older station supplies no reading until it can answer.
       const working = (key: string): boolean => workspaceWorking(store, (session) => hub.processState(session), key);
@@ -484,7 +485,7 @@ export const AgentsLive = (control: Control) =>
           case ARCHIVE:
             return archiveForPeer(hub, request, ws);
           case CONFIGURE:
-            return configureForPeer(hub, request, ws);
+            return configureForPeer(hub, request, ws, peer);
           case LIST:
             return listForPeer(hub, request, ws);
           case NOTICE:
@@ -631,14 +632,26 @@ export const AgentsLive = (control: Control) =>
         const host = p?.share?.host;
         return cloud.memberships().flatMap((m) => m.peers).find((x) => x?.id === host)?.name ?? host ?? null;
       };
+      // (told once the notifier is made, below)
+      let loginLost: ((lost: LoginLost) => void) | null = null;
+      let loginBack: ((id: string) => void) | null = null;
       const accounts: Accounts = makeAccounts({
         data, store, config, hub, reviewUndecided: () => startReview(hub), codex: () => codex as any, hermes: () => hermes, agy: () => agy, following: () => events.inUse() || hub.anyRunning(), checkOnStart: true,
         workspaces: () => hub.workspaces(),
         claudeVersion: () => updates.get().find((v) => v.id === "claude")?.version ?? null,
-        shared: { status: (p) => sharing!.status(p), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, view: (p, ws) => sharing?.profileView(p, ws) ?? null, hostName },
+        loginLost: (lost) => loginLost?.(lost),
+        loginBack: (id) => loginBack?.(id),
+        shared: { status: (p, recheck) => sharing!.status(p, recheck === true), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, view: (p, ws) => sharing?.profileView(p, ws) ?? null, hostName },
       });
       found = accounts.found;
       accounts.start();
+      const homeWorkspace = () => cloud.state?.workspace ?? null;
+      const colabFor = (workspace?: string) => colabAccountsFor(accounts.profiles(), workspace ?? null, homeWorkspace());
+      const sandboxesFor = (workspace?: string) => effectiveSandboxes(config.raw(), colabFor(workspace).length);
+      remote.setColabAccounts(colabFor);
+      remote.setSandboxes(sandboxesFor);
+      jobs.setColabAccounts(colabFor);
+      jobs.setSandboxes((name, workspace) => sandboxesFor(workspace).find((s) => s.name === name) ?? null);
       sharing = new Sharing({
         data, config, cloud,
         ask: (station, workspace, request) => remote.ask(station, workspace === null ? request : { workspace, ...request }),
@@ -650,7 +663,8 @@ export const AgentsLive = (control: Control) =>
         // In sandboxes no Codex here holds the refresh token: it is renewed here whenever it runs out.
         codexRenewRunning: async (id) => await codex.renewLogin(id),
         agyRenew: (home) => agyRenew(home),
-        status: async (id) => { const h = await accounts.lentHealth(id); return { check: h.check ?? null, quota: h.quota ?? null }; },
+        status: async (id, recheck) => { const h = await accounts.lentHealth(id, recheck === true); return { check: h.check ?? null, quota: h.quota ?? null }; },
+        loginExpired: (id) => accounts.markLoginExpired(id),
         changed: () => events.overviewChanged(),
         recheck: () => accounts.recheckBorrowed(),
         profileChanged: (id, reset) => accounts.sharedChanged(id, reset),
@@ -679,6 +693,7 @@ export const AgentsLive = (control: Control) =>
       const view = async (viewer: Viewer, lang: Lang) => ({ ...((await platformView(viewer, lang)) as object), ...(await parts.overviewOf(viewer, lang)) });
 
       hub.live.heldTold = (key, message) => events.heldTold(key, message);
+      hub.onInterruptedChanged(() => events.overviewChanged());
       // A transcript's past is read by the readers, which keep where its reading stands (read/transcripts.ts): the live
       // view goes on from there, and gives a listener what it lacks from them, none of it read on the main thread.
       hub.live.history = {
@@ -740,7 +755,7 @@ export const AgentsLive = (control: Control) =>
       yield* Effect.addFinalizer(() => Effect.sync(stopLatestThreadRequests));
       hub.followRunning();
       // The readers say what runs, and which chats clients made: the hub's.
-      readers.processes = () => hub.processes();
+      readers.processes = () => hub.readProcesses();
       readers.clientKeys = () => hub.clientKeys();
       events.follow({
         live: (key, from, last, send, brief) => {
@@ -772,13 +787,15 @@ export const AgentsLive = (control: Control) =>
       };
       // A session found its runtime not installed: the pages read it again (removed since they last did).
       hub.onRuntimeMissing((runtime) => updates.missing(runtime));
+      // Take the initial profile scopes once the hub's dependencies are ready, before listening for edits.
+      hub.profilesChanged();
       // What the overview shows changes: told on the event streams.
       const unlistenOverview = [
         accounts.onChange(() => events.overviewChanged()),
         updates.changes(() => events.overviewChanged()),
         // macOS's grants to still.fail Helper (the station's page shows them as they change).
         grants?.onChange(() => events.overviewChanged()) ?? (() => {}),
-        config.listen(() => (events.overviewChanged(), events.rowsChanged(null))),
+        config.listen(() => (hub.profilesChanged(), events.overviewChanged(), events.rowsChanged(null))),
         cloud.listen(() => events.overviewChanged()),
       ];
 
@@ -853,6 +870,12 @@ export const AgentsLive = (control: Control) =>
       };
       yield* plane.changes.pipe(
         Stream.runForEach(() => Effect.promise(follow)),
+        Effect.forkScoped,
+      );
+
+      // Its Colab sandboxes' VMs no task holds, stopped once kept warm long enough (agents/sandbox.ts).
+      yield* Effect.promise(() => reapColab(data, allColabAccounts(accounts.profiles())).catch(() => {})).pipe(
+        Effect.repeat(Schedule.spaced(COLAB_REAP_MS)), // timer: a deadline (an idle Colab VM is stopped 3 minutes after its last task; Colab tells nothing and never takes one back)
         Effect.forkScoped,
       );
 
@@ -937,6 +960,30 @@ export const AgentsLive = (control: Control) =>
 
       // What the chats' people hear about while no client of theirs runs: pushed by the control plane.
       const notifier = new Notifier(store, readers, cloud, (notices, ws) => Effect.runPromise(plane.notify(notices, ws)), { now: () => hub.clock.currentTimeMillisUnsafe(), deadline: (login) => hub.logins?.deadline?.(login) ?? null });
+      const billedCooldown = new BilledCooldown();
+      // A profile's login over: the managers of each workspace it serves are told whose it is, to sign it in again.
+      const profileLoginCooldown = new ProfileLoginCooldown();
+      loginLost = ({ id, profile, station }) => {
+        if (cloud.provider() !== "stillfail") return;
+        const home = cloud.home();
+        const workspaces = cloud.memberships().map((m) => m.workspace).filter((ws) => allowedIn(profile, ws, home));
+        const runtime = profile.runtime;
+        const stationName = station ?? cloud.state?.name ?? "still.fail";
+        notifier.notifyProfileLogin({ workspaces, profileId: id, profile: profile.name, runtimeTitle: runtime === undefined ? "" : runtimeTitle(runtime), stationName, at: hub.now() }, profileLoginCooldown);
+      };
+      loginBack = (id) => profileLoginCooldown.clear(id);
+      hub.onBilledFallback = (info) => {
+        const ws = info.workspace ?? cloud.home();
+        if (ws === null || cloud.membership(ws) === null) return;
+        const at = hub.now();
+        if (!billedCooldown.take(ws, info.runtime, at)) return;
+        const title = runtimeTitle(info.runtime);
+        const stationName = cloud.membership(ws)?.name ?? cloud.state?.name ?? "still.fail";
+        if (cloud.provider() === "stillfail") {
+          notifier.notifyBilledFallback({ workspace: ws, runtime: info.runtime, runtimeTitle: title, profile: info.profile.name, at }, { cooled: true });
+        }
+        events.sendLive("billed-fallback", { runtime: info.runtime, runtimeTitle: title, profile: info.profile.name, stationName, at }, { managers: true, workspace: ws });
+      };
 
       // What runs on a clock here (on the hub's): ended at the handover, below.
       const time = new Fibers("station", hub.clock);
@@ -946,7 +993,8 @@ export const AgentsLive = (control: Control) =>
       const stopArchiving = startAutoArchiveTimer(hub, time, readers);
 
       // Chats archived long enough keep only their history and the files sent in them: looked at when the next one
-      // comes due, and every hour for the setting changed.
+      // comes due, and every hour for the setting changed. Also backfills unfinished archive packs and cleans
+      // rebuildable directories of idle unarchived sessions (each bounded per round).
       const emptying = async () => {
         let next: number | null = null;
         try {
@@ -954,9 +1002,13 @@ export const AgentsLive = (control: Control) =>
         } catch (error) {
           log.warn("hub", "emptying long-archived workspaces failed", { error: (error as Error).message });
         }
-        time.after(Math.min(3_600_000, next === null ? Infinity : next - hub.now()), emptying);
+        await runArchiveUpkeepIfDue(hub, hub.now());
+        const nowAfter = hub.now();
+        const nextExpire = next === null ? Infinity : next - nowAfter;
+        const nextUpkeep = Math.max(1_000, nextArchiveUpkeepAt(hub) - nowAfter);
+        time.after(Math.min(3_600_000, nextExpire, nextUpkeep), emptying);
       };
-      time.after(300_000, emptying);
+      time.after(ARCHIVE_UPKEEP_STARTUP_GRACE_MS, emptying);
 
       // The station's own files held to their bounds (ops/storage.ts): its logs, runners gone, jobs' logs, other
       // stations' rooms, the database's log, caches.
@@ -967,22 +1019,27 @@ export const AgentsLive = (control: Control) =>
         jobs: (now) => jobs.upkeep(now),
         remote: (now, disk) => remote.upkeep(now, disk),
         checkpoint: () => readers.checkpointHard(),
+        orphans: store,
+        clonesActive: () => hub.clones.hasActive(),
       });
       upkeep.start();
 
       // The disk of the station's data getting full: what is made again when asked for goes, then the mirrors of other
-      // stations' tasks not in use; low, then archived workspaces before their time (ops/disk.ts).
+      // stations' tasks not in use; below low, runs a full pass across idle unarchived rebuildables, archived
+      // workspaces, orphan UUID transcripts, and unreferenced shared clones (throttled to once per RELIEVE_FULL_EVERY_MS).
       const relieving = async () => {
         const free = () => diskFree(data).catch(() => Infinity);
         let tier: "ok" | "soft" | "low" = "ok";
         try {
+          const now = hub.now();
           const disk = await diskOf(data).catch(() => null);
           tier = disk === null ? "ok" : diskTier(disk.free, disk.total);
           if (tier !== "ok") {
-            await upkeep.renewables(hub.now());
-            await remote.relieve(hub.now(), disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
+            await upkeep.renewables(now);
+            await remote.relieve(now, disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
           }
-          if ((await free()) < DISK_LOW_BYTES) await relieveArchived(hub, free);
+          const low = disk === null ? DISK_LOW_BYTES : diskLow(disk.total);
+          await relieveLowDiskFull(hub, free, low);
         } catch (error) {
           log.warn("hub", "making room on the disk failed", { error: (error as Error).message });
         }
@@ -997,11 +1054,18 @@ export const AgentsLive = (control: Control) =>
       // not only the ones that end all_done from now on; and once after the start (the profiles' checks read by then).
       const reviewing = () => void reviewUndecided(hub).catch((error) => log.warn("hub", "reviewing done chats failed", { error: (error as Error).message }));
       let rule = hub.config().automaticDecisions.completion;
+      let maxConcurrentTurns = hub.config().maxConcurrentTurns;
       const unlistenRule = config.listen(() => {
-        const now = hub.config().automaticDecisions.completion;
+        const cfg = hub.config();
+        const now = cfg.automaticDecisions.completion;
         const changed = now.enabled && (!rule.enabled || now.model !== rule.model);
         rule = now;
         if (changed) reviewing();
+        if (cfg.maxConcurrentTurns !== maxConcurrentTurns) {
+          maxConcurrentTurns = cfg.maxConcurrentTurns;
+          hub.setMaxConcurrentTurns(maxConcurrentTurns);
+        }
+        hub.drainCapQueue();
       });
       time.after(120_000, reviewing);
 

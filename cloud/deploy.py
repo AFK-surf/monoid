@@ -9,6 +9,7 @@ rename to still.fail, as do their Durable Objects, bucket and secrets: renaming 
   preview   stillfail-preview   the preview host, static (wrangler.preview.jsonc)
   status    still-fail-status   still.fail/status, static (wrangler.status.jsonc)
   kit       stillfail-kit       the component library's page, static (wrangler.kit.jsonc): monoid's alone, kit.monoid.zone
+  ui        monoid-ui-site      the ui.monoid.build site & docs, static (wrangler.ui.jsonc): monoid's alone, ui.monoid.build
 Each is deployed on its own: deploying the API drops no relay connection and serves no page. (And the official
 site, `site`, still-fail-site; and the test channel's, `site-beta`, youdid-wtf-site on youdid.wtf, only when named.)
 The test channel lives on its own domain, youdid.wtf: until that zone is active on Cloudflare (or with STILLFAIL_BETA=off)
@@ -41,6 +42,9 @@ else ~/stillfail-deploy:
             Without it the cloud takes no traces.
   review    <deploy>/review-accounts.json, [{"email", "password", "name"}]: the accounts that sign in with a
             password (cloud/src/password.ts), App Store review's. Without it nobody signs in that way.
+  apple     <deploy>/apple.json, {"services_id", "team_id", "key_id", "private_key"}: Sign in with Apple
+            (cloud/src/apple.ts). The Services ID's return URL is <origin>/v1/auth/apple/callback; private_key
+            is the PEM of the team's Sign in with Apple key (.p8). Without it, no Apple sign-in.
   feedback  <deploy>/feedback-token: the token that reads the console's bug reports and marks their status, and
             nothing else (POST /v1/admin/feedback/list and /v1/admin/feedback/<id>/status, the team's feedback
             monitor's). Without it nobody reads or marks them so.
@@ -95,6 +99,7 @@ APNS = DEPLOY / "apns.json"
 FCM_MORE = DEPLOY / "fcm-service-account-more.json"
 APNS_MORE = DEPLOY / "apns-more.json"
 REVIEW = DEPLOY / "review-accounts.json"
+APPLE = DEPLOY / "apple.json"
 FEEDBACK = DEPLOY / "feedback-token"
 # One cloud answering as the other product too (src/guests.ts), once the secret both know is there (forward-secret):
 # the guests its CLOUDS entry lists, with their Google client (guest-google-oauth.json, as google-oauth.json is); for a
@@ -126,10 +131,10 @@ def write_private(path: Path, value) -> None:
     os.replace(tmp, path)
 
 
-PARTS = {"relay": "wrangler.relay.jsonc", "api": "wrangler.jsonc", "web": "wrangler.web.jsonc", "web-beta": "wrangler.web-beta.jsonc", "admin": "wrangler.admin.jsonc", "preview": "wrangler.preview.jsonc", "status": "wrangler.status.jsonc", "site": "wrangler.site.jsonc", "site-beta": "wrangler.site-beta.jsonc", "kit": "wrangler.kit.jsonc"}
+PARTS = {"relay": "wrangler.relay.jsonc", "api": "wrangler.jsonc", "web": "wrangler.web.jsonc", "web-beta": "wrangler.web-beta.jsonc", "admin": "wrangler.admin.jsonc", "preview": "wrangler.preview.jsonc", "status": "wrangler.status.jsonc", "site": "wrangler.site.jsonc", "site-beta": "wrangler.site-beta.jsonc", "kit": "wrangler.kit.jsonc", "ui": "wrangler.ui.jsonc"}
 # What a deploy without parts deploys: the web app only to the test channel (promote-web takes it on); not youdid.wtf's
-# site, nor the component library's page (monoid's alone, named by CI: wrangler.kit.jsonc).
-DEFAULT_PARTS = [p for p in PARTS if p not in ("web", "site-beta", "kit")]
+# site, nor the component library's page or ui.monoid.build (monoid's alone, named explicitly: wrangler.kit.jsonc, wrangler.ui.jsonc).
+DEFAULT_PARTS = [p for p in PARTS if p not in ("web", "site-beta", "kit", "ui")]
 # The test channel's parts, on its own domain (youdid.wtf): deployed only once that zone is on Cloudflare (beta_zone()).
 BETA_PARTS = ("web-beta", "site-beta", "kit")
 # The web app's builds deployed to the test channel, by commit, for promote-web.
@@ -148,6 +153,9 @@ CLOUDS = {
         "zones": {"still.fail": "monoid.build", "youdid.wtf": "monoid.zone"},
         # its name where still.fail's stands alone in the static sites' pages (client/i18n/brand.ts says it for the rest)
         "name": "monoid",
+        # who runs it, where still.fail's legal pages say their operator (web/public's data-operator; website/build.mjs
+        # MONOID_OPERATOR, the same words)
+        "operator": {"zh": "在美国特拉华州注册成立的公司 AFK AI, Inc.", "en": "AFK AI, Inc., a Delaware corporation"},
         "dropped": ["3720.org"],
         # The API's own: Cloudflare Access in front of the console (src/admin.ts), its application "monoid admin" on
         # admin.monoid.build letting in the AFK-surf GitHub organization's members.
@@ -189,6 +197,14 @@ def rebrand_static(cloud: str = CLOUD) -> None:
         for path in (REPO / "dist" / site).rglob("*"):
             if path.suffix in (".html", ".webmanifest") and path.is_file():
                 text = path.read_text()
+                # (who runs it, on the legal pages: their language's)
+                operator = CLOUDS[cloud].get("operator")
+                if operator:
+                    said = operator["en" if '<html lang="en"' in text else "zh"]
+                    text = re.sub(r"<span data-operator>[^<]*</span>", lambda _: f"<span data-operator>{said}</span>", text)
+                    # (where its terms differ from still.fail's: still.fail's element left out, its own in its place)
+                    text = re.sub(r'<(p|li|h2)\b[^>]*\sdata-product="still\.fail"[^>]*>.*?</\1>', "", text, flags=re.S)
+                    text = re.sub(r'<template data-product="monoid">(.*?)</template>', r"\1", text, flags=re.S)
                 # (the name first: rehost would take a bare still.fail for the domain it also is)
                 path.write_text(rehost(STILLFAIL_NAME.sub(CLOUDS[cloud]["name"], text), cloud))
 
@@ -330,6 +346,21 @@ def review() -> dict:
     if not isinstance(accounts, list) or not all(isinstance(a, dict) and "@" in a.get("email", "") and len(a.get("password", "")) >= 12 for a in accounts):
         sys.exit(f"{REVIEW}: expected a list of {{email, password (12 characters at least), name}}")
     return {"REVIEW_ACCOUNTS": json.dumps(accounts)}
+
+
+def apple() -> dict:
+    if not APPLE.exists():
+        print(f"note: {APPLE} is missing; no Sign in with Apple")
+        return {}
+    data = json.loads(APPLE.read_text())
+    if not isinstance(data, dict) or not all(isinstance(data.get(k), str) and data[k].strip() for k in ("services_id", "team_id", "key_id", "private_key")):
+        sys.exit(f"{APPLE}: expected {{services_id, team_id, key_id, private_key}}")
+    return {
+        "APPLE_CLIENT_ID": data["services_id"].strip(),
+        "APPLE_TEAM_ID": data["team_id"].strip(),
+        "APPLE_KEY_ID": data["key_id"].strip(),
+        "APPLE_PRIVATE_KEY": data["private_key"],
+    }
 
 
 def feedback() -> dict:
@@ -500,6 +531,8 @@ def main() -> None:
     if unknown:
         sys.exit(f"no such part: {', '.join(sorted(unknown))}")
     parts = [p for p in PARTS if p in args.parts] or list(DEFAULT_PARTS)
+    if "ui" in parts and CLOUD != "monoid" and not args.dry_run:
+        sys.exit("ui deploys only with STILLFAIL_CLOUD=monoid (ui.monoid.build)")
     admin_account = admin_email(args.dry_run) if "api" in parts and not args.check else None
 
     template = read_template()
@@ -519,6 +552,7 @@ def main() -> None:
         print("vapid", "present" if VAPID.exists() else f"missing: no Web Push without {VAPID}")
         print("fcm", "present" if FCM.exists() else f"missing: no pushes to Android without {FCM}")
         print("apns", "present" if APNS.exists() else f"missing: no pushes to iOS without {APNS}")
+        print("apple", "present" if APPLE.exists() else f"missing: no Sign in with Apple without {APPLE}")
         print("beta zone", beta_zone(), "active" if beta_ready(account_id()) else "not active: web-beta and site-beta will be skipped")
         return
 
@@ -564,6 +598,9 @@ def main() -> None:
         if not shutil.which("moon"):
             sys.exit("no moon and no dist/kit/app.js: the component library's page is built by apps/mbui/scripts/kit-web.sh")
         subprocess.run(["bash", "apps/mbui/scripts/kit-web.sh", "dist/kit"], cwd=REPO, check=True)
+    # The ui.monoid.build documentation and live component site (website/ui/build.mjs into dist/ui).
+    if not args.skip_build and "ui" in parts and not (REPO / "dist" / "ui" / "index.html").exists():
+        subprocess.run(["node", "website/ui/build.mjs", "--out", "dist/ui"], cwd=REPO, check=True)
     # The official sites (website/build.mjs SITES): this cloud's (still.fail, monoid.build) into dist/site, its test
     # channel's (youdid.wtf, monoid.zone) into dist/site-beta.
     for part, site in (("site", rehost("still.fail")), ("site-beta", beta_zone())):
@@ -572,7 +609,7 @@ def main() -> None:
     # Read only for the parts that take them: keys() makes keys.json where there is none, which a deploy of the static
     # sites alone (CI's web-beta, on a machine without the deploy directory's keys) must not do.
     secrets_of = {
-        "api": lambda: {**keys(), "GOOGLE_CLIENT_SECRET": web["client_secret"], **telemetry(), **push(), **review(), **feedback(), **guests()},
+        "api": lambda: {**keys(), "GOOGLE_CLIENT_SECRET": web["client_secret"], **apple(), **telemetry(), **push(), **review(), **feedback(), **guests()},
         "relay": lambda: {"ADMIN_TOKEN": keys()["ADMIN_TOKEN"]},
     }
     def deploy(part: str, env) -> None:
@@ -631,6 +668,7 @@ def main() -> None:
         "site": ["https://still.fail/"],
         "site-beta": [f"https://{beta_zone()}/"],
         "kit": [f"https://kit.{beta_zone()}/"],
+        "ui": ["https://ui.monoid.build/"],
     }
     for part in [] if args.dry_run else parts:
         for url in dict.fromkeys(rehost(u) for u in checks[part] if not dropped(u)):

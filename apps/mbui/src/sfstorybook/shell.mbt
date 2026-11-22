@@ -38,7 +38,6 @@ fn side_shown(w : Double) -> Bool {
 ///|
 /// The old frame round the tree: on 小屏 the library's menus, picks and questions are its, as the app's frame has them.
 pub fn stories_view(c : @ui.Ctx) -> Unit {
-  @ui.old_views_here(c)
   @sf.presented(c)
 }
 
@@ -64,15 +63,16 @@ fn stories_made(root : @view.View, first : String) -> Unit {
   @ui.set_tree_theme(@sf.ui_theme_now)
   // (the workbench's size of words, input and language, as MBUI_FONT_SCALE, MBUI_POINTING and MBUI_LANG say: matrix.mbt)
   let env = env_started()
-  let all = foundations() + stories(@sf.TipLayer::new(fn() { Some(root) })) + workbench_stories(env)
+  let tips = @sf.TipLayer::new(fn() { Some(root) })
+  let all = foundations() + motion_stories(tips) + stories(tips, layer=fn() { Some(root) }) + workbench_stories(env)
   let chosen = @signals.signal(all.search_by(fn(s) { s.key == first }).unwrap_or(-1))
   let width = @signals.signal(2)
   let query = @signals.signal("")
-  let wide = fn() { side_shown(root.window().0) }
+  let wide = fn() { side_shown(root.window_w()) }
   // (the list's width; what is left of the window the parts', said as a width so that what shares its room by it (a
   // filled segmented) is given that room, not what it holds)
   let side_w = fn() { if wide() { side_width() } else { 0.0 } }
-  let main_w = fn() { Some(@sf.dmax(0.0, root.window().0 - side_w())) }
+  let main_w = fn() { Some(@sf.dmax(0.0, root.window_w() - side_w())) }
   // (the bar's 跳转, what the jump goes beside however it is asked: by its button or by ⌘K / Ctrl+K)
   let jump : Ref[@view.View?] = Ref(None)
   // (what is drawn under it all: the root's own ground is the host's)
@@ -209,15 +209,36 @@ fn search_node(v : @view.View, query : @signals.Signal[String]) -> Unit {
 ///|
 /// The list at the side: the library's name, the search, the rows.
 fn side_node(side : @view.View, all : Array[Story], chosen : @signals.Signal[Int], query : @signals.Signal[String]) -> Unit {
+  let brand = @ui.env("MBUI_BRAND")
   side.width(By(fn() { Some(side_width()) })).ground(By(fn() { @sf.theme().p.sidebar })) |> ignore
   side.box(fn(head) {
     head.padding(Is((20.0, 20.0, 20.0, 8.0))).gap(Is(4.0)) |> ignore
-    @sf.words_node(head, fn() { "still.fail 组件" }, fn() { @sf.title }) |> ignore
+    @sf.words_node(
+      head,
+      fn() {
+        if brand == "" {
+          "still.fail 组件"
+        } else if @sf.language() == "en" {
+          brand
+        } else {
+          "\{brand} 组件"
+        }
+      },
+      fn() { @sf.title },
+    )
+    |> ignore
     // (where its parts are, and how many pages: two words side by side, not joined in one line)
     head.box(fn(r) {
       r.row(Is(true)).wraps(Is(Some(4.0))).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
       @sf.words_node(r, fn() { "libs/sf-ui/src" }, fn() { @sf.meta }) |> ignore
-      @sf.pill_node(r, fn() { "\{all.length()} 页" }) |> ignore
+      @sf.pill_node(r, fn() {
+        if brand != "" && @sf.language() == "en" {
+          "\{all.length()} stories"
+        } else {
+          "\{all.length()} 页"
+        }
+      })
+      |> ignore
     })
     |> ignore
   })
@@ -254,7 +275,7 @@ fn bar_node(
   env : Env,
 ) -> Unit {
   // (the room for 环境's words beside the width's choice and the bar's buttons, more chosen said longer)
-  let env_worded = fn() { main.window().0 >= 1008.0 }
+  let env_worded = fn() { main.window_w() >= 1008.0 }
   main.box(fn(bar) {
     bar
     .row(Is(true))
@@ -298,7 +319,12 @@ fn bar_node(
           if i < 0 {
             "\{all.length()} 页"
           } else {
-            library_path + all[i].file
+            let f = all[i].file
+            if f.contains("/") {
+              f
+            } else {
+              library_path + f
+            }
           }
         },
         fn() { bar_file },
@@ -416,12 +442,21 @@ fn still_box(v : @view.View, make : (@view.View) -> Unit) -> Unit {
 ///|
 /// All the parts as cards, each its name, its group and its first state drawn small; pressed, its page.
 fn overview_node(page : @view.View, all : Array[Story], chosen : @signals.Signal[Int]) -> Unit {
-  let narrow = fn() { page.window().0 < 720.0 }
+  let brand = @ui.env("MBUI_BRAND")
+  let narrow = fn() { page.window_w() < 720.0 }
   page.padding(By(fn() { if narrow() { (16.0, 16.0, 16.0, 48.0) } else { (24.0, 24.0, 24.0, 48.0) } })).gap(Is(16.0))
   |> ignore
   @sf.words_node(
     page,
-    fn() { "still.fail 的界面都由这些部件拼成（libs/sf-ui/src）。最前面是设计基石：色板、字阶、同心圆角、光影与动效；之后每个部件一页：它的各种状态、可调参数的 Playground、示例代码和 API。按 ⌘K 跳到任意一页。" },
+    fn() {
+      if brand == "" {
+        "still.fail 的界面都由这些部件拼成（libs/sf-ui/src）。最前面是设计基石：色板、字阶、同心圆角、光影与动效；之后每个部件一页：它的各种状态、可调参数的 Playground、示例代码和 API。按 ⌘K 跳到任意一页。"
+      } else if @sf.language() == "en" {
+        "Production components built with mbui (libs/sf-ui/src). Design foundations, interactive playgrounds, and API examples. Press ⌘K to jump to any story."
+      } else {
+        "基于 mbui 构建的生产级组件库（libs/sf-ui/src）。涵盖设计基石、可调参数 Playground 与 API 示例。按 ⌘K 快速跳转任意组件页。"
+      }
+    },
     fn() { @sf.lead },
   )
   |> ignore
@@ -442,7 +477,7 @@ fn overview_node(page : @view.View, all : Array[Story], chosen : @signals.Signal
         .on_press(fn() { chosen.set(i) })
         |> ignore
         card.box(fn(thumb) {
-          thumb.height(Is(Some(132.0))).pad(Is(16.0)).clips(Is(true)) |> ignore
+          thumb.height(Is(Some(132.0))).pad(Is(16.0)).clips(Is(true)).bounds_input(Is(true)) |> ignore
           match s.cases.get(0) {
             Some((_, make)) => still_box(thumb, make)
             None => ()
@@ -477,7 +512,7 @@ fn card_node(v : @view.View, make : (@view.View) -> Unit) -> Unit {
     .ground(By(fn() { @sf.theme().p.paper }))
     .edge(By(fn() { (1.0, @sf.theme().p.line) }))
     .radius(Is(12.0))
-    .pad(By(fn() { if card.window().0 < 720.0 { 14.0 } else { 20.0 } }))
+    .pad(By(fn() { if card.window_w() < 720.0 { 14.0 } else { 20.0 } }))
     .gap(Is(12.0))
     .min_width(Is(Some(0.0)))
     |> ignore
@@ -507,7 +542,7 @@ fn code_node(v : @view.View, code : () -> String) -> Unit {
 /// a press away; its functions. As wide as `width` says at most.
 fn story_node(page : @view.View, s : Story, width : () -> Double?) -> Unit {
   page
-  .padding(By(fn() { if page.window().0 < 720.0 { (16.0, 16.0, 16.0, 48.0) } else { (24.0, 20.0, 24.0, 48.0) } }))
+  .padding(By(fn() { if page.window_w() < 720.0 { (16.0, 16.0, 16.0, 48.0) } else { (24.0, 20.0, 24.0, 48.0) } }))
   .gap(Is(16.0))
   .min_width(Is(Some(0.0)))
   |> ignore

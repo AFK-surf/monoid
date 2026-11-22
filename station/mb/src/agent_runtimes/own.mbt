@@ -26,7 +26,7 @@ pub struct Own {
   mut tools_absent : Bool
   runner : String
   /// What the process's frozen state is said to be at a handover (proc.frozenState()).
-  mut frozen : J?
+  frozen : J?
   waits : Map[String, Wait]
   /// What answers resolved meanwhile, given on once what is said now is (as a promise's continuation runs after).
   later : Array[() -> Unit]
@@ -274,14 +274,6 @@ fn Own::dispose(self : Own) -> Unit {
   self.closed = true
   self.fail_all("\{self.kind} session is closed")
   self.note("kill", int(5000))
-}
-
-///|
-/// `detach`: let go of the process without ending it.
-fn Own::detach(self : Own) -> Unit {
-  self.closed = true
-  self.note("forget", Bool(true))
-  self.note("detach", Bool(true))
 }
 
 ///|

@@ -20,7 +20,7 @@ export function useKept<T>(topic: Topic): { value: T | undefined; error: CoreErr
   return { value: state.value ?? (state.error ? undefined : last.current), error: state.error };
 }
 
-export const PATH: Record<List, string> = { users: "/users", workspaces: "/workspaces", "invite-codes": "/codes", feedback: "/feedback", audit: "/audit" };
+export const PATH: Record<List, string> = { users: "/users", workspaces: "/workspaces", "invite-codes": "/codes", feedback: "/feedback", audit: "/audit", keys: "/keys" };
 
 /** On a phone the sidebar and a page take turns: "/" is the sidebar there, and the overview elsewhere. */
 export const narrow = () => matchMedia("(max-width: 700px)").matches;

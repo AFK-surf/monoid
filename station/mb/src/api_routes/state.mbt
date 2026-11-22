@@ -12,8 +12,8 @@ priv struct Held {
 priv struct State {
   /// What each uploads folder holds by its content (SHA-256, hex), oldest first.
   contents : Map[String, Map[String, Held]]
-  /// Uploads in parts named as their parts come, by id: the hash's handle.
-  naming : Map[String, JV]
+  /// Uploads in parts named as their parts come, by id: the running SHA-256.
+  naming : Map[String, @hash.Sha256]
   /// Uploads in parts that are whole, by their id.
   assembled : Map[String, (Double, JV)]
   /// The last part asked of each upload in parts still under way: the next waits for it.

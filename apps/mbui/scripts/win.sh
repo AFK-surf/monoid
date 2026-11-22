@@ -1,6 +1,6 @@
 #!/bin/bash
 # The Windows apps: mbui's scripts/win.sh (build | run | script NAME | shot) on this module's apps (APP=stillfail by
-# default; sffix, sfkit), in Git Bash on Windows with MoonBit and MSVC (a Developer Command Prompt's environment).
+# default; sffix), in Git Bash on Windows with MoonBit and MSVC (a Developer Command Prompt's environment).
 # stillfail has the still.fail core in it (src/stillfail/win_engine.c → src/host/win_core.c): the engine and the shell
 # prebuilt for Windows (this checkout's scripts/native.ts parts `engine` and `shell`, win32-x64: from the release
 # native-artifacts, or built here, as only Windows can), the engine's C API (engine/engine.h) and import library found
@@ -14,6 +14,7 @@
 #   scripts/win.sh engine-sync             synchronous host answers across the engine DLL checked
 #   scripts/win.sh sealed                  the desktop app's sealed values opened (src/host/win_electron_sealed.h) checked
 #   scripts/win.sh hello                   Windows Hello as secure.* asks it (src/host/win_hello.h) checked
+#   scripts/win.sh reports                 PostHog reports payload and reports.json logic (src/host/win_reports.c) checked
 #   scripts/win.sh setup                   the installer (windows/setup.c) with the app built and put packed after it
 #   scripts/win.sh setup-bare              the installer's own program alone (out/setup-bare), which setup packs the app with
 # Its identity (as mac-app.sh's Info.plist has the Mac app's), in the program's resources: its icon
@@ -42,32 +43,70 @@ if [ -z "${MBUI_IN_WIN_SH:-}" ] && [ "$APP" = stillfail ]; then
   export engine shell ghostty_vt
 fi
 core() { HERMESC=$(cygpath -m "$engine/hermesc.exe") bash "$AD/core.sh" hermes; }
-# variant: what MBUI_VARIANT builds the app as: its id, its name, its program's name where it is put (the desktop app's
-# own program's in its place), the folder it is put in (%LOCALAPPDATA%\Programs\<dir>: the desktop app's installer's,
-# its package name), and its own environment beyond those
-MONOID_ENV='MBUI_OWN=1\nMBUI_UPDATE_FEED=win\nMBUI_CLOUD=https://app.monoid.build\nMBUI_PRODUCT=monoid\nMBUI_STATION_ID=monoid\nMBUI_STATION_NAME=monoid'
+# variant: what MBUI_VARIANT builds the app as (from apps/mbui/mbui.json): its id, its name, its program's name where
+# it is put (the desktop app's own program's in its place; preview uses stillfail.exe on Windows), the folder it is put
+# in (%LOCALAPPDATA%\Programs\<dir>: the desktop app's installer's, its package name), its company, and its own
+# environment beyond those
 variant() {
-  case "${MBUI_VARIANT:-preview}" in
-    preview) id=fail.still.mbui name="still.fail preview" exe=stillfail dir=stillfail-mbui schemes= extra='MBUI_BETA=1\nMBUI_UPDATE_FEED=win/mbui' ;;
-    stable) id=fail.still.desktop name=still.fail exe=still.fail dir=stillfail schemes=stillfail extra='MBUI_OWN=1\nMBUI_UPDATE_FEED=win' ;;
-    beta) id=fail.still.desktop.beta name=youdid.wtf exe=youdid.wtf dir=stillfail-beta schemes=stillfail-beta,stillfail extra='MBUI_OWN=1\nMBUI_BETA=1\nMBUI_UPDATE_FEED=win' ;;
-    # monoid's: the same app on monoid's cloud, its station its own (~\.monoid, 「monoid station」: install-windows.ts)
-    monoid) id=build.monoid.desktop name=monoid exe=monoid dir=monoid schemes=monoid extra="$MONOID_ENV" ;;
-    monoid-beta) id=build.monoid.desktop.beta name=monoid.zone exe=monoid.zone dir=monoid-beta schemes=monoid-beta,monoid extra="$MONOID_ENV\nMBUI_BETA=1" ;;
-    *) echo "win.sh: MBUI_VARIANT is preview, stable, beta, monoid or monoid-beta, not $MBUI_VARIANT" >&2; return 1 ;;
-  esac
+  local v=${MBUI_VARIANT:-preview} meta kv feed
+  local MBUI_APP_ID MBUI_APP_NAME MBUI_EXECUTABLE MBUI_VERSION MBUI_BUILD MBUI_VARIANT \
+    MBUI_RUNTIME MBUI_MODULE_DIR MBUI_ENTRY MBUI_SCHEMES MBUI_UPDATE_FEED MBUI_UPDATE_CHANNEL \
+    MBUI_ENV_KV MBUI_MAC_MIN_VERSION MBUI_WIN_INSTALL_DIR MBUI_WIN_COMPANY
+  meta=$("$MBUI_DIR/scripts/mbui" meta "$A/mbui.json" --variant "$v" --format sh) || {
+    echo "win.sh: MBUI_VARIANT is preview, stable, beta, monoid or monoid-beta, not $v" >&2
+    return 1
+  }
+  meta=${meta//$'\r'/}
+  eval "$meta"
+  id=$MBUI_APP_ID
+  name=$MBUI_APP_NAME
+  exe=$MBUI_EXECUTABLE
+  [ "$v" != preview ] || exe=stillfail
+  dir=$MBUI_WIN_INSTALL_DIR
+  company=$MBUI_WIN_COMPANY
+  schemes=$MBUI_SCHEMES
+  feed=${MBUI_UPDATE_FEED/#mac/win}
+  extra="MBUI_UPDATE_FEED=$feed"
+  if [ -n "$MBUI_ENV_KV" ]; then
+    local IFS=';'
+    for kv in $MBUI_ENV_KV; do
+      case "$kv" in
+        MBUI_STATION_LABEL=*) ;;
+        *=*) extra="$extra
+$kv" ;;
+      esac
+    done
+  fi
 }
 # res: the app's resources (out/win-res/app.res), for mbui's win.sh to link into it (MBUI_WIN_RES)
 res() {
   local n=${MBUI_BUILD:-$(git -C "$SF_SRC" rev-list --count HEAD 2>/dev/null || echo 1)}
   local icon=$A/windows/AppIcon-$(sha256sum "$AD/mac-icon.swift" | cut -c1-12).ico
   [ -f "$icon" ] || { echo "win.sh: no $icon (scripts/mac-icon.swift changed: swift scripts/mac-icon.swift --ico $icon, on a Mac)" >&2; return 1; }
-  local id name exe dir schemes extra r=$A/out/win-res
+  local id name exe dir company schemes extra env_lines r=$A/out/win-res
   variant || return 1
-  [ -z "$schemes" ] || extra="MBUI_SCHEMES=$schemes\n$extra"
   rm -rf "$r" && mkdir -p "$r"
   cp "$icon" "$r/app.ico"
-  printf "MBUI_APP_ID=%s\nMBUI_APP_NAME=%s\n$extra\n" "$id" "$name" > "$r/app.env"
+  env_lines="MBUI_APP_ID=$id
+MBUI_APP_NAME=$name
+MBUI_VERSION=0.1.$n
+MBUI_BUILD=$n"
+  [ -z "$schemes" ] || env_lines="$env_lines
+MBUI_SCHEMES=$schemes"
+  env_lines="$env_lines
+$extra"
+  if [ -n "${STILLFAIL_POSTHOG:-}" ] && { [ "${MBUI_VARIANT:-preview}" = stable ] || [ "${MBUI_VARIANT:-preview}" = beta ]; }; then
+    local ph_path ph_host ph_key
+    ph_path=$(cygpath -w "$STILLFAIL_POSTHOG" 2>/dev/null || printf '%s' "$STILLFAIL_POSTHOG")
+    ph_host=$(node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(typeof d.host === "string" ? d.host : "");' "$ph_path") || return 1
+    ph_key=$(node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(typeof d.key === "string" ? d.key : "");' "$ph_path") || return 1
+    [ -n "$ph_key" ] || { echo "win.sh: no PostHog key in $STILLFAIL_POSTHOG" >&2; return 1; }
+    [ -z "$ph_host" ] || env_lines="$env_lines
+STILLFAIL_POSTHOG_HOST=$ph_host"
+    env_lines="$env_lines
+STILLFAIL_POSTHOG_KEY=$ph_key"
+  fi
+  printf '%s\n' "$env_lines" > "$r/app.env"
   cat > "$r/app.rc" <<RC
 1 ICON "app.ico"
 MBUI_ENV RCDATA "app.env"
@@ -84,7 +123,7 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "AFK AI, Inc."
+      VALUE "CompanyName", "$company"
       VALUE "FileDescription", "$name"
       VALUE "FileVersion", "0.1.$n"
       VALUE "InternalName", "stillfail"
@@ -166,6 +205,16 @@ hello() {
   check_crt "$out/hello_test_win.exe" || return 1
   "$out/hello_test_win.exe"
 }
+# reports: Windows PostHog telemetry payload and reports.json logic (src/host/win_reports.c), checked by
+# core/reports_test_win.c (pure C at -W4 -WX -utf-8) with zero Visual C++ redistributable dependency (check_crt)
+reports() {
+  local out=$A/out/reports
+  mkdir -p "$out"
+  (cd "$A" && cl.exe -nologo -O2 -W4 -WX -utf-8 -Isrc/host core/reports_test_win.c -Fe"$(cygpath -w "$out/reports_test_win.exe")" \
+    -Fo"$(cygpath -w "$out/")" > "$out/build.log") || { cat "$out/build.log"; return 1; }
+  check_crt "$out/reports_test_win.exe" || return 1
+  "$out/reports_test_win.exe"
+}
 # setup: the installer (windows/setup.c) with the app as built and put (put: the program, its engine and shell, core.hbc)
 # packed after it, as MBUI_VARIANT has it: <MBUI_SETUP_OUT, else out/setup>/<name> (MBUI_SETUP_NAME, else
 # stillfail-setup-0.1.<n>.exe); with MBUI_SETUP_RAW (a path) its raw form (setup.c --raw's) written there as it is packed
@@ -198,7 +247,7 @@ check_crt() {
   return "$bad"
 }
 setup() {
-  local n=${MBUI_BUILD:-$(git -C "$SF_SRC" rev-list --count HEAD 2>/dev/null || echo 1)} id name exe dir schemes extra
+  local n=${MBUI_BUILD:-$(git -C "$SF_SRC" rev-list --count HEAD 2>/dev/null || echo 1)} id name exe dir company schemes extra
   variant || return 1
   . "$MBUI_DIR/scripts/env.sh"
   local built=$MBUI_DIR/out/win/app/$(cd "$MBUI_DIR/out/win/app" && pkg_build $APP native ${MODE:-release}) out=${MBUI_SETUP_OUT:-$A/out/setup}
@@ -235,6 +284,7 @@ app_cmd() {
     engine-sync) engine_sync ;;
     sealed) sealed ;;
     hello) hello ;;
+    reports) reports ;;
     setup) setup ;;
     setup-bare) setup_bare ;;
     *) echo "win.sh: no command $1" >&2; exit 1 ;;

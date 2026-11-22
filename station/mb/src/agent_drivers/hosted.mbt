@@ -55,6 +55,7 @@ pub struct HostedOptions {
   /// what its session writes of it is written
   heard : (Heard) -> HeardSaid
   attached : () -> Unit
+  handed : () -> Unit
   exit : (String, String) -> Later[Unit]
 }
 

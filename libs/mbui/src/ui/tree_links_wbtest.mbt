@@ -168,7 +168,7 @@ fn link_glyphs(t : Tester) -> Array[(Double, Double, Double, Double)] {
 let linked_runs : Array[Run] = [plain("看看 "), link("space.blog 的文档在这里", "https://space.blog/docs"), plain(" 然后再说别的。")]
 
 ///|
-test "a node's link in a box drawn half as big and moved: a glyph of it tapped where it is drawn tells where it leads, on each of its lines; held, told the piece where it is drawn in the window" {
+test "a node's link in a box drawn half as big and moved: a glyph of it tapped where it is drawn tells where it leads, on each of its lines; held, told its line where it is drawn in the window, at the finger across" {
   let m = links_made(@signals.signal(linked_runs), scale=0.5, platform=2)
   let glyphs = link_glyphs(m.t)
   assert_true(glyphs.length() > 4, msg="its glyphs drawn: \{glyphs.length()}")
@@ -185,7 +185,13 @@ test "a node's link in a box drawn half as big and moved: a glyph of it tapped w
   m.t.release(x, y)
   assert_eq(m.holds.length(), 1)
   let (_, (rx, ry, rw, rh)) = m.holds[0]
-  assert_true(x >= rx && x < rx + rw && y >= ry && y < ry + rh, msg="the piece held, in the window: \{Repr(m.holds[0])} round \{Repr((x, y))}")
+  assert_true((rx - x).abs() < 0.01 && rw == 0.0 && y >= ry && y < ry + rh, msg="the line held at the finger, in the window: \{Repr(m.holds[0])} round \{Repr((x, y))}")
+  // right clicked at its last glyph (on another line, the link's piece running from that line's start): there across,
+  // not at the piece's start
+  let (lx, ly) = (last.0 + last.2 / 2.0, last.1 + last.3 / 2.0)
+  m.t.right_click(lx, ly)
+  let (_, (qx, qy, qw, qh)) = m.holds[m.holds.length() - 1]
+  assert_true((qx - lx).abs() < 0.01 && qw == 0.0 && ly >= qy && ly < qy + qh, msg="the line right clicked at the pointer: \{Repr((qx, qy, qw, qh))} round \{Repr((lx, ly))}")
   // (its words' height as drawn, half its line's)
   assert_true(rh <= 11.5, msg="as big as drawn: \{rh}")
 }

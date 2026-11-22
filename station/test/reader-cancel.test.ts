@@ -8,7 +8,7 @@ import { Admin } from "../src/api/admin.ts";
 import { json } from "../src/api/request.ts";
 import { RUNTIME_KINDS } from "../src/agents/runtime.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
-import { ALPN, Reader, serve, writeLine } from "../src/mesh/serve.ts";
+import { ALPN, Reader, seenDevicesOf, serve, writeLine } from "../src/mesh/serve.ts";
 import { HttpError } from "./reference/views.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 import { memoryMesh } from "./memory-mesh.ts";
@@ -104,8 +104,18 @@ test("a batch given a line at a time is said to a client from before as the whol
   assert.equal(lines[1].status, 426, "a runtime it cannot read: told to update, as a GET of it is");
   assert.deepEqual(lines[2], { status: 400, body: { error: "not read in a batch: /nope" } });
   assert.deepEqual(lines, await ask({}), "each line as the whole batch's answer");
-  const modern = await ask({ accept: "application/x-ndjson", "stillfail-runtimes": RUNTIME_KINDS.join(",") });
+  const modern = await ask({ accept: "application/vnd.stillfail.batch-lines+json, application/json", "stillfail-runtimes": RUNTIME_KINDS.join(",") });
   assert.deepEqual(modern[1], { status: 200, body: { session: sessions[1] } });
+  // Content-type negotiation echoes the matched streaming token, keeping old NDJSON and falling back to whole JSON.
+  const vnd = await admin.handle({ method: "POST", path: "/batch", query: [], headers: { accept: "application/vnd.stillfail.batch-lines+json, application/json" }, body: Buffer.from('{"gets":["/sessions/cc"]}'), viewer, lang: "en" });
+  assert.equal(vnd.headers["content-type"], "application/vnd.stillfail.batch-lines+json");
+  assert.ok(!Buffer.isBuffer(vnd.body));
+  const oldNdjson = await admin.handle({ method: "POST", path: "/batch", query: [], headers: { accept: "application/x-ndjson, application/json" }, body: Buffer.from('{"gets":["/sessions/cc"]}'), viewer, lang: "en" });
+  assert.equal(oldNdjson.headers["content-type"], "application/x-ndjson");
+  assert.ok(!Buffer.isBuffer(oldNdjson.body));
+  const whole = await admin.handle({ method: "POST", path: "/batch", query: [], headers: { accept: "application/json" }, body: Buffer.from('{"gets":["/sessions/cc"]}'), viewer, lang: "en" });
+  assert.equal(whole.headers["content-type"], "application/json");
+  assert.ok(Buffer.isBuffer(whole.body));
 });
 
 for (const path of ["/batch", "/changed/sessions"]) test(`POST ${path} under a key it was asked with before is read again`, async () => {
@@ -180,6 +190,7 @@ for (const batch of [false, true]) test(`a device abandoning ${batch ? "a batch"
     await loop;
     await Promise.allSettled(served);
     cloud.close();
+    await seenDevicesOf(cloud).written();
     rmSync(data, { recursive: true, force: true });
   });
   const conn = await device.connect({ id: at.id() }, ALPN);

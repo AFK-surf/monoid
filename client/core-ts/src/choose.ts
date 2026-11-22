@@ -17,7 +17,7 @@ import * as model from "./shapes/model.ts";
 import { Marks } from "./reactive.ts";
 import type { Store, Value } from "./store.ts";
 import { arr as arrU, equal, get as getU, isObject } from "./util.ts";
-import { borrowable, effortDefault, lends, models, quotaLine, servingIn, sourced, subsetEfforts } from "./views/models.ts";
+import { borrowable, effortDefault, lends, models, quotaLine, servingIn, sourced, stationModels, subsetEfforts } from "./views/models.ts";
 import { profileServes } from "./views/profile-scope.ts";
 import { pendingKeyMade } from "./views/local.ts";
 import { type PresetRecord, type Stars, isGone } from "./preset-records.ts";
@@ -38,6 +38,8 @@ function offersUltrafast(overview: unknown, modelId: unknown, accounts: J[], all
 }
 
 const TABLE = "choice";
+/// Sentinel kept in `ws:<scope>:last` when new chats are automatically load-balanced across allowlisted stations.
+const AUTO_STATION = "__auto__";
 /// How many of the combinations used most a model control's panel keeps nearest what opened it.
 const NEAR = 4;
 const FIELDS = ["runtime", "model", "effort", "profile", "profiles", "fast", "speed", "tui", "context"];
@@ -58,7 +60,7 @@ const contextOf = (v: J): number | null => {
 };
 
 /// What a pick's save does: done here, or a request to the station.
-export type Saved = { done: J } | { op: ops.Request };
+export type Saved = { done: J } | { op: ops.Request; notice?: string };
 
 type Of = { kind: "new" } | { kind: "board"; id: string } | { kind: "session"; key: string } | { kind: "connect"; id: string } | { kind: "connectNew"; form: string };
 
@@ -103,6 +105,78 @@ function shownOverview(raw: J, profiles: J): J {
   const overview = Object.freeze({ sharing, profiles });
   shownOverviews.set(profiles, { sharing, overview });
   return overview;
+}
+
+/// A preset's concise summary, model mark, and first folder metadata for the preset picker rows.
+export function presetMeta(
+  p: J,
+  stationNames: ReadonlyMap<string, string>,
+): { summary?: string; maker?: J; runtime?: string; dirName?: string; dirRepo?: string } {
+  const parts: string[] = [];
+  const pm = get(p, "model");
+  const modelId = isObject(pm) ? text(get(pm, "model")) : null;
+  if (modelId !== null) {
+    const mParts = [model.name(modelId)];
+    const effort = text(get(pm, "effort"));
+    if (effort !== null) mParts.push(format.effortLabel(effort));
+    const speed = modelSpeed(get(pm, "speed"));
+    if (speed === "ultrafast") mParts.push("Ultrafast");
+    else if (speed === "fast" || get(pm, "fast") === true) mParts.push("Fast");
+    parts.push(mParts.join(" "));
+  }
+  const dirBasename = (path: string): string => path.split("/").filter((x) => x !== "").pop() ?? path;
+  const dirs = arr(get(p, "dirs"));
+  if (dirs.length > 0) {
+    const firstTwo = dirs.slice(0, 2).map((d) => dirBasename(text(get(d, "path")) ?? "")).filter((x) => x !== "");
+    if (firstTwo.length > 0) {
+      parts.push(dirs.length > 2 ? `${firstTwo.join(", ")} +${dirs.length - 2}` : firstTwo.join(", "));
+    }
+  }
+  const singleStation = text(get(p, "station"));
+  const subStations = arr(get(p, "stations")).filter((x): x is string => typeof x === "string" && x !== "");
+  const nameOfStation = (s: string): string => {
+    const sid = stationId(s);
+    const found = stationNames.get(s) || stationNames.get(sid);
+    return found !== undefined && found !== "" ? found : sid;
+  };
+  if (get(p, "autoStation") === true) {
+    parts.push(t("web-main.preset.autoStation"));
+  } else if (singleStation !== null) {
+    parts.push(nameOfStation(singleStation));
+  } else if (subStations.length === 1) {
+    parts.push(nameOfStation(subStations[0]!));
+  } else if (subStations.length > 1) {
+    parts.push(t("web-main.preset.stationsCount", { n: subStations.length }));
+  }
+  const instr = get(p, "instructions");
+  if (typeof instr === "string" && instr.trim() !== "") {
+    parts.push(t("web-main.preset.hasInstructions"));
+  }
+  const summary = parts.join(" · ");
+  const maker = modelId !== null ? present.maker(modelId) : undefined;
+  const runtime = modelId !== null ? (text(get(pm, "runtime")) ?? undefined) : undefined;
+  const firstDir = dirs[0];
+  const dirName = firstDir !== undefined ? (dirBasename(text(get(firstDir, "path")) ?? "") || undefined) : undefined;
+  const dirRepo = firstDir !== undefined ? (text(get(firstDir, "repo")) ?? undefined) : undefined;
+  return {
+    ...(summary !== "" ? { summary } : {}),
+    ...(maker != null ? { maker } : {}),
+    ...(runtime !== undefined ? { runtime } : {}),
+    ...(dirName !== undefined ? { dirName } : {}),
+    ...(dirRepo !== undefined ? { dirRepo } : {}),
+  };
+}
+
+/// Local preset usage history (`ws:<scope>:presetUsage`), bounded to 50 entries ordered by recency.
+export function recordPresetUsage(history: J[], id: string, weight: number, now: number): { id: string; count: number; last: number }[] {
+  const found = history.find((v) => get(v, "id") === id);
+  const count = (typeof get(found, "count") === "number" ? found.count : 0) + weight;
+  const out = history
+    .filter((v) => typeof get(v, "id") === "string" && v.id !== "" && v.id !== id)
+    .map((v) => ({ id: v.id as string, count: typeof v.count === "number" ? v.count : 0, last: typeof v.last === "number" ? v.last : 0 }));
+  out.push({ id, count, last: now });
+  out.sort((a, b) => b.last - a.last);
+  return out.slice(0, 50);
 }
 
 /// What preset `p` binds a new chat to (the user, 2026-11-13: what a preset names, its chats run with, and the page does
@@ -269,6 +343,12 @@ function picked(r: Resolved): J {
   };
 }
 
+function withAccountPlan(label: string, profile: J): string {
+  const plan = text(get(profile, "planText"));
+  if (plan === null) return label;
+  return label === "" ? plan : `${label} · ${plan}`;
+}
+
 /// The account a control on `value` names (PickAccount; none where it names none) and what it is made of: the one it is
 /// kept to (`kept`, its id, or `keptProfiles` when kept to several), its window running low (`low`). It is the one kept
 /// to, as `option` (the model it runs, its accounts) has it, else the one it is on now (`current`, a chat's); `quiet`,
@@ -287,7 +367,7 @@ function named(value: J, option: J, current: J, quiet: boolean): { kept: string 
       shown !== null && typeof shown.name === "string" && shown.name !== ""
         ? t("core-logic.choose.account.count_on", { n: keptProfiles.length, name: shown.name })
         : t("core-logic.choose.account.count", { n: keptProfiles.length });
-    return { kept: null, keptProfiles, low, account: { text: txt, auto: false, level: low, profile: quiet ? null : shown } };
+    return { kept: null, keptProfiles, low, account: { text: withAccountPlan(txt, shown), auto: false, level: low, profile: quiet ? null : shown } };
   }
   let shown: J = null;
   if (kept !== null) shown = offered.find((a) => a.id === kept) ?? null;
@@ -304,7 +384,7 @@ function named(value: J, option: J, current: J, quiet: boolean): { kept: string 
       : shown !== null
         ? t("core-logic.choose.account.auto_on", { name: typeof shown.name === "string" ? shown.name : "" })
         : t("core-logic.choose.account.auto");
-  return { kept, keptProfiles: null, low, account: { text: txt, auto: kept === null, level: low, profile: quiet ? null : shown } };
+  return { kept, keptProfiles: null, low, account: { text: withAccountPlan(txt, shown), auto: kept === null, level: low, profile: quiet ? null : shown } };
 }
 
 /// Whether what a new chat or a chat runs on now (`value`) runs Fast: as it is set, else as its account does (the one
@@ -341,9 +421,9 @@ export function recordCombo(history: J[], choice: J, now: number): J[] {
 
 /// The combinations used most here (a configuration each: model, runtime, how hard it thinks, how fast, how much
 /// context; the same model run two ways is two), the most first, then the most recently used, at most `NEAR`. Only
-/// exact, still runnable ones are offered: never silently change a remembered depth, runtime or context; one only
-/// another station has (borrowable) is left out. `fixed`: the runtime the control cannot leave, only its own offered
-/// and none said by it. `selected`: `current` is exactly it.
+/// still runnable ones are offered: never silently change a remembered depth, runtime or context; one only another
+/// station has (borrowable) is left out. An unavailable Ultrafast is shown with the speed that will be used instead.
+/// `fixed`: the runtime the control cannot leave, only its own offered and none said by it.
 export function frequentCombos(history: J[], options: J[], current: Resolved, fixed: string | null = null, showRuntime = false, ultrafastAvailable: (id: string) => boolean = () => true, claudeTui = false): J[] {
   const sorted = [...history].sort(
     (a, b) => (typeof b.count === "number" ? b.count : -1) - (typeof a.count === "number" ? a.count : -1) || (typeof b.last === "number" ? b.last : 0) - (typeof a.last === "number" ? a.last : 0),
@@ -366,7 +446,8 @@ export function frequentCombos(history: J[], options: J[], current: Resolved, fi
       (useTiered && arr(get(get(entry, "efforts"), runtime)).includes(tiered.effort) ? tiered.effort : null);
     const fast = comboFast(v);
     const speed = modelSpeed(get(v, "speed"));
-    if (speed === "ultrafast" && (runtime !== "codex" || !ultrafastAvailable(entry.model))) continue;
+    if (speed === "ultrafast" && runtime !== "codex") continue;
+    const speedUnavailable = speed === "ultrafast" && !ultrafastAvailable(entry.model);
     const context = contextOf(get(v, "context"));
     const r = resolve(options, { model: entry.model, runtime, effort, fast, ...speedFields(v), ...tuiFields(v), context, profile: current.profile, profiles: current.profiles });
     if (r.effort !== effort || r.context !== context) continue;
@@ -380,14 +461,14 @@ export function frequentCombos(history: J[], options: J[], current: Resolved, fi
     const name = typeof entry.name === "string" ? entry.name : m;
     // the runtime only where the model runs on more than one
     const runtimeText = arr(entry.runtimes).length > 1 ? format.runtimeLabel(runtime) : null;
-    const speedText = speed === "ultrafast" ? "Ultrafast" : fast === null ? null : fast ? "Fast" : t("core-logic.choose.speed.standard");
+    const speedText = speedUnavailable ? t("core-logic.choose.speed.ultrafast_fallback") : speed === "ultrafast" ? "Ultrafast" : fast === null ? null : fast ? "Fast" : t("core-logic.choose.speed.standard");
     const baseLabel = runtimeText === null ? `${name} · ${effortText}` : `${name} · ${runtimeText} · ${effortText}`;
     const label = [baseLabel, speedText, v.tui === true ? "TUI" : null].filter(Boolean).join(" · ");
     // how it runs in words, after its name: the runtime where it can be another or the station runs several (its short
     // name, format.runtimeShort), the effort, the speed, the context
     const runtimeShown = arr(entry.runtimes).length > 1 || (showRuntime && fixed === null);
     const parts = [fixed === null && runtimeShown ? format.runtimeShort(runtime) : null, effortText, speedText, v.tui === true ? "TUI" : null, context === null ? null : format.compactNumber(context)].filter((x): x is string => x !== null);
-    const selected = current.entry !== null && current.entry.model === m && current.runtime === runtime && current.effort === effort && chosenSpeed(current) === chosenSpeed(v) && (current.tui === true) === (v.tui === true) && current.context === context;
+    const selected = !speedUnavailable && current.entry !== null && current.entry.model === m && current.runtime === runtime && current.effort === effort && chosenSpeed(current) === chosenSpeed(v) && (current.tui === true) === (v.tui === true) && current.context === context;
     out.push({ model: m, runtime, effort, fast, ...speedFields(v), ...tuiFields(v), context, ...(speedText === null ? {} : { speedText }), label, text: parts.join(" · "), name, ...(runtimeText === null ? {} : { runtimeText }), effortText, selected });
   }
   return out;
@@ -431,6 +512,8 @@ export class Choose implements Owner {
   readonly #saving = new Map<string, number>();
   /// The pending chat in each workspace. Its key and any explicit mode last until that chat is accepted.
   readonly #next = new Map<string, { key: string; tui?: boolean }>();
+  /// Most recently used station id per workspace in automatic assignment mode, used to break ties so consecutive chats spread.
+  readonly #autoRecent = new Map<string, string>();
 
   /// The preference on this device. A chat or preset with a model keeps its own choice.
   setDefaultTui(on: boolean): void {
@@ -542,13 +625,49 @@ export class Choose implements Owner {
     return typeof v === "string" ? v : "";
   }
 
-  /// The station the scope's new chats last started on (its id; "" for none).
+  /// The station the scope's new chats last started on (its id; "" for none or automatic assignment).
   keptStation(scope: string): string {
-    return this.#kept(scope);
+    const v = this.#kept(scope);
+    return v === AUTO_STATION ? "" : v;
   }
 
   #keepStation(scope: string, id: string): void {
     this.#env.data.put(TABLE, `ws:${scope}:last`, id, false);
+  }
+
+  /// Online stations in `online` explicitly opted into automatic assignment (never tasks-only rigs).
+  #allowlisted(online: J[]): J[] {
+    return online.filter((s) => s.acceptAutoChats === true && s.mode !== "tasks");
+  }
+
+  /// The least busy station in `pool` that runs `pm` (or any station in `pool` when `pm` is null, without reading other stations' overviews).
+  #pickBest(pool: J[], scope: string, pm: J | null = null): J | undefined {
+    const runs = (s: J) => pm === null || (typeof s.station === "string" && this.#runsBound(s.station, pm));
+    const list = pool.filter(runs);
+    if (list.length === 0) return undefined;
+    const recent = this.#autoRecent.get(scope);
+    const sorted = [...list].sort((a, b) => {
+      const ra = typeof get(get(get(a, "overview"), "counts"), "running") === "number" ? a.overview.counts.running : 0;
+      const rb = typeof get(get(get(b, "overview"), "counts"), "running") === "number" ? b.overview.counts.running : 0;
+      if (ra !== rb) return ra - rb;
+      if (recent !== undefined) {
+        const aRecent = a.id === recent ? 1 : 0;
+        const bRecent = b.id === recent ? 1 : 0;
+        if (aRecent !== bRecent) return aRecent - bRecent;
+      }
+      return 0;
+    });
+    return sorted[0];
+  }
+
+  /// Whether `scope`'s new chats are currently load-balanced across the workspace's allowlisted stations.
+  #isAutoMode(scope: string, online: J[], picked = this.#pickedOne(scope)): boolean {
+    const binds = picked === undefined ? null : presetBinds(picked.p);
+    if (binds !== null && binds.stations !== null) return false;
+    const kept = this.#kept(scope);
+    if (kept === AUTO_STATION) return true;
+    const presetAuto = picked !== undefined && get(picked.p, "autoStation") === true;
+    return kept === "" && (this.#allowlisted(online).length > 0 || presetAuto);
   }
 
   /// The scope's stations up now, each its row (StationRow); an error (null: not known yet; a string: why it failed).
@@ -563,13 +682,15 @@ export class Choose implements Owner {
   /// The station the scope's new chats last started on, as listed, up or not.
   #held(scope: string): J {
     const kept = this.#kept(scope);
+    if (kept === "" || kept === AUTO_STATION) return undefined;
     const v = this.#env.store.value({ topic: "stations", scope });
-    return kept !== "" && v !== undefined && "ok" in v ? arr(v.ok).find((s) => s.id === kept) : undefined;
+    return v !== undefined && "ok" in v ? arr(v.ok).find((s) => s.id === kept) : undefined;
   }
 
   #newChat(scope: string): J {
-    const kept = this.#kept(scope);
-    const view: J = { kept, next: this.#pending(scope).key, any: false, efforts: [], accounts: [], pickAccount: false, waiting: false, frequent: [] };
+    const rawKept = this.#kept(scope);
+    const kept = rawKept === AUTO_STATION ? "" : rawKept;
+    const view: J = { kept, next: this.#pending(scope).key, any: false, autoStation: rawKept === AUTO_STATION, autoPoolCount: 0, efforts: [], accounts: [], pickAccount: false, waiting: false, frequent: [] };
     const found = this.#online(scope);
     if (!Array.isArray(found)) {
       view.error = found.error;
@@ -577,15 +698,40 @@ export class Choose implements Owner {
     }
     const [online, any] = found;
     view.any = any;
-    // The station a person picked stays picked while it is down, others up or not: it is said to be down (`down`), what
-    // was written in it and what it runs as they were; what is sent waits for it (views/calls.ts `stationBack`). Moving
-    // to another station up would start the chat where they did not choose. Only one never picked, or no longer the
-    // workspace's, gives way to the first up.
-    const held = this.#held(scope);
-    const station = held ?? online[0];
-    view.down = held !== undefined && held.online !== true;
-    view.stations = view.down ? [...online, station] : online;
-    if (station === undefined) return view;
+    const allowlisted = this.#allowlisted(online);
+    view.autoPoolCount = allowlisted.length;
+    const picked = this.#pickedOne(scope);
+    const binds = picked === undefined ? null : presetBinds(picked.p);
+    const autoMode = this.#isAutoMode(scope, online, picked);
+    view.autoStation = autoMode;
+    let station: J;
+    if (autoMode) {
+      station = this.#pickBest(allowlisted, scope, binds?.model ?? null);
+      view.down = false;
+      view.stations = online;
+    } else {
+      // The station a person picked stays picked while it is down, others up or not: it is said to be down (`down`), what
+      // was written in it and what it runs as they were; what is sent waits for it (views/calls.ts `stationBack`). Moving
+      // to another station up would start the chat where they did not choose. Only one never picked, or no longer the
+      // workspace's, gives way to the first up.
+      const held = this.#held(scope);
+      station = held ?? online[0];
+      view.down = held !== undefined && held.online !== true;
+      view.stations = view.down ? [...online, station] : online;
+    }
+    if (station === undefined) {
+      if (autoMode && online.length > 0) {
+        view.blocked = "auto_empty";
+        view.problem = t("core-logic.choose.problem.auto_empty");
+      }
+      view.preset = picked === undefined ? "" : (text(get(picked.p, "id")) ?? "");
+      view.presetStation = picked?.station ?? "";
+      view.presetName = picked === undefined ? "" : (text(get(picked.p, "name")) ?? "");
+      view.presetMarks = picked === undefined ? [] : this.#marks(picked.p, picked.station);
+      view.presetModel = binds !== null && binds.model !== null;
+      view.presetStations = binds !== null && binds.stations !== null;
+      return view;
+    }
     const id = typeof station.id === "string" ? station.id : "";
     const name = typeof station.name === "string" ? station.name : "";
     const addr = typeof station.station === "string" ? station.station : "";
@@ -645,25 +791,42 @@ export class Choose implements Owner {
     // profile enabled there does not serve it (its `serves` false; or, on a station from before `serves`, one this
     // workspace joined whose profile's `workspaces` do not name it); then the control's are made apart, as before.
     const servesAll = arr(get(served, "profiles")).length === arr(get(raw, "profiles")).filter((p) => get(p, "enabled") !== false).length;
-    view.pick = overview !== null ? this.#face(addr, servesAll ? options : models(raw, this.#env.now())) : null;
+    view.pick = overview !== null ? this.#face(addr, servesAll ? options : (stationModels(raw, this.#env.now()) as J[])) : null;
     // A model borrowed from its panel on its way here: its control shows it, not what it ran on before (`#lent`).
     const lent = this.#lentFor(addr, "new");
     if (view.pick !== null && lent !== undefined) {
       const m = String(lent.model);
-      view.pick = { value: { model: m, runtime: text(lent.runtime) ?? view.pick.value.runtime, effort: text(lent.effort), fast: lent.fast, context: lent.context, profile: null }, valueOption: { name: model.name(m), maker: present.maker(m), runtimes: [] }, efforts: [] };
+      const short = model.shortIfShorter(m);
+      view.pick = { value: { model: m, runtime: text(lent.runtime) ?? view.pick.value.runtime, effort: text(lent.effort), fast: lent.fast, context: lent.context, profile: null }, valueOption: { name: model.name(m), ...(short !== null ? { shortName: short } : {}), maker: present.maker(m), runtimes: [] }, efforts: [] };
     }
     // The person's own presets, to pick from where the page's control opens (its menu: each by its name, and the
     // station it was made on): as the device holds them (views/presets.ts), whatever station is up, and those a station
     // from before up now lists that they made; others' only at a press (`otherPresets`). The one picked, theirs or
     // someone else's, whichever station it is of.
-    view.presets = this.#ownPresets(scope, online).map(({ p, station: at, stationName }) => ({ id: text(get(p, "id")) ?? "", name: text(get(p, "name")) ?? "", station: at, stationName }));
-    const picked = this.#pickedOne(scope);
+    const stationNames = new Map<string, string>();
+    for (const s of this.#listed(scope)) {
+      const sName = typeof s.name === "string" ? s.name : "";
+      if (typeof s.station === "string" && s.station !== "") stationNames.set(s.station, sName);
+      if (typeof s.id === "string" && s.id !== "") stationNames.set(s.id, sName);
+    }
+    const usage = this.#presetUsage(scope);
+    view.presets = this.#ownPresets(scope, online, usage).map(({ p, station: at, stationName }) => {
+      const pid = text(get(p, "id")) ?? "";
+      const used = (usage.get(pid)?.count ?? 0) > 0;
+      return {
+        id: pid,
+        name: text(get(p, "name")) ?? "",
+        station: at,
+        stationName,
+        ...presetMeta(p, stationNames),
+        ...(used ? { used: true } : {}),
+      };
+    });
     view.preset = picked === undefined ? "" : (text(get(picked.p, "id")) ?? "");
     view.presetStation = picked?.station ?? "";
     view.presetName = picked === undefined ? "" : (text(get(picked.p, "name")) ?? "");
     view.presetMarks = picked === undefined ? [] : this.#marks(picked.p, picked.station);
     // What it binds the page to: its model control shows the preset's and does not open; its stations are those it names.
-    const binds = picked === undefined ? null : presetBinds(picked.p);
     view.presetModel = binds !== null && binds.model !== null;
     view.presetStations = binds !== null && binds.stations !== null;
     if (binds !== null && binds.stations !== null) {
@@ -678,7 +841,8 @@ export class Choose implements Owner {
         const m = String(pm.model);
         // (`model` stays the station's: the page asks only whether there is one)
         const runtime = text(get(pm, "runtime")) ?? view.runtime;
-        view.pick = { value: { model: m, runtime, effort: text(get(pm, "effort")) }, valueOption: { name: model.name(m), maker: present.maker(m), runtimes: [] }, efforts: [] };
+        const short = model.shortIfShorter(m);
+        view.pick = { value: { model: m, runtime, effort: text(get(pm, "effort")) }, valueOption: { name: model.name(m), ...(short !== null ? { shortName: short } : {}), maker: present.maker(m), runtimes: [] }, efforts: [] };
         if (view.problem === null) view.problem = t("core-logic.choose.problem.preset_model_missing", { name, preset: text(get(picked!.p, "name")) ?? "", model: model.name(m) });
       }
     }
@@ -688,7 +852,7 @@ export class Choose implements Owner {
 
   #onStation(addr: string): [J[], Resolved] {
     const overview = this.#env.store.get({ topic: "overview", station: addr });
-    const options = models(overview, this.#env.now());
+    const options = stationModels(overview, this.#env.now()) as J[];
     const subsets = overview === undefined || get(overview, "accountSubsets") === true;
     return [options, resolve(options, this.#choice(ofAddress(addr), stationId(addr)), subsets)];
   }
@@ -710,7 +874,7 @@ export class Choose implements Owner {
   #onStationFor(addr: string, oName: string): [J[], Resolved] {
     if (oName === "new") return this.#onStation(addr);
     const overview = this.#env.store.get({ topic: "overview", station: addr });
-    const options = models(overview, this.#env.now());
+    const options = stationModels(overview, this.#env.now()) as J[];
     const subsets = overview === undefined || get(overview, "accountSubsets") === true;
     return [options, resolve(options, this.#choiceOf(addr, oName), subsets)];
   }
@@ -790,14 +954,42 @@ export class Choose implements Owner {
     return arr(get(this.#env.store.get({ topic: "presets", station: address }), "presets"));
   }
 
-  /// The person's own presets in `scope` as the new chat's page lists them: the device's live records by when each was
-  /// made, then those a station from before up now (`online`) lists that they made (their email) and the device holds
-  /// nothing of; each with the station it was made on (its address and name).
-  #ownPresets(scope: string, online: J[]): { p: J; station: string; stationName: string }[] {
+  /// Local usage records for presets in `scope`, keyed by preset id.
+  #presetUsage(scope: string): Map<string, { count: number; last: number }> {
+    const map = new Map<string, { count: number; last: number }>();
+    for (const entry of arr(this.#record(`ws:${scope}:presetUsage`))) {
+      const id = text(get(entry, "id"));
+      const count = typeof get(entry, "count") === "number" ? entry.count : 0;
+      const last = typeof get(entry, "last") === "number" ? entry.last : 0;
+      if (id !== null && count > 0) map.set(id, { count, last });
+    }
+    return map;
+  }
+
+  /// Record usage of preset `id` in `scope` with `weight`.
+  #recordPresetUsage(scope: string, id: string, weight: number): void {
+    const key = `ws:${scope}:presetUsage`;
+    this.#env.data.put(TABLE, key, recordPresetUsage(arr(this.#record(key)), id, weight, this.#env.now()), false);
+  }
+
+  /// The person's own presets in `scope` as the new chat's page lists them: the device's live records (frequently/recently
+  /// used first, otherwise by when each was made), then those a station from before up now (`online`) lists that they made
+  /// (their email) and the device holds nothing of; each with the station it was made on (its address and name).
+  #ownPresets(scope: string, online: J[], usage: Map<string, { count: number; last: number }> = this.#presetUsage(scope)): { p: J; station: string; stationName: string }[] {
     const held = heldOf(this.#env.data, scope);
     const names = new Map(this.#listed(scope).map((s) => [typeof s.station === "string" ? s.station : "", typeof s.name === "string" ? s.name : ""]));
     const live = Object.values(held.records).filter((r): r is PresetRecord => !isGone(r));
-    live.sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
+    live.sort((a, b) => {
+      const ua = usage.get(a.id);
+      const ub = usage.get(b.id);
+      if (ua !== undefined && ub === undefined) return -1;
+      if (ua === undefined && ub !== undefined) return 1;
+      if (ua !== undefined && ub !== undefined) {
+        if (ub.count !== ua.count) return ub.count - ua.count;
+        if (ub.last !== ua.last) return ub.last - ua.last;
+      }
+      return a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1);
+    });
     const out = live.map((r) => ({ p: r as J, station: `${scope}/${r.home}`, stationName: names.get(`${scope}/${r.home}`) ?? "" }));
     const email = (this.#env.who?.(scope)?.email ?? "").toLowerCase();
     if (email === "" || held.before.length === 0) return out;
@@ -858,36 +1050,46 @@ export class Choose implements Owner {
   #shown(scope: string): string {
     const found = this.#online(scope);
     if (!Array.isArray(found)) throw CoreError.invalid(t("core-logic.choose.error.no_stations_yet"));
-    const current = this.#held(scope) ?? found[0][0];
-    if (current === undefined) throw CoreError.invalid(t("core-logic.choose.error.none_online"));
+    const online = found[0];
+    const picked = this.#pickedOne(scope);
+    const current = this.#isAutoMode(scope, online, picked)
+      ? this.#pickBest(this.#allowlisted(online), scope, picked === undefined ? null : presetBinds(picked.p).model)
+      : (this.#held(scope) ?? online[0]);
+    if (current === undefined) throw CoreError.invalid(t(this.#isAutoMode(scope, online, picked) ? "core-logic.choose.error.auto_empty" : "core-logic.choose.error.none_online"));
     return typeof current.id === "string" ? current.id : "";
   }
 
   /// `newChat.pick`: the station a scope's new chat starts on, and what it runs there.
   pickNew(scope: string, params: J): void {
     const station = text(get(params, "station"));
+    const autoStation = get(params, "autoStation") === true;
     // (what the preset picked binds is not changed here: the page offers no other, and one asked for is refused saying
     // how to have it)
     const bound = typeof get(params, "preset") === "string" ? undefined : this.#bound(scope);
     if (bound !== undefined && bound.model !== null && FIELDS.some((f) => get(params, f) !== undefined)) {
       throw CoreError.invalid(t("core-logic.choose.error.preset_model", { name: bound.name }));
     }
-    if (bound !== undefined && bound.stations !== null && station !== null && !bound.stations.includes(station)) {
+    if (bound !== undefined && bound.stations !== null && (autoStation || (station !== null && !bound.stations.includes(station)))) {
       throw CoreError.invalid(t("core-logic.choose.error.preset_station", { name: bound.name }));
     }
     if (bound !== undefined && bound.model !== null && station !== null && !this.#runsBound(address(scope, station), bound.model)) {
       throw CoreError.invalid(t("core-logic.choose.error.preset_model_station", { name: bound.name, model: model.name(String(bound.model.model)) }));
     }
-    if (station !== null) this.#keepStation(scope, station);
+    if (autoStation) this.#keepStation(scope, AUTO_STATION);
+    else if (station !== null) this.#keepStation(scope, station);
     // the preset, whichever station it is of (`presetStation`, its address; "" for none)
     const preset = get(params, "preset");
     if (typeof preset === "string") {
+      const prevPreset = text(get(this.#record(`ws:${scope}:preset`), "id")) ?? "";
       const presetStation = text(get(params, "presetStation")) ?? "";
       // (someone else's: kept with its content as read now, so that the page and what it binds hold with its station
       // away; read again, it is kept as read then: views/presets.ts)
       const other = preset !== "" && heldOf(this.#env.data, scope).records[preset] === undefined ? this.#env.othersFound?.(scope, preset) : undefined;
       this.#env.data.put(TABLE, `ws:${scope}:preset`, { id: preset, station: presetStation, ...(other !== undefined ? { record: other } : {}) }, false);
-      if (preset !== "" && station === null && !FIELDS.some((f) => get(params, f) !== undefined)) {
+      if (preset !== "" && preset !== prevPreset) {
+        this.#recordPresetUsage(scope, preset, 1);
+      }
+      if (preset !== "" && station === null && !autoStation && !FIELDS.some((f) => get(params, f) !== undefined)) {
         const found = this.#online(scope);
         const online = Array.isArray(found) ? found[0] : [];
         const picked = this.#pickedOne(scope);
@@ -895,18 +1097,6 @@ export class Choose implements Owner {
           const p = picked.p;
           const pm = presetBinds(p).model;
           const runs = (s: J) => pm === null || (typeof s.station === "string" && this.#runsBound(s.station, pm));
-          // the least busy of `pool` that runs the model it binds (none: the page says the one it is on does not)
-          const pickBest = (pool: J[]): string | null => {
-            const list = pool.filter(runs);
-            if (list.length === 0) return null;
-            const sorted = [...list].sort((a, b) => {
-              const ra = typeof get(get(get(a, "overview"), "counts"), "running") === "number" ? a.overview.counts.running : 0;
-              const rb = typeof get(get(get(b, "overview"), "counts"), "running") === "number" ? b.overview.counts.running : 0;
-              return ra - rb;
-            });
-            const best = sorted[0];
-            return best !== undefined && typeof best.id === "string" ? best.id : null;
-          };
           let targetStationId: string | null = null;
           const singleStation = text(get(p, "station"));
           const subsetStations = Array.isArray(get(p, "stations"))
@@ -917,13 +1107,26 @@ export class Choose implements Owner {
             targetStationId = match !== undefined && typeof match.id === "string" ? match.id : stationId(singleStation);
           } else if (subsetStations.length > 0) {
             const pool = online.filter((s) => subsetStations.includes(s.id) || subsetStations.includes(s.station));
-            targetStationId = pickBest(pool);
+            const best = this.#pickBest(pool, scope, pm);
+            targetStationId = best !== undefined && typeof best.id === "string" ? best.id : null;
           } else if (get(p, "autoStation") === true) {
-            targetStationId = pickBest(online);
+            // Strictly use the workspace allowlist via automatic assignment mode; never fall back to non-allowlisted stations.
+            targetStationId = AUTO_STATION;
           } else if (pm !== null) {
-            // any station: the one it is on where that runs its model, else the least busy that does
-            const on = this.#held(scope) ?? online[0];
-            if (on !== undefined && !runs(on)) targetStationId = pickBest(online);
+            if (this.#isAutoMode(scope, online, picked)) {
+              // Keep automatic assignment mode; #newChat selects the least busy allowlisted station running pm.
+              targetStationId = null;
+            } else {
+              // any station: the one it is on where that runs its model, else the least busy that does
+              const held = this.#held(scope);
+              const allowlisted = this.#allowlisted(online);
+              const on = held ?? (allowlisted.length > 0 ? allowlisted[0] : online[0]);
+              if (on !== undefined && !runs(on)) {
+                const pool = held === undefined && allowlisted.length > 0 ? allowlisted : online;
+                const best = this.#pickBest(pool, scope, pm);
+                targetStationId = best !== undefined && typeof best.id === "string" ? best.id : null;
+              }
+            }
           }
           if (targetStationId !== null && targetStationId !== "") {
             this.#keepStation(scope, targetStationId);
@@ -976,6 +1179,24 @@ export class Choose implements Owner {
       this.#keepChoice(scope, id, next);
     }
     this.#changed();
+  }
+
+  /// Guard `newChat.create` in automatic assignment mode: never silently swap `station` (the UI sends attachments,
+  /// optimistic chat.send, and chat open to the displayed station in parallel), but refuse if `station` is no longer
+  /// in the workspace's online allowlist.
+  assertCreateStation(station: string, oName = "new"): void {
+    if (oName !== "new") return;
+    const scope = ofAddress(station);
+    const found = this.#online(scope);
+    if (!Array.isArray(found)) return;
+    const online = found[0];
+    const picked = this.#pickedOne(scope);
+    if (!this.#isAutoMode(scope, online, picked)) return;
+    const sid = stationId(station);
+    const ok = this.#allowlisted(online).some((s) => s.station === station || s.id === sid);
+    if (!ok) {
+      throw CoreError.invalid(t("core-logic.choose.error.auto_empty"));
+    }
   }
 
   /// `newChat.create`: what a new chat on `station` is asked to be made with, as picked there: in the new chat's own
@@ -1066,7 +1287,10 @@ export class Choose implements Owner {
         };
       }
     }
-    this.#keepStation(ofAddress(station), stationId(station));
+    const foundForKeep = this.#online(scope);
+    const keepAuto = Array.isArray(foundForKeep) && this.#isAutoMode(scope, foundForKeep[0], picked);
+    if (keepAuto) this.#autoRecent.set(scope, sid);
+    else this.#keepStation(scope, sid);
     this.#changed();
     return ask;
   }
@@ -1086,8 +1310,14 @@ export class Choose implements Owner {
   used(station: string, choice: J, acceptedKey?: string): void {
     const scope = ofAddress(station);
     if (acceptedKey !== undefined && (acceptedKey === "" || this.#next.get(scope)?.key === acceptedKey)) this.#next.delete(scope);
+    const found = this.#online(scope);
+    if (Array.isArray(found) && this.#isAutoMode(scope, found[0])) {
+      this.#autoRecent.set(scope, stationId(station));
+    }
     const key = `ws:${scope}:frequent`;
     this.#env.data.put(TABLE, key, recordCombo(arr(this.#record(key)), choice, this.#env.now()), false);
+    const activePreset = text(get(this.#pickedOne(scope)?.p, "id"));
+    if (activePreset !== null) this.#recordPresetUsage(scope, activePreset, 2);
     this.#keepUsual(ofAddress(station), choice);
     this.#changed();
   }
@@ -1204,7 +1434,7 @@ export class Choose implements Owner {
   #borrowView(station: string, option: J): J {
     const b = option.borrow;
     const name = typeof option.name === "string" ? option.name : String(option.model);
-    const vars = { station: b.stationName, account: b.profileName, model: name };
+    const vars = { station: b.stationName, account: withAccountPlan(b.profileName, b), model: name };
     const allowed = this.#manages(station);
     return {
       note: t("core-logic.choose.borrow.note", vars),
@@ -1304,7 +1534,11 @@ export class Choose implements Owner {
     const newTui = o.kind === "new" && offersTui && !this.#bound(ofAddress(station))?.model
       ? this.#next.get(ofAddress(station))?.tui ?? deviceTui : undefined;
     const tui = claudeModeAvailable && ("tui" in draft ? draft.tui : newTui ?? value.tui) === true;
-    const ultrafastOffered = (id: string) => offersUltrafast(overview, id, arr(get(get(optionOf(options, id), "accounts"), "codex")), allowedIds);
+    const ultrafastOffered = (id: string) => {
+      const candidates = arr(get(get(optionOf(options, id), "accounts"), "codex"));
+      const selected = resolveAccounts(candidates, asked, multi);
+      return offersUltrafast(overview, id, candidates, selected.profiles ?? (selected.profile !== null ? [selected.profile] : null));
+    };
     const ultrafastAvailable = fastAvailable && onName === "codex" && offersUltrafast(overview, nextModel, accounts, allowedIds);
     // How fast it runs where none is picked: its account's own (the one drafted, else the one it is on), said as what
     // it is rather than as 跟随订阅 (2026-11-02 用户「谁知道订阅是什么，应该直接显示具体值」).
@@ -1323,14 +1557,14 @@ export class Choose implements Owner {
     const who = nonePicked
       ? t("core-logic.choose.account.none")
       : drafted !== undefined && typeof drafted.name === "string"
-        ? drafted.name.split("@")[0]
+        ? withAccountPlan(drafted.name.split("@")[0]!, drafted)
         : profiles !== null
           ? t("core-logic.choose.account.count", { n: profiles.length })
           : t("core-logic.choose.account.all");
     const subsetLevels = profiles !== null ? accounts.filter((a) => profiles.includes(a.id)).map((a) => get(quotaLine(get(a, "quota")), "level") ?? null) : [];
     const subsetLow = subsetLevels.length > 0 && subsetLevels.every((l) => l !== null) ? subsetLevels[0] : null;
     const whoLevel = nonePicked || dropped ? "amber" : profile === null && profiles === null && kept === null && keptProfiles === null ? low : profiles !== null ? subsetLow : null;
-    const currentName = typeof get(current, "name") === "string" ? current.name : "";
+    const currentName = withAccountPlan(text(get(current, "name")) ?? "", current);
     const autoNote = nonePicked
       ? t("core-logic.choose.account.pick_one")
       : profiles !== null
@@ -1347,7 +1581,11 @@ export class Choose implements Owner {
       const found = optionOf(options, x);
       return found !== undefined && typeof found.name === "string" ? found.name : x;
     };
-    const accountText = (id: string | null) => (id === null ? t("core-logic.choose.account.auto") : (account(id)?.name ?? id));
+    const accountText = (id: string | null) => {
+      if (id === null) return t("core-logic.choose.account.auto");
+      const profile = account(id);
+      return withAccountPlan(profile?.name ?? id, profile);
+    };
     const onCurrent = !nonePicked && current !== null && accounts.some((a) => equal(a.id, current.id)) && (profiles === null || profiles.includes(current.id));
     const movesOff = !nonePicked && profile === null && kept === null && m !== null && current !== null && !onCurrent;
     const modelName = nameOf(m);
@@ -1415,12 +1653,13 @@ export class Choose implements Owner {
       const has = (field: string) => (typeof at === "string" ? arr(get(get(opt, field), at)) : []);
       const e = text(hand.effort);
       const c = contextOf(hand.context);
+      const fallbackSpeed = fastRuntime(at) && hand.speed === "ultrafast" && (at !== "codex" || !ultrafastOffered(opt.model));
       const took = {
         runtime: rt,
         effort: e !== null && has("efforts").some((x) => x === e) ? e : null,
-        fast: typeof hand.fast === "boolean" && fastRuntime(at) ? hand.fast : null,
+        fast: fallbackSpeed ? false : typeof hand.fast === "boolean" && fastRuntime(at) ? hand.fast : null,
         ...(at === "claude" ? tuiFields(hand) : {}),
-        ...speedFields(fastRuntime(at) && (hand.speed !== "ultrafast" || (at === "codex" && ultrafastOffered(opt.model))) ? hand : null),
+        ...speedFields(fallbackSpeed ? { speed: "standard" } : fastRuntime(at) ? hand : null),
         context: c !== null && (o.kind === "new" || o.kind === "board" || o.kind === "session" || isPreset) && has("contexts").some((n) => n === c) ? c : null,
       };
       return took.runtime === null && took.effort === null && took.fast === null && took.tui === undefined && took.speed === undefined && took.context === null ? undefined : took;
@@ -1432,7 +1671,8 @@ export class Choose implements Owner {
     const annotated = shown.map((opt: J) => {
       const id = typeof opt.model === "string" ? opt.model : "";
       const currentOption = id === m || id === panelOption;
-      const ran = currentOption ? { runtime: on ?? null, effort, fast, ...speedFields({ speed }), ...tuiFields({ tui }), context } : (this.#usual(scope, id, history) ?? byHand(opt));
+      const last = currentOption ? undefined : this.#usual(scope, id, history);
+      const ran = currentOption ? { runtime: on ?? null, effort, fast, ...speedFields({ speed }), ...tuiFields({ tui }), context } : (last ?? byHand(opt));
       const r = ran === undefined ? null : resolve(options, { model: id, runtime: fixed ? value.runtime : ran.runtime, effort: ran.effort, fast: ran.fast, ...speedFields(ran), ...(offersTui ? tuiFields(currentOption || newTui === undefined ? ran : { tui: newTui }) : {}), context: ran.context });
       const rts = arr(opt.runtimes);
       const parts: string[] = [];
@@ -1445,7 +1685,9 @@ export class Choose implements Owner {
         }
         if (r.effort !== null) parts.push(format.effortLabel(r.effort));
         if (r.tui) parts.push("TUI");
-        if (r.speed === "ultrafast") parts.push("Ultrafast");
+        const handFallback = !currentOption && last === undefined && hand?.speed === "ultrafast" && r.speed === "standard";
+        if (handFallback || (r.speed === "ultrafast" && (r.runtime !== "codex" || !ultrafastOffered(id)))) parts.push(t("core-logic.choose.speed.ultrafast_fallback"));
+        else if (r.speed === "ultrafast") parts.push("Ultrafast");
         else if (r.fast === true) parts.push("Fast");
         if (r.context !== null && (o.kind === "new" || o.kind === "board" || o.kind === "session" || isPreset)) parts.push(format.compactNumber(r.context));
       } else if (!fixed && rts.length > 1) {
@@ -1552,6 +1794,7 @@ export class Choose implements Owner {
         becomes,
         force,
         modelText: modelName ?? t("core-logic.choose.pick_model"),
+        ...(m ? (() => { const s = model.shortIfShorter(m); return s !== null ? { modelShort: s } : {}; })() : {}),
         maker: option !== undefined ? (option.maker ?? null) : null,
         accountText: chosenText,
         accountNote: nonePicked ? t("core-logic.choose.account.pick_one") : profile !== null ? t("core-logic.choose.account.fixed") : profiles !== null ? t("core-logic.choose.account.subset_note") : t("core-logic.choose.account.auto_note"),
@@ -1638,7 +1881,11 @@ export class Choose implements Owner {
     const opts = overview !== undefined ? models(overview, this.#env.now()) : [];
     const normEntry = (v: J): J => {
       const rt = get(v, "runtime");
-      if ((rt !== "agy" && rt !== "devin") || typeof get(v, "model") !== "string") return v;
+      if (typeof get(v, "model") !== "string") return v;
+      if (rt !== "agy" && rt !== "devin") {
+        const entry = optionOf(opts, v.model);
+        return entry === undefined ? v : { ...v, model: entry.model };
+      }
       const tiered = matchTiered(opts, v.model);
       if (tiered === null || tiered.runtime !== rt) return v;
       const eff = text(get(v, "effort")) ?? (arr(get(get(tiered.entry, "efforts"), rt)).includes(tiered.effort) ? tiered.effort : null);
@@ -1733,11 +1980,11 @@ export class Choose implements Owner {
     const view = this.#pick(topic, station, oName);
     if (view === undefined) throw CoreError.invalid(t("core-logic.choose.error.no_options_yet"));
     if ("err" in view) throw view.err;
-    const v = view.ok as J;
+    let v = view.ok as J;
     if (Array.isArray(get(v.draft, "profiles")) && v.draft.profiles.length === 0) {
       return { done: { saved: false } };
     }
-    const next = v.next;
+    let next = v.next;
     const overview = this.#env.store.get({ topic: "overview", station });
     if (Array.isArray(next.profiles) && next.profiles.length > 1 && overview !== undefined && get(overview, "accountSubsets") !== true) {
       this.unsaved(station, oName);
@@ -1746,6 +1993,23 @@ export class Choose implements Owner {
     if (params.tui === true && !v.claudeModeAvailable) {
       this.unsaved(station, oName);
       throw CoreError.invalid(t("core-logic.choose.error.station_claude_tui"));
+    }
+    let speedFallback = false;
+    if (next.speed === "ultrafast" && v.ultrafastAvailable !== true && typeof params.model === "string" && typeof next.model === "string") {
+      const scope = ofAddress(station);
+      const history = arr(this.#record(`ws:${scope}:frequent`));
+      const usual = this.#usual(scope, next.model, history);
+      const remembered = history.some((item) => typeof item.model === "string" && model.key(item.model) === model.key(next.model) && sameCombo({ ...item, model: next.model }, next))
+        || (usual !== undefined && sameCombo({ ...usual, model: next.model }, next));
+      if (remembered) {
+        speedFallback = true;
+        this.set(station, oName, { speed: "standard", fast: false });
+        const adjusted = this.#pick(topic, station, oName);
+        if (adjusted === undefined) throw CoreError.invalid(t("core-logic.choose.error.no_options_yet"));
+        if ("err" in adjusted) throw adjusted.err;
+        v = adjusted.ok as J;
+        next = v.next;
+      }
     }
     if (next.speed === "ultrafast" && v.ultrafastAvailable !== true) {
       this.unsaved(station, oName);
@@ -1770,15 +2034,18 @@ export class Choose implements Owner {
     if ((!inFlight && v.changed !== true && !explicitNewMode) || (v.option === null && !modeOnly)) {
       this.#drafts.delete(key);
       this.#env.store.invalidate(topic);
-      return { done: { saved: false } };
+      return { done: { saved: false, ...(speedFallback ? { notice: t("core-logic.choose.speed.ultrafast_changed") } : {}) } };
     }
     const textOf = (field: string) => (typeof next[field] === "string" ? next[field] : "");
     if (o.kind === "new" || o.kind === "board" || o.kind === "session" || (o.kind === "connectNew" && o.form === "preset")) this.#keepUsual(ofAddress(station), next);
     let saved: Saved;
     switch (o.kind) {
-      case "new":
-        this.pickNew(ofAddress(station), {
-          station: stationId(station),
+      case "new": {
+        const scope = ofAddress(station);
+        const found = this.#online(scope);
+        const keepAuto = Array.isArray(found) && this.#isAutoMode(scope, found[0]);
+        this.pickNew(scope, {
+          ...(keepAuto ? {} : { station: stationId(station) }),
           model: next.model,
           runtime: next.runtime,
           effort: textOf("effort"),
@@ -1791,6 +2058,7 @@ export class Choose implements Owner {
         });
         saved = { done: { saved: true } };
         break;
+      }
       case "connectNew":
         this.#adding.set(`${station}\u0001${o.form}`, next);
         saved = { done: { saved: true } };
@@ -1827,6 +2095,11 @@ export class Choose implements Owner {
     if ("done" in saved) this.#drafts.delete(key);
     else this.#saving.set(key, (this.#saving.get(key) ?? 0) + 1);
     this.#changed();
+    if (speedFallback) {
+      const notice = t("core-logic.choose.speed.ultrafast_changed");
+      if ("done" in saved) saved.done = { ...saved.done, notice };
+      else saved.notice = notice;
+    }
     return saved;
   }
 

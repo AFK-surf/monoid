@@ -27,20 +27,7 @@ pub fn station_lang() -> String {
 ///|
 /// JSON as the catalog's filling takes it.
 fn core_json(j : J) -> Json {
-  match j {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(u) => Json::string(@jsjson.text(u))
-    Arr(xs) => Json::array(xs.map(core_json))
-    Obj(ps) => {
-      let m : Map[String, Json] = Map([])
-      for p in ps {
-        m[@jsjson.text(p.0)] = core_json(p.1)
-      }
-      Json::object(m)
-    }
-  }
+  j.to_json_lossy()
 }
 
 ///|
@@ -48,7 +35,7 @@ fn core_json(j : J) -> Json {
 pub fn tr(lang : String, key : String, args? : J = jo([])) -> String {
   let m : Map[String, Json] = Map([])
   match args {
-    Obj(ps) => for p in ps { m[@jsjson.text(p.0)] = core_json(p.1) }
+    Obj(ps) => for p in ps { m[@jsjson.sanitize_str(p.0)] = core_json(p.1) }
     _ => ()
   }
   @ops_platform.tr(catalog.val, lang, key, m)
@@ -83,12 +70,9 @@ pub async fn release_channel(w : World, app : String) -> String? {
     Some(known) => return known
     None => ()
   }
-  let channel = match
-    (try Some(w.call("fs.readFileSync", [js(pjoin([app, "CHANNEL"])), js("utf8")])) catch {
-      _ => None
-    }) {
-    Some(Str(u)) => channel_of_id(@jsjson.text(u))
-    _ => None
+  let channel = match w.read_text_or_null(pjoin([app, "CHANNEL"]), sync=true) {
+    Some(t) => channel_of_id(t)
+    None => None
   }
   releases[app] = channel
   channel
@@ -119,7 +103,7 @@ pub fn forget_releases() -> Unit {
 /// The config's `updateChannel`, when it names one.
 fn config_channel(raw : J) -> String? {
   match get(Some(raw), "updateChannel") {
-    Some(Str(u)) => channel_of_id(@jsjson.text(u))
+    Some(Str(u)) => channel_of_id(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -149,12 +133,9 @@ pub async fn channel_of_soon(w : World, raw : J, app : String) -> String {
 ///|
 /// `stationVersion(app)` (ops/version.ts): its release's BUILD, `0.1.<n>`.
 pub async fn station_version(w : World, app : String) -> String? {
-  let build = match
-    (try Some(w.call("fs.readFileSync", [js(pjoin([app, "BUILD"])), js("utf8")])) catch {
-      _ => None
-    }) {
-    Some(Str(u)) => trim(@jsjson.text(u))
-    _ => return None
+  let build = match w.read_text_or_null(pjoin([app, "BUILD"]), sync=true) {
+    Some(t) => trim(t)
+    None => return None
   }
   if build != "" && all_digits(build) {
     Some("0.1.\{build}")
@@ -356,25 +337,15 @@ pub fn curl_percent(log : String) -> Int? {
 ///|
 /// How much of the station's release the installer has downloaded, from update.log's tail (its last 4096 bytes).
 pub async fn station_download_percent(w : World, log : String) -> Int? {
-  let opened = (try Some(w.call("fs.open", [js(log), js("r")])) catch { _ => None })
-  if opened is None {
-    return None
+  let st = (try Some(w.stat(log)) catch { _ => None })
+  guard st is Some(s) else { return None }
+  let len = s.size
+  let from = if len - 4096.0 > 0.0 { len - 4096.0 } else { 0.0 }
+  let want = if len < 4096.0 { len.to_int() } else { 4096 }
+  match (try w.read_at(log, want, from) catch { _ => None }) {
+    Some(b) => curl_percent(utf8_text(b))
+    None => None
   }
-  let got : Int? = try {
-    let len = w.handle_size(log)
-    let from = if len - 4096.0 > 0.0 { len - 4096.0 } else { 0.0 }
-    let want = if len < 4096.0 { len.to_int() } else { 4096 }
-    let r = w.call("fh.read", [js(log), ji(0), ji(want), jn(from)])
-    let all = bytes_of(get(Some(r), "buffer"))
-    let n = num(get(Some(r), "bytesRead")).unwrap_or(0.0).to_int()
-    curl_percent(utf8_text(all[0:if n > all.length() { all.length() } else { n }].to_owned()))
-  } catch {
-    _ => None
-  }
-  ignore(w.call("fh.close", [js(log)])) catch {
-    _ => ()
-  }
-  got
 }
 
 ///|

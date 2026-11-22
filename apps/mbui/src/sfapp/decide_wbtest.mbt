@@ -115,12 +115,22 @@ test "the chat's \"…\": the menu a row has, pinning it from it" {
 }
 
 ///|
+/// Tap the topmost (sheet's) match for `row`, skipping the composer-top capsule behind the modal sheet.
+fn tap_sheet_row(t : @ui.Tester, row : String) -> Unit {
+  let matches = t.words().filter(fn(w) { w.0 == row && w.5 > 0.5 && w.1 >= 0.0 && w.1 < 390.0 })
+  match matches.last() {
+    Some(w) => t.tap(w.1 + w.3 / 2.0, w.2 + w.4 / 2.0)
+    None => t.tap_text(row)
+  }
+}
+
+///|
 test "the chat's own sheet: its agents, and on to the agent's card and its history; what is done with it is not in it" {
   let calls : Array[Made] = []
   let t = decide_core(calls, "chat-info")
   assert_true(t.find("复制会话链接") is None)
   assert_true(t.find("Claude · Opus 5.5") is Some(_))
-  t.tap_text("Claude · Opus 5.5")
+  tap_sheet_row(t, "Claude · Opus 5.5")
   assert_true(t.find("费用估算") is Some(_))
   assert_true(t.find("共工作 1 小时 12 分") is Some(_))
   t.tap_text("共工作 1 小时 12 分")
@@ -146,7 +156,7 @@ test "the chat's own sheet, on to its agent's card and to what was said in it: e
   for further in [("Claude · Opus 5.5", "费用估算"), (@sf.t("web-main.things.title"), @sf.t("web-main.things.title"))] {
     let (row, shown) = further
     assert_true(t.find(row) is Some(_), msg=row)
-    t.tap_text(row)
+    tap_sheet_row(t, row)
     assert_true(t.find(shown) is Some(_), msg=row)
     for _ in 0..<40 {
       t.run_for(@ui.frame_period_default)
@@ -183,8 +193,8 @@ test "the history: a group opens to its steps, a step to its call and what came 
   t.tap_text("详情")
   assert_true(t.find("Claude Code 2.1.3") is Some(_))
   assert_true(t.find("MacBook Pro · macOS 26 · M1 Pro") is Some(_))
-  // the last tap's ripple shown whole, its way in and out
-  t.run_for(@motion.ripple_tap_ms)
+  // the last tap's segmented DampedDrag lens slide and settle (within 2 * move_most_ms)
+  t.run_for(@ui.move_most_ms * 2.0)
   t.assert_idle()
 }
 
@@ -375,7 +385,7 @@ test "接力到频道 on a phone: the pages' relay as a sheet, the places the bo
   assert_true(relay_dialog(t) is None, msg="the sheet not leaving once relayed")
   // (said at once, read out: seen as it has come in, toast_said)
   assert_true(toast_said(t, "已接力到 #dev"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("已接力到 #dev") is Some(_))
   // the sheet gone once its way out is over (asserted after it, not in the press's frame: what it showed, the note
   // with it, is kept on that way, where it was emptied before it closed)
@@ -401,8 +411,16 @@ fn steps_in_one_sheet(t : @ui.Tester, row : String, scroll? : Double = 0.0) -> U
   let in_window = fn() { t.words().filter(fn(w) { w.0.length() > 1 && w.1 >= 0.0 && w.1 < 390.0 }) }
   let shown0 = in_window()
   let before : Set[String] = Set::from_array(shown0.map(fn(w) { w.0 }))
+  // Tap the topmost (sheet's) match for `row`, not the composer-top capsule behind the modal sheet.
+  let tap_row = fn() {
+    let matches = t.words().filter(fn(w) { w.0 == row && w.5 > 0.5 && w.1 >= 0.0 && w.1 < 390.0 })
+    match matches.last() {
+      Some(w) => t.tap(w.1 + w.3 / 2.0, w.2 + w.4 / 2.0)
+      None => t.tap_text(row)
+    }
+  }
   // (in and back once at rest, to know what the next shows of its own and where)
-  t.tap_text(row)
+  tap_row()
   t.run_for(@sf.presented_rest() - t.time())
   let shown1 = in_window()
   let after : Set[String] = Set::from_array(shown1.map(fn(w) { w.0 }))
@@ -427,7 +445,7 @@ fn steps_in_one_sheet(t : @ui.Tester, row : String, scroll? : Double = 0.0) -> U
   }
   let y_scrolled = t.drawn_of(first).map(fn(p) { p.1 })
   // in, frame by frame
-  t.tap_text(row)
+  tap_row()
   let mut first_x = x0
   let mut next_at = 10000.0
   let mut between = false
@@ -678,5 +696,113 @@ test "小屏: what is in the chat told after its sheet came up: the sheet grows 
   for y in tops {
     assert_true(y <= was + 0.01, msg="back down on its way: \{Repr(tops)}")
     was = y
+  }
+}
+
+///|
+test "agent sheet working: 3-row header (mark + top-right compact stop, full-width title, full-width status aligned), zero audit faults" {
+  let cases : Array[(Double, Double, Double)] = [
+    (390.0, 844.0, 1.0),
+    (360.0, 740.0, 1.0),
+    (360.0, 740.0, words_large_scale),
+  ]
+  for c in cases {
+    let (w, h, scale) = c
+    let tag = "\{w}x\{h}@\{scale}"
+    new_run()
+    let calls : Array[Made] = []
+    let base = fixture("chat-agent-working")
+    let src : Source = {
+      ..base,
+      call: fn(name, params, done) {
+        calls.push({ name, params, bytes: None, done })
+        done(Ok(Json::object({})))
+      },
+    }
+    decide_src.val = Some(src)
+    open_fixture_over("chat-agent-working", src)
+    let t = @ui.Tester::new(fn(ctx) { view(ctx, src) }, tree=app_tree(src), w~, h~, platform=2)
+    if scale != 1.0 {
+      t.set_font_scale(scale)
+    }
+    t.run_for(@ui.move_most_ms)
+    sheet_rested(t, "sf-present")
+    let (sx, sy, sw, sh) = t.get(@ui.Role::Dialog).rect
+    let in_sheet = fn(x : Double, y : Double) { x >= sx && x <= sx + sw && y >= sy && y <= sy + sh }
+    // Row 2: Model title rendered completely with no ellipsis truncation.
+    let title_words = t
+      .words()
+      .filter(fn(wd) {
+        wd.5 > 0.5 && in_sheet(wd.1, wd.2) && (wd.0.contains("Gemini") || wd.0.contains("Neon") || wd.0.contains("high"))
+      })
+    assert_true(title_words.length() > 0, msg="\{tag}: no title words found in \{Repr(t.words().map(fn(x) { x.0 }))}")
+    // Filter out the bottom model row ("Gemini 4 Neon · 高") by keeping only words near the top of the sheet.
+    let top_title = title_words.filter(fn(wd) { wd.2 < sy + 160.0 })
+    assert_true(top_title.length() > 0, msg="\{tag}: no top title words in \{Repr(title_words)}")
+    let joined_title = top_title.map(fn(wd) { wd.0 }).join(" ")
+    assert_true(!joined_title.contains("…"), msg="\{tag}: title truncated: \{joined_title}")
+    assert_true(
+      joined_title.contains("Gemini 4 Neon") && joined_title.contains("high"),
+      msg="\{tag}: title incomplete: \{joined_title}",
+    )
+    let title_x = top_title[0].1
+    let title_top = top_title[0].2
+    let title_bot = top_title.iter().fold(init=0.0, fn(acc, wd) { dmax(acc, wd.2 + wd.4) })
+    // Row 1: Compact stop button at top-right above title, and model mark on the left aligned with title.
+    let stop_btn = t.get(@ui.Role::Button, label=tr("android-chat.agent.stop"))
+    let (bx, by, bw, bh) = stop_btn.rect
+    assert_true(by < title_top, msg="\{tag}: stop button y=\{by} not above title y=\{title_top}")
+    if scale == 1.0 {
+      assert_true(bh <= 40.0, msg="\{tag}: stop button height=\{bh} > 40 (expected compact pill)")
+    }
+    let jobs_label = t.words().filter(fn(wd) { wd.5 > 0.5 && in_sheet(wd.1, wd.2) && wd.0 == tr("android-chat.agent.jobs") })
+    assert_true(jobs_label.length() > 0, msg="\{tag}: no jobs row label found")
+    assert_true(by < jobs_label[0].2, msg="\{tag}: stop button should not be below bottom card")
+    // Model mark is the topmost shape/icon in Row 1 (above title, left side of sheet).
+    let marks = t
+      .shape_boxes()
+      .filter(fn(b) {
+        in_sheet(b.1, b.2) && b.1 >= sx + 20.0 && b.1 < sx + sw / 2.0 && b.2 >= sy && b.2 + b.4 <= title_top + 2.0
+      })
+    assert_true(marks.length() > 0, msg="\{tag}: no model mark shape found in Row 1 above title y=\{title_top}")
+    let mark_x = marks.last().unwrap().1
+    assert_true(
+      (title_x - mark_x).abs() <= 2.5,
+      msg="\{tag}: title x=\{title_x} not aligned with mark x=\{mark_x}",
+    )
+    // Row 3: Status line below title, status dot aligned with mark/title (<= 2.5pt), spanning full sheet width.
+    let status_words = t
+      .words()
+      .filter(fn(wd) { wd.5 > 0.5 && in_sheet(wd.1, wd.2) && wd.0.contains("等待：") })
+    assert_true(status_words.length() > 0, msg="\{tag}: no status words found")
+    let st0 = status_words[0]
+    assert_true(st0.2 >= title_bot - 1.0, msg="\{tag}: status y=\{st0.2} not below title bottom=\{title_bot}")
+    let status_dots = t
+      .drawn_rects()
+      .filter(fn(r) {
+        in_sheet(r.0, r.1) && r.0 >= sx + 20.0 && r.2 >= 4.0 && r.2 <= 12.0 && r.3 >= 4.0 && r.3 <= 12.0 && r.1 >= st0.2 - 4.0 && r.1 <= st0.2 + st0.4 && r.0 < st0.1
+      })
+    assert_true(status_dots.length() > 0, msg="\{tag}: no status dot found before \{Repr(st0)}")
+    let dot_x = status_dots.last().unwrap().0
+    assert_true(
+      (dot_x - mark_x).abs() <= 2.5,
+      msg="\{tag}: status dot x=\{dot_x} not aligned with mark x=\{mark_x}",
+    )
+    assert_true(
+      (dot_x - title_x).abs() <= 2.5,
+      msg="\{tag}: status dot x=\{dot_x} not aligned with title x=\{title_x}",
+    )
+    let status_right = status_words.iter().fold(init=0.0, fn(acc, wd) { dmax(acc, wd.1 + wd.3) })
+    assert_true(
+      status_right > sx + sw - 80.0,
+      msg="\{tag}: status line too narrow, right=\{status_right}, sheet right=\{sx + sw}",
+    )
+    // 4. Zero audit faults.
+    assert_eq(t.audit(), [], msg="\{tag}: audit faults")
+    // Tap stop button and verify session.stop call.
+    t.tap(bx + bw / 2.0, by + bh / 2.0)
+    let stopped = named(calls, "session.stop")
+    assert_eq(stopped.length(), 1, msg="\{tag}: expected 1 session.stop call")
+    assert_eq(text(Some(stopped[0].params), "key"), "s-c1")
   }
 }

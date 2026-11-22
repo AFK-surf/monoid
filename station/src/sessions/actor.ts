@@ -4,6 +4,7 @@
 // notices). The actor itself runs in the MoonBit program (mb/src/reader/actor_run.mbt), the hub holding a shell of
 // each (mb-actor.ts) that answers it with these.
 import { presetCopyOf, presetInstructions } from "./presets.ts";
+import { RenewRefused } from "../accounts/console.ts";
 import { markNotice } from "./chat.ts";
 import { sessionSkills } from "./agent-home.ts";
 import { writeFile } from "node:fs/promises";
@@ -55,8 +56,13 @@ const failedAgain = (turn: { outcome: string | null; declared: string | null; de
 /// offers 重试 too, as every notice that says a reply goes on does (the user, 2026-11-14).
 const givenUp = (turn: { outcome: string | null; declared: string | null }) => turn.outcome === "completed" && turn.declared === null;
 
+/// A turn cut off by a non-update station restart without a declared final state: its notice offers 重试 to resume.
+export const cutOffByRestart = (turn: { outcome: string | null; declared: string | null; detail: string | null }) =>
+  turn.outcome === "aborted" && turn.declared === null && turn.detail === "other: cut off by restart";
+
 /// A turn its notice's 重试 takes up again.
-export const retryable = (turn: { outcome: string | null; declared: string | null; detail: string | null }) => failedAgain(turn) || givenUp(turn);
+export const retryable = (turn: { outcome: string | null; declared: string | null; detail: string | null }) =>
+  failedAgain(turn) || givenUp(turn) || cutOffByRestart(turn);
 
 
 export type TurnFor = { profile: string | null; person: string | null; thread: number | null };
@@ -100,6 +106,8 @@ export type SessionStore = {
   setRunning(key: string, running: boolean): void;
   setSessionContextBefore(key: string, before: number | null): void;
   setRuntimeSessionId(key: string, id: string | null): void;
+  /// Its runtime session compacted its context once more (optional: a store from before counts none).
+  noteCompacted?(key: string): void;
   /// The runtime sessions it ran in, the first first (optional: none known without it).
   runtimeSessions?(key: string): string[];
   runtimeSessionSources?(key: string): { id: string; runtime: string; profile: string | null }[];
@@ -108,6 +116,7 @@ export type SessionStore = {
   setNeed(turn: string, what: string): void;
   setAbout(turn: string, about: [number, number, string] | null): void;
   lastTurn(key: string): any | null;
+  latestTurn?(key: string): { id: string; summary: any } | null;
   slackStop(session: string, connect: string, channel: string, threadTs: string): { ts: string; turn: string | null } | null;
   rememberSlackStop(session: string, connect: string, channel: string, threadTs: string, ts: string, turn: string | null): void;
   stopWait(key: string, refill?: boolean): void;
@@ -147,15 +156,20 @@ export type SessionDeps = {
   driver(runtime: RuntimeKind): AgentDriver;
   /// The profile a session's runtime starts on now: its own while usable, else another that can take it on (`holding`:
   /// its process has work going in the background, kept on an account nearly full; `across`: before a turn, so another
-  /// runtime's when none of its own can run it, accounts.ts `runOn`).
-  runOn(key: string, holding?: boolean, across?: boolean): Profile & { spelling?(model: string): string | null };
+  /// runtime's when none of its own can run it, accounts.ts `runOn`; `forceCap`: bypasses account concurrency caps).
+  runOn(key: string, holding?: boolean, across?: boolean, forceCap?: boolean): Profile & { spelling?(model: string): string | null };
   /// A turn ran into the allowance of `ranOn`, the profile its process was started on (null: the session's own), or
-  /// `model`'s own limit there (that model alone passed over on it): the profile left and the one moved to, when it moved.
-  spend(key: string, ranOn: string | null, model?: string | null): [string, string] | null;
+  /// `model`'s own limit there (that model alone passed over on it): the profile left and the one moved to, when it moved,
+  /// or `{ paused: "session_cap", ... }` when only capped accounts remain.
+  spend(key: string, ranOn: string | null, model?: string | null): [string, string] | { paused: "session_cap"; profile: string; profileId: string; active: number; cap: number } | null;
   /// When session `key`'s profile, its allowance run out, is expected to run again (absent: in an hour).
   refillsAt?(key: string): number;
-  /// A runtime failed to sign in on `profile`: it is checked again (the pool passes over one whose login is over).
-  recheck?(profile: string): Promise<void>;
+  /// A runtime failed to sign in on `profile`: it is checked again (the pool passes over one whose login is over);
+  /// `force`: refused on it again in the same turn, its login taken as over.
+  recheck?(profile: string, force?: boolean): Promise<void>;
+  /// Read-only check whether a turn that failed with `auth` on `failedProfile` should automatically reopen and retry,
+  /// `tried` the profiles it was refused on before in the same turn.
+  canAuthRetry?(key: string, failedProfile: string, tried?: readonly string[]): boolean;
   /// A turn on `profile` failed with words that name no limit: what its allowance, asked again, says it ran into
   /// (accounts.ts `limitAfter`: a model's own limit by its name, null the account's, undefined none).
   limitAfter?(profile: string, model: string | null): Promise<string | null | undefined>;
@@ -169,7 +183,7 @@ export type SessionDeps = {
   siteInstructions?(): string;
   /// This station's name (what its agents are told they run on); "" where it has none.
   ownName?(): string;
-  /// Whether moving to another station is on here (features.ts stationMoveOn): its skill named in the instructions.
+  /// Whether moving to another station is on here (every station's; a test's may say not): its skill named in the instructions.
   moveOn?(): boolean;
   maxNudges(): number;
   /// The chat session `key` last heard from (its address), when it has no title and nobody is at work in it.
@@ -236,6 +250,8 @@ export type Snapshot = {
   runtime: RuntimeKind;
   agent: unknown | null;
   turn: { id: string; authRetried: boolean; codexRetried?: boolean; by: TurnFor; declared: string | null; wait: number | null } | null;
+  /// Undeclared turn end deferred while the session was held (optional: a station from before does not say).
+  deferredEnd?: { lost: boolean; recorded: string | null } | null;
   workingFor: Working[];
   notices: string[];
   waitingMs: number | null;
@@ -254,6 +270,8 @@ export type Snapshot = {
   restart?: boolean;
   /// Its context was being compacted by hand (optional: a station from before it does not say).
   compacting?: boolean;
+  /// Its process had not yet reached the station's tools as it was handed over (optional: a station from before does not say).
+  toolsUnheard?: boolean;
   identity?: { model: string | null; effort: string | null; runtime: RuntimeKind } | null;
 };
 
@@ -320,6 +338,11 @@ export type OpenHow = {
   readBack: boolean;
   /// the profile its process before ran on
   profile: string | null;
+  /// bypasses account concurrency caps (manual jump-the-queue start)
+  forceCap?: boolean;
+  /// given up (a stop, a suspension, a close, its deadline: mb-actor.ts `cancelOpen`): it fails at once, a process that
+  /// comes of it later ended, the session's row untouched
+  signal?: AbortSignal;
   /// its runtime, once the session's row says it (before it is opened: what failing to start it is about)
   runtime(runtime: RuntimeKind): void;
   generation(): number;
@@ -338,6 +361,47 @@ export type Opened = {
   stoppedNote: string | null;
 };
 
+/// Opening a runtime session given up (`OpenHow.signal`).
+export class OpenAborted extends Error {
+  /// why (its signal's reason): "closed", "cancelled" (by the sessions' program), …
+  readonly why: string;
+  constructor(why = "cancelled") {
+    super("open aborted");
+    this.why = why;
+  }
+}
+
+const abortedBy = (signal: AbortSignal) => new OpenAborted(typeof signal.reason === "string" ? signal.reason : "cancelled");
+
+/// `opening`, a runtime session's process being opened, given up with `signal`: failing at once as it is, the process
+/// that comes of it later ended.
+function unlessAborted(opening: Promise<AgentSession>, signal: AbortSignal | undefined): Promise<AgentSession> {
+  if (signal === undefined) return opening;
+  const end = () => void opening.then((agent) => agent.dispose(), () => {}).catch(() => {});
+  if (signal.aborted) {
+    end();
+    return Promise.reject(abortedBy(signal));
+  }
+  return new Promise((resolve, reject) => {
+    const aborted = () => {
+      end();
+      reject(abortedBy(signal));
+    };
+    signal.addEventListener("abort", aborted, { once: true });
+    opening.then(
+      (agent) => {
+        signal.removeEventListener("abort", aborted);
+        // (given up meanwhile: `aborted` ends it)
+        if (!signal.aborted) resolve(agent);
+      },
+      (error) => {
+        signal.removeEventListener("abort", aborted);
+        reject(signal.aborted ? abortedBy(signal) : error);
+      },
+    );
+  });
+}
+
 /// Opens session `key`'s runtime session, as `how` has it (actor.ts `ensureAgent`).
 export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): Promise<Opened> {
   const told = { afresh: null as string | null, resumeLost: false, readBackTold: false, stoppedNote: null as string | null };
@@ -350,68 +414,88 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   how.runtime(was);
   // Its account first: none of its runtime's able to run it, it may go on on another runtime's (accounts.ts `runOn`),
   // whose driver then opens it, afresh.
-  const profile = deps.runOn(key, false, true);
-  const row = store.getSession(key);
-  if (!row) throw new Error(`session ${key} disappeared`);
-  const runtime = runtimeKind(row.runtime);
-  if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
-  if (runtime !== was) how.runtime(runtime);
-  const driver = deps.driver(runtime);
-  const memory = await deps.linkSkills(row);
-  const base = await openOptions(row, profile, deps, memory);
-  // Its context cleared by hand (clear): no runtime session now, those before on record. A new one, told so; one
-  // continued from a terminal is given still.fail's instructions as a new session is (no cache of its own to keep).
-  const wasCleared = row.runtimeSessionId === null && (store.runtimeSessions?.(key).length ?? 0) > 0;
-  if (wasCleared && row.cwd) base.instructions = sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true);
-  // A runtime started where the station may not read exits at once with nothing to say why (macOS privacy protection
-  // on a session continued in ~/Documents): told as it is instead. A directory someone named (one continued from a
-  // terminal) is looked at as ops/places.ts does, never on this thread in a folder macOS protects (still.fail Helper
-  // asked for it, its window put up for a grant it lacks); the session's own workspace is the station's.
-  if (row.cwd) await (deps.places ?? defaultPlaces()).directory(row.cwd, { lang: stationLang() });
-  else if (await unreadableDirAsync(base.cwd)) throw new Said(unreadableDirMessage(stationLang(), base.cwd));
-  const generation = how.generation();
-  let agent: AgentSession;
-  // Recorded before it may be left, so the history reads on from it.
-  if (row.runtimeSessionId) deps.ranIn?.(key, row.runtimeSessionId, null);
-  const afresh = row.runtimeSessionId ? (deps.startsAfresh?.(key, row.runtimeSessionId, profile, how.profile) ?? null) : null;
-  // What its process before had going in the background, stopped with it: its subagents are taken up again in the
-  // runtime session resumed, or taken to the new one.
-  const stopped = how.stopped;
-  const subagents = stopped.filter((t) => t.kind === "agent").map((t) => t.id);
-  let resumable: string[] = [];
-  if (afresh !== null) {
-    log.info("session", "going on in a new runtime session on another account", { session: key, left: row.runtimeSessionId, profile: profile.id });
-    agent = await driver.open(base, how.listener(generation));
-    told.afresh = afresh;
-    const from = store.runtimeSessionSource ? store.runtimeSessionSource(key, row.runtimeSessionId!) ?? undefined
-      : store.runtimeSessionSources?.(key).find((s) => s.id === row.runtimeSessionId);
-    if (from === undefined || from.runtime === row.runtime) resumable = (await deps.carrySubagents?.(row.runtimeSessionId!, agent.id(), profile, subagents)) ?? [];
-  } else if (row.runtimeSessionId) {
-    try {
-      agent = await driver.open({ ...base, resume: row.runtimeSessionId }, how.listener(generation));
-      resumable = subagents;
-    } catch (error) {
-      // Nothing wrong with the conversation (the network, the account, a borrowing): it stays the session's, opened
-      // again with its next turn. Left for a new one, a long chat lost its whole conversation to a process that could
-      // not reach its provider once (tokyo-mac-studio-0, 2026-11-16, as the machine came up).
-      if (isNonSessionOpenError(error)) throw error;
-      log.warn("session", "resume failed; starting a new runtime session", { session: key, id: row.runtimeSessionId, error: (error as Error).message });
-      agent = await driver.open(base, how.listener(generation));
-      told.resumeLost = true;
+  const profile = deps.runOn(key, false, true, how.forceCap === true);
+  // (a login found over as it opens is said as the profile it is of, for the program to go on on another: mb-actor.ts
+  // `errorOf`, actor_run.mbt `open_over`)
+  try {
+    const row = store.getSession(key);
+    if (!row) throw new Error(`session ${key} disappeared`);
+    const runtime = runtimeKind(row.runtime);
+    if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
+    if (runtime !== was) how.runtime(runtime);
+    const driver = deps.driver(runtime);
+    const memory = await deps.linkSkills(row);
+    const base = await openOptions(row, profile, deps, memory);
+    // Its context cleared by hand (clear): no runtime session now, those before on record. A new one, told so; one
+    // continued from a terminal is given still.fail's instructions as a new session is (no cache of its own to keep).
+    const wasCleared = row.runtimeSessionId === null && (store.runtimeSessions?.(key).length ?? 0) > 0;
+    if (wasCleared && row.cwd) base.instructions = sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true);
+    // A runtime started where the station may not read exits at once with nothing to say why (macOS privacy protection
+    // on a session continued in ~/Documents): told as it is instead. A directory someone named (one continued from a
+    // terminal) is looked at as ops/places.ts does, never on this thread in a folder macOS protects (still.fail Helper
+    // asked for it, its window put up for a grant it lacks); the session's own workspace is the station's.
+    if (row.cwd) await (deps.places ?? defaultPlaces()).directory(row.cwd, { lang: stationLang() });
+    else if (await unreadableDirAsync(base.cwd)) throw new Said(unreadableDirMessage(stationLang(), base.cwd));
+    const generation = how.generation();
+    let agent: AgentSession;
+    // (its signal the driver's too: one opening again after a failure gives up with it, AgyDriver.begin)
+    const open = (options: OpenOptions) => {
+      if (how.signal?.aborted) return Promise.reject(abortedBy(how.signal));
+      const withSignal = how.signal === undefined ? options : { ...options, signal: how.signal };
+      return unlessAborted(driver.open(withSignal, how.listener(generation)), how.signal);
+    };
+    // Recorded before it may be left, so the history reads on from it.
+    if (row.runtimeSessionId) deps.ranIn?.(key, row.runtimeSessionId, null);
+    const afresh = row.runtimeSessionId ? (deps.startsAfresh?.(key, row.runtimeSessionId, profile, how.profile) ?? null) : null;
+    // What its process before had going in the background, stopped with it: its subagents are taken up again in the
+    // runtime session resumed, or taken to the new one.
+    const stopped = how.stopped;
+    const subagents = stopped.filter((t) => t.kind === "agent").map((t) => t.id);
+    let resumable: string[] = [];
+    if (afresh !== null) {
+      log.info("session", "going on in a new runtime session on another account", { session: key, left: row.runtimeSessionId, profile: profile.id });
+      agent = await open(base);
+      told.afresh = afresh;
+      const from = store.runtimeSessionSource ? store.runtimeSessionSource(key, row.runtimeSessionId!) ?? undefined
+        : store.runtimeSessionSources?.(key).find((s) => s.id === row.runtimeSessionId);
+      if (from === undefined || from.runtime === row.runtime) resumable = (await deps.carrySubagents?.(row.runtimeSessionId!, agent.id(), profile, subagents)) ?? [];
+    } else if (row.runtimeSessionId) {
+      try {
+        agent = await open({ ...base, resume: row.runtimeSessionId });
+        resumable = subagents;
+      } catch (error) {
+        // (given up, or timed out: nothing said of the conversation, which stays the session's)
+        if (error instanceof OpenAborted || how.signal?.aborted) throw error;
+        // Nothing wrong with the conversation (the network, the account, a borrowing): it stays the session's, opened
+        // again with its next turn. Left for a new one, a long chat lost its whole conversation to a process that could
+        // not reach its provider once (tokyo-mac-studio-0, 2026-11-16, as the machine came up).
+        if (isNonSessionOpenError(error)) throw error;
+        log.warn("session", "resume failed; starting a new runtime session", { session: key, id: row.runtimeSessionId, error: (error as Error).message });
+        agent = await open(base);
+        told.resumeLost = true;
+      }
+    } else {
+      agent = await open(base);
+      if (wasCleared) told.afresh = deps.cleared?.(key, how.readBack) ?? (how.readBack ? afreshNote(key, []) : cleared(key, []));
+      told.readBackTold = true;
     }
-  } else {
-    agent = await driver.open(base, how.listener(generation));
-    if (wasCleared) told.afresh = deps.cleared?.(key, how.readBack) ?? (how.readBack ? afreshNote(key, []) : cleared(key, []));
-    told.readBackTold = true;
+    // (given up while its subagents were carried: ended, the session's row left as it was)
+    if (how.signal?.aborted) {
+      await agent.dispose().catch(() => {});
+      throw abortedBy(how.signal);
+    }
+    // Recorded before it is the one gone on with: its conversation's calls are those from then (store.ts `conversationSince`).
+    deps.ranIn?.(key, agent.id(), profile.id);
+    if (row.runtimeSessionId !== agent.id()) {
+      store.setRuntimeSessionId(key, agent.id());
+      if (row.runtimeSessionId || wasCleared) deps.live?.moved?.(key);
+    }
+    if (stopped.length > 0) told.stoppedNote = backgroundStopped(stopped, resumable);
+    return { ...told, session: agent, generation, identity: { runtime, model: row.model ?? null, effort: row.effort ?? null }, profile: profile.id };
+  } catch (error) {
+    if (error instanceof RenewRefused && error.profileId === null) error.profileId = profile.id;
+    throw error;
   }
-  // Recorded before it is the one gone on with: its conversation's calls are those from then (store.ts `conversationSince`).
-  deps.ranIn?.(key, agent.id(), profile.id);
-  if (row.runtimeSessionId !== agent.id()) {
-    store.setRuntimeSessionId(key, agent.id());
-    if (row.runtimeSessionId || wasCleared) deps.live?.moved?.(key);
-  }
-  if (stopped.length > 0) told.stoppedNote = backgroundStopped(stopped, resumable);
-  return { ...told, session: agent, generation, identity: { runtime, model: row.model ?? null, effort: row.effort ?? null }, profile: profile.id };
 }
 
 /// Whether opening a runtime session failed for something other than the conversation itself (`openAgent`): the
@@ -419,8 +503,10 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
 /// failure says is the network, the account, the provider or a limit. Resuming again later may well work, so the
 /// conversation is kept rather than left for a new one.
 export function isNonSessionOpenError(error: unknown): boolean {
-  if (error instanceof Said || error instanceof CommandMissing) return true;
+  if (error instanceof Said || error instanceof CommandMissing || error instanceof OpenAborted) return true;
   if ((error as { missing?: unknown } | null)?.missing === true) return true;
+  // (its process not starting in time, the runner's or the runtime's own: nothing of the conversation)
+  if (/timed out|did not start within/i.test((error as Error | null)?.message ?? String(error))) return true;
   const reason = failureOf((error as Error | null)?.message ?? String(error));
   return reason === "network" || reason === "auth" || reason === "refused" || reason === "blocked" || reason === "rate_limit" || reason === "overloaded";
 }
@@ -555,16 +641,21 @@ async function choicesWith(deps: SessionDeps, key: string, now: number, text: st
 }
 
 /// What another agent goes by in a thread: the bot of the connect it posts there through, with its mention; in the
-/// station's own chats, its runtime and model.
+/// station's own chats, its birth connect's bot name when born on an external connect, else its runtime and model.
 function agentName(deps: SessionDeps, key: string, thread: number): string {
   const via = deps.store.threadSessions(thread).find((m) => m.session === key)?.connect;
-  const chat = via && via !== INTERNAL_CONNECT ? deps.chat(via) : undefined;
+  const row = deps.store.getSession(key);
+  const externalVia = via && via !== INTERNAL_CONNECT ? via : undefined;
+  const connect = externalVia ?? (row && row.connect !== INTERNAL_CONNECT ? row.connect : undefined);
+  const chat = connect ? deps.chat(connect) : undefined;
   const name = chat?.botName?.() ?? "";
   if (name !== "") {
-    const user = chat?.botUserId?.() ?? "";
-    return user === "" ? name : `${name} (<@${user}>)`;
+    if (externalVia !== undefined) {
+      const user = chat?.botUserId?.() ?? "";
+      return user === "" ? name : `${name} (<@${user}>)`;
+    }
+    return name;
   }
-  const row = deps.store.getSession(key);
   return row ? `${runtimeLabel(runtimeKind(row.runtime) ?? "claude")}${row.model ? ` ${row.model}` : ""}` : "another agent";
 }
 

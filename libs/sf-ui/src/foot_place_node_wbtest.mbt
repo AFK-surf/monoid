@@ -68,32 +68,34 @@ test "a place in a panel's foot that comes and goes: a sheet's with a finger and
   }
   inspect(seen.join("\n"), content=(
     #|sheet:
-    #|two: 稍后 20,784 171x36
-    #|two: 下载 199,784 171x36
+    #|two: 稍后 32,780 159x32
+    #|two: 下载 199,780 159x32
     #|one, at once: 稍后 0 of it
-    #|one, at once: 下载 20,784 350x36
+    #|one, at once: 下载 32,780 326x32
     #|one: 稍后 0 of it
-    #|one: 下载 20,784 350x36
-    #|two again, at once: 稍后 20,784 171x36
-    #|two again, at once: 下载 199,784 171x36
+    #|one: 下载 32,780 326x32
+    #|two again, at once: 稍后 32,780 159x32
+    #|two again, at once: 下载 199,780 159x32
     #|sheet, with a mouse:
-    #|two: 稍后 20,784 171x36
-    #|two: 下载 199,784 171x36
+    #|two: 稍后 32,780 159x32
+    #|two: 下载 199,780 159x32
     #|one, at once: 稍后 0 of it
-    #|one, at once: 下载 20,784 350x36
+    #|one, at once: 下载 32,780 326x32
     #|one: 稍后 0 of it
-    #|one: 下载 20,784 350x36
-    #|two again, at once: 稍后 20,784 171x36
-    #|two again, at once: 下载 199,784 171x36
+    #|one: 下载 32,780 326x32
+    #|two again, at once: 稍后 32,780 159x32
+    #|two again, at once: 下载 199,780 159x32
     #|dialog:
-    #|two: 稍后 512,328.5 58x36
-    #|two: 下载 578,328.5 58x36
+    #|two: 稍后 518,329.5 54x32
+    #|two: 下载 580,329.5 54x32
     #|one, at once: 稍后 0 of it
-    #|one, at once: 下载 578,328.5 58x36
+    #|one, at once: 下载 580,329.5 54x32
     #|one: 稍后 0 of it
-    #|one: 下载 578,328.5 58x36
-    #|two again, at once: 稍后 512,328.5 58x36
-    #|two again, at once: 下载 578,328.5 58x36
+    #|one: 下载 580,329.5 54x32
+    #|two again, at once: 稍后 518,329.5 54x32
+    #|two again, at once: 下载 580,329.5 54x32
+
+
   ))
 }
 

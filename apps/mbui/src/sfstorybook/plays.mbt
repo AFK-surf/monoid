@@ -13,7 +13,7 @@ priv struct Play {
 /// A control on its row: what it changes, then the control.
 fn control(v : @view.View, label : String, make : (@view.View) -> Unit) -> Unit {
   // (side by side where the window has the room, else its name over it)
-  let wide = fn() { side_shown(v.window().0) }
+  let wide = fn() { side_shown(v.window_w()) }
   v.box(fn(r) {
     r
     .row(By(wide))

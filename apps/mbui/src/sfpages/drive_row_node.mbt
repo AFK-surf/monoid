@@ -163,28 +163,39 @@ pub fn drive_row_node(
         // (had by holding it, its menu says what it is of: a sheet over the row it was held on)
         drive_row_menu(key, (row.items)(), @sf.at_point(x, y), title=if held { @signals.untracked(e).name } else { "" })
       }
-      @sf.row_presses_node(
+      @sf.action_box_node(
         g,
-        By(fn() { if @sf.more_held() { @sf.row_corner } else { row_round } }),
-        fn() {
+        fn() { e().name },
+        fn(_) {
           if @signals.untracked(live) {
             if finger() { (row.open)() } else { (row.press)() }
           }
         },
-        fn(d) {
-          guard @signals.untracked(live) else { return }
-          if g.twice(d) || finger() {
-            (row.open)()
-          } else {
-            (row.press)()
-          }
+        selected=row.chosen,
+        expanded?=if tree && dir { Some(expanded) } else { None },
+        in_node=true,
+        fn(g) {
+          @sf.row_presses_node(
+            g,
+            By(fn() { if @sf.more_held() { @sf.row_corner } else { row_round } }),
+            fn() {
+              if @signals.untracked(live) {
+                if finger() { (row.open)() } else { (row.press)() }
+              }
+            },
+            fn(d) {
+              guard @signals.untracked(live) else { return }
+              if g.twice(d) || finger() {
+                (row.open)()
+              } else {
+                (row.press)()
+              }
+            },
+            fn(d) { menu_at(d.wx, d.wy, true) },
+            fn(x, y) { menu_at(x, y, false) },
+          )
         },
-        fn(d) { menu_at(d.wx, d.wy, true) },
-        fn(x, y) { menu_at(x, y, false) },
       )
-      g.says(By(fn() {
-        Some(@view.said(Button, label=e().name, selected=(row.chosen)(), expanded?=if tree && dir { Some(expanded()) } else { None }))
-      }))
       |> ignore
       g.box(fn(inner) {
         @sf.style_node(inner, fn() {
@@ -470,29 +481,44 @@ let read_whole : Double = 0.995
 
 ///|
 /// How far a file of the drive has come while it is downloaded (FillChip's `progress`), in `parent`: a rounded box, its
-/// ground filled in the accent from the left as it comes (going to each new share over 500 ms: @motion.Eased), n% on
-/// it, the fill drawn narrowed from its left to its share (a square-cornered rect cut to the capsule by its track).
+/// ground filled in the accent from the left as it comes (going to each new share over 200 ms Out: @motion.NodeWay), n% on
+/// it, the fill painted directly via ground_drawn with zero flex relayout (cut to the capsule by its track).
 fn download_chip_node(parent : @view.View, percent : () -> Int) -> Unit {
   let p = fn() {
     let p = percent()
     if p < 0 { 0 } else if p > 100 { 100 } else { p }
   }
-  let fill = @motion.Eased::new(@signals.untracked(p).to_double())
+  let fill = @motion.NodeWay::new(@signals.untracked(p).to_double())
   parent.box(fn(chip) {
     @sf.style_node(chip, fn() { chip_box })
-    chip.reacts(p, fn(now) { fill.go(chip, now.to_double(), chip_fill_ms) }, at_start=false)
+    chip.reacts(p, fn(now) { fill.go_ms(chip, now.to_double(), chip_fill_ms) }, at_start=false)
     chip.box(fn(track) {
       track.over(Is(true)) |> ignore
       @sf.style_node(track, fn() { chip_track })
-      track.box(fn(done) {
-        // (its share of the track as it is drawn, from its left: progress_node's part's; the accent at 20%)
-        done
-        .height(Is(None))
-        .grow(Is(0.0))
-        .ground(By(fn() { @sf.alpha(@sf.theme().p.accent, 0.2) }))
-        .width_share(By(fn() { dmax(0.0, fill.shown(done)) / chip_whole }))
+      track.by_room(fn(inner, room) {
+        inner.over(Is(true)) |> ignore
+        inner.box(fn(done) {
+          // (its share of the track painted directly via ground_drawn, zero relayout: the accent at 20%)
+          done
+          .over(Is(true))
+          .width(Is(Some(0.0)))
+          .height(Is(None))
+          .grow(Is(0.0))
+          .ground(By(fn() { @sf.alpha(@sf.theme().p.accent, 0.2) }))
+          .ground_drawn(By(fn() {
+            {
+              dx: 0.0,
+              dy: 0.0,
+              dw: room.width() * @sf.dclamp(fill.shown(done), 0.0, chip_whole) / chip_whole,
+              dh: 0.0,
+              corners: None,
+            }
+          }))
+          |> ignore
+        })
         |> ignore
       })
+      .over(Is(true))
       |> ignore
     })
     |> ignore
@@ -506,9 +532,8 @@ fn download_chip_node(parent : @view.View, percent : () -> Int) -> Unit {
 }
 
 ///|
-/// The chip's fill going to its new share (500 ms, easing out), the whole of it.
-///|
-let chip_fill_ms : Double = 500.0
+/// The chip's fill going to its new share (200 ms Out, matching progress_node), the whole of it.
+let chip_fill_ms : Double = 200.0
 
 ///|
 let chip_whole : Double = 100.0

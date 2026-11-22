@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import type { LockState } from "../src/cloud/lock.ts";
+import type { LockState } from "../../shared/lock.ts";
 import { certOk, type BoxCert, type Request, type Vault } from "../src/vault/crypto.ts";
 import { PlainStore } from "../src/vault/plain.ts";
 import { Secrets } from "../src/vault/secrets.ts";

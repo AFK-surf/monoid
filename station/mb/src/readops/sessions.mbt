@@ -38,34 +38,8 @@ fn safe_key(s : String) -> Bool {
 
 ///|
 fn utf8_bytes(s : String) -> Array[Json] {
-  let out : Array[Json] = []
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let mut c = s.unsafe_charcode_at(i)
-    i += 1
-    if c >= 0xd800 && c <= 0xdbff && i < n && s.unsafe_charcode_at(i) >= 0xdc00 && s.unsafe_charcode_at(i) <= 0xdfff {
-      c = 0x10000 + ((c - 0xd800) << 10) + (s.unsafe_charcode_at(i) - 0xdc00)
-      i += 1
-    }
-    let push = (b : Int) => out.push(Json::number(b.to_double()))
-    if c < 0x80 {
-      push(c)
-    } else if c < 0x800 {
-      push(0xc0 | (c >> 6))
-      push(0x80 | (c & 0x3f))
-    } else if c < 0x10000 {
-      push(0xe0 | (c >> 12))
-      push(0x80 | ((c >> 6) & 0x3f))
-      push(0x80 | (c & 0x3f))
-    } else {
-      push(0xf0 | (c >> 18))
-      push(0x80 | ((c >> 12) & 0x3f))
-      push(0x80 | ((c >> 6) & 0x3f))
-      push(0x80 | (c & 0x3f))
-    }
-  }
-  out
+  let b = @jsjson.utf8(s)
+  Array::makei(b.length(), i => Json::number(b[i].to_int().to_double()))
 }
 
 ///|
@@ -151,9 +125,9 @@ fn profiles(host : @host.Host, data : String, sep : String) -> Array[(String, St
   guard raw.get("profiles") is Some(Arr(ps)) else { return out }
   for p in ps {
     guard jfield(p, "id") is Some(Str(id)) && jfield(p, "home") is Some(Str(home)) else { continue }
-    let home = @jsjson.text(home)
+    let home = @jsjson.sanitize_str(home)
     let absolute = home.has_prefix("/") || (sep == "\\" && (home.has_prefix("\\") || (home.length() >= 2 && home.unsafe_charcode_at(1) == ':')))
-    out.push((@jsjson.text(id), if absolute { home } else { @nodepath.join(sep, [data, home]) }))
+    out.push((@jsjson.sanitize_str(id), if absolute { home } else { @nodepath.join(sep, [data, home]) }))
   }
   out
 }

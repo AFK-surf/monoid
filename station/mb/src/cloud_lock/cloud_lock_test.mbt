@@ -1,6 +1,5 @@
-// What of the lock runs without a shell: the bytes as Node has them, JSON as JavaScript writes it, entries' shapes and
-// hashes, cloud.json's text, the builds a request says. The rest is held to the TypeScript by
-// station/test/mb-cloud-lock.test.ts through the reader (`--builder harness-cloud-lock`).
+// Native tests for cloud_lock: bytes, JS-compatible JSON, entry shapes and hashes, cloud.json text,
+// build parsing, device builds, lock state machine and pin/lease calculations.
 
 ///|
 test "sha256 and UTF-8 as Node has them" {
@@ -84,6 +83,49 @@ test "cloud.json's text, its fields in the Rust struct's order" {
 }
 
 ///|
+test "cloud.json workspace_emoji and workspace_icon serialization and joined_of filtering" {
+  let s : @cloud_lock.CloudState = {
+    fields: Map([
+      ("origin", Json::string("https://app.still.fail")),
+      ("station", Json::string("st1")),
+      ("workspace", Json::string("w1")),
+      ("workspace_name", Json::string("Home")),
+      ("workspace_emoji", Json::string("🚀")),
+      ("workspace_icon", Json::string("glyph:rocket")),
+      ("name", Json::string("mac-1")),
+      ("peers", Json::array([])),
+      ("revocations", Json::array([])),
+    ]),
+  }
+  let txt = @cloud_lock.state_text(s)
+  assert_true(txt.contains("\"workspace_name\": \"Home\",\n  \"workspace_emoji\": \"🚀\",\n  \"workspace_icon\": \"glyph:rocket\",\n  \"name\": \"mac-1\""))
+  // Empty strings are omitted by state_text
+  let s_empty : @cloud_lock.CloudState = {
+    fields: Map([
+      ("workspace", Json::string("w1")),
+      ("workspace_name", Json::string("Home")),
+      ("workspace_emoji", Json::string("")),
+      ("workspace_icon", Json::string("")),
+      ("name", Json::string("mac-1")),
+    ]),
+  }
+  let txt_empty = @cloud_lock.state_text(s_empty)
+  assert_false(txt_empty.contains("workspace_emoji"))
+  assert_false(txt_empty.contains("workspace_icon"))
+  // joined_of keeps non-empty emoji/icon and omits empty or non-string values
+  let joined = @cloud_lock.joined_of(
+    Some(
+      @cloud_lock.parse(
+        "[{\"workspace\":\"j1\",\"workspace_name\":\"Lab\",\"workspace_emoji\":\"🧪\",\"workspace_icon\":\"glyph:beaker\",\"name\":\"s1\"},{\"workspace\":\"j2\",\"workspace_name\":\"Bare\",\"workspace_emoji\":\"\",\"workspace_icon\":123,\"name\":\"s2\"}]",
+      ).unwrap(),
+    ),
+  )
+  assert_eq(joined.length(), 2)
+  assert_eq(@cloud_lock.stringify(joined[0]), "{\"workspace\":\"j1\",\"workspace_name\":\"Lab\",\"workspace_emoji\":\"🧪\",\"workspace_icon\":\"glyph:beaker\",\"name\":\"s1\",\"peers\":[],\"revocations\":[]}")
+  assert_eq(@cloud_lock.stringify(joined[1]), "{\"workspace\":\"j2\",\"workspace_name\":\"Bare\",\"name\":\"s2\",\"peers\":[],\"revocations\":[]}")
+}
+
+///|
 test "the build a request says" {
   assert_eq(@cloud_lock.build_of(Some(" 9244 ")), Some(9244))
   assert_eq(@cloud_lock.build_of(Some("0.1.9275")), Some(9275))
@@ -104,4 +146,115 @@ test "device builds: kept as the build rises or the day changes" {
   )
   b.saw("d", Some(8000), 100000.0)
   assert_eq(@cloud_lock.stringify(b.of(["d"])), "{\"since\":100,\"devices\":{\"d\":{\"build\":9000,\"at\":100000}}}")
+}
+
+///|
+test "lock state machine: genesis, web device 30-day lease cap, and admit" {
+  let ok_crypto : @cloud_lock.Crypto = { verify: (_, _, _, _) => true }
+  let dev_a = "aa".repeat(32)
+  let dev_web = "bb".repeat(32)
+  let key_a = "ed25519:" + "11".repeat(32)
+  let sig_a : Json = { "key": Json::string(key_a), "alg": "Ed25519", "sig": "22".repeat(64) }
+  let gen : Json = {
+    "v": 1,
+    "ws": "w1",
+    "seq": 0,
+    "prev": Json::null(),
+    "at": 1000,
+    "kind": "genesis",
+    "body": {
+      "owner": "u1",
+      "origins": ["https://app.still.fail"],
+      "rp_id": "app.still.fail",
+      "members": [{ "sub": "u1", "email": "u1@x.com", "role": "owner" }],
+      "devices": [{ "id": Json::string(dev_a), "sub": "u1", "kind": "app", "label": "Mac", "sign_key": Json::string(key_a) }],
+      "passkeys": [],
+      "stations": [],
+    },
+    "sig": sig_a,
+  }
+  let s0 = @cloud_lock.genesis(ok_crypto, gen)
+  assert_eq(s0.seq, 0.0)
+  assert_true(@cloud_lock.signer(s0, key_a, Some(1000.0)) is Some(_))
+  // Admitting the owner's app device succeeds; unknown endpoint is refused
+  let (d0, r0) = @cloud_lock.admit(ok_crypto, s0, { sub: "u1", endpoint: dev_a, base: None, proof: None }, 1000.0)
+  assert_eq(d0.id, dev_a)
+  assert_eq(r0, "owner")
+  assert_true((try Ok(@cloud_lock.admit(ok_crypto, s0, { sub: "u1", endpoint: dev_web, base: None, proof: None }, 1000.0)) catch { e => Err(e) }) is Err(_))
+  // A web device with exp > at + 30 days is refused; within 30 days is accepted and expires past exp
+  let too_long : Json = {
+    "v": 1,
+    "ws": "w1",
+    "seq": 1,
+    "prev": Json::string(s0.head),
+    "at": 2000,
+    "kind": "device",
+    "body": { "id": Json::string(dev_web), "sub": "u1", "kind": "web", "label": "Web", "exp": 2000.0 + @cloud_lock.web_device_secs + 1.0 },
+    "sig": sig_a,
+  }
+  assert_true((try Ok(@cloud_lock.apply(ok_crypto, s0, too_long, Some(2000.0))) catch { e => Err(e) }) is Err(_))
+  let ok_web : Json = {
+    "v": 1,
+    "ws": "w1",
+    "seq": 1,
+    "prev": Json::string(s0.head),
+    "at": 2000,
+    "kind": "device",
+    "body": { "id": Json::string(dev_web), "sub": "u1", "kind": "web", "label": "Web", "exp": 5000 },
+    "sig": sig_a,
+  }
+  let s1 = @cloud_lock.apply(ok_crypto, s0, ok_web, Some(2000.0))
+  let (dw, _) = @cloud_lock.admit(ok_crypto, s1, { sub: "u1", endpoint: dev_web, base: None, proof: None }, 4999.0)
+  assert_eq(dw.kind, "web")
+  assert_true((try Ok(@cloud_lock.admit(ok_crypto, s1, { sub: "u1", endpoint: dev_web, base: None, proof: None }, 5000.0)) catch { e => Err(e) }) is Err(_))
+}
+
+///|
+test "admit_personal accepts own app device and refuses wrong sub or bad proof" {
+  let ok_crypto : @cloud_lock.Crypto = { verify: (_, _, _, _) => true }
+  let bad_crypto : @cloud_lock.Crypto = { verify: (_, _, _, _) => false }
+  let dev = "cc".repeat(32)
+  let lock : Json = {
+    "ws": "w1",
+    "genesis": "",
+    "members": { "u1": { "sub": "u1", "email": "u1@x.com", "role": "admin" } },
+    "devices": {
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
+        "id": Json::string(dev),
+        "sub": "u1",
+        "kind": "app",
+        "label": "Phone",
+        "sign_key": "ed25519:abc",
+        "own": true,
+      },
+    },
+    "signKeys": {},
+  }
+  let (id, role, sign_key) = @cloud_lock.admit_personal(ok_crypto, lock, { sub: "u1", endpoint: dev, base: None, proof: None })
+  assert_eq(id, dev)
+  assert_eq(role, "admin")
+  assert_eq(sign_key, Some("ed25519:abc"))
+  // Wrong member sub is refused
+  assert_true((try Ok(@cloud_lock.admit_personal(ok_crypto, lock, { sub: "u2", endpoint: dev, base: None, proof: None })) catch { e => Err(e) }) is Err(_))
+  // Base key with invalid endpoint proof is refused
+  assert_true((try Ok(@cloud_lock.admit_personal(bad_crypto, lock, { sub: "u1", endpoint: "dd".repeat(32), base: Some(dev), proof: Some("00".repeat(64)) })) catch { e => Err(e) }) is Err(_))
+}
+
+///|
+test "personal_vault_lock preserves member roles and defaults unknown roles to member" {
+  let ok_crypto : @cloud_lock.Crypto = { verify: (_, _, _, _) => true }
+  let emails = Map([("u1", "u1@x.com"), ("u2", "u2@x.com"), ("u3", "u3@x.com")])
+  let roles = Map([("u1", "owner"), ("u2", "admin"), ("u3", "bogus")])
+  let lock = @cloud_lock.personal_vault_lock(ok_crypto, "w1", [], emails, [], [], (_, _) => false, roles~)
+  let role_of = (sub : String) => match lock {
+    { "members": Object(ms), .. } =>
+      match ms.get(sub) {
+        Some({ "role": String(r), .. }) => r
+        _ => ""
+      }
+    _ => ""
+  }
+  assert_eq(role_of("u1"), "owner")
+  assert_eq(role_of("u2"), "admin")
+  assert_eq(role_of("u3"), "member")
 }

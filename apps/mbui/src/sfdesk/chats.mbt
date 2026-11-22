@@ -143,7 +143,7 @@ let side_icon : Double = 16.0
 pub fn new_chat() -> Unit {
   open_page(NewChat)
   // (on the tape its page brought over, from the sidebar in use too)
-  if is_wide(@ui.current()) {
+  if wide.tape.untracked() {
     bring_page()
   }
   // what it is opened for: the cursor in its words, its keyboard up with touch

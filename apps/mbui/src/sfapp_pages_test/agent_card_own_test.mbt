@@ -42,7 +42,7 @@ fn own_agent_card(name : String) -> @ui.Tester {
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
   let last = t
     .words()
-    .filter(fn(w) { w.0 == "Claude" && w.5 > 0.5 })
+    .filter(fn(w) { w.0 == "Claude" && w.5 > 0.5 && w.2 < 640.0 })
     .iter()
     .fold(init=None, fn(acc : (String, Double, Double, Double, Double, Double)?, w) {
       match acc {
@@ -61,7 +61,7 @@ test "wide: an agent's card with its model's own week: three chips whole, beside
   let lines = []
   for name in ["林的 Max", "claude-team-account-5@example.com"] {
     let t = own_agent_card(name)
-    let shown = t.words().filter(fn(w) { w.5 > 0.5 })
+    let shown = t.words().filter(fn(w) { w.5 > 0.5 && w.2 < 640.0 })
     let one = fn(words : String) {
       match shown.filter(fn(w) { w.0 == words }) {
         [w] => w

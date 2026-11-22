@@ -246,8 +246,8 @@ pub fn Tree::said_order(self : Tree) -> Array[SaidNode] {
     if !n.live || n.out || n.flex.style.display == @flex.DisplayNone {
       return
     }
-    // (in its bones: none of it there yet, View::bones)
-    let hid = hid || n.said_hidden || n.bones != 0L
+    // (leaving, or in its bones: none of it read out, View::bones)
+    let hid = hid || n.said_hidden || n.left_at >= 0.0 || n.bones != 0L
     let id = { at, gen: n.gen }
     let mut up = parent
     let mut d = depth
@@ -323,7 +323,7 @@ pub fn Tree::words_within(
     }
     for k in self.kids_in_order(at) {
       let kn = self.nodes[k]
-      if !kn.live || kn.out || kn.said_hidden || kn.bones != 0L {
+      if !kn.live || kn.out || kn.said_hidden || kn.left_at >= 0.0 || kn.bones != 0L {
         continue
       }
       match kn.said {
@@ -429,7 +429,7 @@ pub fn Tree::said_pass(
   let read = fn(at : Int) { self.said_entry_at(at) && !kept_off(at) }
   fn gather_one(k : Int, out : Array[SaidKid], crossed : Ref[Bool]) -> Unit {
     let kn = self.nodes[k]
-    if !kn.live || kn.out || kn.said_hidden || kn.bones != 0L {
+    if !kn.live || kn.out || kn.said_hidden || kn.left_at >= 0.0 || kn.bones != 0L {
       return
     }
     let id = { at: k, gen: kn.gen }
@@ -522,7 +522,7 @@ pub fn Tree::said_pass(
     forced : Bool,
   ) -> Unit {
     let n = self.nodes[at]
-    if !n.live || n.out || n.said_hidden || n.bones != 0L {
+    if !n.live || n.out || n.said_hidden || n.left_at >= 0.0 || n.bones != 0L {
       return
     }
     // (nothing of it changed, nor what holds it: as the pass before found it)
@@ -576,7 +576,7 @@ pub fn Tree::said_pass(
     let mut i = at
     while i >= 0 {
       let m = self.nodes[i]
-      if !m.live || m.out || m.said_hidden || m.bones != 0L {
+      if !m.live || m.out || m.said_hidden || m.left_at >= 0.0 || m.bones != 0L {
         return false
       }
       i = m.parent

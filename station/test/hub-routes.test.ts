@@ -56,7 +56,7 @@ function rig(withAgents = true) {
   const jobs = new Jobs({ store, data, notify: () => {}, link: () => null });
   hub.setJobs(jobs);
   const readers = new Readers(data, 1);
-  readers.processes = () => hub.processes();
+  readers.processes = () => hub.readProcesses();
   const admin = new Admin(readers, { store, agents: withAgents ? ({ hub, jobs } as any) : undefined });
   const ask = async (method: string, path: string, body?: unknown, query: [string, string][] = []) => {
     const raw = Buffer.isBuffer(body) ? body : Buffer.from(body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body));
@@ -75,6 +75,35 @@ function rig(withAgents = true) {
   };
   return { data, store, hub, jobs, readers, claude, codex, ask, answer, close };
 }
+
+test("a refused start is told to the session and chat list without losing the message", async () => {
+  const r = rig();
+  try {
+    r.claude.refuses = "no profile can run here";
+    const [, made] = await r.ask("POST", "/sessions", { runtime: "claude" });
+    assert.equal((await r.ask("POST", `/threads/${made.thread.id}/messages`, { text: "please check this" }))[0], 200);
+    await settle();
+    const summary = (await r.ask("GET", `/sessions/${made.key}`))[1].session;
+    assert.equal(summary.process, "cold");
+    assert.equal(summary.pending, 1);
+    assert.equal(summary.startFailed, true);
+    const shared = (await r.ask("GET", "/chats", undefined, [["shared", "1"]]))[1];
+    const row = shared.find((item: any) => item.thread === made.thread.id);
+    const agent = row.agents.find((item: any) => item.key === made.key);
+    assert.equal(agent.process, "cold");
+    assert.equal(agent.pending, 1);
+    assert.equal(agent.startFailed, true);
+    r.claude.refuses = null;
+    assert.equal((await r.ask("POST", `/threads/${made.thread.id}/messages`, { text: "try again" }))[0], 200);
+    await settle();
+    const running = (await r.ask("GET", `/sessions/${made.key}`))[1].session;
+    assert.equal(running.process, "running");
+    assert.notEqual(running.startFailed, true);
+    assert.equal(running.pending, 0);
+    assert.match(r.claude.last().prompts[0]!, /please check this/);
+    assert.match(r.claude.last().prompts[0]!, /try again/);
+  } finally { await r.close(); }
+});
 
 test("a new chat: its session and its thread, refused without a runtime or with an unknown profile", async () => {
   const r = rig();
@@ -168,11 +197,12 @@ test("another chat with a session, and a session brought into a chat", async () 
     assert.deepEqual(await r.ask("POST", "/threads", { session: "nope" }), [404, { error: "unknown session nope" }]);
     const [status, chat] = await r.ask("POST", "/threads", { session: a.key, title: "  side  " });
     assert.equal(status, 200);
-    assert.equal(chat.title, "side");
-    assert.equal(chat.home, undefined, "a chat of its own");
-    assert.deepEqual(await r.ask("POST", `/threads/${chat.id}/sessions`, { session: "nope" }), [404, { error: "unknown session nope" }]);
+    assert.equal(chat.id, a.thread.id, "POST /threads is idempotent and returns existing home chat");
+    const extra = r.store.openThreadOf("chat", "CHAT", "side-1", "side", "ada@example.com", null);
+    r.store.joinThread(extra.id, a.key, "chat");
+    assert.deepEqual(await r.ask("POST", `/threads/${extra.id}/sessions`, { session: "nope" }), [404, { error: "unknown session nope" }]);
     assert.deepEqual(await r.ask("POST", "/threads/999/sessions", { session: b.key }), [404, { error: "unknown thread 999" }]);
-    const [joined, view] = await r.ask("POST", `/threads/${chat.id}/sessions`, { session: b.key });
+    const [joined, view] = await r.ask("POST", `/threads/${extra.id}/sessions`, { session: b.key });
     assert.equal(joined, 200);
     assert.deepEqual(view.sessions.map((m: any) => m.session), [a.key, b.key]);
     const slack = r.store.openThread("slack:T1", "C1", "1.1", null, null);
@@ -182,7 +212,7 @@ test("another chat with a session, and a session brought into a chat", async () 
     assert.deepEqual(JSON.parse(await r.readers.read("recentChatList", { ws: null, home: null, limit: 2 }, "en")), JSON.parse(JSON.stringify(r.store.recentChatList(null, null, 2))));
     assert.deepEqual(JSON.parse(await r.readers.read("searchChatList", { ws: null, home: null, limit: 2, query: "side" }, "en")), JSON.parse(JSON.stringify(r.store.searchChatList(null, null, 2, "side"))));
     // The archive review's messages, as the readers read them: what the store has.
-    assert.deepEqual(JSON.parse(await r.readers.read("latestMessages", { thread: chat.id, limit: 2 }, "en")), JSON.parse(JSON.stringify(r.store.messagesBefore(chat.id, null, 2))));
+    assert.deepEqual(JSON.parse(await r.readers.read("latestMessages", { thread: extra.id, limit: 2 }, "en")), JSON.parse(JSON.stringify(r.store.messagesBefore(extra.id, null, 2))));
   } finally {
     await r.close();
   }
@@ -480,7 +510,8 @@ test("archiving a session and a chat, and deleting a session", async () => {
     assert.equal((await r.ask("DELETE", `/sessions/${made.key}/archive`))[1].archivedAt, null);
     assert.deepEqual(await r.ask("POST", "/sessions/nope/archive"), [404, { error: "unknown session nope" }]);
 
-    const [, own] = await r.ask("POST", "/threads", { session: made.key });
+    const own = r.store.openThreadOf("chat", "CHAT", "own-1", null, "ada@example.com", null);
+    r.store.joinThread(own.id, made.key, "chat");
     const [hidden, view] = await r.ask("POST", `/threads/${own.id}/archive`);
     assert.equal(hidden, 200);
     assert.equal(typeof view.hiddenAt, "number");

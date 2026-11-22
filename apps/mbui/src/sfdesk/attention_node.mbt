@@ -69,7 +69,7 @@ pub fn attention_panel_node(v : @view.View, src : Source) -> Unit {
   })
   // (the window turned or folded beside the system's tabs: what it opened from is elsewhere, closed, as the system's
   // popovers are)
-  v.reacts(fn() { v.window().0 }, at_start=false, fn(_) {
+  v.reacts(fn() { v.window_w() }, at_start=false, fn(_) {
     if @sf.native_on() && wide.attention_open.untracked() {
       attention_set(false)
     }
@@ -87,7 +87,14 @@ fn attention_open_now(src : Source, w : Workspace) -> Unit {
   attention_close_now()
   let railed = rail_items(src, w.id).contains("attention")
   let (from, side, offset) : (@sf.Anchor, @ui.Side, Double) = if @sf.native_on() {
-    (Of(native_mark.val), if @sf.native_side() { Left } else { Bottom }, if railed { attention_off_rail } else { attention_off_side })
+    (
+      match native_mark_now() {
+        Some(m) => Node(m)
+        None => Unanchored
+      },
+      if @sf.native_side() { Left } else { Bottom },
+      if railed { attention_off_rail } else { attention_off_side },
+    )
   } else if railed {
     // (where the bell was as it opened; opened before the bell was placed (a fixture's, as the frame is first made):
     // beside the bell's node, where it comes to be drawn)
@@ -98,7 +105,7 @@ fn attention_open_now(src : Source, w : Workspace) -> Unit {
     }
   } else {
     match side_attention.val {
-      Some(s) if s.alive() => (Node(s), Bottom, attention_off_side)
+      Some(s) if s.alive() && (side_place() == "chats" || side_place() == "archive") => (Node(s), Bottom, attention_off_side)
       _ => (Unanchored, Bottom, attention_off_side)
     }
   }

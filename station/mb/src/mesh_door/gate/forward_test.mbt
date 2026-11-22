@@ -58,7 +58,7 @@ test "a forward: opened on its own port or another, its connections tunnelled, a
       } else {
         let (a, _b) = @door.pair("x", "y")
         ignore(a)
-        Some((@door.Stream::{ read: async fn() { None }, write: async fn(_b) { () }, finish: async fn() { () }, stopped: async fn() { None }, reset: async fn(_c) { () } }, b"ab"))
+        Some((@door.Stream::{ read: async fn() { None }, write: async fn(_b) { () }, finish: async fn() { () }, stopped: async fn() { None }, reset: async fn(_c) { () }, media_datagrams: None }, b"ab"))
       }
     },
     tunnel_device: None,

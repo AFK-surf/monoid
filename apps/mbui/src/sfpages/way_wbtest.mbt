@@ -1,33 +1,20 @@
-// A way to where something is (way.mbt) short of room: those between leave it for its …, nothing scrolled or wrapped.
+// A way to where something is as nodes (way_line_node) short of room: those between leave it for its …, nothing scrolled or wrapped.
 
 ///|
 test "a way short of room: the first and the last whole, those between leaving from the one after the first, a … offering them in their order; picked there, gone to" {
   let steps = ["Home", "Projects", "Reports", "Quarterly", "Drafts", "Final notes"]
   let went : Array[Int] = []
   @sf.presenters_reset()
-  // (what it presents, on 小屏 a sheet of the window's tree: presented_tree)
-  let t = @ui.Tester::new(
-    @ui.old_views_here,
-    tree=@sf.presented_tree(fn(c) {
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.box(style=way_test_room, fn() { @sf.way_line(c, "way", steps, narrow_way(), fn(i) { went.push(i) }) }) |> ignore
-        @sf.presented(c)
-      })
-    }),
-    w=600.0,
-    h=700.0,
-    platform=2,
-  )
-  t.draw()
+  // (what it presents, on 小屏 a sheet of the window's tree: presented_nodes)
+  let t = way_tester(steps, w=600.0, h=700.0, went~, menus=true)
   // (room for all: each whole, no …)
   for s in steps {
     assert_eq(t.lines_of(s), [s], msg=s)
   }
-  assert_true(way_left(t, -1))
+  assert_true(way_left(t, steps, -1))
   t.resize(280.0, 700.0)
   t.draw()
-  let shown = steps.mapi(fn(i, _) { !way_left(t, i) })
+  let shown = steps.mapi(fn(i, _) { !way_left(t, steps, i) })
   assert_true(shown[0] && shown[5], msg="\{Repr(shown)}")
   assert_eq(t.lines_of("Home"), ["Home"])
   assert_eq(t.lines_of("Final notes"), ["Final notes"])
@@ -58,20 +45,9 @@ test "a way short of room: the first and the last whole, those between leaving f
 ///|
 test "a way with no room even for its first and last: all but the last left for the …, only the last's words cut short, nothing over another" {
   let steps = ["Home", "Projects", "Reports", "A folder with a rather long name"]
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.box(style=way_test_room, fn() { @sf.way_line(c, "way", steps, narrow_way(), fn(_) {  }) }) |> ignore
-      })
-    },
-    w=220.0,
-    h=400.0,
-    platform=2,
-  )
-  t.draw()
-  assert_true(way_left(t, 0) && way_left(t, 1) && way_left(t, 2))
-  assert_true(!way_left(t, -1))
+  let t = way_tester(steps, w=220.0, h=400.0)
+  assert_true(way_left(t, steps, 0) && way_left(t, steps, 1) && way_left(t, steps, 2))
+  assert_true(!way_left(t, steps, -1))
   let last = t.lines_of("A folder")
   assert_eq(last.length(), 1)
   assert_true(last[0].has_suffix("…"), msg="\{Repr(last)}")
@@ -82,31 +58,51 @@ test "a way with no room even for its first and last: all but the last left for 
   // given the room: the first back, whole, before those between
   t.resize(600.0, 400.0)
   t.draw()
-  assert_true(!way_left(t, 0) && way_left(t, -1))
+  assert_true(!way_left(t, steps, 0) && way_left(t, steps, -1))
   assert_eq(t.lines_of("A folder with a rather long name"), ["A folder with a rather long name"])
 }
 
 ///|
 test "a way of ancestors can open its last visible step when the current place is named separately" {
   let went : Array[Int] = []
-  let t = @ui.Tester::new(fn(c) {
-    @sf.begin(c) |> ignore
-    c.with_theme(@sf.ui_theme(), fn() {
-      c.box(style=way_test_room, fn() {
-        @sf.way_line(c, "way", ["Home", "Projects"], narrow_way(), fn(i) { went.push(i) }, last_link=true)
-      }) |> ignore
-    })
-  }, w=600.0, h=400.0, platform=2)
-  t.draw()
+  let t = way_tester(["Home", "Projects"], w=600.0, h=400.0, went~, last_link=true)
   t.tap_text("Projects")
   assert_eq(went, [1])
 }
 
 ///|
-/// Whether the way left its `i`th step out (way_line's slots, as laid out last; -1 its …).
-fn way_left(t : @ui.Tester, i : Int) -> Bool {
-  let c = t.ctx()
-  c.left_out(c.id("way/slot/\{i}"))
+/// A phone's window `w` by `h` with the way of `steps` as nodes in it (narrow_way's look), where way_test_room has it;
+/// the steps gone to, in `went`; `menus`: what it presents (its …'s) drawn over it as the app's window draws it
+/// (presented_nodes). Drawn once.
+fn way_tester(
+  steps : Array[String],
+  w~ : Double,
+  h~ : Double,
+  went? : Array[Int] = [],
+  menus? : Bool = false,
+  last_link? : Bool = false,
+) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, h~, platform=2)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(b) {
+      @sf.style_node(b, fn() { way_test_room })
+      @sf.way_line_node(b, fn() { steps }, narrow_way, fn(i) { went.push(i) }, last_link~) |> ignore
+    })
+    |> ignore
+    if menus {
+      @sf.presented_nodes(root)
+    }
+  })
+  t.draw()
+  t
+}
+
+///|
+/// Whether the way left its `i`th step out (not drawn, as laid out last; -1 its …).
+fn way_left(t : @ui.Tester, steps : Array[String], i : Int) -> Bool {
+  let words = if i < 0 { @sf.way_more } else { steps[i] }
+  !t.words().iter().any(fn(w) { w.5 > 0.0 && w.0 == words })
 }
 
 ///|

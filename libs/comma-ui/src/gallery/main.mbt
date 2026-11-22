@@ -14,6 +14,6 @@ fn main {
     ignore(@hostapi.face_add(@hostapi.face_ui, font, 0))
   }
   let (more, open) = (@ui.env("MBUI_CM_PAGE") == "more", @ui.env("MBUI_CM_OPEN"))
-  @ui.run("Comma 组件", fn(_c) {  }, tree=fn(root) { @pages.page(root, more~, open~) })
+  @ui.run("Comma 组件", fn(root) { @pages.page(root, more~, open~) })
 }
 

@@ -96,55 +96,6 @@ test "a station picture reserves a column only once it can be drawn" {
 }
 
 ///|
-test "an old chat row keeps its offline mark in the end column as a station picture comes and goes" {
-  for platform in [0, 2] {
-    @sfbase.reset()
-    reset()
-    @sf.set_words(@sfbase.fill)
-    let picture = @signals.signal("")
-    let was = @sf.picture_of.val
-    @sf.picture_of.val = fn(_, _) { picture.get() }
-    defer { @sf.picture_of.val = was }
-    let item = @signals.signal({
-      ..sample_chat(0), title: "Old image row", station_name: "Station", station_icon: "https://example.test/station.png",
-      offline: Some("Offline"),
-    })
-    let t = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      chat_row(c, @sfbase.sample_source, item.get(), "agents", at=Side) |> ignore
-    }, w=320.0, h=200.0, platform~, images=[("picture-a", 64, 64), ("picture-b", 64, 64)], finish=false)
-    t.draw()
-    let (x, _, w, _) = t.get(Button, has="Old image row").rect
-    let column = x + w - @sf.row_corner
-    let unplug_at_end = fn() -> Unit raise {
-      assert_true((alignment_unplug(t) - column).abs() < 0.5, msg="unplug \{alignment_unplug(t)}, column \{column}")
-      assert_true(t.query(Image, label="Station") is None, msg="an undrawn station mark still has a slot")
-    }
-    unplug_at_end()
-    picture.set("picture-a")
-    t.frame()
-    unplug_at_end()
-    guard t.pending() is [(_, id), ..] else { fail("the picture was not asked for") }
-    t.finish(1, id)
-    t.frame()
-    guard t.drawn_images() is [image, ..] else { fail("the decoded picture is not drawn") }
-    assert_true((image[0] + image[2] / 2.0 - column).abs() < 0.5 && image[8] > 0.99)
-    assert_true(alignment_unplug(t) < column - kind_slot_w)
-    picture.set("picture-b")
-    t.frame()
-    unplug_at_end()
-    guard t.pending() is [(_, id), ..] else { fail("the replacement picture was not asked for") }
-    t.finish(1, id, ok=false)
-    t.frame()
-    unplug_at_end()
-    item.set({ ..item.get(), station_emoji: "🌿" })
-    t.frame()
-    guard t.rect_of("🌿") is Some(emoji) else { fail("the fallback emoji is not drawn") }
-    assert_true((alignment_center(emoji) - column).abs() < 0.5)
-  }
-}
-
-///|
 test "each status lead and its words align with the title's mark and words" {
   for platform in [0, 2] {
     for at in [@sf.ListAt::Side, Whole] {
@@ -412,6 +363,7 @@ test "the last chat-row mark and its agent stand in the archive column for every
           text: "Opened by Parent",
           archived: false,
           note: "",
+          led: false,
         }
         let cases : Array[(@sfbase.ChatItem, String)] = [
           ({ ..base, offline: Some("Offline") }, "Offline"),
@@ -521,21 +473,42 @@ test "an offline row on a station with its own glyph shows the unplugged icon an
       assert_eq(t.audit(), [])
     }
   }
-  // the old frame's row alike
-  for platform in [0, 2] {
+}
+
+///|
+test "a side row's state words cut short in its round slot: their ellipsis within their box, never cut round by the slot's corners" {
+  let rest = "#8075 已合进 main（9bfb4f6f4b），CI 30 项通过，其余按改动范围跳过"
+  // (windows where the words were cut after a mark set closer before what followed it, their ellipsis then past their
+  // box: cut to it, by the slot's 18 round corners set on their own 18 tall box)
+  for case in [(0, 248.0), (2, 268.0)] {
+    let (platform, ww) = case
     @sfbase.reset()
     reset()
     @sf.set_words(@sfbase.fill)
-    let item = {
-      ..sample_chat(0), title: "Old offline glyph row", station_name: "Station", station_icon: "glyph:laptop:teal",
-      offline: Some("Offline"),
-    }
-    let t = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      chat_row(c, @sfbase.sample_source, item, "agents", at=Side) |> ignore
-    }, w=320.0, h=200.0, platform~)
+    let item = { ..sample_chat(0), title: "Cut state row", state_text: Some(rest), state_lead: "archive", state_rest: rest }
+    let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=ww, h=200.0, platform~)
+    // (Chinese words spaced as on Android, Windows, Linux and the web: "），" a half em closer)
+    t.words_spaced_here()
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+      let tips = @sf.TipLayer::new(fn() { Some(popup) })
+      chat_row_node(root, @sfbase.sample_source, tips, fn() { item }, "agents", fn() { false }, Side, fn() { 0 }) |> ignore
+    })
     t.draw()
-    let (x, _, w, _) = t.get(Button, has="Old offline glyph row").rect
-    offline_with_glyph_check(t, x + w - @sf.row_corner, "old frame, platform \{platform}")
+    guard t.rect_of(rest) is Some((x, y, w, h)) else { fail("the state words are not drawn") }
+    let glyphs = t
+      .drawn_instances()
+      .filter(fn(a) { a[5] == 1.0 && a[0] + a[2] / 2.0 >= x && a[0] + a[2] / 2.0 <= x + w && a[1] + a[3] / 2.0 >= y && a[1] + a[3] / 2.0 <= y + h })
+    assert_true(glyphs.length() > 0, msg="platform \{platform}: no glyph of the state words")
+    for a in glyphs {
+      let clip = a[16:32].to_owned()
+      // (each glyph within their box: the ellipsis too)
+      assert_true(a[0] + a[2] <= x + w + 0.5, msg="platform \{platform}: a glyph past their box \{x + w}: \{Repr(a[0:4].to_owned())}")
+      // (cut to their own box where they are: square there)
+      if a[16] >= x - 0.01 && a[17] >= y - 0.01 && a[18] <= x + w + 0.01 && a[19] <= y + h + 0.01 {
+        assert_eq(a[24:28].to_owned(), [0.0, 0.0, 0.0, 0.0], msg="platform \{platform}: a glyph cut round: \{Repr(clip)}")
+      }
+    }
   }
 }

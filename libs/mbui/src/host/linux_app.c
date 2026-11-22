@@ -49,6 +49,7 @@ typedef struct WinSlot {
   GtkIMContext *im;
   GtkEventController *keys;
   int want_frame;
+  int ad_stepping;
   guint tick_id;
   double scale;
   int fb_pw, fb_ph;         // the area's framebuffer in pixels, as GTK last sized it
@@ -58,12 +59,15 @@ typedef struct WinSlot {
   char *ime_words;  // the field's words (UTF-8) and its selection's ends in them, for the input method
   int ime_sel_a, ime_sel_b;
   int marked_len;
-  int right_down, left_down;  // whether the right (left) button is down
+  int right_down, left_down, middle_down;  // whether the right (left, middle) button is down
   // the last press, for a move of the window it starts (mb_host_window_drag), in the surface's coordinates
   GdkDevice *press_device;
   double press_x, press_y;
   guint32 press_time;
   int press_button;
+  // the last valid pointer position in the surface's coordinates, as a fallback for events without coordinates
+  double ptr_x, ptr_y;
+  int ptr_valid;
   // the last press that moved the window: when and where, for the second of a double click there
   guint32 drag_time;
   double drag_x, drag_y;
@@ -439,8 +443,22 @@ static void gl_current(void) {
 
 static gboolean on_render(GtkGLArea *a, GdkGLContext *c, gpointer data) {
   (void)c, (void)data;
+  int app_wanted = ws->want_frame;
   ws->want_frame = 0;
   gl_current();
+  if (!app_wanted && ws->ad_stepping) {
+    ws->ad_stepping = 0;
+    int w = draw_lw, h = draw_lh;
+    if (w > 0 && h > 0 && ws->fb_pw > 0 && ws->fb_ph > 0) {
+      mb_render_target(ws->fb_pw, ws->fb_ph, w, h, ws->scale);
+      if (mb_render_adaptive_step() && mb_render_adaptive_settling()) {
+        ws->ad_stepping = 1;
+        gtk_gl_area_queue_render(a);
+      }
+    }
+    return TRUE;
+  }
+  ws->ad_stepping = 0;
   // what was decoded meanwhile made textures, then told: the app finds them ready
   mb_images_upload();
   mb_streams_upload();
@@ -473,6 +491,10 @@ static gboolean on_render(GtkGLArea *a, GdkGLContext *c, gpointer data) {
     }
   }
   if (ws->want_frame) schedule();
+  else if (mb_render_adaptive_settling()) {
+    ws->ad_stepping = 1;
+    gtk_gl_area_queue_render(a);
+  }
   return TRUE;
 }
 
@@ -657,8 +679,40 @@ static gboolean on_key_here(GtkEventControllerKey *k, guint keyval, guint keycod
 // an event's place in the area's points
 static void area_point(GdkEvent *ev, double *x, double *y) {
   double sx = 0, sy = 0, nx = 0, ny = 0;
-  gdk_event_get_position(ev, &sx, &sy);
   GtkNative *native = gtk_widget_get_native(ws->area);
+  if (gdk_event_get_position(ev, &sx, &sy) && isfinite(sx) && isfinite(sy)) {
+    ws->ptr_x = sx;
+    ws->ptr_y = sy;
+    ws->ptr_valid = 1;
+  } else {
+    // GTK 4 scroll events carry no coordinates (gdk_event_get_position returns FALSE and writes NaN);
+    // query the seat pointer on the event's surface, falling back to the last valid surface position.
+    GdkSurface *surf = gdk_event_get_surface(ev);
+    if (!surf && native) surf = gtk_native_get_surface(native);
+    GdkSeat *seat = gdk_event_get_seat(ev);
+    if (!seat && surf) {
+      GdkDisplay *disp = gdk_surface_get_display(surf);
+      if (disp) seat = gdk_display_get_default_seat(disp);
+    }
+    GdkDevice *ptr = seat ? gdk_seat_get_pointer(seat) : NULL;
+    GdkModifierType mask = 0;
+    if (surf && ptr && gdk_surface_get_device_position(surf, ptr, &sx, &sy, &mask) && isfinite(sx) && isfinite(sy)) {
+      ws->ptr_x = sx;
+      ws->ptr_y = sy;
+      ws->ptr_valid = 1;
+    } else if (ws->ptr_valid) {
+      sx = ws->ptr_x;
+      sy = ws->ptr_y;
+    } else {
+      sx = 0;
+      sy = 0;
+    }
+  }
+  if (!native) {
+    *x = sx;
+    *y = sy;
+    return;
+  }
   gtk_native_get_surface_transform(native, &nx, &ny);
   graphene_point_t p = GRAPHENE_POINT_INIT((float)(sx - nx), (float)(sy - ny)), out;
   if (gtk_widget_compute_point(GTK_WIDGET(native), ws->area, &p, &out)) {
@@ -764,6 +818,9 @@ static gboolean on_event_here(GtkEventControllerLegacy *c, GdkEvent *ev, gpointe
       if (b == 1) {
         ws->left_down = 1;
         mb_cb.pointer(0, x, y, 0);
+      } else if (b == 2) {
+        ws->middle_down = 1;
+        mb_cb.pointer(0, x, y, 3);
       } else if (b == 3) {
         ws->right_down = 1;
         mb_cb.pointer(0, x, y, 2);
@@ -776,6 +833,9 @@ static gboolean on_event_here(GtkEventControllerLegacy *c, GdkEvent *ev, gpointe
       if (b == 1 && ws->left_down) {
         ws->left_down = 0;
         mb_cb.pointer(2, x, y, 0);
+      } else if (b == 2 && ws->middle_down) {
+        ws->middle_down = 0;
+        mb_cb.pointer(2, x, y, 3);
       } else if (b == 3 && ws->right_down) {
         ws->right_down = 0;
         mb_cb.pointer(2, x, y, 2);
@@ -791,7 +851,7 @@ static gboolean on_event_here(GtkEventControllerLegacy *c, GdkEvent *ev, gpointe
       mb_cb.pointer(1, x, y, 0);
       return TRUE;
     case GDK_LEAVE_NOTIFY:
-      if (!ws->left_down) mb_cb.pointer(7, -1, -1, 0);
+      if (!ws->left_down && !ws->middle_down) mb_cb.pointer(7, -1, -1, 0);
       return FALSE;
     case GDK_SCROLL:
       area_point(ev, &x, &y);
@@ -902,6 +962,16 @@ static void app_state(void) {
   static int told = -1;
   int s = (shown ? 1 : 0) | (front ? 2 : 0);
   if (s == told) return;
+  // (no window of the run's on the screen any more: what drawing holds beyond its frames given back, in the run's
+  // context, made again as a frame is drawn: mb_render_trim)
+  if (!shown && told > 0 && (told & 1)) {
+    GtkWidget *a = area_with_context(-1);
+    if (a) {
+      gdk_gl_context_clear_current();
+      gtk_gl_area_make_current(GTK_GL_AREA(a));
+      if (!gtk_gl_area_get_error(GTK_GL_AREA(a))) mb_render_trim();
+    }
+  }
   told = s;
   state_cb(s);
   schedule();
@@ -1645,6 +1715,44 @@ void mb_host_set_perf(int32_t on) { (void)on; }
 void mb_host_perf_line(moonbit_string_t line) { (void)line; }
 moonbit_string_t mb_host_perf_where(void) { return moonbit_make_string_raw(0); }
 int32_t mb_host_perf_open(int32_t go) { (void)go; return 0; }
+
+// A file shown chosen in its folder in the desktop's file manager (@hostapi.reveal_file: 在文件夹中显示), or whether
+// that can be done here (go 0): it can. Asked of the file manager over D-Bus (org.freedesktop.FileManager1's ShowItems,
+// which Nautilus, Dolphin, Nemo and others serve); where none answers, its folder opened as any folder is. Only a file
+// that is there.
+int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
+  if (!go) return 1;
+  char *path = utf8(s);
+  int ok = 0;
+  if (path[0] && g_file_test(path, G_FILE_TEST_EXISTS)) {
+    fprintf(stdout, "reveal-file: %s\n", path);
+    fflush(stdout);
+    char *uri = g_filename_to_uri(path, NULL, NULL);
+    GDBusConnection *bus = uri ? g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL) : NULL;
+    if (bus) {
+      const char *items[] = {uri, NULL};
+      GVariant *r = g_dbus_connection_call_sync(bus, "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+                                                "org.freedesktop.FileManager1", "ShowItems",
+                                                g_variant_new("(^ass)", items, ""), NULL, G_DBUS_CALL_FLAGS_NONE, 2000,
+                                                NULL, NULL);
+      if (r) {
+        ok = 1;
+        g_variant_unref(r);
+      }
+      g_object_unref(bus);
+    }
+    if (!ok) {
+      char *dir = g_path_get_dirname(path);
+      char *dir_uri = g_filename_to_uri(dir, NULL, NULL);
+      ok = dir_uri && g_app_info_launch_default_for_uri(dir_uri, NULL, NULL);
+      g_free(dir_uri);
+      g_free(dir);
+    }
+    g_free(uri);
+  }
+  g_free(path);
+  return ok;
+}
 double mb_host_perf_size(void) { return 0; }
 moonbit_bytes_t mb_host_perf_read(void) { return moonbit_make_bytes(0, 0); }
 
@@ -1792,6 +1900,12 @@ int32_t mb_host_mods_held(void) {
   return kb ? mods_of(gdk_device_get_modifier_state(kb)) : 0;
 }
 
+// The pointer held by the window and game controllers (@hostapi.set_pointer_lock, gamepads): none here.
+void mb_host_pointer_lock(int32_t on) { (void)on; }
+int32_t mb_host_pointer_locked(void) { return 0; }
+void mb_host_pointer_delta(double *out) { out[0] = 0; out[1] = 0; }
+int32_t mb_host_gamepads(double *out) { (void)out; return 0; }
+
 // The pointer's shape (@hostapi.set_cursor): CSS's names, as GTK takes them.
 void mb_host_set_cursor(int32_t kind) {
   static int now = -1;
@@ -1823,6 +1937,14 @@ double mb_host_cpu_ms(void) {
   struct rusage u;
   if (getrusage(RUSAGE_SELF, &u) != 0) return -1;
   return (u.ru_utime.tv_sec + u.ru_stime.tv_sec) * 1000.0 + (u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1000.0;
+}
+
+// The CPU time of the calling thread (@hostapi.thread_cpu_ms), in ms (-1: unsupported).
+double mb_host_thread_cpu_ms(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0)
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+  return -1.0;
 }
 
 double mb_host_mem_bytes(void) {

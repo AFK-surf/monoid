@@ -18,13 +18,15 @@ export function stationFeature(id: FeatureId, raw: unknown, app: string, registr
   return featureOnChannel(id, channelOf(raw, app), registry);
 }
 
+/// What the overview's `features` says of features graduated since, for apps from before that still decide by it:
+/// moving to another station, on every channel since 2026-11-21 (apps from before offer 迁移 only where it is said).
+/// Goes 7 days after the apps that read `move.offered` instead ship.
+export const GRADUATED_SAID = ["stationMove"] as const;
+
 /// Those on here, as the overview's `features` says them.
 export function stationFeatures(raw: unknown, app: string, registry: Record<string, FeatureSpec> = FEATURES): string[] {
-  return stationFeatureIds(registry).filter((id) => stationFeature(id as FeatureId, raw, app, registry));
+  return [...stationFeatureIds(registry).filter((id) => stationFeature(id as FeatureId, raw, app, registry)), ...GRADUATED_SAID];
 }
-
-/// Whether moving to another station is offered and taken here (move/AGENTS.md).
-export const stationMoveOn = (raw: unknown, app: string): boolean => stationFeature("stationMove", raw, app);
 
 export const FeaturesLive = Layer.effectDiscard(
   Effect.gen(function* () {

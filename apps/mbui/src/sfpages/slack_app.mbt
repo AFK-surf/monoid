@@ -360,7 +360,7 @@ fn config_token_form_node(
       |> ignore
     })
     sa_guide_step_node(g, 2, "web-pages.slackApp.step2", fn() { @sf.t("web-pages.slackApp.step2Note") }, fn(_) {  })
-    sa_guide_step_node(g, 3, "web-pages.slackApp.step3", fn() { @sf.t("web-pages.slackApp.step3Note", args=[("name", "still.fail")]) }, fn(
+    sa_guide_step_node(g, 3, "web-pages.slackApp.step3", fn() { @sf.t("web-pages.slackApp.step3Note", args=[("name", @sf.product())]) }, fn(
       b,
     ) {
       b.box(fn(r) {
@@ -373,7 +373,7 @@ fn config_token_form_node(
         @sf.button_node(r, fn() { @sf.t("web-pages.slackApp.add") }, add, tone=Primary, busy~, disabled=fn() { !ready() }) |> ignore
       })
       |> ignore
-      b.show(fn() { wrong() != "" }, fn(w) { @sf.words_node(w, wrong, fn() { desk_note_bad }) |> ignore })
+      b.show(fn() { wrong() != "" }, fn(w) { @sf.words_node(w, wrong, fn() { @sf.list_note_bad }) |> ignore })
     })
   })
   |> ignore
@@ -390,8 +390,8 @@ fn sa_guide_step_node(g : @view.View, n : Int, title : String, note : () -> Stri
     @sf.step_circle_node(r, fn() { n.to_string() }, first_line=Ui, leading=L6) |> ignore
     r.box(fn(b) {
       @sf.style_node(b, fn() { sa_step_body }, in_row=true)
-      @sf.words_node(b, fn() { @sf.t(title) }, fn() { desk_strong }) |> ignore
-      @sf.words_node(b, note, fn() { desk_muted }) |> ignore
+      @sf.words_node(b, fn() { @sf.t(title) }, fn() { @sf.card_strong }) |> ignore
+      @sf.words_node(b, note, fn() { @sf.card_muted }) |> ignore
       body(b)
     })
     |> ignore
@@ -447,28 +447,25 @@ fn sa_form_node(
     d.icon.get() != ""
   }
   @sf.page_card_node(p, footed=true, fn(k) {
-    k.show(fn() { sa_approve.get(me) is Some(_) }, fn(a) {
-      a.box(fn(b) {
-        @sf.style_node(b, fn() { sa_blue })
-        b.ground(By(fn() { @sf.theme().p.blue_bg })) |> ignore
-        @sf.icon_node(b, "shield-check", cd_icon, By(fn() { @sf.theme().p.blue })) |> ignore
-        b.box(fn(w) {
-          @sf.style_node(w, fn() { cd_effect_words }, in_row=true)
-          @sf.words_node(w, fn() { @sf.t("web-pages.slackApp.approveNote") }, fn() { sa_blue_words }) |> ignore
-        })
-        |> ignore
-        @sf.button_node(
-          b,
-          fn() { @sf.t("web-pages.slackApp.approve") },
-          fn() {
-            let install = sa_approve.get(me).unwrap_or("")
-            sa_approve.remove(me)
-            (core.open_link)(install)
-          },
-          tone=Primary,
-        )
-        |> ignore
+    k.show(fn() { sa_approve.get(me) is Some(_) }, fn(b) {
+      @sf.style_node(b, fn() { sa_blue })
+      b.ground(By(fn() { @sf.theme().p.blue_bg })) |> ignore
+      @sf.icon_node(b, "shield-check", cd_icon, By(fn() { @sf.theme().p.blue })) |> ignore
+      b.box(fn(w) {
+        @sf.style_node(w, fn() { cd_effect_words }, in_row=true)
+        @sf.words_node(w, fn() { @sf.t("web-pages.slackApp.approveNote") }, fn() { sa_blue_words }) |> ignore
       })
+      |> ignore
+      @sf.button_node(
+        b,
+        fn() { @sf.t("web-pages.slackApp.approve") },
+        fn() {
+          let install = sa_approve.get(me).unwrap_or("")
+          sa_approve.remove(me)
+          (core.open_link)(install)
+        },
+        tone=Primary,
+      )
       |> ignore
     })
     app_fields_node(k, core, d, sections, fn() { sa_column(page_w()) - 2.0 * sa_card_in }, tips)

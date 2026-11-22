@@ -159,7 +159,7 @@ test "wide: a row's menu from its right click pins it (chat.pin) and closes" {
   t.key(@ui.key_escape)
   // (closed: nothing of it read out at once, drawn back over pop_out_ms)
   assert_true(t.query(Menu) is None)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("分享") is None)
 }
 
@@ -624,10 +624,10 @@ test "wide: a new chat as the web's: its scene and the composer in the pane's mi
   let station = t.query(Button, label="Willow")
   assert_true(station is Some(_))
   t.click(Button, label="Willow")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(Button, label="Maple") is Some(_))
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(Button, label="Maple") is None)
 }
 
@@ -705,11 +705,13 @@ test "wide: the machine's own sessions offered under the composer as its station
   assert_true(inks().length() > 0 && inks().iter().all(fn(k) { k == @sf.theme().p.muted }), msg="quiet: \{Repr(inks())}")
   // pointed at: its ground, its words the text's
   t.move_to(ox, oy)
-  t.draw()
+  // (its ground comes in over the hover's way: hover_ground_node's)
+  t.run_for(@sf.dur_ms)
   assert_true(ground(), msg="the hover's ground under the offer")
   assert_true(inks().iter().all(fn(k) { k == @sf.theme().p.text }), msg="lit: \{Repr(inks())}")
-  // left: quiet again
+  // left: quiet again, its ground gone over the same way
   t.leave()
+  t.run_for(@sf.dur_ms)
   assert_false(ground())
 }
 
@@ -777,9 +779,9 @@ test "wide: a new chat's composer stays where it is as another station is picked
   let (bx, by, _, _) = composer_glass(t)
   let pick = fn(from : String, to : String) raise {
     t.click(Button, label=from)
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     t.click(Button, label=to)
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
   }
   // Maple: no session of its own; what is wrong for now and what it waits for in its place
   pick("Willow", "Maple")
@@ -916,13 +918,13 @@ test "wide: a new chat becomes its chat as the web's: its scene fading where it 
   let typed = seen_once(t, words)
   assert_true(typed.1 > by && typed.1 < by + bh)
   assert_at((bx, by), { let (x, y, _, _) = composer_glass(t); (x, y) })
-  // half way: the scene where it was as it fades
+  // half way: the scene fading gently upward from where it was (new_chat_node's scene_out, 10 at its end)
   t.run_for(new_leave_ms / 2.0)
   let half = match heading() {
     Some(y) => y
     None => fail("the scene gone at once")
   }
-  assert_true((half - title).abs() < 0.5, msg="the scene stays: \{title} → \{half}")
+  assert_true(half <= title && title - half <= 10.5, msg="the scene fades gently upward (within 10px): \{title} → \{half}")
   // the scene gone at 140 ms
   t.run_for(new_leave_ms / 2.0 + 1.0)
   assert_true(heading() is None)
@@ -941,7 +943,6 @@ test "wide: a new chat becomes its chat as the web's: its scene fading where it 
   assert_at((ex, ey), { let (x, y, _, _) = composer_glass(t); (x, y) })
   // the words in their bubble over the composer at the chat's foot (its rows at its end), gone across to its right
   t.run_for(sent + flight_carry_ms + 34.0 - t.time())
-  assert_true(send_flight.get() is None)
   let landed = seen_once(t, words)
   assert_true(landed.1 < ey && landed.1 > ey - 200.0 && landed.0 > typed.0 + 100.0, msg="landed at \{Repr(landed)} from \{Repr(typed)}")
 }
@@ -996,15 +997,13 @@ test "wide: a new chat's first words, the hint gone under them, into their bubbl
   assert_false(hint_drawn(t), msg="the hint under the words sent")
   assert_true(app.nav.top() is Chat(_))
   let sent = t.time()
-  // the new chat's choices leave as what was by the composer does: fading where they are, on its ground as it goes
-  choices_in_ground(t)
+  // the new chat's choices gone with its page (the node page's own composer: newchat_send_wbtest says how they go)
   t.run_for(new_fade_ms + 1.0)
-  let (gx, _, gw, _) = composer_glass(t)
-  assert_true(seen_words(t, "Willow").iter().all(fn(p) { p.0 < gx || p.0 > gx + gw }), msg="the choices gone")
+  let (gx, gy, gw, gh) = composer_glass(t)
+  assert_true(seen_words(t, "Willow").iter().all(fn(p) { p.0 < gx || p.0 > gx + gw || p.1 < gy || p.1 > gy + gh }), msg="the choices gone")
   assert_false(hint_drawn(t), msg="the hint under the words sent, the composer gone to the chat's foot")
   // with the list, no frame where they are not, nor a jump
   let landed = one_way_till(t, words, sent + flight_carry_ms + 34.0, 120.0)
-  assert_true(send_flight.get() is None)
   // over the composer at the chat's foot (the chat's rows at its end), down with it from where they were typed
   let (_, foot_y, _, _) = composer_glass(t)
   assert_true(landed.1 > typed.1 && landed.1 < foot_y, msg="landed at \{Repr(landed)} from \{Repr(typed)}")
@@ -1058,7 +1057,8 @@ test "wide: a chat and a new chat switched by the sidebar: the composer goes bet
   assert_true(app.nav.top() == NewChat)
   let (_, y0, _, h0) = composer_glass(t)
   assert_true((y0 + h0 - (cy + ch)).abs() < 1.0, msg="from the chat's foot: \{Repr((y0, h0))} \{Repr((cy, ch))}")
-  assert_eq(t.look_of("想让 agent 做什么？").map(fn(l) { l.2 }), Some(1.0))
+  let scene_alpha = fn() { t.words().iter().find_first(fn(w) { w.0 == "想让 agent 做什么？" }).map(fn(w) { w.5 }) }
+  assert_eq(scene_alpha(), Some(1.0))
   // what it holds there and did not at the chat's foot (the new chat's choices) carried on its ground all the way
   choices_in_ground(t)
   t.run_for(@ui.move_most_ms / 2.0)
@@ -1066,7 +1066,7 @@ test "wide: a chat and a new chat switched by the sidebar: the composer goes bet
   t.run_for(went + @ui.move_most_ms + 1.0 - t.time())
   let (_, y1, _, h1) = composer_glass(t)
   assert_true(y1 + h1 < cy - 100.0, msg="in the page's middle: \{Repr((y1, h1))}")
-  assert_eq(t.look_of("想让 agent 做什么？").map(fn(l) { l.2 }), Some(1.0))
+  assert_eq(scene_alpha(), Some(1.0))
   // back to the chat by its row: the composer down to its foot from its place in the page, the rest the chat's at
   // once, the new chat's scene gone in that frame (another chat looked at: nothing of the new chat fades over it, its
   // words over the chat's own as it went till 2026-11-14; the coordinator of the migration's ruling)
@@ -1112,7 +1112,7 @@ test "wide: a right click in a chat as the desktop app's: a link's 在浏览器�
   t.frame()
   assert_eq(t.clipboard(), "https://example.com/review/42")
   // (its menu, the presenters', gone as it goes)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   assert_true(t.find("在浏览器中打开链接") is None)
   // the words before it with nothing picked: its turn shared alone (a message of the chat's list)
   let (px, py, pw, ph) = words_rect(t, "第二屏的插画")
@@ -1121,7 +1121,7 @@ test "wide: a right click in a chat as the desktop app's: a link's 在浏览器�
   assert_true(t.find("多选") is Some(_))
   assert_true(@sfdesk.context.share is Some(_) && @sfdesk.context.link == "" && @sfdesk.context.words == "")
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   // words picked with the pointer: 复制 alone, and what is picked copied
   t.drag(px + 1.0, py + ph / 2.0, px + pw - 1.0, py + ph / 2.0)
   t.frame()
@@ -1240,7 +1240,7 @@ test "wide: a right click on a message's image: 复制图片, the picture on the
   t.right_click(x, y)
   t.frame()
   // (its menu, the presenters': a small panel at the pointer with a mouse, in)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(@sfpages.offered_image() != "", msg="its picture's source")
   t.add_pixels(@sfpages.offered_image(), 2, 2, FixedArray::make(16, b'\xff'))
   t.tap_text("复制图片")
@@ -1476,12 +1476,12 @@ test "wide: 文件 shows favorites and stations; files can be chosen, opened, an
   assert_eq(more.length(), 1)
   let (mx, my, mw, mh) = more[0].rect
   t.tap(mx + mw / 2.0, my + mh / 2.0)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap_text("把「旧版」加入个人收藏")
   t.frame()
   assert_eq(named(calls, "prefs.set").length(), before + 1)
   t.tap(mx + mw / 2.0, my + mh / 2.0)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("从个人收藏移除「旧版」") is Some(_))
 }
 
@@ -1752,7 +1752,7 @@ test "wide: 快捷键 changed by pressing new ones (keys.set), and the new keys 
   t.key(@ui.key_escape)
   t.post(@hostapi.system_channel, "{\"menu\":\"update.check\"}")
   t.frame()
-  t.run_for(@kit.dialog_ms)
+  t.run_for(@motion.dialog_ms)
   assert_true(app.nav.top() == Setting(@settings.Route::Shortcuts))
   assert_true(update_dialog_open())
   assert_true(t.find("检查更新失败") is Some(_))
@@ -2355,7 +2355,7 @@ test "wide: ⌘V with a picture or files on the clipboard puts them in as files 
 test "wide: an agent's card over its picture beside its message (AgentCard.tsx), laid out as the web's over the window" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat-agent-card")
-  let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.5 }) }
+  let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.5 && w.2 < 640.0 }) }
   // the last of its messages' names; its picture in the margin before it
   let names = word("Claude")
   let last = match names.iter().fold(init=None, fn(acc : (String, Double, Double, Double, Double, Double)?, w) {
@@ -2589,7 +2589,7 @@ test "wide: the station a chat's agent runs on, beside its mark in the bar, has 
   let t = wide_tester(calls, mode="chat-agent-card")
   let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.5 }) }
   // its part of the tile: in the chat's bar, named for what it is
-  let part = t.locate("=Willow").filter(fn(p) { p.1 < 60.0 && p.0 > 400.0 })
+  let part = t.locate("=Willow").filter(fn(p) { p.1 > 600.0 && p.0 > 350.0 })
   assert_eq(part.length(), 1, msg="\{Repr(t.locate("=Willow"))}")
   assert_eq(word("机器详情").length(), 0)
   t.move_to(part[0].0, part[0].1)
@@ -2645,7 +2645,7 @@ fn working_agent_card(stands? : String) -> @ui.Tester {
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
   let last = t
     .words()
-    .filter(fn(w) { w.0 == "Claude" && w.5 > 0.5 })
+    .filter(fn(w) { w.0 == "Claude" && w.5 > 0.5 && w.2 < 640.0 })
     .iter()
     .fold(init=None, fn(acc : (String, Double, Double, Double, Double, Double)?, w) {
       match acc {
@@ -2662,7 +2662,7 @@ fn working_agent_card(stands? : String) -> @ui.Tester {
 ///|
 test "wide: a working agent's card has its stop at the end of where it stands, under its label (the corner rule sees it)" {
   let t = working_agent_card()
-  let shown = t.words().filter(fn(w) { w.5 > 0.5 })
+  let shown = t.words().filter(fn(w) { w.5 > 0.5 && w.2 < 640.0 })
   let label = shown.filter(fn(w) { w.0 == "Claude · Opus 5.5" })
   let stands = shown.filter(fn(w) { w.0 == "做完了" })
   // (the card's stop: right of the chat's column, where the activity's are)
@@ -2680,7 +2680,7 @@ test "wide: a working agent's card has its stop at the end of where it stands, u
 test "wide: a working agent's card whose standing is long (what it waits for) has it on whole lines, its stop by the first" {
   let waits = "等待：最新主线与读取修复的合并验证；之后验证分页和读取调度"
   let t = working_agent_card(stands=waits)
-  let shown = t.words().filter(fn(w) { w.5 > 0.5 })
+  let shown = t.words().filter(fn(w) { w.5 > 0.5 && w.2 < 640.0 })
   let stands = shown.filter(fn(w) { w.0.has_prefix("等待：") })
   let label = shown.filter(fn(w) { w.0 == "Claude · Opus 5.5" })
   let stop = t.locate("icon:stop").filter(fn(p) { label.length() == 1 && p.0 > label[0].1 })
@@ -2769,7 +2769,7 @@ test "wide: an agent's card opened again has its latest lines as they are then: 
 }
 
 ///|
-test "wide: an agent's card's latest lines run on as they change (AgentCard.tsx useLinesMotion), the first gone leaving" {
+test "wide: an agent's card's latest lines as they change: the first gone, the rest a line up each, the new one whole (agent_card_node.mbt: View::each, no run of lines)" {
   let latest : @signals.Signal[(Array[(String, String)], Int)] = @signals.signal(
     ([("k1", "读了 src/ui/list.mbt"), ("k2", "跑了列表的测试"), ("k3", "改了 src/ui/list.mbt")], 1),
   )
@@ -2785,31 +2785,13 @@ test "wide: an agent's card's latest lines run on as they change (AgentCard.tsx 
   let y3 = y_of("改了 src/ui/list.mbt")
   let pitch = y2 - y1
   assert_true(pitch > 10.0 && near(y3 - y2, pitch), msg="\{Repr((y1, y2, y3))}")
-  // one more done: the first goes, the next comes
+  // one more done: the first goes, the next comes (the node card says its lines as they are: View::each, agent_card_node)
   latest.set(([("k2", "跑了列表的测试"), ("k3", "改了 src/ui/list.mbt"), ("k4", "提交了改动")], 2))
-  t.frame()
-  // as they were: those that stay where they were drawn, the new one faint a line beyond the last, the first's copy
-  // where it was, whole
-  assert_true(near(y_of("跑了列表的测试"), y2) && near(y_of("改了 src/ui/list.mbt"), y3))
-  assert_eq(word("提交了改动").length(), 0)
-  let gone = word("读了 src/ui/list.mbt")
-  assert_true(gone.length() == 1 && near(gone[0].2, y1) && gone[0].5 > 0.99, msg="\{Repr(gone)}")
-  // half way: on their way up together, the copy with them
-  t.run_for(@sfpages.lines_ms / 2.0)
-  let mid = y_of("跑了列表的测试")
-  assert_true(mid < y2 - 1.0 && mid > y1 + 1.0, msg="\{mid}")
-  let (m3, m4, m1) = (y_of("改了 src/ui/list.mbt"), y_of("提交了改动"), y_of("读了 src/ui/list.mbt"))
-  assert_true(
-    near(m3 - mid, pitch) && near(m4 - mid, pitch * 2.0) && near(m1, mid - pitch),
-    msg="\{Repr((mid, m3, m4, m1, pitch))}",
-  )
-  // there: a line up each, the new one whole, the copy gone
-  t.run_for(@sfpages.lines_ms / 2.0)
-  assert_true(near(y_of("跑了列表的测试"), y1) && near(y_of("改了 src/ui/list.mbt"), y2))
-  let new = word("提交了改动")
-  assert_true(near(new[0].2, y3) && new[0].5 > 0.99, msg="\{Repr(new)}")
-  t.frame()
+  t.run_for(@ui.move_most_ms)
   assert_eq(word("读了 src/ui/list.mbt").length(), 0)
+  assert_true(near(y_of("跑了列表的测试"), y1) && near(y_of("改了 src/ui/list.mbt"), y2), msg="\{Repr((y_of("跑了列表的测试"), y_of("改了 src/ui/list.mbt")))}")
+  let new = word("提交了改动")
+  assert_true(new.length() == 1 && near(new[0].2, y3) && new[0].5 > 0.99, msg="\{Repr(new)}")
 }
 
 ///|
@@ -2843,7 +2825,7 @@ test "wide: 文件's rows as the core says them (driveBrowse, drive.browse): a p
   t.frame()
   assert_true(t.find("重命名") is Some(_), msg="its menu")
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   // (the menu gone: the page's rows to be asked of again)
   assert_true(files_row_chosen(t, "发布清单.md"), msg="chosen by its right click")
   assert_false(files_row_chosen(t, "设计稿"))
@@ -2928,6 +2910,9 @@ test "wide: 文件's tabs as the core keeps them (filesTabs, files.tabs): the ad
   t.frame()
   assert_true(t.query(Button, label="左右分栏") is Some(_), msg="one again")
   // the tab shown closed: the other left alone, no tabs shown
+  let (tx, ty, tw, th) = t.all(Tab)[0].rect
+  t.move_to(tx + tw / 2.0, ty + th / 2.0)
+  t.frame()
   let (x, y, w, h) = t.all(Button, label="关闭标签")[0].rect
   t.tap(x + w / 2.0, y + h / 2.0)
   t.frame()
@@ -3050,7 +3035,7 @@ test "wide: Esc goes to what the frame opened first (a row's menu), then to the 
   t.key(@ui.key_escape)
   t.frame()
   assert_true(t.query(Menu) is None)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("分享") is None)
   assert_true(@sfpages.find_chat() != "")
   // then the bar

@@ -66,7 +66,25 @@ pub fn hover_ground_node(
   let src = by.unwrap_or(target)
   let lit_fn = lit.unwrap_or(fn() { lit_node(src) })
   let active = fn() { on() && (lit_fn() || extra()) }
-  target.ground_over(By(fn() { if active() { color() } else { 0L } })) |> ignore
+  let fade = @motion.hover_fade(target, active, duration_ms=dur_ms, instant_off=fn() { @ui.pointing() is Finger })
+  target.ground_over(By(fn() {
+    // (read as it was before the fade, untracked: View::ground_over still learns it follows the hand and the focus,
+    // its corners' and focus's checks, with no further subscription)
+    @signals.untracked(active) |> ignore
+    let p = fade()
+    if p <= 0.0 {
+      0L
+    } else {
+      let c = color()
+      if p >= 1.0 || c == 0L {
+        c
+      } else {
+        let a = ((c & 0xFFL).to_double() * p).round().to_int64()
+        (c & 0xFFFFFF00L) | a
+      }
+    }
+  }))
+  |> ignore
 }
 
 ///|
@@ -115,10 +133,12 @@ fn rippled_look(
   v : @view.View,
   corner : @view.Live[Double],
   press : () -> Unit,
+  ink? : () -> Int64 = fn() { @motion.ripple_ink },
+  pointer? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   // (a pointer's press lights its ground: press_ripple's)
-  let rippled = press_look(loc~, v, corner, fn() { false }, pointer=false)
+  let rippled = press_look(loc~, v, corner, fn() { false }, ink~, pointer~)
   let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
   v.gesture(
     @ui.touch_slop(),
@@ -142,7 +162,7 @@ fn rippled_look(
 ///|
 /// `v` pressed as an old view's box with an id is (Ctx::on_press: a tap, a mouse's click, Enter or Space with the focus,
 /// a screen reader's press): `press` done then; its ripple and sink as `corner` rounds it (press_look); read out as
-/// `role` named `label`.
+/// `role` named `label`, and whether it is the one chosen where `selected` says (None: says nothing of it).
 #callsite(autofill(loc))
 fn pressed_node(
   v : @view.View,
@@ -150,13 +170,14 @@ fn pressed_node(
   corner : @view.Live[Double],
   role : @view.Role,
   label : () -> String,
+  selected? : () -> Bool? = fn() { None },
   loc~ : SourceLoc,
 ) -> Unit {
   v
   .presses(Is(true))
   .focusable(Is(true))
   .focus_ring_theme()
-  .says(By(fn() { Some(@view.said(role, label=label())) }))
+  .says(By(fn() { Some(@view.said(role, label=label(), selected?=selected())) }))
   .on_press(press)
   |> ignore
   rippled_look(loc~, v, corner, press)
@@ -291,11 +312,14 @@ pub fn styled_words(w : @view.View, words : () -> String, style : () -> @ui.Text
   .words_look(By(fn() { @ui.style_words(style()) }))
   .ink(By(fn() { @ui.style_ink(style()) }))
   |> ignore
-  let (cut, ellipsis) = @signals.untracked(fn() {
+  let (cut, ellipsis, tabular) = @signals.untracked(fn() {
     let said = style()
     let cut = @ui.style_cut(said)
-    (cut, !cut && @ui.style_fills(said) && !@ui.style_words(said).wrap)
+    (cut, !cut && @ui.style_fills(said) && !@ui.style_words(said).wrap, @ui.style_tabular(said))
   })
+  if tabular is Some(_) {
+    w.words_tabular(Is(tabular)) |> ignore
+  }
   if cut {
     // (cut short where their line has not the room across: given way along a row, never squeezed down, View::cuts)
     w.cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
@@ -661,7 +685,7 @@ fn narrow_page_node(
             }))
             |> ignore
             // (what it is of, over its large title: LargeTitle's small line)
-            s.show(fn() { small() != "" }, fn(k) { k.box(fn(w) { styled_words(w, small, fn() { secondary }) |> ignore }) |> ignore })
+            s.show(fn() { small() != "" }, fn(w) { styled_words(w, small, fn() { secondary }) |> ignore })
             s.box(fn(l) {
               // (one line while its title at its least and what it does at the least that comes to have the room
               // beside each other; else what it does, all of it, under the title at the same end, the line's end:
@@ -966,6 +990,7 @@ pub fn group_node(parent : @view.View, rows : (@view.View) -> Unit, card? : Bool
     parent.box(made_for=loc, fn(k) {
       style_node(k, fn() { panel_card_group.then(panel_card_rows).then(panel_card_out_node(k)) })
       k.lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide, card: false }) |> ignore
+      corner_card_node(k, fn() { card_corner }, inset=fn() { corner_inset })
       rows(k)
     })
     |> ignore
@@ -987,6 +1012,7 @@ pub fn group_node(parent : @view.View, rows : (@view.View) -> Unit, card? : Bool
       .clips(Is(true))
       .lends(on_card_lent, true)
       |> ignore
+      corner_card_node(card, fn() { corner }, inset=fn() { pad })
       rows(card)
     })
     |> ignore
@@ -1849,7 +1875,7 @@ pub fn switch_node(
     let size = fn() {
       if !small && native_input() is Finger {
         // Give labels more room on compact touch windows while retaining the capsule.
-        let extra = dclamp(at.window().0 - 360.0, 0.0, 12.0)
+        let extra = dclamp(at.window_w() - 360.0, 0.0, 12.0)
         (52.0 + extra, 28.0)
       } else {
         switch_size(small)
@@ -1880,7 +1906,7 @@ pub fn switch_node(
         .radius(By(fn() { size().1 / 2.0 }))
         .ground(By(fn() {
           let p = theme().p
-          @kit.blend(backdrop_track_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
+          @ui.blend(track_glass_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
         }))
         |> ignore
         let d = fn() { size().1 - 2.0 * switch_in }
@@ -1907,7 +1933,7 @@ pub fn switch_node(
               let calm = 1.0 - dmin(1.0, dmax(lens(), 0.0))
               @motion.velocity_capsule(thumb_w(), d(), speed * travel() * calm, 0.0)
             }))
-            .alpha(By(fn() { if lens() > 0.0 { 0.0 } else { 1.0 } }))
+            .alpha(By(fn() { 1.0 - dclamp(lens(), 0.0, 1.0) }))
             |> ignore
           })
           |> ignore
@@ -1916,20 +1942,27 @@ pub fn switch_node(
         track.show(fn() { lens() > 0.0 }, fn(o) {
           o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
           o.box(fn(l) {
-            let lens_wh = fn() {
-              (thumb_w() * scale_x.shown(l), d() * scale_y.shown(l))
-            }
             l
-            .width(By(fn() { Some(lens_wh().0) }))
-            .height(By(fn() { Some(lens_wh().1) }))
-            .radius(By(fn() { lens_wh().1 / 2.0 }))
-            .glass(By(fn() { Some(backdrop_toggle(lens())) }))
+            .width(By(fn() { Some(thumb_w()) }))
+            .height(By(fn() { Some(d()) }))
+            .radius(By(fn() { d() / 2.0 }))
+            .glass(By(fn() { Some(glass_toggle_lens(lens())) }))
+            .alpha(By(fn() { dclamp(lens(), 0.0, 1.0) }))
             .shadow(Is((4.0, 4.0 / 6.0, 0x0000000DL)))
-            .offset(By(fn() {
-              let (lw, lh) = lens_wh()
-              let (_, h) = size()
-              let mid = switch_in + thumb_w() / 2.0 + travel() * k()
-              (mid - lw / 2.0, (h - lh) / 2.0)
+            .shadow_outside(Is(true))
+            .offset(By(fn() { (switch_in + travel() * k(), switch_in) }))
+            .ground_drawn(By(fn() {
+              let w = thumb_w()
+              let h = d()
+              let lw = w * scale_x.shown(l)
+              let lh = h * scale_y.shown(l)
+              {
+                dx: (w - lw) / 2.0,
+                dy: (h - lh) / 2.0,
+                dw: lw - w,
+                dh: lh - h,
+                corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
+              }
             }))
             |> ignore
           })
@@ -2024,23 +2057,45 @@ pub fn switch_row_node(
   }
   parent.box(made_for=loc, fn(r) {
     r
-    .row(Is(true))
-    .gap(Is(12.0))
     // (at its end as far in as holds a switch on its title's line out of the row's and the card's corners, every
     // switch of a card at one edge)
     .padding(Is((text_in, text_in, dmax(text_in, group_corner - list_pad), text_in)))
     .radius(Is(@ui.concentric(group_corner, list_pad)))
     .min_height(By(fn() { Some(theme().items.least) }))
-    .lines_up(By(fn() { Some(if noted() { Start } else { Middle }) }))
+    .lies_along(Is(Middle))
     |> ignore
-    r.box(fn(words) {
-      // (as wide as the row leaves it, narrower where what it holds is wider: its words wrapped there, as a row's are)
-      words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      led_title_node(words, title, fn() { pg_switch_title }, lead)
-      words.show(noted, fn(n) { styled_words(n, note, fn() { switch_row_note }) |> ignore })
+    r.box(fn(head) {
+      head
+      .row(Is(true))
+      .wraps(Is(Some(6.0)))
+      .gap(Is(12.0))
+      .lies_along(Is(End))
+      .lines_up(Is(Some(Middle)))
+      |> ignore
+      led_title_node(head, title, fn() { pg_switch_title }, lead).grow(Is(1.0)) |> ignore
+      head.box(fn(end) {
+        end
+        .row(Is(true))
+        .gap(Is(8.0))
+        .lines_up(Is(Some(Middle)))
+        .shrink(Is(0.0))
+        .height(By(fn() {
+          guard noted() else { return None }
+          end.words_redone() |> ignore
+          let line = node_sp(end, @ui.tree_theme().text_size(Body).1)
+          let track = if native_input() is Finger { 28.0 } else { switch_size(false).1 }
+          Some(dmax(line, track))
+        }))
+        |> ignore
+        control(end)
+      })
+      |> ignore
     })
     |> ignore
-    line_end_while_node(r, noted, control)
+    r.show(noted, fn(n) {
+      n.margin(Is((0.0, 2.0, 0.0, 0.0))) |> ignore
+      styled_words(n, note, fn() { switch_row_note }) |> ignore
+    })
   })
   |> ignore
 }
@@ -2054,7 +2109,7 @@ fn led_title_node(
   look : () -> @ui.TextStyle,
   lead : ((@view.View) -> Unit)?,
   loc~ : SourceLoc,
-) -> Unit {
+) -> @view.View {
   match lead {
     Some(make) =>
       parent.box(made_for=loc, fn(l) {
@@ -2062,8 +2117,7 @@ fn led_title_node(
         make(l)
         words_node(l, title, look) |> ignore
       })
-      |> ignore
-    None => words_node(parent, title, look) |> ignore
+    None => words_node(parent, title, look)
   }
 }
 
@@ -2285,6 +2339,7 @@ pub fn page_card_node(
       .ground(By(fn() { @ui.tree_theme().color(Card) }))
       .lends(part_at, { ..at, list: false, card: true })
       |> ignore
+      corner_card_node(k, fn() { @ui.tree_theme().corner(Xl3) }, inset=fn() { card_pad })
       body(k)
     })
     |> ignore
@@ -2341,9 +2396,15 @@ pub fn card_foot_node(
 ) -> Unit {
   parent.box(made_for=loc, fn(f) {
     let out = card_foot_in(button_height()) - card_pad
-    f.row(Is(true)).gap(Is(card_foot_gap)).lines_up(Is(Some(Middle))).margin(Is((out, 0.0, out, 0.0))) |> ignore
+    f
+    .row(Is(true))
+    .gap(Is(card_foot_gap))
+    .lines_up(Is(Some(Middle)))
+    .wraps(By(fn() { Some(ask_foot_lines()) }), reverse=!at_end)
+    .margin(Is((out, 0.0, out, 0.0)))
+    |> ignore
     if at_end {
-      f.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+      f.lies_along(Is(End)) |> ignore
     }
     make(f)
   })
@@ -2400,8 +2461,10 @@ pub fn round_key_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore
-    rippled_look(loc~, k, Is(side / 2.0), go)
-    icon_node(k, icon, icon_size, By(ink), name_now?=icon_now) |> ignore
+    hover_ground_node(k)
+    rippled_look(loc~, k, Is(side / 2.0), go, ink=bar_pill_press_ink, pointer=true)
+    bind_pill_press(k)
+    icon_node(k, icon, icon_size, By(ink), name_now?=icon_now, weighed=true) |> ignore
   }
   match opener {
     Some(o) =>
@@ -2469,11 +2532,9 @@ pub fn top_bar_title_node(
 }
 
 ///|
-/// A card's one row with a control at its end (a button) standing in the card's corner, concentric with it: the ladder
-/// makes a card's corner less its padding a row's corner, a button's half (button_height), so the row is as tall as the
-/// button and the card's own padding is round it above, below and at its end; where a wide panel's card has wider ends
-/// than it has padding above and below, the control's margin takes it out to the same (the user, 2026-11-10: a one-row
-/// card's trailing button 16 and 22 in, its capsule not concentric with the card's corner, 「这按钮和卡片圆角也对不上」).
+/// A card's one row with a control at its end (a button) standing in the card's corner, concentric with it: its top,
+/// foot and end stand `@ui.capsule_in(corner, button_height())` from the card's edges so the capsule button's corner
+/// matches the card's (`card_corner` in a pane, `list_card_corner` otherwise).
 /// `words` on its start as a row's title, as far in as the other rows' are.
 #callsite(autofill(loc))
 pub fn corner_row_node(parent : @view.View, words : () -> String, end : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
@@ -2481,18 +2542,21 @@ pub fn corner_row_node(parent : @view.View, words : () -> String, end : (@view.V
   let pane = in_pane_node(parent)
   // (the card's padding above and below, and at its ends: group_node's, wide_group_node's)
   let pad = if pane { corner_inset } else { list_pad }
+  let corner = if pane { card_corner } else { list_card_corner }
+  let want = @ui.capsule_in(corner, button_height())
+  let extra = dmax(0.0, want - pad)
   let ends = if wide && pane { card_pad - wide_row_over } else { pad }
   parent.box(made_for=loc, fn(row) {
     row
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
-    .height(Is(Some(button_height())))
+    .min_height(Is(Some(button_height())))
     .gap(Is(text_in))
-    .padding(Is((dmax(0.0, text_in + list_pad - ends), 0.0, 0.0, 0.0)))
+    .padding(Is((dmax(0.0, text_in + list_pad - ends), extra, 0.0, extra)))
     |> ignore
     words_node(row, words, fn() { pg_row_title }).grow(Is(1.0)).shrink(Is(1.0)) |> ignore
     row.box(fn(e) {
-      e.margin(Is((0.0, 0.0, pad - ends, 0.0))) |> ignore
+      e.margin(Is((0.0, 0.0, want - ends, 0.0))) |> ignore
       end(e)
     })
     |> ignore

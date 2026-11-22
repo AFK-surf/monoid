@@ -67,14 +67,26 @@ pub fn is_kind(e : Error, kind : String) -> Bool {
 }
 
 ///|
-/// The station's parts, as this package asks them.
+/// The station's parts, as this package asks them: direct handles to the stores and hub, plus `call` for cross-slice hooks.
 pub struct Station {
+  store : @store_sessions.Store
+  threads : @store_threads.Store
+  hub : @session_hub.Hub
+  archive_dir : String
+  flush_threads : () -> Unit
   call : async (String, Array[Json]) -> Json
 }
 
 ///|
-pub fn Station::new(call : async (String, Array[Json]) -> Json) -> Station {
-  { call, }
+pub fn Station::new(
+  store : @store_sessions.Store,
+  threads : @store_threads.Store,
+  hub : @session_hub.Hub,
+  archive_dir : String,
+  flush_threads : () -> Unit,
+  call : async (String, Array[Json]) -> Json,
+) -> Station {
+  { store, threads, hub, archive_dir, flush_threads, call }
 }
 
 ///|
@@ -90,82 +102,10 @@ pub async fn Station::tell(self : Station, name : String, args : Array[Json]) ->
 // ── JSON ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ///|
-fn js(s : String) -> Json {
-  Json::string(s)
-}
-
-///|
-fn jn(n : Double) -> Json {
-  Json::number(n)
-}
-
-///|
-fn ji(n : Int) -> Json {
-  Json::number(n.to_double())
-}
-
-///|
-fn jb(b : Bool) -> Json {
-  Json::boolean(b)
-}
-
-///|
-fn jo(fields : Array[(String, Json)]) -> Json {
-  let m = Map::new()
-  for f in fields {
-    m[f.0] = f.1
-  }
-  Json::object(m)
-}
-
-///|
-fn ja(xs : Array[Json]) -> Json {
-  Json::array(xs)
-}
-
-///|
-fn jopt(s : String?) -> Json {
-  match s {
-    Some(x) => js(x)
-    None => Json::null()
-  }
-}
-
-///|
-fn get(v : Json, key : String) -> Json? {
-  match v {
-    Object(o) => o.get(key)
-    _ => None
-  }
-}
-
-///|
-fn str(v : Json, key : String) -> String? {
-  match get(v, key) {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn num(v : Json, key : String) -> Double? {
-  match get(v, key) {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
-}
-
-///|
-fn yes(v : Json, key : String) -> Bool {
-  get(v, key) is Some(True)
-}
-
-///|
-fn items(v : Json?) -> Array[Json] {
-  match v {
-    Some(Array(xs)) => xs
-    _ => []
-  }
+using @jsjson {
+  json_str as js, json_num as jn, json_int as ji, json_bool as jb, json_obj as jo, json_arr as ja,
+  json_opt_str as jopt, json_field as get, json_str_field as str, json_num_field as num,
+  json_items as items, json_str_of as as_str, json_num_of as as_num, json_js_str as js_text, num_text,
 }
 
 ///|
@@ -187,32 +127,6 @@ fn some_of(v : Json) -> Json? {
 }
 
 ///|
-fn as_str(v : Json?) -> String? {
-  match v {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn as_num(v : Json?) -> Double? {
-  match v {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
-}
-
-///|
-/// JavaScript's undefined, as an argument.
-let jundef : Json = jo([("$undef", ji(1))])
-
-///|
-/// Bytes as JSON (`{"$bytes": base64}`).
-fn jbytes(b : Bytes) -> Json {
-  jo([("$bytes", js(@base64.encode(b)))])
-}
-
-///|
 /// The bytes an answer carries (`{"$bytes": base64}`).
 fn bytes_in(v : Json) -> Bytes? {
   match str(v, "$bytes") {
@@ -225,37 +139,6 @@ fn bytes_in(v : Json) -> Bytes? {
 /// JSON.stringify of a string, as JavaScript writes it.
 fn quoted(s : String) -> String {
   Json::string(s).stringify()
-}
-
-///|
-/// What JavaScript's `String(x)` gives for a JSON value.
-fn js_text(v : Json?) -> String {
-  match v {
-    None => "undefined"
-    Some(Null) => "null"
-    Some(String(s)) => s
-    Some(True) => "true"
-    Some(False) => "false"
-    Some(Number(n, ..)) => num_text(n)
-    Some(Array(xs)) => xs.map(x => if x is Null { "" } else { js_text(Some(x)) }).join(",")
-    Some(Object(_)) => "[object Object]"
-  }
-}
-
-///|
-/// A number as JavaScript prints it (integers without a fraction).
-fn num_text(n : Double) -> String {
-  if n.is_nan() {
-    "NaN"
-  } else if n == @double.infinity {
-    "Infinity"
-  } else if n == @double.neg_infinity {
-    "-Infinity"
-  } else if n == n.floor() && n.abs() < 1.0e21 {
-    n.to_int64().to_string()
-  } else {
-    n.to_string()
-  }
 }
 
 ///|

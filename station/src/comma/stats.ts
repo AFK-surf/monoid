@@ -27,6 +27,7 @@ type Json = any;
 export const BUILD_DAYS = 31;
 const DAY_MS = 24 * 60 * 60_000;
 const SETTLE_MS = 60_000;
+export const FAST_SETTLE_MS = 1_000;
 /// How long a statement on the statistics' database waits for another process's write (a handover's) before SQLite
 /// refuses it.
 export const BUSY_MS = 5000;
@@ -107,8 +108,9 @@ export function statsRowsOf(given: StationRows, fromDay: string): Map<string, { 
   return rows;
 }
 
-/// What a Task asks of someone, as Comma takes it: Comma's bounds on whom (`waits_for`), its sentence and its link.
+/// What a Task asks of someone, as Comma takes it: Comma's bounds on whom (`waits_for`), its sentence, its card kind and its link.
 const ATTENTION = ["need", "done", "failed"];
+const CARD_KINDS = ["options", "text", "login", "secret", "device", "rig", "signin"];
 const MAX_WAITS = 8;
 const MAX_NOTE = 300;
 const MAX_URL = 500;
@@ -124,7 +126,13 @@ function attentionFields(chat: Json): Json {
     if (/^[^\s@]+@[^\s@]+$/.test(email) && email.length <= MAX_TEXT && waits.size < MAX_WAITS) waits.add(email);
   }
   const note = cut(typeof a.note === "string" ? a.note.trim() : null, MAX_NOTE);
-  return { attention: a.kind, ...(waits.size > 0 ? { waits_for: [...waits] } : {}), ...(note === null ? {} : { note }) };
+  const card = a.kind === "need" && typeof a.card === "string" && CARD_KINDS.includes(a.card) ? a.card : null;
+  return {
+    attention: a.kind,
+    ...(waits.size > 0 ? { waits_for: [...waits] } : {}),
+    ...(note === null ? {} : { note }),
+    ...(card === null ? {} : { card }),
+  };
 }
 
 /// A chat's link in the app, as Comma takes one: https, at most MAX_URL.
@@ -292,15 +300,16 @@ export class CommaStats {
   #building: Promise<void> | null = null;
   #again = false;
   #stops: (() => void)[] | null = null;
+  #nudge: (() => void) | null = null;
   #closed = false;
   #stopRetry: (() => void) | null = null;
   readonly #read: Read;
-  readonly #changes: (changed: () => void) => () => void;
+  readonly #changes: (changed: (fast?: boolean) => void) => () => void;
 
   /// `changes`: tells when the agents spent or a chat moved, until the function it answers is called. `busyMs`: how long
   /// a statement waits for another's write before it is refused (`BUSY_MS`; a test holding the database's lock to see
   /// what is tried again gives less, each try else 5 s of its time).
-  constructor(path: string, read: Read, changes: (changed: () => void) => () => void, ready: Promise<void> = Promise.resolve(), busyMs = BUSY_MS) {
+  constructor(path: string, read: Read, changes: (changed: (fast?: boolean) => void) => () => void, ready: Promise<void> = Promise.resolve(), busyMs = BUSY_MS) {
     this.#read = read;
     this.#changes = changes;
     // Shared with the process serving as a new one starts beside it (a handover): another's write waited for, as the
@@ -337,41 +346,58 @@ export class CommaStats {
     await mkdir(join(data, "comma-indexes"), { recursive: true, mode: 0o700 });
   }
 
-  static at(data: string, read: Read, changes: (changed: () => void) => () => void, ready?: Promise<void>, busyMs?: number): CommaStats {
+  static at(data: string, read: Read, changes: (changed: (fast?: boolean) => void) => () => void, ready?: Promise<void>, busyMs?: number): CommaStats {
     return new CommaStats(join(data, "comma-stats.db"), read, changes, ready, busyMs);
   }
 
   /// A workspace's index is never taken from the old, unscoped index: its owner is not known after a home change.
-  static inWorkspace(data: string, workspace: string, read: Read, changes: (changed: () => void) => () => void): CommaStats {
+  static inWorkspace(data: string, workspace: string, read: Read, changes: (changed: (fast?: boolean) => void) => () => void): CommaStats {
     const dir = join(data, "comma-indexes");
     // Preserve JavaScript's whole string, including lone surrogates, rather than folding them to U+FFFD in UTF-8.
     const name = createHash("sha256").update(workspace, "utf16le").digest("hex");
     return new CommaStats(join(dir, `${name}.db`), read, changes);
   }
 
-  /// Once Comma is connected first: builds now, a minute after a change, and every hour, until close.
+  /// Once Comma is connected first: builds now, a second after a chat moves (a minute after spending alone), and every
+  /// hour, until close.
   start(): void {
     if (this.#closed || this.#stops !== null) return;
     let settle: (() => void) | null = null;
-    const stopChanges = this.#changes(() => {
-      if (settle !== null) return;
-      settle = wall.after(SETTLE_MS, () => {
+    let settleFast = false;
+    const schedule = (fast = false) => {
+      const wantFast = fast === true;
+      if (settle !== null && (settleFast || !wantFast)) return;
+      if (settle !== null) {
+        settle();
         settle = null;
+      }
+      settleFast = wantFast;
+      settle = wall.after(wantFast ? FAST_SETTLE_MS : SETTLE_MS, () => { // timer: burst debouncing
+        settle = null;
+        settleFast = false;
         this.build();
       });
-    });
+    };
+    const stopChanges = this.#changes(schedule);
+    this.#nudge = () => schedule(true);
     const tick = () => {
       this.build();
-      hourly = wall.after(EVERY_MS, tick);
+      hourly = wall.after(EVERY_MS, tick); // timer: fallback periodic sync
     };
-    let hourly = wall.after(EVERY_MS, tick);
+    let hourly = wall.after(EVERY_MS, tick); // timer: fallback periodic sync
     this.#stops = [stopChanges, () => settle?.(), () => hourly()];
     this.build();
+  }
+
+  /// Schedules a fast build once started (for peer chat-change pushes).
+  nudge(): void {
+    this.#nudge?.();
   }
 
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#nudge = null;
     this.#stopRetry?.();
     for (const stop of this.#stops ?? []) stop();
     this.#stops = null;
@@ -524,9 +550,10 @@ export function taskWire(row: IndexRow): Json | null {
   if (row.removed) return { thread: row.key, rev: row.rev, removed: true };
   try {
     const t = JSON.parse(row.json);
+    const labels = t?.attention === "need" && typeof t.card === "string" && CARD_KINDS.includes(t.card) ? [`card:${t.card}`] : [];
     return {
       thread: row.key, rev: row.rev, task: t.task, title: t.title, status: t.status, created_by: t.created_by, created_at: t.created_at,
-      last_activity_at: t.last_activity_at, runtime: t.runtime, model: t.model, labels: [],
+      last_activity_at: t.last_activity_at, runtime: t.runtime, model: t.model, labels,
       ...(typeof t.attention === "string" ? { attention: t.attention } : {}),
       ...(typeof t.attention === "string" && Array.isArray(t.waits_for) && t.waits_for.length > 0 ? { waits_for: t.waits_for } : {}),
       ...(typeof t.attention === "string" && typeof t.note === "string" ? { note: t.note } : {}),

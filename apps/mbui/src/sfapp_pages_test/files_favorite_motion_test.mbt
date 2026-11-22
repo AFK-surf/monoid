@@ -28,7 +28,7 @@ test "the stations stay steady when a favorite is added or removed" {
       t.run_for(@ui.long_press_ms)
       t.release(x, y)
     }
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     t.tap_text("从个人收藏移除「收藏一」")
     frames(@ui.move_most_ms)
     assert_true(t.find("收藏一") is None)

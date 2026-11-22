@@ -169,6 +169,51 @@ test("signed announcements reach A through B without accepting another workspace
   } finally { dirs.forEach((d) => d.close()); dbs.forEach((d) => d.close()); }
 });
 
+test("app.monoid.build and app.still.fail name one workspace's scope; another origin does not", async () => {
+  const { workspaceScope } = await import("../src/mesh/enrollment-door.ts");
+  const workspace = "01M3HNG540559HJG7H4RCWW0TE";
+  const still = workspaceScope("https://app.still.fail", workspace);
+  assert.equal(workspaceScope("https://app.monoid.build", workspace), still);
+  assert.equal(workspaceScope("https://app.monoid.build/", workspace), still);
+  assert.equal(workspaceScope("https://app.still.fail//", workspace), still);
+  assert.notEqual(workspaceScope("https://example.test", workspace), still);
+  assert.notEqual(workspaceScope("https://app.monoid.build", "other"), still);
+});
+
+test("a node on the peer's roster and not yet on this one's is not asked for, and the rest still comes level", async () => {
+  const { ScopeDirectory } = await import("../src/mesh/scope-directory.ts");
+  const { exchangeScope } = await import("../src/mesh/scope-exchange.ts");
+  const identities = [90, 91, 92].map((seed) => {
+    const privateKey = createPrivateKey({ key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, seed)]), format: "der", type: "pkcs8" });
+    const node = createPublicKey(privateKey).export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+    return { node, privateKey };
+  });
+  const dbs = identities.map(() => new DatabaseSync(":memory:"));
+  const dirs = identities.map((identity, i) => new ScopeDirectory({
+    meshConfigure: async () => descriptor(1300 + i, identity), meshRemove: async () => {},
+  } as unknown as import("../src/mesh/endpoint.ts").Endpoint, new Announcements(dbs[i]!), {
+    id: identity.node, sign: (text) => sign(null, Buffer.from(text), identity.privateKey).toString("hex"),
+  }, () => {}, (error) => { throw error; }));
+  try {
+    const every = new Set(identities.map((i) => i.node));
+    // B has C on its roster already; A does not yet (their rosters briefly differ).
+    await dirs[0]!.set([{ scope, nodes: new Set([identities[0]!.node, identities[1]!.node]), transit: true, relayUrls: [] }]);
+    await dirs[1]!.set([{ scope, nodes: every, transit: true, relayUrls: [] }]);
+    await dirs[2]!.set([{ scope, nodes: every, transit: true, relayUrls: [] }]);
+    await exchangeScope(dirs[1]!, scope, (request) => dirs[2]!.exchange(scope, request));
+    assert.ok(dirs[0]!.admits(scope, identities[1]!.node));
+    assert.equal(dirs[0]!.admits(scope, identities[2]!.node), false);
+    const wanted: string[][] = [];
+    await exchangeScope(dirs[0]!, scope, (request) => {
+      if (request.want) wanted.push(request.want);
+      return dirs[1]!.exchange(scope, request);
+    });
+    assert.deepEqual(wanted, [[identities[1]!.node]]);
+    assert.deepEqual(new Set(dirs[0]!.records(scope).map((r) => JSON.parse(r.body).node)), new Set([identities[0]!.node, identities[1]!.node]));
+    assert.deepEqual(new Set(dirs[1]!.records(scope).map((r) => JSON.parse(r.body).node)), every);
+  } finally { dirs.forEach((d) => d.close()); dbs.forEach((d) => d.close()); }
+});
+
 test("off-thread directory hydration cannot overwrite a newer live announcement", async () => {
   const source = new DatabaseSync(":memory:"), target = new DatabaseSync(":memory:");
   let finish!: (records: import("../src/mesh/announcements.ts").Announcement[]) => void;
@@ -494,4 +539,69 @@ test("remote relay revocation verifies the issuing station and exact target befo
     assert.deepEqual(requests, Array.from({ length: 3 }, () => [remote, workspace, { method: "meshRelays.revoke", node: relay }]));
     await assert.rejects(sync.answer(remote, workspace, { method: "meshRelays.revoke", node: relay }), /issuing station/);
   } finally { await sync.close(); db.close(); rmSync(data, { recursive: true, force: true }); }
+});
+
+test("ScopeDirectory bounds excessive local underlay addresses while keeping small sets unchanged and rejecting Custom", async () => {
+  const { ScopeDirectory } = await import("../src/mesh/scope-directory.ts");
+  const { descriptorOf } = await import("../src/mesh/announcements.ts");
+  const db = new DatabaseSync(":memory:");
+  let push!: (scopes: { scope: string; descriptor: MeshDescriptor }[]) => void;
+  const smallAddrs = [
+    { Ip: "127.0.0.1:4000" },
+    { Ip: "192.168.1.10:4000" },
+    { Relay: "https://relay-z.example" },
+  ];
+  const smallDesc = descriptor();
+  smallDesc.address = { ...(smallDesc.address as Record<string, unknown>), addrs: smallAddrs };
+  const manyAddrs = [
+    { Ip: "[::1]:4000" },
+    { Ip: "127.0.0.1:4000" },
+    { Ip: "[fe80::1]:4000" },
+    { Ip: "169.254.1.1:4000" },
+    { Ip: "[fd00::1]:4000" },
+    { Ip: "192.168.1.10:4000" },
+    { Ip: "172.17.0.1:4000" },
+    { Ip: "100.64.0.1:4000" },
+    { Ip: "[2606:4700:4700::1111]:4000" },
+    { Ip: "[2001:4860:4860::8888]:4000" },
+    { Ip: "8.8.8.8:4000" },
+    { Ip: "1.2.3.4:4000" },
+    { Relay: "https://relay-b.example" },
+    { Relay: "https://relay-a.example" },
+  ];
+  const manyDesc = descriptor();
+  manyDesc.address = { ...(manyDesc.address as Record<string, unknown>), addrs: manyAddrs };
+  const errors: unknown[] = [];
+  const endpoint = {
+    meshConfigure: async () => smallDesc,
+    meshRemove: async () => {},
+    meshListen: (f: (scopes: { scope: string; descriptor: MeshDescriptor }[]) => void) => { push = f; return () => {}; },
+  } as unknown as import("../src/mesh/endpoint.ts").Endpoint;
+  const directory = new ScopeDirectory(endpoint, new Announcements(db), signer, () => {}, (e) => { errors.push(e); });
+  try {
+    await directory.set([{ scope, nodes: allowed, transit: true, relayUrls: [] }]);
+    const first = announcementOf(directory.records(scope)[0]!, scope, allowed);
+    assert.deepEqual((first.descriptor.address as { addrs: unknown[] }).addrs, smallAddrs, "<= 8 addrs must stay untouched and un-reordered");
+    push([{ scope, descriptor: manyDesc }]);
+    assert.deepEqual(errors, []);
+    const bounded = announcementOf(directory.records(scope)[0]!, scope, allowed);
+    assert.deepEqual((bounded.descriptor.address as { addrs: unknown[] }).addrs, [
+      { Relay: "https://relay-a.example" },
+      { Relay: "https://relay-b.example" },
+      { Ip: "1.2.3.4:4000" },
+      { Ip: "8.8.8.8:4000" },
+      { Ip: "[2001:4860:4860::8888]:4000" },
+      { Ip: "[2606:4700:4700::1111]:4000" },
+      { Ip: "100.64.0.1:4000" },
+      { Ip: "172.17.0.1:4000" },
+    ]);
+    const withCustom = descriptor();
+    withCustom.address = {
+      ...(withCustom.address as Record<string, unknown>),
+      addrs: [...Array.from({ length: 9 }, (_, i) => ({ Ip: `192.168.1.${i + 1}:4000` })), { Custom: { id: 1 } }],
+    };
+    push([{ scope, descriptor: withCustom }]);
+    assert.equal(errors.length, 1);
+    assert.throws(() => descriptorOf(withCustom, scope, node), /invalid mesh neighbor address/);
+  } finally { directory.close(); db.close(); }
 });

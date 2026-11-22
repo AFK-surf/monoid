@@ -1,6 +1,6 @@
 // The spinner, or how far what it waits on has come once that is known (progress_spinner's), as a node of the window's
 // tree: the same ring; not known, the spinner's quarter turning by the clock as it is drawn (spinner_node's); known,
-// the accent from its top as far round as it has come, drawn to a part told anew over @kit.progress_ms on the ease-out
+// the accent from its top as far round as it has come, drawn to a part told anew over @motion.progress_ms on the ease-out
 // from where it is drawn then (the first part known there at once, as the old one's anim is made at it).
 
 ///|
@@ -40,7 +40,7 @@ pub fn progress_spinner_node(
       match c {
         Some(k) =>
           if told.val {
-            at.go_ms(v, spin_part(k), @kit.progress_ms, ease=Out)
+            at.go_ms(v, spin_part(k), @motion.progress_ms, ease=Out)
           } else {
             told.val = true
             at.put(spin_part(k))

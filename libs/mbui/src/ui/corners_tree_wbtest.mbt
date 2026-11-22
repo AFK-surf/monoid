@@ -973,3 +973,147 @@ test "corners: a row's ground_over under the hand drawn square inside a rounded 
   assert_true(square.length() == 1 && square[0].contains("lit square under the hand"), msg=list_text(square))
   assert_eq(faults(12.0), [])
 }
+
+///|
+/// A box of the window's tree `w` by `h`, `ra` round, `pad` in from its sides (left, top, right, foot), holding at its
+/// top left a round thing `iw` by `ih`, `rb` round: the corner rule's faults with the theme's ranges (Theme::corner_fit)
+/// set as an app sets them.
+fn tree_round_in(
+  w : Double,
+  h : Double,
+  pad : (Double, Double, Double, Double),
+  ra : Double,
+  iw : Double,
+  ih : Double,
+  rb : Double,
+) -> Array[String] {
+  let t = Tester::new(
+    fn(_) {  },
+    tree=fn(root) {
+      root.box(fn(page) {
+        page.pad(Is(40.0)) |> ignore
+        page.box(fn(outer) {
+          outer.width(Is(Some(w))).height(Is(Some(h))).padding(Is(pad)).radius(Is(ra)).ground(Is(0x222222FFL)) |> ignore
+          outer.box(fn(inner) {
+            inner.width(Is(Some(iw))).height(Is(Some(ih))).radius(Is(rb)).ground(Is(0xEEEEEEFFL)) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    w=500.0,
+    h=500.0,
+    platform=0,
+    corners_held=false,
+    theme=fn() { { ..Theme::light(), corner_fit: Some(fit_ranges) } },
+  )
+  t.draw()
+  g().corner_fit = Some(fit_ranges)
+  t.corner_faults()
+}
+
+///|
+/// Whether `faults` are four, each of them saying `words`.
+fn four_saying(faults : Array[String], words : String) -> Bool {
+  faults.length() == 4 && faults.iter().all(fn(f) { f.contains(words) })
+}
+
+///|
+test "corners: a capsule across a box (370×44, 4 in all round, 18 round) wants the box 22 round in all four corners, with the theme's ranges: the box 14 (squarer than the capsule) or 20 (too near to follow it) said; 22 nothing; 6 in from its sides and 4 from its top and foot, said so" {
+  let pad = (4.0, 4.0, 4.0, 4.0)
+  let square = tree_round_in(370.0, 44.0, pad, 14.0, 362.0, 36.0, 18.0)
+  assert_true(four_saying(square, "wants corner 22"), msg=list_text(square))
+  let near = tree_round_in(370.0, 44.0, pad, 20.0, 362.0, 36.0, 18.0)
+  assert_true(four_saying(near, "wants corner 22"), msg=list_text(near))
+  assert_eq(tree_round_in(370.0, 44.0, pad, 22.0, 362.0, 36.0, 18.0), [])
+  let uneven = tree_round_in(370.0, 44.0, (6.0, 4.0, 6.0, 4.0), 14.0, 358.0, 36.0, 18.0)
+  assert_true(four_saying(uneven, "6 and 4 from its edges"), msg=list_text(uneven))
+}
+
+///|
+test "corners: a capsule down a box (44×370, 4 in, 18 round), and a circle filling a box (44×44, 4 in), the box 14 round: each wants it 22 in all four corners; 22 nothing" {
+  let pad = (4.0, 4.0, 4.0, 4.0)
+  let down = tree_round_in(44.0, 370.0, pad, 14.0, 36.0, 362.0, 18.0)
+  assert_true(four_saying(down, "wants corner 22"), msg=list_text(down))
+  assert_eq(tree_round_in(44.0, 370.0, pad, 22.0, 36.0, 362.0, 18.0), [])
+  let circle = tree_round_in(44.0, 44.0, pad, 14.0, 36.0, 36.0, 18.0)
+  assert_true(four_saying(circle, "wants corner 22"), msg=list_text(circle))
+  assert_eq(tree_round_in(44.0, 44.0, pad, 22.0, 36.0, 36.0, 18.0), [])
+}
+
+///|
+test "corners: a capsule over a box as big as it (180×48, 16 round), with the theme's ranges: the box wants 24 in all four corners" {
+  let t = Tester::new(
+    fn(_) {  },
+    tree=fn(root) {
+      root.box(fn(page) {
+        page.pad(Is(40.0)) |> ignore
+        page.box(fn(card) {
+          card.width(Is(Some(180.0))).height(Is(Some(48.0))).radius(Is(16.0)).ground(Is(0xFBE9E7FFL)) |> ignore
+          card.box(fn(flash) { flash.over(Is(true)).radius(Is(1.0e6)).ground(Is(0xCC5A3433L)) |> ignore }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    w=400.0,
+    h=300.0,
+    platform=0,
+    corners_held=false,
+    theme=fn() { { ..Theme::light(), corner_fit: Some(fit_ranges) } },
+  )
+  t.draw()
+  g().corner_fit = Some(fit_ranges)
+  let faults = t.corner_faults()
+  assert_true(four_saying(faults, "wants corner 24"), msg=list_text(faults))
+}
+
+///|
+test "corners, with the theme's ranges: a circle at one side of a card (46 round 23, 16 in, the card 18 round, 78 or 100 high), and a knob at the start of a capsule track (28 round 14 in a 92×32 round 16), nothing said" {
+  let pad = (16.0, 16.0, 16.0, 16.0)
+  assert_eq(tree_round_in(324.0, 78.0, pad, 18.0, 46.0, 46.0, 23.0), [])
+  assert_eq(tree_round_in(324.0, 100.0, pad, 18.0, 46.0, 46.0, 23.0), [])
+  assert_eq(tree_round_in(92.0, 32.0, (0.0, 0.0, 0.0, 0.0), 16.0, 28.0, 28.0, 14.0), [])
+  // (a switch's knob stretched wider than tall, 23×18 round 9, at the end of its track 36×22 round 11, 4 in from its
+  // side and 2 from its top and foot: the track a capsule already, nothing it could be rounder by)
+  assert_eq(tree_round_in(36.0, 22.0, (9.0, 2.0, 4.0, 2.0), 11.0, 23.0, 18.0, 9.0), [])
+}
+
+///|
+/// A panel at the right of a window 400 by 200, its right corners following the window's 6 in (10), its left ones
+/// `left`, with the theme's ranges; a capsule 36 high across its foot, 8 in.
+fn foot_capsule_panel(left : Double) -> (Ctx) -> Unit {
+  fn(c) {
+    c.with_theme({ ..Theme::light(), corner_ladder: [34.0, 26.0, 18.0, 10.0], corner_fit: Some(fit_ranges) }, fn() {
+      c.box(w=Fill(1.0), h=Fill(1.0), fn() {
+        let edge : CornerOf = Follow(Window, 6.0, 34.0)
+        c.box(
+          style=style(radius=LinkedEach(Own(left), edge, edge, Own(left))),
+          w=Px(300.0),
+          h=Px(188.0),
+          left=94.0,
+          top=6.0,
+          bg=0x333333FFL,
+          pad=8.0,
+          justify=JEnd,
+          fn() { c.box(w=Fill(1.0), h=Px(36.0), radius=18.0, bg=0xEEEEEEFFL, fn() {  }) |> ignore },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+  }
+}
+
+///|
+test "corners: a capsule across the foot of a panel whose right corners follow the window's (10): said only where its left corner (34) is not concentric with it (it wants 26); the left 26, nothing" {
+  let t = Tester::new(foot_capsule_panel(34.0), w=400.0, h=200.0, window_corner=16.0, corners_held=false)
+  t.draw()
+  let faults = t.corner_faults()
+  assert_true(faults.length() == 1 && faults[0].contains("wants corner 26"), msg=list_text(faults))
+  let t = Tester::new(foot_capsule_panel(26.0), w=400.0, h=200.0, window_corner=16.0, corners_held=false)
+  t.draw()
+  assert_eq(t.corner_faults(), [])
+}

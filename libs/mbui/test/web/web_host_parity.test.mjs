@@ -46,7 +46,7 @@ function browser() {
       return names.some((n) => installed.has(n)) ? Promise.resolve(this) : Promise.reject(new Error('no such font'));
     }
   }
-  const document = { ...element(), title: '', body, documentElement: element(), fonts,
+  const document = { ...element(), title: ' 页面自己的标题 ', body, documentElement: element(), fonts,
     createElement: () => ({ ...element(), getContext: () => ctx2d }),
     getElementById: (id) => id === 'c' ? canvas : ime,
     querySelector: (q) => q === 'meta[name="theme-color"]' ? theme : null };
@@ -170,6 +170,7 @@ test('the page\'s title and colour', async () => {
   const b = browser();
   await task();
   assert.equal(b.document.title, 'test', 'the title it runs with');
+  assert.equal(b.H.loadedTitle(), '页面自己的标题', 'the page\'s own, as it loaded');
   b.H.setPageTitle('收件箱 (3)');
   assert.equal(b.document.title, '收件箱 (3)');
   b.H.setThemeColor('#101012');

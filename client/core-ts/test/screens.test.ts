@@ -8,7 +8,7 @@ import { Deferred, Effect, Queue } from "effect";
 import { linkTarget } from "../src/asks.ts";
 import { parseCall } from "../src/core/calls.ts";
 import { CoreError } from "../src/error.ts";
-import { CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR, CURSOR_IMAGE, FrameReader, ackFrame, clipboardFrame, configFrame, copiedFrame, cursorFrame, cursorImageFrame, inputFrame, keyframeFrame, lookFrame, readClientFrames, stateFrame, videoFrame, type ClientFrame, type StationFrame } from "../src/screen-frames.ts";
+import { CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR, CURSOR_IMAGE, FrameReader, ackFrame, clipboardFrame, configFrame, copiedFrame, cursorFrame, cursorImageFrame, inputFrame, keyframeFrame, lookFrame, micFrame, micOnFrame, readClientFrames, stateFrame, videoFrame, type ClientFrame, type StationFrame } from "../src/screen-frames.ts";
 import { LOOK_MS, accessOf, checkInput, othersOf, personShown } from "../src/screens.ts";
 import { HostWire, type RequestHead, type ScreenAsk, type StationWire } from "../src/station/wire.ts";
 import type { FakeHost } from "../src/testing.ts";
@@ -80,7 +80,7 @@ each("a_views_frames_are_read_whole_however_the_stream_cuts_them", (seed) => {
     stateFrame({ cursor: { x: 0.5, y: 0.25, shape: "pointer" }, controlledBy: ["Bob"] }),
     videoFrame(false, 2 ** 40 + 33_333, bytesOf(3, seed + 1)),
     // A kind a later station may send: passed over.
-    new Uint8Array([9, 0, 0, 0, 2, 1, 2]),
+    new Uint8Array([10, 0, 0, 0, 2, 1, 2]),
     configFrame({ codec: "jpeg", width: 800, height: 600 }),
     videoFrame(true, 2 ** 40 + 66_666, bytesOf(12_345, seed + 2)),
   ];
@@ -99,16 +99,29 @@ each("a_views_frames_are_read_whole_however_the_stream_cuts_them", (seed) => {
   assert.equal(video.video.data.buffer.byteLength, 70_000);
   assert.deepEqual(read[2], { state: { cursor: { x: 0.5, y: 0.25, shape: "pointer" }, controlledBy: ["Bob"] } });
   assert.deepEqual(read[3], { video: { key: false, ts: 2 ** 40 + 33_333, data: bytesOf(3, seed + 1) } });
-  assert.deepEqual(read[4], { other: 9 });
+  assert.deepEqual(read[4], { other: 10 });
   assert.deepEqual(read[5], { config: { codec: "jpeg", width: 800, height: 600, description: null, region: null } });
   assert.equal((read[6] as J).video.ts, 2 ** 40 + 66_666);
 });
 
 test("what_a_client_sends_on_a_view_is_framed_as_the_station_reads_it", () => {
-  const sent = join([inputFrame({ t: "text", text: "你好" }), ackFrame(2 ** 33 + 5), keyframeFrame(), lookFrame({ x: 0.5, y: 0, w: 0.5, h: 0.25 }, 1200, 300), lookFrame(null, 0, 0)]);
+  const ack8 = ackFrame(2 ** 33 + 5);
+  assert.equal(ack8.length, 5 + 8, "ack without waitUs stays 8-byte payload");
+  assert.equal(ackFrame(100, 0).length, 5 + 8);
+  assert.equal(ackFrame(100, -10).length, 5 + 8);
+  const ack12 = ackFrame(2 ** 33 + 6, 42_500.4);
+  assert.equal(ack12.length, 5 + 12, "ack with waitUs > 0 appends 4-byte u32 BE");
+  const ackSat = ackFrame(2 ** 33 + 7, 1e12);
+  assert.equal(ackSat.length, 5 + 12);
+  const sent = join([inputFrame({ t: "text", text: "你好" }), ack8, ack12, ackSat, keyframeFrame(), lookFrame({ x: 0.5, y: 0, w: 0.5, h: 0.25 }, 1200, 300), lookFrame(null, 0, 0)]);
   const [frames, rest] = readClientFrames(sent);
-  assert.deepEqual(frames, [{ input: { t: "text", text: "你好" } }, { ack: 2 ** 33 + 5 }, { keyframe: true }, { look: { region: { x: 0.5, y: 0, w: 0.5, h: 0.25 }, maxWidth: 1200, maxHeight: 300 } }, { look: { region: null } }]);
+  assert.deepEqual(frames, [{ input: { t: "text", text: "你好" } }, { ack: 2 ** 33 + 5 }, { ack: 2 ** 33 + 6, waitUs: 42_500 }, { ack: 2 ** 33 + 7, waitUs: 0xffff_ffff }, { keyframe: true }, { look: { region: { x: 0.5, y: 0, w: 0.5, h: 0.25 }, maxWidth: 1200, maxHeight: 300 } }, { look: { region: null } }]);
   assert.equal(rest.length, 0);
+  // parseCall("screen.ack") keeps positive finite waitUs and omits zero/negative/non-finite.
+  assert.deepEqual((parseCall("screen.ack", { view: "v1", ts: 1000 }) as J).call, { kind: "ack", view: "v1", ts: 1000 });
+  assert.deepEqual((parseCall("screen.ack", { view: "v1", ts: 1000, waitUs: 0 }) as J).call, { kind: "ack", view: "v1", ts: 1000 });
+  assert.deepEqual((parseCall("screen.ack", { view: "v1", ts: 1000, waitUs: -5 }) as J).call, { kind: "ack", view: "v1", ts: 1000 });
+  assert.deepEqual((parseCall("screen.ack", { view: "v1", ts: 1000, waitUs: 25_000 }) as J).call, { kind: "ack", view: "v1", ts: 1000, waitUs: 25_000 });
   assert.throws(() => {
     const r = new FrameReader();
     r.push(new Uint8Array([2, 0xff, 0xff, 0xff, 0xff]));
@@ -131,7 +144,7 @@ test("a_persons_input_is_checked_and_put_in_the_frame", () => {
   assert.equal(personShown("agent: 查询账号"), "Agent「查询账号」");
   assert.equal(personShown("agent: 这是一个超过十八个字符的聊天标题用来测试截断不丢右引号"), "Agent「这是一个超过十八个字符的聊天标题用来…」");
   const view = parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", maxWidth: 99999, codecs: ["vp9", "jpeg"] }) as J;
-  assert.deepEqual(view.call.ask, { maxWidth: 7680, maxHeight: 1080, codecs: ["jpeg"], control: true });
+  assert.deepEqual(view.call.ask, { maxWidth: 7680, maxHeight: 1080, codecs: ["jpeg"], control: true, privateClip: true });
   assert.equal(view.call.auto, true, "no mode asked: decided as it opens");
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", control: true }) as J).call.auto, false);
   assert.throws(() => parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", codecs: ["vp9"] }));
@@ -151,6 +164,10 @@ test("a_persons_input_is_checked_and_put_in_the_frame", () => {
   for (const bad of [{ ...fit, width: 0 }, { ...fit, scale: "3" }, null]) assert.equal((parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v1", fit: bad }) as J).call.ask.fit, undefined, JSON.stringify(bad));
   // The 画质 chosen goes to the station (how high the bit rate goes); none for 自动, a preview or one not known.
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "original" }) as J).call.ask.quality, "original");
+  // 超清 (2K): its 画质 said too, its picture 4:2:0 as a game's wants (4:4:4 is 原画's alone)
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "qhd" }) as J).call.ask.quality, "qhd");
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "qhd", chroma444: true }) as J).call.ask.chroma444, undefined);
+  assert.deepEqual((parseCall("screen.bounds", { view: "v1", maxWidth: 2560, maxHeight: 1440, quality: "qhd" }) as J).call, { kind: "bounds", view: "v1", maxWidth: 2560, maxHeight: 1440, quality: "qhd", fps: null });
   for (const quality of [undefined, "best", 3]) assert.equal("quality" in (parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality }) as J).call.ask, false, String(quality));
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "hd", peek: true }) as J).call.ask.quality, undefined);
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", gamut: "p3" }) as J).call.ask.gamut, "p3");
@@ -586,8 +603,8 @@ each("a_page_that_takes_the_pointer_alone_is_told_it_alone_as_it_moves_and_every
   await host.settle();
   assert.equal(views.length, 2);
   const [v, w] = views;
-  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true, binaryCursor: true, customCursor: true }, "the station asked for cursor frames and the pictures of apps' own");
-  assert.deepEqual(w!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true }, "nothing new asked");
+  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true, privateClip: true, binaryCursor: true, customCursor: true }, "the station asked for cursor frames and the pictures of apps' own");
+  assert.deepEqual(w!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true, privateClip: true }, "nothing new asked");
   for (const x of [v!, w!]) x.send(join([stateFrame({ title: "t", control: true }), configFrame({ codec: "h264", width: 1280, height: 720 }), videoFrame(true, 1, bytesOf(100, seed))]));
   await host.settle();
   said(host, log);
@@ -653,7 +670,7 @@ each("a_view_brings_its_frames_with_their_bytes_and_takes_acks_key_frames_and_in
   const [v] = views;
   assert.equal(v!.head.method, "POST");
   assert.equal(v!.head.path, "/admin/api/screens/desktop/view");
-  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264", "jpeg"], control: true });
+  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264", "jpeg"], control: true, privateClip: true });
   const avcc = bytesOf(38, seed);
   const key = bytesOf(150_000, seed);
   const delta = bytesOf(900, seed + 1);
@@ -869,6 +886,23 @@ each("only_looking_is_opened_again_without_control_and_takes_no_input", async (s
   const all = states(log, 1);
   assert.equal(all.slice(all.findIndex((s: J) => s.phase === "live")).some((s: J) => s.phase !== "live"), false);
   core.close();
+});
+
+each("text_sharp_is_asked_as_原画_is_chosen_and_no_more_as_another_is", async (seed) => {
+  // (the view's own ask, as each bounds opens it again)
+  const opened = await viewing(seed);
+  call(opened.core, opened.ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", maxWidth: 1920, maxHeight: 1080, chroma444: true });
+  await opened.host.settle();
+  assert.equal(opened.views[0]!.ask.chroma444, undefined, "自动: not asked");
+  opened.views[0]!.send(join([configFrame({ codec: "jpeg", width: 1920, height: 1080 }), videoFrame(true, 1, bytesOf(500, seed))]));
+  await opened.host.settle();
+  call(opened.core, opened.ui, 2, "screen.bounds", { view: "v", maxWidth: 1920, maxHeight: 1080, quality: "original" });
+  await opened.host.settle();
+  assert.equal(opened.views.at(-1)!.ask.chroma444, true, "原画 chosen: asked");
+  call(opened.core, opened.ui, 3, "screen.bounds", { view: "v", maxWidth: 1920, maxHeight: 1080, quality: "hd" });
+  await opened.host.settle();
+  assert.equal(opened.views.at(-1)!.ask.chroma444, undefined, "高清 again: no more");
+  opened.core.close();
 });
 
 each("another_size_asked_opens_the_view_again_with_it_the_stream_before_kept_until_the_new_one_opened", async (seed) => {
@@ -1321,6 +1355,42 @@ each("the_clipboard_frames_both_ways_are_read_and_framed_however_cut", (seed) =>
   assert.deepEqual(frames, [{ clipboard: { type: "text", paste: true, data: text } }, { clipboard: { type: "png", paste: false, data: PNG } }]);
 });
 
+each("a_copy_marked_private_is_read_with_its_mark_and_a_paste_sends_its_own", (seed) => {
+  const text = new TextEncoder().encode("hunter2");
+  const reader = new FrameReader();
+  const read: StationFrame[] = [];
+  for (const piece of cut(join([copiedFrame("text", text, "concealed"), copiedFrame("png", PNG, "transient"), copiedFrame("text", text, "auto"), new Uint8Array([9, 0, 0, 0, 3, 7, 1, 9]), new Uint8Array([9, 0, 0, 0, 1, 1])]), random(seed))) {
+    reader.push(piece);
+    for (let f = reader.next(); f !== null; f = reader.next()) read.push(f);
+  }
+  assert.deepEqual(read, [
+    { clipboard: { type: "text", data: text, privacy: "concealed" } },
+    { clipboard: { type: "png", data: PNG, privacy: "transient" } },
+    { clipboard: { type: "text", data: text, privacy: "auto" } },
+    { other: 9 },
+    { other: 9 },
+  ], "a mark or a type this client does not know is passed over");
+  const [frames] = readClientFrames(join([clipboardFrame("text", text, true, "concealed"), clipboardFrame("png", PNG, false, "transient"), clipboardFrame("text", text, false, null)]));
+  assert.deepEqual(frames, [{ clipboard: { type: "text", paste: true, data: text, privacy: "concealed" } }, { clipboard: { type: "png", paste: false, data: PNG, privacy: "transient" } }, { clipboard: { type: "text", paste: false, data: text } }]);
+  // (a station from before reads bit 0 alone: the paste is as it was)
+  assert.equal(clipboardFrame("text", text, true, "auto")[5]! & 1, 1);
+  assert.equal((parseCall("screen.clipboard", { view: "v", text: "pw", privacy: "concealed" }) as J).call.privacy, "concealed");
+  assert.equal((parseCall("screen.clipboard", { view: "v", text: "pw", privacy: "secret" }) as J).call.privacy, null);
+});
+
+test("a_move_says_how_far_and_a_controller_is_checked", () => {
+  assert.deepEqual(checkInput({ t: "pointer", kind: "move", x: 0.5, y: 0.5, buttons: 0, dx: 3.5, dy: -20000, relative: true }), { t: "pointer", kind: "move", x: 0.5, y: 0.5, buttons: 0, dx: 3.5, dy: -10000, relative: true });
+  assert.deepEqual(checkInput({ t: "pointer", kind: "down", x: 0.5, y: 0.5, buttons: 1, dx: 3, dy: 4, relative: true }), { t: "pointer", kind: "down", x: 0.5, y: 0.5, buttons: 1, relative: true }, "a press where the pointer is: how far is a move's alone");
+  assert.deepEqual(checkInput({ t: "pointer", kind: "up", x: 0.5, y: 0.5, buttons: 0, relative: true }), { t: "pointer", kind: "up", x: 0.5, y: 0.5, buttons: 0, relative: true });
+  assert.deepEqual(checkInput({ t: "gamepad", index: 1, buttons: 0x3ffff, lx: 2, ly: -0.5, rx: 0, ry: 0, lt: -1, rt: 0.5 }), { t: "gamepad", index: 1, connected: true, buttons: 0x1ffff, lx: 1, ly: -0.5, rx: 0, ry: 0, lt: 0, rt: 0.5 });
+  assert.deepEqual(checkInput({ t: "gamepad", index: 3, connected: false }), { t: "gamepad", index: 3, connected: false, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 });
+  for (const bad of [{ t: "gamepad", index: 4 }, { t: "gamepad", index: 1.5 }, { t: "gamepad" }]) assert.throws(() => checkInput(bad), JSON.stringify(bad));
+  const asked = parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v", quality: "original", chroma444: true }) as J;
+  assert.equal(asked.call.ask.chroma444, true, "text sharp asked with 原画");
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v", quality: "hd", chroma444: true }) as J).call.ask.chroma444, undefined);
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v", peek: true }) as J).call.ask.privateClip, undefined, "a preview reads no clipboard");
+});
+
 test("a_paste_is_checked_its_size_bounded_and_a_reveal_is_an_input", () => {
   const text = parseCall("screen.clipboard", { view: "v", text: "hi" }) as J;
   assert.deepEqual([text.call.type, text.call.paste, [...text.call.data]], ["text", true, [104, 105]], "pasted unless asked not to");
@@ -1361,6 +1431,17 @@ each("while_driving_the_clipboard_goes_both_ways_and_where_files_go_is_said", as
   const copies = log.filter((m) => m.id === 1 && m.value?.clipboard);
   assert.deepEqual(copies[0].value, { clipboard: { type: "text", text: "从远端复制" } });
   assert.deepEqual([copies[1].value, [...copies[1].bytes]], [{ clipboard: { type: "png", size: PNG.length } }, [...PNG]]);
+  // A password manager's copy on it: its mark said, for the page to keep it out of this device's history; an app holding
+  // the pointer, said in the state.
+  views[0]!.send(join([copiedFrame("text", new TextEncoder().encode("pw"), "concealed"), stateFrame({ pointerLock: true })]));
+  await host.settle();
+  said(host, log);
+  assert.deepEqual(log.filter((m) => m.id === 1 && m.value?.clipboard).at(-1).value, { clipboard: { type: "text", text: "pw", privacy: "concealed" } });
+  assert.equal(lastState(log, 1).pointerLock, true);
+  views[0]!.send(stateFrame({ pointerLock: false }));
+  await host.settle();
+  said(host, log);
+  assert.equal(lastState(log, 1).pointerLock, undefined);
   // A paste here, after the key before it; a reveal as input.
   call(core, ui, 2, "screen.input", { view: "v", input: { t: "key", kind: "down", key: "Meta", code: "MetaLeft", mods: 4 } });
   call(core, ui, 3, "screen.clipboard", { view: "v", text: "粘贴" });
@@ -1633,4 +1714,88 @@ test("an_auto_view_yielded_to_an_agent_resumes_control_when_the_agent_leaves_and
   assert.equal(views.length, 2);
   assert.equal(views[1]!.ask.control, true);
   core.close();
+});
+
+/// The person's microphone into the screen's virtual one: `screen.micOn` said to the station (again to each stream
+/// that drives while on), `screen.mic` sent only while driving, shared, and the state's `mic` says a recording of
+/// that epoch goes on; the state's `mic` kept only while driving.
+each("a_views_microphone_goes_only_while_shared_driven_and_recorded_in_its_epoch", async (seed) => {
+  const { host, core, ui, views, replace } = await viewing(seed);
+  const log: J[] = [];
+  call(core, ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+  await host.settle();
+  const v = views[0]!;
+  v.send(join([stateFrame({ title: "t", control: true }), configFrame({ codec: "h264", width: 1280, height: 720 }), videoFrame(true, 1, bytesOf(100, seed))]));
+  await host.settle();
+  const pcm = (n: number, fill: number) => new Uint8Array(n).fill(fill);
+  const mics = (w: typeof v) => w.got.filter((f) => "micOn" in f || "mic" in f);
+  call(core, ui, 2, "screen.mic", { view: "v", epoch: 3 }, pcm(4, 1));
+  call(core, ui, 3, "screen.micOn", { view: "v", on: true });
+  call(core, ui, 4, "screen.micOn", { view: "v", on: true });
+  call(core, ui, 5, "screen.mic", { view: "v", epoch: 3 }, pcm(4, 2));
+  await host.settle();
+  assert.deepEqual(mics(v), [{ micOn: true }], "said once; nothing while nothing records");
+  v.send(stateFrame({ mic: { available: true, active: true, epoch: 3 } }));
+  await host.settle();
+  said(host, log);
+  assert.deepEqual(lastState(log, 1).mic, { available: true, active: true, epoch: 3 });
+  call(core, ui, 6, "screen.mic", { view: "v", epoch: 2 }, pcm(4, 3));
+  call(core, ui, 7, "screen.mic", { view: "v", epoch: 3 }, pcm(4, 4));
+  await host.settle();
+  assert.deepEqual(mics(v), [{ micOn: true }, { mic: { flags: 0, epoch: 3, data: pcm(4, 4) } }]);
+  // Recorded no more: nothing goes.
+  v.send(stateFrame({ mic: { available: true, active: false, epoch: 4 } }));
+  await host.settle();
+  call(core, ui, 8, "screen.mic", { view: "v", epoch: 4 }, pcm(2, 5));
+  await host.settle();
+  assert.equal(mics(v).length, 2);
+  // Another stream: told it is shared as it opens, its microphone said anew by it.
+  v.send(stateFrame({ mic: { available: true, active: true, epoch: 5 } }));
+  await host.settle();
+  replace();
+  await host.settle();
+  said(host, log);
+  assert.equal(views.length, 2);
+  assert.deepEqual(mics(views[1]!), [{ micOn: true }]);
+  assert.equal(lastState(log, 1).mic, undefined);
+  call(core, ui, 9, "screen.mic", { view: "v", epoch: 5 }, pcm(2, 6));
+  await host.settle();
+  assert.equal(mics(views[1]!).length, 1);
+  views[1]!.send(join([stateFrame({ title: "t", control: true }), stateFrame({ mic: { available: true, active: true, epoch: 5 } })]));
+  await host.settle();
+  call(core, ui, 10, "screen.mic", { view: "v", epoch: 5 }, pcm(2, 7));
+  await host.settle();
+  assert.deepEqual(mics(views[1]!).at(-1), { mic: { flags: 0, epoch: 5, data: pcm(2, 7) } });
+  // Made to only look: the microphone gone with control, nothing sent.
+  views[1]!.send(stateFrame({ control: false, mic: null }));
+  await host.settle();
+  said(host, log);
+  assert.equal(lastState(log, 1).mic, undefined);
+  call(core, ui, 11, "screen.mic", { view: "v", epoch: 5 }, pcm(2, 8));
+  await host.settle();
+  assert.equal(mics(views[1]!).length, 2);
+  // Shared no more.
+  call(core, ui, 12, "screen.micOn", { view: "v", on: false });
+  await host.settle();
+  assert.deepEqual(mics(views[1]!).at(-1), { micOn: false });
+  core.receive(ui, { kind: "cancel", id: 1, cancel: true });
+  await host.settle();
+  // A late one after the view went: nothing to do, no error.
+  call(core, ui, 13, "screen.mic", { view: "v", epoch: 5 }, pcm(2, 9));
+  call(core, ui, 14, "screen.micOn", { view: "v", on: true });
+  await host.settle();
+  said(host, log);
+  assert.ok(!log.some((m) => (m.id === 13 || m.id === 14) && m.error), "let be");
+  core.close();
+});
+
+test("a_microphones_calls_are_checked", () => {
+  assert.deepEqual((parseCall("screen.micOn", { view: "v", on: true }) as J).call, { kind: "micOn", view: "v", on: true });
+  assert.throws(() => parseCall("screen.micOn", { view: "v" }));
+  assert.equal((parseCall("screen.mic", { view: "v", epoch: 4294967295 }, new Uint8Array(3840)) as J).call.epoch, 4294967295);
+  for (const [params, bytes] of [[{ view: "v", epoch: 1 }, new Uint8Array(3)], [{ view: "v", epoch: 1 }, new Uint8Array(0)], [{ view: "v", epoch: 1 }, new Uint8Array(3842)], [{ view: "v", epoch: -1 }, new Uint8Array(2)], [{ view: "v", epoch: 1.5 }, new Uint8Array(2)], [{ view: "v", epoch: 4294967296 }, new Uint8Array(2)], [{ view: "v", epoch: 1 }, undefined]] as const) {
+    assert.throws(() => parseCall("screen.mic", params, bytes));
+  }
+  const [frames] = readClientFrames(join([micOnFrame(true), micFrame(new Uint8Array([1, 2]), 7)]));
+  assert.deepEqual(frames, [{ micOn: true }, { mic: { flags: 0, epoch: 7, data: new Uint8Array([1, 2]) } }]);
 });

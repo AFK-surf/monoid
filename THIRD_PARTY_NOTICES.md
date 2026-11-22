@@ -24,7 +24,7 @@ The Android app builds in [JZlib](https://github.com/ymnk/jzlib) 1.1.3 (Copyrigh
 
 ## scrcpy's server in the station's release
 
-The station puts [scrcpy](https://github.com/Genymobile/scrcpy)'s server, the unmodified `scrcpy-server-v5.0.1` of its release (Genymobile and contributors, Apache-2.0), on an Android device for as long as a person views it (`station/src/screens/scrcpy-server`).
+The station puts [scrcpy](https://github.com/Genymobile/scrcpy)'s server, the unmodified `scrcpy-server-v5.0.1` of its release (Genymobile and contributors, Apache-2.0), on an Android device for as long as a person views it (`station/assets/screens/scrcpy-server`).
 
 ## agent-desktop in the station's release
 

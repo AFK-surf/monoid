@@ -62,14 +62,14 @@ pub fn keeps_frame(c : @ui.Ctx) -> Unit {
       KeptAt(at) => {
         @hostapi.log("kept \{k.name}: \{at}")
         k.keep.end()
-        say(c, k.saved)
+        toast_later(k.saved)
       }
       // the person called the panel or the sheet off: nothing to say
       CalledOff => k.keep.end()
       Failed => {
         @hostapi.log("keep \{k.name}: failed")
         k.keep.end()
-        say(c, k.failed)
+        toast_later(k.failed)
       }
     }
     if !(kept is Keeping) {
@@ -113,33 +113,7 @@ pub fn keep_words(way : @hostapi.KeepWay) -> (String, String) {
 }
 
 ///|
-/// Bytes all here (a chat's file the preview has read, a picture made to share) kept `way` (by default as keep_way_of
-/// says: a picture or a film into a phone's photo album, else where the system keeps downloads): `saved` or `failed`
-/// said once the host has answered (keep_words by default), `failed` at once where the host keeps nothing.
-pub fn keep_bytes(
-  c : @ui.Ctx,
-  name : String,
-  mime : String,
-  bytes : Bytes,
-  way? : @hostapi.KeepWay,
-  saved? : String,
-  failed? : String,
-) -> Unit {
-  let way = way.unwrap_or(keep_way_of(name))
-  let (said, failed_said) = keep_words(way)
-  let saved = saved.unwrap_or(said)
-  let failed = failed.unwrap_or(failed_said)
-  // (asked of the host once the frame's builds are over: its callers' bytes, given once)
-  c.tell("keep/" + name, fn() {
-    match @ui.keep(name, mime, bytes, way~) {
-      Some(k) => keepings.push({ keep: k, name, saved, failed, then: fn(_) {  } })
-      None => say(c, failed)
-    }
-  })
-}
-
-///|
-/// Bytes kept on the device as a file named `name` (keep_bytes's), at a cause (a handler: a press, a frame grabbed):
+/// Bytes kept on the device as a file named `name`, at a cause (a handler: a press, a frame grabbed):
 /// asked of the host then, what it says of it said as it says; kept `way` (where its name says, where not said).
 pub fn keep_bytes_now(name : String, mime : String, bytes : Bytes, way? : @hostapi.KeepWay) -> Unit {
   let way = way.unwrap_or(keep_way_of(name))
@@ -210,56 +184,6 @@ pub fn drive_fetch(
   }
   next()
 }
-
-///|
-/// A drive's file downloaded to the device: asked of the core (downloads.mbt), which
-/// fetches it whatever becomes of the page, how far on its row, kept once all of it is here. `listed`: the file as
-/// its folder lists it (its mtime, its size), what is fetched kept in the core as that.
-pub fn download_drive_file(
-  c : @ui.Ctx,
-  src : Source,
-  station : String,
-  root : String,
-  path : String,
-  name : String,
-  listed? : (Double, Double)?,
-) -> Unit {
-  let (mtime, size) = match listed {
-    Some(Some(l)) => l
-    _ => (0.0, 0.0)
-  }
-  // (told once the frame's builds are over: its pages call it under the press that asks for it)
-  c.tell("download/" + station + "/" + root + "/" + path, fn() {
-    download_start_drive(src, station, root, path, name, size, mtime)
-  })
-}
-
-///|
-/// Several files downloaded, each at once and each said.
-pub fn download_drive_files(
-  c : @ui.Ctx,
-  src : Source,
-  station : String,
-  root : String,
-  dir : String,
-  files : Array[DvEntry],
-) -> Unit {
-  for e in files {
-    download_drive_file(c, src, station, root, dv_join(dir, e.name), e.name, listed=Some((e.mtime, e.size)))
-  }
-}
-
-///|
-/// A folder zipped on the station and downloaded: asked of the core, which has the station zip
-/// it (`drive.zip`) and fetches the zip as any file; the folder's row shows how far meanwhile (正在打包 while the
-/// station zips it).
-pub fn download_drive_zip(c : @ui.Ctx, src : Source, station : String, root : String, path : String) -> Unit {
-  c.tell("download-zip/" + station + "/" + root + "/" + path, fn() {
-    download_start_zip(src, station, root, path, dv_name(path) + ".zip")
-  })
-}
-
-
 
 ///|
 /// `bytes` kept as keep_bytes keeps them, asked of the host at once: from a press's handler outside any build (a node of

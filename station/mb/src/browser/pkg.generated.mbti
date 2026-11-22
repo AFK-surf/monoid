@@ -125,13 +125,13 @@ pub fn from_utf8(Bytes) -> String
 
 pub fn gh_source(String) -> (String, String, String)?
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn headful_agent(String) -> String
 
 pub fn host_cdp_open(@host.Host) -> async (String, CdpLink) -> CdpSocket
 
 pub fn host_clock(@host.Host, Double) -> Clock
+
+pub fn host_fetch_bytes(@host.Host, String) -> async (String) -> Bytes?
 
 pub fn host_file_of(@jsjson.JValue?) -> HostFile?
 
@@ -176,8 +176,6 @@ pub fn kept_of(SignInState) -> String
 pub fn key_code(String, String) -> Int32
 
 pub fn key_event(@jsjson.JValue) -> @jsjson.JValue
-
-pub fn kind_of(Error) -> String
 
 pub let login_binding : String
 
@@ -271,7 +269,7 @@ pub fn utf8(String) -> Bytes
 
 pub fn viewport_of(@jsjson.JValue?) -> (Double, Double)?
 
-pub async fn[X] within(Clock, Double, async () -> X, String) -> X
+pub async fn[X] within(Clock, Double, async () -> X, String, late? : (X) -> Unit) -> X
 
 // Errors
 pub(all) suberror FsError {

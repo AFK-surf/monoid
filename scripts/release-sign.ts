@@ -27,7 +27,7 @@ import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sig
 import { createReadStream, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { createGunzip } from "node:zlib";
-import { type Build, RELEASE_KEYS, keyId, verifySigned } from "../station/src/updates/signed.ts";
+import { type Build, RELEASE_KEYS, keyId, verifySigned } from "../shared/release-signed.ts";
 import { storedZip } from "./delta.ts";
 
 const args = process.argv.slice(2);
@@ -94,7 +94,7 @@ function signingKey(): { key: ReturnType<typeof createPrivateKey>; raw: string }
   if (key.asymmetricKeyType !== "ed25519") fail(`RELEASE_SIGNING_KEY is ${key.asymmetricKeyType}, not Ed25519`);
   const raw = Buffer.from(createPublicKey(key).export({ format: "jwk" }).x as string, "base64url").toString("base64");
   const taken = RELEASE_KEYS.includes(raw);
-  if (!taken && process.env.CI) fail(`RELEASE_SIGNING_KEY's public key (${raw}) is not one of the keys stations take (station/src/updates/signed.ts RELEASE_KEYS)`);
+  if (!taken && process.env.CI) fail(`RELEASE_SIGNING_KEY's public key (${raw}) is not one of the keys stations take (shared/release-keys.ts RELEASE_KEYS)`);
   if (!taken) console.error(`release-sign: warning: the key ${raw} is not one of RELEASE_KEYS; only a station given it (STILLFAIL_RELEASE_KEYS) takes these releases`);
   return { key, raw };
 }
@@ -134,11 +134,14 @@ switch (positional[0]) {
     const node = withNode ? (flag("--node") ?? usage()) : "";
     const version = `0.1.${n}`;
     const builds: Record<string, Required<Build>> = {};
-    for (const [, platform, archive, dist] of given) {
-      const [file, raw, nodeSha256] = await Promise.all([hashFile(archive!), hashRaw(archive!), dist === undefined ? NO_NODE : nodeBinarySha(dist, node)]);
+    // (every platform's read side by side, kept in the order given)
+    const hashed = await Promise.all(given.map(([, , archive, dist]) =>
+      Promise.all([hashFile(archive!), hashRaw(archive!), dist === undefined ? NO_NODE : nodeBinarySha(dist, node)])));
+    given.forEach(([, platform, archive], i) => {
+      const [file, raw, nodeSha256] = hashed[i]!;
       if (file.size !== statSync(archive!).size) fail(`${archive} changed while it was read`);
       builds[platform!] = { ...file, nodeSha256, rawSha256: raw.sha256, rawSize: raw.size };
-    }
+    });
     if (Object.keys(builds).length === 0) usage();
     const k = keyOrNone();
     const feed = { version, build: n, commit, ...(k ? signed({ kind: "stillfail-station-release", version, build: n, commit, node, builds }, k) : {}) };

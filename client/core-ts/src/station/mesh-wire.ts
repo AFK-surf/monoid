@@ -13,14 +13,14 @@ import { CoreError } from "../error.ts";
 import { t } from "../i18n.ts";
 import type { Iroh } from "../iroh.ts";
 import { claimBy } from "../lock.ts";
-import { type CredentialSource, type Link, Mesh, type MeshEnv, type Presented, type Reply, relayHost } from "../mesh.ts";
+import { BULK_SLOW_BPS, HOT_RELAYS, type CredentialSource, type Link, Mesh, type MeshEnv, type Presented, type Reply, relayHost, SPEED_MIN_BYTES, SPEED_SLOW_MIN_MS } from "../mesh.ts";
 import { PAIR_ALPN } from "../pair.ts";
 import { RELAY, type Place, type Status } from "../status.ts";
 import { route } from "../route.ts";
 import { utf8 } from "../util.ts";
 import type { StationAddr } from "./addr.ts";
-import { IDEMPOTENCY_KEY, IDEMPOTENT, NDJSON, NO_HEDGE, READS } from "./requests.ts";
-import type { LinkNet, RequestHead, ScreenAsk, StationWire, TerminalAsk, WireReply, WireSocket } from "./wire.ts";
+import { BATCH_LINES, BULK, BULK_LANE, IDEMPOTENCY_KEY, IDEMPOTENT, NDJSON, NO_HEDGE, READS } from "./requests.ts";
+import type { LinkNet, PeerDiag, RequestHead, ScreenAsk, StationWire, TerminalAsk, WireReply, WireSocket } from "./wire.ts";
 import { RECHECKING } from "./words.ts";
 
 /// The header a station's reply to a screen's view says the token its frames go as datagrams under with
@@ -45,6 +45,11 @@ const HEDGE_RECHECK_MS = 250;
 const LOST_TRIES = 3;
 /// How long a write gone unanswered is asked again with its key.
 export const RECHECK_MS = 5 * 60 * 1000;
+/// Elapsed time and average throughput below which a crawling bulk body aborts to switch to a clearly better standby.
+export const BULK_CRAWL_MS = 8_000;
+export const BULK_CRAWL_BPS = 32 * 1024;
+/// Silent period (0 B/s) after which a stalled bulk body checks for a clearly better standby and aborts to switch.
+export const BULK_STALL_MS = 4_000;
 
 export function unconfirmed(why: CoreError): CoreError {
   return new CoreError("unconfirmed", t("station.core.unconfirmed", { why: why.message }));
@@ -105,37 +110,88 @@ export class MeshWire implements StationWire {
       const off = env.off?.(workspace);
       const asker = `${head.method.toUpperCase()} ${route(head.path)}`;
       const mesh = yield* waiting(status, RELAY, t("station.core.connecting"), env.mesh());
-      const link = yield* waiting(status, address, t("station.core.connecting"), mesh.link(key, credentials, theirs, off, asker));
+      // Kept current in the background (requests.ts NO_HEDGE) or routed as a bulk transfer (BULK, BULK_LANE):
+      // wire-only marks, stripped before sending to any station.
+      const bulk = head.headers.some(([k]) => k.toLowerCase() === BULK);
+      const laneHeader = head.headers.find(([k]) => k.toLowerCase() === BULK_LANE)?.[1];
+      const laneParsed = laneHeader !== undefined ? Number(laneHeader) : Number.NaN;
+      const lane = Number.isInteger(laneParsed) && laneParsed >= 0 ? laneParsed : null;
+      const noHedge = head.headers.some(([k]) => k.toLowerCase() === NO_HEDGE);
+      const sent: RequestHead = noHedge || bulk || laneHeader !== undefined
+        ? { ...head, headers: head.headers.filter(([k]) => { const low = k.toLowerCase(); return low !== NO_HEDGE && low !== BULK && low !== BULK_LANE; }) }
+        : head;
+      const pickLink = (attempt = 0) =>
+        bulk && lane !== null && typeof mesh.bulkLinkAt === "function"
+          ? mesh.bulkLinkAt(key, lane + attempt, credentials, theirs, off, asker)
+          : bulk && typeof mesh.bulkLink === "function"
+            ? mesh.bulkLink(key, credentials, theirs, off, asker)
+            : mesh.link(key, credentials, theirs, off, asker);
+      const link = yield* waiting(status, address, t("station.core.connecting"), pickLink());
       const repeats = mayRepeat(head, idempotent.has(key));
       const write = !["GET", "HEAD"].includes(head.method.toUpperCase()) && !onlyReads(head);
-      // Kept current in the background (requests.ts NO_HEDGE): never asked on another way at once, only again where its
-      // way is gone. The mark is the wire's alone: it goes to no station.
-      const noHedge = head.headers.some(([k]) => k.toLowerCase() === NO_HEDGE);
-      const sent: RequestHead = noHedge ? { ...head, headers: head.headers.filter(([k]) => k.toLowerCase() !== NO_HEDGE) } : head;
       // Asked on more than one way (or again), the body is told of as far as the furthest has gone.
       let furthest = 0;
       const told = wrote && ((n: number) => { if (n > furthest) wrote((furthest = n)); });
-      const ask = (l: Link) => Effect.map(l.request(sent, body, told), (reply) => [l, reply] as [Link, Reply]);
-      let answered: [Link, Reply];
+      // A body of SPEED_MIN_BYTES or more times the way it goes on as it goes (`Mesh.timed` times only what comes back,
+      // and a part uploaded is answered in a few bytes): a way found slow while a part is still on it is told at once
+      // (`Mesh.noteSpeed`, once each time it is asked), so the next part goes on a faster way rather than minutes on it.
+      const timesBody = body.length >= SPEED_MIN_BYTES && typeof mesh.noteSpeed === "function";
+      const ask = (l: Link) => {
+        const askedAt = mesh.now();
+        const wayKey = timesBody ? (typeof l.speedKey === "function" ? l.speedKey() : l.path() === "relay" ? l.via() : null) : null;
+        let early = false;
+        const onSent = wayKey === null
+          ? told
+          : (n: number) => {
+            told?.(n);
+            if (early || n < SPEED_MIN_BYTES) return;
+            const elapsed = mesh.now() - askedAt;
+            if (elapsed >= 1_000 && (n / elapsed) * 1000 < BULK_SLOW_BPS) {
+              early = true;
+              mesh.noteSpeed(key, wayKey, n, elapsed);
+            }
+          };
+        return Effect.map(l.request(sent, body, onSent), (reply) => [l, reply, askedAt] as [Link, Reply, number]);
+      };
+      let answered: [Link, Reply, number];
       if (repeats) {
         // Asked on its link; on another way as well if not answered within what its way is expected to take
         // (`hedgeAfter`), or on the link put in its place if its link is replaced meanwhile: the first answer taken.
         const started = mesh.now();
-        const asked = yield* Effect.forkChild(Effect.result(ask(link)));
+        let gotHead = false;
+        let penalized = false;
+        const asked = yield* Effect.forkChild(
+          Effect.result(
+            ask(link).pipe(
+              Effect.tap(() => Effect.sync(() => { gotHead = true; })),
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  if (!gotHead && !penalized) {
+                    const elapsed = mesh.now() - started;
+                    if (elapsed >= SPEED_SLOW_MIN_MS) {
+                      penalized = true;
+                      mesh.outran(key, link, elapsed);
+                    }
+                  }
+                }),
+              ),
+            ),
+          ),
+        );
         // An answer come too late to be taken: its stream let go (the station stops sending what no one reads).
-        const late = ([, reply]: [Link, Reply]) => reply.cancel();
+        const late = ([, reply]: [Link, Reply, number]) => reply.cancel();
         // The other way, as there is one by then (the ways dialled with the link may come through after it).
         const slow = Effect.gen(function* () {
           yield* Effect.sleep(mesh.hedgeAfter(key, link));
           for (;;) {
-            const standby = mesh.standby(key, link);
+            const standby = bulk ? (typeof mesh.bulkStandby === "function" ? mesh.bulkStandby(key, link) : null) : mesh.standby(key, link);
             if (standby !== null) return { slow: standby } as const;
             yield* Effect.sleep(HEDGE_RECHECK_MS);
           }
         });
         const first = yield* Effect.raceAllFirst([
           Effect.map(Fiber.join(asked), (r) => ({ asked: r }) as const),
-          Effect.as(mesh.replaced(key, link), { replaced: true } as const),
+          ...(bulk ? [] : [Effect.as(mesh.replaced(key, link), { replaced: true } as const)]),
           ...(noHedge ? [] : [slow]),
         ]);
         if ("asked" in first) {
@@ -146,8 +202,8 @@ export class MeshWire implements StationWire {
             const w = status.begin(address, RECHECKING(), true);
             let pause = 1_000;
             answered = yield* Effect.gen(function* () {
-              for (;;) {
-                const again = yield* Effect.result(Effect.flatMap(mesh.link(key, credentials, theirs, off, asker), ask));
+              for (let tries = 1; ; tries++) {
+                const again = yield* Effect.result(Effect.flatMap(pickLink(tries), ask));
                 if (again._tag === "Success") return again.success;
                 if (again.failure.code !== "mesh") return yield* Effect.fail(again.failure);
                 if (mesh.now() - started >= RECHECK_MS) return yield* Effect.fail(unconfirmed(again.failure));
@@ -161,7 +217,7 @@ export class MeshWire implements StationWire {
             // seed 143365259, 2026-10-17), a few times.
             answered = yield* Effect.gen(function* () {
               for (let tries = 1; ; tries++) {
-                const l = yield* waiting(status, address, t("station.core.connecting"), mesh.link(key, credentials, theirs, off, asker));
+                const l = yield* waiting(status, address, t("station.core.connecting"), pickLink(tries));
                 const again = yield* Effect.result(ask(l));
                 if (again._tag === "Success") return again.success;
                 if (again.failure.code !== "mesh" || l.closed() === null || tries >= LOST_TRIES) return yield* Effect.fail(again.failure);
@@ -170,27 +226,89 @@ export class MeshWire implements StationWire {
           } else return yield* Effect.fail(r.failure);
         } else if ("replaced" in first) {
           // Replaced while under way: asked again on the new one at once, the first answer taken.
-          const again = Effect.flatMap(mesh.link(key, credentials, theirs, off, asker), ask);
+          const again = Effect.flatMap(pickLink(), ask);
           answered = yield* firstAnswer(asked, again, late);
         } else {
           // Slow on its way: asked on the next best as well. Answered there first, its way is told how long it kept it.
           answered = yield* firstAnswer(asked, ask(first.slow), late);
-          if (answered[0] !== link) mesh.outran(key, link, mesh.now() - started);
+          if (answered[0] !== link && !penalized) {
+            penalized = true;
+            mesh.outran(key, link, mesh.now() - started);
+          }
         }
       } else {
         const r = yield* Effect.result(ask(link));
         if (r._tag === "Failure") return yield* Effect.fail(write && r.failure.code === "mesh" ? unconfirmed(r.failure) : r.failure);
         answered = r.success;
       }
-      const [l, reply] = answered;
+      const [l, reply, askedAt] = answered;
       // Its stream goes with the scope it was asked in.
       yield* Effect.addFinalizer(() => Effect.sync(() => reply.cancel()));
       if (reply.headers.some(([k]) => k.toLowerCase() === IDEMPOTENT)) idempotent.add(key);
       const relay = l.path() === "relay" ? l.via() : null;
+      const speedVia = typeof l.speedKey === "function" ? l.speedKey() : relay;
       // How fast it comes tells how fast that way is; not an event stream's, which comes as things happen, nor a batch
-      // streamed (NDJSON), which comes as the station reads each of it.
-      const streams = head.headers.some(([k, v]) => k.toLowerCase() === "accept" && (v.includes("text/event-stream") || v.includes(NDJSON)));
-      const timed = relay !== null && !streams ? mesh.timed(key, relay, reply.body) : reply.body;
+      // streamed line-by-line, which comes as the station reads each of it. Use the actual response type for batches so
+      // an old station falling back to whole JSON still times normally, while keeping Accept: text/event-stream's rule.
+      const replyType = (reply.headers.find(([k]) => k.toLowerCase() === "content-type")?.[1] ?? "").split(";", 1)[0]!.trim().toLowerCase();
+      const streams =
+        head.headers.some(([k, v]) => k.toLowerCase() === "accept" && v.includes("text/event-stream")) ||
+        replyType === BATCH_LINES ||
+        replyType === NDJSON;
+      // The whole body gone and answered: how fast its way took it.
+      if (timesBody && speedVia !== null) mesh.noteSpeed(key, speedVia, body.length, Math.max(1, mesh.now() - askedAt));
+      const timed = speedVia !== null && !streams ? mesh.timed(key, speedVia, reply.body, bulk) : reply.body;
+      let bodyPull = timed;
+      if (bulk && repeats && !noHedge && !streams) {
+        const crawlStarted = mesh.now();
+        let crawlBytes = 0;
+        let lastCrawlNote = -Infinity;
+        const abortCrawl = (elapsed: number, stalledNow = false): CoreError | null => {
+          const now = mesh.now();
+          if (now - lastCrawlNote >= BULK_STALL_MS && speedVia !== null && typeof mesh.noteSpeed === "function") {
+            const curSpeed = typeof mesh.speed === "function" ? mesh.speed(key, speedVia) : null;
+            if (curSpeed === null || curSpeed >= BULK_CRAWL_BPS) {
+              const sampleBytes = stalledNow ? 1 : Math.max(crawlBytes, 1);
+              const sampleMs = Math.max(elapsed, SPEED_SLOW_MIN_MS);
+              mesh.noteSpeed(key, speedVia, sampleBytes, sampleMs, true);
+              lastCrawlNote = now;
+            }
+          }
+          if (typeof mesh.betterBulkStandby === "function" && mesh.betterBulkStandby(key, l) !== null) {
+            reply.cancel();
+            const err = new CoreError("mesh", t("core-logic.mesh.cut"));
+            err.cause = "bulk_crawl";
+            return err;
+          }
+          return null;
+        };
+        bodyPull = {
+          take: Effect.gen(function* () {
+            const stalled = Effect.gen(function* () {
+              for (;;) {
+                yield* Effect.sleep(BULK_STALL_MS);
+                const err = abortCrawl(mesh.now() - crawlStarted, true);
+                if (err !== null) return { stalled: err } as const;
+              }
+            });
+            const winner = yield* Effect.raceFirst(
+              Effect.map(Effect.result(timed.take), (read) => ({ read }) as const),
+              stalled,
+            );
+            if ("stalled" in winner) return yield* Effect.fail(winner.stalled);
+            if (winner.read._tag === "Failure") return yield* Effect.fail(winner.read.failure);
+            const chunk = winner.read.success;
+            if (chunk === null) return null;
+            crawlBytes += chunk.length;
+            const elapsed = mesh.now() - crawlStarted;
+            if (elapsed >= BULK_CRAWL_MS && (crawlBytes / elapsed) * 1000 < BULK_CRAWL_BPS) {
+              const err = abortCrawl(elapsed);
+              if (err !== null) return yield* Effect.fail(err);
+            }
+            return chunk;
+          }),
+        };
+      }
       // Why the station ended the connection it came on, as its close said (shell, iroh-wasm and node-iroh give it).
       const ended = () => {
         const r = l.conn.closeReason();
@@ -198,7 +316,7 @@ export class MeshWire implements StationWire {
       };
       // A stream gone silent takes the way it came on for gone, not every way to the station (`Mesh.dropWay`).
       const drop = () => mesh.dropWay(key, l);
-      return { status: reply.status, headers: reply.headers, body: timed, via: l.path(), relay: relay !== null ? relayHost(relay) : null, ended, drop };
+      return { status: reply.status, headers: reply.headers, body: bodyPull, via: l.path(), relay: relay !== null ? relayHost(relay) : null, ended, drop };
     }), refusedFor);
   }
 
@@ -232,6 +350,16 @@ export class MeshWire implements StationWire {
     const link = mesh?.current(key) ?? null;
     if (mesh === null || link === null) return null;
     return { ...link.net(), measured: mesh.measured(key), today: mesh.today(key), lan: mesh.lan(key) };
+  }
+
+  bulkLanes(station: StationAddr): number {
+    const mesh = this.#env.meshNow();
+    if (mesh === null || typeof mesh.fastBulkLinks !== "function") return 1;
+    return Math.max(1, mesh.fastBulkLinks(station.toString()).length);
+  }
+
+  diag(station: StationAddr): PeerDiag | null {
+    return this.#env.meshNow()?.diag(station.toString()) ?? null;
   }
 
   measure(station: StationAddr): Effect.Effect<void, CoreError> {
@@ -422,7 +550,7 @@ function takes(inner: Inner): Pick<MeshEnv, "takes" | "incoming"> {
 /// it a device waiting to be confirmed is told its credential was refused, and asks the cloud for another at each try).
 export function meshEnv(inner: Inner, iroh: Iroh): MeshEnv {
   const leaves=new LeafLinks();
-  return { prepare:leaves.prepare, linked:leaves.linked, host: inner.host, runner: inner.runner, tracer: inner.tracer, iroh, wakes: inner.wakes, ...STATION_MESH, ...takes(inner), refusal: refusedForLock };
+  return { prepare:leaves.prepare, linked:leaves.linked, host: inner.host, runner: inner.runner, tracer: inner.tracer, iroh, wakes: inner.wakes, ...STATION_MESH, ...takes(inner), ...(!inner.host.appKeys ? { hotRelays: HOT_RELAYS } : {}), refusal: refusedForLock };
 }
 
 /// The core's mesh: brought up on first use with the relays any account's `/v1/me` names, the credentials from

@@ -289,19 +289,16 @@ fn face_choice_node(
     label_made=fn(line) { face_in_node(line, name, face, face_name_words) },
     note_made=fn(n) { face_in_node(n, sample, face, face_sample_words) },
     trail=fn(e) {
-      e.show(fn() { status().0 != "" }, fn(k) {
-        k.box(fn(room) {
-          @sf.style_node(room, fn() { face_status_room })
-          // (whole at its line's end: the name before it gives way, cut on its line)
-          room.shrink(Is(0.0)) |> ignore
-          @sf.words_node(room, fn() { status().0 }, fn() {
-            if status().1 {
-              face_status_words.then(@sf.bad)
-            } else {
-              face_status_words
-            }
-          })
-          |> ignore
+      e.show(fn() { status().0 != "" }, fn(room) {
+        @sf.style_node(room, fn() { face_status_room })
+        // (whole at its line's end: the name before it gives way, cut on its line)
+        room.shrink(Is(0.0)) |> ignore
+        @sf.words_node(room, fn() { status().0 }, fn() {
+          if status().1 {
+            face_status_words.then(@sf.bad)
+          } else {
+            face_status_words
+          }
         })
         |> ignore
       })

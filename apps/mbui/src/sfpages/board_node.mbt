@@ -544,8 +544,8 @@ fn board_wide(
       // (a card going to another column (View::shared, board_chat_card) drawn within the board as it goes, never over
       // its bar, the chat beside it or the window's edge round it)
       area.flights_within() |> ignore
-      // (short of the chat beside it by as much as that chat's edge reaches over the line between them: a press there
-      // the edge's alone)
+      // (short of the chat beside it by as much as that chat's edge reaches over the board: a press there the edge's
+      // alone)
       area.margin(By(fn() { (0.0, 0.0, if split() { board_edge_reach } else { 0.0 }, 0.0) })) |> ignore
       let across = @view.Scroll::across()
       // (the part of the scroll drawn apart from its anchor while the columns are on their way)
@@ -597,6 +597,13 @@ fn board_wide(
         glide.put(1.0)
         across.put(0.0)
       }
+      // (both let go of with the area, as they were before it: reveal names `own`, which holds it, a ring native's
+      // counting never frees)
+      area.owns(fn() {
+        own.reveal = fn(_) {  }
+        own.to_start = fn() {  }
+      })
+      |> ignore
       // (the chat beside them opened or closed: its way starts at that moment)
       area.reacts(split, fn(open) {
         let at = area.cause_at()
@@ -686,6 +693,7 @@ fn board_wide(
       // there, its edge reaching out over the board)
       p.show(fn() { shown.get() is Some(_) }, fn(s) {
         s
+        // det-ok(layout-drawn-while): split viewport between board (fixed laid_w columns) and beside chat (fixed beside_w inner) reshapes smoothly with no card or chat reflow
         .width(By(fn() { Some(beside_w() * opened.shown_on(s)) }))
         .shrink(Is(0.0))
         .min_height(Is(Some(0.0)))
@@ -715,9 +723,11 @@ fn board_wide(
 }
 
 ///|
-/// The edge of the chat beside the board in `e` (over its start, its middle on the line between them, half over the
-/// board), as a side panel's is (sfdesk's side_edge_node): dragged, its width, kept as it is let go (sfbase's
-/// set_board_chat_w); pressed twice, its own width again; pressed once, nothing (× in its bar closes it).
+/// The edge of the chat beside the board in `e` (over its start, handle_out of it over the board), as a side panel's is
+/// (sfdesk's side_edge_node): its line and bar only under a pointer, focused or in hand, nothing drawn at rest; dragged,
+/// its width, kept as it is let go (sfbase's set_board_chat_w), dragged on past either end its line drawn aside as a
+/// string, sprung back as it is let go; pressed twice, its own width again; pressed once, nothing (× in its bar closes
+/// it).
 fn board_beside_edge(
   e : @view.View,
   src : Source,
@@ -727,6 +737,7 @@ fn board_beside_edge(
 ) -> Unit {
   let held = @signals.signal(false, same=fn(a, b) { a == b })
   e.over(Is(true)).width(Is(Some(@sf.handle_w))).offset(Is((-board_edge_reach, 0.0))) |> ignore
+  let pull = @sf.EdgePull::new()
   let edge = @sf.edge_node(
     e,
     fn() { @sf.t("web-pages.chat.resizePanel") },
@@ -745,21 +756,26 @@ fn board_beside_edge(
     fn(h) { held.set(h) },
     tips~,
     side=Left,
+    pull~,
   )
   edge.box(fn(g) {
     g.over(Is(true)) |> ignore
-    @sf.edge_look_node(g, fn() { @sf.edge_over() }, fn() { edge.pointed() || edge.focus_shown() || held.get() }, fn() {
-      held.get()
-    })
+    @sf.edge_look_node(
+      g,
+      fn() { false },
+      fn() { edge.pointed() || edge.focus_shown() || held.get() },
+      fn() { held.get() },
+      pull~,
+    )
     |> ignore
   })
   |> ignore
 }
 
 ///|
-/// How far the edge of the chat beside the board reaches over the board, its middle on the 1 point line between them
-/// (board_beside_edge).
-let board_edge_reach : Double = @sf.handle_w / 2.0 - 0.5
+/// How far the edge of the chat beside the board reaches over the board (board_beside_edge), as a side panel's over its
+/// page (sfdesk's side_edge_node).
+let board_edge_reach : Double = @sf.handle_out
 
 ///|
 /// How wide each of `n` columns is in `room`: as many whole columns as `room` holds at the least, sharing it, at most
@@ -1314,7 +1330,8 @@ fn board_add_room(b : @view.View, own : BoardOwn, tips : @sf.TipLayer) -> Unit {
   // what makes the cards under it, so that what moves for its draft finds both done; opened, mbui's room's way)
   b.pick(fn() { own.room_made.get() }, fn(room, _) {
     @motion.reveal_node(room, open, fn(h) {
-      h.padding(Is((0.0, 0.0, 0.0, 10.0))) |> ignore
+      // (the column's list clips at its sides; leave room for the glass composer's outside contour)
+      h.padding(Is((2.0, 0.0, 2.0, 10.0))) |> ignore
       board_add(h, own, true, tips)
     })
     |> ignore
@@ -1488,12 +1505,26 @@ fn board_files_node(
             p.pick(fn() { picture() != "" && picture() != "!" }, at_once=true, fn(v, has_picture) {
               if has_picture {
                 // (as big as the tile, covering it, decoded for the device's pixels it is drawn at; a video's on its
-                // black, as the composer's)
+                // black, as the composer's: that black its matte, composited into it and cut once with it, never drawn
+                // apart under it where their rounded edge would show it through as a rim)
                 v
                 .width(Is(Some(@sf.waiting_tile_side)))
                 .height(Is(Some(@sf.waiting_tile_side)))
-                .ground(By(fn() { if is_video() { @ui.tree_theme().color(@sf.video_ground) } else { 0L } }))
                 .image(By(fn() { Some((picture(), "", (@sf.waiting_tile_side * v.pixel_scale()).ceil().to_int())) }))
+                .image_in(
+                  By(fn() {
+                    if is_video() {
+                      Some(
+                        (
+                          (0.0, 0.0, @sf.waiting_tile_side, @sf.waiting_tile_side),
+                          @ui.tree_theme().color(@sf.video_ground),
+                        ),
+                      )
+                    } else {
+                      None
+                    }
+                  }),
+                )
                 .image_covers(Is(true))
                 |> ignore
               } else {
@@ -1513,7 +1544,7 @@ fn board_files_node(
       })
     }) |> ignore
   }
-  parent.show(fn() { !files().is_empty() }, at_once=true, fn(p) { p.box(strip) |> ignore })
+  parent.show(fn() { !files().is_empty() }, at_once=true, fn(p) { strip(p) })
 }
 
 
@@ -1560,24 +1591,26 @@ fn board_chips_node(v : @view.View, src : Source, ws : () -> String) -> Unit {
       // (the cards' margin at either end, lined up with them, inside what scrolls; board_chips_pad over and under: each
       // pressed in 44 high)
       .padding(Is((board_pad, board_chips_pad, board_pad, board_chips_pad)))
-      .min_width(By(fn() { Some(held.window().0) }))
+      .min_width(By(fn() { Some(held.window_w()) }))
       .offset(By(fn() { (left.shown(row), 0.0) }))
       |> ignore
-      @headless.radio_group(
+      @sf.chip_tabs_node(
         row,
         fn() { @sf.t("web-main.board.board") },
+        lanes,
         fn() { @sfbase.board_lane.get() },
         fn(lane) { @sfbase.board_lane.set(lane) },
-        kind=Tab,
-        in_node=true,
-        fn(g, rg) {
-          for k, lane in lanes {
-            let count = fn() { counts.get().get(k).unwrap_or(0) }
-            let said = fn() { @sfbase.board_lane_words(lane) + " " + count().to_string() }
-            let chip = rg.item(g, fn() { lane }, said, fn(c, item) { board_chip_look(c, item, lane, count) })
-            chips[lane] = chip
-          }
+        fn(lane) {
+          let k = lanes.search(lane).unwrap_or(0)
+          let count = counts.get().get(k).unwrap_or(0)
+          @sfbase.board_lane_words(lane) + " " + count.to_string()
         },
+        fn(c, lane, item) {
+          let k = lanes.search(lane).unwrap_or(0)
+          let count = fn() { counts.get().get(k).unwrap_or(0) }
+          board_chip_look(c, item, lane, count)
+        },
+        on_item=fn(lane, chip) { chips[lane] = chip },
       )
       |> ignore
       // (column `lane`'s chip whole in sight, its margin beside it: scrolled to (`glide`) from where it shows now, or
@@ -1643,9 +1676,9 @@ fn board_line(v : @view.View, look : @ui.TextStyle) -> Double {
 /// A chip's look (board_chips_node's, an item of its radio group in `c`): board_chip_h high at least, growing with its
 /// words at the system's size of words, round; its words and its count on a tint of the words' ink, the accent's while
 /// chosen; the hand on it warming its ground over dur_ms; the keyboard's focus a ring of the theme's where it shows.
-fn board_chip_look(c : @view.View, item : @headless.RadioItem, lane : String, count : () -> Int) -> Unit {
-  let on = fn() { item.chosen() }
-  let lit = fn() { !on() && (item.hovered() || item.focus_shown() || item.pressed()) }
+fn board_chip_look(c : @view.View, item : @sf.RadioRow, lane : String, count : () -> Int) -> Unit {
+  let on = fn() { item.picked() }
+  let lit = fn() { !on() && item.lit() }
   let hand = @motion.NodeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
   c.reacts(lit, fn(l) { hand.go_ms(c, if l { 1.0 } else { 0.0 }, @sf.dur_ms) })
   c
@@ -1669,7 +1702,7 @@ fn board_chip_look(c : @view.View, item : @headless.RadioItem, lane : String, co
       @sf.alpha(p.text, 0.05 + 0.04 * hand.shown(c))
     }
   }))
-  .edge(By(fn() { if item.focus_shown() { (@ui.tree_theme().focus_w, @ui.tree_theme().focus) } else { (0.0, 0L) } }))
+  .edge(By(fn() { if c.focus_shown() { (@ui.tree_theme().focus_w, @ui.tree_theme().focus) } else { (0.0, 0L) } }))
   |> ignore
   @sf.words_node(c, fn() { @sfbase.board_lane_words(lane) }, fn() { if on() { chip_on_look } else { board_chip_words } }) |> ignore
   @sf.words_node(c, fn() { count().to_string() }, fn() { if on() { chip_on_look } else { chip_count_look } }) |> ignore
@@ -1925,25 +1958,27 @@ fn draft_card(
     card_ground(card, fn() { false }, fn() { hand.lit(card, fn() { false }) }, lifted) |> ignore
     card.shadow(By(fn() { card_shadow(lifted()) })) |> ignore
     hand.watch(card)
-    card.on_menu(fn(e) { menu(e.wx, e.wy, false) }) |> ignore
-    @sf.presses_held_node(
-      card,
-      edit,
-      @ui.long_press_ms,
-      // (held long by a finger: lifted, its menu; a mouse's button held is a press as long as any)
-      fn(e) {
-        if !@sf.pointer_rests() {
-          lift.held.set(true)
-          menu(e.wx, e.wy, true)
-        }
-      },
-      down=fn(_) { hand.down(card) },
-      up=fn() {
-        hand.up()
-        lift.held.set(false)
-      },
-    )
-    card.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
+    @sf.action_box_node(card, title, fn(_) { edit() }, in_node=true, fn(card) {
+      card.on_menu(fn(e) { menu(e.wx, e.wy, false) }) |> ignore
+      @sf.presses_held_node(
+        card,
+        edit,
+        @ui.long_press_ms,
+        // (held long by a finger: lifted, its menu; a mouse's button held is a press as long as any)
+        fn(e) {
+          if !@sf.pointer_rests() {
+            lift.held.set(true)
+            menu(e.wx, e.wy, true)
+          }
+        },
+        down=fn(_) { hand.down(card) },
+        up=fn() {
+          hand.up()
+          lift.held.set(false)
+        },
+      )
+    })
+    |> ignore
     card.box(fn(head) {
       head.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Start))) |> ignore
       head.box(fn(t) {
@@ -2284,18 +2319,20 @@ fn board_chat_card(
     // flown across it)
     @motion.shared(card, board_shared(own, lane, name) + (if wide { "" } else { "@" + lane })) |> ignore
     let ground = card_ground(card, picked, fn() { hand.lit(card, menu_on) }, raised)
-    card.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
-    // (never dragged, wide or narrow: a finger on it scrolls its column; right clicked, its menu; held long by a finger,
-    // its menu; a mouse's button held is a press as long as any)
-    card.on_menu(fn(e) { open_menu(e.wx, e.wy, false) }) |> ignore
-    @sf.presses_held_node(
-      card,
-      open,
-      @ui.long_press_ms,
-      fn(d) { if !@sf.pointer_rests() { open_menu(d.wx, d.wy, true) } },
-      down=fn(_) { down() },
-      up~,
-    )
+    @sf.action_box_node(card, title, fn(_) { open() }, in_node=true, fn(card) {
+      // (never dragged, wide or narrow: a finger on it scrolls its column; right clicked, its menu; held long by a finger,
+      // its menu; a mouse's button held is a press as long as any)
+      card.on_menu(fn(e) { open_menu(e.wx, e.wy, false) }) |> ignore
+      @sf.presses_held_node(
+        card,
+        open,
+        @ui.long_press_ms,
+        fn(d) { if !@sf.pointer_rests() { open_menu(d.wx, d.wy, true) } },
+        down=fn(_) { down() },
+        up~,
+      )
+    })
+    |> ignore
     // (a pointer over it lights it, asking nothing: its whole row is asked as the hand goes down on it or its menu is
     // asked for, never for each card a pointer passes over)
     hand.watch(card)

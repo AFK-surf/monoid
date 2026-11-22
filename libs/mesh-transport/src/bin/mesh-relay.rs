@@ -1,6 +1,6 @@
 //! Workspace relay executable. Its private state directory holds the identity,
 //! registration and last complete directory; the invitation file is needed once.
-use mesh_transport::{announcement::{Descriptor, SignedAnnouncement}, directory_client::Subscription, enrollment::{self, Invitation}, relay::Forwarder, relay_store::{Saved, Store}};
+use mesh_transport::{announcement::{Descriptor, SignedAnnouncement, bounded_address}, directory_client::Subscription, enrollment::{self, Invitation}, relay::Forwarder, relay_store::{Saved, Store}};
 use iroh::{Endpoint, RelayMode, Watcher, endpoint::presets::Minimal};
 use std::{io::Read, path::PathBuf, sync::Arc, time::Duration};
 
@@ -58,7 +58,7 @@ async fn session(store: &Arc<Store>, saved: &mut Saved, scope: [u8;32], generati
     let mut endpoint = forwarder.endpoint();
     let mut addresses = endpoint.watch_addr();
     let mut descriptor = forwarder.descriptor();
-    descriptor.address = addresses.get();
+    descriptor.address = bounded_address(addresses.get());
     let signed = announce(store,saved,scope,descriptor).await?;
     let subscription = Subscription::open(control,&saved.invitation,scope,generation,&signed).await?;
     let (updates,changed) = tokio::sync::watch::channel(signed);
@@ -68,7 +68,7 @@ async fn session(store: &Arc<Store>, saved: &mut Saved, scope: [u8;32], generati
         tokio::select! {
             result = &mut task.0 => return result.map_err(|e| e.to_string())?,
             update = addresses.updated() => {
-                let address = update.map_err(|e| e.to_string())?;
+                let address = bounded_address(update.map_err(|e| e.to_string())?);
                 let mut descriptor = forwarder.descriptor(); descriptor.address = address;
                 let signed = announce(store,saved,scope,descriptor).await?;
                 updates.send(signed).map_err(|_| "directory publisher ended".to_owned())?;
@@ -83,7 +83,7 @@ async fn session(store: &Arc<Store>, saved: &mut Saved, scope: [u8;32], generati
                 let current=forwarder.endpoint();
                 if current.id()!=endpoint.id() {
                     endpoint=current;addresses=endpoint.watch_addr();
-                    let mut descriptor=forwarder.descriptor();descriptor.address=addresses.get();
+                    let mut descriptor=forwarder.descriptor();descriptor.address=bounded_address(addresses.get());
                     let signed=announce(store,saved,scope,descriptor).await?;
                     updates.send(signed).map_err(|_|"directory publisher ended".to_owned())?;
                 }

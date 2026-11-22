@@ -488,16 +488,16 @@ fn remote_row_node(
     let (press_lit, press_down, press_up) = @sf.press_late(row)
     // its ground: the pointer's eased in and out, the selected one's while it is the tab shown beside the list
     // (nav_ground_by's); a finger's press the ink at 5%
-    let hand = @motion.NodeWay::new(0.0)
-    let chosen = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-    if !finger {
-      row.reacts(fn() { @sf.lit_in_node(slot) }, fn(h) { hand.go_ms(row, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let hand = if !finger {
+      @motion.hover_fade(row, fn() { @sf.lit_in_node(slot) }, duration_ms=@sf.dur_ms)
+    } else {
+      fn() { 0.0 }
     }
-    row.reacts(on, fn(o) { chosen.go_ms(row, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let chosen = @motion.hover_fade(row, on, duration_ms=@sf.dur_ms)
     let ground = fn() {
       let p = t().p
-      let h = hand.shown(row)
-      let o = chosen.shown(row)
+      let h = hand()
+      let o = chosen()
       let base = if h <= 0.0 && o <= 0.0 {
         0L
       } else {

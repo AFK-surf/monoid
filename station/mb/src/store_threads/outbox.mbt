@@ -861,7 +861,7 @@ fn Store::restate(
           retries += 1
           continue
         }
-        if current.broken || widget_source_before_add_needs_repair(self.db) {
+        if current.broken || @store_schema.widget_source_before_add_needs_repair(self.db) {
           repair_merged_edit_lookup(self.db)
         }
         let mut current = current
@@ -897,7 +897,7 @@ fn Store::restate(
               if schema_version(self.db) != schema {
                 raise Retry
               }
-              if legacy_merged_needs_repair(self.db) || widget_source_before_add_needs_repair(self.db) {
+              if legacy_merged_needs_repair(self.db) || @store_schema.widget_source_before_add_needs_repair(self.db) {
                 raise Repair
               }
               let guard_row = match prepared {

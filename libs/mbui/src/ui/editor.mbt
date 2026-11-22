@@ -920,6 +920,8 @@ pub fn Ctx::editor(
       s
     }
   }
+  // (let go with the old view it is built in, if it is: old_presses_gone)
+  island_said_id(3, id)
   // (what the app wrote in it from outside the hand: a part kept is built again to show it)
   st.written.get() |> ignore
   st.limit = paste_limit
@@ -1228,13 +1230,13 @@ pub fn FieldLaid::size(self : FieldLaid, w : Double?) -> (Double, Double) {
 }
 
 ///|
-/// The caret's handle's radius (Compose's cursor handle: 25 dp across, HandleWidth).
-let handle_r : Double = 12.5
+/// The caret's handle's radius (18 pt diameter; touch hit target stays 42 pt via handle_r + 12.0).
+let handle_r : Double = 9.0
 
 ///|
 /// Whether (`x`, `y`) is on the caret's handle of `st` (its circle, and a little round it: a finger's).
 fn EditorState::on_handle(self : EditorState, x : Double, y : Double) -> Bool {
-  if !self.handle_on {
+  if !self.handle_on || y < self.handle_y {
     return false
   }
   // the circle's middle: its radius √2 under the tip, straight down
@@ -1242,7 +1244,7 @@ fn EditorState::on_handle(self : EditorState, x : Double, y : Double) -> Bool {
   let my = self.handle_y + handle_r * 1.4142135623730951
   let dx = x - mx
   let dy = y - my
-  (dx * dx + dy * dy).sqrt() <= handle_r + 8.0
+  (dx * dx + dy * dy).sqrt() <= handle_r + 12.0
 }
 
 ///|
@@ -1499,7 +1501,7 @@ fn Node::hint_shown(self : Node) -> TextLayout {
 /// What the field placed as `b` shows while nothing is typed in it (Node::hint_shown's).
 fn FieldBox::hint_shown(self : FieldBox) -> TextLayout {
   let lay = self.hint_lay()
-  said_in(self.hint, lay(self.hint), self.shorter, self.w - self.pad_l - self.pad_r, lay)
+  said_in(self.hint, lay(self.hint), self.shorter, self.w - self.pad_l - self.pad_r, fn(s, _) { lay(s) })
 }
 
 ///|
@@ -1669,7 +1671,7 @@ fn Ctx::paint_field(
       }
     _ => false
   }
-  if focused && !floating {
+  if focused && !floating && (a == b || ml > 0) {
     let since = self.clock - st.blink0
     let (phase, next) = periods_at(self.clock, st.blink0, caret_blink())
     // blinking till caret_blinks_for_ms, then shown at rest
@@ -1713,27 +1715,32 @@ fn Ctx::paint_field(
     let (cx, cy, cw, ch) = st.caret_box(tl, fb, st.caret)
     let x = cx + cw / 2.0
     let y = cy + ch
-    st.handle_on = true
-    st.handle_x = x
-    st.handle_y = y
-    let r = handle_r
-    push_unclipped()
-    let (outer, _, _) = clip_at(clip_top())
-    let i0 = self.ninst
-    self.emit_rect(x, y, 2.0 * r, 2.0 * r, r, st.caret_color, 0.0, 0L, alpha)
-    self.emit_rect(x, y, r, r, 0.0, st.caret_color, 0.0, 0L, alpha)
-    turn_insts(self.inst, i0, self.ninst, 3.141592653589793 / 4.0, x, y, outer)
-    pop_clip()
-    self.paint_top(i0)
+    let vis = cy + ch > fb.y && cy < fb.y + fb.h && x >= fb.x - 1.0 && x <= fb.x + fb.w + 1.0
+    if vis {
+      st.handle_on = true
+      st.handle_x = x
+      st.handle_y = y
+      let r = handle_r
+      push_unclipped()
+      let (outer, _, _) = clip_at(clip_top())
+      let i0 = self.ninst
+      self.emit_rect(x, y, 2.0 * r, 2.0 * r, r, st.caret_color, 0.0, 0L, alpha)
+      self.emit_rect(x, y, r, r, 0.0, st.caret_color, 0.0, 0L, alpha)
+      turn_insts(self.inst, i0, self.ninst, 3.141592653589793 / 4.0, x, y, outer)
+      pop_clip()
+      self.paint_top(i0)
+    } else {
+      st.handle_on = false
+    }
   } else {
     st.handle_on = false
     if !focused {
       st.handle = false
     }
   }
-  // Android's handles of words a finger picked (Compose's SelectionHandle, as large as the caret's): a drop hanging
-  // from each end's foot, the start's corner up and to its right, the end's up and to its left, over everything
-  if focused && st.sel_handles && h_feel() == 2 && a != b && ml == 0 {
+  // Android & iOS handles of words a finger picked: Android hangs a teardrop under each end joined to a full-line-height
+  // boundary bar; iOS draws a 2pt boundary bar with a 12pt knob at the start's top and the end's bottom.
+  if focused && st.sel_handles && (h_feel() == 2 || h_feel() == 1) && a != b && ml == 0 {
     let r = handle_r
     let (ax, al) = st.place_of(tl, a)
     let (bx, bl) = st.place_of(tl, b)
@@ -1741,17 +1748,46 @@ fn Ctx::paint_field(
     st.sel_ay = st.oy + (al + 1).to_double() * tl.line_h
     st.sel_bx = st.ox + bx
     st.sel_by = st.oy + (bl + 1).to_double() * tl.line_h
-    st.sel_on = true
-    push_unclipped()
-    let i0 = self.ninst
-    // the start's: the circle to the tip's left, its square corner at the tip
-    self.emit_rect(st.sel_ax - 2.0 * r, st.sel_ay, 2.0 * r, 2.0 * r, r, st.caret_color, 0.0, 0L, alpha)
-    self.emit_rect(st.sel_ax - r, st.sel_ay, r, r, 0.0, st.caret_color, 0.0, 0L, alpha)
-    // the end's: to its right
-    self.emit_rect(st.sel_bx, st.sel_by, 2.0 * r, 2.0 * r, r, st.caret_color, 0.0, 0L, alpha)
-    self.emit_rect(st.sel_bx, st.sel_by, r, r, 0.0, st.caret_color, 0.0, 0L, alpha)
-    pop_clip()
-    self.paint_top(i0)
+    let a_top = st.sel_ay - tl.line_h
+    let b_top = st.sel_by - tl.line_h
+    let a_vis = st.sel_ay > fb.y && a_top < fb.y + fb.h && st.sel_ax >= fb.x - 1.0 && st.sel_ax <= fb.x + fb.w + 1.0
+    let b_vis = st.sel_by > fb.y && b_top < fb.y + fb.h && st.sel_bx >= fb.x - 1.0 && st.sel_bx <= fb.x + fb.w + 1.0
+    if a_vis || b_vis {
+      st.sel_on = true
+      push_unclipped()
+      let i0 = self.ninst
+      if h_feel() == 2 {
+        let cw_px = on_pixels(caret_w, self.scale)
+        if a_vis {
+          // start boundary anchor bar + teardrop aligned to the same pixel edge with 1pt overlap into tip (no notch)
+          let ax_bar = on_pixels(st.sel_ax - caret_w, self.scale)
+          let ax_edge = ax_bar + cw_px
+          self.emit_rect(ax_bar, a_top, cw_px, tl.line_h + 1.0, cw_px / 2.0, st.caret_color, 0.0, 0L, alpha)
+          self.emit_rect(ax_edge - 2.0 * r, st.sel_ay, 2.0 * r, 2.0 * r, r, st.caret_color, 0.0, 0L, alpha)
+          self.emit_rect(ax_edge - r, st.sel_ay, r, r, 0.0, st.caret_color, 0.0, 0L, alpha)
+        }
+        if b_vis {
+          // end boundary anchor bar + teardrop aligned to the same pixel edge with 1pt overlap into tip (no notch)
+          let bx_bar = on_pixels(st.sel_bx, self.scale)
+          self.emit_rect(bx_bar, b_top, cw_px, tl.line_h + 1.0, cw_px / 2.0, st.caret_color, 0.0, 0L, alpha)
+          self.emit_rect(bx_bar, st.sel_by, 2.0 * r, 2.0 * r, r, st.caret_color, 0.0, 0L, alpha)
+          self.emit_rect(bx_bar, st.sel_by, r, r, 0.0, st.caret_color, 0.0, 0L, alpha)
+        }
+      } else {
+        if a_vis {
+          self.emit_rect(st.sel_ax - 1.0, a_top, 2.0, tl.line_h, 0.0, st.caret_color, 0.0, 0L, alpha)
+          self.emit_rect(st.sel_ax - 6.0, a_top - 11.0, 12.0, 12.0, 6.0, st.caret_color, 0.0, 0L, alpha)
+        }
+        if b_vis {
+          self.emit_rect(st.sel_bx - 1.0, b_top, 2.0, tl.line_h, 0.0, st.caret_color, 0.0, 0L, alpha)
+          self.emit_rect(st.sel_bx - 6.0, st.sel_by - 1.0, 12.0, 12.0, 6.0, st.caret_color, 0.0, 0L, alpha)
+        }
+      }
+      pop_clip()
+      self.paint_top(i0)
+    } else {
+      st.sel_on = false
+    }
   } else {
     st.sel_on = false
     if !focused || a == b {
@@ -1825,6 +1861,29 @@ fn Ctx::sync_ime(self : Ctx) -> Unit {
         self.ime_sig = ""
         h_set_ime(false, 0.0, 0.0, 0.0, 0.0, "", 0, 0)
       }
+  }
+}
+
+///|
+/// What it was told to do as it is edited, sent or drawn (Ctx::editor's on_submit, on_change, on_edit, look; a tree
+/// field's placeholder fade) let go: the editor that said them gone, they hold what it was built in (its page, the
+/// draft it writes into, what it read), and the Field that keeps this, held by what keeps the draft, held them: a ring
+/// native's counting never frees once the draft is let go. Said again by the next editor built over it.
+fn EditorState::clear_handlers(self : EditorState) -> Unit {
+  self.on_submit = None
+  self.on_change = None
+  self.on_edit = None
+  self.look = None
+  self.looked = None
+  self.ph_alpha_by = None
+}
+
+///|
+/// An editor of id `id` let go of: what it was told let go, unless its state is another's by now (a field of the
+/// window's tree's, or an editor of another id built over the same Field).
+fn editor_gone(st : EditorState, id : Int) -> Unit {
+  if st.built_id == id && st.tree_node is None {
+    st.clear_handlers()
   }
 }
 
@@ -2328,11 +2387,23 @@ fn EditorState::on_sel_handle(self : EditorState, x : Double, y : Double) -> Int
   let near = fn(cx : Double, cy : Double) {
     let dx = x - cx
     let dy = y - cy
-    (dx * dx + dy * dy).sqrt() <= handle_r + 8.0
+    (dx * dx + dy * dy).sqrt() <= handle_r + 12.0
   }
-  if near(self.sel_bx + handle_r, self.sel_by + handle_r) {
+  if h_feel() == 1 {
+    let lh = match self.tl {
+      Some(tl) => tl.line_h
+      None => 20.0
+    }
+    if near(self.sel_bx, self.sel_by + 5.0) {
+      3
+    } else if near(self.sel_ax, self.sel_ay - lh - 5.0) {
+      2
+    } else {
+      0
+    }
+  } else if y >= self.sel_by && near(self.sel_bx + handle_r, self.sel_by + handle_r) {
     3
-  } else if near(self.sel_ax - handle_r, self.sel_ay + handle_r) {
+  } else if y >= self.sel_ay && near(self.sel_ax - handle_r, self.sel_ay + handle_r) {
     2
   } else {
     0
@@ -2458,28 +2529,11 @@ fn Ctx::sync_edit_can(self : Ctx) -> Unit {
 /// when its handle was tapped): offering cut and copy over words picked (not a secret's), paste always, select all
 /// unless all is picked; each frame, said again only when it changed.
 fn Ctx::sync_text_menu(self : Ctx) -> Unit {
-  let want = match self.editors.get(self.focus) {
-    Some(st) if st.menu && st.marked.length() == 0 =>
-      match st.tl {
-        Some(tl) => {
-          let (a, b) = st.sel()
-          let (x0, l0) = st.place_of(tl, a)
-          let (x1, l1) = st.place_of(tl, b)
-          let top = st.oy + l0.to_double() * tl.line_h
-          let bottom = st.oy + (l1 + 1).to_double() * tl.line_h
-          let (x, w) = if l0 == l1 {
-            (st.ox + dmin(x0, x1), dmax((x1 - x0).abs(), caret_w))
-          } else {
-            (st.ox, tl.w)
-          }
-          // (where it is drawn, as big)
-          let (x, top, w, h) = st.drawn_box(x, top, w, bottom - top)
-          Some((x, top, w, h, st.can()))
-        }
-        None => None
-      }
+  let (field_want, own_bar) = self.field_menu_compute()
+  let want = match field_want {
+    Some(m) => if own_bar { None } else { Some((m.x, m.y, m.w, m.h, m.can)) }
     // (words a finger picked with the pointer, let go of: finger_select.mbt)
-    _ => finger_menu()
+    None => finger_menu()
   }
   // (the words of the app's own items where it offers some, a line each: told before the menu, picked_menu)
   let own = match want {

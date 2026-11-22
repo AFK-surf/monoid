@@ -27,7 +27,13 @@ priv struct Endpoint {
   /// Whether a relay holds it inactive for another endpoint of its id (native.ts `relaysConflict`: another station on
   /// this station's key; health.json's `relayConflict`).
   relay_conflict : () -> Bool
+  /// Its home relays as it has them now (endpoint.ts `relayStatus`).
+  relay_status : () -> Json
+  /// Whether it is reached through a relay now, end to end (endpoint.ts `probeRelay`).
+  probe_relay : async (String) -> Json
   close : async () -> Unit
+  /// Routes requests matching `routes` on `alpn` to `--serve` sockets `to` (front_client.mbt `route`).
+  route : (async (Bytes, Array[String], Array[String]) -> Bool)?
   /// Its mesh scopes, where its endpoint keeps them (the front's: endpoint.ts `meshConfigure` and the rest).
   mesh : MeshOps?
 }
@@ -48,6 +54,8 @@ priv struct MeshLive {
   mut keeper : @gate.Keeper?
   /// The workspaces' mesh directory (mesh/scope-sync.ts), where the endpoint keeps scopes.
   mut scopes : @mesh_scopes.ScopeSync?
+  /// The `--serve` child pool answering routed device reads/writes directly over the front.
+  mut served : Served?
 }
 
 ///|
@@ -93,6 +101,9 @@ fn shell_stream(host : @host.Host, id : Json) -> @door.Stream {
       }
     },
     reset: async fn(code) { ignore(host.shell("istream.reset", { "id": id, "code": Json::number(code.to_double()) })) },
+    media_datagrams: Some(async fn(token) {
+      host.shell("istream.mediaDatagrams", { "id": id, "token": Json::number(token) }).0 is True
+    }),
   }
 }
 
@@ -100,58 +111,41 @@ fn shell_stream(host : @host.Host, id : Json) -> @door.Stream {
 /// A connection at the shell (`conn.*`), let go there once it is closed and its end told.
 fn shell_connection(host : @host.Host, id : Json) -> @door.Connection {
   let sync = (op : String) => host.shell_sync(op, { "id": id }) catch { _ => Json::null() }
-  let remote = match sync("conn.remoteId") {
-    String(s) => s
-    _ => ""
-  }
-  let alpn = alpn_text(match sync("conn.alpn") {
-    String(s) => s
-    _ => ""
-  })
+  let remote = as_text(sync("conn.remoteId")).unwrap_or("")
+  let alpn = alpn_text(as_text(sync("conn.alpn")).unwrap_or(""))
   let closed_info : Ref[Json?] = Ref(None)
   let ended : @effect.Deferred[String] = @effect.Deferred::new()
-  ignore(
-    host.rt.fork_daemon("conn closed", on_error=e => @host.note("conn closed failed: \{e}"), async fn() {
-      let info = host.shell("conn.closed", { "id": id }).0 catch {
-        e => { "kind": "other", "reason": Json::string("\{e}") }
-      }
-      if closed_info.val is None {
-        closed_info.val = Some(info)
-      }
-      ignore(host.shell("conn.close", { "id": id, "code": 0, "reason": "", "forget": true })) catch {
-        _ => ()
-      }
-      let words = match info {
-        { "reason": String(r), .. } if r != "" => r
-        _ => "closed"
-      }
-      ignore(ended.succeed(words))
-    }),
-  )
-  {
+  fork_bg(host, "conn closed", async fn() {
+    let info = host.shell("conn.closed", { "id": id }).0 catch {
+      e => { "kind": "other", "reason": Json::string("\{e}") }
+    }
+    if closed_info.val is None {
+      closed_info.val = Some(info)
+    }
+    ignore(host.shell("conn.close", { "id": id, "code": 0, "reason": "", "forget": true })) catch {
+      _ => ()
+    }
+    let words = match info {
+      { "reason": String(r), .. } if r != "" => r
+      _ => "closed"
+    }
+    ignore(ended.succeed(words))
+  })
+  let conn : @door.Connection = {
     remote_id: () => remote,
     alpn: () => alpn,
-    via: () => match sync("conn.via") {
-      String(s) => Some(s)
-      _ => None
-    },
+    via: () => as_text(sync("conn.via")),
     paths: Some(() => match sync("conn.paths") {
       Array(ps) =>
         ps.map(p => {
           let num = (k : String) => match p {
             Object(m) =>
-              match m.get(k) {
-                Some(Number(n, ..)) => Some(n)
-                _ => None
-              }
+              opt_num(m.get(k))
             _ => None
           }
           let text = (k : String) => match p {
             Object(m) =>
-              match m.get(k) {
-                Some(String(s)) => Some(s)
-                _ => None
-              }
+              opt_str(m.get(k))
             _ => None
           }
           {
@@ -224,6 +218,7 @@ fn shell_connection(host : @host.Host, id : Json) -> @door.Connection {
     }),
     handed: None,
   }
+  remember_shell_conn(conn, id)
 }
 
 ///|
@@ -261,10 +256,11 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
     },
     connect: async fn(addr, alpn, given_up) {
       let call = Ref(0L)
-      match given_up {
+      // (the dial called off once it is given up; its watch let go as the dial ends either way, not kept for good)
+      let watch = match given_up {
         Some(g) =>
-          ignore(
-            host.rt.fork_daemon("dial given up", on_error=e => @host.note("dial given up failed: \{e}"), async fn() {
+          Some(
+            host.rt.fork_quiet(name="dial given up", async fn() {
               g.wait()
               if call.val != 0L {
                 ignore(host.shell_sync("fetch.cancel", { "id": Json::number(call.val.to_double()) })) catch {
@@ -273,7 +269,12 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
               }
             }),
           )
-        None => ()
+        None => None
+      }
+      defer {
+        if watch is Some(w) {
+          w.interrupt()
+        }
       }
       let (made, _) = host.shell("iroh.connect", { "id": eid, "addr": addr }, bytes=alpn, called=c => call.val = c)
       guard made is { "id": cid, .. } else { raise BusError("no connection") }
@@ -312,11 +313,17 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
       relays.val = try { host.shell_sync("iroh.relayStatus", { "id": eid }) } catch { _ => relays.val }
       relays_conflict(relays.val)
     },
+    relay_status: () => {
+      relays.val = try { host.shell_sync("iroh.relayStatus", { "id": eid }) } catch { _ => relays.val }
+      relays.val
+    },
+    probe_relay: async fn(url) { op("probeRelay", [("url", Json::string(url))]) },
     close: async fn() {
       ignore(@effect.timeout(1000, async fn() { ignore(host.shell("iroh.close", { "id": eid, "forget": true })) })) catch {
         _ => ()
       }
     },
+    route: None,
     mesh: None,
   }
 }
@@ -358,7 +365,10 @@ async fn front_endpoint(host : @host.Host, socket : String, bind : Map[String, J
     disabled_relays: async fn(peer, urls, no_public) { e.disabled_relays(peer, urls, no_public) },
     linked: () => e.linked(),
     relay_conflict: () => relays_conflict(e.relay_status()),
+    relay_status: () => e.relay_status(),
+    probe_relay: async fn(url) { e.probe_relay(url) },
     close: async fn() { e.close() },
+    route: Some(async fn(alpn, to, routes) { e.route(alpn, to, routes) }),
     mesh: Some({
       scopes: {
         configure: async fn(config) { e.mesh_configure(config) },
@@ -424,10 +434,7 @@ fn KeeperParts::locked_view(self : KeeperParts, l : @cloud_lock.Locked?) -> Json
 fn who_of(w : Json) -> @cloud_lock.Who {
   let t = (k : String) => match w {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => Some(s)
-        _ => None
-      }
+      opt_str(m.get(k))
     _ => None
   }
   { sub: t("sub").unwrap_or(""), endpoint: t("endpoint").unwrap_or(""), base: t("base"), proof: t("proof") }
@@ -447,14 +454,8 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
     Object(m) => m.get(k).unwrap_or(Json::null())
     _ => Json::null()
   }
-  let text = (k : String) => match arg(k) {
-    String(s) => Some(s)
-    _ => None
-  }
-  let arr = (k : String) => match arg(k) {
-    Array(x) => x
-    _ => []
-  }
+  let text = (k : String) => as_text(arg(k))
+  let arr = (k : String) => jitems(arg(k))
   let ws = text("ws")
   let state_text = (k : String) => match cloud.state {
     Some(s) => s.text(k)
@@ -464,10 +465,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
   try {
     match name {
       "home" =>
-        match cloud.home() {
-          Some(h) => Json::string(h)
-          None => Json::null()
-        }
+        jopt(cloud.home())
       "removed" => Json::boolean(cloud.removed())
       "station" => Json::string(state_text("station"))
       "name" => Json::string(state_text("name"))
@@ -497,10 +495,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
         }
       }
       "leftOut" =>
-        match cloud.left_out(ws.unwrap_or("")) {
-          Some(w) => Json::string(w)
-          None => Json::null()
-        }
+        jopt(cloud.left_out(ws.unwrap_or("")))
       "chain" =>
         match cloud.chain(ws~) {
           Some(c) => { "state": self.view(c.state) }
@@ -516,19 +511,13 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
         {
           "taken": Json::number(t.taken.to_double()),
           "off": Json::array(t.off.map(o => o.to_json())),
-          "refusal": match t.refusal {
-            Some(r) => Json::string(r)
-            None => Json::null()
-          },
+          "refusal": jopt(t.refusal),
         }
       }
       "lockAfter" =>
         Json::array(
           cloud.lock_after(
-            match arg("seq") {
-              Number(n, ..) => n
-              _ => -1.0
-            },
+            as_num(arg("seq")).unwrap_or(-1.0),
             ws~,
           ),
         )
@@ -594,14 +583,8 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
             "id": Json::string(device.id),
             "sub": Json::string(device.sub),
             "kind": Json::string(device.kind),
-            "by": match device.by {
-              Some(b) => Json::string(b)
-              None => Json::null()
-            },
-            "sign_key": match device.sign_key {
-              Some(k) => Json::string(k)
-              None => Json::null()
-            },
+            "by": jopt(device.by),
+            "sign_key": jopt(device.sign_key),
           },
           "role": Json::string(role),
         }
@@ -620,10 +603,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
             @cloud_lock.fold(
               self.crypto,
               arr("entries"),
-              match arg("now") {
-                Number(n, ..) => Some(n)
-                _ => None
-              },
+              as_num(arg("now")),
             ),
           ),
         )
@@ -680,10 +660,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
         let was = arg("was")
         let t = (k : String) => match was {
           Object(m) =>
-            match m.get(k) {
-              Some(String(s)) => s
-              _ => ""
-            }
+            opt_str(m.get(k)).unwrap_or("")
           _ => ""
         }
         let field_of = (k : String) => match change {
@@ -725,7 +702,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
       "unprotected" => Json::array(cloud.unprotected(ws~))
       "rigOf" =>
         match cloud.rig_of(text("id").unwrap_or(""), workspace=ws) {
-          Some((_, r)) => r
+          Some((w, r)) => { "workspace": Json::string(w), "rig": r }
           None => Json::null()
         }
       "rigs" => Json::array(cloud.rigs(ws.unwrap_or("")))
@@ -781,7 +758,11 @@ fn P51::mesh_live(self : P51) -> MeshLive {
   })
   // (peer.ts `heard`: another station heard from, told the parts that follow it: the moves)
   peers.heard(peer => bus.notify_peer_heard(peer))
-  let m : MeshLive = { endpoint: None, call: None, http: None, peers, keeper: None, scopes: None }
+  let m : MeshLive = { endpoint: None, call: None, http: None, peers, keeper: None, scopes: None, served: None }
+  bus.register_pids(() => match m.served {
+    Some(s) => s.pids()
+    None => []
+  })
   // Outbound: through the mesh once it is up (the bus's `peer_call`).
   let before = bus.peer_call.val
   bus.peer_call.val = async fn(target, ws, meth, params, bytes) {
@@ -807,16 +788,13 @@ fn P51::mesh_live(self : P51) -> MeshLive {
   bus.mesh_net_info.val = () => match m.endpoint {
     Some(e) => {
       "id": Json::string(e.id),
-      "home": match (e.home)() {
-        Some(h) => Json::string(h)
-        None => Json::null()
-      },
+      "home": jopt((e.home)()),
       "sockets": Json::array((e.sockets)().map(s => Json::string(s))),
     }
     None => Json::null()
   }
   self.stops.push(() => match m.endpoint {
-    Some(e) => ignore(self.host.rt.fork_daemon("mesh close", on_error=e => @host.note("mesh close failed: \{e}"), async fn() { (e.close)() }))
+    Some(e) => fork_bg(self.host, "mesh close", async fn() { (e.close)() })
     None => ()
   })
   m
@@ -976,9 +954,30 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
     keep: endpoint.keep,
     home: endpoint.home,
     public_relays: endpoint.public_relays,
+    relay_status: endpoint.relay_status,
+    probe_relay: Some(endpoint.probe_relay),
+  }
+  // An endpoint found stuck by its relays' probes (relays.ts `PROBE`): the launcher's front restarted, the station handed
+  // over to the new one; where there is no front, closed, so its `accept` ends this run and `mesh_start` binds anew.
+  let on_unhealthy = match bus.restart_front {
+    Some(restart) => restart
+    None =>
+      () => ignore(
+        host.rt.fork_daemon("mesh recovered", on_error=e => @host.note("closing a stuck endpoint failed: \{e}"), async fn() {
+          (endpoint.close)()
+        }),
+      )
   }
   let relays_fiber = host.rt.fork(name="relays", async fn() {
-    @cloud_net.keep_relays(relay_ep, plane.ways, @cloud_net.host_pinger(plane.http), bound~, log=w => p51_log("INFO", "relays", w))
+    @cloud_net.keep_relays(
+      relay_ep,
+      plane.ways,
+      @cloud_net.host_pinger(plane.http),
+      bound~,
+      log=w => p51_log("INFO", "relays", w),
+      on_unhealthy~,
+      say=(level, w) => p51_log(level, "relays", w),
+    )
   })
   scope_stops.push(() => relays_fiber.interrupt())
   // Online at the control plane once a relay can reach it (15 s at most).
@@ -1005,20 +1004,38 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
       }
     None => peer_addr(plane, target, ws)
   }
+  // The relays each station is not reached through, held by the endpoint (peer-relays.ts) while it can: one from before,
+  // with no such operation, holds none (`holds` false once it says so), and a kept connection whose chosen path goes
+  // through a relay turned off is closed instead (relays.ts `goesThrough`), as it is dialed again or the ways change.
+  let holds = Ref(true)
   let dialing : @gate.Dialing = {
     connect: async fn(target, ws, given_up) {
       (endpoint.connect)(scoped(target, ws), @utf8.encode(@gate.peer_bytes_alpn), Some(given_up)) |> with_alpn
     },
     hold: Some(async fn(target) {
+      guard holds.val else { return }
       let addr = @cloud_net.station_addr(plane.ways, target)
-      (endpoint.disabled_relays)(target, addr.disabled_relays, @cloud_net.ours_off(plane.ways))
+      (endpoint.disabled_relays)(target, addr.disabled_relays, @cloud_net.ours_off(plane.ways)) catch {
+        e => if @cloud_net.unsupported("\{e}") { holds.val = false } else { raise e }
+      }
     }),
-    goes_off: None,
+    goes_off: Some((conn, target, ws) => !holds.val &&
+      @cloud_net.goes_through(@gate.chosen_relay(conn), Some(@cloud_net.station_addr(plane.ways, target, workspace?=ws).disabled_relays))),
     relays_changed: Some(f => plane.ways.listen(_ => f())),
   }
   let call = @gate.peer_call(keeper, dialing, host.rt, outside=(target, ws) => (bus.outside_reaches.val)(target, Some(ws)))
   m.call = Some(call)
   self.keeper_call.val = Some(call)
+  if bus.peer_outside.val is Some(handler) {
+    m.peers.outside(async fn(peer, request, body, ws) {
+      let bytes = match body {
+        Some(b) => Some(body_bytes(b))
+        None => None
+      }
+      let (answer, out) = handler(peer, request, bytes, ws)
+      (answer, out.map(bytes_body))
+    })
+  }
   m.peers.attach(call.call)
   // A rig's grants first on what a station asks of it, every station told it is here.
   match self.rig {
@@ -1034,10 +1051,7 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   // The workspaces' mesh directory over the peer bus, and the relays' door (mesh.ts, scope-sync.ts, enrollment-door.ts).
   let door = self.mesh_scopes(m, endpoint, plane, call, scope_stops)
   scope_stops.push(() => {
-    match m.scopes {
-      Some(sync) => sync.close()
-      None => ()
-    }
+    if m.scopes is Some(sync) { sync.close() }
     m.scopes = None
   })
   // The agents' door's way to the other stations' web services.
@@ -1093,9 +1107,61 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
     }
     _ => None
   }
-  let members = if rig { None } else { Some(self.members(keeper, endpoint, leaves~)) }
+  let members_ref : Ref[@gate.Members?] = Ref(None)
+  let mut served_live : Served? = None
+  let members = if rig {
+    None
+  } else {
+    let told_viewer : @gate.ToldViewer? = match (endpoint.route, self.admin) {
+      (Some(route_fn), Some(admin_live)) => {
+        let s = self.served_live(
+          keeper,
+          admin_live,
+          members_ref,
+          paths => ignore(
+            host.rt.fork_quiet(name="served routes", async fn() {
+              ignore(route_fn(@utf8.encode(@gate.alpn), paths, served_routes)) catch {
+                _ => ()
+              }
+            }),
+          ),
+        )
+        served_live = Some(s)
+        Some((conn, viewer, moved, floor) => s.viewer(conn, viewer, moved, floor))
+      }
+      _ => None
+    }
+    let m_val = self.members(keeper, endpoint, leaves~, served=told_viewer)
+    members_ref.val = Some(m_val)
+    Some(m_val)
+  }
+  match (served_live, endpoint.route) {
+    (Some(s), Some(route_fn)) => {
+      m.served = Some(s)
+      scope_stops.push(() => s.close_sync())
+      let started = try {
+        Ok(s.start())
+      } catch {
+        e => Err(e)
+      }
+      match started {
+        Ok(paths) if paths.length() > 0 => {
+          let routed = route_fn(@utf8.encode(@gate.alpn), paths, served_routes) catch { _ => false }
+          if !routed {
+            p51_log("INFO", "mesh", "the front routes nothing (one from before); every request is this process's")
+          } else {
+            p51_log("INFO", "mesh", "requests routed to the MoonBit program", fields={ "routes": Json::array(served_routes.map(Json::string)) })
+          }
+        }
+        Ok(_) => ()
+        Err(e) =>
+          p51_log("WARN", "mesh", "the MoonBit program that answers requests did not start", fields={ "error": Json::string(said_of(e)) })
+      }
+    }
+    _ => ()
+  }
   let superseded = @gate.Superseded::new()
-  let storms = @gate.Storms::new(() => wall_ms() / 1000L)
+  let storms = @gate.Storms::new(@host.now)
   let storms_fiber = host.rt.fork(name="storms", async fn() { storms.start() })
   scope_stops.push(() => storms_fiber.interrupt())
   let here : @gate.HereLocal = match self.rig {
@@ -1113,38 +1179,36 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
     storms.watch(conn)
     let alpn = (conn.alpn)()
     if alpn == @gate.alpn {
-      ignore(host.rt.fork_daemon("superseded", on_error=e => @host.note("superseded failed: \{e}"), async fn() { superseded.arrived(conn) }))
+      fork_bg(host, "superseded", async fn() { superseded.arrived(conn) })
     } else if alpn == @gate.peer_bytes_alpn || alpn == @gate.peer_alpn || alpn == @gate.peer_http_alpn {
       (call.arrived)(conn)
     }
-    ignore(
-      host.rt.fork_daemon("mesh connection", on_error=e => @host.note("mesh connection failed: \{e}"), async fn() {
-        let served = try {
-          if alpn == @gate.peer_bytes_alpn || alpn == @gate.peer_alpn {
-            @gate.serve_peer(keeper, conn, m.peers)
-          } else if alpn == @gate.peer_http_alpn {
-            @gate.serve_http(keeper, conn, here)
-          } else if alpn == @mesh_runtime.tools_alpn {
-            @mesh_runtime.serve_tools(tools, conn, host.rt)
-          } else if alpn == @mesh_scopes.enrollment_alpn {
-            door.serve(conn)
-          } else {
-            match members {
-              Some(mem) => @gate.serve(mem, conn)
-              None => (conn.close)(1, "this station only runs tasks")
-            }
+    fork_bg(host, "mesh connection", async fn() {
+      let served = try {
+        if alpn == @gate.peer_bytes_alpn || alpn == @gate.peer_alpn {
+          @gate.serve_peer(keeper, conn, m.peers)
+        } else if alpn == @gate.peer_http_alpn {
+          @gate.serve_http(keeper, conn, here)
+        } else if alpn == @mesh_runtime.tools_alpn {
+          @mesh_runtime.serve_tools(tools, conn, host.rt)
+        } else if alpn == @mesh_scopes.enrollment_alpn {
+          door.serve(conn)
+        } else {
+          match members {
+            Some(mem) => @gate.serve(mem, conn)
+            None => (conn.close)(1, "this station only runs tasks")
           }
-          Ok(())
-        } catch {
-          e => Err(e)
         }
-        match served {
-          Err(e) => p51_log("INFO", "mesh", "a connection ended", fields={ "alpn": Json::string(alpn), "error": Json::string(@gate.words_of(e)) })
-          Ok(_) => ()
-        }
-        (conn.close)(0, "")
-      }),
-    )
+        Ok(())
+      } catch {
+        e => Err(e)
+      }
+      match served {
+        Err(e) => p51_log("INFO", "mesh", "a connection ended", fields={ "alpn": Json::string(alpn), "error": Json::string(@gate.words_of(e)) })
+        Ok(_) => ()
+      }
+      (conn.close)(0, "")
+    })
   }
 }
 
@@ -1178,10 +1242,7 @@ fn P51::presence_parts(self : P51, plane : Plane) -> @cloud_net.PresenceParts {
       let text : Map[String, Json] = {
         "online": Json::boolean(online),
         "at": Json::number((wall_ms() / 1000L).to_double()),
-        "error": match error {
-          Some(e) => Json::string(e)
-          None => Json::null()
-        },
+        "error": jopt(error),
       }
       if conflict {
         text["conflict"] = Json::boolean(true)
@@ -1194,14 +1255,37 @@ fn P51::presence_parts(self : P51, plane : Plane) -> @cloud_net.PresenceParts {
 
 ///|
 /// The keeper the gate asks of the locks: cloud_lock's, as this station keeps them.
-fn P51::keeper_of(self : P51, plane : Plane) -> @gate.Keeper {
+fn P51::keeper_of(self : P51, plane : Plane) -> @gate.Keeper raise {
   let bus = self.bus
   let host = self.host
+  // The devices' builds kept in stillfail.db (`device_builds`, `device_builds_since`), as mesh.ts gives
+  // device-builds.ts the store: kept across a restart, `since` the first start's, in whole seconds (`nowSecs`). Its
+  // first write refused while another writer holds the lock raises, and the mesh's start is tried again.
+  let now_secs = (wall_ms() / 1000L).to_double()
+  let since = match bus.store.device_builds_since(Json::number(now_secs)) {
+    Number(n, ..) => n
+    _ => now_secs
+  }
+  let rows = bus.store
+    .device_builds()
+    .filter_map(r => match r {
+      { "id": String(id), "build": Number(b, ..), "at": Number(at, ..), .. } => Some((id, b.to_int(), at))
+      _ => None
+    })
+  let kept : @cloud_lock.BuildsKept = {
+    device_builds: () => rows,
+    put_device_build: (id, build, at) => {
+      bus.store.put_device_build(Json::string(id), Json::number(build.to_double()), Json::number(at)) catch {
+        e => p51_log("WARN", "mesh", "device build write failed", fields={ "error": Json::string("\{e}") })
+      }
+    },
+    device_builds_since: _ => since,
+  }
   let parts : KeeperParts = {
     cloud: plane.cloud,
     crypto: plane.crypto,
     plane,
-    builds: @cloud_lock.DeviceBuilds::new(None, wall_ms().to_double() / 1000.0),
+    builds: @cloud_lock.DeviceBuilds::new(Some(kept), now_secs),
     states: [],
     call: self.keeper_call,
   }
@@ -1259,9 +1343,15 @@ fn P51::lock_source(self : P51, plane : Plane) -> @mesh_runtime.LockSource {
 }
 
 ///|
-/// The members of the station's workspaces, as the gate serves them: the admin API, a part's own stream, what the
-/// station's program would answer of a device's reads (this process here: none of its own `--serve` yet).
-fn P51::members(self : P51, keeper : @gate.Keeper, endpoint : Endpoint, leaves? : @gate.LeafDoor? = None) -> @gate.Members {
+/// The members of the station's workspaces, as the gate serves them: the admin API, a part's own stream, and what the
+/// `--serve` child processes answer of a device's reads/writes (`served`).
+fn P51::members(
+  self : P51,
+  keeper : @gate.Keeper,
+  endpoint : Endpoint,
+  leaves? : @gate.LeafDoor? = None,
+  served? : @gate.ToldViewer? = None,
+) -> @gate.Members {
   let bus = self.bus
   let host = self.host
   let lan = () => {
@@ -1292,7 +1382,7 @@ fn P51::members(self : P51, keeper : @gate.Keeper, endpoint : Endpoint, leaves? 
     lan: () => @mesh_runtime.lan_addrs((endpoint.sockets)(), []).filter(a => lan().iter().any(l => a.has_prefix(l))),
     tailnet: () => @mesh_runtime.tailnet_addrs((endpoint.sockets)(), []),
     connected: () => bus.parts.connected(),
-    served: None,
+    served,
     lang_of: hs => @gate.lang_of_core(hs),
     update_words: lang => tr(lang, "station.update.tooOld"),
     leaves,
@@ -1313,21 +1403,18 @@ async fn P51::member_admin(self : P51, ask : @gate.AdminAsk) -> @door.Answer {
     if ask.search == "" { None } else { Some(ask.search) },
     ask.headers,
     ask.body,
-    @jsjson.JV::of_json(ask.viewer.to_json()),
+    to_jv(ask.viewer.to_json()),
     ask.lang,
     signal~,
   )
   let answer = self.admin_answer(a, req)
   let headers = answer.headers.to_array()
+  // (a device gone before a stream's end: the request's signal aborted, so what reads for it stops, and a streamed
+  // body's own stop after it)
+  let stop = answer.body.stop_with(signal, f => ignore(self.host.rt.fork_quiet(name="stream stop", async fn() { f() catch { _ => () } })))
   match answer.body {
     Whole(b) => { status: answer.status, headers, body: Whole(b) }
-    Stream(next) => { status: answer.status, headers, body: Coming({ next, stop: () => () }) }
-    Streamed(next, stop) =>
-      {
-        status: answer.status,
-        headers,
-        body: Coming({ next, stop: () => ignore(self.host.rt.fork_quiet(name="stream stop", async fn() { stop() catch { _ => () } })) }),
-      }
+    Stream(next) | Streamed(next, _) => { status: answer.status, headers, body: Coming({ next, stop }) }
   }
 }
 
@@ -1340,17 +1427,16 @@ fn P51::peer_door(self : P51, m : MeshLive) -> Unit {
   }
   let host = self.host
   bus.peer_http.val = async fn(r, conn) {
-    guard m.http is Some(http) else { return Some(plain(503, "the mesh is not up")) }
-    let rest = r.path()["/peer".length():].to_owned()
-    let parts = rest.split("/").map(s => s.to_owned()).filter(s => s != "").to_array()
-    guard parts.length() >= 2 else { return Some(plain(400, "/peer/<station>/<port>/…")) }
-    let station = parts[0]
-    let port = attempt(() => @string.parse_int(parts[1])).unwrap_or(0)
-    let query = match r.query() {
-      Some(q) => "?" + q
-      None => ""
+    if @mcp_tools.not_from_here(r.headers, bus.door_ports.val) is Some(why) {
+      return Some(plain(403, why))
     }
-    let target = "/" + parts[2:].to_array().join("/") + query
+    guard @mcp_tools.peer_target(r.target) is Some(parsed) else {
+      return Some(plain(404, "a web service of another station is /peer/<station name or id>/<port>/<path>"))
+    }
+    guard m.http is Some(http) else { return Some(plain(503, "this station is not on the mesh yet; try again shortly")) }
+    let station = parsed.station
+    let port = parsed.port
+    let target = parsed.path
     let wrote_head = Ref(false)
     let gone = Ref(false)
     let given = Ref(false)
@@ -1366,15 +1452,13 @@ fn P51::peer_door(self : P51, m : MeshLive) -> Unit {
     let pumping = Ref(false)
     let pump = () => if !pumping.val {
       pumping.val = true
-      ignore(
-        host.rt.fork_daemon("peer answer", on_error=e => @host.note("peer answer failed: \{e}"), async fn() {
-          while queue.length() > 0 {
-            let step = queue.remove(0)
-            step()
-          }
-          pumping.val = false
-        }),
-      )
+      fork_bg(host, "peer answer", async fn() {
+        while queue.length() > 0 {
+          let step = queue.remove(0)
+          step()
+        }
+        pumping.val = false
+      })
     }
     let close = async fn() { host.tcp_close(conn) }
     let answer : @gate.LocalAnswer = {
@@ -1430,20 +1514,27 @@ fn peer_addr(plane : Plane, target : String, ws : String?) -> Json {
     _ => {}
   }
   let ips : Array[Json] = []
-  for m in plane.cloud.memberships() {
-    match m {
-      { "peers": Array(peers), .. } =>
-        for p in peers {
-          match p {
-            { "id": String(id), "ips": Array(given), .. } if id == target =>
-              for ip in given {
-                if ip is String(_) && !ips.contains(ip) {
-                  ips.push(ip)
-                }
-              }
-            _ => ()
+  let take_ips = (entries : Array[Json]) => for p in entries {
+    match p {
+      { "id": String(id), "ips": Array(given), .. } if id == target =>
+        for ip in given {
+          if ip is String(_) && !ips.contains(ip) {
+            ips.push(ip)
           }
         }
+      _ => ()
+    }
+  }
+  for m in plane.cloud.memberships() {
+    match m {
+      Object(o) => {
+        if o.get("peers") is Some(Array(peers)) {
+          take_ips(peers)
+        }
+        if o.get("workspace") is Some(String(w)) {
+          take_ips(plane.cloud.rigs_named(w))
+        }
+      }
       _ => ()
     }
   }

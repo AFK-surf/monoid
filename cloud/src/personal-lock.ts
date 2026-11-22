@@ -6,8 +6,8 @@
 // `keep` (what a station took) is kept as a station keeps a person's lock (station/src/mesh/person-chains.ts): every
 // entry the rules take after a parent kept, the chain the rules' fork choice among them, the rest kept aside
 // (`extendPersonalKept`); what it brings without it, as before.
-import { type Entry, entryHash, personChain, personFold } from "../../station/src/cloud/lock.ts";
-import { type Kept, keep } from "../../station/src/cloud/log-keep.ts";
+import { type Entry, entryHash, personChain, personFold } from "../../shared/lock.ts";
+import { type Kept, keep } from "../../shared/log-keep.ts";
 
 export type PersonalEntry = { v: 1; ws: string; seq: number; prev: string | null; at: number; kind: string; body: unknown; sig: unknown };
 

@@ -201,6 +201,15 @@ pub fn screen_ack(call : Int, ts : Double) -> Bool {
 }
 
 ///|
+/// The app's input to a remote screen (`input`: the JSON `screen.input` says in its `input`) sent straight to its
+/// station, in order, where the engine's shell reads the view of call `call` itself (client/shell
+/// `sf_shell_screen_input`): no message to the core, no answer. Only the engine's (none while a made-up core serves).
+/// False: not so (not a pointer's, the wheel's, a key's or a controller's, or not tapped: the app calls `screen.input`).
+pub fn screen_input(call : Int, input : String) -> Bool {
+  serving.val == 0 && ffi_screen_input(call.to_double(), input) != 0
+}
+
+///|
 /// The values of call `name` for which `f` says true change nothing a frame reads: taken as they come, they build
 /// nothing (Client::quiet). Said once, as the app starts.
 pub fn quiet(name : String, f : (Json) -> Bool) -> Unit {

@@ -176,3 +176,25 @@ test "a row's shared hover ground: a finger's press lit under the tool at once, 
   t.run_for(rove_over_ms)
   assert_eq(rove_grounds(t), [], msg="none")
 }
+
+///|
+test "roving_hover_node: critically damped handoff from tool 0 to tool 1 never overshoots [x_A, x_B]" {
+  let t = rove_tester()
+  let (x0, y0) = rove_mid(rove_tool(t, 0))
+  let (x1, y1) = rove_mid(rove_tool(t, 1))
+  let left0 = rove_tool(t, 0).0
+  let left1 = rove_tool(t, 1).0
+  t.move_to(x0, y0)
+  t.run_for(rove_over_ms)
+  t.move_to(x1, y1)
+  let step = rove_mid_ms / 2.0
+  for _ in 0..<25 {
+    t.run_for(step)
+    let gs = rove_grounds(t)
+    assert_eq(gs.length(), 1, msg="one ground during handoff: \{Repr(gs)}")
+    let gx = gs[0].0
+    assert_true(gx >= left0 - 0.01 && gx <= left1 + 0.01, msg="roving hover overshot [\{left0}, \{left1}]: gx=\{gx}")
+  }
+  t.run_for(rove_over_ms)
+  assert_eq(rove_grounds(t), rove_whole(t, 1), msg="settled on tool 1")
+}

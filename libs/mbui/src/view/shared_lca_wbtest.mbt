@@ -407,3 +407,79 @@ test "what flies in from words a field scrolled (cut_from): what of them was see
   assert_true(!n.flies())
   assert_eq(tree.lift_cut(n.id()), None)
 }
+
+///|
+test "what flies in from within a page's list (in_list) carries no key: the row it lands in comes on the list's way, under the rows still on theirs, not laid whole where it ends over them" {
+  let sent = @signals.signal(false, same=fn(a, b) { a == b })
+  let row0 : Ref[View?] = Ref(None)
+  let inner : Ref[View?] = Ref(None)
+  let plain : Ref[View?] = Ref(None)
+  let list : Ref[View?] = Ref(None)
+  let tree = Tree::new(fn(root) {
+    root.box(fn(o) {
+      list.val = Some(o)
+      o.width(Is(Some(400.0))).height(Is(Some(300.0))) |> ignore
+      o.scrolls_window(
+        Scroll::list(),
+        fn() { if sent.get() { [0, 1] } else { [0] } },
+        est=100.0,
+        follows=fn() { true },
+        flips=true,
+        foot=fn(f) {
+          f.box(fn(c) { c.width(Is(Some(400.0))).height(Is(Some(60.0))).ground(Is(lca_green)) |> ignore }) |> ignore
+        },
+        fn(b, k) {
+          match k {
+            1 =>
+              b.box(fn(r) {
+                r.width(Is(Some(400.0))).height(Is(Some(200.0))) |> ignore
+                // (from higher in the list: what an agent's line puts by a message)
+                r.box(fn(n) {
+                  inner.val = Some(n)
+                  n.width(Is(Some(40.0))).height(Is(Some(40.0))).ground(Is(lca_red)).flies_in(lca_straight, fn(to) {
+                    Some((to.0, to.1 - 200.0, to.2, to.3))
+                  }, in_list=true)
+                  |> ignore
+                })
+                |> ignore
+                r.box(fn(n) {
+                  plain.val = Some(n)
+                  n.width(Is(Some(400.0))).height(Is(Some(160.0))).ground(Is(lca_green)) |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+            _ =>
+              b.box(fn(r) {
+                row0.val = Some(r)
+                r.width(Is(Some(400.0))).height(Is(Some(200.0))).ground(Is(lca_blue)) |> ignore
+              })
+              |> ignore
+          }
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(400.0, 300.0, now=0.0) |> ignore
+  tree.event(1000.0, fn() { sent.set(true) })
+  tree.frame(400.0, 300.0, now=1016.0) |> ignore
+  let a = inner.val.unwrap()
+  assert_true(a.flies(), msg="it flies")
+  let held = tree.nodes[list.val.unwrap().at].scroll_held
+  let at = match self_flying(tree, a) {
+    Some(f) => (f.host, f.after)
+    None => (-2, -2)
+  }
+  guard lca_drawn(tree, row0.val.unwrap()) is Some((_, y0, _, h0, _, _)) else { fail("row 0 not drawn") }
+  guard lca_drawn(tree, plain.val.unwrap()) is Some((_, y1, _, _, _, _)) else { fail("the new row's words not drawn") }
+  // (where it is drawn among the rest, whether its row is raised over the list as one carried whole, and whether the
+  // new row's words are drawn over row 0 still on its way: row 0 from y0 to y0 + h0, the words from y1)
+  let raised = tree.raised_blocks().length()
+  assert_eq(
+    (at, raised, y1 >= y0 + h0 - 0.5),
+    ((list.val.unwrap().at, held), 0, true),
+    msg="drawn in \{Repr(at)} (list \{list.val.unwrap().at}, after \{held}), \{raised} raised, row 0 at \{y0} to \{y0 + h0}, the new row's words at \{y1}",
+  )
+}

@@ -1,316 +1,506 @@
-{"env":{"MBUI_CLOUD":"http://127.0.0.1:28840","MBUI_CORE_ACCOUNT":"{\"sub\":\"alice\",\"email\":\"alice@example.test\",\"name\":\"Name of alice\",\"picture\":\"\",\"access\":\"-\",\"refresh\":\"-\",\"accessExpires\":1794106758}","MBUI_DOWNLOADS_DIR":"/test-worktree/apps/mbui/out/e2e/mac/04-notice_looking/downloads"}}
+{"env":{"MBUI_CLOUD":"http://127.0.0.1:18787","MBUI_CORE_ACCOUNT":"{\"sub\":\"alice\",\"email\":\"alice@example.test\",\"name\":\"Name of alice\",\"picture\":\"\",\"access\":\"-\",\"refresh\":\"-\",\"accessExpires\":1795189456}","MBUI_DOWNLOADS_DIR":"/test-worktree/apps/mbui/out/e2e/mac/01-notice_looking/downloads","MBUI_PLACES_BAR":"1","MBUI_DEVICES":"1","MBUI_STATION_ROWS":"1","MBUI_HAVE_SAME":"1","MBUI_OUTLINE":"1","MBUI_CONNECT_ROWS":"1","MBUI_KEEP_CHAT":"1","MBUI_CHAT_ROW":"1","MBUI_CHATS_WINDOW":"1","MBUI_MARKS_ONE":"1","MBUI_PROFILE_ROWS":"1","MBUI_HOME_SAME":"1","MBUI_SWITCH_AHEAD":"1","MBUI_STATION_UPDATES":"1","MBUI_STATION_MOVE":"1","MBUI_TERMINALS":"1","MBUI_AGENT_RATES":"1","MBUI_SWR_VIEWS":"1","MBUI_OPEN_WHOLE":"1","MBUI_PAGE_PICTURES":"1","MBUI_START_PAGE":"1"}}
 {"host":{"localStation":null}}
-{"settings":{"w":390.0,"h":844.0,"scale":2,"platform":2,"pointing":1,"utc":0,"motion":0,"glass":0,"dark":0,"inset":0,"ime":0,"copy":0,"font":1,"from":"replay"}}
-{"out":{"id":1,"call":"client.device","params":{"client":"still.fail mbui","app":"android","model":""}},"w":1794106477622.238}
-{"out":{"id":2,"subscribe":{"topic":"prefs"},"keyed":true},"w":1794106477622.671}
-{"out":{"id":3,"subscribe":{"topic":"accounts"},"keyed":true},"w":1794106477622.812}
-{"in":{"id":1,"ok":null},"w":1794106477713.747}
-{"in":{"id":2,"value":{"onlyMine":false,"onlyWatching":false,"listFilter":{},"appearance":"system","rowPicture":"auto","absoluteTime":false,"lang":"zh","keys":{},"lastChat":{},"openChat":{"01M6WH7YAB4BPRGFBQN9525T49":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","key":"chat:c-ac1e9aec8ea08679c4b5e6481b439759"}},"chatTabs":{},"dropFiles":{},"driveViews":{},"filesTabs":{},"driveFavorites":{},"driveFavoritesHidden":{},"previewSizes":{},"sidebars":{},"trouble":{},"jobsSeen":{},"failsGone":{},"resume":{},"stationUpdatesDismissed":{},"device":{"app":"android","phone":true,"handoff":false},"productName":"still.fail","product":"still.fail","reader":{"size":18,"line":1.7,"margin":22,"face":"sans","indent":true,"paper":"follow"},"rails":{},"bars":{"sets":[["chats","files","profiles","stations"],["archive","usage","connects","vault"]],"current":0},"barsBy":{},"fonts":{},"faces":{"ui":{"id":"","name":"","mono":false,"family":"","files":[],"bytes":0},"text":{"id":"","name":"","mono":false,"family":"","files":[],"bytes":0},"code":{"id":"","name":"","mono":true,"family":"","files":[],"bytes":0},"list":[{"id":"inter","name":"Inter","mono":false,"family":"SF Inter","css":"http://127.0.0.1:28840/releases/fonts/inter/4.001/font.css","files":[{"weight":0,"url":"http://127.0.0.1:28840/releases/fonts/inter/4.001/var.ttf.gz","bytes":457818,"sha256":"29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031"}],"preview":"http://127.0.0.1:28840/releases/fonts/inter/4.001/preview-194fa287.ttf","bytes":457818},{"id":"noto-sans-sc","name":"思源黑体","mono":false,"family":"SF Noto Sans SC","css":"http://127.0.0.1:28840/releases/fonts/noto-sans-sc/2.004/font.css","files":[{"weight":0,"url":"http://127.0.0.1:28840/releases/fonts/noto-sans-sc/2.004/var.ttf.gz","bytes":11276563,"sha256":"a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da"}],"preview":"http://127.0.0.1:28840/releases/fonts/noto-sans-sc/2.004/preview-f0494178.ttf","bytes":11276563},{"id":"noto-serif-sc","name":"思源宋体","mono":false,"family":"SF Noto Serif SC","css":"http://127.0.0.1:28840/releases/fonts/noto-serif-sc/2.003/font.css","files":[{"weight":0,"url":"http://127.0.0.1:28840/releases/fonts/noto-serif-sc/2.003/var.ttf.gz","bytes":15454579,"sha256":"050080d9255a86808f2945bffac582b31ef32bc36411ce29563b4961670c66f9"}],"preview":"http://127.0.0.1:28840/releases/fonts/noto-serif-sc/2.003/preview-001bbedf.ttf","bytes":15454579},{"id":"lxgw-wenkai","name":"霞鹜文楷","mono":false,"family":"SF LXGW WenKai","css":"http://127.0.0.1:28840/releases/fonts/lxgw-wenkai/1.530/font.css","files":[{"weight":400,"url":"http://127.0.0.1:28840/releases/fonts/lxgw-wenkai/1.530/400.ttf.gz","bytes":12904482,"sha256":"2d73eea94ad808999d90c0000c239a84a33b09d4bc6ab6c5b8bbf1eda8a7fc8b"},{"weight":500,"url":"http://127.0.0.1:28840/releases/fonts/lxgw-wenkai/1.530/500.ttf.gz","bytes":13272430,"sha256":"f4b8a34d1f838fe411540cb7c97b1c384ac9738a876c4104500bc42508b2312a"}],"preview":"http://127.0.0.1:28840/releases/fonts/lxgw-wenkai/1.530/preview-d3505af4.ttf","bytes":26176912},{"id":"jetbrains-mono","name":"JetBrains Mono","mono":true,"family":"SF JetBrains Mono","css":"http://127.0.0.1:28840/releases/fonts/jetbrains-mono/2.211/font.css","files":[{"weight":0,"url":"http://127.0.0.1:28840/releases/fonts/jetbrains-mono/2.211/var.ttf.gz","bytes":90579,"sha256":"48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda"}],"preview":"http://127.0.0.1:28840/releases/fonts/jetbrains-mono/2.211/preview-ee73078f.ttf","bytes":90579},{"id":"fira-code","name":"Fira Code","mono":true,"family":"SF Fira Code","css":"http://127.0.0.1:28840/releases/fonts/fira-code/5.002/font.css","files":[{"weight":0,"url":"http://127.0.0.1:28840/releases/fonts/fira-code/5.002/var.ttf.gz","bytes":137151,"sha256":"9335b082b3c7850d98a64b584f3417f65355f3471278bb5eeb8c6c0e8657aeeb"}],"preview":"http://127.0.0.1:28840/releases/fonts/fira-code/5.002/preview-555be27a.ttf","bytes":137151},{"id":"maple-mono","name":"Maple Mono","mono":true,"family":"SF Maple Mono CN","css":"http://127.0.0.1:28840/releases/fonts/maple-mono/7.9/font.css","files":[{"weight":400,"url":"http://127.0.0.1:28840/releases/fonts/maple-mono/7.9/400.ttf.gz","bytes":8352545,"sha256":"0fcc5139bfd5ab14ff989bb7dfd5236d0cafc10e60b9828569e6883613ab4085"},{"weight":600,"url":"http://127.0.0.1:28840/releases/fonts/maple-mono/7.9/600.ttf.gz","bytes":8438132,"sha256":"96ed7ae26ee7c50b02b2d2b2bc0f1a0cbabe45ae5d6e6abf6678e2177c415677"}],"preview":"http://127.0.0.1:28840/releases/fonts/maple-mono/7.9/preview-cffdf246.ttf","bytes":16790677}]},"keymap":{"changeable":false,"mac":false,"groups":[{"group":"global","name":"全局"},{"group":"chat","name":"对话"},{"group":"files","name":"文件"}],"actions":[{"action":"chat.switch","group":"global","name":"快速切换对话","typing":"yes","keys":["Mod+K"],"labels":["Ctrl+K"],"text":"Ctrl+K","changed":false,"listed":true},{"action":"chat.new","group":"global","name":"新建对话","typing":"yes","keys":["Alt+Mod+N"],"labels":["Ctrl+Alt+N"],"text":"Ctrl+Alt+N","changed":false,"listed":true},{"action":"chat.prev","group":"global","name":"上一个对话","typing":"yes","keys":["Alt+Up"],"labels":["Alt+↑"],"text":"Alt+↑","changed":false,"listed":true},{"action":"chat.next","group":"global","name":"下一个对话","typing":"yes","keys":["Alt+Down"],"labels":["Alt+↓"],"text":"Alt+↓","changed":false,"listed":true},{"action":"sidebar.toggle","group":"global","name":"收起/展开侧边栏","typing":"yes","keys":["Mod+\\"],"labels":["Ctrl+\\"],"text":"Ctrl+\\","changed":false,"listed":true},{"action":"nav.back","group":"global","name":"后退","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"nav.forward","group":"global","name":"前进","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"settings","group":"global","name":"设置","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"shortcuts","group":"global","name":"快捷键一览","typing":"yes","keys":["Mod+/"],"labels":["Ctrl+/"],"text":"Ctrl+/","changed":false,"listed":true},{"action":"zoom.in","group":"global","name":"放大界面","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"zoom.out","group":"global","name":"缩小界面","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"zoom.reset","group":"global","name":"恢复界面大小","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"composer.focus","group":"chat","name":"回到输入框","typing":"no","keys":["Space"],"labels":["空格"],"text":"空格","changed":false,"listed":true},{"action":"composer.file","group":"chat","name":"发送文件","typing":"yes","keys":["Mod+U"],"labels":["Ctrl+U"],"text":"Ctrl+U","changed":false,"listed":true},{"action":"chat.stop","group":"chat","name":"停止当前任务","typing":"yes","keys":["Mod+."],"labels":["Ctrl+."],"text":"Ctrl+.","changed":false,"listed":true},{"action":"chat.history","group":"chat","name":"执行历史","typing":"yes","keys":["Shift+Mod+H"],"labels":["Ctrl+Shift+H"],"text":"Ctrl+Shift+H","changed":false,"listed":true},{"action":"chat.jobs","group":"chat","name":"服务和后台任务","typing":"yes","keys":["Shift+Mod+J"],"labels":["Ctrl+Shift+J"],"text":"Ctrl+Shift+J","changed":false,"listed":true},{"action":"chat.screen","group":"chat","name":"Station 屏幕","typing":"yes","keys":["Shift+Mod+D"],"labels":["Ctrl+Shift+D"],"text":"Ctrl+Shift+D","changed":false,"listed":true},{"action":"chat.latest","group":"chat","name":"跳到最新","typing":"empty","keys":["Mod+Down"],"labels":["Ctrl+↓"],"text":"Ctrl+↓","changed":false,"listed":true},{"action":"chat.find","group":"chat","name":"在对话中查找","typing":"yes","keys":["Mod+F"],"labels":["Ctrl+F"],"text":"Ctrl+F","changed":false,"listed":true},{"action":"chat.archive","group":"chat","name":"归档对话","typing":"yes","keys":["Shift+Mod+E"],"labels":["Ctrl+Shift+E"],"text":"Ctrl+Shift+E","changed":false,"listed":true},{"action":"panel.close","group":"chat","name":"收起侧栏","typing":"yes","keys":["Escape"],"labels":["Esc"],"text":"Esc","changed":false,"listed":true},{"action":"files.preview","group":"files","name":"显示或隐藏预览","typing":"yes","keys":["Shift+Mod+P"],"labels":["Ctrl+Shift+P"],"text":"Ctrl+Shift+P","changed":false,"listed":true}],"workspace":["Alt+1","Alt+2","Alt+3","Alt+4","Alt+5","Alt+6","Alt+7","Alt+8","Alt+9"]},"railView":{"places":[{"id":"chats","label":"对话","kind":"lists","list":"all"},{"id":"mine","label":"我参与的","kind":"lists","list":"mine"},{"id":"watching","label":"监控中","kind":"lists","list":"watching"},{"id":"hidden","label":"已隐藏","kind":"lists","list":"hidden"},{"id":"archive","label":"已归档","kind":"lists","list":"archive"},{"id":"attention","label":"待处理","kind":"attention"},{"id":"files","label":"文件","kind":"places"},{"id":"stations","label":"Station","kind":"places"},{"id":"profiles","label":"Profile","kind":"places"},{"id":"connects","label":"连接","kind":"places"},{"id":"usage","label":"用量","kind":"places"}],"groups":[{"kind":"places","label":"页面","places":["files","stations","profiles","connects","usage"]},{"kind":"lists","label":"对话列表","places":["chats","mine","watching","hidden","archive"]},{"kind":"attention","label":"提醒","places":["attention"]}],"default":["attention","chats","files","stations","profiles","connects","usage"],"all":{"items":["attention","chats","files","stations","profiles","connects","usage"],"hidden":["mine","watching","hidden","archive"],"changed":false},"by":{}}}},"w":1794106477713.993}
-{"in":{"id":3,"value":[{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png"}]},"w":1794106477714.146}
-{"out":{"id":4,"subscribe":{"topic":"workspaces"},"keyed":true},"w":1794106477714.216}
-{"out":{"id":5,"subscribe":{"topic":"status"},"keyed":true},"w":1794106477714.297}
-{"out":{"id":6,"subscribe":{"topic":"downloads"},"keyed":true},"w":1794106477714.485}
-{"step":"# written by scripts/rerecord.sh from its test (src/sfreplay/emit.mbt): not edited by hand","w":1794106477722.995}
-{"step":"timeout 90000","w":1794106477723.014}
-{"step":"#env MBUI_PLATFORM=android","w":1794106477723.02}
-{"step":"answered client.device","w":1794106477723.024}
-{"in":{"id":4,"value":[{"account":{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png"},"workspaces":[{"id":"01M6WH7YAB4BPRGFBQN9525T49","name":"Dev","role":"owner","created_at":1794106456,"stations":1,"members":1,"relays":[],"time":{"created_at":{"past":true,"at":1794106456000,"ago":"刚刚","full":"11/8 10:54:16","until":"1 分钟内"}}}],"invitations":[],"relay_url":"http://127.0.0.1:28838","loaded":true,"beta":true}]},"w":1794106477723.223}
-{"in":{"id":5,"value":{"items":[],"lines":[]}},"w":1794106477723.252}
-{"in":{"id":6,"value":{"downloads":[],"keeping":[]}},"w":1794106477723.262}
-{"out":{"id":7,"subscribe":{"topic":"lock","workspace":"01M6WH7YAB4BPRGFBQN9525T49"},"keyed":true},"w":1794106477723.527}
-{"out":{"id":8,"subscribe":{"topic":"chats","scope":"01M6WH7YAB4BPRGFBQN9525T49","mine":false},"keyed":true},"w":1794106477723.727}
-{"out":{"id":9,"subscribe":{"topic":"changelog"},"keyed":true},"w":1794106477723.845}
-{"out":{"id":10,"subscribe":{"topic":"workspaceMarks","workspace":"01M6WH7YAB4BPRGFBQN9525T49"},"keyed":true},"w":1794106477724.091}
-{"in":{"id":7,"value":{"available":true,"locked":false,"notice":true,"role":"owner","manages":true,"owner":true,"canSign":true,"signs":false,"me":{"device":"86705962c43fc828fe96a0e56eea0610b773cf075cb8cd9bff620cf2e5e11d4d","code":"UEU-239","kind":"app","confirmed":false,"waiting":false},"signers":0,"members":[],"stations":[{"id":"b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","name":"willow","version":"0.1.0","online":true,"protected":false}],"protected":0,"renew":[],"attention":0}},"w":1794106477724.638}
-{"in":{"id":8,"value":{"me":{"id":"alice@example.test","email":"alice@example.test"},"stations":[{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","id":"b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","name":"willow","state":"online","running":0,"doing":"空闲"}],"loading":false,"days":[{"daysAgo":0,"at":1794106474220,"label":"今天","items":[{"id":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","session":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","thread":1,"title":"端到端测试的对话","agents":[{"key":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","runtime":"claude","agentText":"默认模型"}],"last":{"seq":10,"by":{"mine":false},"preview":"看一眼就行 083209"},"unread":false,"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","stationName":"willow","state":"block","time":{"lastActiveAt":{"ago":"刚刚","full":"11/8 10:54:34"}},"people":[{"id":"alice@example.test","name":"Name of alice","email":"alice@example.test","via":"cloud","shown":{"name":"Name of alice","display":"你","picture":"https://example.test/p.png","mine":true}}],"creator":{"id":"alice@example.test","name":"Name of alice","email":"alice@example.test","via":"cloud","shown":{"name":"Name of alice","display":"你","picture":"https://example.test/p.png","mine":true}},"peopleText":"你 发起","clientKey":"new:chat-71e1630202282c8fdb","pinned":false,"decision":{"seq":10,"options":[{"label":"好 083209"},{"label":"不好 083209"}],"card":{"type":"options","options":[{"label":"好 083209"},{"label":"不好 083209"}]},"text":"待处理 · 看一眼就行 083209"},"swipeArchive":true,"hidden":false,"muted":false,"stateText":"需要你处理：看一眼就行 083209","stateLead":"need","stateRest":"看一眼就行 083209","tone":"wait","mayPublish":true}]}],"trouble":null,"members":1,"leading":"agents","glyph":{"online":1,"dim":0,"connecting":0,"failing":0,"working":0,"asleep":false,"summary":"willow","label":"1 台 station，1 台在线","running":0,"now":"暂无 agent 在运行","unit":"个 agent 正在运行"},"note":{"reading":false,"text":null,"failing":[],"empty":false},"syncing":null}},"w":1794106477726.526}
-{"out":{"id":11,"subscribe":{"topic":"longJobs","scope":"01M6WH7YAB4BPRGFBQN9525T49"},"keyed":true},"w":1794106477726.688}
-{"in":{"id":9,"value":{"app":"android","tabs":[{"part":"android","label":"安卓","days":[]}],"loading":false}},"w":1794106477726.898}
-{"in":{"id":10,"value":{"workspaces":{"01M6WH7YAB4BPRGFBQN9525T49":{"alert":0,"unread":0,"wait":1,"tone":"wait","label":"1 个待你处理","chat":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","key":"chat:c-ac1e9aec8ea08679c4b5e6481b439759"},"badge":0,"items":[],"elsewhere":1,"mineTone":"wait"}},"badge":0,"badgeKinds":{"on":true,"wait":true,"failed":true,"done":true,"message":true,"services":true}}},"w":1794106477727.113}
-{"in":{"id":11,"value":{"groups":[],"lit":false,"ids":[]}},"w":1794106477727.725}
-{"out":{"id":12,"subscribe":{"topic":"doing"},"keyed":true},"w":1794106477736.119}
-{"in":{"id":12,"value":{"doing":[]}},"w":1794106477737.865}
-{"out":{"id":13,"subscribe":{"topic":"driveTransfers","workspace":"01M6WH7YAB4BPRGFBQN9525T49"},"keyed":true},"w":1794106477738.179}
-{"out":{"id":14,"subscribe":{"topic":"status","workspace":"01M6WH7YAB4BPRGFBQN9525T49"},"keyed":true},"w":1794106477738.272}
-{"out":{"id":15,"subscribe":{"topic":"lockPrompts"},"keyed":true},"w":1794106477738.528}
-{"out":{"id":16,"call":"client.focus","params":{"visible":true,"focused":true,"workspace":"01M6WH7YAB4BPRGFBQN9525T49"}},"w":1794106477739.391}
-{"out":{"id":17,"subscribe":{"topic":"notify"},"keyed":true},"w":1794106477739.412}
-{"out":{"id":18,"subscribe":{"topic":"notify","workspace":"01M6WH7YAB4BPRGFBQN9525T49"},"keyed":true},"w":1794106477739.439}
-{"step":"answered notify.permission","w":1794106477744.701}
-{"out":{"id":5,"unsubscribe":true},"w":1794106477744.735}
-{"in":{"id":13,"value":{"supported":true,"loaded":true,"transfers":[]}},"w":1794106477745.181}
-{"in":{"id":14,"value":{"items":[],"lines":[]}},"w":1794106477745.197}
-{"in":{"id":15,"value":{"pairing":[],"asks":[]}},"w":1794106477745.207}
-{"in":{"id":16,"ok":null},"w":1794106477745.502}
-{"in":{"id":17,"value":{"on":true,"asked":true,"push":true,"kinds":{"wait":true,"failed":true,"done":"away","message":true},"preview":true,"muted":[],"workspaces":[{"id":"01M6WH7YAB4BPRGFBQN9525T49","name":"Dev","on":true}],"permission":"unknown","show":[]}},"w":1794106477745.524}
-{"in":{"id":18,"value":{"on":true,"asked":true,"push":true,"kinds":{"wait":true,"failed":true,"done":"away","message":true},"preview":true,"muted":[],"workspaces":[{"id":"01M6WH7YAB4BPRGFBQN9525T49","name":"Dev","on":true}],"permission":"unknown","show":[]}},"w":1794106477745.542}
-{"out":{"id":19,"call":"notify.permission","params":{"state":"unknown"}},"w":1794106477746.192}
-{"in":{"id":19,"ok":null},"w":1794106477761.924}
-{"step":"tap 端到端测试","w":1794106477779.132}
-{"out":{"id":20,"subscribe":{"topic":"chat","station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","session":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","compact":true},"keyed":true},"w":1794106477779.516}
-{"step":"tap 端到端测试","acted":true,"w":1794106477779.784}
-{"in":{"id":20,"value":{"archived":false,"pinned":false,"me":{"id":"alice@example.test","email":"alice@example.test"},"thread":{"id":1,"surface":"ember","channel":"CHAT","threadTs":"1794106458.244000","title":"端到端测试的对话","createdBy":"alice@example.test","creator":{"id":"alice@example.test","name":"Name of alice","email":"alice@example.test","via":"cloud","shown":{"name":"Name of alice","display":"你","picture":"https://example.test/p.png","mine":true}},"createdAt":1794106458244,"sessions":[{"thread":1,"session":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","connect":"ember","joinedAt":1794106458245}],"last":10,"lastMessage":{"seq":10,"thread":1,"ts":"1794106474.220000","authorKind":"agent","author":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","authorRuntime":"claude","text":"看一眼就行 083209","attachments":[],"quotes":[],"declared":"block","ending":"need_help","createdAt":1794106474220,"time":{"createdAt":{"at":1794106474220,"ago":"刚刚","full":"11/8 10:54:34","until":"1 分钟内","past":true}}},"read":10,"unread":0,"people":[{"id":"alice@example.test","name":"Name of alice","email":"alice@example.test","via":"cloud","shown":{"name":"Name of alice","display":"你","picture":"https://example.test/p.png","mine":true}}],"firstText":"端到端测试的对话 post:你好，我是测试用的 agent","time":{"createdAt":{"at":1794106458244,"ago":"刚刚","full":"11/8 10:54:18","until":"1 分钟内","past":true}}},"title":"端到端测试的对话","cc":[],"people":[{"id":"alice@example.test","name":"Name of alice","email":"alice@example.test","via":"cloud","shown":{"name":"Name of alice","display":"你","picture":"https://example.test/p.png","mine":true}}],"agents":[{"session":{"key":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","connect":"ember","scope":"all","createdBy":"alice@example.test","boundTo":[],"creator":{"id":"alice@example.test","name":"Name of alice","email":"alice@example.test","via":"cloud"},"participants":[{"id":"alice@example.test","name":"Name of alice","email":"alice@example.test","via":"cloud"}],"runtime":"claude","profile":"cc","profilePinned":false,"runtimeSessionId":"a3fea2c3-9309-4e0b-a35e-a21703be3c73","contextActions":["compact","clear"],"workspace":"/test-station/data/sessions/chat/c-ac1e9aec8ea08679c4b5e6481b439759/workspace","running":false,"createdAt":1794106458242,"lastActiveAt":1794106474223,"process":"warm","turns":7,"pending":0,"firstText":"端到端测试的对话 post:你好，我是测试用的 agent","lastTurn":{"id":"ae1ff8a0-622e-445d-8d31-9d42e7be108d","kind":"input","outcome":"completed","declared":"block","ending":"need_help","need":"看一眼就行 083209","about":{"thread":1,"seq":10,"ts":"1794106474.220000"},"startedAt":1794106474216,"endedAt":1794106474224},"statusText":"需要你处理：看一眼就行 083209","statusLead":"need","statusRest":"看一眼就行 083209","tone":"blue","mark":"block","badgeText":"agent 已暂停，等待处理","titleText":"端到端测试的对话 post:你好，我是测试用的 agent","agentText":"默认模型","runtimeText":"Claude Code","processText":"保温中","efforts":["low","medium","high","xhigh","max"],"canCompact":true,"canClear":true,"time":{"createdAt":{"at":1794106458242,"ago":"刚刚","full":"11/8 10:54:18","until":"1 分钟内","past":true},"lastActiveAt":{"at":1794106474223,"ago":"刚刚","full":"11/8 10:54:34","until":"1 分钟内","past":true}}},"status":"block","badge":"block","profile":{"id":"cc","name":"cc","runtime":"claude","runtimes":["claude"],"access":{"kind":"env","key":"","login":false},"home":"/test-station/data/homes/cc","homeExists":true,"models":["claude-sonnet-5-5"],"named":["claude-sonnet-5-5"],"env":[],"usedBy":[],"loginCommand":"","machine":false,"backgroundOnMessage":true,"enabled":true,"check":{"decision":{"state":"unsupported","detail":"当前登录未提供决策概率接口"},"state":"unknown","detail":"自定义环境变量，still.fail 无法自动检查","checkedAt":1794106460302,"time":{"checkedAt":{"at":1794106460302,"ago":"刚刚","full":"11/8 10:54:20","until":"1 分钟内","past":true}}},"quota":{"state":"unsupported","windows":[],"detail":"自定义环境变量的账号无法查询额度","checkedAt":1794106458259,"time":{"checkedAt":{"at":1794106458259,"ago":"刚刚","full":"11/8 10:54:18","until":"1 分钟内","past":true}}},"checkText":"无法检查","checkTone":"neutral","group":"key","groupTitle":"API Key","makers":{"claude-sonnet-5-5":{"id":"anthropic","name":"Anthropic"}},"names":{"claude-sonnet-5-5":"Sonnet 5.5"},"series":[{"name":"Sonnet","models":["claude-sonnet-5-5"]}],"modelsText":"1 个模型","available":["claude-sonnet-5-5"],"added":["claude-sonnet-5-5"],"modelsReading":false,"uses":["claude"],"usesText":"","canAddModel":true,"decisionOnly":false,"decisionModels":[],"workspaces":[],"serves":true,"kindText":"自定义环境变量","planText":"","signInProvider":"Claude","checkLine":"自定义环境变量，still.fail 无法自动检查"},"profiles":[{"efforts":["low","medium","high","xhigh","max"],"id":"cc","name":"cc","current":true,"kind":"env","runtime":"claude","quota":{"state":"unsupported","windows":[],"detail":"自定义环境变量的账号无法查询额度","checkedAt":1794106458259,"time":{"checkedAt":{"at":1794106458259,"ago":"刚刚","full":"11/8 10:54:18","until":"1 分钟内","past":true}}},"quotaLine":{"text":"自定义环境变量的账号无法查询额度"}}],"choices":[{"model":"claude-sonnet-5-5","name":"Sonnet 5.5","family":"Sonnet","ids":["claude-sonnet-5-5"],"maker":{"id":"anthropic","name":"Anthropic"},"runtimes":["claude"],"efforts":{"claude":["low","medium","high","xhigh","max"]},"contexts":{"claude":[]},"accounts":{"claude":[{"efforts":["low","medium","high","xhigh","max"],"id":"cc","name":"cc","current":true,"kind":"env","runtime":"claude","quota":{"state":"unsupported","windows":[],"detail":"自定义环境变量的账号无法查询额度","checkedAt":1794106458259,"time":{"checkedAt":{"at":1794106458259,"ago":"刚刚","full":"11/8 10:54:18","until":"1 分钟内","past":true}}},"quotaLine":{"text":"自定义环境变量的账号无法查询额度"}}]},"liked":false}],"account":{"efforts":["low","medium","high","xhigh","max"],"id":"cc","name":"cc","current":true,"kind":"env","runtime":"claude","quota":{"state":"unsupported","windows":[],"detail":"自定义环境变量的账号无法查询额度","checkedAt":1794106458259,"time":{"checkedAt":{"at":1794106458259,"ago":"刚刚","full":"11/8 10:54:18","until":"1 分钟内","past":true}}},"quotaLine":{"text":"自定义环境变量的账号无法查询额度"}},"attention":[],"turns":[],"threads":[],"jobs":[],"hasJobs":false}],"messages":[{"seq":1,"thread":1,"ts":"1794106458.297000","authorKind":"person","author":"alice@example.test","authorName":"Name of alice","text":"端到端测试的对话 post:你好，我是测试用的 agent","words":[{"text":"端到端测试的对话 post:你好，我是测试用的 agent"}],"attachments":[],"quotes":[],"createdAt":1794106458297,"mine":true,"system":false,"by":{"name":"Name of alice","picture":"https://example.test/p.png"},"waiting":false,"time":{"createdAt":{"at":1794106458297,"ago":"刚刚","full":"11/8 10:54:18","until":"1 分钟内","past":true}}},{"seq":2,"thread":1,"ts":"1794106458.418000","authorKind":"agent","author":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","authorRuntime":"claude","text":"你好，我是测试用的 agent","md":[["p",[[0,15]]]],"attachments":[],"quotes":[],"declared":"final","ending":"all_done","createdAt":1794106458418,"mine":false,"system":false,"by":{"name":"默认模型","agent":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","runtime":"claude","here":true},"waiting":false,"time":{"createdAt":{"at":1794106458418,"ago":"刚刚","full":"11/8 10:54:18","until":"1 分钟内","past":true}}},{"seq":3,"thread":1,"ts":"1794106464.080000","authorKind":"person","author":"alice@example.test","authorName":"Name of alice","text":"给我几个选项 083209 card:要不要换图标 083209|先不换 083209|一起换 083209*|不用了 083209!","words":[{"text":"给我几个选项 083209 card:要不要换图标 083209|先不换 083209|一起换 083209*|不用了 083209!"}],"attachments":[],"quotes":[],"createdAt":1794106464080,"mine":true,"system":false,"by":{"name":"Name of alice","picture":"https://example.test/p.png"},"waiting":false,"time":{"createdAt":{"at":1794106464080,"ago":"刚刚","full":"11/8 10:54:24","until":"1 分钟内","past":true}}},{"seq":4,"thread":1,"ts":"1794106464.117000","authorKind":"agent","author":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","authorRuntime":"claude","text":"要不要换图标 083209","md":[["p",[[0,13]]]],"attachments":[],"quotes":[],"declared":"block","ending":"need_help","createdAt":1794106464117,"mine":false,"system":false,"by":{"name":"默认模型","agent":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","runtime":"claude","here":true},"waiting":false,"time":{"createdAt":{"at":1794106464117,"ago":"刚刚","full":"11/8 10:54:24","until":"1 分钟内","past":true}},"options":[{"label":"先不换 083209"},{"label":"不用了 083209","closes":true},{"label":"一起换 083209","recommended":true}],"card":{"assigneeText":"待你决策","type":"options","options":[{"label":"先不换 083209"},{"label":"不用了 083209","closes":true},{"label":"一起换 083209","recommended":true}]},"decision":{"resolved":true,"answeredBy":"你","chosen":"一起换 083209","text":"你 选择了「一起换 083209」"}},{"seq":5,"thread":1,"ts":"1794106464.750000","authorKind":"person","author":"alice@example.test","authorName":"Name of alice","text":"一起换 083209","words":[{"text":"一起换 083209"}],"attachments":[],"quotes":[{"author":"agent","text":"要不要换图标 083209","comment":"","ts":"1794106464.117000","role":"agent"}],"createdAt":1794106464750,"mine":true,"system":false,"by":{"name":"Name of alice","picture":"https://example.test/p.png"},"waiting":false,"time":{"createdAt":{"at":1794106464750,"ago":"刚刚","full":"11/8 10:54:24","until":"1 分钟内","past":true}}},{"seq":6,"thread":1,"ts":"1794106464.761000","authorKind":"ember","author":"ember","authorName":"still.fail","text":"⚠️ 本轮 agent 未在对话中回复，以下是它最后输出的文字，由 station 代为转发（并非它发布的消息）；回复即可继续：\n\n> Your turn ended without a state, so nobody knows where the chat stands. Only a real unresolved need requires need_human. A factual answer alone does not need a follow-up question; do not invent one. If you still need something after answering a clarification, visibly ask for it; need alone is only a status summary. If you ask a person to choose or confirm, post the question with a card. Do not reopen a decision the user already made. Decide whether anything in it is still unfinished, then end the turn with exactly one:\n> - all_done: nothing in the chat is left unfinished at all. Post the result with chat_post kind \"all_done\" (or chat_state \"all_done\" if you already posted it), with done: why nothing is left, naming the evidence (a commit, a release, a person's confirmation, the answer given).\n> - need_human: a person has to give, do, decide, confirm or verify something (a card you posted included), or answer a question you asked: kind \"need_human\" with need, what they have to give, do or decide (to verify: where, how and what to look at). If work you started is pending too, mention it after the ask in need.\n> - waiting: only work you started that will bring you back on its own (a background command or agent, a job, a loop watching CI), with nothing asked of anyone, and nothing else you can do meanwhile: chat_state \"waiting\" with seconds, your estimate of how long until it does, and for, what you wait for. Waiting on a person is need_human.\n> - Otherwise: continue the work.","attachments":[],"quotes":[],"createdAt":1794106464761,"mine":false,"system":true,"notice":{"failed":true,"words":"本轮 agent 未在对话中回复，以下是它最后输出的文字，由 station 代为转发（并非它发布的消息）；回复即可继续：\n\n> Your turn ended without a state, so nobody knows where the chat stands. Only a real unresolved need requires need_human. A factual answer alone does not need a follow-up question; do not invent one. If you still need something after answering a clarification, visibly ask for it; need alone is only a status summary. If you ask a person to choose or confirm, post the question with a card. Do not reopen a decision the user already made. Decide whether anything in it is still unfinished, then end the turn with exactly one:\n> - all_done: nothing in the chat is left unfinished at all. Post the result with chat_post kind \"all_done\" (or chat_state \"all_done\" if you already posted it), with done: why nothing is left, naming the evidence (a commit, a release, a person's confirmation, the answer given).\n> - need_human: a person has to give, do, decide, confirm or verify something (a card you posted included), or answer a question you asked: kind \"need_human\" with need, what they have to give, do or decide (to verify: where, how and what to look at). If work you started is pending too, mention it after the ask in need.\n> - waiting: only work you started that will bring you back on its own (a background command or agent, a job, a loop watching CI), with nothing asked of anyone, and nothing else you can do meanwhile: chat_state \"waiting\" with seconds, your estimate of how long until it does, and for, what you wait for. Waiting on a person is need_human.\n> - Otherwise: continue the work.","md":[["p",[[0,61]]],["quote",[["p",[[65,589]]],["list",[["li",[[594,868]]],["li",[[873,1189]]],["li",[[1194,1528]]],["li",[[1533,1562]]]]]]]]},"reportable":true,"by":{"name":"still.fail"},"waiting":false,"time":{"createdAt":{"at":1794106464761,"ago":"刚刚","full":"11/8 10:54:24","until":"1 分钟内","past":true}}},{"seq":7,"thread":1,"ts":"1794106468.813000","authorKind":"person","author":"alice@example.test","authorName":"Name of alice","text":"再问一个 083209 card:先合并哪个分支 083209|先合 A 083209|先合 B 083209","words":[{"text":"再问一个 083209 card:先合并哪个分支 083209|先合 A 083209|先合 B 083209"}],"attachments":[],"quotes":[],"createdAt":1794106468813,"mine":true,"system":false,"by":{"name":"Name of alice","picture":"https://example.test/p.png"},"waiting":false,"time":{"createdAt":{"at":1794106468813,"ago":"刚刚","full":"11/8 10:54:28","until":"1 分钟内","past":true}}},{"seq":8,"thread":1,"ts":"1794106468.824000","authorKind":"agent","author":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","authorRuntime":"claude","text":"先合并哪个分支 083209","md":[["p",[[0,14]]]],"attachments":[],"quotes":[],"declared":"block","ending":"need_help","createdAt":1794106468824,"mine":false,"system":false,"by":{"name":"默认模型","agent":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","runtime":"claude","here":true},"waiting":false,"time":{"createdAt":{"at":1794106468824,"ago":"刚刚","full":"11/8 10:54:28","until":"1 分钟内","past":true}},"options":[{"label":"先合 A 083209"},{"label":"先合 B 083209"}],"card":{"assigneeText":"待你决策","type":"options","options":[{"label":"先合 A 083209"},{"label":"先合 B 083209"}]},"decision":{"resolved":true,"answeredBy":"你","text":"你 回复了"}},{"seq":9,"thread":1,"ts":"1794106474.212000","authorKind":"person","author":"alice@example.test","authorName":"Name of alice","text":"打开就消失 083209 card:看一眼就行 083209|好 083209|不好 083209","words":[{"text":"打开就消失 083209 card:看一眼就行 083209|好 083209|不好 083209"}],"attachments":[],"quotes":[],"createdAt":1794106474212,"mine":true,"system":false,"by":{"name":"Name of alice","picture":"https://example.test/p.png"},"waiting":false,"time":{"createdAt":{"at":1794106474212,"ago":"刚刚","full":"11/8 10:54:34","until":"1 分钟内","past":true}}},{"seq":10,"thread":1,"ts":"1794106474.220000","authorKind":"agent","author":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","authorRuntime":"claude","text":"看一眼就行 083209","md":[["p",[[0,12]]]],"attachments":[],"quotes":[],"declared":"block","ending":"need_help","createdAt":1794106474220,"mine":false,"system":false,"by":{"name":"默认模型","agent":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","runtime":"claude","here":true},"waiting":false,"time":{"createdAt":{"at":1794106474220,"ago":"刚刚","full":"11/8 10:54:34","until":"1 分钟内","past":true}},"options":[{"label":"好 083209"},{"label":"不好 083209"}],"card":{"assigneeText":"待你决策","type":"options","options":[{"label":"好 083209"},{"label":"不好 083209"}]},"decision":{"resolved":false},"asked":true}],"elsewhere":[],"more":false,"firstEntry":1,"lastEntry":10,"newer":false,"caught":10,"unreadAbove":false,"outbox":[],"link":{"state":"online"},"offline":false,"pending":false,"screens":[{"id":"desktop","kind":"desktop","title":"test-station","line":"当前不可用：远程查看屏幕、远程控制屏幕","agent":false}],"decision":{"seq":10,"options":[{"label":"好 083209"},{"label":"不好 083209"}],"card":{"type":"options","options":[{"label":"好 083209"},{"label":"不好 083209"}]},"text":"待处理 · 看一眼就行 083209"},"asks":[{"seq":10,"card":true,"mine":true,"text":"看一眼就行 083209"}],"stateText":"需要你处理：看一眼就行 083209","stateLead":"need","stateRest":"看一眼就行 083209","askClear":true,"publish":{"may":true},"opened":[],"tabs":{"open":[]}}},"w":1794106477785.402}
-{"out":{"id":21,"subscribe":{"topic":"composer","key":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839:chat:c-ac1e9aec8ea08679c4b5e6481b439759"},"keyed":true},"w":1794106477795.652}
-{"out":{"id":22,"subscribe":{"topic":"stations","scope":"01M6WH7YAB4BPRGFBQN9525T49"},"keyed":true},"w":1794106477795.883}
-{"out":{"id":23,"subscribe":{"topic":"chatJobs","station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","session":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","summary":true,"compact":true},"keyed":true},"w":1794106477795.917}
-{"out":{"id":24,"call":"picture","params":{"url":"https://example.test/p.png"}},"w":1794106477795.988}
-{"out":{"id":25,"call":"chat.place","params":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","thread":1}},"w":1794106477811.276}
-{"out":{"id":26,"call":"client.focus","params":{"chat":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","session":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","thread":1,"end":true,"seen":10}}},"w":1794106477811.31}
-{"out":{"id":27,"call":"paste.info","params":{"text":""}},"w":1794106477811.336}
-{"step":"wait 500","w":1794106477813.335}
-{"in":{"id":21,"value":{"text":"","rev":0,"quotes":[],"files":[],"uploading":false,"ready":false,"starting":false,"version":0}},"w":1794106477813.562}
-{"in":{"id":22,"value":[{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","id":"b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","name":"willow","summary":"空闲 · Test CPU · 7 GB · Test OS","face":"idle","line":"Test CPU","online":true,"reconnecting":false,"stateText":"空闲","stateBusy":false,"problems":[],"lastSeen":1794106457,"version":"0.1.0","link":{"state":"online"},"runtimes":[{"runtime":"claude","models":["claude-sonnet-5-5"]}],"models":[{"model":"claude-sonnet-5-5","name":"Sonnet 5.5","family":"Sonnet","ids":["claude-sonnet-5-5"],"maker":{"id":"anthropic","name":"Anthropic"},"runtimes":["claude"],"efforts":{"claude":["low","medium","high","xhigh","max"]},"contexts":{"claude":[]},"accounts":{"claude":[{"efforts":["low","medium","high","xhigh","max"],"id":"cc","name":"cc","current":false,"kind":"env","runtime":"claude","quota":{"state":"unsupported","windows":[],"detail":"自定义环境变量的账号无法查询额度","checkedAt":1794106458259,"time":{"checkedAt":{"at":1794106458259,"ago":"刚刚","full":"11/8 10:54:18","until":"1 分钟内","past":true}}},"quotaLine":{"text":"自定义环境变量的账号无法查询额度"}}]},"liked":false}],"overview":{"automaticDecisions":{"canEdit":true,"canReview":true,"settings":{"completion":{"enabled":false,"model":null}},"models":[],"recent":[],"policy":{"text":"agent 说做完了以后，看这个 chat 里用户要的东西现在怎么样了。只按用户实际要的判断：不替用户加要求，用户没要求部署或验证的就不算欠着。agent 说做完了但消息对不上时，以消息为准。看不到的东西（文件、线上状态）不要猜，看不出来就选「看不出来」。","options":[{"id":"answered","name":"已回答","rubric":"用户要的是答案、解释或建议，已经给了，没有要做的事","archive":true,"count":0,"chats":[]},{"id":"landed","name":"已落地","rubric":"要做的改动已经合进 main、已上线或已发版；用户要验证的已经验证","archive":true,"count":0,"chats":[]},{"id":"dropped","name":"不要了","rubric":"用户说不做了、不合了，或者改去别处做了","archive":true,"count":0,"chats":[]},{"id":"agent_work","name":"agent 还有活","rubric":"还有 agent 自己能接着做的事，或者有任务还在跑","archive":false,"count":0,"chats":[]},{"id":"awaiting_review","name":"等人看结果","rubric":"分支、截图、方案等做好了，在等人看或确认","archive":false,"count":0,"chats":[]},{"id":"awaiting_answer","name":"等人回答","rubric":"有没回答的问题，或没做的决定","archive":false,"count":0,"chats":[]},{"id":"awaiting_action","name":"等人去做","rubric":"要人去操作或提供东西，比如 key、权限、真机测试","archive":false,"count":0,"chats":[]},{"id":"uncertain","name":"看不出来","rubric":"消息不够判断还有没有事","archive":false,"count":0,"chats":[]}],"days":7,"checked":0,"failed":0,"edited":false,"change":null,"summaryText":"最近 7 天检查了 0 个 chat","changeText":null}},"archiving":{"days":1,"slackDays":3,"reviewed":false,"canEdit":true,"mode":"idle","summaryText":"空闲就归档 · 1 天 · Slack：3 天","daysOffered":[1,3,7,30],"slackDaysOffered":[0,3,7,30],"daysOfferedText":["1 天","3 天","7 天","30 天"],"slackDaysOfferedText":["不归档","3 天","7 天","30 天"],"reviewOn":false,"reviewText":"未开启","stalled":false,"lineText":"空闲就归档 · 1 天 · Slack：3 天","modes":[{"mode":"off","label":"不自动归档","days":0,"reviewed":false,"allowed":true},{"mode":"idle","label":"空闲就归档","days":1,"reviewed":false,"allowed":true},{"mode":"reviewed","label":"按模型判断","days":1,"reviewed":true,"allowed":false}],"modeNote":"空闲超过下面的天数就归档。只看状态，不读内容：chat 里提到但没做完的事，它看不出来。 要选「按模型判断」，先开启这台 station 的归档建议。"},"viewer":{"via":"mesh","email":"alice@example.test","name":"Name of alice","sub":"alice","role":"owner","workspace":"01M6WH7YAB4BPRGFBQN9525T49","device":"86705962c43fc828fe96a0e56eea0610b773cf075cb8cd9bff620cf2e5e11d4d"},"connects":[],"profiles":[{"id":"cc","name":"cc","runtime":"claude","runtimes":["claude"],"access":{"kind":"env","key":"","login":false},"home":"/test-station/data/homes/cc","homeExists":true,"models":["claude-sonnet-5-5"],"named":["claude-sonnet-5-5"],"env":[],"usedBy":[],"loginCommand":"","machine":false,"backgroundOnMessage":true,"enabled":true,"check":{"decision":{"state":"unsupported","detail":"当前登录未提供决策概率接口"},"state":"unknown","detail":"自定义环境变量，still.fail 无法自动检查","checkedAt":1794106460302,"time":{"checkedAt":{"at":1794106460302,"ago":"刚刚","full":"11/8 10:54:20","until":"1 分钟内","past":true}}},"quota":{"state":"unsupported","windows":[],"detail":"自定义环境变量的账号无法查询额度","checkedAt":1794106458259,"time":{"checkedAt":{"at":1794106458259,"ago":"刚刚","full":"11/8 10:54:18","until":"1 分钟内","past":true}}},"checkText":"无法检查","checkTone":"neutral","group":"key","groupTitle":"API Key","makers":{"claude-sonnet-5-5":{"id":"anthropic","name":"Anthropic"}},"names":{"claude-sonnet-5-5":"Sonnet 5.5"},"series":[{"name":"Sonnet","models":["claude-sonnet-5-5"]}],"modelsText":"1 个模型","available":["claude-sonnet-5-5"],"added":["claude-sonnet-5-5"],"modelsReading":false,"uses":["claude"],"usesText":"","canAddModel":true,"decisionOnly":false,"decisionModels":[],"workspaces":[],"serves":true,"kindText":"自定义环境变量","planText":"","signInProvider":"Claude","checkLine":"自定义环境变量，still.fail 无法自动检查"}],"processes":[],"counts":{"sessions":1,"running":0,"warm":1},"mesh":{"state":"running","origin":"http://127.0.0.1:28840","station":"b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","workspace":"Dev","workspaceId":"01M6WH7YAB4BPRGFBQN9525T49","name":"willow","reached":true},"slackUsers":[],"slackTeams":[],"slackApps":[],"feishuRegistrations":[],"disk":{"freeBytes":50000000000,"totalBytes":100000000000},"logins":[],"machineLogins":[{"runtime":"claude","installed":true,"loggedIn":false,"planText":"","usable":false,"text":"无法读取 Claude Code 的登录信息","offered":false},{"runtime":"codex","installed":true,"loggedIn":false,"planText":"","usable":false,"text":"Codex 未登录","offered":false}],"sharing":true,"consoleSignIn":true,"updates":[{"id":"station","name":"Station","installed":true,"newer":false,"downgrade":false,"updatable":false,"repairable":false,"note":"并非通过安装脚本安装，无法在此更新","state":"idle","checkedAt":1794106457975,"shownText":"开发版","tipText":"检查更新失败，点击「检查更新」重试","updatingText":"正在更新","failedText":"更新失败"},{"id":"claude","name":"Claude Code","installed":true,"latest":"2.1.319","newer":false,"downgrade":false,"updatable":true,"repairable":false,"state":"idle","checkedAt":1794106457975,"shownText":"版本未知","tipText":"已是最新","updatingText":"正在更新","failedText":"更新失败"},{"id":"codex","name":"Codex","installed":true,"latest":"0.167.0","newer":false,"downgrade":false,"updatable":false,"repairable":false,"note":"安装在 /test-e2e/stillfail/station/test/fake/codex，并非通过 npm 或 Homebrew 安装，需在该机器上手动更新","state":"idle","checkedAt":1794106457975,"shownText":"版本未知","tipText":"已是最新","updatingText":"正在更新","failedText":"更新失败"},{"id":"dsh","name":"DeepSeek Harness","installed":true,"version":"0.2.0","latest":"0.2.2-rc.1","newer":true,"downgrade":false,"updatable":false,"repairable":false,"note":"安装在 /test-e2e/stillfail/station/test/fake/dsh，并非通过 npm 或 Homebrew 安装，需在该机器上手动更新","state":"idle","checkedAt":1794106457975,"shownText":"0.2.0","tipText":"","updatingText":"正在更新","failedText":"更新失败"},{"id":"grok","name":"Grok Build","installed":true,"version":"1.0.62","latest":"1.0.77","newer":true,"downgrade":false,"updatable":false,"repairable":false,"note":"安装在 /test-e2e/stillfail/station/test/fake/grok，并非通过 npm 或 Homebrew 安装，需在该机器上手动更新","state":"idle","checkedAt":1794106457975,"shownText":"1.0.62","tipText":"","updatingText":"正在更新","failedText":"更新失败"},{"id":"cursor","name":"Cursor","installed":false,"latest":"1.3.1","newer":false,"downgrade":false,"updatable":true,"repairable":false,"state":"idle","checkedAt":1794106457975,"shownText":"未安装","tipText":"","updatingText":"正在安装","failedText":"安装失败"},{"id":"devin","name":"Devin","installed":true,"version":"3000.11.92","latest":"3000.12.28","newer":true,"downgrade":false,"updatable":false,"repairable":false,"note":"安装在 /test-e2e/stillfail/station/test/fake/devin，不是用 Devin 的安装脚本装的，需在该机器上手动更新","state":"idle","checkedAt":1794106457975,"shownText":"3000.11.92","tipText":"","updatingText":"正在更新","failedText":"更新失败"},{"id":"hermes","name":"Hermes Agent","installed":true,"newer":false,"downgrade":false,"updatable":false,"repairable":false,"note":"请在该机器上安装 Hermes 0.21.7 或更新版本及 ACP、MCP 组件，并配置模型服务；更新由 Hermes 自行管理。","state":"idle","checkedAt":1794106457975,"shownText":"版本未知","tipText":"检查更新失败，点击「检查更新」重试","updatingText":"正在更新","failedText":"更新失败"},{"id":"agy","name":"Antigravity CLI","installed":true,"newer":false,"downgrade":false,"updatable":true,"repairable":false,"state":"idle","checkedAt":1794106457975,"shownText":"版本未知","tipText":"检查更新失败，点击「检查更新」重试","updatingText":"正在更新","failedText":"更新失败"}],"processesText":"没有运行中的 agent 进程","agentEnv":[],"drive":{"roots":[],"anywhere":true,"home":"/test-station/home"},"search":{"files":"spotlight","personal":false},"network":{"congestion":"cubic"},"context":{"afreshWhenCold":false,"afreshAbove":1},"diagnostics":{"logs":true},"outflowGrants":0,"outflowAnswers":true,"outflowTailcat":{"on":false,"state":"off"}},"profileGroups":[{"group":"key","title":"API Key","profiles":["cc"],"attention":0}],"profileStates":{"cc":{"text":"无法检查","tone":"neutral"}},"betaOffered":false,"host":{"hostname":"test-station","os":"Test OS","arch":"arm64","cpus":4,"cpuModel":"Test CPU","load":0.25,"cpuBusy":0.25,"uptimeSec":3600,"memory":{"totalBytes":8000000000,"usedBytes":4000000000,"swapUsedBytes":0},"disk":{"path":"/test-station/data","totalBytes":100000000000,"freeBytes":50000000000},"stationRssBytes":100000000,"checkedAt":1794106474383,"summary":"4 核 · 7 GB","line":"Test OS · 4 核 · 7 GB · 已运行 0 天","facts":["test-station","Test OS","arm64 · 4 核","已运行 1 小时"],"meters":[{"label":"CPU","short":"CPU","percent":25,"left":75,"level":"ok","value":"25%","remaining":"空闲 75%","big":"75","unit":"%","title":"CPU 空闲率","titleShort":"CPU 空闲","total":"负载 1.0","note":"负载 1.0 · Test CPU"},{"label":"内存","short":"内存","percent":50,"left":50,"level":"ok","value":"3.7 GB / 7.5 GB","remaining":"剩 3.7 G","big":"3.7","unit":"GB","title":"可用内存","total":"总内存 7 GB","totalShort":"总 7 GB"},{"label":"磁盘","short":"磁盘","percent":50,"left":50,"level":"ok","value":"剩余 46.6 GB / 93.1 GB","remaining":"剩 46.6 G","big":"46.6","unit":"GB","title":"可用磁盘","total":"总磁盘 93 GB","totalShort":"总 93 GB"}],"gpus":[{"big":"75","unit":"%","left":75,"level":"ok","title":"GPU 空闲率","titleShort":"GPU 空闲","total":"4 核","model":"Test GPU"}],"identity":"Test CPU · 7 GB · Test OS","details":[{"label":"主机名","value":"test-station"},{"label":"芯片","value":"Test CPU · 4 核 · arm64"},{"label":"已运行","value":"1 小时"},{"label":"still.fail","value":"进程占用 95 MB"}],"usage":"内存 3.7 GB / 7.5 GB · 磁盘 剩余 46.6 GB / 93.1 GB","stationText":"still.fail 95 MB"},"way":{"path":"直连","via":"direct"},"time":{"lastSeen":{"at":1794106457000,"ago":"刚刚","full":"11/8 10:54:17","until":"1 分钟内","past":true}},"joined":false}]},"w":1794106477813.81}
-{"in":{"id":23,"value":{"jobs":[],"hasJobs":false,"servicesNote":"","jobsNote":"","allText":""}},"w":1794106477813.98}
-{"in":{"id":25,"ok":null},"w":1794106477814.724}
-{"in":{"id":26,"ok":null},"w":1794106477814.749}
-{"in":{"id":27,"ok":{"file":false,"info":null,"threshold":5000}},"w":1794106477814.783}
-{"in":{"id":24,"error":{"code":"picture","message":"无法加载图片：网络连接失败（11月8日 10:54:37）"}},"w":1794106477977.939}
-{"out":{"id":13,"unsubscribe":true},"w":1794106478146.718}
-{"step":"now until =willow","w":1794106478329.444}
-{"step":"until 发消息","w":1794106478329.481}
-{"step":"log do: peer send 看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209","w":1794106478329.5}
+{"out":{"id":1,"call":"client.device","params":{"client":"still.fail mbui","app":"android","model":""}},"w":1795189158117.345}
+{"out":{"id":2,"subscribe":{"topic":"prefs"},"keyed":true},"w":1795189158117.71}
+{"out":{"id":3,"subscribe":{"topic":"accounts"},"keyed":true},"w":1795189158119.173}
+{"out":{"id":4,"subscribe":{"topic":"workspaces"},"keyed":true},"w":1795189158119.436}
+{"in":{"id":1,"ok":null},"w":1795189158290.516}
+{"in":{"id":2,"value":{"onlyMine":false,"onlyWatching":false,"boardViews":{},"boardGroups":{},"boardShowEmpty":{},"boardDrafts":{},"listFilter":{},"appearance":"system","rowPicture":"auto","absoluteTime":false,"lang":"zh","keys":{},"lastChat":{},"moveTo":{},"openChat":{},"chatTabs":{},"dropFiles":{},"driveViews":{},"filesTabs":{},"remoteTabs":{},"driveFavorites":{},"driveFavoritesHidden":{},"previewSizes":{},"sidebars":{},"trouble":{},"jobsSeen":{},"failsGone":{},"resume":{},"stationUpdatesDismissed":{},"device":{"app":"android","phone":true,"handoff":false},"productName":"still.fail","product":"still.fail","reader":{"size":16,"line":1.7,"margin":22,"face":"sans","indent":true,"paper":"follow"},"rails":{},"bars":{"sets":[["chats","files","profiles","stations"],["remote","archive","usage","connects"]],"current":0},"barsBy":{},"fonts":{},"faces":{"ui":{"id":"","name":"","mono":false,"family":"","files":[],"bytes":0},"text":{"id":"","name":"","mono":false,"family":"","files":[],"bytes":0},"code":{"id":"","name":"","mono":true,"family":"","files":[],"bytes":0},"list":[{"id":"inter","name":"Inter","mono":false,"family":"SF Inter","css":"http://127.0.0.1:18787/releases/fonts/inter/4.001/font.css","files":[{"weight":0,"url":"http://127.0.0.1:18787/releases/fonts/inter/4.001/var.ttf.gz","bytes":457818,"sha256":"29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031"}],"preview":"http://127.0.0.1:18787/releases/fonts/inter/4.001/preview-194fa287.ttf","bytes":457818},{"id":"noto-sans-sc","name":"思源黑体","mono":false,"family":"SF Noto Sans SC","css":"http://127.0.0.1:18787/releases/fonts/noto-sans-sc/2.004/font.css","files":[{"weight":0,"url":"http://127.0.0.1:18787/releases/fonts/noto-sans-sc/2.004/var.ttf.gz","bytes":11276563,"sha256":"a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da"}],"preview":"http://127.0.0.1:18787/releases/fonts/noto-sans-sc/2.004/preview-f0494178.ttf","bytes":11276563},{"id":"noto-serif-sc","name":"思源宋体","mono":false,"family":"SF Noto Serif SC","css":"http://127.0.0.1:18787/releases/fonts/noto-serif-sc/2.003/font.css","files":[{"weight":0,"url":"http://127.0.0.1:18787/releases/fonts/noto-serif-sc/2.003/var.ttf.gz","bytes":15454579,"sha256":"050080d9255a86808f2945bffac582b31ef32bc36411ce29563b4961670c66f9"}],"preview":"http://127.0.0.1:18787/releases/fonts/noto-serif-sc/2.003/preview-001bbedf.ttf","bytes":15454579},{"id":"lxgw-wenkai","name":"霞鹜文楷","mono":false,"family":"SF LXGW WenKai","css":"http://127.0.0.1:18787/releases/fonts/lxgw-wenkai/1.530/font.css","files":[{"weight":400,"url":"http://127.0.0.1:18787/releases/fonts/lxgw-wenkai/1.530/400.ttf.gz","bytes":12904482,"sha256":"2d73eea94ad808999d90c0000c239a84a33b09d4bc6ab6c5b8bbf1eda8a7fc8b"},{"weight":500,"url":"http://127.0.0.1:18787/releases/fonts/lxgw-wenkai/1.530/500.ttf.gz","bytes":13272430,"sha256":"f4b8a34d1f838fe411540cb7c97b1c384ac9738a876c4104500bc42508b2312a"}],"preview":"http://127.0.0.1:18787/releases/fonts/lxgw-wenkai/1.530/preview-d3505af4.ttf","bytes":26176912},{"id":"jetbrains-mono","name":"JetBrains Mono","mono":true,"family":"SF JetBrains Mono","css":"http://127.0.0.1:18787/releases/fonts/jetbrains-mono/2.211/font.css","files":[{"weight":0,"url":"http://127.0.0.1:18787/releases/fonts/jetbrains-mono/2.211/var.ttf.gz","bytes":90579,"sha256":"48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda"}],"preview":"http://127.0.0.1:18787/releases/fonts/jetbrains-mono/2.211/preview-ee73078f.ttf","bytes":90579},{"id":"fira-code","name":"Fira Code","mono":true,"family":"SF Fira Code","css":"http://127.0.0.1:18787/releases/fonts/fira-code/5.002/font.css","files":[{"weight":0,"url":"http://127.0.0.1:18787/releases/fonts/fira-code/5.002/var.ttf.gz","bytes":137151,"sha256":"9335b082b3c7850d98a64b584f3417f65355f3471278bb5eeb8c6c0e8657aeeb"}],"preview":"http://127.0.0.1:18787/releases/fonts/fira-code/5.002/preview-555be27a.ttf","bytes":137151},{"id":"maple-mono","name":"Maple Mono","mono":true,"family":"SF Maple Mono CN","css":"http://127.0.0.1:18787/releases/fonts/maple-mono/7.9/font.css","files":[{"weight":400,"url":"http://127.0.0.1:18787/releases/fonts/maple-mono/7.9/400.ttf.gz","bytes":8352545,"sha256":"0fcc5139bfd5ab14ff989bb7dfd5236d0cafc10e60b9828569e6883613ab4085"},{"weight":600,"url":"http://127.0.0.1:18787/releases/fonts/maple-mono/7.9/600.ttf.gz","bytes":8438132,"sha256":"96ed7ae26ee7c50b02b2d2b2bc0f1a0cbabe45ae5d6e6abf6678e2177c415677"}],"preview":"http://127.0.0.1:18787/releases/fonts/maple-mono/7.9/preview-cffdf246.ttf","bytes":16790677}]},"keymap":{"changeable":false,"mac":false,"groups":[{"group":"global","name":"全局"},{"group":"chat","name":"对话"},{"group":"files","name":"文件"}],"actions":[{"action":"chat.switch","group":"global","name":"快速切换对话","typing":"yes","keys":["Mod+K"],"labels":["Ctrl+K"],"text":"Ctrl+K","changed":false,"listed":true},{"action":"chat.new","group":"global","name":"新建对话","typing":"yes","keys":["Alt+Mod+N"],"labels":["Ctrl+Alt+N"],"text":"Ctrl+Alt+N","changed":false,"listed":true},{"action":"chat.prev","group":"global","name":"上一个对话","typing":"yes","keys":["Alt+Up"],"labels":["Alt+↑"],"text":"Alt+↑","changed":false,"listed":true},{"action":"chat.next","group":"global","name":"下一个对话","typing":"yes","keys":["Alt+Down"],"labels":["Alt+↓"],"text":"Alt+↓","changed":false,"listed":true},{"action":"sidebar.toggle","group":"global","name":"收起/展开侧边栏","typing":"yes","keys":["Mod+\\"],"labels":["Ctrl+\\"],"text":"Ctrl+\\","changed":false,"listed":true},{"action":"nav.back","group":"global","name":"后退","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"nav.forward","group":"global","name":"前进","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"settings","group":"global","name":"设置","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"shortcuts","group":"global","name":"快捷键一览","typing":"yes","keys":["Mod+/"],"labels":["Ctrl+/"],"text":"Ctrl+/","changed":false,"listed":true},{"action":"zoom.in","group":"global","name":"放大界面","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"zoom.out","group":"global","name":"缩小界面","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"zoom.reset","group":"global","name":"恢复界面大小","typing":"yes","keys":[],"labels":[],"text":"未设置","changed":false,"listed":false},{"action":"composer.focus","group":"chat","name":"回到输入框","typing":"no","keys":["Space"],"labels":["空格"],"text":"空格","changed":false,"listed":true},{"action":"composer.file","group":"chat","name":"发送文件","typing":"yes","keys":["Mod+U"],"labels":["Ctrl+U"],"text":"Ctrl+U","changed":false,"listed":true},{"action":"chat.stop","group":"chat","name":"停止当前任务","typing":"yes","keys":["Mod+."],"labels":["Ctrl+."],"text":"Ctrl+.","changed":false,"listed":true},{"action":"chat.history","group":"chat","name":"执行历史","typing":"yes","keys":["Shift+Mod+H"],"labels":["Ctrl+Shift+H"],"text":"Ctrl+Shift+H","changed":false,"listed":true},{"action":"chat.jobs","group":"chat","name":"服务和后台任务","typing":"yes","keys":["Shift+Mod+J"],"labels":["Ctrl+Shift+J"],"text":"Ctrl+Shift+J","changed":false,"listed":true},{"action":"chat.screen","group":"chat","name":"Station 屏幕","typing":"yes","keys":["Shift+Mod+D"],"labels":["Ctrl+Shift+D"],"text":"Ctrl+Shift+D","changed":false,"listed":true},{"action":"chat.latest","group":"chat","name":"跳到最新","typing":"empty","keys":["Mod+Down"],"labels":["Ctrl+↓"],"text":"Ctrl+↓","changed":false,"listed":true},{"action":"chat.find","group":"chat","name":"在对话中查找","typing":"yes","keys":["Mod+F"],"labels":["Ctrl+F"],"text":"Ctrl+F","changed":false,"listed":true},{"action":"chat.outline","group":"chat","name":"目录","typing":"yes","keys":["Mod+G"],"labels":["Ctrl+G"],"text":"Ctrl+G","changed":false,"listed":true},{"action":"chat.said.prev","group":"chat","name":"上一条发言","typing":"empty","keys":["Alt+Shift+Up"],"labels":["Alt+Shift+↑"],"text":"Alt+Shift+↑","changed":false,"listed":true},{"action":"chat.said.next","group":"chat","name":"下一条发言","typing":"empty","keys":["Alt+Shift+Down"],"labels":["Alt+Shift+↓"],"text":"Alt+Shift+↓","changed":false,"listed":true},{"action":"chat.archive","group":"chat","name":"归档对话","typing":"yes","keys":["Shift+Mod+E"],"labels":["Ctrl+Shift+E"],"text":"Ctrl+Shift+E","changed":false,"listed":true},{"action":"panel.close","group":"chat","name":"收起侧栏","typing":"yes","keys":["Escape"],"labels":["Esc"],"text":"Esc","changed":false,"listed":true},{"action":"files.preview","group":"files","name":"显示或隐藏预览","typing":"yes","keys":["Shift+Mod+P"],"labels":["Ctrl+Shift+P"],"text":"Ctrl+Shift+P","changed":false,"listed":true}],"workspace":["Alt+1","Alt+2","Alt+3","Alt+4","Alt+5","Alt+6","Alt+7","Alt+8","Alt+9"],"send":{"by":"enter","choices":[{"by":"enter","name":"Enter 发送"},{"by":"mod","name":"Ctrl+Enter 发送"}],"send":"↩","newline":"Shift+↩","text":"发送 ↩，换行 Shift+↩"}},"railView":{"places":[{"id":"chats","label":"对话","kind":"lists","list":"all"},{"id":"mine","label":"我参与的","kind":"lists","list":"mine"},{"id":"watching","label":"监控中","kind":"lists","list":"watching"},{"id":"hidden","label":"已隐藏","kind":"lists","list":"hidden"},{"id":"archive","label":"已归档","kind":"lists","list":"archive"},{"id":"attention","label":"待处理","kind":"attention"},{"id":"files","label":"文件","kind":"places"},{"id":"remote","label":"远程","kind":"places"},{"id":"stations","label":"Station","kind":"places"},{"id":"profiles","label":"Profile","kind":"places"},{"id":"connects","label":"连接","kind":"places"},{"id":"usage","label":"用量","kind":"places"}],"groups":[{"kind":"places","label":"页面","places":["files","remote","stations","profiles","connects","usage"]},{"kind":"lists","label":"对话列表","places":["chats","mine","watching","hidden","archive"]},{"kind":"attention","label":"提醒","places":["attention"]}],"default":["attention","chats","files","remote","stations","profiles","connects","usage"],"all":{"items":["attention","chats","files","remote","stations","profiles","connects","usage"],"hidden":["mine","watching","hidden","archive"],"changed":false},"by":{}},"testChannel":false,"experimental":{},"features":{"farviewNative":false,"board":false},"experimentalItems":[{"id":"board","enabled":false}]}},"w":1795189158290.596}
+{"in":{"id":3,"value":[{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png"}]},"w":1795189158291.217}
+{"in":{"id":4,"value":[{"account":{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png"},"workspaces":[{"id":"01M7WSS6DGDTJGNVECXPK074G6","name":"Dev","role":"owner","created_at":1795189152,"stations":1,"members":1,"relays":[],"time":{"created_at":{"past":true,"at":1795189152000,"ago":"刚刚","full":"11/20 15:39:12","until":"1 分钟内"}}}],"invitations":[],"relay_url":"http://127.0.0.1:18740","loaded":false,"beta":true}]},"w":1795189158291.353}
+{"out":{"id":5,"subscribe":{"topic":"status"},"keyed":true},"w":1795189158291.405}
+{"out":{"id":6,"subscribe":{"topic":"notify"},"keyed":true},"w":1795189158291.434}
+{"out":{"id":7,"subscribe":{"topic":"notify","workspace":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true},"w":1795189158291.444}
+{"in":{"id":4,"delta":[{"path":[0,"loaded"],"set":true}]},"w":1795189158291.456}
+{"in":{"id":5,"value":{"items":[],"lines":[]}},"w":1795189158292.327}
+{"in":{"id":6,"value":{"on":true,"asked":true,"push":true,"kinds":{"wait":true,"failed":true,"done":"away","message":true},"preview":true,"muted":[],"workspaces":[{"id":"01M7WSS6DGDTJGNVECXPK074G6","name":"Dev","on":true}],"permission":"unknown","show":[]}},"w":1795189158292.36}
+{"out":{"id":8,"call":"notify.permission","params":{"state":"unknown"}},"w":1795189158292.38}
+{"in":{"id":7,"value":{"on":true,"asked":true,"push":true,"kinds":{"wait":true,"failed":true,"done":"away","message":true},"preview":true,"muted":[],"workspaces":[{"id":"01M7WSS6DGDTJGNVECXPK074G6","name":"Dev","on":true}],"permission":"unknown","show":[]}},"w":1795189158292.392}
+{"settings":{"w":390,"h":844,"scale":1,"platform":2,"pointing":1,"utc":0,"motion":0,"glass":0,"dark":0,"inset":1,"ime":0,"copy":0,"font":1},"w":1795189158298.186}
+{"frame":340016719.9581668,"w":1795189158298.197}
+{"out":{"id":10,"call":"chats.window","params":{"scope":"01M7WSS6DGDTJGNVECXPK074G6","mine":false,"rows":30}},"w":1795189158306.919}
+{"out":{"id":9,"subscribe":{"topic":"chats","scope":"01M7WSS6DGDTJGNVECXPK074G6","mine":false},"keyed":true},"w":1795189158306.938}
+{"out":{"id":11,"subscribe":{"topic":"changelog","news":true},"keyed":true},"w":1795189158306.949}
+{"out":{"id":12,"subscribe":{"topic":"longJobs","scope":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true},"w":1795189158306.957}
+{"out":{"id":13,"subscribe":{"topic":"lock","workspace":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true},"w":1795189158306.966}
+{"out":{"id":14,"subscribe":{"topic":"workspaceMarks"},"keyed":true},"w":1795189158306.971}
+{"out":{"id":15,"subscribe":{"topic":"doing"},"keyed":true},"w":1795189158306.977}
+{"out":{"id":16,"subscribe":{"topic":"driveTransfers","workspace":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true},"w":1795189158306.983}
+{"out":{"id":17,"subscribe":{"topic":"status","workspace":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true},"w":1795189158306.99}
+{"out":{"id":18,"subscribe":{"topic":"lockPrompts"},"keyed":true},"w":1795189158306.996}
+{"out":{"id":19,"subscribe":{"topic":"stationUpdates","scope":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true},"w":1795189158307.003}
+{"out":{"id":20,"subscribe":{"topic":"downloads"},"keyed":true},"w":1795189158307.659}
+{"out":{"id":21,"subscribe":{"topic":"workspace","workspace":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true},"w":1795189158307.815}
+{"out":{"id":22,"subscribe":{"topic":"stations","scope":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true},"w":1795189158307.846}
+{"out":{"id":23,"subscribe":{"topic":"profiles","scope":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true},"w":1795189158307.855}
+{"in":{"id":8,"ok":null},"w":1795189158321.192}
+{"in":{"id":10,"ok":null},"w":1795189158321.201}
+{"in":{"id":9,"value":{"stations":[{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3"}],"days":[{"daysAgo":0,"label":"今天","items":[{"id":"chat:c-e439b5a08fc1cdfe92e704f27f180609","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","thread":1,"title":"端到端测试的对话","agents":[{"runtime":"claude","agentText":"默认模型"}],"last":{"seq":2,"by":{"mine":false},"preview":"你好，我是测试用的 agent"},"unread":true,"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","stationName":"willow","people":[{"id":"alice@example.test","email":"alice@example.test","shown":{"name":"Name of alice","picture":"https://example.test/p.png","mine":true}}],"creator":{"id":"alice@example.test"},"peopleText":"你 发起","pinned":false,"swipeArchive":true,"hidden":false,"tone":"done"}]}],"more":null,"trouble":null,"members":1,"leading":"agents","glyph":{"online":1,"dim":0,"connecting":0,"failing":0,"working":0,"asleep":false,"summary":"willow","label":"1 台 station，1 台在线","running":0,"now":"暂无 agent 在运行","unit":"个 agent 正在运行"},"note":{"reading":false,"text":null,"failing":[],"empty":false},"syncing":"正在同步 · 还剩 1 个对话"}},"w":1795189158321.215}
+{"in":{"id":11,"value":{"app":"android","tabs":[],"loading":false}},"w":1795189158321.761}
+{"in":{"id":12,"value":{"groups":[],"lit":false,"ids":[]}},"w":1795189158321.783}
+{"in":{"id":13,"value":{"available":true,"locked":false,"notice":true,"role":"owner","manages":true,"owner":true,"canSign":true,"signs":false,"me":{"device":"4bbef576ea7789df12485b8947673899b1b2b7f94bb67b7b15cc91e06c99319e","code":"4U6-L9J","kind":"app","confirmed":false,"waiting":false},"signers":0,"members":[],"stations":[{"id":"ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","name":"willow","version":"0.1.0","online":true,"protected":false}],"protected":0,"renew":[],"attention":0,"pending":[]}},"w":1795189158321.811}
+{"out":{"id":24,"call":"client.focus","params":{"visible":true,"focused":true,"workspace":"01M7WSS6DGDTJGNVECXPK074G6"}},"w":1795189158354.153}
+{"out":{"id":5,"unsubscribe":true},"w":1795189158354.909}
+{"step":"# written by scripts/rerecord.sh from its test (src/sfreplay/emit.mbt): not edited by hand","w":1795189158354.918}
+{"step":"timeout 90000","w":1795189158354.921}
+{"step":"#env MBUI_PLATFORM=android","w":1795189158354.922}
+{"step":"tap 端到端测试","w":1795189158354.923}
+{"out":{"id":25,"subscribe":{"topic":"chatRow","station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609"},"keyed":true},"w":1795189158355.21}
+{"out":{"id":27,"call":"chat.window","params":{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","rows":30}},"w":1795189158356.577}
+{"out":{"id":26,"subscribe":{"topic":"chat","station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","compact":true},"keyed":true},"w":1795189158356.599}
+{"out":{"id":28,"subscribe":{"topic":"composer","key":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3:chat:c-e439b5a08fc1cdfe92e704f27f180609"},"keyed":true},"w":1795189158356.653}
+{"out":{"id":29,"subscribe":{"topic":"chatJobs","station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","summary":true,"compact":true},"keyed":true},"w":1795189158356.671}
+{"step":"tap 端到端测试","acted":true,"w":1795189158358.702}
+{"out":{"id":25,"unsubscribe":true,"keep":true},"w":1795189158358.73}
+{"in":{"id":14,"value":{"workspaces":{"01M7WSS6DGDTJGNVECXPK074G6":{"alert":0,"unread":1,"tone":"done","label":"1 个有新消息","badge":1,"workspaceName":"Dev","items":[{"kind":"done","workspace":"01M7WSS6DGDTJGNVECXPK074G6","station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","stationName":"willow","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","thread":1,"title":"端到端测试的对话","what":"","seq":2,"at":1795189155962}],"mineTone":"done"}},"badge":1,"badgeKinds":{"on":true,"wait":true,"failed":true,"done":true,"message":true,"services":true}}},"w":1795189158397.9}
+{"in":{"id":15,"value":{"doing":[]}},"w":1795189158398.107}
+{"in":{"id":16,"value":{"supported":true,"loaded":true,"transfers":[]}},"w":1795189158398.143}
+{"in":{"id":17,"value":{"items":[],"lines":[]}},"w":1795189158398.163}
+{"in":{"id":18,"value":{"pairing":[],"asks":[]}},"w":1795189158398.19}
+{"in":{"id":19,"value":{"items":[],"offered":0,"labelText":"","titleText":"Station 更新"}},"w":1795189158398.256}
+{"in":{"id":9,"delta":[{"path":["syncing"],"set":null}]},"w":1795189158398.309}
+{"in":{"id":20,"value":{"downloads":[],"keeping":[]}},"w":1795189158398.648}
+{"in":{"id":21,"value":{"rev":1795189153000,"id":"01M7WSS6DGDTJGNVECXPK074G6","name":"Dev","created_at":1795189152,"members":[{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png","role":"owner","added_at":1795189152,"time":{"added_at":{"past":true,"at":1795189152000,"ago":"刚刚","full":"11/20 15:39:12","until":"1 分钟内"}}}],"stations":[{"id":"ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","name":"willow","emoji":null,"icon":null,"enrolled_at":1795189153,"enrolled_by":"alice","last_seen":1795189154,"version":"0.1.0","time":{"last_seen":{"past":true,"at":1795189154000,"ago":"刚刚","full":"11/20 15:39:14","until":"1 分钟内"}}}],"relays":[],"ways":[{"id":"http://127.0.0.1:18740","kind":"relay","on":true},{"id":"lan","kind":"lan","on":true},{"id":"tailnet","kind":"tailnet","on":true},{"id":"direct","kind":"direct","on":true}],"lock":null,"role":"owner","invitations":[],"added":[],"lock_requests":0,"time":{"created_at":{"past":true,"at":1795189152000,"ago":"刚刚","full":"11/20 15:39:12","until":"1 分钟内"}}}},"w":1795189158398.698}
+{"in":{"id":22,"value":[{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","id":"ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","name":"willow","summary":"空闲 · Test CPU · 7 GB · Test OS","face":"idle","line":"Test CPU","online":true,"reconnecting":false,"stateText":"空闲","stateBusy":false,"problems":[],"lastSeen":1795189154,"version":"0.1.0","way":{"path":"直连","via":"direct"},"joined":false,"mine":true,"host":{"identity":"Test CPU · 7 GB · Test OS","os":"Test OS","meters":[{"label":"CPU","short":"CPU","percent":25,"left":75,"level":"ok","value":"25%","remaining":"空闲 75%","big":"75","unit":"%","title":"CPU 空闲率","titleShort":"CPU 空闲","total":"负载 1.0","note":"负载 1.0 · Test CPU"},{"label":"内存","short":"内存","percent":50,"left":50,"level":"ok","value":"3.7 GB / 7.5 GB","remaining":"剩 3.7 G","big":"3.7","unit":"GB","title":"可用内存","total":"总内存 7 GB","totalShort":"总 7 GB"},{"label":"磁盘","short":"磁盘","percent":50,"left":50,"level":"ok","value":"剩余 46.6 GB / 93.1 GB","remaining":"剩 46.6 G","big":"46.6","unit":"GB","title":"可用磁盘","total":"总磁盘 93 GB","totalShort":"总 93 GB"}]},"overview":{"viewer":{"via":"mesh","email":"alice@example.test","name":"Name of alice","sub":"alice","role":"owner","workspace":"01M7WSS6DGDTJGNVECXPK074G6","device":"4bbef576ea7789df12485b8947673899b1b2b7f94bb67b7b15cc91e06c99319e"},"counts":{"sessions":1,"running":0,"warm":1},"disk":{"freeBytes":50000000000,"totalBytes":100000000000},"drive":{"roots":[],"anywhere":true,"home":"/test-station/home"}}}]},"w":1795189158398.733}
+{"in":{"id":23,"value":{"items":[{"key":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3/cc","group":"key","groupTitle":"API Key","station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","profile":{"id":"cc","name":"cc","runtime":"claude","access":{"kind":"env"},"checkText":"无法检查","checkTone":"neutral","usesText":"","kindText":"自定义环境变量","planText":"","quota":{"state":"unsupported","windows":[],"detail":"自定义环境变量的账号无法查询额度"}},"title":"cc","usable":true,"state":{"text":"无法检查","tone":"neutral"},"look":false,"where":"willow 可用","several":false,"usedCount":0}],"attention":0,"wait":{"reading":false,"text":null,"failing":[],"empty":false},"machineLogins":[]}},"w":1795189158398.803}
+{"in":{"id":24,"ok":null},"w":1795189158398.815}
+{"in":{"id":25,"value":{"id":"chat:c-e439b5a08fc1cdfe92e704f27f180609","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","thread":1,"title":"端到端测试的对话","agents":[{"runtime":"claude","agentText":"默认模型"}],"last":{"seq":2,"by":{"mine":false},"preview":"你好，我是测试用的 agent"},"unread":true,"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","stationName":"willow","time":{"lastActiveAt":{"ago":"刚刚","full":"11/20 15:39:15"}},"people":[{"id":"alice@example.test","email":"alice@example.test","shown":{"name":"Name of alice","picture":"https://example.test/p.png","mine":true}}],"creator":{"id":"alice@example.test"},"peopleText":"你 发起","pinned":false,"swipeArchive":true,"hidden":false,"muted":false,"tone":"done","mayPublish":true}},"w":1795189158398.826}
+{"in":{"id":27,"ok":null},"w":1795189158398.834}
+{"in":{"id":26,"value":{"archived":false,"pinned":false,"me":{"id":"alice@example.test","email":"alice@example.test"},"thread":{"id":1,"surface":"chat","creator":{"id":"alice@example.test","name":"Name of alice","email":"alice@example.test","via":"cloud","shown":{"name":"Name of alice","display":"你","picture":"https://example.test/p.png","mine":true}},"unread":1,"lastMessage":{"time":{"createdAt":{"ago":"刚刚","full":"11/20 15:39:15"}}},"time":{"createdAt":{"ago":"刚刚","full":"11/20 15:39:15"}}},"title":"端到端测试的对话","cc":[],"people":[{"id":"alice@example.test","name":"Name of alice","email":"alice@example.test","via":"cloud","shown":{"name":"Name of alice","display":"你","picture":"https://example.test/p.png","mine":true}}],"agents":[{"session":{"key":"chat:c-e439b5a08fc1cdfe92e704f27f180609","connect":"chat","scope":"all","createdBy":"alice@example.test","creator":{"id":"alice@example.test","name":"Name of alice","email":"alice@example.test","via":"cloud"},"runtime":"claude","profile":"cc","profilePinned":false,"workspace":"/test-station/data/sessions/chat/c-e439b5a08fc1cdfe92e704f27f180609/workspace","running":false,"createdAt":1795189155664,"lastActiveAt":1795189155970,"process":"cold","pending":0,"lastTurn":{"id":"8cfbf669-9e82-480a-ba12-d1e8a51bc1b2","kind":"input","ending":"all_done","need":"answered the question that was asked"},"statusText":"已完成：answered the question that was asked","statusLead":"done","statusRest":"answered the question that was asked","tone":"green","titleText":"端到端测试的对话 post:你好，我是测试用的 agent","agentText":"默认模型","runtimeText":"Claude Code","processText":"已释放","efforts":["low","medium","high","xhigh","max"],"canCompact":true,"canClear":true,"time":{"createdAt":{"at":1795189155664,"ago":"刚刚","full":"11/20 15:39:15","until":"1 分钟内","past":true},"lastActiveAt":{"at":1795189155970,"ago":"刚刚","full":"11/20 15:39:15","until":"1 分钟内","past":true}}},"status":"final","profile":{"name":"cc","quota":{"state":"unsupported","windows":[],"detail":"自定义环境变量的账号无法查询额度","checkedAt":1795189155654,"time":{"checkedAt":{"at":1795189155654,"ago":"刚刚","full":"11/20 15:39:15","until":"1 分钟内","past":true}}}},"account":{"efforts":["low","medium","high","xhigh","max"],"id":"cc","name":"cc","current":true,"kind":"env","runtime":"claude","quota":{"state":"unsupported","windows":[],"detail":"自定义环境变量的账号无法查询额度","checkedAt":1795189155654,"time":{"checkedAt":{"at":1795189155654,"ago":"刚刚","full":"11/20 15:39:15","until":"1 分钟内","past":true}}},"quotaLine":{"text":"自定义环境变量的账号无法查询额度"}},"attention":[],"jobs":[],"hasJobs":false}],"messages":[{"seq":1,"thread":1,"ts":"1795189155.739000","authorKind":"person","author":"alice@example.test","text":"端到端测试的对话 post:你好，我是测试用的 agent","words":[{"text":"端到端测试的对话 post:你好，我是测试用的 agent"}],"attachments":[],"quotes":[],"createdAt":1795189155740,"mine":true,"system":false,"by":{"name":"Name of alice","picture":"https://example.test/p.png"},"waiting":false,"time":{"createdAt":{"ago":"刚刚","full":"11/20 15:39:15"}}},{"seq":2,"thread":1,"ts":"1795189155.961000","authorKind":"agent","author":"chat:c-e439b5a08fc1cdfe92e704f27f180609","text":"你好，我是测试用的 agent","md":[["p",[[0,15]]]],"attachments":[],"quotes":[],"ending":"all_done","createdAt":1795189155962,"mine":false,"system":false,"by":{"name":"默认模型","agent":"chat:c-e439b5a08fc1cdfe92e704f27f180609","runtime":"claude"},"waiting":false,"time":{"createdAt":{"ago":"刚刚","full":"11/20 15:39:15"}}}],"elsewhere":[],"more":false,"firstEntry":1,"lastEntry":2,"newer":false,"at":1,"unreadLine":2,"unreadAbove":false,"outbox":[],"link":{"state":"online"},"offline":false,"pending":false,"screens":[{"id":"desktop","kind":"desktop","title":"test-station","line":"当前不可用：远程查看屏幕、远程控制屏幕","agent":false}],"canBrowser":true,"asks":[],"stateText":"已完成：answered the question that was asked","stateLead":"done","stateRest":"answered the question that was asked","archivable":true,"publish":{"may":true},"opened":[],"tabs":{"open":[]}}},"w":1795189158398.862}
+{"out":{"id":30,"call":"picture","params":{"url":"https://example.test/p.png","kept":true}},"w":1795189158398.94}
+{"out":{"id":31,"subscribe":{"topic":"chatRow","station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609"},"keyed":true},"w":1795189158399.069}
+{"in":{"id":25,"v":"1m4q716h2k4m:0"},"w":1795189158399.887}
+{"in":{"id":28,"value":{"text":"","rev":0,"quotes":[],"files":[],"uploading":false,"ready":false,"starting":false,"version":0}},"w":1795189158399.911}
+{"in":{"id":29,"value":{"jobs":[],"hasJobs":false,"servicesNote":"","jobsNote":"","allText":""}},"w":1795189158399.94}
+{"frame":340016824.3259584,"w":1795189158400.329}
+{"out":{"id":32,"subscribe":{"topic":"chatFeedback","station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609"},"keyed":true},"w":1795189158401.797}
+{"out":{"id":33,"call":"paste.info","params":{"text":""}},"w":1795189158402.682}
+{"out":{"id":34,"call":"picture","params":{"url":"https://example.test/p.png"}},"w":1795189158407.526}
+{"in":{"id":31,"value":{"id":"chat:c-e439b5a08fc1cdfe92e704f27f180609","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","thread":1,"title":"端到端测试的对话","agents":[{"runtime":"claude","agentText":"默认模型"}],"last":{"seq":2,"by":{"mine":false},"preview":"你好，我是测试用的 agent"},"unread":true,"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","stationName":"willow","time":{"lastActiveAt":{"ago":"刚刚","full":"11/20 15:39:15"}},"people":[{"id":"alice@example.test","email":"alice@example.test","shown":{"name":"Name of alice","picture":"https://example.test/p.png","mine":true}}],"creator":{"id":"alice@example.test"},"peopleText":"你 发起","pinned":false,"swipeArchive":true,"hidden":false,"muted":false,"tone":"done","mayPublish":true}},"w":1795189158408.238}
+{"in":{"id":30,"ok":{"type":""}},"w":1795189158408.296}
+{"in":{"id":33,"ok":{"file":false,"info":null,"threshold":5000}},"w":1795189158408.308}
+{"in":{"id":32,"value":{"reports":[]}},"w":1795189158408.317}
+{"step":"wait 500","w":1795189158427.552}
+{"out":{"id":35,"call":"client.focus","params":{"chat":{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","thread":1,"end":true,"seen":2}}},"w":1795189158427.572}
+{"out":{"id":36,"call":"chat.place","params":{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","thread":1}},"w":1795189158427.845}
+{"frame":340016853.1512084,"w":1795189158429.158}
+{"in":{"id":34,"error":{"code":"picture","message":"无法加载图片：网络连接失败（11月20日 15:39:18）"}},"w":1795189158429.295}
+{"in":{"id":35,"ok":null},"w":1795189158429.314}
+{"in":{"id":36,"ok":null},"w":1795189158429.813}
+{"frame":340016866.7659584,"w":1795189158442.782}
+{"frame":340016883.43229175,"w":1795189158459.456}
+{"frame":340016900.1128751,"w":1795189158476.129}
+{"in":{"id":14,"delta":[{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","chat"],"set":{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","key":"chat:c-e439b5a08fc1cdfe92e704f27f180609"}}]},"w":1795189158484.685}
+{"in":{"id":2,"delta":[{"path":["openChat","01M7WSS6DGDTJGNVECXPK074G6"],"set":{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","key":"chat:c-e439b5a08fc1cdfe92e704f27f180609"}}]},"w":1795189158488.902}
+{"in":{"id":26,"delta":[{"path":["thread","unread"],"set":0}]},"w":1795189158490.932}
+{"in":{"id":9,"delta":[{"path":["days"],"key":["daysAgo"],"patch":0,"ops":[{"path":["items"],"key":["station","id"],"patch":["01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","chat:c-e439b5a08fc1cdfe92e704f27f180609"],"ops":[{"path":["archiveRead"],"set":true},{"path":["settled"],"set":true},{"path":["stateLead"],"set":"done"},{"path":["stateRest"],"set":"answered the question that was asked"},{"path":["stateText"],"set":"已完成：answered the question that was asked"},{"path":["unread"],"set":false},{"path":["tone"],"remove":true}]}]}]},"w":1795189158491.957}
+{"frame":340016916.8149168,"w":1795189158492.814}
+{"in":{"id":31,"delta":[{"path":["archiveRead"],"set":true},{"path":["settled"],"set":true},{"path":["stateLead"],"set":"done"},{"path":["stateRest"],"set":"answered the question that was asked"},{"path":["stateText"],"set":"已完成：answered the question that was asked"},{"path":["unread"],"set":false},{"path":["tone"],"remove":true}]},"w":1795189158492.94}
+{"in":{"id":14,"delta":[{"path":["badge"],"set":0},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","badge"],"set":0},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","items"],"key":["station","thread","session"],"drop":["01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3",1,"chat:c-e439b5a08fc1cdfe92e704f27f180609"]},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","unread"],"set":0},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","label"],"remove":true},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","mineTone"],"remove":true},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","tone"],"remove":true}]},"w":1795189158494.01}
+{"frame":340016947.9337084,"w":1795189158523.945}
+{"frame":340016964.6040001,"w":1795189158540.625}
+{"frame":340016981.27537507,"w":1795189158557.299}
+{"frame":340016999.32541674,"w":1795189158575.357}
+{"frame":340017014.7192501,"w":1795189158590.732}
+{"frame":340017031.3128751,"w":1795189158607.338}
+{"frame":340017047.92587507,"w":1795189158623.95}
+{"frame":340017064.5698334,"w":1795189158640.588}
+{"frame":340017081.23491675,"w":1795189158657.254}
+{"frame":340017097.88366675,"w":1795189158673.913}
+{"frame":340017164.59308344,"w":1795189158740.614}
+{"frame":340017181.3097084,"w":1795189158757.346}
+{"out":{"id":21,"unsubscribe":true,"keep":true},"w":1795189158758.096}
+{"out":{"id":23,"unsubscribe":true,"keep":true},"w":1795189158758.13}
+{"out":{"id":16,"unsubscribe":true},"w":1795189158758.159}
+{"in":{"id":21,"v":"1m4q716h2k4m:1"},"w":1795189158762.201}
+{"in":{"id":23,"v":"1m4q716h2k4m:2"},"w":1795189158762.221}
+{"frame":340017198.13245845,"w":1795189158774.159}
+{"frame":340017214.55825007,"w":1795189158790.577}
+{"frame":340017231.2577501,"w":1795189158807.279}
+{"frame":340017247.95120835,"w":1795189158823.971}
+{"frame":340017264.56175005,"w":1795189158840.584}
+{"frame":340017281.21775013,"w":1795189158857.234}
+{"frame":340017297.89591676,"w":1795189158873.917}
+{"frame":340017314.5466251,"w":1795189158890.563}
+{"frame":340017331.2146667,"w":1795189158907.233}
+{"step":"now until =willow","w":1795189158907.615}
+{"step":"until 发消息","w":1795189158907.678}
+{"step":"log do: peer send 看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209","w":1795189158907.706}
 {"step":"peer send 看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209"}
-{"step":"done 1-peer","w":1794106478329.51}
-{"step":"untiln 2 这个不该通知 083209","w":1794106479046.204}
-{"in":{"id":20,"delta":[{"path":["agents",0,"session","lastActiveAt"],"set":1794106479004},{"path":["agents",0,"session","lastTurn","about","seq"],"set":12},{"path":["agents",0,"session","lastTurn","about","ts"],"set":"1794106479.000000"},{"path":["agents",0,"session","lastTurn","endedAt"],"set":1794106479004},{"path":["agents",0,"session","lastTurn","id"],"set":"c50a484f-e449-4fbb-a4f2-c21757848d4a"},{"path":["agents",0,"session","lastTurn","need"],"set":"这个不该通知 083209"},{"path":["agents",0,"session","lastTurn","startedAt"],"set":1794106478995},{"path":["agents",0,"session","statusRest"],"set":"这个不该通知 083209"},{"path":["agents",0,"session","statusText"],"set":"需要你处理：这个不该通知 083209"},{"path":["agents",0,"session","time","lastActiveAt","at"],"set":1794106479004},{"path":["agents",0,"session","time","lastActiveAt","full"],"set":"11/8 10:54:39"},{"path":["agents",0,"session","turns"],"set":8},{"path":["asks",0,"seq"],"set":12},{"path":["asks",0,"text"],"set":"这个不该通知 083209"},{"path":["decision","seq"],"set":12},{"path":["decision","text"],"set":"待处理 · 这个不该通知 083209"},{"path":["lastEntry"],"set":12},{"path":["messages"],"key":["seq","outgoing"],"put":{"seq":12,"thread":1,"ts":"1794106479.000000","authorKind":"agent","author":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","authorRuntime":"claude","text":"这个不该通知 083209","md":[["p",[[0,13]]]],"attachments":[],"quotes":[],"declared":"block","ending":"need_help","createdAt":1794106479000,"mine":false,"system":false,"by":{"name":"默认模型","agent":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","runtime":"claude","here":true},"waiting":false,"said":true,"time":{"createdAt":{"at":1794106479000,"ago":"刚刚","full":"11/8 10:54:39","until":"1 分钟内","past":true}},"options":[{"label":"好 083209"},{"label":"不好 083209"}],"card":{"assigneeText":"待你决策","type":"options","options":[{"label":"好 083209"},{"label":"不好 083209"}]},"decision":{"resolved":false},"asked":true},"before":null},{"path":["messages"],"key":["seq","outgoing"],"put":{"seq":11,"thread":1,"ts":"1794106478.990000","authorKind":"person","author":"alice@example.test","authorName":"Name of alice","text":"看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209","words":[{"text":"看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209"}],"attachments":[],"quotes":[],"createdAt":1794106478990,"mine":true,"system":false,"by":{"name":"Name of alice","picture":"https://example.test/p.png"},"waiting":false,"said":true,"time":{"createdAt":{"at":1794106478990,"ago":"刚刚","full":"11/8 10:54:38","until":"1 分钟内","past":true}}},"before":[12,null]},{"path":["messages"],"key":["seq","outgoing"],"patch":[10,null],"ops":[{"path":["decision","answeredBy"],"set":"你"},{"path":["decision","resolved"],"set":true},{"path":["decision","text"],"set":"你 回复了"},{"path":["asked"],"remove":true}]},{"path":["stateRest"],"set":"这个不该通知 083209"},{"path":["stateText"],"set":"需要你处理：这个不该通知 083209"},{"path":["thread","last"],"set":12},{"path":["thread","lastMessage","createdAt"],"set":1794106479000},{"path":["thread","lastMessage","seq"],"set":12},{"path":["thread","lastMessage","text"],"set":"这个不该通知 083209"},{"path":["thread","lastMessage","time","createdAt","at"],"set":1794106479000},{"path":["thread","lastMessage","time","createdAt","full"],"set":"11/8 10:54:39"},{"path":["thread","lastMessage","ts"],"set":"1794106479.000000"},{"path":["thread","unread"],"set":1}]},"w":1794106479088.409}
-{"in":{"id":8,"delta":[{"path":["days"],"key":["daysAgo"],"patch":0,"ops":[{"path":["at"],"set":1794106479000},{"path":["items"],"key":["station","id"],"patch":["01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","chat:c-ac1e9aec8ea08679c4b5e6481b439759"],"ops":[{"path":["decision","seq"],"set":12},{"path":["decision","text"],"set":"待处理 · 这个不该通知 083209"},{"path":["last","preview"],"set":"这个不该通知 083209"},{"path":["last","seq"],"set":12},{"path":["stateRest"],"set":"这个不该通知 083209"},{"path":["stateText"],"set":"需要你处理：这个不该通知 083209"},{"path":["time","lastActiveAt","full"],"set":"11/8 10:54:39"},{"path":["unread"],"set":true}]}]}]},"w":1794106479090.677}
-{"out":{"id":28,"subscribe":{"topic":"live","station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","key":"chat:c-ac1e9aec8ea08679c4b5e6481b439759"},"keyed":true},"w":1794106479096.351}
-{"out":{"id":29,"call":"chat.place","params":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","thread":1,"seq":5,"offset":-62}},"w":1794106479097.746}
-{"out":{"id":30,"call":"client.focus","params":{"chat":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","session":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","thread":1,"end":false,"seen":12}}},"w":1794106479097.782}
-{"step":"nonotice 这个不该通知 083209","w":1794106479099.406}
-{"in":{"id":20,"delta":[{"path":["thread","read"],"set":12},{"path":["thread","unread"],"set":0}]},"w":1794106479099.498}
-{"in":{"id":29,"ok":null},"w":1794106479111.242}
-{"in":{"id":30,"ok":null},"w":1794106479111.265}
-{"in":{"id":28,"value":{"loaded":true,"first":0,"timeline":[{"at":"2026-11-08T02:54:24.086Z","kind":"user","text":"<message via=\"web\" connect=\"ember\" thread=\"CHAT/1794106458.244000\" from=\"alice@example.test (alice@example.test)\" client=\"android\" ts=\"1794106464.080000\">\n给我几个选项 083209 card:要不要换图标 083209|先不换 083209|一起换 083209*|不用了 083209!\n</message>"},{"at":"2026-11-08T02:54:28.820Z","kind":"user","text":"<message via=\"web\" connect=\"ember\" thread=\"CHAT/1794106458.244000\" from=\"alice@example.test (alice@example.test)\" client=\"android\" ts=\"1794106468.813000\">\n再问一个 083209 card:先合并哪个分支 083209|先合 A 083209|先合 B 083209\n</message>"},{"at":"2026-11-08T02:54:34.216Z","kind":"user","text":"<message via=\"web\" connect=\"ember\" thread=\"CHAT/1794106458.244000\" from=\"alice@example.test (alice@example.test)\" ts=\"1794106474.212000\">\n打开就消失 083209 card:看一眼就行 083209|好 083209|不好 083209\n</message>\n<card-state thread=\"CHAT/1794106458.244000\" ts=\"1794106468.824000\">Your card is no longer pending after this message. The message is not necessarily a decision; read what it says. No newer card is pending. If the decision is still needed and no newer card asks it, ask again with a new card.</card-state>"},{"at":"2026-11-08T02:54:38.996Z","kind":"user","text":"<message via=\"web\" connect=\"ember\" thread=\"CHAT/1794106458.244000\" from=\"alice@example.test (alice@example.test)\" ts=\"1794106478.990000\">\n看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209\n</message>\n<card-state thread=\"CHAT/1794106458.244000\" ts=\"1794106474.220000\">Your card is no longer pending after this message. The message is not necessarily a decision; read what it says. No newer card is pending. If the decision is still needed and no newer card asks it, ask again with a new card.</card-state>"}],"usage":{"modelCalls":0,"inputTokens":0,"cachedTokens":0,"outputTokens":0,"cost":0,"unpricedCalls":0},"steps":[],"rate":0,"activity":{"now":{"key":"busy","text":"处理中","mono":null,"important":null}}}},"w":1794106479111.293}
-{"in":{"id":8,"delta":[{"path":["days"],"key":["daysAgo"],"patch":0,"ops":[{"path":["items"],"key":["station","id"],"patch":["01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","chat:c-ac1e9aec8ea08679c4b5e6481b439759"],"ops":[{"path":["unread"],"set":false}]}]}]},"w":1794106479111.354}
-{"step":"back","w":1794106479113.938}
-{"step":"back","acted":true,"w":1794106479114.173}
-{"out":{"id":31,"subscribe":{"topic":"driveTransfers","workspace":"01M6WH7YAB4BPRGFBQN9525T49"},"keyed":true},"w":1794106479128.296}
-{"step":"wait 500","w":1794106479134.459}
-{"in":{"id":31,"value":{"supported":true,"loaded":true,"transfers":[]}},"w":1794106479134.622}
-{"out":{"id":32,"call":"chat.place","params":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","thread":1,"seq":6,"offset":-29}},"w":1794106479146.242}
-{"in":{"id":32,"ok":null},"w":1794106479161.304}
-{"out":{"id":33,"call":"chat.place","params":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","thread":1,"seq":7,"offset":-10}},"w":1794106479163.056}
-{"in":{"id":33,"ok":null},"w":1794106479177.911}
-{"out":{"id":34,"call":"chat.place","params":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","thread":1,"seq":8,"offset":-7}},"w":1794106479262.399}
-{"in":{"id":34,"ok":null},"w":1794106479277.925}
-{"out":{"id":35,"call":"chat.place","params":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","thread":1}},"w":1794106479412.569}
-{"out":{"id":36,"call":"client.focus","params":{"chat":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","session":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","thread":1,"end":true,"seen":12}}},"w":1794106479412.601}
-{"in":{"id":35,"ok":null},"w":1794106479427.936}
-{"in":{"id":36,"ok":null},"w":1794106479427.968}
-{"out":{"id":20,"unsubscribe":true},"w":1794106479478.097}
-{"out":{"id":37,"call":"client.focus","params":{"left":{"station":"01M6WH7YAB4BPRGFBQN9525T49/b4e29c1279eb8a363057b6668d5999776f33c89047cda5589266f8e933600839","session":"chat:c-ac1e9aec8ea08679c4b5e6481b439759","thread":1}}},"w":1794106479478.661}
-{"out":{"id":23,"unsubscribe":true},"w":1794106479479.232}
-{"out":{"id":22,"unsubscribe":true},"w":1794106479479.251}
-{"out":{"id":21,"unsubscribe":true},"w":1794106479479.348}
-{"out":{"id":28,"unsubscribe":true},"w":1794106479479.374}
-{"in":{"id":37,"ok":null},"w":1794106479494.539}
-{"step":"now until 端到端测试","w":1794106479645.39}
-{"step":"nonotice 这个不该通知 083209","w":1794106479645.451}
-{"step":"wait 238","w":1794106479661.527}
-{"step":"# flow complete","w":1794106479912.056}
-{"step":"","w":1794106479912.07}
+{"step":"done 1-peer","w":1795189158907.712}
+{"frame":340017347.892,"w":1795189158923.916}
+{"frame":340017364.55662507,"w":1795189158940.592}
+{"frame":340017381.26812506,"w":1795189158957.291}
+{"frame":340017397.89062506,"w":1795189158973.925}
+{"frame":340017414.60625005,"w":1795189158990.625}
+{"frame":340017431.21245843,"w":1795189159007.236}
+{"frame":340017447.9434167,"w":1795189159023.959}
+{"frame":340017464.62575006,"w":1795189159040.649}
+{"frame":340017481.33429176,"w":1795189159057.427}
+{"frame":340017548.02029175,"w":1795189159124.039}
+{"frame":340018601.4093751,"w":1795189160177.432}
+{"step":"untiln 2 这个不该通知 083209","w":1795189160177.884}
+{"in":{"id":22,"delta":[{"path":[],"key":["station"],"patch":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","ops":[{"path":["face"],"set":"working"},{"path":["overview","counts","running"],"set":1},{"path":["overview","counts","warm"],"set":0},{"path":["stateBusy"],"set":true},{"path":["stateText"],"set":"1 个 agent 正在运行"},{"path":["summary"],"set":"1 个 agent 正在运行 · Test CPU · 7 GB · Test OS"}]}]},"w":1795189160182.377}
+{"in":{"id":26,"delta":[{"path":["agents",0,"badge"],"set":"run"},{"path":["agents",0,"session","badgeText"],"set":"工作中"},{"path":["agents",0,"session","canClear"],"set":false},{"path":["agents",0,"session","canCompact"],"set":false},{"path":["agents",0,"session","lastActiveAt"],"set":1795189160145},{"path":["agents",0,"session","lastTurn","id"],"set":"cb95043f-af57-4ee4-95c1-3e052a9b7076"},{"path":["agents",0,"session","lastTurn","ending"],"remove":true},{"path":["agents",0,"session","lastTurn","need"],"remove":true},{"path":["agents",0,"session","mark"],"set":"run"},{"path":["agents",0,"session","process"],"set":"running"},{"path":["agents",0,"session","processText"],"set":"运行中"},{"path":["agents",0,"session","running"],"set":true},{"path":["agents",0,"session","statusText"],"set":"进行中"},{"path":["agents",0,"session","time","lastActiveAt","at"],"set":1795189160145},{"path":["agents",0,"session","time","lastActiveAt","full"],"set":"11/20 15:39:20"},{"path":["agents",0,"session","tone"],"set":"accent"},{"path":["agents",0,"session","statusLead"],"remove":true},{"path":["agents",0,"session","statusRest"],"remove":true},{"path":["agents",0,"since"],"set":1795189160145},{"path":["agents",0,"started"],"set":true},{"path":["agents",0,"status"],"set":"running"},{"path":["joinsUntil"],"set":1795189460088},{"path":["lastEntry"],"set":3},{"path":["messages"],"key":["seq","outgoing"],"put":{"seq":3,"thread":1,"ts":"1795189160.090000","authorKind":"person","author":"alice@example.test","text":"看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209","words":[{"text":"看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209"}],"attachments":[],"quotes":[],"createdAt":1795189160088,"mine":true,"system":false,"by":{"name":"Name of alice","picture":"https://example.test/p.png"},"waiting":false,"said":true,"time":{"createdAt":{"ago":"刚刚","full":"11/20 15:39:20"}}},"before":null},{"path":["thread","lastMessage","time","createdAt","full"],"set":"11/20 15:39:20"},{"path":["archivable"],"remove":true},{"path":["stateLead"],"remove":true},{"path":["stateRest"],"remove":true},{"path":["stateText"],"remove":true}]},"w":1795189160182.448}
+{"out":{"id":37,"subscribe":{"topic":"live","station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","key":"chat:c-e439b5a08fc1cdfe92e704f27f180609"},"keyed":true},"w":1795189160184.065}
+{"out":{"id":38,"call":"client.focus","params":{"chat":{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","thread":1,"end":false,"seen":2}}},"w":1795189160185.379}
+{"in":{"id":9,"delta":[{"path":["days"],"key":["daysAgo"],"patch":0,"ops":[{"path":["items"],"key":["station","id"],"patch":["01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","chat:c-e439b5a08fc1cdfe92e704f27f180609"],"ops":[{"path":["clientKey"],"set":"new:chat-b64d26fcba5f5a63c2"},{"path":["last","by","mine"],"set":true},{"path":["last","preview"],"set":"看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209"},{"path":["last","seq"],"set":3},{"path":["stage"],"set":"run"},{"path":["state"],"set":"run"},{"path":["tone"],"set":"busy"},{"path":["archiveRead"],"remove":true},{"path":["settled"],"remove":true},{"path":["stateLead"],"remove":true},{"path":["stateRest"],"remove":true},{"path":["stateText"],"remove":true}]}]},{"path":["glyph","label"],"set":"1 台 station，1 台在线，1 台运行中"},{"path":["glyph","now"],"set":"1 个 agent 正在运行"},{"path":["glyph","running"],"set":1},{"path":["glyph","summary"],"set":"willow · 运行中"},{"path":["glyph","working"],"set":1}]},"w":1795189160185.452}
+{"in":{"id":37,"value":{"activity":{"now":{"key":"starting","text":"正在启动","mono":null,"important":null}}}},"w":1795189160187.574}
+{"in":{"id":38,"ok":null},"w":1795189160187.63}
+{"in":{"id":31,"delta":[{"path":["clientKey"],"set":"new:chat-b64d26fcba5f5a63c2"},{"path":["last","by","mine"],"set":true},{"path":["last","preview"],"set":"看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209"},{"path":["last","seq"],"set":3},{"path":["stage"],"set":"run"},{"path":["state"],"set":"run"},{"path":["swipeAsk"],"set":"此对话正在进行中。归档后，agent 完成当前回复即停止，等待中的任务也会停止。"},{"path":["time","lastActiveAt","full"],"set":"11/20 15:39:20"},{"path":["tone"],"set":"busy"},{"path":["archiveRead"],"remove":true},{"path":["settled"],"remove":true},{"path":["stateLead"],"remove":true},{"path":["stateRest"],"remove":true},{"path":["stateText"],"remove":true}]},"w":1795189160187.642}
+{"frame":340018617.1167084,"w":1795189160193.131}
+{"frame":340018633.48391676,"w":1795189160209.507}
+{"frame":340018650.5965001,"w":1795189160226.619}
+{"frame":340018667.50391674,"w":1795189160243.527}
+{"in":{"id":26,"delta":[{"path":["agents",0,"badge"],"set":"block"},{"path":["agents",0,"session","badgeText"],"set":"agent 已暂停，等待处理"},{"path":["agents",0,"session","canClear"],"set":true},{"path":["agents",0,"session","canCompact"],"set":true},{"path":["agents",0,"session","lastActiveAt"],"set":1795189160209},{"path":["agents",0,"session","lastTurn","about"],"set":{"thread":1,"seq":4,"ts":"1795189160.190000"}},{"path":["agents",0,"session","lastTurn","ending"],"set":"need_help"},{"path":["agents",0,"session","lastTurn","need"],"set":"这个不该通知 083209"},{"path":["agents",0,"session","mark"],"set":"block"},{"path":["agents",0,"session","process"],"set":"warm"},{"path":["agents",0,"session","processText"],"set":"保温中"},{"path":["agents",0,"session","running"],"set":false},{"path":["agents",0,"session","statusLead"],"set":"need"},{"path":["agents",0,"session","statusRest"],"set":"这个不该通知 083209"},{"path":["agents",0,"session","statusText"],"set":"需要你处理：这个不该通知 083209"},{"path":["agents",0,"session","time","lastActiveAt","at"],"set":1795189160209},{"path":["agents",0,"session","tone"],"set":"blue"},{"path":["agents",0,"status"],"set":"block"},{"path":["agents",0,"since"],"remove":true},{"path":["agents",0,"started"],"remove":true},{"path":["asks"],"append":[{"seq":4,"card":true,"mine":true,"text":"这个不该通知 083209"}]},{"path":["decision"],"set":{"seq":4,"options":[{"label":"好 083209"},{"label":"不好 083209"}],"card":{"type":"options","options":[{"label":"好 083209"},{"label":"不好 083209"}]},"text":"待处理 · 这个不该通知 083209"}},{"path":["lastEntry"],"set":4},{"path":["messages"],"key":["seq","outgoing"],"put":{"seq":4,"thread":1,"ts":"1795189160.190000","authorKind":"agent","author":"chat:c-e439b5a08fc1cdfe92e704f27f180609","text":"这个不该通知 083209","md":[["p",[[0,13]]]],"attachments":[],"quotes":[],"ending":"need_help","createdAt":1795189160190,"mine":false,"system":false,"by":{"name":"默认模型","agent":"chat:c-e439b5a08fc1cdfe92e704f27f180609","runtime":"claude"},"waiting":false,"said":true,"time":{"createdAt":{"ago":"刚刚","full":"11/20 15:39:20"}},"options":[{"label":"好 083209"},{"label":"不好 083209"}],"card":{"assigneeText":"待你决策","type":"options","options":[{"label":"好 083209"},{"label":"不好 083209"}]},"decision":{"resolved":false},"asked":true},"before":null},{"path":["thread","unread"],"set":1},{"path":["joinsUntil"],"remove":true}]},"w":1795189160255.515}
+{"frame":340018685.27183336,"w":1795189160261.287}
+{"in":{"id":37,"value":{"activity":{"now":{"key":"busy","text":"处理中","mono":null,"important":null}}}},"w":1795189160279.639}
+{"in":{"id":9,"delta":[{"path":["days"],"key":["daysAgo"],"patch":0,"ops":[{"path":["items"],"key":["station","id"],"patch":["01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","chat:c-e439b5a08fc1cdfe92e704f27f180609"],"ops":[{"path":["last","by","mine"],"set":false},{"path":["last","preview"],"set":"这个不该通知 083209"},{"path":["last","seq"],"set":4},{"path":["stage"],"set":"wait"},{"path":["stateLead"],"set":"decision"},{"path":["stateLeadText"],"set":"待处理"},{"path":["stateRest"],"set":" · 这个不该通知 083209"},{"path":["stateText"],"set":"待处理 · 这个不该通知 083209"},{"path":["tone"],"set":"wait"},{"path":["unread"],"set":true}]}]},{"path":["glyph","now"],"set":"暂无 agent 在运行"},{"path":["glyph","running"],"set":0}]},"w":1795189160279.683}
+{"in":{"id":31,"delta":[{"path":["decision"],"set":{"seq":4,"options":[{"label":"好 083209"},{"label":"不好 083209"}],"card":{"type":"options","options":[{"label":"好 083209"},{"label":"不好 083209"}]},"text":"待处理 · 这个不该通知 083209"}},{"path":["last","by","mine"],"set":false},{"path":["last","preview"],"set":"这个不该通知 083209"},{"path":["last","seq"],"set":4},{"path":["stage"],"set":"wait"},{"path":["state"],"set":"block"},{"path":["stateLead"],"set":"need"},{"path":["stateRest"],"set":"这个不该通知 083209"},{"path":["stateText"],"set":"需要你处理：这个不该通知 083209"},{"path":["tone"],"set":"wait"},{"path":["unread"],"set":true},{"path":["swipeAsk"],"remove":true}]},"w":1795189160279.751}
+{"in":{"id":14,"delta":[{"path":["badge"],"set":1},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","badge"],"set":1},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","elsewhere"],"set":1},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","items"],"key":["station","thread","session"],"put":{"kind":"wait","workspace":"01M7WSS6DGDTJGNVECXPK074G6","station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","stationName":"willow","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","thread":1,"title":"端到端测试的对话","what":"这个不该通知 083209","seq":4,"at":1795189160190},"before":null},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","label"],"set":"1 个待你处理"},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","mineTone"],"set":"wait"},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","tone"],"set":"wait"},{"path":["workspaces","01M7WSS6DGDTJGNVECXPK074G6","wait"],"set":1}]},"w":1795189160279.791}
+{"in":{"id":22,"delta":[{"path":[],"key":["station"],"patch":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","ops":[{"path":["face"],"set":"idle"},{"path":["overview","counts","running"],"set":0},{"path":["overview","counts","warm"],"set":1},{"path":["stateBusy"],"set":false},{"path":["stateText"],"set":"空闲"},{"path":["summary"],"set":"空闲 · Test CPU · 7 GB · Test OS"}]}]},"w":1795189160279.813}
+{"in":{"id":9,"delta":[{"path":["days"],"key":["daysAgo"],"patch":0,"ops":[{"path":["items"],"key":["station","id"],"patch":["01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","chat:c-e439b5a08fc1cdfe92e704f27f180609"],"ops":[{"path":["state"],"set":"block"},{"path":["stateLead"],"set":"need"},{"path":["stateRest"],"set":"这个不该通知 083209"},{"path":["stateText"],"set":"需要你处理：这个不该通知 083209"},{"path":["stateLeadText"],"remove":true}]}]},{"path":["glyph","label"],"set":"1 台 station，1 台在线"},{"path":["glyph","summary"],"set":"willow"},{"path":["glyph","working"],"set":0}]},"w":1795189160279.84}
+{"in":{"id":26,"delta":[{"path":["askClear"],"set":true},{"path":["stateLead"],"set":"need"},{"path":["stateRest"],"set":"这个不该通知 083209"},{"path":["stateText"],"set":"需要你处理：这个不该通知 083209"}]},"w":1795189160279.859}
+{"frame":340018704.5249584,"w":1795189160280.529}
+{"frame":340018716.7387917,"w":1795189160292.754}
+{"frame":340018736.53029174,"w":1795189160312.554}
+{"frame":340018752.0618334,"w":1795189160328.097}
+{"frame":340018767.08841676,"w":1795189160343.108}
+{"frame":340018783.7687084,"w":1795189160359.789}
+{"frame":340018801.27441674,"w":1795189160377.298}
+{"step":"nonotice 这个不该通知 083209","w":1795189160384.067}
+{"frame":340018816.76833344,"w":1795189160392.787}
+{"step":"back","w":1795189160393.218}
+{"out":{"id":39,"subscribe":{"topic":"driveTransfers","workspace":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true},"w":1795189160393.482}
+{"out":{"id":40,"subscribe":{"topic":"workspace","workspace":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true,"have":"1m4q716h2k4m:1"},"w":1795189160393.542}
+{"out":{"id":41,"subscribe":{"topic":"profiles","scope":"01M7WSS6DGDTJGNVECXPK074G6"},"keyed":true,"have":"1m4q716h2k4m:2"},"w":1795189160393.556}
+{"step":"back","acted":true,"w":1795189160395.254}
+{"in":{"id":39,"value":{"supported":true,"loaded":true,"transfers":[]}},"w":1795189160395.398}
+{"in":{"id":40,"same":true},"w":1795189160395.438}
+{"in":{"id":41,"same":true},"w":1795189160395.446}
+{"frame":340018833.4618751,"w":1795189160409.485}
+{"step":"wait 500","w":1795189160427.186}
+{"frame":340018851.62412506,"w":1795189160427.649}
+{"frame":340018867.58400005,"w":1795189160443.604}
+{"frame":340018883.4194584,"w":1795189160459.442}
+{"frame":340018900.3230001,"w":1795189160476.348}
+{"frame":340018916.82745844,"w":1795189160492.85}
+{"frame":340018934.26941675,"w":1795189160510.293}
+{"frame":340018951.9737918,"w":1795189160528.018}
+{"frame":340018968.4007501,"w":1795189160544.421}
+{"frame":340018984.1727918,"w":1795189160560.194}
+{"frame":340019000.71766675,"w":1795189160576.882}
+{"frame":340019017.0468334,"w":1795189160593.064}
+{"frame":340019034.3666251,"w":1795189160610.39}
+{"frame":340019050.1948334,"w":1795189160626.207}
+{"frame":340019067.3428334,"w":1795189160643.369}
+{"frame":340019083.4265001,"w":1795189160659.451}
+{"frame":340019100.0852501,"w":1795189160676.111}
+{"out":{"id":42,"call":"client.focus","params":{"chat":{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","thread":1,"end":true,"seen":4}}},"w":1795189160677.097}
+{"in":{"id":42,"ok":null},"w":1795189160678.378}
+{"frame":340019116.7444168,"w":1795189160692.77}
+{"frame":340019133.4258334,"w":1795189160709.448}
+{"frame":340019150.1586251,"w":1795189160726.182}
+{"frame":340019166.7656667,"w":1795189160742.791}
+{"out":{"id":43,"call":"client.focus","params":{"left":{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","thread":1}}},"w":1795189160743.499}
+{"out":{"id":26,"unsubscribe":true,"keep":true},"w":1795189160744.019}
+{"out":{"id":32,"unsubscribe":true},"w":1795189160744.045}
+{"out":{"id":28,"unsubscribe":true},"w":1795189160744.056}
+{"out":{"id":29,"unsubscribe":true,"keep":true},"w":1795189160744.068}
+{"out":{"id":31,"unsubscribe":true,"keep":true},"w":1795189160744.077}
+{"out":{"id":37,"unsubscribe":true},"w":1795189160744.083}
+{"in":{"id":43,"ok":null},"w":1795189160750.385}
+{"in":{"id":26,"v":"1m4q716h2k4m:3"},"w":1795189160753.065}
+{"in":{"id":29,"v":"1m4q716h2k4m:4"},"w":1795189160753.107}
+{"in":{"id":31,"v":"1m4q716h2k4m:5"},"w":1795189160753.129}
+{"in":{"id":9,"delta":[{"path":["days"],"key":["daysAgo"],"patch":0,"ops":[{"path":["items"],"key":["station","id"],"patch":["01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","chat:c-e439b5a08fc1cdfe92e704f27f180609"],"ops":[{"path":["unread"],"set":false}]}]}]},"w":1795189160756.951}
+{"frame":340019183.8174584,"w":1795189160759.829}
+{"frame":340019200.08333343,"w":1795189160776.108}
+{"frame":340019217.29408336,"w":1795189160793.394}
+{"frame":340019233.41450006,"w":1795189160809.439}
+{"frame":340019250.08454174,"w":1795189160826.119}
+{"frame":340019274.0965834,"w":1795189160850.143}
+{"frame":340019283.4846667,"w":1795189160859.503}
+{"frame":340019302.52712506,"w":1795189160878.554}
+{"frame":340019316.82758343,"w":1795189160892.846}
+{"frame":340019334.8549584,"w":1795189160910.88}
+{"step":"now until 端到端测试","w":1795189160911.315}
+{"step":"nonotice 这个不该通知 083209","w":1795189160911.414}
+{"frame":340019350.08704174,"w":1795189160926.111}
+{"step":"wait 238","w":1795189160926.426}
+{"frame":340019367.4441667,"w":1795189160943.467}
+{"frame":340019383.4194167,"w":1795189160959.448}
+{"frame":340019400.0943751,"w":1795189160976.117}
+{"out":{"id":45,"call":"chat.window","params":{"station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","rows":30}},"w":1795189160976.214}
+{"out":{"id":44,"subscribe":{"topic":"chat","station":"01M7WSS6DGDTJGNVECXPK074G6/ea50a823b5af410335146ad21cae80481ff84acfb647de8a7df1fc3e700be9a3","session":"chat:c-e439b5a08fc1cdfe92e704f27f180609","compact":true},"keyed":true,"have":"1m4q716h2k4m:3"},"w":1795189160976.237}
+{"in":{"id":45,"ok":null},"w":1795189160977.515}
+{"in":{"id":44,"delta":[{"path":["messages"],"key":["seq","outgoing"],"patch":[4,null],"ops":[{"path":["said"],"remove":true}]},{"path":["messages"],"key":["seq","outgoing"],"patch":[3,null],"ops":[{"path":["said"],"remove":true}]},{"path":["thread","unread"],"set":0},{"path":["unreadLine"],"remove":true}],"kept":true},"w":1795189160978.01}
+{"frame":340019416.74054176,"w":1795189160992.763}
+{"frame":340019433.4742084,"w":1795189161009.498}
+{"frame":340019450.07516676,"w":1795189161026.091}
+{"frame":340019466.7547084,"w":1795189161042.777}
+{"frame":340019483.4219584,"w":1795189161059.454}
+{"frame":340019500.0663751,"w":1795189161076.09}
+{"frame":340019516.7273751,"w":1795189161092.747}
+{"frame":340019533.4248751,"w":1795189161109.449}
+{"frame":340019550.2459584,"w":1795189161126.284}
+{"frame":340019567.98666674,"w":1795189161144.008}
+{"frame":340019600.08800006,"w":1795189161176.114}
+{"step":"# flow complete","w":1795189161176.481}
+{"step":"","w":1795189161176.491}
+{"textrec":{"s":[15,400,0,"字字字字字字字"],"r":[0,1,14.883268482490273,0,1,1,14.883268482490273,0,2,1,14.883268482490273,0,3,1,14.883268482490273,0,4,1,14.88326848249028,0,5,1,14.88326848249028,0,6,1,14.88326848249028,0]}}
 {"textrec":{"m":[15,400,0],"r":[14.501953125,3.1640625,21,14.501953125,3.1640625,0]}}
-{"textrec":{"s":[20,700,8,"Dev"],"r":[0,1,14.273204803466797,0,1,1,11.034393310546875,1,2,1,10.94757080078125,2]}}
-{"textrec":{"m":[20,700,0],"r":[19.3359375,4.21875,28,17.1990966796875,2.8009033203125,0]}}
-{"textrec":{"s":[15,400,0,"搜索全部内容"],"r":[0,1,14.883268482490273,3,1,1,14.883268482490273,4,2,1,14.883268482490273,5,3,1,14.883268482490273,6,4,1,14.88326848249028,7,5,1,14.88326848249028,8]}}
-{"textrec":{"s":[15,600,0,"今天"],"r":[0,1,14.883268482490273,9,1,1,14.883268482490273,10]}}
-{"textrec":{"m":[15,600,0],"r":[14.501953125,3.1640625,21,14.501953125,3.1640625,0]}}
-{"textrec":{"s":[15,400,0,"端到端测试的对话"],"r":[0,1,14.883268482490273,11,1,1,14.883268482490273,12,2,1,14.883268482490273,11,3,1,14.883268482490273,13,4,1,14.88326848249028,14,5,1,14.88326848249028,15,6,1,14.88326848249028,16,7,1,14.88326848249028,17]}}
-{"textrec":{"s":[13,400,32,"看一眼就行 083209"],"r":[0,1,12.898832684824903,18,1,1,12.898832684824903,19,2,1,12.898832684824903,20,3,1,12.898832684824903,21,4,1,12.898832684824896,22,5,1,3.580078125,-1,6,1,8.1123046875,23,7,1,8.1123046875,24,8,1,8.1123046875,25,9,1,8.1123046875,26,10,1,8.1123046875,23,11,1,8.1123046875,27]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字字字字字字字"],"r":[0,1,12.898832684824903,4,1,1,12.898832684824903,4,2,1,12.898832684824903,4,3,1,12.898832684824903,4,4,1,12.898832684824896,4,5,1,12.898832684824896,4,6,1,12.898832684824896,4,7,1,12.898832684824896,4,8,1,12.898832684824896,4,9,1,12.898832684824896,4,10,1,12.898832684824896,4,11,1,12.898832684824896,4,12,1,12.898832684824896,4,13,1,12.898832684824896,4]}}
 {"textrec":{"m":[13,400,0],"r":[12.568359375,2.7421875,18,12.568359375,2.7421875,0]}}
-{"textrec":{"g":3,"r":[0,0,17,16,-1,-13,0]}}
-{"textrec":{"g":4,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":5,"r":[0,0,17,16,-1,-13,0]}}
-{"textrec":{"g":6,"r":[0,0,16,17,-1,-14,0]}}
-{"textrec":{"g":7,"r":[0,0,15,16,0,-13,0]}}
-{"textrec":{"g":8,"r":[0,0,16,17,-1,-14,0]}}
-{"textrec":{"g":9,"r":[0,0,17,16,-1,-13,0]}}
+{"textrec":{"s":[15,400,0,"字字字字字字字字字字"],"r":[0,1,14.883268482490273,0,1,1,14.883268482490273,0,2,1,14.883268482490273,0,3,1,14.883268482490273,0,4,1,14.88326848249028,0,5,1,14.88326848249028,0,6,1,14.88326848249028,0,7,1,14.88326848249028,0,8,1,14.88326848249028,0,9,1,14.88326848249028,0]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字字字字"],"r":[0,1,12.898832684824903,4,1,1,12.898832684824903,4,2,1,12.898832684824903,4,3,1,12.898832684824903,4,4,1,12.898832684824896,4,5,1,12.898832684824896,4,6,1,12.898832684824896,4,7,1,12.898832684824896,4,8,1,12.898832684824896,4,9,1,12.898832684824896,4,10,1,12.898832684824896,4]}}
+{"textrec":{"s":[15,400,0,"字字字字字字"],"r":[0,1,14.883268482490273,0,1,1,14.883268482490273,0,2,1,14.883268482490273,0,3,1,14.883268482490273,0,4,1,14.88326848249028,0,5,1,14.88326848249028,0]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字字字字字字字字字"],"r":[0,1,12.898832684824903,4,1,1,12.898832684824903,4,2,1,12.898832684824903,4,3,1,12.898832684824903,4,4,1,12.898832684824896,4,5,1,12.898832684824896,4,6,1,12.898832684824896,4,7,1,12.898832684824896,4,8,1,12.898832684824896,4,9,1,12.898832684824896,4,10,1,12.898832684824896,4,11,1,12.898832684824896,4,12,1,12.898832684824896,4,13,1,12.898832684824896,4,14,1,12.898832684824896,4,15,1,12.898832684824896,4]}}
+{"textrec":{"s":[15,400,0,"字字字字字字字字字字字字"],"r":[0,1,14.883268482490273,0,1,1,14.883268482490273,0,2,1,14.883268482490273,0,3,1,14.883268482490273,0,4,1,14.88326848249028,0,5,1,14.88326848249028,0,6,1,14.88326848249028,0,7,1,14.88326848249028,0,8,1,14.88326848249028,0,9,1,14.88326848249028,0,10,1,14.88326848249028,0,11,1,14.88326848249028,0]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字字"],"r":[0,1,12.898832684824903,4,1,1,12.898832684824903,4,2,1,12.898832684824903,4,3,1,12.898832684824903,4,4,1,12.898832684824896,4,5,1,12.898832684824896,4,6,1,12.898832684824896,4,7,1,12.898832684824896,4,8,1,12.898832684824896,4]}}
+{"textrec":{"s":[15,400,0,"字字字字字字字字"],"r":[0,1,14.883268482490273,0,1,1,14.883268482490273,0,2,1,14.883268482490273,0,3,1,14.883268482490273,0,4,1,14.88326848249028,0,5,1,14.88326848249028,0,6,1,14.88326848249028,0,7,1,14.88326848249028,0]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字字字字字字"],"r":[0,1,12.898832684824903,4,1,1,12.898832684824903,4,2,1,12.898832684824903,4,3,1,12.898832684824903,4,4,1,12.898832684824896,4,5,1,12.898832684824896,4,6,1,12.898832684824896,4,7,1,12.898832684824896,4,8,1,12.898832684824896,4,9,1,12.898832684824896,4,10,1,12.898832684824896,4,11,1,12.898832684824896,4,12,1,12.898832684824896,4]}}
+{"textrec":{"s":[15,400,0,"字字字字字字字字字"],"r":[0,1,14.883268482490273,0,1,1,14.883268482490273,0,2,1,14.883268482490273,0,3,1,14.883268482490273,0,4,1,14.88326848249028,0,5,1,14.88326848249028,0,6,1,14.88326848249028,0,7,1,14.88326848249028,0,8,1,14.88326848249028,0]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字字字字字字字字"],"r":[0,1,12.898832684824903,4,1,1,12.898832684824903,4,2,1,12.898832684824903,4,3,1,12.898832684824903,4,4,1,12.898832684824896,4,5,1,12.898832684824896,4,6,1,12.898832684824896,4,7,1,12.898832684824896,4,8,1,12.898832684824896,4,9,1,12.898832684824896,4,10,1,12.898832684824896,4,11,1,12.898832684824896,4,12,1,12.898832684824896,4,13,1,12.898832684824896,4,14,1,12.898832684824896,4]}}
+{"textrec":{"s":[15,400,0,"字字字字字"],"r":[0,1,14.883268482490273,0,1,1,14.883268482490273,0,2,1,14.883268482490273,0,3,1,14.883268482490273,0,4,1,14.88326848249028,0]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字字字"],"r":[0,1,12.898832684824903,4,1,1,12.898832684824903,4,2,1,12.898832684824903,4,3,1,12.898832684824903,4,4,1,12.898832684824896,4,5,1,12.898832684824896,4,6,1,12.898832684824896,4,7,1,12.898832684824896,4,8,1,12.898832684824896,4,9,1,12.898832684824896,4]}}
+{"textrec":{"s":[15,400,0,"字字字字字字字字字字字"],"r":[0,1,14.883268482490273,0,1,1,14.883268482490273,0,2,1,14.883268482490273,0,3,1,14.883268482490273,0,4,1,14.88326848249028,0,5,1,14.88326848249028,0,6,1,14.88326848249028,0,7,1,14.88326848249028,0,8,1,14.88326848249028,0,9,1,14.88326848249028,0,10,1,14.88326848249028,0]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字字字字字"],"r":[0,1,12.898832684824903,4,1,1,12.898832684824903,4,2,1,12.898832684824903,4,3,1,12.898832684824903,4,4,1,12.898832684824896,4,5,1,12.898832684824896,4,6,1,12.898832684824896,4,7,1,12.898832684824896,4,8,1,12.898832684824896,4,9,1,12.898832684824896,4,10,1,12.898832684824896,4,11,1,12.898832684824896,4]}}
+{"textrec":{"s":[20,700,8,"Dev"],"r":[0,1,14.273204803466797,5,1,1,11.034393310546875,6,2,1,10.94757080078125,7]}}
+{"textrec":{"m":[20,700,0],"r":[19.3359375,4.21875,28,17.1990966796875,2.8009033203125,0]}}
+{"textrec":{"s":[15,600,0,"今天"],"r":[0,1,14.883268482490273,8,1,1,14.883268482490273,9]}}
+{"textrec":{"m":[15,600,0],"r":[14.501953125,3.1640625,21,14.501953125,3.1640625,0]}}
+{"textrec":{"s":[15,400,0,"搜索全部内容"],"r":[0,1,14.883268482490273,10,1,1,14.883268482490273,11,2,1,14.883268482490273,12,3,1,14.883268482490273,13,4,1,14.88326848249028,14,5,1,14.88326848249028,15]}}
+{"textrec":{"s":[15,600,0,"端到端测试的对话"],"r":[0,1,14.883268482490273,16,1,1,14.883268482490273,17,2,1,14.883268482490273,16,3,1,14.883268482490273,18,4,1,14.88326848249028,19,5,1,14.88326848249028,20,6,1,14.88326848249028,21,7,1,14.88326848249028,22]}}
+{"textrec":{"s":[13,400,0,"你好，我是测试用的 agent"],"r":[0,1,12.898832684824903,23,1,1,12.898832684824903,24,2,1,13.075875486381321,25,3,1,12.898832684824903,26,4,1,12.898832684824903,27,5,1,12.89883268482491,28,6,1,12.898832684824896,29,7,1,12.898832684824896,30,8,1,12.898832684824896,31,9,1,3.580078125,-1,10,1,7.0966796875,32,11,1,7.845703125,33,12,1,7.3505859375,34,13,1,7.50927734375,35,14,1,4.646484375,36]}}
 {"textrec":{"g":10,"r":[0,0,17,16,-1,-13,0]}}
 {"textrec":{"g":11,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":12,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":13,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":14,"r":[0,0,17,16,-1,-13,0]}}
-{"textrec":{"g":15,"r":[0,0,15,17,0,-14,0]}}
+{"textrec":{"g":201326604,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":201326605,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":134217742,"r":[0,0,15,16,-1,-13,0]}}
+{"textrec":{"g":134217743,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":8,"r":[0,0,17,16,-1,-13,0]}}
+{"textrec":{"g":9,"r":[0,0,17,16,-1,-13,0]}}
 {"textrec":{"g":16,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":17,"r":[0,0,17,16,-1,-13,0]}}
-{"textrec":{"g":18,"r":[0,0,14,15,-1,-12,0]}}
-{"textrec":{"g":19,"r":[0,0,15,4,-1,-7,0]}}
-{"textrec":{"g":20,"r":[0,0,15,14,-1,-11,0]}}
-{"textrec":{"g":21,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":22,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":23,"r":[0,0,10,13,-1,-11,0]}}
-{"textrec":{"g":24,"r":[0,0,10,13,-1,-11,0]}}
-{"textrec":{"g":25,"r":[0,0,10,13,-1,-11,0]}}
-{"textrec":{"g":26,"r":[0,0,9,12,0,-11,0]}}
-{"textrec":{"g":27,"r":[0,0,10,13,-1,-11,0]}}
-{"textrec":{"g":0,"r":[0,0,15,17,0,-16,0]}}
-{"textrec":{"g":1,"r":[0,0,13,14,-1,-12,0]}}
-{"textrec":{"g":2,"r":[0,0,14,13,-1,-12,0]}}
-{"textrec":{"s":[16,600,0,"端到端测试的对话"],"r":[0,1,15.875486381322958,28,1,1,15.875486381322958,29,2,1,15.875486381322958,28,3,1,15.875486381322958,30,4,1,15.875486381322958,31,5,1,15.875486381322958,32,6,1,15.875486381322958,33,7,1,15.875486381322958,34]}}
-{"textrec":{"m":[16,600,0],"r":[15.46875,3.375,23,15.46875,3.375,0]}}
-{"textrec":{"s":[8,600,0,"你"],"r":[0,1,7.953307392996109,35]}}
-{"textrec":{"m":[8,600,0],"r":[7.734375,1.6875,11,7.734375,1.6875,0]}}
-{"textrec":{"s":[15,500,0,"好 083209"],"r":[0,1,14.883268482490273,36,1,1,3.855457305908203,-1,2,1,9.51467514038086,37,3,1,9.649196863174438,38,4,1,9.400899410247803,39,5,1,9.035907983779907,40,6,1,9.514675140380866,37,7,1,9.574241638183594,41]}}
-{"textrec":{"s":[15,500,0,"不好 083209"],"r":[0,1,14.883268482490273,42,1,1,14.883268482490273,36,2,1,3.855457305908203,-1,3,1,9.51467514038086,37,4,1,9.649196863174438,38,5,1,9.400899410247803,39,6,1,9.035907983779907,40,7,1,9.51467514038086,37,8,1,9.574241638183594,41]}}
-{"textrec":{"m":[13,600,0],"r":[12.568359375,2.7421875,18,12.568359375,2.7421875,0]}}
-{"textrec":{"s":[13,600,0,"默认模型"],"r":[0,1,12.898832684824903,43,1,1,12.898832684824903,44,2,1,12.898832684824903,45,3,1,12.898832684824903,46]}}
-{"textrec":{"s":[12,400,0,"刚刚"],"r":[0,1,11.918287937743191,47,1,1,11.918287937743191,47]}}
+{"textrec":{"g":17,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":201326608,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":201326610,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":134217747,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":134217748,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":67108885,"r":[0,0,17,17,-1,-14,0]}}
+{"textrec":{"g":67108886,"r":[0,0,17,16,-1,-13,0]}}
+{"textrec":{"g":23,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":24,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":201326617,"r":[0,0,5,7,0,-3,0]}}
+{"textrec":{"g":201326618,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":201326619,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"g":201326620,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":134217757,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":134217758,"r":[0,0,13,14,-1,-11,0]}}
+{"textrec":{"g":67108895,"r":[0,0,13,15,0,-12,0]}}
+{"textrec":{"g":201326624,"r":[0,0,8,10,-1,-8,0]}}
+{"textrec":{"g":33,"r":[0,0,9,12,-1,-8,0]}}
+{"textrec":{"g":201326626,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":67108899,"r":[0,0,8,9,0,-8,0]}}
+{"textrec":{"g":201326628,"r":[0,0,6,12,-1,-10,0]}}
+{"textrec":{"g":201326597,"r":[0,0,15,17,0,-16,0]}}
+{"textrec":{"g":134217734,"r":[0,0,13,14,-1,-12,0]}}
+{"textrec":{"g":67108871,"r":[0,0,14,13,-1,-12,0]}}
+{"textrec":{"s":[15,400,0,"端到端测试的对话 post:你好，我是测试用的 agent"],"r":[0,1,14.883268482490273,37,1,1,14.883268482490273,38,2,1,14.883268482490273,37,3,1,14.883268482490273,39,4,1,14.88326848249028,40,5,1,14.88326848249028,41,6,1,14.88326848249028,42,7,1,14.88326848249028,43,8,1,3.984375,-1,9,1,8.9208984375,44,10,1,8.6279296875,45,11,1,7.58056640625,46,12,1,5.17822265625,47,13,1,4.21875,48,14,1,14.88326848249028,49,15,1,14.88326848249028,50,16,1,15.08754863813229,51,17,1,14.88326848249028,52,18,1,14.88326848249028,53,19,1,14.88326848249028,39,20,1,14.88326848249028,40,21,1,14.88326848249028,54,22,1,14.88326848249028,41,23,1,3.984375,-1,24,1,8.0419921875,55,25,1,8.90625,56,26,1,8.3349609375,57,27,1,8.51806640625,58,28,1,5.21484375,47]}}
+{"textrec":{"s":[12,400,0,"刚刚"],"r":[0,1,11.918287937743191,59,1,1,11.918287937743191,59]}}
 {"textrec":{"m":[12,400,0],"r":[11.6015625,2.53125,17,11.6015625,2.53125,0]}}
-{"textrec":{"m":[14,400,0],"r":[13.53515625,2.953125,20,13.53515625,2.953125,0]}}
-{"textrec":{"s":[14,400,0,"看一眼就行 083209"],"r":[0,1,13.891050583657588,48,1,1,13.891050583657588,49,2,1,13.891050583657588,50,3,1,13.891050583657588,51,4,1,13.891050583657588,52,5,1,3.787109375,-1,6,1,8.66796875,53,7,1,8.791015625,54,8,1,8.626953125,55,9,1,8.298828125,56,10,1,8.66796875,53,11,1,8.763671875,57]}}
-{"textrec":{"s":[13,400,0,"待你决策"],"r":[0,1,12.898832684824903,58,1,1,12.898832684824903,59,2,1,12.898832684824903,60,3,1,12.898832684824903,61]}}
-{"textrec":{"s":[15,500,32,"好 083209"],"r":[0,1,14.883268482490273,62,1,1,3.855457305908203,-1,2,1,9.442158937454224,63,3,1,9.442158937454224,64,4,1,9.442158937454224,65,5,1,9.442158937454224,66,6,1,9.44215893745423,63,7,1,9.442158937454224,67]}}
-{"textrec":{"m":[15,500,0],"r":[14.501953125,3.1640625,21,14.501953125,3.1640625,0]}}
-{"textrec":{"s":[15,500,32,"不好 083209"],"r":[0,1,14.883268482490273,68,1,1,14.883268482490273,62,2,1,3.855457305908203,-1,3,1,9.442158937454224,63,4,1,9.442158937454224,64,5,1,9.442158937454224,65,6,1,9.442158937454224,66,7,1,9.442158937454224,63,8,1,9.442158937454224,67]}}
-{"textrec":{"s":[13,400,0,"忽略"],"r":[0,1,12.898832684824903,69,1,1,12.898832684824903,70]}}
-{"textrec":{"s":[15,400,0,"打开就消失 083209 card:看一眼就行 083209|好 083209|不好 083209"],"r":[0,1,14.883268482490273,71,1,1,14.883268482490273,72,2,1,14.883268482490273,73,3,1,14.883268482490273,74,4,1,14.88326848249028,75,5,1,3.984375,-1,6,1,9.2138671875,76,7,1,9.345703125,77,8,1,9.169921875,78,9,1,8.818359375,79,10,1,9.2138671875,76,11,1,9.31640625,80,12,1,3.984375,-1,13,1,8.1591796875,81,14,1,8.0419921875,82,15,1,5.36865234375,83,16,1,8.86962890625,84,17,1,4.21875,85,18,1,14.88326848249028,86,19,1,14.88326848249028,87,20,1,14.88326848249028,88,21,1,14.88326848249028,73,22,1,14.88326848249028,89,23,1,3.984375,-1,24,1,9.213867187500028,76,25,1,9.345703125,77,26,1,9.169921875,78,27,1,8.818359375,79,28,1,9.2138671875,76,29,1,9.31640625,80,30,1,5.5224609375,90,31,1,14.88326848249028,91,32,1,3.984375,-1,33,1,9.2138671875,76,34,1,9.345703125,77,35,1,9.169921875,78,36,1,8.818359375,79,37,1,9.2138671875,76,38,1,9.31640625,80,39,1,5.5224609375,90,40,1,14.88326848249028,92,41,1,14.88326848249028,91,42,1,3.984375,-1,43,1,9.2138671875,76,44,1,9.345703125,77,45,1,9.169921875,78,46,1,8.818359375,79,47,1,9.2138671875,76,48,1,9.31640625,80]}}
-{"textrec":{"s":[14,400,0,"先合并哪个分支 083209"],"r":[0,1,13.891050583657588,93,1,1,13.891050583657588,94,2,1,13.891050583657588,95,3,1,13.891050583657588,96,4,1,13.891050583657588,97,5,1,13.891050583657588,98,6,1,13.891050583657588,99,7,1,3.787109375,-1,8,1,8.66796875,53,9,1,8.791015625,54,10,1,8.626953125,55,11,1,8.298828124999986,56,12,1,8.66796875,53,13,1,8.763671875,57]}}
-{"textrec":{"s":[13,400,0,"你 回复了"],"r":[0,1,12.898832684824903,59,1,1,3.580078125,-1,2,1,12.898832684824903,100,3,1,12.898832684824903,101,4,1,12.898832684824903,102]}}
-{"textrec":{"s":[15,400,0,"再问一个 083209 card:先合并哪个分支 083209|先合 A 083209|先合 B 083209"],"r":[0,1,14.883268482490273,103,1,1,14.883268482490273,104,2,1,14.883268482490273,87,3,1,14.883268482490273,105,4,1,3.984375,-1,5,1,9.2138671875,76,6,1,9.345703125,77,7,1,9.169921875,78,8,1,8.818359375,79,9,1,9.2138671875,76,10,1,9.31640625,80,11,1,3.984375,-1,12,1,8.1591796875,81,13,1,8.0419921875,82,14,1,5.36865234375,83,15,1,8.86962890625,84,16,1,4.21875,85,17,1,14.88326848249028,106,18,1,14.88326848249028,107,19,1,14.88326848249028,108,20,1,14.88326848249028,109,21,1,14.88326848249028,105,22,1,14.88326848249028,110,23,1,14.883268482490251,111,24,1,3.984375,-1,25,1,9.2138671875,76,26,1,9.345703125,77,27,1,9.169921875,78,28,1,8.818359375,79,29,1,9.2138671875,76,30,1,9.31640625,80,31,1,5.5224609375,90,32,1,14.88326848249028,106,33,1,14.88326848249028,107,34,1,3.984375,-1,35,1,9.873046875,112,36,1,3.984375,-1,37,1,9.2138671875,76,38,1,9.345703125,77,39,1,9.169921875,78,40,1,8.818359375,79,41,1,9.2138671875,76,42,1,9.31640625,80,43,1,5.5224609375,90,44,1,14.88326848249028,106,45,1,14.88326848249028,107,46,1,3.984375,-1,47,1,9.6240234375,113,48,1,3.984375,-1,49,1,9.2138671875,76,50,1,9.345703125,77,51,1,9.169921875,78,52,1,8.818359374999943,79,53,1,9.2138671875,76,54,1,9.31640625,80]}}
-{"textrec":{"s":[13,400,0,"本轮 agent 未在对话中回复，以下是它最后输出的文字，由 station 代为转发（并非它发布的消息）；回复即可继续："],"r":[0,1,12.898832684824903,114,1,1,12.898832684824903,115,2,1,3.580078125,-1,3,1,7.0966796875,116,4,1,7.845703125,117,5,1,7.3505859375,118,6,1,7.50927734375,119,7,1,4.646484375,120,8,1,3.580078125,-1,9,1,12.89883268482491,121,10,1,12.898832684824896,122,11,1,12.898832684824896,123,12,1,12.898832684824896,124,13,1,12.898832684824896,125,14,1,12.898832684824896,100,15,1,12.898832684824896,101,16,1,13.075875486381335,126,17,1,12.898832684824896,127,18,1,12.898832684824896,128,19,1,12.898832684824896,129,20,1,12.898832684824896,130,21,1,12.898832684824896,131,22,1,12.898832684824896,132,23,1,12.898832684824924,133,24,1,12.898832684824924,134,25,1,12.898832684824924,135,26,1,12.898832684824924,136,27,1,12.898832684824924,137,28,1,13.075875486381335,126,29,1,12.898832684824924,138,30,1,3.580078125,-1,31,1,6.69677734375,139,32,1,4.61474609375,120,33,1,7.0966796875,116,34,1,4.646484375,120,35,1,3.1357421875,140,36,1,7.6044921875,141,37,1,7.50927734375,119,38,1,3.580078125,-1,39,1,12.898832684824924,142,40,1,12.898832684824924,143,41,1,12.898832684824924,144,42,1,19.398832684824924,145,43,1,4.071984435797674,146,44,1,12.898832684824924,147,45,1,12.898832684824924,148,46,1,12.898832684824924,130,47,1,12.898832684824924,145,48,1,12.898832684824924,149,49,1,12.898832684824924,135,50,1,12.898832684824924,150,51,1,12.898832684824924,151,52,1,5.45671206225677,152,53,1,13.075875486381278,153,54,1,12.898832684824924,100,55,1,12.898832684824924,101,56,1,12.898832684824924,154,57,1,12.898832684824924,155,58,1,12.898832684824924,156,59,1,12.898832684824924,157,60,1,6.575875486381278,158]}}
-{"textrec":{"s":[13,400,0,"·"],"r":[0,1,6.22854520422212,159]}}
-{"textrec":{"s":[13,400,0,"上报"],"r":[0,1,12.898832684824903,160,1,1,12.898832684824903,161]}}
-{"textrec":{"s":[13,400,0,"…"],"r":[0,1,10.384765625,162]}}
-{"textrec":{"s":[13,400,0,"本轮 agent 未在对话中回复，以下是它最后输出"],"r":[0,1,12.898832684824903,114,1,1,12.898832684824903,115,2,1,3.580078125,-1,3,1,7.0966796875,116,4,1,7.845703125,117,5,1,7.3505859375,118,6,1,7.50927734375,119,7,1,4.646484375,120,8,1,3.580078125,-1,9,1,12.89883268482491,121,10,1,12.898832684824896,122,11,1,12.898832684824896,123,12,1,12.898832684824896,124,13,1,12.898832684824896,125,14,1,12.898832684824896,100,15,1,12.898832684824896,101,16,1,13.075875486381335,126,17,1,12.898832684824896,127,18,1,12.898832684824896,128,19,1,12.898832684824896,129,20,1,12.898832684824896,130,21,1,12.898832684824896,131,22,1,12.898832684824896,132,23,1,12.898832684824924,133,24,1,12.898832684824924,134]}}
-{"textrec":{"s":[13,500,0,"agent："],"r":[0,1,7.277074933052063,163,1,1,8.016787648200989,164,2,1,7.491410613059998,165,3,1,7.717604756355286,166,4,1,4.881580114364624,167,5,1,6.575875486381321,168]}}
+{"textrec":{"s":[13,500,0,"以下是新消息"],"r":[0,1,12.898832684824903,60,1,1,12.898832684824903,61,2,1,12.898832684824903,62,3,1,12.898832684824903,63,4,1,12.898832684824896,64,5,1,12.898832684824896,65]}}
 {"textrec":{"m":[13,500,0],"r":[12.568359375,2.7421875,18,12.568359375,2.7421875,0]}}
-{"textrec":{"s":[13,400,32,"要不要换图标 083209"],"r":[0,1,12.898832684824903,169,1,1,12.898832684824903,170,2,1,12.898832684824903,169,3,1,12.898832684824903,171,4,1,12.898832684824896,172,5,1,12.898832684824896,173,6,1,3.580078125,-1,7,1,8.1123046875,23,8,1,8.1123046875,24,9,1,8.1123046875,25,10,1,8.1123046875,26,11,1,8.1123046875,23,12,1,8.1123046875,27]}}
-{"textrec":{"s":[15,400,0,"一起换 083209"],"r":[0,1,14.883268482490273,87,1,1,14.883268482490273,174,2,1,14.883268482490273,175,3,1,3.984375,-1,4,1,9.2138671875,76,5,1,9.345703124999993,77,6,1,9.169921875,78,7,1,8.818359375,79,8,1,9.2138671875,76,9,1,9.31640625,80]}}
-{"textrec":{"s":[12,400,0,"willow"],"r":[0,1,9.29296875,176,1,1,2.96484375,177,2,1,3.03515625,178,3,1,3.03515625,178,4,1,6.97265625,179,5,1,9.17578125,176]}}
-{"textrec":{"g":114,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":115,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":116,"r":[0,0,9,10,-1,-8,0]}}
-{"textrec":{"g":117,"r":[0,0,9,12,-1,-8,0]}}
-{"textrec":{"g":118,"r":[0,0,9,10,-1,-8,0]}}
-{"textrec":{"g":119,"r":[0,0,8,9,0,-8,0]}}
-{"textrec":{"g":120,"r":[0,0,7,12,-1,-10,0]}}
-{"textrec":{"g":121,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":122,"r":[0,0,14,15,-1,-12,0]}}
-{"textrec":{"g":123,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":124,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":125,"r":[0,0,13,15,0,-12,0]}}
-{"textrec":{"g":100,"r":[0,0,13,14,0,-11,0]}}
-{"textrec":{"g":101,"r":[0,0,14,15,-1,-12,0]}}
-{"textrec":{"g":126,"r":[0,0,5,7,0,-3,0]}}
-{"textrec":{"g":127,"r":[0,0,14,15,0,-12,0]}}
-{"textrec":{"g":128,"r":[0,0,14,14,-1,-11,0]}}
-{"textrec":{"g":129,"r":[0,0,14,14,-1,-11,0]}}
-{"textrec":{"g":130,"r":[0,0,14,14,-1,-12,0]}}
-{"textrec":{"g":131,"r":[0,0,14,14,-1,-11,0]}}
-{"textrec":{"g":132,"r":[0,0,14,15,-1,-12,0]}}
-{"textrec":{"g":133,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":134,"r":[0,0,13,15,0,-12,0]}}
-{"textrec":{"g":162,"r":[0,0,11,5,0,-3,0]}}
-{"textrec":{"g":103,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":104,"r":[0,0,15,17,0,-14,0]}}
-{"textrec":{"g":106,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":107,"r":[0,0,17,16,-1,-13,0]}}
-{"textrec":{"g":87,"r":[0,0,16,4,-1,-7,0]}}
-{"textrec":{"g":105,"r":[0,0,17,16,-1,-13,0]}}
-{"textrec":{"g":76,"r":[0,0,11,14,-1,-12,0]}}
-{"textrec":{"g":77,"r":[0,0,11,14,-1,-12,0]}}
-{"textrec":{"g":78,"r":[0,0,10,14,0,-12,0]}}
-{"textrec":{"g":79,"r":[0,0,10,13,0,-12,0]}}
-{"textrec":{"g":80,"r":[0,0,11,14,-1,-12,0]}}
-{"textrec":{"g":81,"r":[0,0,10,12,-1,-10,0]}}
-{"textrec":{"g":82,"r":[0,0,10,12,-1,-10,0]}}
-{"textrec":{"g":83,"r":[0,0,7,11,0,-10,0]}}
-{"textrec":{"g":84,"r":[0,0,10,15,-1,-13,0]}}
-{"textrec":{"g":85,"r":[0,0,5,11,0,-9,0]}}
-{"textrec":{"g":108,"r":[0,0,16,17,-1,-14,0]}}
-{"textrec":{"g":109,"r":[0,0,15,16,0,-13,0]}}
-{"textrec":{"g":110,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":111,"r":[0,0,16,17,-1,-14,0]}}
-{"textrec":{"g":90,"r":[0,0,4,16,0,-12,0]}}
-{"textrec":{"g":112,"r":[0,0,12,13,-1,-12,0]}}
-{"textrec":{"g":113,"r":[0,0,11,13,0,-12,0]}}
-{"textrec":{"g":43,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":93,"r":[0,0,15,16,-1,-13,0]}}
-{"textrec":{"g":94,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":95,"r":[0,0,15,16,-1,-13,0]}}
-{"textrec":{"g":59,"r":[0,0,14,15,-1,-12,0]}}
-{"textrec":{"g":44,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":45,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":46,"r":[0,0,14,15,-1,-12,0]}}
-{"textrec":{"g":96,"r":[0,0,14,15,0,-12,0]}}
-{"textrec":{"g":97,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":98,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":99,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":53,"r":[0,0,10,14,-1,-12,0]}}
-{"textrec":{"g":54,"r":[0,0,11,14,-1,-12,0]}}
-{"textrec":{"g":55,"r":[0,0,10,14,-1,-12,0]}}
-{"textrec":{"g":56,"r":[0,0,9,13,0,-12,0]}}
-{"textrec":{"g":57,"r":[0,0,11,14,-1,-12,0]}}
-{"textrec":{"g":102,"r":[0,0,13,14,0,-11,0]}}
+{"textrec":{"m":[13,600,0],"r":[12.568359375,2.7421875,18,12.568359375,2.7421875,0]}}
+{"textrec":{"s":[13,600,0,"默认模型"],"r":[0,1,12.898832684824903,66,1,1,12.898832684824903,67,2,1,12.898832684824903,68,3,1,12.898832684824903,69]}}
+{"textrec":{"m":[14,400,0],"r":[13.53515625,2.953125,20,13.53515625,2.953125,0]}}
+{"textrec":{"s":[14,400,0,"你好，我是测试用的 agent"],"r":[0,1,13.891050583657588,70,1,1,13.891050583657588,71,2,1,14.081712062256813,72,3,1,13.891050583657588,73,4,1,13.891050583657588,74,5,1,13.891050583657588,75,6,1,13.891050583657588,76,7,1,13.891050583657588,77,8,1,13.891050583657588,78,9,1,3.787109375000014,-1,10,1,7.57421875,79,11,1,8.380859375,80,12,1,7.84765625,81,13,1,8.0185546875,82,14,1,4.935546875,83]}}
+{"textrec":{"s":[13,400,0,"answered the question that was asked"],"r":[0,1,7.0966796875,32,1,1,7.50927734375,35,2,1,6.63330078125,84,3,1,9.76904296875,85,4,1,7.2236328125,34,5,1,4.77978515625,86,6,1,7.25537109375,34,7,1,7.9091796875,87,8,1,3.580078125,-1,9,1,4.646484375,36,10,1,7.57275390625,88,11,1,7.3505859375,34,12,1,3.580078125,-1,13,1,7.845703125,89,14,1,7.50927734375,90,15,1,7.3505859375,34,16,1,6.69677734375,84,17,1,4.61474609375,36,18,1,3.1357421875,91,19,1,7.6044921875,92,20,1,7.50927734375,35,21,1,3.580078125,-1,22,1,4.646484375,36,23,1,7.57275390625,88,24,1,7.0966796875,32,25,1,4.646484375,36,26,1,3.580078125,-1,27,1,9.89599609375,85,28,1,7.00146484375,32,29,1,6.728515625,84,30,1,3.580078125,-1,31,1,7.0966796875,32,32,1,6.728515625,84,33,1,6.82373046875,93,34,1,7.19189453125,34,35,1,7.9091796875,87]}}
+{"textrec":{"s":[16,600,0,"端到端测试的对话"],"r":[0,1,15.875486381322958,94,1,1,15.875486381322958,95,2,1,15.875486381322958,94,3,1,15.875486381322958,96,4,1,15.875486381322958,97,5,1,15.875486381322958,98,6,1,15.875486381322958,99,7,1,15.875486381322958,100]}}
+{"textrec":{"s":[12,400,0,"willow"],"r":[0,1,9.29296875,101,1,1,2.96484375,102,2,1,3.03515625,103,3,1,3.03515625,103,4,1,6.97265625,104,5,1,9.17578125,101]}}
+{"textrec":{"m":[16,600,0],"r":[15.46875,3.375,23,15.46875,3.375,0]}}
+{"textrec":{"s":[8,600,0,"你"],"r":[0,1,7.953307392996109,105]}}
+{"textrec":{"m":[8,600,0],"r":[7.734375,1.6875,11,7.734375,1.6875,0]}}
+{"textrec":{"g":37,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":38,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":201326629,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":201326631,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":134217768,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":134217769,"r":[0,0,15,17,-1,-14,0]}}
+{"textrec":{"g":67108906,"r":[0,0,17,16,-1,-13,0]}}
+{"textrec":{"g":67108907,"r":[0,0,17,16,-1,-13,0]}}
+{"textrec":{"g":44,"r":[0,0,10,14,0,-10,0]}}
+{"textrec":{"g":45,"r":[0,0,11,12,-1,-10,0]}}
+{"textrec":{"g":134217774,"r":[0,0,9,12,-1,-10,0]}}
+{"textrec":{"g":67108911,"r":[0,0,7,13,-1,-11,0]}}
+{"textrec":{"g":67108912,"r":[0,0,5,11,0,-9,0]}}
+{"textrec":{"g":134217777,"r":[0,0,17,17,-2,-14,0]}}
+{"textrec":{"g":134217778,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":67108915,"r":[0,0,6,7,0,-3,0]}}
+{"textrec":{"g":134217780,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":67108917,"r":[0,0,16,16,0,-13,0]}}
+{"textrec":{"g":67108903,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":40,"r":[0,0,17,16,-1,-13,0]}}
+{"textrec":{"g":54,"r":[0,0,15,16,-1,-13,0]}}
+{"textrec":{"g":201326633,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":55,"r":[0,0,10,12,-1,-10,0]}}
+{"textrec":{"g":56,"r":[0,0,10,14,-1,-10,0]}}
+{"textrec":{"g":57,"r":[0,0,10,12,-1,-10,0]}}
+{"textrec":{"g":67108922,"r":[0,0,9,11,0,-10,0]}}
+{"textrec":{"g":201326639,"r":[0,0,7,13,-1,-11,0]}}
+{"textrec":{"g":67108923,"r":[0,0,12,14,0,-11,0]}}
+{"textrec":{"g":59,"r":[0,0,13,14,-1,-11,0]}}
+{"textrec":{"g":67108924,"r":[0,0,14,15,0,-12,0]}}
+{"textrec":{"g":67108925,"r":[0,0,15,14,-1,-11,0]}}
+{"textrec":{"g":62,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"g":63,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":64,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":201326657,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":66,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":67,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":201326660,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":201326661,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":134217787,"r":[0,0,13,14,-1,-11,0]}}
+{"textrec":{"g":70,"r":[0,0,15,16,-1,-13,0]}}
 {"textrec":{"g":71,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":72,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":73,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":74,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":75,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":86,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":88,"r":[0,0,16,16,0,-13,0]}}
-{"textrec":{"g":89,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":91,"r":[0,0,16,17,-1,-14,0]}}
-{"textrec":{"g":92,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":48,"r":[0,0,15,16,-1,-13,0]}}
-{"textrec":{"g":49,"r":[0,0,15,4,-1,-7,0]}}
-{"textrec":{"g":50,"r":[0,0,15,15,0,-12,0]}}
-{"textrec":{"g":58,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":60,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":69,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":70,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":51,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":52,"r":[0,0,15,16,-1,-13,0]}}
-{"textrec":{"g":61,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":28,"r":[0,0,17,17,-1,-14,0]}}
-{"textrec":{"g":29,"r":[0,0,17,17,-1,-14,0]}}
-{"textrec":{"g":30,"r":[0,0,17,17,-1,-14,0]}}
-{"textrec":{"g":31,"r":[0,0,18,17,-1,-14,0]}}
-{"textrec":{"g":32,"r":[0,0,16,17,0,-14,0]}}
-{"textrec":{"g":33,"r":[0,0,17,17,-1,-14,0]}}
-{"textrec":{"g":34,"r":[0,0,18,17,-1,-14,0]}}
-{"textrec":{"g":62,"r":[0,0,17,17,-1,-14,0]}}
-{"textrec":{"g":63,"r":[0,0,11,14,-1,-12,0]}}
-{"textrec":{"g":64,"r":[0,0,11,14,-1,-12,0]}}
-{"textrec":{"g":68,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":65,"r":[0,0,10,14,0,-12,0]}}
-{"textrec":{"g":66,"r":[0,0,10,13,0,-12,0]}}
-{"textrec":{"g":67,"r":[0,0,11,14,-1,-12,0]}}
-{"textrec":{"s":[15,400,0,"发消息"],"r":[0,1,14.883268482490273,180,1,1,14.883268482490273,74,2,1,14.883268482490273,181]}}
-{"textrec":{"g":180,"r":[0,0,16,17,-1,-14,0]}}
-{"textrec":{"g":181,"r":[0,0,16,17,-1,-14,0]}}
-{"textrec":{"g":47,"r":[0,0,13,14,-1,-11,0]}}
-{"textrec":{"g":35,"r":[0,0,10,10,-1,-8,0]}}
-{"textrec":{"g":174,"r":[0,0,17,16,-1,-13,0]}}
-{"textrec":{"g":175,"r":[0,0,17,17,-1,-14,0]}}
-{"textrec":{"g":176,"r":[0,0,11,9,-1,-8,0]}}
-{"textrec":{"g":177,"r":[0,0,5,11,-1,-10,0]}}
-{"textrec":{"g":178,"r":[0,0,4,11,0,-10,0]}}
-{"textrec":{"g":179,"r":[0,0,9,10,-1,-8,0]}}
-{"textrec":{"g":159,"r":[0,0,4,5,1,-7,0]}}
-{"textrec":{"g":160,"r":[0,0,14,14,-1,-12,0]}}
+{"textrec":{"g":201326664,"r":[0,0,5,7,0,-3,0]}}
+{"textrec":{"g":201326665,"r":[0,0,15,16,-1,-13,0]}}
+{"textrec":{"g":201326666,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":201326667,"r":[0,0,15,16,-1,-13,0]}}
+{"textrec":{"g":134217804,"r":[0,0,15,16,-1,-13,0]}}
+{"textrec":{"g":134217805,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":67108942,"r":[0,0,14,16,0,-13,0]}}
+{"textrec":{"g":79,"r":[0,0,9,11,-1,-9,0]}}
+{"textrec":{"g":134217808,"r":[0,0,9,13,-1,-9,0]}}
+{"textrec":{"g":81,"r":[0,0,10,11,-1,-9,0]}}
+{"textrec":{"g":201326674,"r":[0,0,9,10,-1,-9,0]}}
+{"textrec":{"g":201326675,"r":[0,0,7,13,-1,-11,0]}}
+{"textrec":{"g":32,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":35,"r":[0,0,8,9,0,-8,0]}}
+{"textrec":{"g":134217812,"r":[0,0,8,10,-1,-8,0]}}
+{"textrec":{"g":67108949,"r":[0,0,12,9,-1,-8,0]}}
+{"textrec":{"g":34,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":67108950,"r":[0,0,6,9,0,-8,0]}}
+{"textrec":{"g":67108951,"r":[0,0,10,13,-1,-11,0]}}
+{"textrec":{"g":134217816,"r":[0,0,9,12,-1,-11,0]}}
+{"textrec":{"g":89,"r":[0,0,9,12,-1,-8,0]}}
+{"textrec":{"g":201326682,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":67108898,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":67108900,"r":[0,0,7,12,-1,-10,0]}}
+{"textrec":{"g":91,"r":[0,0,5,12,-1,-11,0]}}
+{"textrec":{"g":92,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":201326627,"r":[0,0,9,9,-1,-8,0]}}
+{"textrec":{"g":36,"r":[0,0,7,12,-1,-10,0]}}
+{"textrec":{"g":67108896,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":67108948,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":134217760,"r":[0,0,8,10,-1,-8,0]}}
+{"textrec":{"g":67108957,"r":[0,0,9,12,0,-11,0]}}
+{"textrec":{"s":[15,400,0,"发消息"],"r":[0,1,14.883268482490273,106,1,1,14.883268482490273,107,2,1,14.883268482490273,108]}}
+{"textrec":{"g":106,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":107,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":201326700,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":94,"r":[0,0,17,17,-1,-14,0]}}
+{"textrec":{"g":95,"r":[0,0,17,17,-1,-14,0]}}
+{"textrec":{"g":201326686,"r":[0,0,17,17,-1,-14,0]}}
+{"textrec":{"g":201326688,"r":[0,0,17,17,-1,-14,0]}}
+{"textrec":{"g":134217825,"r":[0,0,17,17,-1,-14,0]}}
+{"textrec":{"g":134217826,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":67108963,"r":[0,0,18,17,-1,-14,0]}}
+{"textrec":{"g":67108964,"r":[0,0,18,17,-1,-14,0]}}
+{"textrec":{"g":101,"r":[0,0,11,9,-1,-8,0]}}
+{"textrec":{"g":67108966,"r":[0,0,4,11,0,-10,0]}}
+{"textrec":{"g":67108967,"r":[0,0,4,11,0,-10,0]}}
+{"textrec":{"g":67108968,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":67108965,"r":[0,0,12,9,-1,-8,0]}}
+{"textrec":{"s":[15,400,0,"端到端测试的对话"],"r":[0,1,14.883268482490273,37,1,1,14.883268482490273,38,2,1,14.883268482490273,37,3,1,14.883268482490273,39,4,1,14.88326848249028,40,5,1,14.88326848249028,41,6,1,14.88326848249028,42,7,1,14.88326848249028,43]}}
+{"textrec":{"s":[15,400,0,"看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209"],"r":[0,1,14.883268482490273,109,1,1,14.883268482490273,110,2,1,14.883268482490273,41,3,1,14.883268482490273,111,4,1,14.88326848249028,112,5,1,3.984375,-1,6,1,9.2138671875,113,7,1,9.345703125,114,8,1,9.169921875,115,9,1,8.818359375,116,10,1,9.2138671875,113,11,1,9.31640625,117,12,1,3.984375,-1,13,1,8.1591796875,118,14,1,8.0419921875,55,15,1,5.36865234375,119,16,1,8.86962890625,120,17,1,4.21875,48,18,1,14.88326848249028,121,19,1,14.88326848249028,122,20,1,14.88326848249028,123,21,1,14.88326848249028,124,22,1,14.88326848249028,125,23,1,14.883268482490251,126,24,1,3.984375,-1,25,1,9.2138671875,113,26,1,9.345703125,114,27,1,9.169921875,115,28,1,8.818359375,116,29,1,9.2138671875,113,30,1,9.31640625,117,31,1,5.5224609375,127,32,1,14.88326848249028,50,33,1,3.984375,-1,34,1,9.2138671875,113,35,1,9.345703125,114,36,1,9.169921875,115,37,1,8.818359375,116,38,1,9.2138671875,113,39,1,9.31640625,117,40,1,5.5224609375,127,41,1,14.88326848249028,123,42,1,14.88326848249028,50,43,1,3.984375,-1,44,1,9.2138671875,113,45,1,9.345703125,114,46,1,9.169921875,115,47,1,8.818359375,116,48,1,9.2138671875,113,49,1,9.31640625,117]}}
+{"textrec":{"s":[13,400,0,"处理中"],"r":[0,1,12.898832684824903,128,1,1,12.898832684824903,129,2,1,12.898832684824903,130]}}
+{"textrec":{"s":[13,400,32,"0s"],"r":[0,1,8.1123046875,131,1,1,6.728515625,132]}}
+{"textrec":{"g":134217833,"r":[0,0,10,10,-2,-8,0]}}
+{"textrec":{"g":109,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":110,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":201326703,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":134217840,"r":[0,0,17,16,-2,-13,0]}}
+{"textrec":{"g":134217841,"r":[0,0,10,14,-1,-12,0]}}
+{"textrec":{"g":134217842,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":115,"r":[0,0,10,14,0,-12,0]}}
+{"textrec":{"g":67108980,"r":[0,0,10,13,0,-12,0]}}
+{"textrec":{"g":113,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":67108981,"r":[0,0,10,14,0,-12,0]}}
+{"textrec":{"g":134217846,"r":[0,0,10,12,-1,-10,0]}}
+{"textrec":{"g":134217783,"r":[0,0,9,12,-1,-10,0]}}
+{"textrec":{"g":201326711,"r":[0,0,8,11,-1,-10,0]}}
+{"textrec":{"g":120,"r":[0,0,10,15,-1,-13,0]}}
+{"textrec":{"g":48,"r":[0,0,5,11,0,-9,0]}}
+{"textrec":{"g":121,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":122,"r":[0,0,17,16,-1,-13,0]}}
+{"textrec":{"g":123,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":201326716,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":201326717,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":134217854,"r":[0,0,15,16,-1,-13,0]}}
+{"textrec":{"g":134217855,"r":[0,0,5,16,-1,-12,0]}}
+{"textrec":{"g":50,"r":[0,0,16,17,-1,-14,0]}}
+{"textrec":{"g":201326705,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":114,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":134217843,"r":[0,0,10,14,-1,-12,0]}}
+{"textrec":{"g":134217844,"r":[0,0,10,13,-1,-12,0]}}
+{"textrec":{"g":201326709,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":127,"r":[0,0,4,16,0,-12,0]}}
+{"textrec":{"g":134217851,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":67108914,"r":[0,0,17,17,-1,-14,0]}}
+{"textrec":{"g":67108977,"r":[0,0,10,14,0,-12,0]}}
+{"textrec":{"g":201326707,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":116,"r":[0,0,10,13,0,-12,0]}}
+{"textrec":{"g":117,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":201326723,"r":[0,0,10,13,-1,-11,0]}}
+{"textrec":{"g":201326724,"r":[0,0,8,10,-1,-8,0]}}
+{"textrec":{"g":128,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":129,"r":[0,0,15,13,-1,-11,0]}}
+{"textrec":{"s":[15,500,0,"好 083209"],"r":[0,1,14.883268482490273,133,1,1,3.855457305908203,-1,2,1,9.51467514038086,134,3,1,9.649196863174438,135,4,1,9.400899410247803,136,5,1,9.035907983779907,137,6,1,9.514675140380866,134,7,1,9.574241638183594,138]}}
+{"textrec":{"s":[15,500,0,"不好 083209"],"r":[0,1,14.883268482490273,139,1,1,14.883268482490273,133,2,1,3.855457305908203,-1,3,1,9.51467514038086,134,4,1,9.649196863174438,135,5,1,9.400899410247803,136,6,1,9.035907983779907,137,7,1,9.51467514038086,134,8,1,9.574241638183594,138]}}
+{"textrec":{"s":[14,400,0,"这个不该通知 083209"],"r":[0,1,13.891050583657588,140,1,1,13.891050583657588,141,2,1,13.891050583657588,142,3,1,13.891050583657588,143,4,1,13.891050583657588,144,5,1,13.891050583657588,145,6,1,3.787109375,-1,7,1,8.66796875,146,8,1,8.791015625,147,9,1,8.626953125,148,10,1,8.298828125,149,11,1,8.66796875,146,12,1,8.763671875,150]}}
+{"textrec":{"s":[13,400,0,"待你决策"],"r":[0,1,12.898832684824903,151,1,1,12.898832684824903,23,2,1,12.898832684824903,152,3,1,12.898832684824903,153]}}
+{"textrec":{"s":[15,500,32,"好 083209"],"r":[0,1,14.883268482490273,154,1,1,3.855457305908203,-1,2,1,9.442158937454224,155,3,1,9.442158937454224,156,4,1,9.442158937454224,157,5,1,9.442158937454224,158,6,1,9.44215893745423,155,7,1,9.442158937454224,159]}}
+{"textrec":{"m":[15,500,0],"r":[14.501953125,3.1640625,21,14.501953125,3.1640625,0]}}
+{"textrec":{"s":[15,500,32,"不好 083209"],"r":[0,1,14.883268482490273,160,1,1,14.883268482490273,154,2,1,3.855457305908203,-1,3,1,9.442158937454224,155,4,1,9.442158937454224,156,5,1,9.442158937454224,157,6,1,9.442158937454224,158,7,1,9.442158937454224,155,8,1,9.442158937454224,159]}}
+{"textrec":{"s":[13,400,0,"忽略"],"r":[0,1,12.898832684824903,161,1,1,12.898832684824903,162]}}
+{"textrec":{"g":151,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":201326744,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":201326745,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":154,"r":[0,0,17,17,-1,-14,0]}}
+{"textrec":{"g":201326747,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":67109020,"r":[0,0,11,14,0,-12,0]}}
+{"textrec":{"g":134217885,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":158,"r":[0,0,10,13,0,-12,0]}}
+{"textrec":{"g":134217883,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":159,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":160,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":156,"r":[0,0,11,14,-1,-12,0]}}
+{"textrec":{"g":201326751,"r":[0,0,11,14,-1,-12,0]}}
 {"textrec":{"g":161,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"s":[14,400,0,"这个不该通知 083209"],"r":[0,1,13.891050583657588,182,1,1,13.891050583657588,97,2,1,13.891050583657588,183,3,1,13.891050583657588,184,4,1,13.891050583657588,185,5,1,13.891050583657588,186,6,1,3.787109375,-1,7,1,8.66796875,53,8,1,8.791015625,54,9,1,8.626953125,55,10,1,8.298828125,56,11,1,8.66796875,53,12,1,8.763671875,57]}}
-{"textrec":{"s":[13,400,32,"这个不该通知 083209"],"r":[0,1,12.898832684824903,187,1,1,12.898832684824903,188,2,1,12.898832684824903,170,3,1,12.898832684824903,189,4,1,12.898832684824896,190,5,1,12.898832684824896,191,6,1,3.580078125,-1,7,1,8.1123046875,23,8,1,8.1123046875,24,9,1,8.1123046875,25,10,1,8.1123046875,26,11,1,8.1123046875,23,12,1,8.1123046875,27]}}
-{"textrec":{"s":[13,400,0,"处理中"],"r":[0,1,12.898832684824903,192,1,1,12.898832684824903,193,2,1,12.898832684824903,125]}}
-{"textrec":{"s":[15,400,0,"看着的时候 083209 card:这个不该通知 083209|好 083209|不好 083209"],"r":[0,1,14.883268482490273,86,1,1,14.883268482490273,194,2,1,14.883268482490273,15,3,1,14.883268482490273,195,4,1,14.88326848249028,196,5,1,3.984375,-1,6,1,9.2138671875,76,7,1,9.345703125,77,8,1,9.169921875,78,9,1,8.818359375,79,10,1,9.2138671875,76,11,1,9.31640625,80,12,1,3.984375,-1,13,1,8.1591796875,81,14,1,8.0419921875,82,15,1,5.36865234375,83,16,1,8.86962890625,84,17,1,4.21875,85,18,1,14.88326848249028,197,19,1,14.88326848249028,105,20,1,14.88326848249028,92,21,1,14.88326848249028,198,22,1,14.88326848249028,199,23,1,14.883268482490251,200,24,1,3.984375,-1,25,1,9.2138671875,76,26,1,9.345703125,77,27,1,9.169921875,78,28,1,8.818359375,79,29,1,9.2138671875,76,30,1,9.31640625,80,31,1,5.5224609375,90,32,1,14.88326848249028,91,33,1,3.984375,-1,34,1,9.2138671875,76,35,1,9.345703125,77,36,1,9.169921875,78,37,1,8.818359375,79,38,1,9.2138671875,76,39,1,9.31640625,80,40,1,5.5224609375,90,41,1,14.88326848249028,92,42,1,14.88326848249028,91,43,1,3.984375,-1,44,1,9.2138671875,76,45,1,9.345703125,77,46,1,9.169921875,78,47,1,8.818359375,79,48,1,9.2138671875,76,49,1,9.31640625,80]}}
-{"textrec":{"g":187,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":188,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":170,"r":[0,0,15,14,-1,-11,0]}}
-{"textrec":{"g":189,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":190,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":191,"r":[0,0,14,14,-1,-12,0]}}
-{"textrec":{"g":182,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":183,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":184,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":185,"r":[0,0,16,15,-1,-12,0]}}
-{"textrec":{"g":186,"r":[0,0,15,16,-1,-13,0]}}
-{"textrec":{"g":194,"r":[0,0,16,17,-1,-14,0]}}
-{"textrec":{"g":195,"r":[0,0,15,16,0,-13,0]}}
-{"textrec":{"g":196,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":197,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":198,"r":[0,0,17,17,-1,-14,0]}}
-{"textrec":{"g":199,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":200,"r":[0,0,16,16,-1,-13,0]}}
-{"textrec":{"g":192,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":193,"r":[0,0,15,13,-1,-11,0]}}
+{"textrec":{"g":162,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"s":[13,400,32,"这个不该通知 083209"],"r":[0,1,12.898832684824903,163,1,1,12.898832684824903,164,2,1,12.898832684824903,165,3,1,12.898832684824903,166,4,1,12.898832684824896,167,5,1,12.898832684824896,168,6,1,3.580078125,-1,7,1,8.1123046875,131,8,1,8.1123046875,169,9,1,8.1123046875,170,10,1,8.1123046875,171,11,1,8.1123046875,131,12,1,8.1123046875,172]}}
+{"textrec":{"g":163,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":164,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":201326757,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"g":201326758,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":134217895,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":134217896,"r":[0,0,14,14,-1,-12,0]}}
+{"textrec":{"g":131,"r":[0,0,10,13,-1,-11,0]}}
+{"textrec":{"g":169,"r":[0,0,10,13,-1,-11,0]}}
+{"textrec":{"g":67109034,"r":[0,0,9,13,0,-11,0]}}
+{"textrec":{"g":67109035,"r":[0,0,9,12,0,-11,0]}}
+{"textrec":{"g":134217859,"r":[0,0,9,13,-1,-11,0]}}
+{"textrec":{"g":134217900,"r":[0,0,9,13,-1,-11,0]}}
+{"textrec":{"g":140,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":141,"r":[0,0,16,16,-1,-13,0]}}
+{"textrec":{"g":201326734,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":201326735,"r":[0,0,15,16,-1,-13,0]}}
+{"textrec":{"g":134217872,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":134217873,"r":[0,0,14,16,-1,-13,0]}}
+{"textrec":{"g":67109010,"r":[0,0,10,14,0,-12,0]}}
+{"textrec":{"g":201326739,"r":[0,0,10,14,-1,-12,0]}}
+{"textrec":{"g":134217876,"r":[0,0,10,14,-1,-12,0]}}
+{"textrec":{"g":67109013,"r":[0,0,9,13,0,-12,0]}}
+{"textrec":{"g":134217874,"r":[0,0,10,14,-1,-12,0]}}
+{"textrec":{"g":67109014,"r":[0,0,10,14,0,-12,0]}}

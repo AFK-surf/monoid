@@ -67,6 +67,11 @@ function workspace(): string {
   write(join(root, "mb/_build/native/debug/a.o"), 5_000);
   write(join(root, "mb/src/lib/_build/x.o"), 1_200);
   write(join(root, "mb/.mooncakes/core/x.mbt"), 2_200);
+  write(join(root, "mb-new/moon.mod"), 100);
+  write(join(root, "mb-new/src/moon.pkg"), 100);
+  write(join(root, "mb-new/_build/native/debug/a.o"), 5_000);
+  write(join(root, "mb-new/src/lib/_build/x.o"), 1_200);
+  write(join(root, "mb-new/.mooncakes/core/x.mbt"), 2_200);
   write(join(root, "notmb/_build/out"), 1_100);
   write(join(root, "notex/deps/x"), 900);
   write(join(root, "ios-dd/Build/Products/Debug/App"), 8_000);
@@ -93,7 +98,7 @@ function workspace(): string {
 
 const roomOfBoth = async (root: string, budget?: { maxEntries?: number }) => {
   const [program, reference] = [await measureRoom(root, budget), await measureRoomReference(root, budget)];
-  return { program, reference: { bytes: reference.bytes, rebuild: reference.rebuild } };
+  return { program, reference };
 };
 
 test("a room's size and what is made again in it are the walk's, each kind of it, hard links once, links not followed", { skip }, async () => {
@@ -101,14 +106,14 @@ test("a room's size and what is made again in it are the walk's, each kind of it
   const { program, reference } = await roomOfBoth(root);
   assert.deepEqual(program, reference);
   assert.deepEqual(program.rebuild.map(([p]) => p.slice(root.length + 1)).sort(),
-    ["android/.gradle", "app/node_modules", "ex/_build", "ex/deps", "ios-dd", "kt/build", "mb/.mooncakes", "mb/_build", "mb/src/lib/_build", "py/__pycache__",
+    ["android/.gradle", "app/node_modules", "ex/_build", "ex/deps", "ios-dd", "kt/build", "mb-new/.mooncakes", "mb-new/_build", "mb-new/src/lib/_build", "mb/.mooncakes", "mb/_build", "mb/src/lib/_build", "py/__pycache__",
       "rs-info", "rs-out", "rs/target", "web/.next", "web/.turbo"]);
   assert.equal(await measured(root), await measuredReference(root));
   assert.deepEqual(await measuredUpTo(root, Number.MAX_SAFE_INTEGER), await measuredUpToReference(root, Number.MAX_SAFE_INTEGER));
   // (the file of three names counted once: a measure of where it is alone is as much)
   assert.ok(await measured(join(root, "data")) >= 64_000);
   // A room that is not there is nothing.
-  assert.deepEqual(await measureRoom(join(root, "none")), { bytes: 0, rebuild: [] });
+  assert.deepEqual(await measureRoom(join(root, "none")), { bytes: 0, rebuild: [], complete: true });
 });
 
 test("cut short at every count of entries as the walk is, what is made again included", { skip }, async () => {

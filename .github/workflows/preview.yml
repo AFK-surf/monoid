@@ -22,11 +22,15 @@ on:
     paths:
       - "apps/mbui/**"
       - "libs/mbui/**"
+      - "libs/liquid-glass/**"
       - "libs/sf-ui/**"
       - "client/**"
       - "rules/js/**"
       - "web/public/avatars/index.json"
-      - "station/src/api/moved-from.ts"
+      - "shared/moved-from.ts"
+      - "shared/release-keys.ts"
+      - "shared/release-signed.ts"
+      - "shared/delta.ts"
       # (not the four config files apps/mbui/scripts/core.sh HBC_TREES ends with, on purpose: it says why)
       - "vendor/**"
       - "scripts/native.ts"
@@ -76,7 +80,10 @@ jobs:
       win_build: ${{ steps.what.outputs.win_build }}
     steps:
       # (the history's commits and trees, the files' contents only for beta.sh: what changed is told by the trees)
-      - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again: 44991143294)
+      - run: |
+          git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
+          sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none", sparse-checkout: apps/mbui/scripts }
       - id: what
@@ -103,7 +110,7 @@ jobs:
             base=${{ github.event.before }}
             [ -n "$branch" ] && base=$(git merge-base origin/main HEAD)
             if git cat-file -e "$base^{commit}" 2>/dev/null && git diff --name-only "$base" HEAD |
-              grep -qE '^(apps/mbui/windows/|apps/mbui/e2e/win/handoff\.sh$|apps/mbui/scripts/win\.sh$|apps/mbui/src/host/win_core\.c$|apps/mbui/src/host/win_(electron_sealed|hello)\.h$|libs/mbui/src/host/win_(life|update)\.h$|scripts/(win-feeds|release)\.sh$|scripts/release-sign\.ts$|station/src/updates/)'; then v=yes; fi
+              grep -qE '^(apps/mbui/windows/|apps/mbui/e2e/win/handoff\.sh$|apps/mbui/scripts/win\.sh$|apps/mbui/src/host/win_core\.c$|apps/mbui/src/host/win_(electron_sealed|hello)\.h$|libs/mbui/src/host/win_(life|update)\.h$|scripts/(win-feeds|release)\.sh$|scripts/release-sign\.ts$|shared/(release-keys|release-signed|delta)\.ts$|station/src/updates/)'; then v=yes; fi
           fi
           echo "handoff=$v" >> "$GITHUB_OUTPUT"
           echo "handoff: $v"
@@ -158,6 +165,8 @@ jobs:
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
           [ "$GITHUB_REF" = refs/heads/main ] || echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
+          # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again: 44991143294)
+          sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       # (GTK 4 and what the host and the core link beside it: libsoup, libsecret)
       - uses: ./.github/actions/apt
@@ -459,6 +468,9 @@ jobs:
     outputs:
       have: ${{ steps.have.outputs.have }}
     steps:
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again: 44991143294)
+      - if: github.event_name == 'push'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - if: github.event_name == 'push'
         uses: actions/checkout@v5
       - if: github.event_name == 'push'
@@ -650,7 +662,9 @@ jobs:
       # build saved after the store too: the upload, the key and both saves after a whole build took 14 s
       # (43981912517), ~21 s on a slower runner, and the post steps ~6 s; after a cut the stop, the key, both saves and
       # the post steps 18 s (44411432671; 40 s before, 22 s of it went unused), 14 s in main's jobs 135458429309 and
-      # 135478118156 (16 s of the 30 left unused). The core for a device first (its
+      # 135478118156 (16 s of the 30 left unused). Cut at 24 s, the store's and hbc's saves left moon-room 11-13 s, under
+      # its 18, and moon's build was never saved, each run's moonc 111 s again (44722052834): cut at 32 s, moon-room
+      # needs 14 (its save 10-11 s, the post steps 2-3). The core for a device first (its
       # engine, the shell's and libghostty-vt's headers; core.hbc, from the step that began it beside the restores or
       # HBC_CACHE's), beside moonc where that still runs, so that
       # ios.sh's own (app_libs, beside its mbc compile) only finds it and no unit reads ghostty/vt.h as it is copied;
@@ -660,7 +674,7 @@ jobs:
         id: build
         run: |
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 24)) bash -ec '
+          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 32)) bash -ec '
             bash apps/mbui/scripts/core.sh apple-native aarch64-apple-ios
             H=$RUNNER_TEMP/ios-hermes
             if [ -f "$H/pid" ]; then
@@ -752,7 +766,7 @@ jobs:
         run: |
           c=apps/mbui/out/ios-device/_build/native/release/build/stillfail/stillfail/stillfail.c
           left=$(( JOB_END - $(date +%s) ))
-          if [ "$(cat "$RUNNER_TEMP/ios-gen/status" 2>/dev/null)" = 0 ] && [ -s "$c" ] && [ "$left" -gt 18 ]; then
+          if [ "$(cat "$RUNNER_TEMP/ios-gen/status" 2>/dev/null)" = 0 ] && [ -s "$c" ] && [ "$left" -gt 14 ]; then
             find apps/mbui/out/ios-device/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
             echo "key=mbui-ios-moon-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
           else
@@ -855,8 +869,10 @@ jobs:
         uses: actions/setup-node@v5
         with: { node-version-file: .node-version, package-manager-cache: false }
       - uses: ./.github/actions/msvc
+      # (pack too: win.sh runs `scripts/mbui meta`, pack.exe, which uncached was built from nothing there, 36 tasks and
+      # ~35 s of the build: `the build not done after 105 s`, 44684094519)
       - uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc chk' }
+        with: { tools: 'mbc chk pack' }
       - name: Tools (MSVC's link.exe for cargo, which Git Bash's /usr/bin/link shadows)
         run: |
           echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(cygpath -m "$(dirname "$(which cl)")/link.exe")" >> "$GITHUB_ENV"
@@ -878,6 +894,16 @@ jobs:
           node scripts/native.ts fetch shell win32-x64
           node scripts/native.ts fetch engine win32-x64
           node scripts/native.ts fetch ghostty-vt win32-x64
+      # collate, sealed and hello need only MSVC and the Windows natives above, nothing of the app's build (hello's
+      # WinRT UserConsentVerifier::CheckAvailabilityAsync alone took 41-72 s on cold windows-2025 runners, pushing the
+      # post-build checks past the 5 min cap: 44733105178, 44757376609). Start them here so they compile while the
+      # caches restore and finish while the app builds; the post-build check step collects their exit codes and logs.
+      - name: Host checks (collate, sealed, hello, reports), started
+        run: |
+          L=$RUNNER_TEMP/win-checks; mkdir -p "$L"
+          for c in collate sealed hello reports; do
+            nohup bash -c 'bash apps/mbui/scripts/win.sh "$1" > "$0/$1.log" 2>&1; echo $? > "$0/$1.status"' "$L" "$c" > /dev/null 2>&1 &
+          done
       # The app's build as the last run on main left it (mbui's in libs/mbui: moon's _build, the split C and its objects, the .exe): of main's pushes that run this job, three in four leave the app's C
       # as it was (tests, docs, client/, media/; 96 of 129, 2026-10-18 to 20), and then moonc writes the same C again,
       # scripts/mbc finds every unit's object made of the same inputs (by content) and the same link made already:
@@ -1003,8 +1029,20 @@ jobs:
           missing=$(node scripts/native.ts missing mesh:win32-x64 runner:win32-x64 reader:win32-x64)
           [ -n "$missing" ] || exit 0
           echo "not in the release yet: $(echo $missing); the pipeline's natives job is waited for"
+          need_natives=0 need_win_reader=0
+          for p in $missing; do
+            if [ "$p" = reader:win32-x64 ]; then need_win_reader=1; else need_natives=1; fi
+          done
           api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
-          t0=$SECONDS run="" wait_min=${{ github.event_name == 'push' && 3 || 6 }}
+          t0=$SECONDS run="" natives_state="" win_reader_state=""
+          # (3 minutes: inside a push's 5; inside a run's of the day or by hand (its 10), up to JOB_END - 85 s so the
+          # e2e flow and checks still fit after)
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            deadline=$(( $(date +%s) + 180 ))
+          else
+            deadline=$(( JOB_END - 85 ))
+            [ $(( deadline - $(date +%s) )) -ge 60 ] || deadline=$(( $(date +%s) + 60 ))
+          fi
           # (main's: in the release, whichever run's natives job put them there. A run of main's still waiting to start
           # is cancelled by the next push's, which builds and publishes the same natives: 91434fca's was, and this step
           # waited for it until its 6 minutes ran out, the next one's in the release 2 minutes before, 40642483751.)
@@ -1012,28 +1050,72 @@ jobs:
           while :; do
             ! main || [ -n "$(node scripts/native.ts missing mesh:win32-x64 runner:win32-x64 reader:win32-x64)" ] || { echo "(in the release after $((SECONDS - t0)) s)"; break; }
             [ -n "$run" ] || run=$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)
-            state=$([ -z "$run" ] || api "actions/runs/$run/jobs?per_page=100" '.jobs[] | select(.name == "natives") | "\(.status) \(.conclusion // "")"' || true)
-            case "$state" in
-              "completed success") break ;;
-              completed*) main || { echo "::error::the pipeline's natives job ended $state (run $run)"; exit 1; } ;;
-            esac
-            # (main's run of this commit cancelled before its natives were published, a newer push's in its place, the
-            # natives not in the release: this commit's release is the newer one's to make, as the pipeline's was. This
-            # run is cancelled as that one was, not failed: 3a22a53f's waited its 6 minutes and failed, the next run's
-            # natives job begun 1 minute after, 40837737154, 2026-10-29)
-            if main && [ -n "$run" ] && [ "$(api "actions/runs/$run" '.status + " " + (.conclusion // "")' || true)" = "completed cancelled" ]; then
-              echo "main's pipeline run of this commit was cancelled (run $run), a newer push's in its place: this run is cancelled too"
-              gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY"
-              sleep 120; exit 1
+            if [ -n "$run" ]; then
+              jobs=$(api "actions/runs/$run/jobs?per_page=100" '[.jobs[] | select(.name == "natives" or .name == "natives-win-reader" or .name == "natives-win-reader-main") | "\(.name)=\(.status) \(.conclusion // "")"] | join("\n")' || true)
+              natives_state=$(printf '%s\n' "$jobs" | sed -n 's/^natives=//p' | head -1)
+              if main; then
+                win_reader_state=$(printf '%s\n' "$jobs" | sed -n 's/^natives-win-reader-main=//p' | head -1)
+                # (on main, native.ts missing above is the only success exit: reader:win32-x64 is published by
+                # natives-win-reader-main after natives finishes, so natives succeeding must not break out early;
+                # fail fast only if a needed job itself failed)
+                if [ "$need_natives" = 1 ] && [ "$natives_state" = "completed failure" ]; then
+                  echo "::error::the pipeline's natives job ended $natives_state (run $run)"; exit 1
+                fi
+                if [ "$need_win_reader" = 1 ]; then
+                  if [ "$win_reader_state" = "completed failure" ]; then
+                    echo "::error::the pipeline's natives-win-reader-main job ended $win_reader_state (run $run)"; exit 1
+                  elif [ "$win_reader_state" = "completed skipped" ] && [ "$natives_state" = "completed failure" ]; then
+                    echo "::error::the pipeline's natives job ended $natives_state (run $run)"; exit 1
+                  fi
+                fi
+              else
+                win_reader_state=$(printf '%s\n' "$jobs" | sed -n 's/^natives-win-reader=//p' | head -1)
+                natives_ok=1 win_ok=1
+                if [ "$need_natives" = 1 ]; then
+                  case "$natives_state" in
+                    "completed success") ;;
+                    completed*) echo "::error::the pipeline's natives job ended $natives_state (run $run)"; exit 1 ;;
+                    *) natives_ok=0 ;;
+                  esac
+                fi
+                if [ "$need_win_reader" = 1 ]; then
+                  case "$win_reader_state" in
+                    "completed success") ;;
+                    "completed skipped")
+                      # (with vars.CI_1 == 'off', natives builds reader:win32-x64 itself)
+                      case "$natives_state" in
+                        "completed success") ;;
+                        completed*) echo "::error::the pipeline's natives job ended $natives_state (run $run)"; exit 1 ;;
+                        *) win_ok=0 ;;
+                      esac ;;
+                    completed*) echo "::error::the pipeline's natives-win-reader job ended $win_reader_state (run $run)"; exit 1 ;;
+                    *) win_ok=0 ;;
+                  esac
+                fi
+                [ "$natives_ok" = 1 ] && [ "$win_ok" = 1 ] && break
+              fi
+              # (main's run of this commit cancelled before its natives were published, a newer push's in its place, the
+              # natives not in the release: this commit's release is the newer one's to make, as the pipeline's was. This
+              # run is cancelled as that one was, not failed: 3a22a53f's waited its 6 minutes and failed, the next run's
+              # natives job begun 1 minute after, 40837737154, 2026-10-29)
+              if main && [ "$(api "actions/runs/$run" '.status + " " + (.conclusion // "")' || true)" = "completed cancelled" ]; then
+                echo "main's pipeline run of this commit was cancelled (run $run), a newer push's in its place: this run is cancelled too"
+                gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY"
+                sleep 120; exit 1
+              fi
             fi
-            # (3 minutes: inside a push's 5, said before the job is stopped; 6 inside a run's of the day or by hand, its 10:
-            # 3 gave up on main's queue, 44017173538)
-            [ $((SECONDS - t0)) -lt $((wait_min * 60)) ] || { echo "::error::the pipeline's natives job not done after $wait_min minutes (run ${run:-not found})"; exit 1; }
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the pipeline's natives jobs not done after $((SECONDS - t0)) s (run ${run:-not found}; natives=${natives_state:-none}, win-reader=${win_reader_state:-none})"; exit 1; }
             sleep 5
           done
           echo "(its natives job done after $((SECONDS - t0)) s: run $run)"
           if [ "$GITHUB_REF" != refs/heads/main ]; then
-            gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"
+            mkdir -p "$RUNNER_TEMP/natives"
+            if [ "$need_natives" = 1 ] || [ "$win_reader_state" = "completed skipped" ]; then
+              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"
+            fi
+            if [ "$need_win_reader" = 1 ] && [ "$win_reader_state" = "completed success" ]; then
+              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-win-reader-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"
+            fi
             node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA"
             echo "STILLFAIL_NATIVE_INBOX=$RUNNER_TEMP/natives" >> "$GITHUB_ENV"
           fi
@@ -1121,28 +1203,34 @@ jobs:
           export GITHUB_STEP_SUMMARY="$Z/summary"
           nohup bash -c 'bash apps/mbui/scripts/beta.sh win > "$0/log" 2>&1; echo $? > "$0/signed"' "$Z" > /dev/null 2>&1 &
       # the installer (apps/mbui/windows/setup.c) made of the app as built, put into a folder of this run's, put again
-      # over it, taken away (e2e/win/setup.sh: ~12 s); beside it, four checks that need nothing of the app's or the e2e
-      # flow's: the order of names the host gives the core (text.collate: src/host/win_collate.h, a C program), the
-      # synchronous answers across the engine DLL, and what still.fail's desktop app kept sealed, opened by the app
-      # built in its place (src/host/win_electron_sealed.h), and Windows Hello as secure.* asks it (src/host/win_hello.h).
+      # over it, taken away (e2e/win/setup.sh: ~12 s), and beside it the synchronous answers across the engine DLL
+      # (engine-sync); then the three host checks begun before the caches were restored (collate, sealed, hello: the
+      # step `Host checks (collate, sealed, hello), started`), each waited for by its status file and its log shown.
       # Each writes only its own directory (setup's in RUNNER_TEMP, out/collate, out/engine-sync, out/sealed, out/hello):
-      # one after another the first four were 21 s of the job's 300, which main's 44497568003 ran out of 1-2 s short of saving its caches; side by side, the installer's ~12.
-      - name: The installer, installed and taken away (e2e/win/setup.sh); collate, engine-sync, sealed and hello (win.sh hello) beside it
+      # one after another the first four were 21 s of the job's 300, which main's 44497568003 ran out of 1-2 s short of
+      # saving its caches; hello alone then grew to 41-72 s on cold runners (44733105178, 44757376609).
+      - name: The installer, installed and taken away (e2e/win/setup.sh) and engine-sync beside it; collate, sealed, hello and reports collected
         run: |
           L=$RUNNER_TEMP/win-checks; mkdir -p "$L"
           t0=$SECONDS
           bash apps/mbui/e2e/win/setup.sh "$(ls apps/mbui/out/setup/stillfail-setup-*.exe)" > "$L/setup.log" 2>&1 & p_setup=$!
-          bash apps/mbui/scripts/win.sh collate > "$L/collate.log" 2>&1 & p_collate=$!
           bash apps/mbui/scripts/win.sh engine-sync > "$L/engine-sync.log" 2>&1 & p_engine=$!
-          bash apps/mbui/scripts/win.sh sealed > "$L/sealed.log" 2>&1 & p_sealed=$!
-          bash apps/mbui/scripts/win.sh hello > "$L/hello.log" 2>&1 & p_hello=$!
           bad=0
-          for c in setup:$p_setup collate:$p_collate engine-sync:$p_engine sealed:$p_sealed hello:$p_hello; do
+          for c in setup:$p_setup engine-sync:$p_engine; do
             s=0; wait "${c#*:}" || s=$?
             echo "::group::${c%%:*} (exit $s)"; cat "$L/${c%%:*}.log"; echo "::endgroup::"
             [ "$s" = 0 ] || { echo "::error::${c%%:*} failed (exit $s)"; bad=1; }
           done
-          echo "the five side by side: $((SECONDS - t0)) s"
+          echo "setup and engine-sync side by side: $((SECONDS - t0)) s"
+          for c in collate sealed hello reports; do
+            if [ ! -s "$L/$c.status" ]; then
+              node apps/mbui/scripts/waitfor.mjs --deadline 60 --what "win.sh $c" --exists "$(cygpath -w "$L/$c.status")" > /dev/null || true
+            fi
+            s=$(tr -d '\r\n' < "$L/$c.status" 2>/dev/null); s=${s:-none}
+            echo "::group::$c (exit $s)"; cat "$L/$c.log" 2>/dev/null; echo "::endgroup::"
+            [ "$s" = 0 ] || { echo "::error::$c failed (exit $s)"; bad=1; }
+          done
+          echo "the six collected: $((SECONDS - t0)) s"
           exit $bad
       # out before the e2e flow ends (its tests hold nothing back): put, checked, then its feed, once its signing (begun
       # after the build) is over, beside the caches' saves and the e2e flow (the put mostly waiting on the network)

@@ -3,10 +3,10 @@
 // for the stations and devices from before, never waited on; a station that tells its lock moved is read again.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Effect } from "effect";
+import { Deferred, Effect } from "effect";
 import { CoreError } from "../src/error.ts";
 import { type Entry, type Head, Signer, entryHash, next } from "../src/lock.ts";
-import { ASKED_MS, Lock, OTHERS_MS, fold, held, pendingHeld, personalStations, read } from "../src/views/lock.ts";
+import { ASKED_MS, Lock, OTHERS_MS, answersOf, fold, held, pendingHeld, personalStations, read } from "../src/views/lock.ts";
 import { ME, genesis, grant, rig } from "./lock-rig.ts";
 import { REREAD_WAIT_MS, hooks } from "../src/core/execute.ts";
 import { jsonResponse } from "../src/testing.ts";
@@ -372,6 +372,29 @@ test("a station gone silent is not waited on: the locks are read of the one that
   assert.ok(r.host.nowMs() - t5 >= OTHERS_MS, `waited for again: ${r.host.nowMs() - t5} ms`);
 });
 
+test("a station gone silent stays so when its link fails with no status from it; an answer or a refusal of its own lets it be waited on again", async () => {
+  const { inner, run, r } = await setUp();
+  const at = ["ws/a", "ws/b"];
+  // (each answer waits OTHERS_MS for the rest: the one not waited on is told by the call coming back at once)
+  const ask = (b: Effect.Effect<string, CoreError>) => {
+    const t0 = r.host.nowMs();
+    return run(answersOf(inner, [Effect.succeed("a"), b], () => OTHERS_MS, at)).then(() => r.host.nowMs() - t0);
+  };
+  // b asked and silent: waited for OTHERS_MS once, not again.
+  const link = Deferred.makeUnsafe<string, CoreError>();
+  assert.ok((await ask(Deferred.await(link))) >= OTHERS_MS);
+  // Its link gives up long after, with nothing from b itself: still silent, the next read not waiting on it.
+  Deferred.doneUnsafe(link, Effect.fail(new CoreError("link_lost", "no route")));
+  await r.host.time.pass(10);
+  assert.ok((await ask(Effect.never)) < 100, "a failed link is no answer");
+  // A refusal of its own (an HTTP status): it answered, and is waited on again.
+  await ask(Effect.fail(new CoreError("forbidden", "refused", 403)));
+  assert.ok((await ask(Effect.never)) >= OTHERS_MS, "a refusal is an answer");
+  // Silent again, then what it said: waited on again too.
+  await ask(Effect.succeed("b"));
+  assert.ok((await ask(Effect.never)) >= OTHERS_MS, "what it said is an answer");
+});
+
 test("the one to begin its person's lock, held back for a station asleep, begins it once that one answers", async () => {
   const { inner, atA, run, r, asleep } = await setUp(true, { seen: true, keyMade: false });
   const personal = inner.adb.personal();
@@ -424,6 +447,7 @@ test("a locked workspace's roster changes answer within the stations' wait and t
     if (req.method === "POST" && path === "/v1/workspaces/ws/enrollments") {
       return json({ token: "tok", install: "curl x | sh -s -- tok", installWindows: "& (irm x) tok", installDocker: "docker run x tok", command: "stillfail station enroll https://x tok" });
     }
+    if (req.method === "POST" && path === "/v1/workspaces/ws/provision-keys") return json({ id: "pk_1", workspace: "ws", name: "fleet", prefix: "sfpk_abcdefgh", key: "sfpk_key" });
     return undefined;
   });
   // The station, which served the lock until now, answers nothing more: neither a read nor what it is brought.
@@ -460,6 +484,10 @@ test("a locked workspace's roster changes answer within the stations' wait and t
   const enrolled = await timed("workspace.enroll", { name: "mini" });
   assert.ok(enrolled.command.endsWith(` --lock ${st.head().hash}`), enrolled.command);
   assert.equal(enrolled.installDocker, `docker run x tok ${st.head().hash}`);
+  // A console's provisioning key carries the same head, for the console to give each station it enrolls: this device's
+  // word, never the cloud's (cloud/src/directory/stations.ts names no lock).
+  const provision = await timed("workspace.createProvisionKey", { name: "fleet" });
+  assert.deepEqual(provision, { id: "pk_1", workspace: "ws", name: "fleet", prefix: "sfpk_abcdefgh", key: "sfpk_key", lock: st.head().hash });
   assert.equal(st.chain.length, 1);
   await pends("workspace.removeMember", { member: "s2" }, "member.remove", { sub: "s2" });
   // Its one station taken out: the lock names none after that, which is the cloud's to keep from it on, as a lock that

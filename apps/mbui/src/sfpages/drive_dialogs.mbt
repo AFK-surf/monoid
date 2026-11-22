@@ -398,19 +398,30 @@ fn picker_list_node(v : @view.View, src : Source) -> Unit {
 fn picker_row_node(v : @view.View, e : PickerEntry, name : () -> String, note : () -> String, press : () -> Unit) -> Unit {
   @sf.action_box_node(v, name, fn(_) { press() }, fn(r) {
     @sf.style_node(r, fn() { picker_row_at.then(@sf.panel_row_in_node(r)) })
+    r.lines_up(By(fn() { Some(if note() != "" { Start } else { Middle }) })) |> ignore
     @sf.hover_ground_node(r)
-    r.box(fn(l) {
-      l.shrink(Is(0.0)) |> ignore
-      picker_mark_node(l, e)
-    })
-    |> ignore
+    if e.git {
+      r.box(fn(l) {
+        l.shrink(Is(0.0)) |> ignore
+        picker_mark_node(l, e)
+      })
+      |> ignore
+    } else {
+      @sf.first_line_node(r, Body, leading=L6, fn(l) {
+        picker_mark_node(l, e)
+      })
+      |> ignore
+    }
     r.box(fn(w) {
       w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
       @sf.words_node(w, name, fn() { picker_row_name }) |> ignore
       w.show(fn() { note() != "" }, fn(n) { @sf.words_node(n, note, fn() { pick_meta }) |> ignore })
     })
     |> ignore
-    @sf.icon_node(r, "chevron-right", crumb_icon, By(fn() { @sf.theme().p.subtle })).shrink(Is(0.0)) |> ignore
+    @sf.first_line_node(r, Body, leading=L6, fn(c) {
+      @sf.icon_node(c, "chevron-right", crumb_icon, By(fn() { @sf.theme().p.subtle })) |> ignore
+    })
+    |> ignore
   })
   |> ignore
 }
@@ -418,13 +429,13 @@ fn picker_row_node(v : @view.View, e : PickerEntry, name : () -> String, note : 
 ///|
 /// A row's mark in node `v`: a repository its letter's tile (its colour by its path), as high as a press's row less a
 /// corner's inset over and under it so it stands concentric in the row's round ground (panel_row_in_node); a disk the
-/// disk's, a folder the folder's, in the middle of as much room.
+/// disk's, a folder the folder's, in the middle of as much width (its height the first line's).
 fn picker_mark_node(v : @view.View, e : PickerEntry) -> Unit {
   if e.git {
     @sf.tile_avatar_node(v, fn() { e.path }, fn() { e.name }, fn() { "" }, picker_tile, corner=@sf.small_corner)
   } else {
     v.box(fn(b) {
-      b.width(Is(Some(picker_tile))).height(Is(Some(picker_tile))).row(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle))
+      b.width(Is(Some(picker_tile))).row(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle))
       |> ignore
       @sf.icon_node(b, if e.disk { "disk" } else { "folder" }, picker_mark, By(fn() { @sf.theme().p.muted })) |> ignore
     })

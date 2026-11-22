@@ -6,30 +6,46 @@
 // hand, the keys and a screen reader is mbui's headless button's: a press, Enter or Space, Activate.
 
 ///|
-/// The glass of a LiquidButton as `n` is drawn: `press` how far a finger holds it, at `spot` (points from its top
-/// left); `tint` and `surface` its colours (clear: none).
-fn button_glass(press : Double, spot : (Double, Double)?, tint : Int64, surface : Int64) -> @paint.Glass {
+/// The glass of a LiquidButton (iOS 27 liquid glass): `tint` and `surface` its colours (clear: none).
+fn button_glass(
+  tint : Int64,
+  surface : Int64,
+  spot? : (Double, Double)? = None,
+  sharing? : Bool = false,
+) -> @paint.Glass {
+  let d = is_dark()
   let tinted = tint != clear
-  let laid = if tinted { alpha(tint, 0.75) } else { surface }
+  let glass_tint = if tinted {
+    alpha(tint, 0.75)
+  } else if d {
+    0x20202067L
+  } else {
+    0xFDFCFD67L
+  }
   let solid = if tinted {
     tint
   } else if surface != clear {
     over(colors().dialog_container, surface)
+  } else if d {
+    0x1E1F24FFL
   } else {
-    alpha(colors().dialog_container, 1.0 / 0.6)
+    0xFAFAFAFFL
   }
-  @paint.Glass::backdrop_lens(
-    height=12.0,
-    amount=24.0,
-    blur=2.0,
-    tint=if tinted && surface != clear { over(laid, surface) } else { laid },
-    solid~,
-    highlight=1.0,
-    style=Some(Default),
-    saturation=1.5,
-    tint_hue=tinted,
-    spot~,
-    spot_alpha=press,
+  maybe_sharing(
+    @paint.Glass::liquid(
+      blur=2.1,
+      tint=glass_tint,
+      solid~,
+      saturation=1.0,
+      rim=0.6,
+      bezel=20.0,
+      refraction=24.0,
+      chroma=0.0,
+      merge=0.0,
+      adaptive=false,
+      spot~,
+    ),
+    sharing,
   )
 }
 
@@ -66,8 +82,10 @@ fn stretched(w : Double, h : Double, dx : Double, dy : Double, sx : Double, sy :
 ///|
 /// A LiquidButton in `parent`, read out a button named `label`; pressed (by a tap, Enter or Space, a screen reader's
 /// Activate), `press` is called. What it holds is `content`'s (by default its `label` in the catalog's 15 point words:
-/// white where it is tinted, else the words' colour: the catalog's black, white in the dark). `tint`: its colour laid on by hue and at 75% (clear: none); `surface`: a
-/// colour over its glass (clear: none); `interactive`: lit and stretched by a finger on it. The node.
+/// white where it is tinted, else the words' colour: the catalog's black, white in the dark). `tint`: its colour laid
+/// on by hue and at 75% (clear: none); `surface`: a colour over its glass (clear: none); `flat`: content-layer fill
+/// with no `Glass::liquid` (for inside Sheet / Dialog / Popover / Inspector surfaces, zero glass-on-glass);
+/// `interactive`: lit and stretched by a finger on it. The node.
 #callsite(autofill(loc))
 pub fn liquid_button_node(
   parent : @view.View,
@@ -76,8 +94,12 @@ pub fn liquid_button_node(
   content? : (@view.View) -> Unit,
   tint? : Int64 = clear,
   surface? : Int64 = clear,
+  flat? : Bool = false,
   interactive? : Bool = true,
   disabled? : () -> Bool = fn() { false },
+  height? : Double = button_h,
+  px? : Double = button_px,
+  sharing? : Bool = false,
   light? : InteractiveHighlight,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -91,15 +113,9 @@ pub fn liquid_button_node(
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
-    .height(Is(Some(button_h)))
-    .padding(Is((button_px, 0.0, button_px, 0.0)))
-    .radius(Is(button_h / 2.0))
-    .shadow(Is(shadow_default))
-    .glass(By(fn() {
-      let p = if interactive { light.pressed(b) } else { 0.0 }
-      let (w, h) = light.size.get()
-      Some(button_glass(p, if p > 0.0 { Some(light.spot(b, w, h)) } else { None }, tint, surface))
-    }))
+    .height(Is(Some(height)))
+    .padding(Is((px, 0.0, px, 0.0)))
+    .radius(Is(height / 2.0))
     .ground_drawn(By(fn() {
       if !interactive {
         return @view.ground_as_laid
@@ -110,6 +126,58 @@ pub fn liquid_button_node(
     }))
     .alpha(By(fn() { if btn.disabled() { 0.5 } else { 1.0 } }))
     |> ignore
+    if flat {
+      b
+      .ground(By(fn() {
+        if tint != clear {
+          tint
+        } else if surface != clear {
+          surface
+        } else if is_dark() {
+          0xFFFFFF22L
+        } else {
+          0x00000012L
+        }
+      }))
+      .edge(By(fn() {
+        if tint != clear {
+          (0.0, clear)
+        } else if is_dark() {
+          (0.5, 0xFFFFFF24L)
+        } else {
+          (0.5, 0x0000001AL)
+        }
+      }))
+      |> ignore
+    } else {
+      b
+      .shadow(Is(shadow_default))
+      .shadow_outside(Is(true))
+      .glass(By(fn() {
+        let sp = if interactive && light.pressed(b) > 0.001 {
+          let (w, h) = light.size.get()
+          if w > 0.0 && h > 0.0 {
+            Some(light.spot(b, w, h))
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+        Some(button_glass(tint, surface, spot=sp, sharing~))
+      }))
+      .edge(By(fn() { if b.glass_solid() { liquid_solid_edge() } else { (0.0, clear) } }))
+      |> ignore
+    }
+    b.show(fn() { btn.focus_shown() }, fn(ring) {
+      ring
+      .over(Is(true))
+      .points(Is(false))
+      .margin(Is((-3.0, -3.0, -3.0, -3.0)))
+      .radius(Is(height / 2.0 + 3.0))
+      .edge(By(fn() { (2.0, colors().accent) }))
+      |> ignore
+    })
     if interactive {
       // (a finger on it lights it from where it went down; a tap, or a drag let go still on it, presses it: Compose's
       // clickable beside InteractiveHighlight's own drag)
@@ -133,6 +201,21 @@ pub fn liquid_button_node(
           }
         },
       )
+      |> ignore
+      b.box(fn(ov) {
+        ov
+        .over(Is(true))
+        .points(Is(false))
+        .radius(Is(height / 2.0))
+        .ground(By(liquid_press_ink))
+        .alpha(By(fn() { clamp(light.pressed(ov), 0.0, 1.0) }))
+        .ground_drawn(By(fn() {
+          let (w, h) = light.size.get()
+          let (dx, dy, sx, sy) = light.stretch(ov)
+          stretched(w, h, dx, dy, sx, sy)
+        }))
+        |> ignore
+      })
       |> ignore
     }
     // (what it holds moved and grown with its glass about its middle: the catalog's layer holds both)

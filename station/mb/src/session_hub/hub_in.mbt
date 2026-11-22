@@ -204,8 +204,25 @@ pub fn Hub::ws_of(self : Hub, key : String?) -> String? {
 }
 
 ///|
-/// The threads' store's write, its changes told on.
+/// hub.ts `wsOf(row: SessionRow | string | null)`: a session's row read for its own workspace as it is given (not read
+/// again: handover.mbt `check` gives the row of its plan's page), a key's row read here, else the home one.
+pub fn Hub::ws_of_arg(self : Hub, arg : Json) -> String? {
+  match arg {
+    Object(_) =>
+      match row_ws(arg) {
+        Some(w) if w != "" => Some(w)
+        _ => self.home()
+      }
+    String(k) => self.ws_of(Some(k))
+    _ => self.home()
+  }
+}
+
+///|
+/// The threads' store's write, its changes told on, stamped with the station's clock now (the store keeps the time it
+/// was last set, so an entry's `at` otherwise lags by however long ago that was).
 fn[T] Hub::tw(self : Hub, f : () -> T raise) -> T raise {
+  self.threads.set_now(self.now())
   errdefer self.flush_threads()
   let r = f()
   self.flush_threads()
@@ -215,21 +232,7 @@ fn[T] Hub::tw(self : Hub, f : () -> T raise) -> T raise {
 ///|
 /// A JSON value as the threads' store takes it (station/jsjson).
 pub fn jv(v : Json) -> @jsjson.JValue {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(@jsjson.units(s))
-    Array(a) => Arr(a.map(jv))
-    Object(m) => {
-      let out = []
-      for k, x in m {
-        out.push((@jsjson.units(k), jv(x)))
-      }
-      Obj(out)
-    }
-  }
+  @jsjson.JValue::of_json(v)
 }
 
 ///|
@@ -679,29 +682,7 @@ async fn Hub::open_slack_thread(self : Hub, connect : String, surface : String, 
 ///|
 /// node:path `join` of what the hub joins (POSIX, its parts plain names).
 pub fn join_path(parts : Array[String]) -> String {
-  let joined = parts.filter(p => p != "").join("/")
-  // (no "//", no "/./": the parts given are names and absolute roots)
-  let segs = split(joined, "/")
-  let out = []
-  for i, s in segs {
-    if s == "" && i > 0 {
-      continue
-    }
-    if s == "." {
-      continue
-    }
-    if s == ".." && out.length() > 0 && out[out.length() - 1] != "" && out[out.length() - 1] != ".." {
-      ignore(out.pop())
-      continue
-    }
-    out.push(s)
-  }
-  let r = out.join("/")
-  if r == "" {
-    "."
-  } else {
-    r
-  }
+  @nodepath.join("/", parts)
 }
 
 ///|
@@ -862,14 +843,194 @@ pub fn Hub::tools_at(self : Hub, url : String) -> Unit {
 }
 
 ///|
-/// After a restart: resume cut-off turns (those not taken up with their runtime), then deliver whatever is pending.
-pub fn Hub::recover(self : Hub) -> Unit raise {
-  let recovering : Array[String] = []
-  for row in self.running_sessions() {
-    if self.adopted.contains(row_key(row)) || !self.online(row) {
+fn viewer_sees_ws(viewer : Json, ws : String?) -> Bool {
+  match str_of(viewer, "workspace") {
+    None | Some("") => true
+    Some(vw) =>
+      match ws {
+        Some(w) => w == vw
+        None => field(viewer, "home") != Some(Json::boolean(false))
+      }
+  }
+}
+
+///|
+/// Sessions interrupted by a non-update restart visible to `viewer`, newest active first (items capped at 20).
+pub fn Hub::interrupted_in(self : Hub, viewer : Json) -> Json {
+  let rows : Array[Json] = []
+  for key in self.interrupted_by_restart {
+    match self.get_session(key) {
+      Some(row) if !is_true(row, "running") &&
+        field(row, "archivedAt") is (None | Some(Null)) &&
+        !self.handed_over(key) &&
+        viewer_sees_ws(viewer, row_ws(row)) => rows.push(row)
+      _ => ()
+    }
+  }
+  let sorted = stable_sort(rows, (a, b) => {
+    let d = num_of(b, "lastActiveAt").unwrap_or(0.0) - num_of(a, "lastActiveAt").unwrap_or(0.0)
+    if d > 0.0 { 1 } else if d < 0.0 { -1 } else { 0 }
+  })
+  let count = sorted.length()
+  let limit = if count < 20 { count } else { 20 }
+  let items_out : Array[Json] = []
+  for i = 0; i < limit; i = i + 1 {
+    let row = sorted[i]
+    let key = row_key(row)
+    let latest = self.threads.latest_thread(Json::string(key)) catch { _ => Json::null() }
+    let thread_obj = field(latest, "thread").unwrap_or(Json::null())
+    let thread_id = field(thread_obj, "id").unwrap_or(Json::null())
+    let title = match str_of(row, "title") {
+      Some(t) if t != "" => t
+      _ => str_of(thread_obj, "title").unwrap_or("")
+    }
+    items_out.push({ "key": Json::string(key), "thread": thread_id, "title": Json::string(title) })
+  }
+  { "count": num(count.to_double()), "items": Json::array(items_out) }
+}
+
+///|
+/// Resumes sessions interrupted by a non-update restart visible to `viewer` (optionally narrowed to `keys`),
+/// gently staggered by 250 ms on the hub clock.
+pub fn Hub::resume_interrupted(self : Hub, viewer : Json, keys : Json) -> Int raise Refused {
+  let wanted : Array[String]? = match keys {
+    Array(arr) => Some(arr.filter_map(x => match x { String(s) if s != "" => Some(s); _ => None }))
+    _ => None
+  }
+  let rows : Array[Json] = []
+  let keep : Array[String] = []
+  for key in self.interrupted_by_restart {
+    let matched = match wanted {
+      None => true
+      Some(w) => w.contains(key)
+    }
+    if !matched {
+      keep.push(key)
       continue
     }
-    recovering.push(row_key(row))
+    match self.get_session(key) {
+      Some(row) if !is_true(row, "running") &&
+        field(row, "archivedAt") is (None | Some(Null)) &&
+        !self.handed_over(key) =>
+        if viewer_sees_ws(viewer, row_ws(row)) {
+          rows.push(row)
+        } else {
+          keep.push(key)
+        }
+      _ => ()
+    }
+  }
+  self.interrupted_by_restart.clear()
+  for k in keep {
+    self.interrupted_by_restart.push(k)
+  }
+  if rows.length() == 0 {
+    return 0
+  }
+  (self.world.tell)("overview.changed", Json::null())
+  let sorted = stable_sort(rows, (a, b) => {
+    let d = num_of(b, "lastActiveAt").unwrap_or(0.0) - num_of(a, "lastActiveAt").unwrap_or(0.0)
+    if d > 0.0 { 1 } else if d < 0.0 { -1 } else { 0 }
+  })
+  let eligible = sorted.filter(row => self.online(row))
+  if eligible.length() == 0 {
+    return 0
+  }
+  self.recover_one(eligible[0])
+  for i = 1; i < eligible.length(); i = i + 1 {
+    let key = row_key(eligible[i])
+    let delay = 250.0 * i.to_double()
+    ignore(
+      self.after(delay, () => {
+        match self.get_session(key) {
+          Some(now) if !is_true(now, "running") &&
+            field(now, "archivedAt") is (None | Some(Null)) &&
+            !self.handed_over(key) &&
+            self.online(now) =>
+            try {
+              self.recover_one(now)
+            } catch {
+              _ => ()
+            }
+          _ => ()
+        }
+      }),
+    )
+  }
+  eligible.length()
+}
+
+///|
+/// Dismisses sessions interrupted by a non-update restart visible to `viewer` (optionally narrowed to `keys`).
+pub fn Hub::dismiss_interrupted(self : Hub, viewer : Json, keys : Json) -> Int {
+  let wanted : Array[String]? = match keys {
+    Array(arr) => Some(arr.filter_map(x => match x { String(s) if s != "" => Some(s); _ => None }))
+    _ => None
+  }
+  let mut removed = 0
+  let keep : Array[String] = []
+  for key in self.interrupted_by_restart {
+    let matched = match wanted {
+      None => true
+      Some(w) => w.contains(key)
+    }
+    if !matched {
+      keep.push(key)
+      continue
+    }
+    match self.get_session(key) {
+      Some(row) if !viewer_sees_ws(viewer, row_ws(row)) => keep.push(key)
+      _ => removed += 1
+    }
+  }
+  self.interrupted_by_restart.clear()
+  for k in keep {
+    self.interrupted_by_restart.push(k)
+  }
+  if removed > 0 {
+    (self.world.tell)("overview.changed", Json::null())
+  }
+  removed
+}
+
+///|
+/// After a restart: resume cut-off turns (those not taken up with their runtime), then deliver whatever is pending.
+pub fn Hub::recover(self : Hub) -> Unit raise {
+  let manual_resume = self.non_update_restart
+  self.non_update_restart = false
+  let recovering : Array[String] = []
+  let running = self.running_sessions()
+  running.sort_by((a, b) => {
+    let diff = num_of(b, "lastActiveAt").unwrap_or(0.0) - num_of(a, "lastActiveAt").unwrap_or(0.0)
+    if diff > 0.0 { 1 } else if diff < 0.0 { -1 } else { 0 }
+  })
+  for row in running {
+    let key = row_key(row)
+    if self.adopted.contains(key) || !self.online(row) {
+      continue
+    }
+    if manual_resume {
+      let actor = self.actor(row)
+      pending_work.push(async fn() {
+        let interrupted = self.ask_actor(actor, "cutOffByRestart")
+        if interrupted != Json::boolean(true) {
+          return
+        }
+        match self.get_session(key) {
+          Some(now) if !is_true(now, "running") &&
+            field(now, "archivedAt") is (None | Some(Null)) &&
+            !self.handed_over(key) =>
+            if !self.interrupted_by_restart.contains(key) {
+              self.interrupted_by_restart.push(key)
+              (self.world.tell)("overview.changed", Json::null())
+            }
+          _ => ()
+        }
+      })
+      self.wake_waiters()
+      continue
+    }
+    recovering.push(key)
     self.recover_one(row)
   }
   // (a turn resumed takes what waits for it with it; while turns are held, `release` gives the rest theirs)

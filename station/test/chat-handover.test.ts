@@ -23,6 +23,32 @@ import { WS, A, B, C, world, endTurn, stillfailChat, gitEnv, filesOf, entries, h
 
 type Json = any;
 
+test("a chat's rows go a few tables to a request where that station takes them so, one table a request to a station from before; the chat there is the same either way", async () => {
+  // (real run, 2026-11-20: a chat of 3 entries held 30 s toward a busy station, a dozen round trips of 2-3 s each)
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const rowsAsked = () => w.heard.filter((h) => h.method === "handover.rows" && h.from === A).length;
+  const one = await stillfailChat(a);
+  const before = entries(a, one.thread);
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, follow: ["jobs"] });
+  await w.quiet();
+  assert.deepEqual(out.done, [{ module: "chats", id: one.key }]);
+  const batched = rowsAsked();
+  assert.ok(batched >= 1 && batched <= 2, `its rows in a request or two: ${batched}`);
+  assert.deepEqual(entries(b, homeThread(b, one.key)), before);
+  // A station from before: begin says nothing of rows, and each table's page goes alone, as before.
+  b.answered = (request, answer) => (request?.method === "handover.begin" && answer !== null && typeof answer === "object" ? (({ rows: _, ...rest }) => rest)(answer) : answer);
+  const two = await stillfailChat(a);
+  const was = rowsAsked();
+  const out2 = await a.moves.scheduler.move(WS, B, { module: "chats", item: two.key, follow: ["jobs"] });
+  await w.quiet();
+  assert.deepEqual(out2.done, [{ module: "chats", id: two.key }]);
+  const alone = rowsAsked() - was;
+  assert.ok(alone >= 4 && alone > batched, `a table a request: ${alone} against ${batched}`);
+  assert.equal(entries(b, homeThread(b, two.key)).length, entries(a, two.thread).length);
+});
+
 test("a still.fail chat handed over goes on there: shown there, out of sight here and said where it went; its next turn takes up its runtime session on the account's copy there; nothing said in it", async () => {
   const w = world();
   const a = w.get(A);
@@ -130,7 +156,7 @@ test("a Slack thread's chat handed over, its station not reached: what is said i
   assert.ok(a.rig.chat.marked.includes(posts), "as the station's notice");
 });
 
-test("two bots' sessions in one thread: one handed over, the other stays; each bot's events go to its own", async () => {
+test("two bots' sessions in one thread move together as one conversation; both bots' events go there", async () => {
   const w = world();
   const a = w.get(A);
   const b = w.get(B);
@@ -141,17 +167,22 @@ test("two bots' sessions in one thread: one handed over, the other stays; each b
   const gpt = sessionKey("gpt", first.channel, first.threadTs);
   await endTurn(a, cl);
   await endTurn(a, gpt, "codex");
+  assert.deepEqual(a.moves.handover.together(cl), [cl, gpt].sort());
+  assert.deepEqual(a.moves.handover.together(gpt), [cl, gpt].sort());
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: cl });
   await w.quiet();
   assert.equal(out.failed, null, JSON.stringify(out));
   assert.equal(a.rig.store.handedTo(cl)?.station, B);
-  assert.equal(a.rig.store.handedTo(gpt), null);
-  assert.equal(b.rig.store.getSession(gpt), null, "the other bot's stays");
+  assert.equal(a.rig.store.handedTo(gpt)?.station, B);
+  assert.ok(b.rig.store.getSession(cl) !== null, "cl moved to B");
+  assert.ok(b.rig.store.getSession(gpt) !== null, "gpt moved together to B");
+  assert.equal(b.rig.store.conversationOf(gpt), b.rig.store.conversationOf(cl));
   await a.connects.receive("gpt", { type: "message", message: reply(first, "1801.1", "<@UGPT> you", { addressed: true }) });
   await a.connects.receive("cl", { type: "message", message: reply(first, "1801.2", "<@UBOT> you", { addressed: true }) });
   await w.quiet();
-  assert.ok(a.rig.codex.sessions.flatMap((x) => x.prompts).join("\n").includes("<@UGPT> you"), "gpt's goes on here");
+  assert.equal(a.rig.codex.sessions.flatMap((x) => x.prompts).join("\n").includes("<@UGPT> you"), false, "gpt no longer runs on A");
   assert.equal(b.rig.claude.count(), 1, "cl's there");
+  assert.equal(b.rig.codex.count(), 1, "gpt's there too");
   const there = b.rig.store.threadAt("slack:T1", first.channel, first.threadTs)!;
   assert.equal(b.rig.said(there.id).at(-1)?.text, "<@UBOT> you");
 });
@@ -280,6 +311,8 @@ test("a file of the chat's room this station cannot read: the chat does not go, 
   chmodSync(file, 0o000);
   try {
     const error = await a.moves.handover.handOver(key, B).then(() => null, (e: Error) => e.message);
+    // (the drop's taking out there runs after its answer: waited for before what is left there is looked at)
+    await w.quiet();
     assert.match(error ?? "", /读不到 1 个文件（.*locked\.txt）|cannot read 1 of its files \(.*locked\.txt\)/, `the station's words, naming it: ${error}`);
     assert.equal(a.rig.hub.chatHeld(key), null, "goes on here");
     assert.equal(a.rig.store.handedTo(key), null, "nothing of it went");

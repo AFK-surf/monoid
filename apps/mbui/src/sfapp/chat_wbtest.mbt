@@ -30,7 +30,7 @@ test "a chat opens at its end: its bar, its last messages, the composer's room u
   assert_true(!readings.get("ws1/st1\u{1}s-c1").unwrap().jump)
   t.assert_idle()
   // its people left out for its title where the bar is narrower
-  let narrow = chat_tester("chat", w=350.0)
+  let narrow = chat_tester("chat", w=250.0)
   assert_true(!bar(narrow).contains("你") && !bar(narrow).contains("林"), msg="its people left out for its title: \{Repr(bar(narrow))}")
 }
 
@@ -43,7 +43,8 @@ test "scrolled up, the way to the newest shows; tapped, the list glides back to 
     t.semantics().iter().any(fn(s) { s.role == Button && s.label == @sf.t("web-main.chat.toLatest") })
   }
   assert_true(jumps(t))
-  assert_true(t.find("做完了：列表、跳到最新的按钮") is None)
+  // (a reusable row left resting in its off-screen slot within slots_margin is still in tree.drawn(), below the window)
+  assert_true(match t.find("做完了：列表、跳到最新的按钮") { None => true; Some((_, y)) => y > 844.0 })
   // it comes up growing: tapped once it is there, as a person can only tap what shows
   t.run_for(@ui.move_most_ms)
   // over the send button, the composer's room under it
@@ -56,7 +57,7 @@ test "scrolled up, the way to the newest shows; tapped, the list glides back to 
     t.run_for(rest - t.time())
   }
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("做完了：列表、跳到最新的按钮") is Some(_))
+  assert_true(match t.find("做完了：列表、跳到最新的按钮") { Some((_, y)) => y > 0.0 && y < 844.0; None => false })
   assert_true(!jumps(t))
   // (the chat's pictures brushed in once decoded: sfpages message_files.mbt)
   t.run_for(@sfpages.reveal_ms)
@@ -472,17 +473,26 @@ test "words sent going up into the list tell the core where it is as the message
 let place_drag : Double = 300.0
 
 ///|
-test "a long title has what is left beside what follows it, which keeps its own width (Chat.kt BarFrame)" {
-  new_run()
-  let t = @ui.Tester::new(
-    fn(c) {
-      bar_frame(
-        c,
-        "端到端测试的对话 post:你好，我是测试用的 agent",
-        fn() { c.box(w=Px(60.0), fn() { c.text("尾", size=12.0, wrap=false) |> ignore }) |> ignore },
-        fn() {  },
-        true,
-      )
+test "a long title has what is left beside what follows it, which keeps its own width (chat_bar_node)" {
+  fresh_app()
+  let base = fixture("chat")
+  let long_title = "端到端测试的对话 post:你好，我是测试用的 agent"
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let r = base.topic(name, params).get().snapshot()
+      guard name == "chat" && r.value is Some(Object(m)) else { return r }
+      let m2 = m.copy()
+      m2["title"] = Json::string(long_title)
+      { ..r, value: Some(Json::object(m2)) }
+    },
+  }
+  let chat_ref : ChatRef = { station: "ws1/st1", session: "s-c1", title: long_title, station_name: "Willow" }
+  @sf.set_words(fill)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      chat_bar_node(root, src, fn() { Some(Chat(chat_ref)) }, fn() { 0 })
     },
     w=390.0,
     h=200.0,
@@ -490,13 +500,13 @@ test "a long title has what is left beside what follows it, which keeps its own 
   )
   t.draw()
   let (tx, _, tw, _) = t.rect_of("端到端").unwrap()
-  let (ax, _, _, _) = t.rect_of("尾").unwrap()
-  // 390 - 16 (its end) - 34 (…) and the room before it (bar_keys_apart) - 34 (ⓘ) and its room - 8, the box of 60: what
-  // follows starts where it would with a short title
-  assert_eq(ax, 390.0 - 16.0 - 34.0 - bar_keys_apart() - 34.0 - bar_keys_apart() - 8.0 - 60.0)
-  // the title cut to what is left, 8 before it
-  assert_true(tx + tw <= ax - 8.0 + 0.5)
-  assert_true(t.lines_of("端到端")[0].has_suffix("…"))
+  let info = t.get(Button, label=tr("android-chat.info.title")).rect
+  let more = t.get(Button, label=tr("common.more")).rect
+  // info & more buttons stand at the right end with bar_keys_apart between them; title is cut with ellipsis before them
+  assert_true(more.0 > info.0 + info.2, msg="more right of info")
+  assert_true(tx + tw <= info.0, msg="title fits before trailing keys: \{tx}+\{tw} vs \{info.0}")
+  let lines = t.lines_of("端到端")
+  assert_true(lines[0].has_suffix("…"), msg="long title ellipsized: \{lines[0]}")
 }
 
 ///|
@@ -770,7 +780,7 @@ test "what was said while the app was away, brought after its chat opened at its
   t.run_for(@ui.move_most_ms)
   // the first of them from its top, under the line: not the list at the end of the newest
   guard t.drawn_of(first) is Some((_, y)) else { fail("the first of what came is not in view") }
-  assert_true(y > bar_foot() && y < 844.0 / 2.0, msg="the first of what came, from its top: at \{y}")
+  assert_true(y > bar_foot_at(390.0) && y < 844.0 / 2.0, msg="the first of what came, from its top: at \{y}")
   fix_clock.val = None
 }
 

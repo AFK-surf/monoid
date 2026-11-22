@@ -132,6 +132,8 @@ priv struct Lift {
   mut kids_a : Double
   /// the old copy of a pair (else the one made, or one flying alone)
   old : Bool
+  /// drawn scale at departure (for container=true old copy to unwind smoothly to 1.0 over the flight)
+  from_s : Double
   /// how far what it holds is drawn past its own box at rest (left, top, right, bottom: a card's ✕ hung on its corner),
   /// what of it is seen on the way (Tree::lift_cut) taking that in too
   hang : (Double, Double, Double, Double)
@@ -174,6 +176,11 @@ priv struct StaysEnd {
   /// its room as only what holds it cuts it (Tree::seen_bounds), what covers its column's top or foot not taken off:
   /// what is seen of it where it is drawn under that (FlightRoute's `in_stays`)
   held_cut : (Double, Double, Double, Double)
+  /// the corners of `cut` where the clip of what holds it rounds them (Tree::resting_in_clip), its top or foot cut by
+  /// what covers its column square
+  cut_corners : (Double, Double, Double, Double)
+  /// the corners of `held_cut` where the clip of what holds it rounds them
+  held_corners : (Double, Double, Double, Double)
   /// the column that scrolls it, where it is drawn under what covers that column (Tree::stays_scroll_of); -1: none
   scroll_at : Int
   at_start : Bool
@@ -193,6 +200,7 @@ priv struct Departure {
   id : String
   node : NodeId
   from : (Double, Double, Double, Double)
+  from_s : Double
   look : FromLook
   held : NodeId
   leaving : Bool
@@ -238,6 +246,9 @@ priv struct Flying {
   /// what of where it sets out is seen, given where it goes (View::flies_in's `cut_from`), said anew with where it sets
   /// out (Tree::flights_refresh_now)
   cut_fn : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)?
+  /// it sets out and lands within a page's list, among its rows (View::flies_in's `in_list`): it carries no key of that
+  /// list (Tree::carried), the rows coming on the list's own way about it
+  in_list : Bool
 }
 
 ///|
@@ -364,6 +375,8 @@ priv struct Incoming {
   in_list : Bool
   /// what of where it sets out is seen, given where it goes (View::flies_in's `cut_from`)
   cut_from : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)?
+  /// flown as a container box: outer box morphs smoothly without stretching children (Lift's `box`)
+  container : Bool
 }
 
 ///|
@@ -395,7 +408,8 @@ fn flight_far(from : (Double, Double, Double, Double), to : (Double, Double, Dou
 /// a thumbnail sent as one), and the key of a page's list they come in is carried by its way alone (Tree::carried); none
 /// said so, each goes as long as its own way, the key on the longest. `in_list`: it sets out from within the page's list
 /// it lands in (View::scrolls_window), among its rows (what an agent's line puts by a message, the time under one's
-/// words): drawn after all that list scrolls, under its foot and what flies from that foot. `cut_from`: what of where it
+/// words): drawn after all that list scrolls, under its foot and what flies from that foot, carrying none of its keys
+/// (the row it lands in comes on the list's own way, never laid whole where it ends). `cut_from`: what of where it
 /// sets out is seen (x0, y0, x1, y1 in the window, given where it goes: words scrolled in a field, what of them its room
 /// leaves seen), what is seen of it opening from that to all of it on its way (Tree::lift_cut); none: all of it.
 /// Made outside a change it is there at once.
@@ -411,10 +425,11 @@ pub fn View::flies_in(
   lead? : Bool = false,
   in_list? : Bool = false,
   cut_from? : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?,
+  container? : Bool = false,
   loc~ : SourceLoc,
 ) -> View {
   ignore(loc)
-  guard self.live() is Some(n) && self.tree.in_change() else { return self }
+  guard self.live() is Some(n) && (self.tree.in_change() || (container && self.tree.laying)) else { return self }
   n.in_flight = Some(flight)
   self.tree.incoming.push({
     node: { at: self.at, gen: self.gen },
@@ -426,6 +441,7 @@ pub fn View::flies_in(
     lead,
     in_list,
     cut_from,
+    container,
   })
   self.tree.pairs_due()
   self
@@ -455,7 +471,7 @@ fn Tree::incoming_now(
     guard ends[j] is Some((from, to)) else { continue }
     let n = self.nodes[i.node.at]
     let (led, leads_it) = led_of(j, i)
-    let (a, b, c, d) = corners_of(n.look)
+    let (a, b, c, d) = self.seen_corners(i.node.at)
     let look : FromLook = {
       ground: if i.bare { n.look.ground & 0xFFFFFF00L } else { n.look.ground },
       edge: if i.bare { (0.0, n.look.edge.1 & 0xFFFFFF00L) } else { n.look.edge },
@@ -491,6 +507,8 @@ fn Tree::incoming_now(
       after=in_after,
       cut_fn=i.cut_from,
       from_cut=i.cut_from.bind(fn(c) { c(to) }),
+      container=i.container,
+      in_list=i.in_list,
     )
     |> ignore
   }
@@ -790,16 +808,95 @@ pub fn Tree::lift_cut_corners(self : Tree, id : NodeId) -> (Double, Double, Doub
   match (l.stays, l.within) {
     // (each corner less how far that cut comes into the flight on either side of it, so that where the cut comes in
     // its edge is square, and as it goes back out the corner grows back round from none, never a jump)
-    (Some(_), _) => {
+    // (measured from what of the flight the window shows, the other end's overhang past the window taken off as far
+    // along as it is: an other end opened past the window (a picture zoomed past its edges) cuts nothing of the
+    // corners, only that end's room coming into it does)
+    (Some(e), _) => {
       let (ca, cb, cc, cd) = self.look_from(id.at, 1.0).corners
       guard self.lift_cut(id) is Some((q0, q1, q2, q3)) else { return Some((ca, cb, cc, cd)) }
+      let (wx, wy, ww, wh) = self.placed_window(l.top)
+      let (x0, y0, x1, y1) = (wx, wy, wx + ww, wy + wh)
+      let (raw_cut, raw_r, t) = match e.route {
+        Some(r) => (e.held_cut, e.held_corners, (r.opened)(e.ends, 1.0 - l.k))
+        None => (e.cut, e.cut_corners, l.from_stays_end())
+      }
+      // (the other end, in the window: where the flight goes, set out from the end that stays; else where it set out)
+      let (ox, oy, ow, oh) = if e.at_start {
+        let (fx, fy, fw, fh) = self.placed_window(l.follow)
+        let (hx, hy) = self.held_off(l.follow)
+        (fx + hx - l.held_off.0, fy + hy - l.held_off.1, fw, fh)
+      } else {
+        e.ends.from
+      }
       let (lx, ly, lw, lh) = self.lift_rect(l)
-      let dl = dmax(0.0, q0 - lx)
-      let dt = dmax(0.0, q1 - ly)
-      let dr = dmax(0.0, lx + lw - q2)
-      let db = dmax(0.0, ly + lh - q3)
+      let vx0 = lx + dmax(0.0, x0 - ox) * t
+      let vy0 = ly + dmax(0.0, y0 - oy) * t
+      let vx1 = lx + lw - dmax(0.0, ox + ow - x1) * t
+      let vy1 = ly + lh - dmax(0.0, oy + oh - y1) * t
+      let dl = dmax(0.0, q0 - vx0)
+      let dt = dmax(0.0, q1 - vy0)
+      let dr = dmax(0.0, vx1 - q2)
+      let db = dmax(0.0, vy1 - q3)
       let cr = fn(r : Double, a : Double, b : Double) { dmax(0.0, r - dmax(a, b)) }
-      Some((cr(ca, dl, dt), cr(cb, dt, dr), cr(cc, dr, db), cr(cd, db, dl)))
+      // (where that cut comes into the flight at a corner the clip of what holds the end that stays rounds (StaysEnd's
+      // `cut_corners`, `held_corners`), that corner as round as the clip has it there, going as the cut opens)
+      let (c0, c1, c2, c3) = (
+        dmax(raw_cut.0, x0),
+        dmax(raw_cut.1, y0),
+        dmin(raw_cut.2, x1),
+        dmin(raw_cut.3, y1),
+      )
+      let (kx0, ky0, kx1, ky1) = (
+        c0 + (x0 - c0) * t,
+        c1 + (y0 - c1) * t,
+        c2 + (x1 - c2) * t,
+        c3 + (y1 - c3) * t,
+      )
+      let edge_is = fn(a : Double, q : Double) { (a - q).abs() < 1.0e-6 }
+      let cut_cr = fn(
+        rr : Double,
+        a : Double,
+        b : Double,
+        qx : Double,
+        qy : Double,
+        kx : Double,
+        ky : Double,
+        cx : Double,
+        cy : Double,
+        rx : Double,
+        ry : Double,
+      ) {
+        if dmax(a, b) > 1.0e-6 &&
+          rr > 0.0 &&
+          edge_is(cx, rx) &&
+          edge_is(cy, ry) &&
+          edge_is(qx, kx) &&
+          edge_is(qy, ky) {
+          rr * dmax(0.0, 1.0 - t)
+        } else {
+          0.0
+        }
+      }
+      Some(
+        (
+          dmax(
+            cr(ca, dl, dt),
+            cut_cr(raw_r.0, dl, dt, q0, q1, kx0, ky0, c0, c1, raw_cut.0, raw_cut.1),
+          ),
+          dmax(
+            cr(cb, dt, dr),
+            cut_cr(raw_r.1, dt, dr, q2, q1, kx1, ky0, c2, c1, raw_cut.2, raw_cut.1),
+          ),
+          dmax(
+            cr(cc, dr, db),
+            cut_cr(raw_r.2, dr, db, q2, q3, kx1, ky1, c2, c3, raw_cut.2, raw_cut.3),
+          ),
+          dmax(
+            cr(cd, db, dl),
+            cut_cr(raw_r.3, db, dl, q0, q3, kx0, ky1, c0, c3, raw_cut.0, raw_cut.3),
+          ),
+        ),
+      )
     }
     (None, Some(w)) if self.within_cut(l) is Some(_) => {
       let (_, _, s) = self.placed(w.at, drawn=true)
@@ -1093,7 +1190,7 @@ pub fn Tree::stays_drawn(
   guard self.stays_end(id) is Some(at) else { return None }
   let n = self.nodes[at]
   let (x, y, _, s) = self.projected(at, drawn=true)
-  Some(((x, y, n.lw * s, n.lh * s), self.look_from(at, 1.0).corners))
+  Some(((x, y, n.lw * s, n.lh * s), self.look_from(at, s).corners))
 }
 
 ///|
@@ -1109,12 +1206,49 @@ pub fn Tree::stays_seen(self : Tree, id : String) -> Bool {
 fn Tree::stays_of(self : Tree, at : Int, at_start : Bool) -> StaysEnd {
   let n = self.nodes[at]
   let (bx0, by0, bx1, by1) = self.stays_bounds(at)
+  let held_cut = self.seen_bounds({ at, gen: n.gen })
+  // (the corners the clip of what holds it rounds where they are that room's, as push_box_clip rounds them at rest; its
+  // top or foot cut further by what covers its column, square there)
+  let (_, clip_b, clip_r) = self.resting_in_clip(at)
+  let edge_is = fn(a : Double, q : Double) { (a - q).abs() < 1.0e-6 }
+  let held_corners = (
+    if edge_is(held_cut.0, clip_b.0) && edge_is(held_cut.1, clip_b.1) {
+      clip_r.0
+    } else {
+      0.0
+    },
+    if edge_is(held_cut.2, clip_b.2) && edge_is(held_cut.1, clip_b.1) {
+      clip_r.1
+    } else {
+      0.0
+    },
+    if edge_is(held_cut.2, clip_b.2) && edge_is(held_cut.3, clip_b.3) {
+      clip_r.2
+    } else {
+      0.0
+    },
+    if edge_is(held_cut.0, clip_b.0) && edge_is(held_cut.3, clip_b.3) {
+      clip_r.3
+    } else {
+      0.0
+    },
+  )
+  let top_kept = edge_is(by0, held_cut.1)
+  let foot_kept = edge_is(by1, held_cut.3)
+  let cut_corners = (
+    if top_kept { held_corners.0 } else { 0.0 },
+    if top_kept { held_corners.1 } else { 0.0 },
+    if foot_kept { held_corners.2 } else { 0.0 },
+    if foot_kept { held_corners.3 } else { 0.0 },
+  )
   {
     cover: n.look.image_cover,
     cover_at: n.look.image_cover_at,
     contain: n.look.image_contain,
     cut: (bx0, by0, bx1, by1),
-    held_cut: self.seen_bounds({ at, gen: n.gen }),
+    held_cut,
+    cut_corners,
+    held_corners,
     scroll_at: self.stays_scroll_of(at),
     at_start,
     clear: self.stays_clear(at),
@@ -1133,8 +1267,10 @@ fn Tree::in_change(self : Tree) -> Bool {
 /// The shared nodes in node `at` (it, or what it holds), the outermost of each: none in another of them.
 fn Tree::shared_in(self : Tree, at : Int, out : Array[Int]) -> Unit {
   let n = self.nodes[at]
-  // (one said View::shared whose id is none now: its id may be said by what lets it go, Tree::departed)
-  if n.share is Some(_) || (n.share_flight is Some(_) && self.shared_how_of(at) is Some({ refresh: Some(_), .. })) {
+  // (one that moves: one that stays never flies out as it goes, View::shared; one said View::shared whose id is none
+  // now, its id may be said by what lets it go, Tree::departed)
+  if !n.share_stays &&
+    (n.share is Some(_) || (n.share_flight is Some(_) && self.shared_how_of(at) is Some({ refresh: Some(_), .. }))) {
     out.push(at)
     return
   }
@@ -1252,9 +1388,12 @@ fn Tree::mark_on_flight(
 /// How big what node `n` holds is drawn on its flight's way (`w` wide as it is drawn): as wide as it is drawn for as
 /// wide as it is laid out.
 fn lift_scale(n : Node, l : Lift, w : Double) -> Double {
-  // (a container never grown: what it holds at its own size, its box alone going from one end's to the other's)
+  // (a container never grown: what it holds at its own size, its box alone going from one end's to the other's;
+  // its old copy keeps the drawn scale it departed at and eases smoothly to 1.0 over the flight)
   if !l.box && n.lw > 0.0 {
     w / n.lw
+  } else if l.box && l.old && l.from_s < 1.0 {
+    1.0 + (l.from_s - 1.0) * l.k
   } else {
     1.0
   }
@@ -1278,6 +1417,194 @@ fn corners_of(look : Look) -> (Double, Double, Double, Double) {
 }
 
 ///|
+/// Where node `at` rests in the window (x, y, s, its own `lift` aside), the clip of what holds it there (x0, y0, x1, y1,
+/// as Ctx::view_paint composes View::clips), and that clip's four corners (top left, then round it, as push_box_clip
+/// composes them).
+fn Tree::resting_in_clip(
+  self : Tree,
+  at : Int,
+) -> ((Double, Double, Double), (Double, Double, Double, Double), (Double, Double, Double, Double)) {
+  if at < 0 || at >= self.nodes.length() {
+    return ((0.0, 0.0, 1.0), (-1.0e9, -1.0e9, 1.0e9, 1.0e9), (0.0, 0.0, 0.0, 0.0))
+  }
+  let chain : Array[Int] = []
+  let mut i = at
+  while i >= 0 {
+    if !self.nodes[i].slot {
+      chain.push(i)
+    }
+    i = self.nodes[i].parent
+  }
+  let mut x = 0.0
+  let mut y = 0.0
+  let mut s = 1.0
+  let sticks = !self.stickies.is_empty()
+  let mut room_y = 0.0
+  let mut room_s = 1.0
+  let mut held_y = 0.0
+  let mut held_s = 1.0
+  let mut held_lh = 0.0
+  let mut extra = 0.0
+  let mut b = (-1.0e9, -1.0e9, 1.0e9, 1.0e9)
+  let mut br = (0.0, 0.0, 0.0, 0.0)
+  let edge_is = fn(a : Double, q : Double) { (a - q).abs() < 1.0e-6 }
+  let step = fn(
+    r : Double,
+    ox : Double,
+    oy : Double,
+    pr : Double,
+    px : Double,
+    py : Double,
+    qx : Double,
+    qy : Double,
+  ) {
+    let p = if edge_is(qx, px) && edge_is(qy, py) { pr } else { 0.0 }
+    if r > 0.0 && edge_is(qx, ox) && edge_is(qy, oy) && r >= p {
+      r
+    } else {
+      p
+    }
+  }
+  for k = chain.length() - 1; k >= 0; k = k - 1 {
+    let idx = chain[k]
+    let m = self.nodes[idx]
+    if sticks {
+      if m.scroll_off is Some(_) {
+        room_y = y
+        room_s = s
+        extra = 0.0
+      }
+      match self.sticky_extra.get(idx) {
+        Some((g, e)) if g == m.gen => extra = e
+        _ => ()
+      }
+      held_y = y
+      held_s = s
+      held_lh = if k < chain.length() - 1 { self.nodes[chain[k + 1]].lh } else { 0.0 }
+    }
+    let (sx, sy) = self.scroll_off_now(m)
+    let (ox, oy) = m.look.drawn_off
+    x = x + s * (m.lx + sx + ox + (1.0 - m.ls) * m.lpx)
+    y = y + s * (m.ly + sy + oy + (1.0 - m.ls) * m.lpy)
+    s = s * m.ls
+    if idx != at {
+      match m.lift {
+        Some(l) => {
+          let (fx, fy, _, fs) = self.lifted_place(m, l)
+          x = fx
+          y = fy
+          s = fs
+        }
+        None => ()
+      }
+    }
+    if sticks && k < chain.length() - 1 {
+      match self.stickies.get(idx) {
+        Some((g, off)) if g == m.gen => {
+          let most = dmax(0.0, held_y + (held_lh + extra) * held_s - m.lh * s - y)
+          let mut dy = dclamp(room_y + off * room_s - y, 0.0, most)
+          let grid = self.pixel_grid
+          if grid > 0.0 {
+            dy = (dy * grid).round() / grid
+          }
+          y = y + dy
+        }
+        _ => ()
+      }
+    }
+    if idx != at && m.look.clips {
+      let clips_self = m.look.clips && m.coming && !m.come_uncut
+      let way = if m.clips_said {
+        if m.clips_down {
+          1
+        } else {
+          0
+        }
+      } else if self.along_row_at(idx) {
+        2
+      } else {
+        1
+      }
+      let grown_cut = self.grown_cut_of({ at: idx, gen: m.gen })
+      let ch0 = if clips_self {
+        dmax(0.0, m.flex.height - grown_cut)
+      } else {
+        dmax(0.0, m.flex.height + m.look.clips_past)
+      }
+      let w = m.flex.width * s
+      let h = ch0 * s
+      let (ox0, oy0, ox1, oy1) = match way {
+        1 => (-1.0e9, y, 1.0e9, y + h)
+        2 => (x, -1.0e9, x + w, 1.0e9)
+        _ => (x, y, x + w, y + h)
+      }
+      let nx0 = dmax(b.0, ox0)
+      let ny0 = dmax(b.1, oy0)
+      let nx1 = dmin(b.2, ox1)
+      let ny1 = dmin(b.3, oy1)
+      let room = dmax(0.0, dmin(ox1 - ox0, oy1 - oy0) / 2.0)
+      let (c0, c1, c2, c3) = corners_of(m.look)
+      let r0 = dmax(dmin(c0 * s, room), 0.0)
+      let r1 = dmax(dmin(c1 * s, room), 0.0)
+      let r2 = dmax(dmin(c2 * s, room), 0.0)
+      let r3 = dmax(dmin(c3 * s, room), 0.0)
+      br = (
+        step(r0, ox0, oy0, br.0, b.0, b.1, nx0, ny0),
+        step(r1, ox1, oy0, br.1, b.2, b.1, nx1, ny0),
+        step(r2, ox1, oy1, br.2, b.2, b.3, nx1, ny1),
+        step(r3, ox0, oy1, br.3, b.0, b.3, nx0, ny1),
+      )
+      b = (nx0, ny0, nx1, ny1)
+    }
+  }
+  ((x, y, s), b, br)
+}
+
+///|
+/// Node `at`'s four corners in the window where it rests: its own (corners_of), or the rounder corner of the clip of what
+/// holds it where that corner is both's (as push_box_clip rounds it at rest).
+fn Tree::seen_corners(
+  self : Tree,
+  at : Int,
+  scale? : Double = -1.0,
+) -> (Double, Double, Double, Double) {
+  let ((x, y, rs), b, br) = self.resting_in_clip(at)
+  let n = self.nodes[at]
+  let (w, h) = (n.lw * rs, n.lh * rs)
+  let (x1, y1) = (x + w, y + h)
+  let (c0, c1, c2, c3) = corners_of(n.look)
+  let (r0, r1, r2, r3) = (c0 * rs, c1 * rs, c2 * rs, c3 * rs)
+  let room = if w > 0.0 && h > 0.0 { dmin(w, h) / 2.0 } else { 1.0e30 }
+  let edge_is = fn(a : Double, q : Double) { (a - q).abs() < 1.0e-6 }
+  let one = fn(
+    r : Double,
+    kx : Double,
+    ky : Double,
+    bx : Double,
+    by : Double,
+    pr : Double,
+  ) {
+    if pr > dmin(r, room) && edge_is(kx, bx) && edge_is(ky, by) {
+      pr
+    } else {
+      r
+    }
+  }
+  let (a0, a1, a2, a3) = (
+    one(r0, x, y, b.0, b.1, br.0),
+    one(r1, x1, y, b.2, b.1, br.1),
+    one(r2, x1, y1, b.2, b.3, br.2),
+    one(r3, x, y1, b.0, b.3, br.3),
+  )
+  if scale >= 0.0 && rs > 0.0 && (scale - rs).abs() > 1.0e-6 {
+    let k = scale / rs
+    (a0 * k, a1 * k, a2 * k, a3 * k)
+  } else {
+    (a0, a1, a2, a3)
+  }
+}
+
+///|
 /// What node `n` looks like where it is drawn now, as a flight sets out from it: its ground, edge, corners as big as
 /// it is drawn (`s`) and ink; one on a flight's way as it is drawn there.
 fn Tree::look_from(self : Tree, at : Int, s : Double) -> FromLook {
@@ -1286,7 +1613,7 @@ fn Tree::look_from(self : Tree, at : Int, s : Double) -> FromLook {
     Some(l) => {
       let p = lift_look_p(l)
       let to = self.nodes[l.follow].look
-      let c = corners_mix(l.from.corners, corners_of(to), p)
+      let c = corners_mix(l.from.corners, self.seen_corners(l.follow), p)
       {
         ground: colour_mix(l.from.ground, blend_ground(to.ground, to.ground_over), p),
         edge: (l.from.edge.0 + (to.edge.0 - l.from.edge.0) * p, colour_mix(l.from.edge.1, to.edge.1, p)),
@@ -1295,16 +1622,14 @@ fn Tree::look_from(self : Tree, at : Int, s : Double) -> FromLook {
         held: 0.0,
       }
     }
-    None => {
-      let (a, b, c, d) = corners_of(n.look)
+    None =>
       {
         ground: n.look.ground,
         edge: (n.look.edge.0 * s, n.look.edge.1),
-        corners: (a * s, b * s, c * s, d * s),
+        corners: self.seen_corners(at, scale=s),
         ink: n.look.ink,
         held: 0.0,
       }
-    }
   }
 }
 
@@ -1355,7 +1680,7 @@ fn Tree::lifted_content(self : Tree, n : Node, l : Lift, c : Content) -> Content
   let s = lift_scale(n, l, w)
   let p = lift_look_p(l)
   let to = self.nodes[l.follow].look
-  let (a, b, cc, d) = corners_mix(l.from.corners, corners_of(to), p)
+  let (a, b, cc, d) = corners_mix(l.from.corners, self.seen_corners(l.follow), p)
   let ground = colour_mix(l.from.ground, blend_ground(to.ground, to.ground_over), p)
   let edge = ((l.from.edge.0 + (to.edge.0 - l.from.edge.0) * p) / s, colour_mix(l.from.edge.1, to.edge.1, p))
   let ink = colour_mix(l.from.ink, to.ink, p)
@@ -1402,7 +1727,10 @@ fn Tree::departs(self : Tree, holder : View, v : View) -> Bool {
   let found = self.departs_of(v)
   // (none to fly: `v` let go of as it would have been, nothing parked)
   guard found.length() > 0 else { return false }
-  self.departed(found, v.id(), false)
+  // (none of them told as one (an id said By that says none as it goes): nothing to keep it for, let go of at once)
+  if !self.departed(found, v.id(), false) {
+    return false
+  }
   holder.park(v) |> ignore
   true
 }
@@ -1414,7 +1742,7 @@ fn Tree::departs_leaving(self : Tree, v : View) -> Unit {
   guard self.sharing() && self.in_change() && v.live() is Some(_) else { return }
   let found = self.departs_of(v)
   guard found.length() > 0 else { return }
-  self.departed(found, v.id(), true)
+  self.departed(found, v.id(), true) |> ignore
 }
 
 ///|
@@ -1430,8 +1758,9 @@ fn Tree::departs_of(self : Tree, v : View) -> Array[Int] {
 
 ///|
 /// The shared nodes `found`, let go of with `held` (or leaving with it), told as such: where each was drawn as the
-/// change came (where it was on a flight's way, its flight ended), as it looked.
-fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool) -> Unit {
+/// change came (where it was on a flight's way, its flight ended), as it looked. Whether any was told so.
+fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool) -> Bool {
+  let mut any = false
   for at in found {
     let n = self.nodes[at]
     // (its id as said now, where it is said By: what it is let go of as)
@@ -1442,8 +1771,12 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
     guard n.share is Some(id) else { continue }
     // (told once a change: one leaving with what holds it as that leaves too (a row of a show said to pop out of the
     // flow with it, pop_leave.mbt) is one departure, not two)
-    guard !self.departures.iter().any(fn(d) { d.node.at == at && d.node.gen == n.gen }) else { continue }
-    let (from, look) = match n.lift {
+    // (told already, as much a departure kept for as one told now)
+    guard !self.departures.iter().any(fn(d) { d.node.at == at && d.node.gen == n.gen }) else {
+      any = true
+      continue
+    }
+    let (from, from_s, look) = match n.lift {
       Some(l) => {
         // (on a flight's way: where it is drawn as of the change's moment, as it looks there; that flight over)
         match self.flying_of(at) {
@@ -1456,11 +1789,11 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
           Some(f) => self.flight_over(f)
           None => ()
         }
-        ((x, y, w, h), look)
+        ((x, y, w, h), 1.0, look)
       }
       None => {
         let (x, y, _, s) = self.projected(at, drawn=true)
-        ((x, y, n.lw * s, n.lh * s), self.look_from(at, s))
+        ((x, y, n.lw * s, n.lh * s), s, self.look_from(at, s))
       }
     }
     // (what held it, for where it meets the one made (Tree::flight_host); what it holds drawn past its box, where it
@@ -1470,6 +1803,7 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
       id,
       node: { at, gen: n.gen },
       from,
+      from_s,
       look,
       held,
       leaving,
@@ -1477,8 +1811,12 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
       chain: self.held_chain(at),
       hang,
     })
+    any = true
   }
-  self.pairs_due()
+  if any {
+    self.pairs_due()
+  }
+  any
 }
 
 ///|
@@ -1830,6 +2168,7 @@ fn Tree::paired(
     lead: leads_it,
     awaits_old: false,
     cut_fn: None,
+    in_list: false,
   }
   self.flights.push(f)
   // (a container's hang: what each end holds past its box, at rest)
@@ -1842,6 +2181,7 @@ fn Tree::paired(
     box,
     kids_a: 1.0,
     old: false,
+    from_s: 1.0,
     hang: hang_to,
     d: dd,
     late,
@@ -1862,6 +2202,7 @@ fn Tree::paired(
     box,
     kids_a: 1.0,
     old: true,
+    from_s: d.from_s,
     hang: hang_from,
     d: dd,
     late,
@@ -1879,6 +2220,7 @@ fn Tree::paired(
   // (drawn as of each frame's moment while it goes; over at its end, a moment of its own)
   let stop_way = self.queued(fn() { self.drawn_at() }, fn(t) { self.flight_at(f, t) })
   f.stop_end = to_v.at_moment(at + ms, fn() { self.flight_over(f) })
+  self.hand_at_end(at + ms)
   let unkeep = to_v.owns_while(fn() { self.flight_over(f) })
   f.stop = fn() {
     stop_way()
@@ -1996,6 +2338,8 @@ fn Tree::fly_from(
   after? : Int = -1,
   cut_fn? : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)? = None,
   from_cut? : (Double, Double, Double, Double)? = None,
+  container? : Bool = false,
+  in_list? : Bool = false,
 ) -> Bool {
   // (one flying in from what is none of the tree's on that way of its own, View::flies_in; else as it flies with
   // another of its id, View::shared)
@@ -2073,6 +2417,7 @@ fn Tree::fly_from(
     lead,
     awaits_old: waits_old,
     cut_fn,
+    in_list,
   }
   self.flights.push(f)
   // (set out from what is none of the tree's while an old view is hosted in it: refreshed against where it is laid out
@@ -2084,14 +2429,16 @@ fn Tree::fly_from(
   // (one whose node comes on a way its page said (a list key's `comes_way`, the flight's own rise): off its node by
   // where it set out, going with it, so that it and the list rise as one; any other from its fixed start)
   let fixed = if stays is None && !self.rides_said_way(to.at) { Some(from) } else { None }
+  let hang_to = if container { self.hang_of(to.at) } else { (0.0, 0.0, 0.0, 0.0) }
   self.nodes[to.at].lift = Some({
     follow: to.at,
     top,
     host,
-    box: false,
+    box: container,
     kids_a: 1.0,
     old: false,
-    hang: (0.0, 0.0, 0.0, 0.0),
+    from_s: 1.0,
+    hang: hang_to,
     d: dd,
     late,
     k: 1.0,
@@ -2114,6 +2461,7 @@ fn Tree::fly_from(
   self.lifted_order()
   let stop_way = self.queued(fn() { self.drawn_said() }, fn(t) { self.flight_at(f, t) })
   f.stop_end = to_v.at_moment(at + ms, fn() { self.flight_over(f) })
+  self.hand_at_end(at + ms)
   let unkeep = to_v.owns_while(fn() { self.flight_over(f) })
   f.stop = fn() {
     stop_way()
@@ -2172,6 +2520,7 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
       f.dur = ms
       (f.stop_end)()
       f.stop_end = self.handle(f.node.at).at_moment(f.start + ms, fn() { self.flight_over(f) })
+      self.hand_at_end(f.start + ms)
       self.flight_told(f.node.at)
     }
   }
@@ -2217,12 +2566,15 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
           f.dur = ms
           (f.stop_end)()
           f.stop_end = self.handle(f.node.at).at_moment(f.start + ms, fn() { self.flight_over(f) })
+          self.hand_at_end(f.start + ms)
           self.flight_told(f.node.at)
         }
       }
       None => ()
     }
+    // (one within the list carries no key: Tree::incoming_carry)
     match led {
+      _ if f.in_list => ()
       Some((_, _, lf, _)) =>
         if physical_equal(lf, f) {
           self.carried(f.node.at, from, to, f.late, f.start, far_of=f.far_of, anew=true, lead=true)
@@ -2289,7 +2641,7 @@ fn Tree::flight_at(self : Tree, f : Flying, t : Double) -> Unit {
       Some(l) => {
         l.k = k
         l.ky = ky
-        l.a = if l.box { if p >= 0.5 { 1.0 } else { 0.0 } } else if f.fades { a_in } else { 1.0 }
+        l.a = if l.box && f.ghost is Some(_) { if p >= 0.5 { 1.0 } else { 0.0 } } else if f.fades { a_in } else { 1.0 }
         // (one with an end that stays whose route says where it goes: drawn under what covers that end's column while it
         // slides out from under it or back (FlightRoute's `in_stays`, Tree::stays_scroll_slot), over the rest of its
         // layer else; the order made again where that changes)
@@ -2385,28 +2737,90 @@ fn Tree::lift_marked(self : Tree, at : Int) -> Unit {
 /// shape scaled to the way's width, a 3:2 picture flying from a square tile drawn 56 by 37 in a 56 by 56 frame, its
 /// foot cut flat (2026-11-15).
 fn Tree::fills_lifted(self : Tree, at : Int) -> (Double, Double)? {
-  let n = self.nodes[at]
-  let p = n.parent
-  guard p >= 0 && p < self.nodes.length() else { return None }
-  let h = self.nodes[p]
-  guard h.lift is Some(l) && h.lw > 0.0 && h.lh > 0.0 else { return None }
-  guard n.lx.abs() < 0.5 && n.ly.abs() < 0.5 && (n.lw - h.lw).abs() < 0.5 && (n.lh - h.lh).abs() < 0.5 else {
+  if self.flights.is_empty() {
     return None
   }
-  let (_, _, w, hh) = self.lift_rect(l)
-  let s = lift_scale(h, l, w)
-  guard s > 0.0 else { return None }
-  Some((w / s, hh / s))
+  if self.nodes[at].slot {
+    return None
+  }
+  let mut cur = at
+  while cur >= 0 && cur < self.nodes.length() {
+    let n = self.nodes[cur]
+    guard n.lx.abs() < 0.5 && n.ly.abs() < 0.5 else { return None }
+    let mut p = n.parent
+    while p >= 0 && p < self.nodes.length() && self.nodes[p].slot {
+      p = self.nodes[p].parent
+    }
+    guard p >= 0 && p < self.nodes.length() else { return None }
+    let h = self.nodes[p]
+    guard h.live && h.lw > 0.0 && h.lh > 0.0 && (n.lw - h.lw).abs() < 0.5 && (n.lh - h.lh).abs() < 0.5 else {
+      return None
+    }
+    match h.lift {
+      Some(l) => {
+        if l.box {
+          return None
+        }
+        let (_, _, w, hh) = self.lift_rect(l)
+        let s = lift_scale(h, l, w)
+        guard s > 0.0 else { return None }
+        return Some((w / s, hh / s))
+      }
+      None => cur = p
+    }
+  }
+  None
+}
+
+///|
+/// Content of a node that fills a flying ancestor (Tree::fills_lifted), adapted to `(fw, fh)` along with its `image_in`
+/// matte/letterbox sub-rect.
+fn lifted_filler_content(n : Node, c : Content, fw : Double, fh : Double) -> Content {
+  let image_in = match c.image_in {
+    Some(((ix, iy, iw, ih), matte)) =>
+      if ix.abs() < 0.5 && iy.abs() < 0.5 && (iw - n.lw).abs() < 0.5 && (ih - n.lh).abs() < 0.5 {
+        Some(((0.0, 0.0, fw, fh), matte))
+      } else if iw > 0.0 && ih > 0.0 {
+        let k = dmin(fw / iw, fh / ih)
+        let nw = iw * k
+        let nh = ih * k
+        Some((((fw - nw) / 2.0, (fh - nh) / 2.0, nw, nh), matte))
+      } else {
+        c.image_in
+      }
+    None => None
+  }
+  { ..c, w: fw, h: fh, image_in }
 }
 
 ///|
 /// What fills node `at` (Tree::fills_lifted) made again as `at` is drawn otherwise on its way, or comes to its rest.
 fn Tree::fillers_marked(self : Tree, at : Int) -> Unit {
   let n = self.nodes[at]
-  for k in n.kids {
+  if n.lw <= 0.0 || n.lh <= 0.0 {
+    return
+  }
+  match n.lift {
+    Some(l) if l.box => return
+    _ => ()
+  }
+  self.fillers_marked_in(at, n.lw, n.lh)
+}
+
+///|
+fn Tree::fillers_marked_in(self : Tree, at : Int, lw : Double, lh : Double) -> Unit {
+  for k in self.nodes[at].kids {
     let c = self.nodes[k]
-    if c.live && c.lx.abs() < 0.5 && c.ly.abs() < 0.5 && (c.lw - n.lw).abs() < 0.5 && (c.lh - n.lh).abs() < 0.5 {
+    if c.slot {
+      self.fillers_marked_in(k, lw, lh)
+    } else if c.live &&
+      c.lift is None &&
+      c.lx.abs() < 0.5 &&
+      c.ly.abs() < 0.5 &&
+      (c.lw - lw).abs() < 0.5 &&
+      (c.lh - lh).abs() < 0.5 {
       self.look_marked_at(k)
+      self.fillers_marked_in(k, lw, lh)
     }
   }
 }
@@ -2421,11 +2835,17 @@ fn Tree::flight_over(self : Tree, f : Flying) -> Unit {
   f.stop = fn() {  }
   stop()
   if self.alive_id(f.node) {
+    let was_box = match self.nodes[f.node.at].lift {
+      Some(l) => l.box
+      None => false
+    }
     self.flight_told(f.node.at)
     self.nodes[f.node.at].lift = None
     self.places_rev = self.places_rev + 1
     self.look_marked_at(f.node.at)
-    self.fillers_marked(f.node.at)
+    if !was_box {
+      self.fillers_marked(f.node.at)
+    }
     self.place_marked_at(f.node.at)
   }
   match f.ghost {
@@ -2556,6 +2976,18 @@ fn View::flight_read(self : View) -> Flying? {
   }
   cell.get() |> ignore
   self.tree.flying_of(self.at)
+}
+
+///|
+/// Its flight as the new one (View::shared, View::flies_in), where it is on one, over now: drawn where it is laid out,
+/// in its place, its old copy let go of (Tree::flight_over), at the cause that says so (words sent after it while it
+/// still stands where it set out).
+pub fn View::flight_land(self : View) -> Unit {
+  guard self.live() is Some(_) else { return }
+  match self.tree.flying_of(self.at) {
+    Some(f) => self.tree.flight_over(f)
+    None => ()
+  }
 }
 
 ///|
@@ -2864,6 +3296,7 @@ fn Tree::feet_carried(
       let v = self.handle(at)
       (m.come_off)()
       m.come_off = v.at_moment(st.come_ends, fn() { come_done(self, v, m) })
+      self.hand_at_end(st.come_ends)
     }
     self.marked()
   }
@@ -3015,6 +3448,11 @@ fn Tree::incoming_carry(
       None => None
     }
     let leads_it = led is Some((_, ln, _)) && ln == i.node
+    // (one within the list, among its rows (View::flies_in's `in_list`): its block comes on the list's own way, never
+    // carried whole to where it lands and raised over the rows still on their way to theirs)
+    if i.in_list {
+      continue
+    }
     if led is None || leads_it {
       self.carried(i.node.at, from, to, i.late, self.cause_now(), far_of=i.far_of, lead=leads_it)
     }

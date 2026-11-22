@@ -45,7 +45,7 @@ fn made_stack() -> (Tester, Nav[String], MadeLog, Array[String]) {
                 let first = @signals.untracked(page)
                 log.made.push(first)
                 let taps = @signals.signal(0)
-                let scroll = @view.Scroll::new()
+                let scroll = @view.Scroll::plain()
                 log.taps[first] = taps
                 log.scrolls[first] = scroll
                 log.roots[first] = v.id()
@@ -488,4 +488,239 @@ test "window tree: a flat stack's made page put in place of over its root kept, 
     assert_true(t.find("page mA") is Some(_), msg="\{owned}")
     assert_eq((made, gone, left), (["mA", "mB"], [], ["mA", "mB"]), msg="\{owned}")
   }
+}
+
+///|
+test "window tree: a made page with a focused tree field covered by another page: returning by pop or by back_gesture restores focus and ime to the field" {
+  let nav = Nav::new("a")
+  let f = Field::new()
+  let t = Tester::new(fn(_c) {  }, platform=1)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    nav_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=12.0) |> ignore },
+      bg=fn() { 0xFFFFFFFFL },
+      made=fn(p) {
+        if p == "m1" {
+          Some(
+            (
+              "m",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(h) {
+                  h.height(Is(Some(60.0))) |> ignore
+                  field(h, f, placeholder="页内字段", label="页内字段") |> ignore
+                })
+                |> ignore
+              },
+            ),
+          )
+        } else {
+          None
+        }
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  pushed(t, nav, "m1")
+  f.focus()
+  t.draw()
+  t.type_text("a")
+  t.draw()
+  assert_true(f.focused() && t.ime().0, msg="focused before push: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  // (push a page over m1 until settled: m1 is laid out nowhere and loses focus)
+  pushed(t, nav, "b")
+  assert_true(!f.focused() && !t.ime().0, msg="covered page drops focus and ime")
+  // (return by nav.pop(): focus and ime restored to the tree field)
+  view_event(fn() { nav.pop() |> ignore })
+  t.run_for(nav.rest() - t.time() + 16.0)
+  assert_true(f.focused() && t.ime().0, msg="after pop: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  t.type_text("b")
+  t.draw()
+  assert_eq(f.text(), "ab", msg="typing after pop")
+  // (push again until settled, then return by back_gesture: focus and ime restored too)
+  pushed(t, nav, "b")
+  assert_true(!f.focused() && !t.ime().0, msg="covered page drops focus and ime before back_gesture")
+  t.back_gesture(200.0, true)
+  t.run_for(nav.rest() - t.time() + 16.0)
+  assert_true(f.focused() && t.ime().0, msg="after back_gesture: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  t.type_text("c")
+  t.draw()
+  assert_eq(f.text(), "abc", msg="typing after back_gesture")
+}
+
+///|
+test "window tree: covered made page parks at rest, keeps layout cache on pop, and restores focus" {
+  let nav = Nav::new("m_home")
+  let count = @signals.signal(0)
+  let runs = Ref(0)
+  let home_counter_id : Ref[@view.NodeId?] = Ref(None)
+  let t = Tester::new(fn(_c) {  }, platform=1)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    nav_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=12.0) |> ignore },
+      bg=fn() { 0xFFFFFFFFL },
+      made=fn(p) {
+        if p == "m_home" {
+          Some(
+            (
+              "m_home",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(btn) {
+                  btn
+                  .width(Is(Some(100.0)))
+                  .height(Is(Some(40.0)))
+                  .presses(Is(true))
+                  .focusable(Is(true))
+                  .says(Is(Some(@view.said(Button, label="首页按钮"))))
+                  .on_press(fn() {  })
+                  |> ignore
+                })
+                |> ignore
+                v.box(fn(counter) {
+                  home_counter_id.val = Some(counter.id())
+                  counter
+                  .height(Is(Some(24.0)))
+                  .words(
+                    By(fn() {
+                      runs.val += 1
+                      "count=\{count.get()}"
+                    }),
+                    look={ ..@view.words_plain, size: 12.0 },
+                  )
+                  |> ignore
+                })
+                |> ignore
+                v.box(fn(list) {
+                  for i in 0..<50 {
+                    list.box(fn(row) {
+                      row.height(Is(Some(12.0))).words(Is("row \{i}"), look={ ..@view.words_plain, size: 10.0 }) |> ignore
+                    })
+                    |> ignore
+                  }
+                })
+                |> ignore
+              },
+            ),
+          )
+        } else if p == "m_top" {
+          Some(
+            (
+              "m_top",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(h) { h.height(Is(Some(40.0))).words(Is("top"), look={ ..@view.words_plain, size: 12.0 }) |> ignore })
+                |> ignore
+              },
+            ),
+          )
+        } else {
+          None
+        }
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  t.key(key_tab)
+  t.draw()
+  assert_eq(focus_named(t), "Button 首页按钮")
+  assert_true(t.find("count=0") is Some(_))
+  // Push top page over m_home and finish slide animation.
+  pushed(t, nav, "m_top")
+  assert_eq(focus_named(t), "none")
+  // Covered parked page's resting watches (e.g. pv.shift reading clock) must not keep Tree::clock_read() alive,
+  // and parked nodes must not be reported as drawn by Tree::drawn_of.
+  assert_false(view_tree().unwrap().clock_read(), msg="clock_read should be false while covered page is parked at rest")
+  match home_counter_id.val {
+    Some(id) => assert_true(view_tree().unwrap().drawn_of(id, drawn=true) is None, msg="parked node must not appear in drawn_of")
+    None => fail("home_counter_id missing")
+  }
+  t.assert_idle()
+  // While covered, m_home is parked at rest: background signal updates trigger 0 times.
+  let runs_while_covered = runs.val
+  count.set(1)
+  t.draw()
+  count.set(2)
+  t.draw()
+  assert_eq(runs.val, runs_while_covered, msg="covered made page should be at rest")
+  // Pop back to m_home: layout cache is preserved (far fewer than 50 laid nodes),
+  // updated signal value is shown, and focus returns to the button.
+  let laid_before = view_tree().unwrap().work().laid
+  popped(t, nav)
+  let laid_delta = view_tree().unwrap().work().laid - laid_before
+  assert_true(laid_delta <= 15, msg="expected parked layout cache reuse, got laid_delta=\{laid_delta}")
+  assert_true(t.find("count=2") is Some(_), msg="woken page should reflect updated signal")
+  assert_eq(focus_named(t), "Button 首页按钮")
+  t.assert_idle()
+}
+
+///|
+/// A finger down at `xs[0]` (a page's height down) moved through the rest of `xs` a gesture's step apart, each drawn
+/// as it comes, and let go at the last.
+fn swept(t : Tester, xs : Array[Double]) -> Unit {
+  finger(0, xs[0], 400.0)
+  for i in 1..<xs.length() {
+    let at = t.fake.time + input_step_ms
+    t.fake.time = at
+    finger(1, xs[i], 400.0)
+    t.frame_at(at)
+  }
+  finger(2, xs[xs.length() - 1], 400.0)
+  t.draw()
+}
+
+///|
+/// Where its slide has the top page from now to its end and a little past (each ms): none off its way (0 in place, 1
+/// gone), said where it is.
+fn slid_off(t : Tester, nav : Nav[String]) -> Array[Double] {
+  let off : Array[Double] = []
+  if nav.t0 < 0.0 {
+    return off
+  }
+  let from = t.time()
+  let mut at = from
+  while at <= nav.t0 + nav.dur + 50.0 {
+    let p = nav.slid_at(at)
+    if p < 0.0 || p > 1.0 {
+      off.push(p)
+    }
+    at += 1.0
+  }
+  off
+}
+
+///|
+test "window tree: a made page swiped off its left edge and brought back there, let go going left: at rest in its place at once, not sent on past it" {
+  let (t, nav, _, _) = made_stack()
+  pushed(t, nav, "m1")
+  let place = t.find("m1 0").unwrap()
+  swept(t, [4.0, 36.0, 68.0, 100.0, 132.0, 164.0, 200.0, 164.0, 132.0, 100.0, 68.0, 36.0, 4.0])
+  assert_eq((nav.mode, nav.p), (0, 0.0))
+  assert_eq(slid_off(t, nav), [])
+  t.run_for(a_second_ms)
+  assert_eq(nav.depth(), 2)
+  assert_eq((nav.mode, nav.p), (0, 0.0))
+  assert_eq(t.find("m1 0"), Some(place))
+}
+
+///|
+test "window tree: a made page let go fast toward where it goes, close to it (its place, or gone): its slide there never past it" {
+  let (t, nav, _, _) = made_stack()
+  pushed(t, nav, "m1")
+  // (near its place, flung back toward it: back to rest, never left of it)
+  swept(t, [4.0, 40.0, 80.0, 120.0, 160.0, 200.0, 140.0, 80.0, 24.0])
+  assert_eq(nav.depth(), 2)
+  assert_eq(slid_off(t, nav), [])
+  t.run_for(a_second_ms)
+  assert_eq((nav.depth(), nav.mode, nav.p), (2, 0, 0.0))
+  // (near the other side, flung on across: gone back, never past it)
+  swept(t, [4.0, 66.0, 128.0, 190.0, 252.0, 316.0, 380.0])
+  assert_eq(slid_off(t, nav), [])
+  t.run_for(nav.rest() - t.time() + 16.0)
+  assert_eq(nav.depth(), 1)
 }

@@ -17,6 +17,7 @@ final class WarmUp {
         if (started) return;
         started = true;
         Thread t = new Thread(() -> {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
             EGLDisplay d = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
             int[] version = new int[2];
             if (d != EGL14.EGL_NO_DISPLAY) EGL14.eglInitialize(d, version, 0, version, 1);

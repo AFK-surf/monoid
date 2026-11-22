@@ -39,6 +39,9 @@ pub fn decode_png(b : Bytes) -> (Int, Int, FixedArray[Byte])? {
       ctype = b[data + 9].to_int()
       interlace = b[data + 12].to_int()
     } else if kind == b"PLTE" {
+      if len == 0 || len % 3 != 0 || len > 768 {
+        return None
+      }
       palette = Array::makei(len / 3, fn(k) {
         (b[data + k * 3].to_int(), b[data + k * 3 + 1].to_int(), b[data + k * 3 + 2].to_int())
       })
@@ -64,7 +67,16 @@ pub fn decode_png(b : Bytes) -> (Int, Int, FixedArray[Byte])? {
     6 => 4
     _ => return None
   }
-  if idat.length() < 2 {
+  if ctype == 3 && palette.length() == 0 {
+    return None
+  }
+  if idat.length() < 6 {
+    return None
+  }
+  // Validate 2-byte zlib header (RFC 1950): CM=8 (deflate), CINFO<=7, FCHECK mod 31 == 0, no FDICT.
+  let cmf = idat[0].to_int()
+  let flg = idat[1].to_int()
+  if (cmf & 0x0F) != 8 || (cmf >> 4) > 7 || ((cmf << 8) | flg) % 31 != 0 || (flg & 0x20) != 0 {
     return None
   }
   // (zlib: a 2-byte head, then raw deflate)
@@ -82,6 +94,18 @@ pub fn decode_png(b : Bytes) -> (Int, Int, FixedArray[Byte])? {
   } else {
     [(0, 0, 1, 1)]
   }
+  let mut expected_raw = 0
+  for pass in passes {
+    let (x0, y0, dx, dy) = pass
+    let pw = if width > x0 { (width - x0 + dx - 1) / dx } else { 0 }
+    let ph = if height > y0 { (height - y0 + dy - 1) / dy } else { 0 }
+    if pw > 0 && ph > 0 {
+      expected_raw += ph * (1 + (pw * bpp_bits + 7) / 8)
+    }
+  }
+  if raw.length() != expected_raw {
+    return None
+  }
   for pass in passes {
     let (x0, y0, dx, dy) = pass
     let pw = if width > x0 { (width - x0 + dx - 1) / dx } else { 0 }
@@ -97,6 +121,9 @@ pub fn decode_png(b : Bytes) -> (Int, Int, FixedArray[Byte])? {
         return None
       }
       let filter = raw[p].to_int()
+      if filter < 0 || filter > 4 {
+        return None
+      }
       p += 1
       for x in 0..<stride {
         let rawv = raw[p + x].to_int()

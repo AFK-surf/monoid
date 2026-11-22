@@ -43,7 +43,7 @@ test "pick, short, 大屏 keyboard and mouse: its title, its choices, c2 checked
   t.tap_text("第3项")
   t.frame()
   let read = t.query(Menu) is None
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_eq(
     (rows, panel, seen, chosen.val, @sf.presenting(), read, t.find("第1项") is None),
     ([("第1项", Some(Off)), ("第2项", Some(On)), ("第3项", Some(Off))], Some(true), (true, true, true), "c3", false, true, true),
@@ -147,7 +147,7 @@ test "pick, 小屏 touch: a sheet of its choices still; 第3项 tapped: c3" {
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   t.run_for(@ui.move_most_ms)
   let chosen = Ref("")
-  @sf.pick("选一个", pick_choices(3), "c2", fn(k) { chosen.val = k }, from=@sf.at_point(200.0, 300.0))
+  @sf.pick("选一个", pick_choices(3), "c2", fn(k) { chosen.val = k }, from=@sf.at_point(200.0, 700.0))
   t.run_for(@ui.move_most_ms)
   let menus = t.all(Menu).length()
   t.tap_text("第3项")

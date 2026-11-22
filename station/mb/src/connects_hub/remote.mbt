@@ -113,7 +113,7 @@ fn truthy(v : J?) -> Bool {
 /// described to another station (`Described`).
 pub fn describe(connect : J, workspace : String, surface : Surface) -> J {
   let mention = match surface.get_opt("mention", [js("\u{1}")]) {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(other) => js_text(Some(other))
     None => "<@\u{1}>"
   }
@@ -160,6 +160,10 @@ pub fn describe(connect : J, workspace : String, surface : Surface) -> J {
   )
   fields.push(("link", link))
   fields.push(("has", jsa(optional_calls.filter(name => (surface.has)(name)))))
+  // (its `begin` takes a first message's files and card, the thread it begins routed to the asking station)
+  if (surface.has)("begin") {
+    fields.push(("beginPost", jb(true)))
+  }
   drop_undefined(jo(fields))
 }
 
@@ -241,11 +245,23 @@ pub struct RemoteSurface {
   priv log : Log
   /// The files of the answers `api` gave, as that station read them (the newest few, by the answer itself).
   priv files : Array[(J, Array[J])]
+  /// This station's id: where a thread `begin` started is routed to on a station from before.
+  priv here : () -> String
 }
 
 ///|
-pub fn RemoteSurface::new(id : String, known : Known, station : String, described : J, asker : Asker, names : NameBook?, fs : Fs, log : Log) -> RemoteSurface {
-  { id, known, station, described, asker, names, fs, log, files: [] }
+pub fn RemoteSurface::new(
+  id : String,
+  known : Known,
+  station : String,
+  described : J,
+  asker : Asker,
+  names : NameBook?,
+  fs : Fs,
+  log : Log,
+  here? : () -> String = () => "",
+) -> RemoteSurface {
+  { id, known, station, described, asker, names, fs, log, files: [], here }
 }
 
 ///|
@@ -326,7 +342,7 @@ fn RemoteSurface::get(self : RemoteSurface, name : String, args : Array[J]) -> J
       match self.d("link") {
         Some(Null) => Null
         Some(Str(u)) =>
-          js(replace_first(replace_first(@jsjson.text(u), "\u{1}", s(0)), "\u{2}", s(1)))
+          js(replace_first(replace_first(@jsjson.sanitize_str(u), "\u{1}", s(0)), "\u{2}", s(1)))
         _ => undefined()
       }
     "answerFiles" =>
@@ -367,8 +383,8 @@ fn RemoteSurface::get(self : RemoteSurface, name : String, args : Array[J]) -> J
 }
 
 ///|
-/// Its files go first, each as the bytes after a call of its own, and the post names them as that station keeps them.
-async fn RemoteSurface::post(self : RemoteSurface, thread : J, message : String, files : Array[J], card : J) -> String {
+/// Each file sent to the connect's station as the bytes after a call of its own: the files as that station keeps them.
+async fn RemoteSurface::upload_files(self : RemoteSurface, files : Array[J]) -> Array[J] {
   let there : Array[J] = []
   for file in files {
     let path = js_text(at(Some(file), "path"))
@@ -377,7 +393,49 @@ async fn RemoteSurface::post(self : RemoteSurface, thread : J, message : String,
     guard str_of(at(Some(kept), "path")) is Some(p) else { raise fail_("the connect's station did not keep the file") }
     there.push(set_field(file, "path", js(p)))
   }
+  there
+}
+
+///|
+/// Its files go first, and the post names them as that station keeps them.
+async fn RemoteSurface::post(self : RemoteSurface, thread : J, message : String, files : Array[J], card : J) -> String {
+  let there = self.upload_files(files)
   js_text(Some(self.ask_call("post", [thread, js(message), ja(there), card])))
+}
+
+///|
+/// As a post's, its files go first. A station from before takes neither files nor a card here (it would drop them)
+/// and does not route the thread begun: words alone go, and the thread is routed here by `connect.route`.
+async fn RemoteSurface::begin(self : RemoteSurface, channel : String, message : String, title : String, files : Array[J], card : J) -> J {
+  let before = !(self.d("beginPost") is Some(Bool(true)))
+  if before && (files.length() > 0 || !(card is Null)) {
+    raise fail_(
+      "the station that runs this connect needs an update before chat_post can attach files or a card to a new conversation's first message",
+    )
+  }
+  let there = self.upload_files(files)
+  let begun = self.ask_call("begin", [js(channel), js(message), js(title), ja(there), card])
+  let thread = at(Some(begun), "thread")
+  let here = (self.here)()
+  match (str_of(at(thread, "channel")), str_of(at(thread, "threadTs"))) {
+    (Some(ch), Some(ts)) if before &&
+      here != "" &&
+      routed.contains(str_of(self.d("kind")).unwrap_or("")) &&
+      str_of(self.d("mode")) != Some("single-session") => {
+      let request = jo([
+        ("method", js(route_method)),
+        ("workspace", self.d("workspace").unwrap_or(undefined())),
+        ("connect", self.known.to_j()),
+        ("channel", js(ch)),
+        ("threadTs", js(ts)),
+        ("station", js(here)),
+      ])
+      |> drop_undefined
+      ignore((self.asker.ask)(self.station, request, NoBody))
+    }
+    _ => ()
+  }
+  begun
 }
 
 ///|
@@ -407,7 +465,32 @@ async fn RemoteSurface::call(self : RemoteSurface, name : String, args : Array[J
       js(hex(bytes))
     }
     "api" if self.has(name) => {
-      let got = self.ask_call("api", [js(s(0)), args.get(1).unwrap_or(Null)])
+      // A non-JSON answer (a Feishu message's image or file) comes as bytes beside its content type and disposition,
+      // given on as the Feishu connection gives it (`$feishuFile`).
+      let request = jo([
+        ("method", js(call_method)),
+        ("workspace", at(Some(self.described), "workspace").unwrap_or(undefined())),
+        ("connect", self.known.to_j()),
+        ("op", js("api")),
+        ("args", ja([js(s(0)), args.get(1).unwrap_or(Null)])),
+        ("whole", jb(true)),
+      ])
+      |> drop_undefined
+      let raw = (self.asker.ask)(self.station, request, NoBody)
+      let got = nullish_or_null(at(Some(raw.json), "result"))
+      match (raw.bytes, at(Some(got), "feishuFile")) {
+        (Some(bytes), Some(Obj(_) as ff)) => {
+          if bytes.length().to_double() > file_max {
+            raise fail_("that station's answer is too long")
+          }
+          return jo([
+            ("$feishuFile", js(hex(bytes))),
+            ("contentType", js(js_text(at(Some(ff), "contentType")))),
+            ("disposition", js(js_text(at(Some(ff), "disposition")))),
+          ])
+        }
+        _ => ()
+      }
       let answer = nullish_or_null(at(Some(got), "answer"))
       match (answer, at(Some(got), "files")) {
         (Obj(_) | Arr(_), Some(Arr(fs))) => {
@@ -422,7 +505,7 @@ async fn RemoteSurface::call(self : RemoteSurface, name : String, args : Array[J
     }
     "userName" | "userEmail" | "userOf" | "channelName" | "peopleIn" if self.has(name) => self.ask_call(name, [js(s(0))])
     "places" if self.has(name) => self.ask_call("places", [])
-    "begin" if self.has(name) => self.ask_call("begin", [js(s(0)), js(s(1)), js(str_of(args.get(2)).unwrap_or(""))])
+    "begin" if self.has(name) => self.begin(s(0), s(1), str_of(args.get(2)).unwrap_or(""), arr_of(args.get(3)).unwrap_or([]), nullish_or_null(args.get(4)))
     "edit" if self.has(name) => self.ask_call("edit", [args.get(0).unwrap_or(Null), js(s(1)), js(s(2))])
     "history" if self.has(name) => self.ask_call("history", [args.get(0).unwrap_or(Null), js(s(1)), args.get(2).unwrap_or(Null)])
     _ => self.get(name, args)
@@ -486,8 +569,8 @@ pub async fn CallAnswerer::answer(self : CallAnswerer, request : J, body : Bytes
   }
   let s = (i : Int) => js_text(args.get(i))
   match op {
-    "post" => {
-      let kept = arr_of(args.get(2)).unwrap_or([])
+    "post" | "begin" => {
+      let kept = arr_of(args.get(if op == "post" { 2 } else { 3 })).unwrap_or([])
       // Only what came for it, from where uploads keeps it.
       for f in kept {
         let p = js_text(at(Some(f), "path"))
@@ -501,8 +584,20 @@ pub async fn CallAnswerer::answer(self : CallAnswerer, request : J, body : Bytes
           spawn(async fn() { (fs.rm)(dir) })
         }
       }
-      let posted = (chat.call)("post", [args.get(0).unwrap_or(undefined()), js(s(1)), ja(kept), args.get(3).unwrap_or(undefined())])
-      result(posted)
+      if op == "post" {
+        let posted = (chat.call)("post", [args.get(0).unwrap_or(undefined()), js(s(1)), ja(kept), args.get(3).unwrap_or(undefined())])
+        result(posted)
+      } else {
+        if !(chat.has)("begin") {
+          raise fail_("that connect has no such call")
+        }
+        let title = match args.get(2) {
+          Some(Str(_) as t) => t
+          _ => js("")
+        }
+        let begun = (chat.call)("begin", [js(s(0)), js(s(1)), title, ja(kept), nullish_or_null(args.get(4))])
+        result(nullish_or_null(Some(begun)))
+      }
     }
     "download" => {
       let got = (chat.call)("download", [args.get(0).unwrap_or(undefined())])
@@ -511,6 +606,12 @@ pub async fn CallAnswerer::answer(self : CallAnswerer, request : J, body : Bytes
     }
     "api" => {
       let answer = (chat.call)("api", [js(s(0)), match args.get(1) { Some(Null) | None => jo([]); Some(p) => p }])
+      // (a file as the Feishu connection gives it: its bytes go as the answer's, as remote.ts `answerCall` sends them)
+      if str_of(at(Some(answer), "$feishuFile")) is Some(h) {
+        let bytes = unhex(h)
+        let file = jo([("contentType", js(js_text(at(Some(answer), "contentType")))), ("disposition", js(js_text(at(Some(answer), "disposition"))))])
+        return { json: jo([("result", jo([("feishuFile", file)]))]), bytes: Some(bytes) }
+      }
       let files = match chat.get_opt("answerFiles", [answer]) {
         Some(f) => f
         None => ja([])
@@ -661,6 +762,7 @@ pub fn RemoteConnects::surface(self : RemoteConnects, id : String) -> RemoteSurf
     (self.names)(js_text(at(Some(described), "kind"))),
     self.fs,
     self.log,
+    here=self.here,
   )
   self.surfaces[id] = made
   Some(made)

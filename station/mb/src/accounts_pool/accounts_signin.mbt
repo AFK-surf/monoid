@@ -7,6 +7,9 @@
 pub let login_browser_file : String = ".stillfail-login-state.json"
 
 ///|
+pub let default_new_subscription_max_concurrent_sessions : Int = 8
+
+///|
 /// `EMAIL_RE`: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.
 pub fn email_ok(s : String) -> Bool {
   if has_space(s) {
@@ -203,7 +206,7 @@ pub async fn Accounts::new_keyed_profile(
   self.making.remove(id)
   ignore(self.keep_check(id, check))
   match self.profile(id) {
-    Some(p) if p.runtime == "hermes" => self.after_sign_in(id)
+    Some(p) if p.runtime == Some("hermes") => self.after_sign_in(id)
     Some(_) =>
       self.background.spawn(async fn() {
         ignore(self.check(id, lang)) catch {
@@ -338,6 +341,27 @@ pub async fn Accounts::start_login(
   }
   let kind = access_kind(profile.raw)
   let kimi = kimi_signed_in(profile.raw)
+  if kind == "service" {
+    if borrowed(profile.raw) {
+      raise refusal(409, self.tr(lang, "station.share.borrowedEdit"))
+    }
+    let svc = jstr(jget(profile.get("access"), "service"))
+    if svc != Some("colab") {
+      raise refusal(400, self.tr(lang, "station.admin.loginSubscriptionOnly"))
+    }
+    let s = svc.unwrap()
+    self.log("info", "service login started from the admin page", [
+      ("profile", js(id)),
+      ("service", js(s)),
+      ("by", viewer.get("email").unwrap_or(jundef)),
+    ])
+    let fields = [("id", js(id)), ("service", js(s)), ("home", js(profile.home))]
+    match self.service_email(s, profile.home) {
+      Some(e) => fields.push(("email", js(e)))
+      None => ()
+    }
+    return self.ask("logins.startService", [jobj(fields), js(lang)])
+  }
   if kind != "subscription" && kind != "opencode-go" && !kimi {
     raise refusal(400, self.tr(lang, "station.admin.loginSubscriptionOnly"))
   }
@@ -357,10 +381,10 @@ pub async fn Accounts::start_login(
   if kimi {
     return self.ask("logins.startKimi", [home_job(id, profile.home), js(lang)])
   }
-  if profile.runtime == "cursor" {
+  if profile.runtime == Some("cursor") {
     return self.ask("logins.startCursor", [home_job(id, profile.home), js(lang)])
   }
-  if profile.runtime == "agy" {
+  if profile.runtime == Some("agy") {
     let enterprise = jget(profile.get("access"), "enterprise") == Some(Bool(true)) ||
       self.ask("agy.company", [
           js(
@@ -376,9 +400,12 @@ pub async fn Accounts::start_login(
     }
     return self.ask("logins.start", [jobj(fields), js(lang)])
   }
+  guard profile.runtime is Some(runtime) else {
+    raise refusal(400, self.tr(lang, "station.profile.loginUnsupported"))
+  }
   let mut email : String? = None
-  if profile.runtime == "claude" {
-    let from_home = self.account_email(profile.runtime, profile.home)
+  if runtime == "claude" {
+    let from_home = self.account_email(runtime, profile.home)
     let fallback = if email_ok(trim_js(profile.name)) {
       Some(trim_js(profile.name))
     } else {
@@ -396,7 +423,7 @@ pub async fn Accounts::start_login(
   }
   let fields = [
     ("id", js(id)),
-    ("runtime", js(profile.runtime)),
+    ("runtime", js(runtime)),
     ("home", js(profile.home)),
   ]
   match email {
@@ -416,10 +443,38 @@ pub async fn Accounts::new_login(
 ) -> JV {
   let id = "login-\{self.ctx.io.random_hex(4)}"
   let home = join_path([self.given.data, "homes", id])
+  match input.get("service") {
+    Some(Str(svc)) if svc != "" => {
+      if svc != "colab" {
+        raise refusal(400, "unknown service \{svc}")
+      }
+      self.pending[id] = {
+        runtime: None,
+        service: Some(svc),
+        access: None,
+        home,
+        by: viewer,
+        created: None,
+        error: None,
+      }
+      self.log("info", "service sign-in for a new profile started", [
+        ("login", js(id)),
+        ("service", js(svc)),
+        ("by", viewer.get("email").unwrap_or(jundef)),
+      ])
+      let job = self.ask("logins.startService", [
+        jobj([("id", js(id)), ("service", js(svc)), ("home", js(home))]),
+        js(lang),
+      ])
+      return jobj([("id", js(id)), ("job", job)])
+    }
+    _ => ()
+  }
   let access = input.get("access")
   if access == Some(Str("opencode-go")) {
     self.pending[id] = {
-      runtime: "claude",
+      runtime: None,
+      service: None,
       access: Some("opencode-go"),
       home,
       by: viewer,
@@ -435,7 +490,8 @@ pub async fn Accounts::new_login(
   }
   if access == Some(Str("kimi-code")) {
     self.pending[id] = {
-      runtime: "claude",
+      runtime: None,
+      service: None,
       access: Some("kimi-code"),
       home,
       by: viewer,
@@ -451,7 +507,8 @@ pub async fn Accounts::new_login(
   }
   if access == Some(Str("agy-enterprise")) {
     self.pending[id] = {
-      runtime: "agy",
+      runtime: Some("agy"),
+      service: None,
       access: Some("agy-enterprise"),
       home,
       by: viewer,
@@ -476,7 +533,7 @@ pub async fn Accounts::new_login(
   guard runtime_kind(input.get("runtime")) is Some(runtime) else {
     raise refusal(400, "unknown runtime \{text_of(input.get("runtime"))}")
   }
-  self.pending[id] = { runtime, access: None, home, by: viewer, created: None, error: None }
+  self.pending[id] = { runtime: Some(runtime), service: None, access: None, home, by: viewer, created: None, error: None }
   self.log("info", "sign-in for a new profile started", [
     ("login", js(id)),
     ("runtime", js(runtime)),
@@ -579,7 +636,19 @@ async fn Accounts::pending_settled(self : Accounts, id : String) -> Unit {
   }
   let email = match signed_in {
     Some(s) => jstr(s.get("email"))
-    None => if kimi { None } else { self.account_email(p.runtime, p.home) }
+    None =>
+      if kimi {
+        None
+      } else {
+        match p.service {
+          Some(svc) => self.service_email(svc, p.home)
+          None =>
+            match p.runtime {
+              Some(r) => self.account_email(r, p.home)
+              None => None
+            }
+        }
+      }
   }
   if gone() {
     return
@@ -589,11 +658,20 @@ async fn Accounts::pending_settled(self : Accounts, id : String) -> Unit {
   } else if kimi {
     kimi_code
   } else {
-    let s = slug(email.unwrap_or("\{p.runtime}-subscription"), 40)
-    if s == "" {
-      p.runtime
-    } else {
-      s
+    match p.service {
+      Some(svc) => {
+        let s = slug(email.unwrap_or(svc), 40)
+        if s == "" { svc } else { s }
+      }
+      None => {
+        let rt = p.runtime.unwrap_or("profile")
+        let s = slug(email.unwrap_or("\{rt}-subscription"), 40)
+        if s == "" {
+          rt
+        } else {
+          s
+        }
+      }
     }
   }
   let taken = self.taken_ids()
@@ -661,31 +739,37 @@ async fn Accounts::made_of_login(
     None =>
       if kimi {
         "Kimi Code"
-      } else if enterprise {
-        match email {
-          Some(e) => e
-          None => self.tr(lang, "station.profile.agyEnterpriseSubscription")
-        }
       } else {
-        match email {
-          Some(e) => e
+        match p.service {
+          Some(svc) => email.unwrap_or(if svc == "colab" { "Google Colab" } else { svc })
           None =>
-            self.tr(
-              lang,
-              match p.runtime {
-                "claude" => "station.profile.claudeSubscription"
-                "grok" => "station.profile.grokSubscription"
-                "cursor" => "station.profile.cursorSubscription"
-                "devin" => "station.profile.devinSubscription"
-                "agy" => "station.profile.agySubscription"
-                _ => "station.profile.chatgptSubscription"
-              },
-            )
+            if enterprise {
+              match email {
+                Some(e) => e
+                None => self.tr(lang, "station.profile.agyEnterpriseSubscription")
+              }
+            } else {
+              match email {
+                Some(e) => e
+                None =>
+                  match p.runtime {
+                    Some("claude") => self.tr(lang, "station.profile.claudeSubscription")
+                    Some("codex") => self.tr(lang, "station.profile.chatgptSubscription")
+                    Some("grok") => self.tr(lang, "station.profile.grokSubscription")
+                    Some("cursor") => self.tr(lang, "station.profile.cursorSubscription")
+                    Some("devin") => self.tr(lang, "station.profile.devinSubscription")
+                    Some("agy") => self.tr(lang, "station.profile.agySubscription")
+                    Some(r) => r
+                    None => profile_id
+                  }
+              }
+            }
         }
       }
   }
   let save = async fn() {
     self.save(p.by, "profile \{profile_id} from a sign-in", raw => {
+      let max_sessions = jint(default_new_subscription_max_concurrent_sessions)
       let made = match signed_in {
         Some(s) =>
           jobj([
@@ -701,6 +785,8 @@ async fn Accounts::made_of_login(
             ),
             ("home", js("homes/\{profile_id}")),
             ("env", Obj([])),
+            ("maxConcurrentSessions", max_sessions),
+            ("newAccountProtection", jbool(true)),
           ])
         None =>
           if kimi {
@@ -717,23 +803,44 @@ async fn Accounts::made_of_login(
               ),
               ("home", js("homes/\{profile_id}")),
               ("env", Obj([])),
+              ("maxConcurrentSessions", max_sessions),
+              ("newAccountProtection", jbool(true)),
             ])
           } else {
-            jobj([
-              ("id", js(profile_id)),
-              ("name", js(name)),
-              ("runtime", js(p.runtime)),
-              (
-                "access",
-                if enterprise {
-                  jobj([("kind", js("subscription")), ("enterprise", jbool(true))])
-                } else {
-                  jobj([("kind", js("subscription"))])
-                },
-              ),
-              ("home", js("homes/\{profile_id}")),
-              ("env", Obj([])),
-            ])
+            match p.service {
+              Some(svc) =>
+                jobj([
+                  ("id", js(profile_id)),
+                  ("name", js(name)),
+                  (
+                    "access",
+                    jobj([
+                      ("kind", js("service")),
+                      ("service", js(svc)),
+                    ]),
+                  ),
+                  ("home", js("homes/\{profile_id}")),
+                  ("env", Obj([])),
+                ])
+              None =>
+                jobj([
+                  ("id", js(profile_id)),
+                  ("name", js(name)),
+                  ("runtime", jopt(p.runtime)),
+                  (
+                    "access",
+                    if enterprise {
+                      jobj([("kind", js("subscription")), ("enterprise", jbool(true))])
+                    } else {
+                      jobj([("kind", js("subscription"))])
+                    },
+                  ),
+                  ("home", js("homes/\{profile_id}")),
+                  ("env", Obj([])),
+                  ("maxConcurrentSessions", max_sessions),
+                  ("newAccountProtection", jbool(true)),
+                ])
+            }
           }
       }
       let list = profiles_of_raw(raw)
@@ -1050,9 +1157,10 @@ pub async fn Accounts::renew_kimi(self : Accounts, id : String) -> Unit {
 ///|
 /// `afterSignIn`: a profile just signed in: checked and its allowance read, so its page shows them at once.
 fn Accounts::after_sign_in(self : Accounts, id : String) -> Unit {
+  self.auth_revoked.remove(id)
   let profile = self.profile(id)
   match profile {
-    Some(p) if p.runtime == "codex" && access_kind(p.raw) == "subscription" => {
+    Some(p) if p.runtime == Some("codex") && access_kind(p.raw) == "subscription" => {
       self.login_generation[id] = self.login_generation.get(id).unwrap_or(0) + 1
       self.codex_login(id, false, self.ctx.station_lang)
       self.background.track(async fn() {
@@ -1076,7 +1184,7 @@ fn Accounts::after_sign_in(self : Accounts, id : String) -> Unit {
   self.background.spawn(async fn() {
     let profile = self.profile(id)
     match profile {
-      Some(p) if p.runtime == "agy" && self.given.hub_profile_login_changed => {
+      Some(p) if p.runtime == Some("agy") && self.given.hub_profile_login_changed => {
         let run = async fn() { ignore(self.ask("hub.profileLoginChanged", [js(id)])) }
         run() catch {
           e =>
@@ -1090,7 +1198,7 @@ fn Accounts::after_sign_in(self : Accounts, id : String) -> Unit {
       _ => ()
     }
     match profile {
-      Some(p) if p.runtime == "codex" && self.given.codex && self.given.codex_login_changed => {
+      Some(p) if p.runtime == Some("codex") && self.given.codex && self.given.codex_login_changed => {
         let run = async fn() { ignore(self.ask("codex.loginChanged", [js(id)])) }
         run() catch {
           e =>

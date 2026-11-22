@@ -70,7 +70,8 @@ test "a tap however short is shown whole: its way in, then out" {
   let (x, y, w, _, _, _, colour) = s[0]
   assert_true(ripple_near(x + w / 2.0, 100.0) && ripple_near(y + w / 2.0, 25.0))
   let p = w / 2.0 / ripple_most()
-  assert_true(p > 0.7 && p <= 0.75, msg="progress \{p}")
+  let want_p = 0.5 + 0.5 * @ui.Leave.at(0.5)
+  assert_true(p > want_p - 0.08 && p <= want_p + 0.02, msg="progress \{p} (want ~\{want_p})")
   assert_eq(colour & 0xFFL, (26.0 * (1.0 - (p - 0.4) / 0.6)).round().to_int64())
   t.run_for(@motion.ripple_exit_ms)
   assert_eq(t.drawn_shadows().length(), 0)

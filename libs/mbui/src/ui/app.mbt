@@ -60,14 +60,31 @@ priv struct Bench {
 }
 
 ///|
+/// LEGACY immediate-mode entry; new apps use `@ui.run`.
 /// Opens the window and runs `view` for every frame until it closes: the window a tree made once, `tree` (`view` the
 /// old frame around the old views it holds, put where `view` says: old_views_here), else `view` its one old view
 /// (view_host.mbt). `theme`: the theme the tree's nodes are drawn in (set_view_app's).
-pub fn run(title : String, view : (Ctx) -> Unit, tree? : (@view.View) -> Unit, theme? : () -> Theme) -> Unit {
+pub fn run_legacy_ctx(
+  title : String,
+  view : (Ctx) -> Unit,
+  tree? : (@view.View) -> Unit,
+  theme? : () -> Theme,
+  transitions_only? : Bool,
+) -> Unit {
   // (an app's run on a host: what faults is told and its boundary shows it, the app going on: @view's boundary.mbt)
   @view.faults_stop.val = false
   match tree {
-    Some(make) => set_view_app(make, around=view, theme?)
+    Some(make) => {
+      let made = if transitions_only.unwrap_or(true) {
+        fn(root : @view.View) {
+          root.transitions_only() |> ignore
+          make(root)
+        }
+      } else {
+        make
+      }
+      set_view_app(made, around=view, theme?)
+    }
     None => set_view_app(fn(root) { old(root, view).grow(Is(1.0)) |> ignore }, theme?)
   }
   start_host_window(title)
@@ -75,15 +92,41 @@ pub fn run(title : String, view : (Ctx) -> Unit, tree? : (@view.View) -> Unit, t
 
 ///|
 /// Opens the window and runs `tree`, made once, until it closes (`theme`: the theme its nodes are drawn in, followed
-/// as it changes). No old frame is built around it.
-pub fn run_tree(title : String, tree : (@view.View) -> Unit, theme? : () -> Theme) -> Unit {
+/// as it changes). No old frame is built around it. `transitions_only` defaults to true so changes settle at once
+/// unless wrapped in `@view.transition`.
+pub fn run(
+  title : String,
+  tree : (@view.View) -> Unit,
+  theme? : () -> Theme,
+  transitions_only? : Bool = true,
+) -> Unit {
   @view.faults_stop.val = false
-  set_view_app(tree, theme?)
+  let made = if transitions_only {
+    fn(root : @view.View) {
+      root.transitions_only() |> ignore
+      tree(root)
+    }
+  } else {
+    tree
+  }
+  set_view_app(made, theme?)
   start_host_window(title)
 }
 
 ///|
-/// The window `title` opened on the host, its frames and inputs handed to what was set to run in it (run, run_tree).
+/// Compatibility alias for `run`.
+pub fn run_tree(
+  title : String,
+  tree : (@view.View) -> Unit,
+  theme? : () -> Theme,
+  transitions_only? : Bool = true,
+) -> Unit {
+  run(title, tree, theme?, transitions_only~)
+}
+
+///|
+/// The window `title` opened on the host, its frames and inputs handed to what was set to run in it (run, run_tree,
+/// run_legacy_ctx).
 fn start_host_window(title : String) -> Unit {
   bench.host = @hostapi.bench_mode()
   // (the app's own bench, bench_app: the framework's does not run beside it)
@@ -118,6 +161,26 @@ pub fn after_frame(f : () -> Unit) -> Unit {
     frame_afters.val.push(f)
   } else {
     f()
+  }
+}
+
+///|
+// What waits for a frame actually drawn to end (after_drawn_frame): never run between frames.
+let drawn_frame_afters : Ref[Array[() -> Unit]] = Ref([])
+
+///|
+/// Run at the end of the next frame drawn (or the one being drawn now): never at once, nor at the end of an outside
+/// event between frames (after_frame's), so what it does is of something a frame has drawn.
+pub fn after_drawn_frame(f : () -> Unit) -> Unit {
+  drawn_frame_afters.val.push(f)
+}
+
+///|
+fn drawn_frame_afters_run() -> Unit {
+  while !drawn_frame_afters.val.is_empty() {
+    let pending = drawn_frame_afters.val
+    drawn_frame_afters.val = []
+    for f in pending { f() }
   }
 }
 
@@ -222,6 +285,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // (what comes before the frame's own work, timed for the probe: the window's tree brought, its nodes built and laid
   // out, and what came from outside handed on as the frame begins, frame_drawn's start)
   let tw = work_now()
+  let cw = work_thread_cpu()
   view_frame(w, h, scale, t)
   // what the window's tree shaped as it was laid out handed to the host to draw ahead now, while the old views are
   // built and the frame painted, not after all of it (text.mbt glyphs_ahead: when the work is done, not what is drawn)
@@ -235,6 +299,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
     c.wants_frame = true
   }
   let t3 = work_now()
+  let c3 = work_thread_cpu()
   h_present(c.inst, c.ninst)
   if perf_touch_at.val >= 0.0 {
     perf_touch_submitted(work_now())
@@ -247,6 +312,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
     c.trim_images()
   }
   let t4 = work_now()
+  let c4 = work_thread_cpu()
   c.t_present = t4 - t3
   if bench.mode > 0 {
     bench_step(c, t0 - tw, t3 - tw, t4 - t3)
@@ -255,7 +321,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // counts it: perf.mbt)
   perf_tree_framed(t0 - tw)
   // (the frame into the window thread's journal, the interval it closes looked over: journal.mbt)
-  journal_frame(c, tw, t0, t3, t4)
+  journal_frame(c, tw, t0, t3, t4, cw~, c3~, c4~)
   slow_probe(c, t, t3 - t0, t4 - t3, tree=t0 - tw)
   perf_log(c, t, t0 - tw, t3 - tw, t4 - t3)
   // (what the stacks the window's tree holds say of the frame, as it ends: built whole, painted alone or of its looks
@@ -269,6 +335,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // (what the window's tree has going: drawn as the clock goes; what ends at a moment, woken then: view_host.mbt)
   view_frame_end(c)
   frame_afters_run()
+  drawn_frame_afters_run()
   // what of the widgets changed, for a screen reader reading them, as the frame left them (its layers, its focus, where
   // what a page in the hand moved is: a11y.mbt)
   c.a11y_after_paint()
@@ -325,7 +392,8 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
     @hostapi.frame_awaiting(rt.awaiting(), what)
   }
   frame_afters_run()
-  journal_frame_ended(t4)
+  drawn_frame_afters_run()
+  journal_frame_ended(t4, c4~)
   // (as many as were set by its end: what is set after, a cause of the next: frame_quiet)
   frame_end_sets.val = @signals.sets_said()
   frame_running.val = false
@@ -606,14 +674,17 @@ fn frame_body(c : Ctx, w : Double, h : Double, scale : Double, t : Double, tell?
   // (those that follow where lists stand, kept: told again as a list moves with nothing built, list_scroll_fast.mbt)
   list_fast_tells.clear()
   list_fast_tells.append(tells_once(c.tells.filter(fn(t) { tells_follow_lists.contains(t.0) })))
+  list_fast_tells.release_unused(placeholder=tell_run_gone)
   let tell_ids = c.tells.map(fn(t) { t.0 })
   let tells = tells_once(c.tells)
   c.tells.clear()
+  c.tells.release_unused(placeholder=tell_gone)
   // (what is told changes what the next frame builds, though nothing came from outside: built again, frame_watch.mbt)
   looks_told(tell_ids, c.told.map(fn(t) { t.0 }))
   // what any of its builds said to tell, once each (Ctx::tell)
   let told = c.told.copy()
   c.told.clear()
+  c.told.release_unused(placeholder=tell_gone)
   if tell {
     // (each one change, as a press's handler is: what it writes told once all of it is written, never what reads it
     // run between two of its writes and seeing half of it; an after_build's (a host's notice tapped, opening its page)
@@ -809,7 +880,9 @@ pub fn Ctx::after_build(self : Ctx, key : String, f : () -> Unit) -> Unit {
 /// whose rows stay: list_scroll_fast.mbt): `f` reads where the lists stand as it is told (a ListReader), not as built.
 pub fn Ctx::after_build_or_scroll(self : Ctx, key : String, f : () -> Unit) -> Unit {
   if building.val {
-    tells_follow_lists[self.id("\u{2}after-build/" + key)] = true
+    let id = self.id("\u{2}after-build/" + key)
+    tells_follow_lists[id] = true
+    island_said_id(1, id)
   }
   self.after_build(key, f)
 }
@@ -864,6 +937,7 @@ fn frame_build(c : Ctx, w : Double, h : Double) -> Int {
   }
   // (what an earlier build of this frame said to tell outside is let go: this one says it again, or not)
   c.tells.clear()
+  c.tells.release_unused(placeholder=tell_gone)
   drawing_begin()
   desk_build_start()
   c.built_ids.clear()
@@ -1148,6 +1222,12 @@ fn pointer_event_now(
   // (a move with more of its batch after it: said on the tape, given again so: inputrec.mbt)
   if more {
     args.push(1.0)
+  }
+  // (the secondary or middle button on what takes them whole, down to up (View::on_buttons): its alone, no menu's nor
+  // a press's; a middle button nothing takes, nothing; a move told it too, while one is held on it, and on as ever)
+  if view_buttons_took(kind, x, y, button) {
+    input_taped("pointer", h_event_time(), args)
+    return
   }
   // (what the pointer is over, the tree brought to the event's moment for it: once a batch of moves, at its last, what
   // the samples before it did laid out with it, touches.mbt)
@@ -2050,10 +2130,12 @@ fn wheel_routed(x : Double, y : Double, dx : Double, dy : Double, phase : Int, f
     old_wheel(x, y, dx, dy, phase, for_back~, island=Some(island))
     true
   }
-  // (a wheel's notch said so to the tree's: a page's list of it eases it in, as an old view's list does)
+  // (a wheel's notch said so to the tree's: a page's list of it eases it in, as an old view's list does; momentum
+  // coasting after fingers lift said so as well)
   let notch = if phase % 16 == 4 { @view.wheel_notch } else { 0 }
+  let momentum = if phase % 16 == 3 { @view.wheel_momentum } else { 0 }
   wheel_old_target.val = 0
-  if view_wheel(x, y, dx, dy, mods | notch, old~) {
+  if view_wheel(x, y, dx, dy, mods | notch | momentum, old~) {
     if !old_took.val {
       wheel_went.val = 1
       input_taped("wheel", h_event_time(), [x, y, dx, dy, phase.to_double()])
@@ -3147,3 +3229,12 @@ fn probe_reset(t : Double) -> Unit {
   probe_channels.clear()
   probe_since.val = t
 }
+
+///|
+/// What a slot of a frame's tells past their end holds once they are told (Array::release_unused): none. An array
+/// emptied keeps what its slots held, counted as held (native's counting, moonbitlang/core's Array::clear): each tell,
+/// and what it holds (a page's, let go of since), till as many are said again.
+let tell_gone : (Int, () -> Unit) = (0, fn() {  })
+
+///|
+let tell_run_gone : () -> Unit = fn() {  }

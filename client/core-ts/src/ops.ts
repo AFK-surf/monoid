@@ -87,9 +87,12 @@ export const PARAMS: Record<string, string> = {
   "move.back": "from:string module?:string item?:string all?:boolean",
   "move.stop": "",
   "station.restart": "",
+  "station.resumeInterrupted": "keys?:strings",
+  "station.dismissInterrupted": "keys?:strings",
   "context.setAfresh": "afreshWhenCold?:boolean afreshAbove?:number",
   "diagnostics.setLogs": "logs:boolean",
   "elevation.set": "on:boolean",
+  "screenService.set": "on:boolean",
   "session.warm": "key:string",
   "session.evict": "key:string",
   "session.compact": "key:string",
@@ -130,6 +133,7 @@ export const PARAMS: Record<string, string> = {
   "automaticDecisions.review": "",
   "automaticDecisions.policy": "input:json",
   "archiving.save": "days:number reviewed:boolean slackDays:number",
+  "autoChats.save": "enabled:boolean",
   "connect.create": "input?:json id?:string",
   "connect.put": "id:string input?:json",
   "connect.delete": "id:string",
@@ -168,7 +172,7 @@ export const PARAMS: Record<string, string> = {
   "profile.login": "id:string",
   "profile.cancelLogin": "id:string",
   "profile.loginCode": "id:string code?:string",
-  "login.new": "runtime?:string access?:string",
+  "login.new": "runtime?:string access?:string service?:string",
   "login.code": "id:string code?:string",
   "login.drop": "id:string",
   "profile.loginBrowser": "id:string",
@@ -236,6 +240,7 @@ export const PARAMS: Record<string, string> = {
   "workspace.setRole": "workspace:string member:string role?:string",
   "workspace.removeMember": "workspace:string member:string",
   "workspace.enroll": "workspace:string name?:string",
+  "workspace.createProvisionKey": "workspace:string name?:string days?:number",
   "workspace.renameStation": "workspace:string station:string name?:string emoji?:string icon?:string",
   "workspace.removeStation": "workspace:string station:string",
   "workspace.feedbackReply": "workspace:string id:string text:string",
@@ -265,6 +270,8 @@ export const PARAMS: Record<string, string> = {
   "admin.relayTokenRevoke": "id:string",
   "admin.relayPut": "url:string name:string target?:string",
   "admin.relayRemove": "url:string",
+  "admin.createKey": "name:string days?:number",
+  "admin.revokeKey": "id:string",
 };
 
 /// Writes that are not shown as under way (`doing`): quick and quiet.
@@ -395,6 +402,10 @@ function stationOp(name: string, params: unknown): Request | null {
     // The station started again by its launcher (its routes/network.ts), managers only.
     case "station.restart":
       return op("POST", () => "/station/restart", null, OVERVIEW);
+    case "station.resumeInterrupted":
+      return op("POST", () => "/sessions/resume-interrupted", p.has("keys") ? p.pick(["keys"]) : null, OVERVIEW);
+    case "station.dismissInterrupted":
+      return op("POST", () => "/sessions/dismiss-interrupted", p.has("keys") ? p.pick(["keys"]) : null, OVERVIEW);
     // The station's default for a cold cache and its estimated USD threshold, unless the chat chose (`session.settings`
     // `afresh`); its station's routes/context.ts, set by the workspace's owners and admins.
     case "context.setAfresh":
@@ -407,6 +418,10 @@ function stationOp(name: string, params: unknown): Request | null {
     // Windows there, then the station restarted; set by the workspace's owners and admins.
     case "elevation.set":
       return op("PUT", () => "/elevation", p.pick(["on"]), OVERVIEW);
+    // Whether a Windows station installs the optional LocalSystem screen service (screens/service.ts) so human remote
+    // views can see and click UAC prompts, elevated windows, and the lock screen; set by workspace owners and admins.
+    case "screenService.set":
+      return op("PUT", () => "/screen-service", p.pick(["on"]), OVERVIEW);
     case "session.stop":
       return op("POST", () => `/sessions/${p.at("key")}/stop`, null, process("key"));
     case "session.cancelRetry":
@@ -549,6 +564,8 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("PUT", () => "/automatic-decisions/policy", p.has("input") ? p.v.input : {}, OVERVIEW);
     case "archiving.save":
       return op("PUT", () => "/archiving", p.pick(["days", "slackDays", "reviewed"]), OVERVIEW);
+    case "autoChats.save":
+      return op("PUT", () => "/auto-chats", p.pick(["enabled"]), OVERVIEW);
     case "automaticDecisions.refresh":
       return op("POST", () => "/automatic-decisions/refresh", {}, OVERVIEW);
     case "connect.create":
@@ -644,7 +661,7 @@ function stationOp(name: string, params: unknown): Request | null {
     case "profile.loginCode":
       return op("POST", () => `/profiles/${p.at("id")}/login-code`, p.pick(["code"]), OVERVIEW);
     case "login.new":
-      return op("POST", () => "/logins", p.pick(["runtime", "access"]), { kind: "login", id: null, from: null });
+      return op("POST", () => "/logins", p.pick(["runtime", "access", "service"]), { kind: "login", id: null, from: null });
     // A code is taken only while its sign-in waits for one (or, a company's Google account with no licence, for its
     // Google Cloud project, given the same way).
     case "login.code":
@@ -845,6 +862,10 @@ function cloudOp(name: string, params: unknown): Request | null {
       return op("DELETE", () => `${ws()}/members/${p.at("member")}`, null);
     case "workspace.enroll":
       return op("POST", () => `${ws()}/enrollments`, p.pick(["name"]));
+    // A provisioning key for a console that enrolls the stations of machines it makes (web connect `mode=provision`):
+    // in a locked workspace with the lock's head as this device holds it, as an enrollment's (core/execute.ts).
+    case "workspace.createProvisionKey":
+      return op("POST", () => `${ws()}/provision-keys`, p.pick(["name", "days"]));
     case "workspace.renameStation":
       return op("PATCH", () => `${ws()}/stations/${p.at("station")}`, p.pick(["name", "emoji", "icon"]));
     case "workspace.removeStation":
@@ -911,6 +932,10 @@ function cloudOp(name: string, params: unknown): Request | null {
       return op("POST", () => "/v1/admin/relays/put", p.pick(["url", "name", "target"]));
     case "admin.relayRemove":
       return op("POST", () => "/v1/admin/relays/remove", p.pick(["url"]));
+    case "admin.createKey":
+      return op("POST", () => "/v1/admin/keys", p.pick(["name", "days"]));
+    case "admin.revokeKey":
+      return op("POST", () => `/v1/admin/keys/${p.at("id")}/revoke`, null);
     default:
       return null;
   }

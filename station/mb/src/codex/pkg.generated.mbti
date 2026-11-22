@@ -6,26 +6,26 @@ import {
 }
 
 // Values
-pub fn classify_error(@jsjson.JValue?, Array[Int32]) -> String
+pub fn classify_error(@jsjson.JValue?, String) -> String
 
-pub fn compacted(Array[Int32], @jsjson.JValue) -> Bool
+pub fn compacted(String, @jsjson.JValue) -> Bool
 
 pub let delta_methods : Array[String]
 
-pub fn events(Live, Array[Int32], @jsjson.JValue) -> Array[@jsjson.JValue]
+pub fn events(Live, String, @jsjson.JValue) -> Array[@jsjson.JValue]
 
 pub fn outcome(@jsjson.JValue) -> @jsjson.JValue
 
-pub fn tools_lost(Array[Int32], @jsjson.JValue) -> Array[Int32]?
+pub fn tools_lost(String, @jsjson.JValue) -> String?
 
 // Errors
 
 // Types and methods
 pub(all) struct Live {
-  open : Array[Array[Int32]]
+  open : Array[String]
   mut phase : String?
 }
-pub fn Live::feed(Self, Array[Int32], @jsjson.JValue) -> Array[@jsjson.JValue]
+pub fn Live::feed(Self, String, @jsjson.JValue) -> Array[@jsjson.JValue]
 pub fn Live::new() -> Self
 pub fn Live::of_state(@jsjson.JValue) -> Self
 pub fn Live::state(Self) -> @jsjson.JValue

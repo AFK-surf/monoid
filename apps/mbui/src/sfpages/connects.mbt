@@ -266,7 +266,7 @@ pub fn connects_node(
     },
     on_back~,
     frame~,
-    about=fn() { @sf.t("web-pages.connects.about", args=[("name", "still.fail")]) },
+    about=fn() { @sf.t("web-pages.connects.about", args=[("name", @sf.product())]) },
     actions~,
     said?,
     width?,
@@ -684,9 +684,10 @@ fn cn_row_node(
     )
   })
   |> ignore
-  // (its lead a 28x28 face across the row's middle; a platform's mark said once on a row, where the row leads with it,
-  // else before its team)
+  // (its lead a 28x28 face across the row's middle when pictured, else its platform mark on the first line; a platform's
+  // mark said once on a row, where the row leads with it, else before its team)
   r.pick(fn() { image.get() is Some(_) }, fn(p, pictured) {
+    let lead_make = fn(l) { cn_avatar_node(l, core, id, name, fn() { image.get() }, kind, stint) }
     @sf.link_row_node(
       p,
       name,
@@ -694,8 +695,8 @@ fn cn_row_node(
       note=how,
       note_cut=true,
       chevron=false,
-      lead=LeadMade(fn(l) { cn_avatar_node(l, core, id, name, fn() { image.get() }, kind, stint) }),
-      face=true,
+      lead=if pictured { LeadMade(lead_make) } else { LeadLine(lead_make) },
+      face=pictured,
       // its Slack workspace after its name (short of room, its name kept: its team leaves its line first)
       title_after=fn(a) {
         a.drops(Is(cn_drop_team)) |> ignore
@@ -842,7 +843,7 @@ fn cn_waiting_app_node(
     let (name, st, id) = @signals.untracked(fn() { (text(av(), "name"), station(), app_id()) })
     confirm(
       @sf.t("web-pages.settings.stations.removeConfirm", args=[("name", name)]),
-      @sf.t("web-pages.connects.removeBody", args=[("name", "still.fail")]),
+      @sf.t("web-pages.connects.removeBody", args=[("name", @sf.product())]),
       @sf.t("android-settings.members.remove"),
       danger=true,
       fn() {
@@ -863,14 +864,13 @@ fn cn_waiting_app_node(
     note=where_,
     note_cut=true,
     goes=false,
-    lead=LeadMade(fn(l) {
+    lead=LeadLine(fn(l) {
       l.box(fn(k) {
         @sf.style_node(k, fn() { cn_kind_box })
         @sf.drawable_node(k, "slack", cn_waiting_mark) |> ignore
       })
       |> ignore
     }),
-    face=true,
     // its Slack workspace after its name, no mark again (the row leads with Slack's: a platform's mark said once)
     title_after=fn(t) {
       t.drops(Is(cn_drop_team)) |> ignore
@@ -1028,7 +1028,7 @@ let cn_more_icon : Double = 16.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let cn_kind_box : @ui.Style = @ui.css("w=S7 h=S7 align=ACenter justify=JCenter")
+let cn_kind_box : @ui.Style = @ui.css("w=S7 align=ACenter justify=JCenter")
 
 ///|
 /// The filter, as wide as what it says, 8 further under the head than the head's own room, where the web's is

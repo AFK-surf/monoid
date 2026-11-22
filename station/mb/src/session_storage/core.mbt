@@ -11,13 +11,23 @@ pub struct Storage {
   /// cold.ts `followed`, `rooms`.
   followed : Map[String, (Double, String?)]
   rooms : Map[String, String?]
+  /// When each room in `rooms` was found: one found is kept for as long as a followed link (`followed_ms`).
+  priv rooms_at : Map[String, Double]
+  /// When following each path failed (cold.ts `canonical`'s rejection): not followed again for as long as a followed
+  /// link is kept, and taken meanwhile as never followed (in use).
+  priv follow_failed : Map[String, Double]
+  /// The station's sessions directory, followed: found once, as it is not moved while the station runs.
+  priv sessions_real : Ref[String?]
   /// clones.ts: by workspace (`""` for none), oldest first; and whether the leftovers were swept.
   clones : Map[String, Array[Clone]]
   mut swept : @effect.Deferred[Unit]?
   /// agent-home.ts `leftAlone`.
   left_alone : Set[String]
-  /// The tasks started that go on after their call (a clone): awaited by `settled`.
+  /// The tasks started that go on after their call (a clone, a link followed): awaited by `settled`. Only those still
+  /// running are kept (`track_going`).
   going : Array[@effect.Fiber[Unit]]
+  /// The paths being followed in the background (`followed_now`): one fiber a path at once.
+  priv following : Set[String]
 }
 
 ///|
@@ -28,11 +38,30 @@ pub fn Storage::new(st : Station, fs : Files) -> Storage {
     reads: Ref::new(0),
     followed: {},
     rooms: {},
+    rooms_at: {},
+    follow_failed: {},
+    sessions_real: Ref::new(None),
     clones: {},
     swept: None,
     left_alone: Set::new(),
     going: [],
+    following: Set([]),
   }
+}
+
+///|
+/// A task that goes on after its call kept in `going`, those that ended let go first: `going` holds what still runs,
+/// not every task an upkeep round ever started.
+fn Storage::track_going(self : Storage, f : @effect.Fiber[Unit]) -> Unit {
+  keep_running(self.going, f)
+}
+
+///|
+fn keep_running(going : Array[@effect.Fiber[Unit]], f : @effect.Fiber[Unit]) -> Unit {
+  going.retain(x => !x.is_done())
+  // (`retain` leaves what it took out in the slots past the end, still held)
+  going.release_unused(placeholder=f)
+  going.push(f)
 }
 
 ///|
@@ -41,9 +70,19 @@ async fn Storage::ask(self : Storage, name : String, args : Array[Json]) -> Json
 }
 
 ///|
+/// Runs an operation on the threads store with `now` synced and `sent`/`requested` flushed afterwards.
+fn[T] Storage::with_threads(self : Storage, f : (@store_threads.Store) -> T raise) -> T raise {
+  self.st.threads.set_now(self.st.hub.now())
+  errdefer (self.st.flush_threads)()
+  let r = f(self.st.threads)
+  (self.st.flush_threads)()
+  r
+}
+
+///|
 /// The station's clock (`hub.now()`, `wall.now()`).
-async fn Storage::now(self : Storage) -> Double {
-  as_num(Some(self.ask("hub.now", []))).unwrap_or(0.0)
+fn Storage::now(self : Storage) -> Double {
+  self.st.hub.now()
 }
 
 ///|
@@ -54,11 +93,11 @@ async fn Storage::log(self : Storage, level : String, part : String, message : S
 
 ///|
 /// `hub.store.getSession(key)`: None where there is none.
-async fn Storage::session(self : Storage, key : String) -> Json? {
-  some_of(self.ask("store.getSession", [js(key)]))
+fn Storage::session(self : Storage, key : String) -> Json? raise {
+  some_of(self.st.store.get_session(key))
 }
 
 ///|
-async fn Storage::data_dir(self : Storage) -> String {
-  str(self.ask("hub.config", []), "dataDir").unwrap_or("")
+fn Storage::data_dir(self : Storage) -> String {
+  str(self.st.hub.config(), "dataDir").unwrap_or("")
 }

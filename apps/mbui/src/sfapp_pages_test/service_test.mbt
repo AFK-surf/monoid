@@ -181,7 +181,7 @@ test "a service's page as the width moves its bar under it and back (a finger's,
     fn(_) {  },
     tree=fn(root) {
       @sf.set_words(fill)
-      @sfpages.service_view_node(root, src, "ws1/st1", "j-web", now, fn() { root.window().0 })
+      @sfpages.service_view_node(root, src, "ws1/st1", "j-web", now, fn() { root.window_w() })
     },
     w=1100.0,
     h=800.0,

@@ -1,12 +1,17 @@
 // scripts/delta.ts's search and records in C: the suffix array (SA-IS), the 3-byte buckets and bsdiff's matching, each
 // written as delta.ts writes it (read that file for the why of every step), deflating the records in 1 MiB chunks.
 // delta.ts compiles it once (ensureNativeDelta) and hands it the old and made bytes and the runs it found, falling
-// back to its own search where there is no C compiler or zlib.
-//   delta-fast OLD MADE RUNS OUT
+// back to its own search where there is no C compiler or zlib. Where zlib's header is not installed (no zlib1g-dev),
+// it compiles with -DDELTA_DLOPEN_ZLIB and loads the system's libz at run time (load_zlib).
+//   delta-fast [--verify] OLD MADE RUNS OUT
+//   delta-fast --files [--verify] OLD MADE FILES OUT
+//   delta-fast --check-only OLD MADE CHUNKS
 // RUNS: the runs found (wholeFiles, sameBlocks), in delta.ts's order (by made, but for a block sameBlocks followed back
 // over a run found before it, which the search takes as delta.ts's does), 12 bytes each, little-endian
-// { u32 made; u32 old; u32 len }; empty: none (the whole old blob sorted). OUT: the delta's chunks
-// { u32 raw_len; u32 packed_len; raw deflate }, without the header or the end chunk.
+// { u32 made; u32 old; u32 len }; empty: none (the whole old blob sorted).
+// FILES: the old blob's file ranges, 8 bytes each, little-endian { u32 at; u32 len } (empty: no wholeFiles, only
+// sameBlocks); delta-fast computes wholeFiles and sameBlocks itself in C before sorting and searching.
+// OUT: the delta's chunks { u32 raw_len; u32 packed_len; raw deflate }, without the header or the end chunk.
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
@@ -17,16 +22,105 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifndef DELTA_DLOPEN_ZLIB
 #include <zlib.h>
+#else
+// zlib's ABI (1.2 and 1.3), without its header: deflateInit2_/inflateInit2_ are given ZLIB_VERSION and
+// sizeof(z_stream), and refuse a libz of another major version or another z_stream, so a mismatch fails, never quietly.
+#include <dlfcn.h>
+typedef unsigned char Bytef;
+typedef unsigned int uInt;
+typedef unsigned long uLong;
+typedef void *voidpf;
+typedef voidpf (*alloc_func)(voidpf opaque, uInt items, uInt size);
+typedef void (*free_func)(voidpf opaque, voidpf address);
+struct internal_state;
+typedef struct z_stream_s {
+  const Bytef *next_in;
+  uInt avail_in;
+  uLong total_in;
+  Bytef *next_out;
+  uInt avail_out;
+  uLong total_out;
+  const char *msg;
+  struct internal_state *state;
+  alloc_func zalloc;
+  free_func zfree;
+  voidpf opaque;
+  int data_type;
+  uLong adler;
+  uLong reserved;
+} z_stream;
+#define Z_OK 0
+#define Z_STREAM_END 1
+#define Z_FINISH 4
+#define Z_DEFLATED 8
+#define Z_DEFAULT_STRATEGY 0
+#define ZLIB_VERSION "1.2.11"
+#endif
 
 #define CHUNK (1 << 20)
 #define PREFIXES (1 << 24)
 #define PREFIXED_FROM (1 << 20)
+#define WINDOW 256
+#define BLOCK 256
+#define HASH_MUL 0x01000193u
 
 static void die(const char *what) {
   fprintf(stderr, "delta-fast: %s%s%s\n", what, errno ? ": " : "", errno ? strerror(errno) : "");
   exit(1);
 }
+
+#ifdef DELTA_DLOPEN_ZLIB
+static struct {
+  int (*deflateInit2_)(z_stream *, int, int, int, int, int, const char *, int);
+  uLong (*deflateBound)(z_stream *, uLong);
+  int (*deflateReset)(z_stream *);
+  int (*deflate)(z_stream *, int);
+  int (*deflateEnd)(z_stream *);
+  int (*inflateInit2_)(z_stream *, int, const char *, int);
+  int (*inflateReset)(z_stream *);
+  int (*inflate)(z_stream *, int);
+  int (*inflateEnd)(z_stream *);
+} zf;
+
+// (a function pointer from dlsym's void *, copied as POSIX has it: no cast between object and function pointers)
+#define ZSYM(lib, name) do { \
+    void *f_ = dlsym((lib), #name); \
+    if (!f_) { errno = 0; die("libz symbol missing: " #name); } \
+    memcpy(&zf.name, &f_, sizeof zf.name); \
+  } while (0)
+
+static void load_zlib(void) {
+  static int loaded;
+  if (loaded) return;
+  static const char *const names[] = { "libz.so.1", "libz.so", "libz.1.dylib" };
+  void *lib = NULL;
+  for (size_t i = 0; !lib && i < sizeof names / sizeof names[0]; i++) lib = dlopen(names[i], RTLD_NOW);
+  if (!lib) { errno = 0; die("libz not found (libz.so.1, libz.so, libz.1.dylib)"); }
+  ZSYM(lib, deflateInit2_);
+  ZSYM(lib, deflateBound);
+  ZSYM(lib, deflateReset);
+  ZSYM(lib, deflate);
+  ZSYM(lib, deflateEnd);
+  ZSYM(lib, inflateInit2_);
+  ZSYM(lib, inflateReset);
+  ZSYM(lib, inflate);
+  ZSYM(lib, inflateEnd);
+  loaded = 1;
+}
+
+#define deflateInit2(s, level, method, bits, mem, strategy) \
+  (load_zlib(), zf.deflateInit2_((s), (level), (method), (bits), (mem), (strategy), ZLIB_VERSION, (int)sizeof(z_stream)))
+#define inflateInit2(s, bits) (load_zlib(), zf.inflateInit2_((s), (bits), ZLIB_VERSION, (int)sizeof(z_stream)))
+#define deflateBound(s, n) zf.deflateBound((s), (n))
+#define deflateReset(s) zf.deflateReset(s)
+#define deflate(s, f) zf.deflate((s), (f))
+#define deflateEnd(s) zf.deflateEnd(s)
+#define inflateReset(s) zf.inflateReset(s)
+#define inflate(s, f) zf.inflate((s), (f))
+#define inflateEnd(s) zf.inflateEnd(s)
+#endif
 
 static void *alloc(size_t n) {
   void *p = malloc(n ? n : 1);
@@ -151,6 +245,204 @@ static int32_t *prefix_starts(const uint8_t *sorted, int32_t m) {
 
 typedef struct { int64_t made, old, len; } Run;
 typedef struct { int64_t start, end; } Span;
+
+typedef struct { Run *data; int64_t len, cap; } RunVec;
+
+static void runs_push(RunVec *v, Run r) {
+  if (v->len == v->cap) {
+    v->cap = v->cap ? v->cap * 2 : 64;
+    Run *p = realloc(v->data, (size_t)v->cap * sizeof(Run));
+    if (!p) { errno = ENOMEM; die("out of memory"); }
+    v->data = p;
+  }
+  v->data[v->len++] = r;
+}
+
+static uint32_t roll_hash(const uint8_t *b, int len) {
+  uint32_t h = 0;
+  for (int i = 0; i < len; i++) h = h * HASH_MUL + b[i];
+  return h;
+}
+
+static uint32_t hash_pow(int len) {
+  uint32_t top = 1;
+  for (int i = 0; i < len; i++) top *= HASH_MUL;
+  return top;
+}
+
+static int is_flat(const uint8_t *b, int len) {
+  uint8_t first = b[0];
+  for (int i = 1; i < len; i++) if (b[i] != first) return 0;
+  return 1;
+}
+
+static size_t next_pow2(size_t n) {
+  size_t c = 16;
+  while (c < n) c <<= 1;
+  return c;
+}
+
+// --- wholeFiles and sameBlocks in C (delta.ts's wholeFiles, sameBlocks) ---
+
+typedef struct { uint32_t at, len, hash; } FileEntry;
+typedef struct { uint32_t hash, start, count; } WholeSlot;
+
+static int by_hash_len_at(const void *a, const void *b) {
+  const FileEntry *x = a, *y = b;
+  if (x->hash != y->hash) return x->hash < y->hash ? -1 : 1;
+  if (x->len != y->len) return x->len > y->len ? -1 : 1;
+  if (x->at != y->at) return x->at < y->at ? -1 : 1;
+  return 0;
+}
+
+static RunVec find_whole_files(const uint8_t *old, int64_t oldsize, const uint8_t *made, int64_t newsize, const uint8_t *files_buf, size_t files_bytes) {
+  RunVec out = { NULL, 0, 0 };
+  if (files_bytes % 8 != 0) { errno = 0; die("the files list is not 8-byte records"); }
+  int64_t nfiles = (int64_t)(files_bytes / 8);
+  if (nfiles == 0 || newsize < WINDOW) {
+    for (int64_t i = 0; i < nfiles; i++) {
+      const uint8_t *b = files_buf + i * 8;
+      uint32_t at = (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+      uint32_t len = (uint32_t)b[4] | (uint32_t)b[5] << 8 | (uint32_t)b[6] << 16 | (uint32_t)b[7] << 24;
+      if ((int64_t)at + (int64_t)len > oldsize) { errno = 0; die("a file range goes past the old blob"); }
+    }
+    return out;
+  }
+  uint32_t *bits = zalloc((size_t)(1u << 17) * sizeof(uint32_t));
+  FileEntry *entries = alloc((size_t)nfiles * sizeof(FileEntry));
+  size_t valid = 0;
+  for (int64_t i = 0; i < nfiles; i++) {
+    const uint8_t *b = files_buf + i * 8;
+    uint32_t at = (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+    uint32_t len = (uint32_t)b[4] | (uint32_t)b[5] << 8 | (uint32_t)b[6] << 16 | (uint32_t)b[7] << 24;
+    if ((int64_t)at + (int64_t)len > oldsize) { errno = 0; die("a file range goes past the old blob"); }
+    if (len < WINDOW || is_flat(old + at, WINDOW)) continue;
+    uint32_t h = roll_hash(old + at, WINDOW);
+    bits[h >> 15] |= 1u << ((h >> 10) & 31);
+    entries[valid++] = (FileEntry){ at, len, h };
+  }
+  if (valid == 0) { free(bits); free(entries); return out; }
+  qsort(entries, valid, sizeof(FileEntry), by_hash_len_at);
+  size_t cap = next_pow2(valid * 2);
+  uint32_t mask = (uint32_t)(cap - 1);
+  WholeSlot *table = zalloc(cap * sizeof(WholeSlot));
+  for (size_t i = 0; i < valid; ) {
+    uint32_t h = entries[i].hash;
+    size_t start = i;
+    while (i < valid && entries[i].hash == h) i++;
+    uint32_t idx = (h ^ (h >> 16)) & mask;
+    while (table[idx].count != 0) idx = (idx + 1) & mask;
+    table[idx] = (WholeSlot){ h, (uint32_t)start, (uint32_t)(i - start) };
+  }
+  uint32_t top = hash_pow(WINDOW);
+  int64_t p = 0;
+  uint32_t h = roll_hash(made, WINDOW);
+  for (;;) {
+    const FileEntry *found = NULL;
+    if (bits[h >> 15] & (1u << ((h >> 10) & 31))) {
+      uint32_t idx = (h ^ (h >> 16)) & mask;
+      while (table[idx].count != 0) {
+        if (table[idx].hash == h) {
+          uint32_t start = table[idx].start, end = start + table[idx].count;
+          for (uint32_t j = start; j < end; j++) {
+            uint32_t fat = entries[j].at, flen = entries[j].len;
+            if (p + (int64_t)flen <= newsize && memcmp(old + fat, made + p, flen) == 0) { found = &entries[j]; break; }
+          }
+          break;
+        }
+        idx = (idx + 1) & mask;
+      }
+    }
+    if (found) {
+      runs_push(&out, (Run){ p, (int64_t)found->at, (int64_t)found->len });
+      p += (int64_t)found->len;
+      if (p + WINDOW > newsize) break;
+      h = roll_hash(made + p, WINDOW);
+    } else {
+      if (p + WINDOW >= newsize) break;
+      h = h * HASH_MUL - (uint32_t)made[p] * top + (uint32_t)made[p + WINDOW];
+      p++;
+    }
+  }
+  free(bits);
+  free(entries);
+  free(table);
+  return out;
+}
+
+typedef struct { uint32_t hash, off_plus_1; } BlockSlot;
+
+static void look_gap(const uint8_t *old, int64_t oldsize, const uint8_t *made, int64_t from, int64_t to,
+                     const uint32_t *bits, const BlockSlot *table, uint32_t mask, uint32_t top, RunVec *out) {
+  int64_t p = from;
+  if (to - p < BLOCK) return;
+  uint32_t h = roll_hash(made + p, BLOCK);
+  for (;;) {
+    int64_t o = -1;
+    if (bits[h >> 15] & (1u << ((h >> 10) & 31))) {
+      uint32_t idx = (h ^ (h >> 16)) & mask;
+      while (table[idx].off_plus_1 != 0) {
+        if (table[idx].hash == h) { o = (int64_t)(table[idx].off_plus_1 - 1u); break; }
+        idx = (idx + 1) & mask;
+      }
+    }
+    if (o >= 0 && memcmp(old + o, made + p, BLOCK) == 0) {
+      int64_t back = 0;
+      int64_t most = (p - from) < o ? (p - from) : o;
+      while (back < most && made[p - back - 1] == old[o - back - 1]) back++;
+      int64_t len = BLOCK;
+      int64_t ahead = (to - p) < (oldsize - o) ? (to - p) : (oldsize - o);
+      while (len < ahead && made[p + len] == old[o + len]) len++;
+      runs_push(out, (Run){ p - back, o - back, back + len });
+      p += len;
+      if (p + BLOCK > to) return;
+      h = roll_hash(made + p, BLOCK);
+    } else {
+      if (p + BLOCK >= to) return;
+      h = h * HASH_MUL - (uint32_t)made[p] * top + (uint32_t)made[p + BLOCK];
+      p++;
+    }
+  }
+}
+
+static RunVec find_same_blocks(const uint8_t *old, int64_t oldsize, const uint8_t *made, int64_t newsize, const Run *wf, int64_t nwf) {
+  RunVec out = { NULL, 0, 0 };
+  if (newsize < BLOCK || oldsize < BLOCK) {
+    for (int64_t i = 0; i < nwf; i++) runs_push(&out, wf[i]);
+    return out;
+  }
+  uint32_t *bits = zalloc((size_t)(1u << 17) * sizeof(uint32_t));
+  size_t nblocks = (size_t)(oldsize / BLOCK);
+  size_t cap = next_pow2(nblocks * 2);
+  uint32_t mask = (uint32_t)(cap - 1);
+  BlockSlot *table = zalloc(cap * sizeof(BlockSlot));
+  for (int64_t at = 0; at + BLOCK <= oldsize; at += BLOCK) {
+    if (is_flat(old + at, BLOCK)) continue;
+    uint32_t h = roll_hash(old + at, BLOCK);
+    uint32_t idx = (h ^ (h >> 16)) & mask;
+    int exists = 0;
+    while (table[idx].off_plus_1 != 0) {
+      if (table[idx].hash == h) { exists = 1; break; }
+      idx = (idx + 1) & mask;
+    }
+    if (!exists) {
+      table[idx].hash = h;
+      table[idx].off_plus_1 = (uint32_t)at + 1u;
+      bits[h >> 15] |= 1u << ((h >> 10) & 31);
+    }
+  }
+  uint32_t top = hash_pow(BLOCK);
+  int64_t at = 0;
+  for (int64_t i = 0; i < nwf; i++) {
+    look_gap(old, oldsize, made, at, wf[i].made, bits, table, mask, top, &out);
+    runs_push(&out, wf[i]);
+    at = wf[i].made + wf[i].len;
+  }
+  look_gap(old, oldsize, made, at, newsize, bits, table, mask, top, &out);
+  free(bits);
+  free(table);
+  return out;
+}
 
 static int by_start(const void *a, const void *b) {
   const Span *x = a, *y = b;
@@ -345,28 +637,236 @@ static void bsdiff(Search *S, Chunker *out) {
 #undef AT
 }
 
+// --- verifying chunks (equivalent to station/src/updates/delta.ts patch()) ---
+
+static uint32_t get_u32(const uint8_t *b) {
+  return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
+static void verify_fail(const char *unlink_path, const char *what) {
+  if (unlink_path) unlink(unlink_path);
+  errno = 0;
+  die(what);
+}
+
+static void verify_fail_at(const char *unlink_path, const char *what, int64_t offset) {
+  if (unlink_path) unlink(unlink_path);
+  fprintf(stderr, "delta-fast: %s at %lld\n", what, (long long)offset);
+  exit(1);
+}
+
+typedef struct {
+  const uint8_t *data;
+  size_t total, at;
+  uint8_t *buf;
+  size_t buf_len, pos;
+  z_stream is;
+  const char *unlink_path;
+} VerifyReader;
+
+static int vr_next_chunk(VerifyReader *vr) {
+  if (vr->at == vr->total) return 0;
+  if (vr->total - vr->at < 8) verify_fail(vr->unlink_path, "a chunk header is cut short");
+  uint32_t raw_len = get_u32(vr->data + vr->at);
+  uint32_t packed_len = get_u32(vr->data + vr->at + 4);
+  vr->at += 8;
+  if (raw_len == 0 || raw_len > CHUNK) verify_fail(vr->unlink_path, "invalid chunk raw_len");
+  if ((size_t)packed_len > vr->total - vr->at) verify_fail(vr->unlink_path, "a chunk is cut short");
+  if (inflateReset(&vr->is) != Z_OK) verify_fail(vr->unlink_path, "inflateReset");
+  vr->is.next_in = (Bytef *)(vr->data + vr->at);
+  vr->is.avail_in = (uInt)packed_len;
+  vr->is.next_out = vr->buf;
+  vr->is.avail_out = (uInt)raw_len;
+  int zr = inflate(&vr->is, Z_FINISH);
+  if (zr != Z_STREAM_END || vr->is.avail_in != 0 || vr->is.avail_out != 0) {
+    verify_fail(vr->unlink_path, "a chunk does not inflate to its raw_len");
+  }
+  vr->at += packed_len;
+  vr->buf_len = raw_len;
+  vr->pos = 0;
+  return 1;
+}
+
+static size_t vr_take(VerifyReader *vr, size_t max) {
+  while (vr->pos == vr->buf_len) {
+    if (!vr_next_chunk(vr)) verify_fail(vr->unlink_path, "the delta's stream ends early");
+  }
+  size_t avail = vr->buf_len - vr->pos;
+  return max < avail ? max : avail;
+}
+
+static int64_t read_i64_checked(const uint8_t *b, const char *unlink_path) {
+  uint32_t lo = get_u32(b);
+  uint32_t hi_u = get_u32(b + 4);
+  int32_t hi = (int32_t)hi_u;
+  if (hi > 0x1fffff || hi < -0x200000) verify_fail(unlink_path, "a record's number is too large");
+  return (int64_t)(((uint64_t)hi_u << 32) | (uint64_t)lo);
+}
+
+static void verify_chunks(const uint8_t *old, int64_t oldsize, const uint8_t *made, int64_t newsize,
+                          const char *chunks_path, int unlink_on_fail) {
+  const char *unlink_path = unlink_on_fail ? chunks_path : NULL;
+  int fd = open(chunks_path, O_RDONLY);
+  if (fd < 0) {
+    int saved = errno;
+    if (unlink_path) unlink(unlink_path);
+    errno = saved;
+    die(chunks_path);
+  }
+  struct stat st;
+  if (fstat(fd, &st) != 0) {
+    int saved = errno;
+    close(fd);
+    if (unlink_path) unlink(unlink_path);
+    errno = saved;
+    die(chunks_path);
+  }
+  if (st.st_size > 0x7ffffffe) {
+    close(fd);
+    if (unlink_path) unlink(unlink_path);
+    errno = EFBIG;
+    die(chunks_path);
+  }
+  size_t total = (size_t)st.st_size;
+  static const uint8_t none[1] = { 0 };
+  const uint8_t *data = none;
+  if (total > 0) {
+    void *mp = mmap(NULL, total, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mp == MAP_FAILED) {
+      int saved = errno;
+      close(fd);
+      if (unlink_path) unlink(unlink_path);
+      errno = saved;
+      die(chunks_path);
+    }
+    data = mp;
+  }
+  close(fd);
+
+  VerifyReader vr = { 0 };
+  vr.data = data;
+  vr.total = total;
+  vr.buf = alloc(CHUNK);
+  vr.unlink_path = unlink_path;
+  if (inflateInit2(&vr.is, -15) != Z_OK) verify_fail(unlink_path, "inflateInit2");
+
+  int64_t o = 0, p = 0;
+  uint8_t ctrl[24];
+  while (o < newsize) {
+    for (size_t got = 0; got < 24;) {
+      size_t k = vr_take(&vr, 24 - got);
+      memcpy(ctrl + got, vr.buf + vr.pos, k);
+      vr.pos += k;
+      got += k;
+    }
+    int64_t x = read_i64_checked(ctrl, unlink_path);
+    int64_t y = read_i64_checked(ctrl + 8, unlink_path);
+    int64_t z = read_i64_checked(ctrl + 16, unlink_path);
+    if (x < 0 || y < 0) verify_fail(unlink_path, "a record with a negative length");
+    if (x > newsize - o || y > newsize - o - x) verify_fail(unlink_path, "a record goes past made_size");
+    for (int64_t left = x; left > 0;) {
+      size_t want = left < CHUNK ? (size_t)left : CHUNK;
+      size_t k = vr_take(&vr, want);
+      const uint8_t *b = vr.buf + vr.pos;
+      if (p >= 0 && (int64_t)k <= oldsize && p <= oldsize - (int64_t)k) {
+        for (size_t i = 0; i < k; i++) {
+          if ((uint8_t)(b[i] + old[p + (int64_t)i]) != made[o + (int64_t)i]) {
+            verify_fail_at(unlink_path, "what the delta makes differs from the package", o + (int64_t)i);
+          }
+        }
+      } else {
+        for (size_t i = 0; i < k; i++) {
+          uint8_t ob = (p <= oldsize - 1 - (int64_t)i && p + (int64_t)i >= 0) ? old[p + (int64_t)i] : 0;
+          if ((uint8_t)(b[i] + ob) != made[o + (int64_t)i]) {
+            verify_fail_at(unlink_path, "what the delta makes differs from the package", o + (int64_t)i);
+          }
+        }
+      }
+      if (p > INT64_MAX - (int64_t)k) verify_fail(unlink_path, "old offset overflow");
+      vr.pos += k;
+      p += (int64_t)k;
+      o += (int64_t)k;
+      left -= (int64_t)k;
+    }
+    for (int64_t left = y; left > 0;) {
+      size_t want = left < CHUNK ? (size_t)left : CHUNK;
+      size_t k = vr_take(&vr, want);
+      if (memcmp(vr.buf + vr.pos, made + o, k) != 0) {
+        verify_fail_at(unlink_path, "what the delta makes differs from the package", o);
+      }
+      vr.pos += k;
+      o += (int64_t)k;
+      left -= (int64_t)k;
+    }
+    if ((z > 0 && p > INT64_MAX - z) || (z < 0 && p < INT64_MIN - z)) {
+      verify_fail(unlink_path, "old offset overflow");
+    }
+    p += z;
+  }
+  if (vr.pos != vr.buf_len || vr.at != vr.total) {
+    verify_fail(unlink_path, "the delta's stream goes on past made_size");
+  }
+  inflateEnd(&vr.is);
+  free(vr.buf);
+  if (total > 0) munmap((void *)data, total);
+}
+
 int main(int argc, char **argv) {
-  if (argc != 5) {
-    fprintf(stderr, "usage: delta-fast OLD MADE RUNS OUT\n");
+  int files_mode = 0, verify_mode = 0, check_only = 0;
+  int argi = 1;
+  while (argi < argc && argv[argi][0] == '-') {
+    if (strcmp(argv[argi], "--files") == 0) files_mode = 1;
+    else if (strcmp(argv[argi], "--verify") == 0) verify_mode = 1;
+    else if (strcmp(argv[argi], "--check-only") == 0) check_only = 1;
+    else break;
+    argi++;
+  }
+  int rest = argc - argi;
+  if (check_only) {
+    if (files_mode || verify_mode || rest != 3) {
+      fprintf(stderr, "usage: delta-fast [--verify] OLD MADE RUNS OUT | delta-fast --files [--verify] OLD MADE FILES OUT | delta-fast --check-only OLD MADE CHUNKS\n");
+      return 2;
+    }
+    errno = 0;
+    Mapped old = map(argv[argi]), made = map(argv[argi + 1]);
+    verify_chunks(old.p, (int64_t)old.n, made.p, (int64_t)made.n, argv[argi + 2], 0);
+    return 0;
+  }
+  if (rest != 4) {
+    fprintf(stderr, "usage: delta-fast [--verify] OLD MADE RUNS OUT | delta-fast --files [--verify] OLD MADE FILES OUT | delta-fast --check-only OLD MADE CHUNKS\n");
     return 2;
   }
   errno = 0;
-  Mapped old = map(argv[1]), made = map(argv[2]), rf = map(argv[3]);
-  if (rf.n % 12 != 0) { errno = 0; die("the runs file is not 12-byte records"); }
-  int64_t nruns = (int64_t)(rf.n / 12);
-  Run *runs = alloc((size_t)nruns * sizeof(Run));
-  for (int64_t i = 0; i < nruns; i++) {
-    const uint8_t *b = rf.p + i * 12;
-    uint32_t v[3];
-    for (int j = 0; j < 3; j++) v[j] = (uint32_t)b[j * 4] | (uint32_t)b[j * 4 + 1] << 8 | (uint32_t)b[j * 4 + 2] << 16 | (uint32_t)b[j * 4 + 3] << 24;
-    runs[i] = (Run){ v[0], v[1], v[2] };
-    if (runs[i].old + runs[i].len > (int64_t)old.n || runs[i].made + runs[i].len > (int64_t)made.n ||
-        memcmp(old.p + runs[i].old, made.p + runs[i].made, (size_t)runs[i].len) != 0) {
-      errno = 0;
-      die("a run is out of place or not the old bytes it says");
+  const char *old_path = argv[argi];
+  const char *made_path = argv[argi + 1];
+  const char *third_path = argv[argi + 2];
+  const char *out_path = argv[argi + 3];
+  Mapped old = map(old_path), made = map(made_path), third = map(third_path);
+  int64_t oldsize = (int64_t)old.n;
+  Run *runs = NULL;
+  int64_t nruns = 0;
+  if (files_mode) {
+    RunVec wf = find_whole_files(old.p, oldsize, made.p, (int64_t)made.n, third.p, third.n);
+    RunVec sb = find_same_blocks(old.p, oldsize, made.p, (int64_t)made.n, wf.data, wf.len);
+    free(wf.data);
+    runs = sb.data;
+    nruns = sb.len;
+  } else {
+    if (third.n % 12 != 0) { errno = 0; die("the runs file is not 12-byte records"); }
+    nruns = (int64_t)(third.n / 12);
+    runs = alloc((size_t)nruns * sizeof(Run));
+    for (int64_t i = 0; i < nruns; i++) {
+      const uint8_t *b = third.p + i * 12;
+      uint32_t v[3];
+      for (int j = 0; j < 3; j++) v[j] = (uint32_t)b[j * 4] | (uint32_t)b[j * 4 + 1] << 8 | (uint32_t)b[j * 4 + 2] << 16 | (uint32_t)b[j * 4 + 3] << 24;
+      runs[i] = (Run){ v[0], v[1], v[2] };
+      if (runs[i].old + runs[i].len > oldsize || runs[i].made + runs[i].len > (int64_t)made.n ||
+          memcmp(old.p + runs[i].old, made.p + runs[i].made, (size_t)runs[i].len) != 0) {
+        errno = 0;
+        die("a run is out of place or not the old bytes it says");
+      }
     }
   }
-  int64_t oldsize = (int64_t)old.n;
 
   // what of the old blob is outside the runs, and whether that is sorted alone (delta.ts's makeDelta, WHOLE_ENOUGH)
   Span *taken = alloc((size_t)(nruns + 1) * sizeof(Span));
@@ -413,8 +913,8 @@ int main(int argc, char **argv) {
   free(taken);
 
   Chunker c = { 0 };
-  c.out = fopen(argv[4], "wb");
-  if (!c.out) die(argv[4]);
+  c.out = fopen(out_path, "wb");
+  if (!c.out) die(out_path);
   if (deflateInit2(&c.zs, 6, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) { errno = 0; die("deflateInit2"); }
   c.bound = deflateBound(&c.zs, CHUNK);
   c.buf = alloc(CHUNK);
@@ -431,5 +931,6 @@ int main(int argc, char **argv) {
   free(I);
   free(starts);
   free(runs);
+  if (verify_mode) verify_chunks(old.p, oldsize, made.p, (int64_t)made.n, out_path, 1);
   return 0;
 }

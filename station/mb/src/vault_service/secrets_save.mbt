@@ -39,7 +39,10 @@ fn Secrets::vault_for(self : Secrets, lock : Lock, sub : String) -> String raise
     let personal = fn(vaults : Array[Json]) -> Json? {
       for vault in vaults {
         let keyed = ga(Some(vault), "keys").unwrap_or([]).any(k => devices.contains(gtext(get(Some(k), "cert"), "device")))
-        if !members_of(vault).contains(sub) || !keyed {
+        if truthy(get(Some(vault), "deleted")) ||
+          gs(Some(vault), "scope") == Some("workspace") ||
+          !members_of(vault).contains(sub) ||
+          !keyed {
           continue
         }
         if first is None {
@@ -146,15 +149,7 @@ fn shell_quoted(p : String) -> String {
 ///|
 /// `basename(p)`.
 fn basename(p : String) -> String {
-  let mut end = p.length()
-  while end > 1 && p.code_unit_at(end - 1) == '/' {
-    end -= 1
-  }
-  let s = slice(p, 0, b=end)
-  match s.rev_find("/") {
-    Some(i) => slice(s, i + 1)
-    None => s
-  }
+  @nodepath.basename("/", p)
 }
 
 ///|
@@ -446,10 +441,15 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
     sf.push(("about", js(about)))
   }
   let save = obj(sf)
+  let vault_id = match (lock, sub) {
+    (None, _) => @vault_crypto.plain_id
+    (Some(_), None) => ""
+    (Some(l), Some(u)) => self.vault_for(l, u)
+  }
   let rf = [
     ("id", js(id)),
     ("ws", js(ws)),
-    ("vault", js(match (lock, sub) { (None, _) => @vault_crypto.plain_id; (Some(_), None) => ""; (Some(l), Some(u)) => self.vault_for(l, u) })),
+    ("vault", js(vault_id)),
     ("item", js(item)),
     ("session", js(session)),
     ("chat", js("")),

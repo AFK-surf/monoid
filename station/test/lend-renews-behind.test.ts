@@ -17,7 +17,8 @@ import { Cloud } from "../src/cloud/state.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { type Line, hearLines } from "../src/ops/log.ts";
-import { Sharing } from "../src/share/index.ts";
+import { Sharing, type SharingDeps } from "../src/share/index.ts";
+import { ProfileLoginOver, RenewRefused } from "../src/accounts/console.ts";
 import { given, settle, testClock } from "./hub-fakes.ts";
 
 const lines: Line[] = [];
@@ -169,7 +170,7 @@ function cloudFor(station: string): Cloud {
   })) as any;
 }
 
-function station(id: string, others: Map<string, Sharing>, profiles: any[], codexRenewRunning: (id: string) => Promise<boolean>, clock?: Clock.Clock) {
+function station(id: string, others: Map<string, Sharing>, profiles: any[], codexRenewRunning: (id: string) => Promise<boolean>, clock?: Clock.Clock, extra: Partial<SharingDeps> = {}) {
   const data = mkdtempSync(join(tmpdir(), "lend-codex-"));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles }));
   const config = new ConfigFile(data);
@@ -188,6 +189,7 @@ function station(id: string, others: Map<string, Sharing>, profiles: any[], code
     status: async () => ({ check: null, quota: null }),
     changed: () => {},
     ...(clock ? { clock } : {}),
+    ...extra,
   });
   return { data, config, sharing };
 }
@@ -198,7 +200,7 @@ const CODEX = { id: "plus", name: "ChatGPT Plus", runtime: "codex", access: { ki
 
 /// A shares its Codex login (lasting `seconds`) with B, A on a TestClock set at now; the Codex running on it at A is asked to
 /// renew it, and its answer held (`renewal`; `renewed(seconds)` writes the login it renews to first).
-async function sharedCodex(seconds: number) {
+async function sharedCodex(seconds: number, extraA: Partial<SharingDeps> = {}, extraB: Partial<SharingDeps> = {}) {
   const all = new Map<string, Sharing>();
   const asked: string[] = [];
   const renewal = held<boolean>();
@@ -206,8 +208,8 @@ async function sharedCodex(seconds: number) {
   const time = testClock();
   // (the share's clock at now, as the logins' expiries are: a TestClock begins at 0, where every login lasts for ever)
   await time.adjust(Date.now());
-  const a = station(A, all, [CODEX], (id) => (asked.push(id), reached.resolve(), renewal.promise), time.clock);
-  const b = station(B, all, [], async () => false);
+  const a = station(A, all, [CODEX], (id) => (asked.push(id), reached.resolve(), renewal.promise), time.clock, extraA);
+  const b = station(B, all, [], async () => false, undefined, extraB);
   all.set(A, a.sharing).set(B, b.sharing);
   const file = join(a.data, "homes", "plus", "auth.json");
   mkdirSync(join(a.data, "homes", "plus"), { recursive: true });
@@ -263,5 +265,22 @@ test("a Codex login lent with less than an hour left waits for its renewal, and 
     assert.equal(await answered(lent), false, "no bound for it: waits for the renewal");
     s.renewal.reject(new Error("refused"));
     await assert.rejects(lent, /未能借出/);
+  } finally { await s.a.sharing.close(); await s.b.sharing.close(); }
+});
+
+test("FB-44: a Codex login lent with less than an hour left whose renewal is refused for good is over: the borrower is told so", async () => {
+  const expired: string[] = [];
+  const rechecked: boolean[] = [];
+  const s = await sharedCodex(600, { status: async (_id, recheck) => (rechecked.push(recheck === true), { check: null, quota: null }) }, { loginExpired: (id) => void expired.push(id) });
+  try {
+    const lent = s.b.sharing.lendCodex(s.copy);
+    lent.catch(() => {});
+    await given(s.reached, "its renewal asked");
+    // (its refresh token turned down by the token endpoint: no renewal will ever come of it)
+    s.renewal.reject(new RenewRefused(401, "the token endpoint answered 401"));
+    await assert.rejects(lent, (e: Error) => e instanceof ProfileLoginOver && /登录已过期或失效/.test(e.message));
+    assert.deepEqual(expired, [s.copy.id], "the borrower's copy marked signed out at once");
+    await settle();
+    assert.ok(rechecked.includes(true), "the host checks its own login again, for borrowers from before to read");
   } finally { await s.a.sharing.close(); await s.b.sharing.close(); }
 });

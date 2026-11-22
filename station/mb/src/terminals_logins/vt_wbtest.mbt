@@ -247,3 +247,13 @@ test "the terminal: CAN cancels a sequence; DEL is ignored" {
   assert_eq((x, y), (4, 0))
   assert_eq(replies, [])
 }
+
+///|
+test "the terminal: a line longer than it is wide wraps, the row it goes on in marked" {
+  let vt = Vt::new(10, 4, 0)
+  vt.write("0123456789abc\r\nnext")
+  assert_eq(Array::makei(4, i => vt.row(i)), ["0123456789", "abc", "next", ""])
+  assert_eq(Array::makei(4, i => vt.row_wrapped(i)), [false, true, false, false])
+  assert_eq(vt.row_wrapped(-1), false)
+  assert_eq(vt.row_wrapped(4), false)
+}

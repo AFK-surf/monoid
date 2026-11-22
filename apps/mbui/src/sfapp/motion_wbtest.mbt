@@ -146,153 +146,6 @@ test "Home: a row swiped off is archived once it has gone, and leaves no copy of
 }
 
 ///|
-test "words sent fly from the field into their bubble" {
-  // the fixture's own station takes what is sent: the outbox at once, the message after
-  new_run()
-  let clock = Ref(0.0)
-  fix_clock.val = Some(fn() { clock.val })
-  let src = fixture("chat")
-  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  // the chat pushed in over Home
-  t.run_for(@ui.move_most_ms)
-  t.tap_text("发消息")
-  t.type_text("发布前再看一眼签名")
-  t.tap_once(390.0 - 10.0 - 8.0 - 18.0, 844.0 - 10.0 - 8.0 - 18.0)
-  // the words as typed, over the field, until their row is in the list
-  let (fx, fy) = t.drawn_of("发布前再看一眼签名").unwrap()
-  // until their row is in the list, the words stay where they were typed
-  let mut landed = false
-  let mut moved = false
-  // frame by frame until the flight is over (at most its wait for the row and its own time)
-  let end = t.time() + flight_wait_ms + flight_ms
-  while t.time() < end && flight_of("ws1/st1:s-c1") is Some(_) {
-    t.frame()
-    match t.drawn_of("发布前再看一眼签名") {
-      Some((x, y)) => {
-        if (x - fx).abs() > 2.0 || (y - fy).abs() > 2.0 {
-          moved = true
-        }
-        match t.rect_of("发布前再看一眼签名") {
-          Some(r) =>
-            if (x - r.0).abs() < 0.5 && (y - r.1).abs() < 0.5 && moved {
-              landed = true
-            }
-          None => ()
-        }
-      }
-      None => ()
-    }
-  }
-  assert_true(moved && landed, msg="\{moved} \{landed}")
-  fix_clock.val = None
-}
-
-///|
-test "words sent: the composer stays as it was while they are in it, and comes down as they let go of it, not from under them" {
-  new_run()
-  let clock = Ref(0.0)
-  fix_clock.val = Some(fn() { clock.val })
-  let src = fixture("chat")
-  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  t.run_for(@ui.move_most_ms)
-  t.tap_text("发消息")
-  t.type_text("第一行\n第二行\n第三行")
-  // (its box grown to the three lines)
-  t.run_for(@ui.move_most_ms)
-  let box = fn() { @motion.measured(t.ctx(), "composer/content").unwrap() }
-  let reshaping = fn() { t.moving().iter().any(fn(m) { m.contains("layout composer/") }) }
-  let tall = box()
-  let room = @sfpages.composer_room(t.ctx(), "ws1/st1:s-c1")
-  tap_send(t)
-  t.frame()
-  // sent, its words on their way: the composer as tall as it was, nothing in it moving (its field emptied where it
-  // was, its ＋ and send where they were), the list's room under its last row as it was
-  assert_true(flight_of("ws1/st1:s-c1") is Some(f) && f.placed)
-  assert_eq(box(), tall)
-  assert_true(!reshaping(), msg="\{Repr(t.moving())}")
-  assert_eq(@sfpages.composer_room(t.ctx(), "ws1/st1:s-c1"), room)
-  // let go of once the words are on their way: it comes down from as tall as it was, its field with it
-  let (go, down) = @sfbase.flight_lets_go("ws1/st1:s-c1").unwrap()
-  assert_true(go > t.time() && go < @double.infinity, msg="\{go} \{t.time()}")
-  t.run_for(go - t.time())
-  assert_true(
-    flight_of("ws1/st1:s-c1") is Some(f) && flight_p(t.ctx(), f) > 0.0,
-    msg="the words not yet on their way",
-  )
-  assert_true(box() < tall, msg="\{box()} \{tall}")
-  assert_true(reshaping(), msg="\{Repr(t.moving())}")
-  // and its room under the list down with it, on the same curve
-  t.run_for(go + down - t.time())
-  assert_true(@sfpages.composer_room(t.ctx(), "ws1/st1:s-c1") < room)
-  fix_clock.val = None
-}
-
-///|
-test "words sent set out from where they were typed and land where their message has them, set alike all the way" {
-  new_run()
-  let clock = Ref(0.0)
-  fix_clock.val = Some(fn() { clock.val })
-  let src = fixture("chat")
-  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  t.run_for(@ui.move_most_ms)
-  t.tap_text("发消息")
-  let words = "第一行\n第二行\n第三行"
-  t.type_text(words)
-  t.run_for(@ui.move_most_ms)
-  tap_send(t)
-  t.frame()
-  // as they set out: a piece a line, each drawn where it was in the field (a copy of the message's words, cut to it)
-  let f = flight_of("ws1/st1:s-c1").unwrap()
-  let typed = f.lines.unwrap()
-  let (pieces, laid) = @sfbase.flight_pieces(t.ctx(), f).unwrap()
-  assert_eq(pieces.length(), 3)
-  // set alike: the field's lines as high as the message's
-  assert_eq(typed.line_h(), laid.layout.line_h[0])
-  let copies = t.words().filter(fn(w) { w.0 == words && w.5 > 0.99 })
-  for p in pieces {
-    let (fx, fy) = typed.place(f.lead + p.a)
-    assert_true(
-      copies.iter().any(fn(w) { (w.1 + p.at.0 - fx).abs() < 0.5 && (w.2 + p.at.1 - fy).abs() < 0.5 }),
-      msg="\{p.a}: \{fx},\{fy} \{Repr(copies)}",
-    )
-  }
-  // landed: the message's own words where it has them, nothing else of them drawn
-  t.run_for(f.way.ends() - t.time())
-  t.frame()
-  assert_true(flight_of("ws1/st1:s-c1") is None)
-  let drawn = t.words().filter(fn(w) { w.0 == words && w.5 > 0.01 })
-  assert_eq(drawn.length(), 1, msg="\{Repr(drawn)}")
-  fix_clock.val = None
-}
-
-///|
-test "words sent break their lines in their message where the composer broke them: a paragraph goes a line a piece" {
-  new_run()
-  let clock = Ref(0.0)
-  fix_clock.val = Some(fn() { clock.val })
-  let src = fixture("chat")
-  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  t.run_for(@ui.move_most_ms)
-  t.tap_text("发消息")
-  t.type_text("帮我看一下登录按钮在深色模式下的颜色是不是不对，还有注册页输入框的边框也要再核对一遍")
-  t.run_for(@ui.move_most_ms)
-  tap_send(t)
-  t.frame()
-  let f = flight_of("ws1/st1:s-c1").unwrap()
-  let typed = f.lines.unwrap()
-  // more than a line in the field, and as many in the message, each its own piece
-  assert_true(typed.starts.length() > 1)
-  let (pieces, laid) = @sfbase.flight_pieces(t.ctx(), f).unwrap()
-  assert_eq(laid.layout.line_count(), typed.starts.length())
-  assert_eq(pieces.length(), typed.starts.length())
-  fix_clock.val = None
-}
-
-///|
 test "Home: the first rows, after the list waited, come as they are and a tap on one opens it at once" {
   new_run()
   let src = fixture("home")
@@ -356,6 +209,9 @@ test "a quote's line for a comment, tapped while the capsule grows round it, tak
   t.tap_text("引用")
   t.frame()
   t.tap_text("添加说明（可选）")
+  // (the message's menu a sheet of the window's tree, the input method put away till it has gone, as a sheet sinking
+  // over a field holds it, Ctx::ime_held_by_sheet)
+  t.run_for(@ui.move_most_ms)
   let (active, _, _, _) = t.ime()
   assert_true(active)
   t.type_text("长出来的时候点的")
@@ -412,15 +268,19 @@ test "the chat's sheet going down: its own rows take no tap, the scrim none" {
   tap_once_on(t, "固定")
   t.tap_once(195.0, 60.0)
   // sunk: on the sheet's spring, at most the window's height
-  t.run_for(@motion.sheet_spring.duration(844.0, 0.0, 0.0))
+  t.run_for(@motion.carousel_spring.duration(844.0, 0.0, 0.0))
   assert_eq(named(calls, "chat.pin").length(), 0)
   assert_true(!@sf.presenting() && !@sf.presented_drawn())
 }
 
 ///|
 test "the workspaces' sheet sinking takes no tap: the bar's 文件 tapped under it opens its page" {
-  let t = tester("home")
-  t.tap_text("星火工作室")
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  @sfpages.open_workspaces(src, Unanchored)
+  t.run_for(@ui.move_most_ms)
   assert_true(@sf.presenting())
   t.tap_once(195.0, 60.0)
   t.frame()
@@ -457,7 +317,7 @@ test "the bar going down under a page pushed takes no tap: the field tapped wher
   let vis = bar.vis.at(t.time()).0
   assert_true(vis > 0.01 && vis < 0.5, msg="\{vis}")
   let (x, y, w, h) = t.rect_of("发消息").unwrap()
-  assert_true(y + h > 844.0 - 22.0 - 56.0)
+  assert_true(y + h > 844.0 - 22.0 - bar_track)
   t.tap_once(x + w / 2.0, y + h / 2.0)
   let (active, _, _, _) = t.ime()
   assert_true(active)

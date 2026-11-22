@@ -7,7 +7,7 @@
 // nobody, and is told to install an app (client/core-ts/src/views/lock.ts `needsAppIn`); of anyone else, nothing.
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import { LockRefusal, endpointBytes } from "../src/cloud/lock.ts";
+import { LockRefusal, endpointBytes } from "../../shared/lock.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { refusalOf } from "../src/mesh/serve.ts";
 import { WS, bring, dev, ed, handover, station, world } from "./lock-moved-world.ts";

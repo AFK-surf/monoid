@@ -75,7 +75,7 @@ export const RETIRED_SKILLS = ["stillfail-retire"];
 export const FEEDBACK_SKILL = "stillfail-feedback";
 
 /// Where the skills' text is.
-const skillsSource = (): URL => (import.meta.url.endsWith(".ts") ? new URL("../skills/", import.meta.url) : new URL("./skills/", import.meta.url));
+const skillsSource = (): URL => (import.meta.url.endsWith(".ts") ? new URL("../../assets/skills/", import.meta.url) : new URL("./skills/", import.meta.url));
 
 /// A built-in skill as the station has it: its SKILL.md and the files it brings beside it (scripts it runs, from
 /// src/skills/<name>/: none for most). Read once a process: they change only with the station.

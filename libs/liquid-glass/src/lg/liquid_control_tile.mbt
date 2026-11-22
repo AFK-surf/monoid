@@ -6,22 +6,22 @@
 // tile lights it where it is (InteractiveHighlight), as a LiquidButton's.
 
 ///|
-/// A tile's glass, lit by a finger at `spot` as far as `light` says, its highlight along `angle`.
-fn tile_glass(angle : Double, light : Double, spot : (Double, Double)?) -> @paint.Glass {
-  @paint.Glass::backdrop_lens(
-    height=24.0,
-    amount=48.0,
-    blur=0.0,
-    tint=tile_container,
+/// A tile's glass (iOS 27 regular liquid glass).
+fn tile_glass(angle : Double) -> @paint.Glass {
+  ignore(angle)
+  let d = is_dark()
+  @paint.Glass::liquid(
+    blur=2.1,
+    tint=if d { 0x20202067L } else { 0xFDFCFD67L },
     solid=over(colors().dialog_container, tile_container),
-    highlight=1.0,
-    style=Some(Default),
-    saturation=1.5,
-    depth_effect=true,
-    highlight_angle=angle,
-    highlight_falloff=2.0,
-    spot~,
-    spot_alpha=light,
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=34.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+    spot=None,
   )
 }
 
@@ -71,10 +71,17 @@ pub fn liquid_card_node(
     .height(Is(Some(h)))
     .shrink(Is(0.0))
     .radius(Is(radius))
-    .glass(By(fn() {
-      let p = ih.pressed(c)
-      Some(tile_glass(angle, p, if p > 0.0 { Some(ih.spot(c, w, h)) } else { None }))
-    }))
+    .glass(By(fn() { Some(tile_glass(angle)) }))
+    |> ignore
+    c.box(fn(ov) {
+      ov
+      .over(Is(true))
+      .points(Is(false))
+      .radius(Is(radius))
+      .ground(Is(white))
+      .alpha(By(fn() { clamp(ih.pressed(ov), 0.0, 1.0) * 0.14 }))
+      |> ignore
+    })
     |> ignore
     content(c)
   }
@@ -113,32 +120,37 @@ pub fn liquid_card_node(
 }
 
 ///|
-/// A control center tile in `parent`: a card 68 across holding the airplane's icon in white, 0.8 of it; pressed,
-/// `press` is called. Read out a button named `label`. The node.
+/// A control center tile in `parent`: a card 68 across holding `icon` (or the airplane's icon by default) in white;
+/// pressed, `press` is called. Read out a button named `label`. The node.
 #callsite(autofill(loc))
 pub fn liquid_control_tile_node(
   parent : @view.View,
   label : () -> String,
   press : () -> Unit,
   angle? : Double = 45.0,
+  icon? : (@view.View, () -> Int64) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
   liquid_card_node(loc~, parent, tile_size, tile_size, label, angle~, press~, content=fn(c) {
     c.lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
-    flight_icon(c, tile_size * 0.8, fn() { white })
+    match icon {
+      Some(draw) => draw(c, fn() { white })
+      None => flight_icon(c, tile_size * 0.8, fn() { white })
+    }
   })
 }
 
 ///|
 /// What a control center's tile holds that turns something on: a capsule 56 across, white at 20% or the accent while
-/// `on`, the airplane's icon in white at 0.8 of it; pressed, `turn` is told what it turns to. Read out a switch named
-/// `label`. The node.
+/// `on`, holding `icon` (or the airplane's icon by default) in white; pressed, `turn` is told what it turns to. Read
+/// out a switch named `label`. The node.
 #callsite(autofill(loc))
 pub fn liquid_control_item_node(
   parent : @view.View,
   on : () -> Bool,
   turn : (Bool) -> Unit,
   label : () -> String,
+  icon? : (@view.View, () -> Int64) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
   @headless.toggle(made_for=loc, parent, Switch, label, on, turn, fn(c, sw) {
@@ -151,7 +163,10 @@ pub fn liquid_control_item_node(
     .lies_along(Is(Middle))
     .ground(By(fn() { if sw.on() { colors().accent } else { tile_inactive } }))
     |> ignore
-    flight_icon(c, tile_inner * 0.8, fn() { white })
+    match icon {
+      Some(draw) => draw(c, fn() { white })
+      None => flight_icon(c, tile_inner * 0.8, fn() { white })
+    }
     c.show(fn() { sw.focus_shown() }, fn(ring) {
       ring
       .over(Is(true))

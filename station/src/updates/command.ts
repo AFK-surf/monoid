@@ -19,7 +19,7 @@ import { stationLang, tr } from "../ops/i18n.ts";
 import { wall } from "../ops/fibers.ts";
 import { readJsonFile } from "../ops/json-file.ts";
 import { setChannel } from "./channel.ts";
-import { applyFile } from "./delta.ts";
+import { applyFile } from "../../../shared/delta.ts";
 import { type Applier, planUpdate, takeDelta } from "./release.ts";
 import { type Channel, channelOf, releaseChannel } from "./versions.ts";
 

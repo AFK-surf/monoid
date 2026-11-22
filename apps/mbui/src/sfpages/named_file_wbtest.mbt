@@ -40,3 +40,25 @@ test "an old file check cannot open after a newer path was chosen" {
   (answers[0])(Ok({ "kind": "text" }))
   assert_true(@sfbase.viewer.get() is None)
 }
+
+///|
+test "a Windows trailing backslash directory is not opened while Windows relative files open cleanly" {
+  @sfbase.reset()
+  let answers : Array[(Result[Json, Json]) -> Unit] = []
+  let asked : Array[Json] = []
+  let src = @sfbase.made_source(call=fn(_, params, done) {
+    asked.push(params)
+    answers.push(done)
+  })
+  open_named(src, "ws/st", "session", "D:\\work\\proj\\")
+  open_named(src, "ws/st", "session", ".\\out\\")
+  assert_eq(asked.length(), 0, msg="Windows directory paths with trailing backslash do not call file.peek")
+  open_named(src, "ws/st", "session", ".\\scripts\\deploy.ps1")
+  assert_eq(asked.length(), 1)
+  assert_eq(asked[0], { "station": "ws/st", "key": "session", "path": ".\\scripts\\deploy.ps1" })
+  (answers[0])(Ok({ "kind": "text" }))
+  let viewer = @sfbase.viewer.get().unwrap()
+  assert_true(viewer.named)
+  assert_eq(viewer.file.name, "deploy.ps1")
+  assert_eq(viewer.file.path, ".\\scripts\\deploy.ps1")
+}

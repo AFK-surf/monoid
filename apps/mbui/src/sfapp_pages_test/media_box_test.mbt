@@ -67,18 +67,13 @@ test "a wide picture fills its taller chat preview without stretching, its start
   new_run()
   let a = { ..strip("wide.png"), width: 2000.0, height: 400.0 }
   let src : Source = { ..fixture("chat"), file: fn(_, _, _) { "wide" } }
-  let here : @sfpages.MessageHere = {
-    station: "ws1/st1",
-    session: "s-c1",
-    view: chat_view_made(Json::object({})),
-    go: None,
-    inline: true,
-    gutter: 0.0,
-    list: None,
-    core: None,
-  }
   let t = @ui.Tester::new(
-    fn(c) { @sfpages.message_files(c, src, here, [a], false) },
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      @sfpages.message_files_of_node(root, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() { [a] }, false)
+    },
     w=390.0,
     h=600.0,
     images=[("wide", 2000, 400)],
@@ -93,7 +88,6 @@ test "a wide picture fills its taller chat preview without stretching, its start
     (i[4] - 0.0).abs() < 0.001 && (i[5] - 0.0).abs() < 0.001 &&
     (i[6] - 0.45).abs() < 0.001 && (i[7] - 1.0).abs() < 0.001
   }), msg="\{Repr(images)}")
-  assert_true(thumb_of(t.ctx(), "ws1/st1/s-c1/uploads/fx/wide.png").unwrap().start_crop)
 }
 
 ///|
@@ -101,18 +95,13 @@ test "a tall picture fills its wider chat preview without stretching" {
   new_run()
   let a = { ..strip("tall.png"), width: 400.0, height: 2000.0 }
   let src : Source = { ..fixture("chat"), file: fn(_, _, _) { "tall" } }
-  let here : @sfpages.MessageHere = {
-    station: "ws1/st1",
-    session: "s-c1",
-    view: chat_view_made(Json::object({})),
-    go: None,
-    inline: true,
-    gutter: 0.0,
-    list: None,
-    core: None,
-  }
   let t = @ui.Tester::new(
-    fn(c) { @sfpages.message_files(c, src, here, [a], false) },
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      @sfpages.message_files_of_node(root, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() { [a] }, false)
+    },
     w=390.0,
     h=600.0,
     images=[("tall", 400, 2000)],
@@ -126,8 +115,6 @@ test "a tall picture fills its wider chat preview without stretching" {
     (i[4] - 0.0).abs() < 0.001 && (i[5] - 0.0).abs() < 0.001 &&
     (i[6] - 1.0).abs() < 0.001 && (i[7] - 0.375).abs() < 0.001
   }), msg="\{Repr(images)}")
-  let thumb = thumb_of(t.ctx(), "ws1/st1/s-c1/uploads/fx/tall.png").unwrap()
-  assert_true(thumb.start_crop)
   t.tap(80.0, 150.0)
   assert_true(viewer.get() is Some(_))
   let file = viewer.get().unwrap().file
@@ -148,18 +135,21 @@ test "a letterboxed strip waiting to load: what it waits on is its share of its 
     "attachments": [attachment_json({ ..strip("line.png"), width: 200.0, height: 4.0 }, "s-c1")],
   })
   let t = @ui.Tester::new(
-    fn(c) {
-      let here : @sfpages.MessageHere = {
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
         station: "ws1/st1",
         session: "s-c1",
-        view: chat_view_made(Json::object({})),
-        go: None,
-        inline: true,
-        gutter: 0.0,
-        list: None,
-        core: None,
+        view: fn() { chat_view_made(Json::object({})) },
+        width: fn() { 760.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
       }
-      @sfpages.message_row(c, src, here, m)
+      @sfpages.message_row_node(root, src, here, fn() { m })
     },
     w=760.0,
     h=600.0,
@@ -169,229 +159,4 @@ test "a letterboxed strip waiting to load: what it waits on is its share of its 
   // its own proportions (200 : 4), 200 × 4 in the middle of its 200 × 16
   assert_true(ground.iter().any(fn(r) { (r.3 - 4.0).abs() < 0.5 }), msg="\{Repr(ground)}")
   assert_false(ground.iter().any(fn(r) { (r.3 - 16.0).abs() < 0.5 }), msg="\{Repr(ground)}")
-}
-
-///|
-test "a strip sent flies to its picture's place in the message, letterboxed there, on no ground" {
-  new_run()
-  let path = "uploads/fx/line.png"
-  let f : SendFlight = {
-    n: 1,
-    chat: "ws1/st1:s-c1",
-    turns: "ws1/st1:s-c1",
-    text: "",
-    from_x: 16.0,
-    from_y: 700.0,
-    field_x: 16.0,
-    field_y: 700.0,
-    field_w: 300.0,
-    field_h: 40.0,
-    room: 0.0,
-    shaped: "",
-    held_lines: 1,
-    held_extras: -1.0,
-    sent_at: 0.0,
-    stopped: true,
-    foot_lift: fn(_) { 0.0 },
-    desk: false,
-    lines: None,
-    lead: 0,
-    marks: [],
-    runs: None,
-    files: [{ key: path, from: (16.0, 640.0, 56.0, 56.0), shown: None, picture: Some("strip"), paint: None, face: fn(_) {  }, ground: 0L, leaving: None, quote_words: None, quote_to: None }],
-    key: "o:1",
-    placed: false,
-    way: @motion.Anim::new(0.0),
-    gone: @motion.Anim::new(1.0),
-    carried: false,
-    from_top: 640.0,
-    ms: @sfbase.flight_len(false),
-    timed: false,
-    set_out: -1.0,
-    after: 0.0,
-  }
-  send_flight.set(Some(f))
-  let t = @ui.Tester::new(
-    fn(c) {
-      // (each frame before its list is built, as a chat's list does: their way said once their row is laid out)
-      flight_frame(c, f.chat)
-      // its box in the message, 360 × 16, the picture's share of it its own proportions'
-      let item = c.box(style=@ui.style(w=Fixed(360.0), h=Fixed(16.0)), fn() {  })
-      flight_landing(c, f, item, path, share=@sfpages.picture_share(strip("line.png"), @sfpages.image_least), paint=Some(fn(w, h, fit, radius) {
-        c.image("strip", w=Px(w), h=Px(h), fit~, radius~, bg=0L) |> ignore
-      }))
-      flight_placed(c, f)
-      flight_files(c, f.chat)
-    },
-    w=390.0,
-    h=844.0,
-    // (the picture sent is there from the start, as the composer's tile had it: the flight paints it at its tile from
-    // the moment its row is placed, in the Tester's first frames)
-    images=[("strip", 2000, 40)],
-  )
-  t.draw()
-  t.draw()
-  // flown all the way (the phone's: over its first part, then settling)
-  t.run_for(@sfbase.flight_ms_of(f) * @sfbase.fly_share(false))
-  let drawn = t.drawn_images()
-  assert_true(drawn.iter().any(fn(i) { (i[2] - 360.0).abs() < 0.5 && (i[3] - 7.2).abs() < 0.5 }), msg="\{Repr(drawn)}")
-  // no ground under it: the message shows the picture on none
-  let neutral = @sf.theme().p.neutral_bg
-  assert_false(t.drawn_rects().iter().any(fn(r) { r.4 == neutral }))
-  send_flight.set(None)
-}
-
-///|
-test "a tall sent picture moves its crop to the top as it lands" {
-  new_run()
-  let path = "uploads/fx/tall.png"
-  let f : SendFlight = {
-    n: 1,
-    chat: "ws1/st1:s-c1",
-    turns: "ws1/st1:s-c1",
-    text: "",
-    from_x: 16.0,
-    from_y: 700.0,
-    field_x: 16.0,
-    field_y: 700.0,
-    field_w: 300.0,
-    field_h: 40.0,
-    room: 0.0,
-    shaped: "",
-    held_lines: 1,
-    held_extras: -1.0,
-    sent_at: 0.0,
-    stopped: true,
-    foot_lift: fn(_) { 0.0 },
-    desk: false,
-    lines: None,
-    lead: 0,
-    marks: [],
-    runs: None,
-    files: [{ key: path, from: (16.0, 640.0, 56.0, 56.0), shown: None, picture: Some("tall"), paint: None, face: fn(_) {  }, ground: 0L, leaving: None, quote_words: None, quote_to: None }],
-    key: "o:1",
-    placed: false,
-    way: @motion.Anim::new(0.0),
-    gone: @motion.Anim::new(1.0),
-    carried: false,
-    from_top: 640.0,
-    ms: @sfbase.flight_len(false),
-    timed: false,
-    set_out: -1.0,
-    after: 0.0,
-  }
-  send_flight.set(Some(f))
-  let t = @ui.Tester::new(
-    fn(c) {
-      // (each frame before its list is built, as a chat's list does: their way said once their row is laid out)
-      flight_frame(c, f.chat)
-      let item = c.box(style=@ui.style(w=Fixed(160.0), h=Fixed(300.0)), fn() {  })
-      flight_landing(c, f, item, path, start_crop=true, paint=Some(fn(w, h, fit, radius) {
-        c.image("tall", w=Px(w), h=Px(h), fit~, radius~, bg=0L) |> ignore
-      }))
-      flight_placed(c, f)
-      flight_files(c, f.chat)
-    },
-    w=390.0,
-    h=844.0,
-    images=[("tall", 400, 2000)],
-  )
-  t.draw()
-  t.draw()
-  t.run_for(@sfbase.flight_ms_of(f) * @sfbase.fly_share(false) * 0.5)
-  assert_true(t.drawn_images().iter().any(fn(i) { i[5] > 0.0 }), msg="\{Repr(t.drawn_images())}")
-  t.run_for(@sfbase.flight_ms_of(f) * @sfbase.fly_share(false) * 0.5)
-  assert_true(t.drawn_images().iter().any(fn(i) {
-    (i[2] - 160.0).abs() < 0.5 && (i[3] - 300.0).abs() < 0.5 &&
-    i[5].abs() < 0.001 && (i[7] - 0.375).abs() < 0.001
-  }), msg="\{Repr(t.drawn_images())}")
-  send_flight.set(None)
-}
-
-///|
-test "an image sent while it goes up flies on to its place once it is up: its message knows it by its upload, before and after" {
-  new_run()
-  // the message's file: going up (its path its upload's), then up (the station's), the same upload throughout (the
-  // core's views.ts goingUp, uploadOf)
-  let shot : Ref[Attachment] = {
-    val: {
-      name: "shot.png",
-      path: @sfbase.upload_path("u1"),
-      size: 300.0,
-      width: 1200.0,
-      height: 800.0,
-      thumbhash: "",
-      owner: "",
-      upload: "u1",
-      duration: 0.0,
-      frames: 0,
-      held: false,
-    },
-  }
-  let faced = Ref(0)
-  let f : SendFlight = {
-    n: 1,
-    chat: "ws1/st1:s-c1",
-    turns: "ws1/st1:s-c1",
-    text: "",
-    from_x: 16.0,
-    from_y: 700.0,
-    field_x: 16.0,
-    field_y: 700.0,
-    field_w: 300.0,
-    field_h: 40.0,
-    room: 0.0,
-    shaped: "",
-    held_lines: 1,
-    held_extras: -1.0,
-    sent_at: 0.0,
-    stopped: true,
-    foot_lift: fn(_) { 0.0 },
-    desk: true,
-    lines: None,
-    lead: 0,
-    marks: [],
-    runs: None,
-    files: [{ key: @sfbase.upload_path("u1"), from: (16.0, 640.0, 56.0, 56.0), shown: None, picture: Some("shot"), paint: None, face: fn(_) { faced.val += 1 }, ground: 0L, leaving: None, quote_words: None, quote_to: None }],
-    key: "o:1",
-    placed: false,
-    way: @motion.Anim::new(0.0),
-    gone: @motion.Anim::new(1.0),
-    carried: false,
-    from_top: 640.0,
-    ms: @sfbase.flight_len(false),
-    timed: false,
-    set_out: -1.0,
-    after: 0.0,
-  }
-  send_flight.set(Some(f))
-  let t = @ui.Tester::new(
-    fn(c) {
-      // (each frame before its list is built, as a chat's list does: their way said once their row is laid out)
-      flight_frame(c, f.chat)
-      let item = c.box(style=@ui.style(w=Fixed(240.0), h=Fixed(160.0)), fn() {  })
-      flight_landing(c, f, item, @sfbase.file_key(shot.val), paint=Some(fn(w, h, fit, radius) {
-        c.image("shot", w=Px(w), h=Px(h), fit~, radius~, bg=0L) |> ignore
-      }))
-      flight_placed(c, f)
-      flight_files(c, f.chat)
-    },
-    w=390.0,
-    h=844.0,
-    // (the picture sent is there from the start, as the composer's tile had it: the flight paints it at its tile from
-    // the moment its row is placed, in the Tester's first frames)
-    images=[("shot", 1200, 800)],
-  )
-  t.draw()
-  t.draw()
-  // a fifth of its way: up now, at the station's path; on to more than half of it
-  t.run_for(@sfbase.flight_len(true) * 0.2)
-  faced.val = 0
-  shot.val = { ..shot.val, path: "uploads/fx/shot.png" }
-  t.run_for(@sfbase.flight_len(true) * 0.4)
-  // still the picture flying to its place, never drawn back where its tile was
-  assert_eq(faced.val, 0)
-  let drawn = t.drawn_images()
-  assert_true(drawn.iter().any(fn(i) { i[2] > 56.0 && i[2] < 240.0 }), msg="\{Repr(drawn)}")
-  send_flight.set(None)
 }

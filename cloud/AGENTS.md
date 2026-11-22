@@ -3,7 +3,9 @@
 - It keeps only what is about people: accounts and sign-in, workspaces, members and roles, invitations, the list of a
   workspace's stations, each whole or one that only runs tasks (a rig, listed with the member whose it is; who may
   use it is that member's signature, checked by the machine, never the cloud's to say; listing it as the other kind
-  changes nothing on the machine by itself, `station/AGENTS.md`), members' credentials and their revocation,
+  changes nothing on the machine by itself, `station/AGENTS.md`), members' credentials and their revocation, the
+  provisioning keys a workspace's managers give a console to enroll whole stations with (`src/directory/stations.ts`:
+  each works only while its maker manages the workspace, and opens `/v1/provision/*` alone),
   still.fail's relays: its own (`RELAY_URL`) and a list its operator keeps as it runs, never a deploy's config (the
   user, 2026-11-17: 「env 不保留，外部要用让他们自己配」), a relay putting itself on it only with a token the operator
   made for it (`src/relay-registry.ts`), so deploying a relay puts it on no cloud's list. A workspace's own relays and the ways it turned off are its stations'
@@ -14,7 +16,8 @@
   request on to a station (the root AGENTS.md, No way into a station from outside).
 - Workers, each deployed on its own (`deploy.py` lists them, `wrangler*.jsonc` route them): the API
   (`src/index.ts`), the relay (`src/relay-worker.ts`: deploying it drops every relay connection, so it is deployed
-  only when it changed), the static web, admin, preview, status, site and the component library's page (kit). Their
+  only when it changed), the static web, admin, preview, status, site, the component library's page (kit), and the
+  ui.monoid.build site (ui). Their
   names, Durable Objects, bucket and secrets keep their names from before the rename: a renamed one would be new and
   empty.
 - `src/directory.ts` (one SQLite Durable Object, `primary`) is who belongs where, every change one transaction: the
@@ -27,8 +30,8 @@
   objects. Whether a station is up is not the cloud's to say: devices find out over the mesh.
 - A member's credential is a JWT the cloud signs (Ed25519, 30 days, bound to the device's key); stations check it
   offline with the key the presence socket's `state` frame gives, so a signed-in device works with the cloud down.
-  A workspace in safe mode (the lock, `src/lock.ts` over `station/src/cloud/lock.ts` and `rules/`, kept as a station
-  keeps it by `station/src/cloud/log-keep.ts`) is decided by
+  A workspace in safe mode (the lock, `src/lock.ts` over `shared/lock.ts` and `rules/`, kept as a station
+  keeps it by `shared/log-keep.ts`) is decided by
   what its owners signed, not by the cloud: the cloud cannot add people or stations to it. It and the personal lock
   are kept here only for the stations and devices from before the stations carried them (the root AGENTS.md, The
   cloud is the account system): nothing new that is not the account system comes here. Once a chain moved (`moved`

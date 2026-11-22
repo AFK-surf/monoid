@@ -291,6 +291,59 @@ pub fn rich_chat(older : Int) -> Json {
 }
 
 ///|
+/// "chat-feishu": a chat that has only been in a Feishu group (the core's `#unchatted`): no message of its own, what
+/// was said there all it shows (`elsewhere`), a person's ask and its agent's reply with a list in it (FB-37).
+pub fn feishu_chat() -> Json {
+  let claude = by_agent("anthropic", "claude", "s-c1")
+  let place : Json = { "name": "研发协作群", "surface": "feishu" }
+  {
+    "me": { "email": "lin@example.com" },
+    "thread": Json::null(),
+    "title": "飞书群消息排查",
+    "people": [],
+    "agents": [
+      {
+        "session": {
+          "key": "s-c1",
+          "runtime": "claude",
+          "maker": { "id": "anthropic", "name": "Anthropic" },
+          "agentText": "Claude",
+          // (where it stands in words and its tone, as the core says an idle one: present.ts session, format.ts)
+          "statusText": "未开始",
+          "tone": "neutral",
+        },
+        "status": "idle",
+      },
+    ],
+    "messages": [],
+    "elsewhere": [
+      {
+        "key": "in-1",
+        "after": 0,
+        "text": "飞书接入的对话里选中回复里的列表项文字没有弹出浮层，帮忙排查一下。",
+        "place": place,
+        "failed": false,
+        "received": true,
+        "by": { "name": "林知夏" },
+        "time": ago("6 分钟前", "10/19 05:20:00"),
+      },
+      {
+        "key": "out-1",
+        "after": 0,
+        "text": "已经定位到飞书接入会话的选词链路：\n\n- 飞书消息在会话列表里作为外部同步条目渲染，已挂载文本选区标记。\n- 选词浮层读取当前选中行时补齐外部消息映射后，浮层即可正常出现。",
+        "place": place,
+        "failed": false,
+        "by": claude,
+        "time": ago("5 分钟前", "10/19 05:21:00"),
+      },
+    ],
+    "more": false,
+    "outbox": [],
+    "offline": false,
+  }
+}
+
+///|
 /// Any other row's chat: what was asked, and the answer.
 pub fn small_chat(title : String, session : String) -> Json {
   let claude = by_agent("anthropic", "claude", session)
@@ -498,6 +551,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_run_change(rich_chat(f.older))
           } else if f.mode == "chat-md" {
             with_md_message(rich_chat(f.older))
+          } else if f.mode == "chat-feishu" {
+            feishu_chat()
           } else if f.mode == "chat-pieces" {
             with_long_pieces(rich_chat(f.older))
           } else if f.mode == "chat-viz" {
@@ -689,7 +744,7 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
           "overview": fixture_station_drive(false),
         },
       ])
-    "chatJobs" => Some({ "jobs": [] })
+    "chatJobs" => if f.mode == "chat-subchats-jobs" { Some(fix_chat_jobs()) } else { Some({ "jobs": [] }) }
     // what people said in the chat, by the day (the core's `chatOutline`: outline_fixture.mbt)
     "chatOutline" => fixture_outline(f, params)
     // what was said in the chat besides words (the core's `chatThings`: sfpages things.mbt)
@@ -1564,7 +1619,17 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
     "chat.around" => {
       let ts = text(p, "ts")
       if ts == "" {
-        return Some(Ok({ "seq": Json::number(number(p, "seq")) }))
+        // (by its number: the window brought back as far as it holds it, a page before at a time, the chat's earliest
+        // page at most)
+        let target = number(p, "seq")
+        let holds = fn() { items(Some(rich_chat(f.older)), "messages").iter().any(fn(m) { number(Some(m), "seq") == target }) }
+        if !holds() && f.older < rich_chat_pages {
+          while !holds() && f.older < rich_chat_pages {
+            f.older += 1
+          }
+          f.changed()
+        }
+        return Some(Ok({ "seq": Json::number(target) }))
       }
       let all = items(Some(rich_chat(f.older)), "messages")
       Some(
@@ -1855,7 +1920,7 @@ pub let fix_vault : Ref[String] = Ref("")
 ///|
 /// chat-vault's last post: an agent asking to keep a password (`typed`: a token the person types in; `file`: a file
 /// they pick), or `use_secret` for an already answered request to use a token; its card as the core says it.
-pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false, timed? : Bool = false, describe? : Bool = false, remove? : Bool = false, oauth? : Bool = false, off? : Bool = false) -> Json {
+pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false, timed? : Bool = false, describe? : Bool = false, remove? : Bool = false, oauth? : Bool = false, off? : Bool = false, no_key? : Bool = false) -> Json {
   let ask : Map[String, Json] = if remove {
     { "name": "办公室 Mac 主机管理员登录", "reason": "这个密码在 Office-Host-2 上登不上，能用的那个已经另存了，留着会让别的 agent 拿它去试", "mode": "env", "hosts": [], "remove": true, "answer": "approve" }
   } else if describe {
@@ -1886,6 +1951,9 @@ pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false
   // (chat-vault-off: the person's vault not turned on yet, the workspace in no safe mode or not: 开启 first, on the card)
   if off {
     ask["answer"] = "setUp"
+  }
+  if no_key {
+    ask["answer"] = "noKey"
   }
   if timed {
     ask["timeoutKind"] = "idle"
@@ -2067,7 +2135,8 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
   let notice_many = f.mode == "chat-notice-many"
   // (chat-file-alone: its last message a file of its agent's, no words with it)
   let file_alone = f.mode == "chat-file-alone"
-  let vault = f.mode == "chat-vault" || f.mode == "chat-vault-off" || f.mode == "chat-vault-typed" || f.mode == "chat-vault-oauth" || f.mode == "chat-vault-file" || f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-describe" || f.mode == "chat-vault-remove"
+  let vault = f.mode == "chat-vault" || f.mode == "chat-vault-off" || f.mode == "chat-vault-typed" || f.mode == "chat-vault-oauth" || f.mode == "chat-vault-file" || f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-no-key" || f.mode == "chat-vault-describe" || f.mode == "chat-vault-remove"
+  let vault_browse = f.mode == "chat-vault-browse"
   let linked = f.mode.has_prefix("chat-phone-linked-")
   let signin = f.mode.has_prefix("chat-signin")
   // (chat-rig: an agent's request for the viewer's rig, waiting; -other: someone else's rig; -web: on a web page;
@@ -2102,7 +2171,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       None => rest
     }
   }
-  if session != "s-c1" || (fix_decided.is_empty() && !seeded && !vault && !phone && !signin && !ask_end && !ask_text && !notice_many && !file_alone && !rig) {
+  if session != "s-c1" || (fix_decided.is_empty() && !seeded && !vault && !vault_browse && !phone && !signin && !ask_end && !ask_text && !notice_many && !file_alone && !rig) {
     return v
   }
   match v {
@@ -2158,7 +2227,68 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       }
       // chat-vault's request to keep a password, last
       if vault {
-        all.push(vault_post(f.mode == "chat-vault-typed", file=f.mode == "chat-vault-file", use_secret=f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before", timed=f.mode == "chat-vault-timeout", describe=f.mode == "chat-vault-describe", remove=f.mode == "chat-vault-remove", oauth=f.mode == "chat-vault-oauth", off=f.mode == "chat-vault-off"))
+        all.push(vault_post(f.mode == "chat-vault-typed", file=f.mode == "chat-vault-file", use_secret=f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-no-key", timed=f.mode == "chat-vault-timeout", describe=f.mode == "chat-vault-describe", remove=f.mode == "chat-vault-remove", oauth=f.mode == "chat-vault-oauth", off=f.mode == "chat-vault-off", no_key=f.mode == "chat-vault-no-key"))
+      }
+      // chat-vault-browse: settled browse outcome + cross-workspace secret_use card + pending browse card
+      if vault_browse {
+        all.push(
+          msg(58, "agent", by_agent("Anthropic", "claude", "s-c1"), "已查看其它工作区的个人密钥列表", "2 分钟前", {
+            "card": {
+              "type": "options",
+              "vault": "r-browse-done",
+              "vaultAsk": {
+                "name": "",
+                "reason": "查找个人仓库发布用的 token",
+                "mode": "proxy",
+                "hosts": [],
+                "browse": { "workspace": "个人", "workspaces": 2, "items": 3 },
+                "status": "granted",
+                "answer": "approve",
+              },
+            },
+            "createdAt": Json::number(1.0e9),
+          }),
+        )
+        all.push(
+          msg(59, "agent", by_agent("Anthropic", "claude", "s-c1"), "申请使用跨工作区个人密钥 GitHub 个人 Token", "1 分钟前", {
+            "card": {
+              "type": "options",
+              "vault": "r-cross-use",
+              "vaultAsk": {
+                "name": "GitHub 个人 Token",
+                "reason": "拉取个人仓库的 PR 状态以核对依赖版本",
+                "mode": "proxy",
+                "hosts": ["api.github.com"],
+                "howText": "代理 · 限 api.github.com",
+                "command": "gh pr list --repo me/tools",
+                "cross": { "workspace": "ws-personal", "workspaceName": "个人", "vaultName": "个人密钥库" },
+                "answer": "approve",
+                "lasts": "chat",
+              },
+            },
+            "createdAt": Json::number(1.0e9),
+          }),
+        )
+        let pending_browse : Map[String, Json] = {
+          "name": "",
+          "reason": "需要查找你的个人 GitHub 或 Cloudflare Token 以完成部署",
+          "mode": "proxy",
+          "hosts": [],
+          "browse": { "workspace": "个人" },
+          "browseWorkspaces": 2,
+          "browseItems": 3,
+          "answer": "approve",
+        }
+        if fix_vault.val != "" {
+          pending_browse["status"] = Json::string(fix_vault.val)
+          pending_browse["browse"] = { "workspace": "个人", "workspaces": 2, "items": 3 }
+        }
+        all.push(
+          msg(60, "agent", by_agent("Anthropic", "claude", "s-c1"), "申请查看其它工作区的个人密钥列表", "刚刚", {
+            "card": { "type": "options", "vault": "r-browse", "vaultAsk": Json::object(pending_browse) },
+            "createdAt": Json::number(1.0e9),
+          }),
+        )
       }
       // chat-phone's request for the person's phone, last
       if phone {
@@ -2306,7 +2436,56 @@ pub fn fixture_card_call(f : Fixture, name : String, params : Json) -> Result[Js
       f.changed()
       Some(Ok(Json::object({})))
     }
-    "vault.approve" | "vault.deny" if text(p, "request") == "r-demo" => {
+    "vault.browseCandidates" =>
+      Some(
+        Ok(
+          {
+            "workspaces": [
+              {
+                "id": "ws-personal",
+                "name": "个人",
+                "items": [
+                  {
+                    "vault": "v-p1",
+                    "vaultName": "个人密钥库",
+                    "item": "it-gh",
+                    "name": "GitHub 个人 Token",
+                    "about": "个人仓库 PR 与发布权限",
+                    "kind": "token",
+                    "howText": "代理 · 限 api.github.com",
+                  },
+                  {
+                    "vault": "v-p1",
+                    "vaultName": "个人密钥库",
+                    "item": "it-cf",
+                    "name": "Cloudflare API Token",
+                    "about": "个人域名 DNS 与 Workers 部署",
+                    "kind": "token",
+                    "howText": "代理 · 限 api.cloudflare.com",
+                  },
+                ],
+              },
+              {
+                "id": "ws-lab",
+                "name": "实验室",
+                "items": [
+                  {
+                    "vault": "v-l1",
+                    "vaultName": "个人密钥库",
+                    "item": "it-oai",
+                    "name": "OpenAI 个人 Key",
+                    "about": "离线评测脚本专用",
+                    "kind": "token",
+                    "howText": "环境变量 · OPENAI_API_KEY",
+                  },
+                ],
+              },
+            ],
+            "unkeyedWorkspaces": 1,
+          },
+        ),
+      )
+    "vault.approve" | "vault.deny" if text(p, "request") == "r-demo" || text(p, "request") == "r-browse" => {
       fix_vault.val = if name == "vault.approve" { "granted" } else { "denied" }
       f.changed()
       Some(Ok(Json::object({})))

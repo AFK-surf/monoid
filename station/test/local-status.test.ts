@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
-import { SETTLE_MS, TASKS_MOST, routeOf, statusOf, statusServer, type LocalStatus, type StatusInput } from "../src/api/status.ts";
+import { Effect, Layer } from "effect";
+import { SETTLE_MS, StatusLive, TASKS_MOST, routeOf, statusOf, statusServer, type LocalStatus, type StatusInput } from "../src/api/status.ts";
+import { platform } from "../src/platform/index.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { Store, WAITING_FOR_PEOPLE } from "../src/store/store.ts";
 import { testClock } from "./hub-fakes.ts";
@@ -130,5 +132,16 @@ test("a watcher is told the status now, then once a burst of changes settles, an
   } finally {
     s.close();
     await fibers.close();
+  }
+});
+
+test("where there are no Unix sockets (Windows) there is no status socket, and nothing of the station is asked for", async () => {
+  const had = platform.hasUnixSockets;
+  platform.hasUnixSockets = false;
+  try {
+    // Given none of the services it asks for: it ends before asking any (one asked for would fail the build).
+    await Effect.runPromise(Effect.scoped(Layer.build(StatusLive)) as Effect.Effect<unknown>);
+  } finally {
+    platform.hasUnixSockets = had;
   }
 });

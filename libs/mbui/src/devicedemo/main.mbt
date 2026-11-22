@@ -52,7 +52,7 @@ fn main {
     }
     say("DONE \{word} (copy shown: \{@ui.copy_shown()})")
   }
-  @ui.run("devicedemo", fn(c) {
+  @ui.run_legacy_ctx("devicedemo", fn(c) {
     if !keyboard_field {
       c.catch_keys("keys", true)
     }

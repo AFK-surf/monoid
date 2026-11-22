@@ -109,14 +109,15 @@ pub fn fixture_station_channel(beta : Bool) -> Unit {
 }
 
 ///|
-/// Its overview's `features` (station/src/features.ts): on the test channel its terminals, and moving where it offers it.
+/// Its overview's `features` (station/src/features.ts): on the test channel its terminals; and moving, graduated, said
+/// for apps from before wherever it offers it (`GRADUATED_SAID`).
 fn fx_station_features() -> Json {
   let out : Array[Json] = []
   if fx_station_beta.val {
     out.push(Json::string("terminal"))
-    if fx_move.offered {
-      out.push(Json::string("stationMove"))
-    }
+  }
+  if fx_move.offered {
+    out.push(Json::string("stationMove"))
   }
   Json::array(out)
 }

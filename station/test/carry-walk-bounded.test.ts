@@ -50,6 +50,11 @@ test("a gathering looks at the disk as main's walk did, but where a directory's 
   put(join(ws, "mb", "moon.mod.json"), "{}");
   put(join(ws, "mb", "_build", "main.wasm"));
   put(join(ws, "mb", ".mooncakes", "x.mbt"));
+  put(join(ws, "mb-new", "moon.mod"), 'name: "demo"\n');
+  put(join(ws, "mb-new", "_build", "main.wasm"));
+  put(join(ws, "mb-new", ".mooncakes", "x.mbt"));
+  put(join(ws, "mb-pkg", "moon.pkg"), "import {}\n");
+  put(join(ws, "mb-pkg", "_build", "pkg.o"));
   put(join(ws, "ex", "mix.exs"));
   put(join(ws, "ex", "deps", "jason", "mix.exs"));
   const g = await inProgram<Gathered & { looked: [string, string][] }>({ op: "gather", count: true, dataDir: from, db, ws: HOME, home: true, scratch: join(from, "scratch"), agent: null, keys: ["chat:w"], own: [] });
@@ -61,7 +66,7 @@ test("a gathering looks at the disk as main's walk did, but where a directory's 
   // Main's: a listing a directory gone into, an lstat and a hash a file.
   const files = listedOf(g).filter((f) => "hash" in f).map((f) => f.path.slice(ws.length + 1));
   assert.ok(files.includes("a/b/c/d/dd/Build/Products/app"), "deep under the room, it goes as any other directory");
-  for (const left of ["ios-dd/", "rs-out/", "mb/_build/", "mb/.mooncakes/", "ex/deps/"]) assert.ok(!files.some((f) => f.startsWith(left)), `${left} stays behind`);
+  for (const left of ["ios-dd/", "rs-out/", "mb/_build/", "mb/.mooncakes/", "mb-new/_build/", "mb-new/.mooncakes/", "mb-pkg/_build/", "ex/deps/"]) assert.ok(!files.some((f) => f.startsWith(left)), `${left} stays behind`);
   assert.equal(by("fs.hash").length, files.length, "a hash a file");
   assert.equal(by("fs.lstat").length, files.length, "an lstat a file, none of a directory");
   const listed = by("fs.readdir");

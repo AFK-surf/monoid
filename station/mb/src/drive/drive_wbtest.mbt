@@ -156,6 +156,53 @@ test "CRC-32 rolled on, and deflate inflated again to the same" {
 }
 
 ///|
+priv struct FakeClock {
+  mut now : Double
+  timers : Array[(Int, Double, () -> Unit)]
+  mut next : Int
+}
+
+///|
+fn FakeClock::clock(self : FakeClock) -> Clock {
+  {
+    now: () => self.now,
+    after: fn(ms, f) {
+      self.next += 1
+      let id = self.next
+      self.timers.push((id, self.now + ms, f))
+      fn() {
+        for i, t in self.timers {
+          if t.0 == id {
+            self.timers.remove(i) |> ignore
+            return
+          }
+        }
+      }
+    },
+  }
+}
+
+///|
+fn FakeClock::advance(self : FakeClock, ms : Double) -> Unit {
+  let until = self.now + ms
+  while true {
+    let mut best = -1
+    for i, t in self.timers {
+      if t.1 <= until && (best < 0 || t.1 < self.timers[best].1) {
+        best = i
+      }
+    }
+    if best < 0 {
+      break
+    }
+    let t = self.timers.remove(best)
+    self.now = t.1
+    (t.2)()
+  }
+  self.now = until
+}
+
+///|
 test "a folder's watch: a burst told once, kept between asks, its asking held at most so long" {
   let fake : FakeClock = { now: 0.0, timers: [], next: 0 }
   let handlers : Array[(() -> Unit, () -> Unit)] = []
@@ -480,4 +527,32 @@ test "a private write: beside its file under a name of its own each time, nothin
   left.sort()
   assert_eq(left, ["full", "state.json"])
   rm_force(dir)
+}
+
+///|
+test "preview delegates to codecs.preview and returns None on missing codecs or error" {
+  let asked : Array[(String, String)] = []
+  let ok_codecs : Codecs = {
+    thumbnail: (_, _) => None,
+    preview: (image, thumbs) => {
+      asked.push((image, thumbs))
+      Some({ path: join([thumbs, "\{id_of(image)}.p.jpg"]), type_: "image/jpeg" })
+    },
+    thumbhash: (_, _) => None,
+  }
+  let bad_codecs : Codecs = {
+    thumbnail: (_, _) => None,
+    preview: (_, _) => raise fs_error("EIO", "boom"),
+    thumbhash: (_, _) => None,
+  }
+  assert_true(preview("/a/pic.png", "/data/thumbs", None) is None)
+  match preview("/a/pic.png", "/data/thumbs", Some(ok_codecs)) {
+    Some(t) => {
+      assert_eq(t.path, "/data/thumbs/\{id_of("/a/pic.png")}.p.jpg")
+      assert_eq(t.type_, "image/jpeg")
+    }
+    None => abort("expected preview thumbnail")
+  }
+  assert_eq(asked, [("/a/pic.png", "/data/thumbs")])
+  assert_true(preview("/a/pic.png", "/data/thumbs", Some(bad_codecs)) is None)
 }

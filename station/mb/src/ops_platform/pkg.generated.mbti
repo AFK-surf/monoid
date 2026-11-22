@@ -4,7 +4,6 @@ package "station/ops_platform"
 import {
   "moonbitlang/core/json",
   "station/host",
-  "station/sql",
 }
 
 // Values
@@ -39,6 +38,8 @@ pub fn background_found(Bool, (String) -> Bool, (String) -> String?) -> Backgrou
 pub fn backgrounded_on(Background, String, Array[String]) -> (String, Array[String])
 
 pub fn branded(String, Product) -> String
+
+pub fn built_at_of(Array[String], String?, String?) -> Double?
 
 pub fn built_key(String?) -> @json.Json
 
@@ -75,6 +76,8 @@ pub fn device_urls(Array[String], String) -> (String?, String?)
 pub fn disk_every(String) -> Double
 
 pub let disk_every_ms : Double
+
+pub fn disk_low(Double) -> Double
 
 pub let disk_low_bytes : Double
 
@@ -153,8 +156,6 @@ pub fn guarded_tops(Bool, String, Array[String]) -> Array[String]
 pub fn hard_front_of(Double) -> Double
 
 pub fn hard_rss_of(Double) -> Double
-
-pub async fn harness(@host.Host) -> Unit
 
 pub let health_fresh_ms : Double
 
@@ -476,7 +477,7 @@ pub fn session_usage(Array[@json.Json]) -> @json.Json
 
 pub fn sh_quoted(String) -> String
 
-pub fn sha1_hex(Bytes) -> String
+pub fn sha1_hex(BytesView) -> String
 
 pub fn shell_candidates(Array[(String, String)], Array[String], Bool) -> Array[ShellCandidate]
 
@@ -514,6 +515,8 @@ pub fn start_env(Array[(String, String)], @json.Json, Array[String]) -> Array[(S
 
 pub fn start_time_of_etime(String, Double) -> Double?
 
+pub fn station_built_at(String?) -> Double?
+
 pub let station_log_cap : Double
 
 pub fn station_version(String?) -> String?
@@ -526,12 +529,6 @@ pub fn storage_entry(String) -> StorageEntry?
 
 pub let storage_manifest : Array[StorageEntry]
 
-pub fn store_session(@sql.Db, String) -> @json.Json? raise
-
-pub fn store_thread(@sql.Db, Double) -> @json.Json? raise
-
-pub fn store_thread_sessions(@sql.Db, Double) -> Array[@json.Json] raise
-
 pub fn stores_secret(String) -> Bool
 
 pub fn tcp_port_inodes(Array[String], Int32) -> Array[String]
@@ -539,8 +536,6 @@ pub fn tcp_port_inodes(Array[String], Int32) -> Array[String]
 pub fn team_in(Array[(String, Team)], String) -> Team?
 
 pub fn text_name(String) -> Bool
-
-pub fn threads_with_cards(@sql.Db, Array[Double]) -> Array[Double] raise
 
 pub let thumbs_cap : Double
 
@@ -616,6 +611,8 @@ pub fn upkeep_round(Bool, Bool, Bool, Bool) -> Array[String]
 
 pub fn upkeep_said(@json.Json) -> @json.Json?
 
+pub fn url_continuation(String, String, String, Int32, Int32?) -> Int32?
+
 pub fn urls_in(String) -> Array[String]
 
 pub fn usage_cost(@json.Json) -> Double?
@@ -675,6 +672,8 @@ pub fn win_command_candidates(String, Array[(String, String)], String, (Array[St
 pub fn win_command_cmd(String, String?, Bool) -> String
 
 pub fn win_drives((String) -> Bool) -> Array[(String, String)]
+
+pub fn win_find_command(String, Array[(String, String)], String, (Array[String]) -> String, (String) -> Bool) -> String?
 
 pub fn win_group_memory(String, Array[Double]) -> Array[(Double, Double)]
 

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Cloud, readState, writeState } from "../src/cloud/state.ts";
+import { applyState } from "../src/cloud/presence.ts";
 import { member } from "../src/mesh/peer.ts";
 import { setStationLang } from "../src/ops/i18n.ts";
 
@@ -76,6 +77,97 @@ test("cloud routing follows the supplied station config without opening another 
     assert.equal(cloud.transport.eligible("https://app.still.fail/v1/stations/connect"), false);
   } finally {
     await cloud.close();
+    rmSync(data, { recursive: true, force: true });
+  }
+});
+
+test("applyState persists workspace_emoji and workspace_icon for home and joined workspaces and clears them when omitted", () => {
+  const data = mkdtempSync(join(tmpdir(), "cloud-marks-"));
+  const stationId = "a".repeat(64);
+  writeState(data, {
+    origin: "https://app.still.fail", station: stationId, workspace: "ws_home", workspace_name: "Home", name: "s0",
+    relay_url: "https://relay.example", relay_urls: ["https://relay.example"], grant_keys: { keys: [] }, peers: [], revocations: [],
+  });
+  const cloud = new Cloud(data, false);
+  try {
+    applyState(cloud, JSON.stringify({
+      type: "state",
+      origin: "https://app.still.fail",
+      workspace: "ws_home",
+      workspace_name: "Home",
+      workspace_emoji: "🚀",
+      workspace_icon: "glyph:rocket",
+      name: "s0",
+      relay_url: "https://relay.example",
+      relay_urls: ["https://relay.example"],
+      grant_keys: { keys: [] },
+      peers: [{ id: stationId, name: "s0" }],
+      revocations: [],
+      workspaces: [
+        {
+          workspace: "ws_joined",
+          workspace_name: "Lab",
+          workspace_emoji: "🧪",
+          workspace_icon: "glyph:beaker",
+          name: "s0-lab",
+          peers: [{ id: stationId, name: "s0-lab" }],
+          revocations: [],
+        },
+      ],
+    }));
+
+    assert.equal(cloud.membership("ws_home")?.workspace_emoji, "🚀");
+    assert.equal(cloud.membership("ws_home")?.workspace_icon, "glyph:rocket");
+    assert.equal(cloud.membership("ws_joined")?.workspace_emoji, "🧪");
+    assert.equal(cloud.membership("ws_joined")?.workspace_icon, "glyph:beaker");
+
+    // Survives restart via cloud.json.
+    const reloaded = new Cloud(data, false);
+    try {
+      assert.equal(reloaded.membership("ws_home")?.workspace_emoji, "🚀");
+      assert.equal(reloaded.membership("ws_home")?.workspace_icon, "glyph:rocket");
+      assert.equal(reloaded.membership("ws_joined")?.workspace_emoji, "🧪");
+      assert.equal(reloaded.membership("ws_joined")?.workspace_icon, "glyph:beaker");
+    } finally {
+      reloaded.close();
+    }
+
+    // Subsequent state frame without emoji/icon clears them.
+    applyState(cloud, JSON.stringify({
+      type: "state",
+      origin: "https://app.still.fail",
+      workspace: "ws_home",
+      workspace_name: "Home",
+      name: "s0",
+      relay_url: "https://relay.example",
+      relay_urls: ["https://relay.example"],
+      grant_keys: { keys: [] },
+      peers: [{ id: stationId, name: "s0" }],
+      revocations: [],
+      workspaces: [
+        {
+          workspace: "ws_joined",
+          workspace_name: "Lab",
+          name: "s0-lab",
+          peers: [{ id: stationId, name: "s0-lab" }],
+          revocations: [],
+        },
+      ],
+    }));
+
+    const homeAfter = cloud.membership("ws_home")!;
+    const joinedAfter = cloud.membership("ws_joined")!;
+    assert.equal("workspace_emoji" in homeAfter, false);
+    assert.equal("workspace_icon" in homeAfter, false);
+    assert.equal("workspace_emoji" in joinedAfter, false);
+    assert.equal("workspace_icon" in joinedAfter, false);
+    const persisted = readState(data)!;
+    assert.equal("workspace_emoji" in persisted, false);
+    assert.equal("workspace_icon" in persisted, false);
+    assert.equal("workspace_emoji" in persisted.joined![0]!, false);
+    assert.equal("workspace_icon" in persisted.joined![0]!, false);
+  } finally {
+    cloud.close();
     rmSync(data, { recursive: true, force: true });
   }
 });

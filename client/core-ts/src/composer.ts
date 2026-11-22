@@ -160,6 +160,9 @@ export class Composers {
   /// How much of each the station has, by upload id, while it goes up: a message sent part way through starts from there
   /// (`sentOf`).
   #sent = new Map<string, number>();
+  /// Files of a board draft this device has no bytes of, kept by the draft's station (views/board-drafts.ts), by id:
+  /// a message that takes them is given each as that station copies it among its uploads (`uploaded`).
+  #board = new Map<string, { key: string; station: string; name: string }>();
 
   constructor(inner: Inner) {
     this.#inner = inner;
@@ -747,6 +750,8 @@ export class Composers {
     return Effect.forEach(files, (f) => Effect.suspend(() => {
       let upload = this.#uploads.get(f.id);
       const source = this.#sources.get(f.id);
+      const board = this.#board.get(f.id);
+      if (!upload && !source && board !== undefined && board.station === station && this.#inner.boardDrafts) return this.#inner.boardDrafts.stage(board.key, station, { id: f.id, name: board.name });
       if (!upload && source) {
         this.#upload("", station, { ...source, kept: true });
         upload = this.#uploads.get(f.id)!;
@@ -784,6 +789,26 @@ export class Composers {
     });
   }
 
+  /// The bytes of a file added here, read from what it was handed over as, else as kept on the device while it waits for
+  /// its message: for a board draft's station to keep (views/board-drafts.ts); null where neither is here.
+  async bytesOf(id: string): Promise<Uint8Array | null> {
+    const blob = this.#sources.get(id)?.blob;
+    if (blob) {
+      try {
+        return new Uint8Array(await blob.slice(0, blob.size).arrayBuffer());
+      } catch {
+        // (gone with the page that held it: as kept)
+      }
+    }
+    const kept = await Effect.runPromise(this.#inner.driveKept.held(outboxKeptId(id)));
+    return kept?.bytes ?? null;
+  }
+
+  /// How big a file added here is, 0 where it is not here.
+  sizeHeld(id: string): number {
+    return this.#sources.get(id)?.size ?? 0;
+  }
+
   /// An image's or a film's size as read here (`{}` while it is not), for a message that takes it.
   sizeOf(id: string): { width?: number; height?: number } {
     return this.#sizes.get(id) ?? {};
@@ -801,6 +826,9 @@ export class Composers {
   picture(key: string, id: string): Effect.Effect<Beside | null> {
     const s = this.#state(key);
     const f = [...s.files, ...(s.taken?.files ?? [])].find((x) => x.id === id);
+    // (a board draft's written on another device: as its station keeps it)
+    const elsewhere = () => Effect.map(this.#inner.boardDrafts?.picture(key, id) ?? Effect.succeed(null), (got) => (got !== null && got.type.startsWith("image/") ? new Beside({ type: got.type }, got.bytes) : null));
+    if (!f && !this.#sources.has(id)) return elsewhere();
     if (!f || f.pasted || f.link) return Effect.succeed(null);
     const inner = this.#inner;
     const station = draftAt(key)?.[0];
@@ -841,6 +869,16 @@ export class Composers {
   /// file still going up.
   take(key: string, station: string | null = null): { text: string; attachments: J[]; quotes: J[]; uploads: { id: string; name: string; size: number }[]; version: number } {
     const s = this.#state(key);
+    // A board draft's files this device has none of (written on another of the person's): sent as its station keeps
+    // them, each still to go up.
+    const board = this.#inner.boardDrafts?.held(key);
+    if (board) {
+      for (const f of board.files) {
+        if (s.files.some((x) => x.id === f.id)) continue;
+        this.#board.set(f.id, { key, station: board.station, name: f.name });
+        s.files = [...s.files, { id: f.id, name: f.name, size: f.size, done: null, error: null }];
+      }
+    }
     if (station !== null) s.files = s.files.map((f) => this.#toward(f, station));
     const taken = { text: s.text, quotes: s.quotes, files: s.files, id: this.#id(s) };
     s.taken = taken;

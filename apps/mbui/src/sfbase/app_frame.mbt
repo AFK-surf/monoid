@@ -19,15 +19,10 @@ pub fn language_from_prefs(prefs : Json?) -> Unit {
 }
 
 ///|
-/// Experimental switches on this device (实验性功能: `chatPage`, `farviewNative`, `board`), told their signals as the
+/// Experimental switches on this device (实验性功能: `farviewNative`, `board`), told their signals as the
 /// kept choices change and as the app's tree is made, before any page of nodes; turning `board` off puts away any
 /// active board state and returns Home to the ordinary chat list.
-pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
-  let chat_page = @settings.feature_from(prefs, "chatPage")
-  if chat_page != chat_page_told.val {
-    chat_page_told.val = chat_page
-    chat_page_nodes.set(chat_page)
-  }
+pub fn features_from_prefs(prefs : Json?) -> Unit {
   let fv = @settings.feature_from(prefs, "farviewNative")
   if fv != farview_told.val {
     farview_told.val = fv
@@ -47,9 +42,6 @@ pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
 
 ///|
 /// The experimental switches last told from `prefs`: none on as a run begins.
-let chat_page_told : Ref[Bool] = Ref(false)
-
-///|
 let farview_told : Ref[Bool] = Ref(false)
 
 ///|
@@ -100,8 +92,8 @@ pub fn appearance_from_prefs(prefs : Json?, system_dark : Bool) -> Bool {
   })
   // haptics as this device is set (the prefs' `haptics`: off), else on
   @ui.set_haptics(text(prefs, "haptics") != "off")
-  // the chat page as chosen here (the prefs' `chatPage`: 试用新对话页)
-  chat_page_from_prefs(prefs)
+  // the experimental switches as chosen here (the prefs' `features`)
+  features_from_prefs(prefs)
   let dark = @settings.dark(prefs, system_dark)
   @sf.set_dark(Some(dark))
   // the accent as this device is set (the prefs' `accent`, as chosen here a moment ago), else still.fail's orange; one
@@ -284,7 +276,7 @@ fn system_said(json : String) -> Unit {
       // one of the pages' actions from the menu bar: done as its keys are (keymap.mbt ask_action)
       Menu(action) => @settings.ask_action(action)
       // a package handed to the system's installer could not be installed
-      InstallAllow(..) => toast_later(@sf.t("android-chat.file.allowInstall", args=[("app", "still.fail")]))
+      InstallAllow(..) => toast_later(@sf.t("android-chat.file.allowInstall", args=[("app", @sf.product())]))
       InstallFailed(error~, ..) => toast_later(@sf.t("android-chat.file.installFailed", args=[("error", error)]))
       Network =>
         (src.call)(
@@ -388,7 +380,6 @@ fn app_frame_reset() -> Unit {
   badge_told.set(-1)
   told_bars.val = None
   told_dark.val = None
-  chat_page_told.val = false
   farview_told.val = false
   board_told.val = false
   attention.told = false

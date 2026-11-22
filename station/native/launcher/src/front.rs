@@ -28,10 +28,14 @@ const LISTENS_WITHIN: Duration = Duration::from_secs(10);
 /// with its index, so Node takes them in the order they were opened (a device's credential stream first, 2026-11-13).
 /// 3: a route Node gave it (`route`) goes to the program that answers it, Node told the index went (station/mesh/served.ts);
 /// 4: a route's segment `*` is any one; 5: meshConfigure, meshRemove, meshAttachLeaf and meshDetachLeaf (a front of 4
-/// answered Node's mesh directory "no operation meshConfigure" on every try, 2026-11-18).
+/// answered Node's mesh directory "no operation meshConfigure" on every try, 2026-11-18); 6: iroh.probeRelay (#7567),
+/// unix backlog/retry and conn.hand skip (#7568), and noq path-idle/RTT-stall fixes (#7869/#7899/#7919), which a front
+/// kept across updates otherwise never takes up (one of 5 ran a 40-hour-old binary, 2026-11-21); 7: noq-proto BBRv3
+/// idle app_limited (#852) / startup pacing (#802) fixes and 4 MiB stream_receive_window (#8093); 8: BBRv3
+/// loss_thresh(0.30) and gated lower-bound adaptation to prevent cross-border 10–25% loss collapse to min_pipe_cwnd.
 /// A front kept from before a raise here is replaced once by the launcher that takes it up (`current`): the one thing
 /// that does not come with an update, as it is kept across them.
-pub const STREAMS: u64 = 5;
+pub const STREAMS: u64 = 8;
 
 pub struct Front {
     pub pid: i32,

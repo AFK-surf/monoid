@@ -7,11 +7,9 @@ test "89-run-settings" {
     // (the agent's card read by the chat's sheet, then by 详情: the run let it go as the sheet went (a frame took what
     // came meanwhile) and asked again for the tab; handed over between two frames as a device's is, it is one watch all
     // along now, what came for the second given to the first)
-    let f = @sfreplay.Flow::start(@sfreplay.trace("settings-run-settings"), seed~, drop=[
-      "{\"id\":34,\"unsubscribe\":true}", "{\"id\":36,\"subscribe\":{\"topic\":\"agentCard\"",
-    ])
+    let f = @sfreplay.Flow::start(@sfreplay.trace("settings-run-settings"), seed~)
     f.tap("端到端测试")
-    f.run_to(@ui.nav_rest)
+    f.run_for(@ui.move_most_ms)
     f.see("=willow")
     f.tap("icon:info")
     // the chat's own sheet (decide.mbt's)
@@ -19,12 +17,22 @@ test "89-run-settings" {
     // the agent's part of the same sheet
     // (its first row's: under it, the pull requests' and the public links' have one too)
     f.tap("icon:chevron-right", top=true)
+    // the agent's card in the sheet's place, the sheet at its height (as history_test's)
+    f.run_for(@ui.move_most_ms)
+    f.run_to(@sf.presented_rest)
+    f.see("=历史")
     f.tap("=历史")
-    f.run_to(@ui.nav_rest)
+    // the history pushed over the chat, the sheet sunk away
+    f.run_for(@ui.move_most_ms)
+    f.run_to(@sf.presented_rest)
     // 详情: a tab of the history page
     f.tap("=详情")
     // How it runs: the shared model picker rises from the foot.
+    f.see("icon:chevron-down")
+    f.run_for(@ui.move_most_ms)
     f.tap("icon:chevron-down")
+    f.see("思考深度")
+    f.run_for(@ui.move_most_ms)
     f.run_to(@sf.presented_rest)
     // 思考深度: its stops in the sheet itself (@sf.stops), a level a tap; the third of its five (低 to 最高) is 高, the
     // middle of its track. No model is picked yet, so the core keeps none of it (`saved: false`) and the track goes

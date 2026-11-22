@@ -29,14 +29,14 @@ test "a way at rest told to go where it stands, still: nothing set out, no frame
   let worked_before = worked.val
   let said_before = ways_said()
   let t0 = t.time() + 5.0
-  tree.event(t0, fn() { way.go(0.0, lift_spring, at=t0) })
+  tree.event(t0, fn() { way.go(0.0, tactile_bounce, at=t0) })
   let idle = t.idle_said()
   assert_eq(
     (worked.val - worked_before, ways_said() - said_before, way.starts_at(), idle),
     (0, 0, -1.0, None),
   )
   // (one that goes still goes: told back to where it stands while it is on its way, it turns)
-  tree.event(t0 + 10.0, fn() { way.go(1.0, lift_spring, at=t0 + 10.0) })
-  tree.event(t0 + 50.0, fn() { way.go(0.0, lift_spring, at=t0 + 50.0) })
+  tree.event(t0 + 10.0, fn() { way.go(1.0, tactile_bounce, at=t0 + 10.0) })
+  tree.event(t0 + 50.0, fn() { way.go(0.0, tactile_bounce, at=t0 + 50.0) })
   assert_eq(way.starts_at(), t0 + 50.0)
 }

@@ -24,6 +24,9 @@ extern "C" fn ffi_wall_ms() -> Double = "mbc_wall_ms"
 
 extern "C" fn ffi_screen_ack(call : Double, ts : Double) -> Int = "mbc_screen_ack"
 
+#borrow(input)
+extern "C" fn ffi_screen_input(call : Double, input : String) -> Int = "mbc_screen_input"
+
 extern "C" fn ffi_auth_scheme() -> String = "mbc_auth_scheme"
 
 ///|

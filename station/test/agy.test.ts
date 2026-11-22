@@ -4,7 +4,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -60,7 +60,13 @@ async function until(f: () => boolean | Promise<boolean>) {
   }
 }
 const ended = (events: RuntimeEvent[]) => events.filter((e) => e.type === "turnEnded");
-const rpc = (dump: string) => readFileSync(dump + ".rpc", "utf8").trim().split("\n").map((s) => JSON.parse(s));
+// (only complete newline-terminated lines: until() reads .rpc while fake/agy.mjs appends to it)
+const rpc = (dump: string) => {
+  const raw = readFileSync(dump + ".rpc", "utf8");
+  const nl = raw.lastIndexOf("\n");
+  if (nl < 0) return [];
+  return raw.slice(0, nl).split("\n").filter(Boolean).map((s) => JSON.parse(s));
+};
 
 test("a Gemini key runs the Antigravity CLI in its profile's files, with the station's tools and instructions", async () => {
   const { options, events, driver, dump } = setup();
@@ -241,6 +247,53 @@ test("a process that never reaches its backend fails as the network after its wa
   assert.notEqual(words.split("\n")[0], cannotStartWords(new Error("Unknown model ID: gemini-3.1-pro")).split("\n")[0]);
 });
 
+test("an opening given up (node.cancelOpen: timed out, stopped, closed) during its wait to open again ends there at once: no clock moved, no process started again", async () => {
+  const { options, events, dump } = setup({ FAKE_AGY_OFFLINE: "100" });
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  const ac = new AbortController();
+  let failed: unknown = null;
+  const opening = driver.open({ ...options, model: "gemini-3.1-pro", signal: ac.signal }, (e) => events.push(e)).then(() => assert.fail("opened"), (e) => (failed = e));
+  await Promise.race([time.begun(1), opening]);
+  assert.equal(failed, null, String(failed));
+  assert.equal(time.asked(), 1);
+  ac.abort("cancelled");
+  await opening;
+  assert.match(String(failed), /open aborted/);
+  assert.equal(readFileSync(dump + ".offline", "utf8"), "1", "no process opened again");
+  assert.equal(time.asked(), 1, "no wait begun again");
+  // (its clock moved past every wait after: still nothing started)
+  await time.adjust(AGY_CATALOG_RETRY_MS.reduce((a, b) => a + b, 0));
+  assert.equal(readFileSync(dump + ".offline", "utf8"), "1");
+  assert.equal((driver as unknown as { live: Set<unknown> }).live.size, 0, "nothing of it kept");
+});
+
+test("an opening given up while its process starts fails at once, its process ended, and never waits to open again", async () => {
+  const { options, dump } = setup({ FAKE_AGY_SILENT: "1" });
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  const ac = new AbortController();
+  const opening = driver.open({ ...options, signal: ac.signal }, () => {});
+  opening.catch(() => {});
+  await until(() => existsSync(dump + ".rpc") && rpc(dump).some((m) => m.method === "initialize"));
+  const [stuck] = [...(driver as unknown as { live: Set<unknown> }).live] as { runner(): string | undefined }[];
+  const runner = stuck!.runner()!;
+  ac.abort("cancelled");
+  await assert.rejects(opening, /open aborted/);
+  assert.equal(time.asked(), 0, "no wait to open again");
+  assert.equal((driver as unknown as { live: Set<unknown> }).live.size, 0, "nothing of it kept");
+  const { findRunner } = await import("../src/agents/process.ts");
+  await until(async () => (await findRunner(data, runner)) === undefined);
+  // Given up before it was asked: nothing started at all.
+  const { options: before, dump: none } = setup();
+  const gone = new AbortController();
+  gone.abort("closed");
+  await assert.rejects(driver.open({ ...before, signal: gone.signal }, () => {}), /open aborted/);
+  assert.equal(existsSync(none), false, "no process started");
+});
+
 test("another model between turns is set in the running process; one it does not offer starts it again", async () => {
   const { options, events, driver, dump } = setup();
   const session = await driver.open(options, (e) => events.push(e));
@@ -360,8 +413,8 @@ test("models are read without a turn, the station's tools or a transcript", asyn
   assert.equal(readFileSync(dump, "utf8").includes(options.mcpToken), false);
 });
 
-test("tiered subscription models normalize to base model + thinking levels, map (model, effort) to ACP modelId, and match legacy spellings", async () => {
-  const { options, events, driver, dump } = setup({ FAKE_AGY_SUBSCRIPTION: "1" });
+test("the Antigravity catalog reports the plan and groups thinking levels by model", async () => {
+  const { options, events, driver, dump } = setup({ FAKE_AGY_SUBSCRIPTION: "1", FAKE_AGY_TIER: "g1-ultra-lite-tier" });
   const cat = await driver.catalog(options.profile);
   assert.deepEqual(cat, {
     models: ["gemini-4-carbon", "claude-opus-5-5", "gpt-oss-120b", "gemini-pro-orchestrator"],
@@ -372,6 +425,7 @@ test("tiered subscription models normalize to base model + thinking levels, map 
       "gemini-pro-orchestrator": [],
     },
     defaults: { "gemini-4-carbon": "high", "claude-opus-5-5": "medium" },
+    plan: "Ultra 5x",
   });
   const medCat = agyCatalog(
     ["gemini-4-carbon-low", "gemini-4-carbon-medium", "gemini-4-carbon-high", "claude-opus-5-5-low", "claude-opus-5-5-high"],
@@ -547,6 +601,12 @@ test("a warm Antigravity session whose CLI lacks its trajectory recovers across 
     return h;
   };
   const d1 = new AgyDriver({ data: hubDir });
+  let completed = 0;
+  const open = d1.open.bind(d1);
+  d1.open = (options, events) => open(options, (event) => {
+    if (event.type === "turnEnded") completed++;
+    events(event);
+  });
   let hub = makeHub(d1);
   let d2: AgyDriver | null = null;
   try {
@@ -554,7 +614,9 @@ test("a warm Antigravity session whose CLI lacks its trajectory recovers across 
     cfg.maxNudges = 0;
     const m1 = message({ text: "first ask" });
     await hub.accept("cl", m1);
-    await until(() => store.listSessions().length === 1 && !store.listSessions()[0]!.running && store.listSessions()[0]!.runtimeSessionId !== null);
+    // The runtime id is saved before begin_turn sets running. Wait for the first turn's end before deleting its DB.
+    // settle() drains actor work, but the fake process can still be waiting to read its prompt.
+    await until(() => completed >= 1 && store.listSessions().length === 1 && !store.listSessions()[0]!.running && store.listSessions()[0]!.runtimeSessionId !== null);
     await settle();
     const key = store.listSessions()[0]!.key;
     const id1 = store.getSession(key)!.runtimeSessionId!;
@@ -686,7 +748,7 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     // again in a new process, on a sign-in lent anew, the person's words its prompt.
     hostAway = false;
     await hub.accept("cl", reply(m1, "2000.2", "<@UBOT> make it simpler", { addressed: true }));
-    await until(() => !store.getSession(key)!.running && prompts().some((p) => /make it simpler/.test(p)));
+    await until(() => completed >= 2 && !store.getSession(key)!.running && prompts().some((p) => /make it simpler/.test(p)));
     await settle();
     assert.deepEqual(lends, [55]);
     assert.equal(opens(), 2);
@@ -695,7 +757,7 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
 
     // One that lasts: the same process takes the turn after.
     await hub.accept("cl", reply(m1, "2000.3", "<@UBOT> and shorter", { addressed: true }));
-    await until(() => !store.getSession(key)!.running && prompts().some((p) => /and shorter/.test(p)));
+    await until(() => completed >= 3 && !store.getSession(key)!.running && prompts().some((p) => /and shorter/.test(p)));
     await settle();
     assert.equal(opens(), 2);
     assert.deepEqual(lends, [55]);
@@ -706,12 +768,13 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     const { GO_ON_AFTER_AUTH } = await import("../src/agents/instructions.ts");
     const live = [...(driver as any).live][0];
     const postsBefore = chat.texts().length;
+    const completedBefore = completed;
     await hub.accept("cl", reply(m1, "2000.4", "<@UBOT> hold-turn", { addressed: true }));
     await until(() => live.busy());
     live.signInUntil = Date.now() - 60_000;
     writeFileSync(agyToken(home), signIn(-1));
     await hub.accept("cl", reply(m1, "2000.5", "<@UBOT> expire-mid-turn", { addressed: true }));
-    await until(() => !store.getSession(key)!.running && opens() === 3 && prompts().some((p) => p.includes(GO_ON_AFTER_AUTH)));
+    await until(() => completed >= completedBefore + 2 && !store.getSession(key)!.running && opens() === 3 && prompts().some((p) => p.includes(GO_ON_AFTER_AUTH)));
     await settle();
     assert.deepEqual(lends, [55, 55]);
     assert.equal(store.getSession(key)!.runtimeSessionId, id);
@@ -724,6 +787,7 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     // also expires (`⚠ UNAUTHENTICATED (code 401):`) -> reopens process #5 on a newly lent token instead of failing.
     const live2 = [...(driver as any).live][0];
     const postsBeforeLong = chat.texts().length;
+    const completedBeforeLong = completed;
     writeFileSync(dump + ".hold-auth-retry", "1");
     await hub.accept("cl", reply(m1, "2000.6", "<@UBOT> hold-turn", { addressed: true }));
     await until(() => live2.busy());
@@ -739,7 +803,9 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     live3.signInUntil = Date.now() - 60_000;
     writeFileSync(agyToken(home), signIn(-1));
     await hub.accept("cl", reply(m1, "2000.8", "<@UBOT> unauth-mid-turn", { addressed: true }));
-    await until(() => !store.getSession(key)!.running && opens() === 5);
+    // (`running` is false between process #4's end and process #5's `begin_turn`, `opens()` 5 already: the turns
+    // ended are what says process #5's has run)
+    await until(() => completed >= completedBeforeLong + 3 && !store.getSession(key)!.running && opens() === 5);
     await settle();
     assert.deepEqual(lends, [55, 55, 55, 55]);
     assert.equal(store.getSession(key)!.runtimeSessionId, id);
@@ -901,7 +967,7 @@ test("a company's Google account through the accounts: made a profile that remem
   });
   const store = Store.open(":memory:", null);
   const config = new ConfigFile(dir);
-  let tier: string | undefined = "gcp-ge-plus-tier";
+  let plan: string | undefined = "Enterprise Plus";
   const accounts = new Accounts({
     data: dir,
     store,
@@ -911,7 +977,7 @@ test("a company's Google account through the accounts: made a profile that remem
     loginCommands: { claude: "claude", codex: "codex", agy: "agy" },
     check: (req, lang) => checkProfile({ ...req, env: {}, machine: false, lang }),
     quota: async () => ({ state: "ok", windows: [], detail: null, checkedAt: 0 }),
-    agy: () => ({ models: async () => ["gemini-3.5-flash"], catalog: async () => ({ models: ["gemini-3.5-flash"], efforts: {}, defaults: {}, ...(tier !== undefined ? { tier } : {}) }) }),
+    agy: () => ({ models: async () => ["gemini-3.5-flash"], catalog: async () => ({ models: ["gemini-3.5-flash"], efforts: {}, defaults: {}, ...(plan !== undefined ? { plan } : {}) }) }),
   });
   const viewer = { email: "owner@company.com" } as never;
   accounts.start();
@@ -924,7 +990,7 @@ test("a company's Google account through the accounts: made a profile that remem
     assert.deepEqual([made.runtime, made.access, made.name], ["agy", { kind: "subscription", enterprise: true }, "someone@company.com"]);
     // Its plan: as `agy` said it; where it says none, its sign-in's.
     assert.equal((await accounts.check(made.id, "en")).plan, "Enterprise Plus");
-    tier = undefined;
+    plan = undefined;
     assert.equal((await accounts.check(made.id, "en")).plan, "Enterprise Ultra");
     // Signed in again: Google Cloud's way, without being told.
     await accounts.startLogin(made.id, viewer, "en");
@@ -1103,13 +1169,31 @@ test("a company's sign-in that `agy` refuses after its code ends at once saying 
 });
 
 test("a Google account's tier, as people know its plan; a sign-in's file whole only with a company's licence or project; renewed and lent with what it holds", async () => {
-  assert.deepEqual(
-    ["g1-ultra-tier", "g1-pro-tier", "free-tier", "gcp-ge-ultra-tier", "gcp-ge-plus-tier", "gcp-ge-standard-tier", "gcp-standard-tier", "gcp-other-tier", "", "unknown"].map((t) => agyPlan(t)),
-    ["Ultra", "Pro", "Free", "Enterprise Ultra", "Enterprise Plus", "Enterprise", "Enterprise", "Enterprise", null, null],
-  );
+  const plans = [
+    ["free-tier", "Free"],
+    ["g1-plus-tier", "Plus"],
+    ["g1-pro-tier", "Pro"],
+    ["g1-ultra-lite-tier", "Ultra 5x"],
+    ["g1-ultra-tier", "Ultra 20x"],
+    ["gcp-ge-standard-tier", "Enterprise"],
+    ["gcp-ge-plus-tier", "Enterprise Plus"],
+    ["gcp-ge-ultra-tier", "Enterprise Ultra"],
+    ["gcp-standard-tier", "Enterprise"],
+    ["gcp-other-tier", "Enterprise"],
+    ["", null],
+    ["unknown", null],
+  ] as const;
+  for (const [id, plan] of plans) assert.equal(agyPlan({ id }), plan, id);
   assert.equal(agyPlan(null, true), "Enterprise");
-  assert.equal(agyTierIn({ sessionId: "s", _meta: { antigravity: { tier: { id: "g1-ultra-tier", name: "Google AI Ultra" } } } }), "g1-ultra-tier");
-  assert.equal(agyTierIn({ sessionId: "s" }), null);
+  const sessionPlan = (tier: { id?: string; name?: string }) => agySessionPlan({ _meta: { antigravity: { tier } } });
+  assert.equal(sessionPlan({ id: " G1-ULTRA-LITE-TIER ", name: "Google AI Ultra" }), "Ultra 5x");
+  assert.equal(sessionPlan({ id: "g1-ultra-tier", name: "Google AI Ultra" }), "Ultra 20x");
+  assert.equal(sessionPlan({ id: "future-tier", name: " Google AI Future " }), "Google AI Future");
+  assert.equal(sessionPlan({ name: "Google AI Pro Trial" }), "Google AI Pro Trial");
+  assert.equal(sessionPlan({ id: "constructor", name: "Unknown" }), null);
+  assert.equal(agySessionPlan({ sessionId: "s" }), null);
+  assert.equal(agyPlanIn('{"auth_method":"consumer","tier_display_name":"Google AI Pro Trial"}'), "Google AI Pro Trial");
+  assert.equal(agyPlanIn('{"auth_method":"gcp","user_tier":"gcp-future-tier","tier_display_name":"Pay As You Go"}'), "Pay As You Go");
   const token = { access_token: "ya29.x" };
   assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "consumer" }), false), true);
   assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "oauth" }), false), true);
@@ -1708,7 +1792,88 @@ test("Antigravity CLI is declared the station's tools within what it keeps, chat
   assert.equal(names.at(-1), INDIRECT);
   const indirect: string[] = list.at(-1).inputSchema.properties.name.enum;
   assert.deepEqual([...names.slice(0, -1), ...indirect].sort(), all.filter((t) => !HIDDEN.includes(t.name)).map((t) => t.name).sort());
-  // The 45,000 of before is what `agy` 1.5.8 dropped chat_post under (2026-11-16): over the ceiling, as this counts it.
-  const before = await listed(45_000);
-  assert.ok(weighed(before) + before.length * AGY_TOOL_WRAP > AGY_TOOL_CEILING);
+  // Earlier budgets (45,000 on 1.5.8; 26,000 on 1.5.9 with Windows skill paths) pushed agy's pool past its ceiling and dropped chat_post.
+  for (const oldBudget of [45_000, 26_000]) {
+    const before = await listed(oldBudget);
+    assert.ok(weighed(before) + before.length * AGY_TOOL_WRAP > AGY_TOOL_CEILING);
+  }
+});
+
+test("agy Verification Required notice is classified as auth failure (single-line and trailing after partial text)", async () => {
+  assert.equal(classifyFailure("Verification Required"), "auth");
+  assert.equal(noticeFailure("⚠ Verification Required"), "auth");
+  assert.equal(noticeFailure("  ⚠ Verification Required  "), "auth");
+  assert.equal(noticeFailure("partial output\n⚠ Verification Required\n"), "auth");
+  const { options, events, driver } = setup();
+  const s = await driver.open(options, (e) => events.push(e));
+  await s.prompt("verification-required");
+  await until(() => ended(events).length === 1);
+  assert.deepEqual(ended(events)[0], { type: "turnEnded", outcome: { kind: "failed", reason: "auth", message: "⚠ Verification Required" } });
+  await s.prompt("verification-required-mid-turn");
+  await until(() => ended(events).length === 2);
+  assert.deepEqual(ended(events)[1], { type: "turnEnded", outcome: { kind: "failed", reason: "auth", message: "⚠ Verification Required" } });
+  await s.dispose();
+});
+
+test("agy session/load ghost history replay on first prompt is discarded and original prompt is transparently resent once", async () => {
+  const { options, events, driver, dump } = setup();
+  const s = await driver.open({ ...options, model: "gemini-3.1-pro" }, (e) => events.push(e));
+  await s.prompt("initial turn");
+  await until(() => ended(events).length === 1);
+  const id = s.id();
+  await s.dispose();
+
+  // Reopen via session/load with FAKE_AGY_LOAD_REPLAY=1: first prompt replays ghost history and ends without usage;
+  // driver must discard ghost history, not emit turnEnded, not duplicate the user line, and resend once with a new prompt id.
+  const dump2 = join(data, `dump-replay-${++n}`);
+  const opts2: OpenOptions = {
+    ...options,
+    key: `agy-replay-${n}`,
+    resume: id,
+    profile: { ...options.profile, env: { ...(options.profile.env as Record<string, string>), FAKE_DUMP: dump2, FAKE_AGY_LOAD_REPLAY: "1" } },
+  };
+  const events2: RuntimeEvent[] = [];
+  const resumed = await driver.open(opts2, (e) => events2.push(e));
+  await resumed.prompt("real question after load");
+  await until(() => ended(events2).length === 1);
+  assert.deepEqual(ended(events2), [{ type: "turnEnded", outcome: { kind: "completed" } }]);
+  const prompts = rpc(dump2).filter((m) => m.method === "session/prompt");
+  assert.equal(prompts.length, 2, "driver resent the prompt once after ghost replay");
+  assert.notEqual(prompts[0].id, prompts[1].id, "resent prompt uses a fresh prompt:<uuid> id");
+  assert.ok(String(prompts[1].id).startsWith("prompt:"));
+  assert.equal(prompts[0].params.prompt[0].text, "real question after load");
+  assert.equal(prompts[1].params.prompt[0].text, "real question after load");
+
+  const path = transcriptPath("agy", options.profile.home, id)!;
+  const entries = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(entries.filter((e) => e.type === "user" && e.text === "real question after load").length, 1, "user prompt written only once");
+  assert.equal(entries.some((e) => e.text === "ghost history replay text" || e.result === "ghost history output"), false, "ghost replay history not written to transcript");
+  assert.equal(entries.filter((e) => e.type === "assistant").at(-1)?.text, "first real question after load");
+  assert.equal(entries.filter((e) => e.type === "end").length, 2, "only initial turn and real resumed turn wrote end lines");
+  await resumed.dispose();
+
+  // At most 1 resend: if the resent prompt also ends without usage, it completes normally instead of looping.
+  const dump3 = join(data, `dump-replay-once-${++n}`);
+  const opts3: OpenOptions = {
+    ...options,
+    key: `agy-replay-once-${n}`,
+    resume: id,
+    profile: { ...options.profile, env: { ...(options.profile.env as Record<string, string>), FAKE_DUMP: dump3, FAKE_AGY_LOAD_REPLAY: "2" } },
+  };
+  const events3: RuntimeEvent[] = [];
+  const resumed2 = await driver.open(opts3, (e) => events3.push(e));
+  await resumed2.prompt("double empty");
+  await until(() => ended(events3).length === 1);
+  assert.deepEqual(ended(events3), [{ type: "turnEnded", outcome: { kind: "completed" } }]);
+  assert.equal(rpc(dump3).filter((m) => m.method === "session/prompt").length, 2, "never resends more than once");
+  await resumed2.dispose();
+
+  // session/new (not session/load) never triggers load_replay_guard even when end_turn has no usage.
+  const { options: newOpts, events: newEvents, driver: newDriver, dump: newDump } = setup();
+  const fresh = await newDriver.open(newOpts, (e) => newEvents.push(e));
+  await fresh.prompt("no-usage-end");
+  await until(() => ended(newEvents).length === 1);
+  assert.deepEqual(ended(newEvents), [{ type: "turnEnded", outcome: { kind: "completed" } }]);
+  assert.equal(rpc(newDump).filter((m) => m.method === "session/prompt").length, 1, "session/new never resends");
+  await fresh.dispose();
 });

@@ -221,3 +221,35 @@ test "wide: a chat landed on over Home before what the first page shows is answe
     }
   }
 }
+
+///|
+let first_reading_wait_ms : Double = 300.0
+
+///|
+let first_after_splash_ms : Double = 50.0
+
+///|
+test "workspaces arrive after 300ms in Reading while a non-critical first-page topic stays unanswered: first page releases before splash_label_ms with no loading bar" {
+  for w in [390.0, 1280.0] {
+    new_run()
+    let unseen = @signals.signal(true)
+    let slow = @signals.signal(true)
+    let t_ref : Ref[@ui.Tester?] = Ref(None)
+    let src = first_unseen_src("workspaces", unseen, slow, [], fn() { t_ref.val.map(fn(t) { t.time() }).unwrap_or(0.0) })
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=800.0, platform=0)
+    t_ref.val = Some(t)
+    let t0 = t.time()
+    assert_eq(splash_from.val, t0, msg="splash_from at first frame at \{w}")
+    t.run_for(first_reading_wait_ms)
+    unseen.set(false)
+    t.frame()
+    assert_true(first_from.val >= t0 + first_reading_wait_ms, msg="workspace entered view at \{w}")
+    // Advance across splash_label_ms: first_page_node must release just before splash_label_ms so first_splash_node never shows.
+    t.run_for(t0 + splash_label_ms - t.time())
+    assert_true(first_shown.get(), msg="first_shown must be true by splash_label_ms at \{w}")
+    assert_true(!@sfbase.first_page_waits.get(), msg="first_page_waits must be false at \{w}")
+    assert_true(t.find(tr("android-misc.workspaces.loading")) is None, msg="no loading bar shown at splash_label_ms at \{w}")
+    t.run_for(first_after_splash_ms)
+    assert_true(t.find(tr("android-misc.workspaces.loading")) is None, msg="no loading bar shown after splash_label_ms at \{w}")
+  }
+}

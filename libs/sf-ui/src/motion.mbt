@@ -42,12 +42,6 @@ pub let waiting_in : @motion.Trans = @motion.trans(fade=0.0, dy=enter_rise, spec
 pub let hint_back_ms : Double = 200.0
 
 ///|
-/// How what makes way for a small service moves (MOVE): a spring of 0.28 s, no bounce, so a goal that moves on is
-/// followed, not started again.
-// kept across runs: a value (no field of it changes)
-pub let move_spring : @motion.Spec = @motion.move_spring
-
-///|
 /// The most a motion, or a page moved to, waits for what is here already (LOCAL_MS): the core's answer from what it
 /// holds, a picture decoded. Never for the network.
 pub let local_ms : Double = 100.0
@@ -58,6 +52,35 @@ pub let local_ms : Double = 100.0
 pub let dur_ms : Double = 140.0
 
 ///|
+/// The most a popover grown from beside what opened it (pop_in about FromBeside: a menu, a panel, a pick, a hover card,
+/// what is offered) stands off where it is laid out at its farthest edge, in points (View::scale's max_shift). A tall
+/// one (600 to 750 high) gone above its anchor grows from its foot, so at 0.97 its top row would come 18 to 22.5 below
+/// where it lands on its first frame, over half a 36-high row; kept within 8, its whole way in and out narrowed alike.
+/// One whose farthest edge from where it grows (its width or its height, whichever is more) is 266 or less stays
+/// within it at 0.97, drawn as big as pop_in says; a wider one (a panel 360 wide) is kept within it as a tall one is.
+let pop_max_shift : Double = 8.0
+
+///|
+/// Popover enter transition for node `v`: single-layer liquid glass fades together with its content (`glass_pop_in`),
+/// while `MBUI_GLASS=solid` falls back to `pop_in` (`ground_first=true`) to preserve solid occlusion.
+fn pop_in_for(v : @view.View) -> @motion.Trans {
+  if v.glass_solid() { @motion.pop_in } else { @motion.glass_pop_in }
+}
+
+///|
+/// Popover exit transition for node `v`: single-layer liquid glass fades together on `InOut` (`glass_pop_out`),
+/// while `MBUI_GLASS=solid` falls back to `pop_out` (`Leave`, `ground_first=true`).
+fn pop_out_for(v : @view.View) -> @motion.Trans {
+  if v.glass_solid() { @motion.pop_out } else { @motion.glass_pop_out }
+}
+
+///|
+/// Exit ease matching `pop_out_for(v)` (`Leave` under `MBUI_GLASS=solid`, `InOut` on liquid glass).
+fn pop_out_ease_for(v : @view.View) -> @ui.Ease {
+  if v.glass_solid() { Leave } else { InOut }
+}
+
+///|
 /// What says a thing was copied (a check for the copy button, 已复制) shows this long (parts.tsx CopyButton: 1.6 s).
 pub let copied_ms : Double = 1600.0
 
@@ -65,10 +88,10 @@ pub let copied_ms : Double = 1600.0
 /// What is woken by the hand over a picture or a film (the viewer's bars, the player's controls) comes in over this
 /// long, and fades as it rests over `sleep_ms`, on the ease-out (FilePreview.css.ts floating, viewer/media.css.ts: 120,
 /// 320): kit's media controls' own.
-pub let wake_ms : Double = @kit.media_wake_ms
+pub let wake_ms : Double = @player.media_wake_ms
 
 ///|
-pub let sleep_ms : Double = @kit.media_sleep_ms
+pub let sleep_ms : Double = @player.media_sleep_ms
 
 ///|
 /// One breath of what waits (waiting.css.ts breathe): 1.4 s, from whole to `low` and back on
@@ -123,7 +146,7 @@ pub fn refused_dx(t : Double) -> Double {
 pub fn refused_shake(v : @view.View, refuses : () -> Bool, loc~ : SourceLoc) -> Unit {
   // (where it was drawn as a press went down on it while it refused; none: the press is not one of its)
   let armed : Ref[(Double, Double)?] = Ref(None)
-  let shake : Ref[@motion.NodeWay?] = Ref(None)
+  let shake : Ref[@motion.ShakeWay?] = Ref(None)
   // (the window's presses and taps as last followed, untracked: what changed of them told apart)
   let seen = Ref(@signals.untracked(fn() { (v.window_downs(), v.window_taps()) }))
   let refused_was = Ref(@signals.untracked(refuses))
@@ -180,13 +203,13 @@ pub fn refused_shake(v : @view.View, refuses : () -> Bool, loc~ : SourceLoc) -> 
       let way = match shake.val {
         Some(w) => w
         None => {
-          let w = @motion.NodeWay::new(1.0)
+          let w = @motion.ShakeWay::new(amplitude=refused_reach, duration_ms=refused_ms, cycles=1.5)
           shake.val = Some(w)
-          v.offset(By(fn() { (refused_dx(w.shown(v)), 0.0) }), loc~) |> ignore
+          w.shakes(v, loc~) |> ignore
           w
         }
       }
-      way.go_from(v, 0.0, 1.0, @motion.tween(refused_ms, ease=Linear))
+      way.shake(at=v.cause_at(), loc~)
     },
   )
 }

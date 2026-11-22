@@ -35,22 +35,67 @@ export function plainText(text: string): string {
   return out;
 }
 
-/// A link a program broke at its terminal's width put back together: where a line as wide as the terminal (a few
-/// columns short, for a box's margin) ends in a link, the next line goes on with it (Devin's, past 200 columns, comes
-/// on two lines).
+/// What a URL in some text is made of, and what RFC 3986 allows in one.
+const URL_AT_END = /https?:\/\/[^\s"'<>`]+$/;
+const URL_CHARS = /^[A-Za-z0-9._~:/?#[\]@!$&()*+,;=%-]+$/;
+/// A query's or a percent-encoding's mark: what only a URL's part has.
+const URL_MARK = (s: string) => /[&=+]/.test(s) || /%[0-9A-Fa-f]{2}/.test(s);
+/// A line of separators (a box's rule), drawn under a link.
+const RULE = /^[=\-_~*─━═·.]+$/;
+
+/// Whether `next` goes on with the link `lineTrimmed` ends in, broken by a program (or its terminal) over lines; the width
+/// it was broken at if so (`wrapWidth`, the first line's, kept for the lines after), else null. `prevRaw` is the line
+/// just before `next` as it was said; `cols` the terminal's width. A line as wide as the terminal (a few columns short,
+/// for a box's margin) goes on, as before. A narrower one (a CLI breaking its own lines at 80 or so, a margin, a word
+/// break) goes on only where the link is long and `next` reads as more of it: a query's marks or a path, a break at a
+/// query's mark, a long run of URL characters after a long line of a query's link, or the short end of a link broken at
+/// the same width as its lines above. Never a code, a rule, a prompt, a second link or a sentence.
+export function urlContinuation(prevRaw: string, lineTrimmed: string, next: string, cols: number, wrapWidth: number | null): number | null {
+  const at = URL_AT_END.exec(lineTrimmed);
+  if (at === null || !/^\s*[^\s"'<>`]/.test(next)) return null;
+  const prevRawLen = prevRaw.trimEnd().length;
+  if (prevRawLen >= cols - 4) return wrapWidth ?? cols;
+  const url = at[0];
+  if (url.length < 40) return null;
+  const nextTrim = next.trim();
+  if (nextTrim === "" || /^https?:\/\//i.test(nextTrim)) return null;
+  const goes = wrapWidth ?? prevRawLen;
+  if (/\s/.test(nextTrim)) {
+    const first = nextTrim.split(/\s/)[0]!;
+    const ok = url.includes("?") && !/["'<>`]/.test(first) && !/^https?:\/\//i.test(first) && !RULE.test(first) && URL_MARK(first);
+    return ok ? goes : null;
+  }
+  if (/["'<>`]/.test(nextTrim) || RULE.test(nextTrim)) return null;
+  if (/^[A-Z0-9]{4}-[A-Z0-9]{4,6}$/.test(nextTrim) || /^[(\[]?[yYnN]\/[yYnN][)\]]?$/.test(nextTrim)) return null;
+  if (/[:：?？]$/.test(nextTrim) && !/[&=+%]/.test(nextTrim)) return null;
+  const urlChars = URL_CHARS.test(nextTrim);
+  if (
+    URL_MARK(nextTrim) || (nextTrim.includes("/") && nextTrim.length >= 8) ||
+    /[?&=+%]$/.test(lineTrimmed) ||
+    (url.includes("?") && prevRawLen >= 60 && nextTrim.length >= 16 && urlChars) ||
+    (wrapWidth !== null && prevRawLen >= wrapWidth - 4 && urlChars)
+  ) return goes;
+  return null;
+}
+
+/// A link a program broke over lines put back together (`urlContinuation`: Devin's, past 200 columns, comes on two
+/// lines; a CLI breaking at 80 columns, on several).
 export function unwrapped(text: string, cols: number): string {
   const lines = text.split("\n");
-  const full = (line: string) => line.trimEnd().length >= cols - 4;
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i]!;
-    let wide = full(line);
-    while (wide && i + 1 < lines.length && /https?:\/\/[^\s"'<>`]+$/.test(line.trimEnd())) {
+    let prevRaw = line;
+    let wrapWidth: number | null = null;
+    while (i + 1 < lines.length) {
+      const trimmed = line.trimEnd();
       const next = lines[i + 1]!;
-      if (!/^\s*[^\s"'<>`]/.test(next)) break;
-      line = line.trimEnd() + next.trimStart();
+      const width = urlContinuation(prevRaw, trimmed, next, cols, wrapWidth);
+      if (width === null) break;
+      line = trimmed + next.trimStart();
+      prevRaw = next;
+      wrapWidth = width;
       i++;
-      wide = full(next);
     }
     out.push(line);
   }

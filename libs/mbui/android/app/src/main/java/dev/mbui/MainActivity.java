@@ -169,7 +169,13 @@ public class MainActivity extends Activity {
                 WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
             @Override
             public void onPrepare(WindowInsetsAnimation a) {
-                if ((a.getTypeMask() & WindowInsets.Type.ime()) != 0) imeMoving = true;
+                if ((a.getTypeMask() & WindowInsets.Type.ime()) != 0) {
+                    imeMoving = true;
+                    if (mbView != null) {
+                        mbView.setImeMoving(true);
+                        mbView.imeMovingStarted();
+                    }
+                }
             }
 
             @Override
@@ -186,9 +192,10 @@ public class MainActivity extends Activity {
             @Override
             public void onEnd(WindowInsetsAnimation a) {
                 if ((a.getTypeMask() & WindowInsets.Type.ime()) == 0) return;
-                imeMoving = false;
                 WindowInsets now = root.getRootWindowInsets();
                 if (now != null) keyboardAt(now);
+                imeMoving = false;
+                if (mbView != null) mbView.setImeMoving(false);
                 if (now != null && now.isVisible(WindowInsets.Type.ime())) Host.imeAwaited = false;
             }
         });
@@ -222,6 +229,8 @@ public class MainActivity extends Activity {
         Notices.from(getIntent());
         // the default network as it changes, told to the app (src/hostapi/system.mbt), while an activity of the app lives
         NetworkWatch.hold(this);
+        // screen-reader state cached and synced to C atomic (avoids per-frame JNI/Binder queries)
+        A11y.attach(this);
     }
 
     /**
@@ -274,6 +283,7 @@ public class MainActivity extends Activity {
         Updates.started();
         // the window's size classes and the device's fold, said to the app as they change (src/hostapi/system.mbt)
         folds.start();
+        A11y.refresh(this);
         android.os.PowerManager power = getSystemService(android.os.PowerManager.class);
         if (power != null && thermal == null) {
             thermal = MainActivity::thermalSaid;
@@ -307,6 +317,16 @@ public class MainActivity extends Activity {
         // a newer build ready put in place once the app stays out of sight a while (Updates.stopped)
         Updates.stopped();
         super.onStop();
+    }
+
+    /**
+     * The system short of memory: what drawing holds beyond its frames given back (MBView.trim). Off the screen it was
+     * as the view paused (onStop); on it, a frame with glass makes its textures again as it is drawn.
+     */
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_RUNNING_LOW && mbView != null) mbView.trim();
     }
 
     @Override

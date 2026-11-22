@@ -10,8 +10,8 @@
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import type { Cloud } from "../cloud/state.ts";
-import { asEntry, type Entry, fold } from "../cloud/lock.ts";
-import { type Kept, hashOf } from "../cloud/log-keep.ts";
+import { asEntry, type Entry, fold } from "../../../shared/lock.ts";
+import { type Kept, hashOf } from "../../../shared/log-keep.ts";
 import type { PeerCall } from "./bus.ts";
 import { pinMoved } from "./moved-pin.ts";
 import { answerBodies, answerPerson } from "./person-sync.ts";

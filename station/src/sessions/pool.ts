@@ -1,8 +1,8 @@
 // The account pool: which of a station's profiles a session runs on. Only profiles with the
 // chosen model (one they run) qualify; of those, one whose check says it cannot sign in or was rejected, or whose allowance is
 // used up, is passed over. Accounts paid for already (subscriptions, memberships) go first: one billed per use (an API
-// key, a gateway) runs a session only when none of them can, and its sessions move back before a turn when one can again
-// and that loses little. Of the rest: one whose short window (5 hours) is nearly full goes last. The others share the
+// key, a gateway) runs a session only when none of them can, and its sessions move back before the next turn as soon as
+// one can again. Of the rest: one whose short window (5 hours) is nearly full goes last. The others share the
 // sessions by weight, each new one going where (sessions + 1) ÷ weight is least: the weight is how fast a profile has
 // to spend not to lose any of its long window (a week; left × window length ÷ time to refill), times what is left of
 // its short one. So what would be lost is spent first without all sessions crowding onto one account and running its
@@ -25,20 +25,32 @@ export type ProfileHealth = { check?: Json | null; quota?: Json | null; account?
 
 export type PoolSignals = {
   health(id: string): ProfileHealth;
-  /// Sessions with a live process on this profile.
+  /// Sessions with a live process on this profile (running + warm).
   load(id: string): number;
+  /// Sessions actively running a turn on this profile (processState === "running"); falls back to `load` when omitted.
+  active?(id: string): number;
   /// When the pool last chose this profile (0 if never).
   lastPicked(id: string): number;
   /// Now, in milliseconds (allowances refill at times in milliseconds).
   now(): number;
+  /// Configured concurrency cap for this profile's underlying account; absent/null: unlimited.
+  maxSessions?(id: string): number | null | undefined;
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/// Maximum pace weight for a subscription profile with a configured session concurrency cap.
+export const CAPPED_ACCOUNT_MAX_PACE = 1;
 /// A short window this full puts its profile last, and its sessions move off it before their next turn when another
 /// has room: a session sent or kept there would soon run into it.
 const CROWDED_PERCENT = 80;
 /// The least weight: a profile with nothing to lose still takes a session when every other is busier.
 const MIN_WEIGHT = 0.01;
+
+/// Whether a subscription profile has a configured concurrency cap and has reached it.
+export function isSessionCapped(profile: Profile, cap: number | null | undefined, activeCount: number): boolean {
+  if (billedPerUse(profile)) return false;
+  return typeof cap === "number" && Number.isInteger(cap) && cap > 0 && activeCount >= cap;
+}
 
 export const windowsOf = (quota: Json | null | undefined): Json[] => (quota && quota.state === "ok" && Array.isArray(quota.windows) ? quota.windows : []);
 
@@ -109,10 +121,15 @@ export function cheapToLeave(calls: ContextCall[], points: Map<string, number>):
   });
 }
 
-/// Whether a profile signs in: its login is not over and its key was not rejected.
+/// Whether a profile signs in: its login is not over, its key was not rejected, and the provider has not blocked it.
 export function signsIn(health: ProfileHealth): boolean {
   const state = health.check?.state;
-  return state !== "login" && state !== "failed";
+  return state !== "login" && state !== "failed" && health.quota?.state !== "blocked";
+}
+
+/// Whether a profile's last allowance check could not read its quota.
+export function quotaUnavailable(health?: ProfileHealth): boolean {
+  return health?.quota?.state === "unavailable";
 }
 
 /// Whether a profile can run now: it signs in, its key was not rejected, none of its windows is used up, and no turn
@@ -125,6 +142,14 @@ export function usable(health: ProfileHealth, now?: number): boolean {
 /// A chosen model needs the profile to run it; no model means the profile's own default.
 export const serves = (profile: Profile, model: string | null | undefined): boolean => model === null || model === undefined || runs(profile, model);
 
+function shortRoom(quota: Json | null | undefined, now: number): number {
+  const windows = freshWindows(quota, now).filter((w) => typeof w.minutes === "number" && w.minutes > 0);
+  const long = windows.filter((w) => w.minutes * 60_000 > DAY_MS);
+  if (long.length === 0) return 1;
+  const short = windows.filter((w) => w.minutes * 60_000 <= DAY_MS);
+  return short.reduce((min, w) => Math.min(min, Math.max(0, 100 - Number(w.usedPercent)) / 100), 1);
+}
+
 /// `strict` (a chat started by hand): a profile must run the model. Otherwise (a connect's binding, set up
 /// before models were enabled) profiles with it enabled are preferred, and without any the bound ones still serve.
 export function pickProfile(candidates: Profile[], model: string | null | undefined, signals: PoolSignals, strict: boolean): Profile {
@@ -136,15 +161,48 @@ export function pickProfile(candidates: Profile[], model: string | null | undefi
     serving = rank.map((_, i) => i);
   }
   const now = signals.now();
+  const capOf = (p: Profile) => (signals.maxSessions ? signals.maxSessions(p.id) : p.maxConcurrentSessions);
+  const activeOf = (id: string) => (signals.active ? signals.active(id) : signals.load(id));
   const fit = serving.filter((i) => usable(rank[i]![1], now));
   // What is paid for already is spent first, however full: one billed per use only when none of those can run now.
   const paid = fit.filter((i) => !billedPerUse(rank[i]![0]));
   // None can run now: prefer one that at least signs in, as Accounts.runOn does. Otherwise repick can choose an
   // unreachable profile for its stale headroom, only for runOn to move straight back to the spent account.
   const signedIn = serving.filter((i) => signsIn(rank[i]![1]));
-  // None signs in either: still one that runs its model, so the failure shows in the session.
-  const pool = paid.length > 0 ? paid : fit.length > 0 ? fit : signedIn.length > 0 ? signedIn : serving;
-  const urgencies = new Map(pool.map((i) => [i, urgency(rank[i]![1].quota, now)]));
+  const healthy = (list: number[]) => list.filter((i) => !quotaUnavailable(rank[i]![1]));
+  const uncapped = (list: number[]) => list.filter((i) => !isSessionCapped(rank[i]![0], capOf(rank[i]![0]), activeOf(rank[i]![0].id)));
+  const paidHealthy = healthy(paid);
+  const paidHealthyUncapped = uncapped(paidHealthy);
+  const paidUncapped = uncapped(paid);
+  const fitHealthy = healthy(fit);
+  const signedInHealthy = healthy(signedIn);
+  // None signs in either: still one that runs its model, so the failure shows in the session. Within each tier, prefer
+  // profiles whose quota read succeeded over unavailable ones before falling back to a lower tier, and prefer uncapped
+  // subscriptions (all legacy accounts + capped accounts below their active-session limit) over capped ones.
+  const pool =
+    paidHealthyUncapped.length > 0 ? paidHealthyUncapped
+    : paidUncapped.length > 0 ? paidUncapped
+    : paidHealthy.length > 0 ? paidHealthy
+    : paid.length > 0 ? paid
+    : fitHealthy.length > 0 ? fitHealthy
+    : fit.length > 0 ? fit
+    : signedInHealthy.length > 0 ? signedInHealthy
+    : signedIn.length > 0 ? signedIn
+    : serving;
+  const urgencies = new Map(
+    pool.map((i) => {
+      const p = rank[i]![0];
+      const quota = rank[i]![1].quota;
+      const u = urgency(quota, now);
+      const cap = capOf(p);
+      if (!billedPerUse(p) && typeof cap === "number" && Number.isInteger(cap) && cap > 0) {
+        const pace = Math.min(u.pace, CAPPED_ACCOUNT_MAX_PACE);
+        const room = shortRoom(quota, now);
+        return [i, { ...u, pace, weight: Math.max(pace * room, MIN_WEIGHT) }] as const;
+      }
+      return [i, u] as const;
+    }),
+  );
   // Each profile's sessions over its weight, with the new one: the least is where it adds the least crowding.
   const share = (i: number) => (signals.load(rank[i]![0].id) + 1) / urgencies.get(i)!.weight;
   // A stable sort, as Rust's sort_by.

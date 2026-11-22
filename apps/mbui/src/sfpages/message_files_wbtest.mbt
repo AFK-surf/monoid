@@ -7,30 +7,41 @@ test "a chat attachment uses its stored filename on Windows and Unix" {
     assert_eq(@sfbase.viz_base_name(path), name)
   }
   assert_eq(@sfbase.base_name("/Users/lin/a\\b.txt"), "a\\b.txt")
-}
-
-///|
-test "a staged file flies to its message after the station moves it" {
-  let staged = "/station/uploads/2026-11-08-12-00-00-123abc-report.txt"
-  let sent = "/station/session/uploads/2026-11-08-12-00-00-123abc-report.txt"
-  assert_eq(file_flight_key(sent, [sent], [staged]), staged)
-  assert_eq(file_flight_key(staged, [staged], [staged]), staged)
-  // Windows stations keep the same name when they move it too.
-  let win_staged = "C:\\station\\uploads\\2026-11-08-12-00-00-123abc-report.txt"
-  let win_sent = "C:\\station\\session\\uploads\\2026-11-08-12-00-00-123abc-report.txt"
-  assert_eq(file_flight_key(win_sent, [win_sent], [win_staged]), win_staged)
-}
-
-///|
-test "a file flight does not guess when the stored name is ambiguous or outside uploads" {
-  let staged = "/station/uploads/unique-report.txt"
-  let sent = "/station/session/uploads/unique-report.txt"
-  let another = "/other/uploads/unique-report.txt"
-  assert_eq(file_flight_key(sent, [sent], [staged, another]), sent)
-  assert_eq(file_flight_key(sent, [sent, another], [staged]), sent)
-  assert_eq(file_flight_key("/other/unique-report.txt", ["/other/unique-report.txt"], [staged]), "/other/unique-report.txt")
-  assert_eq(file_flight_key(sent, [sent], ["upload:unique-report.txt"]), sent)
-  assert_eq(file_flight_key(sent, [sent], ["quote:0"]), sent)
+  assert_true(!@sfbase.dv_windows_path("/Users/lin/a\\b.txt"))
+  // Windows relative backslash paths, directories, base_of, and new preview_kind extensions (FB-35).
+  for p in [".\\scripts\\deploy.ps1", "..\\config\\app.json", "src\\main.dart", "D:\\work\\proj\\"] {
+    assert_true(@sfbase.dv_windows_path(p), msg=p)
+  }
+  assert_eq(base_of("D:\\work\\proj\\report.md"), "report.md")
+  assert_eq(base_of("D:\\work\\proj\\"), "proj")
+  assert_eq(base_of(".\\scripts\\deploy.ps1"), "deploy.ps1")
+  assert_eq(base_of("src\\main.dart"), "main.dart")
+  assert_true(is_dir_path("D:\\work\\proj\\"))
+  assert_true(is_dir_path(".\\out\\"))
+  assert_true(is_dir_path("src/list/"))
+  assert_true(!is_dir_path("D:\\work\\proj\\report.md"))
+  assert_true(!is_dir_path("/Users/lin/a\\"))
+  for ext_file in ["build.bat", "run.cmd", "boot.hex"] {
+    let (kind, mime, lang) = @sfbase.preview_kind(ext_file)
+    assert_true(kind == Some(@sfbase.KText), msg=ext_file)
+    assert_eq(mime, "text/plain", msg=ext_file)
+    assert_eq(lang, "", msg=ext_file)
+  }
+  for pair in [
+    ("analysis.ipynb", "json"),
+    ("events.jsonl", "json"),
+    ("stream.ndjson", "json"),
+    ("ViewController.m", "c"),
+    ("App.mm", "cpp"),
+    ("mod.psm1", "ps1"),
+    ("mod.psd1", "ps1"),
+    ("pkg.generated.mbti", "mbt"),
+  ] {
+    let (file, want_lang) = pair
+    let (kind, _, lang) = @sfbase.preview_kind(file)
+    assert_true(kind == Some(@sfbase.KCode), msg=file)
+    assert_eq(lang, want_lang, msg=file)
+  }
 }
 
 ///|

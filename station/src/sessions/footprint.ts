@@ -76,7 +76,7 @@ export function* decide(dir: string): Generator<Probe, Rebuilt | null, Answer> {
       if (yield* beside("mix.exs")) return "found";
       break;
     case ".mooncakes":
-      if (yield* beside("moon.mod.json", "moon.work")) return "found";
+      if (yield* beside("moon.mod.json", "moon.mod", "moon.work")) return "found";
       break;
   }
   // Of any name: Xcode's derived data (its products and intermediates), and a Cargo target directory elsewhere
@@ -90,12 +90,13 @@ export function* decide(dir: string): Generator<Probe, Rebuilt | null, Answer> {
   return null;
 }
 
-/// Whether a MoonBit manifest (moon.mod.json, moon.work, moon.pkg.json) is in `from` or above it within its checkout
-/// (up to the directory with `.git`, at most MANIFEST_UP up); outside a checkout only in `from` itself.
+/// Whether a MoonBit manifest (moon.mod.json, moon.mod, moon.work, moon.pkg.json, moon.pkg) is in `from` or above it
+/// within its checkout (up to the directory with `.git`, at most MANIFEST_UP up); outside a checkout only in `from`
+/// itself.
 function* moonAbove(from: string): Generator<Probe, boolean, Answer> {
   let found = false;
   for (let p = from, i = 0; i < MANIFEST_UP; i++) {
-    for (const m of ["moon.mod.json", "moon.work", "moon.pkg.json"]) {
+    for (const m of ["moon.mod.json", "moon.mod", "moon.work", "moon.pkg.json", "moon.pkg"]) {
       if ((yield { there: join(p, m) }) !== true) continue;
       if (p === from) return true;
       found = true;
@@ -170,6 +171,8 @@ export type Room = {
   bytes: number;
   /// What can be made again, in it: directories and their sizes.
   rebuild: [string, number][];
+  complete?: boolean;
+  reason?: string;
 };
 
 export const rebuildBytes = (room: Room) => room.rebuild.reduce((sum, [, b]) => sum + b, 0);
@@ -230,8 +233,8 @@ function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSi
 
 /// Measures one chat's directory again (after something in it was cleaned).
 export async function measureRoom(dir: string, budget: MeasureBudget = MEASURE_ROOM): Promise<Room> {
-  const { bytes, rebuild } = await measure(dir, { finding: true, strict: false }, budget);
-  return { bytes, rebuild: rebuild ?? [] };
+  const { bytes, rebuild, complete, reason } = await measure(dir, { finding: true, strict: false }, budget);
+  return { bytes, rebuild: rebuild ?? [], complete, ...(reason !== undefined ? { reason } : {}) };
 }
 
 /// The size of a path, each file once.

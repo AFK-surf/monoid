@@ -60,8 +60,8 @@ const SEEN_CHARS = 12;
 /// (what its station said of it, else its title), shown first, so chats alike are told apart by why they were found.
 function foundChat(item: J, said: string | undefined, words: string[]): J {
   const title = String(item.title ?? "");
-  const at = title.toLowerCase().indexOf(words[0] ?? "");
-  if (at >= 0 && at <= SEEN_CHARS) return item;
+  const lowerTitle = title.toLowerCase();
+  if (words.length > 0 && words.every((w) => { const i = lowerTitle.indexOf(w); return i >= 0 && i <= SEEN_CHARS; })) return item;
   const source = said ?? title;
   if (!words.every((w) => source.toLowerCase().includes(w))) return item;
   const found = refs.excerpt(source, words);
@@ -72,7 +72,11 @@ function foundChat(item: J, said: string | undefined, words: string[]): J {
 /// A chat found archived: marked so, its second line saying so where a list's says where it stands.
 const archived = () => ({ archived: true, stateText: t("core-views.search.archived") });
 
-const titled = (title: string, words: string[]) => words.length > 0 && title.toLowerCase().includes(words[0]!);
+const titled = (title: string, words: string[]) => {
+  if (words.length === 0) return false;
+  const low = title.toLowerCase();
+  return words.every((w) => low.includes(w));
+};
 
 /// A chat a station found that the device's list does not have (archived, or not read yet): drawn as a row of it.
 function chatRow(hit: J, s: { address: string; name: string }, chatTitle: string): J {
@@ -113,6 +117,7 @@ export function searchView(src: SearchSource, chats: J, view: Topic): Value {
   // What each station said of a chat it found: where its words are.
   const saidOf = new Map<string, string>();
   const seenChats = new Set(items.map((i) => `${i.station}\u0001${i.id}`));
+  const localChats = new Set(seenChats);
   const messages: J[] = wants("message") ? src.foundMessages(chats, { ...view, messages: limit }) : [];
   const seenMessages = new Set(messages.map((m) => `${m.station}\u0001${m.thread}\u0001${m.seq}`));
   const found = new Map<string, J[]>();
@@ -229,6 +234,22 @@ export function searchView(src: SearchSource, chats: J, view: Topic): Value {
   if (older.length > 0) notes.push(t("core-views.search.older", { names: older.join("、") }));
   const offline = stations.filter((s) => !s.online).map((s) => s.name);
   if (offline.length > 0) notes.push(t("core-views.search.offlineStations", { names: offline.join("、") }));
+  // Those whose title has all words first, then active before archived; among non-title hits, local matches stay
+  // ahead of station-only body hits; then the newest; one list across stations.
+  items.sort((a, b) => {
+    const ta = titled(String(a.title ?? ""), words);
+    const tb = titled(String(b.title ?? ""), words);
+    if (ta !== tb) return Number(tb) - Number(ta);
+    const aa = a.archived === true;
+    const ab = b.archived === true;
+    if (aa !== ab) return Number(aa) - Number(ab);
+    if (!ta) {
+      const la = localChats.has(`${a.station}\u0001${a.id}`);
+      const lb = localChats.has(`${b.station}\u0001${b.id}`);
+      if (la !== lb) return Number(lb) - Number(la);
+    }
+    return (num(b.lastActiveAt) ?? 0) - (num(a.lastActiveAt) ?? 0);
+  });
   const shownItems = items.slice(0, kind === "chat" ? limit : kind ? 0 : CHATS_SHOWN).map((item) => foundChat(src.whole(item), saidOf.get(`${item.station}\u0001${item.id}`), words));
   return {
     ok: {

@@ -13,8 +13,8 @@ let chat_real_every_ms : Int = 120
 
 ///|
 /// The scene's source (the head says what).
-fn chat_real_source(chat_nodes : Bool) -> @sfapp.Source {
-  let base = @sfapp.fixture_app("chat", chat_nodes~)
+fn chat_real_source() -> @sfapp.Source {
+  let base = @sfapp.fixture_app("chat")
   let c = @sfrealsize.RealSizeChanging::new()
   let src = @sffixture.round_trip_again(c.source(base), 0.0, delta_of=fn(name, params) { c.last_ops(name, params) })
   chat_real_changing(c)

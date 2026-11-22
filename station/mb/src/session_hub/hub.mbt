@@ -99,35 +99,7 @@ pub fn session_key(connect : String, channel : String, thread_ts : String) -> St
 ///|
 /// read/transcript.ts `iso`: an ISO timestamp of milliseconds since the epoch, as toISOString writes it.
 pub fn iso(ms : Double) -> String {
-  let div = (a : Double, b : Double) => (a / b).floor()
-  let days = div(ms, 86_400_000.0)
-  let rest = ms - days * 86_400_000.0
-  let z = days + 719_468.0
-  let era = div(z, 146_097.0)
-  let doe = z - era * 146_097.0
-  let t = (x : Double) => if x < 0.0 { x.ceil() } else { x.floor() }
-  let yoe = t((doe - t(doe / 1460.0) + t(doe / 36_524.0) - t(doe / 146_096.0)) / 365.0)
-  let doy = doe - (365.0 * yoe + t(yoe / 4.0) - t(yoe / 100.0))
-  let mp = t((5.0 * doy + 2.0) / 153.0)
-  let d = doy - t((153.0 * mp + 2.0) / 5.0) + 1.0
-  let m = if mp < 10.0 { mp + 3.0 } else { mp - 9.0 }
-  let y = yoe + era * 400.0 + (if m <= 2.0 { 1.0 } else { 0.0 })
-  let pad = (n : Double, w : Int) => {
-    let neg = n < 0.0
-    let s = (if neg { -n } else { n }).to_int64().to_string()
-    let width = if neg { w - 1 } else { w }
-    let padded = if s.length() < width { "0".repeat(width - s.length()) + s } else { s }
-    if neg {
-      "-" + padded
-    } else {
-      padded
-    }
-  }
-  let h = t(rest / 3_600_000.0)
-  let mi = t(rest / 60_000.0) % 60.0
-  let s = t(rest / 1000.0) % 60.0
-  let milli = rest % 1000.0
-  "\{pad(y, 4)}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(h, 2)}:\{pad(mi, 2)}:\{pad(s, 2)}.\{pad(milli, 3)}Z"
+  @jsjson.js_iso(ms)
 }
 
 ///|
@@ -143,14 +115,18 @@ pub struct Hub {
   world : World
   store : @store_sessions.Store
   /// The threads' store, made again at each step the clock moved (its time is the one it was made with).
-  mut threads : @store_threads.Store
-  mut words : Words
+  threads : @store_threads.Store
+  words : Words
   /// The actors made (a session's key, its runtime), in the order made.
   actors : Map[String, String]
   /// Why turns are held.
   holds_now : Array[String]
   /// Sessions taken up from the previous station: their turns run on.
   adopted : Set[String]
+  /// Whether `take_up` found no handover.json (crash / OOM / reboot, not an update handover).
+  mut non_update_restart : Bool
+  /// Sessions whose turns were cut off by a non-update restart and still await manual resume or dismissal.
+  interrupted_by_restart : Array[String]
   mut holds_runners : Bool
   /// The workspaces whose chats this station hands to another.
   quieted : Set[String]
@@ -186,6 +162,20 @@ pub struct Hub {
   mut counter : UsageCounter?
   /// Whether what the store tells of usage is kept (module.ts `keepCounted`).
   mut keeps_counted : Bool
+  /// Cross-round cursor for `pack_unfinished_archived` (`{archivedAt, key}` or Null).
+  mut pack_cursor : Json
+  /// When this Hub instance started (used for startup grace before periodic archive upkeep).
+  started_at : Double
+  /// Last time periodic archive backfill & idle rebuildable cleanup ran (`run_archive_upkeep_if_due`),
+  /// persisted in `<data>/upkeep-state.json`.
+  mut last_archive_upkeep_at : Double?
+  /// Bounded cache of `key -> lastActiveAt` for idle rebuildable measurements (shared by periodic and low-disk paths),
+  /// persisted in `<data>/upkeep-state.json`.
+  idle_measured : Map[String, Double]
+  /// Single-flight loader for `<data>/upkeep-state.json` into this Hub instance.
+  mut upkeep_state_load : @effect.Deferred[Unit]?
+  /// Whether `idle_measured` has unpersisted mutations since the last write.
+  mut idle_measured_dirty : Bool
 }
 
 ///|
@@ -198,6 +188,8 @@ pub fn Hub::new(world : World, store : @store_sessions.Store, threads : @store_t
     actors: {},
     holds_now: [],
     adopted: Set([]),
+    non_update_restart: false,
+    interrupted_by_restart: [],
     holds_runners: false,
     quieted: Set([]),
     held_chats: {},
@@ -218,11 +210,27 @@ pub fn Hub::new(world : World, store : @store_sessions.Store, threads : @store_t
     awaiting_workspace_activity: Set([]),
     counter: None,
     keeps_counted: false,
+    pack_cursor: Json::null(),
+    started_at: (world.now)(),
+    last_archive_upkeep_at: None,
+    idle_measured: {},
+    upkeep_state_load: None,
+    idle_measured_dirty: false,
   }
   // The sessions at work are followed by the station itself (live.ts `running`): as the store says each starts and
   // stops. Each transcript's length goes where its summary reads it (`noteLength`).
   ignore(hub.store.subscribe(change => hub.told(change)))
   hub
+}
+
+///|
+/// Record another station's bot IDs for a connect (connects/workspace.ts `told`).
+pub fn Hub::set_told_bots(self : Hub, connect : String, bots : Array[String]) -> Unit {
+  let set : Set[String] = Set([])
+  for b in bots {
+    set.add(b)
+  }
+  self.told_bots[connect] = set
 }
 
 ///|
@@ -233,14 +241,38 @@ pub fn Hub::told(self : Hub, change : Json) -> Unit {
       if self.lengths.contains(key) {
         self.write_lengths(only=[key])
       }
-      let running = match self.get_session(key) {
-        Some(row) => is_true(row, "running")
+      let row = self.get_session(key)
+      let running = match row {
+        Some(r) => is_true(r, "running")
         None => false
       }
       (self.world.tell)("live.running", { "key": Json::string(key), "running": Json::boolean(running) })
+      if self.interrupted_by_restart.contains(key) {
+        let drop = match row {
+          None => true
+          Some(r) => running || !(field(r, "archivedAt") is (None | Some(Null)))
+        }
+        if drop {
+          match self.interrupted_by_restart.search(key) {
+            Some(i) => {
+              ignore(self.interrupted_by_restart.remove(i))
+              (self.world.tell)("overview.changed", Json::null())
+            }
+            None => ()
+          }
+        }
+      }
     }
-    (Some("sessionRemoved"), Some(key)) =>
+    (Some("sessionRemoved"), Some(key)) => {
       (self.world.tell)("live.running", { "key": Json::string(key), "running": Json::boolean(false) })
+      match self.interrupted_by_restart.search(key) {
+        Some(i) => {
+          ignore(self.interrupted_by_restart.remove(i))
+          (self.world.tell)("overview.changed", Json::null())
+        }
+        None => ()
+      }
+    }
     _ => ()
   }
   // (then what follows the store after the hub, in the order the station has them: the counter, then the usage kept)
@@ -342,15 +374,29 @@ fn Hub::home(self : Hub) -> String? {
 }
 
 ///|
+fn wake_waiters_list(waiters : Array[@effect.Deferred[Unit]]) -> Unit {
+  if waiters.length() == 0 {
+    return
+  }
+  let list = waiters.copy()
+  waiters.clear()
+  for d in list {
+    ignore(d.succeed(()))
+  }
+}
+
+///|
+fn Hub::wake_waiters(self : Hub) -> Unit {
+  wake_waiters_list(self.timer_waiters)
+}
+
+///|
 /// Sets `run` going at `ms` from now (0 or less: as the step that set it ends, `run_due` then); its id.
 pub fn Hub::after(self : Hub, ms : Double, run : () -> Unit) -> Int {
   self.timer_seq += 1
   let id = self.timer_seq
   self.timers.push({ id, due: self.now() + (if ms > 0.0 { ms } else { 0.0 }), run })
-  for d in self.timer_waiters {
-    ignore(d.succeed(()))
-  }
-  self.timer_waiters.clear()
+  self.wake_waiters()
   id
 }
 
@@ -363,17 +409,34 @@ pub fn Hub::cancel(self : Hub, id : Int) -> Unit {
 }
 
 ///|
-/// Runs what is due by `now` (the clock moved there), earliest first, those set at once in the order set.
-pub fn Hub::run_due(self : Hub, now : Double) -> Unit {
+fn next_due_in(timers : Array[Timer]) -> Double? {
+  let mut best : Double? = None
+  for t in timers {
+    match best {
+      None => best = Some(t.due)
+      Some(b) => if t.due < b { best = Some(t.due) }
+    }
+  }
+  best
+}
+
+///|
+/// The earliest due time among pending hub timers, or `None` when none are scheduled.
+pub fn Hub::next_due(self : Hub) -> Double? {
+  next_due_in(self.timers)
+}
+
+///|
+fn run_due_in(timers : Array[Timer], now : Double) -> Unit {
   while true {
     let mut best : Int? = None
-    for i, t in self.timers {
+    for i, t in timers {
       if t.due <= now {
         match best {
           None => best = Some(i)
           Some(b) =>
-            if t.due < self.timers[b].due ||
-              (t.due == self.timers[b].due && t.id < self.timers[b].id) {
+            if t.due < timers[b].due ||
+              (t.due == timers[b].due && t.id < timers[b].id) {
               best = Some(i)
             }
         }
@@ -382,11 +445,108 @@ pub fn Hub::run_due(self : Hub, now : Double) -> Unit {
     match best {
       None => break
       Some(i) => {
-        let t = self.timers.remove(i)
+        let t = timers.remove(i)
         (t.run)()
       }
     }
   }
+}
+
+///|
+/// Runs what is due by `now` (the clock moved there), earliest first, those set at once in the order set.
+pub fn Hub::run_due(self : Hub, now : Double) -> Unit {
+  run_due_in(self.timers, now)
+}
+
+///|
+async fn[T] drive_loop(
+  rt : @effect.Runtime,
+  stopped : @effect.Deferred[T],
+  now : () -> Double,
+  timers : Array[Timer],
+  waiters : Array[@effect.Deferred[Unit]],
+  work : Array[async () -> Unit],
+  spawn : (async () -> Unit) -> Unit,
+) -> Unit {
+  while !stopped.is_done() {
+    run_due_in(timers, now())
+    while work.length() > 0 {
+      let f = work.remove(0)
+      spawn(f)
+    }
+    if stopped.is_done() {
+      break
+    }
+    let sleep_ms : Int? = match next_due_in(timers) {
+      None => None
+      Some(due) => {
+        let diff = due - now()
+        if diff <= 0.0 {
+          continue
+        }
+        let clamped = if diff > 60_000.0 { 60_000.0 } else { diff }
+        let ms = clamped.ceil().to_int()
+        Some(if ms < 1 { 1 } else { ms })
+      }
+    }
+    let wake : @effect.Deferred[Unit] = @effect.Deferred::new()
+    waiters.push(wake)
+    let done : @effect.Deferred[Unit] = @effect.Deferred::new()
+    let fibers : Array[@effect.Fiber[Unit]] = []
+    if sleep_ms is Some(ms) {
+      fibers.push(
+        rt.fork_quiet(name="hub timer sleep", async fn() {
+          @effect.sleep(ms) // timer: next hub timer deadline (idle eviction, transcript lengths, usage)
+          ignore(done.succeed(()))
+        }),
+      )
+    }
+    fibers.push(
+      rt.fork_quiet(name="hub timer wake", async fn() {
+        wake.wait() catch { _ => () }
+        ignore(done.succeed(()))
+      }),
+    )
+    fibers.push(
+      rt.fork_quiet(name="hub timer stop", async fn() {
+        ignore(stopped.wait()) catch { _ => () }
+        ignore(done.succeed(()))
+      }),
+    )
+    let mut interrupted = false
+    done.wait() catch { _ => interrupted = true }
+    for f in fibers {
+      if !f.is_done() {
+        f.interrupt()
+      }
+    }
+    match waiters.search_by(d => physical_equal(d, wake)) {
+      Some(i) => ignore(waiters.remove(i))
+      None => ()
+    }
+    if interrupted {
+      break
+    }
+  }
+}
+
+///|
+/// Drives the hub's scheduled timers (`after`) and deferred async work (`later`) until `stopped` completes.
+pub async fn[T] Hub::drive(
+  self : Hub,
+  rt : @effect.Runtime,
+  stopped : @effect.Deferred[T],
+  spawn : (async () -> Unit) -> Unit,
+) -> Unit {
+  drive_loop(
+    rt,
+    stopped,
+    () => self.now(),
+    self.timers,
+    self.timer_waiters,
+    pending_work,
+    spawn,
+  )
 }
 
 // ── actors ──
@@ -738,11 +898,6 @@ pub fn Hub::wake_chat(self : Hub, key : String) -> Unit raise Refused {
 ///|
 pub fn Hub::busy(self : Hub, key : String) -> Bool {
   self.actors.contains(key) && (self.world.process_state)(key) == "running"
-}
-
-///|
-pub fn Hub::chat_held(self : Hub, key : String) -> String? {
-  self.held_chats.get(key)
 }
 
 ///|

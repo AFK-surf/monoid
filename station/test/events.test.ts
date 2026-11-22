@@ -16,7 +16,7 @@ const viewer = (email: string) => ({ sub: email, email, name: email, role: "memb
 
 /// A station process's events. `handover`: what goes over to the next process; `db`: the rows and overview of another's
 /// (the same station's, in the next process).
-function setup(clock?: Clock.Clock, handover?: EventsDeps["handover"], db?: { rows: Record<string, any[]>; overview: { running: number } }) {
+function setup(clock?: Clock.Clock, handover?: EventsDeps["handover"], db?: { rows: Record<string, any[]>; overview: { running: number } }, host: EventsDeps["host"] = async () => ({ cpu: 1 })) {
   let listener: (c: StoreChange) => void = () => {};
   const rows: Record<string, any[]> = db?.rows ?? { "a@x": [{ id: "1", title: "one" }], "b@x": [] };
   const overview = db?.overview ?? { running: 0 };
@@ -39,7 +39,7 @@ function setup(clock?: Clock.Clock, handover?: EventsDeps["handover"], db?: { ro
     // What is said is told as the store wrote it, never read first (no `entries` read here).
     said: (_thread, entries) => entries.map((e) => ({ n: e.n, text: "hi" })),
     subscribe: (l) => ((listener = l), () => {}),
-    host: async () => ({ cpu: 1 }),
+    host,
     jobLog: (id) => (id === "j" ? join(dir, "j.log") : null),
     logNow: async (id) => (id === "j" ? { text: require("node:fs").readFileSync(join(dir, "j.log"), "utf8"), outputAt: 7 } : null),
     sessionExists: (key) => key !== "gone",
@@ -1051,4 +1051,25 @@ test("a chat handed to another station is told to a stream cut before and resume
   assert.ok(!other.got.some((e) => e.event === "chat-moved"));
   await back.close();
   await other.close();
+});
+
+test("a host sample that fails is no rejection, as a stream joins or on the beat after", async () => {
+  const time = testClock();
+  let asked = 0;
+  const { events } = setup(time.clock, undefined, undefined, () => (asked++, Promise.reject(new Error("spawn UNKNOWN"))));
+  const unhandled: unknown[] = [];
+  const heard = (reason: unknown) => void unhandled.push(reason);
+  process.on("unhandledRejection", heard);
+  try {
+    const s = reader((await events.open(viewer("a@x"), "zh", true, [], [])).body as AsyncIterable<Buffer>);
+    await settle();
+    await time.adjust(10_000);
+    await settle();
+    assert.equal(asked, 2, "asked as it joined and on the beat");
+    assert.equal(s.got.filter((e) => e.event === "host").length, 0);
+    await s.close();
+  } finally {
+    process.off("unhandledRejection", heard);
+  }
+  assert.deepEqual(unhandled, []);
 });

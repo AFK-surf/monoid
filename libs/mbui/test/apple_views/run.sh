@@ -18,6 +18,12 @@ ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i
   -c:a aac -shortest "$OUT/test.mp4"
 ffmpeg -loglevel error -y -f lavfi -i testsrc=size=320x240:rate=30 -t 5 \
   -c:v libx264 -pix_fmt yuv420p -movflags +faststart "$OUT/test.mov"
+# one key frame in ten seconds, as a screen's recording (scrub_back_steps)
+ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=640x360:rate=30 -t 10 \
+  -c:v libx264 -preset ultrafast -g 300 -keyint_min 300 -sc_threshold 0 -pix_fmt yuv420p -movflags +faststart \
+  "$OUT/test-gop.mp4"
+# the same shown a quarter turn (its track's matrix, as a phone's upright film)
+ffmpeg -loglevel error -y -display_rotation 90 -i "$OUT/test-gop.mp4" -c copy "$OUT/test-gop-turned.mp4"
 ffmpeg -loglevel error -y -f lavfi -i testsrc=size=320x240:rate=10 -t 5 \
   -c:v libx264 -pix_fmt yuv420p "$OUT/test.3gp"
 ffmpeg -loglevel error -y -f lavfi -i testsrc=size=320x240:rate=10 -t 5 \
@@ -50,6 +56,7 @@ clang -fobjc-arc -O1 -Wall -Wno-unused-function -I"$MOON_HOME/include" -I"$R/src
   "$R/src/host/apple_text.m" $RT \
   -framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics \
   -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework WebKit \
+  -framework VideoToolbox \
   -o "$OUT/selftest"
 "$OUT/selftest" "$OUT" "$OUT/test.pdf" "$OUT/test.mp4|video/mp4|12000|1280|720" \
   "$OUT/test.mov|video/quicktime|5000|320|240" "$OUT/test.3gp|video/3gpp|5000|320|240" \

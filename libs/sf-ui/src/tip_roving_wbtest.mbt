@@ -174,7 +174,7 @@ test "tips of a row of tools, the hand come to it afresh (no tip of it shown a w
   t.move_to(x, y)
   t.run_for(tip_delay_ms + tip_settled_ms)
   t.leave()
-  t.run_for(@kit.tooltip_skip_ms + tip_settled_ms)
+  t.run_for(@headless.tooltip_skip_ms + tip_settled_ms)
   let (x, y) = roving_tool_at(t, 1)
   t.move_to(x, y)
   t.run_for(tip_delay_ms - tip_short_ms)

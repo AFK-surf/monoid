@@ -9,6 +9,7 @@ import type { HttpRequest } from "../src/host.ts";
 import type { StationAddr } from "../src/station/addr.ts";
 import { HostWire, type RequestHead, type StationWire } from "../src/station/wire.ts";
 import type { FakeHost } from "../src/testing.ts";
+import { work } from "../src/work.ts";
 
 const S = "ws/st";
 const preset = (id: string, name: string) => ({ id, name, dirs: [{ path: `/repos/${id}`, repo: `github.com/acme/${id}` }], instructions: "", createdBy: "a@x.com", createdAt: 1, updatedAt: 1 });
@@ -88,8 +89,8 @@ test("presets_are_read_as_shown_again_once_one_is_made_and_the_one_picked_goes_w
   assert.equal(v(values, 2).presetName, "Lib", "named as the station says, the page asking nothing more");
   assert.equal(v(values, 2).presetStation, S);
   assert.deepEqual(v(values, 2).presets, [
-    { id: "app", name: "App", station: S, stationName: "studio" },
-    { id: "lib", name: "Lib", station: S, stationName: "studio" },
+    { id: "app", name: "App", station: S, stationName: "studio", summary: "app", dirName: "app", dirRepo: "github.com/acme/app" },
+    { id: "lib", name: "Lib", station: S, stationName: "studio", summary: "lib", dirName: "lib", dirRepo: "github.com/acme/lib", used: true },
   ]);
   assert.deepEqual(v(values, 2).presetMarks, [{ name: "lib", repo: "github.com/acme/lib" }], "the one picked's marks, its control's look");
   call(core, ui, 5, "newChat.create", { station: S, key: v(values, 2).next });
@@ -205,7 +206,7 @@ test("a_preset_applies_its_optional_station_and_model_when_picked_or_leaves_them
   };
   const said: Record<string, unknown> = {
     ...base(),
-    "GET /overview": { ...overview, claudeTui: true, profiles: [p2] },
+    "GET /overview": { ...overview, claudeTui: true, autoChats: { enabled: true, canEdit: true }, profiles: [p2] },
     "GET /presets": { presets: [presetBound, presetFree], candidates: [candidate] },
   };
   const { host, core } = await started(said as never);
@@ -380,6 +381,14 @@ test("a_preset_that_binds_a_model_starts_only_on_stations_that_run_it_never_on_a
   apply(host, values);
   assert.equal(v(values, 1).station.id, "st");
   assert.equal(v(values, 1).pick.value.model, "claude-sonnet-5-5");
+  // Made again, the page asks each station whether it runs the preset's model of the models it made of that station's
+  // overview already, not each made anew (six times a page, a second and more on a phone before its model showed):
+  // its own station's alone, as with no preset.
+  const made = work.models;
+  call(core, ui, 30, "newChat.pick", { scope: "ws", preset: "review", presetStation: S });
+  await host.settle();
+  apply(host, values);
+  assert.equal(work.models - made, 1, "only the station it is on, as the page shows it");
   // Mini is not offered, and asked for it is refused saying why, the page as it was.
   assert.deepEqual(v(values, 1).stations.map((s: { id: string }) => s.id), ["st"]);
   call(core, ui, 4, "newChat.pick", { scope: "ws", station: "st2" });

@@ -14,7 +14,7 @@
 /// open, docked beside the text or a sheet on 小屏.
 #callsite(autofill(loc))
 fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
-  let small = fn() { layout(root.window().0) is Small }
+  let small = fn() { layout(root.window_w()) is Small }
   let open = fn() { layout_open.get() is Some(_) }
   // (the reading whose panel it is, as it opens)
   let reading = fn() { reading_for(layout_open.untracked().unwrap_or("")) }
@@ -78,6 +78,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       top: 0.0,
       most: None,
       flush: false,
+      head_end: None,
     },
   }
   let shut = fn() {
@@ -144,7 +145,7 @@ fn layout_body(col : @view.View, narrow : Bool, p : () -> ReaderPaper, loc~ : So
   let inner = fn() {
     if narrow {
       let (_, right, _, left) = col.clear()
-      dmax(desk_none, col.window().0 - left - right - 2.0 * desk_layout_in)
+      dmax(desk_none, col.window_w() - left - right - 2.0 * desk_layout_in)
     } else {
       desk_layout_inner
     }
@@ -414,7 +415,7 @@ fn slider_node(
   let span = if max > min { max - min } else { 1.0 }
   let at = fn() { dmin(desk_whole, dmax(desk_none, (now() - min) / span)) }
   let held = @signals.signal(false)
-  let snap = fn(v : Double) { @kit.snap(v, min, max, step) }
+  let snap = fn(v : Double) { @headless.slider_snap(v, min, max, step) }
   let along = fn(d : @view.Drag) {
     if d.w > slider_thumb_room {
       moved(snap(min + dmin(desk_whole, dmax(desk_none, (d.x - slider_thumb_room / 2.0) / (d.w - slider_thumb_room))) * span))

@@ -108,14 +108,19 @@ export function stationHost(answers: Answers) {
         const a = answer({ ...req, method: "GET", url: `https://stillfail.test/admin/api${g}`, body: null });
         return { status: a.status, body: a.body.length > 0 ? JSON.parse(new TextDecoder().decode(a.body)) : null };
       });
-      const streams = batches.ndjson && req.headers.some(([k, v]) => k.toLowerCase() === "accept" && v.includes("application/x-ndjson"));
-      if (streams) return { status: 200, headers: [["content-type", "application/x-ndjson"]], body: new TextEncoder().encode(answers.map((a) => `${JSON.stringify(a)}\n`).join("")) };
+      const accept = req.headers.find(([k]) => k.toLowerCase() === "accept")?.[1] ?? "";
+      const tokens = accept.split(",").map((p) => p.split(";", 1)[0]!.trim().toLowerCase());
+      const streamType = !batches.ndjson ? null : tokens.includes("application/vnd.stillfail.batch-lines+json") ? "application/vnd.stillfail.batch-lines+json" : tokens.includes("application/x-ndjson") ? "application/x-ndjson" : null;
+      if (streamType !== null) return { status: 200, headers: [["content-type", streamType]], body: new TextEncoder().encode(answers.map((a) => `${JSON.stringify(a)}\n`).join("")) };
       return jsonResponse(200, { answers });
     }
-    const list = /^\/admin\/api\/changed\/(chats|threads|sessions)(\?|$)/.exec(path);
+    const list = /^\/admin\/api\/changed\/(chats|threads|sessions|shared)(\?|$)/.exec(path);
     if (req.method === "POST" && list) {
       if (!changes.on) return jsonResponse(404, { error: `no route POST ${path.replace("/admin/api", "").split("?")[0]}` });
-      return changedOf(answer({ ...req, method: "GET", url: req.url.replace("/admin/api/changed/", "/admin/api/"), body: null }), list[1] === "sessions" ? "key" : "id", req);
+      const targetUrl = list[1] === "shared"
+        ? req.url.replace("/admin/api/changed/shared", "/admin/api/chats?shared=1")
+        : req.url.replace("/admin/api/changed/", "/admin/api/");
+      return changedOf(answer({ ...req, method: "GET", url: targetUrl, body: null }), list[1] === "sessions" ? "key" : "id", req);
     }
     let key = `${req.method} ${path.replace("/admin/api", "")}`;
     // A session's detail with its latest turns alone (`?turns=`): as a station from before, which lists them all, unless
@@ -123,15 +128,20 @@ export function stationHost(answers: Answers) {
     if (!(key in answers) && /^GET \/sessions\/[^/?]+\?turns=\d+(&jobs=now)?$/.test(key)) key = key.split("?")[0]!;
     // The archive a page at a time (`&page=`): as a station from before, the whole list, unless the test answers pages.
     if (!(key in answers) && /^GET \/chats\?archived=1&page=/.test(key)) key = "GET /chats?archived=1";
-    // The sidebar's marks (`marks=1`) and shared list (`shared=1`): empty defaults unless the test answers them.
+    // The sidebar's marks (`marks=1&own=1` -> `marks=1`) and shared list (`shared=1`): empty defaults unless the test answers them.
+    if (!(key in answers) && key.startsWith("GET /chats?marks=1&own=1")) {
+      const legacy = key.replace("&own=1", "");
+      if (legacy in answers) key = legacy;
+    }
     if (!(key in answers) && /^GET \/chats\?marks=1/.test(key)) return jsonResponse(200, MARKS);
     if (!(key in answers) && key === "GET /chats?shared=1") return jsonResponse(200, []);
     // The open jobs without their chats (`chats=0`): as a station from before, the list as the test answers it.
     if (!(key in answers) && key === "GET /jobs?chats=0") key = "GET /jobs";
     if (key in answers) return answers[key] instanceof Status ? jsonResponse((answers[key] as Status).code, (answers[key] as Status).body) : jsonResponse(200, answers[key]);
     if (path.startsWith("/admin/api/threads/") && path.includes("/entries")) return jsonResponse(200, { last: 0, entries: [] });
-    // (a person's presets and stars as carried, unless the test answers them: a station from before, no such route)
-    if (/^\/admin\/api\/(presets\/kept|presets\/others|stars)$/.test(path)) return jsonResponse(404, { error: `no route ${req.method} ${path.replace("/admin/api", "")}` });
+    // (a person's presets, stars and drafts of 待派发 as carried, unless the test answers them: a station from before, no
+    // such route)
+    if (/^\/admin\/api\/(presets\/kept|presets\/others|stars|board\/drafts)$/.test(path)) return jsonResponse(404, { error: `no route ${req.method} ${path.replace("/admin/api", "")}` });
     return jsonResponse(404, { error: "no" });
   };
   // How its events stream answers: opens, fails (the station is not reached), hangs (a try that takes long), a status

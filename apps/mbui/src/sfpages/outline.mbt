@@ -177,6 +177,7 @@ pub fn open_outline(
   stint? : Int = 0,
   typed? : String = "",
 ) -> Unit {
+  rail_hover_close()
   let at : OutlineAt = {
     field: @ui.Field::new(),
     query: @signals.signal("", same=fn(a, b) { a == b }),
@@ -209,6 +210,116 @@ pub fn open_outline(
     tall=outline_tall,
     hugs=true,
   )
+}
+
+///|
+/// Build chat `r`'s outline inside a hover panel body `v`: creates OutlineAt, asks `chat.bring` only when the hover
+/// panel actually opens (0 calls at rest), does not steal keyboard focus (`auto_focus=false`), and follows `follow`
+/// while `follow_active()` is true.
+fn open_outline_hover_body(
+  v : @view.View,
+  src : Source,
+  r : ChatRef,
+  thread : Double,
+  current : Double,
+  close : () -> Unit,
+  stint : Int,
+  follow : () -> Double,
+  follow_active : () -> Bool,
+  on_held : (() -> Bool) -> Unit,
+) -> Unit {
+  let at : OutlineAt = {
+    field: @ui.Field::new(),
+    query: @signals.signal("", same=fn(a, b) { a == b }),
+    found: @signals.signal(None),
+    bringing: @signals.signal(false, same=fn(a, b) { a == b }),
+    asked: 0,
+    lit: @signals.signal("", same=fn(a, b) { a == b }),
+    current,
+    held: @signals.signal(
+      if (src.swr_views)() { outline_rows_of(outline_rows_key(r, thread)) } else { Map([]) },
+    ),
+    asking: {},
+    absent: {},
+  }
+  if !src.read_only {
+    (src.call)("chat.bring", Json::object(outline_params(r, thread)), @sfbase.answer_unread)
+  }
+  outline_body(
+    v,
+    src,
+    r,
+    thread,
+    at,
+    close,
+    stint,
+    false,
+    auto_focus=false,
+    follow~,
+    follow_active~,
+    on_held~,
+  )
+}
+
+///|
+/// Active node-based rail hover panel closers (registered while alive, cleared on reset) so opening the modal outline
+/// closes any open hover panel and never stacks two outline panels.
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let rail_hover_closers : Array[(Int, () -> Unit)] = []
+
+///|
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let rail_hover_closer_next : Ref[Int] = Ref(0)
+
+///|
+fn rail_hover_register(close : () -> Unit) -> Int {
+  rail_hover_closer_next.val += 1
+  let id = rail_hover_closer_next.val
+  rail_hover_closers.push((id, close))
+  id
+}
+
+///|
+fn rail_hover_unregister(id : Int) -> Unit {
+  match rail_hover_closers.search_by(fn(p) { p.0 == id }) {
+    Some(i) => rail_hover_closers.remove(i) |> ignore
+    None => ()
+  }
+}
+
+///|
+fn rail_hover_close() -> Unit {
+  for p in rail_hover_closers.copy() {
+    (p.1)()
+  }
+}
+
+///|
+/// Legacy Ctx outline_rail hover state: currently hovered tick's seq, whether pointer is on the rail, and the active
+/// hover panel's held predicate (search input focused or non-empty).
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let old_rail_hover_seq : @signals.Signal[Double] = @signals.signal(-1.0, same=fn(a, b) { a == b })
+
+///|
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let old_rail_hover_on : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let old_rail_held : Ref[() -> Bool] = Ref(fn() { false })
+
+///|
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let old_rail_held_ver : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+
+///|
+fn outline_hover_reset() -> Unit {
+  rail_hover_closers.clear()
+  rail_hover_closer_next.val = 0
+  old_rail_hover_seq.set(-1.0)
+  old_rail_hover_on.set(false)
+  old_rail_held.val = fn() { false }
+  old_rail_held_ver.set(0)
 }
 
 ///|
@@ -273,6 +384,10 @@ fn outline_body(
   close : () -> Unit,
   stint : Int,
   keyed : Bool,
+  auto_focus? : Bool = true,
+  follow? : () -> Double,
+  follow_active? : () -> Bool,
+  on_held? : (() -> Bool) -> Unit,
 ) -> Unit {
   let params = outline_params(r, thread)
   let value = fn() { src.topic("chatOutline", params).get().value }
@@ -481,11 +596,18 @@ fn outline_body(
       },
     )
     // (the keys as it opens from ⌘G and the rail, however it is shown, the input method up; from the round button a
-    // search at hand: the keys where the panel is beside it, not on a sheet, where the rows are what is read)
-    if keyed {
-      @sf.panel_opens_in_node(f)
-    } else {
-      @sf.panel_search_at_hand_node(f)
+    // search at hand: the keys where the panel is beside it, not on a sheet, where the rows are what is read; in a
+    // hover panel (`!auto_focus`), never steal keyboard focus from the chat composer)
+    if auto_focus {
+      if keyed {
+        @sf.panel_opens_in_node(f)
+      } else {
+        @sf.panel_search_at_hand_node(f)
+      }
+    }
+    match on_held {
+      Some(set_held) => set_held(fn() { f.focused() || at.query.get() != "" })
+      None => ()
     }
   })
   |> ignore
@@ -512,10 +634,31 @@ fn outline_body(
   v.show(fn() { more() > 0 }, fn(n) {
     @sf.panel_note_node(n, fn() { @sf.t("web-main.outline.more", args=[("n", more().to_string())]) })
   })
-  // its rows, the reader's in the middle as it opens, the chunk it is in asked for then; what its field holds as it
-  // opens looked for at once
-  at.lit.set(current_key(at))
-  v.at_moment(v.cause_at(), fn() { ask_chunk(chunk_of(at.current)) }) |> ignore
+  // its rows, the hovered tick's (when opened as a hover panel) or the reader's in the middle as it opens, the chunk
+  // it is in asked for then; what its field holds as it opens looked for at once
+  let seq_key = fn(seq : Double) -> String {
+    if seq < 0.0 {
+      ""
+    } else {
+      "said/" + seq.to_int().to_string()
+    }
+  }
+  let init_seq = match follow {
+    Some(get_seq) => {
+      let s = @signals.untracked(get_seq)
+      if s >= 0.0 { s } else { at.current }
+    }
+    None => at.current
+  }
+  let init_key = seq_key(init_seq)
+  at.lit.set(init_key)
+  v.at_moment(v.cause_at(), fn() {
+    ask_chunk(chunk_of(init_seq))
+    if init_seq != at.current && at.current >= 0.0 {
+      ask_chunk(chunk_of(at.current))
+    }
+  })
+  |> ignore
   let first = @signals.untracked(fn() { at.field.text() }).trim(chars=" ").to_owned()
   if first != "" {
     ask(first)
@@ -593,7 +736,32 @@ fn outline_body(
     place~,
   )
   |> ignore
-  place.centre(current_key(at))
+  place.centre(init_key)
+  match (follow, follow_active) {
+    (Some(get_seq), Some(active)) =>
+      v.reacts(
+        fn() {
+          if active() && !searching() {
+            Some(get_seq())
+          } else {
+            None
+          }
+        },
+        at_start=false,
+        fn(opt) {
+          match opt {
+            Some(seq) if seq >= 0.0 => {
+              let k = seq_key(seq)
+              at.lit.set(k)
+              place.centre(k)
+              ask_chunk(chunk_of(seq))
+            }
+            _ => ()
+          }
+        },
+      )
+    _ => ()
+  }
 }
 
 ///|
@@ -685,18 +853,10 @@ let outline_count_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted,
 // ── What opens it on the chat's page (an old view's, as the way to the newest beside it) ──────────────────────────
 
 ///|
-/// The chats whose page shows a way into the outline now, by the chat's key: what (its id, to stand beside), whether
-/// its rail shows (its outline held then: what the steps' keys go along), and whether it stands beside the rail's
-/// middle (when the round button does not show). ⌘G opens it there.
-// kept across runs: said as each page is built, let go of by the package's reset (pages.mbt)
-let outline_entries : Map[String, (Int, Bool, Bool)] = Map([])
-
-///|
 /// What people said in chat `r` (its view `v`), oldest first, as a key's handler finds it: its outline where its rail
-/// holds it (an old view's, as it said; a page made as nodes: `railed`, its rail showing), else what its window holds.
+/// holds it (`railed`, its rail showing), else what its window holds.
 fn said_now(src : Source, r : ChatRef, v : ChatView, railed? : Bool = false) -> Array[Double] {
-  let held = railed || (outline_entries.get(chat_key(r)) is Some((_, true, _)))
-  match (held, v.thread) {
+  match (railed, v.thread) {
     (true, Some(th)) =>
       match src.topic("chatOutline", outline_params(r, th)).get().value {
         Some(_) as o => outline_seqs(o)
@@ -743,11 +903,7 @@ pub fn outline_open_keys(
     }
     _ => ()
   }
-  match outline_entries.get(chat_key(r)) {
-    Some((id, _, true)) => open_outline(src, r, th, current, from=Of(id), side=Left, along=Middle, keys=true, stint~, typed~)
-    Some((id, _, false)) => open_outline(src, r, th, current, from=Of(id), side=Left, keys=true, stint~, typed~)
-    None => open_outline(src, r, th, current, from=Unanchored, keys=true, stint~, typed~)
-  }
+  open_outline(src, r, th, current, from=Unanchored, keys=true, stint~, typed~)
   true
 }
 
@@ -815,13 +971,20 @@ let tick_gap : @ui.Space = S1
 let tick_day_gap : @ui.Space = S3
 
 ///|
-let tick_least : Double = @ui.Space::px(S1)
+let tick_least : Double = 6.0
 
 ///|
-let tick_most : Double = @ui.Space::px(S3)
+let tick_most : Double = 14.0
 
 ///|
-let tick_long : Double = @ui.Space::px(S4)
+let tick_long : Double = 20.0
+
+///|
+/// How long a hovered non-reader tick of a turn of `turn` messages is: noticeably longer than its resting width,
+/// capped at `tick_long`.
+fn tick_hover_w(turn : Int) -> Double {
+  dmin(tick_long, dmax(tick_w(turn) + 4.0, 16.0))
+}
 
 ///|
 /// How many doublings of a turn's messages reach tick_most (32).
@@ -922,329 +1085,11 @@ fn rail_ticks(days : Array[Int], at : Int, turns : Array[Int], most : Double) ->
 }
 
 ///|
-/// What people said in each chat as its rail's tips say it (`chat.outline.rows`' rows, asked a chunk at a time as a
-/// tick is pointed at): its first line and time of day, by the chat's key and the message's seq.
-// kept across runs: let go of by the package's reset (chat_list.mbt)
-let rail_said : @signals.Signal[Map[String, (String, String)]] = @signals.signal({})
-
-///|
-/// The chunks of rail_said asked for whose answer has not come, by the chat's key and the chunk.
-// kept across runs: let go of by the package's reset (chat_list.mbt)
-let rail_asking : Map[String, Bool] = Map([])
-
-///|
-/// What a tick of chat `k`'s rail standing for its message `seq` says: its first line and time, "" till the core gave
-/// them.
-fn rail_tip_words(k : String, seq : Double) -> String {
-  match rail_said.get().get(k + "/" + seq.to_int().to_string()) {
-    Some((words, clock)) => if clock == "" { words } else { words + "  " + clock }
-    None => ""
-  }
-}
-
-///|
-/// The rows of chat `r`'s outline (its thread `thread`, its said `said`) of the chunk the `at`th of them is in, asked for
-/// rail_said unless held or asked already.
-fn rail_ask(src : Source, r : ChatRef, thread : Double, said : Array[Double], at : Int) -> Unit {
-  let k = chat_key(r)
-  let chunk = at / outline_chunk
-  let asking = k + "/" + chunk.to_string()
-  guard !src.read_only && !rail_asking.contains(asking) else { return }
-  let from = chunk * outline_chunk
-  let to = if from + outline_chunk < said.length() { from + outline_chunk } else { said.length() }
-  guard from < to else { return }
-  rail_asking[asking] = true
-  let asked = outline_params(r, thread)
-  asked["seqs"] = Json::array(said[from:to].to_owned().map(fn(q) { Json::number(q) }))
-  (src.call)("chat.outline.rows", Json::object(asked), fn(res) {
-    match res {
-      Ok(j) => {
-        let now = rail_said.untracked().copy()
-        for row in items(Some(j), "rows") {
-          let item = outline_item(row, false)
-          now[k + "/" + item.seq.to_int().to_string()] = (item.words, item.clock)
-        }
-        rail_said.set(now)
-      }
-      // (its station away: asked again as a tick of it is next pointed at)
-      Err(_) => rail_asking.remove(asking) |> ignore
-    }
-  })
-}
-
-///|
-/// The rail of chat `r`'s outline (its thread `thread`) at the list's right (an old view's, beside to_latest), the
-/// list's visible room `top` under its top and `room` over its foot: shown while the outline has three said or more;
-/// one tick for each, as long as its turn (`latest`: the chat's newest message, where the last turn ends), the one at
-/// `index` the reader's. Pointed at, a tick's tip says its message's first line and time (asked for as it is). Pressed,
-/// a tick goes to its message. Whether it shows.
-fn outline_rail(
-  c : @ui.Ctx,
-  src : Source,
-  r : ChatRef,
-  thread : Double,
-  value : Json?,
-  top_seq : Double,
-  at_end : Bool,
-  latest : Double,
-  top : Double,
-  room : Double,
-  room_anim? : (@motion.Anim, Double)? = None,
-) -> Bool {
-  let days = items(value, "days").map(fn(d) { items(Some(d), "seqs").length() })
-  let said = outline_seqs(value)
-  guard said.length() >= rail_least else { return false }
-  let current = outline_current(said, top_seq, at_end)
-  let at = said.search(current).unwrap_or(said.length() - 1)
-  // (its share of the list's height, less the press's own room over and under its ticks)
-  let most = dmax(0.0, dmax(0.0, c.height - top - room) * rail_share - 2.0 * rail_pad.px())
-  let shown = rail_ticks(days, at, rail_turns(said, latest), most)
-  let id = c.id("chat-outline-rail")
-  let k = chat_key(r)
-  // (the tick pointed at: its id and the message it stands for; each tick's id and message for a press on the rail)
-  let pointed : Ref[(Int, Int)?] = Ref(None)
-  let ticks_at : Array[(Int, Int)] = []
-  c.on_press(id, fn() {
-    let mut best = match pointed.val {
-      Some((_, i)) => i
-      None => at
-    }
-    for t in ticks_at {
-      let (tid, tick_at) = t
-      if c.press_within(tid) || c.hovered(tid) {
-        best = tick_at
-        break
-      }
-    }
-    @sfbase.go_to(r, said[best])
-  })
-  c.layer(fn() {
-    c.box(style=rail_place.then(@ui.style(pt=@sf.room_of(top), pb=@sf.room_of(room))), fn() {
-      let b = c.box(style=rail_press, id~, fn() {
-        // (a day's ticks together, the days further apart; the map's, one group; each in a room as tall as it and the
-        // gap to the next, the press's width, for the pointer to rest on)
-        let n = Ref(0)
-        for ticks in shown {
-          c.box(style=rail_day, fn() {
-            for tick in ticks {
-              let tid = c.id("chat-outline-tick/" + n.val.to_string())
-              n.val += 1
-              ticks_at.push((tid, tick.at))
-              // (only pointed at, for its tip: a press there the rail's)
-              c.box(style=tick_room, id=tid, taps=false, points=true, fn() {
-                let line = if tick.reader {
-                  @ui.style(w=Fixed(tick_long), h=Fixed(tick_thick), bg=Fg)
-                } else {
-                  @ui.style(w=Fixed(tick_w(tick.turn)), h=Fixed(tick_thick), bg=Line)
-                }
-                c.box(style=line, fn() {  }) |> ignore
-              })
-              |> ignore
-              if c.hovered(tid) {
-                pointed.val = Some((tid, tick.at))
-              }
-            }
-          })
-          |> ignore
-        }
-      })
-      c.semantics(b, Button, id~, label=@sf.t("web-main.outline.title"))
-      match room_anim {
-        Some((a, target)) => c.look_by(b, fn() { @ui.look(dy=(target - a.get(c)) / 2.0) })
-        None => ()
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-  match pointed.val {
-    // (a tick pointed at: its message, asked for where it is not held, at the moment of the build's end)
-    Some((tid, i)) => {
-      let words = rail_tip_words(k, said[i])
-      if words == "" {
-        c.tell("outline/rail-ask/" + k, fn() { rail_ask(src, r, thread, said, i) })
-      }
-      @sf.tip(c, "chat-outline-tick/" + tid.to_string(), tid, words, side=Left)
-    }
-    None =>
-      @sf.tip(c, "chat-outline-rail", id, @sf.t("web-main.keymap.chat.outline"), shortcut="chat.outline", side=Left)
-  }
-  true
-}
-
-///|
 /// How many said the outline has at least for its rail to show.
 let rail_least : Int = 3
-
-///|
-/// Where the rail stands: the list's right, in its middle between the bar and the composer's room, clear of its scroll
-/// bar.
-// kept across runs: a value (no field of it changes)
-let rail_place : @ui.Style = @ui.style(w=Full, h=Full, align=AEnd, justify=JCenter, pr=@sf.room_of(@ui.scroll_bar_room))
-
-///|
-/// The rail's press: 44 wide and 44 tall at least (rail_press_w), its ticks in its middle at its right, rail_pad in.
-// kept across runs: a value (no field of it changes)
-let rail_press : @ui.Style = @ui.style(
-  w=Fixed(rail_press_w),
-  min_h=Fixed(rail_press_w),
-  align=AEnd,
-  justify=JCenter,
-  py=rail_pad,
-  pr=rail_pad,
-  gap=tick_day_gap,
-)
-
-///|
-/// A day's ticks, one under the other at the press's right, across it.
-// kept across runs: a value (no field of it changes)
-let rail_day : @ui.Style = @ui.css("w=Full align=AEnd")
 
 ///|
 /// A tick's room: across the press, half the gap over it and under it (tick_gap), the tick at its right.
 // kept across runs: a value (no field of it changes)
 let tick_room : @ui.Style = @ui.css("w=Full py=S0_5 align=AEnd")
 
-///|
-/// The round button to chat `r`'s outline (its thread `thread`), over the way to the newest (`lift` over the foot,
-/// `right` in from the pane's end), coming and going as that one does (`shown`, float_trans); pressed, the outline
-/// beside it (a sheet on Small). `current`: the message the reader is at.
-fn outline_float(
-  c : @ui.Ctx,
-  src : Source,
-  r : ChatRef,
-  thread : Double?,
-  current : () -> Double,
-  shown : Bool,
-  right : Double,
-  lift : Double,
-  room_anim? : (@motion.Anim, Double)? = None,
-) -> Unit {
-  let p = @sf.theme().p
-  let look = match chat_float_look(c, r, "chat-outline", shown) {
-    Some(l) => l
-    None => return
-  }
-  let id = c.id("chat-outline")
-  let stint = c.page_stint()
-  match thread {
-    Some(th) if shown => c.on_press(id, fn() { open_outline(src, r, th, current(), from=Of(id), side=Left, stint~) })
-    _ => ()
-  }
-  @sf.tip(c, "chat-outline", id, @sf.t("web-main.keymap.chat.outline"), shortcut="chat.outline")
-  c.layer(fn() {
-    float_box(c, right, lift, fn() {
-      let b = c.box(style=if c.hovered(id) { float_button_hot } else { float_button }, id~, fn() {
-        @sf.icon(c, "list", size=float_icon, color=p.text) |> ignore
-      })
-      c.semantics(b, Button, id~, label=@sf.t("web-main.outline.title"))
-      match room_anim {
-        Some((a, target)) => c.look_by(b, fn() { { ..look, dy: look.dy + target - a.get(c) } })
-        None => c.look(b, look)
-      }
-      @motion.leaving(c, b, shown)
-      b
-    })
-  })
-  |> ignore
-}
-
-///|
-/// Chat `r`'s ways into its outline on its page (chat_list's, an old view's, `lay_w` wide as it is laid out, `list` its
-/// rows): its rail where the page leaves it room (the outline asked for then), else its round button over the way to
-/// the newest while that shows (`jump`); neither in a replay of a run from before (Source's `asks_outline`); its keys.
-/// Whether the round button shows.
-fn outline_entries_of(
-  c : @ui.Ctx,
-  src : Source,
-  r : ChatRef,
-  v : ChatView,
-  key : String,
-  list : Array[Entry],
-  lay_w : Double,
-  jump : Bool,
-  top : Double,
-  room : Double,
-  room_anim? : (@motion.Anim, Double)? = None,
-) -> Bool {
-  let k = chat_key(r)
-  // (offered where the outline may be asked for: not in a replay of a run from before, whose app had none)
-  let offered = (src.asks_outline)()
-  let wide = rail_fits(lay_w)
-  // where the reader is, as the list's first row in view and its end (built again only as those change)
-  let (first, list_at_end) = outline_place(c.list_info_as(key, outline_place))
-  let at_end = list_at_end && !v.newer
-  let top_seq = {
-    let mut s = -1.0
-    if first >= 0 {
-      let mut i = first
-      while i < list.length() && s < 0.0 {
-        match list[i] {
-          Said(m) => s = m.seq
-          _ => ()
-        }
-        i += 1
-      }
-    }
-    reader_top(reading_of(k), v, s)
-  }
-  let railed = match v.thread {
-    Some(th) if wide && offered => {
-      let value = src.topic("chatOutline", outline_params(r, th)).get().value
-      let latest = v.messages.fold(init=-1.0, fn(m, x) { if x.seq > m { x.seq } else { m } })
-      outline_rail(c, src, r, th, value, top_seq, at_end, latest, top, room, room_anim~)
-    }
-    _ => false
-  }
-  let floated = offered && jump && v.thread is Some(_)
-  if floated {
-    outline_entries[k] = (c.id("chat-outline"), railed, false)
-  } else if railed {
-    outline_entries[k] = (c.id("chat-outline-rail"), true, true)
-  } else {
-    outline_entries.remove(k) |> ignore
-  }
-  outline_float(
-    c,
-    src,
-    r,
-    v.thread,
-    fn() { outline_current(said_now(src, r, v), top_seq, at_end) },
-    floated,
-    float_right(c),
-    room + float_lift + float_above,
-    room_anim~,
-  )
-  // (a screen's fixture: opened from what shows, once the frame's builds are over)
-  match outline_presets.get(k) {
-    Some(words) if railed || floated => {
-      outline_presets.remove(k) |> ignore
-      let stint = c.page_stint()
-      c.tell("outline/preset/" + k, fn() { outline_open_keys(src, r, v, stint~, typed=words) |> ignore })
-    }
-    _ => ()
-  }
-  // its keys (keymap.ts's chat group): the outline, the message a person said before and after
-  c.key_context("Chat")
-  let stint = c.page_stint()
-  // (none of them in a replay of a run from before the outline, whose app had none: `offered`)
-  c.on_action("chat.outline", fn() {
-    guard offered && v.thread is Some(_) else { return false }
-    // (what asks the core told outside the build, at the key's moment: Ctx::tell)
-    c.tell("chat.outline/" + k, fn() { outline_open_keys(src, r, v, stint~) |> ignore })
-    true
-  })
-  c.on_action("chat.said.prev", fn() { offered && said_go(src, r, v, -1) })
-  c.on_action("chat.said.next", fn() { offered && said_go(src, r, v, 1) })
-  floated
-}
-
-///|
-/// Where the reader is as a chat's list stands (Ctx::list_info_as's: built again only as this changes): its first row
-/// in view (-1 none) and whether it is at its end.
-fn outline_place(i : @ui.ListInfo?) -> (Int, Bool) {
-  match i {
-    Some(i) => (i.first, i.at_end)
-    None => (-1, true)
-  }
-}

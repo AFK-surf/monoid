@@ -327,7 +327,7 @@ pub fn OpenTabMeta::to_j(self : OpenTabMeta) -> J {
 /// The new tab an `openTab` line asks for: its address and what links it to the tab that asked (None: no such line).
 pub fn open_tab_of(m : J) -> (String, OpenTabMeta)? {
   let str_of = (k : String) => match at(Some(m), k) {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     _ => ""
   }
   let url = str_of("openTab")
@@ -591,8 +591,8 @@ fn FarviewView::new(screen : FarviewScreen, link : FrameLink, o : ViewOptions, g
     let mv = Some(m)
     screen.heard(m)
     match (at(mv, "copied"), v.copied) {
-      (Some(Str(u)), Some((_, f))) if u.length() > 0 && utf8(@jsjson.text(u)).length() <= clip_text_max =>
-        f({ type_: "text", text: @jsjson.text(u) })
+      (Some(Str(u)), Some((_, f))) if u.length() > 0 && utf8(@jsjson.sanitize_str(u)).length() <= clip_text_max =>
+        f({ type_: "text", text: @jsjson.sanitize_str(u) })
       _ => ()
     }
     match at(mv, "changed") {

@@ -12,8 +12,8 @@ import { log } from "../ops/log.ts";
 import { nowSecs } from "../ops/files.ts";
 import { version } from "../ops/version.ts";
 import { type Cloud as CloudState, MODE_PENDING_S, isRevocation, joinedOf, joinedPendingPath, pendingLockPath, rigGrantsPath, rigsOf, waysSaidOf } from "./state.ts";
-import { type Entry, asEntry, entryHash, fold } from "./lock.ts";
-import { hashOf } from "./log-keep.ts";
+import { type Entry, asEntry, entryHash, fold } from "../../../shared/lock.ts";
+import { hashOf } from "../../../shared/log-keep.ts";
 import type { StationKey } from "./key.ts";
 import type { CloudSaid } from "./plane.ts";
 import { type ProviderSpec, signedHeaders } from "./provider.ts";
@@ -302,7 +302,7 @@ export function planeTeller(s: CloudState, send: (frame: unknown) => void, open:
   const asked = new Set<string>();
   const askPending = () => {
     if (!open()) return;
-    for (const ws of pendingAsks(s, asked)) send({ type: "lock.get", after: -1, workspace: ws });
+    for (const ws of pendingAsks(s, asked)) send(ws === null ? { type: "lock.get", after: -1 } : { type: "lock.get", after: -1, workspace: ws });
   };
   const tell = () => {
     for (const m of s.memberships()) {
@@ -410,6 +410,7 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
       && (keptThere || ((was.joined ?? []).some((j) => j.workspace === body.workspace) && !joinedOf(body.workspaces).some((j) => j.workspace === was.workspace)))
       && s.succeed(body.workspace);
     const locked = s.chain() !== null;
+    const wrongHome = locked && s.state !== null && typeof body.workspace === "string" && body.workspace !== s.state.workspace && !took;
     if (locked && s.state && ((typeof body.workspace === "string" && body.workspace !== s.state.workspace && !took) || (typeof body.origin === "string" && body.origin !== s.state.origin))) {
       log.warn("lock", "the control plane moves this station; the workspace lock keeps it where it is", { workspace: body.workspace, origin: body.origin });
     }
@@ -423,6 +424,12 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
       for (const k of ["workspace", "workspace_name", "name", "origin", "relay_url"] as const) {
         if (locked && (k === "origin" || (k === "workspace" && !took))) continue;
         if (typeof body[k] === "string") st[k] = body[k];
+      }
+      if (!wrongHome) {
+        if (typeof body.workspace_emoji === "string" && body.workspace_emoji !== "") st.workspace_emoji = body.workspace_emoji;
+        else delete st.workspace_emoji;
+        if (typeof body.workspace_icon === "string" && body.workspace_icon !== "") st.workspace_icon = body.workspace_icon;
+        else delete st.workspace_icon;
       }
       if (Array.isArray(body.relay_urls)) st.relay_urls = body.relay_urls.filter((u: unknown) => typeof u === "string");
       st.mesh_relays = meshRelays;
@@ -495,8 +502,17 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
 /// there, not asked for on this connection (`asked`, kept by it). The plane tells the station it joined (a `state`
 /// frame) before it answers the join, so that frame came before joining wrote which lock to pin and asked for nothing:
 /// the station took none of that workspace's members until a later frame, which may not come for days (2026-10-23).
-export function pendingAsks(s: CloudState, asked: Set<string>): string[] {
-  const out: string[] = [];
+///
+/// The home workspace's (null) too, where a lock to pin was named there since the plane's last frame (a rig its
+/// person took in naming the workspace's lock, rig/module.ts `#added`, FB-45): asked for at once, not at the next
+/// frame, which may not come for days.
+export function pendingAsks(s: CloudState, asked: Set<string>): (string | null)[] {
+  const out: (string | null)[] = [];
+  const home = s.chain(null) === null && (s.planeLockSeq ?? -1) >= 0 ? pendingLock(s.data) : null;
+  if (home !== null && !asked.has(`/${home}`)) {
+    asked.add(`/${home}`);
+    out.push(null);
+  }
   for (const j of s.state?.joined ?? []) {
     if (s.leftOut(j.workspace) !== "pending" || (s.planeLockSeqs.get(j.workspace) ?? -1) < 0) continue;
     const key = `${j.workspace}/${s.pendingLock(j.workspace)}`;

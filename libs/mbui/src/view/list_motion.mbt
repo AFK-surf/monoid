@@ -381,3 +381,8 @@ pub let wheel_notch : Int = 32
 ///|
 /// A trackpad's pinch (ui's wheel_mod_pinch, in a wheel's `mods`): what zooms takes it, no list scrolls by it.
 pub let wheel_pinch : Int = 16
+
+///|
+/// A trackpad's momentum wheel (phase kind 3 on native macOS: fingers lifted, OS coasting): added to a wheel's `mods`
+/// alongside `wheel_notch` so handlers can tell finger input from coasting.
+pub let wheel_momentum : Int = 64

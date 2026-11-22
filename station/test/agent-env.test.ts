@@ -92,6 +92,23 @@ test("what the station starts gets its variables over its own environment, scrub
   assert.equal(cleanEnv([]).HTTPS_PROXY, process.env.HTTPS_PROXY);
 });
 
+test("the launcher's front socket is never given to what the station starts, from its environment or agentEnv", (t) => {
+  t.after(() => readAgentEnvFrom(() => null));
+  const saved = process.env.STILLFAIL_MESH_FRONT;
+  t.after(() => {
+    if (saved === undefined) delete process.env.STILLFAIL_MESH_FRONT;
+    else process.env.STILLFAIL_MESH_FRONT = saved;
+  });
+  process.env.STILLFAIL_MESH_FRONT = "/data/run/front.sock";
+  readAgentEnvFrom(() => null);
+  assert.equal(startEnv().STILLFAIL_MESH_FRONT, undefined);
+  assert.equal(cleanEnv([]).STILLFAIL_MESH_FRONT, undefined);
+  readAgentEnvFrom(() => ({ agentEnv: { STILLFAIL_MESH_FRONT: "/elsewhere/front.sock" } }));
+  assert.equal(startEnv().STILLFAIL_MESH_FRONT, undefined);
+  // The station itself still reads it.
+  assert.equal(process.env.STILLFAIL_MESH_FRONT, "/data/run/front.sock");
+});
+
 /// A proxy that notes each CONNECT: tunnelled to `to` (a port on this machine) when given, else turned away.
 async function proxy(t: { after(f: () => void): void }, to?: number) {
   const asked: { to: string; auth: string | undefined }[] = [];

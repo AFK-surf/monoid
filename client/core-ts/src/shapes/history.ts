@@ -4,6 +4,7 @@ import { map, opt, struct, tagged, vec, type Shape } from "./dsl.ts";
 export const HISTORY_SHAPES: Record<string, Shape> = {
   Session: struct([
     ["key", "String"],
+    ["conv", opt("String"), { doc: "The anchor session key of the conversation this session belongs to, when different from its own key." }],
     ["connect", opt("String")],
     ["scope", opt("String"), { doc: "thread | all" }],
     ["title", opt("String"), { said: true }],
@@ -36,6 +37,7 @@ export const HISTORY_SHAPES: Record<string, Shape> = {
     ["titleText", "String", { said: true }],
     ["agentText", "String", { said: true }],
     ["modelName", opt("String"), { said: true, doc: "Its model as people call it (Opus 5.5)." }],
+    ["modelShort", opt("String"), { said: true, doc: "Shortened model name for tight spaces when shorter than `modelName` (Neon for Gemini 4 Neon)." }],
     ["maker", opt("Maker")],
     ["runtimeText", "String"],
     ["processText", opt("String")],
@@ -130,6 +132,7 @@ export const HISTORY_SHAPES: Record<string, Shape> = {
     ["text", "String"],
     ["level", "Level"],
     ["unknown", opt("bool"), { doc: "Its whole is not known (a context whose window the runtime does not tell): `text` alone." }],
+    ["compacted", opt("String"), { doc: "A context's: how often its runtime session compacted it (当前会话已压缩 3 次), said in the panel its tile opens; absent where never yet." }],
   ]),
   AgentCardNote: struct([
     ["text", "String", { said: true }],
@@ -270,6 +273,7 @@ export const HISTORY_SHAPES: Record<string, Shape> = {
     ["place", opt("Place")],
     ["block", "bool"],
     ["failed", "bool"],
+    ["unsent", "bool", { doc: "Held back as a message the agent had not read came first, and never sent after: it did not reach the chat." }],
     ["ends", opt("String"), { doc: "The state it ended its turn in: `done` or `human` (waiting on a person); absent for a progress post." }],
   ], { doc: "A message the agent posted: where to, whether it ended its work blocked, whether it failed." }),
   HistoryMark: struct([

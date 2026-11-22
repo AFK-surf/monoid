@@ -1,4 +1,4 @@
-// ⌘F's bar made once as nodes (find_bar_node.mbt) drawn as the old view's find_bar draws it, at the end of a bar's row
+// ⌘F's bar made once as nodes (find_bar_node.mbt), drawn as the old view's find_bar drew it, at the end of a bar's row
 // as wide as a chat's bar is, with what is before it keeping its own width: what it did not look in, its field, its
 // count and its buttons, each state of what the core said; its field giving way down to its least where the row has
 // little room.
@@ -58,32 +58,7 @@ fn find_state(state : String, typed : String) -> Unit {
 }
 
 ///|
-/// The old view's bar in a row `w` wide, `before` kept before it, as `state` says.
-fn find_old(w : Double, before : Double, state : String, typed : String) -> @ui.Tester {
-  @sf.set_words(@sfbase.fill)
-  let src = @sffixture.fixture("chat")
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        c.box(style=find_row(w), fn() {
-          c.box(style=@ui.style(w=Fixed(before), min_w=Fixed(before)), fn() {  }) |> ignore
-          find_bar(c, src, find_chat_ref, find_thread, find_list_none())
-        })
-        |> ignore
-      })
-    },
-    w=w + find_past,
-    h=120.0,
-    platform=0,
-  )
-  find_state(state, typed)
-  t.run_for(@ui.move_most_ms)
-  t
-}
-
-///|
-/// The nodes' bar in the same row.
+/// The nodes' bar in a row `w` wide, `before` kept before it, as `state` says.
 fn find_new(w : Double, before : Double, state : String, typed : String) -> @ui.Tester {
   @sf.set_words(@sfbase.fill)
   let src = @sffixture.fixture("chat")
@@ -112,11 +87,11 @@ fn find_new(w : Double, before : Double, state : String, typed : String) -> @ui.
 }
 
 ///|
-/// What `t` draws: its words (place, size, how seen) and the rectangles it draws, one a line.
+/// What `t` shows: its words (place, size, how seen) and its buttons (what each says, where it is), one a line.
 fn find_drawn(t : @ui.Tester) -> String {
   t.words().map(fn(w) { "\{w.0}@\{w.1},\{w.2} \{w.3}x\{w.4} a\{w.5}" }).join("\n") +
   "\n" +
-  t.drawn_rects().map(fn(r) { "\{r.0},\{r.1} \{r.2}x\{r.3} \{r.4}" }).join("\n")
+  t.all(Button).map(fn(b) { "[\{b.label}] \{Repr(b.rect)}" }).join("\n")
 }
 
 ///|
@@ -124,7 +99,8 @@ fn find_drawn(t : @ui.Tester) -> String {
 let find_past : Double = 40.0
 
 ///|
-test "⌘F's bar made once as nodes is drawn as the old view's: what it did not look in, its field, its count and buttons, each state of what the core said; its field giving way first where the row has little room" {
+test "⌘F's bar made once as nodes: what it did not look in, its field, its count and buttons, each state of what the core said; its field giving way first where the row has little room" {
+  let shown = []
   for c in [
     ("typed, nothing said yet", 200.0, "typed", "截图"),
     ("nothing typed", 200.0, "typed", ""),
@@ -136,12 +112,8 @@ test "⌘F's bar made once as nodes is drawn as the old view's: what it did not 
     ("squeezed: what it did not look in gone, its field near its least", 560.0, "partial", "截图"),
   ] {
     let (name, before, state, typed) = c
-    let old = find_old(760.0, before, state, typed)
-    let was = find_drawn(old)
-    let was_said = old.all(Button).map(fn(b) { (b.label, b.rect) })
     let t = find_new(760.0, before, state, typed)
-    assert_eq(find_drawn(t), was, msg=name)
-    assert_eq(t.all(Button).map(fn(b) { (b.label, b.rect) }), was_said, msg=name)
+    shown.push("== \{name}\n" + find_drawn(t))
     // (squeezed near its field's least: the old bar's note cut to nothing in its box (find_note_box, clip), and what is
     // typed left 29 across by its count and buttons, drawn so by both; the old view held words to no rule, the nodes'
     // audit says them: those two, and only there; reported, 2026-11-11)
@@ -160,5 +132,56 @@ test "⌘F's bar made once as nodes is drawn as the old view's: what it did not 
     assert_eq(known.length(), if before >= 560.0 { 2 } else { 0 }, msg="\{name}: \{Repr(known)}")
     assert_eq(faults, [], msg="\{name}: \{Repr(faults)}")
   }
+  // (as the old view's find_bar drew it, each state, before it went: compared side by side till then)
+  inspect(shown.join("\n"), content=(
+    #|== typed, nothing said yet
+    #|在对话中查找@228,12.5 221x20 a1
+    #|[上一个] (451, 9.5, 26, 26)
+    #|[下一个] (479, 9.5, 26, 26)
+    #|[关闭查找] (507, 9.5, 26, 26)
+    #|== nothing typed
+    #|在对话中查找@228,12.5 221x20 a1
+    #|[上一个] (451, 9.5, 26, 26)
+    #|[下一个] (479, 9.5, 26, 26)
+    #|[关闭查找] (507, 9.5, 26, 26)
+    #|== found: which of how many
+    #|在对话中查找@228,12.5 189x20 a1
+    #|2/3@425,13.5 18x18 a1
+    #|[上一个] (451, 9.5, 26, 26)
+    #|[下一个] (479, 9.5, 26, 26)
+    #|[关闭查找] (507, 9.5, 26, 26)
+    #|== none found
+    #|在对话中查找@228,12.5 171x20 a1
+    #|无结果@407,13.5 36x18 a1
+    #|[上一个] (451, 9.5, 26, 26)
+    #|[下一个] (479, 9.5, 26, 26)
+    #|[关闭查找] (507, 9.5, 26, 26)
+    #|== found in part of the chat
+    #|仅搜索了已加载的 10 条，共 40 条@216,13.5 192x18 a1
+    #|在对话中查找@428,12.5 189x20 a1
+    #|1/3@625,13.5 18x18 a1
+    #|[上一个] (651, 9.5, 26, 26)
+    #|[下一个] (679, 9.5, 26, 26)
+    #|[关闭查找] (707, 9.5, 26, 26)
+    #|== the rest being read
+    #|仅搜索了已读取的 10 条，正在读取其余内容@216,13.5 229.71428571428572x18 a1
+    #|在对话中查找@465.7142857142857,12.5 207.28571428571428x20 a1
+    #|[上一个] (675, 9.5, 26, 26)
+    #|[下一个] (703, 9.5, 26, 26)
+    #|[关闭查找] (731, 9.5, 26, 26)
+    #|== squeezed: its field narrower
+    #|在对话中查找@548,12.5 93x20 a1
+    #|2/3@649,13.5 18x18 a1
+    #|[上一个] (675, 9.5, 26, 26)
+    #|[下一个] (703, 9.5, 26, 26)
+    #|[关闭查找] (731, 9.5, 26, 26)
+    #|== squeezed: what it did not look in gone, its field near its least
+    #|仅搜索了已加载的 10 条，共 40 条@576,13.5 16x18 a1
+    #|在对话中查找@612,12.5 29x20 a1
+    #|1/3@649,13.5 18x18 a1
+    #|[上一个] (675, 9.5, 26, 26)
+    #|[下一个] (703, 9.5, 26, 26)
+    #|[关闭查找] (731, 9.5, 26, 26)
+  ))
   find_close()
 }

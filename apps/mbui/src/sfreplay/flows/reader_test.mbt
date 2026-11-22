@@ -32,7 +32,7 @@ test "98-reader" {
     // the toast's time shown, then its way out
     f.run_for(@sfapp.toast_ms)
     f.t.draw()
-    f.run_to(fn() { @kit.toast_rest("toast") })
+    f.run_to(fn() { @sf.toast_rest("toast").unwrap_or(-1.0) })
     f.end()
   })
 }

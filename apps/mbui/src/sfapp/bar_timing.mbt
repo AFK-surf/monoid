@@ -39,23 +39,8 @@ fn bar_placed(from : String, place : String) -> Unit {
 }
 
 ///|
-/// The page at the stack's root built (page_view): the place switched to, told once the frame's builds are over.
-fn bar_built(c : @ui.Ctx, page : Page) -> Unit {
-  match (bar_timing.val, bar_timed.val, place_of(page)) {
-    (Some(t), Some(p), Some(q)) if p == q =>
-      c.after_build("bar-timing", fn() {
-        if bar_timed.val == Some(p) {
-          bar_timed.val = None
-          (t.built)(p)
-        }
-      })
-    _ => ()
-  }
-}
-
-///|
-/// A page made once at the stack's root (narrow_made_as's place), its page `page`: told built as bar_built tells one,
-/// as it is made and as the place is switched to it again (place_switch said), at that change's moment.
+/// A page made once at the stack's root (narrow_made_as's place), its page `page`: told built once the place is switched
+/// to it (place_switch said), at that change's moment.
 fn bar_built_node(v : @view.View, page : () -> Page) -> Unit {
   v.reacts(fn() {
     place_switch.said()

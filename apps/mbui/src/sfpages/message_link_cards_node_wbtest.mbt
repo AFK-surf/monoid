@@ -65,15 +65,12 @@ fn lc_cases() -> Array[(String, Message, Bool, String)] {
 }
 
 ///|
-test "a link's card over a message's words, made once as nodes, is drawn as the old view's: not yet, open (what it holds, where), still a moment after the pointer left, gone" {
+test "a link's card over a message's words, made once as nodes: not yet, open (what it holds, where), still a moment after the pointer left, gone" {
   for c in lc_cases() {
-    let old = said_old_row(760.0, c.1)
-    let was = lc_seen(old, c.3)
     let t = if c.2 { ag_new_row(760.0, fn() { c.1 }) } else { said_new_row(760.0, fn() { c.1 }) }
     let now = lc_seen(t, c.3)
-    assert_true(was[1] != was[0], msg="\{c.0}: the old one's card opens")
-    assert_eq(was[3], was[0], msg="\{c.0}: the old one's card gone")
-    assert_eq(now, was, msg=c.0)
+    assert_true(now[1] != now[0], msg="\{c.0}: card opens")
+    assert_eq(now[3], now[0], msg="\{c.0}: card gone")
   }
 }
 

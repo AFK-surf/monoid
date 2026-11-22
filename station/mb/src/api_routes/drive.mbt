@@ -19,18 +19,7 @@ pub impl Show for DriveErr with output(self, logger) {
 
 ///|
 fn drive_status(code : String) -> Int32 {
-  match code {
-    "invalid_request" => 400
-    "not_a_root" | "not_found" => 404
-    "path_escape" | "protected" | "permission" => 403
-    "is_a_directory"
-    | "not_a_directory"
-    | "exists"
-    | "upload_lost"
-    | "no_trash" => 409
-    "too_large" => 413
-    _ => 500
-  }
+  @drive.code_status(code)
 }
 
 ///|
@@ -53,16 +42,7 @@ const GRANT_MS : Double = 604800000.0
 
 ///|
 fn base_name(p : String) -> String {
-  // node:path basename (POSIX), no suffix
-  let mut end = p.length()
-  while end > 0 && p.unsafe_charcode_at(end - 1) == '/' {
-    end -= 1
-  }
-  let trimmed = p.unsafe_substring(start=0, end~)
-  match trimmed.rev_find("/") {
-    Some(at) => trimmed.unsafe_substring(start=at + 1, end=trimmed.length())
-    None => trimmed
-  }
+  @nodepath.basename("/", p)
 }
 
 ///|

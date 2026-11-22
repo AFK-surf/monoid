@@ -70,7 +70,7 @@ test "the folder's count matches its visible entries" {
   assert_eq(more.length(), 1)
   let (x, y, w, h) = more[0].rect
   t.tap(x + w / 2.0, y + h / 2.0)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap_text("显示隐藏文件")
   t.run_for(@ui.move_most_ms)
   assert_true(t.find(".草稿缓存") is Some(_), msg="hidden files are shown")
@@ -219,7 +219,7 @@ test "a narrow folder's row held with a finger: what can be done to it in a shee
   assert_false(@sf.presenting())
   let (x, y) = rightmost(m, "季度数据.csv")
   m.right_click(x, y)
-  m.run_for(@kit.presence_in_ms)
+  m.run_for(@motion.presence_in_ms)
   assert_true(@sf.presenting())
   // (beside the pointer)
   let (_, ry) = m.find("重命名").unwrap()
@@ -297,23 +297,23 @@ test "a wide folder's rows: the ⋯ of a row under the pointer, its menu beside 
     assert_eq(more.length(), 1, msg=at)
     let (bx, by, bw, bh) = more[0].rect
     t.tap(bx + bw / 2.0, by + bh / 2.0)
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     assert_true(@sf.presenting(), msg=at)
     assert_true(t.find("重命名") is Some(_), msg=at)
     @sf.close_presented()
-    t.run_for(@kit.presence_out_ms)
+    t.run_for(@motion.presence_out_ms)
     if platform == 0 {
       // a right click on a row: its menu alone (not the folder's too, under it), Escape closing it
       let before = @sf.last_presented()
       t.right_click(x, y)
-      t.run_for(@kit.presence_in_ms)
+      t.run_for(@motion.presence_in_ms)
       assert_eq(@sf.last_presented(), before + 1, msg=at)
       t.key(@ui.key_escape)
-      t.run_for(@kit.presence_out_ms)
+      t.run_for(@motion.presence_out_ms)
       assert_false(@sf.presenting(), msg=at)
       // a right click under the rows: the folder's menu, at the pointer
       t.right_click(x, 760.0)
-      t.run_for(@kit.presence_in_ms)
+      t.run_for(@motion.presence_in_ms)
       assert_true(t.find("按名称排列") is Some(_), msg=at)
       let (_, my) = t.find("按名称排列").unwrap()
       assert_true(my > 400.0, msg=at)
@@ -325,7 +325,7 @@ test "a wide folder's rows: the ⋯ of a row under the pointer, its menu beside 
 test "a wide folder's station button: the stations beside it, the one shown 当前, one away 离线, under what picking one does" {
   let t = files_page_tester(1280.0, 800.0, 0)
   t.click(Button, label="换 station")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(@sf.presenting())
   assert_true(t.find("尽量打开同一个文件夹 · 按住 ⌥ 在新标签打开") is Some(_), msg="what picking does")
   assert_true(t.find("当前") is Some(_))
@@ -353,7 +353,7 @@ test "a phone's folder: a name changed in place, its row kept in view over the s
   t.release(x, y)
   sheet_rested(t, "sf-present")
   t.tap_text("重命名")
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   // the keyboard up: the window laid out above it, as the host lays it out
   t.set_ime_inset(keyboard_h)
   t.resize(390.0, 844.0 - keyboard_h)
@@ -732,7 +732,7 @@ test "添加到收藏's stations: under what it says, one under another, 离线 
 }
 
 ///|
-test "前往文件夹's Tab, drawn after the row it puts in, on a key's cap: edged 1 in the line's colour" {
+test "前往文件夹's Tab, drawn after the row it puts in, on a key's cap: edged 0.5 in the line's colour" {
   let t = files_page_tester(1280.0, 800.0, 0)
   t.key(@ui.key_of_char('g'), mods=@ui.mod_cmd + @ui.mod_shift_key)
   t.run_for(@ui.move_most_ms)
@@ -740,7 +740,7 @@ test "前往文件夹's Tab, drawn after the row it puts in, on a key's cap: edg
   t.run_for(@ui.move_most_ms)
   guard t.words().search_by(fn(w) { w.0 == "Tab" }) is Some(i) else { fail("no Tab drawn") }
   let (_, x, y, w, h, _) = t.words()[i]
-  assert_eq(edge_round(t, x + w / 2.0, y + h / 2.0), (1.0, @ui.tree_theme().color(Line)))
+  assert_eq(edge_round(t, x + w / 2.0, y + h / 2.0), (0.5, @ui.tree_theme().color(Line)))
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
 }
@@ -763,4 +763,33 @@ fn edge_round(t : @ui.Tester, x : Double, y : Double) -> (Double, Int64) {
     Some((_, w, c)) => (w, c)
     None => (0.0, 0L)
   }
+}
+
+///|
+/// 大屏's files' sidebar in a window shorter than its places scrolls down to its last row: the list under the band no
+/// taller than the room left it (as tall as its rows, it overflowed the sidebar and scrolled only as far as the band).
+test "files sidebar scrolls to its last place in a short window" {
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=360.0, platform=0)
+  app.nav.replace(Files)
+  @sfpages.nav_open("ws1/st1")
+  @sfpages.nav_open("ws1/st2")
+  t.run_for(@ui.move_most_ms)
+  // the sidebar's last row's words: the bottom of the sidebar's words, where they are drawn
+  let last_bottom = fn() {
+    let mut b = 0.0
+    for w in t.words() {
+      if w.1 > 80.0 && w.1 < 296.0 && w.5 > 0.0 {
+        b = @cmp.maximum(b, w.2 + w.4)
+      }
+    }
+    b
+  }
+  assert_true(last_bottom() > 360.0)
+  for _ in 0..<6 {
+    t.wheel_phase(250.0, 200.0, 120.0, 4)
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_true(last_bottom() <= 360.0, msg="the sidebar's last row ends at \{last_bottom()}, under the window's 360")
 }

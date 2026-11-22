@@ -52,13 +52,7 @@ fn digits_at(s : String, i : Int) -> String {
 ///|
 /// Where `word` is in `s` from `from`, or -1.
 fn index_of(s : String, word : String, from~ : Int = 0) -> Int {
-  if from > s.length() {
-    return -1
-  }
-  match js_slice(s, from).find(word) {
-    Some(i) => i + from
-    None => -1
-  }
+  @jsjson.js_index_of(s, word, from~)
 }
 
 ///|
@@ -509,8 +503,7 @@ async fn PhoneDisplays::start(
     raise fail_("the phone did not say its screen's size")
   }
   let scid = {
-    let n = w.ask("random.int", [ji(1), ji(0x7fffffff)])
-    let hex = num_of(Some(n)).unwrap_or(1.0).to_int().to_string(radix=16)
+    let hex = random_int(1, 0x7fffffff).to_string(radix=16)
     "0".repeat(@cmp.maximum(0, 8 - hex.length())) + hex
   }
   // Kept on the phone for the next (the link to it may carry 0.1 MB/s): put again when it is not the same.
@@ -518,9 +511,10 @@ async fn PhoneDisplays::start(
   let there = js_num(
     js_trim(shell("stat -c %s \{jar} 2>/dev/null") catch { _ => "" }),
   )
-  let size = num_of(Some(w.ask("fs.size", [js(self.file)]))).unwrap_or(
-    @double.not_a_number,
-  )
+  let size = match w.fs_stat(self.file) {
+    Some(st) => st.size
+    None => raise fail_("ENOENT: no such file or directory, stat '\{self.file}'")
+  }
   if there != size {
     ignore(run(["push", self.file, jar]))
   }

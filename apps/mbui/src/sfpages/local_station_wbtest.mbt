@@ -265,3 +265,30 @@ test "本机 Station moving its data, its disk not connected, a move that did no
   t.run_for(@settings.local_read_ms)
   assert_true(t.find("移动没有完成，数据仍在原处：sh: not found") is Some(_))
 }
+
+///|
+test "a station's security code read off its id as the core reads it (lock-form.ts `shortCodeOf`, station/test/cli-lock-code.test.ts), nothing for what is no id" {
+  assert_eq(station_short_code("0000000000000000000000000000000000000000000000000000000000000000"), "3EL-E55")
+  assert_eq(station_short_code("a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"), "5XC-L6N")
+  assert_eq(station_short_code("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), "D4A-K4W")
+  assert_eq(station_short_code(""), "")
+  assert_eq(station_short_code("0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"), "")
+  assert_eq(station_short_code("0123456789abcdef"), "")
+}
+
+///|
+test "本机 Station in a workspace says its security code in its facts, to check a rig by in safe mode (FB-45); removed from it, none" {
+  let in_ws : String =
+    #|{"data":"~/.stillfail","runner":"service","version":"0.1.4600","service":{"kind":"launchd","name":"fail.still.station"},"workspace":{"id":"ws1","name":"星火工作室","stationName":"Willow","station":"0000000000000000000000000000000000000000000000000000000000000000","removed":false}}
+  for case in page_cases {
+    let (w, platform) = case
+    let t = setting_tester(LocalStation, w, platform~, host=fn(h) { h.set_app_said("local_station", in_ws) })
+    let at = "\{w} platform \{platform}"
+    assert_true(t.find("安全码：3EL-E55") is Some(_), msg=at)
+    assert_eq(t.squeeze_faults(), [], msg=at)
+  }
+  let removed : String =
+    #|{"data":"~/.stillfail","runner":"none","workspace":{"id":"ws1","name":"星火工作室","stationName":"Willow","station":"0000000000000000000000000000000000000000000000000000000000000000","removed":true}}
+  let t = setting_tester(LocalStation, 1280.0, platform=0, host=fn(h) { h.set_app_said("local_station", removed) })
+  assert_true(t.find("安全码") is None)
+}

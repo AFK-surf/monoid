@@ -1,9 +1,9 @@
-// A machine's chips in a line (meter_line's, meter_chip's) as nodes of the window's tree: each whole, in words where
-// the line has the room for all of them, else all by their figures, one way for all; what each is over it while it is
-// pointed at, in the tips of the panel it is in.
+// A machine's chips in a line as nodes of the window's tree: each whole, in words where the line has the room for all
+// of them, else all by their figures, one way for all; what each is over it while it is pointed at, in the tips of the
+// panel it is in.
 
 ///|
-/// A machine's CPU, memory and disk (`meters`, as they are now) in `parent` (meter_line's): a line as wide as what holds
+/// A machine's CPU, memory and disk (`meters`, as they are now) in `parent`: a line as wide as what holds
 /// it, its chips 8 apart, each whole: in words (内存剩 9.2 G) where the line has the room for all of them, else all by
 /// their figures (内存 9.2G), never one cut short. Each says what it is over it while it is pointed at (MeterChips' tip:
 /// its name, how much of how much, a note) in the layer of tips the panel it is in is lent (panel_tips_lent; none
@@ -50,7 +50,7 @@ pub fn meter_line_node(
 }
 
 ///|
-/// A machine's CPU, memory or disk (`m`, as it is now) in `c` (meter_chip's): its mark and what is left, filled as far as
+/// A machine's CPU, memory or disk (`m`, as it is now) in `c`: its mark and what is left, filled as far as
 /// is used; while `figure` says, the figure alone with its unit's first letter at the chip's own size. What it is over it while
 /// pointed at, in `tips`.
 fn meter_chip_node(c : @view.View, m : () -> Json?, figure : () -> Bool, tips : TipLayer?) -> Unit {

@@ -52,7 +52,7 @@ test "kept as a host keeps it: an invitation's link, what it leads to, then join
   assert_eq(named(calls, "invitation.accept").length(), 1)
   assert_eq(app.picked.get(), "ws3")
   assert_true(toast_said(t, "已加入「新的工作室」"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("已加入「新的工作室」") is Some(_))
 }
 

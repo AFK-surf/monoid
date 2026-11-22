@@ -42,8 +42,8 @@ fn sheet_shows_panel(p : Presented) -> PanelOf {
         })
       })
     // (what it holds as it is now, where it is kept: given anew there whole, then told, presented_changed)
-    Menu(items, title, _) => menu_sheet_panel(serial, title, fn() { presented_items_of(serial, items) })
-    Pick(title, choices, chosen, choose, _, search) => {
+    Menu(items, title, _, _) => menu_sheet_panel(serial, title, fn() { presented_items_of(serial, items) })
+    Pick(title, choices, chosen, choose, _, _, search) => {
       let many = choices.length() >= pick_search_from
       sheet_nodes_panel(title, if many { sheet_long_pick } else { 0.0 }, fn(col, close) {
         sheet_pick_node(col, choices, chosen, p.line, many, search && many, fn(k) {
@@ -101,6 +101,7 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
       top: 0.0,
       most: None,
       flush: true,
+      head_end: None,
     },
   }
 }
@@ -199,7 +200,15 @@ let sheet_says_at : @ui.Style = @ui.css("w=Full gap=S2_5")
 #callsite(autofill(loc))
 fn sheet_actions_node(parent : @view.View, buttons : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(f) {
-    style_node(f, fn() { sheet_actions_at })
+    style_node(f, fn() {
+      let ft = (panel_in_of(f).round_foot)()
+      if ft > 0.001 {
+        let at = @ui.capsule_in(pane_corner, button_height())
+        sheet_actions_at.then(@ui.style(mr=room((at - sheet_panel_sides) * ft), mb=room((at - sheet_panel_foot) * ft)))
+      } else {
+        sheet_actions_at
+      }
+    })
     f.wraps(By(fn() { Some(ask_foot_lines()) }), reverse=true) |> ignore
     buttons(f)
   })

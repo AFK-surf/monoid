@@ -1,11 +1,12 @@
 // The features not yet everyone's are one registry, the core's (client/core-ts/src/features.ts `FEATURES`): the app
 // keeps none of its own, reading what the core and the stations say, and the app's made-up core
-// (apps/mbui/src/sffixture/fixture.mbt `fixture_experimental_features`) says the same experimental ids in the same order
-// with the same `betaOnly`. Every id is read where the product decides by it (not a switch nothing reads), each the
-// way its kind is decided: a station's (`station: true`) by the station's channel (`stationFeature`) and its overview
-// (`station_feature`), the device's own by the prefs (`featureEnabled`, `feature_from`, …); no code asks for an id the
-// registry no longer has (a feature graduated or dropped leaves no branch behind); each experimental one has its title
-// and description in both catalogs, and the catalogs keep no words of one gone. Prints what is not so, and fails then.
+// (apps/mbui/src/sffixture/fixture.mbt `fixture_experimental_features`, `fixture_beta_features`) says the same
+// experimental ids in the same order with the same `betaOnly`, and the same beta ids of the device's own. Every id
+// is read where the product decides by it (not a switch nothing reads), each the way its kind is decided: a
+// station's (`station: true`) by the station's channel (`stationFeature`) and its overview (`station_feature`), the
+// device's own by the prefs (`featureEnabled`, `feature_from`, …); no code asks for an id the registry no longer has
+// (a feature graduated or dropped leaves no branch behind); each experimental one has its title and description in
+// both catalogs, and the catalogs keep no words of one gone. Prints what is not so, and fails then.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,6 +27,18 @@ else {
   const core = ids.filter((id) => registry[id]!.stage === "experimental").map((id) => ({ id, betaOnly: registry[id]!.betaOnly === true }));
   if (JSON.stringify(app) !== JSON.stringify(core)) {
     faults.push(`${FIXTURE}'s fixture_experimental_features are not client/core-ts/src/features.ts's experimental FEATURES:\n  fixture: ${JSON.stringify(app)}\n  core:    ${JSON.stringify(core)}`);
+  }
+}
+
+// and its beta features of the device's own (`fixture_beta_features`, on as the made-up app is of the test channel) the
+// core's in the same order.
+const beta = /let fixture_beta_features[^=]*=\s*\[([^\]]*)\]/.exec(read(FIXTURE));
+if (beta === null) faults.push(`${FIXTURE}: no fixture_beta_features`);
+else {
+  const app = [...beta[1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+  const core = ids.filter((id) => registry[id]!.stage === "beta" && registry[id]!.station !== true);
+  if (JSON.stringify(app) !== JSON.stringify(core)) {
+    faults.push(`${FIXTURE}'s fixture_beta_features are not client/core-ts/src/features.ts's beta FEATURES of the device's own:\n  fixture: ${JSON.stringify(app)}\n  core:    ${JSON.stringify(core)}`);
   }
 }
 

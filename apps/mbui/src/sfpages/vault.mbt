@@ -59,12 +59,12 @@ pub fn vault_node(
       if vault_first_node(b, core, here, view, named_by, key, fn(s, quiet, sample) {
           let sample_by = s.keyed_by(fn() { items(sample, "vaults") }, vault_id)
           s.each(fn() { vault_library_keys(sample) }, fn(k) { k }, fn(sb, k) {
-            vault_library_block(sb, quiet, ws, fn() { sample }, sample_by, k.untracked())
+            vault_library_block(sb, quiet, here, fn() { sample }, sample_by, k.untracked())
           })
         }) {
         return
       }
-      vault_library_block(b, core, ws, fn() { shown.get() }, vaults_by, key)
+      vault_library_block(b, core, here, fn() { shown.get() }, vaults_by, key)
     },
   )
 }
@@ -99,11 +99,39 @@ fn vault_shown(v : Json?) -> Json? {
 }
 
 ///|
+/// Whether a vault row is a shared workspace vault.
+fn vault_is_workspace(rv : Json?) -> Bool {
+  text(rv, "scope") == "workspace"
+}
+
+///|
+/// Whether the viewer can manage a vault (its owner or a workspace admin on a workspace vault).
+fn vault_can_manage(rv : Json?) -> Bool {
+  flag(rv, "manages") || flag(rv, "mine")
+}
+
+///|
+/// Member subs of a vault row (`VaultRow.members` is `Array[{ sub, name }]` in core-ts; also accepts plain strings).
+fn vault_member_subs(rv : Json?) -> Array[String] {
+  items(rv, "members").filter_map(fn(x) {
+    match x {
+      String(s) if s != "" => Some(s)
+      Object(_) => {
+        let s = text(Some(x), "sub")
+        if s != "" { Some(s) } else { None }
+      }
+      _ => None
+    }
+  })
+}
+
+///|
 /// The library's blocks (Library) by their keys, as the core's `vaults` (`v`) says it: the requests waiting on the
 /// viewer ("requests", each one's card, as in its chat); none yet, a card to make one ("none"); a vault this device has
 /// no key to ("no-key/<vault>"), one waiting to be keyed anew ("waits/<vault>"), each a section under its name; a row
-/// to 全部密钥 on a card of its own ("all"); how its secrets are kept, on another ("kept"); deleting the viewer's own in red ("delete"); the stations that
-/// refused it ("refused/<n>").
+/// to 全部密钥 on a card of its own ("all"); a workspace vault creation card ("workspace-create") or workspace vault
+/// section ("workspace-vault/<vault>"); how personal secrets are kept, on another ("kept"); deleting manageable vaults
+/// in red ("delete"); the stations that refused it ("refused/<n>").
 fn vault_library_keys(v : Json?) -> Array[String] {
   let plain = flag(v, "plain")
   let vaults = items(v, "vaults")
@@ -126,12 +154,20 @@ fn vault_library_keys(v : Json?) -> Array[String] {
       out.push("waits/" + text(Some(row), "id"))
     }
   }
-  // what it keeps (the profiles' accounts, the vaults' secrets), a page of its own on a card of its own; then how it
-  // keeps them, on another
+  // what it keeps (the profiles' accounts, the vaults' secrets), a page of its own on a card of its own; then workspace
+  // vault creation or settings; then how personal secrets are kept, on another
   out.push("all")
+  if !plain && flag(v, "canCreateWorkspace") {
+    out.push("workspace-create")
+  }
+  for row in vaults {
+    if !plain && vault_is_workspace(Some(row)) {
+      out.push("workspace-vault/" + text(Some(row), "id"))
+    }
+  }
   out.push("kept")
-  // deleting a vault of the viewer's own, in red at the page's foot, asked first (what goes with it said)
-  if !plain && vaults.iter().any(fn(x) { flag(Some(x), "mine") }) {
+  // deleting a manageable vault, in red at the page's foot, asked first (what goes with it said)
+  if !plain && vaults.iter().any(fn(x) { vault_can_manage(Some(x)) }) {
     out.push("delete")
   }
   // the stations that refused the library: not in security mode, or too old for it
@@ -146,11 +182,12 @@ fn vault_library_keys(v : Json?) -> Array[String] {
 fn vault_library_block(
   b : @view.View,
   core : Core,
-  ws : () -> String,
+  here : () -> Here,
   v : () -> Json?,
   vaults : @signals.KeyedList[String, Json],
   key : String,
 ) -> Unit {
+  let ws = fn() { here().workspace }
   let vault_of = fn(id : String) { fn() { vaults.get(id) } }
   match key {
     "requests" => {
@@ -190,14 +227,46 @@ fn vault_library_block(
     "all" =>
       // what it keeps (the profiles' accounts, the vaults' secrets), a page of its own
       @sf.group_node(b, fn(g) { @sf.link_row_node(g, fn() { @sf.t("web-pages.vault.all") }, fn() { (core.push)(VaultItems) }) })
-    "kept" => vault_kept_node(b, core, ws, v)
-    "delete" =>
-      @sf.group_node(b, fn(g) {
-        let mine = fn() { items(v(), "vaults").filter(fn(x) { flag(Some(x), "mine") }) }
-        g.each(fn() { mine().map(fn(r) { text(Some(r), "id") }) }, fn(id) { id }, fn(row, id) {
-          vault_delete_row_node(row, core, ws, vault_of(id.untracked()), fn() { items(v(), "vaults").length() > 1 })
+    "workspace-create" =>
+      @sf.page_card_node(b, footed=true, fn(k) {
+        @sf.card_lines_node(
+          k,
+          fn() { @sf.t("web-pages.vault.workspaceVault") },
+          note=fn() { @sf.t("web-pages.vault.workspaceCreateNote") },
+        )
+        @sf.card_foot_node(k, fn(f) {
+          @sf.button_node(
+            f,
+            fn() { @sf.t("web-pages.vault.workspaceCreate") },
+            fn() {
+              @settings.act(
+                core,
+                @sf.t("web-pages.vault.workspaceCreateWhat"),
+                "vault.create",
+                obj([
+                  ("workspace", str(@signals.untracked(ws))),
+                  ("name", str(@sf.t("web-pages.vault.workspaceVault"))),
+                  ("scope", str("workspace")),
+                ]),
+                done=@sf.t("web-pages.vault.workspaceCreated"),
+              )
+            },
+            tone=Primary,
+            busy=fn() { is_doing(core, ["vault.create"], [("workspace", ws())]) },
+            card_words=true,
+          )
+          |> ignore
         })
       })
+    "kept" => vault_kept_node(b, core, here, v)
+    "delete" =>
+      @sf.group_node(b, fn(g) {
+        let manageable = fn() { items(v(), "vaults").filter(fn(x) { vault_can_manage(Some(x)) }) }
+        g.each(fn() { manageable().map(fn(r) { text(Some(r), "id") }) }, fn(id) { id }, fn(row, id) {
+          vault_delete_row_node(row, core, ws, vault_of(id.untracked()), fn() { manageable().length() > 1 })
+        })
+      })
+    k if k.has_prefix("workspace-vault/") => vault_workspace_node(b, core, here, vault_of(k.exact_view(start=16).to_owned()))
     k if k.has_prefix("no-key/") => vault_no_key_node(b, core, ws, vault_of(k.exact_view(start=7).to_owned()))
     k if k.has_prefix("waits/") => vault_waits_node(b, vault_of(k.exact_view(start=6).to_owned()))
     k if k.has_prefix("refused/") => {
@@ -218,6 +287,30 @@ fn vault_library_block(
 }
 
 ///|
+/// A shared workspace vault section under its name: shared members row (opens member management dialog),
+/// authorized devices row, and default longest approval row (when the viewer can manage the vault).
+fn vault_workspace_node(b : @view.View, core : Core, here : () -> Here, rv : () -> Json?) -> Unit {
+  let ws = fn() { here().workspace }
+  @sf.section_node(b, fn() { text(rv(), "name") }, fn(s) {
+    @sf.group_node(s, fn(g) {
+      @sf.link_row_node(
+        g,
+        fn() { @sf.t("web-pages.vault.members.title") },
+        fn() { vault_members_dialog(core, @signals.untracked(here), @signals.untracked(rv)) },
+        note=fn() {
+          let n = vault_member_subs(rv()).length()
+          @sf.t("web-pages.vault.members.count", args=[("n", n.to_string())])
+        },
+      )
+      vault_devices_row_node(g, core, here, rv, fn() { false })
+      g.show(fn() { vault_can_manage(rv()) }, fn(l) {
+        vault_lasts_row_node(l, core, ws, rv)
+      })
+    })
+  })
+}
+
+///|
 /// What a request waiting on the viewer asks (vault_request's Asked), from its row in the core's `vaults`.
 fn vault_request_asked(rv : Json?) -> Asked {
   let save = field(rv, "save")
@@ -235,6 +328,9 @@ fn vault_request_asked(rv : Json?) -> Asked {
     command: text(rv, "command"),
     how_text: text(rv, "howText"),
     save_kind: text(save, "kind"),
+    save_vault_name: text(save, "vaultName"),
+    save_shared: flag(save, "shared"),
+    save_targets: [],
     username: text(save, "username"),
     filename: text(save, "filename"),
     typed: flag(save, "typed"),
@@ -245,6 +341,19 @@ fn vault_request_asked(rv : Json?) -> Asked {
     new_about: text(field(rv, "describe"), "about"),
     was_about: text(field(rv, "describe"), "wasAbout"),
     remove: flag(rv, "remove"),
+    browse: field(rv, "browse") is Some(_),
+    browse_hint: text(field(rv, "browse"), "workspace"),
+    browse_workspaces: {
+      let n = count(rv, "browseWorkspaces")
+      if n > 0 { n } else { count(field(rv, "browse"), "workspaces") }
+    },
+    browse_items: {
+      let n = count(rv, "browseItems")
+      if n > 0 { n } else { count(field(rv, "browse"), "items") }
+    },
+    cross_workspace: text(field(rv, "cross"), "workspace"),
+    cross_workspace_name: text(field(rv, "cross"), "workspaceName"),
+    cross_vault_name: text(field(rv, "cross"), "vaultName"),
   }
 }
 
@@ -277,7 +386,8 @@ fn vault_request_node(card : @view.View, core : Core, ws : () -> String, row : (
 /// viewer's secrets lasts where a secret says none (its choices, each with what it means, through the presenters); the
 /// devices holding each vault's key (given to new ones from its end). A row that does something does it pressed,
 /// saying what at its end (vault_do_row_node); what is not as it should be said in amber.
-fn vault_kept_node(b : @view.View, core : Core, ws : () -> String, v : () -> Json?) -> Unit {
+fn vault_kept_node(b : @view.View, core : Core, here : () -> Here, v : () -> Json?) -> Unit {
+  let ws = fn() { here().workspace }
   let plain = fn() { flag(v(), "plain") }
   let vaults = fn() { items(v(), "vaults") }
   // (which of its rows show, as `v` says now: plain; or sealed, opened, those left in plain text)
@@ -322,14 +432,15 @@ fn vault_kept_node(b : @view.View, core : Core, ws : () -> String, v : () -> Jso
         },
       )
     })
-    let mine = fn() { vaults().iter().find_first(fn(r) { flag(Some(r), "mine") }) }
+    let personal = fn() { vaults().filter(fn(x) { !vault_is_workspace(Some(x)) }) }
+    let mine = fn() { personal().iter().find_first(fn(r) { flag(Some(r), "mine") }) }
     g.show(fn() { mine() is Some(_) }, fn(l) { vault_lasts_row_node(l, core, ws, mine) })
     // (by id once: each device's row reads its own vault, told only as that one changes)
-    let by_id = g.keyed_by(vaults, fn(r) { text(Some(r), "id") })
+    let by_id = g.keyed_by(personal, fn(r) { text(Some(r), "id") })
     g.each(fn() { if plain() { [] } else { by_id.keys() } }, fn(id) { id }, fn(row, id) {
       let id = id.untracked()
-      vault_devices_row_node(row, core, ws, fn() { by_id.get(id) }, fn() {
-        vaults().length() > 1
+      vault_devices_row_node(row, core, here, fn() { by_id.get(id) }, fn() {
+        personal().length() > 1
       })
     })
   })
@@ -397,44 +508,28 @@ fn vault_lasts_row_node(g : @view.View, core : Core, ws : () -> String, mine : (
 
 ///|
 /// The devices holding a vault's key (`rv`, as it is now; its name where there are more than one, `many`) in `row`:
-/// how many, under it; where some new ones have none yet, how many, in amber, given it from its end by its owner's
-/// device holding it.
-fn vault_devices_row_node(row : @view.View, core : Core, ws : () -> String, rv : () -> Json?, many : () -> Bool) -> Unit {
+/// opens the per-device authorization dialog (`vault_devices_dialog`) instead of blindly authorizing all pending devices.
+fn vault_devices_row_node(row : @view.View, core : Core, here : () -> Here, rv : () -> Json?, many : () -> Bool) -> Unit {
   let id = fn() { text(rv(), "id") }
   let title = fn() { if many() { text(rv(), "name") } else { @sf.t("android-settings.vault.devices") } }
   let missing = fn() { count(rv(), "missing") }
   row.pick(
-    fn() {
-      if missing() == 0 {
-        0
-      } else if !(flag(rv(), "mine") && flag(rv(), "keyed")) {
-        1
-      } else {
-        2
-      }
-    },
-    fn(p, how) {
-      match how {
-        0 =>
-          @sf.link_row_node(p, title, fn() {  }, note=fn() { @sf.t("web-pages.vault.devicesHold", args=[("n", count(rv(), "devices").to_string())]) }, goes=false)
-        1 =>
-          @sf.link_row_node(p, title, fn() {  }, note=fn() { @sf.t("web-pages.vault.missing", args=[("n", missing().to_string())]) }, lacks=true, goes=false)
-        // (given it from its owner's device holding it)
-        _ =>
-          vault_do_row_node(
-            p,
-            title,
-            fn() { @sf.t("web-pages.vault.missing", args=[("n", missing().to_string())]) },
-            fn() { @sf.t("web-pages.vault.addDevice") },
-            fn() { is_doing(core, ["vault.addDevice"], [("workspace", ws()), ("vault", id())]) },
-            lacks=true,
-            fn() {
-              vault_act(core, @signals.untracked(ws), "addDevice", [("vault", str(@signals.untracked(id)))], @sf.t("web-pages.vault.addDeviceWhat"), done=@sf.t(
-                "web-pages.vault.addedDevice",
-              ))
-            },
-          )
-      }
+    fn() { missing() > 0 },
+    fn(p, has_missing) {
+      @sf.link_row_node(
+        p,
+        title,
+        fn() { vault_devices_dialog(core, @signals.untracked(here), @signals.untracked(id)) },
+        note=fn() {
+          if has_missing {
+            @sf.t("web-pages.vault.missing", args=[("n", missing().to_string())])
+          } else {
+            @sf.t("web-pages.vault.devicesHold", args=[("n", count(rv(), "devices").to_string())])
+          }
+        },
+        lacks=has_missing,
+        goes=true,
+      )
     },
   )
 }
@@ -446,7 +541,13 @@ fn vault_delete_row_node(row : @view.View, core : Core, ws : () -> String, rv : 
   let on = fn() { [("workspace", ws()), ("vault", text(rv(), "id"))] }
   @sf.link_row_node(
     row,
-    fn() { @sf.t("web-pages.vault.deleteVault") + (if many() { " · " + text(rv(), "name") } else { "" }) },
+    fn() {
+      if many() {
+        @sf.t("web-pages.vault.deleteNamed", args=[("name", text(rv(), "name"))])
+      } else {
+        @sf.t("web-pages.vault.deleteVault")
+      }
+    },
     fn() {
       if !is_doing(core, ["vault.delete"], @signals.untracked(on)) {
         // (as the core says it now, how many items it keeps with it)
@@ -469,9 +570,25 @@ fn vault_delete_row_node(row : @view.View, core : Core, ws : () -> String, rv : 
 /// how to get one; 申请授权 (`vault.ask`: this device's certificate published anew, so the owner's devices are prompted for
 /// the key, or give it at once where one holds it unsealed) and the recovery words typed where they can give it one.
 fn vault_no_key_node(b : @view.View, core : Core, ws : () -> String, rv : () -> Json?) -> Unit {
+  let this_code = fn() { text((core.topic)("vaults", { "workspace": str(ws()) }).get().value, "thisDeviceCode") }
   @sf.section_node(b, fn() { text(rv(), "name") }, fn(s) {
     @sf.page_card_node(s, footed=true, fn(k) {
       @sf.card_lines_node(k, fn() { @sf.t("android-settings.vault.noKey") }, note=fn() { @sf.t("android-settings.vault.noKeyHow") })
+      k.show(fn() { this_code() != "" }, fn(c) {
+        @sf.style_node(c, fn() { vt_code_box })
+        c
+        .words_runs(
+          By(fn() {
+            [
+              @ui.span(@sf.t("web-pages.vault.thisDeviceCodeLabel"), color=@sf.theme().p.muted),
+              @ui.span(this_code(), mono=true, bold=true, color=@sf.theme().p.text),
+              @ui.span(@sf.t("web-pages.vault.thisDeviceCodeHint"), color=@sf.theme().p.muted),
+            ]
+          }),
+          look=@ui.style_words(@sf.meta.then(@sf.full_words)),
+        )
+        |> ignore
+      })
       @sf.card_foot_node(k, fn(f) {
         @sf.button_node(
           f,
@@ -502,7 +619,7 @@ fn vault_no_key_node(b : @view.View, core : Core, ws : () -> String, rv : () -> 
 fn vault_waits_node(b : @view.View, rv : () -> Json?) -> Unit {
   let note = fn() {
     let station = text(rv(), "waits")
-    if flag(rv(), "mine") {
+    if vault_can_manage(rv()) {
       @sf.t("web-pages.vault.waits.mine", args=[("station", station)])
     } else {
       @sf.t("web-pages.vault.waits.theirs", args=[("owner", text(rv(), "ownerName")), ("station", station)])
@@ -530,13 +647,20 @@ fn vault_setup(core : Core, ws : String) -> Unit {
 fn vault_delete_ask(core : Core, ws : String, rv : Json?) -> Unit {
   let id = text(rv, "id")
   let n = count(rv, "items")
+  let body = if vault_is_workspace(rv) {
+    if n > 0 {
+      @sf.t("web-pages.vault.deleteWorkspaceBody", args=[("n", n.to_string())])
+    } else {
+      @sf.t("web-pages.vault.deleteWorkspaceEmpty")
+    }
+  } else if n > 0 {
+    @sf.t("web-pages.vault.deleteVaultBody", args=[("n", n.to_string())])
+  } else {
+    @sf.t("web-pages.vault.deleteVaultEmpty")
+  }
   confirm(
     @sf.t("web-pages.vault.deleteTitle", args=[("name", text(rv, "name"))]),
-    if n > 0 {
-      @sf.t("web-pages.vault.deleteVaultBody", args=[("n", n.to_string())])
-    } else {
-      @sf.t("web-pages.vault.deleteVaultEmpty")
-    },
+    body,
     @sf.t("common.delete"),
     danger=true,
     fn() { vault_act(core, ws, "delete", [("vault", str(id))], @sf.t("web-pages.vault.deleteWhat"), done=@sf.t("web-pages.vault.deleted")) },
@@ -578,6 +702,11 @@ let vt_glyph : Double = 16.0
 pub let vt_actions : @ui.Style = @ui.css("row w=Full gap=S2 pt=S1 align=ACenter")
 
 ///|
+/// Full-width wrapper for the device verification code line on the no-key card.
+// kept across runs: a value (no field of it changes)
+let vt_code_box : @ui.Style = @ui.css("w=Full")
+
+///|
 /// 全部密钥's field: over its list, as wide as its card, 10 above it.
 // kept across runs: a value (no field of it changes)
 let vt_find : @ui.Style = @ui.css("w=Full pb=S2_5")
@@ -592,18 +721,12 @@ let vt_requests : @ui.Style = @ui.css("w=Full gap=S2_5 pb=S2_5")
 let vt_listed_side : Double = 6.0
 
 ///|
-/// The recovery words (Words): three to a row, 10 apart; each its number (the code face 12, subtle, 24 wide at its
-/// end) 8 before it (the code face 15).
-// kept across runs: a value (no field of it changes)
-let vt_words : @ui.Style = @ui.css("w=Full pt=S1 gap=S2_5")
+/// The recovery words (Words): three to a row when room fits (two when large words outgrow three), 10 apart between
+/// rows, 4 over; each its number (the code face 12, subtle, 24 wide at its end) 8 before it (the code face 15).
+let vt_words_top : Double = 4.0
 
 ///|
-// kept across runs: a value (no field of it changes)
-let vt_words_row : @ui.Style = @ui.css("row w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let vt_word : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S2, align=AEnd)
+let vt_words_row_gap : Double = 10.0
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -648,22 +771,19 @@ pub fn vault_items_node(
     width?,
     tips?,
     actions=fn(a) {
-      a.show(usable, fn(s) {
-        s.box(fn(k) {
-          let add = fn() {
-            let (x, y, w, h) = k.placed_window_now()
-            vault_add(core, @signals.untracked(here), from=At(x, y, w, h))
-          }
-          @sf.page_action_node(k, "plus", fn() { @sf.t("web-pages.vault.add") }, add) |> ignore
-          // (a fixture's mode's 添加, from this one, at the moment the page is made: laid out by then, so it stands beside
-          // it as when it is pressed)
-          if fx_vault_add_up.val {
-            fx_vault_add_up.val = false
-            k.laid_before_causes()
-            k.at_moment(k.logic_at(), add) |> ignore
-          }
-        })
-        |> ignore
+      a.show(usable, fn(k) {
+        let add = fn() {
+          let (x, y, w, h) = k.placed_window_now()
+          vault_add(core, @signals.untracked(here), from=At(x, y, w, h))
+        }
+        @sf.page_action_node(k, "plus", fn() { @sf.t("web-pages.vault.add") }, add) |> ignore
+        // (a fixture's mode's 添加, from this one, at the moment the page is made: laid out by then, so it stands beside
+        // it as when it is pressed)
+        if fx_vault_add_up.val {
+          fx_vault_add_up.val = false
+          k.laid_before_causes()
+          k.at_moment(k.logic_at(), add) |> ignore
+        }
       })
     },
     fn() { blocks.get() },
@@ -682,7 +802,8 @@ pub fn vault_items_node(
 /// What 密钥 and 全部密钥 show before the library, by their keys, as the core's `vaults` (`v`) says where the viewer
 /// stands: the recovery words to write down ("words"); waiting for the core ("waiting"); a web page's names
 /// ("read-only", then "named/<vault>" each); what has to come first ("personal-lock": no safe mode, this device to be
-/// approved by another trusted device of theirs; "not-signer": in safe mode; "off"), or, not
+/// approved by another trusted device of theirs; "not-signer": in safe mode; "off": not set up here, no vault of theirs
+/// on anywhere), or, not
 /// signing for another reason than its not being trusted (the core's `stateText`), this device verified once by a press
 /// ("confirm-signer": its `confirmText`) or the members still syncing ("lock-waiting"). None where the library is there
 /// to be used (in plain text on the station, or locked, signed and set up here).
@@ -700,7 +821,10 @@ fn vault_first_keys(ws : String, v : Json?) -> Array[String]? {
     // theirs whatever the workspace; in safe mode, 安全 is where a device is approved)
     Some(_) if !flag(v, "canSign") && !flag(v, "locked") => Some(["personal-lock"])
     Some(_) if !flag(v, "canSign") => Some(["not-signer"])
-    Some(_) if !flag(v, "setUp") => Some(["off"])
+    // (not set up here while a vault of theirs is on already, on another device of theirs: the core sets this one up by
+    // itself, or 申请授权 does, so the library shows, the vault under its name with no key here yet; 开启 only where
+    // the person has none)
+    Some(_) if !flag(v, "setUp") && items(v, "vaults").is_empty() => Some(["off"])
     Some(_) => None
   }
 }
@@ -836,29 +960,24 @@ fn vault_words_node(b : @view.View, ws : () -> String) -> Unit {
       words=fn() { @sf.t("android-settings.vault.wordsWhy") },
       note=fn() { @sf.t("android-settings.vault.wordsOnce") },
     )
-    k.box(fn(all) {
-      @sf.style_node(all, fn() { vt_words })
-      all.each(fn() { Array::makei((words().length() + 2) / 3, fn(r) { r }) }, fn(r) { r }, fn(line, r) {
-        line.box(fn(l) {
-          @sf.style_node(l, fn() { vt_words_row })
-          for i in 0..<3 {
-            let at = fn() { r.get() * 3 + i }
-            l.box(fn(w) {
-              @sf.style_node(w, fn() { vt_word }, in_row=true)
-              w.show(fn() { at() < words().length() }, fn(s) {
-                s.row(Is(true)).gap(Is(vt_word_gap)).lines_up(Is(Some(End))) |> ignore
-                s.box(fn(n) {
-                  @sf.style_node(n, fn() { vt_word_number })
-                  @sf.mono_line_node(n, fn() { (at() + 1).to_string() }, Meta, fn() { @sf.theme().p.subtle })
-                })
-                |> ignore
-                @sf.mono_line_node(s, fn() { words().get(at()).unwrap_or("") }, Body, fn() { @sf.theme().p.text })
-              })
-            })
-            |> ignore
-          }
+    k.by_room(fn(all, given) {
+      all.row(Is(true)).wraps(Is(Some(vt_words_row_gap))).padding(Is((0.0, vt_words_top, 0.0, 0.0))) |> ignore
+      let cell_w = fn() {
+        all.words_redone() |> ignore
+        let room = given.width()
+        let body_sz = @sf.node_sp(all, @ui.tree_theme().text_size(Body).0)
+        let need = 24.0 + vt_word_gap + body_sz * 4.2
+        let cols = if room >= 3.0 * need { 3 } else { 2 }
+        (room / cols.to_double()).floor()
+      }
+      all.each(fn() { Array::makei(words().length(), fn(i) { i }) }, fn(i) { i }, fn(w, i) {
+        w.row(Is(true)).gap(Is(vt_word_gap)).lines_up(Is(Some(End))).width(By(fn() { Some(cell_w()) })).shrink(Is(0.0)) |> ignore
+        w.box(fn(n) {
+          @sf.style_node(n, fn() { vt_word_number })
+          @sf.mono_line_node(n, fn() { (i.get() + 1).to_string() }, Meta, fn() { @sf.theme().p.subtle })
         })
         |> ignore
+        @sf.mono_line_node(w, fn() { words().get(i.get()).unwrap_or("") }, Body, fn() { @sf.theme().p.text })
       })
     })
     |> ignore
@@ -1369,6 +1488,7 @@ fn named_rows_node(g : @view.View, list : () -> Array[Json]) -> Unit {
 fn vt_group_mark_node(parent : @view.View, group : String) -> Unit {
   match group {
     "key" => @sf.icon_node(parent, "key", vt_glyph, By(fn() { @sf.theme().p.text })) |> ignore
+    "service" => @sf.provider_logo_node(parent, "", "service", vt_glyph, "") |> ignore
     // signed in to an account: its provider's
     "kimi" => @sf.provider_logo_node(parent, "claude", "api-provider", vt_glyph, "kimi") |> ignore
     "opencode" => @sf.provider_logo_node(parent, "claude", "opencode-go", vt_glyph, "") |> ignore

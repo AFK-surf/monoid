@@ -65,8 +65,7 @@ fn is_str(v : Json?, max? : Int = 100000) -> Bool {
 ///|
 /// What JS's `trim` takes away: white space and line ends.
 fn js_space(c : Int) -> Bool {
-  (c >= 9 && c <= 13) || c == 32 || c == 0xa0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200a) || c == 0x2028 ||
-  c == 0x2029 || c == 0x202f || c == 0x205f || c == 0x3000 || c == 0xfeff
+  @jsjson.is_js_space(c)
 }
 
 ///|
@@ -412,4 +411,14 @@ pub fn PlainStore::put(self : PlainStore, i : Json) -> Unit raise DbError {
       [f("ws").unwrap_or(Json::null()), f("id").unwrap_or(Json::null()), f("owner").unwrap_or(Json::null()), f("version").unwrap_or(Json::null()), s(stringify(kept))],
     ),
   )
+}
+
+///|
+/// A snapshot as the vault's stores give it to the routes (vault/store.ts `{value, body}`: api_routes vault.mbt reads
+/// `value` and `body`), or null where nothing is held.
+pub fn snapshot_json(s : (Json, String)?) -> Json {
+  match s {
+    Some((value, body)) => { "value": value, "body": Json::string(body) }
+    None => Json::null()
+  }
 }

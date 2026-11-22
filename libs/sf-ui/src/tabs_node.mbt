@@ -42,6 +42,8 @@ pub fn[K : Eq] tabs_node(
   }
   parent.box(made_for=loc, fn(col) {
     style_node(col, fn() { tabs_column })
+    let panel_way = @motion.NodeWay::new(1.0)
+    let panel_dir : Ref[Double] = Ref(1.0)
     // its tab list (a row as wide as where it is, its track as wide as its tabs)
     col.box(fn(line) {
       style_node(line, fn() { tabs_line })
@@ -76,40 +78,146 @@ pub fn[K : Eq] tabs_node(
             x
           }
           // (where the bar or the capsule is along the strip and how wide: off from where it set out to the chosen
-          // tab's place and width together as that changes, on move_spring; the words' size changed, there at once)
-          let first = place_of(@signals.untracked(chosen))
-          let cover : @signals.Signal[(Array[(Int, Double)], Int)] = @signals.signal(([(first, 1.0)], first))
-          let way = @motion.NodeWay::new(1.0)
-          strip.reacts(chosen, fn(k) {
-            let to_k = place_of(k)
-            let (from, to) = cover.untracked()
-            if to_k != to {
-              let p = way.value_at(strip.cause_at())
-              cover.set((@ui.cover_set_out(from, to, p), to_k))
-              way.go_from(strip, 0.0, 1.0, @motion.move_spring)
+          // tab's place and width together as that changes, on snappy_damped; the words' size changed, there at once)
+          let tab_h_now = fn() {
+            strip.words_redone() |> ignore
+            let tl = @ui.tree_theme().text_line
+            let line = theme().t.ui * (if tl > 0.0 { tl } else { 1.4 })
+            dmax(tab_h, node_sp(strip, line).ceil() + 2.0 * 2.0)
+          }
+          let n = tabs.length()
+          let last_f = if n > 1 { (n - 1).to_double() } else { 0.0 }
+          let init_idx = place_of(@signals.untracked(chosen))
+          let dd = @lg.DampedDrag::new(init_idx.to_double(), lo=0.0, hi=last_f, held_scale=1.0 + seg_lens_grow)
+          dd.attach(strip)
+          let current = Ref(init_idx)
+          let strip_origin_x = Ref(0.0)
+          let pill_rect = fn(v : @view.View) -> (Double, Double, Double, Double)? {
+            guard n > 0 else { return None }
+            let h = tab_h_now()
+            guard n > 1 else { return Some((x_of(0), 0.0, w_of(0), h)) }
+            let p = dd.value(v)
+            let i = p.floor().to_int()
+            let a = if i < 0 { 0 } else if i > n - 2 { n - 2 } else { i }
+            let f = p - a.to_double()
+            let x0 = x_of(a)
+            let x1 = x_of(a + 1)
+            let w0 = w_of(a)
+            let w1 = w_of(a + 1)
+            Some((x0 + (x1 - x0) * f, 0.0, dmax(0.0, w0 + (w1 - w0) * f), h))
+          }
+          let pill_index_at = fn(lx : Double) -> Double {
+            if n <= 1 {
+              return 0.0
             }
-          })
-          let rect = fn() {
-            let (from, to) = cover.get()
-            @ui.cover_rect(from, to, way.shown(strip), fn(k) {
-              if k >= 0 && k < tabs.length() {
-                Some((x_of(k), 0.0, w_of(k), tab_h))
+            let mut from = x_of(0) + w_of(0) / 2.0
+            if lx <= from {
+              return 0.0
+            }
+            for k in 1..<n {
+              let to = x_of(k) + w_of(k) / 2.0
+              if lx < to && to > from {
+                return (k - 1).to_double() + dclamp((lx - from) / (to - from), 0.0, 1.0)
+              }
+              from = to
+            }
+            last_f
+          }
+          let rect = @motion.cover_indicator(
+            strip,
+            fn() { place_of(chosen()) },
+            fn(k) {
+              if k >= 0 && k < n {
+                Some((x_of(k), 0.0, w_of(k), tab_h_now()))
               } else {
                 None
               }
-            })
+            },
+            spec=@motion.snappy_damped,
+          )
+          let prev_idx = Ref(init_idx)
+          strip.reacts(chosen, at_start=false, fn(k) {
+            let to_k = place_of(k)
+            let from_k = prev_idx.val
+            prev_idx.val = to_k
+            if to_k != current.val {
+              current.val = to_k
+              if look is Pill {
+                dd.slide_to(to_k.to_double())
+              }
+            }
+            if to_k != from_k {
+              panel_dir.val = if to_k > from_k { 1.0 } else { -1.0 }
+              if !@ui.reduced_motion() {
+                panel_way.go_from(strip, 0.0, 1.0, @motion.tween(180.0, ease=Out))
+              }
+            }
+          })
+          let no_lens = fn() { !(look is Pill) || strip.glass_solid() || @ui.reduced_motion() }
+          let lens = fn() {
+            if no_lens() {
+              0.0
+            } else {
+              dd.pressed(strip)
+            }
+          }
+          let pill_stopped = fn() {
+            let to = dclamp(dd.target().round(), 0.0, last_f)
+            let i = to.to_int()
+            current.val = i
+            if no_lens() {
+              dd.slide_to(to)
+            } else {
+              dd.animate_to(to)
+            }
+            match tabs.get(i) {
+              Some((k, _)) => if k != @signals.untracked(chosen) { choose(k) }
+              None => ()
+            }
+          }
+          let on_pill_drag = fn(d : @view.Drag) {
+            match d.kind {
+              Down | Moved => {
+                let p = pill_index_at(d.wx - strip_origin_x.val)
+                if no_lens() {
+                  dd.slide_to(p)
+                } else {
+                  dd.update_value(p)
+                }
+              }
+              Up => pill_stopped()
+              Off => {
+                let orig = place_of(@signals.untracked(chosen))
+                current.val = orig
+                if no_lens() {
+                  dd.slide_to(orig.to_double())
+                } else {
+                  dd.cancel_to(orig.to_double())
+                }
+              }
+            }
           }
           strip.box(fn(mark) {
             mark
             .over(Is(true))
-            .offset(By(fn() {
-              let x = rect().map(fn(r) { r.0 }).unwrap_or(0.0)
-              match look {
-                Underline => (x, tab_h - tabs_bar_h)
-                Pill => (x, 0.0)
+            .points(Is(false))
+            .width(Is(Some(0.0)))
+            .ground_drawn(By(fn() {
+              let r = if look is Pill { pill_rect(mark) } else { rect() }
+              match r {
+                Some((x, _, w, _)) => {
+                  dx: x,
+                  dy: match look {
+                    Underline => tab_h_now() - tabs_bar_h
+                    Pill => 0.0
+                  },
+                  dw: w,
+                  dh: 0.0,
+                  corners: None,
+                }
+                None => @view.ground_as_laid
               }
             }))
-            .width(By(fn() { rect().map(fn(r) { r.2 }) }))
             |> ignore
             match look {
               Underline =>
@@ -120,23 +228,25 @@ pub fn[K : Eq] tabs_node(
                 |> ignore
               Pill =>
                 mark
-                .height(Is(Some(tab_h)))
-                .radius(Is(tab_h / 2.0))
+                .height(By(fn() { Some(tab_h_now()) }))
+                .radius(By(fn() { tab_h_now() / 2.0 }))
                 .ground(By(fn() { @ui.tree_theme().lifted }))
                 .edge(By(fn() { (0.5, theme().p.line) }))
                 .shadow(By(fn() { (1.0, 0.0, theme().p.shadow) }))
+                .alpha(By(fn() { seg_thumb_alpha(lens()) }))
                 |> ignore
             }
           })
           |> ignore
           for i, tab in tabs {
             let (key, words) = tab
+            let i_f = i.to_double()
             rg.item(strip, fn() { key }, words, made_for=loc, fn(o, item) {
               o
               .focus_ring_theme()
               .width(By(fn() { Some(w_of(i)) }))
-              .height(Is(Some(tab_h)))
-              .radius(Is(if look is Pill { tab_h / 2.0 } else { tabs_corner }))
+              .height(By(fn() { Some(tab_h_now()) }))
+              .radius(By(fn() { if look is Pill { tab_h_now() / 2.0 } else { tabs_corner } }))
               .lines_up(Is(Some(Middle)))
               .lies_along(Is(Middle))
               |> ignore
@@ -156,7 +266,14 @@ pub fn[K : Eq] tabs_node(
                   }
                 }))
                 .ink(By(fn() {
-                  if item.chosen() || (!item.disabled() && (item.hovered() || item.pressed())) {
+                  if look is Pill {
+                    let lit = dclamp(1.0 - (dd.value(w) - i_f).abs(), 0.0, 1.0)
+                    if !item.disabled() && item.hovered() && lit < 0.5 {
+                      theme().p.text
+                    } else {
+                      @ui.blend(theme().p.muted, theme().p.text, lit)
+                    }
+                  } else if item.chosen() || (!item.disabled() && (item.hovered() || item.pressed())) {
                     theme().p.text
                   } else {
                     theme().p.muted
@@ -165,8 +282,39 @@ pub fn[K : Eq] tabs_node(
                 |> ignore
               })
               |> ignore
+              if look is Pill {
+                o.gesture(
+                  @ui.touch_slop(),
+                  press=fn(d) {
+                    strip_origin_x.val = d.wx - (x_of(i) + d.x)
+                    if !no_lens() {
+                      dd.press()
+                    }
+                    if (i_f - dd.target()).abs() > 0.001 {
+                      if no_lens() {
+                        dd.slide_to(i_f)
+                      } else {
+                        dd.update_value(i_f)
+                      }
+                    }
+                  },
+                  tap=fn(_) { pill_stopped() },
+                  drag=on_pill_drag,
+                )
+                |> ignore
+              }
             })
             |> ignore
+          }
+          if look is Pill {
+            seg_lens_overlay_node(
+              strip,
+              lens,
+              tab_h_now,
+              fn() { pill_rect(strip) },
+              jelly=fn(l) { dd.jelly(l, 10.0) },
+              active=fn() { !no_lens() && dd.pressing() },
+            )
           }
         })
         |> ignore
@@ -190,7 +338,15 @@ pub fn[K : Eq] tabs_node(
           keep_mounted~,
           fn(p, shown) {
             style_node(p, fn() { tabs_panel })
-            p.laid_nowhere(By(fn() { !shown.selected() })) |> ignore
+            p
+            .laid_nowhere(By(fn() { !shown.selected() }))
+            .offset(By(fn() {
+              let q = panel_way.shown(p)
+              (panel_dir.val * 12.0 * (1.0 - q), 0.0)
+            }))
+            .alpha(By(fn() { panel_way.shown(p) }))
+            .carries_until(fn() { panel_way.ends_at() })
+            |> ignore
           },
           fn(p) { content(p, key) },
         )

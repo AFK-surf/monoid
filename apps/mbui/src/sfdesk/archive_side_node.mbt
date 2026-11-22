@@ -151,19 +151,18 @@ fn archive_pane_node(
     },
     make_reused=fn(b, key) {
       // (what its key is now, the last it was where it is gone from the list: told only as that changes)
-      let first = @signals.untracked(fn() { line_of(key()) })
       let mine = @signals.computed(fn(was) {
         match line_of(key()) {
           Some(_) as l => l
-          None => was.unwrap_or(first)
+          None => was.unwrap_or(None)
         }
       })
       let now = fn() { mine.get() }
       b.box(fn(line) {
         @sf.style_node(line, fn() { @sf.list_line(at) })
-        match first {
-          Some(Day(_)) => archive_day_side_node(line, at, now)
-          Some(Row(first, _)) => archive_row_line_node(line, src, tips, at, stint, first, now, key)
+        match b.reused_kind() {
+          Some(1) => archive_day_side_node(line, at, now)
+          Some(0) => archive_row_line_node(line, src, tips, at, stint, Json::null(), now, key)
           _ => ()
         }
       })
@@ -322,20 +321,14 @@ fn archive_row_side_node(
     // (its keys while pointed at in it, or one under way; none drawn for a finger, too small for one: its menu)
     let over = fn() { busy() || (!@sf.more_held() && @sf.lit_in_node(holder)) }
     // its ground as nav_ground_by has it: the pointer's eased in and out, the selected one's while its chat is in view
-    let hover = @motion.NodeWay::new(0.0)
-    let chosen = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-    row.reacts(fn() { @sf.lit_node(row) }, fn(h) { hover.go_ms(row, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
-    row.reacts(on, fn(o) { chosen.go_ms(row, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
     // (taken for another chat as it comes to show (archive_pane_node's reused): its ground as were it made for that one,
     // at once, not easing from the one it was)
-    row.reacts(key, at_start=false, fn(_) {
-      chosen.put(if @signals.untracked(on) { 1.0 } else { 0.0 })
-      hover.put(if @signals.untracked(fn() { @sf.lit_node(row) }) { 1.0 } else { 0.0 })
-    })
+    let hover = @motion.hover_fade_keyed(row, key, fn() { @sf.lit_node(row) }, duration_ms=@sf.dur_ms)
+    let chosen = @motion.hover_fade_keyed(row, key, on, duration_ms=@sf.dur_ms)
     let ground = fn() {
       let p = t().p
-      let h = hover.shown(row)
-      let o = chosen.shown(row)
+      let h = hover()
+      let o = chosen()
       if h <= 0.0 && o <= 0.0 {
         0L
       } else {
@@ -395,12 +388,9 @@ fn archive_row_side_node(
           })
           |> ignore
           // (its clock while pointed at; always to a finger, which hovers over nothing; how it was archived on its tip)
-          m.show(fn() { !@sf.pointer_rests() || @sf.lit_in_node(holder) }, fn(e) {
-            e.box(fn(clock) {
-              @sf.words_node(clock, fn() { text(v(), "clock") }, fn() { arch_clock }) |> ignore
-              @sf.tip_node(tips, clock, fn() { text(v(), "how") }, within=true) |> ignore
-            })
-            |> ignore
+          m.show(fn() { !@sf.pointer_rests() || @sf.lit_in_node(holder) }, fn(clock) {
+            @sf.words_node(clock, fn() { text(v(), "clock") }, fn() { arch_clock }) |> ignore
+            @sf.tip_node(tips, clock, fn() { text(v(), "how") }, within=true) |> ignore
           })
         })
       },

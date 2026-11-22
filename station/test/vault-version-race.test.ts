@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { Request } from "../src/api/request.ts";
-import type { LockState } from "../src/cloud/lock.ts";
+import type { LockState } from "../../shared/lock.ts";
 import { routes } from "../src/api/routes/vault.ts";
 import { previousExited } from "../src/ops/previous.ts";
 import { itemOk, itemSupersedes, signedBytes, TAG, vaultOk, vaultSupersedes, type Item, type Vault } from "../src/vault/crypto.ts";

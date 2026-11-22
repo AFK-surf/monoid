@@ -94,9 +94,21 @@ test "a row held for its menu: lifted over the menu's scrim, a card of the raise
     }
   }
   let raised = @sf.theme().p.raised
-  let cards = row_band_rects(t, y).filter(fn(e) { (e.1).4 == raised && (e.1).2 > 300.0 })
-  assert_true(cards.length() == 1, msg="one card of the raised ground: \{Repr(row_band_rects(t, y))}")
-  let (k, (cx, _, cw, _, _)) = cards[0]
+  let glass_cards : Array[(Int, (Double, Double, Double, Double))] = []
+  for k, o in order {
+    if o.0 == 6 && o.2 < y && o.2 + o.4 > y && o.3 > 300.0 && o.4 < 120.0 {
+      glass_cards.push((k, (o.1, o.2, o.3, o.4)))
+    }
+  }
+  let cards : Array[(Int, (Double, Double, Double, Double))] = if !glass_cards.is_empty() {
+    glass_cards
+  } else {
+    row_band_rects(t, y)
+    .filter(fn(e) { (e.1).4 == raised && (e.1).2 > 300.0 })
+    .map(fn(e) { (e.0, ((e.1).0, (e.1).1, (e.1).2, (e.1).3)) })
+  }
+  assert_true(cards.length() == 1, msg="one lifted card (liquid glass or solid raised): \{Repr(cards)}")
+  let (k, (cx, _, cw, _)) = cards[0]
   // drawn in from the screen's sides
   assert_true(cx > 1.0 && cx + cw < 389.0, msg="drawn in: \{cx} \{cw}")
   match scrim {
@@ -108,7 +120,11 @@ test "a row held for its menu: lifted over the menu's scrim, a card of the raise
   // its menu gone, it is let down: no card left
   t.tap(200.0, 60.0)
   t.run_for(@ui.move_most_ms * 2.0)
-  assert_true(row_band_rects(t, y).iter().all(fn(e) { (e.1).4 != raised }), msg="let down")
+  let down_glass = t
+    .drawn_order()
+    .iter()
+    .any(fn(o) { o.0 == 6 && o.2 < y && o.2 + o.4 > y && o.3 > 300.0 && o.4 < 120.0 })
+  assert_true(row_band_rects(t, y).iter().all(fn(e) { (e.1).4 != raised }) && !down_glass, msg="let down")
 }
 
 ///|
@@ -121,8 +137,19 @@ test "a row low in the list held for its menu: lifted clear of the sheet its men
   let (_, menu_y, _, _) = t.rect_of("重命名").unwrap()
   assert_true(y > menu_y - 40.0, msg="the row where the sheet comes up: \{y} against \{menu_y}")
   let raised = @sf.theme().p.raised
-  let cards = t.drawn_rects().filter(fn(r) { r.4 == raised && r.2 > 300.0 && r.3 < 120.0 })
+  let glass_cards = t
+    .drawn_order()
+    .filter(fn(o) { o.0 == 6 && o.3 > 300.0 && o.4 < 120.0 })
+    .map(fn(o) { (o.1, o.2, o.3, o.4) })
+  let cards = if !glass_cards.is_empty() {
+    glass_cards
+  } else {
+    t
+    .drawn_rects()
+    .filter(fn(r) { r.4 == raised && r.2 > 300.0 && r.3 < 120.0 })
+    .map(fn(r) { (r.0, r.1, r.2, r.3) })
+  }
   assert_true(cards.length() == 1, msg="its card: \{Repr(cards)}")
-  let (_, cy, _, ch, _) = cards[0]
+  let (_, cy, _, ch) = cards[0]
   assert_true(cy + ch + 12.0 <= menu_y, msg="clear of the sheet: card \{cy}+\{ch}, its menu at \{menu_y}")
 }

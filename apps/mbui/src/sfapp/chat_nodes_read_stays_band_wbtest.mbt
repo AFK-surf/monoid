@@ -22,7 +22,8 @@ fn rs_band_room(s : (String, Double, Double, Int)) -> Double {
 fn rs_band_by(t : @ui.Tester, s : (String, Double, Double, Int), by : Double) -> Unit {
   let (_, w, h, platform) = s
   if platform == 2 {
-    t.drag(w / 2.0, h * 0.5, w / 2.0, h * 0.5 - by, steps=30)
+    let steps = if by.abs() < 20.0 { 10 } else { 30 }
+    t.drag(w / 2.0, h * 0.5, w / 2.0, h * 0.5 - by, steps~)
   } else {
     t.move_to(w * 0.6, h / 2.0)
     t.wheel(w * 0.6, h / 2.0, by)

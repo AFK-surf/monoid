@@ -138,32 +138,13 @@ fn num(v : Json) -> Double {
 }
 
 ///|
-fn jnum(n : Double) -> Json {
-  Json::number(n)
+using @jsjson {
+  json_num as jnum, json_int as jint, json_str as jstr, json_bool as jbool, json_opt_str as jopt,
+  jval_of_json as of_json, stringify, jval_str_of as jtext, jval_obj as jobj,
 }
 
 ///|
-fn jint(n : Int) -> Json {
-  Json::number(n.to_double())
-}
-
-///|
-fn jstr(s : String) -> Json {
-  Json::string(s)
-}
-
-///|
-fn jbool(b : Bool) -> Json {
-  Json::boolean(b)
-}
-
-///|
-fn jopt(s : String?) -> Json {
-  match s {
-    Some(s) => Json::string(s)
-    None => Json::null()
-  }
-}
+using @readops {to_json}
 
 ///|
 fn text_of(v : Json) -> String? {
@@ -381,76 +362,28 @@ fn schema_version(db : @sql.Db) -> Int raise {
 /// `JSON.parse` of a column, or none where it is not text that parses (rows.ts `parsed`).
 fn parsed(v : Json) -> @jsjson.JValue? {
   match v {
-    String(s) => try Some(@jsjson.parse(s)) catch { _ => None }
+    String(s) => @jsjson.jval_try_parse(s)
     _ => None
   }
-}
-
-///|
-fn to_json(v : @jsjson.JValue) -> Json {
-  @readops.to_json(v)
-}
-
-///|
-/// A value as JavaScript holds it, from what SQLite or the line gave.
-fn of_json(v : Json) -> @jsjson.JValue {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(@jsjson.units(s))
-    Array(xs) => Arr(xs.map(of_json))
-    Object(m) => {
-      let fields = []
-      for k, x in m {
-        fields.push((@jsjson.units(k), of_json(x)))
-      }
-      Obj(fields)
-    }
-  }
-}
-
-///|
-/// `JSON.stringify`.
-fn stringify(v : @jsjson.JValue) -> String {
-  @jsjson.stringify(v)
 }
 
 ///|
 fn jget(v : @jsjson.JValue, k : String) -> @jsjson.JValue? {
-  match v {
-    Obj(_) => v.get(k)
-    _ => None
-  }
-}
-
-///|
-fn jtext(v : @jsjson.JValue?) -> String? {
-  match v {
-    Some(Str(s)) => Some(@jsjson.text(s))
-    _ => None
-  }
-}
-
-///|
-fn jobj(fields : Array[(String, @jsjson.JValue)]) -> @jsjson.JValue {
-  Obj(fields.map(f => (@jsjson.units(f.0), f.1)))
+  @jsjson.jval_at(Some(v), k)
 }
 
 ///|
 /// `{ ...v, [k]: x }`: `k` replaced where it is, else put last (JavaScript's spread keeps a key's first place).
 fn jset(v : @jsjson.JValue, k : String, x : @jsjson.JValue) -> @jsjson.JValue {
-  let key = @jsjson.units(k)
-  let fields : Array[(Array[Int], @jsjson.JValue)] = match v {
+  let fields : Array[(String, @jsjson.JValue)] = match v {
     Obj(fs) => fs.copy()
-    Arr(xs) => xs.mapi((i, x) => (@jsjson.units(i.to_string()), x))
-    Str(s) => s.mapi((i, c) => (@jsjson.units(i.to_string()), @jsjson.JValue::Str([c])))
+    Arr(xs) => xs.mapi((i, x) => (i.to_string(), x))
+    Str(s) => Array::makei(s.length(), i => (i.to_string(), @jsjson.JValue::Str(s.unsafe_substring(start=i, end=i + 1))))
     _ => []
   }
-  match fields.search_by(f => f.0 == key) {
-    Some(i) => fields[i] = (key, x)
-    None => fields.push((key, x))
+  match fields.search_by(f => f.0 == k) {
+    Some(i) => fields[i] = (k, x)
+    None => fields.push((k, x))
   }
   // JSON.parse of JSON.stringify puts integer-like keys first, as the object itself holds them
   @jsjson.parse(stringify(Obj(fields))) catch {

@@ -124,12 +124,17 @@ pub async fn router_reads(
           taken.map(m => {
             let mm = Some(m)
             let person = prop(mm, "person")
+            let card = match prop(mm, "card") {
+              Some(Obj(_) as c) => Some(c)
+              _ => None
+            }
             jo([
               ("seq", prop(mm, "n")),
               ("author_kind", prop(mm, "authorKind")),
               ("author", nullish(prop(person, "name"), nullish(prop(person, "email"), prop(mm, "author")))),
               ("text", prop(mm, "text")),
               ("at", prop(mm, "at")),
+              ("card", card),
             ])
           }),
         ),
@@ -313,7 +318,7 @@ async fn router_says_once(hub : RouterHub, stats : CommaStats, home : String?, w
         Num(written.n),
       ])
       let text = match prop(Some(entry), "text") {
-        Some(Str(u)) => utext(u)
+        Some(Str(u)) => u
         _ => raise fail_("the Router's recorded message is unavailable")
       }
       let current = (hub.thread_sessions)(written.thread)
@@ -335,7 +340,7 @@ async fn router_says_once(hub : RouterHub, stats : CommaStats, home : String?, w
       for row in rows {
         match prop(Some(row), "session") {
           Some(Str(u)) => {
-            let session = utext(u)
+            let session = u
             if members.contains(session) && !((hub.get_session)(session) is Null) {
               targets.push(session)
             }

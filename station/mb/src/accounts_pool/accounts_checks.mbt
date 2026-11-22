@@ -47,7 +47,7 @@ async fn Accounts::reset_fn(
   if self.given.reset_quota == "given" {
     return self.ask("resetQuota", [profile.raw, js(key), jopt(kind)])
   }
-  if profile.runtime == "claude" {
+  if profile.runtime == Some("claude") {
     return self.claude_reset(profile, key, kind)
   }
   if !self.given.codex {
@@ -82,14 +82,53 @@ fn json_text(v : JV?) -> String {
 }
 
 ///|
-/// `keepCheck`: a check kept, stamped, stored and told. The check as kept.
-fn Accounts::keep_check(self : Accounts, id : String, check : JV) -> JV {
-  let check = jset(check, "checkedAt", jnum(self.background.now()))
+/// `keepCheck`: a check kept, stamped, stored and told. The check as kept. `forced`: a login found over here whatever its
+/// check says (`revoke`).
+fn Accounts::keep_check(self : Accounts, id : String, check : JV, forced? : Bool = false) -> JV {
+  let mut check = jset(check, "checkedAt", jnum(self.background.now()))
+  let mut forced = forced
   let before = self.checks.get(id)
+  let state = jstr(check.get("state"))
+  match self.auth_revoked.get(id) {
+    Some((detail, quota_then, quota_at)) if state != Some("login") && state != Some("failed") => {
+      // Good again only by an allowance read since it was found over (a sign-in anew forgets it): one read here is one
+      // kept since; a borrowed one's host's is one it read later (a host from before answers what it had).
+      let quota = self.quotas.get(id)
+      let is_borrowed = match self.profile(id) {
+        Some(p) => borrowed(p.raw)
+        None => false
+      }
+      let since = match quota {
+        Some(q) => {
+          let at = to_number(q.get("checkedAt"))
+          if is_borrowed {
+            at > quota_at
+          } else {
+            !(quota_then is Some(t) && physical_equal(t, q)) && at >= quota_at
+          }
+        }
+        None => false
+      }
+      if jget(quota, "state") == Some(Str("ok")) && since {
+        self.auth_revoked.remove(id)
+      } else {
+        check = jset(jset(check, "state", js("login")), "detail", js(detail))
+        forced = true
+      }
+    }
+    _ => ()
+  }
+  let now_state = jstr(check.get("state"))
+  let before_state = jstr(jget(before, "state"))
+  if now_state == Some("login") && before_state != Some("login") {
+    self.lost(id, before, forced)
+  } else if now_state == Some("ok") && before_state != Some("ok") && self.given.login_notices {
+    self.background.track(async fn() { ignore(self.ask("accounts.profileLoginCleared", [js(id)])) catch { _ => () } })
+  }
   self.checks[id] = check
   self.hub_cache = None
   self.background.track(async fn() {
-    ignore(self.ask("store.setProfileCheck", [js(id), check]))
+    self.b.with_store(s => s.set_profile_check(Json::string(id), jv_to_json(check)))
   })
   let before_models = match jget(before, "models") {
     None => Some(JV::Null)
@@ -109,6 +148,165 @@ fn Accounts::keep_check(self : Accounts, id : String, check : JV) -> JV {
   }
   self.changed()
   check
+}
+
+///|
+/// `lost`: a subscription's login newly over, told to the managers where it had signed in (or was found over here): a
+/// profile made and never signed in is not. A borrowed one's host tells its own, unless it was found over here alone.
+fn Accounts::lost(self : Accounts, id : String, before : JV?, forced : Bool) -> Unit {
+  guard self.profile(id) is Some(profile) else { return }
+  if !profile.enabled || access_kind(profile.raw) != "subscription" || !self.given.login_notices {
+    return
+  }
+  let lent = borrowed(profile.raw)
+  let tell = if lent {
+    forced
+  } else {
+    forced || jget(before, "state") == Some(Str("ok")) || self.quotas.contains(id)
+  }
+  if !tell {
+    return
+  }
+  let raw = profile.raw
+  self.background.track(async fn() {
+    let station = if lent && self.given.shared_host_name {
+      match self.ask("shared.hostName", [raw]) {
+        Str(h) => js(h)
+        _ => JV::Null
+      }
+    } else {
+      JV::Null
+    }
+    ignore(self.ask("accounts.profileLogin", [jobj([("id", js(id)), ("profile", raw), ("station", station)])])) catch {
+      _ => ()
+    }
+  })
+}
+
+///|
+/// `revoke`: its login taken as over (a runtime refused on it, and its recheck found it so; or its host said so): its
+/// check says to sign in again, and the pool passes it over until it signs in anew.
+/// `seen`: the newest allowance reading its host gave meanwhile (a borrowed one's), which one must be newer than to undo it.
+fn Accounts::revoke(self : Accounts, id : String, notify : Bool, seen? : Double = 0.0) -> Unit {
+  guard self.profile(id) is Some(profile) else { return }
+  if !profile.enabled || access_kind(profile.raw) != "subscription" {
+    return
+  }
+  let detail = self.tr(self.ctx.station_lang, "station.quota.signInExpired")
+  let quota = self.quotas.get(id)
+  let had = match self.auth_revoked.get(id) {
+    Some((_, _, at)) => at
+    None => 0.0
+  }
+  let at = [to_number(jget(quota, "checkedAt")), seen, had].fold(init=0.0, (m, x) => if x > m { x } else { m })
+  self.auth_revoked[id] = (detail, quota, at)
+  let before = self.checks.get(id)
+  if jget(before, "state") == Some(Str("login")) {
+    return
+  }
+  let base = match before {
+    Some(b) => b
+    None => jobj([("models", Null), ("checkedAt", jint(0))])
+  }
+  let mut next = jset(jset(base, "state", js("login")), "detail", js(detail))
+  if profile.runtime == Some("codex") {
+    next = jset(next, "codexRevoked", jbool(true))
+  }
+  ignore(self.keep_check(id, next, forced=notify))
+}
+
+///|
+/// `markLoginExpired`: a borrowed profile's host said its login is over (LOGIN_OVER): the host tells its own managers.
+pub fn Accounts::mark_login_expired(self : Accounts, id : String) -> Unit {
+  let notify = match self.profile(id) {
+    Some(p) => !borrowed(p.raw)
+    None => false
+  }
+  self.revoke(id, notify)
+}
+
+///|
+/// `recheckProfile`: asked again after a runtime on it was refused: good only where its check says so and, for a
+/// runtime whose allowance is read, an allowance read now does too; a borrowed one where its host says so having read
+/// it again. Else it is over (`revoke`). `force`: refused again after a recheck and a retry in the same turn.
+pub async fn Accounts::recheck_profile(self : Accounts, id : String, force? : Bool = false) -> Unit {
+  guard self.profile(id) is Some(profile) else { return }
+  if !profile.enabled {
+    return
+  }
+  let lang = self.ctx.station_lang
+  if access_kind(profile.raw) != "subscription" {
+    ignore(self.check(id, lang)) catch {
+      _ => ()
+    }
+    return
+  }
+  let lent = borrowed(profile.raw)
+  let quota_read = match profile.runtime {
+    Some("claude" | "codex" | "agy" | "cursor" | "grok") => true
+    _ => false
+  }
+  let read_at = (got : JV) => match jget(got.get("quota"), "checkedAt") {
+    Some(Num(at)) => at
+    _ => 0.0
+  }
+  let says_over = (got : JV) => jget(got.get("check"), "state") == Some(Str("login"))
+  if lent && self.given.shared {
+    // What its host has read already (here never asked yet, or asked before the host's own round read it again): a
+    // reading after a refusal is one newer than that, never what a host from before answers it had.
+    let prior = self.ask("shared.status", [profile.raw]) catch { _ => JV::Null }
+    let mine = to_number(jget(self.quotas.get(id), "checkedAt"))
+    let before = if read_at(prior) > mine { read_at(prior) } else { mine }
+    // (the host saying so itself tells its own managers)
+    if force {
+      return self.revoke(id, !says_over(prior), seen=before)
+    }
+    let got = self.ask("shared.status", [profile.raw, jbool(true)]) catch { _ => JV::Null }
+    let check = got.get("check")
+    let quota = got.get("quota")
+    let good = jget(check, "state") == Some(Str("ok")) &&
+      (!quota_read ||
+      (jget(quota, "state") == Some(Str("ok")) &&
+      (match jget(quota, "checkedAt") {
+        Some(Num(at)) => at > before
+        _ => false
+      })))
+    if good {
+      self.auth_revoked.remove(id)
+      ignore(self.check_borrowed(profile, lang)) catch {
+        _ => ()
+      }
+      return
+    }
+    let seen = if read_at(got) > before { read_at(got) } else { before }
+    return self.revoke(id, !says_over(got), seen~)
+  }
+  if force {
+    return self.revoke(id, true)
+  }
+  let generation = self.login_generation.get(id).unwrap_or(0)
+  let quota = if quota_read && self.has_quota_fn() {
+    Some(self.read_quota(id, true) catch { _ => None })
+  } else {
+    None
+  }
+  let check = self.check(id, lang, recheck=true) catch { _ => JV::Null }
+  // (signed in anew meanwhile: what was asked is of the login before)
+  if self.login_generation.get(id).unwrap_or(0) != generation {
+    return
+  }
+  let quota_good = match quota {
+    None => true
+    Some(q) => jget(q, "state") == Some(Str("ok")) || jget(q, "state") == Some(Str("unsupported"))
+  }
+  if check.get("state") == Some(Str("ok")) && quota_good {
+    self.auth_revoked.remove(id)
+    if jget(self.checks.get(id), "state") != Some(Str("ok")) {
+      ignore(self.keep_check(id, check))
+    }
+    return
+  }
+  self.revoke(id, true)
 }
 
 ///|
@@ -138,6 +336,16 @@ fn Accounts::codex_login(
 }
 
 ///|
+/// A check's request, asked again after a runtime on it was refused where `recheck` (said only then, as index.ts).
+fn with_recheck(recheck : Bool, request : JV) -> JV {
+  if recheck {
+    jset(request, "recheck", jbool(true))
+  } else {
+    request
+  }
+}
+
+///|
 fn via_jv(v : Via) -> JV {
   let fields = []
   match v.provider {
@@ -158,7 +366,8 @@ fn via_jv(v : Via) -> JV {
 ///|
 /// `check`: POST /profiles/:id/check: asks the provider or runtime whether the profile works, its models, its
 /// reasoning levels and what it can decide with.
-pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV {
+/// `recheck`: asked again after a runtime on it was refused (profiles.ts `CheckOptions.recheck`).
+pub async fn Accounts::check(self : Accounts, id : String, lang : String, recheck? : Bool = false) -> JV {
   guard self.profile(id) is Some(profile) else {
     raise refusal(404, "unknown profile \{id}")
   }
@@ -197,18 +406,19 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
     }) ==
     ""
   let mut check = self.check_fn(
-    jobj([
-      ("runtime", js(profile.runtime)),
+    with_recheck(recheck, jobj([
+      ("runtime", jopt(profile.runtime)),
+      ("service", jopt(profile.service)),
       ("kind", js(kind)),
       ("key", js(if signed_out { "" } else { key })),
       ("via", via_jv(profile_via(profile.raw))),
       ("home", js(profile.home)),
       ("machine", jbool(profile.machine)),
       ("login", jbool(jget(profile.get("access"), "login") == Some(Bool(true)))),
-    ]),
+    ])),
     lang,
   )
-  let codex_subscription = kind == "subscription" && profile.runtime == "codex"
+  let codex_subscription = kind == "subscription" && profile.runtime == Some("codex")
   let state = () => jstr(check.get("state"))
   if (state() == Some("ok") || state() == Some("unknown")) &&
     profile.runtimes.contains("codex") &&
@@ -269,7 +479,7 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
       }
     }
   }
-  if profile.runtime == "hermes" && self.given.hermes {
+  if profile.runtime == Some("hermes") && self.given.hermes {
     let listed = async fn() {
       let models = jitems(Some(self.ask("hermes.models", [profile.raw])))
       check = jset(check, "models", jarr(models))
@@ -320,7 +530,7 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
       }
     }
   }
-  if profile.runtime == "agy" &&
+  if profile.runtime == Some("agy") &&
     (state() == Some("ok") || state() == Some("unknown")) &&
     self.given.agy {
     let listed = async fn() {
@@ -333,17 +543,9 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
           jobj([("agy", catalog.get("efforts").unwrap_or(Obj([])))]),
         )
         let company = jget(profile.get("access"), "enterprise") == Some(Bool(true))
-        let plan = match catalog.get("tier") {
-          Some(t) if !is_undef(t) =>
-            match self.ask("agy.plan", [t, jbool(company)]) {
-              Str(p) => Some(p)
-              _ => None
-            }
-          _ => None
-        }
-        match plan {
-          Some(p) => check = jset(check, "plan", js(p))
-          None =>
+        match catalog.get("plan") {
+          Some(Str(p)) => check = jset(check, "plan", js(p))
+          _ =>
             if company && check.get("plan") is None {
               check = jset(check, "plan", js("Enterprise"))
             }
@@ -386,7 +588,9 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
       }
     }
   }
-  check = jset(check, "decision", self.discover_fn(profile, check))
+  if kind != "service" {
+    check = jset(check, "decision", self.discover_fn(profile, check))
+  }
   let now = self.profile(id)
   let same = match now {
     Some(n) => self.fingerprint(n) == self.fingerprint(profile)
@@ -397,9 +601,13 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
   }
   if profile.machine && kind == "subscription" && state() == Some("ok") {
     let logins = jitems(Some(self.ask("machine.get", [])))
-    let login = logins
-      .iter()
-      .find_first(l => l.get("runtime") == Some(Str(profile.runtime)) && is_truthy(l.get("loggedIn")))
+    let login = match profile.runtime {
+      Some(r) =>
+        logins
+        .iter()
+        .find_first(l => l.get("runtime") == Some(Str(r)) && is_truthy(l.get("loggedIn")))
+      None => None
+    }
     match jget(login, "plan") {
       Some(Str(p)) if trim_js(p) != "" => check = jset(check, "plan", js(trim_js(p)))
       _ => ()
@@ -534,7 +742,7 @@ fn Accounts::missing_borrowed_reset_details(
   profile : Profile,
   q : JV?,
 ) -> Bool {
-  if profile.runtime != "codex" || !borrowed(profile.raw) {
+  if profile.runtime != Some("codex") || !borrowed(profile.raw) {
     return false
   }
   match q {
@@ -655,7 +863,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
   let lang = self.ctx.station_lang
   if borrowed(profile.raw) && access_kind(profile.raw) == "subscription" && self.given.shared {
     let now = self.background.now()
-    let mut own = if profile.runtime == "codex" {
+    let mut own = if profile.runtime == Some("codex") {
       lent_codex_usage(self.ctx, profile.home, now, lang) catch {
         _ => None
       }
@@ -663,7 +871,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
       None
     }
     let signed_out = (q : JV?) => is_truthy(jget(q, "signedOut"))
-    if profile.runtime == "codex" &&
+    if profile.runtime == Some("codex") &&
       (own is None || signed_out(own)) &&
       self.given.shared_lend_codex {
       let lend = async fn() {
@@ -686,7 +894,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
       let read = jset(jdel(own.unwrap(), "signedOut"), "checkedAt", jnum(now))
       self.quotas[id] = read
       self.keep_quota(id, read)
-      if profile.runtime == "codex" {
+      if profile.runtime == Some("codex") {
         self.codex_login(id, false, lang)
       }
       self.changed()
@@ -715,7 +923,8 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
   let answer = self.quota_fn(profile)
   let signed_out = answer.get("signedOut") == Some(Bool(true))
   let no_answer = answer.get("unanswered") == Some(Bool(true))
-  let asked = jdel(jdel(answer, "signedOut"), "unanswered")
+  let recheck = answer.get("recheck") == Some(Bool(true))
+  let asked = jdel(jdel(jdel(answer, "signedOut"), "unanswered"), "recheck")
   if self.login_generation.get(id).unwrap_or(0) != generation {
     return self.quotas.get(id)
   }
@@ -739,7 +948,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
   self.quota_unanswered.remove(id)
   let mut current = asked
   let mut refused = signed_out
-  if profile.runtime == "codex" && access_kind(profile.raw) == "subscription" && refused {
+  if profile.runtime == Some("codex") && access_kind(profile.raw) == "subscription" && refused {
     let fresh = codex_usage(self.ctx, join_path([profile.home, "auth.json"]), lang) catch {
       _ => None
     }
@@ -761,13 +970,29 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
   self.quotas[id] = read
   self.keep_quota(id, read)
   self.changed()
-  if profile.runtime == "codex" && access_kind(profile.raw) == "subscription" {
+  if profile.runtime == Some("codex") && access_kind(profile.raw) == "subscription" {
     if refused {
       self.codex_login(id, true, lang)
     } else if read.get("state") == Some(Str("ok")) {
       self.codex_login(id, false, lang)
     }
   } else if signed_out && jget(self.checks.get(id), "state") != Some(Str("login")) {
+    // Checked before this answers (asked again with its login renewed), so a host lending it says it signed out with the
+    // allowance that found it so, never `ok` from before (share.status).
+    ignore(self.check(id, self.ctx.station_lang, recheck=true)) catch {
+      _ => ()
+    }
+  } else if recheck && jget(self.checks.get(id), "state") == Some(Str("ok")) {
+    self.background.spawn(async fn() {
+      ignore(self.check(id, self.ctx.station_lang)) catch {
+        _ => ()
+      }
+    })
+  } else if (profile.runtime == Some("claude") || self.auth_revoked.contains(id)) &&
+    access_kind(profile.raw) == "subscription" &&
+    read.get("state") == Some(Str("ok")) &&
+    (jget(self.checks.get(id), "state") == Some(Str("failed")) ||
+      jget(self.checks.get(id), "state") == Some(Str("login"))) {
     self.background.spawn(async fn() {
       ignore(self.check(id, self.ctx.station_lang)) catch {
         _ => ()
@@ -832,6 +1057,8 @@ async fn Accounts::lent_login_version(self : Accounts, home : String) -> String?
 ///|
 /// `sharedChanged`: a shared profile changed on its host.
 pub async fn Accounts::shared_changed(self : Accounts, id : String, reset : Bool) -> Unit {
+  // (changed on its host, signed in anew there perhaps: what its host says is asked again, nothing kept against it)
+  self.auth_revoked.remove(id)
   let profile = self.profile(id)
   match profile {
     Some(p) if !p.enabled && self.given.hub_profile_gone =>
@@ -845,7 +1072,7 @@ pub async fn Accounts::shared_changed(self : Accounts, id : String, reset : Bool
     return
   }
   ignore(self.check_borrowed(profile, self.ctx.station_lang))
-  if profile.runtime == "codex" && self.given.shared_lend_codex {
+  if profile.runtime == Some("codex") && self.given.shared_lend_codex {
     let before = match self.borrowed_login.get(id) {
       Some(b) => b
       None => self.lent_login_version(profile.home)
@@ -870,7 +1097,7 @@ pub async fn Accounts::shared_changed(self : Accounts, id : String, reset : Bool
       ignore(self.ask("hub.allowanceReset", [js(id)]))
     }
   }
-  if profile.runtime == "agy" && self.given.shared_lend_agy {
+  if profile.runtime == Some("agy") && self.given.shared_lend_agy {
     ignore(self.ask("shared.lendAgy", [profile.raw, jbool(true)])) catch {
       _ => ()
     }
@@ -909,7 +1136,7 @@ pub async fn Accounts::reset_quota(
   guard self.profile(id) is Some(profile) else {
     raise refusal(404, t("station.profile.notFound"))
   }
-  if (profile.runtime != "codex" && profile.runtime != "claude") ||
+  if (profile.runtime != Some("codex") && profile.runtime != Some("claude")) ||
     access_kind(profile.raw) != "subscription" {
     raise refusal(400, t("station.quota.resetSubscriptionOnly"))
   }

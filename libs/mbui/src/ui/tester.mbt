@@ -120,6 +120,8 @@ pub fn Tester::end_run(self : Tester, restore : &@hostapi.Host) -> Unit {
 /// the packages over it: on_reset) emptied; then checked (leaked_state), so that what is added later and not
 /// forgotten here fails the next Tester at once rather than a test somewhere else.
 fn reset_globals() -> Unit {
+  // (the fake host's pointer and controllers of the run before: fake_host.mbt)
+  fake_pointer_reset()
   // (the run before's windows beside its first let go of, its first window's state in place: window_slots.mbt)
   windows_reset()
   window_zoom_reset()
@@ -130,6 +132,8 @@ fn reset_globals() -> Unit {
   // A run can end with a frame's resource handover still queued. Finish it before resetting the next run.
   frame_afters_run()
   frame_afters.val = []
+  // (what waited for a frame drawn that never came: none of this run's)
+  drawn_frame_afters.val = []
   the_ctx.val.let_go()
   the_ctx.val = Ctx::new()
   looks_reset()
@@ -209,6 +213,7 @@ fn reset_globals() -> Unit {
   answers_waiting.clear()
   outside_takers.clear()
   @hostapi.autofill_forget()
+  @hostapi.op_list_cache_reset()
   views_told.clear()
   views_told_changed()
   code_fields.clear()
@@ -219,8 +224,8 @@ fn reset_globals() -> Unit {
   perf_bytes_said.set(-1.0)
   image_data.clear()
   image_vector_drawers.clear()
-  moving_images.clear()
-  pixels_read.clear()
+  moving_reset()
+  pixels_reset()
   open_views.clear()
   stacked_views.clear()
   views_stirred.clear()
@@ -273,6 +278,12 @@ fn reset_globals() -> Unit {
   @view.hold_reset()
   @view.untracked_read_reset()
   tester_fanout_reset()
+  fanout_hold.val = false
+  unseen_press_hold.val = false
+  untracked_read_hold.val = false
+  unnamed_press_hold.val = false
+  scroll_each_hold_limit.val = 0
+  effect_in_view_hold.val = false
   if left.length() > 0 {
     @halt.saying("state kept from an earlier test: " + left.join(", "))
   }
@@ -403,10 +414,21 @@ pub fn Tester::new(
   keeps_sources? : Bool = true,
   windows_beside? : Bool = false,
   theme? : () -> Theme,
+  transitions_only? : Bool = false,
   loc~ : SourceLoc,
 ) -> Tester {
   let (around, made) : (((Ctx) -> Unit)?, (@view.View) -> Unit) = match tree {
-    Some(make) => (Some(view), make)
+    Some(make) => {
+      let wrapped = if transitions_only {
+        fn(root : @view.View) {
+          root.transitions_only() |> ignore
+          make(root)
+        }
+      } else {
+        make
+      }
+      (Some(view), wrapped)
+    }
     None => (None, fn(root) { old(root, view).grow(Is(1.0)) |> ignore })
   }
   tester_make(
@@ -445,6 +467,12 @@ pub fn Tester::new(
     begun?,
     keeps_sources~,
     windows_beside~,
+    fanout_limit=0,
+    unseen_press_held=false,
+    untracked_read_held=false,
+    unnamed_press_held=false,
+    scroll_each_limit=0,
+    effect_in_view_held=false,
     loc~,
   )
 }
@@ -488,11 +516,26 @@ pub fn Tester::tree(
   keeps_sources? : Bool = true,
   windows_beside? : Bool = false,
   theme? : () -> Theme,
+  transitions_only? : Bool = true,
+  fanout_limit? : Int = 64,
+  unseen_press_held? : Bool = true,
+  untracked_read_held? : Bool = true,
+  unnamed_press_held? : Bool = true,
+  scroll_each_limit? : Int = 50,
+  effect_in_view_held? : Bool = true,
   loc~ : SourceLoc,
 ) -> Tester {
+  let made = if transitions_only {
+    fn(root : @view.View) {
+      root.transitions_only() |> ignore
+      tree(root)
+    }
+  } else {
+    tree
+  }
   tester_make(
     None,
-    tree,
+    made,
     theme,
     w~,
     h~,
@@ -526,6 +569,12 @@ pub fn Tester::tree(
     begun?,
     keeps_sources~,
     windows_beside~,
+    fanout_limit~,
+    unseen_press_held~,
+    untracked_read_held~,
+    unnamed_press_held~,
+    scroll_each_limit~,
+    effect_in_view_held~,
     loc~,
   )
 }
@@ -569,6 +618,12 @@ fn tester_make(
   begun? : () -> Unit,
   keeps_sources~ : Bool,
   windows_beside~ : Bool,
+  fanout_limit~ : Int,
+  unseen_press_held~ : Bool,
+  untracked_read_held~ : Bool,
+  unnamed_press_held~ : Bool,
+  scroll_each_limit~ : Int,
+  effect_in_view_held~ : Bool,
   loc~ : SourceLoc,
 ) -> Tester {
   host_settings_given.val = ""
@@ -579,6 +634,7 @@ fn tester_make(
     late: 0.0,
     late_after: -1.0,
     late_frame: -1,
+    present_ms: 0.0,
     wall: tester_wall - time,
     scale,
     wants: false,
@@ -597,6 +653,8 @@ fn tester_make(
     ime_rect: (0.0, 0.0, 0.0, 0.0),
     clipboard: "",
     badge: 0,
+    auto_launch: false,
+    hotkeys: {},
     app_said: Map([]),
     app_told: [],
     local_fonts: "",
@@ -729,6 +787,8 @@ fn tester_make(
     perf_lines: [],
     perf_opens: false,
     perf_opened: 0,
+    reveals: false,
+    revealed: [],
     perf_bytes: 0.0,
     view_texts: {},
     view_stills: {},
@@ -865,8 +925,18 @@ fn tester_make(
   }
   let between = test_frames_between()
   tester_rested.clear()
+  tester_ways_rested.val = -1.0
   frames_at_one.val = (-1.0, 0)
   let t = { fake: f, w, h, frames: 0, seed, origin: time, period: frame_period_default, times: [], between, on_way: false, shown: false, motion: test_motion_judged(loc.to_string()), host_frames: false, inputs_next: @double.infinity, each: None, before }
+  if fanout_limit > 0 {
+    t.set_fanout_limit(fanout_limit)
+    fanout_hold.val = true
+  }
+  unseen_press_hold.val = unseen_press_held
+  untracked_read_hold.val = untracked_read_held
+  unnamed_press_hold.val = unnamed_press_held
+  scroll_each_hold_limit.val = scroll_each_limit
+  effect_in_view_hold.val = effect_in_view_held
   // a host's run replayed: its first frame where the host drew it (its first DRAWHASH), the display's frames from
   // there; else the display's first frame after `time`
   match run.bind(run_first_frame) {
@@ -1484,6 +1554,12 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
   }
   self.hold_seen_whole_now()
   self.hold_corners()
+  self.hold_fanout()
+  self.hold_unseen_press()
+  self.hold_untracked_read()
+  self.hold_unnamed_press()
+  self.hold_scroll_each()
+  self.hold_effect_in_view()
   // (where the focus a key moved along comes to rest, once what moved as it did is at rest: tester_focus_off.mbt)
   self.focus_off_at_rest()
   // (what it drew was placed by the layout it drew by: tester_placed.mbt)
@@ -2112,6 +2188,17 @@ fn Tester::words_marked(self : Tester) -> Array[((String, Double, Double, Double
     }
     gone
   }
+  let tree_opt = view_tree()
+  let island_of = fn(i : Int) -> @view.NodeId? {
+    let mut p = i
+    while p >= 0 {
+      if old_box_owners.get(p) is Some((_, id)) {
+        return Some(id)
+      }
+      p = c.nodes[p].parent
+    }
+    None
+  }
   for i in 0..<c.count {
     let n = c.nodes[i]
     // (a field's placeholder too, as Android's hint is words of their own)
@@ -2120,6 +2207,26 @@ fn Tester::words_marked(self : Tester) -> Array[((String, Double, Double, Double
       n.text != "" &&
       !let_go(i) {
       let (x, y) = c.drawn_at(i)
+      let mut wx = x
+      let mut ww = n.fw
+      if !nav_clips_now.is_empty() {
+        match (tree_opt, island_of(i)) {
+          (Some(tree), Some(iid)) =>
+            match nav_clip_for_node(tree, iid) {
+              Some((cut_l, cut_r)) => {
+                let nx0 = dmax(wx, cut_l)
+                let nx1 = dmin(wx + ww, cut_r)
+                if nx1 <= nx0 {
+                  continue
+                }
+                wx = nx0
+                ww = nx1 - nx0
+              }
+              None => ()
+            }
+          _ => ()
+        }
+      }
       let mut alpha = 1.0
       let mut p = i
       while p >= 0 {
@@ -2130,17 +2237,31 @@ fn Tester::words_marked(self : Tester) -> Array[((String, Double, Double, Double
         }
         p = c.nodes[p].parent
       }
-      out.push(((n.text, x, y, n.fw, n.fh, alpha), n.sem_hid))
+      out.push(((n.text, wx, y, ww, n.fh, alpha), n.sem_hid))
     }
   }
   // (and the words of the window's tree's nodes, where and as faded as they are drawn, as Tester::find finds them)
-  match view_tree() {
+  match tree_opt {
     Some(tree) =>
       for d in tree.drawn() {
         // (a field's placeholder too, its hint: view_words_found)
         let words = view_words_found(d)
         if words != "" && d.bones == 0L {
-          out.push(((words, d.x, d.y, d.w, d.h, d.alpha), !tree.reads_out(d.id)))
+          let mut wx = d.x
+          let mut ww = d.w
+          match nav_clip_for_node(tree, d.id) {
+            Some((cut_l, cut_r)) => {
+              let nx0 = dmax(wx, cut_l)
+              let nx1 = dmin(wx + ww, cut_r)
+              if nx1 <= nx0 {
+                continue
+              }
+              wx = nx0
+              ww = nx1 - nx0
+            }
+            None => ()
+          }
+          out.push(((words, wx, d.y, ww, d.h, d.alpha), !tree.reads_out(d.id)))
         }
       }
     None => ()
@@ -2318,7 +2439,7 @@ pub fn Tester::lines_of(self : Tester, s : String) -> Array[String] {
           balance=look.balance,
           line=view_line(scale, look),
           spacing=view_spacing(scale, look),
-          style=view_words_style(),
+          style=view_words_style(tabular=d.words_tabular),
           max_lines=look.max_lines,
         )
         let lines = Array::makei(tl.line_start.length(), fn(l) {
@@ -2740,6 +2861,18 @@ pub fn Tester::set_perf_opens(self : Tester, opens : Bool) -> Unit {
 }
 
 ///|
+/// Whether files can be shown in their folders from now on (@hostapi.reveals_files: a desktop's file manager).
+pub fn Tester::set_reveals(self : Tester, reveals : Bool) -> Unit {
+  self.fake.reveals = reveals
+}
+
+///|
+/// The files the app showed in their folders (@hostapi.reveal_file), oldest first.
+pub fn Tester::revealed(self : Tester) -> Array[String] {
+  self.fake.revealed.copy()
+}
+
+///|
 /// How many times the app opened the performance record's folder (@hostapi.perf_open).
 pub fn Tester::perf_opened(self : Tester) -> Int {
   self.fake.perf_opened
@@ -2866,7 +2999,7 @@ pub fn Tester::drawn_glass_contained(self : Tester) -> Array[Bool] {
     let b = k * inst_size
     let kind = c.inst[b + 5].to_int()
     if kind == 5 || kind == 6 {
-      out.push(c.inst[b + 7] < 0.0)
+      out.push(kind == 5 && c.inst[b + 7] < 0.0)
     }
   }
   out
@@ -2982,7 +3115,7 @@ pub fn Tester::drawn_glyphs(self : Tester) -> Array[(Double, Double, Int64)] {
   let out = []
   for k in 0..<c.ninst {
     let b = k * inst_size
-    if c.inst[b + 5] == 1.0 {
+    if c.inst[b + 5] == 1.0 || c.inst[b + 5] == 7.0 {
       let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
       let color = (ch(c.inst[b + 8]) << 24) |
         (ch(c.inst[b + 9]) << 16) |
@@ -3005,7 +3138,7 @@ pub fn Tester::glyphs_shown(self : Tester) -> Array[(Double, Double, Double, Dou
   let out = []
   for k in 0..<c.ninst {
     let b = k * inst_size
-    if a[b + 5] == 1.0 && a[b + 11] > 0.0 {
+    if (a[b + 5] == 1.0 || a[b + 5] == 7.0) && a[b + 11] > 0.0 {
       let x0 = dmax(a[b], a[b + 16])
       let y0 = dmax(a[b + 1], a[b + 17])
       let x1 = dmin(a[b] + a[b + 2], a[b + 18])
@@ -3029,7 +3162,7 @@ pub fn Tester::glyph_clips(self : Tester) -> Array[((Double, Double, Double, Dou
   let out = []
   for k in 0..<c.ninst {
     let b = k * inst_size
-    if a[b + 5] == 1.0 && a[b + 11] > 0.0 {
+    if (a[b + 5] == 1.0 || a[b + 5] == 7.0) && a[b + 11] > 0.0 {
       out.push(((a[b], a[b + 1], a[b] + a[b + 2], a[b + 1] + a[b + 3]), (a[b + 16], a[b + 17], a[b + 18], a[b + 19])))
     }
   }
@@ -3047,7 +3180,7 @@ pub fn Tester::glyphs_seen(self : Tester) -> Array[(Double, Double, Double, Doub
   let out = []
   for k in 0..<c.ninst {
     let b = k * inst_size
-    if a[b + 5] == 1.0 && a[b + 11] > 0.0 {
+    if (a[b + 5] == 1.0 || a[b + 5] == 7.0) && a[b + 11] > 0.0 {
       let x0 = dmax(a[b], a[b + 16])
       let y0 = dmax(a[b + 1], a[b + 17])
       let x1 = dmin(a[b] + a[b + 2], a[b + 18])
@@ -3090,7 +3223,7 @@ pub fn Tester::rich_of(self : Tester, s : String) -> (RichLayout, Double, Double
       let found : Ref[(RichLayout, Double, Double)?] = Ref(None)
       tree.each_drawn_scaled(fn(c, x, y, a, _) {
         guard found.val is None && !c.runs.is_empty() && a > 0.0 && c.bones == 0L else { return }
-        let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
+        let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks, tabular=c.words_tabular)
         if lay.text.contains(s) {
           // (where it is drawn in the window, as Tree::drawn_of has it: a page's list's rows' too)
           found.val = Some(
@@ -3153,7 +3286,7 @@ fn tree_run_rects(s : String) -> Array[(Double, Double, Double, Double)] {
     if out.length() > 0 || c.runs.is_empty() || a <= 0.0 {
       return
     }
-    let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
+    let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks, tabular=c.words_tabular)
     match lay.text.find(s) {
       Some(i) =>
         for r in lay.rects(i, i + s.length()) {
@@ -3676,6 +3809,59 @@ pub fn Tester::right_click(self : Tester, x : Double, y : Double) -> Unit {
 }
 
 ///|
+/// A mouse's button other than the primary (`button` 2 the secondary, 3 the middle) down at (x, y), held: what takes it
+/// whole (View::on_buttons) sees it go down, and moves (Tester::move_to, a drag's) till it goes up (Tester::button_up).
+/// One frame drawn after it.
+pub fn Tester::button_down(self : Tester, x : Double, y : Double, button : Int) -> Unit {
+  posted_tell()
+  on_pointer(0, x, y, button)
+  self.drawn_now()
+}
+
+///|
+/// A mouse's button other than the primary (Tester::button_down) up at (x, y). One frame drawn after it.
+pub fn Tester::button_up(self : Tester, x : Double, y : Double, button : Int) -> Unit {
+  posted_tell()
+  on_pointer(2, x, y, button)
+  self.drawn_now()
+}
+
+///|
+/// Whether the window holds the pointer now (@hostapi.set_pointer_lock), and how many times it was told to hold it or
+/// let it go.
+pub fn Tester::pointer_locked(self : Tester) -> (Bool, Int) {
+  match fake_pointer_of(self.fake) {
+    Some(p) => (p.lock, p.locks_told)
+    None => (false, 0)
+  }
+}
+
+///|
+/// The mouse moved by (`dx`, `dy`) while the window holds the pointer, its move coming where the pointer stays (x, y),
+/// as a host gives it (@hostapi.pointer_delta_take answers it). One frame drawn after it.
+pub fn Tester::locked_move(self : Tester, x : Double, y : Double, dx : Double, dy : Double) -> Unit {
+  if fake_pointer_of(self.fake) is Some(p) && p.lock {
+    p.delta = (p.delta.0 + dx, p.delta.1 + dy)
+  }
+  self.move_to(x, y)
+}
+
+///|
+/// The pointer let go of by the system (the window gone out of focus, as a host does by itself): nothing told the app.
+pub fn Tester::pointer_lock_lost(self : Tester) -> Unit {
+  if fake_pointer_of(self.fake) is Some(p) {
+    p.lock = false
+    p.delta = (0.0, 0.0)
+  }
+}
+
+///|
+/// The game controllers connected from now on, as the host reads them (@hostapi.gamepads).
+pub fn Tester::set_gamepads(self : Tester, pads : Array[@hostapi.Gamepad]) -> Unit {
+  fake_pointer(self.fake).pads = pads
+}
+
+///|
 /// The pointer gone out of the window.
 pub fn Tester::leave(self : Tester) -> Unit {
   on_pointer(7, -1.0, -1.0, 0)
@@ -3685,8 +3871,8 @@ pub fn Tester::leave(self : Tester) -> Unit {
 ///|
 /// A wheel at (x, y) as the host sends it: `phase` 0 a trackpad's (or a host that does not say), 4 a mouse wheel's
 /// notch (eased in over the next frames). One frame drawn, not settled.
-pub fn Tester::wheel_phase(self : Tester, x : Double, y : Double, dy : Double, phase : Int) -> Unit {
-  finger_wheel(x, y, 0.0, dy, phase)
+pub fn Tester::wheel_phase(self : Tester, x : Double, y : Double, dy : Double, phase : Int, dx? : Double = 0.0) -> Unit {
+  finger_wheel(x, y, dx, dy, phase)
   self.drawn_now()
 }
 

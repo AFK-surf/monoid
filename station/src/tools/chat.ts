@@ -22,13 +22,13 @@ import { slackTools } from "./slack.ts";
 export const CHAT_POST = {
   name: "chat_post",
   description:
-    "Post a message to one of your conversations, in Markdown (Slack and Feishu draw it too; Formatting in your instructions says what differs). kind ends your turn with it; card carries what people answer by choosing or typing (skill stillfail-chats: cards, held posts). With only to and title it names the conversation, nothing posted or ended.",
+    "Post a message to one of your conversations, in Markdown (Formatting in your instructions says what differs by platform). kind ends your turn with it; card carries what people answer by choosing or typing (skill stillfail-chats: cards, held posts). With only to and title it names the conversation, nothing posted or ended.",
   inputSchema: {
     "type": "object",
     "properties": {
       "to": {
         "type": "string",
-        "description": "CHANNEL/THREAD_TS: the thread attribute of the message you are answering."
+        "description": "CHANNEL/THREAD_TS: the thread attribute of the message you are answering; or a Feishu chat_id (oc_…) to begin a conversation there."
       },
       "send": {
         "type": "string",
@@ -75,7 +75,7 @@ export const CHAT_POST = {
       },
       "card": {
         "type": "object",
-        "description": "What people answer this message with, in the chat and in their 待处理: options, text (a value they type) or login (one the login tool started). It does not end your turn: end need_human. A newer card replaces the previous one. A person's next message closes it, a decision or not: ask again with a new card if it is still needed.",
+        "description": "What people answer this message with, in the chat and in their 待处理: options, text (a value they type) or login (one the login tool started). It does not end your turn: end need_human. A newer card replaces the previous one. A person's next message closes it, a decision or not: ask again with a new card if still needed.",
         "properties": {
           "type": {
             "type": "string",
@@ -441,7 +441,7 @@ export const CHAT_ARCHIVE = {
 export const CHAT_CONFIGURE = {
   name: "chat_configure",
   description:
-    "Read or change a session's runtime, model, effort, speed, context or preset, on this station or another station of the workspace. Omit change fields to inspect its current config; omit chat (or pass \"self\") for your own session. Changes take effect on the next turn (or once the running turn ends) and post a notice in that chat. Skill stillfail-chats says more.",
+    "Read or change a session's runtime, model, effort, speed, context, preset or ownership (for), on this station or another station of the workspace. Omit change fields to inspect its current config; omit chat (or pass \"self\") for your own session. Changes take effect on the next turn (or once the running turn ends) and post a notice in that chat. Skill stillfail-chats says more.",
   inputSchema: {
     type: "object",
     properties: {
@@ -454,6 +454,7 @@ export const CHAT_CONFIGURE = {
       context: { type: "integer", minimum: 0, description: "Max context tokens (0 resets to the model's full window)." },
       preset: { type: "string", description: "Apply a preset's model config from this station by name or id (cannot combine with runtime/model/effort/speed/fast/context)." },
       repick: { type: "boolean", description: "Hand account selection back to the station and repick now." },
+      for: { type: "string", enum: ["me", "person"], description: "Change ownership: \"me\" to lead this chat as your sub-chat, \"person\" to hand it back to people." },
     },
     additionalProperties: false,
   },

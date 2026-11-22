@@ -44,7 +44,7 @@ fn scroll_case() -> ScrollCase {
   let pressed = Ref(0)
   let outer = Ref(0.0)
   let rows = @signals.signal(9, same=fn(a, b) { a == b })
-  let scroll = @view.Scroll::new()
+  let scroll = @view.Scroll::plain()
   let focus : Ref[@view.NodeId?] = Ref(None)
   let tree = @view.Tree::new(
     fn(root) {
@@ -266,7 +266,7 @@ test "scrolls: let go flinging, made again holding the same scroll: at rest wher
 
 ///|
 test "scrolls: held in what is drawn twice as big: what it holds drawn moving as far as the finger, past the slop" {
-  let scroll = @view.Scroll::new()
+  let scroll = @view.Scroll::plain()
   let row : Ref[@view.NodeId?] = Ref(None)
   let tree = @view.Tree::new(
     fn(root) {
@@ -1027,4 +1027,95 @@ test "scrolls: what it holds moved says it scrolled, once, whatever frames came 
   let again = k.tree.take_scrolled()
   k.tree.frame(390.0, 844.0) |> ignore
   assert_eq((first, still, moved, again, k.tree.take_scrolled()), (false, false, true, false, false))
+}
+
+///|
+test "scrolls_window in hugs container expands past est when actual row is taller" {
+  for with_neg_mb in [false, true] {
+    for row_h in [60.0, 78.0] {
+      let scroll = @view.Scroll::list()
+      let room_id : Ref[@view.NodeId?] = Ref(None)
+      let tree = @view.Tree::new(
+        fn(root) {
+          root.box(fn(sheet) {
+            sheet.width(Is(Some(360.0))).max_height(Is(Some(400.0))) |> ignore
+            sheet.box(fn(body) {
+              body.width(Is(Some(360.0))).grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+              body.box(fn(col) {
+                col
+                .width(Is(Some(360.0)))
+                .grow(Is(1.0))
+                .min_height(Is(Some(0.0)))
+                .padding(Is((0.0, 0.0, 0.0, 24.0)))
+                |> ignore
+                col.box(fn(room) {
+                  room_id.val = Some(room.id())
+                  room.width(Is(Some(360.0))) |> ignore
+                  room.scrolls_window(scroll, fn() { [0] }, est=56.0, fn(b, _) {
+                    b.height(Is(Some(row_h))) |> ignore
+                  })
+                  |> ignore
+                })
+                |> ignore
+                if with_neg_mb {
+                  col.box(fn(f) { f.margin(Is((0.0, 0.0, 0.0, -8.0))) |> ignore }) |> ignore
+                }
+              })
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        },
+        time=fn() { 0.0 },
+      )
+      tree.frame(390.0, 844.0) |> ignore
+      let h = tree.drawn_of(room_id.val.unwrap()).unwrap().h
+      assert_true(
+        (h - row_h).abs() <= 0.5,
+        msg="with_neg_mb=\{with_neg_mb} row_h=\{row_h}: room height=\{h} expected \{row_h}",
+      )
+      assert_eq(scroll.reach(), 0.0)
+    }
+  }
+}
+
+///|
+test "scrolls in variable-width max_width + max_height hugs container converges when content wraps" {
+  let cap_w = @signals.signal(240.0, same=fn(a, b) { a == b })
+  let scroll = @view.Scroll::new()
+  let room_id : Ref[@view.NodeId?] = Ref(None)
+  let tree = @view.Tree::new(
+    fn(root) {
+      root.box(fn(card) {
+        card
+        .max_width(By(fn() { Some(cap_w.get()) }))
+        .max_height(Is(Some(300.0)))
+        |> ignore
+        card.box(fn(room) {
+          room_id.val = Some(room.id())
+          room.scrolls(scroll, fn(held) {
+            held.row(Is(true)).wraps(Is(Some(0.0))) |> ignore
+            for _ in 0..<6 {
+              held.box(fn(tile) { tile.width(Is(Some(80.0))).height(Is(Some(30.0))) |> ignore }) |> ignore
+            }
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  tree.frame(600.0, 844.0) |> ignore
+  let h1 = tree.drawn_of(room_id.val.unwrap()).unwrap().h
+  assert_true((h1 - 60.0).abs() <= 0.5, msg="at max_width=240 expected 2 wrapped rows (60.0), got \{h1}")
+  assert_eq(scroll.reach(), 0.0)
+
+  tree.event(100.0, fn() { cap_w.set(160.0) })
+  tree.frame(600.0, 844.0, now=100.0) |> ignore
+  let h2 = tree.drawn_of(room_id.val.unwrap()).unwrap().h
+  assert_true((h2 - 90.0).abs() <= 0.5, msg="at max_width=160 expected 3 wrapped rows (90.0), got \{h2}")
+  assert_eq(scroll.reach(), 0.0)
 }

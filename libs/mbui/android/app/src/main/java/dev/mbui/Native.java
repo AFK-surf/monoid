@@ -31,6 +31,10 @@ final class Native {
     static native void dropPending();
     /** The frame taken drawn (GL thread). */
     static native void draw();
+    /** Whether adaptive liquid glass is still settling temporally on the GL thread. */
+    static native boolean adaptiveSettling();
+    /** What drawing holds beyond its frames given back (GL thread, its context current: MBView.trim). */
+    static native void trim();
     /** What the app's thread waits for of the GL context done (GL thread: MBView.glSync). */
     static native void glSync();
     static native void pointer(int kind, float x, float y, double time);
@@ -44,6 +48,8 @@ final class Native {
     static native void overOther(boolean on);
     /** The device slowed for its heat or not (MainActivity's thermal listener): glass drawn solid (android_host.c). */
     static native void thermal(boolean hot);
+    /** Whether a screen reader is active (A11y): cached in C atomic so mb_host_a11y_on needs no JNI per frame. */
+    static native void a11yEnabled(boolean enabled);
     /** A message for the app's next frame on `channel` (post.h's mb_post: any thread): its JSON's UTF-8. */
     static native void postBytes(String channel, byte[] json);
     /** A browser session's end (WebAuth): the URL it came back to, or why not (one of the two null). */

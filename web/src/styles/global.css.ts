@@ -326,9 +326,9 @@ globalStyle("[data-passage-host]", { position: "relative", isolation: "isolate" 
 globalStyle("[data-passage-marks]", { position: "absolute", inset: "0", zIndex: "-1", pointerEvents: "none" });
 globalStyle("[data-passage-marks] > span", {
   position: "absolute",
-  background: `color-mix(in srgb, ${vars.accent} 26%, transparent)`, animation: `${passageFlashKeyframes} 2400ms both`,
+  background: `color-mix(in srgb, ${vars.accent} 26%, transparent)`, animation: `${passageFlashKeyframes} 1700ms both`,
 });
 // own corner: a passage's ends, round where it starts and ends, square where it runs on to the next line (sf/align.mbt)
 globalStyle("[data-passage-marks] > span[data-start]", { borderTopLeftRadius: `calc(6px * ${vars.cornerScale})`, borderBottomLeftRadius: `calc(6px * ${vars.cornerScale})`, cornerShape: vars.cornerShape }); // own corner: a passage's start
 globalStyle("[data-passage-marks] > span[data-end]", { borderTopRightRadius: `calc(6px * ${vars.cornerScale})`, borderBottomRightRadius: `calc(6px * ${vars.cornerScale})`, cornerShape: vars.cornerShape }); // own corner: a passage's end
-globalStyle(`${STILL} [data-passage-marks] > span`, stillFlash(passageFlashHeldKeyframes, "2400ms"));
+globalStyle(`${STILL} [data-passage-marks] > span`, stillFlash(passageFlashHeldKeyframes, "1700ms"));

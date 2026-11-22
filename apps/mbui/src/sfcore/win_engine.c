@@ -9,8 +9,9 @@
 #include "../host/win_core.c"
 #include "../core/core_client.h"
 
-// (a remote screen's frames acknowledged straight to its station by the shell: mb_core_screen_ack)
-static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_stop, mb_core_data_dir, NULL, mb_post, mb_post_drop, mb_core_screen_ack};
+// (a remote screen's frames acknowledged and its input sent straight to its station by the shell: mb_core_screen_ack,
+// mb_core_screen_input)
+static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_stop, mb_core_data_dir, NULL, mb_post, mb_post_drop, mb_core_screen_ack, NULL, mb_core_screen_input};
 
 // The computer's name (设置 › 系统 › 系统信息: its device name) in MBUI_DEVICE_NAME, the machine the core names this
 // device by where the person's devices are listed (signin.mbt tell_device): which of their computers it is. Not over

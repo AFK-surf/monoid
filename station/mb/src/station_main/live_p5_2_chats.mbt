@@ -8,38 +8,15 @@
 using @jsjson {type JValue as J}
 
 ///|
-fn jstr_of(v : J) -> String {
-  match v {
-    Str(s) => @jsjson.text(s)
-    _ => ""
-  }
-}
-
-///|
-fn j_s(s : String) -> J {
-  Str(@jsjson.units(s))
-}
-
-///|
 fn j_undef() -> J {
-  Obj([(@jsjson.units("$u"), Num(1.0))])
+  Obj([("$u", Num(1.0))])
 }
 
 ///|
-fn j_opt(s : String?) -> J {
-  match s {
-    Some(t) => j_s(t)
-    None => Null
-  }
-}
-
-///|
-/// The states the hub keeps of its own for the conversations (held posts, relayed chats' openings, title requests).
+/// The states the hub keeps of its own for the conversations (callback handles, side agents, plus the shared
+/// `@session_chats.ChatState` for held posts, relayed chats' openings, and title requests).
 priv struct ChatState {
-  held : Map[String, Map[String, J]]
-  openings : Map[String, J]
-  titles : Map[String, J]
-  mut held_count : Int32
+  shared : @session_chats.ChatState
   callbacks : Map[Int32, async (Array[J]) -> J]
   mut next_cb : Int32
   refs : Map[String, J]
@@ -67,10 +44,7 @@ priv struct SideAgent {
 
 ///|
 let chat_state : ChatState = {
-  held: Map([]),
-  openings: Map([]),
-  titles: Map([]),
-  held_count: 0,
+  shared: @session_chats.ChatState::new(),
   callbacks: Map([]),
   next_cb: 0,
   refs: Map([]),
@@ -87,6 +61,18 @@ fn P52::chats_world(self : P52) -> @session_chats.World {
   // (what the last call threw besides its words, read by the conversations as they tell a kind's fields apart:
   // a busy database's `errcode`, a file's `code`, the sessions a `CcSessionsUnavailable` names)
   let thrown : Ref[J] = Ref(Null)
+  let live : @session_chats.Live? = match self.hub {
+    Some(hub) =>
+      Some({
+        store: self.bus.store,
+        threads: self.threads,
+        hub,
+        db: self.bus.db,
+        state: chat_state.shared,
+        flush_threads: () => told_threads(self.bus, self.threads),
+      })
+    None => None
+  }
   {
     call: async fn(name, args) {
       lang.val = self.lang()
@@ -96,11 +82,12 @@ fn P52::chats_world(self : P52) -> @session_chats.World {
       chat_state.next_cb += 1
       let id = chat_state.next_cb
       chat_state.callbacks[id] = f
-      Obj([(@jsjson.units("$fn"), Num(id.to_double()))])
+      Obj([("$fn", Num(id.to_double()))])
     },
     words: self.cwords,
     lang,
     thrown,
+    live,
   }
 }
 
@@ -111,7 +98,7 @@ fn P52::chats_world(self : P52) -> @session_chats.World {
 /// (The listener is async and a change is told on the bus's own turn: kept there, not called there.) Not answered, it
 /// failed every state an agent recorded (`no such store method: subscribe`).
 fn P52::store_subscribe(self : P52, listener : J) -> J {
-  let id = jnum_of(Json::object({ "f": jfield(p52_json_of_jv(listener), "$fn") }), "f")
+  let id = jv_num(listener, "$fn")
     .unwrap_or(-1.0)
     .to_int()
   let seen : Array[Json] = []
@@ -124,12 +111,12 @@ fn P52::store_subscribe(self : P52, listener : J) -> J {
     let told = chat_state.callbacks.get(id)
     chat_state.callbacks.remove(id)
     match told {
-      Some(f) => for change in seen { f([jv_of(change)]) |> ignore }
+      Some(f) => for change in seen { f([to_jv(change)]) |> ignore }
       None => ()
     }
     Null
   }
-  Obj([(@jsjson.units("$fn"), Num(stop_id.to_double()))])
+  Obj([("$fn", Num(stop_id.to_double()))])
 }
 
 ///|
@@ -144,25 +131,30 @@ fn P52::peers_callback(self : P52) -> J {
       let id = chat_state.next_cb
       chat_state.callbacks[id] = async fn(given) {
         let station = match given.get(0) {
-          Some(Str(u)) => @jsjson.text(u)
+          Some(Str(u)) => @jsjson.sanitize_str(u)
           _ => ""
         }
-        jv_of(self.storage_call("peers.call", [jstr(station), p52_json_of_jv(given.get(1).unwrap_or(Null))]))
+        to_jv(self.storage_call("peers.call", [jstr(station), of_jv(given.get(1).unwrap_or(Null))]))
       }
       chat_state.peers_cb = Some(id)
       id
     }
   }
-  Obj([(@jsjson.units("$fn"), Num(id.to_double()))])
+  Obj([("$fn", Num(id.to_double()))])
 }
 
 ///|
 /// The conversations' storage parts (session_storage `Storage`), their station's calls answered here.
-fn P52::storage(self : P52) -> @session_storage.Storage {
+fn P52::storage(self : P52) -> @session_storage.Storage raise LiveError {
   @session_storage.Storage::new(
-    @session_storage.Station::new(async fn(name, args) {
-      self.storage_call(name, args)
-    }),
+    @session_storage.Station::new(
+      self.bus.store,
+      self.threads,
+      self.the_hub(),
+      path([self.data, "archive"]),
+      () => told_threads(self.bus, self.threads),
+      async fn(name, args) { self.storage_call(name, args) },
+    ),
     self.files,
   )
 }
@@ -174,86 +166,17 @@ async fn P52::storage_call(
   args : Array[Json],
 ) -> Json {
   let a = (i : Int32) => args.get(i).unwrap_or(Json::null())
-  if name.has_prefix("store.") {
-    return self.store(name[6:].to_owned(), args)
-  }
   match name {
-    "hub.notify" => {
-      self
-      .the_hub()
-      .act(jtext(Json::object({ "k": a(0) }), "k").unwrap_or(""), "notify", args=[
-        a(1),
-      ])
-      Json::null()
-    }
     "hub.setOpening" => {
-      chat_state.openings[a(0).stringify()] = jv_of(a(1))
-      Json::null()
-    }
-    "fn.archiveChat" => {
-      self.the_hub().archive_chat(a(0), a(1) is True)
-      Json::null()
-    }
-    "fn.configure" => {
-      let target = match a(0) { String(k) => k; _ => "" }
-      self.the_hub().configure(target, a(1), lang="en")
-      Json::null()
-    }
-    "fn.contextAsked" =>
-      match @session_hub.context_asked(self.words, match a(0) { Null => None; x => Some(x) }, "en") {
-        Some(Some(n)) => Json::number(n)
-        _ => Json::null()
-      }
-    "fn.inferRuntime" => {
-      let ws = match a(0) { String(w) => Some(w); _ => None }
-      let cur = match a(1) { String(r) => r; _ => "" }
-      let model = match a(2) { String(m) => m; _ => "" }
-      let available = self.the_hub().profiles_in(ws)
-      let rts_of = (p : Json) =>
-        match jfield(p, "runtimes") {
-          Array(xs) => xs.filter_map(x => match x { String(s) => Some(s); _ => None })
-          _ => []
-        }
-      let fits_cur = available.iter().any(p => rts_of(p).contains(cur) && @session_hub.runs(p, model))
-      if fits_cur {
-        Json::null()
-      } else {
-        let matched : Array[String] = []
-        for p in available {
-          if @session_hub.runs(p, model) {
-            for r in rts_of(p) {
-              if !matched.contains(r) {
-                matched.push(r)
-              }
-            }
-          }
-        }
-        if matched.length() == 1 {
-          Json::string(matched[0])
-        } else if matched.length() > 1 {
-          raise @session_storage.failed("model \{model} runs on multiple runtimes (\{matched.join(", ")}): pass runtime")
-        } else {
-          Json::null()
-        }
-      }
-    }
-    "clones.changed" => {
-      self.bus.notify_store({ "type": jstr("clones") })
-      Json::null()
-    }
-    "clones.kill" => {
-      match a(0) {
-        Number(pid, ..) => ignore(kill(pid.to_int(), "SIGKILL", group=true))
-        _ => ()
-      }
+      chat_state.shared.set_opening(a(0).stringify(), to_jv(a(1)))
       Json::null()
     }
     _ =>
       if name.has_prefix("log.") {
-        live_log(
+        slice_log(
           name[4:].to_owned(),
-          jtext(Json::object({ "a": a(0) }), "a").unwrap_or("storage"),
-          jtext(Json::object({ "m": a(1) }), "m").unwrap_or(""),
+          as_text(a(0)).unwrap_or("storage"),
+          as_text(a(1)).unwrap_or(""),
           a(2),
         )
         Json::null()
@@ -261,7 +184,7 @@ async fn P52::storage_call(
         match self.storage_world(name, args) {
           Some(v) => v
           // (the rest as the conversations' world answers it: the hub's methods, its readers, the files, the deps)
-          None => p52_json_of_jv(self.chats_answer(name, args.map(jv_of), args))
+          None => of_jv(self.chats_answer(name, args.map(to_jv), args))
         }
       }
   }
@@ -275,22 +198,22 @@ fn thrown_of(e : Error, thrown : Ref[J]) -> Error {
   match e {
     @session_chats.Thrown(code, _) => {
       if code != "" {
-        thrown.val = jv_of({ "code": Json::string(code) })
+        thrown.val = to_jv({ "code": Json::string(code) })
       }
       e
     }
     _ if @sql.busy(e) => {
       // (node:sqlite's SQLITE_BUSY: conversations.mbt `state_write` takes it for StateWriteBusy)
-      thrown.val = jv_of({ "errcode": Json::number(5.0) })
+      thrown.val = to_jv({ "errcode": Json::number(5.0) })
       @session_chats.Thrown("SqliteError", said_of(e))
     }
     @drive.FsError(f) => {
-      thrown.val = jv_of({ "code": Json::string(f.code) })
+      thrown.val = to_jv({ "code": Json::string(f.code) })
       @session_chats.Thrown(f.code, f.message)
     }
     @store_threads.MessageWriteBusy => @session_chats.Thrown("MessageWriteBusy", "message write is busy")
     @store_threads.CcSessionsUnavailable(ss) => {
-      thrown.val = jv_of({ "sessions": Json::array(ss.map(Json::string)) })
+      thrown.val = to_jv({ "sessions": Json::array(ss.map(Json::string)) })
       @session_chats.Thrown("CcSessionsUnavailable", "cc sessions unavailable")
     }
     @store_threads.DecisionSessionsUnavailable =>
@@ -305,7 +228,7 @@ fn thrown_of(e : Error, thrown : Ref[J]) -> Error {
 ///|
 /// One of the names the conversations ask (session_chats `World.call`).
 async fn P52::chats_call(self : P52, name : String, args : Array[J], thrown : Ref[J]) -> J {
-  let given = args.map(x => p52_json_of_jv(x))
+  let given = args.map(x => of_jv(x))
   thrown.val = Null
   let r = Ok(self.chats_answer(name, args, given)) catch { e => Err(e) }
   match r {
@@ -323,29 +246,18 @@ async fn P52::chats_answer(
 ) -> J {
   let a = (i : Int32) => args.get(i).unwrap_or(Json::null())
   let s = (i : Int32) => {
-    match a(i) {
-      String(x) => x
-      _ => ""
-    }
+    as_text(a(i)).unwrap_or("")
   }
   let (part, meth) = match name.find(".") {
     Some(i) => (name[:i].to_owned(), name[i + 1:].to_owned())
     None => (name, "")
   }
-  let db = self.bus.db
   match part {
     "store" if meth == "subscribe" => self.store_subscribe(raw.get(0).unwrap_or(Null))
-    "store" => jv_of(self.store(meth, args))
+    "store" => to_jv(self.store(meth, args))
     "hub" =>
       match meth {
-        "has" => {
-          let readers = [
-            "historyMessages", "latestMessages", "statePendingCard", "stateQuestion",
-            "reviewPendingCard", "historyPendingCard", "openedChatSaid", "forkReview",
-          ]
-          J::Bool(readers.contains(s(0)))
-        }
-        "isNull" => J::Bool(false)
+        "has" => J::Bool(s(0) == "forkReview")
         "storeHas" => J::Bool(s(0) != "pendingCardHeaderIfReady")
         "chatHasApi" =>
           J::Bool(
@@ -364,77 +276,17 @@ async fn P52::chats_answer(
         "chatProp" =>
           if s(0) == @session_hub.internal_connect {
             match s(1) {
-              "botUserId" => j_s("UEMBER")
+              "botUserId" => @jsjson.JValue::of_string("UEMBER")
               _ => j_undef()
             }
           } else {
             match connect_surfaces.get(s(0)).map(c => jfield(c, s(1))) {
               Some(Null) | None => j_undef()
-              Some(v) => jv_of(v)
+              Some(v) => to_jv(v)
             }
           }
-        "sameChat" => J::Bool(s(0) == s(1))
-        "chatOfExists" =>
-          J::Bool(
-            s(0) == @session_hub.internal_connect ||
-            (self.the_hub().world.chat)(s(0)) is Some(_),
-          )
-        "hasActor" => J::Bool(self.the_hub().actors.contains(s(0)))
-        "actorId" =>
-          if self.the_hub().actors.contains(s(0)) {
-            j_s(s(0))
-          } else {
-            Null
-          }
-        "latestMessages" =>
-          jv_of(@readops.latest_messages(db, { "thread": a(0), "limit": a(1) }))
-        "openedChatSaid" =>
-          jv_of(
-            @readops.opened_chat_said(db, {
-              "thread": a(0),
-              "author": a(1),
-              "agentOnly": a(2),
-            }),
-          )
-        "historyMessages" =>
-          jv_of(
-            @readops.chat_history_messages(db, {
-              "thread": a(0),
-              "before": a(1),
-              "limit": a(2),
-            }),
-          )
-        "historyPendingCard" => jv_of(@readops.pending_card_number(db, a(0)))
-        "stateQuestion" =>
-          jv_of(
-            @readops.state_question(db, {
-              "key": a(0),
-              "threads": a(1),
-              "ts": a(2),
-            }),
-          )
-        "statePendingCard" =>
-          jv_of(@readops.state_pending_card(db, { "threads": a(0) }))
-        "reviewPendingCard" =>
-          jv_of(@readops.review_pending_card(db, { "thread": a(0) }))
-        "link" => j_opt((self.the_hub().world.link)(s(0)))
-        "workspaces" => J::Arr(self.the_hub().workspaces().map(j_s))
-        "station" => j_opt((self.the_hub().world.station)())
-        "wsOf" =>
-          j_opt(
-            self
-            .the_hub()
-            .ws_of(
-              match a(0) {
-                String(x) => Some(x)
-                _ => None
-              },
-            ),
-          )
-        "surface" => j_s(self.the_hub().surface(s(0)))
-        "nextTs" => j_s(self.the_hub().next_ts())
-        "now" => J::Num(wall_ms().to_double())
-        "config" => jv_of(self.config)
+        "workspaces" => J::Arr(self.the_hub().workspaces().map(@jsjson.JValue::of_string))
+        "nextTs" => @jsjson.JValue::of_string(self.the_hub().next_ts())
         // (hub.ts `peers()`: how a message for a chat moved to another station is carried there, messages.ts
         // `fromPeer`; one function kept, as the TypeScript's hook is one)
         "peers" => if self.bound() { self.peers_callback() } else { Null }
@@ -442,7 +294,7 @@ async fn P52::chats_answer(
           let (text, files) = self
             .the_hub()
             .fetched(s(0), s(1), s(2), args[3:].to_owned())
-          J::Arr([j_s(text), J::Arr(files.map(jv_of))])
+          J::Arr([@jsjson.JValue::of_string(text), J::Arr(files.map(to_jv))])
         }
         // (hub.ts `fork(effect)` of review.ts `suggestArchive`: the review of a chat that ended all_done, run in the
         // background on the hub's runtime, a failure of it the review's own)
@@ -458,23 +310,23 @@ async fn P52::chats_answer(
           Null
         }
         "fork" => Null
-        _ => jv_of(@session_hub.hub_call(self.the_hub(), meth, args))
+        _ => to_jv(@session_hub.hub_call(self.the_hub(), meth, args))
       }
     "chat" | "chatOf" => {
       let connect = s(0)
       if connect == @session_hub.internal_connect {
         match meth {
-          "post" => j_s(@session_hub.next_ts_at(wall_ms().to_double()))
+          "post" => @jsjson.JValue::of_string(@session_hub.next_ts_at(wall_ms().to_double()))
           "userName" =>
             match self.user_name(connect, s(1)) {
-              Some(n) => j_s(n)
+              Some(n) => @jsjson.JValue::of_string(n)
               None => Null
             }
-          "botUserId" => j_s("UEMBER")
+          "botUserId" => @jsjson.JValue::of_string("UEMBER")
           _ => j_undef()
         }
       } else {
-        jv_of(
+        to_jv(
           (self.bus.coord_ask.val)("chat." + meth, {
             "connect": jstr(connect),
             "args": Json::array(args[1:].to_owned()),
@@ -486,99 +338,12 @@ async fn P52::chats_answer(
       let key = s(0)
       guard self.actors_program is Some(p) else { return Null }
       match p.actors.get(key) {
-        Some(actor) => jv_of(actor.hub_asked(meth, args[1:].to_owned()))
+        Some(actor) => to_jv(actor.hub_asked(meth, args[1:].to_owned()))
         None => Null
       }
     }
-    "state" =>
-      match meth {
-        "heldGet" =>
-          match chat_state.held.get(s(0)) {
-            Some(m) => m.get(s(1)).unwrap_or(j_undef())
-            None => j_undef()
-          }
-        "heldEnsure" => {
-          if !chat_state.held.contains(s(0)) {
-            chat_state.held[s(0)] = Map([])
-          }
-          Null
-        }
-        "heldSize" =>
-          J::Num(
-            chat_state.held
-            .get(s(0))
-            .map(m => m.length())
-            .unwrap_or(0)
-            .to_double(),
-          )
-        "heldDeleteOldest" => {
-          match chat_state.held.get(s(0)) {
-            Some(m) =>
-              match m.keys().next() {
-                Some(k) => m.remove(k)
-                None => ()
-              }
-            None => ()
-          }
-          Null
-        }
-        "heldSet" => {
-          match chat_state.held.get(s(0)) {
-            Some(m) => m[s(1)] = raw.get(2).unwrap_or(Null)
-            None => ()
-          }
-          Null
-        }
-        "heldDelete" => {
-          match chat_state.held.get(s(0)) {
-            Some(m) => m.remove(s(1))
-            None => ()
-          }
-          Null
-        }
-        "heldCountNext" => {
-          chat_state.held_count += 1
-          J::Num(chat_state.held_count.to_double())
-        }
-        "openingGet" =>
-          match chat_state.openings.get(a(0).stringify()) {
-            Some(Obj(fs)) =>
-              Obj([..fs, (@jsjson.units("$id"), raw.get(0).unwrap_or(Null))])
-            Some(o) => o
-            None => Null
-          }
-        "openingClaim" => {
-          match chat_state.openings.get(a(0).stringify()) {
-            Some(Obj(fs)) =>
-              chat_state.openings[a(0).stringify()] = Obj(
-                [
-                  ..fs.filter(f => @jsjson.text(f.0) != "claimed"),
-                  (@jsjson.units("claimed"), raw.get(2).unwrap_or(Null)),
-                ],
-              )
-            _ => ()
-          }
-          Null
-        }
-        "openingDelete" => {
-          chat_state.openings.remove(a(0).stringify())
-          Null
-        }
-        "openingIs" => J::Bool(chat_state.openings.contains(a(0).stringify()))
-        "titleRequestSet" => {
-          chat_state.titles[a(0).stringify()] = raw.get(1).unwrap_or(Null)
-          Null
-        }
-        "titleRequestGet" =>
-          chat_state.titles.get(a(0).stringify()).unwrap_or(Null)
-        "titleRequestDelete" => {
-          chat_state.titles.remove(a(0).stringify())
-          Null
-        }
-        _ => raise LiveError("no state op \{meth}")
-      }
     "fn" => {
-      let id = jnum_of(Json::object({ "f": jfield(a(0), "$fn") }), "f")
+      let id = jnum_of(a(0), "$fn")
         .unwrap_or(-1.0)
         .to_int()
       match chat_state.callbacks.get(id) {
@@ -586,96 +351,56 @@ async fn P52::chats_answer(
         None => raise LiveError("no function \{id}")
       }
     }
-    "db" => {
-      let sql = s(0)
-      let params = args[1:].to_owned()
-      match meth {
-        "exec" => {
-          db.exec(sql)
-          Null
-        }
-        "get" =>
-          match db.all(sql, params) {
-            [row, ..] => jv_of(Json::object(row))
-            _ => j_undef()
-          }
-        "all" => J::Arr(db.all(sql, params).map(r => jv_of(Json::object(r))))
-        _ => {
-          ignore(db.run(sql, params))
-          Null
-        }
-      }
-    }
     "log" => {
-      live_log(meth, s(0), s(1), a(2))
+      slice_log(meth, s(0), s(1), a(2))
       Null
     }
-    "wall" => {
-      match a(0) {
-        Number(ms, ..) => @effect.sleep(ms.to_int())
-        _ => ()
-      }
-      Null
-    }
-    "random" =>
-      if meth == "uuid" {
-        j_s(@drive.random_uuid())
-      } else {
-        let n = jnum_of(Json::object({ "n": a(0) }), "n")
-          .unwrap_or(16.0)
-          .to_int()
-        j_s(@drive.hex(@drive.random_bytes(n)))
-      }
-    "fs" => jv_of(self.fs_op(meth, args))
-    "os" => j_s(homedir())
-    "path" => {
-      let parts = args.map(x => {
-        match x {
-          String(t) => t
-          _ => ""
-        }
-      })
-      let start = parts
-        .rev()
-        .search_by(p => {
-          p.has_prefix("/") || (p.length() > 1 && p[1:2].to_owned() == ":")
-        })
-      let from = match start {
-        Some(i) => parts.length() - 1 - i
-        None => -1
-      }
-      let base = if from < 0 {
-        [@drive.cwd(), ..parts]
-      } else {
-        parts[from:].to_owned()
-      }
-      j_s(@nodepath.join(sep(), base))
-    }
-    "files" =>
+    "fs" => to_jv(self.fs_op(meth, args))
+    "files" => {
+      let now = @host.now().to_double()
       if meth == "profileFilesRead" {
+        // (a check reads the profile's files first: read again now, kept for `readLately`)
+        match a(0) {
+          Object(m) =>
+            match m.get("home") {
+              Some(String(home)) if home != "" =>
+                for name in ["config.toml", "auth.json"] {
+                  let p = @nodepath.join(sep(), [home, name])
+                  self.read_lately[p] = (now, self.host.read_text(p) catch { _ => None })
+                }
+              _ => ()
+            }
+          _ => ()
+        }
         Null
       } else {
-        match (self.host.read_text(s(0)) catch { _ => None }) {
-          Some(t) => j_s(t)
+        let p = s(0)
+        let text = match self.read_lately.get(p) {
+          Some((at, text)) if now - at < 10_000.0 => text
+          _ => {
+            let text = self.host.read_text(p) catch { _ => None }
+            if self.read_lately.length() >= 256 && !self.read_lately.contains(p) {
+              self.read_lately.clear()
+            }
+            self.read_lately[p] = (now, text)
+            text
+          }
+        }
+        match text {
+          Some(t) => @jsjson.JValue::of_string(t)
           None => Null
         }
       }
+    }
     "drivers" => J::Bool(self.drivers.contains(s(0)))
-    "dep" => self.dep(meth, raw, args)
-    "presets" => jv_of(self.presets_answer(meth, args))
+    "dep" => self.dep(meth, args)
+    "presets" => to_jv(self.presets_answer(meth, args))
     "accounts" =>
-      jv_of((self.bus.jobs_ask.val)("accounts." + meth, Json::array(args)))
+      to_jv((self.bus.jobs_ask.val)("accounts." + meth, Json::array(args)))
     "logins" =>
-      jv_of((self.bus.ui_ask.val)("logins." + meth, Json::array(args)))
-    "places" =>
-      match meth {
-        "mac" => J::Bool(platform() == "darwin")
-        "protects" => J::Bool(platform() == "darwin" && protected_place(s(0)))
-        "file" => raw.get(0).unwrap_or(Null)
-        _ => Null
-      }
-    "repoIndex" => jv_of(self.repo_index_answer(meth, args))
-    "net" => jv_of(self.net_fetch(meth, args))
+      to_jv((self.bus.ui_ask.val)("logins." + meth, Json::array(args)))
+    "repoIndex" => to_jv(self.repo_index_answer(meth, args))
+    "net" => to_jv(self.net_fetch(meth, args))
     // (a runtime session of its own a conversation opens, apart from any actor's: regenerate_title.mbt's, a chat's
     // new title asked of one of its agents' runtimes, regenerate-title.ts `driver.open`)
     "driver" if meth == "open" => self.side_open(s(0), a(1), raw.get(2).unwrap_or(Null))
@@ -696,23 +421,27 @@ async fn P52::chats_answer(
 /// events kept for `events` (a callback of theirs) as they come. A handle of it is answered (`{"$side": n}`).
 async fn P52::side_open(self : P52, runtime : String, options : Json, events : J) -> J {
   guard self.drivers.get(runtime) is Some(driver) else { raise LiveError("no driver for \{runtime}") }
-  let callback = jnum_of(Json::object({ "f": jfield(p52_json_of_jv(events), "$fn") }), "f").unwrap_or(-1.0).to_int()
+  let callback = jv_num(events, "$fn").unwrap_or(-1.0).to_int()
   let told : Array[J] = []
   let wake : Ref[@effect.Deferred[Unit]] = Ref(@effect.Deferred::new())
-  let agent = (driver.open)(options, event => {
-    told.push(event)
-    ignore(wake.val.succeed(()))
-  })
+  let agent = (driver.open)(
+    options,
+    event => {
+      told.push(event)
+      ignore(wake.val.succeed(()))
+    },
+    () => false,
+  )
   chat_state.next_side += 1
   let n = chat_state.next_side
   chat_state.sides[n] = { agent, told, wake, events: callback, until: wall_ms().to_double() + @session_chats.title_timeout_ms }
-  Obj([(@jsjson.units("$side"), Num(n.to_double()))])
+  Obj([("$side", Num(n.to_double()))])
 }
 
 ///|
 /// What a conversation asks of a runtime session it opened (`agent.<meth>`, its handle `handle`).
 async fn P52::side_agent(_self : P52, meth : String, handle : Json, text : String) -> J {
-  let n = jnum_of(Json::object({ "n": jfield(handle, "$side") }), "n").unwrap_or(-1.0).to_int()
+  let n = jnum_of(handle, "$side").unwrap_or(-1.0).to_int()
   guard chat_state.sides.get(n) is Some(side) else { raise LiveError("no runtime session \{n} opened here") }
   match meth {
     "prompt" => {
@@ -770,210 +499,22 @@ fn protected_place(p : String) -> Bool {
 ///|
 /// The files as the station's own file system answers (session_chats' `fs.*`).
 async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
-  let s = (i : Int32) => {
-    match args.get(i) {
-      Some(String(x)) => x
-      _ => ""
-    }
-  }
-  // What to write: a string's UTF-8, or the bytes a route gave (`{"$bytes": base64}`).
-  let data = (i : Int32) => {
-    match args.get(i) {
-      Some(String(x)) => @utf8.encode(x)
-      Some(Object({ "$bytes": String(b), .. })) =>
-        @base64.decode(b) catch {
-          _ => b""
-        }
-      _ => b""
-    }
-  }
-  let fail = (e : Error) => {
-    match e {
-      @drive.FsError(f) => @session_chats.Thrown(f.code, f.message)
-      other => @session_chats.Thrown("", said_of(other))
-    }
-  }
-  // (read off the program's thread; Node's ENOENT where it does not open, as `@drive.read_all`'s)
-  let read_whole = async fn(p : String) -> Bytes raise {
-    match (self.host.read_bytes(p) catch { e => raise fail(e) }) {
-      Some(b) => b
-      None => raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
-    }
-  }
-  match op {
-    "readText" =>
-      Json::string(
-        @utf8.decode_lossy(read_whole(s(0))),
-      )
-    "writeFile" => {
-      // (node's `flag: "wx"`: refused where the file is there, as the hub's uploads ask it)
-      if args.get(2) is Some(Object({ "flag": String("wx"), .. })) &&
-        attempt(() => @drive.lstat(s(0))) is Ok(_) {
-        raise @session_chats.Thrown(
-          "EEXIST",
-          "EEXIST: file already exists, open '\{s(0)}'",
-        )
-      }
-      if live_write_ffi(live_c(s(0)), data(1), 0) != 0 {
-        raise @session_chats.Thrown("EIO", "EIO: i/o error, open '\{s(0)}'")
-      }
-      Json::null()
-    }
-    "appendFile" => {
-      // (the hub's uploads add each part at the file's end, making it with the first)
-      // (made only where it is not there: another failure is the append's, never a part written over)
-      let had = match attempt(() => @drive.stat(s(0))) {
-        Ok(st) => Some(st.size)
-        Err(@drive.FsError(f)) if f.code == "ENOENT" => None
-        Err(e) => raise fail(e)
-      }
-      ignore(
-        @drive.write_part(s(0), {
-          create: had is None,
-          offset: had.unwrap_or(0.0),
-          data: data(1),
-          at_least: None,
-          truncate: None,
-          sync: false,
-        }) catch {
-          e => raise fail(e)
-        },
-      )
-      Json::null()
-    }
-    "access" => {
-      ignore(@drive.stat(s(0)) catch { e => raise fail(e) })
-      Json::null()
-    }
-    "statfs" =>
-      // (statfs's fields: blocks of one byte each, as the disk's sizes say them)
-      match disk_of(s(0)) {
-        Some((free, total)) =>
-          { "blocks": jn(total), "bavail": jn(free), "bsize": jn(1.0) }
-        None =>
-          raise @session_chats.Thrown(
-            "ENOENT",
-            "ENOENT: no such file or directory, statfs '\{s(0)}'",
-          )
-      }
-    "rename" => {
-      @drive.rename(s(0), s(1)) catch {
-        e => raise fail(e)
-      }
-      Json::null()
-    }
-    "mkdir" => {
-      @drive.mkdir(s(0), true) catch {
-        e => raise fail(e)
-      }
-      Json::null()
-    }
-    "rm" => {
-      ignore(remove_tree(s(0)))
-      Json::null()
-    }
-    "copyFile" => {
-      // (node's copyFile replaces what is there unless its mode says COPYFILE_EXCL (1); the drive's never does)
-      let excl = match args.get(2) {
-        Some(Number(m, ..)) => (m.to_int() & 1) == 1
-        _ => false
-      }
-      if excl {
-        @drive.copy_file(s(0), s(1)) catch {
-          e => raise fail(e)
-        }
-      } else {
-        copy_file_over(s(0), s(1)) catch {
-          e => raise fail(e)
-        }
-      }
-      Json::null()
-    }
-    "symlink" => {
-      if live_symlink_ffi(live_c(s(0)), live_c(s(1))) != 0 {
-        raise @session_chats.Thrown(
-          "EEXIST",
-          "EEXIST: file already exists, symlink '\{s(0)}' -> '\{s(1)}'",
-        )
-      }
-      Json::null()
-    }
-    "readdir" =>
-      // (`withFileTypes`: each entry's name and whether it is a folder, as the routes read it)
-      if args.get(1) is Some(Object({ "withFileTypes": True, .. })) {
-        Json::array(
-          (@drive.readdir(s(0)) catch { e => raise fail(e) }).map(d => {
-            ({ "name": Json::string(d.name), "dir": Json::boolean(d.is_dir) } : Json)
-          }),
-        )
-      } else {
-        Json::array(
-          (@drive.names(s(0)) catch { e => raise fail(e) }).map(Json::string),
-        )
-      }
-    "readdirTypes" => {
-      let names = @drive.names(s(0)) catch { e => raise fail(e) }
-      Json::array(
-        names.map(n => {
-          let st = attempt(() => @drive.lstat(path([s(0), n])))
-          (
-            {
-              "name": jstr(n),
-              "isFile": jb(st is Ok(x) && x.file),
-              "isDirectory": jb(st is Ok(x) && x.dir),
-            } : Json)
-        }),
-      )
-    }
-    "readBase64" =>
-      Json::string(
-        @drive.base64(read_whole(s(0))),
-      )
-    "stat" => {
-      let st = @drive.stat(s(0)) catch { e => raise fail(e) }
-      {
-        "isFile": jb(st.file),
-        "isDirectory": jb(st.dir),
-        "size": jn(st.size),
-        "mtimeMs": jn(st.mtime_ms),
-      }
-    }
-    "readHead" => {
-      let want = match args.get(1) {
-        Some(Number(n, ..)) => n
-        _ => 0.0
-      }
-      let show = match args.get(2) {
-        Some(Number(n, ..)) => n.to_int()
-        _ => want.to_int()
-      }
-      let (bytes, _, _) = @drive.read_part(s(0), 0.0, want) catch {
-        e => raise fail(e)
-      }
-      let cut = if bytes.length() < show { bytes.length() } else { show }
-      {
-        "text": jstr(@utf8.decode_lossy(bytes[0:cut].to_owned())),
-        "got": ji(bytes.length()),
-      }
-    }
-    _ => raise @session_chats.Thrown("", "no fs op \{op}")
+  host_fs_op(self.host, op, args) catch {
+    DispatchFsError(c, m) => raise @session_chats.Thrown(c, m)
+    e => raise e
   }
 }
 
 ///|
-/// The deps of src/sessions the conversations ask by name, as their MoonBit.
+/// The deps of src/sessions the conversations ask by name (stateful/IO/platform ops).
 async fn P52::dep(
   self : P52,
   name : String,
-  raw : Array[J],
   args : Array[Json],
 ) -> J {
   let a = (i : Int32) => args.get(i).unwrap_or(Json::null())
   let s = (i : Int32) => {
-    match a(i) {
-      String(x) => x
-      _ => ""
-    }
+    as_text(a(i)).unwrap_or("")
   }
   let storage = self.storage()
   let opt = (v : Json) => {
@@ -984,88 +525,15 @@ async fn P52::dep(
     }
   }
   match name {
-    "USED_WITHIN_MS" => J::Num(@session_hub.used_within_ms)
-    "accessKind" => j_s(@session_hub.access_kind(a(0)))
-    "agyBaseModel" => {
-      let (model, effort) = @session_hub.agy_base_model(s(0))
-      jv_of(
-        match effort {
-          Some(e) => { "model": jstr(model), "effort": jstr(e) }
-          None => { "model": jstr(model) }
-        },
-      )
-    }
-    "devinFusionBase" => {
-      let model = @session_hub.devin_fusion_base(s(0))
-      jv_of({ "model": jstr(model) })
-    }
-    "splitDevinFusion" =>
-      match @session_hub.split_devin_fusion(s(0)) {
-        Some((lead, effort, side)) =>
-          jv_of(
-            match effort {
-              Some(e) =>
-                { "lead": jstr(lead), "effort": jstr(e), "side": jstr(side) }
-              None => { "lead": jstr(lead), "side": jstr(side) }
-            },
-          )
-        None => Null
-      }
-    "askWhich" => j_s(@session_hub.ask_which(jitems(a(0)), s(1)))
-    "candidates" =>
-      J::Arr(
-        @session_hub.candidates(
-          jitems(a(0)),
-          match a(1) {
-            String(r) => Some(r)
-            _ => None
-          },
-          leads=a(2) is True,
-        ).map(jv_of),
-      )
-    "choose" =>
-      jv_of(@session_hub.choose(jitems(a(0)), jitems(a(1)), leads=jitems(a(2))))
-    "contextAsked" =>
-      match @session_hub.context_asked(self.words, opt(a(0)), self.lang()) {
-        None => j_undef()
-        Some(None) => Null
-        Some(Some(n)) => J::Num(n)
-      }
-    "firstLine" => j_s(@session_hub.first_line(s(0)))
-    "fromBefore" => J::Bool(@session_storage.from_before(s(0)))
-    "iso" =>
-      j_s(
-        @session_hub.iso(
-          jnum_of(Json::object({ "n": a(0) }), "n").unwrap_or(0.0),
-        ),
-      )
-    "isSlackMethod" => J::Bool(@session_hub.is_slack_method(s(0)))
-    "isSlackWrite" => J::Bool(@mcp_tools.is_slack_write(s(0)))
-    "linkedSession" =>
-      match @session_storage.linked_session(s(0)) {
-        Some((key, n)) =>
-          J::Arr([
-            j_s(key),
-            match n {
-              Some(x) => J::Num(x.to_double())
-              None => Null
-            },
-          ])
-        None => Null
-      }
-    "linkedStation" => j_opt(@session_storage.linked_station(s(0)))
     "named" =>
       match
         storage.named(
           s(0),
-          match a(1) {
-            String(w) => Some(w)
-            _ => None
-          },
+          as_text(a(1)),
         ) {
-        Thread(t) => jv_of({ "type": jstr("thread"), "thread": t })
+        Thread(t) => to_jv({ "type": jstr("thread"), "thread": t })
         Session(key, n) =>
-          jv_of({
+          to_jv({
             "type": jstr("session"),
             "key": jstr(key),
             "entry": match n {
@@ -1078,15 +546,12 @@ async fn P52::dep(
       J::Bool(
         storage.reachable(
           s(0),
-          match a(1) {
-            String(w) => Some(w)
-            _ => None
-          },
+          as_text(a(1)),
           write=a(2) is True,
         ),
       )
-    "scopeOf" => j_opt(storage.scope_of(s(0)))
-    "sessionThreadOf" => jv_of(storage.session_thread_of(s(0)))
+    "scopeOf" => @jsjson.JValue::of_opt_string(storage.scope_of(s(0)))
+    "sessionThreadOf" => to_jv(storage.session_thread_of(s(0)))
     "peersOf" =>
       match storage.peers_of(s(0)) {
         Some(call) => {
@@ -1095,12 +560,12 @@ async fn P52::dep(
           let id = chat_state.next_cb
           chat_state.callbacks[id] = async fn(given) {
             let station = match given.get(0) {
-              Some(Str(u)) => @jsjson.text(u)
+              Some(Str(u)) => @jsjson.sanitize_str(u)
               _ => ""
             }
-            jv_of(call(station, p52_json_of_jv(given.get(1).unwrap_or(Null))))
+            to_jv(call(station, of_jv(given.get(1).unwrap_or(Null))))
           }
-          Obj([(@jsjson.units("$fn"), Num(id.to_double()))])
+          Obj([("$fn", Num(id.to_double()))])
         }
         None => Null
       }
@@ -1110,171 +575,42 @@ async fn P52::dep(
         .sendable(
           s(0),
           jitems(a(1)).map(x => {
-            match x {
-              String(t) => t
-              _ => ""
-            }
+            as_text(x).unwrap_or("")
           }),
         )
         .map(l => {
-          jv_of({
+          to_jv({
             "path": jstr(l.path),
             "name": jstr(l.name),
             "size": jn(l.size),
           })
         }),
       )
-    "needArg" =>
-      match a(0) {
-        Object(m) => j_opt(@session_hub.need_arg(m, a(1), s(2)))
-        _ => Null
-      }
-    "stateArg" =>
-      match @session_hub.state_arg(opt(a(0))) {
-        Some((state, said)) => J::Arr([jv_of(state), j_s(said)])
-        None => Null
-      }
-    "cardArg" =>
-      match @session_hub.card_arg(opt(a(0)), opt(a(1))) {
-        Some(c) => jv_of(c)
-        None => Null
-      }
-    "cardSaid" => j_s(@session_hub.card_said(a(0)))
-    "placeFigures" => j_s(@session_hub.place_figures(s(0), jitems(a(1))))
-    "slackWithFiles" => {
-      let (text, rest) = @session_hub.slack_with_files(
-        self.words,
-        s(0),
-        jitems(a(1)),
-        s(2),
-      )
-      J::Arr([j_s(text), j_s(rest)])
-    }
     "prepareLocalLinks" =>
       match
         prepare_local_links(
           s(0),
           jitems(a(1)).map(x => {
-            match x {
-              String(t) => t
-              _ => ""
-            }
+            as_text(x).unwrap_or("")
           }),
           s(2),
         ) {
         Ok((text, paths)) =>
-          jv_of({
+          to_jv({
             "text": jstr(text),
             "paths": Json::array(paths.map(Json::string)),
           })
         Err(why) => raise @session_chats.Thrown("", why)
       }
-    "threadsToldOf" => J::Arr(self.the_hub().threads_told_of(s(0)).map(j_s))
+    "threadsToldOf" => J::Arr(self.the_hub().threads_told_of(s(0)).map(@jsjson.JValue::of_string))
     "newSession" => {
       let (key, thread) = self.the_hub().new_session(a(0), lang=self.lang())
-      J::Arr([j_s(key), jv_of(thread)])
+      J::Arr([@jsjson.JValue::of_string(key), to_jv(thread)])
     }
-    // (agents/profiles.ts `profileRuntimes`: the runtimes an account runs, by its access; not a hub config's own list)
-    "profileRuntimes" => J::Arr(@agent_runtimes.profile_runtimes(raw.get(0).unwrap_or(Null)).map(j_s))
-    "profileEnv" => {
-      let pairs = fields_pairs(@agent_runtimes.profile_env(jv_of(a(0)), s(1)))
-      Obj(pairs.map(p => (@jsjson.units(p.0), j_s(p.1))))
-    }
-    "usable" => J::Bool(@session_hub.usable(a(0), None))
     // (image-size.ts `shownFactsSoon`: a film's or a GIF's size, length and frames read from its head as hubops'
     // and the world's; the picture's ThumbHash is `keep`'s, made in its one decode)
-    "shownFactsSoon" => jv_of(shown_facts(self.host, s(0)))
-    "makeReadStore" => j_s("readStore")
-    "readStateQuestion" =>
-      jv_of(
-        @readops.state_question(self.bus.db, {
-          "key": a(1),
-          "threads": a(2),
-          "ts": a(3),
-        }),
-      )
-    "readStatePendingCard" =>
-      jv_of(@readops.state_pending_card(self.bus.db, { "threads": a(1) }))
-    "localeCompare" => J::Num(@drive.collate(s(0), s(1)).to_double())
-    "policyFrom" => jv_of(@session_storage.policy_from(opt(a(0))).to_json())
-    "policyQuestion" =>
-      jv_of(
-        @session_storage.policy_question(
-          @session_storage.policy_from(Some({ "policy": a(0) })),
-        ),
-      )
-    "archiveMass" =>
-      J::Num(
-        @session_storage.archive_mass(
-          a(0),
-          @session_storage.policy_from(Some({ "policy": a(1) })),
-        ),
-      )
-    "recommends" =>
-      J::Bool(
-        @session_storage.recommends(
-          a(0),
-          @session_storage.policy_from(Some({ "policy": a(1) })),
-          jnum_of(Json::object({ "n": a(2) }), "n").unwrap_or(0.0),
-        ),
-      )
-    "dshRoute" =>
-      match @agent_runtimes.dsh_route(jv_of(a(0))) {
-        Some(r) => r.json()
-        None => Null
-      }
-    "expandRoute" => {
-      let env = match a(0) {
-        Object(m) =>
-          m
-          .iter()
-          .map(kv => {
-            (
-              kv.0,
-              match kv.1 {
-                String(v) => v
-                _ => ""
-              },
-            )
-          })
-          .to_array()
-        _ => []
-      }
-      Obj(
-        @agent_drivers.expand_route(env, s(1)).map(p => {
-          (@jsjson.units(p.0), j_s(p.1))
-        }),
-      )
-    }
-    "apiSource" =>
-      match
-        @agent_runtimes.api_source(@agent_runtimes.profile_via(jv_of(a(0)))) {
-        Some((_, at)) => J::Arr([Null, at.json()])
-        None => j_undef()
-      }
-    "given" => j_opt(jtext(a(0), "given"))
-    "titleOf" => {
-      let t = a(0)
-      let first = match a(1) {
-        String(x) => Some(x)
-        _ => None
-      }
-      j_s(
-        match jtext(t, "title") {
-          Some(title) if title != "" => title
-          _ =>
-            match first {
-              Some(f) => @session_hub.first_line(f)
-              None =>
-                @agent_runtimes.thread_address(
-                  jtext(t, "channel").unwrap_or(""),
-                  jtext(t, "threadTs").unwrap_or(""),
-                )
-            }
-        },
-      )
-    }
-    "claim" => J::Arr(storage.claim(s(0), s(1), s(2), opt(a(3))).map(jv_of))
+    "shownFactsSoon" => to_jv(shown_facts(self.host, s(0)))
+    "claim" => J::Arr(storage.claim(s(0), s(1), s(2), opt(a(3))).map(to_jv))
     "sendAlong" => {
       let peers = storage.peers_of(s(2))
       match peers {
@@ -1290,55 +626,16 @@ async fn P52::dep(
           J::Arr(
             storage
             .send_along(call, s(1), s(2), s(3), files)
-            .map(p => jv_of({ "id": jstr(p.0), "name": jstr(p.1) })),
+            .map(p => to_jv({ "id": jstr(p.0), "name": jstr(p.1) })),
           )
         }
         None => J::Arr([])
       }
     }
-    "keep" => J::Arr(@drive.keep(jitems(a(0)).map(jv_of), s(1), Some(codecs())))
-    "formatHistory" => {
-      let names = jitems(a(4)).filter_map(p => {
-        match p {
-          Array([String(k), String(v), ..]) => Some((k, v))
-          _ => None
-        }
-      })
-      let cards : Map[Double, @agent_runtimes.HistoryCard] = Map([])
-      for c in jitems(a(5)) {
-        match c {
-          Array([Number(n, ..), card, ..]) =>
-            cards[n] = {
-              card: match jfield(card, "card") {
-                Null => None
-                x => Some(jv_of(x))
-              },
-              pending: jfield(card, "pending") is True,
-              chose: match jfield(card, "chose") {
-                Object(_) as ch =>
-                  Some(
-                    (jtext(ch, "by").unwrap_or(""), jv_of(jfield(ch, "option"))),
-                  )
-                _ => None
-              },
-            }
-          _ => ()
-        }
-      }
-      j_s(
-        @agent_runtimes.format_history(
-          jitems(a(0)).map(jv_of),
-          s(1),
-          s(2),
-          s(3),
-          names,
-          cards~,
-        ),
-      )
-    }
+    "keep" => J::Arr(@drive.keep(jitems(a(0)).map(to_jv), s(1), Some(codecs())))
     "fileURLToPath" => {
       let u = s(0)
-      j_s(
+      @jsjson.JValue::of_string(
         if u.has_prefix("file://") {
           @session_storage.percent_decode(u[7:].to_owned())
         } else {
@@ -1347,7 +644,6 @@ async fn P52::dep(
       )
     }
     "opencodeGo" => j_undef()
-    "modelKey" => j_s(s(0).to_lower())
     "parseUrl" => {
       let u = s(0)
       match u.find("://") {
@@ -1357,7 +653,7 @@ async fn P52::dep(
             Some(j) => rest[:j].to_owned()
             None => rest
           }
-          jv_of({
+          to_jv({
             "protocol": jstr(u[:i + 1].to_owned()),
             "host": jstr(host),
             "href": jstr(u),
@@ -1366,22 +662,15 @@ async fn P52::dep(
         None => Null
       }
     }
-    _ => {
-      ignore(raw)
+    _ =>
       raise @session_chats.Thrown(
         "",
         "the conversations asked for dep.\{name}, which the station does not have",
       )
-    }
   }
 }
 
 // ── the agents' tools ──
-
-///|
-fn rjs(s : String) -> @api_routes.JV {
-  Str(s)
-}
 
 ///|
 /// What the tools ask the station's parts by name (mcp_tools `ToolsBackend`): the conversations', the endpoint's own
@@ -1399,12 +688,9 @@ async fn P52::tools_call(
   args : Array[@api_routes.JV],
 ) -> @api_routes.JV {
   let a = (i : Int32) => args.get(i).unwrap_or(Null)
-  let s = (i : Int32) => {
-    match a(i) {
-      Str(x) => x
-      _ => ""
-    }
-  }
+  let s = (i : Int32) => match a(i) { Str(x) => x; _ => "" }
+  let opt_s = (i : Int32) => match a(i) { Str(x) => Some(x); _ => None }
+  let jopt_jv = (x : String?) => match x { Some(t) => @api_routes.JV::Str(t); None => Null }
   let w = self.chats_world()
   let thrown = (e : Error) => {
     match e {
@@ -1415,12 +701,12 @@ async fn P52::tools_call(
           } else {
             kind
           },
-          @api_routes.jobj([("message", rjs(m))]),
+          @api_routes.jobj([("message", Str(m))]),
         )
       other =>
         @api_routes.Thrown(
           "Error",
-          @api_routes.jobj([("message", rjs(said_of(other)))]),
+          @api_routes.jobj([("message", Str(said_of(other)))]),
         )
     }
   }
@@ -1429,19 +715,18 @@ async fn P52::tools_call(
       e => raise thrown(e)
     }
   }
-  let jvx = (v : @api_routes.JV) => jv_of(@jsjson.JV::to_json(v))
   match name {
     "mcp.resolve" =>
-      match self.store("sessionKeyByToken", [jstr(s(0))]) {
-        String(k) => rjs(k)
+      match self.bus.store.session_key_by_token(s(0)) {
+        String(k) => Str(k)
         _ => @api_routes.jundef
       }
     "mcp.listing" => {
-      let row = self.store("getSession", [jstr(s(0))]) catch {
+      let row = self.bus.store.get_session(s(0)) catch {
         _ => Json::null()
       }
       match @session_hub.runtime_named(jtext(row, "runtime").unwrap_or("")) {
-        Some("agy") => @api_routes.jobj([("budget", @api_routes.jnum(26000.0))])
+        Some("agy") => @api_routes.jobj([("budget", @api_routes.jnum(22000.0))])
         Some("claude") =>
           @api_routes.jobj([
             (
@@ -1458,28 +743,24 @@ async fn P52::tools_call(
       if self.bound() && self.in_its_workspace(s(0)) {
         @api_routes.jundef
       } else {
-        rjs(@mcp_tools.unbound_refusal)
+        Str(@mcp_tools.unbound_refusal)
       }
-    "hub.store.handedTo" => @jsjson.JV::of_json(self.store("handedTo", [jstr(s(0))]))
+    "hub.store.handedTo" => to_jv(self.bus.store.handed_to(s(0)))
     "sessions/conversations.target" =>
       run(async fn() {
-        @jsjson.JV::of_json(
-          p52_json_of_jv(
-            @session_chats.target(
-              w,
-              s(1),
-              match a(2) {
-                Null => None
-                x => Some(jvx(x))
-              },
-            ),
-          ),
+        @session_chats.target(
+          w,
+          s(1),
+          match a(2) {
+            Null => None
+            x => Some(x)
+          },
         )
       })
     "sessions/conversations.mayStage" =>
       run(async fn() {
         @api_routes.jbool(
-          @session_chats.may_stage(w, jvx(a(1)), a(2) is Bool(true)),
+          @session_chats.may_stage(w, a(1), a(2) is Bool(true)),
         )
       })
     "sessions/conversations.staged" =>
@@ -1487,26 +768,26 @@ async fn P52::tools_call(
         let (given, copies) = @session_chats.staged(
           w,
           s(1),
-          jvx(a(2)),
+          a(2),
           a(3) is Bool(true),
         )
         chat_state.next_ref += 1
         let id = "staged.done:\{chat_state.next_ref}"
-        chat_state.refs[id] = J::Arr(copies.map(j_s))
+        chat_state.refs[id] = J::Arr(copies.map(@jsjson.JValue::of_string))
         @api_routes.jobj([
-          ("args", @jsjson.JV::of_json(p52_json_of_jv(given))),
-          ("done", @api_routes.jobj([("$ref", rjs(id))])),
+          ("args", given),
+          ("done", @api_routes.jobj([("$ref", Str(id))])),
         ])
       })
     "sessions/conversations.unheld" =>
       run(async fn() {
-        let held = @session_chats.unheld(w, s(1), jvx(a(2)))
+        let held = @session_chats.unheld(w, s(1), a(2))
         @api_routes.jobj([
-          ("args", @jsjson.JV::of_json(p52_json_of_jv(held.args))),
+          ("args", held.args),
           (
             "id",
             match held.id {
-              Some(i) => rjs(i)
+              Some(i) => Str(i)
               None => Null
             },
           ),
@@ -1520,164 +801,55 @@ async fn P52::tools_call(
             Some(Str(i)) => Some(i)
             _ => None
           },
-          args: jvx(@api_routes.jget(Some(held), "args").unwrap_or(a(2))),
+          args: @api_routes.jget(Some(held), "args").unwrap_or(a(2)),
         }
-        rjs(@session_chats.chat_post(w, s(1), jvx(a(2)), h))
+        Str(@session_chats.chat_post(w, s(1), a(2), h))
       })
     "sessions/conversations.chatState" =>
-      run(async fn() { rjs(@session_chats.chat_state(w, s(1), jvx(a(2)))) })
+      run(async fn() { Str(@session_chats.chat_state(w, s(1), a(2))) })
     "sessions/conversations.chatLeave" =>
-      run(async fn() { rjs(@session_chats.chat_leave(w, s(1), jvx(a(2)))) })
+      run(async fn() { Str(@session_chats.chat_leave(w, s(1), a(2))) })
     "sessions/conversations.chatHistory" =>
-      run(async fn() { rjs(@session_chats.chat_history(w, s(1), jvx(a(2)))) })
+      run(async fn() { Str(@session_chats.chat_history(w, s(1), a(2))) })
     "sessions/conversations.slackApi" =>
       run(async fn() {
-        rjs(
-          @session_chats.slack_api(
-            w,
-            s(1),
-            s(2),
-            jvx(a(3)),
-            match a(4) {
-              Str(x) => Some(x)
-              _ => None
-            },
-            match a(5) {
-              Str(x) => Some(x)
-              _ => None
-            },
-            a(6) is Bool(true),
-          ),
-        )
+        Str(@session_chats.slack_api(w, s(1), s(2), a(3), opt_s(4), opt_s(5), a(6) is Bool(true)))
       })
     "sessions/messages.sessionSend" =>
-      run(async fn() { rjs(@session_chats.session_send(w, s(1), jvx(a(2)))) })
+      run(async fn() { Str(@session_chats.session_send(w, s(1), a(2))) })
     "sessions/opened.chatCreate" =>
-      run(async fn() { rjs(@session_chats.chat_create(w, s(1), jvx(a(2)))) })
+      run(async fn() { Str(@session_chats.chat_create(w, s(1), a(2))) })
     "sessions/review.suggestArchive" => {
       let key = s(1)
-      ignore(
-        self.host.rt.fork_quiet(name="suggest archive", async fn() {
-          @session_chats.review(w, key) catch {
-            _ => ()
-          }
-        }),
-      )
+      ignore(self.host.rt.fork_quiet(name="suggest archive", async fn() { @session_chats.review(w, key) catch { _ => () } }))
       Null
     }
     "sessions/review.reviewUndecided" => {
-      ignore(
-        self.host.rt.fork_quiet(name="review undecided", async fn() {
-          @session_chats.review_undecided_once(w) catch {
-            _ => ()
-          }
-        }),
-      )
+      ignore(self.host.rt.fork_quiet(name="review undecided", async fn() { @session_chats.review_undecided_once(w) catch { _ => () } }))
       Null
     }
-    "sessions/review.policyWs" =>
-      match self.ws_of(s(1)) {
-        Some(ws) => rjs(ws)
-        None => Null
-      }
+    "sessions/review.policyWs" => jopt_jv(self.ws_of(s(1)))
     "sessions/archive-policy.currentPolicy" =>
-      run(async fn() {
-        @jsjson.JV::of_json(
-          self
-          .storage()
-          .current_policy(
-            match a(1) {
-              Str(x) => Some(x)
-              _ => None
-            },
-          )
-          .to_json(),
-        )
-      })
+      run(async fn() { to_jv(self.storage().current_policy(opt_s(1)).to_json()) })
     "sessions/archive-policy.savePolicy" =>
-      run(async fn() {
-        match
-          self
-          .storage()
-          .save_policy(
-            Some(@jsjson.JV::to_json(a(1))),
-            @jsjson.JV::to_json(a(2)),
-            match a(3) {
-              Str(x) => Some(x)
-              _ => None
-            },
-          ) {
-          Some(t) => rjs(t)
-          None => Null
-        }
-      })
+      run(async fn() { jopt_jv(self.storage().save_policy(Some(of_jv(a(1))), of_jv(a(2)), opt_s(3))) })
     "sessions/chat-archive.chatArchive" =>
-      run(async fn() {
-        rjs(self.storage().chat_archive(s(1), @jsjson.JV::to_json(a(2))))
-      })
+      run(async fn() { Str(self.storage().chat_archive(s(1), of_jv(a(2)))) })
     "sessions/chat-configure.chatConfigure" =>
-      run(async fn() {
-        rjs(self.storage().chat_configure(s(1), @jsjson.JV::to_json(a(2))))
-      })
+      run(async fn() { Str(self.storage().chat_configure(s(1), of_jv(a(2)))) })
     "sessions/others.chatList" =>
-      run(async fn() { rjs(self.storage().chat_list(s(1), @jsjson.JV::to_json(a(2)))) })
-    "sessions/others.scopeOf" =>
-      match self.storage().scope_of(s(1)) {
-        Some(x) => rjs(x)
-        None => Null
-      }
+      run(async fn() { Str(self.storage().chat_list(s(1), of_jv(a(2)))) })
+    "sessions/others.scopeOf" => jopt_jv(self.storage().scope_of(s(1)))
     "sessions/others.chatRead" =>
-      run(async fn() {
-        rjs(
-          self
-          .storage()
-          .chat_read(
-            s(1),
-            @jsjson.JV::to_json(a(2)),
-            None,
-            match a(4) {
-              Str(x) => Some(x)
-              _ => None
-            },
-          ),
-        )
-      })
+      run(async fn() { Str(self.storage().chat_read(s(1), of_jv(a(2)), None, opt_s(4))) })
     "sessions/others.sessionHistory" =>
-      run(async fn() {
-        rjs(
-          self
-          .storage()
-          .session_history(
-            @jsjson.JV::to_json(a(1)),
-            match a(2) {
-              Str(x) => Some(x)
-              _ => None
-            },
-          ),
-        )
-      })
-    "sessions/others.elsewhere" =>
-      match self.storage().elsewhere(s(1), s(2)) {
-        Some(x) => rjs(x)
-        None => Null
-      }
+      run(async fn() { Str(self.storage().session_history(of_jv(a(1)), opt_s(2))) })
+    "sessions/others.elsewhere" => jopt_jv(self.storage().elsewhere(s(1), s(2)))
     "sessions/others.readAfar" =>
       run(async fn() {
-        rjs(self.storage().read_afar(s(1), s(2), s(3), @jsjson.JV::to_json(a(4))))
+        Str(self.storage().read_afar(s(1), s(2), s(3), of_jv(a(4))))
       })
-    "sessions/others.linkedSession" =>
-      match @session_storage.linked_session(s(0)) {
-        Some((k, n)) =>
-          @api_routes.jarr([
-            rjs(k),
-            match n {
-              Some(x) => @api_routes.jnum(x.to_double())
-              None => Null
-            },
-          ])
-        None => Null
-      }
-    "paths.data" => rjs(self.data)
+    "paths.data" => Str(self.data)
     // ── the relays tool's (agents.ts `relayTools`) ──
     "relays.ways" =>
       if (self.bus.cloud_state.val)() is Some(_) {
@@ -1685,93 +857,83 @@ async fn P52::tools_call(
       } else {
         Null
       }
-    "relays.workspaceOf" =>
-      match self.ws_of(s(0)) {
-        Some(ws) => rjs(ws)
-        None =>
-          match self.place().home {
-            Some(h) => rjs(h)
-            None => Null
-          }
-      }
+    "relays.workspaceOf" => jopt_jv(either(self.ws_of(s(0)), self.place().home))
     // (agents.ts `meshList`, `revoke`, `enroll`: the mesh directory's, P5-1's on the bus)
     "relays.meshList" =>
-      match (self.bus.cloud_call.val)("meshList", { "workspace": @jsjson.JV::to_json(a(0)) }) {
+      match (self.bus.cloud_call.val)("meshList", { "workspace": of_jv(a(0)) }) {
         Null => @api_routes.jarr([])
-        said => @jsjson.JV::of_json(said)
+        said => to_jv(said)
       }
     // (where no mesh answers them, a program with no P5-1's: refused as agents.ts refuses them with no directory)
     "relays.revoke" =>
-      match (self.bus.cloud_call.val)("meshRevoke", { "workspace": @jsjson.JV::to_json(a(0)), "node": @jsjson.JV::to_json(a(1)) }) {
+      match (self.bus.cloud_call.val)("meshRevoke", { "workspace": of_jv(a(0)), "node": of_jv(a(1)) }) {
         Null => fail("native mesh relay control is not available on this station")
-        said => @jsjson.JV::of_json(said)
+        said => to_jv(said)
       }
     "relays.enroll" =>
-      match
-        (self.bus.cloud_call.val)("meshEnroll", {
-          "workspace": @jsjson.JV::to_json(a(0)),
-          "name": @jsjson.JV::to_json(a(1)),
-          "by": @jsjson.JV::to_json(a(2)),
-        }) {
+      match (self.bus.cloud_call.val)("meshEnroll", { "workspace": of_jv(a(0)), "name": of_jv(a(1)), "by": of_jv(a(2)) }) {
         Null => fail("native mesh relay enrollment is not available on this station")
-        said => @jsjson.JV::of_json(said)
+        said => to_jv(said)
       }
     "relays.by" => {
-      let row = self.store("getSession", [jstr(s(0))]) catch { _ => Json::null() }
-      rjs(@session_hub.agent_name(jtext(row, "title"), s(0)))
+      let row = self.bus.store.get_session(s(0)) catch { _ => Json::null() }
+      Str(@session_hub.agent_name(jtext(row, "title"), s(0)))
     }
-    "ways.view" => @jsjson.JV::of_json((self.bus.cloud_call.val)("ways", { "workspace": @jsjson.JV::to_json(a(0)) }))
-    "ways.cloud.state" =>
-      match (self.bus.cloud_state.val)() {
-        Some(st) => @jsjson.JV::of_json(st)
-        None => @api_routes.jundef
-      }
-    "mesh/ways.stillFails" => @jsjson.JV::of_json((self.bus.cloud_call.val)("stillFails", Json::null()))
-    "mesh/ways.relayUrl" =>
-      match @cloud_net.relay_url(@jsjson.JV::to_json(a(0)), insecure=a(1) is Bool(true)) {
-        Some(u) => rjs(u)
-        None => Null
-      }
+    "ways.view" => to_jv((self.bus.cloud_call.val)("ways", { "workspace": of_jv(a(0)) }))
+    "ways.cloud.state" => (self.bus.cloud_state.val)().map(to_jv).unwrap_or(@api_routes.jundef)
+    "mesh/ways.stillFails" => to_jv((self.bus.cloud_call.val)("stillFails", Json::null()))
     "mesh/ways.addRelay" =>
-      @jsjson.JV::of_json((self.bus.cloud_call.val)("addRelay", { "workspace": @jsjson.JV::to_json(a(1)), "url": @jsjson.JV::to_json(a(2)), "by": @jsjson.JV::to_json(a(3)) }))
+      to_jv((self.bus.cloud_call.val)("addRelay", { "workspace": of_jv(a(1)), "url": of_jv(a(2)), "by": of_jv(a(3)) }))
     "mesh/ways.removeRelay" =>
-      @jsjson.JV::of_json((self.bus.cloud_call.val)("removeRelay", { "workspace": @jsjson.JV::to_json(a(1)), "url": @jsjson.JV::to_json(a(2)) }))
-    // (relays.ts `probeRelay`: a relay reached over https, its answer's status)
+      to_jv((self.bus.cloud_call.val)("removeRelay", { "workspace": of_jv(a(1)), "url": of_jv(a(2)) }))
+    // (relays.ts `probeRelay`: a relay reached over https, its answer's status, redirects followed as its `fetch` does)
     "fetch" => {
-      let answer = (p5_oauth_io(self.host).fetch)({
-        url: s(0),
-        method_: "GET",
-        headers: [],
-        body: None,
-        timeout_ms: 10000,
-        manual: true,
-      })
+      let answer = (p5_oauth_io(self.host).fetch)({ url: s(0), method_: "GET", headers: [], body: None, timeout_ms: 10000, manual: false })
       @api_routes.jobj([("status", @api_routes.jnum(answer.status.to_double()))])
     }
     // ── the feedback's (feedback/module.ts) ──
-    "plane.spec" => @jsjson.JV::of_json((self.bus.cloud_call.val)("spec", Json::null()))
-    "plane.state.removed" => @jsjson.JV::of_json((self.bus.cloud_call.val)("removed", Json::null()))
-    "plane.state.state" =>
-      match (self.bus.cloud_state.val)() {
-        Some(st) => @jsjson.JV::of_json(st)
-        None => Null
-      }
+    "plane.spec" => to_jv((self.bus.cloud_call.val)("spec", Json::null()))
+    "plane.state.removed" => to_jv((self.bus.cloud_call.val)("removed", Json::null()))
+    "plane.state.state" => (self.bus.cloud_state.val)().map(to_jv).unwrap_or(Null)
     "cloud/signed.signedPost" =>
-      @jsjson.JV::of_json((self.bus.cloud_call.val)("signedPost", { "path": @jsjson.JV::to_json(a(2)), "tag": @jsjson.JV::to_json(a(3)), "value": @jsjson.JV::to_json(a(4)) }))
+      to_jv((self.bus.cloud_call.val)("signedPost", { "path": of_jv(a(2)), "tag": of_jv(a(3)), "value": of_jv(a(4)) }))
     "ops/agent-env.agentEnv" =>
-      @jsjson.JV::of_json(Json::object(Map::from_array(@ops_platform.agent_env((self.bus.config_raw.val)()).map(kv => (kv.0, Json::string(kv.1))))))
+      to_jv(Json::object(Map::from_array(@ops_platform.agent_env((self.bus.config_raw.val)()).map(kv => (kv.0, Json::string(kv.1))))))
     "agents.hub.notify" => {
-      self.the_hub().act(s(0), "notify", args=[jstr(s(1))])
+      ignore(self.the_hub().command(s(0), "notify", [jstr(s(1))]))
       Null
     }
     // (the fixed reports told a while after the station starts and as each release is out: this side's own timers,
     // `start_feedback`)
     "ops/fibers.Fibers.after" | "plane.told" => Null
-    "fs.open" => {
-      tool_files_next.val += 1
-      let h = "toolfile:\{tool_files_next.val}"
-      tool_files[h] = s(0)
-      @api_routes.jref(h)
+    "fs.readTail" => {
+      let path = s(0)
+      let most = match a(1) {
+        Num(n) => n
+        _ => 0.0
+      }
+      let (m, _) = self.host.shell("fs.meta", { "path": jstr(path) }) catch {
+        _ => return Null
+      }
+      guard jfield(m, "exists") != Json::boolean(false) &&
+        jnum_of(m, "size") is Some(size) else {
+        return Null
+      }
+      let from = if size - most > 0.0 { size - most } else { 0.0 }
+      let got = p51_file_piece(self.host, path, from, (size - from).to_int()) catch {
+        _ => return Null
+      }
+      let text = @api_routes.utf8_text(got)
+      Str(
+        if from == 0.0 {
+          text
+        } else {
+          match text.find("\n") {
+            Some(i) => text[i + 1:].to_owned()
+            None => text
+          }
+        },
+      )
     }
     "base" =>
       match (self.bus.cloud_state.val)() {
@@ -1779,73 +941,32 @@ async fn P52::tools_call(
           match
             (jtext(st, "origin"), jtext(st, "workspace"), jtext(st, "station")) {
             (Some(o), Some(ws), Some(station)) =>
-              rjs("\{o}/w/\{ws}/s/\{station}")
+              Str("\{o}/w/\{ws}/s/\{station}")
             _ => Null
           }
         _ => Null
       }
     "agentName" => {
-      let row = self.store("getSession", [jstr(s(0))]) catch {
+      let row = self.bus.store.get_session(s(0)) catch {
         _ => Json::null()
       }
       let title = jtext(row, "title")
-      rjs(@session_hub.agent_name(title, s(0)))
+      Str(@session_hub.agent_name(title, s(0)))
     }
-    // (paths.ts `joinPath`: a path given whole stays as it is)
-    "ops/paths.joinPath" =>
-      rjs(
-        if is_windows() {
-          @ops_platform.win_join(s(0), s(1))
-        } else {
-          @ops_platform.unix_join(s(0), s(1))
-        },
-      )
-    "os.hostname" => rjs(hostname())
-    "ops/version.version" => rjs(self.bus.version)
+    "os.hostname" => Str(hostname())
+    "ops/version.version" => Str(self.bus.version)
     "agents.pageOf" =>
       match self.page_of(s(0)) {
-        Some(l) => rjs(l)
+        Some(l) => Str(l)
         None => @api_routes.jundef
       }
     _ => {
       if name.has_prefix("store.") {
-        return @jsjson.JV::of_json(self.store(name[6:].to_owned(), args.map(@jsjson.JV::to_json)))
-      }
-      // (a file the tools opened, `fs.open`: its size, a piece of it, let go)
-      if name.has_prefix("toolfile:") {
-        let (h, call) = match name.rev_find(".") {
-          Some(i) => (name[:i].to_owned(), name[i + 1:].to_owned())
-          None => (name, "")
-        }
-        guard tool_files.get(h) is Some(file) else { return Null }
-        return match call {
-          "stat" =>
-            match attempt(() => @drive.stat(file)) {
-              Ok(st) => @api_routes.jobj([("size", @api_routes.jnum(st.size))])
-              Err(e) => raise thrown(e)
-            }
-          "read" => {
-            let len = match a(1) {
-              Num(n) => n.to_int()
-              _ => 0
-            }
-            let pos = match a(2) {
-              Num(n) => n
-              _ => 0.0
-            }
-            let got = p51_file_piece(self.host, file, pos, len) catch { e => raise thrown(e) }
-            @api_routes.jobj([("bytesRead", @api_routes.jnum(got.length().to_double())), ("buffer", @api_routes.jbytes(got))])
-          }
-          "close" => {
-            tool_files.remove(h)
-            Null
-          }
-          _ => Null
-        }
+        return to_jv(self.store(name[6:].to_owned(), args.map(of_jv)))
       }
       if name.has_prefix("staged.done:") {
         let copies = match chat_state.refs.get(name) {
-          Some(Arr(c)) => c.map(jstr_of)
+          Some(Arr(c)) => c.map(s => @jsjson.jval_str_of(Some(s)).unwrap_or(""))
           _ => []
         }
         chat_state.refs.remove(name)
@@ -1855,25 +976,22 @@ async fn P52::tools_call(
         return Null
       }
       if name.has_prefix("ops/log.log.") {
-        live_log(name[12:].to_owned(), s(0), s(1), @jsjson.JV::to_json(a(2)))
+        slice_log(name[12:].to_owned(), s(0), s(1), of_jv(a(2)))
         return Null
       }
       // (the forwards' are the gate's (P5-1 `@gate.Forwards`), answered on the bus as `$forwards`; the jobs' part
       // where no gate answers)
       if name.has_prefix("forwards.") {
-        let given = Json::array(args.map(@jsjson.JV::to_json))
+        let given = args.map(of_jv)
         let answered = Some(
-          self.bus.call_peer("self", None, "$forwards", {
-            "op": jstr(name),
-            "args": given,
-          }).0,
+          self.bus.forwards_call(name, given),
         ) catch {
           _ => None
         }
-        return @jsjson.JV::of_json(
+        return to_jv(
           match answered {
             Some(v) => v
-            None => (self.bus.jobs_ask.val)(name, given)
+            None => (self.bus.jobs_ask.val)(name, Json::array(given))
           },
         )
       }
@@ -1895,7 +1013,11 @@ async fn P52::tools_call(
       } else {
         self.bus.coord_ask
       }
-      @jsjson.JV::of_json((to.val)(name, Json::array(args.map(@jsjson.JV::to_json))))
+      match (try { Ok((to.val)(name, Json::array(args.map(of_jv)))) } catch { e => Err(e) }) {
+        Ok(v) => to_jv(v)
+        Err(P54Refused(kind, said)) => raise @api_routes.Thrown(kind, to_jv(said))
+        Err(e) => raise e
+      }
     }
   }
 }
@@ -1971,12 +1093,12 @@ fn P52::tools(self : P52) -> Array[@mcp_tools.Tool] {
   // (what the station's other parts add: tools/mcp.ts takes them as their own; one a part registers under a name
   // listed here is the part's, in that place: its instance holds the part's state, ours only asks it on the bus)
   for t in self.bus.parts.all_tools() {
-    let tool = @mcp_tools.Tool::new(@jsjson.JV::of_json(t.declared), async fn(
+    let tool = @mcp_tools.Tool::new(to_jv(t.declared), async fn(
       session,
       args,
       _,
     ) {
-      let out = (t.call)(@jsjson.JV::to_json(args), { "session": jstr(session) })
+      let out = (t.call)(of_jv(args), { "session": jstr(session) })
       match out {
         String(text) => text
         // (a part's refusal stays one: the call said as failed, isError)
@@ -2010,19 +1132,50 @@ let tools_order : Array[String] = [
 ///|
 /// The agents' door's `/mcp` (tools/http.ts over tools/mcp.ts `McpEndpoint`).
 async fn P52::mcp(self : P52, r : Request) -> Reply {
+  if self.mcp_draining {
+    let is_tool_call = match attempt(() => @json.parse(@utf8.decode_lossy(r.body))) {
+      Ok({ "method": String("tools/call"), .. }) => true
+      _ => false
+    }
+    if is_tool_call {
+      return json_reply(503, { "error": jstr("station is handing over") })
+    }
+  }
+  self.in_flight_mcp += 1
+  defer {
+    self.in_flight_mcp -= 1
+    if self.in_flight_mcp == 0 {
+      if self.mcp_drained is Some(d) {
+        self.mcp_drained = None
+        ignore(d.succeed(()))
+      }
+    }
+  }
   let endpoint = @mcp_tools.McpEndpoint::new(self.tools_backend(), () => {
     self.tools()
   })
   let answered = endpoint.handle(r.meth, r.header("authorization"), r.body)
+  if r.meth == "POST" && answered.status == 200 {
+    match attempt(() => @json.parse(@utf8.decode_lossy(r.body))) {
+      Ok({ "method": String("tools/list" | "tools/call"), "id": _, .. }) => {
+        let auth = r.header("authorization").unwrap_or("")
+        let token = (if auth.has_prefix("Bearer ") || auth.has_prefix("bearer ") {
+          auth[7:].to_owned()
+        } else {
+          auth
+        }).trim().to_owned()
+        if token != "" {
+          match self.bus.store.session_key_by_token(token) {
+            String(session) if session != "" => self.note_mcp_heard(session)
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
   match answered.body {
-    Some(b) => json_reply(answered.status, @jsjson.JV::to_json(b))
+    Some(b) => json_reply(answered.status, of_jv(b))
     None => { status: answered.status, headers: [], body: b"", }
   }
 }
-
-///|
-/// The files the tools opened (`fs.open`), by their handle: the path each reads.
-let tool_files : Map[String, String] = Map([])
-
-///|
-let tool_files_next : Ref[Int] = Ref(0)

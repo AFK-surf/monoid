@@ -17,10 +17,12 @@ test('a frame asked for at a pace is drawn on the next animation frame', async (
     getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 }) };
   const document = { createElement: () => ({ ...element(), getContext: () => ({}) }),
     getElementById: (id) => id === 'c' ? canvas : element(), addEventListener() {} };
-  const frames = [];
+  const frames = [], timers = [];
+  let now = 0;
   const win = { ...element(), document, navigator: { platform: 'MacIntel' }, location: { search: '' }, URLSearchParams,
-    Intl, queueMicrotask, devicePixelRatio: 1, performance: { now: () => 0 },
-    requestAnimationFrame(f) { frames.push(f); } };
+    Intl, queueMicrotask, devicePixelRatio: 1, performance: { now: () => now },
+    setTimeout(f, ms) { timers.push([f, ms]); return timers.length; },
+    requestAnimationFrame(f) { frames.push(f); return frames.length; } };
   win.window = win;
   vm.runInNewContext(source, win, { filename: 'host.js' });
   const H = win.__mbhost;
@@ -29,6 +31,10 @@ test('a frame asked for at a pace is drawn on the next animation frame', async (
   // the first frame, asked for as the host came to know what it decodes, drawn
   for (const f of frames.splice(0)) f(0);
   assert.equal(typeof H.framesPaced, 'function', 'the host answers frames_paced');
+  H.framesPaced(60);
+  assert.equal(frames.length, 1, 'high-rate pace draws on the next animation frame');
+  for (const f of frames.splice(0)) f(16.67);
   H.framesPaced(20);
-  assert.equal(frames.length, 1, 'one animation frame asked for');
+  assert.equal(frames.length, 0, 'low-rate pace waits via wakeAfter instead of immediate rAF');
+  assert.equal(timers.length, 1, 'timer scheduled for low-rate pace');
 });

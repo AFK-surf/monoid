@@ -5,7 +5,7 @@
 /// A mouse's, a chat with no agent yet on 大屏: where its station's tag is in the chat's bar.
 fn hover_tag_tester() -> (@ui.Tester, Double, Double) raise {
   let t = decide_core([], "chat-station-tag", wide=true)
-  let tag = t.locate("Willow").filter(fn(p) { p.1 < 40.0 })
+  let tag = t.locate("Willow").filter(fn(p) { p.1 > 600.0 && p.0 > 260.0 })
   guard tag.length() > 0 else { fail("no station's tag") }
   (t, tag[0].0, tag[0].1)
 }
@@ -46,7 +46,7 @@ test "a hover card closes hover_close_ms after the pointer left its trigger, as 
     t.frame()
     t.run_for(@sfpages.hover_close_ms - (t.time() - left) - hover_around_ms / 2.0)
     seen.push((t.time() - left, t.find("机器详情") is Some(_)))
-    t.run_for(hover_around_ms + @kit.presence_out_ms)
+    t.run_for(hover_around_ms + @motion.presence_out_ms)
     seen.push((t.time() - left, t.find("机器详情") is Some(_)))
   }
   assert_eq(seen.map(fn(s) { s.1 }), [true, false, true, false], msg="(ms after it left, open): \{Repr(seen)}")
@@ -113,7 +113,7 @@ test "a hover card closes hover_close_ms after the pointer left the window, as t
   let seen : Array[(Double, Bool)] = []
   t.run_for(@sfpages.hover_close_ms - (t.time() - left) - hover_around_ms / 2.0)
   seen.push((t.time() - left, t.find("机器详情") is Some(_)))
-  t.run_for(hover_around_ms + @kit.presence_out_ms)
+  t.run_for(hover_around_ms + @motion.presence_out_ms)
   seen.push((t.time() - left, t.find("机器详情") is Some(_)))
   assert_eq(seen.map(fn(s) { s.1 }), [true, false], msg="(ms after it left, open): \{Repr(seen)}")
 }

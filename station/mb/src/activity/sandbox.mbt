@@ -14,35 +14,8 @@ pub fn sha256_hex(data : Array[Int]) -> String {
 ///|
 /// A string's UTF-8 bytes as JavaScript encodes it for a hash (a lone surrogate as U+FFFD).
 pub fn utf8(s : String) -> Array[Int] {
-  let out = []
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let mut c = s.unsafe_charcode_at(i)
-    i += 1
-    if c >= 0xd800 && c <= 0xdbff && i < n && s.unsafe_charcode_at(i) >= 0xdc00 && s.unsafe_charcode_at(i) <= 0xdfff {
-      c = 0x10000 + ((c - 0xd800) << 10) + (s.unsafe_charcode_at(i) - 0xdc00)
-      i += 1
-    } else if c >= 0xd800 && c <= 0xdfff {
-      c = 0xfffd
-    }
-    if c < 0x80 {
-      out.push(c)
-    } else if c < 0x800 {
-      out.push(0xc0 | (c >> 6))
-      out.push(0x80 | (c & 0x3f))
-    } else if c < 0x10000 {
-      out.push(0xe0 | (c >> 12))
-      out.push(0x80 | ((c >> 6) & 0x3f))
-      out.push(0x80 | (c & 0x3f))
-    } else {
-      out.push(0xf0 | (c >> 18))
-      out.push(0x80 | ((c >> 12) & 0x3f))
-      out.push(0x80 | ((c >> 6) & 0x3f))
-      out.push(0x80 | (c & 0x3f))
-    }
-  }
-  out
+  let b = @jsjson.utf8(s)
+  Array::makei(b.length(), i => b[i].to_int())
 }
 
 ///|
@@ -156,19 +129,19 @@ pub fn sandbox_schema() -> String {
 
 ///|
 fn sandbox_meta(db : @sql.Db) -> Int? raise {
-  if first(db, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sandbox_name_meta'", []) is None {
+  if db.first("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sandbox_name_meta'", []) is None {
     return None
   }
-  let m = first(db, "SELECT version, enabled FROM sandbox_name_meta WHERE id = 1", [])
+  let m = db.first("SELECT version, enabled FROM sandbox_name_meta WHERE id = 1", [])
   let v = match m {
-    Some(r) => get(r, "version")
+    Some(r) => @sql.row_val(r, "version")
     None => Json::null()
   }
   guard v is Number(n, ..) && n.to_int() == sandbox_version && m is Some(r) else {
     let said = if v is Null { "missing" } else { v.stringify() }
     raise Failure("sandbox name index version \{said} is incompatible with \{sandbox_version}")
   }
-  match get(r, "enabled") {
+  match @sql.row_val(r, "enabled") {
     Number(e, ..) => Some(e.to_int())
     _ => Some(0)
   }
@@ -208,13 +181,13 @@ pub fn sandbox_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
   guard limit >= 1 else { raise Failure("sandbox name batch must be positive") }
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
-  guard first(db, "SELECT version, enabled, phase, cursor, prune, end_session, end_prune FROM sandbox_name_meta WHERE id = 1", [])
+  guard db.first("SELECT version, enabled, phase, cursor, prune, end_session, end_prune FROM sandbox_name_meta WHERE id = 1", [])
     is Some(meta) &&
-    get(meta, "version") is Number(v, ..) &&
+    @sql.row_val(meta, "version") is Number(v, ..) &&
     v.to_int() == sandbox_version else {
     raise Failure("sandbox name index version is incompatible with \{sandbox_version}")
   }
-  if !(get(meta, "enabled") is Number(1.0, ..)) {
+  if !(@sql.row_val(meta, "enabled") is Number(1.0, ..)) {
     db.exec("COMMIT")
     return true
   }
@@ -228,15 +201,15 @@ pub fn sandbox_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
       )
     _ => ()
   }
-  let present = (session : Json) => first(db, "SELECT 1 FROM sessions WHERE key = ?", [session]) is Some(_)
-  let prune = get(meta, "prune") is Number(1.0, ..)
-  let end_session = get(meta, "end_session")
-  let end_prune = get(meta, "end_prune")
-  let mut phase = match get(meta, "phase") {
+  let present = (session : Json) => db.first("SELECT 1 FROM sessions WHERE key = ?", [session]) is Some(_)
+  let prune = @sql.row_val(meta, "prune") is Number(1.0, ..)
+  let end_session = @sql.row_val(meta, "end_session")
+  let end_prune = @sql.row_val(meta, "end_prune")
+  let mut phase = match @sql.row_val(meta, "phase") {
     Number(p, ..) => p.to_int()
     _ => 0
   }
-  let mut cursor = get(meta, "cursor")
+  let mut cursor = @sql.row_val(meta, "cursor")
   let mut visited = 0
   while visited < limit {
     let lim = Json::number((limit - visited).to_double())
@@ -254,7 +227,7 @@ pub fn sandbox_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
         continue
       }
       for row in rows {
-        let session = get(row, "session")
+        let session = @sql.row_val(row, "session")
         save(session)
         ignore(db.run("DELETE FROM sandbox_name_dirty WHERE session = ?", [session]))
         cursor = session
@@ -274,7 +247,7 @@ pub fn sandbox_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
         continue
       }
       for row in rows {
-        let session = get(row, "session")
+        let session = @sql.row_val(row, "session")
         if !present(session) {
           ignore(db.run("DELETE FROM sandbox_name_rows WHERE session = ?", [session]))
         }
@@ -287,7 +260,7 @@ pub fn sandbox_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
         break
       }
       for row in rows {
-        let session = get(row, "session")
+        let session = @sql.row_val(row, "session")
         if !present(session) {
           ignore(db.run("DELETE FROM sandbox_name_rows WHERE session = ?", [session]))
         } else {
@@ -299,7 +272,7 @@ pub fn sandbox_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
     }
   }
   ignore(db.run("UPDATE sandbox_name_meta SET phase = ?, cursor = ? WHERE id = 1", [Json::number(phase.to_double()), cursor]))
-  let done = phase == 2 && first(db, "SELECT 1 FROM sandbox_name_dirty LIMIT 1", []) is None
+  let done = phase == 2 && db.first("SELECT 1 FROM sandbox_name_dirty LIMIT 1", []) is None
   db.exec("COMMIT")
   done
 }

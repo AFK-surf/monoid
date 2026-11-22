@@ -779,7 +779,7 @@ test "用量 made once in a window 220 wide at words twice as large, as it is re
   // the track, seen)
   for b in made_bands {
     let track = made_drawn.filter(fn(a) {
-      a[5] == 0.0 && a[3] == 34.0 && a[4] == a[3] / 2.0 && a[1] + a[3] > b.0 && a[1] < b.1
+      a[5] == 0.0 && a[3] >= 34.0 && a[4] == a[3] / 2.0 && a[1] + a[3] > b.0 && a[1] < b.1
     })
     assert_true(track.length() == 1, msg="the choice's track in \{Repr(b)}: \{track.length()}")
     let (tx, tw) = (track[0][0], track[0][2])

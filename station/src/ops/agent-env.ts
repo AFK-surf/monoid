@@ -95,11 +95,15 @@ export function keepLocal(env: Record<string, string>): Record<string, string> {
   return { ...env, NO_PROXY: kept, no_proxy: kept };
 }
 
-/// The environment for what the station starts for its agents: its own, these variables over it, less `scrubbed`; this
-/// machine kept out of a proxy.
+/// The station's own variables, never given to what it starts: `STILLFAIL_MESH_FRONT` names the launcher's front, whose
+/// socket binds the station's iroh endpoint, and a test an agent runs that found it took the station off the mesh.
+export const STATION_INTERNAL = ["STILLFAIL_MESH_FRONT"];
+
+/// The environment for what the station starts for its agents: its own, these variables over it, less `scrubbed` and
+/// the station's internal ones; this machine kept out of a proxy.
 export function startEnv(scrubbed: string[] = []): Record<string, string> {
   const env = { ...process.env, ...agentEnv() };
-  return keepLocal(Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => e[1] !== undefined && !scrubbed.includes(e[0]))));
+  return keepLocal(Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => e[1] !== undefined && !scrubbed.includes(e[0]) && !STATION_INTERNAL.includes(e[0]))));
 }
 
 /// Whether a value says more than it should be shown (a key, a token, a proxy's password): masked on the pages.

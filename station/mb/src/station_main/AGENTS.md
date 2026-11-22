@@ -2,8 +2,8 @@
 
 - `stillfail-reader` is the station itself when its arguments ask for it (`entry.mbt` `is_station`: a hook's file,
   a sandbox's bridge or a Claude TUI's (`<…>/claude-tui.mjs` and its `hook` and `mcp`: claude_tui.mbt, line for line
-  as src/agents/claude-tui.mjs, which a session a station from before started still runs under Node), one of `run`,
-  `enroll`, `status`, `id`, `lock`, `channel`, `update`, `heap`, or `run`'s flags with no command);
+  as assets/agents/claude-tui.mjs, which a session a station from before started still runs under Node), one of `run`,
+  `enroll`, `status`, `id`, `lock`, `channel`, `update`, `heap`, `admin`, or `run`'s flags with no command);
   every reader and builder mode (`--data`, `--serve`, `--sessions`, `--builder …`) stays reader/main.mbt's as it was.
 - What the shell (client/shell) does not do is `sys.c`'s, POSIX and `_WIN32` both, built into the reader for every
   target (station/mb/build.sh takes `src/*/*.c`): what comes later (a child's output and end, a lock taken, a control
@@ -27,13 +27,20 @@
   its tools and door places the parts', parts.mbt), health.json and the heartbeat, `heap`, a handover (what the parts
   carry) and its taking up. It makes the composition bus once the store opens (`live_bus.mbt`: what services.ts's
   layers give each other) and starts the live slices on it, a file family each (`live_p5_<N>_*.mbt`, each its
-  `start_live_p5_<N>`): P5-1 first, then on a whole station P5-2, P5-3, P5-4 and P5-5 in that order (P5-3 finds the
-  hub's sessions' program there and mounts `#jobs` and `#remote` on it); a station that only runs tasks (`--rig`, or
+  `start_live_p5_<N>`; the JSON readers and makers, the `Json`/`JValue` conversions, the log line and the other small
+  helpers they share are `live_util.mbt`'s, never a slice's prefixed copy; shared cross-slice infrastructure dispatch
+  and async FS/store/clock/process primitives live in `live_dispatch.mbt` — `host_fs_op`/`host_*`, `dispatch_store`,
+  `dispatch_store_threads`, `dispatch_threads_card`, `dispatch_infra`, `build_updates_world`, `fork_bg`, `bus_after`,
+  `bus_pty_terminal` — any new slice adapter must reuse them rather than re-implementing `fs.*`/`store.*`/`config.*`/
+  `cloud.*`/`events.*`/`os.*`/`platform.*`/`crypto.*` dispatch or adding main-thread sync FS calls): P5-1 first, then on a whole station P5-2,
+  P5-3, P5-4 and P5-5 in that order (P5-3 finds the hub's sessions' program there and mounts `#jobs` and `#remote` on
+  it); a station that only runs tasks (`--rig`, or
   cloud.json's `rig`) starts P5-3 and the devices of P5-4 alone. What one slice asks of another goes by name on the bus
   (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file;
   what several slices follow is a list on the bus each adds to (`on_release`, `on_peer_heard`, `on_trim`,
-  `register_pids`). What is asked often across slices is a typed method of the bus (live_bus.mbt `hub_notify`,
-  `jobs_stop`, …), its fields named once there. station/test/mb-station-contracts.test.ts holds every `Ref` of the bus
+  `register_pids`). What is asked often across slices or by named fields, and every `$…` handler a slice asks of this
+  station's own (`call_peer("self", …)`: `admin_called`, `forwards_call`, …), is a typed method of the bus
+  (live_bus.mbt `hub_notify`, `jobs_stop`, …), its fields named once there. station/test/mb-station-contracts.test.ts holds every `Ref` of the bus
   given by a slice, every name asked on a `*_ask` to one its slice's dispatcher answers, every method session_hub asks
   of an actor to one reader/actor_run.mbt answers, and every `parts.carry`, `plane.told` and `events.follow` hook of the
   TypeScript's given here; station/test/mb-live-hooks-parity.test.ts holds them live.
@@ -84,3 +91,7 @@
   `timer:` why. A command named bare is found on the PATH it is given, then in the system's own directories
   (sys.mbt `resolved_program`, the shell's `proc.run`), so a station whose PATH names none of them still runs `ps`,
   `lsof` or `git`.
+- A decided card's request (a phone's, a rig's) is written by the part's write callback inside
+  `@store_threads.Store::save_card_outcome`'s transaction with the card's close and its queued outcome
+  (live_dispatch.mbt `cardOutcomes.save`), as store.ts `saveCardOutcome` does: such a callback is synchronous
+  (adb_devices `World.write`, rigs_mode `World.callback`), never one that could wait inside the transaction.

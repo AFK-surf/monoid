@@ -598,7 +598,7 @@ pub fn ChromePictures::to_j(self : ChromePictures) -> J {
 fn ChromePictures::of_j(j : J) -> ChromePictures {
   let buttons = match get(Some(j), "buttons") {
     Some(Obj(ps)) =>
-      ps.map(p => (@jsjson.text(p.0), text(get(Some(p.1), "up")).unwrap_or(""), text(get(Some(p.1), "down"))))
+      ps.map(p => (@jsjson.sanitize_str(p.0), text(get(Some(p.1), "up")).unwrap_or(""), text(get(Some(p.1), "down"))))
     _ => []
   }
   { body: text(get(Some(j), "body")).unwrap_or(""), buttons }

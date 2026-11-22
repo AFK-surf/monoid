@@ -172,3 +172,87 @@ test "tabs in a phone's width, both looks: nothing the audit finds" {
     assert_eq(k.t.audit(), [], msg=if look is Pill { "pill" } else { "underline" })
   }
 }
+
+///|
+test "tabs_node: indicator slide animation causes zero relayout (laid == 0)" {
+  for look in [Underline, Pill] {
+    let k = tabs2(look~, keep_mounted=true)
+    k.t.click(Tab, label="任务")
+    k.t.draw()
+    k.t.tree_frames_from_now()
+    k.t.run_for(@ui.move_most_ms)
+    for f in k.t.tree_frames() {
+      assert_eq(f.laid, 0, msg="tabs_node indicator slide relaid out: \{Repr(f)}")
+    }
+  }
+}
+
+///|
+test "tabs_node: panel content enters in sync with indicator direction and settles cleanly" {
+  for kept in [false, true] {
+    let k = tabs2(keep_mounted=kept)
+    let rest_x = k.t.rect_of("对话面板").unwrap().0
+    // (switch rightward: 对话 -> 任务; panel starts shifted right (+dx) and fades in)
+    k.t.click(Tab, label="任务")
+    if !@ui.test_at_a_rate() {
+      k.t.frame()
+      let w_mid = k.t.words().iter().find_first(fn(w) { w.0 == "任务面板" }).unwrap()
+      assert_true(w_mid.1 > rest_x, msg="rightward switch enters from +x: rest=\{rest_x}, mid=\{w_mid.1}")
+      assert_true(w_mid.5 > 0.0 && w_mid.5 < 1.0, msg="rightward switch fades in: alpha=\{w_mid.5}")
+    }
+    k.t.run_for(@ui.move_most_ms)
+    let w_end = k.t.words().iter().find_first(fn(w) { w.0 == "任务面板" }).unwrap()
+    assert_true((w_end.1 - rest_x).abs() < 0.5, msg="settled x matches rest: rest=\{rest_x}, end=\{w_end.1}")
+    assert_true((w_end.5 - 1.0).abs() < 0.01, msg="settled alpha is 1: \{w_end.5}")
+    assert_eq(k.t.audit(), [])
+
+    // (switch leftward: 任务 -> 对话; panel starts shifted left (-dx) and fades in)
+    k.t.click(Tab, label="对话")
+    if !@ui.test_at_a_rate() {
+      k.t.frame()
+      let w_left = k.t.words().iter().find_first(fn(w) { w.0 == "对话面板" }).unwrap()
+      assert_true(w_left.1 < rest_x, msg="leftward switch enters from -x: rest=\{rest_x}, mid=\{w_left.1}")
+      assert_true(w_left.5 > 0.0 && w_left.5 < 1.0, msg="leftward switch fades in: alpha=\{w_left.5}")
+    }
+    k.t.run_for(@ui.move_most_ms)
+    let w_back = k.t.words().iter().find_first(fn(w) { w.0 == "对话面板" }).unwrap()
+    assert_true((w_back.1 - rest_x).abs() < 0.5, msg="settled back x matches rest: rest=\{rest_x}, back=\{w_back.1}")
+    assert_true((w_back.5 - 1.0).abs() < 0.01, msg="settled back alpha is 1: \{w_back.5}")
+    assert_eq(k.t.audit(), [])
+  }
+}
+
+///|
+test "tabs_node: 1.0x and 1.3x keep exact tab height; 2.0x scales tabs and indicator with zero fixed_outgrown or squeeze_faults" {
+  for look in [Underline, Pill] {
+    let base_h = match look {
+      Underline => tabs_line_h
+      Pill => tabs_pill_h
+    }
+    let k = tabs2(look~)
+    assert_eq(k.t.get(Tab, label="对话").rect.3, base_h, msg="1.0x tab height \{Repr(look)}")
+    assert_eq(k.t.fixed_outgrown(), [], msg="1.0x fixed_outgrown \{Repr(look)}")
+    assert_eq(k.t.squeeze_faults(), [], msg="1.0x squeeze_faults \{Repr(look)}")
+    k.t.set_font_scale(1.3)
+    k.t.draw()
+    assert_eq(k.t.get(Tab, label="对话").rect.3, base_h, msg="1.3x tab height \{Repr(look)}")
+    assert_eq(k.t.fixed_outgrown(), [], msg="1.3x fixed_outgrown \{Repr(look)}")
+    assert_eq(k.t.squeeze_faults(), [], msg="1.3x squeeze_faults \{Repr(look)}")
+    k.t.set_font_scale(2.0)
+    k.t.draw()
+    let h2 = k.t.get(Tab, label="对话").rect.3
+    if look is Pill {
+      assert_true(h2 > base_h, msg="2.0x pill tab height grew: \{h2}")
+    } else {
+      assert_true(h2 >= base_h, msg="2.0x underline tab height: \{h2}")
+    }
+    assert_eq(k.t.fixed_outgrown(), [], msg="2.0x fixed_outgrown \{Repr(look)}")
+    assert_eq(k.t.squeeze_faults(), [], msg="2.0x squeeze_faults \{Repr(look)}")
+    k.t.set_font_scale(3.0)
+    k.t.draw()
+    let h3 = k.t.get(Tab, label="对话").rect.3
+    assert_true(h3 > base_h, msg="3.0x tab height grew \{Repr(look)}: \{h3}")
+    assert_eq(k.t.fixed_outgrown(), [], msg="3.0x fixed_outgrown \{Repr(look)}")
+    assert_eq(k.t.squeeze_faults(), [], msg="3.0x squeeze_faults \{Repr(look)}")
+  }
+}

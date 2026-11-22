@@ -12,10 +12,12 @@
 // the drivers are given them (live_p5_2_io.mbt `driver_error_of`: a renewal refused by its kind, every one by its words,
 // never `Error: station/accounts_oauth.Said.Said`), and Claude's logins asking the accounts with the token refused
 // (live_p5_2_drivers.mbt `p52_claude_logins`). A job followed again through a restart (its start as the system says
-// it, against the wall's time it was kept at) is mb-live-p5-3.test.ts's, beside the station's other jobs.
+// it, against the wall's time it was kept at) is mb-live-p5-3.test.ts's, beside the station's other jobs. The
+// conversations' files (live_p5_2_chats.mbt `host_fs_op`, which the repositories' index walks a home by) asked of the
+// shell off the program's thread: a walk over thousands of folders held every fiber 28–40 s while it listed each on it.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -273,4 +275,87 @@ test("the accounts' failures reach the drivers by their kind and their words; Cl
     ],
     given: ["tok-new-1", "tok-new-2", "tok-new-3", "tok-new-4", "tok-new-5"],
   });
+});
+
+test("the repositories' index walks a home through the shell's files, each listing letting the program's other fibers run", { skip }, async () => {
+  const { ok } = harness();
+  const home = fresh("home");
+  // (a cache's shards: thousands of files in folders of their own, none a repository)
+  for (let i = 0; i < 40; i++) {
+    const shard = join(home, "cache", i.toString(16).padStart(2, "0"));
+    mkdirSync(shard, { recursive: true });
+    for (let j = 0; j < 100; j++) writeFileSync(join(shard, `${j}.mbc`), "");
+  }
+  const repo = (p: string) => {
+    mkdirSync(join(p, ".git"), { recursive: true });
+    writeFileSync(join(p, ".git", "config"), `[remote "origin"]\n\turl = https://github.com/acme/${p.split("/").at(-1)}.git\n`);
+    return p;
+  };
+  const one = repo(join(home, "one"));
+  const two = repo(join(home, "deep", "a", "two"));
+  repo(join(home, ".hidden", "three"));
+  repo(join(home, "node_modules", "four"));
+  symlinkSync(join(home, "nowhere"), join(home, "broken"));
+  symlinkSync(one, join(home, "linked"));
+  const file = join(fresh("index"), "repo-index.json");
+  const walked = await ok("repoWalk", { root: home, file });
+  assert.deepEqual([...walked.repos].sort(), [two, one].sort());
+  assert.ok(walked.lists > 40, JSON.stringify(walked));
+  assert.equal(walked.yielded, walked.lists, "a folder listed on the program's thread held its other fibers");
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).repos.map((r: { path: string }) => r.path).sort(), [two, one].sort());
+});
+
+test("the conversations' files through the shell: Node's answers and its codes", { skip }, async () => {
+  const { ok } = harness();
+  const dir = fresh("fs");
+  const at = (n: string) => join(dir, n);
+  const fs = (name: string, ...args: unknown[]) => ok("fsOp", { name, args });
+  // (written whole; `flag: "wx"` refused where it is there, the file as it was)
+  assert.deepEqual(await fs("writeFile", at("a.txt"), "first"), { ok: null });
+  assert.deepEqual(await fs("writeFile", at("a.txt"), "second", { flag: "wx" }), { code: "EEXIST", message: `EEXIST: file already exists, open '${at("a.txt")}'` });
+  assert.deepEqual(await fs("readText", at("a.txt")), { ok: "first" });
+  assert.deepEqual(await fs("writeFile", at("a.txt"), "shorter"), { ok: null });
+  assert.deepEqual(await fs("writeFile", at("a.txt"), "ab"), { ok: null });
+  assert.equal(readFileSync(at("a.txt"), "utf8"), "ab");
+  // (appended at its end, made with the first part)
+  await fs("appendFile", at("up.bin"), "one,");
+  await fs("appendFile", at("up.bin"), { $bytes: Buffer.from("two").toString("base64") });
+  assert.equal(readFileSync(at("up.bin"), "utf8"), "one,two");
+  // (stat follows a link; one that names nothing is not there)
+  await fs("mkdir", at("sub/deeper"));
+  symlinkSync(at("sub"), at("to-sub"));
+  symlinkSync(at("nowhere"), at("broken"));
+  const st = (await fs("stat", at("to-sub"))).ok;
+  assert.deepEqual([st.isFile, st.isDirectory], [false, true]);
+  assert.deepEqual((await fs("stat", at("up.bin"))).ok.size, 7);
+  assert.deepEqual(await fs("stat", at("broken")), { code: "ENOENT", message: `ENOENT: no such file or directory, stat '${at("broken")}'` });
+  assert.deepEqual(await fs("access", at("broken")), { code: "ENOENT", message: `ENOENT: no such file or directory, access '${at("broken")}'` });
+  assert.deepEqual(await fs("access", at("up.bin")), { ok: null });
+  // (a folder's entries as lstat has them: a link neither a file nor a folder)
+  assert.deepEqual((await fs("readdirTypes", dir)).ok, [
+    { name: "a.txt", isFile: true, isDirectory: false },
+    { name: "broken", isFile: false, isDirectory: false },
+    { name: "sub", isFile: false, isDirectory: true },
+    { name: "to-sub", isFile: false, isDirectory: false },
+    { name: "up.bin", isFile: true, isDirectory: false },
+  ]);
+  assert.deepEqual((await fs("readdir", dir, { withFileTypes: true })).ok.map((e: { name: string; dir: boolean }) => [e.name, e.dir]), [["a.txt", false], ["broken", false], ["sub", true], ["to-sub", false], ["up.bin", false]]);
+  assert.deepEqual(await fs("readdir", at("sub")), { ok: ["deeper"] });
+  assert.deepEqual(await fs("readdirTypes", at("none")), { code: "ENOENT", message: `ENOENT: no such file or directory, scandir '${at("none")}'` });
+  // (copied over what is there; renamed; what is not there named by its code)
+  writeFileSync(at("b.txt"), "old and longer");
+  assert.deepEqual(await fs("copyFile", at("a.txt"), at("b.txt")), { ok: null });
+  assert.equal(readFileSync(at("b.txt"), "utf8"), "ab");
+  assert.deepEqual(await fs("copyFile", at("a.txt"), at("a.txt")), { ok: null });
+  assert.equal(readFileSync(at("a.txt"), "utf8"), "ab");
+  assert.equal((await fs("copyFile", at("none"), at("c.txt"))).code, "ENOENT");
+  assert.deepEqual(await fs("rename", at("b.txt"), at("sub/b.txt")), { ok: null });
+  assert.equal((await fs("rename", at("none"), at("d.txt"))).code, "ENOENT");
+  // (a tree removed whole, through a link never followed; nothing there no failure)
+  writeFileSync(at("sub/deeper/f"), "x");
+  assert.deepEqual(await fs("rm", at("to-sub")), { ok: null });
+  assert.ok(existsSync(at("sub/deeper/f")));
+  assert.deepEqual(await fs("rm", at("sub")), { ok: null });
+  assert.ok(!existsSync(at("sub")));
+  assert.deepEqual(await fs("rm", at("sub")), { ok: null });
 });

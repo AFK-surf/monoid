@@ -99,3 +99,71 @@ test "untracked read bars count distinct non-test places per file and default to
   assert_eq(@view.untracked_read_fault("example/src/read_test.mbt:1", [], "fault"), None)
   assert_eq(@view.untracked_read_fault("example/src/read_wbtest.mbt:1", [], "fault"), None)
 }
+
+///|
+test "effect_in_view_faults flags bare @signals.effect in View construction and allows reacts/By/owns" {
+  let sig = @signals.signal(0)
+  let eff_box_loc = read_test_loc()
+  let eff_root_loc = read_test_loc()
+  let eff_show_loc = read_test_loc()
+  let tree = @view.Tree::new(sources=true, fn(root) {
+    @signals.effect(fn() { sig.get() |> ignore }, loc=eff_root_loc) |> ignore
+    root.box(fn(v) {
+      @signals.effect(fn() { sig.get() |> ignore }, loc=eff_box_loc) |> ignore
+      // Allowed alternatives must not trigger [EFFECT_IN_VIEW]:
+      v.words(By(fn() { sig.get().to_string() })) |> ignore
+      v.reacts(fn() { sig.get() }, fn(_) { () })
+      v.owns(fn() { () }) |> ignore
+      v.show(fn() { true }, fn(_inner) {
+        @signals.effect_cleanup(fn() { fn() { () } }, loc=eff_show_loc) |> ignore
+      })
+    })
+    |> ignore
+  })
+  let faults = tree.effect_in_view_faults()
+  assert_eq(faults.length(), 3, msg=faults.join("\n"))
+  assert_true(faults[0].has_prefix("[EFFECT_IN_VIEW]"), msg=faults[0])
+  assert_true(faults[0].contains(@view.source_place(eff_root_loc)), msg=faults[0])
+  assert_true(faults[1].contains(@view.source_place(eff_box_loc)), msg=faults[1])
+  assert_true(faults[2].contains(@view.source_place(eff_show_loc)), msg=faults[2])
+  assert_false(@view.untracked_read_marks_left())
+  tree.dispose()
+  assert_eq(tree.effect_in_view_faults(), [])
+}
+
+///|
+test "scroll_each_faults flags non-virtualized scrolls+each over limit and excludes list_reused" {
+  let items : Array[Int] = []
+  for i in 0..<55 {
+    items.push(i)
+  }
+  let s1 = @view.Scroll::new()
+  let each_loc = read_test_loc()
+  let tree = @view.Tree::new(sources=true, fn(root) {
+    root.box(fn(sc) {
+      sc.scrolls(s1, fn(inner) {
+        inner.each(fn() { items }, fn(i) { i }, fn(row, _it) {
+          row.height(Is(Some(20.0))) |> ignore
+        }, at_once=true, loc=each_loc)
+      })
+      |> ignore
+    })
+    |> ignore
+    // Virtualized list_reused with >50 keys must NOT be flagged.
+    root.box(fn(virt) {
+      virt.list_reused(fn() { items }, fn(row, _k) {
+        row.height(Is(Some(20.0))) |> ignore
+      }, at_once=true)
+      |> ignore
+    })
+    |> ignore
+  })
+  let faults = tree.scroll_each_faults(limit=50)
+  assert_eq(faults.length(), 1, msg=faults.join("\n"))
+  assert_true(faults[0].has_prefix("[UNVIRTUALIZED_SCROLL_EACH]"), msg=faults[0])
+  assert_true(faults[0].contains("55 live items (> 50)"), msg=faults[0])
+  assert_true(faults[0].contains(@view.source_place(each_loc)), msg=faults[0])
+  assert_eq(tree.scroll_each_faults(limit=60), [])
+  assert_eq(tree.scroll_each_faults(limit=0), [])
+  tree.dispose()
+}

@@ -5,9 +5,10 @@
 //
 // Topics of this data have no value of their own: their value is read from here (`shared`), by query, when it goes
 // out; each database's writer says which topics a burst changed, and the store pushes what changed (keyed deltas).
-import { Effect, Fiber, Queue } from "effect";
+import { Deferred, Effect, Fiber, Queue } from "effect";
 import { OVERVIEW_CHAT, OVERVIEW_PROFILED, OVERVIEW_SETTINGS } from "./db/schema.ts";
 import { AccountDb, LIST_OF, MD_SHOWN_EVERY, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MdPut, type MovedTo, type RowChange, frozen } from "./db/account.ts";
+import type { SharedMarkKind, SharedMarksSnapshot, SharedMeta } from "./db/chats.ts";
 import { KEPT as BESIDE, type AnyKept, type Kept, type Maker, type Owner } from "./db/kept.ts";
 import { CHAT_READS, chatKeys, type ChatRead, type ReadKey } from "./db/chat-reads.ts";
 import type { Host, Sql, SqlRow, SqlValue } from "./host.ts";
@@ -17,7 +18,7 @@ import { topicKey, type Topic } from "./protocol.ts";
 import { Marks, signal, tracking, untracked, type Source as ReactiveSource } from "./reactive.ts";
 import type { Runner } from "./runtime.ts";
 import { equal, get, isObject, parseJson, toJsonBytes, u64 } from "./util.ts";
-import { worded, type Words } from "./chat-row.ts";
+import { worded, type SharedSidecar, type Words } from "./chat-row.ts";
 import { rowWords } from "./station/rows-made.ts";
 import { ofAddress } from "./workspace.ts";
 import { glanced } from "./work.ts";
@@ -354,6 +355,9 @@ export class Data {
   readonly #shown = new Map<string, number>();
   /// A room check already running for an account; writes during it do not start another one.
   readonly #keeping = new Set<AccountDb>();
+  /// Accounts currently giving unused pages back to the device (`#giveBackRoom`).
+  readonly #givingBack = new Set<AccountDb>();
+  #roomWaiters: Deferred.Deferred<void>[] = [];
   #keptAt = -Infinity;
 
   constructor(host: Host, runner: Runner, options: DataOptions) {
@@ -443,6 +447,7 @@ export class Data {
       if (note) this.#setNote(sub, note);
       yield* this.onOpened(db);
       this.#keepWithin(db);
+      this.#giveBackRoom(db);
       this.#tellAll();
     });
   }
@@ -1114,6 +1119,8 @@ export class Data {
     // Its person's presets as the device carries them, and which of its stations are from before (presets-kept.ts):
     // in the workspace's, by its id.
     if (table === "presetRecords") return [this.#ofWorkspace(key) ?? null, [key, "presetRecords"]];
+    // Its person's drafts of 待派发 as the device carries them (views/board-drafts.ts): in the workspace's, by its id.
+    if (table === "boardDrafts") return [this.#ofWorkspace(key) ?? null, [key, "boardDrafts"]];
     // A workspace's vaults as its stations hold them (views/vault.ts): the vaults, box certificates and requests by the
     // workspace's id; each vault's items by `<workspace>/<vault>`.
     if (table === "vault") return [this.#ofWorkspace(key) ?? null, [key, "vault"]];
@@ -1203,6 +1210,75 @@ export class Data {
 
   dropChat(station: string, id: string): void {
     this.of(station)?.dropChat(station, id);
+  }
+
+  sharedMeta(station: string): SharedMeta | null {
+    return this.of(station)?.sharedMeta(station) ?? null;
+  }
+
+  setSharedNoRouteBuild(station: string, build: string | null): void {
+    this.of(station)?.setSharedNoRouteBuild(station, build);
+  }
+
+  sharedDigests(station: string): Map<string, string> {
+    return this.of(station)?.sharedDigests(station) ?? new Map();
+  }
+
+  sharedSidecar(station: string, id: string): SharedSidecar | null {
+    return this.of(station)?.sharedSidecar(station, id) ?? null;
+  }
+
+  clearSharedBaseline(station: string): void {
+    this.of(station)?.clearSharedBaseline(station);
+  }
+
+  setSharedChats(station: string, rows: readonly unknown[], places: readonly number[], sidecars: ReadonlyMap<string, SharedSidecar>, marks: SharedMarksSnapshot, meta: SharedMeta): void {
+    glanced.chatRowsWorded += rows.length;
+    this.of(station)?.setSharedChats(station, rows.map(inWords) as Record<string, any>[], this.#host.nowMs(), places, sidecars, marks, meta);
+  }
+
+  putSharedChat(station: string, row: unknown, place: number, sidecar: SharedSidecar | null): void {
+    this.of(station)?.putSharedChat(station, inWords(row), place, sidecar);
+  }
+
+  putSharedBatch(
+    station: string,
+    updates: readonly { row: unknown; place: number; sidecar: SharedSidecar | null }[],
+    drops: readonly string[],
+    markUpdates: readonly { kind: SharedMarkKind; k: string; v: string | null }[],
+    scopedMarks: { scope: { sessions: readonly string[]; threads: readonly number[] }; marks: SharedMarksSnapshot } | null,
+  ): void {
+    this.of(station)?.putSharedBatch(
+      station,
+      updates.map((u) => ({ row: inWords(u.row), place: u.place, sidecar: u.sidecar })),
+      drops,
+      markUpdates,
+      scopedMarks,
+    );
+  }
+
+  applySharedChanged(
+    station: string,
+    changed: readonly { row: unknown; place: number; sidecar: SharedSidecar }[],
+    gone: readonly string[],
+    reprojectAll: boolean,
+    reproject: (row: Record<string, any>, sidecar: SharedSidecar) => { row: Record<string, any>; place: number },
+    newMarks: SharedMarksSnapshot,
+    meta: SharedMeta,
+    extraReproject?: { ids?: Iterable<string>; threads?: Iterable<number> },
+  ): void {
+    glanced.chatRowsWorded += changed.length;
+    this.of(station)?.applySharedChanged(
+      station,
+      changed.map((c) => ({ row: inWords(c.row), place: c.place, sidecar: c.sidecar })),
+      gone,
+      reprojectAll,
+      reproject,
+      newMarks,
+      this.#host.nowMs(),
+      meta,
+      extraReproject,
+    );
   }
 
   /// What a declared read of the chat table finds (db/chat-reads.ts), across the databases of the stations it reads (its
@@ -1343,6 +1419,28 @@ export class Data {
     void this.listed(station, "chats");
     this.#readQuery(readTopic(CHAT_READS.session.name, [station, session]));
     return this.of(station)?.chatOfSession(station, session);
+  }
+
+  /// The anchor session key of `session`'s conversation (`conv ?? session`), from its summary (or detail when unlisted).
+  conversationOf(station: string, session: string): string {
+    this.#readQuery({ topic: "session", station, key: session });
+    const db = this.of(station);
+    const summary = db?.summary(station, session);
+    const src = summary !== undefined ? summary : (db?.detail(station, session) as Record<string, unknown> | undefined)?.session;
+    const conv = src !== null && typeof src === "object" ? (src as Record<string, unknown>).conv : undefined;
+    return typeof conv === "string" && conv !== "" ? conv : session;
+  }
+
+  /// The listed chat row of a session: first check exact row id / session (zero session-table read on the common anchor
+  /// path), then resolve its conversation anchor (`conv ?? session`) by row id / session, and finally fall back to
+  /// `chat_agent` when no distinct `conv` is declared (legacy stations without `conv`).
+  chatForSession(station: string, session: string): unknown {
+    const direct = this.chat(station, session) ?? this.chatOfSession(station, session);
+    if (direct !== undefined) return direct;
+    const conv = this.conversationOf(station, session);
+    if (conv !== session) return this.chat(station, conv) ?? this.chatOfSession(station, conv);
+    this.#readQuery(readTopic(CHAT_READS.agent.name, [station, session]));
+    return this.of(station)?.chatOfAgent(station, session);
   }
 
   /// The listed chat an agent's session is in: its own (chatOfSession), else the first it is among the agents of
@@ -1606,6 +1704,7 @@ export class Data {
     if (db.readOnly || this.#keeping.has(db)) return;
     this.#keeping.add(db);
     this.#runner.fork(Effect.gen({ self: this }, function* () {
+      let evicted = false;
       try {
         // Do not make the account's first values or a committed change wait for maintenance.
         yield* Effect.yieldNow;
@@ -1627,14 +1726,51 @@ export class Data {
             if (this.#shown.has(key)) continue;
             gone.add(key);
             db.evict(l.station, l.id);
+            evicted = true;
             if (db.used() <= to) return;
             yield* Effect.yieldNow;
           }
         }
       } finally {
         this.#keeping.delete(db);
+        if (evicted && this.#dbs.get(db.sub) === db) this.#giveBackRoom(db);
       }
     }));
+  }
+
+  /// Gives unused pages in `db` back to the device in bounded steps after the first views have been answered
+  /// (`mdTurn`), yielding between steps so startup reads and writes are never blocked.
+  #giveBackRoom(db: AccountDb): void {
+    if (db.readOnly || this.#givingBack.has(db)) return;
+    this.#givingBack.add(db);
+    this.#runner.fork(Effect.gen({ self: this }, function* () {
+      try {
+        // Yield first so Core.create finishes wiring `mdTurn = () => store.turn()` after `data.open()`.
+        yield* Effect.yieldNow;
+        yield* this.mdTurn();
+        while (this.#dbs.get(db.sub) === db && db.giveBackRoomStep()) {
+          yield* Effect.yieldNow;
+        }
+      } finally {
+        this.#givingBack.delete(db);
+        if (this.#givingBack.size === 0) {
+          const waiting = this.#roomWaiters;
+          this.#roomWaiters = [];
+          for (const d of waiting) Deferred.doneUnsafe(d, Effect.void);
+        }
+      }
+    }));
+  }
+
+  /// Resolves once background room reclamation (`#giveBackRoom`) has finished for all open databases.
+  get roomGivenBack(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.#givingBack.size === 0) return Effect.void;
+      return Effect.flatMap(Deferred.make<void>(), (d) => {
+        this.#roomWaiters.push(d);
+        return Deferred.await(d);
+      });
+    });
   }
 
   putSummary(station: string, summary: unknown): boolean {

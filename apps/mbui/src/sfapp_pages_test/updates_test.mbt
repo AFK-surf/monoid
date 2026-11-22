@@ -248,7 +248,7 @@ fn update_key_marks(busy : Bool) -> (@ui.Tester, Array[String]) {
     w=120.0,
     h=80.0,
   )
-  t.run_for(@kit.progress_ms)
+  t.run_for(@motion.progress_ms)
   let marks = match @ui.view_tree() {
     Some(tree) =>
       tree.drawn().filter(fn(d) { d.alpha > 0.0 && tree.drawn_name(d.id).contains("icon/") }).map(fn(d) { tree.drawn_name(d.id) })

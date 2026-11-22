@@ -16,7 +16,7 @@
 ///|
 /// A thread a session has.
 priv struct CodexThread {
-  id : Array[Int]
+  id : String
   live : @codex.Live
   /// its session's actor is in this program (`route`)
   mut routed : Bool
@@ -64,7 +64,7 @@ priv enum CodexLine {
   /// nothing anyone reads
   Drop
   /// a thread's notification: its method, its params, the thread
-  Notice(Array[Int], @jsjson.JValue, Array[Int])
+  Notice(String, @jsjson.JValue, String)
 }
 
 ///|
@@ -84,7 +84,7 @@ fn codex_line(line : Bytes) -> CodexLine {
   }
   let params = v.get("params").unwrap_or(Null)
   guard params.get("threadId") is Some(Str(thread)) else { return Drop }
-  if @jsjson.raw_text(method) == "error" && !(params.get("willRetry") is Some(Bool(true))) {
+  if method == "error" && !(params.get("willRetry") is Some(Bool(true))) {
     return Node
   }
   Notice(method, params, thread)
@@ -93,12 +93,12 @@ fn codex_line(line : Bytes) -> CodexLine {
 ///|
 /// A notification's events for its thread's session; a turn's start and end with where its line begins and ends in the
 /// output (`at`; none for what was held for it before it was a session's: told then, `marks`).
-fn codex_events(t : CodexThread, method : Array[Int], params : @jsjson.JValue, at : (Int64, Int64)?) -> Array[@jsjson.JValue] {
+fn codex_events(t : CodexThread, method : String, params : @jsjson.JValue, at : (Int64, Int64)?) -> Array[@jsjson.JValue] {
   let events = @codex.events(t.live, method, params)
   guard at is Some((from, to)) else { return events }
   events.map(e => match e {
-    Obj(fields) if e.get("type") is Some(Str(k)) && (k == @jsjson.units("turnStarted") || k == @jsjson.units("turnEnded")) =>
-      Obj(fields + [(@jsjson.units("from"), Num(from.to_double())), (@jsjson.units("to"), Num(to.to_double()))])
+    Obj(fields) if e.get("type") is Some(Str(k)) && (k == "turnStarted" || k == "turnEnded") =>
+      Obj(fields + [("from", Num(from.to_double())), ("to", Num(to.to_double()))])
     e => e
   })
 }
@@ -131,7 +131,7 @@ fn Agents::codex_heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)])
       Node => node.push((line, from, l.1))
       Drop => ()
       Notice(method, params, thread) => {
-        let key = @jsjson.raw_text(thread)
+        let key = thread
         match c.threads.get(key) {
           Some(t) => {
             let events = codex_events(t, method, params, Some((from, l.1)))
@@ -143,7 +143,7 @@ fn Agents::codex_heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)])
             }
           }
           None => {
-            let m = @jsjson.raw_text(method)
+            let m = method
             if m == "turn/started" || m == "turn/completed" {
               marks.push(Arr([Str(thread), Num(if m == "turn/started" { 1.0 } else { 0.0 }), Num(from.to_double()), Num(l.1.to_double())]))
             }
@@ -244,7 +244,7 @@ fn Agents::codex_tell(
   marks : Array[@jsjson.JValue],
   groups : Map[String, Array[@jsjson.JValue]],
 ) -> Unit {
-  let u = @jsjson.units
+  let u = (s : String) => s
   let body = @buffer.new()
   let at = []
   for l in node {
@@ -254,7 +254,7 @@ fn Agents::codex_tell(
   let threads : Array[@jsjson.JValue] = []
   for k, events in groups {
     guard h.codex.threads.get(k) is Some(t) && events.length() > 0 else { continue }
-    let fields : Array[(Array[Int], @jsjson.JValue)] = [(u("thread"), Str(t.id)), (u("events"), Arr(events)), (u("live"), t.live.state())]
+    let fields : Array[(String, @jsjson.JValue)] = [(u("thread"), Str(t.id)), (u("events"), Arr(events)), (u("live"), t.live.state())]
     if t.routed {
       // (each thread's a batch of its own, all told with this line: each lets go of itself only once taken)
       let b = self.keep_batch(h, events, to)
@@ -283,7 +283,7 @@ fn Agents::add_thread(self : Agents, h : Hosted, thread : String, state : Json?,
     Some(Null) | None => @codex.Live::new()
     Some(s) => @codex.Live::of_state(@jsjson.JValue::of_json(s))
   }
-  let t = { id: @jsjson.units(thread), live, routed }
+  let t = { id: thread, live, routed }
   h.codex.threads[thread] = t
   guard h.codex.orphans is Some(o) && o.get(thread) is Some(held) else { return }
   o.remove(thread)
@@ -353,7 +353,7 @@ fn Agents::orphans_off(self : Agents, h : Hosted) -> Unit {
 /// What a crash reads again of an app-server's output (codex.ts `takeUp`), each a thread's notification as what its live
 /// steps are made of: its method, its thread, and an item's type and id.
 fn Agents::replay(self : Agents, id : Int, notices : Array[Json]) -> Unit {
-  let u = @jsjson.units
+  let u = (s : String) => s
   let threads = match self.replays.get(id) {
     Some(t) => t
     None => {
@@ -364,7 +364,7 @@ fn Agents::replay(self : Agents, id : Int, notices : Array[Json]) -> Unit {
   }
   for n in notices {
     guard n is Array([String(method), String(thread), ..] as parts) else { continue }
-    let params : Array[(Array[Int], @jsjson.JValue)] = [(u("threadId"), Str(u(thread)))]
+    let params : Array[(String, @jsjson.JValue)] = [(u("threadId"), Str(u(thread)))]
     if parts.length() >= 4 {
       let item = []
       for k, name in ["type", "id"] {

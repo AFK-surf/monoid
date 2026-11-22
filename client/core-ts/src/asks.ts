@@ -2,7 +2,7 @@
 // app is out, a picture (fetched once and kept on the device), the buddies a Slack app can wear, a dev cloud's sign-in.
 import { Deferred, Effect, Semaphore } from "effect";
 import buddiesList from "../../../web/public/avatars/index.json" with { type: "json" };
-import { RELEASE_KEYS } from "../../../station/src/updates/keys.ts";
+import { RELEASE_KEYS } from "../../../shared/release-keys.ts";
 import { type Deltas, deltaFrom, feedDeltas, winReleaseWords } from "./app-release.ts";
 import { encodeComponent } from "./accounts.ts";
 import type { AccountSessions } from "./account-provider.ts";
@@ -481,6 +481,7 @@ export function linkTarget(url: string, origin: string): J {
   if (s.length === 1 && s[0] === "invite" && u.fragment !== "") return { opens: "invite", token: u.fragment };
   if (s.length === 6 && s[0] === "w" && s[2] === "s" && s[4] === "chats") return { opens: "chat", workspace: s[1], station: s[3], chat: s[5], ...historyOf(u.query), ...messageOf(u.query) };
   if (s.length === 5 && s[0] === "w" && s[2] === "s" && s[4] === "adb") return { opens: "adbShare", workspace: s[1], station: s[3] };
+  if (s.length === 5 && s[0] === "w" && s[2] === "s" && s[4] === "profiles") return { opens: "profiles", workspace: s[1], station: s[3] };
   // A station's web service on a page of its own (its "open on its own"): the service over the app.
   if (s.length === 6 && s[0] === "w" && s[2] === "s" && s[4] === "services" && s[5] !== "") return { opens: "service", workspace: s[1], station: s[3], service: s[5] };
   // One of a station's screens, as its agents' `screen` tool links it.

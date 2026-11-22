@@ -80,6 +80,7 @@ pub let schema : String =
   $|  afresh INTEGER,
   $|  context INTEGER,
   $|  context_before INTEGER,
+  $|  compactions INTEGER,
   $|  runtime_session_id TEXT,
   $|  workspace TEXT NOT NULL,
   $|  token TEXT NOT NULL UNIQUE,
@@ -90,7 +91,8 @@ pub let schema : String =
   $|  archived_by TEXT,
   $|  shown_at INTEGER,
   $|  cwd TEXT,
-  $|  original_runtime TEXT
+  $|  original_runtime TEXT,
+  $|  conv TEXT
   $|);
   $|-- The sessions shown (store.ts LIVE_SESSIONS): what the station's own periodic work goes over; the archived ones only grow.
   $|CREATE INDEX IF NOT EXISTS sessions_live ON sessions (last_active_at) WHERE archived_at IS NULL;
@@ -489,6 +491,14 @@ pub let schema : String =
   $|  stars TEXT NOT NULL,
   $|  PRIMARY KEY (ws, sub)
   $|);
+  $|-- A person's drafts of 待派发 in a workspace, as their devices carry them (sessions/board-drafts.ts; the drafts as JSON
+  $|-- by id, the KeptDraft of the core's board-drafts.ts): one row a person (their sub) a workspace, read by its key.
+  $|CREATE TABLE IF NOT EXISTS board_drafts (
+  $|  ws TEXT NOT NULL,
+  $|  sub TEXT NOT NULL,
+  $|  drafts TEXT NOT NULL,
+  $|  PRIMARY KEY (ws, sub)
+  $|);
   $|-- The chats handed from here to another station while both are up (replica/handover.ts): where each went, the
   $|-- workspace it was of here (null: the home one), its chat's thread here and there. Its rows here stay (a hand-back
   $|-- goes on from them); a device, a link or a letter naming it is told where it is.
@@ -644,6 +654,7 @@ fn add_archive_columns(db : @sql.Db) -> Unit raise {
     ("context", "INTEGER"),
     ("context_before", "INTEGER"),
     ("profiles", "TEXT"),
+    ("compactions", "INTEGER"),
   ] {
     let (name, kind) = column
     if !has(db, "sessions", name) {
@@ -796,10 +807,10 @@ fn add_letter_column(db : @sql.Db) -> Unit raise {
       let (title, link) = headed_from(text)
       let letter = @jsjson.stringify(
         Obj([
-          (@jsjson.units("way"), Str(@jsjson.units("in"))),
-          (@jsjson.units("title"), Str(@jsjson.units(title))),
-          (@jsjson.units("link"), match link {
-            Some(l) => Str(@jsjson.units(l))
+          ("way", Str("in")),
+          ("title", Str(title)),
+          ("link", match link {
+            Some(l) => Str(l)
             None => Null
           }),
         ]),
@@ -864,22 +875,7 @@ pub fn headed_from(text : String) -> (String, String?) {
 ///|
 /// JavaScript's `\s`: its white space and line terminators.
 fn js_space(c : Char) -> Bool {
-  let u = c.to_int()
-  u == 9 ||
-  u == 10 ||
-  u == 11 ||
-  u == 12 ||
-  u == 13 ||
-  u == 32 ||
-  u == 160 ||
-  u == 5760 ||
-  (u >= 8192 && u <= 8202) ||
-  u == 8232 ||
-  u == 8233 ||
-  u == 8239 ||
-  u == 8287 ||
-  u == 12288 ||
-  u == 65279
+  @jsjson.is_js_space(c.to_int())
 }
 
 ///|
@@ -1693,4 +1689,13 @@ fn add_workspace_columns(db : @sql.Db) -> Unit raise {
   db.exec("CREATE INDEX IF NOT EXISTS sessions_ws ON sessions (key, ws)")
   db.exec("DROP INDEX IF EXISTS sessions_by_ws")
   db.exec("CREATE INDEX IF NOT EXISTS sessions_of_ws ON sessions (COALESCE(ws, ''), key)")
+}
+
+///|
+/// Conversation anchor column (`sessions.conv`) and its lookup indexes.
+fn add_conv_column(db : @sql.Db) -> Unit raise {
+  add_column(db, "sessions", "conv", "TEXT")
+  db.exec("CREATE INDEX IF NOT EXISTS sessions_conv ON sessions (conv, key)")
+  db.exec("CREATE INDEX IF NOT EXISTS sessions_conv_todo ON sessions (key) WHERE scope = 'thread' AND conv IS NULL")
+  db.exec("CREATE INDEX IF NOT EXISTS sessions_conv_grouped ON sessions (conv, key) WHERE conv IS NOT NULL AND conv != key")
 }

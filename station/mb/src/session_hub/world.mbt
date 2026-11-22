@@ -30,8 +30,8 @@ pub(all) struct World {
   idle_ms : (String, Double) -> Double?
   /// Random bytes (node:crypto `randomBytes`), as hex.
   random_hex : (Int) -> String
-  /// Whether moving to another station is on here (features.ts `stationMoveOn`: a `beta` feature of the station's
-  /// channel), as `HubOptions.moveOn` says it; None: not said (on).
+  /// Whether moving to another station is on here (every station's since it graduated; a test's may say not), as
+  /// `HubOptions.moveOn` says it; None: not said (on).
   move_on : () -> Bool?
 }
 

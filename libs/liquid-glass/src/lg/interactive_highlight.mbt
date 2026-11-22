@@ -1,14 +1,19 @@
 // Ported from Kyant0/AndroidLiquidGlass (Apache-2.0): catalog/utils/InteractiveHighlight.kt. Where a finger is on a
 // piece of glass and how far it is pressed: its press by a soft spring (0.5, 300), the finger's way from where it went
-// down snapped to it as it drags and sent back by the same spring as it lets go. What it lights is mbui's lens's spot
-// (Glass::backdrop_lens `spot`, `spot_alpha`: 8% white over it all and 15% round the finger, as far as one and a half
-// times its shorter side, BlendMode.Plus, the shader InteractiveHighlight draws), and what it stretches is the glass's
-// size and place (LiquidButton's layerBlock: `stretch`).
+// down snapped to it as it drags and sent back by the same spring as it lets go. What it lights is mbui's liquid
+// glass spot (`Glass::liquid` `spot`), and what it stretches is the glass's size and place (LiquidButton's layerBlock:
+// `stretch`).
 
 ///|
-/// The press spring and the finger's (pressProgressAnimationSpec, positionAnimationSpec).
-fn highlight_spring(threshold : Double) -> @motion.Spec {
-  @motion.spring(ratio=0.5, stiffness=300.0, threshold~) // det-ok(motion-spring): InteractiveHighlight.kt, ported 1:1
+/// The finger's spring: `ratio=0.5` for position bounce, `ratio=1.0` for critically damped press glow.
+fn highlight_spring(threshold : Double, ratio? : Double = 0.5) -> @motion.Spec {
+  @motion.spring(ratio~, stiffness=300.0, threshold~) // det-ok(motion-spring): InteractiveHighlight.kt (0.5 pos, 1.0 critically damped press)
+}
+
+///|
+/// Critically damped press spring: decays monotonically to 0 without bouncing back.
+fn press_spring(threshold : Double) -> @motion.Spec {
+  highlight_spring(threshold, ratio=1.0)
 }
 
 ///|
@@ -64,7 +69,7 @@ pub fn InteractiveHighlight::down(
   self.size.set((w, h))
   self.dx.put(0.0)
   self.dy.put(0.0)
-  self.press.go(n, 1.0, highlight_spring(0.001))
+  self.press.go(n, 1.0, press_spring(0.001))
 }
 
 ///|
@@ -79,7 +84,7 @@ pub fn InteractiveHighlight::moved(self : InteractiveHighlight, x : Double, y : 
 /// The finger let go or called off (onDragEnd, onDragCancel): its press goes down, its way back to where it went down.
 pub fn InteractiveHighlight::up(self : InteractiveHighlight) -> Unit {
   let n = self.at()
-  self.press.go(n, 0.0, highlight_spring(0.001))
+  self.press.go(n, 0.0, press_spring(0.001))
   self.dx.go(n, 0.0, highlight_spring(0.5))
   self.dy.go(n, 0.0, highlight_spring(0.5))
 }

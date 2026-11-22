@@ -246,6 +246,10 @@ export function card(agent: J, live: J, stations?: ReadonlyMap<string, string>):
         ? { percent: contextPercent, text: t("core-views.agent.context", { used, window: format.compactNumber(n("contextWindow")) }), level: contextPercent >= CONTEXT_RED ? "red" : contextPercent >= CONTEXT_AMBER ? "amber" : "ok" } satisfies Meter
         : { percent: 0, text: used, level: "ok" } satisfies Meter;
       if (contextPercent === null) out.context.unknown = true;
+      // How often its runtime session compacted it (what is left of what came early is a summary): said in what its
+      // tile opens.
+      const compactions = get(get(agent, "session"), "compactions");
+      if (typeof compactions === "number" && compactions > 0) out.context.compacted = compactions === 1 ? t("core-views.agent.compacted_one") : t("core-views.agent.compacted", { n: compactions });
     }
   }
   // Over a most lowered meanwhile: it comes down once this turn is over.

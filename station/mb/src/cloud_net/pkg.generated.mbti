@@ -59,10 +59,6 @@ pub let gather_ms : Int32
 
 pub fn goes_through(String?, Array[String]?) -> Bool
 
-pub async fn harness(@host.Host) -> Unit
-
-pub fn harness_case(@json.Json) -> @json.Json
-
 pub fn host_dial_io(@host.Host, origin? : String) -> DialIO
 
 pub fn host_http(@host.Host) -> Http
@@ -75,11 +71,13 @@ pub fn host_ws(@host.Host) -> WsIO
 
 pub let http_budget : Int32
 
+pub fn http_status_text(Int32) -> String
+
 pub fn is_revocation(@json.Json) -> Bool
 
 pub fn joined_of(@json.Json?) -> Array[@json.Json]
 
-pub async fn keep_relays(RelayEndpoint, Ways, Pinger, bound? : Array[String], log? : (String) -> Unit) -> Unit
+pub async fn keep_relays(RelayEndpoint, Ways, Pinger, bound? : Array[String], log? : (String) -> Unit, on_unhealthy? : () -> Unit, params? : ProbeParams, say? : (String, String) -> Unit) -> Unit
 
 pub fn mark_emoji(@json.Json?) -> String?
 
@@ -99,7 +97,7 @@ pub let mode_pending_s : Int64
 
 pub fn off_relays(Ways, String) -> Array[String]
 
-pub fn otlp_body(String, Array[@json.Json]) -> String
+pub fn otlp_body(String, Array[@json.Json], resource? : Array[(String, String)]) -> String
 
 pub fn ours_off(Ways) -> Bool
 
@@ -107,13 +105,15 @@ pub fn parse_url(String) -> Url?
 
 pub fn peer_disabled(Ways, String) -> PeerDisabled?
 
-pub fn pending_asks(PlaneCloud, Map[String, Bool]) -> Array[String]
+pub fn pending_asks(PlaneCloud, Map[String, Bool]) -> Array[String?]
 
 pub let ping_ms : Int32
 
 pub fn plane_teller(PlaneCloud, (@json.Json) -> Unit, () -> Bool) -> (() -> Unit, () -> Unit)
 
 pub async fn presence(PresenceParts) -> Unit
+
+pub let probe_params : ProbeParams
 
 pub fn provider_of(@json.Json?) -> Provider
 
@@ -152,8 +152,6 @@ pub fn signed_headers(Array[String], String, Int64, (String) -> String, extra? :
 pub async fn signed_post(CloudView, (String) -> String, Int64, String, String, @json.Json, String, async (HttpRequest) -> HttpResponse) -> @json.Json?
 
 pub fn spec_of(Provider) -> ProviderSpec
-
-pub fn state_json(Map[String, @json.Json]) -> @json.Json
 
 pub fn station_addr(Ways, String, workspace? : String) -> StationAddr
 
@@ -221,7 +219,7 @@ pub(all) enum CloudSaid {
 pub fn CloudSaid::to_json(Self) -> @json.Json
 
 pub struct CloudTransport {
-  entry : () -> CloudEntry?
+  entry : () -> CloudEntry? raise NetError
   io : DialIO
   pending : Map[Int32, () -> Unit]
   mut next : Int32
@@ -231,7 +229,7 @@ pub fn CloudTransport::close(Self) -> Unit
 pub fn CloudTransport::dial(Self, Int32, (Result[TlsSocket, DialError]) -> Unit) -> () -> Unit
 pub fn CloudTransport::eligible(Self, String, provider? : Provider) -> Bool raise NetError
 pub async fn CloudTransport::fetch(Self, Http, Pool, HttpRequest) -> HttpResponse
-pub fn CloudTransport::new(() -> CloudEntry?, DialIO) -> Self
+pub fn CloudTransport::new(() -> CloudEntry? raise NetError, DialIO) -> Self
 pub fn CloudTransport::pending_dials(Self) -> Int32
 pub fn CloudTransport::websocket(Self, String, Headers, WsIO, WsEvents) -> WsSocket
 
@@ -256,7 +254,7 @@ pub struct ControlPlane {
 }
 pub fn ControlPlane::credential(Self) -> Accepted
 pub async fn ControlPlane::logs(Self, String) -> Unit
-pub fn ControlPlane::new(CloudView, () -> Provider, (String) -> String, () -> Int64, CloudTransport, Http, provider? : Provider) -> Self
+pub fn ControlPlane::new(CloudView, () -> Provider, (String) -> String, () -> Int64, CloudTransport, Http, provider? : Provider, trace_resource? : Array[(String, String)]) -> Self
 pub async fn ControlPlane::notify(Self, Array[@json.Json], workspace? : String) -> Unit
 pub fn ControlPlane::release_base(Self) -> String?
 pub fn ControlPlane::said(Self, CloudSaid) -> Unit
@@ -452,6 +450,14 @@ pub(all) struct PresenceParts {
   write_presence : (Bool, String?, Bool) -> Unit
 }
 
+pub(all) struct ProbeParams {
+  startup_grace_ms : Int64
+  every_healthy : Int32
+  failures_to_recover : Int32
+  cooldown_ms : Int64
+  cooldown_max_ms : Int64
+}
+
 pub(all) enum Provider {
   Stillfail
   Comma
@@ -483,6 +489,8 @@ pub(all) struct RelayEndpoint {
   keep : (Array[String]) -> Unit
   home : () -> String?
   public_relays : async (Bool) -> Unit
+  relay_status : () -> @json.Json
+  probe_relay : (async (String) -> @json.Json)?
 }
 
 pub struct Replaced {

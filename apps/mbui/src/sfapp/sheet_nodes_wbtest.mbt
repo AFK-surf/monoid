@@ -8,7 +8,7 @@
 /// longer.
 fn sheet_way_ms(t : @ui.Tester) -> Double {
   ignore(t)
-  dmax(@kit.sheet_scrim_ms, @ui.move_ms(844.0)) + 2.0 * @ui.input_step_ms
+  dmax(@motion.sheet_scrim_ms, @ui.move_ms(844.0)) + 2.0 * @ui.input_step_ms
 }
 
 ///|
@@ -52,21 +52,21 @@ fn both_sheets(
 ///|
 test "小屏: a panel opened by nothing whose body and foot are nodes: a sheet whose body, foot and scrim are where they were beside the host's; Escape closes it" {
   debug_inspect(both_sheets(Unanchored, fn(t) { t.key(@ui.key_escape) }), content=(
-    #|((24, 700, 40, 36), (310, 784, 60, 36), 1)
+    #|((30, 692, 40, 36), (298, 776, 60, 36), 1)
   ))
 }
 
 ///|
 test "小屏: a panel opened by a press whose body and foot are nodes, untitled: a sheet whose body, foot and scrim are where they were beside the host's; the back closes it" {
-  debug_inspect(both_sheets(At(100.0, 300.0, 40.0, 40.0), fn(t) { t.back() }, title=""), content=(
-    #|((16, 724, 40, 36), (310, 784, 60, 36), 1)
+  debug_inspect(both_sheets(At(100.0, 600.0, 40.0, 40.0), fn(t) { t.back() }, title=""), content=(
+    #|((22, 716, 40, 36), (298, 776, 60, 36), 1)
   ))
 }
 
 ///|
 test "小屏: a sheet whose body is nodes, a press above it: closed, as the host's" {
   debug_inspect(both_sheets(Unanchored, fn(t) { t.tap(195.0, 40.0) }), content=(
-    #|((24, 700, 40, 36), (310, 784, 60, 36), 1)
+    #|((30, 692, 40, 36), (298, 776, 60, 36), 1)
   ))
 }
 
@@ -94,7 +94,7 @@ test "小屏: a sheet whose body is nodes, its top dragged down a little: back w
   let rest = painted_at(t, body_ink)
   // (at rest, then dragged a little: back)
   debug_inspect((rest, little(t)), content=(
-    #|((24, 700, 40, 36), (24, 700, 40, 36))
+    #|((30, 692, 40, 36), (30, 692, 40, 36))
   ))
   far(t)
 }
@@ -164,7 +164,7 @@ test "小屏: a sheet that grows whose body is nodes: dragged up, its grabber ta
   })
   debug_inspect(grows_trace(t), content=(
     #|[
-    #|  637,
+    #|  629,
     #|  50.6400000000001,
     #|  379.79999999999995,
     #|  169.79999999999995,
@@ -209,16 +209,16 @@ test "小屏: a sheet whose body is nodes rising and sinking away: over the time
   // (and let go as it has sunk away and its scrim faded: its layer held by its sinking, View::moved_by)
   debug_inspect(rise_trace(t), content=(
     #|[
-    #|  834.5,
-    #|  760,
-    #|  723,
-    #|  708,
-    #|  702,
+    #|  831.5,
+    #|  754.5,
+    #|  716,
     #|  700,
-    #|  700,
-    #|  700,
-    #|  700,
-    #|  772.5,
+    #|  694,
+    #|  692,
+    #|  692,
+    #|  692,
+    #|  692,
+    #|  767.5,
     #|  -1,
     #|  -1,
     #|  -1,
@@ -496,6 +496,42 @@ test "小屏: a panel a panel closes for is a page of the same sheet: back to th
   t.run_for(sheet_way_ms(t))
   assert_false(@sf.presenter_visible())
   assert_eq(said, ["second gone", "second gone", "first gone"])
+}
+
+///|
+test "小屏: floating island sheet casts outside-only glass_overlay_shadow in light and dark" {
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  for dark in [false, true] {
+    new_run()
+    let src = fixture("chat")
+    wide_src.val = Some(src)
+    open_chat(chat_a)
+    let t = @ui.Tester::new(
+      fn(c) { view(c, src) },
+      tree=app_tree(src),
+      w=390.0,
+      h=844.0,
+      platform=2,
+      env=if dark { [("MBUI_DARK", "1")] } else { [] },
+    )
+    t.run_for(@ui.move_most_ms)
+    @sf.panel_nodes("面板", from=Unanchored, fn(v, _) { ink_node(v, 40.0, 36.0, body_ink) })
+    t.run_for(sheet_way_ms(t))
+    let (dx, dy, dw, _) = t.query(Dialog).unwrap().rect
+    let sheet_shadows : Array[(Double, Double, Int64)] = []
+    for a in t.drawn_instances() {
+      if a.length() > 13 &&
+        a[5] == 2.0 &&
+        a[12] == 1.0 &&
+        (a[0] - dx).abs() < 2.0 &&
+        (a[2] - dw).abs() < 2.0 &&
+        (a[1] - a[13] - dy).abs() < 2.0 {
+        let c = (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11])
+        sheet_shadows.push((a[7], a[13], c))
+      }
+    }
+    assert_eq(sheet_shadows, [@sf.glass_overlay_shadow()], msg="dark=\{dark}")
+  }
 }
 
 ///|

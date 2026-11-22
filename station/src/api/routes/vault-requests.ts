@@ -20,9 +20,9 @@
 // A request to delete an item (secret_delete 删除), approved: POST vault/removed `{request}` once the viewer's app wrote
 // the item's deleted version (and brought it here), POST vault/plain/removed `{request}` to delete it from the plain
 // library here. It grants nothing either.
-import { admit, type LockState } from "../../cloud/lock.ts";
+import { admit, type LockState } from "../../../../shared/lock.ts";
 import { wall } from "../../ops/fibers.ts";
-import type { Deny, Grant } from "../../vault/crypto.ts";
+import type { BrowseAnswer, Deny, Grant } from "../../vault/crypto.ts";
 import { type PlainItem, type PlainStore, plainOk, shown } from "../../vault/plain.ts";
 import type { Secrets } from "../../vault/secrets.ts";
 import type { Viewer } from "../../mesh/credential.ts";
@@ -142,9 +142,23 @@ export const routes = ({ secrets, plain, lock, events }: VaultRequestsDeps): Rou
       },
     },
     {
+      // A request to browse the viewer's personal secrets from other workspaces (`secret_list` other_workspaces).
+      method: "POST",
+      pattern: /^\/vault\/browses$/,
+      handle: async (r) => {
+        const l = locked(r);
+        return l === null ? NEEDS_LOCK() : decide(r, (o) => secrets.browsed(l, r.viewer.sub, o as BrowseAnswer));
+      },
+    },
+    {
       method: "GET",
       pattern: /^\/vault\/uses$/,
       handle: async (r) => json(200, JSON.stringify({ uses: await secrets.uses(r.viewer.workspace, locked(r), param(r, "vault") ?? "", r.viewer) })),
+    },
+    {
+      method: "GET",
+      pattern: /^\/vault\/cross-uses$/,
+      handle: async (r) => json(200, JSON.stringify({ uses: await secrets.crossUses(r.viewer.workspace, r.viewer) })),
     },
     {
       method: "GET",

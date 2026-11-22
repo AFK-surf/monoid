@@ -21,23 +21,20 @@ import { AskAgain, Gone, type Module, type PlanReads, Said } from "./module.ts";
 import { ReposModule, repoItemId, worktreesOfClones } from "./repos.ts";
 import { SettingsModule } from "./settings.ts";
 import { type VaultDeps, VaultModule, vaultItemId } from "./vault.ts";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
 import { Scheduler } from "./scheduler.ts";
-import { KeptSet } from "./kept.ts";
+import { KeptSet, replaceFile } from "./kept.ts";
 import { Told } from "./told.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { hold as holdUpdates } from "../updates/holds.ts";
+import { profileRuntimes } from "../agents/profiles.ts";
+import { allowedIn } from "../sessions/config.ts";
 
 /// A JSON file written whole (beside, then renamed).
 async function writeJsonFile(path: string, v: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-  await writeFile(tmp, JSON.stringify(v));
-  await rename(tmp, path);
+  await replaceFile(path, JSON.stringify(v));
 }
 
 type Json = any;
@@ -145,6 +142,8 @@ export class Moves {
   /// What each profile here was known by, kept as it moves away (`move/accounts-known.json`, with the accounts
   /// module's state): a chat stopped for one names it so after a start too.
   readonly #known: Map<string, AccountOf>;
+  /// The last write of `#known`, each after the one before; `close` waits for it.
+  #knownWrite: Promise<void> = Promise.resolve();
 
   /// In a turn, the stations it found gone (by id: what each later ask of one fails with at once) and those whose
   /// connection was found gone once (`PeerGone`: the next ask dials anew). Out of a turn, asks go as they are.
@@ -259,7 +258,8 @@ export class Moves {
           const a = accountOf(p, here());
           if (a !== null && JSON.stringify(this.#known.get(id)) !== JSON.stringify(a)) {
             this.#known.set(id, a);
-            void writeJsonFile(join(d.data, "move", "accounts-known.json"), Object.fromEntries(this.#known)).catch(() => {});
+            const known = Object.fromEntries(this.#known);
+            this.#knownWrite = this.#knownWrite.then(() => writeJsonFile(join(d.data, "move", "accounts-known.json"), known)).catch(() => {});
           }
           return a;
         },
@@ -293,6 +293,14 @@ export class Moves {
         const reads = this.#planning.get(ws);
         const pages = reads !== undefined && reads.loaded().length > 0 ? reads.loaded() : this.#pagesNow(ws);
         for (const page of pages) for (const k of page.keys) for (const [id, a] of this.handover.accountsOf([k], page)) out.set(id, a);
+        const home = d.home();
+        for (const p of d.profiles()) {
+          if (typeof p?.id !== "string" || out.has(p.id)) continue;
+          if (p.machine === true || p.share?.borrowed === true) continue;
+          if (profileRuntimes(p).length > 0) continue;
+          if (!allowedIn(p, ws === home ? null : ws, home)) continue;
+          out.set(p.id, accountOf(p, here()));
+        }
         return out;
       },
       shared: (id) => {
@@ -386,11 +394,13 @@ export class Moves {
         const key = `${s.id}\n${s.host}`;
         if (this.#d.store.liveSessionsOn(p.id, 1).length > 0) {
           this.#unusedTold.delete(key);
-          if (this.#unusedOwed.has(key)) void this.#unusedOwed.delete(key);
+          if (this.#unusedOwed.has(key)) void this.#unusedOwed.delete(key).catch((e: Error) => log.warn("move", "unused login state not saved", { error: e.message }));
           continue;
         }
         if (this.#unusedTold.has(key) || this.#unusedOwed.has(key)) continue;
-        void this.#unusedOwed.add(key).then(() => this.#tellUnused(s.host));
+        void this.#unusedOwed.add(key)
+          .then(() => this.#tellUnused(s.host))
+          .catch((e: Error) => log.warn("move", "unused login state not saved", { error: e.message }));
       }
     });
   }
@@ -400,13 +410,12 @@ export class Moves {
     for (const key of this.#unusedOwed.values()) {
       const [share, to] = key.split("\n");
       if (to !== host) continue;
-      void this.#ask(host, { method: "move.unused", share }).then(
-        async () => {
+      void this.#ask(host, { method: "move.unused", share })
+        .then(async () => {
           this.#unusedTold.add(key);
           await this.#unusedOwed.delete(key);
-        },
-        () => {},
-      );
+        })
+        .catch(() => {});
     }
   }
 
@@ -499,6 +508,7 @@ export class Moves {
   async close(): Promise<void> {
     this.told.close();
     await this.handover.close();
+    await this.#knownWrite;
   }
 
   /// Share `share` hosted here again, from `from`: what a trip of this station's shared for it undone (accounts.ts).

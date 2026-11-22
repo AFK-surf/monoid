@@ -3,9 +3,73 @@
 use crate::{identity::Binding, routing::Scope};
 use iroh::{EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 const DOMAIN: &str = "mesh-announcement/v1\0";
 const LIMIT: usize = 16 * 1024;
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
+pub const MAX_UNDERLAY_ADDRS: usize = 8;
+
+fn ipv4_tier(ip: Ipv4Addr) -> u8 {
+    let [a, b, _, _] = ip.octets();
+    if ip.is_link_local() || ip.is_loopback() || ip.is_unspecified() {
+        return 5;
+    }
+    if ip.is_private() || (a == 100 && (b & 0xc0) == 64) {
+        return 3;
+    }
+    if ip.is_multicast() || ip.is_broadcast() || ip.is_documentation() || a == 0 {
+        return 4;
+    }
+    1
+}
+
+fn ipv6_tier(ip: Ipv6Addr) -> u8 {
+    let s = ip.segments();
+    if (s[0] & 0xffc0) == 0xfe80 || ip.is_loopback() || ip.is_unspecified() {
+        return 5;
+    }
+    if (s[0] & 0xfe00) == 0xfc00 || ip.is_multicast() {
+        return 4;
+    }
+    2
+}
+
+fn underlay_tier(addr: &TransportAddr) -> u8 {
+    match addr {
+        TransportAddr::Relay(_) => 0,
+        TransportAddr::Ip(sock) => match sock.ip() {
+            IpAddr::V4(ip) => ipv4_tier(ip),
+            IpAddr::V6(ip) => ipv6_tier(ip),
+        },
+        _ => 5,
+    }
+}
+
+fn underlay_key(addr: &TransportAddr) -> String {
+    match addr {
+        TransportAddr::Relay(url) => url.to_string(),
+        TransportAddr::Ip(sock) => sock.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Bounds a local endpoint's underlay addresses to `MAX_UNDERLAY_ADDRS` while preserving
+/// smaller sets as-is and leaving non-underlay entries untouched for validation to reject.
+pub fn bounded_address(address: EndpointAddr) -> EndpointAddr {
+    if address.addrs.len() <= MAX_UNDERLAY_ADDRS
+        || address.addrs.iter().any(|a| !matches!(a, TransportAddr::Ip(_) | TransportAddr::Relay(_)))
+    {
+        return address;
+    }
+    let mut ranked: Vec<(u8, String, TransportAddr)> = address
+        .addrs
+        .into_iter()
+        .map(|a| (underlay_tier(&a), underlay_key(&a), a))
+        .collect();
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    ranked.truncate(MAX_UNDERLAY_ADDRS);
+    EndpointAddr::new(address.id).with_addrs(ranked.into_iter().map(|(_, _, a)| a))
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Descriptor { pub binding: Binding, pub address: EndpointAddr }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,7 +109,7 @@ impl SignedAnnouncement {
         if b.endpoint != *node.as_bytes() || b.neighbor != *value.descriptor.address.id.as_bytes() || b.generation > MAX_SAFE {
             return Err("announcement binding mismatch".into());
         }
-        if value.descriptor.address.addrs.len() > 8 || value.descriptor.address.addrs.iter().any(|a| !matches!(a, TransportAddr::Ip(_) | TransportAddr::Relay(_))) {
+        if value.descriptor.address.addrs.len() > MAX_UNDERLAY_ADDRS || value.descriptor.address.addrs.iter().any(|a| !matches!(a, TransportAddr::Ip(_) | TransportAddr::Relay(_))) {
             return Err("announcement must name bounded underlay addresses".into());
         }
         Ok(value)
@@ -76,5 +140,77 @@ mod tests {
         assert!(tampered.verify(scope, key.public(), 0).is_err());
         assert!(SignedAnnouncement::sign(&key, scope, 0, descriptor.clone()).is_err());
         assert!(SignedAnnouncement::sign(&key, scope, MAX_SAFE + 1, descriptor).is_err());
+    }
+    #[test]
+    fn bounded_address_preserves_small_sets_unchanged() {
+        let id = SecretKey::from([87; 32]).public();
+        let addr = EndpointAddr::new(id).with_addrs([
+            TransportAddr::Ip("127.0.0.1:1234".parse().unwrap()),
+            TransportAddr::Ip("192.168.1.10:1234".parse().unwrap()),
+            TransportAddr::Relay("https://relay-a.example".parse().unwrap()),
+        ]);
+        assert_eq!(bounded_address(addr.clone()), addr);
+        let exact_eight = EndpointAddr::new(id).with_addrs((0..8).map(|i| {
+            TransportAddr::Ip(format!("192.168.1.{}:1234", i + 1).parse().unwrap())
+        }));
+        assert_eq!(bounded_address(exact_eight.clone()), exact_eight);
+    }
+    #[test]
+    fn bounded_address_prioritizes_relays_and_public_ips_above_limit() {
+        let key = SecretKey::from([88; 32]);
+        let scope = [89; 32];
+        let neighbor = neighbor_secret(&key, scope, crate::policy::TransitPolicy::empty().digest()).public();
+        let relay_a = TransportAddr::Relay("https://relay-a.example".parse().unwrap());
+        let relay_b = TransportAddr::Relay("https://relay-b.example".parse().unwrap());
+        let pub_v4_a = TransportAddr::Ip("1.2.3.4:4000".parse().unwrap());
+        let pub_v4_b = TransportAddr::Ip("8.8.8.8:4000".parse().unwrap());
+        let pub_v6_a = TransportAddr::Ip("[2001:4860:4860::8888]:4000".parse().unwrap());
+        let pub_v6_b = TransportAddr::Ip("[2606:4700:4700::1111]:4000".parse().unwrap());
+        let tailscale = TransportAddr::Ip("100.64.0.1:4000".parse().unwrap());
+        let docker = TransportAddr::Ip("172.17.0.1:4000".parse().unwrap());
+        let lan = TransportAddr::Ip("192.168.1.10:4000".parse().unwrap());
+        let ula = TransportAddr::Ip("[fd00::1]:4000".parse().unwrap());
+        let ll_v4 = TransportAddr::Ip("169.254.1.1:4000".parse().unwrap());
+        let ll_v6 = TransportAddr::Ip("[fe80::1]:4000".parse().unwrap());
+        let lo_v4 = TransportAddr::Ip("127.0.0.1:4000".parse().unwrap());
+        let lo_v6 = TransportAddr::Ip("[::1]:4000".parse().unwrap());
+        let raw = EndpointAddr::new(neighbor).with_addrs([
+            lo_v6, lo_v4, ll_v6, ll_v4, ula, lan.clone(), docker.clone(), tailscale.clone(),
+            pub_v6_b.clone(), pub_v6_a.clone(), pub_v4_b.clone(), pub_v4_a.clone(),
+            relay_b.clone(), relay_a.clone(),
+        ]);
+        assert_eq!(raw.addrs.len(), 14);
+        let bounded = bounded_address(raw);
+        assert_eq!(bounded.addrs.len(), MAX_UNDERLAY_ADDRS);
+        for expected in [&relay_a, &relay_b, &pub_v4_a, &pub_v4_b, &pub_v6_a, &pub_v6_b, &tailscale, &docker] {
+            assert!(bounded.addrs.contains(expected), "missing expected address {expected:?}");
+        }
+        assert!(!bounded.addrs.contains(&lan));
+        let descriptor = Descriptor {
+            binding: Binding::sign(&key, scope, crate::policy::TransitPolicy::empty().digest(), 1, true),
+            address: bounded,
+        };
+        let signed = SignedAnnouncement::sign(&key, scope, 1, descriptor).unwrap();
+        assert_eq!(signed.verify(scope, key.public(), 1).unwrap().descriptor.address.addrs.len(), MAX_UNDERLAY_ADDRS);
+    }
+    #[test]
+    fn bounded_address_does_not_strip_custom_transport() {
+        let key = SecretKey::from([90; 32]);
+        let scope = [91; 32];
+        let neighbor = neighbor_secret(&key, scope, crate::policy::TransitPolicy::empty().digest()).public();
+        let custom = TransportAddr::Custom(crate::transport::address(scope, crate::policy::TransitPolicy::empty().digest(), [1; 32]));
+        let mut addrs: Vec<TransportAddr> = (0..9)
+            .map(|i| TransportAddr::Ip(format!("192.168.1.{}:4000", i + 1).parse().unwrap()))
+            .collect();
+        addrs.push(custom.clone());
+        let raw = EndpointAddr::new(neighbor).with_addrs(addrs);
+        let kept = bounded_address(raw.clone());
+        assert_eq!(kept, raw);
+        assert!(kept.addrs.contains(&custom));
+        let descriptor = Descriptor {
+            binding: Binding::sign(&key, scope, crate::policy::TransitPolicy::empty().digest(), 1, true),
+            address: kept,
+        };
+        assert!(SignedAnnouncement::sign(&key, scope, 1, descriptor).is_err());
     }
 }

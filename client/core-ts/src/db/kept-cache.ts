@@ -34,8 +34,8 @@ export class KeptCacheStore {
   /// What is kept of each agent's session (`station␁session`): its files' `name␁kind`, read in one statement as the first
   /// of them is asked (by the primary key's first columns), then kept level with every write and deletion of `file_kept`
   /// here, and let go of whole where a burst is rolled back. A chat drawn again asks of each of its files twice
-  /// (views.ts `held`: a thumbnail, a poster), on every change of it while a reply streams: 1,500 statements a change for
-  /// a chat of 25 files over 30 changes, now none once its sessions are read.
+  /// (views.ts `held`: a thumbnail, a poster), on every chat topic rebuild while an agent is working: 1,500 statements a
+  /// change for a chat of 25 files over 30 changes, now none once its sessions are read.
   readonly #keptOf = new Map<string, Set<string>>();
   /// Whether `md_kept` is there (made as the first tree is kept), and what its trees take (counted at the first kept).
   #mdKept = false;

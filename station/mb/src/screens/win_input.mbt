@@ -84,11 +84,12 @@ pub struct WinInput {
   priv mut at_y : Double
   priv mut wheel_x : Double
   priv mut wheel_y : Double
+  priv pads : Array[Int]
 }
 
 ///|
 pub fn WinInput::new() -> WinInput {
-  { buttons: 0, held: [], at_x: 0.0, at_y: 0.0, wheel_x: 0.0, wheel_y: 0.0 }
+  { buttons: 0, held: [], at_x: 0.0, at_y: 0.0, wheel_x: 0.0, wheel_y: 0.0, pads: [] }
 }
 
 ///|
@@ -103,6 +104,10 @@ pub fn WinInput::release(self : WinInput) -> Array[J] {
   for code in self.held {
     ops.push(win_key_op(win_keys.get(code).unwrap(), false))
   }
+  for index in self.pads {
+    ops.push(pad_released(index).to_j(op=Some("gamepad")))
+  }
+  self.pads.clear()
   self.buttons = 0
   self.held.clear()
   ops
@@ -111,19 +116,19 @@ pub fn WinInput::release(self : WinInput) -> Array[J] {
 ///|
 pub fn WinInput::ops(self : WinInput, e : ScreenInput) -> Array[J] {
   match e {
-    Pointer(kind~, x~, y~, buttons~) => {
+    Pointer(kind~, x~, y~, buttons~, delta~) => {
       let before = self.buttons
       self.buttons = buttons & 7
       self.at_x = x
       self.at_y = y
       if kind == "move" {
-        return [win_mouse("move", x, y, 0)]
+        return [with_delta(win_mouse("move", x, y, 0), delta)]
       }
       if kind == "down" {
         let b = lowest_bit(self.buttons & before.lnot())
         let bit = if b == 0 { 1 } else { b }
         self.buttons = self.buttons | bit
-        return [win_mouse("down", x, y, button_of_bit(bit).unwrap_or(0))]
+        return [with_delta(win_mouse("down", x, y, button_of_bit(bit).unwrap_or(0)), delta)]
       }
       let b = lowest_bit(before & self.buttons.lnot())
       let bit = if b != 0 {
@@ -137,7 +142,7 @@ pub fn WinInput::ops(self : WinInput, e : ScreenInput) -> Array[J] {
         }
       }
       self.buttons = self.buttons & bit.lnot()
-      [win_mouse("up", x, y, button_of_bit(bit).unwrap_or(0))]
+      [with_delta(win_mouse("up", x, y, button_of_bit(bit).unwrap_or(0)), delta)]
     }
     Wheel(x~, y~, dx~, dy~) => {
       // Whole units only; what is left goes with the next turn the same way (a trackpad's many small ones).
@@ -191,6 +196,10 @@ pub fn WinInput::ops(self : WinInput, e : ScreenInput) -> Array[J] {
       out
     }
     Text(t) => if t == "" { [] } else { [jo([("op", js("text")), ("text", js(t))])] }
+    Gamepad(pad) => {
+      pad_held(self.pads, pad)
+      [pad.to_j(op=Some("gamepad"))]
+    }
     Pose(_) | Device(_) | Button(..) => []
   }
 }

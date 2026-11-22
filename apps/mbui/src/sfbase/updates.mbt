@@ -149,7 +149,7 @@ pub fn stale_build_action(src : Source) -> Unit {
               Offered(v, ..) | Failed(v, _) => update_fetch_found(v, true)
               Ready(v, ..) | Allow(v) =>
                 @ui.update_apply(
-                  @sf.t("android-misc.updates.updated", args=[("app", "still.fail"), ("version", text(Some(v), "versionName"))]),
+                  @sf.t("android-misc.updates.updated", args=[("app", @sf.product()), ("version", text(Some(v), "versionName"))]),
                 )
               _ => update_dialog(src)
             }
@@ -484,7 +484,7 @@ pub fn update_go(src : Source) -> Unit {
       Offered(v, ..) | Failed(v, _) => update_fetch_found(v, true)
       Ready(v, ..) | Allow(v) =>
         @ui.update_apply(
-          @sf.t("android-misc.updates.updated", args=[("app", "still.fail"), ("version", text(Some(v), "versionName"))]),
+          @sf.t("android-misc.updates.updated", args=[("app", @sf.product()), ("version", text(Some(v), "versionName"))]),
         )
       _ => ()
     }
@@ -564,10 +564,10 @@ let update_again_n : Ref[Int] = Ref(0)
 /// a check as it is shown again, nothing said unless a newer build is found.
 pub fn update_again(c : @ui.Ctx, src : Source) -> Unit {
   let n = update_again_n.val
-  if @kit.after(c, "update-again/\{n}", true, update_again_ms, later=true) {
+  if c.held("update-again/\{n}", true, update_again_ms, later=true) {
     update_again_n.val = n + 1
     // (the next hour asked for now, not as a later build of this frame happens to come: none may)
-    @kit.after(c, "update-again/\{n + 1}", true, update_again_ms, later=true) |> ignore
+    c.held("update-again/\{n + 1}", true, update_again_ms, later=true) |> ignore
     c.tell("update-again", fn() { update_check(src, false) })
   }
 }
@@ -592,7 +592,7 @@ pub fn update_stands() -> @settings.VersionNow {
 /// How `now` stands, as 关于's version row says it (update_stands).
 fn update_stands_of(now : UpdateNow) -> @settings.VersionNow {
   let version = fn(v : Json) { [("version", text(Some(v), "versionName"))] }
-  let app = ("app", "still.fail")
+  let app = ("app", @sf.product())
   let check = @sf.t("android-settings.version.check")
   let (label, note, going, part) = match now {
     Quiet | Latest | CouldNot(_) => (check, "", false, None)

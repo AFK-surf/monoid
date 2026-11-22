@@ -39,9 +39,21 @@ export type Token = { access: string; refresh: string; expiresInMs: number; org:
 /// again.
 export class RenewRefused extends Said {
   readonly status: number | null;
+  /// The profile whose login it is, where known (said by the one who opened a session on it: sessions/actor.ts
+  /// `openAgent`), for a session that could not start on it to go on on another.
+  profileId: string | null = null;
   constructor(status: number | null, message: string) {
     super(message);
     this.status = status;
+  }
+}
+
+/// A borrowed profile's login over on its host (share/index.ts `LOGIN_OVER`), said as the profile it is of: a session
+/// that could not start on it goes on on another (the sessions' `auth` failover, as a turn refused on it).
+export class ProfileLoginOver extends RenewRefused {
+  constructor(profileId: string, message: string) {
+    super(null, message);
+    this.profileId = profileId;
   }
 }
 

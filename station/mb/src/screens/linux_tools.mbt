@@ -349,13 +349,5 @@ async fn LinuxScreenTools::install(self : LinuxScreenTools, env : Env, signal : 
 ///|
 /// Strings in UTF-16 code unit order (`Array.prototype.sort`'s).
 fn compare_units(a : String, b : String) -> Int {
-  let x = @jsjson.units(a)
-  let y = @jsjson.units(b)
-  let n = if x.length() < y.length() { x.length() } else { y.length() }
-  for i in 0..<n {
-    if x[i] != y[i] {
-      return if x[i] < y[i] { -1 } else { 1 }
-    }
-  }
-  x.length() - y.length()
+  @jsjson.js_compare(a, b)
 }

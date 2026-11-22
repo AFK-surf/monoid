@@ -31,7 +31,9 @@
     ],
     "imports": [
       "mbui/",
-      "moonbitlang/"
+      "liquid-glass/",
+      "moonbitlang/",
+      "stillfail/sf"
     ]
   },
   "build_effect": {
@@ -86,18 +88,9 @@
     "hash-order": {},
     "globals": {},
     "style-literal": {
-      "src/markdown.mbt": 34,
-      "src/parts.mbt": 44,
-      "src/picture.mbt": 1,
-      "src/waiting.mbt": 10
+      "src/parts.mbt": 3
     },
-    "box-loose": {
-      "src/avatar.mbt": 1,
-      "src/markdown.mbt": 26,
-      "src/parts.mbt": 29,
-      "src/picture.mbt": 2,
-      "src/waiting.mbt": 6
-    },
+    "box-loose": {},
     "style-exact": {
       "src/tokens.mbt": 25
     },
@@ -120,16 +113,8 @@
     "tier-outside-shell": {},
     "fixture-import": {},
     "motion-spring": {},
-    "built-by-hand": {
-      "src/parts.mbt": 2
-    },
-    "layout-read-back": {
-      "src/markdown.mbt": 1,
-      "src/parts.mbt": 1,
-      "src/seg.mbt": 1,
-      "src/submenu.mbt": 1,
-      "src/viewer_frame.mbt": 1
-    },
+    "built-by-hand": {},
+    "layout-read-back": {},
     "motion-length": {},
     "tester-branch": {},
     "frame-number": {},
@@ -137,19 +122,10 @@
       "src/presented_node.mbt": 1
     },
     "build-clock": {},
-    "build-motion": {
-      "src/lift.mbt": 1,
-      "src/marked.mbt": 1,
-      "src/parts.mbt": 1,
-      "src/waiting.mbt": 1
-    },
-    "old-list": {
-      "src/page.mbt": 1
-    },
+    "build-motion": {},
+    "old-list": {},
     "list-comes-off": {},
-    "old-island": {
-      "src/presented_node.mbt": 1
-    },
+    "old-island": {},
     "old-panel": {},
     "old-set-theme": {},
     "old-empty-around": {},
@@ -168,25 +144,21 @@
     "frame-walk": {},
     "scoped-computed": {},
     "raw-effect": {},
-    "pick-loop": {
-      "src/seg_node.mbt": 2,
-      "src/way_node.mbt": 1
-    },
+    "pick-loop": {},
     "each-min-height": {},
     "each-lookup": {},
     "layout-drawn-while": {},
     "shader-int": {},
     "raw-hover-ground": {},
-    "width-structure": {
-      "src/seg_node.mbt": 5
-    },
+    "width-structure": {},
     "reused-untracked-key": {},
     "manual-fade-way": {},
     "page-at-moment": {},
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   },
   "excused": {
     "frame-request": {},
@@ -210,14 +182,8 @@
     "builtin-hash": {},
     "hash-order": {},
     "globals": {},
-    "style-literal": {
-      "src/seg.mbt": 2
-    },
-    "box-loose": {
-      "src/files.mbt": 1,
-      "src/nav_bar.mbt": 1,
-      "src/seg.mbt": 2
-    },
+    "style-literal": {},
+    "box-loose": {},
     "style-exact": {},
     "style-text": {},
     "build-effect": {},
@@ -241,9 +207,7 @@
     "fixture-import": {},
     "motion-spring": {},
     "built-by-hand": {},
-    "layout-read-back": {
-      "src/markdown.mbt": 1
-    },
+    "layout-read-back": {},
     "motion-length": {},
     "tester-branch": {},
     "frame-number": {},
@@ -288,6 +252,7 @@
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   }
 }

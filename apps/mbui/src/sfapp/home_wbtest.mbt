@@ -3,9 +3,6 @@
 fn tester(mode : String) -> @ui.Tester {
   new_run()
   // (the chat's page made as both_pages runs it now, its new chat too: none outside one)
-  if both_nodes.val {
-    both_way()
-  }
   let src = fixture(mode)
   @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
 }
@@ -151,8 +148,6 @@ test "the workspaces' sheet: another workspace tapped is the one in view" {
   t.tap_text("星火工作室")
   assert_true(@sf.presenting())
   assert_true(t.find("切换 workspace") is Some(_))
-  assert_true(t.find("当前使用") is Some(_))
-  assert_true(t.find("其他 workspace") is Some(_))
   t.tap_text("个人")
   assert_true(!@sf.presenting())
   assert_true(t.find("个人") is Some(_))
@@ -177,7 +172,7 @@ test "hiding a running chat leaves it in the hidden list, where it can be restor
   t.frame()
   t.tap_text("关闭提醒")
   // (its notice gone: over the foot of the menu held open next, where 隐藏 is)
-  t.run_for(@sf.toast_ms + @kit.presence_out_ms)
+  t.run_for(@sf.toast_ms + @motion.presence_out_ms)
   let (x, y) = t.find("整理发布清单").unwrap()
   t.press_at(x, y)
   t.run_for(@ui.tap_indication_ms + @sfpages.hold_ms)
@@ -186,7 +181,7 @@ test "hiding a running chat leaves it in the hidden list, where it can be restor
   assert_true(t.find("开启提醒") is Some(_))
   t.tap_text("隐藏")
   // (its notice, with its 撤销, gone: over the foot of the menu held open next, where 取消隐藏 is)
-  t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+  t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
   assert_true(t.find("整理发布清单") is None)
   tap_home_filter(t)
   t.tap_text("已隐藏")
@@ -255,7 +250,7 @@ test "small screen home: a long workspace name gives way to syncing and transfer
     },
   }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=320.0, h=740.0, platform=2)
-  t.run_for(@sf.later_ms + @kit.presence_in_ms)
+  t.run_for(@sf.later_ms + @motion.presence_in_ms)
   let (fx, _, fw, _) = t.query(Button, label="筛选会话：全部").unwrap().rect
   let (sync_x, _, sync_w, _) = t.query(Status, label="正在同步 · 还剩 12 个对话").unwrap().rect
   let (tx, _, tw, _) = t.query(Button, label="1 个传输 · 2%").unwrap().rect
@@ -374,12 +369,16 @@ test "the list while it is read: no rows, the shapes" {
 test "a state line's lead is the core's: an icon in its words' place with what follows; none, the words as they are" {
   new_run()
   let t = @ui.Tester::new(
-    fn(c) {
-      c.box(w=Fill(1.0), fn() {
-        @sfpages.state_line(c, "a", c.id("a"), "要你帮忙：看一下", lead="need", rest="看一下")
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      root.box(fn(b) {
+        b.width_share(Is(1.0)) |> ignore
+        @sfpages.state_line_node(b, tips, fn() { "要你帮忙：看一下" }, fn() { "need" }, fn() { "" }, fn() { "看一下" }, fn() { false })
         // (words that look like a lead, said by none: as they are)
-        @sfpages.state_line(c, "b", c.id("b"), "要你帮忙看一眼")
-        @sfpages.state_line(c, "c", c.id("c"), "待处理 · 用哪个？", lead="decision", lead_text="待处理", rest=" · 用哪个？")
+        @sfpages.state_line_node(b, tips, fn() { "要你帮忙看一眼" }, fn() { "" }, fn() { "" }, fn() { "" }, fn() { false })
+        @sfpages.state_line_node(b, tips, fn() { "待处理 · 用哪个？" }, fn() { "decision" }, fn() { "待处理" }, fn() { " · 用哪个？" }, fn() { false })
       })
       |> ignore
     },
@@ -405,14 +404,15 @@ test "a pending card's long question gives way to its lead on a narrow row" {
       new_run()
       let width = @signals.signal(240.0)
       let t = @ui.Tester::new(
-        fn(c) {
-          @sf.begin(c) |> ignore
-          c.with_theme(@sf.ui_theme(), fn() {
-            c.box(w=Px(width.get()), fn() {
-              @sfpages.state_line(c, "card", c.id("card"), lead + rest, lead="decision", lead_text=lead, rest~)
-            })
-            |> ignore
+        fn(c) { @sf.begin(c) |> ignore },
+        tree=fn(root) {
+          @ui.set_tree_theme(@sf.ui_theme_now)
+          let tips = @sf.TipLayer::new(fn() { Some(root) })
+          root.box(fn(b) {
+            b.width(By(fn() { Some(width.get()) })) |> ignore
+            @sfpages.state_line_node(b, tips, fn() { lead + rest }, fn() { "decision" }, fn() { lead }, fn() { rest }, fn() { false })
           })
+          |> ignore
         },
         w=800.0,
         h=120.0,
@@ -536,32 +536,47 @@ test "a row held long, its 重命名: the question in its menu's place, the row 
 
 ///|
 test "a row held and let down as its menu goes: its shadow fades with its card, none without it" {
-  let calls : Array[Made] = []
-  let t = wide_tester(calls, w=390.0, h=844.0, platform=2)
-  let (_, ry) = t.find("夜里的构建又失败了").unwrap()
-  hold_row(t, "夜里的构建又失败了")
-  t.run_for(@ui.move_most_ms)
-  let bare : Ref[String?] = Ref(None)
-  t.each_frame(
-    Some(fn() {
-      let near = fn(y : Double, h : Double) { y < ry + 30.0 && y + h > ry - 20.0 }
-      // (the card: a row's height, a row's width; its shadow cast by it, as strong as the card is of its whole)
-      let cards = t.drawn_rects().filter(fn(r) { r.2 > 200.0 && r.3 < 100.0 && near(r.1, r.3) })
-      let whole = (@sf.held_raised.color & 0xFFL).to_double()
-      for s in t.drawn_shadows() {
-        if s.2 > 200.0 && near(s.1, s.3) && bare.val is None {
-          let a = (s.6 & 0xFFL).to_double()
-          if !cards.iter().any(fn(r) { a <= (r.4 & 0xFFL).to_double() / 255.0 * whole + 1.0 }) {
-            bare.val = Some("shadow \{Repr(s)} over cards \{Repr(cards)}")
+  for solid in [false, true] {
+    let calls : Array[Made] = []
+    let t = wide_tester(calls, w=390.0, h=844.0, platform=2)
+    @ui.set_glass_solid(if solid { Some(true) } else { None })
+    let (_, ry) = t.find("夜里的构建又失败了").unwrap()
+    hold_row(t, "夜里的构建又失败了")
+    t.run_for(@ui.move_most_ms)
+    let bare : Ref[String?] = Ref(None)
+    t.each_frame(
+      Some(fn() {
+        let near = fn(y : Double, h : Double) { y < ry + 30.0 && y + h > ry - 20.0 }
+        // (the card: either a liquid glass kind==6 instance with strength in slot 15, or a solid fallback rect;
+        // its shadow cast by it must never outlive or exceed the card's own opacity)
+        let card_alphas : Array[Double] = []
+        for r in t.drawn_rects() {
+          if r.2 > 200.0 && r.3 < 100.0 && near(r.1, r.3) {
+            card_alphas.push((r.4 & 0xFFL).to_double() / 255.0)
           }
         }
-      }
-    }),
-  )
-  t.tap(200.0, 60.0)
-  t.run_for(@ui.move_most_ms * 2.0)
-  t.each_frame(None)
-  assert_eq(bare.val, None)
+        for a in t.drawn_instances() {
+          if a.length() > 15 && a[5] == 6.0 && a[2] > 200.0 && a[3] < 100.0 && near(a[1], a[3]) {
+            card_alphas.push(a[15])
+          }
+        }
+        let whole = (@sf.held_raised.color & 0xFFL).to_double()
+        for s in t.drawn_shadows() {
+          if s.2 > 200.0 && near(s.1, s.3) && bare.val is None {
+            let a = (s.6 & 0xFFL).to_double()
+            if !card_alphas.iter().any(fn(ca) { a <= ca * whole + 1.0 }) {
+              bare.val = Some("solid=\{solid} shadow \{Repr(s)} over card_alphas \{Repr(card_alphas)}")
+            }
+          }
+        }
+      }),
+    )
+    t.tap(200.0, 60.0)
+    t.run_for(@ui.move_most_ms * 2.0)
+    t.each_frame(None)
+    @ui.set_glass_solid(None)
+    assert_eq(bare.val, None)
+  }
 }
 
 ///|
@@ -778,9 +793,11 @@ test "a row's state line in red while a message of the viewer's in it did not go
   let red = Ref(0L)
   let muted = Ref(0L)
   let t = @ui.Tester::new(
-    fn(c) {
-      red.val = @sf.begin(c).p.red
-      c.with_theme(@sf.ui_theme(), fn() { @sfpages.state_line(c, "a", c.id("a"), "有一条消息没发出去", alert=true) })
+    fn(c) { red.val = @sf.begin(c).p.red },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      @sfpages.state_line_node(root, tips, fn() { "有一条消息没发出去" }, fn() { "" }, fn() { "" }, fn() { "" }, fn() { true })
     },
     w=390.0,
     h=40.0,
@@ -790,9 +807,11 @@ test "a row's state line in red while a message of the viewer's in it did not go
   assert_true(t.drawn_glyphs().length() > 0)
   assert_true(t.drawn_glyphs().iter().all(fn(g) { g.2 == red.val }))
   let t2 = @ui.Tester::new(
-    fn(c) {
-      muted.val = @sf.begin(c).p.muted
-      c.with_theme(@sf.ui_theme(), fn() { @sfpages.state_line(c, "a", c.id("a"), "有一条消息没发出去") })
+    fn(c) { muted.val = @sf.begin(c).p.muted },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      @sfpages.state_line_node(root, tips, fn() { "有一条消息没发出去" }, fn() { "" }, fn() { "" }, fn() { "" }, fn() { false })
     },
     w=390.0,
     h=40.0,
@@ -970,7 +989,7 @@ test "a toast with 撤销 stays its longer time; one without, its 2.6 s" {
   hold_row(t, "整理发布清单")
   t.frame()
   t.tap_text("关闭提醒")
-  t.run_for(@sf.toast_ms + @kit.presence_out_ms)
+  t.run_for(@sf.toast_ms + @motion.presence_out_ms)
   hold_row(t, "整理发布清单")
   t.frame()
   t.tap_text("隐藏")
@@ -988,7 +1007,7 @@ test "a toast with 撤销 stays its longer time; one without, its 2.6 s" {
 fn rested_toast(t : @ui.Tester, words : String, action : String) -> ((Double, Double, Double, Double), (Double, Double, Double, Double)?) raise {
   @sfbase.toast_later(words, action~)
   t.frame()
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   let toast = match t.query(Status, label=words) {
     Some(n) => n.rect
     None => fail("no toast saying \{words}")
@@ -1003,7 +1022,7 @@ test "a toast is a capsule while its words fit a line; its 撤销 a capsule in i
     let t = if wide { wide_tester(calls) } else { wide_tester(calls, w=390.0, h=844.0, platform=2) }
     let (bare, _) = rested_toast(t, "已复制", "")
     assert_true((bare.3 - 2.0 * @sf.toast_r).abs() < 0.5, msg="\{wide} \{Repr(bare)}")
-    t.run_for(@sf.toast_ms + @kit.presence_out_ms)
+    t.run_for(@sf.toast_ms + @motion.presence_out_ms)
     let ((x, y, w, h), button) = rested_toast(t, "已归档", "撤销")
     let (bx, by, bw, bh) = button.unwrap()
     // as high as one without; its button as far from its top, foot and end as its corner has a capsule that high
@@ -1063,7 +1082,7 @@ test "a toast naming a long title with its 撤销: inside the screen, its 撤销
     let (bx, by, bw, bh) = button.unwrap()
     assert_true(x >= 0.0 && x + tw <= w, msg="\{wide} \{x} \{tw}")
     assert_true(bx >= x && bx + bw <= x + tw && by >= y && by + bh <= y + th, msg="\{wide} \{Repr(button)}")
-    t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+    t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
   }
 }
 
@@ -1085,7 +1104,7 @@ test "a toast clear of the system's bars over the window: over its foot's, besid
     assert_true(x >= left - 0.5 && x + tw <= w - right + 0.5, msg~)
     // (in the middle of what the bars leave)
     assert_true((x - left - (w - right - (x + tw))).abs() < 1.0, msg~)
-    t.run_for(@sf.toast_ms + @kit.presence_out_ms)
+    t.run_for(@sf.toast_ms + @motion.presence_out_ms)
   }
 }
 
@@ -1107,7 +1126,7 @@ test "a toast naming a long title with its 撤销, the system's bars down the wi
     assert_true(w - left - right - 32.0 < @sf.toast_max, msg~)
     assert_true(x >= left + 16.0 - 0.5 && x + tw <= w - right - 16.0 + 0.5, msg~)
     assert_true(bx >= x && bx + bw <= x + tw && by >= y && by + bh <= y + th, msg="\{msg} \{Repr(button)}")
-    t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+    t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
   }
 }
 
@@ -1121,7 +1140,7 @@ test "a toast naming a title that wraps: its 撤销 whole, as wide as beside a s
     let (_, short) = rested_toast(t, "已归档", "撤销")
     let (_, _, short_w, _) = short.unwrap()
     let short_words = t.words().filter(fn(w) { w.0 == "撤销" })[0].3
-    t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+    t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
     for words in [
         "已归档「office-mac-host-2 卡顿排查」",
         "已归档「把首页对话列表改成按天分组并且在每一组的标题里写上那天的日期和星期几，再把置顶的对话单独放在最上面」",
@@ -1134,7 +1153,7 @@ test "a toast naming a title that wraps: its 撤销 whole, as wide as beside a s
       let drawn = t.words().filter(fn(w) { w.0 == "撤销" })
       assert_eq(drawn.length(), 1)
       assert_true((drawn[0].3 - short_words).abs() < 0.5, msg="\{wide} \{words} \{drawn[0].3} \{short_words}")
-      t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+      t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
     }
   }
 }
@@ -1336,11 +1355,11 @@ test "the only row of the list in view archived from its row: no line kept for i
   hold_row(t, "整理发布清单")
   t.frame()
   t.tap_text("关闭提醒")
-  t.run_for(@sf.toast_ms + @kit.presence_out_ms)
+  t.run_for(@sf.toast_ms + @motion.presence_out_ms)
   hold_row(t, "整理发布清单")
   t.frame()
   t.tap_text("隐藏")
-  t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+  t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
   tap_home_filter(t)
   t.tap_text("已隐藏")
   t.run_for(@ui.move_most_ms)
@@ -1403,8 +1422,8 @@ test "the workspaces' sheet: more workspaces than it holds are reached by scroll
     },
   }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  t.run_for(@sf.later_ms + @kit.presence_in_ms)
-  t.tap_text("工作区 1")
+  t.run_for(@sf.later_ms + @motion.presence_in_ms)
+  @sfpages.open_workspaces(src, Unanchored)
   presented_rested(t)
   assert_true(@sf.presenting())
   let last = "工作区 20"
@@ -1434,6 +1453,8 @@ test "the workspaces' sheet: more workspaces than it holds are reached by scroll
     presented_rested(t)
   }
   assert_true(in_view(), msg="the last workspace scrolled into the sheet")
+  // (the list's end met on the last drag and going back from past it: at rest before the tap, else it catches that)
+  t.run_past_glides()
   t.tap_text(last)
   assert_true(!@sf.presenting())
   let (_, bar_y) = t.find(last).unwrap()

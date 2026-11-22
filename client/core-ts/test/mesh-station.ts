@@ -45,6 +45,14 @@ export class Station {
   /// The phone's adb offers (station/src/mesh/adb.ts), each on the connection it came on, answered 200 and held open:
   /// the latest one's connection is where the station opens its tunnels.
   offers: { conn: J; head: J }[] = [];
+  /// Held event streams (`/admin/api/events/hold`), for verifying relay policy changes do not reopen streams.
+  eventOpens = 0;
+  readonly #eventStreams = new Set<J>();
+
+  async pushEvent(line: string): Promise<void> {
+    const data = Buffer.from(`data: ${line}\n\n`);
+    for (const s of [...this.#eventStreams]) await s.write(data).catch(() => this.#eventStreams.delete(s));
+  }
 
   static async start(alpns: Uint8Array[] = [ALPN], world: World = REAL): Promise<Station> {
     return Station.bound({ alpns: alpns.map((a) => Buffer.from(a)), relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" }, world);
@@ -184,6 +192,55 @@ export class Station {
         if (parsed.path.startsWith("/admin/api/big")) {
           const pieces = 16 * Number(new URL(parsed.path, "https://station.test").searchParams.get("mb") ?? 1);
           for (let i = 0; i < pieces; i++) await stream.write(Buffer.alloc(64 * 1024, 7)).catch(() => {});
+          ended = true;
+          await stream.finish().catch(() => {});
+          return;
+        }
+        // A deterministic ranged byte stream: byte at position `p` is `p % 251`, written in 4 KiB chunks.
+        // Optional `stallAfter` stalls at 0 B/s (until stopped) after writing that many bytes.
+        if (parsed.path.startsWith("/admin/api/part")) {
+          const params = new URL(parsed.path, "https://station.test").searchParams;
+          const offset = Number(params.get("offset") ?? 0);
+          const length = Number(params.get("length") ?? 0);
+          const step = Number(params.get("chunk") ?? 4 * 1024);
+          const stallAfter = params.has("stallAfter") ? Number(params.get("stallAfter")) : -1;
+          let ok = true;
+          for (let sent = 0; sent < length; sent += step) {
+            if (stallAfter >= 0 && sent >= stallAfter) {
+              await stream.stopped().catch(() => {});
+              return;
+            }
+            const n = Math.min(step, length - sent);
+            const buf = Buffer.allocUnsafe(n);
+            for (let i = 0; i < n; i++) buf[i] = (offset + sent + i) % 251;
+            try {
+              await stream.write(buf);
+            } catch {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) {
+            ended = true;
+            await stream.finish().catch(() => {});
+          }
+          return;
+        }
+        if (parsed.path === "/admin/api/events/hold") {
+          this.eventOpens++;
+          this.#eventStreams.add(stream);
+          try {
+            await stream.write(Buffer.from("data: ready\n\n"));
+            await stream.stopped();
+          } finally {
+            this.#eventStreams.delete(stream);
+          }
+          ended = true;
+          return;
+        }
+        // A part uploaded: answered in a few bytes, as the station answers one (station/src/api/routes/hub.ts), whatever its size.
+        if (parsed.path.startsWith("/uploads/parts")) {
+          await stream.write(Buffer.from(JSON.stringify({ have: body.length })));
           ended = true;
           await stream.finish().catch(() => {});
           return;

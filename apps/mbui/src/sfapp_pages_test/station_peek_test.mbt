@@ -129,7 +129,7 @@ test "an agent's model opens its model picker, where the context limit can be ch
 test "a chat's history opens the same model picker to change the context limit" {
   let calls : Array[Made] = []
   let t = decide_core(calls, "history-details")
-  let row = t.words().iter().find_first(fn(w) { w.0 == "Opus 5.5" }).unwrap()
+  let row = t.words().iter().find_first(fn(w) { w.0 == "Opus 5.5" && w.2 > 60.0 }).unwrap()
   t.tap(row.1 + row.3 / 2.0, row.2 + row.4 / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("完整 · 1M") is Some(_), msg="the model picker offers the current context limit")
@@ -147,17 +147,17 @@ test "a chat's history opens the same model picker to change the context limit" 
 test "a chat with no agent yet, on a desktop: its station's card under its tag in its bar while the pointer rests there (StationHover)" {
   let calls : Array[Made] = []
   let t = decide_core(calls, "chat-station-tag", wide=true)
-  // the tag: its name in the chat's bar (where it is: its middle)
+  // the tag: its name above the chat's composer (where it is: its middle)
   let before = t.locate("Willow")
-  let tag = before.filter(fn(p) { p.1 < 40.0 })
-  assert_true(tag.length() > 0, msg="the station's tag in the bar: \{Repr(before)}")
+  let tag = before.filter(fn(p) { p.1 > 600.0 && p.0 > 260.0 })
+  assert_true(tag.length() > 0, msg="the station's tag above the composer: \{Repr(before)}")
   let (x, y) = tag[0]
   t.move_to(x, y)
   t.run_for(@sfpages.hover_open_ms * 2.0)
-  // the card's name (the name there now that was not before): beside the tag (under it), not in the window's middle
+  // the card's name (the name there now that was not before): beside the tag (above it), not clipped off the window
   let card = t.locate("Willow").filter(fn(p) { !before.contains(p) })
   assert_true(card.length() > 0, msg="its card")
-  assert_true(card.iter().all(fn(p) { p.1 > y && p.1 < 200.0 && (p.0 - x).abs() < 240.0 }), msg="under the tag: \{Repr(card)}")
+  assert_true(card.iter().all(fn(p) { p.1 < y && p.1 > 40.0 && (p.0 - x).abs() < 240.0 }), msg="above the tag: \{Repr(card)}")
   assert_true(t.find("机器详情") is Some(_), msg="its way on")
   // gone once the pointer has left it
   t.move_to(900.0, 400.0)
@@ -169,7 +169,7 @@ test "a chat with no agent yet, on a desktop: its station's card under its tag i
 test "a chat with no agent yet, tapped by a finger on a desktop: its station's card from the presenters" {
   let calls : Array[Made] = []
   let t = decide_core(calls, "chat-station-tag", wide=true, pointing=Finger)
-  let tag = t.locate("Willow").filter(fn(p) { p.1 < 40.0 })
+  let tag = t.locate("Willow").filter(fn(p) { p.1 > 600.0 && p.0 > 260.0 })
   assert_true(tag.length() > 0)
   t.tap(tag[0].0, tag[0].1)
   t.frame()
@@ -192,11 +192,11 @@ test "station menus keep a wide chat open and route files and details into its t
   let t = decide_core(calls, "chat-station-tag", wide=true)
   let before = app.nav.top()
   @settings.open_station_peek("ws1/st1", from=Unanchored)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   // (the card's 文件, not the files' place in the sidebar under it)
   let (fx, fy) = peek_row(t, "文件")
   t.tap(fx, fy)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("可访问的文件夹") is None)
   t.tap_text("查看所有文件")
   t.frame()
@@ -205,7 +205,7 @@ test "station menus keep a wide chat open and route files and details into its t
   assert_eq(opened.length(), 1)
   assert_eq(text(Some(opened[0].params), "tab"), "drive:[\"ws1/st1\"]")
   @settings.open_station_peek("ws1/st1", from=Unanchored)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap_text("机器详情")
   t.frame()
   assert_true(app.nav.top() == before)
@@ -218,11 +218,11 @@ test "station screen submenu stays reachable outside its hover card and opens a 
   let calls : Array[Made] = []
   let t = decide_core(calls, "chat-station-tag", wide=true)
   let before = app.nav.top()
-  let tag = t.locate("Willow").filter(fn(p) { p.1 < 40.0 })[0]
+  let tag = t.locate("Willow").filter(fn(p) { p.1 > 600.0 && p.0 > 260.0 })[0]
   t.move_to(tag.0, tag.1)
   t.run_for(@sfpages.hover_open_ms * 2.0)
   t.tap_text("屏幕")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   let screen = t.find("Willow 的屏幕").unwrap()
   t.move_to(screen.0, screen.1)
   t.run_for(@sfpages.hover_close_ms * 2.0)
@@ -232,7 +232,7 @@ test "station screen submenu stays reachable outside its hover card and opens a 
   t.frame()
   assert_true(t.query(@ui.Role::MenuItem, label="Willow 的屏幕") is None)
   t.tap_text("屏幕")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap_text("Willow 的屏幕")
   t.frame()
   assert_true(app.nav.top() == before)
@@ -642,7 +642,7 @@ fn peek_first_tester(titles : Array[Array[String]]) -> @ui.Tester {
     ("MBUI_LOCALE", "zh"),
   ])
   t.each_frame(
-    Some(fn() { titles.push(t.words().filter(fn(w) { w.5 > 0.0 && (w.0 == "st1" || w.0 == "Willow") }).map(fn(w) { w.0 })) }),
+    Some(fn() { titles.push(t.words().filter(fn(w) { w.5 > 0.0 && w.4 >= 20.0 && (w.0 == "st1" || w.0 == "Willow") }).map(fn(w) { w.0 })) }),
   )
   t
 }

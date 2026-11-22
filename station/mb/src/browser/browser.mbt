@@ -375,7 +375,7 @@ async fn StationBrowser::create_default_target(
     guard at(Some(made), "targetId") is Some(Str(t)) && t.length() > 0 else {
       raise fail_("Chrome opened no tab.")
     }
-    let target_id = @jsjson.text(t)
+    let target_id = @jsjson.sanitize_str(t)
     match claimed {
       Some(f) => f(target_id, up.tabs)
       None => ()
@@ -410,7 +410,7 @@ pub async fn StationBrowser::open_tab(
   guard at(Some(made), "browserContextId") is Some(Str(cu)) && cu.length() > 0 else {
     raise fail_("Chrome made no browser context.")
   }
-  let ctx = @jsjson.text(cu)
+  let ctx = @jsjson.sanitize_str(cu)
   up.login_contexts[ctx] = ()
   match state_file() {
     Some(initial) =>
@@ -985,7 +985,7 @@ fn StationBrowser::heard_login(self : StationBrowser, up : Up?, e : CdpEvent) ->
   if e.method == "Target.targetInfoChanged" {
     match at_path(Some(e.params), ["targetInfo", "targetId"]) {
       Some(Str(u)) =>
-        match up.login_tabs.get(@jsjson.text(u)) {
+        match up.login_tabs.get(@jsjson.sanitize_str(u)) {
           Some(tab) if tab.ending is None => ignore(self.track_flush(self.save_login_tab(up, tab)))
           _ => ()
         }
@@ -994,7 +994,7 @@ fn StationBrowser::heard_login(self : StationBrowser, up : Up?, e : CdpEvent) ->
   } else if e.method == "Target.targetDestroyed" {
     match at(Some(e.params), "targetId") {
       Some(Str(u)) => {
-        let target_id = @jsjson.text(u)
+        let target_id = @jsjson.sanitize_str(u)
         match up.login_tabs.get(target_id) {
           Some(tab) if tab.ending is None =>
             ignore(self.track_flush(self.end_login_tab(up, target_id, false)))

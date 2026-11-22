@@ -165,8 +165,6 @@ pub fn decisions_node(@view.View, @settings.Core, () -> @settings.Here, on_back~
 
 pub let desk_dialogs : @ref.Ref[Int32]
 
-pub let desk_note : @ui.TextStyle
-
 pub let desk_said_line : @ui.Style
 
 pub let dismissed : @signals.Keyed[String]
@@ -248,6 +246,8 @@ pub let found_draw_ms : Double
 pub let fx_policy_up : @ref.Ref[String]
 
 pub let fx_vault_add_up : @ref.Ref[Bool]
+
+pub fn group_agents_by_station(Array[@sfbase.Agent], String) -> Array[StationAgentGroup]
 
 pub fn here_of(@sfbase.ChatRef, @sfbase.ChatView, String, @sfbase.Turns, @sfbase.Emits, @sfbase.SendFlight?, @settings.Core, inline? : Bool, gutter? : Double) -> MessageHere
 
@@ -639,6 +639,8 @@ pub fn station_retire_panel(@settings.Core, @settings.Here, @json.Json?, @json.J
 
 pub fn station_state(@ui.Ctx, @json.Json?) -> Unit
 
+pub fn station_via_mark_node(@view.View, () -> String, () -> String, () -> String, () -> Int64, () -> Int32) -> Unit
+
 pub fn station_waiting(@ui.Ctx, @settings.Core, @settings.Here, @sf.PageFrame, String, String) -> Unit
 
 pub fn step_card(@ui.Ctx, String, String, String, go? : (() -> Unit)?) -> Unit
@@ -885,6 +887,11 @@ pub(all) struct SettingsRow {
 }
 
 type SrCover
+
+pub(all) struct StationAgentGroup {
+  station : String
+  agents : Array[@sfbase.Agent]
+} derive(Eq)
 
 // Type aliases
 

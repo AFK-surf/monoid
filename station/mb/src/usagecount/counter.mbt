@@ -241,6 +241,21 @@ fn Counter::turns(self : Counter, session : String, from : Double, until : Doubl
 }
 
 ///|
+/// Whether a put-away transcript was read to its end already, with nothing left to write of it: put away, it is not
+/// written again (only restored, and so no longer put away), so its last bytes are not decompressed again to be
+/// compared with its anchor (each read of a station's every archive did, its end segment unpacked each time). One
+/// still lacking its boundary, its anchor or its place, or of a runtime whose calls are not timed whose `,,,` is still
+/// to be written, goes on as before.
+fn read_out(archived : Bool, was : Counted?, sized : Double, path : String, time_from : Double?, runtime : String) -> Bool {
+  guard archived && was is Some(w) else { return false }
+  let to_time = time_from is Some(_) &&
+    w.offset > 0.0 &&
+    ((w.speed is None && !is_timed_runtime(runtime)) ||
+      (is_timed_runtime(runtime) && needs_timing(runtime, w.speed)))
+  sized == w.offset && w.cutoff is Some(_) && w.anchor is Some(_) && w.path == path && !to_time
+}
+
+///|
 /// counter.ts `#readFile`: one transcript of `session` read on from where it was left, its calls recorded a part at a
 /// time; how many were new.
 async fn Counter::read_file(
@@ -271,6 +286,9 @@ async fn Counter::read_file(
     }
   }
   let sized = size.to_double()
+  if read_out(archived, was, sized, path, self.time_from, runtime) {
+    return 0
+  }
   let mut anchor : Bytes = b""
   let shortened = match was {
     Some(w) => sized < w.offset
@@ -333,8 +351,7 @@ async fn Counter::read_file(
     !replaced &&
     before.offset > 0.0 &&
     sized == before.offset &&
-    runtime != "claude" &&
-    runtime != "codex" {
+    !is_timed_runtime(runtime) {
     let db = self.db
     db.exec("BEGIN IMMEDIATE")
     errdefer (db.exec("ROLLBACK") catch { _ => () })
@@ -355,29 +372,17 @@ async fn Counter::read_file(
       }
     }
   }
-  if archived && !replaced && sized == before.offset {
-    return 0
-  }
   let state : CallState = { model: before.model, codex_id: None, window: None, speed: speed_of(before.speed) }
-  // A session created after the counter began can have its first call timestamped just before that boundary.
-  let first_new_at = if session.created_at >= since { min_d(since, session.created_at - skew_ms) } else { since }
-  let mut added = 0
-  let known_suffix_from = before.offset
-  // A Codex transcript's id is in its first line: read again for a file read on from the middle (only where there is
-  // something to read, as counter.ts reads it with the first part).
-  if runtime == "codex" && (archived || sized != before.offset) {
-    state.codex_id = codex_meta(host, path)
-  }
   // Read before its calls were timed: those from `time_from` on timed now, its reading on from where that left.
   if self.time_from is Some(time_from) &&
     was is Some(w) &&
-    w.speed is None &&
+    is_timed_runtime(runtime) &&
+    needs_timing(runtime, w.speed) &&
     !replaced &&
-    before.offset > 0.0 &&
-    (runtime == "claude" || runtime == "codex") {
+    before.offset > 0.0 {
     state.speed = self.timed_again(path, w.path, runtime, subagent, session.key, before.offset, cut, time_from)
-    // (none found to time, kept as `,,,`: read as none (`speed_of`), and not timed again at the next start)
-    let saved_speed = kept_speed(state.speed)
+    // (none found to time, kept as `,,,` or `v1:`: read as none (`speed_of`), and not timed again at the next start)
+    let saved_speed = kept_speed_for(runtime, state.speed)
     if self.files is Some(files) {
       if files.get(path) is Some(f) {
         files[path] = { ..f, speed: Some(saved_speed) }
@@ -386,6 +391,18 @@ async fn Counter::read_file(
         files[w.path] = { ..f, speed: Some(saved_speed) }
       }
     }
+  }
+  if archived && !replaced && sized == before.offset {
+    return 0
+  }
+  // A session created after the counter began can have its first call timestamped just before that boundary.
+  let first_new_at = if session.created_at >= since { min_d(since, session.created_at - skew_ms) } else { since }
+  let mut added = 0
+  let known_suffix_from = before.offset
+  // A Codex transcript's id is in its first line: read again for a file read on from the middle (only where there is
+  // something to read, as counter.ts reads it with the first part).
+  if runtime == "codex" && (archived || sized != before.offset) {
+    state.codex_id = codex_meta(host, path)
   }
   // Each part recorded as it is read, before the next is read.
   read_from(host, path, before.offset.to_int64(), part => {
@@ -405,7 +422,7 @@ async fn Counter::read_file(
         }
       }
       let model_before = state.model
-      let speed_before = Some(kept_speed(state.speed))
+      let speed_before = Some(kept_speed_for(runtime, state.speed))
       let from_known_suffix = was is Some(_) && !replaced && from.to_double() >= known_suffix_from
       let calls = calls_of(runtime, bytes, subagent, state).filter(c => c.at >= session.created_at - skew_ms &&
         (followed || c.at >= first_new_at || from_known_suffix))
@@ -439,7 +456,7 @@ async fn Counter::read_file(
           session: Some(session.key),
           offset: if complete { offset.to_double() } else { from.to_double() },
           model: if complete { state.model } else { model_before },
-          speed: if complete { Some(kept_speed(state.speed)) } else { speed_before },
+          speed: if complete { Some(kept_speed_for(runtime, state.speed)) } else { speed_before },
         }
         let end = if i + write_batch < with_for.length() { i + write_batch } else { with_for.length() }
         let batch = if i < end { with_for[i:end].to_array() } else { [] }
@@ -531,7 +548,7 @@ async fn Counter::timed_again(
     ReadEnough => ()
     e => raise e
   }
-  let saved_speed = kept_speed(state.speed)
+  let saved_speed = kept_speed_for(runtime, state.speed)
   let db = self.db
   let mut earliest = @double.infinity
   let total = if timed.length() > 1 { timed.length() } else { 1 }
@@ -610,8 +627,10 @@ fn sections_of(part : Part, cutoff : Double) -> Array[(BytesView, Int64, Int64, 
 }
 
 ///|
+///|
 /// The sessions run since `?` with a transcript read before its calls were timed, of those that ran a runtime whose
-/// calls are timed (reference `UNTIMED_SESSIONS`).
+/// calls are timed (reference `UNTIMED_SESSIONS`). Kept scoped to `claude`/`codex` legacy NULL rows; `agy` timing
+/// backfill uses the separate bounded `recent_timing_candidates` path below so this query is not widened.
 let untimed_sessions : String =
   #|SELECT DISTINCT u.session AS session_key FROM usage_files u JOIN sessions s ON s.key = u.session
   #|  WHERE u.speed IS NULL AND u.offset > 0
@@ -619,6 +638,79 @@ let untimed_sessions : String =
   #|      OR EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.runtime IN ('claude', 'codex')))
   #|    AND EXISTS (SELECT 1 FROM turns t INDEXED BY turns_by_session
   #|      WHERE t.session_key = u.session AND (t.ended_at IS NULL OR t.ended_at >= ?))
+
+///|
+let recent_timing_page : Int = 256
+
+///|
+let recent_running_turns_sql : String =
+  #|SELECT rowid, session_key FROM turns INDEXED BY turns_ended
+  #|  WHERE ended_at IS NULL AND rowid > ? ORDER BY rowid LIMIT 256
+
+///|
+let recent_ended_first_sql : String =
+  #|SELECT rowid, session_key, ended_at FROM turns INDEXED BY turns_ended
+  #|  WHERE ended_at >= ? ORDER BY ended_at, rowid LIMIT 256
+
+///|
+let recent_ended_same_sql : String =
+  #|SELECT rowid, session_key, ended_at FROM turns INDEXED BY turns_ended
+  #|  WHERE ended_at = ? AND rowid > ? ORDER BY rowid LIMIT 256
+
+///|
+let recent_ended_after_sql : String =
+  #|SELECT rowid, session_key, ended_at FROM turns INDEXED BY turns_ended
+  #|  WHERE ended_at > ? ORDER BY ended_at, rowid LIMIT 256
+
+///|
+/// Recent timing candidates: distinct sessions with a running turn or a turn ended since `time_from`, paged over
+/// `turns_ended` without scanning `usage_files` (each file is checked by path PK in `read_file`).
+fn recent_timing_candidates(db : @sql.Db, time_from : Double) -> Array[String] raise {
+  let out : Array[String] = []
+  let seen : Set[String] = Set([])
+  let add = (rows : Array[Map[String, Json]]) => {
+    for r in rows {
+      if text_of(field(r, "session_key")) is Some(k) && !seen.contains(k) {
+        seen.add(k)
+        out.push(k)
+      }
+    }
+  }
+  // 1. Running turns (`ended_at IS NULL`), paged by rowid.
+  let mut run_rowid = 0.0
+  while true {
+    let rows = db.all(recent_running_turns_sql, [Json::number(run_rowid)])
+    add(rows)
+    if rows.length() < recent_timing_page {
+      break
+    }
+    run_rowid = num_of(field(rows[rows.length() - 1], "rowid")).unwrap_or(run_rowid)
+  }
+  // 2. Ended turns (`ended_at >= time_from`), paged by exact (ended_at = ?, rowid > ?) then (ended_at > ?).
+  let first = db.all(recent_ended_first_sql, [Json::number(time_from)])
+  add(first)
+  if first.length() < recent_timing_page {
+    return out
+  }
+  let mut cursor_at = num_of(field(first[first.length() - 1], "ended_at")).unwrap_or(time_from)
+  let mut cursor_rowid = num_of(field(first[first.length() - 1], "rowid")).unwrap_or(0.0)
+  while true {
+    let same = db.all(recent_ended_same_sql, [Json::number(cursor_at), Json::number(cursor_rowid)])
+    add(same)
+    if same.length() == recent_timing_page {
+      cursor_rowid = num_of(field(same[same.length() - 1], "rowid")).unwrap_or(cursor_rowid)
+      continue
+    }
+    let next = db.all(recent_ended_after_sql, [Json::number(cursor_at)])
+    add(next)
+    if next.length() < recent_timing_page {
+      break
+    }
+    cursor_at = num_of(field(next[next.length() - 1], "ended_at")).unwrap_or(cursor_at)
+    cursor_rowid = num_of(field(next[next.length() - 1], "rowid")).unwrap_or(0.0)
+  }
+  out
+}
 
 ///|
 /// counter.ts `#read`: one read, of the sessions in `only`, or (none) of those that ran since the last sweep (`last`,
@@ -678,13 +770,22 @@ pub async fn Counter::read(self : Counter, ask : Json) -> Json raise {
       wanted.push(k)
     }
   }
-  // Timing back (`time_from`), of all: the sessions run since then whose transcripts were read before calls were timed
-  // too, though none ran since the last sweep (none left, no turn read).
+  // Timing back (`time_from`), of all:
+  // 1. Legacy `claude`/`codex` NULL rows via `untimed_sessions` (normal `wanted`).
+  // 2. Bounded recent/running turn candidates via `turns_ended` for `agy`-only backfill, kept separate from `wanted`
+  //    so non-agy sessions (e.g. Codex) never trigger transcript directory walks on startup.
+  let agy_only_wanted : Array[String] = []
   if only is None && self.time_from is Some(tf) {
     for r in db.all(untimed_sessions, [Json::number(tf)]) {
       if text_of(field(r, "session_key")) is Some(k) && !seen_keys.contains(k) {
         seen_keys.add(k)
         wanted.push(k)
+      }
+    }
+    for k in recent_timing_candidates(db, tf) {
+      if !seen_keys.contains(k) {
+        seen_keys.add(k)
+        agy_only_wanted.push(k)
       }
     }
   }
@@ -694,6 +795,15 @@ pub async fn Counter::read(self : Counter, ask : Json) -> Json raise {
     db
     .all("SELECT * FROM sessions WHERE key IN (SELECT value FROM json_each(?))", [
       Json::string(Json::array(wanted.map(Json::string)).stringify()),
+    ])
+    .map(session_of)
+  }
+  let agy_only_sessions = if agy_only_wanted.length() == 0 {
+    []
+  } else {
+    db
+    .all("SELECT * FROM sessions WHERE key IN (SELECT value FROM json_each(?))", [
+      Json::string(Json::array(agy_only_wanted.map(Json::string)).stringify()),
     ])
     .map(session_of)
   }
@@ -848,6 +958,25 @@ pub async fn Counter::read(self : Counter, ask : Json) -> Json raise {
       }
       seen_files.add(real)
       added += self.read_file(path, runtime, false, s, self.read_before(known, data, homes, path, runtime), since)
+    }
+  }
+  // Antigravity startup timing backfill: only locate and read already-tracked `agy` sources that still need timing
+  // for `agy_only_sessions`, so non-agy sessions never trigger Codex/Claude walks and untracked or already-upgraded
+  // idle `agy` files never enter `read_file`.
+  for s in agy_only_sessions {
+    for source in self.sources(s) {
+      if source.runtime != "agy" {
+        continue
+      }
+      guard self.finder.transcript_path("agy", data, homes, source.id, [], true) is Some(path) else { continue }
+      let was = self.read_before(known, data, homes, path, "agy")
+      guard was is Some(w) && w.offset > 0.0 && needs_timing("agy", w.speed) else { continue }
+      let real = canonical(host, path)
+      if seen_files.contains(real) {
+        continue
+      }
+      seen_files.add(real)
+      added += self.read_file(path, "agy", false, s, was, since)
     }
   }
   added += self.flush()

@@ -172,27 +172,7 @@ fn form_encode(s : String) -> String {
 ///|
 /// application/x-www-form-urlencoded's parser's percent-decoding of one name or value (`+` a space).
 fn form_decode(s : String) -> String {
-  let bytes = utf8(s)
-  let out = []
-  let n = bytes.length()
-  let mut i = 0
-  while i < n {
-    let c = bytes[i].to_int()
-    if c == '+' {
-      out.push(b' ')
-      i += 1
-    } else if c == '%' &&
-      i + 2 < n &&
-      @codec.hex_digit(bytes[i + 1].to_int()) is Some(h) &&
-      @codec.hex_digit(bytes[i + 2].to_int()) is Some(l) {
-      out.push((h * 16 + l).to_byte())
-      i += 3
-    } else {
-      out.push(bytes[i])
-      i += 1
-    }
-  }
-  utf8_text(Bytes::from_array(out))
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|

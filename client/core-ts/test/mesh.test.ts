@@ -16,11 +16,12 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { ADDRESSES_KEY, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_KEPT_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_KEPT_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
-import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
-import { NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
+import { keptFirst } from "../src/station/calls.ts";
+import { ALPN, BULK_CRAWL_MS, BULK_STALL_MS, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
+import { BATCH_LINES, BULK, BULK_LANE, NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
 import { Runner } from "../src/runtime.ts";
 import { StationAddr } from "../src/station/addr.ts";
 import { readAll, type RequestHead } from "../src/station/wire.ts";
@@ -1242,7 +1243,7 @@ for (const relays of [1, 2]) sim(`a_link_whose_station_stops_answering_on_it_is_
   const went = s.time.now();
   await s.settle(s.runner.run(mesh.replaced(id, old)));
   const after = s.time.now() - went;
-  assert.ok(after <= TICK_MS + PING_TIMEOUT_MS + 1_000, `${after}`);
+  assert.ok(after <= TICK_MS + PING_TIMEOUT_MS + RACE_GRACE_MS + 1_000, `${after}`);
   const next = mesh.current(id)!;
   assert.notEqual(next, old);
   assert.equal((await request(s, next, head("/admin/api/overview"))).status, 200);
@@ -1463,6 +1464,47 @@ sim("a_read_in_the_background_slow_on_its_way_is_not_asked_on_another_as_well", 
   assert.deepEqual(asked, ["main /admin/api/batch"], "in the background: asked once, the mark the wire's alone");
   go();
   assert.equal(await s.settle(batch), 200);
+});
+
+sim("mesh_wire_skips_speed_timing_for_streamed_batch_replies_and_times_whole_json_fallback", async (s) => {
+  const timedPaths: string[] = [];
+  let replyHeaders: [string, string][] = [];
+  const main = {
+    request: () => Effect.succeed({ status: 200, headers: replyHeaders, body: { take: Effect.succeed(null) }, cancel: () => {} }),
+    path: () => "relay",
+    via: () => "https://r.relay.test/",
+    speedKey: () => "https://r.relay.test/",
+    conn: { closeReason: () => null },
+    closed: () => null,
+  } as unknown as Link;
+  let currentPath = "";
+  const mesh = {
+    link: () => Effect.succeed(main),
+    hedgeAfter: () => HEDGE_FLOOR_MS,
+    standby: () => null,
+    replaced: () => Effect.never,
+    now: () => s.time.now(),
+    outran: () => {},
+    dropWay: () => {},
+    timed: (_key: string, _via: string, body: unknown) => {
+      timedPaths.push(currentPath);
+      return body;
+    },
+  } as unknown as Mesh;
+  const status = new Status(s.host, s.runner);
+  const wire = new MeshWire({ mesh: () => Effect.succeed(mesh), meshNow: () => mesh, credentials: () => grants("ok", { n: 0 }), relays: () => [], status: () => status });
+  const addr = StationAddr.parse("w/st");
+  const ask = async (label: string, h: RequestHead, resHeaders: [string, string][]) => {
+    currentPath = label;
+    replyHeaders = resHeaders;
+    return s.settle(s.runner.run(Effect.scoped(Effect.map(wire.request(addr, h, new Uint8Array()), (r) => r.status))));
+  };
+  const batchHead: RequestHead = { method: "POST", path: "/admin/api/batch", headers: [[READS, "1"], [NO_HEDGE, "1"], ["accept", `${BATCH_LINES}, application/json`]] };
+  assert.equal(await ask("new-stream", batchHead, [["content-type", BATCH_LINES]]), 200);
+  assert.equal(await ask("old-ndjson", batchHead, [["content-type", NDJSON]]), 200);
+  assert.equal(await ask("old-json", batchHead, [["content-type", "application/json"]]), 200);
+  assert.equal(await ask("sse", { method: "GET", path: "/admin/api/events", headers: [["accept", "text/event-stream"]] }, []), 200);
+  assert.deepEqual(timedPaths, ["old-json"]);
 });
 
 /// One in the background whose way is gone under it is still asked again on the link put in its place.
@@ -1729,6 +1771,21 @@ sim("a_device_off_the_lan_it_kept_addresses_of_waits_for_its_relays_before_its_d
   assert.equal(s.net.tries.slice(tries).filter((t) => t.to === id && t.ips).length, 1, "dialled once at them");
   assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
   await close(s, station, mesh);
+});
+
+/// A dial goes on as its endpoint gets onto a relay: a fixed 250 ms between looks held nine of a phone's eleven first
+/// dials for all of it. With no relay to be had it still looks rarely, and stops at ONTO_MAX_MS.
+sim("a_dial_goes_on_soon_after_its_endpoint_is_on_a_relay_and_looks_rarely_while_none_answers", async (s) => {
+  const started = s.time.now();
+  const on = started + 30;
+  await s.run(onARelay({ relayStatus: () => [{ url: "relay", connected: s.time.now() >= on }] }, false));
+  assert.ok(s.time.now() - on <= 40, `went on ${s.time.now() - on} ms after it was on a relay`);
+
+  let looks = 0;
+  const from = s.time.now();
+  await s.run(onARelay({ relayStatus: () => (looks++, [{ url: "relay", connected: false }]) }, false), ONTO_MAX_MS + 1_000);
+  assert.ok(s.time.now() - from >= ONTO_MAX_MS && s.time.now() - from <= ONTO_MAX_MS + 250, `gave up after ${s.time.now() - from} ms`);
+  assert.ok(looks <= 126, `looked ${looks} times`);
 });
 
 /// The same device back on that LAN, no relay reached yet: the addresses it kept answer, and nothing waits for a relay.
@@ -2578,6 +2635,1538 @@ test("reads_its_calls", () => {
   assert.equal(parseAdb("job.stop", {}), null);
 });
 
+sim("bulk_transfers_take_a_faster_relay_while_interactive_stays_direct", async (s) => {
+  s.net.direct = { ms: 20, bps: 64 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const e = env(s);
+  const mesh = await s.run(Mesh.make(e, [a, b]));
+  const spans = spansOf(e.tracer);
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const read = (path: string, headers: [string, string][]) =>
+    s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path, headers }, new Uint8Array()), (r) => Effect.map(readAll(r.body), (bytes) => ({ via: r.via, relay: r.relay, len: bytes.length })))));
+  const firstBulk = await read("/admin/api/big", [[BULK, "1"]]);
+  assert.equal(firstBulk.via, "direct");
+  assert.equal(firstBulk.relay, null);
+  assert.equal(firstBulk.len, 1024 * 1024);
+  e.tracer.flush();
+  await s.until(() => spans.some((x) => x.name === "mesh.speed" && x.at["stillfail.via"] === "direct"));
+  await s.until(() => mesh.ways(id).some((w) => w.link.path() === "relay"));
+  const nextBulk = await read("/admin/api/big", [[BULK, "1"]]);
+  assert.equal(nextBulk.via, "relay");
+  assert.notEqual(nextBulk.relay, null);
+  assert.equal(nextBulk.len, 1024 * 1024);
+  const interactive = await read("/admin/api/overview", []);
+  assert.equal(interactive.via, "direct");
+  assert.equal(mesh.current(id)?.path(), "direct");
+  await close(s, station, mesh);
+});
+
+sim("a_direct_way_throttled_after_a_burst_decays_and_moves_bulk_to_relay", async (s) => {
+  s.net.direct = { ms: 20, bps: 2 * 1024 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const bulkRead = (path: string) =>
+    s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path, headers: [[BULK, "1"]] }, new Uint8Array()), (r) => Effect.map(readAll(r.body), (bytes) => ({ via: r.via, len: bytes.length })))));
+  const burst = await bulkRead("/admin/api/big");
+  assert.equal(burst.via, "direct");
+  const peak = mesh.speed(id, DIRECT);
+  assert.ok(peak !== null && peak > 1024 * 1024, `expected high initial direct peak, got ${peak}`);
+  const burstAt = s.time.now();
+  // A single mild slow sample (75% of peak, < 5s) must not overwrite a fresh peak.
+  mesh.noteSpeed(id, DIRECT, SPEED_MIN_BYTES, Math.round((SPEED_MIN_BYTES / (peak * 0.75)) * 1000));
+  assert.equal(mesh.speed(id, DIRECT), peak);
+  // Throttle direct to 48 KiB/s well within SPEED_FRESH_MS.
+  s.net.direct = { ms: 20, bps: 48 * 1024 };
+  await bulkRead("/admin/api/big?mb=2");
+  assert.ok(s.time.now() - burstAt < SPEED_FRESH_MS, "must decay well before SPEED_FRESH_MS");
+  const decayed = mesh.speed(id, DIRECT);
+  assert.ok(decayed !== null && decayed < BULK_SLOW_BPS, `expected decayed direct speed < BULK_SLOW_BPS, got ${decayed}`);
+  await s.until(() => mesh.ways(id).some((w) => w.link.path() === "relay"));
+  const after = await bulkRead("/admin/api/big");
+  assert.equal(after.via, "relay");
+  await close(s, station, mesh);
+});
+
+sim("a_fast_direct_way_opens_no_extra_pinned_relay_for_bulk", async (s) => {
+  s.net.direct = { ms: 10, bps: 10 * 1024 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const bulkRead = () =>
+    s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/big", headers: [[BULK, "1"]] }, new Uint8Array()), (r) => Effect.map(readAll(r.body), (bytes) => ({ via: r.via, len: bytes.length })))));
+  assert.equal((await bulkRead()).via, "direct");
+  assert.equal((await bulkRead()).via, "direct");
+  await s.time.pass(TICK_MS * 2);
+  assert.equal(mesh.ways(id).length, 1);
+  assert.equal(mesh.current(id)?.path(), "direct");
+  await close(s, station, mesh);
+});
+
+sim("prune_keeps_the_fastest_bulk_relay_and_bulk_header_never_reaches_the_station", async (s) => {
+  s.net.direct = { ms: 15, bps: 64 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 100, bps: 256 * 1024 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 30, bps: 128 * 1024 }, station: { ms: 10 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 60, bps: 256 * 1024 }, station: { ms: 10 } });
+  const d = s.relay("https://d.relay.test/", { device: { ms: 90, bps: 4 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b, c, d]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b, c, d]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  mesh.noteSpeed(id, b, SPEED_MIN_BYTES, Math.round((SPEED_MIN_BYTES / (128 * 1024)) * 1000));
+  mesh.noteSpeed(id, c, SPEED_MIN_BYTES, Math.round((SPEED_MIN_BYTES / (256 * 1024)) * 1000));
+  mesh.noteSpeed(id, d, SPEED_MIN_BYTES, Math.round((SPEED_MIN_BYTES / (4 * 1024 * 1024)) * 1000));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  await s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/big", headers: [[BULK, "1"]] }, new Uint8Array()), (r) => readAll(r.body))));
+  await s.until(() => mesh.ways(id).some((w) => w.link.via() === d));
+  await s.time.pass(TICK_MS * 6);
+  assert.ok(mesh.ways(id).length <= KEEP_WAYS, `${mesh.ways(id).length} ways open`);
+  assert.equal(mesh.current(id)?.path(), "direct");
+  assert.ok(mesh.ways(id).some((w) => w.link.via() === d), `fastest bulk relay d must survive prune: ${mesh.ways(id).map((w) => w.key()).join(", ")}`);
+  assert.ok(station.served.length > 0);
+  for (const req of station.served) {
+    const keys = Object.keys(req.headers ?? {}).map((k) => k.toLowerCase());
+    assert.ok(!keys.includes(BULK), `stillfail-bulk leaked to station: ${JSON.stringify(req.headers)}`);
+  }
+  await close(s, station, mesh);
+});
+
+sim("multi_way_striped_bulk_transfers_aggregate_bandwidth_across_fast_relays", async (s) => {
+  s.net.direct = { ms: 20, bps: 64 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 256 * 1024 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 80, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b, c]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b, c]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  // First bulk transfer measures slow direct and triggers on-demand pinned relay exploration for b and c.
+  await s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/big", headers: [[BULK, "1"]] }, new Uint8Array()), (r) => readAll(r.body))));
+  await s.until(() => mesh.ways(id).some((w) => w.link.via() === b) && mesh.ways(id).some((w) => w.link.via() === c));
+  // Measure b and c as proven fast (>= BULK_SLOW_BPS) so they join multi-way fastBulkLinks.
+  mesh.noteSpeed(id, b, SPEED_MIN_BYTES, 500);
+  mesh.noteSpeed(id, c, SPEED_MIN_BYTES, 500);
+  assert.ok(wire.bulkLanes(addr) >= 2, `expected >= 2 fast bulk lanes, got ${wire.bulkLanes(addr)}`);
+  assert.ok(mesh.fastBulkLinks(id).every((l) => l.path() !== "direct"), "slow direct must be excluded from fastBulkLinks");
+  const readLane = (lane: number) =>
+    Effect.scoped(
+      Effect.flatMap(
+        wire.request(addr, { method: "GET", path: "/admin/api/big?mb=2", headers: [[BULK, "1"], [BULK_LANE, String(lane)]] }, new Uint8Array()),
+        (r) => Effect.map(readAll(r.body), (bytes) => ({ via: r.via, relay: r.relay, len: bytes.length })),
+      ),
+    );
+  const startedAt = s.time.now();
+  const [r0, r1] = await s.run(Effect.all([readLane(0), readLane(1)], { concurrency: "unbounded" }));
+  const elapsed = s.time.now() - startedAt;
+  assert.equal(r0.via, "relay");
+  assert.equal(r1.via, "relay");
+  assert.notEqual(r0.relay, null);
+  assert.notEqual(r1.relay, null);
+  assert.notEqual(r0.relay, r1.relay, "striped lanes must spread across distinct fast relays");
+  assert.equal(r0.len, 2 * 1024 * 1024);
+  assert.equal(r1.len, 2 * 1024 * 1024);
+  assert.ok(elapsed < 3_200, `expected parallel striped transfer (~2s) instead of serial (~4s), took ${elapsed}ms`);
+  for (const req of station.served) {
+    const keys = Object.keys(req.headers ?? {}).map((k) => k.toLowerCase());
+    assert.ok(!keys.includes(BULK_LANE), `stillfail-bulk-lane leaked to station: ${JSON.stringify(req.headers)}`);
+  }
+  await close(s, station, mesh);
+});
+
+/// A part uploaded on a throttled direct way (a video sent from a phone) is answered in a few bytes: what it says of the
+/// way is how fast its body went, not its reply. Timed only as replies, the way was never found slow and every part
+/// went on it at its 40 KB/s while a relay could take them at megabytes.
+sim("an_upload_found_slow_on_its_way_moves_the_next_part_to_a_faster_relay", async (s) => {
+  s.net.direct = { ms: 20, bps: 40 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const part = new Uint8Array(SPEED_MIN_BYTES * 2).fill(7);
+  const upload = (offset: number) =>
+    Effect.scoped(Effect.flatMap(wire.request(addr, { method: "POST", path: `/uploads/parts?id=u&name=v.mp4&size=${part.length * 2}&offset=${offset}`, headers: [["content-type", "application/octet-stream"], [BULK, "1"]] }, part), (r) => Effect.map(readAll(r.body), (bytes) => ({ via: r.via, len: bytes.length }))));
+  const going = s.runner.run(upload(0));
+  let gone = false;
+  void going.then(() => (gone = true), () => (gone = true));
+  // Found slow while its part is still on the way (half of it gone at 40 KB/s: some 13 s of the 26 it takes).
+  await s.until(() => mesh.speed(id, DIRECT) !== null);
+  assert.equal(gone, false, "the way is found slow before the part has all gone");
+  const slow = mesh.speed(id, DIRECT);
+  assert.ok(slow !== null && slow < BULK_SLOW_BPS, `the upload tells how slow direct is, got ${slow}`);
+  const first = await s.settle(going);
+  await s.until(() => mesh.ways(id).some((w) => w.link.path() === "relay"));
+  assert.equal(first.via, "direct");
+  assert.ok(first.len < 64, `a part is answered in a few bytes, got ${first.len}`);
+  const next = await s.run(upload(part.length));
+  assert.equal(next.via, "relay");
+  await close(s, station, mesh);
+});
+
+sim("a_small_upload_says_nothing_of_its_ways_speed", async (s) => {
+  s.net.direct = { ms: 20, bps: 40 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const small = new Uint8Array(SPEED_MIN_BYTES - 1).fill(7);
+  const r = await s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "POST", path: "/uploads/parts?id=u&name=s.bin&size=1&offset=0", headers: [["content-type", "application/octet-stream"], [BULK, "1"]] }, small), (r) => Effect.map(readAll(r.body), () => r.via))));
+  assert.equal(r, "direct");
+  assert.equal(mesh.speed(id, DIRECT), null);
+  await s.time.pass(TICK_MS * 2);
+  assert.equal(mesh.ways(id).length, 1, `no relay explored: ${mesh.ways(id).map((w) => w.key()).join(", ")}`);
+  await close(s, station, mesh);
+});
+
+sim("slow_small_response_triggers_bulk_exploration_and_excludes_slow_link", async (s) => {
+  s.net.direct = { ms: 20, bps: 40 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 60, bps: 40 * 1024 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  // 256 KiB (< SPEED_MIN_BYTES) at 40 KiB/s takes ~6.4s (>= SPEED_SLOW_MIN_MS, above BULK_CRAWL_BPS): must be recorded and trigger bulk exploration.
+  const got = await s.run(
+    Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/big?mb=0.25", headers: [[BULK, "1"]] }, new Uint8Array()), (r) => readAll(r.body))),
+    30_000,
+  );
+  assert.equal(got.length, 256 * 1024);
+  const recorded = mesh.speed(id, DIRECT);
+  assert.ok(recorded !== null && recorded < BULK_SLOW_BPS, `expected slow direct speed recorded < BULK_SLOW_BPS, got ${recorded}`);
+  await s.until(() => mesh.ways(id).some((w) => w.link.via() === b));
+  assert.ok(mesh.fastBulkLinks(id).every((l) => l.path() !== "direct"), "slow direct link must be excluded from fastBulkLinks");
+  await close(s, station, mesh);
+});
+
+sim("timed_reports_slow_stream_early_after_5s_and_ignores_fast_small_responses", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const { station, mesh, id: bare } = await onRelays(s, [a]);
+  const id = `w/${bare}`;
+  // 1. Fast small response (100 KiB in 1s, < SPEED_MIN_BYTES and < SPEED_SLOW_MIN_MS): must not record speed.
+  mesh.noteSpeed(id, a, 100 * 1024, 1_000);
+  assert.equal(mesh.speed(id, a), null, "fast/short small sample must not record speed");
+  let fastIdx = 0;
+  const fastChunks: (Uint8Array | null)[] = [new Uint8Array(16 * 1024), new Uint8Array(100 * 1024), null];
+  const fastTimed = mesh.timed(id, a, {
+    take: Effect.suspend(() => {
+      const c = fastChunks[fastIdx++] ?? null;
+      return fastIdx === 2 ? Effect.as(Effect.sleep(1_000), c) : Effect.succeed(c);
+    }),
+  });
+  await s.run(readAll(fastTimed));
+  assert.equal(mesh.speed(id, a), null, "timed fast small body must not record speed");
+
+  // 2. Streaming large body on a slow link: reports early at >= 64 KiB && >= 5s before 512 KiB arrives.
+  const stepBytes = 32 * 1024;
+  assert.ok(stepBytes * 3 < SPEED_MIN_BYTES && stepBytes * 3 >= SPEED_SLOW_MIN_BYTES);
+  let slowIdx = 0;
+  const slowTimed = mesh.timed(id, a, {
+    take: Effect.suspend(() => {
+      const i = slowIdx++;
+      if (i === 0) return Effect.succeed(new Uint8Array(stepBytes));
+      if (i <= 3) return Effect.as(Effect.sleep(2_000), new Uint8Array(stepBytes));
+      return Effect.succeed(null);
+    }),
+  });
+  // Chunk 0 (t=0, anchor), chunk 1 (t=2s, own=32 KiB), chunk 2 (t=4s, own=64 KiB, < 5s)
+  await s.run(slowTimed.take);
+  await s.run(slowTimed.take);
+  assert.equal(mesh.speed(id, a), null);
+  await s.run(slowTimed.take);
+  assert.equal(mesh.speed(id, a), null, `must not report before ${SPEED_SLOW_MIN_MS}ms`);
+  // Chunk 3 (t=6s, own=96 KiB < 512 KiB, 16 KiB/s < BULK_SLOW_BPS): must report early before EOF.
+  await s.run(slowTimed.take);
+  const early = mesh.speed(id, a);
+  assert.ok(early !== null && early < BULK_SLOW_BPS, `expected early slow speed < BULK_SLOW_BPS before 512 KiB, got ${early}`);
+  await close(s, station, mesh);
+});
+
+sim("unmeasured_high_rtt_relay_loses_bulk_score_and_is_excluded_from_fast_bulk_links", async (s) => {
+  const high = s.relay("https://high.relay.test/", { device: { ms: 490 }, station: { ms: 10 } });
+  const low = s.relay("https://low.relay.test/", { device: { ms: 65 }, station: { ms: 10 } });
+  const station = await s.stationOn(low, [high]);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [low, high]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  // Open both relays (unmeasured speed) and let pings record their RTTs (~150ms vs ~1000ms).
+  await s.run(mesh.remeasure(id));
+  assert.equal(mesh.speed(id, high), null);
+  assert.equal(mesh.speed(id, low), null);
+  const ranked = mesh.bulkLinks(id);
+  assert.ok(ranked.length >= 2, `expected >= 2 bulk links, got ${ranked.length}`);
+  assert.equal(ranked[0]!.via(), low, "150ms unmeasured relay must outscore 1000ms unmeasured relay");
+  const fast = mesh.fastBulkLinks(id);
+  assert.ok(fast.some((l) => l.via() === low), "150ms unmeasured relay must be in fastBulkLinks");
+  assert.ok(fast.every((l) => l.via() !== high), "1000ms (>600ms) unmeasured relay must be excluded from fastBulkLinks when a faster way exists");
+  // When the low-RTT relay is measured slow, fastBulkLinks falls back to the single best unmeasured way instead of empty.
+  mesh.noteSpeed(id, low, SPEED_MIN_BYTES, 10_000);
+  const fallback = mesh.fastBulkLinks(id);
+  assert.equal(fallback.length, 1, "fallback must keep 1 best unmeasured way when no fast way exists");
+  assert.equal(fallback[0]!.via(), high);
+  await close(s, station, mesh);
+});
+
+sim("bulk_timed_records_crawl_at_5s_8kib_and_penalizes_midstream_disconnect", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const { station, mesh, id: bare } = await onRelays(s, [a, b, c]);
+  const id = `w/${bare}`;
+
+  // 1. Fast small sample with forceSlow=true must still be rejected.
+  mesh.noteSpeed(id, c, 16 * 1024, 1_000, true);
+  assert.equal(mesh.speed(id, c), null, "forceSlow must not record fast/short small samples");
+
+  // 2. 4 KB/s bulk stream records slow at 5s (20 KiB < 64 KiB, >= 8 KiB SPEED_CRAWL_MIN_BYTES).
+  assert.equal(SPEED_CRAWL_MIN_BYTES, 8 * 1024);
+  let idxA = 0;
+  const crawlBody = mesh.timed(id, a, {
+    take: Effect.suspend(() => {
+      const i = idxA++;
+      if (i === 0) return Effect.succeed(new Uint8Array(4 * 1024));
+      return Effect.as(Effect.sleep(1_000), new Uint8Array(4 * 1024));
+    }),
+  }, true);
+  await s.run(crawlBody.take); // t=0 (anchor)
+  for (let sec = 1; sec <= 4; sec++) {
+    await s.run(crawlBody.take);
+    assert.equal(mesh.speed(id, a), null, `must not report at ${sec}s before ${SPEED_SLOW_MIN_MS}ms`);
+  }
+  await s.run(crawlBody.take); // t=5s, own=20 KiB < 64 KiB
+  const speedA = mesh.speed(id, a);
+  assert.ok(speedA !== null && speedA < BULK_SLOW_BPS, `4 KB/s bulk stream must be recorded slow at 5s (20 KiB), got ${speedA}`);
+
+  // 3. Mid-stream connection lost at 6s records slow speed on bulk stream.
+  let idxB = 0;
+  const cutBody = mesh.timed(id, b, {
+    take: Effect.suspend(() => {
+      const i = idxB++;
+      if (i === 0) return Effect.succeed(new Uint8Array(4 * 1024));
+      if (i === 1) return Effect.as(Effect.sleep(2_000), new Uint8Array(4 * 1024));
+      return Effect.andThen(Effect.sleep(4_000), Effect.fail(new HostError("connection lost")));
+    }),
+  }, true);
+  await s.run(cutBody.take); // t=0
+  await s.run(cutBody.take); // t=2s
+  assert.equal(mesh.speed(id, b), null);
+  const cutRes = await s.run(Effect.result(cutBody.take)); // t=6s -> fails
+  assert.equal(cutRes._tag, "Failure");
+  const speedB = mesh.speed(id, b);
+  assert.ok(speedB !== null && speedB < BULK_SLOW_BPS, `mid-stream disconnect at 6s must penalize relay, got ${speedB}`);
+
+  await close(s, station, mesh);
+});
+
+for (const withSink of [false, true]) {
+  sim(`bulk_crawl_switches_to_fast_standby_and_kept_first_resumes_4mb_losslessly_${withSink ? "sink" : "out"}`, async (s) => {
+    const slow = s.relay("https://slow.relay.test/", { device: { ms: 20, bps: 4 * 1024 }, station: { ms: 10 } });
+    const fast = s.relay("https://fast.relay.test/", { device: { ms: 80, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+    const station = await s.stationOn(slow, [fast]);
+    const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [slow, fast]));
+    const id = `w/${station.id()}`;
+    await reach(s, mesh, id);
+    await s.run(mesh.remeasure(id));
+    // Both relays are open; slow has lower RTT (60ms vs 180ms) so it starts as the primary bulk link.
+    assert.equal(mesh.bulkLinks(id)[0]!.via(), slow);
+    const wire = wireOf(s, mesh);
+    const addr = StationAddr.parse(id);
+    const total = 4 * 1024 * 1024;
+    const expected = Uint8Array.from({ length: total }, (_, i) => i % 251);
+    const inner = { runner: s.runner } as unknown as Inner;
+
+    const sinkChunks: Uint8Array[] = [];
+    const viaUsed: (string | null)[] = [];
+    const startedAt = s.time.now();
+    const part = await s.run(
+      keptFirst<{ type: string; total: number }, { type: string; total: number; bytes: Uint8Array }>(
+        inner,
+        { offset: 0, length: total },
+        total,
+        () => Effect.succeed(null),
+        (_at, end) => Effect.succeed(end),
+        undefined,
+        withSink ? (piece) => sinkChunks.push(piece) : undefined,
+        (at, length, _before, take, said) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const reply = yield* wire.request(
+                addr,
+                { method: "GET", path: `/admin/api/part?offset=${at}&length=${length}`, headers: [[BULK, "1"]] },
+                new Uint8Array(),
+              );
+              viaUsed.push(reply.relay ?? null);
+              const head = { type: "video/mp4", total };
+              said(head);
+              yield* readAll(reply.body, take, false);
+              return { ...head, bytes: new Uint8Array(0) };
+            }),
+          ),
+        () => Effect.void,
+        (h) => h.total === total,
+      ),
+      60_000,
+    );
+    const elapsed = s.time.now() - startedAt;
+    assert.ok(viaUsed.length >= 2, `expected crawl abort + resume on fast standby, got ${JSON.stringify(viaUsed)}`);
+    assert.equal(viaUsed[0], "slow.relay.test");
+    assert.equal(viaUsed[1], "fast.relay.test");
+    assert.ok(elapsed >= BULK_CRAWL_MS && elapsed < 25_000, `expected ~12s total (vs ~1000s without failover), took ${elapsed}ms`);
+    const actual = withSink ? Buffer.concat(sinkChunks) : part.bytes;
+    assert.equal(actual.length, total);
+    assert.deepEqual(new Uint8Array(actual), expected);
+    await close(s, station, mesh);
+  });
+}
+
+sim("bulk_crawl_does_not_abort_when_no_better_standby_exists", async (s) => {
+  const only = s.relay("https://only.relay.test/", { device: { ms: 20, bps: 4 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationOn(only, []);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [only]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const length = 64 * 1024; // ~16s at 4 KB/s (> BULK_CRAWL_MS)
+  const expected = Uint8Array.from({ length }, (_, i) => i % 251);
+  const startedAt = s.time.now();
+  const got = await s.run(
+    Effect.scoped(
+      Effect.flatMap(
+        wire.request(addr, { method: "GET", path: `/admin/api/part?offset=0&length=${length}`, headers: [[BULK, "1"]] }, new Uint8Array()),
+        (r) => readAll(r.body),
+      ),
+    ),
+    60_000,
+  );
+  const elapsed = s.time.now() - startedAt;
+  assert.ok(elapsed > BULK_CRAWL_MS, `stream must run past ${BULK_CRAWL_MS}ms without aborting, took ${elapsed}ms`);
+  assert.deepEqual(got, expected);
+  await close(s, station, mesh);
+});
+
+sim("unmeasured_relay_never_outranks_healthy_direct_or_joins_fast_bulk_links_until_proven", async (s) => {
+  s.net.direct = { ms: 20, bps: 2 * 1024 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 30, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  await s.run(mesh.remeasure(id));
+  assert.equal(mesh.speed(id, a), null);
+  assert.equal(mesh.speed(id, b), null);
+  // Healthy direct beats unmeasured relays in #bulkScore and is the sole entry in fastBulkLinks.
+  assert.equal(mesh.bulkLinks(id)[0]!.path(), "direct", "unmeasured direct must outrank unmeasured relay");
+  const fastBefore = mesh.fastBulkLinks(id);
+  assert.equal(fastBefore.length, 1, `unmeasured relays must not join fastBulkLinks beside direct, got ${fastBefore.length}`);
+  assert.equal(fastBefore[0]!.path(), "direct");
+  // Even measured direct at 300 KiB/s (>= 256 KiB/s BULK_RELAY_PROBE_BPS) beats unmeasured relays.
+  mesh.noteSpeed(id, DIRECT, SPEED_MIN_BYTES, Math.round((SPEED_MIN_BYTES / (300 * 1024)) * 1000));
+  assert.equal(mesh.bulkLinks(id)[0]!.path(), "direct", "300 KiB/s direct must beat unmeasured relay");
+  // Once a relay way is proven fast (>= BULK_SLOW_BPS), it joins fastBulkLinks alongside proven direct.
+  const openRelay = mesh.ways(id).find((w) => w.link.path() === "relay")!.link.via()!;
+  mesh.noteSpeed(id, DIRECT, SPEED_MIN_BYTES, 500);
+  mesh.noteSpeed(id, openRelay, SPEED_MIN_BYTES, 500);
+  const fastAfter = mesh.fastBulkLinks(id);
+  assert.ok(fastAfter.length >= 2, `proven fast relay must join fastBulkLinks, got ${fastAfter.length}`);
+  assert.ok(fastAfter.some((l) => l.path() === "direct") && fastAfter.some((l) => l.via() === openRelay));
+  await close(s, station, mesh);
+});
+
+sim("hedge_after_is_capped_at_hedge_max_ms_on_slow_link_and_hedges_stalled_head_within_4s", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20, bps: 2 * 1024 * 1024 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 60, bps: 2 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationOn(a, [b]);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.run(mesh.remeasure(id));
+  const linkA = mesh.ways(id).find((w) => w.link.via() === a)!.link;
+  // Record linkA at 10 KB/s: previously TYPICAL_BYTES / 10KB/s inflated hedgeAfter to ~26.7s.
+  mesh.noteSpeed(id, a, 50 * 1024, 5_000, true);
+  const after = mesh.hedgeAfter(id, linkA);
+  assert.ok(after >= HEDGE_FLOOR_MS && after <= HEDGE_MAX_MS, `hedgeAfter on 10 KB/s link must be within [${HEDGE_FLOOR_MS}, ${HEDGE_MAX_MS}], got ${after}`);
+  // Stall response head on linkA; wire.request must hedge to b within <= HEDGE_MAX_MS + RTT.
+  const connA = station.conns[0];
+  connA.way.silentUntil = connA.peer.way.silentUntil = s.time.now() + 25_000;
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const startedAt = s.time.now();
+  const res = await s.run(
+    Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/overview", headers: [] }, new Uint8Array()), (r) => Effect.map(readAll(r.body), () => r.relay))),
+    15_000,
+  );
+  const elapsed = s.time.now() - startedAt;
+  assert.equal(res, "b.relay.test");
+  assert.ok(elapsed <= HEDGE_MAX_MS + 1_000, `stalled head must hedge within ~${HEDGE_MAX_MS}ms, took ${elapsed}ms`);
+  await close(s, station, mesh);
+});
+
+sim("bulk_zero_bps_stall_watchdog_aborts_at_4s_and_kept_first_resumes_losslessly", async (s) => {
+  const stalled = s.relay("https://stalled.relay.test/", { device: { ms: 20, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const fast = s.relay("https://fast.relay.test/", { device: { ms: 80, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationOn(stalled, [fast]);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [stalled, fast]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.run(mesh.remeasure(id));
+  assert.equal(mesh.bulkLinks(id)[0]!.via(), stalled);
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const total = 512 * 1024;
+  const expected = Uint8Array.from({ length: total }, (_, i) => i % 251);
+  const inner = { runner: s.runner } as unknown as Inner;
+  const viaUsed: (string | null)[] = [];
+  const startedAt = s.time.now();
+  const part = await s.run(
+    keptFirst<{ type: string; total: number }, { type: string; total: number; bytes: Uint8Array }>(
+      inner,
+      { offset: 0, length: total },
+      total,
+      () => Effect.succeed(null),
+      (_at, end) => Effect.succeed(end),
+      undefined,
+      undefined,
+      (at, length, _before, take, said) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            // Stall at 0 B/s after 16 KiB on the initial offset=0 request; subsequent resumed request completes normally.
+            const q = at === 0 ? `&stallAfter=${16 * 1024}` : "";
+            const reply = yield* wire.request(
+              addr,
+              { method: "GET", path: `/admin/api/part?offset=${at}&length=${length}${q}`, headers: [[BULK, "1"]] },
+              new Uint8Array(),
+            );
+            viaUsed.push(reply.relay ?? null);
+            const head = { type: "video/mp4", total };
+            said(head);
+            yield* readAll(reply.body, take, false);
+            return { ...head, bytes: new Uint8Array(0) };
+          }),
+        ),
+      () => Effect.void,
+      (h) => h.total === total,
+    ),
+    30_000,
+  );
+  const elapsed = s.time.now() - startedAt;
+  assert.deepEqual(viaUsed, ["stalled.relay.test", "fast.relay.test"]);
+  assert.ok(elapsed >= BULK_STALL_MS && elapsed < 10_000, `0 B/s stall must switch at ~${BULK_STALL_MS}ms (not 20s), took ${elapsed}ms`);
+  assert.deepEqual(part.bytes, expected);
+  await close(s, station, mesh);
+});
+
+sim("previously_fast_link_stalling_at_zero_bps_switches_to_unmeasured_relay_within_8s", async (s) => {
+  const stalled = s.relay("https://stalled.relay.test/", { device: { ms: 20, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const backup = s.relay("https://backup.relay.test/", { device: { ms: 80, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationOn(stalled, [backup]);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [stalled, backup]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.run(mesh.remeasure(id));
+  // Previously measured at 1 MB/s while backup relay remains unmeasured (BULK_RELAY_PROBE_BPS = 256 KiB/s).
+  mesh.noteSpeed(id, stalled, SPEED_MIN_BYTES, 500);
+  assert.equal(mesh.speed(id, backup), null);
+  assert.equal(mesh.bulkLinks(id)[0]!.via(), stalled);
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const total = 512 * 1024;
+  const expected = Uint8Array.from({ length: total }, (_, i) => i % 251);
+  const inner = { runner: s.runner } as unknown as Inner;
+  const viaUsed: (string | null)[] = [];
+  const startedAt = s.time.now();
+  const part = await s.run(
+    keptFirst<{ type: string; total: number }, { type: string; total: number; bytes: Uint8Array }>(
+      inner,
+      { offset: 0, length: total },
+      total,
+      () => Effect.succeed(null),
+      (_at, end) => Effect.succeed(end),
+      undefined,
+      undefined,
+      (at, length, _before, take, said) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const q = at === 0 ? `&stallAfter=${16 * 1024}` : "";
+            const reply = yield* wire.request(
+              addr,
+              { method: "GET", path: `/admin/api/part?offset=${at}&length=${length}${q}`, headers: [[BULK, "1"]] },
+              new Uint8Array(),
+            );
+            viaUsed.push(reply.relay ?? null);
+            const head = { type: "video/mp4", total };
+            said(head);
+            yield* readAll(reply.body, take, false);
+            return { ...head, bytes: new Uint8Array(0) };
+          }),
+        ),
+      () => Effect.void,
+      (h) => h.total === total,
+    ),
+    30_000,
+  );
+  const elapsed = s.time.now() - startedAt;
+  assert.deepEqual(viaUsed, ["stalled.relay.test", "backup.relay.test"]);
+  assert.ok(elapsed >= 2 * BULK_STALL_MS && elapsed < 15_000, `previously fast link stalling must switch to unmeasured relay at ~8s (not 20s), took ${elapsed}ms`);
+  assert.deepEqual(part.bytes, expected);
+  await close(s, station, mesh);
+});
+
+sim("better_bulk_standby_and_crawl_switch_work_when_all_ways_are_below_bulk_slow_bps", async (s) => {
+  const slower = s.relay("https://slower.relay.test/", { device: { ms: 20, bps: 12 * 1024 }, station: { ms: 10 } });
+  const better = s.relay("https://better.relay.test/", { device: { ms: 40, bps: 50 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationOn(slower, [better]);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [slower, better]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.run(mesh.remeasure(id));
+  const linkSlower = mesh.ways(id).find((w) => w.link.via() === slower)!.link;
+  const linkBetter = mesh.ways(id).find((w) => w.link.via() === better)!.link;
+
+  // Both ways are measured below BULK_SLOW_BPS (12 KiB/s vs 50 KiB/s): betterBulkStandby must return the 4x faster way.
+  mesh.noteSpeed(id, slower, 60 * 1024, 5_000, true); // 12 KiB/s
+  mesh.noteSpeed(id, better, 250 * 1024, 5_000, true); // 50 KiB/s
+  assert.equal(mesh.betterBulkStandby(id, linkSlower), linkBetter, "must switch from 12 KiB/s to 50 KiB/s even when both < BULK_SLOW_BPS");
+  assert.equal(mesh.bulkStandby(id, linkBetter), null, "50 KiB/s way must not hedge/switch to slower 12 KiB/s way");
+
+  // When a way is >= BULK_SLOW_BPS, it must still never pick a < BULK_SLOW_BPS standby.
+  mesh.noteSpeed(id, better, SPEED_MIN_BYTES, 500); // ~1 MiB/s
+  assert.equal(mesh.bulkStandby(id, linkBetter), null, "healthy >= BULK_SLOW_BPS way must not hedge onto < BULK_SLOW_BPS way");
+  assert.equal(mesh.betterBulkStandby(id, linkBetter), null);
+
+  // End-to-end bulk_crawl switch from 12 KiB/s to 50 KiB/s when both are < BULK_SLOW_BPS.
+  mesh.noteSpeed(id, better, 250 * 1024, 5_000, true); // restore 50 KiB/s (< BULK_SLOW_BPS)
+  // Start with slower unmeasured (lower RTT) or explicitly on lane 0? With slower at 12 KiB/s, bulkLinks puts better first.
+  // Give slower a transient fast-ish reading? Better: put slower on lane 1 via BULK_LANE or fresh mesh where slower starts unmeasured.
+  await close(s, station, mesh);
+
+  // Fresh mesh: better is pre-measured at 50 KiB/s (< BULK_SLOW_BPS), slower is unmeasured (lower RTT, starts first).
+  const station2 = await s.stationOn(slower, [better]);
+  const mesh2 = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [slower, better]));
+  const id2 = `w/${station2.id()}`;
+  await reach(s, mesh2, id2);
+  await s.run(mesh2.remeasure(id2));
+  mesh2.noteSpeed(id2, better, 250 * 1024, 5_000, true); // 50 KiB/s (< BULK_SLOW_BPS)
+  assert.equal(mesh2.bulkLinks(id2)[0]!.via(), slower);
+  const wire2 = wireOf(s, mesh2);
+  const addr2 = StationAddr.parse(id2);
+  const total = 256 * 1024;
+  const expected = Uint8Array.from({ length: total }, (_, i) => i % 251);
+  const inner = { runner: s.runner } as unknown as Inner;
+  const viaUsed: (string | null)[] = [];
+  const part = await s.run(
+    keptFirst<{ type: string; total: number }, { type: string; total: number; bytes: Uint8Array }>(
+      inner,
+      { offset: 0, length: total },
+      total,
+      () => Effect.succeed(null),
+      (_at, end) => Effect.succeed(end),
+      undefined,
+      undefined,
+      (at, length, _before, take, said) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const reply = yield* wire2.request(
+              addr2,
+              { method: "GET", path: `/admin/api/part?offset=${at}&length=${length}`, headers: [[BULK, "1"]] },
+              new Uint8Array(),
+            );
+            viaUsed.push(reply.relay ?? null);
+            const head = { type: "video/mp4", total };
+            said(head);
+            yield* readAll(reply.body, take, false);
+            return { ...head, bytes: new Uint8Array(0) };
+          }),
+        ),
+      () => Effect.void,
+      (h) => h.total === total,
+    ),
+    60_000,
+  );
+  assert.deepEqual(viaUsed, ["slower.relay.test", "better.relay.test"]);
+  assert.deepEqual(part.bytes, expected);
+  await close(s, station2, mesh2);
+});
+
+sim("slow_speed_expires_after_15m_while_fast_speed_persists_until_6h", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const { station, mesh, id: bare } = await onRelays(s, [a, b]);
+  const id = `w/${bare}`;
+  assert.equal(SPEED_SLOW_KEPT_MS, 15 * 60_000);
+  mesh.noteSpeed(id, a, 100 * 1024, 5_000, true); // 20 KiB/s (< BULK_SLOW_BPS)
+  mesh.noteSpeed(id, b, SPEED_MIN_BYTES, 500); // ~1 MiB/s (>= BULK_SLOW_BPS)
+  assert.ok(mesh.speed(id, a) !== null && mesh.speed(id, a)! < BULK_SLOW_BPS);
+  assert.ok(mesh.speed(id, b) !== null && mesh.speed(id, b)! >= BULK_SLOW_BPS);
+
+  // Just before 15 minutes: both still valid.
+  await s.time.pass(SPEED_SLOW_KEPT_MS - 1_000);
+  assert.ok(mesh.speed(id, a) !== null, "slow speed must still exist before 15m");
+  assert.ok(mesh.speed(id, b) !== null, "fast speed must still exist before 15m");
+
+  // Past 15 minutes: slow speed expired, fast speed still valid.
+  await s.time.pass(2_000);
+  assert.equal(mesh.speed(id, a), null, "slow speed (< BULK_SLOW_BPS) must expire after 15m");
+  assert.ok(mesh.speed(id, b) !== null, "fast speed (>= BULK_SLOW_BPS) must persist past 15m");
+
+  // Past 6 hours: fast speed also expires.
+  await s.time.pass(SPEED_KEPT_MS - SPEED_SLOW_KEPT_MS);
+  assert.equal(mesh.speed(id, b), null, "fast speed must expire after 6h");
+  await close(s, station, mesh);
+});
+
+sim("main_and_pinned_endpoints_bind_with_exact_relay_allowlists", async (s) => {
+  const bound: BindOptions[] = [];
+  const baseBind = s.iroh.bind.bind(s.iroh);
+  s.iroh = {
+    bind: (o) => {
+      bound.push(o);
+      return baseBind(o);
+    },
+  };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 200 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 30 }, station: { ms: 20 } });
+  const entry = s.net.entry("https://entry.relay.test:8443/", a, { device: { ms: 40 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: true }, [a, b], [entry], { [entry]: a }));
+  assert.equal(bound.length, 1);
+  assert.deepEqual(bound[0]!.relayAllowlist, [a, b, entry]);
+  assert.equal(bound[0]!.allowPublicRelays, true);
+
+  // Turning off `a` disables the main endpoint and dials pinned single-relay (`b`), fenced (`[b]`), and LAN (`[]`).
+  const id = `w/${station.id()}`;
+  station.lan = station.addr().ips;
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 }), undefined, [a]));
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+  await s.until(() => bound.some((o) => o.relayUrls.length === 0 && o.relayOnly === false));
+  const pinnedSingle = bound.find((o) => o.relayOnly === true && o.relayUrls.length === 1 && o.relayUrls[0] === b);
+  const pinnedFence = bound.find((o) => o.relayOnly === false && o.lookup === false && o.relayUrls.length === 1 && o.relayUrls[0] === b);
+  const pinnedLan = bound.find((o) => o.relayOnly === false && o.relayUrls.length === 0);
+  assert.ok(pinnedSingle !== undefined, "expected pinned single-relay endpoint");
+  assert.deepEqual(pinnedSingle.relayAllowlist, [b]);
+  assert.equal(pinnedSingle.allowPublicRelays, false);
+  assert.ok(pinnedFence !== undefined, "expected pinned fenced endpoint");
+  assert.deepEqual(pinnedFence.relayAllowlist, [b]);
+  assert.equal(pinnedFence.allowPublicRelays, false);
+  assert.ok(pinnedLan !== undefined, "expected pinned LAN endpoint");
+  assert.deepEqual(pinnedLan.relayAllowlist, []);
+  assert.equal(pinnedLan.allowPublicRelays, false);
+  await close(s, station, mesh);
+});
+
+sim("retune_with_new_entry_updates_in_place_without_rebinding", async (s) => {
+  const bound: BindOptions[] = [];
+  const baseBind = s.iroh.bind.bind(s.iroh);
+  s.iroh = {
+    bind: (o) => {
+      bound.push(o);
+      return baseBind(o);
+    },
+  };
+  const hongKong = s.relay("https://hong-kong.relay.test/", { device: { ms: 500 }, station: { ms: 40 } });
+  const beijingEntry = s.net.entry("https://beijing.relay.test:8443/", hongKong, { device: { ms: 20 }, station: { ms: 40 } });
+  const station = await s.stationOn(hongKong, []);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: true }, [hongKong]));
+  assert.equal(bound.length, 1);
+  assert.deepEqual(bound[0]!.relayAllowlist, [hongKong]);
+  assert.equal(bound[0]!.allowPublicRelays, true);
+  const id = station.id();
+  const link = await reach(s, mesh, id);
+  assert.ok(sameRelay(via(mesh, id), hongKong));
+  mesh.retune([hongKong], [beijingEntry], { [beijingEntry]: hongKong });
+  await s.time.pass(TICK_MS);
+  assert.equal(bound.length, 1, "adding an entry via retune must keep the main endpoint without rebinding");
+  assert.equal(mesh.current(id), link, "existing connection must stay open");
+  assert.ok(sameRelay(via(mesh, id), beijingEntry));
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+  await close(s, station, mesh);
+});
+
+sim("main_endpoint_without_lookup_omits_relay_allowlist_while_pinned_endpoints_enforce_it", async (s) => {
+  const bound: BindOptions[] = [];
+  const baseBind = s.iroh.bind.bind(s.iroh);
+  s.iroh = {
+    bind: (o) => {
+      bound.push(o);
+      return baseBind(o);
+    },
+  };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 200 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 30 }, station: { ms: 20 } });
+  const entry = s.net.entry("https://entry.relay.test:8443/", a, { device: { ms: 40 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: false }, [a, b], [entry], { [entry]: a }));
+  assert.equal(bound.length, 1);
+  assert.equal(bound[0]!.relayAllowlist, undefined, "lookup: false main endpoint must omit relayAllowlist so setRelayEntries and workspace relays stay open");
+  assert.equal(bound[0]!.allowPublicRelays, undefined);
+
+  const id = `w/${station.id()}`;
+  station.lan = station.addr().ips;
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 }), undefined, [a]));
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+  await s.until(() => bound.some((o) => o.relayUrls.length === 0 && o.relayOnly === false));
+  const pinnedSingle = bound.find((o) => o.relayOnly === true && o.relayUrls.length === 1 && o.relayUrls[0] === b);
+  const pinnedFence = bound.find((o) => o.relayOnly === false && o.lookup === false && o.relayUrls.length === 1 && o.relayUrls[0] === b);
+  const pinnedLan = bound.find((o) => o.relayOnly === false && o.relayUrls.length === 0);
+  assert.ok(pinnedSingle !== undefined, "expected pinned single-relay endpoint");
+  assert.deepEqual(pinnedSingle.relayAllowlist, [b]);
+  assert.equal(pinnedSingle.allowPublicRelays, false);
+  assert.ok(pinnedFence !== undefined, "expected pinned fenced endpoint");
+  assert.deepEqual(pinnedFence.relayAllowlist, [b]);
+  assert.equal(pinnedFence.allowPublicRelays, false);
+  assert.ok(pinnedLan !== undefined, "expected pinned LAN endpoint");
+  assert.deepEqual(pinnedLan.relayAllowlist, []);
+  assert.equal(pinnedLan.allowPublicRelays, false);
+  await close(s, station, mesh);
+});
+
+/// Opens a long-lived event stream on `link` and collects delivered chunks in the background.
+async function holdEvents(s: Sim, link: Link) {
+  const reply = await request(s, link, { method: "GET", path: "/admin/api/events/hold", headers: [["accept", "text/event-stream"]] });
+  assert.equal(reply.status, 200);
+  const chunks: string[] = [];
+  const first = await s.run(reply.body.take);
+  assert.ok(first !== null);
+  chunks.push(text(first));
+  s.runner.fork(
+    Effect.gen(function* () {
+      for (;;) {
+        const next = yield* reply.body.take;
+        if (next === null) return;
+        chunks.push(text(next));
+      }
+    }),
+  );
+  return { chunks, cancel: () => reply.cancel() };
+}
+
+function relaySetOf(urls: (string | null | undefined)[]): string[] {
+  return [...new Set(urls.filter((u): u is string => typeof u === "string").map((u) => new URL(u).href))].sort();
+}
+
+// 1. 6 relays, 2 stations: after 30 s each station narrows to 2 paths (preferring distinct hostOf) and the endpoint
+// stays connected only to their union; links do not drop and event streams do not reopen. Also verifies custom
+// workspace `theirs` relays (selected in hot without becoming an endpoint home relay) and the `HOT_RELAYS + 1` union cap.
+sim("hot_relays_narrows_to_two_paths_per_station_and_keeps_links_and_streams_open", async (s) => {
+  let binds = 0;
+  const webBase = s.net.iroh({ relayControls: true });
+  s.iroh = {
+    bind: (o) => {
+      binds++;
+      return webBase.bind(o);
+    },
+  };
+  // `r0` and `r1` share hostname `a.relay.test` (different ports): `st1` has `r0` fastest (10 ms RTT), `r1` second
+  // (12 ms, same host as `r0`), and `r2` third (14 ms, distinct host `b.relay.test`), so host diversity picks `{r0, r2}`.
+  // `r3` is 15 ms (`10 + 10 < 15` is false, so a link initially on `r3` keeps `r3` selected and picks `{r0, r3}`).
+  const r0 = s.relay("https://a.relay.test:8440/", { device: { ms: 5 }, station: { ms: 5 } });
+  const r1 = s.relay("https://a.relay.test:8441/", { device: { ms: 6 }, station: { ms: 6 } });
+  const r2 = s.relay("https://b.relay.test/", { device: { ms: 7 }, station: { ms: 7 } });
+  const r3 = s.relay("https://c.relay.test/", { device: { ms: 7 }, station: { ms: 8 } });
+  const r4 = s.relay("https://d.relay.test/", { device: { ms: 50 }, station: { ms: 50 } });
+  const r5 = s.relay("https://e.relay.test/", { device: { ms: 60 }, station: { ms: 60 } });
+  const theirsFast = s.relay("https://custom.workspace.test/", { device: { ms: 4 }, station: { ms: 4 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  const st1 = await s.stationOn(r0, [r1, r2, r3, r4, r5]);
+  const st2 = await s.stationOn(r3, [r0, r1, r2, r4, r5]);
+  const stCustom = await s.stationOn(r0, [r1, r2, r3, r4, r5, theirsFast]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: false, hotRelays: HOT_RELAYS }, allRelays));
+  assert.equal(binds, 1);
+
+  const addr1 = `w/${st1.id()}`;
+  const addr2 = `w/${st2.id()}`;
+  const addrCustom = `wCustom/${stCustom.id()}`;
+  const link1 = await s.run(mesh.link(addr1, grants("ok", { n: 0 })));
+  s.net.down(r0, 80);
+  s.net.down(r1, 80);
+  s.net.down(r2, 80);
+  const link2 = await s.run(mesh.link(addr2, grants("ok", { n: 0 })));
+  await s.time.pass(200);
+  mesh.addAddr({ id: st2.id(), relays: allRelays });
+  const linkCustom = await s.run(mesh.link(addrCustom, grants("ok", { n: 0 }), [theirsFast]));
+  await s.time.pass(100);
+
+  const ev1 = await holdEvents(s, link1);
+  const ev2 = await holdEvents(s, link2);
+  assert.equal(st1.eventOpens, 1);
+  assert.equal(st2.eventOpens, 1);
+
+  // Before HOT_SETTLE_MS (at 20 s): still full 6 paths on st1 and all 6 official relays connected on the endpoint.
+  await s.time.pass(20_000);
+  assert.equal(link1.conn.paths().length, 6);
+  assert.equal(mesh.endpoint().relayStatus().length, 6);
+
+  // Past HOT_SETTLE_MS (at 35 s): each station narrows to 2 paths, endpoint keeps only their 3-relay official union `{r0, r2, r3}`,
+  // and `stCustom` keeps `{theirsFast, r0}` without inserting `theirsFast` as an endpoint home relay.
+  await s.time.pass(15_000);
+  assert.deepEqual(relaySetOf(link1.conn.paths().map((p) => p.relay)), [r0, r2].sort());
+  assert.deepEqual(relaySetOf(link2.conn.paths().map((p) => p.relay)), [r0, r3].sort());
+  assert.deepEqual(relaySetOf(linkCustom.conn.paths().map((p) => p.relay)), [theirsFast, r0].sort());
+  assert.deepEqual(
+    relaySetOf(mesh.endpoint().relayStatus().map((r) => r.url)),
+    [r0, r2, r3].sort(),
+  );
+  assert.ok(!mesh.endpoint().relayStatus().some((r) => sameRelay(r.url, theirsFast)));
+  assert.equal(binds, 1, "narrowing must never rebind the main endpoint");
+  assert.equal(mesh.current(addr1), link1);
+  assert.equal(mesh.current(addr2), link2);
+  assert.equal(link1.closed(), null);
+  assert.equal(link2.closed(), null);
+  assert.equal(st1.eventOpens, 1, "event stream on station 1 must not reopen");
+  assert.equal(st2.eventOpens, 1, "event stream on station 2 must not reopen");
+  await st1.pushEvent("still-open-1");
+  await st2.pushEvent("still-open-2");
+  await s.until(() => ev1.chunks.some((c) => c.includes("still-open-1")) && ev2.chunks.some((c) => c.includes("still-open-2")));
+
+  mesh.dropLink(addrCustom);
+
+  // Multi-workspace cap (`HOT_RELAYS = 2`): connect two more workspaces to `st2` whose selected relays are `r4` and
+  // `r5`, while `link2` stays on `r3`, so the 3 links of `st2` want `{r0, r3}`, `{r0, r4}`, `{r0, r5}` and `st2`'s hot
+  // set still caps at `HOT_RELAYS = 2`, keeping `{r3, r4}` while moving `link2c` cleanly without closing any link.
+  s.relay(r4, { device: { ms: 7 }, station: { ms: 8 } });
+  s.relay(r5, { device: { ms: 7 }, station: { ms: 8 } });
+  s.net.down(r0, 80);
+  s.net.down(r1, 80);
+  s.net.down(r2, 80);
+  s.net.down(r3, 80);
+  s.net.down(r5, 80);
+  const link2b = await s.run(mesh.link(`w2/${st2.id()}`, grants("ok", { n: 0 })));
+  await s.time.pass(200);
+  s.net.down(r0, 80);
+  s.net.down(r1, 80);
+  s.net.down(r2, 80);
+  s.net.down(r3, 80);
+  s.net.down(r4, 80);
+  const link2c = await s.run(mesh.link(`w3/${st2.id()}`, grants("ok", { n: 0 })));
+  await s.time.pass(200);
+  mesh.addAddr({ id: st2.id(), relays: allRelays });
+  await s.time.pass(HOT_SETTLE_MS + 2 * TICK_MS);
+  assert.equal(link2.conn.paths().length, HOT_RELAYS, "multi-workspace station hot set must cap at HOT_RELAYS");
+  assert.deepEqual(relaySetOf(link2.conn.paths().map((p) => p.relay)), [r3, r4].sort());
+  assert.equal(link2b.closed(), null);
+  assert.equal(link2c.closed(), null);
+  assert.equal(st2.eventOpens, 1, "event stream on station 2 must still never reopen");
+
+  ev1.cancel();
+  ev2.cancel();
+  await s.settle(st1.close());
+  await s.settle(st2.close());
+  await s.settle(stCustom.close());
+  await s.run(mesh.close());
+});
+
+// 2. Kill the active selected hot relay: within 3 s packets move to the backup hot relay, then the station relaxes and
+// re-narrows to a new pair of 2 relays without dropping the link or reopening the event stream.
+sim("hot_relays_killing_selected_relay_switches_within_3s_then_relaxes_and_repicks_two", async (s) => {
+  s.iroh = s.net.iroh({ relayControls: true });
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 25 }, station: { ms: 25 } });
+  const r4 = s.relay("https://r4.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const r5 = s.relay("https://r5.relay.test/", { device: { ms: 35 }, station: { ms: 35 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  const station = await s.stationOn(r0, [r1, r2, r3, r4, r5]);
+  const mesh = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, allRelays));
+  const id = `w/${station.id()}`;
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  const ev = await holdEvents(s, link);
+
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.deepEqual(relaySetOf(link.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+  assert.ok(sameRelay(link.via(), r0));
+
+  // Kill the active selected relay `r0`: traffic switches to `r1` within PATH_IDLE_MS (3 s).
+  const cutAt = s.time.now();
+  s.net.down(r0, 10 * 60_000);
+  const rep = await request(s, link, head("/admin/api/overview"));
+  const switchMs = s.time.now() - cutAt;
+  assert.equal(rep.status, 200);
+  assert.ok(switchMs <= PATH_IDLE_MS + 200, `expected failover to backup hot relay within ~3 s, took ${switchMs} ms`);
+  assert.ok(sameRelay(link.via(), r1));
+
+  // Next steer tick sees < HOT_RELAYS live paths in `hot` and relaxes immediately (`relayStatus` back to all 6).
+  await s.time.pass(TICK_MS);
+  assert.equal(mesh.endpoint().relayStatus().length, 6, "endpoint must re-insert non-hot relays on relax");
+  assert.equal(link.conn.paths().length, 5, "all 5 surviving relays open paths on the existing connection");
+
+  // After HOT_SETTLE_MS, narrows to `{r1, r2}`.
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.deepEqual(relaySetOf(link.conn.paths().map((p) => p.relay)), [r1, r2].sort());
+  assert.equal(mesh.current(id), link);
+  assert.equal(link.closed(), null);
+  assert.equal(station.eventOpens, 1, "event stream must not reopen");
+
+  ev.cancel();
+  await close(s, station, mesh);
+});
+
+// 3. Kill both hot relays simultaneously, both when the dead `LastOpenPath` stays retained in `conn.paths()`
+// (`retainDeadLastOpen = true`) and under default idle cleanup (`retainDeadLastOpen = false`, #7899): `missed === 1`
+// relaxes the station before `#suspect`'s `#race`, stale-path rescue (#7893) switches the existing connections onto `r2`
+// despite the retained dead path's faster frozen RTT, `RACE_GRACE_MS` keeps the original connections and open event
+// streams unbroken (`eventOpens` unchanged), and after `HOT_SETTLE_MS` the station narrows cleanly to `{r2, r3}`
+// (never re-selecting a retained dead path), then survives a second simultaneous dual-hot cut onto `{r4, r5}`.
+sim("hot_relays_killing_both_hot_relays_relaxes_and_recovers_via_other_relays", async (s) => {
+  s.iroh = s.net.iroh({ relayControls: true });
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 25 }, station: { ms: 25 } });
+  const r4 = s.relay("https://r4.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const r5 = s.relay("https://r5.relay.test/", { device: { ms: 35 }, station: { ms: 35 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  const station = await s.stationOn(r0, [r1, r2, r3, r4, r5]);
+  const mesh = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, allRelays));
+  const wire = wireOf(s, mesh);
+  const addr1 = new StationAddr("w", station.id());
+  const addr2 = new StationAddr("w2", station.id());
+  const id = addr1.toString();
+  const id2 = addr2.toString();
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  const link2 = await s.run(mesh.link(id2, grants("ok", { n: 0 })));
+  const ev1 = await holdEvents(s, link);
+  const ev2 = await holdEvents(s, link2);
+  assert.equal(station.eventOpens, 2);
+
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.deepEqual(relaySetOf(link.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+  assert.deepEqual(relaySetOf(link2.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+
+  // Part A: Keep dead `LastOpenPath` retained even after replacement paths open (`retainDeadLastOpen = true`).
+  s.net.retainDeadLastOpen = true;
+  const cutAt = s.time.now();
+  s.net.down(r0, 10 * 60_000);
+  s.net.down(r1, 10 * 60_000);
+  const getOverview = (addr: StationAddr) =>
+    s.run(Effect.scoped(wire.request(addr, { method: "GET", path: "/admin/api/overview", headers: [] }, new Uint8Array())));
+  const [rep, rep2] = await Promise.all([getOverview(addr1), getOverview(addr2)]);
+  const recoveryMs = s.time.now() - cutAt;
+  s.net.note(`dual hot-relay cut (retained LastOpenPath) recovered in ${recoveryMs} ms`);
+  assert.equal(rep.status, 200);
+  assert.equal(rep2.status, 200);
+  const deadHeld = link.conn.paths().filter((p) => sameRelay(p.relay, r0) || sameRelay(p.relay, r1));
+  assert.equal(
+    deadHeld.length,
+    1,
+    "one dead hot path ages out while the sole LastOpenPath stays retained in conn.paths() alongside reopened paths",
+  );
+  // Bounded by next steer tick (<= TICK_MS = 5 s) + ping timeout (3 s) + sync & path rescue (~300 ms).
+  assert.ok(
+    recoveryMs > 0 && recoveryMs <= TICK_MS + PING_TIMEOUT_MS + 600,
+    `expected recovery after both hot relays cut within <= ${TICK_MS + PING_TIMEOUT_MS + 600} ms, got ${recoveryMs} ms`,
+  );
+  assert.equal(mesh.current(id), link, "dual hot-relay failure must preserve the original connection on workspace 1");
+  assert.equal(mesh.current(id2), link2, "dual hot-relay failure must preserve the original connection on workspace 2");
+  assert.equal(link.closed(), null);
+  assert.equal(link2.closed(), null);
+  assert.equal(station.eventOpens, 2, "dual hot-relay failure must not reopen any application event stream");
+  assert.ok(sameRelay(link.via(), r2), `expected stale-path rescue onto fastest surviving relay r2, got ${link.via()}`);
+  assert.ok(sameRelay(link2.via(), r2), `expected stale-path rescue onto fastest surviving relay r2, got ${link2.via()}`);
+  await station.pushEvent("after-dual-cut-1");
+  await s.until(() => ev1.chunks.some((c) => c.includes("after-dual-cut-1")) && ev2.chunks.some((c) => c.includes("after-dual-cut-1")));
+
+  // Wait for `candidate` from `#race` to close and settle `HOT_SETTLE_MS`: must ignore retained dead `r0`/`r1` and pick `{r2, r3}`.
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.deepEqual(relaySetOf(link.conn.paths().map((p) => p.relay)), [r2, r3].sort());
+  assert.deepEqual(relaySetOf(link2.conn.paths().map((p) => p.relay)), [r2, r3].sort());
+  assert.equal(mesh.current(id), link);
+  assert.equal(mesh.current(id2), link2);
+  assert.equal(station.eventOpens, 2);
+
+  // Part B: Default `#7899` (`noq` `pending_idle_abandon`) mode (`retainDeadLastOpen = false`) on a second dual-hot cut `{r2, r3}`.
+  s.net.retainDeadLastOpen = false;
+  const cut2At = s.time.now();
+  s.net.down(r2, 10 * 60_000);
+  s.net.down(r3, 10 * 60_000);
+  const [repB1, repB2] = await Promise.all([getOverview(addr1), getOverview(addr2)]);
+  const recovery2Ms = s.time.now() - cut2At;
+  assert.equal(repB1.status, 200);
+  assert.equal(repB2.status, 200);
+  assert.ok(recovery2Ms > 0 && recovery2Ms <= TICK_MS + PING_TIMEOUT_MS + 600, `second dual cut recovered in ${recovery2Ms} ms`);
+  assert.ok(
+    !link.conn.paths().some((p) => sameRelay(p.relay, r2) || sameRelay(p.relay, r3)),
+    "default #7899 mode abandons the dead LastOpenPath as soon as replacement paths open",
+  );
+  assert.equal(mesh.current(id), link, "original connection survives a second dual hot-relay failure");
+  assert.equal(mesh.current(id2), link2);
+  assert.equal(station.eventOpens, 2, "event streams still never reopened across two dual hot-relay failures");
+  await station.pushEvent("after-dual-cut-2");
+  await s.until(() => ev1.chunks.some((c) => c.includes("after-dual-cut-2")) && ev2.chunks.some((c) => c.includes("after-dual-cut-2")));
+
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.deepEqual(relaySetOf(link.conn.paths().map((p) => p.relay)), [r4, r5].sort());
+  assert.deepEqual(relaySetOf(link2.conn.paths().map((p) => p.relay)), [r4, r5].sort());
+  assert.equal(station.eventOpens, 2);
+
+  ev1.cancel();
+  ev2.cancel();
+  await close(s, station, mesh);
+});
+
+// 4. A single missed ping (`missed === 1`) immediately relaxes the station (re-inserting cold relays and reopening all
+// 6 paths), while `#suspect`'s race keeps the original connection and open event stream when the old link answers;
+// `dropLink` also clears per-peer disabled state.
+sim("hot_relays_single_missed_ping_relaxes_immediately", async (s) => {
+  const disabledCalls: [string, string[]][] = [];
+  const webBase = s.net.iroh({ relayControls: true });
+  s.iroh = {
+    bind: (o) =>
+      Effect.map(webBase.bind(o), (ep) => {
+        const orig = ep.setDisabledRelays!.bind(ep);
+        ep.setDisabledRelays = (peer, relays) => {
+          disabledCalls.push([peer, [...relays]]);
+          return orig(peer, relays);
+        };
+        return ep;
+      }),
+  };
+  const relays = Array.from({ length: 6 }, (_, i) =>
+    s.relay(`https://r${i}.relay.test/`, { device: { ms: 10 + i * 5 }, station: { ms: 10 + i * 5 } }),
+  );
+  const station = await s.stationOn(relays[0]!, relays.slice(1));
+  const mesh = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, relays));
+  const id = `w/${station.id()}`;
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  const ev = await holdEvents(s, link);
+
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.equal(link.conn.paths().length, 2);
+  assert.equal(mesh.endpoint().relayStatus().length, 2);
+
+  // Pause all relays until the next steer tick records `missed === 1` (triggering both `#relaxStation` and `#suspect`'s
+  // `#race`), then immediately restore the relays so the existing connection answers during `#race` and stays current.
+  for (const r of relays) s.net.down(r, 20_000);
+  await s.until(() => (mesh.ways(id)[0]?.missed ?? 0) === 1, TICK_MS + PING_TIMEOUT_MS + 500);
+  for (const r of relays) s.net.up(r);
+  await s.time.pass(500);
+
+  assert.equal(mesh.endpoint().relayStatus().length, 6, "missed === 1 must relax and re-insert all 6 relays immediately");
+  assert.equal(link.conn.paths().length, 6, "all 6 relay paths reopen on the existing connection");
+  assert.equal(mesh.current(id), link, "race keeps the original connection when it answers after a transient pause");
+  assert.equal(link.closed(), null);
+  assert.equal(station.eventOpens, 1, "event stream must not reopen");
+
+  // Settle back to 2 paths, then drop the link and verify per-peer disabled state is cleared (`setDisabledRelays(id, [])`).
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.equal(link.conn.paths().length, 2);
+  disabledCalls.length = 0;
+  mesh.dropLink(id);
+  await s.time.pass(200);
+  assert.ok(
+    disabledCalls.some(([peer, list]) => peer === station.id() && list.length === 0),
+    "dropping the station's links must clear its disabled relays on the endpoint",
+  );
+
+  ev.cancel();
+  await close(s, station, mesh);
+});
+
+// 5. Opt-out & `ways_off` preservation:
+// - Host without all three relay-control methods (including partial capability) makes zero control calls even with `hotRelays`.
+// - Host with all three methods (`relayControls: true`) makes zero control calls when `hotRelays` is omitted or `0`.
+// - Workspace turning off a relay (`off = [r0]`) continues using `pinned`/`fenced` endpoints (`#mainOn === false`) while
+//   stations with `off = []` narrow on the main endpoint.
+sim("hot_relays_opt_out_and_workspace_off_preserve_existing_behavior", async (s) => {
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const all = [r0, r1, r2];
+  const st1 = await s.stationOn(r0, [r1, r2]);
+  const st2 = await s.stationOn(r0, [r1, r2]);
+
+  // (a) Host missing relay-control methods (and partial host with only `setDisabledRelays`): untouched even with `hotRelays`.
+  let partialCalls = 0;
+  const nativeBase = s.net.iroh();
+  s.iroh = {
+    bind: (o) =>
+      Effect.map(nativeBase.bind(o), (ep) => {
+        ep.setDisabledRelays = () => {
+          partialCalls++;
+          return Effect.void;
+        };
+        return ep;
+      }),
+  };
+  const meshPartial = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, all));
+  const partialLink = await s.run(meshPartial.link(`w/${st1.id()}`, grants("ok", { n: 0 }), undefined, [r0]));
+  assert.notEqual(partialLink.pinned, null, "partial host without insertRelay/removeRelay uses pinned/fenced for off");
+  const partialMain = await s.run(meshPartial.link(`w/${st2.id()}`, grants("ok", { n: 0 })));
+  assert.equal(partialMain.pinned, null);
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.equal(partialCalls, 0, "partial capability must never invoke setDisabledRelays");
+  assert.equal(meshPartial.endpoint().relayStatus().length, 3);
+  await s.run(meshPartial.close());
+
+  // (b) Full `relayControls: true` host with `hotRelays` omitted: zero control calls and all 3 paths kept past settle.
+  let unsetCalls = 0;
+  const webBase = s.net.iroh({ relayControls: true });
+  s.iroh = {
+    bind: (o) =>
+      Effect.map(webBase.bind(o), (ep) => {
+        const sd = ep.setDisabledRelays!.bind(ep);
+        const ir = ep.insertRelay!.bind(ep);
+        const rr = ep.removeRelay!.bind(ep);
+        ep.setDisabledRelays = (p, rs) => {
+          unsetCalls++;
+          return sd(p, rs);
+        };
+        ep.insertRelay = (u) => {
+          unsetCalls++;
+          return ir(u);
+        };
+        ep.removeRelay = (u) => {
+          unsetCalls++;
+          return rr(u);
+        };
+        return ep;
+      }),
+  };
+  const meshUnset = await s.run(Mesh.make(env(s), all));
+  const unsetOff = await s.run(meshUnset.link(`w/${st1.id()}`, grants("ok", { n: 0 }), undefined, [r0]));
+  assert.notEqual(unsetOff.pinned, null, "relayControls host with hotRelays unset uses pinned/fenced for off");
+  const unsetMain = await s.run(meshUnset.link(`w/${st2.id()}`, grants("ok", { n: 0 })));
+  assert.equal(unsetMain.pinned, null);
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.equal(unsetCalls, 0, "hotRelays unset must make zero relay-control calls");
+  assert.equal(unsetMain.conn.paths().length, 3);
+  assert.equal(meshUnset.endpoint().relayStatus().length, 3);
+  await s.run(meshUnset.close());
+
+  // (c) `relayControls: true` + `hotRelays: HOT_RELAYS`: workspace with `off = [r0]` uses `pinned`/`fenced` and never
+  // uses `r0`, while `st2` (`off = []`) narrows on `main` to `{r0, r1}`.
+  s.iroh = s.net.iroh({ relayControls: true });
+  const meshOn = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, all));
+  const offLink = await s.run(meshOn.link(`wsOff/${st1.id()}`, grants("ok", { n: 0 }), undefined, [r0]));
+  const mainLink = await s.run(meshOn.link(`wsOn/${st2.id()}`, grants("ok", { n: 0 })));
+  assert.notEqual(offLink.pinned, null, "workspace turning off a relay stays on pinned/fenced endpoints");
+  assert.ok(!sameRelay(meshOn.current(`wsOff/${st1.id()}`)!.via(), r0));
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.ok(!sameRelay(meshOn.current(`wsOff/${st1.id()}`)!.via(), r0));
+  assert.deepEqual(relaySetOf(mainLink.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+  assert.equal((await request(s, meshOn.current(`wsOff/${st1.id()}`)!, head("/admin/api/overview"))).status, 200);
+  await s.run(meshOn.close());
+
+  await s.settle(st1.close());
+  await s.settle(st2.close());
+});
+
+// 6. Same station in two workspaces where one has `off = []` and the other turns off either a custom workspace relay X
+// (staying on main) or an official relay `r0` (using pinned/fenced): the station never narrows, makes zero
+// `setDisabledRelays` calls, and never oscillates across steer ticks; clearing the second workspace's `off` (and having
+// all open links on main) waits a full `HOT_SETTLE_MS` (30 s) before narrowing; turning `off` back on relaxes immediately.
+sim("hot_relays_same_station_multi_workspace_off_never_oscillates_and_settles_after_clear", async (s) => {
+  const disabledCalls: [string, string[]][] = [];
+  const webBase = s.net.iroh({ relayControls: true });
+  s.iroh = {
+    bind: (o) =>
+      Effect.map(webBase.bind(o), (ep) => {
+        if (ep.setDisabledRelays) {
+          const orig = ep.setDisabledRelays.bind(ep);
+          ep.setDisabledRelays = (peer, relays) => {
+            disabledCalls.push([peer, [...relays]]);
+            return orig(peer, relays);
+          };
+        }
+        return ep;
+      }),
+  };
+
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 14 }, station: { ms: 14 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 18 }, station: { ms: 18 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 22 }, station: { ms: 22 } });
+  const r4 = s.relay("https://r4.relay.test/", { device: { ms: 26 }, station: { ms: 26 } });
+  const r5 = s.relay("https://r5.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const customX = s.relay("https://custom-x.workspace.test/", { device: { ms: 6 }, station: { ms: 6 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  // Part A: Same station `stCustom`, `wsA` has `off = []` and `wsB` turns off custom relay `customX` (both on `main`).
+  const stCustom = await s.stationOn(r0, [r1, r2, r3, r4, r5, customX]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: false, hotRelays: HOT_RELAYS }, allRelays));
+  const addrCustomA = `wsA/${stCustom.id()}`;
+  const addrCustomB = `wsB/${stCustom.id()}`;
+  const linkCustomA = await s.run(mesh.link(addrCustomA, grants("ok", { n: 0 }), [customX], []));
+  const linkCustomB = await s.run(mesh.link(addrCustomB, grants("ok", { n: 0 }), [customX], [customX]));
+  assert.equal(linkCustomA.pinned, null);
+  assert.equal(linkCustomB.pinned, null);
+
+  for (let step = 0; step < 6; step++) {
+    await s.time.pass(15_000);
+    assert.equal(mesh.endpoint().relayStatus().length, 6, "official relays stay untouched while sibling workspace has custom off");
+    assert.ok(linkCustomA.conn.paths().length >= 6, "wsA keeps full relay paths without narrowing");
+    assert.equal(
+      disabledCalls.filter(([peer]) => peer === stCustom.id()).length,
+      0,
+      "must make zero setDisabledRelays calls while any workspace on the station has non-empty off",
+    );
+  }
+
+  // Clear `wsB`'s `off`: must NOT narrow before 30 s, then narrows once 30 s (`HOT_SETTLE_MS`) elapses.
+  mesh.setWays(addrCustomB, [customX], []);
+  await s.time.pass(20_000);
+  assert.equal(
+    disabledCalls.filter(([peer]) => peer === stCustom.id()).length,
+    0,
+    "must wait full HOT_SETTLE_MS (30 s) after clearing off before narrowing",
+  );
+  await s.time.pass(15_000);
+  assert.deepEqual(relaySetOf(linkCustomA.conn.paths().map((p) => p.relay)), [customX, r0].sort());
+  assert.deepEqual(relaySetOf(linkCustomB.conn.paths().map((p) => p.relay)), [customX, r0].sort());
+
+  // Re-disable `customX` in `wsB`: relaxes immediately (without waiting for a steer tick) and stays un-narrowed without oscillation.
+  disabledCalls.length = 0;
+  mesh.setWays(addrCustomB, [customX], [customX]);
+  await s.time.pass(200);
+  assert.deepEqual(
+    disabledCalls.filter(([peer]) => peer === stCustom.id()),
+    [[stCustom.id(), []]],
+    "turning custom relay off again must immediately clear setDisabledRelays once",
+  );
+  assert.equal(mesh.endpoint().relayStatus().length, 6);
+  disabledCalls.length = 0;
+  await s.time.pass(2 * HOT_SETTLE_MS + 2 * TICK_MS);
+  assert.equal(disabledCalls.filter(([peer]) => peer === stCustom.id()).length, 0, "no oscillation after re-disabling");
+  mesh.dropLink(addrCustomA);
+  mesh.dropLink(addrCustomB);
+
+  // Part B: Same station `stOfficial`, `wsA` has `off = []` (on `main`) and `wsB` turns off official relay `r0` (on `pinned`/`fenced`).
+  const stOfficial = await s.stationOn(r0, [r1, r2, r3, r4, r5]);
+  const addrOffA = `wsA/${stOfficial.id()}`;
+  const addrOffB = `wsB/${stOfficial.id()}`;
+  disabledCalls.length = 0;
+  const linkOffA = await s.run(mesh.link(addrOffA, grants("ok", { n: 0 }), undefined, []));
+  const linkOffB = await s.run(mesh.link(addrOffB, grants("ok", { n: 0 }), undefined, [r0]));
+  assert.equal(linkOffA.pinned, null);
+  assert.notEqual(linkOffB.pinned, null);
+
+  for (let step = 0; step < 6; step++) {
+    await s.time.pass(15_000);
+    assert.equal(linkOffA.conn.paths().length, 6, "main workspace must never narrow while sibling workspace is on pinned/fenced");
+    assert.equal(mesh.endpoint().relayStatus().length, 6);
+    assert.equal(
+      disabledCalls.filter(([peer]) => peer === stOfficial.id()).length,
+      0,
+      "must make zero setDisabledRelays calls and never oscillate between main and pinned ticks",
+    );
+  }
+
+  // Clearing `off` while `wsB` still holds a `pinned` link keeps the station un-narrowed (`pinned !== null`); once all
+  // open links are on `main` with `off = []`, it waits a full 30 s before narrowing, then relaxes immediately if `r0` is turned off again.
+  mesh.setWays(addrOffB, undefined, []);
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.notEqual(mesh.current(addrOffB)?.pinned ?? null, null);
+  assert.equal(disabledCalls.filter(([peer]) => peer === stOfficial.id()).length, 0, "still un-narrowed while a pinned link remains open");
+
+  mesh.dropLink(addrOffB);
+  const linkOffBMain = await s.run(mesh.link(addrOffB, grants("ok", { n: 0 }), undefined, []));
+  assert.equal(linkOffBMain.pinned, null);
+  await s.time.pass(20_000);
+  assert.equal(disabledCalls.filter(([peer]) => peer === stOfficial.id()).length, 0, "still settling at 20 s");
+  await s.time.pass(15_000);
+  assert.deepEqual(relaySetOf(linkOffA.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+  assert.deepEqual(relaySetOf(linkOffBMain.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+
+  disabledCalls.length = 0;
+  mesh.setWays(addrOffB, undefined, [r0]);
+  await s.time.pass(200);
+  assert.deepEqual(
+    disabledCalls.filter(([peer]) => peer === stOfficial.id()),
+    [[stOfficial.id(), []]],
+    "turning official relay off in sibling workspace immediately relaxes the station once",
+  );
+  assert.equal(mesh.endpoint().relayStatus().length, 6);
+  disabledCalls.length = 0;
+  await s.time.pass(2 * HOT_SETTLE_MS + 2 * TICK_MS);
+  assert.equal(disabledCalls.filter(([peer]) => peer === stOfficial.id()).length, 0, "no oscillation while sibling workspace is pinned");
+
+  await s.run(mesh.close());
+  await s.settle(stCustom.close());
+  await s.settle(stOfficial.close());
+});
+
+// 7. Regression (`review_mixed_main_and_pinned_does_not_cycle_hot_policy`): healthy mixed `main` + `pinned` workspaces
+// on the same station over 120 s must never narrow or cycle; also covers `pinned` workspace leaving (waits 30 s then
+// narrows) and entering while narrowed (relaxes immediately and stays un-narrowed over 120 s).
+sim("review_mixed_main_and_pinned_does_not_cycle_hot_policy", async (s) => {
+  const changes: { at: number; disabled: string[] }[] = [];
+  const base = s.net.iroh({ relayControls: true });
+  let mesh: Mesh;
+  s.iroh = {
+    bind: (options) =>
+      Effect.map(base.bind(options), (ep) => {
+        if (ep.setDisabledRelays) {
+          const set = ep.setDisabledRelays.bind(ep);
+          ep.setDisabledRelays = (id, disabled) => {
+            changes.push({ at: mesh?.now() ?? 0, disabled: [...disabled] });
+            return set(id, disabled);
+          };
+        }
+        return ep;
+      }),
+  };
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const st = await s.stationOn(r0, [r1, r2]);
+  mesh = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, [r0, r1, r2]));
+  const mainAddr = `main/${st.id()}`;
+  const pinnedAddr = `pinned/${st.id()}`;
+  const main = await s.run(mesh.link(mainAddr, grants("ok", { n: 0 })));
+  const pinned = await s.run(mesh.link(pinnedAddr, grants("ok", { n: 0 }), undefined, [r0]));
+  assert.equal(main.pinned, null);
+  assert.notEqual(pinned.pinned, null);
+
+  // 120 s (> 3 settle windows): zero narrowing and zero cycling while mixed.
+  await s.time.pass(120_000);
+  assert.equal(main.closed(), null);
+  assert.equal(pinned.closed(), null);
+  assert.equal(
+    changes.length,
+    0,
+    "healthy mixed main/pinned workspaces must never narrow or cycle hot policy",
+  );
+
+  // Pinned workspace leaves: waits full 30 s (`HOT_SETTLE_MS`), then narrows once to disable `r2`.
+  mesh.dropLink(pinnedAddr);
+  await s.time.pass(20_000);
+  assert.equal(changes.length, 0, "must wait full 30 s after pinned workspace leaves before narrowing");
+  await s.time.pass(15_000);
+  assert.equal(changes.length, 1);
+  assert.deepEqual(changes[0]!.disabled, [r2]);
+
+  // Pinned workspace enters again while `st` is narrowed: relaxes immediately and never cycles over another 120 s.
+  const pinnedAgain = await s.run(mesh.link(pinnedAddr, grants("ok", { n: 0 }), undefined, [r0]));
+  assert.notEqual(pinnedAgain.pinned, null);
+  await s.time.pass(200);
+  assert.equal(changes.length, 2, "pinned workspace entering must immediately clear disabled relays once");
+  assert.deepEqual(changes[1]!.disabled, []);
+  await s.time.pass(120_000);
+  assert.equal(main.closed(), null);
+  assert.equal(pinnedAgain.closed(), null);
+  assert.equal(changes.length, 2, "must remain stable with zero further policy changes over 120 s");
+
+  await s.run(mesh.close());
+  await s.settle(st.close());
+});
+
+// 8. Regression (`review_hot_healthy_fast_backup_is_not_disabled`): a healthy faster backup relay path that has not yet
+// been adopted by the transport selector (during Gate observation, cooldown, or ACK sample hold) must never be treated
+// as dead or disabled when narrowing; the slower third relay is disabled instead.
+sim("review_hot_healthy_fast_backup_is_not_disabled", async (s) => {
+  const disabledCalls: string[][] = [];
+  const base = s.net.iroh({ relayControls: true });
+  s.iroh = {
+    bind: (options) =>
+      Effect.map(base.bind(options), (ep) => {
+        const set = ep.setDisabledRelays!.bind(ep);
+        ep.setDisabledRelays = (id, urls) => {
+          disabledCalls.push([...urls]);
+          return set(id, urls);
+        };
+        return ep;
+      }),
+  };
+  const r0 = s.relay("https://review-selected.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://review-healthy-fast.test/", { device: { ms: 11 }, station: { ms: 11 } });
+  const r2 = s.relay("https://review-slow.test/", { device: { ms: 12 }, station: { ms: 12 } });
+  const st = await s.stationOn(r0, [r1, r2]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: false, hotRelays: 2 }, [r0, r1, r2]));
+  const link = await s.run(mesh.link(`w/${st.id()}`, grants("ok", { n: 0 })));
+  const original = link.conn.paths.bind(link.conn);
+  const at = s.time.now();
+  // Inject snapshots possible during #7893 Gate observation/cooldown: live faster backup, still unselected.
+  // Transport remains healthy; counter progress and RTT changes deliberately contradict "frozen".
+  link.conn.paths = () =>
+    original().map((p) => ({
+      ...p,
+      rttMs: sameRelay(p.relay, r0) ? 50 : sameRelay(p.relay, r1) ? 5 + ((s.time.now() - at) % 1000) / 1000 : 60,
+      txPackets: p.txPackets + Math.floor((s.time.now() - at) / 1000),
+      lostPackets: 0,
+    }));
+  await s.time.pass(HOT_SETTLE_MS + 2 * TICK_MS);
+  assert.ok(
+    !disabledCalls.some((urls) => urls.some((u) => sameRelay(u, r1))),
+    "healthy faster backup must not be classified dead merely because not yet selected",
+  );
+  assert.ok(
+    disabledCalls.some((urls) => urls.length === 1 && sameRelay(urls[0]!, r2)),
+    "the slowest relay review-slow must be disabled instead",
+  );
+  await close(s, st, mesh);
+});
+
 // ── over the addon: what only it can show, never timed ──
 
 function test(name: string, options: TestOptions | Body, body?: Body) {
@@ -2644,6 +4233,175 @@ test("over_the_addon_relay_probes_disable_ip_without_disabling_live_hole_punchin
   await probe.close();
   await live.close();
 });
+
+/// On a missed ping, a new link opening first gives the suspect link up to RACE_GRACE_MS to finish its control-stream
+/// round trip: if the old link answers in time, it stays in place immediately, the new connection is closed, and an
+/// open event stream is never reopened.
+sim("a_missed_ping_race_keeps_the_old_link_and_event_stream_when_control_answers_within_grace", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 25 }, station: { ms: 25 } });
+  const { station, mesh, id } = await onRelays(s, [a, b]);
+  const old = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  assert.equal((await request(s, old, head("/admin/api/overview"))).status, 200);
+  await s.time.pass(2 * TICK_MS);
+
+  // Hold an open event stream on the original connection throughout the race.
+  const eventStream = await station.conns[0].openBi();
+  let streamClosed = false;
+  void eventStream.read().then(
+    (chunk: Uint8Array | null) => {
+      if (chunk === null) streamClosed = true;
+    },
+    () => {
+      streamClosed = true;
+    },
+  );
+
+  // Align right after a completed ping so the next ping goes in ~150 ms, then hold `old`'s way silent until
+  // PING_TIMEOUT_MS + 350 ms after that ping: the ping misses at +3 s, the new connection opens immediately on the
+  // healthy relay, and `old`'s queued control round trip completes ~350 ms into RACE_GRACE_MS (< 1_000 ms).
+  const grantsBefore = station.grants.length;
+  await s.until(() => station.grants.length > grantsBefore);
+  await s.time.pass(TICK_MS - 150);
+  const beforeConns = station.conns.length;
+  const oldServerConn = station.conns[0];
+  const recoverAt = s.time.now() + 150 + PING_TIMEOUT_MS + 350;
+  oldServerConn.way.silentUntil = oldServerConn.peer.way.silentUntil = recoverAt;
+  // Wait until the missed ping starts the race and opens the new connection on the station.
+  await s.until(() => station.conns.length > beforeConns);
+  const openedAt = s.time.now();
+  assert.equal(mesh.current(id), old, "still holding old during grace");
+  // ~350 ms into RACE_GRACE_MS, `old`'s control stream answers its round trip and closes the candidate immediately
+  // without waiting out the remaining grace budget.
+  await s.until(() => station.conns.slice(beforeConns).every((c: J) => c.isClosed()), RACE_GRACE_MS - 150);
+  assert.ok(s.time.now() - openedAt < RACE_GRACE_MS - 150, `settled in ${s.time.now() - openedAt} ms`);
+  assert.equal(mesh.current(id), old);
+  assert.equal(old.closed(), null);
+  assert.equal(streamClosed, false, "event stream on old connection stayed open");
+  eventStream.reset(0);
+  await close(s, station, mesh);
+});
+
+/// Transport rxBytes (such as backup-path PATH_RESPONSE or keepalives) and pre-existing or downstream `came` bytes do
+/// not prove the old link's control stream works: if control does not answer within RACE_GRACE_MS, the mesh switches
+/// to the new link at the grace deadline, and switches immediately if the old link is already closed.
+sim("a_missed_ping_race_ignores_rx_bytes_and_switches_at_grace_or_immediately_on_close", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const { station, mesh, id } = await onRelays(s, [a, b]);
+  const old = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  // Populate `old.came` before the race so pre-existing body bytes are non-zero.
+  const preReply = await request(s, old, head("/admin/api/overview"));
+  assert.equal(preReply.status, 200);
+  while ((await s.run(preReply.body.take)) !== null) {}
+  assert.ok(old.came > 0);
+  await s.time.pass(2 * TICK_MS);
+
+  const beforeConns = station.conns.length;
+  station.deadBelow = beforeConns;
+  const replaced = s.runner.run(mesh.replaced(id, old));
+  await s.until(() => station.conns.length > beforeConns);
+  const candidateAt = s.time.now();
+  // Simulate +30 KB of backup-path transport packets and downstream body bytes arriving on `old` during the grace
+  // window while its control stream stays silent.
+  const beforeRx = old.conn.stats().rxBytes;
+  station.conns[0].peer.counts.rxBytes += 30_211;
+  assert.equal(old.conn.stats().rxBytes, beforeRx + 30_211);
+  old.came += 4_096;
+  await s.time.pass(RACE_GRACE_MS - 200);
+  assert.equal(mesh.current(id), old, "still within RACE_GRACE_MS");
+  await s.settle(replaced);
+  const waited = s.time.now() - candidateAt;
+  assert.ok(waited >= RACE_GRACE_MS && waited < RACE_GRACE_MS + 250, `switched after ${waited} ms`);
+  const next = mesh.current(id)!;
+  assert.notEqual(next, old);
+
+  // Now verify an explicit close on the suspect link during grace switches immediately without waiting out RACE_GRACE_MS.
+  await s.time.pass(2 * TICK_MS);
+  const nextBefore = station.conns.length;
+  station.deadBelow = nextBefore;
+  const replacedAgain = s.runner.run(mesh.replaced(id, next));
+  await s.until(() => station.conns.length > nextBefore);
+  const closeStart = s.time.now();
+  await s.time.pass(150);
+  station.conns[nextBefore - 1].close(0, "gone");
+  await s.settle(replacedAgain);
+  assert.ok(s.time.now() - closeStart < RACE_GRACE_MS - 400, `closed link switched in ${s.time.now() - closeStart} ms`);
+  await close(s, station, mesh);
+});
+
+/// Closing the candidate connection or dropping the link during RACE_GRACE_MS cleans up immediately without installing
+/// a closed link or leaking connections.
+sim("a_missed_ping_race_cleans_up_when_the_new_link_closes_or_the_place_is_dropped_during_grace", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const { station, mesh, id } = await onRelays(s, [a, b]);
+  const old = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  assert.equal((await request(s, old, head("/admin/api/overview"))).status, 200);
+  await s.time.pass(2 * TICK_MS);
+
+  // Part 1: the new candidate connection closes during RACE_GRACE_MS, then `old` recovers before PROBE_MS ends.
+  const grantsBefore = station.grants.length;
+  await s.until(() => station.grants.length > grantsBefore);
+  await s.time.pass(TICK_MS - 150);
+  const beforeConns = station.conns.length;
+  const oldServerConn = station.conns[0];
+  oldServerConn.way.silentUntil = oldServerConn.peer.way.silentUntil = s.time.now() + 150 + PING_TIMEOUT_MS + 400;
+  await s.until(() => station.conns.length > beforeConns);
+  await s.time.pass(150);
+  station.conns.at(-1)!.close(0, "reset");
+  await s.time.pass(RACE_GRACE_MS);
+  assert.equal(mesh.current(id), old, "never switched to the closed candidate");
+  assert.equal(old.closed(), null);
+
+  // Part 2: `dropLink` during RACE_GRACE_MS immediately closes both `old` and the held candidate connection.
+  await s.time.pass(2 * TICK_MS);
+  const beforeDrop = station.conns.length;
+  station.deadBelow = beforeDrop;
+  await s.until(() => station.conns.length > beforeDrop);
+  await s.time.pass(150);
+  const droppedAt = s.time.now();
+  mesh.dropLink(id);
+  await s.until(() => station.conns.every((c: J) => c.isClosed()), 250);
+  assert.ok(s.time.now() - droppedAt < 250, `cleaned up in ${s.time.now() - droppedAt} ms`);
+  assert.equal(mesh.current(id), null);
+  await close(s, station, mesh);
+});
+
+/// Back from a short while away (`Wake.checksConnections`), the app's keepalives frozen meanwhile: a link that no longer
+/// answers is replaced now, not at its next ping, and one that answers is kept with nothing dialled.
+for (const [net, ms, within] of [["good", 40, 1_000], ["weak", 200, 2_000]] as const) for (const phase of [0, 1_000, 2_500, 4_000]) {
+  const shortlyAway = async (s: Sim, dead: boolean) => {
+    const a = s.relay("https://a.relay.test/", { device: { ms: ms / 2 }, station: { ms: ms / 2 } });
+    const b = s.relay("https://b.relay.test/", { device: { ms: ms / 2 + 10 }, station: { ms: ms / 2 + 10 } });
+    const { station, mesh, id } = await onRelays(s, [a, b]);
+    const wire = wireOf(s, mesh);
+    const addr = StationAddr.parse(`w/${id}`);
+    const get: RequestHead = { method: "GET", path: "/admin/api/overview", headers: [] };
+    const ask = () => s.runner.run(Effect.scoped(Effect.flatMap(wire.request(addr, get, new Uint8Array()), (r) => Effect.map(readAll(r.body), () => r.status))));
+    assert.equal(await s.settle(ask(), 60_000), 200);
+    await s.time.pass(2 * TICK_MS + phase);
+    const dialled = station.conns.length;
+    if (dead) station.deadBelow = dialled;
+    const woken = s.time.now();
+    s.wakes.wake(new Wake(woken, 10_000, false, false));
+    assert.equal(await s.settle(ask(), 60_000), 200);
+    const took = s.time.now() - woken;
+    const more = station.conns.length - dialled;
+    await close(s, station, mesh);
+    return { took, more };
+  };
+  sim(`a_link_gone_while_the_app_was_away_a_short_while_is_replaced_as_it_comes_back_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
+    const { took, more } = await shortlyAway(s, true);
+    assert.ok(took < within, `answered ${took} ms after the wake`);
+    assert.equal(more, 1);
+  });
+  sim(`a_link_that_still_answers_as_the_app_comes_back_is_kept_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
+    const { took, more } = await shortlyAway(s, false);
+    assert.ok(took < within, `answered ${took} ms after the wake`);
+    assert.equal(more, 0);
+  });
+}
 
 suite("mesh", { concurrency: true }, () => {
   for (const [name, options, body] of tests) register(name, options, body);

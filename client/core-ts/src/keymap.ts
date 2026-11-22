@@ -47,6 +47,10 @@ export const ACTIONS: Record<string, Spec> = {
   "chat.said.next": { group: "chat", keys: ["Alt+Shift+Down"], typing: "empty" },
   "chat.archive": { group: "chat", keys: ["Mod+Shift+E"], typing: "yes" },
   "panel.close": { group: "chat", keys: ["Escape"], typing: "yes" },
+  "panel.tab.close": { group: "chat", keys: [], desktop: ["Mod+Shift+W"], typing: "yes" },
+  "panel.tab.reopen": { group: "chat", keys: [], desktop: ["Mod+Shift+T"], typing: "yes" },
+  "panel.tab.prev": { group: "chat", keys: ["Alt+Shift+Left"], desktop: ["Mod+Shift+["], typing: "yes" },
+  "panel.tab.next": { group: "chat", keys: ["Alt+Shift+Right"], desktop: ["Mod+Shift+]"], typing: "yes" },
   // the preview beside a folder's list, shown or not (as Finder's preview pane)
   "files.preview": { group: "files", keys: ["Mod+Shift+P"], typing: "yes" },
 };

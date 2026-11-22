@@ -19,16 +19,9 @@ let tree_presented : Set[Int] = Set([])
 let tree_as_sheet : Map[Int, Bool] = Map([])
 
 ///|
-/// Whether `p` is drawn as a sheet of the window's tree on screen `sheet` (小屏's): sheet_node, as presented_nodes picks:
-/// a panel that is no stage, a confirm, a question, a menu and a pick.
-fn tree_sheet_of(p : Presented, sheet : Bool) -> Bool {
-  sheet && ((p.shows is Panel(x) && !x.stage) || sheet_shows_of(p))
-}
-
-///|
-/// Whether `p` is a confirm, a question, a menu or a pick: on 小屏 a sheet of the window's tree (sheet_shows_panel).
-fn sheet_shows_of(p : Presented) -> Bool {
-  p.shows is (Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) | Menu(_, _, _) | Pick(_, _, _, _, _, _))
+/// Whether `p` is drawn as a sheet of the window's tree on screen `sheet` (小屏's) with window height `win_h`.
+fn tree_sheet_of(p : Presented, sheet : Bool, win_h : Double) -> Bool {
+  how_of(p.shows, p.from, p.held, sheet, win_h) == AsSheet
 }
 
 ///|
@@ -54,15 +47,19 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   reader_layout_nodes(root)
   // (what is presented followed as it is told, on the screen it is drawn on: how each open one is drawn, what closed
   // unsaid let go of, what has gone let go: presented_followed)
-  root.reacts(fn() { (presented_said.val.get(), layout(root.window().0) is Small) }, fn(told) { presented_followed(told.1) })
+  root.reacts(
+    fn() { (presented_said.val.get(), layout(root.window_w()) is Small, root.window_h()) },
+    fn(told) { presented_followed(told.1, told.2) },
+  )
   root.each(
     fn() {
       presented_said.val.get() |> ignore
-      let (w, _) = root.window()
+      let w = root.window_w()
+      let h = root.window_h()
       // (a panel, a confirm, a question, a menu or a pick drawn by what screen it is on, none before the window has its
       // size: what it is drawn as, a sheet or not, is picked as it is made)
       presented_now
-      .filter(fn(p) { w > 0.0 || (p.shows is Panel(x) && x.stage) })
+      .filter(fn(p) { (w > 0.0 && h > 0.0) || (p.shows is Panel(x) && x.stage) })
       .map(fn(p) { PresentedItem::{ p: p } })
     },
     fn(it) { it.p.serial },
@@ -70,8 +67,12 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       // (its own presented, given it by the list as it is made: no walk of what is presented for it)
       let p = item.untracked().p
       let serial = p.serial
-      // (a sheet from the window's foot, on 小屏 as it is made: sheet_node)
-      let as_sheet = tree_sheet_of(p, @signals.untracked(fn() { layout(root.window().0) is Small }))
+      // (a sheet from the window's foot, on 小屏 as it is made when not a popover in the upper half: sheet_node)
+      let as_sheet = tree_sheet_of(
+        p,
+        @signals.untracked(fn() { layout(root.window_w()) is Small }),
+        @signals.untracked(fn() { root.window_h() }),
+      )
       tree_as_sheet[serial] = as_sheet
       // (the root's node it is in at its place in the window's stack of layers: its serial, as the host's presented are)
       if isolated {
@@ -82,7 +83,6 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       // it, not to what had the focus as it opened: View::opened_by)
       match p.from {
         Node(v) => row.opened_by(@view.ByNode(v.id())) |> ignore
-        Of(id) => row.opened_by(@view.ByOld(id)) |> ignore
         At(_, _, _, _) | Unanchored => ()
       }
       // (the tips of what its body and its foot are made of: the window's layer of them, panel_tips_lent)
@@ -187,7 +187,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             dims~,
             covered~,
           )
-        Menu(items, title, along) => {
+        Menu(items, title, along, side) => {
           // (beside what opened it, where it was drawn as it opened; opened by the keyboard where that showed its focus:
           // menu_anchor_now)
           let (anchor, by_key, offset, keep_field) = @signals.untracked(fn() { menu_anchor_now(p.from) })
@@ -205,6 +205,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             keep_field,
             fn(item) { done(item.select) },
             fn() { dismissed_now(serial) },
+            side~,
             shown~,
             gone~,
           )
@@ -262,7 +263,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             gone~,
           )
         }
-        Pick(title, choices, chosen, choose, along, search) if !pick_menu_of(choices, search) => {
+        Pick(title, choices, chosen, choose, along, side, search) if !pick_menu_of(choices, search) => {
           // (a panel with its search over its list: pick_node)
           // (panel_offset off what opened it, a point too: @kit.popover's, as a long pick gives no other)
           let (anchor, _, _, _) = @signals.untracked(fn() { menu_anchor_now(p.from) })
@@ -281,9 +282,10 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             fn() { dismissed_now(serial) },
             shown~,
             gone~,
+            side~,
           )
         }
-        Pick(title, choices, chosen, choose, along, _) => {
+        Pick(title, choices, chosen, choose, along, side, _) => {
           // (a menu of its choices, a short pick's: the one chosen checked where one is, else each its icon;
           // what each is under its words, its value at its row's end, its own mark after its check)
           let (anchor, by_key, offset, keep_field) = @signals.untracked(fn() { menu_anchor_now(p.from) })
@@ -313,6 +315,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             keep_field,
             fn(item) { done(item.select) },
             fn() { dismissed_now(serial) },
+            side~,
             shown~,
             gone~,
             extras=fn(i) {
@@ -363,10 +366,6 @@ fn menu_anchor_now(from : Anchor) -> ((@view.View) -> @view.View, Bool, Double, 
   let (ww, wh) = c.window_size()
   let middle = (ww / 2.0, wh / 3.0, 0.0, 0.0)
   match from {
-    Of(id) => {
-      let by_key = c.focus_shown(id)
-      (fn(layer) { @ui.old_anchor(layer, id, (0.0, 0.0, 0.0, 0.0)) }, by_key, panel_offset, keep && !by_key)
-    }
     // (a node of the window's tree: beside it where it is drawn)
     Node(v) => {
       let by_key = v.focus_shown()
@@ -380,18 +379,6 @@ fn menu_anchor_now(from : Anchor) -> ((@view.View) -> @view.View, Bool, Double, 
         keep,
       )
     Unanchored => (fn(layer) { fixed_anchor(layer, middle) }, false, panel_offset, keep)
-  }
-}
-
-///|
-/// A window's tree of `page` (an old view, the whole window) with what of the presented the tree draws over it
-/// (presented_nodes), in still.fail's theme: as the app's tree has them (sfapp's app_tree), for a page shown without
-/// the app's shell. The Tester's or a host's `tree`, its old frame `@ui.old_views_here`.
-pub fn presented_tree(page : (@ui.Ctx) -> Unit) -> (@view.View) -> Unit {
-  fn(root) {
-    @ui.set_tree_theme(ui_theme_now)
-    @ui.old(root, page).grow(Is(1.0)) |> ignore
-    presented_nodes(root)
   }
 }
 
@@ -437,11 +424,11 @@ pub fn panel_words_at_node(v : @view.View) -> Double {
 
 ///|
 /// How far in from the column a panel's body is given node `v` its title starts, in points: beside what opened it, as
-/// far as its head puts it (panel_head_box's S2_5); on a sheet, on the words' line; none outside a panel. What its body
+/// far as its head puts it (panel_head_box's S4, text_in); on a sheet, on the words' line; none outside a panel. What its body
 /// lines up under the title by (the board's draft's panel: its words and what it runs on).
 pub fn panel_title_at_node(v : @view.View) -> Double {
   match v.lent(panel_in_lent) {
-    Some(p) if p.small => @ui.Space::px(S2_5)
+    Some(p) if p.small => text_in
     Some(p) => p.words
     None => 0.0
   }
@@ -459,6 +446,12 @@ pub fn in_small_panel_node(v : @view.View) -> Bool {
 /// scrolls under them, attach's photos): out across the room the panel leaves at its sides; none outside a panel.
 pub fn panel_bleed_node(v : @view.View) -> @ui.Style {
   @ui.style(mx=room(-panel_in_of(v).sides))
+}
+
+///|
+/// How far in from the panel's edges node `v`'s body column sits (panel_bleed_node's width on each side), in points.
+pub fn panel_sides_at_node(v : @view.View) -> Double {
+  panel_in_of(v).sides
 }
 
 ///|

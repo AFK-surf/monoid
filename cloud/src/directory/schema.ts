@@ -39,12 +39,18 @@ export function initSchema(db: DirectoryDb, runMigrations: { freePlan(): void; s
       CREATE TABLE IF NOT EXISTS lock_turned_off (workspace TEXT NOT NULL, genesis TEXT NOT NULL, seq INTEGER NOT NULL, entry TEXT NOT NULL, PRIMARY KEY (workspace, genesis, seq));
       CREATE TABLE IF NOT EXISTS lock_requests (workspace TEXT NOT NULL, base TEXT NOT NULL, sub TEXT NOT NULL, request TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (workspace, base));
       CREATE INDEX IF NOT EXISTS users_by_email ON users (lower(email));
+      CREATE TABLE IF NOT EXISTS apple_identities (apple_sub TEXT PRIMARY KEY, user_sub TEXT NOT NULL, email TEXT NOT NULL, refresh_token TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS apple_identities_by_user ON apple_identities (user_sub);
       CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, key TEXT NOT NULL, body TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS live (kind TEXT NOT NULL, key TEXT NOT NULL, gen INTEGER NOT NULL, PRIMARY KEY (kind, key));
       CREATE TABLE IF NOT EXISTS hits (hour INTEGER NOT NULL, family TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (hour, family));
       CREATE TABLE IF NOT EXISTS operators (sub TEXT PRIMARY KEY, email TEXT NOT NULL, seen_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS admin_audit (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '');
       CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit (created_at DESC);
+      CREATE TABLE IF NOT EXISTS admin_keys (id TEXT PRIMARY KEY, name TEXT NOT NULL, prefix TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, created_by TEXT NOT NULL, created_by_email TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER, last_used_at INTEGER, revoked_at INTEGER);
+      CREATE INDEX IF NOT EXISTS admin_keys_hash ON admin_keys (key_hash);
+      CREATE TABLE IF NOT EXISTS provision_keys (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, name TEXT NOT NULL, prefix TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, created_by TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER, last_used_at INTEGER, revoked_at INTEGER);
+      CREATE INDEX IF NOT EXISTS provision_keys_workspace ON provision_keys (workspace, created_at DESC);
     `);
   // users had neither column before invite codes, nor beta (1: let into the test channel) before it, nor blocked (1:
   // the admin blocked the account; the account's own object is what keeps it out) before the console could block,

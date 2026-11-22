@@ -17,7 +17,7 @@ fn rsc_lowest(t : @ui.Tester) -> (String, Double, Double)? {
   let mut low : (String, Double, Double)? = None
   for wd in t.words() {
     let (text, x, y, _, h, a) = wd
-    if a > 0.0 && x >= gx && x < gx + gw && y >= 0.0 && y + h <= gy + 0.5 && !rs_in_tip(t, x, y, h) {
+    if a > 0.0 && x >= gx && x < gx + gw && y >= 0.0 && y + h <= gy - 36.0 + 0.5 && !rs_in_tip(t, x, y, h) {
       if low is None || low.unwrap().2 < y + h {
         low = Some((text, x, y + h))
       }

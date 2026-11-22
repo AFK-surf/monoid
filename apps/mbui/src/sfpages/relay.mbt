@@ -102,16 +102,13 @@ fn relay_body(v : @view.View, src : Source) -> Unit {
   let shown = relay_shown(v)
   v.box(fn(body) {
     @sf.style_node(body, fn() { relay_column })
-    body.pick(fn() { shown().picked is Some(_) }, fn(b, picked) {
-      b.box(fn(col) {
-        @sf.style_node(col, fn() { relay_column })
-        if picked {
-          relay_picked(col, src, shown)
-        } else {
-          relay_picking(col, src, shown)
-        }
-      })
-      |> ignore
+    body.pick(fn() { shown().picked is Some(_) }, fn(col, picked) {
+      @sf.style_node(col, fn() { relay_column })
+      if picked {
+        relay_picked(col, src, shown)
+      } else {
+        relay_picking(col, src, shown)
+      }
     })
   })
   |> ignore
@@ -215,12 +212,9 @@ fn relay_places(p : @view.View, shown : () -> RelayShown) -> Unit {
   let view = fn() { shown().view }
   let recent = fn() { flag(view(), "recent") }
   relay_list(p, fn(l) {
-    l.show(recent, fn(h) {
-      h.box(fn(b) {
-        @sf.style_node(b, fn() { relay_group_head_box })
-        @sf.words_node(b, fn() { @sf.t("web-main.relay.recent") }, fn() { relay_group_head }) |> ignore
-      })
-      |> ignore
+    l.show(recent, fn(b) {
+      @sf.style_node(b, fn() { relay_group_head_box })
+      @sf.words_node(b, fn() { @sf.t("web-main.relay.recent") }, fn() { relay_group_head }) |> ignore
     })
     let key = fn(row : Json) { text(Some(row), "connect") + "/" + text(field(Some(row), "place"), "id") }
     l.each(fn() { items(view(), "rows") }, key, fn(cell, row) {
@@ -360,12 +354,9 @@ fn relay_avatar(parent : @view.View, src : Source, conn : () -> Json?) -> Unit {
       }
     }, relay_mark_size)
   })
-  parent.show(fn() { picture() is None && conn() is Some(_) }, at_once=true, fn(a) {
-    a.box(fn(b) {
-      @sf.style_node(b, fn() { relay_avatar_box })
-      @sf.origin_mark_node(b, fn() { relay_origin(text(conn(), "kind")) }, relay_kind_size)
-      |> ignore
-    })
+  parent.show(fn() { picture() is None && conn() is Some(_) }, at_once=true, fn(b) {
+    @sf.style_node(b, fn() { relay_avatar_box })
+    @sf.origin_mark_node(b, fn() { relay_origin(text(conn(), "kind")) }, relay_kind_size)
     |> ignore
   })
 }
@@ -385,41 +376,38 @@ fn relay_via(
   let split = fn() -> Array[String] {
     @sf.t("web-main.relay.via", args=[("bot", "\u{E000}")]).split("\u{E000}").map(fn(w) { w.to_owned() }).collect()
   }
-  parent.show(fn() { conn() is Some(_) }, fn(s) {
-    s.box(fn(b) {
-      @sf.style_node(b, fn() { relay_via_box })
-      b.box(fn(g) { @sf.style_node(g, fn() { relay_grow }, in_row=true) }) |> ignore
-      b.show(fn() { split()[0] != "" }, at_once=true, fn(w) {
-        @sf.words_node(w, fn() { split()[0] }, fn() { relay_via_words }) |> ignore
-      })
-      b.box(fn(v) {
-        @sf.style_node(v, fn() { relay_via_bot })
-        relay_avatar(v, src, conn)
-        @sf.words_node(v, fn() { text(conn(), "name") }, fn() { relay_via_name }) |> ignore
-      })
-      |> ignore
-      b.show(fn() { split().length() > 1 && split()[1] != "" }, at_once=true, fn(w) {
-        @sf.words_node(w, fn() { split()[1] }, fn() { relay_via_words }) |> ignore
-      })
-      // (接力时加入, where the bot is to join it as it relays)
-      b.show(joins, at_once=true, fn(w) {
-        @sf.words_node(w, fn() { " · " + @sf.t("web-main.relay.bot.join") }, fn() { relay_via_words }) |> ignore
-      })
-      // (换一个, where the place has other bots of its workspace: the bots shown under it to choose from)
-      b.show(change, at_once=true, fn(w) {
-        w.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-        @sf.words_node(w, fn() { " · " }, fn() { relay_via_words }) |> ignore
-        @sf.text_action_node(
-          w,
-          fn() { @sf.t("web-main.relay.changeBot") },
-          fn() { relaying.choosing.set(true) },
-          style=fn() { relay_more_words },
-          box=fn() { relay_via_change },
-        )
-        |> ignore
-      })
+  parent.show(fn() { conn() is Some(_) }, fn(b) {
+    @sf.style_node(b, fn() { relay_via_box })
+    b.box(fn(g) { @sf.style_node(g, fn() { relay_grow }, in_row=true) }) |> ignore
+    b.show(fn() { split()[0] != "" }, at_once=true, fn(w) {
+      @sf.words_node(w, fn() { split()[0] }, fn() { relay_via_words }) |> ignore
+    })
+    b.box(fn(v) {
+      @sf.style_node(v, fn() { relay_via_bot })
+      relay_avatar(v, src, conn)
+      @sf.words_node(v, fn() { text(conn(), "name") }, fn() { relay_via_name }) |> ignore
     })
     |> ignore
+    b.show(fn() { split().length() > 1 && split()[1] != "" }, at_once=true, fn(w) {
+      @sf.words_node(w, fn() { split()[1] }, fn() { relay_via_words }) |> ignore
+    })
+    // (接力时加入, where the bot is to join it as it relays)
+    b.show(joins, at_once=true, fn(w) {
+      @sf.words_node(w, fn() { " · " + @sf.t("web-main.relay.bot.join") }, fn() { relay_via_words }) |> ignore
+    })
+    // (换一个, where the place has other bots of its workspace: the bots shown under it to choose from)
+    b.show(change, at_once=true, fn(w) {
+      w.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+      @sf.words_node(w, fn() { " · " }, fn() { relay_via_words }) |> ignore
+      @sf.text_action_node(
+        w,
+        fn() { @sf.t("web-main.relay.changeBot") },
+        fn() { relaying.choosing.set(true) },
+        style=fn() { relay_more_words },
+        box=fn() { relay_via_change },
+      )
+      |> ignore
+    })
   })
 }
 

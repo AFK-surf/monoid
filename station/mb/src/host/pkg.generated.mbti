@@ -49,6 +49,7 @@ pub struct FetchResponse {
   status : Int32
   headers : Array[(String, String)]
   body : Bytes
+  redirected : Bool
 }
 pub fn FetchResponse::header(Self, String) -> String?
 pub fn FetchResponse::text(Self) -> String
@@ -61,7 +62,7 @@ pub struct Host {
 pub async fn Host::accept(Self, @json.Json) -> Conn
 pub fn Host::cancel_fetch(Self, Int64) -> Unit
 pub fn Host::conn(Self, @json.Json, peer? : String) -> Conn
-pub async fn Host::fetch(Self, String, method_? : String, headers? : Array[(String, String)], body? : Bytes, entry? : (String, Int32), head_ms? : Int32, stall_ms? : Int32, timeout_ms? : Int32, called? : (Int64) -> Unit) -> FetchResponse
+pub async fn Host::fetch(Self, String, method_? : String, headers? : Array[(String, String)], body? : Bytes, entry? : (String, Int32), head_ms? : Int32, stall_ms? : Int32, timeout_ms? : Int32, redirect? : String, proxy? : String, ca_pem? : String, called? : (Int64) -> Unit) -> FetchResponse
 pub async fn Host::file_sha256(Self, String) -> String?
 pub async fn Host::line(Self) -> String?
 pub async fn Host::listen_close(Self, @json.Json) -> Unit noraise
@@ -69,6 +70,7 @@ pub fn Host::listener_of(Self, @json.Json, retry_ms? : Int32) -> @net.Listener[C
 pub fn Host::out(Self, Bytes) -> Unit
 pub async fn Host::read_bytes(Self, String, from? : Int32, length? : Int32) -> Bytes?
 pub async fn Host::read_text(Self, String, strict? : Bool) -> String?
+pub async fn Host::rename_retrying(Self, String, String, backoff? : Array[Int32]) -> Unit
 pub fn Host::say(Self, String) -> Unit
 pub fn Host::say_bytes(Self, Bytes) -> Unit
 pub async fn Host::shell(Self, String, @json.Json, bytes? : Bytes, called? : (Int64) -> Unit) -> (@json.Json, Bytes?)

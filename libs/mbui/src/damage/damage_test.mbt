@@ -429,3 +429,31 @@ test "known drawn anew: a part from the start, past half the window whole with n
   )
   debug_inspect(d.next(copy(b), 2, 400.0, 300.0, 2.0, 1.0, 1.0, 1.0, known=[(0.0, 0.0, 400.0, 200.0)]), content="[(0, 0, -1, -1)]")
 }
+
+///|
+test "liquid glass zoom margin includes refraction + abs(chroma), and light_angle rotation dirties glass frames only" {
+  // 1. Non-glass frame: rotating light_angle causes zero dirty rects
+  let plain = frame([(10.0, 10.0, 40.0, 20.0, 0)])
+  let dp = @damage.Damage::new()
+  ignore(dp.next(plain, 1, 400.0, 300.0, 2.0, 1.0, 1.0, 1.0, light_angle=0.0))
+  assert_eq(dp.next(copy(plain), 1, 400.0, 300.0, 2.0, 1.0, 1.0, 1.0, light_angle=0.5), [])
+
+  // 2. Liquid glass frame with zoom (slot 7 = -0.25) and negative chroma (slot 22 = -0.5):
+  //    glass_margin must NOT treat negative slot 7 as frosted contained (which would drop refraction margin),
+  //    and rotating light_angle must dirty the glass region.
+  let gl = frame([(100.0, 80.0, 60.0, 40.0, 6), (170.0, 80.0, 10.0, 10.0, 0)])
+  gl[7] = -0.25
+  gl[20] = -1.0
+  gl[21] = 10.0
+  gl[22] = -0.5
+  gl[23] = 0.0
+  let dg = @damage.Damage::new()
+  ignore(dg.next(gl, 2, 400.0, 300.0, 2.0, 1.0, 1.0, 1.0, light_angle=0.0))
+  // Same light_angle, nothing changed -> empty
+  assert_eq(dg.next(copy(gl), 2, 400.0, 300.0, 2.0, 1.0, 1.0, 1.0, light_angle=0.0), [])
+  // Rotating light_angle -> dirties glass group region with full refraction*(1+abs(chroma)) = 15 + 4 = 19pt margin
+  let rot_parts = dg.next(copy(gl), 2, 400.0, 300.0, 2.0, 1.0, 1.0, 1.0, light_angle=0.785)
+  assert_eq(rot_parts, [(81.0, 61.0, 98.0, 78.0)])
+  // Subsequent frame at same angle -> clean again
+  assert_eq(dg.next(copy(gl), 2, 400.0, 300.0, 2.0, 1.0, 1.0, 1.0, light_angle=0.785), [])
+}

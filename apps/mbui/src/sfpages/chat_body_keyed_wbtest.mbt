@@ -1,6 +1,6 @@
 // A chat's list by key (chat_body_keyed) against the same chat's rows made whole (chat_body_rows): the same keys in the
 // same order, each the same row; and its page as the core changes a message by key: what reads the chat whole
-// (chat_read) not worked out at all, one message read again for each word streamed in, the same in a chat of 50
+// (chat_read) not worked out at all, one message read again for each in-place edit, the same in a chat of 50
 // messages as in one of 150.
 
 ///|
@@ -57,11 +57,17 @@ fn keyed_faults(chat : Json, name : String, sending? : Array[@sfbase.LocalSent] 
               _ => false
             }
           }
-          if !(a.gap == b.gap && a.piece == b.piece && a.entry.id() == b.entry.id() && followed(a.entry) == followed(b.entry)) {
-            faults.push("\{name}: row \{k} otherwise (gap \{a.gap == b.gap}, piece \{a.piece == b.piece}, followed \{followed(a.entry)} \{followed(b.entry)}, \{a.entry.id()} \{b.entry.id()})")
+          if !(a.gap == b.gap && a.slices == b.slices && a.entry.id() == b.entry.id() && followed(a.entry) == followed(b.entry)) {
+            faults.push("\{name}: row \{k} otherwise (gap \{a.gap == b.gap}, slices \{a.slices == b.slices}, followed \{followed(a.entry)} \{followed(b.entry)}, \{a.entry.id()} \{b.entry.id()})")
           }
         }
         _ => faults.push("\{name}: row \{k} missing")
+      }
+      // (how many slices each is drawn in, worked out of its JSON alone, as of it read whole)
+      let n = (keyed.slices)(k)
+      let want = made.rows.get(k).map_or(1, fn(r) { r.slices })
+      if n != want {
+        faults.push("\{name}: row \{k} in \{n} slices, \{want} made whole")
       }
     }
   })
@@ -119,14 +125,12 @@ test "a chat's rows by key are its rows made whole" {
   long_of(10, { "card": { "type": "vault", "vaultAsk": { "name": "钥匙" } } })
   long_of(4, { "system": true })
   let base = keyed_with(chat, { "messages": Json::array(ms) })
-  // (those in pieces in it, and those not)
-  let whole_keys = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, @sfbase.chat_view_made(base), @sfbase.entries_of(@sfbase.chat_view_made(base)), []).keys
-  for k in ["m:t9#2", "m:t7#3"] {
-    assert_true(whole_keys.contains(k), msg="\{k} in \{Repr(whole_keys)}")
-  }
-  for k in ["m:t11#1", "m:t5#1", "m:t6#1"] {
-    assert_false(whole_keys.contains(k), msg="\{k} in \{Repr(whole_keys)}")
-  }
+  // (those in slices in it, and those not: a key each all the same)
+  let whole = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, @sfbase.chat_view_made(base), @sfbase.entries_of(@sfbase.chat_view_made(base)), [])
+  let slices = fn(k : String) { whole.rows.get(k).map_or(0, fn(r) { r.slices }) }
+  assert_true(slices("m:t9") >= 3 && slices("m:t7") >= 4, msg="\{slices("m:t9")} \{slices("m:t7")}")
+  assert_eq((slices("m:t11"), slices("m:t5"), slices("m:t6")), (1, 1, 1))
+  assert_true(!whole.keys.iter().any(fn(k) { k.contains("#") }), msg="\{Repr(whole.keys)}")
   let faults : Array[String] = []
   faults.append(keyed_faults(base, "plain"))
   faults.append(keyed_faults(keyed_with(base, { "unreadLine": Json::number(6.0) }), "unread line"))
@@ -169,10 +173,10 @@ test "a chat's rows by key are its rows made whole" {
 }
 
 ///|
-/// What a chat of `n` messages took, open on 小屏 on a source that keeps its messages by key, for `words` words
-/// streamed into its last message, each a change as the core's: the times it was worked out whole (chat_read), the
-/// messages read again, and what the tree did (bound, made, let go, laid, measured).
-fn keyed_run(n : Int, words : Int) -> (Int, Int, (Int, Int, Int, Int, Int)) raise {
+/// What a chat of `n` messages took, open on 小屏 on a source that keeps its messages by key, for `edits` in-place
+/// edits patched into its last message, each a change as the core's: the times it was worked out whole (chat_read),
+/// the messages read again, and what the tree did (bound, made, let go, laid, measured).
+fn keyed_run(n : Int, edits : Int) -> (Int, Int, (Int, Int, Int, Int, Int)) raise {
   @sfbase.reset()
   reset()
   @sf.set_words(@sfbase.fill)
@@ -215,7 +219,7 @@ fn keyed_run(n : Int, words : Int) -> (Int, Int, (Int, Int, Int, Int, Int)) rais
   let read0 = @sfbase.chat_messages_read.val
   let w0 = scale_work()
   let mut said = scale_words(0)
-  for i in 0..<words {
+  for i in 0..<edits {
     said = said + "字\{i}"
     let ops = [
       Json::object({ "path": Json::array([Json::string("text")]), "set": Json::string(said) }),
@@ -239,17 +243,17 @@ fn keyed_run(n : Int, words : Int) -> (Int, Int, (Int, Int, Int, Int, Int)) rais
     t.run_for(@ui.frame_period_default)
   }
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find(said) is Some(_), msg="\{n}: the words streamed in shown")
+  assert_true(t.find(said) is Some(_), msg="\{n}: the patched text shown")
   (@sfbase.chat_read_made.val - whole0, @sfbase.chat_messages_read.val - read0, scale_did(w0, scale_work()))
 }
 
 ///|
-test "words streamed into a chat's last message read that message alone, by key, the same in a chat of 50 as of 150" {
+test "in-place edits patched into a chat's last message read that message alone, by key, the same in a chat of 50 as of 150" {
   let (whole50, read50, did50) = keyed_run(50, 5)
   let (whole150, read150, did150) = keyed_run(150, 5)
   // (nothing reads the chat whole: its head and that message alone)
   assert_eq((whole50, whole150), (0, 0))
-  // (each word: the message it came into read once)
+  // (each edit: the patched message read once)
   assert_eq((read50, read150), (5, 5))
   assert_true(did150 == did50, msg="150 messages \{Repr(did150)}, 50 \{Repr(did50)}")
 }
@@ -311,4 +315,30 @@ test "a chat's messages by key given anew by its source: the page's list goes on
   @signals.end_batch()
   t.run_for(@ui.move_most_ms)
   assert_true(t.find(scale_put) is Some(_), msg="the message in the list given anew not shown")
+}
+
+///|
+test "where it stood, the turn before's: gone in the frame words are sent from here; kept offline, what was sent waiting" {
+  @sfbase.reset()
+  reset()
+  let base = keyed_with(scale_chat(12), { "stateText": Json::string("已完成：用户选择了「不需要部署」"), "stateLead": Json::string("done") })
+  let sending : Array[@sfbase.LocalSent] = [
+    { row: { ..chat_body_no_out, id: "local:1", text: "刚发的", state: "sending" }, before: Map([]), newest: 12.0 },
+  ]
+  let states = fn(chat : Json, sending : Array[@sfbase.LocalSent]) {
+    let v = @sfbase.chat_view_made(chat)
+    let made = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, v, @sfbase.entries_of(v), sending)
+    made.keys.filter(fn(k) { made.rows.get(k).map_or(false, fn(r) { r.entry is State(_, _, _) }) }).length()
+  }
+  // (nothing on its way: where it stands shown)
+  assert_eq(states(base, []), 1)
+  // (words sent from here, the station up: gone with them, by key as made whole)
+  assert_eq(states(base, sending), 0)
+  // (its station down: kept, what was sent waiting to go)
+  let offline = keyed_with(base, { "offline": Json::boolean(true) })
+  assert_eq(states(offline, sending), 1)
+  let faults : Array[String] = []
+  faults.append(keyed_faults(base, "state, sending", sending~))
+  faults.append(keyed_faults(offline, "state, sending offline", sending~))
+  assert_eq(faults, [])
 }

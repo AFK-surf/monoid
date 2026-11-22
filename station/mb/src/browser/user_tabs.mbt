@@ -712,7 +712,7 @@ fn UserTabs::apply_info(self : UserTabs, tab : UserTab, info : J, force_notify :
   let before_url = tab.url
   let mut persist = false
   let next_url = match at(iv, "url") {
-    Some(Str(u)) => persistable_browser_url(@jsjson.text(u))
+    Some(Str(u)) => persistable_browser_url(@jsjson.sanitize_str(u))
     _ => None
   }
   match tab.pending_navigate_url {
@@ -802,22 +802,22 @@ async fn UserTabs::load(self : UserTabs) -> Unit {
     let rec = Some(item)
     guard item is Obj(_) else { continue }
     guard at(rec, "id") is Some(Str(iu)) else { continue }
-    let id = @jsjson.text(iu)
+    let id = @jsjson.sanitize_str(iu)
     if !user_tab_key(id) || self.by_key.contains(id) {
       continue
     }
     let url = match at(rec, "url") {
-      Some(Str(u)) if @jsjson.text(u) == blank_page => Some(blank_page)
-      Some(Str(u)) => persistable_browser_url(@jsjson.text(u))
+      Some(Str(u)) if @jsjson.sanitize_str(u) == blank_page => Some(blank_page)
+      Some(Str(u)) => persistable_browser_url(@jsjson.sanitize_str(u))
       _ => None
     }
     guard url is Some(url) else { continue }
     let title = match at(rec, "title") {
-      Some(Str(t)) => slice(trim(@jsjson.text(t)), 0, b=512)
+      Some(Str(t)) => slice(trim(@jsjson.sanitize_str(t)), 0, b=512)
       _ => ""
     }
     let resume = match at(rec, "targetId") {
-      Some(Str(t)) if t.length() > 0 => Some(@jsjson.text(t))
+      Some(Str(t)) if t.length() > 0 => Some(@jsjson.sanitize_str(t))
       _ => None
     }
     let tab = UserTab::make(id, url, title, false, resume?)

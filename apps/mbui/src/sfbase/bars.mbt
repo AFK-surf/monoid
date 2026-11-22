@@ -59,15 +59,6 @@ fn bars_of(v : Json?) -> (Array[Array[String]], Int) {
 }
 
 ///|
-/// Whether this window has a bottom bar: the frame of one page at a time has (Small's: sfapp's app.mbt draws it there),
-/// and an iPhone Duo's, the system's tab bar holding the places (sfdesk's rail_native.mbt); the panes side by side of a
-/// wider screen have none, their rail holding the places. What the settings' row of the bars asks (sfpages'
-/// settings_list.mbt): nothing of a bar to set where none is shown.
-pub fn bars_shown(c : @ui.Ctx) -> Bool {
-  @sf.layout(c.window_size().0) is Small || @sf.native_on()
-}
-
-///|
 /// The bars as switched here, before the prefs say it.
 pub let bars_picked : @signals.Signal[(Array[Array[String]], Int)?] = @signals.signal(None)
 

@@ -40,7 +40,7 @@ test "a link's card, its row carried from under a still pointer on a way: open a
   tree.event(at, fn() { grow.go(240.0, @motion.tween(carried_ms, ease=Out), at~) })
   t.run_for(carried_ms - hover_close_ms)
   let midway = card()
-  t.run_for(hover_close_ms + (hover_close_ms + hover_out_ms) * 2.0)
+  t.run_for(hover_close_ms + (hover_close_ms + 90.0) * 2.0)
   assert_eq((opened, midway, card()), (1, 1, 0))
 }
 

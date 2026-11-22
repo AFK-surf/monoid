@@ -64,6 +64,48 @@ test("markdown_windows_drive_paths_in_code_name_files_without_changing_their_sep
   }
 });
 
+test("markdown_fb35_windows_paths_bare_extensions_and_negatives", () => {
+  // Long Windows backslash path elides in the middle keeping backslashes; trailing backslash directory kept.
+  const longWin = "D:\\work\\projects\\monoid\\apps\\web\\src\\components\\FileChipRow.tsx";
+  assert.deepEqual(read("`" + longWin + ":108`"), [
+    ["p", [["code", { content: longWin + ":108", path: longWin, line: 108, shown: "D:\\work\\…\\components\\FileChipRow.tsx" }]]],
+  ]);
+  assert.deepEqual(read("`D:\\work\\proj\\`"), [["p", [["code", { content: "D:\\work\\proj\\", path: "D:\\work\\proj\\" }]]]]);
+  assert.deepEqual(read("`E:\\data\\cases.xlsx`"), [["p", [["code", { content: "E:\\data\\cases.xlsx", path: "E:\\data\\cases.xlsx" }]]]]);
+  // Windows drive Markdown link gets pathAttrs.
+  assert.deepEqual(read("[report.md](D:/work/proj/report.md:12)"), [
+    ["p", [["a", ["report.md"], { href: "D:/work/proj/report.md:12", path: "D:/work/proj/report.md", line: 12 }]]],
+  ]);
+  // Windows backslash relative paths.
+  for (const [content, path, line] of [
+    [".\\scripts\\deploy.ps1", ".\\scripts\\deploy.ps1", null],
+    ["..\\config\\app.json", "..\\config\\app.json", null],
+    ["src\\main.dart:24", "src\\main.dart", 24],
+    [".\\build.bat", ".\\build.bat", null],
+    [".\\out\\", ".\\out\\", null],
+    [".\\README", ".\\README", null],
+    [".\\.env", ".\\.env", null],
+    ["packages\\core\\", "packages\\core\\", null],
+  ] as const) {
+    assert.deepEqual(read("`" + content + "`"), [["p", [["code", { content, path, ...(line === null ? {} : { line }) }]]]], content);
+  }
+  // Common bare filenames without directory prefix.
+  for (const name of [
+    "main.dart", "analysis.ipynb", "deploy.ps1", "build.bat", "hotfix.patch", "changes.diff",
+    "firmware.bin", "boot.hex", "cases.xlsx", "ViewController.m", "App.mm", "toolchain.cmake",
+    "view.mbt", "pkg.generated.mbti",
+  ]) {
+    assert.deepEqual(read("`" + name + "`"), [["p", [["code", { content: name, path: name }]]]], name);
+  }
+  // Negatives: regexes, escapes, drive-relative paths, and common object.property expressions stay plain code.
+  for (const content of [
+    "foo\\.ts", ".\\d+", ".\\n", "a\\nb", "\\w+\\.js", "C:report.md",
+    "System.out", "this.db", "color.r", "iter.zip", ".\\w", ".\\.ts", "1.2\\3",
+  ]) {
+    assert.deepEqual(read("`" + content + "`"), [["p", [["code", { content }]]]], content);
+  }
+});
+
 test("markdown_a_tight_list_holds_its_words_a_loose_one_its_paragraphs", () => {
   assert.deepEqual(read("- 一\n- 二"), [["list", [["li", ["一"]], ["li", ["二"]]]]]);
   assert.deepEqual(read("1. 一\n\n2. 二"), [["list", [["li", [["p", ["一"]]]], ["li", [["p", ["二"]]]]], { ordered: true }]]);
@@ -209,9 +251,10 @@ test("markdown_kept_on_the_device_is_read_as_this_reading_reads_it_or_its_readin
     "[对话](https://still.fail/o/ws1/st1/c-1) https://still.fail/w/ws1/s/st1/screen/desktop [https://github.com/a/b/pull/1](https://github.com/a/b/pull/1)",
     "See `C:\\work\\report.md:12` and `D:/work/notes.txt#L3`.",
     "| 类型 | 文件 |\n|---|---|\n| `\"whole\" | \"tasks\"` ``a || b`` `\\|x\\|` | `libs/a/b.ts:3` `b.ts` |",
+    "- 目标：\\[J=\\sum_t r_t + \\alpha\\,\\mathcal{H}\\]，数组 a\\[0\\] 和引用 \\[1\\]",
   ];
   const digest = createHash("sha256").update(JSON.stringify(texts.map(parse))).digest("hex").slice(0, 16);
-  assert.equal(`${MD_READING}:${digest}`, "12:7b2ce21b4cde91ad", "what Markdown is read as changed: MD_READING one more (markdown.ts) and this digest with it");
+  assert.equal(`${MD_READING}:${digest}`, "14:f2a19cb857d4f0d1", "what Markdown is read as changed: MD_READING one more (markdown.ts) and this digest with it");
 });
 
 test("a_link_or_picture_alone_on_its_line_is_a_paragraph_of_its_own_with_no_blank_line_round_it", () => {
@@ -425,6 +468,18 @@ test("bracket math respects code, escaped delimiters, TeX escapes and missing cl
   assert.deepEqual(read("\\[\nx"), [["p", ["[\nx"]]]);
   assert.deepEqual(read(String.raw`\(x\]`), [["p", ["(x]"]]]);
   assert.deepEqual(read("\\(x\\) 与 \\(y\\)"), [["p", [["code", { content: "x", math: true }], " 与 ", ["code", { content: "y", math: true }]]]]);
+});
+
+test("bracket math written mid-line is a formula where it holds TeX, else escaped brackets", () => {
+  // an agent's display formula after words on its line: TeX's own escapes (`\\,`, `\\Big[`) stay the formula's
+  const tex = String.raw`J(\pi)=\mathbb{E}\Big[\sum_t r_t + \alpha\,\mathcal{H}(\pi(\cdot|s_t))\Big]`;
+  assert.deepEqual(read(`- 目标：\\[${tex}\\]`), [["list", [["li", ["目标：", ["code", { content: tex, math: true }]]]]]]);
+  assert.deepEqual(read(String.raw`其中 \[x^2\] 与 \(y\)`), [["p", ["其中 ", ["code", { content: "x^2", math: true }], " 与 ", ["code", { content: "y", math: true }]]]]);
+  assert.deepEqual(withoutDrawing(parse(String.raw`a \[x_1\]`)), [["p", [[0, 2], ["code", { content: [4, 7], math: true }]]]]);
+  assert.ok((parse(String.raw`a \[x_1\]`)[0] as any)[1][1][1].drawing, "drawn");
+  // Markdown's escaped brackets, and an open one, stay words
+  for (const [text, words] of [[String.raw`数组 a\[0\] 和 \[1\]`, "数组 a[0] 和 [1]"], [String.raw`见 \[x^2`, "见 [x^2"]])
+    assert.deepEqual(read(text), [["p", [words]]]);
 });
 
 test("unclosed display math cannot consume text outside its quote or list", () => {

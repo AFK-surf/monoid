@@ -15,7 +15,7 @@ import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { addToThread, autoArchive, archive, archiveBy, archiveChat, bindSingle, configure, deleteSession, newSession, openChat, say as sayIn } from "../src/sessions/lifecycle.ts";
 import { AUTO, MANUAL } from "../src/store/store.ts";
-import { FakeDriver, Rig, matches, message, reply, say, settle, testClock } from "./hub-fakes.ts";
+import { FakeDriver, Rig, given, matches, message, reply, say, settle, testClock } from "./hub-fakes.ts";
 
 const chat = (runtime: "claude" | "codex" = "claude") => ({ runtime, createdBy: "local" });
 const untimed = (text: string) => text.replace(/^\[Delivered at [^\n]+\]\n/, "");
@@ -156,8 +156,9 @@ test("an agent hears the current time again when a message or job wakes it after
   await time.adjust(30 * 60_000);
   waiting.hub.notify(key, "a job ended");
   await settle();
-  assert.ok(agent.prompts.at(-1)!.includes(`[Delivered at ${new Date(first + 31 * 60_000).toISOString()} (UTC)]`), agent.prompts.at(-1));
-  assert.ok(agent.prompts.at(-1)!.includes("a job ended"));
+  const resumed = waiting.claude.last();
+  assert.ok(resumed.prompts.at(-1)!.includes(`[Delivered at ${new Date(first + 31 * 60_000).toISOString()} (UTC)]`), resumed.prompts.at(-1));
+  assert.ok(resumed.prompts.at(-1)!.includes("a job ended"));
   await waiting.close();
 });
 
@@ -737,6 +738,8 @@ test("a turn that cannot start is not left starting, and stop clears what is sti
   };
   assert.equal(await phase(), null, "the failed start ended what was said to be starting");
   assert.equal(r.hub.processState(key), "cold");
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  assert.equal(r.store.pendingMessages(key).length, 1, "the message remains available for a later attempt");
   // What the station said of it is its own, in English: not said; that it could not start is.
   assert.equal(r.chat.lastText(), "⚠️ 无法启动 agent\n\n```\nthe station this subscription is signed in on did not lend it: station mesh is not ready\n```");
   // Said to be under way some other way: stop, with nothing running, clears it.
@@ -745,6 +748,147 @@ test("a turn that cannot start is not left starting, and stop clears what is sti
   await r.hub.stop(key);
   await settle();
   assert.equal(await phase(), null);
+  await r.close();
+});
+
+test("a failed start keeps its message for the next successful attempt", async () => {
+  const r = new Rig();
+  r.claude.refuses = "no profile can run here";
+  const m = message({ text: "first message" });
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  assert.equal(r.store.pendingMessages(key).length, 1);
+  r.claude.refuses = null;
+  await r.accept(reply(m, "1700000099.000000", "try again"));
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "running");
+  assert.equal(r.store.pendingMessages(key).length, 0);
+  assert.ok(r.claude.last().prompts.some((p) => p.includes("first message")));
+  assert.ok(r.claude.last().prompts.some((p) => p.includes("try again")));
+  await r.close();
+});
+
+test("a failed start takes its pending message when a profile is made available to its workspace", async () => {
+  const r = new Rig({ workspaces: ["home", "joined"] });
+  r.hub.profilesChanged();
+  r.edit((raw) => { raw.connects[0].workspace = "joined"; });
+  const m = message({ text: "first turn" });
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  await r.call(key, "chat_state", { kind: "all_done", done: "first turn finished" });
+  r.claude.last().complete();
+  await settle();
+  await r.hub.evict(key);
+  r.edit((raw) => { raw.profiles = raw.profiles.filter((p: any) => p.id !== "cc"); });
+  r.hub.profilesChanged();
+  await r.accept(reply(m, "1700000099.000000", "waiting for the account"));
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  assert.equal(r.store.pendingMessages(key).length, 1);
+
+  // A copy lent only to the home workspace cannot wake a chat in the joined workspace.
+  r.edit((raw) => raw.profiles.push({ id: "lent", runtime: "claude", home: "homes/lent", share: { borrowed: true, workspaces: ["home"] } }));
+  r.hub.profilesChanged();
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  assert.equal(r.store.pendingMessages(key).length, 1);
+
+  // The owner's grant is an in-place config edit. It wakes the waiting message without another user reply.
+  r.edit((raw) => raw.profiles.find((p: any) => p.id === "lent").share.workspaces.push("joined"));
+  r.hub.profilesChanged();
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "running");
+  assert.equal(r.store.pendingMessages(key).length, 0);
+  assert.equal(r.claude.last().options.profile.id, "lent");
+  assert.ok(r.claude.last().prompts.some((p) => p.includes("waiting for the account")));
+  await r.close();
+});
+
+test("a profile made available while a start is failing retries after that failure", async () => {
+  const r = new Rig();
+  r.hub.profilesChanged();
+  const open = r.claude.open.bind(r.claude);
+  let rejectStart: (error: Error) => void = () => {};
+  let opened: () => void = () => {};
+  const opening = new Promise<void>((resolve) => { opened = resolve; });
+  r.claude.open = () => { opened(); return new Promise((_, reject) => { rejectStart = reject; }); };
+  const m = message({ text: "still waiting" });
+  await r.accept(m);
+  await opening;
+  const key = sessionKey("cl", "C1", m.threadTs);
+  r.edit((raw) => { raw.profiles = raw.profiles.filter((p: any) => p.id !== "cc"); });
+  r.hub.profilesChanged();
+  r.edit((raw) => raw.profiles.push({ id: "new", runtime: "claude", home: "homes/new" }));
+  r.hub.profilesChanged();
+  r.claude.open = open;
+  rejectStart(new Error("the old profile disappeared"));
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "running");
+  assert.equal(r.store.pendingMessages(key).length, 0);
+  assert.equal(r.claude.last().options.profile.id, "new");
+  assert.ok(r.claude.last().prompts.some((p) => p.includes("still waiting")));
+  await r.close();
+});
+
+test("a new available profile wakes a failure even if another profile was already eligible", async () => {
+  const r = new Rig();
+  r.hub.profilesChanged();
+  const open = r.claude.open.bind(r.claude);
+  let opens = 0;
+  r.claude.open = (o, e) => { opens++; return open(o, e); };
+  r.claude.refuses = "the original account cannot start";
+  const m = message({ text: "try once an account is available" });
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  r.edit((raw) => { raw.profiles[0].name = "renamed"; });
+  r.hub.profilesChanged();
+  await settle();
+  assert.equal(opens, 1, "an unrelated edit does not retry a failure");
+  // Revoked before the actor's queue is flushed: the old eligible profile does not make this grant count.
+  r.edit((raw) => raw.profiles.push({ id: "cc2", runtime: "claude", home: "homes/cc2" }));
+  r.hub.profilesChanged();
+  r.edit((raw) => { raw.profiles = raw.profiles.filter((p: any) => p.id !== "cc2"); });
+  r.hub.profilesChanged();
+  await settle();
+  assert.equal(opens, 1, "a revoked grant does not wake the pending start");
+  r.claude.refuses = null;
+  r.edit((raw) => raw.profiles.push({ id: "cc2", runtime: "claude", home: "homes/cc2" }));
+  r.hub.profilesChanged();
+  await settle();
+  assert.equal(opens, 2);
+  assert.equal(r.hub.readProcesses().get(key), "running");
+  assert.equal(r.store.pendingMessages(key).length, 0);
+  await r.close();
+});
+
+test("a retry waiting for a turn slot is queued rather than failed", async () => {
+  const r = new Rig({ maxConcurrentTurns: 1 });
+  r.claude.refuses = "no profile can run here";
+  const first = message({ text: "first message" });
+  await r.accept(first);
+  await settle();
+  const key = sessionKey("cl", "C1", first.threadTs);
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  r.claude.refuses = null;
+  const other = message({ text: "occupy the turn slot" });
+  await r.accept(other);
+  await settle();
+  const occupying = r.claude.last();
+  await r.accept(reply(first, "1700000099.000000", "try again"));
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), undefined);
+  assert.equal(r.store.pendingMessages(key).length, 2);
+  await r.call(sessionKey("cl", "C1", other.threadTs), "chat_state", { kind: "all_done", done: "the other turn finished" });
+  occupying.complete();
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "running");
+  assert.equal(r.store.pendingMessages(key).length, 0);
+  assert.ok(r.claude.last().prompts.some((p) => p.includes("first message") && p.includes("try again")));
   await r.close();
 });
 
@@ -788,7 +932,7 @@ test("claude auth retries once, then reports the profile and does not loop", asy
   await settle();
   assert.equal(r.claude.count(), 2, "a persistent auth failure must stop, not loop");
   // Said as what it means and what to do, not in the runtime's words (those go with the turn, for a report).
-  assert.equal(r.chat.lastText(), "⚠️ 账号认证失败：在 Profile 中重新登录\n\n```\n401 Missing API key\n```");
+  assert.equal(r.chat.lastText(), "⚠️ 账号认证失败：重新登录\n\n```\n401 Missing API key\n```");
   assert.equal(r.claude.last().prompts.length, 1);
   // The notice says whose sign-in failed, for the clients to link that profile's page; another failure is no profile's.
   const thread = r.thread("C1", m.threadTs);
@@ -927,8 +1071,13 @@ test("Codex authentication failure moves an automatic session and continues once
   assert.ok(retry.prompts[0]!.includes(GO_ON_AFTER_AUTH));
   retry.end({ kind: "failed", reason: "auth", message: "401 token_revoked" });
   await settle();
-  assert.equal(r.codex.count(), 2, "a second failure is reported, not retried indefinitely");
-  assert.deepEqual(checked, ["cx", "cx2"]);
+  // (cx2's recheck here says nothing against it: tried once more on it, FB-44's chain; refused again there, it is
+  // rechecked as over, `force`, and with no profile left untried the failure is reported)
+  assert.equal(r.codex.count(), 3, "tried once more on a profile its recheck did not find over");
+  r.codex.last().end({ kind: "failed", reason: "auth", message: "401 token_revoked" });
+  await settle();
+  assert.equal(r.codex.count(), 3, "a failure on every profile is reported, not retried indefinitely");
+  assert.deepEqual(checked, ["cx", "cx2", "cx2"]);
   await r.close();
 });
 
@@ -957,6 +1106,33 @@ test("a runtime not installed is said about it, and what waited goes on once it 
   await settle();
   assert.equal(r.claude.count(), 1);
   assert.ok(r.claude.last().prompts[0]!.includes(m.text), r.claude.last().prompts[0]);
+  await r.close();
+});
+
+test("a runtime installed that still fails to start is said, though its missing was said before in the same words first", async () => {
+  const r = new Rig();
+  r.claude.missing = true;
+  const open = r.claude.open.bind(r.claude);
+  let opens = 0;
+  r.claude.open = (o, e) => (opens++, open(o, e));
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const warned = () => r.chat.texts().filter((t: string) => t.startsWith("⚠️"));
+  assert.deepEqual(warned(), ["⚠️ 无法启动 agent：此 station 尚未安装 Claude Code"]);
+  // Installed, and it ends as it starts: said, not taken for the missing notice it begins like.
+  r.claude.missing = false;
+  r.claude.refuses = "claude session is closed";
+  r.hub.installed("claude");
+  await settle();
+  assert.equal(opens, 2);
+  const failed = "⚠️ 无法启动 agent\n\n```\nclaude session is closed\n```";
+  assert.deepEqual(warned(), ["⚠️ 无法启动 agent：此 station 尚未安装 Claude Code", failed]);
+  // Failing so again with nothing said since: not said twice.
+  r.hub.installed("claude");
+  await settle();
+  assert.equal(opens, 3);
+  assert.deepEqual(warned(), ["⚠️ 无法启动 agent：此 station 尚未安装 Claude Code", failed]);
   await r.close();
 });
 
@@ -1070,6 +1246,108 @@ test("claude auth does not restart stopped, held or declared work", async () => 
     assert.equal(r.claude.count(), 1, mode);
     await r.close();
   }
+});
+
+/// A rig whose `cl` connect runs `runtime`: Claude Code as it is, or the Antigravity CLI on a fake driver of its own.
+const authRig = async (runtime: "claude" | "agy") => {
+  const r = new Rig();
+  if (runtime === "claude") return { r, driver: r.claude };
+  const driver = new FakeDriver("agy");
+  await r.hub.shutdown();
+  r.edit((raw) => {
+    raw.profiles.push({ id: "ag", runtime: "agy", home: "homes/ag", access: { kind: "api-provider", provider: "google", key: "gemini-key" } });
+    raw.connects.find((c: any) => c.id === "cl").bind = { runtime: "agy" };
+  });
+  r.hub = r.newHub({ chats: (id) => (id === "cl" ? r.chat : undefined), drivers: [r.claude, r.codex, driver] });
+  return { r, driver };
+};
+const UNAUTHENTICATED = "⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials.";
+
+test("a 401 on the trailing request after the turn said it waits keeps the wait, ends the process and says nothing; the next process's own 401 is still retried, then said", async (t) => {
+  for (const runtime of ["claude", "agy"] as const) {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+    const { r, driver } = await authRig(runtime);
+    const m = message();
+    await r.accept(m);
+    await settle();
+    const first = driver.last();
+    const key = first.options.route;
+    await r.call(key, "chat_state", { kind: "waiting", seconds: 600, for: "CI" });
+    // Its hourly borrowed token ran out just after chat_state answered: the runtime's last request is refused.
+    first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+    await settle();
+    assert.ok(first.disposed, `${runtime}: the process with the stale sign-in ends`);
+    assert.equal(driver.count(), 1, `${runtime}: not retried, the turn's work was done`);
+    assert.ok(!r.chat.texts().some((s) => s.includes("认证失败")), `${runtime}: no auth failure said: ${r.chat.texts()}`);
+    const last = r.store.lastTurn(key)!;
+    assert.deepEqual([last.outcome, last.declared, last.waitSeconds], ["completed", "waiting", 600], runtime);
+    t.mock.timers.tick(599_000);
+    await settle();
+    assert.equal(driver.count(), 1, `${runtime}: not before its time`);
+    t.mock.timers.tick(11_000);
+    await settle();
+    const second = driver.last();
+    assert.equal(driver.count(), 2, `${runtime}: its wait brings it back in a new process`);
+    assert.equal(second.options.resume, first.sessionId);
+    assert.ok(second.prompts[0]!.includes("waiting on work you started (600 seconds)"), second.prompts[0]);
+    // A passive waitOver turn's 401 stops and says the auth failure without auto-retrying (FB-39);
+    // an active turn's own 401 is still retried once, then said.
+    second.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+    await settle();
+    assert.equal(driver.count(), 2, `${runtime}: passive waitOver 401 stops without auto-retrying`);
+    assert.ok(r.chat.lastText()!.startsWith("⚠️ 账号认证失败"), r.chat.lastText());
+    await r.accept(reply(m, "9999.2", "<@UBOT> check again", { addressed: true }));
+    await settle();
+    const beforeRetry = driver.count();
+    driver.last().end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+    await settle();
+    assert.equal(driver.count(), beforeRetry + 1, runtime);
+    assert.deepEqual(driver.last().prompts.map(untimed), [GO_ON_AFTER_AUTH]);
+    driver.last().end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+    await settle();
+    assert.equal(driver.count(), beforeRetry + 1, `${runtime}: a persistent auth failure stops`);
+    assert.ok(r.chat.lastText()!.startsWith("⚠️ 账号认证失败"), r.chat.lastText());
+    await r.close();
+    t.mock.timers.reset();
+  }
+});
+
+test("a 401 on the trailing request after all_done ends the turn done, its process ended, nothing said", async () => {
+  for (const runtime of ["claude", "agy"] as const) {
+    const { r, driver } = await authRig(runtime);
+    await r.accept(message());
+    await settle();
+    const first = driver.last();
+    const key = first.options.route;
+    await r.call(key, "chat_state", { kind: "all_done", done: "测试任务已完成，没有剩余工作" });
+    first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+    await settle();
+    assert.ok(first.disposed, runtime);
+    assert.equal(driver.count(), 1, runtime);
+    assert.ok(!r.chat.texts().some((s) => s.includes("认证失败")), `${runtime}: ${r.chat.texts()}`);
+    const last = r.store.lastTurn(key)!;
+    assert.deepEqual([last.outcome, last.ending], ["completed", "all_done"], runtime);
+    await r.close();
+  }
+});
+
+test("a stopped turn that had said it waits stays stopped on a 401: no wait is kept", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  const r = new Rig();
+  await r.accept(message());
+  await settle();
+  const first = r.claude.last();
+  const key = first.options.route;
+  await r.call(key, "chat_state", { kind: "waiting", seconds: 600, for: "CI" });
+  await r.hub.stop(key);
+  first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+  await settle();
+  assert.notEqual(r.store.lastTurn(key)!.outcome, "completed");
+  assert.equal(r.store.lastTurn(key)!.waitSeconds, null);
+  t.mock.timers.tick(700_000);
+  await settle();
+  assert.equal(r.claude.count(), 1, "nothing brings it back");
+  await r.close();
 });
 
 test("claude auth's retry budget and whom the turn is for survive a handover", async () => {
@@ -1503,6 +1781,73 @@ test("an agent whose process never reached the station's tools is started again 
   await r.close();
 });
 
+test("toolsUnheard survives handover for a process that never reached tools, and is not triggered if it already reached them", async () => {
+  // Case 1: process never reached tools before handover -> snapshot carries toolsUnheard -> adopted process is restarted with TOOLS_LOST.
+  const heard1 = new Map<string, number>();
+  const first = new Rig({ maxNudges: 2, toolsHeard: heard1 });
+  const m1 = message();
+  await first.accept(m1);
+  await settle();
+  const old1 = first.claude.last();
+  const handed1 = await first.hub.handOver();
+  assert.equal(handed1.sessions.length, 1);
+  assert.equal(handed1.sessions[0]!.toolsUnheard, true);
+  const claude1 = new FakeDriver("claude");
+  const hub1 = first.newHub({
+    chats: (id) => (id === "cl" ? first.chat : undefined),
+    drivers: [claude1, new FakeDriver("codex")],
+    internal: false,
+    toolsHeard: new Map<string, number>(),
+  });
+  await hub1.takeUp();
+  hub1.recover();
+  await settle();
+  const taken1 = claude1.last();
+  assert.equal(taken1.sessionId, old1.sessionId);
+  taken1.says("I still have no chat_post tool.");
+  taken1.complete();
+  await settle();
+  assert.ok(taken1.disposed, "adopted process that never reached tools is disposed");
+  const restarted = claude1.last();
+  assert.notEqual(restarted, taken1);
+  assert.equal(restarted.options.resume, taken1.sessionId);
+  assert.deepEqual(restarted.prompts.map(untimed), [TOOLS_LOST]);
+  await hub1.shutdown();
+  await first.close();
+
+  // Case 2: process already reached tools before handover -> snapshot omits toolsUnheard -> adopted process is nudged, not restarted.
+  const heard2 = new Map<string, number>();
+  const second = new Rig({ maxNudges: 2, toolsHeard: heard2 });
+  const m2 = message();
+  await second.accept(m2);
+  await settle();
+  const old2 = second.claude.last();
+  const key2 = old2.options.route;
+  heard2.set(key2, (heard2.get(key2) ?? 0) + 1);
+  const handed2 = await second.hub.handOver();
+  assert.equal(handed2.sessions.length, 1);
+  assert.equal(handed2.sessions[0]!.toolsUnheard, undefined);
+  const claude2 = new FakeDriver("claude");
+  const hub2 = second.newHub({
+    chats: (id) => (id === "cl" ? second.chat : undefined),
+    drivers: [claude2, new FakeDriver("codex")],
+    internal: false,
+    toolsHeard: new Map<string, number>(),
+  });
+  await hub2.takeUp();
+  hub2.recover();
+  await settle();
+  const taken2 = claude2.last();
+  assert.equal(taken2.sessionId, old2.sessionId);
+  taken2.complete();
+  await settle();
+  assert.ok(!taken2.disposed, "adopted process that already reached tools is kept");
+  assert.equal(claude2.count(), 1);
+  assert.deepEqual(taken2.prompts.map(untimed), [NUDGE]);
+  await hub2.shutdown();
+  await second.close();
+});
+
 test("a turn given up on for want of a state (回复即可继续) is tried again by its notice's 重试", async () => {
   const r = new Rig({ maxNudges: 0 });
   const m = message();
@@ -1816,9 +2161,9 @@ test("idle claude processes beyond the warm limit are evicted, oldest first, as 
   await r.close();
 });
 
-test("an idle process beyond the limit is evicted at its own deadline", async () => {
+test("an idle process within the limit is evicted at its own deadline", async () => {
   const time = testClock();
-  const r = new Rig({ maxWarmClaude: 0, warmMinutes: 0.002, clock: time.clock }); // 120 ms
+  const r = new Rig({ maxWarmClaude: 1, warmMinutes: 0.002, clock: time.clock }); // 120 ms
   await r.accept(message());
   await settle();
   r.claude.last().end({ kind: "aborted" });
@@ -1987,14 +2332,14 @@ test("a pending message edited before delivery reaches the agent as edited", asy
   await r.close();
 });
 
-test("deleting a session ends its process and removes its workspace, the threads only it was in and what the readers kept of its transcript's reading", async () => {
+test("deleting a session ends its process and removes its workspace, exclusive transcripts under <data>, the threads only it was in and what the readers kept of its transcript's reading", async () => {
   const r = new Rig();
   const m = message();
   await r.accept(m);
   await settle();
   const key = sessionKey("cl", "C1", m.threadTs);
   const row = r.session(key);
-  // The runtime's transcript lives in the profile's home and stays.
+  // The runtime's transcript lives in the station-managed profile home under <data> and is deleted when exclusive.
   const transcript = join(r.config.profiles[0]!.home, "projects", "x", `${row.runtimeSessionId}.jsonl`);
   mkdirSync(dirname(transcript), { recursive: true });
   writeFileSync(transcript, "{}\n");
@@ -2009,7 +2354,7 @@ test("deleting a session ends its process and removes its workspace, the threads
   assert.equal(r.store.threadAt("slack:T1", "C1", m.threadTs), null);
   assert.ok(!existsSync(row.workspace));
   assert.ok(!existsSync(dirname(row.workspace)));
-  assert.ok(existsSync(transcript));
+  assert.ok(!existsSync(transcript));
   assert.deepEqual(readdirSync(marks), []);
   await r.close();
 });
@@ -2486,7 +2831,7 @@ test("a session leaves an account whose five hours are nearly full for one with 
   await r.close();
 });
 
-test("a session runs on the subscription; its allowance used up, on the API key, and back on the subscription when it can run again and that loses little", async () => {
+test("a session runs on the subscription; its allowance used up, on the API key, and back on the subscription as soon as one can run again", async () => {
   const time = testClock();
   const r = new Rig({ clock: time.clock });
   const now = time.clock.currentTimeMillisUnsafe();
@@ -2524,19 +2869,96 @@ test("a session runs on the subscription; its allowance used up, on the API key,
   await turn("once more");
   assert.equal(r.session(key).profile, "key");
   await done();
-  // Refilled, its context neither just compacted nor about to be: it stays on the key for now.
+  // Refilled, context uncompacted, but process has background work (`holding`): it stays on the key until that ends.
   used.cc = 0;
   calls("key", [["t1", 60_000], ["t1", 90_000]]);
   const onKey = r.claude.last();
-  await turn("and again");
+  onKey.tasks = [{ id: "a1", kind: "agent", description: "build" }];
+  await turn("meanwhile");
   assert.equal(r.claude.last(), onKey);
   assert.equal(r.session(key).profile, "key");
   await done();
-  // Compacted: the next turn starts afresh on the subscription.
-  calls("key", [["t2", 120_000], ["t2", 20_000]]);
-  await turn("and on");
+  // Background work finished: the next turn moves back to the subscription at once without waiting for compaction.
+  onKey.tasks = [];
+  await turn("and again");
   assert.ok(onKey.disposed);
   assert.equal(r.session(key).profile, "cc");
+  await done();
+  // Kept on the billed-per-use profile by hand: it stays pinned even when a subscription is usable.
+  await configure(r.hub, key, { profile: "key" });
+  await turn("pinned on key");
+  assert.equal(r.session(key).profile, "key");
+  await done();
+  await turn("still pinned on key");
+  assert.equal(r.session(key).profile, "key");
+  await done();
+  await r.close();
+});
+
+test("a session on OpenRouter moves to a newly added subscription on the next turn without waiting for compaction", async () => {
+  const time = testClock();
+  const r = new Rig({ clock: time.clock });
+  const now = time.clock.currentTimeMillisUnsafe();
+  r.edit((raw) => {
+    raw.connects[0].bind.model = "claude-opus-5-5";
+    raw.profiles = [
+      {
+        id: "or",
+        runtime: "claude",
+        home: "homes/or",
+        access: { kind: "api-provider", provider: "openrouter", key: "k" },
+        models: ["anthropic/claude-opus-5.5"],
+      },
+    ];
+  });
+  r.hub.accounts.setHealth((id) =>
+    id === "or"
+      ? { quota: { state: "unsupported", windows: [], detail: "", checkedAt: now } }
+      : { quota: { state: "ok", windows: [{ label: "每周", usedPercent: 0, resetsAt: null }], detail: null, checkedAt: now } },
+  );
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  assert.equal(r.session(key).profile, "or");
+  assert.equal(r.claude.last().options.model, "anthropic/claude-opus-5.5");
+  const turn = async (text: string) => {
+    await r.accept({ ...say(`<@UBOT> ${text}`), threadTs: m.threadTs });
+    await settle();
+  };
+  const done = async () => {
+    await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+    r.claude.last().complete();
+    await settle();
+  };
+  let call = 0;
+  r.store.recordUsage(`/t/${key}`, { session: key, offset: call, model: "anthropic/claude-opus-5.5" }, "claude", [
+    [
+      { id: `c${call++}`, at: now + call, model: "anthropic/claude-opus-5.5", subagent: false, fast: false, input: 0, cacheRead: 60_000, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: 60_000, window: null },
+      { turn: "t1", person: null, thread: null, profile: "or" },
+    ],
+    [
+      { id: `c${call++}`, at: now + call, model: "anthropic/claude-opus-5.5", subagent: false, fast: false, input: 0, cacheRead: 90_000, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: 90_000, window: null },
+      { turn: "t1", person: null, thread: null, profile: "or" },
+    ],
+  ]);
+  await done();
+  const onOpenRouter = r.claude.last();
+  // Add a new subscription profile serving the same model: next turn moves off OpenRouter immediately.
+  r.edit((raw) => {
+    raw.profiles.push({
+      id: "cc-new",
+      runtime: "claude",
+      home: "homes/cc-new",
+      access: { kind: "subscription" },
+      models: ["claude-opus-5-5"],
+    });
+  });
+  await turn("next turn");
+  assert.ok(onOpenRouter.disposed);
+  assert.equal(r.session(key).profile, "cc-new");
+  assert.equal(r.claude.last().options.profile.id, "cc-new");
+  assert.equal(r.claude.last().options.model, "claude-opus-5-5");
   await done();
   await r.close();
 });
@@ -3053,36 +3475,37 @@ test("an account spent with none to move to is said once; what wakes it waits fo
   await settle();
   assert.equal(agent.prompts.length, 1, "no turn while its account is spent");
   assert.equal(said().length, 1);
-  // At the refill: it goes on by itself; the notices follow that turn.
+  const allPrompts = () => r.claude.sessions.flatMap((s) => s.prompts);
+  // At the refill: it goes on by itself (a fresh process if warmMs evicted the idle one); the notices follow that turn.
   await time.adjust(2 * HOUR);
   await settle();
-  assert.equal(agent.prompts.length, 2);
-  assert.equal(untimed(agent.prompts[1]!), GO_ON_AFTER_REFILL);
+  assert.equal(allPrompts().length, 2);
+  assert.equal(untimed(allPrompts()[1]!), GO_ON_AFTER_REFILL);
   // Spent again (the refill read wrong): still said only once, and it waits again (an hour, none known now).
   r.hub.accounts.setHealth(() => ({}));
-  agent.end(spent);
+  r.claude.last().end(spent);
   await settle();
   assert.equal(said().length, 1, "the thread ends with it already");
   const thread = r.thread("C1", m.threadTs);
   const notice = r.store.entriesBefore(thread.id, null, 1).at(-1)!;
   assert.deepEqual(r.store.lastTurn(key)!.about, { thread: thread.id, seq: notice.n, ts: notice.ts });
-  assert.equal(agent.prompts.length, 2);
+  assert.equal(allPrompts().length, 2);
   // A person's message is tried at once, and its failure told them.
   await r.accept(reply(m, "9999.3", "<@UBOT> 还在吗", { addressed: true }));
   await settle();
-  assert.equal(agent.prompts.length, 3);
-  assert.ok(agent.prompts[2]!.includes("还在吗"));
-  agent.end(spent);
+  assert.equal(allPrompts().length, 3);
+  assert.ok(allPrompts()[2]!.includes("还在吗"));
+  r.claude.last().end(spent);
   await settle();
   assert.equal(said().length, 2, "told the person who asked");
   await time.adjust(HOUR);
   await settle();
-  assert.equal(untimed(agent.prompts[3]!), GO_ON_AFTER_REFILL);
+  assert.equal(untimed(allPrompts()[3]!), GO_ON_AFTER_REFILL);
   // A turn that ends well: what waited is given.
   await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
-  agent.complete();
+  r.claude.last().complete();
   await settle();
-  assert.ok(matches(agent.prompts[4]!, ["a job ended", "another job ended"]), agent.prompts[4]);
+  assert.ok(matches(allPrompts()[4]!, ["a job ended", "another job ended"]), allPrompts()[4]);
   await r.close();
 });
 
@@ -3179,7 +3602,8 @@ test("a manual allowance reset wakes only waiting sessions on that account, incl
   await r.hub.allowanceReset("cc");
   await time.adjust(7200_000);
   await settle();
-  assert.deepEqual(agents.map((a) => a.prompts.length), [2, 2, 2, 1], "old timers do not start the resumed or stopped sessions again");
+  const promptCountFor = (route: string) => r.claude.sessions.filter((s) => s.options.route === route).reduce((n, s) => n + s.prompts.length, 0);
+  assert.deepEqual(agents.map((a) => promptCountFor(a.options.route)), [2, 2, 2, 1], "old timers do not start the resumed or stopped sessions again");
   await r.close();
 });
 
@@ -3480,6 +3904,185 @@ test("changing runtime lets the running turn finish and the next reads back the 
   assert.ok(matches(history, ["earlier work", "continued work"]), history);
   await r.close();
 });
+
+/// The identity its message `text` in `m`'s thread was posted as (the runtime, model and effort shown beside it).
+const postedAs = (r: Rig, m: { threadTs: string }, text: string) => r.said(r.thread("C1", m.threadTs).id).find((x) => x.text === text)?.agentIdentity;
+/// Changes `key` as `change` from within what the session's actor waits on (its process opening, its retune): `told`
+/// once its actor is told (the station's answer to what it waits on goes after), `made` once the change is done, which
+/// waits on that actor's queue. (A test's `settle` would wait on the actor waiting on the station for good.)
+function changeMeanwhile(r: Rig, key: string, change: Parameters<typeof configure>[2]) {
+  const told = Promise.withResolvers<void>();
+  const changed = r.hub.changed;
+  r.hub.changed = (k, restart) => {
+    r.hub.changed = changed;
+    const done = changed.call(r.hub, k, restart);
+    told.resolve();
+    return done;
+  };
+  const made = configure(r.hub, key, change);
+  return { made, told: Promise.race([told.promise, made.then(() => {})]) };
+}
+const withModels = (...models: string[]) => (raw: any) => raw.profiles.filter((p: any) => p.id === "cc").forEach((p: any) => (p.models = [...(p.models ?? []), ...models]));
+
+test("a message given while a turn runs on the model from before a change is not steered into it: it starts the next turn, on the new model", async () => {
+  const r = new Rig();
+  r.edit(withModels("sonnet"));
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const old = r.claude.last();
+  await configure(r.hub, key, { model: "sonnet", effort: "low" });
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+  await r.accept(reply(m, "9999.1", "<@UBOT> and the tests", { addressed: true }));
+  await settle();
+  assert.deepEqual(old.steers, [], "not steered into the turn on the model from before");
+  assert.deepEqual(postedAs(r, m, "built"), { runtime: "claude", model: "opus", effort: "high" }, "the running turn's own post is the model it runs on");
+  old.complete();
+  await settle();
+  assert.equal(r.claude.last(), old, "the same process, taken in place");
+  assert.deepEqual(old.retuned, [["sonnet", "low"]]);
+  assert.ok(old.prompts.at(-1)!.includes("and the tests"), old.prompts.at(-1));
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "tested", kind: "final" });
+  assert.deepEqual(postedAs(r, m, "tested"), { runtime: "claude", model: "sonnet", effort: "low" });
+  old.complete();
+  await settle();
+  await r.close();
+});
+
+test("a message given while a turn runs on the runtime from before a change is not steered into it: the next turn runs on the new runtime", async () => {
+  const r = new Rig();
+  r.edit((raw) => { raw.profiles[1].models = ["gpt-5"]; });
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const old = r.claude.last();
+  await configure(r.hub, key, { runtime: "codex", model: "gpt-5" });
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+  await r.accept(reply(m, "9999.1", "<@UBOT> and the tests", { addressed: true }));
+  await settle();
+  assert.deepEqual(old.steers, [], "not steered into the Claude Code turn");
+  assert.deepEqual(postedAs(r, m, "built"), { runtime: "claude", model: "opus", effort: "high" });
+  old.complete();
+  await settle();
+  assert.ok(old.disposed);
+  assert.equal(r.codex.count(), 1);
+  const next = r.codex.last();
+  assert.ok(next.prompts.at(-1)!.includes("and the tests"), next.prompts.at(-1));
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "tested", kind: "final" });
+  assert.deepEqual(postedAs(r, m, "tested"), { runtime: "codex", model: "gpt-5", effort: r.session(key).effort ?? null });
+  next.complete();
+  await settle();
+  await r.close();
+});
+
+for (const runtime of ["claude", "codex"] as const) {
+  test(`a change while its process opens is taken before its turn runs (${runtime === "claude" ? "in place" : "another runtime"})`, async () => {
+    const r = new Rig();
+    r.edit(withModels("sonnet"));
+    r.edit((raw) => { raw.profiles[1].models = ["gpt-5"]; });
+    const m = say("<@UBOT> fix the build");
+    const key = sessionKey("cl", "C1", m.threadTs);
+    let made: Promise<unknown> | undefined;
+    const open = r.claude.open.bind(r.claude);
+    r.claude.open = async (options, events) => {
+      r.claude.open = open;
+      const meanwhile = changeMeanwhile(r, key, runtime === "claude" ? { model: "sonnet", effort: "low" } : { runtime: "codex", model: "gpt-5" });
+      made = meanwhile.made;
+      await meanwhile.told;
+      return open(options, events);
+    };
+    await r.accept(m);
+    await settle();
+    await given(made!, "the change made once it opened");
+    await settle();
+    const opened = r.claude.last();
+    if (runtime === "claude") {
+      assert.deepEqual(opened.retuned, [["sonnet", "low"]]);
+      assert.equal(opened.prompts.length, 1);
+    } else {
+      assert.ok(opened.disposed, "the Claude Code process opened on the runtime from before ends");
+      assert.deepEqual(opened.prompts, []);
+      assert.equal(r.codex.last().prompts.length, 1);
+    }
+    await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+    assert.deepEqual(postedAs(r, m, "built"), runtime === "claude" ? { runtime: "claude", model: "sonnet", effort: "low" } : { runtime: "codex", model: "gpt-5", effort: r.session(key).effort ?? null });
+    (runtime === "claude" ? opened : r.codex.last()).complete();
+    await settle();
+    await r.close();
+  });
+}
+
+test("a second change while its process takes the first in place is taken too", async () => {
+  const r = new Rig();
+  r.edit(withModels("sonnet", "haiku"));
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const same = r.claude.last();
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+  same.complete();
+  await settle();
+  // Its skills linked anew as it is taken in place (an await of its retune): changed again meanwhile.
+  let second: Promise<unknown> | undefined;
+  r.hub.skillsLinker = async () => {
+    r.hub.skillsLinker = async () => "";
+    const meanwhile = changeMeanwhile(r, key, { model: "haiku", effort: "low" });
+    second = meanwhile.made;
+    await meanwhile.told;
+    return "";
+  };
+  await configure(r.hub, key, { model: "sonnet", effort: "low" });
+  await settle();
+  await given(second!, "the second change made");
+  await settle();
+  assert.deepEqual(same.retuned.at(-1), ["haiku", "low"], "taken in place as changed last");
+  assert.ok(!same.disposed);
+  await r.accept(reply(m, "9999.1", "<@UBOT> and the tests", { addressed: true }));
+  await settle();
+  assert.equal(r.claude.last(), same);
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "tested", kind: "final" });
+  assert.deepEqual(postedAs(r, m, "tested"), { runtime: "claude", model: "haiku", effort: "low" });
+  same.complete();
+  await settle();
+  await r.close();
+});
+
+for (const retunable of [true, false]) {
+  test(`a change while a turn runs is taken as the turn ends, before a turn its process starts on its own (${retunable ? "in place" : "ended"})`, async () => {
+    const r = new Rig();
+    r.edit(withModels("sonnet"));
+    const m = say("<@UBOT> fix the build");
+    await r.accept(m);
+    await settle();
+    const key = sessionKey("cl", "C1", m.threadTs);
+    const old = r.claude.last();
+    old.retunable = retunable;
+    await configure(r.hub, key, { model: "sonnet", effort: "low" });
+    assert.deepEqual(old.retuned, [], "not while its turn runs");
+    await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+    old.complete();
+    await settle();
+    if (!retunable) {
+      assert.ok(old.disposed, "its process from before ends once its turn is over");
+      await r.close();
+      return;
+    }
+    assert.deepEqual(old.retuned, [["sonnet", "low"]], "taken in place once its turn is over");
+    assert.ok(!old.disposed);
+    // Its runtime begins a turn of its own (a background task of its ended): it posts as the model it runs on now.
+    old.busyNow = true;
+    old.events({ type: "turnStarted" });
+    await settle();
+    await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "the task ended", kind: "final" });
+    assert.deepEqual(postedAs(r, m, "the task ended"), { runtime: "claude", model: "sonnet", effort: "low" });
+    old.complete();
+    await settle();
+    await r.close();
+  });
+}
 
 test("on another account a conversation goes on in a new runtime session, its history read on; on its own it is taken up", async () => {
   const r = new Rig();
@@ -3898,5 +4501,48 @@ test("a session whose directory is gone is not continued", async () => {
   const found = find(roots, "codex", "22222222-aaaa-bbbb-cccc-000000000001")!;
   await assert.rejects(continueMachineSession(r.hub, roots, found, "local"), /已不存在/);
   assert.equal(r.store.listSessions().length, 0);
+  await r.close();
+});
+
+test("onBilledFallback fires only on automatic fallback to pay-as-you-go when subscriptions exist", async () => {
+  const { newSession } = await import("../src/sessions/lifecycle.ts");
+  const r = new Rig();
+  const fallbacks: { session: string; runtime: string; profile: string }[] = [];
+  r.hub.onBilledFallback = (info) => fallbacks.push({ session: info.session, runtime: info.runtime, profile: info.profile.id });
+  const base = r.config.profiles.find((p) => p.runtimes.includes("claude"))!;
+  const sub = { ...base, id: "sub", name: "Claude Sub", access: { kind: "subscription" as const }, env: {} };
+  const payg = { ...base, id: "payg", name: "OpenRouter", access: { kind: "api-provider" as const, provider: "openrouter" }, env: {} };
+
+  // 1. Pure pay-as-you-go pool (no subscriptions) -> never fires.
+  r.config = { ...r.config, profiles: [payg] };
+  await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+  assert.deepEqual(fallbacks, []);
+
+  // 2. Mixed pool where subscription is exhausted -> new session auto-picks payg -> fires.
+  r.config = { ...r.config, profiles: [sub, payg] };
+  r.hub.accounts.setHealth((id) => (id === "sub" ? { quota: { state: "ok", windows: [{ usedPercent: 100, resetsAt: r.hub.now() + 3_600_000 }] } } : {}));
+  const [s1] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+  assert.equal(fallbacks.length, 1);
+  assert.deepEqual(fallbacks[0], { session: s1, runtime: "claude", profile: "payg" });
+
+  // 3. Pinned to payg -> never fires.
+  await newSession(r.hub, { runtime: "claude", profile: "payg", createdBy: "ada@x.com" });
+  assert.equal(fallbacks.length, 1);
+
+  // 4. Session on sub runs out of allowance (spend) -> falls back to payg -> fires.
+  r.hub.accounts.setHealth(() => ({}));
+  const [s2] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+  assert.equal(r.store.getSession(s2)?.profile, "sub");
+  assert.equal(fallbacks.length, 1);
+  r.hub.accounts.spend(s2, "sub");
+  assert.equal(r.store.getSession(s2)?.profile, "payg");
+  assert.equal(fallbacks.length, 2);
+  assert.deepEqual(fallbacks[1], { session: s2, runtime: "claude", profile: "payg" });
+
+  // 5. Upgrading back from payg to sub -> does NOT fire.
+  r.hub.accounts.resetAllowance("sub");
+  r.hub.accounts.runOn(s2);
+  assert.equal(r.store.getSession(s2)?.profile, "sub");
+  assert.equal(fallbacks.length, 2);
   await r.close();
 });

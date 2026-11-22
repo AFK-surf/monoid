@@ -10,41 +10,12 @@ let breathe_test_side : Double = 40.0
 let breathe_test_ink : Int64 = 0x336699FFL
 
 ///|
-/// How far the node is from the old one, along the row.
-let breathe_test_apart : Double = 300.0
-
-///|
 /// A moment just after another (a hair).
 let breathe_test_hair : Double = 1.0
 
 ///|
 /// How long it is watched once whole (two breaths: any while).
 let breathe_test_after : Double = 2800.0
-
-///|
-/// A square breathing as an old view draws it at (0, 0) and as a node 300 in, both while `waits` says so.
-fn breathe_pair(waits : @signals.Signal[Bool]) -> @ui.Tester {
-  let t = @ui.Tester::new(fn(_c) {  }, w=600.0, h=100.0)
-  t.check_looks(false)
-  @ui.set_view_app(fn(root) {
-    root.row(Is(true)).lines_up(Is(Some(Start))) |> ignore
-    root.box(fn(h) {
-      h.width(Is(Some(breathe_test_side))).height(Is(Some(breathe_test_side))) |> ignore
-      @ui.old(h, fn(c) {
-        let share = @motion.told(c, "breathe-test", if waits.get() { 1.0 } else { 0.0 }, spec=@motion.tween(dur_ms, ease=Out))
-        let b = c.box(w=Px(breathe_test_side), h=Px(breathe_test_side), bg=breathe_test_ink, fn() {  })
-        breathe(c, b, share~)
-      })
-      .grow(Is(1.0))
-      |> ignore
-    })
-    |> ignore
-    root.box(fn(g) { g.width(Is(Some(breathe_test_apart - breathe_test_side))) |> ignore }) |> ignore
-    breathe_square(root, waits, fn() { false })
-  })
-  t.draw()
-  t
-}
 
 ///|
 /// The square that breathes, as a node in `parent`.
@@ -58,23 +29,6 @@ fn breathe_square(parent : @view.View, waits : @signals.Signal[Bool], failed : (
     breathe_node(b, waits=fn() { waits.get() }, failed~)
   })
   |> ignore
-}
-
-///|
-/// The opacity of the square drawn on either side (the old view's, the node's: its colour's last byte), -1 for none.
-fn breathe_alphas(t : @ui.Tester) -> (Int64, Int64) {
-  let mut old = -1L
-  let mut new = -1L
-  for r in t.drawn_rects() {
-    if r.2 == breathe_test_side && r.3 == breathe_test_side {
-      if r.0 < breathe_test_apart / 2.0 {
-        old = r.4 & 0xFFL
-      } else {
-        new = r.4 & 0xFFL
-      }
-    }
-  }
-  (old, new)
 }
 
 ///|
@@ -102,20 +56,26 @@ fn breathe_want(at : Double, share : Double) -> Double {
 }
 
 ///|
-test "breathing as a node as the old view's breathe: the same opacity at each moment of its breath" {
+test "breathing as a node: follows breathe_want at each moment of its breath" {
   let waits = @signals.signal(true)
-  let t = breathe_pair(waits)
+  let t = @ui.Tester::new(
+    fn(c) { @ui.old_views_here(c) },
+    tree=fn(r) { breathe_square(r, waits, fn() { false }) },
+    w=300.0,
+    h=100.0,
+  )
+  t.draw()
   let t0 = t.time()
   let seen = []
   for dt in [0.0, breath_ms / 8.0, breath_ms / 4.0, breath_ms / 2.0, breath_ms * 3.0 / 4.0, breath_ms * 5.0 / 4.0] {
     if dt > 0.0 {
       t.frame_at(t0 + dt)
     }
-    let (old, new) = breathe_alphas(t)
-    assert_true(old >= 0L && new == old, msg="at \{dt}: old \{old}, node \{new}")
-    seen.push(new)
+    let got = breathe_alone(t)
+    let want = breathe_want(t.time(), 1.0)
+    assert_true(got >= 0L && (got.to_double() - want).abs() <= 1.0, msg="at \{dt}: got \{got}, want \{want}")
+    seen.push(got)
   }
-  // (it breathes: not as opaque at every moment)
   assert_true(seen.iter().any(fn(a) { a != seen[0] }), msg="\{Repr(seen)}")
 }
 

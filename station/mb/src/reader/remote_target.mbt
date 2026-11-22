@@ -7,6 +7,16 @@ fn refusal(m : String) -> Error {
 }
 
 ///|
+///|
+/// Effective room/incoming peer key from a task's metadata: `<station>:sandbox:<sandbox>` for cross-station sandbox
+/// tasks, otherwise `<station>`. `meta.station` itself stays the real source station id for `push_out` and `revoke`.
+fn meta_room_peer(meta : Json) -> String {
+  let st = text_of(meta, "station")
+  let sb = text_of(meta, "sandbox")
+  if sb != "" { "\{st}:sandbox:\{sb}" } else { st }
+}
+
+///|
 async fn Actors::task(
   self : Actors,
   workspace : String,
@@ -15,6 +25,8 @@ async fn Actors::task(
   request : Json,
   load : @effect.Deferred[Json]?,
 ) -> Json raise {
+  let sandbox_arg = text_of(request, "sandbox")
+  let room_peer = if sandbox_arg != "" { "\{peer}:sandbox:\{sandbox_arg}" } else { peer }
   if method == "task.gets" {
     // What `task.get` says of each, in one request (a source follows all its tasks here at once).
     let asked = match field_of(request, "tasks") {
@@ -33,8 +45,13 @@ async fn Actors::task(
           ignore(reading.succeed(l))
         })
       }
+      let sub_req : Json = if sandbox_arg != "" {
+        { "session": session, "key": key, "sandbox": jstr(sandbox_arg) }
+      } else {
+        { "session": session, "key": key }
+      }
       let got : Json = try {
-        { "session": session, "key": key, "result": self.task(workspace, peer, "task.get", { "session": session, "key": key }, Some(reading)) }
+        { "session": session, "key": key, "result": self.task(workspace, peer, "task.get", sub_req, Some(reading)) }
       } catch {
         e => ({ "session": session, "key": key, "error": jstr(FsError::of(e)) } : Json)
       }
@@ -46,7 +63,7 @@ async fn Actors::task(
   let session_needed = () => if session == "" || bytes_len(session) > 256 { raise refusal("session is required") }
   if method == "session.size" {
     session_needed()
-    let room = self.room(workspace, peer, session)
+    let room = self.room(workspace, room_peer, session)
     self.written(self.rjoin([room, "session.json"]))
     // (and what Node wrote of it: a room used by work() there)
     ignore(self.rnode("written", [jstr(self.rjoin([room, "session.json"]))]))
@@ -63,11 +80,11 @@ async fn Actors::task(
   }
   if method == "task.mirrors" || method == "task.clean" {
     session_needed()
-    let room = self.room(workspace, peer, session)
+    let room = self.room(workspace, room_peer, session)
     self.written(self.rjoin([room, "session.json"]))
     // (and what Node wrote of it: a room used by work() there)
     ignore(self.rnode("written", [jstr(self.rjoin([room, "session.json"]))]))
-    let mirrors = if self.there(self.rjoin([room, "session.json"])) { self.mirrors_of(workspace, peer, session, self.remote_now()) } else { [] }
+    let mirrors = if self.there(self.rjoin([room, "session.json"])) { self.mirrors_of(workspace, room_peer, session, self.remote_now()) } else { [] }
     // Unlike the automatic sweep's age-based recovery, an explicit cleanup must not interrupt even a slow sync.
     let syncing_now : Map[String, Bool] = {}
     for m in mirrors {
@@ -92,7 +109,7 @@ async fn Actors::task(
     if in_use(mirrors[i]) {
       raise refusal("mirror is in use by a task or sync")
     }
-    if !self.drop_mirror(workspace, peer, session, name, "requested") {
+    if !self.drop_mirror(workspace, room_peer, session, name, "requested") {
       raise refusal("mirror could not be removed completely")
     }
     return { "mirror": jstr(name), "removed": jbool(true) }
@@ -100,7 +117,7 @@ async fn Actors::task(
   if method == "task.list" {
     session_needed()
     let tasks : Array[Json] = []
-    for t in self.tasks_of(workspace, peer, session) {
+    for t in self.tasks_of(workspace, room_peer, session) {
       let job = self.rstore("getJob", [jstr(self.job_of_task(t.dir))])
       tasks.push({ "key": field_of(t.meta, "key"), "spec": field_of(t.meta, "spec"), "job": if job is Null { Json::null() } else { self.rnode("jobJson", [job]) } })
     }
@@ -108,18 +125,18 @@ async fn Actors::task(
   }
   if method == "session.close" {
     session_needed()
-    ignore(self.close_here(workspace, peer, session, None))
+    ignore(self.close_here(workspace, room_peer, session, None))
     return { "closed": jbool(true) }
   }
   let key = text_of(request, "key")
   if session == "" || bytes_len(session) > 256 || key == "" || bytes_len(key) > 128 {
     raise refusal("session and task key are required (at most 256 / 128 bytes)")
   }
-  let id = rhash(Json::array([jstr(workspace), jstr(peer), jstr(session), jstr(key)]))
+  let id = rhash(Json::array([jstr(workspace), jstr(room_peer), jstr(session), jstr(key)]))
   let dir = self.rjoin([self.remote.root, "incoming", id])
   let record = self.rjoin([dir, "task.json"])
   let job_id = "remote_\{id}"
-  let owner = "remote:\{workspace}:\{peer}:\{session}"
+  let owner = "remote:\{workspace}:\{room_peer}:\{session}"
   if method == "task.prepare" {
     let spec = field_of(request, "spec")
     if text_of(spec, "command").trim_space().to_string() == "" {
@@ -146,14 +163,17 @@ async fn Actors::task(
       meta
     } else {
       let m : Map[String, Json] = { "spec": spec, "workspace": jstr(workspace), "station": jstr(peer), "session": jstr(session), "key": jstr(key), "layout": jstr("session") }
+      if sandbox_arg != "" {
+        m["sandbox"] = jstr(sandbox_arg)
+      }
       if from is String(f) {
-        m["mirror"] = jstr(self.mirror_name(workspace, peer, session, f))
+        m["mirror"] = jstr(self.mirror_name(workspace, room_peer, session, f))
       }
       self.mkdirs(dir)
       self.write_json(record, Json::object(m))
       Json::object(m)
     }
-    ignore(self.seen(workspace, peer, session))
+    ignore(self.seen(workspace, room_peer, session))
     return match field_of(meta, "mirror") {
       String(mirror) => { "key": jstr(key), "prepared": jbool(true), "dir": jstr(mirror) }
       _ => { "key": jstr(key), "prepared": jbool(true) }
@@ -164,9 +184,9 @@ async fn Actors::task(
   // Tasks prepared before shared session directories keep their own.
   let work = if text_of(meta, "layout") == "session" {
     if method == "task.start" || method == "file.put" || method == "sync.begin" {
-      self.seen(workspace, peer, session)
+      self.seen(workspace, room_peer, session)
     } else {
-      self.rjoin([self.room(workspace, peer, session), "work"])
+      self.rjoin([self.room(workspace, room_peer, session), "work"])
     }
   } else {
     self.rjoin([dir, "work"])
@@ -176,14 +196,14 @@ async fn Actors::task(
     String(m) => Some(m)
     _ => None
   }
-  let room = self.room(workspace, peer, session)
+  let room = self.room(workspace, room_peer, session)
   let manifest_path = match mirror { Some(m) => self.rjoin([room, "mirrors", "\{m}.json"]); None => "" }
   let syncing = match mirror { Some(m) => self.rjoin([room, "sync", m]); None => "" }
   if method.has_prefix("sync.") && mirror is None {
     raise refusal("this task has no directory to sync")
   }
   let refuse_busy = async fn() raise {
-    let tasks = self.tasks_of(workspace, peer, session).filter(t => t.dir != dir && field_of(t.meta, "mirror") == (match mirror { Some(m) => jstr(m); None => Json::null() }))
+    let tasks = self.tasks_of(workspace, room_peer, session).filter(t => t.dir != dir && field_of(t.meta, "mirror") == (match mirror { Some(m) => jstr(m); None => Json::null() }))
     for t in tasks {
       if self.task_running(t.dir) {
         raise refusal("task \{text_of(t.meta, "key")} is running in \{mirror.unwrap_or("")} on this station; wait for it or stop it")
@@ -218,17 +238,24 @@ async fn Actors::task(
       }
       if mirror is Some(_) {
         cwd = self.file_path(work, m, false)
-        self.used_mirror(workspace, peer, session, m)
+        self.used_mirror(workspace, room_peer, session, m)
       }
       let spec = field_of(meta, "spec")
-      // Through the station's queue (admit): started now if there is room, else when there is. A sandbox's (this
-      // station's own): run there, nothing of this machine's taken, so not queued here.
-      let in_sandbox = peer.has_prefix("sandbox:")
+      // Through the station's queue (admit): started now if there is room, else when there is. A sandbox's (local or
+      // remote Colab): run there, nothing of this machine's taken, so not queued here.
+      let sandbox_target = if sandbox_arg != "" {
+        sandbox_arg
+      } else if peer.has_prefix("sandbox:") {
+        peer.view(start_offset=8).to_string()
+      } else {
+        ""
+      }
+      let in_sandbox = sandbox_target != ""
       if in_sandbox && field_of(spec, "screen") is True {
         raise refusal("a sandbox has no screen: run what needs one on a station")
       }
       if in_sandbox {
-        ignore(self.rnode("ensureIdentity", []))
+        ignore(self.rnode("ensureIdentity", [jstr(sandbox_target), jstr(workspace)]))
       }
       let back = match field_of(spec, "back") {
         Array(b) => Json::array(b.filter(x => x is String(_)))
@@ -239,8 +266,9 @@ async fn Actors::task(
         (Some(_), String(c)) => match self.with_submodules(manifest_path, c) { Some(w) => jstr(w); None => jstr(c) }
         (_, c) => c
       }
+      let sbx_session = if sandbox_arg != "" { "\{peer}:\{session}" } else { session }
       let started = if in_sandbox {
-        self.locked(() => self.start_id([jstr(owner), field_of(spec, "name"), command, jstr(cwd), Json::null(), jbool(false), jstr(job_id), jbool(false), Json::null(), { "sandbox": jstr(peer.view(start_offset=8).to_string()), "session": jstr(session), "back": back }]))
+        self.locked(() => self.start_id([jstr(owner), field_of(spec, "name"), command, jstr(cwd), Json::null(), jbool(false), jstr(job_id), jbool(false), Json::null(), { "sandbox": jstr(sandbox_target), "session": jstr(sbx_session), "back": back, "workspace": jstr(workspace) }]))
       } else {
         self.locked(() => self.start_id([jstr(owner), field_of(spec, "name"), command, jstr(cwd), Json::null(), jbool(false), jstr(job_id), jbool(false), { "screen": jbool(field_of(spec, "screen") is True), "small": jbool(field_of(spec, "small") is True) }, Json::null()]))
       }
@@ -272,7 +300,7 @@ async fn Actors::task(
       self.remove(syncing, recursive=true)
       self.mkdirs(syncing)
       self.mkdirs(self.rjoin([room, "mirrors"]))
-      self.used_mirror(workspace, peer, session, m)
+      self.used_mirror(workspace, room_peer, session, m)
       // (the manifest, what the mirror has now and the conflict base: dirsync.mbt)
       let version = self.sync_begin(manifest_path, self.rjoin([work, m]), syncing)
       let sid = self.random_hex(12)
@@ -313,7 +341,7 @@ async fn Actors::task(
       let done = self.sync_commit(work, m, syncing, manifest_path, field_of(state, "version"), text_of(field_of(meta, "spec"), "dir"), submodules)
       self.write_json(record, with_field(meta, "synced", jbool(true)))
       self.remove(syncing, recursive=true)
-      self.used_mirror(workspace, peer, session, m)
+      self.used_mirror(workspace, room_peer, session, m)
       let out : Map[String, Json] = { "key": jstr(key) }
       match done {
         Object(d) => for k, v in d { out[k] = v }
@@ -571,7 +599,7 @@ async fn Actors::index_incoming(self : Actors) -> Unit raise {
         self.remote.unreadable[name] = true
         continue
       }
-      let owner = js_text(Json::array([jstr(text_of(meta, "workspace")), jstr(text_of(meta, "station")), jstr(text_of(meta, "session"))]))
+      let owner = js_text(Json::array([jstr(text_of(meta, "workspace")), jstr(meta_room_peer(meta)), jstr(text_of(meta, "session"))]))
       self.remote.task_owners[name] = owner
       let owned = self.remote.owner_tasks.get(owner).unwrap_or({})
       owned[name] = true
@@ -625,7 +653,7 @@ async fn Actors::tasks_of(self : Actors, workspace : String, peer : String, sess
   for name in names {
     let dir = self.rjoin([self.remote.root, "incoming", name])
     let meta = self.read_json(self.rjoin([dir, "task.json"])) catch { _ => continue }
-    if text_of(meta, "workspace") == workspace && text_of(meta, "station") == peer && text_of(meta, "session") == session {
+    if text_of(meta, "workspace") == workspace && meta_room_peer(meta) == peer && text_of(meta, "session") == session {
       found.push({ dir, meta })
     }
   }
@@ -1008,7 +1036,7 @@ async fn Actors::running_owners(self : Actors) -> Map[String, Bool] raise {
     }
     let record = self.rjoin([self.remote.root, "incoming", id.view(start_offset=7).to_string(), "task.json"])
     let meta = self.read_json(record) catch { _ => continue }
-    owners[js_text(Json::array([field_of(meta, "workspace"), field_of(meta, "station"), field_of(meta, "session")]))] = true
+    owners[js_text(Json::array([field_of(meta, "workspace"), jstr(meta_room_peer(meta)), field_of(meta, "session")]))] = true
   }
   owners
 }

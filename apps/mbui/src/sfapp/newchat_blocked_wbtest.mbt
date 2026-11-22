@@ -7,9 +7,6 @@
 fn blocked_new(over? : (Map[String, Json]) -> Unit = fn(_) {  }) -> @ui.Tester {
   new_run()
   // (the chat's page made as both_pages runs it now, its new chat too: none outside one)
-  if both_nodes.val {
-    both_way()
-  }
   let base = fixture("newchat-noprofile")
   let src : Source = {
     ..base,

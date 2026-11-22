@@ -1,9 +1,15 @@
 // The Rust core's choose.rs tests, ported.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { frequentCombos, recordCombo, resolve } from "../src/choose.ts";
+import { Effect } from "effect";
+import { Choose, frequentCombos, presetMeta, recordCombo, recordPresetUsage, resolve } from "../src/choose.ts";
+import { conform } from "../src/conform.ts";
+import { Data } from "../src/data.ts";
 import { holdLanguage } from "../src/i18n.ts";
-import { choices, machineMeta, models, quotaLine } from "../src/views/models.ts";
+import { Runner } from "../src/runtime.ts";
+import { Store } from "../src/store.ts";
+import { FakeHost } from "../src/testing.ts";
+import { choices, machineMeta, models, quotaLine, runnableOn } from "../src/views/models.ts";
 
 holdLanguage();
 // deno-lint-ignore no-explicit-any
@@ -358,4 +364,293 @@ test("frequent Claude configurations offer TUI only on stations that run it", ()
   assert.deepEqual(offered.map((x) => x.tui === true), [true, false]);
   assert.equal(offered[0].selected, true);
   assert.deepEqual(frequentCombos(history, [option], current).map((x) => x.tui === true), [false]);
+});
+
+test("presetMeta builds summary, maker, runtime, and first folder metadata", () => {
+  const names = new Map([["ws1/st1", "Willow"], ["st1", "Willow"], ["st2", "Maple"]]);
+  const full = presetMeta({
+    model: { model: "claude-opus-5-5", runtime: "claude", effort: "high", fast: true },
+    dirs: [
+      { path: "/Users/me/projects/still.fail", repo: "github.com/AFK-surf/still.fail" },
+      { path: "/Users/me/code/web-app", repo: "github.com/acme/web-app" },
+      { path: "/Users/me/code/backend" },
+    ],
+    station: "ws1/st1",
+    instructions: "先跑测试",
+  }, names);
+  assert.equal(full.summary, "Opus 5.5 高 Fast · still.fail, web-app +1 · Willow · 含指令");
+  assert.equal(full.runtime, "claude");
+  assert.equal(full.maker?.id, "anthropic");
+  assert.equal(full.dirName, "still.fail");
+  assert.equal(full.dirRepo, "github.com/AFK-surf/still.fail");
+
+  const auto = presetMeta({
+    model: { model: "gpt-6-astra", runtime: "codex", effort: "high", speed: "ultrafast" },
+    dirs: [],
+    autoStation: true,
+    instructions: "   ",
+  }, names);
+  assert.equal(auto.summary, "GPT-6 Astra 高 Ultrafast · 自动分配");
+  assert.equal(auto.dirName, undefined);
+
+  const multi = presetMeta({ dirs: [], stations: ["st1", "st2"], instructions: "" }, names);
+  assert.equal(multi.summary, "2 台 station");
+  assert.equal(multi.maker, undefined);
+});
+
+test("preset usage ranks frequently and recently used presets first while keeping createdAt order without history", () => {
+  const host = new FakeHost();
+  const runner = new Runner(host.time.clock);
+  const data = new Data(host, runner, { owner: () => "s1" });
+  Effect.runSync(data.open(["s1"]));
+  const store = new Store(host, runner);
+  let now = 1_000;
+  const choose = new Choose({ store, data, now: () => now, agent: () => null });
+  store.watch({ topic: "stations", scope: "ws1" }, () => {});
+  store.set({ topic: "stations", scope: "ws1" }, {
+    ok: [{ id: "st1", station: "ws1/st1", name: "Willow", online: true }],
+  });
+  data.put("presetRecords", "ws1", {
+    before: [],
+    records: {
+      "p-a": { id: "p-a", name: "A", dirs: [], instructions: "", owner: "u1", createdBy: "u1@x", createdAt: 100, updatedAt: 100, rev: 1, home: "st1" },
+      "p-b": { id: "p-b", name: "B", dirs: [], instructions: "", owner: "u1", createdBy: "u1@x", createdAt: 200, updatedAt: 200, rev: 1, home: "st1" },
+      "p-c": { id: "p-c", name: "C", dirs: [], instructions: "", owner: "u1", createdBy: "u1@x", createdAt: 300, updatedAt: 300, rev: 1, home: "st1" },
+    },
+  }, false);
+
+  const listIds = () => {
+    const v = choose.compute({ topic: "newChat", scope: "ws1" });
+    assert.ok(v !== undefined && "ok" in v);
+    return ((v.ok as J).presets as J[]).map((p) => ({ id: p.id, used: p.used }));
+  };
+
+  // Without usage history: strictly createdAt asc
+  assert.deepEqual(listIds(), [
+    { id: "p-a", used: undefined },
+    { id: "p-b", used: undefined },
+    { id: "p-c", used: undefined },
+  ]);
+
+  // Pick p-c (count 1, last 1000) -> p-c moves to front
+  choose.pickNew("ws1", { preset: "p-c", presetStation: "ws1/st1" });
+  assert.deepEqual(listIds(), [
+    { id: "p-c", used: true },
+    { id: "p-a", used: undefined },
+    { id: "p-b", used: undefined },
+  ]);
+
+  // Pick p-b later (count 1, last 2000) -> same count as p-c, more recent -> p-b first
+  now = 2_000;
+  choose.pickNew("ws1", { preset: "p-b", presetStation: "ws1/st1" });
+  assert.deepEqual(listIds(), [
+    { id: "p-b", used: true },
+    { id: "p-c", used: true },
+    { id: "p-a", used: undefined },
+  ]);
+
+  // Creating a chat while p-b is active adds weight 2 (count 3)
+  now = 3_000;
+  choose.used("ws1/st1", { model: "claude-opus-5-5", runtime: "claude" });
+  now = 4_000;
+  choose.pickNew("ws1", { preset: "p-c", presetStation: "ws1/st1" }); // p-c count 2, last 4000
+  // p-b (count 3) still beats p-c (count 2) even though p-c was picked more recently
+  assert.deepEqual(listIds(), [
+    { id: "p-b", used: true },
+    { id: "p-c", used: true },
+    { id: "p-a", used: undefined },
+  ]);
+
+  // Cap at 50 entries
+  let hist: { id: string; count: number; last: number }[] = [];
+  for (let i = 0; i < 60; i++) hist = recordPresetUsage(hist, `p-${i}`, 1, i);
+  assert.equal(hist.length, 50);
+  assert.equal(hist[0]!.id, "p-59");
+});
+
+function makeAllowlistRig() {
+  const host = new FakeHost();
+  const runner = new Runner(host.time.clock);
+  const data = new Data(host, runner, { owner: () => "s1" });
+  Effect.runSync(data.open(["s1"]));
+  const store = new Store(host, runner);
+  const choose = new Choose({ store, data, now: () => 1_000, agent: () => null });
+  store.watch({ topic: "stations", scope: "ws1" }, () => {});
+  const setStations = (rows: J[]) => {
+    store.set({ topic: "stations", scope: "ws1" }, { ok: rows });
+  };
+  const setOverview = (id: string, profiles: J[]) => {
+    const ov = { topic: "overview" as const, station: `ws1/${id}` };
+    store.watch(ov, () => {});
+    store.set(ov, { ok: { profiles } });
+    const part = { topic: "stationPart" as const, scope: "ws1", station: `ws1/${id}`, part: "profiles" };
+    store.watch(part, () => {});
+    store.set(part, { ok: profiles });
+  };
+  const view = (): J => {
+    const v = choose.compute({ topic: "newChat", scope: "ws1" });
+    assert.ok(v !== undefined && "ok" in v);
+    return v.ok;
+  };
+  return { choose, data, store, setStations, setOverview, view };
+}
+
+test("a Gemini subscription tier reaches the account picker and the current account", () => {
+  const { choose, setStations, setOverview, view } = makeAllowlistRig();
+  const station = "ws1/st1";
+  const model = "gemini-3.1-pro-preview";
+  const account = {
+    id: "google", name: "google@example.test", runtime: "agy", runtimes: ["agy"], models: [model],
+    access: { kind: "subscription" }, check: { state: "ok", plan: "Pro", checkedAt: 10 },
+    quota: { state: "ok", plan: "Ultra 5x", checkedAt: 20, windows: [] },
+  };
+  const profiles = [account, { ...account, id: "unknown", name: "old@example.test", check: { state: "ok" }, quota: null }];
+  setStations([{ id: "st1", station, name: "Willow", online: true }]);
+  setOverview("st1", profiles);
+  choose.pickNew("ws1", { station: "st1", model, runtime: "agy", profile: "google" });
+  const closed = conform("NewChatPick", view().pick);
+  assert.ok("ok" in closed, JSON.stringify(closed));
+  assert.equal((closed.ok as J).account.text, "google@example.test · Ultra 5x");
+
+  const panel = choose.compute({ topic: "pick", station, of: "new" });
+  assert.ok(panel !== undefined && "ok" in panel);
+  const shaped = conform("PickView", panel.ok);
+  assert.ok("ok" in shaped, JSON.stringify(shaped));
+  const offered = (shaped.ok as J).accounts;
+  assert.equal((shaped.ok as J).who, "google · Ultra 5x");
+  assert.equal(offered.find((p: J) => p.id === "google")?.planText, "Ultra 5x");
+  assert.equal(offered.find((p: J) => p.id === "unknown")?.planText, undefined);
+
+  const current = runnableOn({ profiles }, { profile: "google", model, runtime: "agy" }, 20).find((p) => p.current);
+  const running = conform("RunnableProfile", current);
+  assert.ok("ok" in running, JSON.stringify(running));
+  assert.equal((running.ok as J).planText, "Ultra 5x");
+});
+
+test("auto station allowlist: only acceptAutoChats stations enter the load-balancing pool", () => {
+  const { choose, setStations, view } = makeAllowlistRig();
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "rig1", station: "ws1/rig1", name: "Rig", online: true, mode: "tasks", acceptAutoChats: true, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 3 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, overview: { counts: { running: 1 } } },
+  ]);
+  choose.pickNew("ws1", { autoStation: true });
+  const v = view();
+  assert.equal(v.autoStation, true);
+  assert.equal(v.autoPoolCount, 2);
+  // Even though office (running=0) and rig1 (tasks-only, running=0) are idler, only mm2 from the allowlist is picked.
+  assert.equal(v.station.id, "mm2");
+});
+
+test("auto station allowlist: new user with no last history picks least busy allowlisted station, never non-allowlisted online[0]", () => {
+  const { setStations, view } = makeAllowlistRig();
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 2 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, overview: { counts: { running: 1 } } },
+  ]);
+  const v = view();
+  assert.equal(v.autoStation, true);
+  assert.equal(v.autoPoolCount, 2);
+  assert.equal(v.station.id, "mm2");
+});
+
+test("auto station allowlist: consecutive new chats rotate and spread across allowlisted stations without swapping mid-create", () => {
+  const { choose, setStations, setOverview, view } = makeAllowlistRig();
+  const profile = [{ id: "p1", runtimes: ["claude"], enabled: true, models: ["claude-opus-5-5"] }];
+  setOverview("mm1", profile);
+  setOverview("mm2", profile);
+  setOverview("office", profile);
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 1 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, overview: { counts: { running: 1 } } },
+  ]);
+  choose.pickNew("ws1", { autoStation: true });
+  // First chat: tied at running=1 -> picks mm1.
+  const firstView = view();
+  assert.equal(firstView.autoStation, true);
+  assert.equal(firstView.station.id, "mm1");
+  // Non-allowlisted station is hard-refused in auto mode.
+  assert.throws(() => choose.assertCreateStation("ws1/office"));
+  choose.assertCreateStation("ws1/mm1");
+  const ask1 = choose.create("ws1/mm1");
+  choose.used("ws1/mm1", ask1, firstView.next);
+
+  // Even before counts.running changes (still tied at 1 vs 1), the tie-breaker rotates the next view to mm2!
+  const secondView = view();
+  assert.equal(secondView.autoStation, true);
+  assert.equal(secondView.station.id, "mm2");
+
+  // And when mm2 gets busier (running=3 vs mm1 running=1), the view picks mm1 again, never office.
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 1 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, overview: { counts: { running: 3 } } },
+  ]);
+  const thirdView = view();
+  assert.equal(thirdView.autoStation, true);
+  assert.equal(thirdView.station.id, "mm1");
+});
+
+test("auto station allowlist: picking a model-bound preset while in auto mode stays in allowlist and never pins non-allowlisted stations", () => {
+  const { choose, data, setStations, setOverview, view } = makeAllowlistRig();
+  setOverview("office", [{ id: "p-off", runtimes: ["codex"], enabled: true, models: ["gpt-6.2-sol"] }]);
+  setOverview("mm1", [{ id: "p-m1", runtimes: ["claude"], enabled: true, models: ["claude-opus-5-5"] }]);
+  setOverview("mm2", [{ id: "p-m2", runtimes: ["codex"], enabled: true, models: ["gpt-6.2-sol"] }]);
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 0 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, overview: { counts: { running: 2 } } },
+  ]);
+  data.put("presetRecords", "ws1", {
+    before: [],
+    records: {
+      "p-codex": { id: "p-codex", name: "Codex Preset", dirs: [], instructions: "", model: { runtime: "codex", model: "gpt-6.2-sol" }, owner: "u1", createdBy: "u1@x", createdAt: 100, updatedAt: 100, rev: 1, home: "mm2" },
+    },
+  }, false);
+  choose.pickNew("ws1", { autoStation: true });
+  choose.pickNew("ws1", { preset: "p-codex", presetStation: "ws1/mm2" });
+  const v = view();
+  assert.equal(v.autoStation, true);
+  // office runs gpt-6.2-sol with running=0, but is NOT allowlisted; mm1 is allowlisted but lacks gpt-6.2-sol -> picks mm2.
+  assert.equal(v.station.id, "mm2");
+});
+
+test("auto station allowlist: preset autoStation strictly uses allowlisted stations only", () => {
+  const { choose, data, setStations, view } = makeAllowlistRig();
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 4 } } },
+  ]);
+  data.put("presetRecords", "ws1", {
+    before: [],
+    records: {
+      "p-auto": { id: "p-auto", name: "Auto Preset", dirs: [], instructions: "", autoStation: true, owner: "u1", createdBy: "u1@x", createdAt: 100, updatedAt: 100, rev: 1, home: "mm1" },
+    },
+  }, false);
+  // User previously pinned office manually; picking an autoStation preset switches strictly to allowlist.
+  choose.pickNew("ws1", { station: "office" });
+  assert.equal(view().station.id, "office");
+  choose.pickNew("ws1", { preset: "p-auto", presetStation: "ws1/mm1" });
+  const v = view();
+  assert.equal(v.autoStation, true);
+  assert.equal(v.station.id, "mm1");
+});
+
+test("auto station allowlist: empty or all-offline allowlist never silently falls back to non-allowlisted stations", () => {
+  const { choose, setStations, view } = makeAllowlistRig();
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: false, acceptAutoChats: true, overview: { counts: { running: 0 } } },
+  ]);
+  choose.pickNew("ws1", { autoStation: true });
+  const v = view();
+  assert.equal(v.autoStation, true);
+  assert.equal(v.autoPoolCount, 0);
+  assert.equal(v.station, undefined);
+  assert.equal(v.blocked, "auto_empty");
+  assert.equal(typeof v.problem, "string");
+  assert.throws(() => choose.assertCreateStation("ws1/office"));
 });

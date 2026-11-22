@@ -685,12 +685,9 @@ pub fn kind_row_node(
     words_node(head, note, fn() { notify_kind_note }) |> ignore
   })
   |> ignore
-  parent.show(open, fn(o) {
-    o.box(fn(w) {
-      w.padding(Is((notify_ways_in, 0.0, 0.0, notify_ways_in))).gap(Is(notify_ways_gap)) |> ignore
-      ways(w)
-    })
-    |> ignore
+  parent.show(open, fn(w) {
+    w.padding(Is((notify_ways_in, 0.0, 0.0, notify_ways_in))).gap(Is(notify_ways_gap)) |> ignore
+    ways(w)
   })
 }
 

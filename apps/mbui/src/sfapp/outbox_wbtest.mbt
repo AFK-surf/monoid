@@ -6,12 +6,12 @@
 ///|
 /// The fixture's chat with `out` (the core's ChatView `outbox`) after its messages, its calls kept in `calls`;
 /// `offline`: its station not reached.
-fn outbox_chat(calls : Array[Made], out : Json, offline? : Bool = false, nodes? : Bool = false) -> @ui.Tester {
+fn outbox_chat(calls : Array[Made], out : Json, offline? : Bool = false) -> @ui.Tester {
   // (dropped once the core is asked to (chat.discard, by its id), as the core drops it: a signal, so the chat's topic
   // read over it is told)
   let gone = @signals.signal(false)
   let id = text(Some(out), "id")
-  fake_core(calls, nodes~, on_call=fn(name, params) {
+  fake_core(calls, on_call=fn(name, params) {
     if name == "chat.discard" && text(Some(params), "id") == id {
       gone.set(true)
     }
@@ -157,71 +157,66 @@ test "once the station has it, what was sent says its time under it, not 正在�
 /// 编辑 once lost what was refused (2026-11-17): its words were told the core alone, the field's own words (none, or
 /// a draft begun) told back over them as the composer was next built, its quotes not put back at all.
 test "编辑 on what was refused puts its words after the draft begun and its quotes back in the composer, on both pages, and they stay" {
-  for nodes in [false, true] {
-    let calls : Array[Made] = []
-    let quote : Json = {
-      "author": "Claude",
-      "text": "引用的那一段",
-      "comment": "再看看",
-      "ts": "1.0",
-      "role": "agent",
-    }
-    let t = outbox_chat(
-      calls,
-      outgoing("failed", refused=true, error="a.jpg 的上传源已丢失", quotes=[quote]),
-      nodes~,
-    )
-    t.run_for(@ui.move_most_ms)
-    t.tap_text("发消息")
-    t.type_text("刚写的草稿")
-    unsent_press(t, "编辑")
-    t.run_for(@ui.move_most_ms)
-    let merged = "刚写的草稿\n这条还在路上"
-    // (in the field, as the composer has been built again since, and as the core keeps it)
-    let (active, words, _, _) = t.ime()
-    assert_true(active, msg="nodes=\{nodes}")
-    assert_eq(words, merged)
-    let typed = named(calls, "composer.text")
-    assert_eq(text(Some(typed[typed.length() - 1].params), "text"), merged)
-    // its quote put back as it was said
-    let quoted = named(calls, "composer.quote")
-    assert_eq(quoted.length(), 1, msg="nodes=\{nodes}")
-    let q = field(Some(quoted[0].params), "quote")
-    assert_eq(text(q, "text"), "引用的那一段")
-    assert_eq(text(q, "comment"), "再看看")
-    assert_eq(text(q, "ts"), "1.0")
-    assert_eq(named(calls, "chat.discard").length(), 1)
-    assert_true(t.find("发送失败：a.jpg 的上传源已丢失") is None, msg="nodes=\{nodes}")
-    assert_true(t.find("a.jpg 的上传源已丢失") is None, msg="nodes=\{nodes}")
+  let calls : Array[Made] = []
+  let quote : Json = {
+    "author": "Claude",
+    "text": "引用的那一段",
+    "comment": "再看看",
+    "ts": "1.0",
+    "role": "agent",
   }
+  let t = outbox_chat(
+    calls,
+    outgoing("failed", refused=true, error="a.jpg 的上传源已丢失", quotes=[quote]),
+  )
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("发消息")
+  t.type_text("刚写的草稿")
+  unsent_press(t, "编辑")
+  t.run_for(@ui.move_most_ms)
+  let merged = "刚写的草稿\n这条还在路上"
+  // (in the field, as the composer has been built again since, and as the core keeps it)
+  let (active, words, _, _) = t.ime()
+  assert_true(active)
+  assert_eq(words, merged)
+  let typed = named(calls, "composer.text")
+  assert_eq(text(Some(typed[typed.length() - 1].params), "text"), merged)
+  // its quote put back as it was said
+  let quoted = named(calls, "composer.quote")
+  assert_eq(quoted.length(), 1)
+  let q = field(Some(quoted[0].params), "quote")
+  assert_eq(text(q, "text"), "引用的那一段")
+  assert_eq(text(q, "comment"), "再看看")
+  assert_eq(text(q, "ts"), "1.0")
+  assert_eq(named(calls, "chat.discard").length(), 1)
+  assert_true(t.find("发送失败：a.jpg 的上传源已丢失") is None)
+  assert_true(t.find("a.jpg 的上传源已丢失") is None)
 }
 
 ///|
 test "what is held till its station is reached says 连上后发出 with 编辑 and 删除 beside it, on both pages, pressed with the station not reached" {
-  for nodes in [false, true] {
-    let calls : Array[Made] = []
-    let t = outbox_chat(calls, outgoing("sending", waits="连上后发出", held=true, at=-5000.0), offline=true, nodes~)
-    t.run_for(@ui.move_most_ms)
-    assert_true(outbox_seen(t, "连上后发出"), msg="nodes=\{nodes}")
-    assert_true(t.find("未发送") is None)
-    assert_true(t.query(Button, label="重试") is None)
-    unsent_press(t, "删除")
-    let made = named(calls, "chat.discard")
-    assert_eq(made.length(), 1, msg="nodes=\{nodes}")
-    assert_eq(text(Some(made[0].params), "id"), "o-1")
-    t.run_for(@ui.move_most_ms)
-    assert_true(t.find("这条还在路上") is None, msg="nodes=\{nodes}")
-    assert_true(!outbox_seen(t, "连上后发出"), msg="nodes=\{nodes}")
-    // 编辑: its words back in the composer as it is dropped
-    let calls : Array[Made] = []
-    let t = outbox_chat(calls, outgoing("sending", waits="连上后发出", held=true, at=-5000.0), offline=true, nodes~)
-    t.run_for(@ui.move_most_ms)
-    unsent_press(t, "编辑")
-    t.run_for(@ui.move_most_ms)
-    assert_eq(named(calls, "chat.discard").length(), 1, msg="nodes=\{nodes}")
-    let (_, words, _, _) = t.ime()
-    assert_eq(words, "这条还在路上", msg="nodes=\{nodes}")
-  }
+  let calls : Array[Made] = []
+  let t = outbox_chat(calls, outgoing("sending", waits="连上后发出", held=true, at=-5000.0), offline=true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(outbox_seen(t, "连上后发出"))
+  assert_true(t.find("未发送") is None)
+  assert_true(t.query(Button, label="重试") is None)
+  unsent_press(t, "删除")
+  let made = named(calls, "chat.discard")
+  assert_eq(made.length(), 1)
+  assert_eq(text(Some(made[0].params), "id"), "o-1")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("这条还在路上") is None)
+  assert_true(!outbox_seen(t, "连上后发出"))
+  // 编辑: its words back in the composer as it is dropped
+  let calls : Array[Made] = []
+  let t = outbox_chat(calls, outgoing("sending", waits="连上后发出", held=true, at=-5000.0), offline=true)
+  t.run_for(@ui.move_most_ms)
+  unsent_press(t, "编辑")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(named(calls, "chat.discard").length(), 1)
+  let (_, words, _, _) = t.ime()
+  assert_eq(words, "这条还在路上")
 }
 
 ///|
@@ -236,13 +231,11 @@ test "what is on its way and not held (its station updating) has nothing beside 
 
 ///|
 test "what did not go after it went out with no answer (it may be the station's already) has 重试 and no 删除, on both pages" {
-  for nodes in [false, true] {
-    let calls : Array[Made] = []
-    let t = outbox_chat(calls, outgoing("failed", error="连接断开", unsure=true), nodes~)
-    t.run_for(@ui.move_most_ms)
-    assert_true(t.find("未发送") is Some(_), msg="nodes=\{nodes}")
-    assert_true(t.query(Button, label="删除") is None, msg="nodes=\{nodes}")
-    unsent_press(t, "重试")
-    assert_eq(named(calls, "chat.retry").length(), 1, msg="nodes=\{nodes}")
-  }
+  let calls : Array[Made] = []
+  let t = outbox_chat(calls, outgoing("failed", error="连接断开", unsure=true))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("未发送") is Some(_))
+  assert_true(t.query(Button, label="删除") is None)
+  unsent_press(t, "重试")
+  assert_eq(named(calls, "chat.retry").length(), 1)
 }

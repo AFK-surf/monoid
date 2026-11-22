@@ -161,8 +161,8 @@ pub fn button_node(
     |> ignore
     if !link {
       v
-      .height(Is(Some(size.height())))
-      .padding(Is((size.pad(), 0.0, size.pad(), 0.0)))
+      .min_height(Is(Some(size.height())))
+      .padding(Is((size.pad(), space_sm, size.pad(), space_sm)))
       .edge(By(fn() { (if hierarchy.raised() { 1.0 } else { 0.0 }, now().1) }))
       |> ignore
     }

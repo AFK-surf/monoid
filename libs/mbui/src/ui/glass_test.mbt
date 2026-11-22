@@ -210,13 +210,13 @@ test "glass made to share a capture frosts what the glass before it frosts, over
 test "liquid glass says where the pointer lights it (14): none 0; a spot each of x and y at half a point from 256 before its top left" {
   let t = @ui.Tester::new(fn(c) {
     c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, gap=8.0, fn() {
-      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(spot=Some((12.5, 8.0))), fn() {  })
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(spot=Some((12.5, 8.0)), adaptive=false), fn() {  })
       |> ignore
       c.box(w=Px(60.0), h=Px(10.0), bg=0x000000FFL, fn() {  }) |> ignore
-      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(), fn() {  }) |> ignore
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(adaptive=false), fn() {  }) |> ignore
       c.box(w=Px(60.0), h=Px(10.0), bg=0x000000FFL, fn() {  }) |> ignore
       // (far past its edge either way: held at the packing's ends)
-      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(spot=Some((-900.0, 5000.0))), fn() {  })
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(spot=Some((-900.0, 5000.0)), adaptive=false), fn() {  })
       |> ignore
       // (frosted glass's 14 is its rim's back, as ever)
       c.box(w=Px(120.0), h=Px(44.0), glass=@ui.Glass::frosted(blur=8.0, tint=0L, solid=0L, rim_back=0.25), fn() {  })
@@ -239,108 +239,273 @@ test "liquid glass says where the pointer lights it (14): none 0; a spot each of
 }
 
 ///|
-/// A Backdrop lens's packed numbers taken apart as the renderers take them (kind 6, c2.z below 0): bits `at` on, `n`
-/// of them, of minus `v`.
-fn lens_bits(v : Double, at : Int, n : Int) -> Int {
-  ((-v).round().to_int() >> at) & ((1 << n) - 1)
-}
-
-///|
-/// Lenses side by side over a ground, something drawn between each (so each a capture of its own): each one's 6, 14
-/// and 23.
-fn lens_slots(lenses : Array[@ui.Glass]) -> Array[(Double, Double, Double)] {
+test "unmerged liquid glass (merge=0) shares a capture across shadow when sharing() with matching blur, auto-merges when non-overlapping, and keeps per-corner radii" {
+  let g21 = @ui.Glass::liquid(blur=2.1, merge=0.0, adaptive=false)
+  let g21_spot = @ui.Glass::liquid(blur=2.1, merge=0.0, spot=Some((28.0, 28.0)), adaptive=false)
+  let g40 = @ui.Glass::liquid(blur=4.0, merge=0.0, adaptive=false)
   let t = @ui.Tester::new(fn(c) {
-    c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, gap=4.0, fn() {
-      for gl in lenses {
-        c.box(w=Px(120.0), h=Px(40.0), radius=20.0, glass=gl, fn() {  }) |> ignore
-        c.box(w=Px(10.0), h=Px(4.0), bg=0x000000FFL, fn() {  }) |> ignore
-      }
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, gap=8.0, fn() {
+      // first unmerged liquid with shadow (kind 2) drawn right after it
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=g21, shadow=4.0, fn() {  }) |> ignore
+      // second marked sharing() with same blur and its own spot: shares first's capture across the shadow
+      c.box(w=Px(44.0), h=Px(44.0), radius=22.0, glass=g21_spot.sharing(), shadow=4.0, fn() {  }) |> ignore
+      // third marked sharing() with different blur: must not share
+      c.box(w=Px(44.0), h=Px(44.0), radius=22.0, glass=g40.sharing(), fn() {  }) |> ignore
+      // fourth adjacent non-overlapping (gap=8 > 4) with same blur as third: shares third's capture
+      c.box(w=Px(44.0), h=Px(44.0), radius=22.0, glass=g40, fn() {  }) |> ignore
     })
     |> ignore
   })
-  t.drawn_instances().filter(fn(a) { a[5] == 6.0 }).map(fn(a) { (a[6], a[14], a[23]) })
-}
+  let gs = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs.length(), 4)
+  assert_true(gs[0][20] < 0.0)
+  assert_eq(gs[1][20], gs[0][20])
+  assert_true(gs[1][14] > 0.5)
+  assert_true(gs[2][20] < 0.0 && gs[2][20] != gs[0][20])
+  assert_eq(gs[3][20], gs[2][20])
 
-///|
-test "a Backdrop lens said as before is drawn as before: saturation one, its highlight -1 or -2, its shadow's radius" {
-  let lens = fn(ambient : Bool, inner_shadow : Double) {
-    @ui.Glass::backdrop_lens(height=10.0, amount=14.0, blur=0.0, tint=0xFFFFFF40L, solid=0xFFFFFFFFL, highlight=0.7,
-      ambient~, dispersion=true, inner_shadow~)
-  }
-  assert_eq(lens_slots([lens(false, 0.0), lens(true, 0.0), lens(false, 8.0)]), [
-    (1.0, -1.0, 0.0),
-    (1.0, -2.0, 0.0),
-    (1.0, -1.0, 8.0),
-  ])
-  // (what it says of the rest: as Glass::liquid's, nothing of a lens's own)
-  let gl = lens(true, 8.0)
-  assert_eq(
-    (gl.backdrop_highlight, gl.saturation, gl.brightness, gl.contrast, gl.depth_effect, gl.tint_hue, gl.spot_alpha),
-    (2, 1.0, 0.0, 1.0, false, false, 0.0),
-  )
-  assert_eq((gl.highlight_angle, gl.highlight_falloff, gl.inner_shadow_full, gl.spot), (45.0, 1.0, false, None))
-  // (a style said is the style, whatever `ambient` says)
-  let plain = @ui.Glass::backdrop_lens(height=1.0, amount=1.0, blur=0.0, tint=0L, solid=0L, highlight=1.0,
-    ambient=true, style=Some(Plain))
-  assert_eq(plain.backdrop_highlight, 3)
-}
+  // overlapping (or within 2pt quad growth: gap < 4) unmerged liquid instances take separate captures
+  let t2 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, gap=2.0, fn() {
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=g21, fn() {  }) |> ignore
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=g21, fn() {  }) |> ignore
+    })
+    |> ignore
+  })
+  let gs2 = t2.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs2.length(), 2)
+  assert_true(gs2[0][20] != gs2[1][20])
 
-///|
-test "a Backdrop lens's new numbers, packed whole under 2^23 and taken apart again to what it said" {
-  let gl = @ui.Glass::backdrop_lens(
-    height=10.0,
-    amount=14.0,
-    blur=2.0,
-    tint=0x3366FFBFL,
-    solid=0xFFFFFFFFL,
-    highlight=1.0,
-    style=Some(Plain),
-    saturation=1.5,
-    brightness=0.2,
-    contrast=0.8,
-    depth_effect=true,
-    highlight_angle=100.0,
-    highlight_falloff=2.0,
-    tint_hue=true,
-    spot=Some((30.0, 10.0)),
-    spot_alpha=0.6,
-    inner_shadow=8.0,
-    inner_shadow_full=true,
-  )
-  let s = lens_slots([gl])
-  assert_eq(s.length(), 1)
-  let (sat, mode, rim) = s[0]
-  for v in [sat, mode, rim] {
-    assert_true(v < 0.0 && v > -8388608.0 && v == v.round())
-  }
-  // (14: the style, depth, hue, the shadow a whole radius lower, the angle, the falloff, the brightness)
-  assert_eq(
-    (lens_bits(mode, 0, 2), lens_bits(mode, 2, 1), lens_bits(mode, 3, 1), lens_bits(mode, 4, 1)),
-    (3, 1, 1, 1),
-  )
-  assert_eq((lens_bits(mode, 5, 7) - 1).to_double() * 360.0 / 126.0, 100.0)
-  assert_eq(lens_bits(mode, 12, 4).to_double() * 0.5, 2.0)
-  assert_eq(lens_bits(mode, 16, 7), 64 + 13)
-  // (6: saturation and contrast to a thousandth)
-  assert_eq((lens_bits(sat, 0, 12), lens_bits(sat, 12, 11)), (1500, 800))
-  // (23: the spot at 32 127ths across and down, lit 38 63rds, the shadow two fours)
-  assert_eq((lens_bits(rim, 0, 7), lens_bits(rim, 7, 7), lens_bits(rim, 14, 6), lens_bits(rim, 20, 3)), (32, 32, 38, 2))
-  // no spot where it lights nothing; a contrast of one its saturation as ever, none below 0
-  let quiet = { ..gl, spot_alpha: 0.0, contrast: 1.0, saturation: -2.0 }
-  let (sat, _, rim) = lens_slots([quiet])[0]
-  assert_eq((sat, rim), (0.0, 8.0))
-}
-
-///|
-test "a Backdrop lens's corners each its own, its radius the roundest" {
-  let gl = @ui.Glass::backdrop_lens(height=10.0, amount=14.0, blur=0.0, tint=0L, solid=0xFFFFFFFFL, highlight=1.0)
-  let t = @ui.Tester::new(fn(c) {
+  // unmerged liquid glass keeps per-corner radii in a[36..39]
+  let t3 = @ui.Tester::new(fn(c) {
     c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, fn() {
-      c.box(style=@ui.style(radius=Corners(20.0, 4.0, 12.0, 0.0)), w=Px(120.0), h=Px(60.0), glass=gl, fn() {  })
+      c.box(style=@ui.style(radius=Corners(20.0, 4.0, 12.0, 0.0)), w=Px(120.0), h=Px(60.0), glass=g21, fn() {  })
       |> ignore
     })
     |> ignore
   })
-  let lens = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
-  assert_eq(lens.map(fn(a) { (a[4], a[36], a[37], a[38], a[39]) }), [(20.0, 20.0, 4.0, 12.0, 0.0)])
+  let gs3 = t3.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs3.map(fn(a) { (a[4], a[36], a[37], a[38], a[39]) }), [(20.0, 20.0, 4.0, 12.0, 0.0)])
+}
+
+///|
+test "merged liquid glass keeps independent 4-corner radii and Glass::clear defaults" {
+  let cl = @ui.Glass::clear()
+  assert_eq((cl.liquid, cl.blur, cl.tint, cl.solid, cl.saturation), (true, 0.0, 0xFFFFFF1AL, 0xECECF0FFL, 1.0))
+  assert_eq((cl.rim, cl.bezel, cl.refraction, cl.chroma, cl.merge, cl.adaptive), (0.6, 14.0, 16.0, 0.0, 16.0, true))
+  let t = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, fn() {
+      c.box(dir=Row, gap=6.0, glass_group=true, fn() {
+        c.box(
+          style=@ui.style(radius=Corners(24.0, 24.0, 0.0, 0.0)),
+          w=Px(140.0),
+          h=Px(64.0),
+          glass=@ui.Glass::liquid(merge=16.0),
+          fn() {  },
+        )
+        |> ignore
+        c.box(w=Px(48.0), h=Px(48.0), radius=24.0, glass=cl, fn() {  }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs.length(), 2)
+  assert_eq((gs[0][4], gs[0][36], gs[0][37], gs[0][38], gs[0][39]), (24.0, 24.0, 24.0, 0.0, 0.0))
+  assert_eq((gs[1][4], gs[1][36], gs[1][37], gs[1][38], gs[1][39]), (24.0, 24.0, 24.0, 24.0, 24.0))
+  assert_eq((gs[1][7], gs[1][12], gs[1][13], gs[1][21], gs[1][22], gs[1][23]), (0.0, 0.6, 14.0, 16.0, 0.0, 16.0))
+}
+
+///|
+test "liquid glass clear-lens zoom encodes negative slot 7, shares capture with blur=0 liquid, and light_angle signal resets cleanly" {
+  let cl0 = @ui.Glass::clear(merge=0.0)
+  let clz = @ui.Glass::clear(merge=0.0, zoom=1.25)
+  let cl_clamp = @ui.Glass::liquid(blur=0.0, merge=0.0, zoom=5.0)
+  let blurred_zoom = @ui.Glass::liquid(blur=2.0, merge=0.0, zoom=1.5)
+  assert_eq((cl0.zoom, clz.zoom), (1.0, 1.25))
+  let t = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, gap=8.0, fn() {
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=cl0, fn() {  }) |> ignore
+      // zoomed clear lens right after blur=0 clear glass shares the same capture (both effective blur 0.0)
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=clz, fn() {  }) |> ignore
+      // zoom > 3.0 clamps to 3.0 -> slot 7 = -2.0; sharing() also joins the blur=0 liquid capture
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=cl_clamp.sharing(), fn() {  }) |> ignore
+      // blur > 0 ignores zoom and writes positive blur
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=blurred_zoom, fn() {  }) |> ignore
+    })
+    |> ignore
+  })
+  let gs = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs.length(), 4)
+  assert_eq((gs[0][7], gs[1][7], gs[2][7], gs[3][7]), (0.0, -0.25, -2.0, 2.0))
+  assert_eq(gs[1][20], gs[0][20])
+  assert_eq(gs[2][20], gs[0][20])
+  assert_true(gs[3][20] != gs[0][20])
+  // negative slot 7 on liquid (kind 6) must never be reported as frosted `contained`
+  assert_eq(t.drawn_glass_contained(), [false, false, false, false])
+
+  // global ambient light angle signal updates and resets cleanly
+  assert_eq(@ui.glass_light_angle(), 0.0)
+  @ui.set_glass_light_angle(0.75)
+  assert_eq(@ui.glass_light_angle(), 0.75)
+  @ui.set_glass_light_angle(0.0)
+  assert_eq(@ui.glass_light_angle(), 0.0)
+}
+
+///|
+test "sharing() unmerged liquid glass shares across shadows and inner glyphs in same band, but splits on occluder or vertical gap > 64pt" {
+  let g = @ui.Glass::liquid(blur=2.5, merge=0.0).sharing()
+  // 1. Same horizontal band with shadows and inner text: shares one capture id
+  let t1 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, fn() {
+      c.box(dir=Row, gap=12.0, fn() {
+        c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, shadow=4.0, fn() {
+          c.text("A", wrap=false) |> ignore
+        })
+        |> ignore
+        c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, shadow=4.0, fn() {
+          c.text("B", wrap=false) |> ignore
+        })
+        |> ignore
+        c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, shadow=4.0, fn() {
+          c.text("C", wrap=false) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs1 = t1.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs1.length(), 3)
+  assert_true(gs1[0][20] < 0.0)
+  assert_eq(gs1[1][20], gs1[0][20])
+  assert_eq(gs1[2][20], gs1[0][20])
+
+  // 2. Occluder / scrim drawn between two same-blur liquid glasses covering the second: must start a new capture
+  let t2 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, fn() {
+      c.layer(fn() {
+        c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+      })
+      |> ignore
+      // full-screen page/scrim covering the second glass
+      c.layer(fn() {
+        c.box(w=Fill(1.0), h=Fill(1.0), bg=0x00000080L, fn() {
+          c.box(dir=Row, fn() {
+            c.box(w=Px(100.0), h=Px(1.0), fn() {  }) |> ignore
+            c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs2 = t2.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs2.length(), 2)
+  assert_true(gs2[0][20] < 0.0 && gs2[1][20] < 0.0)
+  assert_true(gs2[1][20] != gs2[0][20])
+
+  // 3. Two same-blur liquid glasses separated vertically by > 64pt (top bar vs bottom bar): must start a new capture
+  let t3 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, fn() {
+      c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+      c.box(w=Px(1.0), h=Px(100.0), fn() {  }) |> ignore
+      c.box(w=Px(80.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+    })
+    |> ignore
+  })
+  let gs3 = t3.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs3.length(), 2)
+  assert_true(gs3[0][20] < 0.0 && gs3[1][20] < 0.0)
+  assert_true(gs3[1][20] != gs3[0][20])
+
+  // 4. Intervening frosted glass (or merged liquid glass) clears liquid_run so the following sharing() liquid starts a new capture
+  let frost = @ui.Glass::frosted(blur=12.0, tint=0xFFFFFF80L, solid=0xFFFFFFFFL)
+  let t4 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, fn() {
+      c.box(dir=Row, gap=12.0, fn() {
+        c.box(w=Px(60.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+        c.box(w=Px(60.0), h=Px(40.0), radius=20.0, glass=frost, fn() {  }) |> ignore
+        c.box(w=Px(60.0), h=Px(40.0), radius=20.0, glass=g, fn() {  }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs4 = t4.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs4.length(), 2)
+  assert_true(gs4[0][20] < 0.0 && gs4[1][20] < 0.0)
+  assert_true(gs4[1][20] != gs4[0][20])
+}
+
+///|
+test "Wave 7 adaptive liquid glass encodes negative slot 14, propagates ink to vector shapes/lines, and pauses on opaque children" {
+  let sq : Array[@ui.Shape] = [@ui.shape_of([([0.0, 0.0, 12.0, 0.0, 12.0, 12.0, 0.0, 12.0], true)], fill=0x111111FFL)]
+  // 1. Ctx path: adaptive slot 14 encoding + kind 11 shape ink propagation + opaque child opt-out
+  let t1 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x000000FFL, gap=8.0, fn() {
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(adaptive=true), fn() {
+        c.text("A", wrap=false) |> ignore
+        c.shapes(sq, w=Px(12.0), h=Px(12.0)) |> ignore
+        // opaque child (solid send button) pauses adaptive ink inheritance
+        c.box(w=Px(32.0), h=Px(32.0), radius=16.0, bg=0x111111FFL, fn() {
+          c.text("B", wrap=false) |> ignore
+          c.shapes(sq, w=Px(12.0), h=Px(12.0)) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      c.box(
+        w=Px(120.0),
+        h=Px(44.0),
+        radius=22.0,
+        glass=@ui.Glass::liquid(spot=Some((12.5, 8.0)), adaptive=true),
+        fn() {  },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs1 = t1.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs1.length(), 2)
+  assert_eq(gs1[0][14], -1.0)
+  assert_eq(gs1[1][14], -(537.0 * 4096.0 + 528.0 + 2.0))
+  assert_eq(t1.adaptive_glyphs(), 1)
+  let shapes1 = t1.drawn_instances().filter(fn(a) { a[5] == 11.0 })
+  assert_true(shapes1.length() >= 2)
+  assert_true(shapes1.iter().any(fn(a) { a[23] > 0.0 }))
+  assert_true(shapes1.iter().any(fn(a) { a[23] == 0.0 }))
+
+  // 2. Retained View tree path: adaptive ink propagates to text & vector shapes, and pauses on opaque children
+  let t2 = @ui.Tester::tree(fn(root) {
+    root.box(fn(gl) {
+      gl
+      .width(Is(Some(120.0)))
+      .height(Is(Some(44.0)))
+      .radius(Is(22.0))
+      .glass(Is(Some(@ui.Glass::liquid(adaptive=true))))
+      |> ignore
+      gl.box(fn(lbl) { lbl.words(Is("Hi")) |> ignore }) |> ignore
+      gl.box(fn(ico) { ico.width(Is(Some(12.0))).height(Is(Some(12.0))).shapes(Is(sq)) |> ignore }) |> ignore
+      gl.box(fn(btn) {
+        btn.width(Is(Some(32.0))).height(Is(Some(32.0))).ground(Is(0x111111FFL)) |> ignore
+        btn.box(fn(blbl) { blbl.words(Is("Go")) |> ignore }) |> ignore
+        btn.box(fn(bico) { bico.width(Is(Some(12.0))).height(Is(Some(12.0))).shapes(Is(sq)) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t2.draw()
+  // "Hi" -> 2 adaptive kind-7 glyphs; "Go" inside opaque 0x111111FF button stays kind-1
+  assert_eq(t2.adaptive_glyphs(), 2)
+  let shapes2 = t2.drawn_instances().filter(fn(a) { a[5] == 11.0 })
+  assert_true(shapes2.length() >= 2)
+  assert_true(shapes2.iter().any(fn(a) { a[23] > 0.0 }))
+  assert_true(shapes2.iter().any(fn(a) { a[23] == 0.0 }))
 }

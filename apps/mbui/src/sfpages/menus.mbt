@@ -13,9 +13,6 @@ priv struct MenuDoing {
   copy : @signals.Signal[String]
   image : @signals.Signal[String]
   mut offered : String
-  /// the file whose menu a finger held opened (its box's id, 0 none), and that menu (the presenters' serial)
-  mut held_for : Int
-  mut held_serial : Int
 }
 
 ///|
@@ -24,8 +21,6 @@ let menu_doing : MenuDoing = {
   copy: @signals.signal("", same=fn(a, b) { a == b }),
   image: @signals.signal("", same=fn(a, b) { a == b }),
   offered: "",
-  held_for: 0,
-  held_serial: -1,
 }
 
 ///|
@@ -40,125 +35,6 @@ fn menus_reset() -> Unit {
   menu_doing.copy.set("")
   menu_doing.image.set("")
   menu_doing.offered = ""
-  menu_doing.held_for = 0
-  menu_doing.held_serial = -1
-}
-
-///|
-/// Whether a finger held file `id` (its box's id) for its menu and that menu is up (lifted meanwhile: @sf.lift_over).
-fn file_held_open(id : Int) -> Bool {
-  menu_doing.held_for == id && @sf.presented_drawn_of(menu_doing.held_serial)
-}
-
-///|
-/// A link in a message held or right clicked: its menu at the pointer.
-fn link_held(c : @ui.Ctx, href : String) -> Unit {
-  // (the press is the link's menu's, not a passage's pick)
-  pk.taken_at = c.press().frame
-  let (x, y, _) = c.pointer()
-  // held by a finger, felt as it opens
-  @sf.menu_held(c, "link") |> ignore
-  @sf.link_menu(
-    href,
-    from=@sf.at_point(x, y),
-    fn() { menu_doing.open.set(href) },
-    fn() { menu_doing.copy.set(href) },
-  )
-}
-
-///|
-/// A file a message names by its path (`path`, its agent `agent`'s on `station`) held or right clicked: 在侧边打开
-/// where it is offered (beside_offered: a side panel for the chat, a file, a kind that opens there); else nothing.
-fn path_held(c : @ui.Ctx, src : Source, station : String, agent : String, path : String) -> Unit {
-  if path.has_suffix("/") || !@sfbase.beside_offered(path, stored_name(path)) {
-    return
-  }
-  pk.taken_at = c.press().frame
-  let (x, y, _) = c.pointer()
-  @sf.menu_held(c, "link") |> ignore
-  @sf.menu(
-    [Some(@sf.menu_item_of(@sf.t("web-main.preview.openBeside"), fn() { open_named(src, station, agent, path, beside=true) }, icon="panel-open"))],
-    from=@sf.at_point(x, y),
-  )
-}
-
-///|
-/// A file in a message (box `id`; a picture's image `src`, else "") held or right clicked: its menu there, as a
-/// passage's (pick.mbt): 引用 into the chat's draft (`quote`, where it is a message's), then what else it offers
-/// (`more`: 下载 and a video's 加载), then a picture's copy; after them, a line between, what its message offers of
-/// itself (`after`, read as the menu opens: its link copied and 多选, as the page made as nodes has them).
-fn file_menu(
-  c : @ui.Ctx,
-  id : Int,
-  src : String,
-  quote? : (() -> Unit)? = None,
-  more? : Array[@sf.MenuItem?] = [],
-  after? : () -> Array[@sf.MenuItem?] = fn() { [] },
-) -> Unit {
-  match c.menu_asked(id) {
-    Some((x, y)) => {
-      menu_doing.offered = src
-      // held with a finger: the press is the menu's (lifting it opens nothing), felt
-      let held = @sf.menu_held(c, "file")
-      if held {
-        // (the press is the file's menu's, not a passage's pick)
-        pk.taken_at = c.press().frame
-      }
-      let items : Array[@sf.MenuItem?] = []
-      match quote {
-        Some(q) => items.push(Some(@sf.menu_item_of(@sf.t("web-main.chat.quote"), q, icon="quote")))
-        None => ()
-      }
-      items.append(more)
-      if src != "" && src != "!" {
-        items.push(Some(@sf.menu_item_of(@sf.t("desktop.contextMenu.copyImage"), fn() { menu_doing.image.set(src) }, icon="copy")))
-      }
-      let tail = after()
-      if !tail.is_empty() {
-        if !items.is_empty() {
-          items.push(None)
-        }
-        items.append(tail)
-      }
-      if items.length() > 0 {
-        @sf.menu(items, from=@sf.at_point(x, y))
-        menu_doing.held_for = if held { id } else { 0 }
-        menu_doing.held_serial = @sf.last_presented()
-      }
-    }
-    _ => ()
-  }
-}
-
-///|
-/// What a menu's choice left, done: a link opened by the system once the frame is built, words copied, a picture read
-/// whole and put on the clipboard (as Electron's copyImage: decoded, as PNG) once it is read.
-fn menus_frame(c : @ui.Ctx) -> Unit {
-  // (taken when it is opened, not while the frame is built: a frame built again lets go of what its earlier builds
-  // said, Ctx::after_build)
-  if menu_doing.open.get() != "" {
-    let href = menu_doing.open.get()
-    c.after_build("menu-open", fn() {
-      menu_doing.open.set("")
-      @ui.open_url(href) |> ignore
-    })
-  }
-  if menu_doing.copy.get() != "" {
-    c.copy_text(menu_doing.copy.get())
-    menu_doing.copy.set("")
-    say(c, @sf.t("common.link.copied"))
-  }
-  if menu_doing.image.get() != "" {
-    match c.image_pixels(menu_doing.image.get(), image_copy_px) {
-      @ui.PixelsRead(w, h, rgba) =>
-        c.after_build("menu-copy-image", fn() {
-          menu_doing.image.set("")
-          @ui.clipboard_set_png(@pixels.png(w, h, unpremultiplied(rgba)))
-        })
-      @ui.PixelsFailed => menu_doing.image.set("")
-      @ui.PixelsComing => ()
-    }
-  }
 }
 
 ///|

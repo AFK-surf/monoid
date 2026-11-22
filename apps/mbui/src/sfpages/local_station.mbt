@@ -47,7 +47,7 @@ pub fn local_station_node(
     said?,
     width?,
     about=fn() {
-      @sf.t(if pc { "web-pages.localStation.leadPc" } else { "web-pages.localStation.lead" }, args=[("name", "still.fail")])
+      @sf.t(if pc { "web-pages.localStation.leadPc" } else { "web-pages.localStation.lead" }, args=[("name", @sf.product())])
     },
     fn() { if text(s(), "data") == "" { ["none"] } else { ["card"] } },
     fn(b, key) {
@@ -70,21 +70,18 @@ fn local_add_foot_node(
   pc : Bool,
   asked : () -> Unit,
 ) -> Unit {
-  k.show(adds, fn(f) {
-    f.box(fn(a) {
-      @sf.style_node(a, fn() { vt_actions.then(@sf.foot_across(@sf.button_height())) })
-      @sf.button_node(
-        a,
-        fn() { @sf.t(if pc { "web-pages.settings.thisPc.add" } else { "web-pages.settings.thisMac.add" }) },
-        fn() {
-          (core.local_install)(true)
-          asked()
-        },
-        tone=Primary,
-        card_words=true,
-      )
-      |> ignore
-    })
+  k.show(adds, fn(a) {
+    @sf.style_node(a, fn() { vt_actions.then(@sf.foot_across(@sf.button_height())) })
+    @sf.button_node(
+      a,
+      fn() { @sf.t(if pc { "web-pages.settings.thisPc.add" } else { "web-pages.settings.thisMac.add" }) },
+      fn() {
+        (core.local_install)(true)
+        asked()
+      },
+      tone=Primary,
+      card_words=true,
+    )
     |> ignore
   })
 }
@@ -101,7 +98,7 @@ fn local_none_node(b : @view.View, core : Core, s : () -> Json?, pc : Bool, aske
       if d != "" {
         local_progress_node(w, s, fn() { d })
       } else {
-        @sf.words_node(w, fn() { @sf.t("desktop.local.noService") }, fn() { desk_muted }) |> ignore
+        @sf.words_node(w, fn() { @sf.t("desktop.local.noService") }, fn() { @sf.card_muted }) |> ignore
       }
     })
     local_failed_node(k, s)
@@ -318,7 +315,7 @@ fn local_facts(s : Json?, pc : Bool) -> Array[String] {
   let run_by = match text(s, "runner") {
     "service" => service_name(s)
     "other" => @sf.t("web-pages.localStation.byHand")
-    "app" => @sf.t("web-pages.localStation.byApp", args=[("name", "still.fail")])
+    "app" => @sf.t("web-pages.localStation.byApp", args=[("name", @sf.product())])
     // stopped: its service's; with none, nothing runs it (this app runs none of its own)
     _ => if service { service_name(s) } else { "" }
   }
@@ -334,6 +331,16 @@ fn local_facts(s : Json?, pc : Bool) -> Array[String] {
     }
     @sf.t(if flag(workspace, "removed") { "web-pages.localStation.removed" } else { "web-pages.localStation.inWorkspace" }, args=[("workspace", ws)])
   }
+  // its security code where it is in a workspace (not removed from it): what its owner checks it by in a workspace in
+  // safe mode, read here as well as from its command (FB-45)
+  let code = if place != "" && !flag(workspace, "removed") {
+    match station_short_code(text(workspace, "station")) {
+      "" => ""
+      c => @sf.t("web-pages.thisDevice.securityCode", args=[("code", c)])
+    }
+  } else {
+    ""
+  }
   // its data where it is: moved (its name a link to it), where it was moved to, and, where that disk is not
   // connected, that it starts once it is
   let data = match text(s, "at") {
@@ -341,7 +348,43 @@ fn local_facts(s : Json?, pc : Bool) -> Array[String] {
     at if flag(s, "away") => @sf.t("web-pages.localStation.awayLine", args=[("path", at)])
     at => @sf.t("web-pages.localStation.at", args=[("path", at)])
   }
-  [run_by, text(s, "version"), place, data].filter(fn(l) { l != "" })
+  [run_by, text(s, "version"), place, code, data].filter(fn(l) { l != "" })
+}
+
+///|
+/// A station's security code from its id (64 lowercase hex digits, its key's public half), as the client core reads one
+/// (client/core-ts/src/lock-form.ts `codeText`, `shortCodeOf`): the first six bytes of the SHA-256 of
+/// `stillfail-lock-code/1`, a NUL and the id, each a letter of 32; "" for anything that is not such an id.
+fn station_short_code(id : String) -> String {
+  if id.length() != 64 {
+    return ""
+  }
+  for c in id {
+    if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+      return ""
+    }
+  }
+  let hash = @zip.sha256(@utf8.encode("stillfail-lock-code/1\u{0}" + id)).to_array()
+  let alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ".to_array()
+  let out = StringBuilder()
+  for i in 0..<6 {
+    let byte = hex_digit(hash[2 * i].to_int()) * 16 + hex_digit(hash[2 * i + 1].to_int())
+    if i == 3 {
+      out.write_char('-')
+    }
+    out.write_char(alphabet[byte % 32])
+  }
+  out.to_string()
+}
+
+///|
+/// One lowercase hex digit's value.
+fn hex_digit(c : Int) -> Int {
+  if c >= '0'.to_int() && c <= '9'.to_int() {
+    c - '0'.to_int()
+  } else {
+    c - 'a'.to_int() + 10
+  }
 }
 
 ///|
@@ -361,7 +404,7 @@ fn local_progress_node(v : @view.View, s : () -> Json?, doing : () -> String) ->
   let percent = fn() { number(s(), "percent") }
   @sf.words_node(v, fn() {
     @sf.t("web-pages.localStation.doing." + doing()) + (if known() { " · \{percent().to_int()}%" } else { "" })
-  }, fn() { desk_muted })
+  }, fn() { @sf.card_muted })
   |> ignore
   v.box(fn(b) {
     @sf.style_node(b, fn() { ls_bar })
@@ -371,7 +414,7 @@ fn local_progress_node(v : @view.View, s : () -> Json?, doing : () -> String) ->
     |> ignore
   })
   |> ignore
-  v.show(fn() { text(s(), "said") != "" }, fn(w) { @sf.words_node(w, fn() { text(s(), "said") }, fn() { desk_note }) |> ignore })
+  v.show(fn() { text(s(), "said") != "" }, fn(w) { @sf.words_node(w, fn() { text(s(), "said") }, fn() { @sf.list_note }) |> ignore })
 }
 
 ///|
@@ -475,7 +518,7 @@ pub fn local_menu_open() -> Bool {
 ///|
 /// (card: its parts 10 apart, the card's padding and ground)
 // kept across runs: a value (no field of it changes)
-let ls_card : @ui.Style = @sf.desk_card.then(@ui.css("gap=S2_5"))
+let ls_card : @ui.Style = @sf.card_surface.then(@ui.css("gap=S2_5"))
 
 ///|
 /// (cardHead: its dot, its title, its buttons, 10 apart)

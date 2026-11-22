@@ -29,6 +29,7 @@ pub fn pick_node(
   cancel : () -> Unit,
   shown? : () -> Unit = fn() {  },
   gone? : () -> Unit = fn() {  },
+  side? : @ui.Side = Bottom,
 ) -> Unit {
   parent.show(
     open,
@@ -38,10 +39,13 @@ pub fn pick_node(
       let th = theme()
       // (how far in it is, from the moment it opened)
       let way = @motion.NodeWay::new(0.0)
-      way.go_ms(layer, 1.0, @kit.pop_ms)
+      way.go_ms(layer, 1.0, @motion.pop_ms)
+      if layout(layer.window_w()) is Small {
+        presented_sheet_rest(layer, fn(_) { way.end() })
+      }
       let look = fn() {
         let p = way.shown(layer)
-        @kit.pop_in.at(p, p)
+        pop_in_for(layer).at(p, p)
       }
       let words_in = fn() { look().words }
       // (what is found by the words typed, as they are now)
@@ -84,25 +88,22 @@ pub fn pick_node(
     let reach = menu_row_reach(th.rows.pick)
     let list = @view.Scroll::new()
     layer.box(fn(p) {
-      p
-      .beside(at.id(), side=Bottom, along=view_along(along), offset~, padding=8.0)
-      .width(Is(Some(chooser_menu_w)))
+      anchored_popover_shell(
+        p,
+        at.id(),
+        look,
+        side~,
+        along~,
+        offset~,
+        holds_side=true,
+      )
+      .width(By(fn() { Some(dmin(chooser_menu_w, dmax(0.0, over_room(layer).0 - 16.0))) }))
       .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
-      // (small_panel: its padding; its search and rows reaching past it to stand concentric with its corners)
       // (small_panel's padding: its search and rows reaching past it at its sides and top to stand concentric with its
       // corners, its last row at its foot, menu_item's at_foot)
       .padding(Is((panel_pad - reach, panel_pad - reach, panel_pad - reach, panel_pad)))
-      .radius(Is(r_menu))
-      .ground(By(fn() { panel_ground() }))
-      .edge(By(fn() { (1.0, panel_edge()) }))
-      .shadow(By(fn() { float_shadow() }))
-      .clips(Is(true))
-      .alpha(By(fn() { look().alpha }))
-      .scale(By(fn() { look().sx }), about=FromBeside)
       .carries_until(fn() { way.ends_at() })
       .says(Is(Some(@view.said(Dialog, label=title))))
-      // (a press on it its own: on what of it takes none, nothing, not outside it)
-      |> ground_node
       |> ignore
       // (which of what is found the keys are on: the one chosen as it opens, where it is found and to be chosen, else
       // the first found that is; ↓ ↑ moving it bring it into sight: `keyed`)
@@ -166,8 +167,17 @@ pub fn pick_node(
           cb.listbox(cv, fn(l) {
             // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
             // grounds, icons and words, the same, Look's `words` as a surface's are)
-            l.max_height(Is(Some(pick_list_most))).shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(words_in)) |> ignore
-            l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+            let side = panel_pad - reach
+            l
+            .margin(Is((-side, 0.0, -side, 0.0)))
+            .max_height(Is(Some(pick_list_most)))
+            .shrink(Is(1.0))
+            .min_height(Is(Some(0.0)))
+            .alpha(By(words_in))
+            |> ignore
+            // (a finger scrolling what is found keeps its search's keyboard: View::scrolls' `for_in`)
+            l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), for_in?=search.val.map(fn(v) { v.id() }), fn(b) {
+              b.padding(Is((side, 0.0, side, 0.0))) |> ignore
               // (its choices by key, once: they are what it was given, the same while it is open; the first of a key the one)
               let by_key : Map[String, Choice] = Map([])
               for x in choices {
@@ -201,8 +211,13 @@ pub fn pick_node(
         },
       )
       |> ignore
-      // (the focus its search's as it opens; what had it given back as it goes)
-      layer.focus_opens(search.val.unwrap()) |> ignore
+      // (the focus its search's as it opens on keyboard/mouse; on touch focus the panel so the soft keyboard stays down)
+      if native_input() is Finger {
+        p.focusable(Is(true), keys=0, tab=false) |> ignore
+        layer.focus_opens(p) |> ignore
+      } else {
+        layer.focus_opens(search.val.unwrap()) |> ignore
+      }
     })
     |> ignore
     },

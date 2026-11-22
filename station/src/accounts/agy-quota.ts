@@ -5,8 +5,9 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import { devNull } from "node:os";
-import { AGY_FILE_TOKENS, agyCompany, agyHome, agyTakeBack, agyToken, geminiDir } from "../agents/agy.ts";
+import { AGY_FILE_TOKENS, agyCompany, agyHome, agyPlan, agyTakeBack, agyToken, geminiDir } from "../agents/agy.ts";
 import { type Env, platform } from "../platform/index.ts";
+import { profileFetch } from "../ops/agent-env.ts";
 import { type Lang, Said, stationLang, tr } from "../ops/i18n.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
 import { RenewRefused } from "./console.ts";
@@ -16,6 +17,10 @@ import { at, okOrUnavailable, percent, windowLabel } from "./quota.ts";
 type Json = any;
 
 const TIMEOUT_MS = 30_000;
+const AGY_CLOUD_CODE_URL = "https://daily-cloudcode-pa.googleapis.com";
+const AGY_PRODUCTION_URL = "https://cloudcode-pa.googleapis.com";
+const AGY_QUOTA_SUMMARY = "/v1internal:retrieveUserQuotaSummary";
+const AGY_USER_AGENT = "antigravity/1.5.12";
 const DAY_MINUTES = 24 * 60;
 const WEEK_MINUTES = 7 * DAY_MINUTES;
 const SCRUBBED = [
@@ -142,6 +147,147 @@ function authFailure(text: string): boolean {
   );
 }
 
+/// Google holding an account until a person verifies it (`agy` says "Eligibility check failed: Your current account is
+/// not eligible for Antigravity. Verify your account to continue." and the page to do it on; its backend
+/// `VALIDATION_REQUIRED`): that page, "" when it gives none, null when it is not that.
+export function agyVerify(text: string): string | null {
+  const lower = text.toLowerCase();
+  if (!["verify your account", "validation_required"].some((w) => lower.includes(w))) return null;
+  return /https:\/\/accounts\.google\.com\/\S+/.exec(text)?.[0] ?? "";
+}
+
+function agyLocationIneligible(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("not currently available in your location") ||
+    lower.includes("unsupported_location") ||
+    lower.includes("not eligible for antigravity")
+  );
+}
+
+/// 5-hour quota windows derived from `v1internal:fetchAvailableModels` (`models[*].quotaInfo`), one per pool
+/// (`gemini` and `3p`), taking the lowest remaining fraction in each pool.
+export function agyModelWindows(body: Json): QuotaWindow[] {
+  const models = isObject(body?.models) ? body.models : null;
+  if (models === null) return [];
+  const pools: Record<"gemini" | "3p", { frac: number; resetsAt: number | null } | null> = { gemini: null, "3p": null };
+  for (const [modelId, entry] of Object.entries(models)) {
+    if (modelId.toLowerCase().startsWith("tab_") || !isObject(entry)) continue;
+    const qi = isObject(entry.quotaInfo) ? entry.quotaInfo : null;
+    if (qi === null) continue;
+    const resetsAt = at(qi.resetTime ?? qi.reset_time);
+    const camelFrac = qi.remainingFraction;
+    const snakeFrac = qi.remaining_fraction;
+    let frac = typeof camelFrac === "number" ? camelFrac : snakeFrac;
+    // Google omits the zero fraction for an exhausted model pool and still gives its reset time.
+    if (typeof frac !== "number") {
+      if (camelFrac != null || snakeFrac != null || resetsAt === null) continue;
+      frac = 0;
+    }
+    const scope = agyScopeForModel(modelId);
+    const prev = pools[scope];
+    if (prev === null) {
+      pools[scope] = { frac, resetsAt };
+    } else {
+      if (frac < prev.frac) prev.frac = frac;
+      if (prev.resetsAt === null && resetsAt !== null) prev.resetsAt = resetsAt;
+    }
+  }
+  const out: QuotaWindow[] = [];
+  for (const [scope, suffix] of [
+    ["gemini", "Gemini"],
+    ["3p", "Claude / GPT"],
+  ] as const) {
+    const p = pools[scope];
+    if (p === null) continue;
+    out.push({
+      label: `${windowLabel(300, "5 小时")} · ${suffix}`,
+      usedPercent: percent((1 - p.frac) * 100),
+      resetsAt: p.resetsAt,
+      minutes: 300,
+      scope,
+    });
+  }
+  return out;
+}
+
+async function agyPost(base: string, path: string, token: string, body: Json): Promise<Json | null> {
+  try {
+    const res = await profileFetch(`${base}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json",
+        "user-agent": AGY_USER_AGENT,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    return JSON.parse(await res.text());
+  } catch {
+    return null;
+  }
+}
+
+function agyBase(urls: Urls, fallback: string): string {
+  return (urls.agyQuota?.trim() || fallback).replace(/\/+$/, "");
+}
+
+async function agyQuotaProject(home: string, base: string) {
+  let token: string;
+  try {
+    const parsed = JSON.parse(await readFile(agyToken(home), "utf8"));
+    token = typeof parsed?.token?.access_token === "string" ? parsed.token.access_token : "";
+  } catch {
+    return null;
+  }
+  if (token === "") return null;
+  const loaded = await agyPost(base, "/v1internal:loadCodeAssist", token, { metadata: { ideType: "ANTIGRAVITY" } });
+  if (!isObject(loaded)) return null;
+  const tier = isObject(loaded.paidTier) ? loaded.paidTier : loaded.currentTier;
+  if (!isObject(tier)) return null;
+  const project = typeof loaded.cloudaicompanionProject === "string" && loaded.cloudaicompanionProject !== "" ? loaded.cloudaicompanionProject : null;
+  const payload = project !== null ? { project } : {};
+  return { token, tier, payload };
+}
+
+function isGeminiWeekly(window: QuotaWindow): boolean {
+  return window.scope === "gemini" && window.minutes === WEEK_MINUTES;
+}
+
+// The CLI and the daily endpoint can omit Gemini's week. Read the explicit shared window from production.
+async function agyGeminiWeekly(base: string, token: string, payload: Json): Promise<QuotaWindow | undefined> {
+  return agyWindows(await agyPost(base, AGY_QUOTA_SUMMARY, token, payload)).find(isGeminiWeekly);
+}
+
+/// Fallback when the CLI rejects an account with an active tier and an ineligible free tier.
+async function agyDirectQuota(home: string, urls: Urls, lang: Lang): Promise<ProfileQuota | null> {
+  const base = agyBase(urls, AGY_CLOUD_CODE_URL);
+  const project = await agyQuotaProject(home, base);
+  if (project === null) return null;
+  const { token, tier, payload } = project;
+  const [summary, models] = await Promise.all([
+    agyPost(base, AGY_QUOTA_SUMMARY, token, payload),
+    agyPost(base, "/v1internal:fetchAvailableModels", token, payload),
+  ]);
+  const { windows, scoped } = summary !== null ? agyAllowance(summary) : { windows: [], scoped: [] };
+  const extra = agyModelWindows(models).filter((w) => !windows.some((reported) => reported.scope === w.scope && reported.minutes === w.minutes));
+  const production = agyBase(urls, AGY_PRODUCTION_URL);
+  if (base !== production && !windows.some(isGeminiWeekly)) {
+    const weekly = await agyGeminiWeekly(production, token, payload);
+    if (weekly !== undefined) windows.unshift(weekly);
+  }
+  const merged = [...extra.filter((w) => w.scope === "gemini"), ...windows, ...extra.filter((w) => w.scope !== "gemini")];
+  if (merged.length === 0 && scoped.length === 0) return null;
+  const q = okOrUnavailable(merged.length > 0 ? merged : scoped, tr(lang, "station.quota.agyNoWindows"));
+  if (q.state === "ok" && merged.length > 0 && scoped.length > 0) q.scoped = scoped;
+  const plan = agyPlan(tier);
+  if (plan !== null) q.plan = plan;
+  return q;
+}
+
 async function runAgyUsage(command: string, env: Env, cwd: string): Promise<{ code: number | null; stdout: string; stderr: string; authPrompted: boolean }> {
   const r = await platform.runnableSoon(command, ["--log-file", devNull, "-p", "/usage", "--output-format", "json"], env as NodeJS.ProcessEnv);
   return new Promise((resolve, reject) => {
@@ -211,6 +357,15 @@ function parseJsonLine(stdout: string): Json | null {
   return null;
 }
 
+/// At most `most` characters of `text`, but a link the cut falls in kept whole: Google's verification link (`Please
+/// verify your account in your browser to continue: https://accounts.google.com/v3/signin/continue?plt=…`) cut short
+/// opens a 400, and it is what the person is to open.
+export function clipKeepingLinks(text: string, most: number): string {
+  if (text.length <= most) return text;
+  const cut = text.slice(0, most);
+  if (!/https?:\/\/\S*$/.test(cut)) return cut;
+  return cut + /^\S*/.exec(text.slice(most))![0];
+}
 
 export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: Lang = stationLang(), command = "agy"): Promise<ProfileQuota> {
   // Before sign-in (no token file in the profile's, none to take back from the keychain: agents/agy.ts `agyTakeBack`),
@@ -238,6 +393,14 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
   const parsed = parseJsonLine(stdout);
   if (parsed !== null && parsed.status === "SUCCESS") {
     const { windows, scoped } = agyAllowance(parsed);
+    if (windows.length > 0 && !windows.some(isGeminiWeekly)) {
+      const production = agyBase(urls, AGY_PRODUCTION_URL);
+      const project = await agyQuotaProject(home, agyBase(urls, AGY_CLOUD_CODE_URL));
+      if (project !== null) {
+        const weekly = await agyGeminiWeekly(production, project.token, project.payload);
+        if (weekly !== undefined) windows.unshift(weekly);
+      }
+    }
     // A company's account paying as it goes (a Google Cloud project with no subscription) has no windows to show.
     if (windows.length === 0 && scoped.length === 0 && agyCompany(await readFile(agyToken(home), "utf8").catch(() => ""))) {
       return { state: "unsupported", windows: [], detail: tr(lang, "station.quota.agyPayAsYouGo"), checkedAt: 0 };
@@ -246,7 +409,19 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
     if (q.state === "ok" && windows.length > 0 && scoped.length > 0) q.scoped = scoped;
     return q;
   }
-  const detail = (typeof parsed?.error === "string" && parsed.error.trim() !== "" ? parsed.error.trim() : stderr.trim() || stdout.trim()).slice(0, 300);
+  const said = typeof parsed?.error === "string" && parsed.error.trim() !== "" ? parsed.error.trim() : stderr.trim() || stdout.trim();
+  // Google refusing the account until a person verifies it: blocked, saying where to verify it. Its page comes after
+  // the first 300 characters.
+  const verify = agyVerify(said);
+  if (verify !== null) {
+    const detail = verify !== "" ? tr(lang, "station.quota.agyVerifyAt", { url: verify }) : tr(lang, "station.quota.agyVerify");
+    return { state: "blocked", windows: [], detail, checkedAt: 0 };
+  }
+  if (agyLocationIneligible(said)) {
+    const direct = await agyDirectQuota(home, urls, lang);
+    if (direct !== null) return direct;
+  }
+  const detail = clipKeepingLinks(said, 300);
   if (authFailure(detail)) {
     throw new RenewRefused(401, tr(lang, "station.quota.signInExpired"));
   }

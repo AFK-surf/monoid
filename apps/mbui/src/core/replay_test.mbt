@@ -757,3 +757,22 @@ test "tapxy measured on the current layout matches the recorded tapxy step" {
   assert_eq(r.deliver(now=220.0), 1)
   assert_eq(r.left(), 0)
 }
+
+///|
+/// A run that let go of a subscription keeping its value: the core's last word of it (`v`) came once that was sent.
+let run_kept : String =
+  #|CORETRACE {"out":{"id":7,"subscribe":{"topic":"accounts"},"keyed":true}}
+  #|CORETRACE {"in":{"id":7,"value":[]},"w":1000}
+  #|CORETRACE {"out":{"id":7,"unsubscribe":true,"keep":true}}
+  #|CORETRACE {"in":{"id":7,"v":"1:1"},"w":1100}
+
+///|
+test "the last word of a subscription let go of keeping its value waits for that letting go" {
+  let r = @core.Replay::parse(run_kept)
+  let c = r.client()
+  let _ = c.subscribe("accounts")
+  assert_eq(r.deliver(), 1)
+  // (not sent yet: its `v` is not given, which the app would drop, keeping nothing to say it has when asked again)
+  assert_eq(r.deliver(), 0)
+  assert_eq(r.left(), 1)
+}

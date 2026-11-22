@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-path = Path(__file__).resolve().parents[1] / "src/screens/linux-portal.py"
+path = Path(__file__).resolve().parents[1] / "assets/screens/linux-portal.py"
 spec = importlib.util.spec_from_file_location("linux_portal_test", path)
 portal = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(portal)

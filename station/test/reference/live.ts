@@ -722,12 +722,13 @@ export function acpOutcome(answer: Json, classify: (text: string) => FailureReas
 export function acpClassify(flavor: string, text: string): FailureReason {
   if (flavor === "grok") return failureOf(text, { auth: ["access token", "subscription"] });
   if (flavor === "agy")
-    return failureOf(text, { auth: ["authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant", "unauthenticated", "token expired"], limit: ["resource_exhausted", "quota"] });
+    return failureOf(text, { auth: ["authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant", "unauthenticated", "token expired", "verification required"], limit: ["resource_exhausted", "quota"] });
   return failureOf(text);
 }
 const AGY_TERMINATED = "⚠ agent execution terminated due to error.";
 const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
 const AGY_UNAUTHENTICATED = "⚠ unauthenticated (code 401):";
+const AGY_VERIFICATION_REQUIRED = "⚠ verification required";
 export function noticeFailure(said: string): FailureReason | null {
   const text = said.trim();
   const last = text.slice(text.lastIndexOf("\n") + 1).trim();
@@ -738,6 +739,7 @@ export function noticeFailure(said: string): FailureReason | null {
     return reason === "model" ? "other" : reason;
   }
   if (lower.startsWith(AGY_UNAUTHENTICATED)) return "auth";
+  if (lower.startsWith(AGY_VERIFICATION_REQUIRED)) return "auth";
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   const reason = acpClassify("agy", text);
   return reason === "model" ? null : reason;
@@ -770,6 +772,13 @@ function underParent(event: LiveEvent, child: string, parent: string | undefined
 type Call = { name: string; input: Json; startedAt?: number };
 type Done = Call & { id: string; failed: boolean; text: string };
 
+function hasTurnUsage(answer: Json): boolean {
+  const u = answer?.result?.usage;
+  if (u === null || typeof u !== "object") return false;
+  const pos = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+  return pos(u.inputTokens) + pos(u.cachedReadTokens) + pos(u.cachedWriteTokens) + pos(u.outputTokens) > 0;
+}
+
 /// acp.ts `AcpSession` (with agy.ts's, grok.ts's and hermes.ts's own) as it heard a line (`onMessage`) and was given a
 /// prompt (`prompt`, `injectPrompt`); its KeptTranscript's lines told as `kept`, a prompt's answer for the driver as
 /// `answered`, an update of usage as `usage` (what agy.ts and devin.ts read of it).
@@ -777,6 +786,9 @@ export class AcpReference {
   turn: { busy: boolean; aborting: boolean; owner: string | null; steering: string[] } = { busy: false, aborting: false, owner: null, steering: [] };
   session = "";
   loading = true;
+  private loadReplayGuard = false;
+  private guardStartedAt: number | null = null;
+  private stagedKept: Json[] = [];
   live = new LiveFromAcp();
   private calls = new Map<string, Call>();
   private saidLast = "";
@@ -790,6 +802,23 @@ export class AcpReference {
     this.flavor = flavor;
     this.kept = kept;
     this.now = now;
+  }
+
+  opened(resumed = false) {
+    if (this.loading && this.flavor === "agy" && resumed) this.loadReplayGuard = true;
+    this.loading = false;
+  }
+
+  private emitKept(line: Json, events: Json[]) {
+    if (this.loadReplayGuard && this.guardStartedAt !== null) this.stagedKept.push({ type: "kept", line });
+    else events.push({ type: "kept", line });
+  }
+
+  private flushStaged(events: Json[]) {
+    for (const e of this.stagedKept) events.push(e);
+    this.stagedKept = [];
+    this.loadReplayGuard = false;
+    this.guardStartedAt = null;
   }
 
   private normalized(update: Json) {
@@ -839,6 +868,11 @@ export class AcpReference {
       return;
     }
     if (!this.turn.busy && turnStep(update) && !this.unprompted(events)) return;
+    if (this.loadReplayGuard) {
+      if (this.guardStartedAt !== null && this.now() - this.guardStartedAt >= 5000) this.flushStaged(events);
+      else if (this.guardStartedAt === null && this.turn.busy) this.guardStartedAt = this.now();
+      if (update?.sessionUpdate === "usage_update") this.flushStaged(events);
+    }
     const done = this.track(update);
     if (update?.sessionUpdate === "agent_message_chunk") {
       if (typeof update.content?.text === "string") this.saidLast += update.content.text;
@@ -886,12 +920,12 @@ export class AcpReference {
     }
     if ((kind !== "tool_call" && kind !== "tool_call_update") || typeof update.toolCallId !== "string") return;
     this.flush(events);
-    if (done !== null) events.push({ type: "kept", line: { type: "tool", id: done.id, name: done.name, status: done.failed ? "error" : "completed", ...(done.startedAt !== undefined ? { startedAt: done.startedAt } : {}), args: done.input, result: chars(done.text, 20_000) } });
+    if (done !== null) this.emitKept({ type: "tool", id: done.id, name: done.name, status: done.failed ? "error" : "completed", ...(done.startedAt !== undefined ? { startedAt: done.startedAt } : {}), args: done.input, result: chars(done.text, 20_000) }, events);
   }
 
   private flush(events: Json[]) {
     if (this.said === null) return;
-    if (this.said.text.trim() !== "") events.push({ type: "kept", line: { type: this.said.type, text: this.said.text } });
+    if (this.said.text.trim() !== "") this.emitKept({ type: this.said.type, text: this.said.text }, events);
     this.said = null;
   }
 
@@ -917,11 +951,24 @@ export class AcpReference {
     this.saidLast = "";
     const failed = this.flavor === "agy" && outcome.kind === "completed" && said !== "" ? noticeFailure(said) : null;
     if (failed !== null) outcome = { kind: "failed", reason: failed, message: chars(said.slice(said.lastIndexOf("\n") + 1).trim(), 1000) };
+    if (this.flavor === "agy" && this.loadReplayGuard && !this.turn.aborting && this.turn.steering.length === 0 && outcome.kind === "completed" && !hasTurnUsage(answer)) {
+      this.loadReplayGuard = false;
+      this.guardStartedAt = null;
+      this.stagedKept = [];
+      this.said = null;
+      this.calls.clear();
+      for (const event of this.live.ended()) events.push(live(event));
+      for (const event of this.live.prompted()) events.push(live(event));
+      this.turn.busy = true;
+      events.push({ type: "loadReplay", id });
+      return;
+    }
     if (!this.turn.busy) events.push({ type: "turnStarted" });
     this.turn.busy = false;
     this.turn.aborting = false;
     this.turn.owner = null;
     this.flush(events);
+    this.flushStaged(events);
     events.push({ type: "answered", id, answer, outcome });
     if (this.flavor === "grok") for (const child of [...this.children.keys()]) this.endChild(child, events);
     if (this.kept) events.push({ type: "kept", line: { type: "end", status: outcome.kind === "completed" ? "finished" : outcome.kind === "aborted" ? "cancelled" : "error", ...(outcome.kind === "failed" ? { error: { message: outcome.message } } : {}) } });
@@ -936,12 +983,23 @@ export class AcpReference {
     this.saidLast = "";
     this.turn.owner = owner;
     this.user(text, false, events);
+    if (this.loadReplayGuard) this.guardStartedAt = this.now();
+    for (const event of this.live.prompted()) events.push(live(event));
+    return events;
+  }
+
+  resent(owner: string): Json[] {
+    const events: Json[] = [];
+    this.turn.busy = true;
+    this.saidLast = "";
+    this.turn.owner = owner;
     for (const event of this.live.prompted()) events.push(live(event));
     return events;
   }
 
   injected(id: string, takeOver: boolean, text: string): Json[] {
     const events: Json[] = [];
+    this.flushStaged(events);
     const add = (s: string) => {
       if (!this.turn.steering.includes(s)) this.turn.steering.push(s);
     };
@@ -965,6 +1023,7 @@ export class AcpReference {
     const events: Json[] = [];
     if (!this.turn.busy) return events;
     this.flush(events);
+    this.flushStaged(events);
     this.calls.clear();
     for (const event of this.live.ended()) events.push(live(event));
     return events;

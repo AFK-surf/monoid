@@ -23,6 +23,7 @@ pub fn View::resizes(
   self : View,
   spec? : (Double, (Double) -> Double),
   foot? : Bool = false,
+  uncut? : Bool = false,
   loc~ : SourceLoc,
 ) -> View {
   guard self.live() is Some(n) else { return self }
@@ -40,7 +41,7 @@ pub fn View::resizes(
   let from = n.flex.height
   // (its way and its foot said with it: told outside a change, what comes is measured and its end fixed in
   // View::comes itself)
-  guard self.comes(self, from, 1.0, spec?, foot~) else { return self }
+  guard self.comes(self, from, 1.0, spec?, foot~, uncut~) else { return self }
   let at = st.come_at
   // (in a page's list's foot on no way said: what a flight that carries a key in at this moment rises by, if one does
   // (Tree::feet_carried); those of another moment forgotten as one is said)
@@ -218,5 +219,79 @@ pub fn View::height_going_now(self : View) -> (Double, Double) {
   match (n.coming, @flex.come_state(n.flex.style, self.tree.cause_now())) {
     (true, Some((tall, speed))) => (tall, speed)
     _ => (n.lh, 0.0)
+  }
+}
+
+///|
+/// Share `[0.0, 1.0]` of `item`'s laid-out height currently covered by `self`'s animating height (`View::comes` /
+/// `View::resizes`), read at draw time without laying out: `1.0` at rest or when `self` already covers `item`.
+pub fn View::come_share_of(self : View, item : View) -> Double {
+  guard self.live() is Some(m) && item.live() is Some(it) else { return 1.0 }
+  let said = match m.come_said {
+    Some(s) => s
+    None => {
+      let s = @signals.signal(0)
+      m.come_said = Some(s)
+      s
+    }
+  }
+  said.get() |> ignore
+  if !m.coming {
+    return 1.0
+  }
+  let st = m.flex.style
+  let whole = st.come_whole
+  let ends = st.come_ends
+  if whole != whole || ends != ends {
+    return 0.0
+  }
+  let t = item.drawn_while(fn(now) { now < ends })
+  let at = if t == @double.infinity { ends } else { t }
+  let shown_h = @flex.come_tall_at(st, whole, at)
+  let mut rel_y = 0.0
+  let mut cur = item.at
+  let mut found = false
+  while cur >= 0 {
+    if cur == self.at {
+      found = true
+      break
+    }
+    let cn = self.tree.nodes[cur]
+    if !cn.slot {
+      rel_y = rel_y + cn.flex.top
+    }
+    cur = cn.parent
+  }
+  if !found || it.flex.height <= 0.5 {
+    return 1.0
+  }
+  let hi = dmax(whole, st.come_from)
+  let lo = dmin(whole, st.come_from)
+  if rel_y + it.flex.height <= lo + 0.5 {
+    return 1.0
+  }
+  let x = (shown_h - rel_y) / it.flex.height
+  if x <= 0.0 {
+    return 0.0
+  }
+  // When trailing padding makes `hi - rel_y > it.flex.height` (`r > 1`), cap `x` with a C1-tangent
+  // parabola from `a = 2 - r` to `(r, 1.0)` so `scale * h <= shown_h - rel_y` everywhere and velocity
+  // reaches 0 smoothly at `shown_h = hi` instead of hard-clamping at `x = 1`.
+  let r = (hi - rel_y) / it.flex.height
+  if r <= 1.001 {
+    dclamp(x, 0.0, 1.0)
+  } else if x >= r {
+    1.0
+  } else if r >= 2.0 {
+    let u = 1.0 - x / r
+    1.0 - u * u
+  } else {
+    let a = 2.0 - r
+    if x <= a {
+      x
+    } else {
+      let d = r - x
+      1.0 - d * d / (4.0 * (r - 1.0))
+    }
   }
 }

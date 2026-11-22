@@ -8,14 +8,15 @@ import { DatabaseSync } from "node:sqlite";
 import { commaEntry, commaRoutes } from "../api/routes/comma.ts";
 import { connectsPart } from "../connects/part.ts";
 import { member } from "../mesh/peer.ts";
+import { wall } from "../ops/fibers.ts";
 import { stationLang } from "../ops/i18n.ts";
 import { Agents } from "../sessions/agents.ts";
 import { ControlPlane, Parts, Paths, Peers, Previous, Readers, StationConfig, Store } from "../services.ts";
 import { makeComma } from "./index.ts";
-import type { CommaChats } from "./surface.ts";
-import { READ, SAY, type WorkspaceReads, answerText, peerRead, workspaceRead } from "./peer.ts";
+import { type CommaChats, OwnerActivity, workspaceMetaOf } from "./surface.ts";
+import { CHANGED, READ, SAY, type WorkspaceReads, answerText, peerRead, workspaceRead } from "./peer.ts";
 import { routerReads, routerSaysAfter } from "./chats.ts";
-import { CommaStats, RevIndex, chatOf } from "./stats.ts";
+import { CommaStats, FAST_SETTLE_MS, RevIndex, chatOf } from "./stats.ts";
 import { workspaceIndex } from "./workspace-index.ts";
 
 type Json = any;
@@ -60,10 +61,14 @@ export const CommaLive = Layer.effectDiscard(
       },
       there: async (station, op, args) => answerText(await bus.ask(station, { method: READ, workspace, op, args, whole: true })),
     });
-    // What moves the statistics or the Task index: the agents' spending, a chat's messages (the Router's too: its
-    // first in a chat makes the row `router`) and its turns, and where
-    // someone read a chat to (a done chat its creator has not read is one the Task index says waits for them).
-    const usage = (changed: () => void) => store.subscribe((change) => void (["usage", "session", "thread", "read"].includes(change.type) && changed()));
+    // What moves the statistics or the Task index: the agents' spending (debounced 60s), a chat's messages (the
+    // Router's too: its first in a chat makes the row `router`) and its turns, and where someone read a chat to (a done
+    // chat its creator has not read is one the Task index says waits for them).
+    const usage = (changed: (fast?: boolean) => void) =>
+      store.subscribe((change) => {
+        if (change.type === "usage") changed(false);
+        else if (change.type === "session" || change.type === "thread" || change.type === "read") changed(true);
+      });
     yield* Effect.promise(() => CommaStats.makeDirs(data));
     // Keep the old database for Router deduplication across a downgrade. Its unscoped indexes are not sent.
     const legacy = yield* Effect.acquireRelease(
@@ -93,6 +98,68 @@ export const CommaLive = Layer.effectDiscard(
       Effect.sync(() => new Map<string, { indexes: ReturnType<typeof workspaceIndex>["indexes"]; stats: CommaStats; chats: CommaChats }>()),
       (all) => Effect.sync(() => { for (const scope of all.values()) scope.stats.close(); }),
     );
+    // Tracks quantized 30s buckets of when each viewer last read a chat on this station or a workspace peer so Comma
+    // can suppress redundant ordinary notifications while the owner is actively using still.fail on any station.
+    const activity = new OwnerActivity();
+    const activeListeners = new Set<() => void>();
+    const notifyActiveListeners = () => {
+      for (const cb of [...activeListeners]) cb();
+    };
+    const workspaceViewers = (ws: string): Set<string> | null => {
+      const state = cloud.rosterOf(ws)?.state;
+      if (!state || state.members.size === 0) return null;
+      const emails = new Set<string>();
+      for (const m of state.members.values()) {
+        if (typeof m?.email === "string" && m.email.trim() !== "") {
+          emails.add(m.email.trim().toLowerCase());
+        }
+      }
+      return emails.size > 0 ? emails : null;
+    };
+    // Another station telling that one of its chats moved, so any Comma connect here rebuilds its Task index within a
+    // second and refreshes cross-station owner activity.
+    bus.on(CHANGED, async (peer: string, request: Json, workspace?: string) => {
+      if (typeof workspace !== "string" || !within(workspace)) throw new Error("not this workspace");
+      member(cloud, peer, workspace);
+      scopes.get(workspace)?.stats.nudge();
+      if (activity.mergePeer(request?.active, store.now())) {
+        notifyActiveListeners();
+      }
+      return { ok: true };
+    });
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        let notifyPeers: (() => void) | null = null;
+        const stopStore = store.subscribe((change) => {
+          if (change.type === "read" && activity.recordLocal(change.viewer, store.now())) {
+            notifyActiveListeners();
+          }
+          if (change.type !== "session" && change.type !== "thread" && change.type !== "read") return;
+          if (notifyPeers !== null) return;
+          notifyPeers = wall.after(FAST_SETTLE_MS, () => { // timer: burst debouncing
+            notifyPeers = null;
+            const seen = new Set<string>();
+            for (const ws of [cloud.home(), ...cloud.memberships().map((m) => m.workspace).sort()]) {
+              if (typeof ws !== "string" || ws === "" || seen.has(ws) || !within(ws)) continue;
+              seen.add(ws);
+              const active = activity.localPayload(workspaceViewers(ws));
+              const message = active === null ? { method: CHANGED, workspace: ws } : { method: CHANGED, workspace: ws, active };
+              void readsFor(ws).others()
+                .then((peers) => {
+                  for (const peer of peers) void bus.ask(peer, message).catch(() => {});
+                })
+                .catch(() => {});
+            }
+          });
+        });
+        return () => {
+          stopStore();
+          notifyPeers?.();
+          notifyPeers = null;
+        };
+      }),
+      (stop) => Effect.sync(stop),
+    );
     const scope = (workspace: string) => {
       const had = scopes.get(workspace);
       if (had !== undefined) return had;
@@ -114,6 +181,10 @@ export const CommaLive = Layer.effectDiscard(
       scopes.set(workspace, created);
       return created;
     };
+    const onOwnerActiveChange = (changed: () => void) => {
+      activeListeners.add(changed);
+      return () => { activeListeners.delete(changed); };
+    };
     const onScopeChange = (changed: () => void) => {
       let seen = scopeVersion;
       return cloud.listen(() => { if (seen !== scopeVersion) { seen = scopeVersion; changed(); } });
@@ -123,7 +194,22 @@ export const CommaLive = Layer.effectDiscard(
       name: (ws) => {
         const m = cloud.membership(ws ?? cloud.home() ?? "");
         return m === null ? hostname() : `${m.workspace_name} · ${m.name === "" ? hostname() : m.name}`;
-      } }), { kind: "comma", shown: (c, raw) => c.shown(raw), entry: commaEntry });
+      },
+      ownerEmail: (ws) => {
+        const state = cloud.rosterOf(ws ?? cloud.home() ?? null)?.state;
+        if (!state || state.members.size !== 1) return null;
+        const only = state.members.values().next().value;
+        return typeof only?.email === "string" ? only.email : null;
+      },
+      workspaceMeta: (ws) => {
+        const target = ws ?? cloud.home();
+        if (target === null) return null;
+        const m = cloud.membership(target);
+        return m === null ? null : workspaceMetaOf(m, cloud.state?.station ?? "");
+      },
+      onWorkspaceMetaChange: (changed) => cloud.listen(() => changed()),
+      ownerActiveAt: (_ws, owner) => activity.get(owner),
+      onOwnerActiveChange }), { kind: "comma", shown: (c, raw) => c.shown(raw), entry: commaEntry });
     // (what offers Comma as a platform in the connect wizard: a station from before says nothing)
     parts.overview("comma", () => true);
     parts.routes(

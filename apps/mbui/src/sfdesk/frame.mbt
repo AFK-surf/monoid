@@ -356,18 +356,9 @@ pub let side_max : Double = 480.0
 pub let closed_bar_in : Double = @sf.window_in
 
 ///|
-let closed_bar_top : Double = 44.0
-
-///|
-/// In a window with its buttons in the app's top row (macOS's: no title bar of the system's), a row `h` high at the top
-/// of what it is built in, under what is built there after it, which is the window's title bar (shell.css.ts main's and
-/// gate's ::before): a press on it that nothing over it takes drags the window, a double click does what the system's
-/// title bar does (Ctx::window_drag). The system takes none of the app's presses there itself (mbui's mac host).
-fn title_row(c : @ui.Ctx, name : String, h : Double) -> Unit {
-  let id = c.id(name)
-  c.window_drag(id)
-  c.box(style=@ui.style(h=Fixed(h)), left=0.0, top=0.0, right=0.0, id~, fn() {  }) |> ignore
-}
+/// How tall the window's top row is in the wide frame where the window's buttons are in it (sfapp's
+/// tape_shell.mbt wide_top_node).
+pub let closed_bar_top : Double = 44.0
 
 ///|
 let closed_bar_gap : Double = 8.0
@@ -496,6 +487,21 @@ fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit) -> 
       .row(Is(true))
       |> ignore
       dock_round_node(g, at)
+      // its top row the window's title bar across all of it, under the rail's and the sidebar's own (between them too:
+      // the sidebar reaching into the rail, side_into_rail); not in the closed bar (what is pressed there its places')
+      g.box(fn(o) {
+        o.over(Is(true)) |> ignore
+        o.box(fn(row) {
+          row
+          .width(By(fn() { Some(at().block.2) }))
+          .height(Is(Some(closed_bar_top)))
+          .laid_nowhere(By(fn() { !@ui.window_inset_now() || at().bar }))
+          .moves_window(By(fn() { @ui.window_inset_now() && !at().bar }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
       // (whether the pointer is on it, for the closed bar's peek: block_pointed)
       dock_made.val = Some(g)
       g.owns(fn() {
@@ -548,6 +554,7 @@ let dock_line : Double = 1.0
 /// colour: dock_edge_node), whether what is in it is drawn, how tall its top row is (the brand's, where the block's
 /// move has got), where that move has got between open and the floating bar (the band's), whether the
 /// block is the closed bar, whether on the tape; the block's ground and its shadow (blur, fall, colour).
+#derive(Eq)
 priv struct SideAt {
   box : (Double, Double, Double, Double)
   /// how wide what the sidebar holds is laid out: `box`'s, but on a move between where it is shown and where it is not
@@ -663,7 +670,7 @@ pub fn wide_back(src : Source) -> (() -> Unit)? {
           Side =>
             if lit_place() != "chats" || app.nav.pages().contains(Archived) {
               Some(fn() {
-                @sfbase.go_place("chats") |> ignore
+                @sfbase.go_place("chats", kept=true) |> ignore
                 wide.landed.set("")
               })
             } else if wide.tape_ask.get() == Some(Page) {
@@ -934,58 +941,6 @@ fn tape_words(p : TapePane) -> String {
 }
 
 ///|
-/// The page's panel on the tape: the page's ground, its corners the tape's (tape_pane_corners), a line round it,
-/// what goes past its edges cut.
-// kept across runs: a value (no field of it changes)
-let page_apart : @ui.Style = @ui.css("bg=Bg border=B1 border_color=Line clip")
-
-///|
-/// The pane: its page laid out as wide as the column leaves, what goes past the window cut.
-// kept across runs: a value (no field of it changes)
-let frame_main : @ui.Style = @ui.css("h=Full clip")
-
-///|
-/// The page in it, drawn moved aside while the sidebar is shown a while.
-// kept across runs: a value (no field of it changes)
-let page_aside : @ui.Style = @ui.css("w=Full h=Full")
-
-
-///|
-/// A page's bar's padding at its left and its right (styles/sidebar.css.ts pageBar: 12, at its right where the window's
-/// corner has its last button in a window's whole: @sf.window_end_in; brand.css.ts, railed, closed: 28 in a window with
-/// its buttons in the app's top row, which reach 12 past the rail; 12 again while the folded sidebar shown a while
-/// reaches over the bar, which starts past it), and its margins while it is shown a while (from its edge to the
-/// window's; under the window's buttons' row, from the rail as folded: less than none at its start, the page's move
-/// aside taken back): where the block's move has got to (side_moves' page-bar), so a bar built of them moves with the
-/// page it is on, its words not jumping ahead of it.
-pub fn page_bar_room() -> (Double, Double, Double, Double) {
-  (wide.bar_pl, if wide.tape.get() { @sf.tape_bar_end(bar_in) } else { @sf.window_end_in(bar_in) }, wide.bar_ml, wide.bar_mr)
-}
-
-///|
-/// A page's bar's row (`style`: as wide as the page, its height) with its room (page_bar_room) round what `bar` builds
-/// (told its padding at its left and its right): its margins as spaces at its ends, one less than none taken back by
-/// drawing the row moved back as far (the page drawn moved aside within what cuts it: page_pane.mbt's page_one). Named
-/// "page-bar" (what the page shows across leaves it out: peek_shift).
-pub fn page_bar_row(c : @ui.Ctx, style : @ui.Style, bar : (Double, Double) -> Unit) -> Int {
-  let (pl, pr, ml, mr) = page_bar_room()
-  let room = fn(x : Double) { c.box(style=@ui.style(w=Fixed(x), h=Full), fn() {  }) |> ignore }
-  let back = dmin(0.0, ml)
-  c.box(style~, moves="page-bar", tx=back, fn() {
-    room(dmax(0.0, ml))
-    bar(pl, pr)
-    room(mr + back)
-  })
-}
-
-///|
-/// At the end of a page's bar that has no padding of its own there (a new chat's): as wide as its right margin while the
-/// folded sidebar is shown a while (page_bar_room), its end by the window's; moved with the block as that is.
-pub fn page_bar_end(c : @ui.Ctx) -> Unit {
-  c.box(style=@ui.style(w=Fixed(wide.bar_mr)), fn() {  }) |> ignore
-}
-
-///|
 /// A page's bars' padding (12), closed past the rail and the window's buttons (28), and past 更新 over their start then
 /// (72; 84 with the window's buttons in the app's top row: brand.css.ts).
 pub let bar_in : Double = 12.0
@@ -1027,6 +982,18 @@ fn land(src : Source, w : Workspace) -> Unit {
     return
   }
   guard land_page(w.id, @sfbase.read_now(src)) is Some(page) else { return }
+  wide.landed.set(w.id)
+  app.nav.push(page)
+}
+
+///|
+/// Same-frame landing when returning to the chats place: pushes only an already-known Chat so the
+/// stack does not flash an empty Home or push an unanswered NewChat ahead of pane_opens.
+fn land_chat(src : Source, w : Workspace) -> Unit {
+  if app.nav.depth() != 1 || app.nav.top() != Home || @sfbase.board_on_of(src, w.id) {
+    return
+  }
+  guard land_page(w.id, @sfbase.read_now(src)) is Some(Chat(_) as page) else { return }
   wide.landed.set(w.id)
   app.nav.push(page)
 }
@@ -1122,44 +1089,6 @@ pub fn frame_opens_on(
   // (the board where the workspace shows it: its chats, all of them, and its stations)
   let board = @sfbase.board_opens(src, ws, ask)
   rail && side && pane && board
-}
-
-///|
-/// The page in the wide frame's pane: the stack's top as the app's pages draw it.
-fn main_page(
-  c : @ui.Ctx,
-  src : Source,
-  w : Workspace,
-  page : Page,
-) -> Unit {
-  match page {
-    // (its bar the page node's: chat_bar_wide_node)
-    Chat(r) => chat_page(c, src, w, r, tape=wide.tape.get())
-    // an agent's history, asked as a page (a link's `?history=…&entry=…`), and a visualization: never on top here,
-    // their chat put in their place with them beside it as they come on top (service_tab.mbt beside_follow)
-    History(_, _, _) | PreviewFile(_, _, _, _) => ()
-    // a web service: as those above once the station says whose chat runs it; till then nothing, not found said so
-    // (made once: pane_made's, tape_made's service_beside_node)
-    Service(_, _) => ()
-    // the chats' list is the sidebar's: nothing open (yet), the page's ground
-    Home => ()
-    // the settings come to beside their list: its first row's page (settings_frame.mbt settings_landing)
-    Settings => setting_page(c, src, w, settings_landing)
-    Setting(r) => setting_page(c, src, w, r)
-    // a place of the rail's other than the chats': its page, under its title
-    Place(p) => place_page(c, src, w, p)
-    // 文件 and a station's drive: made once as nodes (pane_made, tape_made: sfpages' files_page_node.mbt)
-    Files | Drive(_) => ()
-    // a new chat (newchat.mbt)
-    NewChat => new_chat_page(c, src, w, tape=wide.tape.get())
-    // a station's screen, a drive's text read, a film played are over the whole window (sfapp's signed_in), not in
-    // the pane
-    Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_) => ()
-    // a chat's tab in a window of its own: that window's alone (sfapp's lone_tree), never on this stack
-    SideTab(_) => ()
-    // 已归档, none of its chats open beside the list: what it is, made once as nodes (pane_made, tape_made)
-    Archived => ()
-  }
 }
 
 ///|
@@ -1318,7 +1247,7 @@ fn side_peek(c : @ui.Ctx, bar_x : Double, bar_y : Double, bar_r : Double, bar_b 
   if over && !wide.peeking.get() && (on_rail || (px >= 0.0 && px < bar_x + rail_closed_w)) {
     wide.peeking.set(true)
   }
-  if @kit.after(c, "side/peek-away", wide.peeking.get() && !over && !held, peek_leave_ms) {
+  if c.held("side/peek-away", wide.peeking.get() && !over && !held, peek_leave_ms) {
     wide.peeking.set(false)
   }
 }

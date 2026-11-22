@@ -38,7 +38,7 @@ priv struct P54DevWorld {
   listeners : Map[Int, Json]
   procs : Map[Int, P54Proc]
   fns : Map[Int, async (Array[@jsjson.JValue]) -> @jsjson.JValue]
-  timers : Map[Int, () -> Unit]
+  writes : Map[Int, (Array[@jsjson.JValue]) -> @jsjson.JValue raise]
   mut next : Int
 }
 
@@ -143,17 +143,8 @@ fn p54_peer_port(peer : String?) -> Int? {
 }
 
 ///|
-/// A member's connection as the devices are given it (P5-1's `member_stream`: its remote id), or the id it has.
-fn p54_conn_remote(v : Json?) -> String {
-  match v {
-    Some(String(s)) => s
-    _ => p54_text(v, "remoteId").unwrap_or("")
-  }
-}
-
-///|
 fn p54_int(v : Json?) -> Int {
-  p54_num(v).unwrap_or(-1.0).to_int()
+  opt_num(v).unwrap_or(-1.0).to_int()
 }
 
 ///|
@@ -167,7 +158,7 @@ fn P54DevWorld::sock_of(self : P54DevWorld, v : Json?) -> P54Sock raise {
 ///|
 /// The process table (platform `processTable`): each process's pid, parent and group.
 async fn p54_process_table(host : @host.Host) -> Json {
-  let (code, out, _) = p54_run(host, "ps", ["-axo", "pid=,ppid=,pgid="]) catch { _ => return Json::null() }
+  let (code, out, _) = run_cmd(host, "ps", ["-axo", "pid=,ppid=,pgid="]) catch { _ => return Json::null() }
   if code != Some(0) {
     return Json::null()
   }
@@ -188,7 +179,7 @@ async fn p54_port_pids(host : @host.Host, port : Int) -> Json {
   let me = @drive.pid()
   if platform() == "darwin" {
     // (lsof -i names the sockets either end of which is on the port: the listener's own end is this process's)
-    let (_, out, _) = p54_run(host, "lsof", ["-nP", "-a", "-iTCP@127.0.0.1:\{port}", "-sTCP:ESTABLISHED", "-Fp"]) catch {
+    let (_, out, _) = run_cmd(host, "lsof", ["-nP", "-a", "-iTCP@127.0.0.1:\{port}", "-sTCP:ESTABLISHED", "-Fp"]) catch {
       _ => return Json::array([])
     }
     let pids : Array[Int] = []
@@ -204,7 +195,7 @@ async fn p54_port_pids(host : @host.Host, port : Int) -> Json {
   // (Linux: the connection's inode from /proc/net/tcp, local 127.0.0.1:<port>, then whose descriptor it is)
   let tables = []
   for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
-    tables.push(read_pseudo(host, f).unwrap_or(""))
+    tables.push(shell_read_text(host, f).unwrap_or(""))
   }
   let inodes = @ops_platform.tcp_port_inodes(tables, port)
   if inodes.length() == 0 {
@@ -236,10 +227,7 @@ async fn p54_port_pids(host : @host.Host, port : Int) -> Json {
 /// machine's own time zone.
 async fn p54_start_time(host : @host.Host, pid : Int) -> Json {
   ignore(host)
-  match start_time_of(pid) {
-    Some(ms) => Json::number(ms)
-    None => Json::null()
-  }
+  (start_time_of(pid)).map(jn).unwrap_or(Json::null())
 }
 
 ///|
@@ -247,15 +235,12 @@ async fn p54_start_time(host : @host.Host, pid : Int) -> Json {
 fn p54_adb_path() -> String? {
   let env : Map[String, Json] = Map([])
   for k in ["PATH", "PATHEXT", "ANDROID_HOME", "ANDROID_SDK_ROOT", "HOME", "LOCALAPPDATA"] {
-    match env_get(k) {
-      Some(v) => env[k] = Json::string(v)
-      None => ()
-    }
+    if env_get(k) is Some(v) { env[k] = Json::string(v) }
   }
   let exe = if is_windows() { "adb.exe" } else { "adb" }
   let delimiter = if is_windows() { ";" } else { ":" }
   let on_path = env_get("PATH").unwrap_or("").split(delimiter).map(d => path([d.to_owned(), exe])).find_first(p => (try { Ok(@drive.stat(p)) } catch { e => Err(e) }) is Ok(st) && st.file)
-  for p in @adb_devices.adb_candidates(p54_jv(Json::object(env)), on_path, exe, sep(), delimiter) {
+  for p in @adb_devices.adb_candidates(to_jv(Json::object(env)), on_path, exe, sep(), delimiter) {
     if (try { Ok(@drive.stat(p)) } catch { e => Err(e) }) is Ok(st) && st.file {
       return Some(p)
     }
@@ -268,35 +253,22 @@ fn p54_adb_path() -> String? {
 async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsjson.JValue]) -> @jsjson.JValue {
   let bus = self.bus
   let host = bus.host
-  let args = given.map(p54_of_jv)
+  let args = given.map(of_jv)
   let a = (i : Int) => args.get(i)
-  let s = (i : Int) => p54_str(a(i)).unwrap_or("")
+  let s = (i : Int) => opt_str(a(i)).unwrap_or("")
   let jarr = Json::array(args)
-  let fn_of = (v : Json?) => match p54_num(p54_get(v, "$fn")) {
+  let fn_of = (v : Json?) => match opt_num(opt_field(v, "$fn")) {
     Some(n) => self.fns.get(n.to_int())
     None => None
   }
   let answer : Json = match name {
-    // the clock
-    "clock.sleep" => {
-      @effect.sleep(p54_num(a(0)).unwrap_or(0.0).to_int())
-      Json::null()
-    }
-    "clock.cancel" => {
-      match self.timers.get(p54_int(a(0))) {
-        Some(stop) => stop()
-        None => ()
-      }
-      Json::null()
-    }
     "log.info" | "log.warn" | "log.error" => {
       err_write("\{name[4:]} \{s(0)}: \{s(1)} \{a(2).unwrap_or(Json::null()).stringify()}\n")
       Json::null()
     }
     // the machine
-    "process.pid" => Json::number(@drive.pid().to_double())
-    "platform.sep" => Json::string(sep())
-    "platform.os" => Json::string(p54_os())
+    "remote.ask" | "cloud.station" | "cloud.home" | "cloud.removed" | "events.tell" =>
+      dispatch_infra(bus, name, args).unwrap_or(Json::null())
     "platform.startTimeOf" => p54_start_time(host, p54_int(a(0)))
     "platform.tcpPortPids" => p54_port_pids(host, p54_int(a(0)))
     "platform.processTable" => p54_process_table(host)
@@ -318,7 +290,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       } else if pids.length() > 0 {
         // (lsof exits 1 where one of them is gone: what it found is still said)
         let list = pids.map(p => p54_int(Some(p)).to_string()).join(",")
-        let (_, said, _) = p54_run(host, "lsof", ["-a", "-d", "cwd", "-p", list, "-Fpn"]) catch { _ => (None, "", "") }
+        let (_, said, _) = run_cmd(host, "lsof", ["-a", "-d", "cwd", "-p", list, "-Fpn"]) catch { _ => (None, "", "") }
         let mut pid = -1
         for line in said.split("\n") {
           if line.has_prefix("p") {
@@ -330,64 +302,11 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       }
       Json::array(out)
     }
-    "adb.path" => p54_opt(p54_adb_path())
-    "random.hex" => Json::string(@drive.hex(@drive.random_bytes(8)))
-    "random.int" => {
-      let lo = p54_int(a(0))
-      let hi = p54_int(a(1))
-      let r = @drive.random_bytes(4)
-      let n = (r[0].to_int() << 16) | (r[1].to_int() << 8) | r[2].to_int()
-      Json::number((lo + n % (if hi > lo { hi - lo } else { 1 })).to_double())
-    }
+    "adb.path" => jopt(p54_adb_path())
     "previous.gone" => {
       (bus.previous_gone)()
       Json::null()
     }
-    // the files
-    "fs.read" =>
-      match host.read_text(s(0)) {
-        Some(t) => Json::string(t)
-        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{s(0)}'")
-      }
-    "fs.write" => {
-      host.write_private(s(0), @utf8.encode(s(1)), sep=sep())
-      Json::null()
-    }
-    "fs.rename" => {
-      @drive.rename(s(0), s(1))
-      Json::null()
-    }
-    "fs.rm" => {
-      ignore(host.shell("fs.remove", { "path": Json::string(s(0)), "recursive": Json::boolean(true) })) catch {
-        _ => ()
-      }
-      Json::null()
-    }
-    "fs.mkdir" => {
-      @drive.mkdir(s(0), true)
-      Json::null()
-    }
-    "fs.copy" => {
-      // (copyFile: what a send cut short left at `<to>` replaced)
-      copy_file_over(s(0), s(1))
-      Json::null()
-    }
-    "fs.realpath" => Json::string(@drive.realpath(s(0)))
-    "fs.size" => Json::number(@drive.stat(s(0)).size)
-    "fs.stat" => {
-      let st = @drive.stat(s(0))
-      { "isFile": Json::boolean(st.file), "size": Json::number(st.size) }
-    }
-    "fs.mkdtemp" => {
-      let dir = path([tmpdir(), s(0) + @drive.hex(@drive.random_bytes(4))])
-      @drive.mkdir(dir, true, mode=0o700)
-      Json::string(dir)
-    }
-    "fs.sha256" =>
-      match host.file_sha256(s(0)) {
-        Some(h) => Json::string(h)
-        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{s(0)}'")
-      }
     // the processes
     "proc.signal" => {
       ignore(kill(p54_int(a(0)), s(1)))
@@ -395,31 +314,22 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     }
     "proc.run" => {
       let o = a(0)
-      let env = if p54_bool(p54_get(o, "adbEnv")) { Some(env_all() + [("ADB_MDNS_AUTO_CONNECT", "0")]) } else { None }
-      let proc = spawn(host, p54_text(o, "file").unwrap_or(""), p54_strs(p54_get(o, "args")), env?, stdout=Piped, stderr=Piped, group=true)
-      let ms = match p54_num(p54_get(o, "timeout")) {
-        Some(t) if t > 0.0 => t.to_int()
-        _ => 2147483647
-      }
-      match @effect.timeout(ms, async fn() { proc.finished() }) {
-        Some((code, _, out, err)) =>
-          {
-            "code": code.map(c => Json::number(c.to_double())).unwrap_or(Json::null()),
-            "out": Json::string(@utf8.decode_lossy(out)),
-            "err": Json::string(@utf8.decode_lossy(err)),
-          }
-        None => {
-          ignore(kill(proc.pid, "SIGKILL", group=true))
+      let env = if opt_true(opt_field(o, "adbEnv")) { Some(env_all() + [("ADB_MDNS_AUTO_CONNECT", "0")]) } else { None }
+      let ms = match opt_num(opt_field(o, "timeout")) { Some(t) if t > 0.0 => t.to_int(); _ => 0 }
+      match run_capture(host, opt_text(o, "file").unwrap_or(""), opt_strs(opt_field(o, "args")), env?, ms~, group=true) {
+        Some((_, _, _, _, true)) =>
           { "timedOut": Json::boolean(true), "code": Json::null(), "out": Json::string(""), "err": Json::string("") }
-        }
+        Some((code, _, out, err, false)) =>
+          { "code": code.map(ji).unwrap_or(Json::null()), "out": jstr(out), "err": jstr(err) }
+        None => raise SysError("spawn failed")
       }
     }
     "proc.start" => {
       let o = a(0)
       let env = env_all() +
-        (if p54_bool(p54_get(o, "adbEnv")) { [("ADB_MDNS_AUTO_CONNECT", "0")] } else { [] }) +
-        (match p54_get(o, "env") {
-          Some(Object(m)) => m.iter().filter_map(kv => p54_str(Some(kv.1)).map(v => (kv.0, v))).collect()
+        (if opt_true(opt_field(o, "adbEnv")) { [("ADB_MDNS_AUTO_CONNECT", "0")] } else { [] }) +
+        (match opt_field(o, "env") {
+          Some(Object(m)) => m.iter().filter_map(kv => as_text(kv.1).map(v => (kv.0, v))).collect()
           _ => []
         })
       let said = StringBuilder::new()
@@ -427,18 +337,15 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       let id = self.id()
       let child = p54_spawn(
         host,
-        p54_text(o, "file").unwrap_or(""),
-        p54_strs(p54_get(o, "args")),
+        opt_text(o, "file").unwrap_or(""),
+        opt_strs(opt_field(o, "args")),
         env~,
         stdin_piped=false,
         group=true,
         out=b => said.write_string(@utf8.decode_lossy(b)),
         err=b => said.write_string(@utf8.decode_lossy(b)),
         close=(code, _) => {
-          match self.procs.get(id) {
-            Some(p) => p.code = code
-            None => ()
-          }
+          if self.procs.get(id) is Some(p) { p.code = code }
           ignore(closed.succeed(()))
         },
       )
@@ -456,17 +363,11 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         None => Json::null()
       }
     "proc.kill" => {
-      match self.procs.get(p54_int(a(0))) {
-        Some(p) => ignore(kill(p.child.proc.pid, p54_str(a(1)).unwrap_or("SIGTERM"), group=true))
-        None => ()
-      }
+      if self.procs.get(p54_int(a(0))) is Some(p) { ignore(kill(p.child.proc.pid, opt_str(a(1)).unwrap_or("SIGTERM"), group=true)) }
       Json::null()
     }
     "proc.closed" => {
-      match self.procs.get(p54_int(a(0))) {
-        Some(p) => p.closed.wait()
-        None => ()
-      }
+      if self.procs.get(p54_int(a(0))) is Some(p) { p.closed.wait() }
       Json::null()
     }
     "proc.pid" =>
@@ -475,14 +376,9 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         None => Json::null()
       }
     // the sockets: this machine's own (127.0.0.1, a Unix socket's path)
-    "net.freePort" => {
-      let l = host.tcp_listen_local(0)
-      host.listen_close(l.id)
-      Json::number(l.port.to_double())
-    }
     "net.listen" => {
       let o = a(0)
-      let l = host.tcp_listen_local(p54_num(p54_get(o, "port")).unwrap_or(0.0).to_int())
+      let l = host.tcp_listen_local(opt_num(opt_field(o, "port")).unwrap_or(0.0).to_int())
       let id = self.id()
       self.listeners[id] = l.id
       { "id": Json::number(id.to_double()), "port": Json::number(l.port.to_double()) }
@@ -510,11 +406,11 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     }
     "net.connect" => {
       let o = a(0)
-      let conn = match p54_text(o, "path") {
+      let conn = match opt_text(o, "path") {
         Some(p) => p54_wire_of_conn(p54_unix_open(host, p))
         None => {
-          let h = p54_text(o, "host").unwrap_or("127.0.0.1")
-          let port = p54_int(p54_get(o, "port"))
+          let h = opt_text(o, "host").unwrap_or("127.0.0.1")
+          let port = p54_int(opt_field(o, "port"))
           let open = async fn() {
             if h == "127.0.0.1" || h == "localhost" {
               p54_wire_of_conn(p54_tcp_open(host, port))
@@ -522,11 +418,11 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
               p54_wire_of_net(p54_net_tcp(host, h, port))
             }
           }
-          match p54_num(p54_get(o, "timeout")) {
+          match opt_num(opt_field(o, "timeout")) {
             Some(ms) if ms > 0.0 =>
               match @effect.timeout(ms.to_int(), open) {
                 Some(w) => w
-                None => raise Failure(p54_text(o, "why").unwrap_or("connect \{h}:\{port} timed out"))
+                None => raise Failure(opt_text(o, "why").unwrap_or("connect \{h}:\{port} timed out"))
               }
             _ => open()
           }
@@ -545,13 +441,11 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       let sk = self.sock_of(a(0))
       sk.kept = true
       sk.chunks.clear()
-      ignore(
-        host.rt.fork_daemon("socket kept", on_error=e => @host.note("socket kept failed: \{e}"), async fn() {
-          while !sk.destroyed {
-            self.fill(sk)
-          }
-        }),
-      )
+      fork_bg(host, "socket kept", async fn() {
+        while !sk.destroyed {
+          self.fill(sk)
+        }
+      })
       Json::null()
     }
     "net.read" => {
@@ -632,155 +526,73 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         from.destroyed = true
         ignore(from.closed.succeed(()))
       }
-      ignore(host.rt.fork_daemon("join", on_error=e => @host.note("join failed: \{e}"), async fn() { carry(one, two) }))
-      ignore(host.rt.fork_daemon("join", on_error=e => @host.note("join failed: \{e}"), async fn() { carry(two, one) }))
-      Json::null()
-    }
-    // a member's connection on the mesh and its streams (the shell's)
-    "conn.openBi" => {
-      let (got, _) = host.shell("conn.openBi", { "id": a(0).unwrap_or(Json::null()) })
-      p54_get(Some(got), "id").unwrap_or(Json::null())
-    }
-    "conn.closed" => {
-      ignore(host.shell("conn.closed", { "id": a(0).unwrap_or(Json::null()) })) catch {
-        _ => ()
-      }
-      Json::null()
-    }
-    "conn.isClosed" => Json::boolean(false)
-    "conn.hasAnswers" => Json::boolean(true)
-    "conn.answers" => {
-      let (got, _) = host.shell("conn.answers", { "id": a(0).unwrap_or(Json::null()), "what": a(1).unwrap_or(Json::null()) })
-      got
-    }
-    "conn.remoteId" => Json::string(p54_conn_remote(a(0)))
-    // (link.ts `about`, for the log: the device by its id's first 12; how it is reached P5-1 keeps, not told here)
-    "conn.about" => {
-      let remote = p54_conn_remote(a(0))
-      {
-        "device": Json::string(if remote.length() > 12 { remote[:12].to_owned() } else { remote }),
-        "via": Json::string("none"),
-        "ways": Json::string(""),
-      }
-    }
-    "stream.read" => {
-      let (said, bytes) = p54_stream_call(host, a(0).unwrap_or(Json::null()), "read") catch { _ => return @jsjson.JValue::Null }
-      match (p54_get(Some(said), "end"), bytes) {
-        (Some(True), _) | (_, None) => Json::null()
-        (_, Some(b)) => Json::string(@drive.base64(b))
-      }
-    }
-    "stream.write" => {
-      ignore(p54_stream_call(host, a(0).unwrap_or(Json::null()), "write", bytes=@drive.from_base64(s(1))))
-      Json::null()
-    }
-    "stream.finish" | "stream.reset" | "stream.stopped" => {
-      ignore(p54_stream_call(host, a(0).unwrap_or(Json::null()), name[7:].to_owned(), code?=a(1))) catch {
-        _ => ()
-      }
+      fork_bg(host, "join", async fn() { carry(one, two) })
+      fork_bg(host, "join", async fn() { carry(two, one) })
       Json::null()
     }
     "serial.open" => {
       // (stty set its speed already: opened raw here at that speed, unless a baud is given)
-      let baud = match p54_num(a(1)) {
+      let baud = match opt_num(a(1)) {
         Some(b) => b.to_int()
         None => 0
       }
       self.sock(p54_wire_of_net(p54_net_serial(host, s(0), baud)))
     }
-    // the store's chats and cards
-    "store.has" => Json::boolean(["latestThreadIfReady", "pendingCardHeaderIfReady"].contains(s(0)))
-    "store.getSession" => p54_session_row(bus, s(0)).unwrap_or(Json::null())
-    "store.starter" => self.threads.starter(a(0).unwrap_or(Json::null()))
-    "store.firstText" => self.threads.first_text(a(0).unwrap_or(Json::null()))
-    "store.latestThread" => {
-      let v = self.threads.latest_thread(a(0).unwrap_or(Json::null()))
-      bus.drain_thread_requests(self.threads)
-      v
-    }
-    "store.latestThreadIfReady" => {
-      let v = self.threads.latest_thread_if_ready(a(0).unwrap_or(Json::null()))
-      bus.drain_thread_requests(self.threads)
-      v
-    }
-    "store.sessionThreadById" => self.threads.session_thread_by_id(a(0).unwrap_or(Json::null()), a(1).unwrap_or(Json::null()))
-    "store.pendingCardHeader" => self.threads.pending_card_header(a(0).unwrap_or(Json::null()))
-    "store.pendingCardHeaderIfReady" => self.threads.pending_card_header_if_ready(a(0).unwrap_or(Json::null()))
-    "store.insertMessage" => {
-      // (what is checked inside the write is run first, its refusal the write's)
-      match fn_of(a(1)) {
-        Some(f) => ignore(f([]))
-        None => ()
-      }
-      let got = self.threads.insert_message(p54_jv(a(0).unwrap_or(Json::null())))
-      p54_told_threads(bus, self.threads)
-      got
-    }
-    "store.withdrawCard" => {
-      let got = self.threads.withdraw_card(a(0).unwrap_or(Json::null()), a(1).unwrap_or(Json::null()), a(2).unwrap_or(Json::null()))
-      p54_told_threads(bus, self.threads)
-      got
-    }
-    "store.restateCard" => {
-      let now = self.threads.card_at(a(1).unwrap_or(Json::null()), a(2).unwrap_or(Json::null()))
-      let next = match fn_of(a(3)) {
-        Some(f) => p54_of_jv(f([p54_jv(now)]))
-        None => now
-      }
-      let got = self.threads.restate_card(a(0).unwrap_or(Json::null()), a(1).unwrap_or(Json::null()), a(2).unwrap_or(Json::null()), _ => p54_jv(next))
-      p54_told_threads(bus, self.threads)
-      got
-    }
+    // the store's chats and cards (writes/requests needing bus notifications)
+    "store.latestThread" | "store.latestThreadIfReady" | "store.insertMessage" | "store.withdrawCard" | "store.restateCard" | "cardOutcomes.save" =>
+      dispatch_threads_card(
+        bus,
+        self.threads,
+        name,
+        args,
+        async fn(cb, cb_args) {
+          match fn_of(Some(cb)) {
+            Some(f) => Some(of_jv(f(cb_args.map(to_jv))))
+            None => None
+          }
+        },
+        cb => match opt_num(opt_field(Some(cb), "$fn")) {
+          Some(n) =>
+            match self.writes.get(n.to_int()) {
+              Some(f) => {
+                // (called once, inside the transaction: let go after)
+                self.writes.remove(n.to_int())
+                ignore(f([]))
+              }
+              None => raise LiveError("no write \{n}")
+            }
+          None => raise LiveError("no write given")
+        },
+      ).unwrap_or(Json::null())
     "store.sessionChat" | "store.sessionThread" => (bus.hub_ask.val)(name, jarr)
-    // (card-outbox-worker.ts `save`: the request's write, then its outcome queued for the agents' side's worker, which
-    // closes and restates the card)
-    "cardOutcomes.save" => {
-      match fn_of(a(1)) {
-        Some(f) => ignore(f([]))
-        None => ()
-      }
-      (bus.hub_ask.val)("cardOutcomes.save", Json::array([a(0).unwrap_or(Json::null())]))
-    }
     // the hub and the agents' side (P5-2's)
-    "hub.has" => Json::boolean(["prepareCardPosts", "prepareLatestThreads"].contains(s(0)))
-    "hub.identity" => (bus.hub_ask.val)(name, jarr)
-    "hub.notify" | "hub.shared" | "hub.prepareCardPosts" | "hub.prepareLatestThreads" | "chat.post" | "agents.runners" =>
+    "hub.identity" | "hub.notify" | "hub.shared" | "hub.prepareCardPosts" | "hub.prepareLatestThreads" | "chat.post" | "agents.runners" =>
       (bus.hub_ask.val)(name, jarr)
     "jobs.watched" => (bus.jobs_ask.val)(name, jarr)
     // (the forwards and the rigs are P5-1's: asked of this station's own handlers on the bus, the jobs' where none is)
     "forwards.openDevice" | "forwards.closeDevice" =>
-      match (try { Ok(bus.call_peer("self", None, "$forwards", { "op": Json::string(name), "args": jarr })) } catch { e => Err(e) }) {
-        Ok((got, _)) => got
+      match (try { Ok(bus.forwards_call(name, args)) } catch { e => Err(e) }) {
+        Ok(got) => got
         Err(BusError(_)) => (bus.jobs_ask.val)(name, jarr)
         Err(e) => raise e
       }
-    "rigs.list" | "rigs.use" | "rigs.done" => {
-      let (got, _) = bus.call_peer("self", None, "$rigs", { "op": Json::string(name), "args": jarr })
-      got
-    }
-    "remote.ask" => {
-      let req = a(1)
-      let (got, _) = bus.call_peer(s(0), p54_text(req, "workspace"), p54_text(req, "method").unwrap_or(""), req.unwrap_or(Json::null()))
-      got
-    }
+    "rigs.list" | "rigs.use" | "rigs.done" => bus.rigs_call(name, args)
     // the control plane's workspaces
-    "cloud.station" => p54_opt(p54_station_id(bus))
-    "cloud.home" => p54_opt(p54_home(bus))
     "cloud.memberships" => Json::array(self.cloud.memberships)
     "cloud.peers" =>
-      match self.cloud.memberships.iter().find_first(m => p54_text(Some(m), "workspace") == Some(s(0))) {
-        Some(m) => p54_get(Some(m), "peers").unwrap_or(Json::array([]))
+      match self.cloud.memberships.iter().find_first(m => jtext(m, "workspace") == Some(s(0))) {
+        Some(m) => opt_field(Some(m), "peers").unwrap_or(Json::array([]))
         None => Json::array([])
       }
     "cloud.nameOf" => {
       let id = s(0)
       let mut named = id
       for m in self.cloud.memberships {
-        match p54_get(Some(m), "peers") {
+        match opt_field(Some(m), "peers") {
           Some(Array(ps)) =>
             for p in ps {
-              if p54_text(Some(p), "id") == Some(id) {
-                match p54_text(Some(p), "name") {
+              if jtext(p, "id") == Some(id) {
+                match jtext(p, "name") {
                   Some(n) if n != "" => named = n
                   _ => ()
                 }
@@ -791,30 +603,25 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       }
       Json::string(named)
     }
-    "cloud.removed" =>
-      Json::boolean(match (bus.cloud_state.val)() {
-        Some(st) => p54_num(p54_get(Some(st), "removed_at")) is Some(_)
-        None => false
-      })
     "cloud.removedLater" => {
-      // (said once the station is taken out of its workspace: not before it stops here)
-      ignore(bus.stopped.wait())
+      // (said once the station is taken out of its workspace, as the control plane tells it, or as it stops here:
+      // adb/link.ts `removed`, its listener let go either way)
+      let gone : @effect.Deferred[Unit] = @effect.Deferred::new()
+      let off = (bus.cloud_listen.val)(_ => if bus_cloud_removed(bus) { ignore(gone.succeed(())) })
+      defer off()
+      if !bus_cloud_removed(bus) {
+        @effect.race(async fn() { gone.wait() }, async fn() { ignore(bus.stopped.wait()) })
+      }
       Json::null()
     }
-    "cloud.unlisten" => Json::null()
-    "grants.home" => p54_opt(p54_home(bus))
-    "grants.id" => Json::null()
-    "events.tell" => {
-      (bus.events_tell.val)(s(0), a(1).unwrap_or(Json::null()), s(2), a(3).unwrap_or(Json::null()))
-      Json::null()
-    }
+    "grants.home" => jopt(bus_home(bus))
     "sources.changed" => {
       (bus.overview_changed.val)()
       Json::null()
     }
     _ => (bus.hub_ask.val)(name, jarr)
   }
-  p54_jv(answer)
+  to_jv(answer)
 }
 
 ///|
@@ -827,14 +634,14 @@ priv struct P54Devices {
 
 ///|
 fn p54_declared_tool(decl : @jsjson.JValue, call : async (String, Json) -> String) -> PartTool {
-  let declared = p54_of_jv(decl)
+  let declared = of_jv(decl)
   {
-    name: p54_text(Some(declared), "name").unwrap_or(""),
+    name: jtext(declared, "name").unwrap_or(""),
     declared,
     call: async fn(args, context) {
       match (try { Ok(call(p54_session(context), args)) } catch { e => Err(e) }) {
-        Ok(text) => p54_tool_answer(text)
-        Err(e) => p54_tool_answer(@adb_devices.message_of(e), error=true)
+        Ok(text) => tool_answer(text)
+        Err(e) => tool_answer(@adb_devices.message_of(e), error=true)
       }
     },
   }
@@ -852,20 +659,28 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
     listeners: Map([]),
     procs: Map([]),
     fns: Map([]),
-    timers: Map([]),
+    writes: Map([]),
     next: 0,
   }
   let (zh, en) = catalogs_json()
   let world = @adb_devices.World::new(
+    host,
+    bus.store,
+    threads,
     async fn(name, args) { w0.call(name, args) },
     f => {
       let id = w0.id()
       w0.fns[id] = f
-      @jsjson.JValue::Obj([(@jsjson.units("$fn"), @jsjson.JValue::Num(id.to_double()))])
+      @jsjson.JValue::Obj([("$fn", @jsjson.JValue::Num(id.to_double()))])
+    },
+    f => {
+      let id = w0.id()
+      w0.writes[id] = f
+      @jsjson.JValue::Obj([("$fn", @jsjson.JValue::Num(id.to_double()))])
     },
     () => wall_ms().to_double(),
     f => ignore(host.rt.fork_quiet(name="devices", async fn() { f() catch { _ => () } })),
-    @session_chats.Words::new(p54_jv(zh), p54_jv(en)),
+    @session_chats.Words::new(to_jv(zh), to_jv(en)),
   )
   world.set_lang((bus.lang.val)())
   let adb = @adb_devices.Adb::new(
@@ -881,27 +696,36 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
   // An offer or an ask on a member's link (`adb`), given the stream the mesh opened for it.
   bus.parts.streams("adb", async fn(asked) {
     adb.stream(
-      p54_jv(p54_get(Some(asked), "conn").unwrap_or(Json::null())),
-      p54_jv(p54_get(Some(asked), "viewer").unwrap_or(Json::null())),
-      p54_jv(p54_get(Some(asked), "head").unwrap_or(Json::null())),
-      p54_jv(p54_stream_handle(asked)),
-    )
+      to_jv(opt_field(Some(asked), "conn").unwrap_or(Json::null())),
+      to_jv(opt_field(Some(asked), "viewer").unwrap_or(Json::null())),
+      to_jv(opt_field(Some(asked), "head").unwrap_or(Json::null())),
+      to_jv(p54_stream_handle(asked)),
+    ) catch {
+      // (what failed, a decision's write too, said before the link is let go as the TypeScript's handler lets it go)
+      e => {
+        slice_log("warn", "adb", "adb stream failed", { "error": jstr(said_of(e)) })
+        raise e
+      }
+    }
   })
   bus.parts.tools([
-    p54_declared_tool(@adb_devices.phone_use_decl, async fn(session, args) { adb.phone_use(session, p54_jv(args)) }),
-    p54_declared_tool(@adb_devices.phone_send_decl, async fn(session, args) { adb.phone_send(session, p54_jv(args)) }),
+    p54_declared_tool(@adb_devices.phone_use_decl, async fn(session, args) { adb.phone_use(session, to_jv(args)) }),
+    p54_declared_tool(@adb_devices.phone_send_decl, async fn(session, args) { adb.phone_send(session, to_jv(args)) }),
     p54_declared_tool(@adb_devices.adb_devices_decl, async fn(_, _) { adb.adb_devices() }),
     p54_declared_tool(@adb_devices.device_list_decl, async fn(session, _) { devices.device_list(session) }),
-    p54_declared_tool(@adb_devices.device_use_decl, async fn(session, args) { devices.device_use(session, p54_jv(args)) }),
+    p54_declared_tool(@adb_devices.device_use_decl, async fn(session, args) { devices.device_use(session, to_jv(args)) }),
   ])
   // What a member's app asks of the devices attached here.
   let route = (meth : String, pattern : String) => ({
     meth,
     path: pattern,
     answer: async fn(r) {
-      let asked = p54_text(Some(r), "path").unwrap_or("")
-      let body = p54_text(Some(r), "body").unwrap_or("")
-      match devices.route(meth, asked, p54_jv(p54_get(Some(r), "viewer").unwrap_or(Json::null())), body) {
+      let asked = jtext(r, "path").unwrap_or("")
+      let body = match jtext(r, "rawBody") {
+        Some(b) => b
+        None => jtext(r, "body").unwrap_or("")
+      }
+      match devices.route(meth, asked, to_jv(opt_field(Some(r), "viewer").unwrap_or(Json::null())), body) {
         Some((status, value)) => { "status": Json::number(status.to_double()), "body": Json::string(@jsjson.stringify(value)) }
         None => { "status": Json::number(404.0), "body": Json::string("{\"error\":\"no such route\"}") }
       }
@@ -916,21 +740,21 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
     // (the workspace it is asked in: the bus's, else what the request names)
     let workspace = match ws {
       Some(w) => w
-      None => p54_text(Some(params), "workspace").unwrap_or("")
+      None => jtext(params, "workspace").unwrap_or("")
     }
-    (p54_of_jv(devices.bus_list(p54_jv(Json::string(workspace)))), None)
+    (of_jv(devices.bus_list(to_jv(Json::string(workspace)))), None)
   })
   // A device here, reached from another station's chat (mesh/peer-http.ts's tunnel `device`): `probe` only says it
   // is there; else its connection opened, what came with the ask (`carry`) sent first, and the bytes carried both ways
   // between it and the tunnel's stream until either ends.
   bus.here_device.val = async fn(ask, conn) {
-    let workspace = p54_text(Some(ask), "workspace").unwrap_or("")
+    let workspace = jtext(ask, "workspace").unwrap_or("")
     // (P5-1's HereLocal names it `device`; an ask of before, `id`)
-    let id = match p54_text(Some(ask), "device") {
+    let id = match jtext(ask, "device") {
       Some(d) => d
-      None => p54_text(Some(ask), "id").unwrap_or("")
+      None => jtext(ask, "id").unwrap_or("")
     }
-    let probe = p54_bool(p54_get(Some(ask), "probe"))
+    let probe = opt_true(opt_field(Some(ask), "probe"))
     let got = devices.side_device(workspace, id, probe) catch {
       e => raise P54Refused("HttpError", { "status": 404, "message": Json::string(@adb_devices.message_of(e)) })
     }
@@ -939,10 +763,10 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
     }
     // (the tunnel's stream as P5-1 handed it, `{stream, kind, carry}`: what came past its head carried with it, once)
     let (stream, carry) = match conn {
-      { "stream": _, .. } => (p54_member_stream(host, p54_stream_handle(conn)), p54_bytes_of(p54_get(Some(conn), "carry")))
-      _ => (p54_member_stream(host, conn), p54_bytes_of(p54_get(Some(ask), "carry")))
+      { "stream": _, .. } => (p54_member_stream(host, p54_stream_handle(conn)), p54_bytes_of(opt_field(Some(conn), "carry")))
+      _ => (p54_member_stream(host, conn), p54_bytes_of(opt_field(Some(ask), "carry")))
     }
-    p54_device_tunnel(w0, p54_of_jv(got), carry, stream)
+    p54_device_tunnel(w0, of_jv(got), carry, stream)
   }
   { adb, devices, world: w0, dev: world }
 }
@@ -958,8 +782,8 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
     _ => raise Failure("no way to reach the device")
   }
   guard w.fns.get(id) is Some(f) else { raise Failure("no way to reach the device") }
-  let opened = p54_of_jv(f([]))
-  guard p54_num(Some(opened)) is Some(n) && w.socks.get(n.to_int()) is Some(sock) else {
+  let opened = of_jv(f([]))
+  guard as_num(opened) is Some(n) && w.socks.get(n.to_int()) is Some(sock) else {
     raise Failure("the device was not reached")
   }
   let wire = sock.conn
@@ -969,17 +793,15 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
   let lid = listening.id
   let port = listening.port
   let accepting : @effect.Deferred[Json] = @effect.Deferred::new()
-  ignore(
-    host.rt.fork_daemon("device forward accept", on_error=e => @host.note("device forward accept failed: \{e}"), async fn() {
-      let accepted = host.accept(lid) catch {
-        _ => {
-          ignore(accepting.succeed(Json::null()))
-          return
-        }
+  fork_bg(host, "device forward accept", async fn() {
+    let accepted = host.accept(lid) catch {
+      _ => {
+        ignore(accepting.succeed(Json::null()))
+        return
       }
-      ignore(accepting.succeed(accepted.id))
-    }),
-  )
+    }
+    ignore(accepting.succeed(accepted.id))
+  })
   let given = p54_tcp_open(host, port)
   let inner_id = accepting.wait()
   host.listen_close(lid)
@@ -989,80 +811,163 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
     raise Failure("the device's connection was not made")
   }
   let inner : P54Conn = { host, id: inner_id, closed: false }
-  ignore(
-    host.rt.fork_daemon("device forward in", on_error=e => @host.note("device forward in failed: \{e}"), async fn() {
-      let read = wire.read
-      while true {
-        let got = read() catch { _ => None }
-        guard got is Some(b) else { break }
-        inner.write(b) catch {
-          _ => break
-        }
+  fork_bg(host, "device forward in", async fn() {
+    let read = wire.read
+    while true {
+      let got = read() catch { _ => None }
+      guard got is Some(b) else { break }
+      inner.write(b) catch {
+        _ => break
       }
-      inner.close()
-    }),
-  )
-  ignore(
-    host.rt.fork_daemon("device forward out", on_error=e => @host.note("device forward out failed: \{e}"), async fn() {
-      let write = wire.write
-      while inner.read() is Some(b) {
-        write(b) catch {
-          _ => break
-        }
+    }
+    inner.close()
+  })
+  fork_bg(host, "device forward out", async fn() {
+    let write = wire.write
+    while inner.read() is Some(b) {
+      write(b) catch {
+        _ => break
       }
-      (wire.close)()
-      inner.close()
-    }),
-  )
+    }
+    (wire.close)()
+    inner.close()
+  })
   { "id": given.id }
 }
 
 ///|
 /// What the routes ask of the phones and devices by name.
 async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
-  let s = (i : Int) => p54_arg_text(a, i)
+  let s = (i : Int) => call_arg_text(a, i)
   let answer : Json = match op {
-    "devices.listed" => Json::array(d.devices.listed(s(0)).map(p54_of_jv))
-    "devices.phones" => Json::array(d.devices.phones(s(0)).map(p54_of_jv))
-    "devices.all" => Json::array(d.devices.all(s(0), s(1)).map(p54_of_jv))
-    "adb.phonesShown" => Json::array(d.adb.phones_shown(s(0)).map(p54_of_jv))
+    "devices.listed" => Json::array(d.devices.listed(s(0)).map(of_jv))
+    "devices.phones" => Json::array(d.devices.phones(s(0)).map(of_jv))
+    "devices.all" => Json::array(d.devices.all(s(0), s(1)).map(of_jv))
+    "adb.phonesShown" => Json::array(d.adb.phones_shown(s(0)).map(of_jv))
     // (a station that only runs tasks reaches its devices so: `Rig`'s reach, P5-1's; the socket by its number, used
     // through `devices.net.*` as the devices' world uses it)
-    "devices.reach" => p54_of_jv(d.devices.side_device(s(0), s(1), p54_bool(p54_arg(a, 2))))
+    "devices.reach" => of_jv(d.devices.side_device(s(0), s(1), opt_true(call_arg(a, 2))))
     // (a device attached here, forwarded to a chat's port by P5-1's forwards: `[session, reach]`, the target's `reach`
     // called and what it opened, a TCP connection or a serial port, given as one of the shell's loopback connections)
-    "devices.reachForward" => p54_reach_forward(d, p54_arg(a, 1).unwrap_or(Json::null()))
+    "devices.reachForward" => p54_reach_forward(d, call_arg(a, 1).unwrap_or(Json::null()))
+    // (a tasks-only station's device a chat's grant lets it reach (P5-1's rigs, rig.mbt `reach`: devices/connect.ts
+    // `reachDevice` of the device as its owner signed it): the socket's number; its end waited for, the socket let go
+    // then; and it closed)
+    "devices.reachDevice" => of_jv(@adb_devices.reach_device(d.dev, to_jv(call_arg(a, 0).unwrap_or(Json::null()))))
+    "devices.socketClosed" => {
+      let id = p54_int(call_arg(a, 0))
+      match d.world.socks.get(id) {
+        Some(sk) => {
+          sk.closed.wait()
+          d.world.socks.remove(id)
+        }
+        None => ()
+      }
+      Json::null()
+    }
+    // (a chat's tunnel to such a device (P5-1's `HereLocal` `device` on a rig, through `Rig::device`): the tunnel as
+    // P5-1 handed it, `{stream, kind, carry}`, carried both ways with the socket until either ends)
+    "devices.socketTunnel" => {
+      let tunnel = call_arg(a, 1).unwrap_or(Json::null())
+      let stream = p54_member_stream(d.world.bus.host, p54_stream_handle(tunnel))
+      p54_device_tunnel(d.world, call_arg(a, 0).unwrap_or(Json::null()), p54_bytes_of(opt_field(Some(tunnel), "carry")), stream)
+      Json::null()
+    }
+    "devices.socketDestroy" => of_jv(d.world.call("net.destroy", [to_jv(call_arg(a, 0).unwrap_or(Json::null()))]))
     // (who may use a device forwarded to a session's port: devices/module.ts `admitFor`, null to let them in)
     "devices.admit" => {
-      let holders = match p54_arg(a, 2) {
-        Some(Array(xs)) => xs.filter_map(x => p54_num(Some(x)).map(n => n.to_int()))
+      let holders = match call_arg(a, 2) {
+        Some(Array(xs)) => xs.filter_map(x => as_num(x).map(n => n.to_int()))
         _ => []
       }
-      match @adb_devices.session_gate(d.dev, s(0), holders, "this device's port is another chat's: ask for the device with device_use in this chat") {
-        Some(why) => Json::string(why)
-        None => Json::null()
-      }
+      jopt(@adb_devices.session_gate(d.dev, s(0), holders, "this device's port is another chat's: ask for the device with device_use in this chat"))
     }
     // (P5-1's rigs open a device's forward here once a chat may use it: sources.ts `forward`)
     "sources.hasForward" => Json::boolean(true)
-    "sources.forward" => Json::string(d.devices.forward(s(0), p54_jv(p54_arg(a, 1).unwrap_or(Json::null()))))
+    "sources.forward" => Json::string(d.devices.forward(s(0), to_jv(call_arg(a, 1).unwrap_or(Json::null()))))
     // (a test's: a device's TCP reached as the devices reach one, a line sent and what came back)
     "test.reachTcp" if p54_testing() => {
       let w = d.world
-      let sock = p54_of_jv(w.call("net.connect", [p54_jv({ "host": Json::string(s(0)), "port": Json::number(p54_num(p54_arg(a, 1)).unwrap_or(0.0)) })]))
-      ignore(w.call("net.write", [p54_jv(sock), p54_jv(Json::string(@drive.base64(@utf8.encode(s(2)))))]))
-      let got = p54_of_jv(w.call("net.read", [p54_jv(sock)]))
-      ignore(w.call("net.destroy", [p54_jv(sock)]))
+      let sock = of_jv(w.call("net.connect", [to_jv({ "host": Json::string(s(0)), "port": Json::number(opt_num(call_arg(a, 1)).unwrap_or(0.0)) })]))
+      ignore(w.call("net.write", [to_jv(sock), to_jv(Json::string(@drive.base64(@utf8.encode(s(2)))))]))
+      let got = of_jv(w.call("net.read", [to_jv(sock)]))
+      ignore(w.call("net.destroy", [to_jv(sock)]))
       match got {
         String(b) => Json::string(@utf8.decode_lossy(@drive.from_base64(b)))
         _ => Json::null()
       }
     }
+    // (a test's: a share's wait for the station taken out of its workspace (link.mbt `cloud.removedLater`), the control
+    // plane's state and its listeners the test's for it: said as the plane tells the removal, the station still
+    // running, its listener let go; said at once where it was removed before)
+    "test.removedLater" if p54_testing() => {
+      let bus = d.world.bus
+      let (state_was, listen_was) = (bus.cloud_state.val, bus.cloud_listen.val)
+      let removed = Ref(false)
+      let listeners : Array[(Int, (Json?) -> Unit)] = []
+      let next = Ref(0)
+      let listening : @effect.Deferred[Unit] = @effect.Deferred::new()
+      bus.cloud_state.val = () => if removed.val { Some({ "removed_at": Json::number(1.0) }) } else { state_was() }
+      bus.cloud_listen.val = f => {
+        next.val += 1
+        let id = next.val
+        listeners.push((id, f))
+        ignore(listening.succeed(()))
+        () => ignore(listeners.search_by(x => x.0 == id).map(i => listeners.remove(i)))
+      }
+      let said : @effect.Deferred[Unit] = @effect.Deferred::new()
+      fork_bg(bus.host, "test removedLater", async fn() {
+        ignore(d.world.call("cloud.removedLater", []))
+        ignore(said.succeed(()))
+      })
+      listening.wait()
+      let waited = !said.is_done() && listeners.length() == 1
+      removed.val = true
+      for l in listeners.copy() {
+        (l.1)(None)
+      }
+      said.wait()
+      let let_go = listeners.is_empty()
+      // (removed before it is asked: at once)
+      ignore(d.world.call("cloud.removedLater", []))
+      let none_left = listeners.is_empty()
+      bus.cloud_state.val = state_was
+      bus.cloud_listen.val = listen_was
+      {
+        "waited": Json::boolean(waited),
+        "running": Json::boolean(!bus.stopped.is_done()),
+        "letGo": Json::boolean(let_go && none_left),
+      }
+    }
+    // (a test's: a tasks-only station's device reached as its rig reaches one, then let go: its end told)
+    "test.rigReach" if p54_testing() => {
+      let socket = bus_rig_reach(d.world.bus, call_arg(a, 0).unwrap_or(Json::null()))
+      let ended : @effect.Deferred[Unit] = @effect.Deferred::new()
+      (socket.on_close)(() => ignore(ended.succeed(())))
+      (socket.destroy)()
+      ended.wait()
+      // (told once more after the end: at once)
+      let again = Ref(false)
+      (socket.on_close)(() => again.val = true)
+      Json::boolean(again.val)
+    }
+    // (a test's: a rig's device reached as `Rig::device` reaches it and a chat's tunnel carried with it, the tunnel a
+    // connection to the test's port with what came with its ask; its end told the rig)
+    "test.rigTunnel" if p54_testing() => {
+      let socket = bus_rig_reach(d.world.bus, call_arg(a, 0).unwrap_or(Json::null()))
+      let ended : @effect.Deferred[Unit] = @effect.Deferred::new()
+      (socket.on_close)(() => ignore(ended.succeed(())))
+      let c = p54_tcp_open(d.world.bus.host, opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int())
+      (socket.pipe)({ "kind": "tcp", "stream": c.id, "carry": { "$bytes": Json::string(@drive.base64(@utf8.encode(s(2)))) } })
+      c.close()
+      ended.wait()
+      Json::boolean(true)
+    }
     // (a test's: a device here reached as another station's tunnel reaches it, the tunnel's stream a connection to
     // the test's port; the slots live_p5_4_io.c holds; a connection read to its end, one called off as it connects)
     "test.hereDevice" if p54_testing() => {
       let got = d.devices.side_device(s(0), s(1), false)
-      let c = p54_tcp_open(d.world.bus.host, p54_num(p54_arg(a, 2)).unwrap_or(0.0).to_int())
+      let c = p54_tcp_open(d.world.bus.host, opt_num(call_arg(a, 2)).unwrap_or(0.0).to_int())
       let stream : @terminals_logins.Stream = {
         read: async fn() { c.read() },
         write: async fn(b) { c.write(b) },
@@ -1072,13 +977,13 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
           }
         },
       }
-      p54_device_tunnel(d.world, p54_of_jv(got), @utf8.encode(s(3)), stream)
+      p54_device_tunnel(d.world, of_jv(got), @utf8.encode(s(3)), stream)
       c.close()
       Json::boolean(true)
     }
     "test.ioHeld" if p54_testing() => Json::number(p54io_held_ffi().to_double())
     "test.netEof" if p54_testing() => {
-      let n = p54_net_tcp(d.world.bus.host, s(0), p54_num(p54_arg(a, 1)).unwrap_or(0.0).to_int())
+      let n = p54_net_tcp(d.world.bus.host, s(0), opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int())
       let held = p54io_held_ffi()
       let got = StringBuilder::new()
       while n.read() is Some(b) {
@@ -1088,19 +993,132 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
     }
     "test.netCalledOff" if p54_testing() => {
       let host = d.world.bus.host
-      let ms = p54_num(p54_arg(a, 2)).unwrap_or(100.0).to_int()
-      let opened = @effect.timeout(ms, async fn() { p54_net_tcp(host, s(0), p54_num(p54_arg(a, 1)).unwrap_or(0.0).to_int()) }) catch {
+      let ms = opt_num(call_arg(a, 2)).unwrap_or(100.0).to_int()
+      let t0 = @host.now()
+      let opened = @effect.timeout(ms, async fn() { p54_net_tcp(host, s(0), opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int()) }) catch {
         _ => None
       }
-      match opened {
-        Some(n) => n.close()
-        None => ()
+      if opened is Some(n) { n.close() }
+      { "held": Json::number(p54io_held_ffi().to_double()), "elapsedMs": Json::number((@host.now() - t0).to_double()) }
+    }
+    "test.netBackpressure" if p54_testing() => {
+      let host = d.world.bus.host
+      let n = p54_net_tcp(host, s(0), opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int())
+      let chunk = Bytes::make(262144, b'x')
+      let t0 = @host.now()
+      let mut writes = 0
+      let mut hit_full = false
+      for _ in 0..<128 {
+        if !n.write(chunk) {
+          hit_full = true
+          break
+        }
+        writes += 1
       }
-      Json::number(p54io_held_ffi().to_double())
+      let elapsed = (@host.now() - t0).to_double()
+      n.close()
+      {
+        "hitFull": Json::boolean(hit_full),
+        "writes": Json::number(writes.to_double()),
+        "elapsedMs": Json::number(elapsed),
+        "heldAfter": Json::number(p54io_held_ffi().to_double()),
+      }
+    }
+    "test.netWriteEndOrder" if p54_testing() => {
+      let host = d.world.bus.host
+      let n = p54_net_tcp(host, s(0), opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int())
+      let chunks = opt_num(call_arg(a, 2)).unwrap_or(16.0).to_int()
+      let chunk = Bytes::make(65536, b'a')
+      let mut all_written = true
+      for _ in 0..<chunks {
+        if !n.write(chunk) {
+          all_written = false
+          break
+        }
+      }
+      n.end()
+      let got = StringBuilder::new()
+      while n.read() is Some(b) {
+        got.write_string(@utf8.decode_lossy(b))
+      }
+      {
+        "allWritten": Json::boolean(all_written),
+        "reply": Json::string(got.to_string()),
+        "heldAfter": Json::number(p54io_held_ffi().to_double()),
+      }
+    }
+    "test.pumpConnectErrors" if p54_testing() => {
+      let host = d.world.bus.host
+      let pump = Pump::new(host)
+      // 1. Write failure propagates error and closes the socket
+      let write_err : @effect.Deferred[String] = @effect.Deferred::new()
+      let write_closed : @effect.Deferred[Unit] = @effect.Deferred::new()
+      let write_connected : @effect.Deferred[Unit] = @effect.Deferred::new()
+      let read_hold : @effect.Deferred[Bytes?] = @effect.Deferred::new()
+      let sock = pump.connect_with(
+        async fn() { (Json::number(1.0), async fn() { ignore(read_hold.succeed(None)) }) },
+        async fn(_id, _b) { raise Failure("Broken pipe") },
+        async fn(_id) { read_hold.wait() },
+        async fn(_id) {  },
+        {
+          connected: () => ignore(write_connected.succeed(())),
+          data: _ => (),
+          error: m => ignore(write_err.succeed(m)),
+          closed: () => ignore(write_closed.succeed(())),
+        },
+      )
+      write_connected.wait()
+      (sock.write)("hello")
+      let w_err = write_err.wait()
+      write_closed.wait()
+      let w_destroyed = (sock.destroyed)()
+      // 2. unix_open error code preservation (ENOENT, ECONNREFUSED, and passthrough)
+      let open_err = async fn(path : String) -> String {
+        let err_d : @effect.Deferred[String] = @effect.Deferred::new()
+        let cls_d : @effect.Deferred[Unit] = @effect.Deferred::new()
+        ignore(
+          pump.connect(path, {
+            connected: () => (),
+            data: _ => (),
+            error: m => ignore(err_d.succeed(m)),
+            closed: () => ignore(cls_d.succeed(())),
+          }),
+        )
+        let msg = err_d.wait()
+        cls_d.wait()
+        msg
+      }
+      let missing_code = open_err(s(0))
+      let refused_code = open_err(s(1))
+      let other_d : @effect.Deferred[String] = @effect.Deferred::new()
+      let other_c : @effect.Deferred[Unit] = @effect.Deferred::new()
+      ignore(
+        pump.connect_with(
+          async fn() { raise Failure("Permission denied") },
+          async fn(_id, _b) {  },
+          async fn(_id) { None },
+          async fn(_id) {  },
+          {
+            connected: () => (),
+            data: _ => (),
+            error: m => ignore(other_d.succeed(m)),
+            closed: () => ignore(other_c.succeed(())),
+          },
+        ),
+      )
+      let other_code = other_d.wait()
+      other_c.wait()
+      {
+        "writeErr": Json::string(w_err),
+        "writeDestroyed": Json::boolean(w_destroyed),
+        "missingCode": Json::string(missing_code),
+        "refusedCode": Json::string(refused_code),
+        "otherCode": Json::string(other_code),
+      }
     }
     _ =>
       if op.has_prefix("devices.net.") {
-        p54_of_jv(d.world.call(op[8:].to_owned(), (match a { Array(xs) => xs; _ => [] }).map(p54_jv)))
+        of_jv(d.world.call(op[8:].to_owned(), (match a { Array(xs) => xs; _ => [] }).map(to_jv)))
       } else {
         return None
       }

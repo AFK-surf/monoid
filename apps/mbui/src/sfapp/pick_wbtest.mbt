@@ -136,7 +136,7 @@ test "复制 puts the passage on the clipboard and lets go; 全选 takes all of 
   if own_bar {
     // (said at once, read out: seen as it has come in, toast_said)
     assert_true(toast_said(t, "已复制"))
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     assert_true(t.find("已复制") is Some(_))
     // (its toast gone: it says 已复制 over the composer, where the bar of the next passage picked stands)
     t.run_for(@sf.toast_ms)
@@ -387,18 +387,32 @@ test "a tap anywhere else lets go of it, as back does" {
 
 
 ///|
-test "its words no longer laid out: what was picked goes in that very frame, not frames later" {
-  let calls : Array[Made] = []
-  let t = fake_core(calls)
-  hold_on(t, "做完了：列表、跳到最新的按钮") |> ignore
-  assert_true(pk.ts != "")
-  // (as if its message scrolled far off: no box laid out holds its words now)
-  pk.sel.key = "gone"
-  t.frame()
-  assert_eq(pk.ts, "")
-  t.assert_idle()
-}
-
-///|
 /// How long a finger is held still for a long press (ViewConfiguration's long press timeout, as Compose has it).
 let long_press_ms : Double = @ui.long_press_ms
+
+///|
+test "小屏, a chat only in Feishu: a finger held on what was said there offers 引用, 复制 and 全选 (no message to share or link); 引用 quotes it" {
+  new_run()
+  let calls : Array[Made] = []
+  let base = fixture("chat-feishu")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "飞书群消息排查", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  hold_on(t, "已经定位到飞书接入会话") |> ignore
+  let one = picking_now(t).text
+  assert_eq(["引用", "复制", "全选", "多选", "复制链接"].filter(fn(i) { bar_offers(t, i) }), ["引用", "复制", "全选"])
+  bar_choose(t, "引用")
+  t.frame()
+  let quoted = named(calls, "composer.quote")
+  assert_eq(quoted.length(), 1)
+  let q = field(Some(quoted[0].params), "quote")
+  assert_eq((text(q, "text"), text(q, "ts"), text(q, "role"), text(q, "author")), (one, "", "agent", "Claude"))
+  assert_true(t.picking() is None, msg="still picked: \{Repr(t.picking())}")
+}

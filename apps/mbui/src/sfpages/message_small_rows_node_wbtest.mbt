@@ -240,9 +240,9 @@ test "a ring filling as what it waits on comes: none known, the spinner's quarte
   assert_true(a > 0)
   // told anew: on its way there, then as far round as three quarters
   coming.set(Some(0.75))
-  t.run_for(@kit.progress_ms / 2.0)
+  t.run_for(@motion.progress_ms / 2.0)
   let mid = arc()
-  t.run_for(@kit.progress_ms)
+  t.run_for(@motion.progress_ms)
   let end = arc()
   assert_true(a < mid && mid < end, msg="\{a} \{mid} \{end}")
   assert_eq(t.audit(), [])

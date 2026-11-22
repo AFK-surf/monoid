@@ -266,7 +266,7 @@ pub fn offers_node(
     let shown_keys = @signals.signal(@signals.untracked(keys), same=fn(a, b) { a == b })
     o.reacts(open, fn(on) { @view.transition(within=o, fn() { shown_open.set(on) }) }, at_start=false)
     o.reacts(keys, fn(ks) { @view.transition(within=o, fn() { shown_keys.set(ks) }) }, at_start=false)
-    o.show(fn() { shown_open.get() }, leave=@kit.pop_out_ms, fn(shown) {
+    o.show(fn() { shown_open.get() }, leave=@motion.pop_out_ms, fn(shown) {
       shown.over(Is(true)) |> ignore
       live.val = true
       shown.owns(fn() { live.val = false }) |> ignore
@@ -275,18 +275,18 @@ pub fn offers_node(
       shown.reacts(fn() { shown.leaving() }, fn(going) {
         if going {
           live.val = false
-          way.go_ms(shown, 0.0, @kit.pop_out_ms, ease=Leave)
+          way.go_ms(shown, 0.0, @motion.pop_out_ms, ease=@signals.untracked(fn() { pop_out_ease_for(shown) }))
         } else {
           live.val = true
-          way.go_ms(shown, 1.0, @kit.pop_ms)
+          way.go_ms(shown, 1.0, @motion.pop_ms)
         }
       })
       let look = fn() {
         let p = way.shown(shown)
         if shown.leaving() {
-          @kit.pop_out.at(p, p)
+          pop_out_for(shown).at(p, p)
         } else {
-          @kit.pop_in.at(p, p)
+          pop_in_for(shown).at(p, p)
         }
       }
       let panel : Ref[@view.View?] = Ref(None)
@@ -318,9 +318,10 @@ pub fn offers_node(
         .max_height(By(fn() { Some(dmax(0.0, over_room(shown).1 - 16.0)) }))
         .glass(By(fn() { Some(glass_floating()) }))
         .shadow(By(fn() { (2.0, 1.0, @ui.tree_theme().shadow) }))
+        .shadow_outside(Is(true))
         .clips(Is(true))
         .alpha(By(fn() { look().alpha }))
-        .scale(By(fn() { look().sx }), about=FromBeside)
+        .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
         .carries_until(fn() { way.ends_at() })
         .says(Is(Some(@view.said(Dialog, label~))))
         // (a press on it its own, not outside it: on what of it takes none, nothing)
@@ -329,8 +330,14 @@ pub fn offers_node(
         style_node(p, fn() { offers_box })
         p.box(fn(body) {
           // (all it holds as far in as its look says, past the panel's own glass and shadow: Look's `words`)
-          body.alpha(By(fn() { look().words })).max_height(Is(Some(offers_most - 2.0 * panel_pad))) |> ignore
-          body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+          body
+          .margin(Is((-panel_pad, 0.0, -panel_pad, 0.0)))
+          .alpha(By(fn() { look().words }))
+          .max_height(Is(Some(offers_most - 2.0 * panel_pad)))
+          |> ignore
+          // (a finger scrolling them keeps the keyboard of the field `around` holds: View::scrolls' `for_in`)
+          body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), for_in=around.id(), fn(b) {
+            b.padding(Is((panel_pad, 0.0, panel_pad, 0.0))) |> ignore
             b.show(fn() { head().0 != "" }, at_once=true, fn(h) {
               style_node(h, fn() { offers_head })
               words_node(h, fn() { head().0 }, fn() { offers_head_words }) |> ignore

@@ -7,11 +7,10 @@
 //   node e2e/move-live.ts <the station's checkout> <data> <session key> live|restore <keep file>
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { openMoveDb } from "./move-db.ts";
 
-const [src, data, key, mode, keep] = process.argv.slice(2);
-const { Store } = await import(pathToFileURL(join(src!, "station/src/store/store.ts")).href);
-const store = Store.open(join(data!, "stillfail.db"));
+const [_src, data, key, mode, keep] = process.argv.slice(2);
+const store = openMoveDb(join(data!, "stillfail.db"));
 const db = store.db;
 if (mode === "live") {
   const row = db.prepare("SELECT ws, came_from FROM sessions WHERE key = ?").get(key) as { ws: string | null; came_from: string | null } | undefined;

@@ -276,7 +276,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     // A release has them beside its bundle: the build copies each there, or a session's command names a file that is not.
     const build: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts.build;
     const copied = build.split("&&").map((step) => step.trim().split(/\s+/)).find((words) => words[0] === "cp" && words.at(-1) === "dist/" && words[1] !== "-R") ?? [];
-    for (const file of ["src/agents/subagent-hook.mjs", "src/agents/repo-rules-hook.mjs"]) assert.ok(copied.includes(file), `${file} is not copied to dist/ by the build: ${copied.join(" ")}`);
+    for (const file of ["assets/agents/subagent-hook.mjs", "assets/agents/repo-rules-hook.mjs"]) assert.ok(copied.includes(file), `${file} is not copied to dist/ by the build: ${copied.join(" ")}`);
     // In a release (<app>/station/<hook>, <app>/node the release's Node) the command names that Node, which the next
     // release's takes the place of; the Node the station runs on is a version's own directory, pruned after an update.
     // Where either installer puts it (bin/node; node.exe on Windows), whichever is there.

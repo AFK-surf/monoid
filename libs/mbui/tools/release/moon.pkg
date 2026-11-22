@@ -1,0 +1,13 @@
+import {
+  "mbctools/rjson",
+  "mbctools/sys",
+  "moonbitlang/core/bigint",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/env",
+}
+
+options(
+  "is-main": true,
+  link: { "wasm-gc": { "use-js-builtin-string": true } },
+  targets: { "release_native_wbtest.mbt": [ "native" ] },
+)

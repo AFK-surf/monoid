@@ -1,12 +1,12 @@
 import {
   "base/codec",
-  "base/time",
   "station/host",
   "station/sql",
   "station/jsjson",
   "station/locate",
   "station/nodepath",
   "station/readops",
+  "station/history",
   "moonbitlang/core/json",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/encoding/hex",

@@ -17,24 +17,7 @@ pub fn base64url(b : Bytes) -> String {
 ///|
 /// Buffer.from(s, "base64url") (and "base64": both alphabets): what is no letter of them passed over, `=` ending it.
 pub fn from_base64(s : String) -> Bytes {
-  let kept = StringBuilder()
-  for c in s {
-    if c == '=' {
-      break
-    }
-    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || "+/-_".contains_char(c) {
-      kept.write_char(c)
-    }
-  }
-  let kept = kept.to_string()
-  // (a lone letter at the end makes no byte)
-  let n = kept.length() - (if kept.length() % 4 == 1 { 1 } else { 0 })
-  @codec.base64_decode(kept.unsafe_substring(start=0, end=n)).unwrap()
-}
-
-///|
-fn unhex(s : String) -> Bytes {
-  @codec.hex_decode(s).unwrap_or(b"")
+  @codec.base64_decode_loose(s)
 }
 
 ///|
@@ -77,7 +60,7 @@ fn jfield(v : @jsjson.JValue, name : String) -> @jsjson.JValue? {
 /// A field of a JavaScript object as a string, where it is one.
 pub fn jstr(v : @jsjson.JValue, name : String) -> String? {
   match jfield(v, name) {
-    Some(Str(u)) => Some(@jsjson.text(u))
+    Some(Str(u)) => Some(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -117,7 +100,7 @@ pub fn grant_names(g : @jsjson.JValue) -> Array[String] {
       let out = []
       for n in a {
         if n is Str(u) {
-          out.push(@jsjson.text(u))
+          out.push(@jsjson.sanitize_str(u))
         }
       }
       out
@@ -137,7 +120,7 @@ pub fn verify(
 ) -> @jsjson.JValue raise DriveError {
   let refuse = () => drive_error("permission", "that is not a grant of this station's")
   guard grant is Some(Str(u)) else { raise refuse() }
-  let text = @jsjson.text(u)
+  let text = @jsjson.sanitize_str(u)
   let pieces = text.split(".").map(p => p.to_string()).to_array()
   let body = pieces[0]
   let sig = if pieces.length() > 1 { pieces[1] } else { "" }

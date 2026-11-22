@@ -122,3 +122,62 @@ test "a scripted run's step finds what the frame drew and acts after it was pres
   assert_true(took >= 0 && took + 1 < frames.length(), msg="\{Repr(frames)}")
   assert_eq((frames[took].1, frames[took + 1].1), (true, false), msg="\{Repr(frames)}")
 }
+
+///|
+/// A column of two buttons 36 high (`第一项` over `第二项`), shown as `shown` holds: made in the frame that takes it,
+/// drawn 44 down at that frame's logic moment and rising to where it is laid out over the 60 ms after (its first
+/// button's middle, 62 down as it shows, where its second is 60 ms on). Each one's presses counted.
+fn drive_rising_tester(
+  shown : @signals.Signal[Bool],
+  first : Ref[Int],
+  second : Ref[Int],
+) -> Tester {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0)
+  t.check_looks(false)
+  let button = fn(col : @view.View, label : String, pressed : Ref[Int]) {
+    col.box(fn(b) {
+      b
+      .width(Is(Some(120.0)))
+      .height(Is(Some(36.0)))
+      .presses(Is(true))
+      .on_press(fn() { pressed.val += 1 })
+      .says(Is(Some(@view.said(Button, label~))))
+      .words(Is(label))
+      |> ignore
+    })
+    |> ignore
+  }
+  set_view_app(fn(root) {
+    root.show(fn() { shown.get() }, at_once=true, fn(m) {
+      m.box(fn(col) {
+        let from = col.logic_at()
+        col.moved_by(
+          fn(_w, _h, at) { (0.0, 44.0 * (1.0 - dmin(dmax((at - from) / 60.0, 0.0), 1.0))) },
+          fn(_w, _h) { from + 60.0 },
+        )
+        |> ignore
+        button(col, "第一项", first)
+        button(col, "第二项", second)
+      })
+      |> ignore
+    })
+  })
+  t.draw()
+  t.draw()
+  t
+}
+
+///|
+test "a scripted run's tap meets what it found at the frame's moment: presenting the frame taking long moves nothing under it" {
+  let (shown, first, second) = (@signals.signal(false), Ref(0), Ref(0))
+  let t = drive_rising_tester(shown, first, second)
+  // (presenting each frame takes 60 ms, as a device's GPU may hold one: the clock past the frame's moment by the time
+  // its step acts, the column by then risen so its second button is where its first was found)
+  t.fake.present_ms = 60.0
+  // (the column shown as the run's first frame is built; the tap the step that frame, after it was presented)
+  shown.set(true)
+  let logs = t.drive("tap 第一项\nexit")
+  assert_true(logs.iter().any(fn(line) { line == "EXIT 0" }), msg=logs.join("\n"))
+  let got = (first.val, second.val)
+  assert_eq(got, (1, 0), msg="presses taken by the first and the second: \{Repr(got)}")
+}

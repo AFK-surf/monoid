@@ -38,8 +38,11 @@ fn panel_node(
       |> ignore
       // (how far in it is, from the moment it opened; out from the moment it closed)
       let way = @motion.NodeWay::new(0.0)
+      if layout(layer.window_w()) is Small {
+        presented_sheet_rest(layer, fn(_) { way.end() })
+      }
       let leave_from = Ref(0.0)
-      let leave_look = Ref(@kit.pop_in.at(0.0, 0.0))
+      let leave_look = Ref(@signals.untracked(fn() { pop_in_for(layer) }).at(0.0, 0.0))
       // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
       let gate = OpenGate::new()
       layer.reacts(fn() { layer.leaving() }, fn(going) {
@@ -49,11 +52,11 @@ fn panel_node(
             // Keep the appearance reached if it is closed before its entrance finishes.
             let p = way.value_at(layer.cause_at())
             leave_from.val = p
-            leave_look.val = @kit.pop_in.at(p, p)
+            leave_look.val = @signals.untracked(fn() { pop_in_for(layer) }).at(p, p)
           }
-          way.go_ms(layer, 0.0, @kit.pop_out_ms, ease=Leave)
+          way.go_ms(layer, 0.0, @motion.pop_out_ms, ease=@signals.untracked(fn() { pop_out_ease_for(layer) }))
         } else {
-          gate.go(layer, fn() { way.go_ms(layer, 1.0, @kit.pop_ms) })
+          gate.go(layer, fn() { way.go_ms(layer, 1.0, @motion.pop_ms) })
         }
       })
       let look = fn() {
@@ -61,11 +64,11 @@ fn panel_node(
         if layer.leaving() && x.fade_out_together {
           // Fade the whole panel from that appearance, retaining the popover's scale and curve.
           let fade = if leave_from.val > 0.0 { dmin(1.0, dmax(0.0, p / leave_from.val)) } else { 0.0 }
-          { ..@kit.pop_out.at(p, p), alpha: leave_look.val.alpha * fade, words: leave_look.val.words }
+          { ..pop_out_for(layer).at(p, p), alpha: leave_look.val.alpha * fade, words: leave_look.val.words }
         } else if layer.leaving() {
-          @kit.pop_out.at(p, p)
+          pop_out_for(layer).at(p, p)
         } else {
-          @kit.pop_in.at(p, p)
+          pop_in_for(layer).at(p, p)
         }
       }
       let live = fn() { !layer.leaving() }
@@ -73,19 +76,19 @@ fn panel_node(
       submenu_layer_lend(layer)
       // (what its fields offer made in it: offers_layer_lent)
       offers_layer_lend(layer)
-      layer
-      .over(Is(true))
-      // (modal while open: closing, what is under it its own again as it begins to go)
-      .modal(By(live))
-      // (going, nothing of it read out: as an old layer on its way out, inert, is hidden from what reads the screen)
-      .hides(By(fn() { layer.leaving() }))
-      .held_back_goes_on()
-      |> ignore
       // (the focus left where it is as it opens (not `focus`): what is typed still that field's, its keys the layer's
-      // (kit's popover with its initial focus prevented, as menu_node's keep_field)
-      if !x.focus {
+      // (kit's popover with its initial focus prevented, as menu_node's keep_field); said before it is modal, the
+      // field's focus kept as the layer takes what is under it)
+      if !x.focus && !(layout(layer.window_w()) is Small) {
         layer.leaves_typing() |> ignore
       }
+      layer
+      .over(Is(true))
+      // (modal while open: closing, what is under it its own again as it begins to go;
+      // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
+      .modal(By(live))
+      .held_back_goes_on()
+      |> ignore
       layer
       // (a press outside its panel its own, nothing under it pressed: closing it as it goes down)
       .presses(Is(true))
@@ -127,29 +130,44 @@ fn panel_node(
       gate.collect(fn() {
       layer.box(fn(p) {
         presented_popovers[keyed.serial] = p
-        p
-        // (on the side it is on for as long as it has the room there: what it holds shrinking moves its far edge
-        // alone, never the panel across its control; View::beside's `holds_side`)
-        .beside(at.id(), side=x.side, along=x.along, offset=x.offset, padding=8.0, holds_side=true)
-        // (`fits`: as wide as what it holds is laid out, `w` at most, the tree sizing it by it)
-        .width(Is(if x.fits { None } else { Some(x.w) }))
-        .max_width(if x.fits { By(fn() { Some(dmin(x.w, dmax(0.0, over_room(layer).0 - 16.0))) }) } else { Is(None) })
-        .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
-        // (`tall`: a share of the window, no taller than the room beside what opened it, small_panel's `h`)
-        .height(By(fn() { if x.tall > 0.0 { Some(dmin(x.tall * over_room(layer).1, dmax(0.0, over_room(layer).1 - 16.0))) } else { None } }))
-        // (small_panel's: its padding round what it holds, its corner, ground, line and shadow)
+        anchored_popover_shell(
+          p,
+          at.id(),
+          look,
+          side=x.side,
+          along=x.along,
+          offset=x.offset,
+          holds_side=true,
+          concentric_inset=panel_pad,
+        )
+        // (`fits`: as wide as what it holds is laid out, `w` at most, clamped to window room on narrow screens)
+        .width(if x.fits { Is(None) } else { By(fn() { Some(dmin(x.w, dmax(0.0, over_room(layer).0 - 16.0))) }) })
+        .max_width(By(fn() { Some(dmin(x.w, dmax(0.0, over_room(layer).0 - 16.0))) }))
+        .max_height(
+          By(fn() {
+            let room_h = dmax(0.0, over_room(layer).1 - 16.0)
+            let small_hugs = x.tall > 0.0 && x.nodes.hugs && layout(layer.window_w()) is Small
+            if small_hugs {
+              Some(dmin(x.tall * over_room(layer).1, room_h))
+            } else {
+              Some(room_h)
+            }
+          }),
+        )
+        // (`tall`: a share of the window, no taller than the room beside what opened it; on Small `hugs` fits content up to that cap)
+        .height(
+          By(fn() {
+            let small_hugs = x.tall > 0.0 && x.nodes.hugs && layout(layer.window_w()) is Small
+            if x.tall > 0.0 && !small_hugs {
+              Some(dmin(x.tall * over_room(layer).1, dmax(0.0, over_room(layer).1 - 16.0)))
+            } else {
+              None
+            }
+          }),
+        )
         .padding(Is((panel_pad, panel_pad, panel_pad, panel_pad)))
-        .radius(Is(r_menu))
-        .ground(By(fn() { panel_ground() }))
-        .edge(By(fn() { (1.0, panel_edge()) }))
-        .shadow(By(fn() { float_shadow() }))
-        .clips(Is(true))
-        .alpha(By(fn() { look().alpha }))
-        .scale(By(fn() { look().sx }), about=FromBeside)
         .carries_until(fn() { way.ends_at() })
         .says(Is(Some(@view.said(Dialog, label=x.title))))
-        // (a press on it its own: not outside it)
-        |> ground_node
         |> ignore
         // (each part of it out to the panel's edges it stands by, the panel's padding round what it holds inside it: what
         // reaches into that padding on purpose (a head's search in its top corner, a foot's buttons in its foot corner, a
@@ -224,14 +242,24 @@ fn panel_node(
         // (`tall`: what it holds fills the room it is given, laid out in it, scrolling as it does itself: panel_grows)
         if x.tall > 0.0 {
           p.box(fn(b) {
-            // (the room under its head and no more, whatever it holds: grown from none, as what holds a list sized by
-            // what it holds would stand past the panel's foot, its last rows cut there)
-            b.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).margin(By(fn() { (-panel_pad, -over(), -panel_pad, -out_under) })).focusable(Is(x.focus), keys=0, tab=false) |> ignore
+            if x.nodes.hugs {
+              b.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+            } else {
+              // (the room under its head and no more, whatever it holds: grown from none, as what holds a list sized by
+              // what it holds would stand past the panel's foot, its last rows cut there)
+              b.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+            }
+            b.margin(By(fn() { (-panel_pad, -over(), -panel_pad, -out_under) })).focusable(Is(x.focus), keys=0, tab=false) |> ignore
             body_box.val = Some(b)
             // (what it holds: in a column, its words as far in as its look says)
             b.box(fn(col) {
-              style_node(col, fn() { panel_grows.then(panel_part_in(over(), under)) })
-              col.grow(Is(1.0)).alpha(By(fn() { look().words })) |> ignore
+              if x.nodes.hugs {
+                style_node(col, fn() { panel_part_in(over(), under) })
+                col.shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { look().words })) |> ignore
+              } else {
+                style_node(col, fn() { panel_grows.then(panel_part_in(over(), under)) })
+                col.grow(Is(1.0)).alpha(By(fn() { look().words })) |> ignore
+              }
               // (laid out as a small panel's body is: wide, its words a row's padding in)
               panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true)
               (x.nodes.body)(col, close)
@@ -293,6 +321,7 @@ fn panel_node(
               fv.box(fn(row) {
                 let at = if x.ruled { panel_corner_foot().then(@ui.style(pt=room(@ui.capsule_in(r_menu, button_height())))) } else { panel_corner_foot() }
                 style_node(row, fn() { panel_foot_at.then(at) }, in_row=false)
+                row.wraps(By(fn() { Some(ask_foot_lines()) })) |> ignore
                 f(row, close)
               })
               |> ignore
@@ -306,7 +335,7 @@ fn panel_node(
           (Some(f), _) if f.keyed(false) => layer.focus_opens(f.field) |> ignore
           // (a search at hand by touch: the focus left where it is, as on a sheet)
           (Some(_), _) => layer.focus_returns() |> ignore
-          (None, Some(b)) if x.focus => layer.focus_opens(b) |> ignore
+          (None, Some(b)) if x.focus || layout(layer.window_w()) is Small => layer.focus_opens(b) |> ignore
           _ => layer.focus_returns() |> ignore
         }
       })
@@ -314,7 +343,7 @@ fn panel_node(
       })
       gate.seal(layer)
     },
-    leave=@kit.pop_out_ms,
+    leave=@motion.pop_out_ms,
   )
 }
 

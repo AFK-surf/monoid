@@ -450,3 +450,7 @@ pub fn Menu::radio_item(
 ) -> @view.View {
   self.part(parent, MenuItemRadio, label, Some(checked), None, act, look, disabled, in_node, made_for, loc)
 }
+
+///|
+/// How long letters typed one after another find an entry together (Radix's typeahead: a second).
+pub let typeahead_ms : Double = 1000.0

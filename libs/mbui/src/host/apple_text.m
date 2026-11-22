@@ -151,11 +151,13 @@ static CTFontRef face_font(int face, double size, int weight, bool tabular, bool
 static void ahead_forget(void);
 
 // What was shaped and drawn before a face changed: forgotten (MoonBit drops its glyphs as the generation moves on).
+static int keys_stale;  // the keys made before forgotten as the next frame starts (keys_sweep)
 static void faces_changed(void) {
   [fonts removeAllObjects];
   ahead_forget();
   last_size = -1;
   generation++;
+  keys_stale = 1;
 }
 
 // Drawn at this many pixels a point (the screen the window is on): a change draws every glyph again, as a face's does
@@ -540,7 +542,6 @@ int32_t mb_host_shape(moonbit_string_t text, double size, int32_t weight, int32_
   }
 }
 
-int32_t mb_host_atlas_generation(void) { return generation; }
 
 // The side of the words' atlas, or of colour glyphs' (apple.h).
 int32_t mb_host_atlas_size(int32_t colour) { return colour ? MB_ATLAS_COLOR_SIDE : MB_ATLAS_SIDE; }
@@ -812,6 +813,38 @@ static void ahead_forget(void) {
   pthread_mutex_unlock(&ahead_lock);
   [ahead_of removeAllObjects];
   [ahead_order removeAllObjects];
+}
+
+// The glyphs' keys and what each is of forgotten (the faces changed, or more than KEYS_MOST of them: each a cluster of a
+// size, weight and style ever shaped, a run left open on changing text growing them without end), the generation moved
+// on. Only where MoonBit reads the generation (text.mbt text_arrive, as a frame starts: what it shaped is dropped as it
+// sees it moved; faces.mbt words_forgotten, what it shaped dropped just before), never where it may still draw by a key
+// made before (a face given in a frame); a key past the table draws nothing (mb_host_glyph).
+#define KEYS_MOST 65536
+static void keys_sweep(void) {
+  if (!keys_stale && n_entries <= KEYS_MOST) return;
+  keys_stale = 0;
+  ahead_forget();
+  [keys removeAllObjects];
+  [texts removeAllObjects];
+  n_entries = 0;
+  if (cap_entries > 1024) {
+    free(entries);
+    entries = NULL;
+    cap_entries = 0;
+  }
+  free(ascii);
+  ascii = NULL;
+  n_ascii = 0;
+  last_ascii = -1;
+  held = nil;
+  held_key = -1;
+  generation++;
+}
+
+int32_t mb_host_atlas_generation(void) {
+  keys_sweep();
+  return generation;
 }
 
 // Glyph `k` asked to be drawn ahead at the phases of `want`, those of `first` before the rest (none of it asked before:

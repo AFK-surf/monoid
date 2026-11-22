@@ -14,6 +14,8 @@ test "94-share-new-chat" {
     f.tap("新建对话")
     // the sheet going down as the new chat comes up, the files in its composer, waiting
     f.run_to(@sf.presented_rest)
+    // (and the new chat's page come over Home, which lets go of what it read only then)
+    f.run_to(@ui.nav_rest)
     f.see("想让 agent 做什么？")
     f.see("e2e-doc")
     f.gone("正在上传")

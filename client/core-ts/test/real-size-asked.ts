@@ -13,7 +13,7 @@ import { isObject } from "../src/util.ts";
 import {
   CHANGELOG_DEVICE, CHANGELOG_SEEN, CHAT, PEOPLE, CHAT_MESSAGES, DRIVE, LETTERS_COUNT, JOB, JOB_LOG_LINES, OPENS, OTHER_WORKSPACE, OUTLINED, PEEKS, PLAIN_WORKSPACE, SEARCH, UP, VAULT_ITEM, cardCame, changelogFeed, changelogReleased,
   chatArchived, chatRenamed, devicesAdded, devicesSaid, driveAdded, fixture, hostReading, jobLogOf, jobsMoved, lettersHeld, listedOf, liveStepped, lockApproved, memberJoined, messageAdded, more,
-  netOf, outlinedEdit, outlinedLog, outlinedSaid, outlinedWorking, overviewMoved, othersPresetsChanged, othersPresetsOf, presetRecordsChanged, presetsChanged, quotaChanged, records, resourcesOf, screensMoved, screensOf, sessionMade, thingSaid, transcriptOf,
+  netOf, outlinedEdit, outlinedLog, outlinedSaid, outlinedWorking, overviewMoved, othersPresetsChanged, othersPresetsOf, presetRecordsChanged, boardDraftsChanged, presetsChanged, quotaChanged, records, resourcesOf, screensMoved, screensOf, sessionMade, thingSaid, transcriptOf,
   usageRead, vaultAdded, vaultUsed, ownPendingOf, OWN_LOCK, PERSONAL_VAULT, VAULT_BOX, VAULT_SIGNER, STATIONS, MOVES_ASKED, moveOf,
 } from "./real-size.ts";
 import { logged } from "../src/log-lines.ts";
@@ -27,11 +27,12 @@ import { screensView } from "../src/screens.ts";
 import { terminalsView } from "../src/terminals.ts";
 import { sharedPlace } from "../src/station/rows-made.ts";
 import type { Store } from "../src/store.ts";
-import type { FakeHost } from "../src/testing.ts";
+import { type FakeHost, flush } from "../src/testing.ts";
 import { lockView, signerKnown } from "../src/views/lock.ts";
 import { joinable, memberships } from "../src/views/memberships.ts";
 import { boxKeyKnown, itemsView, usesView, vaultsView } from "../src/views/vault.ts";
 import { PresetViews } from "../src/views/presets.ts";
+import { BoardDraftViews } from "../src/views/board-drafts.ts";
 import type { Views } from "../src/views/views.ts";
 import { waysView } from "../src/views/ways.ts";
 import * as xshare from "../src/views/xshare.ts";
@@ -160,6 +161,9 @@ export const ASKED: Record<string, Record<string, unknown> & { topic: string }> 
   "filePeek text": { topic: "filePeek", station, key, path: PEEKS.text },
   "messagePeek": { topic: "messagePeek", station, thread: PEEKS.message.thread, seq: PEEKS.message.seq },
   "job": { topic: "job", station, id: "job-maple-3" },
+  // (the person's drafts of 待派发, as the device carries them: views/board-drafts.ts; last, so that it moves none of
+  // the others' times on the rig's clock)
+  "boardDrafts": { topic: "boardDrafts", scope: "ws" },
 };
 
 /// The chats' lists' windows as the app first tells them (`chats.window`; apps/mbui sfbase/rows.mbt `first_window`): the
@@ -252,7 +256,7 @@ function pageOwners(inner: Inner, notices: Notices, screens: () => J): Owner[] {
 /// (a card come where it waits on one): what a device has heard of them by then, the latest `KEEP`.
 function noticesHeard(notices: Notices, rows: [string, J[]][]): void {
   for (const [station, list] of rows) {
-    notices.changed(station, list.map((r) => ({ id: r.id, before: { ...r, last: { ...r.last, seq: r.last.seq - 1 }, card: undefined, decision: undefined }, after: r })), false);
+    notices.changed(station, list.map((r) => ({ id: r.id, before: { ...r, last: r.last ? { ...r.last, seq: r.last.seq - 1 } : null, card: undefined, decision: undefined }, after: r })), false);
   }
 }
 
@@ -354,6 +358,7 @@ export async function held(long = false, on: { host?: FakeHost; cold?: boolean }
       presetViews = new PresetViews(inner);
       return [
         presetViews,
+        new BoardDraftViews(inner),
         new Choose({ store, data, now: () => host.nowMs(), agent: (s, k) => views.agent(s, k) }),
         changelog,
         { owns: (topic: Topic) => topic.topic === "devices", compute: (topic: Topic) => ({ ok: d.value(String(topic.workspace)) }) },
@@ -400,6 +405,13 @@ export async function held(long = false, on: { host?: FakeHost; cold?: boolean }
     // (others' presets as Maple gave them at the press that showed them)
     presetViews!.heard("ws", station, othersPresetsOf(base));
     await t.host.time.pass(100);
+    // What this round set going (the stations' answers to the search the views asked as they were watched) taken in
+    // before the next, with no time passing: `pass` gives each 10 ms step a few turns of the loop, so whether an answer
+    // was in by the time `search` was made again depended on how many topics took their turns first. One more topic
+    // asked here and `search` was made once at rest instead of twice (part of its stations' answers, then all), and as
+    // `share` keeps the equal parts of the value before, every change after walked it otherwise: 114 or 105 for the
+    // same change (view-work.test.ts, the `boardDrafts` topic, 2026-11-18).
+    await flush(200);
   }
   noticesHeard(notices!, UP.map((station) => [station, (t.data.shared({ topic: "chatRows", station }) as J[]) ?? []]));
   // (what is made after the rest: Markdown read, a page's words)
@@ -583,6 +595,24 @@ export const CAUSES: Record<string, Cause> = {
   },
   // Each cause advances the shared test clock. Append this one so it does not shift the timing of earlier causes.
   rates: { run: ({ t }) => t.set({ topic: "stationRates", station }, ratesOf(1)) },
+  // A draft of 待派发 edited on another device of the person's, carried here as a station told it (views/board-drafts.ts
+  // `carry`: the device's records written).
+  boardDraft: { run: ({ t, base }) => t.data.put("boardDrafts", "ws", boardDraftsChanged(base, t.host.nowMs())) },
+  // Cold-start `POST /changed/shared` quiet delta: 0 changed shared rows and unchanged marks via `applySharedChanged`
+  // (verifies zero chat row reads/writes and zero view walk growth with shown or total chats).
+  sharedDelta: {
+    run: ({ t }) => {
+      t.data.applySharedChanged(
+        station,
+        [],
+        [],
+        false,
+        (r) => ({ row: r, place: sharedPlace(r) }),
+        { reads: new Map(), pins: new Map(), kept: new Set(), dismissed: new Set() },
+        { me: PEOPLE[0]!.email, selves: [], lang: "zh", hiddenKnown: false, mutedKnown: false, noRouteBuild: null },
+      );
+    },
+  },
 };
 
 /// What goes out to each of `ASKED` as each cause happens, on a rig of its own (the chat's six pages' too where it is

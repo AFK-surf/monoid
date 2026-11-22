@@ -3,7 +3,7 @@
 ## Page lists and keyed chat nodes
 
 - Virtualized list blocks represent single rows, not whole multi-row cards. Split long cards (such as 更新日志 days) into one block per row using `@sf.card_piece_node` so entering the viewport does not build dozens of rows in one frame.
-- The node-based chat page reads data by key: subscribe to the chat head (`chat_head`, `chat_view_now`, with no messages) and keyed messages (`ChatMessages` via `Sub::keyed`, rows via `chat_body_keyed`) so streaming into one message reads no other rows and triggers no `view_of_chat` reads on bars, composer, or tickers (`chat_body_keyed_wbtest.mbt`). Read `chat_whole` only on press. Keep optimistic sends and outbox rows keyed (`chat_body_keyed` `taken`, `chat_sent_here`), scanning from newest back for server handoff. Use `chat_body_rows` only when a source lacks keyed messages.
+- The node-based chat page reads data by key: subscribe to the chat head (`chat_head`, `chat_view_now`, with no messages) and keyed messages (`ChatMessages` via `Sub::keyed`, rows via `chat_body_keyed`) so updating or editing one message in place (chat messages are posted whole, never streamed word by word) reads no other rows and triggers no `view_of_chat` reads on bars, composer, or tickers (`chat_body_keyed_wbtest.mbt`). Read `chat_whole` only on press. Keep optimistic sends and outbox rows keyed (`chat_body_keyed` `taken`, `chat_sent_here`), scanning from newest back for server handoff. Use `chat_body_rows` only when a source lacks keyed messages.
 
 ## Chat block reuse (`chat_body_shape`)
 
@@ -11,9 +11,9 @@
 - Store per-block UI state (code wrap/copy flags, horizontal scroll offsets for tables, code, and formulas) in mbui's key-scoped reuse store (`View::reused_bool`, `View::on_reused`, `libs/mbui/src/view/reused_state.mbt`), never rebuilding parts per key.
 - Include creation-only structure (message paths, agent cards, chat thread) in the block make key. Detlint `reused-untracked-key` counts untracked key reads inside `make_reused` and only falls.
 
-## Experimental chat and composer migration flag
+## Chat page and composer
 
-- The node-based chat page, its composer (`composer_node`), and the new-chat page (`new_chat_node`) all sit behind one experimental switch `chatPage` (试用新对话页, `chat_page_from_prefs`, `chat_page_nodes`, read as a page is made, with `chat_page_nodes_at_start` staying `false`) until feature-complete. When off, keep the old pages and old composer. Do not host the old composer inside a node-based page.
+- The node-based chat page, its composer (`composer_node`), and the new-chat page (`new_chat_node`) are the only chat page on every screen (`chat_page_made`). Do not host the old composer inside a node-based page.
 - Share all non-rendering composer logic between both views (`composer_state.mbt`, `apps/mbui/src/sfbase/compose_given.mbt`, `composer_send.mbt`) without duplicating it.
 - Express width-responsive layout changes as property bindings (`By` on gap, margin, size), never structural `pick`/`show` branches on `width()` (detlint `width-structure` only falls).
 

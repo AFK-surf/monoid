@@ -24,7 +24,8 @@ pub struct Room {
 /// told as the layout comes to it, what `make` made reading it (what shows, which rows, how wide each is, what it draws)
 /// made and said again by it there and laid out in that same layout, nothing laid out again afterwards. `make` is done
 /// once, as it is first laid out (its width known then). Its width is what holds it gives it (stretched across a
-/// column, its share of a row), never what it holds: `held` is as wide as its room, as tall as what it holds. What is
+/// column, its share of a row), never what it holds: `held` is as wide as its room and as tall as what it holds, or as tall as its box where what
+/// holds it gives that more (stretched across a row, grown down a column, its height said). What is
 /// made in it never says its own box by its room (a fault where it does); what reads it outside it (none should) is
 /// laid out after, as a change of its own. Where it is given
 /// another room in the same layout (measured in a row before its share is known), made by each in turn, laid out by
@@ -62,11 +63,56 @@ pub fn View::by_room(self : View, make : (View, Room) -> Unit, loc~ : SourceLoc)
           room.wide.set(w)
         }
         tree.room_bindings_run()
+        // (grown down its box where what holds by_room can give that more height than what it holds comes to
+        // (stretched across a row, grown down a column, its height or least height said, or stretched top to foot
+        // over what holds it): filling it; else not, down a column as tall as what it holds, so View::resizes and
+        // View::comes make their way there. Set on its layout alone, left once its own View::grow is said, by
+        // View::sets_together too)
+        if held.live() is Some(hn) && !hn.grow_said {
+          let want = if tree.by_room_fills_down(x.at) { 1.0 } else { 0.0 }
+          if hn.flex.style.grow != want {
+            hn.flex.style.grow = want
+            tree.room_marked_at(held.at)
+          }
+        }
         room.measure(w)
       })
       (if changed { 1.0 } else { 0.0 }, 0.0)
     })
+    tree.soft_min_applied(x.at)
   })
+}
+
+///|
+/// Whether View::by_room's own box `at` can be given more height by what holds it than what it holds comes to, by its
+/// place in the tree alone: its height or a least height said, stretched top to foot over what holds it, stretched
+/// across a row, or grown down a column.
+fn Tree::by_room_fills_down(self : Tree, at : Int) -> Bool {
+  let xs = self.nodes[at].flex.style
+  if xs.height_kind() != @flex.LEN_AUTO {
+    return true
+  }
+  if xs.min_height_kind() != @flex.LEN_AUTO &&
+    (xs.min_height_kind() != @flex.LEN_PT || xs.min_height_value() > 0.0) {
+    return true
+  }
+  if xs.position is @flex.PositionType::Absolute {
+    return xs.inset_top_kind() != @flex.LEN_AUTO && xs.inset_bottom_kind() != @flex.LEN_AUTO
+  }
+  let p = self.box_holder(at)
+  if p < 0 {
+    return false
+  }
+  let ps = self.nodes[p].flex.style
+  if ps.direction is (Row | RowReverse) {
+    match xs.align_self {
+      Auto => ps.align_items is Stretch
+      Stretch => true
+      _ => false
+    }
+  } else {
+    xs.grow > 0.0
+  }
 }
 
 ///|

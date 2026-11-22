@@ -2,9 +2,10 @@
 // the way there's 4), made once and changed as the app's state does, the pages and what floats over
 // them old views (islands) in it:
 //
-//   - under all of it, what the frame does in every tier before its pages (signed_in_frame: what is told as the frame
-//     ends, the icon's number, whether the first page waits: narrow_under; the keys are the shell node's actions:
-//     sfdesk's keys.mbt), and the back of the stack's root a node said as what it reads changes (narrow_takes_back);
+//   - under all of it, the window's top dragging it and the back of the stack's root a node said as what it reads
+//     changes (narrow_takes_back); the keys are the shell node's actions (sfdesk's keys.mbt); what the old frame does
+//     before its pages (signed_in_frame: what is told as the frame ends, the icon's number, whether the first page
+//     waits) is its own (view_in);
 //   - the pages: the stack (app.nav) a node, each page on it a node of its own made as it is put on and let go as it
 //     leaves (what it made forgotten), the page in it built while it shows (an island), where it is drawn bound to its
 //     slide, which sets out at its cause's moment, once the core has given what the page shows (mbui's nav_view.mbt);
@@ -64,7 +65,11 @@ fn shell_is(src : Source, width : Double) -> ShellIs {
 fn narrow_shell(v : @view.View, src : Source) -> Unit {
   // (on the window's ground, as the old view whole is (app_state_tree's): what no page covers, a page sliding, shows it)
   v.ground(By(fn() { @sf.theme().p.bg })) |> ignore
-  @ui.old(v, fn(c) { narrow_under(c, src) }).over(Is(true)) |> ignore
+  // the window's top dragging it where nothing over it takes the press, as a way in's (entry_tree)
+  v.show(fn() { @ui.window_inset_now() }, fn(o) {
+    o.over(Is(true)) |> ignore
+    o.box(fn(b) { b.height(By(fn() { Some(window_band_now()) })).moves_window(Is(true)) |> ignore }) |> ignore
+  })
   // back at the stack's root while the shell takes it (narrow_takes_back), a node of the window's tree's: before the
   // pages, what they and what is over them say takes back (a page's own stack, a menu, a sheet) taking it first; whose
   // it is said at the cause that changes it (a tab of the bar pressed), done as it is done (sfbase's back_step then)
@@ -80,28 +85,7 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   @ui.nav_view(
     v,
     app.nav,
-    fn(c, page) {
-      match workspace_in_view(src).0 {
-        Some(w) => narrow_page_held(c, src, w, page)
-        None => ()
-      }
-    },
-    page_for=fn(entry, serial) {
-      let retained = @sfbase.page_entry_source(src, entry, serial)
-      let page_read = @sfbase.page_chat_reader(retained, entry, serial)
-      fn(visible) {
-        let shown = src.owned_by(visible)
-        fn(c, page) {
-          @sfbase.page_entry_read(serial, retained, page)
-          page_read(page)
-          let page_src = if page is Chat(_) { retained } else { shown }
-          match workspace_in_view(page_src).0 {
-            Some(w) => narrow_page_held(c, page_src, w, page)
-            None => ()
-          }
-        }
-      }
-    },
+    fn(_c, _page) {  },
     bg=fn() { @sf.theme().p.bg },
     // a page opened slides in once the core has given what it shows
     ready=fn(page) {
@@ -111,8 +95,6 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
       }
     },
     most=page_local_ms,
-    // (each page's island built again as what it is laid out by besides what it reads changes: narrow_page_key)
-    page_key=fn(_page) { narrow_island_key(src) },
     // (the pages made once as nodes: narrow_made)
     made=fn(page) { narrow_made(src, page) },
     // (a place of the bottom bar switched away from kept, its nodes put by at rest, taken back as it is switched to:
@@ -121,6 +103,8 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
     // (a chat's page made as nodes left (gone back from, put in place of) kept, its nodes put by at rest, taken back as
     // it is opened again: chat_page_left_key)
     keeps_left=@sfbase.chat_page_left_key,
+    transition=@ui.NavTransition::layered(),
+    tab_moves_slot=false,
   )
   |> ignore
   // (none kept of another workspace: those put by left for good as the workspace in view changes)
@@ -172,7 +156,7 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
           // (the width of the box it is laid out in, this node's: the window's less the system's bars beside it, as
           // the root's sides say it, told as either changes)
           let (left, right) = sides_room()
-          Some(bar_told(src, w, active, narrow_bar_shown(src, w), v.window().0 - left - right))
+          Some(bar_told(src, w, active, narrow_bar_shown(src, w), v.window_w() - left - right))
         }
         None => None
       }
@@ -189,7 +173,7 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   v.show(at_once=true, @sfpages.search_over_on, fn(k) {
     k.over(Is(true)) |> ignore
     @sfpages.search_over_ground_node(k)
-    @sfpages.search_page_node(k, src, fn() { workspace_in_view(src).0 }, fn() { status_top_now(k.window().0) }, Whole)
+    @sfpages.search_page_node(k, src, fn() { workspace_in_view(src).0 }, fn() { status_top_now(k.window_w()) }, Whole)
   })
   // the bottom bar over the pages: its glass, a finger on it the bar's at each event's moment, the bar drawn in it
   // (bar_node.mbt); on a place's top page with nothing over it (narrow_bar_shown); none while this device waits to be
@@ -212,56 +196,6 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
     let (left, right) = sides_room()
     (dmax(0.0, w - left - right), h)
   })
-}
-
-///|
-/// Under the narrow shell's pages (an island): what every frame of the app's state does (app_state_island's), what the
-/// signed-in frame does before its pages (signed_in_frame), how the lists take a mouse.
-fn narrow_under(c : @ui.Ctx, src : Source) -> Unit {
-  if @ui.window_inset() {
-    let id = c.id("window-ground-band")
-    c.window_drag(id)
-    c.box(style=@ui.style(h=Fixed(window_band())), left=0.0, top=0.0, right=0.0, id~, fn() {  }) |> ignore
-  }
-  frame_bare.val = false
-  match workspace_in_view(src).0 {
-    Some(w) => signed_in_frame(c, src, w)
-    None => ()
-  }
-  narrow_lists(c)
-}
-
-///|
-/// What a page's island in the narrow shell is built again by besides what it reads (narrow_page_key), with workspace
-/// in view.
-fn narrow_island_key(src : Source) -> String {
-  match workspace_in_view(src).0 {
-    Some(w) => narrow_page_key(@ui.current(), w)
-    None => ""
-  }
-}
-
-///|
-/// Page `page` of the narrow shell's stack as its island builds it: picked words with a mouse (a finger holds to pick:
-/// pick.mbt), the pictures it waits for said afresh (image_item, video_item).
-fn narrow_page_held(c : @ui.Ctx, src : Source, w : Workspace, page : Page, barred? : Bool = false) -> Unit {
-  @sfbase.held_pictures_waiting.val = []
-  // (the page is its island, kept as its nodes by what it reads and its key (narrow_page_key): no part of its own)
-  let built = fn() {
-    let whole = c.box(style=page_whole, fn() {
-      let (now, _, _, _) = workspace_in_view(src)
-      page_view(c, src, now.unwrap_or(w), page, barred~)
-    })
-    if !stack_by_finger() {
-      @sfdesk.context_page(c, whole)
-    }
-    @motion.scope(c, whole, bottom=true)
-  }
-  c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), built)
-  // what is the page's own and takes back before it (said with it, in its island: what it reads is what the page
-  // writes): words picked in a chat, a link's menu, let go first (pick.mbt); the player sideways turned upright first
-  // is the player's own (@sf.player_node)
-  pick_back(c)
 }
 
 ///|
@@ -333,31 +267,12 @@ fn narrow_takes_back() -> Bool {
 }
 
 ///|
-/// What a page laid out Small is laid out by besides what it reads: the window, the bars' room, the keyboard's, the
-/// ground, where it stands in the stack and the way a place came in, the workspace (its key as a part kept as its
-/// nodes: a page's island's, narrow_shell; its kept part's, narrow_page).
-fn narrow_page_key(c : @ui.Ctx, w : Workspace) -> String {
-  let t = @sf.theme()
-  "\{c.width} \{c.height} \{status_top()} \{nav_foot()} \{bar_room_now()} " +
-  "\{t.p.bg} \{t.dark} \{app.nav.under() is None} \{app.switch_way} \{w.id}"
-}
-
-///|
 /// Whether the bottom bar shows: on a place's top page with nothing over it; not while this device waits to be
 /// confirmed in the workspace's safe mode (its Home is the wait: lock_gate).
 fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
   let root = app.nav.top()
   let waiting = root == Home && @settings.lock_waiting(settings_core(src, w), w.id)
   app.nav.depth() == 1 && place_of(root) is Some(_) && !@sfpages.search_bar_away() && !waiting
-}
-
-///|
-/// Over the tape's frame with a workspace in view (tape_shell's island): the presenters told the app is under them
-/// (what they put up is the window's tree's: presented_nodes; the loupe over all of it too, app_tree's; what the devices
-/// waiting on this one put up: signed_in_prompts; the core the settings' panels draw with: app.mbt's reaction,
-/// panels_frame).
-fn signed_in_over(c : @ui.Ctx) -> Unit {
-  @sf.presented(c)
 }
 
 ///|
@@ -399,24 +314,7 @@ fn signed_in_prompts(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// What the Small stack gives a new chat's page (newchat.mbt): its bar (新对话 in the middle), the navigation bar's
-/// room under it (ChatHost.kt: windowInsetsPadding(keyboard.union(navigationBars))).
-fn new_frame(src : Source, w : Workspace) -> @sfpages.NewChatFrame {
-  {
-    core: settings_core(src, w),
-    bar: fn(c) {
-      @sf.nav_bar(c, "new/cancel", tr("common.cancel"), tr("android-chat.new.title"), bg=@sf.theme().p.bg, top=status_top(), on_press=fn() {
-        @sfbase.close_page(NewChat) |> ignore
-      })
-    },
-    foot: nav_foot(),
-    in_place: true,
-    sent: fn(_) {  },
-  }
-}
-
-///|
-/// What the Small stack gives a new chat made as nodes in node `v` (sfpages' new_chat_node: new_frame's): its bar (取消
+/// What the Small stack gives a new chat made as nodes in node `v` (sfpages' new_chat_node): its bar (取消
 /// back to where it was opened from, 新对话 in the middle) under the status bar as the window it is in is now, the
 /// navigation bar's room under it; the chat it becomes opens in its place.
 /// `width`: the window's, which the page is as wide as.
@@ -425,10 +323,12 @@ fn new_frame_node(src : Source, w : Workspace, width : () -> Double) -> @sfpages
     core: settings_core(src, w),
     ground: fn(_) { @sf.theme().p.bg },
     width,
+    apart: fn() { false },
+    pane: fn() { None },
     bar: fn(b) {
       @sf.nav_bar_node(b, fn() { tr("common.cancel") }, fn() { tr("android-chat.new.title") }, fn() {
         @sfbase.close_page(NewChat) |> ignore
-      }, top=fn() { status_top_now(b.window().0) })
+      }, top=fn() { status_top_now(b.window_w()) })
     },
     foot: fn() { nav_foot() },
     over: fn(_, _) {  },
@@ -456,8 +356,8 @@ fn narrow_made(src : Source, page : Page) -> (String, (@view.View, () -> Page, P
           narrow_made_as(src, Setting(r), true).map(fn(m) { ("place/" + m.0, m.1) })
         _ => None
       }
-    // (文件 at the root of the stack: the bottom bar's place)
-    Files if @signals.untracked(fn() { app.nav.pages().get(0) }) == Some(Files) => narrow_made_as(src, page, true)
+    // (文件 at the root of the stack: the bottom bar's place, including while swapping out or shelved)
+    Files if @signals.untracked(fn() { app.nav.is_root_place(Files) }) => narrow_made_as(src, page, true)
     _ => narrow_made_as(src, page, false)
   }
 }
@@ -487,13 +387,14 @@ fn narrow_made_as(
       (
         kind,
         fn(outer : @view.View, page : () -> Page, under : Page?, stint : () -> Int, serial : Int) {
-          // (a place switched to on the bar: all of it but its ground coming in from the ball's side, page_view's)
+          // (a place switched to on the bar: only its content body slides/fades via Nav::tab_body_motion;
+          // its top bar stays mounted on `outer` so the glass and settings gear stay steady at Δx = 0)
           let v = match place {
             true if under is None => {
               let mut inner : @view.View? = None
               outer.box(fn(i) {
                 i.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-                place_comes_in(i)
+                tab_body_comes_in(i, serial)
                 bar_built_node(i, page)
                 inner = Some(i)
               })
@@ -515,19 +416,21 @@ fn narrow_made_as(
             // (under the status bar as the window it is in is now: status_top_now, by its width as it changes; a place
             // of the bottom bar's under the top bar, which names it, over the bottom bar: place_page's)
             if place {
-              let width = v.window().0
+              let width = v.window_w()
               { back: None, top: status_top_now(width) + bar_h + 8.0, foot: nav_foot() + bar_room_at(width), named: true }
             } else {
-              { back: under.map(@sfbase.back_label), top: status_top_now(v.window().0), foot: nav_foot(), named: false }
+              { back: under.map(@sfbase.back_label), top: status_top_now(v.window_w()), foot: nav_foot(), named: false }
             }
           }
           v.pick(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
-            let gen = next_place_actions_gen()
+            let last_gen = Ref(0)
             let acts = fn(make : (@view.View) -> Unit, _side : (@sf.Look) -> Double) {
+              let gen = next_place_actions_gen()
+              last_gen.val = gen
               page_actions.set(Some((make, gen)))
             }
             p.owns(fn() {
-              if page_actions.untracked() is Some((_, g)) && g == gen {
+              if last_gen.val > 0 && page_actions.untracked() is Some((_, g)) && g == last_gen.val {
                 page_actions.set(None)
               }
             })
@@ -548,12 +451,15 @@ fn narrow_made_as(
             }
           })
           // Home and a place draw their own top bar under the status bar.
-          narrow_made_top(v, has_top=place || kind == "home")
-          // (a place of the bottom bar's: its top bar over it, the place's name as the entry is now (another of the same
-          // page's names it may become), what its page does at its end, settings at its end: place_page's)
+          narrow_made_top(outer, has_top=place || kind == "home")
+          // (a place of the bottom bar's: its top bar mounted on `outer` so push/pop slides it with the page,
+          // while root tab switches keep the glass & settings gear stationary and cross-fade only title/actions)
           if place {
-            v.box(fn(o) {
-              o.over(Is(true)) |> ignore
+            outer.box(fn(o) {
+              o
+              .over(Is(true))
+              .alpha(By(fn() { if app.nav.is_swapping_out(serial) { 0.0 } else { 1.0 } }))
+              |> ignore
               place_top_bar_node(
                 o,
                 fn() {
@@ -564,6 +470,7 @@ fn narrow_made_as(
                   }
                 },
                 fn() { page_actions.get() },
+                title_alpha=fn(n) { app.nav.tab_title_alpha(serial, fn() { app.nav.tab_moment(n) }) },
               )
               |> ignore
             })
@@ -587,8 +494,7 @@ fn narrow_made_as(
     made_at(kind, place, fn(p, core, here, frame, stint, acts, _serial) { f(p, core, here, frame, stint, acts) })
   }
   match page {
-    // (a chat, and the new chat that becomes one in place: the same page, a node of the tree's, its old view in it as
-    // yet, built as the stack's island built it: narrow_page_held)
+    // (a chat, and the new chat that becomes one in place: the same page, a node of the tree's)
     page if @sfbase.chat_page_is(page) && !place =>
       Some(
         (
@@ -598,18 +504,11 @@ fn narrow_made_as(
               v,
               src,
               k,
-              fn(c, s, p) {
-                match workspace_in_view(s).0 {
-                  Some(w) => narrow_page_held(c, s, w, p, barred=true)
-                  None => ()
-                }
-              },
-              key=fn() { narrow_island_key(src) },
-              // (its bar the page's node's, over its old view: chat_bar_node)
+              // (its bar the page's node's: chat_bar_node)
               over=chat_bar_node,
               stint~,
-              // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
-              body=fn(col, s, r, composer, shows) {
+              // (its messages nodes, its composer made as nodes in their list's foot)
+              body=fn(col, s, r, composer, shows, on_stack) {
                 if @sf.native_input() is Mouse {
                   @sfdesk.context_node(col)
                 }
@@ -621,26 +520,22 @@ fn narrow_made_as(
                   tips=@sf.TipLayer::new(fn() { Some(v) }),
                   stint~,
                   shows~,
+                  on_stack~,
                   cover=fn() { bar_foot_live(col, r) },
                   // (and what it comes to, its second row measured or pressed open: where the list was put, under it)
-                  cover_to=fn() { bar_foot_coming(r) },
+                  cover_to=fn() { bar_foot_coming(col, r) },
                   room=list_room,
                   foot=list_foot,
+                  foot_clear_extra=fn() { if @ui.system_tabletop() is Some(_) { 0.0 } else { 34.0 } },
                   composer~,
                   lead=unread_lead(),
                 )
               },
-              foot_node=fn(n, s, r, shows, _) { chat_foot_node(n, s, r, shows, @sf.TipLayer::new(fn() { Some(v) })) },
-              leaving=fn(c, s, r) {
-                match workspace_in_view(s).0 {
-                  Some(w) => new_chat_leaving(c, s, w, r)
-                  None => ()
-                }
-              },
+              foot_node=fn(n, s, r, shows, _) { chat_foot_node(n, s, r, shows, @sf.TipLayer::new(fn() { Some(v) }), stint) },
               // (the new chat it is till it becomes one, made as nodes: sfpages' new_chat_node, under its bar of 取消)
               new_node=fn(n, s) {
                 match @signals.untracked(fn() { workspace_in_view(s).0 }) {
-                  Some(w) => @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, fn() { n.window().0 }), @sf.TipLayer::new(fn() { Some(v) }))
+                  Some(w) => @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, fn() { n.window_w() }), @sf.TipLayer::new(fn() { Some(v) }))
                   None => ()
                 }
               },
@@ -655,13 +550,7 @@ fn narrow_made_as(
       made_at("home", place, fn(p, core, _here, _frame, stint, _acts, serial) {
         let tips = @sf.TipLayer::new(fn() { None })
         p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        // (the bar's first place: coming in as a place switched to does, all of it but its ground, told built then:
-        // page_view's, a place's made once, made_at's)
-        let p = p.box(fn(i) {
-          i.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-          place_comes_in(i)
-          bar_built_node(i, fn() { Home })
-        })
+        bar_built_node(p, fn() { Home })
         p.pick(fn() { workspace_in_view(src).0.map(fn(w) { @settings.lock_waiting(core, w.id) }).unwrap_or(false) }, fn(
           q,
           waiting,
@@ -671,14 +560,14 @@ fn narrow_made_as(
           if waiting {
             lock_gate_node(q, src, core)
           } else {
-            home_node(q, src, tips, stint, shown=fn() { app.nav.shows(serial) })
+            home_node(q, src, tips, stint, serial~, shown=fn() { app.nav.shows(serial) })
           }
         })
       })
     Settings | Setting(Home) =>
       made("settings", fn(p, core, here, frame, stint, _acts) {
         @sfpages.settings_home_node(p, core, here, fn(r) { (core.push)(r) }, on_back=core.pop, frame~, stint~, bars=fn() {
-          @sf.layout(p.window().0) is Small
+          @sf.layout(p.window_w()) is Small
         })
       })
     Setting(About) => made("about", fn(p, core, _here, frame, _stint, _acts) { @sfpages.about_node(p, core, on_back=core.pop, frame~) })
@@ -796,7 +685,7 @@ fn narrow_made_as(
           w.id,
           fn() { at },
           frame=fn() { { ..frame(), back: under.map(fn(u) { drive_back_label(src, w, u) }) } },
-          width=fn() { p.window().0 },
+          width=fn() { p.window_w() },
           on_back=fn() { @sfbase.go_back() |> ignore },
           go=drive_go_back_to,
           shown=fn() { app.nav.shows(serial) },
@@ -939,35 +828,19 @@ fn narrow_made_as(
 }
 
 ///|
-/// A page made once at the stack's root, at a place of the bottom bar's, coming in as page_view has a place's: as far
-/// as the switch to it has gone (place_switch, from the moment it was switched to, whenever it is made), from the side
-/// the ball goes to by switch_slide, fading in; all of it but its ground.
-fn place_comes_in(v : @view.View) -> Unit {
-  let w = place_switch
-  // (told at the way's end, as each way is said: read again then; cleaned up if let go mid-way)
-  let ended : @signals.Signal[Int] = @signals.signal(0)
-  let due : Ref[() -> Unit] = Ref(fn() {  })
-  v.owns(fn() {
-    (due.val)()
-    due.val = fn() {  }
-  })
-  |> ignore
-  v.reacts(fn() { w.said(); w.ends_at() }, fn(end) {
-    (due.val)()
-    due.val = if end >= 0.0 {
-      v.at_moment(end, fn() { ended.set(ended.untracked() + 1) })
-    } else {
-      fn() {  }
-    }
-  })
-  let shown = fn() {
-    ended.get() |> ignore
-    w.shown_on(v)
-  }
+/// A root page body driven by `Nav::replace_tab` dual-ended motion: slides and cross-fades cleanly without
+/// moving the decoupled top bar glass or right-side settings gear.
+fn tab_body_comes_in(v : @view.View, serial : Int) -> Unit {
   v
-  .alpha(By(shown))
-  .offset(By(fn() { (app.switch_way.to_double() * switch_slide * (1.0 - shown()), 0.0) }))
-  .carries_until(fn() { w.ends_at() })
+  .moved_by(
+    fn(_, _, t) {
+      let (dx, _) = app.nav.tab_body_motion(serial, fn() { t }, slide=22.0)
+      (dx, 0.0)
+    },
+    fn(_, _) { app.nav.tab_ends_at() },
+  )
+  .alpha(By(fn() { app.nav.tab_body_motion(serial, fn() { app.nav.tab_moment(v) }, slide=22.0).1 }))
+  .carries_until(fn() { app.nav.tab_ends_at() })
   |> ignore
 }
 
@@ -978,8 +851,8 @@ fn narrow_made_top(v : @view.View, has_top~ : Bool) -> Unit {
   if !has_top {
     v.box(fn(o) {
       o.over(Is(true)) |> ignore
-      o.show(fn() { status_top_now(v.window().0) > 0.0 }, fn(paper) {
-        paper.height(By(fn() { Some(status_top_now(v.window().0)) })).ground(By(fn() { @sf.theme().p.bg })) |> @sf.ground_node |> ignore
+      o.show(fn() { status_top_now(v.window_w()) > 0.0 }, fn(paper) {
+        paper.height(By(fn() { Some(status_top_now(v.window_w())) })).ground(By(fn() { @sf.theme().p.bg })) |> @sf.ground_node |> ignore
       })
     })
     |> ignore
@@ -987,7 +860,7 @@ fn narrow_made_top(v : @view.View, has_top~ : Bool) -> Unit {
   v.box(fn(o) {
     o.over(Is(true)) |> ignore
     // (where the frame is not wide: is_wide, by the window as it is)
-    o.show(fn() { @ui.window_inset_now() && @sf.layout(v.window().0) is Small && !@sf.native_able() }, fn(band) {
+    o.show(fn() { @ui.window_inset_now() && @sf.layout(v.window_w()) is Small && !@sf.native_able() }, fn(band) {
       band.height(By(fn() { Some(window_band_now()) })).moves_window(Is(true)) |> ignore
     })
   })
@@ -1003,37 +876,84 @@ fn place_top_bar_node(
   v : @view.View,
   place : () -> String,
   actions : () -> ((@view.View) -> Unit, Int)?,
+  title_alpha? : (@view.View) -> Double = fn(_) { 1.0 },
 ) -> Unit {
   // (over the page, as place_page draws it: nothing of it cut but its name)
-  place_top_bar_glass(v, place, actions)
+  place_top_bar_glass(v, place, actions, title_alpha~)
 }
 
 ///|
-/// place_top_bar_node's bar on its glass, in `v`.
+/// Progressive blur soft scroll-edge backdrop for floating-pill narrow top bars (iOS 26 UIScrollEdgeEffect.soft):
+/// blurs and veils scrolled content progressively over the lower `fade_h` pt down to `base_h`, degrading to a
+/// solid `p.bg` alpha fade under `MBUI_GLASS=solid`.
+fn narrow_bar_scrim_node(
+  parent : @view.View,
+  base_h : (@view.View) -> Double,
+  fade_h : (@view.View) -> Double,
+) -> Unit {
+  parent.box(fn(scrim) {
+    scrim
+    .over(Is(true))
+    .width_share(Is(1.0))
+    .height(By(fn() { Some(base_h(scrim)) }))
+    .fades(By(fn() { (0.0, 0.0, 0.0, fade_h(scrim)) }))
+    |> ignore
+    scrim.box(fn(fill) {
+      // (register fill in inputs_in via pointed() while keeping points=false so Tree::target_at visits fill and
+      // applies Node::covers to block click-through onto scrolled content behind the top bar without affecting hover)
+      fill
+      .width_share(Is(1.0))
+      .height_share(Is(1.0))
+      .glass(By(fn() { if base_h(fill) > 0.0 { Some(@sf.glass_scroll_edge()) } else { None } }))
+      .points(Is(false))
+      |> ignore
+      fill.pointed() |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// place_top_bar_node's bar in `v`: soft bottom-fade scrim behind the title (no full-width `glass_bar()` to avoid
+/// glass-on-glass) with the right-side settings action inside a floating liquid glass circle.
 fn place_top_bar_glass(
   v : @view.View,
   place : () -> String,
   actions : () -> ((@view.View) -> Unit, Int)?,
+  title_alpha? : (@view.View) -> Double = fn(_) { 1.0 },
 ) -> Unit {
   v.box(fn(g) {
-    g.glass(By(fn() { Some(@sf.glass_bar()) })) |> ignore
+    narrow_bar_scrim_node(
+      g,
+      fn(s) { top_bar_h_at(s.window_w()) + 16.0 },
+      fn(s) { top_bar_h_at(s.window_w()) + 16.0 },
+    )
     g.box(fn(row) {
       row
       .row(Is(true))
-      .padding(By(fn() { (16.0, status_top(), 16.0, 0.0) }))
-      .min_height(By(fn() { Some(top_bar_h()) }))
-      .gap(Is(10.0))
+      .padding(By(fn() { (16.0, status_top_now(row.window_w()), 12.0, 0.0) }))
+      .min_height(By(fn() { Some(top_bar_h_at(row.window_w())) }))
+      .gap(Is(8.0))
       .lines_up(Is(Some(Middle)))
       |> ignore
       // (its words whole: what the page does at its end gives way where the bar has not the room)
       row.box(fn(t) {
-        t.grow(Is(1.0)).basis(Is(Some(0.0))).keeps_held(Is(true)).fits(Is(true)).height(Is(Some(34.0))).row(Is(true)).lines_up(Is(Some(Middle)))
+        t
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        .keeps_held(Is(true))
+        .fits(Is(true))
+        .height(Is(Some(34.0)))
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        .alpha(By(fn() { title_alpha(t) }))
         |> ignore
         @sf.top_bar_title_node(t, fn() { place_label(place()) }) |> ignore
       })
       |> ignore
       row.show(fn() { actions() is Some(_) }, fn(a) {
-        a.row(Is(true)).shrink(Is(1.0)) |> ignore
+        a.row(Is(true)).shrink(Is(1.0)).alpha(By(fn() { title_alpha(a) })) |> ignore
         a.pick(
           fn() {
             match actions() {
@@ -1043,7 +963,7 @@ fn place_top_bar_glass(
           },
           fn(k, _) {
             @sf.top_bar_actions_lent(k)
-            k.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))).shrink(Is(1.0)) |> ignore
+            k.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))).shrink(Is(1.0)) |> ignore
             match @signals.untracked(actions) {
               Some((make, _)) => make(k)
               None => ()
@@ -1051,11 +971,14 @@ fn place_top_bar_glass(
           },
         )
       })
-      // settings at the right edge, as at Home's
-      @sf.round_key_node(row, "settings", fn() { tr("android-chat.home.settings") }, fn() {
-        @sfbase.history_push()
-        app.nav.push(Settings)
+      // settings at the right edge, as at Home's: standalone 40pt liquid glass circle
+      @sf.bar_pill_group_node(row, height=40.0, pad=3.0, gap=0.0, fn(set_pill) {
+        @sf.round_key_node(set_pill, "settings", fn() { tr("android-chat.home.settings") }, fn() {
+          @sfbase.history_push()
+          app.nav.push(Settings)
+        })
       })
+      |> ignore
     })
     |> ignore
   })

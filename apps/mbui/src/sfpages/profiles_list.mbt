@@ -158,7 +158,7 @@ pub fn profiles_list_node(
               @sf.section_heading_node(s, fn() { @sf.sample_words(4) })
               @sf.group_node(s, fn(g) {
                 g.each(fn() { profiles_sample }, fn(e) { text(Some(e), "key") }, fn(r, e) {
-                  pl_account_row_node(r, core.quiet(), fn() { Some(e.get()) }, tips)
+                  pl_account_row_node(r, core.quiet(), fn() { Some(e.get()) }, tips, width?)
                 })
               })
             },
@@ -246,7 +246,7 @@ pub fn profiles_list_node(
             @sf.section_heading_node(b, title, lead=fn(l) { vt_group_mark_node(l, group) })
           }
         }
-        k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k })
+        k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k }, width?)
         k if k.has_prefix("o/") => {
           let station = k.exact_view(start=2).to_owned()
           let sv = @signals.computed(fn(_) {
@@ -278,7 +278,7 @@ pub fn profiles_list_node(
     back_as=fn() { if only == "" { "" } else { text(one(), "name") } },
     // (an account's row put by as it leaves what shows and taken by the next, reading the key it shows now)
     reused=fn(k) { if k.has_prefix("p/") { Some(0) } else { None } },
-    make_reused=fn(b, _, key) { pl_row_block(b, core, only, parts, tips, key) },
+    make_reused=fn(b, _, key) { pl_row_block(b, core, only, parts, tips, key, width?) },
   )
 }
 
@@ -336,6 +336,7 @@ fn pl_row_block(
   parts : @signals.KeyedList[String, (String, PlPart)],
   tips : @sf.TipLayer,
   key : () -> String,
+  width? : () -> Double,
 ) -> Unit {
   let last : Ref[(Json, @sf.CardPiece)?] = Ref(None)
   let now = @signals.computed(fn(_) {
@@ -356,7 +357,7 @@ fn pl_row_block(
   // (wide, a piece of its section's list card as wide_group_node's: workspace_page's, a station's screens')
   @sf.card_piece_node(b, fn() { now.get().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) }, wide_group=true, fn(card) {
     if only == "" {
-      pl_account_row_node(card, core, fn() { row_now.get() }, tips)
+      pl_account_row_node(card, core, fn() { row_now.get() }, tips, width?)
     } else {
       pl_station_row_node(card, core, only, fn() { row_now.get() }, tips)
     }
@@ -364,11 +365,42 @@ fn pl_row_block(
 }
 
 ///|
+/// The inner width available to `quota_worded_node` inside `pl_account_row_node`, derived from `page_w()` along
+/// `page_node` -> `card_piece_node(..., wide_group=true)` -> `link_row_node(..., lines_from_lead=true)` so each row
+/// avoids a per-row `View::by_room` second layout pass.
+fn pl_account_quota_room_w(w : @view.View, page_w : () -> Double) -> () -> Double {
+  let in_pane = w.lent(@sf.pane_lent).unwrap_or(false)
+  let wide = @sf.look_node(w) == @sf.look_for(@sf.narrow_most)
+  let card_pad = if in_pane { @sf.corner_inset } else { @sf.list_pad }
+  fn() {
+    let block_w = if wide {
+      let lane_side = if in_pane { 0.0 } else { @sf.desk_lane_in }
+      let avail = page_w() - 2.0 * lane_side
+      let col_w = if avail < @sf.desk_lane_most { avail } else { @sf.desk_lane_most }
+      col_w - 2.0 * @sf.desk_column_in
+    } else {
+      let room_side = if in_pane { @sf.panel_card_in } else { 12.0 }
+      page_w() - 2.0 * room_side
+    }
+    let row_w = block_w - 2.0 * card_pad
+    // link_row_node(lines_from_lead=true): r padding_x = text_in*2, words margin_left = corner_inset - text_in
+    let avail = row_w - @sf.text_in - @sf.corner_inset
+    if avail > 0.0 { avail } else { 0.0 }
+  }
+}
+
+///|
 /// The workspace's account in a row (profile_list_blocks' row), `ev` its entry as it is now: its vendor's mark by its
 /// first line, its name (a subscription's account, a key's name) and its plan after it; under them what needs a look,
 /// in its tone, or what its allowance lacks; its allowance's windows in words a line of their own. One whose station is
 /// away dimmed. Pressed, its page.
-fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf.TipLayer) -> Unit {
+fn pl_account_row_node(
+  r : @view.View,
+  core : Core,
+  ev : () -> Json?,
+  tips : @sf.TipLayer,
+  width? : () -> Double,
+) -> Unit {
   let p = fn() { field(ev(), "profile") }
   let usable = fn() { flag(ev(), "usable") }
   let state = fn() { field(ev(), "state") }
@@ -379,7 +411,12 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
     if text(state(), "text") != "" {
       text(state(), "text")
     } else if usable() && no_windows && text(quota(), "state") == "ok" && text(quota(), "creditsText") != "" {
-      text(quota(), "creditsText")
+      let detail = text(quota(), "detail")
+      if detail != "" {
+        text(quota(), "creditsText") + " · " + detail
+      } else {
+        text(quota(), "creditsText")
+      }
     } else if usable() && no_windows && text(ev(), "group") != "key" {
       if quota() is (None | Some(Null)) {
         @sf.t("web-main.quota.unchecked")
@@ -444,18 +481,20 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
         title_cut=true,
         title_after=fn(a) {
           a.drops(Is(pl_drop_plan)) |> ignore
-          @sf.row_tag_node(a, fn() { text(p(), "planText") })
+          @sf.row_tag_node(a, fn() {
+            match text(p(), "planText") {
+              "" => if text(field(p(), "access"), "kind") == "service" { text(p(), "kindText") } else { "" }
+              s => s
+            }
+          })
         },
-        title_after_shown=fn() { text(p(), "planText") != "" },
+        title_after_shown=fn() {
+          text(p(), "planText") != "" || (text(field(p(), "access"), "kind") == "service" && text(p(), "kindText") != "")
+        },
         below=fn(q) {
           q.show(windows, fn(w) {
-            @sf.style_node(w, fn() { pl_quota_line })
-            // (small blocks in the row's foot start corner: where its mark is, out to the ladder's inset from its side
-            // (lines_from_lead), and out to it from its foot, concentric with its corner there; #6417's quota_line_out)
-            // (by the row's width as it was made, as the row is: link_row_node's narrow or wide)
-            let (_, _, _, foot) = @sf.row_below_inset(w)
-            w.margin(Is((0.0, 0.0, 0.0, foot))) |> ignore
-            @sf.quota_worded_node(w, quota, tips~)
+            let room_w = width.map(fn(page_w) { pl_account_quota_room_w(w, page_w) })
+            pl_quota_node(w, quota, tips, room_w?)
           })
         },
         below_open=fn() { if windows() { 1.0 } else { 0.0 } },
@@ -469,13 +508,31 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
 }
 
 ///|
-/// A station's profile in a row (profile_row's), `pv` as it is now: whether it works by its first line, its name; under
-/// it what its check says, whose it is or what it is and its models; why its provider refuses it; at its end what is
-/// under way with it and its allowance. Pressed, its page.
+/// Allowance chips at the row's foot, inset so their corner follows the row's.
+fn pl_quota_node(
+  w : @view.View,
+  quota : () -> Json?,
+  tips : @sf.TipLayer,
+  room_w? : () -> Double,
+) -> Unit {
+  @sf.style_node(w, fn() { pl_quota_line })
+  let (_, _, _, foot) = @sf.row_below_inset(w)
+  w.margin(Is((0.0, 0.0, 0.0, foot))) |> ignore
+  @sf.quota_worded_node(w, quota, tips~, room_w?)
+}
+
+///|
+/// A station's profile in a row (profile_row's), with its state, name and tier above its check and models.
+/// Scoped allowance windows go below the row's text. Pressing the row opens the profile's page.
 fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () -> Json?, tips : @sf.TipLayer) -> Unit {
   let id = fn() { text(pv(), "id") }
   let on = fn() { [("station", station), ("id", id())] }
   let calls = ["profile.check", "profile.quota"]
+  let quota = fn() { field(pv(), "quota") }
+  let grouped = fn() {
+    @sf.has_quota(quota()) && items(quota(), "windows").iter().any(fn(w) { text(Some(w), "scope") != "" })
+  }
+  let trouble = fn() { pl_trouble_of(pv()) }
   // (its menu where the pointer's other button is pressed on it: its page opened, its name copied)
   r.on_menu(fn(m) { pl_menu(fn() { (core.push)(Profile(station, @signals.untracked(id))) }, text(@signals.untracked(pv), "name"), m) })
   |> ignore
@@ -483,9 +540,15 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
     r,
     fn() { text(pv(), "name") },
     fn() { (core.push)(Profile(station, @signals.untracked(id))) },
+    // (its tier first on the line under its name, not after the name: beside the title its allowance's chips already
+    // stand, and a tier there too cut a phone's name short, ChatGPT 团队 to ChatGPT…)
     note=fn() {
       join(
         [
+          match text(pv(), "planText") {
+            "" => if text(field(pv(), "access"), "kind") == "service" { text(pv(), "kindText") } else { "" }
+            s => s
+          },
           text(pv(), "checkText"),
           if flag(pv(), "machine") {
             text(pv(), "kindText")
@@ -505,28 +568,28 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
     // (why its provider refuses it, quiet as the line over it, and where that is the station's trouble, how to mend it
     // in the link's ink: profile_row's)
     below=fn(q) {
-      q.box(fn(c) {
+      q.show(fn() { trouble() != "" }, fn(c) {
         @sf.style_node(c, fn() { pl_trouble })
         // (the next lines of the row's words, as close under its note as its note is under its title: not below's 6)
         c.grow(Is(1.0)).min_width(Is(Some(0.0))).margin(Is((0.0, -6.0, 0.0, 0.0))) |> ignore
-        @sf.words_node(c, fn() { pl_trouble_of(pv()) }, fn() { pl_offer_note }) |> ignore
+        @sf.words_node(c, trouble, fn() { pl_offer_note }) |> ignore
         c.show(fn() { field(pv(), "trouble") is Some(Object(_)) }, fn(f) {
           @sf.words_node(f, fn() { @sf.t("android-settings.profile.seeFix") }, fn() { pl_see_fix }) |> ignore
         })
       })
-      |> ignore
+      q.show(grouped, fn(w) { pl_quota_node(w, quota, tips) })
     },
-    below_open=fn() { if pl_trouble_of(pv()) != "" { 1.0 } else { 0.0 } },
+    below_open=fn() { if trouble() != "" || grouped() { 1.0 } else { 0.0 } },
     tail=fn(t) {
       t.box(fn(e) {
         @sf.style_node(e, fn() { pl_tail }, in_row=true)
         doing_mark_node(e, fn() { is_doing(core, calls, on()) }, fn() { failed_of(core, calls, on()) }, tips~)
-        @sf.quota_chips_node(e, fn() { field(pv(), "quota") }, small=true, tips~)
+        @sf.quota_chips_node(e, fn() { if grouped() { None } else { quota() } }, small=true, tips~)
       })
       |> ignore
     },
     // (its tail's room only while it holds something: what is under way, or its allowance's chips)
-    tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) || @sf.has_quota(field(pv(), "quota")) },
+    tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) || (!grouped() && @sf.has_quota(quota())) },
   )
 }
 
@@ -644,7 +707,7 @@ fn pl_machine_offers_node(
                   if usable {
                     @sf.t("web-pages.profiles.useMachineTip")
                   } else {
-                    @sf.t("web-pages.profiles.keychainTip", args=[("name", "still.fail")])
+                    @sf.t("web-pages.profiles.keychainTip", args=[("name", @sf.product())])
                   }
                 })
                 |> ignore
@@ -904,7 +967,7 @@ let pl_drop_plan : Int = 1
 let pl_quota_line : @ui.Style = @ui.css("w=Full pt=S1_5")
 
 ///|
-/// What is under way with a station's profile and its allowance at its row's end, 8 apart across its middle.
+/// What is under way with a station's profile and its unscoped allowance at its row's end, 8 apart.
 // kept across runs: a value (no field of it changes)
 let pl_tail : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 
@@ -985,18 +1048,50 @@ pub fn profiles_page_node(
   held.prefetch("profiles", scope) |> ignore
   held.prefetch("stations", scope) |> ignore
   let tabs_thumb = @sf.SegThumb::new(v, fn() { if overview.get() { 1 } else { 0 } })
-  v.pick(fn() { overview.get() }, fn(p, shown) {
+  // (hoisted to the page container so kept panes update the top bar reactively when waking without re-calling bar_actions;
+  // overview.get() short-circuits profilesOverview while on 账号)
+  match bar_actions {
+    Some(f) => {
+      let has_pools = @signals.computed(fn(_) {
+        overview.get() &&
+        !items((core.topic)("profilesOverview", { "scope": Json::string(here().workspace) }).get().value, "pools").is_empty()
+      })
+      let add = fn() { @settings.place_action(core, here(), "profiles") is Some(_) }
+      let adding = fn(at : @view.View) {
+        match @settings.place_action(core, @signals.untracked(here), "profiles") {
+          Some(run) => run(Node(at))
+          None => ()
+        }
+      }
+      let label = fn() { @sf.t("android-misc.bar.action.profiles") }
+      f(
+        fn(l) {
+          profile_share_node(l, core, here, fn() { true }, tips, bar=true, has_pools=fn() { has_pools.get() })
+          if bar_add {
+            l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })
+          }
+        },
+        fn(_) { @sf.button_height() },
+      )
+    }
+    None => ()
+  }
+  v.each(fn() { [overview.get()] }, fn(x) { x }, keeps=fn() { [true, false] }, at_once=true, fn(p, shown_sig) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    if shown {
-      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, tabs_thumb~, on_show_accounts=fn() {
+    if @signals.untracked(fn() { shown_sig.get() }) {
+      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_add~, tabs_thumb~, on_show_accounts=fn() {
         overview.set(false)
       })
       // (what the switch asked ahead, its pools, read anew by the overview just made: overview_switch)
       @sfbase.shown_read("profiles-list\u{1}" + ws)
     } else {
-      // (概览 once what it shows is answered, the list meanwhile: overview_switch)
-      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, tabs_thumb~, on_show_overview=fn() {
-        (@settings.overview_switch.val)(ws, fn() { overview.set(true) })
+      // (概览 once what it shows is answered, the list meanwhile: overview_switch; release the ahead read after the
+      // overview frame draws so both initial build and subsequent wake-ups hand over cleanly without leaking)
+      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_add~, tabs_thumb~, on_show_overview=fn() {
+        (@settings.overview_switch.val)(ws, fn() {
+          overview.set(true)
+          @ui.after_drawn_frame(fn() { @sfbase.shown_read("profiles-list\u{1}" + ws) })
+        })
       })
     }
   })

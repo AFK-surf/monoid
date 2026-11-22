@@ -85,8 +85,6 @@ pub async fn hand_over(FolderPlace, Place, String, String) -> Bool
 
 pub async fn handover_id(Fs, Array[String], String, Double) -> String
 
-pub async fn harness(@host.Host) -> Unit
-
 pub let hash_most : Double
 
 pub fn head_batches(@jsjson.JValue) -> Array[String]
@@ -227,7 +225,7 @@ pub fn pair_get(Array[(String, String)], String) -> String?
 
 pub fn pairs_json(Array[(String, String)]) -> @jsjson.JValue
 
-pub fn parse(String) -> @jsjson.JValue raise
+pub fn parse(String) -> @jsjson.JValue raise @jsjson.SyntaxError
 
 pub let peer_most : Double
 
@@ -238,6 +236,8 @@ pub fn peer_place(World, String) -> Place
 pub async fn peer_read(World, String, String, String, String?, String) -> Body
 
 pub let previous_limit_ms : Double
+
+pub fn process_runner(() -> ExportProcess raise, () -> Double) -> Runner
 
 pub fn program_runner(Fs, String, String, String, String, () -> Double) -> Runner
 
@@ -432,6 +432,18 @@ pub async fn CopiesPart::start(Self) -> Unit
 pub struct Driver {
   station : String
   session : String
+}
+
+pub(all) struct ExportProcess {
+  write : (Bytes) -> Bool
+  end_input : () -> Unit
+  next : async () -> ExportSaid
+}
+
+pub(all) enum ExportSaid {
+  Said(Bytes)
+  Other
+  Ended(Int?, String?)
 }
 
 pub struct FolderPlace {
@@ -834,7 +846,7 @@ pub struct Serving {
   hello : (String, String, Array[String]) -> Array[String]
 }
 
-pub struct SessionReads {
+pub(all) struct SessionReads {
   session : async (String) -> @jsjson.JValue?
   home_members : async (String) -> Array[String]?
   ran_on : async (String) -> Array[String]

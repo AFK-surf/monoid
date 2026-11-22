@@ -217,7 +217,13 @@ fn rig_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?, 
         }
       }, same=fn(a, b) { a == b })
       @settings.rig_card_node(r, core, here.station, fn() { card.get() }, lock=fn() {
-        open_page(Setting(@settings.Route::AdbShare(here.station)))
+        // (in safe mode its approval is 设置 › 安全's, to people the one safe mode there is, FB-45; else 共享调试's)
+        let locked = match core {
+          Some(c) =>
+            @signals.untracked(fn() { flag((c.topic)("rigs", { "workspace": str(workspace_of(here.station)) }).get().value, "locked") })
+          None => false
+        }
+        open_page(if locked { Setting(@settings.Route::Security) } else { Setting(@settings.Route::AdbShare(here.station)) })
       })
     }, fn(p) {
       @settings.rig_outcome_node(
@@ -340,6 +346,9 @@ let vault_ask_none : VaultAsk = {
   command: "",
   how_text: "",
   save_kind: "",
+  save_vault_name: "",
+  save_shared: false,
+  save_targets: [],
   username: "",
   filename: "",
   typed: false,
@@ -349,6 +358,13 @@ let vault_ask_none : VaultAsk = {
   new_about: "",
   was_about: "",
   remove: false,
+  browse: false,
+  browse_hint: "",
+  browse_workspaces: 0,
+  browse_items: 0,
+  cross_workspace: "",
+  cross_workspace_name: "",
+  cross_vault_name: "",
   status: "",
   scope: "",
   station: "",
@@ -370,6 +386,9 @@ fn vault_asked_of(ask : VaultAsk) -> @settings.Asked {
     command: ask.command,
     how_text: ask.how_text,
     save_kind: ask.save_kind,
+    save_vault_name: ask.save_vault_name,
+    save_shared: ask.save_shared,
+    save_targets: ask.save_targets,
     username: ask.username,
     filename: ask.filename,
     typed: ask.typed,
@@ -380,6 +399,13 @@ fn vault_asked_of(ask : VaultAsk) -> @settings.Asked {
     new_about: ask.new_about,
     was_about: ask.was_about,
     remove: ask.remove,
+    browse: ask.browse,
+    browse_hint: ask.browse_hint,
+    browse_workspaces: ask.browse_workspaces,
+    browse_items: ask.browse_items,
+    cross_workspace: ask.cross_workspace,
+    cross_workspace_name: ask.cross_workspace_name,
+    cross_vault_name: ask.cross_vault_name,
   }
 }
 

@@ -73,6 +73,9 @@ public final class FramePacerTest {
         boolean onMain;
         /** Choreographer's callbacks for the next vsync (posted on the main thread) */
         List<Runnable> nextVsync = new ArrayList<>();
+        /** Optional CALLBACK_INSETS_ANIMATION hook run in the same doFrame after nextVsync callbacks. */
+        Runnable onInsets;
+        int vsyncPosts;
         /** the drawing thread: busy until, its queued events (queueEvent), a frame requested */
         long drawingFree;
         final ArrayDeque<Runnable> drawingQueue = new ArrayDeque<>();
@@ -139,6 +142,7 @@ public final class FramePacerTest {
             nextVsync = new ArrayList<>();
             onMain = true;
             for (Runnable r : cbs) r.run();
+            if (onInsets != null) onInsets.run();
             onMain = false;
             at(v + period, this::vsync);
         }
@@ -156,6 +160,7 @@ public final class FramePacerTest {
         @Override public void postMain(Runnable r) { main(now, r); }
 
         @Override public void postVsync() {
+            vsyncPosts++;
             // Android 13's: told with its preferred timeline, shown two vsyncs on (the app's frame deadline)
             nextVsync.add(() -> pacer.vsyncCame(vsyncTime(), vsyncTime() + 2 * period));
         }
@@ -414,6 +419,169 @@ public final class FramePacerTest {
                 during == 30f && frames >= 28 && frames <= 30, "rate " + during + ", " + frames + " frames in 0.95 s");
     }
 
+    /** A keyboard step (frameNow) right after a picture-only frame still lays out the app rather than redrawing. */
+    static void frameNowAfterPictureCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        ph.app = steady(1.0, 1.0, -1);
+        final boolean[] wantedAfterFrameNow = {false};
+        ph.main(Math.round(50e6), () -> {
+            ph.pacer.pictureFrame();
+            ph.pacer.frameNow();
+            wantedAfterFrameNow[0] = ph.pacer.appWanted.get();
+        });
+        ph.runUntil(Math.round(120e6));
+        check("frameNow after pictureFrame sets appWanted and draws an app frame",
+                wantedAfterFrameNow[0] && ph.drawn.size() == 1,
+                "appWanted=" + wantedAfterFrameNow[0] + ", frames drawn=" + ph.drawn.size());
+    }
+
+    /** Keyboard animation pre-warmed with sayRate(true) runs at topRate from before frame 1 and drops after it ends. */
+    static void imeWarmupRateCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        ph.app = steady(1.0, 1.0, -1);
+        final float[] rateBeforeFirstFrame = {0f};
+        // Pre-warm on drawing thread (MBView.imeMovingStarted) before the first WindowInsetsAnimation.onProgress step
+        ph.at(Math.round(50e6), () -> {
+            ph.drawingQueue.add(() -> ph.pacer.sayRate(true));
+            ph.kickDrawing();
+        });
+        ph.main(Math.round(60e6), () -> rateBeforeFirstFrame[0] = ph.rate);
+        long firstStep = Math.round(60e6);
+        for (int k = 0; k < 10; k++) {
+            ph.main(firstStep + k * ph.period, ph.pacer::frameNow);
+        }
+        long afterSteps = firstStep + 10 * ph.period;
+        ph.runUntil(afterSteps);
+        float rateDuring = ph.rate;
+        int framesDuring = ph.drawn.size();
+        // Animation ends and keyboard is not shown (typingChanged lets the rate go after a second)
+        ph.at(afterSteps + ph.period, () -> {
+            ph.typing = false;
+            ph.drawingQueue.add(ph.pacer::typingChanged);
+            ph.kickDrawing();
+        });
+        ph.runUntil(afterSteps + Math.round(1300e6));
+        check("IME warmup: topRate before frame 1, held across frameNow sequence, released after end",
+                rateBeforeFirstFrame[0] == 120f && rateDuring == 120f && framesDuring == 10 && ph.rate == 0f,
+                "before=" + rateBeforeFirstFrame[0] + ", during=" + rateDuring
+                        + ", frames=" + framesDuring + ", after=" + ph.rate);
+    }
+
+    /** IME inset animation + ongoing app animation coalesces CALLBACK_ANIMATION and CALLBACK_INSETS_ANIMATION into 1 frame/vsync. */
+    static void imeMovingWithAnimationCoalescesCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        long firstV = 12;
+        long imeSteps = 25;
+        long postSteps = 10;
+        long endV = firstV + imeSteps + postSteps;
+        ph.app = steady(3.0, 3.0, (endV * ph.period) / 1e6 - 0.1);
+        ph.main(firstV * ph.period - ph.period / 2, () -> {
+            ph.pacer.setImeMoving(true);
+            ph.pacer.wantFrame();
+        });
+        ph.onInsets = () -> {
+            long k = ph.now / ph.period;
+            if (k >= firstV && k < firstV + imeSteps) {
+                ph.pacer.frameNow();
+                if (k == firstV + imeSteps - 1) ph.pacer.setImeMoving(false);
+            }
+        };
+        ph.runUntil((endV + 6) * ph.period);
+        int imeFrames = 0;
+        double imeStartMs = (firstV * ph.period) / 1e6 - 0.1;
+        double imeEndMs = ((firstV + imeSteps - 1) * ph.period) / 1e6 + 0.1;
+        for (double[] d : ph.drawn) {
+            if (d[0] >= imeStartMs && d[0] <= imeEndMs) imeFrames++;
+        }
+        List<Long> miss = missed(ph, (firstV + 2) * ph.period - 1, (endV + 1) * ph.period);
+        check("IME moving with animation coalesces to 1 frame/vsync with 0 missed refreshes",
+                miss.isEmpty() && imeFrames == imeSteps,
+                "imeFrames=" + imeFrames + "/" + imeSteps + ", missed=" + miss.size()
+                        + (miss.isEmpty() ? "" : " (first=" + miss.get(0) + ")") + ", totalDrawn=" + ph.drawn.size());
+    }
+
+    /** When imeMoving is true but some vsyncs emit no onProgress, flushDeferredVsync falls back with 0 missed refreshes. */
+    static void imeMovingWithoutProgressFallsBackCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        long firstV = 12;
+        long steps = 25;
+        long endV = firstV + steps;
+        ph.app = steady(3.0, 3.0, (endV * ph.period) / 1e6 - 0.1);
+        ph.main(firstV * ph.period - ph.period / 2, () -> {
+            ph.pacer.setImeMoving(true);
+            ph.pacer.wantFrame();
+        });
+        ph.onInsets = () -> {
+            long k = ph.now / ph.period;
+            if (k >= firstV && k < endV && (k % 2 == 0)) {
+                ph.pacer.frameNow();
+            }
+            if (k == endV - 1) ph.pacer.setImeMoving(false);
+        };
+        ph.runUntil((endV + 6) * ph.period);
+        List<Long> miss = missed(ph, (firstV + 2) * ph.period - 1, (endV + 1) * ph.period);
+        check("IME moving without onProgress on some vsyncs falls back with 0 missed refreshes",
+                miss.isEmpty() && ph.drawn.size() == steps + 1,
+                "drawn=" + ph.drawn.size() + "/" + (steps + 1) + ", missed=" + miss.size()
+                        + (miss.isEmpty() ? "" : " (first=" + miss.get(0) + ")"));
+    }
+
+    /** frameNow when a postVsync is already pending does not clear wanted and does not duplicate next vsync callback. */
+    static void frameNowDoesNotDuplicatePendingVsyncCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        long nextV = 12;
+        // Return more=true on frame 0 (drawn by frameNow), false on frame 1 (drawn by vsync #12)
+        ph.app = new App() {
+            @Override public double work(int f, double now) { return 1.0; }
+
+            @Override public double gpu(int f, double now) { return 1.0; }
+
+            @Override public boolean more(int f, double now) { return f == 0; }
+        };
+        final int[] postsBeforeNextVsync = {0};
+        final int[] callbacksAtNextVsync = {0};
+        ph.main(11 * ph.period + 1_000_000, ph.pacer::wantFrame);
+        ph.main(11 * ph.period + 2_000_000, ph.pacer::frameNow);
+        ph.at(nextV * ph.period - 1, () -> {
+            postsBeforeNextVsync[0] = ph.vsyncPosts;
+            callbacksAtNextVsync[0] = ph.nextVsync.size();
+        });
+        ph.runUntil((nextV + 4) * ph.period);
+        check("frameNow with pending postVsync does not duplicate next vsync callback",
+                postsBeforeNextVsync[0] == 1 && callbacksAtNextVsync[0] == 1 && ph.drawn.size() == 2,
+                "postsBefore=" + postsBeforeNextVsync[0] + ", cbsAtNextVsync=" + callbacksAtNextVsync[0]
+                        + ", drawn=" + ph.drawn.size());
+    }
+
+    /** Pure keyboard slide (more=false) keeps preferred timeline armed through a >8.33ms step and transition into more=true. */
+    static void imeMovingPureSlideKeepsTimelineCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        long firstV = 12;
+        long totalSteps = 20;
+        long endV = firstV + totalSteps;
+        ph.app = new App() {
+            @Override public double work(int f, double now) { return f == 4 ? 5.0 : 2.0; }
+
+            @Override public double gpu(int f, double now) { return f == 4 ? 4.5 : 2.0; }
+
+            @Override public boolean more(int f, double now) { return f >= 10 && f < totalSteps - 1; }
+        };
+        ph.main(firstV * ph.period - ph.period / 2, () -> ph.pacer.setImeMoving(true));
+        ph.onInsets = () -> {
+            long k = ph.now / ph.period;
+            if (k >= firstV && k < endV) {
+                ph.pacer.frameNow();
+                if (k == endV - 1) ph.pacer.setImeMoving(false);
+            }
+        };
+        ph.runUntil((endV + 6) * ph.period);
+        List<Long> miss = missed(ph, (firstV + 2) * ph.period - 1, (endV + 1) * ph.period);
+        check("IME pure slide keeps timeline across >8.33ms frame and transition to more=true with 0 missed refreshes",
+                miss.isEmpty() && ph.drawn.size() == totalSteps,
+                "drawn=" + ph.drawn.size() + "/" + totalSteps + ", missed=" + miss.size()
+                        + (miss.isEmpty() ? "" : " (first=" + miss.get(0) + ")"));
+    }
+
     public static void main(String[] args) throws IOException {
         motionCase("a motion of 1 ms CPU and 1 ms GPU a frame shows a new frame at every refresh", 1, 1, true);
         motionCase("a motion of 0.5 ms CPU and 7 ms GPU a frame (the GPU under a refresh) shows a new frame at every refresh", 0.5, 7, true);
@@ -422,6 +590,12 @@ public final class FramePacerTest {
         typingCase();
         rateAfterMotion();
         pacedCase();
+        frameNowAfterPictureCase();
+        imeWarmupRateCase();
+        imeMovingWithAnimationCoalescesCase();
+        imeMovingWithoutProgressFallsBackCase();
+        frameNowDoesNotDuplicatePendingVsyncCase();
+        imeMovingPureSlideKeepsTimelineCase();
         if (args.length > 0) {
             replay(args[0], 1);
             replay(args[0], 7);

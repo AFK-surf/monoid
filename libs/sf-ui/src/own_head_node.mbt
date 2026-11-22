@@ -67,14 +67,11 @@ pub fn own_head_node(
     }
     match state {
       Some(f) =>
-        b.show(state_shown, fn(x) {
-          x.box(fn(s) {
-            style_node(s, fn() { head_state })
-            // (going on in the next line where its line has not the room: head_state's flow)
-            s.wraps(Is(Some(0.0))) |> ignore
-            f(s)
-          })
-          |> ignore
+        b.show(state_shown, fn(s) {
+          style_node(s, fn() { head_state })
+          // (going on in the next line where its line has not the room: head_state's flow)
+          s.wraps(Is(Some(0.0))) |> ignore
+          f(s)
         })
       None => ()
     }

@@ -34,7 +34,7 @@
 
 - A vault is always encrypted and kept by its person's own devices, with safe mode on or off. In safe mode it follows the workspace's lock in force (`client/core-ts/src/views/vault.ts` `lockOf`). Without safe mode it follows the person's own pinned lock (`personalLockOf`, genesis `""`), as each station builds it from members' own logs (`station/src/cloud/vault-lock.ts`). Turning safe mode on or off changes nothing in the vaults.
 - 开启 (`vault.setup`) begins the person's own lock where none exists, with this device on it, then makes the vault and moves old plain items in (`migrate`). Nothing is written to the plain library again (`plainMode` is always false). Its items are only read to move them and delete them.
-- Shared vaults are not supported without safe mode: a vault another person owns is readable only through a lock naming their devices.
+- Shared workspace vaults (`scope: "workspace"`) work both with and without safe mode: in safe mode they follow the workspace lock; without safe mode `personalLockOf` folds and verifies teammates' personal chains returned by `GET /vault/boxes` locally (never replacing this person's own pinned chain) and merges workspace roles. Workspace owners/admins who are members manage them (`canManage`).
 
 ## A person's presets and starred models
 
@@ -43,3 +43,4 @@
 - Trim kept deletions with `goneKept` (`GONE_KEPT`) so devices never send deletions a station would drop. Claim ownerless legacy deletions (`presets-kept.ts` `ownerless`) only when this device owns that preset.
 - For older stations (`GET /presets/kept` returns `no route`), never PUT: use legacy endpoints, open chats by id when listed, and send `presetCopy` otherwise.
 - Show own presets by default and others on press (`otherPresets`, in-memory except picked, `OTHERS_WAIT_MS` cap so slow stations do not stall the UI). Others' presets are viewable, usable, and copyable (`preset.copy`), never editable.
+- The board's drafts of 待派发 are the person's too and carried the same way (`client/core-ts/src/views/board-drafts.ts`, the rule `client/core-ts/src/board-drafts.ts`, the `boardDrafts` topic), no longer the prefs': what a device kept there is taken in once. A draft's files go up to the station it is to run on as they are added; another device shows them from there (`BoardDraftViews.picture`, `GET /board/files`) and, starting it, has that station copy them among its uploads (`client/core-ts/src/composer.ts` `#board`).

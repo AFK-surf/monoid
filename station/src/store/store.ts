@@ -27,7 +27,8 @@ import {
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
   LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn, renameOwnChats } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addConvColumn, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn, renameOwnChats } from "./schema.ts";
+import { OWNED_WS_SQL, activeConversationMembers, birthThreadsOf, conversationOf, membersOf, reanchorOnDeleteInTx, repairConversations, settleConversationInTx } from "./conversations.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
 import { installPeopleSinceIndex } from "./legacy-people-since.ts";
 import { ARCHIVE_POLICY, LEGACY_ARCHIVE_POLICY, hasLegacyArchivePolicy, installArchivePolicyIndex } from "./archive-policy-index.ts";
@@ -113,8 +114,23 @@ export const MEMBER_JOIN_IF_NEEDED = `INSERT INTO thread_sessions (thread, sessi
   SELECT ?1, ?2, ?3, ?4 WHERE NOT EXISTS
     (SELECT 1 FROM thread_sessions WHERE thread = ?1 AND session = ?2 AND left_at IS NULL)
   ON CONFLICT (thread, session) DO UPDATE SET left_at = NULL WHERE thread_sessions.left_at IS NOT NULL`;
-// The sessions that lead the one an UPDATE of sessions changes (chat_create for me), as JSON.
-const LEADERS_RETURNING = "RETURNING (SELECT json_group_array(parent) FROM opened_chats WHERE child_station = '' AND child = sessions.key AND parent_station = '' AND led = 1) AS leaders";
+const ARCHIVE_RETURNING = "RETURNING key, conv, (SELECT json_group_array(parent) FROM opened_chats WHERE child_station = '' AND child = sessions.key AND parent_station = '' AND led = 1) AS leaders";
+export const ARCHIVE_SESSION_SQL = `UPDATE sessions SET archived_at = ?1, archived_by = ?2
+  WHERE key IN (
+    SELECT ?3
+    UNION
+    SELECT key FROM sessions WHERE key = COALESCE((SELECT NULLIF(conv, '') FROM sessions WHERE key = ?3), ?3) AND ${OWNED_WS_SQL}
+    UNION
+    SELECT key FROM sessions INDEXED BY sessions_conv WHERE conv = COALESCE((SELECT NULLIF(conv, '') FROM sessions WHERE key = ?3), ?3) AND ${OWNED_WS_SQL}
+  ) ${ARCHIVE_RETURNING}`;
+export const UNARCHIVE_SESSION_SQL = `UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?1, shown_at)
+  WHERE key IN (
+    SELECT ?2
+    UNION
+    SELECT key FROM sessions WHERE key = COALESCE((SELECT NULLIF(conv, '') FROM sessions WHERE key = ?2), ?2) AND ${OWNED_WS_SQL}
+    UNION
+    SELECT key FROM sessions INDEXED BY sessions_conv WHERE conv = COALESCE((SELECT NULLIF(conv, '') FROM sessions WHERE key = ?2), ?2) AND ${OWNED_WS_SQL}
+  ) ${ARCHIVE_RETURNING}`;
 // Each gives, of a delivery made, the conversational card the thread waited on as it was made: RETURNING is worked out
 // before the AFTER triggers run (schema.ts pending_cards_delivered, which settles it), so a delivery tells what it
 // settled with no statement more on the main thread (test/main-thread-waits.test.ts).
@@ -142,7 +158,9 @@ export const RECENT_JOINED_THREADS = `SELECT t.*, ts.connect FROM thread_session
 export const FEW_SESSION_THREADS = `SELECT t.*, ts.connect FROM thread_sessions ts JOIN threads t ON t.id = ts.thread
   WHERE ts.session = ?1 ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT ?2`;
 export const SESSION_HOME_THREAD = `SELECT t.*, ts.connect FROM threads t INDEXED BY threads_home
-  CROSS JOIN thread_sessions ts WHERE t.home = ?1 AND ts.thread = t.id AND ts.session = ?1
+  CROSS JOIN thread_sessions ts
+  WHERE t.home = COALESCE((SELECT NULLIF(conv, '') FROM sessions WHERE key = ?1), ?1)
+    AND ts.thread = t.id AND ts.session = ?1
   ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT 1`;
 // Ordering still considers every thread, but it reads only its latest message's time; people and full summaries are
 // needed only after the limit. Applying the connect filter outside the limit preserves the prior cross-connect order.
@@ -180,6 +198,19 @@ export const TRANSCRIPT_IN_USE = `SELECT 1 FROM runtime_sessions r INDEXED BY ru
     WHERE s.runtime_session_id = ?1 AND s.runtime = ?2 AND s.key <> ?3 AND (s.archived_at IS NULL OR s.running = 1)
       AND NOT EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.id = ?1)
   LIMIT 1`;
+/// Whether any other session row (including archived ones) references a runtime transcript.
+export const TRANSCRIPT_REFERENCED = `SELECT 1 FROM runtime_sessions r INDEXED BY runtime_sessions_by_id
+    CROSS JOIN sessions s ON s.key = r.session_key
+    WHERE r.id = ?1 AND COALESCE(r.runtime, s.original_runtime, s.runtime) = ?2 AND s.key <> ?3
+  UNION ALL SELECT 1 FROM sessions s INDEXED BY sessions_by_runtime_id
+    WHERE s.runtime_session_id = ?1 AND s.runtime = ?2 AND s.key <> ?3
+      AND NOT EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.id = ?1)
+  LIMIT 1`;
+export const SESSION_PATHS_BATCH = 200;
+/// Bounded primary-key page of session workspace/cwd paths for low-disk clone reclamation.
+export const SESSION_PATHS_PAGE = `SELECT key, workspace, cwd, archived_at FROM sessions WHERE key > ?1 ORDER BY key LIMIT ?2`;
+export const IDLE_UNARCHIVED_BATCH = 64;
+export type IdleUnarchivedSession = { key: string; workspace: string; lastActiveAt: number };
 /// A session's messages not delivered yet and its latest turn (`statsOf`): what is not delivered by the index of those
 /// alone. By (session, thread), SQLite went over every message the session was ever given, and every turn was counted
 /// besides, for no one: auto-archiving looked at each session shown so, on the main thread, 13 s and 22 s on a station short
@@ -214,7 +245,7 @@ export const workOfRow = (r: Json | undefined): WorkOf | undefined =>
 /// (test/reference/ops-sessions.ts `archiveFacts`): bound to a connect, pinned, its chats and which of them are kept, its work and
 /// whether a job of its is up. Null where the index that says it is not built yet. Its chats are the recent ones
 /// (`recentThreadRows`), as everything the station decides of a session's threads looks at.
-export type ArchiveFacts = { bound: boolean | null; pinned: boolean | null; threads: SessionThread[]; kept: number[] | null; work: WorkOf | null; upJob: boolean | null };
+export type ArchiveFacts = { bound: boolean | null; pinned: boolean | null; threads: SessionThread[]; kept: number[] | null; work: WorkOf | null; upJob: boolean | null; convMembers?: string[] };
 
 /// What one look of the auto-archive reads (sessions/lifecycle.ts), a reader's: the sessions shown that are idle long
 /// enough by their times, each with its `ArchiveFacts`; the chats of their own idle long enough and not kept; when the
@@ -296,13 +327,17 @@ export function archiveFactsOf(db: DatabaseSync, keys: readonly string[]): Recor
     const of = workOfRow(work.get(key) as Json | undefined);
     if (of === undefined) { out[key] = null; continue; }
     const chats = recentThreadRows(db, key, RECENT_THREADS).rows.map(toSessionThread);
+    const anchor = conversationOf(db, key);
+    const convMembers = membersOf(db, anchor);
+    const pinTargets = convMembers.length > 0 ? convMembers : [key];
     out[key] = {
       bound: bindings ? bound.get(key) !== undefined : null,
-      pinned: marks ? pin.get(key) !== undefined : null,
+      pinned: marks ? pinTargets.some((m) => pin.get(m) !== undefined) : null,
       threads: chats,
       kept: marks ? chats.filter((t) => keep.get(t.thread.id) !== undefined).map((t) => t.thread.id) : null,
       work: of,
       upJob: sessionUpJobsReady(db, key) ? upJob.get(key) !== undefined : null,
+      convMembers: pinTargets,
     };
   }
   return out;
@@ -713,6 +748,7 @@ export class Store {
     const priority = new Int32Array(new SharedArrayBuffer(8));
     const db = timed(new DatabaseSync(path, { timeout: 5000 }), undefined, undefined, priority);
     let from = SCHEMA_VERSION;
+    let hasTables = false;
     try {
       // A commit waits for the log's write, not for the disk: what the last moments before a power cut wrote may be lost,
       // the database never damaged (WAL). Each live step of an agent commits a few times; with each its own flush to
@@ -729,7 +765,7 @@ export class Store {
       // The log's file cut back to WAL_KEEP_BYTES each time it is written into the database from its start: SQLite keeps
       // it at the most it ever grew to otherwise, 520 MB on a station (2026-11-03) with 1 GB of its disk left.
       db.exec(`PRAGMA journal_size_limit = ${WAL_KEEP_BYTES};`);
-      const hasTables = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get() !== undefined;
+      hasTables = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get() !== undefined;
       if (hasTables) {
         from = (db.prepare("PRAGMA user_version").get() as Json).user_version;
         if (from !== SCHEMA_VERSION && from !== 12) {
@@ -757,6 +793,7 @@ export class Store {
       addSmallJobColumn(db);
       addWaitWatchColumn(db);
       addWorkspaceColumns(db);
+      addConvColumn(db);
       installArchivePolicyIndex(db);
       addOpenerTitle(db);
       addLedColumn(db);
@@ -799,6 +836,7 @@ export class Store {
       installLatestThreadIndex(db);
       installCardPosts(db);
       renameOwnChats(db, (t) => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t) !== undefined);
+      repairConversations(db);
     } catch (e) {
       db.close();
       throw e;
@@ -812,7 +850,9 @@ export class Store {
     } else store = new Store(db, join(dirname(path), "archive"), null, clock, priority.buffer as SharedArrayBuffer);
     try {
       if (from === 12) store.#upgradeFrom12();
-      db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+      // Written only where it changes: a database already at this version is opened without taking the write lock, which
+      // another process (the station before, its backfills) may hold past the busy timeout.
+      if (!hasTables || from !== SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       // (read once here, so that a turn asks nothing of it unless its session has one)
       for (const r of db.prepare("SELECT session FROM moved_notes WHERE told_at IS NULL").all() as { session: string }[]) store.#movedUntold.add(r.session);
     } catch (e) {
@@ -1041,6 +1081,24 @@ export class Store {
     return this.#one("SELECT archived_at FROM sessions INDEXED BY sessions_put_away WHERE archived_at > ? ORDER BY archived_at, key LIMIT 1", after)?.archived_at ?? null;
   }
 
+  /// A bounded page of idle unarchived, non-running sessions with `last_active_at <= through`, oldest activity first,
+  /// using the `sessions_live` partial index (avoids scanning `LIVE_SESSIONS`).
+  idleUnarchivedSessions(
+    after: { lastActiveAt: number; key: string } | null = null,
+    through: number,
+    limit = IDLE_UNARCHIVED_BATCH,
+  ): IdleUnarchivedSession[] {
+    let sql = "SELECT key, workspace, last_active_at FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL AND running = 0 AND last_active_at <= ?";
+    const args: Arg[] = [through];
+    if (after !== null) {
+      sql += " AND last_active_at >= ? AND (last_active_at > ? OR key > ?)";
+      args.push(after.lastActiveAt, after.lastActiveAt, after.key);
+    }
+    args.push(limit);
+    return this.#all(`${sql} ORDER BY last_active_at ASC, key ASC LIMIT ?`, ...args)
+      .map((r) => ({ key: r.key, workspace: r.workspace, lastActiveAt: r.last_active_at }));
+  }
+
   /// Every session, most recently active first.
   listSessions(): SessionRow[] {
     return this.#all("SELECT * FROM sessions ORDER BY last_active_at DESC").map(toSession);
@@ -1187,6 +1245,11 @@ export class Store {
     this.#updateSession(key, "UPDATE sessions SET context_before = ?1 WHERE key = ?2", before, key);
   }
 
+  /// Its runtime session compacted its context once more (on its own or by hand).
+  noteCompacted(key: string): void {
+    this.#updateSession(key, "UPDATE sessions SET compactions = COALESCE(compactions, 0) + 1 WHERE key = ?1", key);
+  }
+
   /// Whether it goes on afresh once its prompt cache is over (null: as the station is set).
   setSessionAfresh(key: string, afresh: boolean | null): void {
     this.#updateSession(key, "UPDATE sessions SET afresh = ?1 WHERE key = ?2", optFlag(afresh), key);
@@ -1215,10 +1278,10 @@ export class Store {
   }
 
   /// null: none now (its context cleared by hand); those it ran in stay in `runtime_sessions`. Where its context stands
-  /// changes with it (read/usage.ts `usageNow`).
+  /// changes with it (read/usage.ts `usageNow`), and how often it compacted counts afresh with another.
   setRuntimeSessionId(key: string, id: string | null): void {
     this.#with((changes) => {
-      this.#run("UPDATE sessions SET runtime_session_id = ?1 WHERE key = ?2", id, key);
+      this.#run("UPDATE sessions SET compactions = CASE WHEN runtime_session_id IS ?1 THEN compactions ELSE NULL END, runtime_session_id = ?1 WHERE key = ?2", id, key);
       changes.push({ type: "session", key }, { type: "conversation", key });
     });
   }
@@ -1279,6 +1342,17 @@ export class Store {
   /// The models `sub` starred in workspace `ws`, kept as `stars` (JSON).
   putModelStars(ws: string, sub: string, stars: string): void {
     this.#run("INSERT INTO model_stars (ws, sub, stars) VALUES (?1, ?2, ?3) ON CONFLICT (ws, sub) DO UPDATE SET stars = excluded.stars", ws, sub, stars);
+  }
+
+  /// `sub`'s drafts of 待派发 in workspace `ws` as kept (sessions/board-drafts.ts), as JSON; null before any.
+  boardDrafts(ws: string, sub: string): string | null {
+    const row = this.#one("SELECT drafts FROM board_drafts WHERE ws = ?1 AND sub = ?2", ws, sub);
+    return row === undefined || row === null ? null : String(row.drafts);
+  }
+
+  /// `sub`'s drafts of 待派发 in workspace `ws`, kept as `drafts` (JSON).
+  putBoardDrafts(ws: string, sub: string, drafts: string): void {
+    this.#run("INSERT INTO board_drafts (ws, sub, drafts) VALUES (?1, ?2, ?3) ON CONFLICT (ws, sub) DO UPDATE SET drafts = excluded.drafts", ws, sub, drafts);
   }
 
   /// Since when this station keeps the devices' builds: `now` the first time it is asked, the same ever after.
@@ -1475,6 +1549,12 @@ export class Store {
     return r ? toOpened(r) : null;
   }
 
+  /// An `opened_chats` row by `(childStation, child)`, if present.
+  openedRecord(childStation: string, child: string): Opened | null {
+    const r = this.#one("SELECT * FROM opened_chats WHERE child_station = ? AND child = ?", childStation, child);
+    return r ? toOpened(r) : null;
+  }
+
   /// How many chats `createdBy` started here since `since`, by runtime and model (what chat_create runs when it is told
   /// no model: sessions/model-choice.ts).
   modelsUsedBy(createdBy: string, since: number): { runtime: string; model: string | null; n: number }[] {
@@ -1498,6 +1578,86 @@ export class Store {
         if (r.parent_station === "") changes.push({ type: "session", key: r.parent as string });
       }
     });
+  }
+
+  /// Changes whether an opened chat is led by its opener (`for: "person"` sets `led = 0`).
+  /// Emits `chatMark` and `session` for affected local sessions so clients refresh immediately.
+  setOpenedLed(childStation: string, child: string, led: boolean): { changed: boolean; prev: Opened | null } {
+    let changed = false;
+    let prev: Opened | null = null;
+    this.#with((changes) => {
+      const existing = this.#one("SELECT * FROM opened_chats WHERE child_station = ? AND child = ?", childStation, child);
+      if (!existing) return;
+      prev = toOpened(existing);
+      if (prev.led === led) return;
+      this.#run("UPDATE opened_chats SET led = ? WHERE child_station = ? AND child = ?", led ? 1 : 0, childStation, child);
+      changed = true;
+      if (childStation === "") {
+        changes.push({ type: "chatMark", thread: null, session: child }, { type: "session", key: child });
+      }
+      if (prev.parentStation === "") {
+        changes.push({ type: "chatMark", thread: null, session: prev.parent }, { type: "session", key: prev.parent });
+      }
+    });
+    return { changed, prev };
+  }
+
+  /// Adopts a chat as led by `(parentStation, parent)` (`for: "me"`): updates an existing row preserving
+  /// `key`/`title`/`link`/`created_at`, or inserts a new row with `key = "adopt:" + child`.
+  adoptOpened(o: { childStation: string; child: string; parentStation: string; parent: string; title: string | null; link: string | null; openerTitle?: string | null }): { changed: boolean; prev: Opened | null } {
+    let changed = false;
+    let prev: Opened | null = null;
+    this.#with((changes) => {
+      const existing = this.#one("SELECT * FROM opened_chats WHERE child_station = ? AND child = ?", o.childStation, o.child);
+      if (existing) {
+        prev = toOpened(existing);
+        if (prev.led === true && prev.parentStation === o.parentStation && prev.parent === o.parent) {
+          const titleChanged = o.title !== null && o.title !== prev.title;
+          const linkChanged = o.link !== null && o.link !== prev.link;
+          if (titleChanged || linkChanged) {
+            this.#run(
+              "UPDATE opened_chats SET title = COALESCE(?, title), link = COALESCE(?, link) WHERE child_station = ? AND child = ?",
+              o.title, o.link, o.childStation, o.child,
+            );
+            if (o.childStation === "") {
+              changes.push({ type: "chatMark", thread: null, session: o.child }, { type: "session", key: o.child });
+            }
+            if (o.parentStation === "") {
+              changes.push({ type: "chatMark", thread: null, session: o.parent }, { type: "session", key: o.parent });
+            }
+          }
+          return;
+        }
+        this.#run(
+          "UPDATE opened_chats SET parent_station = ?, parent = ?, title = COALESCE(?, title), link = COALESCE(?, link), opener_title = ?, led = 1 WHERE child_station = ? AND child = ?",
+          o.parentStation, o.parent, o.title, o.link, o.openerTitle ?? null, o.childStation, o.child,
+        );
+        changed = true;
+        if (o.childStation === "") {
+          changes.push({ type: "chatMark", thread: null, session: o.child }, { type: "session", key: o.child });
+        }
+        if (o.parentStation === "") {
+          changes.push({ type: "chatMark", thread: null, session: o.parent }, { type: "session", key: o.parent });
+        }
+        if (prev.parentStation === "" && (prev.parent !== o.parent || prev.parentStation !== o.parentStation)) {
+          changes.push({ type: "chatMark", thread: null, session: prev.parent }, { type: "session", key: prev.parent });
+        }
+        return;
+      }
+      const at = this.now();
+      this.#run(
+        "INSERT INTO opened_chats (child_station, child, parent_station, parent, key, title, link, opener_title, led, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+        o.childStation, o.child, o.parentStation, o.parent, `adopt:${o.child}`, o.title, o.link, o.openerTitle ?? null, at,
+      );
+      changed = true;
+      if (o.childStation === "") {
+        changes.push({ type: "chatMark", thread: null, session: o.child }, { type: "session", key: o.child });
+      }
+      if (o.parentStation === "") {
+        changes.push({ type: "chatMark", thread: null, session: o.parent }, { type: "session", key: o.parent });
+      }
+    });
+    return { changed, prev };
   }
 
   /// The runtime sessions the session has run in, the first first, ending with the one it runs in now.
@@ -1536,6 +1696,21 @@ export class Store {
   /// A transcript is left unpacked while another shown or running session can still write it.
   transcriptInUse(runtime: string, id: string, except: string): boolean {
     return this.#one(TRANSCRIPT_IN_USE, id, runtime, except) !== undefined;
+  }
+
+  /// Whether any other session row (including archived ones) still references this transcript.
+  transcriptReferenced(runtime: string, id: string, except: string): boolean {
+    return this.#one(TRANSCRIPT_REFERENCED, id, runtime, except) !== undefined;
+  }
+
+  /// A primary-key-bounded page of session workspace/cwd paths for low-disk clone reclamation.
+  sessionPathsPage(after: string, limit = SESSION_PATHS_BATCH): { key: string; workspace: string; cwd: string | null; archivedAt: number | null }[] {
+    return (this.#all(SESSION_PATHS_PAGE, after, limit) as Json[]).map((r) => ({
+      key: String(r.key),
+      workspace: String(r.workspace),
+      cwd: r.cwd === null || r.cwd === undefined ? null : String(r.cwd),
+      archivedAt: r.archived_at === null || r.archived_at === undefined ? null : Number(r.archived_at),
+    }));
   }
 
   setRunning(key: string, running: boolean): void {
@@ -1683,9 +1858,37 @@ export class Store {
     return this.#one(LAST_READ_AT, thread).at;
   }
 
-  /// A session's own chat on the page (ThreadRow.home), if it has one.
+  /// The anchor session key of `key`'s conversation (`conv ?? key`).
+  conversationOf(key: string): string {
+    return conversationOf(this.db, key);
+  }
+
+  /// All owned sessions in conversation `anchor` (`conv = anchor OR key = anchor`).
+  membersOf(anchor: string, limit?: number): string[] {
+    return membersOf(this.db, anchor, limit);
+  }
+
+  /// Idempotent conversation grouping for `thread` (§3.2). Returns true if any session or thread changed.
+  settleConversation(thread: number, born: string | null = null): boolean {
+    return this.#with((changes) => {
+      const touched = this.#tx(() => settleConversationInTx(this.db, thread, this.now(), born));
+      for (const key of touched.sessions) changes.push({ type: "session", key });
+      for (const id of touched.threads) changes.push({ type: "thread", id, entries: [] });
+      return touched.sessions.length > 0 || touched.threads.length > 0;
+    });
+  }
+
+  /// Members of conversation `anchor` that have not left their birth thread, or `[fallbackSession]` if all left.
+  activeConversationMembers(anchor: string, fallbackSession: string): string[] {
+    return activeConversationMembers(this.db, anchor, fallbackSession);
+  }
+
+  /// A session's own chat on the page (ThreadRow.home), resolved via `conversationOf(session)`.
   homeChat(session: string): ThreadRow | null {
-    const r = this.#one("SELECT * FROM threads WHERE home = ? ORDER BY id LIMIT 1", session);
+    const r = this.#one(
+      "SELECT * FROM threads WHERE home = COALESCE((SELECT NULLIF(conv, '') FROM sessions WHERE key = ?1), ?1) ORDER BY id LIMIT 1",
+      session,
+    );
     return r ? toThread(r) : null;
   }
 
@@ -1707,7 +1910,9 @@ export class Store {
       const ws: string | null = session?.ws ?? null;
       const kept: number[] = [];
       const removed: number[] = [];
+      let reanchored: { sessions: string[]; threads: number[] } = { sessions: [], threads: [] };
       this.#tx(() => {
+        reanchored = reanchorOnDeleteInTx(this.db, key);
         const threads: number[] = this.#all("SELECT thread FROM thread_sessions WHERE session = ?", key).map((r) => r.thread);
         this.#run("DELETE FROM thread_sessions WHERE session = ?", key);
         this.#run("DELETE FROM slack_stops WHERE session = ?", key);
@@ -1756,6 +1961,8 @@ export class Store {
       // Clients drop what they keep of the threads that went with it.
       for (const id of removed) changes.push({ type: "threadRemoved", id, ws });
       for (const id of kept) changes.push({ type: "thread", id, entries: [] });
+      for (const s of reanchored.sessions) changes.push({ type: "session", key: s });
+      for (const id of reanchored.threads) changes.push({ type: "thread", id, entries: [] });
     });
   }
 
@@ -1775,10 +1982,15 @@ export class Store {
   /// `ctx.ws` (not shown) until `showChat`. `ctx` says what was put in.
   /// `id`: the hand-over's, whose ctx is kept with the rows (`handover_in`, `importCtx`).
   importRows(ctx: handover.ImportCtx, table: handover.ChatTable, rows: Json[], id?: string): void {
+    this.importPages(ctx, [{ table, rows }], id);
+  }
+
+  /// Pages of several tables of another station's chat put in, in their order, in one transaction (`importRows`'s).
+  importPages(ctx: handover.ImportCtx, pages: readonly { table: handover.ChatTable; rows: Json[] }[], id?: string): void {
     this.#with((changes) => {
       const touched: handover.Touched = { sessions: new Set(), threads: new Set() };
       this.#tx(() => {
-        handover.importRows(this.db, ctx, table, rows, touched);
+        for (const p of pages) handover.importRows(this.db, ctx, p.table, p.rows, touched);
         if (id !== undefined) this.#run("INSERT INTO handover_in (id, ctx) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET ctx = ?2", id, JSON.stringify(ctx));
       });
       for (const key of touched.sessions) this.#wsOf.delete(key);
@@ -1826,10 +2038,20 @@ export class Store {
   /// from here before and back now is no longer said to be there (`handed_over`).
   showChat(keys: readonly string[], ws: string | null): void {
     this.#with((changes) => {
+      const settledSessions = new Set<string>();
+      const settledThreads = new Set<number>();
       this.#tx(() => {
         for (const key of keys) {
           this.#run("UPDATE sessions SET ws = ? WHERE key = ?", ws, key);
           if (this.#run("DELETE FROM handed_over WHERE session = ?", key) > 0) changes.push({ type: "moved", key, station: null, ws, thread: null, there: null });
+        }
+        const birthIds = new Set<number>();
+        for (const key of keys) for (const tid of birthThreadsOf(this.db, key)) birthIds.add(tid);
+        const now = this.now();
+        for (const tid of birthIds) {
+          const touched = settleConversationInTx(this.db, tid, now, null);
+          for (const s of touched.sessions) settledSessions.add(s);
+          for (const id of touched.threads) settledThreads.add(id);
         }
       });
       for (const key of keys) {
@@ -1838,6 +2060,8 @@ export class Store {
         changes.push({ type: "session", key });
         for (const t of this.sessionThreads(key)) changes.push({ type: "thread", id: t.thread.id, entries: [] });
       }
+      for (const s of settledSessions) if (!keys.includes(s)) changes.push({ type: "session", key: s });
+      for (const id of settledThreads) changes.push({ type: "thread", id, entries: [] });
       this.#sessionWorkspaceChanged();
     });
   }
@@ -2011,12 +2235,35 @@ export class Store {
     const out = new Map<string, string[]>();
     if (keys.length === 0) return out;
     const first = new Map<string, number>();
-    for (const r of this.#all("SELECT t.id, t.home, t.surface, m.session FROM threads t LEFT JOIN thread_sessions m ON m.thread = t.id WHERE t.home IN (SELECT value FROM json_each(?)) ORDER BY t.id, m.joined_at, m.rowid LIMIT ?", JSON.stringify(keys), keys.length * 64)) {
-      const home = r.home as string;
-      if (!first.has(home)) first.set(home, r.id as number);
-      if (first.get(home) !== r.id || r.surface !== STILLFAIL_SURFACE) continue;
+    const ownedP = "(p.ws IS NULL OR (p.ws NOT LIKE 'handed:%' AND p.ws NOT LIKE 'coming:%'))";
+    const sql = `SELECT kind, id, k, surface, member FROM (
+        SELECT 0 AS kind, t.id AS id, j.value AS k, t.surface AS surface, m.session AS member, m.joined_at AS j, m.rowid AS r
+          FROM json_each(?1) j
+          JOIN sessions s ON s.key = j.value
+          JOIN threads t INDEXED BY threads_home ON t.home = COALESCE(NULLIF(s.conv, ''), s.key)
+          LEFT JOIN thread_sessions m ON m.thread = t.id
+        UNION ALL
+        SELECT 1 AS kind, 0 AS id, j.value AS k, ?3 AS surface, p.key AS member, 0 AS j, 0 AS r
+          FROM json_each(?1) j
+          JOIN sessions s ON s.key = j.value
+          JOIN sessions p INDEXED BY sessions_conv_grouped
+            ON p.conv IS NOT NULL AND p.conv != p.key
+           AND p.conv = COALESCE(NULLIF(s.conv, ''), s.key)
+           AND ${ownedP}
+        UNION ALL
+        SELECT 1 AS kind, 0 AS id, s.key AS k, ?3 AS surface, s.conv AS member, 0 AS j, 0 AS r
+          FROM sessions s
+          WHERE s.key IN (SELECT value FROM json_each(?1))
+            AND s.conv IS NOT NULL AND s.conv != '' AND s.conv != s.key
+      ) ORDER BY kind, id, j, r LIMIT ?2`;
+    for (const r of this.#all(sql, JSON.stringify(keys), keys.length * 64, STILLFAIL_SURFACE)) {
+      const home = r.k as string;
+      if (r.kind === 0) {
+        if (!first.has(home)) first.set(home, r.id as number);
+        if (first.get(home) !== r.id || r.surface !== STILLFAIL_SURFACE) continue;
+      }
       const list = out.get(home) ?? [];
-      if (typeof r.session === "string") list.push(r.session);
+      if (typeof r.member === "string" && !list.includes(r.member)) list.push(r.member);
       out.set(home, list);
     }
     return out;
@@ -2119,13 +2366,48 @@ export class Store {
   joinThread(thread: number, session: string, connect: string): boolean {
     connect = ownName(connect);
     return this.#with((changes) => {
-      const joined = this.#run(
-        MEMBER_JOIN_IF_NEEDED,
-        thread, session, connect, this.now(),
-      ) > 0;
+      if (this.#one("SELECT 1 FROM thread_sessions WHERE thread = ? AND session = ? AND left_at IS NULL", thread, session) !== undefined) {
+        return false;
+      }
+      const now = this.now();
+      const sRow = this.#one("SELECT scope FROM sessions WHERE key = ?", session) as { scope?: string } | undefined;
+      const tRow = sRow?.scope === "thread"
+        ? (this.#one("SELECT channel, thread_ts FROM threads WHERE id = ?", thread) as { channel?: string; thread_ts?: string } | undefined)
+        : undefined;
+      const isBirthCandidate =
+        sRow?.scope === "thread" &&
+        typeof tRow?.channel === "string" &&
+        tRow.channel !== "" &&
+        typeof tRow?.thread_ts === "string" &&
+        tRow.thread_ts !== "" &&
+        session.endsWith(`:${tRow.channel}:${tRow.thread_ts}`);
+
+      if (!isBirthCandidate) {
+        const joined = this.#run(MEMBER_JOIN_IF_NEEDED, thread, session, connect, now) > 0;
+        if (joined) {
+          changes.push({ type: "session", key: session });
+          changes.push({ type: "thread", id: thread, entries: [] });
+        }
+        return joined;
+      }
+
+      let joined = false;
+      let settled: { sessions: string[]; threads: number[] } = { sessions: [], threads: [] };
+      const body = () => {
+        const isBorn =
+          this.#one("SELECT 1 FROM thread_sessions WHERE session = ? LIMIT 1", session) === undefined &&
+          this.#one("SELECT 1 FROM turns WHERE session_key = ? LIMIT 1", session) === undefined &&
+          this.#one("SELECT 1 FROM chat_shares WHERE session = ? LIMIT 1", session) === undefined;
+        joined = this.#run(MEMBER_JOIN_IF_NEEDED, thread, session, connect, now) > 0;
+        if (joined) settled = settleConversationInTx(this.db, thread, now, isBorn ? session : null);
+      };
+      if (this.db.isTransaction) body();
+      else this.#tx(body);
       if (joined) {
         changes.push({ type: "session", key: session });
         changes.push({ type: "thread", id: thread, entries: [] });
+        for (const s of settled.sessions) if (s !== session) changes.push({ type: "session", key: s });
+        for (const id of settled.threads) if (id !== thread) changes.push({ type: "thread", id, entries: [] });
       }
       return joined;
     });
@@ -3072,18 +3354,30 @@ export class Store {
   /// The marks needed by one automatic archive pass. Until old marks are prepared, keep every candidate safely.
   archiveMarks(): { pinned: (session: string) => boolean; kept: (thread: number) => boolean } {
     if (!archiveMarksReady(this.db)) return { pinned: () => true, kept: () => true };
-    return { pinned: (key) => this.#one(ARCHIVE_PIN_EXISTS, key) !== undefined,
-      kept: (id) => this.#one(ARCHIVE_KEEP_EXISTS, id) !== undefined };
+    return {
+      pinned: (key) => {
+        const anchor = conversationOf(this.db, key);
+        const members = membersOf(this.db, anchor);
+        const list = members.length > 0 ? members : [key];
+        return list.some((m) => this.#one(ARCHIVE_PIN_EXISTS, m) !== undefined);
+      },
+      kept: (id) => this.#one(ARCHIVE_KEEP_EXISTS, id) !== undefined,
+    };
   }
 
   /// Pins a chat to the top of a viewer's list, or lets it go. Pinned again, it keeps when it was first pinned.
   setPin(viewer: string, session: string, pinned: boolean): void {
     this.#with((changes) => {
-      if (pinned) this.#run("INSERT OR IGNORE INTO pins (viewer, session, at) VALUES (?, ?, ?)", viewer, session, this.now());
-      else this.#run("DELETE FROM pins WHERE viewer = ? AND session = ?", viewer, session);
+      const anchor = conversationOf(this.db, session);
+      if (pinned) {
+        this.#run("INSERT OR IGNORE INTO pins (viewer, session, at) VALUES (?, ?, ?)", viewer, anchor, this.now());
+      } else {
+        const targets = new Set<string>([anchor, session, ...membersOf(this.db, anchor)]);
+        for (const m of targets) this.#run("DELETE FROM pins WHERE viewer = ? AND session = ?", viewer, m);
+      }
       // As it stands now (pinned again, it keeps when it was first).
-      const at = pinned ? (this.#one("SELECT at FROM pins WHERE viewer = ? AND session = ?", viewer, session)?.at ?? null) : null;
-      changes.push({ type: "pins", viewer, session, at });
+      const at = pinned ? (this.#one("SELECT at FROM pins WHERE viewer = ? AND session = ?", viewer, anchor)?.at ?? null) : null;
+      changes.push({ type: "pins", viewer, session: anchor, at });
     });
   }
 
@@ -4451,18 +4745,38 @@ export class Store {
 
   #setArchived(key: string, archived: boolean, by: string, changes: Changes): void {
     const now = this.now();
-    let leaders: string[] = [];
+    const leaders = new Set<string>();
+    const settledSessions = new Set<string>();
+    const settledThreads = new Set<number>();
+    let targets: string[] = [key];
     this.#tx(() => {
-      // (with the chats that lead it, if any: its leader's row shows whether a chat it leads is still at work, read/views
-      // opened's `active`; one statement, test/main-thread-waits.test.ts)
-      const row = archived
-        ? this.#one(`UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ? ${LEADERS_RETURNING}`, now, by, key)
-        : this.#one(`UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?, shown_at) WHERE key = ? ${LEADERS_RETURNING}`, by === MANUAL ? now : null, key);
-      leaders = row === undefined ? [] : (JSON.parse(String(row.leaders ?? "[]")) as string[]);
-      this.#run("UPDATE threads SET hidden_at = ?, hidden_by = ? WHERE home = ?", archived ? now : null, archived ? by : null, key);
+      const rows = archived
+        ? (this.#all(ARCHIVE_SESSION_SQL, now, by, key) as { key: string; conv: string | null; leaders: string | null }[])
+        : (this.#all(UNARCHIVE_SESSION_SQL, by === MANUAL ? now : null, key) as { key: string; conv: string | null; leaders: string | null }[]);
+      targets = rows.length > 0 ? rows.map((r) => r.key) : [key];
+      const anchor = rows.find((r) => typeof r.conv === "string" && r.conv !== "")?.conv ?? key;
+      for (const row of rows) {
+        for (const parent of JSON.parse(String(row.leaders ?? "[]")) as string[]) leaders.add(parent);
+      }
+      this.#run("UPDATE threads SET hidden_at = ?, hidden_by = ? WHERE home = ?", archived ? now : null, archived ? by : null, anchor);
+      if (!archived && by === MANUAL) {
+        const birthIds = new Set<number>();
+        for (const m of targets) for (const tid of birthThreadsOf(this.db, m)) birthIds.add(tid);
+        for (const tid of birthIds) {
+          const touched = settleConversationInTx(this.db, tid, now, null);
+          for (const s of touched.sessions) settledSessions.add(s);
+          for (const id of touched.threads) settledThreads.add(id);
+        }
+      }
     });
-    for (const t of this.sessionThreads(key)) changes.push({ type: "thread", id: t.thread.id, entries: [] });
-    changes.push({ type: "session", key });
+    const touchedThreads = new Set<number>(settledThreads);
+    const touchedSessions = new Set<string>(targets);
+    for (const s of settledSessions) touchedSessions.add(s);
+    for (const m of targets) {
+      for (const t of this.sessionThreads(m)) touchedThreads.add(t.thread.id);
+    }
+    for (const id of touchedThreads) changes.push({ type: "thread", id, entries: [] });
+    for (const s of touchedSessions) changes.push({ type: "session", key: s });
     for (const parent of leaders) changes.push({ type: "session", key: parent });
   }
 

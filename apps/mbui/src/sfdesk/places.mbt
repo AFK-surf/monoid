@@ -5,45 +5,17 @@
 // (pane_made); the others still the settings' package's (@settings.page).
 
 ///|
-/// A place of the rail's in the pane: Station's and Profile's the page picked in their list, 连接's its page, the
-/// others (用量) the settings' page of it across the pane.
-fn place_page(c : @ui.Ctx, src : Source, w : Workspace, place : String) -> Unit {
-  let core = settings_core(src, w)
-  let here = @settings.here_of(core, w.id, w.name)
-  // (at the stack's root: no back over its head, its own or the settings' pages')
-  @settings.wide_deep.val = false
-  settings_deep.val = false
-  @settings.frame(core, here, root=true)
-  match place {
-    // (made once as nodes in every frame: stations_place_node, profiles_place_node)
-    "stations" | "profiles" => ()
-    _ =>
-      c.box(style=place_across, fn() {
-        match @settings.route_of(place) {
-          Some(r) => @settings.page(c, core, here, r, root=true)
-          None => ()
-        }
-      })
-      |> ignore
-  }
-}
-
-///|
 fn places_reset() -> Unit {
   place_pick.clear()
 }
 
 ///|
-/// A page across the pane (连接, 用量: no sidebar), on the page's ground.
-// kept across runs: a value (no field of it changes)
-let place_across : @ui.Style = @ui.css("w=Full h=Full bg=Bg")
-
-///|
 /// The page picked in a place (the stations' or the profiles' list) of the workspace `w`; none: the first.
 fn place_route(src : Source, w : Workspace, place : String) -> @settings.Route? {
   match place_pick.get(place_key(w.id, place)) {
-    // (a station or profile gone from the list: the first, not its page waiting for it)
-    Some(Station(a)) if !stations_listed(src, w).iter().any(fn(s) { text(Some(s), "station") == a }) && place_rig_at(src, w, a) is None =>
+    // (a station or profile gone from the list: the first, not its page waiting for it; one just made a rig stays, its
+    // workspace listing it so before the rigs' topic first answers)
+    Some(Station(a)) if !stations_listed(src, w).iter().any(fn(s) { text(Some(s), "station") == a }) && place_rig_at(src, w, a) is None && !workspace_lists_rig(src, w, a) =>
       place_route_first(src, w, place)
     Some(Profiles("")) =>
       match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
@@ -59,6 +31,14 @@ fn place_route(src : Source, w : Workspace, place : String) -> @settings.Route? 
     Some(r) => Some(r)
     None => place_route_first(src, w, place)
   }
+}
+
+///|
+/// Whether the workspace's view lists `address` among its rigs (a station made one a moment ago, before the rigs'
+/// topic, which the station page reads, first answers).
+fn workspace_lists_rig(src : Source, w : Workspace, address : String) -> Bool {
+  let v = src.topic("workspace", { "workspace": Json::string(w.id) }).get().value
+  items(v, "rigs").iter().any(fn(r) { w.id + "/" + text(Some(r), "id") == address })
 }
 
 ///|
@@ -243,9 +223,46 @@ fn profiles_place_node(
       None => None
     }
   }
-  v.pick(picked, fn(p, at) {
+  let kept : @signals.Signal[Array[(String, String)?]] = @signals.signal([])
+  let seen_overview : Ref[Bool] = Ref(false)
+  let recent : Array[(String, String)] = []
+  v.reacts(picked, fn(cur) {
+    match cur {
+      Some(("", "")) => {
+        seen_overview.val = true
+        let next : Array[(String, String)?] = [Some(("", ""))]
+        for x in recent {
+          next.push(Some(x))
+        }
+        kept.set(next)
+      }
+      Some((a, id)) => {
+        // (release any ahead-read handed over by show_answered after the frame draws: covers both initial build,
+        // idempotent with profile_node's own shown_read, and subsequent wake-ups of a parked profile_node)
+        @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at(a, id)) })
+        match recent.search((a, id)) {
+          Some(i) => recent.remove(i) |> ignore
+          None => ()
+        }
+        recent.push((a, id))
+        while recent.length() > 4 {
+          recent.remove(0) |> ignore
+        }
+        let next : Array[(String, String)?] = []
+        if seen_overview.val {
+          next.push(Some(("", "")))
+        }
+        for x in recent {
+          next.push(Some(x))
+        }
+        kept.set(next)
+      }
+      None => ()
+    }
+  })
+  v.each(fn() { [picked()] }, fn(k) { k }, keeps=fn() { kept.get() }, at_once=true, fn(p, at_sig) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    match at {
+    match @signals.untracked(fn() { at_sig.get() }) {
       Some(("", "")) =>
         @sfpages.profiles_overview_node(
           p,

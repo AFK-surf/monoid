@@ -1,6 +1,7 @@
 // Feishu's OpenAPI over HTTP: one client per app, with its tenant_access_token got from the app's id
 // and secret and taken again before it runs out. Feishu (open.feishu.cn) or Lark (open.larksuite.com), or a stand-in
 // for tests ($STILLFAIL_FEISHU_API, one address for both).
+import { FeishuFile } from "../connects/feishu-file.ts";
 import { wall } from "../ops/fibers.ts";
 
 type Json = any;
@@ -33,17 +34,7 @@ const RETRIES = 4;
 /// A file sent with a call (multipart).
 export type FilePart = { field: string; bytes: Uint8Array; name: string; mime: string };
 
-/// A non-JSON answer to an agent's OpenAPI call; only the tool puts it in that session's workspace.
-export class FeishuFile {
-  readonly bytes: Uint8Array;
-  readonly contentType: string;
-  readonly disposition: string;
-  constructor(bytes: Uint8Array, contentType: string, disposition: string) {
-    this.bytes = bytes;
-    this.contentType = contentType;
-    this.disposition = disposition;
-  }
-}
+export { FeishuFile };
 
 export class FeishuClient {
   readonly base: string;

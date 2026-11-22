@@ -478,8 +478,15 @@ async fn X11Input::input(self : X11Input, event : ScreenInput) -> Unit {
       num_text(js_max(0.0, js_min(h - 1.0, js_round(y * (h - 1.0))))),
     ]
     match event {
-      Pointer(x~, y~, buttons~, ..) => {
-        self.command(["mousemove"] + point(x, y))
+      Pointer(x~, y~, buttons~, delta~, ..) => {
+        // A relative move goes only as far as it says, wherever the pointer is (an app holding it).
+        match delta {
+          Some(d) if d.relative =>
+            if d.moved && (d.dx != 0.0 || d.dy != 0.0) {
+              self.command(["mousemove_relative", "--", num_text(js_round(d.dx)), num_text(js_round(d.dy))])
+            }
+          _ => self.command(["mousemove"] + point(x, y))
+        }
         for b in x11_buttons {
           let (bit, button) = b
           let down = (buttons & bit) != 0

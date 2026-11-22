@@ -6,12 +6,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-for (const scenario of ["public", "api", "api-anonymous", "api-redirect", "invalid-token", "broken-body", "wrong-digest", "json-body", "missing", "public-404", "rate-limited"] as const) test(`a native release download handles ${scenario}`, (t) => {
+for (const scenario of ["public", "api", "api-anonymous", "api-redirect", "invalid-token", "broken-body", "wrong-digest", "json-body", "missing", "public-404", "public-404-ci-inbox", "rate-limited"] as const) test(`a native release download handles ${scenario}`, (t) => {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const dir = mkdtempSync(join(tmpdir(), "native-release-fallback-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = join(dir, "bin"), cache = join(dir, "cache"), files = join(dir, "files"), archive = join(dir, "asset.tar.gz");
-  mkdirSync(bin); mkdirSync(files);
+  const inbox = join(dir, "inbox");
+  mkdirSync(bin); mkdirSync(files); mkdirSync(inbox);
   // A stable key and a real tarball: the command must unpack the requested files into its normal cache.
   writeFileSync(join(bin, "git"), "#!/bin/sh\nexit 0\n");
   chmodSync(join(bin, "git"), 0o755);
@@ -31,7 +32,7 @@ for (const scenario of ["public", "api", "api-anonymous", "api-redirect", "inval
       if (url.hostname === 'github.com') {
         name = url.pathname.split('/').at(-1);
         if (scenario === 'public') return new Response(readFileSync(process.env.NATIVE_TEST_ARCHIVE));
-        if (scenario === 'public-404') return new Response('', { status: 404 });
+        if (scenario === 'public-404' || scenario === 'public-404-ci-inbox') return new Response('', { status: 404 });
         if (scenario === 'broken-body') return new Response(new ReadableStream({ start(c) { c.error(new Error('cut short')); } }));
         return new Response('', { status: 504 });
       }
@@ -68,12 +69,14 @@ for (const scenario of ["public", "api", "api-anonymous", "api-redirect", "inval
   `);
   const run = spawnSync(process.execPath, ["--import", preload, join(root, "scripts/native.ts"), "fetch", "shell-apple", "darwin-arm64"], {
     cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, NATIVE_TEST_ARCHIVE: archive,
-      STILLFAIL_NATIVE_CACHE: cache, STILLFAIL_NATIVE: "", STILLFAIL_NATIVE_INBOX: "", STILLFAIL_DIRECT_DNS: "",
+      STILLFAIL_NATIVE_CACHE: cache, STILLFAIL_NATIVE: "", STILLFAIL_NATIVE_INBOX: scenario === "public-404-ci-inbox" ? inbox : "", STILLFAIL_DIRECT_DNS: "",
       STILLFAIL_NATIVE_STORE: "https://app.still.fail/releases/natives", STILLFAIL_NATIVE_REPO: "AFK-surf/monoid",
       STILLFAIL_NATIVE_RELEASE: "native-artifacts", STILLFAIL_NATIVE_CACHE_MAX_BYTES: "0",
       GH_TOKEN: scenario === "api-anonymous" ? "" : "native-test-token", GITHUB_TOKEN: "" },
   });
-  if (["public", "api", "api-anonymous", "api-redirect", "invalid-token", "broken-body"].includes(scenario)) {
+  // (public-404-ci-inbox: a CI consumer job, its inbox empty, the download endpoint's edge still answering 404 for a
+  // part just published: the API gives it; public-404 elsewhere asks no API and fails)
+  if (["public", "api", "api-anonymous", "api-redirect", "invalid-token", "broken-body", "public-404-ci-inbox"].includes(scenario)) {
     assert.equal(run.status, 0, run.stderr);
     const cached = run.stdout.trim();
     assert.equal(readFileSync(join(cached, "libstillfail_shell.a"), "utf8"), "archive");
@@ -84,4 +87,36 @@ for (const scenario of ["public", "api", "api-anonymous", "api-redirect", "inval
     if (scenario === "json-body") assert.match(run.stderr, /did not give a gzip archive/);
     if (scenario === "rate-limited") assert.match(run.stderr, /release API answered 403/);
   }
+});
+
+test("ensure does not ask the download endpoint for a part the release and the store lack", (t) => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), "native-ensure-no-probe-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = join(dir, "bin"), cache = join(dir, "cache"), outbox = join(dir, "outbox");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git"), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(bin, "git"), 0o755);
+  const preload = join(dir, "preload.mjs");
+  writeFileSync(preload, `
+    globalThis.fetch = async (at) => {
+      const url = new URL(at);
+      if (url.hostname === 'app.still.fail') return new Response('', { status: 404 });
+      if (url.hostname === 'api.github.com' && url.pathname.endsWith('/releases/tags/native-artifacts')) return Response.json({ assets: [] });
+      if (url.hostname === 'github.com') throw new Error('unexpected github.com probe');
+      throw new Error('unexpected native request');
+    };
+  `);
+  // A target this machine cannot build: buildHere stops at once, saying it is not prebuilt, with nothing compiled.
+  const target = process.platform === "linux" ? "shell:win32-x64" : "shell:linux-x64";
+  const run = spawnSync(process.execPath, ["--import", preload, join(root, "scripts/native.ts"), "ensure", "--outbox", outbox, target], {
+    cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CI: "",
+      STILLFAIL_NATIVE_CACHE: cache, STILLFAIL_NATIVE: "", STILLFAIL_NATIVE_INBOX: "", STILLFAIL_DIRECT_DNS: "",
+      STILLFAIL_NATIVE_STORE: "https://app.still.fail/releases/natives", STILLFAIL_NATIVE_REPO: "AFK-surf/monoid",
+      STILLFAIL_NATIVE_RELEASE: "native-artifacts", STILLFAIL_NATIVE_CACHE_MAX_BYTES: "0",
+      GH_TOKEN: "native-test-token", GITHUB_TOKEN: "" },
+  });
+  assert.notEqual(run.status, 0);
+  assert.match(run.stderr, /is not prebuilt/);
+  assert.doesNotMatch(run.stderr, /unexpected github\.com probe/);
 });

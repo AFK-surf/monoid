@@ -97,7 +97,23 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // from it and made again as it is come back to, where the old view's island counted none; scrolling up on a phone the
   // composer's own nodes laid out with the list; the same at the default rate and 60, 120, 24 and 7: before it (2473,
   // 503, 1914, 217, 2470), (897, 132, 853, 121, 1062), (551, 358, 593, 87))
-  "phone cold": (1027, 31, 659, 80, 967),
+  // (2026-11-20: a half-open device's fold made only where one is (sfapp tabletop.mbt chat_foot_node's `show`), the
+  // composer held behind what is presented over it (composer_node's held_behind) and the chat's list told what is in
+  // sight (chat_body_node's sight_ver); the most of the default rate: before it (1027, 31, 659, 80, 967), (4, 3, 62, 0,
+  // 182), (2473, 503, 1914, 217, 2472))
+  // (+8 made, +7 laid, +11 bindings, 2026-11-22: narrow Home and Chat top bar action groups use floating
+  // bar_pill_group_node liquid glass capsules, standalone archive circle, and soft GPU bottom-fade narrow_bar_scrim_node; before it (1029, 31, 659, 80, 970))
+  // (+18 bindings, 2026-11-22: interactive liquid glass pill press feedback (.scale on bar_pill_group_node, hover_ground_node on round_key_node, bar_pill_key_press_node on Home workspace switcher, and tucked search_field_node presses(By(...)); before it (1037, 31, 666, 80, 981))
+  // (2026-11-22: composer-top liquid glass capsule displays agent name and station name: phone cold -9 made, -5 let go,
+  // -2 laid, +4 measured for the two new text labels, +18 bindings for glass surface, text, over_alpha and tips-layer
+  // quote pill; before it (1037, 31, 666, 80, 999))
+  // (+1 made, +1 laid, +2 bindings, 2026-11-22: the narrow chat bar's scrim hanging 16pt below the bar, its fade across
+  // the bar's foot (narrow_bar_scrim_node `past`: a ground drawn under the fill that covers no press, the fill's height
+  // bound); before it (1028, 26, 664, 84, 1017))
+  // (+1 binding, 2026-11-22: the composer's glass the bottom bar's, with its outside-only shadow (sf tab_bar_shadow),
+  // its blur on its shape's way to 4 as it opens (sfpages composer_node); before it (1029, 26, 665, 84, 1019))
+  // (+3 made, +3 laid, -1 measured, +4 bindings, 2026-11-22: minimal bottom-seam 0xFE fade seal under composer; before it (1029, 26, 665, 84, 1020))
+  "phone cold": (1037, 26, 673, 87, 1029),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
@@ -107,8 +123,22 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // comes over Home the bar's parts that go with it (its holder going down, the notch closing, the ball fading, the
   // places dimming) are bindings worked out again, each part only as its own ways are told: phone again 38 more
   // bindings, the same at 60, 120, 24 and 7; before it 144)
-  "phone again": (4, 3, 62, 0, 182),
-  "wide cold": (2473, 503, 1914, 217, 2472),
+  "phone again": (4, 3, 62, 0, 183),
+  // (+4 made, +8 laid, +8 bindings, 2026-11-20: #7607's new chat choreography and #7608's hover grounds on the page
+  // made as nodes)
+  // (+5 made, +44 laid, +4 bindings, -19 measured, 2026-11-20: #7833's desktop side tab strip (sf.tab_strip_node) holds
+  // a persistent Scroll::across viewport so 1<->2 tab transitions keep Handoff and focus, plus overlays_node's closed
+  // side_tab_menu_node slot; before it (2444, 501, 1880, 206, 2487))
+  // (+6 bindings, 1 let go fewer, 2026-11-21: a hairline ring of its own under each rail workspace shown by its letter
+  // (sfdesk rail_workspaces_node), in place of the pointer's ground it rested on; the same at 60, 120, 24 and 7; before
+  // it (2449, 501, 1924, 187, 2491))
+  // (2026-11-22: composer-top liquid glass capsule displays agent name and station name: wide cold -5 made, -3 let go,
+  // -1 laid, +4 measured for the two new text labels, +13 bindings for glass surface, text, over_alpha and tips-layer
+  // quote pill; before it (2449, 500, 1924, 187, 2497))
+  // (+3 bindings, 2026-11-22: the composer's glass the bottom bar's, with its outside-only shadow (sf tab_bar_shadow),
+  // its blur on its shape's way to 4 as it opens (sfpages composer_node); before it (2444, 497, 1923, 191, 2510))
+  // (+6 made, +3 let_go, +6 laid, 0 measured, +6 bindings, 2026-11-22: minimal bottom-seam 0xFE fade seal under composer; before it (2444, 497, 1923, 191, 2513))
+  "wide cold": (2460, 500, 1938, 195, 2525),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))
@@ -288,7 +318,6 @@ fn chat_nodes_open_measured(
       None => {
         @sfapp.reset()
         // (its composer made as nodes too: what the bars below were raised for)
-        @sfbase.chat_page_nodes.set(true)
         let c = @sfrealsize.RealSizeChanging::new()
         // (through the app's own client as a phone's core is, so its messages come by key as a device's do:
         // sfbench's chat-real)
@@ -456,7 +485,6 @@ fn field_or_null(m : Json, name : String) -> Json {
 fn chat_nodes_window_read(n : Int, s : (String, Double, Double, Int)) -> (Int, Int, Bool, @ui.Tester, @sfbase.Source) raise {
   let (_, w, h, platform) = s
   @sfapp.new_run()
-  @sfbase.chat_page_nodes.set(true)
   let src = chat_nodes_window_source(n)
   let read0 = @sfbase.chat_messages_read.val
   @sfbase.open_chat(budget_long_ref)
@@ -586,7 +614,6 @@ test "a chat's page made as nodes left kept at rest, holding no chat meanwhile, 
   for win in [("phone", 360.0, 740.0, 2), ("wide", 1280.0, 800.0, 0)] {
     let (name, w, h, platform) = win
     @sfapp.new_run()
-    @sfbase.chat_page_nodes.set(true)
     let client = @core.Client::new(fn(_) {  })
     let called : Array[String] = []
     let src = chat_kept_left_source(client, called)

@@ -39,7 +39,7 @@ import { Said, stationLang, tr } from "../ops/i18n.ts";
 
 type Json = any;
 
-const TUI_BRIDGE = fileURLToPath(new URL("./claude-tui.mjs", import.meta.url));
+const TUI_BRIDGE = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/agents/claude-tui.mjs", import.meta.url) : new URL("./claude-tui.mjs", import.meta.url));
 const TUI_NODE = hookNode(TUI_BRIDGE);
 const tuiRunner = (info: RunnerInfo) => /(?:^|[\\/])claude-tui\.mjs$/.test(info.args[0] ?? "");
 
@@ -183,7 +183,7 @@ const RENEWED = { CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH: "1", CLAUDE_CODE_ENTRYPOINT
 export const CLAUDE_TOOL_LOADED = Object.freeze({ "anthropic/alwaysLoad": true });
 
 /// The hook that refuses a subagent the tools a session speaks by (./subagent-hook.mjs says how it knows one).
-export const SUBAGENT_HOOK = fileURLToPath(new URL("./subagent-hook.mjs", import.meta.url));
+export const SUBAGENT_HOOK = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/agents/subagent-hook.mjs", import.meta.url) : new URL("./subagent-hook.mjs", import.meta.url));
 /// A hook that does not answer is given up on after this many seconds, and the call goes on as if there were none
 /// (2.1.323, 2026-11-14: a hook asleep, the main agent's chat_post made as the time ran out); Claude Code's own limit
 /// is ten minutes, before the main agent's every post. One run takes 26 ms here.

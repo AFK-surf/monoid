@@ -377,64 +377,8 @@ fn error_answer(status : Int, message : String) -> (Int, J) {
 ///|
 /// `Number(s)` of what a query says (`NaN`: None).
 pub fn js_number(s : String) -> Double? {
-  let t = js_trim(s)
-  if t == "" {
-    return Some(0.0)
-  }
-  if t == "Infinity" || t == "+Infinity" || t == "-Infinity" {
-    return None
-  }
-  let lower = t.to_lower()
-  if lower.has_prefix("0x") || lower.has_prefix("0o") || lower.has_prefix("0b") {
-    let base = if lower.has_prefix("0x") { 16 } else if lower.has_prefix("0o") { 8 } else { 2 }
-    let mut v = 0.0
-    for i in 2..<t.length() {
-      let c = lower.unsafe_charcode_at(i)
-      let digit = if c >= '0' && c <= '9' {
-        c - '0'
-      } else if c >= 'a' && c <= 'f' {
-        c - 'a' + 10
-      } else {
-        99
-      }
-      if digit >= base {
-        return None
-      }
-      v = v * base.to_double() + digit.to_double()
-    }
-    return if t.length() > 2 { Some(v) } else { None }
-  }
-  // (a decimal literal: JSON's, with a leading `+`, a leading or trailing `.` allowed)
-  let mut body = t
-  let mut neg = false
-  if body.has_prefix("+") || body.has_prefix("-") {
-    neg = body.has_prefix("-")
-    body = slice_from(body, 1)
-  }
-  if body.has_prefix(".") {
-    body = "0" + body
-  }
-  if body.has_suffix(".") {
-    body = body + "0"
-  }
-  let body = body.replace_all(old=".e", new=".0e").replace_all(old=".E", new=".0E")
-  if body.length() > 1 && body.has_prefix("0") && !body.has_prefix("0.") && !body.has_prefix("0e") && !body.has_prefix("0E") {
-    // (leading zeros: Number reads them as decimal)
-    let mut k = 0
-    while k < body.length() - 1 && body.unsafe_charcode_at(k) == '0' && body.unsafe_charcode_at(k + 1) != '.' {
-      k += 1
-    }
-    return js_number_decimal(slice_from(body, k), neg)
-  }
-  js_number_decimal(body, neg)
-}
-
-///|
-fn js_number_decimal(body : String, neg : Bool) -> Double? {
-  match (try Ok(parse(body)) catch { e => Err(e) }) {
-    Ok(Num(d)) => Some(if neg { -d } else { d })
-    _ => None
-  }
+  let n = @jsjson.js_number(s)
+  if @jsjson.is_finite(n) { Some(n) } else { None }
 }
 
 ///|

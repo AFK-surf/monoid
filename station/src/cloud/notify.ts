@@ -17,11 +17,51 @@ import { STATION_AUTHOR } from "../store/rows.ts";
 /// Notices wait this long to go out together; at most this many in one post (the cloud takes no more).
 const GATHER_MS = 1_000;
 const MAX_BATCH = 50;
+/// Minimum interval between pay-as-you-go fallback alerts for the same workspace and runtime.
+export const BILLED_NOTIFY_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+
+/// Per-(workspace, runtime) cooldown gate so billed-per-use fallback alerts never spam workspace managers.
+export class BilledCooldown {
+  private last = new Map<string, number>();
+
+  take(workspace: string, runtime: string, at: number): boolean {
+    const key = `${workspace}\0${runtime}`;
+    const prev = this.last.get(key);
+    if (prev !== undefined && at - prev < BILLED_NOTIFY_COOLDOWN_MS) return false;
+    this.last.set(key, at);
+    return true;
+  }
+}
+
+/// Minimum interval between alerts that one profile's login is over, for the same workspace.
+export const PROFILE_LOGIN_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+
+/// Per-(workspace, profile) cooldown gate for login-over alerts, cleared once the profile's login is good again so that
+/// the next time it is over is told at once.
+export class ProfileLoginCooldown {
+  private last = new Map<string, number>();
+
+  take(workspace: string | null, profileId: string, at: number): boolean {
+    const key = `${workspace ?? ""}\0${profileId}`;
+    const prev = this.last.get(key);
+    if (prev !== undefined && at - prev < PROFILE_LOGIN_COOLDOWN_MS) return false;
+    this.last.set(key, at);
+    return true;
+  }
+
+  clear(profileId: string): void {
+    for (const key of [...this.last.keys()]) if (key.endsWith(`\0${profileId}`)) this.last.delete(key);
+  }
+}
+
+/// A profile whose login is over, as its alert names it: `station` the station whose login it is.
+export type ProfileLoginNotice = { workspaces: string[]; profileId: string; profile: string; runtimeTitle: string; stationName: string; at: number };
 
 export class Notifier {
   private since: number;
   /// Each session's last turn noticed (when it ended), so one turn is noticed once.
   private ended = new Map<string, number>();
+  private billedCooldown: BilledCooldown;
   private waiting: Notice[] = [];
   /// A batch is being gathered (its wait is running).
   private gathering = false;
@@ -42,11 +82,12 @@ export class Notifier {
 
   /// `send`: a batch to the control plane; `clock`: the clock a batch gathers on (a TestClock in tests); `deadline`:
   /// when a login of this station's under way runs out of time; `now`, the time it is told by (the hub's clock).
-  constructor(store: Store, readers: Readers, cloud: Cloud, send: (notices: Notice[], workspace?: string) => Promise<void>, options: { clock?: Clock.Clock; now?: () => number; deadline?: (login: string) => number | null } = {}) {
+  constructor(store: Store, readers: Readers, cloud: Cloud, send: (notices: Notice[], workspace?: string) => Promise<void>, options: { clock?: Clock.Clock; now?: () => number; deadline?: (login: string) => number | null; billedCooldown?: BilledCooldown } = {}) {
     this.scope = Effect.runSync(Scope.make());
     const runtime = Scope.provide(FiberSet.makeRuntimePromise<never, void, never>(), this.scope);
     this.run = Effect.runSync(options.clock ? runtime.pipe(Effect.provideService(Clock.Clock, options.clock)) : runtime);
     this.since = (options.clock ?? liveClock).currentTimeMillisUnsafe();
+    this.billedCooldown = options.billedCooldown ?? new BilledCooldown();
     this.store = store;
     this.readers = readers;
     this.cloud = cloud;
@@ -111,6 +152,53 @@ export class Notifier {
     return { ...n, text: tr(stationLang(), "station.notice.loginWithin", { text: n.text, minutes: String(minutes) }) };
   }
 
+  /// Enqueues a manager-only push notice when sessions automatically fall back to a pay-as-you-go profile.
+  /// Returns true when the notice is accepted (not suppressed by membership or the 4-hour cooldown).
+  notifyBilledFallback(info: { workspace: string | null; runtime: string; runtimeTitle: string; profile: string; at: number }, options: { cooled?: boolean } = {}): boolean {
+    const ws = info.workspace ?? this.cloud.home();
+    if (ws === null || this.cloud.membership(ws) === null) return false;
+    if (!options.cooled && !this.billedCooldown.take(ws, info.runtime, info.at)) return false;
+    const title = this.cloud.membership(ws)?.name ?? this.cloud.state?.name ?? "still.fail";
+    this.queue([{
+      to: [],
+      audience: "managers",
+      kind: "billed",
+      session: `billed:${info.runtime}`,
+      thread: 0,
+      seq: null,
+      title,
+      by: info.runtimeTitle,
+      text: info.profile,
+      at: info.at,
+      ws,
+    }]);
+    return true;
+  }
+
+  /// Enqueues a manager-only push notice that a profile's login is over, to be signed in again: one a workspace it serves
+  /// (those the station is in), each not told of it within PROFILE_LOGIN_COOLDOWN_MS (`cooldown`). How many were.
+  notifyProfileLogin(info: ProfileLoginNotice, cooldown: ProfileLoginCooldown): number {
+    const notices: Notice[] = [];
+    for (const ws of new Set(info.workspaces)) {
+      if (this.cloud.membership(ws) === null || !cooldown.take(ws, info.profileId, info.at)) continue;
+      notices.push({
+        to: [],
+        audience: "managers",
+        kind: "failed",
+        session: `profile:${info.profileId}`,
+        thread: 0,
+        seq: null,
+        title: info.stationName,
+        by: info.runtimeTitle,
+        text: tr(stationLang(), "station.notice.profileLogin", { profile: info.profile, runtime: info.runtimeTitle, station: info.stationName }),
+        at: info.at,
+        ws,
+      });
+    }
+    this.queue(notices);
+    return notices.length;
+  }
+
   private queue(notices: Notice[]) {
     if (notices.length === 0) return;
     this.waiting.push(...notices);
@@ -129,10 +217,11 @@ export class Notifier {
     const home = this.cloud.home();
     const by = new Map<string | undefined, Notice[]>();
     for (const notice of batch) {
-      const ws = this.store.sessionWs(notice.session) ?? home;
+      const ws = notice.ws ?? this.store.sessionWs(notice.session) ?? home;
       if (ws === null || this.cloud.membership(ws) === null) continue;
       const of = ws === home ? undefined : ws;
-      by.set(of, [...(by.get(of) ?? []), notice]);
+      const { ws: _ws, ...wire } = notice;
+      by.set(of, [...(by.get(of) ?? []), wire]);
     }
     for (const [ws, notices] of by) {
       this.post(notices, ws).then(

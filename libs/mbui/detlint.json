@@ -228,7 +228,6 @@
       "src/kit/pick.mbt": 3
     },
     "layout-read-back": {
-      "src/kit/media.mbt": 2,
       "src/kit/menu.mbt": 2,
       "src/kit/pick.mbt": 1,
       "src/kit/popover.mbt": 5,
@@ -242,7 +241,6 @@
     "ui-current": {},
     "build-clock": {
       "src/kit/progress.mbt": 1,
-      "src/kit/zoom.mbt": 1,
       "src/motion/anim.mbt": 3,
       "src/motion/layer.mbt": 2,
       "src/motion/way.mbt": 1,
@@ -258,7 +256,6 @@
       "src/ui/sideways.mbt": 2
     },
     "build-motion": {
-      "src/kit/media.mbt": 1,
       "src/kit/progress.mbt": 1,
       "src/kit/sheet.mbt": 1,
       "src/kit/switch.mbt": 1,
@@ -276,9 +273,7 @@
       "src/demo/main.mbt": 1,
       "src/textdiff/main.mbt": 1
     },
-    "old-empty-around": {
-      "src/pacedemo/main.mbt": 1
-    },
+    "old-empty-around": {},
     "click-read": {},
     "key-read": {},
     "submitted-read": {
@@ -320,16 +315,15 @@
     "layout-drawn-while": {},
     "shader-int": {},
     "raw-hover-ground": {},
-    "width-structure": {
-      "src/view/grid.mbt": 1
-    },
+    "width-structure": {},
     "reused-untracked-key": {},
     "manual-fade-way": {},
     "page-at-moment": {},
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   },
   "excused": {
     "frame-request": {},
@@ -368,7 +362,9 @@
     "build-effect": {},
     "after-build-input": {},
     "unsettled-ok": {},
-    "host-delay": {},
+    "host-delay": {
+      "android/app/src/main/java/dev/mbui/A11y.java": 1
+    },
     "library-import": {},
     "reset-wire": {},
     "page-hand": {},
@@ -427,7 +423,8 @@
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   },
   "tester": {
     "names": [

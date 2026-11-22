@@ -1,6 +1,5 @@
-// What of these parts needs no station: whose a task's job is, the disk's marks, the door's ports, the words an agent
-// reads, the forms' shapes, JSON as JavaScript writes it, and the parts of a rig's process put together over fakes.
-// (What asks the station is held to the TypeScript by station/test/mb-rigs-mode.test.ts.)
+// Pure unit tests for rigs_mode: task ownership keys, disk thresholds, port ordering, grant wording,
+// form validation, JSON serialization, request status messages, and Windows elevation scripts.
 
 ///|
 test "a task's owner, made and read back" {
@@ -16,6 +15,11 @@ test "a task's owner, made and read back" {
 test "the disk's marks and how often it is looked at" {
   let gib = 1073741824.0
   assert_eq(disk_tier(10.0 * gib, 1000.0 * gib), "low")
+  // (a disk of less than 200 GiB is low under a tenth of it, not under 20 GiB)
+  assert_eq(disk_low(100.0 * gib), 10.0 * gib)
+  assert_eq(disk_low(1000.0 * gib), 20.0 * gib)
+  assert_eq(disk_tier(15.0 * gib, 100.0 * gib), "soft")
+  assert_eq(disk_tier(9.0 * gib, 100.0 * gib), "low")
   assert_eq(disk_tier(25.0 * gib, 100.0 * gib), "soft")
   assert_eq(disk_tier(50.0 * gib, 1000.0 * gib), "soft")
   assert_eq(disk_tier(200.0 * gib, 1000.0 * gib), "ok")
@@ -124,4 +128,122 @@ test "the scripts run elevated end as Windows reads them" {
   assert_true(restart.contains("try { Level $task 'Highest' } catch {}\r\n  Keep $true"))
   assert_true(ask_script("/d/run/a.ps1", true).contains("-Verb RunAs"))
   assert_true(!ask_script("/d/run/a.ps1", false).contains("RunAs"))
+}
+
+///|
+test "well_formed validates rig statement shapes and rejects malformed bounds" {
+  let hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let sig = jobj([("key", jstr("k1")), ("sig", jstr("aabb"))])
+  let base = [
+    ("v", jnum(1.0)),
+    ("sub", jstr("user-1")),
+    ("ws", jstr("01WS")),
+    ("rig", jstr(hex64)),
+    ("at", jnum(1000.0)),
+  ]
+  let wrap = (fields : Array[(String, Json)]) => Some(jobj([("body", jobj(base + fields)), ("sig", sig)]))
+  assert_true(well_formed("add", wrap([])))
+  // (the workspace lock's entry a rig pins: an entry's hash, nothing else, rig-form.ts `AddBody`, FB-45)
+  assert_true(well_formed("add", wrap([("lock", jstr(hex64))])))
+  assert_true(!well_formed("add", wrap([("lock", jstr("ABC"))])))
+  assert_true(!well_formed("add", wrap([("lock", Json::null())])))
+  assert_true(well_formed("full", wrap([])))
+  assert_true(!well_formed("unknown", wrap([])))
+  assert_true(well_formed("revoke", wrap([("request", jstr("r_1"))])))
+  assert_true(!well_formed("revoke", wrap([("request", jstr(""))])))
+  assert_true(well_formed("settings", wrap([("seq", jnum(1.0)), ("open", jbool(true))])))
+  assert_true(well_formed("settings", wrap([("seq", jnum(1.0)), ("open", jbool(false)), ("device", jstr("0123456789abcdef"))])))
+  assert_true(!well_formed("settings", wrap([("seq", jnum(1.0)), ("open", jbool(false)), ("device", jstr("bad"))])))
+  let grant_fields = [
+    ("station", jstr(hex64)),
+    ("session", jstr("CHAT/1.0")),
+    ("chat", jstr("CHAT/1.0")),
+    ("request", jstr("r_1")),
+    ("title", jstr("test")),
+    ("by", jstr("alice")),
+    ("timeout", jobj([("kind", jstr("fixed")), ("seconds", jnum(600.0))])),
+    ("exp", jnum(1600.0)),
+  ]
+  assert_true(well_formed("grant", wrap(grant_fields)))
+  // exp must exceed at
+  let bad_exp = [
+    ("station", jstr(hex64)),
+    ("session", jstr("CHAT/1.0")),
+    ("chat", jstr("CHAT/1.0")),
+    ("request", jstr("r_1")),
+    ("title", jstr("test")),
+    ("by", jstr("alice")),
+    ("timeout", jobj([("kind", jstr("fixed")), ("seconds", jnum(600.0))])),
+    ("exp", jnum(1000.0)),
+  ]
+  assert_true(!well_formed("grant", wrap(bad_exp)))
+  // missing sig is rejected
+  assert_true(!well_formed("add", Some(jobj([("body", jobj(base))]))))
+}
+
+///|
+test "latest, device_id_ok, manages_station, elevation_on and safe_int edge cases" {
+  assert_eq(latest(1000.0, Some(jobj([("kind", jstr("fixed")), ("seconds", jnum(300.0))]))), 1300.0)
+  assert_eq(latest(1000.0, Some(jobj([("kind", jstr("idle")), ("seconds", jnum(300.0))]))), 1000.0 + timeout_max)
+  assert_true(device_id_ok("0123456789abcdef"))
+  assert_true(!device_id_ok("0123456789abcde"))
+  assert_true(!device_id_ok("0123456789abcdeg"))
+  assert_true(manages_station({ workspace: "ws", sub: "u1", role: "owner", email: None, name: None }))
+  assert_true(manages_station({ workspace: "ws", sub: "u2", role: "admin", email: None, name: None }))
+  assert_true(!manages_station({ workspace: "ws", sub: "u3", role: "member", email: None, name: None }))
+  assert_true(elevation_on("windows"))
+  assert_true(!elevation_on("darwin"))
+  assert_true(!elevation_on("linux"))
+  assert_true(safe_int(42.0))
+  assert_true(!safe_int(42.5))
+  assert_eq(mcp_port_file("/tmp/st"), "/tmp/st/run/mcp.json")
+}
+
+///|
+test "said formats pending, undelivered, ended and device-scoped grant statuses" {
+  let mk = (status : String) => {
+    let r : RigRequest = Map([
+      ("id", jstr("r2")),
+      ("rigName", jstr("lab-mac")),
+      ("owner", jstr("bob")),
+      ("ownerEmail", jstr("bob@example.com")),
+      ("timeout", jobj([("kind", jstr("idle")), ("seconds", jnum(3600.0))])),
+      ("status", jstr(status)),
+    ])
+    r
+  }
+  assert_true(said(mk("pending")).contains("waits for its owner bob@example.com"))
+  let undel = mk("granted")
+  assert_true(said(undel).contains("not reached now"))
+  let ended = mk("ended")
+  ended["why"] = jstr("expired")
+  assert_true(said(ended).contains("ended (expired)"))
+  let dev = mk("granted")
+  dev["device"] = jstr("0123456789abcdef")
+  dev["deviceName"] = jstr("usb-cam")
+  dev["delivered"] = jbool(true)
+  assert_true(said(dev).contains("usb-cam"))
+  assert_true(said(dev).contains("bob@example.com"))
+}
+
+///|
+test "screen_service_ask_script and screen_service_parse_probe handle quoting, UAC and status JSON" {
+  let inst = screen_service_ask_script("C:\\O'Brien\\stillfail-screen-svc.exe", true, Some("S-1-5-21-1-2-3-1001"), true)
+  assert_true(inst.contains("C:\\O''Brien\\stillfail-screen-svc.exe"))
+  assert_true(inst.contains("'install', '--user-sid', 'S-1-5-21-1-2-3-1001'"))
+  assert_true(inst.contains("-Verb RunAs"))
+  assert_true(inst.contains("NativeErrorCode -eq 1223) { exit 4 }"))
+  let uninst = screen_service_ask_script("C:\\app\\stillfail-screen-svc.exe", false, None, false)
+  assert_true(uninst.contains("@('uninstall')"))
+  assert_true(!uninst.contains("-Verb RunAs"))
+  let parsed = screen_service_parse_probe(
+    "{\"elevated\":false,\"admin\":true,\"userSid\":\"S-1-5-21-1-2-3-1001\",\"binary\":\"C:\\\\app\\\\stillfail-screen-svc.exe\",\"status\":\"{\\\"installed\\\":true,\\\"running\\\":true,\\\"connected\\\":true}\"}",
+  )
+  assert_true(parsed.installed)
+  assert_true(parsed.running)
+  assert_true(parsed.connected)
+  assert_true(!parsed.elevated)
+  assert_true(parsed.admin)
+  assert_eq(parsed.user_sid, Some("S-1-5-21-1-2-3-1001"))
+  assert_eq(parsed.binary, Some("C:\\app\\stillfail-screen-svc.exe"))
 }

@@ -39,7 +39,9 @@ fn screen_rig(
   h264? : Bool = false,
   os? : String = "",
   screens? : Json,
+  terminals? : Json,
   in_tab? : Bool = false,
+  keep_screen? : Bool = false,
   net? : Json,
 ) -> ScreenRig {
   @sfbase.reset()
@@ -58,6 +60,8 @@ fn screen_rig(
         Some(Json::object({}))
       } else if name == "screens" {
         screens
+      } else if name == "terminals" {
+        terminals
       } else if name == "stationNet" {
         // how this device reaches the station (`net`), as the core says it; none by default (null, as the core answers
         // a station it has no network for: views.ts stationNet)
@@ -89,6 +93,7 @@ fn screen_rig(
   }
   let src : Source = {
     ..base,
+    asks_terminals: if terminals is Some(_) { fn() { true } } else { base.asks_terminals },
     topic_read: fn(name, params) {
       let tp = base.topic(name, params).get().snapshot()
       if name == "stations" && os != "" {
@@ -165,7 +170,10 @@ fn screen_rig(
         fn(k) { k },
         fn(row, k) {
           let (station, screen) = k.untracked()
-          row.owns(fn() { screen_left(src, station, screen) }) |> ignore
+          row.owns(fn() {
+            if keep_screen { screen_covered(src, station, screen, true) } else { screen_left(src, station, screen) }
+          })
+          |> ignore
         },
       )
       // the page as nodes, made again for another screen on top (as the shells make it)
@@ -444,6 +452,8 @@ test "it asks for the view by its name, JPEG only here, as large as its stage; �
   assert_eq(text(Some(asked[0]), "screen"), "browser:tab-1")
   assert_eq(text(Some(asked[0]), "view"), r.sess().view)
   assert_eq(items(Some(asked[0]), "codecs"), [Json::string("jpeg")])
+  // (no H.265 decoded here: nor its 4:4:4)
+  assert_true(field(Some(asked[0]), "chroma444") is None)
   // 自动: the stage it is shown on, in the device's pixels
   let (sw, sh) = r.sess().stage_px
   assert_true(sw > 0 && sh > 0)
@@ -612,6 +622,46 @@ test "zoomed in, the part in sight is asked for, as sharp as it is shown; its fr
 }
 
 ///|
+test "zoomed in again: the first frame of the new part is drawn where that part is in the frame that shows it, never at the last part's place" {
+  let r = screen_rig()
+  r.live()
+  let u = r.ui()
+  u.zoom.zoom_to(u.zoom.fit() * 4.0, u.box_w.get() / 2.0, u.box_h.get() / 2.0, false, at=r.t.ctx().moment())
+  r.t.draw()
+  r.t.draw()
+  let rh = number(field(Some(r.told("screen.look")[0]), "region"), "h")
+  let y = number(field(Some(r.told("screen.look")[0]), "region"), "y")
+  // the first part (the middle quarter) shown
+  let a : Json = { "x": 0.375, "y": y, "w": 0.25, "h": rh }
+  r.say({ "config": { "codec": "jpeg", "width": 1170.0, "height": 1000.0, "region": a } })
+  r.say({ "frame": { "key": true, "ts": 2000.0 } }, bytes=b"\xFF\xD8\xFF\xE0jpeg")
+  let pst = r.sess().part.unwrap()
+  r.t.stream_shows(pst.id(), 2000.0, 1170, 1000)
+  r.t.draw()
+  r.t.draw()
+  // the next part (the quarter left of it, as a pinch at rest there asks), its first frame decoded: the frame that
+  // shows it draws it at its own place, not the first part's
+  let b : Json = { "x": 0.125, "y": y, "w": 0.25, "h": rh }
+  r.say({ "config": { "codec": "jpeg", "width": 1170.0, "height": 1000.0, "region": b } })
+  r.say({ "frame": { "key": true, "ts": 3000.0 } }, bytes=b"\xFF\xD8\xFF\xE0jpeg")
+  r.t.stream_shows(pst.id(), 3000.0, 1170, 1000)
+  // (one frame: the one that takes it, as a host draws it)
+  r.t.frame()
+  let shown = u.shown(r.t.ctx())
+  let streams = drawn_streams(r.t)
+  let part = streams.filter(fn(s) { s.4 == "stream 1170x1000 ts=3000" })
+  assert_eq(part.length(), 1, msg=streams.map(fn(s) { s.4 }).join(", "))
+  let (px, _, pw, _, _) = part[0]
+  let whole = streams.filter(fn(s) { s.4 != "stream 1170x1000 ts=3000" })
+  assert_true(close_to(pw, 0.25 * shown.w))
+  assert_true(
+    close_to(px - whole[0].0, 0.125 * shown.w),
+    msg="the new part's first frame at \{px - whole[0].0}, its place \{0.125 * shown.w}, the last part's \{0.375 * shown.w}",
+  )
+  screen_done(r.t)
+}
+
+///|
 test "a trackpad moves the pointer and clicks where it points; two fingers tapped right-click; the keys row" {
   let r = screen_rig()
   // a desktop's screen (a page of the station's browser is laid out for the phone, and tapped where it is)
@@ -701,25 +751,25 @@ test "only looking, a double tap zooms in where it is and another back to fitted
   r.config()
   r.frame(1000.0)
   let u = r.ui()
-  assert_false(u.zoom.zoomed(r.t.ctx()))
+  assert_false(u.zoom.zoomed_at(r.t.time()))
   r.tap_at(0.25, 0.25)
   r.tap_at(0.25, 0.25)
   r.t.run_for(@ui.move_most_ms)
-  assert_true(u.zoom.zoomed(r.t.ctx()))
+  assert_true(u.zoom.zoomed_at(r.t.time()))
   assert_eq(r.inputs().length(), 0)
   // the same point of the screen, still under the finger
   r.t.run_for(screen_double_tap_ms)
   r.tap_at(0.25, 0.25)
   r.tap_at(0.25, 0.25)
   r.t.run_for(@ui.move_most_ms)
-  assert_false(u.zoom.zoomed(r.t.ctx()))
+  assert_false(u.zoom.zoomed_at(r.t.time()))
   // one tap, then the wait over before the next: no zoom
   r.t.run_for(screen_double_tap_ms)
   r.tap_at(0.25, 0.25)
   r.t.run_for(screen_double_tap_ms)
   r.tap_at(0.25, 0.25)
   r.t.run_for(@ui.move_most_ms)
-  assert_false(u.zoom.zoomed(r.t.ctx()))
+  assert_false(u.zoom.zoomed_at(r.t.time()))
   screen_done(r.t)
 }
 
@@ -785,7 +835,7 @@ test "全屏 (控制中心's upright): the screen alone, sideways, its tools fol
   assert_true(r.labelled("全屏") is None)
   open_center(r)
   r.t.tap_text("全屏")
-  r.t.run_for(@kit.presence_out_ms + @sf.later_ms)
+  r.t.run_for(@motion.presence_out_ms + @sf.later_ms)
   r.t.resize(844.0, 390.0)
   r.t.draw()
   let u = r.ui()
@@ -812,13 +862,13 @@ test "the keyboard up keeps the frame as large, the pointer in sight; down again
   zoom.boxed(800.0, 360.0, at=@ui.current().moment())
   let before = fit_in(800.0, 360.0, 1280.0, 720.0)
   zoom.resize_keeping(800.0, 150.0, Some((0.5, 0.9)), 40.0, when=@ui.current().moment())
-  let (_, sy, sw, sh) = zoom.rect(@ui.current()).unwrap()
+  let (_, sy, sw, sh) = zoom.rect_at(@ui.current().moment()).unwrap()
   assert_true((sw - before.w).abs() < 1.0)
   let y = sy + 0.9 * sh
   assert_true(y >= 0.0 && y <= 150.0)
   zoom.resize_keeping(800.0, 360.0, Some((0.5, 0.9)), 40.0, when=@ui.current().moment())
-  assert_true(!zoom.zoomed(@ui.current()))
-  let (x, y, w, h) = zoom.rect(@ui.current()).unwrap()
+  assert_true(!zoom.zoomed_at(@ui.current().moment()))
+  let (x, y, w, h) = zoom.rect_at(@ui.current().moment()).unwrap()
   assert_true((x - before.x).abs() < 0.001 && (y - before.y).abs() < 0.001)
   assert_true((w - before.w).abs() < 0.001 && (h - before.h).abs() < 0.001)
 }
@@ -1206,6 +1256,70 @@ test "a login field in focus while driving a tab: 用 1Password 填入; its logi
 }
 
 ///|
+test "1Password fill caches non-secret login metadata across fills, passes --vault to item get, and invalidates on get error" {
+  let r = screen_rig()
+  r.live(others=[])
+  let fail_get = Ref(false)
+  @ui.fake_op_runs.clear()
+  @ui.fake_op.val = Some(fn(args) {
+    if args.length() >= 2 && args[0] == "item" && args[1] == "list" {
+      (
+        0,
+        "[{\"id\":\"gh1\",\"title\":\"GitHub\",\"additional_information\":\"demo-user\",\"vault\":{\"id\":\"v-work\"},\"urls\":[{\"href\":\"https://github.com/login\"}]},{\"id\":\"gl1\",\"title\":\"GitLab\",\"additional_information\":\"gl-user\",\"vault\":{\"id\":\"v-priv\"},\"urls\":[{\"href\":\"https://gitlab.com\"}]}]",
+        "",
+      )
+    } else if args.length() >= 3 && args[0] == "item" && args[1] == "get" {
+      if fail_get.val {
+        (1, "", "item not found")
+      } else {
+        (0, "[{\"id\":\"username\",\"label\":\"username\",\"value\":\"u-\{args[2]}\"},{\"id\":\"password\",\"label\":\"password\",\"purpose\":\"PASSWORD\",\"value\":\"pw-\{args[2]}\"}]", "")
+      }
+    } else {
+      (1, "", "unknown command")
+    }
+  })
+  // First fill: runs item list once, then item get with --vault v-work.
+  r.state("live", others=[], more={ "login": { "host": "github.com", "field": "password" } })
+  r.t.draw()
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 2)
+  assert_eq(@ui.fake_op_runs[0], ["item", "list", "--categories", "Login", "--format", "json"])
+  assert_eq(@ui.fake_op_runs[1], ["item", "get", "gh1", "--vault", "v-work", "--fields", "label=username,label=password", "--reveal", "--format", "json"])
+  // Second fill for another cached site within TTL: skips item list and goes straight to item get with --vault v-priv.
+  r.state("live", others=[], more={ "login": { "host": "gitlab.com", "field": "password" } })
+  r.t.draw()
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 3)
+  assert_eq(@ui.fake_op_runs[2], ["item", "get", "gl1", "--vault", "v-priv", "--fields", "label=username,label=password", "--reveal", "--format", "json"])
+  // Failed item get invalidates the cache so the next fill lists again.
+  fail_get.val = true
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 4)
+  let closes = r.t.semantics().filter(fn(s) { s.label == tr("common.close") && !s.hidden && s.rect.1 > 200.0 })
+  assert_eq(closes.length(), 1)
+  let (cx, cy, cw, ch) = closes[0].rect
+  r.t.tap(cx + cw / 2.0, cy + ch / 2.0)
+  r.t.draw()
+  fail_get.val = false
+  r.state("live", others=[], more={ "login": { "host": "github.com", "field": "username" } })
+  r.t.draw()
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 6)
+  assert_eq(@ui.fake_op_runs[4], ["item", "list", "--categories", "Login", "--format", "json"])
+  assert_eq(@ui.fake_op_runs[5], ["item", "get", "gh1", "--vault", "v-work", "--fields", "label=username,label=password", "--reveal", "--format", "json"])
+  screen_done(r.t)
+  @ui.fake_op.val = None
+}
+
+///|
 test "no 1Password tool but the system's autofill: 用密码管理器填入 asks it for the site; the login picked there filled, for that site only, the page's focus gone or not" {
   let r = screen_rig()
   r.live(others=[])
@@ -1466,9 +1580,9 @@ fn screen_done(t : @ui.Tester) -> Unit {
   // (只看/控制's thumb at rest, gone over where a state turned the view to only looking)
   t.run_for(@ui.cover_slide_ms)
   to_sheet_rest(t)
-  if @kit.toast_rest("toast") > t.time() {
+  if @sf.toast_rest("toast").unwrap_or(-1.0) > t.time() {
     t.run_for(@sf.toast_ms)
-    let rest = @kit.toast_rest("toast")
+    let rest = @sf.toast_rest("toast").unwrap_or(-1.0)
     if rest > t.time() {
       t.run_for(rest - t.time())
     }
@@ -1562,7 +1676,7 @@ test "全屏 and sideways, driving: 左键 and 右键 in a capsule of their own 
   r.t.draw()
   open_center(r)
   r.t.tap_text("全屏")
-  r.t.run_for(@kit.presence_out_ms + @sf.later_ms)
+  r.t.run_for(@motion.presence_out_ms + @sf.later_ms)
   r.t.resize(844.0, 390.0)
   r.t.draw()
   assert_true(r.ui().full.get())
@@ -1856,7 +1970,7 @@ test "zoomed in, driven directly: two fingers moving together pan the picture he
   r.tap_at(0.5, 0.5)
   r.tap_at(0.5, 0.5)
   r.t.run_for(@ui.move_most_ms)
-  assert_true(u.zoom.zoomed(r.t.ctx()))
+  assert_true(u.zoom.zoomed_at(r.t.time()))
   r.state("live", control=true, others=[])
   r.t.run_for(screen_double_tap_ms)
   let two = fn(cx : Double, cy : Double) {
@@ -1882,7 +1996,7 @@ test "zoomed in, driven directly: two fingers moving together pan the picture he
   // fitted again: they scroll the screen
   u.zoom.fit_now(at=r.t.ctx().moment())
   r.t.run_for(@ui.move_most_ms)
-  assert_false(u.zoom.zoomed(r.t.ctx()))
+  assert_false(u.zoom.zoomed_at(r.t.time()))
   let (mx, my) = r.at(0.4, 0.5)
   two(mx, my)
   assert_true(r.inputs()[before:].iter().any(fn(j) { text(Some(j), "t") == "wheel" }))
@@ -1970,7 +2084,7 @@ test "beside its chat on its side with touch (an iPhone Duo's side panel): a bro
   for label in ["web-pages.screen.back", "web-pages.screen.forward", "web-pages.screen.reload"] {
     assert_true(r.labelled(tr(label)) is Some(_), msg=label)
   }
-  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 2") is Some(_), msg="the person's pages folded into a button")
+  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 3") is Some(_), msg="all browser pages folded into a button")
   // (→ and ⟳ on its bar: 控制中心 offers them no second time)
   assert_false(r.ui().narrow_bar)
   assert_eq(r.t.audit(), [])
@@ -2106,6 +2220,49 @@ test "a screen left covered by a background tab opens at once when mounted in an
 }
 
 ///|
+test "switching browser tabs keeps the fitted or manually zoomed picture" {
+  for zoomed in [false, true] {
+    let r = screen_rig(w=900.0, h=600.0, platform=0, in_tab=true, keep_screen=true)
+    r.live()
+    let u = screen_ui(screen_key("ws-1/st-1", "browser:tab-1"))
+    if zoomed {
+      u.zoom.zoom_to(u.zoom.fit() * 2.0, u.box_w.get() / 2.0, u.box_h.get() / 2.0, false, at=r.t.time())
+      r.t.draw()
+    }
+    let before = u.shown(r.t.ctx())
+    assert_eq(u.zoom.zoomed_at(r.t.time()), zoomed)
+    for _ in 0..<3 {
+      app.nav.push(Screen({ station: "ws-1/st-1", screen: "browser:tab-2", title: "Other", until_gone: false }))
+      nav_rested(r.t)
+      app.nav.pop() |> ignore
+      nav_rested(r.t)
+      let after = u.shown(r.t.ctx())
+      assert_true(close_to(before.x, after.x) && close_to(before.y, after.y))
+      assert_true(close_to(before.w, after.w) && close_to(before.h, after.h), msg="before \{before.w}×\{before.h}, after \{after.w}×\{after.h}")
+      assert_eq(u.zoom.zoomed_at(r.t.time()), zoomed)
+    }
+    assert_eq(r.t.audit(), [])
+    screen_done(r.t)
+  }
+}
+
+///|
+test "a screen keeps its fitted size when its stage temporarily has no height" {
+  let r = screen_rig(w=900.0, h=600.0, platform=0, in_tab=true)
+  r.live()
+  let u = r.ui()
+  let before = u.shown(r.t.ctx())
+  r.t.resize(900.0, 1.0)
+  r.t.draw()
+  r.t.resize(900.0, 600.0)
+  r.t.draw()
+  let after = u.shown(r.t.ctx())
+  assert_true(close_to(before.w, after.w) && close_to(before.h, after.h))
+  assert_false(u.zoom.zoomed_at(r.t.time()))
+  screen_done(r.t)
+}
+
+///|
 test "browser tab bar with keyboard and mouse, passkey close button, and blocked agent-operating prompt" {
   // 1. In a wide window, a chat side-panel browser tab shows ← → ⟳ directly on its bar.
   let r = screen_rig(w=1100.0, h=760.0, screen="browser:tab-1", in_tab=true)
@@ -2192,5 +2349,126 @@ test "browser tab bar with keyboard and mouse, passkey close button, and blocked
   assert_eq(pointers_of(r).length(), before_ptr)
   assert_eq(r.ui().held_nudge.get(), 1)
   r.t.run_for(@sf.refused_ms)
+  assert_eq(r.t.idle_said(), None)
+  screen_done(r.t)
+}
+
+///|
+/// The screen's virtual microphone as its station says it while this viewer drives it (`mic`): recorded there now or
+/// not, a desktop's.
+fn mic_said(r : ScreenRig, active : Bool, control? : Bool = true) -> Unit {
+  let more : Map[String, Json] = { "kind": Json::string("desktop") }
+  // (the core says none while only looking)
+  if control {
+    more["mic"] = { "available": true, "active": active, "epoch": 1.0 }
+  }
+  r.state("live", control~, others=[], more~)
+  // (the bar's 麦克风 coming or going along its row, to its end)
+  r.t.run_for(@ui.move_most_ms)
+}
+
+///|
+test "麦克风 on the bar only while something on the screen records it or this device's is shared: pressed, shared and told the core; opened again, told again" {
+  // (a browser's: its microphone taken, web/src/mbui/screen-peripherals.ts)
+  let r = screen_rig(platform=4)
+  r.live(others=[])
+  let asked = tr("web-pages.screen.micAsked")
+  let on = tr("web-pages.screen.micMute")
+  let off = tr("web-pages.screen.micUnmute")
+  let none = fn() { r.labelled(asked) is None && r.labelled(on) is None && r.labelled(off) is None }
+  // a screen with no virtual microphone, and one nobody records: nothing on the bar
+  assert_true(none())
+  mic_said(r, false)
+  assert_true(none())
+  // recorded there: on the bar, not lit, saying so
+  mic_said(r, true)
+  assert_eq(pressed_of(r, asked), Some(false))
+  assert_eq(r.t.audit(), [])
+  // pressed: shared, lit, told the core
+  r.tap_label(asked)
+  r.t.draw()
+  let s = r.sess()
+  assert_true(s.mic_on.get())
+  assert_eq(pressed_of(r, on), Some(true))
+  assert_eq(r.told("screen.micOn").last().unwrap().stringify(), "{\"view\":\"" + s.view + "\",\"on\":true}")
+  // the recording over: there still while shared, to switch it off
+  mic_said(r, false)
+  assert_eq(pressed_of(r, on), Some(true))
+  // only looking: gone, shared still (the core sends nothing meanwhile)
+  mic_said(r, true, control=false)
+  assert_true(none())
+  mic_said(r, true)
+  assert_eq(pressed_of(r, on), Some(true))
+  // let go of out of sight and opened again: told again once the view says it is there, not before
+  let told = r.told("screen.micOn").length()
+  s.pause(s.src)
+  s.open(s.src)
+  assert_eq(r.told("screen.micOn").length(), told)
+  mic_said(r, true)
+  assert_eq(r.told("screen.micOn").length(), told + 1)
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":true"))
+  // pressed again: no more, told so; the bar saying the app there records it
+  r.tap_label(on)
+  r.t.draw()
+  assert_false(s.mic_on.get())
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":false"))
+  assert_eq(pressed_of(r, asked), Some(false))
+  // its recording over, nothing shared: gone from the bar
+  mic_said(r, false)
+  assert_true(none())
+  screen_done(r.t)
+}
+
+///|
+test "麦克风 in the viewer's bar with keyboard and mouse: there as on the phone's, lit while shared" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0)
+  r.live(others=[])
+  let asked = tr("web-pages.screen.micAsked")
+  let on = tr("web-pages.screen.micMute")
+  assert_true(r.labelled(asked) is None)
+  mic_said(r, true)
+  assert_eq(pressed_of(r, asked), Some(false))
+  assert_eq(r.t.audit(), [])
+  r.tap_label(asked)
+  r.t.draw()
+  assert_eq(pressed_of(r, on), Some(true))
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":true"))
+  assert_eq(r.t.audit(), [])
+  screen_done(r.t)
+}
+
+///|
+test "a copy a password manager marked on the screen lands on the device's clipboard as a secret: concealed taken off after a while, transient kept, auto as any words" {
+  let r = screen_rig()
+  driven(r)
+  r.say({ "clipboard": { "type": "text", "text": "hunter2", "privacy": "concealed" } })
+  assert_eq(r.t.clipboard(), "hunter2")
+  assert_eq(r.t.clipboard_secret(), Some(@sf.secret_copied_life))
+  r.t.run_for(@sf.secret_copied_life)
+  assert_eq(r.t.clipboard(), "")
+  assert_eq(r.t.clipboard_secret(), None)
+  // words an app made up: as any
+  r.say({ "clipboard": { "type": "text", "text": "made up", "privacy": "auto" } })
+  assert_eq(r.t.clipboard(), "made up")
+  assert_eq(r.t.clipboard_secret(), None)
+  // not to be kept: a secret, left there
+  r.say({ "clipboard": { "type": "text", "text": "one-time 123456", "privacy": "transient" } })
+  assert_eq(r.t.clipboard(), "one-time 123456")
+  assert_eq(r.t.clipboard_secret(), Some(0.0))
+  r.t.run_for(@sf.secret_copied_life)
+  assert_eq(r.t.clipboard(), "one-time 123456")
+  screen_done(r.t)
+}
+
+///|
+test "no 麦克风 where this device's microphone is not taken (an Android phone's): neither on the bar nor in 控制中心" {
+  let r = screen_rig()
+  r.live(others=[])
+  mic_said(r, true)
+  assert_false(r.sess().mic_available())
+  assert_true(r.labelled(tr("web-pages.screen.micAsked")) is None)
+  open_center(r)
+  assert_true(r.labelled(tr("web-pages.screen.mic")) is None)
+  shut(r)
   screen_done(r.t)
 }

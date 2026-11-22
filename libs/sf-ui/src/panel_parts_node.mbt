@@ -21,6 +21,7 @@ priv struct PanelIn {
   centred : Bool
   clear : Double
   listed : Bool
+  round_foot : () -> Double
 }
 
 ///|
@@ -41,9 +42,10 @@ fn panel_in_lend(
   centred? : Bool = false,
   clear? : Double = 0.0,
   listed? : Bool = false,
+  round_foot? : () -> Double = fn() { 0.0 },
 ) -> Unit {
   look_lent(col, look)
-  col.lends(panel_in_lent, { words, sides, rows_out, small, centred, clear, listed }) |> ignore
+  col.lends(panel_in_lent, { words, sides, rows_out, small, centred, clear, listed, round_foot }) |> ignore
 }
 
 ///|
@@ -192,6 +194,7 @@ pub fn panel_opens_in_node(field : @view.View) -> Unit {
 /// | sfpages outline.mbt, 对话目录 from its round button | what it finds | a sheet on 小屏, beside the button |
 /// | sfdesk drive_dialogs.mbt, the folder picker | its filter | a sheet on 小屏, a dialog in the middle |
 /// | sfpages presets.mbt, 添加目录 | its search | a sheet on 小屏, a dialog in the middle |
+/// | sfpages model_triple.mbt, 模型 | its search (搜索模型) | a sheet on 小屏, beside its control |
 /// | (the old frame's panels that say `field`, as they move over) | | |
 pub fn panel_search_at_hand_node(field : @view.View) -> Unit {
   match field.lent(panel_field_lent) {
@@ -203,7 +206,16 @@ pub fn panel_search_at_hand_node(field : @view.View) -> Unit {
 ///|
 /// Where node `v` of a panel's body is laid out (none outside a panel).
 fn panel_in_of(v : @view.View) -> PanelIn {
-  v.lent(panel_in_lent).unwrap_or({ words: 0.0, sides: 0.0, rows_out: 0.0, small: false, centred: false, clear: 0.0, listed: false })
+  v.lent(panel_in_lent).unwrap_or({
+    words: 0.0,
+    sides: 0.0,
+    rows_out: 0.0,
+    small: false,
+    centred: false,
+    clear: 0.0,
+    listed: false,
+    round_foot: fn() { 0.0 },
+  })
 }
 
 ///|
@@ -348,6 +360,7 @@ fn panel_row_by(
   lit? : () -> Bool = fn() { false },
   titled? : Bool = true,
   face? : (Double, (@view.View) -> Unit),
+  top_face? : Bool = false,
   point? : () -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -424,9 +437,12 @@ fn panel_row_by(
         }
       }
       r
-      .padding(By(fn() { (face_in(), menu_row_over, words_at(), menu_row_over) }))
+      .padding(By(fn() {
+        let top_over = if top_face { dmax(menu_row_over, face_in()) } else { menu_row_over }
+        (face_in(), top_over, words_at(), menu_row_over)
+      }))
       .gap(Is(if plain { menu_row_gap } else { panel_row_gap }))
-      .lines_up(Is(Some(Middle)))
+      .lines_up(Is(Some(if top_face { Start } else { Middle })))
       |> ignore
       // (the pointer's own moving onto it, never a list scrolled under a pointer at rest: what the keys move stays theirs)
       if point is Some(p) {
@@ -440,6 +456,14 @@ fn panel_row_by(
               fn() { panel_row_face.then(@ui.style(w=Fixed(dmax(face_size, panel_row_icon_w + words_at() - face_in())))) },
               in_row=true,
             )
+            if top_face {
+              col
+              .height(By(fn() {
+                col.words_redone() |> ignore
+                Some(node_sp(col, @ui.tree_theme().text_size(Meta).1))
+              }))
+              |> ignore
+            }
             fill(col)
           })
           |> ignore
@@ -549,7 +573,7 @@ pub fn panel_said_row_node(
     (Some((_, f)), _) | (None, Some(f)) => Some((panel_icon, fn(col : @view.View) { f(col, panel_icon) }))
     _ => None
   }
-  panel_row_by(loc~, parent, label, fn(_) { press() }, fn() { "" }, fn() { "" }, "", false, lit~, titled=false, face?, point?, made=fn(r) {
+  panel_row_by(loc~, parent, label, fn(_) { press() }, fn() { "" }, fn() { "" }, "", false, lit~, titled=false, face?, top_face=who is Some(_), point?, made=fn(r) {
     match who {
       Some((name, _)) =>
         // (who over what they said, both as far in as the row's words)

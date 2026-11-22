@@ -42,7 +42,8 @@ priv struct Serving {
   /// What Node says of an answer it makes as it comes (`chunk`, then `done`: None), by the request's number.
   streams : Map[Int, @effect.Queue[String?]]
   mut next : Int
-  /// The wall's time when Node last said it, and this clock's then.
+  /// The wall's time when Node last said it, and this clock's then (till it says it, the world's time as this program
+  /// first asked: never 0, which made `now` the machine's uptime, a message written then dated 1970).
   mut wall : Int64
   mut at : Int64
 }
@@ -82,8 +83,8 @@ pub async fn serve_reads(host : @host.Host, reader : Reader, socket : String) ->
     fallbacks: Map([]),
     streams: Map([]),
     next: 0,
-    wall: 0L,
-    at: 0L,
+    wall: @host.epoch_ms(),
+    at: @host.now(),
   }
   host.say(({ "listening": Json::string(socket) } : Json).stringify())
   ignore(
@@ -178,6 +179,19 @@ fn Serving::told(self : Serving, line : String) -> Unit {
 /// The wall's time now, as Node last said it gone on by this clock.
 fn Serving::now(self : Serving) -> Int64 {
   self.wall + (@host.now() - self.at)
+}
+
+///|
+/// A Slack-style ts's time in ms (internal.ts `nextTsAt`: seconds, `.`, six digits of microseconds); None for another.
+fn ts_ms(ts : String) -> Int64? {
+  let parts = ts.split(".").to_array()
+  guard parts is [whole, frac] && frac.length() == 6 && whole.length() > 0 else { return None }
+  let mut ms = 0L
+  for c in whole.iter().concat(frac[0:3].iter()) {
+    guard c >= '0' && c <= '9' else { return None }
+    ms = ms * 10L + (c.to_int() - '0'.to_int()).to_int64()
+  }
+  Some(ms)
 }
 
 ///|
@@ -877,6 +891,7 @@ fn route_read(route : String, pairs : Array[(String, String)], viewer : Json, la
 fn changed_read(route : String, pairs : Array[(String, String)], viewer : Json, lang : String, body : Bytes, runtimes : Array[String]) -> Route {
   let list = match route {
     "/admin/api/changed/chats" => "chats"
+    "/admin/api/changed/shared" => "sharedChats"
     "/admin/api/changed/sessions" => "sessions"
     "/admin/api/changed/threads" => "threads"
     _ => return Not
@@ -893,11 +908,7 @@ fn changed_read(route : String, pairs : Array[(String, String)], viewer : Json, 
     _ => None
   }
   guard held is Some(held) else { return Refuse(400, "held: each held row's digest by its id") }
-  let get = match route_read("/admin/api/" + list, pairs, viewer, lang) {
-    Read(_, args) => args
-    _ => return Not
-  }
-  let id = if list == "chats" { "id" } else if list == "sessions" { "key" } else { "id" }
+  let id = if list == "sessions" { "key" } else { "id" }
   // (the chats' own args: a GET /chats with neither marks, shared nor rows, api/routes/chats.ts `chatsOf`)
   let args = if list == "chats" {
     let a : Map[String, Json] = { "viewer": viewer, "archived": Json::boolean(pairs.iter().any(p => p.0 == "archived" && p.1 == "1")) }
@@ -908,8 +919,13 @@ fn changed_read(route : String, pairs : Array[(String, String)], viewer : Json, 
       }
     }
     Json::object(a)
+  } else if list == "sharedChats" {
+    { "viewer": viewer, "sessions": Json::null(), "threads": Json::null() }
   } else {
-    get
+    match route_read("/admin/api/" + list, pairs, viewer, lang) {
+      Read(_, a) => a
+      _ => return Not
+    }
   }
   Read("changed", {
     "op": Json::string(list),
@@ -944,7 +960,7 @@ fn chats_read(pairs : Array[(String, String)], viewer : Json) -> (String, Json)?
     } else {
       Json::null()
     }
-    return Some(("chatMarks", { "viewer": viewer, "scope": scope }))
+    return Some(("chatMarks", { "viewer": viewer, "scope": scope, "own": Json::boolean(param("own") == Some("1")) }))
   }
   if param("shared") == Some("1") {
     return Some(("sharedChats", if some { scoped } else { { "viewer": viewer, "sessions": Json::null(), "threads": Json::null() } }))
@@ -980,32 +996,7 @@ fn query_pairs(query : String) -> Array[(String, String)] {
 ///|
 /// api/request.ts `percentDecode`: `%xx` a byte, `+` a space, the rest as it is; then UTF-8, lossily.
 fn percent_decode(s : String) -> String {
-  let bytes = @utf8.encode(s)
-  let out = @buffer.new()
-  let hex = (b : Byte) => {
-    let c = b.to_int()
-    if c >= 48 && c <= 57 {
-      c - 48
-    } else if c >= 97 && c <= 102 {
-      c - 87
-    } else if c >= 65 && c <= 70 {
-      c - 55
-    } else {
-      -1
-    }
-  }
-  let mut i = 0
-  while i < bytes.length() {
-    let b = bytes[i]
-    if b == b'%' && i + 2 < bytes.length() + 0 && i + 2 <= bytes.length() - 1 && hex(bytes[i + 1]) >= 0 && hex(bytes[i + 2]) >= 0 {
-      out.write_byte((hex(bytes[i + 1]) * 16 + hex(bytes[i + 2])).to_byte())
-      i += 3
-    } else {
-      out.write_byte(if b == b'+' { b' ' } else { b })
-      i += 1
-    }
-  }
-  @utf8.decode_lossy(out.to_bytes())
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|
@@ -1185,10 +1176,11 @@ fn Serving::mark(
     guard db.all("SELECT 1 AS x FROM sessions WHERE key = ?", [Json::string(id)]) is [_, ..] else {
       return Text(404, error("unknown session \{id}"))
     }
+    let anchor = @sql.conversation_of(db, id)
     let name = title_of(input)
     let home = self.writing(db, () => {
-      ignore(db.run("UPDATE sessions SET title = ?1 WHERE key = ?2", [name, Json::string(id)]))
-      match db.all("SELECT id FROM threads WHERE home = ? ORDER BY id LIMIT 1", [Json::string(id)]) {
+      ignore(db.run("UPDATE sessions SET title = ?1 WHERE key = ?2", [name, Json::string(anchor)]))
+      match db.all("SELECT id FROM threads WHERE home = ? ORDER BY id LIMIT 1", [Json::string(anchor)]) {
         [r, ..] => {
           let home = r.get("id").unwrap_or(Json::null())
           ignore(db.run("UPDATE threads SET title = ?1 WHERE id = ?2", [name, home]))
@@ -1197,7 +1189,7 @@ fn Serving::mark(
         _ => Json::null()
       }
     })
-    let changes : Array[Json] = [{ "type": "session", "key": Json::string(id) }]
+    let changes : Array[Json] = [{ "type": "session", "key": Json::string(anchor) }]
     if home is Null {
       self.changed(changes)
     } else {
@@ -1211,7 +1203,8 @@ fn Serving::mark(
       return Text(404, error("unknown session \{id}"))
     }
     let pinned = method == "PUT"
-    let key = Json::string(id)
+    let anchor = @sql.conversation_of(db, id)
+    let key = Json::string(anchor)
     let at = self.writing(db, () => {
       if pinned {
         ignore(db.run("INSERT OR IGNORE INTO pins (viewer, session, at) VALUES (?, ?, ?)", [Json::string(email), key, now]))
@@ -1220,7 +1213,18 @@ fn Serving::mark(
           _ => Json::null()
         }
       } else {
-        ignore(db.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [Json::string(email), key]))
+        let targets : Array[String] = [anchor]
+        if !targets.contains(id) {
+          targets.push(id)
+        }
+        for m in @sql.members_of(db, anchor) {
+          if !targets.contains(m) {
+            targets.push(m)
+          }
+        }
+        for m in targets {
+          ignore(db.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [Json::string(email), Json::string(m)]))
+        }
         Json::null()
       }
     })
@@ -1488,7 +1492,7 @@ async fn Serving::say(
   }
   let said = match js.get("text") {
     None | Some(Null) => ""
-    Some(Str(u)) => @jscase.trim(@jsjson.raw_text(u))
+    Some(Str(u)) => @jscase.trim(u)
     Some(v) => @jscase.trim(@jsjson.stringify(v))
   }
   let given_quotes = js.get("quotes")
@@ -1540,7 +1544,7 @@ async fn Serving::say(
     Some(Str(u)) => {
       let kept = StringBuilder::new()
       let mut count = 0
-      for ch in @jscase.trim(@jsjson.text(u)) {
+      for ch in @jscase.trim(@jsjson.sanitize_str(u)) {
         let code = ch.to_int()
         if code < 0x20 || (code >= 0x7F && code < 0xA0) {
           continue
@@ -1596,7 +1600,14 @@ async fn Serving::say(
   }
   guard claimed.value("ts") is Some(String(_) as ts) else { return error(500, "no timestamp") }
   let email = viewer.value("email").unwrap_or(Json::null())
-  let at = Json::number(self.now().to_double())
+  // (when Node claimed it, by Node's clock as the message's `ts` is: lifecycle.ts `say` writes them both from one
+  // clock too)
+  let at = Json::number(
+    (match ts {
+      String(t) => ts_ms(t)
+      _ => None
+    }).unwrap_or(self.now()).to_double(),
+  )
   // (rows.ts `jsonList`: none for none)
   let kept_quotes = if quotes.length() == 0 { Json::null() } else { Json::string(@jsjson.stringify(Arr(quotes))) }
   let written = try {
@@ -1622,7 +1633,7 @@ async fn Serving::say(
         ignore(
           db.run(
             "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, runtime, options, card, at, agent_identity, letter, change) VALUES (?, ?, 'message', NULL, ?, 'person', ?, ?, NULL, ?, NULL, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL)",
-            [thread, k, ts, email, Json::string(@jsjson.text(@jsjson.units(said))), kept_quotes, client, at],
+            [thread, k, ts, email, Json::string(@jsjson.sanitize_str(said)), kept_quotes, client, at],
           ),
         )
         match db.all("SELECT thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, runtime, options, card, at, agent_identity, letter, change FROM entries WHERE thread = ? AND n = ?", [thread, k]) {
@@ -1709,7 +1720,7 @@ fn Serving::pending_card(self : Serving, db : @sql.Db, thread : Json) -> Pending
     Some(c) => Some(c)
     None =>
       match parsed(row.get("options")) {
-        Some(o) => Some(@jsjson.JValue::Obj([(@jsjson.units("type"), Str(@jsjson.units("options"))), (@jsjson.units("options"), o)]))
+        Some(o) => Some(@jsjson.JValue::Obj([("type", Str("options")), ("options", o)]))
         None => None
       }
   }
@@ -1723,23 +1734,8 @@ fn Serving::pending_card(self : Serving, db : @sql.Db, thread : Json) -> Pending
 
 ///|
 /// The first `max` characters of code units (`[...s].slice(0, max)`: a pair one, a lone surrogate one).
-fn js_chars(u : Array[Int], max : Int) -> Array[Int] {
-  let out = []
-  let mut count = 0
-  let mut i = 0
-  while i < u.length() && count < max {
-    let c = u[i]
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < u.length() && u[i + 1] >= 0xdc00 && u[i + 1] <= 0xdfff {
-      out.push(c)
-      out.push(u[i + 1])
-      i += 2
-    } else {
-      out.push(c)
-      i += 1
-    }
-    count += 1
-  }
-  out
+fn js_chars(u : String, max : Int) -> String {
+  @jsjson.chars(u, max)
 }
 
 ///|
@@ -1754,28 +1750,28 @@ fn quotes_of(given : @jsjson.JValue?) -> Array[@jsjson.JValue] {
     let o : @jsjson.JValue = if q is Obj(_) { q } else { Obj([]) }
     let field = (name : String, fallback : String, max : Int) => {
       let v = match o.get(name) {
-        None | Some(Null) => @jsjson.units(fallback)
+        None | Some(Null) => fallback
         Some(Str(s)) => s
-        Some(v) => @jsjson.units(@jsjson.stringify(v))
+        Some(v) => @jsjson.stringify(v)
       }
       js_chars(v, max)
     }
     let text = field("text", "", 4000)
-    let quote : Array[(Array[Int], @jsjson.JValue)] = [
-      (@jsjson.units("author"), Str(field("author", "消息", 100))),
-      (@jsjson.units("text"), Str(text)),
-      (@jsjson.units("comment"), Str(field("comment", "", 4000))),
+    let quote : Array[(String, @jsjson.JValue)] = [
+      ("author", Str(field("author", "消息", 100))),
+      ("text", Str(text)),
+      ("comment", Str(field("comment", "", 4000))),
     ]
     if o.get("ts") is Some(Str(ts)) && ts_like(ts) {
-      quote.push((@jsjson.units("ts"), Str(ts)))
+      quote.push(("ts", Str(ts)))
     }
-    if o.get("role") is Some(Str(role)) && ["agent", "person", "page", "image"].iter().any(r => @jsjson.units(r) == role) {
-      quote.push((@jsjson.units("role"), Str(role)))
+    if o.get("role") is Some(Str(role)) && ["agent", "person", "page", "image"].contains(role) {
+      quote.push(("role", Str(role)))
     }
     if o.get("file") is Some(Str(file)) && file.length() > 0 {
-      quote.push((@jsjson.units("file"), Str(js_chars(file, 200))))
+      quote.push(("file", Str(js_chars(file, 200))))
     }
-    if @jscase.trim(@jsjson.raw_text(text)) != "" {
+    if @jscase.trim(text) != "" {
       out.push(@jsjson.JValue::Obj(quote))
     }
   }
@@ -1784,9 +1780,10 @@ fn quotes_of(given : @jsjson.JValue?) -> Array[@jsjson.JValue] {
 
 ///|
 /// `^[0-9]+\.[0-9]+$`
-fn ts_like(u : Array[Int]) -> Bool {
+fn ts_like(u : String) -> Bool {
   let mut dot = -1
-  for i, c in u {
+  for i in 0..<u.length() {
+    let c = u.unsafe_get(i).to_int()
     if c == '.'.to_int() {
       if dot >= 0 {
         return false
@@ -1803,7 +1800,7 @@ fn ts_like(u : Array[Int]) -> Bool {
 /// Whether `v` is the string `s` (code unit for code unit, as `===`).
 fn is_str(v : @jsjson.JValue?, s : String) -> Bool {
   match v {
-    Some(Str(u)) => u == @jsjson.units(s)
+    Some(Str(u)) => u == s
     _ => false
   }
 }

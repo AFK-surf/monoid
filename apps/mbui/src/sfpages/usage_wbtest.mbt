@@ -482,3 +482,29 @@ test "用量 of a workspace spread over stations, as the core makes it and shape
     assert_true(faults.length() == 0, msg="\{at} all time: \{faults.join("\n")}")
   }
 }
+
+///|
+test "用量: skeleton loading caches sample and split choices without redundant recomputation" {
+  let reads = Ref(0)
+  let pending = @signals.signal(true, same=fn(a, b) { a == b })
+  let t = setting_tester(Usage, 1280.0, platform=0, h=1200.0, over=fn(base) {
+    { ..base, topic_read: fn(name, params) {
+      let answer = base.topic(name, params).get().snapshot()
+      if name != "usage" {
+        answer
+      } else if pending.get() {
+        reads.val += 1
+        { ..answer, value: None }
+      } else {
+        answer
+      }
+    } }
+  })
+  t.draw()
+  // Skeleton rendered while usage topic is pending; switching to real data settles cleanly.
+  assert_true(reads.val > 0)
+  pending.set(false)
+  t.draw()
+  assert_true(t.find("$118") is Some(_))
+  assert_true(t.find("按人") is Some(_) && t.find("按模型") is Some(_) && t.find("按账号") is Some(_))
+}

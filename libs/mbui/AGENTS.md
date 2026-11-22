@@ -12,7 +12,7 @@ Subsystem rules live in narrower `AGENTS.md` files loaded when touching those di
 ## Its parts
 
 - `libs/mbui/src/view`: retained window tree, made once. `libs/mbui/src/ui`: legacy immediate-mode `Ctx` plus shared runtime, styles (`style.mbt`, `@ui.css`), theme, text fields, Tester, and `FakeHost`.
-- `libs/mbui/src/signals`: alien-signals port. `libs/mbui/src/motion`: motion as data. `libs/mbui/src/headless`: headless tree controls. `libs/mbui/src/kit`: legacy Radix-like controls on `Ctx` (frozen except toasts).
+- `libs/mbui/src/signals`: alien-signals port. `libs/mbui/src/motion`: motion as data. `libs/mbui/src/headless`: headless tree controls. `libs/mbui/src/player`: streaming audio/video player state machine. `libs/mbui/src/kit`: legacy Radix-like controls on `Ctx` (frozen except toasts).
 - `libs/mbui/src/flex`, `text`, `shape`, `paint`, `skia`, `svg`, `pixels`: layout and drawing. `src/hostapi` and `src/host`: host interface and platform backends. `src/effect`: Effect-TS model on the frame clock.
 - `libs/mbui/tools`: MoonBit build and check tools (`detlint`, `mbc`, `wasmhost`, `chk`, `wasmgas`).
 
@@ -57,6 +57,7 @@ Subsystem rules live in narrower `AGENTS.md` files loaded when touching those di
 
 - All host calls go through `libs/mbui/src/hostapi` (`Host` trait). Only app mains import `libs/mbui/src/host` (detlint `host-import`), while Tester installs `FakeHost` (`libs/mbui/src/ui/fake_host.mbt`), keeping native tests runnable on Linux CI.
 - Deliver external posts and picker results between frames, never deferring to frame start (`libs/mbui/src/host/AGENTS.md`). Never branch app code on whether a Tester is running (detlint `tester-branch`).
+- mbui's film (`libs/mbui/src/film`) links on every host. Apple (`libs/mbui/src/host/apple_film.m`) and Linux (`libs/mbui/src/host/linux_film.c`) film natively; every other host (Android, Windows, iOS) links `libs/mbui/src/host/film_none.c` (`mbf_supported` 0). Film asks a native host only through `mbf_` calls, never a renderer's own name; a new call is written in all three in the same change (`libs/mbui/scripts/film_calls.sh`, run by `libs/mbui/scripts/check.sh`), so no app writes stubs of its own.
 
 ## There are no flaky failures
 
@@ -67,6 +68,10 @@ Subsystem rules live in narrower `AGENTS.md` files loaded when touching those di
 
 - Write build, CI, and check tools in MoonBit under `libs/mbui/tools` (built on demand by wrapper scripts like `libs/mbui/scripts/chk`) or in shell when only orchestrating commands.
 - In development, run tools on wasm-gc via `libs/mbui/scripts/wasmrun.mjs` without compiling C. In CI, build natively (`libs/mbui/scripts/tooltarget.sh`). Route OS calls through `libs/mbui/tools/sys`. Write no new Python. Rewrite existing Python scripts when they need changes.
+
+## Arrays let go of what they held
+
+- On native, `Array::clear`, `truncate`, `pop` and `remove` leave what they took out in the slots past the end, still counted as held. On a long-lived or pooled array of references or closures (a node's children or handlers, a tree's queues, a frame's tells, a reuse pool), follow them with `release_unused(placeholder=…)`, or `shrink_to_fit()` once it is empty, or what they held stays alive and two such arrays can hold each other in a ring.
 
 ## Before a PR
 

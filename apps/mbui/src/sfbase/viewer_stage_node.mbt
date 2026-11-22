@@ -52,7 +52,7 @@ fn Viewer::stage_shows(self : Viewer) -> StageShows {
 /// What viewer `vw` shows of a file read whole or as it comes in node `n` (all of its room, `width()` wide): as
 /// StageShows says, made again as that changes. Its words picked with the pointer, a mouse's drag or a finger's hold;
 /// where its bar floats, a tap on what holds them (not the reader's, not a page's own) shows or hides it.
-pub fn viewer_stage_node(n : @view.View, src : Source, vw : Viewer, width : () -> Double) -> Unit {
+pub fn viewer_stage_node(n : @view.View, src : Source, vw : Viewer, width : () -> Double, panel? : Bool = false) -> Unit {
   n.over(Is(true)) |> ignore
   @ui.words_picked(n)
   n.pick(fn() { vw.stage_shows() }, fn(p, shows) {
@@ -93,7 +93,13 @@ pub fn viewer_stage_node(n : @view.View, src : Source, vw : Viewer, width : () -
               markdown~,
               back_label=fn() { vw.desk_back(src) },
               on_back=fn() { vw.shut_tree() },
-              beside=vw.beside,
+              host=if !vw.beside {
+                @sf.ReaderHost::OwnPage
+              } else if panel {
+                @sf.ReaderHost::PanelTab
+              } else {
+                @sf.ReaderHost::Tab
+              },
               width~,
               move_beside=if vw.beside {
                 None

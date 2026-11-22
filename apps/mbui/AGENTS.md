@@ -5,14 +5,14 @@ still.fail's single app on every platform (`apps/mbui/README.md`), in MoonBit on
 Narrower rules:
 
 - `apps/mbui/src/sfbase/AGENTS.md`: data readiness, SWR, open gates, kept roots, workspace switch < 300 ms, ahead reads, `press_wait`, beside-chat tabs, topics, feature registry
-- `apps/mbui/src/sfpages/AGENTS.md`: card block granularity, keyed chat page, block reuse, `chatPage` flag, width bindings, Farview client
+- `apps/mbui/src/sfpages/AGENTS.md`: card block granularity, keyed chat page, block reuse, chat page and composer, width bindings, Farview client
 - `apps/mbui/src/sfapp/AGENTS.md`: screen sweeps, `fixed_outgrown`, `shown_known`, real-size budgets, replay topic bytes and trace switches, offscreen stills/video, latency
 
 ## The terms (术语)
 
 Use these four terms in PR descriptions and user-facing text (never 电脑版, 手机版, 桌面端, 移动端, or 触屏设备):
 
-- **屏幕** (`@sf.layout`: `Small` / `Medium` / `Large`, 小屏 / 中屏 / 大屏, plus half-open foldables laid out as 小屏 and upright phones): decides pane layout and sheets from bottom (小屏) vs. popovers beside trigger (中屏, 大屏).
+- **屏幕** (`@sf.layout`: `Small` / `Medium` / `Large`, 小屏 / 中屏 / 大屏, plus half-open foldables laid out as 小屏 and upright phones): decides pane layout, bottom sheets on 小屏 for lower-half or unanchored triggers, and popovers beside triggers on 中屏/大屏 as well as upper-half triggers on 小屏.
 - **原生操控** (`@sf.native_input()`): touch or keyboard-and-mouse, fixed at startup. Decides drawn sizes (press targets >= 44x44 without overlap on every input), hover affordances vs. touch equivalents, Enter, scrollbars, and ⌘K (the list-top search field shows on every input).
 - **当前操控** (`@ui.pointing()`): live input mode. Decides interaction feedback only, never what shows, where, or how big.
 - **页面宽窄** (`@sf.look()`): 窄排法 / 宽排法 based on the page's own box width.
@@ -33,7 +33,7 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 
 ## One app: tiers, input, pages, shell
 
-- Six principles: equal ease on both inputs, >= 44x44 non-overlapping press targets, bottom sheets on Small and anchored popovers on Medium/Large, screen decides layout and input decides feedback and drawn scale, the same capabilities on every tier, actions near their targets.
+- Six principles: equal ease on both inputs, >= 44x44 non-overlapping press targets, bottom sheets for lower-half or unanchored triggers on Small and anchored popovers for upper-half triggers on Small and on Medium/Large, screen decides layout and input decides feedback and drawn scale, the same capabilities on every tier, actions near their targets.
 - Packages while legacy pages merge: `libs/sf-ui/src` (library), `apps/mbui/src/sfbase` (model, topics, `Source`, `Page`, `Shell`; imports no pages), `apps/mbui/src/sfdesk` (unmerged Medium/Large pages and frame), `apps/mbui/src/sfapp` (Small frame and pages, `pub using` `sfbase`), `apps/mbui/src/sfpages` (merged cross-screen pages).
 - Move shared code down to `sfbase` or `libs/sf-ui`. Keep business logic in the core and copy in `@sf.t`. Navigate via `@sfbase.open_page` and `@sfbase.open_detail`, never pushing onto `app.nav`.
 - Never branch inside a page on `@sf.layout`, `@sf.native_input()`, or `@ui.pointing()`: adapt layout by page width, ask the library for input-aware parts, and use library primitives (`c.lit`, `c.menu_asked`, tips). Merged pages must be no worse on any screen than before.
@@ -44,6 +44,7 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 - Build new and rewritten UI as tree nodes (`@sf.page_node`, `@sf.panel_nodes`, `View::each`, `View::scrolls_window`, `*_node.mbt`), acting in handlers (`on_press`, `on_pick`, `on_change`). Never wrap a node part back into `Ctx`.
 - To migrate or fix UI, read the logic, state, subscriptions, and git history first, then write it as nodes. Never diff `drawn_rects()`, pixel-fit the old view, or guess from screenshots.
 - Legacy detlint counts (`old-island`, `old-list`, `old-panel`, `click-read`, `key-read`, `submitted-read`, `build-motion`, `layout-read-back`, `ui-current`) only fall: migrate touched code.
+- See `apps/mbui/src/sfpages/AGENTS.md` for keyed chat nodes, block reuse, the chat page and composer, width bindings, and Farview.
 
 ## Motion
 

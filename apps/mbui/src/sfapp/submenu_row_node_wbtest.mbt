@@ -100,7 +100,7 @@ test "a submenu row as nodes, on 小屏: pressed, a sheet of its items titled by
   assert_eq(chosen, ["甲二"])
   assert_true(!sub_has(t, "甲一"))
   inspect(at.join(" | "), content=(
-    #|甲一 (24, 744, 30, 20) | 甲二 (24, 788, 30, 20)
+    #|甲一 (30, 738, 30, 20) | 甲二 (30, 782, 30, 20)
   ))
 }
 

@@ -166,6 +166,22 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
       Some(st) => st
       None => continue
     }
+    if ln.fw <= 0.0 || ln.fh <= 0.0 {
+      continue
+    }
+    let mut alpha = 1.0
+    let mut p = i
+    while p >= 0 && p < self.count {
+      alpha = alpha * self.nodes[p].opacity
+      match self.drawn_entry(p) {
+        Some(e) => alpha = alpha * e.look_now().alpha
+        None => ()
+      }
+      p = self.nodes[p].parent
+    }
+    if alpha <= 0.05 {
+      continue
+    }
     // (scrolled by the hand or eased by a wheel, or put elsewhere by the app or the hand this frame or the one before (put
     // as it is laid out next): what moves it is no row's;
     // nor in its first frames shown, its rows laid out at the heights they are guessed at, then at their own)
@@ -333,14 +349,14 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
         // another's the list does not see))
         let list_key = "t\{tl.id}.\{tl.gen}"
         let (held_by, follow_from) = match rows_steady.anchors.get(list_key) {
-          Some((start, _end, _top, foot, scrolled, was_moving, from)) => {
+          Some((start, end, _top, foot, scrolled, was_moving, from)) => {
             // (not held at its foot: its head grown or shrunk over its keys (a bar opening as part of it) moves what it
             // shows with it; what only covers its top, drawn over what it shows (a reader's bars over its words), moves
             // none of it)
             let by = if !(foot && tl.at_foot) && tl.start != start { tl.start - start } else { 0.0 }
             // (a frame judged again at its moment: as the first judge of it had it)
             let again = rows_steady.judged == now
-            let moving = if again { was_moving } else { foot && tl.at_foot && tl.scrolled != scrolled }
+            let moving = if again { was_moving } else { foot && tl.at_foot && (tl.scrolled != scrolled || tl.end != end) }
             let from = if !again && moving && !was_moving { now } else { from }
             (by, if moving { from } else { -1.0e9 })
           }
@@ -527,8 +543,9 @@ fn rows_steady_return(
 /// before the last going at a speed off the frames round it (not where the way set out between them: the rows go on
 /// from where they were, as fast as the way has them), or a move one way then back within rows_back_frames a second time
 /// within rows_turn_ms of the turn before. And when it turned back now (`turned` as it was where it did not). Where the
-/// way did set out between them, a frame many times as far as both of those round it is a step all the same
-/// (rows_step_least, rows_step_times), unless `faint`: a row not half open, what it holds not seen.
+/// way did set out between them, or on the first of them (from rest, its curve's start all in the frames from it), a
+/// frame many times as far as both of those round it is a step all the same (rows_step_least, rows_step_times), unless
+/// `faint`: a row not half open, what it holds not seen.
 fn rows_steady_fault(
   seen : Array[(Double, Double, Double)],
   period : Double,
@@ -547,7 +564,7 @@ fn rows_steady_fault(
     let v0 = speed(0) * period
     let v1 = speed(1) * period
     let v2 = speed(2) * period
-    if !(set_out > seen[0].1 && set_out <= seen[3].1) {
+    if !(set_out >= seen[0].1 - 1.0e-6 && set_out <= seen[3].1) {
       // (by more than what laying out leaves over in its sums: a way come to its end at rest (9, then 0 and 0) is no
       // stop on its way, whatever crumb of a point a sum leaves where it rests)
       let off = (v1 - (v0 + v2) / 2.0).abs()

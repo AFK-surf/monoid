@@ -137,3 +137,24 @@ test("pools_kept_read_none_of_their_accounts_hours_and_are_frozen_all_through", 
   assert.deepEqual(later.map((p, i) => p === first[i]), [true, true, false, true]);
   assert.deepStrictEqual(later, profilesOverview(items, pace, NOW + 9_000, OFFSET, true).pools);
 });
+
+test("checkedAt_refills_and_detail_changes_with_unchanged_values_reuse_kept_pools", () => {
+  const { items, paces } = workspace();
+  const pace = (station: string) => paces[station];
+  const first = profilesOverview(items, pace, NOW, OFFSET).pools;
+  const touched = items.map((a) => ({
+    ...a,
+    profile: {
+      ...a.profile,
+      quota: {
+        ...a.profile.quota,
+        checkedAt: NOW + 15_000,
+        detail: "refreshed",
+        windows: a.profile.quota.windows.map((w: J) => ({ ...w, refills: "2 小时后重置" })),
+      },
+    },
+  }));
+  const again = profilesOverview(touched, pace, NOW + 15_000, OFFSET).pools;
+  assert.deepEqual(again.map((p, i) => p === first[i]), [true, true, true, true]);
+  assert.deepStrictEqual(again, profilesOverview(touched, pace, NOW + 15_000, OFFSET, true).pools);
+});

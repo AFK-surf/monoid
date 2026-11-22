@@ -335,12 +335,7 @@ fn escape_attr(value : String) -> String {
 ///|
 /// A JavaScript value's truth (`if (v)`).
 fn truthy(v : J?) -> Bool {
-  match v {
-    None | Some(Null) | Some(Bool(false)) => false
-    Some(Str(s)) => s.length() > 0
-    Some(Num(n)) => n != 0.0 && !n.is_nan()
-    _ => true
-  }
+  @jsjson.jval_truthy(v)
 }
 
 ///|

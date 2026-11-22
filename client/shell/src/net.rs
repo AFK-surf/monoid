@@ -15,11 +15,24 @@ use crate::{Answer, Done, Handle, Inner, err, id_of, str_of};
 pub(crate) type SocketRead = Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncRead + Send + Unpin>>>;
 pub(crate) type SocketWrite = Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>;
 
-/// A WebSocket frame as `ws.next` gives it and `ws.send` takes it.
+/// A WebSocket frame as `ws.next` gives it and `ws.send`/`ws.ping` take it.
 pub(crate) enum WsFrame {
     Text(String),
     Binary(Vec<u8>),
+    Ping,
+    Pong,
+    /// The other side's Close frame, with its code and reason where it gave them (`ws.next`'s `end`, and its `code` and
+    /// `reason`: a presence socket the plane replaced, 4000, or whose station it removed, 4004).
+    Close(Option<(u16, String)>),
 }
+
+/// How long `ws.open` may take to have its socket, its TLS and its Upgrade answered where its caller says nothing (as the
+/// TypeScript station's presence socket waits for its open, station/src/cloud/presence.ts).
+const WS_OPEN_WITHIN_MS: u64 = 20_000;
+
+/// How long a frame may take to be written: a socket whose other side stopped reading (a sleep, a network gone without
+/// a reset) fills the kernel's buffer, and its write would wait for good, holding its reads and pings with it.
+const WS_WRITE_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// A listening socket: TCP on this machine's loopback (one bound here, or one a launcher bound and handed down by its
 /// descriptor), or a Unix socket by its path.
@@ -57,8 +70,20 @@ impl Listener {
 }
 
 pub(crate) fn tls_config() -> rustls::ClientConfig {
+    tls_config_with_ca(None)
+}
+
+fn tls_config_with_ca(ca_pem: Option<&str>) -> rustls::ClientConfig {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    let mut roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    if let Some(pem) = ca_pem {
+        for item in CertificateDer::pem_slice_iter(pem.as_bytes()) {
+            if let Ok(cert) = item {
+                let _ = roots.add(cert);
+            }
+        }
+    }
     rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .expect("ring supports the default protocol versions")
@@ -67,11 +92,13 @@ pub(crate) fn tls_config() -> rustls::ClientConfig {
 }
 
 /// As the Rust core's native host had it: HTTP/2 pings and TCP keepalive find connections a sleep or a new network left dead.
-pub(crate) fn http_client(tls: &rustls::ClientConfig) -> reqwest::Client {
-    http_builder(tls).build().expect("reqwest client")
+/// `follow`: redirects followed (up to ten, `redirect: "follow"`: a download's 302 to its storage); else none, its 3xx
+/// answered as it came (sign-ins, the vault's proxy and the rest read the redirect itself).
+pub(crate) fn http_client(tls: &rustls::ClientConfig, follow: bool) -> reqwest::Client {
+    http_builder(tls, follow).build().expect("reqwest client")
 }
 
-fn http_builder(tls: &rustls::ClientConfig) -> reqwest::ClientBuilder {
+fn http_builder(tls: &rustls::ClientConfig, follow: bool) -> reqwest::ClientBuilder {
     use std::time::Duration;
     reqwest::Client::builder()
         .tls_backend_preconfigured(tls.clone())
@@ -81,7 +108,33 @@ fn http_builder(tls: &rustls::ClientConfig) -> reqwest::ClientBuilder {
         .http2_keep_alive_interval(Duration::from_secs(20))
         .http2_keep_alive_timeout(Duration::from_secs(5))
         .http2_keep_alive_while_idle(true)
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(if follow { reqwest::redirect::Policy::limited(10) } else { reqwest::redirect::Policy::none() })
+}
+
+fn custom_http_client(
+    default_tls: &rustls::ClientConfig,
+    follow: bool,
+    proxy: Option<&str>,
+    ca_pem: Option<&str>,
+    entry: Option<(String, u16)>,
+) -> Result<reqwest::Client, String> {
+    let owned_tls;
+    let tls = match ca_pem {
+        Some(pem) => {
+            owned_tls = tls_config_with_ca(Some(pem));
+            &owned_tls
+        }
+        None => default_tls,
+    };
+    let mut builder = http_builder(tls, follow);
+    builder = match proxy {
+        Some(proxy_url) => builder.proxy(reqwest::Proxy::all(proxy_url).map_err(http_error)?),
+        None => builder.no_proxy(),
+    };
+    if let Some((host, port)) = entry {
+        builder = builder.dns_resolver(Arc::new(EntryResolver { host, port }));
+    }
+    builder.build().map_err(http_error)
 }
 
 /// Every name resolved to a cloud entry (its host and port): the TCP goes there, while TLS (its server name, the
@@ -120,15 +173,182 @@ fn http_error(error: reqwest::Error) -> String {
     message
 }
 
+/// How much of a refused WebSocket handshake's body is read for why it was refused
+/// (station/src/connects/surface.ts `REFUSAL_BYTES`).
+const WS_REFUSAL_BYTES: usize = 4096;
+
+/// Why a platform refused a WebSocket handshake, as its answer says: its `handshake-msg` header (Slack),
+/// else its body's `error` or `message` when that is JSON (Comma), else the body's text, collapsed to one
+/// line and at most 300 characters (station/src/connects/surface.ts `refusalWords`).
+fn ws_refusal_words(header: Option<&str>, body: Option<&[u8]>) -> String {
+    if let Some(h) = header.map(str::trim).filter(|s| !s.is_empty()) {
+        return h.to_string();
+    }
+    let Some(bytes) = body else { return String::new() };
+    let slice = &bytes[..bytes.len().min(WS_REFUSAL_BYTES)];
+    let text = String::from_utf8_lossy(slice);
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    let mut said = text.to_string();
+    if let Ok(json) = serde_json::from_str::<Value>(text) {
+        if let Some(words) = json.get("error").and_then(Value::as_str).or_else(|| json.get("message").and_then(Value::as_str)) {
+            said = words.to_string();
+        }
+    }
+    let collapsed = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > 300 {
+        format!("{}…", collapsed.chars().take(299).collect::<String>())
+    } else {
+        collapsed
+    }
+}
+
 fn ws_error(error: WsError) -> String {
     match error {
-        WsError::Http(response) => format!("websocket refused ({})", response.status().as_u16()),
+        WsError::Http(response) => {
+            let status = response.status().as_u16();
+            let header = response.headers().get("handshake-msg").and_then(|v| std::str::from_utf8(v.as_bytes()).ok());
+            let why = ws_refusal_words(header, response.body().as_deref());
+            if why.is_empty() {
+                format!("websocket refused ({status})")
+            } else {
+                format!("websocket refused ({status}): {why}")
+            }
+        }
         error => format!("websocket: {error}"),
     }
 }
 
+/// A duration in ms a call gives as `key` (more than 0), if it gives one.
+fn ms_of(a: &Value, key: &str) -> Option<std::time::Duration> {
+    a.get(key).and_then(Value::as_f64).filter(|ms| *ms > 0.0).map(|ms| std::time::Duration::from_millis(ms as u64))
+}
+
+/// A TCP connection a WebSocket goes over, to `host` (a name or an address, in brackets where IPv6) and `port`: kept
+/// alive (SO_KEEPALIVE, its first probe after 30 s idle as `http_builder`'s) and without Nagle, each address it
+/// resolves to tried in turn.
+async fn ws_tcp(host: &str, port: u16) -> Result<tokio::net::TcpStream, String> {
+    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    let mut failed = None;
+    for addr in tokio::net::lookup_host((host, port)).await.map_err(|e| format!("websocket: {e}"))? {
+        let socket = if addr.is_ipv4() { tokio::net::TcpSocket::new_v4() } else { tokio::net::TcpSocket::new_v6() }.map_err(err)?;
+        socket.set_keepalive(true).map_err(err)?;
+        keep_idle(&socket);
+        match socket.connect(addr).await {
+            Ok(stream) => {
+                stream.set_nodelay(true).map_err(err)?;
+                return Ok(stream);
+            }
+            Err(e) => failed = Some(e),
+        }
+    }
+    Err(match failed {
+        Some(e) => format!("websocket: {e}"),
+        None => format!("websocket: {host} has no address"),
+    })
+}
+
+/// A kept-alive socket's first probe after 30 s idle (the system's own is two hours). Where the system has no such
+/// setting, its own.
+fn keep_idle(socket: &tokio::net::TcpSocket) {
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios"))]
+    {
+        use std::os::fd::AsRawFd;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let option = libc::TCP_KEEPIDLE;
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        let option = libc::TCP_KEEPALIVE;
+        let idle: libc::c_int = 30;
+        // SAFETY: setsockopt on a socket this function's caller holds, with an int it reads.
+        unsafe { libc::setsockopt(socket.as_raw_fd(), libc::IPPROTO_TCP, option, (&idle as *const libc::c_int).cast(), std::mem::size_of::<libc::c_int>() as libc::socklen_t) };
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios")))]
+    let _ = socket;
+}
+
 fn headers_of(response: &reqwest::Response) -> Value {
     Value::Array(response.headers().iter().map(|(k, v)| json!([k.as_str(), String::from_utf8_lossy(v.as_bytes())])).collect())
+}
+
+/// Backoff intervals (in ms, ~2 s total) when retrying transient Unix-socket connect failures while the socket path
+/// still exists on disk (e.g. macOS listen backlog transiently full).
+#[cfg(unix)]
+const UNIX_CONNECT_BACKOFF_MS: &[u64] = &[5, 10, 20, 40, 80, 160, 250, 250, 250, 250, 250, 250, 250];
+
+/// Listen backlog for `unix.listen` (higher than Rust std's hardcoded 128 so bursts during brief main-thread stalls do
+/// not immediately trigger ECONNREFUSED on macOS).
+#[cfg(unix)]
+const UNIX_LISTEN_BACKLOG: libc::c_int = 1024;
+
+/// Connect to a Unix domain socket at `path`, retrying transient `ConnectionRefused`/`WouldBlock`/`Interrupted` errors
+/// with bounded backoff while `path` still exists on disk. Fails immediately if `path` is missing (`NotFound`).
+#[cfg(unix)]
+pub(crate) async fn connect_unix(path: &str) -> Result<tokio::net::UnixStream, String> {
+    use std::io::ErrorKind;
+    let mut attempt = 0usize;
+    loop {
+        match tokio::net::UnixStream::connect(path).await {
+            Ok(socket) => return Ok(socket),
+            Err(e) if matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                let exists = !matches!(std::fs::symlink_metadata(path), Err(meta_err) if meta_err.kind() == ErrorKind::NotFound);
+                if !exists || attempt >= UNIX_CONNECT_BACKOFF_MS.len() {
+                    return Err(err(e));
+                }
+                // timer: retry after transient Unix socket ECONNREFUSED/EAGAIN (full backlog) with bounded backoff
+                tokio::time::sleep(std::time::Duration::from_millis(UNIX_CONNECT_BACKOFF_MS[attempt])).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(err(e)),
+        }
+    }
+}
+
+/// Create, bind, and listen on a Unix domain socket at `path` with an explicit `backlog` and `FD_CLOEXEC`.
+#[cfg(unix)]
+fn listen_unix(path: &str, backlog: libc::c_int) -> Result<tokio::net::UnixListener, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+    let path_bytes = path.as_bytes();
+    if path_bytes.contains(&0) {
+        return Err("unix socket path contains NUL".into());
+    }
+    // SAFETY: `sockaddr_un` is a plain C struct; zero-initializing leaves `sun_path` NUL-terminated.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    if path_bytes.len() >= addr.sun_path.len() {
+        return Err(format!("unix socket path too long ({} >= {})", path_bytes.len(), addr.sun_path.len()));
+    }
+    // SAFETY: `path_bytes.len() < addr.sun_path.len()` was checked above and both pointers are valid and non-overlapping.
+    unsafe {
+        std::ptr::copy_nonoverlapping(path_bytes.as_ptr(), addr.sun_path.as_mut_ptr().cast::<u8>(), path_bytes.len());
+    }
+    let addr_len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path_bytes.len() + 1) as libc::socklen_t;
+
+    // SAFETY: standard POSIX socket creation; wrapped in `OwnedFd` immediately so no error path can leak it.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(err(std::io::Error::last_os_error()));
+    }
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+
+    // SAFETY: setting FD_CLOEXEC on our newly created descriptor.
+    if unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(err(std::io::Error::last_os_error()));
+    }
+    let _ = std::fs::remove_file(path);
+    // SAFETY: `addr` is a properly initialized `sockaddr_un` of length `addr_len`.
+    if unsafe { libc::bind(owned.as_raw_fd(), (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(), addr_len) } < 0 {
+        return Err(err(std::io::Error::last_os_error()));
+    }
+    // SAFETY: `owned` is a bound AF_UNIX/SOCK_STREAM socket.
+    if unsafe { libc::listen(owned.as_raw_fd(), backlog) } < 0 {
+        return Err(err(std::io::Error::last_os_error()));
+    }
+    // SAFETY: transfers ownership of the listening AF_UNIX socket descriptor to `std::os::unix::net::UnixListener`.
+    let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(owned.into_raw_fd()) };
+    std_listener.set_nonblocking(true).map_err(err)?;
+    tokio::net::UnixListener::from_std(std_listener).map_err(err)
 }
 
 /// A connection to the Unix socket at `path` that a stream is carried into, `head` written to it first (what tells the
@@ -136,7 +356,7 @@ fn headers_of(response: &reqwest::Response) -> Value {
 pub(crate) async fn open_unix(path: &str, head: &[u8]) -> Result<(SocketRead, SocketWrite), String> {
     #[cfg(unix)]
     {
-        let socket = tokio::net::UnixStream::connect(path).await.map_err(err)?;
+        let socket = connect_unix(path).await?;
         {
             use std::os::fd::AsRawFd;
             // A stream's pieces written a megabyte ahead of the other side's reads (a Unix socket's own is 8 KiB on
@@ -162,9 +382,9 @@ pub(crate) async fn open_unix(path: &str, head: &[u8]) -> Result<(SocketRead, So
 pub(crate) async fn tell_unix(path: &str, bytes: &[u8]) -> Result<(), String> {
     #[cfg(unix)]
     {
-        let mut socket = tokio::net::UnixStream::connect(path).await.map_err(err)?;
+        let mut socket = connect_unix(path).await?;
         socket.write_all(bytes).await.map_err(err)?;
-        socket.shutdown().await.map_err(err)
+        shut(socket.shutdown().await)
     }
     #[cfg(not(unix))]
     {
@@ -173,22 +393,45 @@ pub(crate) async fn tell_unix(path: &str, bytes: &[u8]) -> Result<(), String> {
     }
 }
 
+/// A connection's end (`shutdown`) as `tell_unix` takes it: the other side gone already is what it was told for (the
+/// station's Node reads the bytes it waits for and closes at once, so on macOS the shutdown that follows races it and
+/// says ENOTCONN, os error 57), not a failure.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn shut(done: std::io::Result<()>) -> Result<(), String> {
+    match done {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotConnected => Ok(()),
+        Err(e) => Err(err(e)),
+    }
+}
+
 impl Inner {
+    /// The request a call says, and its client. `redirect: "follow"`: redirects followed; else (`"manual"`, or none
+    /// said) its answer is the first one, a 3xx too.
     fn request(&self, a: &Value, body: Option<Vec<u8>>) -> Result<reqwest::RequestBuilder, String> {
         let method = reqwest::Method::from_bytes(str_of(a, "method")?.as_bytes()).map_err(err)?;
-        let client = match entry_of(a)? {
-            None => self.http.lock().unwrap().clone(),
-            Some((host, port)) => {
-                let mut entries = self.entries.lock().unwrap();
-                match entries.get(&(host.clone(), port)) {
-                    Some(c) => c.clone(),
-                    None => {
-                        let c = http_builder(&self.tls).dns_resolver(Arc::new(EntryResolver { host: host.clone(), port })).build().map_err(http_error)?;
-                        entries.insert((host, port), c.clone());
-                        c
+        let follow = a.get("redirect").and_then(Value::as_str) == Some("follow");
+        let proxy = a.get("proxy").and_then(Value::as_str).filter(|s| !s.is_empty());
+        let ca_pem = a.get("caPem").and_then(Value::as_str).filter(|s| !s.is_empty());
+        let entry = entry_of(a)?;
+        let client = if proxy.is_none() && ca_pem.is_none() {
+            match entry {
+                None if follow => self.http_follow.lock().unwrap().clone(),
+                None => self.http.lock().unwrap().clone(),
+                Some((host, port)) => {
+                    let mut entries = self.entries.lock().unwrap();
+                    match entries.get(&(host.clone(), port, follow)) {
+                        Some(c) => c.clone(),
+                        None => {
+                            let c = http_builder(&self.tls, follow).dns_resolver(Arc::new(EntryResolver { host: host.clone(), port })).build().map_err(http_error)?;
+                            entries.insert((host, port, follow), c.clone());
+                            c
+                        }
                     }
                 }
             }
+        } else {
+            custom_http_client(&self.tls, follow, proxy, ca_pem, entry)?
         };
         let mut builder = client.request(method, str_of(a, "url")?);
         for pair in a.get("headers").and_then(Value::as_array).into_iter().flatten() {
@@ -200,6 +443,23 @@ impl Inner {
             builder = builder.body(body);
         }
         Ok(builder)
+    }
+
+    /// The answer to the request a call says, its head within `head_within` where given, and whether it is another
+    /// URL's than the one asked (a redirect followed).
+    async fn sent(&self, a: &Value, body: Option<Vec<u8>>, head_within: Option<std::time::Duration>) -> Result<(reqwest::Response, bool), String> {
+        let (client, request) = self.request(a, body)?.build_split();
+        let request = request.map_err(http_error)?;
+        let asked = request.url().clone();
+        let sent = client.execute(request);
+        let response = match head_within {
+            // timer: a deadline on an answer's head, where its caller gives one
+            Some(d) => tokio::time::timeout(d, sent).await.map_err(|_| format!("no answer within {} ms", d.as_millis()))?,
+            None => sent.await,
+        }
+        .map_err(http_error)?;
+        let redirected = response.url() != &asked;
+        Ok((response, redirected))
     }
 
     async fn ws_open(self: &Arc<Self>, a: &Value) -> Done {
@@ -216,18 +476,32 @@ impl Inner {
             }
         }
         let connector = Some(Connector::Rustls(self.tls.clone()));
-        // `entry`: the TCP to a cloud entry, TLS and the Host the URL's own (as `fetch`'s, `EntryResolver`).
-        let (socket, _) = match entry_of(a)? {
-            None => tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector).await.map_err(ws_error)?,
-            Some((host, port)) => {
-                let stream = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(err)?;
-                stream.set_nodelay(true).map_err(err)?;
-                tokio_tungstenite::client_async_tls_with_config(request, stream, None, connector).await.map_err(ws_error)?
+        // `entry`: the TCP to a cloud entry, TLS and the Host the URL's own (as `fetch`'s, `EntryResolver`); else the
+        // URL's own host and port. TLS where the URL is `wss:`, none where `ws:` (`client_async_tls_with_config`).
+        let (host, port) = match entry_of(a)? {
+            Some(entry) => entry,
+            None => {
+                let uri = request.uri();
+                let host = uri.host().ok_or("websocket: the URL has no host")?.to_string();
+                let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("wss") { 443 } else { 80 });
+                (host, port)
             }
         };
+        // `timeoutMs`: how long the socket, its TLS and its Upgrade may take together; a handshake into a socket that
+        // never answers held its caller for good (a presence socket that never opened, nor tried again).
+        let within = ms_of(a, "timeoutMs").unwrap_or(std::time::Duration::from_millis(WS_OPEN_WITHIN_MS));
+        let opening = async {
+            let stream = ws_tcp(&host, port).await?;
+            tokio_tungstenite::client_async_tls_with_config(request, stream, None, connector).await.map_err(ws_error)
+        };
+        // timer: a deadline on a WebSocket's opening (its TCP, TLS and Upgrade), given or 20 s
+        let (socket, _) = tokio::time::timeout(within, opening).await.map_err(|_| format!("websocket: open timed out within {} ms", within.as_millis()))??;
         // `binary`: its binary frames given too (`{binary: true}` and their bytes); else they are let go, as a socket
         // that speaks only text takes `ws.next`'s other answers for its end.
         let binary = a.get("binary").and_then(Value::as_bool).unwrap_or(false);
+        // `control`: incoming Ping/Pong frames given too (`{ping: true}` / `{pong: true}`), so callers that ping can
+        // track liveness; else control frames stay internal to tungstenite without surfacing on `ws.next`.
+        let control = a.get("control").and_then(Value::as_bool).unwrap_or(false);
         let (incoming_tx, incoming) = tokio::sync::mpsc::unbounded_channel();
         let (outgoing, mut outgoing_rx) = tokio::sync::mpsc::unbounded_channel::<WsFrame>();
         // One task owns the socket: reading is also what answers the server's pings; what is to be sent goes between.
@@ -238,14 +512,35 @@ impl Inner {
                     message = socket.next() => match message {
                         Some(Ok(Message::Text(text))) => { let _ = incoming_tx.send(Ok(WsFrame::Text(text.as_str().to_owned()))); }
                         Some(Ok(Message::Binary(b))) if binary => { let _ = incoming_tx.send(Ok(WsFrame::Binary(b.to_vec()))); }
-                        Some(Ok(Message::Close(_))) | Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) | None => return,
+                        Some(Ok(Message::Ping(_))) if control => { let _ = incoming_tx.send(Ok(WsFrame::Ping)); }
+                        Some(Ok(Message::Pong(_))) if control => { let _ = incoming_tx.send(Ok(WsFrame::Pong)); }
+                        Some(Ok(Message::Close(frame))) => {
+                            let _ = incoming_tx.send(Ok(WsFrame::Close(frame.map(|f| (u16::from(f.code), f.reason.to_string())))));
+                            return;
+                        }
+                        Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) | None => return,
                         Some(Ok(_)) => {}
                         Some(Err(e)) => { let _ = incoming_tx.send(Err(ws_error(e))); return; }
                     },
                     text = outgoing_rx.recv() => match text {
-                        Some(frame) => { let m = match frame { WsFrame::Text(t) => Message::text(t), WsFrame::Binary(b) => Message::binary(b) }; if let Err(e) = socket.send(m).await { let _ = incoming_tx.send(Err(ws_error(e))); return; } }
-                        // The handle went (ws.close): the socket is closed.
-                        None => { let _ = socket.close(None).await; return; }
+                        Some(frame) => {
+                            let m = match frame {
+                                WsFrame::Text(t) => Message::text(t),
+                                WsFrame::Binary(b) => Message::binary(b),
+                                WsFrame::Ping => Message::Ping(Default::default()),
+                                WsFrame::Pong => Message::Pong(Default::default()),
+                                WsFrame::Close(_) => Message::Close(None),
+                            };
+                            // timer: a deadline on a frame's write, so a socket whose other side stopped reading ends
+                            match tokio::time::timeout(WS_WRITE_WITHIN, socket.send(m)).await {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => { let _ = incoming_tx.send(Err(ws_error(e))); return; }
+                                Err(_) => { let _ = incoming_tx.send(Err("websocket: write timed out".into())); return; }
+                            }
+                        }
+                        // The handle went (ws.close): the socket is closed (bounded so a half-open TCP cannot hang close).
+                        // timer: timeout bounding WebSocket close handshake on a dead or half-open connection
+                        None => { let _ = tokio::time::timeout(std::time::Duration::from_secs(2), socket.close(None)).await; return; }
                     },
                 }
             }
@@ -260,14 +555,8 @@ impl Inner {
                 // `timeoutMs`: how long the answer's head may take to come; `stallMs`: how long its body may stay
                 // silent between two pieces (a whole-download deadline would cut a large one off on a slow network).
                 // Neither given: as long as the caller waits (it cancels the call).
-                let within = |key: &str| a.get(key).and_then(Value::as_f64).filter(|ms| *ms > 0.0).map(|ms| std::time::Duration::from_millis(ms as u64));
-                let (head_within, stall_within) = (within("timeoutMs"), within("stallMs"));
-                let sent = self.request(a, bytes)?.send();
-                let mut response = match head_within {
-                    Some(d) => tokio::time::timeout(d, sent).await.map_err(|_| format!("no answer within {} ms", d.as_millis()))?,
-                    None => sent.await,
-                }
-                .map_err(http_error)?;
+                let (head_within, stall_within) = (ms_of(a, "timeoutMs"), ms_of(a, "stallMs"));
+                let (mut response, redirected) = self.sent(a, bytes, head_within).await?;
                 let (status, headers) = (response.status().as_u16(), headers_of(&response));
                 let mut body = Vec::new();
                 loop {
@@ -281,17 +570,25 @@ impl Inner {
                         None => break,
                     }
                 }
-                Ok(Answer::bytes(json!({ "status": status, "headers": headers }), body))
+                Ok(Answer::bytes(json!({ "status": status, "headers": headers, "redirected": redirected }), body))
             }
+            // `timeoutMs`: how long its head may take, as `fetch`'s.
             "stream.open" => {
-                let response = self.request(a, bytes)?.send().await.map_err(http_error)?;
+                let (response, redirected) = self.sent(a, bytes, ms_of(a, "timeoutMs")).await?;
                 let (status, headers) = (response.status().as_u16(), headers_of(&response));
                 let id = self.keep(Handle::Response(Arc::new(tokio::sync::Mutex::new(response))));
-                Ok(Answer::json(json!({ "status": status, "headers": headers, "id": id })))
+                Ok(Answer::json(json!({ "status": status, "headers": headers, "id": id, "redirected": redirected })))
             }
+            // `stallMs` (else `timeoutMs`): how long its next piece may take to come.
             "stream.read" => {
                 let Handle::Response(response) = self.handle(id_of(a)?)? else { return Err("not a response".into()) };
-                let chunk = response.lock().await.chunk().await.map_err(http_error)?;
+                let mut response = response.lock().await;
+                let chunk = match ms_of(a, "stallMs").or_else(|| ms_of(a, "timeoutMs")) {
+                    // timer: a deadline on a stream's next piece, where its caller gives one
+                    Some(d) => tokio::time::timeout(d, response.chunk()).await.map_err(|_| format!("nothing more came within {} ms", d.as_millis()))?,
+                    None => response.chunk().await,
+                }
+                .map_err(http_error)?;
                 Ok(match chunk {
                     Some(c) => Answer::bytes(json!({}), c.to_vec()),
                     None => Answer::json(json!({ "end": true })),
@@ -305,8 +602,12 @@ impl Inner {
                     Some(Ok(WsFrame::Text(text))) => Ok(Answer::json(json!({ "text": text }))),
                     // A binary frame (Feishu's long connection speaks protobuf): its bytes, said `binary`.
                     Some(Ok(WsFrame::Binary(b))) => Ok(Answer::bytes(json!({ "binary": true }), b)),
+                    Some(Ok(WsFrame::Ping)) => Ok(Answer::json(json!({ "ping": true }))),
+                    Some(Ok(WsFrame::Pong)) => Ok(Answer::json(json!({ "pong": true }))),
+                    // Its end, with the Close frame's code and reason where the other side gave them.
+                    Some(Ok(WsFrame::Close(Some((code, reason))))) => Ok(Answer::json(json!({ "end": true, "code": code, "reason": reason }))),
+                    Some(Ok(WsFrame::Close(None))) | None => Ok(Answer::json(json!({ "end": true }))),
                     Some(Err(e)) => Err(e),
-                    None => Ok(Answer::json(json!({ "end": true }))),
                 }
             }
             "ws.send" => {
@@ -314,6 +615,11 @@ impl Inner {
                 // Bytes given: a binary frame; else `text`.
                 let frame = match bytes { Some(b) => WsFrame::Binary(b), None => WsFrame::Text(str_of(a, "text")?.to_string()) };
                 outgoing.send(frame).map_err(|_| "the socket is closed".to_string())?;
+                Ok(Answer::json(json!({})))
+            }
+            "ws.ping" => {
+                let Handle::Ws { outgoing, .. } = self.handle(id_of(a)?)? else { return Err("not a socket".into()) };
+                outgoing.send(WsFrame::Ping).map_err(|_| "the socket is closed".to_string())?;
                 Ok(Answer::json(json!({})))
             }
             "tcp.open" => {
@@ -368,8 +674,7 @@ impl Inner {
                 #[cfg(unix)]
                 {
                     let path = str_of(a, "path")?;
-                    let _ = std::fs::remove_file(path);
-                    let listener = tokio::net::UnixListener::bind(path).map_err(err)?;
+                    let listener = listen_unix(path, UNIX_LISTEN_BACKLOG)?;
                     Ok(Answer::json(json!({ "id": self.keep(Handle::Listener(Arc::new(Listener::Unix(listener)))) })))
                 }
                 #[cfg(not(unix))]
@@ -460,11 +765,93 @@ impl Inner {
             }
             "reset" => {
                 // Requests already on the old pool keep it until they end.
-                *self.http.lock().unwrap() = http_client(&self.tls);
+                *self.http.lock().unwrap() = http_client(&self.tls, false);
+                *self.http_follow.lock().unwrap() = http_client(&self.tls, true);
                 self.entries.lock().unwrap().clear();
                 Ok(Answer::json(json!({})))
             }
             other => Err(format!("no operation {other}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A told connection whose other side is gone before its shutdown (ENOTCONN on macOS) told it; any other failure
+    /// of the shutdown is still said.
+    #[test]
+    fn a_shutdown_after_the_other_side_closed_is_no_failure() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(shut(Ok(())), Ok(()));
+        assert_eq!(shut(Err(Error::from(ErrorKind::NotConnected))), Ok(()));
+        #[cfg(unix)]
+        assert_eq!(shut(Err(Error::from_raw_os_error(libc::ENOTCONN))), Ok(()));
+        assert!(shut(Err(Error::from(ErrorKind::BrokenPipe))).is_err());
+    }
+
+    /// The Unix socket's other side reads what it waits for and closes at once (as the station's Node does): what was
+    /// said reached it, and `tell_unix` says no failure, however the shutdown raced the close.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn telling_a_socket_that_closes_at_once_is_no_failure() {
+        let dir = std::env::temp_dir().join(format!("tell-unix-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("s.sock");
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let reader = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = [0u8; 25];
+            socket.read_exact(&mut head).await.unwrap();
+            drop(socket);
+            head
+        });
+        let bytes = [7u8; 25];
+        assert_eq!(tell_unix(path.to_str().unwrap(), &bytes).await, Ok(()));
+        assert_eq!(reader.await.unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listen_unix_rejects_too_long_or_nul_paths() {
+        let too_long = "a".repeat(256);
+        assert!(listen_unix(&too_long, UNIX_LISTEN_BACKLOG).is_err());
+        assert!(listen_unix("/tmp/bad\0path.sock", UNIX_LISTEN_BACKLOG).is_err());
+    }
+
+    #[test]
+    fn custom_ca_pem_and_proxy_client_build_succeeds() {
+        use rustls::pki_types::{CertificateDer, pem::PemObject};
+        const TEST_CA_PEM: &str = "\
+-----BEGIN CERTIFICATE-----
+MIIBjjCCATOgAwIBAgIUYHYbOqqZy+eYaN4rkS9jP4ZVUSAwCgYIKoZIzj0EAwIw
+HDEaMBgGA1UEAwwRc3RpbGxmYWlsLXRlc3QtY2EwHhcNMjYxMTIxMDcxNDI5WhcN
+MzYxMTE4MDcxNDI5WjAcMRowGAYDVQQDDBFzdGlsbGZhaWwtdGVzdC1jYTBZMBMG
+ByqGSM49AgEGCCqGSM49AwEHA0IABBHI57/Y6OgmY0jrusLuT9YsWur9nhLWy3MC
+yYt4aLNl+r2RcaD82cn6it76323wjsp0AAif/Z8e4TdGQXzFohCjUzBRMB0GA1Ud
+DgQWBBSZ97ne31/pRCtnnorzMIezJVw1UDAfBgNVHSMEGDAWgBSZ97ne31/pRCtn
+norzMIezJVw1UDAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0kAMEYCIQCD
+dGDcGBkuuoBMO1MRy/K1ejVmX4CeIcQLmX1ri75nigIhAOljuAdmxyT6pTXrMsse
+VuGw5P1LAmsKR9BKtrU6UfbY
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+not-valid-base64!!!
+-----END CERTIFICATE-----
+";
+        let base_len = webpki_roots::TLS_SERVER_ROOTS.len();
+        let mut roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+        for item in CertificateDer::pem_slice_iter(TEST_CA_PEM.as_bytes()) {
+            if let Ok(cert) = item {
+                let _ = roots.add(cert);
+            }
+        }
+        assert_eq!(roots.len(), base_len + 1);
+
+        let default_tls = tls_config();
+        assert!(custom_http_client(&default_tls, false, Some("http://user:pass@127.0.0.1:8080"), Some(TEST_CA_PEM), None).is_ok());
+        assert!(custom_http_client(&default_tls, true, None, Some(TEST_CA_PEM), None).is_ok());
     }
 }

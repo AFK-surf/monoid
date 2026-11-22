@@ -42,6 +42,13 @@ test("a config is filled in from what it says", () => {
   assert.equal(config.warmMs, 300_000);
 });
 
+test("maxConcurrentTurns defaults to 0 (unlimited) and honors explicit positive override", () => {
+  assert.equal(hubConfig({}, "/data").maxConcurrentTurns, 0);
+  assert.equal(hubConfig({ maxConcurrentTurns: 0 }, "/data").maxConcurrentTurns, 0);
+  assert.equal(hubConfig({ maxConcurrentTurns: -3 }, "/data").maxConcurrentTurns, 0);
+  assert.equal(hubConfig({ maxConcurrentTurns: 7.9 }, "/data").maxConcurrentTurns, 7);
+});
+
 test("what cannot run is refused in words", () => {
   assert.equal(err({ profiles: [{ id: "A", home: "h" }] }), 'profile id "A": use lowercase letters, digits and dashes');
   assert.equal(err({ profiles: [{ id: "a", home: "h" }] }), "profile a: env needs a runtime (claude, codex or dsh)");

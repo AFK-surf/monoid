@@ -375,8 +375,8 @@ test("a_google_account_is_googles_plan_running_the_antigravity_cli_beside_its_ke
   view = flows.value(topic);
   // A person's plan, a company's (Gemini Enterprise: signed in with a work Google account), or the key.
   assert.deepEqual([view.step, view.choices.map((c: J) => [c.id, c.title])], ["method", [["plan", "订阅 · Google AI"], ["enterprise", "企业版 · Gemini Enterprise"], ["key", "API key"]]]);
-  assert.match(view.choices[0].hint, /^Google AI Pro \/ Ultra.*Antigravity CLI.*账号可能被停用。$/);
-  assert.match(view.choices[1].hint, /^公司的 Google Workspace 或 Google Cloud 账号.*Google Cloud 项目.*账号可能被停用。$/);
+  assert.match(view.choices[0].hint, /^Google AI Pro \/ Ultra.*Antigravity CLI.*有封号风险）$/);
+  assert.match(view.choices[1].hint, /^Google Workspace \/ Cloud 公司账号.*Antigravity CLI.*有封号风险）$/);
   flows.change(topic, 1, "edit", { method: "enterprise" });
   view = flows.value(topic);
   assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
@@ -550,4 +550,53 @@ test("Hermes variables are offered only on stations that support Hermes", () => 
   s.set(overview, { ok: { apiProviders: [], updates: [] } });
   flows.change(topic, 1, "edit", { back: true });
   assert.ok(!flows.value(topic).groups.find((g: J) => g.id === "local").providers.some((p: J) => p.id === "env-hermes"));
+});
+
+test("Google Colab is aggregated under Google tile across all runtime/key/service combinations", () => {
+  const { s, flows, topic } = flow();
+  flows.change(topic, 1, "open", {});
+
+  // 1. agy + key + colab -> 4 choices under Google tile (no separate services group)
+  s.set(overview, { ok: { apiProviders: [{ id: "google" }], updates: [{ id: "agy", name: "Antigravity CLI", installed: true }], profileServices: ["colab"] } });
+  let view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  assert.equal(view.groups.find((g: J) => g.id === "services"), undefined);
+  const googleTile = view.groups.find((g: J) => g.id === "labs").providers.find((p: J) => p.id === "google");
+  assert.ok(googleTile);
+  assert.equal(googleTile.name, "Google");
+  assert.equal(googleTile.service, "colab");
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  assert.equal(view.step, "method");
+  assert.deepEqual(view.choices.map((c: J) => c.id), ["plan", "enterprise", "colab", "key"]);
+  flows.change(topic, 1, "edit", { method: "colab" });
+  view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  assert.equal(view.step, "connect");
+  assert.equal(view.title, "连接 Google Colab");
+  assert.deepEqual(view.signIn, { service: "colab", provider: "Google Colab" });
+  assert.equal(view.usesLine, "添加后可用于 Google Colab GPU 算力任务");
+
+  // 2. key + colab (no agy) -> 2 choices (colab + key, NO plan)
+  s.set(overview, { ok: { apiProviders: [{ id: "google" }], updates: [], profileServices: ["colab"] } });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.equal(view.step, "method");
+  assert.deepEqual(view.choices.map((c: J) => c.id), ["colab", "key"]);
+
+  // 3. colab only (no agy, no key) -> skips method step straight to Google Colab connect step
+  s.set(overview, { ok: { apiProviders: [], updates: [], profileServices: ["colab"] } });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.equal(view.step, "connect");
+  assert.equal(view.title, "连接 Google Colab");
+  assert.deepEqual(view.signIn, { service: "colab", provider: "Google Colab" });
+
+  // 4. agy + key without profileServices -> original 3 choices (no colab)
+  s.set(overview, { ok: { apiProviders: [{ id: "google" }], updates: [{ id: "agy", name: "Antigravity CLI", installed: true }] } });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.equal(view.step, "method");
+  assert.deepEqual(view.choices.map((c: J) => c.id), ["plan", "enterprise", "key"]);
 });

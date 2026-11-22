@@ -131,35 +131,22 @@ fn phone_foot_node(v : @view.View, core : Core, station : String, card : () -> P
     )
     |> ignore
   })
-  @sf.ask_buttons_node(v, fn(f) {
-    // (0: 允许; 1: 查看步骤; 2: neither, a station from before)
-    let first = fn() {
-      match lacks() {
-        None => 0
-        Some((_, true)) => 1
-        Some(_) => 2
-      }
-    }
-    f.show(fn() { first() != 2 }, fn(s) {
-      s.pick(fn() { first() == 0 }, fn(p, allow) {
-        if allow {
-          @sf.button_node(
-            p,
-            fn() { tr("android-settings.vault.act.allow") },
-            fn() { decide(true) },
-            tone=Primary,
-            busy=fn() { pending() == Some(true) },
-            disabled=under,
-            card_words=true,
-          )
-          |> ignore
-        } else {
-          @sf.button_node(p, fn() { tr("android-misc.adb.ask.how") }, how, tone=Primary, card_words=true) |> ignore
-        }
-      })
-    })
+  let picks = fn() { scopes().length() >= 2 && lacks() is None }
+  let allow_btn = fn(p : @view.View) {
     @sf.button_node(
-      f,
+      p,
+      fn() { tr("android-settings.vault.act.allow") },
+      fn() { decide(true) },
+      tone=Primary,
+      busy=fn() { pending() == Some(true) },
+      disabled=under,
+      card_words=true,
+    )
+    |> ignore
+  }
+  let deny_btn = fn(p : @view.View) {
+    @sf.button_node(
+      p,
       fn() { tr("android-settings.vault.act.deny") },
       fn() { decide(false) },
       tone=Ghost,
@@ -168,19 +155,73 @@ fn phone_foot_node(v : @view.View, core : Core, station : String, card : () -> P
       card_words=true,
     )
     |> ignore
-    // (nothing to allow yet, or one length alone: no length to choose)
-    f.show(fn() { scopes().length() >= 2 && lacks() is None }, fn(s) {
-      @sf.foot_chooser_node(
-        s,
-        fn() { tr("android-settings.vault.scope." + scope()) },
-        fn() { scopes().map(fn(x) { (x, tr("android-settings.vault.scope." + x)) }) },
-        scope,
-        fn(x) { vault_picked[@signals.untracked(key)] = x },
-      )
+  }
+  let choice = fn(at : @view.View) {
+    @sf.foot_chooser_node(
+      at,
+      fn() { tr("android-settings.vault.scope." + scope()) },
+      fn() { scopes().map(fn(x) { (x, tr("android-settings.vault.scope." + x)) }) },
+      scope,
+      fn(x) { vault_picked[@signals.untracked(key)] = x },
+    )
+    |> ignore
+  }
+  // its buttons, last in the card's foot corners; how long beside them across the foot where it has the room
+  // (concentric with the end corner), else on a line of its own over them (vault_foot_node's one_of)
+  v.pick(picks, fn(r, two) {
+    r.width_share(Is(1.0)) |> ignore
+    if !two {
+      @sf.ask_buttons_node(r, fn(f) {
+        // (0: 允许; 1: 查看步骤; 2: neither, a station from before)
+        let first = fn() {
+          match lacks() {
+            None => 0
+            Some((_, true)) => 1
+            Some(_) => 2
+          }
+        }
+        f.show(fn() { first() != 2 }, fn(s) {
+          s.pick(fn() { first() == 0 }, fn(p, allow) {
+            if allow {
+              allow_btn(p)
+            } else {
+              @sf.button_node(p, fn() { tr("android-misc.adb.ask.how") }, how, tone=Primary, card_words=true) |> ignore
+            }
+          })
+        })
+        deny_btn(f)
+      })
       |> ignore
-    })
+    } else {
+      // (the first that has the room whole: how long beside the buttons, else on its own line over them)
+      r.row(Is(true)).one_of(Is(true)) |> ignore
+      r.box(fn(f) {
+        @sf.style_node(f, fn() { @sf.ask_foot_chosen_end() }, in_row=true)
+        f.wraps(By(fn() { Some(@sf.ask_foot_lines()) }), reverse=true) |> ignore
+        f.box(fn(g) {
+          @sf.style_node(g, fn() { @sf.ask_foot })
+          allow_btn(g)
+          deny_btn(g)
+        })
+        |> ignore
+        choice(f)
+      })
+      |> ignore
+      r.box(fn(w) {
+        w.box(fn(o) {
+          @sf.style_node(o, fn() { ask_over.then(@sf.over_foot_reach(@sf.button_height())) })
+          choice(o)
+        })
+        |> ignore
+        @sf.ask_buttons_node(w, fn(f) {
+          allow_btn(f)
+          deny_btn(f)
+        })
+        |> ignore
+      })
+      |> ignore
+    }
   })
-  |> ignore
 }
 
 ///|

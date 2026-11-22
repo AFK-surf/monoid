@@ -57,7 +57,7 @@ pub fn security_node(
             out.push("rebound")
           } else if text(me, "forgetText") != "" {
             out.push("replaced")
-          } else if flag(me, "waiting") || flag(me, "unsigned") {
+          } else if flag(me, "waiting") || flag(me, "unsigned") || flag(me, "ownLock") {
             out.push("pair")
           } else if text(me, "confirmText") != "" {
             out.push("confirm-signer")
@@ -287,6 +287,9 @@ fn pair_node(parent : @view.View, core : Core, ws : () -> String, lock : () -> J
         @sf.t(
           if flag(field(lock(), "me"), "unsigned") {
             "web-pages.security.upgradeTitle"
+          } else if flag(field(lock(), "me"), "confirmed") && flag(field(lock(), "me"), "ownLock") {
+            // (trusted here, its person's own lock begun on another device not naming it: views/lock.ts `confirmedOffOwn`)
+            "web-pages.security.ownOutsideTitle"
           } else {
             "web-pages.security.waitingTitle"
           },
@@ -614,12 +617,9 @@ fn sec_said_line_node(
       t.show(fn() { note() != "" }, fn(w) {
         @sf.words_node(w, note, fn() { if wide { sec_said_why } else { @sf.pg_link_note } }) |> ignore
       })
-      t.show(acts_shown, fn(a) {
-        a.box(fn(ab) {
-          @sf.style_node(ab, fn() { sec_acts_under })
-          acts(ab)
-        })
-        |> ignore
+      t.show(acts_shown, fn(ab) {
+        @sf.style_node(ab, fn() { sec_acts_under })
+        acts(ab)
       })
     })
     |> ignore
@@ -974,6 +974,7 @@ fn sec_member_panel(
         sec_device_row_node(row, core, ws, fn() { Some(d.get()) }, fn() { false })
       })
     })
+    v.box(fn(f) { @sf.style_node(f, fn() { @sf.panel_card_last_node(f) }) }) |> ignore
   })
 }
 
@@ -1413,7 +1414,7 @@ let sec_station_lead_row : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 ///|
 /// A card's words (the web's sub: the ui's 13, muted).
 // kept across runs: a value (no field of it changes)
-let sec_said : @ui.TextStyle = desk_muted
+let sec_said : @ui.TextStyle = @sf.card_muted
 
 ///|
 /// A note beside a button, as wide as it is (the row goes on under where it has not the room).

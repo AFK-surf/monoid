@@ -7,7 +7,6 @@
 /// The fixture's chat s-c1 opened with its page's inside nodes, `w` by `h` on `platform`, at rest.
 fn chat_nodes_tester(w : Double, h : Double, platform : Int) -> (@ui.Tester, Source) {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
@@ -88,7 +87,6 @@ fn chat_nodes_calling(
 ) -> (@ui.Tester, Source) {
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
   let base = fixture(fixture_mode)
   let src : Source = {
     ..base,
@@ -371,7 +369,6 @@ test "the composer in the list's foot, on 小屏 and 大屏: at its foot the las
 fn foot_long_open(l : LongChat, s : (String, Double, Double, Int)) -> (@ui.Tester, Source) {
   let (_, w, h, platform) = s
   new_run()
-  @sfbase.chat_page_nodes.set(true)
   let src = long_source(l)
   open_chat(long_ref)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, begun=fn() {
@@ -504,18 +501,16 @@ test "a chat's page made with its inside nodes tells the core what is read and w
 /// The long chat (chat_window_wbtest's) opened on screen `s` with its page's inside nodes, at rest (the Tester's screen:
 /// 2 pixels a point); the core saying where it was left (`at`: the message's seq, its top under the list's in pixels, if
 /// said) and its unread line at message `line` (none at 0) as it is read; `before` done as the run begins, before the chat
-/// is opened (a message it is to go to). Its page the old one where `nodes` is false.
+/// is opened (a message it is to go to).
 fn place_long_open(
   l : LongChat,
   s : (String, Double, Double, Int),
-  nodes? : Bool = true,
   at? : (Double, Double?)? = None,
   line? : @signals.Signal[Int] = @signals.signal(0),
   before? : () -> Unit = fn() {  },
 ) -> @ui.Tester {
   let (_, w, h, platform) = s
   new_run()
-  @sfbase.chat_page_nodes.set(nodes)
   before()
   let base = long_source(l)
   let src : Source = {
@@ -560,42 +555,6 @@ fn place_left_and_opened(t : @ui.Tester, l : LongChat, meanwhile? : () -> Unit =
   open_chat(long_ref)
   @ui.came_from_outside()
   long_run(t, l, long_opened_ms)
-}
-
-///|
-test "where a chat was left as one page keeps it, the other opens at the same messages as far down, either way, on 小屏 and 大屏: the old page's kept place on the page made as nodes and the page made as nodes' on the old" {
-  let k = long_ref.station + "\u{1}" + long_ref.session
-  for s in long_screens {
-    let (name, w, h, _) = s
-    for old_keeps in [true, false] {
-      let at = if old_keeps { "\{name}: kept by the old page" } else { "\{name}: kept by the page made as nodes" }
-      // read up on the one, left: the place it keeps, the messages in the middle of what showed and where
-      let l = long_chat()
-      let t = place_long_open(l, s, nodes=!old_keeps)
-      t.move_to(w / 2.0, h / 2.0)
-      t.wheel(w / 2.0, h / 2.0, -600.0)
-      long_run(t, l, long_rest_ms)
-      let seen : Array[(Int, Double)] = []
-      for n in l.first.get()..=l.last.get() {
-        if t.rect_of("第\{n}条：") is Some((_, y, _, _)) && y > h / 4.0 && y < h * 0.75 {
-          seen.push((n, y))
-        }
-      }
-      assert_true(seen.length() > 0, msg="\{at}: nothing read in the middle of the list")
-      home()
-      @ui.came_from_outside()
-      long_run(t, l, long_opened_ms)
-      guard @sfbase.kept_places.get(k) is Some(kept) else { fail("\{at}: no place kept") }
-      // opened on the other, given that place as kept
-      let l = long_chat()
-      let o = place_long_open(l, s, nodes=old_keeps, before=fn() { @sfbase.kept_places[k] = kept })
-      let wrong = seen.filter(fn(p) { !(o.rect_of("第\{p.0}条：") is Some((_, y, _, _)) && (y - p.1).abs() <= 1.0) })
-      assert_true(
-        wrong.is_empty(),
-        msg="\{at}: read at \{Repr(seen)}, kept \{kept.top} at \{kept.offset}, opened at \{Repr(wrong.map(fn(p) { o.rect_of("第\{p.0}条：").map(fn(r) { r.1 }) }))}",
-      )
-    }
-  }
 }
 
 ///|
@@ -742,13 +701,19 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: the way ba
     t.wheel(w / 2.0, h / 2.0, -600.0)
     long_run(t, l, long_rest_ms)
     guard to_newest_shown(t) is Some(b) else { fail("\{name}: the way back to the newest not shown read up") }
-    let (_, by, bw, bh) = b.rect
+    let (bx, by, bw, bh) = b.rect
     let field = composer_top(t)
+    // (its round 32 across as drawn and said; pressed within 44 by 44 round it, Tree::press_least)
     assert_true(
-      bw >= 44.0 && bh >= 44.0 && by > h / 2.0 && field is Some(f) && by + bh <= f,
+      bw >= 32.0 && bh >= 32.0 && by > h / 2.0 && field is Some(f) && by + bh <= f,
       msg="\{name}: the way back to the newest at \{Repr(b.rect)}, the composer's field at \{Repr(field)}",
     )
-    t.click(Button, label="跳到最新")
+    // (a finger's press within 44 by 44 round its round, Tree::press_least; a mouse's on it)
+    if s.3 == 2 {
+      t.tap(bx - 4.0, by + bh / 2.0)
+    } else {
+      t.tap(bx + bw / 2.0, by + bh / 2.0)
+    }
     long_run(t, l, long_rest_ms)
     let now = t.rect_of(last).map(fn(r) { r.1 })
     assert_true(now is Some(y) && (y - end).abs() <= 1.0, msg="\{name}: pressed, its last message at \{Repr(now)}, its end \{end}")
@@ -886,7 +851,6 @@ test "大屏, a chat's page made with its inside nodes: ⌘↓ takes the list re
 fn viz_nodes_open(w : Double, h : Double, platform : Int, asked : Array[String], held? : Bool = true) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
   let base = fixture("chat-viz")
   let src : Source = {
     ..base,
@@ -1299,7 +1263,6 @@ test "大屏, a chat's page made with its inside nodes: a 文件 tab's row carri
 fn find_nodes_open(calls : Array[(String, Json)], w : Double, h : Double, platform : Int) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -1505,6 +1468,39 @@ test "大屏, a chat's page made with its inside nodes: words dragged over with 
   t.run_for(@ui.move_most_ms)
   assert_true(quote_nodes_pill(t) is None, msg="引用 over a pick across messages")
   assert_eq(calls.filter(fn(c) { c.0 == "composer.quote" }).length(), 0)
+}
+
+///|
+test "大屏, a mouse's quote pill goes when its message scrolls out of the list" {
+  let l = long_chat()
+  let t = place_long_open(l, ("大屏", 1280.0, 800.0, 0))
+  let mut words = ""
+  let mut rect : (Double, Double, Double, Double)? = None
+  for n in l.first.get()..=l.last.get() {
+    let text = "第\{n}条："
+    match t.run_rects(text) {
+      [(x, y, w, h), ..] if y > 150.0 && y + h < 650.0 => {
+        words = text
+        rect = Some((x, y, w, h))
+        break
+      }
+      _ => ()
+    }
+  }
+  guard rect is Some((x, y, w, h)) else { fail("no message to select") }
+  mouse_dragged(t, x + 1.0, y + h / 2.0, x + w - 1.0, y + h / 2.0)
+  assert_true(quote_nodes_pill(t) is Some(_), msg="no quote pill over the selection")
+  t.wheel(900.0, 400.0, -20.0)
+  long_run(t, l, long_rest_ms)
+  assert_true(@ui.picked_now() is Some(_) && quote_nodes_pill(t) is Some(_), msg="selection lost while its message remained visible")
+  // Read older messages until the picked row leaves the list's window.
+  for _ in 0..<8 {
+    t.wheel(900.0, 400.0, -600.0)
+    long_run(t, l, long_rest_ms)
+  }
+  assert_false(find_nodes_in_sight(t, words, 800.0), msg="the picked message is still visible")
+  assert_true(quote_nodes_pill(t) is None, msg="quote pill kept after its message left the list")
+  assert_eq(@ui.picked_now(), None, msg="selection kept after its message left the list")
 }
 
 ///|
@@ -1772,11 +1768,37 @@ test "a chat's page made with its inside nodes, 大屏, its rows on the pixels: 
 }
 
 ///|
+/// Its ⋯'s menu closed by an item chosen in it (复制消息链接, 多选 and back out of what it opened), not let go unsaid:
+/// the message unlit all the same (2026-11-20: 多选 left, its band still there).
+test "a chat's page made with its inside nodes, 大屏: a message whose ⋯'s menu closed by an item chosen in it is no more lit" {
+  for item in ["复制消息链接", "多选"] {
+    let (t, _) = chat_nodes_calling(1237.0, 800.0, 0, [], long_md=true, on_pixels=true)
+    // (the long answer brought into sight, its flash gone: its ⋯'s band the only ground of the pointer's colour)
+    @signals.start_batch()
+    @sfbase.go_to({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }, 3.0)
+    @signals.end_batch()
+    t.run_for(@sfbase.flash_ms + @ui.move_most_ms)
+    guard t.rect_of("核心的一段在") is Some((x, y, _, _)) else { fail("\{item}: a line of a later piece not drawn") }
+    t.move_to(x + 8.0, y + 8.0)
+    t.frame()
+    t.frame()
+    t.click(Button, label="更多操作")
+    t.run_for(@ui.move_most_ms)
+    assert_true(row_bands(t, @ui.tree_theme().color(Hover)) is [_], msg="\{item}: its ⋯ lit")
+    t.tap_text(item)
+    t.frame()
+    @sf.close_all_presented()
+    t.run_for(@ui.move_most_ms * 2.0)
+    assert_false(@sf.presenting(), msg=item)
+    assert_eq(row_bands(t, @ui.tree_theme().color(Hover)), [], msg="\{item}: chosen, still lit")
+  }
+}
+
+///|
 /// The composer at the foot of the room while the chat's view is read, then one in the list's foot as it comes: written in
 /// meanwhile, its cursor, its keyboard and its words go on in the second (held so 2026-11-17, asked of a report).
 test "小屏, a chat's page made with its inside nodes, written in before its view comes: the cursor kept in the composer as it comes, the keyboard never told down, what was typed there" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
   let answered = @signals.signal(false)
   let src = over_source(answered)
   open_chat(over_chat)
@@ -1830,7 +1852,6 @@ fn message_changed_open(
 ) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -2138,7 +2159,6 @@ fn reopen_long_open(
   agents? : Int = 3,
 ) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
   let base = long_source(l)
   let src : Source = {
     ..base,
@@ -2207,7 +2227,7 @@ fn reopen_lines(t : @ui.Tester, top : Double, foot : Double) -> Array[(String, D
 /// its words: one whose words begin over the bar's foot and go on well under the room the list keeps there (so the
 /// block before it shows nothing under the bar to read: chat_reader_at's); -1 where none is so.
 fn reopen_piece_at_top(t : @ui.Tester) -> Int {
-  let cover = bar_foot() + bar_extra_target(long_ref)
+  let cover = bar_foot_at(t.ctx().window_size().0) + bar_extra_target(long_ref)
   let mut piece = -1
   for w in t.words() {
     guard w.0.has_prefix("第") && w.5 > 0.5 && w.2 < cover + 2.0 && w.2 + w.4 > cover + 30.0 else { continue }
@@ -2258,7 +2278,7 @@ test "小屏, a chat with its bar's second row open all along and long messages 
   let k = long_ref.station + "\u{1}" + long_ref.session
   // at its end
   let l = long_chat()
-  let t = reopen_long_open(l)
+  let t = reopen_long_open(l, w=200.0)
   assert_true(bar_extra_target(long_ref) > 30.0, msg="its bar's second row not open as it opens")
   let foot = reopen_lines(t, 0.0, 800.0).filter(fn(w) { w.0.has_prefix("第\{long_count}条：") })
   assert_eq(foot.length(), 1, msg="its last message not drawn as it opens")
@@ -2267,7 +2287,7 @@ test "小屏, a chat with its bar's second row open all along and long messages 
   }
   // read up, into the third paragraph (piece 2) of a long message, at its top
   let l = long_chat()
-  let t = reopen_long_open(l)
+  let t = reopen_long_open(l, w=200.0)
   t.move_to(180.0, 400.0)
   let rd = @sfbase.reading_of(k)
   let mut tries = 0
@@ -2350,4 +2370,314 @@ test "小屏, a chat whose title can open its bar's second row, opened again whe
   let back = reopen_lines(t, 0.0, 800.0)
   let wrong = seen.filter(fn(s) { !back.iter().any(fn(n) { n.0 == s.0 && (n.1 - s.1).abs() <= 1.0 }) })
   assert_true(wrong.is_empty(), msg="read at \{Repr(seen)}, shut again at \{Repr(back)}")
+}
+
+///|
+/// The composer's liquid glass on a chat's page (the widest `kind == 6` instance lowest on the window): its rect,
+/// its blur, its bezel's width and how far the bezel bends; its outside-only shadow (`kind == 2`, 12 = 1) laid under
+/// it: its sigma, how far down and its colour.
+fn composer_glass_drawn(
+  t : @ui.Tester,
+) -> ((Double, Double, Double, Double), Double, Double, Double, (Double, Double, Int64)?)? {
+  let mut glass : Array[Double]? = None
+  for a in t.drawn_instances() {
+    if a.length() > 21 && a[5] == 6.0 && a[2] > 200.0 && (glass is None || glass.unwrap()[1] < a[1]) {
+      glass = Some(a)
+    }
+  }
+  guard glass is Some(g) else { return None }
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  let shadow = t
+    .drawn_instances()
+    .iter()
+    .find_first(fn(a) {
+      a.length() > 13 &&
+      a[5] == 2.0 &&
+      a[12] == 1.0 &&
+      (a[0] - g[0]).abs() < 0.5 &&
+      (a[2] - g[2]).abs() < 0.5 &&
+      (a[1] - a[13] - g[1]).abs() < 0.5
+    })
+    .map(fn(a) { (a[7], a[13], (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11])) })
+  Some(((g[0], g[1], g[2], g[3]), g[7], g[13], g[21], shadow))
+}
+
+///|
+test "小屏, a chat's composer: the bottom bar's liquid glass and outside shadow as a capsule, its blur going to 4 as it opens, in light and dark" {
+  for dark in [false, true] {
+    let name = if dark { "dark" } else { "light" }
+    new_run()
+    let src = fixture("chat")
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+    let t = @ui.Tester::new(
+      fn(c) { view(c, src) },
+      tree=app_tree(src),
+      w=390.0,
+      h=844.0,
+      platform=2,
+      env=if dark { [("MBUI_DARK", "1")] } else { [] },
+    )
+    t.run_for(@ui.move_most_ms)
+    let want_shadow = Some(@sf.glass_control_shadow())
+    guard composer_glass_drawn(t) is Some((_, blur, bezel, refraction, drawn_shadow)) else {
+      fail("\{name}: no composer's glass at rest")
+    }
+    assert_eq((blur, bezel, refraction, drawn_shadow), (2.1, 20.0, 28.0, want_shadow), msg="\{name}: at rest")
+    // composer-top floating glass capsule on 小屏 also casts glass_control_shadow() with shadow_outside=true
+    let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+    let top_capsule_shadows = t
+      .drawn_instances()
+      .iter()
+      .filter(fn(g) { g.length() > 21 && g[5] == 6.0 && (g[3] - 30.0).abs() < 2.0 })
+      .map(fn(g) {
+        t
+        .drawn_instances()
+        .iter()
+        .find_first(fn(a) {
+          a.length() > 13 &&
+          a[5] == 2.0 &&
+          a[12] == 1.0 &&
+          (a[0] - g[0]).abs() < 0.5 &&
+          (a[2] - g[2]).abs() < 0.5 &&
+          (a[1] - a[13] - g[1]).abs() < 0.5
+        })
+        .map(fn(a) { (a[7], a[13], (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11])) })
+      })
+      .collect()
+    assert_true(!top_capsule_shadows.is_empty(), msg="\{name}: small composer-top glass capsule missing")
+    for s in top_capsule_shadows {
+      assert_eq(s, want_shadow, msg="\{name}: small composer-top glass capsule shadow")
+    }
+    assert_eq(t.audit(), [], msg="\{name}: at rest")
+    // (pressed, the composer opens on its shape's way: its blur on it, between the capsule's and the opened one's)
+    let mut field : (Double, Double, Double, Double)? = None
+    for s in t.semantics() {
+      if s.role == @ui.Role::TextField && (field is None || field.unwrap().1 < s.rect.1) {
+        field = Some(s.rect)
+      }
+    }
+    guard field is Some((fx, fy, fw, fh)) else { fail("\{name}: no composer's field") }
+    t.tap(fx + fw / 2.0, fy + fh / 2.0)
+    if !@ui.test_at_a_rate() {
+      t.run_for_exact(120.0)
+      guard composer_glass_drawn(t) is Some((_, blur, _, _, _)) else {
+        fail("\{name}: no composer's glass opening")
+      }
+      assert_true(blur > 2.1 && blur < 4.0, msg="\{name}: its blur opening \{blur}")
+    }
+    t.run_for(@ui.move_most_ms)
+    guard composer_glass_drawn(t) is Some((_, blur, bezel, refraction, drawn_shadow)) else {
+      fail("\{name}: no composer's glass opened")
+    }
+    assert_eq((blur, bezel, refraction, drawn_shadow), (4.0, 20.0, 28.0, want_shadow), msg="\{name}: opened")
+    assert_eq(t.audit(), [], msg="\{name}: opened")
+  }
+}
+
+///|
+test "大屏, composer and composer-top glass capsules cast outside-only glass_control_shadow in light and dark" {
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  for dark in [false, true] {
+    let name = if dark { "dark" } else { "light" }
+    new_run()
+    let src = fixture("chat")
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+    let t = @ui.Tester::new(
+      fn(c) { view(c, src) },
+      tree=app_tree(src),
+      w=1280.0,
+      h=800.0,
+      platform=0,
+      env=if dark { [("MBUI_DARK", "1")] } else { [] },
+    )
+    t.run_for(@ui.move_most_ms)
+    let want_shadow = Some(@sf.glass_control_shadow())
+    guard composer_glass_drawn(t) is Some((_, _, _, _, drawn_shadow)) else {
+      fail("\{name}: no wide composer glass")
+    }
+    assert_eq(drawn_shadow, want_shadow, msg="\{name}: wide composer shadow")
+    let top_capsule_shadows = t
+      .drawn_instances()
+      .iter()
+      .filter(fn(g) { g.length() > 21 && g[5] == 6.0 && (g[3] - 30.0).abs() < 2.0 })
+      .map(fn(g) {
+        t
+        .drawn_instances()
+        .iter()
+        .find_first(fn(a) {
+          a.length() > 13 &&
+          a[5] == 2.0 &&
+          a[12] == 1.0 &&
+          (a[0] - g[0]).abs() < 0.5 &&
+          (a[2] - g[2]).abs() < 0.5 &&
+          (a[1] - a[13] - g[1]).abs() < 0.5
+        })
+        .map(fn(a) { (a[7], a[13], (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11])) })
+      })
+      .collect()
+    assert_true(!top_capsule_shadows.is_empty(), msg="\{name}: wide composer-top glass capsule missing")
+    for s in top_capsule_shadows {
+      assert_eq(s, want_shadow, msg="\{name}: wide composer-top glass capsule shadow")
+    }
+  }
+}
+
+///|
+/// The liquid glass drawn round `rect` (a control's as said to a screen reader): its instance, the one whose rect is
+/// nearest it among those over its middle.
+fn float_glass_round(t : @ui.Tester, rect : (Double, Double, Double, Double)) -> Array[Double]? {
+  let (x, y, w, h) = rect
+  let (mx, my) = (x + w / 2.0, y + h / 2.0)
+  let mut best : (Double, Array[Double])? = None
+  for a in t.drawn_instances() {
+    if a.length() > 22 && a[5] == 6.0 && a[0] <= mx && mx <= a[0] + a[2] && a[1] <= my && my <= a[1] + a[3] {
+      let d = (a[0] - x).abs() + (a[1] - y).abs() + (a[2] - w).abs() + (a[3] - h).abs()
+      if best is None || d < best.unwrap().0 {
+        best = Some((d, a))
+      }
+    }
+  }
+  best.map(fn(b) { b.1 })
+}
+
+///|
+/// What of a liquid glass instance says its make (blur, tint RRGGBBAA, bezel, refraction, adaptive ink) and the
+/// outside shadow drawn under it ((blur, how far down, colour), none where there is none).
+fn float_glass_make(t : @ui.Tester, a : Array[Double]) -> ((Double, Int64, Double, Double, Bool), (Double, Double, Int64)?) {
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  let made = (a[7], (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11]), a[13], a[21], a[14] < 0.0)
+  let mut shadow : (Double, Double, Int64)? = None
+  for s in t.drawn_instances() {
+    if s.length() > 13 &&
+      s[5] == 2.0 &&
+      s[12] == 1.0 &&
+      (s[0] - a[0]).abs() < 0.5 &&
+      (s[2] - a[2]).abs() < 0.5 &&
+      (s[1] - s[13] - a[1]).abs() < 0.5 {
+      shadow = Some((s[7], s[13], (ch(s[8]) << 24) | (ch(s[9]) << 16) | (ch(s[10]) << 8) | ch(s[11])))
+    }
+  }
+  (made, shadow)
+}
+
+///|
+/// The chat-subchats-jobs fixture's chat in `win`, dark or not, read up its list (1200 up): 待处理, 对话目录 and the way back to
+/// the newest shown over the composer, at rest.
+fn float_pill_read_up(win : (String, Double, Double, Int, String), dark : Bool) -> @ui.Tester {
+  let (_, w, h, _, _) = win
+  let t = screen_in("chat-subchats-jobs", win, "zh", dark~)
+  // (twice: on 小屏 once leaves the cards that wait in sight)
+  t.move_to(w / 2.0, h / 3.0)
+  t.wheel(w / 2.0, h / 3.0, -600.0)
+  t.run_for(@ui.move_most_ms)
+  t.wheel(w / 2.0, h / 3.0, -600.0)
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// The round button named `label` over the composer (32 round: not 对话目录's rail at the list's right on 大屏), if one.
+fn float_pill_button(t : @ui.Tester, label : String) -> @ui.SemNode? {
+  let found = t
+    .all(Button)
+    .filter(fn(b) {
+      b.label == label &&
+      (b.rect.2 - @sf.float_button_side).abs() < 1.0 &&
+      (b.rect.3 - @sf.float_button_side).abs() < 1.0
+    })
+  found.get(0)
+}
+
+///|
+test "a chat's 待处理, 对话目录 and the way back to the newest, on 小屏 and 大屏, light and dark: one capsule of the composer capsules' liquid glass and shadow, their right edge, 8 over them" {
+  let wins : Array[(String, Double, Double, Int, String)] = [("小屏", 390.0, 844.0, 2, ""), ("大屏", 1280.0, 800.0, 0, "")]
+  for win in wins {
+    for dark in [false, true] {
+      let name = win.0
+      let at = "\{name} dark=\{dark}"
+      let t = float_pill_read_up(win, dark)
+      let buttons = [@sf.t("web-main.chat.asks.go"), @sf.t("web-main.outline.title"), @sf.t("web-main.chat.toLatest")].map(fn(l) {
+        float_pill_button(t, l)
+      })
+      guard buttons is [Some(ask), Some(outline), Some(latest)] else { fail("\{at}: not each shown read up: \{Repr(buttons.map(fn(b) { b.map(fn(b) { b.rect }) }))}") }
+      guard t.query(Button, label="子会话") is Some(subchats) else { fail("\{at}: 子会话 not shown") }
+      let glass = [ask.rect, outline.rect, latest.rect, subchats.rect].map(fn(r) { float_glass_round(t, r) })
+      guard glass is [Some(ga), Some(go), Some(gl), Some(gs)] else { fail("\{at}: not each on liquid glass: \{Repr(glass)}") }
+      // 1. one capsule round the three, 36 across and 104 high (3 × 32, 2 between, 2 round), one over another
+      assert_eq((at, ga == go && go == gl, ga[2], ga[3]), (at, true, 36.0, 104.0))
+      assert_true(
+        ask.rect.1 < outline.rect.1 && outline.rect.1 < latest.rect.1,
+        msg="\{at}: 待处理 \{Repr(ask.rect)}, 对话目录 \{Repr(outline.rect)}, 跳到最新 \{Repr(latest.rect)}",
+      )
+      // 2. its glass and shadow the composer capsules' (glass_floating()'s make, glass_control_shadow() outside it)
+      let want = @sf.glass_floating()
+      let sh = @sf.glass_control_shadow()
+      let one = ((want.blur, want.tint, want.bezel, want.refraction, want.adaptive), Some((sh.0, sh.1, sh.2)))
+      assert_eq((at, [ga, gs].map(fn(a) { float_glass_make(t, a) })), (at, [one, one]))
+      // 3. their right edge
+      let right = fn(a : Array[Double]) { a[0] + a[2] }
+      assert_true((right(ga) - right(gs)).abs() < 0.5, msg="\{at}: right edges capsule \{right(ga)}, 子会话 \{right(gs)}")
+      // 4. 8 over the composer's capsules, the composer closed or not
+      let gap = gs[1] - (ga[1] + ga[3])
+      assert_true((gap - 8.0).abs() < 0.5, msg="\{at}: capsule to 子会话 \{gap}")
+      // (the side pane's edge over the sidebar and the page by 6 on 大屏, as wide_back_wbtest.mbt's)
+      let faults = t
+        .audit()
+        .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+      assert_eq((at, faults), (at, []))
+    }
+  }
+}
+
+///|
+test "a chat's capsule over the composer, on 小屏 and 大屏: 待处理 goes to what waits, 对话目录 opens the outline, the way back to the newest takes the list to its end" {
+  let wins : Array[(String, Double, Double, Int, String)] = [("小屏", 390.0, 844.0, 2, ""), ("大屏", 1280.0, 800.0, 0, "")]
+  for win in wins {
+    let name = win.0
+    // 待处理: the list moved to what waits
+    let t = float_pill_read_up(win, false)
+    guard float_pill_button(t, @sf.t("web-main.chat.asks.go")) is Some(ask) else { fail("\{name}: 待处理 not shown") }
+    let before = t.text_runs().map(fn(r) { (r.text, r.top) })
+    t.tap(ask.rect.0 + ask.rect.2 / 2.0, ask.rect.1 + ask.rect.3 / 2.0)
+    t.run_for(@ui.move_most_ms * 3.0)
+    assert_true(t.text_runs().map(fn(r) { (r.text, r.top) }) != before, msg="\{name}: 待处理 pressed, the list where it was")
+    // 对话目录: the outline opened
+    let t = float_pill_read_up(win, false)
+    guard float_pill_button(t, @sf.t("web-main.outline.title")) is Some(outline) else { fail("\{name}: 对话目录 not shown") }
+    let dialogs = t.all(Dialog).length()
+    t.tap(outline.rect.0 + outline.rect.2 / 2.0, outline.rect.1 + outline.rect.3 / 2.0)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.all(Dialog).length() > dialogs, msg="\{name}: 对话目录 pressed, no outline opened")
+    // the way back to the newest: at the end, gone from the capsule
+    let t = float_pill_read_up(win, false)
+    guard float_pill_button(t, @sf.t("web-main.chat.toLatest")) is Some(latest) else { fail("\{name}: 跳到最新 not shown") }
+    t.tap(latest.rect.0 + latest.rect.2 / 2.0, latest.rect.1 + latest.rect.3 / 2.0)
+    t.run_for(@ui.move_most_ms * 3.0)
+    assert_true(float_pill_button(t, @sf.t("web-main.chat.toLatest")) is None, msg="\{name}: 跳到最新 pressed, still shown")
+  }
+}
+
+///|
+test "小屏, a chat's capsule over the composer: the composer opened under it, it moves with what the composer shows at its top, never a step, 8 over 子会话 again" {
+  let win : (String, Double, Double, Int, String) = ("小屏", 390.0, 844.0, 2, "")
+  let t = float_pill_read_up(win, false)
+  guard float_pill_button(t, @sf.t("web-main.outline.title")) is Some(_) else { fail("对话目录 not shown read up") }
+  // (the composer's field, the lowest field drawn, tapped: the composer opens)
+  let mut field : (Double, Double, Double, Double)? = None
+  for s in t.semantics() {
+    if s.role == @ui.Role::TextField && (field is None || field.unwrap().1 < s.rect.1) {
+      field = Some(s.rect)
+    }
+  }
+  guard field is Some((fx, fy, fw, fh)) else { fail("no composer's field") }
+  t.tap(fx + fw / 2.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard float_pill_button(t, @sf.t("web-main.outline.title")) is Some(outline) else { fail("对话目录 gone as the composer opened") }
+  guard t.query(Button, label="子会话") is Some(subchats) else { fail("子会话 gone as the composer opened") }
+  guard (float_glass_round(t, outline.rect), float_glass_round(t, subchats.rect)) is (Some(gp), Some(gs)) else {
+    fail("not each on liquid glass as the composer opened")
+  }
+  let gap = gs[1] - (gp[1] + gp[3])
+  assert_true((gap - 8.0).abs() < 0.5, msg="opened: capsule to 子会话 \{gap}")
+  assert_eq(t.audit(), [])
 }

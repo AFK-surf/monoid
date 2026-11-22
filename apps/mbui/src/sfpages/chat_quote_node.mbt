@@ -3,7 +3,8 @@
 // pick wholly within one message, a small dark pill 引用 with its mark 8 over the end it let go (mbui's picked_now,
 // picked_end_piece); pressed, what is picked kept (keeps_picked), quoted as the old page quoted it (whose words, the
 // words, the message, as what: chat_layers'), let go, and gone. A pick across messages, or in a row that is no message
-// with an id to quote by (what is on its way from here, a notice's line, the list's own rows), gives none. A finger's
+// (a notice's line, the list's own rows), gives none; what is on its way from here and what was said in Slack or Feishu
+// are quoted with no id (`ts` ""). A finger's
 // pick has no pill: the page's own bar over it, as the old page's (sfbase's pick_bar; @sf.pick_bar_node), never the
 // system's text menu (mbui's picked_bar; the user, 2026-11-15: 「为什么要用系统的」): 引用, 复制, 全选 (but after it), and
 // what that message offers of itself where it offers it (多选, its turn shared from the chat's picture; 复制链接, its
@@ -27,15 +28,25 @@ fn chat_finger_picked(rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
 
 ///|
 /// The message of chat `rows` whose words what is picked lies wholly within, once let go, with the mouse or a finger
-/// (one the viewer sent not yet the chat's too: outgoing_said): what is picked and the message; none otherwise.
+/// (one the viewer sent not yet the chat's too: outgoing_said; one said in Slack or Feishu: elsewhere_said): what is
+/// picked and the message; none otherwise.
 fn chat_picked_message(rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
   guard @ui.picked_now() is Some(p) && p.of.length() == 1 else { return None }
   match rows.read().get(p.of[0]) {
     Some({ entry: Said(m), .. }) if m.ts != "" => Some((p, m))
     // (one of the viewer's not the chat's yet, on its way or failed: theirs, of no message, as the old rows quote it)
     Some({ entry: Out(o), .. }) => Some((p, outgoing_said(o)))
+    // (one said in Slack or Feishu, the chat's only words where it has been nowhere else: whose there, of no message)
+    Some({ entry: Sent(s), .. }) => Some((p, elsewhere_said(s)))
     _ => None
   }
+}
+
+///|
+/// What was said in Slack or Feishu (`s`) as a message to quote: its words, whose they are there (a person's where it
+/// was heard there, its agent's where it was sent), of no message in the chat (`ts` "", as outgoing_said's).
+fn elsewhere_said(s : Elsewhere) -> Message {
+  { ..@sfbase.message_of({}), author_kind: if s.received { "person" } else { "agent" }, text: s.text, by: s.by }
 }
 
 ///|
@@ -78,6 +89,14 @@ fn chat_picked_words(p : @ui.WordsPicked, m : Message, whole : Bool) -> String {
 }
 
 ///|
+/// Let go of this pick if it has not been replaced by a later one.
+fn chat_pick_gone(p : @ui.WordsPicked) -> Unit {
+  if @signals.untracked(@ui.picked_now) is Some(q) && q.made == p.made {
+    @ui.picked_let_go()
+  }
+}
+
+///|
 /// Over chat `r`'s list in `v` (its rows `rows`, each message's words, from where they are read, said of its key:
 /// picked_of, so 全选 over a finger's pick takes all of that message's, @ui's finger_select_all):
 /// the pill 引用 over a mouse's pick within one message, quoting it into the chat's draft (writing_quote, its text
@@ -93,10 +112,9 @@ fn chat_quote_node(
   place : @view.ListPlace[String],
 ) -> Unit {
   let draft = r.station + ":" + r.session
-  // (a finger's pick whose words' block was put by as the list moved on (View::park: kept to be taken for another
-  // key's, no longer let go): let go of, the bar with it, as the list says what it has in sight then)
+  // (a pick whose words' block was put by as the list moved on: let go of it and its bar or pill)
   place.on_sight(fn(_) {
-    match chat_finger_picked(rows) {
+    match chat_picked_message(rows) {
       Some((p, _)) =>
         match @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) {
           Some(end) if !end.shown_nowhere() => ()
@@ -178,11 +196,7 @@ fn chat_quote_node(
         None => ()
       }
       holds.box(fn(b) {
-        let gone = fn() {
-          if @signals.untracked(@ui.picked_now) is Some(q) && q.made == p.made {
-            @ui.picked_let_go()
-          }
-        }
+        let gone = fn() { chat_pick_gone(p) }
         let unkept = end.owns_while(gone)
         b.owns(unkept) |> ignore
         // (taken for another message's words: View::scrolls_window's `reused`)
@@ -205,31 +219,48 @@ fn chat_quote_node(
     }
   }
   v.reacts(fn() { chat_finger_picked(rows) is Some(_) }, fn(on) { if on { make() } })
-  v.pick(fn() { chat_quotable(rows).map(fn(q) { q.0.made }) }, fn(holds, made) {
-    guard made is Some(_) && @signals.untracked(fn() { chat_quotable(rows) }) is Some((p, _)) else { return }
-    @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(src, draft, rows) }, fn(b) {
-      @sf.style_node(b, fn() { chat_quote_pill })
-      @ui.keeps_picked(b)
-      .ground(By(fn() { @ui.tree_theme().color(Primary) }))
-      .shadow(
-        By(fn() {
-          let (blur, fall) = @ui.Shadow::Md.blur_y()
-          (blur, fall, @ui.tree_theme().shadow)
-        }),
-      )
-      .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
+  let quote_in = fn(host : @view.View) {
+    host.pick(fn() { chat_quotable(rows).map(fn(q) { q.0.made }) }, fn(holds, made) {
+      guard made is Some(_) && @signals.untracked(fn() { chat_quotable(rows) }) is Some((p, _)) else { return }
+      guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) else { return }
+      @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(src, draft, rows) }, fn(b) {
+        let gone = fn() { chat_pick_gone(p) }
+        let unkept = end.owns_while(gone)
+        b.owns(unkept) |> ignore
+        end.on_reused(gone)
+        @sf.style_node(b, fn() { chat_quote_pill })
+        @ui.keeps_picked(b)
+        .glass(By(fn() { Some(@sf.glass_menu()) }))
+        .edge(By(fn() { if b.glass_solid() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
+        .shadow(By(fn() { @sf.glass_control_shadow() }))
+        .shadow_outside(Is(true))
+        .clips(Is(true))
+        .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
+        |> ignore
+        @sf.hover_ground_node(b)
+        @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.text })) |> ignore
+        @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
+      })
       |> ignore
-      @sf.hover_ground_node(b, color=fn() { @ui.tree_theme().color(A(Bg, O15)) })
-      @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.on_primary })) |> ignore
-      @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
     })
-    |> ignore
-  })
+  }
+  let quote_made = Ref(false)
+  let make_quote = fn() {
+    guard !quote_made.val else { return }
+    quote_made.val = true
+    match (@sf.window_tips().layer)() {
+      Some(l) => quote_in(l.box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(v))
+      None => quote_in(v)
+    }
+  }
+  v.reacts(fn() { chat_quotable(rows) is Some(_) }, fn(on) { if on { make_quote() } })
 }
 
 ///|
-/// The pill (quotePop: 26 high, 10 in, its mark 4 before its words, round, on the primary ground with a shadow, a step
-/// towards the page where the hand is on it: mbui ui/hand_moves.mbt), its mark 12, its words.
+/// The pill (quotePop: 26 high, 10 in, its mark 4 before its words, round; single-layer liquid glass as the finger's
+/// pick bar and the floating buttons are (`glass_menu()`, falling back to `panel_ground()` + hairline `control_edge_w`
+/// border under `MBUI_GLASS=solid`) with outside-only `float_shadow()`, the hover ground where the hand is on it), its
+/// mark 12 and its words in the ink.
 // kept across runs: a value (no field of it changes)
 let chat_quote_pill : @ui.Style = @ui.style(
   row=true,
@@ -245,7 +276,7 @@ let chat_quote_icon : Double = 12.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let chat_quote_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, color=OnPrimary, wrap=false)
+let chat_quote_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, color=Fg, wrap=false)
 
 ///|
 /// How far over where a finger's pick ends its bar stands (pick_bar's: 52 over the line's top, the bar 40 high).

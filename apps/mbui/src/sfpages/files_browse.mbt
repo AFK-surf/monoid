@@ -164,27 +164,6 @@ pub fn Browse::folder(self : Browse, src : Source, at : DriveAt) -> (Json?, Stri
 }
 
 ///|
-/// The place told the core where it is (`drive.browse` `at`) where that changed since it was last told, from what is
-/// told once an old view's build is over (a chat's 文件 tab: sfdesk's drive_tab.mbt); not while a press switched it.
-pub fn Browse::tell_at(self : Browse, src : Source) -> Unit {
-  let p = browse_place(self.key)
-  let held = browse_held.untracked().contains(self.owner) || browse_held.untracked().contains(self.key)
-  if held {
-    return
-  }
-  let here = @signals.untracked(fn() { browse_here((self.view)(), (self.at)()) })
-  @sfbase.shown_read("browse/" + self.owner)
-  @sfbase.shown_read("browse/" + self.key)
-  if p.told != here {
-    if p.told != "" {
-      p.renaming.set(None)
-    }
-    p.told = here
-    browse_send(src, self, { "act": "at" })
-  }
-}
-
-///|
 /// The places (a place's owner, `page` or `tab`, or one place by its key) switched by a press to show something else
 /// whose browsing is read meanwhile (browse_switch): the place shown as it was till then, the core told nothing more of
 /// it by what shows it.

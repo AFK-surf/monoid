@@ -11,6 +11,12 @@ final class ScreenInput {
   var refusedTold = false
   /// What the picture shows, in global points: the display, or the window shown alone (ScreenView's `area`).
   var area: () -> CGRect
+  /// What of a pixel each axis's moves left over (`dx`, `dy`), carried to the next.
+  var carry = (x: DeltaCarry(), y: DeltaCarry())
+  /// The person's game controllers, driving this Mac's pointer, wheel and keys (Gamepad.swift).
+  lazy var pads = Gamepads(input: self)
+  /// Told of each of the viewer's absolute moves posted (PointerLock.swift's detector of them).
+  var moved: (() -> Void)?
 
   init(channel: Channel, displayID: CGDirectDisplayID) {
     self.channel = channel
@@ -25,7 +31,22 @@ final class ScreenInput {
   func point(_ x: Double, _ y: Double) -> CGPoint {
     let bounds = area()
     let cx = min(max(x, 0), 1), cy = min(max(y, 0), 1)
-    return CGPoint(x: bounds.minX + cx * (bounds.width - 1), y: bounds.minY + cy * (bounds.height - 1))
+    return CGPoint(x: ScreenInput.below(bounds.minX + cx * (bounds.width - 1), bounds.maxX), y: ScreenInput.below(bounds.minY + cy * (bounds.height - 1), bounds.maxY))
+  }
+
+  /// `v` as the largest Float32 no greater than it, and below `edge`: WindowServer keeps the pointer in Float32, and one
+  /// rounded up to a display's right or bottom edge is off it (the Dock that hides, a full screen app's menu bar, never
+  /// shown).
+  static func below(_ v: Double, _ edge: Double) -> Double {
+    var f = Float(v)
+    if Double(f) > v { f = f.nextDown }
+    while Double(f) >= edge { f = f.nextDown }
+    return Double(f)
+  }
+
+  /// Where the pointer is now, in global points (an app that holds it moved it there).
+  func current() -> CGPoint {
+    CGEvent(source: nil)?.location ?? pointer
   }
 
   func send(_ event: CGEvent?, flags: UInt64) {
@@ -68,10 +89,25 @@ final class ScreenInput {
         else if buttons & 4 != 0 { type = .otherMouseDragged; held = .center }
         else { type = .mouseMoved }
       }
-      let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: at, mouseButton: held)
+      // How far the person's pointer moved: its deltas, each pixel's part carried; `relative` (an app holds the pointer):
+      // only that, where the pointer is (kept on the display), the app reading the deltas whole.
+      let dx = op["dx"] as? Double, dy = op["dy"] as? Double
+      // (a press with `relative` too: where the pointer is, never put back at x, y under a game's crosshair)
+      let relative = op["relative"] as? Bool == true
+      var place = at
+      if relative {
+        let now = current(), bounds = area()
+        place = CGPoint(x: ScreenInput.below(min(max(now.x, bounds.minX), bounds.maxX), bounds.maxX), y: ScreenInput.below(min(max(now.y, bounds.minY), bounds.maxY), bounds.maxY))
+      }
+      let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: place, mouseButton: held)
       if let clicks = op["clicks"] as? Int, type != .mouseMoved { event?.setIntegerValueField(.mouseEventClickState, value: Int64(clicks)) }
+      if let dx, let dy {
+        event?.setIntegerValueField(.mouseEventDeltaX, value: carry.x.take(dx))
+        event?.setIntegerValueField(.mouseEventDeltaY, value: carry.y.take(dy))
+      }
       send(event, flags: flags)
-      pointer = at
+      if !relative && type == .mouseMoved && place != pointer { moved?() }
+      pointer = place
     case "scroll":
       let at = point((op["x"] as? Double) ?? 0, (op["y"] as? Double) ?? 0)
       // A wheel turns what is under the pointer: it goes there first.
@@ -101,8 +137,23 @@ final class ScreenInput {
         }
         at += chunk.count
       }
+    case "gamepad":
+      pads.take(op)
     default:
       break
     }
+  }
+}
+
+/// What of a pixel an axis's moves left over: each move goes as whole pixels, rounded with what the ones before left
+/// (`whole = round(rest + v)`, `rest -= whole`), so many slow moves add up to all of theirs (100 of 0.3: 30).
+struct DeltaCarry {
+  var rest = 0.0
+
+  mutating func take(_ v: Double) -> Int64 {
+    let given = v.isFinite ? v : 0
+    let whole = (rest + given).rounded()
+    rest += given - whole
+    return Int64(whole)
   }
 }

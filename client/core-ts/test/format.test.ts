@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as f from "../src/format.ts";
 import { fromLocale, holdLanguage, tr } from "../src/i18n.ts";
-import { compareOrder, family, key, name, same } from "../src/shapes/model.ts";
+import { compareOrder, family, key, name, same, shortIfShorter, shortName } from "../src/shapes/model.ts";
 import * as providers from "../src/shapes/providers.ts";
 import { available, common, fallback } from "../src/shapes/reasoning.ts";
 
@@ -119,6 +119,61 @@ test("models_read_as_people_call_them", () => {
     ["gpt-6-1-sol", "GPT-6.1 Sol"], ["gpt-5-6-luna", "GPT-5.6 Luna"], ["glm-5-3", "GLM-5.3"], ["gemini-3-8-flash", "Gemini 3.8 Flash"], ["kimi-k2-6", "Kimi K2.6"],
     ["deepseek-v4-1-flash-1017", "DeepSeek V4.1 Flash 1017"], ["deepseek-r1-0528", "DeepSeek R1 0528"], ["swe-2", "SWE-2"], ["swe-1-7", "SWE-1.7"], ["adaptive", "Adaptive"],
   ]) assert.equal(name(id), want, id);
+});
+
+test("models_shorten_consistently_for_tight_spaces", () => {
+  for (const [id, want, shorter] of [
+    ["claude-opus-5-5", "Opus", "Opus"],
+    ["claude-sonnet-5", "Sonnet", "Sonnet"],
+    ["claude-fable-5-1", "Fable", "Fable"],
+    ["claude-haiku-4-5-20251001", "Haiku", "Haiku"],
+    ["claude-sonnet-5[1m]", "Sonnet", "Sonnet"],
+    ["opus", "Opus", null],
+    ["sonnet[1m]", "Sonnet", "Sonnet"],
+    ["gemini-4-neon", "Neon", "Neon"],
+    ["gemini-4.1-carbon", "Carbon", "Carbon"],
+    ["gemini-4-argon", "Argon", "Argon"],
+    ["gemini-4-hydrogen", "Hydrogen", "Hydrogen"],
+    ["gemini-2.5-pro", "2.5 Pro", "2.5 Pro"],
+    ["gemini-3-8-flash", "3.8 Flash", "3.8 Flash"],
+    ["gemini-3-pro", "3 Pro", "3 Pro"],
+    ["gemini-4", "Gemini 4", null],
+    ["gpt-6-astra", "Astra", "Astra"],
+    ["openai/gpt-6-astra:free", "Astra", "Astra"],
+    ["gpt-6.1-sol", "Sol", "Sol"],
+    ["gpt-6-1-sol", "Sol", "Sol"],
+    ["gpt-6-luna", "Luna", "Luna"],
+    ["gpt-6.1-terra", "Terra", "Terra"],
+    ["gpt-5.1-codex-max", "Codex Max", "Codex Max"],
+    ["gpt-5.1-codex", "Codex", "Codex"],
+    ["gpt-4o-mini", "4o Mini", "4o Mini"],
+    ["gpt-oss-120b", "OSS 120B", "OSS 120B"],
+    ["gpt-5", "GPT-5", null],
+    ["gpt-4o", "GPT-4o", null],
+    ["deepseek-v4-1-flash", "V4.1 Flash", "V4.1 Flash"],
+    ["deepseek-v4-1-flash-1017", "V4.1 Flash", "V4.1 Flash"],
+    ["deepseek-v4-pro", "V4 Pro", "V4 Pro"],
+    ["deepseek-r1-0528", "R1", "R1"],
+    ["deepseek-flash", "Flash", "Flash"],
+    ["kimi-k2-6", "K2.6", "K2.6"],
+    ["kimi-k2", "K2", "K2"],
+    ["kimi-for-coding", "Kimi", "Kimi"],
+    ["qwen3-coder-plus", "Coder Plus", "Coder Plus"],
+    ["qwen3:32b", "qwen3:32b", null],
+    ["minimax-m2", "M2", "M2"],
+    ["fusion-gpt-6-sol-sidekick-swe-2-medium", "Sol + SWE-2", "Sol + SWE-2"],
+    ["glm-4.6", "GLM-4.6", null],
+    ["grok-4", "Grok 4", null],
+    ["swe-2", "SWE-2", null],
+    ["o3", "o3", null],
+    ["o4-mini", "o4 Mini", null],
+    ["composer-2", "composer-2", null],
+    ["adaptive", "Adaptive", null],
+    ["something-else", "something-else", null],
+  ] as [string, string, string | null][]) {
+    assert.equal(shortName(id), want, id);
+    assert.equal(shortIfShorter(id), shorter, `shortIfShorter(${id})`);
+  }
 });
 
 test("models_list_by_series_newest_first", () => {

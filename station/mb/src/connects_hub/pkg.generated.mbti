@@ -4,7 +4,6 @@ package "station/connects_hub"
 import {
   "mbui/effect",
   "moonbitlang/core/ref",
-  "station/host",
   "station/jsjson",
   "station/session_chats",
 }
@@ -29,8 +28,6 @@ pub fn channel_key(String, String) -> String
 pub fn code_hash(String) -> String
 
 pub fn connect_of(String, @jsjson.JValue) -> @jsjson.JValue
-
-pub fn connects_part(PartDeps, Connects, KindOf) -> Part
 
 pub fn decision_body(String, @jsjson.JValue) -> @jsjson.JValue
 
@@ -69,8 +66,6 @@ pub fn group_credentials(@jsjson.JValue) -> String?
 pub fn group_refused(String, String) -> Error
 
 pub fn group_unreached(String) -> Error
-
-pub async fn harness(@host.Host) -> Unit
 
 pub fn hex(BytesView) -> String
 
@@ -130,6 +125,8 @@ pub fn not_there(Error) -> Bool
 
 pub let optional_calls : Array[String]
 
+pub fn parse_ws_refusal(String) -> (Int32, String)?
+
 pub fn person_key(String, String) -> String
 
 pub let protocol_version : Int32
@@ -174,7 +171,7 @@ pub fn stream_of(@jsjson.JValue) -> (String, String)
 
 pub let take_method : String
 
-pub fn text_of(BytesView) -> String
+pub fn text_of(BytesView, ignore_bom? : Bool) -> String
 
 pub fn thread_of(String, String) -> @jsjson.JValue
 
@@ -504,12 +501,6 @@ pub fn Hlc::new() -> Self
 pub fn Hlc::next(Self, Double) -> (Double, Double)
 pub fn Hlc::saw(Self, Double, Double) -> Unit
 
-pub struct KindOf {
-  kind : String
-  shown : (Connects, @jsjson.JValue) -> @jsjson.JValue
-  taken : ((Connects) -> Unit)?
-}
-
 #derive(Eq, Show)
 pub(all) struct Known {
   id : String
@@ -595,27 +586,6 @@ pub struct NameBookOptions {
 }
 pub fn NameBookOptions::default() -> Self
 
-pub struct Part {
-  connects : Connects
-  // private fields
-}
-pub async fn Part::changed(Self) -> Unit
-pub fn Part::connection(Self, @jsjson.JValue) -> @jsjson.JValue
-pub async fn Part::learn(Self, Double, Array[String]) -> Unit
-pub async fn Part::left(Self) -> Unit
-pub async fn Part::reconnect(Self, String) -> Unit
-pub fn Part::shown(Self, @jsjson.JValue) -> @jsjson.JValue
-pub async fn Part::store_changed(Self, @jsjson.JValue) -> Unit
-pub async fn Part::taken(Self) -> Unit
-
-pub struct PartDeps {
-  cards : Cards
-  recent_people : async (String) -> String
-  overview_changed : () -> Unit
-  rows_changed : () -> Unit
-  log : Log
-}
-
 pub(all) struct Platform {
   kind : String
   names : String
@@ -652,7 +622,7 @@ pub struct RemoteSurface {
   described : @jsjson.JValue
   // private fields
 }
-pub fn RemoteSurface::new(String, Known, String, @jsjson.JValue, Asker, NameBook?, Fs, Log) -> Self
+pub fn RemoteSurface::new(String, Known, String, @jsjson.JValue, Asker, NameBook?, Fs, Log, here? : () -> String) -> Self
 pub fn RemoteSurface::surface(Self) -> Surface
 
 pub(all) struct Signer {
@@ -666,6 +636,7 @@ pub(all) struct Socket {
   send : (Bytes) -> Unit
   ping : () -> Unit
   terminate : () -> Unit
+  is_open : () -> Bool
 }
 
 pub(all) enum SocketEvent {

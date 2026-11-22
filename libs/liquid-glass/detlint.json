@@ -21,7 +21,9 @@
   ],
   "style": {
     "tokens": [
-      "src/lg/tokens.mbt"
+      "src/lg/tokens.mbt",
+      "src/lg/tokens_controls.mbt",
+      "src/lg/tokens_overlays.mbt"
     ],
     "outside": []
   },
@@ -120,7 +122,8 @@
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   },
   "excused": {
     "frame-request": {},
@@ -212,6 +215,7 @@
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   }
 }

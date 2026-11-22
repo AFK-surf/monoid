@@ -15,11 +15,6 @@ pub(all) struct Team {
 }
 
 ///|
-fn team_json(t : Team) -> Json {
-  { "id": js(t.id), "name": js(t.name), "book": js(t.book) }
-}
-
-///|
 fn str_in(j : Json?, path : Array[String]) -> String? {
   let mut at = j
   for p in path {
@@ -491,9 +486,7 @@ pub fn forget_marks(fs : Fs, dir : String, paths : Array[String]) -> Unit raise 
 
 ///|
 /// SHA-1, hex.
-pub fn sha1_hex(data : Bytes) -> String {
-  @hash.sha1_hex(data)
-}
+pub using @hash {sha1_hex}
 
 // ── usage.ts ─────────────────────────────────────────────────────────────────────────────────────────────────────
 

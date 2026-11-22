@@ -141,6 +141,20 @@ fn keys_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
 }
 
 ///|
+/// 麦克风 as a round button in `parent`, lit while this device's microphone is shared into the screen's virtual one:
+/// there only while something on the screen records it or it is shared (ScreenSess::mic_bar_shown), so a bar says
+/// nothing of it otherwise (控制中心's tile switches it then); pressed, shared or no more.
+fn mic_button_node(parent : @view.View, pg : ScreenPage, along_row? : Bool = false) -> Unit {
+  let s = pg.s
+  parent.show(along_row~, fn() { s.mic_bar_shown() }, fn(k) {
+    screen_round_node(k, pg, fn() { s.mic_icon() }, fn() { s.mic_label() }, fn(_) { s.toggle_mic() }, lit=fn() {
+      s.mic_on.get()
+    })
+    |> ignore
+  })
+}
+
+///|
 /// 只看/控制 as one round button (the rail's, the folded tools') in `parent`: the pointer while driving, an eye while
 /// looking; where it may be chosen.
 fn mode_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
@@ -295,6 +309,7 @@ fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         })
       }
     })
+    mic_button_node(bar, pg, along_row=true)
     bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
     // (a panel's bar of its own: the panel's close at its end, beside what it closes, where the system has bars too:
     // among the chat's actions in them it read as another thing's; the user, 2026-11-06)
@@ -322,67 +337,65 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
       None => false
     }
   }
-  p.show(at_once=true, fn() { s.open_said() || closing_gone() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(slot) {
-    slot.box(fn(bar) {
-      match (pg.own_bar, pg.tab_pads) {
-        (Some(own), _) => @sf.style_node(bar, fn() { own })
-        // (the pane's own bar (远程's): a page's height, its line's room under it, its keys as far in as the pane says,
-        // its empty part dragging the window)
-        (None, Some(pads)) => {
-          @sf.style_node(bar, fn() { screen_pane_bar })
-          bar
-          .padding(By(fn() {
-            let (start, end) = pads()
-            (start, 0.0, end, 1.0)
-          }))
-          .moves_window(By(@ui.window_inset_now))
-          |> ignore
-        }
-        (None, None) =>
-          @sf.style_node(bar, fn() { if browser_shown_now(s) { screen_tab_browser_bar } else { screen_tab_status_bar } })
+  p.show(at_once=true, fn() { s.open_said() || closing_gone() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(bar) {
+    match (pg.own_bar, pg.tab_pads) {
+      (Some(own), _) => @sf.style_node(bar, fn() { own })
+      // (the pane's own bar (远程's): a page's height, its line's room under it, its keys as far in as the pane says,
+      // its empty part dragging the window)
+      (None, Some(pads)) => {
+        @sf.style_node(bar, fn() { screen_pane_bar })
+        bar
+        .padding(By(fn() {
+          let (start, end) = pads()
+          (start, 0.0, end, 1.0)
+        }))
+        .moves_window(By(@ui.window_inset_now))
+        |> ignore
       }
-      bar.pick(at_once=true, fn() { browser_shown_now(s) }, fn(m, browser) {
-        m.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(@ui.Space::S2.px())) |> ignore
-        if browser {
-          browser_seen(s)
-          m.box(fn(t) {
-            @sf.style_node(t, fn() { screen_bar_tools }, in_row=true)
-            browser_tools_node(t, pg, narrow~)
+      (None, None) =>
+        @sf.style_node(bar, fn() { if browser_shown_now(s) { screen_tab_browser_bar } else { screen_tab_status_bar } })
+    }
+    bar.pick(at_once=true, fn() { browser_shown_now(s) }, fn(m, browser) {
+      m.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(@ui.Space::S2.px())) |> ignore
+      if browser {
+        browser_seen(s)
+        m.box(fn(t) {
+          @sf.style_node(t, fn() { screen_bar_tools }, in_row=true)
+          browser_tools_node(t, pg, narrow~)
+        })
+        |> ignore
+      } else {
+        screen_bar_words_node(m, pg, pg.own_bar is Some(_))
+        tabs_count_node(m, pg)
+        // 组合键 while driving a desktop
+        m.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
+          let b = screen_round_node(k, pg, fn() { "keycap" }, fn() { @sf.t("web-pages.screen.combos") }, fn(b) {
+            keys_open(s, u, Node(b), combos_only=true)
+          }, lit=fn() {
+            screen_panel_on_now(u, "keys")
           })
-          |> ignore
-        } else {
-          screen_bar_words_node(m, pg, pg.own_bar is Some(_))
-          tabs_count_node(m, pg)
-          // 组合键 while driving a desktop
-          m.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
-            let b = screen_round_node(k, pg, fn() { "keycap" }, fn() { @sf.t("web-pages.screen.combos") }, fn(b) {
-              keys_open(s, u, Node(b), combos_only=true)
-            }, lit=fn() {
-              screen_panel_on_now(u, "keys")
-            })
-            ignore(b)
-          })
-        }
-      })
-      // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
-      if pg.on_window is Some(handed) {
-        let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
-        bar.show(at_once=true, fn() { page().map_or(false, @sfbase.window_opens_for) }, fn(k) {
-          screen_round_node(k, pg, fn() { "external" }, fn() { @sf.t("web-pages.chat.openInWindow") }, fn(_) {
-            match page() {
-              Some(p) => if @sfbase.open_window(p) { handed() }
-              None => ()
-            }
-          })
-          |> ignore
+          ignore(b)
         })
       }
-      bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
-      if pg.own_bar is Some(_) {
-        close_button_node(bar, pg)
-      }
     })
-    |> ignore
+    mic_button_node(bar, pg, along_row=true)
+    // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
+    if pg.on_window is Some(handed) {
+      let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
+      bar.show(at_once=true, fn() { page().map_or(false, @sfbase.window_opens_for) }, fn(k) {
+        screen_round_node(k, pg, fn() { "external" }, fn() { @sf.t("web-pages.chat.openInWindow") }, fn(_) {
+          match page() {
+            Some(p) => if @sfbase.open_window(p) { handed() }
+            None => ()
+          }
+        })
+        |> ignore
+      })
+    }
+    bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
+    if pg.own_bar is Some(_) {
+      close_button_node(bar, pg)
+    }
   })
 }
 
@@ -396,11 +409,11 @@ fn net_poor(s : ScreenSess) -> Bool {
 
 ///|
 /// With keyboard and mouse in `p`: the viewer's bar across the window's top (@sf.viewer_bar_node), one row (the user,
-/// 2026-11-13): back by its name, the view's tabs in the name's place where it has them (a person's pages on the
-/// station's browser, ＋ after them; a desktop's whole screen and its windows), else the screen's name and the core's
-/// line; at its end the link's figures only while it is poor, 组合键 while driving a desktop, 控制中心 (只看 is there),
-/// and 接管 while someone else drives it, who does said in the line's place. Narrow, the tabs fold into a button
-/// counting them.
+/// 2026-11-13): back by its name, the view's tabs in the name's place where it has them (all browser pages on the
+/// station, ＋ after them when allowed; a desktop's whole screen and its windows), else the screen's name and the
+/// core's line; at its end the link's figures only while it is poor, 组合键 while driving a desktop, 控制中心 (只看 is
+/// there), and 接管 while someone else drives it, who does said in the line's place. Narrow, the tabs fold into a
+/// button counting them.
 fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
@@ -433,7 +446,7 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
       fn() { false },
       fn(_) { 1.0 },
       fn() { 0.0 },
-      fn() { p.window().0 },
+      fn() { p.window_w() },
       ink,
       fn(r, corner) {
         // how the view goes, while the link is poor
@@ -452,6 +465,11 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         }, fn(k) {
           let t = @sf.tool_node(k, fn() { { icon: "terminal", label: @sf.t("web-pages.remote.switchSession"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
           t.on_press(fn() { station_sessions_open(pg, t) }) |> ignore
+        })
+        // (麦克风 while something on the screen records it, or this device's is shared: ScreenSess::mic_bar_shown)
+        r.show(along_row=true, fn() { s.mic_bar_shown() }, fn(k) {
+          let t = @sf.tool_node(k, fn() { { icon: s.mic_icon(), label: s.mic_label(), on: s.mic_on.get(), disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
+          t.on_press(fn() { s.toggle_mic() }) |> ignore
         })
         r.show(at_once=true, fn() { s.open_said() }, fn(k) {
           let t = @sf.tool_node(k, fn() { { icon: "sliders", label: @sf.t("web-pages.screen.panel"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
@@ -576,6 +594,7 @@ fn full_tools_node(fill : @view.View, pg : ScreenPage) -> Unit {
         keys_button_node(t, pg)
         paste_button_node(t, pg)
         keyboard_button_node(t, pg)
+        mic_button_node(t, pg)
         center_button_node(t, pg)
         full_button_node(t, pg)
       })
@@ -602,20 +621,17 @@ fn screen_rail_node(p : @view.View, pg : ScreenPage) -> (() -> Unit, () -> Bool)
     }
     rail.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
     let others = fn() { items(s.state_now(), "others").length() }
-    rail.show(at_once=true, fn() { text(s.state_now(), "line") != "" && s.open_said() && others() > 0 }, fn(k) {
-      k.box(fn(people) {
-        let b = screen_round_node(people, pg, fn() { "users" }, fn() { @sf.t("android-misc.screen.people") }, fn(_) { say() }, lit=saying)
-        ignore(b)
-        // the count of the others on it: over the button's top right, 4 out and 2 up
-        people.box(fn(place) {
-          @sf.style_node(place, fn() { rail_badge_place })
-          place.over(Is(true)) |> ignore
-          place.box(fn(badge) {
-            @sf.style_node(badge, fn() { rail_badge }, in_row=true)
-            badge.offset(Is((rail_badge_out, -rail_badge_up))) |> ignore
-            @sf.mark_words_node(badge, fn() { "\{others()}" }, fn() { rail_badge_words }) |> ignore
-          })
-          |> ignore
+    rail.show(at_once=true, fn() { text(s.state_now(), "line") != "" && s.open_said() && others() > 0 }, fn(people) {
+      let b = screen_round_node(people, pg, fn() { "users" }, fn() { @sf.t("android-misc.screen.people") }, fn(_) { say() }, lit=saying)
+      ignore(b)
+      // the count of the others on it: over the button's top right, 4 out and 2 up
+      people.box(fn(place) {
+        @sf.style_node(place, fn() { rail_badge_place })
+        place.over(Is(true)) |> ignore
+        place.box(fn(badge) {
+          @sf.style_node(badge, fn() { rail_badge }, in_row=true)
+          badge.offset(Is((rail_badge_out, -rail_badge_up))) |> ignore
+          @sf.mark_words_node(badge, fn() { "\{others()}" }, fn() { rail_badge_words }) |> ignore
         })
         |> ignore
       })
@@ -625,6 +641,7 @@ fn screen_rail_node(p : @view.View, pg : ScreenPage) -> (() -> Unit, () -> Bool)
     keys_button_node(rail, pg)
     paste_button_node(rail, pg)
     keyboard_button_node(rail, pg)
+    mic_button_node(rail, pg)
     rail.show(at_once=true, fn() { s.open_said() }, fn(k) {
       k.lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())) |> ignore
       center_button_node(k, pg)
@@ -1120,7 +1137,7 @@ fn take_over_capsule_node(at : @view.View, pg : ScreenPage, in_bar : Bool, place
   at.box(fn(b) {
     // a capsule round a 32 high button 6 in from its edge: its corner 6 + 16
     @sf.style_node(b, fn() { if in_bar { take_over_bar_row } else { take_over_box } })
-    let shake : Ref[@motion.NodeWay?] = Ref(None)
+    let shake : Ref[@motion.ShakeWay?] = Ref(None)
     b.reacts(fn() { u.held_nudge.get() }, at_start=false, fn(_) {
       @ui.haptic(Reject)
       if @ui.reduced_motion() {
@@ -1129,13 +1146,13 @@ fn take_over_capsule_node(at : @view.View, pg : ScreenPage, in_bar : Bool, place
       let way = match shake.val {
         Some(w) => w
         None => {
-          let w = @motion.NodeWay::new(1.0)
+          let w = @motion.ShakeWay::new(amplitude=@sf.refused_reach, duration_ms=@sf.refused_ms, cycles=1.5)
           shake.val = Some(w)
-          b.offset(By(fn() { (@sf.refused_dx(w.shown(b)), 0.0) })) |> ignore
+          w.shakes(b) |> ignore
           w
         }
       }
-      way.go_from(b, 0.0, 1.0, @motion.tween(@sf.refused_ms, ease=Linear))
+      way.shake(at=b.cause_at())
     })
     if !in_bar {
       floats_node(b)
@@ -1194,6 +1211,7 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       let user_ids = scs
         .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
         .map(fn(sc) { text(Some(sc), "id") })
+      let can_term = flag(tval, "open")
       let can_browse = flag(sval, "browser") && flag(sval, "control")
       let menu_items : Array[@sf.MenuItem?] = []
       for sc in others {
@@ -1208,19 +1226,19 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         })))
       }
       if !user_ids.is_empty() || can_browse {
-        let in_browser = user_ids.contains(s.screen)
+        let in_browser = s.screen.has_prefix("browser:") || text(s.state, "kind") == "browser"
         menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, fn() {
           if !in_browser {
             let target = match @settings.browser_tab_to_open(s.station, user_ids) {
               Some(tid) => tid
-              None => @settings.new_browser_tab(s.src.call, s.station, user_ids, @sfbase.answer_unread)
+              None => @settings.new_browser_tab(s.src.call, s.station, user_ids, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
             }
             go_page(Screen({ station: s.station, screen: target, title: "", until_gone: false }))
           }
         })))
       }
       let open_terms = items(tval, "terminals").filter(fn(t) { !flag(Some(t), "ended") })
-      if !open_terms.is_empty() || flag(tval, "open") {
+      if !open_terms.is_empty() {
         if !menu_items.is_empty() {
           menu_items.push(None)
         }
@@ -1229,13 +1247,44 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           let tid = text(tv, "id")
           let cwd = text(tv, "cwd")
           menu_items.push(Some(@sf.menu_item_of(terminal_title(tv), icon="terminal", fn() {
-            go_page(Terminal({ station: s.station, terminal: tid, watch: !flag(tval, "open"), cwd }))
+            go_page(Terminal({ station: s.station, terminal: tid, watch: !can_term, cwd }))
           })))
         }
-        if flag(tval, "open") {
-          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="plus", fn() {
-            go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
+      }
+      if can_term || can_browse {
+        if !menu_items.is_empty() {
+          menu_items.push(None)
+        }
+        let open_new_terminal = fn() {
+          go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
+        }
+        let open_new_browser = fn() {
+          let target = @settings.new_browser_tab(
+            s.src.call,
+            s.station,
+            user_ids,
+            failed_said(@sf.t("web-pages.screen.openBrowserWhat")),
+          )
+          let nu = screen_ui(screen_key(s.station, target))
+          nu.address_asked.set(nu.address_asked.untracked() + 1)
+          go_page(Screen({ station: s.station, screen: target, title: "", until_gone: false }))
+        }
+        if can_term && can_browse {
+          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.newSession"), icon="plus", further=true, fn() {
+            @sf.menu(
+              [
+                Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="terminal", open_new_terminal)),
+                Some(@sf.menu_item_of(@sf.t("web-pages.remote.newBrowser"), icon="web", open_new_browser)),
+              ],
+              from=@sf.Beside::Node(from),
+              title=@sf.t("web-pages.remote.newSession"),
+              along=End,
+            )
           })))
+        } else if can_term {
+          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="plus", open_new_terminal)))
+        } else if can_browse {
+          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.newBrowser"), icon="plus", open_new_browser)))
         }
       }
       if !menu_items.is_empty() {
@@ -1246,6 +1295,72 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
     most=@sf.open_hold_ms,
   )
   |> ignore
+}
+
+///|
+/// Bottom "new remote session" row(s) shared by control-center `switchSession` groups (`terminal_view_node.mbt`,
+/// `farview_tab.mbt`): when both terminal and browser are available, opens a submenu with 新建终端 / 新建浏览器 via
+/// `@sf.panel_row_opens_node` (keeping the same icon column as sibling `panel_row_node` rows); otherwise shows the
+/// single available creation row directly.
+fn remote_new_session_rows_node(
+  parent : @view.View,
+  can_term : () -> Bool,
+  can_browser : () -> Bool,
+  done : () -> Unit,
+  open_terminal : () -> Unit,
+  open_browser : () -> Unit,
+) -> Unit {
+  parent.show(fn() { can_term() && can_browser() }, fn(n) {
+    @sf.panel_row_opens_node(
+      n,
+      fn() { @sf.t("web-pages.remote.newSession") },
+      fn(from) {
+        let beside : @sf.Beside = match from {
+          Node(r) => Node(r)
+          At(x, y, w, h) => At(x, y, w, h)
+          Unanchored => return
+        }
+        @sf.menu(
+          [
+            Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="terminal", fn() {
+              done()
+              open_terminal()
+            })),
+            Some(@sf.menu_item_of(@sf.t("web-pages.remote.newBrowser"), icon="web", fn() {
+              done()
+              open_browser()
+            })),
+          ],
+          from=beside,
+          title=@sf.t("web-pages.remote.newSession"),
+          along=End,
+        )
+      },
+      icon=fn() { "plus" },
+    )
+  })
+  parent.show(fn() { can_term() && !can_browser() }, fn(n) {
+    @sf.panel_row_node(
+      n,
+      fn() { @sf.t("web-pages.terminal.new") },
+      fn() {
+        done()
+        open_terminal()
+      },
+      icon=fn() { "plus" },
+    )
+  })
+  parent.show(fn() { !can_term() && can_browser() }, fn(n) {
+    @sf.panel_row_node(
+      n,
+      fn() { @sf.t("web-pages.remote.newBrowser") },
+      fn() {
+        done()
+        open_browser()
+      },
+      icon=fn() { "plus" },
+    )
+  })
 }
 
 ///|

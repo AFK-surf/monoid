@@ -54,197 +54,43 @@ fn unescape(s : String) -> String {
 }
 
 ///|
-fn jstr(s : String) -> Json {
-  Json::string(s)
+pub using @jsjson {js_round, jval_stringify_num as js_number}
+
+///|
+using @jsjson {
+  json_str as jstr, json_num as jnum, json_int as jint, json_bool as jbool, json_obj as obj,
+  json_field as field, json_num_of as num, jval_quote as js_quoted, is_safe_integer as safe_integer,
+  js_split as split, js_starts as starts, js_ends as ends, js_all_digits as all_digits,
 }
 
 ///|
-fn jnum(d : Double) -> Json {
-  Json::number(d)
-}
+using @jscase {trim}
 
 ///|
-fn jint(n : Int) -> Json {
-  Json::number(n.to_double())
-}
+fn field_or_null(v : Json, key : String) -> Json { field(v, key).unwrap_or(Json::null()) }
 
 ///|
-fn jbool(b : Bool) -> Json {
-  if b {
-    Json::boolean(true)
-  } else {
-    Json::boolean(false)
-  }
-}
-
-///|
-/// An object of these pairs, in their order (later keys replacing earlier as a spread does).
-fn obj(pairs : Array[(String, Json)]) -> Json {
-  let m : Map[String, Json] = Map([])
-  for p in pairs {
-    m[p.0] = p.1
-  }
-  Json::object(m)
-}
-
-///|
-/// `v[key]` where `v` is an object (not an array) that has it.
-fn field(v : Json, key : String) -> Json? {
-  match v {
-    Object(m) => m.get(key)
-    _ => None
-  }
-}
-
-///|
-/// `v[key]`, null where there is none.
-fn field_or_null(v : Json, key : String) -> Json {
-  field(v, key).unwrap_or(Json::null())
-}
-
-///|
-/// `v[key]` where it is a string, else "".
-fn text(v : Json, key : String) -> String {
-  match field(v, key) {
-    Some(String(s)) => s
-    _ => ""
-  }
-}
-
-///|
-/// A finite number (load.ts `num`).
-fn num(v : Json?) -> Double? {
-  match v {
-    Some(Number(d, ..)) => Some(d)
-    _ => None
-  }
-}
-
-///|
-/// A JavaScript number as `String(n)` writes it.
-pub fn js_number(d : Double) -> String {
-  if d == 0.0 {
-    return "0"
-  }
-  @jsjson.stringify(@jsjson.JValue::Num(d))
-}
-
-///|
-/// `JSON.stringify(s)` of a string.
-fn js_quoted(s : String) -> String {
-  @jsjson.stringify(@jsjson.JValue::Str(@jsjson.units(s)))
-}
-
-///|
-/// `Math.round`.
-pub fn js_round(x : Double) -> Double {
-  let f = (x + 0.5).floor()
-  // (Math.round(-0.4) is -0, which says "0" all the same)
-  f
-}
-
-///|
-/// `Number.isSafeInteger`.
-fn safe_integer(d : Double) -> Bool {
-  d == d.floor() && d.abs() <= 9007199254740991.0
-}
+fn text(v : Json, key : String) -> String { @jsjson.json_str_field(v, key).unwrap_or("") }
 
 ///|
 fn slice(s : String, from : Int, to : Int) -> String {
-  let n = s.length()
-  let a = if from < 0 { 0 } else if from > n { n } else { from }
-  let b = if to < a { a } else if to > n { n } else { to }
-  s.view(start_offset=a, end_offset=b).to_owned()
+  @jsjson.js_slice(s, if from < 0 { 0 } else { from }, end=if to < 0 { 0 } else { to })
 }
 
 ///|
-fn from(s : String, i : Int) -> String {
-  slice(s, i, s.length())
-}
+fn from(s : String, i : Int) -> String { @jsjson.js_slice(s, if i < 0 { 0 } else { i }) }
 
 ///|
-/// `s.indexOf(sep, at)`.
-fn index_of(s : String, sep : String, at? : Int = 0) -> Int {
-  let n = s.length()
-  let m = sep.length()
-  let mut i = if at < 0 { 0 } else { at }
-  while i + m <= n {
-    let mut j = 0
-    while j < m && s.unsafe_charcode_at(i + j) == sep.unsafe_charcode_at(j) {
-      j += 1
-    }
-    if j == m {
-      return i
-    }
-    i += 1
-  }
-  -1
-}
+fn index_of(s : String, sep : String, at? : Int = 0) -> Int { @jsjson.js_index_of(s, sep, from=at) }
 
 ///|
-/// `s.split(sep)` of a non-empty separator.
-fn split(s : String, sep : String) -> Array[String] {
-  let out = []
-  let mut start = 0
-  while true {
-    let i = index_of(s, sep, at=start)
-    if i < 0 {
-      out.push(from(s, start))
-      break
-    }
-    out.push(slice(s, start, i))
-    start = i + sep.length()
-  }
-  out
-}
+fn join(parts : Array[String], sep : String) -> String { parts.join(sep) }
 
 ///|
-fn join(parts : Array[String], sep : String) -> String {
-  let out = StringBuilder::new()
-  for i, p in parts {
-    if i > 0 {
-      out.write_string(sep)
-    }
-    out.write_string(p)
-  }
-  out.to_string()
-}
+fn is_digit(c : Int) -> Bool { c >= '0' && c <= '9' }
 
 ///|
-fn starts(s : String, p : String) -> Bool {
-  s.length() >= p.length() && slice(s, 0, p.length()) == p
-}
-
-///|
-fn ends(s : String, p : String) -> Bool {
-  s.length() >= p.length() && from(s, s.length() - p.length()) == p
-}
-
-///|
-fn is_digit(c : Int) -> Bool {
-  c >= '0' && c <= '9'
-}
-
-///|
-fn all_digits(s : String) -> Bool {
-  if s.length() == 0 {
-    return false
-  }
-  for i in 0..<s.length() {
-    if !is_digit(s.unsafe_charcode_at(i)) {
-      return false
-    }
-  }
-  true
-}
-
-///|
-/// `Number(s)` of digits (and one `.`), as a double.
-fn digits_number(s : String) -> Double {
-  @string.parse_double(s) catch {
-    _ => 0.0
-  }
-}
+fn digits_number(s : String) -> Double { @string.parse_double(s) catch { _ => 0.0 } }
 
 ///|
 /// `/^\d+(\.\d+)?$/`.
@@ -263,11 +109,6 @@ fn lower_ascii(s : String) -> String {
     out.write_char(Int::unsafe_to_char(if c >= 'A' && c <= 'Z' { c + 32 } else { c }))
   }
   out.to_string()
-}
-
-///|
-fn trim(s : String) -> String {
-  @jscase.trim(s)
 }
 
 ///|

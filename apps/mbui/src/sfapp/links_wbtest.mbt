@@ -344,7 +344,7 @@ test "an invitation's link: what it leads to, then joined as the account (Invite
   assert_eq(app.picked.get(), "ws3")
   // (said at once, read out: seen as it has come in, toast_said)
   assert_true(toast_said(t, "已加入「新的工作室」"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("已加入「新的工作室」") is Some(_))
 }
 

@@ -176,6 +176,26 @@ impl @hostapi.Host for Native with mods_held(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with pointer_lock(_, on) {
+  pointer_lock(on)
+}
+
+///|
+impl @hostapi.Host for Native with pointer_locked(_) {
+  pointer_locked()
+}
+
+///|
+impl @hostapi.Host for Native with pointer_delta(_, out) {
+  pointer_delta(out)
+}
+
+///|
+impl @hostapi.Host for Native with gamepads(_, out) {
+  gamepads(out)
+}
+
+///|
 impl @hostapi.Host for Native with run(_, title, frame, pointer, wheel, key, text) {
   run(title, frame, pointer, wheel, key, text)
 }
@@ -493,6 +513,11 @@ impl @hostapi.Host for Native with cpu_ms(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with thread_cpu_ms(_) {
+  thread_cpu_ms()
+}
+
+///|
 impl @hostapi.Host for Native with perf_state(_) {
   perf_state()
 }
@@ -520,6 +545,11 @@ impl @hostapi.Host for Native with perf_size(_) {
 ///|
 impl @hostapi.Host for Native with perf_open(_, go) {
   perf_open(go)
+}
+
+///|
+impl @hostapi.Host for Native with reveal_file(_, path, go) {
+  reveal_file(path, go)
 }
 
 ///|
@@ -1063,6 +1093,11 @@ impl @hostapi.Host for Native with rn_dirty(_, x, y, w, h) {
 }
 
 ///|
+impl @hostapi.Host for Native with rn_glass_light_angle(_, rad) {
+  rn_glass_light_angle(rad)
+}
+
+///|
 impl @hostapi.Host for Native with nv_bar(_, spec) {
   nv_bar(spec)
 }
@@ -1334,3 +1369,23 @@ impl @hostapi.Host for Native with st_audio_wanted(_, id) { st_audio_wanted(id) 
 
 ///|
 impl @hostapi.Host for Native with st_audio_volume(_, id, v) { st_audio_volume(id, v) }
+
+///|
+impl @hostapi.Host for Native with auto_launch(_) {
+  auto_launch()
+}
+
+///|
+impl @hostapi.Host for Native with set_auto_launch(_, enabled) {
+  set_auto_launch(enabled)
+}
+
+///|
+impl @hostapi.Host for Native with hotkey_set(_, id, accel) {
+  hotkey_set(id, accel)
+}
+
+///|
+impl @hostapi.Host for Native with hotkey_clear(_, id) {
+  hotkey_clear(id)
+}

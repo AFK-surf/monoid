@@ -595,3 +595,45 @@ test "a layer of the tree's opened from an old view's button with the focus, clo
     assert_eq((opened, closed, layer_focused(t)), (Some("取消"), want, want), msg="put away: \{put_away}")
   }
 }
+
+///|
+test "a focus_opens modal layer opened in a frame, a tree field mounted under it in that same frame asks for focus: focus stays on the layer's button while open, and returns with ime to the tree field when closed" {
+  let open = @signals.signal(false)
+  let field_shown = @signals.signal(false)
+  let f = Field::new()
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.show(fn() { field_shown.get() }, fn(h) {
+      h.grow(Is(1.0)) |> ignore
+      field(h, f, placeholder="树字段", label="树字段") |> ignore
+      f.focus()
+    })
+    root.show(fn() { open.get() }, fn(l) {
+      l.over(Is(true)).stacked(Is(2)).modal(By(fn() { !l.leaving() })) |> ignore
+      let no = l.box(fn(x) {
+        x
+        .width(Is(Some(80.0)))
+        .height(Is(Some(40.0)))
+        .presses(Is(true))
+        .focusable(Is(true))
+        .says(Is(Some(@view.said(Button, label="取消"))))
+        .on_press(fn() {  })
+        |> ignore
+      })
+      l.focus_opens(no) |> ignore
+    })
+  })
+  t.draw()
+  // (open the modal layer, then while it is still fresh before the frame ends, mount the tree field under it asking for focus)
+  open.set(true)
+  field_shown.set(true)
+  t.draw()
+  let while_open = (layer_focused(t), f.focused(), t.ime().0)
+  open.set(false)
+  t.draw()
+  assert_eq(
+    (while_open, layer_focused(t), f.focused(), t.ime().0),
+    ((Some("取消"), false, false), Some("树字段"), true, true),
+  )
+}

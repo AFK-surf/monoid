@@ -17,8 +17,7 @@ test "chat_page_nodes smoothness: decision card pick enters once and never repla
   for screen in [dk_screens[0]] {
     let (name, w, h, platform) = screen
     new_run()
-    @sfbase.chat_page_nodes.set(true)
-    let src = fixture_app("chat", chat_nodes=true)
+    let src = fixture_app("chat")
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=true)
     t.set_rows_on_pixels(true)
     t.set_frame_period(1000.0 / 60.0)
@@ -31,12 +30,13 @@ test "chat_page_nodes smoothness: decision card pick enters once and never repla
       #|tap =一起换
       #|wait 2600
       #|exit
+    let min_y = if w >= @sf.page_narrow_most { @sf.wide_bar_h + 8.0 } else { 120.0 }
     t.drive(script, each=fn(t) {
       for wd in t.words() {
         let (txt, x, y, ww, _, a) = wd
-        // (y >= 120: on 390x844, the list scrolls down as the new reply arrives at the foot, carrying this earlier row up
+        // (y >= min_y: on 390x844, the list scrolls down as the new reply arrives at the foot, carrying this earlier row up
         // into the top bar's scroll-edge fade band)
-        if txt.contains("选择了「一起换」") && a > 0.02 && y >= 120.0 {
+        if txt.contains("选择了「一起换」") && a > 0.02 && y >= min_y {
           seen.push((t.time() - start, x, ww, a))
           break
         }
@@ -70,9 +70,8 @@ test "chat_page_nodes smoothness: NewChat -> Chat glides the composer down on �
   for screen in dk_screens {
     let (name, w, h, platform) = screen
     new_run()
-    @sfbase.chat_page_nodes.set(true)
     let fixture = if w >= @sf.page_narrow_most { "chat" } else { "newchat" }
-    let src = fixture_app(fixture, chat_nodes=true)
+    let src = fixture_app(fixture)
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=true)
     t.set_rows_on_pixels(true)
     t.run_for(@ui.move_most_ms * 2.0)

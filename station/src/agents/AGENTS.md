@@ -3,7 +3,7 @@
 ## Runtime drivers and MoonBit output parsing
 
 - All runtimes sit behind one driver seam (`station/src/agents/runtime.ts`), and each driver owns its child's stdin:
-  - Claude Code runs one `claude -p` process per session, or a PTY with lifecycle hooks in `station/src/agents/claude-tui.mjs` when TUI mode is selected (chat sessions only, while Node-less releases use `station/mb/src/station_main/claude_tui.mbt`).
+  - Claude Code runs one `claude -p` process per session, or a PTY with lifecycle hooks in `station/assets/agents/claude-tui.mjs` when TUI mode is selected (chat sessions only, while Node-less releases use `station/mb/src/station_main/claude_tui.mbt`).
   - Codex runs one app-server per account with one thread per session. Pass per-session settings in `thread/start` config, never process env. Shut down idle app-servers after `WARM_MS` and reopen threads on the next turn.
   - Other runtimes live in `station/src/agents/`.
 - One shared MoonBit program parses every runtime's output off the main thread on every platform (including Windows runner named pipes), with no TypeScript fallback:
@@ -15,14 +15,14 @@
 ## MCP tools and instructions
 
 - Agent tools run on the local MCP endpoint (`station/src/tools/`, HTTP on `127.0.0.1`, per-session bearer token).
-- Agent guidance lives in `station/src/agents/instructions.ts` and `station/src/skills/`. When changing instructions, tool parameters, or tool rules, append one sentence with the next number to `station/src/agents/migrations.ts` so older sessions see it once.
+- Agent guidance lives in `station/src/agents/instructions.ts` and `station/assets/skills/`. When changing instructions, tool parameters, or tool rules, append one sentence with the next number to `station/src/agents/migrations.ts` so older sessions see it once.
 - Tool listings are per runtime (`station/src/sessions/agents.ts` `LISTINGS`). Claude Code defers MCP tools, so mark only `chat_post` and `chat_state` as loaded.
-- Keep tool declarations compact: runtimes that load all tools pay every session, and Codex drops parameter descriptions for schemas over 5,000 bytes. State what the tool does and when, and link to its skill in `station/src/skills/` for details. `station/test/tools-weight.test.ts` enforces ceilings. Explain any ceiling raise in the change.
+- Keep tool declarations compact: runtimes that load all tools pay every session, and Codex drops parameter descriptions for schemas over 5,000 bytes. State what the tool does and when, and link to its skill in `station/assets/skills/` for details. `station/test/tools-weight.test.ts` enforces ceilings. Explain any ceiling raise in the change.
 
 ## Subagents never speak in a chat
 
 - Tools that speak (`station/src/tools/mcp.ts` `SPEAKS`, plus writing `slack_api` methods) belong to the main session agent only.
-- Because the MCP endpoint sees one bearer token per session, each runtime driver blocks subagents from speaking tools. Claude Code enforces this via `station/src/agents/subagent-hook.mjs` (gaps documented at `SILENT_SUBAGENTS` in `station/src/agents/claude.ts`). Other runtimes do not enforce it yet.
+- Because the MCP endpoint sees one bearer token per session, each runtime driver blocks subagents from speaking tools. Claude Code enforces this via `station/assets/agents/subagent-hook.mjs` (gaps documented at `SILENT_SUBAGENTS` in `station/src/agents/claude.ts`). Other runtimes do not enforce it yet.
 - Classify every new tool in `station/test/speaks.test.ts`. Tools that only show a card or report to the still.fail team remain open to subagents until the owner decides otherwise.
 
 ## Bug-report replies never auto-reach agents
@@ -31,5 +31,6 @@
 
 ## Sandboxes
 
-- Heavy work runs in sandboxes targeted by `station_task` (`station/src/agents/sandbox.ts`). Configure l4es front doors in `config.json` under `sandboxes`. `station_list` lists them beside stations, and the station runs each task as a local job through `station/src/agents/sandbox-bridge.mjs`.
+- Heavy work runs in sandboxes targeted by `station_task` (`station/src/agents/sandbox.ts`). Configure l4es front doors in `config.json` under `sandboxes`. `station_list` lists them beside stations, and the station runs each task as a local job through `station/assets/agents/sandbox-bridge.mjs`.
 - Install nothing in a sandbox and run no agent or station inside one. Sandboxes are not devices, and no tool or UI adds them. Legacy per-session `sandbox` mode is removed.
+- A sandbox of kind `colab` is a Google Colab VM with a GPU backed by native `service: "colab"` profiles in `Accounts` (`homes/<id>/colab-auth.json`, synced into bounded-ephemeral `<data>/colab/cli-homes/<id>/` via `PlaintextKeyring`), taken and handed back by `station/assets/agents/colab-sandbox.mjs`. When a station has usable Colab profiles for a workspace and no explicit `kind: "colab"` config, it exposes `colab-g4`/`colab-l4`/`colab-t4` automatically and advertises them in `describe` so other stations in the same workspace can dispatch via `sandbox:<hostId>:<name>` while credentials and per-account 3-VM locks stay on the host. Colab never stops a running VM and bills hourly, so the station stops idle ones (`reapColab`); its image has no Node, so Node is installed on the ephemeral VM before the bridge runs.

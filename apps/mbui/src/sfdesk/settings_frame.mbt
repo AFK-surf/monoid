@@ -5,27 +5,6 @@
 // package's, once.
 
 ///|
-/// The settings page `route` in the pane.
-fn setting_page(c : @ui.Ctx, src : Source, w : Workspace, route : Route) -> Unit {
-  let core = settings_core(src, w)
-  let here = @settings.here_of(core, w.id, w.name)
-  // a page under another of them shows back (the sidebar is the way to the others)
-  let under = app.nav.under()
-  let deep = under is Some(Setting(_))
-  settings_deep.val = deep
-  // (the settings' pages not ported yet read it too)
-  @settings.wide_deep.val = deep
-  @settings.frame(core, here)
-  settings_fixture(src, core)
-  @settings.page(c, core, here, route)
-}
-
-///|
-/// Whether the settings page drawn is under another of them (its head's back shown).
-// kept across runs: said again by every settings page as it is drawn (setting_page)
-let settings_deep : Ref[Bool] = Ref(false)
-
-///|
 /// A dialog a fixture's mode puts up over its page (MBUI_FIXTURE=settings-policy-text, settings-security-join, …:
 /// @settings.fixture_desk), once the page is drawn with what it needs; before it is made where a frame makes it once
 /// (pane_made, tape_made, the narrow frame's).
@@ -52,6 +31,26 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
     "new-connect" => @sfpages.new_connect_dialog(src, core, @settings.here_of(core, "ws1", "星火工作室"), "ws1/st1")
     "vault-add" => @sfpages.fx_vault_add_up.val = true
     "vault-editor" => @sfpages.vault_editor_dialog(core, "ws1", "v1", None, kind="token")
+    "vault-workspace-members" => {
+      let here = @settings.here_of(core, "ws1", "星火工作室")
+      let row = items((core.topic)("vaults", { "workspace": str("ws1") }).get().value, "vaults").iter().find_first(fn(r) {
+        text(Some(r), "scope") == "workspace"
+      })
+      @sfpages.vault_members_dialog(core, here, row)
+    }
+    "vault-devices-dialog" => {
+      let here = @settings.here_of(core, "ws1", "星火工作室")
+      @sfpages.vault_devices_dialog(core, here, "v-ws")
+    }
+    "vault-workspace-editor" =>
+      @sfpages.vault_editor_dialog(
+        core,
+        "ws1",
+        "v1",
+        None,
+        kind="token",
+        targets=[("v1", "林的库"), ("v-ws", @sf.t("web-pages.vault.workspaceVault"))],
+      )
     "vault-recover" => @sfpages.vault_recover_dialog(core, "ws1")
     "copies-confirm" =>
       match items(@settings.fixture_copies(), "offers") {
@@ -76,7 +75,7 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
 ///|
 /// What the settings pages here keep put back as the app begins anew.
 fn settings_reset() -> Unit {
-  settings_deep.val = false
+  ()
 }
 
 ///|
@@ -104,7 +103,11 @@ fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
     }
   }
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
-  s.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  s
+  .grow(Is(1.0))
+  .min_height(Is(Some(0.0)))
+  .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   |> ignore
   let in_settings = fn() { app.nav.pages().iter().any(fn(p) { p is (Settings | Setting(_)) }) }
   s.reacts(in_settings, fn(on) { if !on { @sfpages.settings_search_reset() } })

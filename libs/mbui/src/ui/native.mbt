@@ -595,7 +595,7 @@ pub fn NativeView::grabbed(self : NativeView) -> Bytes? {
 
 ///|
 /// When the grab going was asked for, by the app's clock (-1: none going): what decides how long to wait for its answer
-/// reads it (@kit.media_grab_stalled).
+/// reads it (a player's nodes, by @player.media_grab_wait_ms).
 pub fn NativeView::grab_since(self : NativeView) -> Double {
   self.grab_since
 }
@@ -631,8 +631,10 @@ pub fn NativeView::seek(self : NativeView, ms : Double) -> Unit {
 
 ///|
 /// To about `ms` in, at once: the nearest point the player can show without working through the frames before it (a
-/// key frame: Android's CLOSEST_SYNC, Apple's seek with any tolerance), for a jump (±15 s, a tap on the timeline) where
-/// the very frame does not matter and waiting for it would; `seek` goes to the very frame.
+/// key frame within a second of `ms`: Android's SeekParameters, Apple's seek tolerance; none that near, the very frame,
+/// so a film with key frames far apart is not shown at one of them all along a finger's way), for a jump (±15 s, a tap
+/// on the timeline, a finger along it) where the very frame does not matter and waiting for it would; `seek` goes to
+/// the very frame.
 pub fn NativeView::seek_near(self : NativeView, ms : Double) -> Unit {
   if self.id != 0 && !self.closed {
     h_view_control(self.id, 11, ms)
@@ -1006,11 +1008,14 @@ fn sites_arrive() -> Unit {
   if open_views.length() == 0 {
     return
   }
+  // (all a frame takes told as one: a page's dozens of heights set once, not laid out a time each)
+  @signals.start_batch()
   for v in open_views.copy() {
     if !v.closed && (v.serve is Some(_) || v.said is Some(_)) {
       v.take_site()
     }
   }
+  @signals.end_batch()
 }
 
 ///|
@@ -1349,6 +1354,8 @@ fn rects_less(
 fn NativeView::take_site(self : NativeView) -> Unit {
   let v = self
   let mut heard = false
+  // (what it heard told as one, as stood tells it: sync_views' take_site too)
+  @signals.start_batch()
   for _ in 0..<64 {
     let said = h_view_site_next(v.id)
     if said == "" {
@@ -1507,6 +1514,7 @@ fn NativeView::take_site(self : NativeView) -> Unit {
       _ => ()
     }
   }
+  @signals.end_batch()
 }
 
 // ── PDFs ───────────────────────────────────────────────────────────────

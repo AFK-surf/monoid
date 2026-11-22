@@ -91,6 +91,31 @@ test "in security mode: its person's own waits for its code; compared, it is tak
 }
 
 ///|
+test "核对安全码 at each width and with either hand: where the code is read on that machine, its command to copy, the field, 确认 once a code is typed (FB-45)" {
+  for case in page_cases {
+    let (w, platform) = case
+    let at = "\{w} platform \{platform}"
+    let t = setting_tester(Station("ws1/aa11"), w, platform~, mode="settings-station-tasks-locked")
+    tap_words(t, "核对安全码")
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting(), msg=at)
+    assert_true(t.find("stillfail lock status") is Some(_), msg=at)
+    assert_true(t.find("XXX-XXX") is Some(_), msg=at)
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+    // (nothing typed: 确认 does nothing)
+    t.click(Button, label="确认")
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting(), msg=at)
+    t.type_text("k7q-2mx")
+    t.click(Button, label="确认")
+    t.run_for(@ui.move_most_ms)
+    assert_true(!@sf.presenting(), msg=at)
+    assert_true(t.find("我的 · 在线") is Some(_), msg=at)
+  }
+}
+
+///|
 test "its person takes it out of the workspace, asked first" {
   let t = setting_tester(Station("ws1/aa11"), 390.0, platform=2, mode="settings-station-tasks")
   scrolled_to(t, 390.0, "移出 workspace")

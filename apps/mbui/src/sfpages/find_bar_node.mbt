@@ -150,6 +150,7 @@ pub fn find_bar_node(
       },
       said_look=fn() { find_meta },
       tips~,
+      field_in=@ui.Space::px(S3) - @ui.capsule_in(find_field_h / 2.0, find_button_w),
     )
     |> ignore
   })

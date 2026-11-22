@@ -96,7 +96,7 @@ pub fn toaster_node(layer : Layer, toaster : Toaster) -> Unit {
           fn(t) { t.id.to_string() },
           fn(t) { (t.title, t.description) },
           fn(t) { toaster.stays.get(t.id).unwrap_or(toast_stays) },
-          fn(region) { region.lines_up(Is(Some(End))).gap(Is(space_lg)) |> ignore },
+          fn(region) { region.width_share(Is(1.0)).lines_up(Is(Some(End))).gap(Is(space_lg)) |> ignore },
           fn(card, s) { toast_card(card, s) },
           fn(_) {  },
           fn(id) {
@@ -120,9 +120,12 @@ pub fn toaster_node(layer : Layer, toaster : Toaster) -> Unit {
 #callsite(autofill(loc))
 fn toast_card(card : @view.View, s : @headless.ToastItem[ToastSaid], loc~ : SourceLoc) -> Unit {
   let said = fn() { s.toast() }
+  s.row().max_width(Is(None), within=true) |> ignore
+  card.max_width(Is(None), within=true) |> ignore
   card.box(made_for=loc, fn(card) {
     card
     .width(Is(Some(356.0)))
+    .max_width(Is(Some(356.0)), within=true)
     .gap(Is(space_xxs))
     .padding(Is((space_xl, space_lg, space_xl, space_lg)))
     .radius(Is(radius_2xl))
@@ -131,7 +134,7 @@ fn toast_card(card : @view.View, s : @headless.ToastItem[ToastSaid], loc~ : Sour
     .shadow(By(fn() { cast(shadow_lg, shadow_dark_lg) }))
     |> ignore
     card.box(fn(r) {
-      r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(space_md)) |> ignore
+      r.row(Is(true)).lines_up(Is(Some(Start))).gap(Is(space_md)) |> ignore
       // (its intent's glyph, 20 across: Central's filled circle-info, -check, exclamation-circle and -x)
       icon_node(
         r,
@@ -156,6 +159,8 @@ fn toast_card(card : @view.View, s : @headless.ToastItem[ToastSaid], loc~ : Sour
       r.box(fn(w) {
         w
         .grow(Is(1.0))
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
         .words(By(fn() { said().title }), look=words_in(type_small, weight=weight_medium, wrap=true))
         .ink(By(fn() { colors().toast_text_primary }))
         |> ignore

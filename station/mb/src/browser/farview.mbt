@@ -61,7 +61,7 @@ pub fn farview_config(
   }
   let sessions = match at(b, "sessions") {
     Some(Arr(xs)) => xs.filter_map(s => match s {
-      Str(u) if u.length() > 0 => Some(@jsjson.text(u))
+      Str(u) if u.length() > 0 => Some(@jsjson.sanitize_str(u))
       _ => None
     })
     _ => []
@@ -76,7 +76,7 @@ pub fn farview_config(
     release: None,
   }
   match at(b, "farview") {
-    Some(Str(u)) if u.length() > 0 => return Some(at_dir(@jsjson.text(u)))
+    Some(Str(u)) if u.length() > 0 => return Some(at_dir(@jsjson.sanitize_str(u)))
     _ => ()
   }
   match releases.search_by(r => r.0 == target) {

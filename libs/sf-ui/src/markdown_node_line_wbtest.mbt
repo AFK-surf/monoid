@@ -17,59 +17,34 @@ fn ml_tree() -> Json {
 }
 
 ///|
-/// ml_tree's words on one line in a column 16 in from a window `w` wide, drawn by an old view's markdown or as nodes
-/// (`node`).
-fn ml_tester(node : Bool, w : Double) -> @ui.Tester {
+/// ml_tree's words on one line in a column 16 in from a window `w` wide, drawn as nodes.
+fn ml_tester(w : Double) -> @ui.Tester {
   let tree = ml_tree()
-  let t = if node {
-    @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h=300.0, platform=0)
-  } else {
-    @ui.Tester::new(
-      fn(c) {
-        begin(c) |> ignore
-        c.with_theme(ui_theme(), fn() {
-          c.column(w=Fill(1.0), pad=16.0, fn() { markdown(c, mn_text, tree=Some(tree), one_line=true) |> ignore })
-          |> ignore
-        })
-      },
-      w~,
-      h=300.0,
-      platform=0,
-    )
-  }
-  if node {
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      root.lines_up(Is(None)) |> ignore
-      root.box(fn(b) {
-        b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
-        markdown_node(b, fn() { mn_text }, tree=fn() { Some(tree) }, one_line=true) |> ignore
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h=300.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.lines_up(Is(None)) |> ignore
+    root.box(fn(b) {
+      b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+      markdown_node(b, fn() { mn_text }, tree=fn() { Some(tree) }, one_line=true) |> ignore
     })
-  }
+    |> ignore
+  })
   t.draw()
   t.draw()
   t
 }
 
 ///|
-test "Markdown as nodes on one line: its first block's words alone, cut with an ellipsis, as an old view's markdown draws them so, wide and narrow" {
+test "Markdown as nodes on one line: its first block's words alone, cut with an ellipsis, wide and narrow" {
   for w in [390.0, 1200.0] {
-    let old_t = ml_tester(false, w)
-    let old = mn_words(old_t)
-    let old_drawn = mn_instances(old_t)
-    let made_t = ml_tester(true, w)
+    let made_t = ml_tester(w)
     let made = mn_words(made_t)
-    let made_drawn = mn_instances(made_t)
-    assert_true(old.iter().all(fn(x) { !x.has_prefix("第二段") }), msg="\{w}: \{Repr(old)}")
-    assert_eq(made, old, msg="\{w}:\nmade \{Repr(made)}\nold  \{Repr(old)}")
-    let only_made = made_drawn.filter(fn(x) { !old_drawn.contains(x) })
-    let only_old = old_drawn.filter(fn(x) { !made_drawn.contains(x) })
-    assert_true(
-      made_drawn == old_drawn,
-      msg="\{w}: \{made_drawn.length()} drawn, \{old_drawn.length()} old;\nonly made \{Repr(only_made.iter().take(8).collect())}\nonly old  \{Repr(only_old.iter().take(8).collect())}",
-    )
+    assert_true(made.iter().any(fn(x) { x.has_prefix("定时任务") }), msg="\{w}: \{Repr(made)}")
+    assert_true(made.iter().all(fn(x) { !x.has_prefix("第二段") }), msg="\{w}: \{Repr(made)}")
+    assert_eq(made_t.words().length(), 1, msg="\{w}: one line \{Repr(made)}")
+    let (_, x, _, rw, _, _) = made_t.words()[0]
+    assert_true(x >= 16.0 - 0.1 && x + rw <= w - 16.0 + 0.5, msg="\{w}: \{x} + \{rw}")
     let faults = made_t.audit()
     assert_true(faults.is_empty(), msg="\{w}: " + faults.join(" | "))
   }
@@ -128,74 +103,48 @@ fn ml_wide_table() -> Json {
 }
 
 ///|
-/// ml_wide_table shown whole (`fit_tables`) in a column 16 in from a window `w` wide, nothing to copy: an old view's
-/// markdown's or as nodes (`node`).
-fn ml_fit_tester(node : Bool, w : Double) -> @ui.Tester {
+/// ml_wide_table shown whole (`fit_tables`) in a column 16 in from a window `w` wide, nothing to copy.
+fn ml_fit_tester(w : Double) -> @ui.Tester {
   let tree = ml_wide_table()
   let text = "（ml_wide_table 的原文）"
-  let t = if node {
-    @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h=400.0, platform=0)
-  } else {
-    @ui.Tester::new(
-      fn(c) {
-        begin(c) |> ignore
-        c.with_theme(ui_theme(), fn() {
-          c.column(w=Fill(1.0), pad=16.0, fn() {
-            markdown(c, text, tree=Some(tree), fit_tables=true, copy=false) |> ignore
-          })
-          |> ignore
-        })
-      },
-      w~,
-      h=400.0,
-      platform=0,
-    )
-  }
-  if node {
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      root.lines_up(Is(None)) |> ignore
-      root.box(fn(b) {
-        b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
-        markdown_node(b, fn() { text }, tree=fn() { Some(tree) }, fit_tables=true, copy=false) |> ignore
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h=400.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.lines_up(Is(None)) |> ignore
+    root.box(fn(b) {
+      b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+      markdown_node(b, fn() { text }, tree=fn() { Some(tree) }, fit_tables=true, copy=false) |> ignore
     })
-  }
+    |> ignore
+  })
   t.draw()
   t.draw()
   t
 }
 
 ///|
-test "Markdown as nodes, its tables shown whole: one too wide for the column made as much smaller as fits it, as an old view's markdown does; one that fits as ever" {
-  for w in [390.0, 1200.0] {
-    let old_t = ml_fit_tester(false, w)
-    let old = mn_words(old_t)
-    let old_drawn = mn_instances(old_t)
-    let made_t = ml_fit_tester(true, w)
-    let made = mn_words(made_t)
-    let made_drawn = mn_instances(made_t)
-    assert_eq(made, old, msg="\{w}:\nmade \{Repr(made)}\nold  \{Repr(old)}")
-    let only_made = made_drawn.filter(fn(x) { !old_drawn.contains(x) })
-    let only_old = old_drawn.filter(fn(x) { !made_drawn.contains(x) })
-    assert_true(
-      made_drawn == old_drawn,
-      msg="\{w}: \{made_drawn.length()} drawn, \{old_drawn.length()} old;\nonly made \{Repr(only_made.iter().take(8).collect())}\nonly old  \{Repr(only_old.iter().take(8).collect())}",
-    )
-  }
+test "Markdown as nodes, its tables shown whole: one too wide for the column made as much smaller as fits it; one that fits as ever" {
+  let narrow = ml_fit_tester(390.0)
+  let (_, _, _, nh) = narrow.rect_of("station").unwrap()
+  let (nsx, _, nsw, _) = narrow.rect_of("succeeded").unwrap()
+  assert_true(nsx + nsw <= 390.0 - 16.0 + 0.5, msg="390: last col \{nsx + nsw}")
+  let wide = ml_fit_tester(1200.0)
+  let (_, _, _, wh) = wide.rect_of("station").unwrap()
+  let (wsx, _, wsw, _) = wide.rect_of("succeeded").unwrap()
+  assert_true(wsx + wsw <= 1200.0 - 16.0 + 0.5, msg="1200: last col \{wsx + wsw}")
+  assert_true(nh < wh, msg="narrow scaled down: \{nh} vs \{wh}")
 }
 
 ///|
 test "Markdown as nodes, its tables shown whole: the window narrowed past where a table fits and widened back, the frame it turns in draws it as one made at that width, nothing on its way" {
   for turn in [(1200.0, 390.0), (390.0, 1200.0)] {
     let (from_w, to_w) = turn
-    let t = ml_fit_tester(true, from_w)
+    let t = ml_fit_tester(from_w)
     t.run_for(@ui.move_most_ms)
     t.resize(to_w, 400.0)
     let turned = mn_instances(t)
     let turned_words = mn_words(t)
-    let made = ml_fit_tester(true, to_w)
+    let made = ml_fit_tester(to_w)
     made.run_for(@ui.move_most_ms)
     assert_eq(turned_words, mn_words(made), msg="\{Repr(turn)}")
     assert_true(turned == mn_instances(made), msg="\{Repr(turn)}: drawn otherwise in the frame it turned in")

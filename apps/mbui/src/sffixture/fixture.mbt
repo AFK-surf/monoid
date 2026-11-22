@@ -56,6 +56,8 @@ pub(all) struct Fixture {
   /// the look the card to share is drawn in (the prefs' `shareLook`; "" none kept): share-card-<key> (but -dark) opens
   /// it in that look
   mut share_look : String
+  /// how a machine's CPU dial says it on this device (the prefs' `cpuDial`; "" none kept: idle)
+  mut cpu_dial : String
   /// each chats' list's window as it was told (`chats.window`, by fixture_window_key), as the core's views.ts keeps it:
   /// only grows; long-paged's lists give that many of their rows, 50 where untold
   windows : Map[String, Int]
@@ -75,6 +77,7 @@ pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
     "chat-letters-side" => { "ws1/st1:s-c1": kept("letters") }
     "chat-things-side" => { "ws1/st1:s-c1": kept("things") }
     "chat-jobs-side" => { "ws1/st1:s-c1": kept("jobs") }
+    "chat-subchats-panel" => { "ws1/st1:s-c1": kept("subchats") }
     "chat-files-side" => { "ws1/st1:s-c1": kept("files") }
     "chat-drive-side" => { "ws1/st1:s-c1": kept("drive:[\"ws1/st1\"]") }
     "chat-station-side" => { "ws1/st1:s-c1": { "tabs": ["files", "station:[\"ws1/st1\"]"], "active": "station:[\"ws1/st1\"]" } }
@@ -82,18 +85,21 @@ pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
     "chat-history-side" | "chat-history-side-working" | "chat-model-pop" | "chat-model-accounts" => { "ws1/st1:s-c1": kept("s-c1") }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "tabs": ["s-c1", "jobs"], "active": "jobs" } }
     "chat-terminal-side" => { "ws1/st1:s-c1": { "tabs": ["terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]", "s-c1"], "active": "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]" } }
-    "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" =>
+    "chat-view-side" | "chat-view-side-md-long" | "chat-view-side-md-wide" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" =>
       { "ws1/st1:s-c1": kept(fixture_view_tab(mode)) }
     _ => {}
   }
 }
 
 ///|
-/// The file of the first row's chat open beside it in the viewer (chat-view-side: 说明.md; chat-view-side-image:
-/// 界面草图.png; chat-view-side-video: 演示录屏.mp4; chat-view-side-audio: 会议录音.m4a; chat-view-side-mbui:
-/// release.mbui; chat-view-side-memory-mbui: memory-schemes.mbui), its tab as the app keeps it (sfbase's view_tab_key).
+/// The file of the first row's chat open beside it in the viewer (chat-view-side: 说明.md; chat-view-side-md-long:
+/// 长说明.md; chat-view-side-md-wide: 宽表格说明.md; chat-view-side-image: 界面草图.png; chat-view-side-video:
+/// 演示录屏.mp4; chat-view-side-audio: 会议录音.m4a; chat-view-side-mbui: release.mbui; chat-view-side-memory-mbui:
+/// memory-schemes.mbui), its tab as the app keeps it (sfbase's view_tab_key).
 pub fn fixture_view_tab(mode : String) -> String {
   let name = match mode {
+    "chat-view-side-md-long" => "长说明.md"
+    "chat-view-side-md-wide" => "宽表格说明.md"
     "chat-view-side-image" => "界面草图.png"
     "chat-view-side-video" => "演示录屏.mp4"
     "chat-view-side-audio" => "会议录音.m4a"
@@ -117,7 +123,7 @@ pub fn fixture_tabs_shown(mode : String) -> Map[String, Json] {
     "chat-screen-tab" | "chat-browser-tab" | "chat-browser-agent-driving" => { "ws1/st1:s-c1": { "open": ["screen:[\"ws-1/st-1\",\"browser:tab-1\"]"], "shown": "screen:[\"ws-1/st-1\",\"browser:tab-1\"]" } }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "open": ["s-c1", "jobs"], "shown": "jobs" } }
     "chat-terminal-side" => { "ws1/st1:s-c1": { "open": ["terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]", "s-c1"], "shown": "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]" } }
-    "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" => {
+    "chat-view-side" | "chat-view-side-md-long" | "chat-view-side-md-wide" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" => {
       let tab = fixture_view_tab(mode)
       { "ws1/st1:s-c1": { "open": [Json::string(tab)], "shown": Json::string(tab) } }
     }
@@ -175,8 +181,8 @@ pub fn fixture_with_tabs(f : Fixture, params : Map[String, Json], value : Json?)
 }
 
 ///|
-/// `chat.tabs.open / close / front / clear` (`chat`: its key, `tab`, `auto`): what is kept for the chat changed as the
-/// core changes it (nothing, where it says nothing changes).
+/// `chat.tabs.open / close / front / clear / replace` (`chat`: its key, `tab`, `auto`; `was`, the tab replaced): what
+/// is kept for the chat changed as the core changes it (nothing, where it says nothing changes).
 pub fn fixture_tabs_call(f : Fixture, name : String, params : Json) -> Result[Json, Json] {
   let key = text(Some(params), "chat")
   let chat = match key.find(":") {
@@ -214,11 +220,16 @@ pub fn fixture_tabs_call(f : Fixture, name : String, params : Json) -> Result[Js
       "close" => {
         let idx = cur.search(tab_str)
         match idx {
-          Some(i) => cur.remove(i) |> ignore
+          Some(i) => {
+            cur.remove(i) |> ignore
+            if shown == tab_str {
+              shown = match cur.get(i) {
+                Some(s) => s
+                None => if i > 0 { cur.get(i - 1).unwrap_or("") } else { "" }
+              }
+            }
+          }
           None => ()
-        }
-        if shown == tab_str {
-          shown = cur.last().unwrap_or("")
         }
       }
       "clear" => {
@@ -234,11 +245,21 @@ pub fn fixture_tabs_call(f : Fixture, name : String, params : Json) -> Result[Js
     f.changed()
     return Ok(Json::null())
   }
-  let change : Json = {
+  let change : Map[String, Json] = {
     "action": Json::string(act),
     "tab": if tab_str != "" { Json::string(tab_str) } else { Json::null() },
     "auto": Json::boolean(!(field(Some(params), "auto") is Some(False))),
   }
+  // (a tab put in another's place: the one it replaces)
+  match field(Some(params), "was") {
+    Some(String(w)) => change["was"] = Json::string(w)
+    _ => ()
+  }
+  match field(Some(params), "to") {
+    Some(Number(n, ..)) => change["to"] = Json::number(n)
+    _ => ()
+  }
+  let change = Json::object(change)
   match fixture_kept("chat.tabs", fixture_tabs_ask(f, key, chat, Some(change)), None) {
     Some(Ok((r, _))) => {
       match (field(Some(r), "next"), field(Some(r), "tabs")) {
@@ -522,11 +543,552 @@ fn with_opened(v : Json?) -> Json? {
           "mark": "block",
           "stateLead": "need",
           "stateText": "要你帮忙：测试机的磁盘满了，要不要清理旧的缓存？",
+          "led": true,
         },
-        { "station": "ws1/st1", "session": "s-c4", "title": "给设置页加一个深色模式开关", "stateLead": "done", "stateText": "做完了：开关和三处颜色都改好了" },
-        { "station": "ws1/st1", "session": "s-c12", "title": "旧版引导页的截图", "archived": true, "note": "已归档" },
+        {
+          "station": "ws1/st1",
+          "session": "s-c4",
+          "title": "给设置页加一个深色模式开关",
+          "stateLead": "done",
+          "stateText": "做完了：开关和三处颜色都改好了",
+          "led": true,
+        },
+        { "station": "ws1/st1", "session": "s-c12", "title": "旧版引导页的截图", "archived": true, "note": "已归档", "led": true },
       ]
       m["openedText"] = "创建了 3 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
+/// Rich led sub-chats fixture (chat-subchats-pop, chat-subchats-panel): 4 led sub-chats (running, waiting, done,
+/// archived) plus 1 non-led chat opened for a person (excluded from sub-chats bar entry, popover, panel and sheet).
+fn with_subchats(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "安卓构建与冒烟测试",
+          "mark": "run",
+          "stateText": "正在运行端到端用例",
+          "led": true,
+        },
+        {
+          "station": "ws1/st2",
+          "session": "s-c3",
+          "title": "夜里的构建又失败了",
+          "mark": "block",
+          "stateLead": "need",
+          "stateText": "要你帮忙：测试机的磁盘满了，要不要清理旧的缓存？",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c4",
+          "title": "给设置页加一个深色模式开关",
+          "stateLead": "done",
+          "stateText": "做完了：开关和三处颜色都改好了",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c12",
+          "title": "旧版引导页的截图",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：归档前的残留提示",
+          "led": true,
+        },
+        { "station": "ws1/st1", "session": "s-c9", "title": "给产品评审建的独立讨论", "stateLead": "done", "stateText": "已整理好议程" },
+      ]
+      m["openedText"] = "创建了 5 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
+/// Single active led sub-chat fixture (chat-subchats-one): 1 active led sub-chat with no stateText and no archived
+/// group, reproducing the single-card hugs sheet sizing case.
+fn with_subchats_one(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "执行：模型面板搜索同行布局与分段控件交互",
+          "mark": "run",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 1 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
+/// Single active led sub-chat fixture with stateText (chat-subchats-one-note): 1 two-line active led sub-chat with no
+/// archived group, taller than the row estimate.
+fn with_subchats_one_note(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "执行：模型面板搜索同行布局与分段控件交互",
+          "mark": "run",
+          "stateText": "正在运行端到端用例",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 1 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
+/// Long led sub-chats fixture (chat-subchats-many): 2 active + 10 archived led sub-chats (several archived items carry
+/// stale pre-archive `stateText` that must stay hidden), used to verify sheet scrolling and archived state hiding.
+fn with_subchats_many(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "安卓构建与冒烟测试",
+          "mark": "run",
+          "stateText": "正在运行端到端用例",
+          "led": true,
+        },
+        {
+          "station": "ws1/st2",
+          "session": "s-c3",
+          "title": "夜里的构建又失败了",
+          "mark": "block",
+          "stateLead": "need",
+          "stateText": "要你帮忙：测试机的磁盘满了，要不要清理旧的缓存？",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c12",
+          "title": "旧版引导页的截图",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：归档前的残留提示",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c13",
+          "title": "排查消息推送延迟问题",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "出错：额度已用完",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c14",
+          "title": "整理季度发布回归清单",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：确认测试账号权限",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c15",
+          "title": "重构侧栏拖拽动画参数",
+          "archived": true,
+          "note": "已归档",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c16",
+          "title": "核对深色主题对比度边界",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "出错：额度已用完",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c17",
+          "title": "补齐英文翻译缺失词条",
+          "archived": true,
+          "note": "已归档",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c18",
+          "title": "压缩启动阶段首屏资源包",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：选择压缩等级",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c19",
+          "title": "迁移旧版工作站配置格式",
+          "archived": true,
+          "note": "已归档",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c20",
+          "title": "修复平板分屏切换偶发闪屏",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "出错：额度已用完",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c4",
+          "title": "历史日志导出脚本清理",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：清理过期归档",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 12 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
+/// Tall led sub-chats fixture (chat-subchats-tall): 1 waiting + 6 running + 14 done (mix of bare "已完成" and
+/// summary "已完成：…") + 2 archived, all `led: true`, simulating a leader chat with 23 sub-chats.
+fn with_subchats_tall(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st2",
+          "session": "s-c3",
+          "title": "夜里的构建又失败了",
+          "mark": "block",
+          "stateLead": "need",
+          "stateText": "要你帮忙：测试机的磁盘满了，要不要清理旧的缓存？",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "安卓构建与冒烟测试",
+          "mark": "run",
+          "stateText": "正在运行端到端用例",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-t1",
+          "title": "iOS 弱网断线重连回归",
+          "mark": "run",
+          "stateText": "正在对比重连前后消息序号",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-t2",
+          "title": "桌面端快捷键焦点环自查",
+          "mark": "run",
+          "stateText": "正在运行 4 档帧率测试",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-t3",
+          "title": "Core-TS 主题增量字节预算检查",
+          "mark": "run",
+          "stateText": "正在生成 real-size 报告",
+          "led": true,
+        },
+        {
+          "station": "ws1/st2",
+          "session": "s-t4",
+          "title": "Station 跨站同步冲突合并验证",
+          "mark": "run",
+          "stateText": "正在运行三方合并测试",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-t5",
+          "title": "离屏金属渲染对比视频生成",
+          "mark": "run",
+          "stateText": "正在录制 60fps 交互流",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d1",
+          "title": "给设置页加一个深色模式开关",
+          "stateLead": "done",
+          "stateText": "已完成：开关和三处颜色都改好了",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d2",
+          "title": "排查首页列表滚动掉帧",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d3",
+          "title": "补齐弹窗无障碍语义标签",
+          "stateLead": "done",
+          "stateText": "已完成：已通过全量 audit",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d4",
+          "title": "整理多端字体缩放边界用例",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d5",
+          "title": "压缩首屏静态图标资源体积",
+          "stateLead": "done",
+          "stateText": "已完成：减少 180 KB",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d6",
+          "title": "修复窄屏面包屑截断问题",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d7",
+          "title": "同步英文词条缺失翻译",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d8",
+          "title": "核对安全模式卡片按钮文案",
+          "stateLead": "done",
+          "stateText": "已完成：已对齐最新规范",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d9",
+          "title": "清理旧版日志导出临时脚本",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d10",
+          "title": "优化大附件分片续传重试",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d11",
+          "title": "验证飞书群卡片回调签名",
+          "stateLead": "done",
+          "stateText": "已完成：单测全绿",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d12",
+          "title": "检查平板横屏分栏最小宽度",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d13",
+          "title": "补充工作站迁移回滚说明",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c4",
+          "title": "收尾回归与变更日志核对",
+          "stateLead": "done",
+          "stateText": "已完成：已合入测试分支",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c12",
+          "title": "旧版引导页的截图",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：归档前的残留提示",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c13",
+          "title": "排查消息推送延迟问题",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "出错：额度已用完",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 23 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
+/// Done-only led sub-chats fixture (chat-subchats-done-only): 3 unarchived done + 2 archived, verifying that the Done
+/// group auto-expands when no active sub-chats exist while Archived stays collapsed.
+fn with_subchats_done_only(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c4",
+          "title": "给设置页加一个深色模式开关",
+          "stateLead": "done",
+          "stateText": "已完成：开关和三处颜色都改好了",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d2",
+          "title": "排查首页列表滚动掉帧",
+          "stateLead": "done",
+          "stateText": "已完成",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-d3",
+          "title": "补齐弹窗无障碍语义标签",
+          "stateLead": "done",
+          "stateText": "已完成：已通过全量 audit",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c12",
+          "title": "旧版引导页的截图",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：归档前的残留提示",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c13",
+          "title": "排查消息推送延迟问题",
+          "archived": true,
+          "note": "已归档",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 5 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
+/// 3-level led ancestor chain plus 2 led sub-chats (chat-lineage): exercises multi-level breadcrumb + sub-chats entry.
+fn with_lineage(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      let root : Json = {
+        "station": "ws1/st1",
+        "session": "s-c6",
+        "title": "根规划",
+        "text": "由「根规划」创建",
+        "led": true,
+      }
+      let mid : Json = {
+        "station": "ws1/st1",
+        "session": "s-c5",
+        "title": "接口重构",
+        "text": "由「接口重构」创建",
+        "led": true,
+      }
+      let parent : Json = {
+        "station": "ws1/st1",
+        "session": "s-c4",
+        "title": "任务拆分",
+        "text": "由「任务拆分」创建",
+        "led": true,
+      }
+      m["opener"] = parent
+      m["openers"] = [root, mid, parent]
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "安卓构建与冒烟测试",
+          "mark": "run",
+          "stateText": "正在运行端到端用例",
+          "led": true,
+        },
+        {
+          "station": "ws1/st2",
+          "session": "s-c3",
+          "title": "夜里的构建又失败了",
+          "mark": "block",
+          "stateLead": "need",
+          "stateText": "要你帮忙：测试机的磁盘满了，要不要清理旧的缓存？",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 2 个对话"
       Some(Json::object(m))
     }
     other => other
@@ -1192,6 +1754,20 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
     "profiles" => @settings.profiles_rows(@settings.profiles_of_stations(value, wholes()))
     "profile" =>
       @settings.profile_said(fixture_topic_inner(f, "profiles", { "scope": Json::string(text(Some(Json::object(params)), "scope")) }), params)
+    "chat" if f.mode == "chat-subchats-tall" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_tall(value))
+    "chat" if f.mode == "chat-subchats-done-only" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_done_only(value))
+    "chat" if f.mode == "chat-subchats-many" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_many(value))
+    "chat" if f.mode == "chat-subchats-one" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_one(value))
+    "chat" if f.mode == "chat-subchats-one-note" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_one_note(value))
+    "chat" if f.mode.has_prefix("chat-subchats") && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats(value))
+    "chat" if f.mode == "chat-lineage" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_lineage(value))
     "chat" if f.mode.has_prefix("chat-opened") && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_opened(value))
     "chat" if f.mode.has_prefix("chat-opener") && params.get("session") is Some(String("s-c1")) =>
@@ -1207,7 +1783,7 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       match fixture_topic_inner(f, "stations", { "scope": Json::string(ws) }) {
         Some(Array(list)) =>
           for x in list {
-            if text(Some(x), "station") == address && flag(Some(x), "online") {
+            if text(Some(x), "station") == address {
               net = field(Some(x), "net")
             }
           }
@@ -1216,6 +1792,24 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       // (answered whatever it has, as the core does: a station that says no network, none, client/core-ts views.ts
       // stationNet's `ok: null`)
       Some(net.unwrap_or(Json::null()))
+    }
+    "stationDiag" => {
+      let address = text(Some(Json::object(params)), "station")
+      let ws = match address.find("/") {
+        Some(i) => address.exact_view(end=i).to_owned()
+        None => address
+      }
+      let mut diag = None
+      match fixture_topic_inner(f, "stations", { "scope": Json::string(ws) }) {
+        Some(Array(list)) =>
+          for x in list {
+            if text(Some(x), "station") == address {
+              diag = field(Some(x), "diag")
+            }
+          }
+        _ => ()
+      }
+      Some(diag.unwrap_or(Json::null()))
     }
     _ => value
   }
@@ -1465,12 +2059,15 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "sidebars": Json::object(f.sidebars),
         "remoteTabs": Json::object(f_remote_tabs(f)),
         "terminalZoom": if f_terminal_zoom(f) == "" { Json::null() } else { Json::string(f_terminal_zoom(f)) },
+        "screenQuality": f_screen_prefs(f).get("screenQuality").unwrap_or(Json::null()),
+        "screenFps": f_screen_prefs(f).get("screenFps").unwrap_or(Json::null()),
         "appearance": Json::string(f.appearance),
         "windowZoom": Json::string(f.window_zoom),
         "motion": Json::string(f.motion),
         "haptics": Json::string(f.haptics),
         "appUpdate": Json::string(f.app_update),
         "shareLook": if f.share_look == "" { Json::null() } else { Json::string(f.share_look) },
+        "cpuDial": if f.cpu_dial == "" { Json::null() } else { Json::string(f.cpu_dial) },
         "fonts": fixture_fonts(f.fonts),
         "faces": fixture_faces(f.fonts),
         "keys": fixture_keys(f.keys),
@@ -1508,6 +2105,29 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     // (待处理 open, Maple offline: decide_fixture.mbt)
     "chats" if f.mode.has_prefix("home-attention") || f.mode.has_prefix("home-foot") => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_trouble(v, params)) })
     "chats" if f.mode == "home-syncing" => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_syncing(v)) })
+    "chats" if f.mode == "home-restart-interrupted" && f.step == 0 =>
+      fixture_chats(f, params).map(fn(v) {
+        let base = listed_chats(v)
+        match base {
+          Object(m) => {
+            let m = m.copy()
+            m["interrupted"] = Json::array([
+              {
+                "station": "ws1/st1",
+                "stationName": "AFK-东京服务器",
+                "count": 12,
+                "chats": [
+                  { "key": "s-c1", "thread": 1, "title": "修复登录态失效续跑问题" },
+                  { "key": "s-c2", "thread": 2, "title": "检查 macOS 内存压力检测逻辑" },
+                  { "key": "s-c3", "thread": 3, "title": "排查飞书长连接断连原因" },
+                ],
+              },
+            ])
+            Json::object(m)
+          }
+          _ => base
+        }
+      })
     "chats" => fixture_chats(f, params).map(listed_chats)
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
     "chatRow" => fixture_chat_row(f, params)
@@ -1609,6 +2229,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     // (a preset whole, and the other members': the new chat's preset menu's and its dialog's)
     "preset" => fix_preset_one(text(Some(Json::object(params)), "id"))
     "otherPresets" => Some(fix_other_presets())
+    // (the person's drafts of 待派发: board_fixture.mbt)
+    "boardDrafts" => Some(board_drafts_topic(text(Some(Json::object(params)), "scope")))
     "newChat" | "pick" => fixture_new_topic(f, name, scope=text(Some(Json::object(params)), "scope"))
     // none left up long, as the core answers it (the first page waits for it); decide_fixture.mbt's modes say theirs
     "longJobs" if !decide_mode(f.mode) => Some({ "groups": [], "lit": false, "ids": [] })
@@ -2025,10 +2647,14 @@ pub fn fixture_stable_mode(mode : String) -> Bool {
 /// The core's experimental features (client/core-ts/src/features.ts `FEATURES`, stage `experimental`), in its order,
 /// each with its `betaOnly`: what this made-up core says of them (scripts/features-check.ts holds it to the core's).
 let fixture_experimental_features : Array[(String, Bool)] = [
-  ("chatPage", true),
   ("farviewNative", true),
   ("board", false),
 ]
+
+///|
+/// The core's `beta` features of the device's own (features.ts `FEATURES`, stage `beta`, not `station`), in its order:
+/// on as the made-up app is of the test channel, off on stable (scripts/features-check.ts holds it to the core's).
+let fixture_beta_features : Array[String] = []
 
 ///|
 /// The prefs' `experimental`: the switches on of those the core has.
@@ -2043,9 +2669,13 @@ fn fixture_experimental_json(on : Map[String, Bool]) -> Json {
 }
 
 ///|
-/// The prefs' `features` (features.ts `featuresOf`): the device's own, a `betaOnly` one never on a stable app.
+/// The prefs' `features` (features.ts `featuresOf`): the device's own, a `beta` one on the test channel alone, a
+/// `betaOnly` one never on a stable app.
 fn fixture_features_json(test_channel : Bool, on : Map[String, Bool]) -> Json {
   let out : Map[String, Json] = Map([])
+  for id in fixture_beta_features {
+    out[id] = Json::boolean(test_channel)
+  }
   for e in fixture_experimental_features {
     out[e.0] = Json::boolean((!e.1 || test_channel) && on.get(e.0) == Some(true))
   }
@@ -2107,6 +2737,25 @@ let fixture_remote_tabs : Map[Int, Map[String, Json]] = Map([])
 let fixture_terminal_zooms : Map[Int, String] = Map([])
 
 ///|
+// kept across runs: by fixture_ids', each fixture's alone (a screen's 画质 and 帧率 kept by the prefs: `screenQuality`,
+// `screenFps`)
+let fixture_screen_prefs : Map[Int, Map[String, Json]] = Map([])
+
+///|
+/// The fixture's screens' 画质 and 帧率 as the prefs keep them (none: 自动).
+fn f_screen_prefs(f : Fixture) -> Map[String, Json] {
+  let id = fixture_id(f)
+  match fixture_screen_prefs.get(id) {
+    Some(m) => m
+    None => {
+      let m : Map[String, Json] = Map([])
+      fixture_screen_prefs[id] = m
+      m
+    }
+  }
+}
+
+///|
 fn fixture_id(f : Fixture) -> Int {
   f.windows.get(fixture_id_key).unwrap_or(0)
 }
@@ -2163,6 +2812,7 @@ fn made_fixture(mode : String) -> Fixture {
     tabs_shown: fixture_tabs_shown(mode),
     sidebars: {},
     windows: Map::from_array([(fixture_id_key, fixture_ids.next())]),
+    cpu_dial: "",
     share_look: if mode.has_prefix("share-card-") && mode != "share-card-dark" && mode != "share-card-motion" {
       // (share-card-<key>-coming, -failed: its files of the looks on their way, not had)
       let look = mode.unsafe_substring(start="share-card-".length(), end=mode.length())
@@ -2187,6 +2837,11 @@ pub fn fixture(mode : String) -> Source {
   board_prefs_seed(mode)
   paged_rows.clear()
   fixture_preview(mode)
+  if mode == "newchat-preset-many" {
+    new_fix.presets.clear()
+    new_fix.presets.push_iter(fix_preset_many().iter())
+    new_fix.preset = "p-arch"
+  }
   let f = made_fixture(mode)
   if f.mode == "drive-motion" {
     // the folder changing on its own: a note made at 2 s, 发布清单.md taken out at 3.6 s (rows_view's rows coming and
@@ -2488,6 +3143,13 @@ pub fn fixture(mode : String) -> Source {
           }
           done(Ok(Json::object({})))
         }
+        "station.resumeInterrupted" | "station.dismissInterrupted" => {
+          if f.mode == "home-restart-interrupted" {
+            f.step += 1
+            f.changed()
+          }
+          done(Ok(Json::object({})))
+        }
         "chat.archive" => {
           let session = text(Some(params), "session")
           f.archived[session.clamped_view(start=2).to_owned()] = true
@@ -2572,13 +3234,26 @@ pub fn fixture(mode : String) -> Source {
           done(Ok(Json::object({})))
         }
         "screen.settings" | "screen.setSetting" => done(Ok({ "appearance": "light", "textSize": "large" }))
-        "chat.tabs.open" | "chat.tabs.close" | "chat.tabs.front" | "chat.tabs.clear" =>
+        "chat.tabs.open"
+        | "chat.tabs.close"
+        | "chat.tabs.closeOthers"
+        | "chat.tabs.closeRight"
+        | "chat.tabs.move"
+        | "chat.tabs.reopen"
+        | "chat.tabs.front"
+        | "chat.tabs.clear"
+        | "chat.tabs.replace" =>
           done(fixture_tabs_call(f, name, params))
         "decision.show" => done(Ok(Json::null()))
         "keys.set" => {
           let r = fixture_keys_set(f.keys, params)
           f.changed()
           done(Ok(r))
+        }
+        "board.drafts" => {
+          board_drafts_set(params)
+          f.changed()
+          done(Ok(Json::object({})))
         }
         "prefs.set" => {
           match field(Some(params), "windowZoom") {
@@ -2596,6 +3271,11 @@ pub fn fixture(mode : String) -> Source {
           }
           match field(Some(params), "shareLook") {
             Some(String(l)) => f.share_look = l
+            _ => ()
+          }
+          match field(Some(params), "cpuDial") {
+            Some(String(d)) => f.cpu_dial = d
+            Some(Null) => f.cpu_dial = ""
             _ => ()
           }
           match field(Some(params), "motion") {
@@ -2663,6 +3343,14 @@ pub fn fixture(mode : String) -> Source {
             Some(String(z)) => fixture_terminal_zooms[fixture_id(f)] = z
             Some(Null) => fixture_terminal_zooms.remove(fixture_id(f))
             _ => ()
+          }
+          // a screen's 画质 and 帧率 (null: 自动)
+          for k in ["screenQuality", "screenFps"] {
+            match field(Some(params), k) {
+              Some(Null) => f_screen_prefs(f).remove(k)
+              Some(v) => f_screen_prefs(f)[k] = v
+              None => ()
+            }
           }
           // the board's (board_fixture.mbt)
           board_prefs_set(params)

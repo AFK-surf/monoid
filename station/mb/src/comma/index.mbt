@@ -11,6 +11,7 @@ pub(all) struct CommaConnect {
   server : String
   token : String
   workspace : String?
+  owner_email : String?
 }
 
 ///|
@@ -21,6 +22,7 @@ pub fn CommaConnect::to_j(self : CommaConnect) -> J {
     ("server", jstr(self.server)),
     ("token", jstr(self.token)),
     ("workspace", self.workspace.map(jstr).unwrap_or(Null)),
+    ("ownerEmail", self.owner_email.map(jstr).unwrap_or(Null)),
   ])
 }
 
@@ -37,8 +39,8 @@ pub fn ScopedConnect::to_j(self : ScopedConnect) -> J {
   match self.connect.to_j() {
     Obj(entries) => {
       let out = entries.copy()
-      out.push((@jsjson.units("scope"), self.scope.map(jstr).unwrap_or(Null)))
-      out.push((@jsjson.units("scopeVersion"), ji(self.scope_version)))
+      out.push(("scope", self.scope.map(jstr).unwrap_or(Null)))
+      out.push(("scopeVersion", ji(self.scope_version)))
       Obj(out)
     }
     v => v
@@ -48,7 +50,21 @@ pub fn ScopedConnect::to_j(self : ScopedConnect) -> J {
 ///|
 fn non_empty(v : J?) -> String? {
   match v {
-    Some(Str(u)) if u.length() > 0 => Some(utext(u))
+    Some(Str(u)) if u.length() > 0 => Some(u)
+    _ => None
+  }
+}
+
+fn owner_email_of(v : J?) -> String? {
+  match v {
+    Some(Str(u)) => {
+      let email = @jscase.lower(js_trim(u))
+      if email_like(email) && email.length() <= max_text {
+        Some(email)
+      } else {
+        None
+      }
+    }
     _ => None
   }
 }
@@ -70,6 +86,7 @@ pub fn comma_connects(raw : J) -> Array[CommaConnect] {
       server: non_empty(prop(prop(cc, "comma"), "server")).unwrap_or(""),
       token: non_empty(prop(prop(cc, "comma"), "token")).unwrap_or(""),
       workspace: non_empty(prop(cc, "workspace")),
+      owner_email: owner_email_of(prop(prop(cc, "createdBy"), "id")),
     }
   })
 }
@@ -101,6 +118,14 @@ pub(all) struct CommaOptions {
   previous_exited : async () -> Unit
   /// What the station calls itself to Comma for a connect of a workspace (None: the home one).
   name : ((String?) -> String)?
+  /// Metadata of workspace `ws` (None: the home one) reported in capabilities.stillfail_workspace.
+  workspace_meta : ((String?) -> J?)?
+  /// Notifies when workspace metadata may have changed.
+  on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
+  /// Last activity timestamp (Unix ms) of the connect's owner in still.fail, reported in capabilities.stillfail_owner_active_at.
+  owner_active_at : ((String?, String?) -> Double?)?
+  /// Notifies when owner activity may have moved into a new 30-second bucket.
+  on_owner_active_change : ((() -> Unit) -> () -> Unit)?
   /// The connects brought in line with config.json and the workspaces again, and let go.
   reconcile : async () -> Unit
   close_connects : async () -> Unit
@@ -193,6 +218,7 @@ pub fn credentials(c : ScopedConnect) -> String? {
         c.connect.workspace.map(jstr).unwrap_or(Null),
         c.scope.map(jstr).unwrap_or(Null),
         ji(c.scope_version),
+        c.connect.owner_email.map(jstr).unwrap_or(Null),
       ]),
     ),
   )
@@ -256,6 +282,7 @@ pub fn CommaParts::create(self : CommaParts, c : ScopedConnect) -> CommaSurface 
         None => self.io.hostname
       },
       workspace,
+      owner_email: c.connect.owner_email,
       tasks: self.tasks,
       store: options.store,
       models: () => (options.models)(c.connect.id),
@@ -264,6 +291,24 @@ pub fn CommaParts::create(self : CommaParts, c : ScopedConnect) -> CommaSurface 
       chats,
       previous_exited: options.previous_exited,
       in_scope,
+      workspace_meta: if is_in {
+        match options.workspace_meta {
+          Some(f) => Some(() => f(c.connect.workspace))
+          None => None
+        }
+      } else {
+        None
+      },
+      on_workspace_meta_change: if is_in { options.on_workspace_meta_change } else { None },
+      owner_active_at: if is_in {
+        match options.owner_active_at {
+          Some(f) => Some(() => f(c.connect.workspace, c.connect.owner_email))
+          None => None
+        }
+      } else {
+        None
+      },
+      on_owner_active_change: if is_in { options.on_owner_active_change } else { None },
     },
     self.io,
     self.runtime,

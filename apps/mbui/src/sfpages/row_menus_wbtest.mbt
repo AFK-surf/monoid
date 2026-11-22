@@ -113,10 +113,10 @@ fn archive_tester(w : Double, calls : Array[(String, Json)]) -> @ui.Tester {
   app.nav.push(Settings)
   let t = @ui.Tester::new(
     @ui.old_views_here,
-    tree=@sf.presented_tree(fn(c) {
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() { @sf.presented(c) })
-    }),
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.presented_nodes(root)
+    },
     w~,
     h=900.0,
     platform=0,

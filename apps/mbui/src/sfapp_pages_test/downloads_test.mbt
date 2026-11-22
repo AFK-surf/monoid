@@ -21,8 +21,9 @@ fn downloads_src(
     ..base,
     topic_read: fn(name, params) {
       if name == "downloads" {
-        told.get() |> ignore
-        { value: Some({ "downloads": Json::array(list), "keeping": Json::array(keeping) }), error: None, version: 1 }
+        // (a new answer each time it is told: its own copy of the rows and a version of its own, as the core's)
+        let v = told.get() + 1
+        { value: Some({ "downloads": Json::array(list.copy()), "keeping": Json::array(keeping.copy()) }), error: None, version: v }
       } else {
         base.topic(name, params).get().snapshot()
       }
@@ -193,7 +194,7 @@ test "downloads: a message's video right clicked, 加载: the core brings it bef
   t.frame()
   assert_false(@sf.presented_open_of(first))
   // (gone as it closes)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_eq(calls.filter(fn(m) { m.0 == "download.start" }).length(), 0)
   let wants = calls.filter(fn(m) { m.0 == "fill.want" })
   assert_eq(wants.length(), 1)
@@ -237,7 +238,7 @@ test "downloads: a message's video right clicked, 加载: the core brings it bef
     assert_eq(stop.length(), 1)
     t.tap(stop[0].0, stop[0].1)
     t.frame()
-    t.run_for(@kit.pop_out_ms)
+    t.run_for(@motion.pop_out_ms)
   }
   stop_it()
   assert_eq(calls.filter(fn(m) { m.0 == "fill.stop" }).map(fn(m) { text(Some(m.1), "id") }), [id])

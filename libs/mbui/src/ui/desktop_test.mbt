@@ -160,37 +160,6 @@ test "desktop: what moves under a resting pointer is what it hovers" {
 }
 
 ///|
-test "desktop: keys with the command key are shortcuts; Escape reaches the app with a field focused" {
-  let seen : Array[String] = []
-  let t = @ui.Tester::new(
-    fn(c) {
-      if c.shortcut('k') {
-        seen.push("cmd-k")
-      }
-      if c.key_pressed(@ui.key_escape) {
-        seen.push("esc")
-      }
-      if c.key_pressed(@ui.key_code_enter) {
-        seen.push("enter")
-      }
-      c.editor("field", placeholder="words") |> ignore
-    },
-    w=400.0,
-    h=300.0,
-    platform=0,
-  )
-  t.key(@ui.key_of_char('k'), mods=@ui.mod_cmd)
-  // Ctrl+K is not macOS's shortcut
-  t.key(@ui.key_of_char('k'), mods=@ui.mod_ctrl)
-  let (fx, fy) = t.find("words").unwrap()
-  t.tap(fx, fy)
-  t.key(@ui.key_escape)
-  // the field's Enter is the field's
-  t.key(@ui.key_code_enter)
-  assert_eq(seen, ["cmd-k", "esc"])
-}
-
-///|
 test "desktop: a press on the app's own title row drags the window and presses nothing there" {
   let clicks = Ref(0)
   let t = @ui.Tester::new(
@@ -264,39 +233,6 @@ test "desktop: a pane's rows are built for the pane's size" {
   ignore(t)
   assert_true(widths.length() > 0)
   assert_true(widths.iter().all(fn(w) { w == 300.0 }))
-}
-
-///|
-test "desktop: a script hovers, right clicks, presses keys and resizes the window" {
-  let seen : Array[String] = []
-  let t = @ui.Tester::new(
-    fn(c) {
-      let row = c.id("row")
-      c.takes_presses(row)
-      if c.right_clicked(row) is Some(_) {
-        seen.push("menu")
-      }
-      if c.shortcut('k') {
-        seen.push("cmd-k")
-      }
-      if c.key_pressed(@ui.key_code_down, mods=@ui.mod_alt) {
-        seen.push("alt-down")
-      }
-      seen.push("w \{c.width.to_int()}")
-      c.box(id=row, fn() { c.text("a row", wrap=false) |> ignore }) |> ignore
-    },
-    w=400.0,
-    h=300.0,
-    platform=0,
-  )
-  seen.clear()
-  let logs = t.drive("hover a row\nrightclick a row\nkey cmd+k\nkey alt+down\nresize 900 700\nwait 50\nexit")
-  assert_true(logs.iter().any(fn(l) { l.contains("DRIVE PASS") }))
-  assert_eq(t.cursor(), Hand)
-  assert_true(seen.contains("menu"))
-  assert_true(seen.contains("cmd-k"))
-  assert_true(seen.contains("alt-down"))
-  assert_true(seen.contains("w 900"))
 }
 
 ///|
@@ -1008,49 +944,6 @@ test "desktop: lit by the hand on it: a mouse resting on it, a finger pressing i
   t.move_to(20.0, 20.0)
   t.draw()
   assert_true(lit.val)
-}
-
-///|
-test "a field leaving keys to the app: ↑ keeps its caret, Enter sends nothing; the app still reads them" {
-  let f = @ui.Field::new(text="one\ntwo")
-  let leaves : Ref[Array[Int]] = Ref([])
-  let up = Ref(false)
-  let enter = Ref(false)
-  let sent : Ref[String?] = Ref(None)
-  let t = @ui.Tester::new(fn(c) {
-    let r = c.editor("e", field=f, leaves=leaves.val)
-    if r.submitted is Some(_) {
-      sent.val = r.submitted
-    }
-    if c.key_pressed(@ui.key_code_up, in_field=true) {
-      up.val = true
-    }
-    if c.key_pressed(@ui.key_code_enter, in_field=true) {
-      enter.val = true
-    }
-  })
-  t.draw()
-  t.tap(100.0, 20.0)
-  f.set("one\ntwo", caret=7)
-  leaves.val = [@ui.key_code_up, @ui.key_code_down, @ui.key_code_enter]
-  t.draw()
-  t.key(@ui.key_code_up)
-  assert_eq(f.selection(), (7, 7))
-  assert_true(up.val)
-  t.key(@ui.key_code_enter)
-  assert_true(enter.val)
-  assert_eq(sent.val, None)
-  assert_eq(f.text(), "one\ntwo")
-  // Tab too: the focus stays in the field
-  leaves.val = [@ui.key_tab]
-  t.draw()
-  t.key(@ui.key_tab)
-  assert_true(t.ctx().editor_focused("e"))
-  // given back: ↑ goes up a line
-  leaves.val = []
-  t.draw()
-  t.key(@ui.key_code_up)
-  assert_true(f.selection().1 < 4)
 }
 
 ///|

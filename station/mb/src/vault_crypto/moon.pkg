@@ -6,6 +6,5 @@ import {
   "stillfail/rules/form",
   "stillfail/rules/history",
   "moonbitlang/core/encoding/utf8",
-  "moonbitlang/core/json",
   "moonbitlang/core/double",
 }

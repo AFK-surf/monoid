@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { Request } from "../src/api/request.ts";
-import type { LockState } from "../src/cloud/lock.ts";
+import type { LockState } from "../../shared/lock.ts";
 import { routes } from "../src/api/routes/vault.ts";
 import { certOk, signedBytes, TAG, type BoxCert } from "../src/vault/crypto.ts";
 import { VaultStore } from "../src/vault/store.ts";

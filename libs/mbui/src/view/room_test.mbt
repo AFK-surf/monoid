@@ -227,3 +227,153 @@ test "Room::height: how tall it is given to be under what is over it, as the win
   assert_eq(given.val, Some(660.0))
   assert_eq(t.drawn_of(fill.val.unwrap()).map(fn(d) { d.h }), Some(660.0))
 }
+
+///|
+/// A row of two boxes made by their room, sharing it evenly: the first holding one as tall as `left` says, the second
+/// 30 tall with its ground on what it holds (`held`), `right` saying more of that `held` as it is made; the id of that
+/// `held`.
+fn room_row_tree(
+  right : (@view.View) -> Unit,
+  left? : @signals.Signal[Double] = @signals.signal(80.0, same=fn(a, b) { a == b }),
+) -> (@view.Tree, Ref[@view.NodeId?]) {
+  let held_right : Ref[@view.NodeId?] = Ref(None)
+  let t = @view.Tree::new(
+    fn(root) {
+      root.box(fn(r) {
+        r.row(Is(true)) |> ignore
+        r.by_room(fn(held, _) {
+          held.box(fn(b) { b.height(By(fn() { Some(left.get()) })) |> ignore }) |> ignore
+        })
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        |> ignore
+        r.by_room(fn(held, _) {
+          held_right.val = Some(held.id())
+          held.ground(Is(0x0000FFFFL)) |> ignore
+          right(held)
+          held.box(fn(b) { b.height(Is(Some(30.0))) |> ignore }) |> ignore
+        })
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  (t, held_right)
+}
+
+///|
+test "by_room: what it holds fills its box stretched taller across a row, beside one taller, in the first layout" {
+  let (t, held) = room_row_tree(fn(_) {  })
+  t.frame(300.0, 200.0) |> ignore
+  let d = t.drawn_of(held.val.unwrap())
+  assert_eq(d.map(fn(d) { d.h }), Some(80.0), msg="as tall as the one beside it")
+  assert_eq(d.map(fn(d) { d.w }), Some(150.0))
+}
+
+///|
+test "by_room: what it holds filling its box across a row follows the one beside it down, never kept as tall as it was" {
+  let left = @signals.signal(80.0, same=fn(a, b) { a == b })
+  let (t, held) = room_row_tree(fn(_) {  }, left~)
+  t.frame(300.0, 200.0) |> ignore
+  assert_eq(t.drawn_of(held.val.unwrap()).map(fn(d) { d.h }), Some(80.0))
+  left.set(50.0)
+  t.frame(300.0, 200.0) |> ignore
+  assert_eq(t.drawn_of(held.val.unwrap()).map(fn(d) { d.h }), Some(50.0))
+  left.set(10.0)
+  t.frame(300.0, 200.0) |> ignore
+  assert_eq(t.drawn_of(held.val.unwrap()).map(fn(d) { d.h }), Some(30.0), msg="as tall as what it holds, the taller")
+}
+
+///|
+test "by_room: what it holds kept as tall as what it holds where it says it grows no more" {
+  let (t, held) = room_row_tree(fn(h) { h.grow(Is(0.0)) |> ignore })
+  t.frame(300.0, 200.0) |> ignore
+  assert_eq(t.drawn_of(held.val.unwrap()).map(fn(d) { d.h }), Some(30.0))
+}
+
+///|
+test "by_room: how much what it holds grows still taken by sets_together the first time it sets it, later" {
+  let tight = @signals.signal(false, same=fn(a, b) { a == b })
+  let (t, held) = room_row_tree(fn(h) {
+    h.sets_together(fn() { tight.get() }, fn(k) {
+      h.ground(Is(0x00FF00FFL)) |> ignore
+      if k {
+        h.grow(Is(0.0)) |> ignore
+      }
+    })
+    |> ignore
+  })
+  t.frame(300.0, 200.0) |> ignore
+  assert_eq(t.drawn_of(held.val.unwrap()).map(fn(d) { d.h }), Some(80.0))
+  tight.set(true)
+  t.frame(300.0, 200.0) |> ignore
+  assert_eq(t.drawn_of(held.val.unwrap()).map(fn(d) { d.h }), Some(30.0), msg="set by it, nothing else binding it")
+}
+
+///|
+test "by_room: as tall as what it holds down a column, what it holds makes its way there to another height (View::resizes), no fault" {
+  let h = @signals.signal(40.0, same=fn(a, b) { a == b })
+  let held : Ref[@view.View?] = Ref(None)
+  let unders : Array[Double] = []
+  let told = resizes_faults(fn() {
+    let t = @view.Tree::new(sources=true, fn(root) {
+      root.box(fn(col) {
+        col.by_room(fn(f, _) {
+          held.val = Some(f)
+          f.box(fn(b) { b.height(By(fn() { Some(h.get()) })).shrink(Is(0.0)) |> ignore }) |> ignore
+        })
+        |> ignore
+        col.box(fn(b) { b.height(Is(Some(20.0))).shrink(Is(0.0)).words(Is("下")) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    t.frame(390.0, 844.0) |> ignore
+    unders.push(rc_y(t, "下"))
+    t.event(100.0, fn() {
+      held.val.unwrap().resizes() |> ignore
+      h.set(90.0)
+    })
+    for at in [100.0, 200.0, 2000.0] {
+      t.at(at)
+      t.frame(390.0, 844.0) |> ignore
+      unders.push(rc_y(t, "下"))
+    }
+  })
+  assert_eq(told, [], msg="\{Repr(told)}")
+  assert_eq(unders[0], 40.0)
+  assert_true(unders[2] > 40.0 && unders[2] < 90.0, msg="on its way: \{Repr(unders)}")
+  assert_eq(unders[3], 90.0)
+}
+
+///|
+test "by_room: what it holds stretched across a row grows there even where it is the tallest: View::resizes on it a fault" {
+  let left : Ref[@view.View?] = Ref(None)
+  let told = resizes_faults(fn() {
+    let t = @view.Tree::new(sources=true, fn(root) {
+      root.box(fn(r) {
+        r.row(Is(true)) |> ignore
+        r.by_room(fn(held, _) {
+          left.val = Some(held)
+          held.box(fn(b) { b.height(Is(Some(80.0))) |> ignore }) |> ignore
+        })
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        |> ignore
+        r.by_room(fn(held, _) { held.box(fn(b) { b.height(Is(Some(30.0))) |> ignore }) |> ignore })
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        |> ignore
+      })
+      |> ignore
+    })
+    t.frame(300.0, 200.0) |> ignore
+    t.event(100.0, fn() { left.val.unwrap().resizes() |> ignore })
+    t.at(100.0)
+    t.frame(300.0, 200.0) |> ignore
+  })
+  assert_eq(told.length(), 1, msg="\{Repr(told)}")
+  assert_true(told[0].contains("it is grown (grow 1)"), msg=told[0])
+}

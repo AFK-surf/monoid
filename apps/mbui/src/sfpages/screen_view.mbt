@@ -27,7 +27,7 @@
 // the stage, the files' panel and the mouse's buttons are)
 #warnings("-unused_field")
 priv struct ScreenUi {
-  zoom : @kit.Zoom
+  zoom : @motion.Zoom
   pad : PadPointer
   held : HeldKeys
   full : @signals.Signal[Bool]
@@ -863,7 +863,8 @@ fn screen_native_anchor(w : Double, h : Double) -> @sf.Anchor {
 
 ///|
 /// The screen's actions handed to the system's bars (an iPhone Duo's), the least needed last, as the system folds those
-/// it has not the room for from the end (the keyboard up, it keeps three): close, 只看/控制, the keyboard, 控制中心, 按键.
+/// it has not the room for from the end (the keyboard up, it keeps three): close, 只看/控制, the keyboard, 麦克风 (while
+/// something on the screen records it, or this device's is shared), 控制中心, 按键.
 /// What else there is is 控制中心's (the reviewer with pengxiao, 2026-11-12). Each but a panel's own closes what this
 /// page opened over itself before it acts. Said as the page is in place of the system's tabs (not a tab beside its
 /// chat), whole again as what they show changes; what it opened closes as the bars turn to another edge (down the
@@ -893,11 +894,15 @@ fn screen_native_acts(root : @view.View, pg : ScreenPage, alive : () -> Bool) ->
           s.simulator(),
           screen_panel_on_now(u, "center"),
           screen_panel_on_now(u, "keys"),
+          // (麦克风: whether it is there, shared, and what it says)
+          (s.mic_bar_shown(), s.mic_on.get(), s.mic_active_now()),
         ),
       )
     },
     fn(now) {
-      guard now is Some((title, full, choosable, on, driving, catching, open, simulator, center_on, keys_on)) else { return }
+      guard now is Some((title, full, choosable, on, driving, catching, open, simulator, center_on, keys_on, mic)) else {
+        return
+      }
       if !@sf.native_over_up(title, alive~) || full {
         return
       }
@@ -916,6 +921,10 @@ fn screen_native_acts(root : @view.View, pg : ScreenPage, alive : () -> Bool) ->
         @sf.native_over_act("screen-keyboard", @sf.t("android-misc.screen.keyboard"), "keyboard", fn() {
           keyboard_toggled(pg)
         }, active=catching)
+      }
+      // (as the bars' 麦克风: while something there records it, or this device's is shared)
+      if mic is (true, mic_on, _) {
+        @sf.native_over_act("screen-mic", @signals.untracked(fn() { s.mic_label() }), if mic_on { "mic" } else { "mic-off" }, fn() { s.toggle_mic() }, active=mic_on)
       }
       if open {
         @sf.native_over_act("screen-center", @sf.t("web-pages.screen.panel"), "sliders", fn() {
@@ -1075,12 +1084,28 @@ fn screen_copies(s : ScreenSess) -> Unit {
   s.copied.clear()
   let label = match opt_text(s.state, "title") {
     Some(t) if t != "" => t
-    _ => "still.fail"
+    _ => @sf.product()
   }
   let types = s.clip_types()
   for g in got {
     match g {
-      CopiedText(t) => {
+      // marked by a password manager there (its words concealed, or not to be kept): the device's copy marked a secret
+      // too, out of its clipboard's history and managers; a concealed one taken off as a secret copied here is
+      // (@sf.secret_copied_life), a transient one left (only its history skips it). Its other marks (`auto`: words an app
+      // made up) as any words.
+      CopiedText(t, Some("concealed")) => {
+        @ui.clipboard_secret(t, clear_ms=@sf.secret_copied_life)
+        if !@ui.copy_shown() {
+          toast_later(@sf.t("android-misc.screen.copied"))
+        }
+      }
+      CopiedText(t, Some("transient")) => {
+        @ui.clipboard_secret(t, clear_ms=0.0)
+        if !@ui.copy_shown() {
+          toast_later(@sf.t("android-misc.screen.copied"))
+        }
+      }
+      CopiedText(t, _) => {
         @ui.clipboard_set(t, label~)
         if !@ui.copy_shown() {
           toast_later(@sf.t("android-misc.screen.copied"))
@@ -1270,6 +1295,8 @@ fn screen_keys_in(pg : ScreenPage, k : @ui.KeyIn) -> Unit {
       } else {
         u.pasted_v = false
       }
+    // the pointer held for an app there let go of by the person's own keys (⌃Esc, ⌃⌥⇧Q), whatever the app does
+    Key(down~, code~, mods~, ..) if screen_lock_keys(u.mouse, code, mods, down) => ()
     // a browser's own keys on a tab of the station's browser (⌘L, ⌘T, ⌘W, ⌘R, ⌘[, ⌘]): the viewer's, as a browser's
     Key(down~, code~, mods~, ..) if browser_key(s, u, code, mods, down) => ()
     Key(down~, key~, code~, mods~) => {

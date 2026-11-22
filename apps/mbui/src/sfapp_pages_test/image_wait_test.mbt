@@ -6,8 +6,8 @@
 test "a message's image waits with soft colours, and those colours do not change as its way in begins" {
   reset()
   // what its station has given of it so far: nothing ("": asked), then its picture
-  let key = Ref("")
-  let src : Source = { ..fixture("chat"), file: fn(_, _, _) { key.val } }
+  let key = @signals.signal("")
+  let src : Source = { ..fixture("chat"), file: fn(_, _, _) { key.get() } }
   // (said while the chat shows: the one kind of message whose picture is brushed in, image_reveal's `comes`)
   let m = message_of({
     "seq": 3,
@@ -28,18 +28,21 @@ test "a message's image waits with soft colours, and those colours do not change
     ],
   })
   let t = @ui.Tester::new(
-    fn(c) {
-      let here : @sfpages.MessageHere = {
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
         station: "ws1/st1",
         session: "s-c1",
-        view: chat_view_made(Json::object({})),
-        go: None,
-        inline: true,
-        gutter: 0.0,
-        list: None,
-        core: None,
+        view: fn() { chat_view_made(Json::object({})) },
+        width: fn() { 760.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
       }
-      @sfpages.message_row(c, src, here, m)
+      @sfpages.message_row_node(root, src, here, fn() { m })
     },
     w=760.0,
     h=600.0,
@@ -51,7 +54,7 @@ test "a message's image waits with soft colours, and those colours do not change
   t.frame()
   let waiting = t.drawlist_images()[0].2
   // here, not decoded yet; then decoded: the waiting picture stays the same above the arriving image's frost
-  key.val = "pic"
+  key.set("pic")
   t.frame()
   assert_eq(t.drawlist_images()[0].2, waiting, msg="the waiting picture changed as the file arrived")
   t.frame()
@@ -82,13 +85,27 @@ fn waiting_picture_pixels(hash : String) -> (Int, Int, FixedArray[Byte]) raise {
       "width": 1200, "height": 200, "thumbhash": Json::string(hash),
     }],
   })
-  let t = @ui.Tester::new(fn(c) {
-    let here : @sfpages.MessageHere = {
-      station: "ws1/st1", session: "s-c1", view: chat_view_made(Json::object({})),
-      go: None, inline: true, gutter: 0.0, list: None, core: None,
-    }
-    @sfpages.message_row(c, src, here, m)
-  }, w=760.0, h=600.0, platform=0)
+  let t = @ui.Tester::new(
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
+        station: "ws1/st1",
+        session: "s-c1",
+        view: fn() { chat_view_made(Json::object({})) },
+        width: fn() { 760.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
+      }
+      @sfpages.message_row_node(root, src, here, fn() { m })
+    },
+    w=760.0,
+    h=600.0,
+    platform=0,
+  )
   t.draw()
   t.frame()
   let pictures = t.drawlist_images()

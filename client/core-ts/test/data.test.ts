@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Data, dbName, type RowChange } from "../src/data.ts";
 import { CHUNK, importFormer } from "../src/db/import.ts";
 import { placesFor, sameTurns } from "../src/db/account.ts";
-import { VERSION } from "../src/db/schema.ts";
+import { VERSION, giveBackRoomStep } from "../src/db/schema.ts";
 import { type Sql, type SqlRow, type SqlValue, SqlError } from "../src/host.ts";
 import { NodeSql } from "../src/hosts/node-sql.ts";
 import type { Topic } from "../src/protocol.ts";
@@ -1078,6 +1078,7 @@ test("the_room_a_database_file_holds_and_no_longer_uses_is_given_back_to_the_dev
   const owner = () => "s1";
   const data = new Data(host, runner, { owner });
   await run(data.open(["s1"]));
+  await run(data.roomGivenBack);
   const sql = host.sqls.get(dbName("s1")) as NodeSql;
   const onDisk = () => [".db", ".db-wal"].reduce((n, end) => n + (existsSync(join(dir, dbName("s1") + end)) ? statSync(join(dir, dbName("s1") + end)).size : 0), 0);
   const free = () => Number(sql.all("PRAGMA freelist_count")[0]?.[0]) * Number(sql.all("PRAGMA page_size")[0]?.[0]);
@@ -1095,13 +1096,17 @@ test("the_room_a_database_file_holds_and_no_longer_uses_is_given_back_to_the_dev
   const freed = free();
   assert.ok(freed > 256 * 1024, `${freed}`);
   const d = await again();
-  // Opened again: the room the index took is the device's again; the messages stay.
+  // `open` does not block on vacuum/checkpoint: free pages remain until background reclamation runs.
+  assert.ok(free() > 0, `expected free pages right after open, got ${free()}`);
+  await run(d.roomGivenBack);
+  // After background reclamation: the room the index took is the device's again; the messages stay.
   assert.equal(free(), 0);
   assert.ok(onDisk() <= before - freed, `${onDisk()} of ${before}, ${freed} free`);
   assert.equal(d.findSaid(["w/a"], ["40 号对话第 49 条"], 5).length, 1);
   // Opened yet again (nothing freed since): nothing to give back, nothing grows.
   const now = onDisk();
-  await again();
+  const d2 = await again();
+  await run(d2.roomGivenBack);
   assert.ok(onDisk() <= now, `${onDisk()} of ${now}`);
   runner.shutdown();
   rmSync(dir, { recursive: true, force: true });
@@ -1111,6 +1116,28 @@ test("the_room_a_database_file_holds_and_no_longer_uses_is_given_back_to_the_dev
     await run(d.open(["s1"]));
     return d;
   }
+});
+
+test("giveBackRoomStep_stops_without_checkpoint_if_freelist_does_not_shrink", () => {
+  const seen: string[] = [];
+  const stub: Sql = {
+    exec(q) {
+      seen.push(q);
+    },
+    run() {
+      return 0;
+    },
+    all(q) {
+      seen.push(q);
+      if (q === "PRAGMA auto_vacuum") return [[2]];
+      if (q === "PRAGMA freelist_count") return [[10]];
+      return [];
+    },
+    close() {},
+  };
+  assert.equal(giveBackRoomStep(stub), false);
+  assert.ok(seen.includes("PRAGMA incremental_vacuum(256)"));
+  assert.ok(!seen.some((q) => q.includes("wal_checkpoint")), `should not checkpoint when no pages were freed: ${JSON.stringify(seen)}`);
 });
 
 test("model_selection_survives_old_events_and_finishes_without_reverting", async () => {

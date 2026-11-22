@@ -31,12 +31,23 @@ pub fn text_action_node(
   })
 }
 
+fn action_said(
+  role : @view.Role,
+  label : String,
+  selected : Bool?,
+  expanded : Bool?,
+  check : @view.Check?,
+) -> @view.Said {
+  @view.said(role, label~, selected?, expanded?, check?)
+}
+
 ///|
 /// A block pressed as a whole in `parent`, laid out by `look` (given its node, as it is made: its ground, what it holds,
 /// how it lights under the hand, by lit_node or the node's own `pressed`); named `label`, `press` done as it is pressed
 /// (given its node: what it opens goes beside it). `selected`: one of several to choose between (@headless.choice),
 /// read out selected while it says so. `expanded`: what it opens or shuts is open while it says so (a disclosure,
 /// read out expanded). `on`: a toggle button, on while it says so (read out pressed: 全屏, 控制, the keyboard up).
+/// `check`: checked state read out on a button (`On`/`Off`). `focusable`: false where the caller manages focus itself.
 /// None of them: a button, `label_is` its name where it never changes (`label` is it: said once, no binding made for
 /// it, @headless.button's), `in_node` the button `parent` itself (a row a list made: no box of its own). While
 /// `disabled()`, taking no press nor the focus. `on_hold`: what a finger held on it long_press_ms does (a card of it
@@ -51,7 +62,10 @@ pub fn action_box_node(
   selected? : () -> Bool,
   expanded? : () -> Bool,
   on? : () -> Bool,
+  check? : () -> @view.Check,
   disabled? : () -> Bool,
+  said_while_disabled? : Bool = true,
+  focusable? : Bool = true,
   label_is? : String,
   in_node? : Bool = false,
   on_hold? : () -> Unit,
@@ -66,16 +80,74 @@ pub fn action_box_node(
   }
   // (its node, for a toggle's press: what it opens goes beside it)
   let me : Ref[@view.View?] = Ref(None)
-  match (selected, expanded, on) {
-    (Some(chosen), _, _) => @headless.choice(made_for=loc, parent, Button, label, chosen, press, disabled?, fn(v, _) { drawn(v) })
-    (None, Some(open), _) => @headless.disclosure(made_for=loc, parent, label, open, press, disabled?, fn(v, _) { drawn(v) })
-    (None, None, Some(now)) =>
-      @headless.toggle(made_for=loc, parent, Button, label, now, fn(_) { if me.val is Some(v) { press(v) } }, disabled?, hold?, fn(v, _) {
+  match (in_node, selected, expanded, on, check, said_while_disabled) {
+    (false, Some(chosen), None, None, None, true) =>
+      @headless.choice(made_for=loc, parent, Button, label, chosen, press, disabled?, focusable~, fn(v, _) { drawn(v) })
+    (false, None, Some(open), None, None, true) =>
+      @headless.disclosure(made_for=loc, parent, label, open, press, disabled?, fn(v, _) { drawn(v) })
+    (false, None, None, Some(now), None, true) =>
+      @headless.toggle(made_for=loc, parent, Button, label, now, fn(_) { if me.val is Some(v) { press(v) } }, disabled?, hold?, focusable~, fn(v, _) {
         me.val = Some(v)
         drawn(v)
       })
-    (None, None, None) => @headless.button(made_for=loc, parent, label, press, disabled?, hold?, label_is?, in_node~, fn(v, _) { drawn(v) })
+    _ => {
+      let static_able = disabled is None
+      let v = @headless.button(
+        made_for=loc,
+        parent,
+        label,
+        press,
+        disabled?,
+        hold?,
+        focusable~,
+        label_is?=if static_able { Some(label_is.unwrap_or("")) } else { label_is },
+        in_node~,
+        fn(v, _) { drawn(v) },
+      )
+      if selected is Some(_) ||
+        expanded is Some(_) ||
+        check is Some(_) ||
+        !said_while_disabled ||
+        (static_able && label_is is None) {
+        let role : @view.Role = Button
+        v.says(By(fn() {
+          if !said_while_disabled && disabled.map(fn(f) { f() }).unwrap_or(false) {
+            None
+          } else {
+            Some(
+              action_said(
+                role,
+                label(),
+                selected.map(fn(f) { f() }),
+                expanded.map(fn(f) { f() }),
+                check.map(fn(f) { f() }),
+              ),
+            )
+          }
+        }))
+        |> ignore
+      }
+      v
+    }
   }
+}
+
+///|
+/// A layout-only button anchor in `parent` for a host-drawn native control (e.g. macOS Liquid Glass): takes no mbui
+/// press or keyboard focus, and exposes `Button` with `label` in the semantics tree so the host can place its control
+/// over the node's bounds (`@ui.tree_read_out_id`). `look` lays out and registers the node. The node.
+#callsite(autofill(loc))
+pub fn host_button_anchor_node(
+  parent : @view.View,
+  label : () -> String,
+  look : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let role : @view.Role = Button
+  parent.box(made_for=loc, fn(v) {
+    v.says(By(fn() { Some(action_said(role, label(), None, None, None)) })) |> ignore
+    look(v)
+  })
 }
 
 ///|

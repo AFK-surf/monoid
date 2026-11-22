@@ -1,5 +1,5 @@
-// A new chat made once as nodes of the window's tree (new_chat.mbt's page, where the chat's page is made as nodes:
-// sfbase's chat_page_nodes, its composer too; the chat page made's `new_node`): the same page, said by
+// A new chat made once as nodes of the window's tree (new_chat.mbt's page, the chat's page made as nodes,
+// its composer too; the chat page made's `new_node`): the same page, said by
 // the tree's own mechanisms, one tree laid out by the width its frame gives it (its bindings; laid out anew at once as
 // that crosses page_narrow_most, View::lays_anew): narrow, the scene in a page's list (View::scrolls_window) over all that is
 // left, the foot pinned over its end a band of glass with what is wrong for now, the choices in glass capsules and the
@@ -18,11 +18,16 @@
 /// Android's do) or beside it, and what the frame does as the page becomes the chat; its ground as node `n` draws it (a
 /// tape's panel's, a step darker while behind the one in use); the width it is drawn at (`width`: what its frame gives
 /// it, by which it is laid out); what the frame puts over the whole page (`over`: a pane's, a row of its 文件 tab
-/// carried over it to let go into its message), given the page's node and whether it shows (not leaving).
+/// carried over it to let go into its message), given the page's node and whether it shows (not leaving); whether its
+/// composer stands apart from the page's edges (`apart`: on the tape, in a panel of its own) and the corners of the
+/// panel it stands in (`pane`: a tape's panel's, so what is in its corners is concentric with them), as a chat's
+/// composer is given them (chat_composer_node's).
 pub(all) struct NewChatNodeFrame {
   core : Core
   ground : (@view.View) -> Int64
   width : () -> Double
+  apart : () -> Bool
+  pane : () -> FixedArray[@ui.CornerOf]?
   bar : (@view.View) -> Unit
   over : (@view.View, () -> Bool) -> Unit
   foot : () -> Double
@@ -37,6 +42,7 @@ pub(all) struct NewChatNodeFrame {
 priv enum NewKind {
   On
   Blocked
+  AutoEmpty
   First
   NoneUp
 }
@@ -46,18 +52,32 @@ priv enum NewKind {
 /// that leaves over new_leave_ms), leaving as it becomes its chat, its scene leaving over it (what it shows then is as
 /// it was sent: the view it showed, fresh.scene; nothing of it pressed: View::leaving). Its tips in `tips`.
 pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewChatNodeFrame, tips : @sf.TipLayer) -> Unit {
-  let going = fn() { v.leaving() }
-  // (made anew as its chat was not made, its leaving over by then: what it shows coming back from gone, as it left;
-  // fresh_back)
-  let back = @motion.NodeWay::new(0.0)
-  let back_fade = @motion.NodeWay::new(0.0)
+  // (told as it starts leaving, as what reads it there is at rest (View::leaving): its composer's pick let go of then)
+  let left = @signals.signal(false)
+  v.on_leaving(fn() { left.set(true) }) |> ignore
+  v.reacts(fn() { v.leaving() }, at_start=false, fn(l) {
+    if !l {
+      left.set(false)
+    }
+  })
+  let going = fn() { v.leaving() || left.get() }
+  // (made anew after its leaving finished because newChat.create failed: arm the reversing choreography on this node)
   if @sfbase.fresh_back.val {
-    back.put(1.0)
-    back.go_ms(v, 0.0, @sfbase.new_leave_ms, ease=Out)
-    back_fade.put(1.0)
-    back_fade.go_ms(v, 0.0, @sfbase.new_fade_ms, ease=Out)
+    @sfbase.fresh_choreo.val.arm(v)
   }
-  let gone = fn(n : @view.View, fade : Bool) { new_gone_on(v, n, fade, if fade { back_fade } else { back }) }
+  // the chat's keys here as on a chat's page (chat_page_node's): composer.focus the cursor in its composer, the page
+  // brought over first where the tape has it behind
+  let draft = new_chat_drafts + w.id
+  let wr = @signals.untracked(fn() { @sfbase.writing(src, draft) })
+  v.key_context("Chat")
+  .on_action("composer.focus", fn(e) {
+    (@sfbase.page_for_key.val)(e.at)
+    wr.field.focus()
+    composer_take_focus(drafts=new_chat_drafts)
+    @sfbase.draft_given(draft)
+    true
+  })
+  |> ignore
   let topic = fn() { src.topic("newChat", new_chat_asked(w.id)).get() }
   // (as it was sent while it leaves: what the core says of it since is the chat's)
   let view = fn() {
@@ -79,34 +99,38 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
       Some(Array(_)) =>
         match field(now, "station") {
           Some(Object(_)) => if text(now, "blocked") != "" { Blocked } else { On }
-          _ => if flag(now, "any") { NoneUp } else { First }
+          _ => if text(now, "blocked") == "auto_empty" { AutoEmpty } else if flag(now, "any") { NoneUp } else { First }
         }
       // (its stations not read yet: the page as it will be on the station it last started on)
       _ => On
     }
   }
   // (its ground none as it leaves: what is left of it seen over the chat it became, as new_chat_left's)
-  v.grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { if going() { 0L } else { (frame.ground)(v) } })) |> ignore
-  // (its bar gone at once as it becomes its chat, its room kept: the chat has its own)
+  v.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).ground(By(fn() { if going() { 0L } else { (frame.ground)(v) } })) |> ignore
+  // (its bar fades out smoothly along bar_out while non-interactive, crossfading with the chat bar's bar_in)
   v.box(fn(b) {
-    b.alpha(By(fn() { if going() { 0.0 } else { 1.0 } })).hides(By(going)) |> ignore
+    b
+    .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(b, "bar_out") }))
+    .points(By(fn() { !going() }))
+    |> ignore
     (frame.bar)(b)
   })
   |> ignore
   v.box(fn(room) {
-    room.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    room.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     room.pick(kind, at_once=true, fn(p, k) {
-      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      p.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       match k {
-        On => new_on_node(p, src, w, frame, tips, topic, view, going, gone)
+        On => new_on_node(p, v, src, w, frame, tips, topic, view, going)
         Blocked => new_blocked_node(p, src, w, frame, tips, view)
+        AutoEmpty => new_auto_empty_node(p, src, w, frame, view)
         First =>
           new_alone_node(p, "illus_no_station", fn() { @sf.t("android-settings.station.first") }, fn() {
             @sf.t("android-settings.station.firstNote")
           })
         NoneUp =>
           new_alone_node(p, "illus_station_offline", fn() { @sf.t("android-chat.new.offline.title") }, fn() {
-            @sf.t("android-chat.new.offline.text", args=[("app", "still.fail")])
+            @sf.t("android-chat.new.offline.text", args=[("app", @sf.product())])
           })
       }
     })
@@ -123,6 +147,7 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
 /// be read, as `view` and `topic` say them now.
 fn new_on_node(
   v : @view.View,
+  page : @view.View,
   src : Source,
   w : Workspace,
   frame : NewChatNodeFrame,
@@ -130,7 +155,6 @@ fn new_on_node(
   topic : () -> @sfbase.TopicState,
   view : () -> Json?,
   going : () -> Bool,
-  gone : (@view.View, Bool) -> Double,
 ) -> Unit {
   // (its stations not read yet: why they could not be ("" while they are read))
   let held = fn() { !(field(view(), "stations") is Some(Array(_))) }
@@ -145,7 +169,7 @@ fn new_on_node(
     }
   }
   let station = fn() { if held() { None } else { field(view(), "station") } }
-  let on : NewOn = { src, w, frame, tips, view, held, error, station, going, gone }
+  let on : NewOn = { page, src, w, frame, tips, view, held, error, station, going }
   new_on_tree(v, on)
 }
 
@@ -173,6 +197,8 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
   // comes to be, never on a way between the two (View::lays_anew), what holds it going its own way meanwhile)
   v
   .grow(Is(1.0))
+  .shrink(Is(1.0))
+  .basis(Is(Some(0.0)))
   .min_height(Is(Some(0.0)))
   .lines_up(Is(Some(Middle)))
   .padding(By(fn() { if wide() { (new_column_in, 0.0, new_column_in, 0.0) } else { (0.0, 0.0, 0.0, 0.0) } }))
@@ -191,9 +217,7 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
     w_draft.field,
     fn(paths) {
       if @signals.untracked(composes) {
-        for d in @sfbase.finder_dragged(on.src, paths) {
-          @sfbase.files_into(draft, d)
-        }
+        @sfbase.files_into_many(draft, @sfbase.finder_dragged(on.src, paths))
       }
     },
     takes=fn() { @signals.untracked(composes) && @sfbase.finder_by_station_in(on.w.id) },
@@ -212,6 +236,8 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
     .lines_up(By(fn() { if wide() { Some(Middle) } else { None } }))
     .gap(By(fn() { if wide() { @ui.Space::px(S2_5) } else { 0.0 } }))
     .grow(Is(1.0))
+    .shrink(Is(1.0))
+    .basis(Is(Some(0.0)))
     .min_height(Is(Some(0.0)))
     |> ignore
     // (wide, as much room over the scene and the composer as under them; narrow, none: the scene takes it all)
@@ -231,7 +257,8 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
         .min_height(Is(Some(0.0)))
         .lines_up(Is(Some(Middle)))
         .lies_along(By(fn() { if wide() { End } else { Start } }))
-        .alpha(By(fn() { 1.0 - (on.gone)(s, false) }))
+        .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(s, "scene_out") }))
+        .offset(By(fn() { (0.0, -10.0 * @sfbase.fresh_progress(s, "scene_out")) }))
         |> ignore
         new_scene_node(s, on, wide)
       })
@@ -241,21 +268,26 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
     // (the band at the foot narrow; wide, the composer alone)
     col.by_room(fn(band, room) {
       band
-      .glass(By(fn() { if wide() { None } else { Some(@sf.glass_foot()) } }))
+      // (remove duplicate bottom glass band over the incoming chat composer once going, while notices & floating choices
+      // fade out smoothly along choices_out)
+      .glass(By(fn() { if wide() || (on.going)() { None } else { Some(@sf.glass_foot()) } }))
       .lines_up(Is(Some(Middle)))
       .padding(By(fn() { (0.0, if wide() { 0.0 } else { composer_foot_at(room.width()) }, 0.0, 0.0) }))
-      // (gone at once as the page becomes its chat: what is sent rises from the composer through where the choices
-      // were, never over them; back on its way where the chat was not made)
-      .alpha(By(fn() { if (on.going)() { 0.0 } else { 1.0 - (on.gone)(band, true) } }))
       |> ignore
       let width = fn() { composer_width(room.width()) }
       // (narrow alone: there at once as the page is laid out another way, no way in or out, #5767)
       band.show(fn() { !wide() }, at_once=true, fn(o) {
         @sf.style_node(o, fn() { new_over })
-        o.show(fn() { !(on.going)() }, at_once=true, fn(n) {
-          n.lines_up(Is(Some(Middle))) |> ignore
-          new_notices_node(n, on, width)
-        })
+        o
+        .lines_up(Is(Some(Middle)))
+        .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(o, "choices_out") }))
+        .offset(By(fn() {
+          let p = @sfbase.fresh_progress(o, "choices_out")
+          let dy = if (on.going)() { -@sfbase.fresh_over_held.get() - 4.0 * p } else { 0.0 }
+          (0.0, dy)
+        }))
+        |> ignore
+        new_notices_node(o, on, width)
       })
       band.box(fn(c) {
         c.width(By(fn() { Some(room.width()) })) |> ignore
@@ -271,7 +303,8 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
       .basis(Is(Some(0.0)))
       .gap(Is(@ui.Space::px(S2_5)))
       .lines_up(Is(Some(Middle)))
-      .alpha(By(fn() { 1.0 - (on.gone)(under, true) }))
+      .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(under, "under_out") }))
+      .offset(By(fn() { (0.0, 6.0 * @sfbase.fresh_progress(under, "under_out")) }))
       |> ignore
       under.by_room(fn(held, room) {
         held.lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S2_5))) |> ignore
@@ -350,6 +383,7 @@ fn new_scene_node(s : @view.View, on : NewOn, wide : () -> Bool) -> Unit {
 ///|
 /// What the page on a station reads (new_on_node's), handed to its parts.
 priv struct NewOn {
+  page : @view.View
   src : Source
   w : Workspace
   frame : NewChatNodeFrame
@@ -359,7 +393,6 @@ priv struct NewOn {
   error : () -> String
   station : () -> Json?
   going : () -> Bool
-  gone : (@view.View, Bool) -> Double
 }
 
 ///|
@@ -374,20 +407,6 @@ fn NewOn::address(self : NewOn) -> String {
   } else {
     text((self.station)(), "station")
   }
-}
-
-///|
-/// How far its scene has left (0 … 1) as node `n` draws it, and what is by its composer (`fade`: sooner, over
-/// new_fade_ms): page `page` leaving as its first words set out (View::going: of new_leave_ms), on its curve, or come
-/// back as it was where the chat was not made (on its own way, `back`, where it was made anew so).
-fn new_gone_on(page : @view.View, n : @view.View, fade : Bool, back : @motion.NodeWay) -> Double {
-  let t = page.going()
-  let k = if fade {
-    @sf.dmin(1.0, t * @sfbase.new_leave_ms / @sfbase.new_fade_ms)
-  } else {
-    t
-  }
-  @sf.dmax(@ui.Ease::Leave.at(k), back.shown(n))
 }
 
 ///|
@@ -429,10 +448,14 @@ fn new_choosers_node(row : @view.View, on : NewOn, floating : Bool) -> Unit {
       new_station_control_node(r, on, on.station, on.view, floating)
     }
     if waiting {
-      // (its profiles read: a made-up model's, in its bones)
-      @sf.waiting_node(r, fn(b) {
-        model_triple_node(b, @sfbase.sample_source, "sample", "new", face=fn() { field(Some(new_sample_view()), "pick") }, small=true, floating~)
-      })
+      // (its profiles read: a made-up model's, in its bones, as narrow as the row leaves it: what it drops to fit dropped)
+      @sf.waiting_node(
+        r,
+        fn(b) {
+          model_triple_node(b, @sfbase.sample_source, "sample", "new", face=fn() { field(Some(new_sample_view()), "pick") }, small=true, floating~)
+        },
+        fits=true,
+      )
     } else if none {
       // nothing to run it with: the way to where models are enabled
       new_capsule_node(r, fn() { @sf.t("web-main.newChat.noModels") }, floating, fn() { false }, fn(_) {
@@ -514,10 +537,18 @@ fn new_station_control_node(
   let fixed = fn() { flag(view(), "presetStations") && items(view(), "stations").length() <= 1 }
   let open = fn(b : @view.View) {
     let v = @signals.untracked(view)
-    @sf.panel_nodes(@sf.t("android-chat.new.station.pick"), fn(n, close) { station_rows_node(n, on.src, on.w, v, close) }, from=Node(b))
+    @sf.panel_nodes(@sf.t("android-chat.new.station.pick"), fn(n, close) { station_rows_node(n, on.src, on.w, v, close) }, from=Node(b), side=choice_side(Node(b)))
+  }
+  let auto_on = fn() { flag(view(), "autoStation") }
+  let label = fn() {
+    if auto_on() {
+      @sf.t("web-main.newChat.autoStationShort")
+    } else {
+      text(station(), "name")
+    }
   }
   let made : Ref[@view.View?] = Ref(None)
-  new_capsule_node(parent, fn() { text(station(), "name") }, floating, fn() { false }, fn(b) {
+  new_capsule_node(parent, label, floating, fn() { false }, fn(b) {
     if (on.going)() || b.in_bones() {
       ()
     } else if @signals.untracked(fixed) {
@@ -529,8 +560,10 @@ fn new_station_control_node(
   }, fn(b) {
     made.val = Some(b)
     // (a station of no mark of its own the server's, as in its pick: never a bare chevron)
-    b.pick(fn() { @sf.has_station_mark(text(station(), "emoji"), text(station(), "icon")) }, fn(m, has) {
-      if has {
+    b.pick(fn() { if auto_on() { 2 } else if @sf.has_station_mark(text(station(), "emoji"), text(station(), "icon")) { 1 } else { 0 } }, fn(m, kind) {
+      if kind == 2 {
+        @sf.icon_node(m, "sparks", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
+      } else if kind == 1 {
         @sf.station_mark_node(m, fn() { text(station(), "emoji") }, fn() { text(station(), "icon") }, new_mark, fn() {
           @sf.theme().p.text
         }, fn() { 0 })
@@ -543,18 +576,22 @@ fn new_station_control_node(
       // (cut short past 128: new_station_name)
       @sf.style_node(n, fn() { new_station_name }, in_row=true)
       n.row(Is(true)).min_width(Is(Some(0.0))).drops(Is(new_drop_station_name)) |> ignore
-      @sf.words_node(n, fn() { text(station(), "name") }, fn() { new_capsule_words }).cuts(Is(true)).min_width(Is(Some(0.0)))
+      @sf.words_node(n, label, fn() { new_capsule_words }).cuts(Is(true)).min_width(Is(Some(0.0)))
       |> ignore
     })
     |> ignore
     b.show(fn() { !fixed() }, fn(c) { @sf.icon_node(c, "chevron-down", new_chevron, By(fn() { @sf.theme().p.muted })) |> ignore })
   })
-  // (asked from elsewhere: opened as it is seen)
-  if !parent.in_bones() && !@signals.untracked(fixed) && take_asked("station") {
-    @ui.after_frame(fn() {
-      match made.val {
-        Some(b) if b.alive() => open(b)
-        _ => ()
+  // (asked from elsewhere: opened as it is seen, or as it is asked while it is)
+  if !parent.in_bones() {
+    parent.reacts(fn() { new_chat_asked_seq.get() }, fn(_) {
+      if !@signals.untracked(fixed) && take_asked("station") {
+        @ui.after_frame(fn() {
+          match made.val {
+            Some(b) if b.alive() => open(b)
+            _ => ()
+          }
+        })
       }
     })
   }
@@ -610,46 +647,49 @@ fn new_preset_control_node(parent : @view.View, on : NewOn, address : String, fl
     })
     |> ignore
   })
-  // (asked from elsewhere: a fixture's screen of what the control opens, once the frame is drawn)
+  // (asked from elsewhere: a fixture's screen of what the control opens, once the frame is drawn; or as it is asked
+  // while it is)
   let w = on.w
-  let stations = items(@signals.untracked(v), "stations")
-  let first = text(items(@signals.untracked(v), "presets").get(0), "id")
-  for ask in [
-    ("preset-new", "", ""),
-    ("preset-edit", first, ""),
-    ("preset-add", first, "add"),
-    ("preset-new-add", "", "add"),
-    ("preset-new-browse", "", "browse"),
-    ("preset-new-clone", "", "clone"),
-    ("preset-new-browse-repos", "", "browse:/Users/lin/项目"),
-  ] {
-    if take_asked(ask.0) {
-      @ui.after_frame(fn() { preset_dialog(on.src, w, address, ask.1, stations, then=ask.2) })
+  parent.reacts(fn() { new_chat_asked_seq.get() }, fn(_) {
+    let stations = items(@signals.untracked(v), "stations")
+    let first = text(items(@signals.untracked(v), "presets").get(0), "id")
+    for ask in [
+      ("preset-new", "", ""),
+      ("preset-edit", first, ""),
+      ("preset-add", first, "add"),
+      ("preset-new-add", "", "add"),
+      ("preset-new-browse", "", "browse"),
+      ("preset-new-clone", "", "clone"),
+      ("preset-new-browse-repos", "", "browse:/Users/lin/项目"),
+    ] {
+      if take_asked(ask.0) {
+        @ui.after_frame(fn() { preset_dialog(on.src, w, address, ask.1, stations, then=ask.2) })
+      }
     }
-  }
-  if take_asked("preset-new-clones") {
-    @ui.after_frame(fn() {
-      preset_dialog(on.src, w, address, "", stations, clones=[
-        { station: address, id: "c-web", repo: "github.com/acme/shop", name: "shop" },
-        { station: address, id: "c-bad", repo: "github.com/acme/private", name: "private" },
-      ])
-    })
-  }
-  for ask in ["preset", "preset-others"] {
-    if take_asked(ask) {
+    if take_asked("preset-new-clones") {
       @ui.after_frame(fn() {
-        match made.val {
-          Some(b) if b.alive() =>
-            if ask == "preset" {
-              open(b)
-            } else {
-              preset_others_open(on.src, w, @signals.untracked(v), Node(b))
-            }
-          _ => ()
-        }
+        preset_dialog(on.src, w, address, "", stations, clones=[
+          { station: address, id: "c-web", repo: "github.com/acme/shop", name: "shop" },
+          { station: address, id: "c-bad", repo: "github.com/acme/private", name: "private" },
+        ])
       })
     }
-  }
+    for ask in ["preset", "preset-others"] {
+      if take_asked(ask) {
+        @ui.after_frame(fn() {
+          match made.val {
+            Some(b) if b.alive() =>
+              if ask == "preset" {
+                open(b)
+              } else {
+                preset_others_open(on.src, w, @signals.untracked(v), Node(b))
+              }
+            _ => ()
+          }
+        })
+      }
+    }
+  })
 }
 
 ///|
@@ -660,7 +700,39 @@ fn new_preset_control_node(parent : @view.View, on : NewOn, address : String, fl
 /// first value not come): its room as it will be, nothing of it shown or in use.
 fn new_composer_place_node(c : @view.View, on : NewOn, roomy : () -> Bool) -> Unit {
   let away = fn() { (on.going)() || ((on.held)() && on.address() == "") }
-  c.pick(fn() { on.address() }, at_once=true, fn(p, address) {
+  // (narrow, its choices in glass over it, at its foot with it: drawn with its top as it opens; wrap in a child box so
+  // we never clobber composer_node's over_drawn offset on `r`, while holding pre-send multi-line height via
+  // fresh_over_held and fading out smoothly along choices_out; the same as the page leaves, its composer gone)
+  let over_choices = fn(r : @view.View) {
+    r.box(fn(inner) {
+      inner
+      .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(inner, "choices_out") }))
+      .offset(By(fn() {
+        let p = @sfbase.fresh_progress(inner, "choices_out")
+        let dy = if (on.going)() { -@sfbase.fresh_over_held.get() - 4.0 * p } else { 0.0 }
+        (0.0, dy)
+      }))
+      |> ignore
+      new_choosers_node(inner, on, true)
+    })
+    |> ignore
+  }
+  // (gone as the page leaves (sent: it becomes its chat): its draft's composer let go of in that frame, what it read
+  // with it; its room kept as tall as it was laid out, so that nothing under it moves as it goes, its choices fading
+  // out in it along choices_out, as they were over it)
+  c.pick(fn() { if (on.going)() { None } else { Some(on.address()) } }, at_once=true, fn(p, addr) {
+    guard addr is Some(address) else {
+      let (_, _, _, h) = c.placed_window_now()
+      p.height(Is(Some(h))).lines_up(Is(Some(Middle))) |> ignore
+      if !@signals.untracked(roomy) {
+        p.by_room(fn(host, room) {
+          host.width(By(fn() { Some(composer_width(room.width())) })) |> ignore
+          over_choices(host)
+        })
+        |> ignore
+      }
+      return
+    }
     p.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     let name = fn() { text((on.station)(), "name") }
     new_composer_node(
@@ -683,13 +755,15 @@ fn new_composer_place_node(c : @view.View, on : NewOn, roomy : () -> Bool) -> Un
         },
         send: fn(d) { new_send_node(on, address, name(), d) },
         starting: fn() { @sfbase.fresh.starting.get() },
-        // (narrow, its choices in glass over it, at its foot with it: drawn with its top as it opens)
-        over_it: Some(fn(r) { new_choosers_node(r, on, true) }),
+        // (narrow, its choices over it: over_choices)
+        over_it: Some(over_choices),
         over_tall: @sf.glass_chooser_h.points().unwrap_or(0.0) + @ui.Space::px(S1_5),
         away,
       },
       shows=fn() { !(on.going)() },
       tips=on.tips,
+      apart=on.frame.apart,
+      pane=on.frame.pane,
       // (at the band's foot, the choices' own room over it: new_choosers_row's)
       over=0.0,
     )
@@ -787,6 +861,52 @@ fn new_alone_node(v : @view.View, art : String, title : () -> String, note : () 
 }
 
 ///|
+/// Automatic assignment is active, but no online station is in the allowlist: offer picking a station manually or
+/// opening Station settings (never silently fall back to a non-allowlisted station).
+fn new_auto_empty_node(
+  v : @view.View,
+  src : Source,
+  w : Workspace,
+  frame : NewChatNodeFrame,
+  view : () -> Json?,
+) -> Unit {
+  v.lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+  v.box(fn(o) {
+    o.width(By(fn() { Some(@sf.dmin(new_column_w, (frame.width)() - 2.0 * new_column_in)) })) |> ignore
+    @sf.first_one_node(
+      o,
+      fn() { @sf.t("web-main.newChat.autoEmptyTitle") },
+      lead=fn() { text(view(), "problem") },
+      art=fn(a) {
+        a.pick(fn() { @sf.theme().dark }, fn(x, dark) {
+          @sf.drawable_node(x, if dark { "illus_station_offline_dark" } else { "illus_station_offline" }, new_scene_narrow_w) |> ignore
+        })
+      },
+      fn(acts) {
+        let pick_btn : Ref[@view.View?] = Ref(None)
+        acts.show(fn() { items(view(), "stations").length() > 0 }, fn(s) {
+          pick_btn.val = Some(s)
+          @sf.button_node(s, fn() { @sf.t("web-main.newChat.pickStation") }, fn() {
+            let v = @signals.untracked(view)
+            let anchor = match pick_btn.val {
+              Some(b) if b.alive() => @sf.Anchor::Node(b)
+              _ => @sf.Anchor::Unanchored
+            }
+            @sf.panel_nodes(@sf.t("android-chat.new.station.pick"), fn(n, close) { station_rows_node(n, src, w, v, close) }, from=anchor)
+          }, tone=Primary)
+          |> ignore
+        })
+        @sf.button_node(acts, fn() { @sf.t("web-main.newChat.goStations") }, fn() {
+          open_page(Place("stations"))
+        }, tone=Ghost)
+        |> ignore
+      },
+    )
+  })
+  |> ignore
+}
+
+///|
 /// Nothing to run a chat with yet (new_blocked's): what to add, whom to ask, where to pick models; the station chosen
 /// anew among several.
 fn new_blocked_node(
@@ -845,6 +965,7 @@ fn new_blocked_node(
         })
         acts.show(fn() { items(view(), "stations").length() > 1 }, fn(s) {
           let on : NewOn = {
+            page: v,
             src,
             w,
             frame,
@@ -854,7 +975,6 @@ fn new_blocked_node(
             error: fn() { "" },
             station,
             going: fn() { false },
-            gone: fn(_, _) { 0.0 },
           }
           new_station_control_node(s, on, station, view, false)
         })
@@ -890,7 +1010,7 @@ fn new_send_node(on : NewOn, station : String, name : String, d : Writing) -> Un
   }
   // sent, felt as a key's light tap (a no as something refused)
   @ui.haptic(KeyboardTap)
-  let words = @signals.untracked(fn() { d.text.get() }).trim(chars=" \n\t").to_owned()
+  let words = sent_words(d)
   remember_sent_pictures_now(src, d, station)
   let up = @signals.untracked(fn() { up_files(d) })
   let going = @signals.untracked(fn() { going_files(d) })
@@ -903,22 +1023,33 @@ fn new_send_node(on : NewOn, station : String, name : String, d : Writing) -> Un
   // chat's own)
   let from = composer_sent_from_node(src, d)
   let row = sent_local(rk, None, words, up, going~, quotes~, runs~, from~, now=(src.now)())
-  // (beside where the chat opens: its composer flies from where this one stands, roomy in the page's middle, to the
-  // chat's foot, one composer going there as the old page's did)
-  @sfbase.fresh_fly_after.set(if !on.frame.in_place { 0.0 } else { @sfbase.flight_carry_after_ms })
-  if !on.frame.in_place && !@ui.reduced_motion() {
+  // (start unified choreography for actual layout width: wide morphs the roomy composer from middle to foot; narrow
+  // hands off any multi-line/attachment extra height so frame 0 never collapses)
+  let wide = @signals.untracked(fn() { (on.frame.width)() >= @sf.page_narrow_most })
+  let at = on.page.cause_at()
+  @sfbase.fresh_choreo_start(wide, at)
+  @sfbase.fresh_choreo.val.arm(on.page)
+  if wide && !@ui.reduced_motion() {
     @sfbase.fresh_composer_at.set(composer_node_box(d.key))
+  } else if !wide && !@ui.reduced_motion() {
+    let extra = composer_node_extra_height(d.key)
+    @sfbase.fresh_composer_over.set(extra)
+    @sfbase.fresh_over_held.set(extra)
   }
   // (the cursor in its field as it is sent: in the chat's composer as that comes, the keyboard as it was, this page's
   // field let go as it leaves (composer_take_focus, as the chat's composer asks it); sent without it, none)
   if d.field.focused() {
     composer_take_focus()
   }
-  // (its scene leaving as the page does, as it becomes the chat (chat_page_made's show); the chat not made, the page
-  // the new chat again in that answer's change, come back as it was or made anew coming back (fresh_back); the
-  // cursor back in its field where it was, new_send_go's)
+  // (its scene leaving as the page does, as it becomes the chat (chat_page_made's show); the chat not made, reverse
+  // choreography smoothly back from current mid-flight values (or arm anew if page remounts via fresh_back))
   new_send_go(src, on.frame.sent, v, station, key, make, d, rk, row, r, fn() {  }, fn() {  }, fn() {
-    @sfbase.fresh_back.val = true
-    @ui.after_frame(fn() { @sfbase.fresh_back.val = false })
+    @sfbase.fresh_choreo_reverse(on.page.cause_at())
+    if on.page.alive() {
+      @sfbase.fresh_choreo.val.arm(on.page)
+    } else {
+      @sfbase.fresh_back.val = true
+      @ui.after_frame(fn() { @sfbase.fresh_back.val = false })
+    }
   })
 }

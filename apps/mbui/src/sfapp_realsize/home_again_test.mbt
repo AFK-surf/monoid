@@ -187,8 +187,10 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
         home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
         // (the place made, first visit; Home put by, not laid out again nor let go; Profile's list or 概览 one page, the
-        // pick between them two nodes more, plus one refresh icon node per quota chip)
-        assert_eq(home_again_peak.val, if place == "profiles" { (640, 0, 538) } else { (363, 0, 254) }, msg="\{tag} home→\{place}")
+        // pick between them two nodes more; slimmed fill_chip_node with on-demand refresh icon and single-branch pooled
+        // quota brings profiles down to made=591, laid=457 (+1 made/+1 laid for place_top_bar_glass wrapping settings
+        // in bar_pill_group_node, +2 made/+2 laid for narrow_bar_scrim_node))
+        assert_eq(home_again_peak.val, if place == "profiles" { (594, 0, 460) } else { (366, 0, 257) }, msg="\{tag} home→\{place}")
         t.run_for(@sfapptest.kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
@@ -361,15 +363,19 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       let i = if place == "profiles" { 1 } else if place == "connects" { 2 } else { 3 }
       home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
       println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
-      // (Profile's list or 概览 one page, the pick between them two nodes more, plus one refresh icon node per quota chip)
+      // (Profile's list or 概览 one page, the pick between them two nodes more; slimmed fill_chip_node with on-demand
+      // refresh icon and single-branch pooled quota brings tall profiles down to made=731, laid=565; +1 made/+1 laid
+      // for place_top_bar_glass wrapping settings in bar_pill_group_node, +2 made/+2 laid for narrow_bar_scrim_node)
       let first = if place == "profiles" {
-        (794, 0, 670)
+        (734, 0, 568)
       } else if place == "connects" {
-        (439, 0, 306)
+        (442, 0, 309)
       } else {
         // (用量's controls that are a button only while they filter, its rank rows and its legend, each over
-        // action_box_while_node's pick)
-        (487, 0, 398)
+        // action_box_while_node's pick; 3 seg_fill_nodes -> made unchanged, +9 initial laid; -1 structure-box in usage_node;
+        // +1 made/+1 laid for place_top_bar_glass bar_pill_group_node, +2 made/+2 laid for narrow_bar_scrim_node;
+        // -12 laid from View::scrolls eliminating redundant room_spill layout)
+        (489, 0, 397)
       }
       assert_eq(home_again_peak.val, first, msg="\{tag} home→\{place}")
       t.run_for(@sfapptest.kept_switch_over_ms)

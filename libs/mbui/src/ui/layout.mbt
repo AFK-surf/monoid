@@ -105,12 +105,15 @@ fn layout_words(
   spacing~ : Double,
   style~ : Int,
   max_lines? : Int = 0,
+  keep_tabular? : Bool = false,
 ) -> TextLayout {
-  let laid = fn(w : Double) { layout_text(text, size, weight, w, wrap, line~, trim~, spacing~, style~) }
+  let laid = fn(w : Double) { layout_text(text, size, weight, w, wrap, line~, trim~, spacing~, style~, keep_tabular~) }
   let tl = laid(w)
   // (cut after their last line where they say how many they are drawn on, unbalanced: Node::text_layout's)
   if max_lines > 0 && wrap && tl.line_start.length() > max_lines {
-    lines_cut(text, tl, w, max_lines, fn(s, w, wrap) { layout_text(s, size, weight, w, wrap, line~, trim~, spacing~, style~) })
+    lines_cut(text, tl, w, max_lines, fn(s, w, wrap, keep) {
+      layout_text(s, size, weight, w, wrap, line~, trim~, spacing~, style~, keep_tabular=keep_tabular || keep)
+    })
   } else if balance && wrap {
     balanced(tl, laid)
   } else {
@@ -134,8 +137,8 @@ fn Node::words_style(self : Node) -> Int {
 
 ///|
 /// Its words said as `s` (one of its `shorter` ways), on one line.
-fn Node::worded(self : Node, s : String) -> TextLayout {
-  layout_text(s, self.font_size, self.weight, 1.0e9, false, line=self.line_h, trim=self.line_trim, spacing=self.spacing, style=self.words_style())
+fn Node::worded(self : Node, s : String, keep_tabular? : Bool = false) -> TextLayout {
+  layout_text(s, self.font_size, self.weight, 1.0e9, false, line=self.line_h, trim=self.line_trim, spacing=self.spacing, style=self.words_style(), keep_tabular~)
 }
 
 ///|
@@ -145,7 +148,7 @@ fn Node::one_line_in(self : Node, tl : TextLayout, w : Double) -> TextLayout {
   if tl.w <= w + 0.5 {
     return tl
   }
-  said_in(self.text, tl, self.shorter, w, fn(s) { self.worded(s) })
+  said_in(self.text, tl, self.shorter, w, fn(s, keep_tabular) { self.worded(s, keep_tabular~) })
 }
 
 ///|
@@ -157,7 +160,7 @@ fn said_in(
   tl : TextLayout,
   shorter : Array[String],
   w : Double,
-  lay : (String) -> TextLayout,
+  lay : (String, Bool) -> TextLayout,
 ) -> TextLayout {
   if tl.w <= w + 0.5 {
     return tl
@@ -166,7 +169,7 @@ fn said_in(
   let mut last = tl
   for s in shorter {
     said = s
-    last = lay(s)
+    last = lay(s, false)
     if last.w <= w + 0.5 {
       return last
     }
@@ -176,9 +179,9 @@ fn said_in(
 
 ///|
 /// One-line words (`s`, laid out as `tl` by `lay`) cut to fit `w`, ending in an ellipsis.
-fn ellipsized(s : String, tl : TextLayout, w : Double, lay : (String) -> TextLayout) -> TextLayout {
+fn ellipsized(s : String, tl : TextLayout, w : Double, lay : (String, Bool) -> TextLayout) -> TextLayout {
   let shaped = tl.shaped
-  let dots = lay("…")
+  let dots = lay("…", false)
   let room = w - dots.w
   let mut end = 0
   while end < shaped.starts.length() && tl.xs[end] + shaped.adv[end] <= room {
@@ -188,8 +191,22 @@ fn ellipsized(s : String, tl : TextLayout, w : Double, lay : (String) -> TextLay
   while end > 0 && shaped.cu[end - 1] == 32 {
     end = end - 1
   }
-  let cut = if end < shaped.starts.length() { shaped.starts[end] } else { shaped.len }
-  lay(s.exact_view(end=cut).to_owned() + "…")
+  let keep_tabular = has_digit(s)
+  let cut_at = fn(end : Int) {
+    let cut = if end < shaped.starts.length() { shaped.starts[end] } else { shaped.len }
+    lay(s.exact_view(end=cut).to_owned() + "…", keep_tabular)
+  }
+  let mut out = cut_at(end)
+  // (what it ends in set wider before the dots than before what followed it (a full-width mark a half em closer
+  // before another, words_spaced_in, as chws: "），" cut after its "）"): a cluster fewer until it fits)
+  while out.w > w + 0.5 && end > 0 {
+    end = end - 1
+    while end > 0 && shaped.cu[end - 1] == 32 {
+      end = end - 1
+    }
+    out = cut_at(end)
+  }
+  out
 }
 
 ///|
@@ -199,8 +216,8 @@ fn ellipsized(s : String, tl : TextLayout, w : Double, lay : (String) -> TextLay
 /// line up to the one it was made in (Node::text_layout): the lines before are the same in any of them, and what did
 /// not fit the last line in the widest does not in a narrower one, what did still does.
 fn cut_to_lines(n : Node, tl : TextLayout, w : Double) -> TextLayout {
-  let lay = fn(s : String, w : Double, wrap : Bool) {
-    layout_text(s, n.font_size, n.weight, w, wrap, line=n.line_h, trim=n.line_trim, spacing=n.spacing, style=n.words_style())
+  let lay = fn(s : String, w : Double, wrap : Bool, keep_tabular : Bool) {
+    layout_text(s, n.font_size, n.weight, w, wrap, line=n.line_h, trim=n.line_trim, spacing=n.spacing, style=n.words_style(), keep_tabular~)
   }
   lines_cut(n.text, tl, w, n.max_lines, lay)
 }
@@ -208,11 +225,17 @@ fn cut_to_lines(n : Node, tl : TextLayout, w : Double) -> TextLayout {
 ///|
 /// Words `text` wrapped in `w` as `tl` cut after their `most`th line (cut_to_lines's, an old view's and a node's alike:
 /// View::words' WordsLook `max_lines`), `lay` laying words out as they are set (in a width, wrapped or not).
-fn lines_cut(text : String, tl : TextLayout, w : Double, most : Int, lay : (String, Double, Bool) -> TextLayout) -> TextLayout {
+fn lines_cut(
+  text : String,
+  tl : TextLayout,
+  w : Double,
+  most : Int,
+  lay : (String, Double, Bool, Bool) -> TextLayout,
+) -> TextLayout {
   let s = tl.shaped
   let count = s.starts.length()
   let a = tl.line_start[most - 1]
-  let dots = lay("…", 1.0e9, false)
+  let dots = lay("…", 1.0e9, false, false)
   let room = w - dots.w
   let mut x = 0.0
   let mut end = a
@@ -224,8 +247,29 @@ fn lines_cut(text : String, tl : TextLayout, w : Double, most : Int, lay : (Stri
   while end > a && s.cu[end - 1] == 32 {
     end = end - 1
   }
-  let cut = if end < count { s.starts[end] } else { s.len }
-  lay(text.exact_view(end=cut).to_owned() + "…", w, true)
+  let keep_tabular = has_digit(text)
+  let cut_at = fn(end : Int) {
+    let cut = if end < count { s.starts[end] } else { s.len }
+    lay(text.exact_view(end=cut).to_owned() + "…", w, true, keep_tabular)
+  }
+  let mut out = cut_at(end)
+  // (its last line wider with the dots than it was measured (a full-width mark set closer before what followed it
+  // than before the dots, words_spaced_in): wrapped onto a line more, or past `w`; a cluster fewer until it fits)
+  while end > a && lines_over(out, most, w) {
+    end = end - 1
+    while end > a && s.cu[end - 1] == 32 {
+      end = end - 1
+    }
+    out = cut_at(end)
+  }
+  out
+}
+
+///|
+/// Whether wrapped words laid out as `tl` come to more than `most` lines, or their last is wider than `w`.
+fn lines_over(tl : TextLayout, most : Int, w : Double) -> Bool {
+  let n = tl.line_start.length()
+  n > most || (n > 0 && tl.line_w[n - 1] > w + 0.5)
 }
 
 ///|
@@ -294,11 +338,15 @@ fn leaf_size(
     } else {
       tl
     }
+    view_words_first_told(tl)
     (if wm == Exactly || (wm == AtMost && n.wrap && soft_wrapped(tl.line_end, tl.shaped.cu)) { w } else { tl.w }, tl.h)
   } else if n.kind == kind_rich {
     // (on one line, as wide as it is, as Ctx::text's words: cut, where it is, as it is placed narrower)
     match n.rich_layout(if n.wrap { max_w } else { 1.0e9 }) {
-      Some(rl) => (if wm == Exactly || (wm == AtMost && n.wrap && soft_wrapped(rl.line_end, rl.cu)) { w } else { rl.w }, rl.h)
+      Some(rl) => {
+        view_runs_first_told(rl)
+        (if wm == Exactly || (wm == AtMost && n.wrap && soft_wrapped(rl.line_end, rl.cu)) { w } else { rl.w }, rl.h)
+      }
       None => (0.0, 0.0)
     }
   } else if n.kind == kind_editor {
@@ -519,6 +567,8 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
     ACenter => Center
     AEnd => FlexEnd
     AStretch => Stretch
+    AFirstLine => FirstLineCenter
+    ABaseline => Baseline
   }
   if s.align_items != ai {
     s.align_items = ai
@@ -778,7 +828,7 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
       f.measure = Some(fn(w, wm, h, hm) { leaf_size(n, w, wm, h, hm) })
     }
     if f.children.length() > 0 {
-      f.children.clear()
+      f.children_cut(0)
       ch = true
     }
     if k == kind_text {
@@ -914,7 +964,7 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
       c = cn.next
     }
     if j < kids.length() {
-      kids.truncate(j)
+      f.children_cut(j)
       ch = true
     }
   }

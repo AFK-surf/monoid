@@ -783,10 +783,14 @@ fn service_stage_node(
           @sf.style_node(r, fn() { service_restart_room })
           r.box(fn(pill) {
             @sf.style_node(pill, fn() { service_restart_pill })
-            // (its shadow the theme's large one, Restart's shadow-lg: a style's shadow is no node's)
-            pill.shadow(By(fn() { (restart_shadow_blur, restart_shadow_fall, @ui.tree_theme().shadow) })) |> ignore
+            pill.shadow(By(fn() { @sf.glass_control_shadow() }))
+            .shadow_outside(Is(true))
+            |> ignore
             pill.glass(By(fn() { Some(@sf.glass_floating()) })) |> ignore
-            pill.box(fn(d) { @sf.style_node(d, fn() { service_restart_dot }, in_row=true) }) |> ignore
+            @sf.first_line_node(pill, Ui, fn(l) {
+              l.box(fn(d) { @sf.style_node(d, fn() { service_restart_dot }, in_row=true) }) |> ignore
+            })
+            |> ignore
             pill.box(fn(w) {
               @sf.style_node(w, fn() { service_restart_words }, in_row=true)
               @sf.words_node(w, fn() {
@@ -1010,13 +1014,6 @@ fn stage_fingers(st : @view.View, p : ServicePage) -> Unit {
 }
 
 ///|
-/// The restart pill's shadow (the theme's large: @ui.Shadow's Lg): its blur and how far down it falls.
-let restart_shadow_blur : Double = 15.0
-
-///|
-let restart_shadow_fall : Double = 10.0
-
-///|
 /// What is said where the page would be, in `parent` (service_note's, PreviewNote): 13, muted, centred.
 fn service_note_node(parent : @view.View, words : () -> String) -> Unit {
   parent.box(fn(n) {
@@ -1123,7 +1120,7 @@ pub fn service_page_node(
               session: text(j, "session"),
             }
           },
-          fn() { b.window().0 },
+          fn() { b.window_w() },
         )
     }
   })
@@ -1220,7 +1217,7 @@ pub fn file_view_node(
             station,
             job,
             fn() { { port: 0, name, restarting: false, restarts: 0, session: key } },
-            fn() { b.window().0 },
+            fn() { b.window_w() },
             file=Some(f),
             close~,
             full~,

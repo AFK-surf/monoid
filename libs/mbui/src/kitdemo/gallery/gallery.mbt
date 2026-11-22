@@ -5,8 +5,9 @@
 /// The page in both themes, side by side.
 pub fn gallery(c : @ui.Ctx, page : String) -> Unit {
   c.box(dir=Row, w=Fill(1.0), h=Fill(1.0), fn() {
-    half(c, @ui.Theme::light(), page)
-    half(c, @ui.Theme::dark(), page)
+    // gallery textrec_* snapshots were recorded with tabular: false
+    half(c, { ..@ui.Theme::light(), tabular: false }, page)
+    half(c, { ..@ui.Theme::dark(), tabular: false }, page)
   })
   |> ignore
 }

@@ -11,6 +11,8 @@ pub fn access_env(String, String, String, String?, Via) -> Fields
 
 pub fn access_kind(@jsjson.JValue) -> String
 
+pub fn access_kinds(String) -> Array[String]
+
 pub let acp_init : String
 
 pub let acp_open : String
@@ -23,11 +25,13 @@ pub let acp_steer : String
 
 pub fn afresh(String, Array[String]) -> String
 
-pub fn agent_home_feedback(String, @jsjson.JValue?) -> Bool
-
 pub fn ago_words(Double) -> String
 
+pub fn agy_base_model(String) -> (String, String?)
+
 pub fn agy_hook_command(String, String, String) -> String
+
+pub let agy_levels : Array[String]
 
 pub fn anthropic_root(String) -> String
 
@@ -207,10 +211,6 @@ pub fn grok_usage_line(@jsjson.JValue?, Double, @jsjson.JValue) -> String?
 
 pub fn group_of(String) -> String
 
-pub async fn harness(@host.Host) -> Unit
-
-pub async fn harness_case(@host.Host, @jsjson.JValue) -> @jsjson.JValue
-
 pub fn hermes_catalog(@jsjson.JValue?, @jsjson.JValue) -> Array[String]
 
 pub async fn hermes_env(@host.Host, Options, Fields, String, String?) -> Fields
@@ -260,6 +260,8 @@ pub fn keychain_item(String) -> String
 pub fn keychain_read_of((Int32, String)?) -> KeychainRead
 
 pub let keychain_stub : String
+
+pub fn keyed(String) -> Bool
 
 pub let kimi_code : String
 
@@ -373,6 +375,8 @@ pub fn runtime_label(String) -> String
 
 pub fn runtimes_of(Endpoints) -> Array[String]
 
+pub fn runtimes_of_kind(String, String?) -> Array[String]
+
 pub fn sandbox_command(String, Sandbox, SandboxPlace, String, String, Array[Double], String, String, String) -> String
 
 pub fn sandbox_described(Sandbox) -> @jsjson.JValue
@@ -385,7 +389,7 @@ pub let sandbox_prefix : String
 
 pub fn sandboxes_of(@jsjson.JValue?) -> Array[Sandbox]
 
-pub fn session_instructions(String, String?, String, String, String, site? : String, station? : String) -> String
+pub fn session_instructions(String, String?, String, String, String, site? : String, station? : String, move? : Bool) -> String
 
 pub let site_instructions_max : Int32
 
@@ -394,6 +398,8 @@ pub fn site_instructions_of(String?) -> String
 pub let skill_most : Int32
 
 pub let sources : Array[Source]
+
+pub fn split_agy_tier(String) -> (String, String)?
 
 pub fn split_devin_fusion(String) -> Fusion?
 
@@ -456,20 +462,6 @@ pub fn Acp::request(Self, String, String, @jsjson.JValue, String, then? : (Resul
 pub fn Acp::retune(Self, String?, String?) -> Bool
 pub fn Acp::snapshot(Self) -> @jsjson.JValue
 pub fn Acp::steer(Self, String) -> Bool?
-
-pub struct AgentHome {
-  mut running : Bool
-  mut again : Bool
-  mut queued : Bool
-  mut closed : Bool
-  mut rounds : Int32
-  trace : Array[String]
-}
-pub fn AgentHome::changed(Self) -> Unit
-pub fn AgentHome::close(Self) -> Unit
-pub fn AgentHome::ended(Self) -> Unit
-pub fn AgentHome::flush(Self) -> Unit
-pub fn AgentHome::new() -> Self
 
 pub struct Bridged {
   own : Own
@@ -599,7 +591,7 @@ pub struct Own {
   mut tools_url : String?
   mut tools_absent : Bool
   runner : String
-  mut frozen : @jsjson.JValue?
+  frozen : @jsjson.JValue?
   waits : Map[String, Wait]
   later : Array[() -> Unit]
   uuids : Array[String]
@@ -659,8 +651,6 @@ pub(all) struct Start {
   init_timeout : Double?
 }
 pub fn Start::json(Self) -> @jsjson.JValue
-
-type Taken
 
 pub(all) struct Via {
   provider : String?

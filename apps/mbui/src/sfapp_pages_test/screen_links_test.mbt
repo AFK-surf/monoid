@@ -226,17 +226,22 @@ test "a tab's preview: asked for while its card is on the screen, cancelled as i
     }
     t.wheel(195.0, 400.0, -300.0)
   }
+  // (and past the screens the list keeps built beyond what shows, View::scrolls_window's slots_far: its card let go)
+  for _ in 0..<8 {
+    t.wheel(195.0, 400.0, -300.0)
+  }
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("林 正在查看") is None)
   assert_eq(running(streams, cancelled).length(), 0)
   // back, its card on the screen (built is not enough: a row is built a little before it shows): a view of its own
-  for _ in 0..<12 {
+  for _ in 0..<60 {
     match t.rect_of("林 正在查看") {
       Some((_, y, _, h)) if y >= 0.0 && y + h <= 844.0 => break
       _ => ()
     }
     t.wheel(195.0, 400.0, 150.0)
   }
+  assert_true(t.rect_of("林 正在查看") is Some(_), msg="card did not scroll back into view")
   t.run_for(@ui.move_most_ms)
   let again = running(streams, cancelled)
   assert_eq(again.length(), 1)
@@ -252,9 +257,20 @@ test "a tall browser picture fills its preview from the top of the page" {
   let frame_w = @sf.peek_frame_px
   let frame_h = frame_w / 1.6
   let t = @ui.Tester::new(
-    fn(c) {
-      c.box(style=@ui.style(w=Fixed(frame_w), h=Fixed(frame_h), clip=true), fn() {
-        @sfbase.peek_picture(c, "screen.png")
+    fn(_) { () },
+    tree=fn(root) {
+      root.box(fn(b) {
+        b.width(Is(Some(frame_w))).height(Is(Some(frame_h))).clips(Is(true)) |> ignore
+        b.box(fn(pic) {
+          pic
+          .over(Is(true))
+          .fills_across(Is(true))
+          .height_share(Is(1.0))
+          .image(Is(Some(("screen.png", "", 0))))
+          .image_covers_at(Is(Some((0.5, 0.0))))
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
     },

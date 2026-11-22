@@ -13,7 +13,14 @@ pub(all) struct MoveHas {
   refusal : Bool
   room : Bool
   told : Bool
+  /// A chat's station_move answers that it is under way past ANSWER_SOON_MS (move.ts `soon`).
+  soon : Bool
 }
+
+///|
+/// How long a chat's station_move waits on its answer before saying that it is under way and telling the chat its
+/// answer once it ends (move.ts `ANSWER_SOON_MS`: an agent's tool call has a deadline of its runtime's own).
+const ANSWER_SOON_MS : Int = 20000
 
 ///|
 /// An all-moving asked, waiting for its card's choice.
@@ -149,6 +156,51 @@ async fn random_hex(b : ToolsBackend, n : Int) -> String {
 }
 
 ///|
+/// `work`'s answer for chat `session` (None: another station asked) if it comes soon (`soon`), else that it is under
+/// way, its answer told to the chat once it ends, whatever it is (a refusal too): move.ts `#soon`.
+async fn MoveAsks::soon(
+  self : MoveAsks,
+  session : String?,
+  what : String,
+  work : async () -> JV,
+) -> JV {
+  guard session is Some(session) && self.has.soon else { return work() }
+  let b = self.c.b
+  let run = @effect.runtime().fork_quiet(name="station_move answer", work)
+  // timer: a deadline (a chat's station_move answers it is under way)
+  match @effect.timeout(ANSWER_SOON_MS, async fn() { run.wait() }) {
+    Some(Succeeded(v)) => v
+    Some(Failed(e)) => raise e
+    Some(Interrupted) => raise refusal_of("station_move \{what} was stopped")
+    None => {
+      self.running.push(
+        @effect.runtime().fork(name="station_move told", async fn() {
+          let text = match run.wait() {
+            Succeeded(v) =>
+              match v.get("say") {
+                Some(Str(say)) => "station_move \{what} ended: \{say}"
+                _ => "station_move \{what} ended: \{stringify(v)}"
+              }
+            Failed(e) => "station_move \{what} did not go: \{message_of(e)}"
+            Interrupted => "station_move \{what} did not go: it was stopped"
+          }
+          b.tell("move.notify", [js(session), js(text)])
+        }),
+      )
+      jobj([
+        ("underWay", jbool(true)),
+        (
+          "say",
+          js(
+            "station_move \{what} is still under way: its answer is told in this chat once it ends. Do not ask again; end your turn waiting (status shows where each item stands meanwhile).",
+          ),
+        ),
+      ])
+    }
+  }
+}
+
+///|
 /// station_move for a session here (move.ts `tool`).
 pub async fn MoveAsks::tool(self : MoveAsks, session : String, args : JV) -> JV {
   let b = self.c.b
@@ -182,21 +234,37 @@ pub async fn MoveAsks::tool(self : MoveAsks, session : String, args : JV) -> JV 
         if self.has.told &&
           (action is Some(Str("move")) || action is Some(Str("back"))) {
           let key = "tool:\{js_string(action)}:\{random_hex(b, 6)}"
-          return b.ask("move.told.asked", [
-            js(at_id),
-            js(key),
-            jobj([
-              ("method", js("move.tool")),
-              ("workspace", js(ws)),
-              ("args", rest),
-              ("told", js(key)),
-            ]),
-          ])
+          return self.soon(
+            Some(session),
+            "\{js_string(action)} on \{js_string(at.get("name"))}",
+            async fn() {
+              b.ask("move.told.asked", [
+                js(at_id),
+                js(key),
+                jobj([
+                  ("method", js("move.tool")),
+                  ("workspace", js(ws)),
+                  ("args", rest),
+                  ("told", js(key)),
+                ]),
+              ])
+            },
+          )
         }
-        return b.ask("move.ask", [
-          js(at_id),
-          jobj([("method", js("move.tool")), ("workspace", js(ws)), ("args", rest)]),
-        ])
+        return self.soon(
+          Some(session),
+          "\{js_string(action)} on \{js_string(at.get("name"))}",
+          async fn() {
+            b.ask("move.ask", [
+              js(at_id),
+              jobj([
+                ("method", js("move.tool")),
+                ("workspace", js(ws)),
+                ("args", rest),
+              ]),
+            ])
+          },
+        )
       }
     }
     _ => ()
@@ -268,6 +336,11 @@ pub async fn MoveAsks::tool_in(
         Some((id, _)) => id
         None => ""
       }
+      let what = match to {
+        Some((_, n)) => "\{js_string(args.get("action"))} toward \{n}"
+        None => js_string(args.get("action"))
+      }
+      self.soon(session, what, async fn() {
       let plan = b.ask("move.scheduler.planShown", [js(ws), js(to_id)])
       // (one item, a module's a page at a time, or the summary: never every item, whatever the station's size)
       match item {
@@ -331,6 +404,7 @@ pub async fn MoveAsks::tool_in(
         None => words
       }
       jobj([("summary", summary), ("say", js(say))])
+      })
     }
     Some("move") => {
       let (to_id, to_name) = self.station(ws, args.get("to"))
@@ -353,16 +427,22 @@ pub async fn MoveAsks::tool_in(
           "move: name the module and the item (station_move plan lists them), or all",
         )
       }
-      let out = b.ask("move.scheduler.move", [
-        js(ws),
-        js(to_id),
-        jobj([..sel, ("follow", follow)]),
-        jsession,
-      ])
-      jobj([
-        ("outcome", outcome_of(out)),
-        ("say", js(outcome_words(out, "moved to", to_name))),
-      ])
+      self.soon(
+        session,
+        "move of \{module.unwrap_or("")} \{item.unwrap_or("")} to \{to_name}",
+        async fn() {
+          let out = b.ask("move.scheduler.move", [
+            js(ws),
+            js(to_id),
+            jobj([..sel, ("follow", follow)]),
+            jsession,
+          ])
+          jobj([
+            ("outcome", outcome_of(out)),
+            ("say", js(outcome_words(out, "moved to", to_name))),
+          ])
+        },
+      )
     }
     Some("back") => {
       let (from_id, from_name) = self.station(ws, args.get("to"))
@@ -377,16 +457,22 @@ pub async fn MoveAsks::tool_in(
           _ => ()
         }
       }
-      let out = b.ask("move.scheduler.back", [
-        js(ws),
-        js(from_id),
-        jobj([..sel, ("follow", follow)]),
-        jsession,
-      ])
-      jobj([
-        ("outcome", outcome_of(out)),
-        ("say", js(outcome_words(out, "back here from", from_name))),
-      ])
+      self.soon(
+        session,
+        "back of \{module.unwrap_or("")} \{item.unwrap_or("all")} from \{from_name}",
+        async fn() {
+          let out = b.ask("move.scheduler.back", [
+            js(ws),
+            js(from_id),
+            jobj([..sel, ("follow", follow)]),
+            jsession,
+          ])
+          jobj([
+            ("outcome", outcome_of(out)),
+            ("say", js(outcome_words(out, "back here from", from_name))),
+          ])
+        },
+      )
     }
     Some("stop") => {
       if !truthy(Some(b.ask("move.scheduler.stopTurn", [jsession]))) {

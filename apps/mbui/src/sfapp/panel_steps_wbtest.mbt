@@ -26,7 +26,7 @@ test "a phone's sheet: the system's back goes back a step, then closes it" {
   assert_true(preset_fields(t) && shows(t, "新预设"), msg=runs(t))
   assert_false(preset_adding(t))
   t.back()
-  t.run_for(@kit.sheet_scrim_ms)
+  t.run_for(@motion.sheet_scrim_ms)
   t.run_for(@ui.move_most_ms)
   assert_false(preset_fields(t), msg=runs(t))
 }
@@ -121,7 +121,7 @@ test "a new connect's wizard (the core's steps): 下一步 slides its next step 
   t.run_for(@ui.move_most_ms)
   assert_true(shows(t, "下一步") && !shows(t, "创建 app"), msg=runs(t))
   t.back()
-  t.run_for(@kit.sheet_scrim_ms)
+  t.run_for(@motion.sheet_scrim_ms)
   t.run_for(@ui.move_most_ms)
   assert_false(shows(t, "下一步"), msg=runs(t))
 }
@@ -176,7 +176,7 @@ test "a folder chosen in the picker, two steps in, goes back to the dialog with 
     } else {
       t.back()
     }
-    t.run_for(@kit.sheet_scrim_ms)
+    t.run_for(@motion.sheet_scrim_ms)
     t.run_for(@ui.move_most_ms)
     assert_false(preset_fields(t), msg="wide \{wide}: \{runs(t)}")
   }
@@ -196,10 +196,10 @@ test "a group connect's form, 添加并连接: the wizard's done closes the dial
       h=size.1,
       platform=size.2,
     )
-    t.run_for(@kit.sheet_scrim_ms)
+    t.run_for(@motion.sheet_scrim_ms)
     assert_true(shows(t, "加入 Group 服务器") && shows(t, "添加并连接"), msg=runs(t))
     t.tap_text("添加并连接")
-    t.run_for(@kit.sheet_scrim_ms)
+    t.run_for(@motion.sheet_scrim_ms)
     t.run_for(@ui.move_most_ms)
     @view.faults_stop.val = true
     @view.fault_told.val = None
@@ -223,10 +223,10 @@ test "a Feishu bot made by scanning: the wizard done on its own closes the dialo
       h=size.1,
       platform=size.2,
     )
-    t.run_for(@kit.sheet_scrim_ms)
+    t.run_for(@motion.sheet_scrim_ms)
     assert_true(shows(t, "扫码创建"), msg=runs(t))
     @settings.fixture_scanned()
-    t.run_for(@kit.sheet_scrim_ms)
+    t.run_for(@motion.sheet_scrim_ms)
     t.run_for(@ui.move_most_ms)
     @view.faults_stop.val = true
     @view.fault_told.val = None

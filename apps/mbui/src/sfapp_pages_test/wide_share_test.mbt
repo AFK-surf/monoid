@@ -21,9 +21,9 @@ test "wide: 分享给其他 workspace from the chat's info: a dialog lists the w
   t.frame()
   open_share(t)
   t.tap_text("分享给其他 workspace")
-  // (the dialog come in, @kit.dialog_in, and still: the corner rule holds every frame drawn so, its tick rows' boxes
+  // (the dialog come in, @motion.dialog_in, and still: the corner rule holds every frame drawn so, its tick rows' boxes
   // clear of their corners)
-  t.run_for(@kit.dialog_ms)
+  t.run_for(@motion.dialog_ms)
   t.frame()
   assert_eq(t.corner_faults(), [])
   assert_true(t.find("日常") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
@@ -36,8 +36,8 @@ test "wide: 分享给其他 workspace from the chat's info: a dialog lists the w
   assert_eq(field(Some(sent[0].params), "to"), Some(Json::array([Json::string("ws3")])))
   assert_true(t.clipboard().has_prefix("[整理发布清单]("), msg=t.clipboard())
   assert_true(t.clipboard().contains("/st1/s-c1)"), msg=t.clipboard())
-  // (the dialog goes as a presenter does: back the way it came, @kit.pop_out)
-  t.run_for(@kit.pop_out_ms)
+  // (the dialog goes as a presenter does: back the way it came, @motion.pop_out)
+  t.run_for(@motion.pop_out_ms)
   t.frame()
   assert_true(t.find("日常") is None, msg="the dialog gone")
 }

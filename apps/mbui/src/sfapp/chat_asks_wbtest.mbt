@@ -59,7 +59,7 @@ test "a list's panel as tall as what it holds, its share of the window the most 
   let t = decide_core(calls, "chat-letters-many")
   sheet_rested(t, "sf-present")
   let (_, _, _, sh) = t.get(@ui.Role::Dialog).rect
-  assert_true((sh - 844.0 * 0.8).abs() < 2.0, msg="capped: \{sh}")
+  assert_true((sh - (844.0 * 0.8 - 6.0)).abs() < 2.0, msg="capped: \{sh}")
   assert_true(t.find("往来的对话 1") is Some(_))
   assert_true(t.find("往来的对话 30") is None, msg="its last under its foot")
 }
@@ -79,6 +79,32 @@ let context_corners_known : Array[String] = [
   "「清空上下文 结束当前进程，下一条消息开始新的会话」 (at 356,434 488×60, node 911) (corner 18) in the bottom right of 「上下文 压缩上下文 保留摘要，释放上下文空间 清…」 (at 340,283 520×235, node 880) (corner 42): 16 and 24 from its edges",
   "「清空上下文 结束当前进程，下一条消息开始新的会话」 (at 356,434 488×60, node 911) (corner 18) in the bottom left of 「上下文 压缩上下文 保留摘要，释放上下文空间 清…」 (at 340,283 520×235, node 880) (corner 42): 16 and 24 from its edges",
 ]
+
+///|
+test "an agent's context: how often its runtime session compacted it said over what can be done to it, the tile as it was; never yet, nothing" {
+  let said = "当前会话已压缩 3 次"
+  for mode in ["chat-agent-compacted", "chat-agent-context"] {
+    let calls : Array[Made] = []
+    let t = decide_core(calls, mode)
+    let before = t.audit()
+    assert_true(t.find(said) is None, msg="\{mode}: not on its tile")
+    t.tap_text("上下文")
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting(), msg="\{mode}: what can be done to it")
+    assert_true(t.find("清空上下文") is Some(_), msg=mode)
+    if mode == "chat-agent-compacted" {
+      guard t.words().iter().find_first(fn(w) { w.0 == said && w.5 > 0.5 }) is Some(note) else {
+        fail("\{mode}: not said: \{Repr(t.words())}")
+      }
+      guard t.words().iter().find_first(fn(w) { w.0 == "清空上下文" && w.5 > 0.5 }) is Some(row) else { fail(mode) }
+      assert_true(note.2 < row.2, msg="\{mode}: over the rows")
+      assert_eq(note.1, row.1, msg="\{mode}: at the rows' words' start")
+    } else {
+      assert_true(t.find(said) is None, msg="\{mode}: never compacted, nothing said")
+    }
+    assert_eq(t.audit(), before, msg=mode)
+  }
+}
 
 ///|
 /// The fixture's agent card (decide_core's `chat-agent-unsaid`, its context compactable and clearable) on a window of

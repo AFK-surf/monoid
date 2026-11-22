@@ -497,52 +497,13 @@ pub fn refs_close(key : String) -> Unit {
 }
 
 ///|
-/// The chat chosen in the menu of draft `key` among `n` (moved by `by`, round; -1 / 1: ↑ / ↓), and set (`to`).
-pub fn refs_active(key : String, n : Int, by? : Int = 0, to? : Int) -> Int {
-  let f = ref_field(key)
-  match to {
-    Some(i) => f.active.set(i)
-    None => ()
-  }
-  if n <= 0 {
-    return 0
-  }
-  f.active.set(((f.active.get() + by) % n + n) % n)
-  f.active.get()
-}
-
-///|
 /// Whether the menu of draft `key` was closed for the `@` at `start` (Escape, a pick), till its `@words` are gone.
 pub fn refs_closed(key : String, start : Int) -> Bool {
   ref_field(key).closed.get() == start
 }
 
 ///|
-/// A chat picked in the menu of draft `key` for the `@` at `start` (as the menu showed it; its station, its id, its
-/// title) put in as the mark the core makes of it (`chat.ref`, which keeps its link until it is sent; one of another
-/// workspace's keeps it for this one, `into`, too) in the `@words`' place if they are still there, a space and the
-/// caret after it; the menu closed for this `@`. Failing, `failed` is told why.
-pub fn refs_pick(
-  c : @ui.Ctx,
-  src : Source,
-  key : String,
-  input : @ui.Field,
-  start : Int,
-  into : String,
-  station : String,
-  id : String,
-  title : String,
-  failed : (String) -> Unit,
-) -> Unit {
-  let f = ref_field(key)
-  // (the caret as it is now: the words typed after the `@` since its menu was built are the `@`'s too)
-  let caret = input.selection().1
-  f.closed.set(start)
-  c.tell("refs/pick/" + key, fn() { refs_put_picked(src, key, input, start, caret, into, station, id, title, failed) })
-}
-
-///|
-/// refs_pick's, taken in a handler (a menu's row picked, made as nodes): asked of the core at once.
+/// A chat picked in the menu of draft `key` for the `@` at `start`, taken in a handler (a menu's row picked, made as nodes): asked of the core at once.
 pub fn refs_pick_now(
   src : Source,
   key : String,
@@ -605,24 +566,6 @@ fn refs_put_picked(
       },
     )
   }
-}
-
-///|
-/// Whether `input` still holds the `@` its menu was built for (`at`: where it starts; `before`: what was before it and
-/// it then; `after`: what was after the caret then): those as they were, the caret where `after` begins, nothing
-/// picked. The range the menu's choice is for, grown by what was typed in it since, not what the core makes of the
-/// words in it.
-pub fn refs_still_at(input : @ui.Field, at : (Int, String)?, before : String, after : String) -> Bool {
-  guard at is Some((start, _)) else { return false }
-  let now = input.text()
-  let (a, caret) = input.selection()
-  before != "" &&
-  a == caret &&
-  caret > start &&
-  now.length() >= before.length() + after.length() &&
-  caret == now.length() - after.length() &&
-  now.has_prefix(before) &&
-  now.has_suffix(after)
 }
 
 ///|
@@ -727,44 +670,6 @@ pub fn paste_threshold_now(src : Source) -> Int {
       }
     })
   }
-  paste_bound.get()
-}
-
-///|
-/// paste_threshold_now's, asked as the frame that asks it is over (`c`'s tell).
-pub fn paste_threshold(c : @ui.Ctx, src : Source) -> Int {
-  if !paste_bound_asked.val {
-    paste_bound_asked.val = true
-    c.tell("refs/paste-bound", fn() { paste_bound_call(src) })
-  }
-  paste_bound.get()
-}
-
-///|
-/// paste_threshold's ask, made now where it was not made yet (a composer made as nodes, as it is made): what reads
-/// paste_bound told as the core answers.
-pub fn paste_bound_ask(src : Source) -> Unit {
-  if !paste_bound_asked.val {
-    paste_bound_asked.val = true
-    paste_bound_call(src)
-  }
-}
-
-///|
-/// The core asked from how many characters words pasted at once go as a file (`paste.info`), asked again where it
-/// failed.
-fn paste_bound_call(src : Source) -> Unit {
-  (src.call)("paste.info", { "text": Json::string("") }, fn(r) {
-    match r {
-      Ok(v) => paste_bound.set(number(Some(v), "threshold").to_int())
-      Err(_) => paste_bound_asked.val = false
-    }
-  })
-}
-
-///|
-/// From how many characters words pasted at once go as a file, as the core said (0 till it has: none taken so).
-pub fn paste_bound_now() -> Int {
   paste_bound.get()
 }
 

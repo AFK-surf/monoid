@@ -21,20 +21,80 @@ fn outflow_state(turn : Json) -> Json {
 }
 
 ///|
-/// outflow.ts `assigneeAt`: the email of who decides the card on a message, as it names one.
-fn assignee_at(db : @sql.Db, thread : Json, n : Json) -> String? raise {
-  guard one(db, "SELECT card FROM entries WHERE thread = ? AND n = ? AND kind = 'message'", [thread, n]) is Some(r) &&
-    field(r, "card") is String(card) else {
-    return None
+/// outflow.ts `outflowCard`: a message's card as Comma and the Router read it, with no internal ids or credentials.
+fn outflow_card(card : Json?) -> Json? {
+  guard card is Some(Object(c)) else { return None }
+  if c.get("type") == Some(Json::string("login")) {
+    return Some({ "type": "login" })
   }
-  match (try { Some(@jsjson.parse(card)) } catch { _ => None }) {
-    Some(v) =>
-      match jget(Some(v), "assignee") {
-        Some(Str(a)) if !js_blank(@jsjson.text(a)) => Some(@jscase.lower(@jscase.trim(@jsjson.text(a))))
+  if c.get("vault") is Some(Object(_)) {
+    return Some({ "type": "secret" })
+  }
+  if c.get("adb") is Some(Object(_)) {
+    return Some({ "type": "device" })
+  }
+  if c.get("rig") is Some(Object(_)) {
+    return Some({ "type": "rig" })
+  }
+  if c.get("signin") is Some(Object(_)) {
+    return Some({ "type": "signin" })
+  }
+  if c.get("type") == Some(Json::string("options")) {
+    let raw = match c.get("options") {
+      Some(Array(xs)) => xs
+      _ => []
+    }
+    let options : Array[Json] = []
+    for item in raw {
+      if options.length() >= 6 {
+        break
+      }
+      guard item is Object(o) && o.get("label") is Some(String(lbl)) && !js_blank(lbl) else { continue }
+      let m : Map[String, Json] = { "label": Json::string(take_chars(@jscase.trim(lbl), 100)) }
+      if o.get("detail") is Some(String(det)) && !js_blank(det) {
+        m["detail"] = Json::string(take_chars(@jscase.trim(det), 300))
+      }
+      if o.get("recommended") == Some(Json::boolean(true)) {
+        m["recommended"] = true
+      }
+      options.push(Json::object(m))
+    }
+    return Some({ "type": "options", "options": Json::array(options) })
+  }
+  if c.get("type") == Some(Json::string("text")) {
+    let m : Map[String, Json] = { "type": "text" }
+    if c.get("placeholder") is Some(String(ph)) && !js_blank(ph) {
+      m["placeholder"] = Json::string(take_chars(@jscase.trim(ph), 200))
+    }
+    return Some(Json::object(m))
+  }
+  None
+}
+
+///|
+/// outflow.ts `cardInfoAt`: the assignee and kind of the card on a message, as it names them.
+fn card_info_at(db : @sql.Db, thread : Json, n : Json) -> (String?, String?) raise {
+  guard one(db, "SELECT card, options FROM entries WHERE thread = ? AND n = ? AND kind = 'message'", [thread, n]) is Some(r) else {
+    return (None, None)
+  }
+  let raw = card_of(field(r, "card"), field(r, "options"))
+  let assignee = match raw {
+    Some(Object(c)) =>
+      match c.get("assignee") {
+        Some(String(a)) if !js_blank(a) => Some(@jscase.lower(@jscase.trim(a)))
         _ => None
       }
-    None => None
+    _ => None
   }
+  let kind = match outflow_card(raw) {
+    Some(Object(c)) =>
+      match c.get("type") {
+        Some(String(t)) => Some(t)
+        _ => None
+      }
+    _ => None
+  }
+  (assignee, kind)
 }
 
 ///|
@@ -67,15 +127,25 @@ fn attention_of(db : @sql.Db, thread : Map[String, Json], latest : Json, creator
     _ => Json::null()
   }
   if said == Json::string("need_human") {
-    let assignee = match latest.value("about") {
-      Some(Object(_) as about) => assignee_at(db, about.value("thread").unwrap_or(Json::null()), about.value("seq").unwrap_or(Json::null()))
-      _ => None
+    let mut info = match latest.value("about") {
+      Some(Object(_) as about) => card_info_at(db, about.value("thread").unwrap_or(Json::null()), about.value("seq").unwrap_or(Json::null()))
+      _ => (None, None)
     }
-    return Some({
+    if info.1 is None {
+      if n_of(one(db, system_card_waiting_sql, [field(thread, "id")])) is Some(sys_n) {
+        let waiting = card_info_at(db, field(thread, "id"), sys_n)
+        info = (match info.0 { Some(_) as a => a; None => waiting.0 }, waiting.1)
+      }
+    }
+    let out : Map[String, Json] = {
       "kind": "need",
-      "waitsFor": Json::array(match assignee { Some(a) => [Json::string(a)]; None => mine }),
+      "waitsFor": Json::array(match info.0 { Some(a) => [Json::string(a)]; None => mine }),
       "note": words(latest.value("need")),
-    })
+    }
+    if info.1 is Some(c) {
+      out["card"] = Json::string(c)
+    }
+    return Some(Json::object(out))
   }
   if said == Json::string("all_done") {
     guard email is Some(e) && creator is Some(c) && field(thread, "surface") == Json::string("chat") else { return None }

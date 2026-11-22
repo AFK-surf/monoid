@@ -262,6 +262,7 @@ pub fn rows_view_node(
   head? : (@view.View) -> Unit,
   empty? : (@view.View) -> Unit,
   foot? : () -> Double = fn() { 0.0 },
+  pad? : (Double, Double, Double, Double),
 ) -> Unit {
   let src = s.src
   let lines = fn() -> Array[LineAt] {
@@ -297,6 +298,10 @@ pub fn rows_view_node(
   }
   parent.box(fn(l) {
     l.transitions_only().grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    match pad {
+      Some(p) => l.padding(Is(p)) |> ignore
+      None => ()
+    }
     let folder_loaded = fn() {
       let (value, _) = s.b.folder(src, at)
       value is Some(_) && s.b.arranged(src, at.path) is Some(_)
@@ -328,7 +333,7 @@ pub fn rows_view_node(
         Some(w) => (Some(w), 0.0)
         None =>
           match s.b.renaming() {
-            Some(w) => (Some(w), l.window().1)
+            Some(w) => (Some(w), l.window_h())
             None => (None, 0.0)
           }
       }
@@ -428,6 +433,9 @@ pub fn rows_view_node(
 /// rows as rows_view_node draws them (on a card but where not `card`), of made-up names, a couple of folders first.
 pub fn rows_sample_node(parent : @view.View, s : Shown, at : DriveAt, count : Int, compact? : Bool = false, card? : Bool = true) -> Unit {
   @sf.waiting_node(parent, fn(w) {
+    // (keep driveBrowse watched after head during pre-order Tree::rest_in while still in "reading",
+    // matching "list" and post-order View::let_go so drive unsubscribes before driveBrowse at every FPS)
+    w.reacts(fn() { s.b.shown(s.src) is Some(_) }, fn(_) {  })
     for i in 0..<count {
       let (dir, name) = rows_sample_names[i % rows_sample_names.length()]
       let e = @sfbase.dv_entry({

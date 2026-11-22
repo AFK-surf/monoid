@@ -23,7 +23,7 @@
 // 2026-11-12, the lead's first steps kept as `rule=steps` to compare). The second round's `recovery` and `retain` are not
 // used here: they were measured there and not adopted (lock-fork-choice-model.ts says why).
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { type Entry, canonical, personFold, rank, sigValid } from "../src/cloud/lock.ts";
+import { type Entry, canonical, personFold, rank, sigValid } from "../../shared/lock.ts";
 import { Keeper, type LogRules, type Variant, hashOf, signed } from "./lock-fork-choice-model.ts";
 import { type Key, Rng, START, WS, eveKey, key } from "./lock-world-sim.ts";
 

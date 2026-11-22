@@ -47,9 +47,31 @@ fn MessageFilesAt::here(self : MessageFilesAt) -> MessageHere {
     go: None,
     inline: false,
     gutter: 0.0,
-    list: None,
     core: None,
   }
+}
+
+///|
+/// A message's files drawn as nodes (`message_files_node`), for standalone tests.
+pub fn message_files_of_node(
+  parent : @view.View,
+  src : Source,
+  tips : @sf.TipLayer,
+  station : String,
+  session : String,
+  view : ChatView,
+  list : () -> Array[Attachment],
+  mine : Bool,
+) -> Unit {
+  let place : MessageFilesAt = {
+    station: fn() { station },
+    session: fn() { session },
+    view: fn() { view },
+    said: fn() { false },
+    picture: None,
+    share: fn() { None },
+  }
+  message_files_node(parent, src, tips, place, list, fn() { mine }, fn() { None }, fn() { "" })
 }
 
 ///|
@@ -248,8 +270,13 @@ fn message_file_card_node(
           items.push(x)
         }
       }
-      message_items_after(items, place.share)
-      @sf.menu(items, from=@sf.at_point(x, y))
+      with_reveal(src, here, a, owner, fn(reveal) {
+        if reveal is Some(_) {
+          items.push(reveal)
+        }
+        message_items_after(items, place.share)
+        @sf.menu(items, from=@sf.at_point(x, y))
+      })
     },
   )
 }

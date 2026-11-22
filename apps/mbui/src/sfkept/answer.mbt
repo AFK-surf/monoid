@@ -1,5 +1,5 @@
 // The real core's answers to its pure calls, kept for the app's runs without a core: the Tester's tests (src/sf,
-// src/sfapp with its screens), the screenshots' app (src/sffix), the design system's (src/sfkit), and the replays of tapes
+// src/sfapp with its screens), the screenshots' app (src/sffix), and the replays of tapes
 // older than a call (src/sfreplay). `markdown` (a text's tree), `code.ink` (what each piece of a code is), `reader.book`,
 // `reader.text` and `reader.search` (a text as the drive's reader shows it), `commands.find` (what ⌘K lists of what is
 // offered), `chat.tabs` (a chat's side panel's tabs, for a run's made-up core: chat-tabs.ts), `chat.find.go` (where a chat's find goes: chat-find.ts), `chat.relayView` (what a chat's relay picker shows:

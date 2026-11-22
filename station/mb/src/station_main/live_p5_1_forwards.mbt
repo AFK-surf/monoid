@@ -27,10 +27,7 @@ fn forward_socket_id(s : @gate.Socket) -> Json? {
 
 ///|
 fn forget_forward_socket(id : Json) -> Unit {
-  match forward_sockets.search_by(x => x.1 == id) {
-    Some(i) => ignore(forward_sockets.remove(i))
-    None => ()
-  }
+  if forward_sockets.search_by(x => x.1 == id) is Some(i) { ignore(forward_sockets.remove(i)) }
 }
 
 ///|
@@ -138,7 +135,7 @@ async fn tcp_port_pids(host : @host.Host, port : Int) -> Array[Int] {
   }
   let tables = []
   for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
-    if read_pseudo(host, f) is Some(t) {
+    if shell_read_text(host, f) is Some(t) {
       tables.push(t)
     }
   }
@@ -230,10 +227,7 @@ fn P51::forwards_live(self : P51) -> @gate.Forwards {
       Object(m) => m.get(k)
       _ => None
     }
-    let t = (k : String) => match get(k) {
-      Some(String(s)) => Some(s)
-      _ => None
-    }
+    let t = (k : String) => opt_str(get(k))
     let n = (k : String) => match get(k) {
       Some(Number(x, ..)) => Some(x.to_int())
       _ => None
@@ -272,7 +266,7 @@ fn P51::forwards_live(self : P51) -> @gate.Forwards {
           Some(async fn() -> @gate.Socket raise {
             let reached = match d {
               { "reachFn": reach, .. } => (bus.ui_ask.val)("devices.reachForward", Json::array([Json::string(session), reach]))
-              _ => (bus.ui_ask.val)("devices.reach", { "session": Json::string(session), "device": Json::string(id) })
+              _ => bus.ui_devices_reach(session, id)
             }
             match reached {
               { "id": cid, .. } => shell_socket(host, host.conn(cid))
@@ -324,11 +318,16 @@ fn p51_forwards_named(given : Json) -> Json {
       m["port"] = a(2)
       match a(3) {
         { "local": l, .. } => m["local"] = l
+        Number(_, ..) as l => m["local"] = l
         _ => ()
       }
       match a(3) {
         { "job": j, .. } => m["job"] = j
-        _ => ()
+        _ =>
+          match a(4) {
+            String(_) as j => m["job"] = j
+            _ => ()
+          }
       }
     }
     "remove" => {

@@ -133,7 +133,7 @@ test "a picture looked at on an iPhone Duo: the system's tabs put away, its acti
       fail("\{s.label} under the system's column: \{Repr(s.rect)}")
     }
   }
-  match viewer.get().unwrap().zoom.rect(t.ctx()) {
+  match viewer.get().unwrap().zoom.rect_at(t.time()) {
     Some((x, _, w, _)) => assert_true(x + w <= 951.0 - 84.0 + 0.5)
     None => fail("no picture laid out")
   }
@@ -321,9 +321,8 @@ test "an iPhone Duo on its side, the soft keyboard rising: the cards end on it f
 /// it, its foot left corner its own).
 fn composer_and_page(t : @ui.Tester) -> (@ui.Laid, @ui.Laid)? {
   let bs = t.boxes_held()
-  guard bs.search_by(fn(b) { b.kind == "editor" }) is Some(e) else { return None }
-  let ed = bs[e]
-  let round = fn(b : @ui.Laid) { b.x <= ed.x && ed.x + ed.w <= b.x + b.w && b.y <= ed.y && ed.y + ed.h <= b.y + b.h }
+  guard composer_field_rect(t) is Some((ex, ey, ew, eh)) else { return None }
+  let round = fn(b : @ui.Laid) { b.x <= ex && ex + ew <= b.x + b.w && b.y <= ey && ey + eh <= b.y + b.h }
   let mut page : @ui.Laid? = None
   let mut box : @ui.Laid? = None
   for b in bs {
@@ -394,6 +393,22 @@ test "an iPhone Duo, folded or on its side: the cards as far from the screen's f
 }
 
 ///|
+test "an iPhone Duo: the system's action said lower than the composer's round buttons, the composer as high as it stands alone, never padded less than nothing" {
+  // (iOS 27.3 on the Duo's outer screen once said its action lower than the 36 the composer's buttons are across: the
+  // capsule made as high, its padding under nothing, the app stopped as it opened, 2026-11-20)
+  for a in [30.0, 20.0, 1.0] {
+    let (w, h, side) = (466.0, 678.0, 70.0)
+    let t = native_chat(w, h, true, side~, corner=59.0)
+    t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":\{side}},\"nav_action\":{\"x\":\{w - 24.0 - a},\"y\":\{h - 24.0 - a},\"w\":\{a},\"h\":\{a}}}")
+    t.run_for(@ui.move_most_ms)
+    t.drag(400.0, 330.0, 140.0, 330.0)
+    t.run_for(@ui.move_most_ms * 2.0)
+    guard composer_and_page(t) is Some((b, _)) else { fail("\{a}: no composer in a page") }
+    assert_true(b.h >= @sf.theme().round.side + 2.0 * @sf.corner_fit.near - 0.5, msg="\{a}: the composer \{b.h} high")
+  }
+}
+
+///|
 test "an iPhone Duo: a chat's rows as wide as they were with the keyboard up, the composer alone widening" {
   // (narrow: the outer screen, the page brought over; beside the system's action, whose foot corner the keyboard ends)
   let (w, h, side, a) = (466.0, 678.0, 70.0, 48.67)
@@ -402,8 +417,18 @@ test "an iPhone Duo: a chat's rows as wide as they were with the keyboard up, th
   t.run_for(@ui.move_most_ms)
   t.drag(400.0, 330.0, 140.0, 330.0)
   t.run_for(@ui.move_most_ms * 2.0)
+  // (the row's words where they are laid out: an old view's row says them whole to a screen reader, a row made as
+  // nodes its words alone)
   let row = fn() {
-    t.semantics().filter(fn(s) { s.label.contains("推送截图前要先登录") }).map(fn(s) { (s.rect.0, s.rect.2) })
+    let said = t.semantics().filter(fn(s) { s.label.contains("推送截图前要先登录") }).map(fn(s) { (s.rect.0, s.rect.2) })
+    if said.length() > 0 {
+      said
+    } else {
+      match t.rect_of("推送截图前要先登录") {
+        Some((x, _, w, _)) => [(x, w)]
+        None => []
+      }
+    }
   }
   let shut = row()
   assert_eq(shut.length(), 1)
@@ -698,9 +723,33 @@ test "an iPhone Duo: the workspace's button has a dot while another workspace ha
 ///|
 /// The composer's width in the chat's page (the page's own width less its room), as last drawn.
 fn composer_w(t : @ui.Tester) -> Double {
-  match t.boxes().search_by(fn(b) { b.kind == "editor" }) {
-    Some(i) => t.boxes()[i].w
+  match composer_field_rect(t) {
+    Some((_, _, w, _)) => w
     None => 0.0
+  }
+}
+
+///|
+/// The composer's field where it is laid out: the window tree's lowest text field (the page made as nodes, its composer
+/// at its foot; read out or not, as the page beside the sidebar or a panel in use on the tape is kept from what is read
+/// out, tape_behind's, and a panel come over may have a field of its own), else the old view's editor.
+fn composer_field_rect(t : @ui.Tester) -> (Double, Double, Double, Double)? {
+  let mut field : @ui.SemNode? = None
+  for s in t.semantics() {
+    if s.role == TextField && (field is None || field.unwrap().rect.1 < s.rect.1) {
+      field = Some(s)
+    }
+  }
+  match field {
+    Some(f) => Some(f.rect)
+    None =>
+      match t.boxes().search_by(fn(b) { b.kind == "editor" }) {
+        Some(i) => {
+          let b = t.boxes()[i]
+          Some((b.x, b.y, b.w, b.h))
+        }
+        None => None
+      }
   }
 }
 
@@ -710,7 +759,10 @@ test "an iPhone Duo on its side: details come over without taking another strip 
   let t = native_chat(w, h, true, side~, mode="chat-info", corner=59.0)
   let src = fixture("chat-info")
   let from = composer_w(t)
+  // (asked beside the chat: a plain press opens it over the whole window)
+  t.hold_mods(@ui.mod_cmd)
   open_link_in(src, "https://still.fail/o/ws1/st1/s-c1?service=j-web")
+  t.hold_mods(0)
   // (the move's first frame: the page as wide as it was, near enough, the panel coming in from the window's edge)
   t.run_for(@ui.frame_period_default)
   let first = composer_w(t)
@@ -726,7 +778,10 @@ test "an iPhone Duo on its side: the side panel closed while in use slides off a
   let (w, h, side) = (951.0, 669.0, 84.0)
   let t = native_chat(w, h, true, side~, mode="chat-info", corner=59.0)
   let src = fixture("chat-info")
+  // (asked beside the chat: a plain press opens it over the whole window)
+  t.hold_mods(@ui.mod_cmd)
   open_link_in(src, "https://still.fail/o/ws1/st1/s-c1?service=j-web")
+  t.hold_mods(0)
   t.run_for(@ui.move_most_ms)
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Panel)
@@ -859,7 +914,7 @@ test "Duo workspace heading opens the existing panel without a duplicate menu" {
   t.frame()
   assert_true(t.nav_said().contains("workspace-switch"))
   assert_true(t.nav_said().contains("sidebar/search"))
-  t.run_for(@kit.pop_ms / 2.0)
+  t.run_for(@motion.pop_ms / 2.0)
   assert_true(t.nav_said().contains("workspace-switch"))
   assert_true(t.nav_said().contains("sidebar/search"))
   t.run_for(@ui.move_most_ms)
@@ -877,7 +932,7 @@ test "Duo workspace heading opens the existing panel without a duplicate menu" {
   assert_true(t.nav_said().contains("\"blocked\":true"))
   @sf.close_all_presented()
   t.frame()
-  t.run_for(@kit.pop_out_ms / 2.0)
+  t.run_for(@motion.pop_out_ms / 2.0)
   for id in ["workspace-switch", "sidebar/search", "sidebar/filter/mine"] {
     assert_true(t.nav_said().contains(id), msg="missing during panel exit: \{id}")
   }
@@ -1060,7 +1115,7 @@ test "Duo chat menu covers sidebar glass until its exit finishes" {
   }
   t.post(@hostapi.system_channel, "{\"nav\":\"page/chat/info\",\"at\":[270,0,44,44]}")
   t.frame()
-  t.run_for(@kit.pop_out_ms / 2.0)
+  t.run_for(@motion.pop_out_ms / 2.0)
   for id in ["workspace-switch", "sidebar/search", "sidebar/filter"] {
     assert_false(t.nav_said().contains(id), msg="control returned during exit: \{id}")
   }
@@ -1243,7 +1298,7 @@ test "a picture looked at and marked on an iPhone Duo on its side: laid out clea
   assert_eq(@sf.native_clear(), 84.0)
   let clear = 951.0 - 84.0
   // (the picture in the middle of what is clear of the column)
-  let (x, _, w, _) = viewer.get().unwrap().zoom.rect(t.ctx()).unwrap()
+  let (x, _, w, _) = viewer.get().unwrap().zoom.rect_at(t.time()).unwrap()
   assert_true((x + w / 2.0 - clear / 2.0).abs() < 0.5, msg="its middle \{x + w / 2.0}, what is clear's \{clear / 2.0}")
   t.post(@hostapi.system_channel, "{\"nav\":\"over/mark\"}")
   t.run_for(@ui.move_most_ms)
@@ -1507,13 +1562,14 @@ test "an iPhone Duo upright: a picture waiting in the composer, rounder than a c
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=669.0, h=951.0, platform=1, window_corner=59.0, nav_able=true)
   t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":0}}")
   t.run_for(@ui.move_most_ms)
-  // (the composer's corner concentric with the screen's: rounder than a card's)
-  let corner = @sf.composer_corner()
-  assert_true(corner > @sf.card_corner, msg="\{corner}")
   // (each frame held to the corner rule: before, the picture stood 8 in as round as 31, a circle)
   let w = @sfbase.writing(src, "ws1/st1:s-c1")
   @sfbase.writing_add(src, w, "ws1/st1", "新图片.png", png_head())
   t.run_for(@ui.move_most_ms)
+  // (the composer's corner, a box now, concentric with the screen's: rounder than a card's, as it is drawn)
+  guard composer_and_page(t) is Some((box, _)) else { fail("no composer in a page") }
+  let corner = box.radii.3
+  assert_true(corner > @sf.card_corner, msg="\{corner}")
   let picture = @sfbase.writing_pictures[text(Some(w.files.get()[0]), "id")]
   let clips = t.drawn_image_clips()
   let shown = t.drawn_instances().filter(fn(a) { a[5] == 4.0 }).mapi(fn(k, a) { (a, clips[k]) }).filter(fn(p) {

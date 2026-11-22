@@ -162,7 +162,7 @@ pub fn browser_tools(
       run: async fn(session, args) {
         let av = Some(args)
         let action = match at(av, "action") {
-          Some(Str(u)) => @jsjson.text(u)
+          Some(Str(u)) => @jsjson.sanitize_str(u)
           _ => "endpoint"
         }
         let engine = text(at(av, "engine"))

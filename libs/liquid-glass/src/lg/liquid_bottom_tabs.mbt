@@ -8,42 +8,47 @@
 // lights the bar where the lens is. What the bar is to the keys and a screen reader is mbui's headless radio group's, a
 // tab list: a tab pressed is chosen, the arrow keys move among them.
 //
-// Under the catalog's lens are the tabs again in the accent (a second row, drawn into the lens's backdrop alone); here
-// each tab is drawn in a colour going from its words' to the accent as far as the lens is over it.
+// Under the catalog's lens are the tabs again in the accent (a second row, drawn into the lens's backdrop alone): while
+// the lens is lifted (pressed > 0.01 and glass is not solid), the base row transitions smoothly to neutral content ink
+// and a lens-clipped middle viewport draws the tabs in `colors().accent` at inverse offset so the clear zoom=1.22
+// lens above captures, magnifies and refracts only the accented region inside the lens capsule.
 
 ///|
-/// The bar's glass, lit by a finger at `spot` as far as `light` says.
-fn tabs_glass(light : Double, spot : (Double, Double)?) -> @paint.Glass {
-  let c = colors()
-  @paint.Glass::backdrop_lens(
-    height=24.0,
-    amount=24.0,
-    blur=8.0,
-    tint=c.container,
-    solid=alpha(c.container, 1.0 / 0.4),
-    highlight=1.0,
-    style=Some(Default),
-    saturation=1.5,
-    spot~,
-    spot_alpha=light,
+/// The bar's glass (iOS 27 regular liquid glass calibrated for 56–64pt controls).
+fn tabs_glass() -> @paint.Glass {
+  let d = is_dark()
+  @paint.Glass::liquid(
+    blur=2.1,
+    tint=if d { 0x20202067L } else { 0xFDFCFD67L },
+    solid=if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=28.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+    spot=None,
   )
 }
 
 ///|
-/// The lens's glass over the chosen tab, held `p`.
+/// The lens's glass over the chosen tab (iOS 27 clear loupe with 1.10× optical magnification), held `p`.
 fn tab_lens_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
   let c = colors()
-  @paint.Glass::backdrop_lens(
-    height=10.0 * p,
-    amount=14.0 * p,
+  @paint.Glass::liquid(
     blur=0.0,
-    tint=over(alpha(c.lens_idle, 1.0 - p), alpha(black, 0.03 * p)),
+    tint=0xFFFFFF00L,
     solid=alpha(c.container, 1.0 / 0.4),
-    highlight=p,
-    style=Some(Default),
-    dispersion=true,
-    inner_shadow=8.0 * p,
+    saturation=1.0,
+    rim=0.6 * p,
+    bezel=10.0 * p,
+    refraction=14.0 * p,
+    chroma=-0.06 * p,
+    merge=0.0,
+    adaptive=false,
+    zoom=1.0 + 0.10 * p,
   )
 }
 
@@ -66,10 +71,20 @@ pub fn liquid_bottom_tab_node(
   content : (@view.View, () -> Int64) -> Unit,
   lit : (@view.View) -> Double,
   scale : (@view.View) -> Double,
+  press? : (@view.Drag) -> Unit,
+  tap? : (@view.Drag) -> Unit,
+  drag? : (@view.Drag) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
   rg.item(made_for=loc, g, fn() { index }, fn() { label }, fn(t, it) {
-    t.grow(Is(1.0)).radius(Is(tab_lens_h / 2.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+    // (Modifier.weight(1f): its share of the row whatever it holds, so each is as wide as the lens over it)
+    t
+    .grow(Is(1.0))
+    .basis(Is(Some(0.0)))
+    .radius(Is(tab_lens_h / 2.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    |> ignore
     // (what it holds grown about its middle, LiquidBottomTab's graphicsLayer: the tab's own box, where it is pressed,
     // as it is laid out)
     t.box(fn(f) {
@@ -80,6 +95,12 @@ pub fn liquid_bottom_tab_node(
       })
     })
     |> ignore
+    if press is Some(_) || tap is Some(_) || drag is Some(_) {
+      t.box(fn(hit) {
+        hit.over(Is(true)).gesture(@ui.touch_slop(), press?, tap?, drag?) |> ignore
+      })
+      |> ignore
+    }
     // (the keyboard's focus on it: a ring in the accent round its capsule)
     t.show(fn() { it.focus_shown() }, fn(ring) {
       ring.over(Is(true)).radius(Is(tab_lens_h / 2.0)).edge(By(fn() { (2.0, colors().accent) })) |> ignore
@@ -132,11 +153,12 @@ pub fn liquid_bottom_tabs_node(
     dd.attach(g)
     ih.attach(g)
     g.height(Is(Some(tabs_h))).padding(Is((tabs_pad, tabs_pad, tabs_pad, tabs_pad))) |> ignore
-    // (chosen by what is not the lens: a tab pressed, the keys, its caller; the lens sent there as by a hand)
+    // (chosen by what is not the lens: the keys, its caller, a sidebar; the lens only slides there, the bar and the
+    // tabs unpressed and unscaled: a press, a drag and their let-go (`stopped`) alone squeeze and magnify)
     g.reacts(at_start=false, selected, fn(i) {
       if i != current.val {
         current.val = i
-        dd.animate_to(i.to_double())
+        dd.slide_to(i.to_double())
       }
     })
     g.by_room(fn(inner, room) {
@@ -162,23 +184,59 @@ pub fn liquid_bottom_tabs_node(
         .margin(Is((-tabs_pad, -tabs_pad, 0.0, 0.0)))
         .radius(Is(tabs_h / 2.0))
         .shadow(Is(shadow_default))
-        .glass(By(fn() {
-          let p = ih.pressed(bar)
-          let spot = if p > 0.0 {
-            Some(((dd.value(bar) + 0.5) * tab_w() + tabs_pad + panel(bar), tabs_h / 2.0))
-          } else {
-            None
-          }
-          Some(tabs_glass(p, spot))
-        }))
+        .shadow_outside(Is(true))
+        .glass(By(fn() { Some(tabs_glass()) }))
         .ground_drawn(By(fn() {
           let ww = w()
           let s = lerp(1.0, 1.0 + 16.0 / ww, dd.pressed(bar))
           stretched(ww, tabs_h, panel(bar), 0.0, s, s)
         }))
         |> ignore
+        bar.box(fn(ov) {
+          ov
+          .over(Is(true))
+          .points(Is(false))
+          .radius(Is(tabs_h / 2.0))
+          .ground(Is(white))
+          .alpha(By(fn() { clamp(ih.pressed(ov), 0.0, 1.0) * 0.14 }))
+          .ground_drawn(By(fn() {
+            let ww = w()
+            let s = lerp(1.0, 1.0 + 16.0 / ww, dd.pressed(ov))
+            stretched(ww, tabs_h, panel(ov), 0.0, s, s)
+          }))
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
+      let stopped = fn() {
+        let to = clamp(dd.target().round(), 0.0, last)
+        let i = to.to_int()
+        current.val = i
+        dd.animate_to(to)
+        if i != selected() {
+          select(i)
+        }
+        pulled_by.val = 0.0
+        pulled.go(g, 0.0, @motion.spring(ratio=1.0, stiffness=300.0, threshold=0.5)) // det-ok(motion-spring): LiquidBottomTabs.kt offsetAnimation, ported 1:1
+        ih.up()
+      }
+      let on_drag = fn(d : @view.Drag) {
+        match d.kind {
+          // (from where it went down: the slop before a drag is the drag's too, as Compose's overSlop)
+          Down | Moved => {
+            let dx = d.wx - last_x.val
+            last_x.val = d.wx
+            let tw = tab_w()
+            if tw > 0.0 {
+              dd.update_value(clamp(dd.target() + dx / tw, 0.0, last))
+            }
+            pulled_by.val = pulled_by.val + dx
+            pulled.put(pulled_by.val)
+          }
+          Up | Off => stopped()
+        }
+      }
       inner.box(fn(row) {
         row.row(Is(true)).height(Is(Some(tab_lens_h))).offset(By(fn() { (panel(row), 0.0) })) |> ignore
         for i, name in labels {
@@ -186,7 +244,35 @@ pub fn liquid_bottom_tabs_node(
             Some(fs) => fs.get(i).unwrap_or(tab_face(name))
             None => tab_face(name)
           }
-          liquid_bottom_tab_node(row, rg, i, name, face, fn(n) { lit(n, i) }, grown) |> ignore
+          let hit = i.to_double()
+          liquid_bottom_tab_node(
+            row,
+            rg,
+            i,
+            name,
+            face,
+            fn(n) {
+              let l = lit(n, i)
+              if n.glass_solid() {
+                l
+              } else {
+                l * (1.0 - clamp(dd.pressed(n) / 0.25, 0.0, 1.0))
+              }
+            },
+            grown,
+            press=fn(d) {
+              last_x.val = d.wx
+              pulled_by.val = 0.0
+              ih.down(hit * tab_w() + d.x + tabs_pad, d.y + tabs_pad, w(), tabs_h)
+              dd.press()
+              if (hit - dd.target()).abs() > 0.001 {
+                dd.update_value(hit)
+              }
+            },
+            tap=fn(_) { stopped() },
+            drag=on_drag,
+          )
+          |> ignore
         }
       })
       |> ignore
@@ -208,47 +294,93 @@ pub fn liquid_bottom_tabs_node(
           let (s, dy, ink) = shadow_default
           (s, dy, alpha(ink, dd.pressed(lens)))
         }))
-        .glass(By(fn() { Some(tab_lens_glass(dd.pressed(lens))) }))
+        .shadow_outside(Is(true))
         |> ignore
-        // (held, dragged and let go by a finger: the lens's own, over the tabs; its tabs are pressed round it)
-        let stopped = fn() {
-          let to = clamp(dd.target().round(), 0.0, last)
-          let i = to.to_int()
-          current.val = i
-          dd.animate_to(to)
-          if i != selected() {
-            select(i)
-          }
-          pulled_by.val = 0.0
-          pulled.go(lens, 0.0, @motion.spring(ratio=1.0, stiffness=300.0, threshold=0.5)) // det-ok(motion-spring): LiquidBottomTabs.kt offsetAnimation, ported 1:1
-          ih.up()
-        }
-        lens.gesture(
-          @ui.touch_slop(),
-          press=fn(d) {
-            last_x.val = d.wx
-            ih.down(d.x, d.y, w(), tabs_h)
-            dd.press()
-          },
-          tap=fn(_) { stopped() },
-          drag=fn(d) {
-            match d.kind {
-              // (from where it went down: the slop before a drag is the drag's too, as Compose's overSlop)
-              Down => ()
-              Moved => {
-                let dx = d.wx - last_x.val
-                last_x.val = d.wx
-                let tw = tab_w()
-                if tw > 0.0 {
-                  dd.update_value(clamp(dd.target() + dx / tw, 0.0, last))
-                }
-                pulled_by.val = pulled_by.val + dx
-                pulled.put(pulled_by.val)
+        // Idle selection pill fades out as the clear glass loupe fades in (avoids ios27Clear veil at rest).
+        lens.box(fn(pill) {
+          pill
+          .over(Is(true))
+          .radius(By(fn() { size().1 / 2.0 }))
+          .ground(By(fn() { colors().lens_idle }))
+          .alpha(By(fn() { 1.0 - clamp(dd.pressed(pill), 0.0, 1.0) }))
+          |> ignore
+        })
+        |> ignore
+        // True iOS 26 dual-layer clipped accent row: zero Glass, tracks lens bounds & inverse offset so the clear
+        // zoom=1.10 lens above captures and magnifies accented icons/labels strictly inside the lens capsule.
+        lens.box(fn(accent_clip) {
+          accent_clip
+          .over(Is(true))
+          .points(Is(false))
+          .clips(Is(true))
+          .width(By(fn() { Some(size().0) }))
+          .height(By(fn() { Some(size().1) }))
+          .radius(By(fn() { size().1 / 2.0 }))
+          .alpha(By(fn() {
+            if accent_clip.glass_solid() {
+              0.0
+            } else {
+              let p = dd.pressed(accent_clip)
+              if p > 0.01 {
+                clamp(p / 0.25, 0.0, 1.0)
+              } else {
+                0.0
               }
-              Up | Off => stopped()
             }
-          },
-        )
+          }))
+          |> ignore
+          accent_clip.box(fn(accent_row) {
+            accent_row
+            .over(Is(true))
+            .points(Is(false))
+            .row(Is(true))
+            .width(By(fn() { Some(tab_w() * count.to_double()) }))
+            .height(Is(Some(tab_lens_h)))
+            .offset(By(fn() {
+              let (lw, lh) = size()
+              (-(dd.value(accent_row) * tab_w() + (tab_w() - lw) / 2.0), -(tab_lens_h - lh) / 2.0)
+            }))
+            |> ignore
+            for i, name in labels {
+              let face = match faces {
+                Some(fs) => fs.get(i).unwrap_or(tab_face(name))
+                None => tab_face(name)
+              }
+              accent_row.box(fn(atab) {
+                atab
+                .width(By(fn() { Some(tab_w()) }))
+                .height(Is(Some(tab_lens_h)))
+                .shrink(Is(0.0))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                |> ignore
+                atab.box(fn(af) {
+                  af.lines_up(Is(Some(Middle))).gap(Is(2.0)).scale(By(fn() { grown(af) })) |> ignore
+                  face(af, fn() { colors().accent })
+                })
+                |> ignore
+              })
+              |> ignore
+            }
+          })
+          |> ignore
+        })
+        |> ignore
+        lens.box(fn(gl) {
+          gl
+          .over(Is(true))
+          .radius(By(fn() { size().1 / 2.0 }))
+          .glass(By(fn() {
+            let p = dd.pressed(gl)
+            if p > 0.001 {
+              Some(tab_lens_glass(p))
+            } else {
+              None
+            }
+          }))
+          .alpha(By(fn() { clamp(dd.pressed(gl), 0.0, 1.0) }))
+          |> ignore
+        })
         |> ignore
       })
       |> ignore

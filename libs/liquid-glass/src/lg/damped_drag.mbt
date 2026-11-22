@@ -25,8 +25,8 @@ fn speed_spring(threshold : Double) -> @motion.Spec {
 /// A value dragged along `lo` … `hi` and the glass that follows it (DampedDragAnimation): bound to the node whose
 /// timeline its ways run on (`attach`), then pressed, dragged and let go by its control.
 pub struct DampedDrag {
-  priv lo : Double
-  priv hi : Double
+  priv mut lo : Double
+  priv mut hi : Double
   priv threshold : Double
   priv rest_scale : Double
   priv held_scale : Double
@@ -78,6 +78,13 @@ pub fn DampedDrag::attach(self : DampedDrag, n : @view.View) -> Unit {
 }
 
 ///|
+/// Update the drag bounds (for controls whose item count may change dynamically).
+pub fn DampedDrag::set_bounds(self : DampedDrag, lo~ : Double, hi~ : Double) -> Unit {
+  self.lo = lo
+  self.hi = hi
+}
+
+///|
 fn DampedDrag::at(self : DampedDrag) -> @view.View {
   match self.node.val {
     Some(n) => n
@@ -112,6 +119,12 @@ pub fn DampedDrag::target(self : DampedDrag) -> Double {
 /// How far it is held as `n` is drawn (pressProgress: 0 at rest, 1 held).
 pub fn DampedDrag::pressed(self : DampedDrag, n : @view.View) -> Double {
   self.press.shown(n)
+}
+
+///|
+/// Whether the lens press target is currently raised (true on the cause frame of `press` / `animate_to`).
+pub fn DampedDrag::pressing(self : DampedDrag) -> Bool {
+  self.press.target() > 0.001
 }
 
 ///|
@@ -231,5 +244,22 @@ pub fn DampedDrag::animate_to(self : DampedDrag, v : Double) -> Unit {
   let to = clamp(v, self.lo, self.hi)
   self.value.go(n, to, value_spring(self.threshold))
   self.speed.go(n, 0.0, speed_spring(self.threshold))
+  self.release()
+}
+
+///|
+/// Sent smoothly to `v` without pressing or scaling (external/programmatic selection change):
+/// only its value slides to `v` on the value spring while `press` and `scale` stay at rest.
+pub fn DampedDrag::slide_to(self : DampedDrag, v : Double) -> Unit {
+  let n = self.at()
+  let to = clamp(v, self.lo, self.hi)
+  self.value.go(n, to, value_spring(self.threshold))
+  self.speed.go(n, 0.0, speed_spring(self.threshold))
+}
+
+///|
+/// Gesture cancelled: slide smoothly back to `v`, ease velocity to 0, and release any held lens.
+pub fn DampedDrag::cancel_to(self : DampedDrag, v : Double) -> Unit {
+  self.slide_to(v)
   self.release()
 }

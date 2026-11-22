@@ -3,10 +3,8 @@
 
 ///|
 /// 记忆 made once on the tape, 600 wide by 760, a finger where the app takes the swipe (an iPad's): its panel.
-fn tape_memories_made(made? : Bool = true) -> (@ui.Tester, @ui.Laid, Int) raise {
+fn tape_memories_made() -> (@ui.Tester, @ui.Laid, Int) raise {
   new_run()
-  // (its old view where not `made`: what the swipe did before)
-  @sfdesk.pane_makes.val = made
   let src = fixture("settings")
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=600.0, h=760.0, platform=1)
   say_room(t, "medium", "medium")
@@ -21,9 +19,8 @@ fn tape_memories_made(made? : Bool = true) -> (@ui.Tester, @ui.Laid, Int) raise 
 }
 
 ///|
-test "on the tape 记忆 made once over settings, a swipe from its edge as its old view takes one: across and back where it began, the tape moved with it and back, the page in use; across, the sidebar brought over" {
-  let seen = fn(made : Bool) raise {
-  let (t, p, depth) = tape_memories_made(made~)
+test "on the tape 记忆 made once over settings, a swipe from its edge: across and back where it began, the tape moved with it and back, the page in use; across, the sidebar brought over" {
+  let (t, p, depth) = tape_memories_made()
   let y = p.y + 20.0
   t.touch(0, p.x + 6.0, y)
   for i in 1..=6 {
@@ -50,36 +47,25 @@ test "on the tape 记忆 made once over settings, a swipe from its edge as its o
   )
   t.drag(p.x + 6.0, y, p.x + 400.0, y, steps=10)
   t.run_for(@ui.move_most_ms)
-  @sfdesk.pane_makes.val = true
-  (moved, stayed, app.nav.depth() - depth, @sfdesk.wide.tape_at.get())
-  }
-  let old = seen(false)
-  let made = seen(true)
-  assert_eq(made, old)
+  let made = (moved, stayed, app.nav.depth() - depth, @sfdesk.wide.tape_at.get())
   assert_eq(made, (true, (0, @sfdesk.TapePane::Page, true), 0, @sfdesk.TapePane::Side))
 }
 
 ///|
-test "on the tape 记忆 made once, the window made wider between a finger going down at its edge and its swipe taken over: the tape pulled from where it went down, as its old view's is" {
-  let pulled = fn(made : Bool) raise {
-    let (t, p, _) = tape_memories_made(made~)
-    let (x, y) = (p.x + 6.0, p.y + 20.0)
-    t.touch(0, x, y)
-    // (what holds the page moved and grown under the finger before it goes past the slop)
-    t.resize(680.0, 760.0)
-    t.advance(@ui.input_step_ms)
-    t.touch(1, x + 30.0, y)
-    t.advance(@ui.input_step_ms)
-    t.touch(1, x + 80.0, y)
-    let drag = @signals.untracked(fn() { @sfdesk.wide.tape_drag.get() })
-    t.touch(2, x + 80.0, y)
-    t.run_for(@ui.move_most_ms)
-    @sfdesk.pane_makes.val = true
-    drag
-  }
-  let old = pulled(false)
-  let made = pulled(true)
-  assert_true(old > 0.0 && made == old, msg="\{made} \{old}")
+test "on the tape 记忆 made once, the window made wider between a finger going down at its edge and its swipe taken over: the tape pulled from where it went down" {
+  let (t, p, _) = tape_memories_made()
+  let (x, y) = (p.x + 6.0, p.y + 20.0)
+  t.touch(0, x, y)
+  // (what holds the page moved and grown under the finger before it goes past the slop)
+  t.resize(680.0, 760.0)
+  t.advance(@ui.input_step_ms)
+  t.touch(1, x + 30.0, y)
+  t.advance(@ui.input_step_ms)
+  t.touch(1, x + 80.0, y)
+  let drag = @signals.untracked(fn() { @sfdesk.wide.tape_drag.get() })
+  t.touch(2, x + 80.0, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(drag > 0.0, msg="\{drag}")
 }
 
 ///|

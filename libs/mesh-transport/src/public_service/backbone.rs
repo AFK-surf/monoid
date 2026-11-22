@@ -138,7 +138,7 @@ async fn run(scopes:Weak<Scopes>,lane:Lane,incarnation:u64,root:Endpoint,relay:R
         let opening=owner.opening.clone();drop(owner);
         let result=async {
             let mut addresses=endpoint.watch_addr();
-            let own=Descriptor {binding:binding.clone(),address:addresses.get()};
+            let own=Descriptor {binding:binding.clone(),address:bounded_address(addresses.get())};
             let permit=opening.acquire().await.map_err(|_|"public backbone stopped")?;
             let subscription=Subscription::open(&root,address,&own,&policy,relay.generation).await?;
             drop(permit);
@@ -156,7 +156,7 @@ async fn run(scopes:Weak<Scopes>,lane:Lane,incarnation:u64,root:Endpoint,relay:R
             };
             let publish=async {
                 loop {
-                    let address=addresses.updated().await.map_err(|e|e.to_string())?;
+                    let address=bounded_address(addresses.updated().await.map_err(|e|e.to_string())?);
                     own_tx.send(Descriptor {binding:binding.clone(),address}).map_err(|_|"public backbone publisher ended")?;
                 }
                 #[allow(unreachable_code)] Ok::<(),String>(())

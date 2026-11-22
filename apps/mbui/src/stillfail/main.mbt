@@ -197,6 +197,21 @@ let core_source : @sfapp.Source = {
         return
       }
     }
+    // a game's pointer, keys, wheel and controllers sent straight to its station the same way, in order, never waiting
+    // on the core's thread (sfpages' screen.input says the view's call; the core's where the shell does not take it)
+    if name == "screen.input" {
+      let view_call = @sfapp.number(Some(params), "call")
+      if view_call > 0.0 {
+        match params {
+          { "input": Object(_) as input, .. } =>
+            if @core.screen_input(view_call.to_int(), input.stringify()) {
+              done(Ok(Json::null()))
+              return
+            }
+          _ => ()
+        }
+      }
+    }
     if call_log {
       @hostapi.log("CALL \{name} \{logged(name, params)}")
     }
@@ -500,7 +515,7 @@ fn main {
   @ui.on_message("local_station", fn(_, _) { () })
   if core_linked() == 0 || !@sfcore.start() {
     @sfapp.host_setup()
-    @ui.run(@sf.product(), fn(c) {
+    @ui.run_legacy_ctx(run_title(), fn(c) {
       @sf.begin(c) |> ignore
       c.box(w=Fill(1.0), h=Fill(1.0), align=ACenter, justify=JCenter, fn() {
         c.text("这个版本没有链接内核（APP=stillfail scripts/mac.sh build）", size=13.0, color=@sf.theme().p.muted)
@@ -558,8 +573,8 @@ fn main {
   // (the page shown as the journal was told it, sfbase's shown_kind: what the hang reports say too)
   @ui.perf_also("page", fn(_) { @ui.journal_shown() })
   @ui.perf_also("screens", @sfpages.screens_perf)
-  @ui.run(
-    @sf.product(),
+  @ui.run_legacy_ctx(
+    run_title(),
     fn(c) {
       // (what the core said since the last frame is handed to @core.receive as the frame begins, before this:
       // sfcore.start)
@@ -570,4 +585,15 @@ fn main {
     },
     tree=@sfapp.app_tree(core_source),
   )
+}
+
+///|
+/// The title the app's window runs with: in a browser the page's own as it loaded (its `<title>`, monoid's on
+/// app.monoid.build, youdid.wtf's on the test channel's host), else the product's name as the build says it. Not the
+/// core's: the run begins before the core has said which product it is.
+fn run_title() -> String {
+  match @webpage.loaded_title() {
+    "" => @sf.product()
+    page => page
+  }
 }

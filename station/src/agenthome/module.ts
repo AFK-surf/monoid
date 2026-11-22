@@ -9,7 +9,6 @@ import { Effect, Layer } from "effect";
 import { log } from "../ops/log.ts";
 import { Agents } from "../sessions/agents.ts";
 import { agentHomes, linkTranscripts, siteSkills, unlinkAgentHome, writeBuiltinSkills } from "../sessions/agent-home.ts";
-import { featureOnChannel } from "../features.ts";
 import { ControlPlane, StationConfig } from "../services.ts";
 
 export const AgentHomeLive = Layer.effectDiscard(
@@ -21,9 +20,7 @@ export const AgentHomeLive = Layer.effectDiscard(
     const keep = async () => {
       const { agentHome, profiles } = hub.config();
       try {
-        // (stillfail-move where moving is on here: features.ts, the station's channel, so again as its config changes)
-        const move = featureOnChannel("stationMove", updates.channel());
-        for (const home of await agentHomes(agentHome)) await writeBuiltinSkills(home, feedback, siteSkills(), move);
+        for (const home of await agentHomes(agentHome)) await writeBuiltinSkills(home, feedback, siteSkills());
         await unlinkAgentHome(agentHome, profiles);
       } catch (error) {
         log.warn("agent_home", "the agents' home not kept", { error: (error as Error).message });

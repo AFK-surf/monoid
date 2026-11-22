@@ -19,8 +19,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { Cloud, writeState } from "../../../station/src/cloud/state.ts";
-import { bring } from "../../../station/test/lock-moved-world.ts";
+import { MbLockStation } from "./mb-lock-station.ts";
 import type { CoreError } from "../src/error.ts";
 import { lockView, read } from "../src/views/lock.ts";
 import { vaultsView } from "../src/views/vault.ts";
@@ -35,7 +34,10 @@ async function lawful(w: World, where: string): Promise<J> {
   const page = await w.sync();
   const why = `${where}: ${JSON.stringify(page.me).slice(0, 400)}; ${w.why()}`;
   // Law A
-  if (page.locked === true) assert.equal(page.me.confirmed === true, w.admits(), `the page ${page.me.confirmed ? "confirmed" : "not confirmed"}, the station ${w.admits() ? "letting it in" : "refusing it"}; ${why}`);
+  if (page.locked === true) {
+    const admitted = await w.admits();
+    assert.equal(page.me.confirmed === true, admitted, `the page ${page.me.confirmed ? "confirmed" : "not confirmed"}, the station ${admitted ? "letting it in" : "refusing it"}; ${why}`);
+  }
   // Law B
   waysOut(page, why);
   // Law C
@@ -123,8 +125,8 @@ test("a newcomer let in, then taken out: the station refuses it and its page is 
   const admits = [...w.alice.bodies].filter(([, b]) => b.kind === "member" && b.sub === "s1").map(([h]) => h).sort();
   w.alice.say("member.remove", { sub: "s1", cancels: admits }, "ws");
   // (as alice's app brings it, and as the station tells the device on its stream: its link refused then)
-  bring(w.c, w.alice, true, "ws");
-  w.hello();
+  await w.c.bring(w.alice, true, "ws");
+  await w.hello();
   const out = await lawful(w, "taken out");
   assert.equal(out.me.confirmed, false, `out (${w.why()})`);
 });
@@ -145,8 +147,8 @@ test("every other device of a member's lost: offered to make this their only tru
   // The owner takes them out (their admit by the lock of before cancelled) and adds them again as a newcomer.
   const admits = [...w.alice.bodies].filter(([, b]) => b.kind === "member" && b.sub === "s1").map(([h]) => h).sort();
   w.alice.say("member.remove", { sub: "s1", cancels: admits }, "ws");
-  bring(w.c, w.alice, true, "ws");
-  w.hello();
+  await w.c.bring(w.alice, true, "ws");
+  await w.hello();
   const out = await lawful(w, "taken out");
   assert.equal(out.me.confirmed, false);
   await asks(w, "taken out");
@@ -154,7 +156,7 @@ test("every other device of a member's lost: offered to make this their only tru
   await typesShown(w, "asking an owner");
   const back = await lawful(w, "added again");
   assert.equal(back.me.confirmed, true, `in (${w.why()})`);
-  assert.equal(w.c.locked()!.state!.persons.get("s1"), w.inner.adb.personal().root("s1"), "bound at the station by the log begun here");
+  assert.equal((await w.c.locked())!.state!.persons.get("s1"), w.inner.adb.personal().root("s1"), "bound at the station by the log begun here");
 });
 
 test("a web page of someone the list names with no app: told to install one, asking nothing; both laws", async () => {
@@ -185,7 +187,7 @@ async function lawfulOwner(w: Awaited<ReturnType<typeof setUp>>, where: string, 
   await w.run(Effect.ignore(read(w.inner, "ws")));
   const page = lockView(w.inner, "ws") as J;
   const why = `${where}: ${JSON.stringify(page.me).slice(0, 300)}`;
-  if (page.locked === true) assert.equal(page.me.confirmed === true, stationHello(w.stations.A, "s1", w.base, page.role).in, `the page and station A disagree; ${why}`);
+  if (page.locked === true) assert.equal(page.me.confirmed === true, (await stationHello(w.stations.A, "s1", w.base, page.role)).in, `the page and station A disagree; ${why}`);
   waysOut(page, why, root);
   agrees(page, vaultsView(w.inner, "ws") as J, why);
   return page;
@@ -229,7 +231,7 @@ test("another owner of a workspace moved by the root's person: told who alone tu
   // The root's person turns it off on their own device: `off` in their log, brought to the stations.
   const first = w.first as unknown as { say: (kind: string, what: Record<string, unknown>, ws?: string) => unknown };
   first.say("off", {}, "ws");
-  for (const c of Object.values(w.stations)) bring(c, w.first as never, true, "ws");
+  for (const c of Object.values(w.stations)) await c.bring(w.first, true, "ws");
   const offPage = await lawfulOwner(w, "turned off by the root's person", false);
   assert.equal(offPage.locked, false, JSON.stringify(offPage).slice(0, 300));
 });
@@ -242,14 +244,13 @@ test("every station of a moved workspace reset on its machine (stillfail lock re
   for (const name of ["A", "B"] as const) {
     const was = w.stations[name];
     const data = mkdtempSync(join(tmpdir(), "lock-reset-"));
-    writeState(data, { origin: "https://stillfail.test", station: name === "A" ? w.A : w.B, workspace: "ws", workspace_name: "W", name, relay_url: "", relay_urls: [], grant_keys: w.g.keys, peers: [{ id: w.A, name: "A" }, { id: w.B, name: "B" }], revocations: [] } as never);
-    w.stations[name] = new Cloud(data, false);
+    w.stations[name] = await MbLockStation.create(data, { origin: "https://stillfail.test", station: name === "A" ? w.A : w.B, workspace: "ws", workspace_name: "W", name, relay_url: "", relay_urls: [], grant_keys: w.g.keys, peers: [{ id: w.A, name: "A" }, { id: w.B, name: "B" }], revocations: [] }, () => w.r.host.nowMs());
     void was;
   }
   const reset = await lawfulOwner(w, "every station reset");
   assert.equal(reset.locked, false, "the lock let go here");
   await w.r.host.time.pass(5_000);
-  for (const c of Object.values(w.stations)) assert.equal(c.chain(null), null, "never brought back by a read");
+  for (const c of Object.values(w.stations)) assert.equal(await c.chain(null), null, "never brought back by a read");
   assert.equal(w.r.cloud.chains.has("ws"), false, "the cloud's copy dropped");
   // Turned on anew: a genesis of its own, the cloud's copy of before no `lock_exists` in its way; its stations, which
   // keep none, are protected again by the owner's 保护 (lock.joinStation), each its own step.

@@ -234,14 +234,6 @@ fn told_changed(screens : Screens?) -> Unit {
 }
 
 ///|
-/// What a promise set going and not waited for leaves: its failure, if any, swallowed (`.catch(() => {})`).
-async fn quietly(f : async () -> Unit) -> Unit {
-  f() catch {
-    _ => ()
-  }
-}
-
-///|
 /// The fields a log line carries.
 fn fields(fs : Array[(String, J)]) -> J {
   jo(fs)

@@ -501,19 +501,28 @@ export class PhoneGrants {
     // (ended already: the grant it takes back ended with it)
     if (exp <= now) return null;
     const owner = email.toLowerCase();
-    this.#d.db.prepare("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?").run(owner, now);
-    this.#d.db.prepare("INSERT OR REPLACE INTO adb_revokes (id, owner, exp, body) VALUES (?, ?, ?, ?)").run(`${owner} ${body.request}`, owner, exp, text);
-    this.#d.db.prepare(`DELETE FROM adb_revokes WHERE id IN (SELECT id FROM adb_revokes WHERE owner = ?1 ORDER BY exp DESC LIMIT -1 OFFSET ?2)`)
-      .run(owner, REVOKES_PER_OWNER_MAX);
+    // (one transaction: those ended let go, this one kept, the oldest past the cap let go; the reads write nothing)
+    this.#d.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#d.db.prepare("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?").run(owner, now);
+      this.#d.db.prepare("INSERT OR REPLACE INTO adb_revokes (id, owner, exp, body) VALUES (?, ?, ?, ?)").run(`${owner} ${body.request}`, owner, exp, text);
+      this.#d.db.prepare(`DELETE FROM adb_revokes WHERE id IN (SELECT id FROM adb_revokes WHERE owner = ?1 ORDER BY exp DESC LIMIT -1 OFFSET ?2)`)
+        .run(owner, REVOKES_PER_OWNER_MAX);
+      this.#d.db.exec("COMMIT");
+    } catch (e) {
+      this.#d.db.exec("ROLLBACK");
+      throw e;
+    }
     this.#d.toldRevoke?.(kept, owner, body.request, workspace);
     return null;
   }
 
-  /// The signed takings back of `email`'s grants kept here (those ended let go).
+  /// The signed takings back of `email`'s grants kept here, those ended left out. Only reads: a write here (even one
+  /// deleting nothing) waits for the write lock on the main thread, behind whatever holds it; `keepRevoke` lets the
+  /// ended go.
   revokesOfOwner(email: string): { body: unknown; sig: unknown }[] {
     const owner = email.toLowerCase();
-    this.#d.db.prepare("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?").run(owner, this.#secs());
-    return (this.#d.db.prepare("SELECT body FROM adb_revokes WHERE owner = ? ORDER BY exp LIMIT ?").all(owner, REVOKES_PER_OWNER_MAX) as { body: string }[])
+    return (this.#d.db.prepare("SELECT body FROM adb_revokes WHERE owner = ? AND exp > ? ORDER BY exp LIMIT ?").all(owner, this.#secs(), REVOKES_PER_OWNER_MAX) as { body: string }[])
       .map((row) => JSON.parse(row.body) as { body: unknown; sig: unknown });
   }
 

@@ -310,8 +310,8 @@ pub async fn UsageCounter::read(self : UsageCounter, only : Array[String]?, time
 ///|
 /// Runs `f` as work of the hub's own, after what set it going (a fiber of no sleep).
 pub fn Hub::later(self : Hub, f : async () -> Unit) -> Unit {
-  ignore(self)
   pending_work.push(f)
+  self.wake_waiters()
 }
 
 ///|
@@ -672,4 +672,31 @@ pub async fn Hub::retire_usage(self : Hub) -> Unit {
     self.pause(retry)
     retry = if retry * 2.0 < 30_000.0 { retry * 2.0 } else { 30_000.0 }
   }
+}
+
+///|
+/// Start the hub's usage counter (`UsageCounter::new` + `start`).
+pub async fn Hub::usage_start(self : Hub) -> Unit {
+  let c = UsageCounter::new(self)
+  self.counter = Some(c)
+  self.keeps_counted = true
+  c.start()
+}
+
+///|
+/// Stop the hub's usage counter as the station stops or hands over: no read is set going again, and what the store
+/// tells of usage is no longer kept.
+pub fn Hub::usage_stop(self : Hub) -> Unit {
+  if self.counter is Some(c) {
+    c.stop()
+    self.counter = None
+  }
+  self.keeps_counted = false
+}
+
+///|
+/// Start draining moved sessions' chats for usage counting (`UsageDrain::new` + `begin`).
+pub fn Hub::usage_drain(self : Hub) -> Unit {
+  let d = UsageDrain::new(self)
+  d.begin()
 }

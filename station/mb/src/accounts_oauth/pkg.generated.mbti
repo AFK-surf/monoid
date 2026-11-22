@@ -69,10 +69,6 @@ pub fn grok_email_in(String) -> String? raise JsonError
 
 pub fn grok_models(String) -> Array[String]
 
-pub async fn harness(@host.Host) -> Unit
-
-pub fn harness_case(@json.Json) -> @json.Json
-
 pub fn host_io(@host.Host) -> Io
 
 pub fn join(Array[String]) -> String

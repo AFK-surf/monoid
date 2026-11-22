@@ -125,13 +125,11 @@ pub let go_back_pieces : Map[String, (Int, Double)] = Map([])
 ///|
 /// Where the reader was is kept for chat `k` (go_to's): its list showing, placed, more than its own height from the
 /// chat's end as it was last laid out (Reading's `far`: the window short of the chat's end, or its last row that far
-/// under the view), none kept yet. A page made as nodes (chat_page_nodes) says its list is placed only while it shows
-/// (sfpages' chat_goes_to), the old page's `shown` none of its.
+/// under the view), none kept yet. A chat's page says its list is placed only while it shows (sfpages' chat_goes_to).
 fn keep_place_of(k : String) -> Unit {
   guard !places_back.contains(k) else { return }
   guard readings.get(k) is Some(rd) &&
     rd.placed &&
-    (rd.shown || chat_page_nodes.untracked()) &&
     rd.top_seq >= 0.0 &&
     rd.far else {
     return

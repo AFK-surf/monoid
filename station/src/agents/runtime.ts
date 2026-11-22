@@ -52,7 +52,7 @@ export type RuntimeEvent =
 
 export type Profile = {
   id: string;
-  runtime: RuntimeKind;
+  runtime?: RuntimeKind;
   /// The profile's home (CLAUDE_CONFIG_DIR / CODEX_HOME / DSH_HOME; Grok Build's GROK_HOME is its grok/, Cursor's keeps cursor/, Devin's devin/, Pi's PI_CODING_AGENT_DIR pi/).
   home: string;
   /// Whatever else the profile's config says (env, access kind, machine…): read by the drivers as runtime/*.rs do.
@@ -88,7 +88,9 @@ export type OpenOptions = {
   /// Stable per-session routing id for provider affinity headers.
   route: string;
   /// An isolated, temporary text-only request. Drivers must explicitly support this without exposing their tools.
-  textOnly?: boolean;
+  textOnly?: boolean;  /// Aborted when the station gives up opening this session (timeout, stop, suspend, close: `node.cancelOpen`): a driver
+  /// that opens again after a failure stops there, and starts no process after it.
+  signal?: AbortSignal;
 };
 
 export interface AgentSession {

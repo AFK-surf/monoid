@@ -119,7 +119,7 @@ pub fn Acp::begin(self : Acp, opening : Opening, answer : (String) -> J?) -> Str
       a
     }
   }
-  self.open(get(Some(opened), "result"))
+  self.open(get(Some(opened), "result"), resumed=options.resume is Some(_))
   match self.flavor {
     "devin" => {
       let r = self.ask(

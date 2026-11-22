@@ -84,134 +84,40 @@ pub fn is_refused(e : Error) -> Bool {
 // ── JSON as JavaScript has it ──
 
 ///|
-pub fn js(s : String) -> J {
-  Str(@jsjson.units(s))
+pub using @jsjson {
+  jval_str as js, jval_num as jn, jval_int as ji, jval_bool as jb, jval_obj as jo, jval_array as ja,
+  jval_opt_str as jopt, jval_strs as jstrs, jval_str_of as str_of, jval_num_of as num_of, jval_arr as items,
+  jval_strings_of as strings_of, jval_nullish as is_nullish, jval_entries as entries, jval_set_or_new as set,
+  jval_del as unset, jval_spread as merged, stringify, parse, num_text, js_round, js_trunc, js_uniq as uniq,
+  js_slice_to as head_of, js_ends as ends_with, js_starts as starts_with, js_less,
 }
 
 ///|
-pub fn jn(n : Double) -> J {
-  Num(n)
-}
+pub fn at(v : J, key : String) -> J? { @jsjson.jval_at(Some(v), key) }
 
 ///|
-pub fn ji(n : Int) -> J {
-  Num(n.to_double())
-}
+pub fn text_at(v : J, key : String) -> String { @jsjson.jval_text(at(v, key)) }
 
 ///|
-pub fn jb(b : Bool) -> J {
-  Bool(b)
-}
+pub fn str_at(v : J, key : String) -> String? { str_of(at(v, key)) }
 
 ///|
-pub fn jo(fields : Array[(String, J)]) -> J {
-  Obj(fields.map(f => (@jsjson.units(f.0), f.1)))
-}
+pub fn num_at(v : J, key : String) -> Double? { num_of(at(v, key)) }
 
 ///|
-pub fn ja(xs : Array[J]) -> J {
-  Arr(xs)
-}
-
-///|
-pub fn jopt(s : String?) -> J {
-  match s {
-    Some(t) => js(t)
-    None => Null
-  }
-}
-
-///|
-pub fn jstrs(xs : Array[String]) -> J {
-  Arr(xs.map(js))
-}
-
-///|
-/// `v[key]` (None where it is no object or has none).
-pub fn at(v : J, key : String) -> J? {
-  match v {
-    Obj(_) => v.get(key)
-    _ => None
-  }
-}
-
-///|
-pub fn str_of(v : J?) -> String? {
-  match v {
-    Some(Str(u)) => Some(@jsjson.text(u))
-    _ => None
-  }
-}
-
-///|
-pub fn num_of(v : J?) -> Double? {
-  match v {
-    Some(Num(n)) => Some(n)
-    _ => None
-  }
-}
-
-///|
-pub fn text_at(v : J, key : String) -> String {
-  str_of(at(v, key)).unwrap_or("")
-}
-
-///|
-pub fn str_at(v : J, key : String) -> String? {
-  str_of(at(v, key))
-}
-
-///|
-pub fn num_at(v : J, key : String) -> Double? {
-  num_of(at(v, key))
-}
-
-///|
-pub fn yes_at(v : J, key : String) -> Bool {
-  at(v, key) is Some(Bool(true))
-}
-
-///|
-pub fn items(v : J?) -> Array[J] {
-  match v {
-    Some(Arr(xs)) => xs
-    _ => []
-  }
-}
-
-///|
-/// The strings of an array (what is not one left out).
-pub fn strings_of(v : J?) -> Array[String] {
-  items(v).filter_map(x => str_of(Some(x)))
-}
-
-///|
-pub fn is_nullish(v : J?) -> Bool {
-  v is (None | Some(Null))
-}
-
-///|
-/// An object's entries as names and values (none: not an object).
-pub fn entries(v : J?) -> Array[(String, J)] {
-  match v {
-    Some(Obj(fields)) => fields.map(f => (@jsjson.text(f.0), f.1))
-    _ => []
-  }
-}
+pub fn yes_at(v : J, key : String) -> Bool { @jsjson.jval_is_true(at(v, key)) }
 
 ///|
 /// `Object.fromEntries(Object.entries(v ?? {}).filter(([, x]) => typeof x === "string"))`.
 pub fn string_map(v : J?) -> Array[(String, String)] {
   entries(v).filter_map(e => match e.1 {
-    Str(u) => Some((e.0, @jsjson.text(u)))
+    Str(u) => Some((e.0, @jsjson.sanitize_str(u)))
     _ => None
   })
 }
 
 ///|
-pub fn pairs_json(xs : Array[(String, String)]) -> J {
-  jo(xs.map(p => (p.0, js(p.1))))
-}
+pub fn pairs_json(xs : Array[(String, String)]) -> J { jo(xs.map(p => (p.0, js(p.1)))) }
 
 ///|
 pub fn pair_get(xs : Array[(String, String)], key : String) -> String? {
@@ -224,72 +130,6 @@ pub fn pair_get(xs : Array[(String, String)], key : String) -> String? {
 }
 
 ///|
-/// `o[key] = v` on an object (made anew; a key there keeps its place, a new one goes last).
-pub fn set(v : J, key : String, x : J) -> J {
-  match v {
-    Obj(fields) => {
-      let k = @jsjson.units(key)
-      let out = []
-      let mut found = false
-      for f in fields {
-        if f.0 == k {
-          out.push((k, x))
-          found = true
-        } else {
-          out.push(f)
-        }
-      }
-      if !found {
-        out.push((k, x))
-      }
-      Obj(out)
-    }
-    _ => jo([(key, x)])
-  }
-}
-
-///|
-/// `delete o[key]`.
-pub fn unset(v : J, key : String) -> J {
-  match v {
-    Obj(fields) => {
-      let k = @jsjson.units(key)
-      Obj(fields.filter(f => f.0 != k))
-    }
-    _ => v
-  }
-}
-
-///|
-/// `{...a, ...b}`.
-pub fn merged(a : J, b : J) -> J {
-  let mut out = match a {
-    Obj(_) => a
-    _ => Obj([])
-  }
-  for e in entries(Some(b)) {
-    out = set(out, e.0, e.1)
-  }
-  out
-}
-
-///|
-pub fn stringify(v : J) -> String {
-  @jsjson.stringify(v)
-}
-
-///|
-pub fn parse(text : String) -> J raise {
-  @jsjson.parse(text)
-}
-
-///|
-/// The number as String(n) says it.
-pub fn num_text(n : Double) -> String {
-  @session_chats.num_text(n)
-}
-
-///|
 /// `x.toFixed(1)` of a non-negative number.
 pub fn fixed1(x : Double) -> String {
   let n = (x * 10.0 + 0.5).floor()
@@ -299,90 +139,13 @@ pub fn fixed1(x : Double) -> String {
 }
 
 ///|
-/// `${(n / 1024 ** 3).toFixed(1)} GB`.
-pub fn gb(n : Double) -> String {
-  "\{fixed1(n / (1024.0 * 1024.0 * 1024.0))} GB"
-}
+pub fn gb(n : Double) -> String { "\{fixed1(n / (1024.0 * 1024.0 * 1024.0))} GB" }
 
 ///|
-pub fn sha256_text(s : String) -> String {
-  @memory.sha256_hex(@utf8.encode(s))
-}
+pub fn sha256_text(s : String) -> String { @memory.sha256_hex(@utf8.encode(s)) }
 
 ///|
-/// `Math.round`.
-pub fn js_round(x : Double) -> Double {
-  (x + 0.5).floor()
-}
-
-///|
-/// `Math.trunc`.
-pub fn js_trunc(x : Double) -> Double {
-  if x < 0.0 {
-    x.ceil()
-  } else {
-    x.floor()
-  }
-}
-
-///|
-/// `[...new Set(xs)]`.
-pub fn uniq(xs : Array[String]) -> Array[String] {
-  let seen : Map[String, Bool] = {}
-  let out = []
-  for x in xs {
-    if !seen.contains(x) {
-      seen[x] = true
-      out.push(x)
-    }
-  }
-  out
-}
-
-///|
-/// `s.slice(0, n)` by UTF-16 units.
-pub fn head_of(s : String, n : Int) -> String {
-  if s.length() <= n {
-    s
-  } else {
-    s.unsafe_substring(start=0, end=n)
-  }
-}
-
-///|
-pub fn ends_with(s : String, suffix : String) -> Bool {
-  s.has_suffix(suffix)
-}
-
-///|
-pub fn starts_with(s : String, prefix : String) -> Bool {
-  s.has_prefix(prefix)
-}
-
-///|
-/// `a < b` as JavaScript compares strings (by UTF-16 units).
-pub fn js_less(a : String, b : String) -> Bool {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return x < y
-    }
-  }
-  a.length() < b.length()
-}
-
-///|
-pub fn js_cmp(a : String, b : String) -> Int {
-  if a == b {
-    0
-  } else if js_less(a, b) {
-    -1
-  } else {
-    1
-  }
-}
+pub fn js_cmp(a : String, b : String) -> Int { @jsjson.js_compare(a, b) }
 
 // ── names a copy is made of (format.ts) ──
 

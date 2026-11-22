@@ -103,6 +103,12 @@ export interface IrohEndpoint {
   dhtSaid?(keep: boolean): { lines: { at: number; text: string }[]; dropped: number };
   /// Update forwarding entrances without closing any station connection.
   setRelayEntries?(entries: { entry: string; relay: string }[]): Effect.Effect<void, HostError>;
+  /// Change one peer's relay policy without closing its connection (browser).
+  setDisabledRelays?(id: string, relays: string[]): Effect.Effect<void, HostError>;
+  /// Insert a relay with its current forwarding entrances (browser).
+  insertRelay?(url: string): Effect.Effect<void, HostError>;
+  /// Remove a local relay connection (browser).
+  removeRelay?(url: string): Effect.Effect<void, HostError>;
   /// Whether its streams' `tap` decodes a view's Opus sound into the PCM the app plays now (the shell's, asked as each
   /// view opens: client/shell ScreenTap, `tap.opus`), so the view may ask the station for Opus.
   opus?(): boolean;
@@ -118,6 +124,13 @@ export type BindOptions = {
   relayUrls: string[];
   /// Alternative entrances to the same relay, not additional independent relays.
   relayEntries?: { entry: string; relay: string }[];
+  /// When `lookup` is `false`, immutable iroh `relay_allowlist` ceiling (`[]` permits only IP and custom transports).
+  /// When `lookup` is `true`, filters relay URLs returned by DHT and mDNS lookups and grows with `setRelayEntries`.
+  /// Omitted: unrestricted.
+  relayAllowlist?: string[];
+  /// When true with `relayAllowlist`, also admit iroh's built-in default relays for emergency fallback when all
+  /// configured relays are down.
+  allowPublicRelays?: boolean;
   /// Look stations up on the LAN and in the DHT (a client's: not announced itself).
   lookup: boolean;
   /// Relays alone, no IP transports (what measures a relay's way must not go direct).

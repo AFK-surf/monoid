@@ -4,6 +4,8 @@ package "base/codec"
 // Values
 pub fn base64_decode(String) -> Bytes?
 
+pub fn base64_decode_loose(String) -> Bytes
+
 pub fn base64_decode_strict(String) -> Bytes?
 
 pub fn base64_encode(BytesView) -> String

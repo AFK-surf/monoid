@@ -3,6 +3,7 @@ use futures::StreamExt;
 use tokio::io::AsyncWriteExt;
 use iroh::{Watcher, Endpoint, EndpointAddr, RelayMode, RelayUrl, SecretKey, endpoint::presets::Minimal};
 use mesh_transport::{
+    announcement::bounded_address,
     hub::Hub,
     identity::{Binding, neighbor_secret},
     routing::Scope,
@@ -108,7 +109,7 @@ impl Scopes {
             loop {
                 changed.borrow_and_update();
                 let snapshot: Vec<Value> = scopes.lock().await.iter().map(|(scope, kept)|
-                    json!({"scope":hex::encode(scope), "descriptor":{"binding":kept.binding,"address":kept.endpoint.addr()}})).collect();
+                    json!({"scope":hex::encode(scope), "descriptor":{"binding":kept.binding,"address":bounded_address(kept.endpoint.addr())}})).collect();
                 if send(snapshot).await.is_err() { break; }
                 if changed.changed().await.is_err() { break; }
             }
@@ -189,7 +190,7 @@ impl Scopes {
                 kept.binding = binding;
                 self.changed.send_modify(|version| *version = version.wrapping_add(1));
             }
-            return Ok(json!({"binding":kept.binding,"address":kept.endpoint.addr()}));
+            return Ok(json!({"binding":kept.binding,"address":bounded_address(kept.endpoint.addr())}));
         }
         if scopes.len() >= 32 {
             return Err("too many mesh scopes".into());
@@ -213,7 +214,7 @@ impl Scopes {
             runtime.close().await;
             return Err(error.to_string());
         }
-        let answer = json!({"binding":binding,"address":endpoint.addr()});
+        let answer = json!({"binding":binding,"address":bounded_address(endpoint.addr())});
         let mut addresses = endpoint.watch_addr().stream();
         let changed = self.changed.clone();
         let address_watch = Task(tokio::spawn(async move {
@@ -372,7 +373,7 @@ async fn bootstrap_own(scopes:&WeakScopes,scope:Scope,node:iroh::EndpointId,vers
     let scopes=scopes.lock().await;
     let kept=scopes.get(&scope).ok_or("mesh scope removed")?;
     if kept.bootstraps.get(&node).map(|b|b.version)!=Some(version) {return Err("mesh bootstrap replaced".into());}
-    Ok(mesh_transport::announcement::Descriptor {binding:kept.binding.clone(),address:kept.endpoint.addr()})
+    Ok(mesh_transport::announcement::Descriptor {binding:kept.binding.clone(),address:bounded_address(kept.endpoint.addr())})
 }
 async fn bootstrap_peer(scopes:&WeakScopes,scope:Scope,node:iroh::EndpointId,version:u64,descriptor:mesh_transport::announcement::Descriptor)->Result<(),String> {
     let scopes=scopes.upgrade().ok_or("mesh scopes closed")?;

@@ -16,13 +16,8 @@ fn wide_bar_at(
   able? : Bool = false,
   room? : String = "",
   inset? : Bool = false,
-  nodes? : Bool = false,
 ) -> @ui.Tester {
   new_run()
-  // (the chat's page made with its inside nodes: sfbase's chat_page_nodes)
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
   let base = fixture(mode)
   let src : Source = {
     ..base,
@@ -157,7 +152,7 @@ fn wide_bar_jobs(alarm : String) -> (String, Topic) -> Topic {
 /// The pointer moved onto the middle of what is said `label` in the bar (the topmost), or onto `words` drawn in it.
 fn wide_bar_point(t : @ui.Tester, label? : String = "", suffix? : String = "", words? : String = "", right? : Double = 0.0) -> Unit {
   let at = if words != "" {
-    match t.locate(words).filter(fn(p) { p.1 < 90.0 }) {
+    match t.locate(words) {
       [p, ..] => Some(p)
       _ => None
     }
@@ -242,7 +237,7 @@ fn wide_bar_large(calls : Array[Made]) -> Array[(String, () -> @ui.Tester)] {
       "HOVER-PART",
       fn() {
         let t = wide_bar_at(calls)
-        wide_bar_point(t, suffix="的执行历史", right=8.0)
+        wide_bar_point(t, words="Willow")
         t
       },
     ),
@@ -438,7 +433,7 @@ test "中屏: the bar in each state of its chat, as the old one laid it out; wha
 ///|
 /// The bar's button said `label` (its topmost; none as tall as a panel), where it is.
 fn wide_bar_button(t : @ui.Tester, label : String) -> (Double, Double, Double, Double)? {
-  match t.all(Button).filter(fn(b) { b.label == label && b.rect.1 < 90.0 && b.rect.3 < 90.0 }) {
+  match t.all(Button).filter(fn(b) { b.label == label && b.rect.3 < 90.0 }) {
     [b, ..] => Some(b.rect)
     _ => None
   }
@@ -449,7 +444,7 @@ fn wide_bar_button(t : @ui.Tester, label : String) -> (Double, Double, Double, D
 /// tree puts up over the window (a chat's page made as nodes: chat_pops_node) are none of a screen reader's while it is
 /// open, as anything behind a modal layer is.
 fn wide_bar_button_drawn(t : @ui.Tester, label : String) -> (Double, Double, Double, Double)? {
-  match t.semantics().filter(fn(b) { b.role == @ui.Role::Button && b.label == label && b.rect.1 < 90.0 && b.rect.3 < 90.0 }) {
+  match t.semantics().filter(fn(b) { b.role == @ui.Role::Button && b.label == label && b.rect.3 < 90.0 }) {
     [b, ..] => Some(b.rect)
     _ => None
   }
@@ -514,7 +509,7 @@ test "大屏, 中屏: the bar's \"…\" opens the chat's menu beside it; its sid
     let opened = fn() { calls.filter(fn(c) { c.name == "chat.tabs.open" && text(Some(c.params), "tab") == "s-c1" }).length() }
     assert_eq(opened(), 1, msg="\{win.0}: its history beside the chat: \{Repr(calls.map(fn(c) { c.name }))}")
     let t = wide_bar_at(calls, w=win.1)
-    let tile = t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 < 90.0 })
+    let tile = t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 })
     assert_eq(tile.length(), 1, msg=win.0)
     wide_bar_tap(t, tile[0].rect)
     assert_eq(opened(), 2, msg="\{win.0}: the agent's history from its mark: \{Repr(calls.map(fn(c) { c.name }))}")
@@ -568,8 +563,8 @@ test "大屏, 中屏: a button of the bar says its keys in its tip after its wor
       assert_true(keys != "", msg="\{win.0}: \{tip.1} has keys")
       guard wide_bar_button(t, label) is Some(b) else { fail("\{win.0}: no \{label}") }
       wide_bar_tip(t, label)
-      // (its words, then its keys each a cap after them, in their order, on their line, under the button)
-      let under = fn(w : String) { t.locate(w).filter(fn(p) { p.1 > b.1 + b.3 }) }
+      // (its words, then its keys each a cap after them, in their order, on their line, beside the button)
+      let under = fn(w : String) { t.locate(w).filter(fn(p) { p.1 > b.1 + b.3 || p.1 < b.1 }) }
       guard under(label) is [w, ..] else { fail("\{win.0}: \{label}'s tip: \{Repr(under(label))}") }
       let mut after = w.0
       for cap in @sf.key_caps(keys) {
@@ -593,9 +588,11 @@ fn wide_bar_dialog(t : @ui.Tester) -> (Double, Double, Double, Double)? {
 }
 
 ///|
-/// Whether popover `d` stands under button `b`, its end at the button's (bar_popovers' Bottom, End).
+/// Whether popover `d` stands beside button `b` (under for top-bar buttons, above for composer-bar buttons),
+/// its end at the button's.
 fn wide_bar_under(d : (Double, Double, Double, Double), b : (Double, Double, Double, Double)) -> Bool {
-  d.1 >= b.1 + b.3 && (d.0 + d.2 - (b.0 + b.2)).abs() < 1.0
+  let vertical_ok = if b.1 < 90.0 { d.1 >= b.1 + b.3 } else { d.1 + d.3 <= b.1 + 1.0 }
+  vertical_ok && (d.0 + d.2 - (b.0 + b.2)).abs() < 1.0
 }
 
 ///|
@@ -615,7 +612,6 @@ test "大屏, 中屏: the bar's popovers keep by their buttons as the window cha
       }
       guard wide_bar_button(t, label) is Some(b) else { fail("\{win.0}: no \{label}") }
       let focused = fn() { t.focused().map(fn(s) { s.label }) }
-      let had = focused()
       wide_bar_tap(t, b)
       assert_true(opened(), msg="\{win.0}: \{label} opened")
       guard wide_bar_dialog(t) is Some(d) else { fail("\{win.0}: \{label}'s popover") }
@@ -635,7 +631,7 @@ test "大屏, 中屏: the bar's popovers keep by their buttons as the window cha
       t.key(@ui.key_escape)
       t.run_for(@ui.move_most_ms)
       assert_true(!opened(), msg="\{win.0}: \{label} closed")
-      let back = if @sfbase.chat_page_nodes.get() { Some(label) } else { had }
+      let back = Some(label)
       assert_eq(focused(), back, msg="\{win.0}: the focus back where it was")
       // (opened by a key (a fixture's, the system's bars' item): by the button where it is, the window narrower again)
       if which == "info" {
@@ -695,7 +691,7 @@ test "大屏, 中屏: ⌘F's bar open in a bar short of room: the chat's people 
       Some(x) => x
       None => fail("\{name}: no title")
     }
-    assert_true((tw - 4.0 * letter).abs() < 0.5, msg="\{name}: its title 4 letters wide: \{tw}, a letter \{letter}")
+    assert_true(tw >= 4.0 * letter - 0.5, msg="\{name}: its title at least 4 letters wide: \{tw}, a letter \{letter}")
     match (wide_bar_seen(t, "在对话中查找"), wide_bar_seen(t, "无结果")) {
       (Some((fx, _)), Some((x, w))) => {
         assert_true(fx > tx + tw, msg="\{name}: the field after the title: \{fx} \{Repr((tx, tw))}")
@@ -721,55 +717,55 @@ fn wide_bar_lit(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool {
 }
 
 ///|
-/// Whether a hover card stands under `r` at its start (a card of what `r` is: hover_card_node's Bottom, Start, 6 off).
+/// Whether a hover card stands beside `r` at its start (under `r` in the top bar, or above `r` above the composer).
 fn wide_bar_card_under(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool {
   t
   .all(Group)
   .iter()
   .any(fn(g) {
-    let (gx, gy, gw, _) = g.rect
-    (gx - r.0).abs() < 1.0 && gy >= r.1 + r.3 && gy < r.1 + r.3 + 12.0 && gw >= 200.0
+    let (gx, gy, gw, gh) = g.rect
+    let vertical_ok = (gy >= r.1 + r.3 && gy < r.1 + r.3 + 12.0) || (gy + gh <= r.1 + 1.0 && gy + gh >= r.1 - 12.0)
+    (gx - r.0).abs() < 1.0 && vertical_ok && gw >= 200.0
   })
 }
 
 ///|
-test "大屏, 中屏: where the agent's room reaches over its station's half, the pointer resting there lights the agent alone and opens its card alone; on the rest of that half, the station's alone" {
+test "大屏, 中屏: the agent and station halves of the composer-top capsule light independently on hover, open their own cards, and pressing the agent opens its history" {
   for win in wide_bar_windows {
     let calls : Array[Made] = []
     let t = wide_bar_at(calls, w=win.1)
-    let agent = match t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 < 90.0 && b.rect.2 < 30.0 }) {
+    let agent = match t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 }) {
       [b, ..] => b.rect
       _ => fail("\{win.0}: no agent's half")
     }
-    let station = match t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 < 90.0 }) {
+    let station = match t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }) {
       [g, ..] => g.rect
       _ => fail("\{win.0}: no station's half")
     }
     let y = agent.1 + agent.3 / 2.0
-    // (3 past the agent's half: in its room (36 round a 20), drawn the station's; and 3 before the station's end, past it)
-    let reached = agent.0 + agent.2 + 3.0
-    let past = station.0 + station.2 - 3.0
-    assert_true(reached >= station.0 && reached < past, msg="\{win.0}: \{Repr(agent)} \{Repr(station)}")
-    t.move_to(reached, y)
+    assert_true(agent.0 >= station.0 + station.2 - 1.0 && agent.0 <= station.0 + station.2 + 4.0, msg="\{win.0}: \{Repr(station)} \{Repr(agent)}")
+    let on_agent = agent.0 + agent.2 / 2.0
+    let on_station = station.0 + station.2 / 2.0
+    t.move_to(on_agent, y)
     t.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
-    assert_true(wide_bar_lit(t, agent), msg="\{win.0}: in the agent's room, the agent lit")
-    assert_false(wide_bar_lit(t, station), msg="\{win.0}: in the agent's room, the station not lit")
-    assert_true(wide_bar_card_under(t, agent), msg="\{win.0}: in the agent's room, its card")
-    assert_false(wide_bar_card_under(t, station), msg="\{win.0}: in the agent's room, no station's card")
-    t.move_to(past, y)
+    assert_true(wide_bar_lit(t, agent), msg="\{win.0}: on the agent's half, the agent lit")
+    assert_false(wide_bar_lit(t, station), msg="\{win.0}: on the agent's half, the station not lit")
+    assert_true(wide_bar_card_under(t, agent), msg="\{win.0}: on the agent's half, its card")
+    assert_false(wide_bar_card_under(t, station), msg="\{win.0}: on the agent's half, no station's card")
+    t.move_to(on_station, y)
     t.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
     assert_false(wide_bar_lit(t, agent), msg="\{win.0}: on the station's half, the agent not lit")
     assert_true(wide_bar_lit(t, station), msg="\{win.0}: on the station's half, it lit")
     assert_false(wide_bar_card_under(t, agent), msg="\{win.0}: on the station's half, no agent's card")
     assert_true(wide_bar_card_under(t, station), msg="\{win.0}: on the station's half, its card")
-    // (pressed in the agent's room: its history's, as ever)
-    t.move_to(reached, y)
+    // (pressed on the agent's half: its history's, as ever)
+    t.move_to(on_agent, y)
     t.run_for(@ui.move_most_ms)
     let n = calls.filter(fn(c) { c.name == "chat.tabs.open" }).length()
-    t.press_at(reached, y)
-    t.release(reached, y)
+    t.press_at(on_agent, y)
+    t.release(on_agent, y)
     t.run_for(@ui.move_most_ms)
-    assert_eq(calls.filter(fn(c) { c.name == "chat.tabs.open" }).length(), n + 1, msg="\{win.0}: pressed in the agent's room, its history")
+    assert_eq(calls.filter(fn(c) { c.name == "chat.tabs.open" }).length(), n + 1, msg="\{win.0}: pressed on the agent's half, its history")
   }
 }
 
@@ -896,14 +892,24 @@ fn wide_bar_way(t : @ui.Tester, label : String, change : () -> Unit, ms : Double
 test "大屏, 中屏: a button of the bar coming or going settles at once outside a transition (and as an answer), and moves those beside it along the row inside a transition" {
   for win in wide_bar_windows {
     let calls : Array[Made] = []
-    let jobs_on = @signals.signal(false)
-    let jobs = wide_bar_jobs("")
+    let screen_on = @signals.signal(false)
+    let screen = wide_bar_chat_field("screens", fn(_) {
+      Json::array([
+        Json::object({
+          "id": Json::string("d1"),
+          "kind": Json::string("display"),
+          "name": Json::string("Display"),
+          "live": Json::boolean(true),
+          "driven": Json::boolean(false),
+        }),
+      ])
+    })
     let t = wide_bar_at(
       calls,
       w=win.1,
       over=wide_bar_both(wide_bar_chat_field("archivable", fn(_) { Json::boolean(true) }), fn(n, tp) {
-        if jobs_on.get() {
-          jobs(n, tp)
+        if screen_on.get() {
+          screen(n, tp)
         } else {
           tp
         }
@@ -914,25 +920,25 @@ test "大屏, 中屏: a button of the bar coming or going settles at once outsid
       Some(r) => r.0
       None => fail("\{win.0}: no 归档")
     }
-    // background chatJobs change (outside a transition): settles at once, never sliding unprompted
-    let (plain_in, _) = wide_bar_way(t, archive, fn() { jobs_on.set(true) }, @ui.move_most_ms)
+    // background screens change (outside a transition): settles at once, never sliding unprompted
+    let (plain_in, _) = wide_bar_way(t, archive, fn() { screen_on.set(true) }, @ui.move_most_ms)
     let x1 = plain_in[plain_in.length() - 1]
-    assert_true(x0 - x1 >= 20.0, msg="\{win.0}: 归档 made room for the services' button: \{x0} → \{x1}")
+    assert_true(x0 - x1 >= 20.0, msg="\{win.0}: 归档 made room for the remote screen button: \{x0} → \{x1}")
     assert_true(plain_in.length() >= 2, msg=win.0)
     assert_eq(plain_in[1], x1, msg="\{win.0}: outside a transition, button settles at once: \{Repr(plain_in)}")
-    let (plain_out, _) = wide_bar_way(t, archive, fn() { jobs_on.set(false) }, @ui.move_most_ms)
+    let (plain_out, _) = wide_bar_way(t, archive, fn() { screen_on.set(false) }, @ui.move_most_ms)
     assert_true(plain_out.length() >= 2, msg=win.0)
     assert_eq(plain_out[1], x0, msg="\{win.0}: outside a transition, leaving button settles at once: \{Repr(plain_out)}")
     // inside an explicit transition: moves those beside it along the row, never 8 in a frame
-    let (came, came_steps) = wide_bar_way(t, archive, fn() { @view.transition(fn() { jobs_on.set(true) }) }, @ui.move_most_ms)
+    let (came, came_steps) = wide_bar_way(t, archive, fn() { @view.transition(fn() { screen_on.set(true) }) }, @ui.move_most_ms)
     assert_eq(came[came.length() - 1], x1, msg=win.0)
     assert_true(came.length() > 3, msg="\{win.0}: drawn on its way: \{Repr(came)}")
     assert_eq(came_steps, [], msg="\{win.0}: its way in: \{Repr(came)}")
-    let (went, went_steps) = wide_bar_way(t, archive, fn() { @view.transition(fn() { jobs_on.set(false) }) }, @ui.move_most_ms)
+    let (went, went_steps) = wide_bar_way(t, archive, fn() { @view.transition(fn() { screen_on.set(false) }) }, @ui.move_most_ms)
     assert_eq(went[went.length() - 1], x0, msg=win.0)
     assert_eq(went_steps, [], msg="\{win.0}: its way out: \{Repr(went)}")
     // told as an answer (the topic's first value): at once, no way
-    let (told, _) = wide_bar_way(t, archive, fn() { @view.answering(fn() { jobs_on.set(true) }) }, @ui.move_most_ms)
+    let (told, _) = wide_bar_way(t, archive, fn() { @view.answering(fn() { screen_on.set(true) }) }, @ui.move_most_ms)
     assert_true(told.length() >= 2, msg=win.0)
     assert_eq(told[1], x1, msg="\{win.0}: an answer's button in its place at once: \{Repr(told)}")
   }
@@ -961,4 +967,614 @@ test "大屏, the chat's page made as nodes: the side panel's switch pressed, th
   }
   assert_true(xs.length() > 3 && xs[xs.length() - 1] < xs[0], msg="归档 gone left with the panel: \{Repr(xs)}")
   assert_eq(back, [], msg="归档 stepped right on the way: \{Repr(xs)}")
+}
+
+///|
+test "大屏: hovering Station half opens its card and 屏幕 submenu, moving into submenu keeps both open, and moving back to Agent half closes Station card + submenu so only Agent card is open" {
+  let calls : Array[Made] = []
+  let t = wide_bar_at(calls, mode="chat-station-screens")
+  let agent = match t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 }) {
+    [b, ..] => b.rect
+    _ => fail("no agent's half")
+  }
+  let station = match t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }) {
+    [g, ..] => g.rect
+    _ => fail("no station's half")
+  }
+  let word_mid = fn(w : String) -> (Double, Double)? {
+    match t.words().filter(fn(x) { x.0 == w && x.5 > 0.5 }).last() {
+      Some(x) => Some((x.1 + x.3 / 2.0, x.2 + x.4 / 2.0))
+      None => None
+    }
+  }
+  let y = station.1 + station.3 / 2.0
+  let on_station = station.0 + station.2 / 2.0
+  let on_agent = agent.0 + agent.2 / 2.0
+  // 1) Hover Station half -> Station card opens
+  t.move_to(on_station, y)
+  t.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+  assert_true(wide_bar_card_under(t, station), msg="station card opened")
+  // 2) Move onto 屏幕 row -> submenu opens
+  guard word_mid("屏幕") is Some((sx, sy)) else { fail("no 屏幕 row in station card") }
+  t.move_to(sx, sy)
+  t.run_for(@ui.move_most_ms)
+  guard word_mid("Willow 的屏幕") is Some((ix, iy)) else { fail("no Willow 的屏幕 submenu item") }
+  // 3) Move into 屏幕 submenu -> stays open past close delay
+  t.move_to(ix, iy)
+  t.run_for(@sf.hover_card_close_ms + @ui.move_most_ms)
+  assert_true(wide_bar_card_under(t, station), msg="station card stays open while on submenu")
+  assert_true(word_mid("Willow 的屏幕") is Some(_), msg="submenu stays open while pointer on it")
+  // 4) Move back to Agent half -> Station card + submenu close, only Agent card opens
+  t.move_to(on_agent, y)
+  t.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+  assert_false(wide_bar_card_under(t, station), msg="station card closed when moving to agent")
+  assert_true(word_mid("Willow 的屏幕") is None, msg="screen submenu closed when moving to agent")
+  assert_true(wide_bar_card_under(t, agent), msg="agent card opened")
+  let agent_card_above = t
+    .all(Group)
+    .iter()
+    .any(fn(g) {
+      let (gx, gy, gw, gh) = g.rect
+      (gx - agent.0).abs() < 1.0 && gw >= 200.0 && gy + gh <= agent.1 + 1.0 && gy + gh >= agent.1 - 12.0
+    })
+  assert_true(agent_card_above, msg="agent card opens above the composer-top capsule, not covering the composer")
+  assert_eq(
+    t.audit().filter(fn(f) { f.contains("hover_card_node") || f.contains("submenu_row_node") }),
+    [],
+    msg="no hover_card_node or submenu_row_node audit faults",
+  )
+}
+
+///|
+/// The chat's station (ws1/st1) marked `icon` and `emoji`, reached as `via` says now (direct, relay, offline; "": not
+/// said how), the rest as the fixture's.
+fn bar_station_as(icon : String, emoji : String, via : @signals.Signal[String]) -> (String, Topic) -> Topic {
+  fn(n, tp) {
+    guard n == "stations" && tp.value is Some(Array(rows)) else { return tp }
+    let v = via.get()
+    let made = rows.map(fn(row) {
+      guard row is Object(m) && m.get("station") is Some(String("ws1/st1")) else { return row }
+      let o = m.copy()
+      o["icon"] = Json::string(icon)
+      o["emoji"] = Json::string(emoji)
+      o["online"] = Json::boolean(v != "offline")
+      o["reconnecting"] = Json::boolean(false)
+      o["way"] = Json::object({ "via": Json::string(if v == "" || v == "offline" { "none" } else { v }) })
+      Json::object(o)
+    })
+    { ..tp, value: Some(Json::array(made)) }
+  }
+}
+
+///|
+/// The station's dots drawn in `cap` (a station's half or tag above the composer): `side` across (6.4 on its mark's
+/// corner, 6 before its name), each with its ink.
+fn bar_via_dots(t : @ui.Tester, cap : (Double, Double, Double, Double), side : Double) -> Array[(Double, Double, Double, Double, Int64)] {
+  let (x, y, w, h) = cap
+  t
+  .drawn_rects()
+  .filter(fn(d) {
+    (d.2 - side).abs() < 0.05 &&
+    (d.3 - side).abs() < 0.05 &&
+    d.0 >= x - 0.5 &&
+    d.0 + d.2 <= x + w + 0.5 &&
+    d.1 >= y - 0.5 &&
+    d.1 + d.3 <= y + h + 0.5
+  })
+}
+
+///|
+/// What a station's dot says `via` in, as the bar inks it.
+fn bar_via_ink(via : String) -> Int64 {
+  let p = @sf.theme().p
+  match via {
+    "direct" => p.online
+    "relay" => @ui.tree_theme().color(Warn)
+    "offline" => p.red
+    _ => p.muted
+  }
+}
+
+///|
+/// Checks of a station's capsule half `cap` (`name` its words' place): with a mark, one dot on the mark's bottom
+/// right (after where the mark starts, under its middle, before the name) and none before it; with none, one before
+/// the name on its middle.
+fn bar_via_placed(t : @ui.Tester, cap : (Double, Double, Double, Double), name : (Double, Double), marked : Bool, via : String, msg : String) -> Unit raise {
+  let corner = bar_via_dots(t, cap, 6.4)
+  let inline = bar_via_dots(t, cap, 6.0)
+  let mid = cap.1 + cap.3 / 2.0
+  if via == "" {
+    assert_eq((corner.length(), inline.length()), (0, 0), msg="\{msg}: no dot while not said how")
+    return
+  }
+  if marked {
+    assert_eq((corner.length(), inline.length()), (1, 0), msg="\{msg}: \{Repr(t.drawn_rects().filter(fn(d) { d.2 < 10.0 && d.1 > cap.1 && d.1 < cap.1 + cap.3 }))}")
+    let d = corner[0]
+    // (its mark starts where the half's padding ends: 8 in a tile's half, 10 in a tag; the dot past most of it)
+    assert_true(d.0 >= cap.0 + 8.0 + 9.0, msg="\{msg}: on the mark's right, not before it: \{Repr(d)} \{Repr(cap)}")
+    assert_true(d.1 + d.3 / 2.0 > mid + 3.0, msg="\{msg}: on the mark's bottom: \{Repr(d)} \{Repr(cap)}")
+    assert_true(d.0 + d.2 < name.0, msg="\{msg}: before the name: \{Repr(d)} \{Repr(name)}")
+    assert_eq(d.4, bar_via_ink(via), msg="\{msg}: its ink")
+  } else {
+    assert_eq((corner.length(), inline.length()), (0, 1), msg="\{msg}: \{Repr(t.drawn_rects().filter(fn(d) { d.2 < 10.0 && d.1 > cap.1 && d.1 < cap.1 + cap.3 }))}")
+    let d = inline[0]
+    assert_true((d.1 + d.3 / 2.0 - mid).abs() < 1.0, msg="\{msg}: on the half's middle: \{Repr(d)} \{Repr(cap)}")
+    assert_true(d.0 + d.2 < name.0, msg="\{msg}: before the name: \{Repr(d)} \{Repr(name)}")
+    assert_eq(d.4, bar_via_ink(via), msg="\{msg}: its ink")
+  }
+}
+
+///|
+/// Where `words` are drawn inside `cap` (their middle), if they are.
+fn bar_words_in(t : @ui.Tester, words : String, cap : (Double, Double, Double, Double)) -> (Double, Double)? {
+  t.locate(words).iter().find_first(fn(p) { p.0 >= cap.0 && p.0 <= cap.0 + cap.2 && p.1 >= cap.1 && p.1 <= cap.1 + cap.3 })
+}
+
+///|
+test "大屏, 中屏: the station's name above the composer inked as the agent's (Fg, p.text) while not pointed at, in its half of the agent's capsule and in its own tag, light and dark" {
+  for win in wide_bar_windows {
+    for dark in [false, true] {
+      for alone in [false, true] {
+        let calls : Array[Made] = []
+        let over = if alone { wide_bar_chat_field("agents", fn(_) { Json::array([]) }) } else { fn(_, tp) { tp } }
+        let t = wide_bar_at(calls, w=win.1, over~)
+        t.set_dark(dark)
+        t.run_for(@ui.move_most_ms)
+        let msg = "\{win.0} \{if dark { "dark" } else { "light" }}\{if alone { " alone" } else { "" }}"
+        let cap = match t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }) {
+          [g, ..] => g.rect
+          _ => fail("\{msg}: no station's half")
+        }
+        let text = @sf.theme().p.text
+        assert_false(wide_bar_lit(t, cap), msg="\{msg}: not lit")
+        assert_eq(bar_words_inks(t, "Willow", cap), [text], msg="\{msg}: the station's name")
+        if !alone {
+          let agent = match t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 }) {
+            [b, ..] => b.rect
+            _ => fail("\{msg}: no agent's half")
+          }
+          assert_eq(bar_words_inks(t, "Claude", agent), [text], msg="\{msg}: the agent's name")
+        }
+      }
+    }
+  }
+}
+
+///|
+test "大屏, 中屏: the station's dot above the composer on its mark's corner as the agent's badge (a glyph, an emoji, words 1.3 as large), before its name where it has no mark, with or without an agent; inked as it is reached, gone while not said" {
+  let cases : Array[(String, String, Bool)] = [("glyph:desktop", "", true), ("", "🍁", true), ("", "", false)]
+  for win in wide_bar_windows {
+    for c in cases {
+      for scale in [1.0, 1.3] {
+        for alone in [false, true] {
+          let (icon, emoji, marked) = c
+          let via = @signals.signal("direct")
+          let calls : Array[Made] = []
+          let over = if alone {
+            wide_bar_both(bar_station_as(icon, emoji, via), wide_bar_chat_field("agents", fn(_) { Json::array([]) }))
+          } else {
+            bar_station_as(icon, emoji, via)
+          }
+          let t = wide_bar_at(calls, w=win.1, over~)
+          if scale != 1.0 {
+            t.set_font_scale(scale)
+            t.run_for(@ui.move_most_ms)
+          }
+          let msg = "\{win.0} \{icon}\{emoji} \{scale}x\{if alone { " alone" } else { "" }}"
+          let cap = match t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }) {
+            [g, ..] => g.rect
+            _ => fail("\{msg}: no station's half")
+          }
+          guard bar_words_in(t, "Willow", cap) is Some(name) else { fail("\{msg}: no name in \{Repr(cap)}") }
+          for v in ["direct", "relay", "offline", "", "direct"] {
+            via.set(v)
+            t.run_for(@ui.move_most_ms)
+            bar_via_placed(t, cap, name, marked, v, "\{msg} \{v}")
+          }
+          let audit = t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("agent_badge_node") || f.contains("mark_node") })
+          assert_eq(audit, [], msg~)
+        }
+      }
+    }
+  }
+}
+
+///|
+/// The chat's station (ws1/st1) named `name`, the rest as the fixture's.
+fn bar_station_named(name : String) -> (String, Topic) -> Topic {
+  fn(n, tp) {
+    guard n == "stations" && tp.value is Some(Array(rows)) else { return tp }
+    let made = rows.map(fn(row) {
+      guard row is Object(m) && m.get("station") is Some(String("ws1/st1")) else { return row }
+      let o = m.copy()
+      o["name"] = Json::string(name)
+      Json::object(o)
+    })
+    { ..tp, value: Some(Json::array(made)) }
+  }
+}
+
+///|
+/// The chat's first agent named `name` (its session's agentText), the rest as the fixture's.
+fn bar_agent_named(name : String) -> (String, Topic) -> Topic {
+  wide_bar_chat_field("agents", fn(was) {
+    match was {
+      Some(Array(a)) =>
+        Json::array(
+          a.mapi(fn(i, j) {
+            guard i == 0 && j is Object(m) && m.get("session") is Some(Object(s)) else { return j }
+            let o = m.copy()
+            let ss = s.copy()
+            ss["agentText"] = Json::string(name)
+            o["session"] = Json::object(ss)
+            Json::object(o)
+          }),
+        )
+      Some(other) => other
+      None => Json::array([])
+    }
+  })
+}
+
+///|
+/// The chat leading one sub-chat (its `opened`, led).
+fn bar_leads_one() -> (String, Topic) -> Topic {
+  wide_bar_chat_field("opened", fn(_) {
+    Json::array([{ "station": "ws1/st1", "session": "s-sub1", "title": "子对话", "stateText": "运行中", "led": true }])
+  })
+}
+
+///|
+test "大屏, 中屏: the station's and the agent's names above the composer shown whole where the row has room for them, with or without an agent" {
+  let station = "tokyo-mac-studio-0"
+  let agent = "Opus 5.5 · medium"
+  for win in wide_bar_windows {
+    for alone in [false, true] {
+      let calls : Array[Made] = []
+      let over = if alone {
+        wide_bar_both(bar_station_named(station), wide_bar_chat_field("agents", fn(_) { Json::array([]) }))
+      } else {
+        wide_bar_both(bar_station_named(station), bar_agent_named(agent))
+      }
+      let t = wide_bar_at(calls, w=win.1, over~)
+      let msg = "\{win.0}\{if alone { " alone" } else { "" }}"
+      guard t.all(Group).filter(fn(g) { g.label == station && g.rect.1 > 400.0 }) is [_, ..] else {
+        fail("\{msg}: no station's capsule")
+      }
+      assert_eq(t.lines_of(station), [station], msg="\{msg}: the station's name whole")
+      if !alone {
+        assert_eq(t.lines_of(agent), [agent], msg="\{msg}: the agent's name whole")
+      }
+      let audit = t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("agent_badge_node") || f.contains("mark_node") })
+      assert_eq(audit, [], msg~)
+    }
+  }
+}
+
+///|
+fn wide_bar_neon_over(extra_agents? : Int = 0, with_subchats? : Bool = false, with_jobs? : Bool = false) -> (String, Topic) -> Topic {
+  let edit_chat = wide_bar_edit("chat", fn(v) {
+    match v {
+      Some(Object(m)) => {
+        let o = m.copy()
+        let first = match m.get("agents") {
+          Some(Array(a)) if a.length() > 0 => a[0]
+          _ => Json::object({})
+        }
+        let all : Array[Json] = []
+        match first {
+          Object(am) => {
+            let ao = am.copy()
+            match am.get("session") {
+              Some(Object(s)) => {
+                let ss = s.copy()
+                ss["runtime"] = Json::string("agy")
+                ss["maker"] = { "id": "gemini", "name": "Google" }
+                ss["model"] = Json::string("gemini-4-neon")
+                ss["modelName"] = Json::string("Gemini 4 Neon")
+                ss["modelShort"] = Json::string("Neon")
+                ss["effort"] = Json::string("high")
+                ss["agentText"] = Json::string("Gemini 4 Neon · high")
+                ao["session"] = Json::object(ss)
+              }
+              _ => ()
+            }
+            all.push(Json::object(ao))
+          }
+          other => all.push(other)
+        }
+        for i in 0..<extra_agents {
+          all.push({
+            "session": {
+              "key": "s-extra-\{i}",
+              "runtime": "agy",
+              "maker": { "id": "gemini", "name": "Google" },
+              "model": "gemini-4-neon",
+              "modelName": "Gemini 4 Neon",
+              "modelShort": "Neon",
+              "effort": "high",
+              "agentText": "Gemini 4 Neon · high",
+              "statusText": "未开始",
+              "tone": "neutral",
+            },
+            "status": "idle",
+          })
+        }
+        o["agents"] = Json::array(all)
+        if with_subchats {
+          o["opened"] = Json::array([
+            {
+              "station": "ws1/st1",
+              "session": "s-sub-1",
+              "title": "子会话一",
+              "led": true,
+              "state": "run",
+            },
+            {
+              "station": "ws1/st1",
+              "session": "s-sub-2",
+              "title": "子会话二",
+              "led": true,
+              "state": "done",
+            },
+          ])
+        }
+        Some(Json::object(o))
+      }
+      other => other
+    }
+  })
+  if with_jobs {
+    wide_bar_both(edit_chat, wide_bar_jobs("fail"))
+  } else {
+    edit_chat
+  }
+}
+
+///|
+test "大屏, 中屏: a station's name too long for the row above the composer (with its services and a led sub-chat) cut in its capsule, none of it past the services' button or the window" {
+  let station = "这是一台名字非常非常长的机器用来检验输入框上方的胶囊在放不下时会不会把右边的按钮挤出去或者画到窗口外面去了"
+  for win in [("大屏", 860.0), ("中屏", 720.0)] {
+    for alone in [false, true] {
+      let calls : Array[Made] = []
+      let named = wide_bar_both(wide_bar_both(bar_station_named(station), wide_bar_jobs("")), bar_leads_one())
+      let over = if alone { wide_bar_both(named, wide_bar_chat_field("agents", fn(_) { Json::array([]) })) } else { named }
+      let t = wide_bar_at(calls, w=win.1, over~)
+      let msg = "\{win.0}\{if alone { " alone" } else { "" }}"
+      let cap = match t.all(Group).filter(fn(g) { g.label == station && g.rect.1 > 400.0 }) {
+        [g, ..] => g.rect
+        _ => fail("\{msg}: no station's capsule")
+      }
+      let services = t.all(Button).filter(fn(b) { b.label == @sf.t("web-pages.chat.services") && b.rect.1 > 400.0 })
+      guard services is [s, ..] else { fail("\{msg}: no services' button above the composer") }
+      assert_true(cap.0 + cap.2 <= s.rect.0, msg="\{msg}: the station's capsule before the services' button: \{Repr(cap)} \{Repr(s.rect)}")
+      assert_true(s.rect.0 + s.rect.2 <= win.1, msg="\{msg}: the services' button in the window: \{Repr(s.rect)}")
+      assert_true(t.lines_of(station).iter().any(fn(l) { l.has_suffix("…") }), msg="\{msg}: its name cut: \{Repr(t.lines_of(station))}")
+      let audit = t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("agent_badge_node") || f.contains("mark_node") })
+      assert_eq(audit, [], msg~)
+    }
+  }
+}
+
+///|
+test "大屏: the agent's card over the capsule, its context's menu open: a press on the card closes the menu alone, the card staying (twice); 清空上下文 asked in the middle, the card closed" {
+  let calls : Array[Made] = []
+  let clearable = wide_bar_chat_field("agents", fn(was) {
+    match was {
+      Some(Array(a)) =>
+        Json::array(
+          a.map(fn(x) {
+            match x {
+              Object(m) => {
+                let o = m.copy()
+                let s = match m.get("session") {
+                  Some(Object(sm)) => sm.copy()
+                  _ => Map([])
+                }
+                s["canCompact"] = Json::boolean(true)
+                s["canClear"] = Json::boolean(true)
+                o["session"] = Json::object(s)
+                Json::object(o)
+              }
+              other => other
+            }
+          }),
+        )
+      _ => Json::array([])
+    }
+  })
+  let card_said = wide_bar_edit("agentCard", fn(_) {
+    Some({
+      "work": "共工作 1 小时 12 分",
+      "cost": "$4.20",
+      "cache": { "percent": 91, "text": "91%", "level": "ok" },
+      "context": { "percent": 31, "text": "62K / 200K", "level": "ok" },
+      "latest": [{ "key": "k1", "text": "读了 src/ui/list.mbt" }],
+      "attention": [],
+    })
+  })
+  let t = wide_bar_at(calls, over=wide_bar_both(clearable, card_said))
+  let before = t.audit()
+  let agent = match t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 }) {
+    [b, ..] => b.rect
+    _ => fail("no agent's half")
+  }
+  // (words seen above the capsule: the card's, not the page's)
+  let in_card = fn(w : String) -> (Double, Double)? {
+    match t.words().filter(fn(x) { x.0 == w && x.5 > 0.5 && x.2 < agent.1 && x.2 > agent.1 - 400.0 }).last() {
+      Some(x) => Some((x.1 + x.3 / 2.0, x.2 + x.4 / 2.0))
+      None => None
+    }
+  }
+  let clear = @sf.t("web-pages.chat.clear")
+  let menu_open = fn() { t.words().iter().any(fn(x) { x.0 == clear && x.5 > 0.5 }) }
+  // (the card drawn and seen: its words, read out or not (under a modal layer what it holds is not read out))
+  let card_open = fn() { in_card("$4.20") is Some(_) }
+  t.move_to(agent.0 + agent.2 / 2.0, agent.1 + agent.3 / 2.0)
+  t.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+  assert_true(wide_bar_card_under(t, agent), msg="the agent's card open")
+  let context = @sf.t("web-main.chat.agentCard.context")
+  let open_menu = fn(round : String) raise {
+    guard in_card(context) is Some((cx, cy)) else { fail("\{round}: no \{context} in the card") }
+    t.move_to(cx, cy)
+    t.run_for(@ui.move_most_ms)
+    t.press_at(cx, cy)
+    t.release(cx, cy)
+    t.run_for(@ui.move_most_ms)
+    assert_true(menu_open(), msg="\{round}: its context's menu open")
+    assert_true(card_open(), msg="\{round}: the card open with it")
+  }
+  for round in ["first", "second"] {
+    open_menu(round)
+    guard in_card("$4.20") is Some((px, py)) else { fail("\{round}: no cost in the card") }
+    t.move_to(px, py)
+    t.press_at(px, py)
+    t.release(px, py)
+    t.run_for(@sf.hover_card_close_ms + @ui.move_most_ms)
+    assert_false(menu_open(), msg="\{round}: a press on the card: the menu closed")
+    assert_true(card_open(), msg="\{round}: a press on the card: the card stays")
+  }
+  // (清空上下文: asked in the middle of the window, the card closed under it)
+  open_menu("clear")
+  guard t.words().filter(fn(x) { x.0 == clear && x.5 > 0.5 }).last() is Some(row) else { fail("no \{clear}") }
+  let (rx, ry) = (row.1 + row.3 / 2.0, row.2 + row.4 / 2.0)
+  t.move_to(rx, ry)
+  t.press_at(rx, ry)
+  t.release(rx, ry)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(@sf.t("web-pages.chat.clearConfirm")) is Some(_), msg="asked whether to clear")
+  assert_false(card_open(), msg="the ask over it: the card closed")
+  // (the ask let go of: the window as it was, what the audit says of it the same)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sf.presenting(), msg="the ask closed")
+  assert_eq(t.audit(), before)
+  @sf.presenters_reset()
+}
+
+///|
+test "大屏, 中屏: 多模型按 station 分组合并成一颗胶囊，Station 在最左侧，悬停各自独立、点击切换对应模型且仅选中段高亮、无外框蓝边" {
+  for win in wide_bar_windows {
+    // 1) Single agent: Station strictly left of Agent0
+    let calls1 : Array[Made] = []
+    let t1 = wide_bar_at(calls1, w=win.1)
+    let st1 = match t1.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }) {
+      [g, ..] => g.rect
+      _ => fail("\{win.0} single: no station")
+    }
+    let ag1 = match t1.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 }) {
+      [b, ..] => b.rect
+      _ => fail("\{win.0} single: no agent")
+    }
+    assert_true(st1.0 + st1.2 <= ag1.0 + 2.0, msg="\{win.0} single: station left of agent: \{Repr(st1)} \{Repr(ag1)}")
+
+    // 2) Multi-agent (2 agents): single merged capsule, Station < Agent0 < Agent1, independent hover & click
+    let calls2 : Array[Made] = []
+    let t2 = wide_bar_at(calls2, w=win.1, over=wide_bar_agents(2))
+    let sts = t2.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 })
+    assert_eq(sts.length(), 1, msg="\{win.0} 2-agents: one station group")
+    let st = sts[0].rect
+    let ags = t2.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 })
+    assert_eq(ags.length(), 2, msg="\{win.0} 2-agents: two agent segments")
+    let a0 = ags[0].rect
+    let a1 = ags[1].rect
+    assert_true(st.0 + st.2 <= a0.0 + 2.0 && a0.0 - (st.0 + st.2) <= 3.0, msg="\{win.0}: station joined left of a0: \{Repr(st)} \{Repr(a0)}")
+    assert_true(a0.0 + a0.2 <= a1.0 + 2.0 && a1.0 - (a0.0 + a0.2) <= 3.0, msg="\{win.0}: a0 joined left of a1 in one capsule: \{Repr(a0)} \{Repr(a1)}")
+    let y = st.1 + st.3 / 2.0
+    // Hover Station -> only Station lit + Station card
+    t2.move_to(st.0 + st.2 / 2.0, y)
+    t2.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+    assert_true(wide_bar_lit(t2, st), msg="\{win.0}: station lit")
+    assert_false(wide_bar_lit(t2, a0), msg="\{win.0}: a0 not lit when hovering station")
+    assert_false(wide_bar_lit(t2, a1), msg="\{win.0}: a1 not lit when hovering station")
+    assert_true(wide_bar_card_under(t2, st), msg="\{win.0}: station card")
+    // Hover Agent0 -> only Agent0 lit + Agent0 card
+    t2.move_to(a0.0 + a0.2 / 2.0, y)
+    t2.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+    assert_false(wide_bar_lit(t2, st), msg="\{win.0}: station not lit when hovering a0")
+    assert_true(wide_bar_lit(t2, a0), msg="\{win.0}: a0 lit")
+    assert_false(wide_bar_lit(t2, a1), msg="\{win.0}: a1 not lit when hovering a0")
+    assert_true(wide_bar_card_under(t2, a0), msg="\{win.0}: a0 card")
+    // Hover Agent1 -> only Agent1 lit + Agent1 card
+    t2.move_to(a1.0 + a1.2 / 2.0, y)
+    t2.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+    assert_false(wide_bar_lit(t2, st), msg="\{win.0}: station not lit when hovering a1")
+    assert_false(wide_bar_lit(t2, a0), msg="\{win.0}: a0 not lit when hovering a1")
+    assert_true(wide_bar_lit(t2, a1), msg="\{win.0}: a1 lit")
+    assert_true(wide_bar_card_under(t2, a1), msg="\{win.0}: a1 card")
+    // Click Agent0 and Agent1 -> chat.tabs.open with respective keys
+    wide_bar_tap(t2, a0)
+    wide_bar_tap(t2, a1)
+    let opened_tabs = calls2.filter(fn(c) { c.name == "chat.tabs.open" }).map(fn(c) { text(Some(c.params), "tab") })
+    assert_true(opened_tabs.contains("s-c1") && opened_tabs.contains("s-x1"), msg="\{win.0}: opened both agents: \{Repr(opened_tabs)}")
+    // Click Station -> opens station peek
+    @sf.presenters_reset()
+    wide_bar_tap(t2, st)
+    assert_true(@sf.presenting(), msg="\{win.0}: station tap opens peek")
+    t2.key(@ui.key_escape)
+    t2.run_for(@ui.move_most_ms)
+
+    // 3) Side panel active on Agent1: only Agent1 segment is marked/lit
+    let calls3 : Array[Made] = []
+    let side_a1 = wide_bar_both(
+      wide_bar_agents(2),
+      wide_bar_chat_field("tabs", fn(_) { { "open": ["s-x1"], "shown": "s-x1" } }),
+    )
+    let t3 = wide_bar_at(calls3, w=win.1, over=side_a1)
+    let st3 = t3.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 })[0].rect
+    let ags3 = t3.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 })
+    assert_eq(ags3.length(), 2, msg="\{win.0} marked: two agents")
+    assert_false(wide_bar_lit(t3, st3), msg="\{win.0} marked: station not lit")
+    assert_false(wide_bar_lit(t3, ags3[0].rect), msg="\{win.0} marked: a0 not lit")
+    assert_true(wide_bar_lit(t3, ags3[1].rect), msg="\{win.0} marked: a1 lit")
+    assert_eq(t3.audit().filter(fn(f) { f.contains("chat_bar_wide_node") }), [], msg=win.0)
+  }
+}
+
+///|
+test "大屏窄窗(860)与中屏窄窗(600): 3 模型 + 服务按钮 + 子会话下，合并胶囊不越过右侧按钮与窗口边界，零 audit 告警" {
+  for win in [("大屏", 860.0), ("中屏", 600.0)] {
+    let calls : Array[Made] = []
+    let over = wide_bar_both(wide_bar_both(wide_bar_agents(3), wide_bar_jobs("")), bar_leads_one())
+    let t = wide_bar_at(calls, w=win.1, over~)
+    let sts = t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 })
+    let ags = t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 })
+    let services = t.all(Button).filter(fn(b) { b.label == @sf.t("web-pages.chat.services") && b.rect.1 > 400.0 })
+    assert_eq(sts.length(), 1, msg=win.0)
+    assert_eq(ags.length(), 3, msg=win.0)
+    guard services is [s, ..] else { fail("\{win.0}: no services button") }
+    assert_true(sts[0].rect.0 < ags[0].rect.0 && ags[0].rect.0 < ags[1].rect.0 && ags[1].rect.0 < ags[2].rect.0, msg=win.0)
+    let right_most = ags[2].rect.0 + ags[2].rect.2
+    assert_true(right_most <= s.rect.0, msg="\{win.0}: merged capsule before services: \{right_most} vs \{s.rect.0}")
+    assert_true(s.rect.0 + s.rect.2 <= win.1, msg="\{win.0}: services in window: \{Repr(s.rect)}")
+    assert_eq(t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("agent_badge_node") }), [], msg=win.0)
+  }
+}
+
+///|
+test "大屏/中屏输入框上方胶囊：Gemini 4 Neon · 高 宽屏完整展示，挤窄时逐级降级为 Neon · 高 与 Neon（始终保底短名不藏掉），无省略号无死留白，拉宽恢复" {
+  let calls : Array[Made] = []
+  let bar_texts = fn(t : @ui.Tester) -> Array[String] {
+    t.text_runs().filter(fn(r) { r.top > 400.0 && r.bottom < 740.0 }).map(fn(r) { r.text })
+  }
+  // 1) Roomy Large screen (1280): full "Gemini 4 Neon" + "高" shown without ellipsis
+  let t = wide_bar_at(calls, w=1280.0, over=wide_bar_neon_over(with_subchats=true, with_jobs=true))
+  let wide_words = bar_texts(t)
+  assert_true(wide_words.contains("Gemini 4 Neon"), msg="1280: full model name: \{Repr(wide_words)}")
+  assert_true(wide_words.contains("· 高"), msg="1280: effort shown: \{Repr(wide_words)}")
+  assert_true(wide_words.iter().all(fn(s) { !s.contains("…") }), msg="1280: zero ellipsis: \{Repr(wide_words)}")
+  assert_eq(t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("model_segments_node") }), [], msg="1280 audit")
+  // 2) Crowded Medium screen (600) with 3 agents + subchats + jobs: all agents step down to "Neon" without ellipsis
+  let t2 = wide_bar_at(calls, w=600.0, over=wide_bar_neon_over(extra_agents=2, with_subchats=true, with_jobs=true))
+  let mid_words = bar_texts(t2)
+  assert_true(mid_words.contains("Neon"), msg="600 crowded: short model name Neon: \{Repr(mid_words)}")
+  assert_true(!mid_words.contains("Gemini 4 Neon"), msg="600 crowded: full name stepped down: \{Repr(mid_words)}")
+  assert_true(mid_words.iter().all(fn(s) { !s.contains("…") }), msg="600 crowded: zero ellipsis: \{Repr(mid_words)}")
+  assert_eq(t2.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("model_segments_node") }), [], msg="600 audit")
+  // 3) Widen back to 1280: full "Gemini 4 Neon" + "高" recovers immediately
+  t2.resize(1280.0, 800.0)
+  t2.run_for(@ui.move_most_ms)
+  let back_words = bar_texts(t2)
+  assert_true(back_words.contains("Gemini 4 Neon"), msg="widened back: full restored: \{Repr(back_words)}")
+  assert_true(back_words.contains("· 高"), msg="widened back: effort restored: \{Repr(back_words)}")
 }

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writePrivateSoon } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
+import { wall } from "../ops/fibers.ts";
 import { platform } from "../platform/index.ts";
 
 /// Claude Code asks with its item's name in the arguments, or (`security -i`) in the commands it writes to stdin.
@@ -54,9 +55,26 @@ export function keychainItem(home: string): string {
   return `Claude Code-credentials-${createHash("sha256").update(home).digest("hex").slice(0, 8)}`;
 }
 
+/// `/usr/bin/security` with `args`: what it printed, and whether it succeeded. Answers within 5.5 s whatever it does:
+/// `execFile`'s own timeout sends a signal and waits for its output to close, which a `security` stuck on `securityd`
+/// (or a child keeping its stdio) never does, and a session's start waited on it forever (FB-34).
 const security = (args: string[]) =>
   new Promise<{ ok: boolean; stdout: string }>((resolve) => {
-    execFile("/usr/bin/security", args, { timeout: 5000 }, (error, stdout) => resolve({ ok: !error, stdout: String(stdout) }));
+    let settled = false;
+    const done = (answer: { ok: boolean; stdout: string }) => {
+      if (settled) return;
+      settled = true;
+      stop();
+      resolve(answer);
+    };
+    const child = execFile("/usr/bin/security", args, { timeout: 5000, killSignal: "SIGKILL" }, (error, stdout) => done({ ok: !error, stdout: String(stdout) }));
+    // timer: hard deadline if /usr/bin/security ignores kill or keeps stdio open
+    const stop = wall.after(5_500, () => {
+      try { child.kill("SIGKILL"); } catch {}
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      done({ ok: false, stdout: "" });
+    });
   });
 
 /// A profile's login that Claude Code moved into the keychain, moved back into its home's file. Nothing when the file

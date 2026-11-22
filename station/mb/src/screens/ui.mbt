@@ -111,7 +111,7 @@ pub fn tree_text(tree : J) -> String {
   fn walk(n : J, depth : Int, parent : String) -> Unit {
     let ref_ = match get(Some(n), "ref_id") {
       Some(Str(u)) if u.length() > 0 => {
-        let s = @jsjson.text(u)
+        let s = @jsjson.sanitize_str(u)
         let at = match s.rev_find(":") {
           Some(i) => i + 1
           None => 0

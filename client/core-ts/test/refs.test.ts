@@ -124,3 +124,35 @@ test("other_workspaces_chats_are_offered_only_for_what_is_typed_and_never_crowd_
   assert.equal(found.filter((id) => outside.some((o) => o.id === id)).length, OUTSIDE_SHOWN);
   assert.deepEqual(withOutside(local, outside, "登录", "ws", 3).map((i) => i.id), ["登录页", "修登录", "登录流程 B"]);
 });
+
+test("a_search_and_withOutside_match_multiple_words_in_any_order_and_across_fields", async () => {
+  const { withOutside } = await import("../src/refs.ts");
+  const item = (id: string, ti: string, more: Record<string, unknown> = {}) => ({
+    id, session: `s${id}`, title: ti, station: "w/a", stationName: "Studio", agents: [], last: { preview: "" }, lastActiveAt: 10, ...more,
+  });
+  const chats = {
+    days: [{
+      items: [
+        item("1", "实现 Admin API Key、密钥库集成与 Admin CLI", { lastActiveAt: 20 }),
+        item("2", "部署页", { stationName: "Studio", lastActiveAt: 30 }),
+        item("3", "其它对话", { agents: [{ agentText: "Codex" }], last: { preview: "排查 admin 问题" }, lastActiveAt: 40 }),
+        item("4", "CLI 工具说明", { lastActiveAt: 50 }),
+      ],
+    }],
+  };
+  const ids = (v: { items: { id: string }[] }) => v.items.map((i) => i.id);
+  // Multi-word title match regardless of word order or intervening text.
+  assert.deepEqual(ids(search(chats, "admin cli", null, null, null)), ["1"]);
+  assert.deepEqual(ids(search(chats, "CLI admin", null, null, null)), ["1"]);
+  // Cross-field match: stationName + title, and agentText + last.preview.
+  assert.deepEqual(ids(search(chats, "studio 部署", null, null, null)), ["2"]);
+  assert.deepEqual(ids(search(chats, "codex admin", null, null, null)), ["3"]);
+  // withOutside also matches multi-word titles.
+  const local = [item("l1", "Admin 工具与 CLI"), item("l2", "别的", { last: { preview: "admin cli" } })];
+  const outside = [
+    item("o1", "实现 Admin API Key 与 CLI 集成", { outside: "甲" }),
+    item("o2", "只有 Admin", { outside: "甲" }),
+    item("o3", "CLI Admin 共享", { outside: "乙", xshare: { to: ["ws"], write: false } }),
+  ];
+  assert.deepEqual(withOutside(local, outside, "admin cli", "ws", 8).map((i) => i.id), ["l1", "o3", "o1", "l2"]);
+});

@@ -249,6 +249,40 @@ test "a DevTools connection: a command answered by its id, Chrome's error said, 
 }
 
 ///|
+test "a DevTools socket that opens only after the time given is closed at once, one in time kept open" {
+  let rt = @effect.Runtime::new()
+  let clock = vclock(rt)
+  let closed = []
+  let opened = []
+  let open = async fn(url : String, _link : CdpLink) -> CdpSocket {
+    // (the late one answers after the 10 s given, the other at once)
+    if url == "ws://late" {
+      @effect.sleep(cdp_open_ms.to_int() + 5000)
+    }
+    opened.push(url)
+    { send: _ => (), close: () => closed.push(url) }
+  }
+  let failed : Ref[String] = Ref("")
+  ignore(
+    rt.fork(async fn() {
+      ignore(connect_cdp("ws://late", open, clock)) catch {
+        e => failed.val = message_of(e)
+      }
+    }),
+  )
+  let kept : Ref[Cdp?] = Ref(None)
+  ignore(rt.fork(async fn() { kept.val = Some(connect_cdp("ws://soon", open, clock)) }))
+  rt.advance(cdp_open_ms.to_int() + 1)
+  assert_eq(failed.val, "the browser's DevTools did not answer at ws://late")
+  assert_eq(opened, ["ws://soon"])
+  assert_true(kept.val is Some(_))
+  assert_eq(closed, [])
+  rt.advance(5000)
+  assert_eq(opened, ["ws://soon", "ws://late"])
+  assert_eq(closed, ["ws://late"])
+}
+
+///|
 /// A machine of the test's own for Chrome: what it started, signalled and ended; a Chrome that says its port in
 /// DevToolsActivePort and names itself headless until it is given an agent.
 fn chrome_machine(m : Mem, rt : @effect.Runtime, started : Array[Array[String]], ended : Array[Int]) -> Machine {

@@ -109,6 +109,26 @@ END;
 CREATE TRIGGER IF NOT EXISTS vault_pending_nul_drop_v3 AFTER DELETE ON vault_requests BEGIN
   DELETE FROM vault_pending_nul_v3 WHERE ws = OLD.ws AND id = OLD.id;
 END;
+CREATE TABLE IF NOT EXISTS vault_pending_owner_v4 (
+  ws TEXT NOT NULL, id TEXT NOT NULL, owner TEXT, at,
+  PRIMARY KEY (ws, id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS vault_pending_owner_v4_owner ON vault_pending_owner_v4 (ws, owner, id);
+CREATE TRIGGER IF NOT EXISTS vault_pending_owner_add_v4 AFTER INSERT ON vault_requests
+  WHEN NEW.status = 'pending' AND json_valid(NEW.body) AND (json_type(NEW.body, '$.browse') = 'object' OR json_type(NEW.body, '$.cross') = 'object') BEGIN
+  INSERT OR REPLACE INTO vault_pending_owner_v4 VALUES (NEW.ws, NEW.id, json_extract(NEW.body, '$.owner'), json_extract(NEW.body, '$.at'));
+END;
+CREATE TRIGGER IF NOT EXISTS vault_pending_owner_change_v4 AFTER UPDATE ON vault_requests
+  WHEN OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR OLD.status IS NOT NEW.status OR OLD.body IS NOT NEW.body BEGIN
+  DELETE FROM vault_pending_owner_v4 WHERE ws = OLD.ws AND id = OLD.id;
+  DELETE FROM vault_pending_owner_v4 WHERE ws = NEW.ws AND id = NEW.id;
+  INSERT OR REPLACE INTO vault_pending_owner_v4
+    SELECT NEW.ws, NEW.id, json_extract(NEW.body, '$.owner'), json_extract(NEW.body, '$.at')
+    WHERE NEW.status = 'pending' AND json_valid(NEW.body) AND (json_type(NEW.body, '$.browse') = 'object' OR json_type(NEW.body, '$.cross') = 'object');
+END;
+CREATE TRIGGER IF NOT EXISTS vault_pending_owner_drop_v4 AFTER DELETE ON vault_requests BEGIN
+  DELETE FROM vault_pending_owner_v4 WHERE ws = OLD.ws AND id = OLD.id;
+END;
 `;
 
 export const PENDING_BODIES = `SELECT r.body FROM vault_pending_lookup p
@@ -116,6 +136,9 @@ export const PENDING_BODIES = `SELECT r.body FROM vault_pending_lookup p
 export const PENDING_OWN = `SELECT r.id, r.body FROM vault_pending_lookup p INDEXED BY vault_pending_decider
   JOIN vault_requests r ON r.ws = p.ws AND r.id = p.id
   WHERE p.ws = ? AND p.owner_decides = 1 AND p.decider = ?`;
+export const PENDING_CROSS_OWN = `SELECT r.id, r.body FROM vault_pending_owner_v4 p INDEXED BY vault_pending_owner_v4_owner
+  JOIN vault_requests r ON r.ws = p.ws AND r.id = p.id
+  WHERE p.ws = ? AND p.owner = ?`;
 // CROSS JOIN keeps the member's vaults on the outside: no scan of other vaults' waiting requests.
 export const PENDING_MEMBER = `SELECT r.id, r.body FROM vault_member_lookup m
   CROSS JOIN vault_pending_lookup p INDEXED BY vault_pending_decider

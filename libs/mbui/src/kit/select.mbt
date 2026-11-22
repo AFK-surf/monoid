@@ -115,7 +115,7 @@ pub fn select(
       None => if o.dismissed is Some(_) { open = false }
     }
   }
-  kit.val.opens[id] = open
+  opens_set(id, open)
   { value: now, response: r.changed_to(now != value) }
 }
 
@@ -302,6 +302,6 @@ pub fn navigation_menu(
     }
   }
   kit.val.bars[id] = open
-  kit.val.opens[cid] = open >= 0 && by_key
+  opens_set(cid, open >= 0 && by_key)
   followed
 }

@@ -11,8 +11,8 @@
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import type { Cloud } from "../cloud/state.ts";
-import { asEntry, type Entry, LockRefusal, personFold } from "../cloud/lock.ts";
-import { ASIDE_MOST, hashOf } from "../cloud/log-keep.ts";
+import { asEntry, type Entry, LockRefusal, personFold } from "../../../shared/lock.ts";
+import { ASIDE_MOST, hashOf } from "../../../shared/log-keep.ts";
 import type { PeerCall } from "./bus.ts";
 import { AT_ODDS, CHAIN_MOST, type PersonChains, subOf } from "./person-chains.ts";
 import { RETRY_MOST_MS, RETRY_MS, unknownMethod } from "./lock-sync.ts";

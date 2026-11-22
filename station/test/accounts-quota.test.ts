@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync, statSync,
 import { devNull } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { agyAllowance, agyScopeForModel } from "../src/accounts/agy-quota.ts";
+import { agyAllowance, agyModelWindows, agyScopeForModel, agyVerify, clipKeepingLinks } from "../src/accounts/agy-quota.ts";
 import { claudeOAuthToken, RefreshLock } from "../src/accounts/oauth.ts";
 import { readClaudeCredentials } from "../src/agents/machine-logins.ts";
 import { URLS } from "../src/accounts/profiles.ts";
@@ -104,6 +104,57 @@ describe("allowances and renewing", { concurrency: true }, () => {
     assert.equal(ran.key, null, "scrubs inherited GEMINI_API_KEY");
     assert.equal(ran.updates, "1");
 
+    let hasGeminiWeekly = true;
+    const weeklyReset = "2030-01-20T08:00:00Z";
+    const quotaApi = await provider((req) => {
+      if (req.url.endsWith(":loadCodeAssist")) {
+        return { status: 200, body: { paidTier: { id: "g1-pro-tier" }, cloudaicompanionProject: "aicode-consumers" } };
+      }
+      if (req.url.endsWith(":retrieveUserQuotaSummary")) {
+        return {
+          status: 200,
+          body: {
+            quotaSummary: {
+              groups: [
+                {
+                  displayName: "Gemini Models",
+                  buckets: [
+                    { bucketId: "gemini-5h", remainingFraction: 0.5 },
+                    ...(hasGeminiWeekly ? [{ bucketId: "gemini-weekly", remainingFraction: 0.68, resetTime: weeklyReset }] : []),
+                  ],
+                },
+                { displayName: "Gemini 4 Argon", buckets: [{ bucketId: "gemini-argon-wtu-weekly", remainingFraction: 0.8 }] },
+              ],
+            },
+          },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+    try {
+      const apiUrls = { ...URLS, agyQuota: quotaApi.base };
+      const complete = await checkQuota(profile, { PATH: fakePath }, undefined, apiUrls, "zh");
+      assert.deepEqual(complete.windows, q.windows);
+      assert.deepEqual(quotaApi.asked, []);
+
+      const partialEnv = { PATH: fakePath, FAKE_AGY_USAGE_NO_GEMINI_WEEKLY: "1" };
+      const supplemented = await checkQuota(profile, partialEnv, undefined, apiUrls, "zh");
+      assert.deepEqual(supplemented.windows, [
+        { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" },
+        ...q.windows.slice(1),
+      ]);
+      assert.deepEqual(quotaApi.asked.map(({ url, body }) => [url, body]), [
+        ["/v1internal:loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }],
+        ["/v1internal:retrieveUserQuotaSummary", { project: "aicode-consumers" }],
+      ]);
+
+      hasGeminiWeekly = false;
+      const unavailable = await checkQuota(profile, partialEnv, undefined, apiUrls, "zh");
+      assert.deepEqual(unavailable.windows, q.windows.slice(1));
+    } finally {
+      await quotaApi.close();
+    }
+
     // macOS: `agy` is kept to the profile's file (`AGY_FILE_TOKENS`, HOME its agy/), never the login keychain's one
     // item. A profile whose file `agy` had moved into that item takes it back when the item is its noted account; an
     // unsigned profile (even with `agy/sessions` linked by `linkTranscripts` and a cancelled `agy` home) and one whose
@@ -159,6 +210,133 @@ describe("allowances and renewing", { concurrency: true }, () => {
     assert.equal(eofQ.unanswered, true);
     const blockedQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: "Your account has been suspended (typeof check)" }, undefined, URLS, "zh");
     assert.deepEqual([blockedQ.state, blockedQ.unanswered], ["blocked", undefined]);
+    // Google holding the account until it is verified: blocked (the pool passes it over), with the page to verify it on,
+    // which comes after the 300 characters other errors are cut to.
+    const page = "https://accounts.google.com/v3/signin/continue?plt=AKgnsbvgpMGWUxHL-LdY6TaKwyqigcx13EZGzlKmZcGrDxrNDt57SPhlkbXKa1uIKydtd8wIqmUCw2x25ooo2v5G_JN2S8spn6C0rCAJWTFB47we5La_Ckx-UMLZpie3MBHPZkmLQIIq&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&sarp=1&scc=1&flowName=GlifWebSignIn&authuser";
+    const verifyQ = await checkQuota(
+      profile,
+      {
+        PATH: fakePath,
+        FAKE_AGY_USAGE_ERROR: `Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.\n\nAlternatively, try signing in with another personal Google account.\n\nPlease verify your account in your browser to continue:\n${page}`,
+      },
+      undefined,
+      URLS,
+      "zh",
+    );
+    assert.deepEqual([verifyQ.state, verifyQ.unanswered, verifyQ.detail], ["blocked", undefined, `Google 要求先验证这个账号才能用 Antigravity。用登录了这个 Google 账号的浏览器打开下面的链接完成验证，然后重新查询额度\n${page}`]);
+    assert.equal(agyVerify("PERMISSION_DENIED (code 403): Verify your account to continue."), "");
+    assert.equal(agyVerify("Your account has been suspended"), null);
+    const locationErr = "Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location.";
+    assert.equal(agyVerify(locationErr), null);
+
+    // Paid account whose free-tier is ineligible in the current location: `agy -p /usage` fails its eligibility check,
+    // so `agyQuota` confirms an active tier via `loadCodeAssist` and falls back to `retrieveUserQuotaSummary` +
+    // `fetchAvailableModels` to fill missing pools (e.g. Gemini).
+    let paidTier = true;
+    let geminiSpent = false;
+    let dailyHasGeminiWeekly = false;
+    const geminiReset = "2030-01-15T08:00:00Z";
+    const thirdPartyReset = "2030-01-15T08:15:00Z";
+    const agyApi = await provider((req) => {
+      if (req.url.endsWith(":loadCodeAssist")) {
+        return {
+          status: 200,
+          body: paidTier
+            ? {
+                currentTier: { id: "free-tier", name: "Free" },
+                paidTier: { id: "g1-ultra-lite-tier", name: "Google AI Ultra" },
+                cloudaicompanionProject: "aicode-consumers",
+                ineligibleTiers: [{ tierId: "free-tier", reasonCode: "UNSUPPORTED_LOCATION" }],
+              }
+            : { ineligibleTiers: [{ tierId: "free-tier", reasonCode: "UNSUPPORTED_LOCATION" }] },
+        };
+      }
+      if (req.url.endsWith(":retrieveUserQuotaSummary")) {
+        return {
+          status: 200,
+          body: {
+            groups: [
+              ...(dailyHasGeminiWeekly ? [{
+                displayName: "Gemini Models",
+                buckets: [{ bucketId: "gemini-weekly", remainingFraction: 0.68, resetTime: weeklyReset }],
+              }] : []),
+              {
+                displayName: "Claude and GPT models",
+                buckets: [
+                  { bucketId: "3p-weekly", window: "weekly", remainingFraction: 1 },
+                  { bucketId: "3p-5h", window: "5h", remainingFraction: 0.9, resetTime: thirdPartyReset },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      if (req.url.endsWith(":fetchAvailableModels")) {
+        return {
+          status: 200,
+          body: {
+            models: {
+              "gemini-4-hydrogen-sonar": { quotaInfo: { remainingFraction: geminiSpent ? undefined : 0.92, resetTime: geminiReset } },
+              "gemini-3.8-flash-tiered": { quotaInfo: { remainingFraction: geminiSpent ? undefined : 0.98, resetTime: geminiReset } },
+              "claude-opus-5-5-high": { quotaInfo: { remainingFraction: 0.9, resetTime: thirdPartyReset } },
+              tab_flash_lite_preview: { quotaInfo: { remainingFraction: 1 } },
+            },
+          },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+    try {
+      const fallbackQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.equal(fallbackQ.state, "ok");
+      assert.equal(fallbackQ.plan, "Ultra 5x");
+      assert.deepEqual(fallbackQ.windows, [
+        { label: "5 小时 · Gemini", usedPercent: 8, resetsAt: Date.parse(geminiReset), minutes: 300, scope: "gemini" },
+        { label: "每周 · Claude / GPT", usedPercent: 0, resetsAt: null, minutes: 10080, scope: "3p" },
+        { label: "5 小时 · Claude / GPT", usedPercent: 10, resetsAt: Date.parse(thirdPartyReset), minutes: 300, scope: "3p" },
+      ]);
+
+      // Google omits remainingFraction when the model pool is exhausted, but still gives its reset time.
+      geminiSpent = true;
+      const spentQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.equal(spentQ.state, "ok");
+      assert.deepEqual(spentQ.windows, [
+        { ...fallbackQ.windows[0]!, usedPercent: 100 },
+        ...fallbackQ.windows.slice(1),
+      ]);
+
+      dailyHasGeminiWeekly = true;
+      const weeklyQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.deepEqual(weeklyQ.windows, [
+        spentQ.windows[0],
+        { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" },
+        ...spentQ.windows.slice(1),
+      ]);
+
+      // Account with no active tier at all in this location: falls through to report the location error, never a
+      // verification hold.
+      paidTier = false;
+      const trulyBlockedQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.equal(trulyBlockedQ.state, "unavailable");
+      assert.ok(trulyBlockedQ.detail?.includes("not currently available in your location"));
+    } finally {
+      await agyApi.close();
+    }
+    assert.deepEqual(
+      agyModelWindows({
+        models: {
+          "gemini-2.5-pro": { quotaInfo: { remainingFraction: 0.75, resetTime: geminiReset } },
+          "gemini-3-flash": { quotaInfo: {} },
+          "gemini-2.5-flash": { quotaInfo: { remainingFraction: "unknown", resetTime: geminiReset } },
+          tab_jump_flash_lite_preview: { quotaInfo: { remainingFraction: 1 } },
+        },
+      }),
+      [{ label: "5 小时 · Gemini", usedPercent: 25, resetsAt: Date.parse(geminiReset), minutes: 300, scope: "gemini" }],
+    );
+
+    // Another error a link is cut in: the link kept whole, which cut short opens a 400.
+    assert.equal(clipKeepingLinks(`${"x".repeat(10)} ${page} after`, 30), `${"x".repeat(10)} ${page}`);
+    assert.equal(clipKeepingLinks("x".repeat(40), 30), "x".repeat(30));
 
     // No windows: a person's account says it could not read them; a company's paying as it goes has none to show.
     const emptyQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_EMPTY: "1" }, undefined, URLS, "zh");
@@ -268,10 +446,8 @@ describe("allowances and renewing", { concurrency: true }, () => {
   test("a provider the station cannot reach is said so, not as Node says it", async () => {
     const dir = temp("codex-unreached");
     writeFileSync(join(dir, "auth.json"), JSON.stringify({ tokens: { access_token: "at" } }));
-    // (a port nothing listens on any more: the connection is refused)
-    const p = await provider(() => ({ status: 200, body: {} }));
-    await p.close();
-    const quota = await machineUsage("codex", { CODEX_HOME: dir }, { ...URLS, chatgpt: p.base }, "zh");
+    // (port 1 is never bound by a test server: connection refused with no ephemeral-port reuse race)
+    const quota = await machineUsage("codex", { CODEX_HOME: dir }, { ...URLS, chatgpt: "http://127.0.0.1:1" }, "zh");
     assert.deepEqual([quota!.state, quota!.detail], ["unavailable", "无法连接服务商，请检查此 station 的网络或代理"]);
     assert.equal(quota!.unanswered, true);
   });
@@ -486,10 +662,24 @@ describe("allowances and renewing", { concurrency: true }, () => {
     const refused = await checkQuota(profile, {}, undefined, urls, "zh");
     assert.deepEqual([refused.state, refused.signedOut], ["unavailable", true]);
     await p.close();
-    // Not renewed for now: nothing is said of the login.
+    // Not renewed for now: nothing is said of the login, but recheck is flagged so checkProfile can mark it failed.
     p = await oauthProvider(503);
     const later = await checkQuota(profile, {}, undefined, { ...urls, anthropic: p.base, claudeToken: p.base }, "zh");
-    assert.deepEqual([later.state, later.signedOut], ["unavailable", undefined]);
+    assert.deepEqual([later.state, later.signedOut, later.recheck], ["unavailable", undefined, true]);
+    await p.close();
+  });
+
+  test("claudeWithRefresh marks signedOut when usage still returns 401 after renewal", async () => {
+    const home = temp("still-401");
+    writeFileSync(join(home, ".credentials.json"), JSON.stringify(credentials(Date.now() + 3_600_000)));
+    const p = await provider((asked) =>
+      asked.method === "POST"
+        ? { status: 200, body: { access_token: "still-bad", refresh_token: "refresh-new", expires_in: 3600 } }
+        : { status: 401, body: { error: "unauthorized" } },
+    );
+    const got = await claudeWithRefresh({}, home, { ...URLS, anthropic: p.base, claudeToken: p.base }, "zh");
+    assert.deepEqual([got.state, got.signedOut], ["unavailable", true]);
+    assert.deepEqual(p.asked.map((r) => r.method), ["GET", "POST", "GET"]);
     await p.close();
   });
 

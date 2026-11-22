@@ -147,25 +147,26 @@ fn middle_of(t : @ui.Tester, role : @view.Role, label : String) -> (Double, Doub
 }
 
 ///|
-test "a connect's Slack app: its picture's room edged 1 in the line's colour" {
+test "a connect's Slack app: its picture's room edged in a hairline of the line's colour" {
   let t = slack_app_tester(390.0, 2)
   let (x, y) = middle_of(t, Button, "上传图片")
-  assert_eq(edge_round(t, x, y), (1.0, edge_shown(t, x, y, @ui.tree_theme().color(Line))), msg="at \{x},\{y}: \{edges_at(t, x, y)}")
+  assert_eq(edge_round(t, x, y), (0.5, edge_shown(t, x, y, @ui.tree_theme().color(Line))), msg="at \{x},\{y}: \{edges_at(t, x, y)}")
 }
 
 ///|
-test "a connect's Slack app: its colour's swatch edged 1 in the border's colour" {
+test "a connect's Slack app: its colour's swatch edged in a hairline of the line's colour" {
   let t = slack_app_tester(390.0, 2)
   // (the swatch: the one square drawn 28 across, beside the colour's field)
   let swatches = t.drawn_rects().filter(fn(r) { r.2 == 28.0 && r.3 == 28.0 })
   assert_eq(swatches.length(), 1, msg="\{Repr(swatches)}")
   let (sx, sy, _, _, _) = swatches[0]
   let (x, y) = (sx + 14.0, sy + 14.0)
-  assert_eq(edge_round(t, x, y), (1.0, edge_shown(t, x, y, @ui.tree_theme().color(Border))), msg="at \{x},\{y}: \{edges_at(t, x, y)}")
+  // (the line's translucent colour as it is: drawn over the swatch's own colour, as a host draws it)
+  assert_eq(edge_round(t, x, y), (0.5, @ui.tree_theme().color(Line)), msg="at \{x},\{y}: \{edges_at(t, x, y)}")
 }
 
 ///|
-test "a connect's Slack app's buddies to pick from, with a mouse: the picked edged 2 in the words' colour, the rest 1 in the line's, one under the pointer 1 in the field's hover" {
+test "a connect's Slack app's buddies to pick from, with a mouse: the picked edged 2 in the words' colour, the rest a hairline of the line's, one under the pointer a hairline of the border's" {
   let t = slack_app_tester(1280.0, 0)
   let th = @ui.tree_theme()
   // (移动应用 picked by a press; 后端接口 not)
@@ -175,13 +176,13 @@ test "a connect's Slack app's buddies to pick from, with a mouse: the picked edg
   assert_true(t.query(Button, label="移动应用").unwrap().selected == Some(true))
   let (ox, oy) = middle_of(t, Button, "后端接口")
   assert_eq(edge_round(t, px, py), (2.0, edge_shown(t, px, py, th.color(Fg))), msg="picked at \{px},\{py}: \{edges_at(t, px, py)}")
-  assert_eq(edge_round(t, ox, oy), (1.0, edge_shown(t, ox, oy, th.color(Line))), msg="not picked: \{edges_at(t, ox, oy)}")
+  assert_eq(edge_round(t, ox, oy), (0.5, edge_shown(t, ox, oy, th.color(Line))), msg="not picked: \{edges_at(t, ox, oy)}")
   t.move_to(ox, oy)
   t.run_for(@ui.move_most_ms)
-  assert_eq(edge_round(t, ox, oy), (1.0, edge_shown(t, ox, oy, th.color(FieldHover))), msg="under the pointer: \{edges_at(t, ox, oy)}")
+  assert_eq(edge_round(t, ox, oy), (0.5, edge_shown(t, ox, oy, th.color(Border))), msg="under the pointer: \{edges_at(t, ox, oy)}")
   t.move_to(1.0, 1.0)
   t.run_for(@ui.move_most_ms)
-  assert_eq(edge_round(t, ox, oy), (1.0, edge_shown(t, ox, oy, th.color(Line))), msg="the pointer gone")
+  assert_eq(edge_round(t, ox, oy), (0.5, edge_shown(t, ox, oy, th.color(Line))), msg="the pointer gone")
 }
 
 ///|
@@ -224,6 +225,109 @@ fn edge_shown(t : @ui.Tester, x : Double, y : Double, c : Int64) -> Int64 {
     Some((_, g)) => @ui.over(g, c)
     None => c
   }
+}
+
+///|
+test "a connect's startsOn dialog: explicit manual checklist (no auto-all), disables save when empty or unchanged, saves stations array and shows multi-station summary" {
+  for case in [(390.0, 2), (1280.0, 0)] {
+    let (w, platform) = case
+    let at = "\{w} platform \{platform}"
+    let puts : Array[Json] = []
+    let t = setting_tester(Connect("ws1/st1", "k1"), w, platform~, over=fn(s) {
+      {
+        ..s,
+        call: fn(name, params, done) {
+          if name == "connect.put" {
+            puts.push(params)
+          }
+          (s.call)(name, params, done)
+        },
+      }
+    })
+    t.draw()
+    assert_true(t.find("新对话开在") is Some(_), msg=at)
+    let (sx, sy) = t.find("新对话开在").unwrap()
+    t.tap(sx, sy)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting(), msg=at)
+    assert_eq(t.corner_faults(), [], msg=at)
+    assert_eq(t.gap_faults(), [], msg=at)
+    // Must not offer any automatic all-stations option.
+    assert_true(t.find("自动选择") is None, msg=at)
+    assert_true(t.find("所有 station") is None, msg=at)
+    // Initially unchanged -> Save disabled.
+    assert_true(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: save initially disabled")
+    // Unchecking the only checked station (Willow) leaves 0 selected -> Save stays disabled.
+    let (wx, wy) = middle_of(t, Button, "Willow（connect 所在的这台）")
+    t.tap(wx, wy)
+    t.draw()
+    assert_true(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: save disabled when empty")
+    // Re-check Willow and also check Maple -> Save enabled.
+    t.tap(wx, wy)
+    t.draw()
+    let (mx, my) = middle_of(t, Button, "Maple")
+    t.tap(mx, my)
+    t.draw()
+    assert_false(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: save enabled with 2 stations")
+    let (bx, by) = middle_of(t, Button, "保存")
+    t.tap(bx, by)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(puts.length(), 1, msg=at)
+    assert_eq(strings(field(Some(puts[0]), "input"), "stations"), ["st1", "st2"], msg=at)
+    assert_true(t.find("Willow、Maple") is Some(_), msg="\{at}: multi-station label shown from bare station ids")
+    // Re-opening dialog with bare startsOnStations ["st1", "st2"] restores both checkboxes as checked.
+    let (sx2, sy2) = t.find("新对话开在").unwrap()
+    t.tap(sx2, sy2)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: reopened dialog matches saved bare ids")
+    let (mx2, my2) = middle_of(t, Button, "Maple")
+    t.tap(mx2, my2)
+    t.draw()
+    assert_false(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: unchecking Maple enables save")
+    // Toggle "跟随工作区白名单（自动分配）" ON -> manual checklist hides, save sends { autoStation: true }, detail shows "跟随工作区白名单".
+    assert_true(t.find("跟随工作区白名单（自动分配）") is Some(_), msg="\{at}: auto allowlist switch shown")
+    assert_true(t.find("1 台") is Some(_), msg="\{at}: allowlist count shown")
+    let (ax, ay) = middle_of(t, Switch, "跟随工作区白名单（自动分配）")
+    t.tap(ax, ay)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("Willow（connect 所在的这台）") is None, msg="\{at}: manual checklist collapses when auto is on")
+    assert_false(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: save enabled when switching to auto")
+    let (bx2, by2) = middle_of(t, Button, "保存")
+    t.tap(bx2, by2)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(puts.length(), 2, msg=at)
+    assert_true(flag(field(Some(puts[1]), "input"), "autoStation"), msg="\{at}: submits autoStation: true")
+    assert_true(t.find("跟随工作区白名单") is Some(_), msg="\{at}: detail displays auto allowlist summary")
+  }
+}
+
+///|
+test "a connect's startsOn row: non-admin member sees read-only row and cannot open routing dialog" {
+  let t = setting_tester(Connect("ws1/st1", "k1"), 1280.0, platform=0, over=fn(s) {
+    let base_read = s.topic_read
+    {
+      ..s,
+      topic_read: fn(topic, params) {
+        if topic == "workspace" {
+          { value: Some({ "role": "member", "name": "星火", "members": [] }), error: None, version: 1 }
+        } else {
+          base_read(topic, params)
+        }
+      },
+    }
+  })
+  t.draw()
+  assert_true(t.find("新对话开在") is Some(_))
+  let (sx, sy) = t.find("新对话开在").unwrap()
+  t.tap(sx, sy)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sf.presenting(), msg="non-admin tapping startsOn must not open dialog")
 }
 
 ///|

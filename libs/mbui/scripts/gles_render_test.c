@@ -315,6 +315,724 @@ int main(void) {
   CHECK(blurs_made == made + 1);
   CHECK(surface_as_fresh(surface));
 
+  // Fourteen independent glass groups of mixed sizes and blur radii on one screen: all 14 stay cached when only the
+  // top-level caret moves (blurs_made delta == 0) and match a fresh render byte-for-byte.
+  {
+    double g14[16 * MB_INST];
+    static const double blurs[4] = {1.0, 3.0, 7.0, 16.0};
+    rect_at(g14, 0, 0, W, H, 0, 0.92, 0.90, 0.88, 0);
+    for (int i = 0; i < 14; i++) {
+      int col = i % 7, row = i / 7;
+      double gx = 2 + col * 13;
+      double gy = 2 + row * 32;
+      double gw = 8 + i;
+      double gh = 6 + i;
+      double *d = g14 + (i + 1) * MB_INST;
+      rect_at(d, gx, gy, gw, gh, 5, 1, 1, 1, -(101 + i));
+      d[7] = blurs[i % 4];
+      d[11] = 0.4;
+    }
+    rect_at(g14 + 15 * MB_INST, 92, 66, 2, 6, 0, 0, 0, 0, 0);
+    glass_free();
+    made = blurs_made;
+    gl_present(g14, 16, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 14);
+    CHECK(surface_as_whole(surface));
+    g14[15 * MB_INST + 0] = 94;  // only top-level caret moves
+    made = blurs_made;
+    gl_present(g14, 16, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made);
+    CHECK(kept_ok == 1);
+    CHECK(surface_as_fresh(surface));
+  }
+
+  // What drawing holds beyond its frames given back: the trim lets go of glass's textures and the read back's
+  // framebuffer; glass's textures go once MB_GLASS_IDLE frames in a row drew none. Each made again as it is next
+  // needed, the surface then the same to the byte as the frame drawn whole.
+  {
+    double g1[2 * MB_INST];
+    rect_at(g1, 10, 10, 40, 20, 0, 0.9, 0.1, 0.1, 0);
+    rect_at(g1 + MB_INST, 5, 5, 50, 25, 6, 1, 1, 1, -5);
+    g1[MB_INST + 4] = 6;
+    g1[MB_INST + 7] = 2;
+    g1[MB_INST + 11] = 0.3;
+    g1[MB_INST + 21] = 2;
+    g1[MB_INST + 23] = 1;
+    glass_forget();
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(lv[0].t != 0 && lv_w > 0);
+    CHECK(slots[0].bt != 0);
+    CHECK(surface_as_fresh(surface));
+    // the same capture frosted (kind 5), kept in the same slot
+    g1[MB_INST + 5] = 5;
+    g1[0] = 11;
+    glass_forget();
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(slots[0].bt != 0);
+    CHECK(surface_as_fresh(surface));
+
+    CHECK(read_fb != 0);
+    mb_render_trim();
+    CHECK(read_fb == 0 && read_tex == 0);
+    CHECK(lv[0].t == 0 && lv[4].t == 0 && lv_w == 0 && lv_h == 0);
+    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].bt == 0 && slots[i].under == NULL);
+    g1[0] = 12;
+    made = blurs_made;
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 1);
+    CHECK(lv[0].t != 0);
+    CHECK(surface_as_fresh(surface));
+
+    // frames with no glass: glass's textures kept till the MB_GLASS_IDLE-th, then let go
+    double plain[MB_INST];
+    rect_at(plain, 10, 10, 40, 20, 0, 0.9, 0.1, 0.1, 0);
+    for (int i = 1; i <= MB_GLASS_IDLE; i++) {
+      plain[0] = 10 + i % 20;
+      gl_present(plain, 1, 0.1, 0.2, 0.3);
+      if (i == MB_GLASS_IDLE - 1) CHECK(lv[0].t != 0 && slots[0].bt != 0);
+    }
+    CHECK(lv[0].t == 0 && lv_w == 0);
+    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].bt == 0);
+    g1[0] = 13;
+    made = blurs_made;
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 1);
+    CHECK(surface_as_fresh(surface));
+    // a frame with glass among those without keeps them: the count starts again
+    for (int i = 1; i < MB_GLASS_IDLE; i++) {
+      plain[0] = 10 + i % 20;
+      gl_present(plain, 1, 0.1, 0.2, 0.3);
+    }
+    g1[0] = 14;
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    for (int i = 1; i < MB_GLASS_IDLE; i++) {
+      plain[0] = 10 + i % 20;
+      gl_present(plain, 1, 0.1, 0.2, 0.3);
+    }
+    CHECK(lv[0].t != 0);
+  }
+
+  // Unmerged liquid glass (kind 6, a[23] <= 0):
+  // (1) single shape with merge=0 (tight quad + direct sd_rr) matches merge=1e-7 (merged_liquid + sd_group, same float32 quad bounds) byte-for-byte;
+  // (2) two unmerged liquid shapes separated by a shadow (kind 2) sharing one capture make only 1 blur and preserve each
+  //     instance's own spot, matching separate captures byte-for-byte at k == 0.
+  {
+    double eq[2 * MB_INST];
+    rect_at(eq, 0, 0, W, H, 0, 0.85, 0.30, 0.20, 0);
+    rect_at(eq + MB_INST, 18, 22, 54, 24, 6, 1, 1, 1, -9);
+    eq[MB_INST + 4] = 12;
+    eq[MB_INST + 6] = 1;
+    eq[MB_INST + 7] = 2;
+    eq[MB_INST + 11] = 0.25;
+    eq[MB_INST + 12] = 0.8;
+    eq[MB_INST + 13] = 8;
+    eq[MB_INST + 14] = 0;
+    eq[MB_INST + 15] = 1;
+    eq[MB_INST + 21] = 4;
+    eq[MB_INST + 22] = 0.2;
+    eq[MB_INST + 23] = 0;
+    glass_forget();
+    gl_present(eq, 2, 0.1, 0.2, 0.3);
+    unsigned char *px_single = pixels_of_fb(surface);
+
+    eq[MB_INST + 23] = 1e-7;
+    glass_forget();
+    gl_present(eq, 2, 0.1, 0.2, 0.3);
+    unsigned char *px_merged = pixels_of_fb(surface);
+    CHECK(memcmp(px_single, px_merged, (size_t)fb_w * fb_h * 4) == 0);
+    free(px_single);
+    free(px_merged);
+
+    double lq[5 * MB_INST];
+    rect_at(lq, 0, 0, W, H, 0, 0.92, 0.90, 0.85, 0);
+    rect_at(lq + 1 * MB_INST, 10, 46, 76, 18, 0, 0.85, 0.25, 0.20, 0);
+    // left capsule (no spot, merge=0)
+    rect_at(lq + 2 * MB_INST, 6, 48, 30, 14, 6, 1, 1, 1, -9);
+    lq[2 * MB_INST + 4] = 7;
+    lq[2 * MB_INST + 6] = 1;
+    lq[2 * MB_INST + 7] = 1.5;  // sp = 3.0 -> k == 0
+    lq[2 * MB_INST + 11] = 0.25;
+    lq[2 * MB_INST + 12] = 0.8;
+    lq[2 * MB_INST + 13] = 6;
+    lq[2 * MB_INST + 14] = 0;
+    lq[2 * MB_INST + 15] = 1;
+    lq[2 * MB_INST + 21] = 2;
+    lq[2 * MB_INST + 22] = 0;
+    lq[2 * MB_INST + 23] = 0;
+    // shadow between the two shapes (outside the right disc's capture box)
+    rect_at(lq + 3 * MB_INST, 6, 48, 10, 6, 2, 0, 0, 0, 0);
+    lq[3 * MB_INST + 7] = 1;
+    lq[3 * MB_INST + 11] = 0.2;
+    // right disc (with its own spot, merge=0, sharing capture -9)
+    rect_at(lq + 4 * MB_INST, 68, 48, 18, 14, 6, 1, 1, 1, -9);
+    lq[4 * MB_INST + 4] = 7;
+    lq[4 * MB_INST + 6] = 1;
+    lq[4 * MB_INST + 7] = 1.5;
+    lq[4 * MB_INST + 11] = 0.25;
+    lq[4 * MB_INST + 12] = 0.8;
+    lq[4 * MB_INST + 13] = 6;
+    lq[4 * MB_INST + 14] = 537.0 * 4096.0 + 528.0 + 1.0;
+    lq[4 * MB_INST + 15] = 1;
+    lq[4 * MB_INST + 21] = 2;
+    lq[4 * MB_INST + 22] = 0;
+    lq[4 * MB_INST + 23] = 0;
+
+    glass_forget();
+    made = blurs_made;
+    gl_present(lq, 5, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 1);
+    unsigned char *px_lq_shared = pixels_of_fb(surface);
+
+    lq[2 * MB_INST + 20] = -10;
+    lq[4 * MB_INST + 20] = -11;
+    glass_forget();
+    made = blurs_made;
+    gl_present(lq, 5, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 2);
+    unsigned char *px_lq_sep = pixels_of_fb(surface);
+    CHECK(memcmp(px_lq_shared, px_lq_sep, (size_t)fb_w * fb_h * 4) == 0);
+    free(px_lq_shared);
+    free(px_lq_sep);
+  }
+
+  // Asymmetric 4-corner merged_liquid (rr = 14,14,0,0 sheet merged with pill) + Glass::clear() micro-veil vs pure lens:
+  {
+    double as[3 * MB_INST];
+    rect_at(as, 0, 0, W, H, 0, 0.10, 0.12, 0.16, 0);
+    rect_at(as + 1 * MB_INST, 10, 20, 48, 40, 6, 1, 1, 1, -12);
+    as[1 * MB_INST + 4] = 14;
+    as[1 * MB_INST + 6] = 1;
+    as[1 * MB_INST + 7] = 1;
+    as[1 * MB_INST + 11] = 0.25;
+    as[1 * MB_INST + 12] = 0.55;
+    as[1 * MB_INST + 13] = 8;
+    as[1 * MB_INST + 15] = 1;
+    as[1 * MB_INST + 21] = 6;
+    as[1 * MB_INST + 22] = 0.18;
+    as[1 * MB_INST + 23] = 8;
+    as[1 * MB_INST + 36] = 14;
+    as[1 * MB_INST + 37] = 14;
+    as[1 * MB_INST + 38] = 0;
+    as[1 * MB_INST + 39] = 0;
+    rect_at(as + 2 * MB_INST, 62, 28, 20, 20, 6, 1, 1, 1, -12);
+    as[2 * MB_INST + 4] = 10;
+    as[2 * MB_INST + 6] = 1;
+    as[2 * MB_INST + 7] = 1;
+    as[2 * MB_INST + 11] = 0.25;
+    as[2 * MB_INST + 12] = 0.55;
+    as[2 * MB_INST + 13] = 8;
+    as[2 * MB_INST + 15] = 1;
+    as[2 * MB_INST + 21] = 6;
+    as[2 * MB_INST + 22] = 0.18;
+    as[2 * MB_INST + 23] = 8;
+    as[2 * MB_INST + 36] = 10;
+    as[2 * MB_INST + 37] = 10;
+    as[2 * MB_INST + 38] = 10;
+    as[2 * MB_INST + 39] = 10;
+
+    glass_forget();
+    gl_present(as, 3, 0.10, 0.12, 0.16);
+    unsigned char *px_as = pixels_of_fb(surface);
+    // RGBA8 bottom-up at scale 2
+    unsigned char *bg_p = px_as + ((fb_h - 1 - 6) * fb_w + 6) * 4;
+    unsigned char *tl_p = px_as + ((fb_h - 1 - 44) * fb_w + 24) * 4;  // (12, 22) outside top-left rounded corner (r=14)
+    unsigned char *bl_p = px_as + ((fb_h - 1 - 116) * fb_w + 24) * 4; // (12, 58) inside bottom-left square corner (r=0)
+    CHECK(abs((int)tl_p[0] - (int)bg_p[0]) <= 2 && abs((int)tl_p[1] - (int)bg_p[1]) <= 2);
+    CHECK((int)bl_p[0] > 90 && (int)bl_p[1] > 90);
+    free(px_as);
+
+    double cl[3 * MB_INST];
+    rect_at(cl, 0, 0, W, H, 0, 0.08, 0.08, 0.10, 0);
+    rect_at(cl + 1 * MB_INST, 8, 15, 36, 40, 6, 1, 1, 1, -13);
+    cl[1 * MB_INST + 4] = 10;
+    cl[1 * MB_INST + 6] = 1;
+    cl[1 * MB_INST + 7] = 0;
+    cl[1 * MB_INST + 11] = 26.0 / 255.0;
+    cl[1 * MB_INST + 12] = 0.6;
+    cl[1 * MB_INST + 13] = 6;
+    cl[1 * MB_INST + 15] = 1;
+    cl[1 * MB_INST + 21] = 8;
+    cl[1 * MB_INST + 22] = 0;
+    cl[1 * MB_INST + 23] = 0;
+    rect_at(cl + 2 * MB_INST, 56, 15, 36, 40, 6, 1, 1, 1, -14);
+    cl[2 * MB_INST + 4] = 10;
+    cl[2 * MB_INST + 6] = 1;
+    cl[2 * MB_INST + 7] = 0;
+    cl[2 * MB_INST + 11] = 0.0;
+    cl[2 * MB_INST + 12] = 0.6;
+    cl[2 * MB_INST + 13] = 6;
+    cl[2 * MB_INST + 15] = 1;
+    cl[2 * MB_INST + 21] = 8;
+    cl[2 * MB_INST + 22] = 0;
+    cl[2 * MB_INST + 23] = 0;
+
+    glass_forget();
+    gl_present(cl, 3, 0.08, 0.08, 0.10);
+    unsigned char *px_cl = pixels_of_fb(surface);
+    unsigned char *cl_bg = px_cl + ((fb_h - 1 - 6) * fb_w + 6) * 4;
+    unsigned char *cl_veil = px_cl + ((fb_h - 1 - 70) * fb_w + 52) * 4;   // (26, 35) center of Glass::clear()
+    unsigned char *cl_lens = px_cl + ((fb_h - 1 - 70) * fb_w + 148) * 4;  // (74, 35) center of pure clear optical lens
+    CHECK((int)cl_veil[1] >= 44 && (int)cl_veil[1] <= 62);
+    CHECK(abs((int)cl_lens[0] - (int)cl_bg[0]) <= 2 && abs((int)cl_lens[1] - (int)cl_bg[1]) <= 2);
+    free(px_cl);
+
+    // Wave 3A (1): clear-lens optical zoom (slot 7 = -(zoom - 1.0)) magnifies centered backdrop
+    double zm[3 * MB_INST];
+    rect_at(zm, 0, 0, W, H, 0, 0.05, 0.05, 0.08, 0);
+    // Red square centered at (50, 35), half-width 8pt -> x in [42, 58]
+    rect_at(zm + 1 * MB_INST, 42, 27, 16, 16, 0, 0.95, 0.10, 0.10, 0);
+    // Clear liquid lens (10, 10, 80, 50), center (50, 35), refraction = 0
+    rect_at(zm + 2 * MB_INST, 10, 10, 80, 50, 6, 1, 1, 1, -15);
+    zm[2 * MB_INST + 4] = 12;
+    zm[2 * MB_INST + 6] = 1;
+    zm[2 * MB_INST + 7] = 0.0;  // zoom = 1.0
+    zm[2 * MB_INST + 11] = 0.0;
+    zm[2 * MB_INST + 12] = 0.0;
+    zm[2 * MB_INST + 13] = 4;
+    zm[2 * MB_INST + 15] = 1;
+    zm[2 * MB_INST + 21] = 0;
+    zm[2 * MB_INST + 22] = 0;
+    zm[2 * MB_INST + 23] = 0;
+
+    glass_forget();
+    gl_present(zm, 3, 0.05, 0.05, 0.08);
+    unsigned char *px_z1 = pixels_of_fb(surface);
+    // Probe (59, 35) -> (118, 70) at 2x: outside [42, 58] at zoom=1.0 -> dark background
+    unsigned char *z1_p = px_z1 + ((fb_h - 1 - 70) * fb_w + 118) * 4;
+    CHECK((int)z1_p[0] < 40);
+    free(px_z1);
+
+    zm[2 * MB_INST + 7] = -0.25;  // zoom = 1.25 -> sampleBase.x = 50 + 9/1.25 = 57.2 (inside red square!)
+    glass_forget();
+    gl_present(zm, 3, 0.05, 0.05, 0.08);
+    unsigned char *px_z2 = pixels_of_fb(surface);
+    unsigned char *z2_p = px_z2 + ((fb_h - 1 - 70) * fb_w + 118) * 4;
+    CHECK((int)z2_p[0] > 200);
+    free(px_z2);
+
+    // Wave 3A (2): global ambient light_angle rotates specular glint by 90 deg and restores bit-exact at 0.0
+    double la_inst[2 * MB_INST];
+    rect_at(la_inst, 0, 0, W, H, 0, 0.10, 0.10, 0.12, 0);
+    rect_at(la_inst + 1 * MB_INST, 25, 10, 50, 50, 6, 0.12, 0.12, 0.12, -16);
+    la_inst[1 * MB_INST + 4] = 12;
+    la_inst[1 * MB_INST + 6] = 1;
+    la_inst[1 * MB_INST + 7] = 1.0;
+    la_inst[1 * MB_INST + 11] = 0.5;
+    la_inst[1 * MB_INST + 12] = 1.0;
+    la_inst[1 * MB_INST + 13] = 8;
+    la_inst[1 * MB_INST + 15] = 1;
+    la_inst[1 * MB_INST + 21] = 0;
+    la_inst[1 * MB_INST + 22] = 0;
+    la_inst[1 * MB_INST + 23] = 0;
+
+    mb_host_glass_light_angle(0.0);
+    glass_forget();
+    gl_present(la_inst, 2, 0.10, 0.10, 0.12);
+    unsigned char *px_la0 = pixels_of_fb(surface);
+    // Top edge (50, 10.5) -> (100, 21); Left edge (25.5, 35) -> (51, 70)
+    int top0 = (int)px_la0[((fb_h - 1 - 21) * fb_w + 100) * 4 + 1];
+    int left0 = (int)px_la0[((fb_h - 1 - 70) * fb_w + 51) * 4 + 1];
+    CHECK(top0 > left0 + 30);
+
+    mb_host_glass_light_angle(1.5707963267948966);  // PI / 2
+    glass_forget();
+    gl_present(la_inst, 2, 0.10, 0.10, 0.12);
+    unsigned char *px_la90 = pixels_of_fb(surface);
+    int top90 = (int)px_la90[((fb_h - 1 - 21) * fb_w + 100) * 4 + 1];
+    int left90 = (int)px_la90[((fb_h - 1 - 70) * fb_w + 51) * 4 + 1];
+    int right90 = (int)px_la90[((fb_h - 1 - 70) * fb_w + 149) * 4 + 1];
+    CHECK(left90 > top90 + 30);
+    CHECK(right90 > top90 + 30);
+    free(px_la90);
+
+    mb_host_glass_light_angle(0.0);
+    glass_forget();
+    gl_present(la_inst, 2, 0.10, 0.10, 0.12);
+    unsigned char *px_la0_again = pixels_of_fb(surface);
+    CHECK(memcmp(px_la0, px_la0_again, (size_t)fb_w * (size_t)fb_h * 4) == 0);
+    free(px_la0);
+    free(px_la0_again);
+  }
+
+  // Neutral light liquid glass density (kind 6, !is_clear && !is_dark): alpha <= 0.41 keeps the 0.4032 baseline to the
+  // byte (0xFDFCFD50 and 0xFDFCFD67 draw the same), while a dense veil (0xFDFCFDD9 ~ 0.851) emits its own alpha and
+  // fades transmittance, lift and chroma to 0, so over black it is far brighter and over saturated blue it stays neutral.
+  {
+    double ld[2 * MB_INST];
+    unsigned char *px_ld[4];
+    // (alpha byte, backdrop r, g, b)
+    static const double ld_case[4][4] = {
+        {0x50, 0, 0, 0}, {0x67, 0, 0, 0}, {0xD9, 0, 0, 0}, {0xD9, 0.0, 0.4, 1.0}};
+    for (int i = 0; i < 4; i++) {
+      rect_at(ld, 0, 0, W, H, 0, ld_case[i][1], ld_case[i][2], ld_case[i][3], 0);
+      rect_at(ld + MB_INST, 10, 10, 80, 50, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -17);
+      ld[MB_INST + 4] = 12;
+      ld[MB_INST + 6] = 1;
+      ld[MB_INST + 7] = 1.0;
+      ld[MB_INST + 11] = ld_case[i][0] / 255.0;
+      ld[MB_INST + 12] = 0.0;
+      ld[MB_INST + 13] = 4;
+      ld[MB_INST + 15] = 1;
+      ld[MB_INST + 21] = 0;
+      ld[MB_INST + 22] = 0;
+      ld[MB_INST + 23] = 0;
+      glass_forget();
+      gl_present(ld, 2, ld_case[i][1], ld_case[i][2], ld_case[i][3]);
+      px_ld[i] = pixels_of_fb(surface);
+    }
+    // centre (50, 35) -> (100, 70) at 2x
+    double ld_lum[4];
+    for (int i = 0; i < 4; i++) {
+      unsigned char *c = px_ld[i] + ((fb_h - 1 - 70) * fb_w + 100) * 4;
+      ld_lum[i] = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255.0;
+      printf("gles_render: light glass 0x%02X over (%.1f, %.1f, %.1f): rgb %d %d %d, luma %.4f\n", (int)ld_case[i][0],
+             ld_case[i][1], ld_case[i][2], ld_case[i][3], c[0], c[1], c[2], ld_lum[i]);
+    }
+    CHECK(memcmp(px_ld[0], px_ld[1], (size_t)fb_w * fb_h * 4) == 0);
+    CHECK(ld_lum[1] >= 0.25 && ld_lum[1] <= 0.36);
+    CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.40);
+    CHECK(px_ld[3][((fb_h - 1 - 70) * fb_w + 100) * 4 + 0] >= (int)(0.72 * 255.0 + 0.5));
+    for (int i = 0; i < 4; i++) free(px_ld[i]);
+  }
+
+  // Neutral dark liquid glass density (kind 6, is_dark): alpha <= 0.41 keeps the regular baseline to the byte
+  // (0x20202050 and 0x20202067 draw the same), while dense veils (0x202020BF 75%, 0x202020D9 85%) fade
+  // transmittance, lift and chroma toward 0, so over white they stay dark for white ink and over saturated blue
+  // chroma is cleanly attenuated.
+  {
+    double dd[2 * MB_INST];
+    unsigned char *px_dd[5];
+    // (alpha byte, backdrop r, g, b)
+    static const double dd_case[5][4] = {
+        {0x50, 1, 1, 1}, {0x67, 1, 1, 1}, {0xBF, 1, 1, 1}, {0xD9, 1, 1, 1}, {0xD9, 0.0, 0.4, 1.0}};
+    for (int i = 0; i < 5; i++) {
+      rect_at(dd, 0, 0, W, H, 0, dd_case[i][1], dd_case[i][2], dd_case[i][3], 0);
+      rect_at(dd + MB_INST, 10, 10, 80, 50, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -17);
+      dd[MB_INST + 4] = 12;
+      dd[MB_INST + 6] = 1;
+      dd[MB_INST + 7] = 1.0;
+      dd[MB_INST + 11] = dd_case[i][0] / 255.0;
+      dd[MB_INST + 12] = 0.0;
+      dd[MB_INST + 13] = 4;
+      dd[MB_INST + 15] = 1;
+      dd[MB_INST + 21] = 0;
+      dd[MB_INST + 22] = 0;
+      dd[MB_INST + 23] = 0;
+      glass_forget();
+      gl_present(dd, 2, dd_case[i][1], dd_case[i][2], dd_case[i][3]);
+      px_dd[i] = pixels_of_fb(surface);
+    }
+    // centre (50, 35) -> (100, 70) at 2x
+    double dd_lum[5];
+    for (int i = 0; i < 5; i++) {
+      unsigned char *c = px_dd[i] + ((fb_h - 1 - 70) * fb_w + 100) * 4;
+      dd_lum[i] = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255.0;
+      printf("gles_render: dark glass 0x%02X over (%.1f, %.1f, %.1f): rgb %d %d %d, luma %.4f\n", (int)dd_case[i][0],
+             dd_case[i][1], dd_case[i][2], dd_case[i][3], c[0], c[1], c[2], dd_lum[i]);
+    }
+    CHECK(memcmp(px_dd[0], px_dd[1], (size_t)fb_w * fb_h * 4) == 0);
+    CHECK(dd_lum[1] >= 0.55 && dd_lum[1] <= 0.74);
+    CHECK(dd_lum[2] <= 0.36 && dd_lum[2] <= dd_lum[1] - 0.25);
+    CHECK(dd_lum[3] <= 0.30 && dd_lum[3] < dd_lum[2]);
+    unsigned char *dd_blue = px_dd[4] + ((fb_h - 1 - 70) * fb_w + 100) * 4;
+    CHECK(((double)dd_blue[2] - (double)dd_blue[0]) / 255.0 <= 0.28);
+    for (int i = 0; i < 5; i++) free(px_dd[i]);
+  }
+
+  // Dedicated ONE_KIND=13 (unmerged liquid, merge=0) vs ONE_KIND=6 (merged liquid, merge=1e-7) with large flat
+  // interior (inward >= 23), non-zero bevel/refraction/chroma/rim: must be byte-for-byte identical; and zero-copy
+  // slot swap across frames + glass_free() must preserve identical pixels.
+  {
+    CHECK(progs[5].p != 0 && progs[6].p != 0 && progs[MB_KIND_LIQUID_SINGLE].p != 0);
+    double lp[3 * MB_INST];
+    rect_at(lp, 0, 0, W, H, 0, 0.12, 0.24, 0.48, 0);
+    rect_at(lp + MB_INST, 20, 15, 60, 50, 0, 0.92, 0.35, 0.18, 0);
+    rect_at(lp + 2 * MB_INST, 8, 6, 84, 68, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -18);
+    lp[2 * MB_INST + 4] = 16;
+    lp[2 * MB_INST + 6] = 1.0;
+    lp[2 * MB_INST + 7] = 2.5;
+    lp[2 * MB_INST + 11] = 0x67 / 255.0;
+    lp[2 * MB_INST + 12] = 0.6;
+    lp[2 * MB_INST + 13] = 14.0;
+    lp[2 * MB_INST + 15] = 1.0;
+    lp[2 * MB_INST + 21] = 18.0;
+    lp[2 * MB_INST + 22] = 0.4;
+    lp[2 * MB_INST + 23] = 0.0;
+    glass_forget();
+    gl_present(lp, 3, 0.12, 0.24, 0.48);
+    unsigned char *px_single = pixels_of_fb(surface);
+
+    lp[2 * MB_INST + 23] = 1e-7;
+    glass_forget();
+    gl_present(lp, 3, 0.12, 0.24, 0.48);
+    unsigned char *px_merged = pixels_of_fb(surface);
+    CHECK(memcmp(px_single, px_merged, (size_t)fb_w * fb_h * 4) == 0);
+    free(px_merged);
+
+    lp[2 * MB_INST + 23] = 0.0;
+    for (int step = 1; step <= 4; step++) {
+      lp[MB_INST + 0] = 20 + step * 3;
+      gl_present(lp, 3, 0.12, 0.24, 0.48);
+    }
+    glass_free();
+    lp[MB_INST + 0] = 20;
+    gl_present(lp, 3, 0.12, 0.24, 0.48);
+    unsigned char *px_after_free = pixels_of_fb(surface);
+    CHECK(memcmp(px_single, px_after_free, (size_t)fb_w * fb_h * 4) == 0);
+    free(px_single);
+    free(px_after_free);
+  }
+
+  // Wave 7: adaptive liquid glass (slot 14 = -1.0) + adaptive kind 10 neutral/chromatic ink:
+  // 0: light glass over white (bg=1.0), 1: light glass over black (bg=0.0),
+  // 2: light glass over mid-tone (bg=0.50), 3: dark glass (0x20202067) over white (bg=1.0).
+  {
+    double ad[4 * MB_INST];
+    struct { double bg; int dark_glass; double ink; } w7_cases[4] = {
+      {1.0, 0, 0.11},
+      {0.0, 0, 0.11},
+      {0.50, 0, 0.11},
+      {1.0, 1, 0.93},
+    };
+    for (int ci = 0; ci < 4; ci++) {
+      double bg = w7_cases[ci].bg;
+      int dg = w7_cases[ci].dark_glass;
+      double ink = w7_cases[ci].ink;
+      rect_at(ad, 0, 0, W, H, 0, bg, bg, bg, 0);
+      rect_at(ad + MB_INST, 8, 6, 84, 68, 6,
+              dg ? 32.0 / 255.0 : 253.0 / 255.0,
+              dg ? 32.0 / 255.0 : 252.0 / 255.0,
+              dg ? 32.0 / 255.0 : 253.0 / 255.0, -19);
+      ad[MB_INST + 4] = 16;
+      ad[MB_INST + 6] = 1.0;
+      ad[MB_INST + 7] = 2.0;
+      ad[MB_INST + 11] = 0x67 / 255.0;
+      ad[MB_INST + 12] = 0.0;
+      ad[MB_INST + 13] = 10.0;
+      ad[MB_INST + 14] = -1.0;  // adaptive=true, no spot
+      ad[MB_INST + 15] = 1.0;
+      ad[MB_INST + 21] = 0.0;
+      ad[MB_INST + 22] = 0.0;
+      ad[MB_INST + 23] = 0.0;
+      // Neutral line inside glass at y=28 (x=24..46)
+      rect_at(ad + 2 * MB_INST, 20, 22, 30, 12, 10, ink, ink, ink, 0);
+      ad[2 * MB_INST + 4] = 3.0;
+      ad[2 * MB_INST + 12] = 0.1;
+      ad[2 * MB_INST + 13] = 0.5;
+      ad[2 * MB_INST + 14] = 0.9;
+      ad[2 * MB_INST + 15] = 0.5;
+      ad[2 * MB_INST + 21] = 50.0;
+      ad[2 * MB_INST + 22] = 40.0;
+      ad[2 * MB_INST + 23] = 34.0;
+      // Chromatic accent line inside glass at y=52 (x=24..46)
+      rect_at(ad + 3 * MB_INST, 20, 46, 30, 12, 10, 0.90, 0.30, 0.15, 0);
+      ad[3 * MB_INST + 4] = 3.0;
+      ad[3 * MB_INST + 12] = 0.1;
+      ad[3 * MB_INST + 13] = 0.5;
+      ad[3 * MB_INST + 14] = 0.9;
+      ad[3 * MB_INST + 15] = 0.5;
+      ad[3 * MB_INST + 21] = 50.0;
+      ad[3 * MB_INST + 22] = 40.0;
+      ad[3 * MB_INST + 23] = 34.0;
+      glass_forget();
+      gl_present(ad, 4, bg, bg, bg);
+      unsigned char *px_ad = pixels_of_fb(surface);
+      // Glass interior at (68, 40) -> (136, 80) at 2x (RGBA, y flipped)
+      unsigned char *gp = px_ad + ((fb_h - 1 - 80) * fb_w + 136) * 4;
+      double g_lum = (0.2126 * gp[0] + 0.7152 * gp[1] + 0.0722 * gp[2]) / 255.0;
+      unsigned char *np = px_ad + ((fb_h - 1 - 56) * fb_w + 70) * 4;
+      double n_lum = (0.2126 * np[0] + 0.7152 * np[1] + 0.0722 * np[2]) / 255.0;
+      unsigned char *cp = px_ad + ((fb_h - 1 - 104) * fb_w + 70) * 4;
+      printf("gles_render: wave7 case=%d bg=%.2f dg=%d glass=%.3f neutral_ink=%.3f chroma_rgb=%d,%d,%d\n",
+             ci, bg, dg, g_lum, n_lum, cp[0], cp[1], cp[2]);
+      if (ci == 0) {
+        CHECK(g_lum > 0.75);
+        CHECK(n_lum < 0.25);
+      } else if (ci == 1) {
+        CHECK(g_lum < 0.20);
+        CHECK(n_lum > 0.80);
+      } else if (ci == 2) {
+        CHECK(g_lum > 0.55);
+        CHECK(n_lum < 0.25);
+      } else {
+        CHECK(g_lum < 0.45);
+        CHECK(n_lum > 0.85);
+      }
+      CHECK((int)cp[0] > (int)cp[2] + 120);
+      free(px_ad);
+    }
+
+    // Smooth fogging on adaptive flip: thin bright stripe over black is softened by dual-ring fog blur + higher darkDens
+    double fg[3 * MB_INST];
+    double fog_peaks[2] = {0.0, 0.0};
+    for (int adaptive_on = 0; adaptive_on <= 1; adaptive_on++) {
+      rect_at(fg, 0, 0, W, H, 0, 0.0, 0.0, 0.0, 0);
+      // Place the thin 2pt white stripe at y=48 (off the 5-point luma sample cross at y=40 and y=40+/-17)
+      rect_at(fg + MB_INST, 4, 47, 92, 2, 0, 1.0, 1.0, 1.0, 0);
+      rect_at(fg + 2 * MB_INST, 8, 6, 84, 68, 6,
+              adaptive_on ? 253.0 / 255.0 : 32.0 / 255.0,
+              adaptive_on ? 252.0 / 255.0 : 32.0 / 255.0,
+              adaptive_on ? 253.0 / 255.0 : 32.0 / 255.0, -20);
+      fg[2 * MB_INST + 4] = 16;
+      fg[2 * MB_INST + 6] = 1.0;
+      fg[2 * MB_INST + 7] = 1.0;
+      fg[2 * MB_INST + 11] = 0x67 / 255.0;
+      fg[2 * MB_INST + 12] = 0.0;
+      fg[2 * MB_INST + 13] = 10.0;
+      fg[2 * MB_INST + 14] = adaptive_on ? -1.0 : 0.0;
+      fg[2 * MB_INST + 15] = 1.0;
+      fg[2 * MB_INST + 21] = 0.0;
+      fg[2 * MB_INST + 22] = 0.0;
+      fg[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(fg, 3, 0.0, 0.0, 0.0);
+      unsigned char *px_fg = pixels_of_fb(surface);
+      unsigned char *sp = px_fg + ((fb_h - 1 - 96) * fb_w + 100) * 4;  // (50, 48) on the bright 2pt stripe
+      fog_peaks[adaptive_on] = (0.2126 * sp[0] + 0.7152 * sp[1] + 0.0722 * sp[2]) / 255.0;
+      free(px_fg);
+    }
+    printf("gles_render: wave7 fog stripe peak plain_dark=%.3f adaptive_fog=%.3f\n",
+           fog_peaks[0], fog_peaks[1]);
+    CHECK(fog_peaks[1] < fog_peaks[0] - 0.15);
+
+    // Test A: wide 84x16pt adaptive capsule over deep navy #173255 with centered 16x10pt pure white "{less}" block
+    // must resist ping-pong flipping (trimmed mean stays dark -> dark glass + white ink).
+    double ta[4 * MB_INST];
+    rect_at(ta, 0, 0, W, H, 0, 23.0 / 255.0, 50.0 / 255.0, 85.0 / 255.0, 0);
+    rect_at(ta + MB_INST, 42, 31, 16, 10, 0, 1.0, 1.0, 1.0, 0);
+    rect_at(ta + 2 * MB_INST, 8, 28, 84, 16, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -21);
+    ta[2 * MB_INST + 4] = 8.0;
+    ta[2 * MB_INST + 6] = 1.0;
+    ta[2 * MB_INST + 7] = 2.0;
+    ta[2 * MB_INST + 11] = 0x67 / 255.0;
+    ta[2 * MB_INST + 12] = 0.0;
+    ta[2 * MB_INST + 13] = 8.0;
+    ta[2 * MB_INST + 14] = -1.0;
+    ta[2 * MB_INST + 15] = 1.0;
+    ta[2 * MB_INST + 21] = 0.0;
+    ta[2 * MB_INST + 22] = 0.0;
+    ta[2 * MB_INST + 23] = 0.0;
+    rect_at(ta + 3 * MB_INST, 16, 30, 20, 12, 10, 0.11, 0.11, 0.11, 0);
+    ta[3 * MB_INST + 4] = 3.0;
+    ta[3 * MB_INST + 12] = 0.1;
+    ta[3 * MB_INST + 13] = 0.5;
+    ta[3 * MB_INST + 14] = 0.9;
+    ta[3 * MB_INST + 15] = 0.5;
+    ta[3 * MB_INST + 21] = 50.0;
+    ta[3 * MB_INST + 22] = 36.0;
+    ta[3 * MB_INST + 23] = 16.0;
+    glass_forget();
+    gl_present(ta, 4, 23.0 / 255.0, 50.0 / 255.0, 85.0 / 255.0);
+    unsigned char *px_ta = pixels_of_fb(surface);
+    unsigned char *ta_gp = px_ta + ((fb_h - 1 - 72) * fb_w + 148) * 4;  // (74, 36) glass over navy
+    unsigned char *ta_np = px_ta + ((fb_h - 1 - 72) * fb_w + 52) * 4;   // (26, 36) neutral ink inside capsule
+    double ta_g = (0.2126 * ta_gp[0] + 0.7152 * ta_gp[1] + 0.0722 * ta_gp[2]) / 255.0;
+    double ta_n = (0.2126 * ta_np[0] + 0.7152 * ta_np[1] + 0.0722 * ta_np[2]) / 255.0;
+    printf("gles_render: wave7 testA wide_less glass=%.3f ink=%.3f\n", ta_g, ta_n);
+    CHECK(ta_g < 0.28);
+    CHECK(ta_n > 0.80);
+    free(px_ta);
+
+    // Test B: cross-frame temporal smoothing + synchronized glass/ink + Schmitt hysteresis + auto-settle stop
+    gl_set_fixed_dt(1.0 / 60.0);
+    double tb[3 * MB_INST];
+    rect_at(tb, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
+    rect_at(tb + MB_INST, 8, 28, 84, 16, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -22);
+    tb[MB_INST + 4] = 8.0;
+    tb[MB_INST + 6] = 1.0;
+    tb[MB_INST + 7] = 2.0;
+    tb[MB_INST + 11] = 0x67 / 255.0;
+    tb[MB_INST + 12] = 0.0;
+    tb[MB_INST + 13] = 8.0;
+    tb[MB_INST + 14] = -1.0;
+    tb[MB_INST + 15] = 1.0;
+    tb[MB_INST + 21] = 0.0;
+    tb[MB_INST + 22] = 0.0;
+    tb[MB_INST + 23] = 0.0;
+    rect_at(tb + 2 * MB_INST, 16, 30, 20, 12, 10, 0.11, 0.11, 0.11, 0);
+    tb[2 * MB_INST + 4] = 3.0;
+    tb[2 * MB_INST + 12] = 0.1;
+    tb[2 * MB_INST + 13] = 0.5;
+    tb[2 * MB_INST + 14] = 0.9;
+    tb[2 * MB_INST + 15] = 0.5;
+    tb[2 * MB_INST + 21] = 50.0;
+    tb[2 * MB_INST + 22] = 36.0;
+    tb[2 * MB_INST + 23] = 16.0;
+
+    // Frame 0: pure white -> instant light state
+    glass_forget();
+    gl_present(tb, 3, 1.0, 1.0, 1.0);
+    unsigned char *px_tb = pixels_of_fb(surface);
+    double f0_g = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+    double f0_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+    free(px_tb);
+    printf("gles_render: wave7 testB f0_white glass=%.3f ink=%.3f\n", f0_g, f0_n);
+    CHECK(f0_g > 0.75);
+    CHECK(f0_n < 0.25);
+
+    // Frame 1: switch to deep navy #173255 -> smooth intermediate state
+    tb[8] = 23.0 / 255.0; tb[9] = 50.0 / 255.0; tb[10] = 85.0 / 255.0;
+    gl_present(tb, 3, tb[8], tb[9], tb[10]);
+    px_tb = pixels_of_fb(surface);
+    double f1_g = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+    double f1_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+    free(px_tb);
+    printf("gles_render: wave7 testB f1_navy glass=%.3f ink=%.3f settling=%d\n", f1_g, f1_n, gl_adaptive_settling());
+    CHECK(f1_g > 0.28 && f1_g < 0.72);
+    CHECK(f1_n > 0.15 && f1_n < 0.75);
+    CHECK(gl_adaptive_settling() == 1);
+
+    // Step 25 more frames (~420ms): monotonic convergence to dark state
+    double prev_g = f1_g, prev_n = f1_n;
+    for (int s = 0; s < 25; s++) {
+      gl_present(tb, 3, tb[8], tb[9], tb[10]);
+      px_tb = pixels_of_fb(surface);
+      double cg = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+      double cn = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+      free(px_tb);
+      CHECK(cg <= prev_g + 0.015);
+      CHECK(cn >= prev_n - 0.015);
+      prev_g = cg;
+      prev_n = cn;
+    }
+    printf("gles_render: wave7 testB f26_dark glass=%.3f ink=%.3f settling=%d\n", prev_g, prev_n, gl_adaptive_settling());
+    CHECK(prev_g < 0.28);
+    CHECK(prev_n > 0.85);
+
+    // Schmitt hysteresis: bg=0.40 (in [0.36, 0.46]) for 25 frames stays dark
+    tb[8] = 0.40; tb[9] = 0.40; tb[10] = 0.40;
+    for (int s = 0; s < 25; s++) gl_present(tb, 3, 0.40, 0.40, 0.40);
+    px_tb = pixels_of_fb(surface);
+    double hyst_g = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+    double hyst_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+    free(px_tb);
+    printf("gles_render: wave7 testB hyst_0.40 glass=%.3f ink=%.3f\n", hyst_g, hyst_n);
+    CHECK(hyst_g < 0.40);
+    CHECK(hyst_n > 0.80);
+
+    // Return to bright bg=0.95: frame 1 intermediate, +26 frames settles back to light and stops settling
+    tb[8] = 0.95; tb[9] = 0.95; tb[10] = 0.95;
+    gl_present(tb, 3, 0.95, 0.95, 0.95);
+    px_tb = pixels_of_fb(surface);
+    double r1_g = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+    double r1_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+    free(px_tb);
+    printf("gles_render: wave7 testB return_f1 glass=%.3f ink=%.3f\n", r1_g, r1_n);
+    CHECK(r1_g > 0.30 && r1_g < 0.82);
+    CHECK(r1_n > 0.20 && r1_n < 0.88);
+    for (int s = 0; s < 26; s++) gl_present(tb, 3, 0.95, 0.95, 0.95);
+    px_tb = pixels_of_fb(surface);
+    double r_end_g = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+    double r_end_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+    free(px_tb);
+    printf("gles_render: wave7 testB return_end glass=%.3f ink=%.3f settling=%d\n", r_end_g, r_end_n, gl_adaptive_settling());
+    CHECK(r_end_g > 0.75);
+    CHECK(r_end_n < 0.25);
+    CHECK(gl_adaptive_settling() == 0);
+    gl_set_fixed_dt(0.0);
+    glass_forget();
+  }
+
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then
   // made a float, as the app's own instance moved there would be.
   double kept[MB_INST];
@@ -336,6 +1054,220 @@ int main(void) {
   CHECK(fbuf[5] == 0.0f);
   CHECK(surface_as_whole(surface));
   mb_host_group_drop(5);
+
+  // IME height sliding hits top-bar glass cache, and gradually growing glass height stays in one 256px level bucket
+  // without rebuilding levels or clearing unchanged glass slots.
+  {
+    int saved_fb_w = fb_w, saved_fb_h = fb_h;
+    double saved_w = cur_w, saved_h = cur_h, saved_scale = cur_scale;
+    GLuint saved_target = target_fb;
+
+    const int BW = 300, BH = 500, BS = 2;
+    fb_w = BW * BS;
+    fb_h = BH * BS;
+    cur_w = BW;
+    cur_h = BH;
+    cur_scale = BS;
+    GLuint big_tex, big_fb;
+    glGenTextures(1, &big_tex);
+    glBindTexture(GL_TEXTURE_2D, big_tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, fb_w, fb_h);
+    glGenFramebuffers(1, &big_fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, big_fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, big_tex, 0);
+    CHECK(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    target_fb = big_fb;
+    glass_free();
+
+    // (1) IME cur_h sliding: top-bar glass stays cached (blurs_made +1 per step, only bottom bar re-blurred)
+    double ime_inst[5 * MB_INST];
+    static const double ime_hs[5] = {460, 420, 380, 420, 460};
+    rect_at(ime_inst, 0, 0, BW, BH, 0, 0.94, 0.94, 0.92, 0);
+    ime_inst[18] = BW; ime_inst[19] = BH;
+    rect_at(ime_inst + 1 * MB_INST, 20, 12, 120, 20, 0, 0.85, 0.20, 0.20, 0);
+    ime_inst[1 * MB_INST + 18] = BW; ime_inst[1 * MB_INST + 19] = BH;
+    rect_at(ime_inst + 2 * MB_INST, 10, 6, 280, 32, 5, 1, 1, 1, -20);
+    ime_inst[2 * MB_INST + 7] = 3;
+    ime_inst[2 * MB_INST + 11] = 0.4;
+    ime_inst[2 * MB_INST + 18] = BW; ime_inst[2 * MB_INST + 19] = BH;
+    rect_at(ime_inst + 3 * MB_INST, 20, 466, 120, 20, 0, 0.20, 0.30, 0.85, 0);
+    ime_inst[3 * MB_INST + 18] = BW; ime_inst[3 * MB_INST + 19] = BH;
+    rect_at(ime_inst + 4 * MB_INST, 10, 460, 280, 32, 5, 1, 1, 1, -21);
+    ime_inst[4 * MB_INST + 7] = 3;
+    ime_inst[4 * MB_INST + 11] = 0.4;
+    ime_inst[4 * MB_INST + 18] = BW; ime_inst[4 * MB_INST + 19] = BH;
+
+    made = blurs_made;
+    gl_present(ime_inst, 5, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 2);
+    CHECK(surface_as_fresh(big_fb));
+    for (int i = 0; i < 5; i++) {
+      cur_h = ime_hs[i];
+      ime_inst[3 * MB_INST + 1] = cur_h - 34;
+      ime_inst[4 * MB_INST + 1] = cur_h - 40;
+      made = blurs_made;
+      gl_present(ime_inst, 5, 0.1, 0.2, 0.3);
+      CHECK(blurs_made == made + 1);
+      CHECK(surface_as_fresh(big_fb));
+    }
+
+    // (2) Glass height growing from 100px to 220px (+12px/step, 10 steps): levels_rebuilt <= 1, unchanged glass hits cache
+    cur_h = BH;
+    glass_free();
+    int rb0 = levels_rebuilt;
+    double grow_inst[5 * MB_INST];
+    rect_at(grow_inst, 0, 0, BW, BH, 0, 0.92, 0.90, 0.88, 0);
+    grow_inst[18] = BW; grow_inst[19] = BH;
+    rect_at(grow_inst + 1 * MB_INST, 20, 14, 100, 24, 0, 0.15, 0.65, 0.25, 0);
+    grow_inst[1 * MB_INST + 18] = BW; grow_inst[1 * MB_INST + 19] = BH;
+    rect_at(grow_inst + 2 * MB_INST, 10, 10, 160, 32, 5, 1, 1, 1, -22);
+    grow_inst[2 * MB_INST + 7] = 2;
+    grow_inst[2 * MB_INST + 11] = 0.4;
+    grow_inst[2 * MB_INST + 18] = BW; grow_inst[2 * MB_INST + 19] = BH;
+    rect_at(grow_inst + 3 * MB_INST, 20, 140, 100, 120, 0, 0.75, 0.25, 0.15, 0);
+    grow_inst[3 * MB_INST + 18] = BW; grow_inst[3 * MB_INST + 19] = BH;
+    rect_at(grow_inst + 4 * MB_INST, 10, 120, 160, 50, 5, 1, 1, 1, -23);
+    grow_inst[4 * MB_INST + 7] = 2;
+    grow_inst[4 * MB_INST + 11] = 0.4;
+    grow_inst[4 * MB_INST + 18] = BW; grow_inst[4 * MB_INST + 19] = BH;
+
+    for (int step = 0; step < 10; step++) {
+      // height in pt: 50 + step * 6 -> 100px..208px (+ margin 16px = 132px..240px, within one 256px bucket)
+      grow_inst[4 * MB_INST + 3] = 50.0 + step * 6.0;
+      made = blurs_made;
+      gl_present(grow_inst, 5, 0.1, 0.2, 0.3);
+      CHECK(blurs_made == made + (step == 0 ? 2 : 1));
+      CHECK(surface_as_whole(big_fb));
+    }
+    CHECK(surface_as_fresh(big_fb));
+    CHECK(levels_rebuilt - rb0 <= 1);
+
+    glass_free();
+    glBindFramebuffer(GL_FRAMEBUFFER, saved_target);
+    glDeleteFramebuffers(1, &big_fb);
+    glDeleteTextures(1, &big_tex);
+    fb_w = saved_fb_w;
+    fb_h = saved_fb_h;
+    cur_w = saved_w;
+    cur_h = saved_h;
+    cur_scale = saved_scale;
+    target_fb = saved_target;
+  }
+
+  // A selection changes shape data while two adaptive glasses share a backdrop. Each host-added settle
+  // region must redraw the complete shared capture, so no previous glass or caret enters the new blur.
+  {
+    double a[6 * MB_INST];
+    rect_at(a, 0, 0, W, H, 0, 0.95, 0.95, 0.95, 0);
+    rect_at(a + MB_INST, 14, 54, 40, 3, 0, 0.1, 0.1, 0.1, 0);
+    rect_at(a + 2 * MB_INST, 10, 29, 35, 8, 6, 0.99, 0.99, 0.99, -1);
+    a[2 * MB_INST + 4] = 4.0;
+    a[2 * MB_INST + 6] = 1.0;
+    a[2 * MB_INST + 7] = 4.0;
+    a[2 * MB_INST + 11] = 0x67 / 255.0;
+    a[2 * MB_INST + 13] = 8.0;
+    a[2 * MB_INST + 14] = -1.0;
+    a[2 * MB_INST + 15] = 1.0;
+    a[2 * MB_INST + 21] = 6.0;
+    rect_at(a + 3 * MB_INST, 8, 45, 84, 23, 6, 0.99, 0.99, 0.99, -1);
+    a[3 * MB_INST + 4] = 8.0;
+    a[3 * MB_INST + 6] = 1.0;
+    a[3 * MB_INST + 7] = 4.0;
+    a[3 * MB_INST + 11] = 0x67 / 255.0;
+    a[3 * MB_INST + 13] = 8.0;
+    a[3 * MB_INST + 14] = -1.0;
+    a[3 * MB_INST + 15] = 1.0;
+    a[3 * MB_INST + 21] = 6.0;
+    rect_at(a + 4 * MB_INST, 10, 2, 30, 3, 0, 0.4, 0.6, 1.0, 0);
+    a[4 * MB_INST + 11] = 0.0;
+    rect_at(a + 5 * MB_INST, 0, 0, 0, 0, 12, 0, 0, 0, 0);
+    glass_forget();
+    gl_set_fixed_dt(1.0 / 60.0);
+    gl_present(a, 6, 0.95, 0.95, 0.95);
+    gl_dirty_add(0, 0, W, H);
+    a[8] = 0.93;
+    gl_present(a, 6, 0.95, 0.95, 0.95);
+    CHECK(gl_adaptive_settling());
+    a[4 * MB_INST + 11] = 0.5;
+    a[5 * MB_INST + 12] = 1.0;
+    gl_dirty_add(8, 0, 36, 8);
+    gl_present(a, 6, 0.95, 0.95, 0.95);
+    slots_invalidate();
+    CHECK(surface_as_whole(surface));
+    gl_set_fixed_dt(0.0);
+    glass_forget();
+  }
+
+  // Two independent adaptive liquid glasses spaced 8pt apart so their captures overlap, with a high-contrast blue
+  // foreground caret drawn after the lower glass. Three consecutive partial frames updating only the top non-glass
+  // region while settling must stay pixel-identical to a whole redraw, and overlapping settle damage merges to one.
+  {
+    double a[7 * MB_INST];
+    rect_at(a, 0, 0, W, H, 0, 0.95, 0.95, 0.95, 0);
+    rect_at(a + MB_INST, 14, 50, 40, 3, 0, 0.1, 0.1, 0.1, 0);
+    rect_at(a + 2 * MB_INST, 10, 20, 35, 10, 6, 0.99, 0.99, 0.99, -1);
+    a[2 * MB_INST + 4] = 4.0;
+    a[2 * MB_INST + 6] = 1.0;
+    a[2 * MB_INST + 7] = 2.1;
+    a[2 * MB_INST + 11] = 0x67 / 255.0;
+    a[2 * MB_INST + 13] = 8.0;
+    a[2 * MB_INST + 14] = -1.0;
+    a[2 * MB_INST + 15] = 1.0;
+    a[2 * MB_INST + 21] = 28.0;
+    rect_at(a + 3 * MB_INST, 8, 38, 84, 24, 6, 0.99, 0.99, 0.99, -2);
+    a[3 * MB_INST + 4] = 8.0;
+    a[3 * MB_INST + 6] = 1.0;
+    a[3 * MB_INST + 7] = 4.0;
+    a[3 * MB_INST + 11] = 0x67 / 255.0;
+    a[3 * MB_INST + 13] = 8.0;
+    a[3 * MB_INST + 14] = -1.0;
+    a[3 * MB_INST + 15] = 1.0;
+    a[3 * MB_INST + 21] = 28.0;
+    rect_at(a + 4 * MB_INST, 16, 44, 2, 12, 0, 0.05, 0.35, 1.0, 0);
+    rect_at(a + 5 * MB_INST, 10, 2, 30, 4, 0, 0.4, 0.6, 1.0, 0);
+    a[5 * MB_INST + 11] = 0.0;
+    rect_at(a + 6 * MB_INST, 0, 0, 0, 0, 12, 0, 0, 0, 0);
+    glass_forget();
+    gl_set_fixed_dt(1.0 / 60.0);
+    gl_present(a, 7, 0.95, 0.95, 0.95);
+    gl_dirty_add(0, 0, W, H);
+    a[8] = 0.93;
+    gl_present(a, 7, 0.95, 0.95, 0.95);
+    CHECK(gl_adaptive_settling());
+    for (int step = 0; step < 3; step++) {
+      a[5 * MB_INST + 11] = 0.3 * (step + 1);
+      a[6 * MB_INST + 12] = (double)(step + 1);
+      gl_dirty_add(8, 0, 36, 8);
+      gl_present(a, 7, 0.95, 0.95, 0.95);
+      slots_invalidate();
+      CHECK(surface_as_whole(surface));
+    }
+    float f[7 * MB_INST];
+    for (int i = 0; i < 7 * MB_INST; i++) f[i] = (float)a[i];
+    double r[][4] = {{6, 16, 43, 18}, {4, 34, 92, 32}};
+    int rn = 2;
+    CHECK(mb_glass_damage_expand(f, 7, r, &rn, W, H, S));
+    CHECK(rn == 1);
+    gl_set_fixed_dt(0.0);
+    glass_forget();
+  }
+
+  // Captures reached through another capture are closed too, including every shape of a merged liquid group.
+  {
+    float f[4 * MB_INST] = {0};
+    const float x[] = {70, 10, 40, 160};
+    const float id[] = {-2, -1, -1, -3};
+    for (int i = 0; i < 4; i++) {
+      float *a = f + i * MB_INST;
+      a[0] = x[i]; a[1] = 40; a[2] = 10; a[3] = 10; a[5] = 6; a[20] = id[i];
+    }
+    f[MB_INST + 23] = 8;
+    double r[][4] = {{12, 42, 1, 1}};
+    int rn = 1;
+    CHECK(mb_glass_damage_expand(f, 4, r, &rn, 200, 100, 1));
+    CHECK(rn == 1);
+    CHECK(r[0][0] <= 0 && r[0][0] + r[0][2] >= 84 && r[0][0] + r[0][2] < 150);
+  }
 
   if (!failed) printf("gles_render: ok\n");
   return failed;

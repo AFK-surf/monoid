@@ -3,7 +3,7 @@
 // `beta` features. `run` under a launcher of the test's, against a Slack and a still.fail feed of the test's on
 // 127.0.0.1: a Slack connect connected on its socket and slack_api called through the agents' door as the session's
 // bot; the station's latest release read from the channel it is on, and that channel switched as `stillfail update
-// --beta` asks it, station_move offered to the agents only then; a stop that leaves nothing. Then the same parts made
+// --beta` asks it, station_move offered to the agents on either channel; a stop that leaves nothing. Then the same parts made
 // in the harness (`--builder harness-station-main`'s "p5_5"), as the admin API (P5-1's, not made yet) would ask them:
 // the overview's `features`, `updates`, `move` and `copies`, the routes of the updates, the moves and the copies, and
 // the mesh's methods of the copies, a retirement, a hand-over and a move answered. Every program is run with a PATH
@@ -254,7 +254,7 @@ const toolNames = async (port: number, token: string) => {
   return listed.result.tools.map((t: any) => t.name).filter((n: string) => PARTS_TOOLS.has(n)).sort();
 };
 
-test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api called as their bots, the release read from the channel it is on and that channel switched, station_move offered only on the test channel, a stop that leaves nothing", { skip }, async () => {
+test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api called as their bots, the release read from the channel it is on and that channel switched, station_move offered on either channel, a stop that leaves nothing", { skip }, async () => {
   const slack = await slackStandIn();
   const feed = await feedStandIn();
   const feishu = await FakeFeishu.start();
@@ -309,8 +309,9 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
   store.insertSession({ key: "s1", connect: "c1", runtime: "claude", profile: "cc", workspace: data, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
   store.insertSession({ key: "s2", connect: "f1", runtime: "claude", profile: "cc", workspace: data, token: "t2", createdAt: Date.now(), lastActiveAt: Date.now() });
   store.close();
-  // the agents' tools on a stable station: the parts', station_move not among them (station_retire is hidden from tools/list)
-  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_version"]);
+  // the agents' tools on a stable station: the parts', station_move among them since moving graduated (station_retire is
+  // hidden from tools/list)
+  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_move", "station_version"]);
   // station_version: the release as the agents see it; an action it does not know refused as the TypeScript's
   const version = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "station_version", arguments: { action: "list" } } }, "t1");
   assert.equal(version.result.isError, undefined, JSON.stringify(version));
@@ -334,6 +335,26 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
   const sending = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "feishu_api", arguments: { method: "POST /open-apis/im/v1/messages", params: {} } } }, "t2");
   assert.equal(sending.result.isError, true);
   assert.match(sending.result.content[0].text, /chat_post/);
+  // chat_post to a Feishu chat with no conversation yet (FB-43): its first message there, its file uploaded before it and
+  // posted after it, its card's buttons changed to answer in the thread it began; the thread one of s2's conversations
+  const report = join(data, "report.pdf");
+  writeFileSync(report, "pdf");
+  const begun = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "chat_post", arguments: { to: "oc_new/", text: "选哪个", files: [report], card: { type: "options", options: [{ label: "A" }, { label: "B" }] } } } }, "t2");
+  assert.equal(begun.result.isError, undefined, JSON.stringify(begun));
+  const begunTs = /^Posted to oc_new\/(om_bot\d+) \(now one of your conversations\)\./.exec(begun.result.content[0].text)?.[1];
+  assert.ok(begunTs, begun.result.content[0].text);
+  assert.deepEqual(feishu.calls("POST", /^\/open-apis\/im\/v1\/(files|messages)$/).filter((c) => c.path.endsWith("/files") || c.body?.receive_id === "oc_new").map((c) => [c.path, c.body.msg_type ?? c.body.file_type]), [
+    ["/open-apis/im/v1/files", "pdf"],
+    ["/open-apis/im/v1/messages", "interactive"],
+    ["/open-apis/im/v1/messages", "file"],
+  ]);
+  assert.equal(JSON.parse(feishu.calls("PATCH", `/open-apis/im/v1/messages/${begunTs}`)[0]!.body.content).body.elements.find((e: any) => e.tag === "button").behaviors[0].value.t, begunTs);
+  const kept = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  assert.equal(kept.sessionThread("s2", "oc_new", begunTs!)?.connect, "f1");
+  kept.close();
+  const noAbout = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "chat_post", arguments: { to: "oc_x", text: "hi", kind: "all_done", done: "已在新建群发出首条消息，群里已有人回复", about: "om_1" } } }, "t2");
+  assert.equal(noAbout.result.isError, true);
+  assert.equal(noAbout.result.content[0].text, "about must be the ts of a message in an existing conversation (leave about out when starting a new Feishu chat)");
   // `stillfail update --beta` asks the running station (run/channel-ask, a SIGHUP the launcher passes on as `hup`)
   writeFileSync(join(data, "run", "channel-ask"), "beta\n");
   a.tell({ op: "hup" });
@@ -341,14 +362,14 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
   assert.equal(readFileSync(join(data, "run", "channel-answer"), "utf8"), "ok beta\n");
   assert.equal(JSON.parse(readFileSync(join(data, "config.json"), "utf8")).updateChannel, "beta");
   await until("the beta feed read", () => feed.asked.includes("/releases/station-beta.json"), 20_000, () => a.err());
-  // on the test channel: moving is offered, station_move an agent's tool
+  // on the test channel: station_move an agent's tool as on stable
   assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_move", "station_version"]);
-  // back to stable: off again
+  // back to stable: the same
   writeFileSync(join(data, "run", "channel-ask"), "stable\n");
   rmSync(join(data, "run", "channel-answer"));
   a.tell({ op: "hup" });
   await until("the channel answered again", () => existsSync(join(data, "run", "channel-answer")), 20_000, () => a.err());
-  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_version"]);
+  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_move", "station_version"]);
   // the copies' export: a process of its own (`--builder replica-export`), not in the station's, started as background
   // work: on macOS under `taskpolicy -b` (which execs it), its priority the background band's, under the station's
   if (process.platform !== "win32") {
@@ -411,8 +432,9 @@ test("the release's installer started as an update asks it, the copy an update b
   assert.equal(readFileSync(join(run, "install.sh"), "utf8"), readFileSync(script, "utf8"), "the copy is the release's installer");
   // (it runs in the background, nobody's child: its exit written beside it)
   const until = Date.now() + 20_000;
-  while (!existsSync(join(run, "update.exit")) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
-  assert.equal(readFileSync(join(run, "update.exit"), "utf8").trim(), "0");
+  const exitFile = join(run, "update.exit");
+  while ((!existsSync(exitFile) || readFileSync(exitFile, "utf8").trim() === "") && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(readFileSync(exitFile, "utf8").trim(), "0");
   assert.equal(readFileSync(join(run, "ran.txt"), "utf8"), "the new installer\n");
   await h.ok({ step: "stop" });
   h.child.stdin!.end();
@@ -429,13 +451,14 @@ test("the parts as the admin API asks them: the overview's features, updates, mo
   const member = { role: "member", workspace: "w1", email: "m@x.y" };
   // the overview on a stable station
   const first = await h.ok({ step: "overview", viewer: owner, lang: "en" });
-  assert.deepEqual(first.features, []);
-  assert.deepEqual(first.move, { offered: false });
+  // (moving graduated: offered on stable too, and said in `features` for apps from before)
+  assert.deepEqual(first.features, ["stationMove"]);
+  assert.deepEqual(first.move, { offered: true });
   assert.equal(first.updates[0].id, "station");
   assert.equal(typeof first.copies, "object");
   assert.deepEqual([first.slackTeams, first.slackApps], [[], []]);
   assert.deepEqual(await h.ok({ step: "coord", name: "connects.states", arg: [] }), []);
-  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_retire", "station_version"]);
+  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_move", "station_retire", "station_version"]);
   assert.deepEqual([first.comma, first.group, first.feishuRegistrations], [true, true, []]);
   // what the admin API's own routes (api_routes) ask of the connect kinds and Slack's, Feishu's and Comma's parts
   for (const kind of ["slack", "feishu", "comma", "group"]) assert.deepEqual(await h.ok({ step: "coord", name: "connectKinds.get", arg: [kind] }), { $ref: kind });
@@ -518,6 +541,14 @@ test("the parts as the admin API asks them: the overview's features, updates, mo
   assert.ok(Array.isArray(page.body.modules), JSON.stringify(page.body));
   assert.equal((await h.ok({ step: "route", method: "POST", path: "/move", body: { to: "b".repeat(64), module: "chats", item: "s1" }, viewer: member, lang: "en" })).status, 403);
   assert.equal(await h.ok({ step: "coord", name: "move.here", arg: [] }), id);
+  // a folder a move made let go as it goes back (repos.ts `remove`): all it holds, the shell's `fs.remove`; nothing
+  // there no failure
+  const made = join(data, "repos", "made-by-move");
+  mkdirSync(join(made, "a", "b"), { recursive: true });
+  writeFileSync(join(made, "a", "b", "f"), "x");
+  assert.equal(await h.ok({ step: "coord", name: "move.remove", arg: [made] }), null);
+  assert.equal(existsSync(made), false);
+  assert.equal(await h.ok({ step: "coord", name: "move.remove", arg: [made] }), null);
   // the copies' routes: a retirement's start refused (switched off), a restore asked without what it needs
   const retire = await h.ok({ step: "route", method: "POST", path: "/retire", body: { to: "b".repeat(64) }, viewer: owner, lang: "en" });
   assert.equal(retire.status, 409);
@@ -535,8 +566,8 @@ test("the parts as the admin API asks them: the overview's features, updates, mo
   assert.equal(await h.ok({ step: "coord", name: "updates.setChannel", arg: ["stable", "en"] }), null);
   assert.equal(await h.ok({ step: "coord", name: "agents.updates.channel", arg: [] }), "stable");
   assert.equal(JSON.parse(readFileSync(join(data, "config.json"), "utf8")).updateChannel, "stable");
-  assert.deepEqual((await h.ok({ step: "overview", viewer: owner, lang: "en" })).features, []);
-  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_retire", "station_version"]);
+  assert.deepEqual((await h.ok({ step: "overview", viewer: owner, lang: "en" })).features, ["stationMove"]);
+  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_move", "station_retire", "station_version"]);
   // the copies' and a retirement's on coord_ask: a refusal thrown as the routes take it, its words kept
   const retireCoord = await h.send({ step: "coord", name: "retire.retire", arg: ["w1", "b".repeat(64), "o@x.y"] });
   assert.ok(retireCoord.error !== undefined, JSON.stringify(retireCoord));
@@ -558,6 +589,128 @@ test("the parts as the admin API asks them: the overview's features, updates, mo
   assert.equal(stConnects.find((x: any) => x.id === "s-on")?.connection?.state, "no_tokens", JSON.stringify(stConnects));
   assert.equal(stConnects.find((x: any) => x.id === "s-off")?.connection?.state, "disabled", JSON.stringify(stConnects));
   await h.ok({ step: "stop" });
+  h.child.stdin!.end();
+  assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
+});
+
+test("a move's plan reads each page of chats in one statement (store.ts sessionPageOfWs as move/live.ts gives it): a home chat's sessions together, the accounts they ran on, those handed over and those of no workspace, the hub's wsOf given each row", { skip }, async () => {
+  const feed = await feedStandIn();
+  const { data, app, id } = station({ updateChannel: "beta" });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify(cloudOf(id, feed.origin)));
+  const h = harness();
+  assert.deepEqual(await h.ok({ step: "start", data, app }), { station: id });
+  const owner = { role: "owner", workspace: "w1", email: "o@x.y" };
+  const other = "b".repeat(64);
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  const now = Date.now();
+  const add = (key: string, ws: string | null, profile = "cc") =>
+    store.insertSession({ key, connect: "ember", ...(ws === null ? {} : { ws }), runtime: "claude", profile, workspace: join(data, "sessions", key), token: `t-${key}`, createdAt: now, lastActiveAt: now } as never);
+  // a1 and a2 share a1's still.fail home chat; r1 ran on an account it runs on no more; n1 is of no workspace (the
+  // home one's, from before workspaces); h1 was handed to the other station; x1 is another workspace's
+  for (const k of ["a1", "a2", "r1", "h1"]) add(k, "w1");
+  add("n1", null);
+  add("x1", "w2");
+  const home = store.openThread("chat", "CHAT", "1790000000.000001", "a1", "o@x.y");
+  store.joinThread(home.id, "a1", "ember");
+  store.joinThread(home.id, "a2", "ember");
+  (store as any).db.prepare("UPDATE threads SET home = ? WHERE id = ?").run("a1", home.id);
+  store.ranIn("r1", "rt-old", "gone-profile");
+  store.ranIn("r1", "rt-now", "cc");
+  store.handOff(["h1"], other, "w1", {});
+  store.close();
+  await h.ok({ step: "standIn", hub: { "hub.wsOf": "w1" }, peers: { "move.open": { on: true }, "move.chats.live": { live: [], name: "other" }, "move.accounts": {} } });
+  const page = await h.ok({ step: "route", method: "GET", path: "/move", query: { to: other }, body: null, viewer: owner, lang: "en" });
+  assert.equal(page.status, 200, JSON.stringify(page));
+  const chats = page.body.modules.find((m: any) => m.id === "chats");
+  const item = (k: string) => chats.items.find((x: any) => x.id === k);
+  // a2 goes with a1 (their home chat's), x1 is another workspace's; n1 is the home one's
+  assert.deepEqual(chats.items.map((x: any) => x.id), ["a1", "h1", "n1", "r1"]);
+  for (const k of ["a1", "n1", "r1"]) assert.equal(item(k).cannot, undefined, JSON.stringify(item(k)));
+  assert.deepEqual(item("a1").needs, ["accounts machine:cc"]);
+  assert.match(item("r1").leaves, /gone-profile/);
+  // handed over: in the page, and not to be moved again from here
+  assert.ok(item("h1").cannot !== undefined, JSON.stringify(item("h1")));
+  // each chat's row, home chat and accounts read from the page, not asked of the store one by one (11-12 statements a
+  // chat: 79.7 s for 3,643 chats on the station's thread)
+  const asked = await h.ok({ step: "asked" });
+  const oneByOne = asked.filter((x: any) => ["store.getSession", "store.homeChat", "store.threadSessions", "store.chatPage"].includes(x.hub));
+  assert.deepEqual(oneByOne, []);
+  // the hub's wsOf given each session's row, as handover.ts `check` gives it
+  const wsOf = asked.filter((x: any) => x.hub === "hub.wsOf");
+  assert.ok(wsOf.length > 0);
+  for (const x of wsOf) assert.equal(typeof x.args[0]?.key, "string", JSON.stringify(x));
+  await h.ok({ step: "stop" });
+  h.child.stdin!.end();
+  assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
+});
+
+test("Feishu's and Comma's sockets kept up as comma/surface.ts and feishu/surface.ts keep them (pinged every 15 s, dead after 45 s quiet); a platform's socket on the shell sends its ping frame and says it is open only from its open until it closed or was cut off; Comma's part given where the session pages are as sessions/agents.ts `pages` says", { skip }, async () => {
+  const h = harness();
+  assert.deepEqual(await h.ok({ step: "keepalive" }), { feishu: { pingMs: 15_000, staleMs: 45_000 }, comma: { pingMs: 15_000, staleMs: 45_000 } });
+  // the socket's ping is a WebSocket ping frame the server hears (and answers with its pong); the server then closes it
+  const server = createServer();
+  const wss = new WebSocketServer({ server });
+  const pinged: number[] = [];
+  wss.on("connection", (ws) => {
+    ws.on("ping", () => {
+      pinged.push(1);
+      setImmediate(() => ws.close());
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  closers.push(() => server.close());
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+  const probe = await h.ok({ step: "socket", url });
+  assert.equal(pinged.length, 1, JSON.stringify(probe));
+  assert.deepEqual([probe.before, probe.opened, probe.after], [false, true, false], JSON.stringify(probe));
+  assert.equal(probe.said.at(-1), "closed", JSON.stringify(probe));
+  assert.ok(probe.said.includes("pong"), JSON.stringify(probe));
+  assert.deepEqual([probe.cutOpened, probe.cut], [true, false]);
+  // where the session pages are: still.fail cloud's alone, in a workspace not left, its test channel's origin on beta
+  const state = { provider: "stillfail", origin: "https://app.still.fail", workspace: "w1", station: "s1" };
+  assert.deepEqual(await h.ok({ step: "pageBase", state, channel: "stable" }), { origin: "https://app.still.fail", workspace: "w1", station: "s1" });
+  assert.deepEqual(await h.ok({ step: "pageBase", state, channel: "beta" }), { origin: "https://app.youdid.wtf", workspace: "w1", station: "s1" });
+  assert.deepEqual(await h.ok({ step: "pageBase", state: { ...state, origin: "https://app.monoid.build" }, channel: "beta" }), { origin: "https://app.monoid.zone", workspace: "w1", station: "s1" });
+  assert.equal(await h.ok({ step: "pageBase", state: { ...state, provider: "comma" }, channel: "stable" }), null);
+  assert.equal(await h.ok({ step: "pageBase", state: { ...state, workspace: "" }, channel: "stable" }), null);
+  assert.equal(await h.ok({ step: "pageBase", state: { ...state, removed_at: 1 }, channel: "stable" }), null);
+  assert.equal(await h.ok({ step: "pageBase", state: null, channel: "stable" }), null);
+  h.child.stdin!.end();
+  assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
+});
+
+test("the parts that download follow a 302 as Node's fetch does (Slack's url_private telling it was sent elsewhere, Feishu's, the updates', Farview's release, the accounts' unless `manual`), on the shell against a server of the test's", { skip }, async () => {
+  const hits: string[] = [];
+  const server = createServer((req, res) => {
+    hits.push(req.url ?? "");
+    if (req.url === "/moved") {
+      res.writeHead(302, { location: "/final" });
+      res.end();
+    } else if (req.url === "/final") {
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      res.end("final");
+    } else {
+      res.writeHead(404);
+      res.end("none");
+    }
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  closers.push(() => server.close());
+  const at = (path: string) => `http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`;
+  const h = harness();
+  const via = (part: string, path: string, manual = false) => h.ok({ step: "fetchVia", via: part, url: path.startsWith("gh:") ? path : at(path), manual });
+  assert.deepEqual(await via("slack", "/moved"), { status: 200, redirected: true, body: "final" });
+  assert.deepEqual(await via("slack", "/final"), { status: 200, redirected: false, body: "final" });
+  assert.deepEqual(await via("feishu", "/moved"), { status: 200, body: "final" });
+  assert.deepEqual(await via("updates", "/moved"), { status: 200, body: "final" });
+  assert.deepEqual(await via("farview", "/moved"), { body: "final" });
+  assert.equal(await via("farview", "/gone"), null);
+  // (a gh: source with no gh on the PATH: none from there, as fetchBytes says it)
+  assert.equal(await via("farview", "gh:AFK-surf/farview@builds/none.tgz"), null);
+  assert.deepEqual(await via("oauth", "/moved"), { status: 200, body: "final" });
+  hits.length = 0;
+  assert.deepEqual(await via("oauth", "/moved", true), { status: 302, body: "" });
+  assert.deepEqual(hits, ["/moved"]);
   h.child.stdin!.end();
   assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
 });

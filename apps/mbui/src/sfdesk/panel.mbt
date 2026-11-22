@@ -21,6 +21,7 @@ fn side_shows(v : ChatView, tab : String) -> Bool {
   tab == "files" ||
   tab == "letters" ||
   tab == "things" ||
+  tab == "subchats" ||
   tab_service(tab) is Some(_) ||
   tab_file(tab) is Some(_) ||
   station_tab(tab) is Some(_) ||
@@ -55,6 +56,39 @@ pub fn side_now(src : Source, r : ChatRef) -> (Array[String], String) {
 /// the front; all of them closed (`clear`). The panel is told first whether any will be open, to slide as they come.
 pub fn side_change(src : Source, r : ChatRef, action : String, tab : String?) -> Unit {
   side_change_from(src, r, action, tab, side_now(src, r))
+}
+
+///|
+/// File tab `tab` put beside chat `r` in the place of tab `was` (a picture's tab stepped to the one beside it: sfbase's
+/// viewer_tab.mbt), in front; a tab of that file open there already (view_beside's same_file), that one brought to the
+/// front, `was` closed; `was` over the whole window, the tab put there. The tab put in front.
+pub fn view_step(src : Source, r : ChatRef, tab : String, was : String) -> String {
+  let now = side_now(src, r)
+  let open = match @sfbase.view_tab_file(tab) {
+    Some(f) =>
+      now.0
+      .iter()
+      .find_first(fn(t) {
+        match @sfbase.view_tab_file(t) {
+          Some(g) => f.same_file(g)
+          None => false
+        }
+      })
+    None => None
+  }
+  let put = open.unwrap_or(tab)
+  let full = @signals.untracked(fn() { @sfbase.tab_full_is(r.station, r.session, was) })
+  // (put there only to go over the whole window, as `was` was: lone, unless it was there already)
+  let lone = full && open is None && @sfbase.tab_full_lone()
+  side_changing(chat_key(r), now.0, now.1, true)
+  tab_let_go(src, r, was)
+  tab_kept(r, put)
+  let params : Map[String, Json] = { "chat": Json::string(tabs_key(r)), "tab": Json::string(put), "was": Json::string(was) }
+  (src.call)("chat.tabs.replace", Json::object(params), @sfbase.answer_unread)
+  if full {
+    @sfbase.tab_full_open(r, put, lone~)
+  }
+  put
 }
 
 ///|
@@ -129,24 +163,83 @@ fn side_tab_reads(r : ChatRef, tab : String) -> Array[(String, Map[String, Json]
 fn side_change_from(src : Source, r : ChatRef, action : String, tab : String?, now : (Array[String], String)) -> Unit {
   let (tabs, front) = now
   let any = match action {
-    "open" | "front" => true
+    "open" | "front" | "closeOthers" | "closeRight" | "reopen" => true
     "close" => tabs.iter().any(fn(t) { Some(t) != tab })
     _ => false
   }
   side_changing(chat_key(r), tabs, front, any)
-  // a tab opened or brought to the front beside the chat shown while its panel was open already: on the tape, the panel
-  // brought over (none open yet: tape_settle's, once the core says it)
-  if tabs.length() > 0 && (action == "open" || action == "front") {
+  // a tab opened, brought to the front, or reopened beside the chat shown while its panel was open already: on the tape,
+  // the panel brought over (none open yet: tape_settle's, once the core says it)
+  if tabs.length() > 0 && (action == "open" || action == "front" || action == "reopen") {
     tape_bring_side(r)
   }
   // a web service's, visualization's, screen's or terminal's tab closed lets its session go
   match (action, tab) {
     ("close", Some(t)) => tab_let_go(src, r, t)
+    ("closeOthers", Some(keep_t)) =>
+      for t in tabs {
+        if t != keep_t {
+          tab_let_go(src, r, t)
+        }
+      }
+    ("closeRight", Some(keep_t)) =>
+      match tabs.search(keep_t) {
+        Some(idx) =>
+          for i = idx + 1; i < tabs.length(); i = i + 1 {
+            tab_let_go(src, r, tabs[i])
+          }
+        None => ()
+      }
     ("clear", _) => for t in tabs { tab_let_go(src, r, t) }
     ("open", Some(t)) => tab_kept(r, t)
     _ => ()
   }
   side_ask(src, r, action, tab)
+}
+
+///|
+/// Reorder tab `tab` of chat `r`'s side panel to index `to`.
+pub fn side_move(src : Source, r : ChatRef, tab : String, to : Int) -> Unit {
+  let params : Map[String, Json] = {
+    "chat": Json::string(tabs_key(r)),
+    "tab": Json::string(tab),
+    "to": Json::number(to.to_double()),
+  }
+  (src.call)("chat.tabs.move", Json::object(params), @sfbase.answer_unread)
+}
+
+///|
+/// Reopen the most recently closed batch of tabs for chat `r`.
+pub fn side_reopen(src : Source, r : ChatRef) -> Unit {
+  side_change(src, r, "reopen", None)
+}
+
+///|
+/// Step the active side-panel tab of chat `r` by `delta` (-1 previous, +1 next), wrapping around.
+fn side_step(src : Source, r : ChatRef, delta : Int) -> Bool {
+  let (tabs, front) = side_now(src, r)
+  guard tabs.length() > 1 else { return false }
+  let idx = tabs.search(front).unwrap_or(0)
+  let next = tabs[(idx + delta + tabs.length()) % tabs.length()]
+  side_change(src, r, "front", Some(next))
+  true
+}
+
+///|
+/// Close the currently active side-panel tab of chat `r` (`panel.tab.close`).
+fn side_close_front(src : Source, r : ChatRef) -> Bool {
+  let (tabs, front) = side_now(src, r)
+  guard tabs.length() > 0 && front != "" else { return false }
+  side_change(src, r, "close", Some(front))
+  true
+}
+
+///|
+/// Reopen the most recently closed tab batch of chat `r` if available (`panel.tab.reopen`).
+fn side_reopen_key(src : Source, r : ChatRef) -> Bool {
+  guard @sfbase.chat_view_now(src, r) is Some(cv) && cv.tabs.can_reopen else { return false }
+  side_reopen(src, r)
+  true
 }
 
 ///|
@@ -164,11 +257,12 @@ pub fn side_ask(src : Source, r : ChatRef, action : String, tab : String?) -> Un
 ///|
 /// File tab `tab` opened beside chat `r` (the shell's `beside`: sfapp's beside_where), in front; a tab of that file open
 /// there already (the same file, what it said of itself then aside: view_tab_file's same_file), that one brought to the
-/// front, never a second: the tab put in front.
-pub fn view_beside(src : Source, r : ChatRef, tab : String) -> String {
+/// front, never a second: the tab put in front, and whether it is new there. `full`: to go over the whole window at
+/// once, a new one put there under it with no slide of the panel (side_under).
+pub fn view_beside(src : Source, r : ChatRef, tab : String, full? : Bool = false) -> (String, Bool) {
   // (that file in a window of its own: the window to the front, the panel left as it is: sfbase's tab_window_front)
   match @sfbase.tab_window_front(r, tab) {
-    Some(there) => return there
+    Some(there) => return (there, false)
     None => ()
   }
   let open = match @sfbase.view_tab_file(tab) {
@@ -184,8 +278,73 @@ pub fn view_beside(src : Source, r : ChatRef, tab : String) -> String {
     None => None
   }
   let put = open.unwrap_or(tab)
-  side_change(src, r, "open", Some(put))
-  put
+  if full && open is None {
+    side_under(src, r, "open", put)
+  } else {
+    side_change(src, r, "open", Some(put))
+  }
+  (put, open is None)
+}
+
+///|
+/// Tab `tab` of chat `r` opened in its panel (`action` open) or closed there (close) while over the whole window, put
+/// there only to go there (sfbase's tab_full.mbt, `lone`): the panel told nothing, so it is open or closed under it at
+/// once, sliding neither way as the whole window's layer comes or goes.
+pub fn side_under(src : Source, r : ChatRef, action : String, tab : String) -> Unit {
+  match action {
+    "open" => {
+      side_under_chat.val = chat_key(r)
+      // (nothing in the panel before: it stays closed under the whole window, the chat's column as wide as it was, till
+      // the tab is put beside to stay or closed with the layer: side_unseen)
+      if side_now(src, r).0.is_empty() {
+        side_unseen.set(chat_key(r))
+      }
+      tab_kept(r, tab)
+    }
+    _ => {
+      side_under_chat.val = ""
+      tab_let_go(src, r, tab)
+    }
+  }
+  side_ask(src, r, action, Some(tab))
+}
+
+///|
+/// The chat whose panel holds a tab put there only to go over the whole window (side_under), till it is closed or put
+/// beside to stay (side_put_beside): on the tape its panel not brought over as it opens (tape_settle), so nothing of
+/// the tape moves under the whole window nor slides back as it closes.
+// kept across runs: put back by chat_page_reset
+let side_under_chat : Ref[String] = Ref("")
+
+///|
+/// The chat whose panel was opened, from none, only for a tab over the whole window (side_under): drawn closed, its
+/// column none wide and the chat's as wide as with no panel, so nothing under the whole window moves as its layer comes
+/// or goes; let go of once the panel has no tabs (closed with the layer: panel_node's side_panel_node) or the tab is put
+/// beside to stay (side_put_beside: the panel slides in then).
+// kept across runs: put back by chat_page_reset
+let side_unseen : @signals.Signal[String] = @signals.signal("")
+
+///|
+/// Whether chat `key`'s panel is open as it is drawn: some tabs in it, not opened only for one over the whole window
+/// (side_unseen).
+fn side_drawn_open(src : Source, r : ChatRef, key : String) -> Bool {
+  side_now(src, r).0.length() > 0 && side_unseen.get() != key
+}
+
+///|
+/// The tab over the whole window put in its chat's panel to stay (its 移到侧边: sfbase's tab_full_beside), the panel
+/// brought over on the tape.
+fn side_put_beside(r : ChatRef) -> Unit {
+  @sfbase.tab_full_beside()
+  if side_under_chat.val == chat_key(r) {
+    side_under_chat.val = ""
+  }
+  // (opened only for it: slid in now, as a change asked here)
+  if side_unseen.untracked() == chat_key(r) {
+    panel_own.asked.set(chat_key(r))
+    side_unseen.set("")
+  }
+  tape_bring_side(r)
 }
 
 ///|
@@ -264,11 +423,6 @@ pub fn side_width(pane : Double) -> Double {
 }
 
 ///|
-/// The chat and the panel side by side.
-// kept across runs: a value (no field of it changes)
-let panel_row : @ui.Style = @ui.css("row w=Full h=Full")
-
-///|
 /// The least the chat and the panel are side by side (ChatSide.tsx panelWidth: the chat 360, the panel 360 at least, the
 /// rule between): on a page narrower, the panel over the page.
 let side_both_least : Double = 721.0
@@ -276,21 +430,6 @@ let side_both_least : Double = 721.0
 ///|
 /// How wide the panel is over the page (ChatPage.css.ts sidePanel on a narrow page: min(460px, 100vw)).
 let side_over_w : Double = 460.0
-
-///|
-/// Whether the panel being built is a panel of its own on the tape (tape_side): round by the tape's corner.
-// kept across runs: said by tape_side round the panel it builds
-let side_on_tape : Ref[Bool] = Ref(false)
-
-///|
-/// The page under the panel over it: as wide as it is.
-// kept across runs: a value (no field of it changes)
-let panel_page_whole : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-/// The panel over the page (sidePanel, narrow): the page's ground, its shadow at its side (-12 0 32).
-// kept across runs: a value (no field of it changes)
-let side_over_box : @ui.Style = @ui.css("bg=Bg shadow=Xl")
 
 ///|
 /// The panel (sidePanel): its ground the canvas, beside the page with no line between: its edge's own line shows as
@@ -317,17 +456,17 @@ let side_bar_look : @ui.Style = @ui.css("row w=Full h=S11 pl=S2 gap=S2 align=ACe
 /// that (it follows a round window), clear of it, as in the wide frame at least (side_bar's 8 and 12); its foot as
 /// before.
 pub fn side_bar_tape() -> @ui.Style {
-  match @sf.pane_radii() {
-    Some(k) => side_bar_tape_in(k)
+  match @sf.pane_round.val {
+    Some(k) => side_bar_tape_in(k, @ui.corner_roots())
     None => side_bar()
   }
 }
 
 ///|
-/// side_bar_tape's, its panel's corners `radii` round (the tree's bar, side_bar_node: as the tree has the window's
-/// corner).
-fn side_bar_tape_in(radii : FixedArray[Double]) -> @ui.Style {
-  let (left, right) = (radii[0], radii[1])
+/// side_bar_tape's, its panel's corners `corners` (worked out from `roots`; the tree's bar, side_bar_node, has the
+/// window's corner and Windows' own window keys).
+fn side_bar_tape_in(corners : FixedArray[@ui.CornerOf], roots : @ui.CornerRoots) -> @ui.Style {
+  let left = corners[0].radius(roots)
   // (the switch the tallest in it, the row's top its, the tab's middle on its)
   let side = bar_button_side()
   @ui.style(
@@ -336,7 +475,7 @@ fn side_bar_tape_in(radii : FixedArray[Double]) -> @ui.Style {
     pt=@sf.room_of(@ui.capsule_in(@sf.tape_corner, side)),
     pb=S1_5,
     pl=@sf.room_of(@sf.line_end_in(left, side_bar_start, side=@sf.side_tab_side)),
-    pr=@sf.room_of(@sf.line_end_in(right, side_bar_end, side~)),
+    pr=@sf.room_of(@sf.tape_bar_end_of(corners, roots, side_bar_end, side~)),
     gap=S2,
     align=ACenter,
   )
@@ -397,7 +536,7 @@ let side_tab_words_lit : @ui.TextStyle = side_tab_words.then(@ui.text_style(colo
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let side_tab_front : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, wrap=false, w=Cut)
+pub let side_tab_front : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Fg, wrap=false, w=Cut)
 
 ///|
 /// Its close (sideTabClose): 20 round, concentric in the tab's end; pointed at, the pointer's ground over the tab's.
@@ -439,6 +578,7 @@ pub fn side_slide_reset() -> Unit {
   panel_own.asked.set("")
   panel_own.leaving.set(None)
   panel_own.goes.clear()
+  side_tab_menu_reset()
 }
 
 ///|
@@ -477,140 +617,6 @@ fn side_left(key : String) -> Unit {
 }
 
 ///|
-/// Page `key` (`page`) and its side panel (`panel`, `whole` wide at rest) side by side, the panel `open` or not. Opened by
-/// a change asked here, the panel's column widens from nothing over 280 ms and the page narrows with it, frame by frame;
-/// closed, the other way over 240 ms. The panel keeps its whole width all along and shows
-/// through its column as it grows, so it comes in from the right edge without what it holds laid out again; turned back
-/// on its way, it goes on from where it is. Open or closed otherwise (a page opened with its tabs as they were left),
-/// it is so at once.
-pub fn side_beside(c : @ui.Ctx, key : String, open : Bool, whole : Double, page : () -> Unit, panel : () -> Unit) -> Unit {
-  // where the page has not the room for the chat and the panel at their least side by side, the panel comes in over
-  // the page from its right edge (a shadow at its side), the
-  // page as wide as it was, the panel's edge not dragged
-  let over = c.width < side_both_least
-  let whole = if over { dmin(side_over_w, c.width) } else { whole }
-  let name = "--side-panel/" + key
-  match panel_own.was.get(key) {
-    Some(was) if was != open && panel_own.asked.get() == key => {
-      panel_own.asked.set("")
-      // (in and out on a Move as long as it is wide)
-      c.move_state([("side-panel", [name])])
-    }
-    _ => ()
-  }
-  // (each page's own: a panel beside one page and beside another, each as it was last built)
-  if panel_own.was.get(key) != Some(open) {
-    panel_own.was[key] = open
-  }
-  // its column (the panel) as wide as it has got
-  let col = c.moved(name, if open { whole } else { 0.0 })
-  if col <= 0.0 {
-    if !open && side_leaving(key) is Some(_) {
-      panel_own.leaving.set(None)
-    }
-    // (the frame it sets off on, its column not open yet: the page on its way from this frame, as on those after it,
-    // not from whichever is drawn next)
-    if open && !over && whole > 0.0 {
-      let (way, to, ends) = (@sfbase.page_way.id, @sfbase.page_way.to, @sfbase.page_way.ends)
-      @sfbase.page_way_said(
-        way + "/" + name + "/" + open.to_string(),
-        (if way != "" { to } else { c.width }) - whole,
-        ends=dmax(if way != "" { ends } else { 0.0 }, c.moved_ends(name).unwrap_or(c.moment())),
-      )
-      page()
-      @sfbase.page_way_said(way, to, ends~)
-      return
-    }
-    page()
-    return
-  }
-  if over {
-    c.box(style=panel_row, fn() {
-      c.box(style=panel_page_whole, fn() { page() }) |> ignore
-      c.box(style=side_over_box.then(@ui.style(w=Fixed(whole))), right=0.0, top=0.0, bottom=0.0, tx=whole - col, fn() {
-        c.sized(whole, c.height, panel)
-      })
-      |> ignore
-    })
-    |> ignore
-    return
-  }
-  let left = c.width - col
-  c.box(style=panel_row, fn() {
-    // (the page on its way as the panel slides, or as what holds it goes: as wide as that leaves it beside the panel)
-    let (way, to, ends) = (@sfbase.page_way.id, @sfbase.page_way.to, @sfbase.page_way.ends)
-    let target = if open { whole } else { 0.0 }
-    let sliding = col != target
-    if sliding || way != "" {
-      @sfbase.page_way_said(
-        way + "/" + name + "/" + open.to_string(),
-        (if way != "" { to } else { c.width }) - target,
-        ends=dmax(if way != "" { ends } else { 0.0 }, c.moved_ends(name).unwrap_or(c.moment())),
-      )
-    }
-    c.box(style=@ui.style(w=Fixed(left), h=Full), fn() { c.sized(left, c.height, page) }) |> ignore
-    @sfbase.page_way_said(way, to, ends~)
-    // (cut to its column only while it slides: at rest what it puts past its left edge, its edge's handle half over
-    // the page, shows whole, as the web's sidePanel cuts nothing)
-    c.box(style=@ui.style(w=Fixed(col), h=Full, clip=col < whole), fn() {
-      c.box(style=@ui.style(w=Fixed(whole), h=Full), fn() { c.sized(whole, c.height, panel) }) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// Chat `r`'s page (`chat`) in workspace `w`, its side panel the tree's beside it (side_panel_node; on the tape a panel
-/// of its own, tape_side): as the panel's column slides, the page on its way to the width it leaves the page, there as
-/// the slide ends: built again in the first frame at or past its end (Ctx::shows_until), whether or not the page's room
-/// changes then. (A frame drawn just short of the end has the column as wide as it comes to be already; at 24 frames a
-/// second, in a window wide enough for the list to be held at its width on the way (sfpages' laid_w), the next kept the
-/// page as on its way, parting from it built anew: view_beside_wbtest, wide_panel_wbtest.)
-pub fn with_side(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, chat : () -> Unit) -> Unit {
-  if @sf.in_pane() {
-    chat()
-    return
-  }
-  let key = chat_key(r)
-  let (id, to, ends) = (@sfbase.page_way.id, @sfbase.page_way.to, @sfbase.page_way.ends)
-  let open = side_now(src, r).0.length() > 0
-  let way_opt = panel_own.goes.get(key)
-  let way_goes = match way_opt {
-    Some(way) => way.goes_at(c.moment())
-    None => false
-  }
-  if !way_goes && !(id != "" && open) {
-    chat()
-    return
-  }
-  let pane = if id != "" {
-    to
-  } else {
-    let ww = c.window_size().0
-    ww - fold_target(src, w, ww).1.col
-  }
-  if pane < side_both_least {
-    chat()
-    return
-  }
-  let (side_to, side_ends, side_tag) = match way_opt {
-    Some(way) if way_goes => {
-      c.shows_until(way.ends_at())
-      (way.target(), way.ends_at(), (way.target() > 0.0).to_string())
-    }
-    _ => (side_width(pane), 0.0, "true")
-  }
-  @sfbase.page_way_said(
-    id + "/--side-panel/" + key + "/" + side_tag,
-    pane - side_to,
-    ends=dmax(if id != "" { ends } else { 0.0 }, side_ends),
-  )
-  chat()
-  @sfbase.page_way_said(id, to, ends~)
-}
-
-///|
 /// Whose side panel is open (what the frame puts beside the page on the tape): a chat's, or workspace `ws`'s new
 /// chat's (its Station 文件, kept by the same `chatTabs`, by `new:<ws>`).
 #derive(Eq)
@@ -637,51 +643,6 @@ pub fn side_open_for(src : Source, w : Workspace, p : Page) -> SideOf? {
     NewChat => if new_files_open(src, w.id) && new_drive_station(src, w) is Some(_) { Some(NewSide(w.id)) } else { None }
     _ => None
   }
-}
-
-///|
-/// The side panel `side` on the tape, a panel of its own beside the page's, as an old view: a new chat's Station 文件;
-/// its edge not dragged (its width the tape's: frame.mbt tape_one_beside). A chat's is the tree's (tape_side_node), its
-/// bar and what it shows, an old view of it hosted there under the bar (side_panel).
-pub fn tape_side(c : @ui.Ctx, src : Source, w : Workspace, side : SideOf) -> Unit {
-  guard side is NewSide(_) else { return }
-  side_on_tape.val = true
-  match new_drive_station(src, w) {
-    Some(address) => new_files_panel(c, src, w, address)
-    None => ()
-  }
-  side_on_tape.val = false
-}
-
-///|
-/// What the panel (sidePanel) shows under its bar (the tree's: side_bar_node) of every tab the window's tree does not
-/// show (panel_node.mbt side_node_tab: an agent's history, a file in the viewer, a Farview tab, 任务, agent 往来,
-/// 图片、文件和链接, 文件, a station's 文件 and its page are its: a station's screen is left), an old view; what in front
-/// has a bar of its own (side_bars) that bar, the panel's none over it. Its edge is the tree's (side_panel_node's).
-fn side_panel(c : @ui.Ctx, src : Source, _w : Workspace, r : ChatRef, tabs : Array[String], front : String) -> Unit {
-  c.box(style=side_panel_style, fn() {
-    let (_, screen_alone, _) = side_bars(c, tabs, front)
-    c.box(style=side_pane, fn() {
-      station_tab_pane(c, src, r, front, own_bar=if screen_alone { Some(side_bar_tape()) } else { None }) |> ignore
-      // (an agent's history, a web service, a visualization, 任务, agent 往来, 图片、文件和链接, 文件, a station's 文件
-      // and its page: the tree's, panel_node.mbt)
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// How the panel showing `tabs` (`front` in front) is headed: a panel of its own on the tape showing one tab, that tab
-/// its title, the panel's close its only ×; the station's screen alone on its side, its tools a rail with no name of
-/// their own (the panel's row names it); and whether what is in front has a bar of its own (a service's alone: its
-/// address names it; the screen's), that bar the panel's, its × at its end, no row of the panel's over it (the user,
-/// 2026-10-28: two rows there too much). The tree's bar asks the same (side_own_bar_node).
-fn side_bars(c : @ui.Ctx, tabs : Array[String], front : String) -> (Bool, Bool, Bool) {
-  let alone = side_on_tape.val && tabs.length() == 1
-  let (ww, wh) = c.window_size()
-  let screen_alone = screen_tab_alone(tabs) && !column_short.get() && ww <= wh
-  (alone, screen_alone, (alone && tab_service(front) is Some(_)) || screen_alone)
 }
 
 ///|
@@ -735,6 +696,8 @@ fn side_tab_names(
         @sf.t("web-pages.chat.files")
       } else if tab == "things" {
         @sf.t("web-main.things.title")
+      } else if tab == "subchats" {
+        @sf.t("web-pages.chat.subchats")
       } else {
         @sf.t("web-main.letters.title")
       }
@@ -748,6 +711,8 @@ fn side_tab_names(
         @sf.t("web-pages.chat.closeFiles")
       } else if tab == "things" {
         @sf.t("web-main.things.close")
+      } else if tab == "subchats" {
+        @sf.t("web-pages.chat.close", args=[("name", label)])
       } else {
         @sf.t("web-main.letters.close")
       }

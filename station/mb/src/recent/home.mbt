@@ -12,7 +12,7 @@ fn home_chat(
   limit : Int,
   visited : Ref[Int],
 ) -> Bool? raise {
-  guard first(db, "SELECT home FROM threads WHERE id = CAST(? AS INTEGER)", [
+  guard db.first("SELECT home FROM threads WHERE id = CAST(? AS INTEGER)", [
       thread,
     ])
     is Some(chat) else {
@@ -20,15 +20,15 @@ fn home_chat(
     return Some(false)
   }
   let session_ws = (key : Json) => {
-    first(db, "SELECT ws FROM sessions WHERE key = ?", [key])
+    db.first("SELECT ws FROM sessions WHERE key = ?", [key])
   }
-  let home = get(chat, "home")
+  let home = @sql.row_val(chat, "home")
   if !(home is Null) {
     visited.val = 1
     return Some(
       match session_ws(home) {
         None => true
-        Some(s) => get(s, "ws") is Null
+        Some(s) => @sql.row_val(s, "ws") is Null
       },
     )
   }
@@ -45,15 +45,15 @@ fn home_chat(
   }
   visited.val = members.length()
   for m in members {
-    match session_ws(get(m, "session")) {
+    match session_ws(@sql.row_val(m, "session")) {
       None => return Some(true)
-      Some(s) => if get(s, "ws") is Null { return Some(true) }
+      Some(s) => if @sql.row_val(s, "ws") is Null { return Some(true) }
     }
   }
   if members.length() < limit {
     return Some(!seen.val && members.length() == 0)
   }
-  after.val = get(members[members.length() - 1], "session")
+  after.val = @sql.row_val(members[members.length() - 1], "session")
   seen.val = true
   None
 }
@@ -78,25 +78,23 @@ fn mark_home_dirty(db : @sql.Db, thread : Json) -> Unit raise {
 /// A session's chats journaled for the default part when it became known, went, or moved in or out of the default
 /// workspace (`settleRecentHomeSessionStep`), in bounded batches.
 fn settle_home_session(db : @sql.Db, limit : Int) -> Int raise {
-  write(db, () => {
-    guard first(
-        db,
+  db.write(() => {
+    guard db.first(
         "SELECT session, CAST(revision AS TEXT) AS revision FROM recent_scope_session_dirty WHERE kind = 0 AND ws = '' ORDER BY session LIMIT 1",
         [],
       )
       is Some(pending) else {
       return 0
     }
-    let session = get(pending, "session")
-    let revision = get(pending, "revision")
-    let work = first(
-      db,
+    let session = @sql.row_val(pending, "session")
+    let revision = @sql.row_val(pending, "revision")
+    let work = db.first(
       "SELECT CAST(revision AS TEXT) AS revision, phase, CAST(after AS TEXT) AS after FROM recent_home_session_work WHERE session = ?",
       [session],
     )
     let (phase, after) = match work {
-      Some(k) if get(k, "revision") == revision =>
-        (get(k, "phase"), get(k, "after"))
+      Some(k) if @sql.row_val(k, "revision") == revision =>
+        (@sql.row_val(k, "phase"), @sql.row_val(k, "after"))
       _ => {
         ignore(
           db.run(
@@ -144,15 +142,15 @@ fn scan_into(
   dirty : String,
   limit : Int,
 ) -> Int raise {
-  write(db, () => {
+  db.write(() => {
     let m = one(
       db,
       "SELECT CAST(cursor AS TEXT) AS cursor, CAST(through AS TEXT) AS through, scan_done FROM \{meta} WHERE id = 1",
       [],
     )
-    let cursor = get(m, "cursor")
-    let through = get(m, "through")
-    if int(m, "scan_done") == 1 || through is Null {
+    let cursor = @sql.row_val(m, "cursor")
+    let through = @sql.row_val(m, "through")
+    if @sql.row_int(m, "scan_done") == 1 || through is Null {
       return 0
     }
     let found = if cursor is Null {
@@ -170,12 +168,12 @@ fn scan_into(
       ignore(
         db.run(
           "INSERT INTO \{dirty}(thread, revision) SELECT CAST(?1 AS INTEGER), 1 WHERE NOT EXISTS (SELECT 1 FROM \{dirty} WHERE thread = CAST(?1 AS INTEGER))",
-          [get(r, "tid")],
+          [@sql.row_val(r, "tid")],
         ),
       )
     }
     let reached = match found.last() {
-      Some(r) => get(r, "tid")
+      Some(r) => @sql.row_val(r, "tid")
       None => cursor
     }
     ignore(
@@ -192,30 +190,28 @@ fn scan_into(
 /// Changed chats accounted for the default part, in bounded member batches (`settleRecentHomeChatStep`): a simple chat
 /// costs one unit; the revision keeps a change made during a long scan; row, count, cursor and marker go together.
 fn settle_home_chats(db : @sql.Db, limit : Int) -> Int raise {
-  write(db, () => {
+  db.write(() => {
     let mut visited = 0
     while visited < limit {
-      guard first(
-          db,
+      guard db.first(
           "SELECT CAST(thread AS TEXT) AS tid, CAST(revision AS TEXT) AS revision FROM recent_home_dirty ORDER BY thread LIMIT 1",
           [],
         )
         is Some(pending) else {
         break
       }
-      let thread = get(pending, "tid")
-      let revision = get(pending, "revision")
+      let thread = @sql.row_val(pending, "tid")
+      let revision = @sql.row_val(pending, "revision")
       let after : Ref[Json] = Ref(Json::null())
       let seen = Ref(false)
       match
-        first(
-          db,
+        db.first(
           "SELECT CAST(revision AS TEXT) AS revision, after_session, seen FROM recent_home_work WHERE thread = CAST(? AS INTEGER)",
           [thread],
         ) {
-        Some(k) if get(k, "revision") == revision => {
-          after.val = get(k, "after_session")
-          seen.val = int(k, "seen") == 1
+        Some(k) if @sql.row_val(k, "revision") == revision => {
+          after.val = @sql.row_val(k, "after_session")
+          seen.val = @sql.row_int(k, "seen") == 1
         }
         _ =>
           ignore(
@@ -295,13 +291,13 @@ fn settle_home_chats(db : @sql.Db, limit : Int) -> Int raise {
 ///|
 /// The order of at most `limit` default-home chats brought up to date (`settleRecentHomeOrderStep`).
 fn settle_home_order(db : @sql.Db, limit : Int) -> Int raise {
-  write(db, () => {
+  db.write(() => {
     let changed = db.all(
       "SELECT CAST(thread AS TEXT) AS tid FROM recent_home_order_dirty ORDER BY thread LIMIT ?",
       [num(limit)],
     )
     for r in changed {
-      let thread = get(r, "tid")
+      let thread = @sql.row_val(r, "tid")
       ignore(
         db.run(
           "UPDATE recent_home_rows SET at = c.at, said_at = c.said_at, created_at = c.created_at FROM (\{current("?1")}) c WHERE recent_home_rows.thread = c.thread AND (recent_home_rows.at IS NOT c.at OR recent_home_rows.said_at IS NOT c.said_at OR recent_home_rows.created_at IS NOT c.created_at)",
@@ -323,26 +319,24 @@ fn settle_home_order(db : @sql.Db, limit : Int) -> Int raise {
 /// Default chats' workspace intersections brought up to date in bounded batches (`settleRecentHomeOverlapStep`);
 /// a chat with no workspaces costs one unit.
 fn settle_overlap(db : @sql.Db, limit : Int) -> Int raise {
-  write(db, () => {
+  db.write(() => {
     let mut visited = 0
     while visited < limit {
-      guard first(
-          db,
+      guard db.first(
           "SELECT CAST(thread AS TEXT) AS tid, CAST(revision AS TEXT) AS revision FROM recent_home_overlap_dirty ORDER BY thread LIMIT 1",
           [],
         )
         is Some(pending) else {
         break
       }
-      let thread = get(pending, "tid")
-      let revision = get(pending, "revision")
+      let thread = @sql.row_val(pending, "tid")
+      let revision = @sql.row_val(pending, "revision")
       let after = match
-        first(
-          db,
+        db.first(
           "SELECT CAST(revision AS TEXT) AS revision, after_ws FROM recent_home_overlap_work WHERE thread = CAST(? AS INTEGER)",
           [thread],
         ) {
-        Some(k) if get(k, "revision") == revision => get(k, "after_ws")
+        Some(k) if @sql.row_val(k, "revision") == revision => @sql.row_val(k, "after_ws")
         _ => {
           ignore(
             db.run(
@@ -380,14 +374,14 @@ fn settle_overlap(db : @sql.Db, limit : Int) -> Int raise {
           ignore(
             db.run(
               "INSERT INTO recent_home_overlap_rows(ws, thread) SELECT ?1, CAST(?2 AS INTEGER) WHERE NOT EXISTS (SELECT 1 FROM recent_home_overlap_rows WHERE ws = ?1 AND thread = CAST(?2 AS INTEGER))",
-              [get(r, "ws"), thread],
+              [@sql.row_val(r, "ws"), thread],
             ),
           )
         } else {
           ignore(
             db.run(
               "DELETE FROM recent_home_overlap_rows WHERE ws = ? AND thread = CAST(? AS INTEGER)",
-              [get(r, "ws"), thread],
+              [@sql.row_val(r, "ws"), thread],
             ),
           )
         }
@@ -397,7 +391,7 @@ fn settle_overlap(db : @sql.Db, limit : Int) -> Int raise {
         ignore(
           db.run(
             "UPDATE recent_home_overlap_work SET after_ws = ? WHERE thread = CAST(? AS INTEGER)",
-            [get(found[found.length() - 1], "ws"), thread],
+            [@sql.row_val(found[found.length() - 1], "ws"), thread],
           ),
         )
         break
@@ -424,7 +418,7 @@ fn settle_overlap(db : @sql.Db, limit : Int) -> Int raise {
 fn default_home_ready(db : @sql.Db) -> Bool raise {
   installed(db, "home") &&
   installed(db, "scope") &&
-  int(
+  @sql.row_int(
     one(db, "SELECT scan_done FROM recent_home_meta WHERE id = 1", []),
     "scan_done",
   ) ==
@@ -443,7 +437,7 @@ fn default_home_ready(db : @sql.Db) -> Bool raise {
 fn home_ready(db : @sql.Db, home : String) -> Bool raise {
   snapshot(db, "recent_home_union", () => {
     installed(db, "overlap") &&
-    int(
+    @sql.row_int(
       one(db, "SELECT scan_done FROM recent_home_overlap_meta WHERE id = 1", []),
       "scan_done",
     ) ==

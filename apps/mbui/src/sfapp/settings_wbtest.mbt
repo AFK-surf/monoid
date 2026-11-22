@@ -525,6 +525,17 @@ test "an account on several stations shows its subscription tier" {
 }
 
 ///|
+test "Google subscription tiers appear beside the account names with four quota windows" {
+  for w in [360.0, 1280.0] {
+    let list = settings_tester("profiles:ws1/st1", shows="settings-profiles-google", w~, h=1300.0)
+    assert_true(list.find("Ultra 5x") is Some(_), msg="station profiles at \{w}")
+    assert_true(list.find("Enterprise Ultra") is Some(_), msg="station profiles at \{w}")
+    assert_true(list.find("lin@gmail.example") is Some(_), msg="account name at \{w}")
+    assert_true(list.find("Claude / GPT") is Some(_), msg="grouped quota at \{w}")
+  }
+}
+
+///|
 test "profiles on a phone: an allowance of three windows said one way for all, each chip whole (OpenCode Go's)" {
   let t = settings_tester("profiles", shows="settings-profiles-monthly")
   // (on one line 5 小时剩余 62%, 本周剩余 19% and 每月剩余 97% were cut to 5 小时剩…, 本周剩余…, 每月剩余…, 2026-10-31)
@@ -926,7 +937,7 @@ test "a chat's info on a phone: each agent's name whole and its allowance under 
   let t = decide_core(calls, "chat-info")
   // (beside its name the allowance cut the name to 「Claud…」, then left the row on a phone: the allowance gone,
   // 2026-10-26)
-  let (_, name_y) = t.find("Claude · Opus 5.5").unwrap()
+  let name_y = t.words().filter(fn(w) { w.0 == "Claude · Opus 5.5" && w.5 > 0.5 && w.2 < 680.0 })[0].2
   let (_, chip_y) = t.find("62%").unwrap()
   assert_true(t.find("18%") is Some(_))
   assert_true(chip_y > name_y, msg="its allowance \{chip_y} under its name \{name_y}")
@@ -1532,4 +1543,53 @@ test "关闭安全模式: its dialog has the keys in the field the workspace's n
     t.run_for(@ui.move_most_ms)
     assert_true(t.focus_said().has_prefix("TextField"), msg="\{at}: \{t.focus_said()}")
   }
+}
+
+///|
+test "profile: new-account protection card, one-click disable, and maxConcurrentSessions row" {
+  let t = settings_tester("profile:ws1/st1#cc", w=1280.0, h=1300.0)
+  assert_true(t.find("新号保护期已开启（并发上限 8）") is Some(_))
+  assert_true(t.find("关闭新号保护") is Some(_))
+  assert_true(t.find("调整上限") is Some(_))
+  assert_true(t.find("并发上限") is Some(_))
+  assert_true(t.find("8") is Some(_))
+  assert_eq(t.squeeze_faults(), [])
+  let (x, y) = t.find("调整上限").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("输入正整数（留空或填 0 表示不限）") is Some(_))
+  assert_true(t.find("保存") is Some(_))
+  let t_off = settings_tester("profile:ws1/st1#cc", w=1280.0, h=1300.0)
+  let (ox, oy) = t_off.find("关闭新号保护").unwrap()
+  t_off.tap(ox, oy)
+  t_off.run_for(@ui.move_most_ms)
+  assert_true(t_off.find("新号保护期已开启（并发上限 8）") is None)
+  assert_true(t_off.find("调整上限") is None)
+  assert_true(t_off.find("已关闭新号保护，恢复不限并发") is Some(_))
+  assert_true(t_off.find("并发上限") is Some(_))
+  assert_true(t_off.find("8") is None)
+  assert_true(t_off.find("不限") is Some(_))
+  assert_eq(t_off.squeeze_faults(), [])
+  let (rx, ry) = t_off.find("并发上限").unwrap()
+  t_off.tap(rx, ry)
+  t_off.run_for(@ui.move_most_ms)
+  assert_true(t_off.find("输入正整数（留空或填 0 表示不限）") is Some(_))
+  assert_true(t_off.find("保存") is Some(_))
+  let t_narrow = settings_tester("profile:ws1/st1#cc", w=390.0, h=1350.0)
+  assert_true(t_narrow.find("新号保护期已开启（并发上限 8）") is Some(_))
+  assert_true(t_narrow.find("关闭新号保护") is Some(_))
+  assert_true(t_narrow.find("并发上限") is Some(_))
+  assert_true(t_narrow.find("8") is Some(_))
+  assert_eq(t_narrow.squeeze_faults(), [])
+  let t_cx = settings_tester("profile:ws1/st1#cx", w=1280.0, h=1400.0)
+  assert_true(t_cx.find("新号保护期已开启") is None)
+  assert_true(t_cx.find("并发上限") is Some(_))
+  assert_true(t_cx.find("不限") is Some(_))
+  assert_eq(t_cx.squeeze_faults(), [])
+  let t_k2 = settings_tester("profile:ws1/st1#k2", w=1280.0, h=1400.0)
+  assert_true(t_k2.find("新号保护期已开启") is None)
+  assert_true(t_k2.find("并发上限") is None)
+  let t_bx = settings_tester("profile:ws1/st1#bx", shows="settings-profile-copy", w=1280.0, h=1100.0)
+  assert_true(t_bx.find("新号保护期已开启") is None)
+  assert_true(t_bx.find("并发上限") is None)
 }

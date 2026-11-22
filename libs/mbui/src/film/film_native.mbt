@@ -1,18 +1,26 @@
-// The film on a native host: the drawing is the host's offscreen path (src/host/apple_render.m), the writing and the
-// process's few needs src/host/apple_film.m's, linked with the host by the film's program (its main imports
-// mbui/host). Apple's systems only: the other hosts have no film.
+// The film on a native host: the drawing is the host's offscreen path (src/host/apple_render.m, linux_render.c), the
+// writing and the process's few needs src/host/apple_film.m's or linux_film.c's, linked with the host by the film's
+// program (its main imports mbui/host). Apple's systems and Linux only: every other host links src/host/film_none.c,
+// which answers each call film alone makes (mbf_*) as a host with no film, so a program that takes film in links
+// everywhere and says there is none.
+// What film asks of a host's renderer it asks through an mbf_ call of its own (mbf_set_view, mbf_text_scale,
+// mbf_dirty), never the renderer's own name, which another host may not have or may have otherwise
+// (scripts/film_calls.sh).
 
 ///|
-let supported = true
+extern "C" fn ffi_supported() -> Int = "mbf_supported"
+
+///|
+let supported : Bool = ffi_supported() != 0
 
 ///|
 extern "C" fn ffi_init_offscreen(w : Double, h : Double, scale : Double) -> Unit = "mb_render_init_offscreen"
 
 ///|
-extern "C" fn ffi_set_offscreen_view(w : Double, h : Double, scale : Double) -> Unit = "mb_render_set_size"
+extern "C" fn ffi_set_offscreen_view(w : Double, h : Double, scale : Double) -> Unit = "mbf_set_view"
 
 ///|
-extern "C" fn ffi_text_set_scale(scale : Double) -> Unit = "mb_text_set_scale"
+extern "C" fn ffi_text_set_scale(scale : Double) -> Unit = "mbf_text_scale"
 
 ///|
 #borrow(path)
@@ -73,7 +81,7 @@ extern "C" fn ffi_draw_timed(
 ) -> Unit = "mb_render_draw_timed"
 
 ///|
-extern "C" fn ffi_dirty(x : Double, y : Double, w : Double, h : Double) -> Unit = "mb_host_render_dirty"
+extern "C" fn ffi_dirty(x : Double, y : Double, w : Double, h : Double) -> Unit = "mbf_dirty"
 
 ///|
 extern "C" fn ffi_now_ms() -> Double = "mbf_now_ms"

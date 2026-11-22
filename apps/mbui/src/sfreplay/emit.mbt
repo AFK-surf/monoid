@@ -22,11 +22,17 @@ let now_next : Ref[Bool] = Ref(false)
 let incidental_calls : Ref[Array[String]] = Ref([])
 
 ///|
+/// The FLOW_EMIT file a flow was written to whole already: a later test of the same run (a second `test` of the file,
+/// another flow it calls) never writes over it.
+// kept across runs: once per FLOW_EMIT file, as a test binary runs one rerecord's flow
+let emitted_path : Ref[String] = Ref("")
+
+///|
 /// Starts writing the flow, when FLOW_EMIT asks and this is its first order (seed 0).
 fn emit_start(seed : UInt, w : Double, h : Double, env : Array[(String, String)]) -> Unit {
   now_next.val = false
   incidental_calls.val = []
-  if seed != 0 || emit_path() == "" {
+  if seed != 0 || emit_path() == "" || emitted_path.val == emit_path() {
     script.val = None
     return
   }
@@ -77,6 +83,9 @@ fn emit_end() -> Unit {
     Some(_) => {
       emit("# flow complete")
       script.val = None
+      if emit_path() != "" {
+        emitted_path.val = emit_path()
+      }
     }
     None => ()
   }

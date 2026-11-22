@@ -507,3 +507,136 @@ fn unnamed_said(how : Int) -> String? {
 test "a dialog called nothing read out by what it holds, built by the old frame, as the tree's nodes or as an old view the tree's dialog hosts: its words, what calls itself by that alone, nothing of what is kept from what is read out" {
   assert_eq((unnamed_said(0), unnamed_said(1), unnamed_said(2)), (Some("甲 乙"), Some("甲 乙"), Some("甲 乙")))
 }
+
+///|
+/// A page's button ("页内") under the root, and a layer shown while `open` holds (leaving `leave_ms` as it goes, kept
+/// from what is read out by nothing of its own): a dialog ("浮层") holding a button ("确认") and words ("提示词").
+fn leaving_layer(open : @signals.Signal[Bool], clicks : Ref[Int]) -> Tester {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0)
+  t.set_a11y(true)
+  set_view_app(fn(root) {
+    root.box(fn(b) {
+      b
+      .width(Is(Some(80.0)))
+      .height(Is(Some(40.0)))
+      .on_press(fn() {  })
+      .says(Is(Some(@view.said(Button, label="页内"))))
+      |> ignore
+    })
+    |> ignore
+    root.show(
+      fn() { open.get() },
+      fn(d) {
+        d.width(Is(Some(200.0))).says(Is(Some(@view.said(Dialog, label="浮层")))) |> ignore
+        d.box(fn(b) {
+          b
+          .width(Is(Some(80.0)))
+          .height(Is(Some(40.0)))
+          .on_press(fn() { clicks.val = clicks.val + 1 })
+          .says(Is(Some(@view.said(Button, label="确认"))))
+          |> ignore
+        })
+        |> ignore
+        d.box(fn(w) { w.words(Is("提示词")) |> ignore }) |> ignore
+      },
+      leave=leave_ms,
+    )
+  })
+  t.draw()
+  t
+}
+
+///|
+test "a layer leaving, kept from what is read out by nothing of its own: none of it read out from its first frame, a screen reader's press of its button nothing; back as it leaves, read out and pressed at once" {
+  let open = @signals.signal(true, same=fn(a, b) { a == b })
+  let clicks = Ref(0)
+  let t = leaving_layer(open, clicks)
+  let read_out = fn() {
+    t.semantics().iter().any(fn(s) { (s.label == "浮层" || s.label == "确认") && !s.hidden })
+  }
+  let told = fn(label : String) {
+    t
+    .a11y_said()
+    .split("\n")
+    .any(fn(l) {
+      let f = l.split("\u{1F}").map(fn(v) { v.to_owned() }).to_array()
+      f.length() == 16 && f[9] == label
+    })
+  }
+  let said_words = fn() { t.words_said().iter().any(fn(w) { w.0 == "提示词" }) }
+  let drawn_words = fn() { t.words().iter().any(fn(w) { w.0 == "提示词" }) }
+  assert_true(t.query(Dialog, label="浮层") is Some(d) && !d.hidden)
+  assert_true(t.query(Button, label="确认") is Some(b) && !b.hidden)
+  assert_true(said_words())
+  let id = t.get(Button, label="确认").id
+  open.set(false)
+  t.draw()
+  // (leaving: still drawn, nothing of it read out)
+  assert_eq((read_out(), said_words(), drawn_words()), (false, false, true))
+  assert_eq((told("浮层"), told("确认"), told("页内")), (false, false, true))
+  t.post(@hostapi.a11y_channel, "{\"id\":\{id},\"action\":\"activate\"}")
+  t.draw()
+  assert_eq(clicks.val, 0, msg="leaving")
+  t.run_for(leave_ms / 4.0)
+  assert_eq((read_out(), said_words(), drawn_words()), (false, false, true))
+  // (back as it leaves: read out and pressed again at once)
+  open.set(true)
+  t.draw()
+  assert_eq((read_out(), said_words()), (true, true))
+  assert_eq((told("浮层"), told("确认")), (true, true))
+  t.act(Button, Activate, label="确认")
+  assert_eq(clicks.val, 1, msg="back")
+}
+
+///|
+/// A dialog called nothing holding words ("甲") and, shown while `sub` holds (leaving `leave_ms` as it goes), words
+/// ("乙") and a button ("丙").
+fn leaving_within(sub : @signals.Signal[Bool]) -> Tester {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0)
+  t.set_a11y(true)
+  set_view_app(fn(root) {
+    root.box(fn(d) {
+      d.width(Is(Some(200.0))).says(Is(Some(@view.said(Dialog)))) |> ignore
+      d.box(fn(w) { w.words(Is("甲")) |> ignore }) |> ignore
+      d.show(
+        fn() { sub.get() },
+        fn(s) {
+          s.box(fn(w) { w.words(Is("乙")) |> ignore }) |> ignore
+          s.box(fn(b) {
+            b
+            .width(Is(Some(80.0)))
+            .height(Is(Some(40.0)))
+            .on_press(fn() {  })
+            .says(Is(Some(@view.said(Button, label="丙"))))
+            |> ignore
+          })
+          |> ignore
+        },
+        leave=leave_ms,
+      )
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+test "what a dialog called nothing holds leaving: read out by what stays alone from the leaving's first frame, its button gone from what is read out; back, as before" {
+  let sub = @signals.signal(true, same=fn(a, b) { a == b })
+  let t = leaving_within(sub)
+  let button_said = fn() {
+    t.semantics().iter().any(fn(s) { s.label == "丙" && !s.hidden }) &&
+    t.a11y_said().contains("\u{1F}丙\u{1F}")
+  }
+  assert_eq(t.query(Dialog).map(fn(s) { s.label }), Some("甲 乙 丙"))
+  assert_true(button_said())
+  sub.set(false)
+  t.draw()
+  assert_eq(t.query(Dialog).map(fn(s) { s.label }), Some("甲"))
+  assert_false(button_said())
+  sub.set(true)
+  t.draw()
+  assert_eq(t.query(Dialog).map(fn(s) { s.label }), Some("甲 乙 丙"))
+  assert_true(button_said())
+}

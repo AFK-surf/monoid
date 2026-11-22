@@ -100,26 +100,7 @@ pub fn form_get(s : String, name : String) -> String? {
 /// application/x-www-form-urlencoded's percent-decode of a name or value: `+` a space, `%xx` its byte (one not
 /// followed by two hex digits kept), the bytes read as UTF-8.
 fn form_decode(s : String) -> String {
-  let bytes = @buffer.new()
-  let src = utf8_of(s)
-  let mut i = 0
-  while i < src.length() {
-    let c = src[i].to_int()
-    if c == '+'.to_int() {
-      bytes.write_byte(b' ')
-      i += 1
-    } else if c == '%'.to_int() &&
-      i + 2 < src.length() + 0 &&
-      @codec.hex_digit(src[i + 1].to_int()) is Some(hi) &&
-      @codec.hex_digit(src[i + 2].to_int()) is Some(lo) {
-      bytes.write_byte((hi * 16 + lo).to_byte())
-      i += 3
-    } else {
-      bytes.write_byte(src[i])
-      i += 1
-    }
-  }
-  utf8_text(bytes.to_bytes())
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|

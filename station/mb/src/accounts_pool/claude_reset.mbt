@@ -8,8 +8,8 @@
 let reset_timeout_ms : Int = 25_000
 
 ///|
-/// The usage read that says the resets as well.
-pub let usage_path : String = "/api/oauth/usage?at_wall=1&skip_spend=1"
+/// The usage read that includes limit resets and extra_usage (skip_spend=1 omits extra_usage).
+pub let usage_path : String = "/api/oauth/usage?at_wall=1"
 
 ///|
 /// `claudeHeaders`: Claude Code's own headers for its OAuth endpoints.

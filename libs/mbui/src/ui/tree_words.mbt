@@ -64,3 +64,11 @@ pub fn style_fills(style : TextStyle) -> Bool {
   let dark = @signals.untracked(fn() { tree_theme().dark })
   style.resolve(g().narrow, dark).w is Some(Full | Grow(_))
 }
+
+///|
+/// Whether words of `style` explicitly set tabular digits (`Some(true)` / `Some(false)`), or follow the theme (`None`),
+/// sampled when declaring the node.
+pub fn style_tabular(style : TextStyle) -> Bool? {
+  let dark = @signals.untracked(fn() { tree_theme().dark })
+  style.resolve(g().narrow, dark).tabular
+}

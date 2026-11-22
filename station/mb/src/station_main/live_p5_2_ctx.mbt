@@ -34,6 +34,8 @@ priv struct P52 {
   ids_seq : Ref[Int]
   /// The repositories on the machine, offered as a preset's folders (hub.ts `repoIndex`).
   repo_index : @session_chats.RepoIndex
+  /// A person's drafts of 待派发 and their files (sessions/board-drafts.ts, `hub.boardDrafts`).
+  board_drafts : @session_chats.BoardDrafts
   /// Its pass under way, if there is (presets.ts RepoIndex `#walking`).
   mut repo_walking : Bool
   /// What a part set going every so often (ops/fibers.ts `wall.every`), by the handle it was given: still going.
@@ -46,6 +48,37 @@ priv struct P52 {
   mut card_outcomes : @store_threads.Worker?
   /// Whether what the worker writes is being followed to tell it (`outcomes_follow`).
   mut outcomes_following : Bool
+  /// A profile's files as `files.readLately` read them last, by path, with when (decision.ts `readLately`'s `files`):
+  /// the profiles' views and the decisions' models ask them of every profile and model each time, which read the disk
+  /// each time. Kept 10 s, as nothing here watches them; `files.profileFilesRead` reads a profile's again now.
+  read_lately : Map[String, (Double, String?)]
+  /// Every session's key by its runners' ids (memory.ts `runnerSessions`'s `all`), made of `listSessions` once a
+  /// runner neither a live session's nor known here turns up.
+  mut runner_all : Map[String, String]?
+  /// The runners no session has (`unnamed`): asked of `listSessions` once.
+  runner_unnamed : Set[String]
+  mut relieve_low_bytes : Double?
+  /// Last time a billed-per-use fallback alert was emitted, by `<workspace>\0<runtime>`.
+  billed_notified : Map[String, Int64]
+  /// Last time a profile's login-over alert was sent, by `<workspace>\0<profile>` (cloud/notify.ts
+  /// `ProfileLoginCooldown`): cleared once its login is good again.
+  profile_login_notified : Map[String, Int64]
+  /// In-flight `/mcp` calls drained before handover so `chat_state` / `chat_post` finish before actors close.
+  mut in_flight_mcp : Int
+  mut mcp_draining : Bool
+  mut mcp_drained : @effect.Deferred[Unit]?
+  /// How many `tools/list` or `tools/call` requests each session's token made of `/mcp` (mcp.ts `heardBy`).
+  mcp_heard : Map[String, Int]
+}
+
+///|
+fn P52::mcp_heard_of(self : P52, key : String) -> Int {
+  self.mcp_heard.get(key).unwrap_or(0)
+}
+
+///|
+fn P52::note_mcp_heard(self : P52, key : String) -> Unit {
+  self.mcp_heard[key] = self.mcp_heard_of(key) + 1
 }
 
 ///|
@@ -64,39 +97,21 @@ fn P52::the_hub(self : P52) -> @session_hub.Hub raise LiveError {
 ///|
 /// One of the store's calls by its TypeScript name (store.ts): the sessions' store's, else the threads'.
 fn P52::store(self : P52, name : String, args : Array[Json]) -> Json raise {
+  // (where a session's files are put away, session_storage/cold.mbt's: store.ts `archiveDir`)
+  if name == "archiveDir" {
+    return Json::string(path([self.data, "archive"]))
+  }
+  dispatch_store_threads(self.bus, self.threads, name, args)
+}
+
+///|
+/// Run a direct `@store_threads.Store` call with the station's wall clock and change notifications flushed on exit.
+fn[T] P52::with_threads(self : P52, f : (@store_threads.Store) -> T raise) -> T raise {
   self.threads.set_now(wall_ms().to_double())
-  // (the store's clock, as store.ts's `now`: what the storage's policy view counts its decisions since)
-  if name == "now" {
-    return Json::number(self.bus.store.now().to_double())
-  }
-  match (try { Ok(self.bus.store.call(name, args)) } catch { e => Err(e) }) {
-    Ok(v) => v
-    Err(e) => {
-      let said = said_of(e)
-      if said.contains("no call") {
-        // What it wrote is told as the store's own writes are (the events, the readers), as P5-4's vault does
-        // (`p54_told_threads`): kept in `sent` and never told, an agent's chat_post reached no device until the app
-        // read the chat again, and `sent` grew for good (0.1.9984).
-        // (an argument left undefined, as the conversations and the rigs say it, is none: the threads' store takes a
-        // hook where one is given, and ran an empty statement for card-place.ts's `insertMessage(message, undefined)`)
-        let given = args.map(a => match a {
-          Object(m) if m.length() == 1 && (m.contains("$u") || m.contains("$undef") || m.contains("$undefined")) =>
-            Json::null()
-          a => a
-        })
-        let answer = self.threads.call(name, given.map(jv_of)) catch {
-          e => {
-            p52_told_threads(self.bus, self.threads)
-            raise e
-          }
-        }
-        p52_told_threads(self.bus, self.threads)
-        answer
-      } else {
-        raise e
-      }
-    }
-  }
+  errdefer told_threads(self.bus, self.threads)
+  let v = f(self.threads)
+  told_threads(self.bus, self.threads)
+  v
 }
 
 ///|
@@ -109,7 +124,7 @@ async fn P52::card_page(self : P52, op : String, thread : Json, target : String,
     v => v
   }
   // (a page read after the worker wrote: what it wrote told first)
-  p52_told_threads(self.bus, self.threads)
+  told_threads(self.bus, self.threads)
   page
 }
 
@@ -124,43 +139,22 @@ fn P52::outcomes_start(self : P52) -> Unit {
     async fn(thread, target, before) { self.card_page("internalCardMessagePage", thread, target, before) },
   )
   self.card_outcomes = Some(worker)
-  ignore(
-    self.host.rt.fork_daemon("card outcomes", on_error=e => @host.note("card outcomes failed: \{e}"), async fn() {
-      match (try { Ok((self.bus.previous_gone)()) } catch { e => Err(e) }) {
-        Ok(_) => {
-          worker.previous_exited()
-          self.outcomes_follow()
-        }
-        Err(e) => {
-          worker.previous_failed(said_of(e))
-          live_log("warn", "card-outbox", "the previous station did not exit", { "error": jstr(said_of(e)) })
-        }
+  fork_bg(self.host, "card outcomes", async fn() {
+    match (try { Ok((self.bus.previous_gone)()) } catch { e => Err(e) }) {
+      Ok(_) => {
+        worker.previous_exited()
+        self.outcomes_follow()
       }
-    }),
-  )
-  ignore(
-    self.host.rt.fork_daemon("card outcomes stop", on_error=e => @host.note("card outcomes stop failed: \{e}"), async fn() {
-      ignore(self.bus.stopped.wait())
-      worker.close()
-    }),
-  )
-}
-
-///|
-/// card-outbox-worker.ts `save`: a card's outcome queued (`{thread, ts, agent, field, close, outcome}`), the card
-/// closed in the same write where asked and the close told; the worker restates it. Its id in the queue.
-fn P52::outcome_save(self : P52, item : Json) -> Json raise {
-  guard self.card_outcomes is Some(worker) else { raise LiveError("the cards' outcomes are not kept yet") }
-  self.threads.set_now(wall_ms().to_double())
-  let id = worker.save(@store_threads.CardOutcome::from_json(jv_of(item)), () => ()) catch {
-    e => {
-      p52_told_threads(self.bus, self.threads)
-      raise e
+      Err(e) => {
+        worker.previous_failed(said_of(e))
+        slice_log("warn", "card-outbox", "the previous station did not exit", { "error": jstr(said_of(e)) })
+      }
     }
-  }
-  p52_told_threads(self.bus, self.threads)
-  self.outcomes_follow()
-  Json::string(id)
+  })
+  fork_bg(self.host, "card outcomes stop", async fn() {
+    ignore(self.bus.stopped.wait())
+    worker.close()
+  })
 }
 
 ///|
@@ -171,7 +165,7 @@ fn P52::outcomes_follow(self : P52) -> Unit {
   guard self.card_outcomes is Some(worker) && !self.outcomes_following else { return }
   self.outcomes_following = true
   fn step() -> Unit {
-    p52_told_threads(self.bus, self.threads)
+    told_threads(self.bus, self.threads)
     let st = worker.state()
     let going = jtext(st, "cursor") != Some("0") || jfield(st, "again") is True
     let waiting = jitems(jfield(st, "deferred")).length() > 0
@@ -186,18 +180,6 @@ fn P52::outcomes_follow(self : P52) -> Unit {
 }
 
 ///|
-/// The threads' store's changes told to the bus's listeners.
-fn p52_told_threads(bus : LiveBus, threads : @store_threads.Store) -> Unit {
-  let sent = threads.sent.copy()
-  threads.sent.clear()
-  for c in sent {
-    bus.notify_store(c)
-  }
-  // (what it found not prepared yet, asked of the builders: agents.ts `requestSessionChat`, `followLatestThreadRequests`)
-  bus.drain_thread_requests(threads)
-}
-
-///|
 fn P52::profiles(self : P52) -> Array[Json] {
   jitems(jfield(self.config, "profiles"))
 }
@@ -205,10 +187,7 @@ fn P52::profiles(self : P52) -> Array[Json] {
 ///|
 /// The agent home (config.json `agentHome`, else `<data>/agent`).
 fn P52::agent_home(self : P52) -> String {
-  match jtext(self.config, "agentHome") {
-    Some(h) if h != "" => h
-    _ => path([self.data, "agent"])
-  }
+  bus_agent_home(self.bus)
 }
 
 ///|
@@ -221,11 +200,8 @@ fn P52::workspaces(self : P52) -> Array[String] {
 
 ///|
 fn P52::ws_of(self : P52, key : String) -> String? {
-  let v = self.store("sessionWs", [jstr(key)]) catch { _ => return None }
-  match v {
-    String(w) => Some(w)
-    _ => None
-  }
+  let v = self.bus.store.session_ws(key) catch { _ => return None }
+  as_text(v)
 }
 
 ///|
@@ -262,7 +238,7 @@ async fn P52::link_skills(self : P52, row : Json) -> String {
     let workspace = jtext(row, "workspace").unwrap_or("")
     let skills = path([@nodepath.dirname(sep(), memory_path), "skills"])
     self.files.session_skills(workspace, skills) catch {
-      e => live_log("warn", "session", "its workspace's skills not linked where it runs", { "session": jstr(key), "error": jstr(said_of(e)) })
+      e => slice_log("warn", "session", "its workspace's skills not linked where it runs", { "session": jstr(key), "error": jstr(said_of(e)) })
     }
   }
   memory
@@ -352,18 +328,28 @@ async fn P52::open_options(self : P52, row : Json, profile : Json, memory : Stri
 /// The profile a session's runtime starts on now (accounts.ts `runOn`): the accounts' answer where they are made
 /// (another part's, `accounts.runOn`), else its own while it is one of the station's, else the first that runs its
 /// runtime, else the machine's own login of its runtime.
-async fn P52::run_on(self : P52, key : String, holding : Bool, across : Bool) -> Json {
+async fn P52::run_on(
+  self : P52,
+  key : String,
+  holding : Bool,
+  across : Bool,
+  force_cap? : Bool = false,
+) -> Json {
   // (the accounts' pool, P5-3's: its token, its home and its env as the session's account now)
-  match (try { Ok((self.bus.jobs_ask.val)("accounts.runOn", { "key": jstr(key), "holding": jb(holding), "across": jb(across) })) } catch { e => Err(e) }) {
+  match (try { Ok(self.bus.jobs_accounts_run_on(key, holding, across, force_cap~)) } catch { e => Err(e) }) {
     Ok(Object(_) as p) => return p
     Ok(_) => ()
-    Err(e) =>
-      live_log("warn", "agents", "the accounts did not say a profile; the session's own is taken", {
+    Err(e) => {
+      if e is @accounts_pool.Thrown("AccountCapError", _) {
+        raise e
+      }
+      slice_log("warn", "agents", "the accounts did not say a profile; the session's own is taken", {
         "session": jstr(key),
         "error": jstr(said_of(e)),
       })
+    }
   }
-  let row = self.store("getSession", [jstr(key)]) catch { _ => Json::null() }
+  let row = self.bus.store.get_session(key) catch { _ => Json::null() }
   let runtime = jtext(row, "runtime").unwrap_or("claude")
   let profiles = self.profiles()
   let own = jtext(row, "profile")
@@ -373,10 +359,7 @@ async fn P52::run_on(self : P52, key : String, holding : Bool, across : Bool) ->
   }
   match own {
     Some(id) =>
-      match profiles.iter().find_first(p => jtext(p, "id") == Some(id) && runs(p)) {
-        Some(p) => return p
-        None => ()
-      }
+      if profiles.iter().find_first(p => jtext(p, "id") == Some(id) && runs(p)) is Some(p) { return p }
     None => ()
   }
   match profiles.iter().find_first(p => runs(p) && @session_hub.enabled(p)) {
@@ -402,9 +385,11 @@ async fn P52::open_agent(
   set_runtime : (String) -> Unit,
   generation : () -> Int,
   listener : (Int) -> (@jsjson.JValue) -> Unit,
+  force_cap? : Bool = false,
+  cancelled? : () -> Bool = () => false,
 ) -> (Agent, Json) {
-  let hub = self.the_hub()
-  let initial = self.store("getSession", [jstr(key)])
+  ignore(self.the_hub())
+  let initial = self.bus.store.get_session(key)
   if initial == Json::null() {
     raise LiveError("session \{key} disappeared")
   }
@@ -412,8 +397,34 @@ async fn P52::open_agent(
     raise LiveError("session \{key} runs an unknown runtime \{jtext(initial, "runtime").unwrap_or("")}")
   }
   set_runtime(was)
-  let profile = self.run_on(key, false, true)
-  let row = self.store("getSession", [jstr(key)])
+  let profile = self.run_on(key, false, true, force_cap~)
+  // (a login found over as it opens is said as the profile it is of, for the program to go on on another: actor.ts
+  // `openAgent`, actor_run.mbt `open_over`; a start given up goes as it is)
+  let profile_id = jtext(profile, "id").unwrap_or("")
+  self.open_agent_on(key, stopped, read_back, profile_before, set_runtime, generation, listener, was, profile, cancelled) catch {
+    (@accounts_oauth.RenewRefused(_, _) | @accounts_pool.Thrown("RenewRefused", _) | @share_sync.Over(_)) as e if profile_id != "" =>
+      raise @share_sync.login_over_of(profile_id, said_of(e))
+    e => raise e
+  }
+}
+
+///|
+/// `open_agent` on the profile `run_on` gave it.
+async fn P52::open_agent_on(
+  self : P52,
+  key : String,
+  stopped : Array[Json],
+  read_back : Bool,
+  profile_before : String?,
+  set_runtime : (String) -> Unit,
+  generation : () -> Int,
+  listener : (Int) -> (@jsjson.JValue) -> Unit,
+  was : String,
+  profile : Json,
+  cancelled : () -> Bool,
+) -> (Agent, Json) {
+  let hub = self.the_hub()
+  let row = self.bus.store.get_session(key)
   guard @session_hub.runtime_named(jtext(row, "runtime").unwrap_or("")) is Some(runtime) else {
     raise LiveError("session \{key} runs an unknown runtime")
   }
@@ -423,7 +434,7 @@ async fn P52::open_agent(
   guard self.drivers.get(runtime) is Some(driver) else { raise LiveError("no driver for \{runtime}") }
   let memory = self.link_skills(row)
   let base = self.open_options(row, profile, memory)
-  let runtime_sessions = jitems(self.store("runtimeSessions", [jstr(key)]) catch { _ => Json::array([]) })
+  let runtime_sessions = self.bus.store.runtime_sessions(key) catch { _ => [] }
   let cleared = jfield(row, "runtimeSessionId") == Json::null() && runtime_sessions.length() > 0
   let base = if cleared && jtext(row, "cwd") is Some(cwd) {
     match base {
@@ -451,7 +462,7 @@ async fn P52::open_agent(
   told["stoppedNote"] = Json::null()
   let prev_id = jtext(row, "runtimeSessionId")
   match prev_id {
-    Some(id) => ignore(self.store("ranIn", [jstr(key), jstr(id), Json::null()]) catch { _ => Json::null() })
+    Some(id) => self.bus.store.ran_in(key, jstr(id), Json::null()) catch { _ => () }
     None => ()
   }
   let profile_id = jtext(profile, "id").unwrap_or("")
@@ -461,9 +472,13 @@ async fn P52::open_agent(
   }
   let subagents = stopped.filter(t => jtext(t, "kind") == Some("agent")).map(t => jtext(t, "id").unwrap_or(""))
   let mut resumable : Array[String] = []
+  // (given up (mb-actor.ts `cancelOpen`): no process started, the session's row untouched)
+  if cancelled() {
+    raise LiveError(open_aborted + ": cancelled")
+  }
   let agent = match (afresh, prev_id) {
     (Some(note), Some(_)) => {
-      let a = (driver.open)(base, events)
+      let a = (driver.open)(base, events, cancelled)
       told["afresh"] = jstr(note)
       a
     }
@@ -476,23 +491,24 @@ async fn P52::open_agent(
         }
         other => other
       }
-      match (try { Ok((driver.open)(resumed, events)) } catch { e => Err(e) }) {
+      match (try { Ok((driver.open)(resumed, events, cancelled)) } catch { e => Err(e) }) {
         Ok(a) => {
           resumable = subagents
           a
         }
         Err(e) => {
-          if non_session_open_error(e) {
+          // (given up, or timed out: nothing said of the conversation, which stays the session's)
+          if cancelled() || non_session_open_error(e) {
             raise e
           }
-          live_log("warn", "session", "resume failed; starting a new runtime session", { "session": jstr(key), "id": jstr(id), "error": jstr(said_of(e)) })
+          slice_log("warn", "session", "resume failed; starting a new runtime session", { "session": jstr(key), "id": jstr(id), "error": jstr(said_of(e)) })
           told["resumeLost"] = jb(true)
-          (driver.open)(base, events)
+          (driver.open)(base, events, cancelled)
         }
       }
     }
     _ => {
-      let a = (driver.open)(base, events)
+      let a = (driver.open)(base, events, cancelled)
       if cleared {
         told["afresh"] = jstr(hub.told_cleared(key, read_back~) catch { _ => @agent_runtimes.cleared(key, []) })
       }
@@ -500,13 +516,20 @@ async fn P52::open_agent(
       a
     }
   }
+  // (given up while it opened: ended, the session's row left as it was)
+  if cancelled() {
+    (agent.dispose)() catch {
+      _ => ()
+    }
+    raise LiveError(open_aborted + ": cancelled")
+  }
   let id = (agent.id)()
-  ignore(self.store("ranIn", [jstr(key), jstr(id), jstr(profile_id)]) catch { _ => Json::null() })
+  self.bus.store.ran_in(key, jstr(id), jstr(profile_id)) catch { _ => () }
   if prev_id != Some(id) {
-    ignore(self.store("setRuntimeSessionId", [jstr(key), jstr(id)]))
+    self.bus.store.set_runtime_session_id(key, jstr(id))
   }
   if stopped.length() > 0 {
-    told["stoppedNote"] = jstr(@agent_runtimes.background_stopped(stopped.map(jv_of), resumable))
+    told["stoppedNote"] = jstr(@agent_runtimes.background_stopped(stopped.map(to_jv), resumable))
   }
   told["generation"] = ji(gen)
   told["identity"] = { "runtime": jstr(runtime), "model": jfield(row, "model"), "effort": jfield(row, "effort") }
@@ -515,13 +538,30 @@ async fn P52::open_agent(
 }
 
 ///|
+/// Whether a failure's words are the station's own, for people (i18n.ts `Said`, which a login not lent or over,
+/// console.ts `RenewRefused`, share/index.ts `ProfileLoginOver`, is in the TypeScript).
+fn said_own_error(e : Error) -> Bool {
+  match e {
+    @agent_drivers.Said(_) | @share_sync.Said(_) | @share_sync.LoginOver(_, _) | @share_sync.Over(_) |
+    @accounts_oauth.RenewRefused(_, _) | @accounts_pool.Thrown("RenewRefused", _) => true
+    _ => false
+  }
+}
+
+///|
 /// Whether opening a runtime session failed for something other than the conversation itself (actor.ts
 /// `isNonSessionOpenError`).
 fn non_session_open_error(e : Error) -> Bool {
   match e {
-    @agent_drivers.Said(_) | CommandMissing(_) => true
+    _ if said_own_error(e) => true
+    CommandMissing(_) => true
     other => {
-      let reason = @agent_drivers.failure_of(said_of(other))
+      let said = said_of(other)
+      // (given up, or its process not starting in time: nothing of the conversation)
+      if said.has_prefix(open_aborted) || said.to_lower().contains("timed out") || said.to_lower().contains("did not start within") {
+        return true
+      }
+      let reason = @agent_drivers.failure_of(said)
       ["network", "auth", "refused", "blocked", "rate_limit", "overloaded"].contains(reason)
     }
   }
@@ -530,12 +570,12 @@ fn non_session_open_error(e : Error) -> Bool {
 ///|
 /// Its process takes how its session runs now in place, where it runs on the same profile (actor.ts `retuneAgent`).
 async fn P52::retune_agent(self : P52, key : String, agent : Agent, runtime : String, profile_now : String?, restart : Bool, holding : Bool) -> Json {
-  let before = self.store("getSession", [jstr(key)])
+  let before = self.bus.store.get_session(key)
   if before == Json::null() {
     return Json::null()
   }
   let profile = self.run_on(key, holding, true)
-  let current = self.store("getSession", [jstr(key)])
+  let current = self.bus.store.get_session(key)
   guard jtext(current, "runtime") == Some(runtime) else { return Json::null() }
   if restart || jtext(profile, "id") != profile_now {
     return Json::null()
@@ -551,16 +591,16 @@ async fn P52::retune_agent(self : P52, key : String, agent : Agent, runtime : St
 ///|
 /// The station's own words posted to the thread people spoke in last, and recorded there (actor.ts `postNotice`).
 async fn P52::post_notice(self : P52, key : String, text : String, profile : Json, runtime : Json, change : Json, where_~ : (Json) -> Unit) -> Unit {
-  let latest = self.store("latestThread", [jstr(key)])
+  let latest = self.with_threads(t => t.latest_thread(jstr(key)))
   if latest == Json::null() {
-    live_log("warn", "session", "no thread to post a notice to", { "session": jstr(key), "text": jstr(text) })
+    slice_log("warn", "session", "no thread to post a notice to", { "session": jstr(key), "text": jstr(text) })
     return
   }
   let thread = jfield(latest, "thread")
   let connect = jtext(latest, "connect").unwrap_or("")
   let ts = self.chat_post(connect, jtext(thread, "channel").unwrap_or(""), jtext(thread, "threadTs").unwrap_or(""), @session_hub.mark_notice(text), []) catch {
     e => {
-      live_log("warn", "session", "notice failed", { "session": jstr(key), "error": jstr(said_of(e)) })
+      slice_log("warn", "session", "notice failed", { "session": jstr(key), "error": jstr(said_of(e)) })
       return
     }
   }
@@ -582,7 +622,7 @@ async fn P52::post_notice(self : P52, key : String, text : String, profile : Jso
   if change != Json::null() {
     message["change"] = change
   }
-  let inserted = self.store("insertMessage", [Json::object(message)])
+  let inserted = self.with_threads(t => t.insert_message(to_jv(Json::object(message))))
   let n = match inserted {
     Array([n, ..]) => n
     other => jfield(other, "n")
@@ -593,11 +633,11 @@ async fn P52::post_notice(self : P52, key : String, text : String, profile : Jso
 ///|
 /// What the thread people spoke in last ends with, where the station said it (actor.ts `lastStationSaid`).
 fn P52::last_station_said(self : P52, key : String) -> Json raise {
-  let latest = self.store("latestThread", [jstr(key)])
+  let latest = self.with_threads(t => t.latest_thread(jstr(key)))
   if latest == Json::null() {
     return Json::null()
   }
-  let entries = jitems(self.store("entriesBefore", [jfield(jfield(latest, "thread"), "id"), Json::null(), ji(1)]))
+  let entries = jitems(self.with_threads(t => t.entries_before(jfield(jfield(latest, "thread"), "id"), Json::null(), ji(1))))
   match entries.last() {
     Some(last) if jtext(last, "authorKind") is Some("station" | "ember" | "stillfail") => jfield(last, "text")
     _ => Json::null()
@@ -614,12 +654,7 @@ async fn P52::chat_post(self : P52, connect : String, channel : String, thread_t
     }
     return @session_hub.next_ts_at(wall_ms().to_double())
   }
-  match (self.bus.coord_ask.val)("chat.post", {
-    "connect": jstr(connect),
-    "thread": { "channel": jstr(channel), "threadTs": jstr(thread_ts) },
-    "text": jstr(text),
-    "files": Json::array(files),
-  }) {
+  match self.bus.coord_chat_post(connect~, channel~, thread_ts~, text~, files~) {
     String(ts) => ts
     Object(m) if m.get("ts") is Some(String(ts)) => ts
     _ => raise LiveError("connect \{connect} is not connected")
@@ -630,13 +665,10 @@ async fn P52::chat_post(self : P52, connect : String, channel : String, thread_t
 /// What a turn is prompted with (actor.ts `promptFor`).
 async fn P52::prompt_for(self : P52, key : String, now : Double, handed : Json, lost : Bool, stopped : Json, afresh : Json, compacted : Bool) -> String {
   let hub = self.the_hub()
-  let row = self.store("getSession", [jstr(key)])
-  let handed = match handed {
-    String(s) => s
-    _ => ""
-  }
+  let row = self.bus.store.get_session(key)
+  let handed = as_text(handed).unwrap_or("")
   let continued = match jtext(row, "cwd") {
-    Some(cwd) if !(self.store("hasTurns", [jstr(key)]) is True) =>
+    Some(cwd) if !self.bus.store.has_turns(jstr(key)) =>
       Some(@agent_runtimes.continued_here(self.instructions(row, key, self.link_skills(row), Some(cwd))))
     _ => None
   }
@@ -645,26 +677,17 @@ async fn P52::prompt_for(self : P52, key : String, now : Double, handed : Json, 
     String(s) => prompt = s + "\n\n" + prompt
     _ => ()
   }
-  let afresh = match afresh {
-    String(s) => Some(s)
-    _ => None
-  }
+  let afresh = as_text(afresh)
   if lost || afresh is Some(_) || compacted {
     match (hub.told_long_chat(key) catch { _ => None }) {
       Some(long) => prompt = long + "\n\n" + prompt
       None => ()
     }
   }
-  match afresh {
-    Some(a) => prompt = a + "\n\n" + prompt
-    None => ()
-  }
-  match continued {
-    Some(c) => prompt = c + "\n\n" + prompt
-    None => ()
-  }
+  if afresh is Some(a) { prompt = a + "\n\n" + prompt }
+  if continued is Some(c) { prompt = c + "\n\n" + prompt }
   let latest = @agent_runtimes.latest().to_double()
-  let told = jnum_of(Json::object({ "n": self.store("toldNotes", [jstr(key)]) }), "n").unwrap_or(latest)
+  let told = as_num(self.bus.store.told_notes(jstr(key))).unwrap_or(latest)
   if told < latest {
     let workspace = jtext(row, "workspace")
     let full = match workspace {
@@ -679,7 +702,7 @@ async fn P52::prompt_for(self : P52, key : String, now : Double, handed : Json, 
       }
       None => ()
     }
-    ignore(self.store("setToldNotes", [jstr(key), jn(latest)]))
+    self.bus.store.set_told_notes(jstr(key), jn(latest))
     prompt = @agent_runtimes.untold(told, full) + "\n\n" + prompt
   }
   @session_hub.timed(prompt, now)
@@ -735,7 +758,7 @@ fn handed_of(m : Json) -> Json {
 /// actor.ts `formatDelivery`.
 async fn P52::format_delivery(self : P52, key : String, said : Array[Json], cancelled : () -> Bool) -> (String, Json) {
   let threads = said.map(m => jfield(jfield(m, "message"), "thread"))
-  let heard = jitems(self.store("heardThreads", [jstr(key), Json::array(threads)]))
+  let heard = jitems(self.with_threads(t => t.heard_threads(jstr(key), Json::array(threads))))
   let new_threads = threads.filter(t => !heard.contains(t)).filter_map(t => match t { Number(n, ..) => Some(n); _ => None })
   let names : Array[(String, String)] = []
   for m in said {
@@ -755,10 +778,7 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
         names.push((author, name))
       }
       Some("person") =>
-        match self.user_name(jtext(m, "connect").unwrap_or(""), author) {
-          Some(n) => names.push((author, n))
-          None => ()
-        }
+        if self.user_name(jtext(m, "connect").unwrap_or(""), author) is Some(n) { names.push((author, n)) }
       _ => ()
     }
   }
@@ -768,7 +788,7 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
     if selves.iter().any(x => x.0 == connect) || connect == @session_hub.internal_connect {
       continue
     }
-    match (self.bus.coord_ask.val)("chat.bot", { "connect": jstr(connect) }) {
+    match self.bus.coord_chat_bot(connect) {
       Object(_) as bot =>
         match (jtext(bot, "name"), jtext(bot, "user")) {
           (Some(name), Some(user)) if name != "" && user != "" => selves.push((connect, "\{name} (<@\{user}>)"))
@@ -784,8 +804,8 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
       from_chat.push((i, m))
     }
   }
-  let positions = Json::array(from_chat.map(x => { "thread": jfield(jfield(x.1, "message"), "thread"), "n": jfield(jfield(x.1, "message"), "n") }))
-  let later = jitems(self.store("postsAfter", [jstr(key), positions]) catch { _ => Json::array([]) })
+  let positions : Array[Json] = from_chat.map(x => { "thread": jfield(jfield(x.1, "message"), "thread"), "n": jfield(jfield(x.1, "message"), "n") })
+  let later = jitems(self.bus.store.posts_after(key, positions) catch { _ => Json::array([]) })
   let posts : Map[Int, String] = Map([])
   for j, x in from_chat {
     match later.get(j) {
@@ -825,24 +845,60 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
       special,
     }
   }
-  let text = @agent_runtimes.format_inbound(said.map(jv_of), new_threads, names, selves, posts~, cards~, self_key=key)
-  let models = jitems(self.store("untoldWidgetModels", [jstr(key)]) catch { _ => Json::array([]) })
+  let text = @agent_runtimes.format_inbound(said.map(to_jv), new_threads, names, selves, posts~, cards~, self_key=key)
+  let models = self.bus.store.untold_widget_models(jstr(key)) catch { _ => [] }
   let widgets = Json::array(models.map(w => Json::array([jfield(w, "path"), jfield(w, "model")])))
-  let told = @agent_runtimes.format_widget_models(models.map(jv_of))
+  let told = @agent_runtimes.format_widget_models(models.map(to_jv))
   let all = if told == "" { text } else if text == "" { told } else { text + "\n\n" + told }
   (all, widgets)
 }
 
 ///|
 /// What another agent goes by in a thread (actor.ts `agentName`).
-fn P52::agent_name(self : P52, key : String, thread : Json) -> String {
-  let row = self.store("getSession", [jstr(key)]) catch { _ => Json::null() }
+async fn P52::agent_name(self : P52, key : String, thread : Json) -> String {
+  let via = jitems(self.with_threads(t => t.thread_sessions(thread)))
+    .iter()
+    .find_first(m => jtext(m, "session") == Some(key))
+    .bind(m => jtext(m, "connect"))
+  let row = self.bus.store.get_session(key) catch { _ => Json::null() }
+  let birth = if row == Json::null() { None } else { jtext(row, "connect") }
+  let external_via = match via {
+    Some(c) if c != "" && c != @session_hub.internal_connect => Some(c)
+    _ => None
+  }
+  let connect = match external_via {
+    Some(c) => Some(c)
+    None =>
+      match birth {
+        Some(c) if c != "" && c != @session_hub.internal_connect => Some(c)
+        _ => None
+      }
+  }
+  match connect {
+    Some(c) =>
+      match self.bus.coord_chat_bot(c) {
+        Object(_) as bot =>
+          match jtext(bot, "name") {
+            Some(name) if name != "" =>
+              if external_via is Some(_) {
+                match jtext(bot, "user") {
+                  Some(user) if user != "" => return "\{name} (<@\{user}>)"
+                  _ => return name
+                }
+              } else {
+                return name
+              }
+            _ => ()
+          }
+        _ => ()
+      }
+    None => ()
+  }
   if row == Json::null() {
     return "another agent"
   }
   let runtime = @session_hub.runtime_named(jtext(row, "runtime").unwrap_or("")).unwrap_or("claude")
   let label = @session_hub.runtime_label(runtime)
-  ignore(thread)
   match jtext(row, "model") {
     Some(m) => "\{label} \{m}"
     None => label
@@ -856,21 +912,15 @@ async fn P52::user_name(self : P52, connect : String, user : String) -> String? 
   if connect == @session_hub.internal_connect {
     return if user == "UEMBER" { None } else if user == "local" { Some(if self.lang() == "zh" { "管理员" } else { "Admin" }) } else { Some(user) }
   }
-  match (self.bus.coord_ask.val)("chat.userName", { "connect": jstr(connect), "user": jstr(user) }) {
-    String(s) => Some(s)
-    _ => None
-  }
+  as_text(self.bus.coord_chat_user_name(connect, user))
 }
 
 ///|
 /// `text` as the agent is handed it, after what people chose on its cards (actor.ts `handedWithChoices`).
 async fn P52::handed_with_choices(self : P52, key : String, text : String) -> (String, () -> Unit) {
-  let moved_said = self.store("untoldMovedNote", [jstr(key)]) catch { _ => Json::null() }
-  let moved = match moved_said {
-    String(s) => Some(s)
-    _ => None
-  }
-  let chose = jitems(self.store("untoldCardChoices", [jstr(key)]))
+  let moved_said = self.with_threads(t => t.untold_moved_note(jstr(key))) catch { _ => Json::null() }
+  let moved = as_text(moved_said)
+  let chose = jitems(self.with_threads(t => t.untold_card_choices(jstr(key), Json::null())))
   let (rest, told) = if chose.length() == 0 {
     (text, () => ())
   } else {
@@ -880,24 +930,21 @@ async fn P52::handed_with_choices(self : P52, key : String, text : String) -> (S
       if names.iter().any(x => x.0 == by) {
         continue
       }
-      let via = jitems(self.store("threadSessions", [jfield(c, "thread")])).iter().find_first(m => jtext(m, "session") == Some(key))
+      let via = jitems(self.with_threads(t => t.thread_sessions(jfield(c, "thread")))).iter().find_first(m => jtext(m, "session") == Some(key))
       match via {
         Some(m) =>
-          match self.user_name(jtext(m, "connect").unwrap_or(""), by) {
-            Some(n) => names.push((by, n))
-            None => ()
-          }
+          if self.user_name(jtext(m, "connect").unwrap_or(""), by) is Some(n) { names.push((by, n)) }
         None => ()
       }
     }
-    let said = @agent_runtimes.format_card_choices(chose.map(jv_of), names, wall_ms().to_double())
-    (if text == "" { said } else { said + "\n\n" + text }, () => ignore(self.store("markCardChoicesTold", [jstr(key), Json::array(chose)]) catch { _ => Json::null() }))
+    let said = @agent_runtimes.format_card_choices(chose.map(to_jv), names, wall_ms().to_double())
+    (if text == "" { said } else { said + "\n\n" + text }, () => ignore(self.with_threads(t => t.mark_card_choices_told(jstr(key), Json::array(chose))) catch { _ => Json::null() }))
   }
   match moved {
     Some(m) =>
       (if rest == "" { m } else { m + "\n\n" + rest }, () => {
         told()
-        ignore(self.store("markMovedNoteTold", [jstr(key)]) catch { _ => Json::null() })
+        ignore(self.with_threads(t => t.mark_moved_note_told(jstr(key))) catch { _ => Json::null() })
       })
     None => (rest, told)
   }
@@ -907,11 +954,11 @@ async fn P52::handed_with_choices(self : P52, key : String, text : String) -> (S
 /// A turn that ended with no state on a card it posted, still waiting: it ends need_human on it (mb-actor.ts
 /// `cardAsks`).
 fn P52::card_asks(self : P52, key : String, id : String, started : Double?) -> Json raise {
-  let recent = self.store("recentSessionThreads", [jstr(key)])
+  let recent = self.with_threads(t => t.recent_session_threads(jstr(key), Json::null()))
   let mut found : Json? = None
   for t in jitems(jfield(recent, "threads")) {
     let thread = jfield(jfield(t, "thread"), "id")
-    let card = match self.store("pendingCard", [thread]) {
+    let card = match self.with_threads(t => t.pending_card(thread)) {
       Array([c, ..]) => c
       _ => continue
     }
@@ -929,8 +976,8 @@ fn P52::card_asks(self : P52, key : String, id : String, started : Double?) -> J
     }
   }
   guard found is Some(card) else { return jb(false) }
-  ignore(self.store("setAbout", [jstr(id), Json::array([jfield(card, "thread"), jfield(card, "n"), jfield(card, "ts")])]))
-  ignore(self.store("declareTurn", [jstr(id), jstr("need_help"), Json::null()]))
+  self.bus.store.set_about(jstr(id), Json::array([jfield(card, "thread"), jfield(card, "n"), jfield(card, "ts")]))
+  self.bus.store.declare_turn(jstr(id), jstr("need_help"), Json::null())
   jb(true)
 }
 
@@ -938,9 +985,9 @@ fn P52::card_asks(self : P52, key : String, id : String, started : Double?) -> J
 /// A turn its background work woke, that waits on: what the turn before asked is asked still (mb-actor.ts `keepAsk`).
 fn P52::keep_ask(self : P52, key : String, id : String, before : Json) -> Json raise {
   guard jnum_of(before, "endedAt") is Some(since) else { return jb(false) }
-  let threads = jitems(jfield(self.store("recentSessionThreads", [jstr(key)]), "threads")).map(t => jfield(jfield(t, "thread"), "id"))
+  let threads = jitems(jfield(self.with_threads(t => t.recent_session_threads(jstr(key), Json::null())), "threads")).map(t => jfield(jfield(t, "thread"), "id"))
   for thread in threads {
-    if self.store("cardClosedSince", [thread, jn(since)]) is True {
+    if self.with_threads(t => t.card_closed_since(thread, jn(since))) is True {
       return jb(false)
     }
   }
@@ -952,7 +999,7 @@ fn P52::keep_ask(self : P52, key : String, id : String, before : Json) -> Json r
   if asked == Json::null() {
     let during = Json::array([jn(jnum_of(before, "startedAt").unwrap_or(0.0)), jn(since)])
     for thread in threads {
-      match self.store("askingMessage", [thread, Json::null(), during]) {
+      match self.with_threads(t => t.asking_message(thread, Json::null(), during)) {
         Array([m, ..]) => {
           asked = Json::array([jfield(m, "thread"), jfield(m, "n"), jfield(m, "ts")])
           break
@@ -962,19 +1009,19 @@ fn P52::keep_ask(self : P52, key : String, id : String, before : Json) -> Json r
     }
   }
   match jtext(before, "need") {
-    Some(need) if need != "" => ignore(self.store("setNeed", [jstr(id), jstr(need)]))
+    Some(need) if need != "" => self.bus.store.set_need(jstr(id), jstr(need))
     _ => ()
   }
-  ignore(self.store("setAbout", [jstr(id), asked]))
-  ignore(self.store("declareTurn", [jstr(id), jstr("need_help"), Json::null()]))
+  self.bus.store.set_about(jstr(id), asked)
+  self.bus.store.declare_turn(jstr(id), jstr("need_help"), Json::null())
   jb(true)
 }
 
 ///|
 /// What its allowance, asked again, says it ran into (accounts.ts `limitAfter`): the accounts' answer.
 async fn P52::limit_after(self : P52, key : String, profile : Json) -> Json {
-  let row = self.store("getSession", [jstr(key)]) catch { _ => Json::null() }
-  match (self.bus.jobs_ask.val)("accounts.limitAfter", { "profile": profile, "model": jfield(row, "model") }) {
+  let row = self.bus.store.get_session(key) catch { _ => Json::null() }
+  match self.bus.jobs_accounts_limit_after(profile, jfield(row, "model")) {
     Object(m) if m.contains("limit") => Json::object(m)
     _ => Json::null()
   }
@@ -988,7 +1035,7 @@ fn P52::can_update_codex(self : P52) -> Bool {
 ///|
 /// Updates the machine's Codex and waits until it serves new turns (updates' `updateOldCodex`): the updates' part.
 async fn P52::update_codex(self : P52, before : String?) -> Unit {
-  match (self.bus.coord_ask.val)("updates.updateOldCodex", { "running": jopt(before) }) {
+  match self.bus.coord_updates_update_old_codex(before) {
     Object(m) if m.get("error") is Some(String(e)) => raise LiveError(e)
     _ => ()
   }
@@ -1011,10 +1058,7 @@ fn P52::live_event(self : P52, key : String, event : Json) -> Unit {
 ///|
 /// What a session's transcript said last, read before its turn is said to be over (live.ts `turnEnded`).
 async fn P52::live_turn_ended(self : P52, key : String) -> Unit {
-  match self.actors_program {
-    Some(p) => ignore(p.call("#live", "turnEnded", [jstr(key)]))
-    None => ()
-  }
+  if self.actors_program is Some(p) { ignore(p.call("#live", "turnEnded", [jstr(key)])) }
 }
 
 ///|
@@ -1031,35 +1075,28 @@ fn P52::working(self : P52, key : String, working : Array[Json], status : Json) 
     if connect == @session_hub.internal_connect {
       continue
     }
-    ignore(
-      self.host.rt.fork_daemon("working", on_error=e => @host.note("working failed: \{e}"), async fn() {
-        ignore((self.bus.coord_ask.val)("chat.working", {
-          "connect": jstr(connect),
-          "thread": { "channel": jfield(w, "channel"), "threadTs": jfield(w, "threadTs") },
-          "ts": jfield(w, "ts"),
-          "status": jstr(text),
-          "page": jopt(self.page_of(key)),
-        }))
-      }),
-    )
+    fork_bg(self.host, "working", async fn() {
+      self.bus.coord_chat_working(
+        connect~,
+        channel=jfield(w, "channel"),
+        thread_ts=jfield(w, "threadTs"),
+        ts=jfield(w, "ts"),
+        status=text,
+        page=self.page_of(key),
+      )
+    })
   }
 }
 
 ///|
 /// Where a turn stands said where its chat shows it (Slack's assistant status): the connect's part's.
 fn P52::stands_at(self : P52, connect : Json, channel : Json, thread_ts : Json, stands : Json) -> Unit {
-  if jtext(Json::object({ "c": connect }), "c") == Some(@session_hub.internal_connect) {
+  if as_text(connect) == Some(@session_hub.internal_connect) {
     return
   }
-  ignore(
-    self.host.rt.fork_daemon("stands at", on_error=e => @host.note("stands at failed: \{e}"), async fn() {
-      ignore((self.bus.coord_ask.val)("chat.standsAt", {
-        "connect": connect,
-        "thread": { "channel": channel, "threadTs": thread_ts },
-        "stands": stands,
-      }))
-    }),
-  )
+  fork_bg(self.host, "stands at", async fn() {
+    self.bus.coord_chat_stands_at(connect~, channel~, thread_ts~, stands~)
+  })
 }
 
 ///|
@@ -1105,10 +1142,7 @@ fn tool_status(ctx : P52, tool : String) -> String {
 async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json]) -> Json {
   let hub = self.the_hub()
   let a = (i : Int) => args.get(i).unwrap_or(Json::null())
-  let s = (i : Int) => match a(i) {
-    String(x) => x
-    _ => ""
-  }
+  let s = (i : Int) => as_text(a(i)).unwrap_or("")
   match name {
     "held" => jb(hub.held(s(0)))
     "stoppedNotice" => jopt(hub.stopped_notice(s(0)))
@@ -1119,7 +1153,7 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
       Json::null()
     }
     "backgroundOnMessage" => {
-      let row = self.store("getSession", [a(0)])
+      let row = self.bus.store.get_session(s(0))
       if row == Json::null() {
         return jb(true)
       }
@@ -1134,23 +1168,23 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
       // there, and none of its other agents is at work. The session row has no title of the chat's: read there, every
       // chat was untitled however often it was named, and its agent was asked again at each turn's end.
       if jfield(self.config, "askToName") is True {
-        let thread = jfield(self.store("latestThread", [a(0)]), "thread")
+        let thread = jfield(self.with_threads(t => t.latest_thread(a(0))), "thread")
         let named = (k : String) => match jtext(thread, k) { Some(t) => t.trim() != ""; None => false }
         if !(thread is Object(_)) || !(jfield(thread, "hiddenAt") is Null) || named("title") || !(jfield(thread, "autoTitle") is Null) {
           return Json::null()
         }
         let id = jfield(thread, "id")
-        if self.store("firstText", [id]) is Null {
+        if self.bus.store.first_text(id) is Null {
           return Json::null()
         }
-        let at_work = jitems(self.store("threadSessions", [id])).iter().any(m => {
+        let at_work = jitems(self.with_threads(t => t.thread_sessions(id))).iter().any(m => {
           let session = jtext(m, "session").unwrap_or("")
           if session == "" || session == s(0) {
             return false
           }
-          let last = self.store("lastTurn", [jstr(session)])
+          let last = self.bus.store.last_turn(jstr(session))
           hub.process_state(session) == "running" ||
-          self.store("hasPending", [jstr(session)]) is True ||
+          self.with_threads(t => t.has_pending(jstr(session))) is True ||
           (last is Object(_) && (jfield(last, "endedAt") is Null || jtext(last, "declared") == Some("waiting")))
         })
         if at_work {
@@ -1161,30 +1195,34 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
       } else {
         Json::null()
       }
-    "coldAfresh" => jb(hub.goes_afresh(s(0), jnum_of(Json::object({ "n": a(1) }), "n").unwrap_or(wall_ms().to_double())))
+    "coldAfresh" => jb(hub.goes_afresh(s(0), as_num(a(1)).unwrap_or(wall_ms().to_double())))
     "longChat" => jopt(hub.told_long_chat(s(0)))
-    "ranIn" => self.store("ranIn", args)
-    "spend" => (self.bus.jobs_ask.val)("accounts.spend", { "key": a(0), "ranOn": a(1), "model": a(2) })
+    "ranIn" => {
+      self.bus.store.ran_in(s(0), a(1), a(2))
+      Json::null()
+    }
+    "spend" => self.bus.jobs_accounts_spend(a(0), a(1), a(2))
     "refillsAt" =>
-      match (self.bus.jobs_ask.val)("accounts.refillsAt", { "key": a(0) }) {
+      match self.bus.jobs_accounts_refills_at(a(0)) {
         Number(_) as n => n
         _ => jn(wall_ms().to_double() + 3_600_000.0)
       }
-    "recheck" => (self.bus.jobs_ask.val)("accounts.recheck", { "profile": a(0) })
+    "recheck" => self.bus.jobs_accounts_recheck(a(0), a(1))
+    "canAuthRetry" => self.bus.jobs_accounts_can_auth_retry(a(0), a(1), a(2))
     "runtimeMissing" => {
       hub.runtime_updated(s(0))
-      ignore((self.bus.coord_ask.val)("updates.runtimeMissing", { "runtime": a(0) }))
+      self.bus.coord_updates_runtime_missing(a(0))
       Json::null()
     }
-    "settled" => (self.bus.hub_ask.val)("settled", { "key": a(0), "state": a(1), "words": a(2) })
+    "settled" => self.bus.hub_settled(a(0), a(1), a(2))
     "stopJobs" => {
-      for id in jitems(self.store("runningWaitJobIds", [a(0)]) catch { _ => Json::array([]) }) {
+      for id in (self.bus.store.running_wait_job_ids(a(0)) catch { _ => [] }) {
         self.bus.jobs_stop(id)
       }
       Json::null()
     }
     "endJobs" => {
-      for id in jitems(self.store("upJobIds", [a(0), jb(false)]) catch { _ => Json::array([]) }) {
+      for id in (self.bus.store.up_job_ids(a(0), false) catch { _ => [] }) {
         self.bus.jobs_stop(id)
       }
       Json::null()
@@ -1202,6 +1240,6 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
 /// made again cleaned, the room marked cold, then its workspace and history packed, under the room's lock.
 async fn P52::cold_pack(self : P52, key : String) -> Unit {
   self.storage().cold_pack(key) catch {
-    e => live_log("warn", "cold", "an archived session's files not put away", { "session": jstr(key), "error": jstr(said_of(e)) })
+    e => slice_log("warn", "cold", "an archived session's files not put away", { "session": jstr(key), "error": jstr(said_of(e)) })
   }
 }

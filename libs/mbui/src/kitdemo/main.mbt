@@ -55,7 +55,7 @@ fn main {
   if linked {
     @ui.on_message(@hostapi.system_channel, fn(json, _) { @gallery.link_check_said(json) })
   }
-  @ui.run("mbui kit", fn(c) {
+  @ui.run_legacy_ctx("mbui kit", fn(c) {
     if posted {
       @gallery.post_check_run(c)
     } else if picked {

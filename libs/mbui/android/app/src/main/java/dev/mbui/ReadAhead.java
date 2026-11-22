@@ -27,7 +27,10 @@ final class ReadAhead {
         started = true;
         File dir = new File(c.getApplicationInfo().sourceDir).getParentFile();
         if (dir == null) return;
-        Thread t = new Thread(() -> under(dir), "mbui-read-ahead");
+        Thread t = new Thread(() -> {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+            under(dir);
+        }, "mbui-read-ahead");
         // (the least: what the drawing thread waits for comes first)
         t.setPriority(Thread.MIN_PRIORITY);
         t.start();

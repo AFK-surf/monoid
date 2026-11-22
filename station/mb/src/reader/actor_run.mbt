@@ -62,6 +62,11 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
     "putAway" =>
       self.enqueue(a, async fn() {
         a.notices.clear()
+        a.queued_retry = None
+        a.paused_cap = false
+        a.cap_wait_notified = false
+        a.force_session_cap = false
+        self.remove_cap_wait(a.key)
         if a.codex_update is Some(_) {
           a.codex_update = None
           self.set_running(a, false)
@@ -96,11 +101,14 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
     }
     "declare" => {
       let state = arg(0)
+      let mut recorded = false
       self.enqueue(a, async fn() {
         guard a.turn is Some(t) else { return }
         t.declared = Some(state)
         self.declare_turn(a, t.id, Some(state))
+        recorded = true
       })
+      return jbool(recorded)
     }
     "waitFor" => {
       let what = arg(0)
@@ -135,7 +143,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         if a.turn is Some(_) || self.busy(a) || last is Null || !retrying(last) || !about_is(last, thread, seq) {
           return
         }
-        self.stop_waiting(a, say=false)
+        ignore(self.stop_waiting(a, say=false))
         self.notice(a, self.t(a, "station.notice.retryCanceled"))
         self.live_turn_ended(a)
       })
@@ -143,15 +151,40 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
     "retryFailed" => {
       let (thread, seq) = (arg(0), arg(1))
       self.enqueue(a, async fn() {
-        if self.blocked(a) || self.has_pending(a) {
+        let last = self.last_turn(a)
+        let cap_paused = !(last is Null) &&
+          str_of(last.value("outcome")) == Some("failed") &&
+          str_of(last.value("detail")) == Some("other: session_cap")
+        if self.blocked(a) || (!cap_paused && self.has_pending(a)) {
           return
         }
-        let last = self.last_turn(a)
         if last is Null || !retryable(last) || !about_is(last, thread, seq) {
           return
         }
+        if cap_paused {
+          self.remove_cap_wait(a.key)
+          a.paused_cap = false
+          a.cap_wait_notified = false
+          a.force_session_cap = true
+          self.log(a, "info", "manually starting a turn queued by account concurrency cap, as asked")
+          if self.has_pending(a) {
+            return self.pump(a)
+          }
+          if a.queued_retry is Some(r) {
+            a.queued_retry = None
+            return self.start_turn(a, r.kind, r.text, by=r.by)
+          }
+          return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_FAILED"))
+        }
         self.log(a, "info", "trying again a failed turn, as asked")
-        self.start_turn(a, "resume", self.words(a, if given_up(last) { "GO_ON_AFTER_UNANSWERED" } else { "GO_ON_AFTER_FAILED" }))
+        let words_key = if cut_off_by_restart(last) {
+          "RESUME_AFTER_RESTART"
+        } else if given_up(last) {
+          "GO_ON_AFTER_UNANSWERED"
+        } else {
+          "GO_ON_AFTER_FAILED"
+        }
+        self.start_turn(a, "resume", self.words(a, words_key))
       })
     }
     "reassign" => {
@@ -180,13 +213,31 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           a.refill_at = self.now
           return
         }
+        if self.turn_slots_full(a) {
+          a.refill_at = self.now
+          self.enqueue_turn_wait(a)
+          return
+        }
+        let reserved = !a.starting_turn
+        if reserved {
+          a.starting_turn = true
+        }
+        defer {
+          if reserved {
+            a.starting_turn = false
+            if a.turn is None {
+              self.drain_turn_queue()
+            }
+          }
+        }
         a.refill = None
         if self.has_pending(a) {
           return self.pump(a)
         }
-        self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"))
+        self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"), passive=true)
       })
     "recover" => return self.recover(a)
+    "cutOffByRestart" => return self.cut_off_by_restart(a)
     "takeWait" => self.enqueue(a, async fn() { self.take_wait(a) })
     "takeRefill" =>
       self.enqueue(a, async fn() {
@@ -208,20 +259,42 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           return
         }
         self.log(a, "info", "warming session process")
-        ignore(self.ensure_agent(a))
+        // (its start given up by a stop, a suspension or a close: nothing to warm)
+        ignore(self.ensure_agent(a)) catch {
+          e => if open_abort_reason(e) is Some(_) { return } else { raise e }
+        }
         self.idle_now(a)
         self.notify_store(a)
         ignore(self.deps(a, "idle", [jstr(a.key)]))
       })
     "changed" => {
       let restart = truthy(arg(0))
+      let was_paused_cap = a.paused_cap
+      a.paused_cap = false
+      a.cap_wait_notified = false
+      self.remove_cap_wait(a.key)
+      // (counted with no process too: one being opened, or taking an earlier change in place, takes it after)
+      a.change_seq += 1
+      if restart {
+        a.restart_seq = a.change_seq
+      }
       if a.agent is Some(_) {
         a.stale = true
         if restart {
           a.restart = true
         }
       }
-      self.enqueue(a, async fn() { self.catch_up(a, a.turn is None && a.waiting is None) })
+      self.enqueue(a, async fn() {
+        self.catch_up(a, a.turn is None && a.waiting is None)
+        if was_paused_cap && a.turn is None && !self.busy(a) {
+          if self.has_pending(a) {
+            self.pump(a)
+          } else if a.queued_retry is Some(r) {
+            a.queued_retry = None
+            self.start_turn(a, r.kind, r.text, by=r.by)
+          }
+        }
+      })
     }
     "evict" => {
       // (`force`: its session archived, its process ends once its turn is over, what it left in the background too:
@@ -390,13 +463,28 @@ async fn Actors::undeclare(self : Actors, a : Actor) -> Unit raise {
 async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
   let stop_recovery = a.recoveries > 0 || a.recovery_deferred
   a.recovery_deferred = false
+  a.queued_retry = None
+  let had_deferred = a.deferred_end is Some(_) || a.warm
+  a.deferred_end = None
+  a.warm = false
+  a.paused_cap = false
+  a.cap_wait_notified = false
+  a.force_session_cap = false
+  self.mirror(a)
+  self.remove_turn_wait(a.key)
+  self.remove_cap_wait(a.key)
   a.delivery_interruptions += 1
+  // (its runtime's process being opened is given up at once, never waited on behind it in its queue: one that never
+  // answered held the stop for hours, FB-34; a turn starting then is said stopped here once its start has unwound,
+  // a process only warmed is not)
+  let was_starting_turn = a.starting_turn
+  let stop_starting = self.abort_open(a, "stopped") && was_starting_turn
   // (what is being read and formatted for it: Node's, given up at once there, mb-actor.ts)
   self.enqueue(a, async fn() {
     defer {
       a.delivery_interruptions -= 1
     }
-    if stop_recovery {
+    if stop_recovery || had_deferred || stop_starting {
       self.set_running(a, false)
     }
     if a.codex_update is Some(_) {
@@ -419,7 +507,10 @@ async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
     if a.turn is Some(_) {
       return
     }
-    self.stop_waiting(a)
+    let stopped_wait = self.stop_waiting(a)
+    if stop_starting && !stopped_wait {
+      self.notice(a, self.t(a, "station.notice.stopped"))
+    }
     self.live_turn_ended(a)
   })
   Json::null()
@@ -454,6 +545,24 @@ async fn Actors::reassign(self : Actors, a : Actor, thread : Json, seq : Json) -
     self.log(a, "info", "its allowance showed a limit; going on on another profile, as asked", fields={ "from": m[0], "to": m[1] })
     a.refill = None
     return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_SPENT"))
+  }
+  if moved is Object(o) && str_of(o.get("paused")) == Some("session_cap") {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    a.refill = None
+    a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false })
+    self.pause_for_session_cap(
+      a,
+      str_of(o.get("profile")).unwrap_or(""),
+      num_of(o.get("active")).unwrap_or(0.0).to_int(),
+      num_of(o.get("cap")).unwrap_or(0.0).to_int(),
+      o.get("protection") is Some(True),
+      "resume",
+      turn_for_nobody(),
+      None,
+    )
+    return
   }
   let pinned = truthy(row.value("profilePinned").unwrap_or(Json::null()))
   self.notice(a, "⚠️ " + self.t(a, if pinned { "station.notice.reassignPinned" } else { "station.notice.reassignNone" }), profile=ran_on)
@@ -535,14 +644,50 @@ async fn Actors::stop_from_slack(self : Actors, a : Actor, args : Array[Json]) -
 }
 
 ///|
+/// Ends a turn cut off by a non-update station restart without auto-starting the runtime:
+/// posts a notice bound to the cut-off turn (when not already declared done/need_human and
+/// no pending user message awaits delivery) and returns whether the session awaits manual resume.
+async fn Actors::cut_off_by_restart(self : Actors, a : Actor) -> Json raise {
+  let mut interrupted = false
+  self.enqueue(a, async fn() {
+    if a.turn is Some(_) {
+      return
+    }
+    a.recovery_deferred = false
+    let ended = num_of(Some(self.store(a, "endCutOff", [jstr(a.key)]))).unwrap_or(0.0).to_int()
+    self.set_running(a, false)
+    if self.archived(a) {
+      self.let_go(a)
+      return
+    }
+    if ended > 0 && !self.has_pending(a) {
+      let latest = self.store(a, "latestTurn", [jstr(a.key)])
+      let summary = latest.value("summary").unwrap_or(Json::null())
+      if cut_off_by_restart(summary) {
+        self.notice(a, "⚠️ " + self.t(a, "station.notice.cutOffRestart"), about=str_of(latest.value("id")))
+        interrupted = true
+      }
+    }
+  })
+  jbool(interrupted)
+}
+
+///|
 /// actor.ts `recover`.
-async fn Actors::recover(self : Actors, a : Actor) -> Json raise {
+async fn Actors::recover(self : Actors, a : Actor, slot_reserved? : Bool = false) -> Json raise {
   a.recoveries += 1
   self.enqueue(a, async fn() {
     let mut reading = true
+    let mut reserved = slot_reserved && a.starting_turn
     defer {
       if reading {
         a.recoveries -= 1
+      }
+      if reserved {
+        a.starting_turn = false
+        if a.turn is None {
+          self.drain_turn_queue()
+        }
       }
     }
     if a.delivery_interruptions > 0 {
@@ -562,6 +707,15 @@ async fn Actors::recover(self : Actors, a : Actor) -> Json raise {
       a.recovery_deferred = true
       return
     }
+    if self.turn_slots_full(a) {
+      a.recovery_deferred = true
+      self.enqueue_turn_wait(a)
+      return
+    }
+    if !a.starting_turn {
+      a.starting_turn = true
+      reserved = true
+    }
     a.recovery_deferred = false
     let delivery = self.pending_and_format(a, true)
     a.recoveries -= 1
@@ -580,8 +734,8 @@ async fn Actors::recover(self : Actors, a : Actor) -> Json raise {
     }
     self.set_running(a, false)
     let resume = self.words(a, "RESUME_AFTER_RESTART")
-    self.start_turn(a, "resume", if d.text == "" { resume } else { resume + "\n\n" + d.text })
-    self.delivered(a, d)
+    // (marked delivered by `start_turn_body` before it was written to the runtime, its widgets told after: `start_turn`)
+    self.start_turn(a, "resume", if d.text == "" { resume } else { resume + "\n\n" + d.text }, delivery=Some(d))
   })
   Json::null()
 }
@@ -605,6 +759,96 @@ async fn Actors::take_wait(self : Actors, a : Actor) -> Unit raise {
 }
 
 ///|
+/// Wakes a session popped from `turn_wait_queue` with `starting_turn` already reserved.
+/// Releases the reserved slot and drains the next queued session if this actor does not start a turn.
+async fn Actors::wake_queued(self : Actors, a : Actor) -> Unit raise {
+  if a.recovery_deferred && a.recoveries == 0 {
+    a.recovery_deferred = false
+    ignore(self.recover(a, slot_reserved=true))
+    return
+  }
+  let before = a.start_failures
+  self.enqueue(a, async fn() {
+    let owned = a.starting_turn
+    defer {
+      if owned {
+        a.starting_turn = false
+        if a.turn is None {
+          self.drain_turn_queue()
+        }
+      }
+    }
+    if a.waiting is Some(wait) && a.waiting_until <= self.now {
+      self.fire_wait(a, wait, a.waiting_seconds)
+      if a.turn is Some(_) {
+        return
+      }
+    }
+    if a.refill is Some(refill) && a.refill_at <= self.now {
+      self.fire_refill(a, refill)
+      if a.turn is Some(_) {
+        return
+      }
+    }
+    if a.queued_retry is Some(r) {
+      if self.archived(a) {
+        a.queued_retry = None
+      } else if !self.held(a) {
+        a.queued_retry = None
+        if !self.has_pending(a) {
+          self.start_turn(a, r.kind, r.text, by=r.by)
+          if a.turn is Some(nt) && r.codex_retried {
+            nt.codex_retried = true
+          }
+          if a.turn is Some(_) {
+            return
+          }
+        }
+      }
+    }
+    self.pump(a, before_failures=before)
+    if a.turn is None && a.notices.length() > 0 {
+      self.give_notices(a)
+    }
+  })
+}
+
+///|
+/// Serially wakes a single actor waiting in `cap_wait_queue` until it either starts a turn
+/// (occupying a running slot) or hits `sessionCap` again.
+async fn Actors::wake_cap_queued(self : Actors, a : Actor) -> Unit raise {
+  self.enqueue(a, async fn() {
+    if a.phase == "closed" || self.archived(a) || a.turn is Some(_) || self.busy(a) {
+      return
+    }
+    if self.held(a) {
+      a.paused_cap = true
+      return
+    }
+    if a.queued_retry is Some(r) {
+      if !self.has_pending(a) {
+        a.queued_retry = None
+        self.start_turn(a, r.kind, r.text, by=r.by) catch {
+          e => {
+            if session_cap_info(e) is Some(_) {
+              a.queued_retry = Some(r)
+            }
+            raise e
+          }
+        }
+        if a.turn is Some(nt) && r.codex_retried {
+          nt.codex_retried = true
+        }
+        return
+      }
+    }
+    if self.has_pending(a) {
+      self.pump(a)
+    }
+  })
+}
+
+///|
 async fn Actors::release(self : Actors, a : Actor) -> Json raise {
   if a.recovery_deferred {
     a.recovery_deferred = false
@@ -620,9 +864,31 @@ async fn Actors::release(self : Actors, a : Actor) -> Json raise {
     if a.refill is Some(_) && a.refill_at <= self.now {
       self.await_refill(a, self.now)
     }
+    if a.queued_retry is Some(_) {
+      self.enqueue_turn_wait(a)
+      self.drain_turn_queue()
+      return
+    }
     self.pump(a, before_failures=before)
     if a.notices.length() > 0 {
       self.give_notices(a)
+    }
+    if !self.held(a) && a.turn is None && a.deferred_end is Some(d) {
+      let was_warm = a.warm
+      a.deferred_end = None
+      self.mirror(a)
+      defer {
+        if a.warm && a.deferred_end is None {
+          a.warm = false
+          self.mirror(a)
+        }
+      }
+      if self.archived(a) {
+        self.cool(a, was_warm)
+        self.let_go(a)
+        return
+      }
+      self.continue_undeclared_end(a, d.lost, d.recorded, was_warm)
     }
   })
   Json::null()
@@ -668,7 +934,11 @@ async fn Actors::begin_compacting(self : Actors, a : Actor) -> String? raise {
   if !truthy(row.value("runtimeSessionId").unwrap_or(Json::null())) {
     return Some(self.t(a, "station.context.empty"))
   }
-  let agent = self.ensure_agent(a) catch { e => return Some(self.failed_words(a, "compactFailed", e)) }
+  let agent = self.ensure_agent(a) catch {
+    // (its start given up by a stop, a suspension or a close: what was asked for is over, nothing to say of it)
+    e if open_abort_reason(e) is Some(_) => return None
+    e => return Some(self.failed_words(a, "compactFailed", e))
+  }
   if a.afresh is Some(_) {
     return Some(self.t(a, "station.context.empty"))
   }
@@ -751,7 +1021,7 @@ async fn Actors::clear_now(
   if !truthy(left) {
     return Some(self.t(a, "station.context.empty"))
   }
-  self.stop_waiting(a, say=false, keep_jobs~)
+  ignore(self.stop_waiting(a, say=false, keep_jobs~))
   let agent = a.agent
   let background = match agent {
     Some(g) => self.agent_do(a, g, "background", [])
@@ -774,6 +1044,9 @@ async fn Actors::clear_now(
   a.compacted_untold = false
   a.nudges = 0
   a.tools_restarts = 0
+  a.deferred_end = None
+  a.warm = false
+  self.mirror(a)
   ignore(self.deps(a, "ranIn", [jstr(a.key), left, Json::null()]))
   ignore(self.store(a, "setRuntimeSessionId", [jstr(a.key), Json::null()]))
   a.read_back = read_back
@@ -786,6 +1059,8 @@ async fn Actors::clear_now(
 /// actor.ts `suspend`: `why`, what is said of it, in the log and as the turn's end (the station left its workspace, or
 /// this chat is held for a move).
 async fn Actors::suspend(self : Actors, a : Actor, why? : String = "the station is in no workspace") -> Json raise {
+  // (its runtime's process being opened is given up at once: what it was handed stays undelivered, taken up after)
+  ignore(self.abort_open(a, "suspended"))
   a.delivery_interruptions += 1
   self.enqueue(a, async fn() {
     defer {
@@ -795,7 +1070,18 @@ async fn Actors::suspend(self : Actors, a : Actor, why? : String = "the station 
     self.set_agent(a, None)
     let busy = self.busy_of(a, agent)
     let turn = a.turn
+    let had_slot = turn is Some(_) || a.starting_turn
     a.turn = None
+    a.warm = false
+    a.deferred_end = None
+    a.starting_turn = false
+    a.queued_retry = None
+    self.remove_turn_wait(a.key)
+    defer {
+      if had_slot && a.turn is None && !a.starting_turn {
+        self.drain_turn_queue()
+      }
+    }
     a.tools.clear()
     a.working_for = []
     a.stop_requested = false
@@ -836,10 +1122,19 @@ fn Actors::snapshot(self : Actors, a : Actor) -> Json {
         "id": jstr(t.id),
         "authRetried": jbool(t.auth_retried),
         "codexRetried": jbool(t.codex_retried),
+        "passive": jbool(t.passive),
         "by": t.by,
         "declared": match kind_of(t.declared) { Some(k) => jstr(k); None => Json::null() },
         "wait": if kind_of(t.declared) == Some("waiting") { t.declared.unwrap().value("seconds").unwrap_or(Json::null()) } else { Json::null() },
         "askedBefore": t.asked_before.unwrap_or(Json::null()),
+      } : Json)
+    None => Json::null()
+  }
+  let deferred_end = match a.deferred_end {
+    Some(d) =>
+      ({
+        "lost": jbool(d.lost),
+        "recorded": match d.recorded { Some(r) => jstr(r); None => Json::null() },
       } : Json)
     None => Json::null()
   }
@@ -849,6 +1144,7 @@ fn Actors::snapshot(self : Actors, a : Actor) -> Json {
     "runtime": jstr(a.runtime),
     "identity": a.running_identity,
     "turn": turn,
+    "deferredEnd": deferred_end,
     "workingFor": Json::array(a.working_for.map(working_json)),
     "notices": Json::array(a.notices.map(jstr)),
     "waitingMs": if a.waiting is Some(_) { jnum(max0(a.waiting_until - self.now)) } else { Json::null() },
@@ -890,6 +1186,7 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
         id: str_of(t.get("id")).unwrap_or(""),
         auth_retried: t.get("authRetried") is Some(True),
         codex_retried: t.get("codexRetried") is Some(True),
+        passive: t.get("passive") is Some(True),
         by: t.get("by").unwrap_or(turn_for_nobody()),
         declared: match str_of(t.get("declared")) {
           Some(k) => parse_declared(k, num_of(t.get("wait")).unwrap_or(0.0))
@@ -903,6 +1200,15 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
     _ => None
   }
   a.phase = if a.turn is Some(_) { "running" } else { "idle" }
+  a.deferred_end = match snap.value("deferredEnd") {
+    Some(Object(d)) =>
+      Some({
+        lost: d.get("lost") is Some(True),
+        recorded: str_of(d.get("recorded")),
+      })
+    _ => None
+  }
+  a.warm = a.turn is None && a.deferred_end is Some(_)
   a.working_for = match snap.value("workingFor") {
     Some(Array(ws)) => ws.map(working_of)
     _ => []
@@ -932,20 +1238,34 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
 ///|
 /// For shutdown or handover: queued and later tasks are skipped, timers end.
 fn Actors::close(self : Actors, a : Actor) -> Unit {
+  let had_slot = a.turn is Some(_) || a.starting_turn
+  ignore(self.abort_open(a, "closed"))
   a.phase = "closed"
+  a.turn = None
+  a.warm = false
+  a.deferred_end = None
+  a.starting_turn = false
+  a.queued_retry = None
+  a.paused_cap = false
+  a.cap_wait_notified = false
+  a.force_session_cap = false
+  self.remove_turn_wait(a.key)
+  self.remove_cap_wait(a.key)
   for cancel in a.timers.values() {
     cancel()
   }
   a.timers.clear()
   self.mirror(a)
+  if had_slot {
+    self.drain_turn_queue()
+  }
 }
 
 // ── inside the queue ──────────────────────────────────────────────────────────────────────────────────────────────
 
 ///|
-async fn Actors::take_notices(self : Actors, a : Actor) -> String? raise {
-  let notices = a.notices
-  a.notices = []
+/// What its notices say, as it is handed them (they stay its own until they are: `drain_notices`).
+async fn Actors::format_notices(self : Actors, a : Actor, notices : Array[String]) -> String? raise {
   if notices.length() == 0 {
     return None
   }
@@ -955,6 +1275,26 @@ async fn Actors::take_notices(self : Actors, a : Actor) -> String? raise {
     .map(n => "<message via=\"station\" from=\"station\" ts=\"\{at}\">\n\{n}\n</message>")
     .join("\n"),
   )
+}
+
+///|
+/// Its first `n` notices, taken as handed (written to its runtime, or stopped by a person): what they were.
+fn drain_notices(a : Actor, n : Int) -> Array[String] {
+  let k = if n > a.notices.length() { a.notices.length() } else { n }
+  if k <= 0 {
+    return []
+  }
+  let taken : Array[String] = []
+  let left : Array[String] = []
+  for i, notice in a.notices {
+    if i < k {
+      taken.push(notice)
+    } else {
+      left.push(notice)
+    }
+  }
+  a.notices = left
+  taken
 }
 
 ///|
@@ -994,17 +1334,44 @@ async fn Actors::give_notices(self : Actors, a : Actor) -> Unit raise {
   // (let go of meanwhile: its turn's end gives them)
   guard still(a, was) else { return }
   if busy && was is Some(agent) {
-    guard self.take_notices(a) is Some(text) else { return }
+    // (never into a turn on how it ran before a change: they wait for its end, which gives them a turn as changed)
+    if a.stale {
+      return
+    }
+    let n = a.notices.length()
+    guard self.format_notices(a, a.notices) is Some(text) else { return }
     let (handed, told) = self.with_choices(a, text)
+    // (taken once written: one not taken stays as it was, given with the next turn)
     if truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) {
+      ignore(drain_notices(a, n))
       self.told(a, told)
-    } else {
-      a.notices = [text] + a.notices
     }
     return
   }
-  if self.take_notices(a) is Some(text) {
-    self.start_turn(a, "job", text)
+  if a.notices.length() == 0 {
+    return
+  }
+  if self.turn_slots_full(a) {
+    self.enqueue_turn_wait(a)
+    return
+  }
+  let reserved = !a.starting_turn
+  if reserved {
+    a.starting_turn = true
+  }
+  defer {
+    if reserved {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue(drain_cap=!a.paused_cap)
+      }
+    }
+  }
+  // (still its own while its runtime opens: taken as they are written to it (`start_turn_body`), so a start that
+  // fails, times out, waits for room, is suspended or handed over keeps them for its next turn)
+  let n = a.notices.length()
+  if self.format_notices(a, a.notices) is Some(text) {
+    self.start_turn(a, "job", text, notices_taken=n)
   }
 }
 
@@ -1056,6 +1423,27 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
   if self.interrupted(a) || self.held(a) || self.archived(a) || a.compacting {
     return
   }
+  let mut reserved = false
+  if a.turn is None && !a.starting_turn {
+    if self.turn_slots_full(a) {
+      self.enqueue_turn_wait(a)
+      if a.failed_handed != "" {
+        self.mirror(a)
+        self.notify_store(a)
+      }
+      return
+    }
+    a.starting_turn = true
+    reserved = true
+  }
+  defer {
+    if reserved {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue(drain_cap=!a.paused_cap)
+      }
+    }
+  }
   let delivery = self.pending_and_format(a, false)
   guard delivery is Some(d) else { return }
   if self.interrupted(a) || self.held(a) || self.archived(a) || a.compacting {
@@ -1064,6 +1452,16 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
   let was = a.agent
   let busy = self.busy_of(a, was)
   let hkey = handed_ids(d.pending)
+  if !busy && a.paused_cap {
+    if hkey != "" && hkey == a.failed_handed {
+      return
+    }
+    // New user reply arrived while queued: jump the queue and bypass the concurrency cap.
+    self.remove_cap_wait(a.key)
+    a.paused_cap = false
+    a.cap_wait_notified = false
+    a.force_session_cap = true
+  }
   if !busy &&
     before_failures >= 0 &&
     before_failures < a.start_failures &&
@@ -1071,22 +1469,52 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     hkey == a.failed_handed {
     return
   }
+  // A new attempt (including a capacity queue) supersedes the failed attempt, but keeps its messages.
+  if a.failed_handed != "" && !a.paused_cap {
+    a.failed_handed = ""
+    self.mirror(a)
+    self.notify_store(a)
+  }
   // (let go of meanwhile: its turn's end pumps again)
   guard still(a, was) else { return }
   if busy && was is Some(agent) {
+    // (never into a turn on how it ran before a change, which would answer as it: what was said waits for its end,
+    // which pumps it into a turn as changed)
+    if a.stale {
+      return
+    }
     if truthy(self.deps(a, "backgroundOnMessage", [jstr(a.key)])) {
       ignore(self.agent_do(a, agent, "backgroundTools", []))
     }
     let (handed, told) = self.with_choices(a, d.text)
-    if truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) {
+    // (unread before it is written: the model can read it and ask again, `requesting`, before the steer answers)
+    let before = a.unread.length()
+    let mut added = 0
+    for m in d.pending {
+      if !(m.value("apart") is Some(True)) {
+        a.unread.push(m)
+        added += 1
+      }
+    }
+    let unsteer = () => if a.unread.length() >= before + added {
+      for _ in 0..<added {
+        ignore(a.unread.pop())
+      }
+    }
+    let steered = truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) catch {
+      e => {
+        unsteer()
+        raise e
+      }
+    }
+    if !steered {
+      unsteer()
+    } else {
       self.told(a, told)
       self.work_for(a, d.pending)
       self.delivered(a, d)
       for m in d.pending {
         a.steered.push(m.value("handed").unwrap_or(Json::null()))
-        if !(m.value("apart") is Some(True)) {
-          a.unread.push(m)
-        }
       }
       let from = (w : Working) => d.pending.iter().any(m => str_of(m.value("connect")) == Some(w.connect) &&
         str_of(m.value("channel")) == Some(w.channel) &&
@@ -1095,22 +1523,32 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     }
     return
   }
+  if self.turn_slots_full(a) {
+    self.enqueue_turn_wait(a)
+    return
+  }
+  if !a.starting_turn {
+    a.starting_turn = true
+    reserved = true
+  }
   a.nudges = 0
   a.tools_restarts = 0
+  a.deferred_end = None
   self.work_for(a, d.pending)
   let by = match d.pending.search_by(m => str_of(m.value("authorKind")) == Some("person")) {
     Some(i) => ({ "person": d.pending[i].value("person").unwrap_or(Json::null()), "thread": d.pending[i].value("thread").unwrap_or(Json::null()), "profile": Json::null() } : Json)
     None => turn_for_nobody()
   }
-  self.start_turn(a, "input", d.text, by~) catch {
+  self.start_turn(a, "input", d.text, by~, delivery=Some(d)) catch {
     e => {
       a.start_failures += 1
       a.failed_handed = hkey
+      self.mirror(a)
+      self.notify_store(a)
       raise e
     }
   }
   a.failed_handed = ""
-  self.delivered(a, d)
 }
 
 ///|
@@ -1199,8 +1637,90 @@ async fn Actors::pending_and_format(self : Actors, a : Actor, allow_empty : Bool
 }
 
 ///|
+fn session_cap_info(e : Error) -> (String, Int, Int, Bool)? {
+  match e {
+    Asked(j) if j.value("sessionCap") is Some(True) => {
+      let profile = str_of(j.value("profile")).unwrap_or("")
+      let active = num_of(j.value("active")).unwrap_or(0.0).to_int()
+      let cap = num_of(j.value("cap")).unwrap_or(0.0).to_int()
+      let protection = j.value("protection") is Some(True)
+      Some((profile, active, cap, protection))
+    }
+    _ => None
+  }
+}
+
+///|
+/// Enqueues `a` in `cap_wait_queue` and posts a retryable queued notice once per wait.
+async fn Actors::pause_for_session_cap(
+  self : Actors,
+  a : Actor,
+  profile : String,
+  active : Int,
+  cap : Int,
+  protection : Bool,
+  kind : String,
+  by : Json,
+  turn : Turn?,
+) -> Unit raise {
+  self.enqueue_cap_wait(a)
+  a.paused_cap = true
+  a.force_session_cap = false
+  if !a.cap_wait_notified {
+    let tid = match turn {
+      Some(t) => t.id
+      None => {
+        let id = str_of(Some(self.rpc(a.key, "node.uuid", []))).unwrap_or("")
+        ignore(self.store(a, "startTurnFor", [jstr(id), jstr(a.key), jstr(kind), by]))
+        id
+      }
+    }
+    ignore(self.store(a, "endTurn", [jstr(tid), jstr("failed"), jstr("other: session_cap"), Json::null(), Json::null()]))
+    let notice_key = if protection {
+      "station.notice.accountCapProtectionPaused"
+    } else {
+      "station.notice.accountCapPaused"
+    }
+    let said = self.t(a, notice_key, args={
+      "profile": jstr(profile),
+      "active": jnum(active.to_double()),
+      "cap": jnum(cap.to_double()),
+    })
+    self.notice(a, said, about=Some(tid))
+    a.cap_wait_notified = true
+  } else if turn is Some(t) {
+    ignore(self.store(a, "endTurn", [jstr(t.id), jstr("failed"), jstr("other: session_cap"), Json::null(), Json::null()]))
+  }
+  self.set_running(a, false)
+  self.live_turn_ended(a)
+  self.done_working(a)
+}
+
+///|
 /// actor.ts `startTurn`.
-async fn Actors::start_turn(self : Actors, a : Actor, kind : String, text : String, by? : Json = turn_for_nobody()) -> Unit raise {
+async fn Actors::start_turn(
+  self : Actors,
+  a : Actor,
+  kind : String,
+  text : String,
+  by? : Json = turn_for_nobody(),
+  delivery? : Delivery? = None,
+  passive? : Bool = false,
+  notices_taken? : Int = 0,
+) -> Unit raise {
+  let own_slot = !a.starting_turn
+  if own_slot {
+    a.starting_turn = true
+  }
+  let mut paused_by_cap = false
+  defer {
+    if own_slot {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue(drain_cap=!paused_by_cap)
+      }
+    }
+  }
   let retry_about = if text == self.words(a, "GO_ON_AFTER_OVERLOADED") {
     self.last_turn(a).value("about").unwrap_or(Json::null())
   } else {
@@ -1210,11 +1730,43 @@ async fn Actors::start_turn(self : Actors, a : Actor, kind : String, text : Stri
     self.log(a, "info", "archived: no turn of its own", fields={ "kind": jstr(kind) })
     return
   }
-  self.start_turn_body(a, kind, text, by, retry_about) catch {
+  // (a turn begun anew: the profiles a chain of `auth_retry` turns was refused on are those of turns before)
+  if kind != "auth_retry" {
+    a.auth_tried = []
+  }
+  self.start_turn_body(a, kind, text, by, retry_about, delivery, passive, notices_taken) catch {
     e => {
       let turn = a.turn
       a.turn = None
+      // (its runtime's start given up (`abort_open`): no failure, never said it could not start, nor counted one in
+      // `pump`. Stopped by a person, what it was handed is taken as had, as a turn stopped once running is; suspended,
+      // it waits to be handed again; closed, the next station takes it up as it stands)
+      if open_abort_reason(e) is Some(why) {
+        if why == "closed" {
+          return
+        }
+        a.phase = "idle"
+        if why == "stopped" {
+          if delivery is Some(d) {
+            self.delivered(a, d)
+          }
+          ignore(drain_notices(a, notices_taken))
+        }
+        if turn is Some(t) {
+          let stopped = why == "stopped"
+          ignore(self.store(a, "endTurn", [jstr(t.id), jstr("aborted"), jstr(if stopped { "user" } else { "other: " + why }), if stopped { jstr("stopped") } else { Json::null() }, Json::null()]))
+        }
+        self.set_running(a, false)
+        self.live_turn_ended(a)
+        self.done_working(a)
+        return
+      }
       a.phase = "idle"
+      if session_cap_info(e) is Some((profile, active, cap, protection)) {
+        paused_by_cap = true
+        self.pause_for_session_cap(a, profile, active, cap, protection, kind, by, turn)
+        raise e
+      }
       let message = match e {
         Asked(j) => str_of(j.value("message")).unwrap_or("")
         _ => e.to_string()
@@ -1236,23 +1788,46 @@ async fn Actors::start_turn(self : Actors, a : Actor, kind : String, text : Stri
       if missing {
         ignore(self.deps(a, "runtimeMissing", [jstr(a.runtime)]))
       }
-      let said = if missing {
+      async fn missing_said() -> String raise {
         "⚠️ " + self.t(a, "station.notice.runtimeMissing", args={ "name": self.rpc(a.key, "node.words", [jstr("runtimeLabel"), jstr(a.runtime)]) })
+      }
+      let said = if missing {
+        missing_said()
       } else {
         "⚠️ " + self.failed_words(a, "cannotStartWords", e)
       }
+      // (a start failing is said once until a person speaks, whatever its reason; but the runtime said missing
+      // before, starting with the same words, is not that: its failing now that it is there is news)
       let cannot_start = "⚠️ " + self.t(a, "station.notice.cannotStart")
-      let last = self.said_last(a)
-      if !(last is Some(l) && (l == said || (!missing && l.has_prefix(cannot_start)))) {
+      let dup = match self.said_last(a) {
+        Some(l) if l == said => true
+        Some(l) if !missing && l.has_prefix(cannot_start) => l != missing_said()
+        _ => false
+      }
+      if !dup {
         self.notice(a, said, runtime=if missing { jstr(a.runtime) } else { Json::null() }, about=turn.map(t => t.id))
       }
       raise e
     }
   }
+  // (what it was handed is its model's now: the widgets it showed are told, never for one not handed)
+  if delivery is Some(d) {
+    ignore(self.store(a, "markWidgetModelsTold", [jstr(a.key), d.widgets]))
+  }
 }
 
 ///|
-async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text : String, by : Json, retry_about : Json) -> Unit raise {
+async fn Actors::start_turn_body(
+  self : Actors,
+  a : Actor,
+  kind : String,
+  text : String,
+  by : Json,
+  retry_about : Json,
+  delivery : Delivery?,
+  passive : Bool,
+  notices_taken : Int,
+) -> Unit raise {
   self.live_event(a.key, { "kind": "phase", "phase": "starting" })
   if (kind == "input" || kind == "job") && !self.holding(a) && !self.busy(a) &&
     self.deps(a, "coldAfresh", [jstr(a.key), jnum(self.now)]) is True {
@@ -1261,7 +1836,7 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
   if (kind == "input" || kind == "resume" || kind == "job") && a.runtime == "codex" && !self.busy(a) {
     self.refused_thread(a)
   }
-  let mut agent = self.ensure_agent(a)
+  let mut agent = self.open_over(a, passive)
   let lost = a.resume_lost
   a.resume_lost = false
   let (handed, told_choices) = self.with_choices(a, text)
@@ -1285,16 +1860,36 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
       ]),
     ),
   ).unwrap_or(handed)
+  // (changed while it was asked its prompt: taken before the turn begins, never run on how it was before)
+  if a.stale && !self.busy_of(a, Some(agent)) {
+    agent = self.ensure_agent(a)
+  }
+  // (what it is handed, marked delivered before it is written: the runtime can answer with `chat_post` before the
+  // prompt's answer comes back, and a message still undelivered then is taken as one it has not read, holding the post)
+  let delivered = match delivery {
+    Some(d) => d.pending.map(m => m.value("handed").unwrap_or(Json::null()))
+    None => []
+  }
   if self.busy_of(a, Some(agent)) && truthy(self.agent_do(a, agent, "steer", [jstr(prompt)])) {
+    if delivered.length() > 0 {
+      ignore(self.store(a, "markDelivered", [jstr(a.key), Json::array(delivered)]))
+    }
+    ignore(drain_notices(a, notices_taken))
     return self.told(a, told_choices)
   }
   a.steered = []
   a.steered_for = []
   a.unread = []
-  self.begin_turn(a, kind, by)
+  self.begin_turn(a, kind, by, passive~)
   if !(retry_about is Null) && a.turn is Some(t) {
     ignore(self.store(a, "setAbout", [jstr(t.id), [retry_about.value("thread").unwrap_or(Json::null()), retry_about.value("seq").unwrap_or(Json::null()), retry_about.value("ts").unwrap_or(Json::null())]]))
   }
+  let marked = delivered.length() > 0
+  if marked {
+    ignore(self.store(a, "markDelivered", [jstr(a.key), Json::array(delivered)]))
+  }
+  // (its notices taken as what it is handed is: given back with it where it never began)
+  let drained_notices = drain_notices(a, notices_taken)
   ignore(self.agent_do(a, agent, "prompt", [jstr(prompt)])) catch {
     // (its runtime began a turn of its own while this one was begun (the awaits of `begin_turn`, after `busy_of` said
     // idle): what it is handed is steered into that turn, which the turn begun here takes as its own, never the
@@ -1304,10 +1899,25 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
       return self.told(a, told_choices)
     e => {
       self.log(a, "warn", "prompt failed, reopening the runtime", fields={ "error": jstr(e.to_string()) })
-      self.set_agent(a, None)
-      ignore(self.agent_do(a, agent, "dispose", []))
-      agent = self.ensure_agent(a)
-      ignore(self.agent_do(a, agent, "prompt", [jstr(prompt)]))
+      try {
+        self.set_agent(a, None)
+        ignore(self.agent_do(a, agent, "dispose", []))
+        agent = self.ensure_agent(a)
+        ignore(self.agent_do(a, agent, "prompt", [jstr(prompt)]))
+      } catch {
+        e2 => {
+          // (never begun: waiting again, to be handed again; but not what a person stopped as it began)
+          if open_abort_reason(e2) != Some("stopped") {
+            if marked {
+              ignore(self.store(a, "markUndelivered", [jstr(a.key), Json::array(delivered)]))
+            }
+            if drained_notices.length() > 0 {
+              a.notices = drained_notices + a.notices
+            }
+          }
+          raise e2
+        }
+      }
     }
   }
   self.told(a, told_choices)
@@ -1343,16 +1953,21 @@ async fn Actors::refused_thread(self : Actors, a : Actor) -> Unit raise {
 }
 
 ///|
-async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json) -> Unit raise {
+async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json, passive? : Bool = false) -> Unit raise {
+  a.queued_retry = None
   if kind == "input" || kind == "job" {
     a.last_said = ""
     a.posted = false
   }
   let id = str_of(Some(self.rpc(a.key, "node.uuid", []))).unwrap_or("")
   let asked_before = if kind == "job" { self.asked_now(a) } else { None }
-  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", by, asked_before })
+  let is_passive = passive || kind == "title" || kind == "nudge"
+  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", passive: is_passive, by, asked_before })
+  a.deferred_end = None
+  a.warm = false
   a.phase = "running"
   a.waiting = None
+  self.mirror(a)
   let for_ = match by {
     Object(o) => {
       let o = Map::from_iter(o.iter())
@@ -1368,28 +1983,43 @@ async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json) 
 ///|
 /// actor.ts `catchUp`.
 async fn Actors::catch_up(self : Actors, a : Actor, end : Bool) -> Unit raise {
-  guard a.agent is Some(agent) else { return }
-  if !a.stale || self.busy(a) {
-    return
-  }
-  // (taken in place where it can be: Node's, its profile asked of the pool, `retune`)
-  let identity = self.rpc(a.key, "node.retune", [jnum(agent.handle.to_double()), a.profile, jbool(a.restart), jbool(self.holding(a))])
-  if identity is Object(_) {
+  while a.stale && !self.busy(a) {
+    guard a.agent is Some(agent) else { return }
+    let seq = a.change_seq
+    let restart = a.restart
+    // (taken in place where it can be: Node's, its profile asked of the pool, `retune`)
+    let identity = self.rpc(a.key, "node.retune", [jnum(agent.handle.to_double()), a.profile, jbool(restart), jbool(self.holding(a))])
+    if !still(a, Some(agent)) {
+      return
+    }
+    if identity is Object(_) {
+      a.running_identity = identity
+      self.mirror(a)
+      self.log(a, "info", "session process takes the change in place", fields={ "model": identity.value("model").unwrap_or(jstr("")), "effort": identity.value("effort").unwrap_or(jstr("")) })
+      if a.change_seq == seq {
+        a.stale = false
+        a.restart = false
+        return
+      }
+      // (changed again while it took this one: taken as it is now)
+      a.stale = true
+      a.restart = a.restart_seq > seq
+      continue
+    }
+    // (begun a turn of its own meanwhile: never ended under it, taken at that turn's end)
+    if !end || self.busy(a) {
+      return
+    }
+    // (its process ends: the next is opened as the session is then)
     a.stale = false
-    a.running_identity = identity
-    self.log(a, "info", "session process takes the change in place", fields={ "model": identity.value("model").unwrap_or(jstr("")), "effort": identity.value("effort").unwrap_or(jstr("")) })
+    a.restart = false
+    let background = self.agent_do(a, agent, "background", [])
+    self.set_agent(a, None)
+    self.log(a, "info", "ending the process from before the session was changed", fields={ "background": jnum(match background { Array(b) => b.length().to_double(); _ => 0.0 }) })
+    self.end_process(a, Some(agent))
+    self.notify_store(a)
     return
   }
-  if !end {
-    return
-  }
-  a.stale = false
-  a.restart = false
-  let background = self.agent_do(a, agent, "background", [])
-  self.set_agent(a, None)
-  self.log(a, "info", "ending the process from before the session was changed", fields={ "background": jnum(match background { Array(b) => b.length().to_double(); _ => 0.0 }) })
-  self.end_process(a, Some(agent))
-  self.notify_store(a)
 }
 
 ///|
@@ -1403,52 +2033,201 @@ async fn Actors::end_process(self : Actors, a : Actor, agent : Agent?) -> Unit r
 }
 
 ///|
+/// How long its runtime session's process may take to open (`node.open`) before it is given up: one that never answered
+/// held its session's queue, and the stop behind it, for hours (FB-34). As long as own-process.ts `ANSWER_MS`.
+let open_timeout_ms : Double = 120000.0
+
+///|
+/// Why opening its runtime session was given up by a stop, a suspension or a close (`abort_open`): "stopped",
+/// "suspended" or "closed"; none for any other failure.
+fn open_abort_reason(e : Error) -> String? {
+  match e {
+    Asked(j) => str_of(j.value("openAbort"))
+    _ => None
+  }
+}
+
+///|
+/// Gives up at once the opening of its runtime session its queue waits on (`rpc_open`), as `why`, and has Node give it
+/// up too (mb-actor.ts `cancelOpen`: a process that comes of it later is ended there). Whether one was waiting.
+fn Actors::abort_open(self : Actors, a : Actor, why : String) -> Bool {
+  guard a.opening_rpc is Some(id) else { return false }
+  a.opening_rpc = None
+  if !self.cancel_rpc(id, { "openAbort": jstr(why), "message": jstr("open " + why) }) {
+    return false
+  }
+  self.log(a, "info", "opening its runtime given up", fields={ "why": jstr(why) })
+  self.tell(a.key, "node.cancelOpen", [jnum(id.to_double())])
+  true
+}
+
+///|
+/// Asks Node to open its runtime session (`node.open` with `args`, and the ask's number for Node to give it up by),
+/// waiting at most `open_timeout_ms`, and no longer than a stop, a suspension or a close (`abort_open`).
+async fn Actors::rpc_open(self : Actors, a : Actor, args : Array[Json]) -> Json raise {
+  self.next += 1
+  let id = self.next
+  let d : @effect.Deferred[Json] = @effect.Deferred::new()
+  self.asked[id] = d
+  a.opening_rpc = Some(id)
+  // timer: a deadline for its runtime's process to open, which may never answer (FB-34)
+  let cancel_timer = self.after(open_timeout_ms, () => if self.cancel_rpc(id, { "openTimeout": Json::boolean(true), "message": jstr("agent startup timed out") }) {
+    if a.opening_rpc == Some(id) {
+      a.opening_rpc = None
+    }
+    self.tell(a.key, "node.cancelOpen", [jnum(id.to_double())])
+  })
+  defer {
+    cancel_timer()
+    if a.opening_rpc == Some(id) {
+      a.opening_rpc = None
+    }
+  }
+  self.mirror(a)
+  self.active -= 1
+  self.say_node({ "rpc": jnum(id.to_double()), "actor": jstr(a.key), "fn": jstr("node.open"), "args": Json::array(args + [jnum(id.to_double())]) })
+  // (counted again as its answer comes, `heard`, or as it is given up, `cancel_rpc`)
+  let answer = d.wait()
+  match answer {
+    { "error": err, .. } => {
+      if err.value("openTimeout") is Some(True) {
+        self.log(a, "warn", "agent startup timed out", fields={ "ms": jnum(open_timeout_ms) })
+        raise Asked({ "message": jstr(self.t(a, "station.notice.openTimedOut")), "said": Json::boolean(true) })
+      }
+      raise Asked(err)
+    }
+    _ => answer.value("value").unwrap_or(Json::null())
+  }
+}
+
+///|
+/// At most this many profiles a turn goes on to after each refused it (`auth_tried`): a pool of any size is tried
+/// through, never round and round.
+const AUTH_TRIED_MOST : Int = 16
+
+///|
+/// The profiles `a`'s turn was refused on, as Node takes them (sessions/accounts.ts `canAuthRetry`'s `tried`).
+fn auth_tried_json(a : Actor) -> Json {
+  Json::array(a.auth_tried.map(jstr))
+}
+
+///|
+/// `ensure_agent`, going on on another profile where its process could not open as the login of the one it was to
+/// open on is over (Node's `auth`: a borrowed profile whose host said so, share/index.ts LOGIN_OVER, FB-44): that one
+/// rechecked (passed over from then on) and the next the pool gives opened, each once, till none is left. Any other
+/// failure to open is as before.
+async fn Actors::open_over(self : Actors, a : Actor, passive : Bool) -> Agent raise {
+  while true {
+    let opened : Agent? = try {
+      Some(self.ensure_agent(a))
+    } catch {
+      // (a start given up by a stop, a suspension or a close goes as it is: `open_abort_reason`)
+      Asked(j) as e if !passive && j.value("auth") is Some(True) && open_abort_reason(e) is None => {
+        let id = match str_of(j.value("authProfile")) {
+          Some(p) if p != "" => p
+          _ =>
+            match a.profile {
+              String(p) if p != "" => p
+              _ => raise e
+            }
+        }
+        if a.auth_tried.length() >= AUTH_TRIED_MOST {
+          raise e
+        }
+        let already = a.auth_tried.contains(id)
+        ignore(self.deps(a, "recheck", [jstr(id), jbool(already)]))
+        let retry = !(self.deps(a, "canAuthRetry", [jstr(a.key), jstr(id), auth_tried_json(a)]) is False)
+        if !already {
+          a.auth_tried.push(id)
+        }
+        if !retry {
+          a.auth_tried = []
+          raise e
+        }
+        self.log(a, "info", "its login is over where it was to open; going on on another profile", fields={ "profile": jstr(id), "error": j.value("message").unwrap_or(jstr("")) })
+        None
+      }
+      e => raise e
+    }
+    if opened is Some(g) {
+      return g
+    }
+  }
+  abort("unreachable")
+}
+
+///|
 /// actor.ts `ensureAgent`: its runtime session, opened (Node's: the driver, its options, the words it is told of how it
 /// was opened) where it has none.
 async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
-  if a.agent is Some(g) && !a.stale && !self.busy(a) {
-    let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a))]) catch { _ => Json::null() }
-    if !(on is Null) && on != a.profile {
-      a.stale = true
-    }
-    // (its process can no longer take a turn as it is: an Antigravity CLI one whose borrowed sign-in runs out, runtime.ts
-    // `outlived`; its retune refuses, so it is opened again)
-    if !a.stale {
-      let outlived = self.rpc(a.key, "node.outlived", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
-      if outlived is True {
+  while true {
+    if a.agent is Some(g) && !a.stale && !self.busy(a) {
+      let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a)), jbool(a.force_session_cap)]) catch {
+        e => {
+          if session_cap_info(e) is Some(_) {
+            raise e
+          }
+          Json::null()
+        }
+      }
+      if !(on is Null) && on != a.profile {
         a.stale = true
       }
+      // (its process can no longer take a turn as it is: an Antigravity CLI one whose borrowed sign-in runs out, runtime.ts
+      // `outlived`; its retune refuses, so it is opened again)
+      if !a.stale {
+        let outlived = self.rpc(a.key, "node.outlived", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
+        if outlived is True {
+          a.stale = true
+        }
+      }
     }
+    self.catch_up(a, true)
+    if a.agent is Some(g) {
+      a.force_session_cap = false
+      a.paused_cap = false
+      a.cap_wait_notified = false
+      return g
+    }
+    // (what it is changed in while it opens is taken once it is open: `changed` counts it with no process to mark)
+    let seq = a.change_seq
+    let opened = self.rpc_open(a, [Json::array(a.stopped), jbool(a.read_back), a.profile, jbool(a.force_session_cap)])
+    a.force_session_cap = false
+    a.paused_cap = false
+    a.cap_wait_notified = false
+    let handle = num_of(opened.value("handle")).unwrap_or(0.0).to_int()
+    let generation = num_of(opened.value("generation")).unwrap_or(0.0).to_int()
+    a.runtime = str_of(opened.value("runtime")).unwrap_or(a.runtime)
+    match str_of(opened.value("afresh")) {
+      Some(s) => a.afresh = Some(s)
+      None => ()
+    }
+    if opened.value("resumeLost") is Some(True) {
+      a.resume_lost = true
+    }
+    if opened.value("readBackTold") is Some(True) {
+      a.read_back = false
+    }
+    a.stopped.clear()
+    if str_of(opened.value("stoppedNote")) is Some(note) {
+      a.stopped_note = Some(note)
+    }
+    let g = { generation, handle }
+    self.set_agent(a, Some(g))
+    a.running_identity = opened.value("identity").unwrap_or(Json::null())
+    a.profile = opened.value("profile").unwrap_or(Json::null())
+    if a.change_seq == seq {
+      a.stale = false
+      a.restart = false
+      self.mirror(a)
+      return g
+    }
+    // (opened as it was before a change told meanwhile: taken in place, or ended and opened again, before it is used)
+    a.stale = true
+    a.restart = a.restart_seq > seq
+    self.mirror(a)
   }
-  self.catch_up(a, true)
-  if a.agent is Some(g) {
-    return g
-  }
-  let opened = self.rpc(a.key, "node.open", [Json::array(a.stopped), jbool(a.read_back), a.profile])
-  let handle = num_of(opened.value("handle")).unwrap_or(0.0).to_int()
-  let generation = num_of(opened.value("generation")).unwrap_or(0.0).to_int()
-  a.runtime = str_of(opened.value("runtime")).unwrap_or(a.runtime)
-  match str_of(opened.value("afresh")) {
-    Some(s) => a.afresh = Some(s)
-    None => ()
-  }
-  if opened.value("resumeLost") is Some(True) {
-    a.resume_lost = true
-  }
-  if opened.value("readBackTold") is Some(True) {
-    a.read_back = false
-  }
-  a.stopped.clear()
-  if str_of(opened.value("stoppedNote")) is Some(note) {
-    a.stopped_note = Some(note)
-  }
-  let g = { generation, handle }
-  self.set_agent(a, Some(g))
-  a.running_identity = opened.value("identity").unwrap_or(Json::null())
-  a.stale = false
-  a.restart = false
-  a.profile = opened.value("profile").unwrap_or(Json::null())
-  g
+  abort("unreachable")
 }
 
 ///|
@@ -1554,6 +2333,8 @@ async fn Actors::on_compacted(self : Actors, a : Actor, generation : Int) -> Uni
   if !self.is_current(a, generation) {
     return
   }
+  // (counted for its card, on its own or by hand: store.ts `noteCompacted`)
+  ignore(self.store(a, "noteCompacted", [jstr(a.key)]))
   if !a.compacting && self.busy_agent(a) is Some(agent) {
     match self.deps(a, "longChat", [jstr(a.key)]) {
       String(long) => {
@@ -1600,10 +2381,12 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   if a.compacting && a.turn is None {
     return self.compacted(a, outcome)
   }
-  let kind = str_of(outcome.value("kind")).unwrap_or("")
+  let mut kind = str_of(outcome.value("kind")).unwrap_or("")
   let mut reason = str_of(outcome.value("reason")).unwrap_or("")
   let message = str_of(outcome.value("message")).unwrap_or("")
   let mut lent_expired = false
+  // (its sign-in run out under it, not refused: nothing to recheck)
+  let mut ran_out = false
   if a.runtime == "agy" && kind == "failed" && a.agent is Some(g) {
     // (agy 1.5.8 says only `⚠ Agent execution terminated due to error.` (`other`) when its borrowed sign-in runs out
     // under a turn, 2026-11-16: where the process's sign-in has expired, take it as `auth` so `auth_retry` reopens on
@@ -1611,6 +2394,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     if reason == "other" && message.to_lower().contains("agent execution terminated due to error") {
       if truthy(self.agent_do(a, g, "signInExpired", []) catch { _ => Json::null() }) {
         reason = "auth"
+        ran_out = true
       }
       if !self.is_current(a, generation) {
         return
@@ -1642,6 +2426,25 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   self.idle_now(a)
   let turn = a.turn
   a.turn = None
+  if kind == "completed" && !a.stop_requested && turn is Some({ declared: None, .. }) {
+    a.warm = true
+  }
+  let had_turn = turn is Some(_)
+  if had_turn {
+    a.starting_turn = true
+  }
+  defer {
+    if a.warm && a.deferred_end is None {
+      a.warm = false
+      self.mirror(a)
+    }
+    if had_turn {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue()
+      }
+    }
+  }
   a.phase = "idle"
   // (a thread taken up again that ends otherwise than refused so is one that works: refused later, it is taken up
   // again first, `refused_thread`)
@@ -1650,6 +2453,25 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   }
   let stop_requested = a.stop_requested
   a.stop_requested = false
+  // (a chain of `auth_retry` turns goes on only while each is refused so)
+  let refused = kind == "failed" && reason == "auth" && !stop_requested && turn is Some({ declared: None, .. })
+  if !refused {
+    a.auth_tried = []
+  }
+  // A turn that already declared its end state (all_done, need_human, waiting) only needed the runtime's trailing LLM
+  // call to emit unread closing text. If that call fails with auth (an hourly borrowed token expiring right after
+  // chat_state returned), close the stale process so the next turn opens fresh, keep the declared state (its waiting
+  // timer too), and post no false auth error. A bad account still fails on the next turn, which declared nothing yet.
+  if kind == "failed" && reason == "auth" && !stop_requested && turn is Some({ declared: Some(_), .. }) {
+    if a.agent is Some(_) {
+      let agent = a.agent
+      self.set_agent(a, None)
+      self.end_process(a, agent)
+      self.notify_store(a)
+    }
+    self.log(a, "info", "trailing auth failure after the turn declared its state; closing the stale process and keeping the state", fields={ "runtime": jstr(a.runtime) })
+    kind = "completed"
+  }
   // How a turn that said no state ends (2026-11-16, the status refactor): one that posted a card still waiting ends
   // need_human on it; one that posted, asked once again, ends all_done (no ⚠️ after an answer given). And a turn its
   // background work woke, that only waits on, asks what the turn before it asked, while no person has spoken or decided
@@ -1680,7 +2502,10 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   // one asked as often as it may be ends here, stopped at once)
   let warm = kind == "completed" && !stop_requested && turn is Some({ declared: None, .. }) &&
     a.nudges < num_of(Some(self.deps(a, "maxNudges", []))).unwrap_or(0.0).to_int()
-  if !warm {
+  if warm {
+    a.warm = true
+  } else {
+    a.warm = false
     self.set_running(a, false)
   }
   let overloaded = turn is Some(_) && kind == "failed" && reason == "overloaded" && !stop_requested
@@ -1723,7 +2548,12 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   // nothing of an MCP server it could not connect, so no call of one failed; Node keeps what its token made, `toolsUnheard`)
   if a.tools_lost is None && kind == "completed" && !stop_requested && !a.posted && turn is Some({ declared: None, .. }) &&
     a.agent is Some(g) {
-    let unheard = self.rpc(a.key, "node.toolsUnheard", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
+    let unheard = self.rpc(a.key, "node.toolsUnheard", [jnum(g.handle.to_double())]) catch {
+      e => {
+        self.log(a, "warn", "toolsUnheard check failed", fields={ "error": jstr(e.to_string()) })
+        Json::null()
+      }
+    }
     match unheard {
       String(why) => {
         self.log(a, "warn", "the agent cannot reach the station's tools", fields={ "why": jstr(why) })
@@ -1763,8 +2593,16 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     ignore(self.rpc(a.key, "node.updateCodex", [jnum(update.id.to_double())]))
     return
   }
-  if a.runtime == "codex" && kind == "failed" && reason == "auth" && !stop_requested && !(a.profile is Null) {
-    ignore(self.deps(a, "recheck", [a.profile]))
+  // (refused on its profile, any runtime's: rechecked at once, so the pool passes over one whose login is over, a
+  // borrowed one's too, before the next is picked, FB-44; one refused again after it was rechecked and tried again in
+  // this chain is taken as over, `force`. A sign-in that only ran out is not rechecked.)
+  let refused_on = match a.profile {
+    String(p) if p != "" && refused && !lent_expired && !ran_out => Some(p)
+    _ => None
+  }
+  let tried_before = auth_tried_json(a)
+  if refused_on is Some(p) {
+    ignore(self.deps(a, "recheck", [jstr(p), jbool(a.auth_tried.contains(p))]))
   }
   // (agy: session/load answers without checking the CLI's conversation database, and a prompt on a conversation whose
   // database is absent or corrupt fails with "trajectory not found"; end the broken process so no retry hits it again,
@@ -1786,21 +2624,42 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   }
   // (agy: a sign-in lent by another station runs out under a process that never reads it again; a new one opens on
   // one lent anew, agents/agy.ts AGY_LENT_RENEW_MS)
-  if (a.runtime == "claude" || a.runtime == "codex" || a.runtime == "agy") && kind == "failed" && reason == "auth" && !stop_requested &&
-    !self.held(a) && turn is Some(t) && (!t.auth_retried || lent_expired) && t.declared is None {
-    a.nudges = 0
+  // (each profile it is refused on rechecked and left for the next the pool gives, till none is left: never round and
+  // round, `AUTH_TRIED_MOST`)
+  if refused && !self.held(a) && turn is Some(t) && (!t.passive || lent_expired) &&
+    (lent_expired || ran_out || !t.auth_retried || refused_on is Some(_)) && a.auth_tried.length() < AUTH_TRIED_MOST {
     let agent = a.agent
     self.set_agent(a, None)
     self.end_process(a, agent)
-    if a.runtime == "claude" && !(a.profile is Null) {
-      ignore(self.deps(a, "recheck", [a.profile]))
+    let allow_retry = match refused_on {
+      Some(p) => {
+        let can = !(self.deps(a, "canAuthRetry", [jstr(a.key), jstr(p), tried_before]) is False)
+        if !a.auth_tried.contains(p) {
+          a.auth_tried.push(p)
+        }
+        can
+      }
+      None => lent_expired || ran_out || !t.auth_retried
     }
-    self.log(a, "info", "authentication failed; reopening and continuing once", fields={ "runtime": jstr(a.runtime) })
-    self.start_turn(a, "auth_retry", self.words(a, "GO_ON_AFTER_AUTH"), by=t.by)
-    if a.turn is Some(nt) && t.codex_retried {
-      nt.codex_retried = true
+    if !allow_retry {
+      a.auth_tried = []
+      self.notify_store(a)
+      self.log(a, "info", "authentication failed; profile unusable and no healthy fallback, waiting for user", fields={ "runtime": jstr(a.runtime) })
+    } else {
+      a.nudges = 0
+      self.log(a, "info", "authentication failed; reopening and continuing", fields={ "runtime": jstr(a.runtime), "tried": auth_tried_json(a) })
+      let text = self.words(a, "GO_ON_AFTER_AUTH")
+      if self.max_concurrent_turns > 0 && self.active_turn_slots() > self.max_concurrent_turns {
+        a.queued_retry = Some({ kind: "auth_retry", text, by: t.by, codex_retried: t.codex_retried })
+        self.enqueue_turn_wait(a)
+        return
+      }
+      self.start_turn(a, "auth_retry", text, by=t.by)
+      if a.turn is Some(nt) && t.codex_retried {
+        nt.codex_retried = true
+      }
+      return
     }
-    return
   }
   if a.runtime == "agy" && kind == "failed" && reason == "auth" && a.agent is Some(_) {
     let agent = a.agent
@@ -1827,10 +2686,35 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       self.end_process(a, agent)
       self.log(a, "info", "allowance ran out; going on on another profile", fields={ "from": m[0], "to": m[1] })
       a.refill = None
+      if self.max_concurrent_turns > 0 && self.active_turn_slots() > self.max_concurrent_turns {
+        if !self.has_pending(a) {
+          a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false })
+        }
+        self.enqueue_turn_wait(a)
+        return
+      }
       if self.has_pending(a) {
         return self.pump(a)
       }
       return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_SPENT"))
+    }
+    if moved is Object(o) && str_of(o.get("paused")) == Some("session_cap") {
+      let agent = a.agent
+      self.set_agent(a, None)
+      self.end_process(a, agent)
+      a.refill = None
+      a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false })
+      self.pause_for_session_cap(
+        a,
+        str_of(o.get("profile")).unwrap_or(""),
+        num_of(o.get("active")).unwrap_or(0.0).to_int(),
+        num_of(o.get("cap")).unwrap_or(0.0).to_int(),
+        o.get("protection") is Some(True),
+        "resume",
+        turn_for_nobody(),
+        None,
+      )
+      return
     }
     let notice = self.failure_notice(a, outcome)
     let spent_before = match self.rpc(a.key, "node.words", [jstr("spentBefore")]) {
@@ -1936,6 +2820,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     }
   }
   if self.archived(a) {
+    a.deferred_end = None
     self.cool(a, warm)
     self.let_go(a)
     ignore(self.deps(a, "idle", [jstr(a.key)]))
@@ -1964,6 +2849,11 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     }
     self.wait_ms(a, num_of(ends.unwrap().value("seconds")).unwrap_or(0.0), num_of(ends.unwrap().value("seconds")).unwrap_or(0.0) * 1000.0)
     ignore(self.deps(a, "idle", [jstr(a.key)]))
+    // (changed while its turn ran: its process takes it now, in place alone while it waits, before a turn of its
+    // own posts as it ran before)
+    if a.stale {
+      self.catch_up(a, a.waiting is None)
+    }
     return
   }
   ignore(self.deps(a, "idle", [jstr(a.key)]))
@@ -1978,12 +2868,29 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       self.log(a, "info", "its chat has no title; asking it to name it", fields={ "chat": jstr(u) })
       return self.start_turn(a, "title", self.words(a, "nameUntitled", args=[jstr(u)]))
     }
+    if a.stale {
+      self.catch_up(a, a.waiting is None)
+    }
     return
   }
   if self.held(a) {
-    return self.cool(a, warm)
+    a.deferred_end = Some({ lost: lost is Some(_), recorded })
+    self.mirror(a)
+    return
   }
-  if lost is Some(_) {
+  self.continue_undeclared_end(a, lost is Some(_), recorded, warm)
+}
+
+///|
+/// Continues after a turn ended without declaring a state (immediately or once `release` lifts a hold).
+async fn Actors::continue_undeclared_end(
+  self : Actors,
+  a : Actor,
+  lost : Bool,
+  recorded : String?,
+  warm : Bool,
+) -> Unit raise {
+  if lost {
     a.nudges = 0
     if a.tools_restarts < 1 {
       a.tools_restarts += 1
@@ -1993,6 +2900,9 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     }
     a.tools_restarts = 0
     self.cool(a, warm)
+    if a.stale {
+      self.catch_up(a, a.waiting is None)
+    }
     return self.give_up(a, recorded)
   }
   let most = num_of(Some(self.deps(a, "maxNudges", []))).unwrap_or(0.0).to_int()
@@ -2004,6 +2914,9 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   }
   a.nudges = 0
   self.cool(a, warm)
+  if a.stale {
+    self.catch_up(a, a.waiting is None)
+  }
   self.give_up(a, recorded)
 }
 
@@ -2011,6 +2924,10 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
 /// A turn's end that kept it running (`warm`: it said no state, to be asked again at once) and started nothing after
 /// all: stopped now.
 async fn Actors::cool(self : Actors, a : Actor, warm : Bool) -> Unit raise {
+  if a.warm {
+    a.warm = false
+    self.mirror(a)
+  }
   if warm && a.turn is None && !a.compacting && a.codex_update is None {
     self.set_running(a, false)
   }
@@ -2083,7 +3000,8 @@ async fn Actors::give_up(self : Actors, a : Actor, turn : String?) -> Unit raise
 }
 
 ///|
-async fn Actors::stop_waiting(self : Actors, a : Actor, say? : Bool = true, keep_jobs? : Bool = false) -> Unit raise {
+/// Whether it was waiting (on its background work, a refill, or as its last turn said) and was stopped.
+async fn Actors::stop_waiting(self : Actors, a : Actor, say? : Bool = true, keep_jobs? : Bool = false) -> Bool raise {
   let refill = a.refill is Some(_)
   let waited = a.waiting is Some(_) || refill
   a.waiting = None
@@ -2094,13 +3012,15 @@ async fn Actors::stop_waiting(self : Actors, a : Actor, say? : Bool = true, keep
   let last = self.last_turn(a)
   let recorded = !(last is Null) && !(last.value("endedAt") is (None | Some(Null))) && str_of(last.value("declared")) == Some("waiting")
   if !waited && !recorded {
-    return
+    return false
   }
   self.log(a, "info", "stopped while waiting")
   if !(last is Null) && retrying(last) {
     a.overloads = 0
   } else if !keep_jobs {
     ignore(self.deps(a, "stopJobs", [jstr(a.key)]))
+    // (what its jobs told it goes with them, as `stop_background`'s)
+    a.notices = []
   }
   a.nudges = 0
   let agent = a.agent
@@ -2112,6 +3032,7 @@ async fn Actors::stop_waiting(self : Actors, a : Actor, say? : Bool = true, keep
   if say {
     self.notice(a, self.t(a, "station.notice.stopped"))
   }
+  true
 }
 
 ///|
@@ -2127,6 +3048,10 @@ async fn Actors::stop_background(self : Actors, a : Actor) -> Unit raise {
 ///|
 async fn Actors::let_go(self : Actors, a : Actor) -> Unit raise {
   a.notices = []
+  a.queued_retry = None
+  a.deferred_end = None
+  a.warm = false
+  self.mirror(a)
   a.nudges = 0
   let waited = a.waiting is Some(_)
   a.waiting = None
@@ -2142,6 +3067,49 @@ async fn Actors::let_go(self : Actors, a : Actor) -> Unit raise {
 }
 
 ///|
+async fn Actors::fire_wait(self : Actors, a : Actor, wait : Int, seconds : Double) -> Unit raise {
+  if self.held(a) || a.waiting != Some(wait) {
+    return
+  }
+  if self.archived(a) {
+    return self.let_go(a)
+  }
+  if a.compacting {
+    a.over_while_compacting = true
+    return
+  }
+  if self.turn_slots_full(a) {
+    a.waiting_until = self.now
+    self.enqueue_turn_wait(a)
+    return
+  }
+  let reserved = !a.starting_turn
+  if reserved {
+    a.starting_turn = true
+  }
+  defer {
+    if reserved {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue(drain_cap=!a.paused_cap)
+      }
+    }
+  }
+  a.waiting = None
+  a.phase = "idle"
+  let last = self.last_turn(a)
+  if !(last is Null) && retrying(last) {
+    self.log(a, "info", "trying again a turn the provider had no room for", fields={ "seconds": jnum(seconds) })
+    return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_OVERLOADED"), passive=true)
+  }
+  if !(last.value("waitWatch") is Some(False)) && truthy(self.store(a, "hasSessionActiveWatch", [jstr(a.key)])) {
+    return self.wait_ms(a, seconds, seconds * 1000.0)
+  }
+  self.log(a, "info", "the wait is over without word; asking again", fields={ "seconds": jnum(seconds) })
+  self.start_turn(a, "nudge", self.words(a, "waitOver", args=[jnum(seconds)]))
+}
+
+///|
 /// Asks the agent again after `seconds` (`ms` of it left), unless a turn has started by then: a wait of Node's clock.
 fn Actors::wait_ms(self : Actors, a : Actor, seconds : Double, ms : Double) -> Unit {
   a.waits += 1
@@ -2150,30 +3118,7 @@ fn Actors::wait_ms(self : Actors, a : Actor, seconds : Double, ms : Double) -> U
   a.phase = "waiting"
   a.waiting_until = self.now + ms
   a.waiting_seconds = seconds
-  self.timer(a, "wait", ms, async fn() {
-    if self.held(a) || a.waiting != Some(wait) {
-      return
-    }
-    if self.archived(a) {
-      return self.let_go(a)
-    }
-    if a.compacting {
-      a.over_while_compacting = true
-      return
-    }
-    a.waiting = None
-    a.phase = "idle"
-    let last = self.last_turn(a)
-    if !(last is Null) && retrying(last) {
-      self.log(a, "info", "trying again a turn the provider had no room for", fields={ "seconds": jnum(seconds) })
-      return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_OVERLOADED"))
-    }
-    if !(last.value("waitWatch") is Some(False)) && truthy(self.store(a, "hasSessionActiveWatch", [jstr(a.key)])) {
-      return self.wait_ms(a, seconds, seconds * 1000.0)
-    }
-    self.log(a, "info", "the wait is over without word; asking again", fields={ "seconds": jnum(seconds) })
-    self.start_turn(a, "nudge", self.words(a, "waitOver", args=[jnum(seconds)]))
-  })
+  self.timer(a, "wait", ms, async fn() { self.fire_wait(a, wait, seconds) })
 }
 
 ///|
@@ -2183,28 +3128,49 @@ async fn Actors::said_last(self : Actors, a : Actor) -> String? raise {
 }
 
 ///|
+async fn Actors::fire_refill(self : Actors, a : Actor, refill : Int) -> Unit raise {
+  if a.refill != Some(refill) {
+    return
+  }
+  if self.held(a) {
+    return
+  }
+  if self.archived(a) || a.turn is Some(_) || self.busy(a) {
+    a.refill = None
+    return
+  }
+  if self.turn_slots_full(a) {
+    a.refill_at = self.now
+    self.enqueue_turn_wait(a)
+    return
+  }
+  let reserved = !a.starting_turn
+  if reserved {
+    a.starting_turn = true
+  }
+  defer {
+    if reserved {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue(drain_cap=!a.paused_cap)
+      }
+    }
+  }
+  a.refill = None
+  self.log(a, "info", "its allowance should have refilled; going on")
+  if self.has_pending(a) {
+    return self.pump(a)
+  }
+  self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"), passive=true)
+}
+
+///|
 fn Actors::await_refill(self : Actors, a : Actor, at : Double) -> Unit {
   a.refills += 1
   let refill = a.refills
   a.refill = Some(refill)
   a.refill_at = at
-  self.timer(a, "refill", at - self.now, async fn() {
-    if a.refill != Some(refill) {
-      return
-    }
-    if self.held(a) {
-      return
-    }
-    a.refill = None
-    if self.archived(a) || a.turn is Some(_) || self.busy(a) {
-      return
-    }
-    self.log(a, "info", "its allowance should have refilled; going on")
-    if self.has_pending(a) {
-      return self.pump(a)
-    }
-    self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"))
-  })
+  self.timer(a, "refill", at - self.now, async fn() { self.fire_refill(a, refill) })
 }
 
 ///|

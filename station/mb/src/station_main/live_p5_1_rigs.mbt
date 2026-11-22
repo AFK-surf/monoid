@@ -13,10 +13,7 @@ priv struct RigsLive {
 fn rigs_viewer(v : Json) -> @rigs_mode.Viewer {
   let t = (k : String) => match v {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => Some(s)
-        _ => None
-      }
+      opt_str(m.get(k))
     _ => None
   }
   { workspace: t("workspace").unwrap_or(""), sub: t("sub").unwrap_or(""), role: t("role").unwrap_or(""), email: t("email"), name: t("name") }
@@ -55,7 +52,7 @@ fn rigs_arg(v : Json) -> Json {
 /// card made again from the one it was) is called here, where it was given: the other parts have none of its numbers.
 fn P51::rigs_world(self : P51) -> @rigs_mode.World {
   let bus = self.bus
-  let callbacks : Map[Int, async (Array[Json]) -> Json] = {}
+  let callbacks : Map[Int, (Array[Json]) -> Json raise] = {}
   let next = Ref(0)
   let fn_of = (v : Json) => match v {
     { "$fn": Number(n, ..), .. } => callbacks.get(n.to_int())
@@ -74,93 +71,45 @@ fn P51::rigs_world(self : P51) -> @rigs_mode.World {
       t
     }
   }
-  let told = (t : @store_threads.Store) => {
-    let sent = t.sent.copy()
-    t.sent.clear()
-    for c in sent {
-      bus.notify_store(c)
-    }
-    // (what it found not prepared yet, asked of the builders: agents.ts `requestSessionChat`, `followLatestThreadRequests`)
-    bus.drain_thread_requests(t)
-  }
   {
     call: async fn(name, args) {
-      let arg = (i : Int) => args.get(i).unwrap_or(Json::null())
-      match name {
-        // (requests.ts `#saveAndRestate`: the request written, then its outcome queued for the agents' side's worker
-        // (card-outbox-worker.ts), which closes the card and restates its `rig.outcome`)
-        "cardOutcomes.save" => {
-          match fn_of(arg(1)) {
-            Some(f) => ignore(f([]))
-            None => ()
+      let arg = (i : Int) => arg_at(args, i)
+      let run_cb = async fn(cb : Json, cb_args : Array[Json]) -> Json? {
+        match fn_of(cb) {
+          Some(f) => Some(f(cb_args))
+          None => None
+        }
+      }
+      // (a request's write, run inside the threads' store's transaction: called once, let go after)
+      let run_write = (cb : Json) => match cb {
+        { "$fn": Number(n, ..), .. } =>
+          match callbacks.get(n.to_int()) {
+            Some(f) => {
+              callbacks.remove(n.to_int())
+              ignore(f([]))
+            }
+            None => raise LiveError("no write \{n}")
           }
-          bus.hub_card_outcomes_save(arg(0))
+        _ => raise LiveError("no write given")
+      }
+      match name {
+        "cardOutcomes.save" => {
+          ignore(dispatch_threads_card(bus, threads_of(), name, args, run_cb, run_write))
           @rigs_mode.undefined_json()
         }
-        "store.withdrawCard" => {
-          let t = threads_of()
-          let got = t.withdraw_card(arg(0), arg(1), arg(2)) catch {
-            e => {
-              told(t)
-              raise e
-            }
-          }
-          told(t)
-          rigs_answer(got)
-        }
-        "store.restateCard" => {
-          let t = threads_of()
-          let was = t.card_at(arg(1), arg(2))
-          let made = match fn_of(arg(3)) {
-            Some(f) => f([was])
-            None => was
-          }
-          let got = t.restate_card(arg(0), arg(1), arg(2), _ => @drive.to_jv(made)) catch {
-            e => {
-              told(t)
-              raise e
-            }
-          }
-          told(t)
-          rigs_answer(got)
-        }
-        "remote.ask" => {
-          let station = match arg(0) {
-            String(s) => s
-            _ => ""
-          }
-          let request = arg(1)
-          let ws = match request {
-            { "workspace": String(w), .. } => Some(w)
-            _ => None
-          }
-          let meth = match request {
-            { "method": String(m), .. } => m
-            _ => ""
-          }
-          let (answer, _) = bus.call_peer(station, ws, meth, request) catch {
+        "store.withdrawCard" | "store.restateCard" =>
+          rigs_answer(dispatch_threads_card(bus, threads_of(), name, args, run_cb, run_write).unwrap_or(Json::null()))
+        "remote.ask" =>
+          bus_remote_ask(bus, arg_str(args, 0), arg(1)) catch {
             @gate.PeerRefused(m) => raise @rigs_mode.Refused(m)
             e => raise e
           }
-          answer
-        }
         "events.tell" => {
-          (bus.events_tell.val)(
-            match arg(0) {
-              String(s) => s
-              _ => ""
-            },
-            arg(1),
-            match arg(2) {
-              String(s) => s
-              _ => ""
-            },
-            arg(3),
-          )
+          ignore(dispatch_infra(bus, name, args))
           @rigs_mode.undefined_json()
         }
         "store.getSession" =>
-          match bus.store.get_session(match arg(0) { String(s) => s; _ => "" }) {
+          match bus.store.get_session(arg_str(args, 0)) {
             Null => @rigs_mode.undefined_json()
             s => s
           }
@@ -236,10 +185,7 @@ fn P51::rigs_live(self : P51) -> Unit {
       { "args": Array(a), .. } => a
       _ => []
     }
-    let s = (i : Int) => match args.get(i) {
-      Some(String(x)) => x
-      _ => ""
-    }
+    let s = (i : Int) => opt_str(args.get(i)).unwrap_or("")
     let said : Json = match params {
       { "op": "rigs.list", .. } => Json::array(rigs.device_entries(s(0), s(1)))
       { "op": "rigs.use", .. } =>
@@ -258,6 +204,16 @@ fn P51::rigs_live(self : P51) -> Unit {
           })
           .map(n => Json::string(n)),
         )
+      { "op": "rigs.stationListed", .. } =>
+        rigs.station_listed(
+          s(0),
+          s(1),
+          args.get(2).unwrap_or(Json::null()),
+          match args.get(3) {
+            None | Some(Null) => None
+            Some(a) => Some(a)
+          },
+        )
       _ => raise BusError("no such rigs call")
     }
     (said, None)
@@ -273,10 +229,7 @@ fn P51::rigs_live(self : P51) -> Unit {
   let answer = async fn(r : Json) -> Json {
     let t = (k : String) => match r {
       Object(m) =>
-        match m.get(k) {
-          Some(String(s)) => s
-          _ => ""
-        }
+        opt_str(m.get(k)).unwrap_or("")
       _ => ""
     }
     let query = match r {
@@ -343,9 +296,10 @@ fn P51::rigs_live(self : P51) -> Unit {
       },
     ],
   )
-  // Windows: running as the machine's administrator.
+  // Windows: running as the machine's administrator, and the optional LocalSystem screen service.
   if is_windows() {
     self.elevation_live()
+    self.screen_service_live()
   }
 }
 
@@ -387,14 +341,12 @@ fn P51::elevation_live(self : P51) -> Unit {
     run: script => match (try { Ok(powershell(script)) } catch { e => Err(e) }) {
       Ok(p) => {
         let exits : Array[(Int?) -> Unit] = []
-        ignore(
-          host.rt.fork_daemon("elevation script", on_error=e => @host.note("elevation script failed: \{e}"), async fn() {
-            let (code, _, _, _) = p.finished()
-            for f in exits {
-              f(code)
-            }
-          }),
-        )
+        fork_bg(host, "elevation script", async fn() {
+          let (code, _, _, _) = p.finished()
+          for f in exits {
+            f(code)
+          }
+        })
         { kill: () => ignore(kill(p.pid, "SIGKILL")), on_error: _ => (), on_exit: f => exits.push(f) }
       }
       Err(_) => {
@@ -414,10 +366,7 @@ fn P51::elevation_live(self : P51) -> Unit {
       answer: async fn(r) {
         let t = (k : String) => match r {
           Object(m) =>
-            match m.get(k) {
-              Some(String(s)) => s
-              _ => ""
-            }
+            opt_str(m.get(k)).unwrap_or("")
           _ => ""
         }
         let viewer = match r {
@@ -433,6 +382,78 @@ fn P51::elevation_live(self : P51) -> Unit {
     },
   ])
   bus.parts.overview("elevation", async fn(viewer, _) { @rigs_mode.elevation_overview(elevation, rigs_viewer(viewer)) }) catch {
+    _ => ()
+  }
+}
+
+///|
+/// screens/service-module.ts ScreenServiceLive (Windows only).
+fn P51::screen_service_live(self : P51) -> Unit {
+  let bus = self.bus
+  let host = self.host
+  let powershell = (script : String) => spawn(host, "powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_command(script)], stdout=Piped)
+  let candidates = [
+    env_get("STILLFAIL_SCREEN_SVC").unwrap_or(""),
+    @rigs_mode.path_join([bus.app, "station", "stillfail-screen-svc.exe"]),
+    @rigs_mode.path_join([bus.app, "native", "screen", "target", "release", "stillfail-screen-svc.exe"]),
+  ]
+  let service = @rigs_mode.ScreenService::new({
+    after: (ms, f) => self.after(ms.to_int(), f),
+    changed: () => (bus.overview_changed.val)(),
+    fork: f => self.fork("screen-service", f),
+    probe: async fn() {
+      let script = @rigs_mode.screen_service_probe_script(candidates)
+      match (try { Ok(powershell(script)) } catch { e => Err(e) }) {
+        Ok(p) => {
+          let (_, _, out, _) = p.finished()
+          @rigs_mode.screen_service_parse_probe(@utf8.decode_lossy(out))
+        }
+        Err(_) => @rigs_mode.ScreenServiceProbe::empty()
+      }
+    },
+    run: script => match (try { Ok(powershell(script)) } catch { e => Err(e) }) {
+      Ok(p) => {
+        let exits : Array[(Int?) -> Unit] = []
+        fork_bg(host, "screen-service script", async fn() {
+          let (code, _, _, _) = p.finished()
+          for f in exits {
+            f(code)
+          }
+        })
+        { kill: () => ignore(kill(p.pid, "SIGKILL")), on_error: _ => (), on_exit: f => exits.push(f) }
+      }
+      Err(_) => {
+        let failed : Array[() -> Unit] = []
+        ignore(host.rt.fork_quiet(name="screen-service failed", async fn() { for f in failed { f() } }))
+        { kill: () => (), on_error: f => failed.push(f), on_exit: _ => () }
+      }
+    },
+  })
+  self.fork("screen-service", async fn() { service.start() })
+  self.stops.push(() => service.stop())
+  bus.parts.routes([
+    {
+      meth: "PUT",
+      path: "^\\/screen-service$",
+      answer: async fn(r) {
+        let t = (k : String) => match r {
+          Object(m) =>
+            opt_str(m.get(k)).unwrap_or("")
+          _ => ""
+        }
+        let viewer = match r {
+          Object(m) => m.get("viewer").unwrap_or(Json::null())
+          _ => Json::null()
+        }
+        let lang = t("lang")
+        match @rigs_mode.screen_service_route(service, t("method"), t("path"), t("rawBody"), rigs_viewer(viewer), k => tr(lang, k)) {
+          Some(a) => part_answer(a)
+          None => { "status": 404, "body": "{\"error\":\"no route\"}" }
+        }
+      },
+    },
+  ])
+  bus.parts.overview("screenService", async fn(viewer, _) { @rigs_mode.screen_service_overview(service, rigs_viewer(viewer)) }) catch {
     _ => ()
   }
 }
@@ -501,13 +522,7 @@ fn P51::rig_live(self : P51) -> Unit {
         _ => None
       })
     },
-    reach: async fn(device) {
-      let said = (bus.ui_ask.val)("devices.reach", device)
-      if said is Null {
-        raise @rigs_mode.DeviceRefused(503, "devices cannot be reached on this rig yet")
-      }
-      { destroy: () => (), on_close: _ => () }
-    },
+    reach: async fn(device) { bus_rig_reach(bus, device) },
     spawn: spawn_,
     clock,
     files: @rigs_mode.Files::of_host(host),
@@ -523,7 +538,7 @@ fn P51::rig_live(self : P51) -> Unit {
       _ => hub_before(op, arg)
     }
   }
-  self.stops.push(() => ignore(host.rt.fork_daemon("rig close", on_error=e => @host.note("rig close failed: \{e}"), async fn() { rig.close() })))
+  self.stops.push(() => fork_bg(host, "rig close", async fn() { rig.close() }))
   // What a station asks of it: through its grants first, its own `rig.` asked of it.
   bus.on_peer_prefix("rig.", async fn(peer, ws, _meth, params, _) { (rig.heard(peer, params, ws.unwrap_or(cloud.home().unwrap_or(""))), None) })
   let main = @rigs_mode.RigMain::new(
@@ -553,7 +568,7 @@ fn P51::rig_live(self : P51) -> Unit {
         }
         (port, url)
       },
-      set_notify_url: url => ignore(host.rt.fork_daemon("notify url", on_error=e => @host.note("notify url failed: \{e}"), async fn() { ignore(jobs_ask("setNotifyUrl", { "url": Json::string(url) })) })),
+      set_notify_url: url => fork_bg(host, "notify url", async fn() { ignore(jobs_ask("setNotifyUrl", { "url": Json::string(url) })) }),
       mcp_fd: None,
       shown_port: Some(0),
       serving: (_, _) => (),

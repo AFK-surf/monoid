@@ -56,6 +56,8 @@ pub fn sent_reset() -> Unit {
   sent_here_made.clear()
   local_sent_n.val = 0
   sent_pictures.clear()
+  sent_pictures_used.clear()
+  sent_pictures_tick.val = 0
   let told = sent_pictures_told.keys().to_array()
   for k in told {
     sent_picture_tell(k)
@@ -317,24 +319,6 @@ fn sent_joins(rk : String, v : ChatView?, now : Double) -> Bool {
 }
 
 ///|
-/// The rows `all` with what was sent from here and is not among them yet (`still`) put in at `at`, each as its row
-/// will be: one going close under the row before it (LocalSent's `joined`) has that row `followed`, its time under
-/// the new one, from the frame it is sent.
-fn sent_among(all : Array[Entry], keys : Array[String], at : Int, still : Array[LocalSent]) -> Unit {
-  for j, l in still {
-    all.insert(at + j, Out(l.row))
-    keys.insert(at + j, "o:" + l.row.id)
-    if l.row.joined && at + j > 0 {
-      match all[at + j - 1] {
-        Said(m) if !m.followed => all[at + j - 1] = Said({ ..m, followed: true })
-        Out(o) if !o.followed => all[at + j - 1] = Out({ ..o, followed: true })
-        _ => ()
-      }
-    }
-  }
-}
-
-///|
 /// What was sent from chat `rk` that its list made as nodes took a core's row for (`sent_as`: each core's row's key to
 /// the key, sent_local's, of what it took over) leaves what is on its way, as the old list's row_keys lets it go: the row
 /// goes on by that key in the list that took it. Kept, every word sent from a chat stayed on its way for the rest of the
@@ -396,7 +380,56 @@ let sent_pictures_told : Map[String, @signals.Signal[Int]] = Map([])
 /// id): what reads it by a node told.
 pub fn sent_picture_kept(key : String, picture : String) -> Unit {
   sent_pictures[key] = picture
+  sent_pictures_tick.val += 1
+  sent_pictures_used[key] = sent_pictures_tick.val
   sent_picture_tell(key)
+  // (beyond sent_pictures_max, the least lately kept let go of: its message drawn by its station's picture of it, as
+  // one sent from elsewhere is; the picture itself too where nothing else is drawn by it)
+  while sent_pictures.length() > sent_pictures_max {
+    let mut oldest = ""
+    let mut when = 0
+    for k, t in sent_pictures_used {
+      if k != key && (oldest == "" || t < when) {
+        oldest = k
+        when = t
+      }
+    }
+    guard oldest != "" else { break }
+    let was = sent_pictures.get(oldest)
+    sent_pictures.remove(oldest)
+    sent_pictures_used.remove(oldest)
+    sent_picture_tell(oldest)
+    match was {
+      Some(p) => sent_picture_let_go(p)
+      None => ()
+    }
+  }
+}
+
+///|
+/// How many pictures of what was sent from here are kept (sent_pictures; each image two: by its upload and by its path
+/// once up): the last few dozen sent, what a chat's latest show.
+let sent_pictures_max : Int = 64
+
+///|
+/// When each of sent_pictures was last kept (a count: sent_pictures_tick's), by its key.
+// kept across runs: let go with sent_pictures (sent_reset)
+let sent_pictures_used : Map[String, Int] = Map([])
+
+///|
+// kept across runs: put back by sent_reset
+let sent_pictures_tick : Ref[Int] = { val: 0 }
+
+///|
+/// A picture picked or pasted here (`mem:writing/`, writing_add's) let go of once nothing is drawn by it: no draft's file
+/// (writing_pictures) and no message sent from here (sent_pictures). Others are the host's (its picture of a file), or a
+/// station's, not this one's to let go of.
+fn sent_picture_let_go(picture : String) -> Unit {
+  guard picture.has_prefix("mem:writing/") else { return }
+  if writing_pictures.values().any(fn(p) { p == picture }) || sent_pictures.values().any(fn(p) { p == picture }) {
+    return
+  }
+  @ui.forget_image(picture)
 }
 
 ///|

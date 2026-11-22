@@ -5,7 +5,6 @@ import {
   "mbui/signals",
   "mbui/view",
   "mbui/headless",
-  "mbui/kit",
   "mbui/hostapi",
   "mbui/pixels",
   "stillfail/sf",

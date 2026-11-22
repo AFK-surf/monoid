@@ -54,8 +54,14 @@ pub fn move_shown(core : Core, address : String) -> Bool {
 }
 
 ///|
-/// Whether its ⋯ offers 迁移到另一台 station (station `s`): it is online and offers moving (a `beta` feature of the station's:
-/// its overview's `features`).
+/// Whether its ⋯ offers 迁移到另一台 station (station `s`): it is online and offers moving (`move_said`).
 pub fn move_offered(s : Json?) -> Bool {
-  flag(s, "online") && station_feature(s, "stationMove")
+  flag(s, "online") && move_said(s)
+}
+
+///|
+/// Whether station `s` says it takes moves (its overview's `move.offered`: every station since moving graduated,
+/// 2026-11-21; a stable one from before says not, and none from before moving says anything).
+pub fn move_said(s : Json?) -> Bool {
+  flag(field(field(s, "overview"), "move"), "offered")
 }

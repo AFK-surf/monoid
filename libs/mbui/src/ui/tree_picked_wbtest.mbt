@@ -292,3 +292,112 @@ test "words of the tree's a finger picked: the page's items in the system's text
   assert_eq(took, [("link", ["m1"]), ("wide", ["m1"])])
   assert_eq(picked_now(), None)
 }
+
+///|
+test "words of the tree's a finger picked, then a press under them tapped: the tap lets go of what is picked and presses nothing; the next tap presses it" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2)
+  t.check_looks(false)
+  let pressed = Ref(0)
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.padding(Is((0.0, 40.0, 0.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
+      words_picked(page)
+      page.box(fn(row) {
+        picked_of(row, "m1") |> ignore
+        row.height(Is(Some(40.0))) |> ignore
+        row.box(fn(n) {
+          n
+          .width(Is(Some(300.0)))
+          .words_runs(Is(picked_runs), ink=0x333333FFL, look={ size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      page.box(fn(b) {
+        b
+        .width(Is(Some(120.0)))
+        .height(Is(Some(60.0)))
+        .ground(Is(0x112233FFL))
+        .says(Is(Some(@view.said(Button, label="打开"))))
+        .on_press(fn() { pressed.val = pressed.val + 1 })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.press_at(60.0, 51.0)
+  t.run_for(long_press_ms)
+  t.release(60.0, 51.0)
+  t.draw()
+  assert_true(picked_now() is Some(p) && p.finger, msg="the word a finger held still on picked")
+  // (the press, under what is picked: 40 down, the row's 40, then its own 60)
+  t.tap(60.0, 110.0)
+  t.draw()
+  assert_eq(picked_now(), None)
+  assert_eq(pressed.val, 0)
+  t.tap(60.0, 110.0)
+  t.draw()
+  assert_eq(pressed.val, 1)
+}
+
+///|
+test "words of the tree's a finger picked in a column it scrolls, then a finger dragged up over a press there: the column scrolled, nothing pressed" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2, pointing=Finger)
+  t.check_looks(false)
+  let scroll = @view.Scroll::new()
+  let pressed = Ref(0)
+  set_view_app(fn(root) {
+    root.box(fn(v) {
+      words_picked(v)
+      v
+      .width(Is(Some(400.0)))
+      .height(Is(Some(300.0)))
+      .scrolls(scroll, slop=touch_slop(), fn(col) {
+        col.box(fn(row) {
+          picked_of(row, "m1") |> ignore
+          row.height(Is(Some(40.0))) |> ignore
+          row.box(fn(n) {
+            n
+            .width(Is(Some(300.0)))
+            .words_runs(Is(picked_runs), ink=0x333333FFL, look={ size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        for i in 0..<10 {
+          col.box(fn(r) {
+            r
+            .width(Is(Some(400.0)))
+            .height(Is(Some(60.0)))
+            .says(Is(Some(@view.said(Button, label="行 \{i}"))))
+            .on_press(fn() { pressed.val += 1 })
+            |> ignore
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.press_at(60.0, 11.0)
+  t.run_for(long_press_ms)
+  t.release(60.0, 11.0)
+  t.draw()
+  assert_true(picked_now() is Some(p) && p.finger, msg="the word a finger held still on picked")
+  // (a finger down on a row that is pressed, under what is picked, then dragged up past the slop)
+  t.touch(0, 150.0, 200.0)
+  t.run_for(finger_menu_tap_ms)
+  t.touch(1, 150.0, 170.0)
+  t.touch(1, 150.0, 120.0)
+  t.run_for(finger_menu_tap_ms)
+  t.touch(2, 150.0, 120.0)
+  t.run_for(long_press_ms)
+  assert_true(scroll.at(view_tree().unwrap()) > 0.0, msg="the column scrolled: \{scroll.at(view_tree().unwrap())}")
+  assert_eq(pressed.val, 0)
+}

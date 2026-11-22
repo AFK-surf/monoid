@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
-import { type Entry, lockChain, personChain, signedBytes, entryHash as stationHash } from "../../station/src/cloud/lock.ts";
+import { type Entry, lockChain, personChain, signedBytes, entryHash as stationHash } from "../../shared/lock.ts";
 import { entryHash, type LockEntry } from "../src/lock.ts";
 import type { PersonalEntry } from "../src/personal-lock.ts";
 

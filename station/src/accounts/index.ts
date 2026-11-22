@@ -18,7 +18,7 @@
 //   (kimi.ts).
 import { shareRefusal } from "../share/index.ts";
 import { HERMES_MODEL_LIMIT } from "../agents/hermes.ts";
-import { agyAccountFile, agyCompany, agyEmailIn, agyPlan, agyToken, classifyFailure as agyClassifyFailure } from "../agents/agy.ts";
+import { agyAccountFile, agyCompany, agyEmailIn, agyToken, classifyFailure as agyClassifyFailure, type AgyCatalog } from "../agents/agy.ts";
 import { expandDevinFusion } from "../agents/devin.ts";
 import { runtimeKind, runtimeLabel } from "../agents/runtime.ts";
 import type { Clock } from "effect";
@@ -57,6 +57,7 @@ import { type Bound, LEND_BOUND_MS, claudeOAuthToken } from "./oauth.ts";
 import { accessKinds, checkProfile, devinAccountFile, devinNotedIn, grokAuthFile, grokEmailIn, keyed, loginCommand, needsKey, type ProfileCheck, type ProfileQuota, runtimesFor, runtimesOf, URLS, type Urls } from "./profiles.ts";
 import { checkQuota, codexUsage, lentCodexUsage, machineUsage } from "./quota.ts";
 import { claudeResetWith } from "./claude-reset.ts";
+import { DEFAULT_SERVICES, serviceOf, type ServiceRegistry } from "./services.ts";
 import { Refused as Refusal } from "../api/request.ts";
 
 export { checkConfig } from "./check.ts";
@@ -85,6 +86,8 @@ const CONSOLE_RENEW_EVERY_MS = 6 * 3600_000;
 /// How often the Kimi Code sign-ins' tokens (minutes) are looked at (kimi.ts kimiDue says which to renew).
 const KIMI_RENEW_EVERY_MS = 60_000;
 const PENDING_KEPT_MS = 15 * 60_000;
+/// Default active-session cap automatically applied to newly signed-in subscription profiles.
+export const DEFAULT_NEW_SUBSCRIPTION_MAX_CONCURRENT_SESSIONS = 8;
 /// The checks the policy page counts: of the last days, and the chats it names for each option at most.
 const POLICY_DAYS = 7;
 const POLICY_CHATS = 20;
@@ -93,7 +96,14 @@ const POLICY_CHATS = 20;
 export { Refusal };
 
 /// What a check is asked: the account and where it signs in (its home, or a trial one for a key being tried).
-export type CheckRequest = { runtime: Runtime; kind: AccessKind; key: string; via: Via; home: string; machine: boolean; login?: boolean };
+export type CheckRequest = { runtime?: Runtime; kind: AccessKind; key: string; via: Via; service?: string; profile?: Profile; home: string; machine: boolean; login?: boolean; recheck?: boolean };
+
+/// The subscription runtimes whose allowance is read (quota.ts): a login of theirs still good answers it.
+const QUOTA_RUNTIMES: readonly (Runtime | undefined)[] = ["claude", "codex", "agy", "cursor", "grok"];
+
+/// A subscription's login found over here, for the workspace's managers to sign it in again (`station`: the station
+/// whose login it is, a borrowed one's host).
+export type LoginLost = { id: string; profile: Profile; station: string | null };
 
 /// The profile's codex app-server, for what only it says (the agents' CodexDriver: rateLimits, resetQuota, models).
 export type CodexAccess = {
@@ -111,7 +121,7 @@ export type AccountsDeps = {
   /// Starts reviewing the done chats no decision has answered (review.ts): how many, or null without a usable model.
   reviewUndecided?: () => number | null | Promise<number | null>;
   hub?: {
-    accounts: { setHealth(health: (id: string) => ProfileHealth): void; healthOf(id: string): ProfileHealth; setRecheck?(recheck: (id: string) => Promise<unknown>): void; setQuotaAgain?(read: (id: string) => Promise<unknown>): void };
+    accounts: { setHealth(health: (id: string) => ProfileHealth): void; healthOf(id: string): ProfileHealth; setRecheck?(recheck: (id: string, force?: boolean) => Promise<unknown>): void; setQuotaAgain?(read: (id: string) => Promise<unknown>): void };
     /// A profile was deleted: its sessions are taken on by another, or stopped.
     profileGone?(id: string): Promise<void>;
     /// A manual reset lets sessions waiting on this account continue.
@@ -125,7 +135,7 @@ export type AccountsDeps = {
   /// Hermes reports its configured providers and model IDs in ACP session/new (no model turn).
   hermes?: () => { models(profile: Profile): Promise<string[]> } | undefined;
   /// The Antigravity CLI says whether it is signed in, and the models it offers, in ACP session/new (no model turn).
-  agy?: () => { models(profile: Profile): Promise<string[]>; catalog?(profile: Profile): Promise<{ models: string[]; efforts: Record<string, string[]>; defaults: Record<string, string>; tier?: string }> } | undefined;
+  agy?: () => { models(profile: Profile): Promise<string[]>; catalog?(profile: Profile): Promise<AgyCatalog> } | undefined;
   /// Whether someone follows the events or a turn runs (allowances are asked again on a round only then).
   following?: () => boolean;
   /// The station's environment (where the machine's logins are, and the CLIs found); process.env by default.
@@ -147,10 +157,18 @@ export type AccountsDeps = {
   clock?: Clock.Clock;
   /// The workspaces the station is in, its home one first; none by default.
   workspaces?: () => string[];
+  /// Service profile adapters for non-agent-runtime accounts (`access.kind === "service"`).
+  services?: ServiceRegistry;
+  /// A subscription's login newly found over (one that had signed in, or a runtime was refused on): the workspace's
+  /// managers are told to sign it in again (cloud/notify.ts `notifyProfileLogin`). A borrowed one's only where its host
+  /// did not say so itself (a host from before, or one not answering), as the host tells its own.
+  loginLost?: (lost: LoginLost) => void;
+  /// Its login good again (signed in anew, or checked so): told again at once the next time it is over.
+  loginBack?: (id: string) => void;
   /// Profiles other stations share with this one (share/index.ts): how they are doing is their host's to say, and
-  /// what the overview says of each profile's sharing.
+  /// what the overview says of each profile's sharing. `recheck`: its host asks its provider again first.
   shared?: {
-    status(profile: Profile): Promise<{ check: Json; quota: Json }>;
+    status(profile: Profile, recheck?: boolean): Promise<{ check: Json; quota: Json }>;
     /// `workspace`: the viewer's, whose stations alone it names (null: all).
     view(profile: Json, workspace: string | null): Json | null;
     lendCodex?(profile: Profile, rejected: boolean): Promise<number>;
@@ -169,12 +187,12 @@ export type AccountsDeps = {
 /// A sign-in with no profile yet: its runtime, its home while signing in, who started it, what it made.
 /// `access`: an OpenCode Go profile signed in to the OpenCode Console, or a Kimi Code one to Kimi (absent: the runtime's
 /// subscription).
-type Pending = { runtime: Runtime; access?: "opencode-go" | "kimi-code" | "agy-enterprise"; home: string; by: Viewer; created: string | null; error: string | null };
+type Pending = { runtime?: Runtime; service?: string; access?: "opencode-go" | "kimi-code" | "agy-enterprise"; home: string; by: Viewer; created: string | null; error: string | null };
 
 const isObject = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
 const manages = managesStation;
 const runtimeOf = (v: unknown): Runtime | undefined => runtimeKind(v);
-const ACCESS_KINDS: AccessKind[] = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider"];
+const ACCESS_KINDS: AccessKind[] = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider", "service"];
 const accessKindOf = (v: unknown): AccessKind | undefined => (ACCESS_KINDS.includes(v as AccessKind) ? (v as AccessKind) : undefined);
 /// admin/mod.rs Input::text: JavaScript's String(x ?? "").
 const text = (v: unknown) => (v === undefined || v === null ? "" : typeof v === "string" ? v : JSON.stringify(v));
@@ -197,20 +215,36 @@ async function lentLoginVersion(home: string): Promise<string | null> {
 type HomeSays = { exists: boolean; email: string | null };
 
 /// What a profile's home is read for: the home, and what in it says whose account it is.
-function homeAsked(p: Json): { home: string; runtime: Runtime; files: "account" | "console" | null } {
-  const files = accessKind(p) === "subscription" ? (borrowed(p) ? null : "account") : isObject(p.access) && p.access.login === true ? "console" : null;
-  return { home: String(p.home ?? ""), runtime: p.runtime, files };
+function homeAsked(p: Json): { home: string; runtime?: Runtime; service?: string; files: "account" | "console" | "service" | null } {
+  const kind = accessKind(p);
+  const service = serviceOf(p);
+  const files =
+    kind === "service"
+      ? (service !== undefined ? "service" : null)
+      : kind === "subscription"
+        ? (borrowed(p) ? null : "account")
+        : isObject(p.access) && p.access.login === true
+          ? "console"
+          : null;
+  return {
+    home: String(p.home ?? ""),
+    ...(p.runtime !== undefined ? { runtime: p.runtime } : {}),
+    ...(service !== undefined ? { service } : {}),
+    files,
+  };
 }
 
 /// `homeAsked`'s answer, read off the thread (fs/promises).
-async function homeSaysSoon(p: Json): Promise<HomeSays> {
-  const { home, runtime, files } = homeAsked(p);
+async function homeSaysSoon(p: Json, services: ServiceRegistry = DEFAULT_SERVICES): Promise<HomeSays> {
+  const { home, runtime, service, files } = homeAsked(p);
   const email =
-    files === "account"
+    files === "account" && runtime !== undefined
       ? await accountEmailSoon(runtime, home)
       : files === "console"
         ? await emailInSoon([consoleFile(home)])
-        : null;
+        : files === "service" && service !== undefined
+          ? ((await services.get(service)?.identity(home)) ?? null)
+          : null;
   return { exists: await accessFile(home).then(() => true, () => false), email };
 }
 
@@ -230,6 +264,10 @@ export class Accounts {
   private loginGeneration = new Map<string, number>();
   /// The last changed borrowed login whose app-servers were told to reload it.
   private borrowedLogin = new Map<string, string | null>();
+  /// Logins a runtime was refused on and a recheck found over (FB-44), with what is said and the allowance's `checkedAt`
+  /// then: kept signed out through checks that say otherwise (a borrowed one's host from before answers what it had)
+  /// until it signs in anew, its share changes, or an allowance read after says it works.
+  private authRevoked = new Map<string, { detail: string; quota: ProfileQuota | undefined; quotaAt: number }>();
   /// OpenCode Console and Kimi tokens being renewed, by profile (a refresh token is spent once).
   private renewing = new Map<string, Promise<void>>();
   /// The sign-ins for new profiles being settled (pendingChanged), by id: whether it was told again meanwhile.
@@ -240,7 +278,7 @@ export class Accounts {
   /// Which Codex account each Codex subscription profile is signed in to, as its auth.json last said (read off the
   /// thread: `codexAccountRead`), and the reads under way.
   private readonly codexAccounts = new Map<string, { home: string; account: string | null }>();
-  private readonly codexAccountReads = new Map<string, Promise<void>>();
+  private readonly codexAccountReads = new Map<string, { home: string; read: Promise<void> }>();
   /// What each profile's home said when last read (`HomeSays`), by profile, with what it was read for: the overview is
   /// made again at each change for each viewer, and read every profile's files on the thread each time (a few dozen
   /// calls; seconds on a machine short of memory). Read again off the thread as it is made, at most every
@@ -259,6 +297,7 @@ export class Accounts {
   private background: Fibers;
   private stops: (() => void)[] = [];
   private readonly urls: Urls;
+  private readonly services: ServiceRegistry;
   private readonly checkFn: (request: CheckRequest, lang: Lang) => Promise<ProfileCheck>;
   private readonly quotaFn: ((profile: Profile) => Promise<ProfileQuota>) | null;
   private readonly resetFn: ((profile: Profile, key: string, kind: string | null) => Promise<Json>) | null;
@@ -276,19 +315,20 @@ export class Accounts {
     this.deps = deps;
     this.background = new Fibers("accounts", deps.clock);
     this.urls = deps.urls ?? URLS;
+    this.services = deps.services ?? DEFAULT_SERVICES;
     // A Cursor sign-in's key is named for this machine in the person's Cursor dashboard (accounts/cursor.ts).
     this.logins = new LoginManager(deps.data, deps.loginCommands, undefined, deps.clock, this.urls.console, this.urls.cursor ?? CURSOR, () => `still.fail · ${hostname()}`, this.urls.kimi ?? KIMI_AUTH);
     this.logins.setStateFile((id) => this.loginStateFile(id));
     this.machine =
       deps.machine !== undefined ? deps.machine : new MachineLogins(this.env, (runtime, env) => machineUsage(runtime, env, this.urls), undefined, deps.clock);
     this.checkFn =
-      deps.check ?? ((request, lang) => checkProfile({ ...request, env: this.env, machineToken: (env) => this.machineToken(env), urls: this.urls, lang }));
+      deps.check ?? ((request, lang) => checkProfile({ ...request, services: this.services, env: this.env, machineToken: (env, rejected) => this.machineToken(env, rejected), urls: this.urls, lang }));
     this.quotaFn =
       deps.quota !== undefined
         ? deps.quota
         : (profile) => {
             const codex = deps.codex?.();
-            return checkQuota(profile, this.env, codex ? (p) => codex.rateLimits(p) : undefined, this.urls, stationLang(), deps.claudeVersion?.() ?? null);
+            return checkQuota(profile, this.env, codex ? (p) => codex.rateLimits(p) : undefined, this.urls, stationLang(), deps.claudeVersion?.() ?? null, this.services);
           };
     this.resetFn =
       deps.resetQuota !== undefined
@@ -313,19 +353,7 @@ export class Accounts {
     this.deps.hub?.accounts.setHealth((id) => this.health(id));
     // (which Codex account each is on, for the pool's first picks)
     void this.codexAccountsRead().catch(() => {});
-    this.deps.hub?.accounts.setRecheck?.(async (id) => {
-      const profile = this.profile(id);
-      if (profile?.runtime === "codex" && accessKind(profile) === "subscription") {
-        // `codex login status` only checks the local file. Ask the provider before choosing the next account.
-        const generation = this.loginGeneration.get(id) ?? 0;
-        const read = await this.readQuota(id, true);
-        if ((this.loginGeneration.get(id) ?? 0) !== generation) return;
-        if (read?.state !== "ok" && this.checks.get(id)?.state !== "login") {
-          // Even if the allowance endpoint is unreachable, the turn itself reported an authentication refusal.
-          this.codexLogin(id, true);
-        }
-      } else await this.check(id);
-    });
+    this.deps.hub?.accounts.setRecheck?.((id, force) => this.recheckProfile(id, force === true));
     // Asked after a turn failed for no reason its words gave: the one on its way waited for, else a new one.
     this.deps.hub?.accounts.setQuotaAgain?.(async (id) => {
       const busy = this.quotaBusy.get(id);
@@ -375,7 +403,7 @@ export class Accounts {
             }
             return;
           }
-          for (const p of this.profiles()) if (p.machine === true && before.get(p.runtime) !== last.get(p.runtime)) this.afterSignIn(p.id);
+          for (const p of this.profiles()) if (p.machine === true && p.runtime !== undefined && before.get(p.runtime) !== last.get(p.runtime)) this.afterSignIn(p.id);
         }),
       );
       this.background.spawn(() => this.machine!.refresh());
@@ -447,15 +475,15 @@ export class Accounts {
   /// `again`: its login just changed, so one read under way may have read the file before: a read after it, kept last.
   private codexAccountRead(profile: Profile, again = false): Promise<void> {
     const under = this.codexAccountReads.get(profile.id);
-    if (under && !again) return under;
-    const read: Promise<void> = (under ?? Promise.resolve())
+    if (under && !again && under.home === profile.home) return under.read;
+    const read: Promise<void> = (under?.read ?? Promise.resolve())
       .catch(() => {})
       .then(() => codexAccountIdentity(profile.home))
       .then((account) => void this.codexAccounts.set(profile.id, { home: profile.home, account }))
       .finally(() => {
-        if (this.codexAccountReads.get(profile.id) === read) this.codexAccountReads.delete(profile.id);
+        if (this.codexAccountReads.get(profile.id)?.read === read) this.codexAccountReads.delete(profile.id);
       });
-    this.codexAccountReads.set(profile.id, read);
+    this.codexAccountReads.set(profile.id, { home: profile.home, read });
     return read;
   }
 
@@ -467,7 +495,12 @@ export class Accounts {
 
   /// How a profile is doing, told to a station borrowing it: its allowance asked again first when older than a round
   /// (the rounds run only while someone follows this station, and the borrower is not someone).
-  async lentHealth(id: string): Promise<ProfileHealth> {
+  /// `recheck`: the borrower was refused on it, so it is asked of its provider again first (`recheckProfile`).
+  async lentHealth(id: string, recheck = false): Promise<ProfileHealth> {
+    if (recheck) {
+      await this.recheckProfile(id).catch(() => {});
+      return this.health(id);
+    }
     if (!this.quotas.has(id) || this.background.now() - this.quotaAskedAt(id) >= QUOTA_EVERY_MS) await this.refreshQuota(id).catch(() => null);
     return this.health(id);
   }
@@ -576,7 +609,7 @@ export class Accounts {
       const existing: Json | undefined = list.find((p) => p?.id === id);
       const machine = existing?.machine === true;
       // One on the machine's login is the machine's: only which of its models are used, and how it runs, are chosen.
-      const get = (key: string): unknown => (machine && !["model", "models", "backgroundOnMessage", "fast"].includes(key) ? undefined : given[key]);
+      const get = (key: string): unknown => (machine && !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions", "newAccountProtection"].includes(key) ? undefined : given[key]);
       // env: a string sets the value; null removes the key; an omitted key keeps it (so masked secrets survive edits).
       const env: Record<string, string> = isObject(existing?.env) ? { ...existing.env } : {};
       const givenEnv = get("env");
@@ -601,6 +634,12 @@ export class Accounts {
         if (endpoint === undefined) throw new Refusal(400, tr(lang, "station.profile.addressNeeded"));
       }
       const protocol: string | undefined = typeof keep?.protocol === "string" ? keep.protocol : undefined;
+      const service: string | undefined =
+        typeof keep?.service === "string"
+          ? keep.service
+          : isObject(access) && typeof access.service === "string" && access.service.trim() !== ""
+            ? access.service.trim()
+            : undefined;
       const givenName = get("name");
       const name = typeof givenName === "string" ? givenName.trim() : typeof existing?.name === "string" ? existing.name : undefined;
       const givenModel = get("model");
@@ -632,6 +671,28 @@ export class Accounts {
       else fast = typeof existing?.fast === "boolean" ? existing.fast : undefined;
       const givenBackground = get("backgroundOnMessage");
       const background = typeof givenBackground === "boolean" ? givenBackground : typeof existing?.backgroundOnMessage === "boolean" ? existing.backgroundOnMessage : undefined;
+      const givenMaxSessions = get("maxConcurrentSessions");
+      let maxConcurrentSessions: number | undefined;
+      if (givenMaxSessions === undefined) {
+        maxConcurrentSessions = typeof existing?.maxConcurrentSessions === "number" && Number.isInteger(existing.maxConcurrentSessions) && existing.maxConcurrentSessions > 0 ? existing.maxConcurrentSessions : undefined;
+      } else if (givenMaxSessions === null || givenMaxSessions === 0) {
+        maxConcurrentSessions = undefined;
+      } else if (typeof givenMaxSessions === "number" && Number.isInteger(givenMaxSessions) && givenMaxSessions > 0) {
+        maxConcurrentSessions = givenMaxSessions;
+      } else {
+        throw new Refusal(400, "maxConcurrentSessions must be a positive integer or null");
+      }
+      const givenProtection = get("newAccountProtection");
+      let newAccountProtection: boolean | undefined;
+      if (givenMaxSessions !== undefined || givenProtection === false) {
+        newAccountProtection = undefined;
+      } else if (givenProtection === true) {
+        newAccountProtection = maxConcurrentSessions !== undefined ? true : undefined;
+      } else if (givenProtection !== undefined) {
+        throw new Refusal(400, "newAccountProtection must be a boolean");
+      } else {
+        newAccountProtection = maxConcurrentSessions !== undefined && existing?.newAccountProtection === true ? true : undefined;
+      }
       const joined = this.joined();
       const withheld: string[] = Array.isArray(givenWorkspaces) ? joined.filter((w) => !givenWorkspaces.includes(w)) : givenWorkspaces === null ? joined : Array.isArray(existing?.withheld) ? existing.withheld : [];
       const givenHome = get("home");
@@ -640,13 +701,14 @@ export class Accounts {
       const next: Json = { id };
       if (name !== undefined && name !== "") next.name = name;
       const runtime = runtimeOf(get("runtime")) ?? runtimeOf(existing?.runtime);
-      if (runtime !== undefined) next.runtime = runtime;
+      if (kind !== "service" && runtime !== undefined) next.runtime = runtime;
       if (kind !== undefined) {
         next.access = { kind };
         if (key !== undefined) next.access.key = key;
         if (api && provider !== undefined) next.access.provider = provider;
         if (api && endpoint !== undefined) next.access.endpoint = endpoint;
         if (api && protocol !== undefined) next.access.protocol = protocol;
+        if (kind === "service" && service !== undefined) next.access.service = service;
         // Signed in to the OpenCode Console or to Kimi: still, unless a key was given in place of its token.
         const signsIn = kind === "opencode-go" || (api && provider === KIMI_CODE);
         if (signsIn && keep?.login === true && givenKey === undefined) next.access.login = true;
@@ -660,6 +722,8 @@ export class Accounts {
       if (isObject(existing?.share)) next.share = existing.share;
       // Only the default's opposite is written.
       if (background === false) next.backgroundOnMessage = false;
+      if (maxConcurrentSessions !== undefined) next.maxConcurrentSessions = maxConcurrentSessions;
+      if (newAccountProtection === true && maxConcurrentSessions !== undefined) next.newAccountProtection = true;
       if (fast === true) next.fast = true;
       if ((given.enabled ?? existing?.enabled) === false) next.enabled = false;
       if (withheld.length > 0) next.withheld = withheld;
@@ -837,6 +901,15 @@ export class Accounts {
     if (!profile) throw new Refusal(404, `unknown profile ${id}`);
     const kind = accessKind(profile);
     const kimi = kimiSignedIn(profile);
+    if (kind === "service") {
+      if (borrowed(profile)) throw new Refusal(409, tr(lang, "station.share.borrowedEdit"));
+      const sid = serviceOf(profile);
+      const adapter = sid !== undefined ? this.services.get(sid) : undefined;
+      if (!adapter?.login) throw new Refusal(400, tr(lang, "station.admin.loginSubscriptionOnly"));
+      log.info("accounts", "service login started from the admin page", { profile: id, service: sid, by: viewer.email });
+      const email = await adapter.identity(profile.home).catch(() => null);
+      return adapter.login({ id, home: profile.home, email }, { env: this.env, lang, logins: this.logins });
+    }
     if (kind !== "subscription" && kind !== "opencode-go" && !kimi) throw new Refusal(400, tr(lang, "station.admin.loginSubscriptionOnly"));
     if (profile.machine === true) throw new Refusal(400, tr(lang, "station.admin.loginOnMachine"));
     if (borrowed(profile)) throw new Refusal(409, tr(lang, "station.share.borrowedEdit"));
@@ -858,6 +931,7 @@ export class Accounts {
       const candidate = (fromHome ?? fallback)?.trim() ?? "";
       email = EMAIL_RE.test(candidate) ? candidate : null;
     }
+    if (profile.runtime === undefined) throw new Refusal(400, tr(lang, "station.admin.loginSubscriptionOnly"));
     return this.logins.start({ id, runtime: profile.runtime, home: profile.home, ...(email ? { email } : {}) }, lang);
   }
 
@@ -868,13 +942,20 @@ export class Accounts {
   async newLogin(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<{ id: string; job: LoginJob }> {
     const id = `login-${randomBytes(4).toString("hex")}`;
     const home = join(this.deps.data, "homes", id);
+    if (typeof input.service === "string" && input.service !== "") {
+      const adapter = this.services.get(input.service);
+      if (!adapter?.login) throw new Refusal(400, `unknown service ${text(input.service)}`);
+      this.pending.set(id, { service: input.service, home, by: viewer, created: null, error: null });
+      log.info("accounts", "service sign-in for a new profile started", { login: id, service: input.service, by: viewer.email });
+      return { id, job: await adapter.login({ id, home }, { env: this.env, lang, logins: this.logins }) };
+    }
     if (input.access === "opencode-go") {
-      this.pending.set(id, { runtime: "claude", access: "opencode-go", home, by: viewer, created: null, error: null });
+      this.pending.set(id, { access: "opencode-go", home, by: viewer, created: null, error: null });
       log.info("accounts", "OpenCode sign-in for a new profile started", { login: id, by: viewer.email });
       return { id, job: await this.logins.startConsole({ id, home }, lang) };
     }
     if (input.access === "kimi-code") {
-      this.pending.set(id, { runtime: "claude", access: "kimi-code", home, by: viewer, created: null, error: null });
+      this.pending.set(id, { access: "kimi-code", home, by: viewer, created: null, error: null });
       log.info("accounts", "Kimi sign-in for a new profile started", { login: id, by: viewer.email });
       return { id, job: await this.logins.startKimi({ id, home }, lang) };
     }
@@ -944,9 +1025,23 @@ export class Accounts {
     const kimiLogin = kimi ? await readKimi(p.home) : null;
     if (gone()) return;
     if (kimi && !kimiLogin) return this.pendingFailed(id, tr(lang, "station.login.kimiUnreadable"));
-    const email = signedIn ? signedIn.email : kimi ? null : await accountEmailSoon(p.runtime, p.home);
+    const email = signedIn
+      ? signedIn.email
+      : kimi
+        ? null
+        : p.service !== undefined
+          ? ((await this.services.get(p.service)?.identity(p.home)) ?? null)
+          : p.runtime !== undefined
+            ? await accountEmailSoon(p.runtime, p.home)
+            : null;
     if (gone()) return;
-    const base = signedIn ? "opencode-go" : kimi ? KIMI_CODE : slug(email ?? `${p.runtime}-subscription`, 40) || p.runtime;
+    const base = signedIn
+      ? "opencode-go"
+      : kimi
+        ? KIMI_CODE
+        : p.service !== undefined
+          ? (slug(email ?? p.service, 40) || p.service)
+          : (slug(email ?? `${p.runtime ?? "account"}-subscription`, 40) || p.runtime || "account");
     const taken = await this.takenIdsSoon();
     if (gone()) return;
     // (its id held from the homes' listing to its save: another made meanwhile takes another)
@@ -975,16 +1070,36 @@ export class Accounts {
       return;
     }
     const enterprise = p.access === "agy-enterprise";
-    const name = signedIn ? (email ?? "OpenCode Go") : kimi ? "Kimi Code" : enterprise ? (email ?? tr(lang, "station.profile.agyEnterpriseSubscription")) : (email ?? tr(lang, p.runtime === "claude" ? "station.profile.claudeSubscription" : p.runtime === "grok" ? "station.profile.grokSubscription" : p.runtime === "cursor" ? "station.profile.cursorSubscription" : p.runtime === "devin" ? "station.profile.devinSubscription" : p.runtime === "agy" ? "station.profile.agySubscription" : "station.profile.chatgptSubscription"));
+    const subscriptionName = () => {
+      if (p.runtime === "claude") return tr(lang, "station.profile.claudeSubscription");
+      if (p.runtime === "codex") return tr(lang, "station.profile.chatgptSubscription");
+      if (p.runtime === "grok") return tr(lang, "station.profile.grokSubscription");
+      if (p.runtime === "cursor") return tr(lang, "station.profile.cursorSubscription");
+      if (p.runtime === "devin") return tr(lang, "station.profile.devinSubscription");
+      if (p.runtime === "agy") return tr(lang, "station.profile.agySubscription");
+      return profileId;
+    };
+    const name = signedIn
+      ? (email ?? "OpenCode Go")
+      : kimi
+        ? "Kimi Code"
+        : p.service !== undefined
+          ? (email ?? this.services.get(p.service)?.name ?? p.service)
+          : enterprise
+            ? (email ?? tr(lang, "station.profile.agyEnterpriseSubscription"))
+            : (email ?? subscriptionName());
     try {
       await this.save(p.by, `profile ${profileId} from a sign-in`, (raw) => {
         // An OpenCode Go one runs every runtime its key does (it has none of its own).
         // A Kimi Code one runs Claude Code, its token read from its home (kimi.ts), never kept here.
+        const maxConcurrentSessions = DEFAULT_NEW_SUBSCRIPTION_MAX_CONCURRENT_SESSIONS;
         const made = signedIn
-          ? { id: profileId, name, access: { kind: "opencode-go", key: signedIn.access, login: true }, home: `homes/${profileId}`, env: {} }
+          ? { id: profileId, name, access: { kind: "opencode-go", key: signedIn.access, login: true }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions, newAccountProtection: true }
           : kimi
-            ? { id: profileId, name, access: { kind: "api-provider", provider: KIMI_CODE, login: true }, home: `homes/${profileId}`, env: {} }
-            : { id: profileId, name, runtime: p.runtime, access: enterprise ? { kind: "subscription", enterprise: true } : { kind: "subscription" }, home: `homes/${profileId}`, env: {} };
+            ? { id: profileId, name, access: { kind: "api-provider", provider: KIMI_CODE, login: true }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions, newAccountProtection: true }
+            : p.service !== undefined
+              ? { id: profileId, name, access: { kind: "service", service: p.service }, home: `homes/${profileId}`, env: {} }
+              : { id: profileId, name, ...(p.runtime !== undefined ? { runtime: p.runtime } : {}), access: enterprise ? { kind: "subscription", enterprise: true } : { kind: "subscription" }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions, newAccountProtection: true };
         raw.profiles = [...(Array.isArray(raw.profiles) ? raw.profiles : []), made];
       });
     } catch (e) {
@@ -1127,6 +1242,7 @@ export class Accounts {
   /// A profile just signed in: checked (which lists its models, all of them run) and its allowance read, so its page
   /// shows them at once.
   private afterSignIn(id: string) {
+    this.authRevoked.delete(id);
     const profile = this.profile(id);
     // A completed Codex sign-in replaces the login which the provider refused. If the allowance service happens to be
     // unreachable now, keep the new sign-in's status; a new refusal will mark it again.
@@ -1229,9 +1345,25 @@ export class Accounts {
 
   // ── checks and allowances ──
 
-  private keepCheck(id: string, check: ProfileCheck) {
+  /// `forced`: a login found over here whatever its check says (`revoke`).
+  private keepCheck(id: string, check: ProfileCheck, forced = false) {
     check.checkedAt = this.background.now();
     const before = this.checks.get(id);
+    const revoked = this.authRevoked.get(id);
+    if (revoked !== undefined && check.state !== "login" && check.state !== "failed") {
+      // Good again only by an allowance read since it was found over (a sign-in anew forgets it: afterSignIn): one read
+      // here is one kept since; a borrowed one's host's is one it read later (a host from before answers what it had).
+      const quota = this.quotas.get(id);
+      const since = quota !== undefined && typeof quota.checkedAt === "number" &&
+        (borrowed(this.profile(id)) ? quota.checkedAt > revoked.quotaAt : quota !== revoked.quota && quota.checkedAt >= revoked.quotaAt);
+      if (quota?.state === "ok" && since) this.authRevoked.delete(id);
+      else {
+        check = { ...check, state: "login", detail: revoked.detail };
+        forced = true;
+      }
+    }
+    if (check.state === "login" && before?.state !== "login") this.lost(id, before, forced);
+    else if (check.state === "ok" && before?.state !== "ok") this.deps.loginBack?.(id);
     this.checks.set(id, check);
     this.deps.store.setProfileCheck(id, check);
     // Other models found: one may now replace one the profile names.
@@ -1242,6 +1374,84 @@ export class Accounts {
       this.#unchecking = this.uncheckOutdated().catch(() => {});
     }
     this.changed();
+  }
+
+  /// A subscription's login newly over, told to the managers where it had signed in (or was found over here): a profile
+  /// made and never signed in is not. A borrowed one's host tells its own, unless it was found over here alone.
+  private lost(id: string, before: ProfileCheck | undefined, forced: boolean) {
+    const profile = this.profile(id);
+    if (!profile || profile.enabled === false || accessKind(profile) !== "subscription") return;
+    if (borrowed(profile) ? !forced : !(forced || before?.state === "ok" || this.quotas.has(id))) return;
+    this.deps.loginLost?.({ id, profile, station: borrowed(profile) ? (this.deps.shared?.hostName?.(profile) ?? null) : null });
+  }
+
+  /// Its login taken as over (a runtime refused on it, and its recheck found it so; or its host said so): its check says
+  /// to sign in again, and the pool passes it over (sessions/pool.ts `signsIn`) until it signs in anew. `seen`: the
+  /// newest allowance reading its host gave meanwhile (a borrowed one's), which an allowance must be newer than to undo it.
+  private revoke(id: string, notify: boolean, seen = 0) {
+    const profile = this.profile(id);
+    if (!profile || profile.enabled === false || accessKind(profile) !== "subscription") return;
+    const detail = tr(stationLang(), "station.quota.signInExpired");
+    const quota = this.quotas.get(id);
+    const had = this.authRevoked.get(id)?.quotaAt ?? 0;
+    this.authRevoked.set(id, { detail, quota, quotaAt: Math.max(quota?.checkedAt ?? 0, seen, had) });
+    const before = this.checks.get(id);
+    if (before?.state === "login") return;
+    this.keepCheck(id, { ...(before ?? { models: null, checkedAt: 0 }), state: "login", detail, ...(profile.runtime === "codex" ? { codexRevoked: true } : {}) }, notify);
+  }
+
+  /// A borrowed profile's host said its login is over (share/index.ts LOGIN_OVER): the host tells its own managers.
+  markLoginExpired(id: string) {
+    const profile = this.profile(id);
+    this.revoke(id, profile !== undefined && !borrowed(profile));
+  }
+
+  /// Profile `id` asked again after a runtime on it was refused (sessions/accounts.ts `recheck`): its login is good only
+  /// where its check says so and, for a runtime whose allowance is read, an allowance read now does too; a borrowed one
+  /// where its host says so having read it again (a host from before answers what it had: not taken for a reading). Else
+  /// it is over (`revoke`). `force`: refused again after a recheck and a retry in the same turn, it is over.
+  async recheckProfile(id: string, force = false): Promise<void> {
+    const profile = this.profile(id);
+    if (!profile || profile.enabled === false) return;
+    if (accessKind(profile) !== "subscription") {
+      await this.check(id).catch(() => undefined);
+      return;
+    }
+    const quotaRead = QUOTA_RUNTIMES.includes(profile.runtime);
+    const readAt = (got: { quota: Json } | null) => (isObject(got?.quota) && typeof got.quota.checkedAt === "number" ? got.quota.checkedAt : 0);
+    const saysOver = (got: { check: Json } | null) => isObject(got?.check) && got.check.state === "login";
+    if (borrowed(profile) && this.deps.shared) {
+      // What its host has read already (here never asked yet, or asked before the host's own round read it again): a
+      // reading after a refusal is one newer than that, never what a host from before answers it had.
+      const prior = await this.deps.shared.status(profile).catch(() => null);
+      const before = Math.max(this.quotas.get(id)?.checkedAt ?? 0, readAt(prior));
+      // (the host saying so itself tells its own managers)
+      if (force) return this.revoke(id, !saysOver(prior), before);
+      const got = await this.deps.shared.status(profile, true).catch(() => null);
+      const check = got?.check;
+      const quota = got?.quota;
+      const good = isObject(check) && check.state === "ok" &&
+        (!quotaRead || (isObject(quota) && quota.state === "ok" && typeof quota.checkedAt === "number" && quota.checkedAt > before));
+      if (good) {
+        this.authRevoked.delete(id);
+        await this.checkBorrowed(profile, stationLang()).catch(() => undefined);
+        return;
+      }
+      return this.revoke(id, !saysOver(got), Math.max(before, readAt(got)));
+    }
+    if (force) return this.revoke(id, true);
+    const generation = this.loginGeneration.get(id) ?? 0;
+    const quota = quotaRead && this.quotaFn ? await this.readQuota(id, true).catch(() => null) : undefined;
+    const check = await this.check(id, stationLang(), true).catch(() => null);
+    // (signed in anew meanwhile: what was asked is of the login before)
+    if ((this.loginGeneration.get(id) ?? 0) !== generation) return;
+    const good = check?.state === "ok" && (quota === undefined || quota?.state === "ok" || quota?.state === "unsupported");
+    if (good) {
+      this.authRevoked.delete(id);
+      if (this.checks.get(id)?.state !== "ok") this.keepCheck(id, { ...check! });
+      return;
+    }
+    this.revoke(id, true);
   }
 
   /// A Codex provider refusal outlives `codex login status`, which only sees that a local token exists. A successful
@@ -1258,7 +1468,8 @@ export class Accounts {
 
   /// POST /profiles/:id/check: asks the provider or runtime whether the profile works, its models, its reasoning levels
   /// (Codex) and what it can decide with.
-  async check(id: string, lang: Lang = stationLang()): Promise<ProfileCheck> {
+  /// `recheck`: asked again after a runtime on it was refused (profiles.ts `CheckOptions.recheck`).
+  async check(id: string, lang: Lang = stationLang(), recheck = false): Promise<ProfileCheck> {
     const profile = this.profile(id);
     if (!profile) throw new Refusal(404, `unknown profile ${id}`);
     if (profile.enabled === false) throw new Refusal(409, tr(lang, "station.profile.disabled", { profile: profile.name }));
@@ -1271,7 +1482,7 @@ export class Accounts {
     const key = kimi ? (kimiLogin?.access ?? "") : String((profile.access as Json)?.key ?? "").trim();
     const signedOut = kimi && (kimiLogin?.refresh ?? "") === "";
     const check = await this.checkFn(
-      { runtime: profile.runtime, kind, key: signedOut ? "" : key, via: profileVia(profile), home: profile.home, machine: profile.machine === true, login: (profile.access as Json)?.login === true },
+      { runtime: profile.runtime, kind, key: signedOut ? "" : key, via: profileVia(profile), service: serviceOf(profile), profile, home: profile.home, machine: profile.machine === true, login: (profile.access as Json)?.login === true, ...(recheck ? { recheck: true } : {}) },
       lang,
     );
     // Codex capabilities kept for each account, including providers whose model ids came from their API.
@@ -1319,8 +1530,7 @@ export class Accounts {
           check.modelEfforts = { agy: catalog.efforts };
           // Its plan as `agy` said it, else as its sign-in's file does (profiles.ts).
           const company = (profile.access as { enterprise?: unknown } | undefined)?.enterprise === true;
-          const plan = catalog.tier !== undefined ? agyPlan(catalog.tier, company) : null;
-          if (plan !== null) check.plan = plan;
+          if (catalog.plan !== undefined) check.plan = catalog.plan;
           else if (company && check.plan === undefined) check.plan = "Enterprise";
           if (Object.keys(catalog.defaults).length > 0) check.modelEffortDefaults = { agy: catalog.defaults };
         } else {
@@ -1340,7 +1550,7 @@ export class Accounts {
         }
       }
     }
-    check.decision = await this.discoverFn(profile, check);
+    if (kind !== "service") check.decision = await this.discoverFn(profile, check);
     // A profile edited during the probe does not inherit the previous account's capabilities.
     const now = this.profile(id);
     if (!now || fingerprint(now) !== fingerprint(profile)) throw new Refusal(409, tr(lang, "station.profile.changedRecheck"));
@@ -1520,7 +1730,7 @@ export class Accounts {
       return this.quotas.get(id) ?? null;
     }
     if (!this.quotaFn) return this.quotas.get(id) ?? null;
-    const { signedOut, unanswered, ...asked } = await this.quotaFn(profile);
+    const { signedOut, unanswered, recheck, ...asked } = await this.quotaFn(profile);
     if ((this.loginGeneration.get(id) ?? 0) !== generation) return this.quotas.get(id) ?? null;
     // No answer (the provider not reached, or in trouble itself) says nothing of the allowance: the one read before
     // stands, with when it was read, till an answer comes or it is too old to show. One such miss took every Claude
@@ -1553,7 +1763,20 @@ export class Accounts {
     if (profile.runtime === "codex" && accessKind(profile) === "subscription") {
       if (refused) this.codexLogin(id, true);
       else if (read.state === "ok") this.codexLogin(id, false);
-    } else if (signedOut && this.checks.get(id)?.state !== "login") this.background.spawn(() => this.check(id).catch(() => undefined));
+    } else if (signedOut && this.checks.get(id)?.state !== "login") {
+      // Checked before this answers (asked again with its login renewed), so a host lending it says it signed out with
+      // the allowance that found it so, never `ok` from before (share/index.ts `share.status`).
+      await this.check(id, stationLang(), true).catch(() => undefined);
+    } else if (recheck && this.checks.get(id)?.state === "ok") {
+      this.background.spawn(() => this.check(id).catch(() => undefined));
+    } else if (
+      (profile.runtime === "claude" || this.authRevoked.has(id)) &&
+      accessKind(profile) === "subscription" &&
+      read.state === "ok" &&
+      (this.checks.get(id)?.state === "failed" || this.checks.get(id)?.state === "login")
+    ) {
+      this.background.spawn(() => this.check(id).catch(() => undefined));
+    }
     return read;
   }
 
@@ -1582,6 +1805,8 @@ export class Accounts {
   /// A shared profile changed on its host. Get the new login even when the old access token has not expired yet, and
   /// retire app-servers that cached it after their current turns. A reset also wakes sessions once its allowance is read.
   async sharedChanged(id: string, reset: boolean): Promise<void> {
+    // (changed on its host, signed in anew there perhaps: what its host says is asked again, nothing kept against it)
+    this.authRevoked.delete(id);
     const profile = this.profile(id);
     if (profile?.enabled === false) await this.deps.hub?.profileGone?.(id);
     if (!profile || !borrowed(profile) || accessKind(profile) !== "subscription" || !this.deps.shared) return;
@@ -1702,6 +1927,17 @@ export class Accounts {
       raw.autoArchiveDays = idle;
       raw.slackArchiveDays = slackDays;
       raw.autoArchiveReviewed = reviewed;
+    });
+  }
+
+  /// PUT /auto-chats (a workspace manager's): whether this station accepts automatically assigned new chats and presets
+  /// (`acceptAutoChats` in config.json; opt-in, defaults to false).
+  async putAutoChats(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<void> {
+    if (!manages(viewer)) throw new Refusal(403, tr(lang, "station.autoChats.managersOnly"));
+    if (typeof input.enabled !== "boolean") throw new Refusal(400, tr(lang, "station.autoChats.badSettings"));
+    const enabled = input.enabled;
+    await this.save(viewer, "auto chats", (raw) => {
+      raw.acceptAutoChats = enabled;
     });
   }
 
@@ -1847,12 +2083,13 @@ export class Accounts {
         if (check.decision && check.decision.fingerprint !== fingerprint(p)) checkView.decision = { state: "pending", detail: "Profile 已修改，等待自动检查", reason: "changed" };
       }
       return {
-        id: p.id, name: p.name, runtime: p.runtime, runtimes: p.runtimes,
-        email: kind === "subscription" ? this.email(p, says) : a.login === true ? says.email : null,
+        id: p.id, name: p.name, runtime: p.runtime ?? null, service: p.service ?? null, runtimes: p.runtimes,
+        email: kind === "subscription" ? this.email(p, says) : kind === "service" || a.login === true ? says.email : null,
         // A provider's key says `env` where an older core reads it; the provider next to it tells a newer core it is not.
         access: {
           kind: kind === "api-provider" ? "env" : kind, key: mask(String(a.key ?? "").trim()),
           provider: via.provider ?? null, endpoint: via.endpoint ?? null, protocol: via.protocol ?? null,
+          service: p.service ?? null,
           // Its key is the token of a sign-in to the OpenCode Console or to Kimi (signed in again, not replaced).
           login: (kind === "opencode-go" || kimiSignedIn(p)) && a.login === true,
         },
@@ -1866,6 +2103,8 @@ export class Accounts {
         machine: p.machine === true,
         enabled: p.enabled !== false,
         backgroundOnMessage: p.backgroundOnMessage,
+        ...(p.maxConcurrentSessions !== undefined ? { maxConcurrentSessions: p.maxConcurrentSessions } : {}),
+        ...(p.newAccountProtection === true && p.maxConcurrentSessions !== undefined ? { newAccountProtection: true } : {}),
         fast: takesFast(p) && (!fastNeedsCredits(p) || this.quotas.get(p.id)?.extraUsage === true) ? p.fast === true : null,
         check: checkView,
         login: this.logins.get(p.id),
@@ -1874,7 +2113,7 @@ export class Accounts {
         share: this.deps.shared?.view(p, viewer?.workspace ?? null) ?? null,
         // Whether its login can be lent to the workspace's other stations (share/index.ts shareRefusal): its page says
         // so where it cannot, rather than a switch that is refused.
-        shareable: shareRefusal(p) === null,
+        shareable: shareRefusal(p, this.services) === null,
         // The joined workspaces whose sessions may run on it, and whether the viewer's may.
         workspaces: others.filter((w) => allowedIn(p, w, home)),
         serves: allowedIn(p, joined, home),
@@ -1960,7 +2199,7 @@ export class Accounts {
       return under.read;
     }
     const entry = { since, tell, read: Promise.resolve() };
-    entry.read = homeSaysSoon(p)
+    entry.read = homeSaysSoon(p, this.services)
       .then((says) => {
         if (this.homesChanged !== since) return;
         this.homes.set(p.id, { asked, says });
@@ -1986,7 +2225,7 @@ export class Accounts {
       for (const p of profiles) {
         const asked = JSON.stringify(homeAsked(p));
         const since = this.homesChanged;
-        const says = await homeSaysSoon(p).catch(() => null);
+        const says = await homeSaysSoon(p, this.services).catch(() => null);
         const kept = this.homes.get(p.id);
         // Not shown yet (read as it is), or changed meanwhile: left as it is.
         if (says === null || kept === undefined || kept.asked !== asked || this.homesChanged !== since) continue;
@@ -2003,7 +2242,7 @@ export class Accounts {
 
   /// The overview's `logins`: sign-ins for new profiles.
   loginsView(_viewer?: Viewer): Json[] {
-    return [...this.pending.entries()].map(([id, p]) => ({ id, runtime: p.runtime, job: this.logins.get(id), created: p.created, error: p.error }));
+    return [...this.pending.entries()].map(([id, p]) => ({ id, runtime: p.runtime ?? null, ...(p.service !== undefined ? { service: p.service } : {}), job: this.logins.get(id), created: p.created, error: p.error }));
   }
 
   /// The overview's `machineLogins`.
@@ -2014,6 +2253,11 @@ export class Accounts {
   /// The overview's `apiProviders`: the providers a key can be added for (not the two kinds from before the list).
   apiProviders(): Json[] {
     return SOURCES.filter((s) => !(s.id in LEGACY)).map((s) => ({ id: s.id, name: s.name, group: groupOf(s.id) }));
+  }
+
+  /// The overview's `profileServices`: the registered non-agent service profile adapters.
+  profileServices(): string[] {
+    return [...this.services.keys()];
   }
 
   /// Ids a new profile may not take: the profiles' own, those being made, and every home on disk (a deleted profile's

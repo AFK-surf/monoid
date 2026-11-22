@@ -148,3 +148,83 @@ test "the spacing rules on @view.View tree: rows with a persistent active backgr
   let spaced_active = tree_pointed_rows(0, 2.0)
   assert_eq(rule1_count(spaced_active), 0)
 }
+
+///|
+/// A panel of the window's tree, 260 wide, 24 round, 6 in: a heading `heading_in` in from its left; then three rows (44
+/// high, 18 round, pressed as a whole, no ground at rest), each an icon drawn by its shapes 16 in from the panel's
+/// left and words 40 in; and where `kept` is not 0, one more row as wide as `kept` (0: as the others) with its ground
+/// at rest (one chosen), its words 40 in.
+fn tree_panel(heading_in : Double, kept? : Double = -1.0) -> Tester {
+  Tester::new(
+    fn(c) { c.with_theme({ ..Theme::light(), lit_apart: 2.0, lit_reach: 6.0 }, fn() {  }) },
+    w=400.0,
+    h=400.0,
+    platform=0,
+    corners_held=false,
+    tree=fn(root) {
+      root.box(fn(p) {
+        p.width(Is(Some(260.0))).padding(Is((6.0, 6.0, 6.0, 6.0))).ground(Is(0xFFFFFFFFL)).radius(Is(24.0)) |> ignore
+        p.box(fn(h) {
+          h.height(Is(Some(32.0))).padding(Is((heading_in - 6.0, 0.0, 0.0, 0.0))) |> ignore
+          h.box(fn(w) { w.words(Is("A heading")) |> ignore }) |> ignore
+        })
+        |> ignore
+        for _ in 0..<3 {
+          p.box(fn(r) {
+            r
+            .row(Is(true))
+            .width(Is(Some(248.0)))
+            .height(Is(Some(44.0)))
+            .radius(Is(18.0))
+            .padding(Is((10.0, 0.0, 10.0, 0.0)))
+            .gap(Is(8.0))
+            .lines_up(Is(Some(Middle)))
+            .presses(Is(true))
+            .on_press(fn() {  })
+            .ground(By(fn() { if r.pointed() || r.pressed() { 0xEEEEEEFFL } else { 0L } }))
+            |> ignore
+            r.box(fn(i) {
+              i
+              .width(Is(Some(16.0)))
+              .height(Is(Some(16.0)))
+              .shrink(Is(0.0))
+              .shapes(Is([@paint.shape_of([([0.0, 0.0, 16.0, 0.0, 16.0, 16.0, 0.0, 16.0], true)], fill=0x000000FFL)]))
+              |> ignore
+            })
+            |> ignore
+            r.box(fn(w) { w.words(Is("A row")) |> ignore }) |> ignore
+          })
+          |> ignore
+        }
+        if kept >= 0.0 {
+          p.box(fn(k) {
+            k
+            .width(Is(Some(if kept > 0.0 { kept } else { 248.0 })))
+            .height(Is(Some(44.0)))
+            .radius(Is(18.0))
+            .ground(Is(0xEEEEEEFFL))
+            .padding(Is((34.0, 12.0, 10.0, 12.0)))
+            |> ignore
+            k.box(fn(w) { w.words(Is("Chosen")) |> ignore }) |> ignore
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    },
+  )
+}
+
+///|
+test "the spacing rule 8 on the window's tree: a panel's heading as far in as its rows' icons drawn by their shapes, nothing; further out than them, said" {
+  let t = tree_panel(16.0)
+  assert_eq(rule_count(t, "rule 8"), 0, msg=t.gap_faults().join("\n"))
+  assert_true(rule_count(tree_panel(8.0), "rule 8") > 0)
+}
+
+///|
+test "the spacing rule 8 on the window's tree: a row of the panel's with its ground at rest (one chosen), as far in as its rows, nothing; a narrow ground block at its edge, said" {
+  let t = tree_panel(16.0, kept=0.0)
+  assert_eq(rule_count(t, "rule 8"), 0, msg=t.gap_faults().join("\n"))
+  assert_true(rule_count(tree_panel(16.0, kept=60.0), "rule 8") > 0)
+}

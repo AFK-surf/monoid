@@ -11,7 +11,7 @@ import { conform } from "../../client/core-ts/src/conform.ts";
 import { changedOf, digest } from "./reference/digest.ts";
 const viewer = { sub: "u", email: "u@x", name: "", role: "owner", workspace: "w", device: "d" };
 const request = (path: string, headers: Record<string,string> = {}, method = "GET", body: unknown = {}): Request => ({ path, headers, method, query: [], body: Buffer.from(JSON.stringify(body)), viewer, lang: "en" });
-const modern = { "stillfail-runtimes": RUNTIME_KINDS.join(",") };
+const modern = { "stillfail-runtimes": RUNTIME_KINDS.join(","), "stillfail-profile-services": "1" };
 const data = JSON.parse(readFileSync(new URL("./fixtures/overview.json", import.meta.url), "utf8")).overview;
 function overview() {
   const value = structuredClone(data);

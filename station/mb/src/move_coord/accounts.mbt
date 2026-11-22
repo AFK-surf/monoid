@@ -25,6 +25,9 @@ pub fn share_refusal(p : J?) -> String? {
   if is_map(get(p, "share")) && is_true(get(get(p, "share"), "borrowed")) {
     return Some("this profile is another station's")
   }
+  if text(get(get(p, "access"), "kind")) == Some("service") {
+    return Some("a service profile cannot be shared with other stations yet")
+  }
   let sub = text(get(get(p, "access"), "kind")) == Some("subscription")
   let runtime = text(get(p, "runtime"))
   if sub && runtime == Some("grok") {

@@ -130,8 +130,8 @@ fn Own::line(self : Own, v : @jsjson.JValue, now : () -> Double) -> (Array[@jsjs
 /// A turn's start and end said with the turn as it left it (what Node's session keeps of it).
 fn with_turn(e : @jsjson.JValue, turn : @jsjson.JValue) -> @jsjson.JValue {
   match e {
-    Obj(fields) if e.get("type") is Some(Str(t)) && (t == @jsjson.units("turnStarted") || t == @jsjson.units("turnEnded")) =>
-      Obj(fields + [(@jsjson.units("turn"), turn)])
+    Obj(fields) if e.get("type") is Some(Str(t)) && (t == "turnStarted" || t == "turnEnded") =>
+      Obj(fields + [("turn", turn)])
     _ => e
   }
 }
@@ -160,41 +160,7 @@ fn Agents::own_heard(self : Agents, h : Hosted, own : Own, lines : Array[(Bytes,
   }
   let end = lines[lines.length() - 1].1
   let turn = own.turn()
-  let same = @jsjson.stringify(turn) == before && node.length() == 0
-  // (only what steps wrote: held, told with what comes next or once DELTAS_MS is over)
-  if same && events.length() > 0 && events.iter().all(is_delta) {
-    merge_into(h.pending, events)
-    h.pending_units += units_of(events)
-    h.pending_to = end
-    h.told = end
-    if h.pending_units >= DELTAS_MOST {
-      self.flush(h)
-    } else {
-      self.soon(h)
-    }
-    return
-  }
-  if same && events.length() == 0 {
-    if h.pending.length() > 0 {
-      h.pending_to = end
-      h.told = end
-      return
-    }
-    if h.told <= h.acked_out {
-      h.acked_out = end
-      h.acked_to = end
-      h.told = end
-      h.told_out = end
-      self.ack(h)
-      return
-    }
-  }
-  let all = h.pending
-  h.pending = []
-  h.pending_units = 0
-  merge_into(all, events)
-  h.told = end
-  self.tell(h, end, turn, all, node~)
+  self.deliver_heard(h, end, turn, @jsjson.stringify(turn) == before && node.length() == 0, events, node~)
 }
 
 ///|
@@ -227,13 +193,18 @@ fn Agents::own_begin(self : Agents, h : Hosted, own : Own) -> Unit {
 fn Agents::acp_told(self : Agents, h : Hosted, op : String, m : Map[String, Json]) -> Unit {
   guard h.own is Some(Acp(s) as own) else { return }
   let text = (k : String) => match m.get(k) {
-    Some(String(v)) => @jsjson.units(v)
+    Some(String(v)) => v
     _ => []
   }
   match op {
     "acpSession" => s.session = text("id")
-    "acpOpened" => s.loading = false
-    "acpPrompt" => self.own_now(h, own, s.prompted(text("owner"), text("text")))
+    "acpOpened" => s.opened(resumed=m.get("resumed") is Some(True))
+    "acpPrompt" =>
+      if m.get("resend") is Some(True) {
+        self.own_now(h, own, s.resent(text("owner")))
+      } else {
+        self.own_now(h, own, s.prompted(text("owner"), text("text"), now=() => self.now()))
+      }
     "acpInject" => self.own_now(h, own, s.injected(text("id"), m.get("takeOver") is Some(True), text("text")))
     _ => ()
   }
@@ -259,7 +230,7 @@ async fn Agents::own_replay(self : Agents, id : Int, kind : String, path : Strin
     _ => "grok"
   }
   let from_id = match m.get("resume") {
-    Some(String(r)) => @jsjson.units(r)
+    Some(String(r)) => r
     _ => []
   }
   let acp = @acp.Replay::new(flavor, kept=m.get("kept") is Some(True), from_id)
@@ -311,8 +282,8 @@ async fn Agents::own_replay(self : Agents, id : Int, kind : String, path : Strin
     @effect.sleep(0)
   }
   let said : Map[String, Json] = { "ownReplayed": Json::number(id.to_double()) }
-  let text = (s : Array[Int]?) => match s {
-    Some(v) => Json::string(@jsjson.raw_text(v))
+  let text = (s : String?) => match s {
+    Some(v) => Json::string(v)
     None => Json::null()
   }
   match kind {
@@ -338,7 +309,7 @@ async fn Agents::own_replay(self : Agents, id : Int, kind : String, path : Strin
     "acp" => {
       let usages = acp.finish(now)
       let s = acp.session()
-      said["session"] = Json::string(@jsjson.raw_text(s.session))
+      said["session"] = Json::string(s.session)
       said["turn"] = to_json(s.turn.json())
       said["live"] = to_json(s.state())
       said["opened"] = match acp.opened() {

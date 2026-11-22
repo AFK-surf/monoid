@@ -1,0 +1,13 @@
+wait 200
+tap 推入详情
+wait 500
+tap 返回列表
+wait 500
+tap 移至进行中
+wait 500
+tap 移回待办
+wait 500
+wheelat 320 移至进行中
+wait 200
+tap 模拟甩动回弹
+wait 600
