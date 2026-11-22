@@ -253,11 +253,8 @@ fn confirm_panel(
     .padding(Is((dialog_pad, confirm_top, dialog_pad, 0.0)))
     .gap(Is(@ui.Space::px(S2)))
     .radius(Is(dialog_r))
-    .glass(By(fn() { Some(dialog_glass()) }))
-    .edge(By(fn() { if d.glass_solid() { (1.0, theme().color(Line)) } else { (0.0, 0L) } }))
-    .shadow(By(glass_overlay_shadow))
-    .shadow_outside(Is(true))
-    .clips(Is(true))
+    |> ignore
+    dialog_surface_decorate(d)
     .alpha(By(fn() { look().alpha }))
     .scale(By(fn() { look().sx }))
     .offset(By(fn() { (look().dx, look().dy) }))

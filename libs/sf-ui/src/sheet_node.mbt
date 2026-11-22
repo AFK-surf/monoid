@@ -854,16 +854,15 @@ fn sheet_node(
           |> ignore
         }
         ground(fn(g) {
-          g
-          .glass(By(fn() {
-            if vanished() {
-              return None
-            }
-            let t = theme()
-            Some({ ..glass_sheet(), solid: over(over(t.p.bg, alpha(0x000000FFL, 0.28 * live_dim())), alpha(t.p.card, 0.8)) })
-          }))
-          .shadow(By(glass_overlay_shadow))
-          .shadow_outside(Is(true))
+          @lg.liquid_sheet_surface_decorate(
+            g,
+            active=fn() { !vanished() },
+            solid=fn() {
+              let t = theme()
+              over(over(t.p.bg, alpha(0x000000FFL, 0.28 * live_dim())), alpha(t.p.card, 0.8))
+            },
+            shadow=glass_overlay_shadow,
+          )
           |> ignore
         })
         // its top (sheet_drag_h: the grabber and the head) drags it, a node of its own over its glass and under what it

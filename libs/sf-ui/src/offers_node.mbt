@@ -321,11 +321,14 @@ pub fn offers_node(
           p
           .beside(anchor.id(), side~, along=Start, offset~, padding=8.0, width=Anchor)
           .max_height(By(fn() { Some(dmax(0.0, over_room(shown).1 - 16.0)) }))
-          .glass(By(fn() { Some(@lg.liquid_panel_glass(solid=panel_ground())) }))
-          .edge(By(fn() { if p.glass_solid() { @lg.liquid_overlay_solid_edge() } else { (0.0, 0L) } }))
-          .shadow(By(fn() { glass_overlay_shadow() }))
-          .shadow_outside(Is(true))
-          .clips(Is(true))
+          |> ignore
+          @lg.liquid_panel_surface_decorate(
+            p,
+            solid=panel_ground,
+            shadow=glass_overlay_shadow,
+            solid_edge=@lg.liquid_overlay_solid_edge,
+            clips=true,
+          )
           .alpha(By(fn() { look().alpha }))
           .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
           .carries_until(fn() { way.ends_at() })

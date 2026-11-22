@@ -8,14 +8,15 @@
 /// its line round it and its shadow under it, what reaches past its edge cut there. It.
 pub fn small_panel_node(p : @view.View) -> @view.View {
   corner_card_node(p, fn() { r_menu }, inset=fn() { panel_pad })
-  p
-  .padding(Is((panel_pad, panel_pad, panel_pad, panel_pad)))
-  .radius(Is(r_menu))
-  .glass(By(fn() { Some(glass_menu()) }))
-  .edge(By(fn() { if p.glass_solid() { (small_panel_line, panel_edge()) } else { (0.0, 0L) } }))
-  .shadow(By(fn() { glass_overlay_shadow() }))
-  .shadow_outside(Is(true))
-  .clips(Is(true))
+  p.padding(Is((panel_pad, panel_pad, panel_pad, panel_pad))) |> ignore
+  @lg.liquid_panel_surface_decorate(
+    p,
+    radius=r_menu,
+    solid=panel_ground,
+    shadow=glass_overlay_shadow,
+    solid_edge=fn() { (1.0, panel_edge()) },
+    clips=true,
+  )
 }
 
 ///|
@@ -26,10 +27,6 @@ pub fn small_panel_node(p : @view.View) -> @view.View {
 pub fn ground_node(v : @view.View) -> @view.View {
   v.presses(Is(true)).on_press(fn() {  }).cursor(Is(Some(Arrow))).as_ground()
 }
-
-///|
-/// A small panel's line round it (its width), and its shadow's blur and how far under it it falls (small_panel's).
-let small_panel_line : Double = 1.0
 
 ///|
 /// A small panel's button (panel_button's) in `parent`, made once: a capsule 24 high, its words (`label` as it changes)

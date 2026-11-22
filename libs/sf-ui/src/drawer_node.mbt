@@ -130,12 +130,15 @@ pub fn drawer_node(
         .width(By(fn() { Some(eff_w()) }))
         .height(By(fn() { Some(dmax(0.0, layer.window_h() - 2.0 * spec.inset)) }))
         .margin(Is((spec.inset, spec.inset, spec.inset, spec.inset)))
-        .radius(Is(spec.radius))
-        .glass(By(fn() { Some(@lg.liquid_drawer_glass(solid=panel_ground())) }))
-        .edge(By(fn() { if card.glass_solid() { @lg.liquid_overlay_solid_edge() } else { (0.0, 0L) } }))
-        .shadow(By(glass_overlay_shadow))
-        .shadow_outside(Is(true))
-        .clips(Is(true))
+        |> ignore
+        @lg.liquid_drawer_surface_decorate(
+          card,
+          radius=spec.radius,
+          solid=panel_ground,
+          shadow=glass_overlay_shadow,
+          solid_edge=fn() { (1.0, panel_edge()) },
+          clips=true,
+        )
         .offset(By(fn() {
           let dx = match held_dx.get() {
             Some(d) => d

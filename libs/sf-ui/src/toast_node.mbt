@@ -206,11 +206,12 @@ fn toast_look(
     .gap(Is(@ui.Space::px(S3)))
     .padding(By(fn() { (toast_px, toast_action_in, if acting() { toast_action_in } else { toast_px }, toast_action_in) }))
     .max_width(Is(Some(toast_max)))
-    .radius(Is(toast_r))
-    .glass(By(fn() { Some(@lg.liquid_toast_glass()) }))
-    .edge(By(fn() { if tb.glass_solid() { @lg.liquid_overlay_solid_edge() } else { (0.0, 0L) } }))
-    .shadow(By(glass_overlay_shadow))
-    .shadow_outside(Is(true))
+    |> ignore
+    @lg.liquid_toast_surface_decorate(
+      tb,
+      radius=toast_r,
+      shadow=glass_overlay_shadow,
+    )
     .alpha(By(ground))
     // (in from below as it comes, moved across as it is swiped and put away: where it is, pressed and read out there
     // too)

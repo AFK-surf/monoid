@@ -28,6 +28,25 @@ pub fn overlay_solid_edge() -> (Double, Int64) {
 }
 
 ///|
+/// Decorates an existing modal dialog container node `v` in place (zero wrapper nodes) with symmetric dense
+/// liquid dialog glass (`tint_light=0xFDFCFDD1L` for WCAG >= 4.5:1 muted text contrast in Light mode),
+/// outside-only `glass_overlay_shadow`, and `MBUI_GLASS=solid` `panel_edge()` hairline fallback.
+pub fn dialog_surface_decorate(
+  v : @view.View,
+  edge_w? : Double = 1.0,
+  clips? : Bool = true,
+) -> @view.View {
+  @lg.liquid_dialog_surface_decorate(
+    v,
+    solid=panel_ground,
+    tint_light=0xFDFCFDD1L,
+    shadow=glass_overlay_shadow,
+    solid_edge=fn() { (edge_w, panel_edge()) },
+    clips~,
+  )
+}
+
+///|
 /// A centred panel `x` in `parent` while `open()` (going over pop_out_ms once not); `close`: what what it holds is given to close it; `cancel` as it is closed by its close button,
 /// Escape, back or a press outside. `shown`, `gone`: as dialog_layer_node's.
 fn panel_centred_node(
@@ -49,7 +68,6 @@ fn panel_centred_node(
   // (one put at a share of the window down from its top (panel_nodes' `top_share`): no close button, a row's room in)
   let top_share = x.nodes.top
   dialog_layer_node(parent, open, cancel, outside=true, top_share~, first_stop=fn() { !own_ground.val }, first_takes=fn(s : @view.Said) { opens_on_role(s.role) }, shown~, gone~, dims~, covered~, within~, fn(across, layer, look, veil) {
-    let theme = fn() { @ui.tree_theme() }
     // (its title, step and what it says as they are now: `live`'s, read where each is used and followed as it changes;
     // its head there or not as they say, what holds what it holds the same)
     let now = fn() {
@@ -83,11 +101,8 @@ fn panel_centred_node(
       // (dialog_box: 24 over its title, 24 in at its sides; each part out to them, the padding inside it)
       .padding(Is(if top_share > 0.0 { (top_pad, top_pad, top_pad, top_pad) } else { (dialog_pad, dialog_pad, dialog_pad, 0.0) }))
       .radius(Is(dialog_r))
-      .glass(By(fn() { Some(dialog_glass()) }))
-      .edge(By(fn() { if d.glass_solid() { (1.0, theme().color(Line)) } else { (0.0, 0L) } }))
-      .shadow(By(glass_overlay_shadow))
-      .shadow_outside(Is(true))
-      .clips(Is(true))
+      |> ignore
+      dialog_surface_decorate(d)
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }))
       .offset(By(fn() { (look().dx, look().dy) }))

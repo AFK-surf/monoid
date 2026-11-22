@@ -450,30 +450,16 @@ fn tip_look_node(
     ),
   )
   .max_width(Is(Some(tip_widest)))
-  .radius(Is(tip_round))
-  .points(Is(false))
-  .glass(By(fn() {
-    if @headless.tip_owns(owner) {
-      Some(@lg.liquid_panel_glass(solid=panel_ground()))
-    } else {
-      None
-    }
-  }))
-  .edge(By(fn() {
-    if @headless.tip_owns(owner) && t.glass_solid() {
-      @lg.liquid_overlay_solid_edge()
-    } else {
-      (0.0, 0L)
-    }
-  }))
-  .shadow(By(fn() {
-    if @headless.tip_owns(owner) {
-      glass_overlay_shadow()
-    } else {
-      (0.0, 0.0, 0L)
-    }
-  }))
-  .shadow_outside(Is(true))
+  |> ignore
+  @lg.liquid_tooltip_surface_decorate(
+    t,
+    radius=tip_round,
+    active=fn() { @headless.tip_owns(owner) },
+    solid=panel_ground,
+    shadow=glass_overlay_shadow,
+    solid_edge=@lg.liquid_overlay_solid_edge,
+    panel=true,
+  )
   // (its ground in first, its words after, as kit's tip_in and pop_out have them (ground_first): the ground the first
   // half of the way in, the words the second; going, the other way round)
   .alpha(By(fn() {
