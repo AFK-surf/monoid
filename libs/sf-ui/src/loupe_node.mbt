@@ -12,116 +12,23 @@
 /// nothing is read), of what the finger reads.
 #callsite(autofill(loc))
 pub fn loupe_node(root : @view.View, on : () -> Bool, loc~ : SourceLoc) -> Unit {
-  // (where the finger last read, where it goes as it is let go; whether it is in the finger, as a knob held is)
-  let read : @signals.Signal[(Double, Double)?] = @signals.signal(None, same=fn(a, b) { a == b })
-  let follow = @motion.SpringFollow2D::new()
-  root.box(made_for=loc, fn(l) {
-    l
-    .over(Is(true))
-    .over_all(Is(true))
-    .points(Is(false))
-    .presses(Is(false))
-    |> ignore
-    // (where it goes over the point read: within the window's sides, under its top)
-    let goal = fn(p : (Double, Double)) {
-      let ww = l.window_w()
-      let half = loupe_w / 2.0
-      let side = loupe_side
-      (
-        dclamp(p.0, half + side, dmax(half + side, ww - half - side)),
-        dmax(loupe_h / 2.0 + side, p.1 - loupe_lift),
-      )
-    }
-    l.reacts(
-      fn() {
-        if on() {
-          @ui.finger_reads()
-        } else {
-          None
-        }
-      },
-      fn(r) {
-        match r {
-          Some(p) => {
-            let (tx, ty) = goal(p)
-            follow.chase(l, tx, ty)
-            read.set(Some(p))
-          }
-          None => follow.release(l)
-        }
-      },
-    )
-    // (shown while it is in the finger or on its way out: none drawn, none magnified, once it has gone)
-    l.show(at_once=true,
-      fn() { read.get() is Some(_) && follow.active(l) },
-      fn(at) { loupe_capsule(at, read, follow, goal, loc~) },
-    )
-  })
-  |> ignore
-}
-
-///|
-/// The loupe's capsule in `at`, laid out where the finger last had it (`goal` of `read`), drawn where its ways have it:
-/// what the frame shows there larger, the lens of the glass a knob held is over it (where glass is drawn solid, what it
-/// shows bare), as faint and as large as it is in the finger (`follow`), drawn out by its speed across.
-#callsite(autofill(loc))
-fn loupe_capsule(
-  at : @view.View,
-  read : @signals.Signal[(Double, Double)?],
-  follow : @motion.SpringFollow2D,
-  goal : ((Double, Double)) -> (Double, Double),
-  loc~ : SourceLoc,
-) -> Unit {
-  at.made_for(loc) |> ignore
-  let laid = fn() {
-    match read.get() {
-      Some(p) => goal(p)
-      None => (0.0, 0.0)
-    }
-  }
-  let w = loupe_w
-  let h = loupe_h
-  // (drawn out toward where it goes, its back where it was, as it is drawn: how much longer, how much lower, how far
-  // over from where it is laid out)
-  let drawn = fn(n : @view.View) -> @view.GroundShape {
-    let (tx, ty) = laid()
-    follow.capsule_shape(n, w, h, tx, ty)
-  }
-  at
-  .over(Is(true))
-  .offset(By(fn() {
-    let (tx, ty) = laid()
-    (tx - w / 2.0, ty - h / 2.0)
-  }))
-  .width(Is(Some(w)))
-  .height(Is(Some(h)))
-  .radius(Is(h / 2.0))
-  .ground(By(fn() { theme().p.bg }))
-  .ground_drawn(By(fn() { drawn(at) }))
-  .magnifies(By(fn() {
-    match read.get() {
-      Some(p) => Some((p.0, p.1, loupe_zoom))
-      None => None
-    }
-  }))
-  // (as faint as it is in the finger, as large: a knob's lens's)
-  .alpha(By(fn() { dmin(1.0, follow.held_shown(at)) }))
-  .scale(By(fn() { 1.0 + (knob_lens_grow - 1.0) * follow.held_shown(at) }))
-  |> ignore
-  at.box(fn(lens) {
-    lens
-    .over(Is(true))
-    .radius(Is(h / 2.0))
-    .ground_drawn(By(fn() { drawn(lens) }))
-    .glass(By(fn() { if lens.glass_solid() { None } else { Some(glass_knob()) } }))
-    .shadow(By(fn() {
-      let full = dmin(1.0, follow.held_shown(lens))
-      (lens_shadow * full, lens_shadow_y * full, ui_theme_now().shadow)
-    }))
-    .shadow_outside(Is(true))
-    |> ignore
-  })
-  |> ignore
+  @lg.liquid_loupe_node(
+    root,
+    on,
+    @ui.finger_reads,
+    bg=fn() { theme().p.bg },
+    solid=fn() { glass_knob().solid },
+    shadow_color=fn() { ui_theme_now().shadow },
+    width=loupe_w,
+    height=loupe_h,
+    zoom=loupe_zoom,
+    lift=loupe_lift,
+    side_inset=loupe_side,
+    grow=knob_lens_grow,
+    shadow_blur=lens_shadow,
+    shadow_y=lens_shadow_y,
+    loc~,
+  )
 }
 
 ///|

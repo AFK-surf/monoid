@@ -211,6 +211,7 @@ pub fn liquid_press_glass_decorate(
   shadow? : () -> (Double, Double, Int64),
   solid_edge? : () -> (Double, Int64),
   clips? : Bool = true,
+  with_scale? : Bool = true,
   highlight? : InteractiveHighlight,
 ) -> InteractiveHighlight {
   let ih = match highlight {
@@ -218,18 +219,22 @@ pub fn liquid_press_glass_decorate(
     None => InteractiveHighlight::new()
   }
   ih.attach(b)
+  if with_scale {
+    b
+    .scale(
+      By(fn() {
+        if @ui.reduced_motion() {
+          1.0
+        } else {
+          let (_, _, sx, sy) = ih.stretch(b)
+          (sx + sy) / 2.0
+        }
+      }),
+      about=At(0.5, 0.5),
+    )
+    |> ignore
+  }
   b
-  .scale(
-    By(fn() {
-      if @ui.reduced_motion() {
-        1.0
-      } else {
-        let (_, _, sx, sy) = ih.stretch(b)
-        (sx + sy) / 2.0
-      }
-    }),
-    about=At(0.5, 0.5),
-  )
   .glass(By(fn() {
     let spot = if !b.glass_solid() && ih.pressed(b) > 0.001 {
       let (_, _, bw, bh) = b.placed_window_now()
@@ -317,21 +322,6 @@ pub fn liquid_lift_shell_decorate(
     }),
     loc~,
   )
-  .edge(
-    By(fn() {
-      let k = t()
-      if k > 0.001 && v.glass_solid() {
-        let (w, c) = match solid_edge {
-          Some(f) => f()
-          None => liquid_solid_edge()
-        }
-        (w, alpha(c, k))
-      } else {
-        (0.0, clear)
-      }
-    }),
-    loc~,
-  )
   .shadow(
     By(fn() {
       let k = t()
@@ -346,6 +336,24 @@ pub fn liquid_lift_shell_decorate(
   )
   .shadow_outside(Is(true), loc~)
   |> ignore
+  match solid_edge {
+    Some(f) =>
+      v
+      .edge(
+        By(fn() {
+          let k = t()
+          if k > 0.001 && v.glass_solid() {
+            let (w, c) = f()
+            (w, alpha(c, k))
+          } else {
+            (0.0, clear)
+          }
+        }),
+        loc~,
+      )
+      |> ignore
+    None => ()
+  }
   match flat_ground {
     Some(fg) =>
       v

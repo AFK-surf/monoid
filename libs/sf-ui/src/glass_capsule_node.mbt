@@ -16,48 +16,22 @@ pub fn glass_capsule_node(
   solid? : () -> Int64,
   tint? : () -> Int64,
 ) -> @view.View {
-  if min_height is Some(h) {
-    b.min_height(Is(Some(h))) |> ignore
-  }
-  if radius is Some(r) {
-    b.radius(Is(r)) |> ignore
-  }
-  b
-  .glass(By(fn() {
-    let spot = if interactive && b.pressed() && !b.glass_solid() {
-      let (_, _, w, h) = b.placed_window_now()
-      if w > 0.0 && h > 0.0 {
-        Some((w / 2.0, h / 2.0))
-      } else {
-        None
-      }
-    } else {
-      None
-    }
-    let sol = match solid {
-      Some(f) => f()
-      None => if dark { 0x161618FFL } else { panel_ground() }
-    }
-    let base = if dark {
-      @lg.liquid_viewer_dark_glass(spot~, solid=sol, sharing~)
-    } else {
-      @lg.liquid_floating_glass(solid=sol, spot~, sharing~)
-    }
-    Some(
-      match tint {
-        Some(f) => { ..base, tint: f() }
-        None => base
-      },
-    )
-  }))
-  .edge(By(fn() {
-    if b.glass_solid() {
-      (control_edge_w, if dark { 0xFFFFFF26L } else { theme().p.line })
-    } else {
-      (0.0, 0L)
-    }
-  }))
-  .shadow(By(fn() { glass_control_shadow() }))
-  .shadow_outside(Is(true))
-  .clips(Is(true))
+  @lg.liquid_capsule_decorate(
+    b,
+    tone=if dark { ViewerDark } else { Floating },
+    min_height~,
+    radius~,
+    sharing~,
+    interactive~,
+    solid=match solid {
+      Some(f) => f
+      None => fn() { if dark { 0x161618FFL } else { panel_ground() } }
+    },
+    tint=match tint {
+      Some(f) => fn() { Some(f()) }
+      None => fn() { None }
+    },
+    shadow=glass_control_shadow,
+    solid_edge=fn() { (control_edge_w, if dark { 0xFFFFFF26L } else { theme().p.line }) },
+  )
 }

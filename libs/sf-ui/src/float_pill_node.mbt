@@ -20,29 +20,25 @@ pub fn float_pill_group_node(
   pad? : Double = 2.0,
   loc~ : SourceLoc,
 ) -> @view.View {
-  parent.box(made_for=loc, fn(g) {
-    let r = width / 2.0
-    let fx_sig : @signals.Signal[((Double, Double)?, Int)] = @signals.signal((None, 0))
-    let press_way = @motion.NodeWay::new(0.0)
-    let scope : PillPressScope = { pill: g, fx: fx_sig, press_way, count: 0 }
-    g
-    .width(Is(Some(width)))
-    .radius(Is(r))
+  let r = width / 2.0
+  @lg.liquid_pill_group_node(
+    loc~,
+    parent,
+    fn(g) {
+      corner_card_node(g, fn() { r }, inset=fn() { pad })
+      body(g)
+    },
+    height=width,
+    pad~,
     // (its buttons' own half gaps over and under them making up its pad there)
-    .padding(Is((pad, dmax(0.0, pad - float_pill_gap / 2.0), pad, dmax(0.0, pad - float_pill_gap / 2.0))))
-    .lines_up(Is(Some(Middle)))
-    .shrink(Is(0.0))
-    .glass(By(fn() { Some(glass_floating(spot=fx_sig.get().0).sharing()) }))
-    .scale(By(fn() { 1.0 + 0.05 * press_way.shown(g) }), about=At(0.5, 0.5))
-    .edge(By(fn() { if g.glass_solid() { (control_edge_w, theme().p.line) } else { (0.0, 0L) } }))
-    .shadow(By(fn() { glass_control_shadow() }))
-    .shadow_outside(Is(true))
-    .clips(Is(true))
-    .lends(pill_press_lent, scope)
-    |> ignore
-    corner_card_node(g, fn() { r }, inset=fn() { pad })
-    body(g)
-  })
+    pad_y=dmax(0.0, pad - float_pill_gap / 2.0),
+    gap=0.0,
+    direction=Vertical,
+    floating=true,
+    solid=fn() { glass_floating().solid },
+    shadow=glass_control_shadow,
+    solid_edge=fn() { (control_edge_w, theme().p.line) },
+  )
 }
 
 ///|

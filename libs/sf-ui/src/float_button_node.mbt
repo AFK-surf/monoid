@@ -32,8 +32,17 @@ pub fn float_button_node(
     .min_width(Is(Some(float_button_side + 2.0 * room)))
     |> ignore
     @headless.button(made_for=loc, o, label, fn(_) { press() }, disabled=busy.unwrap_or(fn() { false }), fn(b, btn) {
-      let ih = @lg.InteractiveHighlight::new()
-      ih.attach(b)
+      style_node(b, fn() { float_button_look })
+      hover_ground_node(b)
+      let ih = @lg.liquid_press_glass_decorate(
+        b,
+        tone=Floating,
+        sharing=true,
+        solid=fn() { glass_floating().solid },
+        shadow=glass_control_shadow,
+        solid_edge=fn() { (control_edge_w, theme().p.line) },
+        with_scale=false,
+      )
       let scale_bound = Ref(false)
       let ensure_scale = fn() {
         if !scale_bound.val {
@@ -52,26 +61,7 @@ pub fn float_button_node(
           |> ignore
         }
       }
-      style_node(b, fn() { float_button_look })
-      hover_ground_node(b)
       b
-      .glass(By(fn() {
-        let sp = if !b.glass_solid() && ih.pressed(b) > 0.001 {
-          let (_, _, bw, bh) = b.placed_window_now()
-          if bw > 0.0 && bh > 0.0 {
-            Some(ih.spot(b, bw, bh))
-          } else {
-            None
-          }
-        } else {
-          None
-        }
-        Some(glass_floating(spot=sp).sharing())
-      }))
-      .edge(By(fn() { if b.glass_solid() { (control_edge_w, theme().p.line) } else { (0.0, 0L) } }))
-      .shadow(By(fn() { glass_control_shadow() }))
-      .shadow_outside(Is(true))
-      .clips(Is(true))
       .gesture(
         @ui.touch_slop(),
         press=fn(d) {

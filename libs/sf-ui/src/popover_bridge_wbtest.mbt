@@ -163,7 +163,7 @@ test "bar_pill_group_node menu performs iOS 27.0 LiquidMorphPhysics with upward 
 
   // Three-anchor optical boundary invariant:
   // stage=0.0 == glass_bar_pill(), stage=0.5 == luminous 0x88/blur=5.0/bezel=18/refr=14, stage=1.0 == glass_menu()
-  let pill_gl = glass_bar_pill()
+  let pill_gl = @lg.liquid_bar_pill_glass(solid=panel_ground())
   let clear_gl = glass_menu_morph(0.0)
   let mid_gl = glass_menu_morph(0.5)
   let rest_gl = glass_menu()

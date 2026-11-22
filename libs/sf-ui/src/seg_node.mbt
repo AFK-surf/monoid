@@ -232,6 +232,7 @@ fn seg_thumb_alpha(l : Double) -> Double {
 ///|
 /// Clear lifted liquid glass lens mounted above a segmented/pill-tab strip's labels while held (`lens() > 0.001`).
 /// Zero hidden glass instances at rest, zero pointer interception, and zero relayout via paint-layer `ground_drawn`.
+#callsite(autofill(loc))
 fn seg_lens_overlay_node(
   parent : @view.View,
   lens : () -> Double,
@@ -239,70 +240,21 @@ fn seg_lens_overlay_node(
   rect : () -> (Double, Double, Double, Double)?,
   jelly? : (@view.View) -> (Double, Double),
   active? : () -> Bool = fn() { false },
+  loc~ : SourceLoc,
 ) -> Unit {
-  // Mount lazily on first press/hold so idle pages allocate zero nodes, then keep mounted across slide settle so
-  // releasing the lens never triggers a layout pass (`laid == 0`). Glass stays `None` whenever `full() <= 0.001`.
-  let mounted : @signals.Signal[Bool] = @signals.signal(false)
-  parent.reacts(fn() { lens() > 0.001 || active() }, fn(on) {
-    if on && !mounted.untracked() {
-      mounted.set(true)
-    }
-  })
-  parent.show(fn() { mounted.get() }, fn(l) {
-    let full = fn() { dmin(1.0, lens()) }
-    l
-    .over(Is(true))
-    .points(Is(false))
-    .offset(Is((0.0, 0.0)))
-    .width(Is(Some(0.0)))
-    .height(By(fn() { Some(h()) }))
-    // (round as a pill is said to be, Full, as the old lens's capsule: as round as it can be)
-    .radius(Is(1.0e6))
-    .glass(By(fn() {
-      let p = full()
-      if p > 0.001 {
-        Some(@lg.liquid_tab_lens_glass(p, solid=theme().p.raised))
-      } else {
-        None
-      }
-    }))
-    .shadow(By(fn() {
-      let p = full()
-      if p > 0.001 {
-        (seg_lens_shadow * p, seg_lens_shadow_y * p, @ui.tree_theme().shadow)
-      } else {
-        (0.0, 0.0, 0x00000000L)
-      }
-    }))
-    .shadow_outside(Is(true))
-    .alpha(By(full))
-    .ground_drawn(By(fn() {
-      match rect() {
-        Some((rx, ry, rw, _)) => {
-          let hh = h()
-          let (lw, lh) = match jelly {
-            Some(jf) => {
-              let (sx, sy) = jf(l)
-              (dmax(0.0, rw + hh * (sx - 1.0)), dmax(0.0, hh * sy))
-            }
-            None => {
-              let grow = hh * seg_lens_grow * lens()
-              (rw + grow, hh + grow)
-            }
-          }
-          {
-            dx: rx + (rw - lw) / 2.0,
-            dy: ry + (hh - lh) / 2.0,
-            dw: lw,
-            dh: lh - hh,
-            corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
-          }
-        }
-        None => @view.ground_as_laid
-      }
-    }))
-    |> ignore
-  })
+  @lg.liquid_lens_overlay_node(
+    parent,
+    lens,
+    h,
+    rect~,
+    solid=fn() { theme().p.raised },
+    shadow_blur=seg_lens_shadow,
+    shadow_y=seg_lens_shadow_y,
+    jelly?,
+    grow=seg_lens_grow,
+    active~,
+    loc~,
+  )
 }
 
 ///|

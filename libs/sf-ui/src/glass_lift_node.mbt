@@ -19,49 +19,14 @@ pub fn glass_lift_surface(
   },
   loc~ : SourceLoc,
 ) -> Unit {
-  let t = fn() { dclamp(progress(), 0.0, 1.0) }
-  v
-  .glass(
-    By(fn() {
-      let k = t()
-      if k <= 0.001 {
-        None
-      } else {
-        Some({ ..glass(), solid: theme().p.raised }.at_strength(k))
-      }
-    }),
+  @lg.liquid_lift_shell_decorate(
+    v,
+    progress,
+    flat_ground~,
+    glass~,
+    solid=fn() { theme().p.raised },
+    radius=Some(radius),
+    shadow~,
     loc~,
   )
-  .radius(Is(radius), loc~)
-  .shadow(
-    By(fn() {
-      let k = t()
-      if k <= 0.001 {
-        (0.0, 0.0, 0L)
-      } else {
-        let (sigma, dy, color) = shadow()
-        (sigma * k, dy * k, alpha(color, k))
-      }
-    }),
-    loc~,
-  )
-  .shadow_outside(Is(true), loc~)
-  |> ignore
-  match flat_ground {
-    Some(fg) =>
-      v
-      .ground(
-        By(fn() {
-          let k = t()
-          if k <= 0.001 {
-            fg()
-          } else {
-            alpha(fg(), 1.0 - k)
-          }
-        }),
-        loc~,
-      )
-      |> ignore
-    None => ()
-  }
 }

@@ -153,39 +153,18 @@ pub fn value_slider_node(
           |> ignore
         })
         // Lazy-mounted clear liquid glass magnifying lens over the knob while held (0 hidden glass & 0 extra nodes at rest; laid == 0)
-        let lens_mounted : @signals.Signal[Bool] = @signals.signal(false)
-        row.reacts(fn() { !no_lens() && (dd.pressing() || dd.pressed(row) > 0.001) }, fn(active) {
-          if active && !lens_mounted.untracked() {
-            lens_mounted.set(true)
-          }
-        })
-        row.show(fn() { lens_mounted.get() }, at_once=true, fn(gl) {
-          gl
-          .over(Is(true))
-          .points(Is(false))
-          .offset(Is((0.0, 0.0)))
-          .width(Is(Some(vslider_knob_d)))
-          .height(Is(Some(vslider_knob_d)))
-          .radius(Is(r))
-          .glass(By(fn() {
-            let p = lens(gl)
-            if p > 0.001 {
-              Some(@lg.liquid_tab_lens_glass(p, solid=theme().p.raised))
-            } else {
-              None
-            }
-          }))
-          .shadow(By(fn() {
-            let p = lens(gl)
-            if p > 0.001 {
-              (4.0 * p, 2.0 * p, 0x00000022L)
-            } else {
-              (0.0, 0.0, 0L)
-            }
-          }))
-          .shadow_outside(Is(true))
-          .alpha(By(fn() { lens(gl) }))
-          .ground_drawn(By(fn() {
+        @lg.liquid_lens_overlay_node(
+          row,
+          fn() { lens(row) },
+          fn() { vslider_knob_d },
+          width=fn() { vslider_knob_d },
+          radius=r,
+          solid=fn() { theme().p.raised },
+          shadow_color=fn() { 0x00000022L },
+          shadow_blur=4.0,
+          shadow_y=2.0,
+          active=fn() { !no_lens() && (dd.pressing() || dd.pressed(row) > 0.001) },
+          ground_drawn=fn(gl) {
             let (sx, sy) = dd.jelly(gl, 10.0)
             let lw = vslider_knob_d * sx
             let lh = vslider_knob_d * sy
@@ -198,9 +177,9 @@ pub fn value_slider_node(
               dh: lh - vslider_knob_d,
               corners: Some((rr, rr, rr, rr)),
             }
-          }))
-          |> ignore
-        })
+          },
+          loc~,
+        )
         // over the knob while held: its value (rolling as the keys step it, each step under the hand there at once), in
         // a bubble of its own
         let bubble_in = fn(o : @view.View) {
