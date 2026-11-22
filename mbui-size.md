@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ba6e9abbf](https://github.com/AFK-surf/monoid/commit/ba6e9abbfd3cc643cc3d6ee825df237c528e61f5) fix(cloud): give the web.json put its Cloudflare a | 2.71 | 3.65 | 14.81 | 36.93 | 56.42 | 32.36 | 65.64 | 99.63 | 131.04 |
 | [f43ce757d](https://github.com/AFK-surf/monoid/commit/f43ce757d63053878134d6c1218711955822c7da) refactor(sf-ui): move the bottom bar's glass onto  | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.3 | 65.46 | 99.53 | 117.37 |
 | [3e63fed71](https://github.com/AFK-surf/monoid/commit/3e63fed71c7e6870293138e275744584ccdbdbb4) fix(mbui): run switches tests through a core-sized | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.3 | 65.46 | 99.45 | 122.56 |
 | [c442e4689](https://github.com/AFK-surf/monoid/commit/c442e468983462b7c71ed8eaee0ddf14fe76a0c6) fix(app): stop raising lifted media above composer | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.28 | 65.46 | 99.55 | 115.86 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [26d9c959d](https://github.com/AFK-surf/monoid/commit/26d9c959d48a61322a07f498827fadf8e79dce30) perf(mbui): isolate stacked glass cache, add GLES  | 2.68 | 3.61 | 14.64 | 36.73 | 55.84 | 32.18 | 65.16 | 99.91 | 115.83 |
 | [2fc81fb16](https://github.com/AFK-surf/monoid/commit/2fc81fb1640e8b949325cdfed0f11732a9f51005) feat(mbui): show the source of a Markdown file in  | 2.68 | 3.61 | 14.64 | 36.73 | 55.84 | 32.18 | 65.16 | 99.91 | 115.83 |
 | [2baeae5ef](https://github.com/AFK-surf/monoid/commit/2baeae5efc0f19f71244214ce86fefbe58277dc4) feat(sf-ui): put the window keys in one tinted liq | 2.68 | 3.6 | 14.62 | 36.72 | 55.82 | 32.17 | 65.16 | 99.83 | 123.62 |
-| [18c2f2077](https://github.com/AFK-surf/monoid/commit/18c2f207752b73d637d47017bc21cf77ab9cacf9) feat(app): put the shortcuts' search above their l | 2.67 | 3.6 | 14.6 | 36.7 | 55.79 | 32.15 | 65.11 | 100.19 | 123.43 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ba6e9abbf](https://github.com/AFK-surf/monoid/commit/ba6e9abbfd3cc643cc3d6ee825df237c528e61f5) fix(cloud): give the web.json put its Cloudflare a | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [f43ce757d](https://github.com/AFK-surf/monoid/commit/f43ce757d63053878134d6c1218711955822c7da) refactor(sf-ui): move the bottom bar's glass onto  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [3e63fed71](https://github.com/AFK-surf/monoid/commit/3e63fed71c7e6870293138e275744584ccdbdbb4) fix(mbui): run switches tests through a core-sized | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [c442e4689](https://github.com/AFK-surf/monoid/commit/c442e468983462b7c71ed8eaee0ddf14fe76a0c6) fix(app): stop raising lifted media above composer | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [26d9c959d](https://github.com/AFK-surf/monoid/commit/26d9c959d48a61322a07f498827fadf8e79dce30) perf(mbui): isolate stacked glass cache, add GLES  | 0.48 | 0.63 | 2.42 | 3.48 | 5.73 | 1.77 | 4.77 | 55.69 |
 | [2fc81fb16](https://github.com/AFK-surf/monoid/commit/2fc81fb1640e8b949325cdfed0f11732a9f51005) feat(mbui): show the source of a Markdown file in  | 0.48 | 0.63 | 2.41 | 3.47 | 5.72 | 1.76 | 4.77 | 55.59 |
 | [2baeae5ef](https://github.com/AFK-surf/monoid/commit/2baeae5efc0f19f71244214ce86fefbe58277dc4) feat(sf-ui): put the window keys in one tinted liq | 0.48 | 0.63 | 2.41 | 3.47 | 5.72 | 1.76 | 4.77 | 55.59 |
-| [18c2f2077](https://github.com/AFK-surf/monoid/commit/18c2f207752b73d637d47017bc21cf77ab9cacf9) feat(app): put the shortcuts' search above their l | 0.48 | 0.63 | 2.41 | 3.47 | 5.72 | 1.76 | 4.77 | 55.59 |
