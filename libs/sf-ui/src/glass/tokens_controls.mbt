@@ -9,7 +9,7 @@
 let ctrl_seg_pad : Double = 3.0
 
 ///|
-let ctrl_seg_held_scale : Double = 1.06
+let ctrl_seg_held_scale : Double = 1.15
 
 ///|
 let ctrl_seg_px : Double = 12.0
@@ -31,9 +31,19 @@ let ctrl_type_seg : Double = 14.0
 // ---------------------------------------------------------------------------
 
 ///|
+/// iOS 26 lifted opaque pill fill at rest for `glass_track=true` segmented controls
+/// (pure white in Light, lifted medium grey in Dark).
 fn ctrl_seg_thumb_idle() -> Int64 {
-  colors().lens_idle
+  if is_dark() {
+    0x5A5A60FFL
+  } else {
+    0xFFFFFFFFL
+  }
 }
+
+///|
+/// Subtle outer drop shadow for the resting lifted pill in `glass_track=true` segmented controls.
+let ctrl_seg_thumb_idle_shadow : (Double, Double, Int64) = (2.0, 1.0, 0x0000001FL)
 
 ///|
 fn ctrl_seg_inactive_ink() -> Int64 {
@@ -319,6 +329,8 @@ fn ctrl_segmented_track_glass() -> @paint.Glass {
 }
 
 ///|
+/// Calibrated clear loupe recipe for standalone 40-44pt segmented capsules overlaid above labels (`glass_track=true`).
+/// Keeps maximum inward refraction inside the clear vertical margin so top/bottom bevel rims never ghost text strokes.
 fn ctrl_segmented_lens_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
   let c = colors()
@@ -328,13 +340,13 @@ fn ctrl_segmented_lens_glass(p : Double) -> @paint.Glass {
     solid=alpha(c.container, 1.0 / 0.4),
     saturation=1.0,
     rim=0.6 * p,
-    bezel=12.0 * p,
-    refraction=18.0 * p,
-    chroma=-0.05 * p,
+    bezel=8.0 * p,
+    refraction=8.5 * p,
+    chroma=-0.03 * p,
     merge=0.0,
     adaptive=false,
     spot=None,
-    zoom=1.0 + 0.22 * p,
+    zoom=1.0 + 0.12 * p,
   )
 }
 

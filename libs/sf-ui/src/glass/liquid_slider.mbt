@@ -50,6 +50,10 @@ fn slider_thumb_x_for(w : Double, tw : Double, progress : Double, flush : Bool) 
 let slider_stops_lean : Double = 0.25
 
 ///|
+/// Elastic track height growth while held/dragged (6pt -> 10pt in paint layer via ground_drawn, zero relayout).
+let slider_track_held_grow : Double = 4.0
+
+///|
 /// A LiquidSlider in `parent`, at `value` along `least` … `most`; moved (its thumb dragged, its track tapped, a key, a
 /// screen reader's step), `change` is told the new value. Read out a slider named `label`. As wide as what holds it
 /// gives it, `thumb_h_px` high (default 24pt). Supports discrete `stops`, adaptive `thumb_label`, and floating
@@ -259,6 +263,15 @@ pub fn liquid_slider_node(
               None => colors().track
             }
           }))
+          .ground_drawn(By(fn() {
+            let dh = slider_track_held_grow * dmax(0.0, dd.pressed(track))
+            if dh.abs() < 0.001 {
+              @view.ground_as_laid
+            } else {
+              let rr = (track_h + dh) / 2.0
+              { dx: 0.0, dy: -dh / 2.0, dw: 0.0, dh, corners: Some((rr, rr, rr, rr)) }
+            }
+          }))
           |> ignore
         })
         |> ignore
@@ -277,7 +290,13 @@ pub fn liquid_slider_node(
           }))
           .ground_drawn(By(fn() {
             let shown = clamp(dd.progress(fill), 0.0, 1.0) * w()
-            { ..@view.ground_as_laid, dw: shown - w() }
+            let dh = slider_track_held_grow * dmax(0.0, dd.pressed(fill))
+            if dh.abs() < 0.001 {
+              { ..@view.ground_as_laid, dw: shown - w() }
+            } else {
+              let rr = (track_h + dh) / 2.0
+              { dx: 0.0, dy: -dh / 2.0, dw: shown - w(), dh, corners: Some((rr, rr, rr, rr)) }
+            }
           }))
           |> ignore
         })

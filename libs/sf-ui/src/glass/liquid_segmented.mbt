@@ -49,7 +49,7 @@ pub fn liquid_segmented_node(
         first,
         lo=0.0,
         hi=last_init,
-        held_scale=if glass_track { ctrl_seg_held_scale } else { 1.15 },
+        held_scale=ctrl_seg_held_scale,
       )
   }
   let current = Ref(@signals.untracked(selected))
@@ -178,7 +178,11 @@ pub fn liquid_segmented_node(
           }))
           |> ignore
           if glass_track {
-            pill.ground(By(ctrl_seg_thumb_idle)) |> ignore
+            pill
+            .ground(By(ctrl_seg_thumb_idle))
+            .shadow(Is(ctrl_seg_thumb_idle_shadow))
+            .shadow_outside(Is(true))
+            |> ignore
           } else {
             pill
             .ground(By(fn() { @ui.tree_theme().lifted }))
@@ -238,10 +242,6 @@ pub fn liquid_segmented_node(
             |> ignore
           })
           |> ignore
-        }
-        // For standalone glass_track=true, mount the lens behind text so labels stay razor sharp (matching ui.monoid).
-        if glass_track {
-          mount_lens()
         }
         let stopped = fn() {
           let last = last_fn()
@@ -406,10 +406,9 @@ pub fn liquid_segmented_node(
           )
         })
         |> ignore
-        // For embedded glass_track=false, mount the compact refraction loupe above labels while held/dragged.
-        if !glass_track {
-          mount_lens()
-        }
+        // Mount the clear refraction loupe above labels for both `glass_track=true` and `glass_track=false`
+        // so dragging magnifies and refracts the segment labels underneath (iOS 26/27 optical Z-order).
+        mount_lens()
       })
       |> ignore
     },

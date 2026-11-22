@@ -61,7 +61,7 @@ pub fn value_slider_node(
     disabled~,
     value_text=fn(x) { format(x.round().to_int()) },
     fn(v, sl) {
-      let dd = @glass.DampedDrag::new(@signals.untracked(value), lo=min, hi=max, held_scale=1.5)
+      let dd = @glass.DampedDrag::new(@signals.untracked(value), lo=min, hi=max, held_scale=vslider_lens_scale_x)
       dd.attach(v)
       let no_lens = fn() { v.glass_solid() || @ui.reduced_motion() }
       let lens = fn(n : @view.View) -> Double { if no_lens() { 0.0 } else { dclamp(dd.pressed(n), 0.0, 1.0) } }
@@ -107,13 +107,23 @@ pub fn value_slider_node(
           lag.target() |> ignore
           lag.value_at(at) * span()
         }
-        // its track
+        // its track (thickens elastically from 4pt to 8pt while held in paint layer, zero relayout)
         row.box(fn(t) {
           t
           .over(Is(true))
           .margin(Is((0.0, cy - vslider_track_h / 2.0, 0.0, cy - vslider_track_h / 2.0)))
           .radius(Is(vslider_track_h / 2.0))
           .ground(By(fn() { theme().p.line_strong }))
+          .ground_drawn(By(fn() {
+            let cur_h = vslider_track_h + (vslider_track_held_h - vslider_track_h) * dmax(0.0, held.shown(t))
+            let dh = cur_h - vslider_track_h
+            if dh.abs() < 0.001 {
+              @view.ground_as_laid
+            } else {
+              let rr = cur_h / 2.0
+              { dx: 0.0, dy: -dh / 2.0, dw: 0.0, dh, corners: Some((rr, rr, rr, rr)) }
+            }
+          }))
           |> ignore
         })
         |> ignore
@@ -122,14 +132,16 @@ pub fn value_slider_node(
           f
           .over(Is(true))
           .shapes(By(fn() {
-            let k = dmin(1.0, hold())
+            let h_raw = dmax(0.0, held.shown(f))
+            let k = dmin(1.0, h_raw)
+            let cur_h = vslider_track_h + (vslider_track_held_h - vslider_track_h) * h_raw
             let x = r + (sl.part() + lag.shown(f)) * span()
             let ink = theme().p.accent
-            let part = vslider_capsule(0.0, x, cy, vslider_track_h)
-            if k <= 0.01 {
+            let part = vslider_capsule(0.0, x, cy, cur_h)
+            if !no_lens() || k <= 0.01 {
               [@paint.shape_of(part, fill=ink)]
             } else {
-              let drop = @paint.meniscus_outline(0.0, cy, vslider_track_h, x, r + vslider_drop_out * k, k)
+              let drop = @paint.meniscus_outline(0.0, cy, cur_h, x, r + vslider_drop_out * k, k)
               [@paint.shape_of(part, fill=ink), @paint.shape_of(drop, fill=ink)]
             }
           }))
@@ -165,7 +177,11 @@ pub fn value_slider_node(
           shadow_y=2.0,
           active=fn() { !no_lens() && (dd.pressing() || dd.pressed(row) > 0.001) },
           ground_drawn=fn(gl) {
-            let (sx, sy) = dd.jelly(gl, 10.0)
+            let (sx, sy_raw) = dd.jelly(gl, 10.0)
+            let v_squeeze = 1.0 - dclamp((dd.velocity(gl) / 10.0) * 0.25, -0.2, 0.2)
+            let base_sy = if v_squeeze > 0.001 { sy_raw / v_squeeze } else { sy_raw }
+            let sy_ratio = (vslider_lens_scale_y - 1.0) / (vslider_lens_scale_x - 1.0)
+            let sy = (1.0 + (base_sy - 1.0) * sy_ratio) * v_squeeze
             let lw = vslider_knob_d * sx
             let lh = vslider_knob_d * sy
             let x = r + (sl.part() + lag.shown(gl)) * span()
@@ -263,6 +279,17 @@ let vslider_least_w : Double = 120.0
 
 ///|
 let vslider_track_h : Double = 4.0
+
+///|
+/// Track height while held/dragged (elastic thickening from 4pt to 8pt in paint layer, zero relayout).
+let vslider_track_held_h : Double = 8.0
+
+///|
+/// Calibrated horizontal liquid-pill lens scale while held (iOS 26 elongated capsule: 36x24.4pt, ~1.48:1).
+let vslider_lens_scale_x : Double = 1.80
+
+///|
+let vslider_lens_scale_y : Double = 1.22
 
 ///|
 let vslider_knob_d : Double = 20.0
