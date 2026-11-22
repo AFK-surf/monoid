@@ -27,6 +27,8 @@ test "32-sheet-drag" {
     f.drag("选择运行的 station", 0.0, 100.0, steps=sheet_flick_steps)
     f.run_to(@sf.presented_rest)
     f.gone("选择运行的 station")
+    // let a 7 fps display draw a resting frame after the sheet leaves so its kept stationNet version returns before reopening
+    f.run_for(@ui.move_least_ms)
     f.tap("=willow")
     f.run_to(@sf.presented_rest)
     f.tap("=willow", top=true)
