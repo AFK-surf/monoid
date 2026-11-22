@@ -2507,26 +2507,34 @@ fn triple_model_row_node(
         name,
         picked,
         fn(row) {
-          row.pick(fn() { (text(field(o(), "maker"), "id"), runs()) }, fn(m, k) { @sf.maker_mark_node(m, k.0, k.1, 14.0) |> ignore })
           // (all of its name in the room its column leaves it, on a second line where one is not enough: what goes with
           // the model picked beside the models takes the room its words need first)
           row.box(fn(nc) {
-            @sf.style_node(nc, fn() { triple_name_column.then(@ui.style(w=Fixed(names_w()))) }, in_row=true)
+            @sf.style_node(nc, fn() { triple_name_column.then(@ui.style(w=Fixed(names_w() + triple_mark_room))) }, in_row=true)
             nc.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             nc.box(fn(nl) {
               @sf.style_node(nl, fn() { triple_model_name_line })
-              nl.min_width(Is(Some(0.0))) |> ignore
-              @sf.words_node(nl, name, fn() { if picked() { triple_row_picked } else { triple_row_name } })
-              .shrink(Is(0.0))
-              .keeps_held(Is(true))
-              .min_width(Is(Some(0.0)))
-              .max_width(Is(None), within=true)
+              // (what goes with it on a line of its own where it does not fit beside the name, from the maker's mark)
+              // (in the middle of its name's line beside it, as what is at the row's end is; on a line of its own where it does not fit)
+              nl.min_width(Is(Some(0.0))).wraps(Is(Some(triple_wrap_gap))).lines_up(Is(Some(Middle))) |> ignore
+              // (its maker's mark in the middle of its name's line, the two the line's baseline's)
+              nl.box(fn(hd) {
+                @sf.style_node(hd, fn() { triple_name_line }, in_row=true)
+                hd.shrink(Is(0.0)).min_width(Is(Some(0.0))).max_width(Is(None), within=true) |> ignore
+                hd.pick(fn() { (text(field(o(), "maker"), "id"), runs()) }, fn(m, k) { @sf.maker_mark_node(m, k.0, k.1, 14.0) |> ignore })
+                @sf.words_node(hd, name, fn() { if picked() { triple_row_picked } else { triple_row_name } })
+                .shrink(Is(0.0))
+                .keeps_held(Is(true))
+                .min_width(Is(Some(0.0)))
+                .max_width(Is(None), within=true)
+                |> ignore
+              })
               |> ignore
               // (giving way to the name where the row is short: what the name leaves of it, cut short, all of it where
               // the name leaves no room)
               nl.show(fn() { usual() != "" }, fn(ur) {
                 @sf.style_node(ur, fn() { triple_usual_room }, in_row=true)
-                @sf.on_baseline(ur, Ui, Meta)
+                ur
                 .shrink(Is(1.0))
                 .min_width(Is(Some(0.0)))
                 .clips(Is(true))
@@ -2666,30 +2674,32 @@ fn triple_combo_row_node(
         label,
         on,
         fn(row) {
-          row.pick(fn() { (text(field(o(), "maker"), "id"), text(x(), "runtime")) }, fn(m, k) { @sf.maker_mark_node(m, k.0, k.1, 14.0) |> ignore })
           row.box(fn(nc) {
-            @sf.style_node(nc, fn() { triple_name_column.then(@ui.style(w=Fixed(names_w()))) }, in_row=true)
+            @sf.style_node(nc, fn() { triple_name_column.then(@ui.style(w=Fixed(names_w() + triple_mark_room))) }, in_row=true)
             nc.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             nc.box(fn(nl) {
-              @sf.style_node(nl, fn() { triple_name_line })
-              nl.min_width(Is(Some(0.0))) |> ignore
-              @sf.words_node(nl, name, fn() { if on() { triple_row_picked } else { triple_row_name } })
-              .shrink(Is(0.0))
-              .keeps_held(Is(true))
-              .min_width(Is(Some(0.0)))
-              .max_width(Is(None), within=true)
-              |> ignore
-              // (giving way to the name where the row is short: cut short, all of it where the name leaves no room; its
-              // capsule's sides too, which would else stand over what is at the row's end)
-              nl.show(fn() { how() != "" }, fn(cr) {
-                @sf.style_node(cr, fn() { triple_combo_room }, in_row=true)
-                cr.shrink(Is(1.0)).min_width(Is(Some(0.0))).margin(Is((0.0, 0.0, 6.0, 0.0))).clips(Is(true)) |> ignore
-                cr.box(fn(cap) {
-                  @sf.style_node(cap, fn() { triple_combo }, in_row=true)
-                  cap.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                  @sf.words_node(cap, how, fn() { triple_combo_words }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
-                })
+              @sf.style_node(nl, fn() { triple_model_name_line })
+              // (in the middle of its name's line beside it, as what is at the row's end is; on a line of its own where it does not fit, from the maker's mark)
+              nl.min_width(Is(Some(0.0))).wraps(Is(Some(triple_wrap_gap))).lines_up(Is(Some(Middle))) |> ignore
+              // (its maker's mark in the middle of its name's line, the two the line's baseline's)
+              nl.box(fn(hd) {
+                @sf.style_node(hd, fn() { triple_name_line }, in_row=true)
+                hd.shrink(Is(0.0)).min_width(Is(Some(0.0))).max_width(Is(None), within=true) |> ignore
+                hd.pick(fn() { (text(field(o(), "maker"), "id"), text(x(), "runtime")) }, fn(m, k) { @sf.maker_mark_node(m, k.0, k.1, 14.0) |> ignore })
+                @sf.words_node(hd, name, fn() { if on() { triple_row_picked } else { triple_row_name } })
+                .shrink(Is(0.0))
+                .keeps_held(Is(true))
+                .min_width(Is(Some(0.0)))
+                .max_width(Is(None), within=true)
                 |> ignore
+              })
+              |> ignore
+              // (how it runs, as a model's usual configuration is said: muted words, cut short only where a line of its
+              // own does not hold it)
+              nl.show(fn() { how() != "" }, fn(cr) {
+                @sf.style_node(cr, fn() { triple_usual_room }, in_row=true)
+                cr.shrink(Is(1.0)).min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
+                @sf.words_node(cr, how, fn() { triple_usual }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
               }, along_row=true)
             })
             |> ignore
@@ -3252,8 +3262,10 @@ let triple_name_column : @ui.Style = @ui.css("min_w=SPx gap=SPx")
 let triple_check_room : @ui.Style = @ui.css("w=S3_5")
 
 ///|
+/// A model's or a configuration's row with its star or its ✕ beside it, the two on the row's first line: in its middle
+/// where it has one line, by its name where what goes with it took a line of its own.
 // kept across runs: a value (no field of it changes)
-let triple_liking : @ui.Style = @ui.css("row w=Full gap=SPx align=ACenter")
+let triple_liking : @ui.Style = @ui.css("row w=Full gap=SPx align=AFirstLine")
 
 ///|
 /// All the models beside what opened the panel: the makers, a line, a maker's models.
@@ -3308,23 +3320,9 @@ let triple_effort_column : @ui.Style = @ui.css("gap=SPx")
 let triple_kind_mark : @ui.Style = @ui.css("w=S3_5 align=ACenter justify=JCenter")
 
 ///|
-/// How a model runs picked, right after its name: Meta, muted, on one line.
+/// How a model runs picked, or how one of those used most runs, right after its name: small, muted, on one line.
 // kept across runs: a value (no field of it changes)
-let triple_usual : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, w=Cut)
-
-///|
-/// How one of those used most runs, after its name: a capsule on the words' tint, its words the rows' own colour.
-// kept across runs: a value (no field of it changes)
-let triple_combo : @ui.Style = @ui.css("row min_h=S5 px=S2 align=ACenter radius=Full bg=Tint")
-
-///|
-// kept across runs: a value (no field of it changes)
-let triple_combo_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false, w=Cut)
-
-///|
-/// A configuration's capsule's room: as its words', down to nothing, the capsule cut where the name leaves less.
-// kept across runs: a value (no field of it changes)
-let triple_combo_room : @ui.Style = triple_usual_room.then(@ui.css("min_w=S0 clip"))
+let triple_usual : @ui.TextStyle = @ui.text_style(size=Xs2, color=Muted, wrap=false, w=Cut)
 
 ///|
 /// Its room: right after the name, what the name leaves of the row.
@@ -3540,3 +3538,11 @@ pub fn open_triple_accounts(station : String, of : String) -> Unit {
   open_triple(station, of)
   triple.accounts_asked = true
 }
+
+///|
+/// Between a row's name and what goes with it put on the line under it where the two do not fit on one.
+let triple_wrap_gap : Double = 4.0
+
+///|
+/// What the maker's mark takes of a row's name column ahead of its name: the mark and the gap after it.
+let triple_mark_room : Double = 14.0 + @ui.Space::S1_5.px()
