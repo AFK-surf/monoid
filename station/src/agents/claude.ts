@@ -182,6 +182,10 @@ const RENEWED = { CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH: "1", CLAUDE_CODE_ENTRYPOINT
 /// is refused (`SILENT_SUBAGENTS`).
 export const CLAUDE_TOOL_LOADED = Object.freeze({ "anthropic/alwaysLoad": true });
 
+/// A tool result with this `_meta` ends the turn without another model request, unless a call of that message failed
+/// (2.1.330, 2026-11-22). The request it saves wrote only words no one is shown, and read the whole context to do so.
+export const CLAUDE_TURN_ENDED = Object.freeze({ "claude/endTurn": true });
+
 /// The hook that refuses a subagent the tools a session speaks by (./subagent-hook.mjs says how it knows one).
 export const SUBAGENT_HOOK = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/agents/subagent-hook.mjs", import.meta.url) : new URL("./subagent-hook.mjs", import.meta.url));
 /// A hook that does not answer is given up on after this many seconds, and the call goes on as if there were none

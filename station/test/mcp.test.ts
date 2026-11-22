@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AGY_TOOL_BUDGET } from "../src/agents/agy.ts";
-import { CLAUDE_TOOL_LOADED } from "../src/agents/claude.ts";
+import { CLAUDE_TOOL_LOADED, CLAUDE_TURN_ENDED } from "../src/agents/claude.ts";
+import { listingFor } from "../src/sessions/agents.ts";
 import { CORE, EVERY_TURN, fitted, HIDDEN, INDIRECT, type Listing, McpEndpoint, OUTWARD, PRIORITY, type Tool, UNBOUND_REFUSAL, weight } from "../src/tools/mcp.ts";
 
 const echo: Tool = {
@@ -203,4 +204,40 @@ test("heard counts only authorized tools/list and tools/call requests", async ()
   assert.equal(e.heard("session-1"), 1);
   assert.equal((await rpc(e, "good", { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "echo", arguments: { text: "hi" } } })).status, 200);
   assert.equal(e.heard("session-1"), 2);
+});
+
+test("a call that ends the turn says so only where its runtime can stop, and only as it succeeded", async () => {
+  let ends = true;
+  const end: Tool = {
+    name: "end",
+    description: "",
+    inputSchema: { type: "object" },
+    run: async (_key, args) => {
+      if ("fail" in args) throw new Error("nope");
+      return "ended";
+    },
+    endsTurn: (_key, _args, said) => ends && said === "ended",
+  };
+  const call = async (listing: Listing | undefined, args: Record<string, unknown> = {}) => {
+    const e = new McpEndpoint((token) => (token === "good" ? "session-1" : undefined), [end, echo], undefined, () => listing);
+    return ((await rpc(e, "good", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "end", arguments: args } })).body as any).result;
+  };
+  const claude: Listing = { ended: CLAUDE_TURN_ENDED };
+  assert.deepEqual((await call(claude))._meta, { "claude/endTurn": true });
+  assert.equal("_meta" in (await call(undefined)), false);
+  const failed = await call(claude, { fail: true });
+  assert.equal(failed.isError, true);
+  assert.equal("_meta" in failed, false);
+  ends = false;
+  assert.equal("_meta" in (await call(claude)), false);
+  const e = new McpEndpoint((token) => (token === "good" ? "session-1" : undefined), [end, echo], undefined, () => claude);
+  const other: any = (await rpc(e, "good", { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "echo", arguments: { text: "hi" } } })).body;
+  assert.equal("_meta" in other.result, false);
+});
+
+test("only a Claude session in print mode ends its turn on a tool result", () => {
+  assert.deepEqual(listingFor("claude", false), { loaded: CLAUDE_TOOL_LOADED, ended: CLAUDE_TURN_ENDED });
+  assert.deepEqual(listingFor("claude", true), { loaded: CLAUDE_TOOL_LOADED });
+  assert.equal(listingFor("codex", false)?.ended, undefined);
+  assert.equal(listingFor("agy", false)?.ended, undefined);
 });

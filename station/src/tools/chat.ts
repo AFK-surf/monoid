@@ -6,7 +6,7 @@
 // declares neither: with them its schema was over what Codex keeps the parameter descriptions of.
 import { NOTICE_MARK } from "../sessions/chat.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
-import { chatHistory, chatLeave, chatPost, chatState, mayStage, staged, target, unheld, NOT_POSTED } from "../sessions/conversations.ts";
+import { chatHistory, chatLeave, chatPost, chatState, mayStage, nothingUnread, staged, target, unheld, NOT_POSTED } from "../sessions/conversations.ts";
 import type { Hub } from "../sessions/hub.ts";
 import { sessionSend } from "../sessions/messages.ts";
 import { chatCreate } from "../sessions/opened.ts";
@@ -547,9 +547,10 @@ export function chatTools(hub: Hub): Tool[] {
         if ((args.kind === "all_done" || args.kind === "final") && !said.startsWith(NOT_POSTED)) suggestArchive(hub, key);
         return said;
       },
+      endsTurn: (key, args, said) => typeof args.kind === "string" && !said.startsWith(NOT_POSTED) && nothingUnread(hub, key),
     },
     ...slackTools(hub),
-    { ...CHAT_STATE, run: (key, args) => chatState(hub, key, args) },
+    { ...CHAT_STATE, run: (key, args) => chatState(hub, key, args), endsTurn: (key) => nothingUnread(hub, key) },
     { ...CHAT_LEAVE, run: async (key, args) => chatLeave(hub, key, args) },
     { ...CHAT_HISTORY, run: (key, args) => chatHistory(hub, key, args) },
     { ...CHAT_LIST, run: async (key, args, signal) => chatList(hub, key, args, signal) },

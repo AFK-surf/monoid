@@ -25,6 +25,9 @@ export type Tool = {
   run(session: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
   /// What the agent sees when it is more than text (a screenshot): called instead of `run` where there is one.
   content?(session: string, args: Record<string, unknown>): Promise<ToolReply>;
+  /// Whether this call, which succeeded and answered `said`, ended the session's turn: nothing is left for its model to
+  /// read, so a runtime that can stop there (`Listing.ended`) makes no further request.
+  endsTurn?(session: string, args: Record<string, unknown>, said: string): boolean;
 };
 
 export type Reply = { status: number; body?: unknown };
@@ -98,6 +101,8 @@ export type Listing = {
   /// server's tools back until its model searches for them: put on the EVERY_TURN tools alone, so that a turn does not
   /// begin with a search for what it must call, and the rest stay as cheap as that runtime made them.
   loaded?: Readonly<Record<string, unknown>>;
+  /// The `_meta` of a tool result by which it ends its turn there, for a call that `endsTurn`.
+  ended?: Readonly<Record<string, unknown>>;
 };
 
 /// The tool that reaches those a budget left undeclared.
@@ -266,7 +271,10 @@ export class McpEndpoint {
             const { content, isError } = await tool.content(session, args);
             return reply({ result: { content, ...(isError ? { isError: true } : {}) } });
           }
-          return reply({ result: { content: [{ type: "text", text: await tool.run(session, args, signal) }] } });
+          const said = await tool.run(session, args, signal);
+          const ended = this.listing?.(session)?.ended;
+          const stops = ended !== undefined && tool.endsTurn?.(session, args, said) === true;
+          return reply({ result: { content: [{ type: "text", text: said }], ...(stops ? { _meta: ended } : {}) } });
         } catch (error) {
           if (!signal?.aborted) log.warn("mcp", "tool call failed", { session, tool: name, error: (error as Error).message });
           return reply({ result: { content: [{ type: "text", text: (error as Error).message }], isError: true } });

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { rm } from "node:fs/promises";
 import { Context, Effect, Layer, Schedule, Stream, SubscriptionRef } from "effect";
 import { Fibers, wall } from "../ops/fibers.ts";
-import { CLAUDE_TOOL_LOADED, ClaudeDriver } from "../agents/claude.ts";
+import { CLAUDE_TOOL_LOADED, CLAUDE_TURN_ENDED, ClaudeDriver } from "../agents/claude.ts";
 import { readSiteInstructions } from "../agents/instructions.ts";
 import { CodexDriver } from "../agents/codex.ts";
 import { DshDriver } from "../agents/dsh.ts";
@@ -110,8 +110,17 @@ const encode = encodeURIComponent;
 /// (agents/agy.ts, agents/claude.ts); one not named here is declared every tool as it is.
 const LISTINGS: Partial<Record<RuntimeKind, Listing>> = {
   agy: { budget: AGY_TOOL_BUDGET },
-  claude: { loaded: CLAUDE_TOOL_LOADED },
+  claude: { loaded: CLAUDE_TOOL_LOADED, ended: CLAUDE_TURN_ENDED },
 };
+
+/// A session's listing. A TUI session keeps its closing request: its turn ends on a hook, and only print mode was
+/// measured ending on a tool result.
+export function listingFor(runtime: RuntimeKind, tui: boolean): Listing | undefined {
+  const listing = LISTINGS[runtime];
+  if (!tui || listing?.ended === undefined) return listing;
+  const { ended: _ended, ...rest } = listing;
+  return rest;
+}
 
 /// How often the old sandbox-name lookup is looked for, to take it down (hub.ts `sweepSandboxes`).
 const SWEEP_MS = 3 * 60_000;
@@ -619,8 +628,9 @@ export const AgentsLive = (control: Control) =>
         () => [...tools, ...parts.allTools()],
         (session) => (bound() && inItsWorkspace(session) ? undefined : UNBOUND_REFUSAL),
         (session) => {
-          const runtime = runtimeKind(store.getSession(session)?.runtime);
-          return runtime === undefined ? undefined : LISTINGS[runtime];
+          const row = store.getSession(session);
+          const runtime = runtimeKind(row?.runtime);
+          return runtime === undefined ? undefined : listingFor(runtime, row?.tui === true);
         },
       );
 
