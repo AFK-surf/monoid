@@ -160,7 +160,7 @@ export const statusDot = style({
   boxShadow: `inset 0 0 0 1.5px ${vars.muted}`,
   selectors: {
     "&[data-state=\"online\"]": { background: vars.online, boxShadow: "none" },
-    "&[data-state=\"busy\"]": { background: vars.amber, boxShadow: "none" },
+    "&[data-state=\"busy\"]": { background: "#D9962B", boxShadow: "none" },
     "&[data-state=\"error\"]": { background: vars.red, boxShadow: "none" },
   },
 });

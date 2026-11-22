@@ -251,7 +251,7 @@ fn restart_interrupted_card_node(
             @sf.style_node(m, fn() { restart_card_dot_box }, in_row=true)
             m.height(By(fn() { Some(@sf.node_sp(m, @ui.tree_theme().text_size(Ui).1)) })) |> ignore
             m.box(fn(dot) {
-              @sf.style_node(dot, fn() { restart_card_dot.then(@ui.style(bg=Data(@sf.theme().p.warn_ink))) })
+              @sf.style_node(dot, fn() { restart_card_dot.then(@ui.style(bg=Warn)) })
             })
             |> ignore
           })
