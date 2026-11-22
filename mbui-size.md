@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6529ca3f4](https://github.com/AFK-surf/monoid/commit/6529ca3f41c9836795828dff53320d72feeba729) fix(mbui): adapt nested filling children and image | 2.65 | 3.57 | 14.52 | 36.58 | 55.46 | 32.04 | 64.8 | 98.75 | 127.49 |
 | [c1f08f804](https://github.com/AFK-surf/monoid/commit/c1f08f80495f7713706056602b328737b83ac5fc) feat(screens): one volume control by the device, a | 2.65 | 3.57 | 14.52 | 36.58 | 55.46 | 32.04 | 64.8 | 98.75 | 127.49 |
 | [94808184c](https://github.com/AFK-surf/monoid/commit/94808184c2aa571dca96391de3f044d5038607a8) fix(mbui): keep cut words square and their ellipsi | 2.65 | 3.57 | 14.5 | 36.56 | 55.4 | 32.02 | 64.75 | 98.83 | 145.93 |
 | [749e0b7cc](https://github.com/AFK-surf/monoid/commit/749e0b7cc89b2a20a08bee16e5f0fd552d58061d) fix(sf-ui,sfdesk): close hover card submenus on le | 2.65 | 3.57 | 14.5 | 36.56 | 55.4 | 32.02 | 64.75 | 98.83 | 145.93 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [317842bf2](https://github.com/AFK-surf/monoid/commit/317842bf2ac2dafe455918387235ed2f2634fa08) feat(sfapp): iOS 26 scroll-to-collapse and compact | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.62 | 127.63 |
 | [eecf04dd2](https://github.com/AFK-surf/monoid/commit/eecf04dd2c4a543344c687bd742e03a35d20fc20) fix(rig): resolve safe mode task-only station vouc | 2.64 | 3.55 | 14.39 | 36.42 | 54.96 | 31.91 | 64.4 | 98.42 | 125.04 |
 | [1eec0cd3c](https://github.com/AFK-surf/monoid/commit/1eec0cd3ce63e0c127930aa9b4136bd17e5c67ef) chore(mbui): tighten 66 sfapp motion whitelist bar | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.22 | 116.41 |
-| [94dff2fc3](https://github.com/AFK-surf/monoid/commit/94dff2fc3c5c1d56e1d12bc77ebe824e7f9ca20f) fix(sf-ui): collapse blank lines in quote card two | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.47 | 112.62 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6529ca3f4](https://github.com/AFK-surf/monoid/commit/6529ca3f41c9836795828dff53320d72feeba729) fix(mbui): adapt nested filling children and image | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [c1f08f804](https://github.com/AFK-surf/monoid/commit/c1f08f80495f7713706056602b328737b83ac5fc) feat(screens): one volume control by the device, a | 0.47 | 0.61 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.33 |
 | [94808184c](https://github.com/AFK-surf/monoid/commit/94808184c2aa571dca96391de3f044d5038607a8) fix(mbui): keep cut words square and their ellipsi | 0.47 | 0.61 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.33 |
 | [749e0b7cc](https://github.com/AFK-surf/monoid/commit/749e0b7cc89b2a20a08bee16e5f0fd552d58061d) fix(sf-ui,sfdesk): close hover card submenus on le | 0.47 | 0.61 | 2.38 | 3.42 | 5.62 | 1.72 | 4.65 | 54.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [317842bf2](https://github.com/AFK-surf/monoid/commit/317842bf2ac2dafe455918387235ed2f2634fa08) feat(sfapp): iOS 26 scroll-to-collapse and compact | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [eecf04dd2](https://github.com/AFK-surf/monoid/commit/eecf04dd2c4a543344c687bd742e03a35d20fc20) fix(rig): resolve safe mode task-only station vouc | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [1eec0cd3c](https://github.com/AFK-surf/monoid/commit/1eec0cd3ce63e0c127930aa9b4136bd17e5c67ef) chore(mbui): tighten 66 sfapp motion whitelist bar | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
-| [94dff2fc3](https://github.com/AFK-surf/monoid/commit/94dff2fc3c5c1d56e1d12bc77ebe824e7f9ca20f) fix(sf-ui): collapse blank lines in quote card two | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
