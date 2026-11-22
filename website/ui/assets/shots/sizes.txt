@@ -1,11 +1,7 @@
-lg-hero-dark 1120 690
-lg-hero-light 1120 690
+glass-hero-dark 1120 690
+glass-hero-light 1120 690
 std-hero-dark 1120 690
 std-hero-light 1120 690
-lg-crop-controls-dark 1120 690
-lg-crop-interactive-light 1120 690
-lg-crop-dialog-dark 1120 690
-lg-crop-center-dark 1120 690
 comp-gallery-light 1120 690
 comp-buttons-light 680 576
 comp-controls-light 680 552

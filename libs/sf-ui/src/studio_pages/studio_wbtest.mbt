@@ -1,8 +1,9 @@
-// Tests for ui.monoid · STANDARD STAGE (studio_pages):
-// 1. Bottom scene switcher 0.00 px zero-jump invariant across (1120x637), (1120x690), (1280x1040)
-// 2. Zero audit faults across all 3 scenes in Light & Dark modes
-// 3. Real interactive behavior for inputs, search chip filter, progress + toast, count badge, accents, menu, confirm
+// Tests for ui.monoid · LIVE STUDIO (studio_pages):
+// 1. Bottom 4-scene switcher 0.00 px zero-jump invariant across (1120x637), (1120x690), (1280x1040)
+// 2. Zero audit faults across all 4 scenes (Controls / Glass / Tokens / Overlays) in Light & Dark modes
+// 3. Real interactive behavior for Controls, Glass (liquid merge, segmented, float button, bar pill), Overlays
 // 4. Frame-rate invariance across 60 / 120 / 24 / 7 fps
+// 5. Mobile responsive layout at 390x844 and 360x800 across all 4 scenes
 
 ///|
 let settled_ms : Double = 1000.0
@@ -31,36 +32,41 @@ fn mid(t : @ui.Tester, role : @view.Role, label : String) -> (Double, Double) ra
 }
 
 ///|
-test "bottom scene switcher has 0.00 px jump across Controls, Tokens, Overlays at 1120x637, 1120x690 and 1280x1040" {
+test "bottom 4-scene switcher has 0.00 px jump across Controls, Glass, Tokens, Overlays at 1120x637, 1120x690 and 1280x1040" {
   let sizes : Array[(Double, Double)] = [(1120.0, 637.0), (1120.0, 690.0), (1280.0, 1040.0)]
   for sz in sizes {
     let (w, h) = sz
     let t = studio_case(w~, h~)
     t.run_for(settled_ms)
     let r0 = t.get(RadioGroup, label="Stage Scene").rect
+    let (gx, gy) = mid(t, Radio, "Glass")
+    t.tap(gx, gy)
+    t.run_for(settled_ms)
+    let r1 = t.get(RadioGroup, label="Stage Scene").rect
     let (tx, ty) = mid(t, Radio, "Tokens")
     t.tap(tx, ty)
     t.run_for(settled_ms)
-    let r1 = t.get(RadioGroup, label="Stage Scene").rect
+    let r2 = t.get(RadioGroup, label="Stage Scene").rect
     let (ox, oy) = mid(t, Radio, "Overlays")
     t.tap(ox, oy)
     t.run_for(settled_ms)
-    let r2 = t.get(RadioGroup, label="Stage Scene").rect
+    let r3 = t.get(RadioGroup, label="Stage Scene").rect
     let (cx, cy) = mid(t, Radio, "Controls")
     t.tap(cx, cy)
     t.run_for(settled_ms)
-    let r3 = t.get(RadioGroup, label="Stage Scene").rect
+    let r4 = t.get(RadioGroup, label="Stage Scene").rect
     assert_eq(r0, r1)
     assert_eq(r0, r2)
     assert_eq(r0, r3)
+    assert_eq(r0, r4)
   }
 }
 
 ///|
-test "all 3 scenes in light and dark modes pass Tester::audit with zero faults" {
+test "all 4 scenes in light and dark modes pass Tester::audit with zero faults" {
   let faults : Array[(Int, Bool, String)] = []
   for dark in [false, true] {
-    for scene in [0, 1, 2] {
+    for scene in [0, 1, 2, 3] {
       let t = studio_case(first_scene=scene, dark~, w=1120.0, h=690.0)
       t.run_for(settled_ms)
       for f in t.audit() {
@@ -106,8 +112,35 @@ test "Controls scene interactive actions: Run Build, Queue Job, Publish confirm,
 }
 
 ///|
+test "Glass scene interactive controls: capillary merge/separate, float button count, bar pill toast" {
+  let t = studio_case(first_scene=1, dark=true, w=1120.0, h=690.0)
+  t.run_for(settled_ms)
+  assert_true(t.words_said().iter().any(fn(w) { w.0 == "Fused" }))
+  // Separate capillary bridge
+  let (sx, sy) = mid(t, Button, "Separate")
+  t.tap(sx, sy)
+  t.run_for(settled_ms)
+  assert_true(t.words_said().iter().any(fn(w) { w.0 == "Separated" }))
+  // Merge back
+  let (mx, my) = mid(t, Button, "Merge")
+  t.tap(mx, my)
+  t.run_for(settled_ms)
+  assert_true(t.words_said().iter().any(fn(w) { w.0 == "Fused" }))
+  // Float button increments count badge from 3 to 4
+  let (fx, fy) = mid(t, Button, "Glass Alerts")
+  t.tap(fx, fy)
+  t.run_for(settled_ms)
+  assert_true(t.words_said().iter().any(fn(w) { w.0.contains("Glass alert #4") }))
+  // Bar pill round key triggers toast
+  let (kx, ky) = mid(t, Button, "Refract Pulse")
+  t.tap(kx, ky)
+  t.run_for(settled_ms)
+  assert_true(t.words_said().iter().any(fn(w) { w.0.contains("Refraction pulse") }))
+}
+
+///|
 test "Overlays scene menu and confirm dialog work cleanly" {
-  let t = studio_case(first_scene=2, w=1120.0, h=690.0)
+  let t = studio_case(first_scene=3, w=1120.0, h=690.0)
   t.run_for(settled_ms)
   let (mx, my) = mid(t, Button, "Configure Backends")
   t.tap(mx, my)
@@ -126,7 +159,8 @@ test "Overlays scene menu and confirm dialog work cleanly" {
 }
 
 ///|
-/// Snapshot of scene switches, accent switches, and dark/light toggles — must be identical at 60/120/24/7 fps.
+/// Snapshot of scene switches (Controls -> Glass -> Tokens -> Overlays), accent switches, and dark/light toggles —
+/// must be identical at 60/120/24/7 fps.
 fn studio_run_snapshot() -> Array[String] raise {
   let t = studio_case(w=1120.0, h=690.0)
   let out : Array[String] = []
@@ -142,6 +176,10 @@ fn studio_run_snapshot() -> Array[String] raise {
   t.tap(bx, by)
   t.run_for(settled_ms)
   snap("blue")
+  let (gx, gy) = mid(t, Radio, "Glass")
+  t.tap(gx, gy)
+  t.run_for(settled_ms)
+  snap("glass")
   let (tx, ty) = mid(t, Radio, "Tokens")
   t.tap(tx, ty)
   t.run_for(settled_ms)
@@ -160,12 +198,13 @@ fn studio_run_snapshot() -> Array[String] raise {
 ///|
 test "studio interactions are identical at 60, 120, 24 and 7 fps" {
   let res = studio_run_snapshot()
-  assert_eq(res.length(), 5)
+  assert_eq(res.length(), 6)
   assert_eq(res[0].has_prefix("init dark=false accent= dock="), true)
   assert_eq(res[1].has_prefix("blue dark=false accent=blue dock="), true)
-  assert_eq(res[2].has_prefix("tokens dark=false accent=blue dock="), true)
-  assert_eq(res[3].has_prefix("dark dark=true accent=blue dock="), true)
-  assert_eq(res[4].has_prefix("overlays dark=true accent=blue dock="), true)
+  assert_eq(res[2].has_prefix("glass dark=false accent=blue dock="), true)
+  assert_eq(res[3].has_prefix("tokens dark=false accent=blue dock="), true)
+  assert_eq(res[4].has_prefix("dark dark=true accent=blue dock="), true)
+  assert_eq(res[5].has_prefix("overlays dark=true accent=blue dock="), true)
 }
 
 ///|
@@ -178,7 +217,7 @@ test "mobile responsive layout at 390x844 and 360x800 passes audit with 0 faults
       t.run_for(settled_ms)
       let dock0 = t.get(RadioGroup, label="Stage Scene").rect
       assert_true(dock0.0 >= 0.0 && dock0.0 + dock0.2 <= w + 0.5)
-      let scenes : Array[(Int, String)] = [(0, "Controls"), (1, "Tokens"), (2, "Overlays")]
+      let scenes : Array[(Int, String)] = [(0, "Controls"), (1, "Glass"), (2, "Tokens"), (3, "Overlays")]
       for item in scenes {
         let (idx, name) = item
         let (sx, sy) = mid(t, Radio, name)

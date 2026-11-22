@@ -21,7 +21,7 @@ on:
       rates: { type: string, default: "" }
   push:
     branches: [main]
-    paths: ["apps/mbui/**", "libs/mbui/**", "libs/liquid-glass/**", "libs/sf-ui/**", ".github/workflows/mbui-check.yml"]
+    paths: ["apps/mbui/**", "libs/mbui/**", "libs/sf-ui/**", ".github/workflows/mbui-check.yml"]
   # (once a day: sfapp's page tests all in one process, below)
   schedule:
     - cron: "53 3 * * *"

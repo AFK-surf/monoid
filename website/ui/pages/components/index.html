@@ -1,31 +1,31 @@
 <!-- title: Components — ui.monoid -->
 <!-- title-zh: 组件库 — ui.monoid -->
-<!-- description: Headless interaction primitives, production-tested sf-ui controls, and OKLCH design tokens running live in WebGL 2. -->
+<!-- description: Headless interaction primitives, production ui.monoid controls, native Glass::liquid optics, and OKLCH design tokens running live in WebGL 2. -->
 <!-- page: components -->
 
 <section class="hero comp-hero">
   <div class="wrap">
-    <div class="eyebrow" data-en="Component System" data-zh="组件体系">Component System</div>
-    <h1 data-en="Headless primitives. Production looks." data-zh="无头原语，生产级视觉。">Headless primitives. Production looks.</h1>
-    <p class="lede" data-en="Zero-coupling interaction state machines and live WebGL 2 controls." data-zh="零耦合交互状态机与实时 WebGL 2 组件。">Zero-coupling interaction state machines and live WebGL 2 controls.</p>
+    <div class="eyebrow" data-en="ui.monoid Component Library" data-zh="ui.monoid 真实组件库">ui.monoid Component Library</div>
+    <h1 data-en="One production library. Real controls &amp; optics." data-zh="一套生产级组件库，真实控件与原生光学合一。">One production library. Real controls &amp; optics.</h1>
+    <p class="lede" data-en="Zero-coupling headless state machines paired with production controls and native Glass::liquid surfaces running live in WebGL 2." data-zh="零耦合无头状态机，搭配经过生产验证的通用控件与原生 Glass::liquid 光学材质，在 WebGL 2 中实时交互。">Zero-coupling headless state machines paired with production controls and native Glass::liquid surfaces running live in WebGL 2.</p>
 
     <div class="stage" id="comp-stage">
       <div class="live-stage" id="comp-preview-stage">
         <div class="pane on" data-comp-preview="light">
-          {{shot:std-hero-light:ui.monoid Standard UI light stage rendered offscreen on Metal}}
+          {{shot:std-hero-light:ui.monoid Live Studio light stage rendered offscreen on Metal}}
         </div>
         <div class="pane" data-comp-preview="dark">
-          {{shot:std-hero-dark:ui.monoid Standard UI dark stage rendered offscreen on Metal}}
+          {{shot:std-hero-dark:ui.monoid Live Studio dark stage rendered offscreen on Metal}}
         </div>
         <div class="live-bar">
-          <a class="live-launch" id="comp-launch-link" href="/standard/app/">
-            {{i:arrow-ne}}<span data-en="Open Standard UI Library" data-zh="进入普通组件库">Open Standard UI Library</span>
+          <a class="live-launch" id="comp-launch-link" href="/studio/app/">
+            {{i:arrow-ne}}<span data-en="Open ui.monoid Live Studio" data-zh="进入 ui.monoid 实时展厅">Open ui.monoid Live Studio</span>
           </a>
         </div>
       </div>
     </div>
 
-    <div class="story-dock" role="toolbar" aria-label="Standard UI Stage preview" data-en-aria="Standard UI Stage preview" data-zh-aria="Standard UI 预览切换">
+    <div class="story-dock" role="toolbar" aria-label="ui.monoid Live Studio preview" data-en-aria="ui.monoid Live Studio preview" data-zh-aria="ui.monoid 实时展厅预览切换">
       <div class="story-pills">
         <button type="button" class="story-pill is-active" data-comp-theme="light" aria-pressed="true">
           {{i:palette}}<span data-en="Light Surface" data-zh="浅色表面">Light Surface</span>
@@ -36,10 +36,10 @@
       </div>
       <div class="story-pills">
         <a class="story-pill story-full" href="/components/app/?STORY=palette&amp;MBUI_BRAND=ui.monoid">
-          <span data-en="Open Full 27-Control Storybook" data-zh="打开完整 27 控件 Storybook">Open Full 27-Control Storybook</span>{{i:arrow-ne}}
+          <span data-en="Open Full Storybook" data-zh="打开完整 Storybook">Open Full Storybook</span>{{i:arrow-ne}}
         </a>
-        <a class="story-pill story-full" href="/standard/app/">
-          <span data-en="Enter Standard UI App" data-zh="进入普通组件库">Enter Standard UI App</span>{{i:arrow-ne}}
+        <a class="story-pill story-full" href="/studio/app/">
+          <span data-en="Enter Live Studio" data-zh="进入实时展厅">Enter Live Studio</span>{{i:arrow-ne}}
         </a>
       </div>
     </div>
@@ -244,7 +244,7 @@
         b.setAttribute("aria-pressed", String(on));
       }
       if (launchLink) {
-        launchLink.href = theme === "dark" ? "/standard/app/?MBUI_DARK=1" : "/standard/app/";
+        launchLink.href = theme === "dark" ? "/studio/app/?MBUI_DARK=1" : "/studio/app/";
       }
     };
     for (const b of themeBtns) {

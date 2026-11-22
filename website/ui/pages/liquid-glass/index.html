@@ -1,40 +1,31 @@
-<!-- title: Liquid Glass — ui.monoid -->
-<!-- title-zh: Liquid Glass — ui.monoid -->
-<!-- description: Real-time iOS 27 UIGlassEffect optical shaders (Glass::liquid), quarter-circle bevel refraction, adaptive light/dark transmission, and closed-form springs on WebGL 2. -->
+<!-- title: Liquid Glass Optics — ui.monoid -->
+<!-- title-zh: Liquid Glass 光学与交互 — ui.monoid -->
+<!-- description: Real-time iOS 26/27 UIGlassEffect optical materials (Glass::liquid), quarter-circle bevel refraction, capillary liquid merge, and refractive controls inside the unified ui.monoid component library. -->
 <!-- page: liquid-glass -->
 
 <section class="hero dark lg-hero">
   <div class="wrap">
-    <div class="eyebrow" data-en="Apache-2.0 · 32 Self-Hosted Components · iOS 27 Optics" data-zh="Apache-2.0 · 32 个自举组件 · iOS 27 光学模型">Apache-2.0 · 32 Self-Hosted Components · iOS 27 Optics</div>
-    <h1 data-en="Liquid Glass, complete and self-hosted." data-zh="完整自举的液态玻璃组件库。">Liquid Glass, complete and self-hosted.</h1>
-    <p class="lede" data-en="32 optical components rendered directly by ui.monoid on Metal, D3D11, GLES, and WebGL 2 — controls, inputs, navigation, menus, sheets, toasts, 1.5× glyph loupe, and 360° capillary merge." data-zh="32 个由 ui.monoid 直绘六端 GPU 的完整液态玻璃组件：控件、输入、导航、菜单、浮层抽屉、通知、1.5× 字符放大镜与 360° 毛细融合，组件库本身 100% 由自身组件构成。">32 optical components rendered directly by ui.monoid on Metal, D3D11, GLES, and WebGL 2 — controls, inputs, navigation, menus, sheets, toasts, 1.5× glyph loupe, and 360° capillary merge.</p>
+    <div class="eyebrow" data-en="ui.monoid · @glass · iOS 26/27 Optics" data-zh="ui.monoid · @glass · iOS 26/27 光学材质">ui.monoid · @glass · iOS 26/27 Optics</div>
+    <h1 data-en="Real Liquid Glass, built into ui.monoid." data-zh="原生液态玻璃，内置于 ui.monoid 同一套组件库。">Real Liquid Glass, built into ui.monoid.</h1>
+    <p class="lede" data-en="Not a separate showcase library — the exact same production controls (@sf and @glass) rendered on Metal, D3D11, GLES, and WebGL 2 with Glass::liquid bevel refraction, floating pill groups, draggable lenses, and 360° capillary merge." data-zh="不再拆成两套组件库——这是同一份 ui.monoid 生产组件库（@sf 与 @glass）的原生光学能力：在 Metal、D3D11、GLES 与 WebGL 2 上实时呈现 Glass::liquid 倒角折射、悬浮胶囊组、可拖拽透镜与 360° 毛细液桥融合。">Not a separate showcase library — the exact same production controls (@sf and @glass) rendered on Metal, D3D11, GLES, and WebGL 2 with Glass::liquid bevel refraction, floating pill groups, draggable lenses, and 360° capillary merge.</p>
 
     <div class="stage obsidian" id="lg-stage">
       <div class="live-stage" id="lg-preview-stage">
-        <div class="lg-preview on" data-lg-preview="library-dark">
-          {{shot:lg-hero-dark:ui.monoid 32-component Liquid Glass dark library rendered offscreen on Metal}}
+        <div class="lg-preview on" data-lg-preview="glass-dark">
+          {{shot:glass-hero-dark:ui.monoid Live Studio Glass scene in dark mode rendered offscreen on Metal}}
         </div>
-        <div class="lg-preview" data-lg-preview="library-light">
-          {{shot:lg-hero-light:ui.monoid 32-component Liquid Glass light library rendered offscreen on Metal}}
-        </div>
-        <div class="lg-preview" data-lg-preview="overlays">
-          {{shot:lg-crop-dialog-dark:Liquid Glass menus, sheets, toasts and progress indicators rendered offscreen on Metal}}
-        </div>
-        <div class="lg-preview" data-lg-preview="inputs">
-          {{shot:lg-crop-interactive-light:Liquid Glass text fields, checkboxes, radio groups, chips and badges rendered offscreen on Metal}}
-        </div>
-        <div class="lg-preview" data-lg-preview="physics">
-          {{shot:lg-crop-center-dark:Liquid Glass 360-degree capillary merge and 1.5x glyph loupe rendered offscreen on Metal}}
+        <div class="lg-preview" data-lg-preview="glass-light">
+          {{shot:glass-hero-light:ui.monoid Live Studio Glass scene in light mode rendered offscreen on Metal}}
         </div>
         <div class="live-bar">
           <a class="live-launch" id="lg-launch-link" href="/liquid-glass/app/?MBUI_DARK=1">
-            {{i:arrow-ne}}<span data-en="Open Liquid Glass Library" data-zh="进入液态玻璃组件库">Open Liquid Glass Library</span>
+            {{i:arrow-ne}}<span data-en="Open Live Studio (Glass)" data-zh="进入实时展厅（液态玻璃）">Open Live Studio (Glass)</span>
           </a>
         </div>
       </div>
     </div>
 
-    <div class="lg-dock" role="toolbar" aria-label="Liquid Glass scenes" data-en-aria="Liquid Glass scenes" data-zh-aria="Liquid Glass 场景切换">
+    <div class="lg-dock" role="toolbar" aria-label="Liquid Glass preview theme" data-en-aria="Liquid Glass preview theme" data-zh-aria="Liquid Glass 预览主题切换">
       <div class="lg-surface-seg" role="tablist" aria-label="Surface theme">
         <button type="button" role="tab" class="lg-seg-btn" data-lg-theme="dark" aria-selected="true">
           {{i:sparkles}}<span data-en="Dark" data-zh="深色">Dark</span>
@@ -45,20 +36,11 @@
       </div>
 
       <div class="lg-scene-pills">
-        <button type="button" class="lg-pill is-active" data-lg-shot="library" aria-pressed="true">
-          {{i:grid}}<span data-en="Library" data-zh="组件库">Library</span>
-        </button>
-        <button type="button" class="lg-pill" data-lg-shot="inputs" aria-pressed="false">
-          {{i:sliders}}<span data-en="Inputs" data-zh="输入与选择">Inputs</span>
-        </button>
-        <button type="button" class="lg-pill" data-lg-shot="overlays" aria-pressed="false">
-          {{i:layers}}<span data-en="Overlays" data-zh="浮层与反馈">Overlays</span>
-        </button>
-        <button type="button" class="lg-pill" data-lg-shot="physics" aria-pressed="false">
-          {{i:motion}}<span data-en="Physics" data-zh="物理与融合">Physics</span>
-        </button>
         <a class="lg-pill lg-full" href="/liquid-glass/app/?MBUI_DARK=1">
-          <span data-en="Enter Interactive App" data-zh="直达全屏交互库">Enter Interactive App</span>{{i:arrow-ne}}
+          <span data-en="Enter Interactive Glass Studio" data-zh="直达全屏交互实验台">Enter Interactive Glass Studio</span>{{i:arrow-ne}}
+        </a>
+        <a class="lg-pill" href="/studio/app/">
+          <span data-en="All 4 Studio Scenes" data-zh="浏览全部 4 个展厅场景">All 4 Studio Scenes</span>{{i:arrow-ne}}
         </a>
       </div>
     </div>
@@ -70,41 +52,21 @@
     <div class="bento lg-gallery">
       <article class="tile lg-tile w6">
         <div class="lg-shot-frame">
-          {{shot:lg-crop-controls-dark:Liquid Glass buttons, icon actions, segmented lens, toggles, sliders and stepper on dark surface}}
+          {{shot:glass-hero-dark:ui.monoid dark Liquid Glass floating pill groups, segmented lens, and capillary merge}}
         </div>
         <div class="lg-tile-meta">
-          <h3 data-en="Controls & Segmented Lens" data-zh="控件与拖拽透镜">Controls &amp; Segmented Lens</h3>
-          <p data-en="Buttons, icon buttons, grouped capsules, draggable segmented lens, toggles, sliders, and steppers." data-zh="按钮、图标按钮、胶囊组、可拖拽分段透镜、开关、滑块与步进器。">Buttons, icon buttons, grouped capsules, draggable segmented lens, toggles, sliders, and steppers.</p>
+          <h3 data-en="Floating Pills, Lenses &amp; Capillary Merge" data-zh="悬浮胶囊、折射透镜与毛细融合">Floating Pills, Lenses &amp; Capillary Merge</h3>
+          <p data-en="Production @sf.bar_pill_group_node, @sf.float_button_node, @glass.liquid_segmented_node, and @glass.liquid_merge_node sharing one shader pipeline." data-zh="生产级 @sf.bar_pill_group_node、@sf.float_button_node、@glass.liquid_segmented_node 与 @glass.liquid_merge_node 共享同一着色器管线。">Production @sf.bar_pill_group_node, @sf.float_button_node, @glass.liquid_segmented_node, and @glass.liquid_merge_node sharing one shader pipeline.</p>
         </div>
       </article>
 
       <article class="tile lg-tile w6">
         <div class="lg-shot-frame lg-shot-light">
-          {{shot:lg-crop-interactive-light:Liquid Glass text fields, search bar, checkboxes, radio groups, chips and count badges on light surface}}
+          {{shot:glass-hero-light:ui.monoid light Liquid Glass optical surfaces rendered offscreen on Metal}}
         </div>
         <div class="lg-tile-meta">
-          <h3 data-en="Inputs & Selection" data-zh="输入与选择体系">Inputs &amp; Selection</h3>
-          <p data-en="Clearable glass text fields, live search bar, tri-state checkboxes, radio groups, filter chips, and count badges." data-zh="可清除输入框、实时搜索栏、三态复选框、单选组、过滤芯片与计数角标。">Clearable glass text fields, live search bar, tri-state checkboxes, radio groups, filter chips, and count badges.</p>
-        </div>
-      </article>
-
-      <article class="tile lg-tile w5">
-        <div class="lg-shot-frame">
-          {{shot:lg-crop-dialog-dark:Liquid Glass menus, selects, popovers, sheets, action sheets, dialogs and toasts}}
-        </div>
-        <div class="lg-tile-meta">
-          <h3 data-en="Menus, Sheets & Toasts" data-zh="菜单、抽屉与通知">Menus, Sheets &amp; Toasts</h3>
-          <p data-en="Anchored menus, selects, popovers, tooltips, detached floating sheets, action sheets, dialogs, toasts, and progress." data-zh="锚定菜单、选择器、气泡、提示、离边抽屉、操作表、弹窗、通知与进度指示。">Anchored menus, selects, popovers, tooltips, detached floating sheets, action sheets, dialogs, toasts, and progress.</p>
-        </div>
-      </article>
-
-      <article class="tile lg-tile w7">
-        <div class="lg-shot-frame">
-          {{shot:lg-crop-center-dark:Liquid Glass 1.5x glyph-snapped optical loupe and 360-degree capillary merge}}
-        </div>
-        <div class="lg-tile-meta">
-          <h3 data-en="Optics, 1.5× Loupe & 360° Merge" data-zh="光学、1.5× 放大镜与 360° 融合">Optics, 1.5× Loupe &amp; 360° Merge</h3>
-          <p data-en="Real 1.5× glyph-snapped magnifier, progressive blur, adaptive luminance glass, and 360° capillary liquid bridge." data-zh="真实 1.5× 字符吸附放大镜、渐进模糊、亮度自适应玻璃与 360° 毛细液桥融合。">Real 1.5× glyph-snapped magnifier, progressive blur, adaptive luminance glass, and 360° capillary liquid bridge.</p>
+          <h3 data-en="Adaptive Light &amp; Dark Transmission" data-zh="明暗自适应光学传输">Adaptive Light &amp; Dark Transmission</h3>
+          <p data-en="Uniform blur, quarter-circle bevel refraction, inner bevel shadow, and crisp legibility over both light and dark surfaces." data-zh="均匀轻雾、四分之一圆倒角折射、内倒角阴影与高对比度字形，在浅色与深色背景上均保持通透清晰。">Uniform blur, quarter-circle bevel refraction, inner bevel shadow, and crisp legibility over both light and dark surfaces.</p>
         </div>
       </article>
     </div>
@@ -114,96 +76,72 @@
 <section class="section band" id="code">
   <div class="wrap">
     <div class="section-head left reveal">
-      <div class="eyebrow" data-en="MoonBit API & License" data-zh="MoonBit 代码与协议">MoonBit API &amp; License</div>
-      <h2 data-en="Compose glass in plain MoonBit." data-zh="用简洁 MoonBit 编排光学控件。">Compose glass in plain MoonBit.</h2>
+      <div class="eyebrow" data-en="MoonBit API &amp; Attribution" data-zh="MoonBit 代码与开源致谢">MoonBit API &amp; Attribution</div>
+      <h2 data-en="Real @sf and @glass APIs, straight from production." data-zh="直出生产代码的真实 @sf 与 @glass API。">Real @sf and @glass APIs, straight from production.</h2>
     </div>
 
     <div class="lg-code-grid">
-      <pre class="term"><button type="button" class="copy" data-copy="let wifi = @signals.signal(true)
-let brightness = @signals.signal(40.0)
-let tab = @signals.signal(0)
+      <pre class="term"><button type="button" class="copy" data-copy="let range = @signals.signal(0)
+let refract = @signals.signal(true)
+let jobs = @signals.signal(8.0)
 
-@lg.liquid_button_node(
-  row,
-  fn() { &quot;Tinted Liquid Button&quot; },
-  fn() { /* action */ },
-  tint=0x0088FFFFL,
-) |&gt; ignore
+@sf.button_node(row, fn() { &quot;Run Build&quot; }, fn() { /* action */ }, tone=Primary) |&gt; ignore
 
-@lg.liquid_toggle_node(
-  row,
-  fn() { wifi.get() },
-  fn(v) { wifi.set(v) },
-  fn() { &quot;Wi-Fi&quot; },
-) |&gt; ignore
+@sf.switch_node(row, fn() { refract.get() }, fn(v) { refract.set(v) }, fn() { &quot;Bezel Specular&quot; })
 
-@lg.liquid_slider_node(
+@sf.seg_node(row, fn() { [&quot;Stable&quot;, &quot;Beta&quot;, &quot;Canary&quot;] }, fn() { range.get() }, fn(i) { range.set(i) }) |&gt; ignore
+
+@sf.value_slider_node(col, fn() { &quot;Parallel Jobs&quot; }, fn() { jobs.get() }, fn(v) { jobs.set(v) }, min=1.0, max=16.0) |&gt; ignore
+
+// Draggable Liquid Glass segmented control (@glass)
+@glass.liquid_segmented_node(
   col,
-  fn() { brightness.get() },
-  fn(v) { brightness.set(v) },
-  fn() { &quot;Brightness&quot; },
+  fn() { [&quot;Day&quot;, &quot;Week&quot;, &quot;Month&quot;] },
+  fn() { range.get() },
+  fn(i) { range.set(i) },
+  glass_track=true,
 ) |&gt; ignore
 
-@lg.liquid_bottom_tabs_node(
-  col,
-  [&quot;Optics&quot;, &quot;Deck&quot;, &quot;Loupe&quot;, &quot;Merge&quot;],
-  fn() { tab.get() },
-  fn(i) { tab.set(i) },
-  label=&quot;Tabs&quot;,
-) |&gt; ignore
-
-// iOS 27 capillary liquid bridge (@motion.LiquidBond)
-let bond = @lg.LiquidMerge::new(separated=false)
-@lg.liquid_merge_node(
+// 360-degree capillary liquid bridge (@motion.LiquidBond)
+let bond = @glass.LiquidMerge::new(separated=false)
+@glass.liquid_merge_node(
   col,
   controller=bond,
-  main_label=fn() { &quot;Liquid Capsule&quot; },
-) |&gt; ignore" data-en="Copy" data-zh="复制">Copy</button><span class="dim">// libs/liquid-glass/src/pages/pages.mbt</span>
-<span class="kw">let</span> wifi = @signals.signal(<span class="ok">true</span>)
-<span class="kw">let</span> brightness = @signals.signal(<span class="num">40.0</span>)
-<span class="kw">let</span> tab = @signals.signal(<span class="num">0</span>)
+  main_label=fn() { &quot;Capsule&quot; },
+) |&gt; ignore" data-en="Copy" data-zh="复制">Copy</button><span class="dim">// libs/sf-ui/src/studio_pages/studio.mbt</span>
+<span class="kw">let</span> range = @signals.signal(<span class="num">0</span>)
+<span class="kw">let</span> refract = @signals.signal(<span class="ok">true</span>)
+<span class="kw">let</span> jobs = @signals.signal(<span class="num">8.0</span>)
 
-@lg.<span class="fn">liquid_button_node</span>(
-  row,
-  <span class="kw">fn</span>() { <span class="str">"Tinted Liquid Button"</span> },
-  <span class="kw">fn</span>() { <span class="dim">/* action */</span> },
-  tint=<span class="num">0x0088FFFFL</span>,
-) |&gt; ignore
+@sf.<span class="fn">button_node</span>(row, <span class="kw">fn</span>() { <span class="str">"Run Build"</span> }, <span class="kw">fn</span>() { <span class="dim">/* action */</span> }, tone=Primary) |&gt; ignore
 
-@lg.<span class="fn">liquid_toggle_node</span>(
-  row,
-  <span class="kw">fn</span>() { wifi.get() },
-  <span class="kw">fn</span>(v) { wifi.set(v) },
-  <span class="kw">fn</span>() { <span class="str">"Wi-Fi"</span> },
-) |&gt; ignore
+@sf.<span class="fn">switch_node</span>(row, <span class="kw">fn</span>() { refract.get() }, <span class="kw">fn</span>(v) { refract.set(v) }, <span class="kw">fn</span>() { <span class="str">"Bezel Specular"</span> })
 
-@lg.<span class="fn">liquid_slider_node</span>(
+@sf.<span class="fn">seg_node</span>(row, <span class="kw">fn</span>() { [<span class="str">"Stable"</span>, <span class="str">"Beta"</span>, <span class="str">"Canary"</span>] }, <span class="kw">fn</span>() { range.get() }, <span class="kw">fn</span>(i) { range.set(i) }) |&gt; ignore
+
+@sf.<span class="fn">value_slider_node</span>(col, <span class="kw">fn</span>() { <span class="str">"Parallel Jobs"</span> }, <span class="kw">fn</span>() { jobs.get() }, <span class="kw">fn</span>(v) { jobs.set(v) }, min=<span class="num">1.0</span>, max=<span class="num">16.0</span>) |&gt; ignore
+
+<span class="dim">// Draggable Liquid Glass segmented control (@glass)</span>
+@glass.<span class="fn">liquid_segmented_node</span>(
   col,
-  <span class="kw">fn</span>() { brightness.get() },
-  <span class="kw">fn</span>(v) { brightness.set(v) },
-  <span class="kw">fn</span>() { <span class="str">"Brightness"</span> },
+  <span class="kw">fn</span>() { [<span class="str">"Day"</span>, <span class="str">"Week"</span>, <span class="str">"Month"</span>] },
+  <span class="kw">fn</span>() { range.get() },
+  <span class="kw">fn</span>(i) { range.set(i) },
+  glass_track=<span class="ok">true</span>,
 ) |&gt; ignore
 
-@lg.<span class="fn">liquid_bottom_tabs_node</span>(
-  col,
-  [<span class="str">"Optics"</span>, <span class="str">"Deck"</span>, <span class="str">"Loupe"</span>, <span class="str">"Merge"</span>],
-  <span class="kw">fn</span>() { tab.get() },
-  <span class="kw">fn</span>(i) { tab.set(i) },
-  label=<span class="str">"Tabs"</span>,
-) |&gt; ignore
-
-<span class="dim">// iOS 27 capillary liquid bridge (@motion.LiquidBond)</span>
-<span class="kw">let</span> bond = @lg.<span class="fn">LiquidMerge::new</span>(separated=<span class="ok">false</span>)
-@lg.<span class="fn">liquid_merge_node</span>(
+<span class="dim">// 360-degree capillary liquid bridge (@motion.LiquidBond)</span>
+<span class="kw">let</span> bond = @glass.<span class="fn">LiquidMerge::new</span>(separated=<span class="ok">false</span>)
+@glass.<span class="fn">liquid_merge_node</span>(
   col,
   controller=bond,
-  main_label=<span class="kw">fn</span>() { <span class="str">"Liquid Capsule"</span> },
+  main_label=<span class="kw">fn</span>() { <span class="str">"Capsule"</span> },
 ) |&gt; ignore</pre>
 
       <div class="card lg-attr-card">
         <div class="ic">{{i:shield}}</div>
-        <h3 data-en="Apache-2.0 Attribution" data-zh="Apache-2.0 开源致谢">Apache-2.0 Attribution</h3>
-        <p data-en="Glass::liquid unifies Apple iOS 27 UIGlassEffect optics (uniform blur, quarter-circle bevel refraction, capillary liquid bridge hysteresis via @motion.LiquidBond and @lg.liquid_merge_node, ios27Light / ios27Dark / ios27Clear, inner bevel shadow &amp; outline, touch spot, and .sharing() capture) based on whynotmake-it/flutter_liquid_glass, with the interactive control catalog adapted from Kyant0/AndroidLiquidGlass." data-zh="Glass::liquid 统一对标 Apple iOS 27 UIGlassEffect 光学模型（均匀轻雾、四分之一圆倒角折射、基于 @motion.LiquidBond 与 @lg.liquid_merge_node 的毛细液桥滞回融合分离、ios27Light / ios27Dark / ios27Clear、内倒角阴影与外轮廓、触摸光斑及 .sharing() 共享捕获），光学模型致谢 whynotmake-it/flutter_liquid_glass，交互组件目录致谢 Kyant0/AndroidLiquidGlass。">Glass::liquid unifies Apple iOS 27 UIGlassEffect optics (uniform blur, quarter-circle bevel refraction, capillary liquid bridge hysteresis via @motion.LiquidBond and @lg.liquid_merge_node, ios27Light / ios27Dark / ios27Clear, inner bevel shadow &amp; outline, touch spot, and .sharing() capture) based on whynotmake-it/flutter_liquid_glass, with the interactive control catalog adapted from Kyant0/AndroidLiquidGlass.</p>
+        <h3 data-en="Open-Source Attribution" data-zh="开源致谢">Open-Source Attribution</h3>
+        <p data-en="ui.monoid's Glass::liquid optical recipes and @glass layer (libs/sf-ui/src/glass) calibrate Apple iOS 26/27 UIGlassEffect optics (uniform blur, quarter-circle bevel refraction, capillary liquid bridge hysteresis via @motion.LiquidBond and @glass.liquid_merge_node, adaptive transmission, inner bevel shadow &amp; outline, touch spot, and .sharing() capture) with attribution to whynotmake-it/flutter_liquid_glass and Kyant0/AndroidLiquidGlass (Apache-2.0, see THIRD_PARTY_NOTICES.md)." data-zh="ui.monoid 的 Glass::liquid 光学配方与 @glass 层（libs/sf-ui/src/glass）对标 Apple iOS 26/27 UIGlassEffect 光学模型（均匀轻雾、四分之一圆倒角折射、基于 @motion.LiquidBond 与 @glass.liquid_merge_node 的毛细液桥滞回融合分离、自适应传输、内倒角阴影与外轮廓、触摸光斑及 .sharing() 共享捕获），光学模型致谢 whynotmake-it/flutter_liquid_glass，交互物理与控件原语致谢 Kyant0/AndroidLiquidGlass（Apache-2.0，详见 THIRD_PARTY_NOTICES.md）。">ui.monoid's Glass::liquid optical recipes and @glass layer (libs/sf-ui/src/glass) calibrate Apple iOS 26/27 UIGlassEffect optics (uniform blur, quarter-circle bevel refraction, capillary liquid bridge hysteresis via @motion.LiquidBond and @glass.liquid_merge_node, adaptive transmission, inner bevel shadow &amp; outline, touch spot, and .sharing() capture) with attribution to whynotmake-it/flutter_liquid_glass and Kyant0/AndroidLiquidGlass (Apache-2.0, see THIRD_PARTY_NOTICES.md).</p>
         <div class="acts">
           <a class="btn btn-line btn-s" href="https://github.com/whynotmake-it/flutter_liquid_glass" target="_blank" rel="noopener noreferrer">
             {{i:github}}<span data-en="flutter_liquid_glass" data-zh="flutter_liquid_glass">flutter_liquid_glass</span>
@@ -211,8 +149,8 @@ let bond = @lg.LiquidMerge::new(separated=false)
           <a class="btn btn-line btn-s" href="https://github.com/Kyant0/AndroidLiquidGlass" target="_blank" rel="noopener noreferrer">
             {{i:github}}<span data-en="AndroidLiquidGlass" data-zh="AndroidLiquidGlass">AndroidLiquidGlass</span>
           </a>
-          <a class="btn btn-ghost btn-s" href="{{repo}}" target="_blank" rel="noopener noreferrer">
-            <span data-en="libs/liquid-glass Source" data-zh="libs/liquid-glass 源码">libs/liquid-glass Source</span>{{i:arrow-ne}}
+          <a class="btn btn-ghost btn-s" href="{{repo}}/tree/main/libs/sf-ui/src/glass" target="_blank" rel="noopener noreferrer">
+            <span data-en="libs/sf-ui/src/glass Source" data-zh="libs/sf-ui/src/glass 源码">libs/sf-ui/src/glass Source</span>{{i:arrow-ne}}
           </a>
         </div>
       </div>
@@ -237,21 +175,14 @@ let bond = @lg.LiquidMerge::new(separated=false)
 
   const previews = [...stage.querySelectorAll("[data-lg-preview]")];
   const themeBtns = [...document.querySelectorAll("[data-lg-theme]")];
-  const shotBtns = [...document.querySelectorAll("[data-lg-shot]")];
   const launchLink = document.getElementById("lg-launch-link");
 
   let theme = "dark";
-  let shot = "library";
 
   const sync = () => {
-    const key = shot === "library" ? `library-${theme}` : shot;
+    const key = `glass-${theme}`;
     for (const p of previews) p.classList.toggle("on", p.dataset.lgPreview === key);
     for (const b of themeBtns) b.setAttribute("aria-selected", String(b.dataset.lgTheme === theme));
-    for (const b of shotBtns) {
-      const on = b.dataset.lgShot === shot;
-      b.classList.toggle("is-active", on);
-      b.setAttribute("aria-pressed", String(on));
-    }
     if (launchLink) {
       launchLink.href = theme === "dark" ? "/liquid-glass/app/?MBUI_DARK=1" : "/liquid-glass/app/";
     }
@@ -260,14 +191,6 @@ let bond = @lg.LiquidMerge::new(separated=false)
   for (const b of themeBtns) {
     b.addEventListener("click", () => {
       theme = b.dataset.lgTheme === "light" ? "light" : "dark";
-      shot = "library";
-      sync();
-    });
-  }
-
-  for (const b of shotBtns) {
-    b.addEventListener("click", () => {
-      shot = b.dataset.lgShot || "library";
       sync();
     });
   }

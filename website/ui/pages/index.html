@@ -17,10 +17,10 @@
       <div class="hero-stage-shell">
         <div class="pane on" id="pane-glass-dark" role="tabpanel">
           <div class="hero-shot-wrap">
-            {{shot:lg-hero-dark:ui.monoid 32-component Liquid Glass dark library rendered offscreen on Metal}}
+            {{shot:glass-hero-dark:ui.monoid Live Studio Glass scene in dark mode rendered offscreen on Metal}}
             <div class="live-bar">
               <a class="live-launch" href="/liquid-glass/app/?MBUI_DARK=1">
-                {{i:arrow-ne}}<span data-en="Open Liquid Glass Library" data-zh="进入液态玻璃组件库">Open Liquid Glass Library</span>
+                {{i:arrow-ne}}<span data-en="Open Live Studio (Glass)" data-zh="进入实时展厅（液态玻璃）">Open Live Studio (Glass)</span>
               </a>
             </div>
           </div>
@@ -28,10 +28,10 @@
 
         <div class="pane" id="pane-glass-light" role="tabpanel">
           <div class="hero-shot-wrap">
-            {{shot:lg-hero-light:ui.monoid 32-component Liquid Glass light library rendered offscreen on Metal}}
+            {{shot:glass-hero-light:ui.monoid Live Studio Glass scene in light mode rendered offscreen on Metal}}
             <div class="live-bar">
               <a class="live-launch" href="/liquid-glass/app/">
-                {{i:arrow-ne}}<span data-en="Open Liquid Glass Library" data-zh="进入液态玻璃组件库">Open Liquid Glass Library</span>
+                {{i:arrow-ne}}<span data-en="Open Live Studio (Glass)" data-zh="进入实时展厅（液态玻璃）">Open Live Studio (Glass)</span>
               </a>
             </div>
           </div>
@@ -39,10 +39,10 @@
 
         <div class="pane" id="pane-std-light" role="tabpanel">
           <div class="hero-shot-wrap">
-            {{shot:std-hero-light:ui.monoid Standard UI light stage rendered offscreen on Metal}}
+            {{shot:std-hero-light:ui.monoid Live Studio Controls scene in light mode rendered offscreen on Metal}}
             <div class="live-bar">
-              <a class="live-launch" href="/standard/app/">
-                {{i:arrow-ne}}<span data-en="Open Standard UI Library" data-zh="进入普通组件库">Open Standard UI Library</span>
+              <a class="live-launch" href="/studio/app/">
+                {{i:arrow-ne}}<span data-en="Open ui.monoid Live Studio" data-zh="进入 ui.monoid 实时展厅">Open ui.monoid Live Studio</span>
               </a>
             </div>
           </div>
@@ -50,10 +50,10 @@
 
         <div class="pane" id="pane-std-dark" role="tabpanel">
           <div class="hero-shot-wrap">
-            {{shot:std-hero-dark:ui.monoid Standard UI dark stage rendered offscreen on Metal}}
+            {{shot:std-hero-dark:ui.monoid Live Studio Controls scene in dark mode rendered offscreen on Metal}}
             <div class="live-bar">
-              <a class="live-launch" href="/standard/app/?MBUI_DARK=1">
-                {{i:arrow-ne}}<span data-en="Open Standard UI Library" data-zh="进入普通组件库">Open Standard UI Library</span>
+              <a class="live-launch" href="/studio/app/?MBUI_DARK=1">
+                {{i:arrow-ne}}<span data-en="Open ui.monoid Live Studio" data-zh="进入 ui.monoid 实时展厅">Open ui.monoid Live Studio</span>
               </a>
             </div>
           </div>
@@ -65,7 +65,7 @@
       <button type="button" role="tab" aria-selected="true" aria-controls="pane-glass-dark">
         {{i:glass}}
         <b data-en="Liquid Glass Dark" data-zh="深色液态玻璃">Liquid Glass Dark</b>
-        <span data-en="32 self-hosted optical components" data-zh="32 个自举光学组件 · 深色">32 self-hosted optical components</span>
+        <span data-en="Real @glass optics & capillary merge" data-zh="真实 @glass 光学与毛细融合 · 深色">Real @glass optics &amp; capillary merge</span>
       </button>
       <button type="button" role="tab" aria-selected="false" aria-controls="pane-glass-light">
         {{i:sparkles}}
@@ -74,12 +74,12 @@
       </button>
       <button type="button" role="tab" aria-selected="false" aria-controls="pane-std-light">
         {{i:palette}}
-        <b data-en="Standard UI Light" data-zh="浅色普通组件库">Standard UI Light</b>
-        <span data-en="OKLCH & sf-ui · Light" data-zh="OKLCH 色阶与 sf-ui · 浅色">OKLCH &amp; sf-ui · Light</span>
+        <b data-en="Live Studio Light" data-zh="浅色控件展厅">Live Studio Light</b>
+        <span data-en="Production controls & OKLCH tokens" data-zh="生产级控件与 OKLCH 色阶 · 浅色">Production controls &amp; OKLCH tokens</span>
       </button>
       <button type="button" role="tab" aria-selected="false" aria-controls="pane-std-dark">
         {{i:layers}}
-        <b data-en="Standard UI Dark" data-zh="深色普通组件库">Standard UI Dark</b>
+        <b data-en="Live Studio Dark" data-zh="深色控件展厅">Live Studio Dark</b>
         <span data-en="Adaptive dark surfaces & overlays" data-zh="深色表面色阶与浮层体系">Adaptive dark surfaces &amp; overlays</span>
       </button>
     </div>
@@ -414,40 +414,24 @@
       <h2 data-en="iOS 27 Liquid Glass, live on GPU." data-zh="iOS 27 级液态玻璃，GPU 实时折射。">iOS 27 Liquid Glass, live on GPU.</h2>
       <p data-en="Glass::liquid matches Apple iOS 27 UIGlassEffect: uniform blur, quarter-circle bevel refraction, adaptive light/dark transmission, and touch spot illumination on Metal, D3D11, GLES, and WebGL 2." data-zh="Glass::liquid 对标 Apple iOS 27 UIGlassEffect 光学模型：均匀轻雾、四分之一圆倒角折射、明暗自适应传输与触摸光斑，原生运行于 Metal、D3D11、GLES 与 WebGL 2。">Glass::liquid matches Apple iOS 27 UIGlassEffect: uniform blur, quarter-circle bevel refraction, adaptive light/dark transmission, and touch spot illumination on Metal, D3D11, GLES, and WebGL 2.</p>
       <div class="ctas">
-        <a class="btn btn-dark" href="/liquid-glass/" data-en="Open Liquid Glass Gallery" data-zh="打开 Liquid Glass 画廊">Open Liquid Glass Gallery</a>
+        <a class="btn btn-dark" href="/liquid-glass/" data-en="Explore Liquid Glass Optics" data-zh="探索液态玻璃光学">Explore Liquid Glass Optics</a>
       </div>
     </div>
 
     <div class="bento lg-bento">
       <div class="tile w7">
-        <h3 data-en="Interactive Lenses" data-zh="交互式透镜">Interactive Lenses</h3>
-        <p data-en="Drag-responsive capsules with live edge dispersion." data-zh="随指针形变的折射胶囊与实时边缘色散。">Drag-responsive capsules with live edge dispersion.</p>
+        <h3 data-en="Interactive Lenses & Light Glass" data-zh="交互式透镜与浅色玻璃">Interactive Lenses &amp; Light Glass</h3>
+        <p data-en="Floating pill groups, draggable segmented lenses, and switches with live bevel refraction." data-zh="悬浮胶囊组、可拖拽分段透镜与液态开关，实时呈现倒角折射。">Floating pill groups, draggable segmented lenses, and switches with live bevel refraction.</p>
         <div class="tile-shot">
-          {{shot:lg-crop-interactive-light:Interactive Liquid Glass lenses and specular rims rendered offscreen on Metal}}
+          {{shot:glass-hero-light:ui.monoid Liquid Glass light mode controls rendered offscreen on Metal}}
         </div>
       </div>
 
       <div class="tile w5">
-        <h3 data-en="Adaptive Luminance" data-zh="自适应亮度">Adaptive Luminance</h3>
-        <p data-en="Samples backdrop contrast for crisp legibility." data-zh="实时采样背景对比度，字形始终清晰。">Samples backdrop contrast for crisp legibility.</p>
+        <h3 data-en="Dark Glass & Capillary Merge" data-zh="深色玻璃与毛细融合">Dark Glass &amp; Capillary Merge</h3>
+        <p data-en="360-degree smooth-min SDF liquid bridge with adaptive luminance and touch spot." data-zh="360° smooth-min SDF 毛细液桥融合，配亮度自适应与触摸光斑。">360-degree smooth-min SDF liquid bridge with adaptive luminance and touch spot.</p>
         <div class="tile-shot">
-          {{shot:lg-crop-center-dark:Liquid Glass control center dark mode rendered offscreen on Metal}}
-        </div>
-      </div>
-
-      <div class="tile w5">
-        <h3 data-en="Refractive Dialogs" data-zh="折射模态弹窗">Refractive Dialogs</h3>
-        <p data-en="Layered depth blur with crisp rim separation." data-zh="多层景深模糊与锐利边缘分离。">Layered depth blur with crisp rim separation.</p>
-        <div class="tile-shot tile-shot-center">
-          {{shot:lg-crop-dialog-dark:Liquid Glass dark modal dialog rendered offscreen on Metal}}
-        </div>
-      </div>
-
-      <div class="tile w7">
-        <h3 data-en="Dark Glass Controls" data-zh="深色玻璃控件">Dark Glass Controls</h3>
-        <p data-en="Toggles, sliders, and pills on one shader pipeline." data-zh="开关、滑块与胶囊共享同一着色器管线。">Toggles, sliders, and pills on one shader pipeline.</p>
-        <div class="tile-shot">
-          {{shot:lg-crop-controls-dark:Liquid Glass dark mode controls rendered offscreen on Metal}}
+          {{shot:glass-hero-dark:ui.monoid Liquid Glass dark mode controls and capillary merge rendered offscreen on Metal}}
         </div>
       </div>
     </div>
@@ -458,19 +442,19 @@
   <div class="wrap">
     <div class="section-head comp-head reveal">
       <div>
-        <div class="eyebrow" data-en="Headless + sf-ui" data-zh="无头原语 + sf-ui">Headless + sf-ui</div>
-        <h2 data-en="Headless behavior. Production looks." data-zh="无头行为解耦，生产级视觉开箱即用。">Headless behavior. Production looks.</h2>
+        <div class="eyebrow" data-en="ui.monoid Component Library" data-zh="ui.monoid 真实组件库">ui.monoid Component Library</div>
+        <h2 data-en="One production library. Zero fake showcases." data-zh="一套生产级组件库，零虚构演示件。">One production library. Zero fake showcases.</h2>
       </div>
-      <a class="link-arrow" href="/components/" data-en="Browse Live Storybook" data-zh="浏览实时 Storybook">Browse Live Storybook</a>
+      <a class="link-arrow" href="/components/" data-en="Browse Live Studio & Storybook" data-zh="浏览实时展厅与 Storybook">Browse Live Studio &amp; Storybook</a>
     </div>
 
     <div class="grid two comp-grid">
       <div class="card comp-card">
-        {{shot:comp-buttons-light:ui.monoid sf-ui tonal buttons and stateful action controls}}
+        {{shot:comp-buttons-light:ui.monoid tonal buttons and stateful action controls}}
         <h3 data-en="Tonal & Stateful Buttons" data-zh="色调与多态操作按钮">Tonal &amp; Stateful Buttons</h3>
       </div>
       <div class="card comp-card">
-        {{shot:comp-controls-light:ui.monoid sf-ui liquid-lens switches, tabs, and segmented stops}}
+        {{shot:comp-controls-light:ui.monoid liquid-lens switches, tabs, and segmented stops}}
         <h3 data-en="Switches, Tabs & Stops" data-zh="开关、标签与分段控件">Switches, Tabs &amp; Stops</h3>
       </div>
     </div>

@@ -87,7 +87,6 @@ jobs:
       ui: ${{ steps.plan.outputs.ui }}
       mbui: ${{ steps.plan.outputs.mbui }}
       comma_ui: ${{ steps.plan.outputs.comma_ui }}
-      liquid_glass: ${{ steps.plan.outputs.liquid_glass }}
       sf_ui: ${{ steps.plan.outputs.sf_ui }}
       station_tests: ${{ steps.plan.outputs.station_tests }}
       core_tests: ${{ steps.plan.outputs.core_tests }}
@@ -1280,56 +1279,6 @@ jobs:
           path: ${{ env.MBC_STORE }}
           key: comma-ui-linux-store-${{ steps.img.outputs.img }}-${{ github.sha }}
 
-  # The liquid glass library (libs/liquid-glass), on its own beside mbui: detlint, type-checked on native and js, its
-  # tests.
-  check-liquid-glass:
-    needs: plan
-    if: ${{ !cancelled() && !failure() && needs.plan.outputs.liquid_glass == 'true' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions: { contents: read }
-    env:
-      MBC_STORE: ${{ github.workspace }}/libs/liquid-glass/_build/native/release/mbc-store
-    steps:
-      # (the runner's compiler, reckoned as mbui-check.yml's IMG, whose app-pkgs store it takes when it has none of its own)
-      - name: The runner's compiler
-        id: img
-        run: |
-          if [ -z "${ImageVersion:-}" ]; then
-            img=own
-          else
-            cc_bin=$(command -v clang || true)
-            img="cc$({
-              [ -n "$cc_bin" ] && sha256sum "$cc_bin" && "$cc_bin" --version &&
-                printf '#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <limits.h>\n' | "$cc_bin" -E -x c - 2>/dev/null || true
-            } | sha256sum | cut -c1-12)"
-          fi
-          echo "img=$img" >> "$GITHUB_OUTPUT"
-          echo "img=$img (image=${ImageVersion:-own}, cc=$(${cc_bin:-clang} --version 2>/dev/null | head -1))"
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/mbui-moonbit
-      - uses: actions/cache/restore@v4
-        id: store
-        with:
-          path: ${{ env.MBC_STORE }}
-          key: liquid-glass-linux-store-${{ steps.img.outputs.img }}-${{ github.sha }}
-          restore-keys: |
-            liquid-glass-linux-store-${{ steps.img.outputs.img }}-
-            liquid-glass-linux-store-
-            mbui-linux-store-app-pkgs-m-${{ steps.img.outputs.img }}-
-            mbui-linux-store-app-pkgs-m-
-      - run: touch "$RUNNER_TEMP/start"
-      - run: bash libs/liquid-glass/scripts/check.sh
-      - if: github.ref == 'refs/heads/main' && steps.store.outputs.cache-hit != 'true'
-        run: |
-          sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" "$MBC_STORE"
-          find "$MBC_STORE" -name '*.lock' -delete 2>/dev/null || true
-      - uses: actions/cache/save@v4
-        if: github.ref == 'refs/heads/main' && steps.store.outputs.cache-hit != 'true'
-        with:
-          path: ${{ env.MBC_STORE }}
-          key: liquid-glass-linux-store-${{ steps.img.outputs.img }}-${{ github.sha }}
-
   # still.fail's component library (libs/sf-ui), on its own beside mbui: detlint, type-checked on native and js, its
   # tests. On main too: nothing runs it after the merge.
   check-sf-ui:
@@ -1433,7 +1382,7 @@ jobs:
   # 2026-10-22): every job a branch runs, one skipped as passing, one failed or cancelled failing it. Its list
   # is the branch's jobs: a job added to them goes here too, or the protection does not wait for it.
   gate:
-    needs: [plan, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, windows-natives, launcher-windows, ui-windows, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-liquid-glass, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
+    needs: [plan, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, windows-natives, launcher-windows, ui-windows, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2

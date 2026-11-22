@@ -264,90 +264,30 @@ function findInterWoff2(compAppDir) {
   return existsSync(fallback) ? fallback : "";
 }
 
-function renderLiquidGlassAppHtml(lgAppDir) {
-  const hostSrc = withVersion("host.js", resolve(lgAppDir, "host.js"));
-  const appSrc = withVersion("app.js", resolve(lgAppDir, "app.js"));
-  const fontPath = resolve(lgAppDir, "assets/inter.woff2");
-  const fontSrc = existsSync(fontPath) ? withVersion("assets/inter.woff2", fontPath) : "";
+function renderStudioAppHtml(studioAppDir, opts = {}) {
+  const title = opts.title || "ui.monoid — Live Studio";
+  const defaultScene = opts.defaultScene || "";
+  const assetPrefix = opts.assetPrefix || "";
+  const hostSrc = assetPrefix + withVersion("host.js", resolve(studioAppDir, "host.js"));
+  const appSrc = assetPrefix + withVersion("app.js", resolve(studioAppDir, "app.js"));
+  const fontPath = resolve(studioAppDir, "assets/inter.woff2");
+  const fontSrc = existsSync(fontPath) ? assetPrefix + withVersion("assets/inter.woff2", fontPath) : "";
+  const sceneBootstrap = defaultScene
+    ? `  (function () {
+    var sp = new URLSearchParams(location.search);
+    if (!sp.has("MBUI_STD_SCENE")) {
+      sp.set("MBUI_STD_SCENE", ${JSON.stringify(defaultScene)});
+      history.replaceState(null, "", location.pathname + "?" + sp.toString() + location.hash);
+    }
+  })();\n`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
-<title>ui.monoid — Liquid Glass</title>
-<style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #F5F5F7; }
-  html[data-dark="1"], html[data-dark="1"] body { background: #0E0E10; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
-  #ime { position: fixed; left: 0; top: 0; width: 2px; height: 20px; opacity: 0; padding: 0; border: 0;
-         resize: none; overflow: hidden; font-size: 16px; caret-color: transparent; color: transparent;
-         background: transparent; outline: none; }
-  #nogl { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px;
-          font: 400 14px/1.6 system-ui, sans-serif; color: #171717; background: #F7F7F6; }
-  #nogl[hidden] { display: none; }
-</style>
-<script>
-  if (new URLSearchParams(location.search).get("MBUI_DARK") === "1") {
-    document.documentElement.dataset.dark = "1";
-  }
-</script>
-</head>
-<body>
-<canvas id="c"></canvas>
-<textarea id="ime" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
-<div id="nogl" hidden>WebGL 2 is required to render the mbui Liquid Glass gallery.</div>
-<script>
-  (function () {
-    var ok = !!globalThis.__mbrender;
-    if (!ok) {
-      try {
-        var gl = document.createElement("canvas").getContext("webgl2");
-        if (gl) {
-          ok = true;
-          var lose = gl.getExtension("WEBGL_lose_context");
-          if (lose) lose.loseContext();
-        }
-      } catch (e) {}
-    }
-    if (!ok) {
-      document.getElementById("c").style.display = "none";
-      document.getElementById("nogl").hidden = false;
-      return;
-    }
-    var assets = (globalThis.__mbassets = globalThis.__mbassets || {});
-    var load = function (src) {
-      return new Promise(function (resolve, reject) {
-        var s = document.createElement("script");
-        s.src = src;
-        s.onload = resolve;
-        s.onerror = reject;
-        document.body.appendChild(s);
-      });
-    };
-    var fontDone = ${fontSrc ? `fetch(${JSON.stringify(fontSrc)}).then(function (r) { return r.ok ? r.arrayBuffer() : null; }, function () { return null; }).then(function (b) { if (b) assets["inter.woff2"] = new Uint8Array(b); })` : "Promise.resolve()"};
-    Promise.all([load(${JSON.stringify(hostSrc)}), fontDone]).then(function () {
-      return load(${JSON.stringify(appSrc)});
-    });
-  })();
-</script>
-</body>
-</html>
-`;
-}
-
-function renderStandardAppHtml(stdAppDir) {
-  const hostSrc = withVersion("host.js", resolve(stdAppDir, "host.js"));
-  const appSrc = withVersion("app.js", resolve(stdAppDir, "app.js"));
-  const fontPath = resolve(stdAppDir, "assets/inter.woff2");
-  const fontSrc = existsSync(fontPath) ? withVersion("assets/inter.woff2", fontPath) : "";
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
-<title>ui.monoid — Standard UI</title>
+<title>${esc(title)}</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #F6F5F1; }
   html[data-dark="1"], html[data-dark="1"] body { background: #191918; }
@@ -360,7 +300,7 @@ function renderStandardAppHtml(stdAppDir) {
   #nogl[hidden] { display: none; }
 </style>
 <script>
-  if (new URLSearchParams(location.search).get("MBUI_DARK") === "1") {
+${sceneBootstrap}  if (new URLSearchParams(location.search).get("MBUI_DARK") === "1") {
     document.documentElement.dataset.dark = "1";
   }
 </script>
@@ -368,7 +308,7 @@ function renderStandardAppHtml(stdAppDir) {
 <body>
 <canvas id="c"></canvas>
 <textarea id="ime" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
-<div id="nogl" hidden>WebGL 2 is required to render the ui.monoid Standard UI stage.</div>
+<div id="nogl" hidden>WebGL 2 is required to render ui.monoid Live Studio.</div>
 <script>
   (function () {
     var ok = !!globalThis.__mbrender;
@@ -429,16 +369,19 @@ function renderStubAppHtml(title) {
 
 function buildMbuiEmbeds(out, skipMbui) {
   const compAppDir = resolve(out, "components/app");
+  const studioAppDir = resolve(out, "studio/app");
   const lgAppDir = resolve(out, "liquid-glass/app");
   const stdAppDir = resolve(out, "standard/app");
   mkdirSync(compAppDir, { recursive: true });
+  mkdirSync(studioAppDir, { recursive: true });
   mkdirSync(lgAppDir, { recursive: true });
   mkdirSync(stdAppDir, { recursive: true });
 
   if (skipMbui) {
     writeFileSync(resolve(compAppDir, "index.html"), renderStubAppHtml("ui.monoid — Components"));
+    writeFileSync(resolve(studioAppDir, "index.html"), renderStubAppHtml("ui.monoid — Live Studio"));
     writeFileSync(resolve(lgAppDir, "index.html"), renderStubAppHtml("ui.monoid — Liquid Glass"));
-    writeFileSync(resolve(stdAppDir, "index.html"), renderStubAppHtml("ui.monoid — Standard UI"));
+    writeFileSync(resolve(stdAppDir, "index.html"), renderStubAppHtml("ui.monoid — Live Studio"));
     return;
   }
 
@@ -474,32 +417,8 @@ function buildMbuiEmbeds(out, skipMbui) {
     .replace('load("app.js")', `load(${JSON.stringify(compAppSrc)})`);
   writeFileSync(kitIndexPath, kitHtml);
 
-  console.log("[ui.monoid] building Liquid Glass gallery via libs/mbui/scripts/web.sh bundle ...");
-  execFileSync("bash", ["libs/mbui/scripts/web.sh", "bundle", lgAppDir], {
-    cwd: REPO,
-    env: {
-      ...env,
-      APP: "gallery",
-      MBUI_APP_MOD: resolve(REPO, "libs/liquid-glass"),
-      MBUI_WEB_BROTLI: "0",
-    },
-    stdio: "inherit",
-  });
-  const interWoff2 = findInterWoff2(compAppDir);
-  if (interWoff2) {
-    mkdirSync(resolve(lgAppDir, "assets"), { recursive: true });
-    cpSync(interWoff2, resolve(lgAppDir, "assets/inter.woff2"));
-  }
-  writeFileSync(resolve(lgAppDir, "index.html"), renderLiquidGlassAppHtml(lgAppDir));
-
-  const ghosttySrc = resolve(compAppDir, "ghostty-vt.wasm");
-  const ghosttyDst = resolve(lgAppDir, "ghostty-vt.wasm");
-  if (existsSync(ghosttySrc) && !existsSync(ghosttyDst)) {
-    cpSync(ghosttySrc, ghosttyDst);
-  }
-
-  console.log("[ui.monoid] building Standard UI stage via libs/mbui/scripts/web.sh bundle ...");
-  execFileSync("bash", ["libs/mbui/scripts/web.sh", "bundle", stdAppDir], {
+  console.log("[ui.monoid] building unified Live Studio via libs/mbui/scripts/web.sh bundle ...");
+  execFileSync("bash", ["libs/mbui/scripts/web.sh", "bundle", studioAppDir], {
     cwd: REPO,
     env: {
       ...env,
@@ -509,15 +428,34 @@ function buildMbuiEmbeds(out, skipMbui) {
     },
     stdio: "inherit",
   });
+  const interWoff2 = findInterWoff2(compAppDir);
   if (interWoff2) {
-    mkdirSync(resolve(stdAppDir, "assets"), { recursive: true });
-    cpSync(interWoff2, resolve(stdAppDir, "assets/inter.woff2"));
+    mkdirSync(resolve(studioAppDir, "assets"), { recursive: true });
+    cpSync(interWoff2, resolve(studioAppDir, "assets/inter.woff2"));
   }
-  writeFileSync(resolve(stdAppDir, "index.html"), renderStandardAppHtml(stdAppDir));
-  const stdGhosttyDst = resolve(stdAppDir, "ghostty-vt.wasm");
-  if (existsSync(ghosttySrc) && !existsSync(stdGhosttyDst)) {
-    cpSync(ghosttySrc, stdGhosttyDst);
+  const ghosttySrc = resolve(compAppDir, "ghostty-vt.wasm");
+  const studioGhosttyDst = resolve(studioAppDir, "ghostty-vt.wasm");
+  if (existsSync(ghosttySrc) && !existsSync(studioGhosttyDst)) {
+    cpSync(ghosttySrc, studioGhosttyDst);
   }
+  writeFileSync(resolve(studioAppDir, "index.html"), renderStudioAppHtml(studioAppDir));
+  // Alias deep links (/liquid-glass/app/ and /standard/app/) reuse the single studio bundle without rebuilding twice.
+  writeFileSync(
+    resolve(lgAppDir, "index.html"),
+    renderStudioAppHtml(studioAppDir, {
+      title: "ui.monoid — Liquid Glass",
+      defaultScene: "glass",
+      assetPrefix: "/studio/app/",
+    }),
+  );
+  writeFileSync(
+    resolve(stdAppDir, "index.html"),
+    renderStudioAppHtml(studioAppDir, {
+      title: "ui.monoid — Live Studio",
+      defaultScene: "0",
+      assetPrefix: "/studio/app/",
+    }),
+  );
 }
 
 function copyAssets(out) {
@@ -548,6 +486,9 @@ function writeMetadataFiles(out, routes) {
   Cache-Control: public, max-age=0, must-revalidate
 
 /components/app/*.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/studio/app/*.js
   Cache-Control: public, max-age=0, must-revalidate
 
 /liquid-glass/app/*.js

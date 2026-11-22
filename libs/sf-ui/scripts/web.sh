@@ -1,5 +1,5 @@
 #!/bin/bash
-# Standard UI Stage (src/studio) built for the browser into OUT (default out/web):
+# ui.monoid Live Studio (src/studio) built for the browser into OUT (default out/web):
 # mbui's web host (host.js), the minified studio bundle (app.js), and index.html.
 # Query parameters: ?MBUI_DARK=1&MBUI_ACCENT=blue&MBUI_STD_SCENE=0
 #   sh scripts/web.sh [OUT]
@@ -20,8 +20,8 @@ cat > "$out/index.html" <<'HTML'
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>ui.monoid — Standard UI</title>
-<meta name="description" content="Standard UI controls for mbui: buttons, inputs, segmented controls, sliders, switches, OKLCH tokens, menus, dialogs, and toasts rendered live in WebGL 2.">
+<title>ui.monoid — Live Studio</title>
+<meta name="description" content="ui.monoid Live Studio: production controls, Liquid Glass optics, OKLCH tokens, and overlays rendered live in WebGL 2.">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #F6F5F1;
                overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }

@@ -1,7 +1,7 @@
-// ui.monoid · STANDARD STAGE (src/studio shows it in a desktop window and WebGL 2; src/studio_shots captures
+// ui.monoid · LIVE STUDIO (src/studio shows it in a desktop window and WebGL 2; src/studio_shots captures
 // offscreen Metal stills and a 60 fps demo film): a single-viewport (1120x637 / 1120x690 zero-scroll, responsive to
-// 1280x1040) interactive workbench built 100% on production `@sf` retained-tree components with a mathematically
-// pinned bottom 3-scene switcher (Controls / Tokens / Overlays, 0.00 px jump).
+// 1280x1040 and 360x800) interactive workbench built 100% on production `@sf` and `@glass` retained-tree components
+// with a mathematically pinned bottom 4-scene switcher (Controls / Glass / Tokens / Overlays, 0.00 px jump).
 
 ///|
 let brand_pi : Double = 3.141592653589793
@@ -199,7 +199,7 @@ fn accent_dot_btn(parent : @view.View, key : String, name : String, loc~ : Sourc
 }
 
 ///|
-/// Top Studio Bar (`height: 40`): brand mark + `ui.monoid · STANDARD STAGE` on left; OKLCH accent dots +
+/// Top Studio Bar (`height: 40`): brand mark + `ui.monoid · LIVE STUDIO` on left; OKLCH accent dots +
 /// Dark/Light toggle + status pill on right.
 #callsite(autofill(loc))
 fn studio_bar(
@@ -240,7 +240,7 @@ fn studio_bar(
         |> ignore
         tag_slot.box(fn(w) {
           w
-          .words(Is("STANDARD STAGE"), look=words_look(11.0, weight=600, line=16.0, tracking=1.0))
+          .words(Is("LIVE STUDIO"), look=words_look(11.0, weight=600, line=16.0, tracking=1.0))
           .ink(By(fn() { @sf.theme().p.muted }))
           |> ignore
         })
@@ -300,7 +300,7 @@ fn studio_bar(
         |> ignore
         st.box(fn(w) {
           w
-          .words(Is("60 fps · Standard UI"), look=words_look(12.0, weight=500, line=16.0))
+          .words(Is("60 fps · ui.monoid"), look=words_look(12.0, weight=500, line=16.0))
           .ink(By(fn() { @sf.theme().p.muted }))
           |> ignore
         })
@@ -362,7 +362,7 @@ fn card_head(parent : @view.View, title : String, right? : (@view.View) -> Unit,
 }
 
 ///|
-/// Shared interactive state across the 3 scenes of `STANDARD STAGE`.
+/// Shared interactive state across the 4 scenes of `LIVE STUDIO`.
 priv struct StageState {
   scene : @signals.Signal[Int]
   tag_field : @ui.Field
@@ -386,6 +386,12 @@ priv struct StageState {
   menu_open : @signals.Signal[Bool]
   menu_anchor : Ref[@view.View?]
   backends : Array[(String, @signals.Signal[Bool])]
+  glass_range : @signals.Signal[Int]
+  glass_count : @signals.Signal[Int]
+  glass_refract : @signals.Signal[Bool]
+  glass_level : @signals.Signal[Int]
+  glass_stops : @sf.Stops
+  glass_merge : @glass.LiquidMerge
 }
 
 ///|
@@ -430,6 +436,12 @@ fn StageState::new(first_scene : Int) -> StageState {
       ("Vulkan", @signals.signal(false)),
       ("D3D11", @signals.signal(true)),
     ],
+    glass_range: @signals.signal(0),
+    glass_count: @signals.signal(3),
+    glass_refract: @signals.signal(true),
+    glass_level: @signals.signal(2),
+    glass_stops: @sf.Stops::new(),
+    glass_merge: @glass.LiquidMerge::new(separated=false),
   }
 }
 
@@ -874,6 +886,365 @@ fn scene_controls(
 }
 
 ///|
+/// Soft geometric colour backdrop behind floating Liquid Glass controls so bevel refraction and rim separation read
+/// cleanly in both light and dark appearances.
+#callsite(autofill(loc))
+fn glass_canvas_backdrop(parent : @view.View, warm : Bool, loc~ : SourceLoc) -> Unit {
+  parent.box(made_for=loc, fn(bg) {
+    bg
+    .over(Is(true))
+    .clips(Is(true))
+    .points(Is(false))
+    .ground(By(fn() {
+      if @sf.theme().dark {
+        if warm { 0x161B28FFL } else { 0x181726FFL }
+      } else {
+        if warm { 0xECEFF8FFL } else { 0xEEEBF6FFL }
+      }
+    }))
+    |> ignore
+    // Soft geometric colour orbs for optical refraction
+    bg.box(fn(o1) {
+      o1
+      .over(Is(true))
+      .width(Is(Some(190.0)))
+      .height(Is(Some(190.0)))
+      .radius(Is(95.0))
+      .offset(Is((-32.0, -44.0)))
+      .ground(By(fn() {
+        if @sf.theme().dark {
+          if warm { 0xEF633452L } else { 0x3B82F652L }
+        } else {
+          if warm { 0xFF9F7A70L } else { 0x7AB8FF70L }
+        }
+      }))
+      |> ignore
+    })
+    |> ignore
+    bg.box(fn(o2) {
+      o2
+      .over(Is(true))
+      .width(Is(Some(170.0)))
+      .height(Is(Some(170.0)))
+      .radius(Is(85.0))
+      .offset(Is((210.0, 24.0)))
+      .ground(By(fn() {
+        if @sf.theme().dark {
+          if warm { 0x0EA5E948L } else { 0xA855F750L }
+        } else {
+          if warm { 0x67D5C86CL } else { 0xC49BFF6CL }
+        }
+      }))
+      |> ignore
+    })
+    |> ignore
+    bg.box(fn(o3) {
+      o3
+      .over(Is(true))
+      .width(Is(Some(150.0)))
+      .height(Is(Some(150.0)))
+      .radius(Is(75.0))
+      .offset(Is((96.0, 118.0)))
+      .ground(By(fn() {
+        if @sf.theme().dark {
+          if warm { 0x8B5CF645L } else { 0x10B98148L }
+        } else {
+          if warm { 0xA78BFA5CL } else { 0x6EE7B764L }
+        }
+      }))
+      |> ignore
+    })
+    |> ignore
+    // Subtle geometric stripes so bevel refraction visibly bends straight lines
+    for i in 1..<8 {
+      bg.box(fn(ln) {
+        ln
+        .over(Is(true))
+        .width(Is(Some(1.0)))
+        .height(Is(Some(320.0)))
+        .offset(Is((i.to_double() * 54.0, 0.0)))
+        .ground(By(fn() {
+          if @sf.theme().dark { 0xFFFFFF12L } else { 0x17171710L }
+        }))
+        |> ignore
+      })
+      |> ignore
+    }
+    for j in 1..<5 {
+      bg.box(fn(hl) {
+        hl
+        .over(Is(true))
+        .width(Is(Some(560.0)))
+        .height(Is(Some(1.0)))
+        .offset(Is((0.0, j.to_double() * 54.0)))
+        .ground(By(fn() {
+          if @sf.theme().dark { 0xFFFFFF12L } else { 0x17171710L }
+        }))
+        |> ignore
+      })
+      |> ignore
+    }
+  })
+  |> ignore
+}
+
+///|
+/// Scene 1: `Glass` — Production Liquid Glass controls, 360-degree capillary merge, and optical telemetry.
+#callsite(autofill(loc))
+fn scene_glass(
+  parent : @view.View,
+  st : StageState,
+  tips : @sf.TipLayer,
+  cause_at : () -> Double,
+  is_narrow : () -> Bool,
+  is_phone : () -> Bool,
+  loc~ : SourceLoc,
+) -> Unit {
+  let level_name = fn() {
+    match st.glass_level.get() {
+      0 => "Low"
+      1 => "Medium"
+      2 => "High"
+      _ => "Max"
+    }
+  }
+  parent.box(made_for=loc, fn(grid) {
+    grid.row(By(fn() { !is_narrow() })).gap(Is(16.0)).width_share(Is(1.0)) |> ignore
+    // Left Card: Production Liquid Glass Controls
+    bento_card(grid, is_narrow, grow=1.02, gap=12.0, fn(left) {
+      card_head(left, "LIQUID GLASS CONTROLS", right=fn(r) {
+        @sf.badge_node(r, fn() { "iOS 27 Optics" }, tone=Accented) |> ignore
+      })
+      // Colourful geometric refraction canvas hosting floating glass controls
+      left.box(fn(canvas) {
+        canvas
+        .clips(Is(true))
+        .radius(Is(@sf.small_corner))
+        .padding(By(fn() { if is_phone() { (12.0, 14.0, 12.0, 14.0) } else { (16.0, 16.0, 16.0, 16.0) } }))
+        .gap(Is(14.0))
+        .edge(By(fn() { (0.5, @sf.theme().p.line_strong) }))
+        |> ignore
+        glass_canvas_backdrop(canvas, true)
+        // Row 1: Floating bar pill group + float action button with live count badge
+        canvas.box(fn(top_row) {
+          top_row.row(Is(true)).wraps(Is(Some(10.0))).gap(Is(14.0)).lines_up(Is(Some(Middle))) |> ignore
+          @sf.bar_pill_group_node(top_row, fn(pill) {
+            @sf.round_key_node(
+              pill,
+              "search",
+              fn() { "Search Glass" },
+              fn() { st.push_toast("Bar pill pressed", description="GPU touch spot + spring scale") },
+            )
+            @sf.round_key_node(
+              pill,
+              "zap",
+              fn() { "Refract Pulse" },
+              fn() { st.push_toast("Refraction pulse", description="Quarter-circle bevel active") },
+            )
+            @sf.round_key_node(
+              pill,
+              "sliders",
+              fn() { "Optical Tune" },
+              fn() { st.push_toast("Optical parameters", description="blur 2.1pt, bezel 20pt") },
+            )
+          })
+          |> ignore
+          @sf.float_button_node(
+            top_row,
+            "bell",
+            fn() { "Glass Alerts" },
+            fn() {
+              let n = st.glass_count.untracked() + 1
+              st.glass_count.set(n)
+              st.push_toast("Glass alert #\{n}", description="Floating glass button with count badge")
+            },
+            count=fn() { "\{st.glass_count.get()}" },
+            tips~,
+          )
+          |> ignore
+        })
+        |> ignore
+        // Row 2: Draggable Liquid Glass segmented control (glass_track=true)
+        canvas.pick(is_phone, at_once=true, fn(slot, phone) {
+          @glass.liquid_segmented_node(
+            slot,
+            fn() { ["Day", "Week", "Month"] },
+            fn() { st.glass_range.get() },
+            fn(i) { st.glass_range.set(i) },
+            width=if phone { 244.0 } else { 296.0 },
+            glass_track=true,
+            said="Glass Range",
+          )
+          |> ignore
+        })
+      })
+      |> ignore
+      // Switch row on clean card surface (guaranteed >= 4.5:1 contrast in light & dark)
+      left.box(fn(sw_row) {
+        sw_row.row(Is(true)).wraps(Is(Some(8.0))).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(12.0)) |> ignore
+        sw_row.box(fn(sw_left) {
+          sw_left.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
+          @sf.switch_node(
+            sw_left,
+            fn() { st.glass_refract.get() },
+            fn(v) { st.glass_refract.set(v) },
+            fn() { "Bezel Specular" },
+            small=true,
+          )
+          sw_left.box(fn(w) {
+            w
+            .words(Is("Bezel Specular"), look=words_look(13.0, weight=500, line=18.0))
+            .ink(By(fn() { @sf.theme().p.text }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        @sf.pill_node(
+          sw_row,
+          fn() { if st.glass_refract.get() { "Clear Lens" } else { "Soft Tint" } },
+          tone=Blue,
+        )
+        |> ignore
+      })
+      |> ignore
+      // Discrete refraction stops slider (production @sf.stops_node with lazy refraction lens)
+      left.box(fn(stops_box) {
+        stops_box.gap(Is(6.0)) |> ignore
+        stops_box.box(fn(sh) {
+          sh.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+          sh.box(fn(l) {
+            l
+            .words(Is("Refraction Strength"), look=words_look(13.0, weight=500, line=18.0))
+            .ink(By(fn() { @sf.theme().p.text }))
+            |> ignore
+          })
+          |> ignore
+          sh.box(fn(v) {
+            v
+            .words(By(level_name), look=words_look(12.0, weight=600, line=16.0))
+            .ink(By(fn() { @sf.theme().p.accent_text }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        @sf.stops_node(
+          stops_box,
+          fn() { ["Low", "Medium", "High", "Max"] },
+          fn() { st.glass_level.get() },
+          st.glass_stops,
+          said="Refraction Strength",
+          on_pick=fn(i) { st.glass_level.set(i) },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    // Right Card: Capillary Merge & 1.5x Loupe
+    bento_card(grid, is_narrow, grow=0.98, gap=12.0, fn(right) {
+      card_head(right, "CAPILLARY MERGE & 1.5× LOUPE", right=fn(r) {
+        r.pick(fn() { st.glass_merge.is_separated() }, at_once=true, fn(slot, sep) {
+          @sf.pill_node(slot, fn() { if sep { "Separated" } else { "Fused" } }, tone=if sep { Blue } else { Green })
+          |> ignore
+        })
+      })
+      // 360-degree capillary liquid bridge stage over geometric backdrop
+      right.box(fn(arena_box) {
+        arena_box
+        .clips(Is(true))
+        .radius(Is(@sf.small_corner))
+        .padding(Is((10.0, 10.0, 10.0, 10.0)))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        .edge(By(fn() { (0.5, @sf.theme().p.line_strong) }))
+        |> ignore
+        glass_canvas_backdrop(arena_box, false)
+        arena_box.pick(is_phone, at_once=true, fn(slot, phone) {
+          @glass.liquid_merge_node(
+            slot,
+            controller=st.glass_merge,
+            main_w=if phone { 116.0 } else { 156.0 },
+            main_h=if phone { 46.0 } else { 52.0 },
+            sat_size=if phone { 46.0 } else { 52.0 },
+            arena_w=if phone { 244.0 } else { 376.0 },
+            arena_h=if phone { 136.0 } else { 164.0 },
+            main_label=fn() { "Capsule" },
+            sat_label=fn() { "+" },
+            label=fn() { "Capillary Merge" },
+          )
+          |> ignore
+        })
+      })
+      |> ignore
+      // Merge / Separate trigger row
+      right.box(fn(act) {
+        act.row(Is(true)).wraps(Is(Some(8.0))).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
+        @sf.button_node(
+          act,
+          fn() { if st.glass_merge.is_separated() { "Merge" } else { "Separate" } },
+          fn() {
+            let next = !st.glass_merge.is_separated()
+            st.glass_merge.set_separated(next, at=cause_at())
+            st.push_toast(
+              if next { "Capillary bridge split" } else { "Droplets fused" },
+              description="Smooth-min SDF hysteresis via @glass.liquid_merge_node",
+            )
+          },
+          tone=Primary,
+          icon="zap",
+        )
+        |> ignore
+        @sf.button_node(
+          act,
+          fn() { "Reset Bond" },
+          fn() {
+            st.glass_merge.set_separated(false, at=cause_at())
+            st.push_toast("Bond reset", description="Returned to fused equilibrium")
+          },
+          tone=Ghost,
+          icon="refresh",
+        )
+        |> ignore
+      })
+      |> ignore
+      // Real optical parameter telemetry & loupe readout
+      right.box(fn(spec) {
+        spec
+        .padding(Is((14.0, 12.0, 14.0, 12.0)))
+        .gap(Is(8.0))
+        .radius(Is(@sf.small_corner))
+        .ground(By(fn() { @sf.theme().p.card2 }))
+        .edge(By(fn() { (0.5, @sf.theme().p.line) }))
+        |> ignore
+        spec.box(fn(tags) {
+          tags.row(Is(true)).wraps(Is(Some(6.0))).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+          @sf.badge_node(tags, fn() { "blur 2.1pt" }, tone=Neutral) |> ignore
+          @sf.badge_node(tags, fn() { "bezel 20pt" }, tone=Neutral) |> ignore
+          @sf.badge_node(tags, fn() { "refract 28pt" }, tone=Neutral) |> ignore
+          @sf.badge_node(tags, fn() { "rim 0.60" }, tone=Blue) |> ignore
+          @sf.badge_node(tags, fn() { "merge k 34pt" }, tone=Accented) |> ignore
+          @sf.badge_node(tags, fn() { "@sf.loupe_node" }, tone=Green) |> ignore
+        })
+        |> ignore
+        spec.box(fn(hint) {
+          hint
+          .words(
+            Is("Drag the satellite droplet 360° across the capillary break gap, or press Separate / Merge. Touch-dragging text activates the live @sf.loupe_node magnifier."),
+            look=words_look(12.0, weight=400, line=16.0, wrap=true),
+          )
+          .ink(By(fn() { @sf.theme().p.muted }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+  })
+  |> ignore
+}
+
+///|
 /// Large accent theme pill button for the `Tokens` scene.
 #callsite(autofill(loc))
 fn theme_swatch_pill(parent : @view.View, key : String, name : String, loc~ : SourceLoc) -> Unit {
@@ -968,7 +1339,7 @@ fn token_tile(parent : @view.View, name : String, role : String, color : () -> I
 }
 
 ///|
-/// Scene 1: `Tokens` — OKLCH Accent & Surface Ladder + Live Component Specimen.
+/// Scene 2: `Tokens` — OKLCH Accent & Surface Ladder + Live Component Specimen.
 #callsite(autofill(loc))
 fn scene_tokens(
   parent : @view.View,
@@ -1203,7 +1574,7 @@ fn kbd_cap(parent : @view.View, keys : String, loc~ : SourceLoc) -> Unit {
 }
 
 ///|
-/// Scene 2: `Overlays` — 2x2 interactive bench for Dropdown Menu, Modal Confirm, Toast Queue & Hover Tooltips.
+/// Scene 3: `Overlays` — 2x2 interactive bench for Dropdown Menu, Modal Confirm, Toast Queue & Hover Tooltips.
 #callsite(autofill(loc))
 fn scene_overlays(
   parent : @view.View,
@@ -1271,7 +1642,7 @@ fn scene_overlays(
             fn() { "Open Confirm Dialog" },
             fn() {
               st.open_confirm(
-                "Deploy Standard UI Bundle?",
+                "Deploy ui.monoid Bundle?",
                 "Confirming will build and sign the retained-tree package for all six native GPU targets.",
                 "Deploy Now",
                 false,
@@ -1339,7 +1710,7 @@ fn scene_overlays(
           @sf.button_node(
             act,
             fn() { "Action Toast" },
-            fn() { st.push_toast("Bundle archived", description="standard-ui-0.2.0.tar.gz", action="Undo") },
+            fn() { st.push_toast("Bundle archived", description="ui-monoid-0.2.0.tar.gz", action="Undo") },
             tone=Ghost,
             icon="bell",
           )
@@ -1414,8 +1785,8 @@ fn scene_overlays(
 }
 
 ///|
-/// Build `ui.monoid · STANDARD STAGE` inside `root`.
-/// `first_scene`: `0` (Controls), `1` (Tokens), or `2` (Overlays).
+/// Build `ui.monoid · LIVE STUDIO` inside `root`.
+/// `first_scene`: `0` (Controls), `1` (Glass), `2` (Tokens), or `3` (Overlays).
 #callsite(autofill(loc))
 pub fn studio(root : @view.View, first_scene? : Int = 0, loc~ : SourceLoc) -> Unit {
   @sf.set_language(Some("en"))
@@ -1432,7 +1803,7 @@ pub fn studio(root : @view.View, first_scene? : Int = 0, loc~ : SourceLoc) -> Un
     // 1. Neutral architectural backdrop with 80pt hairline grid
     stage_backdrop(stage)
 
-    // 2. Responsive viewport shell (top bar + scene content + pinned bottom 3-scene switcher)
+    // 2. Responsive viewport shell (top bar + scene content + pinned bottom 4-scene switcher)
     let is_narrow = fn() {
       let w = stage.window_w()
       w > 0.0 && w < 760.0
@@ -1447,14 +1818,16 @@ pub fn studio(root : @view.View, first_scene? : Int = 0, loc~ : SourceLoc) -> Un
     }
     let compact_dock = fn() {
       let w = stage.window_w()
-      w > 0.0 && w < 390.0
+      w > 0.0 && w < 520.0
     }
+    let cause_at = fn() { stage.cause_at() }
 
     let draw_scene = fn(slot : @view.View, idx : Int) {
       slot.width_share(Is(1.0)) |> ignore
       match idx {
-        1 => scene_tokens(slot, st, is_narrow, is_phone)
-        2 => scene_overlays(slot, st, tips, is_narrow)
+        1 => scene_glass(slot, st, tips, cause_at, is_narrow, is_phone)
+        2 => scene_tokens(slot, st, is_narrow, is_phone)
+        3 => scene_overlays(slot, st, tips, is_narrow)
         _ => scene_controls(slot, st, tips, is_narrow)
       }
     }
@@ -1500,7 +1873,7 @@ pub fn studio(root : @view.View, first_scene? : Int = 0, loc~ : SourceLoc) -> Un
     })
     |> ignore
 
-    // 3. Mathematically pinned bottom 3-scene switcher (0.00 px jump across all scenes and window sizes)
+    // 3. Mathematically pinned bottom 4-scene switcher (0.00 px jump across all scenes and window sizes)
     stage.box(fn(dock_wrap) {
       dock_wrap
       .over(Is(true))
@@ -1519,10 +1892,10 @@ pub fn studio(root : @view.View, first_scene? : Int = 0, loc~ : SourceLoc) -> Un
         dock_shell.pick(compact_dock, at_once=true, fn(slot, compact) {
           @sf.seg_node(
             slot,
-            fn() { ["Controls", "Tokens", "Overlays"] },
+            fn() { ["Controls", "Glass", "Tokens", "Overlays"] },
             fn() { st.scene.get() },
             fn(i) { st.scene.set(i) },
-            item_w=if compact { 104.0 } else { 118.0 },
+            item_w=if compact { 82.0 } else { 104.0 },
             said="Stage Scene",
           )
           |> ignore
@@ -1628,6 +2001,9 @@ pub fn studio(root : @view.View, first_scene? : Int = 0, loc~ : SourceLoc) -> Un
       label="Notifications",
     )
     |> ignore
+
+    // 8. Global text loupe magnifier (appears only while finger-dragging text)
+    @sf.loupe_node(stage, fn() { true })
   })
   |> ignore
 }
