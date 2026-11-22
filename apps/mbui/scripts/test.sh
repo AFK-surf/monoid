@@ -587,7 +587,16 @@ for t in $targets; do
           # 3/4 157 s and 4/4 124 s. main b7ddfb6b07 (44553113433, -O2): 205, 172, 235 and 128 s. Group 1 reckoned
           # 500 and group 4 400 (group 2 600): about 300 s of pages moved from group 1 to groups 4 and 2. By the
           # table: 757, 657, 697 and 856 s of pages (was 1057, 597, 717, 596).
-          *) specs="4,4,500,1 4,4,600,1 4,4,560,1 4,4,400,1" ;;
+          # #8203's 45064931159 (-O0) cut app 2/4 at 317 s: its 97 page files ran beside chat_page_nodes' two (113-133 s),
+          # squeeze_said (100-111) and screens (70-84), seven processes on four cores, while 1/4 took 146 s, 3/4 115 s
+          # and 4/4 140 s (send_steady's three, 65-75 s). On main (-O2, 45063615978, 45052196659) 2/4 was the slowest
+          # too, 168-187 s, and 4/4 125-140. Screens moved to the fourth (app_group_of), page-seconds.txt written again
+          # from those runs and 45045217984. Reckoned so (group 2 760, group 3 560, group 4 500), 45066643199 took
+          # 154 s for 1/4, 119 s for 2/4 (its two other runs 148 s), 221 s for 3/4 (its 583 s of pages ran 204 s beside
+          # answers_still's five runs, nine processes on four cores) and 139 s for 4/4. Group 2 reckoned 660, group 3
+          # 700, group 4 460. By the table: 643, 483, 443 and 683 s of pages (was 804, 704, 743 and 903 by the old
+          # table).
+          *) specs="4,4,500,1 4,4,660,1 4,4,700,1 4,4,460,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
@@ -763,7 +772,7 @@ for t in $targets; do
       # 252 on arch/next, its Chinese 200 of the first's, each push near its 5 minutes and some cut, ci-corners-once
       # 42003619842, 2026-11-05: back among the four once a screen opens in one build, as on main)
       "src/sfapp/corners_wbtest.mbt "*) echo corners ;;
-      "src/sfapp/screens_wbtest.mbt  ") echo 2 ;;
+      "src/sfapp/screens_wbtest.mbt  ") echo 4 ;;
       "src/sfapp/squeeze_said_wbtest.mbt  ") echo 2 ;;
       # (screens', squeeze_said's and words_large's at the default rate alone: the sweeps' loop above says why)
       # (words_large's sweep, every screen at the system's larger words, on the second, whose jobs had the most room:
