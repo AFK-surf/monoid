@@ -1636,7 +1636,7 @@ fn subchats_sheet_node(v : @view.View, opened : () -> Array[@sfbase.OpenedChat],
     est=subchats_row_est,
   )
   |> ignore
-  v.show(at_once=true, fn() { !(rows.get().get(0) is Some(SubchatsEmpty)) }, fn(f) {
+  v.show(at_once=true, fn() { rows.get().last() is Some(SubchatsOne(_, _)) }, fn(f) {
     @sf.style_node(f, fn() { @sf.panel_card_last_node(f) })
   })
 }
@@ -1669,35 +1669,38 @@ fn subchats_sheet_row_node(
         }
         n
       }
-      @sf.action_box_node(
-        b,
-        fn() { tr("web-pages.chat.subchatsArchived") },
-        fn(_) { archived_open.set(!archived_open.untracked()) },
-        expanded=fn() { archived_open.get() },
-        fn(h) {
-          @sf.style_node(h, fn() {
-            @sf.panel_words_in_node(h)
-            .then(if has_active { subchats_archived_head } else { subchats_archived_head_top })
-            .then(subchats_archived_round)
-          })
-          h.min_height(Is(Some(44.0))) |> ignore
-          @sf.hover_ground_node(h)
-          h.box(fn(l) {
-            @sf.style_node(l, fn() { subchats_archived_left }, in_row=true)
-            @sf.words_node(l, fn() { tr("web-pages.chat.subchatsArchived") }, fn() { jobs_head_words }) |> ignore
-            @sf.words_node(l, fn() { archived_count().to_string() }, fn() { subchats_archived_count_words }) |> ignore
-          })
-          |> ignore
-          @sf.icon_node(
-            h,
-            "",
-            14.0,
-            By(fn() { @sf.theme().p.subtle }),
-            name_now=fn() { if archived_open.get() { "chevron-down" } else { "chevron-right" } },
-          )
-          |> ignore
-        },
-      )
+      b.box(fn(slot) {
+        @sf.style_node(slot, fn() { @sf.panel_words_in_node(slot).then(info_fill) })
+        @sf.action_box_node(
+          slot,
+          fn() { tr("web-pages.chat.subchatsArchived") },
+          fn(_) { archived_open.set(!archived_open.untracked()) },
+          expanded=fn() { archived_open.get() },
+          fn(h) {
+            @sf.style_node(h, fn() {
+              (if has_active { subchats_archived_head } else { subchats_archived_head_top })
+              .then(subchats_archived_round)
+            })
+            h.min_height(Is(Some(44.0))) |> ignore
+            @sf.hover_ground_node(h)
+            h.box(fn(l) {
+              @sf.style_node(l, fn() { subchats_archived_left }, in_row=true)
+              @sf.words_node(l, fn() { tr("web-pages.chat.subchatsArchived") }, fn() { jobs_head_words }) |> ignore
+              @sf.words_node(l, fn() { archived_count().to_string() }, fn() { subchats_archived_count_words }) |> ignore
+            })
+            |> ignore
+            @sf.icon_node(
+              h,
+              "",
+              14.0,
+              By(fn() { @sf.theme().p.subtle }),
+              name_now=fn() { if archived_open.get() { "chevron-down" } else { "chevron-right" } },
+            )
+            |> ignore
+          },
+        )
+        |> ignore
+      })
       |> ignore
     }
     SubchatsOne(archived, key) => {

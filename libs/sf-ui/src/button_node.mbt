@@ -204,7 +204,7 @@ fn button_by(
       if v.lent(foot_fills_lent).unwrap_or(false) {
         // (at a sheet's foot, in a thumb's reach: its share of the foot's width, as the old button's there, foot_fills;
         // never narrower than its words and its ends need, what is beside it giving way first, as the old one's `keep`)
-        v.grow(Is(1.0)).basis(Is(Some(0.0))).keeps_held(Is(true)) |> ignore
+        v.grow(Is(1.0)).basis(Is(Some(0.0))).keeps_held(Is(true)).max_width(Is(None), within=true) |> ignore
       }
     }
     // (what it holds in its middle, however wide it is laid out (as wide as a column, stretched by what holds it): as

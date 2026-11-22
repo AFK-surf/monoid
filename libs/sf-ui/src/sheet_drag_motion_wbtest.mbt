@@ -151,3 +151,117 @@ test "小屏抽屉二级页面推入中途立刻返回，位置与速度连续�
   assert_true(t.find("第一页内容") is Some(_))
   assert_true(t.find("第二页内容") is None)
 }
+
+///|
+/// Find the floating sheet glass rect (x, y, w, h) and the last quiet card rect/corners in the last drawn frame.
+fn sheet_glass_and_card(t : @ui.Tester) -> ((Double, Double, Double, Double), (Double, Double, Double, Double, (Double, Double, Double, Double))) raise {
+  let glasses = t.drawn_glass()
+  assert_true(glasses.length() >= 1, msg="expected sheet glass")
+  let g = glasses[glasses.length() - 1]
+  let gx = g.0
+  let gy = g.1
+  let gw = g.2
+  let gh = g.3
+  let cards = t.drawn_rect_corners().filter(fn(r) {
+    r.0 >= gx && r.1 >= gy && r.0 + r.2 <= gx + gw + 0.5 && r.1 + r.3 <= gy + gh + 0.5 && r.2 > 200.0 && r.3 > 40.0
+  })
+  assert_true(cards.length() >= 1, msg="expected card inside glass (\{gx},\{gy},\{gw},\{gh})")
+  let c = cards[cards.length() - 1]
+  ((gx, gy, gw, gh), (c.0, c.1, c.2, c.3, c.5))
+}
+
+///|
+test "小屏悬浮抽屉内 quiet_card_node 与抽屉玻璃四角严格同心（左/右/底距 16pt，抽屉 42pt，卡片 26pt）" {
+  let t = presenting_tester(phone, fn(_) {
+    panel_nodes("智能体信息", from=Unanchored, fn(v, _) {
+      quiet_card_node(v, last=fn() { true }, fn(k) {
+        words_node(k, fn() { "模型：Gemini 4 Neon" }, fn() { paragraph }) |> ignore
+        words_node(k, fn() { "上下文：12% 已用" }, fn() { paragraph }) |> ignore
+      })
+    })
+  })
+  open_it(t)
+  t.run_for(@ui.move_most_ms)
+  let ((gx, gy, gw, gh), (cx, cy, cw, ch, cr)) = sheet_glass_and_card(t)
+  let left_gap = cx - gx
+  let right_gap = gx + gw - (cx + cw)
+  let bottom_gap = gy + gh - (cy + ch)
+  assert_true((left_gap - panel_card_in).abs() < 0.5, msg="left gap \{left_gap} vs \{panel_card_in}")
+  assert_true((right_gap - panel_card_in).abs() < 0.5, msg="right gap \{right_gap} vs \{panel_card_in}")
+  assert_true((bottom_gap - panel_card_in).abs() < 0.5, msg="bottom gap \{bottom_gap} vs \{panel_card_in}")
+  assert_true((cr.0 - card_corner).abs() < 0.5 && (cr.1 - card_corner).abs() < 0.5 && (cr.2 - card_corner).abs() < 0.5 && (cr.3 - card_corner).abs() < 0.5, msg="card corners \{Repr(cr)} vs \{card_corner}")
+  let gcs = t.drawn_glass_corners()
+  assert_true(gcs.length() >= 1 && (gcs[gcs.length() - 1].4 - pane_corner).abs() < 0.5, msg="glass corner \{Repr(gcs)}")
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "小屏悬浮抽屉在 system_bars().bottom 为 0/24/48 时均正确避让导航栏且卡片底距保持 16pt" {
+  for bar_b in [0.0, 24.0, 48.0] {
+    let t = presenting_tester(phone, fn(_) {
+      panel_nodes("抽屉避让", from=Unanchored, fn(v, _) {
+        quiet_card_node(v, last=fn() { true }, fn(k) {
+          words_node(k, fn() { "卡片第一行" }, fn() { paragraph }) |> ignore
+          words_node(k, fn() { "卡片第二行" }, fn() { paragraph }) |> ignore
+        })
+      })
+    })
+    t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":\{bar_b},\"left\":0,\"right\":0}}")
+    open_it(t)
+    t.run_for(@ui.move_most_ms)
+    let ((gx, gy, gw, gh), (cx, cy, cw, ch, _)) = sheet_glass_and_card(t)
+    let want_clear = dmax(sheet_float_inset, bar_b)
+    let actual_clear = phone.2 - (gy + gh)
+    assert_true((actual_clear - want_clear).abs() < 0.5, msg="bar=\{bar_b}: clear \{actual_clear} vs \{want_clear}")
+    let left_gap = cx - gx
+    let right_gap = gx + gw - (cx + cw)
+    let bottom_gap = gy + gh - (cy + ch)
+    assert_true((left_gap - panel_card_in).abs() < 0.5, msg="bar=\{bar_b}: left \{left_gap}")
+    assert_true((right_gap - panel_card_in).abs() < 0.5, msg="bar=\{bar_b}: right \{right_gap}")
+    assert_true((bottom_gap - panel_card_in).abs() < 0.5, msg="bar=\{bar_b}: bottom \{bottom_gap}")
+    assert_eq(t.audit(), [], msg="bar=\{bar_b}")
+  }
+}
+
+///|
+test "小屏悬浮抽屉带 foot 按钮与 Confirm 按钮时通过全量 audit" {
+  let t1 = presenting_tester(phone, fn(_) {
+    panel_nodes(
+      "带页脚抽屉",
+      from=Unanchored,
+      foot=fn(f, close) {
+        button_node(f, fn() { "取消" }, close, tone=Ghost) |> ignore
+        button_node(f, fn() { "确定" }, close, tone=Primary) |> ignore
+      },
+      fn(v, _) { words_node(v, fn() { "页脚测试正文" }, fn() { paragraph }) |> ignore },
+    )
+  })
+  open_it(t1)
+  t1.run_for(@ui.move_most_ms)
+  assert_eq(t1.audit(), [])
+  let t2 = presenting_tester(phone, fn(_) {
+    confirm("删除这个对话？", "对话和它的记录会从这台工作站上删除。", "删除", fn() {  }, danger=true, warning="删除后不能恢复。")
+  })
+  open_it(t2)
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(t2.audit(), [])
+}
+
+///|
+test "小屏 capped=true tall=0.62 hugs=true 悬浮滚动抽屉含卡片列表时左右底均与浮岛同心" {
+  let t = presenting_tester(phone, fn(_) {
+    panel_nodes("滚动卡片", from=Unanchored, tall=0.62, hugs=true, fn(v, _) {
+      quiet_card_node(v, last=fn() { true }, fn(k) {
+        words_node(k, fn() { "第一项" }, fn() { paragraph }) |> ignore
+        words_node(k, fn() { "第二项" }, fn() { paragraph }) |> ignore
+      })
+    })
+  })
+  open_it(t)
+  t.run_for(@ui.move_most_ms)
+  let ((gx, gy, gw, gh), (cx, cy, cw, ch, _)) = sheet_glass_and_card(t)
+  assert_true((cx - gx - panel_card_in).abs() < 0.5, msg="left \{cx - gx}")
+  assert_true((gx + gw - (cx + cw) - panel_card_in).abs() < 0.5, msg="right \{gx + gw - (cx + cw)}")
+  assert_true((gy + gh - (cy + ch) - panel_card_in).abs() < 0.5, msg="bottom \{gy + gh - (cy + ch)}")
+  assert_eq(t.audit(), [])
+}

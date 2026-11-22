@@ -78,10 +78,10 @@ test "a sheet's foot of nodes: two buttons whose words fit, each its share" {
     }
   }
   inspect(seen.join("\n"), content=(
-    #|place false, words 1: 取消 20,788 171x32 | 下载 199,788 171x32
-    #|place false, words 1.3: 取消 20,788 171x32 | 下载 199,788 171x32
-    #|place true, words 1: 取消 20,788 171x32 | 下载 199,788 171x32
-    #|place true, words 1.3: 取消 20,788 171x32 | 下载 199,788 171x32
+    #|place false, words 1: 取消 32,780 159x32 | 下载 199,780 159x32
+    #|place false, words 1.3: 取消 32,780 159x32 | 下载 199,780 159x32
+    #|place true, words 1: 取消 32,780 159x32 | 下载 199,780 159x32
+    #|place true, words 1.3: 取消 32,780 159x32 | 下载 199,780 159x32
 
   ))
 }
@@ -99,12 +99,12 @@ test "a sheet's foot of nodes: one button's words more than its share, it as wid
     }
   }
   inspect(seen.join("\n"), content=(
-    #|place false, 添加到此 workspace at 1.3: 取消 20,788 138.5x32 | 添加到此 workspace 166.5,788 203.5x32
-    #|place false, Add to this workspace at 1.3: Cancel 20,788 109.25x32 | Add to this workspace 137.25,788 232.75x32
-    #|place false, 添加到此 workspace，然后再看一看 at 1: 取消 20,788 74x32 | 添加到此 workspace，然后再看一看 102,788 268x32
-    #|place true, 添加到此 workspace at 1.3: 取消 20,788 138.5x32 | 添加到此 workspace 166.5,788 203.5x32
-    #|place true, Add to this workspace at 1.3: Cancel 20,788 109.25x32 | Add to this workspace 137.25,788 232.75x32
-    #|place true, 添加到此 workspace，然后再看一看 at 1: 取消 20,788 74x32 | 添加到此 workspace，然后再看一看 102,788 268x32
+    #|place false, 添加到此 workspace at 1.3: 取消 32,780 114.5x32 | 添加到此 workspace 154.5,780 203.5x32
+    #|place false, Add to this workspace at 1.3: Cancel 32,740 326x32 | Add to this workspace 32,780 326x32
+    #|place false, 添加到此 workspace，然后再看一看 at 1: 取消 32,740 326x32 | 添加到此 workspace，然后再看一看 32,780 326x32
+    #|place true, 添加到此 workspace at 1.3: 取消 32,780 114.5x32 | 添加到此 workspace 154.5,780 203.5x32
+    #|place true, Add to this workspace at 1.3: Cancel 32,740 326x32 | Add to this workspace 32,780 326x32
+    #|place true, 添加到此 workspace，然后再看一看 at 1: 取消 32,740 326x32 | 添加到此 workspace，然后再看一看 32,780 326x32
 
   ))
 }
@@ -118,8 +118,8 @@ test "a sheet's foot of nodes: both buttons' words more than the foot has room f
     seen.push("place \{place}: \{new.join(" | ")}")
   }
   inspect(seen.join("\n"), content=(
-    #|place false: 先取消这一次的添加然后 20,748 350x32 | 添加到此 workspace，然后再看一看 20,788 350x32
-    #|place true: 先取消这一次的添加然后 20,748 350x32 | 添加到此 workspace，然后再看一看 20,788 350x32
+    #|place false: 先取消这一次的添加然后 32,740 326x32 | 添加到此 workspace，然后再看一看 32,780 326x32
+    #|place true: 先取消这一次的添加然后 32,740 326x32 | 添加到此 workspace，然后再看一看 32,780 326x32
 
   ))
 }

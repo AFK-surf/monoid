@@ -59,7 +59,7 @@ pub fn station_choice_node(
     fn(b, pressed) {
       style_node(b, fn() { if round { station_choice_round } else { station_choice_box } }, in_row=true)
       // (shrinking to its words' least where the line is short: its name cut short, its mark and chevron whole)
-      b.shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(By(fn() { Some(theme().items.least) })) |> ignore
+      b.shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(By(fn() { Some(if round { button_height() } else { theme().items.least }) })) |> ignore
       if pressed {
         hover_ground_node(b)
       }
