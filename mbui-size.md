@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1fa4ef07a](https://github.com/AFK-surf/monoid/commit/1fa4ef07a8be5bf44c3ca223cd9e8e6825777442) fix(mbui): keep later photos in the attach strip o | 2.67 | 3.6 | 14.58 | 36.67 | 55.72 | 32.11 | 65.01 | 98.81 | 121.72 |
 | [831ca02c9](https://github.com/AFK-surf/monoid/commit/831ca02c945fd701cc13e872350fb1f06844502a) fix(mbui): redraw complete glass captures during s | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.81 | 114.66 |
 | [2b7f56a69](https://github.com/AFK-surf/monoid/commit/2b7f56a69b3ae604abf57b6ded7787dcfd649652) feat(core,mbui,sfapp): step down model labels in t | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.81 | 114.66 |
 | [7a1ead641](https://github.com/AFK-surf/monoid/commit/7a1ead64114b749fcea9384e2c69dab1d844438e) fix(mbui): remove double smoothstep flattening on  | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.81 | 114.66 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [079479b22](https://github.com/AFK-surf/monoid/commit/079479b2207d5cfcac04affe08105b09fc8fdfc8) perf(mbui): share same-band liquid glass captures  | 2.65 | 3.57 | 14.5 | 36.56 | 55.4 | 32.02 | 64.75 | 98.93 | 126.83 |
 | [a3bb99b79](https://github.com/AFK-surf/monoid/commit/a3bb99b79e38289989ba201374f05971afde59b4) fix(mbui): fix small-screen subchats sheet layout, | 2.65 | 3.57 | 14.5 | 36.57 | 55.4 | 32.02 | 64.75 | 98.81 | 128.53 |
 | [9bfb4f6f4](https://github.com/AFK-surf/monoid/commit/9bfb4f6f4b452857e5e38236232e3e9fc2e89e23) fix(sfapp): keep the capsules above the composer i | 2.65 | 3.56 | 14.48 | 36.55 | 55.32 | 32.01 | 64.7 | 98.9 | 122.36 |
-| [6dd1cca90](https://github.com/AFK-surf/monoid/commit/6dd1cca904d4d4ef8c48b305b84d17d5d8b75d34) fix(mbui): drop the neutral disc under an agent's  | 2.65 | 3.56 | 14.48 | 36.55 | 55.32 | 32.01 | 64.7 | 98.75 | 125.22 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1fa4ef07a](https://github.com/AFK-surf/monoid/commit/1fa4ef07a8be5bf44c3ca223cd9e8e6825777442) fix(mbui): keep later photos in the attach strip o | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.31 |
 | [831ca02c9](https://github.com/AFK-surf/monoid/commit/831ca02c945fd701cc13e872350fb1f06844502a) fix(mbui): redraw complete glass captures during s | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.31 |
 | [2b7f56a69](https://github.com/AFK-surf/monoid/commit/2b7f56a69b3ae604abf57b6ded7787dcfd649652) feat(core,mbui,sfapp): step down model labels in t | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.72 | 54.26 |
 | [7a1ead641](https://github.com/AFK-surf/monoid/commit/7a1ead64114b749fcea9384e2c69dab1d844438e) fix(mbui): remove double smoothstep flattening on  | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [079479b22](https://github.com/AFK-surf/monoid/commit/079479b2207d5cfcac04affe08105b09fc8fdfc8) perf(mbui): share same-band liquid glass captures  | 0.47 | 0.61 | 2.38 | 3.42 | 5.62 | 1.72 | 4.65 | 54.46 |
 | [a3bb99b79](https://github.com/AFK-surf/monoid/commit/a3bb99b79e38289989ba201374f05971afde59b4) fix(mbui): fix small-screen subchats sheet layout, | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
 | [9bfb4f6f4](https://github.com/AFK-surf/monoid/commit/9bfb4f6f4b452857e5e38236232e3e9fc2e89e23) fix(sfapp): keep the capsules above the composer i | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
-| [6dd1cca90](https://github.com/AFK-surf/monoid/commit/6dd1cca904d4d4ef8c48b305b84d17d5d8b75d34) fix(mbui): drop the neutral disc under an agent's  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
