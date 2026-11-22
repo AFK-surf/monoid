@@ -899,6 +899,23 @@ for t in $targets; do
       runs=("${mine[@]}")
     fi
   fi
+  # (APP_GROUP=switches on a program built already: its part's ranges of switches_still's tests as one run, a test a
+  # process on a pool of the runner's cores (switches_run). As eight runs of ten side by side, eight processes shared
+  # four cores, each at half of one (73-79 s of CPU at 151 s), and one range's ten in a row ran on alone with three
+  # cores idle until part 2/4 was cut at 315 s of its 5 minutes, main 2787f032a 45042101395; one test's abort failed
+  # the nine after it in its range too, part 4/4's screen 312 (exit 134), 45040104379)
+  if [ "${APP_GROUP:-}" = switches ] && [ -n "${APP_EXE:-}" ] && [ ${#runs[@]} -gt 0 ]; then
+    sw_file="" sw_ranges=() other=()
+    for r in "${runs[@]}"; do
+      read -r -a words <<< "$r"
+      if [ ${#words[@]} = 3 ] && [ "${words[1]}" = --index ] && { [ -z "$sw_file" ] || [ "$sw_file" = "${words[0]}" ]; }; then
+        sw_file=${words[0]} sw_ranges+=("${words[2]}")
+      else
+        other+=("$r")
+      fi
+    done
+    [ -z "$sw_file" ] || runs=("@switches $sw_file ${sw_ranges[*]}" ${other[@]+"${other[@]}"})
+  fi
   run_name() {
     [ "$1" = @pkgs ] && { echo "the packages$(cd "$PKGS_EXE" && find . -name '*_test.exe' | sed 's|^\./| |; s|/[^/]*$||' | LC_ALL=C sort -u | tr -d '\n')"; return; }
     [ "$1" = @flows ] && shift
@@ -906,6 +923,13 @@ for t in $targets; do
     [ "$1" = @realsize_pages ] && shift 2
     [ "$1" = @pages_test_pages ] && shift 2
     [ "$1" = @pages ] && shift 3
+    if [ "$1" = @switches ]; then
+      local f=$2 n=0 r
+      shift 2
+      for r in "$@"; do n=$((n + ${r#*-} - ${r%-*})); done
+      echo "$(basename "$f") ($n tests)"
+      return
+    fi
     case " $* " in
       *" -p "*) echo "the packages$(echo " $* " | sed 's| -p stillfail/| |g')" ;;
       *" --index "*) echo "$(basename "$1") (tests $3)" ;;
@@ -956,6 +980,39 @@ for t in $targets; do
     case $j in *each) j=${j%each} split=$((j > 1 ? j : 2)) ;; esac
     d=$(mktemp -d)
     "$TESTEXE" parts "$info" "$split" "$@" > "$d/parts" || { rm -rf "$d"; return 2; }
+    if [ -s "$d/parts" ]; then
+      parts_watch "$d" "$exe" &
+      local w=$!
+      sed "s|^|$d/|" "$d/parts" | xargs -P "$j" -L 1 sh -c \
+        's=$(date +%s); "$0" "$2" > "$1.out" 2>&1; echo "$? $(($(date +%s) - s))" > "$1.code"' "$exe"
+      kill $w 2>/dev/null
+      wait $w 2>/dev/null
+    fi
+    "$TESTEXE" said "$info" "$d" "$pkg"
+    c=$?
+    rm -rf "$d"
+    return $c
+  }
+  # switches_run EXE INFO JOBS PKG FILE FROM-TO…: exe_run's, a test a part, the ranges' tests taken across them (each
+  # range's first, then each one's second, …), so its tests of the heavy screens (each range's first half: chats, the
+  # card to share) go first and the light ones (settings) end it, JOBS of them side by side
+  switches_run() {
+    local exe=$1 info=$2 j=$3 pkg=$4 file=$5 d k=0 max=0 off r a b i c
+    shift 5
+    d=$(mktemp -d)
+    for r in "$@"; do
+      a=${r%-*} b=${r#*-}
+      [ $((b - a)) -gt "$max" ] && max=$((b - a))
+    done
+    for ((off = 0; off < max; off++)); do
+      for r in "$@"; do
+        a=${r%-*} b=${r#*-}
+        i=$((a + off))
+        [ "$i" -lt "$b" ] || continue
+        echo "$k $file:$i-$((i + 1))"
+        k=$((k + 1))
+      done
+    done > "$d/parts"
     if [ -s "$d/parts" ]; then
       parts_watch "$d" "$exe" &
       local w=$!
@@ -1032,6 +1089,11 @@ for t in $targets; do
       # own runner, APP_GROUP=pkgs)
       elif [ "${runs[i]}" = @pkgs ]; then
         pkgs_run "$PKGS_EXE" > "$out.$i" 2>&1
+      elif [ "${runs[i]%% *}" = @switches ]; then
+        set -- ${runs[i]}
+        sw_j=${SWITCHES_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}
+        [ "$sw_j" -ge 1 ] 2>/dev/null || sw_j=4
+        switches_run "$APP_EXE" "$APP_INFO" "$sw_j" stillfail/sfapp "$(basename "$2")" "${@:3}" > "$out.$i" 2>&1
       elif [ "${runs[i]%% *}" = @pages ]; then
         set -- ${runs[i]}
         # (a process a file on one program too: the third's pages, on one at every rate, ran as one process and said no
