@@ -66,15 +66,19 @@ pub fn liquid_slider_node(
   label : () -> String,
   least? : Double = 0.0,
   most? : Double = 100.0,
+  step? : Double = 0.0,
   threshold? : Double = 0.01,
   disabled? : () -> Bool = fn() { false },
   track_h? : Double = slider_track_h,
+  track_held_grow? : Double = slider_track_held_grow,
   thumb_w_px? : Double = thumb_w,
   thumb_h_px? : Double = thumb_h,
   track_color? : () -> Int64,
   fill_color? : () -> Int64,
   stops? : Int = 0,
   thumb_label? : (Double) -> String,
+  value_text? : (Double) -> String,
+  flush? : Bool = false,
   value_bubble? : ((Double) -> String)? = None,
   drag? : DampedDrag,
   loc~ : SourceLoc,
@@ -86,7 +90,16 @@ pub fn liquid_slider_node(
   let span = most - least
   let has_stops = stops > 1
   let has_label = thumb_label is Some(_)
+  let eff_flush = has_label || flush
   let stop_step = if has_stops && span > 0.0 { span / (stops - 1).to_double() } else { 0.0 }
+  let eff_step = if has_stops { stop_step } else { step }
+  let snap_step = fn(raw : Double) -> Double {
+    if !has_stops && step > 0.0 {
+      clamp(least + ((raw - least) / step).round() * step, least, most)
+    } else {
+      clamp(raw, least, most)
+    }
+  }
   let stop_index_of = fn(v : Double) -> Int {
     if !has_stops || span <= 0.0 {
       0
@@ -146,7 +159,7 @@ pub fn liquid_slider_node(
             )
           None => thumb_w_px
         }
-        let tx = slider_thumb_x_for(d.w, cur_tw, (dd.target() - least) / span, has_label)
+        let tx = slider_thumb_x_for(d.w, cur_tw, (dd.target() - least) / span, eff_flush)
         let hit_thumb = d.x >= tx && d.x <= tx + cur_tw
         on_thumb.val = true
         did_drag.val = false
@@ -167,9 +180,18 @@ pub fn liquid_slider_node(
             change(value_of_stop(nearest))
           }
         } else if !hit_thumb {
-          let to = clamp(least + span * (d.x / d.w), least, most)
+          let frac = if eff_flush {
+            let span_px = dmax(1.0, d.w - cur_tw)
+            clamp((d.x - cur_tw / 2.0) / span_px, 0.0, 1.0)
+          } else {
+            clamp(d.x / d.w, 0.0, 1.0)
+          }
+          let to = snap_step(least + span * frac)
+          raw_drag_val.val = to
           dd.update_value(to)
           change(to)
+        } else {
+          raw_drag_val.val = @signals.untracked(value)
         }
       }
       Moved =>
@@ -189,7 +211,13 @@ pub fn liquid_slider_node(
             }
             dd.update_value(leaned)
           } else {
-            change(clamp(dd.target() + span * (dx / d.w), least, most))
+            let span_px = if eff_flush { dmax(1.0, d.w - thumb_w_px) } else { d.w }
+            raw_drag_val.val = clamp(raw_drag_val.val + span * (dx / span_px), least, most)
+            let next = snap_step(raw_drag_val.val)
+            if next != dd.target() {
+              dd.update_value(next)
+              change(next)
+            }
           }
         }
       Up =>
@@ -200,7 +228,7 @@ pub fn liquid_slider_node(
             dd.update_value(snapped)
             change(snapped)
           } else if did_drag.val {
-            change(dd.target())
+            change(snap_step(dd.target()))
           }
           on_thumb.val = false
           dd.release()
@@ -223,9 +251,11 @@ pub fn liquid_slider_node(
     value,
     min=least,
     max=most,
-    step=stop_step,
+    step=eff_step,
     change,
+    thumb_room=if eff_flush { thumb_w_px } else { 0.0 },
     disabled~,
+    value_text?,
     drag=hand,
     fn(s, sl) {
       dd.attach(s)
@@ -264,7 +294,7 @@ pub fn liquid_slider_node(
             }
           }))
           .ground_drawn(By(fn() {
-            let dh = slider_track_held_grow * dmax(0.0, dd.pressed(track))
+            let dh = track_held_grow * dmax(0.0, dd.pressed(track))
             if dh.abs() < 0.001 {
               @view.ground_as_laid
             } else {
@@ -290,7 +320,7 @@ pub fn liquid_slider_node(
           }))
           .ground_drawn(By(fn() {
             let shown = clamp(dd.progress(fill), 0.0, 1.0) * w()
-            let dh = slider_track_held_grow * dmax(0.0, dd.pressed(fill))
+            let dh = track_held_grow * dmax(0.0, dd.pressed(fill))
             if dh.abs() < 0.001 {
               { ..@view.ground_as_laid, dw: shown - w() }
             } else {
@@ -326,7 +356,7 @@ pub fn liquid_slider_node(
             let (sx, sy) = if no_lens() { (1.0, 1.0) } else { dd.jelly(n, 10.0) }
             let tw = cur_tw * sx
             let th = thumb_h_px * sy
-            let x = slider_thumb_x_for(w(), cur_tw, dd.progress(n), has_label)
+            let x = slider_thumb_x_for(w(), cur_tw, dd.progress(n), eff_flush)
             let r = th / 2.0
             {
               dx: x + (cur_tw - tw) / 2.0,
@@ -414,16 +444,10 @@ pub fn liquid_slider_node(
           }
         })
         |> ignore
-        // Compact floating value bubble above the thumb while held/dragged
+        // Compact floating value bubble above the thumb while held/dragged (unmounted when settled)
         match value_bubble {
-          Some(fmt_fn) => {
-            let bub_mounted : @signals.Signal[Bool] = @signals.signal(false)
-            inner.reacts(fn() { dd.pressing() || dd.pressed(inner) > 0.001 }, fn(active) {
-              if active && !bub_mounted.untracked() {
-                bub_mounted.set(true)
-              }
-            })
-            inner.show(fn() { bub_mounted.get() }, at_once=true, fn(bub) {
+          Some(fmt_fn) =>
+            inner.show(fn() { dd.pressing() || dd.pressed(inner) > 0.001 }, at_once=true, fn(bub) {
               bub
               .over(Is(true))
               .points(Is(false))
@@ -438,8 +462,8 @@ pub fn liquid_slider_node(
               .moved_by(
                 fn(bw, bh, _at) {
                   let cur_tw = eff_tw()
-                  let tx = slider_thumb_x_for(w(), cur_tw, dd.progress(bub), has_label)
-                  (tx + cur_tw / 2.0 - bw / 2.0, -bh - 6.0)
+                  let tx = slider_thumb_x_for(w(), cur_tw, dd.progress(bub), eff_flush)
+                  (tx + cur_tw / 2.0 - bw / 2.0, -bh - 10.0)
                 },
                 fn(_bw, _bh) { dd.value.end() },
               )
@@ -452,7 +476,6 @@ pub fn liquid_slider_node(
               })
               |> ignore
             })
-          }
           None => ()
         }
         inner.show(fn() { sl.focus_shown() }, fn(ring) {
@@ -461,7 +484,7 @@ pub fn liquid_slider_node(
           .width(By(fn() { Some(eff_tw() + 6.0) }))
           .height(Is(Some(thumb_h_px + 6.0)))
           .radius(Is(thumb_h_px / 2.0 + 3.0))
-          .offset(By(fn() { (slider_thumb_x_for(w(), eff_tw(), dd.progress(ring), has_label) - 3.0, -3.0) }))
+          .offset(By(fn() { (slider_thumb_x_for(w(), eff_tw(), dd.progress(ring), eff_flush) - 3.0, -3.0) }))
           .edge(By(fn() { (2.0, colors().accent) }))
           |> ignore
         })
