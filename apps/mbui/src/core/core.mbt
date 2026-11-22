@@ -266,6 +266,12 @@ pub fn wall_ms() -> Double {
 }
 
 ///|
+/// Monotonic clock in milliseconds (telemetry timings such as `bar_switch`).
+pub fn monotonic_ms() -> Double {
+  ffi_now()
+}
+
+///|
 /// Releases a direct subscription; other readers keep it until they leave.
 pub fn unsubscribe(s : Sub) -> Unit {
   client.unsubscribe(s)

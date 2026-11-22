@@ -40,7 +40,7 @@ fn emit_bar_switch(json : String?) -> Unit {
 /// Flushes any timed-out `bar_switch` (3000 ms) when MoonBit owns the state machine.
 fn report_bar_tick() -> Unit {
   if use_mb_bar.val && bar_tracker.has_pending() {
-    emit_bar_switch(bar_tracker.tick(@hostapi.now()))
+    emit_bar_switch(bar_tracker.tick(@core.monotonic_ms()))
   }
 }
 
@@ -130,14 +130,14 @@ fn reports_start() -> Unit {
   let on_placed = fn(from : String, to : String) {
     if use_mb_bar.val {
       timed.clear()
-      emit_bar_switch(bar_tracker.placed(from, to, @hostapi.now()))
+      emit_bar_switch(bar_tracker.placed(from, to, @core.monotonic_ms()))
     } else {
       host_tell("placed", from, to, 0, 0) |> ignore
     }
   }
   let on_built = fn(place : String) {
     if use_mb_bar.val {
-      emit_bar_switch(bar_tracker.built(place, @hostapi.now()))
+      emit_bar_switch(bar_tracker.built(place, @core.monotonic_ms()))
     } else {
       host_tell("built", place, "", 0, 0) |> ignore
     }
@@ -150,7 +150,7 @@ fn reports_start() -> Unit {
       if !first {
         // (the host or MoonBit tracker says whether a switch is being timed: a value's size is counted only then)
         let take = if use_mb_bar.val {
-          bar_tracker.followed(id, topic, @hostapi.now())
+          bar_tracker.followed(id, topic, @core.monotonic_ms())
         } else {
           host_tell("followed", topic, "", id, 0) != 0
         }
@@ -175,7 +175,7 @@ fn reports_start() -> Unit {
           None => (-1, "")
         }
         if use_mb_bar.val {
-          emit_bar_switch(bar_tracker.decoded(id, bytes, parts, @hostapi.now()))
+          emit_bar_switch(bar_tracker.decoded(id, bytes, parts, @core.monotonic_ms()))
         } else {
           host_tell("decoded", topic, parts, id, bytes) |> ignore
         }
