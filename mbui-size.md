@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5dd4241db](https://github.com/AFK-surf/monoid/commit/5dd4241dbe87bc8d1642e44008795082d3210df0) fix(mbui): smooth Wave 7 adaptive liquid glass tra | 2.66 | 3.59 | 14.56 | 36.65 | 55.64 | 32.09 | 64.98 | 99.06 | 118.66 |
 | [7351c0c94](https://github.com/AFK-surf/monoid/commit/7351c0c940036cb5d446b5ef5d33523ed51b3d2b) fix(mbui): exempt pinned list foot from Android ov | 2.66 | 3.59 | 14.56 | 36.64 | 55.63 | 32.09 | 64.95 | 98.9 | 111.12 |
 | [77b54e068](https://github.com/AFK-surf/monoid/commit/77b54e068e822ba2f99ea47fa0e30694a51e1995) feat(mbui): group composer-top agents by station w | 2.67 | 3.59 | 14.56 | 36.64 | 55.63 | 32.09 | 64.95 | 98.76 | 129.99 |
 | [e26266e53](https://github.com/AFK-surf/monoid/commit/e26266e53c18d05a7df86f83486618fac28911a7) feat(mbui): polish text field selection handles, l | 2.66 | 3.59 | 14.56 | 36.64 | 55.61 | 32.09 | 64.93 | 98.85 | 121.55 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9ba38e043](https://github.com/AFK-surf/monoid/commit/9ba38e043278c3767859436ce5e1b365983c8d60) fix(sf-ui,sfapp,sfpages): polish topbar liquid gla | 2.64 | 3.56 | 14.44 | 36.49 | 55.13 | 31.98 | 64.53 | 98.29 | 123.6 |
 | [f6d8ac9fb](https://github.com/AFK-surf/monoid/commit/f6d8ac9fb0c35fa926680db12d67ef3c080fcc83) fix(mbui): eliminate clipping during composer atta | 2.64 | 3.56 | 14.44 | 36.49 | 55.13 | 31.97 | 64.53 | 98.52 | 123.6 |
 | [f6d8ac9fb](https://github.com/AFK-surf/monoid/commit/f6d8ac9fb0c35fa926680db12d67ef3c080fcc83) fix(mbui): eliminate clipping during composer atta | 2.64 | 3.56 | 14.44 | 36.49 | 55.13 | 31.97 | 64.5 | 98.52 | 123.6 |
-| [4f479f697](https://github.com/AFK-surf/monoid/commit/4f479f6976db6b666de085bbf5819148ea33f569) style(sf-ui): tighten default button height to 32p | 2.64 | 3.56 | 14.43 | 36.47 | 55.09 | 31.97 | 64.5 | 98.52 | 116.54 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5dd4241db](https://github.com/AFK-surf/monoid/commit/5dd4241dbe87bc8d1642e44008795082d3210df0) fix(mbui): smooth Wave 7 adaptive liquid glass tra | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.63 |
 | [7351c0c94](https://github.com/AFK-surf/monoid/commit/7351c0c940036cb5d446b5ef5d33523ed51b3d2b) fix(mbui): exempt pinned list foot from Android ov | 0.47 | 0.62 | 2.39 | 3.44 | 5.65 | 1.73 | 4.68 | 54.38 |
 | [77b54e068](https://github.com/AFK-surf/monoid/commit/77b54e068e822ba2f99ea47fa0e30694a51e1995) feat(mbui): group composer-top agents by station w | 0.47 | 0.62 | 2.39 | 3.44 | 5.65 | 1.73 | 4.68 | 54.48 |
 | [e26266e53](https://github.com/AFK-surf/monoid/commit/e26266e53c18d05a7df86f83486618fac28911a7) feat(mbui): polish text field selection handles, l | 0.47 | 0.62 | 2.39 | 3.44 | 5.65 | 1.73 | 4.68 | 54.48 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9ba38e043](https://github.com/AFK-surf/monoid/commit/9ba38e043278c3767859436ce5e1b365983c8d60) fix(sf-ui,sfapp,sfpages): polish topbar liquid gla | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.12 |
 | [f6d8ac9fb](https://github.com/AFK-surf/monoid/commit/f6d8ac9fb0c35fa926680db12d67ef3c080fcc83) fix(mbui): eliminate clipping during composer atta | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.12 |
 | [f6d8ac9fb](https://github.com/AFK-surf/monoid/commit/f6d8ac9fb0c35fa926680db12d67ef3c080fcc83) fix(mbui): eliminate clipping during composer atta | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.12 |
-| [4f479f697](https://github.com/AFK-surf/monoid/commit/4f479f6976db6b666de085bbf5819148ea33f569) style(sf-ui): tighten default button height to 32p | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
