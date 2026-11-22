@@ -906,6 +906,19 @@ int32_t mb_stillfail_tell(moonbit_string_t what_, moonbit_string_t a_, moonbit_s
     }
     return 0;
   }
+  if (strcmp(what, "bar_switch_ready") == 0) {
+    free(what);
+    return sf_win_has_key() ? 1 : 0;
+  }
+  if (strcmp(what, "bar_switch") == 0) {
+    free(what);
+    char *json = sf_win_mb_to_utf8(a_);
+    if (json) {
+      sf_win_hang(json, "bar_switch");
+      free(json);
+    }
+    return 0;
+  }
   free(what);
   return 0;
 }

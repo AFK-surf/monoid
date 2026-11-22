@@ -563,6 +563,11 @@ int32_t mb_stillfail_tell(moonbit_string_t what_, moonbit_string_t a_, moonbit_s
     sf_hang(sf_ns_string(a_), @"ui_hang_summary");
     return 0;
   }
+  if ([what isEqual:@"bar_switch_ready"]) return sf_has_key() ? 1 : 0;
+  if ([what isEqual:@"bar_switch"]) {
+    sf_hang(sf_ns_string(a_), @"bar_switch");
+    return 0;
+  }
   return 0;
 }
 #endif
