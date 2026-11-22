@@ -580,7 +580,11 @@ fn composer_foot_scrim_node(
       |> ignore
     })
     |> ignore
-    // (the keyboard's fade: composer_backdrop_fade's, eased in as it comes up and out as it goes)
+    // (the keyboard's fade: composer_backdrop_fade's, eased in as it comes up and out as it goes; nothing of it with
+    // keyboard and mouse, where no keyboard comes up)
+    if !@sf.soft_keyboard() {
+      return
+    }
     let typing = @motion.NodeWay::new(if @signals.untracked(fn() { scrim.keyboard_inset() }) > 0.0 { 1.0 } else { 0.0 })
     scrim.reacts(fn() { scrim.keyboard_inset() > 0.0 }, fn(up) {
       if up {
