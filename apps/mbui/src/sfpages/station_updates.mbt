@@ -133,41 +133,45 @@ let station_updates_block : @ui.Style = @ui.css("w=Full pt=S3_5")
 
 ///|
 /// The app's own newer build as a row of the dialog in `row` (sfbase's update_as_row): 当前客户端 (the user,
-/// 2026-11-14: 「你直接叫当前客户端不行么」) and beside it how it
-/// stands as 关于 says it; at its end what the person's word does (更新, 重启更新: update_go), while it comes how far.
+/// 2026-11-14: 「你直接叫当前客户端不行么」) and beside it how it stands; at its end what the person's word does
+/// (更新, 重启更新: update_go), while it comes how far. The words wrap where the row has less room.
 fn app_update_row_node(row : @view.View, src : @sfbase.Source) -> Unit {
   let now = fn() { @sfbase.update_as_row().unwrap_or(("", None, "")) }
   @sf.item_row_node(row, fn(r) {
     @sf.row_lines_node(
       r,
       fn(h) {
+        h.lines_up(Is(Some(Start))) |> ignore
         h.box(fn(n) {
-          @sf.style_node(n, fn() { sw_name_line.then(sw_name_grow) }, in_row=true)
-          n.min_width(Is(Some(0.0))) |> ignore
+          @sf.style_node(n, fn() { sw_name_line.then(sw_name_grow).then(@ui.css("align=AStart")) }, in_row=true)
+          n.min_width(Is(Some(0.0))).wraps(Is(Some(0.0))) |> ignore
           @sf.words_node(n, fn() { @sf.t("web-pages.stationUpdates.app") }, fn() { sw_name }) |> ignore
-          @sf.words_node(n, fn() { now().0 }, fn() { su_version }) |> ignore
+          @sf.words_node(n, fn() { now().0 }, fn() { sw_note }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         })
         |> ignore
-        h.pick(fn() { now().2 != "" }, fn(e, pressed) {
-          @sf.style_node(e, fn() { sw_rest })
-          if pressed {
-            @sf.button_node(
-              e,
-              fn() { now().2 },
-              fn() { if @sfbase.stale_build_now() { @sfbase.stale_build_action(src) } else { @sfbase.update_go(src) } },
-              tone=Primary,
-            )
-            |> ignore
-          } else {
-            e.show(fn() { now().1 is Some(_) }, fn(bar) {
-              bar.width(Is(Some(sw_progress_w))) |> ignore
-              @sf.progress_node(bar, fn() { now().1.unwrap_or(None) }, fn() { @ui.tree_theme().line }, fn() {
-                @sf.theme().p.accent
-              })
+        @sf.first_line_node(h, Ui, leading=L6, fn(first) {
+          first.pick(fn() { now().2 != "" }, fn(e, pressed) {
+            @sf.style_node(e, fn() { sw_rest })
+            if pressed {
+              @sf.button_node(
+                e,
+                fn() { now().2 },
+                fn() { if @sfbase.stale_build_now() { @sfbase.stale_build_action(src) } else { @sfbase.update_go(src) } },
+                tone=Primary,
+              )
               |> ignore
-            })
-          }
+            } else {
+              e.show(fn() { now().1 is Some(_) }, fn(bar) {
+                bar.width(Is(Some(sw_progress_w))) |> ignore
+                @sf.progress_node(bar, fn() { now().1.unwrap_or(None) }, fn() { @ui.tree_theme().line }, fn() {
+                  @sf.theme().p.accent
+                })
+                |> ignore
+              })
+            }
+          })
         })
+        |> ignore
       },
       fn(_) {  },
     )
