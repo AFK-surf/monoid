@@ -453,3 +453,138 @@ test "an Antigravity opening not given up opens again after each wait, then fail
     #|(4, 3, Antigravity CLI could not load its model catalog: connection failed)
   ))
 }
+
+///|
+/// An Antigravity driver whose processes answer `initialize` and `session/new` as `agy acp` does, the first `offline`
+/// of them with no models; each ended (`kill`) says its end as a process does (`exit`).
+fn fake_agy_driver(lp : Loop, offline : Int, started : Ref[Int]) -> AgyDriver {
+  let m = fake_codex_machine(lp, {}, Set::new())
+  let procs : Procs = {
+    start: (id, _, _, _, _, options, _) => {
+      started.val += 1
+      let k = started.val
+      let alive = Ref(true)
+      let answer = (line : String) => {
+        guard parse_json(line) is Some(message) else { return }
+        guard get(Some(message), "id") is Some(rid) else { return }
+        let result = match str_at(Some(message), "method") {
+          Some("session/new") =>
+            obj([
+              ("sessionId", s("conv-\{k}")),
+              (
+                "models",
+                if k <= offline {
+                  Null
+                } else {
+                  obj([
+                    ("currentModelId", s("gemini-3.1-pro")),
+                    ("availableModels", arr([obj([("modelId", s("gemini-3.1-pro"))])])),
+                  ])
+                },
+              ),
+            ])
+          _ => obj([])
+        }
+        let reply = json_text(obj([("jsonrpc", s("2.0")), ("id", rid), ("result", result)]))
+        lp.soon(() => ignore((options.heard)({ json: obj([("lines", arr([obj([("text", s(reply))])]))]) })))
+      }
+      let info : RunnerInfo = {
+        json: obj([
+          ("id", s(id)),
+          ("runner", n(1000 + k)),
+          ("pgid", n(1000 + k)),
+          ("startedAt", d(1000.0)),
+          ("socket", s("/tmp/\{id}.sock")),
+          ("keeps", b(true)),
+        ]),
+      }
+      let proc : Proc = {
+        info,
+        write: line => if alive.val { answer(line) },
+        tell: _ => (),
+        say: (_, _) => (),
+        keep_from: _ => (),
+        freeze: () => (),
+        frozen_state: () => None,
+        detach: () => (),
+        kill: _ => {
+          if !alive.val {
+            return done(lp)
+          }
+          alive.val = false
+          // (ended: it says so, as a runner tells a process's end)
+          (options.exit)("SIGTERM", "")
+        },
+        released: () => done(lp),
+        has_exited: () => !alive.val,
+        handed: () => false,
+        thread: (_, _, _) => (),
+        drop_thread: _ => (),
+        route_thread: (_, _, _) => false,
+        route: _ => (),
+        orphans_off: () => (),
+      }
+      Later::ok(lp, proc)
+    },
+    adopt: (_, _, _, _) => abort("unused"),
+    replay_own: (_, _, _, _) => Later::ok(lp, Null),
+    replay: _ => Later::ok(lp, obj([])),
+    freeze: _ => done(lp),
+    thaw: _ => (),
+    close: () => done(lp),
+  }
+  let world : AgyWorld = {
+    raw_env: Env::new([]),
+    has_keychain: false,
+    keychain_read: () => Later::ok(lp, None),
+    lent_borrowed: None,
+    lent_write: None,
+    run: (_, _, _, _, _) => done(lp),
+    sleep: ms => {
+      let out = Later::new(lp)
+      lp.after(ms, () => out.resolve(())) |> ignore
+      out
+    },
+  }
+  let profiles : ProfileSays = { env: (_, _) => [], codex_overrides: _ => [] }
+  let words : Words = {
+    repo_rules_command: "",
+    agy_repo_rules_command: "",
+    subagent_hook_command: "",
+    speaks: [],
+    speaks_writing: "",
+  }
+  let ids : Ids = { next: () => "id" }
+  AgyDriver::new(m, "/data", procs, world, profiles, words, ids)
+}
+
+///|
+test "the processes of Antigravity openings that offered no models, ended as it opens again, tell nothing of their end: the session's process opened after them is not taken for closed" {
+  let lp = Loop::new()
+  let started = Ref(0)
+  let driver = fake_agy_driver(lp, 2, started)
+  let told : Array[String] = []
+  let options = obj([
+    ("key", s("chat:c-agy")),
+    ("cwd", s("/work")),
+    ("instructions", s("")),
+    ("mcpUrl", s("")),
+    ("mcpToken", s("")),
+    ("profile", obj([("id", s("ag")), ("runtime", s("agy")), ("home", s("/homes/ag")), ("access", s("api-provider"))])),
+  ])
+  let opened = Ref("pending")
+  driver
+  .begin(options, e => told.push(str_at(Some(e), "type").unwrap_or("?")), true)
+  .on(r => opened.val = match r {
+    Ok(session) => session.acp.own.session_id
+    Err(Failed(msg)) => msg
+    Err(e) => e.to_string()
+  })
+  lp.run()
+  lp.advance(60_000.0)
+  lp.run()
+  assert_eq(opened.val, "conv-3")
+  assert_eq(started.val, 3)
+  // (ccvm 2026-11-22: the two ended told `closed`, and the actor closed the live one)
+  assert_eq(told.filter(t => t == "closed"), [])
+}
