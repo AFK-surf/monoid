@@ -787,6 +787,8 @@ export const AgentsLive = (control: Control) =>
       };
       // A session found its runtime not installed: the pages read it again (removed since they last did).
       hub.onRuntimeMissing((runtime) => updates.missing(runtime));
+      // Take the initial profile scopes once the hub's dependencies are ready, before listening for edits.
+      hub.profilesChanged();
       // What the overview shows changes: told on the event streams.
       const unlistenOverview = [
         accounts.onChange(() => events.overviewChanged()),

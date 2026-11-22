@@ -201,7 +201,7 @@ export class Hub {
   readonly readUpkeepState: (dataDir: string) => Promise<UpkeepState>;
   readonly accounts: Accounts;
   /// The last profile access scopes seen by `profilesChanged`, kept apart from config.json's mutable objects.
-  private profileScopes: Profile[];
+  private profileScopes: Profile[] | null = null;
   readonly clock: Clock.Clock;
   readonly places: Places;
   readonly machineRoots: () => Roots;
@@ -356,7 +356,6 @@ export class Hub {
 
   constructor(options: HubOptions) {
     this.options = options;
-    this.profileScopes = this.copyProfileScopes(this.config().profiles);
     this.onBilledFallback = options.onBilledFallback ?? null;
     this.clock = options.clock ?? liveClock;
     this.startedAt = this.now();
@@ -1351,6 +1350,7 @@ export class Hub {
     const before = this.profileScopes;
     const after = this.config().profiles;
     this.profileScopes = this.copyProfileScopes(after);
+    if (before === null) return;
     const scope = (p: Profile) => {
       const share = p.share as { borrowed?: unknown; workspaces?: unknown } | undefined;
       return JSON.stringify([p.runtimes, p.enabled !== false, p.withheld ?? [], share?.borrowed, share?.workspaces]);

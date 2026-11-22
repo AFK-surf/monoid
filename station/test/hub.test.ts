@@ -772,6 +772,7 @@ test("a failed start keeps its message for the next successful attempt", async (
 
 test("a failed start takes its pending message when a profile is made available to its workspace", async () => {
   const r = new Rig({ workspaces: ["home", "joined"] });
+  r.hub.profilesChanged();
   r.edit((raw) => { raw.connects[0].workspace = "joined"; });
   const m = message({ text: "first turn" });
   await r.accept(m);
@@ -808,6 +809,7 @@ test("a failed start takes its pending message when a profile is made available 
 
 test("a profile made available while a start is failing retries after that failure", async () => {
   const r = new Rig();
+  r.hub.profilesChanged();
   const open = r.claude.open.bind(r.claude);
   let rejectStart: (error: Error) => void = () => {};
   let opened: () => void = () => {};
@@ -833,6 +835,7 @@ test("a profile made available while a start is failing retries after that failu
 
 test("a new available profile wakes a failure even if another profile was already eligible", async () => {
   const r = new Rig();
+  r.hub.profilesChanged();
   const open = r.claude.open.bind(r.claude);
   let opens = 0;
   r.claude.open = (o, e) => { opens++; return open(o, e); };
