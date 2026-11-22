@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e9f48df90](https://github.com/AFK-surf/monoid/commit/e9f48df90aca90a16004e26ef91eaf6cff6c00ec) fix(mbui): shorten the app update row (#8165) | 2.69 | 3.62 | 14.66 | 36.76 | 55.91 | 32.2 | 65.24 | 100.12 | 125.32 |
 | [61314116d](https://github.com/AFK-surf/monoid/commit/61314116db05d116bc27f23a8809c99948a4f49e) fix(station): catch mid-session MCP loss and backo | 2.68 | 3.61 | 14.66 | 36.74 | 55.88 | 32.2 | 65.21 | 99.94 | 123.62 |
 | [8b659b96c](https://github.com/AFK-surf/monoid/commit/8b659b96c7cd9a7b67ef429649ac6557ea1b7f19) perf(mbui): add Windows D3D11 GPU timing, display_ | 2.68 | 3.61 | 14.64 | 36.73 | 55.84 | 32.18 | 65.16 | 99.91 | 115.83 |
 | [26d9c959d](https://github.com/AFK-surf/monoid/commit/26d9c959d48a61322a07f498827fadf8e79dce30) perf(mbui): isolate stacked glass cache, add GLES  | 2.68 | 3.61 | 14.64 | 36.73 | 55.84 | 32.18 | 65.16 | 99.91 | 115.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f4f4a3969](https://github.com/AFK-surf/monoid/commit/f4f4a3969319607731f19948d861d5dcbce954cc) fix(sf-ui): keep a hover card open when its modal  | 2.66 | 3.58 | 14.53 | 36.6 | 55.52 | 32.06 | 64.86 | 98.68 | 116.7 |
 | [648a3b3c9](https://github.com/AFK-surf/monoid/commit/648a3b3c9d4475c39c5503687109fc748039621b) perf(mbui): fix Android IME pop-up/dismiss frame p | 2.66 | 3.58 | 14.53 | 36.6 | 55.52 | 32.06 | 64.86 | 99.04 | 119.35 |
 | [fde7ce64a](https://github.com/AFK-surf/monoid/commit/fde7ce64a6629f9dbf29117b762ef0810490e51f) mbui, sf-ui, sfapp: Wave 7 adaptive liquid glass w | 2.66 | 3.58 | 14.53 | 36.6 | 55.52 | 32.06 | 64.86 | 98.91 | 124.17 |
-| [ec183127d](https://github.com/AFK-surf/monoid/commit/ec183127df2b0db0a04b127423177aea5700c910) fix(mesh): bump noq-proto for BBRv3 fixes and rais | 2.66 | 3.58 | 14.53 | 36.6 | 55.49 | 32.06 | 64.83 | 99.03 | 124.49 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e9f48df90](https://github.com/AFK-surf/monoid/commit/e9f48df90aca90a16004e26ef91eaf6cff6c00ec) fix(mbui): shorten the app update row (#8165) | 0.48 | 0.63 | 2.42 | 3.48 | 5.74 | 1.77 | 4.77 | 55.71 |
 | [61314116d](https://github.com/AFK-surf/monoid/commit/61314116db05d116bc27f23a8809c99948a4f49e) fix(station): catch mid-session MCP loss and backo | 0.48 | 0.63 | 2.42 | 3.48 | 5.74 | 1.77 | 4.77 | 55.71 |
 | [8b659b96c](https://github.com/AFK-surf/monoid/commit/8b659b96c7cd9a7b67ef429649ac6557ea1b7f19) perf(mbui): add Windows D3D11 GPU timing, display_ | 0.48 | 0.63 | 2.42 | 3.48 | 5.74 | 1.77 | 4.77 | 55.71 |
 | [26d9c959d](https://github.com/AFK-surf/monoid/commit/26d9c959d48a61322a07f498827fadf8e79dce30) perf(mbui): isolate stacked glass cache, add GLES  | 0.48 | 0.63 | 2.42 | 3.48 | 5.73 | 1.77 | 4.77 | 55.69 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f4f4a3969](https://github.com/AFK-surf/monoid/commit/f4f4a3969319607731f19948d861d5dcbce954cc) fix(sf-ui): keep a hover card open when its modal  | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
 | [648a3b3c9](https://github.com/AFK-surf/monoid/commit/648a3b3c9d4475c39c5503687109fc748039621b) perf(mbui): fix Android IME pop-up/dismiss frame p | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
 | [fde7ce64a](https://github.com/AFK-surf/monoid/commit/fde7ce64a6629f9dbf29117b762ef0810490e51f) mbui, sf-ui, sfapp: Wave 7 adaptive liquid glass w | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.49 |
-| [ec183127d](https://github.com/AFK-surf/monoid/commit/ec183127df2b0db0a04b127423177aea5700c910) fix(mesh): bump noq-proto for BBRv3 fixes and rais | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.65 | 54.05 |
