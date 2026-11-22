@@ -54,37 +54,37 @@ test "styles: the lock's waiting page, every state, drawn as before" {
   }
   // Home narrow top bar only draws progressive scroll-edge glass over the status bar (skipped when status_top == 0).
   inspect(out.to_string(), content=(
-    #|waiting narrow 28659:82166dc6
+    #|waiting narrow 28665:5dc4e3a4
     #|waiting wide 66023:4112183f
-    #|waiting-dark narrow 28578:b7c858ee
+    #|waiting-dark narrow 28584:e366a494
     #|waiting-dark wide 65852:4a6a3989
-    #|finding narrow 46460:3cfc23c0
+    #|finding narrow 46466:3af8309c
     #|finding wide 84907:723ded1c
-    #|finding-dark narrow 46514:40e3ef02
+    #|finding-dark narrow 46520:920c442
     #|finding-dark wide 84871:17a7b16a
-    #|code narrow 32637:5caeb59b
+    #|code narrow 32643:54763ce7
     #|code wide 70141:42f542a3
-    #|code-dark narrow 32513:a163d467
+    #|code-dark narrow 32519:ccb1dd7
     #|code-dark wide 69927:72631d87
-    #|wrong narrow 28624:750eee94
+    #|wrong narrow 28630:fdb5b42
     #|wrong wide 66161:2649ae81
-    #|wrong-dark narrow 28727:346f1f5
+    #|wrong-dark narrow 28733:9d6126eb
     #|wrong-dark wide 66174:f25a5808
-    #|checking narrow 35729:1cd5770a
+    #|checking narrow 35735:6fb738a8
     #|checking wide 74132:54bef3
-    #|checking-dark narrow 35822:c2a40ebf
+    #|checking-dark narrow 35828:ddc72c2d
     #|checking-dark wide 74135:1e5e7a12
-    #|none narrow 39495:e9792385
+    #|none narrow 39501:cfa33761
     #|none wide 77132:a85cd953
-    #|none-dark narrow 39374:48aaea96
+    #|none-dark narrow 39380:ef7ce5f6
     #|none-dark wide 76921:427c396c
-    #|failed narrow 23886:743cb146
+    #|failed narrow 23892:399d0b24
     #|failed wide 60819:839fa92d
-    #|failed-dark narrow 23889:f84b45cc
+    #|failed-dark narrow 23895:d6714ce2
     #|failed-dark wide 60732:1a404b71
-    #|nocode narrow 28659:82166dc6
+    #|nocode narrow 28665:5dc4e3a4
     #|nocode wide 66023:4112183f
-    #|nocode-dark narrow 28578:b7c858ee
+    #|nocode-dark narrow 28584:e366a494
     #|nocode-dark wide 65852:4a6a3989
     #|
 
@@ -163,15 +163,15 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // The narrow station settings use the wider glass switch in both themes.
   // Whole-pixel View::shift lets ride_kept_for hit across the narrow page slide, moving cached segment coordinates by 1 ULP (2e-14 px).
   inspect(out.to_string(), content=(
-    #|settings narrow 102201:c02457f2
-    #|station narrow 96680:81b09671
-    #|me-reading narrow 31603:5db644e2
+    #|settings narrow 102204:7f17d648
+    #|station narrow 96686:e6b9eb77
+    #|me-reading narrow 31606:126b67b0
     #|settings wide 204457:ab771352
     #|station wide 275132:f1508c18
     #|me-reading wide 199176:3c1c9ea
-    #|settings-dark narrow 102465:2bee3590
-    #|station-dark narrow 96577:d7ef8e6b
-    #|me-reading-dark narrow 31736:2f1ccf3
+    #|settings-dark narrow 102468:e3d5247a
+    #|station-dark narrow 96583:215e73df
+    #|me-reading-dark narrow 31739:8b3c5a3b
     #|settings-dark wide 204349:32841efe
     #|station-dark wide 274770:cd4ea834
     #|me-reading-dark wide 199134:f5de9219
