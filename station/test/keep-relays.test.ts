@@ -310,25 +310,56 @@ test("the first relay letting no probe on, the next reaching the endpoint: its f
   assert.deepEqual(w.recovered, [w.at()]);
 });
 
-test("two relays failing in one check count once, on the same timeline; a third is not asked", async (t) => {
+test("two relays failing in one check count once, on the same timeline; the next check asks the third first", async (t) => {
   const now = { probe: FAILED, status: LOST, up: true };
   const w = watching(t, now, [OURS, B, C]);
   await settle(10);
   await w.tick(3);
   assert.deepEqual(w.probes, [0, 0, 30_000, 30_000, 60_000, 60_000, 90_000, 90_000], "two probes a check");
-  assert.ok(!w.through.includes(C), "two relays agreeing: no third asked");
+  assert.deepEqual(w.through.slice(0, 4), [A, B, C, A], "two relays agreeing: no third that check, the next starts at it");
   assert.deepEqual(w.recovered, []);
   await w.tick(1);
   assert.deepEqual(w.recovered, [2 * MIN]);
 });
 
-test("one relay failing while the next three let no probe on, more left unasked: not counted, never recovered", async (t) => {
+test("two relays staying bad while a third reaches the endpoint: asked next, failures cleared, never recovered", async (t) => {
+  const now = { probe: { ok: true } as Probed, status: LOST, up: true, through: { [A]: FAILED, [B]: FAILED } as Record<string, Probed> };
+  const w = watching(t, now, [OURS, B, C, D]);
+  await settle(10);
+  await w.tick(60);
+  assert.deepEqual(w.through.slice(0, 6), [A, B, C, A, B, C], "the two bad, then the third, which clears them");
+  assert.ok(!w.through.includes(D));
+  assert.deepEqual(w.recovered, []);
+});
+
+test("a relay the endpoint is connected to is asked before those it is not", async (t) => {
+  const status: Status = [{ url: A, connected: false, access: A }, { url: B, connected: false, access: B }, { url: C, connected: true, access: C }];
+  const now = { probe: { ok: true } as Probed, status, up: true, through: { [A]: FAILED, [B]: FAILED } as Record<string, Probed> };
+  const w = watching(t, now, [OURS, B, C]);
+  await settle(10);
+  await w.tick(60);
+  assert.ok(w.through.length > 0);
+  assert.ok(w.through.every((r) => r === C), "only the connected one, which answers");
+  assert.deepEqual(w.recovered, []);
+});
+
+test("two relays failing across checks, the others letting no probe on: still counted and recovered", async (t) => {
+  const now = { probe: OFFLINE, status: LOST, up: true, through: { [A]: FAILED, [D]: FAILED } as Record<string, Probed> };
+  const w = watching(t, now, [OURS, B, C, D, E]);
+  await settle(10);
+  await w.tick(3);
+  assert.deepEqual(w.recovered, [], "within the first two minutes");
+  await w.tick(1);
+  assert.deepEqual(w.recovered, [2 * MIN]);
+});
+
+test("one relay failing while the next three let no probe on, more left unasked: not counted, the next check asks the one left", async (t) => {
   const now = { probe: OFFLINE, status: LOST, up: true, through: { [A]: FAILED } as Record<string, Probed> };
   const w = watching(t, now, [OURS, B, C, D, E]);
   await settle(10);
   await w.tick(60);
   assert.deepEqual(w.through.slice(0, 4), [A, B, C, D], "four probes a check at most");
-  assert.ok(!w.through.includes(E));
+  assert.deepEqual(w.through.slice(4, 8), [B, C, D, E], "the one that failed last, the one unasked now asked");
   assert.equal(w.probes.length, 61 * 4);
   assert.deepEqual(w.recovered, []);
 });

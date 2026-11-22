@@ -72,7 +72,10 @@ export function oursOff(state: Cloud, ways: Ways = waysOf(state)): boolean {
 /// One relay can fail the probe while the endpoint is well (a relay half down that still answers its ping, or one over
 /// its quota that lets no one on), so a check probes through up to `MAX_PROBES_PER_TICK` relays that answer, the
 /// first that did, then the next of the rest whose ping answers: one through which it is reached clears the failures;
-/// a failure counts only once a second relay also fails, or when no other relay answering was left to ask.
+/// a failure counts only once a second relay also fails, or when no other relay answering was left to ask. Relays that
+/// failed since the last good probe are asked last, and relays the endpoint's status says it is on first, so two relays
+/// gone bad together do not hide a third that still reaches it; those left unasked then count as asked only if they too
+/// failed since.
 export const PROBE = {
   startupGraceMs: 120_000,
   everyHealthy: 4,
@@ -151,6 +154,8 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
     const p: ProbeParams = { ...PROBE, ...watch?.params };
     const startedAt = yield* Clock.currentTimeMillis;
     let failures = 0;
+    // (the relays that failed a probe since the last one that reached it, bare)
+    const streakFailed = new Set<string>();
     let healthyTicks = 0;
     let unsupported = false;
     let lastRecoverAt: number | null = null;
@@ -161,6 +166,7 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
         // (none of the relays answers: this machine's network or the relays', not the endpoint's)
         if (!up) {
           failures = 0;
+          streakFailed.clear();
           return;
         }
         if (reachable === null) return;
@@ -181,37 +187,41 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
             },
           );
         let probed = 0;
-        let restIdx = 0;
+        let candIdx = 0;
         let exhausted = false;
-        const tried = new Set<string>();
+        const connected = new Set(status.filter((s) => s.connected).map((s) => bare(s.url)));
+        const pool = [...new Map([reachable, ...rest].map((u) => [bare(u), u])).values()];
+        const rank = (u: string) => (streakFailed.has(bare(u)) ? 2 : connected.has(bare(u)) ? 0 : 1);
+        const candidates = [0, 1, 2].flatMap((r) => pool.filter((u) => rank(u) === r));
         const failedRelays: string[] = [];
         let firstDetail: Record<string, unknown> = {};
         const offlineRelays: string[] = [];
         while (probed < MAX_PROBES_PER_TICK) {
-          // The first that answered its ping, then the next of the rest whose ping answers.
-          let relay: string | null = probed === 0 ? reachable : null;
-          while (relay === null && restIdx < rest.length) {
-            const c = rest[restIdx++]!;
-            if (tried.has(bare(c))) continue;
-            if (yield* Effect.promise(() => pingOnce(c))) relay = c;
+          // The next candidate that answers its ping (`reachable` answered this check's).
+          let relay: string | null = null;
+          while (relay === null && candIdx < candidates.length) {
+            const c = candidates[candIdx++]!;
+            if (bare(c) === bare(reachable) || (yield* Effect.promise(() => pingOnce(c)))) relay = c;
           }
           if (relay === null) {
             exhausted = true;
             break;
           }
-          tried.add(bare(relay));
           const res = yield* runOne(relay);
           probed++;
           if (res.kind === "unsupported") {
             // (a front or an addon from before: never restarted for having no probe)
             failures = 0;
+            streakFailed.clear();
             unsupported = true;
             log.info("mesh", "the endpoint cannot be probed through a relay; not probed again", { relay, error: res.error });
             return;
           }
           if (res.kind === "ok") {
             if (failedRelays.length > 0) log.info("mesh", "the endpoint was not reached through one relay, but answered through another; not the endpoint's", { relay: failedRelays[0], okRelay: relay, ...firstDetail });
+            else if (streakFailed.size > 0) log.info("mesh", "the endpoint answered through another relay after earlier failures; not the endpoint's", { okRelay: relay, failedBefore: [...streakFailed] });
             failures = 0;
+            streakFailed.clear();
             const now = yield* Clock.currentTimeMillis;
             if (lastRecoverAt !== null && now - lastRecoverAt >= cooldown) {
               cooldown = p.cooldownMs;
@@ -225,10 +235,11 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
           }
           if (failedRelays.length === 0) firstDetail = res.detail;
           failedRelays.push(relay);
+          streakFailed.add(bare(relay));
           // (two relays found it out of reach: the endpoint's)
           if (failedRelays.length >= 2) break;
         }
-        if (restIdx >= rest.length && failedRelays.length < 2) exhausted = true;
+        if (failedRelays.length < 2 && candidates.slice(candIdx).every((c) => streakFailed.has(bare(c)))) exhausted = true;
         if (failedRelays.length === 0) {
           log.info("mesh", "a probe through a relay that answers did not get on it; the network's, not the endpoint's", { relay: offlineRelays[0] ?? reachable, ...(offlineRelays.length > 1 ? { relays: offlineRelays } : {}) });
           return;
@@ -246,6 +257,7 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
         lastRecoverAt = now;
         log.error("mesh", "the endpoint failed its end-to-end probes through a relay that answers; recovering it", { relay: failedRelays[0], ...also, failures, cooldownMs: cooldown });
         failures = 0;
+        streakFailed.clear();
         watch.onUnhealthy();
       });
 
