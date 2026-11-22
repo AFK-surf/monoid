@@ -46,11 +46,33 @@ let info_title_line : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 let info_title_words : @ui.Style = @ui.css("w=Cut pt=S1")
 
 ///|
-/// An agent's mark, name and where it stands in a line on their tops, its mark and its stop on its name's line
-/// (agent_name_line), what it did under it 16 down (panel_card_in).
+/// An agent's head column: 4 over, 16 under (panel_card_in); its three rows (mark + stop, title, status)
+/// each inset to the sheet's 32pt text axis.
 // kept across runs: a value (no field of it changes)
-let agent_title_line : @ui.Style = @ui.css("row w=Full pt=S1 gap=S3 align=AStart").then(
+let agent_title_head : @ui.Style = @ui.css("w=Full pt=S1").then(
   @ui.style(pb=@sf.room_of(@sf.panel_card_in)),
+)
+
+///|
+/// An agent's head Row 1: its mark on the left and its compact stop pill on the right (32 high, matching the
+/// dialog close key, right edge concentric with the 42pt sheet corner).
+// kept across runs: a value (no field of it changes)
+let agent_title_row1 : @ui.Style = @ui.css("row w=Full align=ACenter").then(
+  @ui.style(min_h=Fixed(agent_stop_h), pl=@sf.room_of(agent_words_in), pr=@sf.room_of(agent_stop_corner_in)),
+)
+
+///|
+/// An agent's head Row 2 (its full-width model title): 8 under Row 1, inset to the 32pt text axis.
+// kept across runs: a value (no field of it changes)
+let agent_title_name_box : @ui.Style = @ui.css("w=Full pt=S2").then(
+  @ui.style(px=@sf.room_of(agent_words_in)),
+)
+
+///|
+/// An agent's head Row 3 (its full-width status line): 6 under the title, inset to the 32pt text axis.
+// kept across runs: a value (no field of it changes)
+let agent_title_status_box : @ui.Style = @ui.css("w=Full pt=S1_5").then(
+  @ui.style(px=@sf.room_of(agent_words_in)),
 )
 
 ///|
@@ -735,12 +757,8 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
   // (one column, its parts as close as they are laid out: not the panel's own gap between them)
   v.box(fn(col) {
     @sf.style_node(col, fn() { title_row_whole })
-    // (its head clear of an untitled dialog's close button over its end)
-    col.box(fn(h) {
-      @sf.style_node(h, fn() { @sf.untitled_clear_node(h).then(title_row_whole) })
-      agent_title_node(h, src, r, key, a)
-    })
-    |> ignore
+    // (its head: Row 1 clears an untitled dialog's close button; Row 2 title and Row 3 status span full width)
+    agent_title_node(col, src, r, key, a)
     // (no outer card around them: its latest lines and what is wrong on the panel's ground, at its figures' words,
     // its figures each a block of their own out to the panel's cards' sides, the room of its cards under them; each
     // part opening its room as what it says comes, the card read after the sheet rose: a part there as it is made at
@@ -1045,51 +1063,49 @@ let agent_notes_under : Double = 12.0
 let agent_words_in : Double = 8.0
 
 ///|
-/// An agent's head in its card (agent_title_row's, as nodes) in `h`, `a` as the chat says it now: its maker's mark
-/// alone, its name and where it stands, its stop where it runs; what it did a card of the panel's under it, 16 in (the
-/// user, 2026-11-03, 面板里可以放卡片).
-fn agent_title_node(h : @view.View, src : Source, r : ChatRef, key : String, a : () -> Json?) -> Unit {
+/// An agent's head in its card (agent_title_row's, as nodes) in `col`, `a` as the chat says it now: three rows aligned
+/// on the sheet's 32pt text axis — Row 1 with its maker's mark on the left and its compact stop pill on the right
+/// (clearing an untitled dialog's close key), Row 2 with its full-width model title (up to 2 lines), Row 3 with its
+/// full-width status line.
+fn agent_title_node(col : @view.View, src : Source, r : ChatRef, key : String, a : () -> Json?) -> Unit {
   let s = fn() { field(a(), "session") }
-  h.box(fn(line) {
-    @sf.style_node(line, fn() { agent_title_line })
-    // (its mark on its name's line, not on the middle of its two lines: the user, 2026-11-14)
-    let mark_at = line.box(fn(m) { agent_name_line(m) })
-    model_mark_big_node(
-      mark_at,
-      fn() { text(field(s(), "maker"), "id") },
-      fn() { text(s(), "runtime") },
-      agent_title_mark,
-      fn() { state_of_badge(text(a(), "badge")) },
-      around=fn() {
-        let t = @sf.theme()
-        @sf.over(t.p.bg, @sf.alpha(t.p.card, 0.8))
-      },
-      plain=true,
-    )
-    line.box(fn(w) {
-      @sf.style_node(w, fn() { agent_title_words }, in_row=true)
-      @sf.words_node(w, fn() { text(s(), "agentText") }, fn() { agent_title_name }) |> ignore
-      @sfpages.agent_status_node(w, src, a)
+  col.box(fn(head) {
+    @sf.style_node(head, fn() { agent_title_head })
+    head.box(fn(clear_wrap) {
+      @sf.style_node(clear_wrap, fn() { @sf.untitled_clear_node(clear_wrap).then(title_row_whole) })
+      clear_wrap.box(fn(row) {
+        @sf.style_node(row, fn() { agent_title_row1 })
+        model_mark_big_node(
+          row,
+          fn() { text(field(s(), "maker"), "id") },
+          fn() { text(s(), "runtime") },
+          agent_title_mark,
+          fn() { state_of_badge(text(a(), "badge")) },
+          around=fn() {
+            let t = @sf.theme()
+            @sf.over(t.p.bg, @sf.alpha(t.p.card, 0.8))
+          },
+          plain=true,
+        )
+        row.box(fn(sp) { sp.grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore }) |> ignore
+        row.show(at_once=true, fn() { text(a(), "status") == "running" || text(a(), "status") == "queued" }, fn(at) {
+          stop_button_node(at, src, r.station, key)
+        })
+      })
+      |> ignore
     })
     |> ignore
-    line.show(at_once=true, fn() { text(a(), "status") == "running" || text(a(), "status") == "queued" }, fn(at) {
-      // (its stop on its name's line too)
-      agent_name_line(at)
-      stop_button_node(at, src, r.station, key)
+    head.box(fn(t) {
+      @sf.style_node(t, fn() { agent_title_name_box })
+      @sf.words_node(t, fn() { text(s(), "agentText") }, fn() { agent_title_name }) |> ignore
     })
+    |> ignore
+    head.box(fn(st) {
+      @sf.style_node(st, fn() { agent_title_status_box })
+      @sfpages.agent_status_node(st, src, a)
+    })
+    |> ignore
   })
-  |> ignore
-}
-
-///|
-/// Node `c` as tall as the agent's name's line (agent_title_name's, at the system's size of words), what it holds down
-/// its middle, however tall (the stop overhangs it alike over and under).
-fn agent_name_line(c : @view.View) -> Unit {
-  c
-  .height(By(fn() { Some(@sf.theme().t.title_line * c.words_scale()) }))
-  .shrink(Is(0.0))
-  .lies_along(Is(Middle))
-  .lines_up(Is(Some(Middle)))
   |> ignore
 }
 
@@ -1151,20 +1167,17 @@ fn swap_part_node(
 }
 
 ///|
-/// Its mark in its head (40), its name and where it stands 1 apart.
-let agent_title_mark : Double = 40.0
+/// Its mark in its head (46, glyph 25.76 in plain mode, balanced with the 32pt stop capsule).
+let agent_title_mark : Double = 46.0
 
 ///|
+/// Its name: the title's size, bold, full width, wrapping up to two lines.
 // kept across runs: a value (no field of it changes)
-let agent_title_words : @ui.Style = @ui.css("w=Full gap=SPx")
+let agent_title_name : @ui.TextStyle = @ui.text_style(size=Title, weight=Bold, color=Fg, w=Full, max_lines=2)
 
 ///|
-/// Its name: the title's size, bold, on a line cut short.
-// kept across runs: a value (no field of it changes)
-let agent_title_name : @ui.TextStyle = @ui.text_style(size=Title, weight=Bold, color=Fg, wrap=false, w=Cut)
-
-///|
-/// Stopping its turn, while it works (stop_button's, as a node) in `v`: red on its tint, a spinner while it is asked.
+/// Stopping its turn, while it works (stop_button's, as a node) in `v`: compact red pill on its tint, a spinner while
+/// it is asked.
 fn stop_button_node(v : @view.View, src : Source, station : String, key : String) -> Unit {
   let skey = "stop/" + station + "/" + key
   v.box(fn(b) {
@@ -1205,6 +1218,10 @@ let agent_stop : @ui.Style = @ui.css("row min_h=S8 px=S3_5 py=S1 gap=S1_5 radius
 
 ///|
 let agent_stop_h : Double = 32.0
+
+///|
+/// Extra right inset inside Row 1 so the 32pt stop capsule sits concentric with the 42pt sheet top-right corner.
+let agent_stop_corner_in : Double = @ui.capsule_in(@sf.pane_corner, agent_stop_h) - @sf.panel_words
 
 ///|
 let agent_stop_ink : Double = 0.14

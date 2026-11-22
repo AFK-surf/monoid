@@ -205,7 +205,7 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
       open_letters(src, r, 7.0)
       @sfdesk.letters_open_at(r, @sffixture.fix_letters_link)
     }
-    "chat-agent" | "chat-agent-unsaid" | "chat-agent-context" | "chat-agent-compacted" | "chat-agent-screens" => open_agent(src, r, "s-c1")
+    "chat-agent" | "chat-agent-working" | "chat-agent-unsaid" | "chat-agent-context" | "chat-agent-compacted" | "chat-agent-screens" => open_agent(src, r, "s-c1")
     "chat-jobs" => open_chat_jobs(src, r)
     "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" => open_subchats(src, r)
     "chat-job" => {
@@ -977,7 +977,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     // (webdemo: the web's demo workspace, its chats' rows with people's faces, which chat's fixture has none)
     "webdemo", "home", "board", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu", "landing", "landing-invited", "blocked", "place",
     "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
-    "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose", "chat-download", "chat-failed", "chat-feedback", "chat-image-coming",
+    "chat-agent-working", "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose", "chat-download", "chat-failed", "chat-feedback", "chat-image-coming",
     "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice", "chat-history-side",
     // (its agent at work: what the history's head shows only then, #6246's stop among its keys)
     "chat-history-side-working", "chat-info", "chat-info-bare", "chat-job",
