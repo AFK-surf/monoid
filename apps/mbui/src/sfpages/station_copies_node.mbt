@@ -53,6 +53,7 @@ fn copies_offers_or_line_node(
   core : Core,
   address : String,
   copies : () -> Json?,
+  on_restored? : () -> Unit,
 ) -> Unit {
   let offers = fn() { items(copies(), "offers") }
   g.show(fn() { offers().length() == 0 }, fn(r) { said_row_node(r, fn() { text(copies(), "line") }) })
@@ -64,14 +65,14 @@ fn copies_offers_or_line_node(
       if live && is_s3 {
         @sf.setting_node(r, fn() { text(Some(x.get()), "line") }, in_card=true, fn(e) {
           @sf.button_node(e, fn() { @sf.t("web-pages.stations.copies.restore") }, fn() {
-            copies_restore_confirm(core, address, Some(@signals.untracked(fn() { x.get() })))
+            copies_restore_confirm(core, address, Some(@signals.untracked(fn() { x.get() })), on_restored?)
           }, tone=Primary)
           |> ignore
         })
       } else if live {
         @sf.corner_row_node(r, fn() { text(Some(x.get()), "line") }, fn(e) {
           @sf.button_node(e, fn() { @sf.t("web-pages.stations.copies.restore") }, fn() {
-            copies_restore_confirm(core, address, Some(@signals.untracked(fn() { x.get() })))
+            copies_restore_confirm(core, address, Some(@signals.untracked(fn() { x.get() })), on_restored?)
           }, tone=Primary)
           |> ignore
         })
@@ -609,10 +610,11 @@ fn backup_rows_node(
 }
 
 ///|
-/// A station's row on the 备份 page: online dot + mark + name, subtitle from `stationPart` `"copies"`.
+/// A station's row on the 备份 page: online dot + mark + name, current backup settings summary + status from `stationPart` `"copies"`.
 fn backup_row_node(v : @view.View, core : Core, stint : () -> Int, s : () -> Json?, copies : () -> Json?) -> Unit {
   let view = fn() { if flag(s(), "online") { copies() } else { None } }
-  let line = fn() {
+  let settings_line = fn() { text(field(view(), "backup"), "settingsSummary") }
+  let status_line = fn() {
     if !flag(s(), "online") {
       @sf.t("web-pages.automaticDecisions.offline")
     } else {
@@ -641,16 +643,141 @@ fn backup_row_node(v : @view.View, core : Core, stint : () -> Int, s : () -> Jso
     v,
     fn() { text(s(), "name") },
     fn() { (core.push)(StationBackup(text(s(), "station"))) },
-    note=fn() { if bad() { "" } else { line() } },
-    trouble=fn() { if bad() { line() } else { "" } },
+    note=fn() {
+      let cfg = settings_line()
+      if bad() {
+        cfg
+      } else {
+        let st = status_line()
+        if cfg != "" && st != "" {
+          cfg + "\n" + st
+        } else if cfg != "" {
+          cfg
+        } else {
+          st
+        }
+      }
+    },
+    trouble=fn() { if bad() { status_line() } else { "" } },
     lead~,
     goes=true,
   )
 }
 
 ///|
+/// Format a byte count concisely (e.g. `18.4 MB`), or `""` when zero.
+fn copies_format_bytes(n : Double) -> String {
+  if n <= 0.0 {
+    return ""
+  }
+  let units = ["B", "KB", "MB", "GB", "TB"]
+  let mut i = 0
+  let mut x = n
+  while x >= 1000.0 && i < units.length() - 1 {
+    x = x / 1000.0
+    i += 1
+  }
+  if i == 0 {
+    x.to_int().to_string() + " B"
+  } else {
+    let tenths = (x * 10.0 + 0.5).to_int()
+    let whole = tenths / 10
+    let frac = tenths % 10
+    if whole >= 100 || frac == 0 {
+      whole.to_string() + " " + units[i]
+    } else {
+      whole.to_string() + "." + frac.to_string() + " " + units[i]
+    }
+  }
+}
+
+///|
+/// Deterministic UTC `MM-DD HH:mm` timestamp from epoch milliseconds (no wall-clock reads).
+fn copies_format_time(at_ms : Double) -> String {
+  if at_ms <= 0.0 {
+    return ""
+  }
+  let pad2 = fn(n : Int) { if n < 10 { "0" + n.to_string() } else { n.to_string() } }
+  let total_sec = (at_ms / 1000.0).to_int64()
+  let days = total_sec / 86400L
+  let rem = (total_sec % 86400L).to_int()
+  let hh = rem / 3600
+  let mm = (rem % 3600) / 60
+  let z = days + 719468L
+  let era = (if z >= 0L { z } else { z - 146096L }) / 146097L
+  let doe = z - era * 146097L
+  let yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L
+  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
+  let mp = (5L * doy + 2L) / 153L
+  let d = (doy - (153L * mp + 2L) / 5L + 1L).to_int()
+  let m = (mp + (if mp < 10L { 3L } else { -9L })).to_int()
+  pad2(m) + "-" + pad2(d) + " " + pad2(hh) + ":" + pad2(mm)
+}
+
+///|
+/// Format the detail subtitle for one `copies.history` record.
+fn copies_history_detail(rv : Json?) -> String {
+  let kind = text(rv, "kind")
+  let ok = text(rv, "status") == "ok"
+  let target_kind = if text(rv, "targetKind") == "s3" {
+    @sf.t("web-pages.backup.station.historyKindS3")
+  } else {
+    @sf.t("web-pages.backup.station.historyKindStation")
+  }
+  let chats = number(rv, "chats").to_int()
+  let batches = number(rv, "batches").to_int()
+  let bytes_text = copies_format_bytes(number(rv, "bytes"))
+  let reason_text = fn() {
+    match text(rv, "reason") {
+      "offline" => @sf.t("web-pages.backup.station.historyReasonOffline")
+      "old" => @sf.t("web-pages.backup.station.historyReasonOld")
+      _ => {
+        let err = text(rv, "error")
+        if err != "" {
+          err
+        } else {
+          @sf.t("web-pages.backup.station.historyReasonError")
+        }
+      }
+    }
+  }
+  let parts : Array[String] = []
+  if kind == "restore" {
+    if ok {
+      parts.push(@sf.t("web-pages.backup.station.historyRestoreOk"))
+      if chats > 0 {
+        parts.push(@sf.t("web-pages.backup.station.historyChats", args=[("n", chats.to_string())]))
+      }
+      if bytes_text != "" {
+        parts.push(bytes_text)
+      }
+    } else {
+      parts.push(@sf.t("web-pages.backup.station.historyRestoreFail"))
+      parts.push(reason_text())
+    }
+  } else if ok {
+    parts.push(@sf.t("web-pages.backup.station.historySyncOk"))
+    parts.push(target_kind)
+    if chats > 0 {
+      parts.push(@sf.t("web-pages.backup.station.historyChats", args=[("n", chats.to_string())]))
+    }
+    if batches > 0 {
+      parts.push(@sf.t("web-pages.backup.station.historyBatches", args=[("n", batches.to_string())]))
+    }
+    if bytes_text != "" {
+      parts.push(bytes_text)
+    }
+  } else {
+    parts.push(@sf.t("web-pages.backup.station.historySyncFail"))
+    parts.push(target_kind)
+    parts.push(reason_text())
+  }
+  parts.join(" · ")
+}
+
+///|
 /// Per-station backup page (`Route::StationBackup(station)`): flat layout with current status / restore offers,
-/// per-station peer target selection and `acceptOthers`, and per-station R2/S3 targets.
+/// backup history (`copies.history`), per-station peer target selection and `acceptOthers`, and per-station R2/S3 targets.
 pub fn station_backup_node(
   v : @view.View,
   core : Core,
@@ -678,6 +805,49 @@ pub fn station_backup_node(
     }
   }
   let picked_manual = @signals.signal(false)
+  let history_loading : @signals.Signal[Bool] = @signals.signal(false)
+  let history_records : @signals.Signal[Array[Json]] = @signals.signal([])
+  let history_error : @signals.Signal[String] = @signals.signal("")
+  let history_loaded : @signals.Signal[Bool] = @signals.signal(false)
+  let load_seq = Ref(0)
+  let load_history = fn() {
+    if !@signals.untracked(online) {
+      return
+    }
+    load_seq.val = load_seq.val + 1
+    let seq = load_seq.val
+    history_loading.set(true)
+    history_error.set("")
+    (core.call)(
+      "copies.history",
+      obj([("station", str(station)), ("limit", Json::number(30.0))]),
+      fn(r) {
+        if load_seq.val != seq {
+          return
+        }
+        history_loading.set(false)
+        history_loaded.set(true)
+        match r {
+          Ok(val) => {
+            history_records.set(items(Some(val), "records"))
+            history_error.set("")
+          }
+          Err(e) => {
+            let code = text(Some(e), "code")
+            let msg = @settings.error_text(e)
+            if code == "not_found" || code == "notFound" || msg.contains("404") || msg.contains("Not Found") {
+              history_error.set(@sf.t("web-pages.backup.station.historyUnsupported"))
+            } else {
+              history_error.set(@sf.t("web-pages.backup.station.historyError", args=[("error", msg)]))
+            }
+          }
+        }
+      },
+    )
+  }
+  if @signals.untracked(online) {
+    load_history()
+  }
   let saving = fn() { is_doing(core, ["copies.setSettings"], [("station", station)]) }
   let selected_stations = fn() -> Array[String] { copies_selected_ids(backup()) }
   let ui_mode = fn() -> String { copies_mode_of(backup(), picked_manual.get()) }
@@ -685,6 +855,9 @@ pub fn station_backup_node(
   let s3_items = fn() { items(backup(), "s3") }
   let blocks = fn() {
     let out = ["status"]
+    if online() {
+      out.push("history")
+    }
     if !online() {
       out.push("offline")
     } else if !manager() {
@@ -702,7 +875,7 @@ pub fn station_backup_node(
           @sf.group_node(sec, fn(g) {
             g.pick(fn() { online() && copies() is Some(Object(_)) }, fn(r, has_view) {
               if has_view {
-                copies_offers_or_line_node(r, core, station, copies)
+                copies_offers_or_line_node(r, core, station, copies, on_restored=load_history)
               } else {
                 said_row_node(r, fn() {
                   if !online() {
@@ -717,6 +890,63 @@ pub fn station_backup_node(
             })
           })
         })
+      "history" =>
+        st_section_node(
+          b,
+          fn() { @sf.t("web-pages.backup.station.history") },
+          ends=(fn() { true }, fn(e) {
+            @sf.action_node(
+              e,
+              fn() { @sf.t("web-pages.backup.station.historyRefresh") },
+              load_history,
+              disabled=fn() { history_loading.get() },
+            )
+          }),
+          fn(sec) {
+            sec.reacts(online, fn(is_on) {
+              if is_on && !history_loaded.untracked() && !history_loading.untracked() {
+                load_history()
+              }
+            })
+            @sf.group_node(sec, fn(g) {
+              g.show(fn() { history_loading.get() && history_records.get().is_empty() }, fn(r) {
+                said_row_node(r, fn() { @sf.t("web-pages.backup.station.historyLoading") })
+              })
+              g.show(fn() { !history_loading.get() && history_error.get() != "" && history_records.get().is_empty() }, fn(r) {
+                said_row_node(r, fn() { history_error.get() })
+              })
+              g.show(fn() { !history_loading.get() && history_error.get() == "" && history_records.get().is_empty() }, fn(r) {
+                said_row_node(r, fn() { @sf.t("web-pages.backup.station.historyEmpty") })
+              })
+              g.each(
+                fn() { history_records.get() },
+                fn(x) {
+                  let id = text(Some(x), "id")
+                  if id != "" { id } else { text(Some(x), "target") + "/" + number(Some(x), "at").to_string() }
+                },
+                fn(row, x) {
+                  let rv = fn() { Some(x.get()) }
+                  let title_of = fn() {
+                    let tn = text(rv(), "targetName")
+                    if tn != "" {
+                      tn
+                    } else {
+                      let tg = text(rv(), "target")
+                      if tg.length() > 8 { tg[:8].to_owned() } else { tg }
+                    }
+                  }
+                  let is_err = fn() { text(rv(), "status") != "ok" }
+                  let detail = fn() { copies_history_detail(rv()) }
+                  @sf.row_box_node(row, title_of, fn(s) {
+                    s.value(fn() { copies_format_time(number(rv(), "at")) })
+                    s.note(fn() { if is_err() { "" } else { detail() } })
+                    s.note(fn() { if is_err() { detail() } else { "" } }, tone=NoteBad)
+                  })
+                },
+              )
+            })
+          },
+        )
       "offline" => @sf.page_note_node(b, fn() { @sf.t("web-pages.backup.station.offline") })
       "admin" => @sf.page_note_node(b, fn() { @sf.t("web-pages.backup.station.adminOnly") })
       "targets" =>
@@ -748,6 +978,7 @@ pub fn station_backup_node(
                           "copies.setSettings",
                           obj([("station", str(station)), ("mode", str("auto"))]),
                           done=@sf.t("web-pages.stations.copies.saved"),
+                          then=fn(_) { load_history() },
                         )
                       }
                       "off" => {
@@ -758,6 +989,7 @@ pub fn station_backup_node(
                           "copies.setSettings",
                           obj([("station", str(station)), ("mode", str("manual")), ("stations", Json::array([]))]),
                           done=@sf.t("web-pages.stations.copies.saved"),
+                          then=fn(_) { load_history() },
                         )
                       }
                       _ => {
@@ -784,6 +1016,7 @@ pub fn station_backup_node(
                             ("stations", Json::array(next.map(str))),
                           ]),
                           done=@sf.t("web-pages.stations.copies.saved"),
+                          then=fn(_) { load_history() },
                         )
                       }
                     }
@@ -822,6 +1055,7 @@ pub fn station_backup_node(
                         ("stations", Json::array(next.map(str))),
                       ]),
                       done=@sf.t("web-pages.stations.copies.saved"),
+                      then=fn(_) { load_history() },
                     )
                   },
                   note=fn() {
@@ -849,6 +1083,7 @@ pub fn station_backup_node(
                   "copies.setSettings",
                   obj([("station", str(station)), ("acceptOthers", Json::boolean(now))]),
                   done=@sf.t("web-pages.stations.copies.saved"),
+                  then=fn(_) { load_history() },
                 )
               },
               note=fn() { @sf.t("web-pages.stations.copies.acceptOthersNote") },
@@ -862,7 +1097,7 @@ pub fn station_backup_node(
           fn() { @sf.t("web-pages.stations.copies.s3Heading") },
           ends=(can_edit, fn(e) {
             @sf.action_node(e, fn() { @sf.t("web-pages.stations.copies.s3Add") }, fn() {
-              copies_s3_form_dialog(core, station, @signals.untracked(backup), None)
+              copies_s3_form_dialog(core, station, @signals.untracked(backup), None, on_saved=Some(load_history))
             }, disabled=saving)
           }),
           fn(s3_sec) {
@@ -879,7 +1114,13 @@ pub fn station_backup_node(
                     c.box(fn(btns) {
                       @sf.style_node(btns, fn() { copies_s3_actions })
                       @sf.button_node(btns, fn() { @sf.t("web-pages.stations.copies.s3Edit") }, fn() {
-                        copies_s3_form_dialog(core, station, @signals.untracked(backup), Some(@signals.untracked(fn() { x.get() })))
+                        copies_s3_form_dialog(
+                          core,
+                          station,
+                          @signals.untracked(backup),
+                          Some(@signals.untracked(fn() { x.get() })),
+                          on_saved=Some(load_history),
+                        )
                       }, tone=Ghost, disabled=saving)
                       |> ignore
                       @sf.button_node(btns, fn() { @sf.t("web-pages.stations.copies.s3Delete") }, fn() {
@@ -901,6 +1142,7 @@ pub fn station_backup_node(
                               "copies.setSettings",
                               obj([("station", str(station)), ("s3", Json::array(kept))]),
                               done=@sf.t("web-pages.stations.copies.saved"),
+                              then=fn(_) { load_history() },
                             )
                           },
                           danger=true,
@@ -976,6 +1218,7 @@ pub fn copies_s3_form_dialog(
   backup : Json?,
   editing : Json?,
   on_save? : ((Json, () -> Unit) -> Unit)? = None,
+  on_saved? : (() -> Unit)? = None,
 ) -> Unit {
   let is_edit = editing is Some(Object(_))
   let edit_id = text(editing, "id")
@@ -1231,6 +1474,10 @@ pub fn copies_s3_form_dialog(
                 done=@sf.t("web-pages.stations.copies.saved"),
                 then=fn(res) {
                   shut()
+                  match on_saved {
+                    Some(cb) => cb()
+                    None => ()
+                  }
                   match field(Some(res), "generatedKeys") {
                     Some(Object(m)) if m.length() > 0 => {
                       let pairs : Array[(String, String)] = []
@@ -1289,7 +1536,7 @@ fn copies_generated_key_dialog(core : Core, keys : Array[(String, String)]) -> U
 ///|
 /// 恢复到这台 asked first: what it restores and that the station must stay without chats until it restarts; then
 /// `copies.restore` of `copy` (CopyOffer), passing `fromS3` for S3/R2 offers or `fromStation` for peer station offers.
-pub fn copies_restore_confirm(core : Core, address : String, copy : Json?) -> Unit {
+pub fn copies_restore_confirm(core : Core, address : String, copy : Json?, on_restored? : () -> Unit) -> Unit {
   @sf.confirm(
     @sf.t("web-pages.stations.copies.restoreTitle", args=[("name", text(copy, "name"))]),
     @sf.t("web-pages.stations.copies.restoreBody", args=[("name", text(copy, "name"))]),
@@ -1306,7 +1553,18 @@ pub fn copies_restore_confirm(core : Core, address : String, copy : Json?) -> Un
       } else {
         params.push(("fromStation", str(text(copy, "fromStation"))))
       }
-      @settings.act(core, @sf.t("web-pages.stations.copies.restoreWhat"), "copies.restore", obj(params))
+      @settings.act(
+        core,
+        @sf.t("web-pages.stations.copies.restoreWhat"),
+        "copies.restore",
+        obj(params),
+        then=fn(_) {
+          match on_restored {
+            Some(cb) => cb()
+            None => ()
+          }
+        },
+      )
     },
   )
 }

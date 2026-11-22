@@ -2915,7 +2915,7 @@ fn fx_station(address : String) -> Json {
       (
         "overview",
         if up && fx.copies is Some(_) {
-          obj([("copies", fx.copies.unwrap_or(Json::null()))])
+          obj([("copies", fixture_copies_maple())])
         } else {
           Json::null()
         },
@@ -4353,6 +4353,9 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
   match retire_fixture_call(name, p) {
     Some(r) => return Some(r)
     None => ()
+  }
+  if name == "copies.history" {
+    return Some(Ok(fixture_copies_history()))
   }
   match move_fixture_call(name, p) {
     Some(r) => return Some(r)
@@ -5878,6 +5881,7 @@ fn fixture_copies_config() -> Json {
         ("mode", str("manual")),
         ("stations", Json::array([str("st2")])),
         ("acceptOthers", Json::boolean(true)),
+        ("settingsSummary", str("手动互备：Cedar · Cloudflare R2 · 接收互备")),
         (
           "peers",
           Json::array([
@@ -5909,6 +5913,91 @@ fn fixture_copies_config() -> Json {
             ]),
           ]),
         ),
+      ]),
+    ),
+  ])
+}
+
+///|
+/// Maple's backup configuration in `settings-backup`: automatic 2-station backup, accepting others, no S3.
+fn fixture_copies_maple() -> Json {
+  obj([
+    ("line", str("已备份到 Willow · 5 分钟前")),
+    ("level", str("ok")),
+    ("offers", []),
+    ("canRestore", Json::boolean(true)),
+    ("formerly", []),
+    (
+      "backup",
+      obj([
+        ("mode", str("auto")),
+        ("stations", Json::array([])),
+        ("acceptOthers", Json::boolean(true)),
+        ("settingsSummary", str("自动互备（2 台） · 接收互备")),
+        (
+          "peers",
+          Json::array([
+            obj([("station", str("st1")), ("name", str("Willow")), ("acceptOthers", Json::boolean(true)), ("online", Json::boolean(true))]),
+          ]),
+        ),
+        ("s3", Json::array([])),
+      ]),
+    ),
+  ])
+}
+
+///|
+/// Typical `copies.history` response for fixture previews and tests: 2 successful syncs (R2 + peer) and 1 failed S3 sync.
+fn fixture_copies_history() -> Json {
+  obj([
+    (
+      "records",
+      Json::array([
+        obj([
+          ("id", str("rec-1")),
+          ("at", Json::number(1795357800000.0)),
+          ("kind", str("sync")),
+          ("targetKind", str("s3")),
+          ("target", str("r2-1")),
+          ("targetName", str("Cloudflare R2")),
+          ("status", str("ok")),
+          ("chats", Json::number(42.0)),
+          ("messages", Json::number(1280.0)),
+          ("batches", Json::number(3.0)),
+          ("bytes", Json::number(18400000.0)),
+          ("reason", Json::null()),
+          ("error", Json::null()),
+        ]),
+        obj([
+          ("id", str("rec-2")),
+          ("at", Json::number(1795357200000.0)),
+          ("kind", str("sync")),
+          ("targetKind", str("station")),
+          ("target", str("st2")),
+          ("targetName", str("Cedar")),
+          ("status", str("ok")),
+          ("chats", Json::number(42.0)),
+          ("messages", Json::number(1280.0)),
+          ("batches", Json::number(2.0)),
+          ("bytes", Json::number(18400000.0)),
+          ("reason", Json::null()),
+          ("error", Json::null()),
+        ]),
+        obj([
+          ("id", str("rec-3")),
+          ("at", Json::number(1795353600000.0)),
+          ("kind", str("sync")),
+          ("targetKind", str("s3")),
+          ("target", str("s3-2")),
+          ("targetName", str("AWS S3")),
+          ("status", str("error")),
+          ("chats", Json::number(0.0)),
+          ("messages", Json::number(0.0)),
+          ("batches", Json::number(0.0)),
+          ("bytes", Json::number(0.0)),
+          ("reason", str("offline")),
+          ("error", str("ECONNREFUSED")),
+        ]),
       ]),
     ),
   ])

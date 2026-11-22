@@ -1464,6 +1464,8 @@ export interface CopyBackup {
 	peers: CopyPeerChoice[];
 	/** Configured external R2/S3 backup targets and their sync status. */
 	s3: CopyS3Target[];
+	/** Concise one-line summary of this station's current backup configuration. */
+	settingsSummary: string;
 }
 
 /** A station's backups, as its 设置 shows them: one row; and its chats moved away as it is retired, or another's taken in. */

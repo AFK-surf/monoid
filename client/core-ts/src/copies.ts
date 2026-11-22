@@ -95,17 +95,38 @@ function s3TargetOf(s: J, stationTo: number, c: Clock): J {
 /// Sanitize and format optional `backup` settings from the station overview; undefined for older stations.
 function backupOf(b: unknown, stationTo: number, c: Clock): J | undefined {
   if (!isObject(b)) return undefined;
+  const mode = b.mode === "manual" ? "manual" : "auto";
+  const stations = arr(b.stations).filter((s): s is string => typeof s === "string");
+  const acceptOthers = b.acceptOthers !== false;
+  const peers = arr(b.peers).map((p) => ({
+    station: str(p?.station),
+    name: str(p?.name) || short(str(p?.station)),
+    acceptOthers: p?.acceptOthers !== false,
+    online: p?.online === true,
+  }));
+  const s3 = arr(b.s3).map((s) => s3TargetOf(s, stationTo, c));
+  const peerNames = new Map<string, string>();
+  for (const p of peers) peerNames.set(p.station, p.name);
+  const parts: string[] = [];
+  if (mode === "auto") {
+    parts.push(t("core-views.copies.summary.auto"));
+  } else if (stations.length > 0) {
+    const names = stations.map((id) => peerNames.get(id) || short(id));
+    parts.push(t("core-views.copies.summary.manual", { places: listed(names) }));
+  } else {
+    parts.push(t("core-views.copies.summary.off"));
+  }
+  if (s3.length > 0) {
+    parts.push(listed(s3.map((x) => x.name as string)));
+  }
+  parts.push(acceptOthers ? t("core-views.copies.summary.acceptOn") : t("core-views.copies.summary.acceptOff"));
   return {
-    mode: b.mode === "manual" ? "manual" : "auto",
-    stations: arr(b.stations).filter((s): s is string => typeof s === "string"),
-    acceptOthers: b.acceptOthers !== false,
-    peers: arr(b.peers).map((p) => ({
-      station: str(p?.station),
-      name: str(p?.name) || short(str(p?.station)),
-      acceptOthers: p?.acceptOthers !== false,
-      online: p?.online === true,
-    })),
-    s3: arr(b.s3).map((s) => s3TargetOf(s, stationTo, c)),
+    mode,
+    stations,
+    acceptOthers,
+    peers,
+    s3,
+    settingsSummary: parts.join(" · "),
   };
 }
 

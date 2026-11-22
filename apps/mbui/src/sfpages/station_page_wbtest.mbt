@@ -305,6 +305,8 @@ test "backup tab and per-station backup page: sidebar row, unified apply with sh
     assert_true(t.find("应用到全部在线 Station") is Some(_), msg="apply button: \{at}")
     assert_true(t.find("Willow") is Some(_), msg="station Willow: \{at}")
     assert_true(t.find("Maple") is Some(_), msg="station Maple: \{at}")
+    assert_true(t.find("手动互备：Cedar · Cloudflare R2 · 接收互备") is Some(_), msg="Willow settingsSummary: \{at}")
+    assert_true(t.find("自动互备（2 台） · 接收互备") is Some(_), msg="Maple settingsSummary: \{at}")
     assert_eq(t.audit(), [], msg="audit backup tab \{at}: \{Repr(t.audit())}")
     assert_eq(t.squeeze_faults(), [], msg="squeeze backup tab \{at}: \{Repr(t.squeeze_faults())}")
     // Bug A: clicking 应用到全部在线 Station without touching S3 must NOT send `s3` field
@@ -391,6 +393,11 @@ test "backup tab and per-station backup page: sidebar row, unified apply with sh
     })
     t.run_for(@ui.move_most_ms)
     assert_true(t.find("已备份到 Cedar 和 Cloudflare R2 · 2 分钟前") is Some(_), msg="summary: \{at}")
+    assert_true(t.find("备份记录") is Some(_), msg="history heading: \{at}")
+    assert_true(t.find("同步成功 · R2 / S3 · 42 个聊天 · 3 批 · 18.4 MB") is Some(_), msg="history R2 ok: \{at}")
+    assert_true(t.find("同步成功 · Station · 42 个聊天 · 2 批 · 18.4 MB") is Some(_), msg="history Cedar ok: \{at}")
+    assert_true(t.find("AWS S3") is Some(_), msg="history AWS S3 target: \{at}")
+    assert_true(t.find("同步失败 · R2 / S3 · 无法连接") is Some(_), msg="history AWS S3 fail: \{at}")
     assert_true(t.find("备份方式") is Some(_), msg="mode label: \{at}")
     assert_true(t.find("Cedar") is Some(_), msg="peer Cedar: \{at}")
     assert_true(t.find("不接收他人备份") is Some(_), msg="peer Aspen declined: \{at}")
@@ -408,6 +415,12 @@ test "backup tab and per-station backup page: sidebar row, unified apply with sh
     assert_eq(t.squeeze_faults(), [], msg="squeeze 1.3x \{at}: \{Repr(t.squeeze_faults())}")
     t.set_font_scale(1.0)
     t.run_for(@ui.move_most_ms)
+    // Clicking 刷新 triggers copies.history again
+    let hist_before = calls.filter(fn(c) { c.0 == "copies.history" }).length()
+    t.tap_text("刷新")
+    t.run_for(@ui.move_most_ms)
+    let hist_after = calls.filter(fn(c) { c.0 == "copies.history" }).length()
+    assert_eq(hist_after, hist_before + 1, msg="refresh triggers copies.history: \{at}")
     // Toggle acceptOthers switch -> copies.setSettings for ws1/st1 only
     t.click(Switch, label="允许替其他 Station 存备份")
     t.run_for(@ui.move_most_ms)
@@ -435,8 +448,40 @@ test "backup tab and per-station backup page: sidebar row, unified apply with sh
   // 4. 320px narrow Backup & StationBackup clean
   let n320 = setting_tester(StationBackup("ws1/st1"), 320.0, platform=2, mode="settings-backup-station", h=2600.0)
   n320.run_for(@ui.move_most_ms)
+  assert_true(n320.find("备份记录") is Some(_), msg="320px history heading")
   assert_eq(n320.audit(), [], msg="320px audit: \{Repr(n320.audit())}")
   assert_eq(n320.squeeze_faults(), [], msg="320px squeeze: \{Repr(n320.squeeze_faults())}")
+  // 4b. Empty history and error history states
+  let empty_h = setting_tester(StationBackup("ws1/st1"), 390.0, platform=2, mode="settings-backup-station", h=2400.0, over=fn(s) {
+    {
+      ..s,
+      call: fn(name, params, done) {
+        if name == "copies.history" {
+          done(Ok(@settings.obj([("records", Json::array([]))])))
+          return
+        }
+        (s.call)(name, params, done)
+      },
+    }
+  })
+  empty_h.run_for(@ui.move_most_ms)
+  assert_true(empty_h.find("暂无备份记录") is Some(_), msg="empty history message")
+  assert_eq(empty_h.audit(), [], msg="empty history audit")
+  let err_h = setting_tester(StationBackup("ws1/st1"), 390.0, platform=2, mode="settings-backup-station", h=2400.0, over=fn(s) {
+    {
+      ..s,
+      call: fn(name, params, done) {
+        if name == "copies.history" {
+          done(Err(@settings.obj([("code", Json::string("not_found")), ("message", Json::string("404 Not Found"))])))
+          return
+        }
+        (s.call)(name, params, done)
+      },
+    }
+  })
+  err_h.run_for(@ui.move_most_ms)
+  assert_true(err_h.find("当前 Station 版本暂不支持查看备份记录") is Some(_), msg="unsupported history message")
+  assert_eq(err_h.audit(), [], msg="error history audit")
   // 5. Offline station hides write controls
   let off = setting_tester(StationBackup("ws1/st1"), 390.0, platform=2, mode="settings-station-away", h=1600.0)
   off.run_for(@ui.move_most_ms)

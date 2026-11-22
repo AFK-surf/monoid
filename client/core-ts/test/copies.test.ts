@@ -219,6 +219,7 @@ test("backup settings: S3-only, mixed station+S3, partial failure, unconfigured,
   }, c);
   assert.equal(s3Only.line, "已备份到 Cloudflare R2 · 2 分钟前");
   assert.equal(s3Only.level, "ok");
+  assert.equal(s3Only.backup.settingsSummary, "未开启互备 · Cloudflare R2 · 接收互备");
   assert.equal(s3Only.backup.s3[0].statusLine, "已同步 · 2 分钟前");
   assert.equal(s3Only.backup.s3[0].level, "ok");
   assert.ok("ok" in conform("StationCopies", s3Only), JSON.stringify(conform("StationCopies", s3Only)));
@@ -244,6 +245,7 @@ test("backup settings: S3-only, mixed station+S3, partial failure, unconfigured,
   }, c);
   assert.equal(mixed.line, "已备份到 Cedar、Aspen 和 Cloudflare R2 · 1 分钟前");
   assert.equal(mixed.level, "ok");
+  assert.equal(mixed.backup.settingsSummary, "手动互备：Cedar 和 Aspen · Cloudflare R2 · 不接收他人备份");
   assert.equal(mixed.backup.acceptOthers, false);
   assert.equal(mixed.backup.peers.length, 2);
   assert.equal(mixed.backup.peers[1].acceptOthers, false);
@@ -267,6 +269,7 @@ test("backup settings: S3-only, mixed station+S3, partial failure, unconfigured,
   }, c);
   assert.equal(partial.line, "已备份到 Cedar · 2 分钟前 · Cloudflare R2 出错了");
   assert.equal(partial.level, "amber");
+  assert.equal(partial.backup.settingsSummary, "自动互备（2 台） · Cloudflare R2 · 接收互备");
   assert.equal(partial.backup.s3[0].level, "red");
   assert.equal(partial.backup.s3[0].statusLine, "同步失败");
   assert.ok("ok" in conform("StationCopies", partial), JSON.stringify(conform("StationCopies", partial)));
@@ -283,7 +286,20 @@ test("backup settings: S3-only, mixed station+S3, partial failure, unconfigured,
   }, c);
   assert.equal(none.line, "未配置备份目标");
   assert.equal(none.level, "amber");
+  assert.equal(none.backup.settingsSummary, "未开启互备 · 接收互备");
   assert.ok("ok" in conform("StationCopies", none), JSON.stringify(conform("StationCopies", none)));
+
+  const offDecline = copiesShown({
+    to: 7,
+    chats: 12,
+    keepers: [],
+    empty: false,
+    manage: true,
+    formerly: [],
+    backup: { mode: "manual", stations: [], acceptOthers: false, peers: [], s3: [] },
+  }, c);
+  assert.equal(offDecline.backup.settingsSummary, "未开启互备 · 不接收他人备份");
+  assert.ok("ok" in conform("StationCopies", offDecline), JSON.stringify(conform("StationCopies", offDecline)));
 
   // Restore offer from S3/R2
   const offeredS3 = {
@@ -318,6 +334,16 @@ test("backup settings: S3-only, mixed station+S3, partial failure, unconfigured,
 
   const restoreStReq = request("copies.restore", { station: "ws1/st1", origin: A, gen: "1-abcdef01", fromStation: B });
   assert.deepEqual(restoreStReq?.body, { station: A, gen: "1-abcdef01", from: { station: B } });
+
+  const histDefault = request("copies.history", { station: "ws1/st1" });
+  assert.equal(histDefault?.method, "GET");
+  assert.equal(histDefault?.path, "/copies/history");
+  assert.deepEqual(histDefault?.effect, { kind: "none" });
+
+  const histLimit = request("copies.history", { station: "ws1/st1", limit: 30 });
+  assert.equal(histLimit?.path, "/copies/history?limit=30");
+  assert.equal(request("copies.history", { station: "ws1/st1", limit: 999 })?.path, "/copies/history?limit=50");
+  assert.equal(request("copies.history", { station: "ws1/st1", limit: 0 })?.path, "/copies/history?limit=1");
 
   // stationPart "copies" is an allowed overview part with StationCopies shape
   const partTopic = parseTopic({ topic: "stationPart", scope: "ws1", station: "ws1/st1", part: "copies" });

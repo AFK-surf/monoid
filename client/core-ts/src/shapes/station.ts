@@ -96,6 +96,7 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["acceptOthers", "bool", { doc: "Whether this station accepts backups from other stations in the workspace." }],
     ["peers", vec("CopyPeerChoice"), { doc: "Other stations in the workspace available as backup targets." }],
     ["s3", vec("CopyS3Target"), { doc: "Configured external R2/S3 backup targets and their sync status." }],
+    ["settingsSummary", "String", { doc: "Concise one-line summary of this station's current backup configuration." }],
   ], { doc: "Backup target settings and S3/R2 target states for a station." }),
   CopyPeerChoice: struct([
     ["station", "String"],

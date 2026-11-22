@@ -929,6 +929,11 @@
   "core-views.copies.s3.behind": "Behind",
   "core-views.copies.s3.offline": "Can't reach endpoint",
   "core-views.copies.s3.error": "Sync failed",
+  "core-views.copies.summary.auto": "Auto (2 stations)",
+  "core-views.copies.summary.manual": "Manual: {places}",
+  "core-views.copies.summary.off": "Station backup off",
+  "core-views.copies.summary.acceptOn": "Accepts copies",
+  "core-views.copies.summary.acceptOff": "Declines copies",
   "core-views.copies.stopped": "Backups stopped: {why}; tried again by itself",
   "core-views.copies.offer": {
     "one": "{name}'s chat",

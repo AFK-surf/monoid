@@ -81,6 +81,7 @@ export const PARAMS: Record<string, string> = {
   "copies.setSettings": "mode?:string stations?:strings acceptOthers?:boolean s3?:json",
   "copies.testS3": "id?:string endpoint?:string region?:string bucket?:string prefix?:string forcePathStyle?:boolean accessKeyId?:string secretAccessKey?:string encryptionKey?:string",
   "copies.restore": "origin:string gen:string fromStation?:string fromS3?:string",
+  "copies.history": "limit?:number",
   "copies.retire": "to:string",
   "copies.retireCancel": "",
   "copies.retireAgain": "",
@@ -386,6 +387,12 @@ function stationOp(name: string, params: unknown): Request | null {
         ? { s3: p.str("fromS3") }
         : { station: p.str("fromStation") };
       return op("POST", () => "/copies/restore", { station: p.str("origin"), gen: p.str("gen"), from }, OVERVIEW);
+    }
+    // Recent backup sync and restore records recorded on the station.
+    case "copies.history": {
+      const raw = p.v.limit;
+      const limit = typeof raw === "number" && Number.isFinite(raw) ? Math.max(1, Math.min(50, Math.floor(raw))) : null;
+      return op("GET", () => limit !== null ? `/copies/history?limit=${limit}` : "/copies/history", null, NONE);
     }
     // The station retired from the workspace, its chats going on on `to` (another of its stations' id), by the
     // workspace's owners and admins (its station's replica/retire.ts); let go of while its station says it can be

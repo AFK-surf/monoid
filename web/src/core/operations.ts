@@ -12,6 +12,7 @@ export interface OperationParams {
   "copies.setSettings": { mode?: string | null | undefined; stations?: string[] | null | undefined; acceptOthers?: boolean | null | undefined; s3?: unknown };
   "copies.testS3": { id?: string | null | undefined; endpoint?: string | null | undefined; region?: string | null | undefined; bucket?: string | null | undefined; prefix?: string | null | undefined; forcePathStyle?: boolean | null | undefined; accessKeyId?: string | null | undefined; secretAccessKey?: string | null | undefined; encryptionKey?: string | null | undefined };
   "copies.restore": { origin: string; gen: string; fromStation?: string | null | undefined; fromS3?: string | null | undefined };
+  "copies.history": { limit?: number | null | undefined };
   "copies.retire": { to: string };
   "copies.retireCancel": {  };
   "copies.retireAgain": {  };
@@ -207,7 +208,7 @@ export interface OperationParams {
   "admin.revokeKey": { id: string };
 }
 
-export const UNTRACKED_OPERATIONS = new Set(["admin.me", "chat.relayPeople", "chat.relayPlaces", "chats.archived", "copies.retirePreview", "drive.folders", "file.peek", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
+export const UNTRACKED_OPERATIONS = new Set(["admin.me", "chat.relayPeople", "chat.relayPlaces", "chats.archived", "copies.history", "copies.retirePreview", "drive.folders", "file.peek", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
 
 type Call = (name: string, params: Record<string, unknown>) => Promise<unknown>;
 
@@ -225,6 +226,7 @@ export function bindStationOperations(call: Call) {
     copiesSetSettings: <T = unknown>(params: OperationParams["copies.setSettings"] = {}) => call("copies.setSettings", params) as Promise<T>,
     copiesTestS3: <T = unknown>(params: OperationParams["copies.testS3"] = {}) => call("copies.testS3", params) as Promise<T>,
     copiesRestore: <T = unknown>(params: OperationParams["copies.restore"]) => call("copies.restore", params) as Promise<T>,
+    copiesHistory: <T = unknown>(params: OperationParams["copies.history"] = {}) => call("copies.history", params) as Promise<T>,
     copiesRetire: <T = unknown>(params: OperationParams["copies.retire"]) => call("copies.retire", params) as Promise<T>,
     copiesRetireCancel: <T = unknown>(params: OperationParams["copies.retireCancel"] = {}) => call("copies.retireCancel", params) as Promise<T>,
     copiesRetireAgain: <T = unknown>(params: OperationParams["copies.retireAgain"] = {}) => call("copies.retireAgain", params) as Promise<T>,
