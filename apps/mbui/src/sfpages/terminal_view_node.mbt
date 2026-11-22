@@ -1698,11 +1698,11 @@ pub fn terminal_pane_node(
           fl.show(
             fn() { (modes_sig.get() & @hostapi.term_mode_viewport_active) == 0 },
             fn(sb) {
-              @sf.button_node(
+              @sf.float_button_node(
                 sb,
+                "arrow-down",
                 fn() { @sf.t("web-pages.terminal.scrollBottom") },
                 scroll_to_bottom,
-                tone=Primary,
               )
               |> ignore
             },
@@ -1718,6 +1718,7 @@ pub fn terminal_pane_node(
         |> ignore
         f.box(fn(cap) {
           @sf.style_node(cap, fn() { full_tools_box })
+          floats_capsule_node(cap)
           @sf.tool_round_node(cap, "shrink", fn() { @sf.t("android-misc.screen.unfull") }, fn() { full.set(false) }) |> ignore
         })
         |> ignore

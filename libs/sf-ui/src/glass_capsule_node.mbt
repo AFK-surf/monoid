@@ -13,16 +13,19 @@ pub fn glass_capsule_node(
   sharing? : Bool = true,
   interactive? : Bool = false,
   dark? : Bool = false,
+  panel? : Bool = false,
   solid? : () -> Int64,
   tint? : () -> Int64,
+  active? : () -> Bool,
 ) -> @view.View {
   @glass.liquid_capsule_decorate(
     b,
-    tone=if dark { ViewerDark } else { Floating },
+    tone=if dark { ViewerDark } else if panel { Panel } else { Floating },
     min_height~,
     radius~,
     sharing~,
     interactive~,
+    active?,
     solid=match solid {
       Some(f) => f
       None => fn() { if dark { 0x161618FFL } else { panel_ground() } }

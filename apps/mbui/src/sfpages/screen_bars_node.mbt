@@ -575,7 +575,7 @@ fn full_tools_node(fill : @view.View, pg : ScreenPage) -> Unit {
     @sf.style_node(place, fn() { screen_corner_end(screen_top_end) })
     place.box(fn(cap) {
       @sf.style_node(cap, fn() { full_tools_box })
-      floats_node(cap)
+      floats_capsule_node(cap)
       // a round button 4 in from the capsule's edge: its corner 20 + 4
       let open = fn() { u.tools_open.get() }
       let b = screen_round_node(
@@ -671,7 +671,7 @@ fn rail_said_node(p : @view.View, pg : ScreenPage, said : (() -> Unit, () -> Boo
       @sf.style_node(place, fn() { rail_say_place })
       place.box(fn(b) {
         @sf.style_node(b, fn() { rail_say_box })
-        floats_node(b)
+        floats_panel_node(b)
         @sf.words_node(b, fn() { text(s.state_now(), "line") }, fn() { rail_say_words }) |> ignore
       })
       |> ignore
@@ -1039,13 +1039,17 @@ fn mouse_left_round_node(cap : @view.View, s : ScreenSess, u : ScreenUi) -> Unit
   let label = fn() { @sf.t("android-misc.screen.key.mouseLeft") }
   let key = @sf.action_box_node(cap, label, on=held, fn(_) { left_pressed_on(s, u, took) }, fn(v) {
     @sf.style_node(v, fn() { mouse_round }, in_row=true)
-    v
-    .ground(By(fn() { @ui.tree_theme().color(if held() { Fg } else { Floating }) }))
-    .shadow(By(fn() {
-      let t = @ui.tree_theme()
-      (2.0, 1.0, if held() { 0L } else { t.shadow })
-    }))
+    @sf.glass_capsule_node(
+      v,
+      min_height=Some(44.0),
+      radius=Some(22.0),
+      sharing=true,
+      interactive=true,
+      panel=true,
+      active=fn() { !held() },
+    )
     |> ignore
+    v.ground(By(fn() { if held() { @ui.tree_theme().color(Fg) } else { 0L } })) |> ignore
     @sf.hover_ground_node(v, lit=Some(fn() { v.pressed() && !held() }))
     @sf.icon_node(v, "mouse-left", round_icon, By(fn() { @ui.tree_theme().color(if held() { Bg } else { Fg }) })) |> ignore
     button_felt_node(v, btn_primary)
@@ -1064,7 +1068,7 @@ fn keys_capsule_over_node(fill : @view.View, pg : ScreenPage, sides~ : Bool) -> 
       @sf.style_node(place, fn() { if sides { screen_foot_center.then(@sf.sides_clear(@ui.Space::S2.px())) } else { screen_foot_center } })
       place.box(fn(cap) {
         @sf.style_node(cap, fn() { keys_capsule_box }, in_row=true)
-        floats_node(cap)
+        floats_capsule_node(cap)
         keys_row_node(cap, pg)
       })
       |> ignore
@@ -1155,7 +1159,7 @@ fn take_over_capsule_node(at : @view.View, pg : ScreenPage, in_bar : Bool, place
       way.shake(at=b.cause_at())
     })
     if !in_bar {
-      floats_node(b)
+      floats_capsule_node(b)
       @sf.first_line_node(b, Ui, fn(l) { l.box(fn(d) { @sf.style_node(d, fn() { take_over_dot }, in_row=true) }) |> ignore }) |> ignore
       b.box(fn(w) {
         @sf.style_node(w, fn() { take_over_words_box }, in_row=true)

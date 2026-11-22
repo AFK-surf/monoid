@@ -859,48 +859,14 @@ let pg_lead_x : Double = 12.0
 let pg_lead_foot : Double = 10.0
 
 ///|
-/// Back (nav_back's, as a node): a chevron and where to (`label`) in the link's ink, rippling as it is pressed; `back`
-/// done then.
-#callsite(autofill(loc))
-fn nav_back_node(
-  parent : @view.View,
-  label : () -> String,
-  back : () -> Unit,
-  most? : () -> Double,
-  loc~ : SourceLoc,
-) -> Unit {
-  parent.box(made_for=loc, fn(b) {
-    b
-    .row(Is(true))
-    .padding(Is((0.0, nav_back_y, nav_back_end, nav_back_y)))
-    .radius(By(fn() { @ui.tree_theme().corner(Lg) }))
-    .lines_up(Is(Some(Middle)))
-    |> ignore
-    pressed_node(b, back, Is(nav_back_ripple), Link, label)
-    icon_node(b, "chevron-left", nav_back_icon, By(fn() { theme().p.accent_text })) |> ignore
-    match most {
-      // (its word no wider than `most`: there whole or not at all, the chevron alone where it has not the room, as
-      // nav_back's)
-      Some(m) =>
-        b.box(fn(r) {
-          r.row(Is(true)).fits(Is(true)).min_width(Is(Some(0.0))).max_width(By(fn() { Some(m()) })) |> ignore
-          r.box(fn(w) { styled_words(w, label, fn() { nav_back_words }) |> ignore }).drops(Is(1)) |> ignore
-        })
-        |> ignore
-      None => b.box(fn(w) { styled_words(w, label, fn() { nav_back_words }) |> ignore }) |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
-/// Floating single-layer liquid glass back capsule for narrow sub-pages (`narrow_page_node`, `skeleton_page_head`):
-/// 40pt min-height pill with chevron-left and back label, matching Home/Chat/Place top bar capsules in a 44pt bar.
+/// Floating single-layer liquid glass back capsule for narrow sub-pages (`narrow_page_node`, `skeleton_page_head`,
+/// `nav_bar_node`): 40pt min-height pill with chevron-left and back label, matching Home/Chat/Place top bar capsules.
 #callsite(autofill(loc))
 fn nav_back_pill_node(
   parent : @view.View,
   label : () -> String,
   back : () -> Unit,
+  most? : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(b) {
@@ -930,27 +896,30 @@ fn nav_back_pill_node(
     )
     pressed_node(b, back, Is(pg_back_pill_h / 2.0), Link, label)
     icon_node(b, "chevron-left", nav_back_icon, By(fn() { theme().p.accent_text })) |> ignore
-    b.box(fn(w) {
-      w.drops(Is(1)).padding(Is((2.0, 0.0, 5.0, 0.0))) |> ignore
-      styled_words(w, label, fn() { nav_back_words }) |> ignore
-    })
-    |> ignore
+    match most {
+      Some(m) =>
+        b.box(fn(r) {
+          r.row(Is(true)).fits(Is(true)).min_width(Is(Some(0.0))).max_width(By(fn() { Some(m()) })) |> ignore
+          r.box(fn(w) {
+            w.drops(Is(1)).padding(Is((2.0, 0.0, 5.0, 0.0))) |> ignore
+            styled_words(w, label, fn() { nav_back_words }) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      None =>
+        b.box(fn(w) {
+          w.drops(Is(1)).padding(Is((2.0, 0.0, 5.0, 0.0))) |> ignore
+          styled_words(w, label, fn() { nav_back_words }) |> ignore
+        })
+        |> ignore
+    }
   })
   |> ignore
 }
 
 ///|
-/// nav_back_box's room (4 over and under, 6 at its end), its chevron's size, its ripple's corner.
-let nav_back_y : Double = 4.0
-
-///|
-let nav_back_end : Double = 6.0
-
-///|
 let nav_back_icon : Double = 22.0
-
-///|
-let nav_back_ripple : Double = 8.0
 
 ///|
 /// A heading over a group (heading's, narrow: SectionHeader, 12 in, its words strong, 14 over it and 6 under). `ends`:

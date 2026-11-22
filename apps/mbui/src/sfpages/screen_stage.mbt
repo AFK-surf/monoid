@@ -29,12 +29,15 @@ let screen_double_tap_ms : Double = 340.0
 let screen_keep_margin : Double = 40.0
 
 ///|
-/// How a screen gone dark is blurred under its dark (ScreenViewer.kt Stage: BlurEffect(28.dp), a radius Skia takes as
-/// a deviation of 0.57735 of it and half a pixel: the glass's blur is the deviation).
-/// A floating ground's shadow (the theme's `shadow=Sm`: 2 blurred, 1 down), which a style laid on a node does not
-/// draw (@sf.style_node): said on the node itself.
-fn floats_node(v : @view.View) -> Unit {
-  v.shadow(By(fn() { (2.0, 1.0, @ui.tree_theme().shadow) })) |> ignore
+/// A floating capsule over the remote screen/terminal stage: single-layer 75% liquid glass via `@sf.glass_capsule_node(panel=true)`.
+fn floats_capsule_node(v : @view.View, active? : () -> Bool) -> Unit {
+  @sf.glass_capsule_node(v, sharing=false, panel=true, active?) |> ignore
+}
+
+///|
+/// A floating multi-line card over the remote screen stage: single-layer liquid glass panel via `@sf.panel_surface_decorate`.
+fn floats_panel_node(v : @view.View) -> Unit {
+  @sf.panel_surface_decorate(v, clips=true) |> ignore
 }
 
 ///|
@@ -612,7 +615,7 @@ fn screen_stage_said(stage : @view.View, pg : ScreenPage, phase : () -> String, 
     c.at_moment(c.cause_at() + @sf.later_ms, fn() { later.set(true) }, later=true) |> ignore
     c.box(fn(pill) {
       @sf.style_node(pill, fn() { wait_pill_box }, in_row=true)
-      floats_node(pill)
+      floats_capsule_node(pill, active=fn() { later.get() })
       pill.alpha(By(fn() { if later.get() { 1.0 } else { 0.0 } })) |> ignore
       @sf.spinner_node(pill, size=wait_spinner) |> ignore
       @sf.words_node(pill, fn() { w }, fn() { wait_pill_words }) |> ignore
@@ -728,7 +731,7 @@ fn screen_stage_foot(st : @view.View, pg : ScreenPage, pair : () -> Bool) -> Uni
           guard why is Some(why) else { return }
           w.box(fn(b) {
             @sf.style_node(b, fn() { undriven_box }, in_row=true)
-            floats_node(b)
+            floats_panel_node(b)
             @sf.first_line_node(b, Meta, fn(l) {
               @sf.icon_node(l, "info", undriven_icon, By(fn() { @ui.tree_theme().color(Muted) })) |> ignore
             })
@@ -775,7 +778,7 @@ fn drops_node(d : @view.View, s : ScreenSess) -> Unit {
   }, fn(card) {
     // a row's round key (34) at its top end, the first's in the panel's corner concentric with it (drop_row_box)
     @sf.style_node(card, fn() { drops_box })
-    floats_node(card)
+    floats_panel_node(card)
     card.each(
       at_once=true,
       fn() {

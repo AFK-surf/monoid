@@ -42,8 +42,8 @@ fn history_node(
     fn() { tr("android-chat.history.title") },
     fn() { @sfbase.go_back() |> ignore },
     top=fn() { frame().top },
+    trailing_shown=fn() { (agent() is Some(_) && history_tab.get() == 0) || (title() != "" && link() != "") },
     trailing=fn(e) {
-      e.gap(By(fn() { @sf.keys_apart(size=34.0, least=4.0) })) |> ignore
       e.show(at_once=true, fn() { agent() is Some(_) && history_tab.get() == 0 }, fn(f) {
         let on = fn() { @sfpages.history_only_io() }
         @sf.round_key_node(

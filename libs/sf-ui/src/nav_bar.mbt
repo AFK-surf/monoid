@@ -34,6 +34,9 @@ pub fn nav_bar_node(
   sub? : () -> String = fn() { "" },
   top? : () -> Double = fn() { 0.0 },
   trailing? : (@view.View) -> Unit,
+  trailing_shown? : () -> Bool,
+  trailing_pill? : Bool = true,
+  trailing_pad? : Double = 3.0,
   back_most? : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -76,20 +79,28 @@ pub fn nav_bar_node(
         })
       })
       |> ignore
-      // back and what is at the end, on the 32 line at its top
+      // back and what is at the end, on the 40pt capsule line at its top
       i.box(fn(e) {
         e.over(Is(true)).row(Is(true)).height(Is(Some(nav_line_h))).lines_up(Is(Some(Middle))) |> ignore
         // (back only where there is somewhere to go: a page with nowhere back, a pane's beside a list, has none, as
         // page_node's Back; a chevron saying nothing would be a press with no name and no way)
-        e.show(fn() { back() != "" }, at_once=true, fn(k) { nav_back_node(k, back, on_back, most?=back_most) })
+        e.show(fn() { back() != "" }, at_once=true, fn(k) { nav_back_pill_node(k, back, on_back, most?=back_most) })
         e.box(fn(gap) { gap.grow(Is(1.0)) |> ignore }) |> ignore
         match trailing {
-          Some(f) =>
-            e.box(fn(t) {
-              t.row(Is(true)).height(Is(Some(nav_line_h))).lines_up(Is(Some(Middle))) |> ignore
-              f(t)
-            })
-            |> ignore
+          Some(f) => {
+            let draw = fn(t : @view.View) {
+              if trailing_pill {
+                bar_pill_group_node(t, f, height=nav_line_h, pad=trailing_pad, gap=2.0) |> ignore
+              } else {
+                t.row(Is(true)).height(Is(Some(nav_line_h))).lines_up(Is(Some(Middle))) |> ignore
+                f(t)
+              }
+            }
+            match trailing_shown {
+              Some(shown) => e.show(at_once=true, shown, draw)
+              None => draw(e)
+            }
+          }
           None => ()
         }
       })
@@ -101,18 +112,19 @@ pub fn nav_bar_node(
 }
 
 ///|
-/// nav_bar_box's room (16 at either end, 6 over, 10 under), the title's clear of either side (nav_title_clear) and
-/// the line back, the title and what is at the end share (nav_line's 32).
+/// nav_bar_box's room (16 at either end, 2 over, 6 under; 48pt total matching the legacy 6+32+10 bar), the title's
+/// clear of either side (nav_title_clear) and the line back, the title and what is at the end share (40pt matching
+/// liquid glass back/trailing capsules).
 let nav_bar_x : Double = 16.0
 
 ///|
-let nav_bar_top : Double = 6.0
+let nav_bar_top : Double = 2.0
 
 ///|
-let nav_bar_foot : Double = 10.0
+let nav_bar_foot : Double = 6.0
 
 ///|
 let nav_title_x : Double = 84.0
 
 ///|
-let nav_line_h : Double = 32.0
+let nav_line_h : Double = 40.0

@@ -126,7 +126,7 @@ let screen_line_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4,
 ///|
 /// 全屏's tools: a capsule floating still, a round button 4 in from its edge, 4 between.
 // kept across runs: a value (no field of it changes)
-let full_tools_box : @ui.Style = @ui.css("p=S1 gap=S1 align=ACenter radius=Xl4 bg=Floating shadow=Sm")
+let full_tools_box : @ui.Style = @ui.css("p=S1 gap=S1 align=ACenter radius=Xl4")
 
 // ── the rail ──────────────────────────────────────────────────────────────
 
@@ -166,8 +166,6 @@ let rail_say_box : @ui.Style = @ui.style(
   px=S3_5,
   py=S2,
   radius=Xl2,
-  bg=Floating,
-  shadow=Sm,
 )
 
 ///|
@@ -204,7 +202,7 @@ let keys_row_box : @ui.Style = @ui.css("row gap=S1 align=ACenter")
 ///|
 /// The keys row floating over the frame: a capsule 4 round it.
 // kept across runs: a value (no field of it changes)
-let keys_capsule_box : @ui.Style = @ui.css("p=S1 radius=Full bg=Floating shadow=Sm")
+let keys_capsule_box : @ui.Style = @ui.css("p=S1 radius=Full")
 
 // ── 接管 ─────────────────────────────────────────────────────────────────
 
@@ -221,8 +219,6 @@ let take_over_box : @ui.Style = @ui.style(
   gap=S2_5,
   align=ACenter,
   radius=Full,
-  bg=Floating,
-  shadow=Sm,
 )
 
 ///|
@@ -300,7 +296,7 @@ let stage_foot_column : @ui.Style = @ui.style(w=Full, max_w=@sf.phone_max, gap=S
 ///|
 /// Why 控制 does not drive it: floating still, 14 and 8 in, an icon (16) 8 before the words (13 on 18, three lines).
 // kept across runs: a value (no field of it changes)
-let undriven_box : @ui.Style = @ui.css("row px=S3_5 py=S2 gap=S2 align=ACenter radius=Xl2 bg=Floating shadow=Sm")
+let undriven_box : @ui.Style = @ui.css("row px=S3_5 py=S2 gap=S2 align=ACenter radius=Xl2")
 
 ///|
 let undriven_icon : Double = 16.0
@@ -313,7 +309,7 @@ let undriven_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color
 /// On its way: 24 round it, the capsule floating still with no ground of
 /// its own, 12 and 6 in, the spinner (12) 8 before the words (13 on 18, the ink, two lines).
 // kept across runs: a value (no field of it changes)
-let wait_pill_box : @ui.Style = @ui.css("row px=S3 py=S1_5 gap=S2 align=ACenter radius=Full bg=Floating shadow=Sm")
+let wait_pill_box : @ui.Style = @ui.css("row px=S3 py=S1_5 gap=S2 align=ACenter radius=Full")
 
 ///|
 let wait_spinner : Double = 12.0
@@ -385,7 +381,7 @@ let again_soft_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, 
 /// The files' panel: floating still, as wide as the foot, a card's corner of the ladder's (its rows' keys concentric
 /// with it: drop_key_in).
 // kept across runs: a value (no field of it changes)
-let drops_box : @ui.Style = @ui.style(w=Full, radius=@sf.card_radius, bg=Floating, shadow=Sm, clip=true)
+let drops_box : @ui.Style = @ui.style(w=Full, radius=@sf.card_radius, clip=true)
 
 ///|
 /// A file's row: 18 in at its start, 12 between; its key at its top end as far in as makes it concentric with the

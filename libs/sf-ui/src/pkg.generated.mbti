@@ -1372,7 +1372,7 @@ pub fn nav_bar(@ui.Ctx, String, String, String, sub? : () -> Unit, title_after? 
 
 pub let nav_fade : @motion.Spec
 
-pub fn nav_bar_node(@view.View, () -> String, () -> String, () -> Unit, top? : () -> Double, trailing? : (@view.View) -> Unit) -> Unit
+pub fn nav_bar_node(@view.View, () -> String, () -> String, () -> Unit, sub? : () -> String, top? : () -> Double, trailing? : (@view.View) -> Unit, trailing_shown? : () -> Bool, trailing_pill? : Bool, trailing_pad? : Double, back_most? : () -> Double) -> Unit
 
 pub fn nav_ground_by(@ui.Ctx, String, Bool, Bool, lit? : Int64) -> () -> Int64
 

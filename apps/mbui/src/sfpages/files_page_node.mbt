@@ -188,6 +188,7 @@ fn narrow_folder_node(
       top=fn() { frame().top },
       // (back's word no wider than the bar has beside the title, 80 at least: whole or not at all)
       back_most=fn() { dmax(room() / 2.0 - narrow_back_room, narrow_back_least) },
+      trailing_pad=4.0,
       trailing=fn(t) {
         t.box(fn(held) {
           held.max_width(By(fn() { Some(room() / 2.0 - bar_title_half) })) |> ignore

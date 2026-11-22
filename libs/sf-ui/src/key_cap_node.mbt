@@ -244,7 +244,15 @@ pub fn tool_round_node(
       }
       Floating => {
         style_node(v, fn() { tool_round_floating }, in_row=true)
-        v.shadow(By(fn() { (2.0, 1.0, @ui.tree_theme().shadow) })) |> ignore
+        glass_capsule_node(
+          v,
+          min_height=Some(44.0),
+          radius=Some(22.0),
+          sharing=true,
+          interactive=true,
+          panel=true,
+        )
+        |> ignore
         hover_ground_node(v, lit=Some(fn() { b.pressed() }))
       }
     }
@@ -295,6 +303,6 @@ let tool_round_mark : Double = 20.0
 let tool_round : @ui.Style = @ui.css("w=S10 h=S10 radius=Full align=ACenter justify=JCenter")
 
 ///|
-/// A round tool floating over a picture: 44 (a press's least), on the floating ground (the ink at 8% pressed).
+/// A round tool floating over a picture: 44 (a press's least), on single-layer liquid glass (the ink at 8% pressed).
 // kept across runs: a value (no field of it changes)
-let tool_round_floating : @ui.Style = @ui.css("w=S11 h=S11 radius=Full bg=Floating shadow=Sm align=ACenter justify=JCenter")
+let tool_round_floating : @ui.Style = @ui.css("w=S11 h=S11 radius=Full align=ACenter justify=JCenter")

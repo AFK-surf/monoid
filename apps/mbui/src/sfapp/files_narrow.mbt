@@ -42,6 +42,8 @@ fn files_narrow_body(v : @view.View, src : Source, ws : String, place : Bool, fr
       fn() { tr("android-misc.bar.place.files") },
       fn() { @sfbase.go_back() |> ignore },
       top=fn() { frame().top },
+      trailing_shown=fn() { @sfpages.favorite_stations(src, ws).length() > 0 },
+      trailing_pad=4.0,
       trailing=fn(t) {
         t.show(fn() { @sfpages.favorite_stations(src, ws).length() > 0 }, at_once=true, fn(k) {
           @sf.icon_button_node(k, "plus", fn() { @sf.t("web-pages.files.addFavorite") }, fn() {

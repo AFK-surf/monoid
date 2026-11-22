@@ -272,7 +272,7 @@ fn login_fill_node(c : @view.View, s : ScreenSess) -> Unit {
   // (what it is about read first, so it is followed whatever the host has: a host's manager is its from its start)
   c.show(at_once=true, fn() { !(host() is None && s.fill_step.get() == "") && (op() || @hostapi.autofill()) }, fn(card) {
     @sf.style_node(card, fn() { drops_box })
-    floats_node(card)
+    floats_panel_node(card)
     card.box(fn(row) {
       @sf.style_node(row, fn() { drop_row_box }, in_row=true)
       let step = fn() { s.fill_step.get() }

@@ -103,8 +103,8 @@ pub fn opened_head_node(
       })
       |> ignore
     } else {
-      nav_bar_node(h, back, name, went, sub=meta, top~, trailing=fn(e) {
-        icon_action_opens_node(e, "sliders", fn() { t("web-pages.screen.panel") }, more) |> ignore
+      nav_bar_node(h, back, name, went, sub=meta, top~, trailing_pad=4.0, trailing=fn(e) {
+        icon_button_by(e, "sliders", fn() { t("web-pages.screen.panel") }, more, None, icon_button_side, 16.0, None, fn() { false }) |> ignore
       })
     }
     // what is to be done, while there is: its words, the button at the line's end
