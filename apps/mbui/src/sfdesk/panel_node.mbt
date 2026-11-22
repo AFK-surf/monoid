@@ -119,6 +119,20 @@ fn side_slides(n : @view.View, src : Source, key : String, chat : String, open :
       panel_own.asked.set("")
       let at = n.cause_at()
       let (cur_w, cur_v) = way.at(at)
+      // (where the rows' words stand across as it sets off: turned back on its way, where its way has them drawn)
+      let pane = @signals.untracked(fn() { pane_w_at(src, n) })
+      let cur_side = if way.goes_at(at) {
+        let prev = laid_toward(
+          pane - cur_w,
+          pane - way.value_at(way.starts_at()),
+          pane - way.target(),
+          from_side?=panel_own.from_side.get(key),
+        )
+        @sfpages.chat_row_side(prev.laid) + prev.across
+      } else {
+        @sfpages.chat_row_side(pane - cur_w)
+      }
+      panel_own.from_side[key] = cur_side
       if way.goes_at(at) {
         let v = @sf.dclamp(cur_v, -4000.0, 4000.0)
         way.go(target, @motion.moved(over=(target - cur_w).abs()), velocity=v, at~)
@@ -134,6 +148,7 @@ fn side_slides(n : @view.View, src : Source, key : String, chat : String, open :
     }
     _ => {
       way.put(target)
+      panel_own.from_side.remove(key)
       if !open {
         side_left(key)
       }
@@ -218,7 +233,12 @@ fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLa
     }
     return { by: 0.0, across: 0.0, laid: pane - to, toward: pane - to, toward_by: 0.0 }
   }
-  let laid = laid_toward(pane - way.value_at(t), pane - way.value_at(way.starts_at()), pane - way.target())
+  let laid = laid_toward(
+    pane - way.value_at(t),
+    pane - way.value_at(way.starts_at()),
+    pane - way.target(),
+    from_side?=panel_own.from_side.get(key),
+  )
   if centred {
     { ..laid, across: -laid.by / 2.0 }
   } else {
@@ -232,12 +252,15 @@ fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLa
 /// as its rows' words stood at `from` than they stand at `to`, less as much of it as the way has come
 /// (chat_page_made's `narrower`): so they go with the page from where they stood as it set off to where they stand, never
 /// stepping where they are laid out anew; what is arranged otherwise at `from` than at `to` drawn as much of the way
-/// as is left to how it was at `from`.
-fn laid_toward(now : Double, from : Double, to : Double) -> @sfbase.ColumnLaid {
-  let gone = if (from - to).abs() > 0.5 { dmax(0.0, dmin(1.0, (from - now) / (from - to))) } else { 1.0 }
+/// as is left to how it was at `from`. Where the way set off turned back on another (`from_side`: where the words stood
+/// across then), from there; and past `from` as the way overshoots it, as far past (moved on as it goes, never held).
+fn laid_toward(now : Double, from : Double, to : Double, from_side? : Double) -> @sfbase.ColumnLaid {
+  let start_side = from_side.unwrap_or(@sfpages.chat_row_side(from))
+  let raw = if (from - to).abs() > 0.5 { (from - now) / (from - to) } else { 1.0 }
+  let gone = dmax(0.0, dmin(1.0, raw))
   {
     by: now - to,
-    across: (@sfpages.chat_row_side(from) - @sfpages.chat_row_side(to)) * (1.0 - gone),
+    across: (start_side - @sfpages.chat_row_side(to)) * (1.0 - raw),
     laid: to,
     toward: from,
     toward_by: 1.0 - gone,

@@ -1578,3 +1578,239 @@ test "大屏/中屏输入框上方胶囊：Gemini 4 Neon · 高 宽屏完整展�
   assert_true(back_words.contains("Gemini 4 Neon"), msg="widened back: full restored: \{Repr(back_words)}")
   assert_true(back_words.contains("· 高"), msg="widened back: effort restored: \{Repr(back_words)}")
 }
+
+///|
+/// The bar's soft scroll edge as drawn (chat_bar_wide_node's wide_bar_scrim_node: frosted glass from the bar's top, as
+/// wide as the bar, as tall as it and 16 more; the rightmost such, the page's over the sidebar's), (x, y, w, h).
+fn wide_bar_edge(t : @ui.Tester) -> (Double, Double, Double, Double)? {
+  let mut found : (Double, Double, Double, Double)? = None
+  for g in t.drawn_glass() {
+    let (x, y, w, h, kind, _) = g
+    if kind == 5 &&
+      y < 40.0 &&
+      w >= 300.0 &&
+      h >= @sf.wide_bar_h + 16.0 - 0.01 &&
+      h < 140.0 &&
+      (found is None || x > found.unwrap().0) {
+      found = Some((x, y, w, h))
+    }
+  }
+  found
+}
+
+///|
+/// Where the bar has the chat's title `title` (its words' box, read out as them, within the bar's edge), (x, y, w, h).
+fn wide_bar_title_at(t : @ui.Tester, title : String) -> (Double, Double, Double, Double)? {
+  guard wide_bar_edge(t) is Some((ex, ey, ew, eh)) else { return None }
+  match
+    t
+    .semantics()
+    .filter(fn(b) {
+      b.role == @ui.Role::Text &&
+      b.label == title &&
+      b.rect.0 >= ex - 0.5 &&
+      b.rect.0 + b.rect.2 <= ex + ew + 0.5 &&
+      b.rect.1 >= ey &&
+      b.rect.1 + b.rect.3 <= ey + eh
+    }) {
+    [b, ..] => Some(b.rect)
+    _ => None
+  }
+}
+
+///|
+/// Where the bar's buttons at its end start (the leftmost of them), the window's width where it has none.
+fn wide_bar_keys_x(t : @ui.Tester) -> Double {
+  let own = [
+    @sf.t("web-pages.chat.archive"),
+    @sf.t("web-pages.chat.screen"),
+    @sf.t("web-pages.chat.info"),
+    @sf.t("common.more"),
+    @sf.t("web-pages.chat.openPanel"),
+  ]
+  // (the bar's end, past the window's on the tape where its page's panel is partly out of it)
+  let mut least = match wide_bar_edge(t) {
+    Some((ex, _, ew, _)) => ex + ew
+    None => t.ctx().window_size().0
+  }
+  // (as read out: on the tape past the window's edge too)
+  for b in t.semantics() {
+    if b.role == @ui.Role::Button && b.rect.1 < 90.0 && b.rect.3 < 90.0 && own.contains(b.label) {
+      least = dmin(least, b.rect.0)
+    }
+  }
+  least
+}
+
+///|
+/// The fixture's chat's title.
+// kept across runs: a value
+let wide_bar_title_words : String = "整理发布清单"
+
+///|
+/// Where the chat's words start across (the first line of one of its answers, laid out in its column).
+// kept across runs: a value
+let wide_bar_words_words : String = "高度先按 90 估"
+
+///|
+/// What is wrong with the title in each state of `states` (by its name, its title's words, whether the chat's column
+/// stands clear of the bar's start room): its start where the chat's words start in its column (`wide_bar_words_words`)
+/// or, where those start nearer the bar's start than its start room (the panel's words' line on the tape, the bar's 12
+/// in off it with the sidebar open) and its words' 8 in, there (`clear` false: never there where it is true), none
+/// of it past the bar's start or onto its buttons, and (`steady`) its start where the first state's is.
+fn wide_bar_aligned(
+  states : Array[(String, String, Bool, () -> @ui.Tester)],
+  steady? : Bool = false,
+) -> Array[String] {
+  let faults : Array[String] = []
+  let mut first : Double? = None
+  for s in states {
+    let (name, title, clear, make) = s
+    let t = make()
+    guard wide_bar_edge(t) is Some((ex, _, _, _)) else {
+      faults.push("\{name}: no edge under the bar")
+      continue
+    }
+    guard wide_bar_title_at(t, title) is Some((x, _, w, _)) else {
+      faults.push("\{name}: no title")
+      continue
+    }
+    guard t.rect_of(wide_bar_words_words) is Some((wx, _, _, _)) else {
+      faults.push("\{name}: no words of the chat's")
+      continue
+    }
+    let keys = wide_bar_keys_x(t)
+    if x < ex || x + w > keys {
+      faults.push("\{name}: the title \{x}..\{x + w}, the bar from \{ex}, the buttons from \{keys}")
+    }
+    // (the bar's start room: on the tape the panel's words' line, off it, the sidebar open, the bar's 12 in)
+    let room = if @sfdesk.wide.tape.get() { @sfdesk.wide.bar_pl } else { @sfdesk.bar_in }
+    let least = ex + room + 8.0
+    if (x - dmax(wx, least)).abs() > 1.0 {
+      faults.push("\{name}: the title from \{x}, the chat's words from \{wx}, its least start \{least}")
+    }
+    if clear && (x - wx).abs() > 1.0 {
+      faults.push("\{name}: the title from \{x}, the chat's words from \{wx} (its start room \{least})")
+    }
+    match first {
+      Some(f) if steady && (x - f).abs() > 0.5 => faults.push("\{name}: the title from \{x}, the first's from \{f}")
+      None => first = Some(x)
+      _ => ()
+    }
+    let audit = t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") })
+    if audit.length() > 0 {
+      faults.push("\{name}: audit \{Repr(audit)}")
+    }
+  }
+  faults
+}
+
+///|
+test "大屏, 中屏: the chat's title starts where its words do (中屏: at the panel's words' line), not moved as 归档, the screens or the side panel's switch come and go" {
+  // (its own run first: each state's maker starts another before it reads a word)
+  new_run()
+  for win in wide_bar_windows {
+    let calls : Array[Made] = []
+    let title = wide_bar_title_words
+    // (大屏's column stands clear of the bar's start; 中屏's, on the tape, starts nearer its edge than the panel's
+    // words' line)
+    let clear = win.1 > 1000.0
+    let faults = wide_bar_aligned(steady=true, [
+      ("\{win.0} plain", title, clear, fn() { wide_bar_at(calls, w=win.1) }),
+      (
+        "\{win.0} archivable",
+        title,
+        clear,
+        fn() { wide_bar_at(calls, w=win.1, over=wide_bar_chat_field("archivable", fn(_) { Json::boolean(true) })) },
+      ),
+      ("\{win.0} screens", title, clear, fn() { wide_bar_at(calls, w=win.1, mode="chat-station-screens") }),
+      ("\{win.0} no agent", title, clear, fn() { wide_bar_at(calls, w=win.1, over=wide_bar_agents(0)) }),
+      ("\{win.0} people", title, clear, fn() { wide_bar_at(calls, w=win.1, over=wide_bar_people(7)) }),
+    ])
+    assert_eq(faults, [], msg=faults.join("\n"))
+  }
+}
+
+///|
+test "大屏: the title where the chat's words start with the sidebar folded and in a Windows window; a long one in a narrow window at the bar's start room, clear of the buttons" {
+  // (its own run first: each state's maker starts another before it reads a word)
+  new_run()
+  let long = "把发布清单里每一项都核对一遍然后整理成最终的版本再发给大家确认一下"
+  let calls : Array[Made] = []
+  let titled = wide_bar_chat_field("title", fn(_) { Json::string(long) })
+  let faults = wide_bar_aligned([
+    (
+      "folded",
+      wide_bar_title_words,
+      true,
+      fn() {
+        let t = wide_bar_at(calls)
+        @sfdesk.sidebar_toggle()
+        t.run_for(@ui.move_most_ms)
+        t
+      },
+    ),
+    ("windows", wide_bar_title_words, true, fn() { wide_bar_at(calls, platform=3, inset=true) }),
+    // (a title cut short: its box as wide as is left it; the column at 860 and on the tape nearer the bar's start than
+    // its start room)
+    ("long 860", long, false, fn() { wide_bar_at(calls, w=860.0, over=titled) }),
+    ("long 860 people", long, false, fn() { wide_bar_at(calls, w=860.0, over=wide_bar_both(wide_bar_people(7), titled)) }),
+    ("long 中屏", long, false, fn() { wide_bar_at(calls, w=600.0, over=titled) }),
+  ])
+  assert_eq(faults, [], msg=faults.join("\n"))
+}
+
+///|
+test "大屏, 中屏: under the bar a soft scroll edge, as tall as it and 16 more, in place of its ground; light and dark, 1.3x, a finger's, a Windows window's" {
+  let calls : Array[Made] = []
+  let states : Array[(String, () -> @ui.Tester)] = [
+    ("大屏", fn() { wide_bar_at(calls) }),
+    ("中屏", fn() { wide_bar_at(calls, w=720.0) }),
+    ("windows", fn() { wide_bar_at(calls, platform=3, inset=true) }),
+    ("touch", fn() { wide_bar_at(calls, w=690.0, h=840.0, platform=2, room="medium") }),
+  ]
+  for s in states {
+    for dark in [false, true] {
+      for scale in [1.0, 1.3] {
+        let t = (s.1)()
+        t.set_dark(dark)
+        t.set_font_scale(scale)
+        t.run_for(@ui.move_most_ms)
+        let msg = "\{s.0} \{if dark { "dark" } else { "light" }} \{scale}x"
+        guard wide_bar_edge(t) is Some((ex, ey, ew, eh)) else { fail("\{msg}: no edge under the bar") }
+        // (no ground of the bar's own over it: the edge is its ground)
+        let grounds = t
+          .drawn_rects()
+          .filter(fn(r) {
+            (r.0 - ex).abs() < 0.5 && (r.1 - ey).abs() < 0.5 && (r.2 - ew).abs() < 0.5 && (r.3 - (eh - 16.0)).abs() < 0.5
+          })
+        assert_eq(grounds.length(), 0, msg="\{msg}: a ground as the bar's: \{Repr(grounds)}")
+        guard wide_bar_title_at(t, wide_bar_title_words) is Some(_) else { fail("\{msg}: no title") }
+        let audit = t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("find_bar_node") })
+        assert_eq(audit, [], msg~)
+      }
+    }
+  }
+}
+
+///|
+test "大屏: the bar's empty parts beside its title drag a Windows window; under the bar, its soft edge takes no press" {
+  let calls : Array[Made] = []
+  let t = wide_bar_at(calls, platform=3, inset=true)
+  guard wide_bar_edge(t) is Some((ex, ey, _, eh)) else { fail("no edge under the bar") }
+  guard wide_bar_title_at(t, wide_bar_title_words) is Some((x, y, w, h)) else { fail("no title") }
+  let mid = y + h / 2.0
+  let keys = wide_bar_keys_x(t)
+  // (between the bar's start and the title, between the title and the buttons)
+  for px in [(ex + x) / 2.0, (x + w + keys) / 2.0] {
+    assert_true(t.drags_window_at(px, mid), msg="no drag at \{px}, \{mid}: \{t.sources_at(px, mid)}")
+  }
+  // (the edge's tail under the bar: what is under it takes the press, not the bar)
+  let bar_h = eh - 16.0
+  assert_false(t.drags_window_at(x + w / 2.0, ey + bar_h + 8.0), msg="the edge's tail drags the window")
+  let before = t.window_drags()
+  t.press_at((x + w + keys) / 2.0, mid)
+  t.release((x + w + keys) / 2.0, mid)
+  t.frame()
+  assert_eq(t.window_drags() - before, 1)
+}

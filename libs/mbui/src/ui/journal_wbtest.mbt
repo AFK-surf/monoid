@@ -503,7 +503,7 @@ test "what the drawing side did is said with the summary where its host said any
   let j = said[1].json().stringify()
   assert_true(
     j.contains(
-      "\"gpu\":{\"frames\":3,\"over_8ms\":2,\"over_16ms\":1,\"over_24ms\":1,\"worst_ms\":30,\"dropped\":2}",
+      "\"gpu\":{\"frames\":3,\"over_8ms\":2,\"over_16ms\":1,\"over_24ms\":1,\"worst_ms\":30,\"dropped\":2,\"by_page\":{\"\" :[3,2,1,1,30,2]}}".replace(old="\"\" :[", new="\"\":["),
     ),
     msg=j,
   )
@@ -550,4 +550,121 @@ test "per-piece thread cpu time is kept in notes and ui_hang JSON even below 1ms
   assert_eq(told.length(), 2)
   assert_eq(told[1].contributors[0].notes, [])
   assert_false(told[1].json().stringify().contains("\"cpu\""), msg=told[1].json().stringify())
+}
+
+///|
+test "frame_late populates late_to_screen in HangSummary and late_ms/gpu_ms/gpu_dropped on Frame contributor" {
+  let (t, clock) = journal_start()
+  defer set_work_clock(None)
+  gpu_dropped_seen.val = 0
+  let said : Array[HangSummary] = []
+  let told : Array[Hang] = []
+  hang_summary_told(Some(fn(s) { said.push(s) }))
+  hangs_told(Some(fn(h) { told.push(h) }))
+  journal_shows("Chat")
+  // Frame with late=2.5ms (<4), no hang
+  t.frame_late(2.5)
+  t.frame(ms=first_frame_ms)
+  // Frame with late=12.4ms (8..16) and GPU 28.5ms (new GPU-only hang)
+  t.frame_late(12.4)
+  gpu_frames_count(28.5, 0)
+  t.frame(ms=first_frame_ms)
+  // Frame with same 28.5ms GPU value (deduplicated: no second GPU-only hang) and late=26.2ms (>=24)
+  t.frame_late(26.2)
+  gpu_frames_count(28.5, 0)
+  t.frame(ms=first_frame_ms)
+  // Frame with dropped delta=1 triggers GPU-only hang even with same gms
+  t.frame_late(0.0)
+  gpu_frames_count(28.5, 1)
+  t.frame(ms=first_frame_ms)
+  assert_eq(told.length(), 2)
+  let j0 = told[0].json().stringify()
+  assert_true(j0.contains("\"late_ms\":12.4"), msg=j0)
+  assert_true(j0.contains("\"gpu_ms\":28.5"), msg=j0)
+  assert_true(j0.contains("\"gpu_only\":true"), msg=j0)
+  let j1 = told[1].json().stringify()
+  assert_true(j1.contains("\"gpu_dropped\":1"), msg=j1)
+  assert_true(j1.contains("\"gpu_only\":true"), msg=j1)
+  clock.val += 1000.0
+  view_event_said(fn() {  }, fn() { journal_hidden.val = true }, what="app-state")
+  assert_eq(said.length(), 1)
+  let sj = said[0].json().stringify()
+  assert_true(
+    sj.contains("\"late_to_screen\":{\"bounds\":[4,8,16,24],\"counts\":[1,0,1,0,1],\"worst_ms\":26.2}"),
+    msg=sj,
+  )
+  assert_true(sj.contains("\"by_page\":{\"Chat\":[3,3,3,3,28.5,1]}"), msg=sj)
+}
+
+///|
+test "long session auto-flushes HangSummary every 10 minutes and preserves current page name" {
+  let (t, clock) = journal_start()
+  defer set_work_clock(None)
+  let said : Array[HangSummary] = []
+  hang_summary_told(Some(fn(s) { said.push(s) }))
+  journal_shows("Home")
+  t.draw()
+  assert_eq(said.length(), 0)
+  // Advance 9 minutes: no roll yet
+  clock.val += 540000.0
+  t.draw()
+  assert_eq(said.length(), 0)
+  // Advance past 10 minutes: rolls summary and resets counts while preserving "Home"
+  clock.val += 70000.0
+  t.draw()
+  assert_eq(said.length(), 1)
+  assert_eq(said[0].frames, 3)
+  assert_eq(said[0].by_page.map(fn(p) { p.0 }), ["Home"])
+  assert_eq(journal_shown(), "Home")
+  // Subsequent frame starts a fresh window under "Home"
+  clock.val += 1000.0
+  t.draw()
+  clock.val += 1000.0
+  view_event_said(fn() {  }, fn() { journal_hidden.val = true }, what="app-state")
+  assert_eq(said.length(), 2)
+  assert_eq(said[1].frames, 1)
+  assert_eq(said[1].by_page.map(fn(p) { p.0 }), ["Home"])
+}
+
+///|
+test "mem_peak_mb is sampled into HangSummary JSON and omitted when host reports <= 0" {
+  let (t, clock) = journal_start()
+  defer set_work_clock(None)
+  let said : Array[HangSummary] = []
+  hang_summary_told(Some(fn(s) { said.push(s) }))
+  // Default FakeHost returns -1.0 -> omitted
+  t.draw()
+  clock.val += 1000.0
+  view_event_said(fn() {  }, fn() { journal_hidden.val = true }, what="app-state")
+  assert_false(said[0].json().stringify().contains("\"mem_peak_mb\""), msg=said[0].json().stringify())
+  // With sampled memory values, peak is emitted and reset between windows
+  let mem = Ref(128.4)
+  mem_mb_clock.val = Some(fn() { mem.val })
+  defer { mem_mb_clock.val = None }
+  t.draw()
+  mem.val = 256.7
+  clock.val += 1000.0
+  view_event_said(fn() {  }, fn() { journal_hidden.val = true }, what="app-state")
+  assert_true(said[1].json().stringify().contains("\"mem_peak_mb\":256.7"), msg=said[1].json().stringify())
+}
+
+///|
+test "after_build callbacks are wrapped in work_part with sanitized key names" {
+  let clock = Ref(1000.0)
+  let t = Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), fn() { c.text("x", wrap=false) |> ignore }) |> ignore
+    c.after_build("menu-bar", fn() { clock.val += 15.0 })
+    c.after_build("tell/secret-id-123", fn() { clock.val += 12.0 })
+  })
+  journal_reset()
+  set_work_clock(Some(fn() { clock.val }))
+  defer set_work_clock(None)
+  let told : Array[Hang] = []
+  hangs_told(Some(fn(h) { told.push(h) }))
+  t.draw()
+  assert_eq(told.length(), 1)
+  let j = told[0].json().stringify()
+  assert_true(j.contains("\"part\":\"after menu-bar\",\"ms\":15"), msg=j)
+  assert_true(j.contains("\"part\":\"after tell\",\"ms\":12"), msg=j)
+  assert_false(j.contains("secret-id-123"), msg=j)
 }

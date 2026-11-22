@@ -286,6 +286,36 @@ test "desk: Markdown in the viewer's reader, its find open: Esc closes the find,
 }
 
 ///|
+test "Markdown's 源码 from the reader's bar: its words as they are written, 预览 the reader again (大屏 and 小屏)" {
+  for size in [(1280.0, 800.0), (390.0, 844.0)] {
+    let held = Ref(None)
+    let t = outer_viewer("md", held, w=size.0, h=size.1)
+    outer_give(t, held, "说明.md")
+    t.run_for(@sf.reader_place_ms)
+    let v = viewer.get().unwrap()
+    let words = fn() { t.words().map(fn(w) { w.0 }) }
+    // (read: the heading drawn as a heading, no # of its source)
+    assert_true(!v.source && @sfbase.vf_reads(v) && !words().iter().any(fn(w) { w.has_prefix("# 发布前要做的") }), msg="\{size.0}: read: \{Repr(words())}")
+    // (小屏: its bars brought by a tap)
+    if size.0 < 600.0 {
+      t.tap(195.0, 420.0)
+      t.run_for(@sf.reader_bars_ms)
+    }
+    assert_true(outer_buttons(t).contains("源码"), msg="\{size.0}: the reader's 源码: \{Repr(outer_buttons(t))}")
+    t.act(Button, Activate, label="源码")
+    t.run_for(@ui.move_most_ms)
+    assert_true(v.source && !@sfbase.vf_reads(v) && words().iter().any(fn(w) { w.has_prefix("# 发布前要做的") }), msg="\{size.0}: 源码: \{v.source} \{Repr(words())}")
+    // (the viewer's own bar now, its 预览 and 源码 a choice, 源码 chosen)
+    let options = t.semantics().filter(fn(s) { s.role == @ui.Role::Radio }).map(fn(s) { (s.label, s.check) })
+    assert_true(options.contains(("源码", Some(@ui.Check::On))), msg="\{size.0}: its bar's 预览 and 源码: \{Repr(options)}")
+    t.tap_text("预览")
+    t.run_for(@ui.move_most_ms)
+    t.run_for(@sf.reader_place_ms)
+    assert_true(!v.source && @sfbase.vf_reads(v) && !words().iter().any(fn(w) { w.has_prefix("# 发布前要做的") }), msg="\{size.0}: 预览: \{Repr(words())}")
+  }
+}
+
+///|
 test "beside an iPhone Duo's own bars: a PDF, a file of no kind and a table hand them no picture's actions (none to mark, copy or fit)" {
   for at in [("pdf", "设计说明.pdf"), ("none", "备份.bin"), ("csv", "数据.csv")] {
     let held = Ref(None)

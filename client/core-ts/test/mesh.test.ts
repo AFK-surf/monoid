@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { createSocket } from "node:dgram";
 import { suite, test as register, type TestOptions } from "node:test";
-import { Effect, Fiber, Queue } from "effect";
+import { Deferred, Effect, Fiber, Queue } from "effect";
 import type { Credential } from "../src/cloud.ts";
 import type { Inner } from "../src/core.ts";
 import { CoreError, HostError } from "../src/error.ts";
@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_KEPT_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_KEPT_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REBIND_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_KEPT_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_KEPT_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { keptFirst } from "../src/station/calls.ts";
@@ -4402,6 +4402,206 @@ for (const [net, ms, within] of [["good", 40, 1_000], ["weak", 200, 2_000]] as c
     assert.equal(more, 0);
   });
 }
+
+sim("concurrent_rebind_deduplicates_slow_binds_handles_caller_interruption_and_leaks_no_endpoint", async (s) => {
+  const a = s.relay("https://a.relay.test/");
+  const b = s.relay("https://b.relay.test/");
+  const st1 = await s.stationOn(a, [b]);
+  const st2 = await s.stationOn(a, [b]);
+  const st3 = await s.stationOn(a, [b]);
+  const baseIroh = s.iroh;
+  let mainBinds = 0;
+  let gate: Deferred.Deferred<void> | null = null;
+  const boundEndpoints: { closed: boolean }[] = [];
+  const wrappedIroh: Iroh = {
+    bind: (o) =>
+      Effect.gen(function* () {
+        const isMain = o.relayOnly === false && o.lookup === true;
+        if (isMain) {
+          mainBinds++;
+          if (gate !== null) {
+            const g = gate;
+            yield* Deferred.await(g);
+          }
+        }
+        const ep = yield* baseIroh.bind(o);
+        const rec = { closed: false };
+        boundEndpoints.push(rec);
+        return {
+          ...ep,
+          close: () =>
+            Effect.andThen(
+              ep.close(),
+              Effect.sync(() => {
+                rec.closed = true;
+              }),
+            ),
+        };
+      }),
+  };
+
+  const mesh = await s.run(Mesh.make({ ...env(s), iroh: wrappedIroh }, [a]));
+  assert.equal(mainBinds, 1);
+
+  // Trigger #stuck = true with an unanswered dial, and keep st2/st3 unanswered until after f3 starts.
+  st1.unanswered(1);
+  await s.run(mesh.link(st1.id(), grants("ok", { n: 0 }))).then(
+    () => null,
+    () => null,
+  );
+  st2.unanswered(1);
+
+  // Gate subsequent main binds so they stay in flight past REBIND_MS.
+  gate = Deferred.makeUnsafe<void>();
+  const f1 = s.runner.fork(mesh.link(st1.id(), grants("ok", { n: 0 })));
+  const f2 = s.runner.fork(mesh.link(st2.id(), grants("ok", { n: 0 })));
+  await s.until(() => mainBinds === 2);
+
+  // Advance past REBIND_MS while bind #2 is still in flight; a 3rd link() must NOT start bind #3.
+  await s.time.pass(REBIND_MS + 500);
+  const f3 = s.runner.fork(mesh.link(st3.id(), grants("ok", { n: 0 })));
+  await s.time.pass(100);
+  assert.equal(mainBinds, 2, "slow in-flight rebind must be single-flight across callers past REBIND_MS");
+
+  // Interrupting the first caller must not cancel or leak the in-flight rebind.
+  await s.run(Fiber.interrupt(f1));
+  await s.time.pass(100);
+
+  // Trigger retune([a, b]) mid-rebind: should queue one follow-up rebind, not start concurrently.
+  mesh.retune([a, b], []);
+  await s.time.pass(100);
+  assert.equal(mainBinds, 2, "retune during in-flight rebind must wait for it instead of stacking");
+
+  // Release the first gate while holding a second gate for the queued retune bind,
+  // so f3 finishes its handshake on endpoint #2 before SimNet replaces the device-key slot with endpoint #3.
+  const firstGate = gate;
+  const secondGate = Deferred.makeUnsafe<void>();
+  gate = secondGate;
+  Deferred.doneUnsafe(firstGate, Effect.void);
+
+  const l3 = await s.settle(s.runner.run(Fiber.join(f3)));
+  assert.equal(l3.closed(), null);
+  await s.run(Fiber.interrupt(f2));
+  await s.until(() => mainBinds === 3);
+  gate = null;
+  Deferred.doneUnsafe(secondGate, Effect.void);
+  await s.until(() => mesh.endpoint().relayStatus().length === 2);
+  assert.equal(mainBinds, 3, "initial bind (1) + single-flight rebind (2) + one queued retune rebind (3)");
+
+  await s.run(mesh.close());
+  await s.until(() => boundEndpoints.every((e) => e.closed), RETIRE_MS + 5_000);
+  assert.ok(boundEndpoints.every((e) => e.closed), "every bound endpoint must be closed with zero leaks");
+  await st1.close();
+  await st2.close();
+  await st3.close();
+});
+
+sim("pinned_endpoint_bind_survives_first_caller_interruption_without_deadlock_or_leak", async (s) => {
+  const a = s.relay("https://a.relay.test/");
+  const b = s.relay("https://b.relay.test/");
+  const station = await s.stationOn(a, [b]);
+  const baseIroh = s.iroh;
+  let pinnedBinds = 0;
+  let pinnedGate: Deferred.Deferred<void> | null = Deferred.makeUnsafe<void>();
+  const boundEndpoints: { relayOnly: boolean; closed: boolean }[] = [];
+  const wrappedIroh: Iroh = {
+    bind: (o) =>
+      Effect.gen(function* () {
+        if (o.relayOnly === true && o.relayUrls.length === 1 && o.relayUrls[0] === b) {
+          pinnedBinds++;
+          if (pinnedGate !== null) {
+            const g = pinnedGate;
+            yield* Deferred.await(g);
+          }
+        }
+        const ep = yield* baseIroh.bind(o);
+        const rec = { relayOnly: o.relayOnly, closed: false };
+        boundEndpoints.push(rec);
+        return {
+          ...ep,
+          close: () =>
+            Effect.andThen(
+              ep.close(),
+              Effect.sync(() => {
+                rec.closed = true;
+              }),
+            ),
+        };
+      }),
+  };
+
+  const mesh = await s.run(Mesh.make({ ...env(s), iroh: wrappedIroh }, [a, b]));
+  const addr1 = `w1/${station.id()}`;
+  const addr2 = `w2/${station.id()}`;
+
+  // Open a link on the main endpoint first, then run remeasure(addr1) which dials #pinnedEndpoint(b)
+  // directly on the caller's fiber via #explore -> #dialPinned.
+  const link1 = await s.run(mesh.link(addr1, grants("ok", { n: 0 })), 20_000);
+  assert.equal((await request(s, link1, head("/admin/api/overview"))).status, 200);
+  const f1 = s.runner.fork(mesh.remeasure(addr1));
+  await s.until(() => pinnedBinds === 1);
+
+  // Interrupt the remeasure fiber while #pinnedEndpoint(b) is still awaiting bind().
+  await s.run(Fiber.interrupt(f1));
+  await s.time.pass(50);
+
+  // Release the gate now that the first caller's fiber was interrupted.
+  const g = pinnedGate;
+  pinnedGate = null;
+  Deferred.doneUnsafe(g, Effect.void);
+
+  // A subsequent dial that needs relay b (a turned off) and mesh.close() must not deadlock on #pinned.get(b).
+  const link2 = await s.run(mesh.link(addr2, grants("ok", { n: 0 }), undefined, [a]), 20_000);
+  assert.equal((await request(s, link2, head("/admin/api/overview"))).status, 200);
+  assert.equal(pinnedBinds, 1, "only one pinned bind should be issued for relay b");
+
+  await s.run(mesh.close(), 20_000);
+  await s.until(() => boundEndpoints.every((e) => e.closed), RETIRE_MS + 5_000);
+  assert.ok(boundEndpoints.every((e) => e.closed), "every bound endpoint must be closed with zero leaks");
+  await station.close();
+});
+
+sim("concurrent_onARelay_waiters_share_a_single_poll_loop_and_wake_together", async (s) => {
+  // Part 1: 20 concurrent waiters on an endpoint whose relays never connect share one poll loop.
+  let looks = 0;
+  const offlineEp = { relayStatus: () => (looks++, [{ url: "relay", connected: false }]) };
+  const from = s.time.now();
+  await s.run(
+    Effect.all(
+      Array.from({ length: 20 }, () => onARelay(offlineEp, false)),
+      { concurrency: "unbounded" },
+    ),
+    ONTO_MAX_MS + 1_000,
+  );
+  const elapsed = s.time.now() - from;
+  assert.ok(elapsed >= ONTO_MAX_MS && elapsed <= ONTO_MAX_MS + 250, `gave up after ${elapsed} ms`);
+  assert.ok(looks <= 130, `expected <= 130 relayStatus calls across 20 waiters, got ${looks}`);
+
+  // Part 2: 20 concurrent waiters all wake promptly when the relay connects at +30ms.
+  let wakeLooks = 0;
+  const started = s.time.now();
+  const on = started + 30;
+  const wakingEp = { relayStatus: () => (wakeLooks++, [{ url: "relay", connected: s.time.now() >= on }]) };
+  const wakeTimes: number[] = [];
+  await s.run(
+    Effect.all(
+      Array.from({ length: 20 }, () =>
+        Effect.andThen(
+          onARelay(wakingEp, false),
+          Effect.sync(() => {
+            wakeTimes.push(s.time.now());
+          }),
+        ),
+      ),
+      { concurrency: "unbounded" },
+    ),
+  );
+  assert.equal(wakeTimes.length, 20);
+  for (const tWake of wakeTimes) {
+    assert.ok(tWake >= on && tWake - on <= 40, `waiter woke at +${tWake - on} ms after relay connected`);
+  }
+  assert.ok(wakeLooks <= 10, `expected <= 10 relayStatus calls before connecting, got ${wakeLooks}`);
+});
 
 suite("mesh", { concurrency: true }, () => {
   for (const [name, options, body] of tests) register(name, options, body);

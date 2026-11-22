@@ -862,17 +862,39 @@ fn frame_paint(c : Ctx, root : Int, alone? : Bool = false) -> Unit {
 }
 
 ///|
+/// Sanitize an `after_build` key into a static, privacy-safe work_part name: keep only the prefix before the first
+/// `/`, ASCII letters/digits/`-`/`_`, up to 32 characters.
+fn after_build_part_name(key : String) -> String {
+  let out = StringBuilder()
+  let mut len = 0
+  for ch in key {
+    if ch == '/' || len >= 32 {
+      break
+    }
+    if ch.is_ascii_alphabetic() || ch.is_ascii_digit() || ch == '-' || ch == '_' {
+      out.write_char(ch)
+      len += 1
+    }
+  }
+  let name = out.to_string()
+  if name == "" { "unknown" } else { name }
+}
+
+///|
 /// `f`, what the view tells outside of what it builds (a call to its core: the chat shown and its end seen), done once
 /// the frame's builds are over, as the last of them says it: a frame is built again while what the view read changes
 /// (frame_body), and what an earlier build said, from what it read then, is let go. By `key` in the scope it is said
 /// in: said twice in a build, the later, where the first was said (said in order: what is kept says it again as it is
 /// drawn again, said.mbt). Said outside a frame's build, at once.
 pub fn Ctx::after_build(self : Ctx, key : String, f : () -> Unit) -> Unit {
+  let wrapped = fn() {
+    @hostapi.work_part(fn() { "after " + after_build_part_name(key) }, f)
+  }
   if !building.val {
-    f()
+    wrapped()
     return
   }
-  self.tells.push((self.id("\u{2}after-build/" + key), f))
+  self.tells.push((self.id("\u{2}after-build/" + key), wrapped))
 }
 
 ///|

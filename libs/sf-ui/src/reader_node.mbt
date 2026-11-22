@@ -26,7 +26,8 @@
 /// Tab for a tab over the whole window or in a window of its own, PanelTab for a tab in the chat's panel (wider column:
 /// panel_column_ems), `width()` its width (its panel beside the text where it has room for both). `move_beside`: while
 /// its first says so, a
-/// desktop's bar's 移到侧边 (its file to a tab beside the page), where offered.
+/// desktop's bar's 移到侧边 (its file to a tab beside the page), where offered. `source`: 源码 in its bars (not in a tab,
+/// whose own tools say it), its text shown as it is written in place of the reader.
 #callsite(autofill(loc))
 pub fn reader_node(
   parent : @view.View,
@@ -38,6 +39,7 @@ pub fn reader_node(
   host? : ReaderHost = OwnPage,
   width? : () -> Double,
   move_beside? : (() -> Bool, () -> Unit)? = None,
+  source? : (() -> Unit)? = None,
   loc~ : SourceLoc,
 ) -> @view.View {
   let beside = host != OwnPage
@@ -123,9 +125,9 @@ pub fn reader_node(
         fn(c, phone) {
           c.over(Is(true)) |> ignore
           if phone.untracked() {
-            reader_narrow_chrome(c, r, file, back_label, back, paper, tab_w)
+            reader_narrow_chrome(c, r, file, back_label, back, source, paper, tab_w)
           } else {
-            reader_desk_chrome(c, r, file, back_label, back, move_beside, paper, tab_w)
+            reader_desk_chrome(c, r, file, back_label, back, move_beside, source, paper, tab_w)
           }
         },
       )
@@ -642,7 +644,7 @@ fn reader_chunk_node(
 
 ///|
 /// What floats over the paper on 大屏 and 中屏 in `parent`: the bar (back by name, the file's name, its chapter, how far
-/// read and its size; 目录 · 搜索 · 排版 · 移到侧边 · 下载), gone as the text is read on down while no panel is open; what
+/// read and its size; 目录 · 搜索 · 排版 · 移到侧边 · 源码 · 下载), gone as the text is read on down while no panel is open; what
 /// was found, 10 under it over the text's middle, clear of the panel; the hairline along the foot; the contents' or the
 /// search's panel docked at the right under the bar (the layout's: reader_layout_nodes). The pointer at the window's
 /// top brings the bar back. The bar's middle by how wide the reader is laid out (`width`, reader_node's).
@@ -654,6 +656,7 @@ fn reader_desk_chrome(
   back_label : () -> String,
   back : () -> Unit,
   move_beside : (() -> Bool, () -> Unit)?,
+  source : (() -> Unit)?,
   paper : () -> ReaderPaper,
   width : () -> Double,
   loc~ : SourceLoc,
@@ -746,6 +749,20 @@ fn reader_desk_chrome(
             )
             |> ignore
           })
+        None => ()
+      }
+      // (源码: its text as it is written, in place of this reader)
+      match source {
+        Some(f) =>
+          tool_node(
+            row,
+            fn() { { icon: "file-code", label: t("web-main.preview.source"), on: false, disabled: false } },
+            ink,
+            corner,
+            f,
+            tip=tips,
+          )
+          |> ignore
         None => ()
       }
       tool_node(
@@ -1248,6 +1265,7 @@ fn reader_narrow_chrome(
   file : ViewerFile,
   back_label : () -> String,
   back : () -> Unit,
+  source : (() -> Unit)?,
   paper : () -> ReaderPaper,
   width : () -> Double,
   loc~ : SourceLoc,
@@ -1354,9 +1372,19 @@ fn reader_narrow_chrome(
           })
         })
         |> ignore
-        // 搜索, then 下载, as every file opened has it (the desktop's bar's last)
+        // 源码 (where it is offered), 搜索, then 下载, as every file opened has it (the desktop's bar's last)
         bar.box(fn(end) {
           style_node(end, fn() { narrow_top_end.then(@ui.style(justify=JEnd, gap=keys_gap(size=narrow_key_side))) })
+          match source {
+            Some(f) =>
+              @headless.button(end, fn() { t("web-main.preview.source") }, fn(_) { f() }, fn(b, s) {
+                style_node(b, fn() { narrow_top_button })
+                reader_lit_over(b, s)
+                icon_node(b, "file-code", viewer_back_icon, By(fn() { paper().ink })) |> ignore
+              })
+              |> ignore
+            None => ()
+          }
           @headless.toggle(end, Button, fn() { t("web-pages.drive.reader.find") }, fn() { r.panel.get() == Find }, fn(_) {
             reader_toggle_panel(r, Find)
           }, fn(b, s) {

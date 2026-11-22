@@ -78,11 +78,12 @@ pub fn vf_kind_label(kind : PKind?) -> String {
 }
 
 ///|
-/// Whether a preview offers the 预览 / 源码 switch once its bytes are here.
-/// (`.mbui` / `.wasm` mini-programs run without a human-facing source toggle; agents read their source and state directly.)
+/// Whether a preview offers the 预览 / 源码 switch once its bytes are here: whatever text it renders (a table, a page,
+/// Markdown read in the reader). (`.mbui` / `.wasm` mini-programs run without a human-facing source toggle; agents
+/// read their source and state directly.)
 pub fn vf_has_source(vw : Viewer) -> Bool {
   match vw.shown_kind() {
-    Some(KCsv) | Some(KHtml) => true
+    Some(KCsv) | Some(KHtml) | Some(KMarkdown) => true
     _ => false
   }
 }
@@ -250,7 +251,8 @@ pub fn Viewer::read_key(self : Viewer) -> String {
 ///|
 /// Whether a preview reads as a text on a desktop.
 pub fn vf_reads(vw : Viewer) -> Bool {
+  vw.source_told.get() |> ignore
   vw.bytes.get() is Some(_) &&
-  (vw.shown_kind() == Some(KMarkdown) || vw.shown_kind() == Some(KText)) &&
+  ((vw.shown_kind() == Some(KMarkdown) && !vw.source) || vw.shown_kind() == Some(KText)) &&
   !vw.told_of()
 }

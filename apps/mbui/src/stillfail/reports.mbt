@@ -103,13 +103,20 @@ fn reports_start() -> Unit {
   @ui.hang_summary_told(
     Some(fn(s) {
       report_bar_tick()
-      let (held, unsent) = hang_gate.flush()
+      let (held, unsent, unsent_by) = hang_gate.flush()
       for h in held {
         host_tell("hang", h.json().stringify(), "", 0, 0) |> ignore
       }
       let json = match s.json() {
         Object(m) => {
           m["hangs_unsent"] = Json::number(unsent.to_double())
+          if !unsent_by.is_empty() {
+            let by : Map[String, Json] = Map([])
+            for k, v in unsent_by {
+              by[k] = Json::number(v.to_double())
+            }
+            m["hangs_unsent_by"] = Json::object(by)
+          }
           // (what the core said meanwhile to ids nothing held, let be unread, by what the ids were: how many, their
           // length; none: not said)
           let unheld : Map[String, Json] = Map([])

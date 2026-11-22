@@ -329,13 +329,175 @@ static NSDictionary *sf_report_event(NSDictionary *kept, NSString *rid, NSString
   };
 }
 
+/// A Hermes `.cpuprofile` frame's short name (`name@funcLine:funcColumn`, stripping `(...)` suffix), matching Android's
+/// `MemoryWatch.shortName`.
+__attribute__((unused)) static NSString *sf_js_short_name(NSDictionary *frame) {
+  NSString *name = [frame[@"name"] isKindOfClass:NSString.class] ? frame[@"name"] : @"";
+  NSRange p = [name rangeOfString:@"("];
+  if (p.location != NSNotFound) name = [name substringToIndex:p.location];
+  if (!name.length) name = @"(anonymous)";
+  id line = frame[@"funcLine"];
+  if (line && line != NSNull.null) {
+    NSString *l = sf_string(line) ?: @"";
+    id col = frame[@"funcColumn"];
+    NSString *c = (col && col != NSNull.null) ? (sf_string(col) ?: @"") : @"";
+    return [NSString stringWithFormat:@"%@@%@:%@", name, l, c];
+  }
+  return name;
+}
+
+/// Summarizes a Hermes `.cpuprofile` JSON trace into `{busy_percent, functions, stacks}` (top 25 inclusive functions,
+/// top 8 stacks capped at 12 frames joined by `" < "`): matches Android's `MemoryWatch.hottest`.
+__attribute__((unused)) static NSDictionary *sf_hottest_js(NSData *traceData) {
+  if (!traceData.length) return nil;
+  NSDictionary *trace = sf_dict([NSJSONSerialization JSONObjectWithData:traceData options:0 error:nil]);
+  NSDictionary *frames = sf_dict(trace[@"stackFrames"]);
+  NSArray *samples = sf_array(trace[@"samples"]);
+  if (!frames || !samples) return nil;
+  NSMutableDictionary<NSString *, NSNumber *> *inclusive = [NSMutableDictionary dictionary];
+  NSMutableDictionary<NSString *, NSNumber *> *stacks = [NSMutableDictionary dictionary];
+  NSInteger busy = 0;
+  for (id s in samples) {
+    NSDictionary *sample = sf_dict(s);
+    NSString *fid = sample ? sf_string(sample[@"sf"]) : nil;
+    NSMutableArray<NSString *> *real = [NSMutableArray array];
+    NSMutableSet<NSString *> *seenIds = [NSMutableSet set];
+    while (fid && ![seenIds containsObject:fid] && seenIds.count < 256) {
+      [seenIds addObject:fid];
+      NSDictionary *frame = sf_dict(frames[fid]);
+      if (!frame) break;
+      NSString *n = sf_js_short_name(frame);
+      if (![n isEqualToString:@"[root]"]) [real addObject:n];
+      fid = sf_string(frame[@"parent"]);
+    }
+    if (!real.count) continue;
+    busy++;
+    for (NSString *n in [NSSet setWithArray:real]) inclusive[n] = @([inclusive[n] integerValue] + 1);
+    NSUInteger depth = MIN((NSUInteger)12, real.count);
+    NSString *key = [[real subarrayWithRange:NSMakeRange(0, depth)] componentsJoinedByString:@" < "];
+    stacks[key] = @([stacks[key] integerValue] + 1);
+  }
+  NSInteger all = MAX((NSInteger)1, (NSInteger)samples.count);
+  NSArray<NSString *> *fnKeys = [inclusive.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+    NSComparisonResult c = [inclusive[b] compare:inclusive[a]];
+    return c != NSOrderedSame ? c : [a compare:b];
+  }];
+  NSMutableDictionary<NSString *, NSNumber *> *functions = [NSMutableDictionary dictionary];
+  for (NSUInteger i = 0; i < fnKeys.count && i < 25; i++) {
+    NSString *k = fnKeys[i];
+    functions[k] = @(([inclusive[k] integerValue] * 100) / all);
+  }
+  NSArray<NSString *> *stKeys = [stacks.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+    NSComparisonResult c = [stacks[b] compare:stacks[a]];
+    return c != NSOrderedSame ? c : [a compare:b];
+  }];
+  NSMutableArray<NSDictionary *> *top = [NSMutableArray array];
+  for (NSUInteger i = 0; i < stKeys.count && i < 8; i++) {
+    NSString *k = stKeys[i];
+    [top addObject:@{@"percent" : @(([stacks[k] integerValue] * 100) / all), @"stack" : k}];
+  }
+  return @{
+    @"busy_percent" : @((busy * 100) / all),
+    @"functions" : functions,
+    @"stacks" : top,
+  };
+}
+
+/// Builds a PostHog `$exception` event for a macOS `MemoryRunaway` detection, aligned with Android's `MemoryWatch`.
+__attribute__((unused)) static NSDictionary *sf_memory_runaway_event(
+    uint64_t footprintBeforeBytes, uint64_t footprintAfterBytes, int64_t windowMs,
+    NSDictionary *statsBefore, NSDictionary *statsAfter, NSDictionary *jsHot,
+    NSString *account, NSDictionary *here, double atMs, NSString *uuid) {
+  if (!account.length || !uuid.length) return nil;
+  int64_t ms = windowMs > 0 ? windowMs : 1;
+  int64_t footprintMb = (int64_t)(footprintAfterBytes / (1024ULL * 1024ULL));
+  int64_t diffBytes = (int64_t)footprintAfterBytes - (int64_t)footprintBeforeBytes;
+  int64_t grewBytesPerMin = (int64_t)(((__int128)diffBytes * 60000) / ms);
+  int64_t grewMbPerMin = grewBytesPerMin / (1024LL * 1024LL);
+  int64_t windowS = (ms + 500) / 1000;
+
+  NSDictionary *csBefore = sf_dict(statsBefore[@"calls"]);
+  NSDictionary *csAfter = sf_dict(statsAfter[@"calls"]);
+  NSMutableDictionary<NSString *, NSNumber *> *deltaMap = [NSMutableDictionary dictionary];
+  NSMutableDictionary<NSString *, NSNumber *> *totalMap = [NSMutableDictionary dictionary];
+  NSMutableDictionary<NSString *, NSNumber *> *unansMap = [NSMutableDictionary dictionary];
+  for (id rawOp in csAfter) {
+    NSString *op = sf_string(rawOp);
+    if (!op) continue;
+    NSArray *vAfter = sf_array(csAfter[rawOp]);
+    int64_t totalAfter = (vAfter.count > 0 && [vAfter[0] isKindOfClass:NSNumber.class]) ? [vAfter[0] longLongValue] : 0;
+    NSArray *vBefore = sf_array(csBefore[rawOp]);
+    int64_t totalBefore = (vBefore.count > 0 && [vBefore[0] isKindOfClass:NSNumber.class]) ? [vBefore[0] longLongValue] : 0;
+    int64_t d = totalAfter - totalBefore;
+    if (d > 0) deltaMap[op] = @(d);
+    totalMap[op] = @(totalAfter);
+    int64_t unans = (vAfter.count > 1 && [vAfter[1] isKindOfClass:NSNumber.class]) ? [vAfter[1] longLongValue] : 0;
+    if (unans > 0) unansMap[op] = @(unans);
+  }
+  NSArray<NSString *> *busiestKeys = [deltaMap.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+    NSComparisonResult c = [deltaMap[b] compare:deltaMap[a]];
+    return c != NSOrderedSame ? c : [a compare:b];
+  }];
+  NSMutableDictionary<NSString *, NSNumber *> *shellCalls = [NSMutableDictionary dictionary];
+  for (NSUInteger i = 0; i < busiestKeys.count && i < 15; i++) shellCalls[busiestKeys[i]] = deltaMap[busiestKeys[i]];
+
+  NSArray<NSString *> *totalKeys = [totalMap.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+    NSComparisonResult c = [totalMap[b] compare:totalMap[a]];
+    return c != NSOrderedSame ? c : [a compare:b];
+  }];
+  NSMutableDictionary<NSString *, NSNumber *> *shellCallsTotal = [NSMutableDictionary dictionary];
+  for (NSUInteger i = 0; i < totalKeys.count && i < 20; i++) shellCallsTotal[totalKeys[i]] = totalMap[totalKeys[i]];
+
+  NSArray<NSString *> *unansKeys = [unansMap.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+    NSComparisonResult c = [unansMap[b] compare:unansMap[a]];
+    return c != NSOrderedSame ? c : [a compare:b];
+  }];
+  NSMutableDictionary<NSString *, NSNumber *> *shellUnanswered = [NSMutableDictionary dictionary];
+  for (NSUInteger i = 0; i < unansKeys.count && i < 15; i++) shellUnanswered[unansKeys[i]] = unansMap[unansKeys[i]];
+
+  NSMutableString *top = [NSMutableString string];
+  for (NSUInteger i = 0; i < busiestKeys.count && i < 3; i++) {
+    if (i > 0) [top appendString:@", "];
+    [top appendFormat:@"%@ \u00d7%@", busiestKeys[i], deltaMap[busiestKeys[i]]];
+  }
+  NSString *value = [NSString stringWithFormat:@"footprint %lld MB, %+lld MB/min; shell: %@",
+                                               footprintMb, grewMbPerMin, top.length ? top : @"quiet"];
+
+  NSMutableDictionary *p = [here mutableCopy] ?: [NSMutableDictionary dictionary];
+  p[@"reason"] = @"memory_runaway";
+  p[@"footprint_mb"] = @(footprintMb);
+  p[@"footprint_grew_mb_per_min"] = @(grewMbPerMin);
+  p[@"window_s"] = @(windowS);
+  p[@"shell_calls"] = shellCalls;
+  p[@"shell_calls_total"] = shellCallsTotal;
+  p[@"shell_unanswered"] = shellUnanswered;
+  if (statsAfter[@"handles"] && statsAfter[@"handles"] != NSNull.null) p[@"shell_handles"] = statsAfter[@"handles"];
+  if (statsAfter[@"sqls"] && statsAfter[@"sqls"] != NSNull.null) p[@"shell_sqls"] = statsAfter[@"sqls"];
+  if (jsHot) p[@"js"] = jsHot;
+  p[@"$exception_level"] = @"error";
+  p[@"$exception_list"] = @[ @{
+    @"type" : @"MemoryRunaway",
+    @"value" : value,
+    @"mechanism" : @{@"handled" : @YES, @"synthetic" : @NO, @"type" : @"generic"},
+  } ];
+  return @{
+    @"event" : @"$exception",
+    @"distinct_id" : account,
+    @"uuid" : uuid,
+    @"timestamp" : sf_iso(atMs),
+    @"properties" : p,
+  };
+}
+
 #ifndef SF_REPORTS_PURE
 #import <MetricKit/MetricKit.h>
 #if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
 #else
 #import <AppKit/AppKit.h>
+#include <mach/mach.h>
 #include <sys/sysctl.h>
+#include <unistd.h>
 #endif
 #include <stdatomic.h>
 #include <time.h>
@@ -614,6 +776,92 @@ static void sf_watchdog_start(void) {
   dispatch_resume(wd_timer);
 }
 
+#if !TARGET_OS_IPHONE
+__attribute__((weak)) char *mb_core_shell_stats(size_t *out_len) {
+  if (out_len) *out_len = 0;
+  return NULL;
+}
+__attribute__((weak)) int mb_core_sample_js(int seconds, const char *path) {
+  (void)seconds;
+  (void)path;
+  return 0;
+}
+
+/// Physical footprint past which macOS reports `MemoryRunaway` once per process (aligned with Android MemoryWatch).
+static const uint64_t SF_MEM_LIMIT = 1536ULL * 1024 * 1024;
+static const uint64_t SF_MEM_EVERY_SEC = 30;
+static const int SF_MEM_WINDOW_SEC = 15;
+
+static dispatch_queue_t mem_watch_queue;
+static dispatch_source_t mem_watch_timer;
+
+static uint64_t sf_phys_footprint(void) {
+  task_vm_info_data_t info;
+  mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) != KERN_SUCCESS) return 0;
+  return info.phys_footprint;
+}
+
+static int64_t sf_monotonic_ms(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (int64_t)t.tv_sec * 1000 + (int64_t)(t.tv_nsec / 1000000);
+}
+
+static NSDictionary *sf_shell_stats_dict(void) {
+  if (!mb_core_shell_stats) return nil;
+  size_t len = 0;
+  char *raw = mb_core_shell_stats(&len);
+  if (!raw) return nil;
+  NSData *d = [NSData dataWithBytesNoCopy:raw length:len freeWhenDone:YES];
+  return sf_dict([NSJSONSerialization JSONObjectWithData:d options:0 error:nil]);
+}
+
+/// Checks `phys_footprint` every 30 s on a background serial queue; once >= 1.5 GiB, cancels itself and (if reporting
+/// is enabled) samples shell stats and Hermes JS for 15 s before sending a `MemoryRunaway` `$exception` to PostHog.
+static void sf_mem_watch_start(void) {
+  dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_BACKGROUND, 0);
+  mem_watch_queue = dispatch_queue_create("stillfail-memory", attr);
+  mem_watch_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, mem_watch_queue);
+  dispatch_source_set_timer(mem_watch_timer,
+                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)SF_MEM_EVERY_SEC * NSEC_PER_SEC),
+                            SF_MEM_EVERY_SEC * NSEC_PER_SEC,
+                            5 * NSEC_PER_SEC);
+  dispatch_source_set_event_handler(mem_watch_timer, ^{
+    uint64_t fpBefore = sf_phys_footprint();
+    if (fpBefore < SF_MEM_LIMIT) return;
+    dispatch_source_cancel(mem_watch_timer);
+    mem_watch_timer = nil;
+    if (!sf_reporting()) return;
+    NSDictionary *statsBefore = sf_shell_stats_dict();
+    int64_t t0 = sf_monotonic_ms();
+    NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"stillfail-memory-runaway-%d.cpuprofile", (int)getpid()]];
+    [NSFileManager.defaultManager removeItemAtPath:tmpPath error:nil];
+    BOOL sampled = mb_core_sample_js ? (mb_core_sample_js(SF_MEM_WINDOW_SEC, tmpPath.UTF8String) != 0) : NO;
+    if (!sampled) sleep((unsigned int)SF_MEM_WINDOW_SEC);
+    int64_t ms = sf_monotonic_ms() - t0;
+    if (ms < 1) ms = 1;
+    uint64_t fpAfter = sf_phys_footprint();
+    NSDictionary *statsAfter = sf_shell_stats_dict();
+    NSDictionary *jsHot = nil;
+    if (sampled) {
+      NSData *traceData = [NSData dataWithContentsOfFile:tmpPath];
+      if (traceData) jsHot = sf_hottest_js(traceData);
+    }
+    [NSFileManager.defaultManager removeItemAtPath:tmpPath error:nil];
+    double at = floor(NSDate.date.timeIntervalSince1970 * 1000);
+    dispatch_async(reports_queue, ^{
+      NSString *account = signed_in ?: sf_string(state_read()[@"account"]) ?: sf_anonymous;
+      NSDictionary *event = sf_memory_runaway_event(fpBefore, fpAfter, ms, statsBefore, statsAfter, jsHot,
+                                                    account, sf_here(), at, NSUUID.UUID.UUIDString.lowercaseString);
+      if (event) sf_send(@[ event ]);
+    });
+  });
+  dispatch_resume(mem_watch_timer);
+}
+#endif
+
 /// PostHog's project from the Info.plist; MetricKit asked for the reports once the app runs (its delivery comes on a
 /// queue of its own, soon after), and for those it gave before (a start that ended before it kept them).
 __attribute__((constructor)) static void reports_start(void) {
@@ -664,6 +912,9 @@ __attribute__((constructor)) static void reports_start(void) {
     }];
 #endif
     sf_watchdog_start();
+#if !TARGET_OS_IPHONE
+    sf_mem_watch_start();
+#endif
   });
 }
 

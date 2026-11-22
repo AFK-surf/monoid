@@ -16,7 +16,9 @@
 /// at its start (`start`, given whether a title starts it: one that has none starts with its marks, round as they
 /// are) and at its end (`end`, given whether the side panel is open beside it and ⌘F's bar is in it),
 /// the corner its buttons share with the window's (`linked`: none on the tape), its ground as drawn in node `bar`
-/// (`ground`: the page's; on the tape, the page's panel's, a step darker while that is behind the one in use).
+/// (`ground`: the page's; on the tape, the page's panel's, a step darker while that is behind the one in use), and how
+/// far its page's column starts from its own start past where the bar starts (`content_offset`: the page's margin
+/// before the bar's taken back, while the folded sidebar is shown a while; none on the tape).
 pub(all) struct ChatBarEnds {
   over : () -> Double
   margins : () -> (Double, Double)
@@ -24,6 +26,7 @@ pub(all) struct ChatBarEnds {
   end : (Bool, Bool) -> Double
   linked : () -> @ui.CornerOf?
   ground : (@view.View) -> Int64
+  content_offset : () -> Double
 }
 
 ///|
@@ -142,8 +145,10 @@ fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, t
 
 ///|
 /// Chat `r`'s bar in `b` (chat_bar_wide_node's): its row as page_bar_row's (as high as a bar is, with what is over its
-/// buttons; its margins while the folded sidebar is shown a while), its box (chat_bar_box's: its line under it, the
-/// page's ground; its empty part dragging the window where the window's buttons are the app's), its rooms at its ends.
+/// buttons; its margins while the folded sidebar is shown a while), its box (its empty part dragging the window where
+/// the window's buttons are the app's) over a soft scroll edge in its ground (wide_bar_scrim_node: what scrolls under
+/// it blurred and veiled away, as 小屏's bar has it), its rooms at its ends: its title where the chat's words start in
+/// its column (as the column is laid out on its way to another width), never nearer its start than its ends allow.
 fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, tips : @sf.TipLayer, stint : () -> Int) -> Unit {
   let view = fn() { @sfbase.chat_view_now(src, r) }
   b.reacts(fn() {
@@ -199,7 +204,6 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
       .basis(Is(Some(0.0)))
       .min_width(Is(Some(0.0)))
       .lines_up(Is(Some(Middle)))
-      .ground(By(fn() { (ends.ground)(bar) }))
       .height(By(fn() { Some(high()) }))
       .padding(By(fn() { (0.0, (ends.over)(), 0.0, 1.0) }))
       // (its empty part drags the window, in one with its buttons in the app's top row: what is in it taking presses
@@ -207,7 +211,29 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
       .presses(Is(true))
       .moves_window(By(fn() { @ui.window_inset() }))
       |> ignore
-      bar_room_node(bar, fn() { (ends.start)(titled()) })
+      // (as tall as the bar and 16 more, faded out over all of it: the chat under it never cut off at a line; where glass
+      // is drawn solid (no blur: less see-through asked for), whole under the bar and faded out over its 16 past it, no
+      // words under it showing through the title)
+      wide_bar_scrim_node(
+        bar,
+        fn(_) { high() + 16.0 },
+        fn(s) { if s.glass_solid() { 16.0 } else { high() + 16.0 } },
+        ends.ground,
+      )
+      // (the title's words, chat_bar_title_in into its row, where the column's words start: chat_row_side of the width
+      // it is laid out at, moved across as the column is on its way (sfbase's column_laid); none before the bar's start
+      // room)
+      let chat_id = r.station + "\u{1}" + r.session
+      bar_room_node(bar, fn() {
+        let least = (ends.start)(titled())
+        let col = @sfbase.column_laid(chat_id, bar)
+        let side = if col.laid > 0.0 {
+          @sfpages.chat_row_side(col.laid) + col.across
+        } else {
+          @sfpages.chat_row_side(room.width())
+        }
+        dmax(least, side + (ends.content_offset)() - chat_bar_title_in)
+      })
       bar.box(fn(inner) {
         inner
         .row(Is(true))
@@ -270,6 +296,37 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
   })
   // (as high as the bar, what takes presses in it within it)
   .height(By(fn() { Some(high()) }))
+  |> ignore
+}
+
+///|
+/// The bar's soft scroll edge in `parent` (narrow_shell.mbt's narrow_bar_scrim_node, in the bar's ground `ground`):
+/// `base_h` tall from its top, faded out over the lower `fade_h` of it. Its fill takes the presses within the bar (none
+/// reach the chat under it) but points at nothing, and is the bar's own: the bar's empty part still drags the window.
+fn wide_bar_scrim_node(
+  parent : @view.View,
+  base_h : (@view.View) -> Double,
+  fade_h : (@view.View) -> Double,
+  ground : (@view.View) -> Int64,
+) -> Unit {
+  parent.box(fn(scrim) {
+    scrim
+    .over(Is(true), from_top=true)
+    .width_share(Is(1.0))
+    .height(By(fn() { Some(base_h(scrim)) }))
+    .fades(By(fn() { (0.0, 0.0, 0.0, fade_h(scrim)) }))
+    |> ignore
+    scrim.box(fn(fill) {
+      fill
+      .width_share(Is(1.0))
+      .height_share(Is(1.0))
+      .glass(By(fn() { if base_h(fill) > 0.0 { Some(@sf.glass_scroll_edge(ground=ground(fill))) } else { None } }))
+      .points(Is(false))
+      |> ignore
+      fill.pointed() |> ignore
+    })
+    |> ignore
+  })
   |> ignore
 }
 

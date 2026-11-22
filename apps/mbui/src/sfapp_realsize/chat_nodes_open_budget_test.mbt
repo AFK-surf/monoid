@@ -138,7 +138,9 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (+3 bindings, 2026-11-22: the composer's glass the bottom bar's, with its outside-only shadow (sf tab_bar_shadow),
   // its blur on its shape's way to 4 as it opens (sfpages composer_node); before it (2444, 497, 1923, 191, 2510))
   // (+6 made, +3 let_go, +6 laid, 0 measured, +6 bindings, 2026-11-22: minimal bottom-seam 0xFE fade seal under composer; before it (2444, 497, 1923, 191, 2513))
-  "wide cold": (2460, 500, 1938, 195, 2525),
+  // (+2 made, +5 laid, +2 bindings, 2026-11-22: the chat's bar's soft scroll edge, its glass in place of its ground,
+  // and its title where the chat's words start (sfdesk chat_bar_wide_node); before it (2460, 500, 1938, 195, 2525))
+  "wide cold": (2462, 500, 1943, 195, 2527),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))

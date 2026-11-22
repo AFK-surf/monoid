@@ -38,3 +38,36 @@ test "the frames drawn counted past each budget, those never drawn by what the h
   })
 }
 
+///|
+test "gpu_frames_count tracks per-page stats and deduplicates repeated asynchronous last_gpu >= 24ms" {
+  journal_reset()
+  gpu_dropped_seen.val = 0
+  journal_shows("Home")
+  gpu_frames_count(10.0, 0)
+  assert_eq(gpu_frame_consume(), (10.0, 0, false))
+  // First 28.4ms GPU frame triggers slow flag
+  gpu_frames_count(28.4, 0)
+  assert_eq(gpu_frame_consume(), (28.4, 0, true))
+  // Repeated identical 28.4ms value from async host does not re-trigger
+  gpu_frames_count(28.4, 0)
+  assert_eq(gpu_frame_consume(), (28.4, 0, false))
+  // A different >= 24ms value triggers again
+  gpu_frames_count(31.2, 0)
+  assert_eq(gpu_frame_consume(), (31.2, 0, true))
+  // Dropping back below 24ms resets dedup so a later 31.2ms triggers again
+  journal_shows("Chat")
+  gpu_frames_count(6.0, 0)
+  assert_eq(gpu_frame_consume(), (6.0, 0, false))
+  gpu_frames_count(31.2, 0)
+  assert_eq(gpu_frame_consume(), (31.2, 0, true))
+  // Dropped frame delta triggers even if gms is unchanged
+  gpu_frames_count(31.2, 2)
+  assert_eq(gpu_frame_consume(), (31.2, 2, true))
+  let by_page = gpu_by_page_take()
+  assert_eq(by_page, [
+    ("Home", 4, 4, 3, 3, 31.2, 0),
+    ("Chat", 3, 2, 2, 2, 31.2, 2),
+  ])
+  let _ = gpu_frames_take()
+}
+

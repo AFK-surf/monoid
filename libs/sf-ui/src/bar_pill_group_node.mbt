@@ -1,60 +1,38 @@
 // Single-layer iOS 26 / macOS 26 floating liquid glass pill container for top bar action button groups:
-// uses `glass_bar_pill(spot~)` (40% translucent iOS 27 optical liquid glass matching `glass_tab_bar()`),
-// tight outside-only `glass_control_shadow()` (`shadow_outside(Is(true))` so shadows stay crisp and never bleed inside glass or onto adjacent pills),
-// native `.glassEffect(.interactive())` press response (`spot` specular highlight + `@motion.backdrop_press_spring` bounce),
-// `MBUI_GLASS=solid` hairline `panel_edge()` fallback, and automatic concentric corner scope (`corner_card_node`).
+// delegates neutral pills to `@lg.liquid_pill_group_node` & `@lg.bind_pill_press`, adding sf-ui's calibrated
+// outside-only `glass_control_shadow()`, `MBUI_GLASS=solid` hairline `panel_edge()` fallback, and automatic
+// concentric corner scope (`corner_card_node`). Tinted pills (`bar_pill_group_with` with `tint=Some(...)`,
+// `window_keys_node`) and vertical `float_pill_group_node` share the package-local `PillPressScope` / `pill_press_lent`.
 
 ///|
-/// Translucent liquid glass for floating top bar action pills (`36–40pt` tall): matches `glass_tab_bar()`'s
-/// iOS 27 40% tint (`0x20202067L` / `0xFDFCFD67L`) with bevel/refraction tuned for top bar capsules and
-/// live `spot` specular highlight on press. `tint`: a pill told apart from the neutral ones beside it (the window's own
-/// buttons'), its glass that colour and its solid ground the panel's with a quarter of it over.
+/// Translucent liquid glass for floating top bar action pills (`36–40pt` tall): delegates optical constants to
+/// `@lg.liquid_bar_pill_glass`, supporting optional `tint` (`window_keys_node`) and private SDF `layer` isolation.
 fn glass_bar_pill(
   spot? : (Double, Double)? = None,
   tint? : Int64? = None,
   layer? : Int = 0,
 ) -> @ui.Glass {
-  let t = theme()
-  let (glass_tint, solid) = match tint {
-    Some(c) => (c, over(panel_ground(), alpha(c, 0.24)))
-    None => (if t.dark { 0x20202067L } else { 0xFDFCFD67L }, panel_ground())
+  let base = match tint {
+    Some(c) => {
+      ..@lg.liquid_bar_pill_glass(
+        spot~,
+        solid=over(panel_ground(), alpha(c, 0.24)),
+        sharing=layer == 0,
+      ),
+      tint: c,
+    }
+    None => @lg.liquid_bar_pill_glass(spot~, solid=panel_ground(), sharing=layer == 0)
   }
   if layer > 0 {
-    @ui.Glass::liquid(
-      blur=2.5,
-      tint=glass_tint,
-      solid~,
-      saturation=1.0,
-      rim=0.6,
-      bezel=14.0,
-      refraction=20.0,
-      chroma=0.0,
-      merge=0.0,
-      layer~,
-      break_gap=12.0,
-      adaptive=false,
-      spot~,
-    )
+    { ..base, layer, break_gap: 12.0 }
   } else {
-    @ui.Glass::liquid(
-      blur=2.5,
-      tint=glass_tint,
-      solid~,
-      saturation=1.0,
-      rim=0.6,
-      bezel=14.0,
-      refraction=20.0,
-      chroma=0.0,
-      merge=0.0,
-      adaptive=false,
-      spot~,
-    ).sharing()
+    base
   }
 }
 
 ///|
-/// Shared press-feedback scope lent by `bar_pill_group_node` to its interactive children (`round_key_node`,
-/// `icon_button_node`, and custom pill actions via `bind_pill_press` / `bar_pill_key_press_node`).
+/// Shared press-feedback scope lent by `bar_pill_group_node`, tinted `bar_pill_group_with` (`window_keys_node`),
+/// and vertical `float_pill_group_node` to their interactive children.
 priv struct PillPressScope {
   pill : @view.View
   fx : @signals.Signal[((Double, Double)?, Int)]
@@ -66,17 +44,18 @@ priv struct PillPressScope {
 let pill_press_lent : @view.Lent[PillPressScope] = @view.Lent::new()
 
 ///|
-/// Theme-adaptive press overlay ink for controls inside a liquid glass top bar pill: bright white glow in Dark
-/// mode and soft dark veil in Light mode so touch and mouse presses stay clearly visible over translucent glass.
+/// Theme-adaptive press overlay ink for controls inside a liquid glass top bar pill: delegates to `@lg.liquid_pill_press_ink()`.
 pub fn bar_pill_press_ink() -> Int64 {
-  alpha(theme().p.text, if theme().dark { 0.22 } else { 0.12 })
+  @lg.liquid_pill_press_ink()
 }
 
 ///|
-/// Connects an interactive child control inside `bar_pill_group_node` to its enclosing liquid glass pill's
-/// `.glassEffect(.interactive())` response: moves the GPU `spot` specular highlight to the child's center and
-/// springs the pill scale via `@motion.backdrop_press_spring`. No-op outside a `bar_pill_group_node`.
+/// Connects an interactive child control inside `bar_pill_group_node`, `bar_pill_group_with`, or
+/// `float_pill_group_node` to its enclosing liquid glass pill's `.glassEffect(.interactive())` response: moves the
+/// GPU `spot` specular highlight to the child's center and springs the pill scale via `@motion.backdrop_press_spring`.
+/// No-op outside a pill group.
 pub fn bind_pill_press(child : @view.View) -> Unit {
+  @lg.bind_pill_press(child)
   bind_pill_press_by(child, fn() { child.pressed() })
 }
 
@@ -200,7 +179,7 @@ pub fn bar_pill_group_node(
 }
 
 ///|
-/// bar_pill_group_node's pill, its glass `tint()` where said (glass_bar_pill's `tint`), else the neutral one.
+/// bar_pill_group_node's pill, its glass `tint()` where said (`window_keys_node`), else delegates to neutral `bar_pill_group_node`.
 #callsite(autofill(loc))
 fn bar_pill_group_with(
   parent : @view.View,

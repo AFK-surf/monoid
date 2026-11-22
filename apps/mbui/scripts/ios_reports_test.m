@@ -239,6 +239,141 @@ int main(void) {
     CHECK(sf_wd_tick(&wd, 1, t + 1000, seq - 1, &send_ping, &hang_ms) == 0);
     CHECK(sf_wd_tick(&wd, 1, t + 2500, seq - 1, &send_ping, &hang_ms) == 1);
     CHECK(hang_ms == 2500);
+
+    // ── sf_hottest_js: Hermes .cpuprofile parsing ──
+    {
+      CHECK(sf_hottest_js(nil) == nil);
+      CHECK(sf_hottest_js([@"not json" dataUsingEncoding:NSUTF8StringEncoding]) == nil);
+      CHECK(sf_hottest_js([@"{}" dataUsingEncoding:NSUTF8StringEncoding]) == nil);
+
+      // Build a 14-frame deep chain to verify 12-frame stack cap, plus [root], '(' truncation, anonymous, recursion.
+      NSMutableDictionary *framesMap = [@{
+        @"1" : @{@"name" : @"[root]"},
+        @"2" : @{@"name" : @"outer(arg1, arg2)", @"funcLine" : @10, @"funcColumn" : @2, @"parent" : @1},
+        @"3" : @{@"name" : @"(a, b)", @"funcLine" : @99, @"funcColumn" : @1, @"parent" : @"2"},
+        @"4" : @{@"name" : @"inner(x)", @"funcLine" : @42, @"funcColumn" : @8, @"parent" : @3},
+        // Recursive call of inner(x) on top of itself: inclusive should count once per sample.
+        @"5" : @{@"name" : @"inner(y)", @"funcLine" : @42, @"funcColumn" : @8, @"parent" : @4},
+        // Frame without funcLine
+        @"6" : @{@"name" : @"nativeHelper(z)", @"parent" : @1},
+      } mutableCopy];
+      // Deep stack: frames 100..113 (14 frames above root)
+      for (int i = 0; i < 14; i++) {
+        NSString *fid = [NSString stringWithFormat:@"%d", 100 + i];
+        id parent = i == 0 ? @1 : [NSString stringWithFormat:@"%d", 100 + i - 1];
+        framesMap[fid] = @{@"name" : [NSString stringWithFormat:@"deep%d()", i], @"parent" : parent};
+      }
+      // 10 samples: 2 idle ([root]), 5 in frame 5 (recursive inner), 2 in frame 6 (nativeHelper), 1 in frame 113 (deep)
+      NSArray *samplesArr = @[
+        @{@"sf" : @1},
+        @{@"sf" : @"1"},
+        @{@"sf" : @5},
+        @{@"sf" : @5},
+        @{@"sf" : @5},
+        @{@"sf" : @5},
+        @{@"sf" : @5},
+        @{@"sf" : @6},
+        @{@"sf" : @6},
+        @{@"sf" : @113},
+      ];
+      NSData *traceData = [NSJSONSerialization dataWithJSONObject:@{@"stackFrames" : framesMap, @"samples" : samplesArr} options:0 error:nil];
+      NSDictionary *hot = sf_hottest_js(traceData);
+      CHECK(hot != nil);
+      CHECK([NSJSONSerialization isValidJSONObject:hot]);
+      SAME(hot[@"busy_percent"], @80);
+      NSDictionary *fns = hot[@"functions"];
+      // inner@42:8 appeared in 5 of 10 samples (deduplicated per sample -> 50%, not 100%)
+      SAME(fns[@"inner@42:8"], @50);
+      SAME(fns[@"(anonymous)@99:1"], @50);
+      SAME(fns[@"outer@10:2"], @50);
+      SAME(fns[@"nativeHelper"], @20);
+      CHECK(fns[@"[root]"] == nil);
+      NSArray *stacks = hot[@"stacks"];
+      SAME(@(stacks.count), @3);
+      SAME(stacks[0][@"percent"], @50);
+      SAME(stacks[0][@"stack"], @"inner@42:8 < inner@42:8 < (anonymous)@99:1 < outer@10:2");
+      SAME(stacks[1][@"percent"], @20);
+      SAME(stacks[1][@"stack"], @"nativeHelper");
+      SAME(stacks[2][@"percent"], @10);
+      // 14 frames capped at 12 (deep13 down to deep2)
+      NSArray *deepParts = [stacks[2][@"stack"] componentsSeparatedByString:@" < "];
+      SAME(@(deepParts.count), @12);
+      SAME(deepParts.firstObject, @"deep13");
+      SAME(deepParts.lastObject, @"deep2");
+    }
+
+    // ── sf_memory_runaway_event: full stats, caps, sorting, negative growth, quiet fallback ──
+    {
+      NSMutableDictionary *callsBefore = [NSMutableDictionary dictionary];
+      NSMutableDictionary *callsAfter = [NSMutableDictionary dictionary];
+      // Create 25 ops: ops 0..19 have deltas 20..1 and unanswered 20..1; ops 20..24 have 0 delta and 0 unanswered.
+      for (int i = 0; i < 25; i++) {
+        NSString *op = [NSString stringWithFormat:@"op%02d", i];
+        int base = 1000 - i * 10;
+        int delta = i < 20 ? (20 - i) * 10 : 0;
+        int unans = i < 18 ? (18 - i) : 0;
+        callsBefore[op] = @[ @(base), @0 ];
+        callsAfter[op] = @[ @(base + delta), @(unans) ];
+      }
+      NSDictionary *statsBefore = @{@"calls" : callsBefore};
+      NSDictionary *statsAfter = @{
+        @"calls" : callsAfter,
+        @"handles" : @{@"tcp" : @12, @"iroh" : @3},
+        @"sqls" : @{@"open" : @4},
+      };
+      NSDictionary *jsHot = @{@"busy_percent" : @75, @"functions" : @{@"parse@1:0" : @60}, @"stacks" : @[]};
+      uint64_t fpBefore = 1600ULL * 1024 * 1024;
+      uint64_t fpAfter = 1700ULL * 1024 * 1024;  // +100 MB over 15 s = +400 MB/min
+      NSDictionary *macHere = @{@"app" : @"macos", @"$lib" : @"stillfail-macos", @"release" : @"0.2.0 (42)", @"$os" : @"macOS", @"$device_manufacturer" : @"Apple"};
+      NSDictionary *ev = sf_memory_runaway_event(fpBefore, fpAfter, 15000, statsBefore, statsAfter, jsHot,
+                                                 @"acc-1", macHere, 1794030000123.0, @"00000000-0000-4000-8000-000000000001");
+      CHECK(ev != nil);
+      CHECK([NSJSONSerialization isValidJSONObject:ev]);
+      SAME(ev[@"event"], @"$exception");
+      SAME(ev[@"distinct_id"], @"acc-1");
+      SAME(ev[@"uuid"], @"00000000-0000-4000-8000-000000000001");
+      SAME(ev[@"timestamp"], @"2026-11-07T05:40:00.123Z");
+      NSDictionary *mp = ev[@"properties"];
+      SAME(mp[@"reason"], @"memory_runaway");
+      SAME(mp[@"$exception_level"], @"error");
+      SAME(mp[@"footprint_mb"], @1700);
+      SAME(mp[@"footprint_grew_mb_per_min"], @400);
+      SAME(mp[@"window_s"], @15);
+      SAME(@([mp[@"shell_calls"] count]), @15);
+      SAME(mp[@"shell_calls"][@"op00"], @200);
+      SAME(mp[@"shell_calls"][@"op14"], @60);
+      CHECK(mp[@"shell_calls"][@"op15"] == nil);
+      SAME(@([mp[@"shell_calls_total"] count]), @20);
+      SAME(mp[@"shell_calls_total"][@"op00"], @1200);
+      SAME(@([mp[@"shell_unanswered"] count]), @15);
+      SAME(mp[@"shell_unanswered"][@"op00"], @18);
+      CHECK(mp[@"shell_unanswered"][@"op15"] == nil);
+      SAME(mp[@"shell_handles"], (@{@"tcp" : @12, @"iroh" : @3}));
+      SAME(mp[@"shell_sqls"], (@{@"open" : @4}));
+      SAME(mp[@"js"], jsHot);
+      NSDictionary *mx = [mp[@"$exception_list"] firstObject];
+      SAME(mx[@"type"], @"MemoryRunaway");
+      SAME(mx[@"value"], @"footprint 1700 MB, +400 MB/min; shell: op00 ×200, op01 ×190, op02 ×180");
+      SAME(mx[@"mechanism"], (@{@"handled" : @YES, @"synthetic" : @NO, @"type" : @"generic"}));
+
+      // Negative growth and nil/empty stats fallback to "quiet"
+      uint64_t fpDropBefore = 1600ULL * 1024 * 1024;
+      uint64_t fpDropAfter = 1599ULL * 1024 * 1024;  // -1 MB over 15 s = -4 MB/min
+      NSDictionary *quiet = sf_memory_runaway_event(fpDropBefore, fpDropAfter, 15000, nil, nil, nil,
+                                                    @"acc-1", macHere, 0, @"00000000-0000-4000-8000-000000000002");
+      CHECK(quiet != nil);
+      CHECK([NSJSONSerialization isValidJSONObject:quiet]);
+      NSDictionary *qp = quiet[@"properties"];
+      SAME(qp[@"footprint_mb"], @1599);
+      SAME(qp[@"footprint_grew_mb_per_min"], @(-4));
+      SAME(@([qp[@"shell_calls"] count]), @0);
+      SAME(@([qp[@"shell_calls_total"] count]), @0);
+      SAME(@([qp[@"shell_unanswered"] count]), @0);
+      CHECK(qp[@"shell_handles"] == nil);
+      CHECK(qp[@"shell_sqls"] == nil);
+      CHECK(qp[@"js"] == nil);
+      SAME([qp[@"$exception_list"] firstObject][@"value"], @"footprint 1599 MB, -4 MB/min; shell: quiet");
+    }
   }
   if (!failed) printf("ios reports: ok\n");
   return failed;

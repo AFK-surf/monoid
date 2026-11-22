@@ -673,6 +673,13 @@ fn pane_chat_bar_ends(
         None => if beside { bar_in } else { closed_end }
       }
     },
+    // (the page's column from where the bar starts: the page's margin before the bar's taken back)
+    content_offset: fn() {
+      match look() {
+        Some(f) => -f.bar_ml
+        None => 0.0
+      }
+    },
     linked: fn() { if @ui.window_keys_own() { None } else { Some(@sf.window_corner_key()) } },
     ground: fn(_) { @sf.theme().p.bg },
   }
