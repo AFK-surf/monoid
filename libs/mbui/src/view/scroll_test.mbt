@@ -1079,3 +1079,43 @@ test "scrolls_window in hugs container expands past est when actual row is talle
     }
   }
 }
+
+///|
+test "scrolls in variable-width max_width + max_height hugs container converges when content wraps" {
+  let cap_w = @signals.signal(240.0, same=fn(a, b) { a == b })
+  let scroll = @view.Scroll::new()
+  let room_id : Ref[@view.NodeId?] = Ref(None)
+  let tree = @view.Tree::new(
+    fn(root) {
+      root.box(fn(card) {
+        card
+        .max_width(By(fn() { Some(cap_w.get()) }))
+        .max_height(Is(Some(300.0)))
+        |> ignore
+        card.box(fn(room) {
+          room_id.val = Some(room.id())
+          room.scrolls(scroll, fn(held) {
+            held.row(Is(true)).wraps(Is(Some(0.0))) |> ignore
+            for _ in 0..<6 {
+              held.box(fn(tile) { tile.width(Is(Some(80.0))).height(Is(Some(30.0))) |> ignore }) |> ignore
+            }
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  tree.frame(600.0, 844.0) |> ignore
+  let h1 = tree.drawn_of(room_id.val.unwrap()).unwrap().h
+  assert_true((h1 - 60.0).abs() <= 0.5, msg="at max_width=240 expected 2 wrapped rows (60.0), got \{h1}")
+  assert_eq(scroll.reach(), 0.0)
+
+  tree.event(100.0, fn() { cap_w.set(160.0) })
+  tree.frame(600.0, 844.0, now=100.0) |> ignore
+  let h2 = tree.drawn_of(room_id.val.unwrap()).unwrap().h
+  assert_true((h2 - 90.0).abs() <= 0.5, msg="at max_width=160 expected 3 wrapped rows (90.0), got \{h2}")
+  assert_eq(scroll.reach(), 0.0)
+}

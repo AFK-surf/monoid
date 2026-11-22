@@ -1321,7 +1321,7 @@ pub fn View::scrolls(
           // room, a page's list then at its foot there taken to follow it (an agent's history beside its chat,
           // 2026-11-10: every move of the hand up from its foot undone as a row came to show))
           let told = performing || (across && !(wm is Undefined))
-          if told || !(hm is Undefined) || (!across && s.whole is Some(_)) {
+          if told || !(hm is Undefined) {
             if told {
               // (what reads them may change what it holds (room kept at its foot for its bar, or for what is tucked
               // over its top): measured again till it comes out as it was, in this same layout)
@@ -1341,21 +1341,25 @@ pub fn View::scrolls(
             if !performing && !(m is Exactly) {
               // (measured by what it holds, within the most it may be: as big as that made it; within the same
               // compute pass a parent's perform pre-measure can re-measure with a tighter inner_h, which must not
-              // overwrite the outer hugs container's real cap `most`)
+              // overwrite the outer hugs container's real cap `most`, while still updating `was` for the current width)
               let gen = @flex.computes()
               let most = if m is AtMost { most } else { @double.infinity }
-              let want = dmin(last_whole.val, most)
-              match sized_by.val {
-                Some((g, _, prev_most)) if g == gen && prev_most > most => ()
-                _ => sized_by.val = Some((gen, want, most))
+              let most = match sized_by.val {
+                Some((g, _, prev_most)) if g == gen && prev_most > most => prev_most
+                _ => most
               }
+              sized_by.val = Some((gen, dmin(last_whole.val, most), most))
             } else if performing {
               // (laid out as big as what it held made it as it was measured, what it holds now another size within the
               // most it may be: what holds it laid out again by that once all of it is (outside its room, Tree::in_room))
               match sized_by.val {
-                Some((_, was, most)) => {
+                Some((g, was, most)) => {
                   sized_by.val = None
-                  if (dmin(last_whole.val, most) - was).abs() > 0.5 {
+                  let target = dmin(last_whole.val, most)
+                  let cur = if across { w } else { h }
+                  if g == @flex.computes() &&
+                    (target - was).abs() > 0.5 &&
+                    (!(m is Exactly) || (target - cur).abs() > 0.5) {
                     tree.room_spill.push(me)
                   }
                 }
