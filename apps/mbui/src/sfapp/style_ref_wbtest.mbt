@@ -54,37 +54,37 @@ test "styles: the lock's waiting page, every state, drawn as before" {
   }
   // Home narrow top bar only draws progressive scroll-edge glass over the status bar (skipped when status_top == 0).
   inspect(out.to_string(), content=(
-    #|waiting narrow 28667:68783366
+    #|waiting narrow 28659:82166dc6
     #|waiting wide 66023:4112183f
-    #|waiting-dark narrow 28580:1ee0b9e2
+    #|waiting-dark narrow 28578:b7c858ee
     #|waiting-dark wide 65852:4a6a3989
-    #|finding narrow 46468:f0e4a08c
+    #|finding narrow 46460:3cfc23c0
     #|finding wide 84907:723ded1c
-    #|finding-dark narrow 46516:f30ebba0
+    #|finding-dark narrow 46514:40e3ef02
     #|finding-dark wide 84871:17a7b16a
-    #|code narrow 32645:2148c53
+    #|code narrow 32637:5caeb59b
     #|code wide 70141:42f542a3
-    #|code-dark narrow 32515:832d1681
+    #|code-dark narrow 32513:a163d467
     #|code-dark wide 69927:72631d87
-    #|wrong narrow 28632:c5f61a74
+    #|wrong narrow 28624:750eee94
     #|wrong wide 66161:2649ae81
-    #|wrong-dark narrow 28729:3f28824d
+    #|wrong-dark narrow 28727:346f1f5
     #|wrong-dark wide 66174:f25a5808
-    #|checking narrow 35737:ef17c26a
+    #|checking narrow 35729:1cd5770a
     #|checking wide 74132:54bef3
-    #|checking-dark narrow 35824:ab9a0167
+    #|checking-dark narrow 35822:c2a40ebf
     #|checking-dark wide 74135:1e5e7a12
-    #|none narrow 39503:ed22d2cd
+    #|none narrow 39495:e9792385
     #|none wide 77132:a85cd953
-    #|none-dark narrow 39376:84073784
+    #|none-dark narrow 39374:48aaea96
     #|none-dark wide 76921:427c396c
-    #|failed narrow 23894:e5f366e6
+    #|failed narrow 23886:743cb146
     #|failed wide 60819:839fa92d
-    #|failed-dark narrow 23891:28005208
+    #|failed-dark narrow 23889:f84b45cc
     #|failed-dark wide 60732:1a404b71
-    #|nocode narrow 28667:68783366
+    #|nocode narrow 28659:82166dc6
     #|nocode wide 66023:4112183f
-    #|nocode-dark narrow 28580:1ee0b9e2
+    #|nocode-dark narrow 28578:b7c858ee
     #|nocode-dark wide 65852:4a6a3989
     #|
 
