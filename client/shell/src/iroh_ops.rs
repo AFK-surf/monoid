@@ -280,14 +280,19 @@ impl Inner {
         id
     }
 
-    /// A closed connection let go: what the core may still ask (`remoteId`, `closeReason`, `stats`) is kept, and its
+    /// A closed connection let go: what the core may still ask (`remoteId`, `alpn`, `closeReason`, `stats`) is kept, and its
     /// streams go, a read still waiting on one woken.
     fn release_conn(&self, id: u64, reason: &iroh::endpoint::ConnectionError) {
         let mut handles = self.handles.lock().unwrap();
         let gone = match handles.get(&id) {
             Some(Handle::Conn(conn)) => {
                 let s = conn.stats();
-                Handle::Gone { remote: hex::encode(conn.remote_id().as_bytes()), reason: close_info(reason), stats: json!({ "rxBytes": s.udp_rx.bytes, "txBytes": s.udp_tx.bytes }) }
+                Handle::Gone {
+                    remote: hex::encode(conn.remote_id().as_bytes()),
+                    alpn: hex::encode(conn.alpn()),
+                    reason: close_info(reason),
+                    stats: json!({ "rxBytes": s.udp_rx.bytes, "txBytes": s.udp_tx.bytes }),
+                }
             }
             _ => return,
         };
@@ -812,6 +817,7 @@ impl Inner {
                 }))
             }
             ("conn.remoteId", Handle::Gone { remote, .. }) => Ok(json!(remote)),
+            ("conn.alpn", Handle::Gone { alpn, .. }) => Ok(json!(alpn)),
             ("conn.closeReason", Handle::Gone { reason, .. }) => Ok(reason),
             ("conn.paths", Handle::Gone { .. }) => Ok(json!([])),
             ("conn.stats", Handle::Gone { stats, .. }) => Ok(stats),

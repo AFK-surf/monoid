@@ -852,7 +852,7 @@ fn probe_relay_is_an_operation() {
         assert_eq!(probe(other, "https://relay.example/").await.err().unwrap(), "the endpoint is closed");
         inner.run("iroh.close", json!({ "id": id }), None).await.unwrap();
         assert_eq!(probe(id, "https://relay.example/").await.err().unwrap(), "the endpoint is closed");
-        let written = inner.keep(Handle::Gone { remote: String::new(), reason: json!({}), stats: json!({}) });
+        let written = inner.keep(Handle::Gone { remote: String::new(), alpn: String::new(), reason: json!({}), stats: json!({}) });
         assert_eq!(probe(written, "https://relay.example/").await.err().unwrap(), "not an endpoint");
     });
 }
@@ -1271,6 +1271,8 @@ fn lets_a_closed_connection_and_its_streams_go() {
         let stream = opened.json["id"].as_u64().unwrap();
         assert!(matches!(inner.handle(stream), Ok(Handle::IStream(_))));
         let remote = inner.run_sync("conn.remoteId", &json!({ "id": id })).unwrap();
+        let alpn = inner.run_sync("conn.alpn", &json!({ "id": id })).unwrap();
+        assert_eq!(alpn, json!(hex::encode(b"stillfail/test")));
         theirs.close(7u32.into(), b"bye");
         for _ in 0..200 {
             if matches!(inner.handle(id), Ok(Handle::Gone { .. })) {
@@ -1283,6 +1285,9 @@ fn lets_a_closed_connection_and_its_streams_go() {
         assert!(inner.handle(stream).is_err());
         assert_eq!(inner.run_sync("conn.closeReason", &json!({ "id": id })).unwrap(), json!({ "kind": "application", "reason": "bye", "text": "closed by peer: bye (code 7)" }));
         assert_eq!(inner.run_sync("conn.remoteId", &json!({ "id": id })).unwrap(), remote);
+        assert_eq!(inner.run_sync("conn.alpn", &json!({ "id": id })).unwrap(), alpn);
+        assert_eq!(inner.run_sync("conn.via", &json!({ "id": id })).unwrap(), Value::Null);
+        assert!(inner.run_sync("conn.stats", &json!({ "id": id })).is_ok());
         assert_eq!(inner.run_sync("conn.paths", &json!({ "id": id })).unwrap(), json!([]));
         assert_eq!(inner.run("conn.closed", json!({ "id": id }), None).await.unwrap().json, json!({ "kind": "application", "reason": "bye", "text": "closed by peer: bye (code 7)" }));
         assert!(inner.run("conn.openBi", json!({ "id": id }), None).await.is_err());

@@ -91,7 +91,7 @@ pub(crate) enum Handle {
     Conn(Connection),
     /// A connection that closed, let go (its state, its streams), with what the core may still ask of it; `conn.close`
     /// with `forget: true` lets it go entirely, before or after it closed.
-    Gone { remote: String, reason: Value, stats: Value },
+    Gone { remote: String, alpn: String, reason: Value, stats: Value },
     /// An endpoint closed (`iroh.close`), let go, with what the core may still ask of it: one bound anew in its place
     /// leaves a dial still under way on it asking its relays as it fails (mesh.ts `link`), as the station's addon answers.
     /// `iroh.close` with `forget: true` lets it go entirely, before or after it closed.
