@@ -438,7 +438,12 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
     else if (await unreadableDirAsync(base.cwd)) throw new Said(unreadableDirMessage(stationLang(), base.cwd));
     const generation = how.generation();
     let agent: AgentSession;
-    const open = (options: OpenOptions) => how.signal?.aborted ? Promise.reject(abortedBy(how.signal)) : unlessAborted(driver.open(options, how.listener(generation)), how.signal);
+    // (its signal the driver's too: one opening again after a failure gives up with it, AgyDriver.begin)
+    const open = (options: OpenOptions) => {
+      if (how.signal?.aborted) return Promise.reject(abortedBy(how.signal));
+      const withSignal = how.signal === undefined ? options : { ...options, signal: how.signal };
+      return unlessAborted(driver.open(withSignal, how.listener(generation)), how.signal);
+    };
     // Recorded before it may be left, so the history reads on from it.
     if (row.runtimeSessionId) deps.ranIn?.(key, row.runtimeSessionId, null);
     const afresh = row.runtimeSessionId ? (deps.startsAfresh?.(key, row.runtimeSessionId, profile, how.profile) ?? null) : null;

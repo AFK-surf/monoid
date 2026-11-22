@@ -103,7 +103,7 @@ static NSString *const kWebVideoHTML =
      "post({type:'state',duration:Number.isFinite(v.duration)?v.duration*1000:-1,"
      "position:Number.isFinite(at())?at()*1000:0,playing:quiet===null&&!v.paused&&!v.ended,"
      "width:v.videoWidth,height:v.videoHeight,shown:v.readyState>=2&&frameReady,ready:v.readyState>=2&&frameReady,"
-     "waiting:waiting,buffered:b*1000,ended:v.ended,rate:quiet!==null?quiet.rate:v.playbackRate,error:v.error?v.error.code:0});}"
+     "waiting:waiting&&quiet===null&&!v.paused&&!v.ended,buffered:b*1000,ended:v.ended,rate:quiet!==null?quiet.rate:v.playbackRate,error:v.error?v.error.code:0});}"
      "function tick(){if(v.paused||v.ended){ticking=false;return}status();requestAnimationFrame(tick)}"
      "function startTick(){if(!ticking){ticking=true;requestAnimationFrame(tick)}}"
      "for(const e of ['loadedmetadata','loadeddata','durationchange','progress','timeupdate','pause','seeked','ended','ratechange','volumechange'])"

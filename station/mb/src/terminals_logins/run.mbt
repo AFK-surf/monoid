@@ -1,5 +1,5 @@
 // station/src/logins/run.ts: one login (怎么做到): a login command run on this machine in a pseudo-terminal (the
-// system's `script`, 200 × 40), with stand-ins for the browser (BROWSER, and `open`, `xdg-open`, `osascript` first on
+// system's `script`, 1000 × 40), with stand-ins for the browser (BROWSER, and `open`, `xdg-open`, `osascript` first on
 // its PATH) that hand the page it would open to the station instead. What a person has to do is read from three
 // places: the page it opens, what it prints (pages, a device code, prompts), and whether it has stopped on a prompt.
 // Its screen is kept by a terminal with no display (vt.mbt, the port of @xterm/headless it ran on), which also answers
@@ -10,7 +10,9 @@
 // away): here a fiber of its own takes each write in turn.
 
 ///|
-pub const COLS : Int = 200
+/// Wide enough that a long OAuth page (a PKCE challenge, scopes and state: some 300 to 1000 characters) stays on one
+/// line; one longer still is wrapped by the terminal (`wrapped`), put together again where its agent reads it.
+pub const COLS : Int = 1000
 
 ///|
 pub const ROWS : Int = 40
@@ -64,6 +66,8 @@ pub fn key_code(key : String) -> String? {
 /// The screen as the login's agent reads it and its page follows it.
 pub(all) struct Screen {
   rows : Array[String]
+  /// `wrapped[y]`: row y goes on from the row above it, the terminal having wrapped a line too long for its width.
+  wrapped : Array[Bool]
   cursor : (Int, Int)
   echo : Bool
   live : Bool
@@ -188,6 +192,7 @@ pub struct LoginRun {
   priv mut reads : Int
   priv mut look_again : Bool
   priv mut rows : Array[String]
+  priv mut wrapped : Array[Bool]
   priv mut cursor : (Int, Int)
   priv mut exited : Bool
   priv mut quiet : (() -> Unit)?
@@ -237,6 +242,7 @@ pub fn LoginRun::new(o : RunOptions, io : RunIo) -> LoginRun {
     reads: 0,
     look_again: false,
     rows: Array::make(ROWS, ""),
+    wrapped: Array::make(ROWS, false),
     cursor: (0, 0),
     exited: false,
     quiet: None,
@@ -286,7 +292,13 @@ pub async fn LoginRun::pids(self : LoginRun) -> Array[Int] {
 
 ///|
 pub fn LoginRun::screen(self : LoginRun) -> Screen {
-  { rows: self.rows.copy(), cursor: self.cursor, echo: self.echo, live: self.active() }
+  {
+    rows: self.rows.copy(),
+    wrapped: self.wrapped.copy(),
+    cursor: self.cursor,
+    echo: self.echo,
+    live: self.active(),
+  }
 }
 
 ///|
@@ -514,9 +526,11 @@ pub fn LoginRun::output(self : LoginRun, text : String) -> Unit {
 /// The screen as the emulator has it now; told when it changed.
 fn LoginRun::draw(self : LoginRun) -> Unit {
   let rows = Array::makei(ROWS, i => self.term.row(i))
+  let wrapped = Array::makei(ROWS, i => self.term.row_wrapped(i))
   let cursor = (self.term.cursor_x(), self.term.cursor_y())
-  let same = rows == self.rows && cursor == self.cursor
+  let same = rows == self.rows && wrapped == self.wrapped && cursor == self.cursor
   self.rows = rows
+  self.wrapped = wrapped
   self.cursor = cursor
   if !same {
     (self.o.drawn)()

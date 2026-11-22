@@ -138,6 +138,44 @@ test "a link's card naming an icon and a picture shows whole from its first fram
 }
 
 ///|
+test "a pictured link's hover shows its picture and title without clipping, before or after the picture arrives" {
+  for w in [390.0, 250.0, 1280.0] {
+    for late in [false, true] {
+      let asked = []
+      let src = peek_pictures_source(asked)
+      let t = peek_pictures_tester(w, fn(row) {
+        web_peek_node(row, src, "ws1/st1", fn() { "https://example.com/bench/shot" }, fn() { "截图" })
+      })
+      t.draw()
+      let (x, y, rw, rh) = t.get(@ui.Role::Button, label="截图").rect
+      t.move_to(x + rw / 2.0, y + rh / 2.0)
+      t.frame()
+      if !late { peek_pictures_answer(asked) }
+      t.run_for(hover_open_ms + @ui.move_most_ms)
+      if late { peek_pictures_answer(asked) }
+      t.run_for(@motion.pop_ms)
+      let images = t.drawn_images()
+      let clips = t.drawn_image_clips()
+      let mut picture = -1
+      for i in 0..<images.length() {
+        if images[i][2] > 40.0 { picture = i }
+      }
+      let sources = t.sources_of("列表滚动截图")
+      let said = "width \{w}, late \{late}: \{sources}"
+      assert_true(picture >= 0, msg=said)
+      let image = images[picture]
+      let clip = clips[picture].0
+      let title = t.rect_of("列表滚动截图").unwrap()
+      let at_picture = t.sources_at(image[0] + image[2] / 2.0, image[1] + image[3] / 2.0)
+      assert_true(image[1] + image[3] <= clip.3 + 0.5, msg="picture clipped: \{said}; \{at_picture}")
+      assert_true(title.1 + title.3 <= clip.3 + 0.5, msg="title clipped: \{said}")
+      assert_true(image[0] >= 0.0 && image[0] + image[2] <= w, msg="picture outside window: \{said}")
+      assert_eq(t.audit(), [], msg=said)
+    }
+  }
+}
+
+///|
 test "a picture file's peek shows whole from its first frame, 窄排法 and 宽排法: its picture asked as it is read, before it opens" {
   for w in [390.0, 1280.0] {
     let asked = []

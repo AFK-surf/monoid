@@ -21,6 +21,110 @@ fn ctrl_button_size_px(size : LiquidButtonSize) -> Double {
 }
 
 ///|
+/// Shared press-feedback scope lent by `liquid_pill_group_node` and `liquid_button_group_node` to
+/// their interactive children (`bind_pill_press`).
+priv struct PillPressScope {
+  pill : @view.View
+  spot : @signals.Signal[(Double, Double)?]
+  press_way : @motion.NodeWay
+  mut count : Int
+}
+
+///|
+let pill_press_lent : @view.Lent[PillPressScope] = @view.Lent::new()
+
+///|
+/// Theme-adaptive press overlay ink for controls inside a liquid glass pill group.
+pub fn liquid_pill_press_ink() -> Int64 {
+  liquid_press_ink()
+}
+
+///|
+/// Connects an interactive child control inside `liquid_pill_group_node` (or `liquid_button_group_node`)
+/// to its enclosing liquid glass pill's press response: moves the GPU `spot` specular highlight to
+/// the child's center and springs the outer pill scale via `@motion.backdrop_press_spring`.
+/// No-op outside a pill group.
+pub fn bind_pill_press(child : @view.View) -> Unit {
+  guard child.lent(pill_press_lent) is Some(scope) else { return }
+  let active = Ref(false)
+  let release = fn() {
+    if active.val {
+      active.val = false
+      scope.count = if scope.count > 0 { scope.count - 1 } else { 0 }
+      if scope.count == 0 {
+        scope.spot.set(None)
+        scope.press_way.go(scope.pill, 0.0, @motion.backdrop_press_spring)
+      }
+    }
+  }
+  child.reacts(fn() { child.pressed() }, fn(down) {
+    if down {
+      if !active.val {
+        active.val = true
+        scope.count += 1
+      }
+      if !scope.pill.glass_solid() {
+        let (gx, gy, _, _) = scope.pill.placed_window_now()
+        let (cx, cy, cw, ch) = child.placed_window_now()
+        scope.spot.set(Some((cx - gx + cw / 2.0, cy - gy + ch / 2.0)))
+      }
+      if !@ui.reduced_motion() {
+        scope.press_way.go(scope.pill, 1.0, @motion.backdrop_press_spring)
+      }
+    } else {
+      release()
+    }
+  })
+  child.owns(release) |> ignore
+}
+
+///|
+/// A generic single-layer floating Liquid Glass pill container in `parent` for a group of bar
+/// controls built by `body`. Children that call `bind_pill_press` automatically steer the outer
+/// capsule's GPU `spot` highlight to their center and spring-scale the capsule (`1.05×`).
+#callsite(autofill(loc))
+pub fn liquid_pill_group_node(
+  parent : @view.View,
+  body : (@view.View) -> Unit,
+  height? : Double = 40.0,
+  pad? : Double = 3.0,
+  gap? : Double = 2.0,
+  sharing? : Bool = true,
+  solid? : () -> Int64,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(g) {
+    let r = height / 2.0
+    let spot_sig : @signals.Signal[(Double, Double)?] = @signals.signal(None)
+    let press_way = @motion.NodeWay::new(0.0)
+    let scope : PillPressScope = { pill: g, spot: spot_sig, press_way, count: 0 }
+    g
+    .row(Is(true))
+    .height(Is(Some(height)))
+    .radius(Is(r))
+    .padding(Is((pad, pad, pad, pad)))
+    .gap(Is(gap))
+    .lines_up(Is(Some(Middle)))
+    .shrink(Is(0.0))
+    .glass(By(fn() {
+      let sol = match solid {
+        Some(f) => f()
+        None => clear
+      }
+      Some(liquid_bar_pill_glass(spot=spot_sig.get(), solid=sol, sharing~))
+    }))
+    .scale(By(fn() { 1.0 + 0.05 * press_way.shown(g) }), about=At(0.5, 0.5))
+    .edge(By(fn() { if g.glass_solid() { liquid_solid_edge() } else { (0.0, clear) } }))
+    .shadow(Is(shadow_default))
+    .shadow_outside(Is(true))
+    .clips(Is(true))
+    .lends(pill_press_lent, scope)
+    |> ignore
+    body(g)
+  })
+}
+
+///|
 /// A circular floating liquid glass icon button in `parent`, read out as a button named `label`.
 /// Supports jelly stretch and touch spotlight (`InteractiveHighlight`), active tinting,
 /// disabled state and keyboard focus ring.
@@ -31,15 +135,20 @@ pub fn liquid_icon_button_node(
   icon : (@view.View, () -> Int64) -> Unit,
   press : () -> Unit,
   size? : LiquidButtonSize = Regular,
+  side? : Double,
   tint? : Int64 = clear,
   surface? : Int64 = clear,
   active? : () -> Bool = fn() { false },
   disabled? : () -> Bool = fn() { false },
   interactive? : Bool = true,
+  sharing? : Bool = false,
   highlight? : InteractiveHighlight,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let side = ctrl_button_size_px(size)
+  let side = match side {
+    Some(s) => s
+    None => ctrl_button_size_px(size)
+  }
   let r = side / 2.0
   @headless.button(made_for=loc, parent, label, fn(_) { press() }, disabled~, fn(b, btn) {
     let ih = match highlight {
@@ -69,7 +178,20 @@ pub fn liquid_icon_button_node(
     .lies_along(Is(Middle))
     .shadow(Is(shadow_default))
     .shadow_outside(Is(true))
-    .glass(By(fn() { Some(ctrl_surface_glass(eff_tint(), surface)) }))
+    .glass(By(fn() {
+      let sp = if interactive && ih.pressed(b) > 0.001 {
+        let (w, h) = ih.size.get()
+        if w > 0.0 && h > 0.0 {
+          Some(ih.spot(b, w, h))
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+      Some(liquid_control_glass(tint=eff_tint(), surface~, spot=sp, sharing~))
+    }))
+    .edge(By(fn() { if b.glass_solid() { liquid_solid_edge() } else { (0.0, clear) } }))
     .ground_drawn(By(fn() {
       if !interactive {
         return @view.ground_as_laid
@@ -116,8 +238,8 @@ pub fn liquid_icon_button_node(
         .over(Is(true))
         .points(Is(false))
         .radius(Is(r))
-        .ground(Is(white))
-        .alpha(By(fn() { clamp(ih.pressed(ov), 0.0, 1.0) * ctrl_press_glow_alpha }))
+        .ground(By(liquid_press_ink))
+        .alpha(By(fn() { clamp(ih.pressed(ov), 0.0, 1.0) }))
         .ground_drawn(By(fn() {
           let (w, h) = ih.size.get()
           let (dx, dy, sx, sy) = ih.stretch(ov)
@@ -212,6 +334,9 @@ pub fn liquid_button_group_node(
   let r_inner = inner_h / 2.0
   let div_h = h * ctrl_divider_ratio
   parent.box(made_for=loc, fn(g) {
+    let spot_sig : @signals.Signal[(Double, Double)?] = @signals.signal(None)
+    let press_way = @motion.NodeWay::new(0.0)
+    let scope : PillPressScope = { pill: g, spot: spot_sig, press_way, count: 0 }
     g
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
@@ -221,7 +346,10 @@ pub fn liquid_button_group_node(
     .radius(Is(r_outer))
     .shadow(Is(shadow_default))
     .shadow_outside(Is(true))
-    .glass(By(fn() { Some(ctrl_surface_glass(clear, surface)) }))
+    .glass(By(fn() { Some(liquid_control_glass(tint=clear, surface~, spot=spot_sig.get())) }))
+    .scale(By(fn() { 1.0 + 0.05 * press_way.shown(g) }), about=At(0.5, 0.5))
+    .edge(By(fn() { if g.glass_solid() { liquid_solid_edge() } else { (0.0, clear) } }))
+    .lends(pill_press_lent, scope)
     .says(Is(Some(@view.said(Group, label="Action Group"))))
     |> ignore
     g.each(
@@ -275,6 +403,7 @@ pub fn liquid_button_group_node(
           }
         }
         @headless.button(made_for=loc, slot, item_label, fn(_) { item_press() }, disabled=item_disabled, fn(b, btn) {
+          bind_pill_press(b)
           let highlight_way = @motion.NodeWay::new(0.0)
           let active_way = @motion.NodeWay::new(if @signals.untracked(item_active) { 1.0 } else { 0.0 })
           let press_way = @motion.NodeWay::new(0.0)

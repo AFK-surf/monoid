@@ -43,6 +43,7 @@ type Mirror = {
   notices: number;
   waiting: boolean;
   refill: boolean;
+  startFailed: boolean;
   unread: [number, number, string][];
   identity: { model: string | null; effort: string | null; runtime: RuntimeKind } | null;
   runtime: RuntimeKind;
@@ -381,7 +382,7 @@ export class MbActor {
     this.key = key;
     this.runtime = runtime;
     this.#deps = deps;
-    this.#mirror = { queued: 0, seen: 0, turn: null, warm: false, deferredEnd: false, codexUpdate: false, agent: null, idleSince: program.now(), notices: 0, waiting: false, refill: false, unread: [], identity: null, runtime, closed: false };
+    this.#mirror = { queued: 0, seen: 0, turn: null, warm: false, deferredEnd: false, codexUpdate: false, agent: null, idleSince: program.now(), notices: 0, waiting: false, refill: false, startFailed: false, unread: [], identity: null, runtime, closed: false };
     this.#post({ runtime });
   }
 
@@ -423,6 +424,10 @@ export class MbActor {
   processState(): "running" | "warm" | "cold" {
     if (this.#mirror.turn || this.#mirror.warm || this.#mirror.deferredEnd || this.#mirror.codexUpdate || this.#session()?.busy()) return "running";
     return this.#mirror.agent !== null ? "warm" : "cold";
+  }
+
+  startFailed(): boolean {
+    return this.#mirror.startFailed && this.processState() !== "running";
   }
 
   idleMs(now: number): number | null {

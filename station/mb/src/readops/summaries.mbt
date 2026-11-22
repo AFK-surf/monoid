@@ -231,7 +231,11 @@ fn summary_with(db : @sql.Db, known : Known, key : String, l : Lists) -> Json ra
   }
   let v = summary_session_json(row)
   v["boundTo"] = Json::array(l.bindings.get(key).unwrap_or([]))
-  v["process"] = Json::string(known.processes.get(key).unwrap_or("cold"))
+  let process = known.processes.get(key).unwrap_or("cold")
+  v["process"] = Json::string(if process == "warmFailed" { "warm" } else if process == "coldFailed" { "cold" } else { process })
+  if process == "warmFailed" || process == "coldFailed" {
+    v["startFailed"] = true
+  }
   let stat = l.stats.get(key)
   let s = (k : String, none : Json) => match stat { Some(r) => field(r, k); None => none }
   v["turns"] = s("turns", Json::number(0.0))

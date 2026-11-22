@@ -224,6 +224,12 @@ export class Pacer {
     if (this.#gap !== null) this.#due = Math.max(this.#due + this.#gap, now + this.#gap / 2);
   }
 
+  /// The viewer cannot use the frames on the way and asked for a new key frame. Do not count them as delivered, or
+  /// let their missing acknowledgements hold the replacement behind them.
+  lost() {
+    this.#out.length = 0;
+  }
+
   /// The client decoded every frame up to `ts`; the newest of them gives a round trip.
   /// `viewerWaitMs`: how long (ms) the client held the frame (e.g. jitter buffer) before showing or dropping it.
   acked(ts: number, viewerWaitMs = 0) {
@@ -523,6 +529,11 @@ export class FrameLatency {
     const capture = ts / 1000;
     if (now - capture < 0 || now - capture > 10_000) return;
     this.#out.set(ts, { capture, sent: now });
+  }
+
+  /// Frames the viewer gave up will not contribute latency samples.
+  lost() {
+    this.#out.clear();
   }
 
   /// The client drew every frame up to `ts`; `rtt`: the link's quickest round trip (ms), the way back its half.

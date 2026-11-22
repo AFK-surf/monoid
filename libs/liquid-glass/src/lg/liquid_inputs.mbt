@@ -82,6 +82,8 @@ pub fn liquid_text_field_node(
   parent : @view.View,
   field : @ui.Field,
   placeholder? : String = "",
+  placeholder_by? : () -> String,
+  height_by? : () -> Double,
   label? : () -> String = fn() { "" },
   description? : () -> String = fn() { "" },
   error? : () -> String = fn() { "" },
@@ -131,10 +133,16 @@ pub fn liquid_text_field_node(
       cap
       .row(Is(true))
       .lines_up(Is(Some(Middle)))
-      .height(Is(Some(ctrl_input_h)))
+      .height(match height_by {
+        Some(f) => By(fn() { Some(f()) })
+        None => Is(Some(ctrl_input_h))
+      })
       .padding(Is((ctrl_input_px, 0.0, ctrl_input_px, 0.0)))
       .gap(Is(ctrl_input_gap))
-      .radius(Is(ctrl_input_r))
+      .radius(match height_by {
+        Some(f) => By(fn() { f() / 2.0 })
+        None => Is(ctrl_input_r)
+      })
       .shadow(Is(shadow_default))
       .shadow_outside(Is(true))
       .glass(By(fn() { Some(ctrl_input_glass()) }))
@@ -142,10 +150,15 @@ pub fn liquid_text_field_node(
         if tf.invalid() {
           (ctrl_input_focus_edge_w, ctrl_danger_ink())
         } else {
+          let (base_w, base_c) = if cap.glass_solid() {
+            liquid_solid_edge()
+          } else {
+            (ctrl_hairline_w, ctrl_input_edge_ink())
+          }
           let t = clamp(focus_way.shown(cap), 0.0, 1.0)
           (
-            lerp(ctrl_hairline_w, ctrl_input_focus_edge_w, t),
-            lerp_color(ctrl_input_edge_ink(), colors().accent, t),
+            lerp(base_w, ctrl_input_focus_edge_w, t),
+            lerp_color(base_c, colors().accent, t),
           )
         }
       }))
@@ -177,6 +190,7 @@ pub fn liquid_text_field_node(
         cap,
         field,
         placeholder~,
+        placeholder_by?,
         font_size=ctrl_type_body,
         max_lines=1,
         enter_sends=true,
@@ -238,11 +252,15 @@ pub fn liquid_search_bar_node(
   parent : @view.View,
   field : @ui.Field,
   placeholder? : String = "Search",
+  placeholder_by? : () -> String,
+  height_by? : () -> Double,
   label? : () -> String = fn() { "Search" },
   disabled? : () -> Bool = fn() { false },
   submitted? : (String) -> Unit,
   edited? : (String) -> Unit,
   on_clear? : () -> Unit,
+  on_escape? : () -> Unit,
+  leading? : (@view.View, () -> Int64) -> Unit,
   trailing? : (@view.View) -> Unit,
   flat? : Bool = false,
   loc~ : SourceLoc,
@@ -255,20 +273,44 @@ pub fn liquid_search_bar_node(
       cap.reacts(at_start=false, fn() { tf.focused() }, fn(on) {
         focus_way.go(cap, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
       })
+      match on_escape {
+        Some(esc) =>
+          cap.on_key(fn(k) {
+            if k.code == @ui.key_escape && k.mods == 0 && field.focused() {
+              esc()
+              true
+            } else {
+              false
+            }
+          })
+          |> ignore
+        None => ()
+      }
       cap
       .grow(Is(1.0))
       .basis(Is(Some(0.0)))
       .row(Is(true))
       .lines_up(Is(Some(Middle)))
-      .height(Is(Some(ctrl_input_h)))
+      .height(match height_by {
+        Some(f) => By(fn() { Some(f()) })
+        None => Is(Some(ctrl_input_h))
+      })
       .padding(Is((ctrl_input_px, 0.0, ctrl_input_px, 0.0)))
       .gap(Is(ctrl_input_gap))
-      .radius(Is(ctrl_input_r))
+      .radius(match height_by {
+        Some(f) => By(fn() { f() / 2.0 })
+        None => Is(ctrl_input_r)
+      })
       .edge(By(fn() {
+        let (base_w, base_c) = if !flat && cap.glass_solid() {
+          liquid_solid_edge()
+        } else {
+          (ctrl_hairline_w, ctrl_input_edge_ink())
+        }
         let t = clamp(focus_way.shown(cap), 0.0, 1.0)
         (
-          lerp(ctrl_hairline_w, ctrl_input_focus_edge_w, t),
-          lerp_color(ctrl_input_edge_ink(), colors().accent, t),
+          lerp(base_w, ctrl_input_focus_edge_w, t),
+          lerp_color(base_c, colors().accent, t),
         )
       }))
       .alpha(By(fn() { if tf.disabled() { ctrl_disabled_alpha } else { 1.0 } }))
@@ -278,19 +320,29 @@ pub fn liquid_search_bar_node(
       } else {
         cap.shadow(Is(shadow_default)).shadow_outside(Is(true)).glass(By(fn() { Some(ctrl_input_glass()) })) |> ignore
       }
-      cap.box(fn(ic) {
-        ic
-        .width(Is(Some(ctrl_search_icon_size)))
-        .height(Is(Some(ctrl_search_icon_size)))
-        .shrink(Is(0.0))
-        .shapes(By(fn() { ctrl_search_shapes(ctrl_search_icon_size, ctrl_muted_ink()) }))
-        |> ignore
-      })
-      |> ignore
+      match leading {
+        Some(draw_lead) =>
+          cap.box(fn(l) {
+            l.shrink(Is(0.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+            draw_lead(l, ctrl_muted_ink)
+          })
+          |> ignore
+        None =>
+          cap.box(fn(ic) {
+            ic
+            .width(Is(Some(ctrl_search_icon_size)))
+            .height(Is(Some(ctrl_search_icon_size)))
+            .shrink(Is(0.0))
+            .shapes(By(fn() { ctrl_search_shapes(ctrl_search_icon_size, ctrl_muted_ink()) }))
+            |> ignore
+          })
+          |> ignore
+      }
       let typed = @ui.field(
         cap,
         field,
         placeholder~,
+        placeholder_by?,
         font_size=ctrl_type_body,
         max_lines=1,
         enter_sends=true,

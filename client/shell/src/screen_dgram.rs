@@ -74,6 +74,8 @@ const WINDOW: usize = 8;
 const GAP_WAIT: Duration = Duration::from_millis(3);
 /// How long a frame not yet whole is waited for at most when nothing after it came (its shards come within ~4 ms).
 const STALE: Duration = Duration::from_millis(40);
+/// A config came but no frame of it arrived at all. With no shards there is no other way to detect its loss.
+const FIRST_FRAME_WAIT: Duration = Duration::from_secs(2);
 /// Key frames asked for no more often than this.
 const KEYFRAME_EVERY: Duration = Duration::from_millis(200);
 /// A key frame asked for and not come whole this long after (lost itself, and the screen still: no frame after it to
@@ -957,6 +959,9 @@ pub(crate) struct MediaIn {
     want_keyframe: bool,
     asked_keyframe: Option<Instant>,
     wait_from: Option<Instant>,
+    /// A config's first frame, if it has not arrived; and the epoch of the last frame made whole (which may precede its config).
+    first_frame: Option<(u8, Instant)>,
+    last_video_epoch: Option<u8>,
     pub(crate) counts: Counts,
     /// The shards missing of the frames had or let go since the loss was last said (`take_report`).
     pub(crate) loss: LossCount,
@@ -993,6 +998,8 @@ impl MediaIn {
             want_keyframe: false,
             asked_keyframe: None,
             wait_from: None,
+            first_frame: None,
+            last_video_epoch: None,
             counts: Counts::default(),
             loss: LossCount::default(),
             clock: None,
@@ -1006,7 +1013,7 @@ impl MediaIn {
 
     /// What came next on the stream, followed: where the last place in it is that is between two frames (the frames
     /// ready go there), None where there is none.
-    pub(crate) fn stream(&mut self, chunk: &[u8]) -> Option<usize> {
+    pub(crate) fn stream(&mut self, chunk: &[u8], now: Instant) -> Option<usize> {
         let mut at = 0;
         if !self.line_done {
             at = chunk.iter().position(|&b| b == b'\n')? + 1;
@@ -1022,7 +1029,7 @@ impl MediaIn {
                 at += take;
                 self.rem -= take;
                 if self.rem == 0 {
-                    self.frame_done();
+                    self.frame_done(now);
                     boundary = Some(at);
                 }
                 continue;
@@ -1039,8 +1046,12 @@ impl MediaIn {
                     return None;
                 }
                 self.rem = len;
+                // A reliable video frame is on its way. It can take longer than the datagram deadline to arrive.
+                if self.kind == FRAME_VIDEO {
+                    self.first_frame = None;
+                }
                 if len == 0 {
-                    self.frame_done();
+                    self.frame_done(now);
                     boundary = Some(at);
                 }
             }
@@ -1048,19 +1059,24 @@ impl MediaIn {
         boundary
     }
 
-    fn frame_done(&mut self) {
+    fn frame_done(&mut self, now: Instant) {
         match self.kind {
             FRAME_CONFIG => {
                 self.video_epoch = self.video_epoch.wrapping_add(1);
+                let had_frame = self.last_video_epoch == Some(self.video_epoch) || self.video.held.iter().any(|(epoch, _)| *epoch == self.video_epoch);
                 Self::config_came(&mut self.video, self.video_epoch, &mut self.ready, FRAME_VIDEO, &mut self.loss, self.clock);
                 self.wait_from = None;
+                self.first_frame = (!self.video.closed && !had_frame).then_some((self.video_epoch, now + FIRST_FRAME_WAIT));
             }
             FRAME_AUDIO_CONFIG => {
                 self.audio_epoch = self.audio_epoch.wrapping_add(1);
                 Self::config_came(&mut self.audio, self.audio_epoch, &mut self.ready, FRAME_AUDIO, &mut self.loss, self.clock);
             }
             // (the station sends this kind on the stream now: what came of it as datagrams is no longer to be given)
-            FRAME_VIDEO => Self::close(&mut self.video),
+            FRAME_VIDEO => {
+                self.first_frame = None;
+                Self::close(&mut self.video);
+            }
             FRAME_AUDIO => Self::close(&mut self.audio),
             _ => {}
         }
@@ -1158,6 +1174,7 @@ impl MediaIn {
                     let p = self.video.pending.remove(&s).unwrap();
                     retain_counted(&mut self.video.pending, &mut self.loss, now, |q, _| q > s);
                     self.video.broken = false;
+                    self.want_keyframe = false;
                     self.give_video(s, p);
                 }
                 None => break,
@@ -1188,6 +1205,10 @@ impl MediaIn {
     fn give_video(&mut self, seq: u32, mut p: Pending) {
         self.video.last = seq;
         self.wait_from = None;
+        self.last_video_epoch = Some(p.epoch);
+        if self.first_frame.is_some_and(|(epoch, _)| epoch == p.epoch) {
+            self.first_frame = None;
+        }
         self.counts.video += 1;
         let (frame, _) = p.whole.take().unwrap();
         self.gate(true, p.epoch, frame);
@@ -1199,6 +1220,7 @@ impl MediaIn {
         let now = self.clock.unwrap_or_else(Instant::now);
         retain_counted(&mut self.video.pending, &mut self.loss, now, |_, p| p.key);
         self.wait_from = None;
+        self.first_frame = None;
         self.want_keyframe = true;
         self.counts.given_up += 1;
         crate::tally("dgram.video.lost");
@@ -1233,14 +1255,15 @@ impl MediaIn {
             return None;
         }
         if self.video.broken {
-            return if self.want_keyframe { None } else { self.asked_keyframe.map(|at| at + KEYFRAME_RETRY) };
+            return if self.want_keyframe {
+                self.asked_keyframe.map(|at| at + KEYFRAME_EVERY).filter(|at| self.clock.is_some_and(|now| now < *at))
+            } else {
+                self.asked_keyframe.map(|at| at + KEYFRAME_RETRY)
+            };
         }
         let wait = self.wait_from.map(|w| w + GAP_WAIT);
         let stale = self.video.pending.get(&self.video.last.wrapping_add(1)).filter(|p| p.whole.is_none()).map(|p| p.first + STALE);
-        match (wait, stale) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        [wait, stale, self.first_frame.map(|(_, at)| at)].into_iter().flatten().min()
     }
 
     pub(crate) fn tick(&mut self, now: Instant) {
@@ -1252,6 +1275,10 @@ impl MediaIn {
             if !self.want_keyframe && self.asked_keyframe.is_some_and(|at| now.duration_since(at) >= KEYFRAME_RETRY) {
                 self.want_keyframe = true;
             }
+            return;
+        }
+        if self.first_frame.is_some_and(|(_, at)| now >= at) {
+            self.give_up();
             return;
         }
         self.advance(now);
@@ -1455,9 +1482,13 @@ mod tests {
     }
 
     fn stream_of(media: &mut MediaIn, bytes: &[u8]) -> Vec<u8> {
+        stream_at(media, bytes, Instant::now())
+    }
+
+    fn stream_at(media: &mut MediaIn, bytes: &[u8], now: Instant) -> Vec<u8> {
         // what a read gives: the stream's bytes with the frames ready put at its last boundary
         let mut out = Vec::new();
-        match media.stream(bytes) {
+        match media.stream(bytes, now) {
             Some(b) => {
                 out.extend_from_slice(&bytes[..b]);
                 media.drain_into(&mut out);
@@ -1640,6 +1671,7 @@ mod tests {
         want.extend(frame_bytes(FRAME_VIDEO, &key));
         want.extend(frame_bytes(FRAME_VIDEO, &p));
         assert_eq!(out, want, "given right after the config");
+        assert_eq!(media.deadline(), None, "a frame received ahead of its config needs no retry");
         // a frame of the config before, late: dropped
         let old = datagrams_of(3, FRAME_VIDEO, false, 0, 3, &video_body(false, 3, 10, 3), None, 1200, 0.0).unwrap();
         media.datagram(&old[0], t);
@@ -1733,6 +1765,71 @@ mod tests {
         assert_eq!(given(&mut media).into_iter().map(|g| g.1).collect::<Vec<_>>(), vec![frames[0].2.clone(), frames[4].2.clone()]);
         assert_eq!(media.deadline(), None);
         assert!(!media.take_keyframe(ms(530)));
+    }
+
+    #[test]
+    fn another_loss_soon_after_recovery_waits_for_the_next_keyframe_slot() {
+        let t = Instant::now();
+        let ms = |n: u64| t + Duration::from_millis(n);
+        let mut media = MediaIn::new(5, false);
+        stream_at(&mut media, &config(1), t);
+        let frames: Vec<(u8, bool, Vec<u8>)> = (0..7).map(|i| (FRAME_VIDEO, i == 0 || i == 3 || i == 6, video_body(i == 0 || i == 3 || i == 6, i, 3000, i as u8))).collect();
+        let sent = send(5, &frames, 1, 0.0);
+        sent[0].iter().for_each(|d| media.datagram(d, t));
+        sent[1].iter().skip(2).for_each(|d| media.datagram(d, t));
+        sent[2].iter().for_each(|d| media.datagram(d, t));
+        media.tick(ms(4));
+        assert!(media.take_keyframe(ms(4)));
+        sent[3].iter().for_each(|d| media.datagram(d, ms(30)));
+        assert!(!media.video.broken);
+        sent[4].iter().skip(2).for_each(|d| media.datagram(d, ms(40)));
+        sent[5].iter().for_each(|d| media.datagram(d, ms(40)));
+        media.tick(ms(44));
+        assert!(!media.take_keyframe(ms(44)), "the next request is rate-limited");
+        assert_eq!(media.deadline(), Some(ms(204)), "wake when the limit expires even if no more frames arrive");
+        media.tick(ms(204));
+        assert!(media.take_keyframe(ms(204)));
+        sent[6].iter().for_each(|d| media.datagram(d, ms(220)));
+        assert!(!media.video.broken);
+        assert_eq!(media.deadline(), None);
+    }
+
+    #[test]
+    fn the_first_frame_lost_entirely_on_a_still_screen_is_asked_for_again() {
+        let t = Instant::now();
+        let mut media = MediaIn::new(5, false);
+        stream_at(&mut media, &config(1), t);
+        // No shard of the first frame came. A still screen sends nothing else to reveal the loss.
+        assert_eq!(media.deadline(), Some(t + FIRST_FRAME_WAIT));
+        media.tick(t + FIRST_FRAME_WAIT - Duration::from_millis(1));
+        assert!(!media.take_keyframe(t + FIRST_FRAME_WAIT - Duration::from_millis(1)));
+        media.tick(t + FIRST_FRAME_WAIT);
+        assert!(media.take_keyframe(t + FIRST_FRAME_WAIT));
+        assert_eq!(media.deadline(), Some(t + FIRST_FRAME_WAIT + KEYFRAME_RETRY));
+        // Chrome repeats the config with its requested key frame, which follows the missing sequence 1.
+        stream_at(&mut media, &config(2), t + FIRST_FRAME_WAIT + Duration::from_millis(10));
+        let body = video_body(true, 2, 100, 2);
+        let recovery = datagrams_of(5, FRAME_VIDEO, true, 2, 2, &body, None, 1200, 0.0).unwrap();
+        for d in recovery {
+            media.datagram(&d, t + FIRST_FRAME_WAIT + Duration::from_millis(20));
+        }
+        assert_eq!(given(&mut media), vec![(FRAME_VIDEO, body)]);
+        assert_eq!(media.deadline(), None);
+        assert!(!media.take_keyframe(t + FIRST_FRAME_WAIT + Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn a_frame_on_the_reliable_stream_cancels_the_first_frame_deadline() {
+        let t = Instant::now();
+        let mut media = MediaIn::new(5, false);
+        stream_at(&mut media, &config(1), t);
+        assert_eq!(media.deadline(), Some(t + FIRST_FRAME_WAIT));
+        let video = frame_bytes(FRAME_VIDEO, &video_body(true, 1, 10, 1));
+        stream_at(&mut media, &video[..5], t);
+        assert_eq!(media.deadline(), None);
+        media.tick(t + FIRST_FRAME_WAIT);
+        assert!(!media.take_keyframe(t + FIRST_FRAME_WAIT));
+        stream_at(&mut media, &video[5..], t + FIRST_FRAME_WAIT);
     }
 
     #[test]

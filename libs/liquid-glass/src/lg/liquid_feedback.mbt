@@ -13,8 +13,42 @@ pub(all) enum LiquidStatus {
 }
 
 ///|
+/// Composable single-layer Liquid Glass toast capsule shell (`liquid_toast_glass`, `shadow_outside(Is(true))`,
+/// `MBUI_GLASS=solid` 1pt hairline fallback) for custom toast stacks and swipeable toaster layers.
+#callsite(autofill(loc))
+pub fn liquid_toast_shell_node(
+  parent : @view.View,
+  body : (@view.View) -> Unit,
+  radius? : Double = ovl_toast_radius,
+  max_width? : Double = 420.0,
+  solid? : () -> Int64,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(shell) {
+    shell
+    .radius(Is(radius))
+    .max_width(Is(Some(max_width)))
+    .shadow(Is(shadow_default))
+    .shadow_outside(Is(true))
+    .glass(
+      By(fn() {
+        let s = match solid {
+          Some(f) => f()
+          None => clear
+        }
+        Some(liquid_toast_glass(solid=s))
+      }),
+    )
+    .edge(By(fn() { if shell.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
+    |> ignore
+    body(shell)
+  })
+}
+
+///|
 /// A Liquid Glass floating toast capsule (`r=24pt`) with vector status badge, title, optional
-/// subtitle, optional action capsule and optional `×` dismiss button.
+/// subtitle, optional action capsule, optional `×` dismiss button, horizontal swipe-to-dismiss when
+/// `on_dismiss` is provided, and `MBUI_GLASS=solid` 1pt edge fallback.
 #callsite(autofill(loc))
 pub fn liquid_toast_node(
   parent : @view.View,
@@ -31,6 +65,9 @@ pub fn liquid_toast_node(
     let shown_visible = ovl_transitioned_bool(h, visible)
     h.show(shown_visible, leave=@motion.pop_out_ms, fn(s) {
       let (look, _) = @motion.overlay_presence(s, enter=@motion.pop_in, exit=@motion.pop_out)
+      let drag_x = @motion.NodeWay::new(0.0)
+      let drag_start_wx = Ref(0.0)
+      let drag_start_x = Ref(0.0)
       s
       .row(Is(true))
       .lines_up(Is(Some(Start)))
@@ -39,11 +76,43 @@ pub fn liquid_toast_node(
       .radius(Is(ovl_toast_radius))
       .shadow(Is(shadow_default))
       .shadow_outside(Is(true))
-      .glass(By(fn() { Some(ovl_capsule_glass()) }))
-      .alpha(By(fn() { look().alpha }))
+      .glass(By(fn() { Some(liquid_toast_glass()) }))
+      .edge(By(fn() { if s.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
+      .alpha(By(fn() { look().alpha * clamp(1.0 - drag_x.shown(s).abs() / 240.0, 0.0, 1.0) }))
       .scale(By(fn() { look().sx }))
+      .offset(By(fn() { (drag_x.shown(s), 0.0) }))
       .says(By(fn() { Some(@view.said(Status, label=title(), description=subtitle())) }))
       |> ignore
+      match on_dismiss {
+        Some(dismiss) =>
+          s
+          .gesture(
+            @ui.touch_slop(),
+            press=fn(d) {
+              drag_start_wx.val = d.wx
+              drag_start_x.val = drag_x.value_at(d.at)
+            },
+            drag=fn(d) {
+              match d.kind {
+                Down | Moved => drag_x.put(drag_start_x.val + (d.wx - drag_start_wx.val))
+                Up | Off => {
+                  let cur = drag_x.value_at(d.at)
+                  let vx = d.vx()
+                  let should_dismiss = d.kind is Up && (cur.abs() > 72.0 || vx.abs() > 0.45)
+                  if should_dismiss {
+                    let dir = if cur >= 0.0 { 1.0 } else { -1.0 }
+                    drag_x.go(s, dir * 240.0, @motion.move_damped, velocity=vx)
+                    dismiss()
+                  } else {
+                    drag_x.go(s, 0.0, @motion.move_damped, velocity=vx)
+                  }
+                }
+              }
+            },
+          )
+          |> ignore
+        None => ()
+      }
       // Vector status icon aligned to first line of title
       s.box(fn(ic) {
         ic
@@ -394,12 +463,14 @@ pub fn liquid_nav_bar_node(
 }
 
 ///|
-/// A Liquid Glass floating capsule toolbar (`r = height / 2`).
+/// A Liquid Glass floating capsule toolbar (`r = height / 2`) with `MBUI_GLASS=solid` 1pt edge fallback.
 #callsite(autofill(loc))
 pub fn liquid_toolbar_node(
   parent : @view.View,
   body : (@view.View) -> Unit,
   height? : Double = 48.0,
+  pad? : Double = ovl_toolbar_px,
+  gap? : Double = ovl_toolbar_gap,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(bar) {
@@ -407,12 +478,13 @@ pub fn liquid_toolbar_node(
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
     .height(Is(Some(height)))
-    .padding(Is((ovl_toolbar_px, 0.0, ovl_toolbar_px, 0.0)))
-    .gap(Is(ovl_toolbar_gap))
+    .padding(Is((pad, 0.0, pad, 0.0)))
+    .gap(Is(gap))
     .radius(Is(height / 2.0))
     .shadow(Is(shadow_default))
     .shadow_outside(Is(true))
     .glass(By(fn() { Some(ovl_capsule_glass()) }))
+    .edge(By(fn() { if bar.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
     .says(Is(Some(@view.said(Toolbar, label="Toolbar"))))
     |> ignore
     body(bar)

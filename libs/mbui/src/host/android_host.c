@@ -481,6 +481,10 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_dropPending(JNIEnv *env, jclass c) {
 // (GL thread) the frame taken drawn (gl_present_kept: straight onto the surface or through the canvas)
 JNIEXPORT void JNICALL Java_dev_mbui_Native_draw(JNIEnv *env, jclass c) { gl_present_kept(kept_count, kept_r, kept_g, kept_b); }
 
+JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_adaptiveSettling(JNIEnv *env, jclass c) {
+  return gl_adaptive_settling() ? JNI_TRUE : JNI_FALSE;
+}
+
 // (MBView.trim, GL thread, its context current: the view paused, the system short of memory)
 JNIEXPORT void JNICALL Java_dev_mbui_Native_trim(JNIEnv *env, jclass c) { mb_render_trim(); }
 
@@ -493,6 +497,10 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_redraw(JNIEnv *env, jclass c) {
     glDisable(GL_SCISSOR_TEST);
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
+    return;
+  }
+  if (gl_adaptive_settling()) {
+    gl_adaptive_step();
     return;
   }
   draw_kept();

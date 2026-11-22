@@ -412,10 +412,10 @@ pub struct AgyDriver {
   lost : Array[String]
   sessions : Array[AgySession]
 }
-pub fn AgyDriver::acp_begin(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit, Bool) -> Later[AgySession]
+pub fn AgyDriver::acp_begin(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit, Bool, cancelled? : () -> Bool) -> Later[AgySession]
 pub fn AgyDriver::adopt(Self, @jsjson.JValue, @jsjson.JValue?, (@jsjson.JValue) -> Unit) -> Later[AgySession]
-pub fn AgyDriver::begin(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit, Bool) -> Later[AgySession]
-pub fn AgyDriver::begin_once(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit, Bool) -> Later[AgySession]
+pub fn AgyDriver::begin(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit, Bool, cancelled? : () -> Bool) -> Later[AgySession]
+pub fn AgyDriver::begin_once(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit, Bool, cancelled? : () -> Bool) -> Later[AgySession]
 pub fn AgyDriver::borrowed(Self, @jsjson.JValue) -> Bool
 pub fn AgyDriver::catalog(Self, @jsjson.JValue) -> Later[@jsjson.JValue]
 pub fn AgyDriver::ensure_conversation(Self, String, String) -> Later[Unit]
@@ -426,7 +426,7 @@ pub fn AgyDriver::lp(Self) -> Loop
 pub fn AgyDriver::m(Self) -> Machine
 pub fn AgyDriver::new(Machine, String, Procs, command? : String, AgyWorld, ProfileSays, Words, Ids) -> Self
 pub fn AgyDriver::note_lost(Self, String) -> Unit
-pub fn AgyDriver::open(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit) -> Later[AgySession]
+pub fn AgyDriver::open(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit, cancelled? : () -> Bool) -> Later[AgySession]
 pub fn AgyDriver::ready(Self, AgySession, @jsjson.JValue, Bool) -> Later[Unit]
 pub fn AgyDriver::renew(Self, String) -> Later[Unit]
 pub fn AgyDriver::renew_lent(Self, @jsjson.JValue) -> Later[Unit]

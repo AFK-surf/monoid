@@ -1252,6 +1252,86 @@ test "大屏, 中屏: the station's and the agent's names above the composer sho
 }
 
 ///|
+fn wide_bar_neon_over(extra_agents? : Int = 0, with_subchats? : Bool = false, with_jobs? : Bool = false) -> (String, Topic) -> Topic {
+  let edit_chat = wide_bar_edit("chat", fn(v) {
+    match v {
+      Some(Object(m)) => {
+        let o = m.copy()
+        let first = match m.get("agents") {
+          Some(Array(a)) if a.length() > 0 => a[0]
+          _ => Json::object({})
+        }
+        let all : Array[Json] = []
+        match first {
+          Object(am) => {
+            let ao = am.copy()
+            match am.get("session") {
+              Some(Object(s)) => {
+                let ss = s.copy()
+                ss["runtime"] = Json::string("agy")
+                ss["maker"] = { "id": "gemini", "name": "Google" }
+                ss["model"] = Json::string("gemini-4-neon")
+                ss["modelName"] = Json::string("Gemini 4 Neon")
+                ss["modelShort"] = Json::string("Neon")
+                ss["effort"] = Json::string("high")
+                ss["agentText"] = Json::string("Gemini 4 Neon · high")
+                ao["session"] = Json::object(ss)
+              }
+              _ => ()
+            }
+            all.push(Json::object(ao))
+          }
+          other => all.push(other)
+        }
+        for i in 0..<extra_agents {
+          all.push({
+            "session": {
+              "key": "s-extra-\{i}",
+              "runtime": "agy",
+              "maker": { "id": "gemini", "name": "Google" },
+              "model": "gemini-4-neon",
+              "modelName": "Gemini 4 Neon",
+              "modelShort": "Neon",
+              "effort": "high",
+              "agentText": "Gemini 4 Neon · high",
+              "statusText": "未开始",
+              "tone": "neutral",
+            },
+            "status": "idle",
+          })
+        }
+        o["agents"] = Json::array(all)
+        if with_subchats {
+          o["opened"] = Json::array([
+            {
+              "station": "ws1/st1",
+              "session": "s-sub-1",
+              "title": "子会话一",
+              "led": true,
+              "state": "run",
+            },
+            {
+              "station": "ws1/st1",
+              "session": "s-sub-2",
+              "title": "子会话二",
+              "led": true,
+              "state": "done",
+            },
+          ])
+        }
+        Some(Json::object(o))
+      }
+      other => other
+    }
+  })
+  if with_jobs {
+    wide_bar_both(edit_chat, wide_bar_jobs("fail"))
+  } else {
+    edit_chat
+  }
+}
+
+///|
 test "大屏, 中屏: a station's name too long for the row above the composer (with its services and a led sub-chat) cut in its capsule, none of it past the services' button or the window" {
   let station = "这是一台名字非常非常长的机器用来检验输入框上方的胶囊在放不下时会不会把右边的按钮挤出去或者画到窗口外面去了"
   for win in [("大屏", 860.0), ("中屏", 720.0)] {
@@ -1469,4 +1549,32 @@ test "大屏窄窗(860)与中屏窄窗(600): 3 模型 + 服务按钮 + 子会话
     assert_true(s.rect.0 + s.rect.2 <= win.1, msg="\{win.0}: services in window: \{Repr(s.rect)}")
     assert_eq(t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("agent_badge_node") }), [], msg=win.0)
   }
+}
+
+///|
+test "大屏/中屏输入框上方胶囊：Gemini 4 Neon · 高 宽屏完整展示，挤窄时逐级降级为 Neon · 高 与 Neon（始终保底短名不藏掉），无省略号无死留白，拉宽恢复" {
+  let calls : Array[Made] = []
+  let bar_texts = fn(t : @ui.Tester) -> Array[String] {
+    t.text_runs().filter(fn(r) { r.top > 400.0 && r.bottom < 740.0 }).map(fn(r) { r.text })
+  }
+  // 1) Roomy Large screen (1280): full "Gemini 4 Neon" + "高" shown without ellipsis
+  let t = wide_bar_at(calls, w=1280.0, over=wide_bar_neon_over(with_subchats=true, with_jobs=true))
+  let wide_words = bar_texts(t)
+  assert_true(wide_words.contains("Gemini 4 Neon"), msg="1280: full model name: \{Repr(wide_words)}")
+  assert_true(wide_words.contains("· 高"), msg="1280: effort shown: \{Repr(wide_words)}")
+  assert_true(wide_words.iter().all(fn(s) { !s.contains("…") }), msg="1280: zero ellipsis: \{Repr(wide_words)}")
+  assert_eq(t.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("model_segments_node") }), [], msg="1280 audit")
+  // 2) Crowded Medium screen (600) with 3 agents + subchats + jobs: all agents step down to "Neon" without ellipsis
+  let t2 = wide_bar_at(calls, w=600.0, over=wide_bar_neon_over(extra_agents=2, with_subchats=true, with_jobs=true))
+  let mid_words = bar_texts(t2)
+  assert_true(mid_words.contains("Neon"), msg="600 crowded: short model name Neon: \{Repr(mid_words)}")
+  assert_true(!mid_words.contains("Gemini 4 Neon"), msg="600 crowded: full name stepped down: \{Repr(mid_words)}")
+  assert_true(mid_words.iter().all(fn(s) { !s.contains("…") }), msg="600 crowded: zero ellipsis: \{Repr(mid_words)}")
+  assert_eq(t2.audit().filter(fn(f) { f.contains("chat_bar_wide_node") || f.contains("model_segments_node") }), [], msg="600 audit")
+  // 3) Widen back to 1280: full "Gemini 4 Neon" + "高" recovers immediately
+  t2.resize(1280.0, 800.0)
+  t2.run_for(@ui.move_most_ms)
+  let back_words = bar_texts(t2)
+  assert_true(back_words.contains("Gemini 4 Neon"), msg="widened back: full restored: \{Repr(back_words)}")
+  assert_true(back_words.contains("· 高"), msg="widened back: effort restored: \{Repr(back_words)}")
 }

@@ -1303,31 +1303,51 @@ pub fn AgyDriver::starting(self : AgyDriver, options : JValue) -> Later[AcpStart
 }
 
 ///|
-/// One opening, opened again after a wait while its process offers no models (`begin`).
+/// One opening, opened again after a wait while its process offers no models (`begin`). Given up (`cancelled`: timed
+/// out, stopped, suspended, closed), it opens nothing again and starts no process.
 pub fn AgyDriver::begin(
   self : AgyDriver,
   options : JValue,
   events : (JValue) -> Unit,
   probe : Bool,
+  cancelled? : () -> Bool = () => false,
 ) -> Later[AgySession] {
   let m = self.m()
-  fn attempt(i : Int) -> Later[AgySession] {
-    self
-    .begin_once(options, events, probe)
-    .recover(e => {
+  agy_opened_again(m.lp, () => self.begin_once(options, events, probe, cancelled~), self.world.sleep, cancelled, (i, wait) => m.log(
+    "warn",
+    "agents::agy",
+    "its process offered no models (its network not up?); opened again after a wait",
+    obj([("key", get(Some(options), "key").unwrap_or(Null)), ("attempt", n(i + 1)), ("waitMs", d(wait))]),
+  ))
+}
+
+///|
+/// `begin`'s openings (`once`): one whose process offered no models opened again after each of
+/// `agy_catalog_retry_ms` (`sleep`, `waiting` told first), none once `cancelled`, whose failure is "open aborted".
+fn[T] agy_opened_again(
+  lp : Loop,
+  once : () -> Later[T],
+  sleep : (Double) -> Later[Unit],
+  cancelled : () -> Bool,
+  waiting : (Int, Double) -> Unit,
+) -> Later[T] {
+  fn attempt(i : Int) -> Later[T] {
+    if cancelled() {
+      return Later::fail(lp, Failed("open aborted"))
+    }
+    once().recover(e => {
+      if cancelled() {
+        return Later::fail(lp, Failed("open aborted"))
+      }
       guard e is Failed(msg) &&
         msg == "Antigravity CLI could not load its model catalog: connection failed" &&
         i < agy_catalog_retry_ms.length() else {
-        return Later::fail(m.lp, e)
+        return Later::fail(lp, e)
       }
       let wait = agy_catalog_retry_ms[i]
-      m.log(
-        "warn",
-        "agents::agy",
-        "its process offered no models (its network not up?); opened again after a wait",
-        obj([("key", get(Some(options), "key").unwrap_or(Null)), ("attempt", n(i + 1)), ("waitMs", d(wait))]),
-      )
-      (self.world.sleep)(wait).bind(_ => attempt(i + 1))
+      waiting(i, wait)
+      // (given up during its wait: `attempt` refuses at once, nothing opened again)
+      sleep(wait).bind(_ => attempt(i + 1))
     })
   }
 
@@ -1340,6 +1360,7 @@ pub fn AgyDriver::begin_once(
   options : JValue,
   events : (JValue) -> Unit,
   probe : Bool,
+  cancelled? : () -> Bool = () => false,
 ) -> Later[AgySession] {
   let m = self.m()
   let lp = m.lp
@@ -1371,7 +1392,15 @@ pub fn AgyDriver::begin_once(
     } else {
       done(lp)
     }
-    prepared.bind(_ => self.acp_begin(options, events, probe)).map(session => {
+    prepared
+    .bind(_ => {
+      // (given up while it was made ready: no process started)
+      if cancelled() {
+        return Later::fail(lp, Failed("open aborted"))
+      }
+      self.acp_begin(options, events, probe, cancelled~)
+    })
+    .map(session => {
       session.sign_in_until = until
       session.sign_in_opened_at = if borrowed { Some(m.now()) } else { None }
       session
@@ -1386,13 +1415,21 @@ pub fn AgyDriver::acp_begin(
   options : JValue,
   events : (JValue) -> Unit,
   probe : Bool,
+  cancelled? : () -> Bool = () => false,
 ) -> Later[AgySession] {
   let m = self.m()
   let lp = m.lp
   let o = Some(options)
+  if cancelled() {
+    return Later::fail(lp, Failed("open aborted"))
+  }
   self
   .starting(options)
   .bind(start => {
+    // (given up while it was made ready: no process started)
+    if cancelled() {
+      return Later::fail(lp, Failed("open aborted"))
+    }
     let session = self.session(options, events)
     let own = session.acp.own
     own.tools_url = str_at(o, "mcpUrl")
@@ -1475,6 +1512,10 @@ pub fn AgyDriver::acp_begin(
         })
       work
       .map(_ => {
+        // (given up as it opened: ended below, never a session's)
+        if cancelled() {
+          raise Failed("open aborted")
+        }
         self.sessions.push(session)
         session
       })
@@ -1539,8 +1580,13 @@ pub fn AgyDriver::ready(self : AgyDriver, session : AgySession, options : JValue
 
 ///|
 /// Opens a session (`open`).
-pub fn AgyDriver::open(self : AgyDriver, options : JValue, events : (JValue) -> Unit) -> Later[AgySession] {
-  self.begin(options, events, false)
+pub fn AgyDriver::open(
+  self : AgyDriver,
+  options : JValue,
+  events : (JValue) -> Unit,
+  cancelled? : () -> Bool = () => false,
+) -> Later[AgySession] {
+  self.begin(options, events, false, cancelled~)
 }
 
 ///|

@@ -158,6 +158,74 @@ function nameOf(id: string): string {
   return context === "" ? named : `${named} ${context}`;
 }
 
+const GEMINI_GENERIC = new Set(["pro", "flash", "ultra", "nano", "lite", "mini", "thinking", "exp", "preview", "latest"]);
+const GPT_CODENAMES = new Set(["sol", "astra", "luna", "terra"]);
+const VERSION_TOKEN = /^[0-9]+(?:\.[0-9]+)*$/;
+
+/// Shortened model name for tight spaces (Neon for Gemini 4 Neon, Opus for Opus 5.5, V4.1 Flash for DeepSeek V4.1 Flash).
+export const shortName = remembered(shortNameOf);
+function shortNameOf(id: string): string {
+  const k = key(id);
+  const at = k.indexOf("[");
+  const base = at >= 0 ? k.slice(0, at) : k;
+  if (base.startsWith("fusion-")) {
+    const split = splitDevinFusion(base);
+    if (split !== null) {
+      const sideEff = Object.keys(SIDE_EFFORTS).find((l) => split.side.endsWith(`-${l}`) && split.side.length > l.length + 1);
+      const sideCore = sideEff === undefined ? split.side : split.side.slice(0, -sideEff.length - 1);
+      return `${shortNameOf(split.lead)} + ${shortNameOf(sideCore)}`;
+    }
+  }
+  const words = base.split("-").filter((w) => w !== "");
+  const first = words[0];
+  if (first === undefined) return nameOf(id);
+  if (first === "claude" || CLAUDE.includes(first)) {
+    const fam = words.find((w) => CLAUDE.includes(w));
+    if (fam !== undefined) return word(fam);
+  }
+  const parts = joined(words);
+  if (first === "gemini") {
+    let i = 1;
+    while (i < parts.length && VERSION_TOKEN.test(parts[i]!)) i++;
+    const rest = parts.slice(i);
+    if (rest.length > 0 && !GEMINI_GENERIC.has(rest[0]!)) return rest.map(word).join(" ");
+    if (parts.length >= 2 && parts.slice(1).some((p) => !VERSION_TOKEN.test(p))) return parts.slice(1).map(word).join(" ");
+    return nameOf(id);
+  }
+  if (first === "gpt") {
+    const codename = parts.slice(2).map((w) => w.split(":")[0]!).find((w) => GPT_CODENAMES.has(w));
+    if (codename !== undefined) return word(codename);
+    const codexAt = parts.indexOf("codex");
+    if (codexAt >= 1) return parts.slice(codexAt).map(word).join(" ");
+    if (parts.length >= 3) return parts.slice(1).map(word).join(" ");
+    return nameOf(id);
+  }
+  if (first === "deepseek") {
+    let rest = parts.slice(1);
+    if (rest.length >= 2 && rest[rest.length - 1]!.length === 4 && isDigits(rest[rest.length - 1]!)) rest = rest.slice(0, -1);
+    if (rest.length > 0) return rest.map(word).join(" ");
+    return nameOf(id);
+  }
+  if (first === "kimi") {
+    if (parts[1] !== undefined && /^k[0-9]/.test(parts[1])) return parts.slice(1).map(word).join(" ");
+    if (parts[1] === "for") return "Kimi";
+    return nameOf(id);
+  }
+  if (first.startsWith("qwen")) {
+    const rest = parts.slice(1);
+    if (rest.length > 0 && rest.some((p) => !VERSION_TOKEN.test(p))) return rest.map(word).join(" ");
+    return nameOf(id);
+  }
+  if (first === "minimax" && parts.length >= 2) return parts.slice(1).map(word).join(" ");
+  return nameOf(id);
+}
+
+/// Shortened model name when it actually saves text over `name(id)`, else null.
+export function shortIfShorter(id: string): string | null {
+  const s = shortName(id);
+  return s !== name(id) ? s : null;
+}
+
 const CLAUDE = ["fable", "opus", "sonnet", "haiku"];
 
 function oSeries(first: string): boolean {

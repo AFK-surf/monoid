@@ -104,7 +104,13 @@ test("a_chat_made_again_while_its_agent_works_reads_no_file_kept_nor_linked_reco
   const shown = drawnOf(u);
   assert.deepEqual(shown.slice(0, FILES).map((m: J) => m[1][0]), Array.from({ length: FILES }, (_, i) => ["k", i < FILES - 1]));
   assert.deepEqual(shown.slice(FILES, FILES + LINKS).map((m: J) => m[2][0]), Array.from({ length: LINKS }, (_, i) => (i < LINKS - 1 ? [`链接 ${i}`, 100 + i, false] : ["归档的", 100 + i, true])));
-  assert.deepEqual(u.value.opened.map((o: J) => [o.session, o.title, o.mark ?? null]), Array.from({ length: OPENED }, (_, i) => [`o${i}`, `开的 ${i} 现在`, i % 2 === 0 ? "run" : null]));
+  assert.deepEqual(
+    u.value.opened.map((o: J) => [o.session, o.title, o.mark ?? null]),
+    [
+      ...Array.from({ length: OPENED / 2 }, (_, k) => OPENED - 2 - k * 2).map((i) => [`o${i}`, `开的 ${i} 现在`, "run"]),
+      ...Array.from({ length: OPENED / 2 }, (_, k) => OPENED - 1 - k * 2).map((i) => [`o${i}`, `开的 ${i} 现在`, null]),
+    ],
+  );
 
   // While its agent is working: the chat made again ROUNDS times, nothing it shows of its messages changed.
   const counted = counting(sql);
@@ -133,7 +139,7 @@ test("a_chat_made_again_while_its_agent_works_reads_no_file_kept_nor_linked_reco
   const now = drawnOf(u);
   assert.deepEqual(now[FILES - 1][1], [["k", true]], "the picture kept since");
   assert.deepEqual(now[FILES][2], [["改名了", 100, false]], "the chat renamed");
-  assert.equal(u.value.opened[1].mark, "run", "the chat opened now at work");
+  assert.equal(u.value.opened.find((o: J) => o.session === "o1")?.mark, "run", "the chat opened now at work");
 
   // And what a core started anew on the same records makes of it is what this one made by keeping.
   const fresh = await rig();

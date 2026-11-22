@@ -116,7 +116,7 @@ export function installChoose(inner: Inner): Choose {
               Effect.tapError(handlers.op!(inner, { kind: "op", op: saved.op }, progress, at, ctx), () => Effect.sync(() => choose.unsaved(field("station"), field("of")))),
               Effect.sync(() => choose.settled(field("station"), field("of"))),
             );
-            return { saved: true };
+            return { saved: true, ...(saved.notice !== undefined ? { notice: saved.notice } : {}) };
           });
       }
     });

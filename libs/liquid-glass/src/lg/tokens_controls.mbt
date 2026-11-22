@@ -370,7 +370,46 @@ fn ctrl_count_palette(tone : LiquidTone) -> (Int64, Int64, Int64) {
 // ---------------------------------------------------------------------------
 
 ///|
-fn ctrl_surface_glass(tint : Int64, surface : Int64, bezel? : Double = 18.0, refraction? : Double = 22.0) -> @paint.Glass {
+/// Theme-adaptive hairline edge for `MBUI_GLASS=solid` fallback (0.5pt).
+pub fn liquid_solid_edge() -> (Double, Int64) {
+  if is_dark() {
+    (0.5, 0xFFFFFF26L)
+  } else {
+    (0.5, 0x0000001CL)
+  }
+}
+
+///|
+/// Theme-adaptive press overlay ink over translucent glass: bright white veil in Dark mode,
+/// soft dark veil in Light mode so presses stay clearly legible on both surfaces.
+pub fn liquid_press_ink() -> Int64 {
+  if is_dark() {
+    0xFFFFFF38L
+  } else {
+    0x0000001FL
+  }
+}
+
+///|
+fn maybe_sharing(g : @paint.Glass, sharing : Bool) -> @paint.Glass {
+  if sharing {
+    g.sharing()
+  } else {
+    g
+  }
+}
+
+///|
+/// Calibrated iOS 27 Liquid Glass recipe for floating controls (buttons, icon buttons, chips, steppers).
+pub fn liquid_control_glass(
+  tint? : Int64 = clear,
+  surface? : Int64 = clear,
+  bezel? : Double = 18.0,
+  refraction? : Double = 22.0,
+  blur? : Double = 2.1,
+  spot? : (Double, Double)? = None,
+  sharing? : Bool = false,
+) -> @paint.Glass {
   let d = is_dark()
   let tinted = tint != clear
   let glass_tint = if tinted {
@@ -389,19 +428,229 @@ fn ctrl_surface_glass(tint : Int64, surface : Int64, bezel? : Double = 18.0, ref
   } else {
     0xFAFAFAFFL
   }
-  @paint.Glass::liquid(
-    blur=2.1,
-    tint=glass_tint,
-    solid~,
-    saturation=1.0,
-    rim=0.6,
-    bezel~,
-    refraction~,
-    chroma=0.0,
-    merge=0.0,
-    adaptive=false,
-    spot=None,
+  maybe_sharing(
+    @paint.Glass::liquid(
+      blur~,
+      tint=glass_tint,
+      solid~,
+      saturation=1.0,
+      rim=0.6,
+      bezel~,
+      refraction~,
+      chroma=0.0,
+      merge=0.0,
+      adaptive=false,
+      spot~,
+    ),
+    sharing,
   )
+}
+
+///|
+/// Translucent iOS 27 Liquid Glass for floating top-bar action pills (36–40pt tall), sharing capture by default.
+pub fn liquid_bar_pill_glass(
+  spot? : (Double, Double)? = None,
+  solid? : Int64 = clear,
+  sharing? : Bool = true,
+) -> @paint.Glass {
+  let d = is_dark()
+  let tint = if d { 0x20202067L } else { 0xFDFCFD67L }
+  let sol = if solid != clear {
+    solid
+  } else if d {
+    0x1E1F24FFL
+  } else {
+    0xFAFAFAFFL
+  }
+  maybe_sharing(
+    @paint.Glass::liquid(
+      blur=2.5,
+      tint~,
+      solid=sol,
+      saturation=1.0,
+      rim=0.6,
+      bezel=14.0,
+      refraction=20.0,
+      chroma=0.0,
+      merge=0.0,
+      adaptive=false,
+      spot~,
+    ),
+    sharing,
+  )
+}
+
+///|
+/// Floating adaptive iOS 27 Liquid Glass capsule (e.g. composer / floating island over scrolling content).
+pub fn liquid_floating_glass(
+  tint? : Int64? = None,
+  solid? : Int64 = clear,
+  spot? : (Double, Double)? = None,
+  sharing? : Bool = false,
+) -> @paint.Glass {
+  let d = is_dark()
+  let glass_tint = match tint {
+    Some(c) => c
+    None => if d { 0x20202067L } else { 0xFDFCFD67L }
+  }
+  let sol = if solid != clear {
+    solid
+  } else if d {
+    0x1E1F24FFL
+  } else {
+    0xFAFAFAFFL
+  }
+  maybe_sharing(
+    @paint.Glass::liquid(
+      blur=2.1,
+      tint=glass_tint,
+      solid=sol,
+      saturation=1.0,
+      rim=0.6,
+      bezel=20.0,
+      refraction=28.0,
+      chroma=0.0,
+      merge=0.0,
+      adaptive=true,
+      spot~,
+    ),
+    sharing,
+  )
+}
+
+///|
+/// Calibrated iOS 27 regular Liquid Glass for bottom tab bars (56pt controls) with optional capillary merge.
+pub fn liquid_tab_bar_glass(
+  spot? : (Double, Double)? = None,
+  merge? : Double = 0.0,
+  solid? : Int64 = clear,
+  sharing? : Bool = false,
+) -> @paint.Glass {
+  let d = is_dark()
+  let tint = if d { 0x20202067L } else { 0xFDFCFD67L }
+  let sol = if solid != clear {
+    solid
+  } else if d {
+    0x1E1F24FFL
+  } else {
+    0xFAFAFAFFL
+  }
+  maybe_sharing(
+    @paint.Glass::liquid(
+      blur=2.1,
+      tint~,
+      solid=sol,
+      saturation=1.0,
+      rim=0.6,
+      bezel=20.0,
+      refraction=28.0,
+      chroma=0.0,
+      merge~,
+      adaptive=false,
+      spot~,
+    ),
+    sharing,
+  )
+}
+
+///|
+/// High-translucency desaturated Liquid Glass for floating controls over vivid media / photography.
+pub fn liquid_viewer_clear_glass(
+  spot? : (Double, Double)? = None,
+  solid? : Int64 = clear,
+  sharing? : Bool = false,
+) -> @paint.Glass {
+  let d = is_dark()
+  let tint = if d { 0x20202067L } else { 0xFDFCFD67L }
+  let sol = if solid != clear {
+    solid
+  } else if d {
+    0x1E1F24FFL
+  } else {
+    0xFAFAFAFFL
+  }
+  maybe_sharing(
+    @paint.Glass::liquid(
+      blur=4.0,
+      tint~,
+      solid=sol,
+      saturation=0.55,
+      rim=0.70,
+      bezel=9.0,
+      refraction=12.0,
+      chroma=0.06,
+      merge=0.0,
+      adaptive=false,
+      spot~,
+    ),
+    sharing,
+  )
+}
+
+///|
+/// Dark translucent Liquid Glass for white-ink media viewer capsules with controlled saturation.
+pub fn liquid_viewer_dark_glass(
+  spot? : (Double, Double)? = None,
+  solid? : Int64 = clear,
+  sharing? : Bool = false,
+) -> @paint.Glass {
+  let sol = if solid != clear { solid } else { 0x161618FFL }
+  maybe_sharing(
+    @paint.Glass::liquid(
+      blur=4.0,
+      tint=0x20202067L,
+      solid=sol,
+      saturation=0.65,
+      rim=0.65,
+      bezel=9.0,
+      refraction=12.0,
+      chroma=0.06,
+      merge=0.0,
+      adaptive=false,
+      spot~,
+    ),
+    sharing,
+  )
+}
+
+///|
+/// Clear lifted Liquid Glass loupe for compact tab bar / segmented control thumbs while held.
+pub fn liquid_tab_lens_glass(
+  press : Double,
+  solid? : Int64 = clear,
+  sharing? : Bool = false,
+) -> @paint.Glass {
+  let p = clamp(press, 0.0, 1.0)
+  let d = is_dark()
+  let sol = if solid != clear {
+    solid
+  } else if d {
+    0x242428FFL
+  } else {
+    0xFFFFFFFFL
+  }
+  maybe_sharing(
+    @paint.Glass::liquid(
+      blur=0.0,
+      tint=0xFFFFFF00L,
+      solid=sol,
+      saturation=1.0,
+      rim=0.6 * p,
+      bezel=6.0 * p,
+      refraction=5.5 * p,
+      chroma=-0.02 * p,
+      merge=0.0,
+      adaptive=false,
+      spot=None,
+      zoom=1.0 + 0.08 * p,
+    ),
+    sharing,
+  )
+}
+
+///|
+fn ctrl_surface_glass(tint : Int64, surface : Int64, bezel? : Double = 18.0, refraction? : Double = 22.0) -> @paint.Glass {
+  liquid_control_glass(tint~, surface~, bezel~, refraction~)
 }
 
 ///|

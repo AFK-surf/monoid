@@ -319,7 +319,7 @@ function deciding(id: string, th: number, seq: number, at: number, dismissed: bo
 const ids = (v: J): string[] => v.days.flatMap((d: J) => d.items.map((i: J) => i.id));
 
 /// A value without what the clients show of it: what a view puts together, alone.
-const SHOWN = new Set(["trouble", "settled", "archivable", "swipeArchive", "swipeAsk", "stateText", "stateLead", "stateRest", "face", "line", "available", "offered", "connection", "glyph", "note", "time", "statusText", "tone", "badgeText", "titleText", "agentText", "maker", "runtimeText", "processText", "efforts", "modeText", "modeShort", "runText", "presence", "checkText", "checkTone", "preview", "makers", "mark", "order", "left", "level", "refills", "shown", "processesText", "by", "waiting", "since", "originText", "originKind", "summary", "modelsText", "stateBusy", "problems", "changes", "modeWords", "modeLabel", "modeSentence", "placeText"]);
+const SHOWN = new Set(["trouble", "settled", "archivable", "swipeArchive", "swipeAsk", "stateText", "stateLead", "stateRest", "face", "line", "available", "offered", "connection", "glyph", "note", "time", "statusText", "tone", "badgeText", "titleText", "agentText", "modelShort", "shortName", "maker", "runtimeText", "processText", "efforts", "modeText", "modeShort", "runText", "presence", "checkText", "checkTone", "preview", "makers", "mark", "order", "left", "level", "refills", "shown", "processesText", "by", "waiting", "since", "originText", "originKind", "summary", "modelsText", "stateBusy", "problems", "changes", "modeWords", "modeLabel", "modeSentence", "placeText"]);
 function plain(v: J): J {
   if (Array.isArray(v)) return v.map(plain);
   if (v !== null && typeof v === "object") return Object.fromEntries(Object.entries(v).filter(([k, x]) => !SHOWN.has(k) && x !== null && x !== undefined).map(([k, x]) => [k, plain(x)]));
@@ -2574,12 +2574,95 @@ test("a_chat_whose_agent_opened_others_lists_them_each_where_it_stands", async (
   await t.read(u, 1);
   const v = u.value;
   assert.equal(v.openedText, "创建了 4 个对话");
+  // Priority order: need (c-need) -> other active newest-first (gone idx=3, c-adopted idx=1) -> archived (old).
   assert.deepEqual(v.opened.map((o: J) => [o.session, o.title, o.stateLead ?? null, o.archived ?? false, o.led ?? false]), [
     ["c-need", "安卓构建", "need", false, true],
+    ["gone", "没了的", null, false, false],
     ["c-adopted", "被别人收归的", null, false, false],
     ["old", "归档的", null, true, false],
-    ["gone", "没了的", null, false, false],
   ]);
+});
+
+test("opened_chats_report_done_when_unread_and_sort_by_priority_newest_first", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  const now = t.host.nowMs();
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember" })]);
+  t.set(threads("ws/a"), [thread(7, ["k"], now)]);
+  t.set({ topic: "archivedRows", station: "ws/a" }, [
+    { ...row("c-arch-1", now), title: "旧归档", archived: { at: now, by: "auto" } },
+    { ...row("c-arch-2", now), title: "新归档", archived: { at: now, by: "auto" } },
+  ]);
+  const unreadDoneRow = {
+    ...row("c-done-unread", now),
+    title: "未读已完成",
+    unread: true,
+    agents: [{ ...session("a-done-1"), lastTurn: { kind: "message", declared: "final", ending: "all_done", need: "补齐单测", outcome: "completed", startedAt: 1, endedAt: 2 } }],
+  };
+  t.set(rows("ws/a"), [
+    {
+      ...row("k", now),
+      thread: 7,
+      opened: [
+        { session: "c-arch-1", led: true },
+        { session: "c-done-unread", led: true },
+        { session: "c-idle-1", led: true },
+        { session: "c-run-1", led: true },
+        { session: "c-need", led: true },
+        { session: "c-fail", led: true },
+        { session: "c-done-2", led: true },
+        { session: "c-run-2", led: true },
+        { session: "c-idle-2", led: true },
+        { session: "c-arch-2", led: true },
+      ],
+    },
+    unreadDoneRow,
+    {
+      ...row("c-done-2", now),
+      title: "较新已完成",
+      unread: true,
+      agents: [{ ...session("a-done-2"), lastTurn: { kind: "message", declared: "final", ending: "all_done", outcome: "completed", startedAt: 1, endedAt: 2 } }],
+    },
+    { ...row("c-idle-1", now), title: "旧空闲" },
+    { ...row("c-idle-2", now), title: "新空闲" },
+    { ...row("c-run-1", now), title: "旧运行中", agents: [{ ...session("a-run-1"), process: "running" }] },
+    { ...row("c-run-2", now), title: "新运行中", agents: [{ ...session("a-run-2"), process: "running" }] },
+    {
+      ...row("c-need", now),
+      title: "待处理",
+      agents: [{ ...session("a-need"), lastTurn: { kind: "message", declared: "block", ending: "need_help", need: "确认方案", outcome: "completed", startedAt: 1, endedAt: 2 } }],
+    },
+    {
+      ...row("c-fail", now),
+      title: "执行失败",
+      agents: [{ ...session("a-fail"), lastTurn: { kind: "message", outcome: "failed", detail: "auth: 401", startedAt: 1, endedAt: 2 } }],
+    },
+  ]);
+  t.set(pageOf("ws/a", 7), page(1, ["开始"], null));
+  t.set(overview("ws/a"), overviewOf([], []));
+  await t.read(u, 1);
+  const opened = u.value.opened as J[];
+  assert.deepEqual(opened.map((o) => o.session), [
+    "c-fail",
+    "c-need",
+    "c-run-2",
+    "c-run-1",
+    "c-idle-2",
+    "c-idle-1",
+    "c-done-2",
+    "c-done-unread",
+    "c-arch-2",
+    "c-arch-1",
+  ]);
+  const doneUnread = opened.find((o) => o.session === "c-done-unread")!;
+  assert.equal(doneUnread.stateLead, "done");
+  assert.ok(typeof doneUnread.stateText === "string" && doneUnread.stateText.includes("补齐单测"));
+  const doneBare = opened.find((o) => o.session === "c-done-2")!;
+  assert.equal(doneBare.stateLead, "done");
+  assert.equal(doneBare.stateText, "已完成");
+  // Original row's unread flag must not be mutated.
+  assert.equal(unreadDoneRow.unread, true);
 });
 
 test("a_chat_that_links_others_reads_their_rows_alone_not_their_stations_lists", async () => {
@@ -4428,6 +4511,9 @@ test("an_agent_whose_card_is_answered_from_here_is_at_work_from_the_answer_on_ti
   // here, its turn not begun since: still at work
   const answer = { seq: 6, ts: "t-6", mine: true, quotes, createdAt: 200 };
   assert.equal(answeredAt([agent("final", 50)], [card, answer], [])[0].status, "queued");
+  const failed = { status: "failed", session: { key: "s-1", lastTurn: { startedAt: 50 }, startFailed: true, pending: 1 } };
+  assert.equal(answeredAt([failed], [card, answer], [])[0].status, "failed", "a refused start ends the activity even though the answer is retained");
+  assert.equal(answeredAt([failed], [card], [{ id: "o-2", state: "sending", quotes }])[0].status, "queued", "a new answer can try again");
   // its turn after it begun (and over): as the station says
   assert.equal(answeredAt([agent("final", 250)], [card, answer], [])[0].status, "final");
   // words sent under the card, the chat's last word: they answer it as a pick does

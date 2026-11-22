@@ -10,7 +10,8 @@ import { type FakeDriver, Rig, message, reply, settle, testClock } from "./hub-f
 const STOPPED = "已停止当前任务";
 const TIMED_OUT = "⚠️ 无法启动 agent：启动超时，回复即可重试";
 
-/// `driver`'s opens held while `on` (each counted in `started` as it is asked), all let go at once by `release`.
+/// `driver`'s opens held while `on` (each counted in `started` as it is asked, the signal it was given in `signals`), all
+/// let go at once by `release`.
 function stuckOpens(driver: FakeDriver) {
   const open = driver.open.bind(driver);
   let release!: () => void;
@@ -19,6 +20,7 @@ function stuckOpens(driver: FakeDriver) {
   const s = {
     on: false,
     asked: 0,
+    signals: [] as (AbortSignal | undefined)[],
     started: Promise.resolve(),
     hold() {
       s.on = true;
@@ -33,6 +35,7 @@ function stuckOpens(driver: FakeDriver) {
   driver.open = async (...args) => {
     if (s.on) {
       s.asked++;
+      s.signals.push(args[0].signal);
       started();
       await gate;
     }
@@ -77,9 +80,13 @@ test("a runtime that never opens is given up after its deadline, said so; its co
     // (nothing said before its deadline)
     await time.adjust(119_000);
     assert.notEqual(r.chat.lastText(), TIMED_OUT);
+    const signal = stuck.signals.at(-1);
+    assert.ok(signal !== undefined, "the driver is given the opening's signal");
+    assert.equal(signal.aborted, false);
     await time.adjust(1_000);
     await settle();
     assert.equal(r.chat.lastText(), TIMED_OUT);
+    assert.equal(signal.aborted, true, "given up for the driver too: one opening again after a failure stops (AgyDriver)");
     assert.equal(r.session(key).running, false);
     assert.equal(await phaseOf(r, key), null, "no longer said to be starting");
     assert.equal(r.session(key).runtimeSessionId, first.sessionId, "its conversation is still the session's");
@@ -170,10 +177,13 @@ for (const how of ["the app", "-stop"] as const) {
       r.hub.notify(key, "a job ended");
       await stuck.started;
       const before = r.chat.texts().length;
+      const signal = stuck.signals.at(-1);
+      assert.ok(signal !== undefined && !signal.aborted, "the driver is given the opening's signal");
       // (no clock moved: given up at once)
       await stop(r, m, key);
       await settle();
       assert.deepEqual(r.chat.texts().slice(before), [STOPPED]);
+      assert.equal(signal.aborted, true, "given up for the driver too");
       assert.equal(r.session(key).running, false);
       assert.equal(await phaseOf(r, key), null);
       assert.equal(r.session(key).runtimeSessionId, first.sessionId);

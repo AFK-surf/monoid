@@ -980,6 +980,275 @@ int main(void) {
       printf("apple_render: wave7 fog stripe peak plain_dark=%.3f adaptive_fog=%.3f\n",
              fog_peaks[0], fog_peaks[1]);
       CHECK(fog_peaks[1] < fog_peaks[0] - 0.15);
+
+      // Test A: wide 320x36pt adaptive capsule over deep navy #173255 with centered 60x24pt pure white "{less}" block
+      // must resist ping-pong flipping (trimmed mean stays dark -> dark glass + white ink).
+      double ta[4 * MB_INST];
+      rect_at(ta, 0, 0, 400, 300, 0, 23.0 / 255.0, 50.0 / 255.0, 85.0 / 255.0, 0);
+      rect_at(ta + MB_INST, 170, 138, 60, 24, 0, 1.0, 1.0, 1.0, 0);
+      rect_at(ta + 2 * MB_INST, 40, 132, 320, 36, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -21);
+      ta[2 * MB_INST + 4] = 18.0;
+      ta[2 * MB_INST + 6] = 1.0;
+      ta[2 * MB_INST + 7] = 2.0;
+      ta[2 * MB_INST + 11] = 0x67 / 255.0;
+      ta[2 * MB_INST + 12] = 0.0;
+      ta[2 * MB_INST + 13] = 14.0;
+      ta[2 * MB_INST + 14] = -1.0;
+      ta[2 * MB_INST + 15] = 1.0;
+      ta[2 * MB_INST + 21] = 0.0;
+      ta[2 * MB_INST + 22] = 0.0;
+      ta[2 * MB_INST + 23] = 0.0;
+      rect_at(ta + 3 * MB_INST, 70, 140, 60, 20, 10, 0.11, 0.11, 0.11, 0);
+      ta[3 * MB_INST + 4] = 4.0;
+      ta[3 * MB_INST + 12] = 0.1;
+      ta[3 * MB_INST + 13] = 0.5;
+      ta[3 * MB_INST + 14] = 0.9;
+      ta[3 * MB_INST + 15] = 0.5;
+      ta[3 * MB_INST + 21] = 200.0;
+      ta[3 * MB_INST + 22] = 150.0;
+      ta[3 * MB_INST + 23] = 36.0;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(ta, 4, 23.0 / 255.0, 50.0 / 255.0, 85.0 / 255.0);
+      present_drain();
+      uint8_t *px_ta = read_texture(canvas, &aw, &ah);
+      uint8_t *ta_gp = px_ta + (300 * aw + 560) * 4;  // (280, 150) glass over navy
+      uint8_t *ta_np = px_ta + (300 * aw + 200) * 4;  // (100, 150) neutral ink inside capsule
+      double ta_g = (0.2126 * ta_gp[2] + 0.7152 * ta_gp[1] + 0.0722 * ta_gp[0]) / 255.0;
+      double ta_n = (0.2126 * ta_np[2] + 0.7152 * ta_np[1] + 0.0722 * ta_np[0]) / 255.0;
+      printf("apple_render: wave7 testA wide_less glass=%.3f ink=%.3f\n", ta_g, ta_n);
+      CHECK(ta_g < 0.28);
+      CHECK(ta_n > 0.80);
+      free(px_ta);
+
+      // Test B: cross-frame temporal smoothing + synchronized glass/ink + Schmitt hysteresis + auto-settle stop
+      mb_render_set_fixed_dt(1.0 / 60.0);
+      double tb[3 * MB_INST];
+      rect_at(tb, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+      rect_at(tb + MB_INST, 40, 132, 320, 36, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -22);
+      tb[MB_INST + 4] = 18.0;
+      tb[MB_INST + 6] = 1.0;
+      tb[MB_INST + 7] = 2.0;
+      tb[MB_INST + 11] = 0x67 / 255.0;
+      tb[MB_INST + 12] = 0.0;
+      tb[MB_INST + 13] = 14.0;
+      tb[MB_INST + 14] = -1.0;
+      tb[MB_INST + 15] = 1.0;
+      tb[MB_INST + 21] = 0.0;
+      tb[MB_INST + 22] = 0.0;
+      tb[MB_INST + 23] = 0.0;
+      rect_at(tb + 2 * MB_INST, 70, 140, 60, 20, 10, 0.11, 0.11, 0.11, 0);
+      tb[2 * MB_INST + 4] = 4.0;
+      tb[2 * MB_INST + 12] = 0.1;
+      tb[2 * MB_INST + 13] = 0.5;
+      tb[2 * MB_INST + 14] = 0.9;
+      tb[2 * MB_INST + 15] = 0.5;
+      tb[2 * MB_INST + 21] = 200.0;
+      tb[2 * MB_INST + 22] = 150.0;
+      tb[2 * MB_INST + 23] = 36.0;
+
+      // Frame 0: pure white -> instant light state
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(tb, 3, 1.0, 1.0, 1.0);
+      present_drain();
+      uint8_t *px_tb = read_texture(canvas, &aw, &ah);
+      double f0_g = (0.2126 * px_tb[(300 * aw + 560) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 560) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 560) * 4 + 0]) / 255.0;
+      double f0_n = (0.2126 * px_tb[(300 * aw + 200) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 200) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 200) * 4 + 0]) / 255.0;
+      free(px_tb);
+      printf("apple_render: wave7 testB f0_white glass=%.3f ink=%.3f\n", f0_g, f0_n);
+      CHECK(f0_g > 0.75);
+      CHECK(f0_n < 0.25);
+
+      // Frame 1: switch to deep navy #173255 -> intermediate state (no 1-frame hard jump)
+      tb[8] = 23.0 / 255.0; tb[9] = 50.0 / 255.0; tb[10] = 85.0 / 255.0;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(tb, 3, tb[8], tb[9], tb[10]);
+      present_drain();
+      px_tb = read_texture(canvas, &aw, &ah);
+      double f1_g = (0.2126 * px_tb[(300 * aw + 560) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 560) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 560) * 4 + 0]) / 255.0;
+      double f1_n = (0.2126 * px_tb[(300 * aw + 200) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 200) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 200) * 4 + 0]) / 255.0;
+      free(px_tb);
+      printf("apple_render: wave7 testB f1_navy glass=%.3f ink=%.3f settling=%d\n", f1_g, f1_n, mb_render_adaptive_settling());
+      CHECK(f1_g > 0.28 && f1_g < 0.72);
+      CHECK(f1_n > 0.15 && f1_n < 0.75);
+      CHECK(mb_render_adaptive_settling() == 1);
+
+      // Step 25 more frames (~420ms): monotonic convergence to dark state
+      double prev_g = f1_g, prev_n = f1_n;
+      for (int s = 0; s < 25; s++) {
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(tb, 3, tb[8], tb[9], tb[10]);
+        present_drain();
+        px_tb = read_texture(canvas, &aw, &ah);
+        double cg = (0.2126 * px_tb[(300 * aw + 560) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 560) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 560) * 4 + 0]) / 255.0;
+        double cn = (0.2126 * px_tb[(300 * aw + 200) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 200) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 200) * 4 + 0]) / 255.0;
+        free(px_tb);
+        CHECK(cg <= prev_g + 0.015);
+        CHECK(cn >= prev_n - 0.015);
+        prev_g = cg;
+        prev_n = cn;
+      }
+      printf("apple_render: wave7 testB f26_dark glass=%.3f ink=%.3f settling=%d\n", prev_g, prev_n, mb_render_adaptive_settling());
+      CHECK(prev_g < 0.28);
+      CHECK(prev_n > 0.85);
+
+      // Schmitt hysteresis: bg=0.40 (in [0.36, 0.46]) for 25 frames stays dark
+      tb[8] = 0.40; tb[9] = 0.40; tb[10] = 0.40;
+      for (int s = 0; s < 25; s++) {
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(tb, 3, 0.40, 0.40, 0.40);
+        present_drain();
+      }
+      px_tb = read_texture(canvas, &aw, &ah);
+      double hyst_g = (0.2126 * px_tb[(300 * aw + 560) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 560) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 560) * 4 + 0]) / 255.0;
+      double hyst_n = (0.2126 * px_tb[(300 * aw + 200) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 200) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 200) * 4 + 0]) / 255.0;
+      free(px_tb);
+      printf("apple_render: wave7 testB hyst_0.40 glass=%.3f ink=%.3f\n", hyst_g, hyst_n);
+      CHECK(hyst_g < 0.40);
+      CHECK(hyst_n > 0.80);
+
+      // Return to bright bg=0.95: frame 1 intermediate, +26 frames settles back to light and stops settling
+      tb[8] = 0.95; tb[9] = 0.95; tb[10] = 0.95;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(tb, 3, 0.95, 0.95, 0.95);
+      present_drain();
+      px_tb = read_texture(canvas, &aw, &ah);
+      double r1_g = (0.2126 * px_tb[(300 * aw + 560) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 560) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 560) * 4 + 0]) / 255.0;
+      double r1_n = (0.2126 * px_tb[(300 * aw + 200) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 200) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 200) * 4 + 0]) / 255.0;
+      free(px_tb);
+      printf("apple_render: wave7 testB return_f1 glass=%.3f ink=%.3f\n", r1_g, r1_n);
+      CHECK(r1_g > 0.30 && r1_g < 0.82);
+      CHECK(r1_n > 0.20 && r1_n < 0.88);
+      for (int s = 0; s < 26; s++) {
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(tb, 3, 0.95, 0.95, 0.95);
+        present_drain();
+      }
+      px_tb = read_texture(canvas, &aw, &ah);
+      double r_end_g = (0.2126 * px_tb[(300 * aw + 560) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 560) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 560) * 4 + 0]) / 255.0;
+      double r_end_n = (0.2126 * px_tb[(300 * aw + 200) * 4 + 2] + 0.7152 * px_tb[(300 * aw + 200) * 4 + 1] + 0.0722 * px_tb[(300 * aw + 200) * 4 + 0]) / 255.0;
+      free(px_tb);
+      printf("apple_render: wave7 testB return_end glass=%.3f ink=%.3f settling=%d\n", r_end_g, r_end_n, mb_render_adaptive_settling());
+      CHECK(r_end_g > 0.75);
+      CHECK(r_end_n < 0.25);
+      CHECK(mb_render_adaptive_settling() == 0);
+      // Caret / instance drawn ABOVE the glass changing must NOT re-trigger adaptive settling.
+      double tb4[4 * MB_INST];
+      memcpy(tb4, tb, 3 * MB_INST * sizeof(double));
+      rect_at(tb4 + 3 * MB_INST, 10, 10, 2, 16, 0, 0.1, 0.1, 0.1, 0);
+      mb_host_render_dirty(0, 0, 40, 40);
+      mb_render_present(tb4, 4, 0.95, 0.95, 0.95);
+      present_drain();
+      CHECK(mb_render_adaptive_settling() == 0);
+      tb4[3 * MB_INST + 0] = 20;
+      mb_host_render_dirty(0, 0, 40, 40);
+      mb_render_present(tb4, 4, 0.95, 0.95, 0.95);
+      present_drain();
+      CHECK(mb_render_adaptive_settling() == 0);
+      mb_render_set_fixed_dt(0.0);
+      glass_forget();
+    }
+
+    // A selection changes shape data while two adaptive glasses share a capture. Settle regions must contain the
+    // complete capture so they never blur the preceding frame's glass or foreground.
+    {
+      double a[6 * MB_INST];
+      rect_at(a, 0, 0, 400, 300, 0, 0.95, 0.95, 0.95, 0);
+      rect_at(a + MB_INST, 56, 216, 160, 12, 0, 0.1, 0.1, 0.1, 0);
+      rect_at(a + 2 * MB_INST, 40, 116, 140, 32, 6, 0.99, 0.99, 0.99, -1);
+      rect_at(a + 3 * MB_INST, 32, 180, 336, 92, 6, 0.99, 0.99, 0.99, -1);
+      for (int i = 2; i <= 3; i++) {
+        a[i * MB_INST + 4] = 16.0;
+        a[i * MB_INST + 6] = 1.0;
+        a[i * MB_INST + 7] = 4.0;
+        a[i * MB_INST + 11] = 0x67 / 255.0;
+        a[i * MB_INST + 13] = 8.0;
+        a[i * MB_INST + 14] = -1.0;
+        a[i * MB_INST + 15] = 1.0;
+        a[i * MB_INST + 21] = 6.0;
+      }
+      rect_at(a + 4 * MB_INST, 40, 8, 120, 12, 0, 0.4, 0.6, 1.0, 0);
+      a[4 * MB_INST + 11] = 0.0;
+      rect_at(a + 5 * MB_INST, 0, 0, 0, 0, 12, 0, 0, 0, 0);
+      mb_render_set_fixed_dt(1.0 / 60.0);
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(a, 6, 0.95, 0.95, 0.95);
+      present_drain();
+      a[8] = 0.93;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(a, 6, 0.95, 0.95, 0.95);
+      present_drain();
+      CHECK(mb_render_adaptive_settling());
+      a[4 * MB_INST + 11] = 0.5;
+      a[5 * MB_INST + 12] = 1.0;
+      mb_host_render_dirty(32, 0, 144, 32);
+      mb_render_present(a, 6, 0.95, 0.95, 0.95);
+      present_drain();
+      slots_invalidate();
+      CHECK(canvas_as_whole());
+      mb_render_set_fixed_dt(0.0);
+      glass_forget();
+    }
+
+    // Two independent adaptive liquid glasses spaced 8pt apart so their captures overlap, with a high-contrast blue
+    // foreground caret drawn after the lower glass. Three consecutive partial frames updating only the top non-glass
+    // region while settling must stay pixel-identical to a whole redraw, and overlapping settle damage merges to one.
+    {
+      double a[7 * MB_INST];
+      rect_at(a, 0, 0, 400, 300, 0, 0.95, 0.95, 0.95, 0);
+      rect_at(a + MB_INST, 56, 216, 160, 12, 0, 0.1, 0.1, 0.1, 0);
+      rect_at(a + 2 * MB_INST, 40, 128, 140, 32, 6, 0.99, 0.99, 0.99, -1);
+      a[2 * MB_INST + 4] = 16.0;
+      a[2 * MB_INST + 6] = 1.0;
+      a[2 * MB_INST + 7] = 2.1;
+      a[2 * MB_INST + 11] = 0x67 / 255.0;
+      a[2 * MB_INST + 13] = 8.0;
+      a[2 * MB_INST + 14] = -1.0;
+      a[2 * MB_INST + 15] = 1.0;
+      a[2 * MB_INST + 21] = 28.0;
+      rect_at(a + 3 * MB_INST, 32, 168, 336, 92, 6, 0.99, 0.99, 0.99, -2);
+      a[3 * MB_INST + 4] = 16.0;
+      a[3 * MB_INST + 6] = 1.0;
+      a[3 * MB_INST + 7] = 4.0;
+      a[3 * MB_INST + 11] = 0x67 / 255.0;
+      a[3 * MB_INST + 13] = 8.0;
+      a[3 * MB_INST + 14] = -1.0;
+      a[3 * MB_INST + 15] = 1.0;
+      a[3 * MB_INST + 21] = 28.0;
+      rect_at(a + 4 * MB_INST, 48, 196, 2, 24, 0, 0.05, 0.35, 1.0, 0);
+      rect_at(a + 5 * MB_INST, 40, 8, 120, 12, 0, 0.4, 0.6, 1.0, 0);
+      a[5 * MB_INST + 11] = 0.0;
+      rect_at(a + 6 * MB_INST, 0, 0, 0, 0, 12, 0, 0, 0, 0);
+      mb_render_set_fixed_dt(1.0 / 60.0);
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(a, 7, 0.95, 0.95, 0.95);
+      present_drain();
+      a[8] = 0.93;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(a, 7, 0.95, 0.95, 0.95);
+      present_drain();
+      CHECK(mb_render_adaptive_settling());
+      for (int step = 0; step < 3; step++) {
+        a[5 * MB_INST + 11] = 0.3 * (step + 1);
+        a[6 * MB_INST + 12] = (double)(step + 1);
+        mb_host_render_dirty(32, 0, 144, 32);
+        mb_render_present(a, 7, 0.95, 0.95, 0.95);
+        present_drain();
+        slots_invalidate();
+        CHECK(canvas_as_whole());
+      }
+      float f[7 * MB_INST];
+      for (int i = 0; i < 7 * MB_INST; i++) f[i] = (float)a[i];
+      double r[][4] = {{36, 124, 148, 40}, {28, 164, 344, 100}};
+      int rn = 2;
+      CHECK(mb_glass_damage_expand(f, 7, r, &rn, 400, 300, 2));
+      CHECK(rn == 1);
+      CHECK(r[0][1] <= 92 && r[0][1] + r[0][3] >= 298);
+      mb_render_set_fixed_dt(0.0);
+      glass_forget();
     }
 
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in

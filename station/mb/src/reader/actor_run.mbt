@@ -1427,6 +1427,10 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
   if a.turn is None && !a.starting_turn {
     if self.turn_slots_full(a) {
       self.enqueue_turn_wait(a)
+      if a.failed_handed != "" {
+        self.mirror(a)
+        self.notify_store(a)
+      }
       return
     }
     a.starting_turn = true
@@ -1464,6 +1468,12 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     hkey != "" &&
     hkey == a.failed_handed {
     return
+  }
+  // A new attempt (including a capacity queue) supersedes the failed attempt, but keeps its messages.
+  if a.failed_handed != "" && !a.paused_cap {
+    a.failed_handed = ""
+    self.mirror(a)
+    self.notify_store(a)
   }
   // (let go of meanwhile: its turn's end pumps again)
   guard still(a, was) else { return }
@@ -1533,6 +1543,8 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     e => {
       a.start_failures += 1
       a.failed_handed = hkey
+      self.mirror(a)
+      self.notify_store(a)
       raise e
     }
   }

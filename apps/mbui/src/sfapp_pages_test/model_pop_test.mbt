@@ -119,6 +119,27 @@ test "choosing a frequent model fades the model words with the panel" {
 }
 
 ///|
+test "a model choice shows the speed fallback reported by the core" {
+  let base = fixture_app("newchat-crowded-model")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      (base.call)(name, params, fn(res) {
+        match res {
+          Ok(_) if name == "pick.save" => done(Ok({ "notice": "Ultrafast 不可用，已改用标准速度。" }))
+          _ => done(res)
+        }
+      })
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(squeeze_opening)
+  t.click(Button, label="GPT-6 Astra · 中")
+  t.run_for(squeeze_opening)
+  assert_true(t.find("Ultrafast 不可用，已改用标准速度。") is Some(_))
+}
+
+///|
 test "a frequent model with a different runtime is applied as its panel leaves without the contents jumping" {
   let t = model_pop("newchat-crowded-model")
   let before = t.find("常用搭配").unwrap()
@@ -551,6 +572,32 @@ test "wide: Devin's sidekick at the foot opens a secondary model-by-effort panel
   t.run_for(squeeze_opening)
   assert_true(t.query(Button, label="SWE-2 · 高") is Some(_), msg="the foot says the updated sidekick effort")
 }
+///|
+test "the model control says its speed on small and large screens with larger words" {
+  for win in [corner_windows[0], corner_windows[5]] {
+    for scale in [1.0, 1.3] {
+      let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
+      let standard = screen_in("newchat-speed-standard", win, "zh", font_scale=scale)
+      let held = standard.audit().map(bare)
+      assert_eq(standard.locate("icon:zap-fast").length() + standard.locate("icon:zap-ultrafast").length(), 0)
+      for (mode, speed, icon) in [("newchat-speed-fast", "Fast", "zap-fast"), ("newchat-speed-ultrafast", "Ultrafast", "zap-ultrafast")] {
+        let t = screen_in(mode, win, "zh", font_scale=scale)
+        let buttons = t.semantics().filter(fn(s) { s.role is Button })
+        guard buttons.filter(fn(b) { b.label.has_prefix("GPT-6.2 Sol") }) is [chip, ..] else {
+          fail("no model control among \{buttons.map(fn(b) { b.label }).join(", ")}")
+        }
+        assert_true(chip.label.contains(speed), msg="\{win.0} at \{scale}: \{chip.label}")
+        let marks = t.locate("icon:" + icon)
+        assert_eq(marks.length(), 1, msg="\{win.0} at \{scale}: \{t.sources_of("GPT-6.2 Sol")}")
+        let (x, y) = marks[0]
+        let (bx, by, bw, bh) = chip.rect
+        assert_true(x >= bx && x <= bx + bw && y >= by && y <= by + bh, msg=t.sources_at(x, y))
+        assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="\{win.0} at \{scale}: \{t.audit().join("\n")}")
+      }
+    }
+  }
+}
+
 ///|
 test "Ultrafast can be selected and cleared on small and large screens with larger words" {
   for win in [corner_windows[0], corner_windows[5]] {

@@ -211,18 +211,17 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
       }
     }
   })
-  // (UIScrollEdgeEffect.soft's place, not home_top_bar_node's full bar_h fade: the title is bare words, so the ground
-  // stays solid behind it and fades across the bar's foot, 16pt past it, messages gone before they reach the title
-  // while the pills' lower half shows them through; no blur yet, which the soft edge also has)
-  narrow_bar_scrim_node(
-    g,
-    fn(s) {
-      status_top_now(s.window_w()) + bar_h + state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get() + 16.0
-    },
-    fn(s) {
-      status_top_now(s.window_w()) + bar_h + state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get() + 16.0
-    },
-  )
+  // Progressive scroll-edge blur (`glass_scroll_edge`): keep collapsed bars on their full-height fade (matching #8101),
+  // and smoothly narrow the bottom fade band to 52pt as Row 2 or breadcrumbs open so the full-blur plateau follows the
+  // descended title down while leaving the first message 16pt past the foot clear (smoothstep has zero slope at ramp=1).
+  let collapsed_h = fn(s : @view.View) { status_top_now(s.window_w()) + bar_h + 16.0 }
+  let extra_h = fn(s : @view.View) { state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get() }
+  narrow_bar_scrim_node(g, fn(s) { collapsed_h(s) + extra_h(s) }, fn(s) {
+    let base = collapsed_h(s)
+    let extra = extra_h(s)
+    let expanded_fade = @sf.dmin(base + extra, 52.0)
+    base + (expanded_fade - base) * bar_clamp01(extra / 24.0)
+  })
   g.reacts(can_toggle, fn(ok) {
     if !ok && state.manual_expanded.get() {
       state.manual_expanded.set(false)
@@ -1029,7 +1028,7 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
     fn(p) {
       match p.0 {
         Some(g) => {
-          let ags = g.agents.map(fn(ag) { "\{ag.key}\u{1}\{ag.maker}\u{1}\{ag.runtime}\u{1}\{ag.who}" }).join("\u{2}")
+          let ags = g.agents.map(fn(ag) { "\{ag.key}\u{1}\{ag.maker}\u{1}\{ag.runtime}\u{1}\{ag.who}\u{1}\{ag.model_name}\u{1}\{ag.model_short}\u{1}\{ag.effort}" }).join("\u{2}")
           "g\u{1}\{g.station}\u{1}\{ags}\u{1}\{p.1}"
         }
         None => "s\u{1}\{p.1}"
@@ -1072,7 +1071,7 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
           }
           @sf.action_box_node(slot, fn() { label }, label_is=label, on_press, fn(k) {
             small_glass_capsule(k)
-            k.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(6.0)).fits(Is(true)) |> ignore
+            k.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(6.0)).fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             @sf.hover_ground_node(k)
             match station {
               Some(s) => {
@@ -1083,13 +1082,11 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
                   .words(Is(s.name))
                   .words_look(By(fn() { @ui.style_words(small_composer_pill_words) }))
                   .ink(By(fn() { @ui.style_ink(small_composer_pill_words) }))
-                  .cuts(Is(true))
-                  .allow_ellipsis(Is(true))
                   |> ignore
                   if has_mark {
-                    w.drops(Is(2)) |> ignore
+                    w.shrink(Is(0.0)).drops(Is(4)) |> ignore
                   } else {
-                    w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                    w.shrink(Is(1.0)).min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
                   }
                 })
                 |> ignore
@@ -1116,17 +1113,17 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
               })
               |> ignore
               if n == 1 {
-                k.box(fn(w) {
-                  w
-                  .words(Is(ag.who))
-                  .words_look(By(fn() { @ui.style_words(small_composer_pill_words) }))
-                  .ink(By(fn() { @ui.style_ink(small_composer_pill_words) }))
-                  .cuts(Is(true))
-                  .allow_ellipsis(Is(true))
-                  .drops(Is(1))
-                  |> ignore
-                })
-                |> ignore
+                @sfpages.model_agent_segments_static(
+                  k,
+                  ag.model_name,
+                  ag.model_short,
+                  ag.effort,
+                  ag.who,
+                  fn() { small_composer_pill_words },
+                  drop_short=1,
+                  drop_effort=2,
+                  drop_hide=3,
+                )
               }
             }
           })

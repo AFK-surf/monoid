@@ -41,6 +41,7 @@ pub fn liquid_segmented_node(
   said? : String = "Segmented Control",
   shown? : () -> Bool = fn() { true },
   in_node? : Bool = false,
+  render_item? : (@view.View, Int, () -> Bool) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
   let total_h = match height_by {
@@ -87,6 +88,7 @@ pub fn liquid_segmented_node(
         .shadow(Is(shadow_default))
         .shadow_outside(Is(true))
         .glass(By(fn() { Some(ctrl_segmented_track_glass()) }))
+        .edge(By(fn() { if g.glass_solid() { liquid_solid_edge() } else { (0.0, clear) } }))
         |> ignore
       } else {
         g.ground(By(fn() { alpha(@ui.tree_theme().fg, 0.06) })) |> ignore
@@ -335,44 +337,48 @@ pub fn liquid_segmented_node(
                   .lines_up(Is(Some(Middle)))
                   .lies_along(Is(Middle))
                   |> ignore
-                  seg.box(fn(w) {
-                    w
-                    .words(By(fn() { item_sig.get().1 }))
-                    .words_look(By(fn() {
-                      let sz = match text_size {
-                        Some(f) => f()
-                        None => ctrl_type_seg
-                      }
-                      if glass_track {
-                        words_at(sz, weight=weight_medium)
-                      } else {
-                        {
-                          size: sz,
-                          weight: if it.chosen() { 500 } else { 400 },
-                          line: -@ui.tree_theme().text_line,
-                          wrap: false,
-                          tracking: @view.letters_own,
-                          balance: false,
-                          max_lines: 0,
-                        }
-                      }
-                    }))
-                    .ink(By(fn() {
-                      let lit = clamp(1.0 - (dd.value(w) - idx_f).abs(), 0.0, 1.0)
-                      let (off_c, on_c) = if glass_track {
-                        (ctrl_seg_inactive_ink(), colors().content)
-                      } else {
-                        (@ui.tree_theme().muted, @ui.tree_theme().fg)
-                      }
-                      if !glass_track && it.hovered() && lit < 0.5 {
-                        on_c
-                      } else {
-                        lerp_color(off_c, on_c, lit)
-                      }
-                    }))
-                    |> ignore
-                  })
-                  |> ignore
+                  match render_item {
+                    Some(draw_item) => draw_item(seg, idx, fn() { it.chosen() })
+                    None =>
+                      seg.box(fn(w) {
+                        w
+                        .words(By(fn() { item_sig.get().1 }))
+                        .words_look(By(fn() {
+                          let sz = match text_size {
+                            Some(f) => f()
+                            None => ctrl_type_seg
+                          }
+                          if glass_track {
+                            words_at(sz, weight=weight_medium)
+                          } else {
+                            {
+                              size: sz,
+                              weight: if it.chosen() { 500 } else { 400 },
+                              line: -@ui.tree_theme().text_line,
+                              wrap: false,
+                              tracking: @view.letters_own,
+                              balance: false,
+                              max_lines: 0,
+                            }
+                          }
+                        }))
+                        .ink(By(fn() {
+                          let lit = clamp(1.0 - (dd.value(w) - idx_f).abs(), 0.0, 1.0)
+                          let (off_c, on_c) = if glass_track {
+                            (ctrl_seg_inactive_ink(), colors().content)
+                          } else {
+                            (@ui.tree_theme().muted, @ui.tree_theme().fg)
+                          }
+                          if !glass_track && it.hovered() && lit < 0.5 {
+                            on_c
+                          } else {
+                            lerp_color(off_c, on_c, lit)
+                          }
+                        }))
+                        |> ignore
+                      })
+                      |> ignore
+                  }
                   // Gesture target directly on the item (no nested pressable box, keeping 36pt press_room intact)
                   seg.gesture(
                     @ui.touch_slop(),

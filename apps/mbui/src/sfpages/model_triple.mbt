@@ -255,7 +255,11 @@ fn pick_save(
   for k, v in patch {
     p[k] = v
   }
-  act(src, @sf.t("common.save"), "pick.save/" + station + "/" + of, "pick.save", Json::object(p), done~, ok~, failed~)
+  act(src, @sf.t("common.save"), "pick.save/" + station + "/" + of, "pick.save", Json::object(p), done~, ok=fn(result) {
+    let notice = text(Some(result), "notice")
+    if notice != "" { toast_later(notice) }
+    ok(result)
+  }, failed~)
 }
 
 ///|
@@ -530,31 +534,43 @@ pub fn model_triple_node(
       r.show(offers, fn(m) {
         m.pick(fn() { (text(field(vo(), "maker"), "id"), runtime()) }, fn(k, x) { @sf.maker_mark_node(k, x.0, x.1, 14.0) |> ignore })
       })
-      // (within the room it has, the most it can say: model_triple's; the model never, its name cut short last)
+      // (within the room it has, the most it can say: model_triple's; the model never, its name stepping to short before effort drops and cut short last)
       r.show(offers, fn(nm) {
         // (what may be left out leaving for it first, its name cut short only then: View::fit_whole, its own and its
         // words')
-        nm.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fit_whole(Is(true)) |> ignore
-        @sf.words_node(nm, fn() {
-          let model = text(value(), "model")
-          if model == "" {
-            @sf.t("web-main.model.pick")
-          } else {
-            // (a model not among those listed here, none of this station's: the name the core knows it by, never its id)
-            match (text(vo(), "name"), text(v(), "modelText")) {
-              ("", "") => model
-              ("", n) => n
-              (n, _) => n
+        nm.row(Is(true)).fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fit_whole(Is(true)) |> ignore
+        model_name_segments_node(
+          nm,
+          fn() {
+            let model = text(value(), "model")
+            if model == "" {
+              @sf.t("web-main.model.pick")
+            } else {
+              // (a model not among those listed here, none of this station's: the name the core knows it by, never its id)
+              match (text(vo(), "name"), text(v(), "modelText")) {
+                ("", "") => model
+                ("", n) => n
+                (n, _) => n
+              }
             }
-          }
-        }, fn() { name_look })
-        .shrink(Is(1.0))
-        .min_width(Is(Some(0.0)))
-        .cuts(Is(true))
-        .allow_ellipsis(Is(true))
-        // (what may be left out leaving for it first, its name cut short only then: View::fit_whole)
-        .fit_whole(Is(true))
-        |> ignore
+          },
+          fn() {
+            let model = text(value(), "model")
+            if model == "" {
+              ""
+            } else {
+              match (text(vo(), "shortName"), text(v(), "modelShort")) {
+                ("", s) => s
+                (s, _) => s
+              }
+            }
+          },
+          fn() { name_look },
+          drop_short=triple_drop_model_short,
+          drop_hide=0,
+          cuts_last=true,
+          fit_whole=true,
+        )
       })
         part(r, triple_drop_runtime, fn() { offers() && !flag(v(), "runtimeFixed") && (flag(v(), "showRuntime") || items(vo(), "runtimes").length() > 1) }, fn(x) {
           dot(x)
@@ -572,9 +588,17 @@ pub fn model_triple_node(
           }, fn() { words_look })
           |> ignore
         })
-        part(r, triple_drop_effort, fn() { offers() && text(v(), "fastText") != "" }, fn(x) {
+        part(r, triple_drop_speed, fn() { offers() && text(v(), "fastText") != "" }, fn(x) {
+          // (set off by a dot as the other parts are, the icon as the speed's words were)
           dot(x)
-          @sf.words_node(x, fn() { text(v(), "fastText") }, fn() { words_look }) |> ignore
+          x.pick(fn() { text(v(), "fastText") }, fn(mark, speed) {
+            if speed == "Fast" || speed == "Ultrafast" {
+              let icon = if speed == "Ultrafast" { "zap-ultrafast" } else { "zap-fast" }
+              @sf.icon_node(mark, icon, 14.0, By(fn() { @sf.theme().p.text })) |> ignore
+            } else {
+              @sf.words_node(mark, fn() { speed }, fn() { words_look }) |> ignore
+            }
+          })
         })
         // (who runs it: its mark where it has one, then its name, then its allowance's chips: model_triple's)
         let profile = fn() { field(account(), "profile") }
@@ -3041,17 +3065,24 @@ let triple_alone : @ui.Style = @ui.css("row align=ACenter")
 
 ///|
 /// The order the control's line leaves its parts out in, short of room: who runs it by name
-/// (in its part), who runs it, how hard it thinks and how fast, then the runtime.
+/// (in its part), who runs it, model short name, how hard it thinks and how fast, then the runtime.
 let triple_drop_name : Int = 1
 
 ///|
 let triple_drop_account : Int = 2
 
 ///|
-let triple_drop_effort : Int = 3
+let triple_drop_model_short : Int = 3
 
 ///|
-let triple_drop_runtime : Int = 4
+let triple_drop_effort : Int = 4
+
+///|
+let triple_drop_runtime : Int = 5
+
+///|
+/// Keep the compact speed mark after the other optional details when the row narrows.
+let triple_drop_speed : Int = 6
 
 ///|
 /// The triple as a row's value (28 high at its end, in its middle): a capsule, as the round controls beside it are, its

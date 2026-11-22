@@ -141,7 +141,8 @@ pub fn open_fixture(mode : String) -> Unit {
     }
     // the wide frame's (wide_panel.mbt): the chat's "…" open, its services' popover, what is opened beside it
     "chat-letters-pop" | "chat-opener-pop" | "chat-opened-pop" => @sfdesk.open_info_pop()
-    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" => @sfdesk.open_subchats_pop()
+    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" =>
+      @sfdesk.open_subchats_pop()
     "chat-jobs-pop" => {
       @sfdesk.open_jobs_pop()
       @sfdesk.open_job_pop("j-ci")
@@ -205,9 +206,10 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
       open_letters(src, r, 7.0)
       @sfdesk.letters_open_at(r, @sffixture.fix_letters_link)
     }
-    "chat-agent" | "chat-agent-unsaid" | "chat-agent-context" | "chat-agent-compacted" | "chat-agent-screens" => open_agent(src, r, "s-c1")
+    "chat-agent" | "chat-agent-working" | "chat-agent-unsaid" | "chat-agent-context" | "chat-agent-compacted" | "chat-agent-screens" => open_agent(src, r, "s-c1")
     "chat-jobs" => open_chat_jobs(src, r)
-    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" => open_subchats(src, r)
+    "chat-subchats-pop" | "chat-subchats-many" | "chat-subchats-one" | "chat-subchats-one-note" | "chat-subchats-tall" | "chat-subchats-done-only" =>
+      open_subchats(src, r)
     "chat-job" => {
       dui.job_tab = 0
       open_job(src, r, "j-ci")
@@ -420,6 +422,11 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   // 大屏's and 中屏's where there is the room, the chat's page over the board where there is none)
   if mode == "board-side" {
     @sfbase.board_pick.set(Some(rich))
+  }
+  // the board with its new draft composer open
+  if mode == "board-add" {
+    @sfbase.board_lane.set("draft")
+    @sfbase.board_adding.set(true)
   }
   // ⌘/'s shortcuts at a glance
   if mode == "keys-dialog" {
@@ -654,7 +661,7 @@ pub fn open_mode(mode : String) -> Unit {
       n.d_runtime = n.runtime
     }
     if mode == "newchat-tui-model" { @sffixture.new_fix.claude_mode = true }
-    if mode == "newchat-ultrafast-model" {
+    if mode == "newchat-ultrafast-model" || mode.has_prefix("newchat-speed-") {
       let n = @sffixture.new_fix
       n.crowded = true
       n.ultrafast = true
@@ -662,6 +669,8 @@ pub fn open_mode(mode : String) -> Unit {
       n.runtime = "codex"
       n.d_model = n.model
       n.d_runtime = n.runtime
+      if mode == "newchat-speed-fast" { n.speed = "fast" }
+      if mode == "newchat-speed-ultrafast" { n.speed = "ultrafast" }
     }
     // (with models starred: under 喜欢 in its model's panel)
     if mode.has_suffix("-liked") {
@@ -970,7 +979,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     // (webdemo: the web's demo workspace, its chats' rows with people's faces, which chat's fixture has none)
     "webdemo", "home", "board", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu", "landing", "landing-invited", "blocked", "place",
     "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
-    "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose", "chat-download", "chat-failed", "chat-feedback", "chat-image-coming",
+    "chat-agent-working", "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose", "chat-download", "chat-failed", "chat-feedback", "chat-image-coming",
     "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice", "chat-history-side",
     // (its agent at work: what the history's head shows only then, #6246's stop among its keys)
     "chat-history-side-working", "chat-info", "chat-info-bare", "chat-job",
@@ -1053,7 +1062,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "terminal", "terminal-taken",
     // (the board with a card's chat open beside it, its edge at rest: last, so the real size's sweep gives the shell's
     // ways a chat reads (chatRow) to chat's screen first, as before it came: sfapp_realsize real_size_test.mbt real_size_given_here)
-    "board-side",
+    "board-side", "board-add",
   ]
   // (and the card to share in each of its other looks: share_looks.mbt)
   for k in @sfpages.share_look_keys()[1:] {

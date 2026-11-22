@@ -96,6 +96,7 @@ test "what the agent reads of a screen: the page and the code hidden, the cursor
   let login = obj("{\"id\":\"a1\",\"code\":\"AB12-CD34\"}")
   let screen : Screen = {
     rows: ["", "copy your code: AB12-CD34", "open https://github.com/login/device now   ", "", ""],
+    wrapped: [false, false, false, false, false],
     cursor: (0, 3),
     echo: true,
     live: true,
@@ -315,4 +316,81 @@ test "shell OSC 7 and OSC 9;9 keep a terminal's folder, across chunks (terminals
   assert_eq(osc_cwd("plain\u{1b}[31mred"), (None, ""))
   assert_eq(osc_cwd("x\u{1b}]9;"), (None, ""))
   assert_eq(osc_cwd("x\u{1b}]9;9"), (None, "\u{1b}]9;9"))
+}
+
+///|
+/// A Keycloak sign-in page's parts (station/test/logins.test.ts `KEYCLOAK_PAGE`): its 330 characters with
+/// `Hq3Vt8Lm2Xw9Rz4` between them; 315 without; longer than the login terminal is wide with 750 more in its state.
+let keycloak_head : String = "https://sso.acme-corp.example/realms/engineering/protocol/openid-connect/auth?client_id=acme-cli&redirect_uri=https%3A%2F%2Fsso.acme-corp.example%2Fcli%2Fdone&response_type=code&scope=openid+profile+email&state="
+
+///|
+let keycloak_tail : String = "Nc7Bp1Fy6Dj5Gk0Tsa&code_challenge=K7xQ2mZpL9vR4tY8wB3nC6hJ1fD5gS0aE2iU7oP4kM9&code_challenge_method=S256"
+
+///|
+fn keycloak(state : String) -> String {
+  keycloak_head + state + keycloak_tail
+}
+
+///|
+fn keycloak_longer() -> String {
+  let b = StringBuilder::new()
+  for _ in 0..<250 {
+    b.write_string("Zq9")
+  }
+  keycloak(b.to_string() + "Hq3Vt8Lm2Xw9Rz4")
+}
+
+///|
+/// A link broken by its program every `width` columns, each line indented.
+fn broken_at(url : String, width : Int, indent : String) -> Array[String] {
+  let lines = []
+  let per = width - indent.length()
+  let mut i = 0
+  while i < url.length() {
+    lines.push(indent + url.unsafe_substring(start=i, end=@cmp.minimum(url.length(), i + per)))
+    i += per
+  }
+  lines
+}
+
+///|
+test "what the agent reads of a screen: a long page wrapped by the terminal or broken by its program hidden whole, the cursor's line marked" {
+  let login = obj("{\"id\":\"a1\"}")
+  let line = "Visit " + keycloak_longer() + " to sign in."
+  let rows = [
+    line.unsafe_substring(start=0, end=COLS),
+    line.unsafe_substring(start=COLS, end=line.length()),
+    "",
+    "Enter the code: ",
+    "",
+    "",
+  ]
+  let wrapped = [false, true, false, false, false, false]
+  let at = (cursor : (Int, Int), wrapped : Array[Bool]) => screen_for(
+    Some({ rows, wrapped, cursor, echo: true, live: true }),
+    login,
+  )
+  assert_eq(at((16, 3), wrapped), "Visit <link> to sign in.\n\nEnter the code:▏")
+  assert_eq(at((3, 1), wrapped), "Visit <link> to sign in.▏\n\nEnter the code:")
+  assert_eq(at((3, 0), wrapped), "Visit <link> to sign in.▏\n\nEnter the code:")
+  assert_eq(at((16, 3), []), "Visit <link> to sign in.\n\nEnter the code:▏")
+  // Broken by its program at 80 columns: no part of the page left to read.
+  for page in [keycloak("Hq3Vt8Lm2Xw9Rz4"), keycloak("")] {
+    let at80 = ["Open this page in your browser:"]
+    at80.push_iter(broken_at(page, 80, "  ").iter())
+    at80.push_iter(["", "Enter the code: ", "", ""].iter())
+    let screen = (cursor : (Int, Int)) => screen_for(
+      Some({ rows: at80, wrapped: [], cursor, echo: true, live: true }),
+      login,
+    )
+    assert_eq(screen((16, 7)), "Open this page in your browser:\n  <link>\n\nEnter the code:▏")
+    assert_eq(screen((10, 3)), "Open this page in your browser:\n  <link>▏\n\nEnter the code:")
+  }
+  // At 200 columns, the line's end said after the link.
+  let said = "Visit " + keycloak("Hq3Vt8Lm2Xw9Rz4") + " to sign in, then paste the code below."
+  let at200 = [said.unsafe_substring(start=0, end=200), said.unsafe_substring(start=200, end=said.length()), "", "Enter the code: "]
+  assert_eq(
+    screen_for(Some({ rows: at200, wrapped: [false, false, false, false], cursor: (16, 3), echo: true, live: true }), login),
+    "Visit <link> to sign in, then paste the code below.\n\nEnter the code:▏",
+  )
 }

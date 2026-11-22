@@ -14,9 +14,12 @@ pub(all) enum DrawerSide {
 
 ///|
 /// A Liquid Glass floating island side drawer in `parent`, open while `open()` holds.
-/// Supports `Leading` and `Trailing` placement, interactive horizontal drag with rubber-band
-/// over-pull (max 16pt) and velocity-continuous dismiss (> 32% width or > 0.45 pt/ms),
-/// Escape / scrim tap dismissal via `@headless.dialog`, and `MBUI_GLASS=solid` 1pt edge fallback.
+/// Supports `Leading` and `Trailing` placement, optional headless free-body mode (`show_header=false`),
+/// optional scrim (`scrim=false`), custom `solid` fallback, customizable `inset`/`radius`/`body_pad`,
+/// responsive width clamping on narrow windows (`min(width, max(0, window_w - 2 * inset))`),
+/// interactive horizontal drag with rubber-band over-pull (max 16pt) and velocity-continuous dismiss
+/// (> 32% width or > 0.45 pt/ms), Escape / scrim tap dismissal via `@headless.dialog`, and `MBUI_GLASS=solid`
+/// 1pt edge fallback.
 #callsite(autofill(loc))
 pub fn liquid_drawer_node(
   parent : @view.View,
@@ -28,6 +31,12 @@ pub fn liquid_drawer_node(
   width? : Double = 320.0,
   subtitle? : () -> String = fn() { "" },
   footer? : (@view.View) -> Unit,
+  show_header? : Bool = true,
+  scrim? : Bool = true,
+  solid? : () -> Int64,
+  inset? : Double = ovl_drawer_inset,
+  radius? : Double = ovl_drawer_radius,
+  body_pad? : Double = ovl_drawer_pad,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(h) {
@@ -37,10 +46,23 @@ pub fn liquid_drawer_node(
       Leading => -1.0
       Trailing => 1.0
     }
-    let travel = width + ovl_drawer_inset * 2.0
-    let off_x = sign * travel
+    let eff_w = fn(n : @view.View) -> Double {
+      let ww = n.window_w()
+      if ww > 0.0 {
+        let avail = ww - 2.0 * inset
+        let max_w = if avail > 0.0 { avail } else { 0.0 }
+        if width < max_w { width } else { max_w }
+      } else {
+        width
+      }
+    }
+    let eff_travel = fn(n : @view.View) -> Double {
+      let t = eff_w(n) + inset * 2.0
+      if t > 1.0 { t } else { 1.0 }
+    }
+    let init_off_x = sign * (width + inset * 2.0)
     h.show(shown_open, leave=ovl_drawer_leave_ms, fn(s) {
-      let slide = @motion.NodeWay::new(off_x)
+      let slide = @motion.NodeWay::new(init_off_x)
       slide.go(s, 0.0, @motion.move_damped)
       s.reacts(
         at_start=false,
@@ -49,13 +71,13 @@ pub fn liquid_drawer_node(
           if on {
             slide.go(s, 0.0, @motion.move_damped)
           } else {
-            slide.go(s, off_x, @motion.move_damped)
+            slide.go(s, sign * eff_travel(s), @motion.move_damped)
           }
         },
       )
       let vis = fn(n : @view.View) -> Double {
         let dismiss_dist = slide.shown(n) * sign
-        clamp(1.0 - dismiss_dist / travel, 0.0, 1.0)
+        clamp(1.0 - dismiss_dist / eff_travel(n), 0.0, 1.0)
       }
       s
       .over(Is(true))
@@ -64,19 +86,21 @@ pub fn liquid_drawer_node(
       .lies_along(Is(match side { Leading => Start; Trailing => End }))
       .fills_across(Is(true))
       |> ignore
-      // Lightweight scrim whose opacity continuously tracks drawer visibility (0..0.18).
-      s.box(fn(scrim) {
-        scrim
-        .over(Is(true))
-        .ground(By(fn() { alpha(black, ovl_drawer_scrim_alpha * vis(scrim)) }))
+      // Optional lightweight scrim whose opacity continuously tracks drawer visibility (0..0.18).
+      if scrim {
+        s.box(fn(scrim_box) {
+          scrim_box
+          .over(Is(true))
+          .ground(By(fn() { alpha(black, ovl_drawer_scrim_alpha * vis(scrim_box)) }))
+          |> ignore
+        })
         |> ignore
-      })
-      |> ignore
+      }
       s.box(fn(room) {
         room
-        .width(Is(Some(width + 2.0 * ovl_drawer_inset)))
-        .max_width(Is(Some(width + 2.0 * ovl_drawer_inset)), within=true)
-        .padding(Is((ovl_drawer_inset, ovl_drawer_inset, ovl_drawer_inset, ovl_drawer_inset)))
+        .width(By(fn() { Some(eff_w(room) + 2.0 * inset) }))
+        .max_width(By(fn() { Some(eff_w(room) + 2.0 * inset) }), within=true)
+        .padding(Is((inset, inset, inset, inset)))
         |> ignore
         @headless.dialog(
           room,
@@ -90,11 +114,20 @@ pub fn liquid_drawer_node(
             let drag_start_x = Ref(0.0)
             card
             .grow(Is(1.0))
-            .radius(Is(ovl_drawer_radius))
+            .radius(Is(radius))
             .shadow(Is(shadow_default))
             .shadow_outside(Is(true))
-            .glass(By(fn() { Some(ovl_drawer_glass()) }))
-            .edge(By(fn() { if card.glass_solid() { ovl_solid_edge() } else { (0.0, clear) } }))
+            .glass(
+              By(fn() {
+                let c = match solid {
+                  Some(f) => f()
+                  None => clear
+                }
+                Some(liquid_drawer_glass(solid=c))
+              }),
+            )
+            .edge(By(fn() { if card.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
+            .clips(Is(true))
             .offset(By(fn() { (slide.shown(card), 0.0) }))
             |> ignore
             // Full-card gesture container inside `@headless.dialog` (avoids `@headless.dialog`'s outer no-op `on_drag`).
@@ -125,11 +158,13 @@ pub fn liquid_drawer_node(
                       let cur = slide.value_at(d.at)
                       let dismiss_dist = cur * sign
                       let dismiss_vel = d.vx() * sign
+                      let cur_w = @signals.untracked(fn() { eff_w(card) })
                       let should_close = d.kind is Up &&
-                        (dismiss_dist > width * ovl_drawer_dismiss_ratio || dismiss_vel > ovl_drawer_dismiss_vel) &&
+                        (dismiss_dist > cur_w * ovl_drawer_dismiss_ratio || dismiss_vel > ovl_drawer_dismiss_vel) &&
                         dismiss_vel >= -ovl_drawer_dismiss_vel
                       if should_close {
-                        slide.go(card, off_x, @motion.move_damped, velocity=d.vx())
+                        let cur_off_x = sign * @signals.untracked(fn() { eff_travel(card) })
+                        slide.go(card, cur_off_x, @motion.move_damped, velocity=d.vx())
                         dlg.close()
                       } else {
                         slide.go(card, 0.0, @motion.move_damped, velocity=d.vx())
@@ -139,78 +174,80 @@ pub fn liquid_drawer_node(
                 },
               )
               |> ignore
-              // Header row: title + optional subtitle + concentric circular close button (12pt inset + 16pt r == 28pt)
-              pan.box(fn(hdr) {
-                hdr
-                .row(Is(true))
-                .lines_up(Is(Some(Start)))
-                .lies_along(Is(Between))
-                .gap(Is(ovl_drawer_pad))
-                .padding(Is((ovl_drawer_hdr_pl, ovl_drawer_pad, ovl_drawer_pad, ovl_drawer_pad)))
-                |> ignore
-                hdr.box(fn(titles) {
-                  titles.grow(Is(1.0)).gap(Is(ovl_text_gap)).padding(Is((0.0, 2.0, 0.0, 0.0))) |> ignore
-                  titles.box(fn(w) {
-                    w
-                    .words(By(title), look=words_at(ovl_type_title, weight=ovl_weight_semibold, wrap=true))
-                    .ink(By(fn() { colors().content }))
+              if show_header {
+                // Header row: title + optional subtitle + concentric circular close button (12pt inset + 16pt r == 28pt)
+                pan.box(fn(hdr) {
+                  hdr
+                  .row(Is(true))
+                  .lines_up(Is(Some(Start)))
+                  .lies_along(Is(Between))
+                  .gap(Is(ovl_drawer_pad))
+                  .padding(Is((ovl_drawer_hdr_pl, ovl_drawer_pad, ovl_drawer_pad, ovl_drawer_pad)))
+                  |> ignore
+                  hdr.box(fn(titles) {
+                    titles.grow(Is(1.0)).gap(Is(ovl_text_gap)).padding(Is((0.0, 2.0, 0.0, 0.0))) |> ignore
+                    titles.box(fn(w) {
+                      w
+                      .words(By(title), look=words_at(ovl_type_title, weight=ovl_weight_semibold, wrap=true))
+                      .ink(By(fn() { colors().content }))
+                      |> ignore
+                    })
+                    |> ignore
+                    titles.show(fn() { subtitle() != "" }, fn(sub) {
+                      sub
+                      .words(By(subtitle), look=words_at(ovl_type_sub, wrap=true))
+                      .ink(By(ovl_muted_ink))
+                      |> ignore
+                    })
+                  })
+                  |> ignore
+                  @headless.button(hdr, fn() { "Close" }, fn(_) { dlg.close() }, made_for=loc, fn(btn_v, btn) {
+                    btn_v
+                    .width(Is(Some(ovl_close_btn_size)))
+                    .height(Is(Some(ovl_close_btn_size)))
+                    .shrink(Is(0.0))
+                    .radius(Is(ovl_close_btn_size / 2.0))
+                    .lines_up(Is(Some(Middle)))
+                    .lies_along(Is(Middle))
+                    |> ignore
+                    let hover_t = @motion.hover_fade(btn_v, fn() { btn.hovered() })
+                    let press_t = @motion.hover_fade(btn_v, fn() { btn.pressed() }, duration_ms=@motion.pointer_tap_ms)
+                    btn_v
+                    .ground(
+                      By(fn() {
+                        let base = ovl_close_ground()
+                        let h = hover_t()
+                        let p = press_t()
+                        let with_h = if h > 0.001 { over(base, alpha(ovl_row_hover(), h)) } else { base }
+                        if p > 0.001 { over(with_h, alpha(ovl_row_press(), p)) } else { with_h }
+                      }),
+                    )
+                    |> ignore
+                    ovl_focus_ring(btn_v, fn() { btn.focus_shown() }, ovl_close_btn_size / 2.0)
+                    btn_v.box(fn(ic) {
+                      ic
+                      .width(Is(Some(ovl_close_icon_size)))
+                      .height(Is(Some(ovl_close_icon_size)))
+                      .shapes(By(fn() { ovl_close_shapes(ovl_close_icon_size, colors().content) }))
+                      |> ignore
+                    })
                     |> ignore
                   })
                   |> ignore
-                  titles.show(fn() { subtitle() != "" }, fn(sub) {
-                    sub
-                    .words(By(subtitle), look=words_at(ovl_type_sub, wrap=true))
-                    .ink(By(ovl_muted_ink))
-                    |> ignore
-                  })
                 })
                 |> ignore
-                @headless.button(hdr, fn() { "Close" }, fn(_) { dlg.close() }, made_for=loc, fn(btn_v, btn) {
-                  btn_v
-                  .width(Is(Some(ovl_close_btn_size)))
-                  .height(Is(Some(ovl_close_btn_size)))
-                  .shrink(Is(0.0))
-                  .radius(Is(ovl_close_btn_size / 2.0))
-                  .lines_up(Is(Some(Middle)))
-                  .lies_along(Is(Middle))
-                  |> ignore
-                  let hover_t = @motion.hover_fade(btn_v, fn() { btn.hovered() })
-                  let press_t = @motion.hover_fade(btn_v, fn() { btn.pressed() }, duration_ms=@motion.pointer_tap_ms)
-                  btn_v
-                  .ground(
-                    By(fn() {
-                      let base = ovl_close_ground()
-                      let h = hover_t()
-                      let p = press_t()
-                      let with_h = if h > 0.001 { over(base, alpha(ovl_row_hover(), h)) } else { base }
-                      if p > 0.001 { over(with_h, alpha(ovl_row_press(), p)) } else { with_h }
-                    }),
-                  )
-                  |> ignore
-                  ovl_focus_ring(btn_v, fn() { btn.focus_shown() }, ovl_close_btn_size / 2.0)
-                  btn_v.box(fn(ic) {
-                    ic
-                    .width(Is(Some(ovl_close_icon_size)))
-                    .height(Is(Some(ovl_close_icon_size)))
-                    .shapes(By(fn() { ovl_close_shapes(ovl_close_icon_size, colors().content) }))
-                    |> ignore
-                  })
-                  |> ignore
+                // Hairline separator below header
+                pan.box(fn(sep) {
+                  sep.height(Is(Some(ovl_hairline_h))).ground(By(ovl_hairline)) |> ignore
                 })
                 |> ignore
-              })
-              |> ignore
-              // Hairline separator below header
-              pan.box(fn(sep) {
-                sep.height(Is(Some(ovl_hairline_h))).ground(By(ovl_hairline)) |> ignore
-              })
-              |> ignore
+              }
               // Body slot (strictly zero glass-on-glass)
               pan.box(fn(b) {
                 b
                 .grow(Is(1.0))
                 .min_height(Is(Some(0.0)))
-                .padding(Is((ovl_drawer_pad, ovl_drawer_pad, ovl_drawer_pad, ovl_drawer_pad)))
+                .padding(Is((body_pad, body_pad, body_pad, body_pad)))
                 |> ignore
                 body(b)
               })

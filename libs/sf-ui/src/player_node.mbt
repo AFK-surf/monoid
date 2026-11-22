@@ -169,8 +169,7 @@ fn PlayerNode::audio(self : PlayerNode, s : @player.MediaStatus) -> Bool {
 /// Whether it plays (or waits for more), or will once a finger moving it through the time lets go (player_parts.mbt's plays).
 fn PlayerNode::plays(self : PlayerNode) -> Bool {
   let s = self.status()
-  let ph = self.phase(s)
-  ph == Playing || ph == Buffering || self.p.scrub_resumes()
+  ((s.playing || s.buffering) && !s.ended) || self.p.scrub_resumes()
 }
 
 ///|
@@ -303,7 +302,7 @@ fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double)
       Ahead(nudge)
     } else {
       // (at its end, whatever its host says of its playing: played again, as Media::play_pause does)
-      let was = self.p.status().playing && !self.p.status().ended
+      let was = self.plays()
       self.act(fn() { self.p.play_pause() })
       if was {
         Paused

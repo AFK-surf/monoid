@@ -409,11 +409,11 @@ fn net_poor(s : ScreenSess) -> Bool {
 
 ///|
 /// With keyboard and mouse in `p`: the viewer's bar across the window's top (@sf.viewer_bar_node), one row (the user,
-/// 2026-11-13): back by its name, the view's tabs in the name's place where it has them (a person's pages on the
-/// station's browser, ＋ after them; a desktop's whole screen and its windows), else the screen's name and the core's
-/// line; at its end the link's figures only while it is poor, 组合键 while driving a desktop, 控制中心 (只看 is there),
-/// and 接管 while someone else drives it, who does said in the line's place. Narrow, the tabs fold into a button
-/// counting them.
+/// 2026-11-13): back by its name, the view's tabs in the name's place where it has them (all browser pages on the
+/// station, ＋ after them when allowed; a desktop's whole screen and its windows), else the screen's name and the
+/// core's line; at its end the link's figures only while it is poor, 组合键 while driving a desktop, 控制中心 (只看 is
+/// there), and 接管 while someone else drives it, who does said in the line's place. Narrow, the tabs fold into a
+/// button counting them.
 fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
@@ -1211,6 +1211,7 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       let user_ids = scs
         .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
         .map(fn(sc) { text(Some(sc), "id") })
+      let can_term = flag(tval, "open")
       let can_browse = flag(sval, "browser") && flag(sval, "control")
       let menu_items : Array[@sf.MenuItem?] = []
       for sc in others {
@@ -1225,19 +1226,19 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         })))
       }
       if !user_ids.is_empty() || can_browse {
-        let in_browser = user_ids.contains(s.screen)
+        let in_browser = s.screen.has_prefix("browser:") || text(s.state, "kind") == "browser"
         menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, fn() {
           if !in_browser {
             let target = match @settings.browser_tab_to_open(s.station, user_ids) {
               Some(tid) => tid
-              None => @settings.new_browser_tab(s.src.call, s.station, user_ids, @sfbase.answer_unread)
+              None => @settings.new_browser_tab(s.src.call, s.station, user_ids, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
             }
             go_page(Screen({ station: s.station, screen: target, title: "", until_gone: false }))
           }
         })))
       }
       let open_terms = items(tval, "terminals").filter(fn(t) { !flag(Some(t), "ended") })
-      if !open_terms.is_empty() || flag(tval, "open") {
+      if !open_terms.is_empty() {
         if !menu_items.is_empty() {
           menu_items.push(None)
         }
@@ -1246,13 +1247,44 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           let tid = text(tv, "id")
           let cwd = text(tv, "cwd")
           menu_items.push(Some(@sf.menu_item_of(terminal_title(tv), icon="terminal", fn() {
-            go_page(Terminal({ station: s.station, terminal: tid, watch: !flag(tval, "open"), cwd }))
+            go_page(Terminal({ station: s.station, terminal: tid, watch: !can_term, cwd }))
           })))
         }
-        if flag(tval, "open") {
-          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="plus", fn() {
-            go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
+      }
+      if can_term || can_browse {
+        if !menu_items.is_empty() {
+          menu_items.push(None)
+        }
+        let open_new_terminal = fn() {
+          go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
+        }
+        let open_new_browser = fn() {
+          let target = @settings.new_browser_tab(
+            s.src.call,
+            s.station,
+            user_ids,
+            failed_said(@sf.t("web-pages.screen.openBrowserWhat")),
+          )
+          let nu = screen_ui(screen_key(s.station, target))
+          nu.address_asked.set(nu.address_asked.untracked() + 1)
+          go_page(Screen({ station: s.station, screen: target, title: "", until_gone: false }))
+        }
+        if can_term && can_browse {
+          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.newSession"), icon="plus", further=true, fn() {
+            @sf.menu(
+              [
+                Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="terminal", open_new_terminal)),
+                Some(@sf.menu_item_of(@sf.t("web-pages.remote.newBrowser"), icon="web", open_new_browser)),
+              ],
+              from=@sf.Beside::Node(from),
+              title=@sf.t("web-pages.remote.newSession"),
+              along=End,
+            )
           })))
+        } else if can_term {
+          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="plus", open_new_terminal)))
+        } else if can_browse {
+          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.newBrowser"), icon="plus", open_new_browser)))
         }
       }
       if !menu_items.is_empty() {
@@ -1263,6 +1295,72 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
     most=@sf.open_hold_ms,
   )
   |> ignore
+}
+
+///|
+/// Bottom "new remote session" row(s) shared by control-center `switchSession` groups (`terminal_view_node.mbt`,
+/// `farview_tab.mbt`): when both terminal and browser are available, opens a submenu with 新建终端 / 新建浏览器 via
+/// `@sf.panel_row_opens_node` (keeping the same icon column as sibling `panel_row_node` rows); otherwise shows the
+/// single available creation row directly.
+fn remote_new_session_rows_node(
+  parent : @view.View,
+  can_term : () -> Bool,
+  can_browser : () -> Bool,
+  done : () -> Unit,
+  open_terminal : () -> Unit,
+  open_browser : () -> Unit,
+) -> Unit {
+  parent.show(fn() { can_term() && can_browser() }, fn(n) {
+    @sf.panel_row_opens_node(
+      n,
+      fn() { @sf.t("web-pages.remote.newSession") },
+      fn(from) {
+        let beside : @sf.Beside = match from {
+          Node(r) => Node(r)
+          At(x, y, w, h) => At(x, y, w, h)
+          Unanchored => return
+        }
+        @sf.menu(
+          [
+            Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="terminal", fn() {
+              done()
+              open_terminal()
+            })),
+            Some(@sf.menu_item_of(@sf.t("web-pages.remote.newBrowser"), icon="web", fn() {
+              done()
+              open_browser()
+            })),
+          ],
+          from=beside,
+          title=@sf.t("web-pages.remote.newSession"),
+          along=End,
+        )
+      },
+      icon=fn() { "plus" },
+    )
+  })
+  parent.show(fn() { can_term() && !can_browser() }, fn(n) {
+    @sf.panel_row_node(
+      n,
+      fn() { @sf.t("web-pages.terminal.new") },
+      fn() {
+        done()
+        open_terminal()
+      },
+      icon=fn() { "plus" },
+    )
+  })
+  parent.show(fn() { !can_term() && can_browser() }, fn(n) {
+    @sf.panel_row_node(
+      n,
+      fn() { @sf.t("web-pages.remote.newBrowser") },
+      fn() {
+        done()
+        open_browser()
+      },
+      icon=fn() { "plus" },
+    )
+  })
 }
 
 ///|

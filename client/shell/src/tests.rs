@@ -1599,7 +1599,7 @@ fn a_screens_frames_as_datagrams_come_through_loss_at_once() {
                     read = crecv.read(&mut buf) => match read.unwrap() {
                         Some(n) => {
                             let chunk = &buf[..n];
-                            match rx.media.stream(chunk) {
+                            match rx.media.stream(chunk, Instant::now()) {
                                 Some(b) => {
                                     bytes.extend_from_slice(&chunk[..b]);
                                     rx.media.drain_into(&mut bytes);

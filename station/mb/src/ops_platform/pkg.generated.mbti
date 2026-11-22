@@ -611,6 +611,8 @@ pub fn upkeep_round(Bool, Bool, Bool, Bool) -> Array[String]
 
 pub fn upkeep_said(@json.Json) -> @json.Json?
 
+pub fn url_continuation(String, String, String, Int32, Int32?) -> Int32?
+
 pub fn urls_in(String) -> Array[String]
 
 pub fn usage_cost(@json.Json) -> Double?

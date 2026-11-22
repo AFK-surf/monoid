@@ -178,14 +178,26 @@ test "wide: sub-chats bar entry excludes non-led chats, opens popover, navigates
   let d = dialogs[dialogs.length() - 1].rect
   assert_true(d.1 + d.3 <= sub_btn.rect.1 + 1.0, msg="wide subchats popover must open above composer pill: \{Repr(d)} vs \{Repr(sub_btn.rect)}")
   assert_eq(t2.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
-  // 3 active led sub-chats shown, archived collapsed by default, non-led chat excluded!
+  // 2 active led sub-chats shown, done and archived collapsed by default, non-led chat excluded!
   assert_true(t2.query(Button, label="安卓构建与冒烟测试") is Some(_))
   assert_true(t2.query(Button, label="夜里的构建又失败了") is Some(_))
-  assert_true(t2.query(Button, label="给设置页加一个深色模式开关") is Some(_))
+  assert_true(t2.query(Button, label="给设置页加一个深色模式开关") is None)
   assert_true(t2.query(Button, label="旧版引导页的截图") is None)
   assert_true(t2.query(Button, label="给产品评审建的独立讨论") is None)
   assert_true(t2.find("1 进行中") is Some(_))
   assert_true(t2.find("1 待处理") is Some(_))
+  // Expand done disclosure, verify done item and its summary text show, then collapse again
+  guard t2.query(Button, label="已完成") is Some(done_btn) else { fail("expected done disclosure button") }
+  assert_eq(done_btn.expanded, Some(false))
+  t2.click(Button, label="已完成")
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(t2.query(Button, label="已完成").unwrap().expanded, Some(true))
+  assert_true(t2.query(Button, label="给设置页加一个深色模式开关") is Some(_))
+  assert_true(t2.find("做完了：开关和三处颜色都改好了") is Some(_))
+  t2.click(Button, label="已完成")
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(t2.query(Button, label="已完成").unwrap().expanded, Some(false))
+  assert_true(t2.query(Button, label="给设置页加一个深色模式开关") is None)
   // Expand archived disclosure, verify archived item shows without stale stateText, then collapse again
   guard t2.query(Button, label="已归档") is Some(arch_btn) else { fail("expected archived disclosure button") }
   assert_eq(arch_btn.expanded, Some(false))
@@ -439,4 +451,133 @@ test "small: single subchat sheet fits card without bottom fade or truncation at
   let t4 = screen_in("chat-subchats-one-note", phone, "zh", font_scale=1.3)
   assert_true(t4.find("正在运行端到端用例") is Some(_))
   assert_single_subchat_sheet(t4, title, 70.0)
+}
+
+///|
+test "wide: tall subchats popover caps height, collapses done/archived by default, expands and scrolls to bottom done item" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat-subchats-tall")
+  t.draw()
+  t.click(Button, label="子会话")
+  t.run_for(@ui.move_most_ms)
+  let dialogs = t.all(Dialog)
+  assert_true(dialogs.length() > 0, msg="expected subchats popover dialog")
+  let d = dialogs[dialogs.length() - 1].rect
+  assert_true(d.3 <= 480.0, msg="tall subchats popover must cap height: \{Repr(d)}")
+  assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
+  // 7 active items visible; done (14) and archived (2) collapsed by default
+  assert_true(t.query(Button, label="夜里的构建又失败了") is Some(_))
+  assert_true(t.query(Button, label="离屏金属渲染对比视频生成") is Some(_))
+  assert_true(t.query(Button, label="给设置页加一个深色模式开关") is None)
+  assert_true(t.query(Button, label="旧版引导页的截图") is None)
+  guard t.query(Button, label="已完成") is Some(done_btn) else { fail("expected done disclosure button") }
+  assert_eq(done_btn.expanded, Some(false))
+  guard t.query(Button, label="已归档") is Some(arch_btn) else { fail("expected archived disclosure button") }
+  assert_eq(arch_btn.expanded, Some(false))
+  // Scroll inside the capped popover so the collapsed 已完成 header is inside the viewport, then expand it
+  let cx = d.0 + d.2 / 2.0
+  let cy = d.1 + d.3 / 2.0
+  for _ in [0, 1] {
+    t.wheel(cx, cy, 160.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  t.click(Button, label="已完成")
+  t.run_for(@ui.move_most_ms)
+  let dialogs2 = t.all(Dialog)
+  let d2 = dialogs2[dialogs2.length() - 1].rect
+  assert_true(d2.3 <= 480.0, msg="expanded tall subchats popover must stay capped: \{Repr(d2)}")
+  assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
+  assert_eq(t.query(Button, label="已完成").unwrap().expanded, Some(true))
+  assert_true(t.query(Button, label="给设置页加一个深色模式开关") is Some(_))
+  assert_true(t.find("已完成：开关和三处颜色都改好了") is Some(_))
+  // Bare "已完成" appears only once (the section heading), never duplicated as a row secondary line
+  let bare_done_words = t.words().filter(fn(w) { w.0 == "已完成" && w.5 > 0.5 })
+  assert_eq(bare_done_words.length(), 1, msg="bare 已完成 must only appear as section heading: \{Repr(bare_done_words)}")
+  // Scroll further inside the popover to reach the last done item; header and footer must stay pinned inside popover
+  let cx2 = d2.0 + d2.2 / 2.0
+  let cy2 = d2.1 + d2.3 / 2.0
+  for _ in [0, 1, 2, 3, 4, 5, 6, 7] {
+    t.wheel(cx2, cy2, 160.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  let head_words = t.words().filter(fn(w) {
+    w.0 == "子会话" && w.5 > 0.5 && w.1 >= d2.0 && w.1 <= d2.0 + d2.2 && w.2 >= d2.1 && w.2 <= d2.1 + d2.3
+  })
+  assert_true(head_words.length() > 0, msg="header 子会话 must stay pinned inside popover after scrolling")
+  guard t.query(Button, label="在侧栏查看") is Some(foot_btn) else {
+    fail("footer 在侧栏查看 must stay pinned inside popover after scrolling")
+  }
+  assert_true(
+    foot_btn.rect.1 >= d2.1 && foot_btn.rect.1 + foot_btn.rect.3 <= d2.1 + d2.3 + 1.0,
+    msg="footer 在侧栏查看 must remain visible inside popover: \{Repr(foot_btn.rect)} vs \{Repr(d2)}",
+  )
+  guard t.query(Button, label="收尾回归与变更日志核对") is Some(last_btn) else {
+    fail("expected last done subchat visible after scrolling")
+  }
+  assert_true(last_btn.rect.1 + last_btn.rect.3 <= foot_btn.rect.1 + 1.0, msg="last done subchat above pinned footer: \{Repr(last_btn.rect)} vs \{Repr(foot_btn.rect)}")
+  t.click(Button, label="收尾回归与变更日志核对")
+  match app.nav.top() {
+    Chat(r) => assert_eq(r.session, "s-c4")
+    _ => fail("expected last done subchat s-c4 open")
+  }
+}
+
+///|
+test "small: tall and done-only subchats sheets collapse/auto-expand done, pass audit at 1.0x/1.3x, and scroll to navigate" {
+  // 1) tall sheet: active visible, done & archived collapsed by default; scroll to 已完成, expand, scroll to bottom, navigate
+  let calls : Array[Made] = []
+  let t = decide_core(calls, "chat-subchats-tall")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [])
+  assert_true(t.query(Button, label="夜里的构建又失败了") is Some(_))
+  assert_true(t.query(Button, label="给设置页加一个深色模式开关") is None)
+  t.drag(195.0, 720.0, 195.0, 480.0, steps=16)
+  t.run_for(@ui.move_most_ms)
+  guard t.query(Button, label="已完成") is Some(done_btn) else { fail("expected done disclosure button") }
+  assert_eq(done_btn.expanded, Some(false))
+  t.click(Button, label="已完成")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [])
+  assert_eq(t.query(Button, label="已完成").unwrap().expanded, Some(true))
+  for _ in [0, 1, 2, 3, 4, 5, 6, 7] {
+    t.drag(195.0, 720.0, 195.0, 380.0, steps=16)
+    t.run_for(@ui.move_most_ms)
+  }
+  guard t.query(Button, label="收尾回归与变更日志核对") is Some(last_btn) else {
+    fail("expected last done subchat visible after scrolling small sheet")
+  }
+  assert_true(last_btn.rect.1 + last_btn.rect.3 <= 844.0, msg="last done subchat inside viewport: \{Repr(last_btn.rect)}")
+  t.click(Button, label="收尾回归与变更日志核对")
+  t.run_for(@ui.move_most_ms)
+  match app.nav.top() {
+    Chat(r) => assert_eq(r.session, "s-c4")
+    _ => fail("expected last done subchat s-c4 open")
+  }
+
+  // 2) done-only sheet: no active items -> done auto-expands, archived stays collapsed
+  let calls2 : Array[Made] = []
+  let t2 = decide_core(calls2, "chat-subchats-done-only")
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(t2.audit(), [])
+  assert_eq(t2.query(Button, label="已完成").unwrap().expanded, Some(true))
+  assert_eq(t2.query(Button, label="已归档").unwrap().expanded, Some(false))
+  assert_true(t2.query(Button, label="给设置页加一个深色模式开关") is Some(_))
+  assert_true(t2.query(Button, label="旧版引导页的截图") is None)
+  let bare_done = t2.words().filter(fn(w) { w.0 == "已完成" && w.5 > 0.5 })
+  assert_eq(bare_done.length(), 1, msg="bare 已完成 must not repeat on done rows: \{Repr(bare_done)}")
+
+  // 3) 1.3x font scale audit on both tall and done-only
+  let phone = ("phone", 390.0, 844.0, 2, "")
+  let t3 = screen_in("chat-subchats-tall", phone, "zh", font_scale=1.3)
+  assert_eq(t3.audit(), [])
+  for _ in [0, 1] {
+    t3.drag(195.0, 720.0, 195.0, 440.0, steps=16)
+    t3.run_for(@ui.move_most_ms)
+  }
+  t3.click(Button, label="已完成")
+  t3.run_for(@ui.move_most_ms)
+  assert_eq(t3.audit(), [])
+
+  let t4 = screen_in("chat-subchats-done-only", phone, "zh", font_scale=1.3)
+  assert_eq(t4.audit(), [])
 }

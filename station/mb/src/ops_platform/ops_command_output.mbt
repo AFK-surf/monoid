@@ -92,38 +92,186 @@ fn next_url(text : String, from : Int) -> (Int, Int)? {
 }
 
 ///|
-/// Whether `/https?:\/\/[^\s"'<>`]+$/` matches `s`.
-fn ends_in_url(s : String) -> Bool {
+/// `/https?:\/\/[^\s"'<>`]+$/` in `s`: where its match starts.
+fn url_at_end(s : String) -> Int? {
   let mut from = 0
   while next_url(s, from) is Some((a, e)) {
     if e == s.length() {
-      return true
+      return Some(a)
     }
     from = a + 1
   }
+  None
+}
+
+///|
+fn is_hex(c : Int) -> Bool {
+  is_digit(c) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+///|
+/// `/[&=+]/.test(s) || /%[0-9A-Fa-f]{2}/.test(s)`: a query's or a percent-encoding's mark.
+fn url_mark(s : String) -> Bool {
+  let n = s.length()
+  for i in 0..<n {
+    let c = cu(s, i)
+    if c == 38 || c == 61 || c == 43 {
+      return true
+    }
+    if c == 37 && i + 2 < n && is_hex(cu(s, i + 1)) && is_hex(cu(s, i + 2)) {
+      return true
+    }
+  }
   false
+}
+
+///|
+/// `/["'<>`]/` for one unit.
+fn quote_unit(c : Int) -> Bool {
+  c == 34 || c == 39 || c == 60 || c == 62 || c == 96
+}
+
+///|
+/// `/^[=\-_~*─━═·.]+$/`: a line of separators (a box's rule).
+fn rule_line(s : String) -> Bool {
+  s.length() > 0 &&
+  all_units(s, c => match c {
+    61 | 45 | 95 | 126 | 42 | 0x2500 | 0x2501 | 0x2550 | 0xb7 | 46 => true
+    _ => false
+  })
+}
+
+///|
+/// `/^[A-Za-z0-9._~:/?#[\]@!$&()*+,;=%-]$/`: what RFC 3986 allows in a URL, one unit.
+fn rfc_url_unit(c : Int) -> Bool {
+  match c {
+    46 | 95 | 126 | 58 | 47 | 63 | 35 | 91 | 93 | 64 | 33 | 36 | 38 | 40 | 41 | 42 | 43 | 44 | 59 | 61 | 37 | 45 =>
+      true
+    _ => is_alnum(c)
+  }
+}
+
+///|
+/// `/^https?:\/\//i`.
+fn web_scheme(s : String) -> Bool {
+  let low = lower(sub(s, 0, 8))
+  starts(low, "https://") || starts(low, "http://")
+}
+
+///|
+/// `/^[A-Z0-9]{4}-[A-Z0-9]{4,6}$/`: a device code.
+fn dashed_code(s : String) -> Bool {
+  let n = s.length()
+  let code = (c : Int) => is_upper(c) || is_digit(c)
+  n >= 9 &&
+  n <= 11 &&
+  cu(s, 4) == 45 &&
+  all_units(sub(s, 0, 4), code) &&
+  all_units(sub(s, 5, n), code)
+}
+
+///|
+/// `/^[(\[]?[yYnN]\/[yYnN][)\]]?$/`: a Y/n question's choices.
+fn yn_alone(s : String) -> Bool {
+  let yn = (c : Int) => c == 121 || c == 89 || c == 110 || c == 78
+  let mut a = 0
+  let mut b = s.length()
+  if a < b && (cu(s, a) == 40 || cu(s, a) == 91) {
+    a += 1
+  }
+  if b - a == 4 && (cu(s, b - 1) == 41 || cu(s, b - 1) == 93) {
+    b -= 1
+  }
+  b - a == 3 && yn(cu(s, a)) && cu(s, a + 1) == 47 && yn(cu(s, a + 2))
+}
+
+///|
+/// command-output.ts `urlContinuation`: whether `next` goes on with the link `line_trimmed` ends in, broken by a
+/// program (or its terminal) over lines; the width it was broken at if so, else None.
+pub fn url_continuation(
+  prev_raw : String,
+  line_trimmed : String,
+  next : String,
+  cols : Int,
+  wrap_width : Int?,
+) -> Int? {
+  guard url_at_end(line_trimmed) is Some(at) else { return None }
+  // `/^\s*[^\s"'<>`]/`
+  let k = spaces_from(next, 0)
+  if !(k < next.length() && url_unit(cu(next, k))) {
+    return None
+  }
+  let prev_raw_len = js_trim_end(prev_raw).length()
+  if prev_raw_len >= cols - 4 {
+    return Some(wrap_width.unwrap_or(cols))
+  }
+  let url = sub(line_trimmed, at, line_trimmed.length())
+  if url.length() < 40 {
+    return None
+  }
+  let next_trim = js_trim(next)
+  if next_trim == "" || web_scheme(next_trim) {
+    return None
+  }
+  let goes = Some(wrap_width.unwrap_or(prev_raw_len))
+  let query = has(url, "?")
+  if any_unit(next_trim, js_space) {
+    let first = split_by(next_trim, js_space)[0]
+    let ok = query &&
+      !any_unit(first, quote_unit) &&
+      !web_scheme(first) &&
+      !rule_line(first) &&
+      url_mark(first)
+    return if ok { goes } else { None }
+  }
+  if any_unit(next_trim, quote_unit) || rule_line(next_trim) {
+    return None
+  }
+  if dashed_code(next_trim) || yn_alone(next_trim) {
+    return None
+  }
+  let last = cu(next_trim, next_trim.length() - 1)
+  if (last == 58 || last == 0xff1a || last == 63 || last == 0xff1f) &&
+    !any_unit(next_trim, c => c == 38 || c == 61 || c == 43 || c == 37) {
+    return None
+  }
+  let url_chars = all_units(next_trim, rfc_url_unit)
+  let end = cu(line_trimmed, line_trimmed.length() - 1)
+  if url_mark(next_trim) ||
+    (has(next_trim, "/") && next_trim.length() >= 8) ||
+    end == 63 ||
+    end == 38 ||
+    end == 61 ||
+    end == 43 ||
+    end == 37 ||
+    (query && prev_raw_len >= 60 && next_trim.length() >= 16 && url_chars) ||
+    (wrap_width is Some(w) && prev_raw_len >= w - 4 && url_chars) {
+    return goes
+  }
+  None
 }
 
 ///|
 /// command-output.ts `unwrapped`.
 pub fn unwrapped(text : String, cols : Int) -> String {
   let lines = split_on(text, "\n")
-  let full = (line : String) => js_trim_end(line).length() >= cols - 4
   let out = []
   let mut i = 0
   while i < lines.length() {
     let mut line = lines[i]
-    let mut wide = full(line)
-    while wide && i + 1 < lines.length() && ends_in_url(js_trim_end(line)) {
+    let mut prev_raw = line
+    let mut wrap_width : Int? = None
+    while i + 1 < lines.length() {
+      let trimmed = js_trim_end(line)
       let next = lines[i + 1]
-      // `/^\s*[^\s"'<>`]/`
-      let k = spaces_from(next, 0)
-      if !(k < next.length() && url_unit(cu(next, k))) {
+      guard url_continuation(prev_raw, trimmed, next, cols, wrap_width)
+        is Some(width) else {
         break
       }
-      line = js_trim_end(line) + js_trim_start(next)
+      line = trimmed + js_trim_start(next)
+      prev_raw = next
+      wrap_width = Some(width)
       i += 1
-      wide = full(next)
     }
     out.push(line)
     i += 1

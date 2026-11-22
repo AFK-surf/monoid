@@ -755,7 +755,7 @@ export const AgentsLive = (control: Control) =>
       yield* Effect.addFinalizer(() => Effect.sync(stopLatestThreadRequests));
       hub.followRunning();
       // The readers say what runs, and which chats clients made: the hub's.
-      readers.processes = () => hub.processes();
+      readers.processes = () => hub.readProcesses();
       readers.clientKeys = () => hub.clientKeys();
       events.follow({
         live: (key, from, last, send, brief) => {
@@ -787,13 +787,15 @@ export const AgentsLive = (control: Control) =>
       };
       // A session found its runtime not installed: the pages read it again (removed since they last did).
       hub.onRuntimeMissing((runtime) => updates.missing(runtime));
+      // Take the initial profile scopes once the hub's dependencies are ready, before listening for edits.
+      hub.profilesChanged();
       // What the overview shows changes: told on the event streams.
       const unlistenOverview = [
         accounts.onChange(() => events.overviewChanged()),
         updates.changes(() => events.overviewChanged()),
         // macOS's grants to still.fail Helper (the station's page shows them as they change).
         grants?.onChange(() => events.overviewChanged()) ?? (() => {}),
-        config.listen(() => (events.overviewChanged(), events.rowsChanged(null))),
+        config.listen(() => (hub.profilesChanged(), events.overviewChanged(), events.rowsChanged(null))),
         cloud.listen(() => events.overviewChanged()),
       ];
 

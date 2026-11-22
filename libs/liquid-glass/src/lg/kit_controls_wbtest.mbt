@@ -604,3 +604,305 @@ test "liquid_slider_node continuous drag and jelly release cause zero per-frame 
   assert_eq(laid_delta, 0, msg="expected 0 Flex layouts during slider drag and jelly settle, got \{laid_delta}")
   assert_true(val.get() > 70.0, msg="expected slider value > 70 after right drag, got \{val.get()}")
 }
+
+///|
+fn has_active_liquid_spot(t : @ui.Tester) -> Bool {
+  t.drawn_instances().iter().any(fn(a) { a.length() > 14 && a[5] == 6.0 && a[14] > 0.0 })
+}
+
+///|
+fn has_solid_hairline_edge(t : @ui.Tester, expected_edge : (Double, Int64)) -> Bool {
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  t.drawn_instances().iter().any(fn(a) {
+    if a.length() > 15 && a[5] == 0.0 && (a[6] - expected_edge.0).abs() < 0.01 {
+      let c = (ch(a[12]) << 24) | (ch(a[13]) << 16) | (ch(a[14]) << 8) | ch(a[15])
+      c == expected_edge.1
+    } else {
+      false
+    }
+  })
+}
+
+///|
+test "Wave 20 Phase 1A: calibrated optical glass recipes expose spot, sharing, zoom and theme-adaptive press ink" {
+  let near = fn(a : Double, b : Double) { (a - b).abs() < 1.0e-9 }
+  for dark in [false, true] {
+    set_dark(Some(dark))
+    let sp = Some((18.0, 20.0))
+    let ctrl = liquid_control_glass(spot=sp, sharing=true)
+    let pill = liquid_bar_pill_glass(spot=sp)
+    let flt = liquid_floating_glass(spot=sp, sharing=true)
+    let tab = liquid_tab_bar_glass(spot=sp, merge=12.0)
+    let vclr = liquid_viewer_clear_glass(spot=sp)
+    let vdrk = liquid_viewer_dark_glass(spot=sp)
+    let lens = liquid_tab_lens_glass(1.0)
+    let ink = liquid_press_ink()
+    let edge = liquid_solid_edge()
+    assert_eq(
+      (
+        ctrl.spot == sp && ctrl.shares_capture,
+        pill.spot == sp && pill.shares_capture && near(pill.blur, 2.5) && near(pill.bezel, 14.0),
+        flt.spot == sp && flt.adaptive && flt.shares_capture && near(flt.refraction, 28.0),
+        tab.spot == sp && near(tab.merge, 12.0) && near(tab.refraction, 28.0),
+        vclr.spot == sp && near(vclr.blur, 4.0) && near(vclr.saturation, 0.55),
+        vdrk.spot == sp && near(vdrk.blur, 4.0) && vdrk.solid == 0x161618FFL,
+        near(lens.zoom, 1.08) && near(lens.bezel, 6.0) && near(lens.refraction, 5.5),
+        edge.0 == 0.5,
+        if dark { ink == 0xFFFFFF38L } else { ink == 0x0000001FL },
+      ),
+      (true, true, true, true, true, true, true, true, true),
+    )
+  }
+  set_dark(Some(false))
+}
+
+///|
+test "Wave 20 Phase 1A: liquid_button_node and liquid_icon_button_node drive real GPU spot on press and solid hairline fallback" {
+  let t = lg_case(fn(p) {
+    p.box(fn(r) {
+      r.row(Is(true)).gap(Is(16.0)).lines_up(Is(Some(Middle))) |> ignore
+      liquid_button_node(r, fn() { "Compact" }, fn() {  }, height=32.0, px=12.0, sharing=true) |> ignore
+      liquid_icon_button_node(r, fn() { "Orb" }, fn(v, ink) { flight_icon(v, 18.0, ink) }, fn() {  }, side=34.0, sharing=true)
+      |> ignore
+    })
+    |> ignore
+  })
+  assert_no_nested_glass(t, "buttons at rest")
+  let btn_rect = t.get(Button, label="Compact").rect
+  let ico_rect = t.get(Button, label="Orb").rect
+  let rest_spot = has_active_liquid_spot(t)
+  // Press button -> GPU spot becomes active
+  t.touch(0, btn_rect.0 + 16.0, btn_rect.1 + btn_rect.3 / 2.0)
+  t.run_for(held_ms)
+  let btn_spot = has_active_liquid_spot(t)
+  t.touch(2, btn_rect.0 + 16.0, btn_rect.1 + btn_rect.3 / 2.0)
+  t.run_for(springs_out)
+  // Press icon button -> GPU spot becomes active
+  t.touch(0, ico_rect.0 + ico_rect.2 / 2.0, ico_rect.1 + ico_rect.3 / 2.0)
+  t.run_for(held_ms)
+  let ico_spot = has_active_liquid_spot(t)
+  t.touch(2, ico_rect.0 + ico_rect.2 / 2.0, ico_rect.1 + ico_rect.3 / 2.0)
+  t.run_for(springs_out)
+  let released_spot = has_active_liquid_spot(t)
+  // MBUI_GLASS=solid shows adaptive hairline edge with 0 liquid glass instances
+  @ui.set_glass_solid(Some(true))
+  t.draw()
+  let solid_liquid = t.drawn_glass().filter(fn(g) { g.4 == 6 }).length()
+  let solid_edge = has_solid_hairline_edge(t, liquid_solid_edge())
+  @ui.set_glass_solid(None)
+  assert_eq(
+    (btn_rect.3, ico_rect.2, rest_spot, btn_spot, ico_spot, released_spot, solid_liquid, solid_edge),
+    (32.0, 34.0, false, true, true, false, 0, true),
+  )
+}
+
+///|
+test "Wave 20 Phase 1A: liquid_pill_group_node and liquid_button_group_node steer outer GPU spot and spring scale on child press" {
+  for dark in [false, true] {
+    let pill_ref : Ref[@view.View?] = Ref(None)
+    let t = lg_case(dark~, fn(p) {
+      p.box(fn(r) {
+        r.row(Is(true)).gap(Is(16.0)).lines_up(Is(Some(Middle))) |> ignore
+        let g = liquid_pill_group_node(r, height=40.0, pad=3.0, gap=2.0, fn(pg) {
+          @headless.button(pg, fn() { "Bell" }, fn(_) {  }, fn(b, _) {
+            b.width(Is(Some(34.0))).height(Is(Some(34.0))).radius(Is(17.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+            bind_pill_press(b)
+            flight_icon(b, 18.0, fn() { colors().content })
+          })
+          |> ignore
+        })
+        pill_ref.val = Some(g)
+        liquid_button_group_node(r, fn() {
+          [
+            LiquidGroupAction::new(label=fn() { "Edit" }, icon=fn(v, ink) { flight_icon(v, 18.0, ink) }, press=fn() {  }),
+            LiquidGroupAction::new(label=fn() { "Share" }, icon=fn(v, ink) { flight_icon(v, 18.0, ink) }, press=fn() {  }),
+          ]
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    assert_no_nested_glass(t, "pill group and button group")
+    let pill = pill_ref.val.unwrap()
+    let scope = pill.lent(pill_press_lent).unwrap()
+    let (bx, by) = middle(t, Button, "Bell")
+    t.touch(0, bx, by)
+    t.run_for(held_ms)
+    let pill_pressed = (scope.spot.untracked() is Some(_), has_active_liquid_spot(t), pill.drawn_scale() > 1.01)
+    t.touch(2, bx, by)
+    t.run_for(springs_out)
+    let pill_settled = (scope.spot.untracked() is None, (pill.drawn_scale() - 1.0).abs() < 0.002)
+    let (ex, ey) = middle(t, Button, "Edit")
+    t.touch(0, ex, ey)
+    t.run_for(held_ms)
+    let group_spot = has_active_liquid_spot(t)
+    t.touch(2, ex, ey)
+    t.run_for(springs_out)
+    assert_eq((pill_pressed, pill_settled, group_spot, t.audit()), ((true, true, true), (true, true), true, []))
+  }
+}
+
+///|
+test "Wave 20 Phase 1A: liquid_toggle_node zero-relayout drag, lazy lens (0 hidden glass at rest), custom size and solid guard" {
+  let on = @signals.signal(false)
+  let t = lg_case(fn(p) {
+    liquid_toggle_node(
+      p,
+      fn() { on.get() },
+      fn(v) { on.set(v) },
+      fn() { "Compact Toggle" },
+      width=52.0,
+      height=24.0,
+      track_color=fn() { 0x60606844L },
+      on_color=fn() { 0x0088FFFFL },
+    )
+    |> ignore
+  })
+  let rest_glass = t.drawn_glass().length()
+  let tr = t.get(Switch, label="Compact Toggle").rect
+  let tree = @ui.view_tree().unwrap()
+  t.touch(0, tr.0 + 14.0, tr.1 + tr.3 / 2.0)
+  t.run_for(a_frame)
+  let held_glass = t.drawn_glass().length()
+  let laid0 = tree.work().laid
+  for i in 1..<=10 {
+    t.touch(1, tr.0 + 14.0 + i.to_double() * 2.0, tr.1 + tr.3 / 2.0)
+    t.run_for(a_frame)
+  }
+  t.touch(2, tr.0 + 34.0, tr.1 + tr.3 / 2.0)
+  for _ in 0..<12 {
+    t.run_for(a_frame)
+  }
+  let laid_delta = tree.work().laid - laid0
+  t.run_for(springs_out)
+  let dragged_on = on.get()
+  let settled_glass = t.drawn_glass().length()
+  // Solid guard prevents glass lens even while held
+  @ui.set_glass_solid(Some(true))
+  t.touch(0, tr.0 + 34.0, tr.1 + tr.3 / 2.0)
+  t.run_for(held_ms)
+  let solid_held_glass = t.drawn_glass().length()
+  t.touch(2, tr.0 + 34.0, tr.1 + tr.3 / 2.0)
+  @ui.set_glass_solid(None)
+  t.run_for(springs_out)
+  assert_eq(
+    ((tr.2, tr.3), rest_glass, held_glass, laid_delta, dragged_on, settled_glass, solid_held_glass, on.get()),
+    ((52.0, 24.0), 0, 1, 0, true, 0, 0, false),
+  )
+}
+
+///|
+test "Wave 20 Phase 1A: liquid_slider_node discrete stops snap, live drag preview, adaptive thumb_label, value_bubble and zero hidden glass at rest" {
+  let val = @signals.signal(0.0)
+  let names = ["Low", "Medium", "High", "Max"]
+  let t = lg_case(fn(p) {
+    p.box(fn(b) {
+      b.width(Is(Some(320.0))) |> ignore
+      liquid_slider_node(
+        b,
+        fn() { val.get() },
+        fn(v) { val.set(v) },
+        fn() { "Effort" },
+        least=0.0,
+        most=3.0,
+        stops=4,
+        thumb_label=fn(v) { names[clamp(v.round(), 0.0, 3.0).to_int()] },
+        value_bubble=Some(fn(v) { "\{v.round().to_int()}/3" }),
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  let rest_glass = t.drawn_glass().length()
+  assert_no_nested_glass(t, "stops slider at rest")
+  let sr = t.get(Slider, label="Effort").rect
+  let sy = sr.1 + sr.3 / 2.0
+  // Drag from stop 0 toward ~68% (near stop 2 = "High") and check live preview BEFORE release
+  t.touch(0, sr.0 + 12.0, sy)
+  t.run_for(a_frame)
+  let held_glass = t.drawn_glass().length()
+  t.touch(1, sr.0 + sr.2 * 0.68, sy)
+  t.run_for(a_frame)
+  let mid_words = t.words_said()
+  let live_preview_ok = (
+    mid_words.iter().any(fn(w) { w.0 == "High" }),
+    mid_words.iter().any(fn(w) { w.0 == "2/3" }),
+    val.get() == 0.0,
+  )
+  t.touch(2, sr.0 + sr.2 * 0.68, sy)
+  t.run_for(springs_out)
+  let snapped = val.get()
+  let after_glass = t.drawn_glass().length()
+  assert_eq((rest_glass, held_glass, live_preview_ok, snapped, after_glass, t.audit()), (0, 1, (true, true, true), 2.0, 0, []))
+}
+
+///|
+test "Wave 20 Phase 1A: liquid_segmented_node custom render_item slot and glass_solid hairline" {
+  let sel = @signals.signal(0)
+  let t = lg_case(fn(p) {
+    liquid_segmented_node(
+      p,
+      fn() { ["First", "Second", "Third"] },
+      fn() { sel.get() },
+      fn(i) { sel.set(i) },
+      width=240.0,
+      render_item=fn(slot, _idx, is_selected) {
+        flight_icon(slot, 18.0, fn() { if is_selected() { colors().accent } else { colors().content } })
+      },
+    )
+    |> ignore
+  })
+  assert_no_nested_glass(t, "custom render_item segmented")
+  let (x, y) = middle(t, Tab, "Third")
+  t.tap(x, y)
+  t.run_for(springs_out)
+  @ui.set_glass_solid(Some(true))
+  t.draw()
+  let solid_edge = has_solid_hairline_edge(t, liquid_solid_edge())
+  let solid_glass = t.drawn_glass().length()
+  @ui.set_glass_solid(None)
+  assert_eq((sel.get(), solid_edge, solid_glass), (2, true, 0))
+}
+
+///|
+test "Wave 20 Phase 1A: liquid_search_bar_node and liquid_text_field_node support placeholder_by, height_by, leading, on_escape and solid edge" {
+  let sf = @ui.Field::new()
+  let tf = @ui.Field::new()
+  let hint = @signals.signal("Find chats")
+  let escaped = Ref(0)
+  let t = lg_case(fn(p) {
+    p.box(fn(b) {
+      b.width(Is(Some(360.0))).gap(Is(12.0)) |> ignore
+      liquid_search_bar_node(
+        b,
+        sf,
+        placeholder_by=fn() { hint.get() },
+        height_by=fn() { 36.0 },
+        leading=fn(v, ink) { flight_icon(v, 16.0, ink) },
+        on_escape=fn() { escaped.val += 1 },
+      )
+      |> ignore
+      liquid_text_field_node(
+        b,
+        tf,
+        placeholder_by=fn() { hint.get() },
+        height_by=fn() { 38.0 },
+        label=fn() { "Query" },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  assert_no_nested_glass(t, "inputs with practical params")
+  let (fx, fy) = middle(t, TextField, "Search")
+  t.tap(fx, fy)
+  t.run_for(a_frame)
+  t.key(@ui.key_escape)
+  t.run_for(a_frame)
+  @ui.set_glass_solid(Some(true))
+  t.draw()
+  let solid_edge = has_solid_hairline_edge(t, liquid_solid_edge())
+  let solid_glass = t.drawn_glass().length()
+  @ui.set_glass_solid(None)
+  assert_eq((escaped.val, solid_edge, solid_glass), (1, true, 0))
+}

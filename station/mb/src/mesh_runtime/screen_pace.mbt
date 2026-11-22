@@ -379,6 +379,12 @@ pub fn Pacer::sent(self : Pacer, ts : Double, bytes : Double, key? : Bool = fals
 }
 
 ///|
+/// The viewer gave up these frames and asked for a key frame. Do not count them as delivered.
+fn Pacer::lost(self : Pacer) -> Unit {
+  self.out.clear()
+}
+
+///|
 /// The client decoded every frame up to `ts`; the newest of them gives a round trip.
 /// `viewer_wait_ms`: how long (ms) the client held the frame before showing or dropping it.
 pub fn Pacer::acked(self : Pacer, ts : Double, viewer_wait_ms? : Double = 0.0) -> Unit {
@@ -782,6 +788,12 @@ pub fn FrameLatency::sent(self : FrameLatency, ts : Double) -> Unit {
     return
   }
   self.out[ts] = (capture, now)
+}
+
+///|
+/// Frames the viewer gave up will not contribute latency samples.
+fn FrameLatency::lost(self : FrameLatency) -> Unit {
+  self.out.clear()
 }
 
 ///|

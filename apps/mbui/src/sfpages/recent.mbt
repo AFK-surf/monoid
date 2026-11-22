@@ -368,9 +368,10 @@ fn recent_photo_node(
 }
 
 ///|
-/// The strip's row: as far in as recent_in has it, 12 over its foot, its tiles 8 apart.
+/// The strip's row: as far in as recent_in has it, 12 over its foot, its tiles 8 apart; as wide as its tiles, neither
+/// held to the screen's width nor clipping (what scrolls across, Scroll::across, is the strip's width and cuts it).
 // kept across runs: a value (no field of it changes)
-let recent_strip_row : @ui.Style = @ui.css("row w=Full pb=S3 gap=S2 clip")
+let recent_strip_row : @ui.Style = @ui.css("row pb=S3 gap=S2")
 
 ///|
 /// Extra room under ＋'s tiles: none, since `sheet_held` already provides symmetric 16pt bottom padding matching sides

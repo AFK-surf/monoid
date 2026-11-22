@@ -89,6 +89,8 @@
   "core-logic.choose.save.unchanged": "无变更",
   "core-logic.choose.speed.plan": "跟随账号",
   "core-logic.choose.speed.standard": "标准",
+  "core-logic.choose.speed.ultrafast_fallback": "标准（Ultrafast 不可用）",
+  "core-logic.choose.speed.ultrafast_changed": "Ultrafast 不可用，已改用标准速度。",
   "core-logic.choose.sidekick.none": "无",
   "core-logic.choose.context.whole": "完整",
   "core-logic.choose.context.whole_of": "完整 · {window}",

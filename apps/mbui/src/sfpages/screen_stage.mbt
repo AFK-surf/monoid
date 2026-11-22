@@ -293,6 +293,8 @@ fn screen_stage_room(
     },
     fn(now) {
       let (bw, bh, sz, over, around, (room_w, room_h)) = now
+      // A tab can have no room for one layout as it is switched. Keep its last view until it has room again.
+      guard bw > 0.0 && bh > 0.0 && bw > room_w && bh > room_h else { return }
       let at = stage.cause_at()
       if over && !u.over_seen {
         u.zoom.fit_now(at~)

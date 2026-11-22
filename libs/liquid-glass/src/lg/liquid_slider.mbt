@@ -29,21 +29,31 @@ fn slider_glass(p : Double) -> @paint.Glass {
 
 ///|
 /// Where the thumb's left is along a track `w` wide at `progress` (0-1) of it: its middle there, held within a quarter
-/// of itself of the ends.
-fn slider_thumb_x(w : Double, progress : Double) -> Double {
-  let hi = w - thumb_w * 3.0 / 4.0
-  let lo = -thumb_w / 4.0
-  if hi < lo {
-    lo
+/// of itself of the ends (or flush within `[0, w - tw]` when `flush` is true for labeled thumbs).
+fn slider_thumb_x_for(w : Double, tw : Double, progress : Double, flush : Bool) -> Double {
+  if flush {
+    let hi = dmax(0.0, w - tw)
+    clamp(w * progress - tw / 2.0, 0.0, hi)
   } else {
-    clamp(-thumb_w / 2.0 + w * progress, lo, hi)
+    let hi = w - tw * 3.0 / 4.0
+    let lo = -tw / 4.0
+    if hi < lo {
+      lo
+    } else {
+      clamp(-tw / 2.0 + w * progress, lo, hi)
+    }
   }
 }
 
 ///|
+/// Magnetic lean fraction toward the finger while dragging between discrete stops (matching sf-ui stops_node).
+let slider_stops_lean : Double = 0.25
+
+///|
 /// A LiquidSlider in `parent`, at `value` along `least` … `most`; moved (its thumb dragged, its track tapped, a key, a
 /// screen reader's step), `change` is told the new value. Read out a slider named `label`. As wide as what holds it
-/// gives it, 24 high. The node.
+/// gives it, `thumb_h_px` high (default 24pt). Supports discrete `stops`, adaptive `thumb_label`, and floating
+/// `value_bubble` while pressed. The node.
 #callsite(autofill(loc))
 pub fn liquid_slider_node(
   parent : @view.View,
@@ -54,6 +64,14 @@ pub fn liquid_slider_node(
   most? : Double = 100.0,
   threshold? : Double = 0.01,
   disabled? : () -> Bool = fn() { false },
+  track_h? : Double = slider_track_h,
+  thumb_w_px? : Double = thumb_w,
+  thumb_h_px? : Double = thumb_h,
+  track_color? : () -> Int64,
+  fill_color? : () -> Int64,
+  stops? : Int = 0,
+  thumb_label? : (Double) -> String,
+  value_bubble? : ((Double) -> String)? = None,
   drag? : DampedDrag,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -62,22 +80,89 @@ pub fn liquid_slider_node(
     None => DampedDrag::new(@signals.untracked(value), lo=least, hi=most, threshold~, held_scale=thumb_held_scale)
   }
   let span = most - least
+  let has_stops = stops > 1
+  let has_label = thumb_label is Some(_)
+  let stop_step = if has_stops && span > 0.0 { span / (stops - 1).to_double() } else { 0.0 }
+  let stop_index_of = fn(v : Double) -> Int {
+    if !has_stops || span <= 0.0 {
+      0
+    } else {
+      let frac = clamp((v - least) / span, 0.0, 1.0)
+      clamp((frac * (stops - 1).to_double()).round(), 0.0, (stops - 1).to_double()).to_int()
+    }
+  }
+  let value_of_stop = fn(i : Int) -> Double {
+    if !has_stops {
+      least
+    } else {
+      least + span * (i.to_double() / (stops - 1).to_double())
+    }
+  }
+  let lean_value_for = fn(raw_v : Double) -> (Int, Double) {
+    let frac = if span <= 0.0 { 0.0 } else { clamp((raw_v - least) / span, 0.0, 1.0) }
+    let fp = frac * (stops - 1).to_double()
+    let nearest = clamp(fp.round(), 0.0, (stops - 1).to_double()).to_int()
+    let leaned = clamp(
+      nearest.to_double() + (fp - nearest.to_double()) * slider_stops_lean,
+      0.0,
+      (stops - 1).to_double(),
+    )
+    (nearest, least + span * (leaned / (stops - 1).to_double()))
+  }
   let on_thumb = Ref(false)
   let did_drag = Ref(false)
   let last_x = Ref(0.0)
+  let raw_drag_val = Ref(@signals.untracked(value))
+  let felt_stop = Ref(stop_index_of(@signals.untracked(value)))
+  let live_stop : @signals.Signal[Int?] = @signals.signal(None)
+  let live_val = fn() -> Double {
+    if has_stops {
+      match live_stop.get() {
+        Some(i) => value_of_stop(i)
+        None => value()
+      }
+    } else {
+      value()
+    }
+  }
   let hand = fn(d : @view.Drag) {
     if disabled() || d.w <= 0.0 {
       return
     }
     match d.kind {
       Down => {
-        let tx = slider_thumb_x(d.w, (dd.target() - least) / span)
-        let hit_thumb = d.x >= tx && d.x <= tx + thumb_w
+        let cur_tw = match thumb_label {
+          Some(lbl_fn) =>
+            dmin(
+              d.w,
+              dmax(
+                thumb_w_px,
+                @ui.text_advance(lbl_fn(@signals.untracked(value)), size=ctrl_type_label, weight=weight_medium) + 20.0,
+              ),
+            )
+          None => thumb_w_px
+        }
+        let tx = slider_thumb_x_for(d.w, cur_tw, (dd.target() - least) / span, has_label)
+        let hit_thumb = d.x >= tx && d.x <= tx + cur_tw
         on_thumb.val = true
         did_drag.val = false
         last_x.val = d.wx
         dd.press()
-        if !hit_thumb {
+        if has_stops {
+          let raw = if hit_thumb {
+            @signals.untracked(value)
+          } else {
+            clamp(least + span * (d.x / d.w), least, most)
+          }
+          raw_drag_val.val = raw
+          let (nearest, leaned) = lean_value_for(raw)
+          felt_stop.val = nearest
+          live_stop.set(Some(nearest))
+          if !hit_thumb {
+            dd.update_value(leaned)
+            change(value_of_stop(nearest))
+          }
+        } else if !hit_thumb {
           let to = clamp(least + span * (d.x / d.w), least, most)
           dd.update_value(to)
           change(to)
@@ -90,11 +175,27 @@ pub fn liquid_slider_node(
           if dx != 0.0 {
             did_drag.val = true
           }
-          change(clamp(dd.target() + span * (dx / d.w), least, most))
+          if has_stops {
+            raw_drag_val.val = clamp(raw_drag_val.val + span * (dx / d.w), least, most)
+            let (nearest, leaned) = lean_value_for(raw_drag_val.val)
+            if nearest != felt_stop.val {
+              felt_stop.val = nearest
+              live_stop.set(Some(nearest))
+              @ui.haptic(TextHandleMove)
+            }
+            dd.update_value(leaned)
+          } else {
+            change(clamp(dd.target() + span * (dx / d.w), least, most))
+          }
         }
       Up =>
         if on_thumb.val {
-          if did_drag.val {
+          if has_stops {
+            let snapped = value_of_stop(felt_stop.val)
+            live_stop.set(None)
+            dd.update_value(snapped)
+            change(snapped)
+          } else if did_drag.val {
             change(dd.target())
           }
           on_thumb.val = false
@@ -103,6 +204,10 @@ pub fn liquid_slider_node(
       Off =>
         if on_thumb.val {
           on_thumb.val = false
+          if has_stops {
+            live_stop.set(None)
+            dd.update_value(@signals.untracked(value))
+          }
           dd.release()
         }
     }
@@ -114,25 +219,46 @@ pub fn liquid_slider_node(
     value,
     min=least,
     max=most,
-    step=0.0,
+    step=stop_step,
     change,
     disabled~,
     drag=hand,
     fn(s, sl) {
       dd.attach(s)
-      s.height(Is(Some(thumb_h))).alpha(By(fn() { if sl.disabled() { 0.5 } else { 1.0 } })) |> ignore
+      s.height(Is(Some(thumb_h_px))).alpha(By(fn() { if sl.disabled() { 0.5 } else { 1.0 } })) |> ignore
       // (moved by what is not this hand's drag: its value followed, LaunchedEffect's updateValue)
-      s.reacts(at_start=false, value, fn(v) { if dd.target() != v { dd.update_value(v) } })
+      s.reacts(at_start=false, value, fn(v) {
+        if !(has_stops && on_thumb.val) && dd.target() != v {
+          dd.update_value(v)
+        }
+      })
       s.by_room(fn(inner, room) {
         let w = fn() { room.width() }
+        let no_lens = fn() { inner.glass_solid() || @ui.reduced_motion() }
+        let lens = fn(n : @view.View) -> Double { if no_lens() { 0.0 } else { dd.pressed(n) } }
+        let eff_tw = fn() -> Double {
+          match thumb_label {
+            Some(lbl_fn) => {
+              inner.words_redone() |> ignore
+              let measured = @ui.text_advance(lbl_fn(live_val()), size=ctrl_type_label, weight=weight_medium) + 20.0
+              dmin(w(), dmax(thumb_w_px, measured))
+            }
+            None => thumb_w_px
+          }
+        }
         inner.box(fn(track) {
           track
           .over(Is(true))
           .width(By(fn() { Some(w()) }))
-          .height(Is(Some(slider_track_h)))
-          .offset(Is((0.0, (thumb_h - slider_track_h) / 2.0)))
-          .radius(Is(slider_track_h / 2.0))
-          .ground(By(fn() { colors().track }))
+          .height(Is(Some(track_h)))
+          .offset(Is((0.0, (thumb_h_px - track_h) / 2.0)))
+          .radius(Is(track_h / 2.0))
+          .ground(By(fn() {
+            match track_color {
+              Some(f) => f()
+              None => colors().track
+            }
+          }))
           |> ignore
         })
         |> ignore
@@ -140,10 +266,15 @@ pub fn liquid_slider_node(
           fill
           .over(Is(true))
           .width(By(fn() { Some(w()) }))
-          .height(Is(Some(slider_track_h)))
-          .offset(Is((0.0, (thumb_h - slider_track_h) / 2.0)))
-          .radius(Is(slider_track_h / 2.0))
-          .ground(By(fn() { colors().accent }))
+          .height(Is(Some(track_h)))
+          .offset(Is((0.0, (thumb_h_px - track_h) / 2.0)))
+          .radius(Is(track_h / 2.0))
+          .ground(By(fn() {
+            match fill_color {
+              Some(f) => f()
+              None => colors().accent
+            }
+          }))
           .ground_drawn(By(fn() {
             let shown = clamp(dd.progress(fill), 0.0, 1.0) * w()
             { ..@view.ground_as_laid, dw: shown - w() }
@@ -151,26 +282,46 @@ pub fn liquid_slider_node(
           |> ignore
         })
         |> ignore
+        // Interior detent markers for discrete stops mode
+        if has_stops {
+          let dot_side = 4.0
+          for i in 1..<(stops - 1) {
+            let frac = i.to_double() / (stops - 1).to_double()
+            inner.box(fn(dot) {
+              dot
+              .over(Is(true))
+              .points(Is(false))
+              .width(Is(Some(dot_side)))
+              .height(Is(Some(dot_side)))
+              .radius(Is(dot_side / 2.0))
+              .offset(By(fn() { (w() * frac - dot_side / 2.0, (thumb_h_px - dot_side) / 2.0) }))
+              .ground(By(fn() { if is_dark() { 0xFFFFFF55L } else { 0x00000038L } }))
+              |> ignore
+            })
+            |> ignore
+          }
+        }
         inner.box(fn(thumb) {
           let thumb_shape = fn(n : @view.View) -> @view.GroundShape {
-            let (sx, sy) = dd.jelly(n, 10.0)
-            let tw = thumb_w * sx
-            let th = thumb_h * sy
-            let x = slider_thumb_x(w(), dd.progress(n))
+            let cur_tw = eff_tw()
+            let (sx, sy) = if no_lens() { (1.0, 1.0) } else { dd.jelly(n, 10.0) }
+            let tw = cur_tw * sx
+            let th = thumb_h_px * sy
+            let x = slider_thumb_x_for(w(), cur_tw, dd.progress(n), has_label)
             let r = th / 2.0
             {
-              dx: x + (thumb_w - tw) / 2.0,
-              dy: (thumb_h - th) / 2.0,
-              dw: tw - thumb_w,
-              dh: th - thumb_h,
+              dx: x + (cur_tw - tw) / 2.0,
+              dy: (thumb_h_px - th) / 2.0,
+              dw: tw - thumb_w_px,
+              dh: th - thumb_h_px,
               corners: Some((r, r, r, r)),
             }
           }
           thumb
           .over(Is(true))
-          .width(Is(Some(thumb_w)))
-          .height(Is(Some(thumb_h)))
-          .radius(Is(thumb_h / 2.0))
+          .width(Is(Some(thumb_w_px)))
+          .height(Is(Some(thumb_h_px)))
+          .radius(Is(thumb_h_px / 2.0))
           .shadow(Is(shadow_thumb))
           .shadow_outside(Is(true))
           .ground_drawn(By(fn() { thumb_shape(thumb) }))
@@ -178,43 +329,120 @@ pub fn liquid_slider_node(
           thumb.box(fn(solid) {
             solid
             .over(Is(true))
-            .width(Is(Some(thumb_w)))
-            .height(Is(Some(thumb_h)))
-            .radius(Is(thumb_h / 2.0))
-            .ground(Is(white))
-            .alpha(By(fn() { 1.0 - clamp(dd.pressed(solid), 0.0, 1.0) }))
+            .width(Is(Some(thumb_w_px)))
+            .height(Is(Some(thumb_h_px)))
+            .radius(Is(thumb_h_px / 2.0))
+            .ground(By(fn() {
+              if has_label && is_dark() {
+                0x2C2C2EFFL
+              } else {
+                white
+              }
+            }))
+            .alpha(By(fn() { 1.0 - clamp(lens(solid), 0.0, 1.0) }))
             .ground_drawn(By(fn() { thumb_shape(solid) }))
             |> ignore
           })
           |> ignore
-          thumb.box(fn(gl) {
+          // Lazy-mount the refraction loupe on first press (0 hidden glass & 0 extra nodes at rest; laid == 0 on release).
+          let lens_mounted : @signals.Signal[Bool] = @signals.signal(false)
+          thumb.reacts(fn() { !no_lens() && (dd.pressing() || dd.pressed(thumb) > 0.001) }, fn(active) {
+            if active && !lens_mounted.untracked() {
+              lens_mounted.set(true)
+            }
+          })
+          thumb.show(fn() { lens_mounted.get() }, at_once=true, fn(gl) {
             gl
             .over(Is(true))
-            .width(Is(Some(thumb_w)))
-            .height(Is(Some(thumb_h)))
-            .radius(Is(thumb_h / 2.0))
+            .points(Is(false))
+            .width(Is(Some(thumb_w_px)))
+            .height(Is(Some(thumb_h_px)))
+            .radius(Is(thumb_h_px / 2.0))
             .glass(By(fn() {
-              let p = dd.pressed(gl)
+              let p = clamp(lens(gl), 0.0, 1.0)
               if p > 0.001 {
                 Some(slider_glass(p))
               } else {
                 None
               }
             }))
-            .alpha(By(fn() { clamp(dd.pressed(gl), 0.0, 1.0) }))
+            .alpha(By(fn() { clamp(lens(gl), 0.0, 1.0) }))
             .ground_drawn(By(fn() { thumb_shape(gl) }))
             |> ignore
           })
-          |> ignore
+          match thumb_label {
+            Some(lbl_fn) =>
+              thumb.box(fn(lbl) {
+                lbl
+                .over(Is(true))
+                .points(Is(false))
+                .width(By(fn() { Some(eff_tw()) }))
+                .height(Is(Some(thumb_h_px)))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                .offset(By(fn() { (slider_thumb_x_for(w(), eff_tw(), dd.progress(lbl), true), 0.0) }))
+                |> ignore
+                lbl.box(fn(wt) {
+                  wt
+                  .words(By(fn() { lbl_fn(live_val()) }), look=words_at(ctrl_type_label, weight=weight_medium))
+                  .ink(By(fn() { colors().content }))
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+            None => ()
+          }
         })
         |> ignore
+        // Compact floating value bubble above the thumb while held/dragged
+        match value_bubble {
+          Some(fmt_fn) => {
+            let bub_mounted : @signals.Signal[Bool] = @signals.signal(false)
+            inner.reacts(fn() { dd.pressing() || dd.pressed(inner) > 0.001 }, fn(active) {
+              if active && !bub_mounted.untracked() {
+                bub_mounted.set(true)
+              }
+            })
+            inner.show(fn() { bub_mounted.get() }, at_once=true, fn(bub) {
+              bub
+              .over(Is(true))
+              .points(Is(false))
+              .row(Is(true))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .padding(Is((8.0, 3.0, 8.0, 3.0)))
+              .radius(Is(11.0))
+              .ground(By(fn() { colors().content }))
+              .alpha(By(fn() { clamp(dd.pressed(bub), 0.0, 1.0) }))
+              .scale(By(fn() { lerp(0.92, 1.0, clamp(dd.pressed(bub), 0.0, 1.0)) }), about=At(0.5, 1.0))
+              .moved_by(
+                fn(bw, bh, _at) {
+                  let cur_tw = eff_tw()
+                  let tx = slider_thumb_x_for(w(), cur_tw, dd.progress(bub), has_label)
+                  (tx + cur_tw / 2.0 - bw / 2.0, -bh - 6.0)
+                },
+                fn(_bw, _bh) { dd.value.end() },
+              )
+              |> ignore
+              bub.box(fn(wt) {
+                wt
+                .words(By(fn() { fmt_fn(live_val()) }), look=words_at(ctrl_type_caption, weight=weight_medium))
+                .ink(By(fn() { if is_dark() { black } else { white } }))
+                |> ignore
+              })
+              |> ignore
+            })
+          }
+          None => ()
+        }
         inner.show(fn() { sl.focus_shown() }, fn(ring) {
           ring
           .over(Is(true))
-          .width(Is(Some(thumb_w + 6.0)))
-          .height(Is(Some(thumb_h + 6.0)))
-          .radius(Is(thumb_h / 2.0 + 3.0))
-          .offset(By(fn() { (slider_thumb_x(w(), dd.progress(ring)) - 3.0, -3.0) }))
+          .width(By(fn() { Some(eff_tw() + 6.0) }))
+          .height(Is(Some(thumb_h_px + 6.0)))
+          .radius(Is(thumb_h_px / 2.0 + 3.0))
+          .offset(By(fn() { (slider_thumb_x_for(w(), eff_tw(), dd.progress(ring), has_label) - 3.0, -3.0) }))
           .edge(By(fn() { (2.0, colors().accent) }))
           |> ignore
         })

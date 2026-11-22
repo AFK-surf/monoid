@@ -247,6 +247,53 @@ test("a process that never reaches its backend fails as the network after its wa
   assert.notEqual(words.split("\n")[0], cannotStartWords(new Error("Unknown model ID: gemini-3.1-pro")).split("\n")[0]);
 });
 
+test("an opening given up (node.cancelOpen: timed out, stopped, closed) during its wait to open again ends there at once: no clock moved, no process started again", async () => {
+  const { options, events, dump } = setup({ FAKE_AGY_OFFLINE: "100" });
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  const ac = new AbortController();
+  let failed: unknown = null;
+  const opening = driver.open({ ...options, model: "gemini-3.1-pro", signal: ac.signal }, (e) => events.push(e)).then(() => assert.fail("opened"), (e) => (failed = e));
+  await Promise.race([time.begun(1), opening]);
+  assert.equal(failed, null, String(failed));
+  assert.equal(time.asked(), 1);
+  ac.abort("cancelled");
+  await opening;
+  assert.match(String(failed), /open aborted/);
+  assert.equal(readFileSync(dump + ".offline", "utf8"), "1", "no process opened again");
+  assert.equal(time.asked(), 1, "no wait begun again");
+  // (its clock moved past every wait after: still nothing started)
+  await time.adjust(AGY_CATALOG_RETRY_MS.reduce((a, b) => a + b, 0));
+  assert.equal(readFileSync(dump + ".offline", "utf8"), "1");
+  assert.equal((driver as unknown as { live: Set<unknown> }).live.size, 0, "nothing of it kept");
+});
+
+test("an opening given up while its process starts fails at once, its process ended, and never waits to open again", async () => {
+  const { options, dump } = setup({ FAKE_AGY_SILENT: "1" });
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  const ac = new AbortController();
+  const opening = driver.open({ ...options, signal: ac.signal }, () => {});
+  opening.catch(() => {});
+  await until(() => existsSync(dump + ".rpc") && rpc(dump).some((m) => m.method === "initialize"));
+  const [stuck] = [...(driver as unknown as { live: Set<unknown> }).live] as { runner(): string | undefined }[];
+  const runner = stuck!.runner()!;
+  ac.abort("cancelled");
+  await assert.rejects(opening, /open aborted/);
+  assert.equal(time.asked(), 0, "no wait to open again");
+  assert.equal((driver as unknown as { live: Set<unknown> }).live.size, 0, "nothing of it kept");
+  const { findRunner } = await import("../src/agents/process.ts");
+  await until(async () => (await findRunner(data, runner)) === undefined);
+  // Given up before it was asked: nothing started at all.
+  const { options: before, dump: none } = setup();
+  const gone = new AbortController();
+  gone.abort("closed");
+  await assert.rejects(driver.open({ ...before, signal: gone.signal }, () => {}), /open aborted/);
+  assert.equal(existsSync(none), false, "no process started");
+});
+
 test("another model between turns is set in the running process; one it does not offer starts it again", async () => {
   const { options, events, driver, dump } = setup();
   const session = await driver.open(options, (e) => events.push(e));

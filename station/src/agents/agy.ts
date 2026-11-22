@@ -695,16 +695,23 @@ export class AgyDriver extends AcpDriver<AgySession> {
 
   /// One opening, opened again after `AGY_CATALOG_RETRY_MS` while its process offers no models (`AgyNoCatalog`); any
   /// other failure is the caller's at once.
+  /// Given up (`OpenOptions.signal`: timed out, stopped, suspended, closed), it opens nothing again and starts no process.
   protected async begin(options: OpenOptions, events: Events, probe: boolean): Promise<AgySession> {
+    const signal = options.signal;
     for (let attempt = 0; ; attempt++) {
+      if (signal?.aborted) throw new Error("open aborted");
       try {
         return await this.beginOnce(options, events, probe);
       } catch (error) {
+        if (signal?.aborted) throw error;
         const wait = AGY_CATALOG_RETRY_MS[attempt];
         if (!(error instanceof AgyNoCatalog) || wait === undefined) throw error;
         log.warn("agents::agy", "its process offered no models (its network not up?); opened again after a wait", { key: options.key, attempt: attempt + 1, waitMs: wait });
-        // timer: retry after a failure
-        await Effect.runPromise(this.#clock.sleep(Duration.millis(wait)));
+        // timer: retry after a failure (its wait interrupted as the opening is given up)
+        const waited = Effect.runPromise(this.#clock.sleep(Duration.millis(wait)), signal === undefined ? undefined : { signal });
+        await waited.catch((error: unknown) => {
+          if (!signal?.aborted) throw error;
+        });
       }
     }
   }
@@ -721,6 +728,8 @@ export class AgyDriver extends AcpDriver<AgySession> {
       await agyHooks(options.profile.home);
       if (options.skills !== undefined) await agySkills(options.cwd, options.skills);
     }
+    // (given up while it was made ready: no process started)
+    if (options.signal?.aborted) throw new Error("open aborted");
     const session = await super.begin(options, events, probe);
     session.signInUntil = until;
     session.signInOpenedAt = borrowed ? wall.now() : null;

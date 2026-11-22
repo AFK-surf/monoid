@@ -6,7 +6,7 @@
 // again when asked again.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Deferred, Effect } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import type { FakeHost } from "../src/testing.ts";
 import { Core } from "../src/core.ts";
 import { handlers } from "../src/core/execute.ts";
@@ -14,7 +14,7 @@ import { Kind } from "../src/trace.ts";
 import { AGAIN_MS, titleOf } from "../src/views/downloads.ts";
 import { chatKeptId, sentKeptId } from "../src/drive-kept.ts";
 import { RECONNECT_MS } from "../src/station/sync.ts";
-import { HostError } from "../src/error.ts";
+import { CoreError, HostError } from "../src/error.ts";
 import { HostWire, type StationWire } from "../src/station/wire.ts";
 import { BODY_IDLE_MS, BULK_LANE, NO_HEDGE } from "../src/station/requests.ts";
 import { StationAddr } from "../src/station/addr.ts";
@@ -1113,5 +1113,107 @@ test("FileRanges isolates foreground reads from in-flight background noHedge ran
   assert.deepEqual(rBg.bytes, file);
   assert.deepEqual(rFg1.bytes, file);
   assert.deepEqual(rFg2.bytes, file);
+  t.core.close();
+});
+
+test("exchange() ends span with stillfail.cancelled on fiber interrupt and never double-ends", async () => {
+  type Recorded = { name: string; attrs: Map<string, unknown>; ends: number };
+  const recorded: Recorded[] = [];
+  let mode: "hang-head" | "hang-body" | "ok" | "err" = "hang-head";
+  const bodyChunk = new Uint8Array(8192).fill(5);
+  const t = await started(undefined, 0, (host): StationWire => {
+    const fallback = new HostWire(host);
+    return {
+      request: (station, head, body) => {
+        if (!head.path.includes("/sessions/k1/parts")) return fallback.request(station, head, body);
+        if (mode === "hang-head") return Effect.never;
+        if (mode === "hang-body") {
+          let sent = false;
+          return Effect.succeed({
+            status: 200,
+            headers: [["content-type", "video/mp4"], ["stillfail-total", "65536"]] as [string, string][],
+            via: "relay",
+            relay: "relay.test",
+            body: {
+              take: Effect.suspend(() => {
+                if (!sent) {
+                  sent = true;
+                  return Effect.succeed(bodyChunk);
+                }
+                return Effect.never;
+              }),
+            },
+          });
+        }
+        if (mode === "err") {
+          return Effect.fail(new CoreError("mesh", "boom"));
+        }
+        return Effect.succeed({
+          status: 200,
+          headers: [["content-type", "video/mp4"]] as [string, string][],
+          via: "direct",
+          relay: null,
+          body: {
+            take: (() => {
+              let done = false;
+              return Effect.suspend(() => (done ? Effect.succeed(null) : ((done = true), Effect.succeed(bodyChunk))));
+            })(),
+          },
+        });
+      },
+    };
+  });
+  const tracer = t.core.inner.tracer;
+  const origSpan = tracer.span.bind(tracer);
+  tracer.span = (name, kind, parent) => {
+    const s = origSpan(name, kind, parent);
+    const rec: Recorded = { name, attrs: new Map(), ends: 0 };
+    if (name.includes("/sessions/:id/parts")) recorded.push(rec);
+    const origSet = s.set.bind(s);
+    const origEnd = s.end.bind(s);
+    s.set = (k, v) => { rec.attrs.set(k, v); origSet(k, v); };
+    s.end = () => { rec.ends++; origEnd(); };
+    return s;
+  };
+  const addr = StationAddr.parse(ST);
+  const req = t.core.inner.stations.requests;
+  const partPath = "/sessions/k1/parts?name=v.mp4&offset=0&length=65536";
+
+  // 1. Interrupt while waiting for response head.
+  mode = "hang-head";
+  const f1 = t.core.inner.runner.fork(Effect.ignore(req.exchange(addr, "GET", partPath, [], new Uint8Array(), false, null)));
+  await t.host.settle();
+  await t.core.inner.runner.run(Fiber.interrupt(f1));
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0]!.ends, 1, "head-interrupted span must end exactly once");
+  assert.equal(recorded[0]!.attrs.get("stillfail.cancelled"), true);
+  assert.equal(recorded[0]!.attrs.has("http.response.body.size"), false);
+
+  // 2. Interrupt mid-body after receiving 8192 bytes.
+  mode = "hang-body";
+  const f2 = t.core.inner.runner.fork(Effect.ignore(req.exchange(addr, "GET", partPath, [], new Uint8Array(), false, null)));
+  await t.host.settle();
+  await t.core.inner.runner.run(Fiber.interrupt(f2));
+  assert.equal(recorded.length, 2);
+  assert.equal(recorded[1]!.ends, 1, "body-interrupted span must end exactly once");
+  assert.equal(recorded[1]!.attrs.get("stillfail.cancelled"), true);
+  assert.equal(recorded[1]!.attrs.get("stillfail.via"), "relay.test");
+  assert.equal(recorded[1]!.attrs.get("http.response.body.size"), bodyChunk.length);
+  assert.equal(recorded[1]!.attrs.has("stillfail.head_ms"), true);
+
+  // 3. Normal success & typed error must each end exactly once without stillfail.cancelled.
+  mode = "ok";
+  await t.core.inner.runner.run(req.exchange(addr, "GET", partPath, [], new Uint8Array(), false, null));
+  assert.equal(recorded.length, 3);
+  assert.equal(recorded[2]!.ends, 1);
+  assert.equal(recorded[2]!.attrs.has("stillfail.cancelled"), false);
+
+  mode = "err";
+  const failed = await t.core.inner.runner.run(Effect.result(req.exchange(addr, "GET", partPath, [], new Uint8Array(), false, null)));
+  assert.equal(failed._tag, "Failure");
+  assert.equal(recorded.length, 4);
+  assert.equal(recorded[3]!.ends, 1);
+  assert.equal(recorded[3]!.attrs.has("stillfail.cancelled"), false);
+
   t.core.close();
 });

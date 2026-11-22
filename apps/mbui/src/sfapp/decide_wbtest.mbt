@@ -698,3 +698,111 @@ test "小屏: what is in the chat told after its sheet came up: the sheet grows 
     was = y
   }
 }
+
+///|
+test "agent sheet working: 3-row header (mark + top-right compact stop, full-width title, full-width status aligned), zero audit faults" {
+  let cases : Array[(Double, Double, Double)] = [
+    (390.0, 844.0, 1.0),
+    (360.0, 740.0, 1.0),
+    (360.0, 740.0, words_large_scale),
+  ]
+  for c in cases {
+    let (w, h, scale) = c
+    let tag = "\{w}x\{h}@\{scale}"
+    new_run()
+    let calls : Array[Made] = []
+    let base = fixture("chat-agent-working")
+    let src : Source = {
+      ..base,
+      call: fn(name, params, done) {
+        calls.push({ name, params, bytes: None, done })
+        done(Ok(Json::object({})))
+      },
+    }
+    decide_src.val = Some(src)
+    open_fixture_over("chat-agent-working", src)
+    let t = @ui.Tester::new(fn(ctx) { view(ctx, src) }, tree=app_tree(src), w~, h~, platform=2)
+    if scale != 1.0 {
+      t.set_font_scale(scale)
+    }
+    t.run_for(@ui.move_most_ms)
+    sheet_rested(t, "sf-present")
+    let (sx, sy, sw, sh) = t.get(@ui.Role::Dialog).rect
+    let in_sheet = fn(x : Double, y : Double) { x >= sx && x <= sx + sw && y >= sy && y <= sy + sh }
+    // Row 2: Model title rendered completely with no ellipsis truncation.
+    let title_words = t
+      .words()
+      .filter(fn(wd) {
+        wd.5 > 0.5 && in_sheet(wd.1, wd.2) && (wd.0.contains("Gemini") || wd.0.contains("Neon") || wd.0.contains("high"))
+      })
+    assert_true(title_words.length() > 0, msg="\{tag}: no title words found in \{Repr(t.words().map(fn(x) { x.0 }))}")
+    // Filter out the bottom model row ("Gemini 4 Neon · 高") by keeping only words near the top of the sheet.
+    let top_title = title_words.filter(fn(wd) { wd.2 < sy + 160.0 })
+    assert_true(top_title.length() > 0, msg="\{tag}: no top title words in \{Repr(title_words)}")
+    let joined_title = top_title.map(fn(wd) { wd.0 }).join(" ")
+    assert_true(!joined_title.contains("…"), msg="\{tag}: title truncated: \{joined_title}")
+    assert_true(
+      joined_title.contains("Gemini 4 Neon") && joined_title.contains("high"),
+      msg="\{tag}: title incomplete: \{joined_title}",
+    )
+    let title_x = top_title[0].1
+    let title_top = top_title[0].2
+    let title_bot = top_title.iter().fold(init=0.0, fn(acc, wd) { dmax(acc, wd.2 + wd.4) })
+    // Row 1: Compact stop button at top-right above title, and model mark on the left aligned with title.
+    let stop_btn = t.get(@ui.Role::Button, label=tr("android-chat.agent.stop"))
+    let (bx, by, bw, bh) = stop_btn.rect
+    assert_true(by < title_top, msg="\{tag}: stop button y=\{by} not above title y=\{title_top}")
+    if scale == 1.0 {
+      assert_true(bh <= 40.0, msg="\{tag}: stop button height=\{bh} > 40 (expected compact pill)")
+    }
+    let jobs_label = t.words().filter(fn(wd) { wd.5 > 0.5 && in_sheet(wd.1, wd.2) && wd.0 == tr("android-chat.agent.jobs") })
+    assert_true(jobs_label.length() > 0, msg="\{tag}: no jobs row label found")
+    assert_true(by < jobs_label[0].2, msg="\{tag}: stop button should not be below bottom card")
+    // Model mark is the topmost shape/icon in Row 1 (above title, left side of sheet).
+    let marks = t
+      .shape_boxes()
+      .filter(fn(b) {
+        in_sheet(b.1, b.2) && b.1 >= sx + 20.0 && b.1 < sx + sw / 2.0 && b.2 >= sy && b.2 + b.4 <= title_top + 2.0
+      })
+    assert_true(marks.length() > 0, msg="\{tag}: no model mark shape found in Row 1 above title y=\{title_top}")
+    let mark_x = marks.last().unwrap().1
+    assert_true(
+      (title_x - mark_x).abs() <= 2.5,
+      msg="\{tag}: title x=\{title_x} not aligned with mark x=\{mark_x}",
+    )
+    // Row 3: Status line below title, status dot aligned with mark/title (<= 2.5pt), spanning full sheet width.
+    let status_words = t
+      .words()
+      .filter(fn(wd) { wd.5 > 0.5 && in_sheet(wd.1, wd.2) && wd.0.contains("等待：") })
+    assert_true(status_words.length() > 0, msg="\{tag}: no status words found")
+    let st0 = status_words[0]
+    assert_true(st0.2 >= title_bot - 1.0, msg="\{tag}: status y=\{st0.2} not below title bottom=\{title_bot}")
+    let status_dots = t
+      .drawn_rects()
+      .filter(fn(r) {
+        in_sheet(r.0, r.1) && r.0 >= sx + 20.0 && r.2 >= 4.0 && r.2 <= 12.0 && r.3 >= 4.0 && r.3 <= 12.0 && r.1 >= st0.2 - 4.0 && r.1 <= st0.2 + st0.4 && r.0 < st0.1
+      })
+    assert_true(status_dots.length() > 0, msg="\{tag}: no status dot found before \{Repr(st0)}")
+    let dot_x = status_dots.last().unwrap().0
+    assert_true(
+      (dot_x - mark_x).abs() <= 2.5,
+      msg="\{tag}: status dot x=\{dot_x} not aligned with mark x=\{mark_x}",
+    )
+    assert_true(
+      (dot_x - title_x).abs() <= 2.5,
+      msg="\{tag}: status dot x=\{dot_x} not aligned with title x=\{title_x}",
+    )
+    let status_right = status_words.iter().fold(init=0.0, fn(acc, wd) { dmax(acc, wd.1 + wd.3) })
+    assert_true(
+      status_right > sx + sw - 80.0,
+      msg="\{tag}: status line too narrow, right=\{status_right}, sheet right=\{sx + sw}",
+    )
+    // 4. Zero audit faults.
+    assert_eq(t.audit(), [], msg="\{tag}: audit faults")
+    // Tap stop button and verify session.stop call.
+    t.tap(bx + bw / 2.0, by + bh / 2.0)
+    let stopped = named(calls, "session.stop")
+    assert_eq(stopped.length(), 1, msg="\{tag}: expected 1 session.stop call")
+    assert_eq(text(Some(stopped[0].params), "key"), "s-c1")
+  }
+}

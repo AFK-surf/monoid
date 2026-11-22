@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_KEPT_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_KEPT_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { keptFirst } from "../src/station/calls.ts";
@@ -3273,6 +3273,109 @@ sim("previously_fast_link_stalling_at_zero_bps_switches_to_unmeasured_relay_with
   assert.deepEqual(viaUsed, ["stalled.relay.test", "backup.relay.test"]);
   assert.ok(elapsed >= 2 * BULK_STALL_MS && elapsed < 15_000, `previously fast link stalling must switch to unmeasured relay at ~8s (not 20s), took ${elapsed}ms`);
   assert.deepEqual(part.bytes, expected);
+  await close(s, station, mesh);
+});
+
+sim("better_bulk_standby_and_crawl_switch_work_when_all_ways_are_below_bulk_slow_bps", async (s) => {
+  const slower = s.relay("https://slower.relay.test/", { device: { ms: 20, bps: 12 * 1024 }, station: { ms: 10 } });
+  const better = s.relay("https://better.relay.test/", { device: { ms: 40, bps: 50 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationOn(slower, [better]);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [slower, better]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.run(mesh.remeasure(id));
+  const linkSlower = mesh.ways(id).find((w) => w.link.via() === slower)!.link;
+  const linkBetter = mesh.ways(id).find((w) => w.link.via() === better)!.link;
+
+  // Both ways are measured below BULK_SLOW_BPS (12 KiB/s vs 50 KiB/s): betterBulkStandby must return the 4x faster way.
+  mesh.noteSpeed(id, slower, 60 * 1024, 5_000, true); // 12 KiB/s
+  mesh.noteSpeed(id, better, 250 * 1024, 5_000, true); // 50 KiB/s
+  assert.equal(mesh.betterBulkStandby(id, linkSlower), linkBetter, "must switch from 12 KiB/s to 50 KiB/s even when both < BULK_SLOW_BPS");
+  assert.equal(mesh.bulkStandby(id, linkBetter), null, "50 KiB/s way must not hedge/switch to slower 12 KiB/s way");
+
+  // When a way is >= BULK_SLOW_BPS, it must still never pick a < BULK_SLOW_BPS standby.
+  mesh.noteSpeed(id, better, SPEED_MIN_BYTES, 500); // ~1 MiB/s
+  assert.equal(mesh.bulkStandby(id, linkBetter), null, "healthy >= BULK_SLOW_BPS way must not hedge onto < BULK_SLOW_BPS way");
+  assert.equal(mesh.betterBulkStandby(id, linkBetter), null);
+
+  // End-to-end bulk_crawl switch from 12 KiB/s to 50 KiB/s when both are < BULK_SLOW_BPS.
+  mesh.noteSpeed(id, better, 250 * 1024, 5_000, true); // restore 50 KiB/s (< BULK_SLOW_BPS)
+  // Start with slower unmeasured (lower RTT) or explicitly on lane 0? With slower at 12 KiB/s, bulkLinks puts better first.
+  // Give slower a transient fast-ish reading? Better: put slower on lane 1 via BULK_LANE or fresh mesh where slower starts unmeasured.
+  await close(s, station, mesh);
+
+  // Fresh mesh: better is pre-measured at 50 KiB/s (< BULK_SLOW_BPS), slower is unmeasured (lower RTT, starts first).
+  const station2 = await s.stationOn(slower, [better]);
+  const mesh2 = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [slower, better]));
+  const id2 = `w/${station2.id()}`;
+  await reach(s, mesh2, id2);
+  await s.run(mesh2.remeasure(id2));
+  mesh2.noteSpeed(id2, better, 250 * 1024, 5_000, true); // 50 KiB/s (< BULK_SLOW_BPS)
+  assert.equal(mesh2.bulkLinks(id2)[0]!.via(), slower);
+  const wire2 = wireOf(s, mesh2);
+  const addr2 = StationAddr.parse(id2);
+  const total = 256 * 1024;
+  const expected = Uint8Array.from({ length: total }, (_, i) => i % 251);
+  const inner = { runner: s.runner } as unknown as Inner;
+  const viaUsed: (string | null)[] = [];
+  const part = await s.run(
+    keptFirst<{ type: string; total: number }, { type: string; total: number; bytes: Uint8Array }>(
+      inner,
+      { offset: 0, length: total },
+      total,
+      () => Effect.succeed(null),
+      (_at, end) => Effect.succeed(end),
+      undefined,
+      undefined,
+      (at, length, _before, take, said) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const reply = yield* wire2.request(
+              addr2,
+              { method: "GET", path: `/admin/api/part?offset=${at}&length=${length}`, headers: [[BULK, "1"]] },
+              new Uint8Array(),
+            );
+            viaUsed.push(reply.relay ?? null);
+            const head = { type: "video/mp4", total };
+            said(head);
+            yield* readAll(reply.body, take, false);
+            return { ...head, bytes: new Uint8Array(0) };
+          }),
+        ),
+      () => Effect.void,
+      (h) => h.total === total,
+    ),
+    60_000,
+  );
+  assert.deepEqual(viaUsed, ["slower.relay.test", "better.relay.test"]);
+  assert.deepEqual(part.bytes, expected);
+  await close(s, station2, mesh2);
+});
+
+sim("slow_speed_expires_after_15m_while_fast_speed_persists_until_6h", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const { station, mesh, id: bare } = await onRelays(s, [a, b]);
+  const id = `w/${bare}`;
+  assert.equal(SPEED_SLOW_KEPT_MS, 15 * 60_000);
+  mesh.noteSpeed(id, a, 100 * 1024, 5_000, true); // 20 KiB/s (< BULK_SLOW_BPS)
+  mesh.noteSpeed(id, b, SPEED_MIN_BYTES, 500); // ~1 MiB/s (>= BULK_SLOW_BPS)
+  assert.ok(mesh.speed(id, a) !== null && mesh.speed(id, a)! < BULK_SLOW_BPS);
+  assert.ok(mesh.speed(id, b) !== null && mesh.speed(id, b)! >= BULK_SLOW_BPS);
+
+  // Just before 15 minutes: both still valid.
+  await s.time.pass(SPEED_SLOW_KEPT_MS - 1_000);
+  assert.ok(mesh.speed(id, a) !== null, "slow speed must still exist before 15m");
+  assert.ok(mesh.speed(id, b) !== null, "fast speed must still exist before 15m");
+
+  // Past 15 minutes: slow speed expired, fast speed still valid.
+  await s.time.pass(2_000);
+  assert.equal(mesh.speed(id, a), null, "slow speed (< BULK_SLOW_BPS) must expire after 15m");
+  assert.ok(mesh.speed(id, b) !== null, "fast speed (>= BULK_SLOW_BPS) must persist past 15m");
+
+  // Past 6 hours: fast speed also expires.
+  await s.time.pass(SPEED_KEPT_MS - SPEED_SLOW_KEPT_MS);
+  assert.equal(mesh.speed(id, b), null, "fast speed must expire after 6h");
   await close(s, station, mesh);
 });
 

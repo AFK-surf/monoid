@@ -1256,7 +1256,10 @@ fn ViewSession::take(self : ViewSession, kind : Int, payload : Bytes) -> Unit {
     self.pace()
     self.wake()
   } else if kind == kind_keyframe {
+    self.pacer.lost()
+    self.latency.lost()
     (self.view.keyframe)()
+    self.wake()
   } else if kind == kind_sound {
     if payload.length() == 1 {
       self.sound_on = payload[0] != b'\x00'

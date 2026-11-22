@@ -783,6 +783,9 @@ pub(all) struct Agent {
   runtime : String
   maker : String
   who : String
+  model_name : String
+  model_short : String
+  effort : String
   /// block | run | failed, or "" (done)
   badge : String
   /// running while its turn runs
@@ -807,6 +810,9 @@ pub fn agent_of(a : Json) -> Agent {
     runtime: text(session, "runtime"),
     maker: text(field(session, "maker"), "id"),
     who: text(session, "agentText"),
+    model_name: text(session, "modelName"),
+    model_short: text(session, "modelShort"),
+    effort: text(session, "effort"),
     badge: text(s, "badge"),
     status: text(s, "status"),
     since: opt_number(s, "since"),
