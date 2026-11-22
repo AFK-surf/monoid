@@ -19,13 +19,14 @@ priv struct OffersAt {
   sent : Ref[Int]
   under : Ref[Int]
   field : @ui.Field
+  root : Ref[@view.View?]
+  reads : Ref[Int]
 }
 
 ///|
 /// A window with the offers' keys (offers_bindings), a field 300 wide 100 in and 100 down, a button 下面 beside it, and
-/// what the field offers (`n` of them, 甲 乙 丙, then 第3 …), opened once the field has the focus.
-fn offers_tester(n? : Int = 3) -> OffersAt raise {
-  let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, platform=0)
+/// what the field offers (`n` of them, 甲 乙 丙, then 第3 …), each time it is asked counted in `x.reads`.
+fn offers_window(x : OffersAt, n : Int) -> (@view.View) -> Unit {
   let names = ["甲", "乙", "丙"]
   let keys = Array::makei(n, fn(i) { "k\{i}" })
   let named : Map[String, String] = Map([])
@@ -33,19 +34,8 @@ fn offers_tester(n? : Int = 3) -> OffersAt raise {
     named[k] = if i < names.length() { names[i] } else { "第\{i}" }
   }
   let name_of = fn(k : String) { named.get(k).unwrap_or(k) }
-  let x : OffersAt = {
-    t,
-    frame: Ref(None),
-    open: @signals.signal(false, same=fn(a, b) { a == b }),
-    current: @signals.signal(0, same=fn(a, b) { a == b }),
-    taken: [],
-    closes: Ref(0),
-    escapes: Ref(0),
-    sent: Ref(0),
-    under: Ref(0),
-    field: @ui.Field::new(),
-  }
-  @ui.set_view_app(fn(root) {
+  fn(root) {
+    x.root.val = Some(root)
     root
     .keymap(Is(@view.Keymap::new(offers_bindings())))
     .row(Is(true))
@@ -69,7 +59,10 @@ fn offers_tester(n? : Int = 3) -> OffersAt raise {
         around,
         f.parent().unwrap(),
         fn() { x.open.get() },
-        fn() { keys },
+        fn() {
+          x.reads.val += 1
+          keys
+        },
         x.current,
         fn(r, k, _) { words_node(r, fn() { name_of(k) }, fn() { offers_head_words }) |> ignore },
         name_of,
@@ -97,13 +90,48 @@ fn offers_tester(n? : Int = 3) -> OffersAt raise {
       |> ignore
     })
     |> ignore
+  }
+}
+
+///|
+/// offers_window in a Tester's window, its field given the focus: open from the start where `open`; the window's tree
+/// one where a change outside a transition settles at once where `transitions_only` (as Tester::tree's and an app's).
+fn offers_window_tester(n : Int, open : Bool, transitions_only : Bool) -> OffersAt raise {
+  let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, platform=0)
+  let x : OffersAt = {
+    t,
+    frame: Ref(None),
+    open: @signals.signal(open, same=fn(a, b) { a == b }),
+    current: @signals.signal(0, same=fn(a, b) { a == b }),
+    taken: [],
+    closes: Ref(0),
+    escapes: Ref(0),
+    sent: Ref(0),
+    under: Ref(0),
+    field: @ui.Field::new(),
+    root: Ref(None),
+    reads: Ref(0),
+  }
+  let window = offers_window(x, n)
+  @ui.set_view_app(fn(root) {
+    if transitions_only {
+      root.transitions_only() |> ignore
+    }
+    window(root)
   })
   t.draw()
-  // (the field given the focus, then what it offers opened)
   t.click(TextField)
-  x.open.set(true)
   t.draw()
-  t.run_for(@ui.move_most_ms)
+  x
+}
+
+///|
+/// offers_window in a Tester's window, opened once the field has the focus.
+fn offers_tester(n? : Int = 3) -> OffersAt raise {
+  let x = offers_window_tester(n, false, false)
+  x.open.set(true)
+  x.t.draw()
+  x.t.run_for(@ui.move_most_ms)
   x
 }
 
@@ -272,4 +300,105 @@ test "offers: a mouse's pointer over its ground (its head's words, its padding) 
   assert_eq(grounds, points.map(fn(_) { Arrow }), msg="its ground at \{Repr(points)}, it \{Repr((dx, dy, dw, dh))}")
   let (rx, ry, rw, rh) = x.t.get(Option, label="乙", selected=false).rect
   assert_eq(shape_on(rx + rw / 2.0, ry + rh / 2.0), Hand, msg="a row")
+}
+
+///|
+/// How far the words `w` are seen, as drawn (None: not drawn).
+fn offers_seen(x : OffersAt, w : String) -> Double? {
+  x.t.words().iter().find_first(fn(d) { d.0 == w }).map(fn(d) { d.5 })
+}
+
+///|
+/// What the window's tree holds beside the field and the button under its root: what holds the offers in the layer.
+fn offers_held(x : OffersAt) -> Int {
+  x.root.val.map(fn(r) { r.kids().length() - 2 }).unwrap_or(-1)
+}
+
+///|
+test "offers: closed, nothing of it made in the layer and what it offers never asked; first opened, made then and popped in, its keys its" {
+  for transitions_only in [true, false] {
+    let x = offers_window_tester(3, false, transitions_only)
+    let say = "\{transitions_only}"
+    x.t.type_text("a")
+    x.t.run_for(@ui.move_most_ms)
+    assert_eq((offers_held(x), x.reads.val, offers_seen(x, "甲")), (0, 0, None), msg=say)
+    // (closed, ↓ and Enter the field's)
+    x.t.key(@ui.key_code_down)
+    x.t.key(@ui.key_code_enter)
+    assert_eq((x.current.get(), x.taken, x.sent.val), (0, [], 1), msg=say)
+    x.open.set(true)
+    x.t.draw()
+    assert_eq(offers_held(x), 1, msg=say)
+    x.t.run_for(@motion.pop_ms / 2.0)
+    let mid = offers_seen(x, "甲").unwrap_or(-1.0)
+    assert_true(mid > 0.0 && mid < 1.0, msg="half way in: \{mid} \{say}")
+    x.t.run_for(@motion.pop_ms)
+    assert_eq(offers_seen(x, "甲"), Some(1.0), msg=say)
+    let (fx, fy, fw, fh) = offers_rect(x.frame.val)
+    let (dx, dy, dw, _) = x.t.get(Dialog, label="可以选的").rect
+    assert_eq((dx, dy, dw), (fx, fy + fh + 6.0, fw), msg=say)
+    assert_true(offers_in_field(x.t), msg=say)
+    x.t.key(@ui.key_code_down)
+    x.t.key(@ui.key_code_enter)
+    assert_eq((x.current.get(), x.taken, x.sent.val), (1, [1], 1), msg=say)
+    x.t.run_for(@motion.pop_out_ms)
+    assert_eq((offers_seen(x, "甲"), offers_held(x)), (None, 1), msg=say)
+  }
+}
+
+///|
+test "offers: opened again, the one made at first, popped in again; Escape and a press outside close it each time, none made more" {
+  for transitions_only in [true, false] {
+    let x = offers_window_tester(3, false, transitions_only)
+    let say = "\{transitions_only}"
+    x.open.set(true)
+    x.t.draw()
+    x.t.run_for(@motion.pop_ms)
+    let held = x.root.val.unwrap().kids().last().map(fn(v) { v.id() })
+    x.t.key(@ui.key_escape)
+    assert_eq((x.closes.val, x.escapes.val), (1, 0), msg=say)
+    x.t.run_for(@motion.pop_out_ms / 2.0)
+    let out = offers_seen(x, "甲").unwrap_or(-1.0)
+    assert_true(out > 0.0 && out < 1.0, msg="half way out: \{out} \{say}")
+    x.t.run_for(@motion.pop_out_ms)
+    assert_eq(offers_seen(x, "甲"), None, msg=say)
+    x.open.set(true)
+    x.t.draw()
+    x.t.run_for(@motion.pop_ms / 2.0)
+    let mid = offers_seen(x, "甲").unwrap_or(-1.0)
+    assert_true(mid > 0.0 && mid < 1.0, msg="half way in again: \{mid} \{say}")
+    x.t.run_for(@motion.pop_ms)
+    assert_eq(offers_seen(x, "甲"), Some(1.0), msg=say)
+    let (bx, by, bw, bh) = x.t.get(Button, label="下面").rect
+    x.t.tap(bx + bw / 2.0, by + bh / 2.0)
+    assert_eq((x.closes.val, x.under.val), (2, 1), msg=say)
+    x.t.run_for(@motion.pop_out_ms)
+    x.open.set(true)
+    x.t.draw()
+    x.t.run_for(@motion.pop_ms)
+    x.t.get(Option, label="甲", selected=true) |> ignore
+    assert_eq(offers_held(x), 1, msg=say)
+    assert_eq(x.root.val.unwrap().kids().last().map(fn(v) { v.id() }), held, msg=say)
+  }
+}
+
+///|
+test "offers: open from the start, made with the field, shown and its keys its" {
+  for transitions_only in [true, false] {
+    let x = offers_window_tester(3, true, transitions_only)
+    let say = "\{transitions_only}"
+    assert_eq(offers_held(x), 1, msg=say)
+    x.t.run_for(@ui.move_most_ms)
+    assert_eq(offers_seen(x, "甲"), Some(1.0), msg=say)
+    x.t.get(Option, label="甲", selected=true) |> ignore
+    x.t.key(@ui.key_code_down)
+    assert_eq(x.current.get(), 1, msg=say)
+    x.t.key(@ui.key_escape)
+    assert_eq((x.closes.val, x.escapes.val), (1, 0), msg=say)
+    x.t.run_for(@motion.pop_out_ms)
+    x.open.set(true)
+    x.t.draw()
+    x.t.run_for(@motion.pop_ms)
+    assert_eq((offers_held(x), offers_seen(x, "甲")), (1, Some(1.0)), msg=say)
+  }
 }

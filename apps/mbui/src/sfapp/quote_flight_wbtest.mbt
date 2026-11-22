@@ -41,7 +41,15 @@ fn quote_ground(t : @ui.Tester) -> (Double, Double, Double, Double) raise {
   let mut least : (Double, Double, Double, Double)? = None
   for r in t.drawn_rects() {
     let (rx, ry, rw, rh, colour) = r
-    if (colour & 0xFFL) != 0L && rx <= x + 1.0 && ry <= y + 1.0 && rx + rw >= x + 1.0 && ry + rh >= y + 1.0 {
+    // (a card at least 24 by 16, as the flight's own card is (mbui particle_flight_paint.mbt): its dust, 2 to 2.8 across
+    // and seeded by the card's node, is no card, wherever it drifts)
+    if (colour & 0xFFL) != 0L &&
+      rw >= 24.0 &&
+      rh >= 16.0 &&
+      rx <= x + 1.0 &&
+      ry <= y + 1.0 &&
+      rx + rw >= x + 1.0 &&
+      ry + rh >= y + 1.0 {
       match least {
         Some((_, _, lw, lh)) if lw * lh <= rw * rh => ()
         _ => least = Some((rx, ry, rw, rh))

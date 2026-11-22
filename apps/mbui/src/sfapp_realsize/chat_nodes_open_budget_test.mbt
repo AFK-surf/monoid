@@ -113,7 +113,11 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (+1 binding, 2026-11-22: the composer's glass the bottom bar's, with its outside-only shadow (sf tab_bar_shadow),
   // its blur on its shape's way to 4 as it opens (sfpages composer_node); before it (1029, 26, 665, 84, 1019))
   // (+3 made, +3 laid, -1 measured, +4 bindings, 2026-11-22: minimal bottom-seam 0xFE fade seal under composer; before it (1029, 26, 665, 84, 1020))
-  "phone cold": (1037, 26, 673, 87, 1029),
+  // (2026-11-22: what a field offers held in its layer only once it first opens (sf offers_node), the composer's @
+  // offers making no node and binding none while closed, as a chooser's menu (sf ChooserMenu::menu): 2 made, 2 laid and
+  // 1 binding fewer, the same at 60, 120, 24 and 7, the bar brought down to it; measured before it (1027, 26, 663, 81,
+  // 1015), its bar (1037, 26, 673, 87, 1029))
+  "phone cold": (1025, 26, 661, 81, 1014),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
@@ -142,7 +146,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // and its title where the chat's words start (sfdesk chat_bar_wide_node); before it (2460, 500, 1938, 195, 2525))
   // (+1 binding, 2026-11-22: composer foot fades beneath rising bottom sheets via @sf.sheet_foot_alpha(foot) (sfpages
   // composer_node); before it (2462, 500, 1943, 195, 2527))
-  "wide cold": (2462, 500, 1943, 195, 2528),
+  // (2026-11-22: what a field offers held in its layer only once it first opens (sf offers_node): 4 made, 2 let go, 3
+  // laid and 2 bindings fewer, the same at 60, 120, 24 and 7, the bar brought down to it; measured before it (2461, 500,
+  // 1943, 195, 2527), its bar (2462, 500, 1943, 195, 2528))
+  "wide cold": (2457, 498, 1940, 195, 2525),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))
@@ -151,7 +158,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (2026-11-19: Home's pane the new chat made as nodes (above), the chat's page kept left let go of it as the chat
   // opens from it again and its nodes made and bound where the old view's island counted none; every bar brought to what
   // is counted now, the most of the default rate and 60, 120, 24 and 7: wide again before it (22, 44, 70, 4, 172))
-  "wide again": (174, 325, 184, 23, 332),
+  // (2026-11-22: what a field offers held in its layer only once it first opens (sf offers_node): 2 made, 4 let go, 2
+  // laid and 1 binding fewer, the same at 60, 120, 24 and 7, the bar brought down to it; measured before it (151, 313,
+  // 121, 14, 307), its bar (174, 325, 184, 23, 332))
+  "wide again": (149, 309, 119, 14, 306),
   "phone up": (543, 354, 606, 87, 0),
   // (wide up 2 made and 1 laid more, 2026-11-18: a quote's source that leads somewhere is mbui's headless button, read
   // out and pressed as one (sf button_while_node), the pick that makes it a button only then and the button's own box
