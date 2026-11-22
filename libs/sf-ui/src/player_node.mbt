@@ -726,6 +726,37 @@ fn player_wait_node(parent : @view.View, pn : PlayerNode, size : @ui.TextSize, i
 }
 
 ///|
+/// Whether `k` is the dark-over-picture media ink (white text on dark video surface) rather than
+/// the theme-adaptive audio stage ink.
+fn player_is_picture_ink(k : MediaInk) -> Bool {
+  k.text == media_dark_text && k.stage == media_dark_stage
+}
+
+///|
+/// Single-layer iOS 27 Liquid Glass recipe for floating player controls and status overlays:
+/// uses `@glass.liquid_viewer_dark_glass` over video pictures (`picture == true`, white ink) and
+/// `@glass.liquid_floating_glass` over audio stages (`picture == false`, theme-adaptive ink),
+/// keeping `ink().ground` as the `MBUI_GLASS=solid` fallback.
+fn player_surface_glass(ink : () -> MediaInk, spot : (Double, Double)?) -> @ui.Glass {
+  let k = ink()
+  if player_is_picture_ink(k) {
+    @glass.liquid_viewer_dark_glass(spot~, solid=k.ground, sharing=true)
+  } else {
+    @glass.liquid_floating_glass(spot~, solid=k.ground, sharing=true)
+  }
+}
+
+///|
+/// 0.5pt hairline border used when `MBUI_GLASS=solid` degrades floating player surfaces to solid.
+fn player_solid_edge(ink : () -> MediaInk) -> (Double, Int64) {
+  if player_is_picture_ink(ink()) {
+    (control_edge_w, 0xFFFFFF26L)
+  } else {
+    (control_edge_w, theme().p.line)
+  }
+}
+
+///|
 /// What lies in the middle of its stage in `parent` (the old player's player_cover, player_waits, player_ask, the phone's
 /// pill): a song's mark and its name; what it waits on once it has waited, where it has no bar to say it in
 /// (player_wait_node); why it failed (a card on the night, its 重试 where trying again may help); a pill of what a
@@ -767,8 +798,18 @@ fn middle_node(parent : @view.View, pn : PlayerNode, name : String, pill : () ->
       pill
       .padding(Is((@ui.Space::S3.px(), @ui.Space::S1_5.px(), @ui.Space::S3.px(), @ui.Space::S1_5.px())))
       .radius(By(fn() { @ui.tree_theme().corner(Xl1_5) }))
-      .ground(By(fn() { ink().ground }))
       |> ignore
+      if pn.embedded {
+        pill.ground(By(fn() { ink().ground })) |> ignore
+      } else {
+        @glass.liquid_capsule_decorate(
+          pill,
+          glass=fn(spot) { player_surface_glass(ink, spot) },
+          shadow=glass_control_shadow,
+          solid_edge=fn() { player_solid_edge(ink) },
+        )
+        |> ignore
+      }
       player_wait_node(pill, pn, Ui, fn() { ink().text }) |> ignore
     })
     |> ignore
@@ -787,8 +828,18 @@ fn middle_node(parent : @view.View, pn : PlayerNode, name : String, pill : () ->
       b
       .padding(Is((@ui.Space::S3.px(), @ui.Space::S1_5.px(), @ui.Space::S3.px(), @ui.Space::S1_5.px())))
       .radius(By(fn() { @ui.tree_theme().corner(Xl1_5) }))
-      .ground(By(fn() { ink().ground }))
       |> ignore
+      if pn.embedded {
+        b.ground(By(fn() { ink().ground })) |> ignore
+      } else {
+        @glass.liquid_capsule_decorate(
+          b,
+          glass=fn(spot) { player_surface_glass(ink, spot) },
+          shadow=glass_control_shadow,
+          solid_edge=fn() { player_solid_edge(ink) },
+        )
+        |> ignore
+      }
       said_words_node(b, pill, Ui, fn() { ink().text }) |> ignore
     })
     |> ignore
@@ -827,7 +878,7 @@ fn failed_card_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, 
       pn.ready.set(pn.p.started())
     }, ink)
     |> ignore
-  }, buttons=fn() { state() != -2 && state() != -3 && state() != -4 }, loc~)
+  }, buttons=fn() { state() != -2 && state() != -3 && state() != -4 }, embedded=pn.embedded, loc~)
 }
 
 ///|
@@ -842,6 +893,7 @@ fn night_card_node(
   note : () -> String,
   foot : (@view.View) -> Unit,
   buttons? : () -> Bool = fn() { true },
+  embedded? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(card) {
@@ -852,8 +904,19 @@ fn night_card_node(
     .padding(Is((card_pad, card_pad, card_pad, card_pad)))
     .gap(Is(ask_card_gap))
     .radius(Is(card_corner))
-    .ground(By(fn() { ink().ground }))
     |> ignore
+    if embedded {
+      card.ground(By(fn() { ink().ground })) |> ignore
+    } else {
+      @glass.liquid_capsule_decorate(
+        card,
+        glass=fn(spot) { player_surface_glass(ink, spot) },
+        shadow=glass_overlay_shadow,
+        solid_edge=fn() { player_solid_edge(ink) },
+        clips=false,
+      )
+      |> ignore
+    }
     card.box(fn(w) {
       w.gap(Is(@ui.Space::S0_5.px())) |> ignore
       w.box(fn(l) {
@@ -1808,10 +1871,22 @@ fn desk_player_node(
         .width(By(fn() { Some(dmin(media_bar_most, dmax(0.0, stage().0 - panel() - 2.0 * media_bar_in))) }))
         .padding(By(fn() { (media_bar_pad, if narrow() { desk_time_over } else { media_bar_top }, media_bar_pad, media_bar_foot()) }))
         .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
-        .ground(By(fn() { if embedded { no_ground } else { ink().ground } }))
         .alpha(By(fn() { if going() { 0.0 } else { pn.shown.shown(bar) } }))
         .presses(By(fn() { pn.on() && !flying() && !going() }))
         |> ignore
+        if embedded {
+          bar.ground(Is(no_ground)) |> ignore
+        } else {
+          @glass.liquid_capsule_decorate(
+            bar,
+            glass=fn(spot) { player_surface_glass(ink, spot) },
+            active=fn() { !going() && pn.shown.shown(bar) > 0.001 },
+            shadow=glass_control_shadow,
+            solid_edge=fn() { player_solid_edge(ink) },
+            clips=false,
+          )
+          |> ignore
+        }
         desk_controls_node(bar, pn, file, cink, narrow, tips)
       })
       |> ignore
@@ -2310,8 +2385,15 @@ fn phone_player_node(
           .gap(Is(@ui.Space::S1.px()))
           .radius(Is(@ui.Space::S12.px() / 2.0))
           .lines_up(Is(Some(Middle)))
-          .ground(By(fn() { ink().ground }))
           .presses(By(live))
+          |> ignore
+          @glass.liquid_capsule_decorate(
+            h,
+            glass=fn(spot) { player_surface_glass(ink, spot) },
+            active=fn() { !away() && shown(place) > 0.001 },
+            shadow=glass_control_shadow,
+            solid_edge=fn() { player_solid_edge(ink) },
+          )
           |> ignore
           media_key_node(h, fn() { "chevron-left" }, fn() { t("common.back") }, live, ink, back, side=phone_key_side, faint=false, ripples=true)
           |> ignore
@@ -2387,13 +2469,24 @@ fn phone_player_node(
           c
           .width_share(Is(1.0))
           .max_width(Is(Some(phone_controls_most)))
-                  .padding(Is((phone_keys_in, @ui.Space::S2.px(), phone_keys_in, phone_controls_foot())))
+          .padding(Is((phone_keys_in, @ui.Space::S2.px(), phone_keys_in, phone_controls_foot())))
           .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
-          .ground(By(fn() { if embedded { no_ground } else { ink().ground } }))
           .presses(By(live))
           // (a finger down anywhere on them keeps them a while)
           .on_drag(fn(d) { if d.kind == Down { pn.wake() } })
           |> ignore
+          if embedded {
+            c.ground(Is(no_ground)) |> ignore
+          } else {
+            @glass.liquid_capsule_decorate(
+              c,
+              glass=fn(spot) { player_surface_glass(ink, spot) },
+              active=fn() { !away() && shown(place) > 0.001 },
+              shadow=glass_control_shadow,
+              solid_edge=fn() { player_solid_edge(ink) },
+            )
+            |> ignore
+          }
           phone_controls_node(c, pn, cink, live)
         })
         |> ignore

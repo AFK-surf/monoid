@@ -498,11 +498,11 @@ test "a phone's bar along the top is a capsule its round keys stand concentric i
   t.draw()
   // (the bar: 48 high across the top, its keys 40 round, 4 in from its ends)
   let bars = t
-    .drawn_rect_corners()
-    .filter(fn(r) { r.2 > 200.0 && (r.3 - 48.0).abs() < 0.5 && r.1 < 200.0 && r.4 == media_dark_ground })
+    .drawn_glass_corners()
+    .filter(fn(r) { r.2 > 200.0 && (r.3 - 48.0).abs() < 0.5 && r.1 < 200.0 })
   assert_eq(bars.length(), 1, msg="\{Repr(bars)}")
   let half = @ui.Space::S12.px() / 2.0
-  assert_eq(bars[0].5, (half, half, half, half))
+  assert_eq(bars[0].4, half)
   assert_eq(top_bar_faults(t), [])
   // the back key and 下载 held down, each drawing its press's round ground and ripple in the bar's ends
   for icon in ["icon:chevron-left", "icon:download"] {
