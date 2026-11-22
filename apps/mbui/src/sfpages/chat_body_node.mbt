@@ -1701,9 +1701,7 @@ fn chat_body_node(
         // higher, over the last message)
         match to {
           Some(r) => {
-            chat_to_newest_node(f, src, r, jump, place, here.view, width, here.tips)
-            chat_outline_node(f, src, r, jump, here.view, width, here.tips, here.stint)
-            chat_ask_node(f, r, src, jump, place, here.view, list, width, here.tips)
+            chat_floats_node(f, src, r, jump, place, here.view, list, width, here.tips, here.stint)
           }
           None => ()
         }

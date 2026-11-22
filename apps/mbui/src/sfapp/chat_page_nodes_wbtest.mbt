@@ -2528,50 +2528,68 @@ fn float_glass_make(t : @ui.Tester, a : Array[Double]) -> ((Double, Int64, Doubl
 }
 
 ///|
-test "a chat's round buttons over its list and the capsules over its composer, on 小屏 and 大屏, light and dark: one liquid glass and shadow, one right edge, 12 apart" {
+/// The chat-subchats-jobs fixture's chat in `win`, dark or not, read up its list (1200 up): 待处理, 对话目录 and the way back to
+/// the newest shown over the composer, at rest.
+fn float_pill_read_up(win : (String, Double, Double, Int, String), dark : Bool) -> @ui.Tester {
+  let (_, w, h, _, _) = win
+  let t = screen_in("chat-subchats-jobs", win, "zh", dark~)
+  // (twice: on 小屏 once leaves the cards that wait in sight)
+  t.move_to(w / 2.0, h / 3.0)
+  t.wheel(w / 2.0, h / 3.0, -600.0)
+  t.run_for(@ui.move_most_ms)
+  t.wheel(w / 2.0, h / 3.0, -600.0)
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// The round button named `label` over the composer (32 round: not 对话目录's rail at the list's right on 大屏), if one.
+fn float_pill_button(t : @ui.Tester, label : String) -> @ui.SemNode? {
+  let found = t
+    .all(Button)
+    .filter(fn(b) {
+      b.label == label &&
+      (b.rect.2 - @sf.float_button_side).abs() < 1.0 &&
+      (b.rect.3 - @sf.float_button_side).abs() < 1.0
+    })
+  found.get(0)
+}
+
+///|
+test "a chat's 待处理, 对话目录 and the way back to the newest, on 小屏 and 大屏, light and dark: one capsule of the composer capsules' liquid glass and shadow, their right edge, 12 over them on 大屏" {
   let wins : Array[(String, Double, Double, Int, String)] = [("小屏", 390.0, 844.0, 2, ""), ("大屏", 1280.0, 800.0, 0, "")]
   for win in wins {
     for dark in [false, true] {
-      let (name, w, h, _, _) = win
-      let t = screen_in("chat-subchats-jobs", win, "zh", dark~)
+      let name = win.0
       let at = "\{name} dark=\{dark}"
-      // (read up the list: 对话目录 and the way back to the newest shown over the composer, at rest)
-      t.move_to(w / 2.0, h / 3.0)
-      t.wheel(w / 2.0, h / 3.0, -600.0)
-      t.run_for(@ui.move_most_ms)
-      // (the round one over the composer, not 对话目录's rail at the list's right on 大屏)
-      let rounds = t
-        .all(Button)
-        .filter(fn(b) {
-          b.label == "对话目录" &&
-          (b.rect.2 - @sf.float_button_side).abs() < 1.0 &&
-          (b.rect.3 - @sf.float_button_side).abs() < 1.0
-        })
-      guard rounds is [outline] else { fail("\{at}: not one round 对话目录 read up: \{Repr(rounds.map(fn(b) { b.rect }))}") }
-      guard to_newest_shown(t) is Some(latest) else { fail("\{at}: the way back to the newest not shown read up") }
+      let t = float_pill_read_up(win, dark)
+      let buttons = [@sf.t("web-main.chat.asks.go"), @sf.t("web-main.outline.title"), @sf.t("web-main.chat.toLatest")].map(fn(l) {
+        float_pill_button(t, l)
+      })
+      guard buttons is [Some(ask), Some(outline), Some(latest)] else { fail("\{at}: not each shown read up: \{Repr(buttons.map(fn(b) { b.map(fn(b) { b.rect }) }))}") }
       guard t.query(Button, label="子会话") is Some(subchats) else { fail("\{at}: 子会话 not shown") }
-      let glass = [outline.rect, latest.rect, subchats.rect].map(fn(r) { float_glass_round(t, r) })
-      guard glass is [Some(go), Some(gl), Some(gs)] else { fail("\{at}: not each on liquid glass: \{Repr(glass)}") }
-      // 1. one glass: glass_floating()'s make and glass_control_shadow() outside it, each the same
+      let glass = [ask.rect, outline.rect, latest.rect, subchats.rect].map(fn(r) { float_glass_round(t, r) })
+      guard glass is [Some(ga), Some(go), Some(gl), Some(gs)] else { fail("\{at}: not each on liquid glass: \{Repr(glass)}") }
+      // 1. one capsule round the three, 36 across and 104 high (3 × 32, 2 between, 2 round), one over another
+      assert_eq((at, ga == go && go == gl, ga[2], ga[3]), (at, true, 36.0, 104.0))
+      assert_true(
+        ask.rect.1 < outline.rect.1 && outline.rect.1 < latest.rect.1,
+        msg="\{at}: 待处理 \{Repr(ask.rect)}, 对话目录 \{Repr(outline.rect)}, 跳到最新 \{Repr(latest.rect)}",
+      )
+      // 2. its glass and shadow the composer capsules' (glass_floating()'s make, glass_control_shadow() outside it)
       let want = @sf.glass_floating()
       let sh = @sf.glass_control_shadow()
-      let made = [go, gl, gs].map(fn(a) { float_glass_make(t, a) })
       let one = ((want.blur, want.tint, want.bezel, want.refraction, want.adaptive), Some((sh.0, sh.1, sh.2)))
-      assert_eq((at, made), (at, [one, one, one]))
-      assert_eq((at, want.blur, want.tint & 0xFFL, want.bezel, want.refraction, want.adaptive), (at, 2.1, 0x67L, 20.0, 28.0, true))
-      // 2. one right edge
+      assert_eq((at, [ga, gs].map(fn(a) { float_glass_make(t, a) })), (at, [one, one]))
+      // 3. their right edge
       let right = fn(a : Array[Double]) { a[0] + a[2] }
+      assert_true((right(ga) - right(gs)).abs() < 0.5, msg="\{at}: right edges capsule \{right(ga)}, 子会话 \{right(gs)}")
+      // 4. 12 over the composer's capsules on 大屏; on 小屏 the closed composer keeps the room it opens to, so further
+      // over them, never on them
+      let gap = gs[1] - (ga[1] + ga[3])
       assert_true(
-        (right(go) - right(gs)).abs() < 0.5 && (right(gl) - right(gs)).abs() < 0.5,
-        msg="\{at}: right edges 对话目录 \{right(go)}, 跳到最新 \{right(gl)}, 子会话 \{right(gs)}",
-      )
-      // 3. 12 apart, each over the next; on 大屏 the lowest 12 over the capsules too (on 小屏 the composer keeps the
-      // room it opens to while it is closed, so the lowest stands further over them, never on them)
-      let gap_up = gl[1] - (go[1] + go[3])
-      let gap_down = gs[1] - (gl[1] + gl[3])
-      assert_true(
-        (gap_up - 12.0).abs() < 0.5 && (if name == "大屏" { (gap_down - 12.0).abs() < 0.5 } else { gap_down >= 12.0 - 0.5 }),
-        msg="\{at}: 对话目录 to 跳到最新 \{gap_up}, 跳到最新 to 子会话 \{gap_down}",
+        if name == "大屏" { (gap - 12.0).abs() < 0.5 } else { gap >= 12.0 - 0.5 },
+        msg="\{at}: capsule to 子会话 \{gap}",
       )
       // (the side pane's edge over the sidebar and the page by 6 on 大屏, as wide_back_wbtest.mbt's)
       let faults = t
@@ -2579,5 +2597,33 @@ test "a chat's round buttons over its list and the capsules over its composer, o
         .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
       assert_eq((at, faults), (at, []))
     }
+  }
+}
+
+///|
+test "a chat's capsule over the composer, on 小屏 and 大屏: 待处理 goes to what waits, 对话目录 opens the outline, the way back to the newest takes the list to its end" {
+  let wins : Array[(String, Double, Double, Int, String)] = [("小屏", 390.0, 844.0, 2, ""), ("大屏", 1280.0, 800.0, 0, "")]
+  for win in wins {
+    let name = win.0
+    // 待处理: the list moved to what waits
+    let t = float_pill_read_up(win, false)
+    guard float_pill_button(t, @sf.t("web-main.chat.asks.go")) is Some(ask) else { fail("\{name}: 待处理 not shown") }
+    let before = t.text_runs().map(fn(r) { (r.text, r.top) })
+    t.tap(ask.rect.0 + ask.rect.2 / 2.0, ask.rect.1 + ask.rect.3 / 2.0)
+    t.run_for(@ui.move_most_ms * 3.0)
+    assert_true(t.text_runs().map(fn(r) { (r.text, r.top) }) != before, msg="\{name}: 待处理 pressed, the list where it was")
+    // 对话目录: the outline opened
+    let t = float_pill_read_up(win, false)
+    guard float_pill_button(t, @sf.t("web-main.outline.title")) is Some(outline) else { fail("\{name}: 对话目录 not shown") }
+    let dialogs = t.all(Dialog).length()
+    t.tap(outline.rect.0 + outline.rect.2 / 2.0, outline.rect.1 + outline.rect.3 / 2.0)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.all(Dialog).length() > dialogs, msg="\{name}: 对话目录 pressed, no outline opened")
+    // the way back to the newest: at the end, gone from the capsule
+    let t = float_pill_read_up(win, false)
+    guard float_pill_button(t, @sf.t("web-main.chat.toLatest")) is Some(latest) else { fail("\{name}: 跳到最新 not shown") }
+    t.tap(latest.rect.0 + latest.rect.2 / 2.0, latest.rect.1 + latest.rect.3 / 2.0)
+    t.run_for(@ui.move_most_ms * 3.0)
+    assert_true(float_pill_button(t, @sf.t("web-main.chat.toLatest")) is None, msg="\{name}: 跳到最新 pressed, still shown")
   }
 }

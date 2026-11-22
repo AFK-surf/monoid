@@ -173,11 +173,11 @@ pub let bar_foot : Double = 45.0
 let unread_lead : Double = 92.0
 
 ///|
-/// The round buttons over the list (chatToBottom): 32 across, 2 in from the composer column's side (the right edge of
-/// the capsules over the composer, 2 in as well); the lowest standing on the composer's room (its foot's top, whose
-/// composer_over of 12 keeps it 12 over the capsules, its 44 by 44 press 6 clear of them); each one over another 44
-/// above it (32 across and 12 apart, their 44 by 44 presses just touching); how long they come and go.
-let float_side : Double = 32.0
+/// The round buttons over the list (chatToBottom) on their capsule of glass (chat_floats_node): it 36 across, 2 in from
+/// the composer column's side (the right edge of the capsules over the composer, 2 in as well), standing on the
+/// composer's room (its foot's top, whose composer_over of 12 keeps it 12 over the capsules); the way to the newest
+/// saying how many new messages wait 8 under it; how long they come and go.
+let float_pill_w : Double = 36.0
 
 ///|
 let float_in : Double = 2.0
@@ -186,7 +186,7 @@ let float_in : Double = 2.0
 let float_lift : Double = 0.0
 
 ///|
-let float_above : Double = 44.0
+let float_gap : Double = 8.0
 
 ///|
 let float_ms : Double = 160.0
