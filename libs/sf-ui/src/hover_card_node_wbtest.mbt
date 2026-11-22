@@ -1275,3 +1275,81 @@ test "a card opened by a finger's hold, its modal menu open: a press outside clo
   assert_eq(t.audit(), [])
   presenters_reset()
 }
+
+///|
+/// A card of trigger 甲 open over a list 2000 high in a window 800 by 500 (`tall`: what the card holds higher than the
+/// window, so that it scrolls), a modal layer over all but the card's layer while `modal`. How far the list has
+/// scrolled, and whether the card is open.
+fn wheel_card_rig(
+  tall? : Bool = false,
+  modal? : @signals.Signal[Bool] = @signals.signal(false),
+) -> (@ui.Tester, () -> Double, () -> Bool) {
+  let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=500.0, platform=0)
+  t.check_looks(false)
+  let scroll = @view.Scroll::new()
+  let hand : Ref[HoverHand?] = Ref(None)
+  let tree : Ref[@view.Tree?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    tree.val = Some(root.tree)
+    let layer : Ref[@view.View?] = Ref(None)
+    let tips = TipLayer::new(fn() { layer.val })
+    root.box(fn(k) {
+      k.width(Is(Some(120.0))).height(Is(Some(32.0))).says(Is(Some(@view.said(Button, label="甲")))) |> ignore
+      hand.val = Some(
+        hover_card_node(
+          tips,
+          k,
+          fn(b) { b.box(fn(w) { w.height(Is(Some(if tall { 1000.0 } else { 40.0 }))) |> ignore }) |> ignore },
+          press=fn() {  },
+        ),
+      )
+    })
+    |> ignore
+    root.box(fn(l) {
+      l.height(Is(Some(400.0))) |> ignore
+      l.scrolls(scroll, fn(s) { s.box(fn(c) { c.height(Is(Some(2000.0))) |> ignore }) |> ignore }) |> ignore
+    })
+    |> ignore
+    root.show(fn() { modal.get() }, fn(m) { m.over(Is(true)).modal(Is(true)) |> ignore })
+    layer.val = Some(root.box(fn(l) { l.over(Is(true)).over_all(Is(true)) |> ignore }))
+  })
+  t.draw()
+  t.move_to(20.0, 16.0)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  t.move_to(40.0, 52.0)
+  t.run_for(hover_short_ms)
+  (t, fn() { scroll.at(tree.val.unwrap()) }, fn() { @signals.untracked(hand.val.unwrap().open) })
+}
+
+///|
+test "a wheel on an open card that moves nothing in it scrolls the list under it, the card staying open" {
+  let (t, list, open) = wheel_card_rig()
+  assert_true(open())
+  t.wheel(40.0, 52.0, 120.0)
+  t.run_for(hover_settled_ms)
+  assert_eq(list(), 120.0, msg="on the card: the list under it moved")
+  assert_true(open(), msg="the card stays open")
+  t.wheel(600.0, 300.0, 120.0)
+  t.run_for(hover_settled_ms)
+  assert_eq(list(), 240.0, msg="off the card: the list moved")
+}
+
+///|
+test "a wheel on an open card that scrolls moves the card, not the list under it" {
+  let (t, list, open) = wheel_card_rig(tall=true)
+  assert_true(open())
+  t.wheel(40.0, 52.0, 120.0)
+  t.run_for(hover_settled_ms)
+  assert_eq(list(), 0.0, msg="the card took it")
+}
+
+///|
+test "a wheel on a card under a modal layer does not reach the list the layer keeps from input" {
+  let modal = @signals.signal(false)
+  let (t, list, _) = wheel_card_rig(modal~)
+  modal.set(true)
+  t.run_for(hover_settled_ms)
+  t.wheel(40.0, 52.0, 120.0)
+  t.run_for(hover_settled_ms)
+  assert_eq(list(), 0.0, msg="kept from input")
+}

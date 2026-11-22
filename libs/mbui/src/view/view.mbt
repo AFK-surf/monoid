@@ -483,6 +483,8 @@ struct Node {
   /// how many times what a wheel does to it was said: a wheel asked of it as it was said then, asked only while it
   /// still is so (Tree::wheel_at)
   mut wheel_said : Int
+  // (what is in it moving by no wheel, the wheel goes on to what is drawn under it: View::wheel_passes)
+  mut wheel_passes : Bool
   /// what a key does to it (View::on_key): true where it took the key
   mut on_key : ((Key) -> Bool)?
   /// how many times what a key does to it was said (View::on_key): a key asked of it as it was said then, asked only
@@ -2141,6 +2143,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.focus_shown_cell = None
       n.key_said = 0
       n.wheel_said = 0
+      n.wheel_passes = false
       n.on_drag = None
       n.drags_whole = false
       n.drag_captures = false
@@ -2223,6 +2226,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         on_key: None,
         key_said: 0,
         wheel_said: 0,
+        wheel_passes: false,
         on_back: None,
         on_back_step: None,
         back_said: 0,
@@ -8021,6 +8025,16 @@ pub fn View::on_wheel_moves(self : View, f : (Wheel) -> Bool) -> View {
 }
 
 ///|
+/// A wheel that nothing in it moves goes on to what is drawn under it, not to what holds it: a card floating over a page
+/// (in a layer of the window, so the page is none of what holds it) leaves the page to scroll under the pointer. What is
+/// kept from input (a modal layer over the page) is not asked, as ever.
+pub fn View::wheel_passes(self : View) -> View {
+  guard self.live() is Some(n) else { return self }
+  n.wheel_passes = true
+  self
+}
+
+///|
 /// A wheel turned at (x, y) in the window at `at` (`dx`, `dy`, `mods` as the host says them), as one event of that
 /// moment: asked of the topmost node drawn there that takes a press or the wheel (or hosts an old view with something of
 /// its own there, `there` says: one with nothing there is passed, as though it were not there), then of what holds it,
@@ -8069,7 +8083,8 @@ pub fn Tree::wheel_at(
   self.event(t, fn() {
     // (where things are as of then, what the change under way set before it counted: Tree::asked_at's)
     self.laid_now(via=7) |> ignore
-    let found : Ref[NodeId?] = Ref(None)
+    // (all that takes it there, in the order drawn: the last the topmost)
+    let hits : Array[NodeId] = []
     let now = self.logic_said()
     self.each_drawn_scaled(fn(c, cx, cy, _, s) {
       if self.finger_on(c, cx, cy, s, x, y, now, tracked=false) {
@@ -8079,50 +8094,73 @@ pub fn Tree::wheel_at(
           n.on_press is Some(_) ||
           n.top_row ||
           (n.hosted && @signals.untracked(fn() { there(c.id) })) {
-          found.val = Some(c.id)
+          hits.push(c.id)
         }
       }
     })
-    match found.val {
+    match hits.last() {
       Some(f) => {
         wheel_last.found_at = f.at
         wheel_last.found_gen = f.gen
       }
       None => ()
     }
-    guard found.val is Some(id) && self.nodes[0].live else { return }
-    // (from it up through what holds it as of then, the innermost first: each node, whether it hosted an old view, and
-    // how many times what a wheel does to it was said then)
-    let chain : Array[(NodeId, Bool, Int)] = []
-    let mut i = id.at
-    while i >= 0 {
-      let n = self.nodes[i]
-      chain.push(({ at: i, gen: n.gen }, n.hosted, n.wheel_said))
-      i = n.parent
-    }
-    for e in chain {
-      let (id, hosted, said) = e
+    guard self.nodes[0].live else { return }
+    // (what let it through, none of what it holds asked again)
+    let passed : Array[NodeId] = []
+    let mut k = hits.length() - 1
+    while k >= 0 {
+      let hit = hits[k]
+      k = k - 1
       guard self.nodes[0].live else { break }
-      let n = self.nodes[id.at]
-      guard n.live && n.gen == id.gen && !self.pressless_at(id.at) else { continue }
-      if hosted && n.hosted {
+      let h = self.nodes[hit.at]
+      guard h.live && h.gen == hit.gen else { continue }
+      if passed.iter().any(fn(p) { self.holds(p, hit) }) {
+        continue
+      }
+      // (from it up through what holds it as of then, the innermost first, as far as what lets a wheel through: each
+      // node, whether it hosted an old view, and how many times what a wheel does to it was said then)
+      let chain : Array[(NodeId, Bool, Int)] = []
+      let mut through : NodeId? = None
+      let mut i = hit.at
+      while i >= 0 {
+        let n = self.nodes[i]
+        chain.push(({ at: i, gen: n.gen }, n.hosted, n.wheel_said))
+        if n.wheel_passes {
+          through = Some({ at: i, gen: n.gen })
+          break
+        }
+        i = n.parent
+      }
+      let mut took = false
+      for e in chain {
+        let (id, hosted, said) = e
+        guard self.nodes[0].live else { break }
+        let n = self.nodes[id.at]
+        guard n.live && n.gen == id.gen && !self.pressless_at(id.at) else { continue }
+        if hosted && n.hosted {
+          theirs.val = true
+          if @signals.untracked(fn() { old(id) }) {
+            wheel_last.took_at = id.at
+            wheel_last.took_gen = id.gen
+            took = true
+            break
+          }
+        }
+        guard n.wheel_said == said && n.on_wheel is Some(f) else { continue }
         theirs.val = true
-        if @signals.untracked(fn() { old(id) }) {
+        let (nx, ny, ns) = self.placed(id.at)
+        if @signals.untracked(fn() {
+            f({ x: (x - nx) / ns, y: (y - ny) / ns, wx: x, wy: y, dx, dy, mods, at: t, w: n.flex.width, h: n.flex.height })
+          }) {
           wheel_last.took_at = id.at
           wheel_last.took_gen = id.gen
+          took = true
           break
         }
       }
-      guard n.wheel_said == said && n.on_wheel is Some(f) else { continue }
-      theirs.val = true
-      let (nx, ny, ns) = self.placed(id.at)
-      if @signals.untracked(fn() {
-          f({ x: (x - nx) / ns, y: (y - ny) / ns, wx: x, wy: y, dx, dy, mods, at: t, w: n.flex.width, h: n.flex.height })
-        }) {
-        wheel_last.took_at = id.at
-          wheel_last.took_gen = id.gen
-        break
-      }
+      guard !took && through is Some(p) else { break }
+      passed.push(p)
     }
   })
   theirs.val

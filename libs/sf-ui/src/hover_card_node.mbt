@@ -167,6 +167,8 @@ pub fn hover_card_node(
   let make = fn() -> Bool {
     guard (layer.layer)() is Some(l) else { return false }
     let holder = l.box(made_for=loc, fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(owner)
+    // (a wheel on the card that moves nothing in it scrolls the page under the card)
+    holder.wheel_passes() |> ignore
     holder_v.val = Some(holder)
     holder.on_key(fn(k) {
       if k.code == @ui.key_escape && open.untracked() && !@signals.untracked(held) && row_open.untracked() is None {
