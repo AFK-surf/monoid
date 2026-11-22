@@ -44,18 +44,29 @@ pub fn icon_path(name : String) -> String {
 }
 
 ///|
-/// How far icon `name`, `size` across, is drawn off its box's middle where it stands alone in a round key, so its weight
-/// sits in the middle (play_mark's triangle is, as a disc's): a chevron's open side reads as a triangle's base, its
-/// weight a sixth of its width (1 of the 24 grid's 6) off toward that side, so it is drawn as far toward its point.
-fn icon_weight_nudge(name : String, size : Double) -> (Double, Double) {
-  let u = size / 24.0
-  match name {
-    "chevron-left" => (-u, 0.0)
-    "chevron-right" => (u, 0.0)
-    "chevron-up" => (0.0, -u)
-    "chevron-down" => (0.0, u)
-    _ => (0.0, 0.0)
+/// Icon `name`'s data (icon_data's, the 24 grid) moved so its weight sits in its box's middle, for where it stands alone
+/// in a round key (play_mark's triangle is so in its disc): a chevron's open side reads as a triangle's base, its weight
+/// a sixth of its width (1 of the 24 grid's 6) off toward that side, so it is moved as far toward its point. Others as
+/// they are.
+fn icon_weighed(name : String, data : Array[Double]) -> Array[Double] {
+  let (dx, dy) = match name {
+    "chevron-left" => (-1.0, 0.0)
+    "chevron-right" => (1.0, 0.0)
+    "chevron-up" => (0.0, -1.0)
+    "chevron-down" => (0.0, 1.0)
+    _ => return data
   }
+  let out = data.copy()
+  let mut i = 0
+  while i + 2 < out.length() {
+    let n = out[i + 2].to_int()
+    for p in 0..<n {
+      out[i + 3 + 2 * p] += dx
+      out[i + 4 + 2 * p] += dy
+    }
+    i = i + 3 + 2 * n
+  }
+  out
 }
 
 ///|

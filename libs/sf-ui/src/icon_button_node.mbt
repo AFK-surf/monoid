@@ -152,9 +152,7 @@ fn icon_button_by(
         }
       }))
       |> ignore
-      let named = icon_now.unwrap_or(fn() { icon })
-      icon_node(v, icon, icon_size, By(fn() { if on() || hand.shown(v) > 0.5 { lit_ink() } else { theme().p.muted } }), name_now=named)
-      .offset(By(fn() { icon_weight_nudge(named(), icon_size) }))
+      icon_node(v, icon, icon_size, By(fn() { if on() || hand.shown(v) > 0.5 { lit_ink() } else { theme().p.muted } }), name_now?=icon_now, weighed=true)
       |> ignore
       tip.val = match tips {
         Some(t) => Some(tip_node(t, v, label, side=Bottom, shortcut~))
