@@ -775,3 +775,104 @@ test "小屏输入框上方合并胶囊：单模型与多模型（390 与 320 �
     }
   }
 }
+
+///|
+/// The bar's progressive scroll-edge scrim drawn in the last frame (the frosted glass at the window's top fading out
+/// towards its foot): where it ends and how far above that its blur is whole.
+fn bar_scrim_of(t : @ui.Tester) -> (Double, Double)? {
+  let mut got : (Double, Double)? = None
+  for f in t.drawn_fades() {
+    if f.0 == 5 && f.1 < 0.5 && f.6 > 0.0 {
+      let bot = f.1 + f.2
+      match got {
+        Some((b, _)) if b >= bot => ()
+        _ => got = Some((bot, f.6))
+      }
+    }
+  }
+  got
+}
+
+///|
+/// How far the bar's scrim is whole at `y` (0: none of its blur and veil, 1: all, smoothstep'd by the shader after).
+fn bar_scrim_ramp(t : @ui.Tester, y : Double) -> Double raise {
+  guard bar_scrim_of(t) is Some((bot, fade)) else { fail("no bar scrim drawn: \{Repr(t.drawn_fades())}") }
+  @sf.dclamp((bot - y) / fade, 0.0, 1.0)
+}
+
+///|
+fn row2_title_bot(t : @ui.Tester, title : String) -> Double raise {
+  let hits = t.words().filter(fn(w) { w.2 >= 48.0 && w.0 == title && w.5 > 0.5 })
+  guard hits.length() == 1 else { fail("Row 2 title expected once: \{Repr(hits)}") }
+  hits[0].2 + hits[0].4
+}
+
+///|
+test "小屏顶栏：长标题展开到第 2 行时，渐进模糊随第 2 行一起向下扩散，第 2 行标题底边处仍在模糊平台内；收起回到基线" {
+  let long_title = "重新设计手机端小屏顶部栏标题展开与收起动画节奏验证"
+  let (t, _) = chat_bar_node_tester(long_title, msg_count=14)
+  t.post(@hostapi.system_channel, "{\"over\":false,\"bars\":{\"top\":47,\"bottom\":34,\"left\":0,\"right\":0}}")
+  t.run_for(@ui.move_most_ms)
+  t.move_to(195.0, 400.0)
+  t.wheel(195.0, 400.0, -10000.0)
+  t.run_for(@ui.move_most_ms)
+  let bar_ref : ChatRef = { station: "ws1/st1", session: "s-c1", title: long_title, station_name: "Willow" }
+  assert_eq(bar_extra_target(bar_ref), 0.0)
+  // Collapsed: the scrim ends 16pt past the bar's foot
+  guard bar_scrim_of(t) is Some((bot0, fade0)) else { fail("no collapsed scrim") }
+  let foot0 = bar_foot_at(390.0)
+  assert_true((bot0 - (foot0 + 16.0)).abs() < 0.5, msg="collapsed scrim foot \{bot0} vs bar foot \{foot0} + 16")
+  // (collapsed, its fade the whole scrim as before: nothing of it changed)
+  assert_true((fade0 - bot0).abs() < 0.5, msg="collapsed fade \{fade0} spans the scrim \{bot0}")
+  let row1_words = t.words().filter(fn(w) { w.2 < 100.0 && w.1 > 44.0 && w.5 > 0.5 && w.0 == long_title })
+  guard row1_words.length() > 0 else { fail("Row 1 title expected") }
+  t.tap(row1_words[0].1 + 20.0, row1_words[0].2 + row1_words[0].4 / 2.0)
+  t.run_for(chat_bar_expand_ms / 2.0)
+  guard bar_scrim_of(t) is Some((bot_mid, fade_mid)) else { fail("no mid-expand scrim") }
+  t.run_for(chat_bar_expand_ms)
+  let extra = bar_extra_target(bar_ref)
+  assert_true(extra >= 30.0, msg="expanded Row 2 height \{extra}")
+  guard bar_scrim_of(t) is Some((bot1, fade1)) else { fail("no expanded scrim") }
+  assert_true(bot_mid > bot0 + 1.0 && bot_mid < bot1 - 1.0, msg="mid-expand scrim foot \{bot0} < \{bot_mid} < \{bot1}")
+  let foot1 = foot0 + extra
+  assert_true((bot1 - (foot1 + 16.0)).abs() < 0.5, msg="expanded scrim foot \{bot1} vs bar foot \{foot1} + 16")
+  let title_bot = row2_title_bot(t, long_title)
+  let ramp = bar_scrim_ramp(t, title_bot)
+  assert_true(
+    ramp >= 0.44,
+    msg="Row 2 title foot \{title_bot} under scrim \{bot1} (fade \{fade1}): ramp \{ramp} < 0.44",
+  )
+  // (open, the fade a band at the bar's foot; on its way, narrowing from the collapsed one towards it)
+  assert_true(fade1 <= 52.0 + 0.01, msg="expanded fade \{fade1} <= 52")
+  assert_true(
+    fade_mid >= fade1 - 0.01 && fade_mid <= fade0 + 0.01,
+    msg="mid-expand fade \{fade_mid} between \{fade1} and \{fade0}",
+  )
+  assert_eq(bar_node_audit(t), [], msg="expanded audit: \{Repr(bar_node_audit(t))}")
+  // Tap Row 2 to collapse: back to the baseline
+  let row2_hits = t.words().filter(fn(w) { w.2 >= 48.0 && w.0 == long_title && w.5 > 0.5 })
+  t.tap(row2_hits[0].1 + row2_hits[0].3 / 2.0, row2_hits[0].2 + row2_hits[0].4 / 2.0)
+  t.run_for(chat_bar_collapse_ms * 1.5)
+  assert_eq(bar_extra_target(bar_ref), 0.0)
+  guard bar_scrim_of(t) is Some((bot2, fade2)) else { fail("no collapsed-back scrim") }
+  assert_true((bot2 - bot0).abs() < 0.5 && (fade2 - fade0).abs() < 0.5, msg="back to \{bot0}/\{fade0}: \{bot2}/\{fade2}")
+  assert_eq(bar_node_audit(t), [])
+}
+
+///|
+test "小屏顶栏：放不下 3 字而自动展开到第 2 行时，第 2 行标题底边处仍在渐进模糊平台内，零 audit 告警" {
+  let tight_title = "极窄标题测试：当第 1 行连三个汉字加省略号都放不下时自动展开"
+  let (t, _) = chat_bar_node_tester(tight_title, archivable=true, w=230.0, msg_count=14, at=14.0)
+  t.run_for(@ui.move_most_ms)
+  let bar_ref : ChatRef = { station: "ws1/st1", session: "s-c1", title: tight_title, station_name: "Willow" }
+  let extra = bar_extra_target(bar_ref)
+  assert_true(extra > 30.0, msg="must auto-expand on mount")
+  guard bar_scrim_of(t) is Some((bot, fade)) else { fail("no scrim") }
+  let foot = bar_foot_at(230.0) + extra
+  assert_true((bot - (foot + 16.0)).abs() < 0.5, msg="scrim foot \{bot} vs bar foot \{foot} + 16")
+  let title_bot = row2_title_bot(t, tight_title)
+  let ramp = bar_scrim_ramp(t, title_bot)
+  assert_true(ramp >= 0.44, msg="Row 2 title foot \{title_bot} under scrim \{bot} (fade \{fade}): ramp \{ramp} < 0.44")
+  assert_true(fade <= 52.0 + 0.01, msg="fade \{fade} <= 52")
+  assert_eq(bar_node_audit(t), [], msg="auto-expanded audit: \{Repr(bar_node_audit(t))}")
+}

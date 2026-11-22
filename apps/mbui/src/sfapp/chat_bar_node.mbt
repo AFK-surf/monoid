@@ -211,18 +211,17 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
       }
     }
   })
-  // (UIScrollEdgeEffect.soft's place, not home_top_bar_node's full bar_h fade: the title is bare words, so the ground
-  // stays solid behind it and fades across the bar's foot, 16pt past it, messages gone before they reach the title
-  // while the pills' lower half shows them through; no blur yet, which the soft edge also has)
-  narrow_bar_scrim_node(
-    g,
-    fn(s) {
-      status_top_now(s.window_w()) + bar_h + state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get() + 16.0
-    },
-    fn(s) {
-      status_top_now(s.window_w()) + bar_h + state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get() + 16.0
-    },
-  )
+  // Progressive scroll-edge blur (`glass_scroll_edge`): keep collapsed bars on their full-height fade (matching #8101),
+  // and smoothly narrow the bottom fade band to 52pt as Row 2 or breadcrumbs open so the full-blur plateau follows the
+  // descended title down while leaving the first message 16pt past the foot clear (smoothstep has zero slope at ramp=1).
+  let collapsed_h = fn(s : @view.View) { status_top_now(s.window_w()) + bar_h + 16.0 }
+  let extra_h = fn(s : @view.View) { state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get() }
+  narrow_bar_scrim_node(g, fn(s) { collapsed_h(s) + extra_h(s) }, fn(s) {
+    let base = collapsed_h(s)
+    let extra = extra_h(s)
+    let expanded_fade = @sf.dmin(base + extra, 52.0)
+    base + (expanded_fade - base) * bar_clamp01(extra / 24.0)
+  })
   g.reacts(can_toggle, fn(ok) {
     if !ok && state.manual_expanded.get() {
       state.manual_expanded.set(false)
