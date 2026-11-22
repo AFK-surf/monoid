@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 // @ts-expect-error: the site's build is plain JavaScript (website/build.mjs), untyped
-import { SITES, latestRelease, rebrand, withRelease } from "../website/build.mjs";
+import { SITES, latestRelease, legal, rebrand, withRelease } from "../website/build.mjs";
 
 // The template is monoid.build's page; each other site is it with its name, its web app and its cloud's downloads.
 const page = [
@@ -98,10 +98,27 @@ test("still.fail and youdid.wtf build the classic single-page site with real app
       assert.ok(existsSync(join(out, `assets/android-qr-${site}.svg`)), `${site}: android qr`);
       assert.ok(existsSync(join(out, "terms.html")), `${site}: terms.html`);
       assert.ok(existsSync(join(out, "en/terms.html")), `${site}: en/terms.html`);
+      assert.ok(existsSync(join(out, "support.html")), `${site}: support.html`);
+      assert.ok(existsSync(join(out, "en/support.html")), `${site}: en/support.html`);
     }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("monoid.build rebrands support pages with monoid, AFK AI, Inc., and hi@monoid.build", async () => {
+  const { readFileSync } = await import("node:fs");
+  const zh = legal(readFileSync(new URL("../web/public/support.html", import.meta.url), "utf8"), "monoid.build");
+  assert.match(zh, /<title>技术支持 · monoid<\/title>/);
+  assert.match(zh, /AFK AI, Inc\./);
+  assert.match(zh, /mailto:hi@monoid\.build/);
+  assert.ok(!/still\.fail/.test(zh.replace("stillfail.site.theme", "")), "zh support page should not mention still.fail");
+
+  const en = legal(readFileSync(new URL("../web/public/en/support.html", import.meta.url), "utf8"), "monoid.build");
+  assert.match(en, /<title>Support · monoid<\/title>/);
+  assert.match(en, /AFK AI, Inc\., a Delaware corporation/);
+  assert.match(en, /mailto:hi@monoid\.build/);
+  assert.ok(!/still\.fail/.test(en.replace("stillfail.site.theme", "")), "en support page should not mention still.fail");
 });
 
 // The changelog names the newest stable release (docs/releases), never the one the template was written with.

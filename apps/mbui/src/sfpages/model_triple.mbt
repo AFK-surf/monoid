@@ -255,7 +255,11 @@ fn pick_save(
   for k, v in patch {
     p[k] = v
   }
-  act(src, @sf.t("common.save"), "pick.save/" + station + "/" + of, "pick.save", Json::object(p), done~, ok~, failed~)
+  act(src, @sf.t("common.save"), "pick.save/" + station + "/" + of, "pick.save", Json::object(p), done~, ok=fn(result) {
+    let notice = text(Some(result), "notice")
+    if notice != "" { toast_later(notice) }
+    ok(result)
+  }, failed~)
 }
 
 ///|
@@ -584,9 +588,17 @@ pub fn model_triple_node(
           }, fn() { words_look })
           |> ignore
         })
-        part(r, triple_drop_effort, fn() { offers() && text(v(), "fastText") != "" }, fn(x) {
+        part(r, triple_drop_speed, fn() { offers() && text(v(), "fastText") != "" }, fn(x) {
+          // (set off by a dot as the other parts are, the icon as the speed's words were)
           dot(x)
-          @sf.words_node(x, fn() { text(v(), "fastText") }, fn() { words_look }) |> ignore
+          x.pick(fn() { text(v(), "fastText") }, fn(mark, speed) {
+            if speed == "Fast" || speed == "Ultrafast" {
+              let icon = if speed == "Ultrafast" { "zap-ultrafast" } else { "zap-fast" }
+              @sf.icon_node(mark, icon, 14.0, By(fn() { @sf.theme().p.text })) |> ignore
+            } else {
+              @sf.words_node(mark, fn() { speed }, fn() { words_look }) |> ignore
+            }
+          })
         })
         // (who runs it: its mark where it has one, then its name, then its allowance's chips: model_triple's)
         let profile = fn() { field(account(), "profile") }
@@ -3067,6 +3079,10 @@ let triple_drop_effort : Int = 4
 
 ///|
 let triple_drop_runtime : Int = 5
+
+///|
+/// Keep the compact speed mark after the other optional details when the row narrows.
+let triple_drop_speed : Int = 6
 
 ///|
 /// The triple as a row's value (28 high at its end, in its middle): a capsule, as the round controls beside it are, its

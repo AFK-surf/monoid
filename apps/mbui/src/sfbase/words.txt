@@ -3073,6 +3073,8 @@ web-pages.remote.takeOverAgent
 web-pages.remote.newTab
 web-pages.remote.urlSent
 web-pages.remote.switchSession
+web-pages.remote.newSession
+web-pages.remote.newBrowser
 web-pages.remote.newBrowserTab
 web-pages.remote.newViewOn
 core-views.screen.kind.desktop

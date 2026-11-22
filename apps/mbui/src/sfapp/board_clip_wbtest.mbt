@@ -18,6 +18,25 @@ fn board_glyph_cuts(t : @ui.Tester, w : String, left_of? : Double = 1.0e9) -> Ar
 }
 
 ///|
+test "大屏: the new draft's glass has room for its outer contour on both sides" {
+  for w in [1000.0, 1440.0] {
+    let (t, _) = board_at("board", w, 900.0)
+    t.click(Button, label="新待办")
+    t.run_for(@ui.move_most_ms)
+    guard t.query(TextField, label="要做什么？") is Some(field) else { fail("no draft field") }
+    let (fx, fy, fw, fh) = field.rect
+    let (mx, my) = (fx + fw / 2.0, fy + fh / 2.0)
+    let glass = t.drawn_cut().filter(fn(g) {
+      g.0 == 6 && mx >= g.1 && mx < g.1 + g.3 && my >= g.2 && my < g.2 + g.4
+    })
+    guard glass.length() == 1 else { fail("\{w}: expected the draft's glass, got \{Repr(glass)}") }
+    let (_, x, _, width, _, (left, _, right, _)) = glass[0]
+    assert_true(left <= x - 0.75 && right >= x + width + 0.75, msg="\{w}: glass \{x}..\{x + width}, clip \{left}..\{right}")
+    assert_eq(board_faults(t), [])
+  }
+}
+
+///|
 test "大屏: a draft started flies on to 进行中 drawn within the board all its way, cut under its bar and at the window's foot" {
   let (w, h) = (1440.0, 420.0)
   let (t, src) = board_at("board", w, h)

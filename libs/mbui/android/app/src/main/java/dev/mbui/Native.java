@@ -31,6 +31,8 @@ final class Native {
     static native void dropPending();
     /** The frame taken drawn (GL thread). */
     static native void draw();
+    /** Whether adaptive liquid glass is still settling temporally on the GL thread. */
+    static native boolean adaptiveSettling();
     /** What drawing holds beyond its frames given back (GL thread, its context current: MBView.trim). */
     static native void trim();
     /** What the app's thread waits for of the GL context done (GL thread: MBView.glSync). */

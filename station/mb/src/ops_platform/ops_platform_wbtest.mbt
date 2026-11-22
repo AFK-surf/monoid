@@ -156,3 +156,81 @@ test "file search Turns aborts same-typist prior searches, drops waiting, and bo
   assert_true(file_search_reuse(Some(15000.0), false, true))
   assert_true(!file_search_reuse(Some(25000.0), false, true))
 }
+
+///|
+/// A Keycloak sign-in page's parts (station/test/logins.test.ts `KEYCLOAK_PAGE`): its 330 characters with
+/// `Hq3Vt8Lm2Xw9Rz4` between them; 315 without; longer than the login terminal is wide with 750 more in its state.
+let keycloak_head : String = "https://sso.acme-corp.example/realms/engineering/protocol/openid-connect/auth?client_id=acme-cli&redirect_uri=https%3A%2F%2Fsso.acme-corp.example%2Fcli%2Fdone&response_type=code&scope=openid+profile+email&state="
+
+///|
+let keycloak_tail : String = "Nc7Bp1Fy6Dj5Gk0Tsa&code_challenge=K7xQ2mZpL9vR4tY8wB3nC6hJ1fD5gS0aE2iU7oP4kM9&code_challenge_method=S256"
+
+///|
+fn keycloak(state : String) -> String {
+  keycloak_head + state + keycloak_tail
+}
+
+///|
+fn keycloak_longer() -> String {
+  let b = StringBuilder::new()
+  for _ in 0..<250 {
+    b.write_string("Zq9")
+  }
+  keycloak(b.to_string() + "Hq3Vt8Lm2Xw9Rz4")
+}
+
+///|
+/// A link broken by its program every `width` columns, each line indented.
+fn broken_at(url : String, width : Int, indent : String) -> Array[String] {
+  let lines = []
+  let per = width - indent.length()
+  let mut i = 0
+  while i < url.length() {
+    lines.push(indent + url.unsafe_substring(start=i, end=@cmp.minimum(url.length(), i + per)))
+    i += per
+  }
+  lines
+}
+
+///|
+test "a long sign-in page broken by its program at 200 or 80 columns put together; a code, a rule, a prompt, a second link or a sentence after a link not" {
+  let page = keycloak("Hq3Vt8Lm2Xw9Rz4")
+  let shorter = keycloak("")
+  let longer = keycloak_longer()
+  assert_eq(page.length(), 330)
+  assert_eq(shorter.length(), 315)
+  assert_eq(longer.length() > 1000, true)
+  // At 200 columns, the line's end said after the link.
+  let line = "Visit " + page + " to sign in, then paste the code below."
+  let at200 = sub(line, 0, 200) + "\n" + sub(line, 200, line.length()) + "\n\nCode:"
+  assert_eq(urls_in(unwrapped(at200, 200)), [page])
+  assert_eq(urls_in(unwrapped(at200, 1000)), [page])
+  // At 80 columns, indented: five lines, the last a short end.
+  for p in [page, shorter] {
+    let lines = broken_at(p, 80, "  ")
+    assert_eq(lines.length(), 5)
+    let said = "Open this page in your browser:\n" + lines.join("\n") + "\n\nEnter the code:"
+    assert_eq(urls_in(unwrapped(said, 1000)), [p])
+    assert_eq(unwrapped(said, 1000), "Open this page in your browser:\n  " + p + "\n\nEnter the code:")
+  }
+  assert_eq(broken_at(shorter, 80, "  ")[4], "  256")
+  let lines = broken_at(page, 80, "  ")
+  assert_eq(url_continuation(lines[0], js_trim_end(lines[0]), lines[1], 1000, None), Some(80))
+  assert_eq(url_continuation(lines[3], "  " + sub(page, 0, 312), lines[4], 1000, Some(80)), Some(80))
+  // Longer than the terminal is wide, broken at its width.
+  let long_line = "Visit " + longer + " to sign in."
+  assert_eq(urls_in(unwrapped(sub(long_line, 0, 1000) + "\n" + sub(long_line, 1000, long_line.length()), 1000)), [longer])
+  // What follows a whole link, or a short one, is no more of it.
+  for next in ["ABCD-1234", "vFA9uVPF", "Code:", "================", "https://github.com/login/device", "Then press Enter to continue.", "(Y/n)"] {
+    let said = "  " + page + "\n  " + next
+    assert_eq(unwrapped(said, 1000), said)
+  }
+  assert_eq(
+    unwrapped("open https://github.com/login/device\nand/enter=x", 1000),
+    "open https://github.com/login/device\nand/enter=x",
+  )
+  // As before: a line as wide as the terminal goes on.
+  let wide = sub(line, 0, 200)
+  assert_eq(url_continuation(wide, wide, "rest", 200, None), Some(200))
+  assert_eq(url_continuation(wide, wide, "rest", 1000, None), None)
+}

@@ -65,6 +65,8 @@ void mb_render_pace(void);
 void mb_render_set_size(int pw, int ph, double w, double h, double scale);
 // 1 when presented (0: nothing drawn, no swap chain)
 int mb_render_present(const double *inst, int32_t count, double r, double g, double b);
+int mb_render_adaptive_settling(int wid);
+int mb_render_adaptive_step(int wid);
 int mb_frame_beats(void);
 // renders the last presented frame again into a texture and writes a PNG
 int mb_render_snapshot(const wchar_t *path);

@@ -251,6 +251,40 @@ test("an actionable failure after opening is sent in the viewer's language", asy
   await view.served;
 });
 
+test("a key frame requested after unacknowledged frames can recover the view", async () => {
+  class RecoveringView extends FakeView {
+    #requested = false;
+    override keyframe() {
+      super.keyframe();
+      this.#requested = true;
+    }
+    override async next(): Promise<Frame | null> {
+      const next = await super.next();
+      if (next && this.#requested) {
+        this.#requested = false;
+        return { ...next, key: true };
+      }
+      return next;
+    }
+  }
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  source.make = () => new RecoveringView();
+  hub.add(source);
+  const v = await open(hub, member);
+  await until(v.frames, KIND.video);
+  await until(v.frames, KIND.video);
+  // Neither frame was acknowledged. The receiver asks for a new key frame after loss.
+  await v.stream.write(frame(KIND.keyframe, Buffer.alloc(0)));
+  await settle();
+  const view = source.views[0]!;
+  assert.equal(view.keyframes, 1);
+  assert.ok(view.asked >= 3, "the pace must not hold the requested key frame behind lost frames");
+  assert.equal((await until(v.frames, KIND.video))[0], 1);
+  await v.stream.finish();
+  await v.served;
+});
+
 test("frames go unacknowledged while the link keeps up: two before its round trip is known, none once one waits too long", async () => {
   const hub = new ScreenHub();
   const source = new FakeSource();

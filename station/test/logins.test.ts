@@ -99,20 +99,68 @@ test("a login's program by its name, past env, its variables and what only runs 
   assert.equal(programOf(["uvx", "--from", "azure-cli", "az", "login"]), "az");
   assert.equal(programOf(["pnpm", "login"]), "pnpm");
   assert.equal(programOf(["env"]), "env");
-  // Broken at 200 columns by the program itself (no box, so the line is as wide as the terminal): put together again.
+  // Broken at 200 columns by the program itself (no box, so the line is as wide as a 200-column terminal): put together
+  // again, read at that width or at the login terminal's.
   const line = `Visit ${DEVIN_PAGE} to sign in, then copy the code and paste it below.`;
-  assert.ok(DEVIN_PAGE.length > COLS);
-  const broken = `${line.slice(0, COLS)}\n${line.slice(COLS)}\n\n Code:\n ❭ ••••`;
-  assert.deepEqual(urlsIn(broken), [DEVIN_PAGE.slice(0, COLS - "Visit ".length)], "as it is said, the link ends where the line does");
-  assert.deepEqual(urlsIn(unwrapped(broken, COLS)), [DEVIN_PAGE]);
-  assert.ok(unwrapped(broken, COLS).endsWith(`${DEVIN_PAGE} to sign in, then copy the code and paste it below.\n\n Code:\n ❭ ••••`));
+  assert.ok(DEVIN_PAGE.length > 200);
+  const broken = `${line.slice(0, 200)}\n${line.slice(200)}\n\n Code:\n ❭ ••••`;
+  assert.deepEqual(urlsIn(broken), [DEVIN_PAGE.slice(0, 200 - "Visit ".length)], "as it is said, the link ends where the line does");
+  for (const cols of [200, COLS]) {
+    assert.deepEqual(urlsIn(unwrapped(broken, cols)), [DEVIN_PAGE], `${cols}`);
+    assert.ok(unwrapped(broken, cols).endsWith(`${DEVIN_PAGE} to sign in, then copy the code and paste it below.\n\n Code:\n ❭ ••••`), `${cols}`);
+  }
   // Over three lines; a short line ending in a link is left as it is.
-  const long = `https://x.example/${"a".repeat(2 * COLS)}`;
-  assert.deepEqual(urlsIn(unwrapped(`${long.slice(0, COLS)}\n${long.slice(COLS, 2 * COLS)}\n${long.slice(2 * COLS)}\nnext`, COLS)), [long]);
+  const long = `https://x.example/${"a".repeat(400)}`;
+  assert.deepEqual(urlsIn(unwrapped(`${long.slice(0, 200)}\n${long.slice(200, 400)}\n${long.slice(400)}\nnext`, 200)), [long]);
+  // Longer than the login terminal is wide: broken at its width, put together.
+  const longer = `https://x.example/a?b=${"c".repeat(2 * COLS)}`;
+  assert.deepEqual(urlsIn(unwrapped(`${longer.slice(0, COLS)}\n${longer.slice(COLS, 2 * COLS)}\n${longer.slice(2 * COLS)}\nnext`, COLS)), [longer]);
   assert.equal(unwrapped("open https://github.com/login/device\nand enter the code", COLS), "open https://github.com/login/device\nand enter the code");
+  assert.equal(unwrapped("open https://github.com/login/device\nand/enter=x", COLS), "open https://github.com/login/device\nand/enter=x", "a short link goes on with nothing");
   // A PKCE challenge's capitals are no device code.
   assert.equal(deviceCodeIn(`${line}\n\n Code:`), null);
   assert.equal(deviceCodeIn("open https://login.microsoft.com/device?x=ABCD-1234 and enter the code GQGFJ2QXM"), "GQGFJ2QXM");
+});
+
+/// A Keycloak sign-in page of 330 characters (scopes, state, a PKCE challenge), and one of 315 whose last line comes
+/// to three characters broken at 80 columns.
+const KEYCLOAK_PAGE = "https://sso.acme-corp.example/realms/engineering/protocol/openid-connect/auth?client_id=acme-cli&redirect_uri=https%3A%2F%2Fsso.acme-corp.example%2Fcli%2Fdone&response_type=code&scope=openid+profile+email&state=Hq3Vt8Lm2Xw9Rz4Nc7Bp1Fy6Dj5Gk0Tsa&code_challenge=K7xQ2mZpL9vR4tY8wB3nC6hJ1fD5gS0aE2iU7oP4kM9&code_challenge_method=S256";
+const KEYCLOAK_SHORTER = KEYCLOAK_PAGE.replace("Hq3Vt8Lm2Xw9Rz4", "");
+/// Longer than the login terminal is wide.
+const KEYCLOAK_LONGER = KEYCLOAK_PAGE.replace("state=", `state=${"Zq9".repeat(250)}`);
+/// A link broken by its program every `width` columns, each line indented.
+const brokenAt = (url: string, width: number, indent = "") => {
+  const lines: string[] = [];
+  for (let i = 0; i < url.length; i += width - indent.length) lines.push(indent + url.slice(i, i + width - indent.length));
+  return lines;
+};
+
+test("a long sign-in page broken by its program at 200 or 80 columns is put together; a code, a rule, a prompt, a second link or a sentence after a link is not", () => {
+  assert.equal(KEYCLOAK_PAGE.length, 330);
+  assert.equal(KEYCLOAK_SHORTER.length, 315);
+  assert.ok(KEYCLOAK_LONGER.length > COLS);
+  // At 200 columns, the line's end said after the link.
+  const line = `Visit ${KEYCLOAK_PAGE} to sign in, then paste the code below.`;
+  const at200 = `${line.slice(0, 200)}\n${line.slice(200)}\n\nCode:`;
+  for (const cols of [200, COLS]) assert.deepEqual(urlsIn(unwrapped(at200, cols)), [KEYCLOAK_PAGE], `${cols}`);
+  // At 80 columns, indented: five lines, the last a short end (S256's 256 alone, for the shorter page).
+  for (const page of [KEYCLOAK_PAGE, KEYCLOAK_SHORTER]) {
+    const lines = brokenAt(page, 80, "  ");
+    assert.equal(lines.length, 5);
+    const said = `Open this page in your browser:\n${lines.join("\n")}\n\nEnter the code:`;
+    assert.deepEqual(urlsIn(unwrapped(said, COLS)), [page]);
+    assert.ok(unwrapped(said, COLS).endsWith(`  ${page}\n\nEnter the code:`));
+  }
+  assert.equal(brokenAt(KEYCLOAK_SHORTER, 80, "  ").at(-1), "  256");
+  // Unbroken, or longer than the terminal is wide and broken at its width.
+  assert.deepEqual(urlsIn(unwrapped(`Visit ${KEYCLOAK_PAGE} to sign in.`, COLS)), [KEYCLOAK_PAGE]);
+  const longer = `Visit ${KEYCLOAK_LONGER} to sign in.`;
+  assert.deepEqual(urlsIn(unwrapped(`${longer.slice(0, COLS)}\n${longer.slice(COLS)}`, COLS)), [KEYCLOAK_LONGER]);
+  // What follows a whole link is no more of it.
+  for (const next of ["ABCD-1234", "vFA9uVPF", "Code:", "================", "https://github.com/login/device", "Then press Enter to continue.", "(Y/n)"]) {
+    const said = `  ${KEYCLOAK_PAGE}\n  ${next}`;
+    assert.equal(unwrapped(said, COLS), said, next);
+  }
 });
 
 // ── logins run for real ──
@@ -448,6 +496,55 @@ test("the screen as the agent reads it: the page and the code hidden, the cursor
   const rows = ["! First copy your one-time code: 1A2B-C3D4", "Press Enter to open https://github.com/login/device in your browser... ", "", "", ""];
   assert.equal(screenFor({ rows, cursor: { x: 70, y: 1 }, echo: true, live: true }, login), "! First copy your one-time code: <code>\nPress Enter to open <link> in your browser...▏");
   assert.equal(screenFor(null, login), "");
+});
+
+test("the screen as the agent reads it: a long page wrapped by the terminal or broken by its program is hidden whole, the cursor's line marked where it is", () => {
+  const login = {} as Login;
+  const blank = (n: number) => Array.from({ length: n }, () => "");
+  // Longer than the terminal is wide: wrapped onto the next row.
+  const line = `Visit ${KEYCLOAK_LONGER} to sign in.`;
+  const rows = [line.slice(0, COLS), line.slice(COLS), "", "Enter the code: ", ...blank(4)];
+  const wrapped = [false, true, ...blank(6).map(() => false)];
+  assert.equal(screenFor({ rows, wrapped, cursor: { x: 16, y: 3 }, echo: true, live: true }, login), "Visit <link> to sign in.\n\nEnter the code:▏");
+  assert.equal(screenFor({ rows, wrapped, cursor: { x: 3, y: 1 }, echo: true, live: true }, login), "Visit <link> to sign in.▏\n\nEnter the code:", "the cursor on the wrapped row: on its line");
+  assert.equal(screenFor({ rows, wrapped, cursor: { x: 3, y: 0 }, echo: true, live: true }, login), "Visit <link> to sign in.▏\n\nEnter the code:");
+  assert.equal(screenFor({ rows, cursor: { x: 16, y: 3 }, echo: true, live: true }, login), "Visit <link> to sign in.\n\nEnter the code:▏", "older screens without the marks: the link broken at the terminal's width");
+  // Broken by its program at 200 and at 80 columns: no part of the page left to read.
+  const said = `Visit ${KEYCLOAK_PAGE} to sign in, then paste the code below.`;
+  const at200 = [said.slice(0, 200), said.slice(200), "", "Enter the code: "];
+  assert.equal(screenFor({ rows: at200, wrapped: at200.map(() => false), cursor: { x: 16, y: 3 }, echo: true, live: true }, login), "Visit <link> to sign in, then paste the code below.\n\nEnter the code:▏");
+  for (const page of [KEYCLOAK_PAGE, KEYCLOAK_SHORTER]) {
+    const at80 = ["Open this page in your browser:", ...brokenAt(page, 80, "  "), "", "Enter the code: ", ...blank(3)];
+    const shown = screenFor({ rows: at80, cursor: { x: 16, y: 7 }, echo: true, live: true }, login);
+    assert.equal(shown, "Open this page in your browser:\n  <link>\n\nEnter the code:▏");
+    assert.equal(screenFor({ rows: at80, cursor: { x: 10, y: 3 }, echo: true, live: true }, login), "Open this page in your browser:\n  <link>▏\n\nEnter the code:", "the cursor on a broken line: on the link's");
+  }
+});
+
+test("a sign-in page of 330 characters or longer than the terminal is wide, said whole, broken at 200 columns, or wrapped by the terminal: the whole page told, none of it on the agent's screen", { skip: skipped }, async () => {
+  for (const [mode, page] of [["plain", KEYCLOAK_PAGE], ["at200", KEYCLOAK_PAGE], ["longer", KEYCLOAK_LONGER]] as const) {
+    const m = machine();
+    script(join(m.bin, "fakekeycloak"), `#!/usr/bin/env node
+const line = ${JSON.stringify(`Visit ${page} to sign in, then paste the code below.`)};
+const said = process.argv[2] === "at200" ? line.slice(0, 200) + "\\r\\n" + line.slice(200) : line;
+process.stdout.write("Signing in to Acme SSO\\r\\n" + said + "\\r\\n\\r\\nEnter the code: ");
+process.stdin.resume();
+`);
+    const [tool] = loginTools({ logins: () => m.logins, starter: () => ({ ...m.by, chat: "chat:c-1" }), link: (_s, id) => `https://still.fail/w/w1/s/st/login/${id}` });
+    try {
+      const starting = tool!.run("chat:c-1", { command: `fakekeycloak ${mode}` });
+      const id = await upon((w) => m.logins.changes(w), () => m.logins.logins()[0]?.id, "started");
+      await m.quietAt(id, "Enter the code");
+      const told = await starting;
+      const login = m.logins.get(id)!;
+      assert.deepEqual([login.step, login.url], ["open", page], mode);
+      const screen = told.slice(told.indexOf("Screen:"));
+      assert.match(screen, /Visit <link> to sign in, then paste the code below\./, mode);
+      for (const part of ["state=", "code_challenge", "sso.acme-corp", "S256"]) assert.ok(!screen.includes(part), `${mode}: ${part} in ${screen}`);
+    } finally {
+      await m.logins.close();
+    }
+  }
 });
 
 test("a tool nobody described: its device code and page read from what it says", { skip: skipped }, async () => {

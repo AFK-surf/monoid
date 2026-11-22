@@ -405,6 +405,11 @@ pub fn farview_pane_node(
           let scs = items(sval, "screens")
           let br_tabs = scs.filter(fn(sc) { text(Some(sc), "kind") == "browser" })
           let other_scs = scs.filter(fn(sc) { text(Some(sc), "kind") != "browser" })
+          let user_ids = scs
+            .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+            .map(fn(sc) { text(Some(sc), "id") })
+          let can_term = flag(tval, "open")
+          let can_browse = flag(sval, "browser") && flag(sval, "control")
           let open_terms = items(tval, "terminals").filter(fn(t) { !flag(Some(t), "ended") })
           let page_here : @sfbase.Page = @sfbase.Page::Screen({ station, screen, title, until_gone: false })
           @sf.panel_nodes(
@@ -538,7 +543,7 @@ pub fn farview_pane_node(
                   danger=true,
                 )
               })
-              if !other_scs.is_empty() || !open_terms.is_empty() || flag(tval, "open") {
+              if !other_scs.is_empty() || !open_terms.is_empty() || can_term || can_browse {
                 @sf.panel_group_node(sheet, fn() { @sf.t("web-pages.remote.switchSession") }, fn(g) {
                   for sc in other_scs {
                     let sid = text(Some(sc), "id")
@@ -564,23 +569,30 @@ pub fn farview_pane_node(
                       fn() { tlabel },
                       fn() {
                         done()
-                        switch_to(@sfbase.Page::Terminal({ station, terminal: tid, watch: !flag(tval, "open"), cwd: tcwd }))
+                        switch_to(@sfbase.Page::Terminal({ station, terminal: tid, watch: !can_term, cwd: tcwd }))
                       },
                       icon=fn() { "terminal" },
                       note=fn() { tcwd },
                     )
                   }
-                  if flag(tval, "open") {
-                    @sf.panel_row_node(
-                      g,
-                      fn() { @sf.t("web-pages.terminal.new") },
-                      fn() {
-                        done()
-                        switch_to(@sfbase.Page::Terminal({ station, terminal: "new", watch: false, cwd: "" }))
-                      },
-                      icon=fn() { "plus" },
-                    )
-                  }
+                  remote_new_session_rows_node(
+                    g,
+                    fn() { can_term },
+                    fn() { can_browse },
+                    done,
+                    fn() { switch_to(@sfbase.Page::Terminal({ station, terminal: "new", watch: false, cwd: "" })) },
+                    fn() {
+                      let next = @settings.new_browser_tab(
+                        src.call,
+                        station,
+                        user_ids,
+                        failed_said(@sf.t("web-pages.screen.openBrowserWhat")),
+                      )
+                      let nu = screen_ui(screen_key(station, next))
+                      nu.address_asked.set(nu.address_asked.untracked() + 1)
+                      switch_to(@sfbase.Page::Screen({ station, screen: next, title: "", until_gone: false }))
+                    },
+                  )
                 })
               }
             },

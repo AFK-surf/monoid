@@ -951,7 +951,10 @@ class ViewSession {
             break;
           }
           case KIND.keyframe:
+            this.pacer.lost();
+            this.latency.lost();
             this.view.keyframe();
+            this.#wake();
             break;
           case KIND.sound:
             if (got.payload.length === 1) this.#soundOn = got.payload[0] !== 0;

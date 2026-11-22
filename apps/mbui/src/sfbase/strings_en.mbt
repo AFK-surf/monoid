@@ -3124,6 +3124,8 @@ let en : Map[String, String] = {
   "web-pages.remote.newTab": "New remote tab",
   "web-pages.remote.urlSent": "Added to chat draft",
   "web-pages.remote.switchSession": "Switch remote session",
+  "web-pages.remote.newSession": "New",
+  "web-pages.remote.newBrowser": "New browser",
   "web-pages.remote.newBrowserTab": "New browser tab",
   "web-pages.remote.newViewOn": "New view on {station}",
   "core-views.screen.kind.desktop": "Desktop",

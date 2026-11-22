@@ -506,7 +506,7 @@ impl Inner {
                 read = recv.read(&mut buf) => match read.map_err(err)? {
                     Some(n) => {
                         let chunk = &buf[..n];
-                        let boundary = media.media.stream(chunk);
+                        let boundary = media.media.stream(chunk, tokio::time::Instant::now());
                         let mut tap = halves.tap.lock().unwrap();
                         match (tap.as_mut(), boundary) {
                             (Some(tap), _) => tap.take(chunk, self),
@@ -1154,7 +1154,7 @@ mod tests {
                                 read = crecv.read(&mut buf) => match read.unwrap() {
                                     Some(n) => {
                                         let chunk = &buf[..n];
-                                        match rx.media.stream(chunk) {
+                                        match rx.media.stream(chunk, tokio::time::Instant::now()) {
                                             Some(b) => {
                                                 bytes.extend_from_slice(&chunk[..b]);
                                                 rx.media.drain_into(&mut bytes);

@@ -201,6 +201,16 @@ test("an error completes a pending grab and a host without frame callbacks uses 
   assert.equal(b.count("grabReady"), 1);
 });
 
+test("a paused player does not report that it is waiting to play", () => {
+  const { video, api, state } = player();
+  api.play();
+  video.emit("waiting");
+  assert.equal(state().waiting, true);
+  api.pause();
+  assert.equal(state().playing, false);
+  assert.equal(state().waiting, false);
+});
+
 // VP9 in MP4: WebKit often never finishes a seek made while paused (#3993).
 test("a paused MP4 seek plays muted to the target frame, then pauses there", () => {
   const { video, api, count, state } = player(true, true);

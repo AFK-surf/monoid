@@ -1017,7 +1017,7 @@ impl Stream {
                 read = recv.read(&mut buf) => match read.map_err(failed)? {
                     Some(n) => {
                         let chunk = &buf[..n];
-                        match media.media.stream(chunk) {
+                        match media.media.stream(chunk, tokio::time::Instant::now()) {
                             Some(b) => {
                                 out.extend_from_slice(&chunk[..b]);
                                 media.media.drain_into(&mut out);

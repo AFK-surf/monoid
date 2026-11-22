@@ -37,6 +37,13 @@ void mb_render_forget(int wid);
 id<MTLDevice> mb_render_device(void);
 void mb_render_set_size(double w, double h, double scale);
 void mb_render_present(const double *inst, int32_t count, double r, double g, double b);
+// adaptive liquid glass temporal smoothing: fixed dt (> 0 for deterministic film/tests, 0 for wall clock),
+// reset slots (instant snap on next frame), query settling state, and lightweight idle step without MoonBit layout
+void mb_render_set_fixed_dt(double dt);
+void mb_render_adaptive_reset(void);
+int mb_render_adaptive_settling(void);
+int mb_render_adaptive_settling_of(int wid);
+int mb_render_adaptive_step(int wid);
 // what drawing holds (the spare drawables, the glass's levels) given back, the frame shown kept (the window not in front)
 void mb_render_trim(void);
 // renders the last presented frame again into memory and writes a PNG

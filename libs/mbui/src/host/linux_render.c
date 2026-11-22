@@ -95,6 +95,11 @@ typedef struct {
   size_t fcap;
   int32_t kept_count;
   double kept_r, kept_g, kept_b;
+  GLuint ad_tex[2], ad_fb[2];
+  int ad_cur, ad_settling;
+  mb_ad_slot ad_slots[MB_ADAPTIVE_MAX];
+  double ad_last_time;
+  uint64_t ad_frame_serial;
 } RenderWin;
 static RenderWin render_wins[MB_WINS];
 static int render_at;  // the window whose frame gles_render.h holds now
@@ -108,6 +113,11 @@ static void render_take(RenderWin *w) {
   w->pictures_missing = pictures_missing;
   w->fbuf = fbuf, w->fcap = fcap;
   w->kept_count = kept_count, w->kept_r = kept_r, w->kept_g = kept_g, w->kept_b = kept_b;
+  memcpy(w->ad_tex, ad_tex, sizeof ad_tex);
+  memcpy(w->ad_fb, ad_fb, sizeof ad_fb);
+  w->ad_cur = ad_cur, w->ad_settling = ad_settling;
+  memcpy(w->ad_slots, ad_slots, sizeof ad_slots);
+  w->ad_last_time = ad_last_time, w->ad_frame_serial = ad_frame_serial;
 }
 
 static void render_put(const RenderWin *w) {
@@ -119,6 +129,11 @@ static void render_put(const RenderWin *w) {
   pictures_missing = w->pictures_missing;
   fbuf = w->fbuf, fcap = w->fcap;
   kept_count = w->kept_count, kept_r = w->kept_r, kept_g = w->kept_g, kept_b = w->kept_b;
+  memcpy(ad_tex, w->ad_tex, sizeof ad_tex);
+  memcpy(ad_fb, w->ad_fb, sizeof ad_fb);
+  ad_cur = w->ad_cur, ad_settling = w->ad_settling;
+  memcpy(ad_slots, w->ad_slots, sizeof ad_slots);
+  ad_last_time = w->ad_last_time, ad_frame_serial = w->ad_frame_serial;
 }
 
 void mb_render_use(int wid) {
@@ -138,6 +153,12 @@ void mb_render_forget(int wid) {
     glDeleteFramebuffers(1, &canvas_fb);
     glDeleteTextures(1, &canvas_tex);
   }
+  if (ready) {
+    for (int i = 0; i < 2; i++) {
+      if (ad_fb[i]) glDeleteFramebuffers(1, &ad_fb[i]);
+      if (ad_tex[i]) glDeleteTextures(1, &ad_tex[i]);
+    }
+  }
   free(fbuf);
   RenderWin none = {0};
   render_put(&none);
@@ -148,8 +169,16 @@ void mb_render_forget(int wid) {
 
 void mb_render_setup(void) {
   // (each window's canvas gone with the old context, as the one in place's: canvas_lost)
-  for (int k = 0; k < MB_WINS; k++) render_wins[k].canvas_fb = render_wins[k].canvas_tex = 0, render_wins[k].canvas_ok = 0,
-                                     render_wins[k].canvas_w = render_wins[k].canvas_h = 0;
+  for (int k = 0; k < MB_WINS; k++) {
+    render_wins[k].canvas_fb = render_wins[k].canvas_tex = 0;
+    render_wins[k].canvas_ok = 0;
+    render_wins[k].canvas_w = render_wins[k].canvas_h = 0;
+    render_wins[k].ad_tex[0] = render_wins[k].ad_tex[1] = 0;
+    render_wins[k].ad_fb[0] = render_wins[k].ad_fb[1] = 0;
+    render_wins[k].ad_cur = 0;
+    render_wins[k].ad_settling = 0;
+    memset(render_wins[k].ad_slots, 0, sizeof render_wins[k].ad_slots);
+  }
   gl_setup();
   ready = 1;
   // what the atlases held is gone with the old context (MoonBit draws its glyphs again: linux_text.c's generation)
@@ -180,6 +209,11 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   mb_streams_upload();
   gl_present((double *)inst, count, r, g, b);
 }
+
+void mb_render_set_fixed_dt(double dt) { gl_set_fixed_dt(dt); }
+void mb_render_adaptive_reset(void) { gl_adaptive_reset(); }
+int mb_render_adaptive_settling(void) { return gl_adaptive_settling(); }
+int mb_render_adaptive_step(void) { return ready ? gl_adaptive_step() : 0; }
 
 // (the window's frame is GTK's once drawn: drawn again into a framebuffer of its own)
 int mb_render_snapshot(const char *path) {

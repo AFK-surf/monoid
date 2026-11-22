@@ -49,6 +49,7 @@ typedef struct WinSlot {
   GtkIMContext *im;
   GtkEventController *keys;
   int want_frame;
+  int ad_stepping;
   guint tick_id;
   double scale;
   int fb_pw, fb_ph;         // the area's framebuffer in pixels, as GTK last sized it
@@ -442,8 +443,22 @@ static void gl_current(void) {
 
 static gboolean on_render(GtkGLArea *a, GdkGLContext *c, gpointer data) {
   (void)c, (void)data;
+  int app_wanted = ws->want_frame;
   ws->want_frame = 0;
   gl_current();
+  if (!app_wanted && ws->ad_stepping) {
+    ws->ad_stepping = 0;
+    int w = draw_lw, h = draw_lh;
+    if (w > 0 && h > 0 && ws->fb_pw > 0 && ws->fb_ph > 0) {
+      mb_render_target(ws->fb_pw, ws->fb_ph, w, h, ws->scale);
+      if (mb_render_adaptive_step() && mb_render_adaptive_settling()) {
+        ws->ad_stepping = 1;
+        gtk_gl_area_queue_render(a);
+      }
+    }
+    return TRUE;
+  }
+  ws->ad_stepping = 0;
   // what was decoded meanwhile made textures, then told: the app finds them ready
   mb_images_upload();
   mb_streams_upload();
@@ -476,6 +491,10 @@ static gboolean on_render(GtkGLArea *a, GdkGLContext *c, gpointer data) {
     }
   }
   if (ws->want_frame) schedule();
+  else if (mb_render_adaptive_settling()) {
+    ws->ad_stepping = 1;
+    gtk_gl_area_queue_render(a);
+  }
   return TRUE;
 }
 

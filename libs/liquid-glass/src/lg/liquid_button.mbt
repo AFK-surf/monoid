@@ -7,7 +7,12 @@
 
 ///|
 /// The glass of a LiquidButton (iOS 27 liquid glass): `tint` and `surface` its colours (clear: none).
-fn button_glass(tint : Int64, surface : Int64) -> @paint.Glass {
+fn button_glass(
+  tint : Int64,
+  surface : Int64,
+  spot? : (Double, Double)? = None,
+  sharing? : Bool = false,
+) -> @paint.Glass {
   let d = is_dark()
   let tinted = tint != clear
   let glass_tint = if tinted {
@@ -26,18 +31,21 @@ fn button_glass(tint : Int64, surface : Int64) -> @paint.Glass {
   } else {
     0xFAFAFAFFL
   }
-  @paint.Glass::liquid(
-    blur=2.1,
-    tint=glass_tint,
-    solid~,
-    saturation=1.0,
-    rim=0.6,
-    bezel=20.0,
-    refraction=24.0,
-    chroma=0.0,
-    merge=0.0,
-    adaptive=false,
-    spot=None,
+  maybe_sharing(
+    @paint.Glass::liquid(
+      blur=2.1,
+      tint=glass_tint,
+      solid~,
+      saturation=1.0,
+      rim=0.6,
+      bezel=20.0,
+      refraction=24.0,
+      chroma=0.0,
+      merge=0.0,
+      adaptive=false,
+      spot~,
+    ),
+    sharing,
   )
 }
 
@@ -89,6 +97,9 @@ pub fn liquid_button_node(
   flat? : Bool = false,
   interactive? : Bool = true,
   disabled? : () -> Bool = fn() { false },
+  height? : Double = button_h,
+  px? : Double = button_px,
+  sharing? : Bool = false,
   light? : InteractiveHighlight,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -102,9 +113,9 @@ pub fn liquid_button_node(
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
-    .height(Is(Some(button_h)))
-    .padding(Is((button_px, 0.0, button_px, 0.0)))
-    .radius(Is(button_h / 2.0))
+    .height(Is(Some(height)))
+    .padding(Is((px, 0.0, px, 0.0)))
+    .radius(Is(height / 2.0))
     .ground_drawn(By(fn() {
       if !interactive {
         return @view.ground_as_laid
@@ -142,7 +153,20 @@ pub fn liquid_button_node(
       b
       .shadow(Is(shadow_default))
       .shadow_outside(Is(true))
-      .glass(By(fn() { Some(button_glass(tint, surface)) }))
+      .glass(By(fn() {
+        let sp = if interactive && light.pressed(b) > 0.001 {
+          let (w, h) = light.size.get()
+          if w > 0.0 && h > 0.0 {
+            Some(light.spot(b, w, h))
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+        Some(button_glass(tint, surface, spot=sp, sharing~))
+      }))
+      .edge(By(fn() { if b.glass_solid() { liquid_solid_edge() } else { (0.0, clear) } }))
       |> ignore
     }
     b.show(fn() { btn.focus_shown() }, fn(ring) {
@@ -150,7 +174,7 @@ pub fn liquid_button_node(
       .over(Is(true))
       .points(Is(false))
       .margin(Is((-3.0, -3.0, -3.0, -3.0)))
-      .radius(Is(button_h / 2.0 + 3.0))
+      .radius(Is(height / 2.0 + 3.0))
       .edge(By(fn() { (2.0, colors().accent) }))
       |> ignore
     })
@@ -182,9 +206,9 @@ pub fn liquid_button_node(
         ov
         .over(Is(true))
         .points(Is(false))
-        .radius(Is(button_h / 2.0))
-        .ground(Is(white))
-        .alpha(By(fn() { clamp(light.pressed(ov), 0.0, 1.0) * 0.14 }))
+        .radius(Is(height / 2.0))
+        .ground(By(liquid_press_ink))
+        .alpha(By(fn() { clamp(light.pressed(ov), 0.0, 1.0) }))
         .ground_drawn(By(fn() {
           let (w, h) = light.size.get()
           let (dx, dy, sx, sy) = light.stretch(ov)

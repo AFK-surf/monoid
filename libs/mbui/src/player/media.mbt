@@ -392,7 +392,7 @@ pub fn Media::play_pause(self : Media) -> Unit {
   match self.view {
     Some(n) =>
       // (at its end, whatever its host says of its playing as it gets there: from its start again, as it shows)
-      if s.playing && !s.ended {
+      if (s.playing || s.buffering) && !s.ended {
         n.pause()
       } else {
         if s.ended {
@@ -579,7 +579,8 @@ pub fn Media::times(self : Media) -> (Double, Double, Double, Double, Double) {
 /// apart would show one of them all along.
 pub fn Media::scrub_to(self : Media, ms : Double) -> Unit {
   if self.scrub < 0.0 {
-    self.scrub_played = self.status().playing
+    let s = self.status()
+    self.scrub_played = (s.playing || s.buffering) && !s.ended
     self.scrub_sent = -1.0
     match self.view {
       Some(n) => {

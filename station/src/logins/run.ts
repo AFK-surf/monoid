@@ -1,5 +1,5 @@
 // One login (怎么做到): a login command run on this machine in a pseudo-terminal (the system's
-// `script`, 200 × 40), with stand-ins for the browser (BROWSER, and `open`, `xdg-open`, `osascript` first on its PATH)
+// `script`, 1000 × 40), with stand-ins for the browser (BROWSER, and `open`, `xdg-open`, `osascript` first on its PATH)
 // that hand the page it would open to the station instead. What a person has to do is read from three places: the page
 // it opens, what it prints (pages, a device code, prompts), and whether it has stopped on a prompt. Its screen is kept by
 // a terminal emulator with no display (@xterm/headless), which also answers what the program asks of its terminal (the
@@ -19,7 +19,9 @@ import { platform } from "../platform/index.ts";
 import { started } from "../platform/processes.ts";
 import { type Loopback, asksEnter, assignmentsOf, deviceCodeIn, deviceUrls, loopbackOf, plainText, prompts, saysDone, secretAsked, storesSecret, unwrapped, urlsIn } from "../ops/command-output.ts";
 
-export const COLS = 200;
+/// Wide enough that a long OAuth page (a PKCE challenge, scopes and state: some 300 to 1000 characters) stays on one
+/// line; one longer still is wrapped by the terminal (`wrapped`), put together again where its agent reads it.
+export const COLS = 1000;
 export const ROWS = 40;
 /// How long a login may take before it is ended (a device code lasts 5 to 15 minutes; a browser left open, as long).
 export const TIMEOUT_MS = 15 * 60_000;
@@ -39,7 +41,8 @@ export type Key = "Enter" | "Backspace" | "Up" | "Down" | "Left" | "Right" | "Ta
 
 export const KEYS: Record<Key, string> = { Enter: "\r", Backspace: "\u007f", Up: "\u001b[A", Down: "\u001b[B", Right: "\u001b[C", Left: "\u001b[D", Tab: "\t", "Ctrl-C": "\u0003" };
 
-export type Screen = { rows: string[]; cursor: { x: number; y: number }; echo: boolean; live: boolean };
+/// `wrapped[y]`: row y goes on from the row above it, the terminal having wrapped a line too long for its width.
+export type Screen = { rows: string[]; wrapped?: boolean[]; cursor: { x: number; y: number }; echo: boolean; live: boolean };
 
 export type RunOptions = {
   id: string;
@@ -96,6 +99,7 @@ export class LoginRun {
   #reads = 0;
   #lookAgain = false;
   #rows: string[] = Array.from({ length: ROWS }, () => "");
+  #wrapped: boolean[] = Array.from({ length: ROWS }, () => false);
   #cursor = { x: 0, y: 0 };
   #exited = false;
   #quiet: (() => void) | null = null;
@@ -134,7 +138,7 @@ export class LoginRun {
   }
 
   screen(): Screen {
-    return { rows: [...this.#rows], cursor: { ...this.#cursor }, echo: this.echo, live: this.active };
+    return { rows: [...this.#rows], wrapped: [...this.#wrapped], cursor: { ...this.#cursor }, echo: this.echo, live: this.active };
   }
 
   /// Starts the command; one that cannot be run ends failed, saying why.
@@ -263,9 +267,11 @@ export class LoginRun {
   #draw(): void {
     const buffer = this.#term.buffer.active;
     const rows = Array.from({ length: ROWS }, (_, i) => buffer.getLine(buffer.baseY + i)?.translateToString(true) ?? "");
+    const wrapped = Array.from({ length: ROWS }, (_, i) => buffer.getLine(buffer.baseY + i)?.isWrapped === true);
     const cursor = { x: buffer.cursorX, y: buffer.cursorY };
-    const same = rows.every((r, i) => r === this.#rows[i]) && cursor.x === this.#cursor.x && cursor.y === this.#cursor.y;
+    const same = rows.every((r, i) => r === this.#rows[i]) && wrapped.every((w, i) => w === this.#wrapped[i]) && cursor.x === this.#cursor.x && cursor.y === this.#cursor.y;
     this.#rows = rows;
+    this.#wrapped = wrapped;
     this.#cursor = cursor;
     if (!same) this.#o.drawn();
   }
