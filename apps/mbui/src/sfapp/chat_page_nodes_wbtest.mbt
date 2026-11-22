@@ -1471,6 +1471,39 @@ test "大屏, a chat's page made with its inside nodes: words dragged over with 
 }
 
 ///|
+test "大屏, a mouse's quote pill goes when its message scrolls out of the list" {
+  let l = long_chat()
+  let t = place_long_open(l, ("大屏", 1280.0, 800.0, 0))
+  let mut words = ""
+  let mut rect : (Double, Double, Double, Double)? = None
+  for n in l.first.get()..=l.last.get() {
+    let text = "第\{n}条："
+    match t.run_rects(text) {
+      [(x, y, w, h), ..] if y > 150.0 && y + h < 650.0 => {
+        words = text
+        rect = Some((x, y, w, h))
+        break
+      }
+      _ => ()
+    }
+  }
+  guard rect is Some((x, y, w, h)) else { fail("no message to select") }
+  mouse_dragged(t, x + 1.0, y + h / 2.0, x + w - 1.0, y + h / 2.0)
+  assert_true(quote_nodes_pill(t) is Some(_), msg="no quote pill over the selection")
+  t.wheel(900.0, 400.0, -20.0)
+  long_run(t, l, long_rest_ms)
+  assert_true(@ui.picked_now() is Some(_) && quote_nodes_pill(t) is Some(_), msg="selection lost while its message remained visible")
+  // Read older messages until the picked row leaves the list's window.
+  for _ in 0..<8 {
+    t.wheel(900.0, 400.0, -600.0)
+    long_run(t, l, long_rest_ms)
+  }
+  assert_false(find_nodes_in_sight(t, words, 800.0), msg="the picked message is still visible")
+  assert_true(quote_nodes_pill(t) is None, msg="quote pill kept after its message left the list")
+  assert_eq(@ui.picked_now(), None, msg="selection kept after its message left the list")
+}
+
+///|
 test "小屏, a chat's page made with its inside nodes: a finger held still on a message's words picks; lifted, the page's own bar over it offers 引用, no system's text menu; pressed, quoted into the chat's draft as that message's, nothing picked" {
   let calls : Array[(String, Json)] = []
   let (w, h) = (390.0, 844.0)
