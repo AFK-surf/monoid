@@ -145,15 +145,15 @@ test "progressive frosted glass degrades to solid kind 0 with fade slots 52..55 
 }
 
 ///|
-test "View::fades tail (< 0.5 opacity) does not occlude hits underneath glass overlay while opaque body (>= 0.5) still covers" {
-  let prog = Glass::frosted(blur=22.0, tint=0xFFFFFFAD, solid=0xFFFFFFFF, saturation=1.35, progressive=true)
+test "View::fades tail (< 0.2 opacity) does not occlude hits underneath glass overlay while bar body (>= 0.2) still covers" {
+  let prog = Glass::frosted(blur=8.0, tint=0xFFFFFF5C, solid=0xFFFFFFFF, saturation=1.25, progressive=true)
   let top_hits = Ref(0)
   let tail_hits = Ref(0)
   let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
   set_view_app(fn(root) {
     // Underlying pressable targets in normal flow:
-    // - top_btn at y: 0..44 (under the non-faded upper body of the overlay, fade_r = 1.0 >= 0.5)
-    // - tail_btn at y: 72..100 (under the bottom fade tail of the overlay, y1=100, fade_h=56 -> at y=86, fade_r = 14/56 = 0.25 < 0.5)
+    // - top_btn at y: 0..44 (under the upper body of the overlay, fade_r = 1.0 >= 0.2)
+    // - tail_btn at y: 84..100 (under the bottom fade tail of the overlay, y1=100, fade_h=56 -> at y=92, fade_r = 8/56 = 0.143 < 0.2)
     root.box(fn(b) {
       b
       .over(Is(true))
@@ -167,14 +167,14 @@ test "View::fades tail (< 0.5 opacity) does not occlude hits underneath glass ov
     root.box(fn(b) {
       b
       .over(Is(true))
-      .offset(Is((20.0, 72.0)))
+      .offset(Is((20.0, 84.0)))
       .width(Is(Some(200.0)))
-      .height(Is(Some(28.0)))
+      .height(Is(Some(16.0)))
       .on_press(fn() { tail_hits.val = tail_hits.val + 1 })
       |> ignore
     })
     |> ignore
-    // Progressive soft-edge glass overlay covering y: 0..100 with 56pt bottom fade band (fade_r < 0.5 for y > 72)
+    // Progressive soft-edge glass overlay covering y: 0..100 with 56pt bottom fade band (fade_r < 0.2 for y > 88.8)
     root.box(fn(host) {
       host
       .over(Is(true))
@@ -198,11 +198,11 @@ test "View::fades tail (< 0.5 opacity) does not occlude hits underneath glass ov
   })
   t.draw()
 
-  // Tap in the opaque upper body (y=20, fade_r=1.0 >= 0.5): glass overlay covers and blocks the tap
+  // Tap in the opaque upper body (y=20, fade_r=1.0 >= 0.2): glass overlay covers and blocks the tap
   t.tap(100.0, 20.0)
   assert_eq(top_hits.val, 0)
 
-  // Tap in the bottom fade tail (y=86, fade_r=14/56=0.25 < 0.5): glass overlay does NOT cover, tap reaches tail_btn
-  t.tap(100.0, 86.0)
+  // Tap in the bottom fade tail (y=92, fade_r=8/56=0.143 < 0.2): glass overlay does NOT cover, tap reaches tail_btn
+  t.tap(100.0, 92.0)
   assert_eq(tail_hits.val, 1)
 }

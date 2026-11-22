@@ -14,7 +14,7 @@ fn last_kind_at(t : @ui.Tester, x : Double, y : Double) -> Int {
   let mut kind = -1
   for i in t.drawn_instances() {
     let cut = i[18] <= i[16] || (x >= i[16] && x <= i[18] && y >= i[17] && y <= i[19])
-    let alpha = if i[5] == 6.0 { i[15] } else { i[11] }
+    let alpha = if i[5] == 5.0 || i[5] == 6.0 { i[15] } else { i[11] }
     if alpha > 0.5 && x >= i[0] && x <= i[0] + i[2] && y >= i[1] && y <= i[1] + i[3] && cut {
       kind = i[5].to_int()
     }

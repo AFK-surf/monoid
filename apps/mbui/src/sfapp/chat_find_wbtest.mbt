@@ -1296,7 +1296,7 @@ test "a phone's chat: each key of its bar, over the messages scrolled under the 
   let t = screen_in("chat", corner_windows[0], "zh")
   let tree = @ui.view_tree().unwrap()
   // (the bar: page ground spanning from the window's top with floating liquid glass pills for its keys)
-  let bars = tree.drawn().filter(fn(d) { d.ground != 0L && d.y <= 0.0 && d.w >= 300.0 && d.h >= bar_h && d.h < 120.0 })
+  let bars = tree.drawn().filter(fn(d) { (d.ground != 0L || d.glass is Some(_)) && d.y <= 0.0 && d.w >= 300.0 && d.h >= bar_h && d.h < 120.0 })
   assert_true(bars.length() >= 1, msg="the bar's ground: \{bars.length()}")
   let pills = tree.drawn().filter(fn(d) { d.glass is Some(_) && d.y < bar_h })
   assert_true(pills.length() >= 2, msg="the bar's glass pills: \{pills.length()}")

@@ -160,9 +160,10 @@ fn Tree::fades_ramp_at(self : Tree, id : NodeId, x : Double, y : Double) -> Doub
 
 ///|
 /// Whether node `id`, drawn at opacity `a`, covers what is drawn under it at window point `(x, y)`: requires
-/// `Node::covers(a)` and that ancestor `View::fades` bands have not faded it below 0.5 opacity at `(x, y)`.
+/// `Node::covers(a)` and that ancestor `View::fades` bands have not faded it below 0.2 opacity at `(x, y)`
+/// (keeping top-bar body taps occluded while letting extended soft-edge fade tails pass through).
 fn Tree::covers_at(self : Tree, id : NodeId, a : Double, x : Double, y : Double) -> Bool {
-  self.nodes[id.at].covers(a) && self.fades_ramp_at(id, x, y) >= 0.5
+  self.nodes[id.at].covers(a) && self.fades_ramp_at(id, x, y) >= 0.2
 }
 
 ///|
