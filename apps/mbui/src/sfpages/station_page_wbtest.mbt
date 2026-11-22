@@ -272,14 +272,14 @@ test "backup tab and per-station backup page: sidebar row, unified apply with sh
         call: fn(name, params, done) {
           if name == "copies.setSettings" {
             calls.push((name, params))
-            // First station generates an encryption key for the S3 target
-            if calls.length() == 1 {
+            // First station generates an encryption key + id for the new S3 target when s3 is sent
+            if calls.length() == 1 && field(Some(params), "s3") is Some(Array(_)) {
               done(
                 Ok(
                   @settings.obj([
                     (
                       "generatedKeys",
-                      @settings.obj([("r2-1", Json::string("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))]),
+                      @settings.obj([("r2abc123", Json::string("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))]),
                     ),
                   ]),
                 ),
@@ -301,16 +301,41 @@ test "backup tab and per-station backup page: sidebar row, unified apply with sh
     assert_true(t.find("Maple") is Some(_), msg="station Maple: \{at}")
     assert_eq(t.audit(), [], msg="audit backup tab \{at}: \{Repr(t.audit())}")
     assert_eq(t.squeeze_faults(), [], msg="squeeze backup tab \{at}: \{Repr(t.squeeze_faults())}")
-    // Click 应用到全部在线 Station -> sequential calls to ws1/st1 then ws1/st2 sharing generated encryptionKey
+    // Bug A: clicking 应用到全部在线 Station without touching S3 must NOT send `s3` field
     t.click(Button, label="应用到全部在线 Station")
     t.run_for(@ui.move_most_ms)
-    assert_eq(calls.length(), 2, msg="two online stations updated: \{at}")
+    assert_eq(calls.length(), 2, msg="two online stations updated (mode only): \{at}")
     assert_eq(text(Some(calls[0].1), "station"), "ws1/st1", msg="first station: \{at}")
     assert_eq(text(Some(calls[1].1), "station"), "ws1/st2", msg="second station: \{at}")
+    assert_true(field(Some(calls[0].1), "s3") is None, msg="no s3 sent when untouched (st1): \{at}")
+    assert_true(field(Some(calls[1].1), "s3") is None, msg="no s3 sent when untouched (st2): \{at}")
+    // Bug B: adding a new R2 target marks s3 dirty and propagates BOTH generated id and encryptionKey from first succeeding station to rest
+    calls.clear()
+    t.tap_text("添加")
+    t.run_for(@ui.move_most_ms)
+    t.click(TextField, label="名称")
+    t.type_text("R2 Extra")
+    t.click(TextField, label="Bucket")
+    t.type_text("extra-bkt")
+    t.click(TextField, label="Endpoint URL")
+    t.type_text("https://extra.r2.cloudflarestorage.com")
+    t.click(TextField, label="Access Key ID")
+    t.type_text("AKEXTRA")
+    t.click(TextField, label="Secret Access Key")
+    t.type_text("SKEXTRA")
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="保存")
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="应用到全部在线 Station")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(calls.length(), 2, msg="two online stations updated (with new s3): \{at}")
     let second_s3 = items(Some(calls[1].1), "s3")
-    assert_true(second_s3.length() == 1, msg="second station s3 count: \{at}")
+    assert_eq(second_s3.length(), 2, msg="second station s3 count: \{at}")
+    let propagated = second_s3.iter().find_first(fn(x) { text(Some(x), "name") == "R2 Extra" })
+    assert_true(propagated is Some(_), msg="new target present on second station: \{at}")
+    assert_eq(text(propagated, "id"), "r2abc123", msg="generated id propagated to second station: \{at}")
     assert_eq(
-      text(Some(second_s3[0]), "encryptionKey"),
+      text(propagated, "encryptionKey"),
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       msg="shared generated key propagated to second station: \{at}",
     )
