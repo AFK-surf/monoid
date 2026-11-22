@@ -2488,3 +2488,96 @@ test "大屏, composer and composer-top glass capsules cast outside-only glass_c
     }
   }
 }
+
+///|
+/// The liquid glass drawn round `rect` (a control's as said to a screen reader): its instance, the one whose rect is
+/// nearest it among those over its middle.
+fn float_glass_round(t : @ui.Tester, rect : (Double, Double, Double, Double)) -> Array[Double]? {
+  let (x, y, w, h) = rect
+  let (mx, my) = (x + w / 2.0, y + h / 2.0)
+  let mut best : (Double, Array[Double])? = None
+  for a in t.drawn_instances() {
+    if a.length() > 22 && a[5] == 6.0 && a[0] <= mx && mx <= a[0] + a[2] && a[1] <= my && my <= a[1] + a[3] {
+      let d = (a[0] - x).abs() + (a[1] - y).abs() + (a[2] - w).abs() + (a[3] - h).abs()
+      if best is None || d < best.unwrap().0 {
+        best = Some((d, a))
+      }
+    }
+  }
+  best.map(fn(b) { b.1 })
+}
+
+///|
+/// What of a liquid glass instance says its make (blur, tint RRGGBBAA, bezel, refraction, adaptive ink) and the
+/// outside shadow drawn under it ((blur, how far down, colour), none where there is none).
+fn float_glass_make(t : @ui.Tester, a : Array[Double]) -> ((Double, Int64, Double, Double, Bool), (Double, Double, Int64)?) {
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  let made = (a[7], (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11]), a[13], a[21], a[14] < 0.0)
+  let mut shadow : (Double, Double, Int64)? = None
+  for s in t.drawn_instances() {
+    if s.length() > 13 &&
+      s[5] == 2.0 &&
+      s[12] == 1.0 &&
+      (s[0] - a[0]).abs() < 0.5 &&
+      (s[2] - a[2]).abs() < 0.5 &&
+      (s[1] - s[13] - a[1]).abs() < 0.5 {
+      shadow = Some((s[7], s[13], (ch(s[8]) << 24) | (ch(s[9]) << 16) | (ch(s[10]) << 8) | ch(s[11])))
+    }
+  }
+  (made, shadow)
+}
+
+///|
+test "a chat's round buttons over its list and the capsules over its composer, on 小屏 and 大屏, light and dark: one liquid glass and shadow, one right edge, 12 apart" {
+  let wins : Array[(String, Double, Double, Int, String)] = [("小屏", 390.0, 844.0, 2, ""), ("大屏", 1280.0, 800.0, 0, "")]
+  for win in wins {
+    for dark in [false, true] {
+      let (name, w, h, _, _) = win
+      let t = screen_in("chat-subchats-jobs", win, "zh", dark~)
+      let at = "\{name} dark=\{dark}"
+      // (read up the list: 对话目录 and the way back to the newest shown over the composer, at rest)
+      t.move_to(w / 2.0, h / 3.0)
+      t.wheel(w / 2.0, h / 3.0, -600.0)
+      t.run_for(@ui.move_most_ms)
+      // (the round one over the composer, not 对话目录's rail at the list's right on 大屏)
+      let rounds = t
+        .all(Button)
+        .filter(fn(b) {
+          b.label == "对话目录" &&
+          (b.rect.2 - @sf.float_button_side).abs() < 1.0 &&
+          (b.rect.3 - @sf.float_button_side).abs() < 1.0
+        })
+      guard rounds is [outline] else { fail("\{at}: not one round 对话目录 read up: \{Repr(rounds.map(fn(b) { b.rect }))}") }
+      guard to_newest_shown(t) is Some(latest) else { fail("\{at}: the way back to the newest not shown read up") }
+      guard t.query(Button, label="子会话") is Some(subchats) else { fail("\{at}: 子会话 not shown") }
+      let glass = [outline.rect, latest.rect, subchats.rect].map(fn(r) { float_glass_round(t, r) })
+      guard glass is [Some(go), Some(gl), Some(gs)] else { fail("\{at}: not each on liquid glass: \{Repr(glass)}") }
+      // 1. one glass: glass_floating()'s make and glass_control_shadow() outside it, each the same
+      let want = @sf.glass_floating()
+      let sh = @sf.glass_control_shadow()
+      let made = [go, gl, gs].map(fn(a) { float_glass_make(t, a) })
+      let one = ((want.blur, want.tint, want.bezel, want.refraction, want.adaptive), Some((sh.0, sh.1, sh.2)))
+      assert_eq((at, made), (at, [one, one, one]))
+      assert_eq((at, want.blur, want.tint & 0xFFL, want.bezel, want.refraction, want.adaptive), (at, 2.1, 0x67L, 20.0, 28.0, true))
+      // 2. one right edge
+      let right = fn(a : Array[Double]) { a[0] + a[2] }
+      assert_true(
+        (right(go) - right(gs)).abs() < 0.5 && (right(gl) - right(gs)).abs() < 0.5,
+        msg="\{at}: right edges 对话目录 \{right(go)}, 跳到最新 \{right(gl)}, 子会话 \{right(gs)}",
+      )
+      // 3. 12 apart, each over the next; on 大屏 the lowest 12 over the capsules too (on 小屏 the composer keeps the
+      // room it opens to while it is closed, so the lowest stands further over them, never on them)
+      let gap_up = gl[1] - (go[1] + go[3])
+      let gap_down = gs[1] - (gl[1] + gl[3])
+      assert_true(
+        (gap_up - 12.0).abs() < 0.5 && (if name == "大屏" { (gap_down - 12.0).abs() < 0.5 } else { gap_down >= 12.0 - 0.5 }),
+        msg="\{at}: 对话目录 to 跳到最新 \{gap_up}, 跳到最新 to 子会话 \{gap_down}",
+      )
+      // (the side pane's edge over the sidebar and the page by 6 on 大屏, as wide_back_wbtest.mbt's)
+      let faults = t
+        .audit()
+        .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+      assert_eq((at, faults), (at, []))
+    }
+  }
+}

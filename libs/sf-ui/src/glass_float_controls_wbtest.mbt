@@ -3,7 +3,10 @@
 //    outside-only float shadow (`shadow_outside == true`), zero extra solid ground fill rects on the control, and clean
 //    `Tester::audit()`.
 // 2. `MBUI_GLASS=solid` (`@ui.set_glass_solid(Some(true))`) fallback mode in Light & Dark: 0 glass instances, opaque
-//    `panel_ground()` fallback fill, 0.5pt `control_edge_w` hairline `theme().p.line` border, and clean `Tester::audit()`.
+//    fallback fill (`panel_ground()` for the pick bar, `glass_floating().solid` for the round button: the capsules'
+//    over the composer), 0.5pt `control_edge_w` hairline `theme().p.line` border, and clean `Tester::audit()`.
+// 3. The round button's glass is the composer-top capsules' (`glass_floating()`): its liquid instance's blur, tint,
+//    bezel, refraction and adaptive ink as `glass_floating()` says.
 
 ///|
 fn float_control_tester(kind : String, dark : Bool, solid : Bool) -> @ui.Tester {
@@ -46,7 +49,23 @@ test "pick_bar_node and float_button_node use single-layer liquid glass with sha
       let glass = t.drawn_glass()
       let liquid_count = glass.filter(fn(g) { g.4 == 6 }).length()
       let outside_shadow = has_outside_shadow(t)
-      let expected_solid = panel_ground()
+      let expected_solid = if kind == "float_button" { glass_floating().solid } else { panel_ground() }
+      if kind == "float_button" {
+        let want = glass_floating()
+        let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+        let insts = t.drawn_instances().filter(fn(a) { a.length() > 22 && a[5] == 6.0 })
+        let said = insts.map(fn(a) {
+          (a[7], (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11]), a[13], a[21], a[14] < 0.0)
+        })
+        assert_eq(
+          (dark, said),
+          (dark, [(want.blur, want.tint, want.bezel, want.refraction, want.adaptive)]),
+        )
+        assert_eq(
+          (dark, want.blur, want.tint & 0xFFL, want.bezel, want.refraction, want.adaptive),
+          (dark, 2.1, 0x67L, 20.0, 28.0, true),
+        )
+      }
       let has_shell_solid_fill = match glass.get(0) {
         Some(g) =>
           t

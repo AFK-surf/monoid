@@ -1,8 +1,8 @@
 // A round button floating over a page's list (sfpages' float_button, chatToBottom: the way to a chat's newest) as a
-// node of the window's tree, made once: 32 high and round, single-layer liquid glass (`glass_menu()`, falling back to
-// `panel_ground()` + hairline `control_edge_w` border under `MBUI_GLASS=solid`) with outside-only
-// `glass_control_shadow()`, its icon and the words beside it it says; the hover ground under the hand; pressed in 44
-// by 44 round it at the least.
+// node of the window's tree, made once: 32 high and round, the single-layer liquid glass of the capsules over the
+// composer (`glass_floating().sharing()`, falling back to `glass_floating().solid` + hairline `control_edge_w`
+// `theme().p.line` border under `MBUI_GLASS=solid`) with outside-only `glass_control_shadow()`, its icon and the words
+// beside it it says; the hover ground under the hand; pressed in 44 by 44 round it at the least.
 
 ///|
 /// The round button in `parent` showing icon `icon` and, where `count` says any, those words after it; named `label`
@@ -35,7 +35,7 @@ pub fn float_button_node(
       style_node(b, fn() { float_button_look })
       hover_ground_node(b)
       b
-      .glass(By(fn() { Some(glass_menu()) }))
+      .glass(By(fn() { Some(glass_floating().sharing()) }))
       .edge(By(fn() { if b.glass_solid() { (control_edge_w, theme().p.line) } else { (0.0, 0L) } }))
       .shadow(By(fn() { glass_control_shadow() }))
       .shadow_outside(Is(true))

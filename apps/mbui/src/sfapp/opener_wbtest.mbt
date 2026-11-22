@@ -265,8 +265,13 @@ test "small: composer-top capsules give way inside the window" {
     guard t.query(Button, label="服务和后台任务") is Some(jobs) else { fail("expected jobs capsule at \{w}") }
     let strip = t.all(Button).filter(fn(b) { b.rect.1 == sub.rect.1 })
     assert_true(strip.length() >= 3, msg="expected agent, jobs and subchats capsules at \{w}: \{strip.length()}")
+    // (the strip as wide as the composer under it, 2 in from its sides)
+    let inset = @sfpages.composer_side() + 2.0
     for b in strip {
-      assert_true(b.rect.0 >= 12.0 && b.rect.0 + b.rect.2 <= w - 12.0 + 0.5, msg="\{b.label} past the strip at \{w}: \{Repr(b.rect)}")
+      assert_true(
+        b.rect.0 >= inset - 0.5 && b.rect.0 + b.rect.2 <= w - inset + 0.5,
+        msg="\{b.label} past the strip at \{w}: \{Repr(b.rect)}",
+      )
     }
     assert_true(jobs.rect.0 + jobs.rect.2 <= sub.rect.0, msg="jobs and subchats overlap at \{w}")
     assert_eq(t.audit(), [])

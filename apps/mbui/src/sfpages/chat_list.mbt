@@ -173,18 +173,20 @@ pub let bar_foot : Double = 45.0
 let unread_lead : Double = 92.0
 
 ///|
-/// The round buttons over the list (chatToBottom): 32 across, 6 in from the send button's side, 12 over the composer's
-/// room; the bell 8 over the way to the end when both show; their icon 16; how long they come and go.
+/// The round buttons over the list (chatToBottom): 32 across, 2 in from the composer column's side (the right edge of
+/// the capsules over the composer, 2 in as well); the lowest standing on the composer's room (its foot's top, whose
+/// composer_over of 12 keeps it 12 over the capsules, its 44 by 44 press 6 clear of them); each one over another 44
+/// above it (32 across and 12 apart, their 44 by 44 presses just touching); how long they come and go.
 let float_side : Double = 32.0
 
 ///|
-let float_in : Double = 6.0
+let float_in : Double = 2.0
 
 ///|
-let float_lift : Double = 12.0
+let float_lift : Double = 0.0
 
 ///|
-let float_above : Double = 48.0
+let float_above : Double = 44.0
 
 ///|
 let float_ms : Double = 160.0
