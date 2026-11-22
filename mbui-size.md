@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [219e4eeb0](https://github.com/AFK-surf/monoid/commit/219e4eeb0f336f78ce342038ab6ef2795238f2d5) perf(mbui): optimize Apple and Android text shapin | 2.7 | 3.64 | 14.75 | 36.85 | 56.19 | 32.27 | 65.46 | 99.35 | 140.9 |
 | [0e13725c6](https://github.com/AFK-surf/monoid/commit/0e13725c60fa22a216a72f725dc0259ab0d467f3) perf(mbui): make one page block per station in Pla | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.01 | 119.94 |
 | [4daac21ad](https://github.com/AFK-surf/monoid/commit/4daac21adb61ca310f25a8e92d6fbb2634ed3a10) perf(mbui): de-amplify GLES and Metal partial redr | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.01 | 119.94 |
 | [f5b905dd9](https://github.com/AFK-surf/monoid/commit/f5b905dd908240a93b88d6f5ab5236a946722e40) feat(app): a station's 资源 says what the machine is | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 98.96 | 120.06 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f7978a96d](https://github.com/AFK-surf/monoid/commit/f7978a96df78ae0c98b939f5952b478314e9fb0b) fix(test): build the delta C harness without PIE o | 2.67 | 3.6 | 14.59 | 36.69 | 55.74 | 32.14 | 65.08 | 98.93 | 120.95 |
 | [d14a63795](https://github.com/AFK-surf/monoid/commit/d14a63795c75de8b6ead55911db8ffc2e87657e0) fix(mbui): stop pointer-driven layout loops (#8149 | 2.67 | 3.6 | 14.59 | 36.69 | 55.74 | 32.14 | 65.06 | 98.94 | 123.84 |
 | [fb7c623cc](https://github.com/AFK-surf/monoid/commit/fb7c623cc88af36f118d38d615876a62c57b2788) perf(mbui): set macOS menu bar items enabled in pl | 2.67 | 3.6 | 14.59 | 36.69 | 55.74 | 32.14 | 65.06 | 98.94 | 123.84 |
-| [5fa0192bb](https://github.com/AFK-surf/monoid/commit/5fa0192bb5782095d688727bbd49077f2ef0f834) perf(mbui): eliminate Windows glyph rasterization  | 2.67 | 3.6 | 14.59 | 36.68 | 55.74 | 32.13 | 65.06 | 98.88 | 123.68 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [219e4eeb0](https://github.com/AFK-surf/monoid/commit/219e4eeb0f336f78ce342038ab6ef2795238f2d5) perf(mbui): optimize Apple and Android text shapin | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
 | [0e13725c6](https://github.com/AFK-surf/monoid/commit/0e13725c60fa22a216a72f725dc0259ab0d467f3) perf(mbui): make one page block per station in Pla | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
 | [4daac21ad](https://github.com/AFK-surf/monoid/commit/4daac21adb61ca310f25a8e92d6fbb2634ed3a10) perf(mbui): de-amplify GLES and Metal partial redr | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.67 |
 | [f5b905dd9](https://github.com/AFK-surf/monoid/commit/f5b905dd908240a93b88d6f5ab5236a946722e40) feat(app): a station's 资源 says what the machine is | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.61 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f7978a96d](https://github.com/AFK-surf/monoid/commit/f7978a96df78ae0c98b939f5952b478314e9fb0b) fix(test): build the delta C harness without PIE o | 0.47 | 0.62 | 2.4 | 3.45 | 5.69 | 1.75 | 4.73 | 54.59 |
 | [d14a63795](https://github.com/AFK-surf/monoid/commit/d14a63795c75de8b6ead55911db8ffc2e87657e0) fix(mbui): stop pointer-driven layout loops (#8149 | 0.47 | 0.62 | 2.4 | 3.45 | 5.69 | 1.75 | 4.73 | 54.59 |
 | [fb7c623cc](https://github.com/AFK-surf/monoid/commit/fb7c623cc88af36f118d38d615876a62c57b2788) perf(mbui): set macOS menu bar items enabled in pl | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.51 |
-| [5fa0192bb](https://github.com/AFK-surf/monoid/commit/5fa0192bb5782095d688727bbd49077f2ef0f834) perf(mbui): eliminate Windows glyph rasterization  | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.51 |
