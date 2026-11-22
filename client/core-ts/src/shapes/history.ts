@@ -193,6 +193,9 @@ export const HISTORY_SHAPES: Record<string, Shape> = {
   ChatJobsView: struct([
     ["jobs", vec("Job")],
     ["hasJobs", opt("bool"), { skipNone: true, doc: "On a summary, whether there are jobs; their details are read separately." }],
+    ["hasServices", opt("bool"), { skipNone: true, doc: "On a summary, whether there are current web services (with a port)." }],
+    ["serviceAlarm", opt("String"), { skipNone: true, doc: "fail: a service died lately; restart: a service is being started again." }],
+    ["backgroundCount", opt("u32"), { skipNone: true, doc: "On a summary, how many current non-service background jobs (including watches and scheduled tasks) are running." }],
     ["alarm", opt("String"), { doc: "fail: one died lately; restart: a service is being started again." }],
     ["servicesNote", "String", { doc: "2 个在线，1 个在重启; 1 个在盯着 (empty: nothing to say)." }],
     ["jobsNote", "String"],

@@ -139,7 +139,13 @@ pub fn chat_item(@json.Json) -> ChatItem
 
 pub let chat_jobs_asked : @ref.Ref[(@ui.Ctx, Source, ChatRef) -> Unit]
 
+pub fn chat_jobs_background_count(@json.Json?) -> Int
+
+pub fn chat_jobs_has_services(@json.Json?) -> Bool
+
 pub let chat_jobs_open : @ref.Ref[(Source, ChatRef, Double) -> Unit]
+
+pub fn chat_jobs_service_alarm(@json.Json?) -> String
 
 pub fn chat_jobs_summary_params(ChatRef) -> Map[String, @json.Json]
 

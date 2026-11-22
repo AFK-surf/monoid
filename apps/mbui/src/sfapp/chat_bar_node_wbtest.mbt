@@ -40,6 +40,7 @@ fn chat_bar_node_tester(
           _ => Map([])
         }
         jobs["hasJobs"] = Json::boolean(jobs_now)
+        jobs["hasServices"] = Json::boolean(jobs_now)
         return { ..got, value: Some(Json::object(jobs)) }
       }
       guard name == "chat" && got.value is Some(Object(chat)) else { return got }
@@ -304,11 +305,11 @@ test "小屏顶栏：有状态栏且可点展开时，第 1 行标题自身高�
 }
 
 ///|
-test "小屏活动条：对话有服务和后台任务时，打开它们的胶囊位于 composer 上方且有名字（读屏念得出、测试按名字找得到）" {
+test "小屏活动条：对话有 Web 服务时，打开它们的胶囊位于 composer 上方且有名字（读屏念得出、测试按名字找得到）" {
   let (t, _) = chat_bar_node_tester("短标题", has_jobs=true)
-  let keys = t.all(Button, label="服务和后台任务")
-  assert_eq(keys.length(), 1, msg="the jobs key, by its name")
-  assert_true(keys[0].rect.1 > 400.0, msg="jobs pill sits above composer: \{Repr(keys[0].rect)}")
+  let keys = t.all(Button, label="服务")
+  assert_eq(keys.length(), 1, msg="the services key, by its name")
+  assert_true(keys[0].rect.1 > 400.0, msg="services pill sits above composer: \{Repr(keys[0].rect)}")
 }
 
 ///|
@@ -784,7 +785,7 @@ fn small_neon_tester(w : Double, has_jobs? : Bool = false, has_subchats? : Bool 
     topic_read: fn(name, params) {
       let got = base.topic(name, params).get().snapshot()
       if name == "chatJobs" && has_jobs {
-        return { ..got, value: Some({ "hasJobs": true, "jobs": [], "alarm": "fail" }) }
+        return { ..got, value: Some({ "hasJobs": true, "hasServices": true, "jobs": [], "alarm": "fail", "serviceAlarm": "fail" }) }
       }
       guard name == "chat" && got.value is Some(Object(chat)) else { return got }
       let changed = chat.copy()
@@ -971,4 +972,70 @@ test "小屏顶栏：放不下 3 字而自动展开到第 2 行时，第 2 行�
   assert_true(ramp >= 0.44, msg="Row 2 title foot \{title_bot} under scrim \{bot} (fade \{fade}): ramp \{ramp} < 0.44")
   assert_true(fade <= 52.0 + 0.01, msg="fade \{fade} <= 52")
   assert_eq(bar_node_audit(t), [], msg="auto-expanded audit: \{Repr(bar_node_audit(t))}")
+}
+
+///|
+test "小屏聊天条：仅后台任务时不显示 web 胶囊，ⓘ 对话信息中显示后台任务行并打开纯后台任务抽屉；有 Web 服务时显示 web 胶囊并打开纯服务抽屉" {
+  // 1. Background job only (hasJobs: true, hasServices: false, backgroundCount: 1)
+  let bg_only = fn(name : String, tp : Topic) -> Topic {
+    if name != "chatJobs" {
+      return tp
+    }
+    let full = @sffixture.fix_chat_jobs()
+    let bg_jobs = items(Some(full), "jobs").filter(fn(j) { !flag(Some(j), "service") })
+    {
+      ..tp,
+      value: Some({
+        "hasJobs": true,
+        "hasServices": false,
+        "backgroundCount": 1,
+        "alarm": Json::null(),
+        "serviceAlarm": Json::null(),
+        "servicesNote": "",
+        "jobsNote": "1 个运行中",
+        "allText": "全部 1 个",
+        "jobs": Json::array(bg_jobs),
+      }),
+    }
+  }
+  let (t_bg, _) = chat_bar_node_tester("整理发布清单", over=bg_only)
+  assert_eq(
+    t_bg.all(Button).filter(fn(b) { b.label == tr("android-misc.jobs.services") || b.label == tr("android-misc.jobs.title") }).length(),
+    0,
+    msg="background-only chat must not show web services capsule",
+  )
+  t_bg.click(Button, label=tr("android-chat.info.title"))
+  t_bg.run_for(@ui.move_most_ms)
+  assert_true(t_bg.find(tr("android-misc.jobs.jobs")) is Some(_), msg="info sheet must show background jobs row")
+  t_bg.tap_text(tr("android-misc.jobs.jobs"))
+  t_bg.run_for(@ui.move_most_ms)
+  assert_true(t_bg.find("盯 CI") is Some(_), msg="background jobs sheet must show 盯 CI")
+  assert_true(t_bg.find("web") is None, msg="background jobs sheet must not show web service")
+  assert_eq(t_bg.audit().filter(fn(f) { f.contains("chat_bar_node") || f.contains("sheets.mbt") }), [])
+
+  // 2. Mixed web service + background job (hasServices: true, serviceAlarm: fail)
+  let mixed = fn(name : String, tp : Topic) -> Topic {
+    if name != "chatJobs" {
+      return tp
+    }
+    let full = @sffixture.fix_chat_jobs()
+    let m = match full {
+      Object(o) => o.copy()
+      _ => Map([])
+    }
+    m["hasJobs"] = Json::boolean(true)
+    m["hasServices"] = Json::boolean(true)
+    m["backgroundCount"] = Json::number(1.0)
+    m["alarm"] = Json::string("fail")
+    m["serviceAlarm"] = Json::string("fail")
+    { ..tp, value: Some(Json::object(m)) }
+  }
+  let (t_svc, _) = chat_bar_node_tester("整理发布清单", over=mixed)
+  let svc_btns = t_svc.all(Button).filter(fn(b) { b.label == tr("android-misc.jobs.services") })
+  assert_eq(svc_btns.length(), 1, msg="chat with web service must show services capsule")
+  t_svc.click(Button, label=tr("android-misc.jobs.services"))
+  t_svc.run_for(@ui.move_most_ms)
+  assert_true(t_svc.find("web") is Some(_), msg="services sheet must show web service")
+  assert_true(t_svc.find("盯 CI") is None, msg="services sheet must not show background job")
+  assert_eq(t_svc.audit().filter(fn(f) { f.contains("chat_bar_node") || f.contains("sheets.mbt") }), [])
 }

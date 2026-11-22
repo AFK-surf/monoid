@@ -47,7 +47,11 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, view : () -> ChatVi
   })
   // (what is in it as every screen's info reads it: sfpages' chat_holds_said; beside the system's tabs, its rows fewer)
   let things = @signals.computed(fn(_) { (@sfpages.chat_holds_said(src, r, chat()), @sf.native_on()) })
-  v.show(fn() { things.get().0.any() }, fn(g) { info_things_node(g, src, r, fn() { things.get() }, done) })
+  let jobs_summary = fn() { src.topic("chatJobs", chat_jobs_summary_params(r)).get().value }
+  let bg_count = fn() { @sfbase.chat_jobs_background_count(jobs_summary()) }
+  v.show(fn() { things.get().0.any() || bg_count() > 0 }, fn(g) {
+    info_things_node(g, src, r, fn() { things.get() }, bg_count, done)
+  })
 }
 
 ///|
@@ -287,6 +291,7 @@ fn info_things_node(
   src : Source,
   r : ChatRef,
   holds : () -> (@sfpages.ChatHolds, Bool),
+  bg_count : () -> Int,
   done : () -> Unit,
 ) -> Unit {
   let said = fn() { holds().0 }
@@ -338,6 +343,12 @@ fn info_things_node(
         done()
         letters_to_list(r)
         side_toggle(src, r, "letters")
+      })
+    })
+    t.show(fn() { bg_count() > 0 }, fn(row) {
+      info_row_node(row, "boxes", fn() { @sf.t("web-main.jobs.jobs") }, fn() { bg_count().to_string() }, fn() {
+        done()
+        side_tab_open(src, r, "jobs")
       })
     })
   })

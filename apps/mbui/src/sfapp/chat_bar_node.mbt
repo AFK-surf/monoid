@@ -612,10 +612,9 @@ fn bar_archivable(view : () -> ChatView?) -> Bool {
 }
 
 ///|
-/// Whether a chat has services or jobs (its bar's key to them), its jobs' summary `jobs` as the core says it.
+/// Whether a chat has current web services (its bar's key to them), its jobs' summary `jobs` as the core says it.
 fn bar_has_jobs(jobs : () -> Json?) -> Bool {
-  let j = jobs()
-  flag(j, "hasJobs") || items(j, "jobs").length() > 0
+  @sfbase.chat_jobs_has_services(jobs())
 }
 
 ///|
@@ -1187,8 +1186,8 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
   o.show(has_right, at_once=true, fn(right) {
     right.row(Is(true)).grow(Is(1.0)).lies_along(Is(End)).gap(Is(6.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
     right.show(has_jobs, at_once=true, fn(j_slot) {
-      let alarm = fn() { text(jobs(), "alarm") }
-      @sf.action_box_node(j_slot, fn() { tr("android-misc.jobs.title") }, fn(_) { open_chat_jobs(src, r) }, fn(k) {
+      let alarm = fn() { @sfbase.chat_jobs_service_alarm(jobs()) }
+      @sf.action_box_node(j_slot, fn() { tr("android-misc.jobs.services") }, fn(_) { open_chat_jobs(src, r, scope=ServicesOnly) }, fn(k) {
         small_glass_capsule(k)
         k.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(5.0)) |> ignore
         @sf.hover_ground_node(k)

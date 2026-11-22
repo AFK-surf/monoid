@@ -1183,8 +1183,8 @@ fn wide_composer_bar_node(
   }
   let jobs_held = @sfbase.topic_value_held(src, "chatJobs", chat_jobs_summary_params(r))
   let jobs = fn() { jobs_held.get() }
-  let has_jobs = fn() { flag(jobs(), "hasJobs") || items(jobs(), "jobs").length() > 0 }
-  let alarm = fn() { if has_jobs() { text(jobs(), "alarm") } else { "" } }
+  let has_services = fn() { @sfbase.chat_jobs_has_services(jobs()) }
+  let alarm = fn() { if has_services() { @sfbase.chat_jobs_service_alarm(jobs()) } else { "" } }
   let driven = fn() {
     match view() {
       Some(v) => chat_screens_driven(v.screens)
@@ -1205,7 +1205,7 @@ fn wide_composer_bar_node(
     }
   }
   let own = fn() { !@sf.native_on() }
-  let has_right = fn() { (own() && (has_jobs() || driven())) || has_subchats() }
+  let has_right = fn() { (own() && (has_services() || driven())) || has_subchats() }
   o
   .row(Is(true))
   .fits(Is(true))
@@ -1275,9 +1275,9 @@ fn wide_composer_bar_node(
   // Right group: live/active controls under a single `show`
   o.show(has_right, at_once=true, fn(right) {
     right.row(Is(true)).grow(Is(1.0)).lies_along(Is(End)).gap(Is(6.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
-    // Active Jobs pill
-    right.show(fn() { own() && has_jobs() }, at_once=true, fn(b) {
-      let button = @sf.action_box_node(b, fn() { @sf.t("web-pages.chat.services") }, fn(_) { jobs_pressed(src, r) }, fn(btn) {
+    // Active Web Services pill
+    right.show(fn() { own() && has_services() }, at_once=true, fn(b) {
+      let button = @sf.action_box_node(b, fn() { @sf.t("web-main.jobs.services") }, fn(_) { jobs_pressed(src, r) }, fn(btn) {
         wide_glass_capsule(btn)
         btn.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(5.0)) |> ignore
         @sf.hover_ground_node(btn, extra=fn() { chat_own.jobs_open.get() })
@@ -1292,7 +1292,7 @@ fn wide_composer_bar_node(
           .ground(By(fn() { if alarm() == "fail" { @sf.theme().p.red } else { @ui.tree_theme().color(Warn) } }))
           |> ignore
         })
-        @sf.tip_node(tips, btn, fn() { @sf.t("web-pages.chat.services") }, shortcut="chat.jobs") |> ignore
+        @sf.tip_node(tips, btn, fn() { @sf.t("web-main.jobs.services") }, shortcut="chat.jobs") |> ignore
       })
       if @signals.untracked(own) {
         chat_jobs_pop_node(b, src, r, Some(button))

@@ -260,7 +260,15 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
           _ => ()
         }
       }
-      offer(action_offered("chat.jobs", "web", fn() { open_jobs_pop() }))
+      offer(
+        action_offered("chat.jobs", "boxes", fn() {
+          if @sfbase.chat_jobs_has_services(src.topic("chatJobs", chat_jobs_summary_params(r)).get().value) {
+            open_jobs_pop()
+          } else {
+            side_tab_open(src, r, "jobs")
+          }
+        }),
+      )
       match view {
         Some(v) => {
           if chat_has_remote(v) {

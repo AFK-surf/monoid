@@ -155,3 +155,40 @@ test "a quiet card: each label (Meta) on the baseline of its value's first line 
   }
   @ui.set_web_lines(false)
 }
+
+///|
+test "quiet_card_node: flat with no card fill inside small floating panel, card fill and card_corner kept in bottom sheet" {
+  // 1. Inside an anchored small floating panel (`small=true`): no card fill box, row radius matches `small_panel_inner(r_menu)`
+  let t_small = u13_case(fn(root) {
+    root.box(fn(col) {
+      panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true)
+      quiet_card_node(col, fn(k) {
+        quiet_row_node(k, fn() { "后台任务" }, press=fn() {  }, fn(row) {
+          words_node(row, fn() { "后台任务" }, fn() { u13_value }) |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  let small_cards = t_small.drawn_rect_corners().filter(fn(r) { (r.5.0 - quiet_card_corner).abs() < 0.1 && r.4 != 0L })
+  assert_eq(small_cards.length(), 0, msg="small floating panel must not draw nested card fill")
+  assert_eq(t_small.audit(), [])
+
+  // 2. Inside a bottom sheet (`small=false`): keeps card fill and `quiet_card_corner`
+  let t_sheet = u13_case(fn(root) {
+    root.box(fn(col) {
+      panel_in_lend(col, Narrow, sheet_panel_sides, sides=0.0)
+      quiet_card_node(col, fn(k) {
+        quiet_row_node(k, fn() { "后台任务" }, press=fn() {  }, fn(row) {
+          words_node(row, fn() { "后台任务" }, fn() { u13_value }) |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  let sheet_cards = t_sheet.drawn_rect_corners().filter(fn(r) { (r.5.0 - quiet_card_corner).abs() < 0.1 && r.4 != 0L })
+  assert_true(sheet_cards.length() >= 1, msg="bottom sheet must keep card fill with quiet_card_corner")
+  assert_eq(t_sheet.audit(), [])
+}

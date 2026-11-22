@@ -88,6 +88,7 @@ fn chat_jobs_pop_node(host : @view.View, src : Source, r : ChatRef, own : @view.
       fn() { jobs_summary(src, r) },
       open,
       open,
+      services_only=true,
     )
   })
 }

@@ -1552,7 +1552,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide chat live/step": 3,
   "wide chat-agent live/step": 3,
   "wide chat-job live/step": 3,
-  "wide chat-jobs-pop chatJobs compact/minute": 16,
+  "wide chat-jobs-pop chatJobs compact/minute": 8,
   "wide chat-letters-pop chatThings/thing": 16,
   "wide chat-working live/step": 3,
   "wide newchat newChat/host": 28,

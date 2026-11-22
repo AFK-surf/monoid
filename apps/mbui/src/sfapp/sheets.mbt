@@ -168,6 +168,8 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
   let tools = fn() { finds() || remote() }
   let holds = @signals.computed(fn(_) { @sfpages.chat_holds_said(src, r, chat()) })
   let pulls = fn() { holds.get().pulls }
+  let jobs_summary = fn() { src.topic("chatJobs", chat_jobs_summary_params(r)).get().value }
+  let bg_count = fn() { @sfbase.chat_jobs_background_count(jobs_summary()) }
   // (a card come or gone, or a row of one, a later answer's (what is in it told after the sheet came up): the sheet
   // goes on from as tall as it is seen then to its new height, @sf.panel_reshaped_node; said before what it shows is
   // made anew)
@@ -179,7 +181,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
         agents().length(),
         opened_any(),
         (finds(), outlines(), remote()),
-        (h.pulls.length(), h.said, h.files, h.letters),
+        (h.pulls.length(), h.said, h.files, h.letters, bg_count()),
       )
     },
     fn(_) { @sf.panel_reshaped_node(v) },
@@ -232,7 +234,11 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     // their faces
     col.box(fn(line) {
       @sf.style_node(line, fn() {
-        if @sf.in_small_panel_node(line) { info_facts_line.then(@sf.panel_words_in_node(line)) } else { info_facts_line }
+        if @sf.in_small_panel_node(line) {
+          info_facts_line.then(@sf.panel_words_in_node(line)).then(@ui.css("pb=S2"))
+        } else {
+          info_facts_line
+        }
       })
       let faces = fn() {
         match view() {
@@ -262,6 +268,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     // only as that one changes: an agent come or gone makes or lets go its row alone)
     let agent_key = fn(a : Json) { text(field(Some(a), "session"), "key") }
     col.show(fn() { agents().length() > 0 }, fn(p) {
+      info_gap_node(p, fn() { @sf.in_small_panel_node(p) })
       @sf.quiet_card_node(p, fn(k) {
         let by_key = k.keyed_by(agents, agent_key)
         k.each(fn() { by_key.keys() }, fn(key) { key }, fn(row, key) {
@@ -284,7 +291,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
       },
       fn(p, made) {
         guard made is Some((_, words)) else { return }
-        info_gap_node(p, fn() { agents().length() > 0 })
+        info_gap_node(p, fn() { @sf.in_small_panel_node(p) || agents().length() > 0 })
         let opened = fn() {
           match view() {
             Some(cv) => cv.opened
@@ -320,7 +327,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     // what is done in it, a card of its own (sfdesk's: its bar's 查找, its outline, the remote ways of its station),
     // each row there while it may be done
     col.show(tools, fn(p) {
-      info_gap_node(p, fn() { agents().length() > 0 || opened_any() })
+      info_gap_node(p, fn() { @sf.in_small_panel_node(p) || agents().length() > 0 || opened_any() })
       @sf.quiet_card_node(p, fn(k) {
         // ⌘F's bar, in the chat's bar (chat_bar_node's)
         k.show(finds, fn(m) {
@@ -387,8 +394,8 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     // what is done with it): its pull requests, what else was said, the stations' files, what its agents and other
     // chats' wrote (told only as it changes; the card there while it holds anything, each of its rows by what it shows:
     // a thing come or gone makes again only the row it changes)
-    col.show(fn() { holds.get().any() }, fn(p) {
-      info_gap_node(p, fn() { agents().length() > 0 || opened_any() || tools() })
+    col.show(fn() { holds.get().any() || bg_count() > 0 }, fn(p) {
+      info_gap_node(p, fn() { @sf.in_small_panel_node(p) || agents().length() > 0 || opened_any() || tools() })
       @sf.quiet_card_node(p, fn(k) {
         // the pull requests linked in it, the latest 3 (the user, 2026-10-29: most chats have one or two, seen at a
         // look), 全部 N 个 to the rest; tapped, one opens in the browser
@@ -451,6 +458,14 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
           )
           |> ignore
         })
+        // current non-service background jobs (including watches and scheduled tasks): their own scoped sheet
+        k.show(fn() { bg_count() > 0 }, fn(m) {
+          info_more_row_node(m, "boxes", fn() { tr("android-misc.jobs.jobs") }, fn() { bg_count().to_string() }, fn() {
+            close()
+            open_chat_jobs(src, r, scope=BackgroundOnly)
+          })
+          |> ignore
+        })
       })
     })
     // (its last card at a dialog's foot, as far from it as from its sides)
@@ -498,9 +513,17 @@ fn info_facts_said(chat : Json?, view : ChatView?) -> String {
 }
 
 ///|
-/// The room between two of the info's cards in `p`, over the card after it, while one is over it (`over`).
+/// The room between two of the info's cards in `p`, over the card after it, while one is over it (`over`): a hairline
+/// divider aligned to the content text axis inside a floating glass panel, or a 16pt card gap in a bottom sheet.
 fn info_gap_node(p : @view.View, over : () -> Bool) -> Unit {
-  p.show(over, fn(g) { @sf.style_node(g, fn() { info_lists_gap }) })
+  p.show(over, fn(g) {
+    if @sf.in_small_panel_node(g) {
+      @sf.style_node(g, fn() { @ui.css("w=Full py=S1_5").then(@ui.style(px=@sf.room_of(@sf.text_in))) })
+      g.box(fn(l) { @sf.style_node(l, fn() { @ui.style(w=Full, h=@sf.hairline, bg=Line) }) }) |> ignore
+    } else {
+      @sf.style_node(g, fn() { info_lists_gap })
+    }
+  })
 }
 
 ///|
@@ -559,9 +582,10 @@ fn info_pull_row_node(k : @view.View, src : Source, r : ChatRef, pull : () -> Js
   let title = fn() { @sfpages.pull_title(pull()) }
   let url = fn() { text(pull(), "url") }
   k.box(fn(b) {
+    let corner = if @sf.in_small_panel_node(b) { @sf.small_panel_inner(@sf.r_menu) } else { @sf.quiet_row_corner }
     @sf.style_node(b, fn() { @sf.quiet_row_middle })
     b
-    .radius(Is(@sf.quiet_row_corner))
+    .radius(Is(corner))
     .says(By(fn() { Some(@view.said(Link, label=title())) }))
     |> ignore
     @sf.hover_ground_node(b)
@@ -598,18 +622,43 @@ fn info_pull_row_node(k : @view.View, src : Source, r : ChatRef, pull : () -> Js
 /// name's room, or left the row where it had not the room: the allowance gone), its chevron. Pressed, `press`.
 fn info_agent_row_node(k : @view.View, src : Source, a : () -> Json?, press : () -> Unit) -> Unit {
   let s = fn() { field(a(), "session") }
-  @sf.quiet_row_node(k, fn() { text(s(), "agentText") }, look=@sf.quiet_row_style.then(@sf.quiet_row_tile), press~, fn(row) {
-    model_mark_big_node(
-      row,
-      fn() { text(field(s(), "maker"), "id") },
-      fn() { text(s(), "runtime") },
-      info_tile,
-      fn() { state_of_badge(text(a(), "badge")) },
-      around=fn() {
-        let t = @sf.theme()
-        @sf.over(t.p.bg, @sf.alpha(t.p.card, 0.8))
-      },
-    )
+  let small = @sf.in_small_panel_node(k)
+  let look = if small {
+    @sf.quiet_row_style.then(@ui.css("py=S2 align=AStart"))
+  } else {
+    @sf.quiet_row_style.then(@sf.quiet_row_tile)
+  }
+  @sf.quiet_row_node(k, fn() { text(s(), "agentText") }, look~, press~, fn(row) {
+    if small {
+      row.box(fn(m) {
+        @sf.quiet_first_line(m)
+        model_mark_big_node(
+          m,
+          fn() { text(field(s(), "maker"), "id") },
+          fn() { text(s(), "runtime") },
+          info_tile,
+          fn() { state_of_badge(text(a(), "badge")) },
+          around=fn() {
+            let t = @sf.theme()
+            @sf.over(t.p.bg, @sf.alpha(t.p.card, 0.8))
+          },
+          plain=true,
+        )
+      })
+      |> ignore
+    } else {
+      model_mark_big_node(
+        row,
+        fn() { text(field(s(), "maker"), "id") },
+        fn() { text(s(), "runtime") },
+        info_tile,
+        fn() { state_of_badge(text(a(), "badge")) },
+        around=fn() {
+          let t = @sf.theme()
+          @sf.over(t.p.bg, @sf.alpha(t.p.card, 0.8))
+        },
+      )
+    }
     row.box(fn(w) {
       @sf.style_node(w, fn() { info_fill }, in_row=true)
       @sf.words_node(w, fn() { text(s(), "agentText") }, fn() { info_agent_name }) |> ignore
@@ -1415,6 +1464,16 @@ fn job_tint(tone : String) -> Int64? {
 let info_fill : @ui.Style = @ui.css("w=Full")
 
 ///|
+/// Which subset of `chatJobs` the small-screen jobs sheet displays: all (from an agent card), only web services (from
+/// the chat bar's `web` capsule), or only non-service background jobs (from the `ⓘ` chat info sheet).
+#derive(Eq)
+priv enum JobsScope {
+  All
+  ServicesOnly
+  BackgroundOnly
+}
+
+///|
 /// One of the rows of the chat's services and jobs (jobs_node's): words saying it has none, a group's label (its
 /// services, its jobs), a job of a group by its id.
 #derive(Eq, Hash)
@@ -1425,22 +1484,29 @@ priv enum JobsRow {
 }
 
 ///|
-/// The rows of services and jobs `jobs`: none, words saying so; services, then background jobs, each group under its
-/// label.
-fn jobs_rows(jobs : Array[Json]) -> Array[JobsRow] {
+/// The rows of services and jobs `jobs` within `scope`: none, words saying so; services, then background jobs, each
+/// group under its label (scoped sheets omit the redundant group title when its note is empty).
+fn jobs_rows(jobs : Array[Json], scope : JobsScope, view? : Json? = None) -> Array[JobsRow] {
   let out : Array[JobsRow] = []
-  if jobs.length() == 0 {
-    out.push(JobsNone)
-    return out
+  let kinds : Array[Bool] = match scope {
+    All => [true, false]
+    ServicesOnly => [true]
+    BackgroundOnly => [false]
   }
-  for service in [true, false] {
+  for service in kinds {
     let group = jobs.filter(fn(j) { flag(Some(j), "service") == service })
     if group.length() > 0 {
-      out.push(JobsHead(service))
+      let note = text(view, if service { "servicesNote" } else { "jobsNote" })
+      if scope == All || note != "" {
+        out.push(JobsHead(service))
+      }
       for j in group {
         out.push(JobsOne(service, text(Some(j), "id")))
       }
     }
+  }
+  if out.length() == 0 {
+    out.push(JobsNone)
   }
   out
 }
@@ -1451,7 +1517,7 @@ fn jobs_rows(jobs : Array[Json]) -> Array[JobsRow] {
 /// background jobs, each group's head with how many are up or alive; a service up or being started again opens its page
 /// (service.mbt), one that did not start (or is over) and any job its sheet (open_job), this panel closed for it. In
 /// their bones while they are read, what went wrong over them.
-fn jobs_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit) -> Unit {
+fn jobs_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit, scope? : JobsScope = All) -> Unit {
   let topic = fn() { src.topic("chatJobs", chat_params(r)).get() }
   let view = fn() {
     match topic().value {
@@ -1461,7 +1527,18 @@ fn jobs_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit) -> U
   }
   // (told at last, or a job come or gone: what it holds another height for that cause, the sheet going on from as tall
   // as it is seen then, @sf.panel_reshaped_node; made before what it shows, so it is said before that is made anew)
-  v.reacts(at_start=false, fn() { (view() is Some(_), items(view(), "jobs").length()) }, fn(_) { @sf.panel_reshaped_node(v) })
+  v.reacts(
+    at_start=false,
+    fn() {
+      let count = match scope {
+        All => items(view(), "jobs").length()
+        ServicesOnly => items(view(), "jobs").filter(fn(j) { flag(Some(j), "service") }).length()
+        BackgroundOnly => items(view(), "jobs").filter(fn(j) { !flag(Some(j), "service") }).length()
+      }
+      (view() is Some(_), count)
+    },
+    fn(_) { @sf.panel_reshaped_node(v) },
+  )
   |> ignore
   v.pick(fn() { view() is Some(_) }, fn(p, told) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
@@ -1473,11 +1550,11 @@ fn jobs_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit) -> U
           w,
           fn(s) {
             let sample = jobs_sample()
-            let rows = jobs_rows(sample)
+            let rows = jobs_rows(sample, scope)
             s.each_of(fn() { rows }, at_once=true, fn(row_at, row) {
               row_at.box(fn(b) {
                 @sf.style_node(b, fn() { info_fill })
-                jobs_row_node(b, src, r, row, fn() { Some(Json::object({ "jobs": Json::array(sample) })) }, fn() {  })
+                jobs_row_node(b, src, r, row, fn() { Some(Json::object({ "jobs": Json::array(sample) })) }, fn() {  }, scope~)
               })
               |> ignore
             })
@@ -1493,9 +1570,9 @@ fn jobs_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit) -> U
       |> ignore
       return
     }
-    let rows = @signals.computed(fn(_) { jobs_rows(items(view(), "jobs")) })
+    let rows = @signals.computed(fn(_) { jobs_rows(items(view(), "jobs"), scope, view=view()) })
     // (its rows on the panel's words' line, as tall as they come to up to the panel's share, scrolling in it past that)
-    @sf.panel_list_node(p, fn() { rows.get() }, fn(b, row) { jobs_row_node(b, src, r, row, view, close) }, est=jobs_row_est)
+    @sf.panel_list_node(p, fn() { rows.get() }, fn(b, row) { jobs_row_node(b, src, r, row, view, close, scope~) }, est=jobs_row_est)
     |> ignore
     // (its last card at a dialog's foot, as far from it as from its sides)
     p.show(at_once=true, fn() { !(rows.get().get(0) is Some(JobsNone)) }, fn(f) {
@@ -1516,7 +1593,15 @@ let jobs_waiting : @ui.Style = @ui.css("w=Full px=S4_5")
 ///|
 /// Row `row` of the chat's services and jobs (jobs_node's) in `b`, the core's `chatJobs` as `view` has it now; a job's
 /// row pressed leads where it does (job_press), `close` closing the panel first.
-fn jobs_row_node(b : @view.View, src : Source, r : ChatRef, row : JobsRow, view : () -> Json?, close : () -> Unit) -> Unit {
+fn jobs_row_node(
+  b : @view.View,
+  src : Source,
+  r : ChatRef,
+  row : JobsRow,
+  view : () -> Json?,
+  close : () -> Unit,
+  scope? : JobsScope = All,
+) -> Unit {
   match row {
     JobsNone =>
       b.box(fn(n) {
@@ -1537,7 +1622,11 @@ fn jobs_row_node(b : @view.View, src : Source, r : ChatRef, row : JobsRow, view 
             } else {
               ("android-misc.jobs.jobs", text(view(), "jobsNote"))
             }
-            tr(key) + (if note != "" { " · " + note } else { "" })
+            if scope == All {
+              tr(key) + (if note != "" { " · " + note } else { "" })
+            } else {
+              note
+            }
           },
           fn() { jobs_head_words },
         )
@@ -1660,9 +1749,14 @@ let jobs_head_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wra
 ///|
 /// The chat's services and jobs (jobs_node): the library's panel, as tall as what it holds up to 62% of the window,
 /// dragged between half and nearly all of it, what it holds nodes of the window's tree made once as it opens.
-fn open_chat_jobs(src : Source, r : ChatRef) -> Unit {
-  @sf.panel_nodes(tr("android-misc.jobs.title"), from=Unanchored, tall=0.62, hugs=true, grows=true, fn(v, close) {
-    jobs_node(v, src, r, close)
+fn open_chat_jobs(src : Source, r : ChatRef, scope? : JobsScope = All) -> Unit {
+  let title = match scope {
+    All => tr("android-misc.jobs.title")
+    ServicesOnly => tr("android-misc.jobs.services")
+    BackgroundOnly => tr("android-misc.jobs.jobs")
+  }
+  @sf.panel_nodes(title, from=Unanchored, tall=0.62, hugs=true, grows=true, fn(v, close) {
+    jobs_node(v, src, r, close, scope~)
   })
 }
 

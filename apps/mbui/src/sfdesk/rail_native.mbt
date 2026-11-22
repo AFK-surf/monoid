@@ -284,7 +284,7 @@ fn bar_chat(
     None => ()
   }
   match jobs {
-    Some((act, alarm)) => bar_action("chat/jobs", @sf.t("web-pages.chat.services"), "web", act, dot=alarm) |> ignore
+    Some((act, alarm)) => bar_action("chat/jobs", @sf.t("web-main.jobs.services"), "web", act, dot=alarm) |> ignore
     None => ()
   }
   match screen {

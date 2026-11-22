@@ -145,7 +145,9 @@ fn wide_bar_renaming(title : String, stage? : String = "sent", error? : String =
 ///|
 /// The chat's services and jobs: some, one died lately (`alarm`).
 fn wide_bar_jobs(alarm : String) -> (String, Topic) -> Topic {
-  wide_bar_edit("chatJobs", fn(_) { Some({ "hasJobs": true, "jobs": [], "alarm": Json::string(alarm) }) })
+  wide_bar_edit("chatJobs", fn(_) {
+    Some({ "hasJobs": true, "hasServices": true, "jobs": [], "alarm": Json::string(alarm), "serviceAlarm": Json::string(alarm) })
+  })
 }
 
 ///|
@@ -262,7 +264,7 @@ fn wide_bar_large(calls : Array[Made]) -> Array[(String, () -> @ui.Tester)] {
       "TIP-JOBS",
       fn() {
         let t = wide_bar_at(calls, over=wide_bar_jobs("fail"))
-        wide_bar_tip(t, @sf.t("web-pages.chat.services"))
+        wide_bar_tip(t, @sf.t("web-main.jobs.services"))
         t
       },
     ),
@@ -387,7 +389,7 @@ fn wide_bar_held(states : Array[(String, () -> @ui.Tester)]) -> Array[String] {
     // panel off the tape, said 打开侧栏))
     let own = [
       @sf.t("web-pages.chat.archive"),
-      @sf.t("web-pages.chat.services"),
+      @sf.t("web-main.jobs.services"),
       @sf.t("web-pages.chat.screen"),
       @sf.t("web-pages.chat.info"),
       @sf.t("common.more"),
@@ -481,7 +483,7 @@ test "大屏, 中屏: the bar's 对话信息 opens the chat's info under it and 
     assert_true((dx + dw - (b.0 + b.2)).abs() < 1.0, msg="\{win.0}: its end at its button's: \{Repr((dx, dy, dw))} \{Repr(b)}")
     wide_bar_tap(t, b)
     assert_eq(@sfdesk.chat_pops_open(), (false, false), msg="\{win.0}: pressed again, closed")
-    let jobs = @sf.t("web-pages.chat.services")
+    let jobs = @sf.t("web-main.jobs.services")
     guard wide_bar_button(t, jobs) is Some(j) else { fail("\{win.0}: no \{jobs}") }
     wide_bar_tap(t, j)
     assert_eq(@sfdesk.chat_pops_open(), (false, true), msg=win.0)
@@ -547,7 +549,7 @@ test "大屏, 中屏: a button of the bar says its keys in its tip after its wor
     let calls : Array[Made] = []
     let tips = [
       ("web-pages.chat.archive", "chat.archive"),
-      ("web-pages.chat.services", "chat.jobs"),
+      ("web-main.jobs.services", "chat.jobs"),
       ("web-pages.chat.screen", "chat.screen"),
       ("web-pages.chat.openPanel", "chat.history"),
     ]
@@ -601,7 +603,7 @@ test "大屏, 中屏: the bar's popovers keep by their buttons as the window cha
     let calls : Array[Made] = []
     for which in ["info", "jobs"] {
       let t = wide_bar_at(calls, w=win.1, over=wide_bar_jobs("fail"))
-      let label = @sf.t(if which == "info" { "web-pages.chat.info" } else { "web-pages.chat.services" })
+      let label = @sf.t(if which == "info" { "web-pages.chat.info" } else { "web-main.jobs.services" })
       let opened = fn() {
         let (i, j) = @sfdesk.chat_pops_open()
         if which == "info" {
@@ -1345,7 +1347,7 @@ test "大屏, 中屏: a station's name too long for the row above the composer (
         [g, ..] => g.rect
         _ => fail("\{msg}: no station's capsule")
       }
-      let services = t.all(Button).filter(fn(b) { b.label == @sf.t("web-pages.chat.services") && b.rect.1 > 400.0 })
+      let services = t.all(Button).filter(fn(b) { b.label == @sf.t("web-main.jobs.services") && b.rect.1 > 400.0 })
       guard services is [s, ..] else { fail("\{msg}: no services' button above the composer") }
       assert_true(cap.0 + cap.2 <= s.rect.0, msg="\{msg}: the station's capsule before the services' button: \{Repr(cap)} \{Repr(s.rect)}")
       assert_true(s.rect.0 + s.rect.2 <= win.1, msg="\{msg}: the services' button in the window: \{Repr(s.rect)}")
@@ -1539,7 +1541,7 @@ test "大屏窄窗(860)与中屏窄窗(600): 3 模型 + 服务按钮 + 子会话
     let t = wide_bar_at(calls, w=win.1, over~)
     let sts = t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 })
     let ags = t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 })
-    let services = t.all(Button).filter(fn(b) { b.label == @sf.t("web-pages.chat.services") && b.rect.1 > 400.0 })
+    let services = t.all(Button).filter(fn(b) { b.label == @sf.t("web-main.jobs.services") && b.rect.1 > 400.0 })
     assert_eq(sts.length(), 1, msg=win.0)
     assert_eq(ags.length(), 3, msg=win.0)
     guard services is [s, ..] else { fail("\{win.0}: no services button") }

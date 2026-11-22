@@ -17,7 +17,8 @@ fn swr_jobs_at(late : @signals.Signal[Bool], swr : Bool, w? : Double = 1280.0) -
       match (name, params.contains("summary")) {
         ("chatJobs", false) if late.get() => { value: None, error: None, version: 0 }
         // (the bar's summary as the core says it: whether it has any, none of them listed)
-        ("chatJobs", true) => { value: Some({ "jobs": [], "hasJobs": true, "alarm": Json::null() }), error: None, version: 1 }
+        ("chatJobs", true) =>
+          { value: Some({ "jobs": [], "hasJobs": true, "hasServices": true, "alarm": Json::null(), "serviceAlarm": Json::null() }), error: None, version: 1 }
         _ => base.topic(name, params).get().snapshot()
       }
     },
@@ -44,7 +45,7 @@ test "大屏: the services' popover over a core that says its jobs late never sa
   for swr in [false, true] {
     let late = @signals.signal(true)
     let t = swr_jobs_at(late, swr)
-    guard wide_bar_button(t, @sf.t("web-pages.chat.services")) is Some((x, y, w, h)) else {
+    guard wide_bar_button(t, @sf.t("web-main.jobs.services")) is Some((x, y, w, h)) else {
       fail("\{swr}: no services' button")
     }
     t.tap(x + w / 2.0, y + h / 2.0)
@@ -68,7 +69,7 @@ test "大屏: the services' popover over a core that says its jobs late never sa
     }
     guard drawn is Some(first) else { fail("\{swr}: the popover is not open once its jobs came") }
     t.run_for(@ui.move_most_ms)
-    assert_true(t.find("盯 CI") is Some(_), msg="\{swr}: its job there")
+    assert_true(t.find("web") is Some(_), msg="\{swr}: its service there")
     assert_true(t.shown_of(swr_jobs_none()) is None, msg="\{swr}")
     guard wide_bar_dialog(t) is Some(at_rest) else { fail("\{swr}: closed") }
     // with MBUI_SWR_VIEWS whole from its first frame, coming in by its size as a panel does (its height to its width
