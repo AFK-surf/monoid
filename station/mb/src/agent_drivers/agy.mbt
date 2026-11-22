@@ -1430,7 +1430,10 @@ pub fn AgyDriver::acp_begin(
     if cancelled() {
       return Later::fail(lp, Failed("open aborted"))
     }
-    let session = self.session(options, events)
+    // An opening that failed is nobody's: what its process says as it is ended (its `closed`) is not told
+    // (acp.ts `begin`), or it would close the session's process opened after it under the same open.
+    let failed = Ref::new(false)
+    let session = self.session(options, e => if !failed.val { events(e) })
     let own = session.acp.own
     own.tools_url = str_at(o, "mcpUrl")
     let key = str_at(o, "key").unwrap_or("")
@@ -1519,7 +1522,10 @@ pub fn AgyDriver::acp_begin(
         self.sessions.push(session)
         session
       })
-      .recover(e => own.dispose().bind(_ => Later::fail(lp, e)))
+      .recover(e => {
+        failed.val = true
+        own.dispose().bind(_ => Later::fail(lp, e))
+      })
     })
   })
 }

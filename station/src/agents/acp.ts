@@ -499,7 +499,13 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
     const start = await this.starting(options, probe);
     // (given up while it was made ready: no process started)
     throwIfAborted(options.signal);
-    const session = this.session(options, events);
+    // An opening that failed is nobody's: what its process says as it is ended (its `closed`) is not told. Told, it
+    // would close the session's process opened after it under the same open (`agy` opening again, its process ended
+    // late: ccvm 2026-11-22, the session's live process taken for gone and its turn heard by no one).
+    let failed = false;
+    const session = this.session(options, (event) => {
+      if (!failed) events(event);
+    });
     session.toolsUrl = options.mcpUrl;
     await this.start(session, options, start.command, start.args, start.env);
     const signal = options.signal;
@@ -532,6 +538,7 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
       await session.adopted();
       throwIfAborted(signal);
     } catch (error) {
+      failed = true;
       await session.dispose();
       throw error;
     } finally {

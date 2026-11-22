@@ -222,6 +222,23 @@ test("a process that could not reach its backend as the machine came up (no mode
   await opened!.dispose();
 });
 
+test("the processes of openings that offered no models, ended as it opens again, tell nothing of their end: the session's process opened after them is not taken for closed", async () => {
+  const { options } = setup({ FAKE_AGY_OFFLINE: "2" });
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  const told: RuntimeEvent[] = [];
+  const opening = driver.open({ ...options, model: "gemini-3.1-pro" }, (e) => told.push(e));
+  await Promise.race([time.begun(1), opening]);
+  await time.adjust(AGY_CATALOG_RETRY_MS[0]!);
+  await Promise.race([time.begun(2), opening]);
+  await time.adjust(AGY_CATALOG_RETRY_MS[1]!);
+  const session = await opening;
+  // (each ended before the next opened, its end handled: `dispose` waits on it)
+  assert.deepEqual(told.filter((e) => e.type === "closed"), [], "no `closed` of the two ended (ccvm 2026-11-22: the actor closed the live one)");
+  await session.dispose();
+});
+
 test("a process that never reaches its backend fails as the network after its waits, not as an unknown model", async () => {
   const { options, events, dump } = setup({ FAKE_AGY_OFFLINE: "100" });
   const time = testClock();
