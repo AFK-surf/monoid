@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [063ac567f](https://github.com/AFK-surf/monoid/commit/063ac567f454ce7f1828c157a6bdd6fad8145610) feat(mbui,sf-ui): polish iOS 26/27 liquid glass pr | 2.71 | 3.65 | 14.81 | 36.93 | 56.43 | 32.35 | 65.66 | 99.71 | 127.72 |
 | [77aef8b6d](https://github.com/AFK-surf/monoid/commit/77aef8b6d7aff40a9bff79032a9a4553b570ac9b) perf(mbui): cut medium-screen tape drag frame cost | 2.71 | 3.65 | 14.81 | 36.93 | 56.43 | 32.35 | 65.64 | 99.55 | 127.72 |
 | [40807fa89](https://github.com/AFK-surf/monoid/commit/40807fa892485f932200ffe2772f7acb2b9caa24) refactor(sf-ui,website): unify ui.monoid live stud | 2.71 | 3.65 | 14.81 | 36.92 | 56.41 | 32.35 | 65.64 | 99.63 | 126.38 |
 | [02f41fec5](https://github.com/AFK-surf/monoid/commit/02f41fec50cc59a564b150a7c47cecc848edc501) feat(sf-ui): align segmented and slider liquid gla | 2.71 | 3.65 | 14.81 | 36.92 | 56.41 | 32.35 | 65.64 | 99.6 | 128.73 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3e01fcab0](https://github.com/AFK-surf/monoid/commit/3e01fcab0066b6975b928daf9c03abc4f0fb1dba) feat(lg,sf-ui,mbui): port iOS 27.0 LiquidMorphPhys | 2.69 | 3.62 | 14.66 | 36.76 | 55.91 | 32.2 | 65.24 | 100.12 | 125.32 |
 | [e9f48df90](https://github.com/AFK-surf/monoid/commit/e9f48df90aca90a16004e26ef91eaf6cff6c00ec) fix(mbui): shorten the app update row (#8165) | 2.69 | 3.62 | 14.66 | 36.76 | 55.91 | 32.2 | 65.24 | 100.12 | 125.32 |
 | [61314116d](https://github.com/AFK-surf/monoid/commit/61314116db05d116bc27f23a8809c99948a4f49e) fix(station): catch mid-session MCP loss and backo | 2.68 | 3.61 | 14.66 | 36.74 | 55.88 | 32.2 | 65.21 | 99.94 | 123.62 |
-| [8b659b96c](https://github.com/AFK-surf/monoid/commit/8b659b96c7cd9a7b67ef429649ac6557ea1b7f19) perf(mbui): add Windows D3D11 GPU timing, display_ | 2.68 | 3.61 | 14.64 | 36.73 | 55.84 | 32.18 | 65.16 | 99.91 | 115.83 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [063ac567f](https://github.com/AFK-surf/monoid/commit/063ac567f454ce7f1828c157a6bdd6fad8145610) feat(mbui,sf-ui): polish iOS 26/27 liquid glass pr | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.81 |
 | [77aef8b6d](https://github.com/AFK-surf/monoid/commit/77aef8b6d7aff40a9bff79032a9a4553b570ac9b) perf(mbui): cut medium-screen tape drag frame cost | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.46 |
 | [40807fa89](https://github.com/AFK-surf/monoid/commit/40807fa892485f932200ffe2772f7acb2b9caa24) refactor(sf-ui,website): unify ui.monoid live stud | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [02f41fec5](https://github.com/AFK-surf/monoid/commit/02f41fec50cc59a564b150a7c47cecc848edc501) feat(sf-ui): align segmented and slider liquid gla | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3e01fcab0](https://github.com/AFK-surf/monoid/commit/3e01fcab0066b6975b928daf9c03abc4f0fb1dba) feat(lg,sf-ui,mbui): port iOS 27.0 LiquidMorphPhys | 0.48 | 0.63 | 2.43 | 3.48 | 5.77 | 1.78 | 4.8 | 54.58 |
 | [e9f48df90](https://github.com/AFK-surf/monoid/commit/e9f48df90aca90a16004e26ef91eaf6cff6c00ec) fix(mbui): shorten the app update row (#8165) | 0.48 | 0.63 | 2.42 | 3.48 | 5.74 | 1.77 | 4.77 | 55.71 |
 | [61314116d](https://github.com/AFK-surf/monoid/commit/61314116db05d116bc27f23a8809c99948a4f49e) fix(station): catch mid-session MCP loss and backo | 0.48 | 0.63 | 2.42 | 3.48 | 5.74 | 1.77 | 4.77 | 55.71 |
-| [8b659b96c](https://github.com/AFK-surf/monoid/commit/8b659b96c7cd9a7b67ef429649ac6557ea1b7f19) perf(mbui): add Windows D3D11 GPU timing, display_ | 0.48 | 0.63 | 2.42 | 3.48 | 5.74 | 1.77 | 4.77 | 55.71 |
