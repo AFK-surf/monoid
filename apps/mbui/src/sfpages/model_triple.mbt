@@ -2670,14 +2670,16 @@ fn triple_combo_row_node(
               @sf.style_node(nl, fn() { triple_name_line })
               nl.min_width(Is(Some(0.0))) |> ignore
               @sf.words_node(nl, name, fn() { if on() { triple_row_picked } else { triple_row_name } })
-              .shrink(Is(1.0))
+              .shrink(Is(0.0))
+              .keeps_held(Is(true))
               .min_width(Is(Some(0.0)))
+              .max_width(Is(None), within=true)
               |> ignore
               // (giving way to the name where the row is short: cut short, all of it where the name leaves no room; its
               // capsule's sides too, which would else stand over what is at the row's end)
               nl.show(fn() { how() != "" }, fn(cr) {
                 @sf.style_node(cr, fn() { triple_combo_room }, in_row=true)
-                cr.min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
+                cr.shrink(Is(1.0)).min_width(Is(Some(0.0))).margin(Is((0.0, 0.0, 6.0, 0.0))).clips(Is(true)) |> ignore
                 cr.box(fn(cap) {
                   @sf.style_node(cap, fn() { triple_combo }, in_row=true)
                   cap.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore

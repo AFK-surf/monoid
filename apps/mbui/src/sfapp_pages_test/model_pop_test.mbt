@@ -357,6 +357,52 @@ fn words_in(t : @ui.Tester, r : (Double, Double, Double, Double), name : String)
 }
 
 ///|
+test "a long frequent configuration gives the model name room first" {
+  let how = "Runner · Highest · Standard (extended speed unavailable)"
+  for (w, h, scale, name, one_line) in [
+    (1280.0, 800.0, 1.0, "Example Model 7", true),
+    (390.0, 844.0, 1.0, "Example Model 7", true),
+    (390.0, 844.0, 1.3, "Example Model 7", true),
+    (320.0, 700.0, 1.0, "Example Model With A Very Long Name", false),
+  ] {
+    let label = name + " · " + how
+    let base = fixture_app("newchat-model")
+    let src : Source = {
+      ..base,
+      topic_read: fn(topic, params) {
+        @settings.fixture_followed()
+        let snap = base.topic(topic, params).get().snapshot()
+        if topic != "pick" { return snap }
+        match snap.value {
+          Some(Object(o)) => {
+            let m = o.copy()
+            m["combos"] = [{
+              "model": "gpt-6", "runtime": "codex", "effort": "high",
+              "name": Json::string(name), "text": Json::string(how), "selected": false,
+            }]
+            { ..snap, value: Some(Json::object(m)) }
+          }
+          _ => snap
+        }
+      },
+    }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=0)
+    t.set_font_scale(scale)
+    t.run_for(squeeze_opening)
+    let row = t.get(Button, label~).rect
+    let words = words_in(t, row, name).unwrap()
+    assert_true(words.x + words.w <= row.0 + row.2, msg="the model name stays in the combination row")
+    if one_line {
+      assert_eq(t.lines_of(name), [name], msg="\{w} at \{scale}: the configuration must give the model name room first")
+    }
+    assert_true(t.query(Button, label="从常用搭配移除 " + label) is Some(_))
+    t.click(Button, label~)
+    t.run_for(@motion.presence_in_ms)
+    assert_eq(new_fix.model, "gpt-6")
+  }
+}
+
+///|
 test "wide, few models: the configurations used most under 常用搭配, one model run two ways twice, a starred one's there and among the starred, none starred itself; the models over them, each its star" {
   // (what is used most is a configuration, apart from what is starred: the user, 2026-11-10, 「收藏跟常用不一样」
   // 「常用包括了思考深度和速度还有上下文长度」「是一种配置」)
