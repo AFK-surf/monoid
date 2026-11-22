@@ -448,7 +448,9 @@ fn composer_node_of(
     } else {
       None
     }
-    composer_foot_scrim_node(foot, roomy, made, fn() { stand.at(fn() { composer_foot_at(rest_wide()) }) })
+    composer_foot_scrim_node(foot, roomy, made, fn() { stand.at(fn() { composer_foot_at(rest_wide()) }) }, fn() {
+      stand.at(fn() { node_open_room(stand, rest_wide()) - 12.0 })
+    })
     match made {
       None => {
         composer_notices_node(foot, src, r, tips, stand, over_drawn)
@@ -514,17 +516,17 @@ fn composer_node_of(
 }
 
 ///|
-/// Fade messages as they pass behind the composer, using the page's background in both themes. The long feather keeps
-/// some of the backdrop visible through the glass. The nearly opaque bottom also seals the gap below the composer.
-/// Alpha stays below one so this paint never blocks selection or wheel scrolling beside the composer.
-let composer_backdrop_fade : Double = 220.0
-
+/// Fade messages as they pass behind the composer, using the page's background in both themes: from nothing at the top
+/// of its box with one line in it (`box_h`, node_open_room's) to nearly opaque at its foot, so what stands above it is
+/// left as it is and some of the backdrop still shows through the glass. The nearly opaque bottom also seals the gap
+/// below the composer. Alpha stays below one so this paint never blocks selection or wheel scrolling beside it.
 ///|
 fn composer_foot_scrim_node(
   foot : @view.View,
   roomy : () -> Bool,
   made : ComposerNodeFor?,
   seam_h : () -> Double,
+  box_h : () -> Double,
 ) -> Unit {
   foot.box(fn(scrim) {
     scrim
@@ -549,8 +551,8 @@ fn composer_foot_scrim_node(
     scrim.box(fn(band) {
       band
       .width_share(Is(1.0))
-      .height(By(fn() { Some(seam_h() + 6.0 + composer_backdrop_fade) }))
-      .fades(Is((0.0, composer_backdrop_fade, 0.0, 0.0)))
+      .height(By(fn() { Some(dmax(box_h(), seam_h() + 6.0)) }))
+      .fades(By(fn() { (0.0, dmax(0.0, box_h() - seam_h() - 6.0), 0.0, 0.0) }))
       .points(Is(false))
       |> ignore
       band.box(fn(fill) {

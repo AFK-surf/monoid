@@ -168,10 +168,10 @@ test "composer keeps its adaptive glass while fading messages behind it" {
     }
   }
   assert_eq(glass_of(), (2.1, 0x67, true))
-  // The fade reaches the glass, while the fill remains just translucent enough for uncovered words and the wheel.
+  // The fade starts at the glass's top (nothing above it dimmed), its fill just translucent enough for the wheel.
   let (gx, gy, gw, gh) = composer_cover_glass_box(t)
   let has_backdrop_fade = t.drawn_instances().iter().any(fn(a) {
-    a[5] == 0.0 && a[53] > 0.0 && a[1] < gy && a[1] + a[3] > gy + gh / 2.0 &&
+    a[5] == 0.0 && a[53] > 0.0 && a[1] <= gy + 0.5 && a[1] + a[3] > gy + gh / 2.0 &&
     (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw
   })
   assert_true(has_backdrop_fade, msg="expected messages to fade behind the composer")
