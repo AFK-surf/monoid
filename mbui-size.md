@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7a1ead641](https://github.com/AFK-surf/monoid/commit/7a1ead64114b749fcea9384e2c69dab1d844438e) fix(mbui): remove double smoothstep flattening on  | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.81 | 114.66 |
 | [0a8047918](https://github.com/AFK-surf/monoid/commit/0a804791815d242ada5a95d526f9860914c78447) fix(session): handle failed agent starts and retry | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.65 | 108.33 |
 | [0259f9d0c](https://github.com/AFK-surf/monoid/commit/0259f9d0cb824eecf48dbb691d6193edd0ed83ff) feat(mbui): add new submenu for terminal and brows | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.65 | 108.33 |
 | [7c4bfea28](https://github.com/AFK-surf/monoid/commit/7c4bfea281f3ac6557d50a19aa787600aea0084f) feat(liquid-glass): uplift controls, optical recip | 2.67 | 3.59 | 14.57 | 36.65 | 55.66 | 32.11 | 65 | 98.96 | 126.87 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6dd1cca90](https://github.com/AFK-surf/monoid/commit/6dd1cca904d4d4ef8c48b305b84d17d5d8b75d34) fix(mbui): drop the neutral disc under an agent's  | 2.65 | 3.56 | 14.48 | 36.55 | 55.32 | 32.01 | 64.7 | 98.75 | 125.22 |
 | [6fc4680e3](https://github.com/AFK-surf/monoid/commit/6fc4680e3cd3d2313541ff59c9576879eaa9a356) fix(sfapp): fade the narrow chat bar's ground at i | 2.65 | 3.56 | 14.48 | 36.55 | 55.32 | 32.01 | 64.7 | 98.55 | 116.53 |
 | [d89ca6e6b](https://github.com/AFK-surf/monoid/commit/d89ca6e6b89a7eb916ffed0af79e27f743c2de8e) fix(sf-ui): center chevrons in round keys by their | 2.65 | 3.57 | 14.48 | 36.55 | 55.31 | 32.01 | 64.7 | 98.71 | 119.32 |
-| [42f851327](https://github.com/AFK-surf/monoid/commit/42f851327726e06f5d041c630283d101d6653b65) perf(core): make each station's models once while  | 2.65 | 3.56 | 14.48 | 36.55 | 55.31 | 32 | 64.68 | 98.29 | 127.13 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7a1ead641](https://github.com/AFK-surf/monoid/commit/7a1ead64114b749fcea9384e2c69dab1d844438e) fix(mbui): remove double smoothstep flattening on  | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.53 |
 | [0a8047918](https://github.com/AFK-surf/monoid/commit/0a804791815d242ada5a95d526f9860914c78447) fix(session): handle failed agent starts and retry | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.53 |
 | [0259f9d0c](https://github.com/AFK-surf/monoid/commit/0259f9d0cb824eecf48dbb691d6193edd0ed83ff) feat(mbui): add new submenu for terminal and brows | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.38 |
 | [7c4bfea28](https://github.com/AFK-surf/monoid/commit/7c4bfea281f3ac6557d50a19aa787600aea0084f) feat(liquid-glass): uplift controls, optical recip | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.38 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6dd1cca90](https://github.com/AFK-surf/monoid/commit/6dd1cca904d4d4ef8c48b305b84d17d5d8b75d34) fix(mbui): drop the neutral disc under an agent's  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
 | [6fc4680e3](https://github.com/AFK-surf/monoid/commit/6fc4680e3cd3d2313541ff59c9576879eaa9a356) fix(sfapp): fade the narrow chat bar's ground at i | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
 | [d89ca6e6b](https://github.com/AFK-surf/monoid/commit/d89ca6e6b89a7eb916ffed0af79e27f743c2de8e) fix(sf-ui): center chevrons in round keys by their | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
-| [42f851327](https://github.com/AFK-surf/monoid/commit/42f851327726e06f5d041c630283d101d6653b65) perf(core): make each station's models once while  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
