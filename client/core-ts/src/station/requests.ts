@@ -231,8 +231,8 @@ export class Requests {
   /// Not `quiet`, it is in a person's sight: the station's background waits while it is under way, and what is idle
   /// there gives way (scheduler.ts `foregroundBegin`).
   exchange(station: StationAddr, method: string, path: string, headers: [string, string][], body: Uint8Array, quiet: boolean, ctx: SpanContext | null, heard?: (loaded: number) => void, wrote?: (sent: number) => void, sink?: (piece: Uint8Array) => void, onHead?: (status: number, headers: [string, string][]) => void, json = false, flushCut = false): Effect.Effect<{ status: number; headers: [string, string][]; body: Uint8Array; json?: unknown }, CoreError> {
-    const idleMs = json ? JSON_IDLE_MS : BODY_IDLE_MS;
-    const headIdleMs = json ? JSON_IDLE_MS : (body.length > 0 ? 0 : BODY_IDLE_MS);
+    const headIdleMs = json ? JSON_IDLE_MS : 0;
+    const bodyIdleMs = json ? JSON_IDLE_MS : BODY_IDLE_MS;
     return Effect.scoped(
       Effect.gen({ self: this }, function* () {
         const status = this.#status(station);
@@ -261,7 +261,7 @@ export class Requests {
             onHead?.(reply.status, reply.headers);
             // What came over the link is counted (and said in the span); what it says, decompressed.
             let came = 0;
-            const counted = { ...reply, body: { take: Effect.tap(within(reply.body.take, idleMs), (chunk) => Effect.sync(() => chunk && ((came += chunk.length), waiting ? waiting.received(chunk.length) : status.received(null, chunk.length)))) } };
+            const counted = { ...reply, body: { take: Effect.tap(within(reply.body.take, bodyIdleMs), (chunk) => Effect.sync(() => chunk && ((came += chunk.length), waiting ? waiting.received(chunk.length) : status.received(null, chunk.length)))) } };
             let loaded = 0;
             let told = 0;
             // An error's body is read as any other's: what it says is the error.
@@ -539,7 +539,7 @@ export class Requests {
       const [span, head] = this.#head(station, "GET", path, isBulk ? [[BULK, "1"]] : [], 0, ctx);
       const attempt = (): Effect.Effect<[string, Uint8Array], CoreError, Scope.Scope> =>
         Effect.gen({ self: this }, function* () {
-          const reply = yield* within(this.wire.request(station, head, empty), BODY_IDLE_MS);
+          const reply = yield* this.wire.request(station, head, empty);
           answered(span, reply);
           if (reply.status !== 200) return yield* Effect.fail(new CoreError(`http_${reply.status}`, t("station.core.fileUnreadable"), reply.status));
           const kind = replyHeader(reply, "content-type") ?? "";
