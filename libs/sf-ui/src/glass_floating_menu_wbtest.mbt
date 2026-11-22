@@ -36,8 +36,41 @@ test "glass_floating and glass_menu emit iOS 27 liquid glass recipes in light an
 }
 
 ///|
+test "glass_control_shadow, glass_overlay_shadow, and tab_bar_shadow emit exact light/dark values" {
+  for dark in [false, true] {
+    let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0, dark~, platform=0)
+    set_dark(Some(dark))
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(_) {  }) |> ignore
+    })
+    t.draw()
+    let expected_control = if dark { (6.0, 2.0, 0x00000038L) } else { (5.0, 2.0, 0x00000010L) }
+    let expected_overlay = if dark { (8.0, 4.0, 0x00000042L) } else { (8.0, 4.0, 0x00000014L) }
+    let tab = tab_bar_shadow()
+    assert_eq(glass_control_shadow(), expected_control)
+    assert_eq(glass_overlay_shadow(), expected_overlay)
+    assert_eq((tab.sigma, tab.dy, tab.color), expected_control)
+  }
+  set_dark(None)
+}
+
+///|
+fn outside_shadows(t : @ui.Tester) -> Array[(Double, Double, Int64)] {
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  let out : Array[(Double, Double, Int64)] = []
+  for a in t.drawn_instances() {
+    if a.length() > 13 && a[5] == 2.0 && a[12] == 1.0 {
+      let c = (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11])
+      out.push((a[7], a[13], c))
+    }
+  }
+  out
+}
+
+///|
 fn has_outside_shadow(t : @ui.Tester) -> Bool {
-  t.drawn_instances().iter().any(fn(a) { a.length() > 12 && a[5] == 2.0 && a[12] == 1.0 })
+  !outside_shadows(t).is_empty()
 }
 
 ///|
@@ -154,7 +187,8 @@ test "all four anchored popovers use single-layer liquid glass with shadow_outsi
       let t = anchored_popover_tester(kind, dark, false)
       let glass = t.drawn_glass()
       let liquid_count = glass.filter(fn(g) { g.4 == 6 }).length()
-      let outside_shadow = has_outside_shadow(t)
+      let shadows = outside_shadows(t)
+      let expected_shadow = glass_overlay_shadow()
       let expected_solid = panel_ground()
       let has_shell_solid_fill = match glass.get(0) {
         Some(g) =>
@@ -166,8 +200,8 @@ test "all four anchored popovers use single-layer liquid glass with shadow_outsi
       }
       let glass_audits = t.audit()
       assert_eq(
-        (kind, dark, glass.length(), liquid_count, outside_shadow, has_shell_solid_fill, glass_audits),
-        (kind, dark, 1, 1, true, false, []),
+        (kind, dark, glass.length(), liquid_count, shadows, has_shell_solid_fill, glass_audits),
+        (kind, dark, 1, 1, [expected_shadow], false, []),
       )
 
       // 2. Solid fallback mode (`MBUI_GLASS=solid`): 0 glass instances, panel_ground + 1pt panel_edge, clean audit

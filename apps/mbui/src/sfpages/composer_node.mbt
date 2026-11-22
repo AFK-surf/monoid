@@ -1284,14 +1284,9 @@ fn composer_box_node(
         Some(glass.sharing())
       }),
     )
-    // (the small screen's bottom bar's shadow round it (@sf.tab_bar_shadow), outside its outline only, as its glass is
-    // the bar's: the glass bends nothing of it)
-    .shadow(
-      By(fn() {
-        let s = @sf.tab_bar_shadow()
-        (s.sigma, s.dy, s.color)
-      }),
-    )
+    // (persistent liquid glass control shadow (@sf.glass_control_shadow), outside its outline only: the glass bends
+    // nothing of it)
+    .shadow(By(fn() { @sf.glass_control_shadow() }))
     .shadow_outside(Is(true))
     // (round as a capsule is, or as its box's corner; from one to the other as its height goes its way: drawn, as a
     // control answering, never laid out again for it)

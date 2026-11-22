@@ -99,11 +99,13 @@ test "drawer_node Leading & Trailing layout, single-layer liquid glass, solid de
         let glass = t.drawn_glass()
         let expected_glass = if solid { 0 } else { 1 }
         let liquid_count = glass.filter(fn(g) { g.4 == 6 }).length()
+        let shadows = outside_shadows(t)
+        let expected_shadows = if solid { [] } else { [glass_overlay_shadow()] }
         let audits = t.audit()
         @ui.set_glass_solid(None)
         assert_eq(
-          (side, dark, solid, glass.length(), liquid_count, audits),
-          (side, dark, solid, expected_glass, expected_glass, []),
+          (side, dark, solid, glass.length(), liquid_count, shadows, audits),
+          (side, dark, solid, expected_glass, expected_glass, expected_shadows, []),
         )
       }
     }

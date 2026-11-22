@@ -2385,12 +2385,36 @@ test "小屏, a chat's composer: the bottom bar's liquid glass and outside shado
       env=if dark { [("MBUI_DARK", "1")] } else { [] },
     )
     t.run_for(@ui.move_most_ms)
-    let shadow = @sf.tab_bar_shadow()
-    let want_shadow = Some((shadow.sigma, shadow.dy, shadow.color))
+    let want_shadow = Some(@sf.glass_control_shadow())
     guard composer_glass_drawn(t) is Some((_, blur, bezel, refraction, drawn_shadow)) else {
       fail("\{name}: no composer's glass at rest")
     }
     assert_eq((blur, bezel, refraction, drawn_shadow), (2.1, 20.0, 28.0, want_shadow), msg="\{name}: at rest")
+    // composer-top floating glass capsule on 小屏 also casts glass_control_shadow() with shadow_outside=true
+    let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+    let top_capsule_shadows = t
+      .drawn_instances()
+      .iter()
+      .filter(fn(g) { g.length() > 21 && g[5] == 6.0 && (g[3] - 30.0).abs() < 2.0 })
+      .map(fn(g) {
+        t
+        .drawn_instances()
+        .iter()
+        .find_first(fn(a) {
+          a.length() > 13 &&
+          a[5] == 2.0 &&
+          a[12] == 1.0 &&
+          (a[0] - g[0]).abs() < 0.5 &&
+          (a[2] - g[2]).abs() < 0.5 &&
+          (a[1] - a[13] - g[1]).abs() < 0.5
+        })
+        .map(fn(a) { (a[7], a[13], (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11])) })
+      })
+      .collect()
+    assert_true(!top_capsule_shadows.is_empty(), msg="\{name}: small composer-top glass capsule missing")
+    for s in top_capsule_shadows {
+      assert_eq(s, want_shadow, msg="\{name}: small composer-top glass capsule shadow")
+    }
     assert_eq(t.audit(), [], msg="\{name}: at rest")
     // (pressed, the composer opens on its shape's way: its blur on it, between the capsule's and the opened one's)
     let mut field : (Double, Double, Double, Double)? = None
@@ -2414,5 +2438,53 @@ test "小屏, a chat's composer: the bottom bar's liquid glass and outside shado
     }
     assert_eq((blur, bezel, refraction, drawn_shadow), (4.0, 20.0, 28.0, want_shadow), msg="\{name}: opened")
     assert_eq(t.audit(), [], msg="\{name}: opened")
+  }
+}
+
+///|
+test "大屏, composer and composer-top glass capsules cast outside-only glass_control_shadow in light and dark" {
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  for dark in [false, true] {
+    let name = if dark { "dark" } else { "light" }
+    new_run()
+    let src = fixture("chat")
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+    let t = @ui.Tester::new(
+      fn(c) { view(c, src) },
+      tree=app_tree(src),
+      w=1280.0,
+      h=800.0,
+      platform=0,
+      env=if dark { [("MBUI_DARK", "1")] } else { [] },
+    )
+    t.run_for(@ui.move_most_ms)
+    let want_shadow = Some(@sf.glass_control_shadow())
+    guard composer_glass_drawn(t) is Some((_, _, _, _, drawn_shadow)) else {
+      fail("\{name}: no wide composer glass")
+    }
+    assert_eq(drawn_shadow, want_shadow, msg="\{name}: wide composer shadow")
+    let top_capsule_shadows = t
+      .drawn_instances()
+      .iter()
+      .filter(fn(g) { g.length() > 21 && g[5] == 6.0 && (g[3] - 30.0).abs() < 2.0 })
+      .map(fn(g) {
+        t
+        .drawn_instances()
+        .iter()
+        .find_first(fn(a) {
+          a.length() > 13 &&
+          a[5] == 2.0 &&
+          a[12] == 1.0 &&
+          (a[0] - g[0]).abs() < 0.5 &&
+          (a[2] - g[2]).abs() < 0.5 &&
+          (a[1] - a[13] - g[1]).abs() < 0.5
+        })
+        .map(fn(a) { (a[7], a[13], (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11])) })
+      })
+      .collect()
+    assert_true(!top_capsule_shadows.is_empty(), msg="\{name}: wide composer-top glass capsule missing")
+    for s in top_capsule_shadows {
+      assert_eq(s, want_shadow, msg="\{name}: wide composer-top glass capsule shadow")
+    }
   }
 }

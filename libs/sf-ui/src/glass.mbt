@@ -148,13 +148,11 @@ pub fn glass_tab_bar(spot? : (Double, Double)? = None, merge? : Double = 0.0) ->
 }
 
 ///|
-/// The bottom bar's shadow by theme: softer on light grounds, deeper on dark grounds so the capsule floats cleanly.
+/// The bottom bar's shadow by theme: delegates to `glass_control_shadow()` so all persistent liquid glass controls
+/// share one calibrated outside-only shadow.
 pub fn tab_bar_shadow() -> Raised {
-  if theme().dark {
-    { sigma: 12.0, dy: 5.0, color: 0x00000052L }
-  } else {
-    { sigma: 10.0, dy: 4.0, color: 0x00000018L }
-  }
+  let (sigma, dy, color) = glass_control_shadow()
+  { sigma, dy, color }
 }
 
 ///|

@@ -805,7 +805,7 @@ fn sheet_node(
             let t = theme()
             Some({ ..glass_sheet(), solid: over(over(t.p.bg, alpha(0x000000FFL, 0.28 * live_dim())), alpha(t.p.card, 0.8)) })
           }))
-          .shadow(Is((sheet_raised.sigma, sheet_raised.dy, sheet_raised.color)))
+          .shadow(By(glass_overlay_shadow))
           .shadow_outside(Is(true))
           |> ignore
         })

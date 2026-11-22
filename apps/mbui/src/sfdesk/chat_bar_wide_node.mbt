@@ -537,7 +537,7 @@ fn wide_glass_capsule(b : @view.View, marked? : () -> Bool = fn() { false }) -> 
       (0.0, 0L)
     }
   }))
-  .shadow(By(fn() { @sf.float_shadow() }))
+  .shadow(By(fn() { @sf.glass_control_shadow() }))
   .shadow_outside(Is(true))
   .clips(Is(true))
   .shrink(Is(1.0))

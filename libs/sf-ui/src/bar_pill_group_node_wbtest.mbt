@@ -1,5 +1,5 @@
 // Tests for `bar_pill_group_node`: single-layer iOS 26 / macOS 26 liquid glass (`kind == 6`, zero nested glass),
-// tight outside-only `bar_pill_shadow()` (`shadow_outside == true`), exact concentric corners for both 34pt `round_key_node`
+// tight outside-only `glass_control_shadow()` (`shadow_outside == true`), exact concentric corners for both 34pt `round_key_node`
 // (`height=40, pad=3`) and 32pt `icon_button_node` (`height=36, pad=2`), 40pt standalone circle (`height=40, pad=0`),
 // `MBUI_GLASS=solid` degradation (`panel_ground()` + `control_edge_w` `panel_edge()`, 0 glass instances), and clean
 // `Tester::audit()` in both Light and Dark themes.
@@ -71,12 +71,13 @@ test "bar_pill_group_node renders single-layer liquid glass with shadow_outside,
       let t = pill_group_tester(kind, dark, false)
       let glass = t.drawn_glass()
       let liquid_count = glass.filter(fn(g) { g.4 == 6 }).length()
-      let outside_shadow = has_outside_shadow(t)
+      let shadows = outside_shadows(t)
+      let expected_shadow = glass_control_shadow()
       let corners = t.corner_faults()
       let audits = t.audit()
       assert_eq(
-        (kind, dark, glass.length(), liquid_count, outside_shadow, corners, audits),
-        (kind, dark, 1, 1, true, [], []),
+        (kind, dark, glass.length(), liquid_count, shadows, corners, audits),
+        (kind, dark, 1, 1, [expected_shadow], [], []),
       )
 
       let ts = pill_group_tester(kind, dark, true)

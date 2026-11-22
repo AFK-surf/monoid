@@ -1,6 +1,6 @@
 // Single-layer iOS 26 / macOS 26 floating liquid glass pill container for top bar action button groups:
 // uses `glass_bar_pill(spot~)` (40% translucent iOS 27 optical liquid glass matching `glass_tab_bar()`),
-// tight outside-only `bar_pill_shadow()` (`shadow_outside(Is(true))` so shadows stay crisp and never bleed inside glass or onto adjacent pills),
+// tight outside-only `glass_control_shadow()` (`shadow_outside(Is(true))` so shadows stay crisp and never bleed inside glass or onto adjacent pills),
 // native `.glassEffect(.interactive())` press response (`spot` specular highlight + `@motion.backdrop_press_spring` bounce),
 // `MBUI_GLASS=solid` hairline `panel_edge()` fallback, and automatic concentric corner scope (`corner_card_node`).
 
@@ -102,17 +102,6 @@ pub fn bar_pill_key_press_node(v : @view.View) -> Unit {
 }
 
 ///|
-/// Tight ambient shadow for floating top bar liquid glass pills: much softer and closer than popover `float_shadow()`
-/// so 38pt/40pt pills do not cast a heavy halo down into the bar or bleed onto adjacent 6pt-spaced pills.
-fn bar_pill_shadow() -> (Double, Double, Int64) {
-  if theme().dark {
-    (6.0, 2.0, 0x00000040L)
-  } else {
-    (4.0, 1.5, 0x00000012L)
-  }
-}
-
-///|
 /// A single-layer liquid glass pill container in `parent` for a group of top bar controls made by `body`:
 /// `height` tall (default `40.0`, full capsule radius `height / 2.0`), padded `pad` all around (default `3.0`,
 /// concentric with 34pt `round_key_node` at `height=40.0, pad=3.0` and 32pt `icon_button_node` at `height=36.0, pad=2.0`),
@@ -142,7 +131,7 @@ pub fn bar_pill_group_node(
     .glass(By(fn() { Some(glass_bar_pill(spot=spot_sig.get())) }))
     .scale(By(fn() { 1.0 + 0.05 * press_way.shown(g) }), about=At(0.5, 0.5))
     .edge(By(fn() { if g.glass_solid() { (control_edge_w, panel_edge()) } else { (0.0, 0L) } }))
-    .shadow(By(fn() { bar_pill_shadow() }))
+    .shadow(By(fn() { glass_control_shadow() }))
     .shadow_outside(Is(true))
     .clips(Is(true))
     .lends(pill_press_lent, scope)

@@ -1,6 +1,6 @@
 // The bar over words a finger picked in a message (sfbase's pick_bar, MessagePick.kt) as a node of the window's tree,
 // made once: a single-layer liquid glass capsule 40 high (`glass_menu()`, falling back to `panel_ground()` + hairline
-// `control_edge_w` border under `MBUI_GLASS=solid`) with outside-only `float_shadow()`; its buttons 32 high and
+// `control_edge_w` border under `MBUI_GLASS=solid`) with outside-only `glass_control_shadow()`; its buttons 32 high and
 // round, each its icon (where it has one) and its words; after a thin line 16 high, what it does with the message, each
 // a mark alone 32 round, read out by its words. Each a ripple where it is pressed, over mbui's headless button.
 
@@ -25,7 +25,7 @@ pub fn pick_bar_node(parent : @view.View, items : Array[PickBarItem], loc~ : Sou
     bar
     .glass(By(fn() { Some(glass_menu()) }))
     .edge(By(fn() { if bar.glass_solid() { (control_edge_w, theme().p.line) } else { (0.0, 0L) } }))
-    .shadow(By(fn() { float_shadow() }))
+    .shadow(By(fn() { glass_control_shadow() }))
     .shadow_outside(Is(true))
     .clips(Is(true))
     |> ignore

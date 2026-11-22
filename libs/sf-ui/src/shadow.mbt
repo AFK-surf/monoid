@@ -115,3 +115,29 @@ pub fn float_shadow_ink() -> Int64 {
 
 ///|
 let dark_float_shadow : Double = 0.34
+
+///|
+/// Tight outside-only outer shadow for persistent floating liquid glass controls (bottom tab bar, composer, top bar
+/// pills, composer-top capsules, floating action/quote/pick pills). Liquid glass already carries its own 0.75pt
+/// external contour and bevel refraction; always pair with `.shadow_outside(Is(true))` and never reuse opaque
+/// `float_shadow()` or `sheet_raised`.
+pub fn glass_control_shadow() -> (Double, Double, Int64) {
+  if theme().dark {
+    (6.0, 2.0, 0x00000038L)
+  } else {
+    (5.0, 2.0, 0x00000010L)
+  }
+}
+
+///|
+/// Restrained outside-only outer shadow for transient liquid glass overlays (anchored popovers, menus, small panels,
+/// toasts, floating side drawers, and bottom floating sheets). Liquid glass already carries its own 0.75pt external
+/// contour and bevel refraction; always pair with `.shadow_outside(Is(true))` and never reuse opaque `float_shadow()`
+/// or `sheet_raised`.
+pub fn glass_overlay_shadow() -> (Double, Double, Int64) {
+  if theme().dark {
+    (8.0, 4.0, 0x00000042L)
+  } else {
+    (8.0, 4.0, 0x00000014L)
+  }
+}

@@ -209,7 +209,7 @@ fn toast_look(
     .radius(Is(toast_r))
     .glass(By(fn() { Some(glass_toast()) }))
     .edge(By(fn() { if tb.glass_solid() { (1.0, panel_edge()) } else { (0.0, 0L) } }))
-    .shadow(By(float_shadow))
+    .shadow(By(glass_overlay_shadow))
     .shadow_outside(Is(true))
     .alpha(By(ground))
     // (in from below as it comes, moved across as it is swiped and put away: where it is, pressed and read out there

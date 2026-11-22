@@ -133,7 +133,7 @@ pub fn drawer_node(
         .radius(Is(spec.radius))
         .glass(By(fn() { Some({ ..glass_sheet(), solid: panel_ground() }) }))
         .edge(By(fn() { if card.glass_solid() { (1.0, panel_edge()) } else { (0.0, 0L) } }))
-        .shadow(By(float_shadow))
+        .shadow(By(glass_overlay_shadow))
         .shadow_outside(Is(true))
         .clips(Is(true))
         .offset(By(fn() {

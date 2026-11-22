@@ -569,11 +569,10 @@ fn bar_shadows_node(
 }
 
 ///|
-/// The shadow round the bar's glass on the page (@sf.tab_bar_shadow: light/dark separated), outside its outline only:
-/// the glass bends nothing of it.
+/// The shadow round the bar's glass on the page (@sf.glass_control_shadow: light/dark separated), outside its outline
+/// only: the glass bends nothing of it.
 fn bar_shadow() -> (Double, Double, Int64) {
-  let s = @sf.tab_bar_shadow()
-  (s.sigma, s.dy, s.color)
+  @sf.glass_control_shadow()
 }
 
 ///|

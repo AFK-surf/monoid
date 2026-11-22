@@ -499,6 +499,42 @@ test "小屏: a panel a panel closes for is a page of the same sheet: back to th
 }
 
 ///|
+test "小屏: floating island sheet casts outside-only glass_overlay_shadow in light and dark" {
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  for dark in [false, true] {
+    new_run()
+    let src = fixture("chat")
+    wide_src.val = Some(src)
+    open_chat(chat_a)
+    let t = @ui.Tester::new(
+      fn(c) { view(c, src) },
+      tree=app_tree(src),
+      w=390.0,
+      h=844.0,
+      platform=2,
+      env=if dark { [("MBUI_DARK", "1")] } else { [] },
+    )
+    t.run_for(@ui.move_most_ms)
+    @sf.panel_nodes("面板", from=Unanchored, fn(v, _) { ink_node(v, 40.0, 36.0, body_ink) })
+    t.run_for(sheet_way_ms(t))
+    let (dx, dy, dw, _) = t.query(Dialog).unwrap().rect
+    let sheet_shadows : Array[(Double, Double, Int64)] = []
+    for a in t.drawn_instances() {
+      if a.length() > 13 &&
+        a[5] == 2.0 &&
+        a[12] == 1.0 &&
+        (a[0] - dx).abs() < 2.0 &&
+        (a[2] - dw).abs() < 2.0 &&
+        (a[1] - a[13] - dy).abs() < 2.0 {
+        let c = (ch(a[8]) << 24) | (ch(a[9]) << 16) | (ch(a[10]) << 8) | ch(a[11])
+        sheet_shadows.push((a[7], a[13], c))
+      }
+    }
+    assert_eq(sheet_shadows, [@sf.glass_overlay_shadow()], msg="dark=\{dark}")
+  }
+}
+
+///|
 /// How long what scrolls goes on after a finger throws it, at most: its fling over by then (what a test runs to before
 /// it reads where it was left).
 let fling_over_ms : Double = 3000.0

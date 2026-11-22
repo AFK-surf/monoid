@@ -13,7 +13,7 @@ pub fn small_panel_node(p : @view.View) -> @view.View {
   .radius(Is(r_menu))
   .glass(By(fn() { Some(glass_menu()) }))
   .edge(By(fn() { if p.glass_solid() { (small_panel_line, panel_edge()) } else { (0.0, 0L) } }))
-  .shadow(By(fn() { float_shadow() }))
+  .shadow(By(fn() { glass_overlay_shadow() }))
   .shadow_outside(Is(true))
   .clips(Is(true))
 }
