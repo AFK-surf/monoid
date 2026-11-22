@@ -16,10 +16,11 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
-import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
+import { keptFirst } from "../src/station/calls.ts";
+import { ALPN, BULK_CRAWL_MS, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
 import { BATCH_LINES, BULK, BULK_LANE, NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
 import { Runner } from "../src/runtime.ts";
 import { StationAddr } from "../src/station/addr.ts";
@@ -2868,9 +2869,9 @@ sim("a_small_upload_says_nothing_of_its_ways_speed", async (s) => {
 });
 
 sim("slow_small_response_triggers_bulk_exploration_and_excludes_slow_link", async (s) => {
-  s.net.direct = { ms: 20, bps: 20 * 1024 };
+  s.net.direct = { ms: 20, bps: 40 * 1024 };
   s.net.lan = { punchMs: 500 };
-  const a = s.relay("https://a.relay.test/", { device: { ms: 60, bps: 20 * 1024 }, station: { ms: 10 } });
+  const a = s.relay("https://a.relay.test/", { device: { ms: 60, bps: 40 * 1024 }, station: { ms: 10 } });
   const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 10 } });
   const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
   await s.settle(station.endpoint.online());
@@ -2881,7 +2882,7 @@ sim("slow_small_response_triggers_bulk_exploration_and_excludes_slow_link", asyn
   await s.until(() => direct(mesh, id));
   const wire = wireOf(s, mesh);
   const addr = StationAddr.parse(id);
-  // 256 KiB (< SPEED_MIN_BYTES) at 20 KiB/s takes > 10s (>= SPEED_SLOW_MIN_MS): must be recorded and trigger bulk exploration.
+  // 256 KiB (< SPEED_MIN_BYTES) at 40 KiB/s takes ~6.4s (>= SPEED_SLOW_MIN_MS, above BULK_CRAWL_BPS): must be recorded and trigger bulk exploration.
   const got = await s.run(
     Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/big?mb=0.25", headers: [[BULK, "1"]] }, new Uint8Array()), (r) => readAll(r.body))),
     30_000,
@@ -2934,6 +2935,169 @@ sim("timed_reports_slow_stream_early_after_5s_and_ignores_fast_small_responses",
   await s.run(slowTimed.take);
   const early = mesh.speed(id, a);
   assert.ok(early !== null && early < BULK_SLOW_BPS, `expected early slow speed < BULK_SLOW_BPS before 512 KiB, got ${early}`);
+  await close(s, station, mesh);
+});
+
+sim("unmeasured_high_rtt_relay_loses_bulk_score_and_is_excluded_from_fast_bulk_links", async (s) => {
+  const high = s.relay("https://high.relay.test/", { device: { ms: 490 }, station: { ms: 10 } });
+  const low = s.relay("https://low.relay.test/", { device: { ms: 65 }, station: { ms: 10 } });
+  const station = await s.stationOn(low, [high]);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [low, high]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  // Open both relays (unmeasured speed) and let pings record their RTTs (~150ms vs ~1000ms).
+  await s.run(mesh.remeasure(id));
+  assert.equal(mesh.speed(id, high), null);
+  assert.equal(mesh.speed(id, low), null);
+  const ranked = mesh.bulkLinks(id);
+  assert.ok(ranked.length >= 2, `expected >= 2 bulk links, got ${ranked.length}`);
+  assert.equal(ranked[0]!.via(), low, "150ms unmeasured relay must outscore 1000ms unmeasured relay");
+  const fast = mesh.fastBulkLinks(id);
+  assert.ok(fast.some((l) => l.via() === low), "150ms unmeasured relay must be in fastBulkLinks");
+  assert.ok(fast.every((l) => l.via() !== high), "1000ms (>600ms) unmeasured relay must be excluded from fastBulkLinks when a faster way exists");
+  // When the low-RTT relay is measured slow, fastBulkLinks falls back to the single best unmeasured way instead of empty.
+  mesh.noteSpeed(id, low, SPEED_MIN_BYTES, 10_000);
+  const fallback = mesh.fastBulkLinks(id);
+  assert.equal(fallback.length, 1, "fallback must keep 1 best unmeasured way when no fast way exists");
+  assert.equal(fallback[0]!.via(), high);
+  await close(s, station, mesh);
+});
+
+sim("bulk_timed_records_crawl_at_5s_8kib_and_penalizes_midstream_disconnect", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const { station, mesh, id: bare } = await onRelays(s, [a, b, c]);
+  const id = `w/${bare}`;
+
+  // 1. Fast small sample with forceSlow=true must still be rejected.
+  mesh.noteSpeed(id, c, 16 * 1024, 1_000, true);
+  assert.equal(mesh.speed(id, c), null, "forceSlow must not record fast/short small samples");
+
+  // 2. 4 KB/s bulk stream records slow at 5s (20 KiB < 64 KiB, >= 8 KiB SPEED_CRAWL_MIN_BYTES).
+  assert.equal(SPEED_CRAWL_MIN_BYTES, 8 * 1024);
+  let idxA = 0;
+  const crawlBody = mesh.timed(id, a, {
+    take: Effect.suspend(() => {
+      const i = idxA++;
+      if (i === 0) return Effect.succeed(new Uint8Array(4 * 1024));
+      return Effect.as(Effect.sleep(1_000), new Uint8Array(4 * 1024));
+    }),
+  }, true);
+  await s.run(crawlBody.take); // t=0 (anchor)
+  for (let sec = 1; sec <= 4; sec++) {
+    await s.run(crawlBody.take);
+    assert.equal(mesh.speed(id, a), null, `must not report at ${sec}s before ${SPEED_SLOW_MIN_MS}ms`);
+  }
+  await s.run(crawlBody.take); // t=5s, own=20 KiB < 64 KiB
+  const speedA = mesh.speed(id, a);
+  assert.ok(speedA !== null && speedA < BULK_SLOW_BPS, `4 KB/s bulk stream must be recorded slow at 5s (20 KiB), got ${speedA}`);
+
+  // 3. Mid-stream connection lost at 6s records slow speed on bulk stream.
+  let idxB = 0;
+  const cutBody = mesh.timed(id, b, {
+    take: Effect.suspend(() => {
+      const i = idxB++;
+      if (i === 0) return Effect.succeed(new Uint8Array(4 * 1024));
+      if (i === 1) return Effect.as(Effect.sleep(2_000), new Uint8Array(4 * 1024));
+      return Effect.andThen(Effect.sleep(4_000), Effect.fail(new HostError("connection lost")));
+    }),
+  }, true);
+  await s.run(cutBody.take); // t=0
+  await s.run(cutBody.take); // t=2s
+  assert.equal(mesh.speed(id, b), null);
+  const cutRes = await s.run(Effect.result(cutBody.take)); // t=6s -> fails
+  assert.equal(cutRes._tag, "Failure");
+  const speedB = mesh.speed(id, b);
+  assert.ok(speedB !== null && speedB < BULK_SLOW_BPS, `mid-stream disconnect at 6s must penalize relay, got ${speedB}`);
+
+  await close(s, station, mesh);
+});
+
+for (const withSink of [false, true]) {
+  sim(`bulk_crawl_switches_to_fast_standby_and_kept_first_resumes_4mb_losslessly_${withSink ? "sink" : "out"}`, async (s) => {
+    const slow = s.relay("https://slow.relay.test/", { device: { ms: 20, bps: 4 * 1024 }, station: { ms: 10 } });
+    const fast = s.relay("https://fast.relay.test/", { device: { ms: 80, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+    const station = await s.stationOn(slow, [fast]);
+    const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [slow, fast]));
+    const id = `w/${station.id()}`;
+    await reach(s, mesh, id);
+    await s.run(mesh.remeasure(id));
+    // Both relays are open; slow has lower RTT (60ms vs 180ms) so it starts as the primary bulk link.
+    assert.equal(mesh.bulkLinks(id)[0]!.via(), slow);
+    const wire = wireOf(s, mesh);
+    const addr = StationAddr.parse(id);
+    const total = 4 * 1024 * 1024;
+    const expected = Uint8Array.from({ length: total }, (_, i) => i % 251);
+    const inner = { runner: s.runner } as unknown as Inner;
+
+    const sinkChunks: Uint8Array[] = [];
+    const viaUsed: (string | null)[] = [];
+    const startedAt = s.time.now();
+    const part = await s.run(
+      keptFirst<{ type: string; total: number }, { type: string; total: number; bytes: Uint8Array }>(
+        inner,
+        { offset: 0, length: total },
+        total,
+        () => Effect.succeed(null),
+        (_at, end) => Effect.succeed(end),
+        undefined,
+        withSink ? (piece) => sinkChunks.push(piece) : undefined,
+        (at, length, _before, take, said) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const reply = yield* wire.request(
+                addr,
+                { method: "GET", path: `/admin/api/part?offset=${at}&length=${length}`, headers: [[BULK, "1"]] },
+                new Uint8Array(),
+              );
+              viaUsed.push(reply.relay ?? null);
+              const head = { type: "video/mp4", total };
+              said(head);
+              yield* readAll(reply.body, take, false);
+              return { ...head, bytes: new Uint8Array(0) };
+            }),
+          ),
+        () => Effect.void,
+        (h) => h.total === total,
+      ),
+      60_000,
+    );
+    const elapsed = s.time.now() - startedAt;
+    assert.ok(viaUsed.length >= 2, `expected crawl abort + resume on fast standby, got ${JSON.stringify(viaUsed)}`);
+    assert.equal(viaUsed[0], "slow.relay.test");
+    assert.equal(viaUsed[1], "fast.relay.test");
+    assert.ok(elapsed >= BULK_CRAWL_MS && elapsed < 25_000, `expected ~12s total (vs ~1000s without failover), took ${elapsed}ms`);
+    const actual = withSink ? Buffer.concat(sinkChunks) : part.bytes;
+    assert.equal(actual.length, total);
+    assert.deepEqual(new Uint8Array(actual), expected);
+    await close(s, station, mesh);
+  });
+}
+
+sim("bulk_crawl_does_not_abort_when_no_better_standby_exists", async (s) => {
+  const only = s.relay("https://only.relay.test/", { device: { ms: 20, bps: 4 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationOn(only, []);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [only]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const length = 64 * 1024; // ~16s at 4 KB/s (> BULK_CRAWL_MS)
+  const expected = Uint8Array.from({ length }, (_, i) => i % 251);
+  const startedAt = s.time.now();
+  const got = await s.run(
+    Effect.scoped(
+      Effect.flatMap(
+        wire.request(addr, { method: "GET", path: `/admin/api/part?offset=0&length=${length}`, headers: [[BULK, "1"]] }, new Uint8Array()),
+        (r) => readAll(r.body),
+      ),
+    ),
+    60_000,
+  );
+  const elapsed = s.time.now() - startedAt;
+  assert.ok(elapsed > BULK_CRAWL_MS, `stream must run past ${BULK_CRAWL_MS}ms without aborting, took ${elapsed}ms`);
+  assert.deepEqual(got, expected);
   await close(s, station, mesh);
 });
 

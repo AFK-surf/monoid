@@ -127,8 +127,9 @@ export const TALLY_EVERY_MS = 60_000;
 export const SPEED_KEY = "relay-speed";
 /// A reply this long or longer tells how fast a way is; a shorter one is mostly its round trip.
 export const SPEED_MIN_BYTES = 512 * 1024;
-/// Minimum bytes and elapsed time for recording a slow bulk way early (below BULK_SLOW_BPS) before SPEED_MIN_BYTES arrives.
+/// Minimum bytes and elapsed time for recording a slow way early (below BULK_SLOW_BPS) before SPEED_MIN_BYTES arrives.
 export const SPEED_SLOW_MIN_BYTES = 64 * 1024;
+export const SPEED_CRAWL_MIN_BYTES = 8 * 1024;
 export const SPEED_SLOW_MIN_MS = 5_000;
 /// What a way's speed is weighed with its round trip by: the time a larger reply (a page of history, an image) takes.
 export const TYPICAL_BYTES = 256 * 1024;
@@ -1180,10 +1181,10 @@ export class Mesh {
   /// comes slower than its way could bring it (the station reading slowly); one seen before that is not kept against how
   /// the way brings replies now. The way the requests go on found slower than it was taken to be: they are moved at once
   /// if another is clearly better now (`#choose`), not after minutes more on it.
-  noteSpeed(addr: string, relay: string, bytes: number, ms: number): void {
+  noteSpeed(addr: string, relay: string, bytes: number, ms: number, forceSlow = false): void {
     if (ms <= 0 || bytes <= 0) return;
     const bps = (bytes / ms) * 1000;
-    const slowEarly = bytes >= SPEED_SLOW_MIN_BYTES && ms >= SPEED_SLOW_MIN_MS && bps < BULK_SLOW_BPS;
+    const slowEarly = (bytes >= SPEED_SLOW_MIN_BYTES || forceSlow) && ms >= SPEED_SLOW_MIN_MS && bps < BULK_SLOW_BPS;
     if (bytes < SPEED_MIN_BYTES && !slowEarly) return;
     const now = this.#env.host.nowMs();
     this.#saySpeed(addr, relay, bytes, ms, now);
@@ -1259,7 +1260,7 @@ export class Mesh {
   /// and each alone said a part of how fast it is: a phone's way to a station through a relay, held at a third of its
   /// speed, lost to ways never tried, each bringing its videos at 35 KB/s (2026-10-28). Told as it is under way, not
   /// after: a way found slow by a reply of megabytes is left at once (`noteSpeed`), not after it took minutes to come.
-  timed(addr: string, way: string, body: Pull<Uint8Array>): Pull<Uint8Array> {
+  timed(addr: string, way: string, body: Pull<Uint8Array>, isBulk = false): Pull<Uint8Array> {
     const key = `${endpointId(addr)} ${relayKey(way)}`;
     let first: number | null = null;
     let from = 0;
@@ -1268,47 +1269,64 @@ export class Mesh {
     let lastOwn = 0;
     let lastCame = 0;
     let lastAt = 0;
+    const minSlowBytes = isBulk ? SPEED_CRAWL_MIN_BYTES : SPEED_SLOW_MIN_BYTES;
     return {
-      take: Effect.flatMap(body.take, (chunk) =>
-        Effect.map(Clock.currentTimeMillis, (now) => {
-          const came = (this.#came.get(key) ?? 0) + (chunk?.length ?? 0);
-          this.#came.set(key, came);
-          if (first === null) {
-            if (chunk !== null) [first, from, lastAt, lastCame] = [now, came, now, came];
+      take: body.take.pipe(
+        Effect.tapError(() =>
+          isBulk && first !== null
+            ? Effect.map(Clock.currentTimeMillis, (now) => {
+                const elapsed = now - first!;
+                if (elapsed >= SPEED_SLOW_MIN_MS) {
+                  const came = this.#came.get(key) ?? from;
+                  const bytes = Math.max(came - from, 1);
+                  if ((bytes / elapsed) * 1000 < BULK_SLOW_BPS) {
+                    this.noteSpeed(addr, way, bytes, elapsed, true);
+                  }
+                }
+              })
+            : Effect.void,
+        ),
+        Effect.flatMap((chunk) =>
+          Effect.map(Clock.currentTimeMillis, (now) => {
+            const came = (this.#came.get(key) ?? 0) + (chunk?.length ?? 0);
+            this.#came.set(key, came);
+            if (first === null) {
+              if (chunk !== null) [first, from, lastAt, lastCame] = [now, came, now, came];
+              return chunk;
+            }
+            own += chunk?.length ?? 0;
+            const elapsed = now - first;
+            const slowTotal =
+              own >= minSlowBytes &&
+              elapsed >= SPEED_SLOW_MIN_MS &&
+              ((came - from) / Math.max(1, elapsed)) * 1000 < BULK_SLOW_BPS;
+            if (chunk === null) {
+              if (own >= SPEED_MIN_BYTES || (!told && slowTotal)) {
+                this.noteSpeed(addr, way, came - from, elapsed, isBulk && slowTotal);
+              }
+            } else if (!told) {
+              if (own >= SPEED_MIN_BYTES || slowTotal) {
+                told = true;
+                lastOwn = own;
+                lastCame = came;
+                lastAt = now;
+                this.noteSpeed(addr, way, came - from, elapsed, isBulk && slowTotal);
+              }
+            } else if (now - lastAt >= 5_000) {
+              const ownDelta = own - lastOwn;
+              const bytes = came - lastCame;
+              const ms = now - lastAt;
+              const slowSlice = ownDelta >= minSlowBytes && (bytes / Math.max(1, ms)) * 1000 < BULK_SLOW_BPS;
+              if (ownDelta >= SPEED_MIN_BYTES || slowSlice) {
+                lastOwn = own;
+                lastCame = came;
+                lastAt = now;
+                this.noteSpeed(addr, way, bytes, ms, isBulk && slowSlice);
+              }
+            }
             return chunk;
-          }
-          own += chunk?.length ?? 0;
-          const elapsed = now - first;
-          const slowTotal =
-            own >= SPEED_SLOW_MIN_BYTES &&
-            elapsed >= SPEED_SLOW_MIN_MS &&
-            ((came - from) / Math.max(1, elapsed)) * 1000 < BULK_SLOW_BPS;
-          if (chunk === null) {
-            if (own >= SPEED_MIN_BYTES || (!told && slowTotal)) {
-              this.noteSpeed(addr, way, came - from, elapsed);
-            }
-          } else if (!told) {
-            if (own >= SPEED_MIN_BYTES || slowTotal) {
-              told = true;
-              lastOwn = own;
-              lastCame = came;
-              lastAt = now;
-              this.noteSpeed(addr, way, came - from, elapsed);
-            }
-          } else if (now - lastAt >= 5_000) {
-            const ownDelta = own - lastOwn;
-            const bytes = came - lastCame;
-            const ms = now - lastAt;
-            const slowSlice = ownDelta >= SPEED_SLOW_MIN_BYTES && (bytes / Math.max(1, ms)) * 1000 < BULK_SLOW_BPS;
-            if (ownDelta >= SPEED_MIN_BYTES || slowSlice) {
-              lastOwn = own;
-              lastCame = came;
-              lastAt = now;
-              this.noteSpeed(addr, way, bytes, ms);
-            }
-          }
-          return chunk;
-        }),
+          }),
+        ),
       ),
     };
   }
@@ -2303,13 +2321,23 @@ export class Mesh {
     return { score: cost(way.srtt, via !== null ? this.speed(addr, via) : null) + 2 * way.dev, dev: way.dev };
   }
 
+  /// Best available RTT estimate for `way` in ms, falling back to 200 when no signal exists.
+  #wayRtt(way: Way): number {
+    if (way.samples > 0) return way.srtt;
+    if (way.answeredMs !== null && Number.isFinite(way.answeredMs) && way.answeredMs > 0) return way.answeredMs;
+    const netRtt = way.link.net().rttMs;
+    if (netRtt !== null && Number.isFinite(netRtt) && netRtt > 0) return netRtt;
+    return 200;
+  }
+
   /// Expected ms to transfer BULK_BYTES on `way` (lower is better).
   #bulkScore(addr: string, way: Way): number {
     if (way.link.pinned === LAN) return way.samples > 0 ? way.srtt : 0;
-    const rtt = way.samples > 0 ? way.srtt : (way.answeredMs ?? 200);
+    const rtt = this.#wayRtt(way);
     const sk = way.link.speedKey();
     const bps = sk !== null ? this.speed(addr, sk) : null;
-    return rtt + (BULK_BYTES / (bps !== null && bps > 0 ? bps : BULK_PROBE_BPS)) * 1000;
+    const probeBps = Math.min(BULK_PROBE_BPS, Math.round(BULK_PROBE_BPS * (200 / Math.max(200, rtt))));
+    return rtt + (BULK_BYTES / (bps !== null && bps > 0 ? bps : probeBps)) * 1000;
   }
 
   /// Of `ways`, the one scoring best (pinged at least once; none pinged yet: the first).
@@ -2951,14 +2979,34 @@ export class Mesh {
     return [...byKey.values()].sort((a, b) => this.#bulkScore(addr, a) - this.#bulkScore(addr, b)).map((w) => w.link);
   }
 
-  /// Fast open bulk ways suitable for concurrent striped transfers: excludes ways known to be below BULK_SLOW_BPS.
+  /// Fast open bulk ways suitable for concurrent striped transfers: excludes ways with missed pings, ways known to be
+  /// below BULK_SLOW_BPS, and high-RTT (> 600ms) unmeasured ways (falling back to the single best unmeasured way when
+  /// no other fast way exists).
   fastBulkLinks(addr: string): Link[] {
-    return this.bulkLinks(addr).filter((l) => {
-      if (l.pinned === LAN) return true;
+    const ways = this.#live(addr);
+    const candidates = this.bulkLinks(addr).flatMap((l) => {
+      const w = ways.find((x) => x.link === l);
+      return w !== undefined && w.missed === 0 ? [w] : [];
+    });
+    const fast: Link[] = [];
+    let bestUnmeasured: Link | null = null;
+    for (const w of candidates) {
+      const l = w.link;
+      if (l.pinned === LAN) {
+        fast.push(l);
+        continue;
+      }
       const sk = l.speedKey();
       const bps = sk !== null ? this.speed(addr, sk) : null;
-      return bps === null || bps >= BULK_SLOW_BPS;
-    });
+      if (bps !== null) {
+        if (bps >= BULK_SLOW_BPS) fast.push(l);
+      } else {
+        if (bestUnmeasured === null) bestUnmeasured = l;
+        if (this.#wayRtt(w) <= 600) fast.push(l);
+      }
+    }
+    if (fast.length === 0 && bestUnmeasured !== null) return [bestUnmeasured];
+    return fast;
   }
 
   /// Standby link for hedging a slow bulk transfer: never hedges onto a way already known to be below BULK_SLOW_BPS.
@@ -2974,6 +3022,19 @@ export class Mesh {
       return l;
     }
     return null;
+  }
+
+  /// A live standby bulk way that is at least 2x better than `link` (half the expected `#bulkScore` transfer time),
+  /// or null when no clearly better alternative exists.
+  betterBulkStandby(addr: string, link: Link): Link | null {
+    const candidate = this.bulkStandby(addr, link);
+    if (candidate === null) return null;
+    const ways = this.#live(addr);
+    const curWay = ways.find((w) => w.link === link);
+    const candWay = ways.find((w) => w.link === candidate);
+    if (candWay === undefined) return null;
+    if (curWay === undefined) return candidate;
+    return this.#bulkScore(addr, candWay) < 0.5 * this.#bulkScore(addr, curWay) ? candidate : null;
   }
 
   /// Relays that may be dialled pinned for bulk transfers (allows the single relay when main is on direct).

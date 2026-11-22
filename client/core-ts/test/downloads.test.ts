@@ -9,6 +9,8 @@ import { test } from "node:test";
 import { Deferred, Effect } from "effect";
 import type { FakeHost } from "../src/testing.ts";
 import { Core } from "../src/core.ts";
+import { handlers } from "../src/core/execute.ts";
+import { Kind } from "../src/trace.ts";
 import { AGAIN_MS, titleOf } from "../src/views/downloads.ts";
 import { chatKeptId, sentKeptId } from "../src/drive-kept.ts";
 import { RECONNECT_MS } from "../src/station/sync.ts";
@@ -941,5 +943,69 @@ test("download dynamically upgrades from 1 lane to 2 concurrent lanes when bulkL
     out.set(got.bytes, off);
   }
   assert.deepEqual(out, file);
+  t.core.close();
+});
+
+test("concurrent foreground station.file.part >= 256 KiB auto-stripes across bulk lanes without explicit lane", async () => {
+  const file = bytesOf(2 * MB, 53);
+  const seen: { offset: number; length: number; lane: string | undefined }[] = [];
+  const gates: Deferred.Deferred<void>[] = [];
+  const t = await started(undefined, 0, (host): StationWire => {
+    const fallback = new HostWire(host);
+    return {
+      bulkLanes: () => 2,
+      request: (station, head, body) => {
+        const u = new URL(head.path, "https://stillfail.test");
+        if (!u.pathname.endsWith("/sessions/k1/parts")) return fallback.request(station, head, body);
+        return Effect.suspend(() => {
+          const offset = Number(u.searchParams.get("offset"));
+          const length = Number(u.searchParams.get("length"));
+          const lane = head.headers.find(([k]) => k.toLowerCase() === BULK_LANE)?.[1];
+          seen.push({ offset, length, lane });
+          if (length >= 256 * 1024 && gates.length < 2) {
+            const gate = Deferred.makeUnsafe<void>();
+            gates.push(gate);
+            return Effect.andThen(Deferred.await(gate), fallback.request(station, head, body));
+          }
+          return fallback.request(station, head, body);
+        });
+      },
+    };
+  });
+  files(t.host, new Map([["video.mp4", file]]));
+  const ui = t.core.connect();
+  const done = new Map<number, any>();
+  const take = () => {
+    for (const [, m] of t.host.takeEmitted()) {
+      const msg = m as Record<string, unknown>;
+      if ("ok" in msg || "error" in msg) done.set(msg.id as number, msg);
+    }
+  };
+  // Two concurrent foreground >= 256 KiB parts without explicit lane must auto-assign distinct lanes.
+  call(t.core, ui, 201, "station.file.part", { station: ST, key: "k1", name: "video.mp4", offset: 0, length: 512 * 1024, keep: true, size: file.length });
+  call(t.core, ui, 202, "station.file.part", { station: ST, key: "k1", name: "video.mp4", offset: 512 * 1024, length: 512 * 1024, keep: true, size: file.length });
+  await t.host.settle();
+  assert.equal(gates.length, 2, "both large video parts must be in flight concurrently");
+  assert.deepEqual(seen.map((s) => s.lane), ["0", "1"], "concurrent large parts must auto-stripe across distinct lanes");
+  for (const g of gates) Deferred.doneUnsafe(g, Effect.void);
+  await t.host.settle();
+  take();
+  assert.deepEqual(done.get(201)?.bytes, file.slice(0, 512 * 1024));
+  assert.deepEqual(done.get(202)?.bytes, file.slice(512 * 1024, MB));
+
+  // Small (< 256 KiB) or quiet part reads must NOT auto-assign a lane.
+  seen.length = 0;
+  call(t.core, ui, 203, "station.file.part", { station: ST, key: "k1", name: "video.mp4", offset: MB, length: 64 * 1024, keep: true, size: file.length });
+  await t.host.settle();
+  await t.core.inner.runner.run(
+    handlers.stationFilePart!(
+      t.core.inner,
+      { kind: "stationFilePart", station: ST, key: "k1", name: "video.mp4", offset: MB + 64 * 1024, length: 512 * 1024, progress: false, stream: false, keep: file.length, quiet: true },
+      () => {},
+      [ui, 204],
+      t.core.inner.tracer.span("test", Kind.Internal).context,
+    ),
+  );
+  assert.deepEqual(seen.map((s) => s.lane), [undefined, undefined], "small and quiet reads must not auto-assign bulk lanes");
   t.core.close();
 });
