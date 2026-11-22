@@ -213,6 +213,7 @@ export class Copies {
   #told: Told = nothingTold();
   #gathering: (() => void) | null = null;
   #transcriptGathering: (() => void) | null = null;
+  #retrying: (() => void) | null = null;
   #wantTranscripts = false;
   #passing: Promise<void> | null = null;
   #again = false;
@@ -275,7 +276,11 @@ export class Copies {
   async close(): Promise<void> {
     this.#closed = true;
     this.#gathering?.();
+    this.#gathering = null;
     this.#transcriptGathering?.();
+    this.#transcriptGathering = null;
+    this.#retrying?.();
+    this.#retrying = null;
     this.#telling?.();
     for (const k of this.#keeping.values()) k.again?.();
     this.#handAgain?.();
@@ -311,7 +316,7 @@ export class Copies {
 
   /// A pass a moment from now (what else changes meanwhile goes with it).
   #gather(): void {
-    if (this.#gathering !== null || this.#closed) return;
+    if (this.#gathering !== null || this.#retrying !== null || this.#closed) return;
     this.#gathering = this.#d.fibers.after(GATHER_MS, () => { // timer: a debounce of a burst of the store's changes
       this.#gathering = null;
       void this.#pass();
@@ -321,7 +326,7 @@ export class Copies {
   /// An independently debounced transcript scan (never blocks the 1s chat export pass).
   #gatherTranscripts(): void {
     this.#wantTranscripts = true;
-    if (this.#transcriptGathering !== null || this.#closed) return;
+    if (this.#transcriptGathering !== null || this.#retrying !== null || this.#closed) return;
     this.#transcriptGathering = this.#d.fibers.after(TRANSCRIPT_GATHER_MS, () => { // timer: a debounce of a burst of transcript writes
       this.#transcriptGathering = null;
       this.#wantTranscripts = false;
@@ -343,6 +348,8 @@ export class Copies {
       try {
         const passed = await this.#d.runner.pass(told);
         this.#passed = passed;
+        this.#retrying?.();
+        this.#retrying = null;
         if (this.#exportError !== null) {
           this.#exportError = null;
           this.#exportTries = 0;
@@ -354,11 +361,24 @@ export class Copies {
         log.warn("copies", "an export failed", { error: (e as Error).message });
         // (what was told goes with the next one, a while from now: its thread started again where it ended)
         this.#merge(told);
+        this.#again = false;
+        this.#gathering?.();
+        this.#gathering = null;
+        this.#transcriptGathering?.();
+        this.#transcriptGathering = null;
         if (this.#exportError === null) this.#changed(0);
         this.#exportError = (e as Error).message;
         const wait = Math.min(RETRY_MS * 2 ** this.#exportTries, RETRY_MOST_MS);
         this.#exportTries++;
-        if (!this.#closed) this.#d.fibers.after(wait, () => void this.#pass()); // timer: a retry after a failure
+        this.#retrying?.();
+        this.#retrying = null;
+        if (!this.#closed) {
+          this.#retrying = this.#d.fibers.after(wait, () => { // timer: a retry after a failure
+            this.#retrying = null;
+            if (this.#wantTranscripts && this.#transcriptGathering === null) this.#gatherTranscripts();
+            void this.#pass();
+          });
+        }
       }
     })();
     await this.#passing;

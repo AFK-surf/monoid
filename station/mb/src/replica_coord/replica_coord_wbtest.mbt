@@ -154,16 +154,20 @@ test "tell tracks sessions, removals, and ignores unrelated events" {
 
 ///|
 /// An export's process of the test's own: the lines it was written, an answer given each ask as `answer` says (none:
-/// it waits), its end once its stdin is closed.
+/// it waits), its end once its stdin is closed (unless `end_on_eof` is false, simulating a stuck pass).
 fn fake_export(
   written : Array[String],
   answer : (J) -> String?,
   started : Ref[Int],
+  signals? : Array[String] = [],
+  end_on_eof? : Bool = true,
+  ignore_sigterm? : Bool = false,
 ) -> () -> ExportProcess raise {
   () => {
     started.val += 1
     let out : @effect.Queue[ExportSaid] = @effect.Queue::unbounded()
     let open = Ref(true)
+    let dead = Ref(false)
     {
       write: b => {
         guard open.val else { return false }
@@ -177,7 +181,18 @@ fn fake_export(
       },
       end_input: () => {
         open.val = false
-        ignore(out.try_offer(Ended(Some(0), None)))
+        if end_on_eof && !dead.val {
+          dead.val = true
+          ignore(out.try_offer(Ended(Some(0), None)))
+        }
+      },
+      kill: sig => {
+        signals.push(sig)
+        open.val = false
+        if !dead.val && (!ignore_sigterm || sig == "SIGKILL") {
+          dead.val = true
+          ignore(out.try_offer(Ended(None, Some(sig))))
+        }
       },
       next: async fn() { out.take() },
     }
@@ -381,4 +396,141 @@ test "a batch gone with no newer head, another error, or gone again and again: t
   let (got, went) = level_by_newest(old, newest, batches_but([b1, b2, b3, b4]), [])
   assert_eq(got, "failed: ENOENT ENOENT: no such file or directory, open '\{b3}'")
   assert_eq(went, 1 + stale_heads_most)
+}
+
+///|
+test "process_runner close force-kills a stuck export after close_grace_ms (SIGTERM and SIGKILL escalation)" {
+  // Case 1: stuck in pass, ignores close/EOF, exits on SIGTERM after close_grace_ms.
+  let rt = @effect.Runtime::new()
+  let written = []
+  let signals = []
+  let started = Ref(0)
+  let runner = process_runner(
+    fake_export(written, _ => None, started, signals~, end_on_eof=false),
+    () => 7.0,
+    close_grace_ms=20.0,
+  )
+  let passed = Ref("")
+  let closed = Ref(false)
+  ignore(
+    rt.fork(async fn() {
+      ignore((runner.pass)(jo([]))) catch {
+        e => passed.val = message_of(e)
+      }
+    }),
+  )
+  rt.advance(1)
+  ignore(
+    rt.fork(async fn() {
+      (runner.close)()
+      closed.val = true
+    }),
+  )
+  rt.advance(10)
+  assert_false(closed.val)
+  assert_eq(signals, [])
+  rt.advance(15)
+  assert_true(closed.val)
+  assert_eq(signals, ["SIGTERM"])
+  assert_eq(passed.val, "the copies' export ended (null, SIGTERM)")
+
+  // Case 2: ignores SIGTERM too -> escalates to SIGKILL after min(close_grace_ms, 500).
+  let rt2 = @effect.Runtime::new()
+  let written2 = []
+  let signals2 = []
+  let started2 = Ref(0)
+  let runner2 = process_runner(
+    fake_export(written2, _ => None, started2, signals=signals2, end_on_eof=false, ignore_sigterm=true),
+    () => 7.0,
+    close_grace_ms=20.0,
+  )
+  let passed2 = Ref("")
+  let closed2 = Ref(false)
+  ignore(
+    rt2.fork(async fn() {
+      ignore((runner2.pass)(jo([]))) catch {
+        e => passed2.val = message_of(e)
+      }
+    }),
+  )
+  rt2.advance(1)
+  ignore(
+    rt2.fork(async fn() {
+      (runner2.close)()
+      closed2.val = true
+    }),
+  )
+  rt2.advance(25)
+  assert_false(closed2.val)
+  assert_eq(signals2, ["SIGTERM"])
+  rt2.advance(25)
+  assert_true(closed2.val)
+  assert_eq(signals2, ["SIGTERM", "SIGKILL"])
+  assert_eq(passed2.val, "the copies' export ended (null, SIGKILL)")
+}
+
+///|
+test "Copies pass failure strictly respects backoff even when told arrives during retry window" {
+  let rt = @effect.Runtime::new()
+  let after = (ms : Double, f : () -> Unit) => {
+    let cancelled = Ref(false)
+    let fiber = rt.fork_quiet(async fn() {
+      @effect.sleep(ms.to_int())
+      if !cancelled.val {
+        f()
+      }
+    })
+    () => {
+      cancelled.val = true
+      fiber.interrupt()
+    }
+  }
+  let should_fail = Ref(true)
+  let pass_calls = Ref(0)
+  let seen_sessions : Array[String] = []
+  let eloop = ExportLoop::new(
+    after,
+    f => ignore(rt.fork_quiet(f)),
+    async fn(told) {
+      pass_calls.val += 1
+      if should_fail.val {
+        raise failed("database is locked")
+      }
+      for s in strings_of(at(told, "sessions")) {
+        seen_sessions.push(s)
+      }
+      jo([("heads", jo([])), ("more", jb(false)), ("wrote", ji(1)), ("empty", jb(false))])
+    },
+    _ => (),
+    _ => (),
+    (_, _, _) => (),
+  )
+
+  // Trigger first change -> gather fires at 1000ms -> pass #1 fails -> 5000ms backoff armed.
+  eloop.told(parse("{\"type\":\"session\",\"key\":\"s1\"}"))
+  rt.advance(1000)
+  assert_eq(pass_calls.val, 1)
+  assert_eq(eloop.export_error, Some("database is locked"))
+  assert_eq(eloop.export_tries, 1)
+
+  // New changes arrive during the 5000ms backoff window -> must NOT re-enter pass within 1s!
+  eloop.told(parse("{\"type\":\"session\",\"key\":\"s2\"}"))
+  rt.advance(1000)
+  assert_eq(pass_calls.val, 1)
+  eloop.told(parse("{\"type\":\"session\",\"key\":\"s3\"}"))
+  rt.advance(3000)
+  assert_eq(pass_calls.val, 1)
+
+  // Advance past 5000ms -> retry fires and recovers, exporting all accumulated sessions together!
+  should_fail.val = false
+  rt.advance(1500)
+  assert_eq(pass_calls.val, 2)
+  assert_eq(eloop.export_error, None)
+  assert_eq(eloop.export_tries, 0)
+  assert_true(seen_sessions.contains("s1"))
+  assert_true(seen_sessions.contains("s2"))
+  assert_true(seen_sessions.contains("s3"))
+
+  ignore(rt.fork(async fn() { eloop.close() }))
+  rt.advance(1)
 }

@@ -181,6 +181,7 @@ pub(all) enum ExportSaid {
 pub(all) struct ExportProcess {
   write : (Bytes) -> Bool
   end_input : () -> Unit
+  kill : (String) -> Unit
   next : async () -> ExportSaid
 }
 
@@ -198,7 +199,7 @@ priv struct Running {
 /// …}`, answered `{id, answer}` or `{id, error}` a line each, one ask at a time. What it says is read only by whoever
 /// holds the turn (`one`), its end too: `close` tells it to end and waits its turn for that end, so an ask reading it
 /// meanwhile is answered by the end and the end is never taken from under the close (its process left running).
-pub fn process_runner(start : () -> ExportProcess raise, now : () -> Double) -> Runner {
+pub fn process_runner(start : () -> ExportProcess raise, now : () -> Double, close_grace_ms? : Double = 2000.0) -> Runner {
   let proc : Ref[Running?] = Ref(None)
   let places : Ref[J?] = Ref(None)
   let closed = Ref(false)
@@ -300,14 +301,39 @@ pub fn process_runner(start : () -> ExportProcess raise, now : () -> Double) -> 
       proc.val = None
       ignore((r.p.write)(@utf8.encode("{\"id\":0,\"type\":\"close\"}\n")))
       (r.p.end_input)()
-      // (its end waited for in turn: an ask reading it now is answered by that end, then it is here)
-      one.with_permit(async fn() {
-        while !r.ended {
-          if (r.p.next)() is Ended(_, _) {
-            r.ended = true
+      if r.ended {
+        return
+      }
+      let grace = if close_grace_ms >= 1.0 { close_grace_ms.to_int() } else { 1 }
+      let kill_wait = if grace < 500 { grace } else { 500 }
+      let watchdog = @effect.runtime().fork_quiet(async fn() {
+        // timer: a timeout waiting for the export process to close before forcing exit
+        @effect.sleep(grace)
+        if !r.ended {
+          (r.p.kill)("SIGTERM")
+          // timer: a timeout escalating SIGTERM to SIGKILL on a stuck export process
+          @effect.sleep(kill_wait)
+          if !r.ended {
+            (r.p.kill)("SIGKILL")
           }
         }
       })
+      // (its end waited for in turn: an ask reading it now is answered by that end, then it is here)
+      try {
+        one.with_permit(async fn() {
+          while !r.ended {
+            if (r.p.next)() is Ended(_, _) {
+              r.ended = true
+            }
+          }
+        })
+      } catch {
+        e => {
+          watchdog.interrupt()
+          raise e
+        }
+      }
+      watchdog.interrupt()
     },
   }
 }

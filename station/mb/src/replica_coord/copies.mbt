@@ -258,16 +258,199 @@ fn Restoring::to_json(self : Restoring) -> J {
 }
 
 ///|
+/// Pure pass-scheduling, debounce, and failure-backoff loop for `Copies`, kept free of `Host`/`Fs` so native
+/// whitebox tests exercise the exact state machine on `@effect.Runtime`.
+priv struct ExportLoop {
+  after : (Double, () -> Unit) -> () -> Unit
+  go : (async () -> Unit) -> Unit
+  run_pass : async (J) -> J
+  on_passed : (J) -> Unit
+  on_changed : (Double) -> Unit
+  on_warn : (String, String, J) -> Unit
+  mut told : Told
+  mut gathering : (() -> Unit)?
+  mut transcript_gathering : (() -> Unit)?
+  mut retrying : (() -> Unit)?
+  mut want_transcripts : Bool
+  mut passing : @effect.Deferred[Unit]?
+  mut again : Bool
+  mut closed : Bool
+  mut export_error : String?
+  mut export_tries : Int
+}
+
+///|
+fn ExportLoop::new(
+  after : (Double, () -> Unit) -> () -> Unit,
+  go : (async () -> Unit) -> Unit,
+  run_pass : async (J) -> J,
+  on_passed : (J) -> Unit,
+  on_changed : (Double) -> Unit,
+  on_warn : (String, String, J) -> Unit,
+) -> ExportLoop {
+  {
+    after,
+    go,
+    run_pass,
+    on_passed,
+    on_changed,
+    on_warn,
+    told: Told::nothing(),
+    gathering: None,
+    transcript_gathering: None,
+    retrying: None,
+    want_transcripts: false,
+    passing: None,
+    again: false,
+    closed: false,
+    export_error: None,
+    export_tries: 0,
+  }
+}
+
+///|
+fn ExportLoop::told(self : ExportLoop, change : J) -> Unit {
+  if tell(self.told, change) {
+    self.gather()
+  }
+  match str_at(change, "type") {
+    Some("session") | Some("conversation") | Some("sessionRemoved") => self.gather_transcripts()
+    _ => ()
+  }
+}
+
+///|
+fn ExportLoop::gather(self : ExportLoop) -> Unit {
+  if self.gathering is Some(_) || self.retrying is Some(_) || self.closed {
+    return
+  }
+  // timer: a debounce of a burst of the store's changes
+  self.gathering = Some(
+    (self.after)(gather_ms, () => {
+      self.gathering = None
+      (self.go)(async fn() { self.pass() })
+    }),
+  )
+}
+
+///|
+fn ExportLoop::gather_transcripts(self : ExportLoop) -> Unit {
+  self.want_transcripts = true
+  if self.transcript_gathering is Some(_) || self.retrying is Some(_) || self.closed {
+    return
+  }
+  // timer: a debounce of a burst of transcript writes
+  self.transcript_gathering = Some(
+    (self.after)(transcript_gather_ms, () => {
+      self.transcript_gathering = None
+      self.want_transcripts = false
+      self.told.transcripts = true
+      (self.go)(async fn() { self.pass() })
+    }),
+  )
+}
+
+///|
+fn ExportLoop::merge(self : ExportLoop, told : Told) -> Unit {
+  let t = self.told
+  t.sessions.push_iter(told.sessions.iter())
+  t.threads.push_iter(told.threads.iter())
+  t.removed_sessions.push_iter(told.removed_sessions.iter())
+  t.removed_threads.push_iter(told.removed_threads.iter())
+  t.marks.push_iter(told.marks.iter())
+  if told.transcripts {
+    t.transcripts = true
+  }
+}
+
+///|
+async fn ExportLoop::pass(self : ExportLoop) -> Unit {
+  if self.passing is Some(_) {
+    self.again = true
+    return
+  }
+  let told = self.told
+  self.told = Told::nothing()
+  self.again = false
+  let done : @effect.Deferred[Unit] = @effect.Deferred::new()
+  self.passing = Some(done)
+  (self.go)(async fn() {
+    try {
+      let passed = (self.run_pass)(told.to_json())
+      call_opt(self.retrying)
+      self.retrying = None
+      if self.export_error is Some(_) {
+        self.export_error = None
+        self.export_tries = 0
+        (self.on_changed)(0.0)
+      } else if num_at(passed, "wrote").unwrap_or(0.0) > 0.0 {
+        (self.on_changed)(copies_tell_ms)
+      }
+      (self.on_passed)(passed)
+      if yes_at(passed, "more") {
+        self.again = true
+      }
+    } catch {
+      e => {
+        (self.on_warn)("copies", "an export failed", jo([("error", js(message_of(e)))]))
+        self.merge(told)
+        self.again = false
+        call_opt(self.gathering)
+        self.gathering = None
+        call_opt(self.transcript_gathering)
+        self.transcript_gathering = None
+        if self.export_error is None {
+          (self.on_changed)(0.0)
+        }
+        self.export_error = Some(message_of(e))
+        let wait = backoff(copies_retry_ms, self.export_tries, copies_retry_most_ms)
+        self.export_tries += 1
+        call_opt(self.retrying)
+        self.retrying = None
+        if !self.closed {
+          // timer: a retry after a failure
+          self.retrying = Some(
+            (self.after)(wait, () => {
+              self.retrying = None
+              if self.want_transcripts && self.transcript_gathering is None {
+                self.gather_transcripts()
+              }
+              (self.go)(async fn() { self.pass() })
+            }),
+          )
+        }
+      }
+    }
+    self.passing = None
+    ignore(done.succeed(()))
+    if self.again && !self.closed {
+      (self.go)(async fn() { self.pass() })
+    }
+  })
+  done.wait()
+}
+
+///|
+async fn ExportLoop::close(self : ExportLoop) -> Unit {
+  self.closed = true
+  call_opt(self.gathering)
+  self.gathering = None
+  call_opt(self.transcript_gathering)
+  self.transcript_gathering = None
+  call_opt(self.retrying)
+  self.retrying = None
+  match self.passing {
+    Some(d) => d.wait()
+    None => ()
+  }
+}
+
+///|
 pub struct Copies {
   w : World
   d : CopiesDeps
   kept : FolderPlace
-  mut told : Told
-  mut gathering : (() -> Unit)?
-  mut transcript_gathering : (() -> Unit)?
-  mut want_transcripts : Bool
-  mut passing : Run?
-  mut again : Bool
+  priv mut export_loop : ExportLoop?
   mut closed : Bool
   mut passed : J?
   keeping : Map[String, Keeping]
@@ -276,8 +459,6 @@ pub struct Copies {
   mut hand_again : (() -> Unit)?
   mut hand_tries : Int
   mut restoring : Restoring?
-  mut export_error : String?
-  mut export_tries : Int
   old : Map[String, Bool]
   peer_accepts : Map[String, Bool]
   online : Map[String, Bool]
@@ -295,6 +476,32 @@ pub struct Copies {
 }
 
 ///|
+fn Copies::eloop(self : Copies) -> ExportLoop {
+  match self.export_loop {
+    Some(l) => l
+    None => {
+      let l = ExportLoop::new(
+        (ms, f) => self.w.after(ms, f),
+        f => self.w.go(f),
+        told => (self.d.runner.pass)(told),
+        passed => {
+          self.passed = Some(passed)
+          for e in entries(at(passed, "heads")) {
+            if items(at(e.1, "batches")).length() > 0 {
+              self.level_all(e.0)
+            }
+          }
+        },
+        ms => self.changed(ms),
+        (part, words, fields) => self.w.warn(part, words, fields),
+      )
+      self.export_loop = Some(l)
+      l
+    }
+  }
+}
+
+///|
 pub async fn Copies::new(w : World, d : CopiesDeps) -> Copies {
   let restored = w.fs.read_json(outcome_file(w.fs, d.data))
   let history_by_ws = parse_history_file(w.fs.read_json(history_file(w.fs, d.data)))
@@ -302,12 +509,7 @@ pub async fn Copies::new(w : World, d : CopiesDeps) -> Copies {
     w,
     d,
     kept: FolderPlace::new(w.fs, kept_dir(w.fs, d.data)),
-    told: Told::nothing(),
-    gathering: None,
-    transcript_gathering: None,
-    want_transcripts: false,
-    passing: None,
-    again: false,
+    export_loop: None,
     closed: false,
     passed: None,
     keeping: {},
@@ -316,8 +518,6 @@ pub async fn Copies::new(w : World, d : CopiesDeps) -> Copies {
     hand_again: None,
     hand_tries: 0,
     restoring: None,
-    export_error: None,
-    export_tries: 0,
     old: {},
     peer_accepts: {},
     online: {},
@@ -352,17 +552,14 @@ pub async fn Copies::start(self : Copies) -> Unit {
 ///|
 pub async fn Copies::close(self : Copies) -> Unit {
   self.closed = true
-  call_opt(self.gathering)
-  call_opt(self.transcript_gathering)
+  if self.export_loop is Some(l) {
+    l.close()
+  }
   call_opt(self.telling)
   for _, k in self.keeping {
     call_opt(k.again)
   }
   call_opt(self.hand_again)
-  match self.passing {
-    Some(r) => r.settled()
-    None => ()
-  }
   match self.handing {
     Some(r) => r.settled()
     None => ()
@@ -404,123 +601,26 @@ fn Copies::changed(self : Copies, ms : Double) -> Unit {
 ///|
 /// The store's change, put with what is to be exported: a few keys, nothing read.
 pub fn Copies::told(self : Copies, change : J) -> Unit {
-  if tell(self.told, change) {
-    self.gather()
-  }
-  match str_at(change, "type") {
-    Some("session") | Some("conversation") | Some("sessionRemoved") => self.gather_transcripts()
-    _ => ()
-  }
-}
-
-///|
-fn Copies::gather(self : Copies) -> Unit {
-  if self.gathering is Some(_) || self.closed {
-    return
-  }
-  // timer: a debounce of a burst of the store's changes
-  self.gathering = Some(
-    self.w.after(gather_ms, () => {
-      self.gathering = None
-      self.w.go(async fn() { self.pass() })
-    }),
-  )
-}
-
-///|
-fn Copies::gather_transcripts(self : Copies) -> Unit {
-  self.want_transcripts = true
-  if self.transcript_gathering is Some(_) || self.closed {
-    return
-  }
-  // timer: a debounce of a burst of transcript writes
-  self.transcript_gathering = Some(
-    self.w.after(transcript_gather_ms, () => {
-      self.transcript_gathering = None
-      self.want_transcripts = false
-      self.told.transcripts = true
-      self.w.go(async fn() { self.pass() })
-    }),
-  )
+  self.eloop().told(change)
 }
 
 ///|
 /// One pass at a time; what is told meanwhile goes in the next.
 async fn Copies::pass(self : Copies) -> Unit {
-  if self.passing is Some(_) {
-    self.again = true
-    return
-  }
-  let told = self.told
-  self.told = Told::nothing()
-  self.again = false
-  let run = self.w.run(async fn() {
-    try {
-      let passed = (self.d.runner.pass)(told.to_json())
-      self.passed = Some(passed)
-      if self.export_error is Some(_) {
-        self.export_error = None
-        self.export_tries = 0
-        self.changed(0.0)
-      } else if num_at(passed, "wrote").unwrap_or(0.0) > 0.0 {
-        self.changed(copies_tell_ms)
-      }
-      for e in entries(at(passed, "heads")) {
-        if items(at(e.1, "batches")).length() > 0 {
-          self.level_all(e.0)
-        }
-      }
-      if yes_at(passed, "more") {
-        self.again = true
-      }
-    } catch {
-      e => {
-        self.w.warn("copies", "an export failed", jo([("error", js(message_of(e)))]))
-        self.merge(told)
-        if self.export_error is None {
-          self.changed(0.0)
-        }
-        self.export_error = Some(message_of(e))
-        let wait = backoff(copies_retry_ms, self.export_tries, copies_retry_most_ms)
-        self.export_tries += 1
-        if !self.closed {
-          // timer: a retry after a failure
-          ignore(self.w.after(wait, () => self.w.go(async fn() { self.pass() })))
-        }
-      }
-    }
-    self.passing = None
-    if self.again && !self.closed {
-      self.w.go(async fn() { self.pass() })
-    }
-  })
-  self.passing = Some(run)
-  run.settled()
-}
-
-///|
-fn Copies::merge(self : Copies, told : Told) -> Unit {
-  let t = self.told
-  t.sessions.push_iter(told.sessions.iter())
-  t.threads.push_iter(told.threads.iter())
-  t.removed_sessions.push_iter(told.removed_sessions.iter())
-  t.removed_threads.push_iter(told.removed_threads.iter())
-  t.marks.push_iter(told.marks.iter())
-  if told.transcripts {
-    t.transcripts = true
-  }
+  self.eloop().pass()
 }
 
 ///|
 /// The export done now, and the places levelled: what a test waits for.
 pub async fn Copies::settle(self : Copies) -> Unit {
-  call_opt(self.gathering)
-  self.gathering = None
-  call_opt(self.transcript_gathering)
-  self.transcript_gathering = None
-  if self.want_transcripts {
-    self.want_transcripts = false
-    self.told.transcripts = true
+  let l = self.eloop()
+  call_opt(l.gathering)
+  l.gathering = None
+  call_opt(l.transcript_gathering)
+  l.transcript_gathering = None
+  if l.want_transcripts {
+    l.want_transcripts = false
+    l.told.transcripts = true
   }
   self.settle_export()
   while true {
@@ -545,12 +645,13 @@ pub async fn Copies::settle(self : Copies) -> Unit {
 ///|
 /// The export brought to rest.
 pub async fn Copies::settle_export(self : Copies) -> Unit {
+  let l = self.eloop()
   while true {
-    self.pass()
-    while self.passing is Some(r) {
-      r.settled()
+    l.pass()
+    while l.passing is Some(d) {
+      d.wait()
     }
-    if !self.again {
+    if !l.again {
       break
     }
   }
@@ -1673,12 +1774,13 @@ pub fn Copies::overview(self : Copies, ws : String, manage? : Bool = false) -> J
     Some(p) => yes_at(p, "empty")
     None => false
   }
-  let stopped = match self.export_error {
+  let stopped = match self.export_loop.bind(l => l.export_error) {
     None => J::Null
     Some(e) => {
       let l = e.to_lower()
       let full = l.contains("enospc") || l.contains("disk is full") || l.contains("database or disk is full")
-      jo([("error", js(e)), ("tries", ji(self.export_tries)), ("reason", js(if full { "full" } else { "error" }))])
+      let tries = self.export_loop.map(x => x.export_tries).unwrap_or(0)
+      jo([("error", js(e)), ("tries", ji(tries)), ("reason", js(if full { "full" } else { "error" }))])
     }
   }
   jo([

@@ -2,7 +2,8 @@
 // restore, `includeTranscripts: false` S3 policy, and workspace exclusion (both TS reference and MoonBit reader).
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, sep } from "node:path";
 import { afterEach, test } from "node:test";
@@ -608,4 +609,265 @@ test("E2E (MoonBit reader + Mock S3 + PeerPlace): chunk dedup, includeTranscript
   assert.equal(outcomeNoTr.error, null, "restore from includeTranscripts:false target has no error");
   assert.ok(outcomeNoTr.missing >= 1, "missing transcript files counted gracefully");
   assert.ok(existsSync(moved(join(s.claudeRoom, "uploads", "note.txt"), s.data, dataRestoredNoTr)), "chat attachment still restored");
+});
+
+test("incremental transcript pass budget (files & bytes) and safe tr_del / GC (TS reference + MoonBit reader)", async () => {
+  const makeFiveFileStation = (tag: string) => {
+    const data = dataDir(tag);
+    const db = join(data, "stillfail.db");
+    const store = Store.open(db, join(data, "archive"));
+    closing.push(async () => store.close());
+    const room = join(data, "sessions", "chat", "chat:batch", "workspace");
+    mkdirSync(room, { recursive: true });
+    const cid = "claude-batch-001";
+    store.insertSession({
+      key: "chat:batch",
+      connect: "chat",
+      runtime: "claude",
+      profile: "cc",
+      workspace: room,
+      token: "tok-batch",
+      createdAt: 1,
+      lastActiveAt: 1,
+      ws: null,
+    });
+    store.setRuntimeSessionId("chat:batch", cid);
+    const t = store.openThread("chat", "C", "ts-batch", "Batch Chat", "p@x").id;
+    store.joinThread(t, "chat:batch", "chat");
+    store.insertMessage({ thread: t, ts: "b.1", authorKind: "person", author: "p@x", text: "hello batch" });
+
+    const proj = claudeProject(room)!;
+    const trDir = join(data, "transcripts", "claude", proj);
+    mkdirSync(join(trDir, cid), { recursive: true });
+    const files: string[] = [];
+    const mainPath = join(trDir, `${cid}.jsonl`);
+    writeFileSync(mainPath, '{"i":0,"body":"main-transcript-0"}\n');
+    files.push(mainPath);
+    for (let i = 1; i <= 4; i++) {
+      const p = join(trDir, cid, `sub-${i}.jsonl`);
+      writeFileSync(p, `{"i":${i},"body":"sub-transcript-${i}"}\n`);
+      files.push(p);
+    }
+    return { data, db, files };
+  };
+
+  // 1. TS reference: 5 files with transcriptPassFiles: 2 -> 3 passes (2 + 2 + 1), no spurious tr_del
+  const tsSrc = makeFiveFileStation("tr-budget-ts");
+  const tsReplica = join(tsSrc.data, "replica");
+  let now = 1_700_000_000_000;
+  const exporter = new Exporter({
+    db: tsSrc.db,
+    replica: tsReplica,
+    dataDir: tsSrc.data,
+    origin: sid("a"),
+    now: () => now,
+    chunkBytes: 1024,
+    transcriptPassFiles: 2,
+    fold: false,
+  });
+  closing.push(async () => exporter.close());
+  exporter.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+
+  const readBatchRecs = (replica: string, head: { gen: string; batches: string[] }, batchIdx: number) => {
+    const genDir = join(replica, "own", HOME, head.gen);
+    return [...decodeBatch(readFileSync(join(genDir, "log", head.batches[batchIdx]!))).lines].map((l) => JSON.parse(l));
+  };
+
+  const p1 = exporter.pass(nothingTold());
+  assert.equal(p1.more, true, "pass 1 truncated by transcriptPassFiles=2");
+  const head1 = p1.heads[HOME]!;
+  const recs1 = readBatchRecs(tsReplica, head1, 0);
+  assert.equal(recs1.filter((r) => "tr" in r).length, 2, "pass 1 exports exactly 2 transcript files");
+  assert.equal(recs1.filter((r) => "tr_del" in r).length, 0, "pass 1 emits no spurious tr_del");
+
+  now += 1000;
+  const p2 = exporter.pass(nothingTold());
+  assert.equal(p2.more, true, "pass 2 truncated by transcriptPassFiles=2");
+  const head2 = p2.heads[HOME]!;
+  const recs2 = readBatchRecs(tsReplica, head2, head2.batches.length - 1);
+  assert.equal(recs2.filter((r) => "tr" in r).length, 2, "pass 2 exports next 2 transcript files");
+  assert.equal(recs2.filter((r) => "tr_del" in r).length, 0, "pass 2 emits no spurious tr_del");
+
+  now += 1000;
+  const p3 = exporter.pass(nothingTold());
+  assert.equal(p3.more, false, "pass 3 finishes remaining 1 file");
+  const head3 = p3.heads[HOME]!;
+  const recs3 = readBatchRecs(tsReplica, head3, head3.batches.length - 1);
+  assert.equal(recs3.filter((r) => "tr" in r).length, 1, "pass 3 exports final 1 transcript file");
+  assert.equal(recs3.filter((r) => "tr_del" in r).length, 0, "pass 3 emits no tr_del");
+  assert.equal(Object.keys(head3.transcriptFiles ?? {}).length, 5, "all 5 transcript chunks present in head");
+
+  // Delete 1 file and run a complete pass -> tr_del emitted and orphan chunk GC'd
+  const deletedPath = tsSrc.files[4]!;
+  const chunksBefore = new Set(Object.keys(head3.transcriptFiles ?? {}));
+  rmSync(deletedPath);
+  now += 1000;
+  const p4 = exporter.pass({ ...nothingTold(), transcripts: true });
+  assert.equal(p4.more, false);
+  const head4 = p4.heads[HOME]!;
+  const recs4 = readBatchRecs(tsReplica, head4, head4.batches.length - 1);
+  const dels4 = recs4.filter((r) => "tr_del" in r).map((r) => r.tr_del);
+  assert.deepEqual(dels4, [deletedPath], "complete pass emits tr_del for deleted file");
+  const chunksAfter = new Set(Object.keys(head4.transcriptFiles ?? {}));
+  assert.equal(chunksAfter.size, 4, "deleted file chunk removed from head.transcriptFiles");
+  for (const ch of chunksBefore) {
+    if (!chunksAfter.has(ch)) {
+      assert.ok(!existsSync(join(tsReplica, "chunks", ch)), "orphan chunk GC'd from disk");
+    }
+  }
+
+  // 2. Single file larger than transcriptPassBytes must still make progress in one pass (no infinite loop)
+  const bigData = dataDir("tr-budget-big");
+  const bigDb = join(bigData, "stillfail.db");
+  const bigStore = Store.open(bigDb, join(bigData, "archive"));
+  closing.push(async () => bigStore.close());
+  const bigRoom = join(bigData, "sessions", "chat", "chat:big", "workspace");
+  mkdirSync(bigRoom, { recursive: true });
+  bigStore.insertSession({
+    key: "chat:big",
+    connect: "chat",
+    runtime: "codex",
+    profile: "cx",
+    workspace: bigRoom,
+    token: "tok-big",
+    createdAt: 1,
+    lastActiveAt: 1,
+    ws: null,
+  });
+  bigStore.setRuntimeSessionId("chat:big", "codex-big-001");
+  const tBig = bigStore.openThread("chat", "C", "ts-big", "Big Chat", "p@x").id;
+  bigStore.joinThread(tBig, "chat:big", "chat");
+  const bigDir = join(bigData, "transcripts", "codex", "2026", "11", "22");
+  mkdirSync(bigDir, { recursive: true });
+  const bigFile = join(bigDir, "rollout-2026-11-22-codex-big-001.jsonl");
+  writeFileSync(bigFile, "A".repeat(1024) + "B".repeat(1024) + "C".repeat(452));
+  const bigExporter = new Exporter({
+    db: bigDb,
+    replica: join(bigData, "replica"),
+    dataDir: bigData,
+    origin: sid("a"),
+    now: () => 1_700_000_000_000,
+    chunkBytes: 1024,
+    transcriptPassBytes: 512,
+  });
+  closing.push(async () => bigExporter.close());
+  bigExporter.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "big" }] });
+  const bigPass = bigExporter.pass(nothingTold());
+  assert.equal(bigPass.more, false, "single file exceeding transcriptPassBytes completes in 1 pass");
+  assert.equal(Object.keys(bigPass.heads[HOME]!.transcriptFiles ?? {}).length, 3, "2500B file split into 3 chunks of 1024B");
+
+  // 3. MoonBit reader parity for transcriptPassFiles=2 (when binary is built)
+  if (binary !== null) {
+    const mbSrc = makeFiveFileStation("tr-budget-mb");
+    const mbReplica = join(mbSrc.data, "replica");
+    const runner = new ProgramRunner({
+      db: mbSrc.db,
+      replica: mbReplica,
+      dataDir: mbSrc.data,
+      origin: sid("a"),
+      chunkBytes: 1024,
+      transcriptPassFiles: 2,
+    });
+    closing.push(async () => runner.close());
+    await runner.places({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+
+    const mp1 = await runner.pass(nothingTold());
+    assert.equal(mp1.more, true, "MB pass 1 truncated by transcriptPassFiles=2");
+    assert.equal(Object.keys(mp1.heads[HOME]!.transcriptFiles ?? {}).length, 2);
+
+    const mp2 = await runner.pass(nothingTold());
+    assert.equal(mp2.more, true, "MB pass 2 truncated by transcriptPassFiles=2");
+    assert.equal(Object.keys(mp2.heads[HOME]!.transcriptFiles ?? {}).length, 4);
+
+    const mp3 = await runner.pass(nothingTold());
+    assert.equal(mp3.more, false, "MB pass 3 finishes remaining 1 file");
+    assert.equal(Object.keys(mp3.heads[HOME]!.transcriptFiles ?? {}).length, 5);
+
+    rmSync(mbSrc.files[4]!);
+    const mp4 = await runner.pass({ ...nothingTold(), transcripts: true });
+    assert.equal(mp4.more, false);
+    assert.equal(Object.keys(mp4.heads[HOME]!.transcriptFiles ?? {}).length, 4, "MB complete pass deletes and GCs orphan chunk");
+  }
+});
+
+test("ProgramRunner.close() force-kills a hung worker after closeGraceMs and rejects pending asks", async () => {
+  class FakeHungThread extends EventEmitter {
+    killed = false;
+    posted: unknown[] = [];
+    postMessage(m: unknown) {
+      this.posted.push(m);
+      // Intentionally never replies to simulate a worker stuck in a long pass.
+    }
+    kill() {
+      this.killed = true;
+    }
+  }
+  const fake = new FakeHungThread();
+  const runner = new ProgramRunner(
+    { db: "/tmp/x.db", replica: "/tmp/r", dataDir: "/tmp/d", origin: sid("a") },
+    () => fake,
+    25,
+  );
+  const pendingPass = runner.pass(nothingTold());
+  await runner.close();
+  assert.equal(fake.killed, true, "hung worker was force-killed after closeGraceMs");
+  await assert.rejects(pendingPass, /closed/);
+  await assert.rejects(runner.pass(nothingTold()), /closed/);
+});
+
+test("Copies pass failure strictly respects exponential backoff even when told() arrives during retry window", async () => {
+  const data = dataDir("tr-backoff");
+  const clock = testClock();
+  const fibers = new Fibers("copies-backoff", clock);
+  closing.push(async () => fibers.close());
+
+  let shouldFail = true;
+  let passCalls = 0;
+  const seenSessions: string[] = [];
+  const runner = {
+    places: async () => {},
+    pass: async (told: ReturnType<typeof nothingTold>) => {
+      passCalls++;
+      if (shouldFail) throw new Error("database is locked");
+      seenSessions.push(...told.sessions);
+      return { heads: {}, more: false, wrote: 1, read: 0, empty: false };
+    },
+    newGenerations: async () => {},
+    sources: async () => ({}),
+    close: async () => {},
+  };
+
+  const copies = new Copies({
+    data,
+    here: () => sid("a"),
+    places: () => ({ home: HOME, workspaces: [{ workspace: HOME, name: "a" }] }),
+    roster: () => [{ id: sid("a"), name: "a" }],
+    ask: async () => { throw new Error("offline"); },
+    runner,
+    fibers,
+    changed: () => {},
+    restart: async () => null,
+  });
+  closing.push(async () => copies.close());
+
+  // First change triggers gather (1s) -> pass #1 fails -> 5s backoff armed
+  copies.told({ type: "session", key: "s1" });
+  await clock.move(1_000);
+  assert.equal(passCalls, 1);
+
+  // Changes arriving during the 5s backoff must NOT trigger a 1s gather retry
+  copies.told({ type: "session", key: "s2" });
+  await clock.move(1_000);
+  assert.equal(passCalls, 1, "backoff not bypassed at +1s");
+  copies.told({ type: "session", key: "s3" });
+  await clock.move(3_000);
+  assert.equal(passCalls, 1, "backoff not bypassed at +4s");
+
+  // At +5s retry fires, succeeds, and exports all accumulated sessions together
+  shouldFail = false;
+  await clock.move(1_500);
+  assert.equal(passCalls, 2, "retry fired after 5s backoff");
+  assert.ok(seenSessions.includes("s1"));
+  assert.ok(seenSessions.includes("s2"));
+  assert.ok(seenSessions.includes("s3"));
 });

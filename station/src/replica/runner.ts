@@ -24,7 +24,15 @@ export interface Runner {
   close(): Promise<void>;
 }
 
-export type RunnerOptions = { db: string; replica: string; dataDir: string; origin: string; chunkBytes?: number };
+export type RunnerOptions = {
+  db: string;
+  replica: string;
+  dataDir: string;
+  origin: string;
+  chunkBytes?: number;
+  transcriptPassFiles?: number;
+  transcriptPassBytes?: number;
+};
 
 /// What the work runs in: the MoonBit program's process, or a test's own, asked and answering a message each,
 /// `{id, answer}` or `{id, error}`.
@@ -33,12 +41,16 @@ type Thread = {
   on(event: "error", f: (e: Error) => void): unknown;
   on(event: "exit", f: (code: number) => void): unknown;
   postMessage(m: unknown): void;
+  kill?(): void;
+  terminate?(): Promise<number>;
 };
 
 /// The work in the MoonBit program (`--builder replica-export`).
 export function exportThread(o: RunnerOptions): Thread {
   const args = ["--builder", "replica-export", "--db", o.db, "--replica", o.replica, "--data-dir", o.dataDir, "--origin", o.origin, "--sep", sep];
   if (o.chunkBytes !== undefined) args.push("--chunk-bytes", String(o.chunkBytes));
+  if (o.transcriptPassFiles !== undefined) args.push("--transcript-pass-files", String(o.transcriptPassFiles));
+  if (o.transcriptPassBytes !== undefined) args.push("--transcript-pass-bytes", String(o.transcriptPassBytes));
   return new MbProcess(readerBinary(), args);
 }
 
@@ -48,15 +60,18 @@ export function exportThread(o: RunnerOptions): Thread {
 export class ProgramRunner implements Runner {
   readonly #o: RunnerOptions;
   readonly #start: (o: RunnerOptions) => Thread;
+  readonly #closeGraceMs: number;
   #worker: Thread | null = null;
+  #closing: Thread | null = null;
   readonly #waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   #next = 0;
   #places: Places | null = null;
   #closed = false;
 
-  constructor(o: RunnerOptions, start: (o: RunnerOptions) => Thread = exportThread) {
+  constructor(o: RunnerOptions, start: (o: RunnerOptions) => Thread = exportThread, closeGraceMs = 2_000) {
     this.#o = o;
     this.#start = start;
+    this.#closeGraceMs = closeGraceMs;
   }
 
   #begin(): Thread {
@@ -68,8 +83,9 @@ export class ProgramRunner implements Runner {
       else w?.resolve(m.answer);
     });
     const fail = (e: Error) => {
-      if (this.#worker !== worker) return;
-      this.#worker = null;
+      if (this.#worker !== worker && this.#closing !== worker) return;
+      if (this.#worker === worker) this.#worker = null;
+      if (this.#closing === worker) this.#closing = null;
       for (const w of this.#waiting.values()) w.reject(e);
       this.#waiting.clear();
     };
@@ -104,11 +120,37 @@ export class ProgramRunner implements Runner {
     return this.#ask<Record<string, string>>({ type: "sources", hashes });
   }
   async close() {
-    if (this.#worker === null) {
-      this.#closed = true;
-      return;
-    }
-    await this.#ask<void>({ type: "close" }).catch(() => {});
     this.#closed = true;
+    const worker = this.#worker;
+    this.#worker = null;
+    if (worker === null) return;
+    this.#closing = worker;
+    const id = ++this.#next;
+    const ack = new Promise<void>((resolve, reject) => {
+      this.#waiting.set(id, { resolve, reject });
+      try {
+        worker.postMessage({ type: "close", id, now: wall.now() });
+      } catch (e) {
+        this.#waiting.delete(id);
+        reject(e as Error);
+      }
+    });
+    let stop = () => {};
+    const timedOut = Symbol("timeout");
+    const timer = new Promise<typeof timedOut>((resolve) => {
+      stop = wall.after(this.#closeGraceMs, () => resolve(timedOut)); // timer: a timeout waiting for the export process to close
+    });
+    try {
+      const res = await Promise.race([ack.catch(() => timedOut), timer]);
+      if (res === timedOut && this.#closing === worker) {
+        worker.kill?.();
+      }
+    } finally {
+      stop();
+      if (this.#closing === worker) this.#closing = null;
+      const err = new Error("the copies' thread is closed");
+      for (const w of this.#waiting.values()) w.reject(err);
+      this.#waiting.clear();
+    }
   }
 }

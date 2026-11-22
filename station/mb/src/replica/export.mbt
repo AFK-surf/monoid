@@ -19,6 +19,18 @@ let runs_kept : Int = 512
 pub let chunk_plain_bytes : Int = 4194304
 
 ///|
+let default_transcript_pass_files : Int = 64
+
+///|
+let default_transcript_pass_bytes : Int = 33554432
+
+///|
+pub let transcript_pass_files : Int = default_transcript_pass_files
+
+///|
+pub let transcript_pass_bytes : Int = default_transcript_pass_bytes
+
+///|
 let state_schema : String =
   #|CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID;
   #|CREATE TABLE IF NOT EXISTS digests (ws TEXT NOT NULL, k TEXT NOT NULL, d TEXT NOT NULL, PRIMARY KEY (ws, k)) WITHOUT ROWID;
@@ -95,10 +107,13 @@ pub struct Exporter {
   priv origin : String
   priv most : Int
   priv chunk_bytes : Int
+  priv transcript_pass_files : Int
+  priv transcript_pass_bytes : Int
   priv fold : Bool
   priv now : () -> Double
   priv mut places : Places
   priv mut known : Bool
+  priv mut transcripts_pending : Bool
   /// This run of the exporter.
   run : String
   priv mut read : Int
@@ -115,6 +130,8 @@ pub fn Exporter::new(
   now : () -> Double,
   batch_bytes? : Int = batch_bytes,
   chunk_bytes? : Int = chunk_plain_bytes,
+  transcript_pass_files? : Int = transcript_pass_files,
+  transcript_pass_bytes? : Int = transcript_pass_bytes,
   fold? : Bool = true,
 ) -> Exporter raise {
   let files = { host, sep }
@@ -133,10 +150,13 @@ pub fn Exporter::new(
     origin,
     most: batch_bytes,
     chunk_bytes: if chunk_bytes > 0 { chunk_bytes } else { chunk_plain_bytes },
+    transcript_pass_files: if transcript_pass_files > 0 { transcript_pass_files } else { default_transcript_pass_files },
+    transcript_pass_bytes: if transcript_pass_bytes > 0 { transcript_pass_bytes } else { default_transcript_pass_bytes },
     fold,
     now,
     places: { home: None, workspaces: [] },
     known: false,
+    transcripts_pending: false,
     run: files.random(4),
     read: 0,
   }
@@ -181,6 +201,7 @@ fn Exporter::set_meta(self : Exporter, k : String, v : String) -> Unit raise {
 fn Exporter::forget(self : Exporter) -> Unit raise {
   self.state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files;")
   self.known = false
+  self.transcripts_pending = false
 }
 
 ///|
@@ -543,7 +564,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
   }
   let mut more = false
   let want_transcripts = get(told, "transcripts") is Some(Bool(true))
-  let scan_transcripts = !self.known || want_transcripts
+  let scan_transcripts = !self.known || want_transcripts || self.transcripts_pending
   let sess_rows : Array[JValue] = []
   let run_rows : Map[String, Array[JValue]] = Map([])
   self.db.exec("BEGIN")
@@ -647,7 +668,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
         }
       }
       self.known = true
-    } else if want_transcripts {
+    } else if scan_transcripts {
       for table in ["sessions", "runtime_sessions"] {
         let mut after = 0.0
         while true {
@@ -790,7 +811,17 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     }
   }
   if scan_transcripts {
-    self.export_transcripts(outs, sess_rows, run_rows, ws_of_session, say)
+    if more {
+      self.transcripts_pending = true
+    } else {
+      let transcripts_more = self.export_transcripts(outs, sess_rows, run_rows, ws_of_session, say)
+      if transcripts_more {
+        self.transcripts_pending = true
+        more = true
+      } else {
+        self.transcripts_pending = false
+      }
+    }
   }
   let mut wrote = 0
   let heads : Array[(String, JValue)] = []
@@ -802,7 +833,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     }
     heads.push((w.0, out.head))
   }
-  if scan_transcripts {
+  if scan_transcripts && !self.transcripts_pending {
     self.gc_transcript_chunks()
   }
   Obj([
@@ -1156,7 +1187,7 @@ async fn Exporter::export_transcripts(
   run_rows : Map[String, Array[JValue]],
   ws_of_session : (JValue?) -> String,
   say : (String, JValue) -> Unit,
-) -> Unit {
+) -> Bool {
   let finder = @locate.Finder::new(self.host, self.files.sep)
   let by_ws : Map[String, Map[String, String?]] = Map([])
   for ws, _ in outs {
@@ -1238,10 +1269,17 @@ async fn Exporter::export_transcripts(
       }
     }
   }
+  let mut done_files = 0
+  let mut done_bytes = 0
+  let mut truncated = false
   for ws, found_map in by_ws {
+    if truncated {
+      break
+    }
     let paths = found_map.keys().collect()
     paths.sort_by(compare_units)
     let active : Set[String] = Set([])
+    let mut ws_truncated = false
     for path in paths {
       guard self.files.lstat(path) is Some(("file", size, mode, mtime)) else { continue }
       active.add(path)
@@ -1261,6 +1299,11 @@ async fn Exporter::export_transcripts(
       }
       if unchanged {
         continue
+      }
+      if done_files > 0 && (done_files >= self.transcript_pass_files || done_bytes >= self.transcript_pass_bytes) {
+        truncated = true
+        ws_truncated = true
+        break
       }
       let chunks : Array[String] = []
       let total = size.to_int()
@@ -1289,7 +1332,7 @@ async fn Exporter::export_transcripts(
             let comp_size = zst.length().to_double()
             let chunk_path = self.files.join([self.replica, "chunks", h])
             if !(self.files.kind(chunk_path) is Some("file")) {
-              self.host.write_atomic(chunk_path, zst, mode=0o644, sync=true, mkdir=true, sep=self.files.sep)
+              self.host.write_atomic(chunk_path, zst, mode=0o644, sync=false, mkdir=true, sep=self.files.sep)
             }
             ignore(
               self.state.run("INSERT OR REPLACE INTO transcript_chunks (plain_hash, chunk_hash, comp_size) VALUES (?, ?, ?)", [
@@ -1331,15 +1374,20 @@ async fn Exporter::export_transcripts(
           ("chunks", strs(chunks)),
         ]),
       )
+      done_files += 1
+      done_bytes += offset
     }
-    for row in self.state.all("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path", [s(ws)]) {
-      let old_path = field_text(row, "path")
-      if !active.contains(old_path) {
-        ignore(self.state.run("DELETE FROM transcript_files WHERE ws = ? AND path = ?", [s(ws), s(old_path)]))
-        say(ws, Obj([("tr_del", str(old_path))]))
+    if !ws_truncated {
+      for row in self.state.all("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path", [s(ws)]) {
+        let old_path = field_text(row, "path")
+        if !active.contains(old_path) {
+          ignore(self.state.run("DELETE FROM transcript_files WHERE ws = ? AND path = ?", [s(ws), s(old_path)]))
+          say(ws, Obj([("tr_del", str(old_path))]))
+        }
       }
     }
   }
+  truncated
 }
 
 ///|

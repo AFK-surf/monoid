@@ -678,6 +678,10 @@ fn P55::export_runner(self : P55, db : String, replica : String, data : String, 
     {
       write: b => p.write(b),
       end_input: () => p.end_input(),
+      kill: sig => {
+        p.end_input()
+        ignore(kill(p.pid, sig))
+      },
       next: async fn() {
         match p.events.take() {
           Out(b) => Said(b)

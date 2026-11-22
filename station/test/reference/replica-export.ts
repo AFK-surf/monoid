@@ -30,6 +30,8 @@ import { storage, transcriptSources } from "./transcript-paths.ts";
 export * from "../../src/replica/export.ts";
 
 export const CHUNK_PLAIN_BYTES = 4 * 1024 * 1024;
+export const TRANSCRIPT_PASS_FILES = 64;
+export const TRANSCRIPT_PASS_BYTES = 32 * 1024 * 1024;
 
 const ONE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.@+-]*$/;
 
@@ -62,14 +64,14 @@ export const ownDir = (replica: string) => join(replica, "own");
 export const genDir = (root: string, ws: string, gen: string) => join(root, ws, gen);
 export const headFile = (dir: string) => join(dir, "head.json");
 
-/// Written beside and renamed into place, synced: a reader sees it whole or not at all.
-export function writeWhole(path: string, bytes: Uint8Array | string): void {
+/// Written beside and renamed into place, synced unless `sync === false`: a reader sees it whole or not at all.
+export function writeWhole(path: string, bytes: Uint8Array | string, sync = true): void {
   mkdirSync(dirname(path), { recursive: true }); // sync: in the export's own thread (worker.ts)
   const tmp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   const fd = openSync(tmp, "w"); // sync: in the export's own thread (worker.ts)
   try {
     writeSync(fd, typeof bytes === "string" ? Buffer.from(bytes) : bytes); // sync: in the export's own thread (worker.ts)
-    fsyncSync(fd); // sync: in the export's own thread (worker.ts)
+    if (sync) fsyncSync(fd); // sync: in the export's own thread (worker.ts)
   } finally {
     closeSync(fd); // sync: in the export's own thread (worker.ts)
   }
@@ -159,6 +161,10 @@ export type ExporterOptions = {
   batchBytes?: number;
   /// Plaintext chunk size for transcript CAS (default 4 MiB; smaller in tests to verify multi-chunk dedup).
   chunkBytes?: number;
+  /// Max changed transcript files processed per pass before yielding (default 64).
+  transcriptPassFiles?: number;
+  /// Max changed transcript bytes processed per pass before yielding (default 32 MiB).
+  transcriptPassBytes?: number;
   /// False: batches left as they were written, never folded (a test's, to restore a generation from them as written).
   fold?: boolean;
 };
@@ -170,6 +176,8 @@ export class Exporter {
   #places: Places = { home: null, workspaces: [] };
   /// Whether this run has read the small tables whole yet.
   #known = false;
+  /// Whether a transcript scan was deferred or truncated by budget and must continue in the next pass.
+  #transcriptsPending = false;
   /// This run of the exporter: a generation's head lists the runs that wrote it (a copy that holds a run this station's
   /// own does not know was written by one rolled back).
   readonly run = randomBytes(4).toString("hex");
@@ -181,6 +189,12 @@ export class Exporter {
   }
   get #chunkBytes(): number {
     return this.#o.chunkBytes !== undefined && this.#o.chunkBytes > 0 ? this.#o.chunkBytes : CHUNK_PLAIN_BYTES;
+  }
+  get #transcriptPassFiles(): number {
+    return this.#o.transcriptPassFiles !== undefined && this.#o.transcriptPassFiles > 0 ? this.#o.transcriptPassFiles : TRANSCRIPT_PASS_FILES;
+  }
+  get #transcriptPassBytes(): number {
+    return this.#o.transcriptPassBytes !== undefined && this.#o.transcriptPassBytes > 0 ? this.#o.transcriptPassBytes : TRANSCRIPT_PASS_BYTES;
   }
 
   constructor(o: ExporterOptions) {
@@ -218,6 +232,7 @@ export class Exporter {
   #forget(): void {
     this.#state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files;");
     this.#known = false;
+    this.#transcriptsPending = false;
   }
 
   setPlaces(places: Places): void {
@@ -414,7 +429,7 @@ export class Exporter {
     };
     let more = false;
     const wantTranscripts = told.transcripts === true;
-    const scanTranscripts = !this.#known || wantTranscripts;
+    const scanTranscripts = !this.#known || wantTranscripts || this.#transcriptsPending;
     const sessRows: Row[] = [];
     const runRows = new Map<string, Row[]>();
     this.#db.exec("BEGIN");
@@ -482,7 +497,7 @@ export class Exporter {
           }
         }
         this.#known = true;
-      } else if (wantTranscripts) {
+      } else if (scanTranscripts) {
         for (const table of ["sessions", "runtime_sessions"] as const) {
           for (let after = 0; ; ) {
             const rows = all(pageOf(table), after, PAGE);
@@ -575,7 +590,17 @@ export class Exporter {
       }
     }
     if (scanTranscripts) {
-      this.#exportTranscripts(outs, sessRows, runRows, wsOfSession, say);
+      if (more) {
+        this.#transcriptsPending = true;
+      } else {
+        const transcriptsMore = this.#exportTranscripts(outs, sessRows, runRows, wsOfSession, say);
+        if (transcriptsMore) {
+          this.#transcriptsPending = true;
+          more = true;
+        } else {
+          this.#transcriptsPending = false;
+        }
+      }
     }
     let wrote = 0;
     const heads: Record<string, Head> = {};
@@ -586,7 +611,7 @@ export class Exporter {
       }
       heads[ws] = out.head;
     }
-    if (scanTranscripts) {
+    if (scanTranscripts && !this.#transcriptsPending) {
       this.#gcTranscriptChunks();
     }
     return { heads, more, wrote, read: this.#read };
@@ -775,7 +800,7 @@ export class Exporter {
     runRows: Map<string, Row[]>,
     wsOfSession: (ws: unknown) => string,
     say: (ws: string, rec: Rec) => void,
-  ): void {
+  ): boolean {
     const byWs = new Map<string, Map<string, string | null>>();
     for (const ws of outs.keys()) byWs.set(ws, new Map());
     for (const sess of sessRows) {
@@ -838,10 +863,17 @@ export class Exporter {
       }
     }
     const chunkBytes = this.#chunkBytes;
+    const maxFiles = this.#transcriptPassFiles;
+    const maxBytes = this.#transcriptPassBytes;
     const chunksDir = join(this.#o.replica, "chunks");
+    let doneFiles = 0;
+    let doneBytes = 0;
+    let truncated = false;
     for (const [ws, foundMap] of byWs) {
+      if (truncated) break;
       const paths = [...foundMap.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
       const active = new Set<string>();
+      let wsTruncated = false;
       for (const path of paths) {
         let st;
         try {
@@ -857,7 +889,13 @@ export class Exporter {
         const mode = Number(st.mode) & 0o777;
         const existing = this.#state.prepare("SELECT room, size, mtime FROM transcript_files WHERE ws = ? AND path = ?").get(ws, path) as { room: string | null; size: number; mtime: number } | undefined;
         if (existing !== undefined && existing.size === size && existing.mtime === mtime && existing.room === room) continue;
+        if (doneFiles > 0 && (doneFiles >= maxFiles || doneBytes >= maxBytes)) {
+          truncated = true;
+          wsTruncated = true;
+          break;
+        }
         const chunks: string[] = [];
+        let readBytes = 0;
         const fd = openSync(path, "r"); // sync: in the export's own thread (worker.ts)
         try {
           const buf = Buffer.allocUnsafe(Math.min(chunkBytes, Math.max(size, 1)));
@@ -875,25 +913,31 @@ export class Exporter {
               const zst = zstdCompressSync(plain); // sync: in the export's own thread (worker.ts)
               ch = createHash("sha256").update(zst).digest("hex");
               const chunkPath = join(chunksDir, ch);
-              if (!existsSync(chunkPath)) writeWhole(chunkPath, zst); // sync: in the export's own thread (worker.ts)
+              if (!existsSync(chunkPath)) writeWhole(chunkPath, zst, false); // sync: in the export's own thread (worker.ts)
               this.#state.prepare("INSERT OR REPLACE INTO transcript_chunks (plain_hash, chunk_hash, comp_size) VALUES (?, ?, ?)").run(plainHash, ch, zst.length);
             }
             chunks.push(ch);
             offset += n;
+            readBytes = offset;
           }
         } finally {
           closeSync(fd); // sync: in the export's own thread (worker.ts)
         }
         this.#state.prepare("INSERT OR REPLACE INTO transcript_files (ws, path, room, size, mtime, mode, chunks_json) VALUES (?, ?, ?, ?, ?, ?, ?)").run(ws, path, room, size, mtime, mode, JSON.stringify(chunks));
         say(ws, { tr: path, room, size, mtime, mode, chunks });
+        doneFiles++;
+        doneBytes += readBytes;
       }
-      for (const row of this.#state.prepare("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path").all(ws) as { path: string }[]) {
-        if (!active.has(row.path)) {
-          this.#state.prepare("DELETE FROM transcript_files WHERE ws = ? AND path = ?").run(ws, row.path);
-          say(ws, { tr_del: row.path });
+      if (!wsTruncated) {
+        for (const row of this.#state.prepare("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path").all(ws) as { path: string }[]) {
+          if (!active.has(row.path)) {
+            this.#state.prepare("DELETE FROM transcript_files WHERE ws = ? AND path = ?").run(ws, row.path);
+            say(ws, { tr_del: row.path });
+          }
         }
       }
     }
+    return truncated;
   }
 
   #transcriptFilesMap(ws: string): Record<string, number> {
