@@ -110,7 +110,9 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (+1 made, +1 laid, +2 bindings, 2026-11-22: the narrow chat bar's scrim hanging 16pt below the bar, its fade across
   // the bar's foot (narrow_bar_scrim_node `past`: a ground drawn under the fill that covers no press, the fill's height
   // bound); before it (1028, 26, 664, 84, 1017))
-  "phone cold": (1029, 26, 665, 84, 1019),
+  // (+1 binding, 2026-11-22: the composer's glass the bottom bar's, with its outside-only shadow (sf tab_bar_shadow),
+  // its blur on its shape's way to 4 as it opens (sfpages composer_node); before it (1029, 26, 665, 84, 1019))
+  "phone cold": (1029, 26, 665, 84, 1020),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
@@ -132,7 +134,9 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (2026-11-22: composer-top liquid glass capsule displays agent name and station name: wide cold -5 made, -3 let go,
   // -1 laid, +4 measured for the two new text labels, +13 bindings for glass surface, text, over_alpha and tips-layer
   // quote pill; before it (2449, 500, 1924, 187, 2497))
-  "wide cold": (2444, 497, 1923, 191, 2510),
+  // (+3 bindings, 2026-11-22: the composer's glass the bottom bar's, with its outside-only shadow (sf tab_bar_shadow),
+  // its blur on its shape's way to 4 as it opens (sfpages composer_node); before it (2444, 497, 1923, 191, 2510))
+  "wide cold": (2444, 497, 1923, 191, 2513),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))

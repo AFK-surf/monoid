@@ -20,8 +20,9 @@ pub fn glass_foot() -> @ui.Glass {
 
 ///|
 /// A capsule floating over the list (mFloating, the composer's): iOS 27 liquid glass (`ios27Dark` / `ios27Light`
-/// neutral tint when `tint` is `None`, or caller-supplied `tint` such as drag-over accent); `solid` preserves the
-/// opaque raised fallback under `MBUI_GLASS=solid`.
+/// neutral tint when `tint` is `None`, or caller-supplied `tint` such as drag-over accent), its blur, bezel and
+/// refraction the small screen's bottom bar's (`glass_tab_bar`) so the composer and the bar read as one glass;
+/// `solid` preserves the opaque raised fallback under `MBUI_GLASS=solid`.
 pub fn glass_floating(tint? : Int64) -> @ui.Glass {
   let t = theme()
   let glass_tint = match tint {
@@ -30,13 +31,13 @@ pub fn glass_floating(tint? : Int64) -> @ui.Glass {
   }
   let solid = over(t.p.bg, alpha(tint.unwrap_or(t.p.raised), 0.72))
   @ui.Glass::liquid(
-    blur=6.0,
+    blur=2.1,
     tint=glass_tint,
     solid~,
     saturation=1.0,
     rim=0.6,
-    bezel=14.0,
-    refraction=18.0,
+    bezel=20.0,
+    refraction=28.0,
     chroma=0.0,
     merge=0.0,
     adaptive=false,
