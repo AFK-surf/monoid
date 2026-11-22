@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 2.7 | 3.63 | 14.71 | 36.81 | 56.07 | 32.25 | 65.36 | 99.22 | 122.29 |
 | [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 2.7 | 3.63 | 14.71 | 36.81 | 56.07 | 32.24 | 65.34 | 99.34 | 125.71 |
 | [4f0b0d29b](https://github.com/AFK-surf/monoid/commit/4f0b0d29bc4e0be898bbbc740f211c3b2b195ece) feat(liquid-glass): add overlay, drawer, and morph | 2.7 | 3.63 | 14.7 | 36.79 | 56.05 | 32.24 | 65.34 | 99.34 | 122.78 |
 | [c2a94eb4a](https://github.com/AFK-surf/monoid/commit/c2a94eb4a98da030645237dd6f56d5fe51faa614) perf(sf-ui): mount the offers overlay only when it | 2.7 | 3.63 | 14.7 | 36.79 | 56.05 | 32.24 | 65.34 | 99.27 | 124.04 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [33fc6434d](https://github.com/AFK-surf/monoid/commit/33fc6434da852c38759b756b5605c52fa0b5887e) fix(player): match playback controls to the player | 2.66 | 3.59 | 14.56 | 36.65 | 55.64 | 32.1 | 64.98 | 99.26 | 124.87 |
 | [2b0b21c94](https://github.com/AFK-surf/monoid/commit/2b0b21c9412241eba48b5e883d40515ec2a8b4ed) fix(screens): recover lost screen frames (#8113) | 2.66 | 3.59 | 14.56 | 36.65 | 55.64 | 32.1 | 64.98 | 99.26 | 124.87 |
 | [5dd4241db](https://github.com/AFK-surf/monoid/commit/5dd4241dbe87bc8d1642e44008795082d3210df0) fix(mbui): smooth Wave 7 adaptive liquid glass tra | 2.66 | 3.59 | 14.56 | 36.65 | 55.64 | 32.09 | 64.98 | 99.06 | 118.66 |
-| [7351c0c94](https://github.com/AFK-surf/monoid/commit/7351c0c940036cb5d446b5ef5d33523ed51b3d2b) fix(mbui): exempt pinned list foot from Android ov | 2.66 | 3.59 | 14.56 | 36.64 | 55.63 | 32.09 | 64.95 | 98.9 | 111.12 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [4f0b0d29b](https://github.com/AFK-surf/monoid/commit/4f0b0d29bc4e0be898bbbc740f211c3b2b195ece) feat(liquid-glass): add overlay, drawer, and morph | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [c2a94eb4a](https://github.com/AFK-surf/monoid/commit/c2a94eb4a98da030645237dd6f56d5fe51faa614) perf(sf-ui): mount the offers overlay only when it | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [33fc6434d](https://github.com/AFK-surf/monoid/commit/33fc6434da852c38759b756b5605c52fa0b5887e) fix(player): match playback controls to the player | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.38 |
 | [2b0b21c94](https://github.com/AFK-surf/monoid/commit/2b0b21c9412241eba48b5e883d40515ec2a8b4ed) fix(screens): recover lost screen frames (#8113) | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.63 |
 | [5dd4241db](https://github.com/AFK-surf/monoid/commit/5dd4241dbe87bc8d1642e44008795082d3210df0) fix(mbui): smooth Wave 7 adaptive liquid glass tra | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.63 |
-| [7351c0c94](https://github.com/AFK-surf/monoid/commit/7351c0c940036cb5d446b5ef5d33523ed51b3d2b) fix(mbui): exempt pinned list foot from Android ov | 0.47 | 0.62 | 2.39 | 3.44 | 5.65 | 1.73 | 4.68 | 54.38 |
