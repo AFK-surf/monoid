@@ -107,7 +107,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (2026-11-22: composer-top liquid glass capsule displays agent name and station name: phone cold -9 made, -5 let go,
   // -2 laid, +4 measured for the two new text labels, +18 bindings for glass surface, text, over_alpha and tips-layer
   // quote pill; before it (1037, 31, 666, 80, 999))
-  "phone cold": (1028, 26, 664, 84, 1017),
+  // (+1 made, +1 laid, +2 bindings, 2026-11-22: the narrow chat bar's scrim hanging 16pt below the bar, its fade across
+  // the bar's foot (narrow_bar_scrim_node `past`: a ground drawn under the fill that covers no press, the fill's height
+  // bound); before it (1028, 26, 664, 84, 1017))
+  "phone cold": (1029, 26, 665, 84, 1019),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
