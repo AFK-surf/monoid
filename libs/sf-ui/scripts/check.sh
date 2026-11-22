@@ -7,6 +7,14 @@ A=$(cd "$D/.." && pwd)
 MBUI_DIR=$(cd "$A/../mbui" && pwd)
 . "$MBUI_DIR/scripts/env.sh"
 "$MBUI_DIR/scripts/detlint" "$A" || exit 1
+# Enforce zero raw .glass( / Glass::liquid( / Glass::frosted( in sf-ui non-test sources (all liquid glass must
+# go through @lg; image_reveal_node.mbt is the sole progressive-decode frosted blur exception).
+raw_glass=$(grep -rnE '\.glass\(|Glass::liquid\(|Glass::frosted\(' "$A/src" --include='*.mbt' | grep -vE '_(wb)?test\.mbt:' | grep -v '/image_reveal_node\.mbt:' || true)
+if [ -n "$raw_glass" ]; then
+  echo "sf-ui: raw .glass(/Glass::liquid(/Glass::frosted( outside @lg (delegate to libs/liquid-glass/src/lg):" >&2
+  echo "$raw_glass" >&2
+  exit 1
+fi
 cd "$A"
 for t in native js; do
   moon check --target $t --output-json 2>&1 | "$MBUI_DIR/scripts/chk" errs
