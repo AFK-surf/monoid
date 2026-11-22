@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8c3c82085](https://github.com/AFK-surf/monoid/commit/8c3c82085e63fd332d5a3670cea5d94714a0e689) feat(mbui): merge composer-top controls into one c | 2.72 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.62 | 124.9 |
 | [13cfd02f3](https://github.com/AFK-surf/monoid/commit/13cfd02f3d105d402dd4ff4bd2a8d9ab6fd4f5c2) feat(sf-ui): upgrade floating player controls and  | 2.71 | 3.65 | 14.82 | 36.93 | 56.44 | 32.35 | 65.66 | 99.57 | 157.03 |
 | [4dcdd2a40](https://github.com/AFK-surf/monoid/commit/4dcdd2a40e05ee58cf7453db5422eeac18879dda) fix(mbui): track composed text for composer line r | 2.71 | 3.65 | 14.82 | 36.93 | 56.43 | 32.35 | 65.66 | 99.63 | 125.17 |
 | [1809b2751](https://github.com/AFK-surf/monoid/commit/1809b2751552f70b75a8dae34dcb50288db4591f) fix(station): drop O(N²) scans from MoonBit replic | 2.71 | 3.65 | 14.81 | 36.93 | 56.43 | 32.35 | 65.66 | 99.4 | 127.26 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [29f393569](https://github.com/AFK-surf/monoid/commit/29f393569f860c872ada1332c2bf6dcf1579e83f) feat(mbui): keep long UI hangs in a local log (#81 | 2.7 | 3.63 | 14.69 | 36.78 | 56.01 | 32.23 | 65.33 | 99.44 | 124.13 |
 | [0f1800b12](https://github.com/AFK-surf/monoid/commit/0f1800b122c3d86a2fefe2ca7adb25b4181defdf) fix(mbui): replace 9-tap progressive blur small-ra | 2.69 | 3.63 | 14.69 | 36.79 | 56 | 32.23 | 65.31 | 99.27 | 127.74 |
 | [1953aa4af](https://github.com/AFK-surf/monoid/commit/1953aa4af5ba6cc481dcf18bf8070ece6c628bd5) fix(notice): fix profile push routing, notice.brin | 2.69 | 3.63 | 14.69 | 36.79 | 56 | 32.2 | 65.24 | 99.85 | 89.85 |
-| [8b62854f0](https://github.com/AFK-surf/monoid/commit/8b62854f03592bd74c4e3427f2eae920b434a8c5) feat(mbui): replace legacy frosted bars with liqui | 2.69 | 3.62 | 14.66 | 36.76 | 55.92 | 32.2 | 65.24 | 99.85 | 103.82 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8c3c82085](https://github.com/AFK-surf/monoid/commit/8c3c82085e63fd332d5a3670cea5d94714a0e689) feat(mbui): merge composer-top controls into one c | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 55 |
 | [13cfd02f3](https://github.com/AFK-surf/monoid/commit/13cfd02f3d105d402dd4ff4bd2a8d9ab6fd4f5c2) feat(sf-ui): upgrade floating player controls and  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.84 |
 | [4dcdd2a40](https://github.com/AFK-surf/monoid/commit/4dcdd2a40e05ee58cf7453db5422eeac18879dda) fix(mbui): track composed text for composer line r | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.74 |
 | [1809b2751](https://github.com/AFK-surf/monoid/commit/1809b2751552f70b75a8dae34dcb50288db4591f) fix(station): drop O(N²) scans from MoonBit replic | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [29f393569](https://github.com/AFK-surf/monoid/commit/29f393569f860c872ada1332c2bf6dcf1579e83f) feat(mbui): keep long UI hangs in a local log (#81 | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.48 |
 | [0f1800b12](https://github.com/AFK-surf/monoid/commit/0f1800b122c3d86a2fefe2ca7adb25b4181defdf) fix(mbui): replace 9-tap progressive blur small-ra | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.48 |
 | [1953aa4af](https://github.com/AFK-surf/monoid/commit/1953aa4af5ba6cc481dcf18bf8070ece6c628bd5) fix(notice): fix profile push routing, notice.brin | 0.48 | 0.63 | 2.43 | 3.48 | 5.77 | 1.78 | 4.8 | 54.58 |
-| [8b62854f0](https://github.com/AFK-surf/monoid/commit/8b62854f03592bd74c4e3427f2eae920b434a8c5) feat(mbui): replace legacy frosted bars with liqui | 0.48 | 0.63 | 2.43 | 3.48 | 5.77 | 1.78 | 4.8 | 54.58 |
