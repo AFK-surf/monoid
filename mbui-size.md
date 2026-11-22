@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [17fb8f5be](https://github.com/AFK-surf/monoid/commit/17fb8f5be8a5dc2c0eb0595624256bb7e15e4016) fix(mbui): skip pointer-off Tree::at withins layou | 2.71 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.58 | 123.17 |
 | [2e83ff5d4](https://github.com/AFK-surf/monoid/commit/2e83ff5d4f1a7ac17214417e10e508cf021d3733) fix(mbui): refresh page-seconds and rebalance app  | 2.72 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.62 | 124.9 |
 | [8c3c82085](https://github.com/AFK-surf/monoid/commit/8c3c82085e63fd332d5a3670cea5d94714a0e689) feat(mbui): merge composer-top controls into one c | 2.72 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.62 | 124.9 |
 | [13cfd02f3](https://github.com/AFK-surf/monoid/commit/13cfd02f3d105d402dd4ff4bd2a8d9ab6fd4f5c2) feat(sf-ui): upgrade floating player controls and  | 2.71 | 3.65 | 14.82 | 36.93 | 56.44 | 32.35 | 65.66 | 99.57 | 157.03 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [005f1d100](https://github.com/AFK-surf/monoid/commit/005f1d100a6a15a0a4e86c7e96eb271e251570e2) fix(mbui): let two fingers take turns scrolling a  | 2.7 | 3.63 | 14.7 | 36.79 | 56.04 | 32.24 | 65.34 | 99.16 | 126.07 |
 | [e414d0eca](https://github.com/AFK-surf/monoid/commit/e414d0eca0b572035ccbd302232fb58e0555b445) perf(station): start the runtime when an app makes | 2.7 | 3.63 | 14.69 | 36.78 | 56.01 | 32.23 | 65.33 | 99.44 | 124.13 |
 | [29f393569](https://github.com/AFK-surf/monoid/commit/29f393569f860c872ada1332c2bf6dcf1579e83f) feat(mbui): keep long UI hangs in a local log (#81 | 2.7 | 3.63 | 14.69 | 36.78 | 56.01 | 32.23 | 65.33 | 99.44 | 124.13 |
-| [0f1800b12](https://github.com/AFK-surf/monoid/commit/0f1800b122c3d86a2fefe2ca7adb25b4181defdf) fix(mbui): replace 9-tap progressive blur small-ra | 2.69 | 3.63 | 14.69 | 36.79 | 56 | 32.23 | 65.31 | 99.27 | 127.74 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [17fb8f5be](https://github.com/AFK-surf/monoid/commit/17fb8f5be8a5dc2c0eb0595624256bb7e15e4016) fix(mbui): skip pointer-off Tree::at withins layou | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.56 |
 | [2e83ff5d4](https://github.com/AFK-surf/monoid/commit/2e83ff5d4f1a7ac17214417e10e508cf021d3733) fix(mbui): refresh page-seconds and rebalance app  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.58 |
 | [8c3c82085](https://github.com/AFK-surf/monoid/commit/8c3c82085e63fd332d5a3670cea5d94714a0e689) feat(mbui): merge composer-top controls into one c | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 55 |
 | [13cfd02f3](https://github.com/AFK-surf/monoid/commit/13cfd02f3d105d402dd4ff4bd2a8d9ab6fd4f5c2) feat(sf-ui): upgrade floating player controls and  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.84 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [005f1d100](https://github.com/AFK-surf/monoid/commit/005f1d100a6a15a0a4e86c7e96eb271e251570e2) fix(mbui): let two fingers take turns scrolling a  | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.56 |
 | [e414d0eca](https://github.com/AFK-surf/monoid/commit/e414d0eca0b572035ccbd302232fb58e0555b445) perf(station): start the runtime when an app makes | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.56 |
 | [29f393569](https://github.com/AFK-surf/monoid/commit/29f393569f860c872ada1332c2bf6dcf1579e83f) feat(mbui): keep long UI hangs in a local log (#81 | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.48 |
-| [0f1800b12](https://github.com/AFK-surf/monoid/commit/0f1800b122c3d86a2fefe2ca7adb25b4181defdf) fix(mbui): replace 9-tap progressive blur small-ra | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.48 |
