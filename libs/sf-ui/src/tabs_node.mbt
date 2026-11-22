@@ -307,7 +307,14 @@ pub fn[K : Eq] tabs_node(
             |> ignore
           }
           if look is Pill {
-            seg_lens_overlay_node(strip, lens, tab_h_now, fn() { pill_rect(strip) }, jelly=fn(l) { dd.jelly(l, 10.0) })
+            seg_lens_overlay_node(
+              strip,
+              lens,
+              tab_h_now,
+              fn() { pill_rect(strip) },
+              jelly=fn(l) { dd.jelly(l, 10.0) },
+              active=fn() { !no_lens() && dd.pressing() },
+            )
           }
         })
         |> ignore

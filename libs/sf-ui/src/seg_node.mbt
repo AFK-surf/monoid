@@ -232,16 +232,23 @@ fn seg_thumb_alpha(l : Double) -> Double {
 ///|
 /// Clear lifted liquid glass lens mounted above a segmented/pill-tab strip's labels while held (`lens() > 0.001`).
 /// Zero hidden glass instances at rest, zero pointer interception, and zero relayout via paint-layer `ground_drawn`.
-#callsite(autofill(loc))
 fn seg_lens_overlay_node(
   parent : @view.View,
   lens : () -> Double,
   h : () -> Double,
   rect : () -> (Double, Double, Double, Double)?,
   jelly? : (@view.View) -> (Double, Double),
-  loc~ : SourceLoc,
+  active? : () -> Bool = fn() { false },
 ) -> Unit {
-  parent.box(made_for=loc, fn(l) {
+  // Mount lazily on first press/hold so idle pages allocate zero nodes, then keep mounted across slide settle so
+  // releasing the lens never triggers a layout pass (`laid == 0`). Glass stays `None` whenever `full() <= 0.001`.
+  let mounted : @signals.Signal[Bool] = @signals.signal(false)
+  parent.reacts(fn() { lens() > 0.001 || active() }, fn(on) {
+    if on && !mounted.untracked() {
+      mounted.set(true)
+    }
+  })
+  parent.show(fn() { mounted.get() }, fn(l) {
     let full = fn() { dmin(1.0, lens()) }
     l
     .over(Is(true))
@@ -296,7 +303,6 @@ fn seg_lens_overlay_node(
     }))
     |> ignore
   })
-  |> ignore
 }
 
 ///|

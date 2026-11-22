@@ -122,6 +122,12 @@ pub fn DampedDrag::pressed(self : DampedDrag, n : @view.View) -> Double {
 }
 
 ///|
+/// Whether the lens press target is currently raised (true on the cause frame of `press` / `animate_to`).
+pub fn DampedDrag::pressing(self : DampedDrag) -> Bool {
+  self.press.target() > 0.001
+}
+
+///|
 /// How fast its value goes as `n` is drawn, in its ranges a second (velocity).
 pub fn DampedDrag::velocity(self : DampedDrag, n : @view.View) -> Double {
   self.speed.shown(n)
