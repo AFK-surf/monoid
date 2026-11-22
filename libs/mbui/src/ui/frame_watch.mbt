@@ -1305,28 +1305,110 @@ let gpu_worst : Ref[Double] = Ref(0.0)
 let gpu_dropped_seen : Ref[Int] = Ref(0)
 
 ///|
+/// Per-page GPU frame counts by shown_slot (6 per slot: timed, over_8ms, over_16ms, over_24ms, worst_ms_tenths,
+/// dropped).
+// kept across runs: put back as a run begins (gpu_frames_reset) and as the summary is taken (gpu_by_page_take)
+let gpu_page_counts : FixedArray[Int] = FixedArray::make(6 * (shown_names_most + 2), 0)
+
+///|
+/// Last GPU time >= hang budget reported, to deduplicate asynchronous hosts that return the same last_gpu value across
+/// consecutive frames until the next GPU frame finishes (-1: none active).
+// kept across runs: put back as a run begins (gpu_frames_reset)
+let gpu_last_reported : Ref[Double] = Ref(-1.0)
+
+///|
+/// Latest frame's GPU time, dropped delta, and whether it is a new GPU-slow/dropped event for journal_frame.
+// kept across runs: consumed by journal_frame and put back as a run begins (gpu_frames_reset)
+let gpu_frame_ms : Ref[Double] = Ref(-1.0)
+
+///|
+// kept across runs: consumed by journal_frame and put back as a run begins (gpu_frames_reset)
+let gpu_frame_dropped : Ref[Int] = Ref(0)
+
+///|
+// kept across runs: consumed by journal_frame and put back as a run begins (gpu_frames_reset)
+let gpu_frame_slow : Ref[Bool] = Ref(false)
+
+///|
 /// A frame drawn, the GPU's time of the last the host finished `gms` (-1: not known) and the frames it never drew in
 /// all `dropped` (frame_drawn, as each frame is drawn).
 fn gpu_frames_count(gms : Double, dropped : Int) -> Unit {
+  let slot = shown_slot.val
+  let base = slot * 6
   if gms >= 0.0 {
+    gpu_frame_ms.val = gms
     gpu_counts[0] += 1
+    gpu_page_counts[base] += 1
     if gms > gpu_budget_120_ms {
       gpu_counts[1] += 1
+      gpu_page_counts[base + 1] += 1
     }
     if gms > gpu_budget_60_ms {
       gpu_counts[2] += 1
+      gpu_page_counts[base + 2] += 1
     }
     if gms >= gpu_budget_hang_ms {
       gpu_counts[3] += 1
+      gpu_page_counts[base + 3] += 1
+      if gms != gpu_last_reported.val {
+        gpu_last_reported.val = gms
+        gpu_frame_slow.val = true
+      }
+    } else {
+      gpu_last_reported.val = -1.0
     }
     if gms > gpu_worst.val {
       gpu_worst.val = gms
     }
+    let tenths = (gms * 10.0).round().to_int()
+    if tenths > gpu_page_counts[base + 4] {
+      gpu_page_counts[base + 4] = tenths
+    }
   }
   if dropped > gpu_dropped_seen.val {
-    gpu_counts[4] += dropped - gpu_dropped_seen.val
+    let delta = dropped - gpu_dropped_seen.val
+    gpu_counts[4] += delta
+    gpu_page_counts[base + 5] += delta
     gpu_dropped_seen.val = dropped
+    gpu_frame_dropped.val += delta
+    gpu_frame_slow.val = true
   }
+}
+
+///|
+/// Take and clear the current frame's GPU telemetry for journal_frame.
+fn gpu_frame_consume() -> (Double, Int, Bool) {
+  let res = (gpu_frame_ms.val, gpu_frame_dropped.val, gpu_frame_slow.val)
+  gpu_frame_ms.val = -1.0
+  gpu_frame_dropped.val = 0
+  gpu_frame_slow.val = false
+  res
+}
+
+///|
+/// Take and clear per-page GPU frame counts, resolving slot names before shown_names is cleared.
+fn gpu_by_page_take() -> Array[(String, Int, Int, Int, Int, Double, Int)] {
+  let out : Array[(String, Int, Int, Int, Int, Double, Int)] = []
+  for slot in 0..<(shown_names_most + 2) {
+    let base = slot * 6
+    let timed = gpu_page_counts[base]
+    let dropped = gpu_page_counts[base + 5]
+    if timed > 0 || dropped > 0 {
+      out.push(
+        (
+          shown_name(slot),
+          timed,
+          gpu_page_counts[base + 1],
+          gpu_page_counts[base + 2],
+          gpu_page_counts[base + 3],
+          gpu_page_counts[base + 4].to_double() / 10.0,
+          dropped,
+        ),
+      )
+    }
+  }
+  gpu_page_counts.fill(0)
+  out
 }
 
 ///|
@@ -1350,6 +1432,11 @@ pub fn gpu_frames_take() -> GpuFrames {
 fn gpu_frames_reset() -> Unit {
   gpu_counts.fill(0)
   gpu_worst.val = 0.0
+  gpu_page_counts.fill(0)
+  gpu_last_reported.val = -1.0
+  gpu_frame_ms.val = -1.0
+  gpu_frame_dropped.val = 0
+  gpu_frame_slow.val = false
 }
 
 ///|

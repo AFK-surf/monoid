@@ -195,6 +195,79 @@ fn frame_band(w : Double) -> Int {
 }
 
 ///|
+/// End-to-end vsync lateness bands (ms) for `late_to_screen` in HangSummary.
+let late_band_ms : FixedArray[Double] = [4.0, 8.0, 16.0, 24.0]
+
+///|
+fn late_band(late : Double) -> Int {
+  if late < 4.0 {
+    0
+  } else if late < 8.0 {
+    1
+  } else if late < 16.0 {
+    2
+  } else if late < 24.0 {
+    3
+  } else {
+    4
+  }
+}
+
+///|
+/// Rolling flush interval for `ui_hang_summary` on long-lived sessions (10 minutes).
+let journal_summary_roll_ms : Double = 600000.0
+
+///|
+/// Frames whose end-to-end lateness (`@hostapi.frame_late`) was > 0, bucketed by `late_band_ms`.
+// kept across runs: put back as a run begins (journal_reset) and as a summary is said (journal_said_shown)
+let journal_late_bands : FixedArray[Int] = FixedArray::make(late_band_ms.length() + 1, 0)
+
+///|
+/// Worst end-to-end frame lateness (ms, [0]) and peak process memory (MB, [1]) since the last summary.
+// kept across runs: put back as a run begins (journal_reset) and as a summary is said (journal_said_shown)
+let journal_extra_ms : FixedArray[Double] = [0.0, 0.0]
+
+///|
+/// Optional test override for process memory sampling (MB).
+// kept across runs: reset by tests that set it
+let mem_mb_clock : Ref[(() -> Double)?] = Ref(None)
+
+///|
+priv struct SummaryExtra {
+  late_counts : Array[Int]
+  late_worst : Double
+  mem_peak_mb : Double
+  gpu_by_page : Array[(String, Int, Int, Int, Int, Double, Int)]
+}
+
+///|
+/// Extra summary telemetry kept alongside recent `HangSummary` instances (matched by `physical_equal` in
+/// `HangSummary::json`) so `pub(all) struct HangSummary` stays ABI-stable.
+// kept across runs: put back as a run begins (journal_reset)
+let summary_extras : Array[(HangSummary, SummaryExtra)] = []
+
+///|
+fn journal_sample_mem() -> Unit {
+  let mb = match mem_mb_clock.val {
+    Some(f) => f()
+    None => h_mem_mb()
+  }
+  if mb > journal_extra_ms[1] {
+    journal_extra_ms[1] = mb
+  }
+}
+
+///|
+fn journal_maybe_roll_summary(seal : Seal, at : Double) -> Unit {
+  if seal != Hidden &&
+    journal_counts[5] >= 0.0 &&
+    at - journal_counts[5] >= journal_summary_roll_ms &&
+    journal_counts[0] > 0.0 {
+    journal_said_shown(at)
+  }
+}
+
+///|
 let journal_cap : Int = 1024
 
 ///|
@@ -428,6 +501,10 @@ fn journal_reset() -> Unit {
   shown_said.val = ""
   arranged_said.val = ("", 0.0, 0.0)
   shown_counts.fill(0)
+  journal_late_bands.fill(0)
+  journal_extra_ms.fill(0.0)
+  summary_extras.clear()
+  summary_extras.shrink_to_fit()
   gpu_frames_reset()
   journal_listens()
 }
@@ -480,7 +557,15 @@ fn journal_flush_small() -> Unit {
 /// A piece of work done from `start` to `end`: kept, or folded where it is short and of a kind that comes often (an
 /// event, what follows a frame). When `wall >= 4.0ms` and `cpu_ms >= 0.0`, attaches `("cpu", round_tenth(cpu_ms))`
 /// to `Worked.notes` (bypassing `journal_floor_ms` so OS preemption like wall=53.7ms, cpu=0.3ms is preserved).
-fn journal_work(what : Done, start : Double, end : Double, cpu_ms? : Double = -1.0) -> Unit {
+fn journal_work(
+  what : Done,
+  start : Double,
+  end : Double,
+  cpu_ms? : Double = -1.0,
+  late_ms? : Double = -1.0,
+  gpu_ms? : Double = -1.0,
+  gpu_dropped? : Int = 0,
+) -> Unit {
   if journal_counts[5] < 0.0 {
     journal_counts[5] = start
   }
@@ -502,6 +587,15 @@ fn journal_work(what : Done, start : Double, end : Double, cpu_ms? : Double = -1
   }
   if wall_ms >= 4.0 && cpu_ms >= 0.0 {
     notes.push(("cpu", journal_ms(cpu_ms)))
+  }
+  if late_ms > 0.0 {
+    notes.push(("late_ms", journal_ms(late_ms)))
+  }
+  if gpu_ms >= 0.0 {
+    notes.push(("gpu_ms", journal_ms(gpu_ms)))
+  }
+  if gpu_dropped > 0 {
+    notes.push(("gpu_dropped", gpu_dropped.to_double()))
   }
   let foldable = match what {
     Event(_) | FrameEnd => true
@@ -605,6 +699,14 @@ fn journal_frame(
     journal_again.val[i] = n
   }
   journal_laid.val = journal_since(now.2, was.2) > 0
+  let late = @hostapi.frame_late()
+  if late > 0.0 {
+    journal_late_bands[late_band(late)] += 1
+    if late > journal_extra_ms[0] {
+      journal_extra_ms[0] = late
+    }
+  }
+  let (gms, gdrop, gslow) = gpu_frame_consume()
   journal_work(
     Frame({
       tree: t0 - tw,
@@ -626,11 +728,17 @@ fn journal_frame(
     tw,
     t3,
     cpu_ms=journal_cpu_delta(cw, c3),
+    late_ms=late,
+    gpu_ms=gms,
+    gpu_dropped=gdrop,
   )
   journal_work(Present, t3, t4, cpu_ms=journal_cpu_delta(c3, c4))
   journal_counts[0] += 1.0
+  if journal_counts[0].to_int() % 60 == 1 {
+    journal_sample_mem()
+  }
   shown_counts[shown_slot.val * 4] += 1
-  journal_seal(Presented, t4)
+  journal_seal(Presented, t4, gpu_slow=gslow)
   journal_presented.val = true
   journal_dirty_at.val = -1.0
 }
@@ -679,7 +787,7 @@ fn journal_frame_ended(t4 : Double, c4? : Double = -1.0) -> Unit {
 
 ///|
 /// The open interval closed by `seal` at `at`, looked over for a hang.
-fn journal_seal(seal : Seal, at : Double) -> Unit {
+fn journal_seal(seal : Seal, at : Double, gpu_slow? : Bool = false) -> Unit {
   journal_flush_small()
   let from = journal_at[1]
   let to = journal_at[0]
@@ -695,6 +803,7 @@ fn journal_seal(seal : Seal, at : Double) -> Unit {
   journal_put(Boundary(seal, at))
   journal_at[1] = journal_at[0]
   if to == from {
+    journal_maybe_roll_summary(seal, at)
     return
   }
   // (summed first with nothing made, as every frame closes one: what is kept of it only where it is a hang)
@@ -733,13 +842,15 @@ fn journal_seal(seal : Seal, at : Double) -> Unit {
   let trigger = if longest >= hang_stall_ms {
     Stall
   } else if seal == Presented {
-    if lost > 0 || waited + small_ms < probe_slow_ms {
+    if lost > 0 || (waited + small_ms < probe_slow_ms && !gpu_slow) {
+      journal_maybe_roll_summary(seal, at)
       return
     }
     LateFrame
   } else if longest >= probe_slow_ms {
     Blocking
   } else {
+    journal_maybe_roll_summary(seal, at)
     return
   }
   let mut contributors : Array[Worked] = []
@@ -807,14 +918,25 @@ fn journal_seal(seal : Seal, at : Double) -> Unit {
   if hang_tell.val is Some(f) {
     @signals.untracked(fn() { f(hang) })
   }
+  journal_maybe_roll_summary(seal, at)
 }
 
 ///|
-/// The app hidden at `at`: what it did while shown said (hang_summary_told), its counts begun again.
+/// The app hidden (or rolled after 10 minutes) at `at`: what it did while shown said (hang_summary_told), its counts
+/// begun again.
 fn journal_said_shown(at : Double) -> Unit {
+  journal_sample_mem()
   let since = journal_counts[5]
   let n = frame_band_ms.length() + 1
   let bands = fn(kind : Int) { Array::makei(n, fn(i) { journal_bands[kind * n + i] }) }
+  let gpu_by_page = gpu_by_page_take()
+  let late_n = late_band_ms.length() + 1
+  let extra : SummaryExtra = {
+    late_counts: Array::makei(late_n, fn(i) { journal_late_bands[i] }),
+    late_worst: journal_extra_ms[0],
+    mem_peak_mb: journal_extra_ms[1],
+    gpu_by_page,
+  }
   let summary = {
     shown_ms: if since < 0.0 { 0.0 } else { at - since },
     work_ms: journal_counts[4],
@@ -829,9 +951,15 @@ fn journal_said_shown(at : Double) -> Unit {
     by_page: shown_by_page(),
     gpu: gpu_frames_take(),
   }
+  if summary_extras.length() >= hangs_kept_most {
+    summary_extras.remove(0) |> ignore
+  }
+  summary_extras.push((summary, extra))
   journal_counts.fill(0.0)
   journal_counts[5] = -1.0
   journal_bands.fill(0)
+  journal_late_bands.fill(0)
+  journal_extra_ms.fill(0.0)
   shown_counts.fill(0)
   // (the names begun again, the one shown now first: a long run's names past the most are told apart again)
   shown_names.clear()
@@ -922,7 +1050,16 @@ fn Worked::notes_said(self : Worked) -> String {
   if self.notes.is_empty() {
     ""
   } else {
-    " on " + self.notes.map(fn(n) { "\{n.0} \{journal_ms(n.1)}ms" }).join(", ")
+    " on " +
+    self.notes
+    .map(fn(n) {
+      if n.0 == "gpu_dropped" {
+        "gpu_dropped=\{n.1.round().to_int()}"
+      } else {
+        "\{n.0} \{journal_ms(n.1)}ms"
+      }
+    })
+    .join(", ")
   }
 }
 
@@ -948,6 +1085,7 @@ pub fn Hang::said(self : Hang) -> String {
 /// `arranged` and the window's size as `window_w`, `window_h` (none said: no field).
 pub fn Hang::json(self : Hang) -> Json {
   let active = self.end - self.start
+  let mut has_gpu_slow = false
   let contributors = self.contributors.map(fn(w) {
     let o : Map[String, Json] = {
       "kind": Json::string(w.what.name()),
@@ -959,6 +1097,20 @@ pub fn Hang::json(self : Hang) -> Json {
       for n in w.notes {
         if n.0 == "cpu" {
           o["cpu"] = Json::number(journal_ms(n.1))
+        } else if n.0 == "late_ms" {
+          o["late_ms"] = Json::number(journal_ms(n.1))
+        } else if n.0 == "gpu_ms" {
+          let v = journal_ms(n.1)
+          o["gpu_ms"] = Json::number(v)
+          if v >= gpu_budget_hang_ms {
+            has_gpu_slow = true
+          }
+        } else if n.0 == "gpu_dropped" {
+          let v = n.1.round()
+          o["gpu_dropped"] = Json::number(v)
+          if v > 0.0 {
+            has_gpu_slow = true
+          }
         } else {
           parts.push(Json::object({ "part": Json::string(n.0), "ms": Json::number(journal_ms(n.1)) }))
         }
@@ -1005,6 +1157,9 @@ pub fn Hang::json(self : Hang) -> Json {
     "contributors": Json::array(contributors),
     "contributors_elided": Json::number(self.elided.to_double()),
   }
+  if self.trigger is LateFrame && self.work_ms < probe_slow_ms && has_gpu_slow {
+    o["gpu_only"] = Json::boolean(true)
+  }
   if self.page != "" {
     o["page"] = Json::string(self.page)
   }
@@ -1016,6 +1171,16 @@ pub fn Hang::json(self : Hang) -> Json {
     o["window_h"] = Json::number(self.window_h.round())
   }
   Json::object(o)
+}
+
+///|
+fn summary_extra_of(s : HangSummary) -> SummaryExtra? {
+  for i = summary_extras.length() - 1; i >= 0; i = i - 1 {
+    if physical_equal(s, summary_extras[i].0) {
+      return Some(summary_extras[i].1)
+    }
+  }
+  None
 }
 
 ///|
@@ -1043,9 +1208,25 @@ pub fn HangSummary::json(self : HangSummary) -> Json {
     },
     "by_page": Json::object(by_page),
   }
+  let extra = summary_extra_of(self)
+  match extra {
+    Some(e) => {
+      if e.late_worst > 0.0 {
+        o["late_to_screen"] = {
+          "bounds": Json::array(Array::makei(late_band_ms.length(), fn(i) { Json::number(late_band_ms[i]) })),
+          "counts": journal_counts_json(e.late_counts),
+          "worst_ms": Json::number(journal_ms(e.late_worst)),
+        }
+      }
+      if e.mem_peak_mb > 0.0 {
+        o["mem_peak_mb"] = Json::number(journal_ms(e.mem_peak_mb))
+      }
+    }
+    None => ()
+  }
   let g = self.gpu
   if g.timed > 0 || g.dropped > 0 {
-    o["gpu"] = {
+    let gpu_obj : Map[String, Json] = {
       "frames": Json::number(g.timed.to_double()),
       "over_8ms": Json::number(g.over_120.to_double()),
       "over_16ms": Json::number(g.over_60.to_double()),
@@ -1053,6 +1234,24 @@ pub fn HangSummary::json(self : HangSummary) -> Json {
       "worst_ms": Json::number(journal_ms(g.worst_ms)),
       "dropped": Json::number(g.dropped.to_double()),
     }
+    match extra {
+      Some(e) if !e.gpu_by_page.is_empty() => {
+        let gbp : Map[String, Json] = Map([])
+        for p in e.gpu_by_page {
+          gbp[p.0] = Json::array([
+            Json::number(p.1.to_double()),
+            Json::number(p.2.to_double()),
+            Json::number(p.3.to_double()),
+            Json::number(p.4.to_double()),
+            Json::number(journal_ms(p.5)),
+            Json::number(p.6.to_double()),
+          ])
+        }
+        gpu_obj["by_page"] = Json::object(gbp)
+      }
+      _ => ()
+    }
+    o["gpu"] = Json::object(gpu_obj)
   }
   Json::object(o)
 }
