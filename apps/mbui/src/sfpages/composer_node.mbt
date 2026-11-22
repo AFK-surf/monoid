@@ -624,6 +624,7 @@ fn composer_foot_scrim_node(
   foot.box(fn(scrim) {
     scrim
     .over(Is(true))
+    .presses(Is(false))
     .width_share(Is(1.0))
     .height_share(Is(1.0))
     .lies_along(Is(End))
