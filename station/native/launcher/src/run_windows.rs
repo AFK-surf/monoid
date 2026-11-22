@@ -50,7 +50,8 @@ use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED
 use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT};
 use windows_sys::Win32::System::Threading::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CreateEventW, GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, SetProcessShutdownParameters, TerminateProcess,
+    WaitForSingleObject,
 };
 
 use crate::data::{self, Config};
@@ -489,6 +490,7 @@ pub fn run(mut options: Options) -> i32 {
     let _ = EVENTS.set(Mutex::new(tx.clone()));
     // SAFETY: a handler that only sends on a channel.
     unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) };
+    shut_down_before_node();
     let with_parent = options.with_parent;
     let parent = if with_parent { parent_process() } else { None };
     if with_parent && parent.is_none() {
@@ -562,6 +564,7 @@ fn resume(options: Options, run: PathBuf, name: &str) -> i32 {
     let _ = EVENTS.set(Mutex::new(tx.clone()));
     // SAFETY: a handler that only sends on a channel.
     unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) };
+    shut_down_before_node();
     let with_parent = options.with_parent;
     let parent = if with_parent { parent_process() } else { None };
     if let Err(error) = take_asks(&security, tx.clone()) {
@@ -647,6 +650,22 @@ fn take_asks(security: &Security, tx: Sender<Event>) -> io::Result<()> {
     Ok(())
 }
 
+/// Windows ends processes of one shutdown level youngest first (the default 0x280): asked to go before normal processes,
+/// the launcher hears the logoff or shutdown before Node is ended, and stops it.
+fn shut_down_before_node() {
+    // SAFETY: sets this process's own shutdown level; a refusal leaves it at the default.
+    unsafe { SetProcessShutdownParameters(0x300, 0) };
+}
+
+/// Node's exit codes when Windows logs off or shuts down rather than a crash: ended by csrss (DBG_TERMINATE_PROCESS),
+/// or started as the window station shuts down (STATUS_DLL_INIT_FAILED_LOGOFF).
+const DBG_TERMINATE_PROCESS: i32 = 0x4001_0004_u32 as i32;
+const STATUS_DLL_INIT_FAILED_LOGOFF: i32 = 0xC000_026B_u32 as i32;
+
+fn is_windows_shutdown_exit(code: Option<i32>) -> bool {
+    matches!(code, Some(DBG_TERMINATE_PROCESS | STATUS_DLL_INIT_FAILED_LOGOFF))
+}
+
 /// Waits for what happens (a line from a Node, a Node's end, a stop, something due) and tells the lifecycle, until it
 /// is done.
 fn serve(station: &mut Lifecycle<System>) -> i32 {
@@ -674,7 +693,14 @@ fn serve(station: &mut Lifecycle<System>) -> i32 {
         };
         match event {
             Some(Event::Said(pid, message)) => station.heard(pid, vec![message]),
-            Some(Event::Exited(pid, code)) => station.ended(pid, &code.map_or("exited (no code)".into(), |c| format!("exited with {c}"))),
+            Some(Event::Exited(pid, code)) => {
+                let how = code.map_or("exited (no code)".into(), |c| format!("exited with {c}"));
+                if is_windows_shutdown_exit(code) {
+                    station.ended_on_shutdown(pid, &how);
+                } else {
+                    station.ended(pid, &how);
+                }
+            }
             Some(Event::Stop(why)) => {
                 log::info(&format!("stopping ({why})"));
                 station.stop();
@@ -937,6 +963,20 @@ impl Pipe {
             })();
             CloseHandle(event);
             result
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_logoff_and_shutdown_exits_are_the_os_shutting_down() {
+        assert!(is_windows_shutdown_exit(Some(1073807364)));
+        assert!(is_windows_shutdown_exit(Some(-1073741205)));
+        for code in [Some(1), Some(0), Some(-1073740791), None] {
+            assert!(!is_windows_shutdown_exit(code), "{code:?}");
         }
     }
 }
