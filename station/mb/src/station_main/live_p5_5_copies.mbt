@@ -503,6 +503,18 @@ fn copies_routes(bus : LiveBus, copies : @replica_coord.Copies, retire : @replic
         Err(e) => refusal(e)
       }
     }),
+    p55_route("GET", "^/copies/history$", async fn(r) {
+      let viewer = jfield(r, "viewer")
+      let limit = match jtext(jfield(r, "query"), "limit") {
+        Some(s) if s != "" =>
+          match (try { Some(@string.parse_int(s)) } catch { _ => None }) {
+            Some(n) => if n < 1 { 1 } else if n > 50 { 50 } else { n }
+            None => 30
+          }
+        _ => 30
+      }
+      answered(200, { "records": of_jv(copies.history_json(jtext_or_empty(viewer, "workspace"), limit~)) })
+    }),
     p55_route("GET", "^/copies/settings$", async fn(r) {
       let viewer = jfield(r, "viewer")
       if !manages(viewer) {

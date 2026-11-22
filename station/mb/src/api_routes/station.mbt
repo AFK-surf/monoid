@@ -630,6 +630,42 @@ fn Admin::copies_routes(self : Admin) -> Array[Route] {
       }
       ok(jobj([("ok", jbool(true))]), status=202)
     }),
+    route("GET", "^\\/copies\\/history$", async fn(r, _) {
+      let limit : Int32 = match r.param("limit") {
+        Some(s) if s.length() > 0 => {
+          let mut n : Int32 = 0
+          let mut ok_num = true
+          for i in 0..<s.length() {
+            let c = s.unsafe_charcode_at(i)
+            if c >= '0' && c <= '9' {
+              if n < 1000 {
+                n = n * 10 + (c - '0')
+              }
+            } else {
+              ok_num = false
+              break
+            }
+          }
+          if !ok_num {
+            30
+          } else if n < 1 {
+            1
+          } else if n > 50 {
+            50
+          } else {
+            n
+          }
+        }
+        _ => 30
+      }
+      ok(
+        jobj([
+          ("records", self.backend.ask("copies.history", [ws(r), jint(limit)])),
+        ]),
+      ) catch {
+        e => error(500, message_of(e))
+      }
+    }),
     route("GET", "^\\/copies\\/settings$", async fn(r, _) {
       if !manages_station(r.viewer) {
         return error(403, "only the workspace's owners and admins manage backup settings")

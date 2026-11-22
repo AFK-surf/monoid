@@ -50,6 +50,118 @@ pub fn outcome_file(fs : Fs, data : String) -> String {
 }
 
 ///|
+pub fn history_file(fs : Fs, data : String) -> String {
+  fs.join([data, "replica", "history.json"])
+}
+
+///|
+pub let history_max : Int = 50
+
+///|
+pub(all) struct BackupRecord {
+  id : String
+  at : Double
+  kind : String
+  target_kind : String
+  target : String
+  target_name : String
+  status : String
+  chats : Int
+  messages : Int
+  batches : Int
+  bytes : Double
+  reason : String?
+  error : String?
+}
+
+///|
+pub fn BackupRecord::to_json(self : BackupRecord) -> J {
+  jo([
+    ("id", js(self.id)),
+    ("at", jn(self.at)),
+    ("kind", js(self.kind)),
+    ("targetKind", js(self.target_kind)),
+    ("target", js(self.target)),
+    ("targetName", js(self.target_name)),
+    ("status", js(self.status)),
+    ("chats", ji(self.chats)),
+    ("messages", ji(self.messages)),
+    ("batches", ji(self.batches)),
+    ("bytes", jn(self.bytes)),
+    ("reason", jopt(self.reason)),
+    ("error", jopt(self.error)),
+  ])
+}
+
+///|
+fn is_valid_history_reason(s : String) -> Bool {
+  s == "offline" || s == "old" || s == "error" || s == "gone" || s == "notEmpty"
+}
+
+///|
+fn parse_backup_record(v : J) -> BackupRecord? {
+  guard str_at(v, "id") is Some(id) && id != "" else { return None }
+  guard num_at(v, "at") is Some(at_v) else { return None }
+  guard str_at(v, "kind") is Some(kind) && (kind == "sync" || kind == "restore") else { return None }
+  guard str_at(v, "targetKind") is Some(target_kind) && (target_kind == "station" || target_kind == "s3") else { return None }
+  guard str_at(v, "target") is Some(target) else { return None }
+  guard str_at(v, "targetName") is Some(target_name) else { return None }
+  guard str_at(v, "status") is Some(status) && (status == "ok" || status == "error") else { return None }
+  let nonneg_int = (k : String) => match num_at(v, k) {
+    Some(n) if n >= 0.0 => n.to_int()
+    _ => 0
+  }
+  let nonneg_num = (k : String) => match num_at(v, k) {
+    Some(n) if n >= 0.0 => n.floor()
+    _ => 0.0
+  }
+  let reason = match str_at(v, "reason") {
+    Some(r) if is_valid_history_reason(r) => Some(r)
+    _ => None
+  }
+  let error = str_at(v, "error")
+  Some({
+    id,
+    at: at_v,
+    kind,
+    target_kind,
+    target,
+    target_name,
+    status,
+    chats: nonneg_int("chats"),
+    messages: nonneg_int("messages"),
+    batches: nonneg_int("batches"),
+    bytes: nonneg_num("bytes"),
+    reason,
+    error,
+  })
+}
+
+///|
+fn parse_history_file(v : J?) -> Map[String, Array[BackupRecord]] {
+  let out : Map[String, Array[BackupRecord]] = {}
+  guard v is Some(root) else { return out }
+  guard num_at(root, "v") == Some(1.0) else { return out }
+  for e in entries(at(root, "workspaces")) {
+    let parsed : Array[BackupRecord] = []
+    for item in items(Some(e.1)) {
+      match parse_backup_record(item) {
+        Some(rec) => parsed.push(rec)
+        None => ()
+      }
+    }
+    parsed.sort_by((a, b) => if b.at > a.at { 1 } else if b.at < a.at { -1 } else { 0 })
+    while parsed.length() > history_max {
+      ignore(parsed.pop())
+    }
+    if parsed.length() > 0 {
+      out[e.0] = parsed
+    }
+  }
+  out
+}
+
+///|
 pub fn restore_dir(fs : Fs, data : String) -> String {
   fs.join([data, "restore"])
 }
@@ -166,6 +278,10 @@ pub struct Copies {
   online : Map[String, Bool]
   s3_places : Map[String, (String, S3Place)]
   mut telling : (() -> Unit)?
+  history_by_ws : Map[String, Array[BackupRecord]]
+  mut history_seq : Int
+  mut saving_history : Run?
+  mut save_history_again : Bool
   restored : J?
   was : Array[String]
   levelling : Map[String, Run]
@@ -176,6 +292,7 @@ pub struct Copies {
 ///|
 pub async fn Copies::new(w : World, d : CopiesDeps) -> Copies {
   let restored = w.fs.read_json(outcome_file(w.fs, d.data))
+  let history_by_ws = parse_history_file(w.fs.read_json(history_file(w.fs, d.data)))
   {
     w,
     d,
@@ -199,6 +316,10 @@ pub async fn Copies::new(w : World, d : CopiesDeps) -> Copies {
     online: {},
     s3_places: {},
     telling: None,
+    history_by_ws,
+    history_seq: 0,
+    saving_history: None,
+    save_history_again: false,
     restored,
     was: formerly_of(w.fs, d.data),
     levelling: {},
@@ -237,6 +358,9 @@ pub async fn Copies::close(self : Copies) -> Unit {
   match self.handing {
     Some(r) => r.settled()
     None => ()
+  }
+  while self.saving_history is Some(r) {
+    r.settled()
   }
 }
 
@@ -363,13 +487,17 @@ pub async fn Copies::settle(self : Copies) -> Unit {
   self.settle_export()
   while true {
     let busy = self.keeping.values().any(k => k.busy)
-    if !busy && self.handing is None {
+    if !busy && self.handing is None && self.saving_history is None {
       break
     }
     for r in self.levelling.values().collect() {
       r.settled()
     }
     match self.handing {
+      Some(r) => r.settled()
+      None => ()
+    }
+    match self.saving_history {
       Some(r) => r.settled()
       None => ()
     }
@@ -821,12 +949,14 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
   }
   k.busy = true
   let was_error = k.error
+  let prev_reason = k.reason
   let run = self.w.run(async fn() {
     try {
       let place = peer_place(self.w, peer)
       let (head, first) = level_newest(head, () => self.head_of_ws(ws), async fn(h) {
         level(place, ws, self.own(h), known=k.known)
       })
+      let mut synced_head = head
       let said = head_said(head)
       let mut done = first
       if done is Behind {
@@ -852,6 +982,7 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
         }
         begun.wait()
         guard self.head_of_ws(ws) is Some(next) else { raise failed("no copy of this workspace's") }
+        synced_head = next
         done = level(place, ws, self.own(next))
         if done is Behind {
           raise failed("that station keeps more of this station's than it has")
@@ -859,14 +990,30 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
       }
       match done {
         Level(to, missing, known) => {
+          let at = self.w.now()
           k.known = Some(known)
           k.head = Some(said)
           k.reason = None
           k.to = to
           k.missing = missing
-          k.at = Some(self.w.now())
+          k.at = Some(at)
           k.error = None
           k.tries = 0
+          self.record(
+            ws,
+            at,
+            "sync",
+            "station",
+            peer,
+            self.peer_name(ws, peer),
+            "ok",
+            num_at(synced_head, "chats").unwrap_or(0.0).to_int(),
+            num_at(synced_head, "messages").unwrap_or(0.0).to_int(),
+            head_batches(synced_head).length(),
+            num_at(synced_head, "bytes").unwrap_or(0.0),
+            None,
+            None,
+          )
         }
         Behind => ()
       }
@@ -882,6 +1029,23 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
         k.error = Some(message_of(e))
         k.reason = Some(reason)
         k.known = None
+        if was_error is None || prev_reason != Some(reason) {
+          self.record(
+            ws,
+            self.w.now(),
+            "sync",
+            "station",
+            peer,
+            self.peer_name(ws, peer),
+            "error",
+            0,
+            0,
+            0,
+            0.0,
+            Some(reason),
+            k.error,
+          )
+        }
         if reason != "old" {
           let wait = backoff(copies_retry_ms, k.tries, copies_retry_most_ms)
           k.tries += 1
@@ -956,7 +1120,9 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
   }
   k.busy = true
   let was_error = k.error
+  let prev_reason = k.reason
   let target_id = target.id
+  let target_name = if target.name != "" { target.name } else { target.bucket }
   let run = self.w.run(async fn() {
     try {
       let s3 = self.s3_place(target)
@@ -964,6 +1130,7 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
       let (head, first) = level_newest(head, () => self.head_of_ws(ws), async fn(h) {
         level(place, ws, self.own(h), known=k.known)
       })
+      let mut synced_head = head
       let said = head_said(head)
       let mut done = first
       if done is Behind {
@@ -988,6 +1155,7 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
         }
         begun.wait()
         guard self.head_of_ws(ws) is Some(next) else { raise failed("no copy of this workspace's") }
+        synced_head = next
         done = level(place, ws, self.own(next))
         if done is Behind {
           raise failed("that S3 target keeps more of this station's than it has")
@@ -995,14 +1163,30 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
       }
       match done {
         Level(to, missing, known) => {
+          let at = self.w.now()
           k.known = Some(known)
           k.head = Some(said)
           k.reason = None
           k.to = to
           k.missing = missing
-          k.at = Some(self.w.now())
+          k.at = Some(at)
           k.error = None
           k.tries = 0
+          self.record(
+            ws,
+            at,
+            "sync",
+            "s3",
+            target_id,
+            target_name,
+            "ok",
+            num_at(synced_head, "chats").unwrap_or(0.0).to_int(),
+            num_at(synced_head, "messages").unwrap_or(0.0).to_int(),
+            head_batches(synced_head).length(),
+            num_at(synced_head, "bytes").unwrap_or(0.0),
+            None,
+            None,
+          )
         }
         Behind => ()
       }
@@ -1015,6 +1199,23 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
         k.error = Some(message_of(e))
         k.reason = Some(reason)
         k.known = None
+        if was_error is None || prev_reason != Some(reason) {
+          self.record(
+            ws,
+            self.w.now(),
+            "sync",
+            "s3",
+            target_id,
+            target_name,
+            "error",
+            0,
+            0,
+            0,
+            0.0,
+            Some(reason),
+            k.error,
+          )
+        }
         let wait = backoff(copies_retry_ms, k.tries, copies_retry_most_ms)
         k.tries += 1
         if !self.closed {
@@ -1138,6 +1339,242 @@ async fn Copies::hand_over(self : Copies) -> Bool {
     }
   }
   left
+}
+
+// ── backup & restore history ──
+
+///|
+fn Copies::peer_name(self : Copies, ws : String, peer : String) -> String {
+  let roster = (self.d.roster)(ws).unwrap_or([])
+  match roster.search_by(m => m.id == peer) {
+    Some(i) if roster[i].name != "" => roster[i].name
+    _ => if peer.length() > 8 { peer.unsafe_substring(start=0, end=8) } else { peer }
+  }
+}
+
+///|
+fn Copies::s3_target_name(self : Copies, id : String) -> String {
+  let s3 = self.backup_config().s3
+  match s3.search_by(t => t.id == id) {
+    Some(i) => if s3[i].name != "" { s3[i].name } else { s3[i].bucket }
+    None => id
+  }
+}
+
+///|
+fn history_payload_json(history_by_ws : Map[String, Array[BackupRecord]]) -> J {
+  let ws_entries : Array[(String, J)] = []
+  for ws, list in history_by_ws {
+    let capped : Array[J] = []
+    let n = if list.length() > history_max { history_max } else { list.length() }
+    for i in 0..<n {
+      capped.push(list[i].to_json())
+    }
+    ws_entries.push((ws, ja(capped)))
+  }
+  jo([("v", ji(1)), ("workspaces", jo(ws_entries))])
+}
+
+///|
+fn append_history_record(
+  history_by_ws : Map[String, Array[BackupRecord]],
+  seq : Int,
+  ws : String,
+  at : Double,
+  kind : String,
+  target_kind : String,
+  target : String,
+  target_name : String,
+  status : String,
+  chats : Int,
+  messages : Int,
+  batches : Int,
+  bytes : Double,
+  reason : String?,
+  error : String?,
+) -> BackupRecord {
+  let rec : BackupRecord = {
+    id: "\{num_text(at.trunc())}-\{seq}",
+    at,
+    kind,
+    target_kind,
+    target,
+    target_name,
+    status,
+    chats,
+    messages,
+    batches,
+    bytes,
+    reason,
+    error,
+  }
+  let list = match history_by_ws.get(ws) {
+    Some(xs) => xs
+    None => {
+      let xs : Array[BackupRecord] = []
+      history_by_ws[ws] = xs
+      xs
+    }
+  }
+  let next : Array[BackupRecord] = [rec]
+  for item in list {
+    next.push(item)
+  }
+  next.sort_by((a, b) => if b.at > a.at { 1 } else if b.at < a.at { -1 } else { 0 })
+  while next.length() > history_max {
+    ignore(next.pop())
+  }
+  history_by_ws[ws] = next
+  rec
+}
+
+///|
+fn Copies::record(
+  self : Copies,
+  ws : String,
+  at : Double,
+  kind : String,
+  target_kind : String,
+  target : String,
+  target_name : String,
+  status : String,
+  chats : Int,
+  messages : Int,
+  batches : Int,
+  bytes : Double,
+  reason : String?,
+  error : String?,
+) -> Unit {
+  self.history_seq += 1
+  ignore(
+    append_history_record(
+      self.history_by_ws,
+      self.history_seq,
+      ws,
+      at,
+      kind,
+      target_kind,
+      target,
+      target_name,
+      status,
+      chats,
+      messages,
+      batches,
+      bytes,
+      reason,
+      error,
+    ),
+  )
+  self.save_history()
+}
+
+///|
+fn Copies::save_history(self : Copies) -> Unit {
+  if self.saving_history is Some(_) {
+    self.save_history_again = true
+    return
+  }
+  self.save_history_again = false
+  let fs = self.w.fs
+  let path = history_file(fs, self.d.data)
+  let payload = history_payload_json(self.history_by_ws)
+  let run = self.w.run(async fn() {
+    try {
+      fs.write_json(path, payload)
+    } catch {
+      e => self.w.warn("copies", "backup history not saved", jo([("error", js(message_of(e)))]))
+    }
+    self.saving_history = None
+    if self.save_history_again {
+      self.save_history()
+    }
+  })
+  if !run.is_done() {
+    self.saving_history = Some(run)
+  }
+}
+
+///|
+fn restored_record_of(
+  restored : J?,
+  peer_name : (String) -> String,
+  s3_name : (String) -> String,
+) -> BackupRecord? {
+  guard restored is Some(o) else { return None }
+  guard num_at(o, "at") is Some(at_v) else { return None }
+  let from = text_at(o, "from")
+  let is_s3 = from.has_prefix("s3:")
+  let target = if is_s3 { from.unsafe_substring(start=3, end=from.length()) } else { from }
+  let target_name = if is_s3 {
+    s3_name(target)
+  } else if target != "" {
+    peer_name(target)
+  } else {
+    text_at(o, "name")
+  }
+  let error = str_at(o, "error")
+  let reason = match str_at(o, "reason") {
+    Some("full") => Some("error")
+    Some(r) if is_valid_history_reason(r) => Some(r)
+    _ => None
+  }
+  let rows = at(o, "rows").unwrap_or(Null)
+  Some({
+    id: "restore-\{num_text(at_v.trunc())}",
+    at: at_v,
+    kind: "restore",
+    target_kind: if is_s3 { "s3" } else { "station" },
+    target,
+    target_name,
+    status: if error is None { "ok" } else { "error" },
+    chats: num_at(rows, "sessions").unwrap_or(0.0).to_int(),
+    messages: num_at(rows, "entries").unwrap_or(0.0).to_int(),
+    batches: 0,
+    bytes: 0.0,
+    reason,
+    error,
+  })
+}
+
+///|
+fn query_history(
+  history_by_ws : Map[String, Array[BackupRecord]],
+  restored : J?,
+  ws : String,
+  limit : Int,
+  peer_name : (String) -> String,
+  s3_name : (String) -> String,
+) -> Array[BackupRecord] {
+  let n = if limit < 1 { 1 } else if limit > history_max { history_max } else { limit }
+  let list = match history_by_ws.get(ws) {
+    Some(xs) => xs.copy()
+    None => []
+  }
+  match restored_record_of(restored, peer_name, s3_name) {
+    Some(rec) =>
+      if !list.iter().any(r => r.kind == "restore" && r.at == rec.at) {
+        list.push(rec)
+        list.sort_by((a, b) => if b.at > a.at { 1 } else if b.at < a.at { -1 } else { 0 })
+      }
+    None => ()
+  }
+  let take = if list.length() < n { list.length() } else { n }
+  let out : Array[BackupRecord] = []
+  for i in 0..<take {
+    out.push(list[i])
+  }
+  out
+}
+
+///|
+/// Recent backup & restore records for `ws` (newest first, clamped to 1..50).
+pub fn Copies::history(self : Copies, ws : String, limit? : Int = 30) -> Array[BackupRecord] {
+  query_history(self.history_by_ws, self.restored, ws, limit, p => self.peer_name(ws, p), id => self.s3_target_name(id))
+}
+
+///|
+pub fn Copies::history_json(self : Copies, ws : String, limit? : Int = 30) -> J {
+  ja(self.history(ws, limit~).map(r => r.to_json()))
 }
 
 // ── what the station's settings show ──
@@ -1468,6 +1905,21 @@ pub async fn Copies::restore(
         },
       )
       self.w.warn("copies", "a copy not brought", jo([("origin", js(origin)), ("from", js(r.from)), ("error", jopt(r.error))]))
+      self.record(
+        ws,
+        self.w.now(),
+        "restore",
+        if from_s3 { "s3" } else { "station" },
+        from,
+        if from_s3 { self.s3_target_name(from) } else { self.peer_name(ws, from) },
+        "error",
+        0,
+        0,
+        0,
+        0.0,
+        r.reason,
+        r.error,
+      )
       self.changed(0.0)
       raise e
     }

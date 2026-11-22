@@ -404,3 +404,88 @@ test "select_backup_targets: auto, manual, empty, and acceptOthers=false skippin
   let empty_cfg : BackupConfig = { mode: "manual", stations: [], accept_others: true, s3: [] }
   assert_eq(select_backup_targets("W1", a, roster, empty_cfg, accepts, _ => false), [])
 }
+
+///|
+test "Copies history: record, dedup logic, 50-record cap, persistence reload, limit clamping, and restore merge" {
+  let ws = "W1"
+  let peer_b = "b".repeat(64)
+  let hist : Map[String, Array[BackupRecord]] = {}
+  let mut seq = 0
+  let add = (
+    at : Double,
+    kind : String,
+    target_kind : String,
+    target : String,
+    target_name : String,
+    status : String,
+    chats : Int,
+    messages : Int,
+    batches : Int,
+    bytes : Double,
+    reason : String?,
+    error : String?,
+  ) => {
+    seq += 1
+    append_history_record(hist, seq, ws, at, kind, target_kind, target, target_name, status, chats, messages, batches, bytes, reason, error)
+  }
+
+  // Record peer sync ok + s3 sync ok
+  let r1 = add(1000.0, "sync", "station", peer_b, "Cedar", "ok", 10, 80, 2, 4096.0, None, None)
+  let r2 = add(2000.0, "sync", "s3", "r2main", "Cloudflare R2", "ok", 10, 80, 2, 4096.0, None, None)
+  assert_eq(r1.id, "1000-1")
+  assert_eq(r2.id, "2000-2")
+
+  // Error dedup rule: first failure (was_error=None) records; same reason skipped; reason change records; recovery records
+  let should_rec = (was_error : String?, prev_reason : String?, reason : String) => was_error is None || prev_reason != Some(reason)
+  assert_true(should_rec(None, None, "offline"))
+  assert_false(should_rec(Some("unreachable"), Some("offline"), "offline"))
+  assert_true(should_rec(Some("unreachable"), Some("offline"), "error"))
+  ignore(add(3000.0, "sync", "station", peer_b, "Cedar", "error", 0, 0, 0, 0.0, Some("offline"), Some("station unreachable")))
+  ignore(add(4000.0, "sync", "station", peer_b, "Cedar", "ok", 11, 85, 3, 5000.0, None, None))
+
+  // Cap at 50 records per workspace (newest first)
+  for i in 0..<60 {
+    ignore(add(5000.0 + i.to_double() * 100.0, "sync", "s3", "r2main", "Cloudflare R2", "ok", i, i * 2, 1, 1024.0, None, None))
+  }
+  assert_eq(hist[ws].length(), history_max)
+  assert_eq(hist[ws][0].at, 10900.0)
+  assert_eq(hist[ws][history_max - 1].at, 6000.0)
+
+  // Persistence round-trip: history_payload_json -> stringify -> parse -> parse_history_file
+  let disk_text = stringify(history_payload_json(hist))
+  let reloaded = parse_history_file(Some(parse(disk_text)))
+  assert_eq(reloaded[ws].length(), history_max)
+  assert_eq(reloaded[ws][0].id, hist[ws][0].id)
+  assert_eq(reloaded[ws][0].target_kind, "s3")
+  assert_eq(reloaded[ws][0].target_name, "Cloudflare R2")
+  assert_eq(reloaded[ws][0].status, "ok")
+
+  // Corrupted or wrong-version history safely falls back to empty
+  assert_eq(parse_history_file(None).length(), 0)
+  assert_eq(parse_history_file(Some(parse("{\"v\":2,\"workspaces\":{}}"))).length(), 0)
+
+  // Restore outcome merge + limit clamping (1..50) + no duplicate when same restore at exists
+  let outcome = parse(
+    "{\"origin\":\"\{peer_b}\",\"name\":\"Old\",\"from\":\"s3:r2main\",\"at\":20000,\"rows\":{\"sessions\":4,\"entries\":22},\"files\":1,\"missing\":0,\"error\":null,\"reason\":null,\"pending\":false,\"left\":0}",
+  )
+  let top2 = query_history(reloaded, Some(outcome), ws, 2, _ => "Peer", id => if id == "r2main" { "Cloudflare R2" } else { id })
+  assert_eq(top2.length(), 2)
+  assert_eq(top2[0].kind, "restore")
+  assert_eq(top2[0].target_kind, "s3")
+  assert_eq(top2[0].target, "r2main")
+  assert_eq(top2[0].target_name, "Cloudflare R2")
+  assert_eq(top2[0].status, "ok")
+  assert_eq(top2[0].chats, 4)
+  assert_eq(top2[0].messages, 22)
+  assert_eq(top2[1].at, 10900.0)
+
+  // Clamp limit < 1 to 1 and > 50 to 50
+  assert_eq(query_history(reloaded, Some(outcome), ws, 0, _ => "Peer", id => id).length(), 1)
+  assert_eq(query_history(reloaded, Some(outcome), ws, 999, _ => "Peer", id => id).length(), history_max)
+
+  // If history already has a restore record at the same `at`, do not duplicate it
+  ignore(append_history_record(reloaded, 999, ws, 20000.0, "restore", "s3", "r2main", "Cloudflare R2", "ok", 4, 22, 0, 0.0, None, None))
+  let deduped = query_history(reloaded, Some(outcome), ws, 50, _ => "Peer", id => id)
+  let restore_count = deduped.filter(r => r.kind == "restore" && r.at == 20000.0).length()
+  assert_eq(restore_count, 1)
+}

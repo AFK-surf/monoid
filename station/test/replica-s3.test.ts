@@ -13,7 +13,8 @@ import { PeerBus, Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { checkConfig } from "../src/accounts/check.ts";
-import { Copies, keptDir } from "../src/replica/copies.ts";
+import { Copies, historyFile, keptDir } from "../src/replica/copies.ts";
+import { outcomeFile } from "../src/replica/restore.ts";
 import {
   type NormalizedBackupConfig,
   type NormalizedS3Target,
@@ -782,4 +783,171 @@ test("HTTP routes: /copies/settings secret redaction, key generation, secret pre
   // Verify config.json was written cleanly with backup field
   const rawOnDisk = JSON.parse(readFileSync(config.path, "utf8"));
   assert.equal(rawOnDisk.backup.s3[0].name, "Renamed R2");
+});
+
+// ── 6. Persistent backup history & GET /copies/history route ──
+
+test("Backup history: peer & S3 sync persistence, error dedup & recovery, restore outcome merge, and GET /copies/history", async () => {
+  const s3 = new MockS3Server();
+  await s3.start();
+  const s3Target = s3.target({ id: "r2hist", name: "R2 Hist" });
+
+  const mesh = new Mesh();
+  const [A, B] = [sid("a"), sid("b")];
+  mesh.rosters.set(HOME, [A, B]);
+  const made = station();
+  const a = mesh.add(A, [HOME], {
+    made,
+    backup: { mode: "manual", stations: [B], acceptOthers: true, s3: [s3Target] },
+  });
+  const b = mesh.add(B, [HOME]);
+
+  await b.copies.start();
+  await a.copies.start();
+  await mesh.settle();
+
+  // Peer + S3 sync both recorded and persisted to <data>/replica/history.json
+  const hist1 = a.copies.history(HOME);
+  assert.ok(hist1.length >= 2, `expected at least 2 records, got ${hist1.length}`);
+  const peerOk = hist1.find((r) => r.kind === "sync" && r.targetKind === "station" && r.target === B && r.status === "ok");
+  const s3Ok = hist1.find((r) => r.kind === "sync" && r.targetKind === "s3" && r.target === s3Target.id && r.status === "ok");
+  assert.ok(peerOk, "peer sync ok record missing");
+  assert.ok(s3Ok, "s3 sync ok record missing");
+  assert.equal(peerOk.targetName, B.slice(0, 4));
+  assert.equal(s3Ok.targetName, "R2 Hist");
+  assert.ok(peerOk.chats > 0 && peerOk.messages > 0 && peerOk.batches > 0 && peerOk.bytes > 0);
+  assert.equal(peerOk.reason, null);
+  assert.equal(peerOk.error, null);
+  assert.ok(s3Ok.chats > 0 && s3Ok.messages > 0 && s3Ok.batches > 0 && s3Ok.bytes > 0);
+
+  // overview.copies must NOT embed history
+  const ov = a.copies.overview(HOME, true) as Json;
+  assert.equal("history" in ov, false);
+
+  // Persisted file exists and contains no secrets
+  const histPath = historyFile(a.data);
+  assert.ok(existsSync(histPath), "history.json should exist on disk");
+  const rawHistText = readFileSync(histPath, "utf8");
+  assert.ok(!rawHistText.includes(s3.secretAccessKey));
+  assert.ok(!rawHistText.includes(TEST_KEY));
+
+  // Take peer B offline and trigger multiple retries -> error deduplicated to a single record
+  b.up = false;
+  await mesh.clock.move(10_000);
+  made.store.deleteSession(made.deleted);
+  await a.copies.settle();
+  const errCountAfterFirst = a.copies.history(HOME).filter((r) => r.target === B && r.status === "error").length;
+  assert.equal(errCountAfterFirst, 1, "first peer failure should record 1 error");
+
+  // Advance clock across backoff retries while B is still offline -> no duplicate error records
+  await mesh.clock.move(10_000);
+  await a.copies.settle();
+  await mesh.clock.move(20_000);
+  await a.copies.settle();
+  const errCountAfterRetries = a.copies.history(HOME).filter((r) => r.target === B && r.status === "error").length;
+  assert.equal(errCountAfterRetries, 1, "repeated failures with same reason must not spam history");
+
+  // Bring B back online -> recovery records a new ok entry
+  b.up = true;
+  await mesh.clock.move(60_000);
+  await mesh.settle();
+  const okAfterRecovery = a.copies.history(HOME).filter((r) => r.target === B && r.status === "ok").length;
+  assert.ok(okAfterRecovery >= 2, "recovery after failure should record a new ok entry");
+
+  // Restart a fresh Copies instance on the same data dir + an outcomeFile -> reloads history & merges restore record
+  const restoreAt = mesh.clock.currentTimeMillisUnsafe() + 5000;
+  writeFileSync(
+    outcomeFile(a.data),
+    JSON.stringify({
+      origin: sid("c"),
+      name: "OldStation",
+      from: `s3:${s3Target.id}`,
+      at: restoreAt,
+      rows: { sessions: 3, entries: 19 },
+      files: 1,
+      missing: 0,
+      error: null,
+      reason: null,
+      pending: false,
+      left: 0,
+    }),
+  );
+  const runner2 = new InlineRunner({
+    db: join(a.data, "stillfail.db"),
+    replica: join(a.data, "replica"),
+    dataDir: a.data,
+    origin: A,
+    now: () => mesh.clock.currentTimeMillisUnsafe(),
+  });
+  closing.push(async () => await runner2.close());
+  const fibers2 = new Fibers("copies-reload", mesh.clock);
+  closing.push(async () => await fibers2.close());
+  const reloaded = new Copies({
+    data: a.data,
+    here: () => A,
+    places: () => ({ home: HOME, workspaces: [{ workspace: HOME, name: "A" }] }),
+    roster: () => [{ id: A, name: "A" }, { id: B, name: "Cedar" }],
+    ask: (s, r) => a.bus.ask(s, r),
+    runner: runner2,
+    fibers: fibers2,
+    changed: () => {},
+    restart: async () => null,
+    backup: () => a.backup,
+  });
+  closing.push(async () => await reloaded.close());
+
+  const reloadedHist = reloaded.history(HOME, 50);
+  assert.equal(reloadedHist[0]!.kind, "restore");
+  assert.equal(reloadedHist[0]!.targetKind, "s3");
+  assert.equal(reloadedHist[0]!.target, s3Target.id);
+  assert.equal(reloadedHist[0]!.targetName, "R2 Hist");
+  assert.equal(reloadedHist[0]!.status, "ok");
+  assert.equal(reloadedHist[0]!.chats, 3);
+  assert.equal(reloadedHist[0]!.messages, 19);
+  assert.ok(reloadedHist.some((r) => r.kind === "sync" && r.targetKind === "station" && r.status === "ok"));
+  assert.ok(reloadedHist.some((r) => r.kind === "sync" && r.targetKind === "s3" && r.status === "ok"));
+
+  // HTTP route GET /copies/history?limit=2: allowed for ordinary member, truncated, newest-first, no secrets
+  const routeList = copiesRoutes({ copies: reloaded, retire: {} as any, starts: false, changed: () => {} });
+  const histRoute = routeList.find((x) => x.method === "GET" && x.pattern.test("/copies/history"));
+  assert.ok(histRoute, "GET /copies/history route should exist");
+  const resp = await histRoute.handle(
+    {
+      method: "GET",
+      path: "/copies/history",
+      query: [["limit", "2"]],
+      headers: {},
+      body: Buffer.alloc(0),
+      viewer: { workspace: HOME, email: "member@example.com", role: "member", device: "dev1" } as any,
+      lang: "en",
+    } as any,
+    "/copies/history".match(histRoute.pattern)!,
+  );
+  assert.equal(resp.status, 200);
+  const respText = resp.body.toString("utf8");
+  assert.ok(!respText.includes(s3.secretAccessKey));
+  assert.ok(!respText.includes(TEST_KEY));
+  const respBody = JSON.parse(respText);
+  assert.equal(Array.isArray(respBody.records), true);
+  assert.equal(respBody.records.length, 2);
+  assert.ok(respBody.records[0].at >= respBody.records[1].at);
+  assert.equal(respBody.records[0].kind, "restore");
+
+  // Restore failure on an empty station records a kind="restore", status="error" entry
+  const D = sid("d");
+  mesh.rosters.set(HOME, [D]);
+  const emptyNode = mesh.add(D, [HOME], {
+    backup: { mode: "manual", stations: [], acceptOthers: true, s3: [] },
+  });
+  await emptyNode.copies.start();
+  await emptyNode.copies.settle();
+  await assert.rejects(() => emptyNode.copies.restore(HOME, A, "lz5x0-0123abcd", { s3: "missing-s3" }));
+  await emptyNode.copies.settle();
+  const failHist = emptyNode.copies.history(HOME);
+  assert.equal(failHist.length, 1);
+  assert.equal(failHist[0]!.kind, "restore");
+  assert.equal(failHist[0]!.targetKind, "s3");
+  assert.equal(failHist[0]!.target, "missing-s3");
+  assert.equal(failHist[0]!.status, "error");
+  assert.equal(failHist[0]!.reason, "gone");
 });

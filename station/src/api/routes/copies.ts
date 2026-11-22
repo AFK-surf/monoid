@@ -1,7 +1,7 @@
 // The copies of this station's chats (replica/copies.ts), as its settings ask of them: on a station with no chat of its
 // own, one of the lost stations' copies the overview's `copies.restorable` offers taken back (POST /copies/restore
 // `{station, gen, from: {station}}`). The workspace's owners and admins.
-import { type Request, error, json } from "../request.ts";
+import { type Request, error, json, param } from "../request.ts";
 import type { Route } from "../admin.ts";
 import { managesStation } from "../../mesh/credential.ts";
 import type { ConfigFile } from "../../ops/config.ts";
@@ -93,6 +93,16 @@ export const routes = ({
         return error(e instanceof Refused ? 409 : 500, (e as Error).message);
       }
       return json(202, JSON.stringify({ ok: true }));
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/copies\/history$/,
+    handle: async (r: Request) => {
+      const rawLimit = param(r, "limit");
+      const parsed = rawLimit !== undefined && rawLimit !== "" ? Number.parseInt(rawLimit, 10) : 30;
+      const limit = Number.isFinite(parsed) ? Math.max(1, Math.min(50, parsed)) : 30;
+      return json(200, JSON.stringify({ records: copies.history(r.viewer.workspace, limit) }));
     },
   },
   {

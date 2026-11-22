@@ -35,6 +35,75 @@ export const TELL_RESTORE_MS = 1_000;
 /// Where the stations this one keeps copies of are kept, and which station this one was (it took a lost one's place).
 export const keptDir = (data: string) => join(data, "replicas");
 export const formerlyFile = (data: string) => join(data, "replica", "formerly.json");
+export const historyFile = (data: string) => join(data, "replica", "history.json");
+export const HISTORY_MAX = 50;
+
+export type BackupRecord = {
+  id: string;
+  at: number;
+  kind: "sync" | "restore";
+  targetKind: "station" | "s3";
+  target: string;
+  targetName: string;
+  status: "ok" | "error";
+  chats: number;
+  messages: number;
+  batches: number;
+  bytes: number;
+  reason: RestoreReason | null;
+  error: string | null;
+};
+
+const VALID_REASONS = new Set<string>(["offline", "old", "error", "gone", "notEmpty"]);
+
+function parseBackupRecord(raw: unknown): BackupRecord | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== "string" || r.id === "") return null;
+  if (typeof r.at !== "number" || !Number.isFinite(r.at)) return null;
+  if (r.kind !== "sync" && r.kind !== "restore") return null;
+  if (r.targetKind !== "station" && r.targetKind !== "s3") return null;
+  if (typeof r.target !== "string") return null;
+  if (typeof r.targetName !== "string") return null;
+  if (r.status !== "ok" && r.status !== "error") return null;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : 0);
+  const reason = typeof r.reason === "string" && VALID_REASONS.has(r.reason) ? (r.reason as RestoreReason) : null;
+  const error = typeof r.error === "string" ? r.error : null;
+  return {
+    id: r.id,
+    at: r.at,
+    kind: r.kind,
+    targetKind: r.targetKind,
+    target: r.target,
+    targetName: r.targetName,
+    status: r.status,
+    chats: num(r.chats),
+    messages: num(r.messages),
+    batches: num(r.batches),
+    bytes: num(r.bytes),
+    reason,
+    error,
+  };
+}
+
+function parseHistoryFile(raw: unknown): Map<string, BackupRecord[]> {
+  const out = new Map<string, BackupRecord[]>();
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return out;
+  const obj = raw as Record<string, unknown>;
+  if (obj.v !== 1 || obj.workspaces === null || typeof obj.workspaces !== "object" || Array.isArray(obj.workspaces)) return out;
+  for (const [ws, list] of Object.entries(obj.workspaces as Record<string, unknown>)) {
+    if (!Array.isArray(list)) continue;
+    const parsed: BackupRecord[] = [];
+    for (const item of list) {
+      const rec = parseBackupRecord(item);
+      if (rec !== null) parsed.push(rec);
+    }
+    parsed.sort((a, b) => b.at - a.at);
+    if (parsed.length > HISTORY_MAX) parsed.length = HISTORY_MAX;
+    if (parsed.length > 0) out.set(ws, parsed);
+  }
+  return out;
+}
 
 /// The stations this one took the place of, as `formerly.json` says (written before its store opens, never after: read
 /// once as it starts).
@@ -164,6 +233,11 @@ export class Copies {
   /// Cached S3Place instances keyed by target id + config signature.
   readonly #s3Places = new Map<string, { sig: string; place: S3Place }>();
   #telling: (() => void) | null = null;
+  /// Persisted backup & restore history per workspace (at most HISTORY_MAX entries, newest first).
+  readonly #history: Map<string, BackupRecord[]>;
+  #historySeq = 0;
+  #savingHistory: Promise<void> | null = null;
+  #saveHistoryAgain = false;
 
   /// What came of the restore this station was started again for (null: none): written before its store opened and
   /// never after, so read once.
@@ -180,6 +254,11 @@ export class Copies {
     } catch {}
     this.#restored = restored;
     this.#was = formerlyOf(d.data);
+    let history = new Map<string, BackupRecord[]>();
+    try {
+      history = parseHistoryFile(JSON.parse(readFileSync(historyFile(d.data), "utf8"))); // sync: read once, before the station serves
+    } catch {}
+    this.#history = history;
   }
 
   /// Begun: the export told where it is, a first pass (the small tables read whole), the other stations told it is up.
@@ -197,6 +276,7 @@ export class Copies {
     this.#handAgain?.();
     await this.#passing?.catch(() => {});
     await this.#handing?.catch(() => {});
+    while (this.#savingHistory !== null) await this.#savingHistory.catch(() => {});
   }
 
   /// The station's settings told the copies changed: within `ms` (0: now).
@@ -285,8 +365,8 @@ export class Copies {
     } while (this.#again);
     for (;;) {
       const busy = [...this.#keeping.values()].some((k) => k.busy);
-      if (!busy && this.#handing === null) break;
-      await Promise.all([...this.#levelling.values(), this.#handing]);
+      if (!busy && this.#handing === null && this.#savingHistory === null) break;
+      await Promise.all([...this.#levelling.values(), this.#handing, this.#savingHistory]);
     }
   }
 
@@ -535,9 +615,11 @@ export class Copies {
     k.busy = true;
     const keeping = k;
     const wasError = k.error;
+    const prevReason = k.reason;
     const run = (async () => {
       try {
         const place = new PeerPlace(peer, this.#d.ask);
+        let syncedHead = head;
         let done = await level(place, ws, this.#own(head), keeping.known);
         if (done.behind) {
           // This station's own copy is behind what that station keeps of it: its data was rolled back. A new
@@ -554,6 +636,7 @@ export class Copies {
           await begun.done;
           const next = this.#passed?.heads[ws];
           if (next === undefined) throw new Error("no copy of this workspace's");
+          syncedHead = next;
           done = await level(place, ws, this.#own(next));
           if (done.behind) throw new Error("that station keeps more of this station's than it has");
         }
@@ -565,6 +648,20 @@ export class Copies {
         keeping.at = this.#d.fibers.now();
         keeping.error = null;
         keeping.tries = 0;
+        this.#record(ws, {
+          at: keeping.at,
+          kind: "sync",
+          targetKind: "station",
+          target: peer,
+          targetName: this.#peerName(ws, peer),
+          status: "ok",
+          chats: syncedHead.chats,
+          messages: syncedHead.messages,
+          batches: syncedHead.batches.length,
+          bytes: syncedHead.bytes,
+          reason: null,
+          error: null,
+        });
       } catch (e) {
         const reason = this.#reason(peer, e);
         // (one from before copies, which knows no `replica.*`: nothing to say or retry until it says it is up, as
@@ -574,6 +671,22 @@ export class Copies {
         keeping.error = (e as Error).message;
         keeping.reason = reason;
         keeping.known = null;
+        if (wasError === null || reason !== prevReason) {
+          this.#record(ws, {
+            at: this.#d.fibers.now(),
+            kind: "sync",
+            targetKind: "station",
+            target: peer,
+            targetName: this.#peerName(ws, peer),
+            status: "error",
+            chats: 0,
+            messages: 0,
+            batches: 0,
+            bytes: 0,
+            reason,
+            error: keeping.error,
+          });
+        }
         if (reason !== "old") {
           const wait = Math.min(RETRY_MS * 2 ** keeping.tries, RETRY_MOST_MS);
           keeping.tries++;
@@ -624,9 +737,11 @@ export class Copies {
     k.busy = true;
     const keeping = k;
     const wasError = k.error;
+    const prevReason = k.reason;
     const run = (async () => {
       try {
         const place = this.#s3Place(target);
+        let syncedHead = head;
         let done = await level(place, ws, this.#own(head), keeping.known);
         if (done.behind) {
           let begun = this.#begun.get(ws);
@@ -644,6 +759,7 @@ export class Copies {
           await begun.done;
           const next = this.#passed?.heads[ws];
           if (next === undefined) throw new Error("no copy of this workspace's");
+          syncedHead = next;
           done = await level(place, ws, this.#own(next));
           if (done.behind) throw new Error("that S3 target keeps more of this station's than it has");
         }
@@ -655,12 +771,42 @@ export class Copies {
         keeping.at = this.#d.fibers.now();
         keeping.error = null;
         keeping.tries = 0;
+        this.#record(ws, {
+          at: keeping.at,
+          kind: "sync",
+          targetKind: "s3",
+          target: target.id,
+          targetName: target.name || target.bucket,
+          status: "ok",
+          chats: syncedHead.chats,
+          messages: syncedHead.messages,
+          batches: syncedHead.batches.length,
+          bytes: syncedHead.bytes,
+          reason: null,
+          error: null,
+        });
       } catch (e) {
         const reason: Reason = e instanceof S3HttpError ? "error" : "offline";
         if (keeping.error === null) log.warn("copies", "an S3 place not brought level", { ws, s3: target.id, error: (e as Error).message });
         keeping.error = (e as Error).message;
         keeping.reason = reason;
         keeping.known = null;
+        if (wasError === null || reason !== prevReason) {
+          this.#record(ws, {
+            at: this.#d.fibers.now(),
+            kind: "sync",
+            targetKind: "s3",
+            target: target.id,
+            targetName: target.name || target.bucket,
+            status: "error",
+            chats: 0,
+            messages: 0,
+            batches: 0,
+            bytes: 0,
+            reason,
+            error: keeping.error,
+          });
+        }
         const wait = Math.min(RETRY_MS * 2 ** keeping.tries, RETRY_MOST_MS);
         keeping.tries++;
         if (!this.#closed) {
@@ -766,6 +912,93 @@ export class Copies {
       }
     }
     return left;
+  }
+
+  // ── backup & restore history ──
+
+  #peerName(ws: string, peer: string): string {
+    const found = (this.#d.roster(ws) ?? []).find((s) => s.id === peer);
+    return found !== undefined && found.name !== "" ? found.name : peer.slice(0, 8);
+  }
+
+  #s3TargetName(id: string): string {
+    const found = this.#backup().s3.find((t) => t.id === id);
+    if (found === undefined) return id;
+    return found.name !== "" ? found.name : found.bucket;
+  }
+
+  #record(ws: string, entry: Omit<BackupRecord, "id">): void {
+    const id = `${Math.trunc(entry.at)}-${++this.#historySeq}`;
+    const rec: BackupRecord = { id, ...entry };
+    let list = this.#history.get(ws);
+    if (list === undefined) this.#history.set(ws, (list = []));
+    list.unshift(rec);
+    list.sort((a, b) => b.at - a.at);
+    if (list.length > HISTORY_MAX) list.length = HISTORY_MAX;
+    this.#saveHistory();
+  }
+
+  #saveHistory(): void {
+    if (this.#savingHistory !== null) {
+      this.#saveHistoryAgain = true;
+      return;
+    }
+    this.#saveHistoryAgain = false;
+    const path = historyFile(this.#d.data);
+    const tmp = `${path}.tmp`;
+    const workspaces: Record<string, BackupRecord[]> = {};
+    for (const [ws, list] of this.#history) workspaces[ws] = list.slice(0, HISTORY_MAX);
+    const payload = JSON.stringify({ v: 1, workspaces });
+    const run = (async () => {
+      try {
+        await mkdir(join(this.#d.data, "replica"), { recursive: true });
+        await writeFile(tmp, payload, "utf8");
+        await rename(tmp, path);
+      } catch (e) {
+        log.warn("copies", "backup history not saved", { error: (e as Error).message });
+      }
+    })();
+    this.#savingHistory = run;
+    void run.finally(() => {
+      if (this.#savingHistory === run) this.#savingHistory = null;
+      if (this.#saveHistoryAgain) this.#saveHistory();
+    });
+  }
+
+  #restoredRecord(ws: string): BackupRecord | null {
+    const o = this.#restored;
+    if (o === null) return null;
+    const isS3 = o.from.startsWith("s3:");
+    const target = isS3 ? o.from.slice(3) : o.from;
+    const targetName = isS3 ? this.#s3TargetName(target) : target !== "" ? this.#peerName(ws, target) : o.name;
+    const reason: RestoreReason | null = o.reason === "full" ? "error" : (o.reason ?? null);
+    return {
+      id: `restore-${Math.trunc(o.at)}`,
+      at: o.at,
+      kind: "restore",
+      targetKind: isS3 ? "s3" : "station",
+      target,
+      targetName,
+      status: o.error === null ? "ok" : "error",
+      chats: typeof o.rows?.sessions === "number" ? o.rows.sessions : 0,
+      messages: typeof o.rows?.entries === "number" ? o.rows.entries : 0,
+      batches: 0,
+      bytes: 0,
+      reason,
+      error: o.error,
+    };
+  }
+
+  /// Recent backup & restore records for `ws` (newest first, clamped to 1..50).
+  history(ws: string, limit = 30): BackupRecord[] {
+    const n = Math.max(1, Math.min(HISTORY_MAX, Number.isFinite(limit) ? Math.trunc(limit) : 30));
+    const list = (this.#history.get(ws) ?? []).slice();
+    const restored = this.#restoredRecord(ws);
+    if (restored !== null && !list.some((r) => r.kind === "restore" && r.at === restored.at)) {
+      list.push(restored);
+      list.sort((a, b) => b.at - a.at);
+    }
+    return list.slice(0, n).map((r) => ({ ...r }));
   }
 
   // ── what the station's settings show ──
@@ -934,6 +1167,20 @@ export class Copies {
       r.error = (e as Error).message;
       r.reason = e instanceof NotEmpty ? "notEmpty" : e instanceof Gone ? "gone" : "s3" in from ? (e instanceof S3HttpError ? "error" : "offline") : this.#reason(from.station, e);
       log.warn("copies", "a copy not brought", { origin, from: r.from, error: r.error });
+      this.#record(ws, {
+        at: this.#d.fibers.now(),
+        kind: "restore",
+        targetKind: "s3" in from ? "s3" : "station",
+        target: "s3" in from ? from.s3 : from.station,
+        targetName: "s3" in from ? this.#s3TargetName(from.s3) : this.#peerName(ws, from.station),
+        status: "error",
+        chats: 0,
+        messages: 0,
+        batches: 0,
+        bytes: 0,
+        reason: r.reason,
+        error: r.error,
+      });
       this.#changed(0);
       throw e;
     });

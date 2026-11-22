@@ -276,6 +276,14 @@ fn P55::copies_ops(self : P55, copies : @replica_coord.Copies, retire : @replica
     retire.again(arg_str(jitems(arg), 0))
     Json::null()
   })
+  self.op("copies.history", async fn(arg) {
+    let a = jitems(arg)
+    let limit = match as_num(arg_at(a, 1)) {
+      Some(n) => n.to_int()
+      None => 30
+    }
+    of_jv(copies.history_json(arg_str(a, 0), limit~))
+  })
   self.op("copies.settings", async fn(arg) {
     let a = jitems(arg)
     of_jv(copies.backup_view(arg_str(a, 0)))
