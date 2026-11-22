@@ -284,7 +284,7 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
   // (chat-info-bare differs from chat-info only in its chat's and chatThings' values: the same screen here. board-add
   // is the same board with its composer open; its opening is checked against the board's bar below.)
   let distinct = @sfapptest.corner_modes().filter(fn(m) {
-    m != "newchat-station-models" && m != "newchat-station-empty" && m != "chat-info-bare" && m != "board-add"
+    m != "newchat-station-models" && m != "newchat-station-empty" && m != "newchat-borrow-model" && m != "chat-info-bare" && m != "board-add"
   })
   let modes = distinct.filter(fn(m) { m == "home" }) + distinct.filter(fn(m) { m != "home" })
   for mode in modes {
@@ -412,7 +412,7 @@ test "the station filter fixtures become the same model panel on the real worksp
   for win in real_size_windows {
     let given = fn(way : String) { !real_size_shell_ways.contains(way) && !real_size_chat_ways.contains(way) }
     let expected = real_size_screen("newchat-model", win, given)
-    for mode in ["newchat-station-models", "newchat-station-empty"] {
+    for mode in ["newchat-station-models", "newchat-station-empty", "newchat-borrow-model"] {
       assert_eq(real_size_screen(mode, win, given), expected, msg="\{win.0} \{mode}")
     }
   }

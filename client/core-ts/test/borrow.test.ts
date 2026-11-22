@@ -141,7 +141,7 @@ test("picking_another_stations_model_asks_to_borrow_it_and_borrowing_shares_it_w
   choose.set(at, of, { model: "deepseek-v4-pro" });
   const v: J = (choose.compute({ topic: "pick", station: at, of }) as J).ok;
   assert.equal(v.option, "deepseek-v4-pro");
-  assert.deepEqual([v.borrow.note, v.borrow.title, v.borrow.action, v.borrow.confirmAction, v.borrow.allowed], ["此 Profile 位于 Office，尚未分享给此 station。", "将 ds@x.com 分享至此 station", "去分享", "确认分享", true]);
+  assert.deepEqual([v.borrow.note, v.borrow.title, v.borrow.action, v.borrow.confirmAction, v.borrow.allowed], ["此 Profile 位于 Office，尚未分享给此 station。", "将账号分享至此 station", "去分享", "确认分享", true]);
   assert.equal(v.borrow.lines.length, 3);
   assert.ok(v.borrow.lines[1].includes("副本"), v.borrow.lines[1]);
   assert.ok(v.borrow.lines[2].includes("环境"), v.borrow.lines[2]);
@@ -165,7 +165,7 @@ test("picking_another_stations_model_asks_to_borrow_it_and_borrowing_shares_it_w
   assert.throws(() => member.borrow(at, of), /owner 或 admin/);
   choose.set(at, of, { model: "gpt-6-astra" });
   const subscription: J = (choose.compute({ topic: "pick", station: at, of }) as J).ok;
-  assert.equal(subscription.borrow.title, "将 cx@x.com · Plus 分享至此 station");
+  assert.match(subscription.borrow.lines[0], /「cx@x.com · Plus」/);
   assert.deepEqual(choose.borrow(at, of).op.body, { on: true, allow: [HERE] }, "a new share is limited to this station");
   choose.set(at, of, { model: "claude-opus-5-5" });
   assert.equal((choose.compute({ topic: "pick", station: at, of }) as J).ok.borrow, null);

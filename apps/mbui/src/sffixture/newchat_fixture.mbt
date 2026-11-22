@@ -882,8 +882,12 @@ pub fn fix_pick() -> Json {
     // (the model drafted another station's: borrowed first, asked, from the panel's foot)
     "borrow": if n.borrow {
       {
-        "title": "将 Maple 的 Fable 5.1 分享至此 station？",
-        "lines": ["Fable 5.1 由 Maple 上的 Claude 订阅运行。", "分享后，这个连接的会话也用它的额度。"],
+        "title": "将账号分享至此 station",
+        "lines": [
+          "此 station 当前没有可用于 Fable 5.1 的账号。确认后，会将 Maple 的 Profile「Claude Max」分享至此 station，供此 station 上的对话使用。",
+          "这是订阅账号：此 station 每次启动 agent 都需要连接 Maple 获取登录，Maple 离线时无法使用。",
+          "不同 station 的环境可能不同（已安装的运行时和工具、网络、文件），分享前请确认此 station 能正常使用这个账号。",
+        ],
         "action": "去分享",
         "confirmAction": "确认分享",
         "allowed": true,
