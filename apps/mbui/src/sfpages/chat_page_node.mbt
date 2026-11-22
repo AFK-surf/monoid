@@ -5,7 +5,8 @@
 
 ///|
 /// Chat `r`'s messages as `src` reads them (view_of_chat), in node `v`, growing to what the column it is in leaves
-/// them, once its view is read (till then none: its bones are the old page's), laid out by the room the column gives it
+/// them, once its view is read (while it is read the first time, its messages to come in their bones and what failed
+/// over them in red: chat_messages_sample_node, waiting_node), laid out by the room the column gives it
 /// (View::by_room: its width what the shell gives the page, as it changes), under the chat's bar, `cover` tall (where
 /// it is drawn to, what hides the list's top), `room` more over its first row, `foot` under its last and the composer
 /// `composer` builds under that, in the list's foot (till the view is read, at the foot of the room it is given),
@@ -175,14 +176,49 @@ pub fn chat_page_body_node(
     // it had, or was to take, taken by the one after it)
     b.pick(at_once=true, fn() { read.get() is Some(_) }, fn(o, loaded) {
       guard loaded else {
+        o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+        let error_text = fn() {
+          match src.topic("chat", @sfbase.chat_params(r)).get().error {
+            Some(e) => {
+              let msg = match e {
+                String(s) => s
+                _ => @sfbase.text(Some(e), "message")
+              }
+              @sf.t("android-chat.chat.unreadable", args=[("error", msg)])
+            }
+            None => ""
+          }
+        }
+        // a chat just made from a new chat (its scene leaving, its first words on their way) is the core's own:
+        // nothing to read from a station, nothing breathing for the frames until the core's view of it comes
+        let from_fresh = fn() {
+          @sfbase.fresh.became.get() == Some(r) ||
+          (@sfbase.fresh.sending.get() && @sfbase.fresh.made.get() == r.session)
+        }
+        o.box(fn(s) {
+          s
+          .grow(Is(1.0))
+          .shrink(Is(1.0))
+          .basis(Is(Some(0.0)))
+          .min_height(Is(Some(0.0)))
+          .clip()
+          .padding(By(fn() { (0.0, cover(), 0.0, 0.0) }))
+          |> ignore
+          s.show(at_once=true, fn() { error_text() != "" || !from_fresh() }, fn(w) {
+            w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+            @sf.waiting_node(
+              w,
+              fn(bones) { chat_messages_sample_node(bones, width, tips, stint, top=room) },
+              error=error_text,
+              fill=true,
+            )
+          })
+        })
+        |> ignore
         match composer {
           Some(build) => {
-            o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-            o.box(fn(s) { s.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore }) |> ignore
-            build(o)
             // (whether its field had the cursor, as it last said: what its field's going tells first is not the person's)
             let had = Ref(false)
-            o.reacts(fn() { w.field.focused() }, fn(f) { had.val = f })
             o.owns(fn() {
               if had.val || w.field.focused() || composing.wanted {
                 composer_take_focus()
@@ -190,6 +226,8 @@ pub fn chat_page_body_node(
               }
             })
             |> ignore
+            build(o)
+            o.reacts(fn() { w.field.focused() }, fn(f) { if o.alive() { had.val = f } })
           }
           None => ()
         }
@@ -286,4 +324,72 @@ pub fn chat_page_body_node(
   .basis(Is(Some(0.0)))
   .min_height(Is(Some(0.0)))
   |> ignore
+}
+
+///|
+/// The made-up messages of chat_messages_sample_node: whether each is the viewer's, and how long each of its paragraphs
+/// is (letters): a short ask, an answer of a few lines, and so on, as a chat goes.
+// kept across runs: a table, never written
+let sample_messages : Array[(Bool, Array[Int])] = [
+  (true, [14]),
+  (false, [70, 36]),
+  (true, [22]),
+  (false, [110, 48, 24]),
+  (true, [9]),
+  (false, [56]),
+]
+
+///|
+/// A chat's messages to come while it is read the first time (the library's waiting_node, in its bones): made-up
+/// messages as its list draws them (mine_said_node, agent_said_node: the viewer's in their bubble, an agent's words
+/// under its picture, name and time), as far apart and as far in as the list has them, `top` over the first as over the
+/// list's first row.
+fn chat_messages_sample_node(
+  v : @view.View,
+  width : () -> Double,
+  tips : @sf.TipLayer,
+  stint : () -> Int,
+  top~ : Double,
+) -> Unit {
+  let side = fn() { row_side(width()) }
+  let gap = fn() { if width() <= chat_narrow_w { list_gap_narrow } else { list_gap } }
+  let view = @sfbase.chat_view_made({ "title": Json::string(""), "messages": [] })
+  let here : MessageNodeHere = {
+    station: "",
+    session: "",
+    view: fn() { view },
+    width,
+    tips,
+    stint,
+    jump: None,
+    picture: None,
+  }
+  v
+  .fills_across(Is(true))
+  .shrink(Is(1.0))
+  .basis(Is(Some(0.0)))
+  .min_height(Is(Some(0.0)))
+  .clip()
+  |> ignore
+  v.box(fn(t) { t.height(Is(Some(top))) |> ignore }) |> ignore
+  for i, m in sample_messages {
+    let (mine, lines) = m
+    let words = lines.map(@sf.sample_words)
+    let key = "sample/" + i.to_string()
+    let said = @sfbase.message_of({
+      "ts": Json::string(key),
+      "authorKind": Json::string(if mine { "person" } else { "agent" }),
+      "mine": Json::boolean(mine),
+      "text": Json::string(words.join("\n\n")),
+      "md": Json::array(words.map(fn(w) { Json::array([Json::string("p"), Json::array([Json::string(w)])]) })),
+      "by": { "name": Json::string(@sf.sample_words(if mine { 2 } else { 6 })), "maker": { "id": "anthropic" } },
+      "time": { "createdAt": { "ago": Json::string(@sf.sample_words(3)), "full": "" } },
+    })
+    let row_top = if i == 0 { fn() { 0.0 } } else { gap }
+    if mine {
+      mine_said_node(v, @sfbase.sample_source, here, fn() { key }, side, row_top, fn() { said }) |> ignore
+    } else {
+      agent_said_node(v, @sfbase.sample_source, here, fn() { key }, side, row_top, fn() { said }) |> ignore
+    }
+  }
 }
