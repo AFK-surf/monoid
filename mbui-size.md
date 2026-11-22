@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a9d9ce82a](https://github.com/AFK-surf/monoid/commit/a9d9ce82ac3bb38019e98a22651d3c2eb55c77dd) fix(core-ts): fix bulk relay scoring, crawl failov | 2.66 | 3.58 | 14.53 | 36.6 | 55.49 | 32.05 | 64.81 | 98.63 | 120.92 |
 | [16d223b0f](https://github.com/AFK-surf/monoid/commit/16d223b0f4fcb32cfb7b7a908491012cae3bfae9) feat(mbui): progressive variable-blur scroll-edge  | 2.66 | 3.58 | 14.53 | 36.59 | 55.49 | 32.05 | 64.81 | 98.88 | 121.44 |
 | [52bd257dc](https://github.com/AFK-surf/monoid/commit/52bd257dcdb8ac5dcb523c765eb879e782c754c3) fix(sfapp): remove nested card background on agent | 2.66 | 3.58 | 14.53 | 36.59 | 55.49 | 32.05 | 64.81 | 98.88 | 121.44 |
 | [1219cfac7](https://github.com/AFK-surf/monoid/commit/1219cfac7016b282e9b0e8b396c06f9cf5c3632e) fix(sf-ui): align floating sheet content corners a | 2.66 | 3.58 | 14.53 | 36.6 | 55.49 | 32.05 | 64.81 | 98.7 | 117.93 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e38d63d7e](https://github.com/AFK-surf/monoid/commit/e38d63d7e5639f9ac79b61d818c250adef66842d) feat(sf-ui): lift clear liquid glass lens on segme | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.68 | 134 |
 | [45690a1a0](https://github.com/AFK-surf/monoid/commit/45690a1a001d810573eb14cc4f6c6db886dfde91) fix(sf-ui,sfdesk): fade liquid-glass popovers and  | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.68 | 134 |
 | [d68c56649](https://github.com/AFK-surf/monoid/commit/d68c56649313d1f3fa921cc65d84b291f8b3c809) fix(core): show a wait in history only when the ag | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.67 | 129.43 |
-| [5d23b1d3c](https://github.com/AFK-surf/monoid/commit/5d23b1d3c6325b138ae7233bc8131cc76cf95e88) feat(sf-ui,sfdesk): upgrade floating controls to l | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.45 | 128.25 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a9d9ce82a](https://github.com/AFK-surf/monoid/commit/a9d9ce82ac3bb38019e98a22651d3c2eb55c77dd) fix(core-ts): fix bulk relay scoring, crawl failov | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.65 | 54.05 |
 | [16d223b0f](https://github.com/AFK-surf/monoid/commit/16d223b0f4fcb32cfb7b7a908491012cae3bfae9) feat(mbui): progressive variable-blur scroll-edge  | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.65 | 54.05 |
 | [52bd257dc](https://github.com/AFK-surf/monoid/commit/52bd257dcdb8ac5dcb523c765eb879e782c754c3) fix(sfapp): remove nested card background on agent | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.07 |
 | [1219cfac7](https://github.com/AFK-surf/monoid/commit/1219cfac7016b282e9b0e8b396c06f9cf5c3632e) fix(sf-ui): align floating sheet content corners a | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e38d63d7e](https://github.com/AFK-surf/monoid/commit/e38d63d7e5639f9ac79b61d818c250adef66842d) feat(sf-ui): lift clear liquid glass lens on segme | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.43 |
 | [45690a1a0](https://github.com/AFK-surf/monoid/commit/45690a1a001d810573eb14cc4f6c6db886dfde91) fix(sf-ui,sfdesk): fade liquid-glass popovers and  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
 | [d68c56649](https://github.com/AFK-surf/monoid/commit/d68c56649313d1f3fa921cc65d84b291f8b3c809) fix(core): show a wait in history only when the ag | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
-| [5d23b1d3c](https://github.com/AFK-surf/monoid/commit/5d23b1d3c6325b138ae7233bc8131cc76cf95e88) feat(sf-ui,sfdesk): upgrade floating controls to l | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
