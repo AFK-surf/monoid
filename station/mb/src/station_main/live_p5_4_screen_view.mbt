@@ -133,6 +133,8 @@ fn p54_source_port(src : @screens.ScreenSource) -> @mesh_runtime.ScreenSourcePor
     address: src.address.map(f => () => Some(f())),
     scale: src.scale.map(f => async fn() { f().map(s => of_jv(s.to_j())) }),
     set_scale: src.set_scale.map(f => async fn(n) { of_jv(f(n).to_j()) }),
+    volume: src.volume.map(f => async fn() { f().map(v => of_jv(v.to_j())) }),
+    set_volume: src.set_volume.map(f => async fn(n) { of_jv(f(n).to_j()) }),
     resolution: src.resolution.map(f => async fn() { f().map(r => of_jv(r.to_j())) }),
     set_resolution: src.set_resolution.map(f => async fn(w, h) { of_jv(f(w, h).to_j()) }),
   }

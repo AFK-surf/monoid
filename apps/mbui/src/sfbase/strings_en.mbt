@@ -2620,6 +2620,7 @@ let en : Map[String, String] = {
   "web-pages.screen.debug.enrolled": "Enrolled",
   "web-pages.screen.debug.bioMatch": "Matching face or finger",
   "web-pages.screen.debug.bioNoMatch": "Non-matching",
+  "web-pages.screen.debug.volume": "Volume",
   "web-pages.screen.debug.volumeUp": "Volume up",
   "web-pages.screen.debug.volumeDown": "Volume down",
   "web-pages.screen.debug.memoryWarning": "Simulate a memory warning",

@@ -253,19 +253,121 @@ fn debug_device_keys_node(k : @view.View, pg : ScreenPage, beside~ : Bool) -> Un
 }
 
 ///|
-/// The device's volume, up and down, as round buttons in `v`.
+/// The device's volume as one round button in `v` (its keys' place is one button's): pressed, a panel beside it as wide
+/// as what it holds, no head (the button says what it is); on while it is open. In it a slider at the level the station
+/// reads where it reads one (an Android device's: read again as it opens, set where it is moved to), else its down and
+/// up, pressed as often as wanted with it staying up.
 fn debug_volume_node(v : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
-  v.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S2.px())) |> ignore
-  screen_round_node(v, pg, fn() { "volume" }, fn() { @sf.t("web-pages.screen.debug.volumeUp") }, fn(_) {
-    debug_device_input(s, "volume_up")
-  })
-  |> ignore
-  screen_round_node(v, pg, fn() { "volume-x" }, fn() { @sf.t("web-pages.screen.debug.volumeDown") }, fn(_) {
-    debug_device_input(s, "volume_down")
+  let u = pg.u
+  screen_round_node(v, pg, fn() { "volume" }, fn() { @sf.t("web-pages.screen.debug.volume") }, fn(b) {
+    screen_panel_toggle(u, "volume", fn() {
+      if s.volume() is Some(_) {
+        s.input(s.src, Json::object({ "t": Json::string("volume") }))
+      }
+      @sf.panel_nodes(
+        @sf.t("web-pages.screen.debug.volume"),
+        fn(p, _) { debug_volume_panel_node(p, pg) },
+        from=Node(b),
+        fits=true,
+        heads_itself=true,
+        side=screen_panel_side(),
+        along=Middle,
+        focus=false,
+      )
+    })
+  }, lit=fn() {
+    screen_panel_on_now(u, "volume")
   })
   |> ignore
 }
+
+///|
+/// What 音量's panel holds (debug_volume_node): the slider where the station reads the level, else down and up.
+fn debug_volume_panel_node(p : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  p.pick(at_once=true, fn() { s.state_now() |> ignore; s.volume() is Some(_) }, fn(k, read) {
+    if read {
+      debug_volume_slider_node(k, s)
+    } else {
+      k.row(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)).gap(Is(@ui.Space::S2.px())) |> ignore
+      screen_round_node(k, pg, fn() { "volume-down" }, fn() { @sf.t("web-pages.screen.debug.volumeDown") }, fn(_) {
+        debug_device_input(s, "volume_down")
+      })
+      |> ignore
+      screen_round_node(k, pg, fn() { "volume-up" }, fn() { @sf.t("web-pages.screen.debug.volumeUp") }, fn(_) {
+        debug_device_input(s, "volume_up")
+      })
+      |> ignore
+    }
+  })
+}
+
+///|
+/// The device's volume as a slider in `k`, 0 … its most: where it is moved to told the station (each level once), the
+/// knob kept there until the station says the device is at it.
+fn debug_volume_slider_node(k : @view.View, s : ScreenSess) -> Unit {
+  let asked : @signals.Signal[Double?] = @signals.signal(None)
+  let said = fn() {
+    s.state_now() |> ignore
+    s.volume()
+  }
+  k.reacts(said, at_start=false, fn(now) {
+    match (now, asked.untracked()) {
+      (Some((level, _)), Some(a)) if level == a => asked.set(None)
+      _ => ()
+    }
+  })
+  // (as tall as a press's room at least, the slider in its middle; the knob at either end as far in from the panel's
+  // side as from its top, so its corner is the panel's one step in; beside its button that wide, across a sheet as
+  // wide as the sheet)
+  k
+  .min_width(Is(Some(volume_slider_w)))
+  .padding(
+    By(fn() {
+      let v = dmax(0.0, (@ui.room_least() - volume_slider_h) / 2.0)
+      let h = @ui.Space::S1.px() + v
+      (h, v, h, v)
+    }),
+  )
+  |> ignore
+  @sf.value_slider_node(
+    k,
+    fn() { @sf.t("web-pages.screen.debug.volume") },
+    fn() {
+      match (asked.get(), said()) {
+        (Some(a), _) => a
+        (None, Some((level, _))) => level
+        (None, None) => 0.0
+      }
+    },
+    fn(x) {
+      let level = x.round()
+      let was = match asked.untracked() {
+        Some(a) => Some(a)
+        None => @signals.untracked(said).map(fn(v) { v.0 })
+      }
+      if was != Some(level) {
+        asked.set(Some(level))
+        s.input(s.src, Json::object({ "t": Json::string("volume"), "level": Json::number(level) }))
+      }
+    },
+    max=match @signals.untracked(said) {
+      Some((_, most)) => most
+      None => 1.0
+    },
+    bubble=false,
+  )
+  |> ignore
+}
+
+///|
+/// 音量's slider's width (at least: a sheet's across it).
+let volume_slider_w : Double = 200.0
+
+///|
+/// How tall sf's slider is drawn (its value_slider_node's).
+let volume_slider_h : Double = 28.0
 
 ///|
 /// What came of the device's picture taken and of an app started again, said where what debugs it says things (by the

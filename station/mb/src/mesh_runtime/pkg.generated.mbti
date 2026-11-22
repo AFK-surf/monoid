@@ -265,6 +265,8 @@ pub fn parse_reveal(@json.Json) -> String?
 
 pub fn parse_scale(@json.Json) -> Double?
 
+pub fn parse_volume(@json.Json) -> Double??
+
 pub fn parse_window_pick(@json.Json) -> WindowPick
 
 pub let piece : Int32
@@ -653,6 +655,8 @@ pub(all) struct ScreenSourcePort {
   address : (() -> String?)?
   scale : (async () -> @json.Json?)?
   set_scale : (async (Double) -> @json.Json)?
+  volume : (async () -> @json.Json?)?
+  set_volume : (async (Double) -> @json.Json)?
   resolution : (async () -> @json.Json?)?
   set_resolution : (async (Double, Double) -> @json.Json)?
 }

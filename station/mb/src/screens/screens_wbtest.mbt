@@ -400,3 +400,13 @@ test "ViewOptions tracks agent views separately from human remote views" {
   assert_false(view_options_of(parse("{\"maxWidth\":1280,\"maxHeight\":720,\"codecs\":[\"h264\"]}")).agent)
   assert_true(view_options_of(parse("{\"maxWidth\":1280,\"maxHeight\":720,\"codecs\":[\"jpeg\"],\"agent\":true}")).agent)
 }
+
+///|
+test "an Android device's media volume as its service says it: the level and its most; none where it says none" {
+  let said = (s : String) => volume_of(s).map(v => stringify(v.to_j()))
+  assert_eq(said("[V] will print volume\n[V] volume is 7 in range [0..15]\n"), Some("{\"level\":7,\"max\":15}"))
+  assert_eq(said("volume is 0 in range [0..25]"), Some("{\"level\":0,\"max\":25}"))
+  assert_eq(said("Error: no such service"), None)
+  assert_eq(said("volume is 9 in range [0..0]"), None)
+  assert_eq(said("volume is 9 in range [1..15]"), None)
+}

@@ -2593,6 +2593,7 @@ let zh : Map[String, String] = {
   "web-pages.screen.debug.enrolled": "已录入",
   "web-pages.screen.debug.bioMatch": "匹配",
   "web-pages.screen.debug.bioNoMatch": "不匹配",
+  "web-pages.screen.debug.volume": "音量",
   "web-pages.screen.debug.volumeUp": "音量加",
   "web-pages.screen.debug.volumeDown": "音量减",
   "web-pages.screen.debug.memoryWarning": "模拟内存警告",

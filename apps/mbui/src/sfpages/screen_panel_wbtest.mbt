@@ -842,13 +842,29 @@ test "a device wider than tall: what it has itself in a row under it, App first;
   r.t.resize(1280.0, 600.0)
   simulator_live(r)
   r.t.draw()
-  for word in ["device.home", "device.appSwitcher", "device.lock", "debug.volumeUp", "device.shot", "debug.recordStart"] {
+  for word in ["device.home", "device.appSwitcher", "device.lock", "debug.volume", "device.shot", "debug.recordStart"] {
     assert_true(r.labelled(tr("web-pages.screen." + word)) is Some(_), msg=word)
   }
+  // its volume one button: its down and up in the panel it opens, which stays up as they are pressed
+  assert_true(r.labelled(tr("web-pages.screen.debug.volumeUp")) is None)
+  let (vx, vy) = r.labelled(tr("web-pages.screen.debug.volume")).unwrap()
+  r.t.tap(vx, vy)
+  r.t.draw()
+  r.tap_label(tr("web-pages.screen.debug.volumeUp"))
+  r.t.draw()
   r.tap_label(tr("web-pages.screen.debug.volumeUp"))
   r.t.draw()
   let ins = r.inputs()
   assert_eq(text(Some(ins[ins.length() - 1]), "name"), "volume_up")
+  assert_eq(text(Some(ins[ins.length() - 2]), "name"), "volume_up")
+  r.tap_label(tr("web-pages.screen.debug.volumeDown"))
+  r.t.draw()
+  let ins = r.inputs()
+  assert_eq(text(Some(ins[ins.length() - 1]), "name"), "volume_down")
+  // pressed again: put away
+  r.t.tap(vx, vy)
+  r.t.run_for(@sf.later_ms)
+  assert_true(r.labelled(tr("web-pages.screen.debug.volumeUp")) is None)
   // under the device, not over it
   let (_, by, _, _) = r.labelled(tr("web-pages.screen.device.home")).map(fn(p) { (p.0, p.1, 0.0, 0.0) }).unwrap()
   let shown = r.ui().shown(r.t.ctx())
@@ -888,6 +904,35 @@ test "旋转 by the device: told to the device, whose picture says what it did" 
 }
 
 ///|
+test "an Android device's volume: one button, a slider at the level it reads, asked again as it opens, set where it is moved to" {
+  let r = screen_rig(w=1280.0, h=800.0, screen="android:emulator-5554")
+  r.state("live", more={ "kind": Json::string("simulator"), "volume": { "level": 5.0, "max": 15.0 } })
+  r.config()
+  r.frame(1.0)
+  r.t.draw()
+  let (vx, vy) = r.labelled(tr("web-pages.screen.debug.volume")).unwrap()
+  assert_true(r.labelled(tr("web-pages.screen.debug.volumeUp")) is None)
+  r.t.tap(vx, vy)
+  r.t.draw()
+  r.t.run_for(@sf.later_ms)
+  let ins = r.inputs()
+  assert_eq(text(Some(ins[ins.length() - 1]), "t"), "volume")
+  assert_true(field(Some(ins[ins.length() - 1]), "level") is None)
+  // no down and up: the slider, its knob at the level read
+  assert_true(r.labelled(tr("web-pages.screen.debug.volumeUp")) is None)
+  let slider = r.t.semantics().filter(fn(e) { e.label == tr("web-pages.screen.debug.volume") && !e.hidden && e.role == Slider })
+  assert_eq(slider.length(), 1)
+  let (x, y, w, h) = slider[0].rect
+  // pressed at its end: the most, told once
+  r.t.tap(x + w - 2.0, y + h / 2.0)
+  r.t.draw()
+  let ins = r.inputs()
+  assert_eq(text(Some(ins[ins.length() - 1]), "t"), "volume")
+  assert_eq(number(Some(ins[ins.length() - 1]), "level"), 15.0)
+  screen_done(r.t)
+}
+
+///|
 test "a device taller than wide: as large as the window's height leaves it, what it has itself right beside it" {
   let r = screen_rig(w=1280.0, h=800.0)
   r.state("live", more={ "kind": Json::string("simulator"), "debug": Json::boolean(true) })
@@ -916,7 +961,7 @@ test "an Android device: its back and its volume by it, nothing it has not" {
   r.frame(1.0)
   r.t.draw()
   assert_true(r.labelled(tr("web-pages.screen.device.back")) is Some(_))
-  assert_true(r.labelled(tr("web-pages.screen.debug.volumeUp")) is Some(_))
+  assert_true(r.labelled(tr("web-pages.screen.debug.volume")) is Some(_))
   assert_true(r.labelled(tr("web-pages.screen.device.softKeyboard")) is None)
   assert_true(r.t.rect_of(tr("web-pages.screen.debug.uninstall")) is None)
   assert_true(r.labelled(tr("web-pages.screen.device.shot")) is None)

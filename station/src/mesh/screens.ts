@@ -116,6 +116,14 @@ export function parseResolution(v: any): { width: number; height: number } | nul
   return v !== null && typeof v === "object" && v.t === "resolution" && n(v.width) && n(v.height) ? { width: v.width, height: v.height } : null;
 }
 
+/// What a client's input frame asks of the device's media volume (`{t: "volume"}` to read it again, `{t: "volume",
+/// level}` to set it): the level (null: read it), or undefined when it is not that.
+export function parseVolume(v: any): number | null | undefined {
+  if (v === null || typeof v !== "object" || v.t !== "volume") return undefined;
+  if (v.level === undefined) return null;
+  return Number.isInteger(v.level) && v.level >= 0 && v.level <= 1000 ? v.level : undefined;
+}
+
 /// What a client's input frame asks of the file manager (`{t: "reveal", path}`): the path, or null when it is not that.
 export function parseReveal(v: any): string | null {
   return v !== null && typeof v === "object" && v.t === "reveal" && typeof v.path === "string" && v.path !== "" && v.path.length <= 4096 ? v.path : null;
@@ -728,6 +736,12 @@ class ViewSession {
         if (scale !== null && !this.#closed) void this.#state({ scale });
       });
     }
+    // Its media volume, to a person who drives it (a source whose volume is read: an Android device's).
+    if (this.control && this.source.volume) {
+      void this.source.volume().then((volume) => {
+        if (volume !== null && !this.#closed) void this.#state({ volume });
+      }, () => {});
+    }
     // Its resolution too (a source whose resolution is changed: Windows' desktop, the Mac's).
     if (this.control && this.source.resolution) {
       void this.source.resolution().then((resolution) => {
@@ -990,6 +1004,21 @@ class ViewSession {
                   source.setResolution!(size.width, size.height).then(
                     (resolution) => void this.#state({ resolution }),
                     (error) => log.info("screens", "the display's resolution was not set", { screen: this.id, ...size, error: (error as Error).message }),
+                  ),
+                );
+              }
+              break;
+            }
+            const level = parseVolume(raw);
+            if (level !== undefined) {
+              const source = this.source;
+              if (level === null && source.volume) {
+                this.#then(() => source.volume!().then((volume) => void (volume !== null && this.#state({ volume })), () => {}));
+              } else if (level !== null && source.setVolume) {
+                this.#then(() =>
+                  source.setVolume!(level).then(
+                    (volume) => void this.#state({ volume }),
+                    (error) => log.info("screens", "the device's volume was not set", { screen: this.id, level, error: (error as Error).message }),
                   ),
                 );
               }

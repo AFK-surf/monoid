@@ -285,6 +285,9 @@ export function windowsOf(v: unknown): ScreenWindow[] {
 /// steps it takes, in percent.
 export type ScreenScale = { percent: number; recommended: number; steps: number[] };
 
+/// A device's media volume as its system has it (an Android device's music stream): now, and its most (its least 0).
+export type ScreenVolume = { level: number; max: number };
+
 /// A display's resolution as its system has it (Windows' Settings › Display › Display resolution, in pixels; macOS's
 /// Displays, in points): now, and the modes it takes (landscape, the largest first).
 export type ScreenResolution = { width: number; height: number; modes: { width: number; height: number }[] };
@@ -353,6 +356,10 @@ export interface ScreenSource {
   /// Sets its display's scale to one of its steps, and says it as `scale` does; until its last view ends, after which
   /// it is put back as it was before the first change.
   setScale?(percent: number): Promise<ScreenScale>;
+  /// Its media volume (null when it is not had now); none: a source whose volume is not read (a simulator's, a desktop).
+  volume?(): Promise<ScreenVolume | null>;
+  /// Sets its media volume to `level` (0..its most), and says it as `volume` does.
+  setVolume?(level: number): Promise<ScreenVolume>;
   /// Its display's resolution (null when it is not had now); none: a source whose resolution is not changed.
   resolution?(): Promise<ScreenResolution | null>;
   /// Sets its display's resolution to one of its modes, and says it as `resolution` does; until its last view ends,

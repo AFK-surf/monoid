@@ -474,7 +474,7 @@ export function Said(props: IconProps) {
 }
 
 export function ScreenRotate(props: IconProps) {
-  return <Svg {...props}><rect x="8" y="6.5" width="8" height="11" rx="1.75" /><path d="M3.5 12a8.5 8.5 0 0 1 5-7.75" /><path d="M5.75 3.5l2.75 .75-.75 2.75" /><path d="M20.5 12a8.5 8.5 0 0 1-5 7.75" /><path d="M18.25 20.5l-2.75-.75.75-2.75" /></Svg>;
+  return <Svg {...props}><path d="M6 8.5H10Q12.5 8.5 12.5 11V18Q12.5 20.5 10 20.5H6Q3.5 20.5 3.5 18V11Q3.5 8.5 6 8.5Z M7.5 4.5H11.5Q19.5 4.5 19.5 12.5V15 M17 12.5L19.5 15L22 12.5" /></Svg>;
 }
 
 export function Scribble(props: IconProps) {
@@ -617,12 +617,20 @@ export function ViewTree(props: IconProps) {
   return <Svg {...props}><path d="M4 5.5H11 M10 12H20 M10 18.5H20 M6.5 8V16Q6.5 18.5 9 18.5H10 M6.5 12H10" /></Svg>;
 }
 
+export function VolumeDown(props: IconProps) {
+  return <Svg {...props}><path d="M5.5 8.5H6.8Q7.6 8.5 8.2 8L9.9 6.5Q12 4.7 12 7.4V16.6Q12 19.3 9.9 17.5L8.2 16Q7.6 15.5 6.8 15.5H5.5Q3 15.5 3 13V11Q3 8.5 5.5 8.5Z M15.5 12H20.5" /></Svg>;
+}
+
+export function VolumeUp(props: IconProps) {
+  return <Svg {...props}><path d="M5.5 8.5H6.8Q7.6 8.5 8.2 8L9.9 6.5Q12 4.7 12 7.4V16.6Q12 19.3 9.9 17.5L8.2 16Q7.6 15.5 6.8 15.5H5.5Q3 15.5 3 13V11Q3 8.5 5.5 8.5Z M15.5 12H20.5 M18 9.5V14.5" /></Svg>;
+}
+
 export function VolumeX(props: IconProps) {
-  return <Svg {...props}><path d="M4.5 9H7.5L12 5V19L7.5 15H4.5Q3 15 3 13.5V10.5Q3 9 4.5 9Z M16 9.5L21 14.5 M21 9.5L16 14.5" /></Svg>;
+  return <Svg {...props}><path d="M5.5 8.5H6.8Q7.6 8.5 8.2 8L9.9 6.5Q12 4.7 12 7.4V16.6Q12 19.3 9.9 17.5L8.2 16Q7.6 15.5 6.8 15.5H5.5Q3 15.5 3 13V11Q3 8.5 5.5 8.5Z M16 10L20 14 M20 10L16 14" /></Svg>;
 }
 
 export function Volume(props: IconProps) {
-  return <Svg {...props}><path d="M4.5 9H7.5L12 5V19L7.5 15H4.5Q3 15 3 13.5V10.5Q3 9 4.5 9Z M15.5 9Q17 10.3 17 12Q17 13.7 15.5 15 M18 6.5Q21 8.8 21 12Q21 15.2 18 17.5" /></Svg>;
+  return <Svg {...props}><path d="M5.5 8.5H6.8Q7.6 8.5 8.2 8L9.9 6.5Q12 4.7 12 7.4V16.6Q12 19.3 9.9 17.5L8.2 16Q7.6 15.5 6.8 15.5H5.5Q3 15.5 3 13V11Q3 8.5 5.5 8.5Z M15.5 9.5Q16.75 10.5 16.75 12Q16.75 13.5 15.5 14.5 M18 7Q20.75 9 20.75 12Q20.75 15 18 17" /></Svg>;
 }
 
 export function Wait(props: IconProps) {
@@ -802,6 +810,8 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "users": Users,
   "view-columns": ViewColumns,
   "view-tree": ViewTree,
+  "volume-down": VolumeDown,
+  "volume-up": VolumeUp,
   "volume-x": VolumeX,
   "volume": Volume,
   "wait": Wait,

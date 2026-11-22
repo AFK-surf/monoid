@@ -11,7 +11,7 @@ import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { ScreenRefused } from "./hub.ts";
 import type { Panel } from "./sim-mask.ts";
-import type { Frame, FrameConfig, ScreenInput, ScreenSource, ScreenVideo, ScreenView, Screens, ViewOptions } from "./source.ts";
+import type { Frame, FrameConfig, ScreenInput, ScreenSource, ScreenVideo, ScreenView, ScreenVolume, Screens, ViewOptions } from "./source.ts";
 
 /// The version of ./scrcpy-server: it refuses to run under any other name.
 export const SERVER_VERSION = "5.0.1";
@@ -538,6 +538,18 @@ export class PeekCount {
   }
 }
 
+/// What `cmd media_session volume --get` says (`volume is 7 in range [0..15]`): the level and its most; null where it
+/// says none.
+export function volumeOf(said: string): ScreenVolume | null {
+  const m = /volume is (\d+) in range \[0\.\.(\d+)\]/.exec(said);
+  if (m === null) return null;
+  const level = Number(m[1]), max = Number(m[2]);
+  return max > 0 && level <= max ? { level, max } : null;
+}
+
+/// The device's music stream (3: STREAM_MUSIC), asked of its media service: `media volume` before Android 10.
+const VOLUME = (args: string) => `cmd media_session volume --stream 3 ${args} 2>/dev/null || media volume --stream 3 ${args}`;
+
 /// One device on adb.
 export class AndroidScreen implements ScreenSource {
   readonly id: string;
@@ -580,6 +592,17 @@ export class AndroidScreen implements ScreenSource {
 
   size(): { width: number; height: number } {
     return this.#size;
+  }
+
+  async volume(): Promise<ScreenVolume | null> {
+    return volumeOf(await this.#adb.run(["shell", VOLUME("--get")]).catch(() => ""));
+  }
+
+  async setVolume(level: number): Promise<ScreenVolume> {
+    const now = await this.volume();
+    if (now === null) throw new Error("the device says no volume");
+    await this.#adb.run(["shell", VOLUME(`--set ${Math.max(0, Math.min(now.max, Math.round(level)))}`)]);
+    return (await this.volume()) ?? now;
   }
 
   async open(options: ViewOptions): Promise<ScreenView> {

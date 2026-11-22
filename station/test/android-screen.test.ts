@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { parseInput } from "../src/mesh/screens.ts";
+import { parseInput, parseVolume } from "../src/mesh/screens.ts";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { makeScreens } from "../src/screens/source.ts";
 import { ScreenRefused } from "../src/screens/hub.ts";
-import { AndroidScreen, AndroidScreens, AndroidInput, KEYCODES, emulatorStart, startOf, PEEKS_MOST, PEEK_BITRATE, PEEK_FPS, PeekCount, bitrateOf, viewArgs, ScrcpyStream, adbEnv, avcCOf, avccOf, devicesOf, metaOf, nalsOf, panelsOf, shownDevice, sideOf, sizeOf } from "../src/screens/android.ts";
+import { AndroidScreen, AndroidScreens, AndroidInput, KEYCODES, emulatorStart, startOf, PEEKS_MOST, PEEK_BITRATE, PEEK_FPS, PeekCount, bitrateOf, viewArgs, ScrcpyStream, adbEnv, avcCOf, avccOf, devicesOf, metaOf, nalsOf, panelsOf, shownDevice, sideOf, sizeOf, volumeOf } from "../src/screens/android.ts";
 
 const size = { width: 1000, height: 2000 };
 
@@ -251,4 +251,37 @@ esac
 test("a viewer's rotate gets through the station's checks", () => {
   assert.deepEqual(parseInput({ t: "device", name: "rotate" }), { t: "device", name: "rotate" });
   assert.equal(parseInput({ t: "device", name: "turn" }), null);
+});
+
+test("the media volume its service says: the level and its most; none where it says none", () => {
+  assert.deepEqual(volumeOf("[V] will print volume\n[V] volume is 7 in range [0..15]\n"), { level: 7, max: 15 });
+  assert.deepEqual(volumeOf("volume is 0 in range [0..25]"), { level: 0, max: 25 });
+  assert.equal(volumeOf("Error: no such service"), null);
+  assert.equal(volumeOf("volume is 9 in range [0..0]"), null);
+});
+
+test("a viewer's volume: read again, or set to a level; nothing else", () => {
+  assert.equal(parseVolume({ t: "volume" }), null);
+  assert.equal(parseVolume({ t: "volume", level: 4 }), 4);
+  for (const v of [{ t: "volume", level: -1 }, { t: "volume", level: 1.5 }, { t: "volume", level: "3" }, { t: "scale", percent: 100 }, null]) assert.equal(parseVolume(v), undefined, JSON.stringify(v));
+});
+
+test("a device's volume: read from its music stream, set within its range and read back", async () => {
+  const asked: string[] = [];
+  let level = 5;
+  const adb = {
+    run: async (args: string[]) => {
+      const line = args.join(" ");
+      asked.push(line);
+      const set = /--set (\d+)/.exec(line);
+      if (set) level = Number(set[1]);
+      return `[V] volume is ${level} in range [0..15]`;
+    },
+  };
+  const screen = new AndroidScreen({ id: "android:emulator-5554", title: "t", size, panels: [], adb: adb as any, file: "/nonexistent", changed: () => {} });
+  assert.deepEqual(await screen.volume(), { level: 5, max: 15 });
+  assert.match(asked[0], /^shell cmd media_session volume --stream 3 --get/);
+  assert.deepEqual(await screen.setVolume(12), { level: 12, max: 15 });
+  assert.deepEqual(await screen.setVolume(40), { level: 15, max: 15 });
+  assert.ok(asked.some((a) => a.includes("--stream 3 --set 15")));
 });

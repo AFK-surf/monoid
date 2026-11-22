@@ -2572,6 +2572,7 @@ web-pages.screen.debug.notEnrolled
 web-pages.screen.debug.enrolled
 web-pages.screen.debug.bioMatch
 web-pages.screen.debug.bioNoMatch
+web-pages.screen.debug.volume
 web-pages.screen.debug.volumeUp
 web-pages.screen.debug.volumeDown
 web-pages.screen.debug.memoryWarning

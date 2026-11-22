@@ -874,3 +874,18 @@ test "a key frame on the way may wait key_queue_ms more before a queue is taken 
   }
   assert_eq(b.asked_rate(), rate)
 }
+
+///|
+test "a viewer's volume: read again, or set to a level; nothing else" {
+  assert_eq(@mesh_runtime.parse_volume(o([("t", Json::string("volume"))])), Some(None))
+  assert_eq(@mesh_runtime.parse_volume(o([("t", Json::string("volume")), ("level", Json::number(4.0))])), Some(Some(4.0)))
+  for bad in [
+    o([("t", Json::string("volume")), ("level", Json::number(-1.0))]),
+    o([("t", Json::string("volume")), ("level", Json::number(1.5))]),
+    o([("t", Json::string("volume")), ("level", Json::string("3"))]),
+    o([("t", Json::string("scale")), ("percent", Json::number(100.0))]),
+    Json::null(),
+  ] {
+    assert_eq(@mesh_runtime.parse_volume(bad), None)
+  }
+}

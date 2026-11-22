@@ -118,6 +118,8 @@ pub fn open_screen_fixture(mode : String) -> Unit {
     { ..screen_fix_at, screen: "browser:u_mail", title: "收件箱 - Proton Mail" }
   } else if m == "screen-pages" {
     { ..screen_fix_at, title: "Sign in · Anthropic" }
+  } else if m == "screen-android" {
+    { ..screen_fix_at, screen: "android:emulator-5554", title: "Pixel 9 · Android 16" }
   } else {
     screen_fix_at
   }
@@ -398,6 +400,18 @@ pub fn screen_fixture_stream(
           "corners": Json::array([Json::number(0.1024), Json::number(0.1024), Json::number(0.1024), Json::number(0.1024)]),
         },
       ])
+      on_value({ "state": Json::object(st) }, None)
+    }
+    // (an Android device: its volume read by the station, a slider in 音量's panel)
+    "screen-android" => {
+      live(true, true, [], None, None, None, None, None, None)
+      let st = match screen_fix_state("live", true, true, [], "", None, None, None, None, None, None) {
+        Object(m) => m.copy()
+        _ => {}
+      }
+      st["title"] = Json::string("Pixel 9 · Android 16")
+      st["kind"] = Json::string("simulator")
+      st["volume"] = { "level": 7.0, "max": 15.0 }
       on_value({ "state": Json::object(st) }, None)
     }
     "screen-login-fill" | "screen-login-pick" => {

@@ -687,6 +687,19 @@ fn resolution_shown(modes : Array[(Int, Int)], now : (Int, Int), fits : Int) -> 
 }
 
 ///|
+/// The device's media volume while this viewer drives one whose station reads it (an Android device's): its level and
+/// its most; None elsewhere (a simulator's, whose volume is only its keys), or while only looking.
+fn ScreenSess::volume(self : ScreenSess) -> (Double, Double)? {
+  if !self.driving() {
+    return None
+  }
+  match field(self.state, "volume") {
+    Some(Object(_)) as v if number(v, "max") > 0.0 => Some((number(v, "level"), number(v, "max")))
+    _ => None
+  }
+}
+
+///|
 /// The screen's display scale while this viewer drives one whose station changes it (Windows): now, the one its system
 /// recommends, the steps it takes (in percent, lowest first); None elsewhere, or while only looking.
 fn ScreenSess::scale(self : ScreenSess) -> (Int, Int, Array[Int])? {

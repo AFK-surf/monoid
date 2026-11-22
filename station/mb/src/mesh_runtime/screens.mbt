@@ -315,6 +315,21 @@ pub fn parse_scale(v : Json) -> Double? {
 }
 
 ///|
+/// What a client's input frame asks of the device's media volume (`{t: "volume"}` to read it again, `{t: "volume",
+/// level}` to set it): Some(None) to read it, Some(Some(level)) to set it, None when it is not that.
+pub fn parse_volume(v : Json) -> Double?? {
+  guard input_of(v, "volume") is Some(m) else { return None }
+  match m.get("level") {
+    None => Some(None)
+    Some(_) =>
+      match int_field(m, "level") {
+        Some(l) if l >= 0.0 && l <= 1000.0 => Some(Some(l))
+        _ => None
+      }
+  }
+}
+
+///|
 /// What a client's input frame asks of the display's resolution (`{t: "resolution", width, height}`).
 pub fn parse_resolution(v : Json) -> (Double, Double)? {
   guard input_of(v, "resolution") is Some(m) else { return None }

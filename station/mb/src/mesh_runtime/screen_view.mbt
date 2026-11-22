@@ -114,6 +114,8 @@ pub(all) struct ScreenSourcePort {
   address : (() -> String?)?
   scale : (async () -> Json?)?
   set_scale : (async (Double) -> Json)?
+  volume : (async () -> Json?)?
+  set_volume : (async (Double) -> Json)?
   resolution : (async () -> Json?)?
   set_resolution : (async (Double, Double) -> Json)?
 }
@@ -1358,6 +1360,34 @@ fn ViewSession::input(self : ViewSession, raw : Json) -> Unit {
     }
     return
   }
+  if parse_volume(raw) is Some(asked) {
+    match (asked, self.source.volume, self.source.set_volume) {
+      (None, Some(read), _) =>
+        self.then_(() => {
+          let v = read() catch { _ => return }
+          if v is Some(v) && !(v is Null) {
+            ignore(self.state(jobj([("volume", v)])))
+          }
+        })
+      (Some(level), _, Some(set)) =>
+        self.then_(() => {
+          let volume = set(level) catch {
+            e => {
+              (self.said)(
+                "info",
+                "screens",
+                "the device's volume was not set",
+                jobj([("screen", jstr(self.id)), ("level", jnum(level)), ("error", jstr(message_of(e)))]),
+              )
+              return
+            }
+          }
+          ignore(self.state(jobj([("volume", volume)])))
+        })
+      _ => ()
+    }
+    return
+  }
   if parse_reveal(raw) is Some(path) {
     if self.source.reveal && self.view.reveal is Some(reveal) {
       self.then_(() => reveal(path))
@@ -1555,6 +1585,16 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
         let s = scale() catch { _ => return }
         if s is Some(v) && !(v is Null) && !self.closed {
           ignore(self.state(jobj([("scale", v)])))
+        }
+      }),
+    )
+  }
+  if self.control && self.source.volume is Some(volume) {
+    ignore(
+      self.rt.fork_daemon("screen volume", on_error=_ => (), () => {
+        let v = volume() catch { _ => return }
+        if v is Some(v) && !(v is Null) && !self.closed {
+          ignore(self.state(jobj([("volume", v)])))
         }
       }),
     )

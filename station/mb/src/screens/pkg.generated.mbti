@@ -267,6 +267,8 @@ pub fn view_on(ViewShown, Double) -> String
 
 pub fn view_options_of(@jsjson.JValue) -> ViewOptions
 
+pub fn volume_of(String) -> ScreenVolume?
+
 pub let win_keys : Map[String, WinKey]
 
 pub fn window_words(Io, String) -> @jsjson.JValue
@@ -337,10 +339,12 @@ pub async fn AndroidScreen::discard(Self) -> Unit
 pub fn AndroidScreen::gone(Self) -> Unit
 pub fn AndroidScreen::new(Io, String, String, (Double, Double), Array[Panel], Adb, String, () -> Unit, peeks? : PeekCount?, emulator_since? : Double?) -> Self
 pub async fn AndroidScreen::open(Self, ViewOptions) -> AndroidView
+pub async fn AndroidScreen::set_volume(Self, Double) -> ScreenVolume
 pub fn AndroidScreen::since(Self) -> Double?
 pub fn AndroidScreen::size(Self) -> (Double, Double)
 pub fn AndroidScreen::source(Self) -> ScreenSource
 pub fn AndroidScreen::title(Self) -> String
+pub async fn AndroidScreen::volume(Self) -> ScreenVolume?
 
 pub struct AndroidScreens {
   // private fields
@@ -1158,6 +1162,8 @@ pub(all) struct ScreenSource {
   since : (() -> Double?)?
   scale : (async () -> ScreenScale?)?
   set_scale : (async (Double) -> ScreenScale)?
+  volume : (async () -> ScreenVolume?)?
+  set_volume : (async (Double) -> ScreenVolume)?
   resolution : (async () -> ScreenResolution?)?
   set_resolution : (async (Double, Double) -> ScreenResolution)?
   ui : (async (Array[String]) -> @jsjson.JValue)?
@@ -1211,6 +1217,13 @@ pub(all) struct ScreenView {
   feed_mic : ((Bytes, UInt32) -> Unit)?
 }
 pub fn ScreenView::bare(async () -> Frame?, () -> Unit, async (ScreenInput) -> Unit, () -> Unit) -> Self
+
+#derive(Eq)
+pub(all) struct ScreenVolume {
+  level : Double
+  max : Double
+}
+pub fn ScreenVolume::to_j(Self) -> @jsjson.JValue
 
 #derive(Eq)
 pub(all) struct ScreenWindow {

@@ -630,6 +630,19 @@ pub fn windows_of(v : J?) -> Array[ScreenWindow] {
   out
 }
 
+/// A device's media volume as its system has it (an Android device's music stream): now, and its most (its least 0).
+#derive(Eq)
+pub(all) struct ScreenVolume {
+  level : Double
+  max : Double
+}
+
+///|
+pub fn ScreenVolume::to_j(self : ScreenVolume) -> J {
+  jo([("level", jn(self.level)), ("max", jn(self.max))])
+}
+
+///|
 /// steps it takes, in percent.
 #derive(Eq)
 pub(all) struct ScreenScale {
@@ -845,6 +858,10 @@ pub(all) struct ScreenSource {
   since : (() -> Double?)?
   scale : (async () -> ScreenScale?)?
   set_scale : (async (Double) -> ScreenScale)?
+  /// Its media volume (None when it is not had now); none: a source whose volume is not read.
+  volume : (async () -> ScreenVolume?)?
+  /// Sets its media volume to a level (0..its most), and says it as `volume` does.
+  set_volume : (async (Double) -> ScreenVolume)?
   resolution : (async () -> ScreenResolution?)?
   set_resolution : (async (Double, Double) -> ScreenResolution)?
   ui : (async (Array[String]) -> J)?
@@ -888,6 +905,8 @@ pub fn ScreenSource::bare(
     since: None,
     scale: None,
     set_scale: None,
+    volume: None,
+    set_volume: None,
     resolution: None,
     set_resolution: None,
     ui: None,
