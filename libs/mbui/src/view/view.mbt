@@ -2731,12 +2731,15 @@ pub fn Tree::at(self : Tree, ms : Double) -> Unit {
 /// follows whether it is at or past a moment told so, as it comes to be so or not (View::drawn_past), each still read
 /// by what reads it and its node living, the rest let go; told of what was followed as this began, what is followed
 /// anew meanwhile kept for the next.
-fn Tree::clock_to(self : Tree, ms : Double) -> Unit {
+fn Tree::clock_to(self : Tree, ms : Double, beat? : Bool = false) -> Unit {
   // (the moment and whether it is past each followed, told as one: no reader sees the one without the other)
   @signals.start_batch()
   let ticking_was = self.ticking
   self.ticking = true
   self.clock.set(ms)
+  if beat {
+    self.beat.set(ms)
+  }
   if self.drawn_marks.length() > 0 {
     let keep = []
     for m in self.drawn_marks {
@@ -6847,8 +6850,7 @@ pub fn Tree::placed_against_laid(self : Tree, id : NodeId) -> (Bool, Double, Dou
 /// The clock set to `ms` and what is bound to it worked out there (what follows a way: View::drawn_while), as the
 /// layout at that moment asks (Tree::measured_now, View::grows_now); untracked, its caller's.
 fn Tree::bound_at(self : Tree, ms : Double) -> Unit {
-  self.clock_to(ms)
-  self.beat.set(ms)
+  self.clock_to(ms, beat=true)
   self.pull()
   self.draining += 1
   let mut i = 0
@@ -6929,8 +6931,7 @@ fn Tree::measured_now(self : Tree) -> Unit {
   })
   if shown != at {
     @signals.untracked(fn() {
-      self.clock_to(shown)
-      self.beat.set(shown)
+      self.clock_to(shown, beat=true)
     })
   }
   self.standing = was_standing
@@ -7402,6 +7403,11 @@ fn Tree::modals_settled(self : Tree, withins? : Bool = true) -> Unit {
 }
 
 ///|
+fn Tree::pointer_on(self : Tree) -> Bool {
+  self.pointer_xy.0 >= 0.0 && self.pointer_xy.1 >= 0.0
+}
+
+///|
 /// A change committed whole (outside any other being committed): where what is under the pointer is read
 /// (View::pointer_within) and the change laid out or placed anything again, laid out as of the change's moment
 /// (Tree::laid_now: what it told pulled in, laid out, placed; what is under the pointer told then, laid_out's), so what
@@ -7416,6 +7422,7 @@ fn Tree::withins_settled(self : Tree) -> Unit {
   if self.committing == 0 &&
     !self.standing &&
     !self.withins_passing &&
+    self.pointer_on() &&
     (!self.withins_at.is_empty() || !self.bar_cols.is_empty()) &&
     (self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
     if self.in_events == 0 && !self.advancing {
@@ -7427,10 +7434,14 @@ fn Tree::withins_settled(self : Tree) -> Unit {
   // (what takes input changed with nothing else to lay out: which column's bar the pointer is along told now, at the
   // change's end)
   if self.committing == 0 && !self.standing && !self.withins_passing && self.bars_due {
-    self.pointer_still_holds() |> ignore
-    self.withins_passing = true
-    self.bars_near_told() |> ignore
-    self.withins_passing = false
+    if self.pointer_on() {
+      self.pointer_still_holds() |> ignore
+      self.withins_passing = true
+      self.bars_near_told() |> ignore
+      self.withins_passing = false
+    } else {
+      self.bars_due = false
+    }
   }
 }
 
@@ -7457,6 +7468,7 @@ fn Tree::withins_owed_now(self : Tree) -> Unit {
   if self.committing == 0 &&
     !self.standing &&
     !self.withins_passing &&
+    self.pointer_on() &&
     (!self.withins_at.is_empty() || !self.bar_cols.is_empty()) &&
     (self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
     self.withins_laid()
@@ -7471,7 +7483,8 @@ fn Tree::withins_restored(self : Tree) -> Unit {
   if self.committing != 0 || self.withins_passing || self.last_w <= 0.0 {
     return
   }
-  if (!self.withins_at.is_empty() || !self.bar_cols.is_empty()) &&
+  if self.pointer_on() &&
+    (!self.withins_at.is_empty() || !self.bar_cols.is_empty()) &&
     (self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
     let was_standing = self.standing
     self.standing = true
@@ -7483,10 +7496,14 @@ fn Tree::withins_restored(self : Tree) -> Unit {
     self.standing = was_standing
   }
   if !self.withins_passing && self.bars_due {
-    self.pointer_still_holds() |> ignore
-    self.withins_passing = true
-    self.bars_near_told() |> ignore
-    self.withins_passing = false
+    if self.pointer_on() {
+      self.pointer_still_holds() |> ignore
+      self.withins_passing = true
+      self.bars_near_told() |> ignore
+      self.withins_passing = false
+    } else {
+      self.bars_due = false
+    }
   }
 }
 
@@ -8738,16 +8755,14 @@ fn Tree::laid_now(self : Tree, via? : Int = 2) -> Bool {
   let was_standing = self.standing
   self.standing = true
   @signals.untracked(fn() {
-    self.clock_to(at)
-    self.beat.set(at)
+    self.clock_to(at, beat=true)
     self.pull()
     self.pass_via = via
     self.laid_out(at)
   })
   if shown != at {
     @signals.untracked(fn() {
-      self.clock_to(shown)
-      self.beat.set(shown)
+      self.clock_to(shown, beat=true)
     })
   }
   self.standing = was_standing
@@ -12470,8 +12485,7 @@ fn Tree::settle_layout_at(self : Tree, at : Double) -> Unit {
   let passes_was = self.work.passes
   let shown = self.clock.untracked()
   @signals.untracked(fn() {
-    self.clock_to(at)
-    self.beat.set(at)
+    self.clock_to(at, beat=true)
     self.pull()
     self.due = true
     self.pass_via = 3
@@ -12479,8 +12493,7 @@ fn Tree::settle_layout_at(self : Tree, at : Double) -> Unit {
   })
   if shown != at {
     @signals.untracked(fn() {
-      self.clock_to(shown)
-      self.beat.set(shown)
+      self.clock_to(shown, beat=true)
     })
   }
   self.standing = false
@@ -16537,6 +16550,9 @@ fn Tree::pointer_now(self : Tree, x : Double, y : Double) -> Unit {
   }
   self.pointer_still = None
   self.pointer_again = false
+  if p.0 < 0.0 {
+    self.withins_owed = false
+  }
   self.pointer_xy = p
   self.withins_told() |> ignore
   for at in self.besides_at {

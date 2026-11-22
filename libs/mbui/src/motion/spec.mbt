@@ -128,6 +128,41 @@ fn moved_ms(per : Double, over : Double, from : Double, to : Double) -> Double {
 }
 
 ///|
+/// Scale (`points` per unit) and optional `along` way for a turned-back `Spec::Moved` (`v * (to - from) < 0.0`),
+/// mapping its units into points for `@flex.come_way_ms` / `@flex.come_way`.
+fn moved_turn_scale(
+  per : Double,
+  over : Double,
+  from : Double,
+  to : Double,
+  v : Double,
+) -> (Double, @flex.ComeWith?) {
+  if per != 1.0 {
+    let u = if per > 0.0 { per } else { 1.0 }
+    let along = if over >= 0.0 && over > (to - from).abs() * u + 0.5 {
+      Some(@flex.ComeWith::{ start: 0.0, ends: @ui.move_ms(over) })
+    } else {
+      None
+    }
+    (u, along)
+  } else if over > 1.0 && from >= 0.0 && from <= 1.0 && (to == 0.0 || to == 1.0) && v.abs() <= 20.0 {
+    let along = if (to - from).abs() < 1.0 {
+      Some(@flex.ComeWith::{ start: 0.0, ends: @ui.move_ms(over) })
+    } else {
+      None
+    }
+    (over, along)
+  } else {
+    let along = if over >= 0.0 && over > (to - from).abs() + 0.5 {
+      Some(@flex.ComeWith::{ start: 0.0, ends: @ui.move_ms(over) })
+    } else {
+      None
+    }
+    (1.0, along)
+  }
+}
+
+///|
 /// Motion.kt motionSpring: a spring by its visual duration (seconds) and
 /// bounce, as Motion (the web's motion library) makes it: stiffness
 /// (2π / 1.2·duration)², damping ratio clamp(1 − bounce, .05, 1).
@@ -261,7 +296,15 @@ pub fn Spec::duration(self : Spec, from : Double, to : Double, v : Double) -> Do
     Spring(ratio, k, thr, delay) =>
       delay + spring_duration(ratio, k, from - to, v, thr)
     Tween(ms, _, delay) => delay + ms
-    Moved(per, over, delay) => if from == to && v == 0.0 { delay } else { delay + moved_ms(per, over, from, to) }
+    Moved(per, over, delay) =>
+      if from == to && v == 0.0 {
+        delay
+      } else if v * (to - from) < 0.0 {
+        let (u, along) = moved_turn_scale(per, over, from, to, v)
+        delay + @flex.come_way_ms(0.0, v / 1000.0 * u, (to - from) * u, along?)
+      } else {
+        delay + moved_ms(per, over, from, to)
+      }
     Snap(delay) => delay
     Motion(tr) => tr.delay + generator_duration(tr.generator(from, to, v))
   }
@@ -321,9 +364,15 @@ pub fn Spec::value_at(
       if t < delay {
         return (from, v)
       }
-      // (its speed per second, the way's per ms)
-      let (x, xv) = @ui.move_path(from - to, v / 1000.0, t - delay, moved_ms(per, over, from, to))
-      (to + x, xv * 1000.0)
+      if v * (to - from) < 0.0 {
+        let (u, along) = moved_turn_scale(per, over, from, to, v)
+        let (y, yv) = @flex.come_way(0.0, v / 1000.0 * u, (to - from) * u, t - delay, along?)
+        (from + y / u, yv / u * 1000.0)
+      } else {
+        // (its speed per second, the way's per ms)
+        let (x, xv) = @ui.move_path(from - to, v / 1000.0, t - delay, moved_ms(per, over, from, to))
+        (to + x, xv * 1000.0)
+      }
     }
     Snap(_) => (from, v)
     Motion(_) => (from, v)
