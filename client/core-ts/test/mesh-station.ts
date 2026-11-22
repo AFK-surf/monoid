@@ -197,13 +197,19 @@ export class Station {
           return;
         }
         // A deterministic ranged byte stream: byte at position `p` is `p % 251`, written in 4 KiB chunks.
+        // Optional `stallAfter` stalls at 0 B/s (until stopped) after writing that many bytes.
         if (parsed.path.startsWith("/admin/api/part")) {
           const params = new URL(parsed.path, "https://station.test").searchParams;
           const offset = Number(params.get("offset") ?? 0);
           const length = Number(params.get("length") ?? 0);
           const step = Number(params.get("chunk") ?? 4 * 1024);
+          const stallAfter = params.has("stallAfter") ? Number(params.get("stallAfter")) : -1;
           let ok = true;
           for (let sent = 0; sent < length; sent += step) {
+            if (stallAfter >= 0 && sent >= stallAfter) {
+              await stream.stopped().catch(() => {});
+              return;
+            }
             const n = Math.min(step, length - sent);
             const buf = Buffer.allocUnsafe(n);
             for (let i = 0; i < n; i++) buf[i] = (offset + sent + i) % 251;

@@ -231,7 +231,8 @@ export class Requests {
   /// Not `quiet`, it is in a person's sight: the station's background waits while it is under way, and what is idle
   /// there gives way (scheduler.ts `foregroundBegin`).
   exchange(station: StationAddr, method: string, path: string, headers: [string, string][], body: Uint8Array, quiet: boolean, ctx: SpanContext | null, heard?: (loaded: number) => void, wrote?: (sent: number) => void, sink?: (piece: Uint8Array) => void, onHead?: (status: number, headers: [string, string][]) => void, json = false, flushCut = false): Effect.Effect<{ status: number; headers: [string, string][]; body: Uint8Array; json?: unknown }, CoreError> {
-    const headIdleMs = json ? JSON_IDLE_MS : 0;
+    const isRead = (method.toUpperCase() === "GET" || method.toUpperCase() === "HEAD") && !path.startsWith("/preview/");
+    const headIdleMs = json ? JSON_IDLE_MS : isRead ? BODY_IDLE_MS : 0;
     const bodyIdleMs = json ? JSON_IDLE_MS : BODY_IDLE_MS;
     return Effect.scoped(
       Effect.gen({ self: this }, function* () {
@@ -539,7 +540,7 @@ export class Requests {
       const [span, head] = this.#head(station, "GET", path, isBulk ? [[BULK, "1"]] : [], 0, ctx);
       const attempt = (): Effect.Effect<[string, Uint8Array], CoreError, Scope.Scope> =>
         Effect.gen({ self: this }, function* () {
-          const reply = yield* this.wire.request(station, head, empty);
+          const reply = yield* within(this.wire.request(station, head, empty), BODY_IDLE_MS);
           answered(span, reply);
           if (reply.status !== 200) return yield* Effect.fail(new CoreError(`http_${reply.status}`, t("station.core.fileUnreadable"), reply.status));
           const kind = replyHeader(reply, "content-type") ?? "";
@@ -566,7 +567,7 @@ export class Requests {
         Effect.gen(function* () {
           const first = yield* Effect.result(Effect.scoped(attempt()));
           if (first._tag === "Success") return first.success;
-          if (isBulk && first.failure.cause === "bulk_crawl") return yield* Effect.scoped(attempt());
+          if (isBulk && (first.failure.cause === "bulk_crawl" || first.failure.code === "timeout")) return yield* Effect.scoped(attempt());
           return yield* Effect.fail(first.failure);
         }).pipe(Effect.ensuring(Effect.sync(() => waiting.end()))),
       );
@@ -585,7 +586,7 @@ export class Requests {
   /// when the transfer is interrupted.
   filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
     return this.#chatParts.read(JSON.stringify([station.toString(), key, name]), offset, length,
-      (at, count, take, head) => this.#filePart(station, key, name, at, count, ctx, take, head, quiet, noHedge, lane), heard, sink, said);
+      (at, count, take, head) => this.#filePart(station, key, name, at, count, ctx, take, head, quiet, noHedge, lane), heard, sink, said, noHedge);
   }
 
   #filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
@@ -650,7 +651,7 @@ export class Requests {
   /// `heard`, `sink`, `said`, `quiet`, `noHedge`: as filePart's.
   driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, version?: readonly [number, number], noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
     return this.#driveParts.read(JSON.stringify([station.toString(), root, path, version]), offset, length,
-      (at, count, take, head) => this.#driveRead(station, root, path, at, count, ctx, take, head, quiet, noHedge, lane), heard, sink, said);
+      (at, count, take, head) => this.#driveRead(station, root, path, at, count, ctx, take, head, quiet, noHedge, lane), heard, sink, said, noHedge);
   }
 
   #driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {

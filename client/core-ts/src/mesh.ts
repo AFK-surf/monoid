@@ -118,8 +118,9 @@ export const DIRECT_HOLD_MAX_MS = 30 * 60_000;
 /// way is up: the LAN way is enough, and the main endpoint's link would only punch one more path to the station
 ///.
 export const LAN_RECALL_MS = DIRECT_RECALL_MS;
-/// The least a read waits for its answer on its way before it is asked on the next best way as well.
+/// The least and most a read waits for its answer on its way before it is asked on the next best way as well.
 export const HEDGE_FLOOR_MS = 1_000;
+export const HEDGE_MAX_MS = 4_000;
 /// How much of a request's body goes on a stream at a time when how far it has gone is told of (a part is 4 MB).
 export const BODY_STEP = 64 * 1024;
 export const NET_DAY_KEY = "net-day";
@@ -147,8 +148,9 @@ export const SPEED_SAID_MS = 60_000;
 export const BULK_BYTES = 4 * 1024 * 1024;
 /// Throughput below which a bulk way is considered slow and triggers on-demand relay exploration.
 export const BULK_SLOW_BPS = 512 * 1024;
-/// Assumed throughput for an unmeasured way when scoring bulk candidates.
+/// Assumed throughput for an unmeasured direct or relay way when scoring bulk candidates.
 export const BULK_PROBE_BPS = 1024 * 1024;
+export const BULK_RELAY_PROBE_BPS = 256 * 1024;
 /// Minimum interval between on-demand bulk relay explorations for the same peer.
 export const BULK_EXPLORE_MS = 60_000;
 /// A reply head is a line of JSON; anything longer is not a station talking.
@@ -2336,7 +2338,8 @@ export class Mesh {
     const rtt = this.#wayRtt(way);
     const sk = way.link.speedKey();
     const bps = sk !== null ? this.speed(addr, sk) : null;
-    const probeBps = Math.min(BULK_PROBE_BPS, Math.round(BULK_PROBE_BPS * (200 / Math.max(200, rtt))));
+    const baseProbe = way.key() === DIRECT ? BULK_PROBE_BPS : BULK_RELAY_PROBE_BPS;
+    const probeBps = Math.min(baseProbe, Math.round(baseProbe * (200 / Math.max(200, rtt))));
     return rtt + (BULK_BYTES / (bps !== null && bps > 0 ? bps : probeBps)) * 1000;
   }
 
@@ -2979,34 +2982,41 @@ export class Mesh {
     return [...byKey.values()].sort((a, b) => this.#bulkScore(addr, a) - this.#bulkScore(addr, b)).map((w) => w.link);
   }
 
-  /// Fast open bulk ways suitable for concurrent striped transfers: excludes ways with missed pings, ways known to be
-  /// below BULK_SLOW_BPS, and high-RTT (> 600ms) unmeasured ways (falling back to the single best unmeasured way when
-  /// no other fast way exists).
+  /// Fast open bulk ways suitable for concurrent striped transfers: only includes proven fast ways (LAN, measured
+  /// >= BULK_SLOW_BPS, or unmeasured low-RTT direct). Unmeasured relays are never mixed into multi-way striping; when
+  /// no proven fast way exists, falls back to the single best low-RTT (or best overall) unmeasured way.
   fastBulkLinks(addr: string): Link[] {
     const ways = this.#live(addr);
     const candidates = this.bulkLinks(addr).flatMap((l) => {
       const w = ways.find((x) => x.link === l);
       return w !== undefined && w.missed === 0 ? [w] : [];
     });
-    const fast: Link[] = [];
+    const proven: Link[] = [];
+    let bestLowRttUnmeasured: Link | null = null;
     let bestUnmeasured: Link | null = null;
     for (const w of candidates) {
       const l = w.link;
       if (l.pinned === LAN) {
-        fast.push(l);
+        proven.push(l);
         continue;
       }
       const sk = l.speedKey();
       const bps = sk !== null ? this.speed(addr, sk) : null;
       if (bps !== null) {
-        if (bps >= BULK_SLOW_BPS) fast.push(l);
+        if (bps >= BULK_SLOW_BPS) proven.push(l);
       } else {
-        if (bestUnmeasured === null) bestUnmeasured = l;
-        if (this.#wayRtt(w) <= 600) fast.push(l);
+        const rtt = this.#wayRtt(w);
+        if (w.key() === DIRECT && rtt <= 600) {
+          proven.push(l);
+        } else {
+          if (bestUnmeasured === null) bestUnmeasured = l;
+          if (bestLowRttUnmeasured === null && rtt <= 600) bestLowRttUnmeasured = l;
+        }
       }
     }
-    if (fast.length === 0 && bestUnmeasured !== null) return [bestUnmeasured];
-    return fast;
+    if (proven.length > 0) return proven;
+    const fallback = bestLowRttUnmeasured ?? bestUnmeasured;
+    return fallback !== null ? [fallback] : [];
   }
 
   /// Standby link for hedging a slow bulk transfer: never hedges onto a way already known to be below BULK_SLOW_BPS.
@@ -3086,23 +3096,24 @@ export class Mesh {
     });
   }
 
-  /// Bulk link for a striped lane, spreading concurrent parts across fast bulk ways.
+  /// Bulk link for a striped lane, spreading concurrent parts across fast bulk ways (or alternate bulk ways on retry).
   bulkLinkAt(addr: string, lane: number, credentials: CredentialSource, theirs?: readonly string[], off?: readonly string[], asker?: string): Effect.Effect<Link, CoreError> {
     return Effect.map(this.link(addr, credentials, theirs, off, asker), (cur) => {
       this.#maybeExploreBulk(addr, credentials);
       const fast = this.fastBulkLinks(addr);
-      if (fast.length > 0) return fast[Math.abs(lane) % fast.length]!;
-      return this.bulkLinks(addr)[0] ?? cur;
+      if (fast.length >= 2 || (lane === 0 && fast.length > 0)) return fast[Math.abs(lane) % fast.length]!;
+      const all = this.bulkLinks(addr);
+      if (all.length > 0) return all[Math.abs(lane) % all.length]!;
+      return cur;
     });
   }
 
-  /// How long a read on `link` waits for its answer before it is asked on another way as well: what its way is expected
-  /// to take at worst, and twice its deviation more; HEDGE_FLOOR_MS at least (the station's own time to answer).
+  /// How long a read on `link` waits for its answer head before it is asked on another way as well: RTT plus four
+  /// deviations, clamped to [HEDGE_FLOOR_MS, HEDGE_MAX_MS].
   hedgeAfter(addr: string, link: Link): number {
     const w = this.#live(addr).find((x) => x.link === link);
     if (w === undefined || w.samples === 0) return HEDGE_FLOOR_MS;
-    const s = this.#score(addr, w);
-    return Math.max(HEDGE_FLOOR_MS, s.score + 2 * s.dev);
+    return Math.min(HEDGE_MAX_MS, Math.max(HEDGE_FLOOR_MS, w.srtt + 4 * w.dev));
   }
 
   /// A read asked on `slow` and then on another way as well was answered on the other first, `ms` after it was asked on

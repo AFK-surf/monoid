@@ -16,7 +16,8 @@ import { chatKeptId, sentKeptId } from "../src/drive-kept.ts";
 import { RECONNECT_MS } from "../src/station/sync.ts";
 import { HostError } from "../src/error.ts";
 import { HostWire, type StationWire } from "../src/station/wire.ts";
-import { BULK_LANE } from "../src/station/requests.ts";
+import { BODY_IDLE_MS, BULK_LANE, NO_HEDGE } from "../src/station/requests.ts";
+import { StationAddr } from "../src/station/addr.ts";
 import { apply as applyOps } from "../src/delta.ts";
 import { call, subscribe } from "./helpers.ts";
 import { Raw, started, stationReplies, status } from "./station-fixture.ts";
@@ -1007,5 +1008,110 @@ test("concurrent foreground station.file.part >= 256 KiB auto-stripes across bul
     ),
   );
   assert.deepEqual(seen.map((s) => s.lane), [undefined, undefined], "small and quiet reads must not auto-assign bulk lanes");
+  t.core.close();
+});
+
+test("autoLane resets sequential reads to lane 0, skips stream:true, and increments lane on head timeout retry", async () => {
+  const file = bytesOf(3 * MB, 61);
+  const seen: { offset: number; lane: string | undefined }[] = [];
+  let hangFirstTimeout = false;
+  let hungOnce = false;
+  const t = await started(undefined, 0, (host): StationWire => {
+    const fallback = new HostWire(host);
+    return {
+      bulkLanes: () => 2,
+      request: (station, head, body) => {
+        const u = new URL(head.path, "https://stillfail.test");
+        if (!u.pathname.endsWith("/sessions/k1/parts")) return fallback.request(station, head, body);
+        return Effect.suspend(() => {
+          const offset = Number(u.searchParams.get("offset"));
+          const lane = head.headers.find(([k]) => k.toLowerCase() === BULK_LANE)?.[1];
+          seen.push({ offset, lane });
+          if (hangFirstTimeout && !hungOnce) {
+            hungOnce = true;
+            return Effect.never;
+          }
+          return fallback.request(station, head, body);
+        });
+      },
+    };
+  });
+  files(t.host, new Map([["seq.mp4", file]]));
+  const ui = t.core.connect();
+  const done = new Map<number, any>();
+  const take = () => {
+    for (const [, m] of t.host.takeEmitted()) {
+      const msg = m as Record<string, unknown>;
+      if ("ok" in msg || "error" in msg) done.set(msg.id as number, msg);
+    }
+  };
+
+  // 1. Two sequential non-stream >= 256 KiB reads both get lane "0".
+  call(t.core, ui, 301, "station.file.part", { station: ST, key: "k1", name: "seq.mp4", offset: 0, length: 512 * 1024, keep: true, size: file.length });
+  await t.host.settle();
+  call(t.core, ui, 302, "station.file.part", { station: ST, key: "k1", name: "seq.mp4", offset: 512 * 1024, length: 512 * 1024, keep: true, size: file.length });
+  await t.host.settle();
+  assert.deepEqual(seen.map((s) => s.lane), ["0", "0"], "sequential reads must reset to lane 0");
+
+  // 2. stream: true (video/audio playback) does NOT auto-assign a lane.
+  seen.length = 0;
+  call(t.core, ui, 303, "station.file.part", { station: ST, key: "k1", name: "seq.mp4", offset: MB, length: 512 * 1024, stream: true, keep: true, size: file.length });
+  call(t.core, ui, 304, "station.file.part", { station: ST, key: "k1", name: "seq.mp4", offset: MB + 512 * 1024, length: 512 * 1024, stream: true, keep: true, size: file.length });
+  await t.host.settle();
+  assert.deepEqual(seen.map((s) => s.lane), [undefined, undefined], "stream: true reads must not auto-stripe");
+
+  // 3. Head BODY_IDLE_MS timeout retries with incremented lane (attempt = 1 -> lane "1") and succeeds.
+  seen.length = 0;
+  hangFirstTimeout = true;
+  call(t.core, ui, 305, "station.file.part", { station: ST, key: "k1", name: "seq.mp4", offset: 2 * MB, length: 512 * 1024, stream: true, keep: true, size: file.length });
+  await t.host.settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]!.lane, undefined);
+  await t.host.time.pass(BODY_IDLE_MS + 50, 100);
+  await t.host.settle();
+  take();
+  assert.deepEqual(seen.map((s) => s.lane), [undefined, "1"], "head timeout retry must increment lane to switch paths");
+  assert.ok("ok" in done.get(305), "retried part read must succeed after head timeout");
+  t.core.close();
+});
+
+test("FileRanges isolates foreground reads from in-flight background noHedge ranges while still coalescing foreground reads", async () => {
+  const file = bytesOf(64 * 1024, 71);
+  const requests: { noHedge: boolean; gate: Deferred.Deferred<void> }[] = [];
+  const t = await started(undefined, 0, (host): StationWire => {
+    const fallback = new HostWire(host);
+    return {
+      request: (station, head, body) => {
+        const u = new URL(head.path, "https://stillfail.test");
+        if (!u.pathname.endsWith("/sessions/k1/parts")) return fallback.request(station, head, body);
+        return Effect.suspend(() => {
+          const noHedge = head.headers.some(([k]) => k.toLowerCase() === NO_HEDGE);
+          const gate = Deferred.makeUnsafe<void>();
+          requests.push({ noHedge, gate });
+          return Effect.andThen(Deferred.await(gate), fallback.request(station, head, body));
+        });
+      },
+    };
+  });
+  files(t.host, new Map([["clip.mp4", file]]));
+  const addr = StationAddr.parse(ST);
+  const req = t.core.inner.stations.requests;
+  const bg = t.core.inner.runner.run(req.filePart(addr, "k1", "clip.mp4", 0, file.length, null, undefined, undefined, undefined, true, true));
+  await t.host.settle();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]!.noHedge, true);
+
+  // Two foreground (noHedge: false) reads must NOT coalesce into the background noHedge range, but MUST coalesce with each other.
+  const fg1 = t.core.inner.runner.run(req.filePart(addr, "k1", "clip.mp4", 0, file.length, null, undefined, undefined, undefined, false, false));
+  const fg2 = t.core.inner.runner.run(req.filePart(addr, "k1", "clip.mp4", 0, file.length, null, undefined, undefined, undefined, false, false));
+  await t.host.settle();
+  assert.equal(requests.length, 2, "foreground reads must launch 1 shared foreground request separate from background noHedge");
+  assert.equal(requests[1]!.noHedge, false);
+
+  for (const r of requests) Deferred.doneUnsafe(r.gate, Effect.void);
+  const [rBg, rFg1, rFg2] = await Promise.all([bg, fg1, fg2]);
+  assert.deepEqual(rBg.bytes, file);
+  assert.deepEqual(rFg1.bytes, file);
+  assert.deepEqual(rFg2.bytes, file);
   t.core.close();
 });

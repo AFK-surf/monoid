@@ -16,11 +16,11 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { keptFirst } from "../src/station/calls.ts";
-import { ALPN, BULK_CRAWL_MS, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
+import { ALPN, BULK_CRAWL_MS, BULK_STALL_MS, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
 import { BATCH_LINES, BULK, BULK_LANE, NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
 import { Runner } from "../src/runtime.ts";
 import { StationAddr } from "../src/station/addr.ts";
@@ -2781,6 +2781,9 @@ sim("multi_way_striped_bulk_transfers_aggregate_bandwidth_across_fast_relays", a
   // First bulk transfer measures slow direct and triggers on-demand pinned relay exploration for b and c.
   await s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/big", headers: [[BULK, "1"]] }, new Uint8Array()), (r) => readAll(r.body))));
   await s.until(() => mesh.ways(id).some((w) => w.link.via() === b) && mesh.ways(id).some((w) => w.link.via() === c));
+  // Measure b and c as proven fast (>= BULK_SLOW_BPS) so they join multi-way fastBulkLinks.
+  mesh.noteSpeed(id, b, SPEED_MIN_BYTES, 500);
+  mesh.noteSpeed(id, c, SPEED_MIN_BYTES, 500);
   assert.ok(wire.bulkLanes(addr) >= 2, `expected >= 2 fast bulk lanes, got ${wire.bulkLanes(addr)}`);
   assert.ok(mesh.fastBulkLinks(id).every((l) => l.path() !== "direct"), "slow direct must be excluded from fastBulkLinks");
   const readLane = (lane: number) =>
@@ -3098,6 +3101,178 @@ sim("bulk_crawl_does_not_abort_when_no_better_standby_exists", async (s) => {
   const elapsed = s.time.now() - startedAt;
   assert.ok(elapsed > BULK_CRAWL_MS, `stream must run past ${BULK_CRAWL_MS}ms without aborting, took ${elapsed}ms`);
   assert.deepEqual(got, expected);
+  await close(s, station, mesh);
+});
+
+sim("unmeasured_relay_never_outranks_healthy_direct_or_joins_fast_bulk_links_until_proven", async (s) => {
+  s.net.direct = { ms: 20, bps: 2 * 1024 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 30, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  await s.run(mesh.remeasure(id));
+  assert.equal(mesh.speed(id, a), null);
+  assert.equal(mesh.speed(id, b), null);
+  // Healthy direct beats unmeasured relays in #bulkScore and is the sole entry in fastBulkLinks.
+  assert.equal(mesh.bulkLinks(id)[0]!.path(), "direct", "unmeasured direct must outrank unmeasured relay");
+  const fastBefore = mesh.fastBulkLinks(id);
+  assert.equal(fastBefore.length, 1, `unmeasured relays must not join fastBulkLinks beside direct, got ${fastBefore.length}`);
+  assert.equal(fastBefore[0]!.path(), "direct");
+  // Even measured direct at 300 KiB/s (>= 256 KiB/s BULK_RELAY_PROBE_BPS) beats unmeasured relays.
+  mesh.noteSpeed(id, DIRECT, SPEED_MIN_BYTES, Math.round((SPEED_MIN_BYTES / (300 * 1024)) * 1000));
+  assert.equal(mesh.bulkLinks(id)[0]!.path(), "direct", "300 KiB/s direct must beat unmeasured relay");
+  // Once a relay way is proven fast (>= BULK_SLOW_BPS), it joins fastBulkLinks alongside proven direct.
+  const openRelay = mesh.ways(id).find((w) => w.link.path() === "relay")!.link.via()!;
+  mesh.noteSpeed(id, DIRECT, SPEED_MIN_BYTES, 500);
+  mesh.noteSpeed(id, openRelay, SPEED_MIN_BYTES, 500);
+  const fastAfter = mesh.fastBulkLinks(id);
+  assert.ok(fastAfter.length >= 2, `proven fast relay must join fastBulkLinks, got ${fastAfter.length}`);
+  assert.ok(fastAfter.some((l) => l.path() === "direct") && fastAfter.some((l) => l.via() === openRelay));
+  await close(s, station, mesh);
+});
+
+sim("hedge_after_is_capped_at_hedge_max_ms_on_slow_link_and_hedges_stalled_head_within_4s", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20, bps: 2 * 1024 * 1024 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 60, bps: 2 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationOn(a, [b]);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.run(mesh.remeasure(id));
+  const linkA = mesh.ways(id).find((w) => w.link.via() === a)!.link;
+  // Record linkA at 10 KB/s: previously TYPICAL_BYTES / 10KB/s inflated hedgeAfter to ~26.7s.
+  mesh.noteSpeed(id, a, 50 * 1024, 5_000, true);
+  const after = mesh.hedgeAfter(id, linkA);
+  assert.ok(after >= HEDGE_FLOOR_MS && after <= HEDGE_MAX_MS, `hedgeAfter on 10 KB/s link must be within [${HEDGE_FLOOR_MS}, ${HEDGE_MAX_MS}], got ${after}`);
+  // Stall response head on linkA; wire.request must hedge to b within <= HEDGE_MAX_MS + RTT.
+  const connA = station.conns[0];
+  connA.way.silentUntil = connA.peer.way.silentUntil = s.time.now() + 25_000;
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const startedAt = s.time.now();
+  const res = await s.run(
+    Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/overview", headers: [] }, new Uint8Array()), (r) => Effect.map(readAll(r.body), () => r.relay))),
+    15_000,
+  );
+  const elapsed = s.time.now() - startedAt;
+  assert.equal(res, "b.relay.test");
+  assert.ok(elapsed <= HEDGE_MAX_MS + 1_000, `stalled head must hedge within ~${HEDGE_MAX_MS}ms, took ${elapsed}ms`);
+  await close(s, station, mesh);
+});
+
+sim("bulk_zero_bps_stall_watchdog_aborts_at_4s_and_kept_first_resumes_losslessly", async (s) => {
+  const stalled = s.relay("https://stalled.relay.test/", { device: { ms: 20, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const fast = s.relay("https://fast.relay.test/", { device: { ms: 80, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationOn(stalled, [fast]);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [stalled, fast]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.run(mesh.remeasure(id));
+  assert.equal(mesh.bulkLinks(id)[0]!.via(), stalled);
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const total = 512 * 1024;
+  const expected = Uint8Array.from({ length: total }, (_, i) => i % 251);
+  const inner = { runner: s.runner } as unknown as Inner;
+  const viaUsed: (string | null)[] = [];
+  const startedAt = s.time.now();
+  const part = await s.run(
+    keptFirst<{ type: string; total: number }, { type: string; total: number; bytes: Uint8Array }>(
+      inner,
+      { offset: 0, length: total },
+      total,
+      () => Effect.succeed(null),
+      (_at, end) => Effect.succeed(end),
+      undefined,
+      undefined,
+      (at, length, _before, take, said) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            // Stall at 0 B/s after 16 KiB on the initial offset=0 request; subsequent resumed request completes normally.
+            const q = at === 0 ? `&stallAfter=${16 * 1024}` : "";
+            const reply = yield* wire.request(
+              addr,
+              { method: "GET", path: `/admin/api/part?offset=${at}&length=${length}${q}`, headers: [[BULK, "1"]] },
+              new Uint8Array(),
+            );
+            viaUsed.push(reply.relay ?? null);
+            const head = { type: "video/mp4", total };
+            said(head);
+            yield* readAll(reply.body, take, false);
+            return { ...head, bytes: new Uint8Array(0) };
+          }),
+        ),
+      () => Effect.void,
+      (h) => h.total === total,
+    ),
+    30_000,
+  );
+  const elapsed = s.time.now() - startedAt;
+  assert.deepEqual(viaUsed, ["stalled.relay.test", "fast.relay.test"]);
+  assert.ok(elapsed >= BULK_STALL_MS && elapsed < 10_000, `0 B/s stall must switch at ~${BULK_STALL_MS}ms (not 20s), took ${elapsed}ms`);
+  assert.deepEqual(part.bytes, expected);
+  await close(s, station, mesh);
+});
+
+sim("previously_fast_link_stalling_at_zero_bps_switches_to_unmeasured_relay_within_8s", async (s) => {
+  const stalled = s.relay("https://stalled.relay.test/", { device: { ms: 20, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const backup = s.relay("https://backup.relay.test/", { device: { ms: 80, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationOn(stalled, [backup]);
+  const mesh = await s.run(Mesh.make({ ...env(s), relayOnly: true }, [stalled, backup]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.run(mesh.remeasure(id));
+  // Previously measured at 1 MB/s while backup relay remains unmeasured (BULK_RELAY_PROBE_BPS = 256 KiB/s).
+  mesh.noteSpeed(id, stalled, SPEED_MIN_BYTES, 500);
+  assert.equal(mesh.speed(id, backup), null);
+  assert.equal(mesh.bulkLinks(id)[0]!.via(), stalled);
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const total = 512 * 1024;
+  const expected = Uint8Array.from({ length: total }, (_, i) => i % 251);
+  const inner = { runner: s.runner } as unknown as Inner;
+  const viaUsed: (string | null)[] = [];
+  const startedAt = s.time.now();
+  const part = await s.run(
+    keptFirst<{ type: string; total: number }, { type: string; total: number; bytes: Uint8Array }>(
+      inner,
+      { offset: 0, length: total },
+      total,
+      () => Effect.succeed(null),
+      (_at, end) => Effect.succeed(end),
+      undefined,
+      undefined,
+      (at, length, _before, take, said) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const q = at === 0 ? `&stallAfter=${16 * 1024}` : "";
+            const reply = yield* wire.request(
+              addr,
+              { method: "GET", path: `/admin/api/part?offset=${at}&length=${length}${q}`, headers: [[BULK, "1"]] },
+              new Uint8Array(),
+            );
+            viaUsed.push(reply.relay ?? null);
+            const head = { type: "video/mp4", total };
+            said(head);
+            yield* readAll(reply.body, take, false);
+            return { ...head, bytes: new Uint8Array(0) };
+          }),
+        ),
+      () => Effect.void,
+      (h) => h.total === total,
+    ),
+    30_000,
+  );
+  const elapsed = s.time.now() - startedAt;
+  assert.deepEqual(viaUsed, ["stalled.relay.test", "backup.relay.test"]);
+  assert.ok(elapsed >= 2 * BULK_STALL_MS && elapsed < 15_000, `previously fast link stalling must switch to unmeasured relay at ~8s (not 20s), took ${elapsed}ms`);
+  assert.deepEqual(part.bytes, expected);
   await close(s, station, mesh);
 });
 

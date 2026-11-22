@@ -13,7 +13,7 @@ import { CoreError } from "../error.ts";
 import { t } from "../i18n.ts";
 import type { Iroh } from "../iroh.ts";
 import { claimBy } from "../lock.ts";
-import { BULK_SLOW_BPS, HOT_RELAYS, type CredentialSource, type Link, Mesh, type MeshEnv, type Presented, type Reply, relayHost, SPEED_MIN_BYTES } from "../mesh.ts";
+import { BULK_SLOW_BPS, HOT_RELAYS, type CredentialSource, type Link, Mesh, type MeshEnv, type Presented, type Reply, relayHost, SPEED_MIN_BYTES, SPEED_SLOW_MIN_MS } from "../mesh.ts";
 import { PAIR_ALPN } from "../pair.ts";
 import { RELAY, type Place, type Status } from "../status.ts";
 import { route } from "../route.ts";
@@ -48,6 +48,8 @@ export const RECHECK_MS = 5 * 60 * 1000;
 /// Elapsed time and average throughput below which a crawling bulk body aborts to switch to a clearly better standby.
 export const BULK_CRAWL_MS = 8_000;
 export const BULK_CRAWL_BPS = 32 * 1024;
+/// Silent period (0 B/s) after which a stalled bulk body checks for a clearly better standby and aborts to switch.
+export const BULK_STALL_MS = 4_000;
 
 export function unconfirmed(why: CoreError): CoreError {
   return new CoreError("unconfirmed", t("station.core.unconfirmed", { why: why.message }));
@@ -156,7 +158,26 @@ export class MeshWire implements StationWire {
         // Asked on its link; on another way as well if not answered within what its way is expected to take
         // (`hedgeAfter`), or on the link put in its place if its link is replaced meanwhile: the first answer taken.
         const started = mesh.now();
-        const asked = yield* Effect.forkChild(Effect.result(ask(link)));
+        let gotHead = false;
+        let penalized = false;
+        const asked = yield* Effect.forkChild(
+          Effect.result(
+            ask(link).pipe(
+              Effect.tap(() => Effect.sync(() => { gotHead = true; })),
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  if (!gotHead && !penalized) {
+                    const elapsed = mesh.now() - started;
+                    if (elapsed >= SPEED_SLOW_MIN_MS) {
+                      penalized = true;
+                      mesh.outran(key, link, elapsed);
+                    }
+                  }
+                }),
+              ),
+            ),
+          ),
+        );
         // An answer come too late to be taken: its stream let go (the station stops sending what no one reads).
         const late = ([, reply]: [Link, Reply, number]) => reply.cancel();
         // The other way, as there is one by then (the ways dialled with the link may come through after it).
@@ -210,7 +231,10 @@ export class MeshWire implements StationWire {
         } else {
           // Slow on its way: asked on the next best as well. Answered there first, its way is told how long it kept it.
           answered = yield* firstAnswer(asked, ask(first.slow), late);
-          if (answered[0] !== link) mesh.outran(key, link, mesh.now() - started);
+          if (answered[0] !== link && !penalized) {
+            penalized = true;
+            mesh.outran(key, link, mesh.now() - started);
+          }
         }
       } else {
         const r = yield* Effect.result(ask(link));
@@ -238,28 +262,50 @@ export class MeshWire implements StationWire {
       if (bulk && repeats && !noHedge && !streams) {
         const crawlStarted = mesh.now();
         let crawlBytes = 0;
-        let crawlNoted = false;
+        let lastCrawlNote = -Infinity;
+        const abortCrawl = (elapsed: number, stalledNow = false): CoreError | null => {
+          const now = mesh.now();
+          if (now - lastCrawlNote >= BULK_STALL_MS && speedVia !== null && typeof mesh.noteSpeed === "function") {
+            const curSpeed = typeof mesh.speed === "function" ? mesh.speed(key, speedVia) : null;
+            if (curSpeed === null || curSpeed >= BULK_CRAWL_BPS) {
+              const sampleBytes = stalledNow ? 1 : Math.max(crawlBytes, 1);
+              const sampleMs = Math.max(elapsed, SPEED_SLOW_MIN_MS);
+              mesh.noteSpeed(key, speedVia, sampleBytes, sampleMs, true);
+              lastCrawlNote = now;
+            }
+          }
+          if (typeof mesh.betterBulkStandby === "function" && mesh.betterBulkStandby(key, l) !== null) {
+            reply.cancel();
+            const err = new CoreError("mesh", t("core-logic.mesh.cut"));
+            err.cause = "bulk_crawl";
+            return err;
+          }
+          return null;
+        };
         bodyPull = {
-          take: Effect.flatMap(timed.take, (chunk) => {
-            if (chunk === null) return Effect.succeed(null);
+          take: Effect.gen(function* () {
+            const stalled = Effect.gen(function* () {
+              for (;;) {
+                yield* Effect.sleep(BULK_STALL_MS);
+                const err = abortCrawl(mesh.now() - crawlStarted, true);
+                if (err !== null) return { stalled: err } as const;
+              }
+            });
+            const winner = yield* Effect.raceFirst(
+              Effect.map(Effect.result(timed.take), (read) => ({ read }) as const),
+              stalled,
+            );
+            if ("stalled" in winner) return yield* Effect.fail(winner.stalled);
+            if (winner.read._tag === "Failure") return yield* Effect.fail(winner.read.failure);
+            const chunk = winner.read.success;
+            if (chunk === null) return null;
             crawlBytes += chunk.length;
             const elapsed = mesh.now() - crawlStarted;
             if (elapsed >= BULK_CRAWL_MS && (crawlBytes / elapsed) * 1000 < BULK_CRAWL_BPS) {
-              if (!crawlNoted && speedVia !== null && typeof mesh.noteSpeed === "function") {
-                const curSpeed = typeof mesh.speed === "function" ? mesh.speed(key, speedVia) : null;
-                if (curSpeed === null || curSpeed >= BULK_SLOW_BPS) {
-                  mesh.noteSpeed(key, speedVia, Math.max(crawlBytes, 1), elapsed, true);
-                }
-                crawlNoted = true;
-              }
-              if (typeof mesh.betterBulkStandby === "function" && mesh.betterBulkStandby(key, l) !== null) {
-                reply.cancel();
-                const err = new CoreError("mesh", t("core-logic.mesh.cut"));
-                err.cause = "bulk_crawl";
-                return Effect.fail(err);
-              }
+              const err = abortCrawl(elapsed);
+              if (err !== null) return yield* Effect.fail(err);
             }
-            return Effect.succeed(chunk);
+            return chunk;
           }),
         };
       }
