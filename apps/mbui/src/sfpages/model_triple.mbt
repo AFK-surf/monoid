@@ -2517,13 +2517,17 @@ fn triple_model_row_node(
               @sf.style_node(nl, fn() { triple_model_name_line })
               nl.min_width(Is(Some(0.0))) |> ignore
               @sf.words_node(nl, name, fn() { if picked() { triple_row_picked } else { triple_row_name } })
-              .shrink(Is(1.0))
+              .shrink(Is(0.0))
+              .keeps_held(Is(true))
               .min_width(Is(Some(0.0)))
+              .max_width(Is(None), within=true)
               |> ignore
-              // (giving way to the name where the row is short: what the name leaves of it, cut short)
+              // (giving way to the name where the row is short: what the name leaves of it, cut short, all of it where
+              // the name leaves no room)
               nl.show(fn() { usual() != "" }, fn(ur) {
                 @sf.style_node(ur, fn() { triple_usual_room }, in_row=true)
                 @sf.on_baseline(ur, Ui, Meta)
+                .shrink(Is(1.0))
                 .min_width(Is(Some(0.0)))
                 .clips(Is(true))
                 |> ignore
