@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f7978a96d](https://github.com/AFK-surf/monoid/commit/f7978a96df78ae0c98b939f5952b478314e9fb0b) fix(test): build the delta C harness without PIE o | 2.67 | 3.6 | 14.59 | 36.69 | 55.74 | 32.14 | 65.08 | 98.93 | 120.95 |
 | [d14a63795](https://github.com/AFK-surf/monoid/commit/d14a63795c75de8b6ead55911db8ffc2e87657e0) fix(mbui): stop pointer-driven layout loops (#8149 | 2.67 | 3.6 | 14.59 | 36.69 | 55.74 | 32.14 | 65.06 | 98.94 | 123.84 |
 | [fb7c623cc](https://github.com/AFK-surf/monoid/commit/fb7c623cc88af36f118d38d615876a62c57b2788) perf(mbui): set macOS menu bar items enabled in pl | 2.67 | 3.6 | 14.59 | 36.69 | 55.74 | 32.14 | 65.06 | 98.94 | 123.84 |
 | [5fa0192bb](https://github.com/AFK-surf/monoid/commit/5fa0192bb5782095d688727bbd49077f2ef0f834) perf(mbui): eliminate Windows glyph rasterization  | 2.67 | 3.6 | 14.59 | 36.68 | 55.74 | 32.13 | 65.06 | 98.88 | 123.68 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [abca93fca](https://github.com/AFK-surf/monoid/commit/abca93fcab0d7884f3ed916bcc671558e5f2922c) feat(sf-ui,sfpages): align composer liquid glass w | 2.66 | 3.57 | 14.52 | 36.59 | 55.48 | 32.04 | 64.81 | 98.67 | 115.45 |
 | [e3f2606bc](https://github.com/AFK-surf/monoid/commit/e3f2606bc9038868b8f86ab0851828b260724b8e) fix(mbui): composite waiting tiles' ground into th | 2.66 | 3.57 | 14.52 | 36.59 | 55.48 | 32.04 | 64.81 | 99.01 | 112.25 |
 | [3e9d20511](https://github.com/AFK-surf/monoid/commit/3e9d20511428a1cda54c4b0c158f2939513b92aa) fix(screens): set an Android device's volume throu | 2.65 | 3.57 | 14.52 | 36.58 | 55.47 | 32.04 | 64.81 | 98.83 | 129.56 |
-| [6529ca3f4](https://github.com/AFK-surf/monoid/commit/6529ca3f41c9836795828dff53320d72feeba729) fix(mbui): adapt nested filling children and image | 2.65 | 3.57 | 14.52 | 36.58 | 55.46 | 32.04 | 64.8 | 98.75 | 127.49 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f7978a96d](https://github.com/AFK-surf/monoid/commit/f7978a96df78ae0c98b939f5952b478314e9fb0b) fix(test): build the delta C harness without PIE o | 0.47 | 0.62 | 2.4 | 3.45 | 5.69 | 1.75 | 4.73 | 54.59 |
 | [d14a63795](https://github.com/AFK-surf/monoid/commit/d14a63795c75de8b6ead55911db8ffc2e87657e0) fix(mbui): stop pointer-driven layout loops (#8149 | 0.47 | 0.62 | 2.4 | 3.45 | 5.69 | 1.75 | 4.73 | 54.59 |
 | [fb7c623cc](https://github.com/AFK-surf/monoid/commit/fb7c623cc88af36f118d38d615876a62c57b2788) perf(mbui): set macOS menu bar items enabled in pl | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.51 |
 | [5fa0192bb](https://github.com/AFK-surf/monoid/commit/5fa0192bb5782095d688727bbd49077f2ef0f834) perf(mbui): eliminate Windows glyph rasterization  | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [abca93fca](https://github.com/AFK-surf/monoid/commit/abca93fcab0d7884f3ed916bcc671558e5f2922c) feat(sf-ui,sfpages): align composer liquid glass w | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [e3f2606bc](https://github.com/AFK-surf/monoid/commit/e3f2606bc9038868b8f86ab0851828b260724b8e) fix(mbui): composite waiting tiles' ground into th | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [3e9d20511](https://github.com/AFK-surf/monoid/commit/3e9d20511428a1cda54c4b0c158f2939513b92aa) fix(screens): set an Android device's volume throu | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
-| [6529ca3f4](https://github.com/AFK-surf/monoid/commit/6529ca3f41c9836795828dff53320d72feeba729) fix(mbui): adapt nested filling children and image | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
