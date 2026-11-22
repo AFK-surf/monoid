@@ -518,6 +518,28 @@ export function overviewOf(now: number, station: number): J {
     copies: {
       to: 412 + station, chats: 160 + station * 13, stopped: null, restored: null, empty: false, restoring: null, restorable: null, manage: true, formerly: [],
       keepers: [1, 2].map((d) => ({ station: pick(STATIONS, station + d).id, name: pick(STATIONS, station + d).name, to: 412 + station, at: now - (3 + d) * MIN, error: null, reason: null })),
+      backup: {
+        mode: "manual",
+        stations: [pick(STATIONS, station + 1).id],
+        acceptOthers: true,
+        peers: [1, 2].map((d) => ({ station: pick(STATIONS, station + d).id, name: pick(STATIONS, station + d).name, acceptOthers: true, online: true })),
+        s3: [{
+          id: "r2-1",
+          name: "Cloudflare R2",
+          endpoint: "https://acct.r2.cloudflarestorage.com",
+          region: "auto",
+          bucket: "stillfail-backups",
+          prefix: "stillfail-backup",
+          forcePathStyle: true,
+          accessKeyMask: "AKIA****1234",
+          keyFingerprint: "ab12cd34",
+          includeTranscripts: true,
+          to: 412 + station,
+          at: now - 4 * MIN,
+          error: null,
+          reason: null,
+        }],
+      },
     },
     // What a chat can be kept to less context on (station/src/api/overview.ts, sessions/context-cap.ts): each model's window.
     contextCaps: { runtimes: ["claude", "codex"], least: 100_000, windows: Object.fromEntries([...new Set(profiles.flatMap((p: J) => p.models as string[]))].map((m) => [m, /haiku|4-5|mini|flash|v3/.test(m) ? 200_000 : /gpt|codex|grok/.test(m) ? 400_000 : 1_000_000])) },
