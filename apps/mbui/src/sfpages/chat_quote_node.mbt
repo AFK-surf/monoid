@@ -221,12 +221,7 @@ fn chat_quote_node(
       guard made is Some(_) && @signals.untracked(fn() { chat_quotable(rows) }) is Some((p, _)) else { return }
       @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(src, draft, rows) }, fn(b) {
         @sf.style_node(b, fn() { chat_quote_pill })
-        @ui.keeps_picked(b)
-        .glass(By(fn() { Some(@sf.glass_menu()) }))
-        .edge(By(fn() { if b.glass_solid() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
-        .shadow(By(fn() { @sf.glass_control_shadow() }))
-        .shadow_outside(Is(true))
-        .clips(Is(true))
+        @sf.glass_capsule_node(@ui.keeps_picked(b), interactive=true)
         .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
         |> ignore
         @sf.hover_ground_node(b)
