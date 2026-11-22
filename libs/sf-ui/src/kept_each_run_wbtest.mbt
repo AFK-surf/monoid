@@ -55,3 +55,14 @@ test "a run begins with none of the system's bars said, nothing said over the wi
   assert_false(native_over.up)
   assert_true(native_claims.is_empty())
 }
+
+///|
+test "a run begins with no active hover slot and hover_open_seq reset, whatever the run before left" {
+  ker_run() |> ignore
+  hover_open_seq.val = 7
+  hover_claim(7, fn() {  })
+  assert_true(hover_open_active.val is Some(_))
+  ker_run() |> ignore
+  assert_eq(hover_open_seq.val, 0)
+  assert_true(hover_open_active.val is None)
+}

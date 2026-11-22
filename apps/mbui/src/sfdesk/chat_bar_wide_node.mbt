@@ -584,7 +584,7 @@ fn wide_station_tag(
     k.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(5.0)) |> ignore
     @sf.hover_ground_node(k, lit=Some(hot))
     k.says(Is(Some(@view.said(Group, label=s.name)))) |> ignore
-    @sf.hover_card_node(tips, k, fn(c) { @settings.station_peek_card_node(c, address, stint) }, tile=true, padded=false, tapped=fn() {
+    @sf.hover_card_node(tips, k, fn(c) { @settings.station_peek_card_node(c, address, stint) }, tile=true, padded=false, side=Top, tapped=fn() {
       @settings.open_station_peek(address, from=Node(k))
     })
     |> ignore
@@ -706,6 +706,7 @@ fn wide_agent_tile(
           },
           tile=true,
           padded=false,
+          side=Top,
           held=fn() { (held.val)() },
           pointed=fn() { t.pointed_in() },
         ),
@@ -755,6 +756,7 @@ fn wide_agent_tile(
           g,
           fn(c) { held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card) },
           tile=true,
+          side=Top,
           held=fn() { (held.val)() },
           pointed=fn() { g.pointed_in() },
         ),
@@ -774,7 +776,7 @@ fn wide_agent_tile(
         |> ignore
         @sf.hover_ground_node(sp, lit=Some(hot))
         sp.says(By(fn() { station_now().map(fn(s) { @view.said(Group, label=s.name) }) })) |> ignore
-        @sf.hover_card_node(tips, sp, fn(c) { @settings.station_peek_card_node(c, r.station, stint) }, tile=true, padded=false, yields_to=agent, tapped=fn() {
+        @sf.hover_card_node(tips, sp, fn(c) { @settings.station_peek_card_node(c, r.station, stint) }, tile=true, padded=false, side=Top, yields_to=agent, tapped=fn() {
           @settings.open_station_peek(r.station, from=Node(sp))
         })
         |> ignore
@@ -793,6 +795,7 @@ fn wide_agent_tile(
           t,
           fn(c) { held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card) },
           tile=true,
+          side=Top,
           held=fn() { (held.val)() },
           pointed=fn() { t.pointed_in() },
         ),

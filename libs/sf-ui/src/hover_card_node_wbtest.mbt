@@ -866,3 +866,232 @@ test "hover_panel_node: 0 cold-start body nodes; opens after 180ms, stays open o
   assert_false(open(), msg="outside click closes even when held")
   assert_eq(t.audit(), [])
 }
+
+///|
+test "hover_card_node with submenu_row_node: moving into submenu keeps both open, click chooses item, Escape closes submenu then card, leaving both closes both, outside click closes both at once" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=600.0, platform=0)
+  t.check_looks(false)
+  let hand : Ref[HoverHand?] = Ref(None)
+  let picked = Ref(0)
+  let layer_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    let tips = TipLayer::new(fn() { layer_ref.val })
+    root.box(fn(k) {
+      k
+      .margin(Is((40.0, 40.0, 0.0, 0.0)))
+      .width(Is(Some(120.0)))
+      .height(Is(Some(36.0)))
+      .focusable(Is(true))
+      .says(Is(Some(@view.said(Button, label="触发器"))))
+      |> ignore
+      hand.val = Some(
+        hover_card_node(
+          tips,
+          k,
+          fn(b) {
+            submenu_row_node(b, fn() { "屏幕" }, fn() {
+              [Some(menu_item_of("主屏", fn() { picked.val += 1 }))]
+            })
+          },
+          padded=false,
+          press=fn() {  },
+        ),
+      )
+    })
+    |> ignore
+    layer_ref.val = Some(root.box(fn(l) { l.over(Is(true)).over_all(Is(true)) |> ignore }))
+  })
+  t.draw()
+  let open = fn() { hand.val is Some(h) && @signals.untracked(h.open) }
+  let word_mid = fn(w : String) -> (Double, Double)? {
+    match t.words().filter(fn(x) { x.0 == w && x.5 > 0.5 }).last() {
+      Some(x) => Some((x.1 + x.3 / 2.0, x.2 + x.4 / 2.0))
+      None => None
+    }
+  }
+  let trigger = (100.0, 58.0)
+  let open_card_and_submenu = fn() raise {
+    t.move_to(hover_away.0, hover_away.1)
+    t.run_for(hover_short_ms)
+    t.move_to(trigger.0, trigger.1)
+    t.run_for(hover_card_open_ms + hover_settled_ms)
+    assert_true(open(), msg="card opened")
+    guard word_mid("屏幕") is Some((sx, sy)) else { fail("no 屏幕 row") }
+    t.move_to(sx, sy)
+    t.run_for(hover_settled_ms)
+    assert_true(word_mid("主屏") is Some(_), msg="submenu opened")
+  }
+  // 1) Move across gap into submenu item: both stay open; click item triggers callback and closes submenu
+  open_card_and_submenu()
+  guard word_mid("主屏") is Some((ix, iy)) else { fail("no 主屏 item") }
+  t.move_to(ix, iy)
+  t.run_for(hover_card_close_ms + hover_settled_ms)
+  assert_true(open(), msg="on submenu item: card stays open")
+  assert_true(word_mid("主屏") is Some(_), msg="on submenu item: submenu stays open")
+  t.tap(ix, iy)
+  t.run_for(hover_settled_ms)
+  assert_eq(picked.val, 1, msg="submenu item clicked")
+  assert_true(word_mid("主屏") is None, msg="submenu closed after click")
+  // 2) Re-open submenu: first Escape closes only submenu, second Escape closes card
+  open_card_and_submenu()
+  t.key(@ui.key_escape)
+  t.run_for(hover_settled_ms)
+  assert_true(word_mid("主屏") is None, msg="first Escape closes submenu")
+  assert_true(open(), msg="first Escape keeps card open")
+  t.key(@ui.key_escape)
+  t.run_for(hover_settled_ms)
+  assert_false(open(), msg="second Escape closes card")
+  // 3) Re-open submenu, move away: both card and submenu close after close delay
+  open_card_and_submenu()
+  t.move_to(hover_away.0, hover_away.1)
+  t.run_for(hover_card_close_ms + hover_settled_ms)
+  assert_false(open(), msg="leaving both closes card")
+  assert_true(word_mid("主屏") is None, msg="leaving both closes submenu")
+  // 4) Re-open submenu, single click outside: both close immediately
+  open_card_and_submenu()
+  t.move_to(hover_away.0, hover_away.1)
+  t.tap(hover_away.0, hover_away.1)
+  t.run_for(hover_settled_ms)
+  assert_false(open(), msg="outside click closes card")
+  assert_true(word_mid("主屏") is None, msg="outside click closes submenu")
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "window-level hover exclusion between hover_card_node and hover_panel_node, and hover_panel_node submenu close on leave / outside click" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=600.0, platform=0)
+  t.check_looks(false)
+  let hand_a : Ref[HoverHand?] = Ref(None)
+  let hand_b : Ref[HoverHand?] = Ref(None)
+  let hand_c : Ref[HoverHand?] = Ref(None)
+  let layer_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    let tips = TipLayer::new(fn() { layer_ref.val })
+    root.row(Is(true)) |> ignore
+    root.box(fn(k) {
+      k
+      .margin(Is((40.0, 40.0, 0.0, 0.0)))
+      .width(Is(Some(100.0)))
+      .height(Is(Some(36.0)))
+      .says(Is(Some(@view.said(Button, label="甲"))))
+      |> ignore
+      hand_a.val = Some(
+        hover_card_node(
+          tips,
+          k,
+          fn(b) {
+            submenu_row_node(b, fn() { "甲子菜单" }, fn() { [Some(menu_item_of("甲项", fn() {  }))] })
+          },
+          padded=false,
+          press=fn() {  },
+        ),
+      )
+    })
+    |> ignore
+    root.box(fn(k) {
+      k
+      .margin(Is((40.0, 40.0, 0.0, 0.0)))
+      .width(Is(Some(100.0)))
+      .height(Is(Some(36.0)))
+      .says(Is(Some(@view.said(Button, label="乙"))))
+      |> ignore
+      hand_b.val = Some(hover_card_node(tips, k, fn(b) { b.box(fn(w) { w.words(Is("乙的卡")) |> ignore }) |> ignore }, press=fn() {  }))
+    })
+    |> ignore
+    root.box(fn(k) {
+      k
+      .margin(Is((460.0, 40.0, 0.0, 0.0)))
+      .width(Is(Some(100.0)))
+      .height(Is(Some(36.0)))
+      .presses(Is(true))
+      .points(Is(true))
+      .says(Is(Some(@view.said(Button, label="丙"))))
+      |> ignore
+      hand_c.val = Some(
+        hover_panel_node(
+          tips,
+          k,
+          "丙面板",
+          fn(b, _close) {
+            submenu_row_node(b, fn() { "丙子菜单" }, fn() { [Some(menu_item_of("丙项", fn() {  }))] }, side=Left)
+          },
+          pointed=fn() { k.pointed_in() },
+        ),
+      )
+    })
+    |> ignore
+    layer_ref.val = Some(root.box(fn(l) { l.over(Is(true)).over_all(Is(true)) |> ignore }))
+  })
+  t.draw()
+  let open_a = fn() { hand_a.val is Some(h) && @signals.untracked(h.open) }
+  let open_b = fn() { hand_b.val is Some(h) && @signals.untracked(h.open) }
+  let open_c = fn() { hand_c.val is Some(h) && @signals.untracked(h.open) }
+  let word_mid = fn(w : String) -> (Double, Double)? {
+    match t.words().filter(fn(x) { x.0 == w && x.5 > 0.5 }).last() {
+      Some(x) => Some((x.1 + x.3 / 2.0, x.2 + x.4 / 2.0))
+      None => None
+    }
+  }
+  let trigger_mid = fn(label : String) -> (Double, Double) raise {
+    match t.semantics().filter(fn(s) { s.label == label && !s.hidden }) {
+      [s, ..] => (s.rect.0 + s.rect.2 / 2.0, s.rect.1 + s.rect.3 / 2.0)
+      [] => fail("no trigger \{label}")
+    }
+  }
+  // 1) Card 甲 held open with submenu open -> hovering 乙 opens 乙 and immediately closes 甲 + its submenu
+  (hand_a.val.unwrap().hold)()
+  t.run_for(hover_settled_ms)
+  assert_true(open_a(), msg="甲 held open")
+  guard word_mid("甲子菜单") is Some((ax, ay)) else { fail("no 甲子菜单") }
+  t.move_to(ax, ay)
+  t.run_for(hover_settled_ms)
+  assert_true(word_mid("甲项") is Some(_), msg="甲 submenu open")
+  let (bx, by) = trigger_mid("乙")
+  t.move_to(bx, by)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  assert_true(open_b(), msg="乙 opened")
+  assert_false(open_a(), msg="甲 closed when 乙 opened")
+  assert_true(word_mid("甲项") is None, msg="甲 submenu closed when 乙 opened")
+  // 2) Hovering 丙 opens hover_panel_node and closes 乙
+  let (cx, cy) = trigger_mid("丙")
+  t.move_to(cx, cy)
+  t.run_for(hover_panel_open_ms + hover_settled_ms)
+  assert_true(open_c(), msg="丙 panel opened")
+  assert_false(open_b(), msg="乙 closed when 丙 opened")
+  // 3) hover_panel_node with submenu: stays open on submenu, closes on leave after hover_panel_close_ms
+  guard word_mid("丙子菜单") is Some((px, py)) else { fail("no 丙子菜单") }
+  t.move_to(px, py)
+  t.run_for(hover_settled_ms)
+  guard word_mid("丙项") is Some((ix, iy)) else { fail("no 丙项") }
+  t.move_to(ix, iy)
+  t.run_for(hover_panel_close_ms + hover_settled_ms)
+  assert_true(open_c(), msg="丙 stays open on submenu item")
+  assert_true(word_mid("丙项") is Some(_), msg="丙 submenu stays open")
+  t.move_to(hover_away.0, hover_away.1)
+  t.run_for(hover_panel_close_ms + hover_settled_ms)
+  assert_false(open_c(), msg="丙 closes on leave")
+  assert_true(word_mid("丙项") is None, msg="丙 submenu closes on leave")
+  // 4) hover_panel_node with submenu: single outside click closes both
+  t.move_to(cx, cy)
+  t.run_for(hover_panel_open_ms + hover_settled_ms)
+  assert_true(open_c(), msg="丙 reopened")
+  guard word_mid("丙子菜单") is Some((px2, py2)) else { fail("no 丙子菜单") }
+  t.move_to(px2, py2)
+  t.run_for(hover_settled_ms)
+  assert_true(word_mid("丙项") is Some(_), msg="丙 submenu reopened")
+  t.move_to(hover_away.0, hover_away.1)
+  t.tap(hover_away.0, hover_away.1)
+  t.run_for(hover_settled_ms)
+  assert_false(open_c(), msg="outside click closes 丙")
+  assert_true(word_mid("丙项") is None, msg="outside click closes 丙 submenu")
+  // 5) Opening 甲 closes 丙
+  t.move_to(cx, cy)
+  t.run_for(hover_panel_open_ms + hover_settled_ms)
+  assert_true(open_c(), msg="丙 open again")
+  let (ax0, ay0) = trigger_mid("甲")
+  t.move_to(ax0, ay0)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  assert_true(open_a(), msg="甲 opened")
+  assert_false(open_c(), msg="丙 closed when 甲 opened")
+  assert_eq(t.audit(), [])
+}

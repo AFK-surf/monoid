@@ -968,3 +968,59 @@ test "大屏, the chat's page made as nodes: the side panel's switch pressed, th
   assert_true(xs.length() > 3 && xs[xs.length() - 1] < xs[0], msg="归档 gone left with the panel: \{Repr(xs)}")
   assert_eq(back, [], msg="归档 stepped right on the way: \{Repr(xs)}")
 }
+
+///|
+test "大屏: hovering Station half opens its card and 屏幕 submenu, moving into submenu keeps both open, and moving back to Agent half closes Station card + submenu so only Agent card is open" {
+  let calls : Array[Made] = []
+  let t = wide_bar_at(calls, mode="chat-station-screens")
+  let agent = match t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 }) {
+    [b, ..] => b.rect
+    _ => fail("no agent's half")
+  }
+  let station = match t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }) {
+    [g, ..] => g.rect
+    _ => fail("no station's half")
+  }
+  let word_mid = fn(w : String) -> (Double, Double)? {
+    match t.words().filter(fn(x) { x.0 == w && x.5 > 0.5 }).last() {
+      Some(x) => Some((x.1 + x.3 / 2.0, x.2 + x.4 / 2.0))
+      None => None
+    }
+  }
+  let y = station.1 + station.3 / 2.0
+  let on_station = station.0 + station.2 / 2.0
+  let on_agent = agent.0 + agent.2 / 2.0
+  // 1) Hover Station half -> Station card opens
+  t.move_to(on_station, y)
+  t.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+  assert_true(wide_bar_card_under(t, station), msg="station card opened")
+  // 2) Move onto 屏幕 row -> submenu opens
+  guard word_mid("屏幕") is Some((sx, sy)) else { fail("no 屏幕 row in station card") }
+  t.move_to(sx, sy)
+  t.run_for(@ui.move_most_ms)
+  guard word_mid("Willow 的屏幕") is Some((ix, iy)) else { fail("no Willow 的屏幕 submenu item") }
+  // 3) Move into 屏幕 submenu -> stays open past close delay
+  t.move_to(ix, iy)
+  t.run_for(@sf.hover_card_close_ms + @ui.move_most_ms)
+  assert_true(wide_bar_card_under(t, station), msg="station card stays open while on submenu")
+  assert_true(word_mid("Willow 的屏幕") is Some(_), msg="submenu stays open while pointer on it")
+  // 4) Move back to Agent half -> Station card + submenu close, only Agent card opens
+  t.move_to(on_agent, y)
+  t.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+  assert_false(wide_bar_card_under(t, station), msg="station card closed when moving to agent")
+  assert_true(word_mid("Willow 的屏幕") is None, msg="screen submenu closed when moving to agent")
+  assert_true(wide_bar_card_under(t, agent), msg="agent card opened")
+  let agent_card_above = t
+    .all(Group)
+    .iter()
+    .any(fn(g) {
+      let (gx, gy, gw, gh) = g.rect
+      (gx - agent.0).abs() < 1.0 && gw >= 200.0 && gy + gh <= agent.1 + 1.0 && gy + gh >= agent.1 - 12.0
+    })
+  assert_true(agent_card_above, msg="agent card opens above the composer-top capsule, not covering the composer")
+  assert_eq(
+    t.audit().filter(fn(f) { f.contains("hover_card_node") || f.contains("submenu_row_node") }),
+    [],
+    msg="no hover_card_node or submenu_row_node audit faults",
+  )
+}

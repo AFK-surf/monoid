@@ -32,6 +32,44 @@ let hover_card_in_ms : Double = @motion.pop_ms
 pub let hover_card_out_ms : Double = @motion.pop_out_ms
 
 ///|
+// kept across runs: put back as a run begins (on_reset)
+let hover_open_seq : Ref[Int] = Ref(0)
+
+///|
+// kept across runs: put back as a run begins (on_reset)
+let hover_open_active : Ref[(Int, () -> Unit)?] = Ref(None)
+
+///|
+fn init {
+  @ui.on_reset(fn() {
+    hover_open_seq.val = 0
+    hover_open_active.val = None
+  })
+}
+
+///|
+/// Claims the window's single active hover slot for `id`, closing whichever other hover card or panel was open.
+fn hover_claim(id : Int, close : () -> Unit) -> Unit {
+  match hover_open_active.val {
+    Some((prev_id, prev_close)) if prev_id != id => {
+      hover_open_active.val = None
+      prev_close()
+    }
+    _ => ()
+  }
+  hover_open_active.val = Some((id, close))
+}
+
+///|
+/// Releases the window's single active hover slot if `id` currently holds it.
+fn hover_release(id : Int) -> Unit {
+  match hover_open_active.val {
+    Some((cur_id, _)) if cur_id == id => hover_open_active.val = None
+    _ => ()
+  }
+}
+
+///|
 /// What is done with a card (hover_card_node's) by what it is of or by what is in it: opened as a finger's hold opens
 /// it (`hold`: till a press outside it and what it is of, or Escape), closed (`close`), whether it is open now
 /// (`open`, followed), and the card while it is made (`card`, followed: what is opened from what it holds stands beside
@@ -52,7 +90,8 @@ pub struct HoverHand {
 /// it (a link in its words: View::beside's). `held`: kept open meanwhile, whatever the pointer does, through a press
 /// outside, Escape and its anchor taking no input (what was pressed in it opened something beside it the pointer goes
 /// on to, a modal panel over its anchor, pressed in), as kit's hover_card's `held`; let go, as the pointer is then. A
-/// row of it opening a menu beside it (submenu_row_node) holds it so while that is open, without being said.
+/// row of it opening a menu beside it (submenu_row_node) lives in the card's holder so the pointer on the submenu keeps
+/// the card open, leaving both closes both, and a press outside closes both at once.
 /// `press`: what a press on `anchor` does, every input's (a tap, a click, Enter), `anchor` then taking presses;
 /// `tapped`: what a finger's tap on `anchor` does in place of `press` (a station's card from the presenters, a finger
 /// resting on nothing); said alone, `anchor` takes presses from a finger only, a mouse's press there what holds it's (a
@@ -90,10 +129,10 @@ pub fn hover_card_node(
   loc~ : SourceLoc,
 ) -> HoverHand {
   let owner = owner.unwrap_or(anchor)
-  // (a row of it opening a menu beside it (submenu_row_node): its menu open, the card kept open as by `held`, the pointer
-  // gone on to the menu, outside the card; as kit's hover_card was held by what opened from it)
+  // (a row of it opening a menu beside it (submenu_row_node): its menu is mounted in `holder` via submenu_layer_lent,
+  // so `holder.pointed_in()` covers both card and submenu, and closing the card clears `row_open` to close its submenu)
   let row_open : @signals.Signal[@view.View?] = @signals.signal_by(None, same=same_view)
-  let held = fn() { held() || row_open.get() is Some(_) }
+  let hover_id = Ref(0)
   let open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
   // (opened by a finger's hold: stays till a press outside, Escape, or its anchor takes no input)
   let by_hand = Ref(false)
@@ -127,7 +166,7 @@ pub fn hover_card_node(
     let holder = l.box(made_for=loc, fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(owner)
     holder_v.val = Some(holder)
     holder.on_key(fn(k) {
-      if k.code == @ui.key_escape && open.untracked() && !@signals.untracked(held) {
+      if k.code == @ui.key_escape && open.untracked() && !@signals.untracked(held) && row_open.untracked() is None {
         (set_open.val)(false)
         true
       } else {
@@ -135,7 +174,7 @@ pub fn hover_card_node(
       }
     })
     |> ignore
-    // (a press anywhere in the window but on the card or on what it is of: closed as it goes down, the press what it
+    // (a press anywhere in the window but on the card, its submenu or what it is of: closed as it goes down, the press what it
     // lands on's as ever; the window's presses read only while it is open and not kept open, so a card shut again
     // follows none of them, and its coming to be read is no press)
     let downs_was : Ref[Int?] = Ref(None)
@@ -162,7 +201,7 @@ pub fn hover_card_node(
         Some(p) => @signals.untracked(p)
         None => on(Some(anchor))
       }
-      if !(on(card.untracked()) || on_anchor) {
+      if !(on(holder_v.val) || on_anchor) {
         (set_open.val)(false)
       }
     })
@@ -227,6 +266,8 @@ pub fn hover_card_node(
     stop_due()
     if !on {
       by_hand.val = false
+      hover_release(hover_id.val)
+      row_open.set(None)
     }
     if on == open.untracked() {
       return
@@ -236,6 +277,11 @@ pub fn hover_card_node(
       guard made.val else { return }
     }
     if on {
+      if hover_id.val == 0 {
+        hover_open_seq.val += 1
+        hover_id.val = hover_open_seq.val
+      }
+      hover_claim(hover_id.val, fn() { (set_open.val)(false) })
       // (none made: made as it is opened, coming in once what it holds is: OpenGate; one still going, at once)
       if card.untracked() is None {
         gate.val = OpenGate::new()
@@ -273,9 +319,9 @@ pub fn hover_card_node(
       !yielded(yields_to)
     let on_card = mouse &&
       (
-        match card.get() {
-          Some(c) => c.pointed_in()
-          None => false
+        match (card.get(), holder_v.val) {
+          (Some(_), Some(h)) => h.pointed_in()
+          _ => false
         }
       )
     (on_anchor, on_card, anchor.window_held(), takes(), keep)
@@ -394,6 +440,7 @@ pub fn hover_card_node(
   // counting never frees)
   owner.owns(fn() {
     stop_due()
+    hover_release(hover_id.val)
     way.put(0.0)
     set_open.val = fn(_) {  }
   })
@@ -546,10 +593,10 @@ fn hover_panel_surface(
 
 ///|
 /// An interactive hover panel beside node `anchor`, lazily created in `layer` on first open (0 nodes while closed).
-/// Opens after mouse rests on `anchor` for `spec.open_delay`; stays open while pointer is on `anchor` or panel, or
-/// while `held()` is true (e.g. a search field focused or non-empty); closes `spec.close_delay` after pointer leaves
-/// both and `!held()`. Escape, an outside press, or `anchor.takes_input()` becoming false closes it immediately
-/// (unless a submenu inside it is open). When `pointed` is supplied, `anchor`'s gesture is untouched.
+/// Opens after mouse rests on `anchor` for `spec.open_delay`; stays open while pointer is on `anchor`, panel, or its
+/// open submenu, or while `held()` is true (e.g. a search field focused or non-empty); closes `spec.close_delay` after
+/// pointer leaves all of them and `!held()`. Escape (when no submenu is open), an outside press, or `anchor.takes_input()`
+/// becoming false closes it immediately (and closes any open submenu). When `pointed` is supplied, `anchor`'s gesture is untouched.
 #callsite(autofill(loc))
 pub fn hover_panel_node(
   layer : TipLayer,
@@ -564,6 +611,7 @@ pub fn hover_panel_node(
 ) -> HoverHand {
   let owner = owner.unwrap_or(anchor)
   let row_open : @signals.Signal[@view.View?] = @signals.signal_by(None, same=same_view)
+  let hover_id = Ref(0)
   let open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
   let by_hand = Ref(false)
   let card : @signals.Signal[@view.View?] = @signals.signal_by(None, same=fn(a, b) {
@@ -602,13 +650,13 @@ pub fn hover_panel_node(
     })
     |> ignore
     let downs_was : Ref[Int?] = Ref(None)
-    holder.reacts(fn() { if open.get() && row_open.get() is None { Some(holder.window_downs()) } else { None } }, at_start=false, fn(
+    holder.reacts(fn() { if open.get() { Some(holder.window_downs()) } else { None } }, at_start=false, fn(
       now,
     ) {
       let was = downs_was.val
       downs_was.val = now
       guard was is Some(_) && now is Some(_) else { return }
-      guard open.untracked() && row_open.untracked() is None else { return }
+      guard open.untracked() else { return }
       let (x, y) = holder.window_down_point()
       let on = fn(v : @view.View?) {
         match v {
@@ -624,7 +672,7 @@ pub fn hover_panel_node(
         Some(p) => @signals.untracked(p)
         None => on(Some(anchor))
       }
-      if !(on(card.untracked()) || on_anchor) {
+      if !(on(holder_v.val) || on_anchor) {
         (set_open.val)(false)
       }
     })
@@ -658,6 +706,8 @@ pub fn hover_panel_node(
     stop_due()
     if !on {
       by_hand.val = false
+      hover_release(hover_id.val)
+      row_open.set(None)
     }
     if on == open.untracked() {
       return
@@ -667,6 +717,11 @@ pub fn hover_panel_node(
       guard made.val else { return }
     }
     if on {
+      if hover_id.val == 0 {
+        hover_open_seq.val += 1
+        hover_id.val = hover_open_seq.val
+      }
+      hover_claim(hover_id.val, fn() { (set_open.val)(false) })
       if card.untracked() is None {
         gate.val = OpenGate::new()
       }
@@ -683,10 +738,9 @@ pub fn hover_panel_node(
   let takes = fn() { anchor.takes_input() }
   let state = fn() {
     let mouse = @ui.pointing() is Mouse
-    let sub = row_open.get() is Some(_)
-    let keep = held() || sub
+    let keep = held()
     if !mouse && !keep && !open.get() {
-      return (false, false, false, true, false, false)
+      return (false, false, false, true, false)
     }
     let on_anchor = mouse &&
       (
@@ -697,17 +751,17 @@ pub fn hover_panel_node(
       )
     let on_card = mouse &&
       (
-        match card.get() {
-          Some(c) => c.pointed_in()
-          None => false
+        match (card.get(), holder_v.val) {
+          (Some(_), Some(h)) => h.pointed_in()
+          _ => false
         }
       )
-    (on_anchor, on_card, anchor.window_held(), takes(), keep, sub)
+    (on_anchor, on_card, anchor.window_held(), takes(), keep)
   }
   let rests_was = Ref(false)
   let takes_was = Ref(true)
   owner.reacts(state, fn(s) {
-    let (on_anchor, on_card, pressed, takes, keep, sub) = s
+    let (on_anchor, on_card, pressed, takes, keep) = s
     let at = owner.cause_at()
     if !on_anchor && takes && takes_was.val {
       dismissed.val = false
@@ -716,7 +770,7 @@ pub fn hover_panel_node(
     let rests = on_anchor && !pressed && !dismissed.val
     let rests_now = rests && !rests_was.val
     rests_was.val = rests
-    if !takes && !sub {
+    if !takes {
       if on_anchor {
         dismissed.val = true
       }
@@ -730,7 +784,7 @@ pub fn hover_panel_node(
         due.val = Some(
           owner.at_moment(at + spec.close_delay, fn() {
             due.val = None
-            let (a, c, _, _, k, _) = @signals.untracked(state)
+            let (a, c, _, _, k) = @signals.untracked(state)
             if !(a || c || k || by_hand.val) {
               (set_open.val)(false)
             }
@@ -742,7 +796,7 @@ pub fn hover_panel_node(
       due.val = Some(
         owner.at_moment(at + spec.open_delay, fn() {
           due.val = None
-          let (a, _, p, t, _, _) = @signals.untracked(state)
+          let (a, _, p, t, _) = @signals.untracked(state)
           if a && !p && t && !dismissed.val {
             (set_open.val)(true)
           }
@@ -758,7 +812,7 @@ pub fn hover_panel_node(
     by_hand.val = true
   }
   close_explicit.val = fn() {
-    let (on_a, _, _, _, _, _) = @signals.untracked(state)
+    let (on_a, _, _, _, _) = @signals.untracked(state)
     if on_a {
       dismissed.val = true
     }
@@ -775,6 +829,7 @@ pub fn hover_panel_node(
   // (set_open and close_explicit let go of last: each names itself through make, a ring native's counting never frees)
   owner.owns(fn() {
     stop_due()
+    hover_release(hover_id.val)
     way.put(0.0)
     set_open.val = fn(_) {  }
     close_explicit.val = fn() {  }
