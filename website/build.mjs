@@ -501,7 +501,7 @@ function buildClassic(site, outDir, out) {
       cpSync(here(`assets/${f}`), out + `assets/${f}`);
     }
   }
-  for (const f of ["terms", "privacy", "trademark"]) {
+  for (const f of ["terms", "privacy", "trademark", "support"]) {
     cpSync(here(`../web/public/${f}.html`), out + `${f}.html`);
     cpSync(here(`../web/public/en/${f}.html`), out + `en/${f}.html`);
   }
@@ -640,7 +640,7 @@ function main(argv) {
   // Terms, privacy and trademark, the pages the footer links (still.fail's web/public: in Chinese at /terms…, in
   // English at /en/terms…), with the sheet and icon they ask for at the root: as this site's product has them.
   mkdirSync(out + "en", { recursive: true });
-  for (const f of ["terms", "privacy", "trademark"]) {
+  for (const f of ["terms", "privacy", "trademark", "support"]) {
     writeFileSync(out + `${f}.html`, legal(readFileSync(here(`../web/public/${f}.html`), "utf8"), site));
     writeFileSync(out + `en/${f}.html`, legal(readFileSync(here(`../web/public/en/${f}.html`), "utf8"), site));
   }

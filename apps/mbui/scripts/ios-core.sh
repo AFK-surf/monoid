@@ -39,6 +39,11 @@ app_bundle() {
   mkdir -p $APPDIR/Frameworks
   rm -rf $APPDIR/Frameworks/hermes.framework
   cp -R $HERMES_SLICE/hermes.framework $APPDIR/Frameworks/
+  for lproj in "$H"/../ios/*.lproj; do
+    [ -d "$lproj" ] || continue
+    rm -rf "$APPDIR/$(basename "$lproj")"
+    cp -R "$lproj" "$APPDIR/"
+  done
   # One monoid identity for TestFlight and App Store. iOS has no macOS LSEnvironment: the app reads these two signed
   # values before the core starts (src/sfcore/apple_engine.m), so sign-in and accounts go to monoid's cloud.
   case ${MBUI_IOS_PRODUCT:-stillfail} in
