@@ -12,7 +12,7 @@ Narrower rules:
 
 Use these four terms in PR descriptions and user-facing text (never 电脑版, 手机版, 桌面端, 移动端, or 触屏设备):
 
-- **屏幕** (`@sf.layout`: `Small` / `Medium` / `Large`, 小屏 / 中屏 / 大屏, plus half-open foldables laid out as 小屏 and upright phones): decides pane layout and sheets from bottom (小屏) vs. popovers beside trigger (中屏, 大屏).
+- **屏幕** (`@sf.layout`: `Small` / `Medium` / `Large`, 小屏 / 中屏 / 大屏, plus half-open foldables laid out as 小屏 and upright phones): decides pane layout, bottom sheets on 小屏 for lower-half or unanchored triggers, and popovers beside triggers on 中屏/大屏 as well as upper-half triggers on 小屏.
 - **原生操控** (`@sf.native_input()`): touch or keyboard-and-mouse, fixed at startup. Decides drawn sizes (press targets >= 44x44 without overlap on every input), hover affordances vs. touch equivalents, Enter, scrollbars, and ⌘K (the list-top search field shows on every input).
 - **当前操控** (`@ui.pointing()`): live input mode. Decides interaction feedback only, never what shows, where, or how big.
 - **页面宽窄** (`@sf.look()`): 窄排法 / 宽排法 based on the page's own box width.
@@ -33,7 +33,7 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 
 ## One app: tiers, input, pages, shell
 
-- Six principles: equal ease on both inputs, >= 44x44 non-overlapping press targets, bottom sheets on Small and anchored popovers on Medium/Large, screen decides layout and input decides feedback and drawn scale, the same capabilities on every tier, actions near their targets.
+- Six principles: equal ease on both inputs, >= 44x44 non-overlapping press targets, bottom sheets for lower-half or unanchored triggers on Small and anchored popovers for upper-half triggers on Small and on Medium/Large, screen decides layout and input decides feedback and drawn scale, the same capabilities on every tier, actions near their targets.
 - Packages while legacy pages merge: `libs/sf-ui/src` (library), `apps/mbui/src/sfbase` (model, topics, `Source`, `Page`, `Shell`; imports no pages), `apps/mbui/src/sfdesk` (unmerged Medium/Large pages and frame), `apps/mbui/src/sfapp` (Small frame and pages, `pub using` `sfbase`), `apps/mbui/src/sfpages` (merged cross-screen pages).
 - Move shared code down to `sfbase` or `libs/sf-ui`. Keep business logic in the core and copy in `@sf.t`. Navigate via `@sfbase.open_page` and `@sfbase.open_detail`, never pushing onto `app.nav`.
 - Never branch inside a page on `@sf.layout`, `@sf.native_input()`, or `@ui.pointing()`: adapt layout by page width, ask the library for input-aware parts, and use library primitives (`c.lit`, `c.menu_asked`, tips). Merged pages must be no worse on any screen than before.

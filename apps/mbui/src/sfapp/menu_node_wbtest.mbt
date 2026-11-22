@@ -95,7 +95,7 @@ test "大屏, keyboard and mouse, a short window: a menu taller than it: its pan
 ///|
 test "小屏: a menu presented: a sheet still, the old frame's, nothing of it the window's tree's" {
   let t = menu_tester(390.0, 844.0, 2)
-  @sf.menu(menu_items_counting(["复制", "重命名", "删除"], []), from=@sf.at_point(200.0, 300.0))
+  @sf.menu(menu_items_counting(["复制", "重命名", "删除"], []), from=@sf.at_point(200.0, 700.0))
   t.run_for(@ui.move_most_ms)
   assert_eq((tree_said(Menu, "") is None, t.find("重命名") is Some(_)), (true, true))
 }

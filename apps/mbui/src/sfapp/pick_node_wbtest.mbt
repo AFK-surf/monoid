@@ -147,7 +147,7 @@ test "pick, 小屏 touch: a sheet of its choices still; 第3项 tapped: c3" {
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   t.run_for(@ui.move_most_ms)
   let chosen = Ref("")
-  @sf.pick("选一个", pick_choices(3), "c2", fn(k) { chosen.val = k }, from=@sf.at_point(200.0, 300.0))
+  @sf.pick("选一个", pick_choices(3), "c2", fn(k) { chosen.val = k }, from=@sf.at_point(200.0, 700.0))
   t.run_for(@ui.move_most_ms)
   let menus = t.all(Menu).length()
   t.tap_text("第3项")

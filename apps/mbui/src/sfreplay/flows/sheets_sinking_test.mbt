@@ -15,12 +15,13 @@ test "51-sheets-sinking" {
     f.see("切换 workspace")
     f.run_for(@ui.move_most_ms)
     f.run_to(@sf.presented_rest)
-    // its scrim tapped: it sinks, only drawn; the bar's 文件 tapped under it as it goes
-    f.tap_at(195.0, 120.0)
+    // its outside tapped below the top popover: it closes, only drawn; the bar's 文件 tapped under it as it goes
+    f.tap_at(195.0, 700.0)
     f.tap("icon:folder")
     f.see("=文件")
     f.run_to(@sf.presented_rest)
     f.gone("切换 workspace")
+    f.run_for(@ui.move_most_ms)
     f.tap("icon:chats")
     f.run_for(@ui.move_most_ms)
     f.tap("端到端测试")
@@ -28,8 +29,8 @@ test "51-sheets-sinking" {
     f.see("发消息")
     f.tap("icon:info")
     f.run_to(@sf.presented_rest)
-    // its scrim tapped, and the composer tapped through it as it goes down: the words typed there, sent
-    f.tap_at(195.0, 60.0)
+    // its outside tapped to the left of the right-aligned chat-info popover, and the composer tapped through it as it goes: the words typed there, sent
+    f.tap_at(20.0, 700.0)
     f.tap_at(120.0, -36.0)
     f.type_text("穿过下去的面板 082939")
     f.tap("icon:arrow-up")

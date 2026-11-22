@@ -1392,15 +1392,21 @@ fn SheetRise::top_at(self : SheetRise, h : Double, hv : Double, t : Double) -> (
   match self.way {
     None => if self.risen { (h, hv) } else { (0.0, 0.0) }
     Some(w) => {
-      let goal = if w.up { h } else { 0.0 }
       let plan = if w.plan.is_nan() { h } else { w.plan }
-      let (u, uv) = @ui.come_way_by(w.u0, w.v0, goal, if w.up { plan } else { 0.0 }, t - w.at, kept=w.kept)
-      // (rising: its end as tall as it comes to, as much of how fast that goes as its way has got there)
-      if w.up && hv != 0.0 {
-        let (u1, _) = @ui.come_way_by(w.u0, w.v0, goal + 1.0, plan, t - w.at, kept=w.kept)
-        (u, uv + (u1 - u) * hv)
+      if w.up && !w.plan.is_nan() {
+        let (u, uv) = @ui.come_way_by(w.u0, w.v0, plan, plan, t - w.at, kept=w.kept)
+        // Rise distance stays anchored to the planned height so mid-rise height growth never pushes the foot back down.
+        (u + (h - plan), uv + hv)
       } else {
-        (u, uv)
+        let goal = if w.up { h } else { 0.0 }
+        let (u, uv) = @ui.come_way_by(w.u0, w.v0, goal, if w.up { plan } else { 0.0 }, t - w.at, kept=w.kept)
+        // (rising: its end as tall as it comes to, as much of how fast that goes as its way has got there)
+        if w.up && hv != 0.0 {
+          let (u1, _) = @ui.come_way_by(w.u0, w.v0, goal + 1.0, plan, t - w.at, kept=w.kept)
+          (u, uv + (u1 - u) * hv)
+        } else {
+          (u, uv)
+        }
       }
     }
   }

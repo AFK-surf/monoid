@@ -70,11 +70,12 @@ pub fn switch_workspace(src : Source, ws : String, closes? : () -> Unit = fn() {
 ///|
 /// The workspace sheet; compact headings may request a content-sized panel instead of the usual tall list. What it
 /// holds nodes of the window's tree, made once as it opens (@sf.panel_nodes), each bound to what the core says now.
-pub fn open_workspaces(src : Source, from : @sf.Anchor, compact? : Bool = false) -> Unit {
+pub fn open_workspaces(src : Source, from : @sf.Anchor, compact? : Bool = false, along? : @ui.Along = Start) -> Unit {
   @sf.panel_nodes(
     @sf.t("android-misc.workspace.sheet.title"),
     fn(v, close) { workspaces_list(v, src, close, compact~) },
     from~,
+    along~,
     tall=if compact { 0.0 } else { workspaces_tall },
     // (as tall as what it holds up to its share: a few workspaces leave no room empty under them; not drawn taller by
     // its top, which would open that room again: more than its share holds scroll in it)

@@ -711,7 +711,16 @@ fn bar_end_node(
     pill.box(fn(k) {
       slides(k)
       k.row(Is(true)) |> ignore
-      @sf.round_key_node(k, "info", fn() { tr("android-chat.info.title") }, fn() { open_info(src, r) }, icon_size=20.0)
+      @sf.round_key_node(
+        k,
+        "info",
+        fn() { tr("android-chat.info.title") },
+        fn() {
+          let (x, y, iw, ih) = k.placed_window_now()
+          open_info(src, r, from=At(x, y, iw, ih), along=End)
+        },
+        icon_size=20.0,
+      )
     })
     |> ignore
     pill.box(fn(k) {
@@ -729,7 +738,7 @@ fn bar_end_node(
             }
             let chat = src.topic("chat", chat_params(r)).get().value
             let (x, y, mw, mh) = more.placed_window_now()
-            @sfpages.open_chat_menu(src, w, r, @sfpages.chat_extra_items(src, r, chat), from=At(x, y, mw, mh))
+            @sfpages.open_chat_menu(src, w, r, @sfpages.chat_extra_items(src, r, chat), from=At(x, y, mw, mh), along=End)
           },
           icon_size=18.0,
         )

@@ -96,8 +96,8 @@ fn strip_tester(n : Int, tapped : Array[Int]) -> @ui.Tester {
 }
 
 ///|
-/// Where tile `i` of the strip is (0 the camera): its start and top, the row as far in as recent_in has it, a tile 92
-/// wide and 6 apart.
+/// Where tile `i` of the strip is (0 the camera): its start and top, the row as far in as recent_in has it, a tile 108
+/// wide and 8 apart.
 fn strip_tile(i : Int) -> (Double, Double) {
   let (side, top) = recent_in(false)
   (side + i.to_double() * recent_step, top)
@@ -108,6 +108,8 @@ test "recent photos: a tap puts one in alone; its ring chooses it, then a tap an
   let tapped = []
   let t = strip_tester(4, tapped)
   let src = fn(i : Int) { recent.photos[i - 1].src }
+  let corner = attach_block_corner(false)
+  let ring_center = recent_mark_in(corner) + recent_mark_side / 2.0
   // none chosen: a tap on a photo is it alone
   let (x1, y1) = strip_tile(1)
   t.tap(x1 + 40.0, y1 + 90.0)
@@ -115,7 +117,7 @@ test "recent photos: a tap puts one in alone; its ring chooses it, then a tap an
   assert_eq(recent.chosen.length(), 0)
   // its ring in its top end corner chooses it
   let (x2, y2) = strip_tile(2)
-  t.tap(x2 + recent_tile_w - 10.0, y2 + 10.0)
+  t.tap(x2 + recent_tile_w - ring_center, y2 + ring_center)
   assert_eq(recent.chosen.copy(), [src(2)])
   // some chosen: a tap anywhere on a tile chooses it, or not
   let (x3, y3) = strip_tile(3)
@@ -125,7 +127,7 @@ test "recent photos: a tap puts one in alone; its ring chooses it, then a tap an
   // each numbered in the order chosen, in its ring
   let ring_at = fn(i : Int) {
     let (x, _) = strip_tile(i)
-    x + recent_tile_w - recent_mark_in(@sf.row_corner) - recent_mark_side
+    x + recent_tile_w - recent_mark_in(corner) - recent_mark_side
   }
   match (t.rect_of("1"), t.rect_of("2")) {
     (Some((a, _, aw, _)), Some((b, _, bw, _))) => {
@@ -147,8 +149,10 @@ test "recent photos: a tap puts one in alone; its ring chooses it, then a tap an
 test "recent photos: 添加 n 个 stands where the tiles under the strip were, while some are chosen" {
   let tapped = []
   let t = strip_tester(3, tapped)
+  let corner = attach_block_corner(false)
+  let ring_center = recent_mark_in(corner) + recent_mark_side / 2.0
   let (x1, y1) = strip_tile(1)
-  t.tap(x1 + recent_tile_w - 10.0, y1 + 10.0)
+  t.tap(x1 + recent_tile_w - ring_center, y1 + ring_center)
   let (x2, y2) = strip_tile(2)
   t.tap(x2 + 40.0, y2 + 90.0)
   assert_eq(recent.chosen.length(), 2)

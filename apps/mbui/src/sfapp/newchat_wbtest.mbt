@@ -202,7 +202,7 @@ test "the bar: hidden under a page pushed, back as it comes back" {
 ///|
 test "the workspaces' sheet: as tall as what it holds, not drawn taller by its top, dragged down past 30% it closes" {
   let t = tester("home")
-  t.tap_text("星火工作室")
+  @sfpages.open_workspaces(fixture("home"), Unanchored)
   presented_rested(t)
   // (two workspaces: shorter than its share of the window, 70%)
   let h = t.get(@ui.Role::Dialog).rect.3
@@ -224,7 +224,7 @@ test "a sheet takes the drags on it: the list under it does not scroll" {
   // (where the list is, by a row of it)
   let row = fn() { t.locate("=把旧的截图都换成新的").map(fn(p) { p.1 }) }
   let before = row()
-  t.tap_text("星火工作室")
+  @sfpages.open_workspaces(fixture("home"), Unanchored)
   presented_rested(t)
   t.drag(195.0, 700.0, 195.0, 400.0)
   assert_eq(row(), before)

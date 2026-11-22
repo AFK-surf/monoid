@@ -271,6 +271,7 @@ fn chat_menu_items(
   here? : Bool = false,
   asks_rename? : Bool = false,
   archived? : () -> Unit = fn() {  },
+  along? : @ui.Along = Start,
 ) -> Array[@sf.MenuItem?] {
   let r = row_ref(item)
   let items : Array[@sf.MenuItem?] = []
@@ -461,7 +462,7 @@ fn chat_menu_items(
         )
     },
   )
-  items.append(share_menu(shared, share_from))
+  items.append(share_menu(shared, share_from, along~))
   // (no line closing the menu: nothing after the chat's own group)
   if items.last() is Some(None) {
     items.pop() |> ignore
@@ -793,8 +794,8 @@ pub fn open_chat_menu(
   // menu opened whole the moment it is, while what it was asked in stays as it was (sfbase's press_wait: the chat
   // left, the workspace switched or something else put up, it opens nothing; what it read is the page's, let go of
   // with it). The system's bars' … too, told once the frame's builds are over (sfdesk rail_native.mbt))
-  let w = @sfbase.press_wait(fn() { chat_menu_whole(src, r, extra, share_from=fn() { from }) is Some(_) }, fn() {
-    match chat_menu_whole(src, r, extra, share_from=fn() { from }) {
+  let w = @sfbase.press_wait(fn() { chat_menu_whole(src, r, extra, share_from=fn() { from }, along~) is Some(_) }, fn() {
+    match chat_menu_whole(src, r, extra, share_from=fn() { from }, along~) {
       Some(items) => @sf.menu(items, from~, along~)
       None => ()
     }
@@ -833,6 +834,7 @@ fn chat_menu_whole(
   r : ChatRef,
   extra : Array[@sf.MenuItem?],
   share_from~ : () -> @sf.Beside,
+  along? : @ui.Along = Start,
 ) -> Array[@sf.MenuItem?]? {
   let held = @sfbase.chat_whole_held(src, r)
   let found : ChatItem? = match (held.value, held.error) {
@@ -841,7 +843,7 @@ fn chat_menu_whole(
     _ => return None
   }
   let items : Array[@sf.MenuItem?] = match found {
-    Some(item) => chat_menu_items(src, item, share_from~, page=extra)
+    Some(item) => chat_menu_items(src, item, share_from~, page=extra, along~)
     None => {
       let link = @sfbase.chat_link(r.station, r.session)
       let shared : Array[@sf.MenuItem?] = []
@@ -855,7 +857,7 @@ fn chat_menu_whole(
         )
       }
       shared.append(extra)
-      share_menu(shared, share_from)
+      share_menu(shared, share_from, along~)
     }
   }
   let reports = feedback_reports(src, r)
@@ -881,14 +883,14 @@ fn chat_menu_whole(
 ///|
 /// What shares a chat or takes it elsewhere (`shared`), in its menu: one item, 分享, its own menu from `share_from`, where
 /// there are two or more; else as they are.
-fn share_menu(shared : Array[@sf.MenuItem?], share_from : () -> @sf.Beside) -> Array[@sf.MenuItem?] {
+fn share_menu(shared : Array[@sf.MenuItem?], share_from : () -> @sf.Beside, along? : @ui.Along = Start) -> Array[@sf.MenuItem?] {
   if shared.length() < 2 {
     return shared
   }
   [
     Some(
       @sf.menu_item_of(@sf.t("web-main.chat.share"), icon="share", further=true, fn() {
-        @sf.menu(shared, from=share_from(), title=@sf.t("web-main.chat.share.title"))
+        @sf.menu(shared, from=share_from(), title=@sf.t("web-main.chat.share.title"), along~)
       }),
     ),
   ]

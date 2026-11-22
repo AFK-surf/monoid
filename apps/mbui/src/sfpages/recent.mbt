@@ -15,10 +15,10 @@
 let recent_most : Int = 30
 
 ///|
-/// A tile of the strip: 92 wide, 6 between (recent_tiles' gap after recent_tile_w).
+/// A tile of the strip: 108 wide, 8 between (recent_tiles' gap after recent_tile_w).
 // its tests alone use it: where a tile stands
 #warnings("-unused_value")
-let recent_step : Double = 98.0
+let recent_step : Double = 116.0
 
 ///|
 /// The strip's state while the app runs.
@@ -200,7 +200,10 @@ fn recent_adding_node(
     @ui.pick_photos(chosen, on_got=add) |> ignore
   }
   v.box(fn(row) {
-    @sf.style_node(row, fn() { recent_add_row.then(@ui.style(pb=@sf.room_of(attach_foot(small)))) })
+    @sf.style_node(row, fn() {
+      let base = recent_add_row.then(@ui.style(pb=@sf.room_of(attach_foot(small))))
+      if small { base } else { base.then(@sf.panel_card_out_node(row)).then(@sf.panel_card_last_node(row)) }
+    })
     row.box(fn(b) {
       @sf.style_node(b, fn() { recent_add.then(@ui.style(radius=attach_block_radius(small))) }, in_row=true)
       @sf.words_node(b, words, fn() { recent_add_words }) |> ignore
@@ -365,55 +368,47 @@ fn recent_photo_node(
 }
 
 ///|
-/// The strip's row: as far in as recent_in has it, 12 over its foot, its tiles 6 apart (Attach.kt RecentPhotos'
-/// contentPadding and spacing).
+/// The strip's row: as far in as recent_in has it, 12 over its foot, its tiles 8 apart.
 // kept across runs: a value (no field of it changes)
-let recent_strip_row : @ui.Style = @ui.css("row w=Full pb=S3 gap=S1_5 clip")
+let recent_strip_row : @ui.Style = @ui.css("row w=Full pb=S3 gap=S2 clip")
 
 ///|
-/// The room under ＋'s tiles (照片 文件 Station 文件, 添加 n 个): in a sheet 18; in a small panel none past
-/// its padding, so they stand as far from its foot as the strip from its sides and top.
-fn attach_foot(small : Bool) -> Double {
-  if small {
-    0.0
-  } else {
-    18.0
-  }
+/// Extra room under ＋'s tiles: none, since `sheet_held` already provides symmetric 16pt bottom padding matching sides
+/// and a small panel has its own `panel_pad`.
+fn attach_foot(_small : Bool) -> Double {
+  0.0
 }
 
 ///|
-/// How far in the strip's tiles stand from the panel's sides and under its top: in a sheet on its words' line
-/// (panel_words, 24) and its first tile as far down the sheet as its corner is round (pane_corner, under its grabber:
-/// @sf.sheet_grab_h): under that corner, in none of it (12 in and 29 down it would have to be round by 13; 24 in and
-/// 37 down it is in the corner, not concentric with it; Attach.kt RecentPhotos' 12 and 4 were for a 34); in a small
-/// panel beside ＋ (`small`), at its padding, as a menu's rows (the first tile in its corner, concentric with it:
-/// attach_block_corner).
+/// How far in the strip's tiles stand from the panel's sides and under its top: in a sheet aligned with the cards below
+/// (`panel_card_in`, 16) and below the 42pt top corner (`pane_corner - sheet_grab_h`); in a small panel (`small`), at
+/// its padding.
 fn recent_in(small : Bool) -> (Double, Double) {
   if small {
     (@sf.panel_pad, 0.0)
   } else {
-    (@sf.panel_words, @sf.pane_corner - @sf.sheet_grab_h)
+    (@sf.panel_card_in, @sf.pane_corner - @sf.sheet_grab_h)
   }
 }
 
 ///|
-/// How round ＋'s tiles are (the strip's, 照片 文件 Station 文件, 添加 n 个): a block's (the ladder's row_corner) in a
-/// sheet; in a small panel (`small`), concentric with its corner at its padding, as its rows are.
+/// How round ＋'s tiles are (the strip's, 照片 文件 Station 文件, 添加 n 个): `card_corner` (26) in a sheet so tiles inset
+/// 16pt from 42pt floating glass stay concentric (`26 + 16 = 42`); in a small panel (`small`), concentric with `r_menu`.
 fn attach_block_corner(small : Bool) -> Double {
   if small {
     @sf.small_panel_inner(@sf.r_menu)
   } else {
-    @sf.row_corner
+    @sf.card_corner
   }
 }
 
 ///|
-/// attach_block_corner as a style's: a small panel's panel_in, else a block's row_radius.
+/// attach_block_corner as a style's: a small panel's `panel_in`, else `card_radius`.
 fn attach_block_radius(small : Bool) -> @ui.Radius {
   if small {
     @sf.panel_in
   } else {
-    @sf.row_radius
+    @sf.card_radius
   }
 }
 
@@ -465,7 +460,7 @@ let recent_add_h : Double = 70.0
 let recent_add_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, color=OnPrimary, wrap=false)
 
 ///|
-/// A tile: 92 × 122 (as round as attach_block_corner: what is marked in its corners concentric with it), a quiet ground
+/// A tile: 108 × 122 (as round as attach_block_corner: what is marked in its corners concentric with it), a quiet ground
 /// under it.
 // kept across runs: a value (no field of it changes)
 let recent_tile_box : @ui.Style = @ui.style(
@@ -478,7 +473,7 @@ let recent_tile_box : @ui.Style = @ui.style(
 )
 
 ///|
-let recent_tile_w : Double = 92.0
+let recent_tile_w : Double = 108.0
 
 ///|
 let recent_tile_h : Double = 122.0
@@ -490,4 +485,4 @@ let recent_ask : @ui.Style = @ui.css("px=S2 gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let recent_ask_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, leading=L4, center=true)
+let recent_ask_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, leading=L4, center=true, balance=true)

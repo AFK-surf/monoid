@@ -58,7 +58,7 @@ test "小屏: a panel opened by nothing whose body and foot are nodes: a sheet w
 
 ///|
 test "小屏: a panel opened by a press whose body and foot are nodes, untitled: a sheet whose body, foot and scrim are where they were beside the host's; the back closes it" {
-  debug_inspect(both_sheets(At(100.0, 300.0, 40.0, 40.0), fn(t) { t.back() }, title=""), content=(
+  debug_inspect(both_sheets(At(100.0, 600.0, 40.0, 40.0), fn(t) { t.back() }, title=""), content=(
     #|((22, 716, 40, 36), (298, 776, 60, 36), 1)
   ))
 }

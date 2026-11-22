@@ -40,6 +40,9 @@ pub fn pick_node(
       // (how far in it is, from the moment it opened)
       let way = @motion.NodeWay::new(0.0)
       way.go_ms(layer, 1.0, @motion.pop_ms)
+      if layout(layer.window_w()) is Small {
+        presented_sheet_rest(layer, fn(_) { way.end() })
+      }
       let look = fn() {
         let p = way.shown(layer)
         pop_in_for(layer).at(p, p)
@@ -94,7 +97,7 @@ pub fn pick_node(
         offset~,
         holds_side=true,
       )
-      .width(Is(Some(chooser_menu_w)))
+      .width(By(fn() { Some(dmin(chooser_menu_w, dmax(0.0, over_room(layer).0 - 16.0))) }))
       .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
       // (small_panel's padding: its search and rows reaching past it at its sides and top to stand concentric with its
       // corners, its last row at its foot, menu_item's at_foot)
@@ -208,8 +211,13 @@ pub fn pick_node(
         },
       )
       |> ignore
-      // (the focus its search's as it opens; what had it given back as it goes)
-      layer.focus_opens(search.val.unwrap()) |> ignore
+      // (the focus its search's as it opens on keyboard/mouse; on touch focus the panel so the soft keyboard stays down)
+      if native_input() is Finger {
+        p.focusable(Is(true), keys=0, tab=false) |> ignore
+        layer.focus_opens(p) |> ignore
+      } else {
+        layer.focus_opens(search.val.unwrap()) |> ignore
+      }
     })
     |> ignore
     },

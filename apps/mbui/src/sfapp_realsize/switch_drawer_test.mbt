@@ -239,7 +239,8 @@ test "the sheet closed by hand while the switch waits: the switch done still, th
   @sfapp.new_run()
   let src = sd_source(100.0)
   let t = sd_app(src, 390.0, 844.0, 2)
-  sd_open_sheet(t)
+  @sfpages.open_workspaces(src, Unanchored)
+  t.run_for(sd_sheet_up_ms)
   let title = @sf.t("android-misc.workspace.sheet.title")
   let (x, y) = sd_in_sheet(t, "个人")
   let frames = sd_frames(t, src, title, @sfbase.switch_wait_ms + @ui.move_most_ms * 2.0, fn() { t.tap(x + 4.0, y + 4.0) }, between=(

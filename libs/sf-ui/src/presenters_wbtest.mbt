@@ -167,7 +167,7 @@ test "a capped sheet lays out lists that arrive after it opens" {
         |> ignore
       })
     })
-  })
+  }, button_at=JEnd)
   open_it(t)
   t.tap_text("显示列表")
   t.draw()
@@ -196,7 +196,7 @@ fn menu_items_of(said : Array[String]) -> Array[MenuItem?] {
 ///|
 test "a menu with a finger at Small: a sheet from the foot; an item tapped closes it and does what it says" {
   let said : Array[String] = []
-  let t = presenting_tester(phone, fn(from) { menu(menu_items_of(said), from=beside_of(from)) })
+  let t = presenting_tester(phone, fn(from) { menu(menu_items_of(said), from=beside_of(from)) }, button_at=JEnd)
   open_it(t)
   assert_eq(presented_how, [AsSheet])
   // in the sheet's rows, low in the window
@@ -307,7 +307,7 @@ fn choices_of(n : Int) -> Array[Choice] {
 ///|
 test "a pick with a finger at Small: a sheet of the choices; one tapped is chosen and it closes" {
   let chosen = Ref("c1")
-  let t = presenting_tester(phone, fn(from) { pick("选一个", choices_of(3), chosen.val, fn(k) { chosen.val = k }, from=beside_of(from)) })
+  let t = presenting_tester(phone, fn(from) { pick("选一个", choices_of(3), chosen.val, fn(k) { chosen.val = k }, from=beside_of(from)) }, button_at=JEnd)
   open_it(t)
   assert_eq(presented_how, [AsSheet])
   assert_true(t.find("选一个") is Some(_))
@@ -346,7 +346,7 @@ test "a long pick with a finger at Small: the search in its sheet finds by the w
   let chosen = Ref("c1")
   let t = presenting_tester(phone, fn(from) {
     pick("选一个", choices_of(pick_search_from + 4), chosen.val, fn(k) { chosen.val = k }, from=beside_of(from))
-  })
+  }, button_at=JEnd)
   open_it(t)
   assert_eq(presented_how, [AsSheet])
   t.tap_text("common.search")
@@ -369,7 +369,7 @@ fn panel_body() -> (@view.View, () -> Unit) -> Unit {
 ///|
 test "a panel with a finger at Small: a sheet; back closes it" {
   let said : Array[String] = []
-  let t = presenting_tester(phone, fn(from) { panel_nodes("面板", panel_body(), foot=ok_foot(said), from~) })
+  let t = presenting_tester(phone, fn(from) { panel_nodes("面板", panel_body(), foot=ok_foot(said), from~) }, button_at=JEnd)
   open_it(t)
   assert_eq(presented_how, [AsSheet])
   assert_true(t.find("面板里的话") is Some(_))
@@ -428,7 +428,7 @@ test "a sheet's action buttons keep their words whole, sharing the row or going 
         button_node(v, fn() { first }, fn() {  }) |> ignore
         button_node(v, fn() { second }, fn() {  }, tone=Primary, disabled=fn() { disabled }) |> ignore
       })
-    })
+    }, button_at=JEnd)
     open_it(t)
     assert_eq(t.lines_of(first), [first], msg="first: \{Repr(t.lines_of(first))}")
     assert_eq(t.lines_of(second), [second], msg="second: \{Repr(t.lines_of(second))}")
@@ -583,7 +583,7 @@ test "one over another: a confirm from a menu's item comes when the menu has gon
       button_node(v, fn() { "删除它" }, fn() { confirm("删掉吗？", "删掉后不能恢复。", "删掉", fn() { said.push("deleted") }, danger=true) })
       |> ignore
     }, from~)
-  })
+  }, button_at=JEnd)
   open_it(t)
   t.tap_text("删除它")
   t.run_for(presented_rest() - t.time())
@@ -658,7 +658,7 @@ fn panel_with_confirm(at : (Int, Double, Double), by_nothing? : Bool = false) ->
         button_node(v, fn() { "删掉" }, fn() { confirm("删掉这个？", "删掉后找不回来。", "确认删掉", fn() {  }, danger=true) }) |> ignore
       },
     )
-  })
+  }, button_at=JEnd)
 }
 
 ///|
@@ -753,7 +753,7 @@ let way_frames : Int = 40
 ///|
 test "a menu's item that opens a menu, with a finger at Small: a level of the same sheet, one sheet and the scrim as it was all the way; back is back to the menu" {
   let said : Array[String] = []
-  let t = presenting_tester(phone, menu_with_more(said))
+  let t = presenting_tester(phone, menu_with_more(said), button_at=JEnd)
   open_it(t)
   let (top0, _) = one_sheet(t)
   let dim = scrim_alpha(t, phone)
@@ -847,7 +847,7 @@ test "what a sheet's item opens with a finger at Small: a sheet in its place, fr
       ],
       from=beside_of(from),
     )
-  })
+  }, button_at=JEnd)
   for opened in [("删掉", "删掉吗？", "删掉它"), ("重命名", "保存", "保存")] {
     let (item, words, action) = opened
     open_it(t)
@@ -1051,7 +1051,7 @@ test "with a finger at Small, whatever kind of sheet closes for whatever kind: t
         let firsts = kinds_of(from, "下一步", nexts[j].1)
         named.val = "\{firsts[i].0}, then \{nexts[j].0}"
         (firsts[i].1)()
-      })
+      }, button_at=JEnd)
       t.tap_text("打开")
       t.run_for(@ui.move_most_ms + @motion.sheet_scrim_ms)
       let at = named.val
@@ -1157,7 +1157,7 @@ test "a short pick with a mouse at Large: a menu of choices beside what opened i
 ///|
 /// The thin lines drawn (rects 2 high at most and 60 wide at least) with the menu of `items` open by 打开 in window `at`.
 fn menu_rules_drawn(at : (Int, Double, Double), items : Array[MenuItem?]) -> Int {
-  let t = presenting_tester(at, fn(from) { menu(items, from=beside_of(from)) })
+  let t = presenting_tester(at, fn(from) { menu(items, from=beside_of(from)) }, button_at=JEnd)
   open_it(t)
   t.drawn_rects().filter(fn(d) { d.3 <= 2.0 && d.2 >= 60.0 }).length()
 }
@@ -1174,4 +1174,102 @@ test "a menu's lines: none at either end, never two together, whatever was given
     assert_eq(one, none + 1, msg="\{at.0}: a line between")
     assert_eq(menu_rules_drawn(at, [None, a(), None, None, b(), None]), one, msg="\{at.0}: still one, none at the ends")
   }
+}
+
+///|
+test "Small upper-half triggers open popovers without scrim, while lower-half and non-popover kinds keep sheets" {
+  // upper-half menu, short pick, long pick, anchored panel -> AsPopover without scrim
+  let t_menu = presenting_tester(phone, fn(from) { menu(menu_items_of([]), from=beside_of(from)) }, button_at=JStart)
+  open_it(t_menu)
+  assert_eq(presented_how, [AsPopover])
+  assert_eq(scrims_drawn(t_menu, phone), 0)
+  assert_true(where_is(t_menu, "重命名").1 < phone.2 / 2.0)
+
+  let t_pick = presenting_tester(
+    phone,
+    fn(from) { pick("选一个", choices_of(3), "c1", fn(_) {  }, from=beside_of(from)) },
+    button_at=JStart,
+  )
+  open_it(t_pick)
+  assert_eq(presented_how, [AsPopover])
+  assert_eq(scrims_drawn(t_pick, phone), 0)
+  assert_true(where_is(t_pick, "第1项").1 < phone.2 / 2.0)
+
+  let t_panel = presenting_tester(phone, fn(from) { panel_nodes("面板", panel_body(), from~) }, button_at=JStart)
+  open_it(t_panel)
+  assert_eq(presented_how, [AsPopover])
+  assert_eq(scrims_drawn(t_panel, phone), 0)
+  assert_true(where_is(t_panel, "面板里的话").1 < phone.2 / 2.0)
+
+  // upper-half confirm, ask, unanchored, form, steps, grows -> stay AsSheet
+  let sheet_cases : Array[(String, (Anchor) -> Unit)] = [
+    ("confirm", fn(from) { confirm("确定？", "说明", "好", fn() {  }, from~) }),
+    ("ask", fn(from) { ask("输入", "保存", fn(_) {  }, from~) }),
+    ("unanchored", fn(_) { panel_nodes("无锚点", panel_body(), from=Unanchored) }),
+    ("form", fn(from) { panel_nodes("表单", panel_body(), from~, form=true) }),
+    ("steps", fn(from) { panel_nodes("分步", panel_body(), from~, steps=true) }),
+    ("grows", fn(from) { panel_nodes("长列表", panel_body(), from~, grows=true) }),
+  ]
+  for item in sheet_cases {
+    let (name, open) = item
+    let t = presenting_tester(phone, open, button_at=JStart)
+    open_it(t)
+    assert_eq(presented_how, [AsSheet], msg=name)
+    assert_eq(scrims_drawn(t, phone), 1, msg=name)
+  }
+
+  // lower-half triggers -> AsSheet
+  let t_low = presenting_tester(phone, fn(from) { panel_nodes("面板", panel_body(), from~) }, button_at=JEnd)
+  open_it(t_low)
+  assert_eq(presented_how, [AsSheet])
+  assert_eq(scrims_drawn(t_low, phone), 1)
+}
+
+///|
+test "Small narrow 320pt popover clamps width, hugs tall+hugs content, and touch long pick does not focus search" {
+  let narrow = (2, 320.0, 568.0)
+  // wide panel clamped within 320pt viewport and tall+hugs fits 2 rows tightly
+  let t_panel = presenting_tester(
+    narrow,
+    fn(from) {
+      panel_nodes("窄屏面板", from~, w=420.0, tall=0.7, hugs=true, fn(v, _) {
+        words_node(v, fn() { "第一项" }, fn() { paragraph }) |> ignore
+        words_node(v, fn() { "第二项" }, fn() { paragraph }) |> ignore
+      })
+    },
+    button_at=JStart,
+  )
+  open_it(t_panel)
+  assert_eq(presented_how, [AsPopover])
+  let (p1_x, p1_y, p1_w, _) = t_panel.rect_of("第一项").unwrap()
+  let (_, p2_y, _, p2_h) = t_panel.rect_of("第二项").unwrap()
+  assert_true(p1_x >= 0.0 && p1_x + p1_w <= narrow.1, msg="clamped width: \{p1_x} + \{p1_w}")
+  // tall=0.7 would be ~397pt if not hugged; two rows stay well under 220pt
+  assert_true(p2_y + p2_h - p1_y < 160.0, msg="hugs height")
+  let (_, panel_bot) = drawn_span(t_panel, "第二项")
+  assert_true(panel_bot < narrow.2 * 0.55, msg="popover hugs content rather than taking 0.7 of window")
+
+  // touch long pick: clamped width, opens without focusing search input, tapping search allows typing
+  let chosen = Ref("c1")
+  let t_pick = presenting_tester(
+    narrow,
+    fn(from) {
+      pick("选一个", choices_of(pick_search_from + 4), chosen.val, fn(k) { chosen.val = k }, from=beside_of(from))
+    },
+    button_at=JStart,
+  )
+  open_it(t_pick)
+  assert_eq(presented_how, [AsPopover])
+  // typing immediately does not filter because search field is not focused on touch
+  t_pick.type_text("第12")
+  t_pick.run_for(@ui.move_most_ms)
+  assert_true(t_pick.find("第2项") is Some(_), msg="touch long pick should not auto-focus search")
+  // tapping search focuses it and filters choices
+  t_pick.tap_text("common.search")
+  t_pick.type_text("第12")
+  t_pick.run_for(@ui.move_most_ms)
+  assert_true(t_pick.find("第2项") is None)
+  assert_true(t_pick.find("第12项") is Some(_))
+  t_pick.tap_text("第12项")
+  assert_eq(chosen.val, "c12")
 }

@@ -47,13 +47,16 @@ fn attach_body_node(v : @view.View, src : Source, key : String, close : () -> Un
     }
     let corner = attach_block_corner(small)
     p.box(fn(row) {
-      @sf.style_node(row, fn() { attach_tiles.then(@ui.style(pb=@sf.room_of(attach_foot(small)))) })
+      @sf.style_node(row, fn() {
+        let base = attach_tiles.then(@ui.style(pb=@sf.room_of(attach_foot(small))))
+        if small { base } else { base.then(@sf.panel_card_out_node(row)).then(@sf.panel_card_last_node(row)) }
+      })
       let tile_node = fn(words : String, icon : String, press : () -> Unit) {
         let label = fn() { @sf.t(words) }
         row.box(fn(tile) {
           @sf.style_node(tile, fn() { attach_tile.then(@ui.style(radius=attach_block_radius(small))) }, in_row=true)
           @sf.icon_node(tile, icon, attach_icon, By(fn() { @sf.theme().p.text })) |> ignore
-          @sf.words_node(tile, label, fn() { attach_words }) |> ignore
+          @sf.words_node(tile, label, fn() { attach_words }).words_centered(Is(true)) |> ignore
           // (Attach.kt: clip(Smooth(14)).clickable; the ladder's block corner here, or a small panel's)
           @sf.rippled_node(tile, press, corner, label)
         })
@@ -93,7 +96,7 @@ let attach_tile_h : Double = 70.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let attach_words : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false)
+let attach_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, leading=L4, center=true, balance=true)
 
 ///|
 let attach_icon : Double = 22.0

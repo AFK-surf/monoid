@@ -38,6 +38,9 @@ fn panel_node(
       |> ignore
       // (how far in it is, from the moment it opened; out from the moment it closed)
       let way = @motion.NodeWay::new(0.0)
+      if layout(layer.window_w()) is Small {
+        presented_sheet_rest(layer, fn(_) { way.end() })
+      }
       let leave_from = Ref(0.0)
       let leave_look = Ref(@signals.untracked(fn() { pop_in_for(layer) }).at(0.0, 0.0))
       // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
@@ -76,7 +79,7 @@ fn panel_node(
       // (the focus left where it is as it opens (not `focus`): what is typed still that field's, its keys the layer's
       // (kit's popover with its initial focus prevented, as menu_node's keep_field); said before it is modal, the
       // field's focus kept as the layer takes what is under it)
-      if !x.focus {
+      if !x.focus && !(layout(layer.window_w()) is Small) {
         layer.leaves_typing() |> ignore
       }
       layer
@@ -137,12 +140,31 @@ fn panel_node(
           holds_side=true,
           concentric_inset=panel_pad,
         )
-        // (`fits`: as wide as what it holds is laid out, `w` at most, the tree sizing it by it)
-        .width(Is(if x.fits { None } else { Some(x.w) }))
-        .max_width(if x.fits { By(fn() { Some(dmin(x.w, dmax(0.0, over_room(layer).0 - 16.0))) }) } else { Is(None) })
-        .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
-        // (`tall`: a share of the window, no taller than the room beside what opened it, small_panel's `h`)
-        .height(By(fn() { if x.tall > 0.0 { Some(dmin(x.tall * over_room(layer).1, dmax(0.0, over_room(layer).1 - 16.0))) } else { None } }))
+        // (`fits`: as wide as what it holds is laid out, `w` at most, clamped to window room on narrow screens)
+        .width(if x.fits { Is(None) } else { By(fn() { Some(dmin(x.w, dmax(0.0, over_room(layer).0 - 16.0))) }) })
+        .max_width(By(fn() { Some(dmin(x.w, dmax(0.0, over_room(layer).0 - 16.0))) }))
+        .max_height(
+          By(fn() {
+            let room_h = dmax(0.0, over_room(layer).1 - 16.0)
+            let small_hugs = x.tall > 0.0 && x.nodes.hugs && layout(layer.window_w()) is Small
+            if small_hugs {
+              Some(dmin(x.tall * over_room(layer).1, room_h))
+            } else {
+              Some(room_h)
+            }
+          }),
+        )
+        // (`tall`: a share of the window, no taller than the room beside what opened it; on Small `hugs` fits content up to that cap)
+        .height(
+          By(fn() {
+            let small_hugs = x.tall > 0.0 && x.nodes.hugs && layout(layer.window_w()) is Small
+            if x.tall > 0.0 && !small_hugs {
+              Some(dmin(x.tall * over_room(layer).1, dmax(0.0, over_room(layer).1 - 16.0)))
+            } else {
+              None
+            }
+          }),
+        )
         .padding(Is((panel_pad, panel_pad, panel_pad, panel_pad)))
         .carries_until(fn() { way.ends_at() })
         .says(Is(Some(@view.said(Dialog, label=x.title))))
@@ -220,14 +242,24 @@ fn panel_node(
         // (`tall`: what it holds fills the room it is given, laid out in it, scrolling as it does itself: panel_grows)
         if x.tall > 0.0 {
           p.box(fn(b) {
-            // (the room under its head and no more, whatever it holds: grown from none, as what holds a list sized by
-            // what it holds would stand past the panel's foot, its last rows cut there)
-            b.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).margin(By(fn() { (-panel_pad, -over(), -panel_pad, -out_under) })).focusable(Is(x.focus), keys=0, tab=false) |> ignore
+            if x.nodes.hugs {
+              b.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+            } else {
+              // (the room under its head and no more, whatever it holds: grown from none, as what holds a list sized by
+              // what it holds would stand past the panel's foot, its last rows cut there)
+              b.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+            }
+            b.margin(By(fn() { (-panel_pad, -over(), -panel_pad, -out_under) })).focusable(Is(x.focus), keys=0, tab=false) |> ignore
             body_box.val = Some(b)
             // (what it holds: in a column, its words as far in as its look says)
             b.box(fn(col) {
-              style_node(col, fn() { panel_grows.then(panel_part_in(over(), under)) })
-              col.grow(Is(1.0)).alpha(By(fn() { look().words })) |> ignore
+              if x.nodes.hugs {
+                style_node(col, fn() { panel_part_in(over(), under) })
+                col.shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { look().words })) |> ignore
+              } else {
+                style_node(col, fn() { panel_grows.then(panel_part_in(over(), under)) })
+                col.grow(Is(1.0)).alpha(By(fn() { look().words })) |> ignore
+              }
               // (laid out as a small panel's body is: wide, its words a row's padding in)
               panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true)
               (x.nodes.body)(col, close)
@@ -303,7 +335,7 @@ fn panel_node(
           (Some(f), _) if f.keyed(false) => layer.focus_opens(f.field) |> ignore
           // (a search at hand by touch: the focus left where it is, as on a sheet)
           (Some(_), _) => layer.focus_returns() |> ignore
-          (None, Some(b)) if x.focus => layer.focus_opens(b) |> ignore
+          (None, Some(b)) if x.focus || layout(layer.window_w()) is Small => layer.focus_opens(b) |> ignore
           _ => layer.focus_returns() |> ignore
         }
       })

@@ -19,16 +19,9 @@ let tree_presented : Set[Int] = Set([])
 let tree_as_sheet : Map[Int, Bool] = Map([])
 
 ///|
-/// Whether `p` is drawn as a sheet of the window's tree on screen `sheet` (小屏's): sheet_node, as presented_nodes picks:
-/// a panel that is no stage, a confirm, a question, a menu and a pick.
-fn tree_sheet_of(p : Presented, sheet : Bool) -> Bool {
-  sheet && ((p.shows is Panel(x) && !x.stage) || sheet_shows_of(p))
-}
-
-///|
-/// Whether `p` is a confirm, a question, a menu or a pick: on 小屏 a sheet of the window's tree (sheet_shows_panel).
-fn sheet_shows_of(p : Presented) -> Bool {
-  p.shows is (Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) | Menu(_, _, _, _) | Pick(_, _, _, _, _, _, _))
+/// Whether `p` is drawn as a sheet of the window's tree on screen `sheet` (小屏's) with window height `win_h`.
+fn tree_sheet_of(p : Presented, sheet : Bool, win_h : Double) -> Bool {
+  how_of(p.shows, p.from, p.held, sheet, win_h) == AsSheet
 }
 
 ///|
@@ -54,15 +47,19 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   reader_layout_nodes(root)
   // (what is presented followed as it is told, on the screen it is drawn on: how each open one is drawn, what closed
   // unsaid let go of, what has gone let go: presented_followed)
-  root.reacts(fn() { (presented_said.val.get(), layout(root.window_w()) is Small) }, fn(told) { presented_followed(told.1) })
+  root.reacts(
+    fn() { (presented_said.val.get(), layout(root.window_w()) is Small, root.window_h()) },
+    fn(told) { presented_followed(told.1, told.2) },
+  )
   root.each(
     fn() {
       presented_said.val.get() |> ignore
       let w = root.window_w()
+      let h = root.window_h()
       // (a panel, a confirm, a question, a menu or a pick drawn by what screen it is on, none before the window has its
       // size: what it is drawn as, a sheet or not, is picked as it is made)
       presented_now
-      .filter(fn(p) { w > 0.0 || (p.shows is Panel(x) && x.stage) })
+      .filter(fn(p) { (w > 0.0 && h > 0.0) || (p.shows is Panel(x) && x.stage) })
       .map(fn(p) { PresentedItem::{ p: p } })
     },
     fn(it) { it.p.serial },
@@ -70,8 +67,12 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       // (its own presented, given it by the list as it is made: no walk of what is presented for it)
       let p = item.untracked().p
       let serial = p.serial
-      // (a sheet from the window's foot, on 小屏 as it is made: sheet_node)
-      let as_sheet = tree_sheet_of(p, @signals.untracked(fn() { layout(root.window_w()) is Small }))
+      // (a sheet from the window's foot, on 小屏 as it is made when not a popover in the upper half: sheet_node)
+      let as_sheet = tree_sheet_of(
+        p,
+        @signals.untracked(fn() { layout(root.window_w()) is Small }),
+        @signals.untracked(fn() { root.window_h() }),
+      )
       tree_as_sheet[serial] = as_sheet
       // (the root's node it is in at its place in the window's stack of layers: its serial, as the host's presented are)
       if isolated {

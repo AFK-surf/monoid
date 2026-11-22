@@ -240,6 +240,8 @@ priv struct Presented {
   /// closed, its going not yet seen by the window's tree (close_from; unsaid as presented_nodes takes the change):
   /// what is presented meanwhile (what was chosen or pressed in it opened another) comes in its place
   mut closed_now : Bool
+  /// opened by a long-press hold (menu_held_node): stays a sheet on Small so the scrim lifts the held row
+  held : Bool
   /// presented as a sheet closed whose going was not yet seen: how tall that one stood. As a sheet too, this one comes
   /// in its place (sheet_node: there at once that tall, on to its own height, the scrim as it was), not from below as
   /// that one sinks across it
@@ -373,6 +375,11 @@ let presented_alone : Ref[Bool] = Ref(false)
 let presented_how : Array[How] = []
 
 ///|
+/// Whether the next presenter opened was triggered by a long-press hold (menu_held_node).
+// kept across runs: consumed by present(); put back by presenters_reset
+let presented_held : Ref[Bool] = Ref(false)
+
+///|
 /// Nothing presented (the app begun again).
 pub fn presenters_reset() -> Unit {
   presented_now.clear()
@@ -387,6 +394,8 @@ pub fn presenters_reset() -> Unit {
   presented_alone.val = false
   presented_how.clear()
   presented_sheets.val = false
+  presented_win_h.val = 0.0
+  presented_held.val = false
   presented_sheet_rests.clear()
   presented_sheet_next.val = 0
   presented_sheet_ended.val = -1.0
@@ -395,9 +404,16 @@ pub fn presenters_reset() -> Unit {
 
 ///|
 fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit = fn() {  }) -> Unit {
+  let held_flag = presented_held.val
+  presented_held.val = false
   // (presented as a sheet closed, none drawn of that going yet (what was chosen or pressed in it presents this): in
   // that one's place, the topmost of them's; a menu by what was chosen in a menu, a page of that one's sheet)
   let chosen_in = presented_now.iter().filter(fn(q) { q.closed_now && q.stands > 0.0 && q.taken_by == 0 }).last()
+  let held = held_flag ||
+    (match chosen_in {
+      Some(old) => tree_presented.contains(old.serial) && tree_as_sheet.get(old.serial).unwrap_or(false)
+      None => false
+    })
   match (chosen_in, shows) {
     (Some(old), Menu(items, title, _, _)) if old.chosen &&
       old.shows is Menu(_, _, _, _) &&
@@ -451,6 +467,7 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
     stands: 0.0,
     stands_now: None,
     closed_now: false,
+    held,
     in_place: chosen_in.map(fn(old) { old.stands }),
     taken_by: 0,
     chosen: false,
@@ -1149,7 +1166,7 @@ fn scrim_owner(sheet : Bool) -> Int {
   let dims = fn(p : Presented) {
     match p.shows {
       Panel(x) if x.stage => false
-      _ => how_of(p.shows, p.from, sheet) != AsPopover
+      _ => presented_how_of(p, sheet) != AsPopover
     }
   }
   for p in presented_now {
@@ -1174,7 +1191,7 @@ fn dialog_covered(serial : Int) -> Bool {
   match presented_now.search_by(fn(q) { q.serial == serial }) {
     Some(i) =>
       presented_now[i].open &&
-      presented_now[i + 1:].iter().any(fn(q) { q.open && how_of(q.shows, q.from, false) == AsDialog })
+      presented_now[i + 1:].iter().any(fn(q) { q.open && presented_how_of(q, false) == AsDialog })
     None => false
   }
 }
@@ -1186,7 +1203,7 @@ fn sheet_over(serial : Int) -> Double? {
   presented_said.val.get() |> ignore
   match presented_now.search_by(fn(q) { q.serial == serial }) {
     Some(i) if presented_now[i].open =>
-      presented_now[i + 1:].iter().filter(fn(q) { q.open && how_of(q.shows, q.from, true) == AsSheet }).last().map(fn(q) {
+      presented_now[i + 1:].iter().filter(fn(q) { q.open && presented_how_of(q, true) == AsSheet }).last().map(fn(q) {
         q.sheet_h.get()
       })
     _ => None
@@ -1199,7 +1216,7 @@ fn sheet_over(serial : Int) -> Double? {
 fn taken_as_sheet(p : Presented) -> Bool {
   p.taken_by != 0 &&
   presented_now.iter().any(fn(q) {
-    q.serial == p.taken_by && q.in_place is Some(_) && how_of(q.shows, q.from, true) == AsSheet
+    q.serial == p.taken_by && q.in_place is Some(_) && presented_how_of(q, true) == AsSheet
   })
 }
 
@@ -1229,15 +1246,55 @@ pub fn presented(_c : @ui.Ctx, alone? : Bool = false) -> Unit {
 let presented_sheets : Ref[Bool] = Ref(false)
 
 ///|
+/// The window's height as presented_nodes last told it, for choosing popover vs. sheet by trigger position on Small.
+// kept across runs: said by presented_nodes; put back by presenters_reset
+let presented_win_h : Ref[Double] = Ref(0.0)
+
+///|
+/// Share of window height above which an anchored trigger on Small opens a popover/dropdown instead of a bottom sheet.
+let small_upper_share : Double = 0.5
+
+///|
+/// Vertical midpoint of `from` in window coordinates, or None when unanchored or not yet placed.
+fn anchor_center_y(from : Anchor) -> Double? {
+  match from {
+    Node(v) => {
+      let (_, y, _, h) = v.placed_window_now()
+      if h > 0.0 || y > 0.0 {
+        Some(y + h / 2.0)
+      } else {
+        None
+      }
+    }
+    At(_, y, _, h) => Some(y + h / 2.0)
+    Unanchored => None
+  }
+}
+
+///|
+/// Whether `shows` opened from `from` on Small uses a popover beside its trigger instead of a bottom sheet:
+/// only anchored menus, picks, and non-form/non-steps/non-growing panels triggered in the upper half of the window.
+fn small_as_popover(shows : Shows, from : Anchor, held : Bool, win_h : Double) -> Bool {
+  guard !held && win_h > 0.0 else { return false }
+  guard anchor_center_y(from) is Some(cy) && cy < win_h * small_upper_share else { return false }
+  match shows {
+    Menu(_, _, _, _) | Pick(_, _, _, _, _, _, _) => true
+    Panel(x) => !x.stage && !x.form && !x.nodes.steps && !x.grows && from != Unanchored
+    Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) => false
+  }
+}
+
+///|
 /// What is presented as it is told (presented_said's change, as presented_nodes follows it, `sheet` the screen's): how
 /// each open one is drawn (presented_how); each closed unsaid let go of, once, once the event or frame that closed it is
 /// over; and what has gone let go (presented_left).
-fn presented_followed(sheet : Bool) -> Unit {
+fn presented_followed(sheet : Bool, win_h : Double) -> Unit {
   presented_sheets.val = sheet
+  presented_win_h.val = win_h
   presented_how.clear()
   for p in presented_now {
     if p.open {
-      presented_how.push(how_of(p.shows, p.from, sheet))
+      presented_how.push(presented_how_of(p, sheet))
     } else if !p.ended {
       p.ended = true
       @ui.after_frame(fn() { gone_all(p) })
@@ -1269,6 +1326,7 @@ fn presented_left() -> Unit {
   }
   for serial in gone {
     presented_items_said.remove(serial)
+    tree_as_sheet.remove(serial)
     // (gone with none in its place: what led to it leads nowhere)
     if !took_place.contains(serial) {
       let mut end = serial
@@ -1294,13 +1352,31 @@ fn presented_left() -> Unit {
 }
 
 ///|
-fn how_of(shows : Shows, from : Anchor, sheet : Bool) -> How {
+fn how_of(shows : Shows, from : Anchor, held : Bool, sheet : Bool, win_h : Double) -> How {
   match (sheet, shows) {
     (_, Panel(x)) if x.stage => AsDialog
-    (true, _) => AsSheet
+    (true, _) => if small_as_popover(shows, from, held, win_h) { AsPopover } else { AsSheet }
     (false, Panel(x)) if from == Unanchored || x.form => AsDialog
     (false, Menu(_, _, _, _) | Pick(_, _, _, _, _, _, _) | Panel(_)) => AsPopover
     (false, Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _)) => AsDialog
+  }
+}
+
+///|
+/// How presented item `p` is drawn, honoring the sheet/popover decision frozen in `tree_as_sheet` when its node was made
+/// so scrim ownership, stacking, and exit handling stay in sync even if the anchor moves or leaves.
+fn presented_how_of(p : Presented, sheet : Bool) -> How {
+  if sheet {
+    match tree_as_sheet.get(p.serial) {
+      Some(as_sheet) =>
+        match p.shows {
+          Panel(x) if x.stage => AsDialog
+          _ => if as_sheet { AsSheet } else { AsPopover }
+        }
+      None => how_of(p.shows, p.from, p.held, true, presented_win_h.val)
+    }
+  } else {
+    how_of(p.shows, p.from, p.held, false, presented_win_h.val)
   }
 }
 
@@ -1613,7 +1689,7 @@ pub let sheet_panel_foot : Double = 24.0
 let sheet_capped_room : @ui.Style = sheet_grows.then(@ui.style(pb=room(sheet_panel_foot)))
 
 ///|
-/// What a panel opened by a press holds in a sheet: as far in as a pick's rows (sheet_rows), 24 under.
+/// What a panel opened by a press holds in a sheet: 16 in at its sides (sheet_row_sides, as its cards are), 24 under.
 // kept across runs: a value (no field of it changes)
 let sheet_held : @ui.Style = @ui.style(w=Full, px=room(sheet_row_sides), pb=S6)
 

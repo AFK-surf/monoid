@@ -275,8 +275,12 @@ test "the chat's sheet going down: its own rows take no tap, the scrim none" {
 
 ///|
 test "the workspaces' sheet sinking takes no tap: the bar's 文件 tapped under it opens its page" {
-  let t = tester("home")
-  t.tap_text("星火工作室")
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  @sfpages.open_workspaces(src, Unanchored)
+  t.run_for(@ui.move_most_ms)
   assert_true(@sf.presenting())
   t.tap_once(195.0, 60.0)
   t.frame()

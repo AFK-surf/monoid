@@ -80,6 +80,7 @@ pub fn edge_reach(gap : Double) -> (Double, Double) {
 /// A menu asked by a node's hold (presses_held_node's `held`): felt as it opens where a finger held
 /// it (the press already the hold's: lifting it opens nothing).
 pub fn menu_held_node() -> Unit {
+  presented_held.val = true
   if @ui.pointing() is Finger {
     @ui.haptic(LongPress)
   }

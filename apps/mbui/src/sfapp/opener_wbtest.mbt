@@ -85,8 +85,8 @@ test "a chat whose agent made others has how many in its own sheet (…), each i
   t.run_for(@ui.move_most_ms)
   t.tap_text("创建了 3 个对话")
   t.run_for(@ui.move_most_ms)
-  // (a menu on Small: a sheet from the foot, a button each)
-  t.click(Button, label="给设置页加一个深色模式开关")
+  // (a menu opened from the upper-half chat-info popover on Small: a dropdown menu, a MenuItem each)
+  t.click(MenuItem, label="给设置页加一个深色模式开关")
   t.run_for(@ui.move_most_ms)
   match app.nav.top() {
     Chat(r) => assert_eq(r.session, "s-c4")

@@ -582,6 +582,7 @@ test "its panel closes as the card comes to say neither (none left in the backgr
     let seen = ["后台进行中", "审阅 live.ts 的改动", "清单", "跑检查并提交"]
     let places = fn() { seen.map(fn(s) { t.words().iter().find_first(fn(w) { w.0 == s && w.5 > 0.0 }).map(fn(w) { w.2 }) }) }
     let was = places()
+    let is_sheet = scrim_drawn(t).length() > 0
     // (both at once, as the core says the card)
     @signals.start_batch()
     card.tasks.set([])
@@ -595,11 +596,22 @@ test "its panel closes as the card comes to say neither (none left in the backgr
       let drawn = now.filter(fn(p) { p is Some(_) }).length()
       assert_true(drawn == 0 || drawn == seen.length(), msg="\{at}: frame \{n}: \{drawn} of \{Repr(seen)}")
       if drawn > 0 && !wide {
-        // (a sheet goes down whole)
-        for i in 1..<now.length() {
-          let d = now[i].unwrap() - now[0].unwrap()
-          let d0 = was[i].unwrap() - was[0].unwrap()
-          assert_true((d - d0).abs() <= 0.01, msg="\{at}: frame \{n}: \{seen[i]} \{d} under \{seen[0]}, \{d0} before")
+        if is_sheet {
+          // (a sheet goes down whole)
+          for i in 1..<now.length() {
+            let d = now[i].unwrap() - now[0].unwrap()
+            let d0 = was[i].unwrap() - was[0].unwrap()
+            assert_true((d - d0).abs() <= 0.01, msg="\{at}: frame \{n}: \{seen[i]} \{d} under \{seen[0]}, \{d0} before")
+          }
+        } else {
+          // (an upper-half popover scales down uniformly as it exits, with no internal reflow)
+          let s0 = (now[1].unwrap() - now[0].unwrap()) / (was[1].unwrap() - was[0].unwrap())
+          assert_true(s0 >= 0.96 && s0 <= 1.01, msg="\{at}: frame \{n}: popover exit scale \{s0}")
+          for i in 1..<now.length() {
+            let d = now[i].unwrap() - now[0].unwrap()
+            let d0 = was[i].unwrap() - was[0].unwrap()
+            assert_true((d / d0 - s0).abs() <= 0.01, msg="\{at}: frame \{n}: \{seen[i]} ratio \{d / d0} vs \{s0}")
+          }
         }
       }
       n += 1

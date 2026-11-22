@@ -159,9 +159,9 @@ pub fn chat_row_node(
       } else {
         @sf.at_point(x, y)
       }
-      // (held by a finger: felt as it opens)
+      // (held by a finger: felt as it opens, kept as a sheet on Small so the scrim lifts the row)
       if from_row {
-        @ui.haptic(LongPress)
+        @sf.menu_held_node()
       }
       @sf.menu(chat_menu_items(src, i, share_from=fn() { from }, here=kept is Some(_)), from~)
       rows.menu_for = @sfbase.row_name(i)

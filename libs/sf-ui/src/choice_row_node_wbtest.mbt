@@ -147,7 +147,11 @@ fn panel_choice_rows(at : (Int, Double, Double), pressed : Bool, listed? : Bool 
   let count : Map[String, Int] = Map([])
   let tally = fn(k : String) { count[k] = count.get(k).unwrap_or(0) + 1 }
   let open = fn(from : Anchor) {
-    let from = if pressed { from } else { Unanchored }
+    let from = if pressed {
+      if layout(at.1) is Small { Anchor::At(40.0, at.2 - 80.0, 60.0, 32.0) } else { from }
+    } else {
+      Unanchored
+    }
     let n = choice_rows.length()
     // (a list in a panel a share of the window tall, as tall as what it holds up to its share: hugs)
     panel_nodes("选一个", from~, tall=if listed { 0.8 } else { 0.0 }, hugs=listed, fn(v, _) {

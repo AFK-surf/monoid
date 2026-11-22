@@ -253,7 +253,7 @@ fn home_top_bar_node(
               guard @signals.untracked(workspace) is Some(w) else { return }
               let (x, y, wd, h) = key.val.map(fn(k) { k.placed_window_now() }).unwrap_or((0.0, 0.0, 0.0, 0.0))
               let board = @sfbase.board_on_now(src)
-              @sfpages.filter_menu(At(x, y, wd, h), shown(w), fn(f) { home_filter_go(src, w, f, board~) }, in_board=board)
+              @sfpages.filter_menu(At(x, y, wd, h), shown(w), fn(f) { home_filter_go(src, w, f, board~) }, in_board=board, along=Start)
               opener.mark()
             },
             icon_size=20.0,
@@ -311,10 +311,14 @@ fn home_top_bar_node(
         |> ignore
         // the workspace's switcher: its mark, its name, what the others have waiting
         let open = fn(s : @view.View) {
-          @sfpages.open_workspaces(src, {
-            let (x, y, w, h) = s.placed_window_now()
-            @sf.Anchor::At(x, y, w, h)
-          })
+          @sfpages.open_workspaces(
+            src,
+            {
+              let (x, y, w, h) = s.placed_window_now()
+              @sf.Anchor::At(x, y, w, h)
+            },
+            along=End,
+          )
         }
         @sf.bar_pill_group_node(end, height=40.0, pad=3.0, gap=0.0, fn(ws_pill) {
           @sf.action_box_node(ws_pill, fn() { workspace().map(fn(w) { w.name }).unwrap_or("") }, open, fn(s) {
@@ -332,7 +336,7 @@ fn home_top_bar_node(
             // (the fixture's home-sheet: opened by it as the app starts, beside it wherever it is laid out)
             if home_sheet_at_start.val {
               home_sheet_at_start.val = false
-              @sfpages.open_workspaces(src, @sf.Anchor::Node(s))
+              @sfpages.open_workspaces(src, @sf.Anchor::Node(s), along=End)
             }
             @sf.icon_node(s, "chevron-down", 16.0, By(fn() { @sf.theme().p.muted })) |> ignore
             s.show(fn() { workspace().map(fn(w) { @sf.has_station_mark(w.emoji, w.icon) }).unwrap_or(false) }, fn(m) {

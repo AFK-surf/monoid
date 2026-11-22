@@ -1423,7 +1423,7 @@ test "the workspaces' sheet: more workspaces than it holds are reached by scroll
   }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   t.run_for(@sf.later_ms + @motion.presence_in_ms)
-  t.tap_text("工作区 1")
+  @sfpages.open_workspaces(src, Unanchored)
   presented_rested(t)
   assert_true(@sf.presenting())
   let last = "工作区 20"

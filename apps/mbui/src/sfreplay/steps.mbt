@@ -992,6 +992,12 @@ pub fn Flow::tap(self : Flow, what : String, top? : Bool = false, loc~ : SourceL
   // what came for it given first, Flow::until)
   self.until_at(site, fn() { self.reach_spots(what).length() > 0 })
   let p = self.kept_point(site, fn() {
+    if keeping.val == 1 {
+      match @ui.view_tree() {
+        Some(tree) => tree.bring_to(self.t.time())
+        None => ()
+      }
+    }
     let at = self.reach_spots(what)
     if at.length() == 0 {
       self.fail("nothing to tap: " + what)

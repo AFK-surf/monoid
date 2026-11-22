@@ -44,7 +44,11 @@ fn panel_link_rows(at : (Int, Double, Double), pressed : Bool, listed? : Bool = 
   let tally = fn(k : String) { count[k] = count.get(k).unwrap_or(0) + 1 }
   let n = link_rows.length()
   let open = fn(from : Anchor) {
-    let from = if pressed { from } else { Unanchored }
+    let from = if pressed {
+      if layout(at.1) is Small { Anchor::At(40.0, at.2 - 80.0, 60.0, 32.0) } else { from }
+    } else {
+      Unanchored
+    }
     panel_nodes("去哪里", from~, tall=if listed { 0.8 } else { 0.0 }, hugs=listed, fn(v, _) {
       if listed {
         panel_list_node(v, fn() { Array::makei(n, fn(i) { i }) }, fn(b, i) { node_link_row(b, i, tally) }, est=60.0) |> ignore

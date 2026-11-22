@@ -23,7 +23,7 @@ test "a sheet from the foot, the old frame's (a confirm) and the window's tree's
         } else {
           confirm("归档这个对话？", long, "确认归档", fn() {  }, danger=true, from~)
         }
-      })
+      }, button_at=JEnd)
       tt.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":21,\"left\":\{left},\"right\":\{right}}}")
       tt.run_for(@ui.move_most_ms)
       open_it(tt)

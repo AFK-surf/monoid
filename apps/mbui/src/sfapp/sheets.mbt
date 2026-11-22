@@ -168,7 +168,14 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     @sf.style_node(col, fn() { title_row_whole })
     // its name and ✎, clear of an untitled dialog's close button over its end
     col.box(fn(h) {
-      @sf.style_node(h, fn() { @sf.untitled_clear_node(h).then(title_row_whole) })
+      @sf.style_node(h, fn() {
+        let base = @sf.untitled_clear_node(h).then(title_row_whole)
+        if @sf.in_small_panel_node(h) {
+          base.then(@sf.panel_words_in_node(h)).then(@ui.css("pt=S2"))
+        } else {
+          base
+        }
+      })
       info_title_node(h, src, r, fn() { text(chat(), "title") }, open, fn() { opt_number(thread(), "id") })
     })
     |> ignore
@@ -183,7 +190,9 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
       fn(p, opener) {
         guard opener is Some((to, said)) else { return }
         p.box(fn(b) {
-          @sf.style_node(b, fn() { info_opener })
+          @sf.style_node(b, fn() {
+            if @sf.in_small_panel_node(b) { info_opener.then(@sf.panel_words_in_node(b)) } else { info_opener }
+          })
           b.radius(Is(info_opener_corner)) |> ignore
           @sf.rippled_node(b, fn() {
             close()
@@ -200,7 +209,9 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     // who started it and when, how many take part, when it was last written in: what there is of them, in a line, after
     // their faces
     col.box(fn(line) {
-      @sf.style_node(line, fn() { info_facts_line })
+      @sf.style_node(line, fn() {
+        if @sf.in_small_panel_node(line) { info_facts_line.then(@sf.panel_words_in_node(line)) } else { info_facts_line }
+      })
       let faces = fn() {
         match view() {
           Some(cv) => if cv.people.length() > 5 { cv.people[:5].to_owned() } else { cv.people }
@@ -662,10 +673,10 @@ fn info_title_node(h : @view.View, src : Source, r : ChatRef, title : () -> Stri
 ///|
 /// The chat's own sheet (chat_info_node) from "…": the library's panel, as tall as what it shows, what it holds nodes of
 /// the window's tree made once as it opens, its name with ✎ beside it its first line.
-fn open_info(src : Source, r : ChatRef) -> Unit {
+fn open_info(src : Source, r : ChatRef, from? : @sf.Anchor = Unanchored, along? : @ui.Along = Start) -> Unit {
   // (its name its head, with its ✎ after it: the user, 2026-11-04, 为啥不做成标题; no title of words, where what it
   // holds draws its name itself)
-  @sf.panel_nodes("", from=Unanchored, heads_itself=true, live=fn() { ("", "", "") }, fn(v, close) { chat_info_node(v, src, r, close) })
+  @sf.panel_nodes("", from~, along~, heads_itself=true, live=fn() { ("", "", "") }, fn(v, close) { chat_info_node(v, src, r, close) })
 }
 
 ///|

@@ -12,6 +12,8 @@ fn init {
   @ui.window_kept_ref(presented_alone, fn() { false })
   @ui.window_kept_array(presented_how)
   @ui.window_kept_ref(presented_sheets, fn() { false })
+  @ui.window_kept_ref(presented_win_h, fn() { 0.0 })
+  @ui.window_kept_ref(presented_held, fn() { false })
   @ui.window_kept_set(tree_presented)
   @ui.window_kept_map(tree_as_sheet)
   @ui.window_kept_ref(window_tips_at, fn() { None })

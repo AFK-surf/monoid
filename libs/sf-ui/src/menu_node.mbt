@@ -149,6 +149,13 @@ fn menu_node_by(
       // as panel_node's)
       let (enter, exit) = @signals.untracked(fn() { (pop_in_for(layer), pop_out_for(layer)) })
       let (look, live) = @motion.overlay_presence(layer, enter~, exit~)
+      if modal && layout(layer.window_w()) is Small {
+        let rest_end = Ref(0.0)
+        layer.reacts(fn() { layer.leaving() }, fn(going) {
+          rest_end.val = layer.cause_at() + (if going { @motion.pop_out_ms } else { @motion.pop_ms })
+        })
+        presented_sheet_rest(layer, fn(_) { rest_end.val })
+      }
       // (its words and icons as far in as its look says: its ground first, then they, as pop_in has it)
       let words_in = fn() { look().words }
       // (its rows that can be chosen, by their index: the one with the focus is lit; the keyboard moves the focus along

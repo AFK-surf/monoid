@@ -471,3 +471,169 @@ test "小屏输入框上方胶囊：390 宽空间足够时，station 长名字�
     assert_eq(audit, [], msg~)
   }
 }
+
+///|
+test "小屏按按钮位置切换：390x844 首页顶栏筛选/工作区/待处理与对话顶栏更多/信息在按钮下方以 popover 展开，底栏触发器仍走底部抽屉，零 audit 告警" {
+  // 1) Home top bar: filter, workspace switcher, attention bell -> popover in upper half (y < 422), 0 audit faults
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  // [☰ 筛选]
+  let filter_btn = t.semantics().iter().find_first(fn(s) { s.role == Button && s.label.contains("筛选") && s.rect.1 < 60.0 }).unwrap()
+  t.tap(filter_btn.rect.0 + filter_btn.rect.2 / 2.0, filter_btn.rect.1 + filter_btn.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  let (_, filter_y) = t.find("全部会话").unwrap()
+  assert_true(filter_y < 422.0, msg="home filter opens as popover in upper half: y=\{filter_y}")
+  assert_eq(t.audit(), [], msg="home filter audit")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  // [⌄ 星火工作室]
+  let ws_btn = t.semantics().iter().find_first(fn(s) { s.role == Button && s.label == "星火工作室" && s.rect.1 < 60.0 }).unwrap()
+  t.tap(ws_btn.rect.0 + ws_btn.rect.2 / 2.0, ws_btn.rect.1 + ws_btn.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  let ws_dlg = t.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Dialog }).unwrap()
+  assert_true(ws_dlg.rect.1 < 422.0 && ws_dlg.rect.1 + ws_dlg.rect.3 < 650.0, msg="home workspace opens as popover hugging content: \{Repr(ws_dlg.rect)}")
+  assert_eq(t.audit(), [], msg="home workspace audit")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  // [🔔 待处理]
+  let bell_btn = t.semantics().iter().find_first(fn(s) { s.role == Button && s.label == tr("web-main.attention.entry") && s.rect.1 < 60.0 }).unwrap()
+  t.tap(bell_btn.rect.0 + bell_btn.rect.2 / 2.0, bell_btn.rect.1 + bell_btn.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  let bell_dlg = t.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Dialog }).unwrap()
+  assert_true(bell_dlg.rect.1 < 422.0, msg="home attention opens as popover in upper half: \{Repr(bell_dlg.rect)}")
+  assert_eq(t.audit(), [], msg="home attention audit")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+
+  // 2) Chat top bar [···] & [ⓘ] -> popover in upper half; bottom bar [+] -> bottom sheet (y > 422)
+  let (tc, _) = chat_bar_node_tester("梳理发布清单")
+  // [···]
+  let more_btn = tc.semantics().iter().find_first(fn(s) { s.role == Button && s.label == tr("common.more") && s.rect.1 < 60.0 }).unwrap()
+  tc.tap(more_btn.rect.0 + more_btn.rect.2 / 2.0, more_btn.rect.1 + more_btn.rect.3 / 2.0)
+  tc.run_for(@ui.move_most_ms)
+  let (_, more_y) = tc.find("重命名").unwrap()
+  assert_true(more_y < 422.0, msg="chat more opens as popover in upper half: y=\{more_y}")
+  assert_eq(tc.audit(), [], msg="chat more audit")
+  tc.back()
+  tc.run_for(@ui.move_most_ms)
+  // [ⓘ]
+  let info_btn = tc.semantics().iter().find_first(fn(s) { s.role == Button && s.label == tr("android-chat.info.title") && s.rect.1 < 60.0 }).unwrap()
+  tc.tap(info_btn.rect.0 + info_btn.rect.2 / 2.0, info_btn.rect.1 + info_btn.rect.3 / 2.0)
+  tc.run_for(@ui.move_most_ms)
+  let info_dlg = tc.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Dialog }).unwrap()
+  assert_true(info_dlg.rect.1 < 422.0, msg="chat info opens as popover in upper half: \{Repr(info_dlg.rect)}")
+  assert_eq(tc.audit(), [], msg="chat info audit")
+  tc.back()
+  tc.run_for(@ui.move_most_ms)
+  // bottom composer [+] -> bottom sheet
+  let plus_btn = tc.semantics().iter().find_first(fn(s) { s.role == Button && s.rect.1 > 700.0 && s.rect.0 < 80.0 }).unwrap()
+  tc.tap(plus_btn.rect.0 + plus_btn.rect.2 / 2.0, plus_btn.rect.1 + plus_btn.rect.3 / 2.0)
+  tc.run_for(@ui.move_most_ms)
+  let sheet_dlg = tc.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Dialog }).unwrap()
+  assert_true(sheet_dlg.rect.1 > 422.0, msg="composer + stays bottom sheet: \{Repr(sheet_dlg.rect)}")
+}
+
+///|
+test "小屏窄窗 320x568 + 1.3x 字号：首页与对话顶栏 popover 全部在视口内且零截断溢出" {
+  // Home top bar popovers at 320x568 @ 1.3x
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=320.0, h=568.0, platform=2)
+  t.set_font_scale(1.3)
+  t.run_for(@ui.move_most_ms)
+  for label in ["筛选", "星火工作室", tr("web-main.attention.entry")] {
+    let btn = t.semantics().iter().find_first(fn(s) { s.role == Button && s.label.contains(label) && s.rect.1 < 60.0 }).unwrap()
+    t.tap(btn.rect.0 + btn.rect.2 / 2.0, btn.rect.1 + btn.rect.3 / 2.0)
+    t.run_for(@ui.move_most_ms)
+    let dlg = t.semantics().iter().find_first(fn(s) { !s.hidden && (s.role == Dialog || s.role == Menu) }).unwrap()
+    assert_true(dlg.rect.0 >= 0.0 && dlg.rect.0 + dlg.rect.2 <= 320.0 + 0.5, msg="home \{label} width within 320: \{Repr(dlg.rect)}")
+    assert_true(dlg.rect.1 >= 0.0 && dlg.rect.1 + dlg.rect.3 <= 568.0 + 0.5, msg="home \{label} height within 568: \{Repr(dlg.rect)}")
+    assert_eq(t.fixed_outgrown(), [], msg="home \{label} fixed_outgrown")
+    assert_eq(t.squeeze_faults(), [], msg="home \{label} squeeze_faults")
+    assert_eq(t.audit(), [], msg="home \{label} audit")
+    t.back()
+    t.run_for(@ui.move_most_ms)
+  }
+
+  // Chat top bar popovers at 320x568 @ 1.3x
+  let (tc, _) = chat_bar_node_tester("梳理发布清单", w=320.0, h=568.0, font_scale=1.3)
+  for label in [tr("common.more"), tr("android-chat.info.title")] {
+    let btn = tc.semantics().iter().find_first(fn(s) { s.role == Button && s.label == label && s.rect.1 < 60.0 }).unwrap()
+    tc.tap(btn.rect.0 + btn.rect.2 / 2.0, btn.rect.1 + btn.rect.3 / 2.0)
+    tc.run_for(@ui.move_most_ms)
+    let dlg = tc.semantics().iter().find_first(fn(s) { !s.hidden && (s.role == Dialog || s.role == Menu) }).unwrap()
+    assert_true(dlg.rect.0 >= 0.0 && dlg.rect.0 + dlg.rect.2 <= 320.0 + 0.5, msg="chat \{label} width within 320: \{Repr(dlg.rect)}")
+    assert_true(dlg.rect.1 >= 0.0 && dlg.rect.1 + dlg.rect.3 <= 568.0 + 0.5, msg="chat \{label} height within 568: \{Repr(dlg.rect)}")
+    assert_eq(tc.fixed_outgrown(), [], msg="chat \{label} fixed_outgrown")
+    assert_eq(tc.squeeze_faults(), [], msg="chat \{label} squeeze_faults")
+    assert_eq(tc.audit(), [], msg="chat \{label} audit")
+    tc.back()
+    tc.run_for(@ui.move_most_ms)
+  }
+}
+
+///|
+test "小屏悬浮液态玻璃底抽屉（+ 附件）：390x844 中文对称内缩与三列对齐、显示最近照片单行，390x844 英文与 320x568 中文零挤压零圆角告警" {
+  let open_attach = fn(w : Double, h : Double, locale : String) -> @ui.Tester raise {
+    new_run()
+    @sf.presenters_reset()
+    let src = fixture("chat")
+    wide_src.val = Some(src)
+    open_chat(chat_a)
+    let t = @ui.Tester::new(
+      fn(c) { view(c, src) },
+      tree=app_tree(src),
+      w~,
+      h~,
+      platform=2,
+      env=[("MBUI_LOCALE", locale)],
+    )
+    t.run_for(@ui.move_most_ms)
+    guard t.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Button && s.label == tr("web-main.composer.attach") }) is Some(plus_btn) else {
+      fail("plus button not found at \{w}x\{h} \{locale}")
+    }
+    t.tap(plus_btn.rect.0 + plus_btn.rect.2 / 2.0, plus_btn.rect.1 + plus_btn.rect.3 / 2.0)
+    t.run_for(@ui.move_most_ms)
+    t
+  }
+
+  // 1) 390x844 zh-CN: symmetric 6pt window_in glass inset + 16pt panel_card_in -> left 22, right 368, bottom 822; single-line label
+  let tz = open_attach(390.0, 844.0, "zh-CN")
+  guard tz.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Button && s.label == tr("android-chat.attach.camera") }) is Some(cam) else {
+    let btns = tz.semantics().filter(fn(s) { !s.hidden && s.role == Button }).map(fn(s) { "\{s.label}@\{@ui.rect_text(s.rect)}" })
+    fail("camera tile not found (want \{tr("android-chat.attach.camera")}); buttons=\{Repr(btns)}")
+  }
+  guard tz.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Button && s.label == tr("android-chat.attach.photos") }) is Some(photos) else {
+    fail("photos tile not found")
+  }
+  guard tz.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Button && s.label == tr("web-pages.chat.files") }) is Some(st_files) else {
+    fail("station files tile not found")
+  }
+  assert_true((cam.rect.0 - 22.0).abs() < 0.5, msg="camera left at 22pt: \{Repr(cam.rect)}")
+  assert_true((photos.rect.0 - 22.0).abs() < 0.5, msg="photos tile left at 22pt: \{Repr(photos.rect)}")
+  assert_true((cam.rect.0 - photos.rect.0).abs() < 0.5, msg="strip left aligns with bottom tiles")
+  assert_true((st_files.rect.0 + st_files.rect.2 - 368.0).abs() < 0.5, msg="rightmost tile ends at 368pt: \{Repr(st_files.rect)}")
+  assert_true((photos.rect.1 + photos.rect.3 - 822.0).abs() < 0.5, msg="bottom tiles end at 822pt (16pt above 838pt glass bottom): \{Repr(photos.rect)}")
+  assert_eq(tz.lines_of("显示最近照片"), ["显示最近照片"], msg="显示最近照片 fits on one line: \{Repr(tz.lines_of("显示最近照片"))}")
+  assert_eq(tz.squeeze_faults(), [], msg="zh 390 squeeze_faults")
+  assert_eq(tz.corner_faults(), [], msg="zh 390 corner_faults")
+  assert_eq(tz.audit(), [], msg="zh 390 audit")
+
+  // 2) 390x844 en-US: Photos & videos and Show recent photos clean, no squeeze/corner/audit faults
+  let te = open_attach(390.0, 844.0, "en-US")
+  assert_true(te.find("Photos & videos") is Some(_), msg="en Photos & videos shown")
+  assert_true(te.find("Show recent photos") is Some(_), msg="en Show recent photos shown")
+  assert_eq(te.squeeze_faults(), [], msg="en 390 squeeze_faults")
+  assert_eq(te.corner_faults(), [], msg="en 390 corner_faults")
+  assert_eq(te.audit(), [], msg="en 390 audit")
+
+  // 3) 320x568 zh-CN: narrow screen clean, no squeeze/corner/audit faults
+  let tn = open_attach(320.0, 568.0, "zh-CN")
+  assert_true(tn.find("Station 文件") is Some(_), msg="zh 320 Station 文件 shown")
+  assert_true(tn.find("显示最近照片") is Some(_), msg="zh 320 显示最近照片 shown")
+  assert_eq(tn.squeeze_faults(), [], msg="zh 320 squeeze_faults: \{Repr(tn.squeeze_faults())}")
+  assert_eq(tn.corner_faults(), [], msg="zh 320 corner_faults: \{Repr(tn.corner_faults())}")
+  assert_eq(tn.audit(), [], msg="zh 320 audit: \{Repr(tn.audit())}")
+}

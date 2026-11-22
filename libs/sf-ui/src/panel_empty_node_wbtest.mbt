@@ -10,7 +10,11 @@
 /// window). Closed after, gone.
 fn panel_empty_drawn(at : (Int, Double, Double), pressed : Bool, full : Bool) -> Array[String] raise {
   let open = fn(from : Anchor) {
-    let from = if pressed { from } else { Unanchored }
+    let from = if pressed {
+      if layout(at.1) is Small { Anchor::At(40.0, at.2 - 80.0, 60.0, 32.0) } else { from }
+    } else {
+      Unanchored
+    }
     panel_nodes(
       "一个",
       from~,
