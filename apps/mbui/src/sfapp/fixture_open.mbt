@@ -749,6 +749,10 @@ pub fn open_mode(mode : String) -> Unit {
         @sffixture.new_fix.preset = "p-sf"
         @sffixture.new_fix.bound = true
       }
+      "newchat-borrow-model" => {
+        @sffixture.new_fix.borrow = true
+        @sfpages.new_chat_ask("model")
+      }
       "newchat-station-models" | "newchat-station-empty" | "newchat-station-models-many" | "newchat-tui-model" | "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
         @sfpages.new_chat_ask("model")
       _ => ()
@@ -993,7 +997,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload",
     "files", "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split", "files-transfers",
     "files-tree", "place-stations", "place-profiles", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
-    "newchat-model", "newchat-profiles", "newchat-reading", "newchat-station",
+    "newchat-model", "newchat-borrow-model", "newchat-scope", "newchat-profiles", "newchat-reading", "newchat-station",
     "newchat-station-models", "newchat-station-empty",
     // (a preset's dialog and its steps further in: 添加目录, the folder picker at a station's home and in a folder of
     // repositories, 从 Git 克隆, a clone under way and one failed among its folders)

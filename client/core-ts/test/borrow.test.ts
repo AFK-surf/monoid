@@ -141,7 +141,7 @@ test("picking_another_stations_model_asks_to_borrow_it_and_borrowing_shares_it_w
   choose.set(at, of, { model: "deepseek-v4-pro" });
   const v: J = (choose.compute({ topic: "pick", station: at, of }) as J).ok;
   assert.equal(v.option, "deepseek-v4-pro");
-  assert.deepEqual([v.borrow.note, v.borrow.title, v.borrow.action, v.borrow.allowed], ["此 station 还不能用 DeepSeek V4 Pro", "向 Office 借用 ds@x.com", "借用账号", true]);
+  assert.deepEqual([v.borrow.note, v.borrow.title, v.borrow.action, v.borrow.allowed], ["此 Profile 尚未分享给此 station，可向 Office 借用。", "向 Office 借用 ds@x.com", "借用账号", true]);
   assert.equal(v.borrow.lines.length, 3);
   assert.ok(v.borrow.lines[1].includes("副本"), v.borrow.lines[1]);
   assert.ok(v.borrow.lines[2].includes("环境"), v.borrow.lines[2]);
@@ -161,7 +161,7 @@ test("picking_another_stations_model_asks_to_borrow_it_and_borrowing_shares_it_w
   const member = control(workspace(), "member");
   member.set(at, of, { model: "deepseek-v4-pro" });
   const m: J = (member.compute({ topic: "pick", station: at, of }) as J).ok;
-  assert.deepEqual([m.borrow.allowed, m.borrow.why], [false, "只有 owner 或 admin 可以借用"]);
+  assert.deepEqual([m.borrow.allowed, m.borrow.why], [false, "此 Profile 尚未分享给此 station，请联系 owner 或 admin 借用。"]);
   assert.throws(() => member.borrow(at, of), /owner 或 admin/);
   choose.set(at, of, { model: "gpt-6-astra" });
   const subscription: J = (choose.compute({ topic: "pick", station: at, of }) as J).ok;
@@ -169,6 +169,41 @@ test("picking_another_stations_model_asks_to_borrow_it_and_borrowing_shares_it_w
   choose.set(at, of, { model: "claude-opus-5-5" });
   assert.equal((choose.compute({ topic: "pick", station: at, of }) as J).ok.borrow, null);
   assert.throws(() => choose.borrow(at, of), /无需借用/);
+});
+
+test("a_new_chat_explains_local_profiles_not_available_to_its_workspace_even_when_another_station_lends", () => {
+  const ws = workspace();
+  ws[0].overview.profiles = [profile("mine", ["claude-opus-5-5"], { serves: false })];
+  const choose = control(ws, "admin");
+  const page: J = (choose.compute({ topic: "newChat", scope: "ws" }) as J).ok;
+  assert.equal(page.blocked, null);
+  assert.match(page.problem, /Profile 尚未向此 workspace 开放/);
+  assert.match(page.problem, /借用/);
+  choose.set(`ws/${HERE}`, "new", { otherStations: true });
+  const pick: J = (choose.compute({ topic: "pick", station: `ws/${HERE}`, of: "new" }) as J).ok;
+  assert.ok(pick.options.every((o: J) => o.availability === "borrowable"));
+});
+
+test("borrowing_explains_when_a_share_is_missing_or_already_allowed", () => {
+  const at = `ws/${HERE}`;
+  const of = "new";
+  const view = (ws: J[], role: string): J => {
+    const choose = control(ws, role);
+    choose.set(at, of, { model: "deepseek-v4-pro" });
+    return (choose.compute({ topic: "pick", station: at, of }) as J).ok.borrow;
+  };
+  const ws = workspace();
+  assert.equal(view(ws, "admin").note, "此 Profile 尚未分享给此 station，可向 Office 借用。");
+  ws[1].overview.profiles[2].share.allow = [MINI, HERE];
+  const waiting = view(ws, "admin");
+  assert.equal(waiting.note, "此 Profile 已分享给此 station，但尚未收到；可重试借用。");
+  assert.match(waiting.lines[0], /已将 Profile.*分享给此 station/);
+  assert.equal(waiting.allowed, true);
+  assert.equal(view(ws, "member").why, "此 Profile 已分享给此 station，但尚未收到；请联系 owner 或 admin 检查。");
+  ws[1].overview.profiles[2].share.allow = null;
+  const all = view(ws, "admin");
+  assert.equal(all.allowed, false);
+  assert.match(all.why, /已分享给所有 station.*尚未收到/);
 });
 
 test("a_model_borrowed_from_a_controls_panel_is_that_controls_once_borrowed_not_the_one_it_ran_before", () => {

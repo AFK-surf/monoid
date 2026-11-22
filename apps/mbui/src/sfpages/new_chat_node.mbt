@@ -955,7 +955,12 @@ fn new_blocked_node(
                 open_page(Setting(@settings.Route::NewProfile(address())))
               }, tone=Primary, icon="plus")
               |> ignore
-            "shared" => ()
+            "shared" => if flag(view(), "profileScopeMissing") {
+              @sf.button_node(b, fn() { @sf.t("web-main.newChat.goPickModels") }, fn() {
+                open_page(Setting(@settings.Route::Profiles(address())))
+              }, tone=Primary)
+              |> ignore
+            }
             _ =>
               @sf.button_node(b, fn() { @sf.t("web-main.newChat.goPickModels") }, fn() {
                 open_page(Setting(@settings.Route::Profiles(address())))

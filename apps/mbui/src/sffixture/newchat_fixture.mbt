@@ -886,7 +886,7 @@ pub fn fix_pick() -> Json {
         "lines": ["Fable 5.1 由 Maple 上的 Claude 订阅运行。", "借用后，这个连接的会话也用它的额度。"],
         "action": "借用",
         "allowed": true,
-        "note": "Fable 5.1 在 Maple 上，借用后这里也能用。",
+        "note": "此 Profile 尚未分享给此 station，可向 Maple 借用。",
       }
     } else {
       Json::null()
@@ -1141,14 +1141,15 @@ fn fix_new_chat_of(f : Fixture) -> Json {
     }
   }
   // Its station has no profile, or its only available profiles are disabled.
-  if f.mode == "newchat-noprofile" || f.mode == "newchat-disabled" {
+  if f.mode == "newchat-noprofile" || f.mode == "newchat-disabled" || f.mode == "newchat-scope" {
     return {
       "kept": Json::string(n.station),
       "stations": [fix_station("st1"), fix_station("st2")],
       "any": true,
       "station": fix_station(n.station),
-      "blocked": Json::string(if f.mode == "newchat-disabled" { "disabled" } else { "profile" }),
-      "problem": Json::string(if f.mode == "newchat-disabled" { "Willow 的可用 Profile 均已停用，请在 Profile 页面重新启用。" } else { "" }),
+      "blocked": Json::string(if f.mode == "newchat-disabled" { "disabled" } else if f.mode == "newchat-scope" { "shared" } else { "profile" }),
+      "profileScopeMissing": Json::boolean(f.mode == "newchat-scope"),
+      "problem": Json::string(if f.mode == "newchat-disabled" { "Willow 的可用 Profile 均已停用，请在 Profile 页面重新启用。" } else if f.mode == "newchat-scope" { "Willow 的 Profile 尚未向此 workspace 开放，请在 Profile 设置中检查分享范围。" } else { "" }),
       "model": Json::null(),
       "runtime": "",
       "waiting": false,
