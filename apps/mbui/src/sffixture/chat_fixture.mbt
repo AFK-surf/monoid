@@ -744,7 +744,7 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
           "overview": fixture_station_drive(false),
         },
       ])
-    "chatJobs" => Some({ "jobs": [] })
+    "chatJobs" => if f.mode == "chat-subchats-jobs" { Some(fix_chat_jobs()) } else { Some({ "jobs": [] }) }
     // what people said in the chat, by the day (the core's `chatOutline`: outline_fixture.mbt)
     "chatOutline" => fixture_outline(f, params)
     // what was said in the chat besides words (the core's `chatThings`: sfpages things.mbt)

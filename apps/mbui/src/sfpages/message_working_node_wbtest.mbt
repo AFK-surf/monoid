@@ -216,3 +216,29 @@ test "its agent's card opens over its picture under a pointer, as over a message
   assert_eq(t.words().length(), shut, msg="closed")
   assert_eq(t.audit(), [])
 }
+
+///|
+/// The neutral discs 18 across a Tester drew last: an agent's picture's ground (agent_avatar_ground).
+fn neutral_discs(t : @ui.Tester) -> Array[(Double, Double, Double, Double, Int64)] {
+  let ground = @sf.theme().p.neutral_bg
+  let side = @ui.Space::S4_5.px()
+  t.drawn_rects().filter(fn(r) { r.4 == ground && (r.2 - side).abs() < 0.5 && (r.3 - side).abs() < 0.5 })
+}
+
+///|
+test "an agent at work's picture inside its ring has no neutral disc of its own, at work and waiting; a message's picture keeps it" {
+  for c in [work_cases()[1], work_cases()[3]] {
+    let view = work_view(c.1)
+    let t = work_new(390.0, work_src(@signals.signal(c.2), []), fn() { view })
+    t.run_for(@ui.move_most_ms)
+    let discs = neutral_discs(t)
+    assert_true(discs.is_empty(), msg="\{c.0}: \{Repr(discs)}")
+    assert_true(t.drawn_glyphs().length() + t.drawn_images().length() + t.drawn_shapes().length() > 0, msg=c.0)
+    assert_eq(t.audit(), [], msg=c.0)
+  }
+  let t = dec_new(390.0, fn() { dec_view() }, fn(f, _) {
+    agent_avatar_node(f, fn() { "anthropic" }, fn() { "claude" }) |> ignore
+  })
+  t.run_for(@ui.move_most_ms)
+  assert_eq(neutral_discs(t).length(), 1)
+}

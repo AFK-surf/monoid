@@ -171,7 +171,7 @@ fn working_said_node(
             // (its picture, made once; away, drawn nowhere and its room kept, while a message's picture flies from it
             // and lets that message out; back, flown home from where it let the last one out by that change itself:
             // emit.mbt's Float and Return, one picture in the other's place the line does not see, agent_out_steps)
-            let own = agent_avatar_node(face, fn() { a().maker }, fn() { a().runtime })
+            let own = agent_avatar_node(face, fn() { a().maker }, fn() { a().runtime }, bare=true)
             pic.val = Some(own)
             // (what a message of its agent's coming while it is at work comes out of: agent_said_node's `out_of`; told no more
             // as it is let go)

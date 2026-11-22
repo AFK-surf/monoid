@@ -842,6 +842,31 @@ impl<O: Os> Lifecycle<O> {
         }
     }
 
+    /// Node `pid` ended as the OS logs off or shuts down (Windows): not a crash. Nothing is recorded or started again,
+    /// and the launcher stops, the other Nodes too.
+    #[cfg_attr(unix, allow(dead_code))]
+    pub fn ended_on_shutdown(&mut self, pid: u32, how: &str) {
+        match self.slot_of(pid) {
+            Some(Slot::Current) => {
+                let node = self.current.take().unwrap();
+                self.reroute(&node.served);
+                log::info(&format!("Node {pid} {how} (OS shutting down)"));
+            }
+            Some(Slot::Next) => {
+                self.next = None;
+                log::info(&format!("Node {pid} (starting beside) {how} (OS shutting down)"));
+            }
+            Some(Slot::Retiring) => {
+                self.retiring = None;
+                log::info(&format!("Node {pid} handed over and {how} (OS shutting down)"));
+                self.check_taken();
+            }
+            None => {}
+        }
+        // (after the one ended is let go: it is not told to stop)
+        self.stop();
+    }
+
     /// The serving Node ended without being asked: started again after the backoff.
     fn crashed(&mut self, node: Node<O::Node>, how: &str) {
         log::warn(&format!("Node {} ended unexpectedly", node.process.pid()));
@@ -2072,6 +2097,44 @@ mod tests {
         assert_eq!(kinds, ["front_hung_killed", "front_gone"]);
         assert_eq!((events[0]["level"].as_str(), events[0]["misses"].as_u64(), events[0]["probeMs"].as_u64(), events[0]["openFds"].as_u64()), (Some("error"), Some(3), Some(30_000), Some(812)));
         assert_eq!((events[1]["level"].as_str(), events[1]["retries"].as_u64(), events[1]["front"].as_str()), (Some("warn"), Some(0), Some("ok")));
+    }
+
+    #[test]
+    fn a_node_ended_by_the_os_shutting_down_is_no_crash() {
+        let mut station = station("shutdowncurrent", false);
+        let old = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.start_next();
+        let next = station.last();
+        station.told(old);
+        station.ended_on_shutdown(old, "exited with 1073807364");
+        assert_eq!(station.told(next), ["stop"], "the one starting beside is stopped");
+        assert!(station.told(old).is_empty(), "the one ended is not told");
+        assert_eq!(station.restart_at, None);
+        assert_eq!(station.finished(), None);
+        station.ended(next, EXITED_0);
+        assert_eq!(station.finished(), Some(0));
+        station.pass(s(10));
+        assert_eq!(station.last(), next, "none started again");
+        assert!(station.events().is_empty(), "nothing recorded: {:?}", station.events());
+    }
+
+    #[test]
+    fn a_node_starting_beside_ended_by_the_os_shutting_down_is_no_failed_handover() {
+        let mut station = station("shutdownnext", false);
+        let old = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.start_next();
+        let next = station.last();
+        station.told(old);
+        station.ended_on_shutdown(next, "exited with -1073741205");
+        assert_eq!(station.told(old), ["stop"]);
+        assert!(station.told(next).is_empty());
+        assert_eq!(station.restart_at, None);
+        assert_eq!(station.file("handoff-failed"), None);
+        assert!(station.events().is_empty(), "nothing recorded: {:?}", station.events());
+        station.ended(old, EXITED_0);
+        assert_eq!(station.finished(), Some(0));
     }
 
     #[test]

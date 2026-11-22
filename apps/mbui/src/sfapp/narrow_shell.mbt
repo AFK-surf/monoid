@@ -886,23 +886,45 @@ fn place_top_bar_node(
 /// Soft GPU bottom-fade backdrop for floating-pill narrow top bars (iOS 26 UIScrollEdgeEffect.soft):
 /// stays 100% opaque `p.bg` across the status bar & title area, then feathers smoothly to transparent
 /// over the lower `fade_h` pt down to `base_h` so scrolled content dissolves cleanly at the bar's
-/// bottom edge without a hard clip or extending past the bar's interactive height.
+/// bottom edge without a hard clip. `past` pt of it hang below `base_h` (drawn only: presses there reach what scrolls
+/// under it), the fade spanning the bar's foot rather than ending at it.
 fn narrow_bar_scrim_node(
   parent : @view.View,
   base_h : (@view.View) -> Double,
   fade_h : (@view.View) -> Double,
+  past? : Double = 0.0,
 ) -> Unit {
   parent.box(fn(scrim) {
     scrim
     .over(Is(true))
     .width_share(Is(1.0))
-    .height(By(fn() { Some(base_h(scrim)) }))
+    .height(By(fn() { Some(base_h(scrim) + past) }))
     .fades(By(fn() { (0.0, 0.0, 0.0, fade_h(scrim)) }))
     |> ignore
+    if past > 0.0 {
+      // (the scrim's whole height drawn under the fill, over it in a layer of its own: a shade short of opaque, since
+      // Node::covers counts a whole ground as hiding what is under it whatever `fades` does to it, and what hangs below
+      // the bar is drawn fading, presses there reaching what scrolls under it; the fill covers the bar itself)
+      scrim.box(fn(hang) {
+        hang
+        .over(Is(true))
+        .width_share(Is(1.0))
+        .height_share(Is(1.0))
+        .ground(By(fn() { (@sf.theme().p.bg & 0xFFFFFF00L) | 0xFEL }))
+        .points(Is(false))
+        |> ignore
+      })
+      |> ignore
+    }
     scrim.box(fn(fill) {
       // (register fill in inputs_in via pointed() while keeping points=false so Tree::target_at visits fill and
       // applies Node::covers to block click-through onto scrolled content behind the top bar without affecting hover)
-      fill.width_share(Is(1.0)).height_share(Is(1.0)).ground(By(fn() { @sf.theme().p.bg })).points(Is(false)) |> ignore
+      fill.width_share(Is(1.0)).ground(By(fn() { @sf.theme().p.bg })).points(Is(false)) |> ignore
+      if past > 0.0 {
+        fill.height(By(fn() { Some(base_h(fill)) })) |> ignore
+      } else {
+        fill.height_share(Is(1.0)) |> ignore
+      }
       fill.pointed() |> ignore
     })
     |> ignore

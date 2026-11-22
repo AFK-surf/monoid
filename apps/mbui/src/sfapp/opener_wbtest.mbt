@@ -255,6 +255,25 @@ test "small: chat-lineage breadcrumb navigates and chat-subchats-pop sheet exclu
 }
 
 ///|
+test "small: composer-top capsules give way inside the window" {
+  let calls : Array[Made] = []
+  let t = decide_core(calls, "chat-subchats-jobs")
+  for w in [390.0, 320.0, 280.0] {
+    t.resize(w, 844.0)
+    t.run_for(@ui.move_most_ms)
+    guard t.query(Button, label="子会话") is Some(sub) else { fail("expected subchats capsule at \{w}") }
+    guard t.query(Button, label="服务和后台任务") is Some(jobs) else { fail("expected jobs capsule at \{w}") }
+    let strip = t.all(Button).filter(fn(b) { b.rect.1 == sub.rect.1 })
+    assert_true(strip.length() >= 3, msg="expected agent, jobs and subchats capsules at \{w}: \{strip.length()}")
+    for b in strip {
+      assert_true(b.rect.0 >= 12.0 && b.rect.0 + b.rect.2 <= w - 12.0 + 0.5, msg="\{b.label} past the strip at \{w}: \{Repr(b.rect)}")
+    }
+    assert_true(jobs.rect.0 + jobs.rect.2 <= sub.rect.0, msg="jobs and subchats overlap at \{w}")
+    assert_eq(t.audit(), [])
+  }
+}
+
+///|
 test "small: subchats sheet aligns heading, shows header counts, collapses/expands archived without stale stateText, and navigates" {
   let calls : Array[Made] = []
   let t = decide_core(calls, "chat-subchats-pop")

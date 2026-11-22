@@ -270,6 +270,11 @@ let msg_waiting : @ui.Style = @ui.css("row gap=S1_25 align=ACenter")
 let agent_avatar_ground : @ui.Style = @ui.css("w=S4_5 h=S4_5 radius=Full bg=Neutral align=ACenter justify=JCenter")
 
 ///|
+/// An agent's picture ringed on its working line (no neutral disc inside the outer ring): 18 across, its mark in the middle.
+// kept across runs: a value (no field of it changes)
+let agent_avatar_bare : @ui.Style = @ui.css("w=S4_5 h=S4_5 align=ACenter justify=JCenter")
+
+///|
 // kept across runs: a value (no field of it changes)
 let person_avatar_room : @ui.Style = @ui.css("w=S4_5 h=S4_5")
 

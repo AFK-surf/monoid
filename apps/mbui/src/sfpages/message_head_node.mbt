@@ -61,15 +61,18 @@ fn message_agent_of(here : MessageNodeHere, agent : String) -> String {
 /// An agent's picture (agent_avatar's) in `v`: its model's `maker` (its `runtime`'s where none is said; still.fail's
 /// mark without either) on the neutral ground, 18 round, one piece in bones; `corner` (slack | feishu; "" none), that
 /// place's mark on its corner, where a place is said at all (None: an agent's own message, which never has one: no node
-/// held for it). Each as it changes. Its node (what its agent's card is over: message_agent_card_node).
+/// held for it); `bare`, its mark alone with no ground under it (an agent at work's, its ring round it). Each as it
+/// changes. Its node (what its agent's card is over: message_agent_card_node).
 fn agent_avatar_node(
   v : @view.View,
   maker : () -> String,
   runtime : () -> String,
   corner? : (() -> String)? = None,
+  bare? : Bool = false,
 ) -> @view.View {
   v.box(fn(b) {
-    @sf.style_node(b, fn() { agent_avatar_ground })
+    let ground = if bare { agent_avatar_bare } else { agent_avatar_ground }
+    @sf.style_node(b, fn() { ground })
     b.bone_whole(Is(true)) |> ignore
     let mark = fn() {
       let (m, r) = (maker(), runtime())
