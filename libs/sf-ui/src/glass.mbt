@@ -288,13 +288,15 @@ pub fn glass_sheet() -> @ui.Glass {
 /// Progressive blur soft scroll-edge backdrop (iOS 26 UIScrollEdgeEffect.soft): blurs and veils scrolled content
 /// progressively across the host node's `View::fades` band (blur sigma 0 -> 8.5pt, `p.bg` veil 0 -> 50% with
 /// adaptive contrast boost over opposing-luminance content, vibrancy saturation 1.25), degrading to a solid
-/// `p.bg` alpha fade under `MBUI_GLASS=solid`.
-pub fn glass_scroll_edge() -> @ui.Glass {
+/// `p.bg` alpha fade under `MBUI_GLASS=solid`. `ground`: the ground it veils into where that is not `p.bg` (a page's
+/// panel a step darker behind the one in use); none (0) is `p.bg`.
+pub fn glass_scroll_edge(ground? : Int64 = 0L) -> @ui.Glass {
   let t = theme()
+  let bg = if ground != 0L { ground } else { t.p.bg }
   @ui.Glass::frosted(
     blur=8.5,
-    tint=alpha(t.p.bg, 0.50),
-    solid=t.p.bg,
+    tint=alpha(bg, 0.50),
+    solid=bg,
     saturation=1.25,
     progressive=true,
   )
