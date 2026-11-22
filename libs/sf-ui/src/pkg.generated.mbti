@@ -2200,6 +2200,10 @@ pub let share_w_most : Double
 
 pub fn sheet_column_node(@view.View, (@view.View) -> Unit) -> Unit
 
+pub fn sheet_foot_alpha(@view.View) -> Double
+
+pub fn sheet_foot_cover(@view.View) -> Double
+
 pub let sheet_grabber : @ui.Style
 
 pub let sheet_most : Double

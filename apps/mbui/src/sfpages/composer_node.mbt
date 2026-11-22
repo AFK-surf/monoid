@@ -435,6 +435,7 @@ fn composer_node_of(
     // least)
     // (roomy, alone in the page's middle: as tall as its box, nothing round it)
     foot
+    .alpha(By(fn() { if roomy() { 1.0 } else { @sf.sheet_foot_alpha(foot) } }))
     .padding(
       By(fn() {
         if roomy() {

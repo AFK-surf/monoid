@@ -535,6 +535,73 @@ test "小屏: floating island sheet casts outside-only glass_overlay_shadow in l
 }
 
 ///|
+test "小屏对话页底抽屉打开时，底部输入框与浮动玻璃胶囊全部淡出避让，关闭后完整恢复" {
+  new_run()
+  let src = fixture("chat-jobs")
+  wide_src.val = Some(src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  open_fixture_over("chat-jobs", src)
+  t.run_for(sheet_way_ms(t))
+  assert_true(@sf.presenting(), msg="sheet open")
+  let lower_open = t.drawn_glass().filter(fn(g) { g.1 + g.3 > 422.0 && g.4 == 6 })
+  assert_eq(lower_open.length(), 1, msg="only sheet glass in lower half while open: \{Repr(lower_open)}")
+  assert_eq(t.audit(), [], msg="open audit")
+  t.key(@ui.key_escape)
+  t.run_for(sheet_way_ms(t))
+  assert_false(@sf.presenter_visible(), msg="sheet closed")
+  let lower_closed = t.drawn_glass().filter(fn(g) { g.1 + g.3 > 422.0 && g.4 == 6 })
+  assert_true(lower_closed.length() >= 2, msg="composer and floating chrome restored: \{Repr(lower_closed)}")
+  assert_eq(t.audit(), [], msg="closed audit")
+}
+
+///|
+test "小屏首页底抽屉打开时，底部 Tab Bar 玻璃全部淡出避让，关闭后恢复两块玻璃" {
+  new_run()
+  let src = fixture("home-jobs")
+  wide_src.val = Some(src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  open_fixture_over("home-jobs", src)
+  t.run_for(@ui.move_most_ms)
+  let tab_before = t.drawn_glass().filter(fn(g) { g.4 == 6 && g.1 > 700.0 && (g.3 - bar_track).abs() < 2.0 })
+  assert_eq(tab_before.length(), 2, msg="tab bar visible before opening sheet: \{Repr(tab_before)}")
+  let before_audit = t.audit()
+  @sf.panel_nodes("首页底抽屉", from=@sf.Anchor::Unanchored, fn(v, _) {
+    @sf.words_node(v, fn() { "底抽屉内容" }, fn() { @sf.paragraph }) |> ignore
+  })
+  t.run_for(sheet_way_ms(t))
+  assert_true(@sf.presenting(), msg="home sheet open")
+  let tab_open = t.drawn_glass().filter(fn(g) { g.4 == 6 && g.1 > 700.0 && (g.3 - bar_track).abs() < 2.0 })
+  assert_eq(tab_open.length(), 0, msg="tab bar glass hidden while sheet open: \{Repr(tab_open)}")
+  assert_eq(t.audit(), [], msg="home open audit")
+  t.key(@ui.key_escape)
+  t.run_for(sheet_way_ms(t))
+  assert_false(@sf.presenter_visible(), msg="home sheet closed")
+  let tab_closed = t.drawn_glass().filter(fn(g) { g.4 == 6 && g.1 > 700.0 && (g.3 - bar_track).abs() < 2.0 })
+  assert_eq(tab_closed.length(), 2, msg="tab bar capsule + action circle restored: \{Repr(tab_closed)}")
+  assert_eq(t.audit(), before_audit, msg="home closed audit matches before")
+}
+
+///|
+test "宽屏弹层与居中新建对话（roomy）不受底抽屉避让影响，输入框保持可见" {
+  for mode in ["chat-jobs", "new-chat"] {
+    new_run()
+    let src = fixture(mode)
+    wide_src.val = Some(src)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+    open_fixture_over(mode, src)
+    t.run_for(sheet_way_ms(t))
+    if mode == "new-chat" {
+      @sf.panel_nodes("宽屏弹层", from=@sf.Anchor::Unanchored, fn(v, _) {
+        @sf.words_node(v, fn() { "弹层内容" }, fn() { @sf.paragraph }) |> ignore
+      })
+      t.run_for(sheet_way_ms(t))
+    }
+    let composer_glass = t.drawn_glass().filter(fn(g) { g.4 == 6 && g.2 > 200.0 && g.3 >= 40.0 && g.3 <= 220.0 })
+    assert_true(composer_glass.length() >= 1, msg="\{mode}: wide composer remains visible: \{Repr(t.drawn_glass())}")
+  }
+}
+
+///|
 /// How long what scrolls goes on after a finger throws it, at most: its fling over by then (what a test runs to before
 /// it reads where it was left).
 let fling_over_ms : Double = 3000.0

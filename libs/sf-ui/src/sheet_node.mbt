@@ -13,6 +13,48 @@
 // back and a press on what is above it close it (its gone told); what it holds closes it with what it was given.
 
 ///|
+/// Active bottom sheets' live coverage (`0.0` none .. `1.0` full) evaluated on an observer view's frame clock.
+// kept across runs: each let go with its sheet's layer; presenters_reset empties it
+let sheet_foot_covers : Map[Int, (@view.View) -> Double] = Map([])
+
+///|
+// kept across runs: only counts; presenters_reset puts it back
+let sheet_foot_next : Ref[Int] = Ref(0)
+
+///|
+fn sheet_foot_ver_new() -> @signals.Signal[Int] {
+  @signals.signal(0, same=fn(a, b) { a == b })
+}
+
+///|
+/// Notifies observers whenever a bottom sheet registers or leaves `sheet_foot_covers`.
+// kept across runs: presenters_reset puts it back
+let sheet_foot_ver : Ref[@signals.Signal[Int]] = Ref(sheet_foot_ver_new())
+
+///|
+/// How far open bottom sheets (`sheet_node`) cover the window's foot right now (`0.0` none .. `1.0` full),
+/// tracking scrim fade and 1:1 interactive drag on `v`'s frame clock.
+pub fn sheet_foot_cover(v : @view.View) -> Double {
+  sheet_foot_ver.val.get() |> ignore
+  let mut cover = 0.0
+  for _, f in sheet_foot_covers {
+    let c = f(v)
+    if c > cover {
+      cover = c
+    }
+  }
+  dclamp(cover, 0.0, 1.0)
+}
+
+///|
+/// Opacity (`1.0` clear .. `0.0` hidden) for bottom floating chrome (composer, chat floats, bottom tab bar)
+/// receding beneath a rising bottom sheet: finishes fading in the front 65% of the sheet's scrim/drag progress
+/// so bottom glass clears before the sheet's liquid bevel sweeps over it, and returns 1:1 on drag-to-dismiss.
+pub fn sheet_foot_alpha(v : @view.View) -> Double {
+  1.0 - dclamp(sheet_foot_cover(v) / 0.65, 0.0, 1.0)
+}
+
+///|
 /// How far down a sheet's top is dragged before it closes as it is let go (@kit.sheet's, one without detents).
 let sheet_drag_close : Double = 80.0
 
@@ -212,7 +254,7 @@ fn sheet_node(
       let drawn : Ref[(Double, Double, Double)] = Ref((0.0, 0.0, 0.0))
       // (while a finger drags the sheet down or it springs back, dim the scrim with its drag progress; once leaving,
       // `dim` fades out from the release alpha)
-      let drag_dim_factor = fn() -> Double {
+      let drag_dim_factor_on = fn(v : @view.View) -> Double {
         if layer.leaving() {
           1.0
         } else if @signals.untracked(fn() { top().x.grows }) {
@@ -226,13 +268,28 @@ fn sheet_node(
         } else {
           let down = match held.get() {
             Some(y) => y
-            None => back.shown(layer)
+            None => back.shown(v)
           }
           let own = dmax(drawn.val.1, sheet_drag_close)
           dclamp(1.0 - down / own, 0.0, 1.0)
         }
       }
-      let live_dim = fn() -> Double { dim.shown(layer) * drag_dim_factor() }
+      let live_dim = fn() -> Double { dim.shown(layer) * drag_dim_factor_on(layer) }
+      let cover_id = sheet_foot_next.val + 1
+      sheet_foot_next.val = cover_id
+      sheet_foot_covers[cover_id] = fn(v : @view.View) -> Double {
+        if vanished() {
+          0.0
+        } else {
+          dim.shown(v) * drag_dim_factor_on(v)
+        }
+      }
+      sheet_foot_ver.val.set(sheet_foot_ver.val.untracked() + 1)
+      layer.owns(fn() {
+        sheet_foot_covers.remove(cover_id)
+        sheet_foot_ver.val.set(sheet_foot_ver.val.untracked() + 1)
+      })
+      |> ignore
       // (its foot drawn back by how far it is drawn off its place on its way from as tall as it stood (as tall as it was
       // last drawn): staying at the window's foot as its top goes, as the host's sheet's foot does)
       // (how far its foot was drawn back as it closed on its way from as tall as it stood: carried's; none else)

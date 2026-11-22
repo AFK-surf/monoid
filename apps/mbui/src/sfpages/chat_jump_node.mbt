@@ -911,7 +911,8 @@ fn chat_float_stand(stand : @view.View, jump : ChatJump, chat : String) -> Unit 
   // (fading in and out over float_ms (the old page's float_trans), leaving over as long; standing as it is found as its
   // list is first in sight and as an answer tells it (ChatJump's `sight_from`, @view.answering), coming by nothing)
   let settled = stand.cause_at() <= jump.sight_from || @view.answering_now()
-  stand.alpha(By(@motion.presence_in(stand, @motion.tween(float_ms, ease=Out), from=if settled { 1.0 } else { 0.0 }))) |> ignore
+  let presence = @motion.presence_in(stand, @motion.tween(float_ms, ease=Out), from=if settled { 1.0 } else { 0.0 })
+  stand.alpha(By(fn() { presence() * @sf.sheet_foot_alpha(stand) })) |> ignore
 }
 
 ///|

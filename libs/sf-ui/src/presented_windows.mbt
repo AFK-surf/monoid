@@ -18,4 +18,7 @@ fn init {
   @ui.window_kept_map(tree_as_sheet)
   @ui.window_kept_ref(window_tips_at, fn() { None })
   @ui.window_kept_ref(tree_sheet_place, fn() { None })
+  @ui.window_kept_map(sheet_foot_covers)
+  @ui.window_kept_ref(sheet_foot_next, fn() { 0 })
+  @ui.window_kept_ref(sheet_foot_ver, sheet_foot_ver_new)
 }
