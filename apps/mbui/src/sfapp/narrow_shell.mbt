@@ -450,8 +450,8 @@ fn narrow_made_as(
               None => ()
             }
           })
-          // Home and a place draw their own top bar under the status bar.
-          narrow_made_top(outer, has_top=place || kind == "home")
+          // Home, a place, and pushed sub-pages draw their own top bar / scroll-edge backdrop under the status bar.
+          narrow_made_top(outer, has_top=place || kind == "home" || (under is Some(_) && kind != "screen"))
           // (a place of the bottom bar's: its top bar mounted on `outer` so push/pop slides it with the page,
           // while root tab switches keep the glass & settings gear stationary and cross-fade only title/actions)
           if place {

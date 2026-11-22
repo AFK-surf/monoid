@@ -33,7 +33,7 @@ test "nav bar: back, title and what is at its end on one line (settings' pages)"
     let mids : Array[(String, Double)] = []
     for s in t.semantics() {
       let (_, y, _, h) = s.rect
-      if !s.hidden && h > 0.0 && h <= 34.0 && y >= 0.0 && y + h / 2.0 < 38.0 {
+      if !s.hidden && h > 0.0 && h <= 40.0 && y >= 0.0 && y + h / 2.0 < 38.0 {
         mids.push((s.label, y + h / 2.0))
       }
     }
@@ -79,7 +79,7 @@ fn bar_line_under(mode : String, top : Double) -> Array[(String, Double)] {
   let mids : Array[(String, Double)] = []
   for s in t.semantics() {
     let (_, y, _, h) = s.rect
-    if !s.hidden && h > 0.0 && h <= 34.0 && y + h / 2.0 < top + 38.0 {
+    if !s.hidden && h > 0.0 && h <= 40.0 && y + h / 2.0 < top + 38.0 {
       mids.push((s.label, y + h / 2.0))
     }
   }
@@ -117,7 +117,7 @@ fn back_middle(mode : String, top : Double) -> (String, Double)? {
   let mut first : (String, Double, Double)? = None
   for s in t.semantics() {
     let (x, y, _, h) = s.rect
-    if !s.hidden && h > 0.0 && h <= 34.0 && y >= top && y + h / 2.0 < top + 38.0 {
+    if !s.hidden && h > 0.0 && h <= 40.0 && y >= top && y + h / 2.0 < top + 38.0 {
       match first {
         Some((_, fx, _)) if fx <= x => ()
         _ => first = Some((s.label, x, y + h / 2.0))

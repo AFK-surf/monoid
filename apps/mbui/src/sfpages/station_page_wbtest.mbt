@@ -334,9 +334,12 @@ test "an away station's 概览 shows diagnostics card with copy and cached resou
 ///|
 test "a station's page, its parts chosen by its choice: 设置 pressed shows it" {
   let t = station_tester("ws1/st1")
-  match t.find_last("设置") {
-    Some((x, y)) => t.tap(x, y)
-    None => fail("no 设置")
+  match t.semantics().filter(fn(s) { s.role != Link && !s.hidden && s.label == "设置" }) {
+    [tab, ..] => {
+      let (x, y, w, h) = tab.rect
+      t.tap(x + w / 2.0, y + h / 2.0)
+    }
+    [] => fail("no 设置")
   }
   t.draw()
   assert_eq(@settings.station_parts.get("ws1/st1"), Some("settings"))

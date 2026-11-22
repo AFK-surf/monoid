@@ -56,3 +56,18 @@ test "a made page without its own top still covers the status bar with its groun
   })
   assert_true(!bands.is_empty(), msg="the page's status-bar ground: \{Repr(bands)}")
 }
+
+///|
+test "a pushed narrow settings page shows a floating liquid glass back pill with no hard status-bar band" {
+  new_run()
+  let src = fixture("home")
+  app.nav.push(Settings)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.post(@hostapi.system_channel, "{\"bars\":{\"top\":24,\"bottom\":48,\"left\":0,\"right\":0}}")
+  t.run_for(@ui.move_most_ms)
+  let pills = t.drawn_glass().filter(fn(g) { g.4 == 6 && g.1 < 100.0 })
+  let bands = t.drawn_rects().filter(fn(r) {
+    r.0 == 0.0 && r.1 == 0.0 && r.2 == 390.0 && r.3 == 24.0
+  })
+  assert_true(pills.length() >= 1 && bands.is_empty(), msg="pills \{Repr(pills)}, bands \{Repr(bands)}")
+}

@@ -336,7 +336,6 @@ pub fn styled_words(w : @view.View, words : () -> String, style : () -> @ui.Text
 #derive(Eq, Hash)
 priv enum PageItem {
   Top
-  Back
   Title
   Head
   Lead
@@ -562,14 +561,16 @@ fn narrow_page_node(
   // what it shows as it is answered in place of what it showed waiting or empty, there at once: pg_blocks_read)
   let was : Ref[Set[String]] = Ref(Set([]))
   let other = Ref(false)
+  let back_bar_h = fn(node : @view.View) -> Double {
+    let line_h = node_sp(node, @ui.tree_theme().text_size(Title).1)
+    let pill_h = dmax(pg_back_pill_h, line_h + 2.0 * pg_back_pill_y)
+    pg_back_top + pill_h + pg_back_foot
+  }
   let items = fn() -> Array[PageItem] {
     let f = frame()
     let out = []
-    if f.top > 0.0 {
+    if f.top > 0.0 || f.back is Some(_) {
       out.push(Top)
-    }
-    if f.back is Some(_) {
-      out.push(Back)
     }
     if head is Some(_) {
       out.push(Head)
@@ -640,27 +641,18 @@ fn narrow_page_node(
       fn(s, item) {
       with_look(Narrow, fn() {
         match item {
-          // under what stands over it (a status bar)
-          Top => s.height(By(fn() { Some(frame().top) })) |> ignore
-          // back to where it was opened from
-          Back => {
-            s.row(Is(true)).padding(Is((pg_back_x, pg_back_top, pg_back_end, pg_back_foot))).lines_up(Is(Some(Middle)))
+          // under what stands over it (a status bar and/or floating back bar)
+          Top =>
+            s.height(By(fn() {
+              let f = frame()
+              let bar = if f.back is Some(_) {
+                back_bar_h(s) + (if head is Some(_) { pg_back_head_gap } else { 0.0 })
+              } else {
+                0.0
+              }
+              Some(f.top + bar)
+            }))
             |> ignore
-            nav_back_node(s, fn() { frame().back.unwrap_or("") }, on_back)
-            // (what its own head does, at the line's end: own_head's back_line)
-            match (head, actions) {
-              (Some(_), Some(f)) =>
-                s.show(back_holds, fn(e) {
-                  e.grow(Is(1.0)).row(Is(true)).lies_along(Is(End)) |> ignore
-                  e.box(fn(a) {
-                    style_node(a, fn() { head_actions })
-                    f(a)
-                  })
-                  |> ignore
-                })
-              _ => ()
-            }
-          }
           // a head of its own in place of its title, in the page's room as its cards are (pg_card_room: 10 under it;
           // under the frame's bar that names it, 8 under that too: pg_barred_head)
           Head =>
@@ -744,6 +736,43 @@ fn narrow_page_node(
     |> ignore
   })
   |> ignore
+  if !@signals.untracked(fn() { frame().named }) {
+    v.show(fn() { frame().back is Some(_) }, at_once=true, fn(bar) {
+      bar.over(Is(true)).lies_along(Is(Start)) |> ignore
+      top_scroll_edge_node(
+        bar,
+        fn(s) { frame().top + back_bar_h(s) },
+        fn(s) { back_bar_h(s) },
+        bg=fn() { theme().p.bg },
+        shield=true,
+      )
+      |> ignore
+      bar.box(fn(row) {
+        row
+        .row(Is(true))
+        .fits(Is(true))
+        .gap(Is(8.0))
+        .padding(By(fn() { (pg_back_pill_x, frame().top + pg_back_top, pg_back_pill_x, pg_back_foot) }))
+        .lines_up(Is(Some(Middle)))
+        |> ignore
+        nav_back_pill_node(row, fn() { frame().back.unwrap_or("") }, on_back)
+        match (head, actions) {
+          (Some(_), Some(f)) =>
+            row.show(back_holds, fn(e) {
+              e.grow(Is(1.0)).row(Is(true)).lies_along(Is(End)) |> ignore
+              e.box(fn(a) {
+                style_node(a, fn() { head_actions })
+                a.lends(back_bar_lent, true) |> ignore
+                f(a)
+              })
+              |> ignore
+            })
+          _ => ()
+        }
+      })
+      |> ignore
+    })
+  }
 }
 
 ///|
@@ -757,23 +786,32 @@ let pg_head_named_top : Double = 8.0
 let head_back_holds : @view.Lent[() -> Bool] = @view.Lent::new()
 
 ///|
+/// Whether a control is placed in `narrow_page_node`'s floating liquid glass back bar (so `icon_action_by` wraps
+/// trailing icon actions in a symmetric 40pt floating liquid glass circle pill).
+// kept across runs: what each narrow page's floating back bar lends (View::lends), let go with it
+let back_bar_lent : @view.Lent[Bool] = @view.Lent::new()
+
+///|
 /// How tall a page's part is counted before it was first laid out (narrow_list's old list's).
 let pg_block_est : Double = 80.0
 
 ///|
-/// Back's line's room (pg_back_line: 18 in, 10 at its end, 6 over, 4 under); the large title's (pg_title_box: 24 in, 16
-/// at its end, 6 under; 40 over
-/// with nothing over it), its line's gap and its words' least (pg_title_line, pg_title_words); what it is for
-/// (pg_lead_box: 12 in, 10 under). The title starts where what is for and the sections' headings do (12 of the page's
-/// room and 12 of their own), back as far in with it (the user, 2026-11-15: a title 8 out of the words under it).
-let pg_back_x : Double = 18.0
+/// Floating back pill's left/right inset (12pt, matching Home/Chat top bar and group cards below), min-height (40pt,
+/// matching Home/Chat/Place top bar `bar_pill_group_node`), vertical inner padding (4pt), top/bottom bar padding
+/// (2pt each -> 44pt bar rhythm), and extra gap under bar for `own_head` pages (10pt -> 54pt total).
+let pg_back_pill_x : Double = 12.0
 
 ///|
-/// Back's line's room at its end, where what it holds there (a page's own head's actions) stays as it was.
-let pg_back_end : Double = 10.0
+let pg_back_pill_h : Double = 40.0
 
 ///|
-let pg_back_top : Double = 6.0
+let pg_back_pill_y : Double = 4.0
+
+///|
+let pg_back_top : Double = 2.0
+
+///|
+let pg_back_head_gap : Double = 10.0
 
 ///|
 /// The room at a page's foot under its last block (pg_foot). In a panel of its own (pane_lent), narrow, what puts its
@@ -789,7 +827,7 @@ fn page_foot(foot : @view.View) -> Double {
 }
 
 ///|
-let pg_back_foot : Double = 4.0
+let pg_back_foot : Double = 2.0
 
 ///|
 let pg_title_x : Double = 24.0
@@ -851,6 +889,39 @@ fn nav_back_node(
         |> ignore
       None => b.box(fn(w) { styled_words(w, label, fn() { nav_back_words }) |> ignore }) |> ignore
     }
+  })
+  |> ignore
+}
+
+///|
+/// Floating single-layer liquid glass back capsule for narrow sub-pages (`narrow_page_node`, `skeleton_page_head`):
+/// 40pt min-height pill with chevron-left and back label, matching Home/Chat/Place top bar capsules in a 44pt bar.
+#callsite(autofill(loc))
+fn nav_back_pill_node(
+  parent : @view.View,
+  label : () -> String,
+  back : () -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.box(made_for=loc, fn(b) {
+    b
+    .row(Is(true))
+    .fits(Is(true))
+    .min_width(Is(Some(pg_back_pill_h)))
+    .padding(Is((9.0, pg_back_pill_y, 9.0, pg_back_pill_y)))
+    .gap(Is(0.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    |> ignore
+    glass_capsule_node(b, min_height=Some(pg_back_pill_h), radius=Some(pg_back_pill_h / 2.0), sharing=true, interactive=true) |> ignore
+    hover_ground_node(b, color=fn() { if b.pressed() { bar_pill_press_ink() } else { @ui.tree_theme().color(Hover) } })
+    pressed_node(b, back, Is(pg_back_pill_h / 2.0), Link, label)
+    icon_node(b, "chevron-left", nav_back_icon, By(fn() { theme().p.accent_text })) |> ignore
+    b.box(fn(w) {
+      w.drops(Is(1)).padding(Is((2.0, 0.0, 5.0, 0.0))) |> ignore
+      styled_words(w, label, fn() { nav_back_words }) |> ignore
+    })
+    |> ignore
   })
   |> ignore
 }
