@@ -6,6 +6,10 @@
 let cover_mouse_hold_ms : Double = 500.0
 
 ///|
+/// How far apart a finger's moves come as it pulls the messages: a frame's at 60 Hz.
+let cover_drag_step_ms : Double = 16.0
+
+///|
 fn composer_cover_tester(pointing? : @ui.Pointing = Mouse, platform? : Int = 0) -> @ui.Tester {
   new_run()
   let src = fixture("chat")
@@ -15,7 +19,7 @@ fn composer_cover_tester(pointing? : @ui.Pointing = Mouse, platform? : Int = 0) 
   let t = @ui.Tester::new(
     fn(c) {
       let _ = @sf.begin(c)
-      c.mouse_drags_lists(false)
+      c.mouse_drags_lists(pointing is Finger)
       @sf.presented(c)
     },
     tree=fn(root) {
@@ -175,4 +179,39 @@ test "composer adaptive glass steps from 2.1 compact capsule to 4.0 expanded box
   t.run_for(@ui.move_most_ms)
   assert_true(composer_focused())
   assert_eq(glass_of(), (4.0, 0x67, true))
+}
+
+///|
+test "composer over messages on Android: the messages pulled past their top stretch, the composer drawn where it rests" {
+  let t = composer_cover_tester(pointing=Finger, platform=2)
+  let glass = fn() {
+    t.drawn_glass().map(fn(g) { (g.0, g.1, g.2, g.3) })
+  }
+  let rest_glass = glass()
+  assert_true(rest_glass.length() > 0, msg="no glass drawn")
+  let (gx, top, gw, gh) = composer_cover_glass_box(t)
+  // (what is read of the messages above the composer, and of the composer within its glass at rest)
+  let messages = fn() { t.glyphs_seen().filter(fn(r) { r.3 <= top }) }
+  let composer = fn() {
+    t.glyphs_seen().filter(fn(r) { r.0 >= gx && r.2 <= gx + gw && r.1 >= top && r.3 <= top + gh })
+  }
+  let rest_messages = messages()
+  let rest_composer = composer()
+  assert_true(rest_composer.length() > 0, msg="no words read in the composer")
+  // (a finger pulls the messages down from their top, past the slop, and holds them there)
+  t.touch(0, 300.0, 150.0)
+  for k in 1..=10 {
+    t.advance(cover_drag_step_ms)
+    t.touch(1, 300.0, 150.0 + 16.0 * k.to_double())
+    t.draw()
+  }
+  assert_true(messages() != rest_messages, msg="the messages not stretched")
+  assert_eq(glass(), rest_glass, msg="the composer's glass moved: \{Repr(glass())}, at rest \{Repr(rest_glass)}")
+  assert_eq(
+    composer(),
+    rest_composer,
+    msg="the composer's words moved: \{Repr(composer())}, at rest \{Repr(rest_composer)}",
+  )
+  t.touch(2, 300.0, 310.0)
+  t.draw()
 }

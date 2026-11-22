@@ -131,6 +131,89 @@ test "Android: a page's list pulled past its foot, its rows stretched: its bar o
 }
 
 ///|
+let pinned_foot_ink : Int64 = 0x224466FFL
+
+///|
+/// Android's page's list of 100 rows 50 high with a foot 60 high pinned over the foot of what shows (View::scrolls_window's
+/// `foot`), the window's whole, a finger held on it after `hand`: how far it shows past its end, its rows' drawing
+/// and its foot's (each box of the foot's colour, where it is drawn).
+fn footed_held(hand : (Tester) -> Unit) -> (Double, Array[Array[Double]], Array[Array[Double]]) {
+  let s = @view.Scroll::list()
+  let t = Tester::new(fn(_c) {  }, platform=2)
+  set_view_app(fn(root) {
+    root.box(fn(col) {
+      col.width(Is(Some(390.0))).height(Is(Some(844.0))) |> ignore
+      col.scrolls_window(
+        s,
+        fn() { Array::makei(100, fn(i) { i }) },
+        est=50.0,
+        foot=fn(f) { f.box(fn(b) { b.height(Is(Some(60.0))).ground(Is(pinned_foot_ink)) |> ignore }) |> ignore },
+        fn(row, _) { row.height(Is(Some(50.0))).ground(Is(0xEEEEEEFFL)) |> ignore },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  hand(t)
+  let tree = view_tree().unwrap()
+  let foot = t
+    .drawn_instances()
+    .filter(fn(a) {
+      a[5] == 0.0 &&
+      (((a[8] * 255.0).round().to_int64() << 24) |
+      ((a[9] * 255.0).round().to_int64() << 16) |
+      ((a[10] * 255.0).round().to_int64() << 8) |
+      (a[11] * 255.0).round().to_int64()) ==
+      pinned_foot_ink
+    })
+    .map(fn(a) { a[0:5].to_owned() })
+  (s.past(tree), same_drawn(t), foot)
+}
+
+///|
+/// A finger down at (200, `y0`) moved `by` (past the slop) in 20 steps and held there.
+fn footed_drag(y0 : Double, by : Double) -> (Tester) -> Unit {
+  fn(t) {
+    t.touch(0, 200.0, y0)
+    let steps = 20
+    for k in 1..=steps {
+      t.advance(drag_step_ms)
+      let slop = if by > 0.0 { 8.0 } else { -8.0 }
+      t.touch(1, 200.0, y0 + (slop + by) * k.to_double() / steps.to_double())
+      t.draw()
+    }
+  }
+}
+
+///|
+test "Android: a page's list pulled past its top or its foot, its rows stretched: its pinned foot drawn where it is at rest, unstretched" {
+  // (at rest at its top; pulled 200 down past its top)
+  let (rest_past, rest_rows, rest_foot) = footed_held(fn(_t) {  })
+  let (top_past, top_rows, top_foot) = footed_held(footed_drag(200.0, 200.0))
+  assert_eq(rest_past, 0.0)
+  assert_true(rest_foot.length() > 0, msg="no foot drawn")
+  assert_true(top_past > 0.0, msg="not past its top: \{top_past}")
+  assert_true(top_rows != rest_rows, msg="its rows not stretched past its top")
+  assert_eq(top_foot, rest_foot, msg="past its top")
+  // (at its foot; and pulled 200 up past it)
+  let to_foot = fn(t : Tester) {
+    t.wheel(200.0, 400.0, 10000.0)
+    t.run_for(wheel_ease_ms)
+  }
+  let (end_past, end_rows, end_foot) = footed_held(to_foot)
+  let (foot_past, foot_rows, foot_foot) = footed_held(fn(t) {
+    to_foot(t)
+    footed_drag(700.0, -200.0)(t)
+  })
+  assert_eq(end_past, 0.0)
+  assert_eq(end_foot, rest_foot, msg="at its foot")
+  assert_true(foot_past < 0.0, msg="not past its foot: \{foot_past}")
+  assert_true(foot_rows != end_rows, msg="its rows not stretched past its foot")
+  assert_eq(foot_foot, end_foot, msg="past its foot")
+}
+
+///|
 /// How long a page's list is left to move by itself before what it holds grows above what is in sight, and by how much.
 let grown_after_ms : Double = 100.0
 

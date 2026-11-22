@@ -6179,6 +6179,8 @@ fn View::scrolls_window_ids(
         fs.set_inset_right(Pt(0.0))
         fs.set_inset_bottom(Pt(0.0))
         fs.set_inset_top(Auto)
+        // (pinned, not scrolled: none of the list's own fading or Android's stretch past its ends, as its bar's)
+        f.drawn_clear_of(self) |> ignore
         // (as tall as the room under the last block, on the grid: what the page builds in it at its top, as the head's)
         f.height(By(fn() { Some(foot_h.get()) })).shrink(Is(0.0)) |> ignore
         // (what flies from a thing in it may be drawn under it: Scroll's foot_at)
