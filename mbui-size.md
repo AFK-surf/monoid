@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d14a63795](https://github.com/AFK-surf/monoid/commit/d14a63795c75de8b6ead55911db8ffc2e87657e0) fix(mbui): stop pointer-driven layout loops (#8149 | 2.67 | 3.6 | 14.59 | 36.69 | 55.74 | 32.14 | 65.06 | 98.94 | 123.84 |
 | [fb7c623cc](https://github.com/AFK-surf/monoid/commit/fb7c623cc88af36f118d38d615876a62c57b2788) perf(mbui): set macOS menu bar items enabled in pl | 2.67 | 3.6 | 14.59 | 36.69 | 55.74 | 32.14 | 65.06 | 98.94 | 123.84 |
 | [5fa0192bb](https://github.com/AFK-surf/monoid/commit/5fa0192bb5782095d688727bbd49077f2ef0f834) perf(mbui): eliminate Windows glyph rasterization  | 2.67 | 3.6 | 14.59 | 36.68 | 55.74 | 32.13 | 65.06 | 98.88 | 123.68 |
 | [77a2cb29f](https://github.com/AFK-surf/monoid/commit/77a2cb29f3b020a65bf0ecb03b4a8648b83b1e4c) fix(chat): fade messages behind the composer while | 2.67 | 3.6 | 14.59 | 36.68 | 55.74 | 32.13 | 65.06 | 98.88 | 123.68 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e3f2606bc](https://github.com/AFK-surf/monoid/commit/e3f2606bc9038868b8f86ab0851828b260724b8e) fix(mbui): composite waiting tiles' ground into th | 2.66 | 3.57 | 14.52 | 36.59 | 55.48 | 32.04 | 64.81 | 99.01 | 112.25 |
 | [3e9d20511](https://github.com/AFK-surf/monoid/commit/3e9d20511428a1cda54c4b0c158f2939513b92aa) fix(screens): set an Android device's volume throu | 2.65 | 3.57 | 14.52 | 36.58 | 55.47 | 32.04 | 64.81 | 98.83 | 129.56 |
 | [6529ca3f4](https://github.com/AFK-surf/monoid/commit/6529ca3f41c9836795828dff53320d72feeba729) fix(mbui): adapt nested filling children and image | 2.65 | 3.57 | 14.52 | 36.58 | 55.46 | 32.04 | 64.8 | 98.75 | 127.49 |
-| [c1f08f804](https://github.com/AFK-surf/monoid/commit/c1f08f80495f7713706056602b328737b83ac5fc) feat(screens): one volume control by the device, a | 2.65 | 3.57 | 14.52 | 36.58 | 55.46 | 32.04 | 64.8 | 98.75 | 127.49 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d14a63795](https://github.com/AFK-surf/monoid/commit/d14a63795c75de8b6ead55911db8ffc2e87657e0) fix(mbui): stop pointer-driven layout loops (#8149 | 0.47 | 0.62 | 2.4 | 3.45 | 5.69 | 1.75 | 4.73 | 54.59 |
 | [fb7c623cc](https://github.com/AFK-surf/monoid/commit/fb7c623cc88af36f118d38d615876a62c57b2788) perf(mbui): set macOS menu bar items enabled in pl | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.51 |
 | [5fa0192bb](https://github.com/AFK-surf/monoid/commit/5fa0192bb5782095d688727bbd49077f2ef0f834) perf(mbui): eliminate Windows glyph rasterization  | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.51 |
 | [77a2cb29f](https://github.com/AFK-surf/monoid/commit/77a2cb29f3b020a65bf0ecb03b4a8648b83b1e4c) fix(chat): fade messages behind the composer while | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e3f2606bc](https://github.com/AFK-surf/monoid/commit/e3f2606bc9038868b8f86ab0851828b260724b8e) fix(mbui): composite waiting tiles' ground into th | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [3e9d20511](https://github.com/AFK-surf/monoid/commit/3e9d20511428a1cda54c4b0c158f2939513b92aa) fix(screens): set an Android device's volume throu | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [6529ca3f4](https://github.com/AFK-surf/monoid/commit/6529ca3f41c9836795828dff53320d72feeba729) fix(mbui): adapt nested filling children and image | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
-| [c1f08f804](https://github.com/AFK-surf/monoid/commit/c1f08f80495f7713706056602b328737b83ac5fc) feat(screens): one volume control by the device, a | 0.47 | 0.61 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.33 |
