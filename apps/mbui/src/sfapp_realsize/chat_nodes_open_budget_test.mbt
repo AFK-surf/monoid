@@ -112,7 +112,8 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // bound); before it (1028, 26, 664, 84, 1017))
   // (+1 binding, 2026-11-22: the composer's glass the bottom bar's, with its outside-only shadow (sf tab_bar_shadow),
   // its blur on its shape's way to 4 as it opens (sfpages composer_node); before it (1029, 26, 665, 84, 1019))
-  "phone cold": (1029, 26, 665, 84, 1020),
+  // (+3 made, +3 laid, -1 measured, +4 bindings, 2026-11-22: minimal bottom-seam 0xFE fade seal under composer; before it (1029, 26, 665, 84, 1020))
+  "phone cold": (1032, 26, 668, 83, 1024),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
@@ -136,7 +137,8 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // quote pill; before it (2449, 500, 1924, 187, 2497))
   // (+3 bindings, 2026-11-22: the composer's glass the bottom bar's, with its outside-only shadow (sf tab_bar_shadow),
   // its blur on its shape's way to 4 as it opens (sfpages composer_node); before it (2444, 497, 1923, 191, 2510))
-  "wide cold": (2444, 497, 1923, 191, 2513),
+  // (+6 made, +3 let_go, +6 laid, 0 measured, +6 bindings, 2026-11-22: minimal bottom-seam 0xFE fade seal under composer; before it (2444, 497, 1923, 191, 2513))
+  "wide cold": (2450, 500, 1929, 191, 2519),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))

@@ -218,6 +218,12 @@ fn Ctx::emit_bands(
       if b.even_odd { 1.0 } else { 0.0 },
       0.0,
     )
+    if glass_paint.ink_r > 0.0 {
+      let idx = (self.ninst - 1) * inst_size
+      self.inst[idx + 21] = glass_paint.ink_x
+      self.inst[idx + 22] = glass_paint.ink_y
+      self.inst[idx + 23] = glass_paint.ink_r
+    }
   }
 }
 

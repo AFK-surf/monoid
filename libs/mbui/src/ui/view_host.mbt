@@ -1580,6 +1580,8 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   let stretching : Array[(@view.NodeId, Double, Double, Double, Double, Double)] = []
   // (the nodes what they hold is revealed in, on their way, the innermost last: @view.View::spatial_reveal, RevealAt)
   let unveiling : Array[RevealAt] = []
+  // (adaptive liquid glass ink scopes active during the tree walk, innermost last: saved prior (ink_x, ink_y, ink_r))
+  let ink_stack : Array[(@view.NodeId, Double, Double, Double)] = []
   // (covered beside pages clipped horizontally during parallax push/pop: (pv_id, cut_left, cut_right, runs0))
   if dr.mode != mode_hits {
     nav_clips_now.clear()
@@ -1803,6 +1805,12 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     while unveiling.length() > 0 && !tree.holds_in_order(unveiling[unveiling.length() - 1].id, c.id) {
       unveiling.pop() |> ignore
     }
+    while ink_stack.length() > 0 && !tree.holds_in_order(ink_stack[ink_stack.length() - 1].0, c.id) {
+      let (_, ox, oy, or_) = ink_stack.pop().unwrap()
+      glass_paint.ink_x = ox
+      glass_paint.ink_y = oy
+      glass_paint.ink_r = or_
+    }
     while nav_clipping.length() > 0 && !tree.holds_in_order(nav_clipping[nav_clipping.length() - 1].0, c.id) {
       let (_, cut_l, cut_r, runs0) = nav_clipping.pop().unwrap()
       nav_clip_trim(runs0, cut_l, cut_r)
@@ -1867,6 +1875,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     if fading.length() == 0 &&
       stretching.length() == 0 &&
       unveiling.length() == 0 &&
+      glass_paint.ink_r == 0.0 &&
       nav_veil is None &&
       nav_clip is None &&
       !raise_holds(c.id) &&
@@ -1998,6 +2007,23 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
         Some(o) => tree_hits_passed.val = o.to
         None => ()
       }
+    }
+    match c.glass {
+      Some(gl) if gl.liquid && gl.adaptive && gl.strength > 0.001 && !glass_paint.solid && c.bones == 0L => {
+        ink_stack.push((c.id, glass_paint.ink_x, glass_paint.ink_y, glass_paint.ink_r))
+        let gx = x + ground_drawn.dx * s
+        let gy = y + ground_drawn.dy * s
+        let gw = dmax(0.0, c.w + ground_drawn.dw) * s
+        let gh = dmax(0.0, c.h + ground_drawn.dh) * s
+        glass_paint.ink_x = gx + gw / 2.0
+        glass_paint.ink_y = gy + gh / 2.0
+        glass_paint.ink_r = dmax(dmin(gw, gh) / 2.0, 1.0)
+      }
+      _ =>
+        if glass_paint.ink_r > 0.0 && c.ground != 0L && (c.ground & 0xFFL) >= 0xC0L {
+          ink_stack.push((c.id, glass_paint.ink_x, glass_paint.ink_y, glass_paint.ink_r))
+          glass_paint.ink_r = 0.0
+        }
     }
     let ring_at = if c.hosted && c.bones != 0L {
       // (an old view hosted in its bones: its box a bone, as an old view's view of another app is, bones.mbt)
@@ -2209,6 +2235,12 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     let (_, cut_l, cut_r, runs0) = nav_clipping.pop().unwrap()
     nav_clip_trim(runs0, cut_l, cut_r)
   }
+  while ink_stack.length() > 0 {
+    let (_, ox, oy, or_) = ink_stack.pop().unwrap()
+    glass_paint.ink_x = ox
+    glass_paint.ink_y = oy
+    glass_paint.ink_r = or_
+  }
   close_to(None)
   raise_close(None)
   if !raised.is_empty() {
@@ -2325,7 +2357,10 @@ fn Ctx::view_drawn(
       push_unclipped()
       let prev_origin_x = glyph_origin_x.val
       glyph_origin_x.val = ux
+      let saved_ink_r = glass_paint.ink_r
+      glass_paint.ink_r = 0.0
       let b = self.view_made(tree, c, edge_after~)
+      glass_paint.ink_r = saved_ink_r
       glyph_origin_x.val = prev_origin_x
       pop_clip()
       view_blocks[c.id] = b
@@ -3429,6 +3464,18 @@ fn Ctx::view_blit(
     }
     if kind == 11.0 {
       s.unsafe_set(b + 12, s.unsafe_get(b + 12) + seg_base)
+    }
+    if glass_paint.ink_r > 0.0 {
+      if kind == 1.0 {
+        s.unsafe_set(b + 5, 7.0)
+        s.unsafe_set(b + 21, glass_paint.ink_x)
+        s.unsafe_set(b + 22, glass_paint.ink_y)
+        s.unsafe_set(b + 23, glass_paint.ink_r)
+      } else if kind == 10.0 || kind == 11.0 {
+        s.unsafe_set(b + 21, glass_paint.ink_x)
+        s.unsafe_set(b + 22, glass_paint.ink_y)
+        s.unsafe_set(b + 23, glass_paint.ink_r)
+      }
     }
     // (a box's, a shadow's, frosted glass's border colour, liquid glass's opacity: faded with it; a glyph's 12-15 are
     // where it is in the atlas)

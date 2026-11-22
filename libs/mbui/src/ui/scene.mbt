@@ -1741,7 +1741,10 @@ fn Ctx::paint_node(self : Ctx, i : Int, alpha_in : Double) -> Unit {
       glass_paint.ink_y = n.y + n.fh / 2.0
       glass_paint.ink_r = dmax(dmin(n.fw, n.fh) / 2.0, 1.0)
     }
-    _ => ()
+    _ =>
+      if glass_paint.ink_r > 0.0 && n.bg != 0L && (n.bg & 0xFFL) >= 0xC0L {
+        glass_paint.ink_r = 0.0
+      }
   }
   if n.kind == kind_list {
     // under its rows: what the motion package draws there (its rows gone, leaving)

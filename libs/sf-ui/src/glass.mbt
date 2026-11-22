@@ -40,7 +40,7 @@ pub fn glass_floating(tint? : Int64) -> @ui.Glass {
     refraction=28.0,
     chroma=0.0,
     merge=0.0,
-    adaptive=false,
+    adaptive=true,
   )
 }
 

@@ -783,6 +783,119 @@ int main(void) {
     free(px_after_free);
   }
 
+  // Wave 7: adaptive liquid glass (slot 14 = -1.0) + adaptive kind 10 neutral/chromatic ink:
+  // 0: light glass over white (bg=1.0), 1: light glass over black (bg=0.0),
+  // 2: light glass over mid-tone (bg=0.50), 3: dark glass (0x20202067) over white (bg=1.0).
+  {
+    double ad[4 * MB_INST];
+    struct { double bg; int dark_glass; double ink; } w7_cases[4] = {
+      {1.0, 0, 0.11},
+      {0.0, 0, 0.11},
+      {0.50, 0, 0.11},
+      {1.0, 1, 0.93},
+    };
+    for (int ci = 0; ci < 4; ci++) {
+      double bg = w7_cases[ci].bg;
+      int dg = w7_cases[ci].dark_glass;
+      double ink = w7_cases[ci].ink;
+      rect_at(ad, 0, 0, W, H, 0, bg, bg, bg, 0);
+      rect_at(ad + MB_INST, 8, 6, 84, 68, 6,
+              dg ? 32.0 / 255.0 : 253.0 / 255.0,
+              dg ? 32.0 / 255.0 : 252.0 / 255.0,
+              dg ? 32.0 / 255.0 : 253.0 / 255.0, -19);
+      ad[MB_INST + 4] = 16;
+      ad[MB_INST + 6] = 1.0;
+      ad[MB_INST + 7] = 2.0;
+      ad[MB_INST + 11] = 0x67 / 255.0;
+      ad[MB_INST + 12] = 0.0;
+      ad[MB_INST + 13] = 10.0;
+      ad[MB_INST + 14] = -1.0;  // adaptive=true, no spot
+      ad[MB_INST + 15] = 1.0;
+      ad[MB_INST + 21] = 0.0;
+      ad[MB_INST + 22] = 0.0;
+      ad[MB_INST + 23] = 0.0;
+      // Neutral line inside glass at y=28 (x=24..46)
+      rect_at(ad + 2 * MB_INST, 20, 22, 30, 12, 10, ink, ink, ink, 0);
+      ad[2 * MB_INST + 4] = 3.0;
+      ad[2 * MB_INST + 12] = 0.1;
+      ad[2 * MB_INST + 13] = 0.5;
+      ad[2 * MB_INST + 14] = 0.9;
+      ad[2 * MB_INST + 15] = 0.5;
+      ad[2 * MB_INST + 21] = 50.0;
+      ad[2 * MB_INST + 22] = 40.0;
+      ad[2 * MB_INST + 23] = 34.0;
+      // Chromatic accent line inside glass at y=52 (x=24..46)
+      rect_at(ad + 3 * MB_INST, 20, 46, 30, 12, 10, 0.90, 0.30, 0.15, 0);
+      ad[3 * MB_INST + 4] = 3.0;
+      ad[3 * MB_INST + 12] = 0.1;
+      ad[3 * MB_INST + 13] = 0.5;
+      ad[3 * MB_INST + 14] = 0.9;
+      ad[3 * MB_INST + 15] = 0.5;
+      ad[3 * MB_INST + 21] = 50.0;
+      ad[3 * MB_INST + 22] = 40.0;
+      ad[3 * MB_INST + 23] = 34.0;
+      glass_forget();
+      gl_present(ad, 4, bg, bg, bg);
+      unsigned char *px_ad = pixels_of_fb(surface);
+      // Glass interior at (68, 40) -> (136, 80) at 2x (RGBA, y flipped)
+      unsigned char *gp = px_ad + ((fb_h - 1 - 80) * fb_w + 136) * 4;
+      double g_lum = (0.2126 * gp[0] + 0.7152 * gp[1] + 0.0722 * gp[2]) / 255.0;
+      unsigned char *np = px_ad + ((fb_h - 1 - 56) * fb_w + 70) * 4;
+      double n_lum = (0.2126 * np[0] + 0.7152 * np[1] + 0.0722 * np[2]) / 255.0;
+      unsigned char *cp = px_ad + ((fb_h - 1 - 104) * fb_w + 70) * 4;
+      printf("gles_render: wave7 case=%d bg=%.2f dg=%d glass=%.3f neutral_ink=%.3f chroma_rgb=%d,%d,%d\n",
+             ci, bg, dg, g_lum, n_lum, cp[0], cp[1], cp[2]);
+      if (ci == 0) {
+        CHECK(g_lum > 0.75);
+        CHECK(n_lum < 0.25);
+      } else if (ci == 1) {
+        CHECK(g_lum < 0.20);
+        CHECK(n_lum > 0.80);
+      } else if (ci == 2) {
+        CHECK(g_lum > 0.55);
+        CHECK(n_lum < 0.25);
+      } else {
+        CHECK(g_lum < 0.45);
+        CHECK(n_lum > 0.85);
+      }
+      CHECK((int)cp[0] > (int)cp[2] + 120);
+      free(px_ad);
+    }
+
+    // Smooth fogging on adaptive flip: thin bright stripe over black is softened by dual-ring fog blur + higher darkDens
+    double fg[3 * MB_INST];
+    double fog_peaks[2] = {0.0, 0.0};
+    for (int adaptive_on = 0; adaptive_on <= 1; adaptive_on++) {
+      rect_at(fg, 0, 0, W, H, 0, 0.0, 0.0, 0.0, 0);
+      // Place the thin 2pt white stripe at y=48 (off the 5-point luma sample cross at y=40 and y=40+/-17)
+      rect_at(fg + MB_INST, 4, 47, 92, 2, 0, 1.0, 1.0, 1.0, 0);
+      rect_at(fg + 2 * MB_INST, 8, 6, 84, 68, 6,
+              adaptive_on ? 253.0 / 255.0 : 32.0 / 255.0,
+              adaptive_on ? 252.0 / 255.0 : 32.0 / 255.0,
+              adaptive_on ? 253.0 / 255.0 : 32.0 / 255.0, -20);
+      fg[2 * MB_INST + 4] = 16;
+      fg[2 * MB_INST + 6] = 1.0;
+      fg[2 * MB_INST + 7] = 1.0;
+      fg[2 * MB_INST + 11] = 0x67 / 255.0;
+      fg[2 * MB_INST + 12] = 0.0;
+      fg[2 * MB_INST + 13] = 10.0;
+      fg[2 * MB_INST + 14] = adaptive_on ? -1.0 : 0.0;
+      fg[2 * MB_INST + 15] = 1.0;
+      fg[2 * MB_INST + 21] = 0.0;
+      fg[2 * MB_INST + 22] = 0.0;
+      fg[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(fg, 3, 0.0, 0.0, 0.0);
+      unsigned char *px_fg = pixels_of_fb(surface);
+      unsigned char *sp = px_fg + ((fb_h - 1 - 96) * fb_w + 100) * 4;  // (50, 48) on the bright 2pt stripe
+      fog_peaks[adaptive_on] = (0.2126 * sp[0] + 0.7152 * sp[1] + 0.0722 * sp[2]) / 255.0;
+      free(px_fg);
+    }
+    printf("gles_render: wave7 fog stripe peak plain_dark=%.3f adaptive_fog=%.3f\n",
+           fog_peaks[0], fog_peaks[1]);
+    CHECK(fog_peaks[1] < fog_peaks[0] - 0.15);
+  }
+
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then
   // made a float, as the app's own instance moved there would be.
   double kept[MB_INST];

@@ -494,7 +494,7 @@ fn shot_drawn_of(inst : FixedArray[Double], n : Int, x : Double, y : Double) -> 
     let b = k * inst_size
     Array::makei(inst_size, fn(j) {
       let v = inst[b + j]
-      if inst[b + 5] == 1.0 && (j == 12 || j == 13) {
+      if (inst[b + 5] == 1.0 || inst[b + 5] == 7.0) && (j == 12 || j == 13) {
         "-"
       } else if j == 0 {
         ((v - x) * 100.0).round().to_string()

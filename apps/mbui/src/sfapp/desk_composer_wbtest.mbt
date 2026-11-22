@@ -1028,7 +1028,7 @@ test "the line a composer grows by comes out fading to its foot pixel by pixel, 
         let line = @sf.theme().round.side
         t
         .drawn_fades()
-        .filter(fn(d) { d.0 == 1 && d.1 + d.2 / 2.0 >= ey - 1.0 && d.1 <= ey + eh + line })
+        .filter(fn(d) { (d.0 == 1 || d.0 == 7) && d.1 + d.2 / 2.0 >= ey - 1.0 && d.1 <= ey + eh + line })
         .map(fn(d) { (d.1, d.2, d.5, d.6) })
       }
       // (none of the lines over the lowest, the new one, touched by its fading: each wholly above where it starts)

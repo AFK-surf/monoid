@@ -852,6 +852,22 @@
     return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+  float mb_backdrop_luma(vec2 c, float r) {
+    return (luma(backdrop(c)) + luma(backdrop(c + vec2(r, 0.0))) + luma(backdrop(c - vec2(r, 0.0))) +
+            luma(backdrop(c + vec2(0.0, r))) + luma(backdrop(c - vec2(0.0, r)))) / 5.0;
+  }
+  vec3 mb_adaptive_ink(vec3 rgb, float bgL) {
+    float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
+    if (ch <= 0.08) {
+      float origL = luma(rgb);
+      if (origL < 0.5) {
+        float lightT = smoothstep(0.29, 0.31, bgL);
+        float lightL = clamp(1.06 - origL, 0.68, 0.98);
+        rgb = mix(vec3(lightL), rgb, lightT);
+      }
+    }
+    return rgb;
+  }
   // how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth
   // each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts it
   float clip_cover(vec2 p, vec4 c, vec4 r, vec4 s, float scale) {
@@ -883,6 +899,7 @@
         for (int i = first; i < first + n; i++) { int t = (i / 6) * 15 + mb_seg_slot(i); w += mb_path_rows(texelFetch(u_segs, ivec2(t % 2040, t / 2040), 0), v_rect, p, u_scale); }
         a = mb_path_cover(w, v_c2.z);
       }
+      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, mb_backdrop_luma(v_pad.yz, v_pad.w * 0.5));
       o = vec4(col.rgb, 1.0) * col.a * a;
       return;
     }
@@ -893,6 +910,7 @@
       vec2 a = v_rect.xy + v_c2.xy * v_rect.zw, ab = v_rect.xy + v_c2.zw * v_rect.zw - a;
       float h = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
       float d = length(p - a - ab * h) - v_p.x;
+      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, mb_backdrop_luma(v_pad.yz, v_pad.w * 0.5));
       o = vec4(col.rgb, 1.0) * col.a * clamp(0.5 - d * u_scale, 0.0, 1.0);
       return;
     }
@@ -913,10 +931,8 @@
       #if ONE_KIND < 0
       if (kind == 7) {
         // inked by how light what is under its glass is, looked at round the glass's middle
-        vec2 c = v_pad.yz; float r = v_pad.w * 0.5;
-        float l = (luma(backdrop(c)) + luma(backdrop(c + vec2(r, 0.0))) + luma(backdrop(c - vec2(r, 0.0))) +
-                   luma(backdrop(c + vec2(0.0, r))) + luma(backdrop(c - vec2(0.0, r)))) / 5.0;
-        vec3 ink = mix(vec3(1.0), vec3(0.11, 0.11, 0.12), smoothstep(0.42, 0.6, l));
+        float l = mb_backdrop_luma(v_pad.yz, v_pad.w * 0.5);
+        vec3 ink = mb_adaptive_ink(col.rgb, l);
         o = vec4(ink, 1.0) * (t.a * col.a);
         return;
       }
@@ -967,6 +983,8 @@
                     - mb_contour_int(max(outward - 0.5, 0.0), edgeW);
       if (materialAlpha < 0.01 && ext_cov < 0.01) discard;
       bool is_clear = (v_p.w <= 0.1 && col.a < 0.12);
+      bool is_adaptive = v_c2.z < -0.5;
+      float spot_raw = is_adaptive ? (-v_c2.z - 1.0) : v_c2.z;
       bool is_dark = (!is_clear && col.a >= 0.05 && luma(col.rgb) < 0.35);
       float inward = max(-d, 0.0);
       float rawBevel = max(v_c2.y, 0.0);
@@ -1045,6 +1063,7 @@
       float glintLum;
       float glintFaceGain;
       float glintVib;
+      float fogT = 0.0;
       if (is_clear) {
         // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens
         // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)
@@ -1060,6 +1079,44 @@
         glintLum = mix(1.6, 1.2, clearVeil);
         glintFaceGain = mix(0.0, 0.25, clearVeil);
         glintVib = mix(2.85, 1.5, clearVeil);
+      } else if (is_adaptive) {
+        #if ONE_KIND == 13
+        vec2 ac = v_rect.xy + v_rect.zw * 0.5;
+        float ar = max(min(v_rect.z, v_rect.w) * 0.5, 1.0) * 0.5;
+        #else
+        vec2 ac = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
+        float ar = ((k <= 0.0) ? max(min(v_rect.z, v_rect.w) * 0.5, 1.0) : max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0)) * 0.5;
+        #endif
+        float bgL = mb_backdrop_luma(ac, ar);
+        float baseDens = (col.a > 0.41) ? col.a : 0.30;
+        if (is_dark) {
+          float brightT = smoothstep(0.35, 0.85, bgL);
+          fogT = brightT;
+          float dens = max(baseDens, mix(baseDens, 0.64, brightT));
+          float extra = clamp((dens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
+          emission = mix(vec3(28.0 / 255.0, 28.0 / 255.0, 28.0 / 255.0), vec3(34.0 / 255.0, 34.0 / 255.0, 34.0 / 255.0), extra);
+          transmittance = mix(0.54, 0.0, extra);
+          lift = mix(0.36, 0.0, extra);
+          chromaGain = mix(0.92, 0.0, extra);
+          contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;
+          glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
+        } else {
+          float darkMix = 1.0 - smoothstep(0.24, 0.36, bgL);
+          fogT = darkMix;
+          float extra = clamp((baseDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
+          float darkDens = max(baseDens, mix(baseDens, 0.52, darkMix));
+          float darkExtra = clamp((darkDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
+          vec3 lightEm = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * baseDens;
+          vec3 darkEm = mix(vec3(28.0 / 255.0, 28.0 / 255.0, 28.0 / 255.0), vec3(34.0 / 255.0, 34.0 / 255.0, 34.0 / 255.0), darkExtra);
+          emission = mix(lightEm, darkEm, darkMix);
+          transmittance = mix(mix(0.70, 0.0, extra), mix(0.54, 0.0, darkExtra), darkMix);
+          lift = mix(mix(0.16, 0.0, extra), mix(0.36, 0.0, darkExtra), darkMix);
+          chromaGain = mix(mix(1.18, 0.0, extra), mix(0.92, 0.0, darkExtra), darkMix);
+          contourStr = mix(0.43, 0.88, darkMix);
+          contourDirAmt = mix(0.77, 1.0, darkMix);
+          bevelShadowStr = 0.036;
+          glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
+        }
       } else if (is_dark) {
         float darkDens = (col.a > 0.41) ? col.a : 0.30;
         float extra = clamp((darkDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
@@ -1079,6 +1136,17 @@
         contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;
         glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
       }
+      if (fogT > 0.001) {
+        float r1 = fogT * 2.6;
+        float r2 = fogT * 3.6;
+        vec2 fc = sampleBase + disp;
+        vec3 fBlur = (refractColor * 2.0
+          + (backdrop(fc + vec2(r1, 0.0)) + backdrop(fc - vec2(r1, 0.0))
+           + backdrop(fc + vec2(0.0, r1)) + backdrop(fc - vec2(0.0, r1))) * 1.5
+          + (backdrop(fc + vec2(r2, r2)) + backdrop(fc + vec2(-r2, r2))
+           + backdrop(fc + vec2(r2, -r2)) + backdrop(fc + vec2(-r2, -r2)))) * (1.0 / 12.0);
+        refractColor = mix(refractColor, fBlur, fogT);
+      }
       float Y = luma(refractColor);
       float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);
       vec3 transmittedColor = vec3(transLum * transmittance) + (refractColor - vec3(Y)) * (chromaGain * v_p.z);
@@ -1089,8 +1157,8 @@
         baseColor = mix(baseColor, col.rgb, col.a * 0.5);
       }
       float spot = 0.0;
-      if (v_c2.z > 0.5) {
-        float q = v_c2.z - 1.0;
+      if (spot_raw > 0.5) {
+        float q = spot_raw - 1.0;
         float qx = floor(q * 0.000244140625);
         float qy = q - qx * 4096.0;
         vec2 gp = v_rect.xy + vec2(qx * 0.5 - 256.0, qy * 0.5 - 256.0);
@@ -1717,7 +1785,8 @@
     for (let i = 0; i < start; i++) {
       const tid = f32[i * INST + 20];
       if (i > 0 && tid !== f32[(i - 1) * INST + 20]) run = i;
-      const sees = tid < 0 || Math.round(f32[i * INST + 5]) === 7;
+      const k = Math.round(f32[i * INST + 5]);
+      const sees = tid < 0 || k === 7 || ((k === 10 || k === 11) && f32[i * INST + 23] > 0);
       if (sees && reaches(i, run, g)) whole = i + 1;
     }
     const maxNeed = (start + (count - pieces)) * INST;

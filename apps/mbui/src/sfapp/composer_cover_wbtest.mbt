@@ -149,3 +149,30 @@ test "composer over messages: clicking inside its field clears a previous messag
   assert_true(composer_focused())
   assert_eq(t.ctx().selected_text(), "")
 }
+
+///|
+test "composer adaptive glass steps from 2.1 compact capsule to 4.0 expanded box at 0x67 with minimal 0xFE seam seal" {
+  let t = composer_cover_tester()
+  let glass_of = fn() -> (Double, Int, Bool) {
+    let (gx, gy, gw, gh) = composer_cover_glass_box(t)
+    let hit = t.drawn_instances().iter().find_first(fn(a) {
+      a[5] == 6.0 && (a[0] - gx).abs() < 2.0 && (a[1] - gy).abs() < 2.0 && (a[2] - gw).abs() < 2.0 && (a[3] - gh).abs() < 2.0
+    })
+    match hit {
+      Some(a) => (a[7], (a[11] * 255.0).round().to_int(), a[14] < -0.5)
+      None => (-1.0, -1, false)
+    }
+  }
+  assert_eq(glass_of(), (2.1, 0x67, true))
+  // Minimal bottom-seam 0xFE top-fade seal (only ~30-34pt tall, leaving composer body transparent)
+  let has_seam_seal = t.drawn_instances().iter().any(fn(a) {
+    a[5] == 0.0 && a[53] > 0.0 && a[3] <= 40.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[2] >= 500.0
+  })
+  assert_true(has_seam_seal, msg="expected a minimal bottom-seam top-fading 0xFE seal under the composer")
+  // Focusing expands the composer into the 40% (0x67), blur=4.0 adaptive glass recipe (#8086 + Wave 7)
+  let (lx, ly) = composer_cover_line_hit(t)
+  t.tap(lx, ly)
+  t.run_for(@ui.move_most_ms)
+  assert_true(composer_focused())
+  assert_eq(glass_of(), (4.0, 0x67, true))
+}

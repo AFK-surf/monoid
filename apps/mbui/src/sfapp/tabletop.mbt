@@ -76,7 +76,15 @@ fn chat_foot_node(
     recent.basis(Is(Some(0.0))).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     recent_list_node(recent, src, tips, r, stint)
   })
-  n.box(fn(bar) { bar.height(By(fn() { Some(nav_foot()) })) |> ignore }) |> ignore
+  n.box(fn(bar) {
+    bar
+    .height(By(fn() { Some(nav_foot()) }))
+    .ground(By(fn() { if @ui.system_tabletop() is Some(_) { 0L } else { @sf.theme().p.bg } }))
+    .alpha(Is(254.0 / 255.0))
+    .points(Is(false))
+    |> ignore
+  })
+  |> ignore
 }
 
 ///|

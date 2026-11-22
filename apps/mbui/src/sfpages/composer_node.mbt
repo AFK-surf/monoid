@@ -448,6 +448,7 @@ fn composer_node_of(
     } else {
       None
     }
+    composer_foot_scrim_node(foot, roomy, made, fn() { stand.at(fn() { composer_foot_at(rest_wide()) }) })
     match made {
       None => {
         composer_notices_node(foot, src, r, tips, stand, over_drawn)
@@ -504,6 +505,63 @@ fn composer_node_of(
       @sf.style_node(e, fn() { error_box })
       @sf.words_node(e, fn() { w.error.get() }, fn() { composer_error_words }) |> ignore
     })
+  })
+  |> ignore
+}
+
+///|
+/// Minimal soft top-fade seam seal pinned to the bottom of `foot`, covering only the `composer_foot_at` gap below the
+/// composer plus `composer_seam_fade` pt of upward feathering so the composer body and floating pill stay 100% open to
+/// transparent liquid glass refraction and adaptive flipping. Reuses `p.bg` with `alpha(254/255)` so `Node::covers`
+/// never blocks selection or wheel scrolling beside the composer and no new palette color is introduced.
+let composer_seam_fade : Double = 18.0
+
+///|
+fn composer_foot_scrim_node(
+  foot : @view.View,
+  roomy : () -> Bool,
+  made : ComposerNodeFor?,
+  seam_h : () -> Double,
+) -> Unit {
+  foot.box(fn(scrim) {
+    scrim
+    .over(Is(true))
+    .width_share(Is(1.0))
+    .height_share(Is(1.0))
+    .lies_along(Is(End))
+    .points(Is(false))
+    |> ignore
+    match made {
+      Some(m) =>
+        scrim
+        .laid_nowhere(By(roomy))
+        .alpha(By(fn() { if (m.away)() { 0.0 } else { 1.0 } }))
+        .hides(By(m.away))
+        |> ignore
+      None =>
+        scrim
+        .laid_nowhere(By(fn() { @ui.system_tabletop() is Some(_) }))
+        |> ignore
+    }
+    scrim.box(fn(band) {
+      band
+      .width_share(Is(1.0))
+      .height(By(fn() { Some(seam_h() + 6.0 + composer_seam_fade) }))
+      .fades(Is((0.0, composer_seam_fade, 0.0, 0.0)))
+      .points(Is(false))
+      |> ignore
+      band.box(fn(fill) {
+        fill
+        .width_share(Is(1.0))
+        .height_share(Is(1.0))
+        .points(Is(false))
+        .ground(By(fn() { @sf.theme().p.bg }))
+        .alpha(Is(254.0 / 255.0))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
   })
   |> ignore
 }

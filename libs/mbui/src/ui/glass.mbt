@@ -218,7 +218,12 @@ fn Ctx::glass_inst(
     1.0,
     if gl.liquid { gl.rim } else { gl.rim_edge },
     if gl.liquid { gl.bezel } else { gl.rim_lit },
-    if gl.liquid { glass_spot(gl.spot) } else { gl.rim_back },
+    if gl.liquid {
+      let spot_v = glass_spot(gl.spot)
+      if gl.adaptive { -(spot_v + 1.0) } else { spot_v }
+    } else {
+      gl.rim_back
+    },
     alpha,
   )
   let b = (self.ninst - 1) * inst_size

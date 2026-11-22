@@ -210,13 +210,13 @@ test "glass made to share a capture frosts what the glass before it frosts, over
 test "liquid glass says where the pointer lights it (14): none 0; a spot each of x and y at half a point from 256 before its top left" {
   let t = @ui.Tester::new(fn(c) {
     c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, gap=8.0, fn() {
-      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(spot=Some((12.5, 8.0))), fn() {  })
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(spot=Some((12.5, 8.0)), adaptive=false), fn() {  })
       |> ignore
       c.box(w=Px(60.0), h=Px(10.0), bg=0x000000FFL, fn() {  }) |> ignore
-      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(), fn() {  }) |> ignore
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(adaptive=false), fn() {  }) |> ignore
       c.box(w=Px(60.0), h=Px(10.0), bg=0x000000FFL, fn() {  }) |> ignore
       // (far past its edge either way: held at the packing's ends)
-      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(spot=Some((-900.0, 5000.0))), fn() {  })
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(spot=Some((-900.0, 5000.0)), adaptive=false), fn() {  })
       |> ignore
       // (frosted glass's 14 is its rim's back, as ever)
       c.box(w=Px(120.0), h=Px(44.0), glass=@ui.Glass::frosted(blur=8.0, tint=0L, solid=0L, rim_back=0.25), fn() {  })
@@ -240,9 +240,9 @@ test "liquid glass says where the pointer lights it (14): none 0; a spot each of
 
 ///|
 test "unmerged liquid glass (merge=0) shares a capture across shadow when sharing() with matching blur, auto-merges when non-overlapping, and keeps per-corner radii" {
-  let g21 = @ui.Glass::liquid(blur=2.1, merge=0.0)
-  let g21_spot = @ui.Glass::liquid(blur=2.1, merge=0.0, spot=Some((28.0, 28.0)))
-  let g40 = @ui.Glass::liquid(blur=4.0, merge=0.0)
+  let g21 = @ui.Glass::liquid(blur=2.1, merge=0.0, adaptive=false)
+  let g21_spot = @ui.Glass::liquid(blur=2.1, merge=0.0, spot=Some((28.0, 28.0)), adaptive=false)
+  let g40 = @ui.Glass::liquid(blur=4.0, merge=0.0, adaptive=false)
   let t = @ui.Tester::new(fn(c) {
     c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, gap=8.0, fn() {
       // first unmerged liquid with shadow (kind 2) drawn right after it
@@ -441,4 +441,71 @@ test "sharing() unmerged liquid glass shares across shadows and inner glyphs in 
   assert_eq(gs4.length(), 2)
   assert_true(gs4[0][20] < 0.0 && gs4[1][20] < 0.0)
   assert_true(gs4[1][20] != gs4[0][20])
+}
+
+///|
+test "Wave 7 adaptive liquid glass encodes negative slot 14, propagates ink to vector shapes/lines, and pauses on opaque children" {
+  let sq : Array[@ui.Shape] = [@ui.shape_of([([0.0, 0.0, 12.0, 0.0, 12.0, 12.0, 0.0, 12.0], true)], fill=0x111111FFL)]
+  // 1. Ctx path: adaptive slot 14 encoding + kind 11 shape ink propagation + opaque child opt-out
+  let t1 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x000000FFL, gap=8.0, fn() {
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(adaptive=true), fn() {
+        c.text("A", wrap=false) |> ignore
+        c.shapes(sq, w=Px(12.0), h=Px(12.0)) |> ignore
+        // opaque child (solid send button) pauses adaptive ink inheritance
+        c.box(w=Px(32.0), h=Px(32.0), radius=16.0, bg=0x111111FFL, fn() {
+          c.text("B", wrap=false) |> ignore
+          c.shapes(sq, w=Px(12.0), h=Px(12.0)) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      c.box(
+        w=Px(120.0),
+        h=Px(44.0),
+        radius=22.0,
+        glass=@ui.Glass::liquid(spot=Some((12.5, 8.0)), adaptive=true),
+        fn() {  },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs1 = t1.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs1.length(), 2)
+  assert_eq(gs1[0][14], -1.0)
+  assert_eq(gs1[1][14], -(537.0 * 4096.0 + 528.0 + 2.0))
+  assert_eq(t1.adaptive_glyphs(), 1)
+  let shapes1 = t1.drawn_instances().filter(fn(a) { a[5] == 11.0 })
+  assert_true(shapes1.length() >= 2)
+  assert_true(shapes1.iter().any(fn(a) { a[23] > 0.0 }))
+  assert_true(shapes1.iter().any(fn(a) { a[23] == 0.0 }))
+
+  // 2. Retained View tree path: adaptive ink propagates to text & vector shapes, and pauses on opaque children
+  let t2 = @ui.Tester::tree(fn(root) {
+    root.box(fn(gl) {
+      gl
+      .width(Is(Some(120.0)))
+      .height(Is(Some(44.0)))
+      .radius(Is(22.0))
+      .glass(Is(Some(@ui.Glass::liquid(adaptive=true))))
+      |> ignore
+      gl.box(fn(lbl) { lbl.words(Is("Hi")) |> ignore }) |> ignore
+      gl.box(fn(ico) { ico.width(Is(Some(12.0))).height(Is(Some(12.0))).shapes(Is(sq)) |> ignore }) |> ignore
+      gl.box(fn(btn) {
+        btn.width(Is(Some(32.0))).height(Is(Some(32.0))).ground(Is(0x111111FFL)) |> ignore
+        btn.box(fn(blbl) { blbl.words(Is("Go")) |> ignore }) |> ignore
+        btn.box(fn(bico) { bico.width(Is(Some(12.0))).height(Is(Some(12.0))).shapes(Is(sq)) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t2.draw()
+  // "Hi" -> 2 adaptive kind-7 glyphs; "Go" inside opaque 0x111111FF button stays kind-1
+  assert_eq(t2.adaptive_glyphs(), 2)
+  let shapes2 = t2.drawn_instances().filter(fn(a) { a[5] == 11.0 })
+  assert_true(shapes2.length() >= 2)
+  assert_true(shapes2.iter().any(fn(a) { a[23] > 0.0 }))
+  assert_true(shapes2.iter().any(fn(a) { a[23] == 0.0 }))
 }

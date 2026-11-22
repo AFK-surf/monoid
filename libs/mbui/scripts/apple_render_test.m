@@ -858,6 +858,128 @@ int main(void) {
       CHECK(memcmp(px_single, px_after_free, (size_t)aw * (size_t)ah * 4) == 0);
       free(px_single);
       free(px_after_free);
+
+      // Wave 7: adaptive liquid glass (slot 14 = -1.0) + adaptive kind 10 neutral/chromatic ink:
+      // 0: light glass over white (bg=1.0) -> light glass + dark ink
+      // 1: light glass over black (bg=0.0) -> dark glass + light ink
+      // 2: light glass over mid-tone (bg=0.50) -> stays light glass + dark ink
+      // 3: dark glass (0x20202067) over white (bg=1.0) -> stays dark smoked glass + light ink (never flips white)
+      double ad[4 * MB_INST];
+      struct { double bg; int dark_glass; double ink; } w7_cases[4] = {
+        {1.0, 0, 0.11},
+        {0.0, 0, 0.11},
+        {0.50, 0, 0.11},
+        {1.0, 1, 0.93},
+      };
+      for (int ci = 0; ci < 4; ci++) {
+        double bg = w7_cases[ci].bg;
+        int dg = w7_cases[ci].dark_glass;
+        double ink = w7_cases[ci].ink;
+        rect_at(ad, 0, 0, 400, 300, 0, bg, bg, bg, 0);
+        rect_at(ad + MB_INST, 100, 80, 200, 140, 6,
+                dg ? 32.0 / 255.0 : 253.0 / 255.0,
+                dg ? 32.0 / 255.0 : 252.0 / 255.0,
+                dg ? 32.0 / 255.0 : 253.0 / 255.0, -19);
+        ad[MB_INST + 4] = 28;
+        ad[MB_INST + 6] = 1.0;
+        ad[MB_INST + 7] = 2.0;
+        ad[MB_INST + 11] = 0x67 / 255.0;
+        ad[MB_INST + 12] = 0.0;
+        ad[MB_INST + 13] = 14.0;
+        ad[MB_INST + 14] = -1.0;  // adaptive=true, no spot
+        ad[MB_INST + 15] = 1.0;
+        ad[MB_INST + 21] = 0.0;
+        ad[MB_INST + 22] = 0.0;
+        ad[MB_INST + 23] = 0.0;
+        // Neutral line inside glass at y=120 (x=140..180)
+        rect_at(ad + 2 * MB_INST, 130, 110, 60, 20, 10, ink, ink, ink, 0);
+        ad[2 * MB_INST + 4] = 4.0;
+        ad[2 * MB_INST + 12] = 0.1;
+        ad[2 * MB_INST + 13] = 0.5;
+        ad[2 * MB_INST + 14] = 0.9;
+        ad[2 * MB_INST + 15] = 0.5;
+        ad[2 * MB_INST + 21] = 200.0;
+        ad[2 * MB_INST + 22] = 150.0;
+        ad[2 * MB_INST + 23] = 70.0;
+        // Chromatic accent line inside glass at y=180 (x=140..180): must preserve color on dark backdrop
+        rect_at(ad + 3 * MB_INST, 130, 170, 60, 20, 10, 0.90, 0.30, 0.15, 0);
+        ad[3 * MB_INST + 4] = 4.0;
+        ad[3 * MB_INST + 12] = 0.1;
+        ad[3 * MB_INST + 13] = 0.5;
+        ad[3 * MB_INST + 14] = 0.9;
+        ad[3 * MB_INST + 15] = 0.5;
+        ad[3 * MB_INST + 21] = 200.0;
+        ad[3 * MB_INST + 22] = 150.0;
+        ad[3 * MB_INST + 23] = 70.0;
+        glass_forget();
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(ad, 4, bg, bg, bg);
+        present_drain();
+        uint8_t *px_ad = read_texture(canvas, &aw, &ah);
+        // Glass interior at (240, 150) -> (480, 300) at 2x (BGRA)
+        uint8_t *gp = px_ad + (300 * aw + 480) * 4;
+        double g_lum = (0.2126 * gp[2] + 0.7152 * gp[1] + 0.0722 * gp[0]) / 255.0;
+        // Neutral line center at (160, 120) -> (320, 240)
+        uint8_t *np = px_ad + (240 * aw + 320) * 4;
+        double n_lum = (0.2126 * np[2] + 0.7152 * np[1] + 0.0722 * np[0]) / 255.0;
+        // Chromatic line center at (160, 180) -> (320, 360)
+        uint8_t *cp = px_ad + (360 * aw + 320) * 4;
+        printf("apple_render: wave7 case=%d bg=%.2f dg=%d glass=%.3f neutral_ink=%.3f chroma_rgb=%d,%d,%d\n",
+               ci, bg, dg, g_lum, n_lum, cp[2], cp[1], cp[0]);
+        if (ci == 0) {
+          CHECK(g_lum > 0.75);
+          CHECK(n_lum < 0.25);
+        } else if (ci == 1) {
+          CHECK(g_lum < 0.20);
+          CHECK(n_lum > 0.80);
+        } else if (ci == 2) {
+          CHECK(g_lum > 0.55);
+          CHECK(n_lum < 0.25);
+        } else {
+          CHECK(g_lum < 0.45);
+          CHECK(n_lum > 0.85);
+        }
+        CHECK((int)cp[2] > (int)cp[0] + 120);
+        free(px_ad);
+      }
+
+      // Smooth fogging on adaptive flip: thin bright stripe over black is softened by dual-ring fog blur + higher darkDens
+      double fg[3 * MB_INST];
+      double fog_peaks[2] = {0.0, 0.0};
+      for (int adaptive_on = 0; adaptive_on <= 1; adaptive_on++) {
+        rect_at(fg, 0, 0, 400, 300, 0, 0.0, 0.0, 0.0, 0);
+        // Place the thin 2pt white stripe at y=165 (off the 5-point luma sample cross at y=150 and y=150+/-35)
+        rect_at(fg + MB_INST, 80, 164, 240, 2, 0, 1.0, 1.0, 1.0, 0);
+        rect_at(fg + 2 * MB_INST, 100, 80, 200, 140, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -20);
+        fg[2 * MB_INST + 4] = 28;
+        fg[2 * MB_INST + 6] = 1.0;
+        fg[2 * MB_INST + 7] = 1.0;
+        fg[2 * MB_INST + 11] = 0x67 / 255.0;
+        fg[2 * MB_INST + 12] = 0.0;
+        fg[2 * MB_INST + 13] = 14.0;
+        fg[2 * MB_INST + 14] = adaptive_on ? -1.0 : 0.0;
+        fg[2 * MB_INST + 15] = 1.0;
+        fg[2 * MB_INST + 21] = 0.0;
+        fg[2 * MB_INST + 22] = 0.0;
+        fg[2 * MB_INST + 23] = 0.0;
+        // Over black, light tint with adaptive_on triggers fogT=1.0; compare against non-adaptive dark tint
+        if (adaptive_on) {
+          fg[2 * MB_INST + 8] = 253.0 / 255.0;
+          fg[2 * MB_INST + 9] = 252.0 / 255.0;
+          fg[2 * MB_INST + 10] = 253.0 / 255.0;
+        }
+        glass_forget();
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(fg, 3, 0.0, 0.0, 0.0);
+        present_drain();
+        uint8_t *px_fg = read_texture(canvas, &aw, &ah);
+        uint8_t *sp = px_fg + (330 * aw + 400) * 4;  // (200, 165) on the bright 2pt stripe
+        fog_peaks[adaptive_on] = (0.2126 * sp[2] + 0.7152 * sp[1] + 0.0722 * sp[0]) / 255.0;
+        free(px_fg);
+      }
+      printf("apple_render: wave7 fog stripe peak plain_dark=%.3f adaptive_fog=%.3f\n",
+             fog_peaks[0], fog_peaks[1]);
+      CHECK(fog_peaks[1] < fog_peaks[0] - 0.15);
     }
 
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
