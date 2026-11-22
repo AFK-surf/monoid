@@ -2088,7 +2088,7 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
         gl_dirty_add(ad_slots[i].cx - ad_slots[i].hx - 4.0, ad_slots[i].cy - ad_slots[i].hy - 4.0,
                      ad_slots[i].hx * 2.0 + 8.0, ad_slots[i].hy * 2.0 + 8.0);
     }
-    if (!dirty_whole && !mb_glass_damage_expand(fbuf, count, dirty, dirty_n, fb_w / cur_scale, fb_h / cur_scale,
+    if (!dirty_whole && !mb_glass_damage_expand(fbuf, count, dirty, &dirty_n, fb_w / cur_scale, fb_h / cur_scale,
                                                  cur_scale)) dirty_whole = 1;
   }
   gl_present_drawn(count, r, g, b);

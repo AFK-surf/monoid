@@ -2337,7 +2337,7 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
   }
   D3D11_RECT parts[MB_PARTS];
   if (adaptive_damage && !dirty_whole &&
-      !mb_glass_damage_expand(last_inst, count, dirty, dirty_n, fb_w / vscale, fb_h / vscale, vscale)) dirty_whole = 1;
+      !mb_glass_damage_expand(last_inst, count, dirty, &dirty_n, fb_w / vscale, fb_h / vscale, vscale)) dirty_whole = 1;
   int np = take_parts(fb_w, fb_h, *kept, parts);
   int missing = 0;
   if (np < 0) {
@@ -2460,7 +2460,7 @@ int mb_render_adaptive_step(int wid) {
                            rw->ad_slots[i].cy - rw->ad_slots[i].hy - 4.0,
                            rw->ad_slots[i].hx * 2.0 + 8.0, rw->ad_slots[i].hy * 2.0 + 8.0);
   }
-  if (!dirty_whole && !mb_glass_damage_expand(last_inst, last_count, dirty, dirty_n,
+  if (!dirty_whole && !mb_glass_damage_expand(last_inst, last_count, dirty, &dirty_n,
                                                fb_w / vscale, fb_h / vscale, vscale)) dirty_whole = 1;
   ad_mode = 1;
   ad_backdrop_changed = 0;

@@ -2197,7 +2197,7 @@ static int draw_parts(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLBuff
   MTLScissorRect parts[MB_PARTS];
   MBDirty expanded = *d;
   if (expanded.glass_closure && expanded.told && !expanded.whole && kept && !pictures_missing &&
-      !mb_glass_damage_expand((const float *)buf.contents, count, expanded.r, expanded.n,
+      !mb_glass_damage_expand((const float *)buf.contents, count, expanded.r, &expanded.n,
                               target.width / at_scale, target.height / at_scale, at_scale)) expanded.whole = 1;
   int n = take_parts(&expanded, (int)target.width, (int)target.height, kept, parts);
   int missing = 0;
@@ -2617,6 +2617,7 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
       // (it takes the place of one not drawn yet: what that said differs is still to be drawn, the events that one
       // showed this one shows)
       dirty_join(&fr->parts, &was->parts);
+      if (fr->glass) fr->parts.glass_closure = 1;
       if (was->tw != fr->tw || was->th != fr->th || was->scale != fr->scale) fr->parts.whole = fr->parts.told = 1;
       if (was->lat >= 0 && lat >= 0) merged = was->lat;
       else if (was->lat >= 0) fr->lat = was->lat;

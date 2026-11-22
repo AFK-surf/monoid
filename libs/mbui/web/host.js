@@ -2128,21 +2128,39 @@
       start = end;
     }
     cutOn = wasCut;
-    for (const p of parts) {
-      let x0 = p[0], y0 = p[1], x1 = x0 + p[2], y1 = y0 + p[3], grew;
-      do {
-        grew = false;
+    let changed;
+    do {
+      changed = false;
+      for (const p of parts) {
+        let x0 = p[0], y0 = p[1], x1 = x0 + p[2], y1 = y0 + p[3];
         for (const g of grabs) {
           if (x0 >= g[2] || x1 <= g[0] || y0 >= g[3] || y1 <= g[1]) continue;
           if (x0 > g[0] || y0 > g[1] || x1 < g[2] || y1 < g[3]) {
             x0 = Math.min(x0, g[0]); y0 = Math.min(y0, g[1]);
             x1 = Math.max(x1, g[2]); y1 = Math.max(y1, g[3]);
-            grew = true;
+            changed = true;
           }
         }
-      } while (grew);
-      p[0] = x0; p[1] = y0; p[2] = x1 - x0; p[3] = y1 - y0;
-    }
+        p[0] = x0; p[1] = y0; p[2] = x1 - x0; p[3] = y1 - y0;
+      }
+      for (let i = 0; i < parts.length; i++) {
+        const a = parts[i];
+        let ax0 = a[0], ay0 = a[1], ax1 = ax0 + a[2], ay1 = ay0 + a[3];
+        for (let j = i + 1; j < parts.length;) {
+          const b = parts[j];
+          const bx0 = b[0], by0 = b[1], bx1 = bx0 + b[2], by1 = by0 + b[3];
+          if (ax0 <= bx1 && bx0 <= ax1 && ay0 <= by1 && by0 <= ay1) {
+            ax0 = Math.min(ax0, bx0); ay0 = Math.min(ay0, by0);
+            ax1 = Math.max(ax1, bx1); ay1 = Math.max(ay1, by1);
+            a[0] = ax0; a[1] = ay0; a[2] = ax1 - ax0; a[3] = ay1 - ay0;
+            parts.splice(j, 1);
+            changed = true;
+          } else {
+            j++;
+          }
+        }
+      }
+    } while (changed);
   }
 
   function grabLevels(m) {
