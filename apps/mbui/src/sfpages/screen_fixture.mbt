@@ -475,13 +475,23 @@ pub fn screen_fixture_stream(
         Object(o) => o.copy()
         _ => {}
       }
-      let user = m != "screen-pages"
+      let (user, address, title, line) = match asked {
+        "browser:u_mail" => (true, "https://mail.proton.me/u/0/inbox", "收件箱 - Proton Mail", "mail.proton.me · 控制")
+        "browser:u_gh" => (true, "https://github.com/AFK-surf/monoid", "GitHub", "github.com · 控制")
+        "browser:tab-1" => (false, "https://console.anthropic.com/login", "Sign in · Anthropic", "console.anthropic.com · 控制")
+        _ =>
+          if m != "screen-pages" {
+            (true, "https://mail.proton.me/u/0/inbox", "收件箱 - Proton Mail", "mail.proton.me · 控制")
+          } else {
+            (false, "https://console.anthropic.com/login", "Sign in · Anthropic", "console.anthropic.com · 控制")
+          }
+      }
       st["kind"] = Json::string("browser")
       st["openUrl"] = Json::boolean(true)
       st["userTab"] = Json::boolean(user)
-      st["address"] = Json::string(if user { "https://mail.proton.me/u/0/inbox" } else { "https://console.anthropic.com/login" })
-      st["title"] = Json::string(if user { "收件箱 - Proton Mail" } else { "Sign in · Anthropic" })
-      st["line"] = Json::string(if user { "mail.proton.me · 控制" } else { "console.anthropic.com · 控制" })
+      st["address"] = Json::string(address)
+      st["title"] = Json::string(title)
+      st["line"] = Json::string(line)
       on_value({ "state": Json::object(st) }, None)
     }
     "screen-browser-agent-driving" | "screen-browser-unnamed-agent" => {

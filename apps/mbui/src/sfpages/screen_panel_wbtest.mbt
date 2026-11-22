@@ -1104,10 +1104,11 @@ test "a person's page as a browser shows it: its tabs over it, ← → ⟳ and i
   )
   r.config()
   r.frame(1000.0)
-  // its tabs, a sleeping one as any other; the agent's tab and the desktop not among them
+  // all browser pages on the station (including sleeping and agent tabs), never the desktop
   assert_true(r.labelled("收件箱 - Proton Mail") is Some(_))
   assert_true(r.labelled("GitHub") is Some(_))
-  assert_true(r.labelled("Sign in · Anthropic") is None)
+  assert_true(r.labelled("Sign in · Anthropic") is Some(_))
+  assert_true(r.labelled("Willow 的屏幕") is None, msg="desktop is not a browser tab")
   assert_true(r.t.find("已休眠") is None, msg="a tab's sleep is the station's own")
   assert_eq(address_of("browser:u_mail"), "https://mail.proton.me/u/0/inbox", msg="its whole address in its bar")
   for label in ["web-pages.screen.back", "web-pages.screen.forward", "web-pages.screen.reload", "web-pages.screen.newTab"] {
@@ -1161,8 +1162,10 @@ test "words typed in the address bar go to the tab on Enter" {
   r.state("live", more={ "kind": Json::string("browser"), "openUrl": Json::boolean(true), "address": Json::string("https://console.anthropic.com/login") })
   r.config()
   r.frame(1000.0)
-  // an agent's tab: its address and ← → ⟳, no tabs of a person's
-  assert_true(r.labelled("收件箱 - Proton Mail") is None)
+  // an agent's tab: its address, ← → ⟳, and all browser pages on the station as tabs (current tab prefers live state title)
+  assert_true(r.labelled("收件箱 - Proton Mail") is Some(_))
+  assert_true(r.labelled("GitHub") is Some(_))
+  assert_true(r.labelled("still.fail — Chrome") is Some(_))
   assert_eq(address_of("browser:tab-1"), "https://console.anthropic.com/login")
   // the keys given it (as ⌘L gives them), its words written over
   let asked = screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).address_asked
@@ -1184,12 +1187,13 @@ test "narrow, the tabs fold into a button counting them; its panel lists them an
   r.state("live", more={ "kind": Json::string("browser"), "openUrl": Json::boolean(true), "userTab": Json::boolean(true) })
   r.config()
   r.frame(1000.0)
-  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 2") is Some(_))
+  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 3") is Some(_))
   assert_true(r.labelled("GitHub") is None, msg="no row of tabs where it is narrow")
-  r.tap_label(tr("web-pages.screen.tabs") + " 2")
+  r.tap_label(tr("web-pages.screen.tabs") + " 3")
   r.t.run_for(@sf.later_ms)
   to_sheet_rest(r.t)
   assert_true(r.t.find("GitHub") is Some(_))
+  assert_true(r.t.find("Sign in · Anthropic") is Some(_))
   assert_true(r.t.find(tr("web-pages.screen.newTab")) is Some(_))
   assert_eq(r.t.audit(), [])
   r.t.tap_text("GitHub")
@@ -1199,6 +1203,187 @@ test "narrow, the tabs fold into a button counting them; its panel lists them an
     Screen(at) => assert_eq(at.screen, "browser:u_gh")
     _ => fail("expected the GitHub tab shown")
   }
+  screen_done(r.t)
+}
+
+///|
+test "non-userTab browser page shows all station browser tabs on wide screen, switches, and handles ⌘T / ⌘W" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0, screen="browser:tab-1", screens=browser_screens())
+  r.state(
+    "live",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("Sign in · Anthropic"),
+      "address": Json::string("https://console.anthropic.com/login"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  assert_true(r.labelled("收件箱 - Proton Mail") is Some(_))
+  assert_true(r.labelled("GitHub") is Some(_))
+  assert_true(r.labelled("Sign in · Anthropic") is Some(_))
+  assert_true(r.labelled("Willow 的屏幕") is None, msg="desktop must not appear in browser tabs")
+  assert_true(r.labelled(tr("web-pages.screen.newTab")) is Some(_))
+  assert_true(
+    r.t.semantics().iter().any(fn(s) { s.label == "Sign in · Anthropic" && s.selected == Some(true) }),
+    msg="current non-userTab should be selected",
+  )
+  assert_eq(r.t.audit(), [])
+  // ⌘W closes current closable tab and switches to neighbor
+  r.key_in(true, "w", "KeyW", mod_meta)
+  r.t.run_for(@ui.move_most_ms)
+  let closed = r.told("screen.close")
+  assert_eq(closed.length(), 1)
+  assert_eq(text(Some(closed[0]), "screen"), "browser:tab-1")
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, "browser:u_gh")
+    _ => fail("expected neighbor tab after ⌘W")
+  }
+  screen_done(r.t)
+
+  // Separate run for clicking GitHub and ⌘T from non-userTab
+  let r2 = screen_rig(w=1280.0, h=800.0, platform=0, screen="browser:tab-1", screens=browser_screens())
+  r2.state(
+    "live",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("Sign in · Anthropic"),
+      "address": Json::string("https://console.anthropic.com/login"),
+    },
+  )
+  r2.config()
+  r2.frame(1000.0)
+  r2.key_in(true, "t", "KeyT", mod_meta)
+  r2.t.run_for(@ui.move_most_ms)
+  assert_eq(r2.told("screen.openBrowser").length(), 1)
+  screen_done(r2.t)
+
+  let r3 = screen_rig(w=1280.0, h=800.0, platform=0, screen="browser:tab-1", screens=browser_screens())
+  r3.state(
+    "live",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("Sign in · Anthropic"),
+      "address": Json::string("https://console.anthropic.com/login"),
+    },
+  )
+  r3.config()
+  r3.frame(1000.0)
+  r3.tap_label("GitHub")
+  r3.t.run_for(@ui.move_most_ms)
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, "browser:u_gh")
+    _ => fail("expected GitHub tab on tap")
+  }
+  screen_done(r3.t)
+}
+
+///|
+test "read-only or non-closable browser tabs show tabs without × or ＋, ignore ⌘T/⌘W, and still switch on click" {
+  let ro_screens : Json = {
+    "browser": true,
+    "control": false,
+    "known": true,
+    "outdated": false,
+    "screens": [
+      { "id": "desktop", "kind": "desktop", "title": "Willow 的屏幕", "width": 1920.0, "height": 1080.0, "line": "1920 × 1080", "link": "" },
+      { "id": "browser:fv-1", "kind": "browser", "closable": false, "openUrl": false, "site": "example.com", "title": "Farview Docs", "width": 1280.0, "height": 800.0, "line": "example.com", "link": "" },
+      { "id": "browser:u_gh", "kind": "browser", "userTab": true, "closable": false, "openUrl": false, "site": "github.com", "title": "GitHub", "width": 1280.0, "height": 800.0, "line": "github.com", "link": "" },
+    ],
+  }
+  let r = screen_rig(w=1280.0, h=800.0, platform=0, screen="browser:fv-1", screens=ro_screens)
+  r.state(
+    "live",
+    control=false,
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(false),
+      "title": Json::string("Farview Docs"),
+      "address": Json::string("https://example.com/docs"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  assert_true(r.labelled("Farview Docs") is Some(_))
+  assert_true(r.labelled("GitHub") is Some(_))
+  assert_true(r.labelled("Willow 的屏幕") is None)
+  assert_true(r.labelled(tr("web-pages.screen.newTab")) is None, msg="no ＋ when control is false")
+  assert_true(r.labelled(tr("web-pages.screen.closeTab")) is None, msg="no × when closable is false")
+  assert_eq(r.t.audit(), [])
+  r.key_in(true, "t", "KeyT", mod_meta)
+  r.key_in(true, "w", "KeyW", mod_meta)
+  r.frame(1100.0)
+  assert_true(r.told("screen.openBrowser").is_empty())
+  assert_true(r.told("screen.close").is_empty())
+  r.tap_label("GitHub")
+  r.t.run_for(@ui.move_most_ms)
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, "browser:u_gh")
+    _ => fail("expected GitHub tab on click in read-only mode")
+  }
+  screen_done(r.t)
+}
+
+///|
+test "narrow screen on non-userTab browser page shows tab count 3 and panel with all tabs, new tab, and close tab" {
+  let r = screen_rig(w=390.0, h=844.0, platform=2, screen="browser:tab-1", screens=browser_screens())
+  r.state(
+    "live",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("Sign in · Anthropic"),
+      "address": Json::string("https://console.anthropic.com/login"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 3") is Some(_))
+  r.tap_label(tr("web-pages.screen.tabs") + " 3")
+  r.t.run_for(@sf.later_ms)
+  to_sheet_rest(r.t)
+  assert_true(r.t.find("收件箱 - Proton Mail") is Some(_))
+  assert_true(r.t.find("GitHub") is Some(_))
+  assert_true(r.t.find("Sign in · Anthropic") is Some(_))
+  assert_true(r.t.find(tr("web-pages.screen.newTab")) is Some(_))
+  assert_true(r.t.find(tr("web-pages.screen.closeTabFull")) is Some(_))
+  assert_eq(r.t.audit(), [])
+  r.t.tap_text("GitHub")
+  r.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r.t)
+  match app.nav.top() {
+    Screen(at) => assert_eq(at.screen, "browser:u_gh")
+    _ => fail("expected GitHub tab from narrow panel")
+  }
+  screen_done(r.t)
+}
+
+///|
+test "browser tab bar keeps current page selected even before screens topic includes it" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0, screen="browser:tab-99", screens=browser_screens())
+  r.state(
+    "live",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("OAuth Login"),
+      "address": Json::string("https://accounts.example.com/oauth"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  assert_true(r.labelled("收件箱 - Proton Mail") is Some(_))
+  assert_true(r.labelled("GitHub") is Some(_))
+  assert_true(r.labelled("Sign in · Anthropic") is Some(_))
+  assert_true(r.labelled("OAuth Login") is Some(_))
+  assert_true(
+    r.t.semantics().iter().any(fn(s) { s.label == "OAuth Login" && s.selected == Some(true) }),
+    msg="unlisted current browser tab should appear and be selected",
+  )
+  assert_eq(r.t.audit(), [])
   screen_done(r.t)
 }
 

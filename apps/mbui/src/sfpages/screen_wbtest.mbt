@@ -2084,7 +2084,7 @@ test "beside its chat on its side with touch (an iPhone Duo's side panel): a bro
   for label in ["web-pages.screen.back", "web-pages.screen.forward", "web-pages.screen.reload"] {
     assert_true(r.labelled(tr(label)) is Some(_), msg=label)
   }
-  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 2") is Some(_), msg="the person's pages folded into a button")
+  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 3") is Some(_), msg="all browser pages folded into a button")
   // (→ and ⟳ on its bar: 控制中心 offers them no second time)
   assert_false(r.ui().narrow_bar)
   assert_eq(r.t.audit(), [])

@@ -409,11 +409,11 @@ fn net_poor(s : ScreenSess) -> Bool {
 
 ///|
 /// With keyboard and mouse in `p`: the viewer's bar across the window's top (@sf.viewer_bar_node), one row (the user,
-/// 2026-11-13): back by its name, the view's tabs in the name's place where it has them (a person's pages on the
-/// station's browser, ＋ after them; a desktop's whole screen and its windows), else the screen's name and the core's
-/// line; at its end the link's figures only while it is poor, 组合键 while driving a desktop, 控制中心 (只看 is there),
-/// and 接管 while someone else drives it, who does said in the line's place. Narrow, the tabs fold into a button
-/// counting them.
+/// 2026-11-13): back by its name, the view's tabs in the name's place where it has them (all browser pages on the
+/// station, ＋ after them when allowed; a desktop's whole screen and its windows), else the screen's name and the
+/// core's line; at its end the link's figures only while it is poor, 组合键 while driving a desktop, 控制中心 (只看 is
+/// there), and 接管 while someone else drives it, who does said in the line's place. Narrow, the tabs fold into a
+/// button counting them.
 fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
@@ -1226,7 +1226,7 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         })))
       }
       if !user_ids.is_empty() || can_browse {
-        let in_browser = user_ids.contains(s.screen)
+        let in_browser = s.screen.has_prefix("browser:") || text(s.state, "kind") == "browser"
         menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, fn() {
           if !in_browser {
             let target = match @settings.browser_tab_to_open(s.station, user_ids) {

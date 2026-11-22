@@ -970,7 +970,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide chat-phone-linked-connected": (1962, 1415, 154),
   "phone screen-pages": (815, 538, 61),
   "phone screen-user-pages": (810, 540, 61),
-  "phone screen-user-tabs": (810, 540, 61),
+  "phone screen-user-tabs": (897, 575, 73),
   "phone screen-windows": (819, 547, 65),
   "phone screen-window": (819, 547, 65),
   "wide screen-pages": (1300, 898, 80),
