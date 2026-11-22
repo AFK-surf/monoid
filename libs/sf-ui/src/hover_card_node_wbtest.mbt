@@ -1095,3 +1095,183 @@ test "window-level hover exclusion between hover_card_node and hover_panel_node,
   assert_false(open_c(), msg="丙 closed when 甲 opened")
   assert_eq(t.audit(), [])
 }
+
+///|
+/// A trigger 触发器 (120 by 36, 40 in) whose card (as sfpages' agent card's) holds words 卡头 (its own 60 high, where a
+/// press is on the card and on nothing in it) and a button 上下文 that opens a modal menu beside itself (From At: its
+/// rect, as usage_tiles_node's context does), the card kept open while that is presented (`held`: presented_from), the
+/// menu's 清空上下文 asking in the middle of the window (confirm); the presenters over all of it (presented_nodes).
+fn hover_menu_rig(platform : Int) -> (@ui.Tester, Ref[HoverHand?]) {
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=600.0, platform~)
+  t.check_looks(false)
+  let hand : Ref[HoverHand?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    // (its card in the window's root over what it holds, under what is presented: as the pane's tips are, sfdesk's)
+    let tips = TipLayer::new(fn() { Some(root) })
+    let opened : @signals.Signal[Anchor?] = @signals.signal(None, same=fn(x, y) { x == y })
+    root.box(fn(k) {
+      k
+      .margin(Is((40.0, 40.0, 0.0, 0.0)))
+      .width(Is(Some(120.0)))
+      .height(Is(Some(36.0)))
+      .focusable(Is(true))
+      .says(Is(Some(@view.said(Button, label="触发器"))))
+      |> ignore
+      hand.val = Some(
+        hover_card_node(
+          tips,
+          k,
+          fn(b) {
+            b.box(fn(w) { w.height(Is(Some(60.0))).words(Is("卡头")) |> ignore }) |> ignore
+            action_box_node(
+              b,
+              fn() { "上下文" },
+              fn(x) {
+                let (x0, y0, w0, h0) = x.placed_window_now()
+                menu([Some(menu_item_of("清空上下文", fn() { confirm("确认清空", "清空后不能恢复", "清空", fn() {  }, danger=true) }))], from=At(
+                  x0, y0, w0, h0,
+                ))
+                opened.set(Some(At(x0, y0, w0, h0)))
+              },
+              fn(x) { x.height(Is(Some(36.0))).words(Is("上下文 ›")) |> ignore },
+            )
+            |> ignore
+          },
+          held=fn() {
+            match opened.get() {
+              Some(at) => presented_from(at)
+              None => false
+            }
+          },
+          press=fn() {  },
+        ),
+      )
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  (t, hand)
+}
+
+///|
+/// The middle of words `w` drawn and seen, if they are.
+fn hover_menu_word(t : @ui.Tester, w : String) -> (Double, Double)? {
+  match t.words().filter(fn(x) { x.0 == w && x.5 > 0.5 }).last() {
+    Some(x) => Some((x.1 + x.3 / 2.0, x.2 + x.4 / 2.0))
+    None => None
+  }
+}
+
+///|
+test "a card kept open while a modal menu it opened is presented: a press on the card closes the menu alone, the card staying, again the second time; Escape closes the menu, then the card" {
+  let (t, hand) = hover_menu_rig(0)
+  let open = fn() { hand.val is Some(h) && @signals.untracked(h.open) }
+  let trigger = (100.0, 58.0)
+  let open_menu = fn(round : String) raise {
+    guard hover_menu_word(t, "上下文 ›") is Some((bx, by)) else { fail("\{round}: no 上下文") }
+    t.move_to(bx, by)
+    t.run_for(hover_short_ms)
+    t.tap(bx, by)
+    t.run_for(@ui.move_most_ms)
+    assert_true(hover_menu_word(t, "清空上下文") is Some(_), msg="\{round}: menu open")
+    assert_true(open(), msg="\{round}: card open with its menu")
+  }
+  t.move_to(trigger.0, trigger.1)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  assert_true(open(), msg="card opened")
+  for round in ["first", "second"] {
+    open_menu(round)
+    guard hover_menu_word(t, "卡头") is Some((hx, hy)) else { fail("\{round}: no 卡头") }
+    t.move_to(hx, hy)
+    t.tap(hx, hy)
+    t.run_for(hover_short_ms)
+    assert_false(presenting(), msg="\{round}: a press on the card: the menu closed")
+    assert_true(open(), msg="\{round}: a press on the card: the card stays")
+    t.run_for(hover_card_close_ms + hover_settled_ms)
+    assert_true(open(), msg="\{round}: the pointer on it: still open past its close")
+  }
+  // (Escape: the menu first, the card after)
+  open_menu("escape")
+  t.key(@ui.key_escape)
+  t.run_for(hover_card_close_ms + hover_settled_ms)
+  assert_false(presenting(), msg="first Escape: the menu closed")
+  assert_true(open(), msg="first Escape: the card stays")
+  t.key(@ui.key_escape)
+  t.run_for(hover_settled_ms)
+  assert_false(open(), msg="second Escape: the card closed")
+  assert_eq(t.audit(), [])
+  presenters_reset()
+}
+
+///|
+test "a card's modal menu choosing what asks in the middle of the window: the card closes, the ask stays; a press outside the card and the menu closes the menu at once and the card hover_card_close_ms after" {
+  let (t, hand) = hover_menu_rig(0)
+  let open = fn() { hand.val is Some(h) && @signals.untracked(h.open) }
+  let trigger = (100.0, 58.0)
+  let open_menu = fn() raise {
+    t.move_to(hover_away.0, hover_away.1)
+    t.run_for(hover_card_close_ms + hover_settled_ms)
+    t.move_to(trigger.0, trigger.1)
+    t.run_for(hover_card_open_ms + hover_settled_ms)
+    assert_true(open(), msg="card opened")
+    guard hover_menu_word(t, "上下文 ›") is Some((bx, by)) else { fail("no 上下文") }
+    t.move_to(bx, by)
+    t.run_for(hover_short_ms)
+    t.tap(bx, by)
+    t.run_for(@ui.move_most_ms)
+    assert_true(hover_menu_word(t, "清空上下文") is Some(_), msg="menu open")
+  }
+  // (chosen: the ask in the middle takes over, the card closes)
+  open_menu()
+  guard hover_menu_word(t, "清空上下文") is Some((cx, cy)) else { fail("no 清空上下文") }
+  t.move_to(cx, cy)
+  t.tap(cx, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_true(hover_menu_word(t, "确认清空") is Some(_), msg="the ask open")
+  assert_false(open(), msg="the ask over it: the card closed")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_false(presenting(), msg="the ask closed")
+  // (a press outside both: the menu at once, the card hover_card_close_ms after)
+  open_menu()
+  t.move_to(hover_away.0, hover_away.1)
+  t.tap(hover_away.0, hover_away.1)
+  t.run_for(hover_short_ms)
+  assert_false(presenting(), msg="outside: the menu closed")
+  assert_true(open(), msg="outside: the card not yet")
+  t.run_for(hover_card_close_ms + hover_settled_ms)
+  assert_false(open(), msg="outside: the card closed after")
+  assert_eq(t.audit(), [])
+  presenters_reset()
+}
+
+///|
+test "a card opened by a finger's hold, its modal menu open: a press outside closes the menu alone, the card staying till the next press outside" {
+  let (t, hand) = hover_menu_rig(1)
+  let open = fn() { hand.val is Some(h) && @signals.untracked(h.open) }
+  let trigger = (100.0, 58.0)
+  t.touch(0, trigger.0, trigger.1)
+  t.run_for(@ui.long_press_ms + hover_settled_ms)
+  t.touch(2, trigger.0, trigger.1)
+  t.run_for(hover_settled_ms)
+  assert_true(open(), msg="held: open")
+  guard hover_menu_word(t, "上下文 ›") is Some((bx, by)) else { fail("no 上下文") }
+  t.touch(0, bx, by)
+  t.touch(2, bx, by)
+  t.run_for(@ui.move_most_ms)
+  assert_true(hover_menu_word(t, "清空上下文") is Some(_), msg="menu open")
+  t.touch(0, hover_away.0, hover_away.1)
+  t.touch(2, hover_away.0, hover_away.1)
+  t.run_for(hover_card_close_ms + hover_settled_ms)
+  assert_false(presenting(), msg="outside: the menu closed")
+  assert_true(open(), msg="outside: the card held by the finger stays")
+  t.touch(0, hover_away.0, hover_away.1)
+  t.touch(2, hover_away.0, hover_away.1)
+  t.run_for(hover_settled_ms)
+  assert_false(open(), msg="the next press outside: the card closed")
+  assert_eq(t.audit(), [])
+  presenters_reset()
+}

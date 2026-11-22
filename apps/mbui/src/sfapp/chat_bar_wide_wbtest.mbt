@@ -1245,3 +1245,99 @@ test "大屏, 中屏: a station's name too long for the row above the composer (
     }
   }
 }
+
+///|
+test "大屏: the agent's card over the capsule, its context's menu open: a press on the card closes the menu alone, the card staying (twice); 清空上下文 asked in the middle, the card closed" {
+  let calls : Array[Made] = []
+  let clearable = wide_bar_chat_field("agents", fn(was) {
+    match was {
+      Some(Array(a)) =>
+        Json::array(
+          a.map(fn(x) {
+            match x {
+              Object(m) => {
+                let o = m.copy()
+                let s = match m.get("session") {
+                  Some(Object(sm)) => sm.copy()
+                  _ => Map([])
+                }
+                s["canCompact"] = Json::boolean(true)
+                s["canClear"] = Json::boolean(true)
+                o["session"] = Json::object(s)
+                Json::object(o)
+              }
+              other => other
+            }
+          }),
+        )
+      _ => Json::array([])
+    }
+  })
+  let card_said = wide_bar_edit("agentCard", fn(_) {
+    Some({
+      "work": "共工作 1 小时 12 分",
+      "cost": "$4.20",
+      "cache": { "percent": 91, "text": "91%", "level": "ok" },
+      "context": { "percent": 31, "text": "62K / 200K", "level": "ok" },
+      "latest": [{ "key": "k1", "text": "读了 src/ui/list.mbt" }],
+      "attention": [],
+    })
+  })
+  let t = wide_bar_at(calls, over=wide_bar_both(clearable, card_said))
+  let before = t.audit()
+  let agent = match t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 }) {
+    [b, ..] => b.rect
+    _ => fail("no agent's half")
+  }
+  // (words seen above the capsule: the card's, not the page's)
+  let in_card = fn(w : String) -> (Double, Double)? {
+    match t.words().filter(fn(x) { x.0 == w && x.5 > 0.5 && x.2 < agent.1 && x.2 > agent.1 - 400.0 }).last() {
+      Some(x) => Some((x.1 + x.3 / 2.0, x.2 + x.4 / 2.0))
+      None => None
+    }
+  }
+  let clear = @sf.t("web-pages.chat.clear")
+  let menu_open = fn() { t.words().iter().any(fn(x) { x.0 == clear && x.5 > 0.5 }) }
+  // (the card drawn and seen: its words, read out or not (under a modal layer what it holds is not read out))
+  let card_open = fn() { in_card("$4.20") is Some(_) }
+  t.move_to(agent.0 + agent.2 / 2.0, agent.1 + agent.3 / 2.0)
+  t.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+  assert_true(wide_bar_card_under(t, agent), msg="the agent's card open")
+  let context = @sf.t("web-main.chat.agentCard.context")
+  let open_menu = fn(round : String) raise {
+    guard in_card(context) is Some((cx, cy)) else { fail("\{round}: no \{context} in the card") }
+    t.move_to(cx, cy)
+    t.run_for(@ui.move_most_ms)
+    t.press_at(cx, cy)
+    t.release(cx, cy)
+    t.run_for(@ui.move_most_ms)
+    assert_true(menu_open(), msg="\{round}: its context's menu open")
+    assert_true(card_open(), msg="\{round}: the card open with it")
+  }
+  for round in ["first", "second"] {
+    open_menu(round)
+    guard in_card("$4.20") is Some((px, py)) else { fail("\{round}: no cost in the card") }
+    t.move_to(px, py)
+    t.press_at(px, py)
+    t.release(px, py)
+    t.run_for(@sf.hover_card_close_ms + @ui.move_most_ms)
+    assert_false(menu_open(), msg="\{round}: a press on the card: the menu closed")
+    assert_true(card_open(), msg="\{round}: a press on the card: the card stays")
+  }
+  // (清空上下文: asked in the middle of the window, the card closed under it)
+  open_menu("clear")
+  guard t.words().filter(fn(x) { x.0 == clear && x.5 > 0.5 }).last() is Some(row) else { fail("no \{clear}") }
+  let (rx, ry) = (row.1 + row.3 / 2.0, row.2 + row.4 / 2.0)
+  t.move_to(rx, ry)
+  t.press_at(rx, ry)
+  t.release(rx, ry)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(@sf.t("web-pages.chat.clearConfirm")) is Some(_), msg="asked whether to clear")
+  assert_false(card_open(), msg="the ask over it: the card closed")
+  // (the ask let go of: the window as it was, what the audit says of it the same)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sf.presenting(), msg="the ask closed")
+  assert_eq(t.audit(), before)
+  @sf.presenters_reset()
+}

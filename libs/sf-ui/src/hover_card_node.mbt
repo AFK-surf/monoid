@@ -151,7 +151,10 @@ pub fn hover_card_node(
   let gate : Ref[OpenGate] = Ref(OpenGate::new())
   // (the moment pending: its rest's end while closed, its leave's while open)
   let due : Ref[(() -> Unit)?] = Ref(None)
+  // (which ask after the event is the one standing: each stop_due lets the one before go)
+  let recheck_gen = Ref(0)
   let stop_due = fn() {
+    recheck_gen.val += 1
     match due.val {
       Some(s) => s()
       None => ()
@@ -206,7 +209,6 @@ pub fn hover_card_node(
       }
     })
     holder.show(fn() { open.get() }, leave=hover_card_out_ms, fn(t) {
-      card.set(Some(t))
       t.owns(fn() {
         match card.untracked() {
           Some(c) if c.id() == t.id() => card.set(None)
@@ -259,6 +261,8 @@ pub fn hover_card_node(
       |> ignore
       })
       gate.val.seal(t)
+      // (said once what it holds is made, as hover_panel_node does: state() then reads `held` as that made it)
+      card.set(Some(t))
     })
     true
   }
@@ -327,15 +331,43 @@ pub fn hover_card_node(
     (on_anchor, on_card, anchor.window_held(), takes(), keep)
   }
   let rests_was = Ref(false)
+  let keep_was = Ref(false)
   owner.reacts(state, fn(s) {
     let (on_anchor, on_card, pressed, takes, keep) = s
     let at = owner.cause_at()
     let rests = on_anchor && !pressed
     let rests_now = rests && !rests_was.val
     rests_was.val = rests
+    let released = keep_was.val && !keep
+    keep_was.val = keep
     // (taking no input: closed, unless kept open by the app (what it opened, a modal panel beside it, over its anchor))
     if !takes && !keep {
-      (set_open.val)(false)
+      if released && open.untracked() {
+        // (let go by the modal it kept open closing: whether its anchor takes input and where the pointer is are told
+        // only once the event that closed it has settled its modal layers (an at_moment at this moment may come before
+        // that), so asked again at that event's end, then closed at once or as a leave's)
+        stop_due()
+        let gen = recheck_gen.val
+        @ui.after_frame(fn() {
+          guard recheck_gen.val == gen && owner.alive() && open.untracked() else { return }
+          let (a, c, _, t, k) = @signals.untracked(state)
+          if !t && !k {
+            (set_open.val)(false)
+          } else if !(by_hand.val || k || a || c) && due.val is None {
+            due.val = Some(
+              owner.at_moment(at + hover_card_close_ms, fn() {
+                due.val = None
+                let (a2, c2, _, _, k2) = @signals.untracked(state)
+                if !(a2 || c2 || k2 || by_hand.val) {
+                  (set_open.val)(false)
+                }
+              }),
+            )
+          }
+        })
+      } else {
+        (set_open.val)(false)
+      }
       return
     }
     if open.untracked() {
