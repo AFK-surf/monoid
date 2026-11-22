@@ -566,18 +566,12 @@ fn wide_station_tag(
       @settings.open_station_peek(address, from=Node(k))
     })
     |> ignore
-    @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() {
-      if hot() {
-        @sf.theme().p.text
-      } else {
-        @sf.theme().p.muted
-      }
-    }, stint)
+    @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.text }, stint)
     k.box(fn(w) {
       w
       .words(Is(s.name))
-      .words_look(By(fn() { @ui.style_words(if hot() { chat_station_words_hot } else { chat_station_words }) }))
-      .ink(By(fn() { @ui.style_ink(if hot() { chat_station_words_hot } else { chat_station_words }) }))
+      .words_look(By(fn() { @ui.style_words(chat_station_words) }))
+      .ink(By(fn() { @ui.style_ink(chat_station_words) }))
       .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
       .cuts(Is(true))
@@ -718,7 +712,7 @@ fn wide_agent_tile(
           .gap(Is(6.0))
           .lines_up(Is(Some(Middle)))
           |> ignore
-          wide_station_inline(sp, station_now, via, fn() { false }, stint)
+          wide_station_inline(sp, station_now, via, stint)
         })
         |> ignore
       })
@@ -775,7 +769,7 @@ fn wide_agent_tile(
           @settings.open_station_peek(r.station, from=Node(sp))
         })
         |> ignore
-        wide_station_inline(sp, station_now, via, hot, stint)
+        wide_station_inline(sp, station_now, via, stint)
       })
       |> ignore
     })
@@ -834,25 +828,19 @@ fn wide_agent_inline(parent : @view.View, a : Agent, badge : () -> String, said 
 ///|
 /// Station half inside the first agent's liquid glass capsule: station mark (15pt) with its via dot on its corner, or
 /// the dot alone before the name for a station with no mark (@sfpages.station_via_mark_node), + station name.
-fn wide_station_inline(p : @view.View, station_now : () -> Station?, via : () -> String, hot : () -> Bool, stint : () -> Int) -> Unit {
+fn wide_station_inline(p : @view.View, station_now : () -> Station?, via : () -> String, stint : () -> Int) -> Unit {
   @sfpages.station_via_mark_node(
     p,
     fn() { station_now().map(fn(s) { s.emoji }).unwrap_or("") },
     fn() { station_now().map(fn(s) { s.icon }).unwrap_or("") },
     via,
-    fn() {
-      if hot() {
-        @sf.theme().p.text
-      } else {
-        @sf.theme().p.muted
-      }
-    },
+    fn() { @sf.theme().p.text },
     stint,
   )
   @sf.words_node(
     p,
     fn() { station_now().map(fn(s) { s.name }).unwrap_or("") },
-    fn() { if hot() { chat_station_words_hot } else { chat_station_words } },
+    fn() { chat_station_words },
   )
   .shrink(Is(1.0))
   .min_width(Is(Some(0.0)))

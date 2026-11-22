@@ -461,6 +461,51 @@ test "小屏输入框上方胶囊：station 有图标（glyph、emoji，1.0x 与
 
 
 ///|
+/// The inks the glyphs of the drawn line `words` inside `cap` are drawn in (each once, sorted; none fully clear).
+fn bar_words_inks(t : @ui.Tester, words : String, cap : (Double, Double, Double, Double)) -> Array[Int64] {
+  let (x, y, w, h) = cap
+  let out : Array[Int64] = []
+  for r in t.text_runs() {
+    guard r.text == words && r.x0 >= x - 0.5 && r.x1 <= x + w + 0.5 && r.top >= y - 0.5 && r.bottom <= y + h + 0.5 else {
+      continue
+    }
+    for g in t.drawn_glyphs() {
+      if g.0 >= r.x0 - 0.5 && g.0 <= r.x1 + 0.5 && g.1 >= r.top - 0.5 && g.1 <= r.bottom + 0.5 && (g.2 & 0xFFL) != 0L && !out.contains(g.2) {
+        out.push(g.2)
+      }
+    }
+  }
+  out.sort()
+  out
+}
+
+///|
+test "小屏输入框上方胶囊：station 名字与 agent 名字同为 Fg 墨色（p.text），有 agent 的合并胶囊与无 agent 的独立 station 胶囊皆然，浅色与深色皆然" {
+  for dark in [false, true] {
+    for alone in [false, true] {
+      let (t, _) = chat_bar_node_tester("整理发布清单", no_agents=alone)
+      t.set_dark(dark)
+      t.run_for(@ui.move_most_ms)
+      let msg = "\{if dark { "dark" } else { "light" }}\{if alone { " alone" } else { "" }}"
+      let found = if alone {
+        t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }).map(fn(g) { g.rect })
+      } else {
+        match composer_agent_rect(t) {
+          Some(r) => [r]
+          None => []
+        }
+      }
+      guard found is [cap, ..] else { fail("\{msg}: no capsule") }
+      let text = @sf.theme().p.text
+      assert_eq(bar_words_inks(t, "Willow", cap), [text], msg="\{msg}: the station's name")
+      if !alone {
+        assert_eq(bar_words_inks(t, "Claude", cap), [text], msg="\{msg}: the agent's name")
+      }
+    }
+  }
+}
+
+///|
 test "小屏输入框上方胶囊：390 宽空间足够时，station 长名字在有 agent 的胶囊和独立 station 胶囊里都完整显示、不截断，零 audit 告警" {
   let station = "tokyo-mac-studio-0"
   for alone in [false, true] {

@@ -424,11 +424,7 @@ let chat_title_words : @ui.TextStyle = @ui.text_style(size=Title, weight=Semibol
 
 ///|
 // kept across runs: a value (no field of it changes)
-let chat_station_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let chat_station_words_hot : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
+let chat_station_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
 
 ///|
 /// People in a stack (peopleStack): each 16 across, each 4 over the one before; +n after them, 11 muted.

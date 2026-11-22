@@ -790,12 +790,12 @@ fn station_chip_node(
     .says(Is(Some(@view.said(Group, label=s.name))))
     |> ignore
     @sf.hover_ground_node(k)
-    @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.muted }, stint)
+    @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.text }, stint)
     k.box(fn(w) {
       w
       .words(Is(s.name))
-      .words_look(By(fn() { @ui.style_words(small_composer_pill_muted) }))
-      .ink(By(fn() { @ui.style_ink(small_composer_pill_muted) }))
+      .words_look(By(fn() { @ui.style_words(small_composer_pill_words) }))
+      .ink(By(fn() { @ui.style_ink(small_composer_pill_words) }))
       .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
       .cuts(Is(true))
@@ -937,10 +937,6 @@ let small_crumb_words_hot : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, 
 ///|
 // kept across runs: a value (no field of it changes)
 let small_composer_pill_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_composer_pill_muted : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1087,12 +1083,12 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
                     |> ignore
                   })
                   |> ignore
-                  @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.muted }, stint)
+                  @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.text }, stint)
                   k.box(fn(w) {
                     w
                     .words(Is(s.name))
-                    .words_look(By(fn() { @ui.style_words(small_composer_pill_muted) }))
-                    .ink(By(fn() { @ui.style_ink(small_composer_pill_muted) }))
+                    .words_look(By(fn() { @ui.style_words(small_composer_pill_words) }))
+                    .ink(By(fn() { @ui.style_ink(small_composer_pill_words) }))
                     .cuts(Is(true))
                     .allow_ellipsis(Is(true))
                     .drops(Is(2))

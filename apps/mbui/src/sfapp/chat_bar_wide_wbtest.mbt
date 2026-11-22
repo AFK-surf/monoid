@@ -1111,6 +1111,36 @@ fn bar_words_in(t : @ui.Tester, words : String, cap : (Double, Double, Double, D
 }
 
 ///|
+test "大屏, 中屏: the station's name above the composer inked as the agent's (Fg, p.text) while not pointed at, in its half of the agent's capsule and in its own tag, light and dark" {
+  for win in wide_bar_windows {
+    for dark in [false, true] {
+      for alone in [false, true] {
+        let calls : Array[Made] = []
+        let over = if alone { wide_bar_chat_field("agents", fn(_) { Json::array([]) }) } else { fn(_, tp) { tp } }
+        let t = wide_bar_at(calls, w=win.1, over~)
+        t.set_dark(dark)
+        t.run_for(@ui.move_most_ms)
+        let msg = "\{win.0} \{if dark { "dark" } else { "light" }}\{if alone { " alone" } else { "" }}"
+        let cap = match t.all(Group).filter(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 }) {
+          [g, ..] => g.rect
+          _ => fail("\{msg}: no station's half")
+        }
+        let text = @sf.theme().p.text
+        assert_false(wide_bar_lit(t, cap), msg="\{msg}: not lit")
+        assert_eq(bar_words_inks(t, "Willow", cap), [text], msg="\{msg}: the station's name")
+        if !alone {
+          let agent = match t.all(Button).filter(fn(b) { b.label.has_suffix("的执行历史") && b.rect.1 > 400.0 }) {
+            [b, ..] => b.rect
+            _ => fail("\{msg}: no agent's half")
+          }
+          assert_eq(bar_words_inks(t, "Claude", agent), [text], msg="\{msg}: the agent's name")
+        }
+      }
+    }
+  }
+}
+
+///|
 test "大屏, 中屏: the station's dot above the composer on its mark's corner as the agent's badge (a glyph, an emoji, words 1.3 as large), before its name where it has no mark, with or without an agent; inked as it is reached, gone while not said" {
   let cases : Array[(String, String, Bool)] = [("glyph:desktop", "", true), ("", "🍁", true), ("", "", false)]
   for win in wide_bar_windows {
