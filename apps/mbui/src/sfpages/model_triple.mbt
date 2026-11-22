@@ -2520,13 +2520,12 @@ fn triple_model_row_node(
               // (its maker's mark in the middle of its name's line, the two the line's baseline's)
               nl.box(fn(hd) {
                 @sf.style_node(hd, fn() { triple_name_line }, in_row=true)
-                hd.shrink(Is(0.0)).min_width(Is(Some(0.0))).max_width(Is(None), within=true) |> ignore
+                // (a name too long for its line wraps in it: what goes with it has gone to the line under it by then)
+                hd.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                 hd.pick(fn() { (text(field(o(), "maker"), "id"), runs()) }, fn(m, k) { @sf.maker_mark_node(m, k.0, k.1, 14.0) |> ignore })
                 @sf.words_node(hd, name, fn() { if picked() { triple_row_picked } else { triple_row_name } })
-                .shrink(Is(0.0))
-                .keeps_held(Is(true))
+                .shrink(Is(1.0))
                 .min_width(Is(Some(0.0)))
-                .max_width(Is(None), within=true)
                 |> ignore
               })
               |> ignore
@@ -2684,13 +2683,12 @@ fn triple_combo_row_node(
               // (its maker's mark in the middle of its name's line, the two the line's baseline's)
               nl.box(fn(hd) {
                 @sf.style_node(hd, fn() { triple_name_line }, in_row=true)
-                hd.shrink(Is(0.0)).min_width(Is(Some(0.0))).max_width(Is(None), within=true) |> ignore
+                // (a name too long for its line wraps in it: what goes with it has gone to the line under it by then)
+                hd.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                 hd.pick(fn() { (text(field(o(), "maker"), "id"), text(x(), "runtime")) }, fn(m, k) { @sf.maker_mark_node(m, k.0, k.1, 14.0) |> ignore })
                 @sf.words_node(hd, name, fn() { if on() { triple_row_picked } else { triple_row_name } })
-                .shrink(Is(0.0))
-                .keeps_held(Is(true))
+                .shrink(Is(1.0))
                 .min_width(Is(Some(0.0)))
-                .max_width(Is(None), within=true)
                 |> ignore
               })
               |> ignore
