@@ -1589,6 +1589,168 @@ int main(void) {
       glass_forget();
     }
 
+    // Perf-30: (1) Rotated spinner isolation & 60-frame benchmark, (2) 45-deg grazing & far-pivot rotated overlap,
+    // (3) unrelated kind==12 vector path segment isolation.
+    {
+      mb_render_set_size(400, 600, 2);
+      glass_free();
+      // (1) Rotated spinner 400pt below top progressive blur + liquid glass
+      {
+        double sp[5 * MB_INST];
+        rect_at(sp, 0, 0, 400, 600, 0, 0.94, 0.94, 0.92, 0);
+        sp[18] = 400; sp[19] = 600;
+        rect_at(sp + 1 * MB_INST, 20, 8, 120, 24, 0, 0.85, 0.20, 0.20, 0);
+        sp[1 * MB_INST + 18] = 400; sp[1 * MB_INST + 19] = 600;
+        rect_at(sp + 2 * MB_INST, 180, 460, 20, 20, 0, 0.20, 0.45, 0.90, 0);
+        sp[2 * MB_INST + 18] = 400; sp[2 * MB_INST + 19] = 600;
+        sp[2 * MB_INST + 32] = 0.1;
+        sp[2 * MB_INST + 33] = 190.0;
+        sp[2 * MB_INST + 34] = 470.0;
+        rect_at(sp + 3 * MB_INST, 0, 0, 400, 64, 5, 0.96, 0.96, 0.96, -50);
+        sp[3 * MB_INST + 6] = 1.1;
+        sp[3 * MB_INST + 7] = 6.0;
+        sp[3 * MB_INST + 11] = 0.35;
+        sp[3 * MB_INST + 15] = 1.0;
+        sp[3 * MB_INST + 18] = 400; sp[3 * MB_INST + 19] = 600;
+        sp[3 * MB_INST + 22] = -1.0;
+        sp[3 * MB_INST + 54] = 64.0;
+        sp[3 * MB_INST + 55] = 24.0;
+        rect_at(sp + 4 * MB_INST, 24, 12, 140, 32, 6, 0.99, 0.99, 0.99, -51);
+        sp[4 * MB_INST + 4] = 16.0;
+        sp[4 * MB_INST + 6] = 1.0;
+        sp[4 * MB_INST + 7] = 2.0;
+        sp[4 * MB_INST + 11] = 0x67 / 255.0;
+        sp[4 * MB_INST + 13] = 8.0;
+        sp[4 * MB_INST + 14] = -1.0;
+        sp[4 * MB_INST + 15] = 1.0;
+        sp[4 * MB_INST + 18] = 400; sp[4 * MB_INST + 19] = 600;
+        sp[4 * MB_INST + 21] = 6.0;
+
+        mb_render_set_fixed_dt(1.0 / 60.0);
+        glass_forget();
+        int b_start = blurs_made;
+        int steady_blurs = 0;
+        double t0 = CACurrentMediaTime();
+        for (int frame = 0; frame < 60; frame++) {
+          sp[2 * MB_INST + 32] = 0.1 + frame * 0.105;
+          int b_before = blurs_made;
+          mb_host_render_dirty(0, 0, 400, 600);
+          mb_render_present(sp, 5, 0.94, 0.94, 0.92);
+          present_drain();
+          if (frame == 0) {
+            CHECK(blurs_made == b_before + 2);
+          } else {
+            steady_blurs += (blurs_made - b_before);
+            CHECK(blurs_made == b_before);
+          }
+        }
+        double elapsed_ms = (CACurrentMediaTime() - t0) * 1000.0;
+        printf("apple_render: Perf-30 60-frame spinner blurs=%d (frames 2..60=%d) ms=%.2f\n",
+               blurs_made - b_start, steady_blurs, elapsed_ms);
+        CHECK(steady_blurs == 0);
+        CHECK(canvas_as_whole());
+        mb_render_set_fixed_dt(0.0);
+      }
+
+      // (2) Rotated instance grazing overlap at 45 deg + far-pivot swing into glass capture region
+      {
+        double rg[3 * MB_INST];
+        rect_at(rg, 0, 0, 400, 600, 0, 0.94, 0.94, 0.92, 0);
+        rg[18] = 400; rg[19] = 600;
+        rect_at(rg + 1 * MB_INST, 80, 80, 40, 40, 0, 0.90, 0.15, 0.15, 0);
+        rg[1 * MB_INST + 18] = 400; rg[1 * MB_INST + 19] = 600;
+        rg[1 * MB_INST + 32] = 0.0;
+        rg[1 * MB_INST + 33] = 100.0;
+        rg[1 * MB_INST + 34] = 100.0;
+        rect_at(rg + 2 * MB_INST, 40, 20, 120, 40, 5, 0.98, 0.98, 0.98, -52);
+        rg[2 * MB_INST + 7] = 4.0;
+        rg[2 * MB_INST + 11] = 0.45;
+        rg[2 * MB_INST + 18] = 400; rg[2 * MB_INST + 19] = 600;
+
+        glass_forget();
+        mb_host_render_dirty(0, 0, 400, 600);
+        mb_render_present(rg, 3, 0.94, 0.94, 0.92);
+        present_drain();
+        CHECK(canvas_as_whole());
+        rg[1 * MB_INST + 32] = 0.7853981633974483;
+        int b0 = blurs_made;
+        mb_host_render_dirty(0, 0, 400, 600);
+        mb_render_present(rg, 3, 0.94, 0.94, 0.92);
+        present_drain();
+        CHECK(blurs_made == b0 + 1);
+        CHECK(canvas_as_whole());
+
+        // Far-pivot swing
+        rg[1 * MB_INST + 0] = 200.0; rg[1 * MB_INST + 1] = 300.0;
+        rg[1 * MB_INST + 2] = 30.0; rg[1 * MB_INST + 3] = 30.0;
+        rg[1 * MB_INST + 32] = 0.0;
+        rg[1 * MB_INST + 33] = 150.0; rg[1 * MB_INST + 34] = 170.0;
+        glass_forget();
+        mb_host_render_dirty(0, 0, 400, 600);
+        mb_render_present(rg, 3, 0.94, 0.94, 0.92);
+        present_drain();
+        rg[1 * MB_INST + 32] = 3.141592653589793;
+        b0 = blurs_made;
+        mb_host_render_dirty(0, 0, 400, 600);
+        mb_render_present(rg, 3, 0.94, 0.94, 0.92);
+        present_drain();
+        CHECK(blurs_made == b0 + 1);
+        CHECK(canvas_as_whole());
+      }
+
+      // (3) Unrelated kind==12 vector path segment isolation
+      {
+        double vg[4 * MB_INST];
+        rect_at(vg, 0, 0, 400, 600, 0, 0.94, 0.94, 0.92, 0);
+        vg[18] = 400; vg[19] = 600;
+        rect_at(vg + 1 * MB_INST, 40, 400, 60, 40, 11, 0.10, 0.30, 0.85, 0);
+        vg[1 * MB_INST + 12] = 0.0;
+        vg[1 * MB_INST + 13] = 1.0;
+        vg[1 * MB_INST + 18] = 400; vg[1 * MB_INST + 19] = 600;
+        rect_at(vg + 2 * MB_INST, 20, 20, 140, 40, 5, 0.98, 0.98, 0.98, -53);
+        vg[2 * MB_INST + 7] = 4.0;
+        vg[2 * MB_INST + 11] = 0.45;
+        vg[2 * MB_INST + 18] = 400; vg[2 * MB_INST + 19] = 600;
+        memset(vg + 3 * MB_INST, 0, MB_INST * sizeof(double));
+        vg[3 * MB_INST + 5] = 12;
+        vg[3 * MB_INST + 0] = 40; vg[3 * MB_INST + 1] = 400;
+        vg[3 * MB_INST + 2] = 100; vg[3 * MB_INST + 3] = 440;
+
+        glass_forget();
+        int b0 = blurs_made;
+        mb_host_render_dirty(0, 0, 400, 600);
+        mb_render_present(vg, 4, 0.94, 0.94, 0.92);
+        present_drain();
+        CHECK(blurs_made == b0 + 1);
+        for (int step = 0; step < 3; step++) {
+          vg[3 * MB_INST + 2] = 90 + step * 5;
+          b0 = blurs_made;
+          mb_host_render_dirty(0, 0, 400, 600);
+          mb_render_present(vg, 4, 0.94, 0.94, 0.92);
+          present_drain();
+          CHECK(blurs_made == b0);
+          CHECK(canvas_as_whole());
+        }
+
+        vg[1 * MB_INST + 1] = 24.0;
+        vg[3 * MB_INST + 1] = 24.0; vg[3 * MB_INST + 3] = 56.0;
+        glass_forget();
+        mb_host_render_dirty(0, 0, 400, 600);
+        mb_render_present(vg, 4, 0.94, 0.94, 0.92);
+        present_drain();
+        vg[3 * MB_INST + 2] = 110.0;
+        b0 = blurs_made;
+        mb_host_render_dirty(0, 0, 400, 600);
+        mb_render_present(vg, 4, 0.94, 0.94, 0.92);
+        present_drain();
+        CHECK(blurs_made == b0 + 1);
+        CHECK(canvas_as_whole());
+      }
+
+      mb_render_set_size(400, 300, 2);
+      glass_free();
+    }
+
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
     // doubles, then made a float, as the app's own instance moved there would be.
     double kept[MB_INST];

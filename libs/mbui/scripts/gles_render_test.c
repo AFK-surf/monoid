@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <zlib.h>
 #include "moonbit.h"
 #include "corner_sl.h"
@@ -1525,6 +1526,326 @@ int main(void) {
     glBindFramebuffer(GL_FRAMEBUFFER, surface);
     canvas_ok = 0;
     glass_forget();
+  }
+
+  // Perf-30: (1) Rotated spinner isolation & 60-frame benchmark, (2) 45-deg grazing & far-pivot rotated overlap,
+  // (3) unrelated kind==12 vector segment isolation, (4) GLES VRAM budget + compact 64px slots + high-water lv shrink.
+  {
+    GLuint p30_tex = 0, p30_fb = 0;
+    int pw = 400, ph = 600, psc = 2;
+    fb_w = pw * psc;
+    fb_h = ph * psc;
+    cur_w = pw;
+    cur_h = ph;
+    cur_scale = psc;
+    glGenTextures(1, &p30_tex);
+    glBindTexture(GL_TEXTURE_2D, p30_tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, fb_w, fb_h);
+    glGenFramebuffers(1, &p30_fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, p30_fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, p30_tex, 0);
+    CHECK(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    target_fb = p30_fb;
+    canvas_ok = 0;
+    glass_free();
+
+    // (1) Rotated spinner 400pt below top progressive blur + liquid glass: 60 frames, frames 2..60 must have 0 blurs.
+    {
+      double sp[5 * MB_INST];
+      rect_at(sp, 0, 0, pw, ph, 0, 0.94, 0.94, 0.92, 0);
+      sp[18] = pw; sp[19] = ph;
+      rect_at(sp + 1 * MB_INST, 20, 8, 120, 24, 0, 0.85, 0.20, 0.20, 0);
+      sp[1 * MB_INST + 18] = pw; sp[1 * MB_INST + 19] = ph;
+      // Rotating spinner far below (y=460, 400pt below top glass)
+      rect_at(sp + 2 * MB_INST, 180, 460, 20, 20, 0, 0.20, 0.45, 0.90, 0);
+      sp[2 * MB_INST + 18] = pw; sp[2 * MB_INST + 19] = ph;
+      sp[2 * MB_INST + 32] = 0.1;
+      sp[2 * MB_INST + 33] = 190.0;
+      sp[2 * MB_INST + 34] = 470.0;
+      // Top progressive blur
+      rect_at(sp + 3 * MB_INST, 0, 0, pw, 64, 5, 0.96, 0.96, 0.96, -50);
+      sp[3 * MB_INST + 6] = 1.1;
+      sp[3 * MB_INST + 7] = 6.0;
+      sp[3 * MB_INST + 11] = 0.35;
+      sp[3 * MB_INST + 15] = 1.0;
+      sp[3 * MB_INST + 18] = pw; sp[3 * MB_INST + 19] = ph;
+      sp[3 * MB_INST + 22] = -1.0;
+      sp[3 * MB_INST + 54] = 64.0;
+      sp[3 * MB_INST + 55] = 24.0;
+      // Top liquid glass capsule
+      rect_at(sp + 4 * MB_INST, 24, 12, 140, 32, 6, 0.99, 0.99, 0.99, -51);
+      sp[4 * MB_INST + 4] = 16.0;
+      sp[4 * MB_INST + 6] = 1.0;
+      sp[4 * MB_INST + 7] = 2.0;
+      sp[4 * MB_INST + 11] = 0x67 / 255.0;
+      sp[4 * MB_INST + 13] = 8.0;
+      sp[4 * MB_INST + 14] = -1.0;
+      sp[4 * MB_INST + 15] = 1.0;
+      sp[4 * MB_INST + 18] = pw; sp[4 * MB_INST + 19] = ph;
+      sp[4 * MB_INST + 21] = 6.0;
+
+      glass_forget();
+      gl_set_fixed_dt(1.0 / 60.0);
+      int b_start = blurs_made;
+      int steady_blurs = 0;
+      struct timespec t0, t1;
+      clock_gettime(CLOCK_MONOTONIC, &t0);
+      for (int frame = 0; frame < 60; frame++) {
+        sp[2 * MB_INST + 32] = 0.1 + frame * 0.105;
+        int b_before = blurs_made;
+        gl_present(sp, 5, 0.94, 0.94, 0.92);
+        if (frame == 0) {
+          CHECK(blurs_made == b_before + 2);
+        } else {
+          steady_blurs += (blurs_made - b_before);
+          CHECK(blurs_made == b_before);
+        }
+      }
+      glFinish();
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      double elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000.0 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+      printf("gles_render: Perf-30 60-frame spinner blurs=%d (frames 2..60=%d) ms=%.2f\n",
+             blurs_made - b_start, steady_blurs, elapsed_ms);
+      CHECK(steady_blurs == 0);
+      CHECK(surface_as_whole(p30_fb));
+      CHECK(surface_as_fresh(p30_fb));
+      gl_set_fixed_dt(0.0);
+    }
+
+    // (2) Rotated instance grazing overlap at 45 deg + far-pivot swing into glass capture region.
+    {
+      double rg[3 * MB_INST];
+      rect_at(rg, 0, 0, pw, ph, 0, 0.94, 0.94, 0.92, 0);
+      rg[18] = pw; rg[19] = ph;
+      // Glass at y=0..60 with blur=4.0 (margin = 14pt -> grab reaches y=74)
+      // Rect 40x40 centered at (100, 100): at angle=0, top is y=80 (> 74, outside).
+      // At angle=45 deg, half-diagonal is 20*sqrt(2) = 28.28 -> top reaches y=71.72 (< 74, overlaps grab!).
+      rect_at(rg + 1 * MB_INST, 80, 80, 40, 40, 0, 0.90, 0.15, 0.15, 0);
+      rg[1 * MB_INST + 18] = pw; rg[1 * MB_INST + 19] = ph;
+      rg[1 * MB_INST + 32] = 0.0;
+      rg[1 * MB_INST + 33] = 100.0;
+      rg[1 * MB_INST + 34] = 100.0;
+      rect_at(rg + 2 * MB_INST, 40, 20, 120, 40, 5, 0.98, 0.98, 0.98, -52);
+      rg[2 * MB_INST + 7] = 4.0;
+      rg[2 * MB_INST + 11] = 0.45;
+      rg[2 * MB_INST + 18] = pw; rg[2 * MB_INST + 19] = ph;
+
+      glass_forget();
+      gl_present(rg, 3, 0.94, 0.94, 0.92);
+      CHECK(surface_as_whole(p30_fb));
+      // Rotate to 45 deg: corner grazes glass capture -> must rebuild and match fresh render byte-for-byte
+      rg[1 * MB_INST + 32] = 0.7853981633974483;
+      int b0 = blurs_made;
+      gl_present(rg, 3, 0.94, 0.94, 0.92);
+      CHECK(blurs_made == b0 + 1);
+      CHECK(surface_as_fresh(p30_fb));
+
+      // Far-pivot swing: rect at (200, 300, 30, 30), pivot at (150, 170), rotate by PI -> lands near (85, 25) inside glass!
+      rg[1 * MB_INST + 0] = 200.0; rg[1 * MB_INST + 1] = 300.0;
+      rg[1 * MB_INST + 2] = 30.0; rg[1 * MB_INST + 3] = 30.0;
+      rg[1 * MB_INST + 32] = 0.0;
+      rg[1 * MB_INST + 33] = 150.0; rg[1 * MB_INST + 34] = 170.0;
+      glass_forget();
+      gl_present(rg, 3, 0.94, 0.94, 0.92);
+      rg[1 * MB_INST + 32] = 3.141592653589793;
+      b0 = blurs_made;
+      gl_present(rg, 3, 0.94, 0.94, 0.92);
+      CHECK(blurs_made == b0 + 1);
+      CHECK(surface_as_fresh(p30_fb));
+    }
+
+    // (3) Unrelated kind==12 vector path segment isolation.
+    {
+      double vg[4 * MB_INST];
+      rect_at(vg, 0, 0, pw, ph, 0, 0.94, 0.94, 0.92, 0);
+      vg[18] = pw; vg[19] = ph;
+      // Bottom kind==11 vector shape (y=400..440, far below top glass)
+      rect_at(vg + 1 * MB_INST, 40, 400, 60, 40, 11, 0.10, 0.30, 0.85, 0);
+      vg[1 * MB_INST + 12] = 0.0;  // seg start
+      vg[1 * MB_INST + 13] = 1.0;  // seg count
+      vg[1 * MB_INST + 18] = pw; vg[1 * MB_INST + 19] = ph;
+      // Top frosted glass (y=20..60, no kind==11 under it)
+      rect_at(vg + 2 * MB_INST, 20, 20, 140, 40, 5, 0.98, 0.98, 0.98, -53);
+      vg[2 * MB_INST + 7] = 4.0;
+      vg[2 * MB_INST + 11] = 0.45;
+      vg[2 * MB_INST + 18] = pw; vg[2 * MB_INST + 19] = ph;
+      // Trailing kind==12 segment piece
+      memset(vg + 3 * MB_INST, 0, MB_INST * sizeof(double));
+      vg[3 * MB_INST + 5] = 12;
+      vg[3 * MB_INST + 0] = 40; vg[3 * MB_INST + 1] = 400;
+      vg[3 * MB_INST + 2] = 100; vg[3 * MB_INST + 3] = 440;
+
+      glass_forget();
+      int b0 = blurs_made;
+      gl_present(vg, 4, 0.94, 0.94, 0.92);
+      CHECK(blurs_made == b0 + 1);
+      for (int step = 0; step < 3; step++) {
+        vg[3 * MB_INST + 2] = 90 + step * 5;
+        b0 = blurs_made;
+        gl_present(vg, 4, 0.94, 0.94, 0.92);
+        CHECK(blurs_made == b0);
+        CHECK(surface_as_whole(p30_fb));
+      }
+      CHECK(surface_as_fresh(p30_fb));
+
+      // Move kind==11 under the top glass: mutating kind==12 MUST rebuild blur!
+      vg[1 * MB_INST + 1] = 24.0;
+      vg[3 * MB_INST + 1] = 24.0; vg[3 * MB_INST + 3] = 56.0;
+      glass_forget();
+      gl_present(vg, 4, 0.94, 0.94, 0.92);
+      vg[3 * MB_INST + 2] = 110.0;
+      b0 = blurs_made;
+      gl_present(vg, 4, 0.94, 0.94, 0.92);
+      CHECK(blurs_made == b0 + 1);
+      CHECK(surface_as_fresh(p30_fb));
+    }
+
+    // (4) GLES VRAM budget + compact 64px slot textures + high-water lv_w/lv_h shrink.
+    {
+      GLuint big_tex = 0, big_fb = 0;
+      int bw_pt = 1280, bh_pt = 720, bsc = 2;
+      fb_w = bw_pt * bsc;
+      fb_h = bh_pt * bsc;
+      cur_w = bw_pt;
+      cur_h = bh_pt;
+      cur_scale = bsc;
+      glGenTextures(1, &big_tex);
+      glBindTexture(GL_TEXTURE_2D, big_tex);
+      glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, fb_w, fb_h);
+      glGenFramebuffers(1, &big_fb);
+      glBindFramebuffer(GL_FRAMEBUFFER, big_fb);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, big_tex, 0);
+      CHECK(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+      target_fb = big_fb;
+      canvas_ok = 0;
+      glass_free();
+
+      double big[3 * MB_INST];
+      rect_at(big, 0, 0, bw_pt, bh_pt, 0, 0.12, 0.16, 0.22, 0);
+      big[18] = bw_pt; big[19] = bh_pt;
+      rect_at(big + MB_INST, 0, 0, 1240, 60, 5, 1, 1, 1, -54);
+      big[MB_INST + 7] = 12.0;
+      big[MB_INST + 11] = 0.4;
+      big[MB_INST + 18] = bw_pt; big[MB_INST + 19] = bh_pt;
+      big[MB_INST + 22] = -1.0;
+      big[MB_INST + 54] = 60.0;
+      big[MB_INST + 55] = 30.0;
+      rect_at(big + 2 * MB_INST, 0, 80, 120, 620, 5, 1, 1, 1, -55);
+      big[2 * MB_INST + 7] = 12.0;
+      big[2 * MB_INST + 11] = 0.4;
+      big[2 * MB_INST + 18] = bw_pt; big[2 * MB_INST + 19] = bh_pt;
+      gl_present(big, 3, 0.12, 0.16, 0.22);
+      CHECK(lv_w >= 2400 && lv_h >= 1200);
+      CHECK(slots_total_bytes() <= MB_GLASS_CACHE_MAX_BYTES);
+      CHECK(surface_as_whole(big_fb));
+
+      double sm[4 * MB_INST];
+      rect_at(sm, 0, 0, bw_pt, bh_pt, 0, 0.14, 0.18, 0.24, 0);
+      sm[18] = bw_pt; sm[19] = bh_pt;
+      rect_at(sm + MB_INST, 20, 30, 420, 60, 0, 0.90, 0.35, 0.20, 0);
+      sm[MB_INST + 18] = bw_pt; sm[MB_INST + 19] = bh_pt;
+      rect_at(sm + 2 * MB_INST, 40, 40, 160, 44, 5, 1, 1, 1, -56);
+      sm[2 * MB_INST + 7] = 12.0;
+      sm[2 * MB_INST + 11] = 0.45;
+      sm[2 * MB_INST + 18] = bw_pt; sm[2 * MB_INST + 19] = bh_pt;
+      sm[2 * MB_INST + 22] = -1.0;
+      sm[2 * MB_INST + 54] = 84.0;
+      sm[2 * MB_INST + 55] = 44.0;
+      rect_at(sm + 3 * MB_INST, 300, 40, 120, 40, 5, 1, 1, 1, -57);
+      sm[3 * MB_INST + 7] = 3.0;
+      sm[3 * MB_INST + 11] = 0.45;
+      sm[3 * MB_INST + 18] = bw_pt; sm[3 * MB_INST + 19] = bh_pt;
+
+      size_t peak_slot_bytes = slots_total_bytes();
+      size_t max_small_tex_area = 0;
+      for (int step = 0; step < 40; step++) {
+        sm[MB_INST + 0] = 20 + (step * 7) % 120;
+        gl_present(sm, 4, 0.14, 0.18, 0.24);
+        size_t cur_bytes = slots_total_bytes();
+        if (cur_bytes > peak_slot_bytes) peak_slot_bytes = cur_bytes;
+        CHECK(cur_bytes <= MB_GLASS_CACHE_MAX_BYTES);
+        for (int j = 0; j < MB_GLASS_SLOTS; j++) {
+          if (slots[j].valid && slots[j].bt && slots[j].grab.w < 1000) {
+            size_t area = (size_t)slots[j].bw * (size_t)slots[j].bh;
+            if (area > max_small_tex_area) max_small_tex_area = area;
+          }
+        }
+      }
+      printf("gles_render: glass stress peak_slot_bytes=%zu (limit=%zu) max_small_area=%zu lv_area=%zu\n",
+             peak_slot_bytes, (size_t)MB_GLASS_CACHE_MAX_BYTES, max_small_tex_area, (size_t)lv_w * (size_t)lv_h);
+      CHECK(peak_slot_bytes <= MB_GLASS_CACHE_MAX_BYTES);
+      CHECK(max_small_tex_area > 0 && max_small_tex_area * 8 < (size_t)lv_w * (size_t)lv_h);
+      CHECK(surface_as_whole(big_fb));
+      CHECK(surface_as_fresh(big_fb));
+
+      // High-water mark shrink over MB_GLASS_IDLE (180) frames
+      glass_free();
+      fb_w = 400 * 2;
+      fb_h = 300 * 2;
+      cur_w = 400;
+      cur_h = 300;
+      cur_scale = 2;
+      target_fb = p30_fb;
+      glBindFramebuffer(GL_FRAMEBUFFER, p30_fb);
+      // Reuse a 800x600 FBO for clean 400x300@2x shrink test
+      glDeleteFramebuffers(1, &big_fb);
+      glDeleteTextures(1, &big_tex);
+      glGenTextures(1, &big_tex);
+      glBindTexture(GL_TEXTURE_2D, big_tex);
+      glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, fb_w, fb_h);
+      glGenFramebuffers(1, &big_fb);
+      glBindFramebuffer(GL_FRAMEBUFFER, big_fb);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, big_tex, 0);
+      target_fb = big_fb;
+      canvas_ok = 0;
+
+      double lg[2 * MB_INST];
+      rect_at(lg, 0, 0, 400, 300, 0, 0.15, 0.25, 0.40, 0);
+      lg[18] = 400; lg[19] = 300;
+      rect_at(lg + MB_INST, 0, 0, 400, 300, 5, 1, 1, 1, -58);
+      lg[MB_INST + 7] = 8.0;
+      lg[MB_INST + 11] = 0.45;
+      lg[MB_INST + 18] = 400; lg[MB_INST + 19] = 300;
+      gl_present(lg, 2, 0.15, 0.25, 0.40);
+      size_t big_lv_area = (size_t)lv_w * (size_t)lv_h;
+      CHECK(lv_w == 800 && lv_h == 600);
+      CHECK(surface_as_whole(big_fb));
+
+      double sml[3 * MB_INST];
+      rect_at(sml, 0, 0, 400, 300, 0, 0.15, 0.25, 0.40, 0);
+      sml[18] = 400; sml[19] = 300;
+      rect_at(sml + MB_INST, 24, 24, 52, 32, 0, 0.90, 0.20, 0.20, 0);
+      sml[MB_INST + 18] = 400; sml[MB_INST + 19] = 300;
+      rect_at(sml + 2 * MB_INST, 20, 20, 60, 40, 5, 1, 1, 1, -59);
+      sml[2 * MB_INST + 7] = 4.0;
+      sml[2 * MB_INST + 11] = 0.45;
+      sml[2 * MB_INST + 18] = 400; sml[2 * MB_INST + 19] = 300;
+      for (int i = 0; i < MB_GLASS_IDLE; i++) {
+        sml[MB_INST + 0] = 24 + (i % 20);
+        gl_present(sml, 3, 0.15, 0.25, 0.40);
+      }
+      size_t shrunk_lv_area = (size_t)lv_w * (size_t)lv_h;
+      printf("gles_render: lv shrink big_area=%zu -> shrunk_area=%zu (%dx%d)\n",
+             big_lv_area, shrunk_lv_area, lv_w, lv_h);
+      CHECK(shrunk_lv_area * 4 < big_lv_area);
+      CHECK(surface_as_whole(big_fb));
+      CHECK(surface_as_fresh(big_fb));
+
+      glDeleteFramebuffers(1, &big_fb);
+      glDeleteTextures(1, &big_tex);
+    }
+
+    glDeleteFramebuffers(1, &p30_fb);
+    glDeleteTextures(1, &p30_tex);
+    fb_w = W * S;
+    fb_h = H * S;
+    cur_w = W;
+    cur_h = H;
+    cur_scale = S;
+    target_fb = surface;
+    glBindFramebuffer(GL_FRAMEBUFFER, surface);
+    canvas_ok = 0;
+    glass_free();
   }
 
   if (!failed) printf("gles_render: ok\n");

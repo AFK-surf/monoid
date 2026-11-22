@@ -152,6 +152,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     @Override
     public void onPause() {
         paused = true;
+        lastSettleNs = 0L;
         if (settleScheduled.getAndSet(false)) {
             Host.main.post(() -> Choreographer.getInstance().removeFrameCallback(settleVsync));
         }
@@ -559,12 +560,24 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         if (mail.handOver(shows, MBText.placed)) requestRender();
     }
 
-    /** VSync-paced settle wakeup for adaptive glass (main thread Choreographer -> GLThread requestRender). */
+    /** VSync-paced settle wakeup for adaptive glass (main thread Choreographer -> GLThread requestRender, capped <= 60 Hz). */
     private final java.util.concurrent.atomic.AtomicBoolean settleScheduled = new java.util.concurrent.atomic.AtomicBoolean();
-    private final Choreographer.FrameCallback settleVsync = t -> {
+    private volatile long lastSettleNs;
+    private final Choreographer.FrameCallback settleVsync = this::onSettleVsync;
+
+    private void onSettleVsync(long t) {
+        if (paused || Host.view != this || !Native.adaptiveSettling()) {
+            settleScheduled.set(false);
+            return;
+        }
+        if (t - lastSettleNs < 15_000_000L) {
+            Choreographer.getInstance().postFrameCallback(settleVsync);
+            return;
+        }
         settleScheduled.set(false);
-        if (!paused && Host.view == this && Native.adaptiveSettling()) requestRender();
-    };
+        lastSettleNs = t;
+        requestRender();
+    }
 
     private void scheduleAdaptiveSettle() {
         if (paused) return;
@@ -642,7 +655,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         } else {
             Native.redraw();
         }
-        if (Native.adaptiveSettling()) scheduleAdaptiveSettle();
+        if (Native.adaptiveSettling()) {
+            if (t.took) lastSettleNs = System.nanoTime();
+            scheduleAdaptiveSettle();
+        }
         // what the frames it took the place of on the screen used, and this one does not: let go now
         mail.runAll(t.retire);
         showAt(t.shows);

@@ -2045,17 +2045,33 @@ static void glass_forget(void) {
 }
 
 // Whether instance i (its run of glass starting at `run`) draws anything in g (x0, y0, x1, y1, points): its quad as
-// the vertex shader makes it (vmain: grown round its rect, liquid glass over its group's bounds), turned ones always.
+// the vertex shader makes it (vmain: grown round its rect, liquid glass over its group's bounds, rotated AABB when turned).
 static int reaches(const float *f, int32_t i, int32_t run, const float g[4]) {
   const float *b = f + (size_t)i * MB_INST;
-  if (b[32] != 0.0f) return 1;
   int kind = (int)(b[5] + 0.5f);
+  if (b[32] != 0.0f && kind == 6 && (b[23] > 0.0f || f[(size_t)run * MB_INST + 23] > 0.0f)) return 1;
   float e = kind == 2 ? fabsf(b[7]) * 3.0f + 2.0f : 1.0f;
   // (liquid: its group's bounds, each shape and the first's reach round it, 2 more: grab_of)
   if (kind == 6) e = fmaxf(fmaxf(b[23], f[(size_t)run * MB_INST + 23]), 0.0f) + 2.0f;
   e += 1.0f;
   float x0 = fminf(b[0], b[0] + b[2]) - e, x1 = fmaxf(b[0], b[0] + b[2]) + e;
   float y0 = fminf(b[1], b[1] + b[3]) - e, y1 = fmaxf(b[1], b[1] + b[3]) + e;
+  if (b[32] != 0.0f) {
+    float px = b[33], py = b[34], c = cosf(b[32]), s = sinf(b[32]);
+    float dx[4] = {x0 - px, x1 - px, x0 - px, x1 - px};
+    float dy[4] = {y0 - py, y0 - py, y1 - py, y1 - py};
+    float rx0 = 1e30f, ry0 = 1e30f, rx1 = -1e30f, ry1 = -1e30f;
+    for (int k = 0; k < 4; k++) {
+      float rx = px + c * dx[k] - s * dy[k];
+      float ry = py + s * dx[k] + c * dy[k];
+      if (rx < rx0) rx0 = rx;
+      if (rx > rx1) rx1 = rx;
+      if (ry < ry0) ry0 = ry;
+      if (ry > ry1) ry1 = ry;
+    }
+    x0 = rx0 - 1.0f; x1 = rx1 + 1.0f;
+    y0 = ry0 - 1.0f; y1 = ry1 + 1.0f;
+  }
   return x1 > g[0] && x0 < g[2] && y1 > g[1] && y0 < g[3];
 }
 
@@ -2147,17 +2163,21 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
   }
   float *o = under_now;
   int32_t picked = 0, run = 0;
+  int has_shape = 0;
   for (int32_t i = 0; i < start; i++) {
     float tid = f[(size_t)i * MB_INST + 20];
     if (i > 0 && tid != f[(size_t)(i - 1) * MB_INST + 20]) run = i;
     if (!reaches(f, i, run, dep)) continue;
     if (tid > (float)MB_STREAM_TEX) return 0;
+    if ((int)(f[(size_t)i * MB_INST + 5] + 0.5f) == 11) has_shape = 1;
     memcpy(o, f + (size_t)i * MB_INST, MB_INST * sizeof(float));
     o += MB_INST;
     picked++;
   }
-  memcpy(o, f + (size_t)pieces * MB_INST, (size_t)(count - pieces) * MB_INST * sizeof(float));
-  o += (size_t)(count - pieces) * MB_INST;
+  if (has_shape && count > pieces) {
+    memcpy(o, f + (size_t)pieces * MB_INST, (size_t)(count - pieces) * MB_INST * sizeof(float));
+    o += (size_t)(count - pieces) * MB_INST;
+  }
   under_now_n = (size_t)(o - under_now);
   under_whole = 0;
   under_picked = picked;
@@ -2482,14 +2502,15 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         int pre_n = 0;
         double key[7] = {target.width, target.height, at_scale, r, g, b, alpha};
         int pre_bound = 0;
-        for (int32_t s0 = 0; s0 < count && pre_n < MB_ADAPTIVE_MAX;) {
+        for (int32_t s0 = 0; s0 < count;) {
           int stid = (int)f[s0 * MB_INST + 20];
           int32_t e0 = s0 + 1;
           if (stid < 0) {
             while (e0 < count && (int)f[e0 * MB_INST + 20] == stid) e0++;
             if (stid != pre_bound) {
               pre_bound = stid;
-              if ((int)(f[s0 * MB_INST + 5] + 0.5f) == 6) {
+              int skind = (int)(f[s0 * MB_INST + 5] + 0.5f);
+              if (skind == 5 || skind == 6) {
                 Grab gm;
                 if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height) && grab_in_part(&gm) &&
                     under_take(f, s0, count, seg_base, &gm)) {
@@ -2502,17 +2523,19 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
                       pre_hits[pre_hits_n].grab = gm;
                       pre_hits_n++;
                     }
-                    AdPending tmp[MB_ADAPTIVE_MAX];
-                    int nu = ad_collect_and_match(at_win, f, s0, e0, count, &gm, 0, ad_dt, ad_serial, tmp);
-                    if (nu > 0) {
-                      float map[4], uvc[4];
-                      grab_map_uvc(&gm, slot_bt[sl], map, uvc);
-                      for (int i = 0; i < nu && pre_n < MB_ADAPTIVE_MAX; i++) {
-                        pre_batch[pre_n].p = tmp[i];
-                        pre_batch[pre_n].tex = slot_bt[sl];
-                        memcpy(pre_batch[pre_n].map, map, sizeof map);
-                        memcpy(pre_batch[pre_n].uvc, uvc, sizeof uvc);
-                        pre_n++;
+                    if (skind == 6 && pre_n < MB_ADAPTIVE_MAX) {
+                      AdPending tmp[MB_ADAPTIVE_MAX];
+                      int nu = ad_collect_and_match(at_win, f, s0, e0, count, &gm, 0, ad_dt, ad_serial, tmp);
+                      if (nu > 0) {
+                        float map[4], uvc[4];
+                        grab_map_uvc(&gm, slot_bt[sl], map, uvc);
+                        for (int i = 0; i < nu && pre_n < MB_ADAPTIVE_MAX; i++) {
+                          pre_batch[pre_n].p = tmp[i];
+                          pre_batch[pre_n].tex = slot_bt[sl];
+                          memcpy(pre_batch[pre_n].map, map, sizeof map);
+                          memcpy(pre_batch[pre_n].uvc, uvc, sizeof uvc);
+                          pre_n++;
+                        }
                       }
                     }
                   }

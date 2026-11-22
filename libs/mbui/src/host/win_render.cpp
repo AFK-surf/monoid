@@ -2240,13 +2240,29 @@ static void show_blur(const Grab *m, const level *L) {
 
 static int reaches(const float *f, int32_t i, int32_t run, const float g[4]) {
   const float *b = f + (size_t)i * MB_INST;
-  if (b[32] != 0.0f) return 1;
   int kind = (int)(b[5] + 0.5f);
+  if (b[32] != 0.0f && kind == 6 && (b[23] > 0.0f || f[(size_t)run * MB_INST + 23] > 0.0f)) return 1;
   float e = kind == 2 ? fabsf(b[7]) * 3.0f + 2.0f : 1.0f;
   if (kind == 6) e = fmaxf(fmaxf(b[23], f[(size_t)run * MB_INST + 23]), 0.0f) + 2.0f;
   e += 1.0f;
   float x0 = fminf(b[0], b[0] + b[2]) - e, x1 = fmaxf(b[0], b[0] + b[2]) + e;
   float y0 = fminf(b[1], b[1] + b[3]) - e, y1 = fmaxf(b[1], b[1] + b[3]) + e;
+  if (b[32] != 0.0f) {
+    float px = b[33], py = b[34], c = cosf(b[32]), s = sinf(b[32]);
+    float dx[4] = {x0 - px, x1 - px, x0 - px, x1 - px};
+    float dy[4] = {y0 - py, y0 - py, y1 - py, y1 - py};
+    float rx0 = 1e30f, ry0 = 1e30f, rx1 = -1e30f, ry1 = -1e30f;
+    for (int k = 0; k < 4; k++) {
+      float rx = px + c * dx[k] - s * dy[k];
+      float ry = py + s * dx[k] + c * dy[k];
+      if (rx < rx0) rx0 = rx;
+      if (rx > rx1) rx1 = rx;
+      if (ry < ry0) ry0 = ry;
+      if (ry > ry1) ry1 = ry;
+    }
+    x0 = rx0 - 1.0f; x1 = rx1 + 1.0f;
+    y0 = ry0 - 1.0f; y1 = ry1 + 1.0f;
+  }
   return x1 > g[0] && x0 < g[2] && y1 > g[1] && y0 < g[3];
 }
 
@@ -2338,17 +2354,21 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
   }
   float *o = under_now;
   int32_t picked = 0, run = 0;
+  int has_shape = 0;
   for (int32_t i = 0; i < start; i++) {
     float tid = f[(size_t)i * MB_INST + 20];
     if (i > 0 && tid != f[(size_t)(i - 1) * MB_INST + 20]) run = i;
     if (!reaches(f, i, run, dep)) continue;
     if (tid > (float)MB_STREAM_TEX) return 0;
+    if ((int)(f[(size_t)i * MB_INST + 5] + 0.5f) == 11) has_shape = 1;
     memcpy(o, f + (size_t)i * MB_INST, MB_INST * sizeof(float));
     o += MB_INST;
     picked++;
   }
-  memcpy(o, f + (size_t)pieces * MB_INST, (size_t)(count - pieces) * MB_INST * sizeof(float));
-  o += (size_t)(count - pieces) * MB_INST;
+  if (has_shape && count > pieces) {
+    memcpy(o, f + (size_t)pieces * MB_INST, (size_t)(count - pieces) * MB_INST * sizeof(float));
+    o += (size_t)(count - pieces) * MB_INST;
+  }
   under_now_n = (size_t)(o - under_now);
   under_whole = 0;
   under_picked = picked;
