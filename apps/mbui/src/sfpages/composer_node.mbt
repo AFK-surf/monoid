@@ -589,7 +589,8 @@ fn composer_foot_scrim_node(
         typing.go_ms(scrim, 0.0, composer_backdrop_out_ms, ease=Leave)
       }
     })
-    scrim.box(fn(lift) {
+    // (made only while the keyboard is up, and as it fades out once it goes: nothing more on a chat opened without it)
+    scrim.show(fn() { scrim.keyboard_inset() > 0.0 }, leave=composer_backdrop_out_ms, fn(lift) {
       lift
       .over(Is(true))
       .width_share(Is(1.0))
@@ -618,7 +619,6 @@ fn composer_foot_scrim_node(
       })
       |> ignore
     })
-    |> ignore
   })
   |> ignore
 }
