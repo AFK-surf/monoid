@@ -259,6 +259,19 @@ priv struct Presented {
   /// (panel_page: sheet_node's pages, each kept as it was left, sliding in over the one before); back takes the last
   /// off (panel_pop), a press outside or the sheet dragged down closes all of it
   more : @signals.Signal[Array[PanelPage]]
+  /// a popover menu's pushed submenu levels (menu_push: in-container horizontal slide inside the same glass menu
+  /// shell); back pops the last level (menu_pop), while outside press or Escape closes the whole menu
+  menu_more : @signals.Signal[Array[MenuLevel]]
+}
+
+///|
+/// A submenu level pushed onto an `AsPopover` menu (Presented's `menu_more`): its step number, title, items, and
+/// `gone` callback run when popped or dismissed unsaid.
+priv struct MenuLevel {
+  n : Int
+  title : String
+  items : Array[MenuItem?]
+  gone : () -> Unit
 }
 
 ///|
@@ -428,6 +441,17 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
     }
     _ => ()
   }
+  // (a menu opened by choosing an item in an AsPopover menu: push as an in-container submenu level of the same menu)
+  let chosen_menu = presented_now.iter().filter(fn(q) { q.closed_now && q.chosen && q.taken_by == 0 }).last()
+  match (chosen_menu, shows) {
+    (Some(old), Menu(items, title, _, _)) if old.shows is Menu(_, _, _, _) &&
+      tree_presented.contains(old.serial) &&
+      !tree_as_sheet.get(old.serial).unwrap_or(false) => {
+      menu_push(old, items, title, gone)
+      return
+    }
+    _ => ()
+  }
   // (a panel by what a panel on a sheet of the window's tree held, which closed for it: a page of that sheet)
   match (chosen_in, shows) {
     (Some(old), Panel(x)) if old.chosen &&
@@ -476,6 +500,7 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
     chosen: false,
     under,
     more: @signals.signal_ref([]),
+    menu_more: @signals.signal_ref([]),
   })
   @signals.start_batch()
   presented_told()
@@ -1029,8 +1054,10 @@ fn closing_together(f : () -> Unit) -> Unit {
 /// then; its view draws it going from the next frame on.
 fn dismissed_now(serial : Int, back? : Bool = false) -> Unit {
   match presented_now.search_by(fn(q) { q.serial == serial }) {
-    // (a step further in, gone back from: a page of its sheet taken off; a panel's from another's, that one back)
-    Some(i) if back && presented_now[i].open && (panel_pop(presented_now[i]) || back_under(presented_now[i])) => ()
+    // (a step further in, gone back from: a submenu level popped, a page of its sheet taken off, or a panel back)
+    Some(i) if back &&
+      presented_now[i].open &&
+      (menu_pop(presented_now[i]) || panel_pop(presented_now[i]) || back_under(presented_now[i])) => ()
     Some(i) if presented_now[i].open => {
       // (it and what is over it, each closed unsaid let go of once, from the top)
       let closing = presented_now[i:].to_owned().filter(fn(q) { q.open && !q.ended }).rev()
@@ -1118,8 +1145,47 @@ fn panel_pop(p : Presented) -> Bool {
 }
 
 ///|
-/// What `p` holds let go of as it closes unsaid: its pages', the last first, then its own.
+/// Pushes a submenu level onto an `AsPopover` menu `p` in place (same glass container, horizontal slide),
+/// reopening `p` from the `closed_now` state set by choosing the parent item.
+fn menu_push(p : Presented, items : Array[MenuItem?], title : String, gone : () -> Unit) -> Unit {
+  p.open = true
+  p.closed_now = false
+  p.ended = false
+  p.chosen = false
+  p.steps_made += 1
+  @view.transition(fn() {
+    match steps_reshaping.get(p.serial) {
+      Some(f) => f()
+      None => ()
+    }
+    p.menu_more.set([..p.menu_more.untracked(), { n: p.steps_made, title, items, gone }])
+    presented_told()
+  })
+}
+
+///|
+/// Pops the topmost submenu level from `p` if open and past its first level, running its `gone` callback.
+fn menu_pop(p : Presented) -> Bool {
+  let more = p.menu_more.untracked()
+  guard p.open && more.length() > 0 else { return false }
+  let last = more[more.length() - 1]
+  @view.transition(fn() {
+    match steps_reshaping.get(p.serial) {
+      Some(f) => f()
+      None => ()
+    }
+    p.menu_more.set(more[:more.length() - 1].to_owned())
+  })
+  (last.gone)()
+  true
+}
+
+///|
+/// What `p` holds let go of as it closes unsaid: its submenu levels', its pages', the last first, then its own.
 fn gone_all(p : Presented) -> Unit {
+  for lv in p.menu_more.untracked().rev() {
+    (lv.gone)()
+  }
   for pg in p.more.untracked().rev() {
     (pg.gone)()
   }

@@ -67,6 +67,8 @@ pub(all) struct PillTriggerScope {
   press_way : @motion.NodeWay
   morph_glass : Ref[(() -> @paint.Glass?)?]
   morph_shadow : Ref[(() -> (Double, Double, Int64))?]
+  mut morph_owner : Int
+  mut morph_cancel : (() -> Unit)?
   children : Array[@view.View]
   height : Double
   pad : Double
@@ -197,6 +199,8 @@ pub fn liquid_pill_group_node(
       press_way,
       morph_glass,
       morph_shadow,
+      morph_owner: 0,
+      morph_cancel: None,
       children,
       height,
       pad,

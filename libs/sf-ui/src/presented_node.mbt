@@ -193,7 +193,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
           let (anchor, by_key, offset, keep_field) = @signals.untracked(fn() { menu_anchor_now(p.from) })
           // (what it holds as it is now, where it is kept: given anew there whole, then told, presented_changed; what
           // reads it, its rows, keys and choices, read it again then; what a choice does, as it is there then)
-          menu_node(
+          menu_node_by(
             row,
             open,
             anchor,
@@ -208,6 +208,9 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             side~,
             shown~,
             gone~,
+            false,
+            sub_levels=fn() { p.menu_more.get().map(fn(lv) { (lv.n, lv.title, menu_clean_items(lv.items)) }) },
+            level_back=fn() { menu_pop(p) },
           )
         }
         Panel(x) if x.stage =>

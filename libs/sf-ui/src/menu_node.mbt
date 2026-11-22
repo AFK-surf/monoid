@@ -136,24 +136,40 @@ fn menu_node_by(
   modal? : Bool = true,
   ticks : Bool,
   check_end? : Bool = false,
+  sub_levels? : () -> Array[(Int, String, Array[MenuItem?])] = fn() { [] },
+  level_back? : () -> Bool = fn() { false },
 ) -> Unit {
   // (no line at either end, none twice: menu_clean_items)
   let content = fn() { menu_clean_items(content()) }
+  let cur_level = fn() -> (Int, String, Array[MenuItem?], Int) {
+    let subs = sub_levels()
+    if subs.is_empty() {
+      (0, title, content(), 0)
+    } else {
+      let last = subs[subs.length() - 1]
+      (last.0, last.1, last.2, subs.length())
+    }
+  }
+  let cur_items = fn() { cur_level().2 }
+  let cur_title = fn() { cur_level().1 }
+  let cur_depth = fn() { cur_level().3 }
   parent.show(
     open,
     fn(layer) {
       shown()
       layer.owns(gone) |> ignore
-      let t = theme()
+      let th = theme()
       // (how far in it is, from the moment it opened; out from the moment it closed, back into the side it grew from,
       // as panel_node's)
       let (enter, exit) = @signals.untracked(fn() { (pop_in_for(layer), pop_out_for(layer)) })
       let (look, live) = @motion.overlay_presence(layer, enter~, exit~)
-      if modal && layout(layer.window_w()) is Small {
-        let rest_end = Ref(0.0)
-        layer.reacts(fn() { layer.leaving() }, fn(going) {
-          rest_end.val = layer.cause_at() + (if going { @motion.pop_out_ms } else { @motion.pop_ms })
-        })
+      let rest_end = Ref(0.0)
+      if modal {
+        if layout(layer.window_w()) is Small {
+          layer.reacts(fn() { layer.leaving() }, fn(going) {
+            rest_end.val = dmax(rest_end.val, layer.cause_at() + (if going { @motion.pop_out_ms } else { @motion.pop_ms }))
+          })
+        }
         presented_sheet_rest(layer, fn(_) { rest_end.val })
       }
       // (its words and icons as far in as its look says: its ground first, then they, as pop_in has it)
@@ -177,11 +193,11 @@ fn menu_node_by(
           None => ()
         }
       }
-      // (said once: the first choice, or a close)
+      // (said once per level: the first choice, or a close; reset when a submenu level pushes/pops)
       let said = Ref(false)
       let go = fn(i : Int) {
         // (what it holds now: what the row pressed shows)
-        match @signals.untracked(content).get(i) {
+        match @signals.untracked(cur_items).get(i) {
           Some(Some(item)) if !item.disabled && !item.heading && !said.val => {
             // (one taken closes it; one of several ticked leaves it open to tick the next: said again)
             if !ticks {
@@ -198,6 +214,67 @@ fn menu_node_by(
       // (its panel, once made, and what opened it: what a press outside it is outside of, where it is not modal)
       let panel : Ref[@view.View?] = Ref(None)
       let opener : Ref[@view.View?] = Ref(None)
+      let body_ref : Ref[@view.View?] = Ref(None)
+      let active_ref : Ref[@view.View?] = Ref(None)
+      let reach = menu_row_reach(th.rows.pick)
+      let pad_v_of = fn(depth : Int, items : Array[MenuItem?], lv_title : String) -> Double {
+        let is_first_row = depth == 0 && items.length() > 0 && (items[0] is Some(i) && !i.heading) && lv_title == ""
+        let is_last_row = items.length() > 0 && (items[items.length() - 1] is Some(i) && !i.heading)
+        let top_pad = if depth > 0 {
+          r_menu - 12.0
+        } else if is_first_row {
+          panel_pad - reach
+        } else {
+          panel_pad
+        }
+        let bot_pad = if is_last_row { panel_pad - reach } else { panel_pad }
+        top_pad + bot_pad
+      }
+      let cur_pad_v = fn() -> Double {
+        let (_, lv_t, lv_items, lv_d) = cur_level()
+        pad_v_of(lv_d, lv_items, lv_t)
+      }
+      // (in-container submenu horizontal slide state: closed-form NodeWay, zero overhead when depth == 0)
+      let slide_way = @motion.NodeWay::new(1.0)
+      let slide_dir : Ref[Double] = Ref(1.0)
+      let slide_w : Ref[Double] = Ref(min_w)
+      let slide_h_from : Ref[Double] = Ref(0.0)
+      let slide_gen : Ref[Int] = Ref(0)
+      let leaving_snap : @signals.Signal[(Int, String, Array[MenuItem?], Int)?] = @signals.signal_ref(None)
+      let prev_level : Ref[(Int, String, Array[MenuItem?], Int)] = Ref(@signals.untracked(cur_level))
+      layer.reacts(fn() { cur_level().0 }, at_start=false, fn(new_id) {
+        said.val = false
+        let next_lv = @signals.untracked(cur_level)
+        let prev_lv = prev_level.val
+        if prev_lv.0 != new_id {
+          slide_dir.val = if next_lv.3 >= prev_lv.3 { 1.0 } else { -1.0 }
+          let w_now = match panel.val {
+            Some(pv) => pv.placed_window_now().2
+            None => min_w
+          }
+          slide_w.val = dmax(w_now, min_w)
+          let old_bh = match body_ref.val {
+            Some(bv) => bv.placed_window_now().3
+            None => 0.0
+          }
+          let old_pad_v = pad_v_of(prev_lv.3, prev_lv.2, prev_lv.1)
+          let new_pad_v = pad_v_of(next_lv.3, next_lv.2, next_lv.1)
+          slide_h_from.val = dmax(0.0, old_bh + old_pad_v - new_pad_v)
+          let dur = @ui.move_ms(slide_w.val)
+          leaving_snap.set(Some(prev_lv))
+          slide_way.go_from(layer, 0.0, 1.0, @motion.moved(points=slide_w.val))
+          rest_end.val = dmax(rest_end.val, layer.cause_at() + dur)
+          slide_gen.val += 1
+          let gen = slide_gen.val
+          layer.at_moment(layer.cause_at() + dur, fn() {
+            if slide_gen.val == gen {
+              leaving_snap.set(None)
+            }
+          })
+          |> ignore
+          prev_level.val = next_lv
+        }
+      })
       // (said before it is modal: the field the focus is in kept as the layer takes what is under it, never cleared)
       if keep_field {
         // (what is typed the field's it leaves the focus in: kit's dropdown_menu's initial focus none)
@@ -272,7 +349,7 @@ fn menu_node_by(
           return false
         }
         let now = @signals.untracked(lit)
-        let items = @signals.untracked(content)
+        let items = @signals.untracked(cur_items)
         if k.code == @ui.key_escape {
           cancel()
           true
@@ -334,7 +411,9 @@ fn menu_node_by(
       })
       .takes_back(fn() {
         if @signals.untracked(live) {
-          cancel()
+          if !level_back() {
+            cancel()
+          }
         }
       })
       |> ignore
@@ -342,16 +421,19 @@ fn menu_node_by(
       let at = anchor(layer)
       opener.val = Some(at)
       // (a column before every item's words where one has an icon or is one of a choice: the web's dropdown)
-      let iconed = fn() { content().iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" }) }
+      let iconed = fn() { cur_items().iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" }) }
       // (none for a check said to go at its row's end)
-      let lead = fn() { iconed() || (!check_end && content().iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) })) }
+      let lead = fn() { iconed() || (!check_end && cur_items().iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) })) }
       let gap = fn() { if lead() && !iconed() { chooser_gap } else { menu_gap } }
       // (how far in a heading's words are: past the check's or icon's column, and a mark's where a row has one, as the
       // dropdown's heading_look has them)
       let marked = fn() {
-        let n = content().length()
+        if cur_depth() > 0 {
+          return false
+        }
+        let items = cur_items()
+        let n = items.length()
         let mut any = false
-        let items = content()
         for i in 0..<n {
           let leads = match items[i] {
             Some(it) => menu_mark_leads(it, extras(i), check_end~)
@@ -366,13 +448,12 @@ fn menu_node_by(
       let past = fn() {
         (if lead() { menu_check_w + gap() } else { 0.0 }) + (if marked() { menu_check_w + gap() } else { 0.0 })
       }
-      let reach = menu_row_reach(t.rows.pick)
       let first_row = fn() {
-        let items = content()
-        items.length() > 0 && (items[0] is Some(i) && !i.heading) && title == ""
+        let items = cur_items()
+        cur_depth() == 0 && items.length() > 0 && (items[0] is Some(i) && !i.heading) && cur_title() == ""
       }
       let last_row = fn() {
-        let items = content()
+        let items = cur_items()
         items.length() > 0 && (items[items.length() - 1] is Some(i) && !i.heading)
       }
       anchored_popover_bridge(layer, at, look, side~, along~, offset~)
@@ -383,7 +464,7 @@ fn menu_node_by(
         // arrow back, closing it while the focus is in it, the layer's keys closing it otherwise)
         @headless.menu(
           p,
-          label=fn() { title_plain(title) },
+          label=fn() { title_plain(cur_title()) },
           on_close=fn() {
             if @signals.untracked(live) {
               cancel()
@@ -398,55 +479,161 @@ fn menu_node_by(
             .min_width(Is(Some(min_w)))
             .max_width(By(fn() { Some(over_room(layer).0 - 16.0) }))
             .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
-            // (small_panel: its padding, its rows reaching past it to stand concentric with its corners)
+            // (small_panel: its padding, its rows reaching past it to stand concentric with its corners;
+            // submenu levels use `r_menu - 12` inset so the 24x24 circular `<` back button (radius 12) sits concentric with `r_menu`)
             .padding(
               By(fn() {
-                (panel_pad - reach, if first_row() { panel_pad - reach } else { panel_pad }, panel_pad - reach, if last_row() { panel_pad - reach } else { panel_pad })
+                let top_pad = if cur_depth() > 0 {
+                  r_menu - 12.0
+                } else if first_row() {
+                  panel_pad - reach
+                } else {
+                  panel_pad
+                }
+                (panel_pad - reach, top_pad, panel_pad - reach, if last_row() { panel_pad - reach } else { panel_pad })
               }),
             )
             |> ignore
             p.box(fn(body) {
+              body_ref.val = Some(body)
               // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
               // grounds, checks, marks and words, its headings and lines, the same, Look's `words` as a surface's are)
               let side = panel_pad - reach
-              body.margin(Is((-side, 0.0, -side, 0.0))) |> ignore
+              body
+              .margin(Is((-side, 0.0, -side, 0.0)))
+              .clips(Is(true))
+              .height(
+                By(fn() {
+                  let sp = slide_way.shown(body)
+                  if sp >= 0.999 || slide_h_from.val <= 0.0 {
+                    None
+                  } else {
+                    let h_to = match active_ref.val {
+                      Some(av) => av.placed_window_now().3
+                      None => 0.0
+                    }
+                    if h_to <= 0.0 {
+                      None
+                    } else {
+                      let cap = dmax(0.0, over_room(layer).1 - 16.0 - cur_pad_v())
+                      Some(dmin(cap, slide_h_from.val + (dmin(h_to, cap) - slide_h_from.val) * sp))
+                    }
+                  }
+                }),
+              )
+              |> ignore
               popover_content_motion(p, body, words_in)
-              body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
-                b.padding(Is((side, 0.0, side, 0.0))) |> ignore
-                // (its title over its rows, in a heading's look: none over a heading of its own first, two headings
-                // one over the other reading as one more of them; a sheet of it still titled by it, sheet_shows_node's)
-                if title != "" {
-                  b.show(fn() { !(content().get(0) is Some(Some(i)) && i.heading) }, fn(h) {
-                    menu_heading_node(h, fn() { title }, past, reach)
+              body.box(fn(active) {
+                active_ref.val = Some(active)
+                active
+                .shrink(Is(0.0))
+                .offset(
+                  By(fn() {
+                    let sp = slide_way.shown(active)
+                    if sp >= 0.999 {
+                      (0.0, 0.0)
+                    } else {
+                      (slide_dir.val * (1.0 - sp) * slide_w.val, 0.0)
+                    }
+                  }),
+                )
+                |> ignore
+                active.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+                  b.padding(Is((side, 0.0, side, 0.0))) |> ignore
+                  // (submenu level header: concentric 24x24 `<` back button + submenu title; at_once=true because level switch is driven by horizontal slide_way)
+                  b.show(fn() { cur_depth() > 0 }, at_once=true, fn(hdr) {
+                    let back_pad_l = dmax(0.0, r_menu - 12.0 - side)
+                    hdr
+                    .row(Is(true))
+                    .lines_up(Is(Some(Middle)))
+                    .gap(Is(4.0))
+                    .padding(Is((back_pad_l, 0.0, text_in, 4.0)))
+                    |> ignore
+                    icon_button_node(
+                      hdr,
+                      "chevron-left",
+                      fn() { t("common.back") },
+                      fn() { level_back() |> ignore },
+                      size=24.0,
+                    )
+                    |> ignore
+                    hdr.box(fn(tw) {
+                      tw
+                      .words(By(cur_title), look=toast_words_look(Ui, L5, 600, false))
+                      .ink(By(fn() { @ui.tree_theme().color(Fg) }))
+                      |> ignore
+                    })
+                    |> ignore
                   })
-                }
-                // (each of what it holds by its place and its kind: one changing what it is (a line, a heading, a row) made
-                // anew there; a row's words, icon, check and whether it can be chosen read again as they change, the row the
-                // same, its focus kept)
-                b.each(fn() { content().mapi(fn(i, x) { (i, menu_row_kind(x, ticks)) }) }, fn(k) { k }, fn(cell, k) {
-                  let (i, kind) = k.untracked()
-                  let item = fn() {
-                    match content().get(i) {
-                      Some(Some(item)) => item
-                      _ => menu_none
-                    }
+                  // (its title over its rows on level 0, in a heading's look: none over a heading of its own first)
+                  if title != "" {
+                    b.show(fn() { cur_depth() == 0 && !(cur_items().get(0) is Some(Some(i)) && i.heading) }, at_once=true, fn(h) {
+                      menu_heading_node(h, fn() { title }, past, reach)
+                    })
                   }
-                  match kind {
-                    0 => menu_rule_node(cell, reach)
-                    1 => menu_heading_node(cell, fn() { item().label }, past, reach)
-                    _ => {
-                      rows[i] = menu_row_node(cell, menu, item, kind, lead, gap, reach, fn() { go(i) }, extras(i), check_end~)
-                      cell.owns(fn() { rows.remove(i) }) |> ignore
-                    }
-                  }
+                  // (each of what it holds by its level, place and kind: at_once=true so old level rows unmount immediately instead of collapsing above the new level while lv_box slides out)
+                  b.each(
+                    fn() {
+                      let (lv_id, _, items, _) = cur_level()
+                      items.mapi(fn(i, x) { (lv_id, i, menu_row_kind(x, ticks)) })
+                    },
+                    fn(k) { k },
+                    at_once=true,
+                    fn(cell, k) {
+                      let (lv_id, i, kind) = k.untracked()
+                      let item = fn() {
+                        match cur_items().get(i) {
+                          Some(Some(item)) => item
+                          _ => menu_none
+                        }
+                      }
+                      let row_extra = if lv_id == 0 { extras(i) } else { menu_no_extra }
+                      match kind {
+                        0 => menu_rule_node(cell, reach)
+                        1 => menu_heading_node(cell, fn() { item().label }, past, reach)
+                        _ => {
+                          rows[i] = menu_row_node(cell, menu, item, kind, lead, gap, reach, fn() { go(i) }, row_extra, check_end~)
+                          cell.owns(fn() {
+                            match rows.get(i) {
+                              Some(r) if r.id() == cell.id() => rows.remove(i)
+                              _ => rows.remove(i)
+                            }
+                          })
+                          |> ignore
+                        }
+                      }
+                    },
+                  )
                 })
+                |> ignore
               })
               |> ignore
+              // (leaving level snapshot sliding out horizontally while the new level slides in; unmounted on settle)
+              body.show(fn() { leaving_snap.get() is Some(_) }, at_once=true, fn(lv_box) {
+                lv_box
+                .over(Is(true))
+                .points(Is(false))
+                .width(Is(Some(slide_w.val)))
+                .padding(Is((side, 0.0, side, 0.0)))
+                .offset(
+                  By(fn() {
+                    let sp = slide_way.shown(lv_box)
+                    (-slide_dir.val * sp * slide_w.val, 0.0)
+                  }),
+                )
+                .alpha(By(fn() { 1.0 - slide_way.shown(lv_box) * 0.35 }))
+                |> ignore
+                match @signals.untracked(fn() { leaving_snap.get() }) {
+                  Some((_, snap_title, snap_items, snap_depth)) =>
+                    menu_leaving_level_node(lv_box, snap_title, snap_items, snap_depth, side, reach, th.rows.pick)
+                  None => ()
+                }
+              })
             })
             |> ignore
             // (the focus given as it opens: opened by the keyboard, to its first row; else its panel; back to what had it
             // as it goes)
-            let first = match rows.get(first_live(@signals.untracked(content), 0, 1)) {
+            let first = match rows.get(first_live(@signals.untracked(cur_items), 0, 1)) {
               Some(r) if by_key => r
               _ => p
             }
@@ -850,6 +1037,104 @@ fn view_along(a : @ui.Along) -> @view.Along {
     Middle => Middle
     End => End
   }
+}
+
+///|
+/// Non-interactive visual snapshot of a leaving submenu level while sliding horizontally out of `menu_node_by`.
+#callsite(autofill(loc))
+fn menu_leaving_level_node(
+  parent : @view.View,
+  snap_title : String,
+  snap_items : Array[MenuItem?],
+  snap_depth : Int,
+  side : Double,
+  reach : Double,
+  row_h : Double,
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.box(made_for=loc, fn(parent) {
+  let iconed = snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" })
+  let lead = iconed || snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) })
+  let gap = if lead && !iconed { chooser_gap } else { menu_gap }
+  let past = if lead { menu_check_w + gap } else { 0.0 }
+  if snap_depth > 0 {
+    let back_pad_l = dmax(0.0, r_menu - 12.0 - side)
+    parent.box(fn(hdr) {
+      hdr
+      .row(Is(true))
+      .lines_up(Is(Some(Middle)))
+      .gap(Is(4.0))
+      .padding(Is((back_pad_l, 0.0, text_in, 4.0)))
+      |> ignore
+      hdr.box(fn(b) {
+        b.width(Is(Some(24.0))).height(Is(Some(24.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+        icon_node(b, "chevron-left", 14.0, By(fn() { library_theme().p.text })) |> ignore
+      })
+      |> ignore
+      hdr.box(fn(tw) {
+        tw
+        .words(Is(snap_title), look=toast_words_look(Ui, L5, 600, false))
+        .ink(By(fn() { @ui.tree_theme().color(Fg) }))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  } else if snap_title != "" && !(snap_items.get(0) is Some(Some(i)) && i.heading) {
+    menu_heading_node(parent, fn() { snap_title }, fn() { past }, reach)
+  }
+  for x in snap_items {
+    match x {
+      None => menu_rule_node(parent, reach)
+      Some(item) if item.heading => menu_heading_node(parent, fn() { item.label }, fn() { past }, reach)
+      Some(item) =>
+        parent.box(fn(r) {
+          r
+          .row(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .min_height(Is(Some(row_h)))
+          .padding(Is((text_in + reach, menu_row_over, text_in + reach, menu_row_over)))
+          .gap(Is(gap))
+          |> ignore
+          if lead {
+            r.box(fn(col) {
+              col.width(Is(Some(menu_check_w))).lines_up(Is(Some(Middle))) |> ignore
+              if item.chosen == Some(true) {
+                icon_node(col, "check", 14.0, By(fn() { library_theme().p.text })) |> ignore
+              } else if item.icon != "" {
+                icon_node(col, item.icon, 14.0, By(fn() {
+                  let p = library_theme().p
+                  if item.danger {
+                    if item.disabled { p.subtle } else { p.red }
+                  } else {
+                    p.muted
+                  }
+                }))
+                |> ignore
+              }
+            })
+            |> ignore
+          }
+          r.box(fn(w) {
+            w
+            .words(Is(item.label), look=toast_words_look(Ui, L5, 400, false))
+            .ink(By(fn() { @ui.tree_theme().color(if item.disabled { Subtle } else if item.danger { Danger } else { Fg }) }))
+            |> ignore
+          })
+          |> ignore
+          if item.further {
+            r.box(fn(at) {
+              at.grow(Is(1.0)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Middle))) |> ignore
+              icon_node(at, "chevron-right", 14.0, By(fn() { library_theme().p.subtle })) |> ignore
+            })
+            |> ignore
+          }
+        })
+        |> ignore
+    }
+  }
+  })
+  |> ignore
 }
 
 ///|

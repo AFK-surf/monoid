@@ -27,6 +27,7 @@ priv struct PillMorphState {
   pill_h : Double
   tx_win : Double
   is_closing : @signals.Signal[Bool]
+  superseded : @signals.Signal[Bool]
   t_way : @motion.NodeWay
   shell_ref : Ref[@view.View?]
 }
@@ -88,6 +89,9 @@ fn pill_morph_shell_bounds(pm : PillMorphState) -> (Double, Double, Double, Doub
 fn popover_content_alpha(p : @view.View, node : @view.View, fallback : () -> Double) -> Double {
   match p.lent(pill_morph_lent) {
     Some(pm) => {
+      if pm.superseded.get() {
+        return 0.0
+      }
       let t = pm.t_way.shown(node)
       let closing = pm.is_closing.get()
       let (px_win, py_win, w, h) = p.placed_window_now()
@@ -124,7 +128,7 @@ fn popover_content_motion(p : @view.View, node : @view.View, fallback : () -> Do
               1.0
             } else {
               let f = pill_morph_eval(pm, px_win, py_win, w, h, closing, t)
-              dclamp(f.cur_w / w, 0.20, 1.0)
+              dclamp(dmin(f.cur_w / w, f.cur_h / h), 0.20, 1.0)
             }
           }
         }),
@@ -224,6 +228,14 @@ pub fn anchored_popover_bridge(
   }
   match anchor.lent(@lg.liquid_pill_trigger_lent) {
     Some(trig) => {
+      match trig.morph_cancel {
+        Some(cancel_prev) => cancel_prev()
+        None => ()
+      }
+      trig.morph_owner += 1
+      let my_owner = trig.morph_owner
+      let superseded = @signals.signal(false)
+      trig.morph_cancel = Some(fn() { superseded.set(true) })
       let pill_h = trig.height
       let pill_pad = trig.pad
       let pill_layer = trig.pill.id().at + 100
@@ -246,6 +258,7 @@ pub fn anchored_popover_bridge(
         pill_h: pill_h_eff,
         tx_win,
         is_closing,
+        superseded,
         t_way,
         shell_ref,
       }
@@ -389,6 +402,10 @@ pub fn anchored_popover_bridge(
         |> ignore
       }
       layer.owns(fn() {
+        if trig.morph_owner != my_owner {
+          return
+        }
+        trig.morph_cancel = None
         let (sp, ly) = trig.fx.get()
         if ly == pill_layer || ly < 0 {
           trig.morph_glass.val = None
@@ -406,6 +423,9 @@ pub fn anchored_popover_bridge(
       })
       |> ignore
       layer.reacts(fn() { layer.leaving() }, fn(leaving) {
+        if trig.morph_owner != my_owner || superseded.untracked() {
+          return
+        }
         if leaving {
           is_closing.set(true)
           let (sp, _) = trig.fx.get()
@@ -426,14 +446,19 @@ pub fn anchored_popover_bridge(
         }
       })
       layer.lends(pill_morph_lent, pm) |> ignore
-      // Dynamic leave-hold sentinel so the full 610ms close recoil + horizontal splash completes before unmount.
+      // Dynamic leave-hold sentinel so the full 610ms close recoil + horizontal splash completes before unmount,
+      // or yields immediately (0.0) if superseded by a newer menu taking ownership of the same trigger pill.
       layer.box(made_for=loc, fn(hold) {
         hold
         .over(Is(true))
         .points(Is(false))
         .width(Is(Some(0.0)))
         .height(Is(Some(0.0)))
-        .moved_by(fn(_, _, _) { (0.0, 0.0) }, fn(_, _) { t_way.ends_at() }, holds_leaving=true)
+        .moved_by(
+          fn(_, _, _) { (0.0, 0.0) },
+          fn(_, _) { if superseded.get() { 0.0 } else { t_way.ends_at() } },
+          holds_leaving=true,
+        )
         |> ignore
       })
       |> ignore
@@ -500,6 +525,31 @@ pub fn anchored_popover_shell(
         scale_about=FromBeside,
         max_shift=pop_max_shift,
         morph=fn() {
+          if pm.superseded.get() {
+            return Some(
+              (
+                0.0,
+                true,
+                1.0,
+                1.0,
+                {
+                  mx: 0.0,
+                  my: 0.0,
+                  cur_w: 1.0,
+                  cur_h: 1.0,
+                  radius: 0.0,
+                  raw_value: 0.0,
+                  push_dy: 0.0,
+                  platter_active: false,
+                  content_opacity: 0.0,
+                  content_blur: 0.0,
+                  final_dy: 0.0,
+                  open_anchor_scale: 0.0,
+                  blob_a_emerge: 0.0,
+                },
+              ),
+            )
+          }
           let t = pm.t_way.shown(p)
           let closing = pm.is_closing.get()
           let (px_win, py_win, w, h) = p.placed_window_now()

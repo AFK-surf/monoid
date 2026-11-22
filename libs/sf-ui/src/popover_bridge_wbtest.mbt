@@ -22,6 +22,15 @@ let bridge_test_recoil_ms : Double = 215.0
 let bridge_test_splash_step_ms : Double = 185.0
 
 ///|
+let bridge_test_mid_slide_ms : Double = 80.0
+
+///|
+let bridge_test_slide_settle_ms : Double = 500.0
+
+///|
+let bridge_test_reopen_ms : Double = 120.0
+
+///|
 /// Returns `(index, merge)` for every `kind == 6` liquid glass instance emitted in the last frame.
 fn bridge_liquid_instances(t : @ui.Tester) -> Array[(Int, Double)] {
   let out : Array[(Int, Double)] = []
@@ -323,4 +332,175 @@ test "MBUI_GLASS=solid emits zero liquid glass instances across pill menu entran
   assert_eq(t.drawn_glass().length(), 0, msg="solid mid-exit has 0 glass")
   t.run_for(@motion.pop_out_ms)
   assert_eq(t.drawn_glass().length(), 0, msg="solid post-exit has 0 glass")
+}
+
+///|
+test "pill menu submenu slides in-container with single glass shell, concentric back header, and clean dismiss" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  set_words(fn(key, _) { if key == "common.back" { "返回" } else { key } })
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, dark=false, platform=2)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let more_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((16.0, 48.0, 16.0, 16.0))).ground(By(fn() { theme().p.bg })) |> ignore
+      page.box(fn(bar) {
+        bar.row(Is(true)).gap(Is(6.0)).lies_along(Is(End)) |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          icon_button_node(k, "archive", fn() { "Archive" }, fn() {  }) |> ignore
+        })
+        |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          icon_button_node(k, "info", fn() { "Info" }, fn() {  }) |> ignore
+          let more = icon_button_node(k, "more", fn() { "More" }, fn() {
+            let anchor = more_ref.val.unwrap()
+            menu(
+              [
+                Some(menu_item_of("固定", fn() {  }, icon="pin")),
+                Some(menu_item_of("分享", fn() {
+                  menu(
+                    [
+                      Some(menu_item_of("复制链接", fn() {  }, icon="link")),
+                      Some(menu_item_of("导出图片", fn() {  }, icon="image")),
+                    ],
+                    from=Node(anchor),
+                    title="分享",
+                    along=End,
+                  )
+                }, icon="share", further=true)),
+                Some(menu_item_of("删除", fn() {  }, icon="trash", danger=true)),
+              ],
+              from=Node(anchor),
+              along=End,
+            )
+          })
+          more_ref.val = Some(more)
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  // Open root menu
+  let (mx, my, mw, mh) = more_ref.val.unwrap().placed_window_now()
+  t.press_at(mx + mw * 0.5, my + mh * 0.5)
+  t.release(mx + mw * 0.5, my + mh * 0.5)
+  t.run_for(bridge_test_settle_ms)
+  assert_true(t.find("分享") is Some(_), msg="root menu shows 分享")
+  assert_eq(bridge_liquid_instances(t).length(), 2, msg="root menu rest: Archive + 1 menu glass")
+  assert_eq(t.audit(), [], msg="root menu rest audit clean")
+  assert_eq(t.corner_faults(), [], msg="root menu rest corner_faults clean")
+
+  // Tap 分享 -> push submenu in same glass container (no 2nd menu glass ball!)
+  let (sx, sy) = t.find("分享").unwrap()
+  t.press_at(sx, sy)
+  t.release(sx, sy)
+  t.run_for(bridge_test_mid_slide_ms)
+  assert_eq(bridge_liquid_instances(t).length(), 2, msg="mid-slide submenu still has only 2 liquid instances (Archive + 1 menu)")
+  t.run_for(bridge_test_slide_settle_ms)
+  assert_true(t.find("复制链接") is Some(_), msg="submenu shows 复制链接")
+  assert_eq(bridge_liquid_instances(t).length(), 2, msg="submenu rest: Archive + 1 menu glass")
+  assert_eq(t.audit(), [], msg="submenu rest audit clean")
+  assert_eq(t.corner_faults(), [], msg="submenu rest corner_faults clean")
+
+  // Tap back -> slide back to root menu
+  t.back()
+  t.run_for(bridge_test_slide_settle_ms)
+  assert_true(t.find("固定") is Some(_), msg="back returns to root menu")
+  assert_eq(bridge_liquid_instances(t).length(), 2, msg="back rest: Archive + 1 menu glass")
+  assert_eq(t.audit(), [], msg="back rest audit clean")
+
+  // Push submenu again and dismiss by tapping outside -> whole menu closes cleanly back into pill
+  let (sx2, sy2) = t.find("分享").unwrap()
+  t.press_at(sx2, sy2)
+  t.release(sx2, sy2)
+  t.run_for(bridge_test_slide_settle_ms)
+  t.press_at(40.0, 500.0)
+  t.release(40.0, 500.0)
+  t.run_for(bridge_test_settle_ms)
+  assert_true(t.find("复制链接") is None, msg="outside tap closes whole submenu")
+  assert_eq(bridge_liquid_instances(t).length(), 2, msg="post-close restores 2 top bar pills")
+}
+
+///|
+test "rapid close and reopen on same pill trigger preserves morph_owner without old unmount clobber" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, dark=false, platform=2)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let more_ref : Ref[@view.View?] = Ref(None)
+  let open_menu = fn() {
+    let anchor = more_ref.val.unwrap()
+    menu(
+      [
+        Some(menu_item_of("Item A", fn() {  })),
+        Some(menu_item_of("Item B", fn() {  })),
+      ],
+      from=Node(anchor),
+      along=End,
+    )
+  }
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((16.0, 48.0, 16.0, 16.0))).ground(By(fn() { theme().p.bg })) |> ignore
+      page.box(fn(bar) {
+        bar.row(Is(true)).gap(Is(6.0)).lies_along(Is(End)) |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          let more = icon_button_node(k, "more", fn() { "More" }, open_menu)
+          more_ref.val = Some(more)
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  // Open menu 1 and settle
+  open_menu()
+  t.draw()
+  t.run_for(bridge_test_settle_ms)
+  // Start closing menu 1 (mid-610ms close), then immediately open menu 2 on same trigger pill
+  t.key(@ui.key_escape)
+  t.draw()
+  t.run_for(bridge_test_reopen_ms)
+  open_menu()
+  t.draw()
+  // Wait past menu 1's old 610ms window + menu 2 settle: menu 2 must remain intact with exactly 1 glass instance
+  t.run_for(bridge_test_settle_ms)
+  assert_true(t.find("Item A") is Some(_), msg="menu 2 stays open after menu 1 unmount")
+  assert_eq(bridge_liquid_instances(t).length(), 1, msg="only menu 2 glass instance active (old trigger stays hidden)")
+  assert_eq(t.audit(), [], msg="reopen rest audit clean")
+  // Close menu 2 cleanly: trigger pill must restore to alpha=1
+  t.key(@ui.key_escape)
+  t.draw()
+  t.run_for(bridge_test_settle_ms)
+  assert_eq(bridge_liquid_instances(t).length(), 1, msg="trigger pill restored cleanly after menu 2 close")
+}
+
+///|
+test "tall 8-item pill menu clamps mid-open content scale to min(cur_w/w, cur_h/h)" {
+  let f120 = @lg.lm_eval_pill_morph(300.0, 35.0, 74.0, 36.0, 358.0, 184.0, 35.0, 200.0, 390.0, 20.0, 1.0, false, 0.12)
+  let scale_w = f120.cur_w / 200.0
+  let scale_h = f120.cur_h / 390.0
+  let clamped = dclamp(dmin(scale_w, scale_h), 0.20, 1.0)
+  assert_true(scale_h < scale_w, msg="tall 8-item menu has cur_h/h < cur_w/w at 120ms: h=\{scale_h} w=\{scale_w}")
+  assert_true(clamped <= scale_h + 1.0e-9, msg="content scale <= cur_h/h prevents top-row clipping: \{clamped} vs \{scale_h}")
 }

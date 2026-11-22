@@ -813,7 +813,7 @@ test "a menu's item that opens a menu, with a finger at Small: a level of the sa
 }
 
 ///|
-test "a menu's item that opens a menu, with a mouse at Large: the next menu beside what opened it, the first gone" {
+test "a menu's item that opens a menu, with a mouse at Large: submenu pushes in the same popover; back pops level, esc closes all" {
   let said : Array[String] = []
   let t = presenting_tester(desk, menu_with_more(said))
   open_it(t)
@@ -823,7 +823,7 @@ test "a menu's item that opens a menu, with a mouse at Large: the next menu besi
   assert_true(t.find("复制链接") is Some(_))
   assert_true(t.key_named("esc"))
   assert_true(!presenting())
-  assert_eq(said, ["level gone"])
+  assert_eq(said, ["level gone", "gone"])
 }
 
 ///|
