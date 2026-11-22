@@ -206,6 +206,12 @@ test "a station's page in three parts: 概览 what runs on it, 进程 what still
   assert_true(t.find("屏幕、浏览器与终端") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
   assert_true(t.find("文件") is Some(_))
   assert_true(t.find("设备信息") is None)
+  // what the machine is, in the 资源 card over its dials: the cores, the architecture and the hostname the head's
+  // line does not say
+  let (_, made_y) = t.find("Apple M1 Pro · 10 核 · arm64 · macOS 26.2 · willow").unwrap()
+  let (_, dials_y) = t.find("CPU 空闲率").unwrap()
+  let (_, title_y) = t.find("资源").unwrap()
+  assert_true(title_y < made_y && made_y < dials_y, msg="under 资源 and over its dials")
   // 进程: what still.fail uses of the machine
   @settings.station_parts["ws1/st1"] = "processes"
   t.draw()

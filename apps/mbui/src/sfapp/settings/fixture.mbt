@@ -2608,15 +2608,12 @@ fn fx_station(address : String) -> Json {
               },
             ],
           ),
-          (
-            "details",
-            [
-              obj([("label", str("主机名")), ("value", str("willow"))]),
-              obj([("label", str("芯片")), ("value", str("Apple M1 Pro，10 核"))]),
-              obj([("label", str("已运行")), ("value", str("6 天 4 小时"))]),
-              obj([("label", str("进程")), ("value", str("station 412 MB"))]),
-            ],
-          ),
+          ("uptimeText", str("已运行 6 天 4 小时")),
+          ("madeOf", str(if fx.gpus {
+            "AMD EPYC 7543 · 64 核 · x86_64 · Linux 6.8.0-45-generic · willow"
+          } else {
+            "Apple M1 Pro · 10 核 · arm64 · macOS 26.2 · willow"
+          })),
         ])
         },
       ),

@@ -23,11 +23,7 @@ let station_part_names : Array[String] = ["overview", "processes", "settings"]
 ///|
 fn station_head_facts(s : Json?) -> String {
   let host = field(s, "host")
-  let details = items(host, "details")
-  let uptime = match details.iter().find_first(fn(d) { text(Some(d), "label") == "已运行" }) {
-    Some(d) if text(Some(d), "value") != "" => "已运行 " + text(Some(d), "value")
-    _ => ""
-  }
+  let uptime = text(host, "uptimeText")
   let facts = [text(host, "identity")]
   if uptime != "" {
     facts.push(uptime)

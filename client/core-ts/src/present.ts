@@ -1327,14 +1327,14 @@ export function host(h: J): J {
   });
   // What the machine is, the same line wherever it is named: its chip, its memory, its system.
   o.identity = [cpuModel, memTotal > 0 ? format.gb(memTotal) : null, os || null].filter((x) => x !== null).join(" · ");
-  // The rest, a row each, only where the machine is looked at closely.
-  const uptimeText = days > 0 ? t("core-views.present.host.uptime_days_hours", { days, hours }) : t("core-views.present.host.uptime_hours", { hours });
-  o.details = [
-    { label: t("core-views.present.host.hostname"), value: str(src.hostname) ?? "" },
-    { label: t("core-views.present.host.chip"), value: [cpuModel, cpus > 0 ? cores : null, arch || null].filter((x) => x !== null).join(" · ") },
-    { label: t("core-views.present.host.uptime"), value: uptimeText },
-    { label: brand.name(), value: t("core-views.present.host.process", { size: `${format.round(rss / 1024 ** 2)} MB` }) },
-  ].filter((d) => d.value !== "");
+  // How long it has been up, said where the machine is named (its page's head).
+  o.uptimeText = days > 0 ? t("core-views.present.host.up_days_hours", { days, hours }) : t("core-views.present.host.up_hours", { hours });
+  // What the machine is, in one line over its figures (its 资源 card's): its chip and how many cores it has, its
+  // architecture, its system, what it calls itself. Never what it has of them or is using now: the meters say its
+  // memory and its disk whole under their figures, and each GPU's dial says its model.
+  o.madeOf = [[cpuModel, cpus > 0 ? cores : null].filter((x) => x !== null).join(" · "), arch, os, str(src.hostname) ?? ""]
+    .filter((x) => x !== "")
+    .join(" · ");
   o.meters = [cpu, memory, disk];
   o.usage = [memory, disk].map((m) => `${m.label} ${m.value}`).join(" · ");
   o.stationText = `${brand.name()} ${format.round(rss / 1024 ** 2)} MB`;

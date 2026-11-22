@@ -2813,7 +2813,6 @@ let en : Map[String, String] = {
   "web-pages.slackApp.useThis": "Use this account",
   "web-pages.stations.agentEnv": "Agent environment variables",
   "web-pages.stations.agentEnvLead": "Agents, logins and tasks started by this station load these variables, commonly to set an HTTP proxy. One NAME=value per line; you can paste a .env file. Leave a masked value as it is to keep it. A Profile's variable of the same name takes precedence. After saving, idle agent processes restart; running ones pick up the change after their current turn.",
-  "web-pages.stations.deviceLoading": "Loading device info",
   "web-pages.stations.latency": "Latency {latency}",
   "web-pages.stations.netNone": "Not connected",
   "web-pages.stations.offline": "Offline",

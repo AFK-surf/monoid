@@ -254,10 +254,6 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["totalShort", opt("String"), { doc: "`total` where its line has not the room: 总 64 GB." }],
     ["note", opt("String")],
   ], { doc: "CPU, memory or disk: how full (and how bad: ok | amber | red), in words." }),
-  HostDetail: struct([
-    ["label", "String"],
-    ["value", "String", { said: true }],
-  ], { doc: "A fact of a machine, a row of its details: 主机名 willow." }),
   HostGpu: struct([
     ["big", "String"],
     ["unit", "String"],
@@ -287,7 +283,8 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["meters", vec("Meter")],
     ["gpus", vec("HostGpu"), { default: true, doc: "The machine's GPUs, each with the figures it can report." }],
     ["identity", "String", { doc: "What the machine is, the same line wherever it is named: Apple M1 Pro · 32 GB · macOS 26." }],
-    ["details", vec("HostDetail"), { doc: "The rest, a row each, where the machine is looked at closely: its hostname, chip, uptime, the process." }],
+    ["uptimeText", "String", { said: true, doc: "How long it has been up, where the machine is named: 已运行 6 天 4 小时." }],
+    ["madeOf", "String", { said: true, doc: "What the machine is, in a line over its figures: Apple M1 Pro · 10 核 · arm64 · macOS 26.2 · willow.\nNot what it has of it or is using now: the meters say its memory and disk, each GPU's dial says its model." }],
     ["usage", "String", { doc: "Memory and disk in a line, what is used and what is left: 内存 12.3 / 32 GB · 磁盘 剩 45.2 / 460 GB." }],
     ["stationText", "String", { doc: "The station's own memory in a line: still.fail 38 MB." }],
   ], { doc: "The machine a station runs on, with it in words." }),

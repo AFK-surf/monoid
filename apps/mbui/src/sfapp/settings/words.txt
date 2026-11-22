@@ -1655,8 +1655,6 @@ web-pages.stations.agentEnvEdit
 web-pages.stations.agentEnvLine
 web-pages.stations.agentEnvRead
 web-pages.stations.agentEnvSave
-web-pages.stations.device
-web-pages.stations.deviceOffline
 web-pages.stations.joinedElsewhere
 web-pages.stations.joinedFrom
 web-pages.stations.thisMachine

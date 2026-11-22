@@ -124,25 +124,15 @@ let st_logins_open : @sf.LiveMap[String, String] = @sf.LiveMap::new()
 // ── styles ──────────────────────────────────────────────────────────────
 
 ///|
-/// The rest of a machine (hostDetails: its labels beside each, 14 apart, rows 8 apart, the meta's 12 muted).
+/// What the machine is, over its dials in its 资源 (station_resources_node's `madeOf`): a quiet line as the card's
+/// others are, folding where the line has not the room for it.
 // kept across runs: a value (no field of it changes)
-let hd_grid : @ui.Style = @ui.css("row w=Full gap=S3_5")
+let st_made_of : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
 
 ///|
-// kept across runs: a value (no field of it changes)
-let hd_labels : @ui.Style = @ui.css("gap=S2")
-
-///|
-// kept across runs: a value (no field of it changes)
-let hd_values : @ui.Style = @ui.style(w=@sf.grow, gap=S2)
-
-///|
+/// A name in the connection diagnostics' rows (diag_meta_node's), beside what it says and quieter.
 // kept across runs: a value (no field of it changes)
 let hd_label : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let hd_value : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false, w=Full)
 
 ///|
 let sw_glyph : Double = 18.0

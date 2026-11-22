@@ -10,6 +10,10 @@ let terminal_windows : Array[(String, Double, Double, Int, String)] = [corner_wi
 test "a station's terminals are rows among its screens, 打开终端 after them; no part of their own" {
   for win in terminal_windows {
     let t = screen_in("settings-station-terminals", win, "zh")
+    // (what the machine is stands over its dials in 资源 now, a line more before the screens: a phone's window shows
+    // its terminals under it)
+    t.wheel(win.1 / 2.0, win.2 / 2.0, 200.0)
+    t.run_for(@ui.move_most_ms)
     for title in ["station", "still.fail"] {
       assert_true(t.find(title) is Some(_), msg="\{win.0}: no row \{title}")
     }

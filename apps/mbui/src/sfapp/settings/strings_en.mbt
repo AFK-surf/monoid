@@ -1699,8 +1699,6 @@ let en : Map[String, String] = {
   "web-pages.stations.agentEnvLine": "Line {line}: {problem}",
   "web-pages.stations.agentEnvRead": "read the variables",
   "web-pages.stations.agentEnvSave": "save the variables",
-  "web-pages.stations.device": "Device",
-  "web-pages.stations.deviceOffline": "Offline, no device info",
   "web-pages.stations.joinedElsewhere": "From another workspace",
   "web-pages.stations.joinedFrom": "From {name}",
   "web-pages.stations.thisMachine": "This machine",

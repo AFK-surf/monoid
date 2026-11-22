@@ -215,7 +215,6 @@ fn station_view_node(
             ["processes"]
           }
         "settings" => station_settings_keys(s(), manager)
-        "machine" => ["software", "device"]
         _ => station_overview_keys(core, here, s())
       },
     )
@@ -276,7 +275,6 @@ fn station_view_node(
       "move" => station_move_section(b, core, address)
       "software" =>
         station_software_node(b, core, station_narrowed(s, ["updates"]), manager, fn() { flag(top(), "online") }, tips)
-      "device" => station_device_node(b, station_narrowed(s, [], host=true))
       _ => ()
     }
   }
@@ -520,7 +518,6 @@ fn station_part_asks(core : Core, here : Here, address : String, s : Json?, mana
   let keys = match part {
     "processes" => ["processes"]
     "settings" => station_settings_keys(s, manager)
-    "machine" => []
     _ => ["screens", ..station_overview_keys_by(s, None, terminals=terminals_offered(core, s), has_devices=true)]
   }
   let out : Array[(String, Map[String, Json])] = []
@@ -868,6 +865,12 @@ fn station_resources_node(b : @view.View, core : Core, src : Source, here : () -
           let address = @signals.untracked(fn() { text(s(), "station") })
           let net = fn() { station_part_read(core, address, station_net_ask(address)).value }
           let uses = fn() { items(station_part_read(core, address, resources_ask(here(), address)).value, "stations").get(0) }
+          // what the machine is, over its figures (the core's `madeOf`: its chip and cores, architecture, system and
+          // hostname, none of which its dials say)
+          let made_of = @signals.computed(fn(_) { text(field(s(), "host"), "madeOf") })
+          r.show(fn() { made_of.get() != "" }, fn(x) {
+            @sf.words_node(x, fn() { made_of.get() }, fn() { st_made_of }) |> ignore
+          })
           station_dials_node(r, src, fn() { field(s(), "host") })
           r.show(fn() { flag(s(), "online") && net() is Some(Object(_)) }, fn(x) { @sf.station_net_line_node(x, net, look=Page) })
           // (what still.fail itself uses of the machine, opening its 进程: read while shown)
@@ -2504,39 +2507,6 @@ fn software_switch_node(
 }
 
 ///|
-/// What the machine is (station_machine's 设备信息): a quiet row each, its label beside it; while it is not read, that
-/// it is being read, or away that it cannot be.
-fn station_device_node(b : @view.View, s : () -> Json?) -> Unit {
-  let host = fn() {
-    match field(s(), "host") {
-      Some(Object(_)) as h => h
-      _ => None
-    }
-  }
-  st_section_node(b, fn() { @sf.t("web-pages.stations.device") }, fn(sec) {
-    @sf.group_node(sec, fn(g) {
-      g.pick(fn() { host() is Some(_) }, fn(p, known) {
-        if known {
-          let rows = fn() {
-            let out : Array[(String, String)] = items(host(), "details").map(fn(d) { (text(Some(d), "label"), text(Some(d), "value")) })
-            out
-          }
-          @sf.block_node(p, fn(k) { host_details_node(k, rows) })
-        } else {
-          said_row_node(p, fn() {
-            if flag(s(), "online") {
-              @sf.t("web-pages.stations.deviceLoading")
-            } else {
-              @sf.t("web-pages.stations.deviceOffline")
-            }
-          })
-        }
-      })
-    })
-  })
-}
-
-///|
 /// Diagnostic key-value rows with a vertically aligned value column that wraps cleanly on narrow screens and large
 /// font scales while keeping first-line baseline alignment between label and value.
 fn diag_meta_node(k : @view.View, rows : () -> Array[(String, String)]) -> Unit {
@@ -2594,27 +2564,6 @@ fn diag_ways_node(k : @view.View, ways : () -> Array[Json]) -> Unit {
       })
       |> ignore
     })
-  })
-  |> ignore
-}
-
-///|
-/// The rest of a machine (host_details'), a quiet row each: its label beside it, quieter.
-fn host_details_node(k : @view.View, rows : () -> Array[(String, String)]) -> Unit {
-  let numbered = fn() { rows().mapi(fn(i, r) { (i, r) }) }
-  k.box(fn(grid) {
-    @sf.style_node(grid, fn() { hd_grid })
-    grid.box(fn(labels) {
-      @sf.style_node(labels, fn() { hd_labels }, in_row=true)
-      labels.each(numbered, fn(x) { x.0 }, fn(l, x) { @sf.words_node(l, fn() { x.get().1.0 }, fn() { hd_label }) |> ignore })
-    })
-    |> ignore
-    grid.box(fn(values) {
-      @sf.style_node(values, fn() { hd_values }, in_row=true)
-      values.min_width(Is(Some(0.0))) |> ignore
-      values.each(numbered, fn(x) { x.0 }, fn(l, x) { @sf.words_node(l, fn() { x.get().1.1 }, fn() { hd_value }) |> ignore })
-    })
-    |> ignore
   })
   |> ignore
 }
