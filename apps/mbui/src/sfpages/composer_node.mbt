@@ -514,11 +514,10 @@ fn composer_node_of(
 }
 
 ///|
-/// Minimal soft top-fade seam seal pinned to the bottom of `foot`, covering only the `composer_foot_at` gap below the
-/// composer plus `composer_seam_fade` pt of upward feathering so the composer body and floating pill stay 100% open to
-/// transparent liquid glass refraction and adaptive flipping. Reuses `p.bg` with `alpha(254/255)` so `Node::covers`
-/// never blocks selection or wheel scrolling beside the composer and no new palette color is introduced.
-let composer_seam_fade : Double = 18.0
+/// Fade messages as they pass behind the composer, using the page's background in both themes. The long feather keeps
+/// some of the backdrop visible through the glass. The nearly opaque bottom also seals the gap below the composer.
+/// Alpha stays below one so this paint never blocks selection or wheel scrolling beside the composer.
+let composer_backdrop_fade : Double = 220.0
 
 ///|
 fn composer_foot_scrim_node(
@@ -550,8 +549,8 @@ fn composer_foot_scrim_node(
     scrim.box(fn(band) {
       band
       .width_share(Is(1.0))
-      .height(By(fn() { Some(seam_h() + 6.0 + composer_seam_fade) }))
-      .fades(Is((0.0, composer_seam_fade, 0.0, 0.0)))
+      .height(By(fn() { Some(seam_h() + 6.0 + composer_backdrop_fade) }))
+      .fades(Is((0.0, composer_backdrop_fade, 0.0, 0.0)))
       .points(Is(false))
       |> ignore
       band.box(fn(fill) {

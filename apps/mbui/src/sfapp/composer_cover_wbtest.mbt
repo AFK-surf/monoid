@@ -155,7 +155,7 @@ test "composer over messages: clicking inside its field clears a previous messag
 }
 
 ///|
-test "composer adaptive glass steps from 2.1 compact capsule to 4.0 expanded box at 0x67 with minimal 0xFE seam seal" {
+test "composer keeps its adaptive glass while fading messages behind it" {
   let t = composer_cover_tester()
   let glass_of = fn() -> (Double, Int, Bool) {
     let (gx, gy, gw, gh) = composer_cover_glass_box(t)
@@ -168,11 +168,13 @@ test "composer adaptive glass steps from 2.1 compact capsule to 4.0 expanded box
     }
   }
   assert_eq(glass_of(), (2.1, 0x67, true))
-  // Minimal bottom-seam 0xFE top-fade seal (only ~30-34pt tall, leaving composer body transparent)
-  let has_seam_seal = t.drawn_instances().iter().any(fn(a) {
-    a[5] == 0.0 && a[53] > 0.0 && a[3] <= 40.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[2] >= 500.0
+  // The fade reaches the glass, while the fill remains just translucent enough for uncovered words and the wheel.
+  let (gx, gy, gw, gh) = composer_cover_glass_box(t)
+  let has_backdrop_fade = t.drawn_instances().iter().any(fn(a) {
+    a[5] == 0.0 && a[53] > 0.0 && a[1] < gy && a[1] + a[3] > gy + gh / 2.0 &&
+    (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw
   })
-  assert_true(has_seam_seal, msg="expected a minimal bottom-seam top-fading 0xFE seal under the composer")
+  assert_true(has_backdrop_fade, msg="expected messages to fade behind the composer")
   // Focusing expands the composer into the 40% (0x67), blur=4.0 adaptive glass recipe (#8086 + Wave 7)
   let (lx, ly) = composer_cover_line_hit(t)
   t.tap(lx, ly)
