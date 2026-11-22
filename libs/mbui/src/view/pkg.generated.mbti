@@ -1362,6 +1362,7 @@ pub fn Tree::lit_row_state(Self, NodeId) -> (Bool, Bool, Bool)
 pub fn Tree::lives(Self, NodeId) -> Bool
 pub fn Tree::logic_at(Self) -> Double
 pub fn Tree::looks_of(Self, NodeId) -> Array[String]
+pub fn Tree::max_fingers(Self, NodeId) -> Int
 pub fn Tree::menu_at(Self, Double, Double, Double) -> Bool
 pub fn Tree::modal_stack(Self) -> Int32
 pub fn Tree::modal_top(Self) -> NodeId?

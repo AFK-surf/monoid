@@ -72,6 +72,12 @@ pub fn Tracker::reset(self : Tracker) -> Unit {
 }
 
 ///|
+/// Number of samples currently stored in `self`.
+fn Tracker::count(self : Tracker) -> Int {
+  self.n
+}
+
+///|
 /// What a tracker holds as of a moment, kept as it was (its samples copied): its velocity as of then worked out only
 /// where it is asked (Drag::vx, Drag::vy), as Tracker::velocity_at would have then, whatever the tracker took since.
 #derive(Eq, Debug)
@@ -94,6 +100,19 @@ pub fn Tracker::said_at(self : Tracker, t : Double) -> TrackerSaid {
 pub fn TrackerSaid::velocity(self : TrackerSaid) -> Double {
   let tr : Tracker = { times: self.times, vals: self.vals, index: self.index, n: self.n, fit: None }
   tr.velocity_at(self.t)
+}
+
+///|
+/// Copies the samples held in `self` from oldest to newest into `to`, shifted by `-anchor`.
+fn TrackerSaid::seed_deltas(self : TrackerSaid, to : Tracker, anchor : Double) -> Unit {
+  if self.n <= 0 {
+    return
+  }
+  let start = (self.index - self.n + 1 + track_size) % track_size
+  for k in 0..<self.n {
+    let idx = (start + k) % track_size
+    to.add(self.times[idx], self.vals[idx] - anchor)
+  }
 }
 
 ///|

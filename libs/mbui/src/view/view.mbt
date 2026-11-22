@@ -8896,6 +8896,16 @@ fn bound_still(n : Node, id : NodeId, said : Int) -> Bool {
 }
 
 ///|
+/// Maximum number of simultaneous fingers accepted by node `id`'s `on_drag` (0 if not live).
+pub fn Tree::max_fingers(self : Tree, id : NodeId) -> Int {
+  if self.alive_id(id) {
+    self.nodes[id.at].fingers
+  } else {
+    0
+  }
+}
+
+///|
 /// The fingers down on what is held, in the order they went down (none told: the first's), let go of.
 fn Tree::fingers_off(self : Tree) -> Array[Int] {
   let was = if self.downs.is_empty() { [0] } else { self.downs.copy() }

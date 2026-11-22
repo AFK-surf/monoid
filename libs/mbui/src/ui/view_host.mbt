@@ -148,12 +148,22 @@ let view_nothing_down : Ref[(Double, Double)?] = Ref(None)
 let view_down : Ref[(Double, Double, Array[(@view.NodeId, Int)], Array[(Double, Double, Double)])?] = Ref(None)
 
 ///|
+/// Whether slot 0 (the first finger in `view_down`) is still down on the screen before anything claimed the hold.
+// kept across runs: put back as a run begins (view_forget)
+let view_down_slot0 : Ref[Bool] = Ref(false)
+
+///|
 /// A second finger down beside the press held now before anything took it over (view_down, its chain cut to what
 /// scrolls): where it went down in the window and its events since, what it may set scrolling as it moves
 /// (view_claimed_second), or hand over to as the first is let go (kind 8); none once something took the hold, the second
 /// is let go, or the press is.
 // kept across runs: put back as a run begins (view_forget)
 let view_down2 : Ref[(Double, Double, Array[(Double, Double, Double)])?] = Ref(None)
+
+///|
+/// Additional fingers (extra_slot -> (x0, y0, events)) down beside the press before anything claimed the hold.
+// kept across runs: put back as a run begins (view_forget)
+let view_down_extra : Map[Int, (Double, Double, Array[(Double, Double, Double)])] = Map([])
 
 ///|
 /// A hold the window's tree handed the old views (view_through) as a long press: what of them it was handed to (where
@@ -198,6 +208,12 @@ fn view_handed_comes(c : Ctx) -> Unit {
 /// moving its second into its first as the first is let go (kind 8) the same finger still.
 // kept across runs: put back as a run begins (view_forget)
 let view_fingers : FixedArray[Int] = FixedArray::make(3, -1)
+
+///|
+/// Additional fingers beyond the primary two slots (`extra_slot -> tree_finger_id`) while dragging a node accepting > 2
+/// fingers.
+// kept across runs: put back as a run begins (view_forget)
+let view_fingers_extra : Map[Int, Int] = Map([])
 
 ///|
 /// Told as the tree, brought, changed something a paint draws or finds (view_brought): what paints reads it, so the
@@ -583,7 +599,9 @@ fn view_forget() -> Unit {
   view_held.val = None
   view_nothing_down.val = None
   view_down.val = None
+  view_down_slot0.val = false
   view_down2.val = None
+  view_down_extra.clear()
   tree_finger_off()
   old_focus_shown.val = 0
   old_focus_parked.val = None
@@ -595,6 +613,7 @@ fn view_forget() -> Unit {
   view_fingers[0] = -1
   view_fingers[1] = -1
   view_fingers[2] = 0
+  view_fingers_extra.clear()
   touches_forget()
   view_input_to.val = -3
   old_islands.clear()
@@ -4063,6 +4082,21 @@ fn view_scroll_lets_go(tree : @view.Tree, id : @view.NodeId) -> Unit {
 }
 
 ///|
+/// Whether the active tree drag or pending scroll claim accepts more than 2 simultaneous fingers.
+fn view_wants_extra_fingers() -> Bool {
+  guard view_app.val is Some(tree) else { return false }
+  match view_held.val {
+    Some(Dragging(id)) => tree.max_fingers(id) > 2
+    Some(Nowhere) =>
+      match view_down.val {
+        Some((_, _, chain, _)) => chain.length() > 0
+        None => false
+      }
+    _ => false
+  }
+}
+
+///|
 /// The hold now (a press of a node's, a gesture's not its own yet, an old view's, nobody's) taken over at
 /// (x, y) at `at` by what holds what it went down on, where one says it takes it as it has moved so far
 /// (Tree::claimer_of): what had it called off (a node's press let go unpressed; a gesture's told Off; the old view's told
@@ -4072,16 +4106,30 @@ fn view_claimed(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool 
   guard view_down.val is Some((x0, y0, chain, events)) else { return false }
   guard tree.claimer_of(chain, x - x0, y - y0) is Some(id) else { return false }
   view_down.val = None
-  // (a second finger down beside it, scrolled: that one held on it too, where it is now, the first leading it)
+  view_down_slot0.val = false
+  let scrolls = tree.claims_scroll(id)
+  // (other fingers down beside it, scrolled: held on it too where each is now, the first leading it)
   let second = match view_down2.val {
-    Some((x2, y2, events2)) if tree.claims_scroll(id) =>
+    Some((x2, y2, events2)) if scrolls =>
       match events2.last() {
         Some((_, ex, ey)) => Some((ex, ey))
         None => Some((x2, y2))
       }
     _ => None
   }
+  let extras : Array[(Int, Double, Double)] = []
+  if scrolls {
+    for slot, entry in view_down_extra {
+      let (ex0, ey0, evs) = entry
+      let (fx, fy) = match evs.last() {
+        Some((_, ex, ey)) => (ex, ey)
+        None => (ex0, ey0)
+      }
+      extras.push((slot, fx, fy))
+    }
+  }
   view_down2.val = None
+  view_down_extra.clear()
   view_scroll_lets_go(tree, id)
   match view_held.val {
     Some(Node(n)) => {
@@ -4101,13 +4149,21 @@ fn view_claimed(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool 
   view_fingers[0] = 0
   view_fingers[1] = -1
   view_fingers[2] = 1
+  view_fingers_extra.clear()
   match second {
     Some((x2, y2)) => {
-      view_fingers[1] = 1
-      view_fingers[2] = 2
-      tree.drag_at(id, Down, x2, y2, at, finger=1) |> ignore
+      let g = view_fingers[2]
+      view_fingers[1] = g
+      view_fingers[2] = g + 1
+      tree.drag_at(id, Down, x2, y2, at, finger=g) |> ignore
     }
     None => ()
+  }
+  for e in extras {
+    let g = view_fingers[2]
+    view_fingers[2] = g + 1
+    view_fingers_extra[e.0] = g
+    tree.drag_at(id, Down, e.1, e.2, at, finger=g) |> ignore
   }
   // (down where it went down, its events since its own: how fast it goes from them, Drag's `vy`; this move told next)
   let before = events.copy()
@@ -4122,33 +4178,137 @@ fn view_claimed(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool 
 
 ///|
 /// The second finger (view_down2) moved to (x, y) at `at` before anything took the hold: taken over by what of the first's
-/// chain (view_down's, cut to what scrolls) says it takes it as the second has moved so far (Tree::claimer_of), the
-/// first held on it too where it is now, the second leading it from where it went down, moved to where it is now.
-/// Whether it was.
+/// chain (view_down's, cut to what scrolls) says it takes it as the second has moved so far (Tree::claimer_of), all
+/// other still-down fingers held on it too where each is now, the second leading it from where it went down, moved to
+/// where it is now. Whether it was.
 fn view_claimed_second(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool {
   guard view_down.val is Some((x1, y1, chain, events1)) && view_down2.val is Some((x2, y2, events2)) else {
     return false
   }
   guard tree.claimer_of(chain, x - x2, y - y2) is Some(id) else { return false }
+  let slot0_down = view_down_slot0.val
+  let extras : Array[(Int, Double, Double)] = []
+  for slot, entry in view_down_extra {
+    let (ex0, ey0, evs) = entry
+    let (fx, fy) = match evs.last() {
+      Some((_, ex, ey)) => (ex, ey)
+      None => (ex0, ey0)
+    }
+    extras.push((slot, fx, fy))
+  }
   view_down.val = None
+  view_down_slot0.val = false
   view_down2.val = None
+  view_down_extra.clear()
   view_scroll_lets_go(tree, id)
   view_held.val = Some(Dragging(id))
-  view_fingers[0] = 0
-  view_fingers[1] = 1
-  view_fingers[2] = 2
-  let (f1x, f1y) = match events1.last() {
-    Some((_, ex, ey)) => (ex, ey)
-    None => (x1, y1)
+  view_fingers[0] = -1
+  view_fingers[1] = -1
+  view_fingers[2] = 0
+  view_fingers_extra.clear()
+  if slot0_down {
+    let g = view_fingers[2]
+    view_fingers[0] = g
+    view_fingers[2] = g + 1
+    let (f1x, f1y) = match events1.last() {
+      Some((_, ex, ey)) => (ex, ey)
+      None => (x1, y1)
+    }
+    tree.drag_at(id, Down, f1x, f1y, at, finger=g) |> ignore
   }
-  tree.drag_at(id, Down, f1x, f1y, at, finger=0) |> ignore
+  for e in extras {
+    let g = view_fingers[2]
+    view_fingers[2] = g + 1
+    view_fingers_extra[e.0] = g
+    tree.drag_at(id, Down, e.1, e.2, at, finger=g) |> ignore
+  }
+  let g2 = view_fingers[2]
+  view_fingers[1] = g2
+  view_fingers[2] = g2 + 1
   // (down where it went down, its events since its own: how fast it goes from them; this move told next)
   let before = events2.copy()
   if before.length() > 1 && before[before.length() - 1] == (at, x, y) {
     before.pop() |> ignore
   }
-  tree.drag_at(id, Down, x2, y2, at, finger=1, track=before) |> ignore
-  tree.drag_at(id, Moved, x, y, at, finger=1) |> ignore
+  tree.drag_at(id, Down, x2, y2, at, finger=g2, track=before) |> ignore
+  tree.drag_at(id, Moved, x, y, at, finger=g2) |> ignore
+  h_frame_owed()
+  true
+}
+
+///|
+/// An extra finger (`slot` in `view_down_extra`) moved to `(x, y)` at `at` before anything claimed the hold: taken over
+/// by what of `view_down`'s scroll chain claims it, with all other still-down fingers registered first and this finger
+/// leading. Whether it was.
+fn view_claimed_extra(tree : @view.Tree, slot : Int, x : Double, y : Double, at : Double) -> Bool {
+  guard view_down.val is Some((x1, y1, chain, events1)) else { return false }
+  guard view_down_extra.get(slot) is Some((xe, ye, events_e)) else { return false }
+  guard tree.claimer_of(chain, x - xe, y - ye) is Some(id) else { return false }
+  let slot0_down = view_down_slot0.val
+  let second = match view_down2.val {
+    Some((x2, y2, events2)) =>
+      match events2.last() {
+        Some((_, ex, ey)) => Some((ex, ey))
+        None => Some((x2, y2))
+      }
+    None => None
+  }
+  let other_extras : Array[(Int, Double, Double)] = []
+  for s, entry in view_down_extra {
+    if s == slot {
+      continue
+    }
+    let (ex0, ey0, evs) = entry
+    let (fx, fy) = match evs.last() {
+      Some((_, ex, ey)) => (ex, ey)
+      None => (ex0, ey0)
+    }
+    other_extras.push((s, fx, fy))
+  }
+  view_down.val = None
+  view_down_slot0.val = false
+  view_down2.val = None
+  view_down_extra.clear()
+  view_scroll_lets_go(tree, id)
+  view_held.val = Some(Dragging(id))
+  view_fingers[0] = -1
+  view_fingers[1] = -1
+  view_fingers[2] = 0
+  view_fingers_extra.clear()
+  if slot0_down {
+    let g = view_fingers[2]
+    view_fingers[0] = g
+    view_fingers[2] = g + 1
+    let (f1x, f1y) = match events1.last() {
+      Some((_, ex, ey)) => (ex, ey)
+      None => (x1, y1)
+    }
+    tree.drag_at(id, Down, f1x, f1y, at, finger=g) |> ignore
+  }
+  match second {
+    Some((x2, y2)) => {
+      let g = view_fingers[2]
+      view_fingers[1] = g
+      view_fingers[2] = g + 1
+      tree.drag_at(id, Down, x2, y2, at, finger=g) |> ignore
+    }
+    None => ()
+  }
+  for e in other_extras {
+    let g = view_fingers[2]
+    view_fingers[2] = g + 1
+    view_fingers_extra[e.0] = g
+    tree.drag_at(id, Down, e.1, e.2, at, finger=g) |> ignore
+  }
+  let ge = view_fingers[2]
+  view_fingers[2] = ge + 1
+  view_fingers_extra[slot] = ge
+  let before = events_e.copy()
+  if before.length() > 1 && before[before.length() - 1] == (at, x, y) {
+    before.pop() |> ignore
+  }
+  tree.drag_at(id, Down, xe, ye, at, finger=ge, track=before) |> ignore
+  tree.drag_at(id, Moved, x, y, at, finger=ge) |> ignore
   h_frame_owed()
   true
 }
@@ -4178,12 +4338,15 @@ fn view_caught(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool {
   view_nothing_down.val = None
   if k == 0 {
     view_down.val = None
+    view_down_slot0.val = false
     view_down2.val = None
+    view_down_extra.clear()
     view_scroll_lets_go(tree, id)
     view_held.val = Some(Dragging(id))
     view_fingers[0] = 0
     view_fingers[1] = -1
     view_fingers[2] = 1
+    view_fingers_extra.clear()
     tree.drag_at(id, Down, x, y, at, finger=0) |> ignore
   } else {
     // (stopped where it is, as a hold set going on it and called off at once does: Scroll's Down, then its Off)
@@ -4207,7 +4370,9 @@ fn view_old_moved(x : Double, y : Double) -> Unit {
     picked.dragging || (c.down && c.taken_at == c.press_at) {
     // (the old view's own now: nothing of the tree's takes it over after)
     view_down.val = None
+    view_down_slot0.val = false
     view_down2.val = None
+    view_down_extra.clear()
     return
   }
   view_event(fn() { view_claimed(tree, x, y, view_moment()) |> ignore }, what="pointer")
@@ -4272,7 +4437,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
   }
   // (what the old views take presses at, where the tree has them as of then; not for a move of a finger a node of the
   // tree's holds (View::on_drag): it is that node's, nothing of an old view's asked)
-  if !((kind == 1 || kind == 5) && view_held.val is Some(Dragging(_))) {
+  if !((kind == 1 || kind == 5 || kind == 16) && view_held.val is Some(Dragging(_))) {
     old_hits_place(g(), Some(tree))
   }
   // (where in the window's stack of layers what of the tree's it goes down on is, its topmost modal layer's at least, as
@@ -4293,7 +4458,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
   // (a press anywhere, told before it goes to what takes it: what closes at the next press follows it)
   if kind == 0 {
     tree.went_down(at, x~, y~)
-  } else if kind == 2 || kind == 3 {
+  } else if kind == 2 || kind == 3 || kind == 18 {
     // (let go or called off: nothing held anywhere)
     tree.went_up(at)
   }
@@ -4327,6 +4492,8 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
   // the secondary button)
   if kind == 0 {
     view_down2.val = None
+    view_down_extra.clear()
+    view_down_slot0.val = !(over || button == 2)
     view_down.val = if over || button == 2 {
       None
     } else {
@@ -4342,9 +4509,11 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       }
       Some((x, y, tree.claimers_at(x, y, from?, there=fn(id) { old_wheel_there(id, x, y) }), [(at, x, y)]))
     }
-  } else if kind == 2 || kind == 3 {
+  } else if kind == 2 || kind == 3 || kind == 18 {
     view_down.val = None
+    view_down_slot0.val = false
     view_down2.val = None
+    view_down_extra.clear()
   } else if kind == 4 {
     // (a second finger down before anything took the press (a press's, a gesture's waiting on its slop, nobody's):
     // what of what may take it over scrolls kept for either finger to set scrolling as it moves (view_claimed,
@@ -4362,12 +4531,16 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
           view_down2.val = Some((x, y, [(at, x, y)]))
         } else {
           view_down.val = None
+          view_down_slot0.val = false
           view_down2.val = None
+          view_down_extra.clear()
         }
       }
       _ => {
         view_down.val = None
+        view_down_slot0.val = false
         view_down2.val = None
+        view_down_extra.clear()
       }
     }
   } else if kind == 1 {
@@ -4398,10 +4571,35 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
   } else if kind == 8 {
     // (the first let go, the second the host's first from here: where it went down and its events the press's)
     match (view_down.val, view_down2.val) {
-      (Some((_, _, chain, _)), Some((x2, y2, events2))) => view_down.val = Some((x2, y2, chain, events2))
-      _ => view_down.val = None
+      (Some((_, _, chain, _)), Some((x2, y2, events2))) => {
+        view_down.val = Some((x2, y2, chain, events2))
+        view_down_slot0.val = true
+      }
+      _ => {
+        view_down.val = None
+        view_down_slot0.val = false
+        view_down_extra.clear()
+      }
     }
     view_down2.val = None
+  } else if kind == 15 {
+    if view_down.val is Some(_) {
+      view_down_extra[button] = (x, y, [(at, x, y)])
+    }
+  } else if kind == 16 {
+    match (view_down.val, view_down_extra.get(button)) {
+      (Some((_, _, chain, _)), Some((_, _, evs))) if chain.length() > 0 => {
+        evs.push((at, x, y))
+        if evs.length() > view_down_most {
+          evs.remove(0) |> ignore
+        }
+      }
+      _ => ()
+    }
+  } else if kind == 17 {
+    view_down_extra.remove(button)
+  } else if kind == 19 {
+    view_down_slot0.val = false
   }
   // (a tap of the tree's, as what took it says it was one: a node's press run, a gesture's tap, a press on nothing let go
   // where it went down; told the tree once that is done, after what it landed on: Tree::tapped)
@@ -4475,6 +4673,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
           view_fingers[0] = 0
           view_fingers[1] = -1
           view_fingers[2] = 1
+          view_fingers_extra.clear()
           tree.drag_at(id, Down, x, y, at, finger=0) |> ignore
           h_frame_owed()
           true
@@ -4496,12 +4695,16 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
             // there): its own from here, nothing of the tree's taking it over, as an old view's field's: view_old_moved)
             if tree_field_bar_down(id, x, y, at) {
               view_down.val = None
+              view_down_slot0.val = false
+              view_down_extra.clear()
             } else if tree_field_down(id, x, y, at) {
               // As on an old view's field, a mouse press lets go of words picked on the page.
               if pointing() is Mouse && picked.from.base != NoSel {
                 select_none()
               }
               view_down.val = None
+              view_down_slot0.val = false
+              view_down_extra.clear()
             }
           }
           true
@@ -4611,9 +4814,9 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       h_frame_owed()
       true
     }
-    // (a second finger while one held on a node of the tree's: the node's too, as one of the fingers it takes (on_drag's
-    // `fingers`), each by its own id; one more than it takes calls the hold off, the rest of it nobody's)
-    (4 | 5 | 6 | 8, Some(Dragging(id))) => {
+    // (a second or extra finger while held on a node of the tree's: the node's too, as one of the fingers it takes
+    // (on_drag's `fingers`), each by its own id; one more than it takes calls the hold off, the rest of it nobody's)
+    (4 | 5 | 6 | 8 | 15 | 16 | 17 | 19, Some(Dragging(id))) => {
       let took = match kind {
         4 => {
           view_fingers[1] = view_fingers[2]
@@ -4627,15 +4830,45 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
           view_fingers[1] = -1
           tree.drag_at(id, Up, x, y, at, finger=g)
         }
-        _ => {
+        8 => {
           let g = view_fingers[0]
           view_fingers[0] = view_fingers[1]
           view_fingers[1] = -1
           tree.drag_at(id, Up, x, y, at, finger=g)
         }
+        15 => {
+          let g = view_fingers[2]
+          view_fingers[2] = g + 1
+          view_fingers_extra[button] = g
+          tree.drag_at(id, Down, x, y, at, finger=g)
+        }
+        16 =>
+          match view_fingers_extra.get(button) {
+            Some(g) => tree.drag_at(id, Moved, x, y, at, finger=g)
+            None => true
+          }
+        17 =>
+          match view_fingers_extra.get(button) {
+            Some(g) => {
+              view_fingers_extra.remove(button)
+              tree.drag_at(id, Up, x, y, at, finger=g)
+            }
+            None => true
+          }
+        _ => {
+          // (kind 19: slot 0 lifted while extra fingers remain down)
+          let g = view_fingers[0]
+          view_fingers[0] = -1
+          if g >= 0 {
+            tree.drag_at(id, Up, x, y, at, finger=g)
+          } else {
+            true
+          }
+        }
       }
       if !took {
         view_held.val = Some(Nowhere)
+        view_fingers_extra.clear()
       }
       h_frame_owed()
       true
@@ -4647,11 +4880,32 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       tree.event(at, fn() { tree.hold_lost_in(0) })
       true
     }
-    // (the second finger moved before anything took the press: set scrolling by it where it says, view_claimed_second)
+    // (the second or extra finger moved before anything took the press: set scrolling by it where it says)
     (5, Some(Nowhere)) if view_claimed_second(tree, x, y, at) => true
-    (4 | 5 | 6 | 8, Some(Nowhere)) => true
+    (16, Some(Nowhere)) if view_claimed_extra(tree, button, x, y, at) => true
+    (4 | 5 | 6 | 8 | 15 | 16 | 17 | 19, Some(Nowhere)) => true
+    (18, Some(Dragging(id))) => {
+      let g = view_fingers_extra.get(button)
+      view_fingers_extra.clear()
+      view_held.val = None
+      tree.gesture_tap_taken() |> ignore
+      match g {
+        Some(f) => tree.drag_at(id, Up, x, y, at, finger=f) |> ignore
+        None => ()
+      }
+      tapped.val = tree.gesture_tap_taken()
+      h_frame_owed()
+      true
+    }
+    (18, Some(_)) => {
+      view_held.val = None
+      view_nothing_down.val = None
+      view_fingers_extra.clear()
+      true
+    }
     (2 | 3, Some(Dragging(id))) => {
       view_held.val = None
+      view_fingers_extra.clear()
       tree.gesture_tap_taken() |> ignore
       tree.drag_at(id, if kind == 2 { Up } else { Off }, x, y, at, finger=view_fingers[0]) |> ignore
       tapped.val = tree.gesture_tap_taken()
@@ -5850,6 +6104,7 @@ fn view_through(to : @view.Target, x : Double, y : Double, down_at : Double, why
       view_fingers[0] = 0
       view_fingers[1] = -1
       view_fingers[2] = 1
+      view_fingers_extra.clear()
       h_frame_owed()
     }
     Hosted(island) => {
