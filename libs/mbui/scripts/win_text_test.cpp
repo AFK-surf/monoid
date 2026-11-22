@@ -22,13 +22,16 @@
 #include <string.h>
 #include <wchar.h>
 
-typedef const wchar_t *moonbit_string_t;
+typedef wchar_t *moonbit_string_t;
 typedef uint8_t *moonbit_bytes_t;
 static int32_t test_bytes_len = 0;
 static int32_t test_doubles_len = 0;
 static int32_t Moonbit_array_length(moonbit_string_t s) { return s ? (int32_t)wcslen(s) : 0; }
 static int32_t Moonbit_array_length(moonbit_bytes_t) { return test_bytes_len; }
 static int32_t Moonbit_array_length(double *) { return test_doubles_len; }
+static moonbit_string_t moonbit_make_string_raw(int32_t len) {
+  return (moonbit_string_t)calloc((size_t)(len > 0 ? len + 1 : 1), sizeof(wchar_t));
+}
 
 extern "C" {
 int mb_atlas_size = 4096;
@@ -82,7 +85,8 @@ static void test_fine_math_and_reuse(void) {
   CHECK(dw != NULL && d2d != NULL && wic != NULL);
   if (!dw || !d2d || !wic) return;
   text_scale = 2.0;
-  int k = mb_host_text_key(L"H", 16.0, 400, 0);
+  wchar_t sH[] = L"H";
+  int k = mb_host_text_key(sH, 16.0, 400, 0);
   CHECK(k >= 0);
   IDWriteTextLayout *l = main_layout_for(k);
   CHECK(l != NULL);
@@ -113,7 +117,8 @@ static void test_fine_math_and_reuse(void) {
 static void test_ahead_single_phase_and_nonblocking(void) {
   ahead_forget();
   text_scale = 2.0;
-  int k1 = mb_host_text_key(L"A", 16.0, 400, 0);
+  wchar_t sA[] = L"A";
+  int k1 = mb_host_text_key(sA, 16.0, 400, 0);
   CHECK(k1 >= 0);
 
   // 1. First mb_host_glyphs_ahead queues ONLY the requested phase (sub = 0), nothing in ahead_rest.
@@ -174,7 +179,8 @@ static void test_ahead_single_phase_and_nonblocking(void) {
 
   // 5. rasterize() on a fresh glyph at phase 1: draws phase 1 and does NOT enqueue other phases.
   int rest_before = ahead_rest.n;
-  int k2 = mb_host_text_key(L"B", 16.0, 400, 0);
+  wchar_t sB[] = L"B";
+  int k2 = mb_host_text_key(sB, 16.0, 400, 0);
   CHECK(k2 >= 0);
   rasterize(k2 | (1 << 26));
   CHECK(entries[k2].subs_queued == (1 << 1));
