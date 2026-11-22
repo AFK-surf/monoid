@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e414d0eca](https://github.com/AFK-surf/monoid/commit/e414d0eca0b572035ccbd302232fb58e0555b445) perf(station): start the runtime when an app makes | 2.7 | 3.63 | 14.69 | 36.78 | 56.01 | 32.23 | 65.33 | 99.44 | 124.13 |
 | [29f393569](https://github.com/AFK-surf/monoid/commit/29f393569f860c872ada1332c2bf6dcf1579e83f) feat(mbui): keep long UI hangs in a local log (#81 | 2.7 | 3.63 | 14.69 | 36.78 | 56.01 | 32.23 | 65.33 | 99.44 | 124.13 |
 | [0f1800b12](https://github.com/AFK-surf/monoid/commit/0f1800b122c3d86a2fefe2ca7adb25b4181defdf) fix(mbui): replace 9-tap progressive blur small-ra | 2.69 | 3.63 | 14.69 | 36.79 | 56 | 32.23 | 65.31 | 99.27 | 127.74 |
 | [1953aa4af](https://github.com/AFK-surf/monoid/commit/1953aa4af5ba6cc481dcf18bf8070ece6c628bd5) fix(notice): fix profile push routing, notice.brin | 2.69 | 3.63 | 14.69 | 36.79 | 56 | 32.2 | 65.24 | 99.85 | 89.85 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1aaa170ed](https://github.com/AFK-surf/monoid/commit/1aaa170ed270f11c2ab1318ad2c578b8576d61b5) fix(core-ts): fix zero-speed video routing, stall  | 2.66 | 3.58 | 14.55 | 36.63 | 55.58 | 32.08 | 64.91 | 98.96 | 127.28 |
 | [e9f727949](https://github.com/AFK-surf/monoid/commit/e9f727949dd1f1e19c91206c5e6893d47926864e) docs: remove misleading chat-message streaming wor | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 99.09 | 116.7 |
 | [fd4464ef0](https://github.com/AFK-surf/monoid/commit/fd4464ef07d130b1b398ee3e875df369ed89fb3c) fix(ci): include libs/liquid-glass in beta mirror, | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 98.9 | 116.7 |
-| [aca188733](https://github.com/AFK-surf/monoid/commit/aca18873379823b32ca2853c7c6d8d9289f86df2) fix(mbui,sf-ui,sfapp): smooth small-sigma progress | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 98.9 | 116.7 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e414d0eca](https://github.com/AFK-surf/monoid/commit/e414d0eca0b572035ccbd302232fb58e0555b445) perf(station): start the runtime when an app makes | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.56 |
 | [29f393569](https://github.com/AFK-surf/monoid/commit/29f393569f860c872ada1332c2bf6dcf1579e83f) feat(mbui): keep long UI hangs in a local log (#81 | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.48 |
 | [0f1800b12](https://github.com/AFK-surf/monoid/commit/0f1800b122c3d86a2fefe2ca7adb25b4181defdf) fix(mbui): replace 9-tap progressive blur small-ra | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.48 |
 | [1953aa4af](https://github.com/AFK-surf/monoid/commit/1953aa4af5ba6cc481dcf18bf8070ece6c628bd5) fix(notice): fix profile push routing, notice.brin | 0.48 | 0.63 | 2.43 | 3.48 | 5.77 | 1.78 | 4.8 | 54.58 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1aaa170ed](https://github.com/AFK-surf/monoid/commit/1aaa170ed270f11c2ab1318ad2c578b8576d61b5) fix(core-ts): fix zero-speed video routing, stall  | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.4 |
 | [e9f727949](https://github.com/AFK-surf/monoid/commit/e9f727949dd1f1e19c91206c5e6893d47926864e) docs: remove misleading chat-message streaming wor | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.4 |
 | [fd4464ef0](https://github.com/AFK-surf/monoid/commit/fd4464ef07d130b1b398ee3e875df369ed89fb3c) fix(ci): include libs/liquid-glass in beta mirror, | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.4 |
-| [aca188733](https://github.com/AFK-surf/monoid/commit/aca18873379823b32ca2853c7c6d8d9289f86df2) fix(mbui,sf-ui,sfapp): smooth small-sigma progress | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.66 |
