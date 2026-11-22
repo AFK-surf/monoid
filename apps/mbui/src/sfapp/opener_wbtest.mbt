@@ -367,3 +367,76 @@ test "small: subchats sheet passes audit at 1.3x font scale" {
   t2.run_for(@ui.move_most_ms)
   assert_eq(t2.audit(), [])
 }
+
+///|
+fn assert_single_subchat_sheet(t : @ui.Tester, title : String, min_card_h : Double) -> Unit raise {
+  assert_eq(t.audit(), [])
+  guard t.query(Button, label=title) is Some(btn) else { fail("expected single subchat button: \{title}") }
+  let bx = btn.rect.0 + btn.rect.2 / 2.0
+  let by = btn.rect.1 + btn.rect.3 / 2.0
+  guard t.drawn_glass().filter(fn(g) { g.2 > 300.0 && g.3 > 100.0 && bx >= g.0 && bx <= g.0 + g.2 && by >= g.1 && by <= g.1 + g.3 }).last()
+    is Some(g) else {
+    fail("expected floating sheet glass enclosing \{title}: \{Repr(t.drawn_glass())}")
+  }
+  let mut bottom_fade = 0.0
+  for f in t.drawn_fades() {
+    if f.1 >= g.1 && f.1 < g.1 + g.3 && f.6 > bottom_fade {
+      bottom_fade = f.6
+    }
+  }
+  assert_true(bottom_fade <= 1.0e-6, msg="expected zero bottom fade, got \{bottom_fade}")
+  let cards = t
+    .drawn_rects()
+    .filter(fn(r) {
+      r.0 > g.0 + 1.0 &&
+      r.0 + r.2 < g.0 + g.2 - 1.0 &&
+      r.1 > g.1 + 1.0 &&
+      r.1 + r.3 < g.1 + g.3 - 1.0 &&
+      r.2 > 200.0 &&
+      bx >= r.0 &&
+      bx <= r.0 + r.2 &&
+      by >= r.1 &&
+      by <= r.1 + r.3
+    })
+  guard cards.fold(init=None, fn(best : (Double, Double, Double, Double)?, r) {
+    let rect = (r.0, r.1, r.2, r.3)
+    match best {
+      Some(b) if b.2 * b.3 >= rect.2 * rect.3 => Some(b)
+      _ => Some(rect)
+    }
+  })
+    is Some(card) else {
+    fail("expected card rect inside sheet glass: \{Repr(cards)}")
+  }
+  assert_true(card.3 >= min_card_h - 0.5, msg="card height=\{card.3} < \{min_card_h}")
+  let left_gap = card.0 - g.0
+  let right_gap = g.0 + g.2 - (card.0 + card.2)
+  let bottom_gap = g.1 + g.3 - (card.1 + card.3)
+  assert_true((left_gap - 16.0).abs() <= 0.5, msg="left gap=\{left_gap} != 16")
+  assert_true((right_gap - 16.0).abs() <= 0.5, msg="right gap=\{right_gap} != 16")
+  assert_true((bottom_gap - 16.0).abs() <= 0.5, msg="bottom gap=\{bottom_gap} != 16")
+}
+
+///|
+test "small: single subchat sheet fits card without bottom fade or truncation at 1.0x and 1.3x" {
+  let title = "执行：模型面板搜索同行布局与分段控件交互"
+  let phone = ("phone", 390.0, 844.0, 2, "")
+
+  let calls1 : Array[Made] = []
+  let t1 = decide_core(calls1, "chat-subchats-one")
+  t1.run_for(@ui.move_most_ms)
+  assert_single_subchat_sheet(t1, title, 60.0)
+
+  let t2 = screen_in("chat-subchats-one", phone, "zh", font_scale=1.3)
+  assert_single_subchat_sheet(t2, title, 60.0)
+
+  let calls3 : Array[Made] = []
+  let t3 = decide_core(calls3, "chat-subchats-one-note")
+  t3.run_for(@ui.move_most_ms)
+  assert_true(t3.find("正在运行端到端用例") is Some(_))
+  assert_single_subchat_sheet(t3, title, 70.0)
+
+  let t4 = screen_in("chat-subchats-one-note", phone, "zh", font_scale=1.3)
+  assert_true(t4.find("正在运行端到端用例") is Some(_))
+  assert_single_subchat_sheet(t4, title, 70.0)
+}

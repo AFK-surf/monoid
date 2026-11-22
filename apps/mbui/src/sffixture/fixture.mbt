@@ -614,6 +614,53 @@ fn with_subchats(v : Json?) -> Json? {
 }
 
 ///|
+/// Single active led sub-chat fixture (chat-subchats-one): 1 active led sub-chat with no stateText and no archived
+/// group, reproducing the single-card hugs sheet sizing case.
+fn with_subchats_one(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "执行：模型面板搜索同行布局与分段控件交互",
+          "mark": "run",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 1 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
+/// Single active led sub-chat fixture with stateText (chat-subchats-one-note): 1 two-line active led sub-chat with no
+/// archived group, taller than the row estimate.
+fn with_subchats_one_note(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "执行：模型面板搜索同行布局与分段控件交互",
+          "mark": "run",
+          "stateText": "正在运行端到端用例",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 1 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
 /// Long led sub-chats fixture (chat-subchats-many): 2 active + 10 archived led sub-chats (several archived items carry
 /// stale pre-archive `stateText` that must stay hidden), used to verify sheet scrolling and archived state hiding.
 fn with_subchats_many(v : Json?) -> Json? {
@@ -1449,6 +1496,10 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       @settings.profile_said(fixture_topic_inner(f, "profiles", { "scope": Json::string(text(Some(Json::object(params)), "scope")) }), params)
     "chat" if f.mode == "chat-subchats-many" && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_subchats_many(value))
+    "chat" if f.mode == "chat-subchats-one" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_one(value))
+    "chat" if f.mode == "chat-subchats-one-note" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_one_note(value))
     "chat" if f.mode.has_prefix("chat-subchats") && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_subchats(value))
     "chat" if f.mode == "chat-lineage" && params.get("session") is Some(String("s-c1")) =>

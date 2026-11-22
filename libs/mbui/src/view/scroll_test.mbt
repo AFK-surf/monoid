@@ -1028,3 +1028,54 @@ test "scrolls: what it holds moved says it scrolled, once, whatever frames came 
   k.tree.frame(390.0, 844.0) |> ignore
   assert_eq((first, still, moved, again, k.tree.take_scrolled()), (false, false, true, false, false))
 }
+
+///|
+test "scrolls_window in hugs container expands past est when actual row is taller" {
+  for with_neg_mb in [false, true] {
+    for row_h in [60.0, 78.0] {
+      let scroll = @view.Scroll::list()
+      let room_id : Ref[@view.NodeId?] = Ref(None)
+      let tree = @view.Tree::new(
+        fn(root) {
+          root.box(fn(sheet) {
+            sheet.width(Is(Some(360.0))).max_height(Is(Some(400.0))) |> ignore
+            sheet.box(fn(body) {
+              body.width(Is(Some(360.0))).grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+              body.box(fn(col) {
+                col
+                .width(Is(Some(360.0)))
+                .grow(Is(1.0))
+                .min_height(Is(Some(0.0)))
+                .padding(Is((0.0, 0.0, 0.0, 24.0)))
+                |> ignore
+                col.box(fn(room) {
+                  room_id.val = Some(room.id())
+                  room.width(Is(Some(360.0))) |> ignore
+                  room.scrolls_window(scroll, fn() { [0] }, est=56.0, fn(b, _) {
+                    b.height(Is(Some(row_h))) |> ignore
+                  })
+                  |> ignore
+                })
+                |> ignore
+                if with_neg_mb {
+                  col.box(fn(f) { f.margin(Is((0.0, 0.0, 0.0, -8.0))) |> ignore }) |> ignore
+                }
+              })
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        },
+        time=fn() { 0.0 },
+      )
+      tree.frame(390.0, 844.0) |> ignore
+      let h = tree.drawn_of(room_id.val.unwrap()).unwrap().h
+      assert_true(
+        (h - row_h).abs() <= 0.5,
+        msg="with_neg_mb=\{with_neg_mb} row_h=\{row_h}: room height=\{h} expected \{row_h}",
+      )
+      assert_eq(scroll.reach(), 0.0)
+    }
+  }
+}
