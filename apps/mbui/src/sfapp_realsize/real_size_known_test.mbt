@@ -480,7 +480,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-fonts-code": (515, 636, 116),
   "phone settings-decisions": (369, 261, 33),
   "phone settings-completion": (306, 214, 27),
-  "phone settings-bars": (533, 385, 63),
+  "phone settings-bars": (505, 343, 61),
   "phone settings-about": (472, 329, 45),
   "phone settings-changelog": (489, 349, 57),
   "phone settings-prices": (544, 414, 136),
