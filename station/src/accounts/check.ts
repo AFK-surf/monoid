@@ -9,7 +9,6 @@ import { fallbackEfforts } from "../sessions/pool.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
 import { checkNetwork } from "../mesh/settings.ts";
 import { checkAgentEnv } from "../ops/agent-env.ts";
-import { checkBackupConfig } from "../replica/backup-config.ts";
 import { DEFAULT_SERVICES, type ServiceRegistry } from "./services.ts";
 
 const ACCESS_KINDS = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider", "service"];
@@ -57,7 +56,39 @@ export function checkConfig(raw: any, _data: string, services: ServiceRegistry =
   }
   // The variables for what it starts for its agents (src/ops/agent-env.ts).
   checkAgentEnv(raw.agentEnv);
-  checkBackupConfig(raw.backup);
+  // Backup targets (src/replica/backup-config.ts): checked inline so accounts/ imports no part.
+  if (raw.backup !== undefined && raw.backup !== null) {
+    if (!isObject(raw.backup)) throw new Error("backup must be an object");
+    if (raw.backup.stations !== undefined && raw.backup.stations !== null && raw.backup.stations !== "auto") {
+      if (!Array.isArray(raw.backup.stations) || raw.backup.stations.some((s: unknown) => typeof s !== "string" || !/^[0-9a-f]{64}$/.test(s))) {
+        throw new Error("backup.stations must be \"auto\" or an array of station ids");
+      }
+    }
+    if (raw.backup.acceptOthers !== undefined && raw.backup.acceptOthers !== null && typeof raw.backup.acceptOthers !== "boolean") {
+      throw new Error("backup.acceptOthers must be a boolean");
+    }
+    if (raw.backup.s3 !== undefined && raw.backup.s3 !== null) {
+      if (!Array.isArray(raw.backup.s3)) throw new Error("backup.s3 must be an array");
+      const seen = new Set<string>();
+      for (let i = 0; i < raw.backup.s3.length; i++) {
+        const t = raw.backup.s3[i];
+        if (!isObject(t)) throw new Error(`backup.s3[${i}] must be an object`);
+        if (typeof t.id !== "string" || !/^[a-z0-9_-]{1,32}$/.test(t.id)) throw new Error(`backup.s3[${i}].id must match /^[a-z0-9_-]{1,32}$/`);
+        if (seen.has(t.id)) throw new Error(`backup.s3: duplicate target id ${t.id}`);
+        seen.add(t.id);
+        if (typeof t.name !== "string" || t.name.trim() === "") throw new Error(`backup.s3[${i}].name is required`);
+        if (typeof t.endpoint !== "string" || t.endpoint.trim() === "") throw new Error(`backup.s3[${i}].endpoint is required`);
+        if (typeof t.bucket !== "string" || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(t.bucket) || t.bucket.includes("..")) {
+          throw new Error(`backup.s3[${i}].bucket is invalid`);
+        }
+        if (typeof t.accessKeyId !== "string" || t.accessKeyId.trim() === "") throw new Error(`backup.s3[${i}].accessKeyId is required`);
+        if (typeof t.secretAccessKey !== "string" || t.secretAccessKey === "") throw new Error(`backup.s3[${i}].secretAccessKey is required`);
+        if (typeof t.encryptionKey !== "string" || !/^[0-9a-f]{64}$/.test(t.encryptionKey)) {
+          throw new Error(`backup.s3[${i}].encryptionKey must be a 64-character lowercase hex string`);
+        }
+      }
+    }
+  }
   checkNetwork(raw.network);
   // Its sandboxes, targets of station_task (src/agents/sandbox.ts).
   checkSandboxes(raw);
