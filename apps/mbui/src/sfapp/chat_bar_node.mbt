@@ -716,7 +716,7 @@ fn bar_end_node(
         "info",
         fn() { tr("android-chat.info.title") },
         fn() {
-          open_info(src, r, from=Node(k), along=End)
+          open_info(src, r)
         },
         icon_size=20.0,
       )

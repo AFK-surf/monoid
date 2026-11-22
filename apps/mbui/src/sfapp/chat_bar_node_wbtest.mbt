@@ -519,60 +519,72 @@ test "小屏输入框上方胶囊：390 宽空间足够时，station 长名字�
 }
 
 ///|
-test "小屏按按钮位置切换：390x844 首页顶栏筛选/工作区/待处理与对话顶栏更多/信息在按钮下方以 popover 展开，底栏触发器仍走底部抽屉，零 audit 告警" {
-  // 1) Home top bar: filter, workspace switcher, attention bell -> popover in upper half (y < 422), 0 audit faults
+test "小屏弹层边界：390x844 顶栏筛选/工作区/更多保持就近 popover，待处理/对话详情与底栏 + 均为全宽底抽屉且支持拖拽收起，零 audit 告警" {
+  // 1) Home top bar: [☰ 筛选] & [⌄ 星火工作室] -> popover in upper half (no scrim); [🔔 待处理] -> full-width bottom sheet with scrim
   new_run()
   let src = fixture("home")
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   t.run_for(@ui.move_most_ms)
-  // [☰ 筛选]
+  // [☰ 筛选] -> popover
   let filter_btn = t.semantics().iter().find_first(fn(s) { s.role == Button && s.label.contains("筛选") && s.rect.1 < 60.0 }).unwrap()
   t.tap(filter_btn.rect.0 + filter_btn.rect.2 / 2.0, filter_btn.rect.1 + filter_btn.rect.3 / 2.0)
   t.run_for(@ui.move_most_ms)
   let (_, filter_y) = t.find("全部会话").unwrap()
   assert_true(filter_y < 422.0, msg="home filter opens as popover in upper half: y=\{filter_y}")
+  assert_eq(scrim_drawn(t).length(), 0, msg="home filter popover has no scrim")
   assert_eq(t.audit(), [], msg="home filter audit")
   t.back()
   t.run_for(@ui.move_most_ms)
-  // [⌄ 星火工作室]
+  // [⌄ 星火工作室] -> upper-half anchored popover hugging content (no scrim)
   let ws_btn = t.semantics().iter().find_first(fn(s) { s.role == Button && s.label == "星火工作室" && s.rect.1 < 60.0 }).unwrap()
   t.tap(ws_btn.rect.0 + ws_btn.rect.2 / 2.0, ws_btn.rect.1 + ws_btn.rect.3 / 2.0)
   t.run_for(@ui.move_most_ms)
   let ws_dlg = t.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Dialog }).unwrap()
+  assert_eq(scrim_drawn(t).length(), 0, msg="home workspace popover has no scrim")
   assert_true(ws_dlg.rect.1 < 422.0 && ws_dlg.rect.1 + ws_dlg.rect.3 < 650.0, msg="home workspace opens as popover hugging content: \{Repr(ws_dlg.rect)}")
   assert_eq(t.audit(), [], msg="home workspace audit")
   t.back()
   t.run_for(@ui.move_most_ms)
-  // [🔔 待处理]
+  // [🔔 待处理] -> full-width bottom sheet with scrim, grabber tap/drag detents & dismiss
   let bell_btn = t.semantics().iter().find_first(fn(s) { s.role == Button && s.label == tr("web-main.attention.entry") && s.rect.1 < 60.0 }).unwrap()
   t.tap(bell_btn.rect.0 + bell_btn.rect.2 / 2.0, bell_btn.rect.1 + bell_btn.rect.3 / 2.0)
   t.run_for(@ui.move_most_ms)
   let bell_dlg = t.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Dialog }).unwrap()
-  assert_true(bell_dlg.rect.1 < 422.0, msg="home attention opens as popover in upper half: \{Repr(bell_dlg.rect)}")
+  assert_eq(scrim_drawn(t).length(), 1, msg="home attention sheet has scrim")
+  assert_true(bell_dlg.rect.2 >= 377.0 && bell_dlg.rect.1 + bell_dlg.rect.3 >= 837.0, msg="home attention opens as full-width bottom sheet: \{Repr(bell_dlg.rect)}")
   assert_eq(t.audit(), [], msg="home attention audit")
-  t.back()
+  // tap grabber to expand to full detent, then drag down to dismiss
+  t.tap(195.0, bell_dlg.rect.1 + 12.0)
   t.run_for(@ui.move_most_ms)
+  let bell_tall = t.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Dialog }).unwrap()
+  assert_true(bell_tall.rect.3 > bell_dlg.rect.3 + 20.0, msg="home attention grabber expands sheet: \{Repr(bell_dlg.rect)} -> \{Repr(bell_tall.rect)}")
+  t.drag(195.0, bell_tall.rect.1 + 12.0, 195.0, 780.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(!@sf.presenting(), msg="home attention sheet dismissed by drag")
 
-  // 2) Chat top bar [···] & [ⓘ] -> popover in upper half; bottom bar [+] -> bottom sheet (y > 422)
+  // 2) Chat top bar: [···] -> popover in upper half (no scrim); [ⓘ] & bottom bar [+] -> full-width bottom sheet with scrim
   let (tc, _) = chat_bar_node_tester("梳理发布清单")
-  // [···]
+  // [···] -> popover
   let more_btn = tc.semantics().iter().find_first(fn(s) { s.role == Button && s.label == tr("common.more") && s.rect.1 < 60.0 }).unwrap()
   tc.tap(more_btn.rect.0 + more_btn.rect.2 / 2.0, more_btn.rect.1 + more_btn.rect.3 / 2.0)
   tc.run_for(@ui.move_most_ms)
   let (_, more_y) = tc.find("重命名").unwrap()
   assert_true(more_y < 422.0, msg="chat more opens as popover in upper half: y=\{more_y}")
+  assert_eq(scrim_drawn(tc).length(), 0, msg="chat more popover has no scrim")
   assert_eq(tc.audit(), [], msg="chat more audit")
   tc.back()
   tc.run_for(@ui.move_most_ms)
-  // [ⓘ]
+  // [ⓘ] -> full-width bottom sheet with scrim, drag detent & dismiss
   let info_btn = tc.semantics().iter().find_first(fn(s) { s.role == Button && s.label == tr("android-chat.info.title") && s.rect.1 < 60.0 }).unwrap()
   tc.tap(info_btn.rect.0 + info_btn.rect.2 / 2.0, info_btn.rect.1 + info_btn.rect.3 / 2.0)
   tc.run_for(@ui.move_most_ms)
   let info_dlg = tc.semantics().iter().find_first(fn(s) { !s.hidden && s.role == Dialog }).unwrap()
-  assert_true(info_dlg.rect.1 < 422.0, msg="chat info opens as popover in upper half: \{Repr(info_dlg.rect)}")
+  assert_eq(scrim_drawn(tc).length(), 1, msg="chat info sheet has scrim")
+  assert_true(info_dlg.rect.2 >= 377.0 && info_dlg.rect.1 + info_dlg.rect.3 >= 837.0, msg="chat info opens as full-width bottom sheet: \{Repr(info_dlg.rect)}")
   assert_eq(tc.audit(), [], msg="chat info audit")
-  tc.back()
+  tc.drag(195.0, info_dlg.rect.1 + 12.0, 195.0, 780.0)
   tc.run_for(@ui.move_most_ms)
+  assert_true(!@sf.presenting(), msg="chat info sheet dismissed by drag")
   // bottom composer [+] -> bottom sheet
   let plus_btn = tc.semantics().iter().find_first(fn(s) { s.role == Button && s.rect.1 > 700.0 && s.rect.0 < 80.0 }).unwrap()
   tc.tap(plus_btn.rect.0 + plus_btn.rect.2 / 2.0, plus_btn.rect.1 + plus_btn.rect.3 / 2.0)
@@ -582,8 +594,8 @@ test "小屏按按钮位置切换：390x844 首页顶栏筛选/工作区/待处�
 }
 
 ///|
-test "小屏窄窗 320x568 + 1.3x 字号：首页与对话顶栏 popover 全部在视口内且零截断溢出" {
-  // Home top bar popovers at 320x568 @ 1.3x
+test "小屏窄窗 320x568 + 1.3x 字号：首页与对话顶栏弹层（短菜单 popover 与面板底抽屉）全部在视口内且零截断溢出" {
+  // Home top bar overlays at 320x568 @ 1.3x
   new_run()
   let src = fixture("home")
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=320.0, h=568.0, platform=2)
@@ -603,7 +615,7 @@ test "小屏窄窗 320x568 + 1.3x 字号：首页与对话顶栏 popover 全部�
     t.run_for(@ui.move_most_ms)
   }
 
-  // Chat top bar popovers at 320x568 @ 1.3x
+  // Chat top bar overlays at 320x568 @ 1.3x
   let (tc, _) = chat_bar_node_tester("梳理发布清单", w=320.0, h=568.0, font_scale=1.3)
   for label in [tr("common.more"), tr("android-chat.info.title")] {
     let btn = tc.semantics().iter().find_first(fn(s) { s.role == Button && s.label == label && s.rect.1 < 60.0 }).unwrap()

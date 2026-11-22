@@ -44,6 +44,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
     ruled: false,
     fade_out_together: false,
     form: false,
+    popover: false,
     stage: false,
     above: None,
     heads_itself: true,

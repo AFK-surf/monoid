@@ -710,13 +710,14 @@ fn sheet_node(
           (left, 0.0, right, -reach.get())
         }))
         .max_height(By(fn() {
-          // (one that grows: up to the window's top as a finger draws it past its most, giving way; one as tall as what
-          // it holds up to its share (`hugs`), no taller than that share)
+          // (one that grows: up to the window's top as a finger draws it past its most, giving way; at rest, capped at
+          // `sheet_most` and for `capped_of && hugs_of` at `pg.x.tall * wh`; once dragged or toggled, allowed up to `most`)
           let pg = top()
           let under = reach.get()
           let wh = body_win_h()
-          let most = wh * (if pg.x.grows { 1.0 } else { sheet_most }) + under
-          Some(if capped_of(pg.x) && hugs_of(pg) { dmin(most, pg.x.tall * wh + under) } else { most })
+          let dragging = tall_held.get() is Some(_) || sized.get()
+          let most = wh * (if pg.x.grows && dragging { 1.0 } else { sheet_most }) + under
+          Some(if !dragging && capped_of(pg.x) && hugs_of(pg) { dmin(most, pg.x.tall * wh + under) } else { most })
         }))
         .height(By(fn() {
           let pg = top()

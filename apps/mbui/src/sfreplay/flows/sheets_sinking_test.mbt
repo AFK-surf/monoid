@@ -29,8 +29,8 @@ test "51-sheets-sinking" {
     f.see("发消息")
     f.tap("icon:info")
     f.run_to(@sf.presented_rest)
-    // its outside tapped to the left of the right-aligned chat-info popover, and the composer tapped through it as it goes: the words typed there, sent
-    f.tap_at(20.0, 700.0)
+    // its scrim tapped, and the composer tapped through it as it goes down: the words typed there, sent
+    f.tap_at(195.0, 60.0)
     f.tap_at(120.0, -36.0)
     f.type_text("穿过下去的面板 082939")
     f.tap("icon:arrow-up")

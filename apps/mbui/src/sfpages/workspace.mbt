@@ -80,6 +80,7 @@ pub fn open_workspaces(src : Source, from : @sf.Anchor, compact? : Bool = false,
     // (as tall as what it holds up to its share: a few workspaces leave no room empty under them; not drawn taller by
     // its top, which would open that room again: more than its share holds scroll in it)
     hugs=true,
+    popover=true,
   )
 }
 

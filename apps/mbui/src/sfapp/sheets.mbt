@@ -192,14 +192,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     @sf.style_node(col, fn() { title_row_whole })
     // its name and ✎, clear of an untitled dialog's close button over its end
     col.box(fn(h) {
-      @sf.style_node(h, fn() {
-        let base = @sf.untitled_clear_node(h).then(title_row_whole)
-        if @sf.in_small_panel_node(h) {
-          base.then(@sf.panel_words_in_node(h)).then(@ui.css("pt=S2"))
-        } else {
-          base
-        }
-      })
+      @sf.style_node(h, fn() { @sf.untitled_clear_node(h).then(title_row_whole) })
       info_title_node(h, src, r, fn() { text(chat(), "title") }, open, fn() { opt_number(thread(), "id") })
     })
     |> ignore
@@ -214,9 +207,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
       fn(p, opener) {
         guard opener is Some((to, said)) else { return }
         p.box(fn(b) {
-          @sf.style_node(b, fn() {
-            if @sf.in_small_panel_node(b) { info_opener.then(@sf.panel_words_in_node(b)) } else { info_opener }
-          })
+          @sf.style_node(b, fn() { info_opener })
           b.radius(Is(info_opener_corner)) |> ignore
           @sf.rippled_node(b, fn() {
             close()
@@ -263,17 +254,18 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
       |> ignore
     })
     |> ignore
-    // its agents, each a row of a card: its mark, its name, how it is and its allowance, a tap to its card
-    // (the card there while it has any; its agents kept by their session's key once, each row reading its own, told
-    // only as that one changes: an agent come or gone makes or lets go its row alone)
+    // divider between header/facts and the first visible section
+    info_rule_node(col, fn() { agents().length() > 0 || opened_any() || tools() || holds.get().any() || bg_count() > 0 })
+    // its agents, each a flat row: its mark, its name, how it is and its allowance, a tap to its card
+    // (kept by their session's key once, each row reading its own, told only as that one changes: an agent come or
+    // gone makes or lets go its row alone)
     let agent_key = fn(a : Json) { text(field(Some(a), "session"), "key") }
     col.show(fn() { agents().length() > 0 }, fn(p) {
-      info_gap_node(p, fn() { @sf.in_small_panel_node(p) })
-      @sf.quiet_card_node(p, fn(k) {
+      info_agent_section_node(p, fn(k) {
         let by_key = k.keyed_by(agents, agent_key)
         k.each(fn() { by_key.keys() }, fn(key) { key }, fn(row, key) {
           let key = key.untracked()
-          info_agent_row_node(row, src, fn() { by_key.get(key) }, fn() {
+          info_agent_row_node(row, src, fn() { by_key.get(key) }, flat=true, fn() {
             close()
             open_agent(src, r, key)
           })
@@ -291,19 +283,20 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
       },
       fn(p, made) {
         guard made is Some((_, words)) else { return }
-        info_gap_node(p, fn() { @sf.in_small_panel_node(p) || agents().length() > 0 })
+        info_rule_node(p, fn() { agents().length() > 0 })
         let opened = fn() {
           match view() {
             Some(cv) => cv.opened
             None => []
           }
         }
-        @sf.quiet_card_node(p, fn(k) {
+        info_section_node(p, fn(k) {
           let at : Ref[@view.View?] = Ref(None)
           at.val = Some(
             @sf.quiet_row_node(
               k,
               fn() { words },
+              look=info_flat_row,
               fn(row) {
                 @sf.icon_node(row, "spawned", info_icon, By(fn() { @sf.theme().p.muted })) |> ignore
                 row.box(fn(w) {
@@ -324,11 +317,11 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
         })
       },
     )
-    // what is done in it, a card of its own (sfdesk's: its bar's 查找, its outline, the remote ways of its station),
+    // what is done in it, a section of its own (sfdesk's: its bar's 查找, its outline, the remote ways of its station),
     // each row there while it may be done
     col.show(tools, fn(p) {
-      info_gap_node(p, fn() { @sf.in_small_panel_node(p) || agents().length() > 0 || opened_any() })
-      @sf.quiet_card_node(p, fn(k) {
+      info_rule_node(p, fn() { agents().length() > 0 || opened_any() })
+      info_section_node(p, fn(k) {
         // ⌘F's bar, in the chat's bar (chat_bar_node's)
         k.show(finds, fn(m) {
           info_more_row_node(m, "search", fn() { tr("web-main.keymap.chat.find") }, fn() { "" }, fn() {
@@ -390,13 +383,13 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
         })
       })
     })
-    // then what is in it, one card (the user, 2026-10-30: who works in it before what it made, what it holds apart from
-    // what is done with it): its pull requests, what else was said, the stations' files, what its agents and other
-    // chats' wrote (told only as it changes; the card there while it holds anything, each of its rows by what it shows:
-    // a thing come or gone makes again only the row it changes)
+    // then what is in it, one section (the user, 2026-10-30: who works in it before what it made, what it holds apart
+    // from what is done with it): its pull requests, what else was said, the stations' files, what its agents and other
+    // chats' wrote, and its running background jobs (told only as it changes; each of its rows by what it shows: a thing
+    // come or gone makes again only the row it changes)
     col.show(fn() { holds.get().any() || bg_count() > 0 }, fn(p) {
-      info_gap_node(p, fn() { @sf.in_small_panel_node(p) || agents().length() > 0 || opened_any() || tools() })
-      @sf.quiet_card_node(p, fn(k) {
+      info_rule_node(p, fn() { agents().length() > 0 || opened_any() || tools() })
+      info_section_node(p, fn(k) {
         // the pull requests linked in it, the latest 3 (the user, 2026-10-29: most chats have one or two, seen at a
         // look), 全部 N 个 to the rest; tapped, one opens in the browser
         k.each(
@@ -513,6 +506,58 @@ fn info_facts_said(chat : Json?, view : ChatView?) -> String {
 }
 
 ///|
+/// Flat section container for `chat_info_node`: rows sit directly on the sheet/panel surface at `panel_card_out`
+/// (`16pt` from edge) with `px=S1` (`4pt`) inside each row so icons/text align at `20pt` with the title and facts.
+fn info_section_node(parent : @view.View, rows : (@view.View) -> Unit) -> Unit {
+  parent.box(fn(k) {
+    @sf.style_node(k, fn() { title_row_whole.then(@sf.panel_card_out_node(k)) })
+    rows(k)
+  })
+  |> ignore
+}
+
+///|
+/// Flat section container for the agent rows in `chat_info_node`: extends `4pt` wider (`mx=-S2` on sheets) so the
+/// `p=S2` (`8pt`) inset stays concentric with `quiet_row_corner` (`18 - 8 = 10`) while keeping the agent tile at `20pt`.
+fn info_agent_section_node(parent : @view.View, rows : (@view.View) -> Unit) -> Unit {
+  parent.box(fn(k) {
+    @sf.style_node(k, fn() {
+      if @sf.in_small_panel_node(k) {
+        title_row_whole
+      } else {
+        title_row_whole.then(@ui.style(mx=@sf.room_of(-@sf.corner_inset)))
+      }
+    })
+    rows(k)
+  })
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let info_rule_box : @ui.Style = @ui.css("w=Full py=S1_5")
+
+///|
+/// Conditional subtle hairline divider between `chat_info_node` sections, shown only when `over` is true:
+/// 0.5pt (`@sf.hairline`) aligned to the `20pt` content axis at quiet `Tint` (6% ink) opacity.
+fn info_rule_node(p : @view.View, over : () -> Bool) -> Unit {
+  p.show(over, fn(r) {
+    @sf.style_node(r, fn() { info_rule_box })
+    r.box(fn(l) { @sf.style_node(l, fn() { @ui.style(w=Full, h=@sf.hairline, bg=Tint) }) }) |> ignore
+  })
+}
+
+///|
+/// Flat row styles for `chat_info_node` (`px=S1` = `4pt` = `panel_words - panel_card_in`; agent row uses `p=S2` = `8pt`
+/// inside `info_agent_section_node` for concentric `18 -> 10` tile corners).
+// kept across runs: a value (no field of it changes)
+let info_flat_row : @ui.Style = @ui.css("row w=Full min_h=S11 py=S1 px=S1 gap=S3 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let info_flat_agent_row : @ui.Style = @ui.css("row w=Full min_h=S11 p=S2 gap=S3 align=AStart")
+
+///|
 /// The room between two of the info's cards in `p`, over the card after it, while one is over it (`over`): a hairline
 /// divider aligned to the content text axis inside a floating glass panel, or a 16pt card gap in a bottom sheet.
 fn info_gap_node(p : @view.View, over : () -> Bool) -> Unit {
@@ -527,7 +572,7 @@ fn info_gap_node(p : @view.View, over : () -> Bool) -> Unit {
 }
 
 ///|
-/// A row of a card of the chat's info in `k`: its icon, its words, what there is of it muted (`end`, while it says
+/// A row of a section of the chat's info in `k`: its icon, its words, what there is of it muted (`end`, while it says
 /// something: under its words where the line has not the room, their words whole), its chevron, the icon and the
 /// chevron on its words' first line; pressed, `press`. Its node.
 fn info_more_row_node(
@@ -537,7 +582,7 @@ fn info_more_row_node(
   end : () -> String,
   press : () -> Unit,
 ) -> @view.View {
-  @sf.quiet_row_node(k, words, press~, fn(row) {
+  @sf.quiet_row_node(k, words, look=info_flat_row, press~, fn(row) {
     // (one line on the row's middle; more, the icon and the chevron on the first of them)
     row.box(fn(line) {
       @sf.style_node(line, fn() { info_more_line }, in_row=true)
@@ -583,7 +628,7 @@ fn info_pull_row_node(k : @view.View, src : Source, r : ChatRef, pull : () -> Js
   let url = fn() { text(pull(), "url") }
   k.box(fn(b) {
     let corner = if @sf.in_small_panel_node(b) { @sf.small_panel_inner(@sf.r_menu) } else { @sf.quiet_row_corner }
-    @sf.style_node(b, fn() { @sf.quiet_row_middle })
+    @sf.style_node(b, fn() { info_flat_row })
     b
     .radius(Is(corner))
     .says(By(fn() { Some(@view.said(Link, label=title())) }))
@@ -620,16 +665,18 @@ fn info_pull_row_node(k : @view.View, src : Source, r : ChatRef, pull : () -> Js
 /// its mark (as tall as its two lines: in the card's corners as far from its top as from its foot), its name, how it is
 /// and for how long, and its allowance under them, each a line of its own (beside its name the allowance took the
 /// name's room, or left the row where it had not the room: the allowance gone), its chevron. Pressed, `press`.
-fn info_agent_row_node(k : @view.View, src : Source, a : () -> Json?, press : () -> Unit) -> Unit {
+fn info_agent_row_node(k : @view.View, src : Source, a : () -> Json?, press : () -> Unit, flat? : Bool = false) -> Unit {
   let s = fn() { field(a(), "session") }
   let small = @sf.in_small_panel_node(k)
-  let look = if small {
+  let look = if flat {
+    info_flat_agent_row
+  } else if small {
     @sf.quiet_row_style.then(@ui.css("py=S2 align=AStart"))
   } else {
     @sf.quiet_row_style.then(@sf.quiet_row_tile)
   }
   @sf.quiet_row_node(k, fn() { text(s(), "agentText") }, look~, press~, fn(row) {
-    if small {
+    if small && !flat {
       row.box(fn(m) {
         @sf.quiet_first_line(m)
         model_mark_big_node(
@@ -744,10 +791,10 @@ fn info_title_node(h : @view.View, src : Source, r : ChatRef, title : () -> Stri
 ///|
 /// The chat's own sheet (chat_info_node) from "…": the library's panel, as tall as what it shows, what it holds nodes of
 /// the window's tree made once as it opens, its name with ✎ beside it its first line.
-fn open_info(src : Source, r : ChatRef, from? : @sf.Anchor = Unanchored, along? : @ui.Along = Start) -> Unit {
+fn open_info(src : Source, r : ChatRef) -> Unit {
   // (its name its head, with its ✎ after it: the user, 2026-11-04, 为啥不做成标题; no title of words, where what it
   // holds draws its name itself)
-  @sf.panel_nodes("", from~, along~, heads_itself=true, live=fn() { ("", "", "") }, fn(v, close) { chat_info_node(v, src, r, close) })
+  @sf.panel_nodes("", from=Unanchored, heads_itself=true, grows=true, live=fn() { ("", "", "") }, fn(v, close) { chat_info_node(v, src, r, close) })
 }
 
 ///|
@@ -774,9 +821,9 @@ let info_icon : Double = 16.0
 let info_face : Double = 16.0
 
 ///|
-/// Its facts' line: 6 over, 16 under, its faces and words 8 apart on their middle; its words 13, muted.
+/// Its facts' line: 6 over, 8 under, its faces and words 8 apart on their middle; its words 13, muted.
 // kept across runs: a value (no field of it changes)
-let info_facts_line : @ui.Style = @ui.css("row w=Full pt=S1_5 pb=S4 gap=S2 align=ACenter")
+let info_facts_line : @ui.Style = @ui.css("row w=Full pt=S1_5 pb=S2 gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

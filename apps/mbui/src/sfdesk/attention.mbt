@@ -191,7 +191,7 @@ fn attention_read_all(src : Source, list : Array[Json]) -> Unit {
 /// what was let go here) as that changes. As it opens, what it shows of the stations' trouble and of what is left up
 /// long is looked at, as the panel beside the bell's (kept: no longer lighting the bell), listed while it is open.
 pub fn open_attention_panel(src : Source, w : Workspace, from : @sf.Anchor) -> Unit {
-  attention_present(src, w, from, @sf.t("web-main.attention.entry"), true, fn(close) { close }, gone=fn() {
+  attention_present(src, w, from, @sf.t("web-main.attention.entry"), true, fn(close) { close }, grows=true, gone=fn() {
     attention.trouble_seen = None
   })
 }
@@ -213,6 +213,7 @@ fn attention_present(
   side? : @ui.Side = Bottom,
   along? : @ui.Along = Start,
   offset? : Double = @sf.panel_offset,
+  grows? : Bool = false,
   foot_style? : @ui.Style = att_foot,
   gone? : () -> Unit = fn() {  },
 ) -> Unit {
@@ -241,6 +242,7 @@ fn attention_present(
     side~,
     along~,
     offset~,
+    grows~,
     foot=fn(v, close) {
       // (across the foot's row, its words at its start as the old foot's were)
       v.box(fn(b) {

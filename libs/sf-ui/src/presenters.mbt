@@ -165,6 +165,8 @@ priv struct PanelOf {
   /// fade the panel and its contents together as it leaves
   fade_out_together : Bool
   form : Bool
+  /// whether an upper-half anchored panel on Small may open as a popover beside its trigger (panel_nodes' `popover`)
+  popover : Bool
   /// a picture shown alone over the window, its buttons under it (panel_nodes' `stage`)
   stage : Bool
   /// on a stage, what is chosen of the picture between it and its buttons (panel_nodes' `above`)
@@ -589,6 +591,8 @@ pub fn pick(
 /// the middle, drawn smaller where the window has not the room for it, 关闭 and its `foot`'s buttons under it on the
 /// night; a press beside it, Escape and the back close it too; `above`, over those buttons, what is chosen of the
 /// picture (the card to share's looks).
+/// `popover`: opt in to opening as an anchored popover on Small when triggered in the upper half of the window
+/// (non-stage, non-form, non-steps, non-growing, anchored); default `false` opens as a bottom sheet on Small.
 /// `head_end`: on a sheet, what stands at the end of its title's line (a quiet action of the whole panel's, as a panel
 /// that heads itself beside what opened it has at its own head's end); not drawn where the panel has no such head.
 pub fn panel_nodes(
@@ -609,6 +613,7 @@ pub fn panel_nodes(
   ruled? : Bool = false,
   form? : Bool = false,
   grows? : Bool = false,
+  popover? : Bool = false,
   side? : @ui.Side = Bottom,
   along? : @ui.Along = Start,
   offset? : Double = panel_offset,
@@ -637,6 +642,7 @@ pub fn panel_nodes(
       ruled,
       fade_out_together,
       form,
+      popover,
       stage,
       above,
       heads_itself,
@@ -1359,14 +1365,23 @@ fn anchor_center_y(from : Anchor) -> Double? {
 }
 
 ///|
+/// Maximum non-separator item count for an upper-half `Menu` or non-searchable `Pick` on Small
+/// to open as an anchored popover; longer lists use a bottom sheet instead.
+let small_popover_menu_most : Int = 12
+
+///|
 /// Whether `shows` opened from `from` on Small uses a popover beside its trigger instead of a bottom sheet:
-/// only anchored menus, picks, and non-form/non-steps/non-growing panels triggered in the upper half of the window.
+/// anchored short `Menu` (<= `small_popover_menu_most` items), short non-searchable `Pick`, and anchored
+/// non-stage/non-form/non-steps/non-growing `Panel` explicitly opting in via `popover=true`, triggered in the upper half.
 fn small_as_popover(shows : Shows, from : Anchor, held : Bool, win_h : Double) -> Bool {
   guard !held && win_h > 0.0 else { return false }
   guard anchor_center_y(from) is Some(cy) && cy < win_h * small_upper_share else { return false }
   match shows {
-    Menu(_, _, _, _) | Pick(_, _, _, _, _, _, _) => true
-    Panel(x) => !x.stage && !x.form && !x.nodes.steps && !x.grows && from != Unanchored
+    Menu(items, _, _, _) =>
+      items.iter().filter(fn(x) { x is Some(_) }).count() <= small_popover_menu_most
+    Pick(_, choices, _, _, _, _, search) =>
+      choices.length() <= small_popover_menu_most && pick_menu_of(choices, search)
+    Panel(x) => x.popover && !x.stage && !x.form && !x.nodes.steps && !x.grows && from != Unanchored
     Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) => false
   }
 }

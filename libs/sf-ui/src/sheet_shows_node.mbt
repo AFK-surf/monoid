@@ -82,6 +82,7 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
     ruled: false,
     fade_out_together: false,
     form: false,
+    popover: false,
     stage: false,
     above: None,
     heads_itself: false,

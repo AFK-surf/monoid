@@ -1177,14 +1177,15 @@ test "a menu's lines: none at either end, never two together, whatever was given
 }
 
 ///|
-test "Small upper-half triggers open popovers without scrim, while lower-half and non-popover kinds keep sheets" {
-  // upper-half menu, short pick, long pick, anchored panel -> AsPopover without scrim
+test "Small upper-half triggers open popovers only for short Menu/Pick, while Panels, long lists, and lower-half triggers keep sheets" {
+  // upper-half short menu (<= 12 items) -> AsPopover without scrim
   let t_menu = presenting_tester(phone, fn(from) { menu(menu_items_of([]), from=beside_of(from)) }, button_at=JStart)
   open_it(t_menu)
   assert_eq(presented_how, [AsPopover])
   assert_eq(scrims_drawn(t_menu, phone), 0)
   assert_true(where_is(t_menu, "重命名").1 < phone.2 / 2.0)
 
+  // upper-half short pick (< pick_search_from) -> AsPopover without scrim
   let t_pick = presenting_tester(
     phone,
     fn(from) { pick("选一个", choices_of(3), "c1", fn(_) {  }, from=beside_of(from)) },
@@ -1195,20 +1196,45 @@ test "Small upper-half triggers open popovers without scrim, while lower-half an
   assert_eq(scrims_drawn(t_pick, phone), 0)
   assert_true(where_is(t_pick, "第1项").1 < phone.2 / 2.0)
 
-  let t_panel = presenting_tester(phone, fn(from) { panel_nodes("面板", panel_body(), from~) }, button_at=JStart)
-  open_it(t_panel)
+  // upper-half non-searchable pick with <= small_popover_menu_most items -> AsPopover without scrim
+  let t_pick_nosearch = presenting_tester(
+    phone,
+    fn(from) { pick("选一个", choices_of(small_popover_menu_most), "c1", fn(_) {  }, from=beside_of(from), search=false) },
+    button_at=JStart,
+  )
+  open_it(t_pick_nosearch)
   assert_eq(presented_how, [AsPopover])
-  assert_eq(scrims_drawn(t_panel, phone), 0)
-  assert_true(where_is(t_panel, "面板里的话").1 < phone.2 / 2.0)
+  assert_eq(scrims_drawn(t_pick_nosearch, phone), 0)
 
-  // upper-half confirm, ask, unanchored, form, steps, grows -> stay AsSheet
+  // upper-half explicit popover=true anchored panel -> AsPopover without scrim
+  let t_panel_pop = presenting_tester(
+    phone,
+    fn(from) { panel_nodes("切换面板", panel_body(), from~, popover=true) },
+    button_at=JStart,
+  )
+  open_it(t_panel_pop)
+  assert_eq(presented_how, [AsPopover])
+  assert_eq(scrims_drawn(t_panel_pop, phone), 0)
+  assert_true(where_is(t_panel_pop, "面板里的话").1 < phone.2 / 2.0)
+
+  // upper-half default Panels (popover=false), popover=true with unanchored/form/steps/grows,
+  // long Menu (> 12), searchable long Pick (>= pick_search_from), non-searchable Pick (> 12), Confirm, Ask -> AsSheet with scrim
+  let long_menu_items : Array[MenuItem?] = Array::makei(small_popover_menu_most + 1, fn(i) {
+    Some(menu_item_of("第\{i + 1}项", fn() {  }))
+  })
   let sheet_cases : Array[(String, (Anchor) -> Unit)] = [
+    ("panel", fn(from) { panel_nodes("面板", panel_body(), from~) }),
+    ("panel-tall-hugs", fn(from) { panel_nodes("半高面板", panel_body(), from~, tall=0.62, hugs=true) }),
+    ("unanchored", fn(_) { panel_nodes("无锚点", panel_body(), from=Unanchored) }),
+    ("popover-unanchored", fn(_) { panel_nodes("无锚点切换", panel_body(), from=Unanchored, popover=true) }),
+    ("form", fn(from) { panel_nodes("表单", panel_body(), from~, form=true, popover=true) }),
+    ("steps", fn(from) { panel_nodes("分步", panel_body(), from~, steps=true, popover=true) }),
+    ("grows", fn(from) { panel_nodes("长列表", panel_body(), from~, grows=true, popover=true) }),
+    ("long-menu", fn(from) { menu(long_menu_items, from=beside_of(from)) }),
+    ("searchable-long-pick", fn(from) { pick("长选择", choices_of(pick_search_from), "c1", fn(_) {  }, from=beside_of(from)) }),
+    ("overlong-nosearch-pick", fn(from) { pick("超长选择", choices_of(small_popover_menu_most + 1), "c1", fn(_) {  }, from=beside_of(from), search=false) }),
     ("confirm", fn(from) { confirm("确定？", "说明", "好", fn() {  }, from~) }),
     ("ask", fn(from) { ask("输入", "保存", fn(_) {  }, from~) }),
-    ("unanchored", fn(_) { panel_nodes("无锚点", panel_body(), from=Unanchored) }),
-    ("form", fn(from) { panel_nodes("表单", panel_body(), from~, form=true) }),
-    ("steps", fn(from) { panel_nodes("分步", panel_body(), from~, steps=true) }),
-    ("grows", fn(from) { panel_nodes("长列表", panel_body(), from~, grows=true) }),
   ]
   for item in sheet_cases {
     let (name, open) = item
@@ -1218,21 +1244,51 @@ test "Small upper-half triggers open popovers without scrim, while lower-half an
     assert_eq(scrims_drawn(t, phone), 1, msg=name)
   }
 
-  // lower-half triggers -> AsSheet
-  let t_low = presenting_tester(phone, fn(from) { panel_nodes("面板", panel_body(), from~) }, button_at=JEnd)
+  // lower-half triggers (even short menu or popover=true panel) -> AsSheet
+  let t_low = presenting_tester(phone, fn(from) { menu(menu_items_of([]), from=beside_of(from)) }, button_at=JEnd)
   open_it(t_low)
   assert_eq(presented_how, [AsSheet])
   assert_eq(scrims_drawn(t_low, phone), 1)
+
+  let t_low_panel = presenting_tester(
+    phone,
+    fn(from) { panel_nodes("底部切换", panel_body(), from~, popover=true) },
+    button_at=JEnd,
+  )
+  open_it(t_low_panel)
+  assert_eq(presented_how, [AsSheet])
+  assert_eq(scrims_drawn(t_low_panel, phone), 1)
 }
 
 ///|
-test "Small narrow 320pt popover clamps width, hugs tall+hugs content, and touch long pick does not focus search" {
+test "Small narrow 320pt short popover and popover=true panel clamp width and hug tall+hugs content" {
   let narrow = (2, 320.0, 568.0)
-  // wide panel clamped within 320pt viewport and tall+hugs fits 2 rows tightly
+  let t_menu = presenting_tester(
+    narrow,
+    fn(from) { menu(menu_items_of([]), from=beside_of(from)) },
+    button_at=JStart,
+  )
+  open_it(t_menu)
+  assert_eq(presented_how, [AsPopover])
+  let (mx, my, mw, _) = t_menu.rect_of("重命名").unwrap()
+  assert_true(mx >= 0.0 && mx + mw <= narrow.1, msg="clamped menu width: \{mx} + \{mw}")
+  assert_true(my < narrow.2 / 2.0, msg="menu in upper half: \{my}")
+
+  let t_pick = presenting_tester(
+    narrow,
+    fn(from) { pick("选一个", choices_of(3), "c1", fn(_) {  }, from=beside_of(from)) },
+    button_at=JStart,
+  )
+  open_it(t_pick)
+  assert_eq(presented_how, [AsPopover])
+  let (px, _, pw, _) = t_pick.rect_of("第1项").unwrap()
+  assert_true(px >= 0.0 && px + pw <= narrow.1, msg="clamped pick width: \{px} + \{pw}")
+
+  // popover=true panel clamped within 320pt viewport and tall=0.7 hugs=true fits 2 rows tightly
   let t_panel = presenting_tester(
     narrow,
     fn(from) {
-      panel_nodes("窄屏面板", from~, w=420.0, tall=0.7, hugs=true, fn(v, _) {
+      panel_nodes("窄屏切换", from~, w=420.0, tall=0.7, hugs=true, popover=true, fn(v, _) {
         words_node(v, fn() { "第一项" }, fn() { paragraph }) |> ignore
         words_node(v, fn() { "第二项" }, fn() { paragraph }) |> ignore
       })
@@ -1244,32 +1300,45 @@ test "Small narrow 320pt popover clamps width, hugs tall+hugs content, and touch
   let (p1_x, p1_y, p1_w, _) = t_panel.rect_of("第一项").unwrap()
   let (_, p2_y, _, p2_h) = t_panel.rect_of("第二项").unwrap()
   assert_true(p1_x >= 0.0 && p1_x + p1_w <= narrow.1, msg="clamped width: \{p1_x} + \{p1_w}")
-  // tall=0.7 would be ~397pt if not hugged; two rows stay well under 220pt
   assert_true(p2_y + p2_h - p1_y < 160.0, msg="hugs height")
   let (_, panel_bot) = drawn_span(t_panel, "第二项")
   assert_true(panel_bot < narrow.2 * 0.55, msg="popover hugs content rather than taking 0.7 of window")
+}
 
-  // touch long pick: clamped width, opens without focusing search input, tapping search allows typing
-  let chosen = Ref("c1")
-  let t_pick = presenting_tester(
-    narrow,
-    fn(from) {
-      pick("选一个", choices_of(pick_search_from + 4), chosen.val, fn(k) { chosen.val = k }, from=beside_of(from))
-    },
+///|
+test "Small sheet_node: tall=0.0 grows=true caps at sheet_most at rest, and tall=0.62 hugs=true grows=true grows to sheet_most on drag" {
+  let tall_body = fn(v : @view.View, _ : () -> Unit) {
+    for i in 0..<40 {
+      words_node(v, fn() { "第\{i + 1}行内容" }, fn() { paragraph }) |> ignore
+    }
+  }
+  // 1) tall=0.0, grows=true with very tall content: at rest (!dragging) capped at sheet_most (0.94 * h), never hits top (y=0)
+  let t1 = presenting_tester(
+    phone,
+    fn(_) { panel_nodes("超长详情", tall_body, from=Unanchored, grows=true) },
     button_at=JStart,
   )
-  open_it(t_pick)
-  assert_eq(presented_how, [AsPopover])
-  // typing immediately does not filter because search field is not focused on touch
-  t_pick.type_text("第12")
-  t_pick.run_for(@ui.move_most_ms)
-  assert_true(t_pick.find("第2项") is Some(_), msg="touch long pick should not auto-focus search")
-  // tapping search focuses it and filters choices
-  t_pick.tap_text("common.search")
-  t_pick.type_text("第12")
-  t_pick.run_for(@ui.move_most_ms)
-  assert_true(t_pick.find("第2项") is None)
-  assert_true(t_pick.find("第12项") is Some(_))
-  t_pick.tap_text("第12项")
-  assert_eq(chosen.val, "c12")
+  open_it(t1)
+  assert_eq(presented_how, [AsSheet])
+  let dlg1 = t1.get(@ui.Role::Dialog)
+  let cap1 = phone.2 * sheet_most
+  assert_true(dlg1.rect.3 <= cap1 + 1.0, msg="grows=true at rest should not exceed sheet_most (\{cap1}): got \{Repr(dlg1.rect)}")
+  assert_true(dlg1.rect.1 >= phone.2 * (1.0 - sheet_most) - 1.0, msg="grows=true at rest stays below top bar: \{Repr(dlg1.rect)}")
+
+  // 2) tall=0.62, hugs=true, grows=true with very tall content: opens capped at 0.62 * h, dragging grabber up grows to sheet_most
+  let t2 = presenting_tester(
+    phone,
+    fn(_) { panel_nodes("半高可扩展", tall_body, from=Unanchored, tall=0.62, hugs=true, grows=true) },
+    button_at=JStart,
+  )
+  open_it(t2)
+  assert_eq(presented_how, [AsSheet])
+  let dlg2_init = t2.get(@ui.Role::Dialog)
+  assert_true(dlg2_init.rect.3 <= phone.2 * 0.62 + 2.0, msg="tall=0.62 hugs=true opens capped at 0.62: \{Repr(dlg2_init.rect)}")
+  // drag the grabber upward to expand to sheet_most
+  let grab_y = dlg2_init.rect.1 + 12.0
+  t2.drag(phone.1 / 2.0, grab_y, phone.1 / 2.0, 60.0)
+  t2.run_for(@ui.move_most_ms)
+  let dlg2_grown = t2.get(@ui.Role::Dialog)
+  assert_true(dlg2_grown.rect.3 >= phone.2 * 0.9, msg="dragging tall=0.62 hugs=true grows=true expands to sheet_most: \{Repr(dlg2_grown.rect)}")
 }

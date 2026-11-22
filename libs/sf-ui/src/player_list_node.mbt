@@ -327,6 +327,7 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
     ruled: false,
     fade_out_together: false,
     form: false,
+    popover: false,
     stage: false,
     above: None,
     heads_itself: true,
