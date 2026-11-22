@@ -5,6 +5,9 @@
 extern "C" fn st_open() -> Int = "mb_host_stream_open"
 
 ///|
+fn st_low_latency(_id : Int, _enabled : Bool) -> Unit { () }
+
+///|
 #borrow(avcc)
 extern "C" fn st_h264(id : Int, avcc : Bytes, w : Int, h : Int) -> Unit = "mb_host_stream_h264"
 

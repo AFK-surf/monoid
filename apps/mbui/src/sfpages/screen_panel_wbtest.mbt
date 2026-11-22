@@ -58,6 +58,49 @@ fn shut(r : ScreenRig) -> Unit {
 }
 
 ///|
+test "a browser can switch picture response for the current view without reopening it" {
+  let r = screen_rig(platform=4, h264=true)
+  r.live()
+  r.state("live", more={ "codec": Json::string("h264") })
+  open_center(r)
+  open_choices(r, "web-pages.screen.presentation", tr("web-pages.screen.presentation.smooth"))
+  assert_true(r.t.find(tr("web-pages.screen.presentation.lowHint")) is Some(_))
+  choose_last(r, tr("web-pages.screen.presentation.low"))
+  assert_true(r.sess().low_latency.get())
+  assert_eq(r.told("screen.view").length(), 1)
+  assert_eq(r.cancelled, [])
+  assert_eq(r.t.audit(), [])
+  open_choices(r, "web-pages.screen.presentation", tr("web-pages.screen.presentation.low"))
+  choose_last(r, tr("web-pages.screen.presentation.smooth"))
+  assert_false(r.sess().low_latency.get())
+  shut(r)
+  screen_done(r.t)
+}
+
+///|
+test "picture response is not offered where the browser decoder is unavailable" {
+  let r = screen_rig(platform=4, h264=false)
+  r.live()
+  r.state("live", more={ "codec": Json::string("h264") })
+  open_center(r)
+  assert_true(r.t.find(tr("web-pages.screen.presentation")) is None)
+  shut(r)
+  screen_done(r.t)
+}
+
+///|
+test "picture response is hidden for JPEG and appears when the view switches to H.264" {
+  let r = screen_rig(platform=4, h264=true)
+  r.live()
+  open_center(r)
+  assert_true(r.t.find(tr("web-pages.screen.presentation")) is None)
+  r.state("live", more={ "codec": Json::string("h264") })
+  assert_true(r.t.find(tr("web-pages.screen.presentation")) is Some(_))
+  shut(r)
+  screen_done(r.t)
+}
+
+///|
 test "画质 chosen in 控制中心 is kept on the device and asked of the open view" {
   let r = screen_rig()
   r.live()

@@ -84,6 +84,90 @@ const mkFrame = (w = 16, h = 16) => ({
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const AVCC = [1, 0x64, 0x00, 0x2a];
 
+test('low latency skips the jitter hold and switching back restores it', async () => {
+  const b = pacedBrowser();
+  await tick();
+  const id = b.host.streamOpen();
+  b.host.streamH264(id, AVCC, 16, 16);
+  for (const [time, ts] of [[100, 0], [176, 16_000], [192, 32_000]]) {
+    b.setNow(time);
+    b.videos.push(mkFrame());
+    b.host.streamFrame(id, [1], ts === 0, ts);
+    b.drainEvents(id);
+    b.runRaf();
+  }
+  // The normal policy holds this clean frame after the two 60ms late arrivals.
+  b.setNow(200);
+  b.videos.push(mkFrame());
+  b.host.streamFrame(id, [1], false, 100_000);
+  assert.deepEqual(b.drainEvents(id), []);
+  b.host.streamLowLatency(id, true);
+  assert.deepEqual(b.drainEvents(id), ['f 100000 16 16']);
+  b.runRaf();
+
+  // The arrival clock kept learning while the policy was enabled.
+  b.host.streamLowLatency(id, false);
+  b.setNow(216);
+  b.videos.push(mkFrame());
+  b.host.streamFrame(id, [1], false, 116_000);
+  assert.deepEqual(b.drainEvents(id), []);
+  b.setNow(280);
+  b.runRaf();
+  assert.deepEqual(b.drainEvents(id), ['f 116000 16 16 64000']);
+  b.host.streamClose(id);
+});
+
+test('low latency decodes every frame but retains only the newest between display refreshes', async () => {
+  const b = pacedBrowser();
+  await tick();
+  const id = b.host.streamOpen();
+  b.host.streamLowLatency(id, true);
+  b.host.streamH264(id, AVCC, 16, 16);
+  const frames = [mkFrame(), mkFrame(), mkFrame(), mkFrame()];
+  b.setNow(100);
+  for (let i = 0; i < frames.length; i++) {
+    b.videos.push(frames[i]);
+    b.host.streamFrame(id, [i], i === 0, i * 1000);
+  }
+  assert.equal(b.videos.length, 0, 'all encoded frames reached the decoder');
+  assert.deepEqual(b.drainEvents(id), ['f 0 16 16', 'd 1000', 'd 2000']);
+  assert.deepEqual(frames.map(f => f.closed), [0, 1, 1, 0]);
+  b.setNow(116);
+  b.runRaf();
+  assert.deepEqual(b.drainEvents(id), ['f 3000 16 16 16000']);
+  b.host.streamShow(id, 3000);
+  assert.deepEqual(frames.map(f => f.closed), [1, 1, 1, 0]);
+  b.host.streamClose(id);
+  assert.deepEqual(frames.map(f => f.closed), [1, 1, 1, 1]);
+});
+
+test('enabling low latency releases an existing backlog and survives decoder reconfiguration', async () => {
+  const b = pacedBrowser();
+  await tick();
+  const id = b.host.streamOpen();
+  b.host.streamH264(id, AVCC, 16, 16);
+  const frames = [mkFrame(), mkFrame(), mkFrame()];
+  b.setNow(100);
+  for (let i = 0; i < frames.length; i++) {
+    b.videos.push(frames[i]);
+    b.host.streamFrame(id, [1], i === 0, i * 1000);
+  }
+  assert.deepEqual(b.drainEvents(id), ['f 0 16 16']);
+  b.host.streamLowLatency(id, true);
+  assert.deepEqual(b.drainEvents(id), ['d 1000']);
+  b.runRaf();
+  assert.deepEqual(b.drainEvents(id), ['f 2000 16 16']);
+  assert.equal(frames[1].closed, 1);
+  b.host.streamH264(id, AVCC, 16, 16);
+  b.setNow(116);
+  for (let i = 0; i < 3; i++) {
+    b.videos.push(mkFrame());
+    b.host.streamFrame(id, [1], i === 0, 10_000 + i * 1000);
+  }
+  assert.deepEqual(b.drainEvents(id), ['f 10000 16 16', 'd 11000']);
+  b.host.streamClose(id);
+});
+
 test('clean link (0ms jitter) emits immediate f TS W H with no waitUs suffix', async () => {
   const b = pacedBrowser();
   await tick();

@@ -245,6 +245,7 @@ pub(open) trait Host {
   st_av1_here(Self) -> Int = _
   st_av1(Self, Int, Bytes, Int, Int) -> Unit = _
   st_open(Self) -> Int = _
+  st_low_latency(Self, Int, Bool) -> Unit = _
   st_h264(Self, Int, Bytes, Int, Int) -> Unit = _
   st_frame(Self, Int, Bytes, Int, Double) -> Unit = _
   st_jpeg(Self, Int, Bytes, Double) -> Unit = _
@@ -1430,6 +1431,11 @@ impl Host with nt_text(_, _) {
 ///|
 impl Host with st_open(_) {
   0
+}
+
+///|
+impl Host with st_low_latency(_, _, _) {
+  ()
 }
 
 ///|
@@ -3371,6 +3377,11 @@ fn nt_text(what : Int) -> String {
 ///|
 fn st_open() -> Int {
   current.val.st_open()
+}
+
+///|
+fn st_low_latency(id : Int, enabled : Bool) -> Unit {
+  current.val.st_low_latency(id, enabled)
 }
 
 ///|

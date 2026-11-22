@@ -2628,6 +2628,11 @@ web-pages.screen.keysPanel
 web-pages.screen.quick
 web-pages.screen.picture
 web-pages.screen.quality
+web-pages.screen.presentation
+web-pages.screen.presentation.smooth
+web-pages.screen.presentation.smoothHint
+web-pages.screen.presentation.low
+web-pages.screen.presentation.lowHint
 web-pages.screen.quality.auto
 web-pages.screen.quality.hd
 web-pages.screen.quality.original

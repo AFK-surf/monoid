@@ -149,6 +149,8 @@ priv struct ScreenSess {
   mut acked : Double
   /// the decoder the frames go to, and the picture it shows (made as the view first opens: own_stream)
   mut stream : @ui.Stream?
+  /// Prefer recent decoded frames for this view, rather than buffering for smoother playback.
+  low_latency : @signals.Signal[Bool]
   /// the decoder a part's frames go to (made as the first part's config comes), its codec; whether the frames now
   /// coming are a part's; the part the next frame shows (from its config), and the part each of its frames shows from
   /// (by the time of the first), oldest first
@@ -267,6 +269,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         call: 0,
         acked: -1.0,
         stream: None,
+        low_latency: @signals.signal(false, same=fn(a, b) { a == b }),
         part: None,
         part_codec: None,
         parting: false,
@@ -331,6 +334,7 @@ fn ScreenSess::part_stream(self : ScreenSess) -> @ui.Stream {
         // it would be drawn a frame at the last part's place, the picture jumping as a pinch comes to rest)
         latched=Some(fn(_) { self.shown_told() }),
       )
+      st.low_latency(self.low_latency.untracked())
       self.part = Some(st)
       self.streams_told.set(self.streams_told.untracked() + 1)
       st
@@ -442,7 +446,23 @@ fn ScreenSess::own_stream(self : ScreenSess) -> Unit {
       latched=Some(fn(_) { self.shown_told() }),
     ),
   )
+  match self.stream {
+    Some(st) => st.low_latency(self.low_latency.untracked())
+    None => ()
+  }
   self.streams_told.set(self.streams_told.untracked() + 1)
+}
+
+///|
+/// Change both the whole picture's and its zoomed part's presentation policy for this view.
+fn ScreenSess::set_low_latency(self : ScreenSess, enabled : Bool) -> Unit {
+  self.low_latency.set(enabled)
+  for st in [self.stream, self.part] {
+    match st {
+      Some(s) => s.low_latency(enabled)
+      None => ()
+    }
+  }
 }
 
 ///|

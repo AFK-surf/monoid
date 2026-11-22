@@ -503,6 +503,8 @@ pub fn stream_layers() -> Bool
 
 pub fn stream_layers_tagged() -> Bool
 
+pub fn stream_low_latency(Int32, Bool) -> Unit
+
 pub fn stream_next(Int32) -> String
 
 pub fn stream_open() -> Int32
@@ -1190,6 +1192,7 @@ pub(open) trait Host {
   fn st_av1_here(Self) -> Int32 = _
   fn st_av1(Self, Int32, Bytes, Int32, Int32) -> Unit = _
   fn st_open(Self) -> Int32 = _
+  fn st_low_latency(Self, Int32, Bool) -> Unit = _
   fn st_h264(Self, Int32, Bytes, Int32, Int32) -> Unit = _
   fn st_frame(Self, Int32, Bytes, Int32, Double) -> Unit = _
   fn st_jpeg(Self, Int32, Bytes, Double) -> Unit = _

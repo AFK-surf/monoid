@@ -190,6 +190,21 @@ fn center_node(
         }
       },
     )
+    g.show(fn() { @ui.platform() == 4 && @ui.h264_here() && text(state(), "codec") == "h264" }, fn(row) {
+      center_choice_node(
+        row,
+        "web-pages.screen.presentation",
+        fn() { @sf.t(if s.low_latency.get() { "web-pages.screen.presentation.low" } else { "web-pages.screen.presentation.smooth" }) },
+        fn() {
+          [
+            @sf.choice("smooth", @sf.t("web-pages.screen.presentation.smooth"), note=@sf.t("web-pages.screen.presentation.smoothHint")),
+            @sf.choice("low", @sf.t("web-pages.screen.presentation.low"), note=@sf.t("web-pages.screen.presentation.lowHint")),
+          ]
+        },
+        fn() { if s.low_latency.get() { "low" } else { "smooth" } },
+        fn(k) { s.set_low_latency(k == "low") },
+      )
+    })
     let scale = fn() {
       state() |> ignore
       s.scale()

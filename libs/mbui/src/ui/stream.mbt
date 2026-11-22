@@ -53,6 +53,8 @@ pub struct Stream {
   /// touches no host as the frame builds); 0 before, or where the host has none
   priv mut id : Int
   priv mut opened : Bool
+  /// the requested presentation policy, also applied if chosen before the host stream opens
+  priv mut low_latency : Bool
   priv shown : (Double) -> Unit
   priv broken : () -> Unit
   /// H.264 (a config came), else JPEG; the config's picture size
@@ -144,6 +146,7 @@ pub fn Stream::new(
   let s = {
     id: 0,
     opened: false,
+    low_latency: false,
     shown,
     broken,
     h264: false,
@@ -434,6 +437,18 @@ pub fn Stream::id(self : Stream) -> Int {
 }
 
 ///|
+/// Prefer the latest decoded frame to buffering for smoothness, where the host supports it.
+pub fn Stream::low_latency(self : Stream, enabled : Bool) -> Unit {
+  if self.closed || self.low_latency == enabled {
+    return
+  }
+  self.low_latency = enabled
+  if self.id != 0 {
+    @hostapi.stream_low_latency(self.id, enabled)
+  }
+}
+
+///|
 /// Gone: its decoder stopped, its frames let go and not said (nothing more is), nothing of it drawn.
 pub fn Stream::close(self : Stream) -> Unit {
   if self.closed {
@@ -465,6 +480,9 @@ fn Stream::open(self : Stream) -> Unit {
   if !self.opened {
     self.opened = true
     self.id = h_stream_open()
+    if self.id != 0 && self.low_latency {
+      @hostapi.stream_low_latency(self.id, true)
+    }
     // (the volume asked before it opened)
     match self.volume {
       Some(v) if self.id != 0 => @hostapi.stream_audio_volume(self.id, v)

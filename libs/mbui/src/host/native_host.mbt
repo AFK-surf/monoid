@@ -1123,6 +1123,11 @@ impl @hostapi.Host for Native with st_open(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with st_low_latency(_, id, enabled) {
+  st_low_latency(id, enabled)
+}
+
+///|
 impl @hostapi.Host for Native with st_h264(_, id, avcc, w, h) {
   st_h264(id, avcc, w, h)
 }

@@ -3597,6 +3597,17 @@
     return backlogMs < 500 || sinceCatchUpMs < 250 ? 'backlog' : 'catchUp';
   }
   function trimDecoded(s, now, draws = 0) {
+    if (s.lowLatency) {
+      // Decode every frame in order, but do not present stale decoded frames.
+      while (s.paced.length > 1) {
+        const dropped = s.paced.shift();
+        dropped.frame.close();
+        const waitUs = waitUsOf(dropped, now);
+        say(s, waitUs > 0 ? `d ${num(dropped.ts)} ${waitUs}` : `d ${num(dropped.ts)}`);
+      }
+      s.backlogSince = null;
+      return;
+    }
     let due = dueCount(s, now);
     const phase = presenterPhase(
       due, draws, now - (s.backlogSince ?? now), now - s.lastCatchUp,
@@ -3634,7 +3645,7 @@
     const now = performance.now();
     trimDecoded(s, now, 1);
     let drew = false;
-    if (s.paced.length && isDue(s, s.paced[0], now)) {
+    if (s.paced.length && (s.lowLatency || isDue(s, s.paced[0], now))) {
       emitFrame(s, s.paced.shift(), now);
       drew = true;
     }
@@ -3645,7 +3656,7 @@
     const immediate = !s.paced.length && !s.drawnThisFrame;
     s.paced.push(item);
     trimDecoded(s, now);
-    if (immediate && s.paced.length && isDue(s, s.paced[0], now)) emitFrame(s, s.paced.shift(), now);
+    if (immediate && s.paced.length && (s.lowLatency || isDue(s, s.paced[0], now))) emitFrame(s, s.paced.shift(), now);
     if (s.paced.length || s.drawnThisFrame) schedulePresent(s);
   }
   function resetPace(s) {
@@ -3721,9 +3732,19 @@
   H.streamOpen = () => {
     const id = ++nextStream;
     streams.set(id, { id, events: [], decoded: [], inside: [], paced: [], arrivals: new Map(), samples: [], lows: [],
-      holdMs: 0, backlogSince: null, lastCatchUp: -Infinity, paceRaf: 0, drawnThisFrame: false, gen: 0, needKey: true,
+      holdMs: 0, lowLatency: false, backlogSince: null, lastCatchUp: -Infinity, paceRaf: 0, drawnThisFrame: false, gen: 0, needKey: true,
       decoder: null, config: null, tex: null, shown: null, closed: false, jpegs: Promise.resolve() });
     return id;
+  };
+  H.streamLowLatency = (id, enabled) => {
+    const s = streams.get(id);
+    if (!s || s.lowLatency === !!enabled) return;
+    s.lowLatency = !!enabled;
+    if (!s.lowLatency || !s.paced.length) return;
+    const now = performance.now();
+    trimDecoded(s, now);
+    if (!s.drawnThisFrame) emitFrame(s, s.paced.shift(), now);
+    schedulePresent(s);
   };
   H.streamH264 = (id, avcc, w, h) => {
     const s = streams.get(id);

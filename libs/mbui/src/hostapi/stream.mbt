@@ -39,6 +39,12 @@ pub fn stream_open() -> Int {
 }
 
 ///|
+/// Prefer the latest decoded frame to a jitter buffer, where the host offers this presentation policy.
+pub fn stream_low_latency(id : Int, enabled : Bool) -> Unit {
+  st_low_latency(id, enabled)
+}
+
+///|
 /// A config for H.264: its avcC and the picture's size. The decoder starts anew (what was in it let go: "d"), from the
 /// next key frame.
 pub fn stream_h264(id : Int, avcc : Bytes, w : Int, h : Int) -> Unit {

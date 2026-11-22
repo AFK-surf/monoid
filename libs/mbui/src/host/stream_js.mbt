@@ -5,6 +5,10 @@ extern "js" fn st_open() -> Int =
   #|() => (globalThis.__mbhost && globalThis.__mbhost.streamOpen) ? globalThis.__mbhost.streamOpen() : 0
 
 ///|
+extern "js" fn st_low_latency(id : Int, enabled : Bool) -> Unit =
+  #|(i, enabled) => { if (globalThis.__mbhost && globalThis.__mbhost.streamLowLatency) globalThis.__mbhost.streamLowLatency(i, enabled) }
+
+///|
 extern "js" fn st_h264(id : Int, avcc : Bytes, w : Int, h : Int) -> Unit =
   #|(i, a, w, h) => globalThis.__mbhost.streamH264(i, a, w, h)
 

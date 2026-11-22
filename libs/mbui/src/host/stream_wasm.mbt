@@ -7,6 +7,9 @@
 fn st_open() -> Int = "mbhost" "mb_host_stream_open"
 
 ///|
+fn st_low_latency(_id : Int, _enabled : Bool) -> Unit { () }
+
+///|
 fn mbw_mb_host_stream_h264(id : Int, avcc : Int, w : Int, h : Int) = "mbhost" "mb_host_stream_h264"
 
 ///|
