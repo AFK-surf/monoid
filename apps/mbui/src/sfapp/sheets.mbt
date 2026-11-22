@@ -730,18 +730,19 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
       agent_title_node(h, src, r, key, a)
     })
     |> ignore
-    // (its words on the card's 24, its figures blocks at its foot 8 in, a row's corner; each part of it opening its room
-    // as what it says comes (the card read after it rose): the sheet's top not stepping up as its height does, 2026-11-09
-    // the user: 「好像还存在高度突变的元素」)
-    // (each part of it opening its room as what it says comes, the card read after it rose: a part there as it is made
-    // at once, one that comes later from none to all of its height, the card and the sheet going with it, never a step;
-    // the card itself and the room under it only once a part of it shows: group_rows', 2026-11-09 the user:
-    // 「好像还存在高度突变的元素」)
-    @sf.stats_card_node(col, fn() { agent_card_says(card()) }, [
-      (fn() { items(card(), "latest").length() > 0 }, fn(l) { agent_lines_node(l, card) }),
-      (fn() { items(card(), "attention").length() > 0 }, fn(n) { agent_notes_node(n, card, agent_notes_over) }),
-      (fn() { agent_tiles_known(card()) }, fn(t) { card_tiles_node(t, card, agent_tiles_over, entry) }),
-    ])
+    // (no outer card around them: its latest lines and what is wrong on the panel's ground, at its figures' words,
+    // its figures each a block of their own out to the panel's cards' sides, the room of its cards under them; each
+    // part opening its room as what it says comes, the card read after the sheet rose: a part there as it is made at
+    // once, one that comes later from none to all of its height, the sheet going with it, never a step, 2026-11-09 the
+    // user: 「好像还存在高度突变的元素」)
+    @sf.reveal_part_node(col, fn() { items(card(), "latest").length() > 0 }, fn(l) { agent_lines_node(l, card) })
+    @sf.reveal_part_node(col, fn() { items(card(), "attention").length() > 0 }, fn(n) {
+      agent_notes_node(n, card, 0.0, px=agent_words_in, pb=agent_notes_under)
+    })
+    @sf.reveal_part_node(col, fn() { agent_tiles_known(card()) }, look=fn(b) { @sf.panel_card_out_node(b) }, fn(t) {
+      card_tiles_node(t, card, 0.0, entry)
+      t.box(fn(g) { g.height(Is(Some(@sf.panel_card_in))) |> ignore }) |> ignore
+    })
     let station = fn() { station_marks(src, @sfbase.workspace_of(r.station)).iter().find_first(fn(st) { st.address == r.station }) }
     let chat_cv = fn() { view_of_chat(src, r).0 }
     let has_remote = fn() {
@@ -1024,11 +1025,13 @@ let agent_station_line : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter"
 let agent_row_station_mark : Double = 15.0
 
 ///|
-/// How far under what is over them its notes and its figures stand in its card.
-let agent_notes_over : Double = 10.0
+/// Under its notes, over its figures.
+let agent_notes_under : Double = 12.0
 
 ///|
-let agent_tiles_over : Double = 14.0
+/// How far its lines and notes stand in from the column: as far as its figures' words do (a card out of the panel's
+/// sides, panel_card_out, its words 16 in it).
+let agent_words_in : Double = 8.0
 
 ///|
 /// An agent's head in its card (agent_title_row's, as nodes) in `h`, `a` as the chat says it now: its maker's mark
@@ -1137,12 +1140,6 @@ fn swap_part_node(
 }
 
 ///|
-/// Whether the core's card of an agent says anything its card shows: its latest lines, what is wrong, its figures.
-fn agent_card_says(card : Json?) -> Bool {
-  items(card, "latest").length() > 0 || items(card, "attention").length() > 0 || agent_tiles_known(card)
-}
-
-///|
 /// Its mark in its head (40), its name and where it stands 1 apart.
 let agent_title_mark : Double = 40.0
 
@@ -1240,9 +1237,10 @@ fn agent_lines_node(v : @view.View, card : () -> Json?) -> Unit {
 }
 
 ///|
-/// Its lines: 8 over and under, on the card's words' line, 4 apart (on the spacing's scale: 3 was not), on lines of 18.
+/// Its lines: none over, 14 under, 8 in from the column's words (as its figures' words are), 4 apart (on the spacing's
+/// scale: 3 was not), on lines of 18.
 // kept across runs: a value (no field of it changes)
-let agent_lines : @ui.Style = @ui.css("w=Full py=S2").then(@ui.style(px=@sf.room_of(@sf.text_in)))
+let agent_lines : @ui.Style = @ui.css("w=Full px=S2 pt=S0 pb=S3_5")
 
 ///|
 let agent_lines_gap : Double = 4.0
