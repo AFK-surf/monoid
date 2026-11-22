@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b390c13c4](https://github.com/AFK-surf/monoid/commit/b390c13c494ec2029c85b8ebe3cdce0500af8507) feat(mbui): upgrade narrow sub-page back button an | 2.7 | 3.63 | 14.72 | 36.81 | 56.09 | 32.25 | 65.39 | 99.26 | 127.7 |
 | [69d36b777](https://github.com/AFK-surf/monoid/commit/69d36b77723412480ecb77f482f465e84d0cc226) feat(mbui): move archived and feedback notices to  | 2.7 | 3.63 | 14.72 | 36.81 | 56.09 | 32.25 | 65.39 | 99.26 | 127.7 |
 | [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 2.7 | 3.63 | 14.71 | 36.81 | 56.07 | 32.25 | 65.36 | 99.22 | 122.29 |
 | [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 2.7 | 3.63 | 14.71 | 36.81 | 56.07 | 32.24 | 65.34 | 99.34 | 125.71 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7c4bfea28](https://github.com/AFK-surf/monoid/commit/7c4bfea281f3ac6557d50a19aa787600aea0084f) feat(liquid-glass): uplift controls, optical recip | 2.67 | 3.59 | 14.57 | 36.65 | 55.66 | 32.11 | 65 | 98.96 | 126.87 |
 | [04d8ccd79](https://github.com/AFK-surf/monoid/commit/04d8ccd79d35d2283fcaac60a9ae2397164ea1a8) fix(sfapp): expand narrow chat top-bar blur platea | 2.66 | 3.59 | 14.56 | 36.65 | 55.64 | 32.1 | 64.98 | 99.09 | 123.45 |
 | [33fc6434d](https://github.com/AFK-surf/monoid/commit/33fc6434da852c38759b756b5605c52fa0b5887e) fix(player): match playback controls to the player | 2.66 | 3.59 | 14.56 | 36.65 | 55.64 | 32.1 | 64.98 | 99.26 | 124.87 |
-| [2b0b21c94](https://github.com/AFK-surf/monoid/commit/2b0b21c9412241eba48b5e883d40515ec2a8b4ed) fix(screens): recover lost screen frames (#8113) | 2.66 | 3.59 | 14.56 | 36.65 | 55.64 | 32.1 | 64.98 | 99.26 | 124.87 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b390c13c4](https://github.com/AFK-surf/monoid/commit/b390c13c494ec2029c85b8ebe3cdce0500af8507) feat(mbui): upgrade narrow sub-page back button an | 0.48 | 0.63 | 2.44 | 3.49 | 5.79 | 1.78 | 4.82 | 54.56 |
 | [69d36b777](https://github.com/AFK-surf/monoid/commit/69d36b77723412480ecb77f482f465e84d0cc226) feat(mbui): move archived and feedback notices to  | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7c4bfea28](https://github.com/AFK-surf/monoid/commit/7c4bfea281f3ac6557d50a19aa787600aea0084f) feat(liquid-glass): uplift controls, optical recip | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.38 |
 | [04d8ccd79](https://github.com/AFK-surf/monoid/commit/04d8ccd79d35d2283fcaac60a9ae2397164ea1a8) fix(sfapp): expand narrow chat top-bar blur platea | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.38 |
 | [33fc6434d](https://github.com/AFK-surf/monoid/commit/33fc6434da852c38759b756b5605c52fa0b5887e) fix(player): match playback controls to the player | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.38 |
-| [2b0b21c94](https://github.com/AFK-surf/monoid/commit/2b0b21c9412241eba48b5e883d40515ec2a8b4ed) fix(screens): recover lost screen frames (#8113) | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.63 |
