@@ -438,6 +438,18 @@ test("a_decision_agent_passes_the_chat_shape", () => {
   assert.equal((conform("ChatAgent", legacy) as J).ok.status, "decision");
 });
 
+test("a failed start with undelivered messages is failed until another attempt starts", () => {
+  const lastTurn = { outcome: "completed", ending: "waiting", declared: "waiting", endedAt: 5, waitFor: "old work" };
+  const failed = { process: "cold", pending: 1, startFailed: true, lastTurn };
+  assert.equal(p.sessionStatus(failed), "failed");
+  assert.equal(p.waiting(failed), null);
+  assert.equal(p.markOf(failed), "failed");
+  assert.equal(p.session(failed).statusText, "出错：无法启动 agent");
+  assert.equal(p.sessionStatus({ ...failed, startFailed: false }), "running");
+  assert.equal(p.sessionStatus({ ...failed, process: "running" }), "running");
+  assert.equal(p.sessionStatus({ process: "cold", pending: 1, lastTurn: null }), "queued");
+});
+
 test("a_chat_with_nothing_left_is_settled_and_says_where_it_stands", () => {
   const agent = (turn: J, process: string): J => {
     let a: J = { key: "k", process, pending: 0, lastTurn: turn };

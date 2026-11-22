@@ -125,6 +125,10 @@ function summaryWith(s: Store, key: string, l: Lists): Json {
   v.boundTo = l.bindings.get(key) ?? [];
   // The hub's, as given with the read.
   v.process = s.processes.get(key) ?? "cold";
+  if (v.process === "coldFailed" || v.process === "warmFailed") {
+    v.startFailed = true;
+    v.process = v.process === "warmFailed" ? "warm" : "cold";
+  }
   const stat = l.stats.get(key);
   v.turns = stat?.turns ?? 0;
   // How long its ended turns ran, all added up: the work a device shows with how many turns, without reading them; null

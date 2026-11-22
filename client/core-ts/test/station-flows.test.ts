@@ -1141,6 +1141,45 @@ test("messages_its_agent_takes_leave_it_at_work_until_its_summary_says_the_turn_
   core.close();
 });
 
+test("a new message clears a failed start until the station reports the new attempt", async () => {
+  const failed = { ...summary("a", 1), pending: 1, process: "cold", startFailed: true };
+  const answers: J = { ...base(), "GET /sessions": [failed], "GET /sessions/a": { session: failed, threads: [], turns: [], jobs: [] } };
+  const { host, core, push } = await started(answers);
+  await host.settle();
+  const held = () => core.inner.data.summary(ST, "a") as J;
+  assert.equal(present.sessionStatus(held()), "failed");
+  push("session-pending", { key: "a", pending: 2 });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  assert.equal(present.sessionStatus(held()), "queued");
+  push("session", { ...failed, pending: 2 });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  assert.equal(present.sessionStatus(held()), "failed");
+  push("session-pending", { key: "a", pending: 0 });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  assert.equal(present.sessionStatus(held()), "running");
+  core.close();
+});
+
+test("a chat stops showing its agent at work when the station reports a refused start", async () => {
+  const initial: J = base();
+  const queued = { ...session("k1"), pending: 1 };
+  const row = { ...initial["GET /chats?shared=1"][0], agents: [{ key: "k1", runtime: "claude", model: null, effort: null, process: "cold", pending: 1, lastTurn: null }] };
+  const answers: J = { ...initial, "GET /sessions": [queued], "GET /sessions/k1": { session: queued, threads: [], turns: [], jobs: [] }, "GET /chats?shared=1": [row] };
+  const { host, core, push, ui: id, values, read } = await ui(answers);
+  push("made", { rows: true, marks: true, shared: true });
+  subscribe(core, id, 1, { topic: "chat", station: ST, thread: 7 });
+  await coalesce(host);
+  await read();
+  assert.equal(v(values, 1).agents[0].status, "queued");
+  push("session", { ...queued, startFailed: true });
+  push("chat-shared", { ...row, agents: [{ ...row.agents[0], startFailed: true }] });
+  await coalesce(host);
+  await read();
+  assert.equal(v(values, 1).agents[0].status, "failed");
+  assert.equal(v(values, 1).agents[0].session.pending, 1, "the message remains waiting for a later attempt");
+  core.close();
+});
+
 test("a_chats_end_says_nothing_of_its_ended_turn_from_the_viewers_words_sent_until_the_next_turn_ends", async () => {
   // Words sent to an agent that ended done: its end said 完成 again under them, from the shared row read after the
   // station took them, the turn they began not in it yet (2026-11-08). The page's own summary says at once.

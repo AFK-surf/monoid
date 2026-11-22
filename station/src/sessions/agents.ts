@@ -755,7 +755,7 @@ export const AgentsLive = (control: Control) =>
       yield* Effect.addFinalizer(() => Effect.sync(stopLatestThreadRequests));
       hub.followRunning();
       // The readers say what runs, and which chats clients made: the hub's.
-      readers.processes = () => hub.processes();
+      readers.processes = () => hub.readProcesses();
       readers.clientKeys = () => hub.clientKeys();
       events.follow({
         live: (key, from, last, send, brief) => {

@@ -5452,6 +5452,9 @@ export function answeredAt(agents: J[], messages: J[], outbox: J[]): J[] {
     const key = str(get(a.session, "key"));
     const since = key !== null ? waiting.get(key) : undefined;
     if (since === undefined || a.status === "running" || a.status === "queued") return a;
+    // Once the station has reported a failed start for the delivered answer, it is no longer at work on it.
+    // A new answer still in the outbox can begin another attempt, so it retains the immediate queued state.
+    if (since !== Infinity && a.status === "failed" && get(a.session, "startFailed") === true && (u64(get(a.session, "pending")) ?? 0) > 0) return a;
     const began = u64(get(get(a.session, "lastTurn"), "startedAt"));
     return began !== null && began >= since ? a : { ...a, status: "queued" };
   });

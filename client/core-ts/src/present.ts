@@ -344,9 +344,12 @@ export function ending(s: J): string | null {
   return said === "final" ? "all_done" : said === "block" || said === "need_decision" ? "need_help" : said;
 }
 
+const failedStart = (s: J): boolean => get(s, "startFailed") === true && (u64(get(s, "pending")) ?? 0) > 0;
+
 /// Where a session stands.
 export function sessionStatus(s: J): string {
   if (get(s, "process") === "running") return "running";
+  if (failedStart(s)) return "failed";
   const turn = get(s, "lastTurn");
   // A turn not ended yet is running, whatever `process` says: the station reads its process states before its
   // database (read/pool.ts), so a turn that has just begun can come with the process still cold. One that ended
@@ -563,7 +566,7 @@ function stateWhat(a: J): string | null {
   if (waiting(a) === null) {
     const need = said("need");
     if (status === "block" && need !== null) return need;
-    if (status === "failed") return format.failureText(said("detail") ?? "");
+    if (status === "failed") return failedStart(a) ? t("station.notice.cannotStart") : format.failureText(said("detail") ?? "");
     if (status === "aborted") return t("core-logic.format.status.aborted.what");
     if (status === "unexpected") return t("core-logic.format.status.unexpected.what");
   }
@@ -757,7 +760,7 @@ function statusOf(s: J): { text: string; tone: J; lead: Lead["kind"] | null; res
     lead = "done";
     rest = done ?? "";
   } else if (status === "failed") {
-    text = t("core-views.present.failed", { why: format.failureText(said("detail") ?? "") });
+    text = t("core-views.present.failed", { why: failedStart(s) ? t("station.notice.cannotStart") : format.failureText(said("detail") ?? "") });
   }
   if (waiting(s) !== null) {
     const what = nonEmpty(get(turn, "waitFor"));

@@ -1608,6 +1608,15 @@ export class Hub {
     return new Map([...this.actors].flatMap(([key, a]) => (a.processState() === "cold" ? [] : [[key, a.processState()] as [string, string]])));
   }
 
+  /// The readers also need to distinguish a failed start from messages still queued for an agent.
+  readProcesses(): Map<string, string> {
+    const states = this.processes();
+    for (const [key, actor] of this.actors) {
+      if (actor.startFailed()) states.set(key, actor.processState() === "warm" ? "warmFailed" : "coldFailed");
+    }
+    return states;
+  }
+
   /// The key the client that asked for a session gave it (NewChat.clientKey), while it is kept.
   clientKey(key: string): string | undefined {
     const kept = this.clientKeysMade.get(key);

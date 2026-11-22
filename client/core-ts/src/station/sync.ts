@@ -1950,7 +1950,7 @@ export class StationsSync {
         // Fewer: taken by its agent, into the turn it runs (begun, or steered), which the summary told after says. Its
         // last turn held may be one that ended asking a person: not standing asking again until then.
         const taken = pending < (u64(get(held, "pending")) ?? 0);
-        const now = taken ? { ...held, pending, process: "running" } : { ...held, pending };
+        const now = taken ? { ...held, pending, process: "running", startFailed: false } : { ...held, pending, startFailed: false };
         this.#core.data.putSummary(address, now);
         return;
       }

@@ -350,14 +350,18 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
   let stats = if of is None { session_activity_all(db) } else { session_activity(db, stat_keys) }
   let agent = (key : String) => {
     let x = all.get(key).unwrap()
+    let process = known.processes.get(key).unwrap_or("cold")
     let v : Map[String, Json] = {
       "key": Json::string(key),
       "runtime": field(x, "runtime"),
       "model": field(x, "model"),
       "effort": field(x, "effort"),
-      "process": Json::string(known.processes.get(key).unwrap_or("cold")),
+      "process": Json::string(if process == "warmFailed" { "warm" } else if process == "coldFailed" { "cold" } else { process }),
       "pending": match stats.get(key) { Some((p, _)) => p; None => Json::number(0.0) },
       "lastTurn": match stats.get(key) { Some((_, t)) => t; None => Json::null() },
+    }
+    if process == "warmFailed" || process == "coldFailed" {
+      v["startFailed"] = true
     }
     if watches.get(key) is Some(w) {
       v["watch"] = w

@@ -4428,6 +4428,9 @@ test("an_agent_whose_card_is_answered_from_here_is_at_work_from_the_answer_on_ti
   // here, its turn not begun since: still at work
   const answer = { seq: 6, ts: "t-6", mine: true, quotes, createdAt: 200 };
   assert.equal(answeredAt([agent("final", 50)], [card, answer], [])[0].status, "queued");
+  const failed = { status: "failed", session: { key: "s-1", lastTurn: { startedAt: 50 }, startFailed: true, pending: 1 } };
+  assert.equal(answeredAt([failed], [card, answer], [])[0].status, "failed", "a refused start ends the activity even though the answer is retained");
+  assert.equal(answeredAt([failed], [card], [{ id: "o-2", state: "sending", quotes }])[0].status, "queued", "a new answer can try again");
   // its turn after it begun (and over): as the station says
   assert.equal(answeredAt([agent("final", 250)], [card, answer], [])[0].status, "final");
   // words sent under the card, the chat's last word: they answer it as a pick does

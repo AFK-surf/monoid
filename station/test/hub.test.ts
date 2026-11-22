@@ -738,6 +738,8 @@ test("a turn that cannot start is not left starting, and stop clears what is sti
   };
   assert.equal(await phase(), null, "the failed start ended what was said to be starting");
   assert.equal(r.hub.processState(key), "cold");
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  assert.equal(r.store.pendingMessages(key).length, 1, "the message remains available for a later attempt");
   // What the station said of it is its own, in English: not said; that it could not start is.
   assert.equal(r.chat.lastText(), "⚠️ 无法启动 agent\n\n```\nthe station this subscription is signed in on did not lend it: station mesh is not ready\n```");
   // Said to be under way some other way: stop, with nothing running, clears it.
@@ -746,6 +748,51 @@ test("a turn that cannot start is not left starting, and stop clears what is sti
   await r.hub.stop(key);
   await settle();
   assert.equal(await phase(), null);
+  await r.close();
+});
+
+test("a failed start keeps its message for the next successful attempt", async () => {
+  const r = new Rig();
+  r.claude.refuses = "no profile can run here";
+  const m = message({ text: "first message" });
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  assert.equal(r.store.pendingMessages(key).length, 1);
+  r.claude.refuses = null;
+  await r.accept(reply(m, "1700000099.000000", "try again"));
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "running");
+  assert.equal(r.store.pendingMessages(key).length, 0);
+  assert.ok(r.claude.last().prompts.some((p) => p.includes("first message")));
+  assert.ok(r.claude.last().prompts.some((p) => p.includes("try again")));
+  await r.close();
+});
+
+test("a retry waiting for a turn slot is queued rather than failed", async () => {
+  const r = new Rig({ maxConcurrentTurns: 1 });
+  r.claude.refuses = "no profile can run here";
+  const first = message({ text: "first message" });
+  await r.accept(first);
+  await settle();
+  const key = sessionKey("cl", "C1", first.threadTs);
+  assert.equal(r.hub.readProcesses().get(key), "coldFailed");
+  r.claude.refuses = null;
+  const other = message({ text: "occupy the turn slot" });
+  await r.accept(other);
+  await settle();
+  const occupying = r.claude.last();
+  await r.accept(reply(first, "1700000099.000000", "try again"));
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), undefined);
+  assert.equal(r.store.pendingMessages(key).length, 2);
+  await r.call(sessionKey("cl", "C1", other.threadTs), "chat_state", { kind: "all_done", done: "the other turn finished" });
+  occupying.complete();
+  await settle();
+  assert.equal(r.hub.readProcesses().get(key), "running");
+  assert.equal(r.store.pendingMessages(key).length, 0);
+  assert.ok(r.claude.last().prompts.some((p) => p.includes("first message") && p.includes("try again")));
   await r.close();
 });
 
