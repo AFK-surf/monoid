@@ -391,6 +391,14 @@ test("resources, accounts, search, the memory and the shares: on StationParts an
     assert.equal(refusedAgain.status, 400, JSON.stringify(refusedAgain.body));
     assert.equal(refusedAgain.body.kind, "RenewRefused", JSON.stringify(refusedAgain.body));
     assert.doesNotMatch(refusedAgain.body.error, /Error: |station\/accounts_oauth/);
+    // (a profile's home given whole stays as it is, as paths.ts `joinPath` keeps it: never joined under the data again)
+    const renewAbs = { id: "renew", home: join(data, "homes", "renew") };
+    const givenAbs = await parts(door, "POST", "/ask/accounts.claudeToken", { profile: renewAbs });
+    assert.equal(givenAbs.status, 200, JSON.stringify(givenAbs.body));
+    assert.equal(givenAbs.body.token, "tok-old");
+    const refusedAbs = await parts(door, "POST", "/ask/accounts.claudeToken", { profile: renewAbs, rejected: "tok-old" });
+    assert.equal(refusedAbs.status, 400, JSON.stringify(refusedAbs.body));
+    assert.equal(refusedAbs.body.kind, "RenewRefused", JSON.stringify(refusedAbs.body));
     // (the machine's own login, its file in the home: not on macOS, where it is the keychain's item)
     if (process.platform !== "darwin") {
       mkdirSync(join(home, ".claude"), { recursive: true });

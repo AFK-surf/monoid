@@ -782,6 +782,18 @@ pub async fn Accounts::machine_token(
 }
 
 ///|
+/// `ops/paths.ts` `joinPath` (Rust `Path::join`): an absolute `given` replaces `base`; nothing is normalised.
+fn join_under(sep : String, base : String, given : String) -> String {
+  if @nodepath.is_absolute(sep, given) || base == "" {
+    given
+  } else if base.has_suffix(sep) || (sep == "\\" && base.has_suffix("/")) {
+    base + given
+  } else {
+    base + sep + given
+  }
+}
+
+///|
 /// `claudeToken`: a Claude profile's current token, renewed when about to run out.
 pub async fn Accounts::claude_token(
   self : Accounts,
@@ -796,7 +808,7 @@ pub async fn Accounts::claude_token(
     None | Some(Null) => ""
     h => js_string(h)
   }
-  let joined = @nodepath.join(self.b.sep, [self.given.data, home])
+  let joined = join_under(self.b.sep, self.given.data, home)
   let claude_version = self.claude_version()
   let (token, expires_at) = claude_oauth_token(
     self.ctx,

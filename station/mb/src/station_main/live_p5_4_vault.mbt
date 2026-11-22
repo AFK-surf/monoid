@@ -588,7 +588,7 @@ async fn p54_vault_live(
     },
     session_ws: session => bus_session_ws(bus, session),
     session_dir: session => bus_session_dir(bus, session),
-    join_path: (a, b) => path([a, b]),
+    join_path: (a, b) => if is_windows() { @ops_platform.win_join(a, b) } else { @ops_platform.unix_join(a, b) },
     signin_id: None,
     passkeys_again_all: () => fork("vault passkeys", async fn() { ignore((bus.ui_ask.val)("browser.passkeysAgain", [])) }),
   })
