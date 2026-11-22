@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3e63fed71](https://github.com/AFK-surf/monoid/commit/3e63fed71c7e6870293138e275744584ccdbdbb4) fix(mbui): run switches tests through a core-sized | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.3 | 65.46 | 99.45 | 122.56 |
 | [c442e4689](https://github.com/AFK-surf/monoid/commit/c442e468983462b7c71ed8eaee0ddf14fe76a0c6) fix(app): stop raising lifted media above composer | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.28 | 65.46 | 99.55 | 115.86 |
 | [2787f032a](https://github.com/AFK-surf/monoid/commit/2787f032ab7824c096d7cc4222b5a4244a8378ff) refactor(sf-ui): merge production liquid glass lay | 2.7 | 3.64 | 14.75 | 36.85 | 56.2 | 32.28 | 65.46 | 99.55 | 126.47 |
 | [3a99f35e7](https://github.com/AFK-surf/monoid/commit/3a99f35e7d0e81f7a35027e8af34dd51c34e3f90) fix(station): leave Unix domain sockets out of arc | 2.7 | 3.64 | 14.75 | 36.85 | 56.19 | 32.28 | 65.46 | 99.19 | 121.69 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2baeae5ef](https://github.com/AFK-surf/monoid/commit/2baeae5efc0f19f71244214ce86fefbe58277dc4) feat(sf-ui): put the window keys in one tinted liq | 2.68 | 3.6 | 14.62 | 36.72 | 55.82 | 32.17 | 65.16 | 99.83 | 123.62 |
 | [18c2f2077](https://github.com/AFK-surf/monoid/commit/18c2f207752b73d637d47017bc21cf77ab9cacf9) feat(app): put the shortcuts' search above their l | 2.67 | 3.6 | 14.6 | 36.7 | 55.79 | 32.15 | 65.11 | 100.19 | 123.43 |
 | [a2e9941cc](https://github.com/AFK-surf/monoid/commit/a2e9941cc2cbce8ff638ef7879cd000e90c269a2) feat(mbui): add macOS and Windows crash and main-t | 2.67 | 3.6 | 14.6 | 36.7 | 55.79 | 32.15 | 65.11 | 100.19 | 123.43 |
-| [75c7a178d](https://github.com/AFK-surf/monoid/commit/75c7a178d517259070eca12361d6b1ce6b63fc64) perf(mbui): optimize adaptive liquid glass GPU ren | 2.67 | 3.6 | 14.6 | 36.7 | 55.79 | 32.15 | 65.11 | 100.19 | 123.43 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3e63fed71](https://github.com/AFK-surf/monoid/commit/3e63fed71c7e6870293138e275744584ccdbdbb4) fix(mbui): run switches tests through a core-sized | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [c442e4689](https://github.com/AFK-surf/monoid/commit/c442e468983462b7c71ed8eaee0ddf14fe76a0c6) fix(app): stop raising lifted media above composer | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [2787f032a](https://github.com/AFK-surf/monoid/commit/2787f032ab7824c096d7cc4222b5a4244a8378ff) refactor(sf-ui): merge production liquid glass lay | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
 | [3a99f35e7](https://github.com/AFK-surf/monoid/commit/3a99f35e7d0e81f7a35027e8af34dd51c34e3f90) fix(station): leave Unix domain sockets out of arc | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2baeae5ef](https://github.com/AFK-surf/monoid/commit/2baeae5efc0f19f71244214ce86fefbe58277dc4) feat(sf-ui): put the window keys in one tinted liq | 0.48 | 0.63 | 2.41 | 3.47 | 5.72 | 1.76 | 4.77 | 55.59 |
 | [18c2f2077](https://github.com/AFK-surf/monoid/commit/18c2f207752b73d637d47017bc21cf77ab9cacf9) feat(app): put the shortcuts' search above their l | 0.48 | 0.63 | 2.41 | 3.47 | 5.72 | 1.76 | 4.77 | 55.59 |
 | [a2e9941cc](https://github.com/AFK-surf/monoid/commit/a2e9941cc2cbce8ff638ef7879cd000e90c269a2) feat(mbui): add macOS and Windows crash and main-t | 0.47 | 0.62 | 2.4 | 3.45 | 5.69 | 1.75 | 4.73 | 55.25 |
-| [75c7a178d](https://github.com/AFK-surf/monoid/commit/75c7a178d517259070eca12361d6b1ce6b63fc64) perf(mbui): optimize adaptive liquid glass GPU ren | 0.47 | 0.62 | 2.4 | 3.45 | 5.69 | 1.75 | 4.73 | 55.38 |
