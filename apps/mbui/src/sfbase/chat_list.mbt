@@ -20,6 +20,8 @@ pub(all) enum Entry {
   /// where the chat stands (ChatView's `state`): its words, what leads them, what follows the lead
   State(String, String, String)
   Working(Agent)
+  /// its agent's prompt cache over (ChatView's `cache_cold`): session, status, detail, afresh
+  CacheCold(String, String, String, Bool)
   Foot
 }
 
@@ -36,6 +38,7 @@ pub fn Entry::id(self : Entry) -> String {
     Out(o) => "o:" + o.id
     State(_, _, _) => state_key
     Working(a) => "act:" + a.key
+    CacheCold(_, _, _, _) => "cache_cold"
     Foot => "foot"
   }
 }
@@ -560,6 +563,12 @@ fn chat_entry_tail(out : Array[Entry], v : ChatView) -> Unit {
       }
     }
   }
+  if !v.newer && !v.archived {
+    match v.cache_cold {
+      Some((session, status, detail, afresh)) => out.push(CacheCold(session, status, detail, afresh))
+      None => ()
+    }
+  }
   out.push(Foot)
 }
 
@@ -770,6 +779,8 @@ fn chat_entries_same(a : ChatView, b : ChatView) -> Bool {
   a.newer == b.newer &&
   a.unread_line == b.unread_line &&
   a.state == b.state &&
+  a.cache_cold == b.cache_cold &&
+  a.archived == b.archived &&
   a.elsewhere.is_empty() && b.elsewhere.is_empty() &&
   a.outbox.is_empty() && b.outbox.is_empty() &&
   a.agents.iter().all(fn(agent) { !at_work(agent) }) &&

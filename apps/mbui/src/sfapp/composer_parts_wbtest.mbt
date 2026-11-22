@@ -547,14 +547,19 @@ test "the cache notice keeps status and cost together with a compact choice on a
         None => tp
       }
     })
-    t.resize(360.0, 844.0)
+    t.resize(390.0, 844.0)
     t.draw()
-    let (sx, sy, sw, _) = t.rect_of("缓存已过期").unwrap()
+    t.run_for(@ui.move_most_ms)
+    let (_, last_y, _, last_h) = t.rect_of("推送截图前要先登录 gh。").unwrap()
+    let (sx, sy, sw, sh) = t.rect_of("缓存已过期").unwrap()
     let (dx, dy, _, _) = t.rect_of("重读约 $1.49").unwrap()
-    let (cx, cy, cw, _) = t.get(Button, label="接着聊").rect
-    assert_true(dx >= sx + sw && dy == sy, msg="the status and cost share a line")
+    let (cx, cy, cw, ch) = t.get(Button, label="接着聊").rect
+    assert_true(sy >= last_y + last_h, msg="cache cold sits below last message: sy=\{sy}, last_end=\{last_y + last_h}")
+    assert_true(dx >= sx + sw && (dy - sy).abs() < 1.0, msg="the status and cost share a line")
+    assert_true((sy + sh / 2.0 - cy - ch / 2.0).abs() < 1.0, msg="status, cost and choice fit on one line at 390pt")
     let glass = t.drawn_glass_corners().filter(fn(g) { g.0 < sx && g.0 + g.2 > cx + cw && g.1 < sy && g.1 + g.3 > cy })
-    assert_eq(glass.length(), 1)
+    assert_eq(glass.length(), 0, msg="cache cold is an inline list row, not floating glass")
+    assert_eq(t.audit(), [], msg="zero audit faults at 390x844")
     t.click(Button, label="接着聊")
     t.click(MenuItemRadio, label="换新上下文")
     assert_eq(named(calls, "session.settings").length(), 1)
@@ -614,6 +619,138 @@ test "a cache choice opened over a collapsed composer leaves it collapsed" {
     t.run_for(@sfpages.let_go_ms + @ui.move_most_ms)
     let (_, after_y, _, _) = t.rect_of("缓存已过期").unwrap()
     assert_true((after_y - before_y).abs() < 1.0, msg="the collapsed composer moved from \{before_y} to \{after_y}")
+  })
+}
+
+///|
+test "cache cold sits below need card with zero audit faults across sizes, font scale and English" {
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = fake_core(calls, over=fn(name, tp) {
+      if name != "chat" { return tp }
+      match tp.value {
+        Some(v) => { ..tp, value: Some(@sffixture.with_cache_cold(@sffixture.with_need(v))) }
+        None => tp
+      }
+    })
+    t.resize(390.0, 844.0)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    let (_, ny, _, nh) = t.rect_of(@sffixture.need_state.2).unwrap()
+    let (_, cy, _, _) = t.rect_of("缓存已过期").unwrap()
+    assert_true(cy >= ny + nh, msg="cache cold sits below need card: ny+nh=\{ny + nh}, cy=\{cy}")
+    assert_eq(t.audit(), [], msg="zero audit faults at 390x844 (1.0x)")
+    t.resize(360.0, 844.0)
+    t.set_font_scale(1.3)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.audit(), [], msg="zero audit faults at 360x844 (1.3x)")
+    t.set_font_scale(1.0)
+    t.resize(320.0, 568.0)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.audit(), [], msg="zero audit faults at 320x568 (1.0x)")
+    // Wide desktop screen (1280x800, platform=0)
+    let calls_wide : Array[Made] = []
+    let t_wide = fake_core(calls_wide, platform=0, over=fn(name, tp) {
+      if name != "chat" { return tp }
+      match tp.value {
+        Some(v) => { ..tp, value: Some(@sffixture.with_cache_cold(@sffixture.with_need(v))) }
+        None => tp
+      }
+    })
+    t_wide.resize(1280.0, 800.0)
+    t_wide.draw()
+    t_wide.run_for(@ui.move_most_ms)
+    let faults_wide = t_wide
+      .audit()
+      .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+    assert_eq(faults_wide, [], msg="zero audit faults at 1280x800 (1.0x): \{Repr(faults_wide)}")
+    // English locale
+    @sf.set_language(Some("en"))
+    let calls_en : Array[Made] = []
+    let t_en = fake_core(calls_en, over=fn(name, tp) {
+      if name == "prefs" {
+        return { ..tp, value: Some({ "lang": "en" }) }
+      }
+      if name != "chat" { return tp }
+      match tp.value {
+        Some(v) => { ..tp, value: Some(@sffixture.with_cache_cold(@sffixture.with_need(v))) }
+        None => tp
+      }
+    })
+    t_en.resize(390.0, 844.0)
+    t_en.draw()
+    t_en.run_for(@ui.move_most_ms)
+    assert_true(t_en.find("Cache expired") is Some(_), msg="English status shown")
+    assert_true(t_en.find("Reread ≈$1.49") is Some(_), msg="English detail shown")
+    assert_eq(t_en.audit(), [], msg="zero audit faults in English at 390x844")
+    t_en.resize(360.0, 844.0)
+    t_en.set_font_scale(1.3)
+    t_en.draw()
+    t_en.run_for(@ui.move_most_ms)
+    assert_eq(t_en.audit(), [], msg="zero audit faults in English at 360x844 (1.3x)")
+    @sf.set_language(None)
+  })
+}
+
+///|
+test "scrolling up in a long chat moves cache cold out of the viewport with the messages" {
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = fake_core(calls, over=fn(name, tp) {
+      if name != "chat" { return tp }
+      match tp.value {
+        Some(v) => { ..tp, value: Some(@sffixture.with_cache_cold(v)) }
+        None => tp
+      }
+    })
+    t.resize(390.0, 844.0)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("缓存已过期") is Some(_), msg="cache cold visible at list bottom")
+    for _ in 0..<8 {
+      t.wheel(195.0, 400.0, -300.0)
+    }
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("缓存已过期") is None, msg="cache cold scrolled out of viewport with messages")
+  })
+}
+
+///|
+test "sending online hides cache cold on the send frame while offline keeps it visible and disabled" {
+  both_pages(fn() raise {
+    // Online send: hides immediately on send frame
+    let calls : Array[Made] = []
+    let t = fake_core(calls, over=fn(name, tp) {
+      if name != "chat" { return tp }
+      match tp.value {
+        Some(v) => { ..tp, value: Some(@sffixture.with_cache_cold(v)) }
+        None => tp
+      }
+    })
+    assert_true(t.find("缓存已过期") is Some(_), msg="cache cold shown before online send")
+    t.tap_text("发消息")
+    t.type_text("签名")
+    t.click(Button, label=@sf.t("web-main.composer.send"))
+    t.draw()
+    assert_true(t.find("缓存已过期") is None, msg="cache cold hidden immediately on online send frame")
+    // Offline send: stays visible and chooser stays disabled
+    let calls_off : Array[Made] = []
+    let t_off = fake_core(calls_off, over=fn(name, tp) {
+      if name != "chat" { return tp }
+      match tp.value {
+        Some(v) => { ..tp, value: Some(@sffixture.with_flag(@sffixture.with_cache_cold(v), "offline")) }
+        None => tp
+      }
+    })
+    assert_true(t_off.find("缓存已过期") is Some(_), msg="cache cold shown before offline send")
+    t_off.tap_text("发消息")
+    t_off.type_text("签名")
+    t_off.click(Button, label=@sf.t("web-main.composer.send"))
+    t_off.draw()
+    assert_true(t_off.find("缓存已过期") is Some(_), msg="cache cold remains visible after offline send")
+    assert_true(t_off.get(Button, label="接着聊").disabled, msg="cache cold chooser remains disabled offline")
   })
 }
 

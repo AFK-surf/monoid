@@ -239,6 +239,13 @@ fn chat_body_ends(
     for a in chat_working_kept(v, turns) {
       put(under, Entry::Working(a), lone())
     }
+    if (still.is_empty() || v.offline) && !v.archived {
+      match v.cache_cold {
+        Some((session, status, detail, afresh)) =>
+          put(under, Entry::CacheCold(session, status, detail, afresh), lone())
+        None => ()
+      }
+    }
   }
   for a in answered {
     put(under, Entry::Working(a), lone())

@@ -1945,7 +1945,7 @@ let comment_rows_live : Map[String, Int] = Map([])
 
 ///|
 /// What is said over chat `r`'s composer made as nodes, a notice each, in their order (composer_notices_node's): it
-/// archived, its agent's prompt cache over, its station down, a report of the person's answered.
+/// archived, its station down, a report of the person's answered.
 fn composer_notice_kinds(src : Source, r : ChatRef, reports? : () -> Array[Json]) -> Array[String] {
   let reports = match reports {
     Some(f) => f
@@ -1955,9 +1955,6 @@ fn composer_notice_kinds(src : Source, r : ChatRef, reports? : () -> Array[Json]
   let ks : Array[String] = []
   if h.map(fn(h) { h.archived }).unwrap_or(false) {
     ks.push("archive")
-  }
-  if h.map(fn(h) { h.cache_cold is Some(_) && !h.archived }).unwrap_or(false) {
-    ks.push("wait")
   }
   if h.map(fn(h) { h.offline }).unwrap_or(false) {
     ks.push("unplug")
@@ -3174,8 +3171,8 @@ fn preview_waiting(station : String, id : String, name : String, picture : Strin
 ///|
 /// What is said over a chat's composer in `foot` (chat_notices', as nodes), each a capsule of its own over it as the
 /// composer is, coming in and going down its column as what comes does: an archived chat's, with 还原对话 (why it
-/// failed under it; not while its station is down); its agent's prompt cache over, with the choice of how it goes on;
-/// its station down; the still.fail team's reply on a bug report sent from it.
+/// failed under it; not while its station is down); its station down; the still.fail team's reply on a bug report sent
+/// from it.
 fn composer_notices_node(
   foot : @view.View,
   src : Source,
@@ -3249,55 +3246,6 @@ fn composer_notices_node(
             press: fn() { notice_restore(src, r, key) },
           },
           failed=fn() { composing.restore_errors.get(key).unwrap_or("") },
-        )
-        made.offset(By(fn() { (0.0, drawn_off(made)) })) |> ignore
-      }
-      // (its agent's prompt cache over: what going on would read again, and the choice of how it goes on)
-      "wait" => {
-        let cold = fn() { head().bind(fn(h) { h.cache_cold }) }
-        let doing = fn() {
-          match cold() {
-            Some((session, _, _, _)) => "session.settings/" + r.station + "/" + session
-            None => ""
-          }
-      }
-        let held = fn() { @sfbase.doing(doing()) || head().map(fn(h) { h.offline }).unwrap_or(false) }
-        // (drawn with the composer's ground's top as its shape goes, as far over it all the way: where its foot's
-        // room goes its way on the page's too; the notice's own box, its row a slot of the column)
-        let made = @sf.composer_notice_node(
-          n,
-          tips,
-          fn() { "wait" },
-          fn() { cold().map(fn(c) { c.1 }).unwrap_or("") },
-          plus_mid,
-          summary=fn() {
-            match cold() {
-              Some((_, status, detail, _)) if detail != "" => Some((status, detail))
-              _ => None
-            }
-          },
-          held~,
-          choice={
-            choices: fn() { [("go_on", @sf.t("web-main.chat.goOn")), ("afresh", @sf.t("web-main.chat.afresh"))] },
-            chosen: fn() { if cold().map(fn(c) { c.3 }).unwrap_or(false) { "afresh" } else { "go_on" } },
-            // (its menu open: the composer under it kept a box, the cursor gone to the menu (let_go_ms's))
-            on_open: Some(fn(on) {
-              if on {
-                composing_node.choosing_cache.set(key, true)
-              } else if composing_node.choosing_cache.contains(key) {
-                composing_node.choosing_cache.remove(key)
-              }
-            }),
-            choose: fn(value) {
-              guard cold() is Some((session, _, _, afresh)) && !held() else { return }
-              let next = value == "afresh"
-              if next != afresh {
-                let words = if next { "web-main.chat.afresh" } else { "web-main.chat.goOn" }
-                let params : Json = { "station": Json::string(r.station), "key": Json::string(session), "afresh": Json::boolean(next) }
-                @sfbase.act(src, @sf.t(words), doing(), "session.settings", params)
-              }
-            },
-          },
         )
         made.offset(By(fn() { (0.0, drawn_off(made)) })) |> ignore
       }

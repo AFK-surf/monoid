@@ -663,6 +663,143 @@ fn need_card_node(
 }
 
 ///|
+/// Its agent's prompt cache over, at the foot of the chat's list (in a message_row_frame_node, as need_card_node is):
+/// what going on would read again and the choice of how it goes on (接着聊 / 换新上下文).
+fn chat_cache_cold_node(
+  v : @view.View,
+  src : Source,
+  here : MessageNodeHere,
+  cold : () -> (String, String, String, Bool)?,
+) -> Unit {
+  let key = here.station + ":" + here.session
+  let doing = fn() {
+    match cold() {
+      Some((session, _, _, _)) => "session.settings/" + here.station + "/" + session
+      None => ""
+    }
+  }
+  let held = fn() { @sfbase.doing(doing()) || (here.view)().offline }
+  let status = fn() { cold().map(fn(c) { c.1 }).unwrap_or("") }
+  let detail = fn() { cold().map(fn(c) { c.2 }).unwrap_or("") }
+  let chooser_h = fn(b : @view.View) {
+    b.words_redone() |> ignore
+    @sf.dmax(28.0, (b.words_scale() * 18.0).ceil() + 4.0)
+  }
+  let meta_line = fn(b : @view.View) { @ui.sp_at(b.words_scale(), @sf.theme().t.meta_line) }
+  let head = fn(b : @view.View) { @sf.dmax(meta_line(b), chooser_h(b)) }
+  v.box(fn(card) {
+    @sf.style_node(card, fn() { cache_cold_card })
+    let end_pad = fn() { @sf.dmax(4.0, @ui.capsule_in(@sf.row_corner, head(card))) }
+    let start_pad = fn() { @ui.capsule_in(@sf.row_corner, @sf.theme().items.mark) }
+    card
+    .radius(Is(@sf.row_corner))
+    .padding(By(fn() { (start_pad(), end_pad(), end_pad(), end_pad()) }))
+    |> ignore
+    card.box(fn(line) {
+      line
+      .row(Is(true))
+      .lines_up(Is(Some(Start)))
+      .wraps(Is(Some(@ui.Space::S1.px())))
+      .lies_along(Is(Between))
+      |> ignore
+      line.box(fn(title) {
+        title
+        .row(Is(true))
+        .lines_up(Is(Some(Start)))
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
+        .gap(Is(@ui.Space::S1_5.px()))
+        |> ignore
+        title.box(fn(m) {
+          m
+          .width(By(fn() { Some(@sf.theme().items.mark) }))
+          .height(By(fn() { Some(head(m)) }))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          |> ignore
+          @sf.icon_node(m, "wait", 16.0, By(fn() { @sf.theme().p.muted })) |> ignore
+        })
+        |> ignore
+        title.box(fn(words) {
+          words
+          .row(Is(true))
+          .wraps(Is(Some(@ui.Space::S1.px())))
+          .gap(Is(@ui.Space::S2.px()))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .padding(By(fn() { (0.0, @sf.dmax(0.0, (head(words) - meta_line(words)) / 2.0), 0.0, 0.0) }))
+          |> ignore
+          @sf.words_node(words, status, fn() { cache_cold_status }) |> ignore
+          words.show(fn() { detail() != "" }, at_once=true, fn(d) {
+            @sf.words_node(d, detail, fn() { cache_cold_detail }) |> ignore
+          })
+        })
+        |> ignore
+      })
+      |> ignore
+      line.box(fn(at) {
+        at
+        .margin(By(fn() { (@sf.theme().items.mark + @ui.Space::S1_5.px() - 8.0, 0.0, 0.0, 0.0) }))
+        .height(By(fn() { Some(head(at)) }))
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        |> ignore
+        @sf.capsule_chooser_node(
+          at,
+          fn() {
+            if cold().map(fn(c) { c.3 }).unwrap_or(false) {
+              @sf.t("web-main.chat.afresh")
+            } else {
+              @sf.t("web-main.chat.goOn")
+            }
+          },
+          fn() { [("go_on", @sf.t("web-main.chat.goOn")), ("afresh", @sf.t("web-main.chat.afresh"))] },
+          fn() { if cold().map(fn(c) { c.3 }).unwrap_or(false) { "afresh" } else { "go_on" } },
+          fn(value) {
+            guard cold() is Some((session, _, _, afresh)) && !held() else { return }
+            let next = value == "afresh"
+            if next != afresh {
+              let words = if next { "web-main.chat.afresh" } else { "web-main.chat.goOn" }
+              let params : Json = {
+                "station": Json::string(here.station),
+                "key": Json::string(session),
+                "afresh": Json::boolean(next),
+              }
+              @sfbase.act(src, @sf.t(words), doing(), "session.settings", params)
+            }
+          },
+          side=Top,
+          disabled=held,
+          on_open=fn(on) {
+            if on {
+              composing_node.choosing_cache.set(key, true)
+            } else if composing_node.choosing_cache.contains(key) {
+              composing_node.choosing_cache.remove(key)
+            }
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let cache_cold_card : @ui.Style = @ui.css("w=Full bg=A(Fg,O5)")
+
+///|
+// kept across runs: a value (no field of it changes)
+let cache_cold_status : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Fg, wrap=true)
+
+///|
+// kept across runs: a value (no field of it changes)
+let cache_cold_detail : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=true)
+
+///|
 /// What is under a post: the column's width (under_post's room).
 // kept across runs: a value (no field of it changes)
 let under_post_room : @ui.Style = @ui.css("w=Full")

@@ -2530,6 +2530,7 @@ pub(all) enum Entry {
   Out(Outgoing)
   State(String, String, String)
   Working(Agent)
+  CacheCold(String, String, String, Bool)
   Foot
 }
 pub fn Entry::id(Self) -> String
