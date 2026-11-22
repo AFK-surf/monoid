@@ -284,6 +284,9 @@ export class Copies {
     this.#telling?.();
     for (const k of this.#keeping.values()) k.again?.();
     this.#handAgain?.();
+    // Close the export runner BEFORE awaiting `#passing` so ProgramRunner's closeGraceMs watchdog can force-kill a
+    // hung child process and unblock `#passing`.
+    await this.#d.runner.close().catch(() => {});
     await this.#passing?.catch(() => {});
     await this.#handing?.catch(() => {});
     while (this.#savingHistory !== null) await this.#savingHistory.catch(() => {});

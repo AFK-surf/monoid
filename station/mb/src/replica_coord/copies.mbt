@@ -431,7 +431,7 @@ async fn ExportLoop::pass(self : ExportLoop) -> Unit {
 }
 
 ///|
-async fn ExportLoop::close(self : ExportLoop) -> Unit {
+fn ExportLoop::stop_timers(self : ExportLoop) -> Unit {
   self.closed = true
   call_opt(self.gathering)
   self.gathering = None
@@ -439,10 +439,23 @@ async fn ExportLoop::close(self : ExportLoop) -> Unit {
   self.transcript_gathering = None
   call_opt(self.retrying)
   self.retrying = None
+}
+
+///|
+async fn ExportLoop::wait_passing(self : ExportLoop) -> Unit {
   match self.passing {
     Some(d) => d.wait()
     None => ()
   }
+}
+
+///|
+async fn ExportLoop::close(self : ExportLoop, close_runner : async () -> Unit) -> Unit {
+  self.stop_timers()
+  close_runner() catch {
+    _ => ()
+  }
+  self.wait_passing()
 }
 
 ///|
@@ -553,13 +566,21 @@ pub async fn Copies::start(self : Copies) -> Unit {
 pub async fn Copies::close(self : Copies) -> Unit {
   self.closed = true
   if self.export_loop is Some(l) {
-    l.close()
+    l.stop_timers()
   }
   call_opt(self.telling)
   for _, k in self.keeping {
     call_opt(k.again)
   }
   call_opt(self.hand_again)
+  // Close the export runner BEFORE awaiting an in-flight pass so its close_grace_ms watchdog can terminate a stuck
+  // child process and unblock `wait_passing()`.
+  (self.d.runner.close)() catch {
+    _ => ()
+  }
+  if self.export_loop is Some(l) {
+    l.wait_passing()
+  }
   match self.handing {
     Some(r) => r.settled()
     None => ()

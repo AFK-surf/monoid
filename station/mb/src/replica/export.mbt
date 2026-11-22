@@ -19,7 +19,7 @@ let runs_kept : Int = 512
 pub let chunk_plain_bytes : Int = 4194304
 
 ///|
-let default_transcript_pass_files : Int = 64
+let default_transcript_pass_files : Int = 512
 
 ///|
 let default_transcript_pass_bytes : Int = 33554432

@@ -531,6 +531,58 @@ test "Copies pass failure strictly respects backoff even when told arrives durin
   assert_true(seen_sessions.contains("s2"))
   assert_true(seen_sessions.contains("s3"))
 
-  ignore(rt.fork(async fn() { eloop.close() }))
+  ignore(rt.fork(async fn() { eloop.close(async fn() { () }) }))
   rt.advance(1)
+}
+
+///|
+test "ExportLoop close invokes close_runner before waiting on an in-flight stuck pass" {
+  let rt = @effect.Runtime::new()
+  let written = []
+  let signals = []
+  let started = Ref(0)
+  let runner = process_runner(
+    fake_export(written, _ => None, started, signals~, end_on_eof=false),
+    () => 7.0,
+    close_grace_ms=20.0,
+  )
+  let eloop = ExportLoop::new(
+    (ms, f) => {
+      let cancelled = Ref(false)
+      let fiber = rt.fork_quiet(async fn() {
+        @effect.sleep(ms.to_int())
+        if !cancelled.val {
+          f()
+        }
+      })
+      () => {
+        cancelled.val = true
+        fiber.interrupt()
+      }
+    },
+    f => ignore(rt.fork_quiet(f)),
+    told => (runner.pass)(told),
+    _ => (),
+    _ => (),
+    (_, _, _) => (),
+  )
+  // Start a pass that hangs on the stuck child process.
+  ignore(rt.fork(async fn() { eloop.pass() }))
+  rt.advance(1)
+  assert_true(eloop.passing is Some(_))
+
+  let closed = Ref(false)
+  ignore(
+    rt.fork(async fn() {
+      eloop.close(runner.close)
+      closed.val = true
+    }),
+  )
+  rt.advance(10)
+  assert_false(closed.val)
+  // After close_grace_ms (20ms), runner.close sends SIGTERM, unblocking the hung pass and letting close() return.
+  rt.advance(20)
+  assert_true(closed.val)
+  assert_eq(signals, ["SIGTERM"])
+  assert_true(eloop.passing is None)
 }

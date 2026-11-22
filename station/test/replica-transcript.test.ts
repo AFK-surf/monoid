@@ -815,6 +815,46 @@ test("ProgramRunner.close() force-kills a hung worker after closeGraceMs and rej
   await assert.rejects(runner.pass(nothingTold()), /closed/);
 });
 
+test("Copies.close() closes runner before awaiting hung pass so closeGraceMs force-kill triggers without deadlock", async () => {
+  class FakeHungThread extends EventEmitter {
+    killed = false;
+    postMessage(_m: unknown) {
+      // Never replies: simulates replica-export stuck in a long pass.
+    }
+    kill() {
+      this.killed = true;
+    }
+  }
+  const fake = new FakeHungThread();
+  const data = dataDir("tr-copies-close");
+  const clock = testClock();
+  const fibers = new Fibers("copies-close", clock);
+  closing.push(async () => fibers.close());
+  const runner = new ProgramRunner(
+    { db: join(data, "stillfail.db"), replica: join(data, "replica"), dataDir: data, origin: sid("a") },
+    () => fake,
+    25,
+  );
+  const copies = new Copies({
+    data,
+    here: () => sid("a"),
+    places: () => ({ home: HOME, workspaces: [{ workspace: HOME, name: "a" }] }),
+    roster: () => [{ id: sid("a"), name: "a" }],
+    ask: async () => { throw new Error("offline"); },
+    runner,
+    fibers,
+    changed: () => {},
+    restart: async () => null,
+  });
+
+  // Trigger a stuck pass via told() + gather (1s).
+  copies.told({ type: "session", key: "s-hung" });
+  await clock.move(1_000);
+  // copies.close() must call runner.close() first, triggering fake.kill() after ~25ms and returning cleanly.
+  await copies.close();
+  assert.equal(fake.killed, true, "Copies.close() triggered ProgramRunner force-kill without deadlocking on #passing");
+});
+
 test("Copies pass failure strictly respects exponential backoff even when told() arrives during retry window", async () => {
   const data = dataDir("tr-backoff");
   const clock = testClock();

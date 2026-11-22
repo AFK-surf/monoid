@@ -30,7 +30,7 @@ import { storage, transcriptSources } from "./transcript-paths.ts";
 export * from "../../src/replica/export.ts";
 
 export const CHUNK_PLAIN_BYTES = 4 * 1024 * 1024;
-export const TRANSCRIPT_PASS_FILES = 64;
+export const TRANSCRIPT_PASS_FILES = 512;
 export const TRANSCRIPT_PASS_BYTES = 32 * 1024 * 1024;
 
 const ONE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.@+-]*$/;
@@ -178,6 +178,7 @@ export class Exporter {
   #known = false;
   /// Whether a transcript scan was deferred or truncated by budget and must continue in the next pass.
   #transcriptsPending = false;
+  #closed = false;
   /// This run of the exporter: a generation's head lists the runs that wrote it (a copy that holds a run this station's
   /// own does not know was written by one rolled back).
   readonly run = randomBytes(4).toString("hex");
@@ -211,6 +212,8 @@ export class Exporter {
   }
 
   close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
     this.#db.close();
     this.#state.close();
   }
