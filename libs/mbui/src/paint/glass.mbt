@@ -40,6 +40,8 @@ pub(all) struct Glass {
   zoom : Double
   // continuous materialisation strength in [0.0, 1.0] (0.0: fully flat / no glass emitted; 1.0: full glass)
   strength : Double
+  // frosted: progressive / variable blur modulated by the node's `View::fades` ramp (0 -> blur, 0 -> tint/sat)
+  progressive : Bool
 }
 
 ///|
@@ -54,6 +56,7 @@ pub fn Glass::frosted(
   rim_back? : Double = 0.0,
   shares_capture? : Bool = false,
   contained? : Bool = false,
+  progressive? : Bool = false,
   strength? : Double = 1.0,
 ) -> Glass {
   {
@@ -76,6 +79,7 @@ pub fn Glass::frosted(
     spot: None,
     zoom: 1.0,
     strength: dclamp(strength, 0.0, 1.0),
+    progressive,
   }
 }
 
@@ -128,6 +132,7 @@ pub fn Glass::liquid(
     spot,
     zoom,
     strength: dclamp(strength, 0.0, 1.0),
+    progressive: false,
   }
 }
 

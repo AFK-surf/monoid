@@ -62,7 +62,7 @@ fn Tree::hold_found(self : Tree, x : Double, y : Double) -> (NodeId, Double, Dou
             n.top_row {
             taker.val = o
             taker_box.val = (cx, cy, cx + c.w * s, cy + c.h * s)
-          } else if !n.points && n.covers(a) {
+          } else if !n.points && self.covers_at(c.id, a, x, y) {
             match hold.val {
               Some((_, hid, _, _)) if self.covers_over(hid, c.id) => hold.val = None
               _ => ()

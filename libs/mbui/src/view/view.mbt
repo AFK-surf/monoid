@@ -5113,7 +5113,7 @@ pub fn Tree::claimers_at(
             n.claims is Some(_) ||
             (n.hosted && @signals.untracked(fn() { there(c.id) })) {
             found.val = Some((c.id, o, (cx, cy, cx + c.w * s, cy + c.h * s)))
-          } else if takes_own && n.covers(a) {
+          } else if takes_own && self.covers_at(c.id, a, x, y) {
             covered.val = o
             match found.val {
               Some((prev, _, _)) if !self.nodes[prev.at].hosted && self.covers_over(prev, c.id) => found.val = None
@@ -15635,7 +15635,7 @@ fn Tree::target_in(self : Tree, x : Double, y : Double, tracked~ : Bool) -> (Tar
       } else if n.top_row {
         TopRow(c.id)
       } else {
-        if n.covers(a) {
+        if self.covers_at(c.id, a, x, y) {
           covered.val = o
           let mut w = 0
           for i in 0..<found.length() {
@@ -15733,7 +15733,7 @@ fn Tree::points_over(self : Tree, x : Double, y : Double) -> NodeId? {
         n.hosted ||
         n.top_row {
         found.val = None
-      } else if n.covers(a) {
+      } else if self.covers_at(c.id, a, x, y) {
         match found.val {
           Some(prev) if self.covers_over(prev, c.id) => found.val = None
           _ => ()

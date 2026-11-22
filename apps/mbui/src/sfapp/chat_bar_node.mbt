@@ -217,10 +217,9 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
   narrow_bar_scrim_node(
     g,
     fn(s) {
-      status_top_now(s.window_w()) + bar_h + state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get()
+      status_top_now(s.window_w()) + bar_h + state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get() + 8.0
     },
-    fn(s) { if state.open_way.shown(s) > 0.0 || state.crumb_h.get() > 0.0 { 22.0 } else { 28.0 } },
-    past=16.0,
+    fn(s) { if state.open_way.shown(s) > 0.0 || state.crumb_h.get() > 0.0 { 28.0 } else { 48.0 } },
   )
   g.reacts(can_toggle, fn(ok) {
     if !ok && state.manual_expanded.get() {

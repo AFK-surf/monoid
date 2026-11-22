@@ -11,7 +11,8 @@
 //   frosted: 12-14 the rim's hairline, its lit top-left, its back (white's
 //  alpha, Bar.kt rim) · 15 opacity · 21-23 a notch in its top
 //            edge (its box's notch_*: the circle's middle below the top,
-//            its radius, its fillets'; scene.mbt)
+//            its radius, its fillets'; scene.mbt); or slot 22 == -1.0 when
+//            `progressive` (variable blur modulated by slots 52-59 fade ramp)
 //   liquid:  12 the rim's light · 13 the bezel's width · 14 where the pointer
 //            lights it (Glass::spot, from its rect's top left: glass_spot's
 //            packing; 0 none) · 15 opacity · 21 how far the bezel bends what
@@ -224,7 +225,7 @@ fn Ctx::glass_inst(
   let b = (self.ninst - 1) * inst_size
   let a = self.inst
   a[b + 21] = gl.refraction
-  a[b + 22] = gl.chroma
+  a[b + 22] = if gl.liquid { gl.chroma } else if gl.progressive { -1.0 } else { 0.0 }
   a[b + 23] = gl.merge
 }
 
@@ -325,7 +326,8 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
   // For liquid glass (kind 6), a negative slot 7 encodes clear-lens optical zoom (-(zoom - 1.0)) with effective blur 0.0.
   let eff_blur = if liquid && blur < 0.0 { 0.0 } else { blur }
   let is_single_liquid = liquid && a[b + 23] <= 0.0
-  if shares && !liquid && glass_paint.frost_run != 0 {
+  let is_progressive = !liquid && a[b + 22] < -0.5
+  if shares && !liquid && !is_progressive && glass_paint.frost_run != 0 {
     // the last frosted capture's (liquid glass's is no frost, and only of what is under its shapes), the run as it was
     a[b + 20] = -glass_paint.frost_run.to_double()
     return
@@ -388,9 +390,10 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
   }
   // one capture with the glass just before it: right after it, as it is,
   // the same blur, not over it, and (merged liquid) a group of fewer than 8; frosted glass
-  // contained (blur below 0) a capture of its own box alone
+  // contained (blur below 0) or progressive (slot 22 < -0.5) takes a capture of its own
   let prev = glass_paint.run_start + glass_paint.run_len
   let prev_is_single = liquid && k > 0 && a[(k - 1) * inst_size + 23] <= 0.0
+  let prev_is_progressive = !liquid && k > 0 && a[(k - 1) * inst_size + 22] < -0.5
   let prev_eff_blur = if k > 0 {
     let pb = a[(k - 1) * inst_size + 7]
     if liquid && pb < 0.0 { 0.0 } else { pb }
@@ -399,6 +402,8 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
   }
   let mut same = glass_paint.run != 0 &&
     prev == k &&
+    !is_progressive &&
+    !prev_is_progressive &&
     eff_blur >= 0.0 &&
     a[(k - 1) * inst_size + 5] == kind &&
     prev_eff_blur == eff_blur &&
@@ -434,7 +439,7 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
     glass_paint.run = glass_paint.run + 1
     glass_paint.run_start = k
     glass_paint.run_len = 1
-    if !liquid {
+    if !liquid && !is_progressive {
       glass_paint.frost_run = glass_paint.run
       glass_paint.liquid_run = 0
       glass_paint.liquid_first = -1

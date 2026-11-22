@@ -127,6 +127,45 @@ fn Node::covers(self : Node, a : Double) -> Bool {
 }
 
 ///|
+/// Effective fade ramp multiplier in `[0.0, 1.0]` applied to node `id` at window point `(x, y)` by its ancestors'
+/// `View::fades` bands (`(left, top, right, bottom)`). Returns `1.0` when no ancestor fades at `(x, y)`.
+fn Tree::fades_ramp_at(self : Tree, id : NodeId, x : Double, y : Double) -> Double {
+  let mut r = 1.0
+  let mut p = self.nodes[id.at].parent
+  while p >= 0 {
+    let anc = self.nodes[p]
+    let (fl, ft, fr, fb) = anc.look.fades
+    if fl > 0.0 || ft > 0.0 || fr > 0.0 || fb > 0.0 {
+      let (ax, ay, aw, ah) = self.placed_window(p)
+      if fl > 0.0 {
+        r = r * dclamp((x - ax) / fl, 0.0, 1.0)
+      }
+      if ft > 0.0 {
+        r = r * dclamp((y - ay) / ft, 0.0, 1.0)
+      }
+      if fr > 0.0 {
+        r = r * dclamp((ax + aw - x) / fr, 0.0, 1.0)
+      }
+      if fb > 0.0 {
+        r = r * dclamp((ay + ah - y) / fb, 0.0, 1.0)
+      }
+      if r <= 0.0 {
+        return 0.0
+      }
+    }
+    p = anc.parent
+  }
+  r
+}
+
+///|
+/// Whether node `id`, drawn at opacity `a`, covers what is drawn under it at window point `(x, y)`: requires
+/// `Node::covers(a)` and that ancestor `View::fades` bands have not faded it below 0.5 opacity at `(x, y)`.
+fn Tree::covers_at(self : Tree, id : NodeId, a : Double, x : Double, y : Double) -> Bool {
+  self.nodes[id.at].covers(a) && self.fades_ramp_at(id, x, y) >= 0.5
+}
+
+///|
 /// Whether node `cover` (which draws a ground or glass of its own, Node::covers) lies in a layer over `under` (an
 /// `over` box not holding `under`, or outside what scrolls `under`) rather than beside it in the same flow.
 fn Tree::covers_over(self : Tree, under : NodeId, cover : NodeId) -> Bool {
@@ -173,8 +212,7 @@ pub fn Tree::covered_under(self : Tree, under : NodeId, over : NodeId, part : (D
     if found.val || !on.contains(c.id.at) {
       return
     }
-    let n = self.nodes[c.id.at]
-    if n.covers(a) &&
+    if self.covers_at(c.id, a, (px0 + px1) * 0.5, (py0 + py1) * 0.5) &&
       x <= px0 + 0.5 &&
       y <= py0 + 0.5 &&
       x + c.w * s >= px1 - 0.5 &&

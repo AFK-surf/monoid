@@ -38,6 +38,7 @@ fn scene_tester(
     ("MBUI_TEXT_RECORD", "1"),
     ("MBUI_LOCALE", arg("MBUI_LOCALE")),
     ("MBUI_DARK", arg("MBUI_DARK")),
+    ("MBUI_GLASS", arg("MBUI_GLASS")),
     // (a picture of words as a shaper that spaces none sets them: hostapi's words_spaced)
     ("MBUI_AUTOSPACE", arg("MBUI_AUTOSPACE")),
   ]
@@ -49,6 +50,12 @@ fn scene_tester(
   let nav_able = arg("MBUI_FILM_NAV_ABLE") == "1"
   // (MBUI_FILM_WINDOWS=1: windows of the run open to the app from its first frame, as its tree is made; below)
   let windows_beside = arg("MBUI_FILM_WINDOWS") == "1"
+  let solid_glass = arg("MBUI_GLASS") == "solid"
+  let begun = fn() {
+    if solid_glass {
+      @ui.set_glass_solid(Some(true))
+    }
+  }
   let t = match (view, tree) {
     (None, Some(make)) =>
       @ui.Tester::tree(
@@ -66,6 +73,7 @@ fn scene_tester(
         words_over_held~,
         live~,
         before~,
+        begun~,
         window_corner~,
         nav_able~,
         windows_beside~,
@@ -91,6 +99,7 @@ fn scene_tester(
         words_over_held~,
         live~,
         before~,
+        begun~,
         window_corner~,
         nav_able~,
         windows_beside~,

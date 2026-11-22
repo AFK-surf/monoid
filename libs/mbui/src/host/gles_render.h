@@ -155,7 +155,7 @@ static const char *FS =
     "  return clamp(0.5 - d * scale, 0.0, 1.0);\n"
     "}\n"
     "// what it shows at p, as if uncut\n"
-    "void shade(vec2 p) {\n"
+    "void shade(vec2 p, float fade_r) {\n"
     "  int kind = ONE_KIND == 13 ? 6 : (ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5));\n"
     "  // where a native view shows: its picture (NativeViews.Picture), the part of it c2 says, cut to its corners\n"
     "  if (kind == 9) { vec2 hh = v_rect.zw * 0.5; float rr = min(mb_corner_of(p - v_rect.xy - hh, v_rr), min(hh.x, hh.y)); vec2 q = abs(p - v_rect.xy - hh) - hh + rr; float a = clamp(0.5 - (length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr) * u_scale, 0.0, 1.0); if (a <= 0.0) discard; vec2 uv = v_c2.xy + clamp((p - v_rect.xy) / v_rect.zw, 0.0, 1.0) * v_c2.zw; if (uv.y < 0.0 || uv.y > 1.0) discard; o = texture(u_img, uv) * a; return; }\n"
@@ -472,9 +472,14 @@ static const char *FS =
     "  if (kind == 5) {\n"
     "    // frosted: the blurred copy, saturated, the tint over it; the rim (a hairline inside the edge, the top left lit,\n"
     "    // the foot and right less), 0.5 wide\n"
+    "    bool prog_glass = (v_pad.z < -0.5);\n"
+    "    float ps = prog_glass ? smoothstep(0.0, 1.0, fade_r) : 1.0;\n"
+    "    float ts = prog_glass ? (fade_r * fade_r) : 1.0;\n"
+    "    float sat = prog_glass ? mix(1.0, v_p.z, ps) : v_p.z;\n"
+    "    float ta = prog_glass ? (col.a * ts) : col.a;\n"
     "    vec3 g3 = backdrop(p);\n"
-    "    g3 = max(mix(vec3(luma(g3)), g3, v_p.z), 0.0);\n"
-    "    g3 = g3 * (1.0 - col.a) + col.rgb * col.a;\n"
+    "    g3 = max(mix(vec3(luma(g3)), g3, sat), 0.0);\n"
+    "    g3 = g3 * (1.0 - ta) + col.rgb * ta;\n"
     "    if (v_c2.x + v_c2.y + v_c2.z > 0.0) {\n"
     "      float edge = clamp(0.5 + (d + 0.5) * u_scale, 0.0, 1.0);\n"
     "      float lit = clamp(0.5 + notch_cut(sd_rr(p - 0.5, v_rect, v_rr), p - 0.5, v_rect, v_pad) * u_scale, 0.0, 1.0);\n"
@@ -484,8 +489,9 @@ static const char *FS =
     "      g3 = mix(g3, vec3(1.0), v_c2.z * back);\n"
     "    }\n"
     "    // dithered as it is written to 8 bits, so its slopes do not band (corner.sl mb_dither)\n"
-    "    g3 += mb_dither(p * u_scale) / 255.0;\n"
-    "    o = vec4(g3, 1.0) * (a * v_c2.w);\n"
+    "    g3 += mb_dither(p * u_scale) * ps / 255.0;\n"
+    "    float edge_a = prog_glass ? smoothstep(0.0, 0.04, fade_r) : 1.0;\n"
+    "    o = vec4(g3, 1.0) * (a * v_c2.w * edge_a);\n"
     "    return;\n"
     "  }\n"
     "  vec4 fill = vec4(col.rgb, 1.0) * col.a;\n"
@@ -510,10 +516,16 @@ static const char *FS =
     "    if (cover <= 0.0) discard;\n"
     "  }\n"
     "  // and faded out towards a cut, each pixel by where it is (scene.mbt 52-59)\n"
+    "  int kind = ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5);\n"
+    "  bool prog_glass = (kind == 5 && v_pad.z < -0.5);\n"
     "  vec4 ramp = clamp(v_ramp, 0.0, 1.0);\n"
-    "  cover *= ramp.x * ramp.y * ramp.z * ramp.w;\n"
-    "  if (cover <= 0.0) discard;\n"
-    "  shade(p);\n"
+    "  float fade_r = ramp.x * ramp.y * ramp.z * ramp.w;\n"
+    "  if (fade_r <= 0.0) discard;\n"
+    "  if (!prog_glass) {\n"
+    "    cover *= fade_r;\n"
+    "    if (cover <= 0.0) discard;\n"
+    "  }\n"
+    "  shade(p, fade_r);\n"
     "  o *= cover;\n"
     "}\n";
 
@@ -544,6 +556,9 @@ static const char *PFS =
     "// The backdrop's passes: u_a.xy the source's texel, u_a.z 1 halving (dual Kawase's down), 2 a Gaussian along u_b.zw\n"
     "// of deviation u_a.w (texels); u_b.xy the last texel's centre of what the source holds\n"
     "uniform highp sampler2D u_src;\n"
+    "uniform highp sampler2D u_lv1;\n"
+    "uniform highp sampler2D u_lv2;\n"
+    "uniform highp sampler2D u_lv3;\n"
     "uniform vec4 u_a;\n"
     "uniform vec4 u_b;\n"
     "uniform vec4 u_c[9];\n"
@@ -551,6 +566,43 @@ static const char *PFS =
     "void main() {\n"
     "  vec2 ts = u_a.xy;\n"
     "  vec2 lo = ts * 0.5, hi = u_b.xy;\n"
+    "  if (u_a.z > 3.5) {\n"
+    "    vec2 p = u_c[0].xy + gl_FragCoord.xy * u_c[0].zw;\n"
+    "    float ramp = 1.0;\n"
+    "    if (u_c[1].y > 0.0) ramp *= clamp((p.y - u_c[1].x) / u_c[1].y, 0.0, 1.0);\n"
+    "    if (u_c[1].w > 0.0) ramp *= clamp((u_c[1].z - p.y) / u_c[1].w, 0.0, 1.0);\n"
+    "    if (u_c[2].y > 0.0) ramp *= clamp((p.x - u_c[2].x) / u_c[2].y, 0.0, 1.0);\n"
+    "    if (u_c[2].w > 0.0) ramp *= clamp((u_c[2].z - p.x) / u_c[2].w, 0.0, 1.0);\n"
+    "    float sp = max(u_c[3].x, 1.0);\n"
+    "    float kf = u_c[3].y;\n"
+    "    vec4 m0 = u_c[4], m1 = u_c[5], m2 = u_c[6], m3 = u_c[7];\n"
+    "    if (kf < 0.5) { o = texture(u_src, clamp(gl_FragCoord.xy * m0.xy, m0.xy * 0.5, m0.zw)); return; }\n"
+    "    float sig1 = pow(sp, 1.0 / kf);\n"
+    "    float r = clamp(ramp, 0.0, 1.0);\n"
+    "    float target_px = r <= 0.0 ? 0.0 : sp * pow(r, 1.35);\n"
+    "    float lv_u;\n"
+    "    if (target_px <= sig1 || kf <= 1.05) {\n"
+    "      lv_u = clamp(target_px / max(sig1, 1e-4), 0.0, kf);\n"
+    "    } else {\n"
+    "      lv_u = clamp(1.0 + (kf - 1.0) * log(target_px / sig1) / max(log(sp / sig1), 1e-4), 0.0, kf);\n"
+    "    }\n"
+    "    int idx = min(int(floor(lv_u)), int(kf + 0.5) - 1);\n"
+    "    if (idx < 0) idx = 0;\n"
+    "    float f = lv_u - float(idx);\n"
+    "    vec4 c0, c1;\n"
+    "    if (idx == 0) {\n"
+    "      c0 = texture(u_src, clamp(gl_FragCoord.xy * m0.xy, m0.xy * 0.5, m0.zw));\n"
+    "      c1 = texture(u_lv1, clamp(gl_FragCoord.xy * m1.xy, m1.xy * 1.0, m1.zw));\n"
+    "    } else if (idx == 1) {\n"
+    "      c0 = texture(u_lv1, clamp(gl_FragCoord.xy * m1.xy, m1.xy * 1.0, m1.zw));\n"
+    "      c1 = texture(u_lv2, clamp(gl_FragCoord.xy * m2.xy, m2.xy * 2.0, m2.zw));\n"
+    "    } else {\n"
+    "      c0 = texture(u_lv2, clamp(gl_FragCoord.xy * m2.xy, m2.xy * 2.0, m2.zw));\n"
+    "      c1 = texture(u_lv3, clamp(gl_FragCoord.xy * m3.xy, m3.xy * 4.0, m3.zw));\n"
+    "    }\n"
+    "    o = mix(c0, c1, f);\n"
+    "    return;\n"
+    "  }\n"
     "  if (u_a.z > 2.5) {\n"
     "    vec2 p = u_c[0].xy + gl_FragCoord.xy * u_c[0].zw;\n"
     "    p = mb_contained_point(p, u_c[1], u_c[2], u_c[3], u_c[4], u_c[5], u_c[6], u_c[7], u_c[8], u_c[0].z);\n"
@@ -589,7 +641,7 @@ static GLuint vao, vbo, atlas, catlas, post;
 // a ground's flat middle (bands.h mb_pieces), and where its window's size goes
 static GLuint prog_flat;
 static GLint uf_vp;
-static GLint pu_src, pu_a, pu_b, pu_c;
+static GLint pu_src, pu_lv1, pu_lv2, pu_lv3, pu_a, pu_b, pu_c;
 
 // The kinds drawn by a program of their own: the shader with its kind fixed (ONE_KIND), so each is compiled to its
 // kind's branch alone and a pixel of it is shaded with the registers that branch needs, not the most any kind's does
@@ -707,6 +759,9 @@ static void gl_setup(void) {
   glAttachShader(post, compile(GL_FRAGMENT_SHADER, PFS));
   glLinkProgram(post);
   pu_src = glGetUniformLocation(post, "u_src");
+  pu_lv1 = glGetUniformLocation(post, "u_lv1");
+  pu_lv2 = glGetUniformLocation(post, "u_lv2");
+  pu_lv3 = glGetUniformLocation(post, "u_lv3");
   pu_a = glGetUniformLocation(post, "u_a");
   pu_b = glGetUniformLocation(post, "u_b");
   pu_c = glGetUniformLocation(post, "u_c");
@@ -943,8 +998,9 @@ static void ensure_canvas(void) {
 // (sg), whether its edge is contained, and the glass's own numbers (its bounds, liquid's shapes). Zeroed whole first,
 // so two of the same compare the same (as Metal's: apple_render.m Grab).
 typedef struct {
-  int px0, pb0, w, h, top, k, contained, n;
-  float sg;
+  int px0, pb0, w, h, top, k, contained, progressive, n;
+  float sg, sp;
+  float fade[4], fadex[4];
   float gb[4], shape[32], rad[32];
   MBContained edge;
 } Grab;
@@ -957,6 +1013,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
   int kind = (int)(a[5] + 0.5f);
   int is_contained = (kind == 5 && a[7] < 0.0f);
+  int is_progressive = (kind == 5 && a[22] < -0.5f);
   float blur = (kind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
@@ -1023,9 +1080,18 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   if (cut_on && (px1 <= cut[0] || cut[0] + cut[2] <= px0 || pb1 <= cut[1] || cut[1] + cut[3] <= pb0)) return 0;
   m->px0 = px0; m->pb0 = pb0; m->w = px1 - px0; m->h = pb1 - pb0; m->top = top;
   m->contained = is_contained ? mb_contained_make(&m->edge, a, px0 / sc, (top - pb0) / sc, 1.0f / sc, -1.0f / sc) : 0;
+  m->progressive = is_progressive;
+  if (is_progressive) {
+    for (int i = 0; i < 4; i++) {
+      m->fade[i] = a[52 + i];
+      m->fadex[i] = a[56 + i];
+    }
+  }
   float sp = blur * sc;
   int k = 0;
   while (k < 3 && sp / (float)(1 << (k + 1)) >= 2.0f) k++;
+  m->sp = sp;
+  if (is_progressive && k == 0 && sp > 0.5f) k = 1;
   // what is left of the deviation once the halvings' and the last look's (bilinear) spread are taken out
   float sk = sp / (float)(1 << k);
   float pre = k > 0 ? 0.75f * (1.0f - powf(0.25f, (float)k)) / 3.0f + 1.0f / 6.0f : 0.0f;
@@ -1048,21 +1114,21 @@ static void grab_levels(const Grab *m, int lw[4], int lh[4]) {
 static void show_blur(const Grab *m, GLuint bt, int bw, int bh) {
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
-  int k = m->k, px0 = m->px0, pb0 = m->pb0, top = m->top;
+  int sk = m->progressive ? 0 : m->k, px0 = m->px0, pb0 = m->pb0, top = m->top;
   float sc = (float)cur_scale;
   memcpy(ggb, m->gb, sizeof ggb);
   memcpy(gshape, m->shape, sizeof gshape);
   memcpy(grad, m->rad, sizeof grad);
   gn = m->n;
-  float d = (float)(1 << k);
+  float d = (float)(1 << sk);
   bd_tex = bt;
   gmap[0] = sc / d / bw; gmap[1] = -sc / d / bh;
   gmap[2] = -(float)px0 / d / bw; gmap[3] = (float)(top - pb0) / d / bh;
-  guvc[0] = 0.5f / bw; guvc[1] = 0.5f / bh; guvc[2] = (lw[k] - 0.5f) / bw; guvc[3] = (lh[k] - 0.5f) / bh;
+  guvc[0] = 0.5f / bw; guvc[1] = 0.5f / bh; guvc[2] = (lw[sk] - 0.5f) / bw; guvc[3] = (lh[sk] - 0.5f) / bh;
 }
 
 // The level a grab's blur is left in.
-static level *grab_blurred(const Grab *m) { return m->contained && m->k == 0 ? &lv[4] : &lv[m->k]; }
+static level *grab_blurred(const Grab *m) { return (m->progressive || (m->contained && m->k == 0)) ? &lv[4] : &lv[m->k]; }
 
 // A grab of target_fb blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
 // Gaussian left (grab_blurred). The levels are shared by every capture: what is shown is the copy a slot keeps (below).
@@ -1086,12 +1152,47 @@ static void blur(const Grab *m) {
 #endif
   glBlitFramebuffer(m->px0, m->pb0, m->px0 + w, m->pb0 + h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
   glUseProgram(post);
+  int lw[4], lh[4];
+  grab_levels(m, lw, lh);
+  if (m->progressive) {
+    float prev_var = 0.0f;
+    for (int j = 1; j <= k; j++) {
+      post_pass(&lv[j - 1], lw[j - 1], lh[j - 1], &lv[j], lw[j], lh[j], 1, 0, 0, 0);
+      float target_px = powf(fmaxf(m->sp, 1.0f), (float)j / (float)k);
+      float have_var = prev_var + 0.75f * (float)(1 << (2 * j - 2));
+      float need_var = fmaxf(target_px * target_px - have_var, 0.0f);
+      float sg_j = sqrtf(need_var) / (float)(1 << j);
+      if (sg_j > 0.3f) {
+        post_pass(&lv[j], lw[j], lh[j], &lv[4], lw[j], lh[j], 2, sg_j, 1, 0);
+        post_pass(&lv[4], lw[j], lh[j], &lv[j], lw[j], lh[j], 2, sg_j, 0, 1);
+      }
+      prev_var = fmaxf(have_var, target_px * target_px);
+    }
+    float sc = (float)cur_scale;
+    float prog[36] = {0};
+    prog[0] = (float)m->px0 / sc; prog[1] = (float)(m->top - m->pb0) / sc;
+    prog[2] = 1.0f / sc; prog[3] = -1.0f / sc;
+    for (int i = 0; i < 4; i++) { prog[4 + i] = m->fade[i]; prog[8 + i] = m->fadex[i]; }
+    prog[12] = m->sp; prog[13] = (float)k;
+    for (int j = 0; j < 4; j++) {
+      float dj = (float)(1 << j), tw = (float)lv[j].w, th = (float)lv[j].h;
+      prog[16 + j * 4 + 0] = 1.0f / (dj * tw);
+      prog[16 + j * 4 + 1] = 1.0f / (dj * th);
+      prog[16 + j * 4 + 2] = ((float)lw[j] - 0.5f) / tw;
+      prog[16 + j * 4 + 3] = ((float)lh[j] - 0.5f) / th;
+    }
+    glUniform4fv(pu_c, 9, prog);
+    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, lv[1].t); glUniform1i(pu_lv1, 1);
+    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, lv[2].t); glUniform1i(pu_lv2, 2);
+    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, lv[3].t); glUniform1i(pu_lv3, 3);
+    post_pass(&lv[0], w, h, &lv[4], w, h, 4, 0, 0, 0);
+    glActiveTexture(GL_TEXTURE0);
+    return;
+  }
   if (contained) {
     glUniform4fv(pu_c, 9, (const float *)&m->edge);
     post_pass(&lv[0], w, h, &lv[4], w, h, 3, 0, 0, 0);
   }
-  int lw[4], lh[4];
-  grab_levels(m, lw, lh);
   for (int j = 1; j <= k; j++)
     post_pass(j == 1 && contained ? &lv[4] : &lv[j - 1], lw[j - 1], lh[j - 1], &lv[j], lw[j], lh[j], 1, 0, 0, 0);
   if (m->sg > 0.3f) {

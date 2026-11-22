@@ -346,13 +346,19 @@ MB_CORNER_SL
 "    cover *= clip_cover(cp, I.oclip, I.orc, I.ors, u.scale);\n"
 "    if (cover <= 0.0) discard_fragment();\n"
 "  }\n"
-"  // and faded out towards a cut, each pixel by where it is (scene.mbt 52-59)\n"
-"  if (I.fade.y > 0.0) cover *= clamp((cp.y - I.fade.x) / I.fade.y, 0.0, 1.0);\n"
-"  if (I.fade.w > 0.0) cover *= clamp((I.fade.z - cp.y) / I.fade.w, 0.0, 1.0);\n"
-"  if (I.fadex.y > 0.0) cover *= clamp((cp.x - I.fadex.x) / I.fadex.y, 0.0, 1.0);\n"
-"  if (I.fadex.w > 0.0) cover *= clamp((I.fadex.z - cp.x) / I.fadex.w, 0.0, 1.0);\n"
-"  if (cover <= 0.0) discard_fragment();\n"
 "  int kind = one_kind == 13 ? 6 : (one_kind >= 0 ? one_kind : int(I.p.y + 0.5));\n"
+"  bool prog_glass = (kind == 5 && I.pad.z < -0.5);\n"
+"  // and faded out towards a cut, each pixel by where it is (scene.mbt 52-59)\n"
+"  float fade_r = 1.0;\n"
+"  if (I.fade.y > 0.0) fade_r *= clamp((cp.y - I.fade.x) / I.fade.y, 0.0, 1.0);\n"
+"  if (I.fade.w > 0.0) fade_r *= clamp((I.fade.z - cp.y) / I.fade.w, 0.0, 1.0);\n"
+"  if (I.fadex.y > 0.0) fade_r *= clamp((cp.x - I.fadex.x) / I.fadex.y, 0.0, 1.0);\n"
+"  if (I.fadex.w > 0.0) fade_r *= clamp((I.fadex.z - cp.x) / I.fadex.w, 0.0, 1.0);\n"
+"  if (fade_r <= 0.0) discard_fragment();\n"
+"  if (!prog_glass) {\n"
+"    cover *= fade_r;\n"
+"    if (cover <= 0.0) discard_fragment();\n"
+"  }\n"
 "  float4 col = I.color;\n"
 "  if (kind == 1 || kind == 3 || kind == 7) {\n"
 "    constexpr sampler s(filter::linear, coord::pixel);\n"
@@ -652,10 +658,14 @@ MB_CORNER_SL
 "    // the foot and right less), 0.5 wide. Through (misc.y): as much of it as was a native view's hole left out (its\n"
 "    // alpha), for the view's own frost under the canvas to show there\n"
 "    float4 b4 = backdrop4(bd, g, p);\n"
-"    float3 g3 = max(mix(float3(luma(b4.rgb)), b4.rgb, I.p.z), 0.0);\n"
+"    float ps = prog_glass ? smoothstep(0.0, 1.0, fade_r) : 1.0;\n"
+"    float ts = prog_glass ? (fade_r * fade_r) : 1.0;\n"
+"    float sat = prog_glass ? mix(1.0, I.p.z, ps) : I.p.z;\n"
+"    float ta = prog_glass ? (col.a * ts) : col.a;\n"
+"    float3 g3 = max(mix(float3(luma(b4.rgb)), b4.rgb, sat), 0.0);\n"
 "    float ga = g.misc.y > 0.5 ? b4.a : 1.0;\n"
-"    g3 = g3 * (1.0 - col.a) + col.rgb * col.a;\n"
-"    ga = ga * (1.0 - col.a) + col.a;\n"
+"    g3 = g3 * (1.0 - ta) + col.rgb * ta;\n"
+"    ga = ga * (1.0 - ta) + ta;\n"
 "    if (I.c2.x + I.c2.y + I.c2.z > 0.0) {\n"
 "      float edge = clamp(0.5 + (d + 0.5) * u.scale, 0.0, 1.0);\n"
 "      float lit = clamp(0.5 + notch_cut(sd_rr(p - 0.5, I.rect, I.rr), p - 0.5, I.rect, I.pad) * u.scale, 0.0, 1.0);\n"
@@ -666,8 +676,9 @@ MB_CORNER_SL
 "      g3 = w4.rgb; ga = w4.a;\n"
 "    }\n"
 "    // dithered as it is written to 8 bits, so its slopes do not band (corner.sl mb_dither)\n"
-"    g3 += mb_dither(p * u.scale) / 255.0;\n"
-"    return (float4(g3, ga) * (a * I.c2.w)) * cover;\n"
+"    g3 += mb_dither(p * u.scale) * ps / 255.0;\n"
+"    float edge_a = prog_glass ? smoothstep(0.0, 0.04, fade_r) : 1.0;\n"
+"    return (float4(g3, ga) * (a * I.c2.w * edge_a)) * cover;\n"
 "  }\n"
 "  float4 fill = float4(col.rgb, 1.0) * col.a;\n"
 "  float bw = I.p.z;\n"
@@ -694,10 +705,48 @@ MB_CORNER_SL
 "fragment float4 fcopy(float4 pos [[position]], texture2d<float, access::read> src [[texture(0)]]) {\n"
 "  return src.read(uint2(pos.xy));\n"
 "}\n"
-"fragment float4 fpost(float4 pos [[position]], texture2d<float> src [[texture(0)]], constant PU& u [[buffer(0)]]) {\n"
+"fragment float4 fpost(float4 pos [[position]], texture2d<float> src [[texture(0)]],\n"
+"    texture2d<float> lv1 [[texture(1)]], texture2d<float> lv2 [[texture(2)]], texture2d<float> lv3 [[texture(3)]],\n"
+"    constant PU& u [[buffer(0)]]) {\n"
 "  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
 "  float2 ts = u.a.xy;\n"
 "  float2 lo = ts * 0.5, hi = u.b.xy;\n"
+"  if (u.a.z > 3.5) {\n"
+"    float2 p = u.map.xy + pos.xy * u.map.zw;\n"
+"    float ramp = 1.0;\n"
+"    if (u.box.y > 0.0) ramp *= clamp((p.y - u.box.x) / u.box.y, 0.0, 1.0);\n"
+"    if (u.box.w > 0.0) ramp *= clamp((u.box.z - p.y) / u.box.w, 0.0, 1.0);\n"
+"    if (u.rr.y > 0.0) ramp *= clamp((p.x - u.rr.x) / u.rr.y, 0.0, 1.0);\n"
+"    if (u.rr.w > 0.0) ramp *= clamp((u.rr.z - p.x) / u.rr.w, 0.0, 1.0);\n"
+"    float sp = max(u.clip.x, 1.0);\n"
+"    float kf = u.clip.y;\n"
+"    float4 m0 = u.rc, m1 = u.rs, m2 = u.outer, m3 = u.orc;\n"
+"    if (kf < 0.5) return src.sample(s, clamp(pos.xy * m0.xy, m0.xy * 0.5, m0.zw));\n"
+"    float sig1 = pow(sp, 1.0 / kf);\n"
+"    float r = clamp(ramp, 0.0, 1.0);\n"
+"    float target_px = r <= 0.0 ? 0.0 : sp * pow(r, 1.35);\n"
+"    float lv_u;\n"
+"    if (target_px <= sig1 || kf <= 1.05) {\n"
+"      lv_u = clamp(target_px / max(sig1, 1e-4), 0.0, kf);\n"
+"    } else {\n"
+"      lv_u = clamp(1.0 + (kf - 1.0) * log(target_px / sig1) / max(log(sp / sig1), 1e-4), 0.0, kf);\n"
+"    }\n"
+"    int idx = min(int(floor(lv_u)), int(kf + 0.5) - 1);\n"
+"    if (idx < 0) idx = 0;\n"
+"    float f = lv_u - float(idx);\n"
+"    float4 c0, c1;\n"
+"    if (idx == 0) {\n"
+"      c0 = src.sample(s, clamp(pos.xy * m0.xy, m0.xy * 0.5, m0.zw));\n"
+"      c1 = lv1.sample(s, clamp(pos.xy * m1.xy, m1.xy * 1.0, m1.zw));\n"
+"    } else if (idx == 1) {\n"
+"      c0 = lv1.sample(s, clamp(pos.xy * m1.xy, m1.xy * 1.0, m1.zw));\n"
+"      c1 = lv2.sample(s, clamp(pos.xy * m2.xy, m2.xy * 2.0, m2.zw));\n"
+"    } else {\n"
+"      c0 = lv2.sample(s, clamp(pos.xy * m2.xy, m2.xy * 2.0, m2.zw));\n"
+"      c1 = lv3.sample(s, clamp(pos.xy * m3.xy, m3.xy * 4.0, m3.zw));\n"
+"    }\n"
+"    return mix(c0, c1, f);\n"
+"  }\n"
 "  if (u.a.z > 2.5) {\n"
 "    float2 p = u.map.xy + pos.xy * u.map.zw;\n"
 "    p = mb_contained_point(p, u.box, u.rr, u.clip, u.rc, u.rs, u.outer, u.orc, u.ors, u.map.z);\n"
@@ -958,6 +1007,9 @@ static void post_pass(id<MTLCommandBuffer> cb, id<MTLTexture> src, int sw, int s
   if (edge) u.edge = *edge;
   [e setFragmentBytes:&u length:sizeof u atIndex:0];
   [e setFragmentTexture:src atIndex:0];
+  [e setFragmentTexture:(mode == 4 ? lv[1] : src) atIndex:1];
+  [e setFragmentTexture:(mode == 4 ? lv[2] : src) atIndex:2];
+  [e setFragmentTexture:(mode == 4 ? lv[3] : src) atIndex:3];
   [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [e endEncoding];
 }
@@ -1011,7 +1063,7 @@ static int glass_through(const float *f, int32_t count) {
       }
       continue;
     }
-    if (kind != 5 || b[20] >= 0 || !nh || through_n >= MB_THROUGH || is_through(b[20]) || !shows_of(b, r))
+    if (kind != 5 || b[22] < -0.5f || b[20] >= 0 || !nh || through_n >= MB_THROUGH || is_through(b[20]) || !shows_of(b, r))
       continue;
     // (its blur reaches a hole near it too)
     float m = 3.0f * fabsf(b[7]);
@@ -1029,7 +1081,7 @@ static int glass_through(const float *f, int32_t count) {
     int kind = (int)(b[5] + 0.5f);
     if (kind == 9) under = (int32_t)(b[20] + 0.5f) - MB_VIEW_TEX;
     float r[4];
-    if (kind != 5 || !is_through(b[20]) || under <= 0 || n >= MB_FROSTS || !shows_of(b, r)) continue;
+    if (kind != 5 || b[22] < -0.5f || !is_through(b[20]) || under <= 0 || n >= MB_FROSTS || !shows_of(b, r)) continue;
     double *e = frosts + n++ * MB_FROST_N;
     for (int k = 0; k < 4; k++) {
       e[k] = r[k] * zoom;
@@ -1048,7 +1100,13 @@ static int glass_through(const float *f, int32_t count) {
 // What a capture of glass is of, worked out before any of the GPU's work: its rectangle in the target's pixels, how
 // many times it is halved (k, at most 3) and the Gaussian left after (sg), and the glass's own numbers (gu's but map
 // and uvc, which follow from these and the level's size). Zeroed whole first, so two of the same compare the same.
-typedef struct { int px0, py0, w, h, k, contained; float sg; GU g; MBContained edge; } Grab;
+typedef struct {
+  int px0, py0, w, h, k, contained, progressive;
+  float sg, sp;
+  float fade[4], fadex[4];
+  GU g;
+  MBContained edge;
+} Grab;
 
 // The capture the run [start, end) of glass makes, of a target tw × th pixels; 0 when none of it shows.
 // Frosted glass of the same capture further on (glass.mbt shares_capture) is under it too.
@@ -1058,6 +1116,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
   int kind = (int)(a[5] + 0.5f);
   int is_contained = (kind == 5 && a[7] < 0.0f);
+  int is_progressive = (kind == 5 && a[22] < -0.5f);
   float blur = (kind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
@@ -1119,10 +1178,19 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   if (px1 <= px0 || py1 <= py0 || x1 <= x0 || y1 <= y0) return 0;
   m->px0 = px0; m->py0 = py0; m->w = px1 - px0; m->h = py1 - py0;
   m->contained = is_contained ? mb_contained_make(&m->edge, a, px0 / sc, py0 / sc, 1.0f / sc, 1.0f / sc) : 0;
+  m->progressive = is_progressive;
+  if (is_progressive) {
+    for (int i = 0; i < 4; i++) {
+      m->fade[i] = a[52 + i];
+      m->fadex[i] = a[56 + i];
+    }
+  }
   // down to where the deviation is 2 texels or more, at most 1/8
   float sp = blur * sc;
   int k = 0;
   while (k < 3 && sp / (float)(1 << (k + 1)) >= 2.0f) k++;
+  m->sp = sp;
+  if (is_progressive && k == 0 && sp > 0.5f) k = 1;
   // what is left of the deviation once the halvings' and the last look's (bilinear) spread are taken out
   float sk = sp / (float)(1 << k);
   float pre = k > 0 ? 0.75f * (1.0f - powf(0.25f, (float)k)) / 3.0f + 1.0f / 6.0f : 0.0f;
@@ -1151,16 +1219,17 @@ static void show_blur(const Grab *m, id<MTLTexture> bt) {
   gu.misc[2] = cosf(g_light_angle);
   gu.misc[3] = sinf(g_light_angle);
   gtex = bt;
+  int sk = m->progressive ? 0 : m->k;
   float sc = (float)at_scale;
-  float W = (float)gtex.width, H = (float)gtex.height, d = (float)(1 << m->k);
+  float W = (float)gtex.width, H = (float)gtex.height, d = (float)(1 << sk);
   gu.map[0] = sc / d / W; gu.map[1] = sc / d / H;
   gu.map[2] = -(float)m->px0 / d / W; gu.map[3] = -(float)m->py0 / d / H;
   gu.uvc[0] = 0.5f / W; gu.uvc[1] = 0.5f / H;
-  gu.uvc[2] = ((float)lw[m->k] - 0.5f) / W; gu.uvc[3] = ((float)lh[m->k] - 0.5f) / H;
+  gu.uvc[2] = ((float)lw[sk] - 0.5f) / W; gu.uvc[3] = ((float)lh[sk] - 0.5f) / H;
 }
 
 // The level a grab's blur is left in.
-static id<MTLTexture> grab_blurred(const Grab *m) { return m->contained && m->k == 0 ? ltmp : lv[m->k]; }
+static id<MTLTexture> grab_blurred(const Grab *m) { return (m->progressive || (m->contained && m->k == 0)) ? ltmp : lv[m->k]; }
 
 // A grab of target blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
 // Gaussian left (passes of their own, the target's pass ended before; grab_blurred). The levels are shared by every
@@ -1179,6 +1248,36 @@ static void blur(id<MTLCommandBuffer> cb, id<MTLTexture> target, const Grab *m) 
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
   int k = m->k;
+  if (m->progressive) {
+    float prev_var = 0.0f;
+    for (int j = 1; j <= k; j++) {
+      post_pass(cb, lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0, NULL);
+      float target_px = powf(fmaxf(m->sp, 1.0f), (float)j / (float)k);
+      float have_var = prev_var + 0.75f * (float)(1 << (2 * j - 2));
+      float need_var = fmaxf(target_px * target_px - have_var, 0.0f);
+      float sg_j = sqrtf(need_var) / (float)(1 << j);
+      if (sg_j > 0.3f) {
+        post_pass(cb, lv[j], lw[j], lh[j], ltmp, lw[j], lh[j], 2, sg_j, 1, 0, NULL);
+        post_pass(cb, ltmp, lw[j], lh[j], lv[j], lw[j], lh[j], 2, sg_j, 0, 1, NULL);
+      }
+      prev_var = fmaxf(have_var, target_px * target_px);
+    }
+    float sc = (float)at_scale;
+    MBContained prog;
+    memset(&prog, 0, sizeof prog);
+    prog.map[0] = (float)m->px0 / sc; prog.map[1] = (float)m->py0 / sc;
+    prog.map[2] = 1.0f / sc; prog.map[3] = 1.0f / sc;
+    for (int i = 0; i < 4; i++) { prog.box[i] = m->fade[i]; prog.rr[i] = m->fadex[i]; }
+    prog.clip[0] = m->sp; prog.clip[1] = (float)k;
+    float *ms[4] = {prog.rc, prog.rs, prog.outer, prog.orc};
+    for (int j = 0; j < 4; j++) {
+      float dj = (float)(1 << j), tw = (float)lv[j].width, th = (float)lv[j].height;
+      ms[j][0] = 1.0f / (dj * tw); ms[j][1] = 1.0f / (dj * th);
+      ms[j][2] = ((float)lw[j] - 0.5f) / tw; ms[j][3] = ((float)lh[j] - 0.5f) / th;
+    }
+    post_pass(cb, lv[0], lw[0], lh[0], ltmp, lw[0], lh[0], 4, 0, 0, 0, &prog);
+    return;
+  }
   if (m->contained) post_pass(cb, lv[0], lw[0], lh[0], ltmp, lw[0], lh[0], 3, 0, 0, 0, &m->edge);
   for (int j = 1; j <= k; j++) post_pass(cb, j == 1 && m->contained ? ltmp : lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0, NULL);
   if (m->sg > 0.3f) {
@@ -1323,7 +1422,7 @@ static int slot_same(const Grab *m, const double key[7]) {
 // The blur just made (blur) kept in the slot least lately shown by swapping texture handles with the level
 // (zero GPU blit). Not yet said to be of anything (valid).
 static int slot_fill(const Grab *m, unsigned frame_clock) {
-  id<MTLTexture> __strong *Lp = m->contained && m->k == 0 ? &ltmp : &lv[m->k];
+  id<MTLTexture> __strong *Lp = (m->progressive || (m->contained && m->k == 0)) ? &ltmp : &lv[m->k];
   id<MTLTexture> L = *Lp;
   int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
   for (int j = 0; j < MB_GLASS_SLOTS; j++) {

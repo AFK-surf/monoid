@@ -859,7 +859,7 @@
     return clamp(0.5 - d * scale, 0.0, 1.0);
   }
   // what it shows at p, as if uncut
-  void shade(vec2 p) {
+  void shade(vec2 p, float fade_r) {
     #ifndef ONE_KIND
     #define ONE_KIND -1
     #endif
@@ -1194,9 +1194,14 @@
     if (kind == 5) {
       // frosted: the blurred copy, saturated, the tint over it; the rim (a hairline inside the edge, the top left lit,
       // the foot and right less), 0.5 wide
+      bool prog_glass = (v_pad.z < -0.5);
+      float ps = prog_glass ? smoothstep(0.0, 1.0, fade_r) : 1.0;
+      float ts = prog_glass ? (fade_r * fade_r) : 1.0;
+      float sat = prog_glass ? mix(1.0, v_p.z, ps) : v_p.z;
+      float ta = prog_glass ? (col.a * ts) : col.a;
       vec3 g3 = backdrop(p);
-      g3 = max(mix(vec3(luma(g3)), g3, v_p.z), 0.0);
-      g3 = g3 * (1.0 - col.a) + col.rgb * col.a;
+      g3 = max(mix(vec3(luma(g3)), g3, sat), 0.0);
+      g3 = g3 * (1.0 - ta) + col.rgb * ta;
       if (v_c2.x + v_c2.y + v_c2.z > 0.0) {
         float edge = clamp(0.5 + (d + 0.5) * u_scale, 0.0, 1.0);
         float lit = clamp(0.5 + notch_cut(sd_rr(p - 0.5, v_rect, v_rr), p - 0.5, v_rect, v_pad) * u_scale, 0.0, 1.0);
@@ -1206,8 +1211,9 @@
         g3 = mix(g3, vec3(1.0), v_c2.z * back);
       }
       // dithered as it is written to 8 bits, so its slopes do not band (corner.sl mb_dither)
-      g3 += mb_dither(p * u_scale) / 255.0;
-      o = vec4(g3, 1.0) * (a * v_c2.w);
+      g3 += mb_dither(p * u_scale) * ps / 255.0;
+      float edge_a = prog_glass ? smoothstep(0.0, 0.04, fade_r) : 1.0;
+      o = vec4(g3, 1.0) * (a * v_c2.w * edge_a);
       return;
     }
     #endif
@@ -1237,10 +1243,16 @@
       if (cover <= 0.0) discard;
     }
     // and faded out towards a cut, each pixel by where it is (scene.mbt 52-59)
+    int kind = ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5);
+    bool prog_glass = (kind == 5 && v_pad.z < -0.5);
     vec4 ramp = clamp(v_ramp, 0.0, 1.0);
-    cover *= ramp.x * ramp.y * ramp.z * ramp.w;
-    if (cover <= 0.0) discard;
-    shade(p);
+    float fade_r = ramp.x * ramp.y * ramp.z * ramp.w;
+    if (fade_r <= 0.0) discard;
+    if (!prog_glass) {
+      cover *= fade_r;
+      if (cover <= 0.0) discard;
+    }
+    shade(p, fade_r);
     o *= cover;
   }`;
   // the flat pipeline: a ground's colour where it is covered whole, cut by straight clips alone (bands.h mb_pieces)
@@ -1262,6 +1274,9 @@
   // The backdrop's passes: u_a.xy the source's texel, u_a.z 1 halving (dual Kawase's down), 2 a Gaussian along u_b.zw
   // of deviation u_a.w (texels); u_b.xy the last texel's centre of what the source holds
   uniform highp sampler2D u_src;
+  uniform highp sampler2D u_lv1;
+  uniform highp sampler2D u_lv2;
+  uniform highp sampler2D u_lv3;
   uniform vec4 u_a;
   uniform vec4 u_b;
   uniform vec4 u_c[9];
@@ -1269,6 +1284,43 @@
   void main() {
     vec2 ts = u_a.xy;
     vec2 lo = ts * 0.5, hi = u_b.xy;
+    if (u_a.z > 3.5) {
+      vec2 p = u_c[0].xy + gl_FragCoord.xy * u_c[0].zw;
+      float ramp = 1.0;
+      if (u_c[1].y > 0.0) ramp *= clamp((p.y - u_c[1].x) / u_c[1].y, 0.0, 1.0);
+      if (u_c[1].w > 0.0) ramp *= clamp((u_c[1].z - p.y) / u_c[1].w, 0.0, 1.0);
+      if (u_c[2].y > 0.0) ramp *= clamp((p.x - u_c[2].x) / u_c[2].y, 0.0, 1.0);
+      if (u_c[2].w > 0.0) ramp *= clamp((u_c[2].z - p.x) / u_c[2].w, 0.0, 1.0);
+      float sp = max(u_c[3].x, 1.0);
+      float kf = u_c[3].y;
+      vec4 m0 = u_c[4], m1 = u_c[5], m2 = u_c[6], m3 = u_c[7];
+      if (kf < 0.5) { o = texture(u_src, clamp(gl_FragCoord.xy * m0.xy, m0.xy * 0.5, m0.zw)); return; }
+      float sig1 = pow(sp, 1.0 / kf);
+      float r = clamp(ramp, 0.0, 1.0);
+      float target_px = r <= 0.0 ? 0.0 : sp * pow(r, 1.35);
+      float lv_u;
+      if (target_px <= sig1 || kf <= 1.05) {
+        lv_u = clamp(target_px / max(sig1, 1e-4), 0.0, kf);
+      } else {
+        lv_u = clamp(1.0 + (kf - 1.0) * log(target_px / sig1) / max(log(sp / sig1), 1e-4), 0.0, kf);
+      }
+      int idx = min(int(floor(lv_u)), int(kf + 0.5) - 1);
+      if (idx < 0) idx = 0;
+      float f = lv_u - float(idx);
+      vec4 c0, c1;
+      if (idx == 0) {
+        c0 = texture(u_src, clamp(gl_FragCoord.xy * m0.xy, m0.xy * 0.5, m0.zw));
+        c1 = texture(u_lv1, clamp(gl_FragCoord.xy * m1.xy, m1.xy * 1.0, m1.zw));
+      } else if (idx == 1) {
+        c0 = texture(u_lv1, clamp(gl_FragCoord.xy * m1.xy, m1.xy * 1.0, m1.zw));
+        c1 = texture(u_lv2, clamp(gl_FragCoord.xy * m2.xy, m2.xy * 2.0, m2.zw));
+      } else {
+        c0 = texture(u_lv2, clamp(gl_FragCoord.xy * m2.xy, m2.xy * 2.0, m2.zw));
+        c1 = texture(u_lv3, clamp(gl_FragCoord.xy * m3.xy, m3.xy * 4.0, m3.zw));
+      }
+      o = mix(c0, c1, f);
+      return;
+    }
     if (u_a.z > 2.5) {
       vec2 p = u_c[0].xy + gl_FragCoord.xy * u_c[0].zw;
       p = mb_contained_point(p, u_c[1], u_c[2], u_c[3], u_c[4], u_c[5], u_c[6], u_c[7], u_c[8], u_c[0].z);
@@ -1386,7 +1438,7 @@
     gl.attachShader(post, compile(gl.FRAGMENT_SHADER, PFS));
     gl.linkProgram(post);
     if (!gl.getProgramParameter(post, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(post));
-    for (const n of ['u_src', 'u_a', 'u_b', 'u_c']) PU[n] = gl.getUniformLocation(post, n);
+    for (const n of ['u_src', 'u_lv1', 'u_lv2', 'u_lv3', 'u_a', 'u_b', 'u_c']) PU[n] = gl.getUniformLocation(post, n);
     glassLost();
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -1554,6 +1606,7 @@
     // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
     const kind = Math.round(f32[a + 5]);
     const isContained = kind === 5 && f32[a + 7] < 0;
+    const isProgressive = kind === 5 && f32[a + 22] < -0.5;
     const blur = (kind === 6 && f32[a + 7] < 0) ? 0 : Math.abs(f32[a + 7]);
     const mergedLiquid = kind === 6 && f32[a + 23] > 0;
     const unmergedLiquid = kind === 6 && !mergedLiquid;
@@ -1624,11 +1677,14 @@
     const sp = blur * sc;
     let k = 0;
     while (k < 3 && sp / (1 << (k + 1)) >= 2) k++;
+    if (isProgressive && k === 0 && sp > 0.5) k = 1;
     const sk = sp / (1 << k);
     const pre = k > 0 ? 0.75 * (1 - Math.pow(0.25, k)) / 3 + 1 / 6 : 0;
     const sg = Math.sqrt(Math.max(sk * sk - pre, 0));
+    const fade = isProgressive ? [f32[a + 52], f32[a + 53], f32[a + 54], f32[a + 55]] : null;
+    const fadex = isProgressive ? [f32[a + 56], f32[a + 57], f32[a + 58], f32[a + 59]] : null;
     return {
-      px0, pb0, w, h, top: Hh, k, contained, n: mN, sg,
+      px0, pb0, w, h, top: Hh, k, contained, progressive: isProgressive, n: mN, sg, sp, fade, fadex,
       gb: [x0 - 2, y0 - 2, x1 + 2, y1 + 2],
       shape: mShape, rad: mRad, edge,
     };
@@ -1644,12 +1700,12 @@
   }
 
   function grabBlurred(m) {
-    return m.contained && m.k === 0 ? lv[4] : lv[m.k];
+    return (m.progressive || (m.contained && m.k === 0)) ? lv[4] : lv[m.k];
   }
 
   function showBlur(m, bt, bw, bh) {
     const [lw, lh] = grabLevels(m);
-    const k = m.k, d = 1 << k, sc = dpr;
+    const sk = m.progressive ? 0 : m.k, d = 1 << sk, sc = dpr;
     for (let i = 0; i < 4; i++) ggb[i] = m.gb[i];
     gshape.set(m.shape);
     grad.set(m.rad);
@@ -1657,7 +1713,7 @@
     bdTex = bt;
     gmap[0] = sc / d / bw; gmap[1] = -sc / d / bh;
     gmap[2] = -m.px0 / d / bw; gmap[3] = (m.top - m.pb0) / d / bh;
-    guvc[0] = 0.5 / bw; guvc[1] = 0.5 / bh; guvc[2] = (lw[k] - 0.5) / bw; guvc[3] = (lh[k] - 0.5) / bh;
+    guvc[0] = 0.5 / bw; guvc[1] = 0.5 / bh; guvc[2] = (lw[sk] - 0.5) / bw; guvc[3] = (lh[sk] - 0.5) / bh;
   }
 
   function blurGlass(m) {
@@ -1671,11 +1727,46 @@
     if (gl.invalidateFramebuffer) gl.invalidateFramebuffer(gl.DRAW_FRAMEBUFFER, [gl.COLOR_ATTACHMENT0]);
     gl.blitFramebuffer(m.px0, m.pb0, m.px0 + w, m.pb0 + h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.useProgram(post);
+    const [lw, lh] = grabLevels(m);
+    if (m.progressive) {
+      let prevVar = 0;
+      for (let j = 1; j <= k; j++) {
+        postPass(lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0);
+        const targetPx = Math.pow(Math.max(m.sp, 1), j / k);
+        const haveVar = prevVar + 0.75 * (1 << (2 * j - 2));
+        const needVar = Math.max(targetPx * targetPx - haveVar, 0);
+        const sgJ = Math.sqrt(needVar) / (1 << j);
+        if (sgJ > 0.3) {
+          postPass(lv[j], lw[j], lh[j], lv[4], lw[j], lh[j], 2, sgJ, 1, 0);
+          postPass(lv[4], lw[j], lh[j], lv[j], lw[j], lh[j], 2, sgJ, 0, 1);
+        }
+        prevVar = Math.max(haveVar, targetPx * targetPx);
+      }
+      const sc = dpr;
+      const prog = new Float32Array(36);
+      prog[0] = m.px0 / sc; prog[1] = (m.top - m.pb0) / sc;
+      prog[2] = 1 / sc; prog[3] = -1 / sc;
+      for (let i = 0; i < 4; i++) { prog[4 + i] = m.fade[i]; prog[8 + i] = m.fadex[i]; }
+      prog[12] = m.sp; prog[13] = k;
+      for (let j = 0; j < 4; j++) {
+        const dj = 1 << j, tw = lv[j].w, th = lv[j].h;
+        prog[16 + j * 4 + 0] = 1 / (dj * tw);
+        prog[16 + j * 4 + 1] = 1 / (dj * th);
+        prog[16 + j * 4 + 2] = (lw[j] - 0.5) / tw;
+        prog[16 + j * 4 + 3] = (lh[j] - 0.5) / th;
+      }
+      gl.uniform4fv(PU.u_c, prog);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, lv[1].t); gl.uniform1i(PU.u_lv1, 1);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, lv[2].t); gl.uniform1i(PU.u_lv2, 2);
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, lv[3].t); gl.uniform1i(PU.u_lv3, 3);
+      postPass(lv[0], w, h, lv[4], w, h, 4, 0, 0, 0);
+      gl.activeTexture(gl.TEXTURE0);
+      return;
+    }
     if (contained) {
       gl.uniform4fv(PU.u_c, m.edge);
       postPass(lv[0], w, h, lv[4], w, h, 3, 0, 0, 0);
     }
-    const [lw, lh] = grabLevels(m);
     for (let j = 1; j <= k; j++) {
       postPass(j === 1 && contained ? lv[4] : lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0);
     }
@@ -1746,12 +1837,16 @@
 
   function grabSame(a, b) {
     if (a.px0 !== b.px0 || a.pb0 !== b.pb0 || a.w !== b.w || a.h !== b.h || a.top !== b.top ||
-        a.k !== b.k || a.contained !== b.contained || a.n !== b.n || a.sg !== b.sg) return false;
+        a.k !== b.k || a.contained !== b.contained || a.progressive !== b.progressive || a.n !== b.n ||
+        a.sg !== b.sg || a.sp !== b.sp) return false;
     for (let i = 0; i < 4; i++) if (a.gb[i] !== b.gb[i]) return false;
     for (let i = 0; i < a.n * 4; i++) if (a.shape[i] !== b.shape[i]) return false;
     for (let i = 0; i < a.n * 4; i++) if (a.rad[i] !== b.rad[i]) return false;
     if (a.contained) {
       for (let i = 0; i < 36; i++) if (a.edge[i] !== b.edge[i]) return false;
+    }
+    if (a.progressive) {
+      for (let i = 0; i < 4; i++) if (a.fade[i] !== b.fade[i] || a.fadex[i] !== b.fadex[i]) return false;
     }
     return true;
   }

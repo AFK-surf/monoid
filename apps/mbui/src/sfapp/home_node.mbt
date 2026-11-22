@@ -158,8 +158,14 @@ fn home_top_bar_node(
     // so scrolled chat rows refract cleanly through the translucent liquid glass pills and feather into the status bar)
     narrow_bar_scrim_node(
       g,
-      fn(s) { status_top_now(s.window_w()) + bar_h },
-      fn(_) { bar_h },
+      fn(s) {
+        let top = status_top_now(s.window_w())
+        if top > 0.0 { top + 20.0 } else { 0.0 }
+      },
+      fn(s) {
+        let top = status_top_now(s.window_w())
+        if top > 0.0 { top + 20.0 } else { 0.0 }
+      },
     )
     g.box(fn(row) {
       row
