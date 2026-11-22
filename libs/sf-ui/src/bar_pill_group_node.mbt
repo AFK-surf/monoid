@@ -56,9 +56,10 @@ pub fn bar_pill_group_node(
   height? : Double = 40.0,
   pad? : Double = 3.0,
   gap? : Double = 2.0,
+  adaptive? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
-  bar_pill_group_with(loc~, parent, body, height~, pad~, gap~)
+  bar_pill_group_with(loc~, parent, body, height~, pad~, gap~, adaptive~)
 }
 
 ///|
@@ -71,6 +72,7 @@ fn bar_pill_group_with(
   pad? : Double = 3.0,
   gap? : Double = 2.0,
   tint? : (() -> Int64)? = None,
+  adaptive? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   let r = height / 2.0
@@ -89,5 +91,6 @@ fn bar_pill_group_with(
     tint?,
     shadow=glass_control_shadow,
     solid_edge=fn() { (control_edge_w, panel_edge()) },
+    adaptive~,
   )
 }

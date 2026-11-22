@@ -179,6 +179,7 @@ pub fn liquid_pill_group_node(
   shadow? : () -> (Double, Double, Int64),
   solid_edge? : () -> (Double, Int64),
   floating? : Bool = false,
+  adaptive? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(g) {
@@ -247,11 +248,12 @@ pub fn liquid_pill_group_node(
                 spot=sp,
                 solid=over(base_sol, alpha(c, 0.24)),
                 sharing=eff_sharing,
+                adaptive~,
               ),
               tint: c,
             }
           }
-          None => liquid_bar_pill_glass(spot=sp, solid=sol, sharing=eff_sharing)
+          None => liquid_bar_pill_glass(spot=sp, solid=sol, sharing=eff_sharing, adaptive~)
         }
       }
       if ly > 0 {

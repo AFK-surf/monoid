@@ -241,13 +241,14 @@ test "window_keys_node: one 104x36 liquid glass pill, its outside shadow, no rul
         let (gx, gy, gw, gh, kind, _) = glass[0]
         assert_eq((kind, gw, gh), (6, 104.0, 36.0), msg="\{at}")
         assert_true((gx + gw - (w - side)).abs() < 1.0e-6 && (gy - top).abs() < 1.0e-6, msg="\{at}: pill at \{gx},\{gy}")
-        // (Large and a window of its own's: past the window's corner, 12 where that is past it; the buttons on the
-        // bars' line, 6 under the top. Small: in the middle of the 44 band. Medium: the buttons on the tape's line)
+        // (Large, Small and a window of its own's: symmetric 4pt top and side inset when the window corner is smaller
+        // than the pill's half-height 18; the buttons on the bars' line, 6 under the top. Medium: on the tape's line)
         let expect_top = if name == "medium" { window_in + tape_line - 2.0 } else { 4.0 }
         assert_eq(top, expect_top, msg="\{at}")
         if name != "medium" {
-          let expect_side = if corner > 0.0 && 12.0 < corner + corner_fit.near { corner + 12.0 } else { 12.0 }
-          assert_eq(side, expect_side, msg="\{at}")
+          assert_eq(side, 4.0, msg="\{at}")
+        } else if corner <= 8.0 {
+          assert_eq(side, expect_top, msg="\{at}")
         }
         // (the buttons 2 in from the pill's edges and 2 apart, 32 round, concentric with its 36)
         let (cx, cy, cw, ch) = window_key_rect(t, "desktop.menu.close")
@@ -318,5 +319,41 @@ test "window_keys_node: pressing minimize, maximize or close, or the host holdin
       t.assert_idle()
     }
   }
+  set_dark(None)
+}
+
+///|
+test "bar_pill_group_node defaults adaptive off; adaptive=true and window_keys_node encode adaptive glass and icon ink" {
+  let check_pill = fn(adaptive : Bool) -> (Bool, Bool) {
+    presenters_reset()
+    set_words(fn(key, _) { key })
+    let t = @ui.Tester::new(fn(_c) {  }, w=420.0, h=160.0, dark=false, platform=0)
+    set_dark(Some(false))
+    @ui.set_glass_solid(None)
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(bar) {
+        bar.row(Is(true)).grow(Is(1.0)).padding(Is((24.0, 24.0, 24.0, 24.0))).ground(By(fn() { theme().p.bg })) |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, adaptive~, fn(g) {
+          icon_button_node(g, "info", fn() { "Info" }, fn() {  }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    t.draw()
+    let has_adaptive_glass = t.drawn_instances().iter().any(fn(a) { a.length() > 14 && a[5] == 6.0 && a[14] < -0.5 })
+    let has_adaptive_icon = t.drawn_instances().iter().any(fn(a) { a.length() > 23 && a[5] == 11.0 && a[23] > 0.0 })
+    (has_adaptive_glass, has_adaptive_icon)
+  }
+  assert_eq(check_pill(false), (false, false))
+  assert_eq(check_pill(true), (true, true))
+  let (tw, _) = window_keys_tester(1280.0, 8.0, false, false, false)
+  let wk_adaptive_glass = tw
+    .drawn_instances()
+    .iter()
+    .any(fn(a) { a.length() > 14 && a[5] == 6.0 && (a[2] - 104.0).abs() < 0.01 && (a[3] - 36.0).abs() < 0.01 && a[14] < -0.5 })
+  let wk_adaptive_icons = tw.drawn_instances().iter().any(fn(a) { a.length() > 23 && a[5] == 11.0 && a[23] > 0.0 })
+  assert_eq((wk_adaptive_glass, wk_adaptive_icons), (true, true))
   set_dark(None)
 }

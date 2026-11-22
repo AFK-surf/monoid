@@ -754,7 +754,15 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
       // button, or what is round, smaller than half the window: a panel too square to follow a square window's corner
       // stands as alone, below)
       let button = (round || (b.id != 0 && b.hit)) && !c.half_of(i, p)
+      let even_capsule_in_square_window = round &&
+        (b.fw - b.fh).abs() > 0.5 &&
+        even &&
+        ra < rb &&
+        dx / u >= c.fit_near() - 0.5
       if ct.window && !in_step && button {
+        if even_capsule_in_square_window {
+          continue
+        }
         out.push(
           "\{c.named(i)} (corner \{rb}) by the \{corner} of \{c.named(p)} (the window's, corner \{ra}): \{dx} and \{dy} from its edges, not concentric with it; nothing stands there: past its arc, \{ra + c.fit_near()} in from the side it is near",
         )

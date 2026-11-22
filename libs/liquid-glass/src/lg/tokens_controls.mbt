@@ -452,6 +452,7 @@ pub fn liquid_bar_pill_glass(
   spot? : (Double, Double)? = None,
   solid? : Int64 = clear,
   sharing? : Bool = true,
+  adaptive? : Bool = false,
 ) -> @paint.Glass {
   let d = is_dark()
   let tint = if d { 0x20202067L } else { 0xFDFCFD67L }
@@ -473,7 +474,7 @@ pub fn liquid_bar_pill_glass(
       refraction=20.0,
       chroma=0.0,
       merge=0.0,
-      adaptive=false,
+      adaptive~,
       spot~,
     ),
     sharing,

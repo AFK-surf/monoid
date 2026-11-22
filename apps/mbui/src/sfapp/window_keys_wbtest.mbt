@@ -38,14 +38,14 @@ fn past_rule(t : @ui.Tester, x : Double) -> String? {
 }
 
 ///|
-test "a Windows window laid out Large: its own buttons at the top row's right, 12 in and on the bars' line, the page's keys before their pill" {
+test "a Windows window laid out Large: its own buttons at the top row's right, 4 in and on the bars' line, the page's keys before their pill" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat", platform=3, window_corner=8.0, window_inset=true)
   t.run_for(@ui.move_most_ms)
-  // in a liquid glass pill 12 in as a bar's last capsule stands at a corner it cannot follow (Windows 11's 8), its
+  // in a liquid glass pill 4 in (symmetric with its 4pt top inset on Windows 11's 8pt corner), its
   // buttons 2 in and 2 apart, 6 under the top
   guard named_at(t, "关闭窗口") is Some((cx, cy, cw, ch)) else { fail("no close button") }
-  assert_eq((cx + cw, cy, cw, ch), (1266.0, 6.0, 32.0, 32.0))
+  assert_eq((cx + cw, cy, cw, ch), (1274.0, 6.0, 32.0, 32.0))
   guard named_at(t, "最大化") is Some((zx, zy, _, _)) else { fail("no maximize button") }
   assert_eq((zx, zy), (cx - 34.0, 6.0))
   guard named_at(t, "最小化") is Some((mx, _, _, _)) else { fail("no minimize button") }
@@ -105,7 +105,7 @@ test "a Windows window laid out Small: its buttons in the band over the page; on
   let t = wide_tester(calls, w=390.0, h=844.0, platform=3, window_corner=8.0, window_inset=true)
   t.run_for(@ui.move_most_ms)
   guard named_at(t, "关闭窗口") is Some((cx, cy, cw, _)) else { fail("no close button") }
-  assert_eq((cx + cw, cy), (376.0, 6.0))
+  assert_eq((cx + cw, cy), (384.0, 6.0))
   // nothing of the page's in the band (44) under them
   for s in t.semantics() {
     let (_, sy, _, sh) = s.rect
@@ -492,7 +492,7 @@ test "window_keys_node: inset toggle, window resize, and lone_window_tree update
   )
   t2.run_for(@ui.move_most_ms)
   guard named_at(t2, "关闭窗口") is Some((cx, cy, cw, ch)) else { fail("lone: no close button") }
-  assert_eq((cx + cw, cy, cw, ch), (586.0, 6.0, 32.0, 32.0))
+  assert_eq((cx + cw, cy, cw, ch), (594.0, 6.0, 32.0, 32.0))
   guard named_at(t2, "最大化") is Some((zx, zy, zw, zh)) else { fail("lone: no maximize button") }
   assert_eq(t2.window_snap_rect(), (zx, zy, 32.0, 32.0))
   guard named_at(t2, "最小化") is Some((mx, my, mw, mh)) else { fail("lone: no minimize button") }
@@ -609,4 +609,50 @@ test "a Windows window's buttons pressed, maximize held down as the host says: t
   t.run_for(@ui.move_most_ms)
   assert_true((width() - 104.0).abs() < 0.3, msg="maximize let go: pill \{width()} across")
   t.assert_idle()
+}
+
+///|
+test "a Windows window in Light mode: window_keys_node uses adaptive glass and adaptive icon ink with symmetric 4pt top/right margin across chat, previews, and player" {
+  for mode in ["chat", "chat-preview-video", "chat-preview-image", "player-video"] {
+    let t = if mode == "chat-preview-image" {
+      desk_tester(mode, platform=3, window_corner=8.0, window_inset=true)
+    } else {
+      let calls : Array[Made] = []
+      wide_tester(calls, mode~, w=1280.0, h=800.0, platform=3, window_corner=8.0, window_inset=true)
+    }
+    t.set_dark(false)
+    t.run_for(@ui.move_most_ms)
+    guard named_at(t, "关闭窗口") is Some((cx, cy, cw, ch)) else { fail("\{mode}: no close button") }
+    let pills = t
+      .drawn_glass()
+      .filter(fn(g) { g.0 <= cx && g.0 + g.2 >= cx + cw && g.1 <= cy && g.1 + g.3 >= cy + ch && g.4 == 6 })
+    guard pills is [(gx, gy, gw, gh, kind, _)] else { fail("\{mode}: expected 1 liquid pill round close, got \{Repr(pills)}") }
+    assert_eq((kind, gw, gh), (6, 104.0, 36.0), msg=mode)
+    assert_eq((gy, 1280.0 - (gx + gw)), (4.0, 4.0), msg=mode)
+    let has_adaptive_glass = t
+      .drawn_instances()
+      .iter()
+      .any(fn(a) {
+        a.length() > 14 &&
+        a[5] == 6.0 &&
+        (a[0] - gx).abs() < 0.5 &&
+        (a[1] - gy).abs() < 0.5 &&
+        (a[2] - 104.0).abs() < 0.01 &&
+        (a[3] - 36.0).abs() < 0.01 &&
+        a[14] < -0.5
+      })
+    let has_adaptive_icon = t
+      .drawn_instances()
+      .iter()
+      .any(fn(a) {
+        a.length() > 23 &&
+        a[5] == 11.0 &&
+        a[0] >= gx &&
+        a[0] + a[2] <= gx + gw &&
+        a[1] >= gy &&
+        a[1] + a[3] <= gy + gh &&
+        a[23] > 0.0
+      })
+    assert_eq((has_adaptive_glass, has_adaptive_icon, window_keys_faults(t)), (true, true, []), msg=mode)
+  }
 }

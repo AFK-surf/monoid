@@ -906,3 +906,35 @@ test "Wave 20 Phase 1A: liquid_search_bar_node and liquid_text_field_node suppor
   @ui.set_glass_solid(None)
   assert_eq((escaped.val, solid_edge, solid_glass), (1, true, 0))
 }
+
+///|
+test "liquid_bar_pill_glass and liquid_pill_group_node default adaptive to false and forward adaptive=true with adaptive child ink" {
+  assert_eq(liquid_bar_pill_glass().adaptive, false)
+  assert_eq(liquid_bar_pill_glass(adaptive=true).adaptive, true)
+  let check = fn(adaptive : Bool) -> (Bool, Bool, Bool) {
+    let t = lg_case(fn(p) {
+      liquid_pill_group_node(p, height=36.0, pad=2.0, gap=2.0, adaptive~, fn(g) {
+        g.box(fn(k) {
+          k.width(Is(Some(32.0))).height(Is(Some(32.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+          flight_icon(k, 16.0, ctrl_muted_ink)
+        })
+        |> ignore
+        g.box(fn(s) {
+          s
+          .width(Is(Some(16.0)))
+          .height(Is(Some(16.0)))
+          .shapes(Is(ctrl_close_shapes(16.0, ctrl_muted_ink())))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    let has_adaptive_glass = t.drawn_instances().iter().any(fn(a) { a.length() > 14 && a[5] == 6.0 && a[14] < -0.5 })
+    let has_adaptive_glyph = t.adaptive_glyphs() > 0
+    let has_adaptive_shape = t.drawn_instances().iter().any(fn(a) { a.length() > 23 && a[5] == 11.0 && a[23] > 0.0 })
+    (has_adaptive_glass, has_adaptive_glyph, has_adaptive_shape)
+  }
+  assert_eq(check(false), (false, false, false))
+  assert_eq(check(true), (true, true, true))
+}
