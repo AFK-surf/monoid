@@ -1363,15 +1363,15 @@ export class Hub {
       const row = this.store.getSession(actor.key);
       if (!row || row.archivedAt !== null || this.handedOver(row.key) || !this.store.hasPending(row.key) || !this.online(row)) continue;
       const allowed = (p: Profile) => p.enabled !== false && p.runtimes.includes(actor.runtime) && allowedIn(p, row.ws ?? null, home);
-      const added = changed.some((p) => allowed(p) && (!previous.has(p.id) || !allowed(previous.get(p.id)!)));
-      if (!added) continue;
+      const added = new Set(changed.filter((p) => allowed(p) && (!previous.has(p.id) || !allowed(previous.get(p.id)!))).map((p) => p.id));
+      if (added.size === 0) continue;
       // A start may still be in flight when the profile arrives. Once its queue reaches this barrier, retry only if
       // it actually failed and the profile still serves the workspace. Ordinary queued wakes retain their deduplication.
       void actor.flushed().then(() => {
         const now = this.store.getSession(actor.key);
         if (!now || now.archivedAt !== null || this.actors.get(actor.key) !== actor || this.handedOver(actor.key) ||
           !actor.startFailed() || !this.store.hasPending(actor.key) || !this.online(now)) return;
-        const stillAllowed = this.config().profiles.some((p) => p.enabled !== false && p.runtimes.includes(actor.runtime) &&
+        const stillAllowed = this.config().profiles.some((p) => added.has(p.id) && p.enabled !== false && p.runtimes.includes(actor.runtime) &&
           allowedIn(p, now.ws ?? null, this.workspaces()[0] ?? null));
         if (stillAllowed) return actor.kick();
       }).catch((error) => log.warn("hub", "could not retry after a profile became available", { session: actor.key, error: (error as Error).message }));

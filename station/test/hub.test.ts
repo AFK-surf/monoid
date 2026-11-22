@@ -846,6 +846,13 @@ test("a new available profile wakes a failure even if another profile was alread
   r.hub.profilesChanged();
   await settle();
   assert.equal(opens, 1, "an unrelated edit does not retry a failure");
+  // Revoked before the actor's queue is flushed: the old eligible profile does not make this grant count.
+  r.edit((raw) => raw.profiles.push({ id: "cc2", runtime: "claude", home: "homes/cc2" }));
+  r.hub.profilesChanged();
+  r.edit((raw) => { raw.profiles = raw.profiles.filter((p: any) => p.id !== "cc2"); });
+  r.hub.profilesChanged();
+  await settle();
+  assert.equal(opens, 1, "a revoked grant does not wake the pending start");
   r.claude.refuses = null;
   r.edit((raw) => raw.profiles.push({ id: "cc2", runtime: "claude", home: "homes/cc2" }));
   r.hub.profilesChanged();
