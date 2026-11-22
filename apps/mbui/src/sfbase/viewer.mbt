@@ -704,19 +704,34 @@ fn viewer_route(window : () -> (Double, Double)) -> (@view.FlightRoute, (Bool, (
 }
 
 ///|
+/// The least and most share of the way the viewer's flight goes out from under the bar or composer over
+/// (route_handed): at least `route_out_least` so a short lift does not stop in a frame or two, and at most
+/// `route_out_most` so a large lift (`s >= 0.5`) still finishes before the end and leaves room for the layer switch
+/// and the viewer's ground and bars to fade in to 1.
+let route_out_least : Double = 0.4
+
+///|
+let route_out_most : Double = 0.75
+
+///|
+/// Where along the flight's way from the thumbnail (0 … 1) the going-out stretch finishes (`out` reaches 1,
+/// `in_stays` ends, and the viewer's ground begins to fade in).
+fn route_out_end(s : Double) -> Double {
+  dmin(route_out_most, dmax(2.0 * s, route_out_least))
+}
+
+///|
 /// How far what goes with the viewer's flight (its ground, a film's bars) is `q` of the way from the thumbnail, its
 /// going out `s` of it (route_handed): none while the picture is still going out from under the bar or composer, cut
 /// to what they leave clear (the page not yet seen to go dim under what is still part of it), then at one pace from
-/// there to all of it at the viewer.
+/// `route_out_end(s)` to all of it (1.0) at the viewer.
 fn route_seen(q : Double, s : Double) -> Double {
+  let q = dmin(1.0, dmax(0.0, q))
   if s <= 0.0 {
-    return dmin(1.0, dmax(0.0, q))
+    return q
   }
-  if s >= 1.0 {
-    return 0.0
-  }
-  let l = dmin(1.0, dmax(2.0 * s, route_out_least))
-  if q <= l || l >= 1.0 {
+  let l = route_out_end(s)
+  if q <= l {
     0.0
   } else {
     dmin(1.0, (q - l) / (1.0 - l))
@@ -725,27 +740,30 @@ fn route_seen(q : Double, s : Double) -> Double {
 
 ///|
 /// How far gone out from under the bar or composer and how far grown from the thumbnail (each 0 to 1) the viewer's flight
-/// is `q` of its way from the thumbnail, its going out `s` of the whole way by how far it goes (viewer_route). Its edge
-/// going furthest goes at the way's own pace all the way (the going out and the growing together as far as the way: q =
-/// s * out + (1 - s) * grown), the going out from its own pace slowing to rest over `l` of the way (twice its share,
-/// at least route_out_least: a short one not stopped within a frame or two), the growing taking up what it gives: no
-/// stop and no step where they meet. None to go out from (s 0): out all along, grown as far as the way.
+/// is `q` of its way from the thumbnail, its going out `s` of the whole way by how far it goes (viewer_route). For
+/// `2 * s <= route_out_most` its edge going furthest goes at the way's own pace all the way (`q = s * out + (1 - s) * grown`),
+/// slowing to rest over `l = route_out_end(s)`. For larger `s` (`s < l`), `out` uses initial slope `l / s` so `s * out <= q`
+/// everywhere without clamping `grown` to 0; for `s >= l`, it slides out linearly over `[0, l]` then grows over `[l, 1]`.
+/// None to go out from (`s <= 0`): out all along, grown as far as the way.
 fn route_handed(q : Double, s : Double) -> (Double, Double) {
+  let q = dmin(1.0, dmax(0.0, q))
   if s <= 0.0 {
     return (1.0, q)
   }
-  if s >= 1.0 {
-    return (dmin(1.0, q), 0.0)
+  let l = route_out_end(s)
+  if q >= l {
+    let grown = if s >= l { (q - l) / (1.0 - l) } else { (q - s) / (1.0 - s) }
+    return (1.0, dmin(1.0, dmax(0.0, grown)))
   }
-  let l = dmin(1.0, dmax(2.0 * s, route_out_least))
-  let out = if q >= l { 1.0 } else { 2.0 * q / l - q * q / (l * l) }
-  (out, dmin(1.0, dmax(0.0, (q - s * out) / (1.0 - s))))
+  let u = q / l
+  if s >= l {
+    (u, 0.0)
+  } else {
+    let a = dmin(2.0, l / s)
+    let out = a * u + (1.0 - a) * u * u
+    (out, dmin(1.0, dmax(0.0, (q - s * out) / (1.0 - s))))
+  }
 }
-
-///|
-/// The least share of the way the viewer's flight goes out from under the bar or composer over (route_handed), slowing
-/// to rest as it is done.
-let route_out_least : Double = 0.4
 
 ///|
 /// The viewer fading in and out where there is no thumbnail to grow from.

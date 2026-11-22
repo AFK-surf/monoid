@@ -459,3 +459,103 @@ test "a picture and a film half under the composer of a chat's page made as node
     }
   }
 }
+
+///|
+/// The chat's compare.png (`film`: its recording) on a phone, seen once, wheeled till all but a strip of it lies under
+/// the composer (its going out from under it further than its growing to the viewer: the flight's going out more than
+/// half its way), pressed on that strip and let go: what went wrong once it is open (the viewer's ground over all the
+/// window, whole; its bars shown) and as it closes (the ground never over the flying picture; gone at the end).
+fn high_lift_faults(film : Bool) -> Array[String] {
+  let (t, x, y) = if film { film_in_chat(platform=2, w=390.0) } else { image_in_chat("compare.png", platform=2, w=390.0) }
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  t.back()
+  if film {
+    film_frame_answered(t)
+  }
+  t.run_for(@ui.move_most_ms)
+  let i = t.drawn_images().filter(fn(i) { i[8] > 0.5 && x >= i[0] && x <= i[0] + i[2] && y >= i[1] && y <= i[1] + i[3] })
+  guard i.length() > 0 else { return ["no thumbnail drawn"] }
+  let (left, was, w0) = (i[0][0], i[0][1], i[0][2])
+  // (on this phone what the bar and composer leave clear ends at 729.25: its top 5 above that, its going out from under
+  // the composer (207 or so) further than its growing to the viewer, 203 a film's, 173 a picture's)
+  let top = 724.0
+  t.wheel(x, y, was - top)
+  t.run_for(@ui.scrollbar_hold_ms + @ui.scrollbar_fade_ms)
+  let moved = t.drawn_images().filter(fn(i) { i[8] > 0.5 && (i[0] - left).abs() < 1.0 && (i[2] - w0).abs() < 1.0 })
+  guard moved.iter().any(fn(m) { (m[1] - top).abs() < 2.0 }) else {
+    return ["not wheeled under the composer: \{Repr(moved.map(fn(m) { m[1] }))}, \{top}"]
+  }
+  let faults : Array[String] = []
+  t.tap(x, top + 3.0)
+  guard viewer.get() is Some(v) else { return ["nothing opened"] }
+  t.run_for(@ui.move_most_ms)
+  let fade = v.fade.value_at(t.time())
+  if fade < 0.99 {
+    faults.push("open: its ground and bars at \{fade}")
+  }
+  // (the viewer's ground: a fill over all the window, whole, drawn over the page's words)
+  let inst = t.drawn_instances()
+  let mut first_words = inst.length()
+  for k, d in inst {
+    if d[5] == 1.0 {
+      first_words = k
+      break
+    }
+  }
+  let mut ground = false
+  for k, d in inst {
+    if k > first_words && d[5] == 0.0 && d[0] <= 0.0 && d[1] <= 0.0 && d[2] >= 389.0 && d[3] >= 843.0 && d[11] >= 0.99 {
+      ground = true
+    }
+  }
+  if !ground {
+    faults.push("open: no ground whole over the page")
+  }
+  // (its bars: a film's time, a picture's name at the top)
+  if film {
+    if !words_show(t, "0:00") {
+      faults.push("open: the player's bars not shown")
+    }
+  } else if !t.words().iter().any(fn(w) { w.0 == "compare.png" && w.2 < 60.0 && w.5 >= 0.99 }) {
+    faults.push("open: the viewer's bar not shown")
+  }
+  // and closed: back in under the composer, the ground never over the flying picture, gone at the end
+  t.back()
+  if film {
+    film_frame_answered(t)
+  }
+  let frame = Ref(0)
+  t.each_frame(
+    Some(fn() {
+      let v = match viewer.get() {
+        Some(v) => Some(v)
+        None => pv_leaving.get()
+      }
+      if v is Some(v) && pic_flies(t, v) {
+        match ground_over_flight(t, w0) {
+          Some(a) => faults.push("closing frame \{frame.val}: the viewer's ground over the flying picture at \{a}")
+          None => ()
+        }
+      }
+      frame.val += 1
+    }),
+  )
+  t.run_shown(@ui.move_most_ms)
+  t.each_frame(None)
+  if viewer.get() is Some(_) || pv_leaving.get() is Some(_) {
+    faults.push("closed: the viewer not gone")
+  }
+  faults
+}
+
+///|
+// A film or a picture opened from under the composer on a phone, its going out further than its growing (the user's
+// phone, 2026-11-22: 视频/图片展开后黑底和控制栏完全消失): its flight's ground and bars were held at none all the way
+// (sfbase viewer.mbt's route_seen, its going out ending at the way's end), the page seen through round it with no bars.
+test "a film and a picture opened from mostly under a phone's composer: the viewer's ground whole and its bars shown once open, gone once closed" {
+  for film in [true, false] {
+    let faults = high_lift_faults(film)
+    assert_true(faults.is_empty(), msg="\{if film { "film" } else { "picture" }}: \{Repr(faults)}")
+  }
+}
