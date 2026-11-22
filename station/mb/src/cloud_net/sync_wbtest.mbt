@@ -573,7 +573,8 @@ test "watch: the first relay letting no probe on, the next two failing: recovere
   w.through = Map::from_array([(relay_r2, offline_found)])
   let from = w.probed_through.length()
   w.ticks(3)
-  assert_eq(w.probed_through[from:from + 3].to_owned(), [relay_r2, relay_r1, relay_own])
+  // (the first check failed through r2 and r1, so the one not failed since is asked first)
+  assert_eq(w.probed_through[from:from + 3].to_owned(), [relay_own, relay_r2, relay_r1])
   assert_eq(w.recovered, [])
   w.ticks(1)
   assert_eq(w.recovered, [2L * minute])
@@ -602,11 +603,11 @@ test "watch: the first relay letting no probe on, the next reaching the endpoint
 }
 
 ///|
-test "watch: two relays failing in one check count once, on the same timeline; a third is not asked" {
+test "watch: two relays failing in one check count once, on the same timeline; the next check asks the third first" {
   let w = watched_on(failed, lost, [relay_r2, relay_r1, relay_own], [relay_own])
   w.ticks(3)
   assert_eq(w.probes, [0L, 0L, 30_000L, 30_000L, 60_000L, 60_000L, 90_000L, 90_000L])
-  assert_false(w.probed_through.contains(relay_own))
+  assert_eq(w.probed_through[0:4].to_owned(), [relay_r2, relay_r1, relay_own, relay_r2])
   assert_eq(w.recovered, [])
   w.ticks(1)
   assert_eq(w.recovered, [2L * minute])
@@ -615,14 +616,58 @@ test "watch: two relays failing in one check count once, on the same timeline; a
 }
 
 ///|
-test "watch: one relay failing while the next three let no probe on, more left unasked: never recovered" {
+test "watch: two relays staying bad while a third reaches the endpoint: asked next, failures cleared, never recovered" {
+  let last = "https://d.example"
+  let w = watched_on({ "ok": true }, lost, [relay_r2, relay_r1, relay_own, last], [relay_own, last])
+  w.through = Map::from_array([(relay_r2, failed), (relay_r1, failed)])
+  let from = w.probed_through.length()
+  w.ticks(60)
+  assert_eq(w.probed_through[from:from + 6].to_owned(), [relay_r2, relay_r1, relay_own, relay_r2, relay_r1, relay_own])
+  assert_false(w.probed_through.contains(last))
+  assert_eq(w.recovered, [])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: a relay the endpoint is connected to is asked before those it is not" {
+  let status : Json = [
+    { "url": relay_r2, "connected": false, "access": "" },
+    { "url": relay_r1, "connected": false, "access": "" },
+    { "url": relay_own, "connected": true, "access": "" },
+  ]
+  let w = watched_on({ "ok": true }, status, [relay_r2, relay_r1, relay_own], [relay_own])
+  w.through = Map::from_array([(relay_r2, failed), (relay_r1, failed)])
+  w.ticks(60)
+  assert_true(w.probed_through.length() > 0)
+  assert_true(w.probed_through.iter().all(r => r == relay_own))
+  assert_eq(w.recovered, [])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: two relays failing across checks, the others letting no probe on: still counted and recovered" {
+  let owns = ["https://c.example", "https://d.example", "https://e.example"]
+  let w = watched_on(offline_found, lost, [relay_r2, relay_r1, ..owns], owns)
+  w.through = Map::from_array([(relay_r2, failed), (owns[1], failed)])
+  w.ticks(3)
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered, [2L * minute])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: one relay failing while the next three let no probe on, more left unasked: the next check asks the one left" {
   let owns = ["https://c.example", "https://d.example", "https://e.example"]
   let w = watched_on(offline_found, lost, [relay_r2, relay_r1, ..owns], owns)
   w.through = Map::from_array([(relay_r2, failed)])
   let from = w.probed_through.length()
   w.ticks(60)
   assert_eq(w.probed_through[from:from + 4].to_owned(), [relay_r2, relay_r1, owns[0], owns[1]])
-  assert_false(w.probed_through.contains(owns[2]))
+  assert_eq(w.probed_through[from + 4:from + 8].to_owned(), [relay_r1, owns[0], owns[1], owns[2]])
   assert_eq(w.probes.length(), 61 * 4)
   assert_eq(w.recovered, [])
   w.fiber.interrupt()

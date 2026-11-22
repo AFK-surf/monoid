@@ -1505,7 +1505,7 @@ test "ovl_sheet_glass and ovl_drawer_glass use symmetric 80% floating tint (0xCC
     let expected_rest = if dark { 0x202020CCL } else { 0xFDFCFDCCL }
     let expected_full = if dark { 0x202020DCL } else { 0xFDFCFDDCL }
     let sg = ovl_sheet_glass()
-    let dg = ovl_drawer_glass()
+    let dg = liquid_drawer_glass()
     assert_eq(sg.tint, expected_rest)
     assert_eq(dg.tint, expected_rest)
     let sg_exp = ovl_sheet_glass_at(1.0)
@@ -1514,5 +1514,272 @@ test "ovl_sheet_glass and ovl_drawer_glass use symmetric 80% floating tint (0xCC
     assert_true(sg_exp.blur > sg.blur)
     assert_true(sg_exp.refraction < sg.refraction)
     assert_true((sg_exp.rim - 0.45).abs() < 0.01)
+  }
+}
+
+///|
+test "exported liquid_*_glass recipes match symmetric density, solid override and progressive scroll-edge spec" {
+  for dark in [false, true] {
+    set_dark(Some(dark))
+    let custom_solid = 0x112233FFL
+    let pg = liquid_panel_glass(solid=custom_solid)
+    let dg = liquid_dialog_glass(solid=custom_solid)
+    let sg = liquid_sheet_glass(solid=custom_solid)
+    let drg = liquid_drawer_glass(solid=custom_solid)
+    let tg = liquid_toast_glass(solid=custom_solid)
+    let cg = liquid_capsule_glass(solid=custom_solid)
+    let expected_70 = if dark { 0x202020B3L } else { 0xFDFCFDB3L }
+    let expected_75 = if dark { 0x202020BFL } else { 0xFDFCFDBFL }
+    let expected_80 = if dark { 0x202020CCL } else { 0xFDFCFDCCL }
+    assert_eq(pg.tint, expected_75)
+    assert_eq(pg.solid, custom_solid)
+    assert_eq(pg.bezel, 16.0)
+    assert_eq(pg.refraction, 22.0)
+    assert_eq(dg.tint, expected_70)
+    assert_eq(dg.blur, 9.0)
+    assert_eq(dg.rim, 0.65)
+    assert_eq(dg.bezel, 22.0)
+    assert_eq(dg.refraction, 32.0)
+    assert_eq(dg.solid, custom_solid)
+    assert_eq(sg.tint, expected_80)
+    assert_eq(sg.refraction, 24.0)
+    assert_eq(drg.tint, expected_80)
+    assert_eq(tg.tint, expected_75)
+    assert_eq(tg.blur, 2.1)
+    assert_eq(tg.bezel, 12.0)
+    assert_eq(tg.refraction, 14.0)
+    assert_eq(cg.solid, custom_solid)
+    let seg_default = liquid_scroll_edge_glass()
+    let expected_bg = if dark { 0x121212FFL } else { 0xFFFFFFFFL }
+    assert_eq(seg_default.progressive, true)
+    assert_eq(seg_default.blur, 8.5)
+    assert_eq(seg_default.saturation, 1.25)
+    assert_eq(seg_default.solid, expected_bg)
+    assert_eq(seg_default.tint, alpha(expected_bg, 0.50))
+    let seg_custom = liquid_scroll_edge_glass(bg=0x223344FFL)
+    assert_eq(seg_custom.solid, 0x223344FFL)
+    assert_eq(seg_custom.tint, alpha(0x223344FFL, 0.50))
+    let (ew, ec) = liquid_overlay_solid_edge()
+    assert_eq(ew, 1.0)
+    assert_eq(ec, if dark { 0xFFFFFF24L } else { 0x00000018L })
+  }
+}
+
+///|
+test "liquid_scroll_edge_node emits progressive frosted glass when base_h > 0, zero hidden glass at base_h = 0, and shields clicks" {
+  let bar_h = @signals.signal(64.0)
+  let under_taps = Ref(0)
+  let t = ovl_case(w=420.0, h=500.0, fn(page, _host) {
+    page.box(fn(stage) {
+      stage.width(Is(Some(356.0))).height(Is(Some(320.0))) |> ignore
+      // Button positioned at top behind the top scroll-edge shield
+      liquid_button_node(stage, fn() { "Behind Top" }, fn() { under_taps.val += 1 }) |> ignore
+      liquid_scroll_edge_node(
+        stage,
+        fn(_) { bar_h.get() },
+        fn(_) { bar_h.get() },
+        side=Top,
+        shield=true,
+      )
+      |> ignore
+      liquid_scroll_edge_node(
+        stage,
+        fn(_) { bar_h.get() },
+        fn(_) { bar_h.get() },
+        side=Bottom,
+        shield=false,
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.run_for(springs_out)
+  // 1 liquid button + 2 frosted progressive scroll-edge bands (kind != 6)
+  let frosted_open = t.drawn_glass().filter(fn(g) { g.4 != 6 }).length()
+  assert_eq(frosted_open, 2)
+  // Tapping the button behind the shielded Top scroll edge is blocked
+  let (bx, by) = middle(t, Button, "Behind Top")
+  t.tap(bx, by)
+  t.run_for(a_frame)
+  assert_eq(under_taps.val, 0)
+  // Collapsing base_h to 0 emits zero hidden scroll-edge glass instances
+  bar_h.set(0.0)
+  t.run_for(a_frame)
+  let frosted_zero = t.drawn_glass().filter(fn(g) { g.4 != 6 }).length()
+  assert_eq(frosted_zero, 0)
+  assert_no_nested_glass(t, "liquid_scroll_edge_node")
+}
+
+///|
+test "liquid_dialog_shell_node, liquid_toast_shell_node and liquid_tooltip_bubble_node render single-layer glass with 0 audit faults" {
+  for dark in [false, true] {
+    let t = ovl_case(dark~, w=700.0, h=600.0, fn(page, _host) {
+      page.box(fn(col) {
+        col.width(Is(Some(420.0))).gap(Is(16.0)) |> ignore
+        liquid_dialog_shell_node(col, radius=24.0, fn(d) {
+          d.padding(Is((20.0, 20.0, 20.0, 20.0))).gap(Is(8.0)) |> ignore
+          d.box(fn(w) {
+            w.words(Is("Custom Dialog Shell"), look=words_at(ovl_type_title, weight=ovl_weight_semibold))
+            .ink(By(fn() { colors().content }))
+            |> ignore
+          })
+          |> ignore
+          d.box(fn(w) {
+            w.words(Is("Composable dense 80% glass surface for panels and switchers."), look=words_at(ovl_type_body, wrap=true))
+            .ink(By(ovl_muted_ink))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        liquid_toast_shell_node(col, fn(tb) {
+          tb.row(Is(true)).padding(Is((16.0, 10.0, 16.0, 10.0))).lines_up(Is(Some(Middle))) |> ignore
+          tb.box(fn(w) {
+            w.words(Is("Toast shell message"), look=words_at(ovl_type_body)).ink(By(fn() { colors().content }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        liquid_tooltip_bubble_node(col, fn() { "Quick Open" }, shortcut=fn() { "⌘K" }) |> ignore
+        liquid_toolbar_node(col, pad=16.0, gap=12.0, fn(bar) {
+          bar.box(fn(w) { w.words(Is("Custom Toolbar"), look=words_at(ovl_type_sub)).ink(By(fn() { colors().content })) |> ignore })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    t.run_for(springs_out)
+    assert_eq(t.drawn_glass().filter(fn(g) { g.4 == 6 }).length(), 4)
+    assert_no_nested_glass(t, "uplifted shells dark=\{dark}")
+    assert_eq(t.audit(), [])
+    assert_eq(t.corner_faults(), [])
+  }
+}
+
+///|
+test "liquid_drawer_node supports show_header=false, scrim=false and clamps width on narrow windows" {
+  let open = @signals.signal(true)
+  let t = ovl_case(w=300.0, h=600.0, fn(_page, host) {
+    liquid_drawer_node(
+      host,
+      fn() { open.get() },
+      fn() { open.set(false) },
+      fn() { "Workspace Sidebar" },
+      fn(b) {
+        b.box(fn(w) {
+          w.words(Is("Headless custom header"), look=words_at(ovl_type_body)).ink(By(fn() { colors().content }))
+          |> ignore
+        })
+        |> ignore
+      },
+      width=360.0,
+      show_header=false,
+      scrim=false,
+      inset=10.0,
+      body_pad=16.0,
+    )
+    |> ignore
+  })
+  t.run_for(springs_out)
+  let rect = t.get(Dialog, label="Workspace Sidebar").rect
+  // Clamped to window_w - 2 * inset = 300 - 20 = 280
+  assert_true((rect.2 - 280.0).abs() < 1.0, msg="expected clamped drawer width 280, got \{rect.2}")
+  assert_eq(t.all(Button, label="Close").length(), 0)
+  assert_no_nested_glass(t, "liquid_drawer_headless_narrow")
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "liquid_toast_node supports horizontal swipe-to-dismiss and springs back on short drag" {
+  let visible = @signals.signal(true)
+  let dismissed = Ref(0)
+  let t = ovl_case(w=600.0, h=400.0, fn(page, _host) {
+    page.box(fn(col) {
+      col.width(Is(Some(360.0))) |> ignore
+      liquid_toast_node(
+        col,
+        fn() { visible.get() },
+        fn() { "Swipeable notice" },
+        on_dismiss=fn() {
+          dismissed.val += 1
+          visible.set(false)
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.run_for(springs_out)
+  let r = t.get(Status, label="Swipeable notice").rect
+  let cx = r.0 + r.2 * 0.5
+  let cy = r.1 + r.3 * 0.5
+  // Short drag (30pt < 72pt) stays open
+  t.touch(0, cx, cy)
+  t.run_for(ovl_morph_step_ms)
+  t.touch(1, cx + 30.0, cy)
+  t.run_for(ovl_drawer_drag_ms)
+  t.touch(2, cx + 30.0, cy)
+  t.run_for(springs_out)
+  assert_eq((visible.get(), dismissed.val), (true, 0))
+  // Long swipe right (110pt > 72pt) triggers on_dismiss
+  t.touch(0, cx, cy)
+  t.run_for(ovl_morph_step_ms)
+  t.touch(1, cx + 110.0, cy)
+  t.run_for(ovl_drawer_drag_ms)
+  t.touch(2, cx + 110.0, cy)
+  t.run_for(springs_out)
+  assert_eq((visible.get(), dismissed.val, t.all(Status, label="Swipeable notice").length()), (false, 1, 0))
+}
+
+///|
+test "liquid_tooltip_node renders shortcut badge via liquid_tooltip_bubble_node without blocking clicks" {
+  let clicked = Ref(0)
+  let t = ovl_case(fn(page, host) {
+    liquid_tooltip_node(
+      page,
+      host,
+      fn() { "Command Palette" },
+      fn(wrap) {
+        liquid_button_node(wrap, fn() { "Palette" }, fn() { clicked.val += 1 }) |> ignore
+      },
+      shortcut=fn() { "⌘K" },
+    )
+    |> ignore
+  })
+  let (bx, by) = middle(t, Button, "Palette")
+  t.move_to(bx, by)
+  t.run_for(@headless.tooltip_delay_ms + springs_out)
+  assert_eq(t.all(Tooltip, label="Command Palette").length(), 1)
+  assert_true(t.words_said().iter().any(fn(w) { w.0 == "⌘K" }))
+  assert_eq(t.audit(), [])
+  t.tap(bx, by)
+  t.run_for(springs_out)
+  assert_eq(clicked.val, 1)
+}
+
+///|
+test "liquid_dialog_node iOS 26/27 compact geometry passes Tester::audit and corner_faults in light and dark" {
+  for dark in [false, true] {
+    let open = @signals.signal(true)
+    let t = ovl_case(dark~, w=700.0, h=600.0, fn(_page, host) {
+      liquid_dialog_node(
+        host,
+        fn() { open.get() },
+        fn() { open.set(false) },
+        fn() { "Publish ui.monoid" },
+        fn() { "Compile one MoonBit UI tree into native GPU bundles." },
+        cancel=fn() { "Cancel" },
+        action=fn() { "Publish" },
+      )
+      |> ignore
+    })
+    t.run_for(springs_out)
+    let rect = t.get(Dialog, label="Publish ui.monoid").rect
+    assert_true((rect.2 - 320.0).abs() < 1.0, msg="expected default dialog width 320, got \{rect.2}")
+    assert_no_nested_glass(t, "liquid_dialog_ios27 dark=\{dark}")
+    assert_eq(t.audit(), [])
+    assert_eq(t.corner_faults(), [])
   }
 }

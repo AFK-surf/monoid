@@ -59,6 +59,25 @@ pub fn subchats_need_count(subchats : Array[@sfbase.OpenedChat]) -> Int {
 }
 
 ///|
+/// Whether a led sub-chat belongs in the collapsible "Done" group (finished and not running, failed, blocked, or archived).
+pub fn subchat_is_done(o : @sfbase.OpenedChat) -> Bool {
+  !o.archived && o.state_lead == "done" && o.mark != "run" && o.mark != "failed" && o.mark != "block"
+}
+
+///|
+/// Secondary state line for a sub-chat row: hides stale text on archived rows and omits bare "已完成" / "Done" inside
+/// the Done group while keeping summary lines such as "已完成：…".
+pub fn subchat_row_state_text(o : @sfbase.OpenedChat) -> String {
+  if o.archived {
+    ""
+  } else if subchat_is_done(o) && o.state_text == @sf.t("core-views.present.done") {
+    ""
+  } else {
+    o.state_text
+  }
+}
+
+///|
 /// Status mark kind for a sub-chat row: 0=run dot, 1=need dot, 2=fail dot, 3=archived icon, 4=done icon, 5=spawned icon.
 pub fn subchat_mark_kind(o : @sfbase.OpenedChat?) -> Int {
   match o {
@@ -112,20 +131,28 @@ pub fn subchats_counts_node(parent : @view.View, opened : () -> Array[@sfbase.Op
 
 ///|
 /// Shared sub-chats list in `v`: optional header with live running/waiting counts (separate nodes, never `·`-joined),
-/// active sub-chats first and archived sub-chats under a collapsible disclosure heading (collapsed by default when
-/// active sub-chats exist, expanded when only archived sub-chats exist), optional footer action to open the right
-/// side-panel `subchats` tab (`in_panel`).
+/// active sub-chats first, collapsible done group (collapsed when active items exist, expanded otherwise), collapsible
+/// archived group (collapsed when active or done items exist, expanded otherwise), and optional footer action to open
+/// the right side-panel `subchats` tab (`in_panel`). When `scroll_most` is given (Medium/Large popover), the header and
+/// footer stay pinned while only the middle list scrolls within `scroll_most()`.
 pub fn subchats_list_node(
   v : @view.View,
   opened : () -> Array[@sfbase.OpenedChat],
   close? : () -> Unit,
   in_panel? : () -> Unit,
   show_head? : Bool = true,
+  scroll_most? : () -> Double,
 ) -> Unit {
   let subchats = fn() { led_subchats(opened()) }
-  let active = fn() { subchats().filter(fn(o) { !o.archived }) }
+  let active = fn() { subchats().filter(fn(o) { !o.archived && !subchat_is_done(o) }) }
+  let done = fn() { subchats().filter(fn(o) { subchat_is_done(o) }) }
   let archived = fn() { subchats().filter(fn(o) { o.archived }) }
-  let archived_open = @signals.signal(@signals.untracked(fn() { active().length() == 0 }))
+  let done_open = @signals.signal(@signals.untracked(fn() { active().length() == 0 }))
+  let archived_open = @signals.signal(@signals.untracked(fn() { active().length() == 0 && done().length() == 0 }))
+  let scroll : @view.Scroll? = match scroll_most {
+    Some(_) => Some(@view.Scroll::new())
+    None => None
+  }
   if show_head {
     v.box(fn(head) {
       @sf.style_node(head, fn() { subchats_head })
@@ -133,72 +160,74 @@ pub fn subchats_list_node(
       subchats_counts_node(head, opened)
     })
     |> ignore
-  }
-  v.pick(at_once=true, fn() { subchats().length() == 0 }, fn(body, empty) {
-    if empty {
-      body.box(fn(e) {
-        @sf.style_node(e, fn() { subchats_empty })
-        @sf.words_node(e, fn() { @sf.t("web-pages.chat.subchatsNone") }, fn() { subchats_empty_words }) |> ignore
-      })
-      |> ignore
-      return
-    }
-    let key_of = fn(o : @sfbase.OpenedChat) { o.chat.station + "\u{1}" + o.chat.session }
-    let by_key = body.keyed_by(subchats, key_of)
-    body.box(fn(list) {
-      @sf.style_node(list, fn() { subchats_list })
-      list.show(at_once=true, fn() { active().length() > 0 }, fn(g) {
-        @sf.style_node(g, fn() { subchats_group })
-        g.each(fn() { active().map(key_of) }, fn(k) { k }, fn(row, k) {
-          let id = k.untracked()
-          subchat_row_node(row, fn() { by_key.get(id) }, close?=close)
+    match scroll {
+      Some(sc) =>
+        v.box(fn(l) {
+          @sf.style_node(l, fn() { subchats_head_divider })
+          l.alpha(By(fn() { if sc.goes() { 1.0 } else { 0.0 } })) |> ignore
         })
-      })
-      list.show(at_once=true, fn() { archived().length() > 0 }, fn(g) {
-        @sf.style_node(g, fn() {
-          if active().length() > 0 {
-            subchats_group_spaced
-          } else {
-            subchats_group
-          }
-        })
-        @sf.action_box_node(
-          g,
-          fn() { @sf.t("web-pages.chat.subchatsArchived") },
-          fn(_) { archived_open.set(!archived_open.untracked()) },
-          expanded=fn() { archived_open.get() },
-          fn(h) {
-            @sf.style_node(h, fn() { subchats_section_head.then(subchats_round) })
-            h.min_height(Is(Some(44.0))) |> ignore
-            @sf.hover_ground_node(h)
-            h.box(fn(l) {
-              @sf.style_node(l, fn() { subchats_section_left }, in_row=true)
-              @sf.words_node(l, fn() { @sf.t("web-pages.chat.subchatsArchived") }, fn() { subchats_section_words }) |> ignore
-              @sf.words_node(l, fn() { archived().length().to_string() }, fn() { subchats_section_count }) |> ignore
-            })
-            |> ignore
-            @sf.icon_node(
-              h,
-              "",
-              14.0,
-              By(fn() { @sf.theme().p.subtle }),
-              name_now=fn() { if archived_open.get() { "chevron-down" } else { "chevron-right" } },
-            )
-            |> ignore
-          },
-        )
         |> ignore
-        g.show(fn() { archived_open.get() }, fn(ag) {
-          @sf.style_node(ag, fn() { subchats_group })
-          ag.each(fn() { archived().map(key_of) }, fn(k) { k }, fn(row, k) {
+      None => ()
+    }
+  }
+  let render_body = fn(host : @view.View) {
+    host.pick(at_once=true, fn() { subchats().length() == 0 }, fn(body, empty) {
+      if empty {
+        body.box(fn(e) {
+          @sf.style_node(e, fn() { subchats_empty })
+          @sf.words_node(e, fn() { @sf.t("web-pages.chat.subchatsNone") }, fn() { subchats_empty_words }) |> ignore
+        })
+        |> ignore
+        return
+      }
+      let key_of = fn(o : @sfbase.OpenedChat) { o.chat.station + "\u{1}" + o.chat.session }
+      let by_key = body.keyed_by(subchats, key_of)
+      body.box(fn(list) {
+        @sf.style_node(list, fn() { subchats_list })
+        list.show(at_once=true, fn() { active().length() > 0 }, fn(g) {
+          @sf.style_node(g, fn() { subchats_group })
+          g.each(fn() { active().map(key_of) }, fn(k) { k }, fn(row, k) {
             let id = k.untracked()
             subchat_row_node(row, fn() { by_key.get(id) }, close?=close)
           })
         })
+        subchats_collapsible_group_node(
+          list,
+          fn() { @sf.t("web-pages.chat.subchatsDone") },
+          done,
+          done_open,
+          fn() { active().length() > 0 },
+          key_of,
+          by_key,
+          close?=close,
+        )
+        subchats_collapsible_group_node(
+          list,
+          fn() { @sf.t("web-pages.chat.subchatsArchived") },
+          archived,
+          archived_open,
+          fn() { active().length() > 0 || done().length() > 0 },
+          key_of,
+          by_key,
+          close?=close,
+        )
       })
+      |> ignore
     })
-    |> ignore
-  })
+  }
+  match (scroll_most, scroll) {
+    (Some(cap), Some(sc)) =>
+      v.box(fn(wrap) {
+        @sf.style_node(wrap, fn() { subchats_scroll_wrap })
+        wrap.shrink(Is(1.0)).min_height(Is(Some(0.0))).max_height(By(fn() { Some(cap()) })) |> ignore
+        wrap.scrolls(sc, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) { render_body(s) })
+        .clips(By(fn() { sc.goes() }))
+        .bounds_input(By(fn() { sc.goes() }))
+        |> ignore
+      })
+      |> ignore
+    _ => render_body(v)
+  }
   match in_panel {
     Some(open_panel) =>
       v.show(at_once=true, fn() { subchats().length() > 0 }, fn(foot) {
@@ -220,6 +249,61 @@ pub fn subchats_list_node(
 }
 
 ///|
+fn subchats_collapsible_group_node(
+  list : @view.View,
+  label : () -> String,
+  items : () -> Array[@sfbase.OpenedChat],
+  open : @signals.Signal[Bool],
+  has_above : () -> Bool,
+  key_of : (@sfbase.OpenedChat) -> String,
+  by_key : @signals.KeyedList[String, @sfbase.OpenedChat],
+  close? : () -> Unit,
+) -> Unit {
+  list.show(at_once=true, fn() { items().length() > 0 }, fn(g) {
+    @sf.style_node(g, fn() {
+      if has_above() {
+        subchats_group_spaced
+      } else {
+        subchats_group
+      }
+    })
+    @sf.action_box_node(
+      g,
+      label,
+      fn(_) { open.set(!open.untracked()) },
+      expanded=fn() { open.get() },
+      fn(h) {
+        @sf.style_node(h, fn() { subchats_section_head.then(subchats_round) })
+        h.min_height(Is(Some(44.0))) |> ignore
+        @sf.hover_ground_node(h)
+        h.box(fn(l) {
+          @sf.style_node(l, fn() { subchats_section_left }, in_row=true)
+          @sf.words_node(l, label, fn() { subchats_section_words }) |> ignore
+          @sf.words_node(l, fn() { items().length().to_string() }, fn() { subchats_section_count }) |> ignore
+        })
+        |> ignore
+        @sf.icon_node(
+          h,
+          "",
+          14.0,
+          By(fn() { @sf.theme().p.subtle }),
+          name_now=fn() { if open.get() { "chevron-down" } else { "chevron-right" } },
+        )
+        |> ignore
+      },
+    )
+    |> ignore
+    g.show(fn() { open.get() }, fn(ag) {
+      @sf.style_node(ag, fn() { subchats_group })
+      ag.each(fn() { items().map(key_of) }, fn(k) { k }, fn(row, k) {
+        let id = k.untracked()
+        subchat_row_node(row, fn() { by_key.get(id) }, close?=close)
+      })
+    })
+  })
+}
+
+///|
 /// A single sub-chat row: first-line aligned status mark, title + optional state summary, first-line aligned chevron.
 fn subchat_row_node(row : @view.View, item : () -> @sfbase.OpenedChat?, close? : () -> Unit) -> Unit {
   let title = fn() {
@@ -230,7 +314,7 @@ fn subchat_row_node(row : @view.View, item : () -> @sfbase.OpenedChat?, close? :
   }
   let state_text = fn() {
     match item() {
-      Some(o) => o.state_text
+      Some(o) => subchat_row_state_text(o)
       None => ""
     }
   }
@@ -280,7 +364,7 @@ fn subchat_row_node(row : @view.View, item : () -> @sfbase.OpenedChat?, close? :
         @sf.words_node(w, title, fn() { if is_archived() { subchats_title_archived } else { subchats_title } })
         .allow_ellipsis(Is(true))
         |> ignore
-        w.show(at_once=true, fn() { !is_archived() && state_text() != "" }, fn(st) {
+        w.show(at_once=true, fn() { state_text() != "" }, fn(st) {
           @sf.words_node(st, state_text, fn() { subchats_state_words }).allow_ellipsis(Is(true)) |> ignore
         })
       })
@@ -304,6 +388,14 @@ let subchats_round : @ui.Style = @ui.style(radius=@sf.panel_in)
 ///|
 // kept across runs: a value (no field of it changes)
 let subchats_head : @ui.Style = @ui.css("row w=Full pt=S1_5 px=S2_5 pb=S1_5 gap=S2 align=ACenter justify=JBetween")
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_head_divider : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_scroll_wrap : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)

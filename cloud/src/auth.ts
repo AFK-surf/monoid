@@ -1,4 +1,5 @@
 import { createRemoteJWKSet, EncryptJWT, jwtDecrypt, jwtVerify, SignJWT } from "jose";
+import { appleConfigured } from "./apple";
 import { adminOrigins, betaOrigin, publicOrigins } from "./compat";
 import type { Env } from "./env";
 import type { Role } from "./types";
@@ -123,9 +124,9 @@ export function bearerToken(request: Request): string | null {
   return match?.[1] ?? null;
 }
 
-/** Whether anyone can sign in: through the provider, or with a code sent to an email (mail.ts), or both. */
+/** Whether anyone can sign in: through Google/OIDC, Sign in with Apple, or a code sent to an email (mail.ts). */
 export function authConfigured(env: Env): boolean {
-  return Boolean((providerConfigured(env) || (env.EMAIL && env.EMAIL_FROM)) && env.AUTH_SIGNING_KEY?.length >= 43 && env.PUBLIC_ORIGIN);
+  return Boolean((providerConfigured(env) || appleConfigured(env) || (env.EMAIL && env.EMAIL_FROM)) && env.AUTH_SIGNING_KEY?.length >= 43 && env.PUBLIC_ORIGIN);
 }
 
 export function reply(body: unknown, status = 200, headers: HeadersInit = {}): Response {

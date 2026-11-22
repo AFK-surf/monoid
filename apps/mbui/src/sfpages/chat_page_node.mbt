@@ -256,7 +256,7 @@ pub fn chat_page_body_node(
         // (and while something waits to be decided whose bell may float over the list's end, its room over it: the last
         // row as far over the bell as it is over the composer without it, as the page before kept it (chat_list's
         // `ask_clear`))
-        foot=fn() { foot() + (if @sfbase.ask_clears((here.view)()) { float_lift + float_side } else { 0.0 }) },
+        foot=fn() { foot() + (if @sfbase.ask_clears((here.view)()) { float_ask_clear } else { 0.0 }) },
         foot_clear_extra~,
         composer?,
         lead~,

@@ -258,35 +258,134 @@ export const fillScript = (username: string | undefined, password: string | unde
 export const PASSKEY_BINDING = "__stillfailPasskey";
 const passkeyBinding = (owner: string): string => `${PASSKEY_BINDING}_${owner.replaceAll("-", "")}`;
 /// What takes a page's passkey sign-in (navigator.credentials.get with `publicKey`) to the person driving it, run in a
-/// page's top document before its own scripts (and each one it opens while watched): the ask said through the binding
-/// as `{"owner", "id", "rpId", "challenge", "allow", "userVerification"}` (base64url), `{"id", "gone": true}` as the page gives it
-/// up (its signal), and answered by the station with `__stillfailPasskeyReply(owner, id, answer)`: a credential made as the
-/// browser makes it, or the error the browser would give. The platform is said to have an authenticator, so that sites
-/// offer passkeys. Anything else (a password asked, a passkey made) goes to the browser as before.
+/// page's top document and its same-origin iframes before their own scripts (and each one it opens while watched): the
+/// ask said through the binding as `{"owner", "id", "rpId", "challenge", "allow", "userVerification"}` (base64url),
+/// `{"id", "gone": true}` as the page gives it up (its signal), and answered by the station with
+/// `__stillfailPasskeyReply(owner, id, answer)`: a credential made as the browser makes it, or the error the browser
+/// would give. The platform is said to have an authenticator, so that sites offer passkeys. Anything else (a password
+/// asked, a passkey made) goes to the browser as before.
 export const passkeyHook = (owner: string, device = true): string => `(() => {
-  if (window !== window.top || !navigator.credentials) return;
+  if (!navigator.credentials) return;
   const owner = ${JSON.stringify(owner)};
   const device = ${device ? "true" : "false"};
+  const sameAncestors = (w) => {
+    try {
+      let cur = w;
+      const topOrigin = window.top.location && window.top.location.origin;
+      while (cur !== window.top) {
+        const p = cur.parent;
+        if (!p || p === cur) return false;
+        if (p.location.origin !== topOrigin) return false;
+        const o = cur.location && cur.location.origin;
+        if (o && o !== "null" && topOrigin && o !== topOrigin) return false;
+        cur = p;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (window !== window.top) {
+    if (!sameAncestors(window)) return;
+    try { if (typeof window.top.__stillfailPasskeyFrame === "function") window.top.__stillfailPasskeyFrame(window); } catch {}
+    return;
+  }
   if (window.__stillfailPasskeyWatch) return window.__stillfailPasskeyWatch(owner, true, device);
   // A page kept across a station update may still have the old, unowned hook. Its get falls through while off.
   if (window.__stillfailPasskeyOff) window.__stillfailPasskeyOff(true);
   const owners = new Map();
   let active = null;
   let activeDevice = false;
-  const creds = navigator.credentials;
-  const get = creds.get.bind(creds);
-  const bytes = (v) => v instanceof ArrayBuffer ? new Uint8Array(v) : ArrayBuffer.isView(v) ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength) : null;
+  const bytes = (v) => {
+    if (!v || typeof v !== "object") return null;
+    if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+    if (v instanceof ArrayBuffer || Object.prototype.toString.call(v) === "[object ArrayBuffer]") return new Uint8Array(v);
+    return null;
+  };
   const b64 = (v) => { const u = bytes(v); if (!u) return null; let s = ""; for (const b of u) s += String.fromCharCode(b); return btoa(s).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, ""); };
-  const buf = (s) => { const t = atob(s.replace(/-/g, "+").replace(/_/g, "/")); const u = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) u[i] = t.charCodeAt(i); return u.buffer; };
+  const buf = (w, s) => { const t = atob(s.replace(/-/g, "+").replace(/_/g, "/")); const U8 = (w && w.Uint8Array) || Uint8Array; const u = new U8(t.length); for (let i = 0; i < t.length; i++) u[i] = t.charCodeAt(i); return u.buffer; };
+  const domErr = (w, msg, name) => { const DE = (w && w.DOMException) || DOMException; return new DE(msg, name); };
   const waiting = new Map();
   const uvpaWaiting = new Map();
+  const attached = new WeakSet();
   let next = 0;
   const said = (v) => { try { window[${JSON.stringify(PASSKEY_BINDING)} + "_" + active.replaceAll("-", "")](JSON.stringify({ ...v, owner: active })); return true; } catch { return false; } };
+  const attach = (w) => {
+    if (!w || attached.has(w) || !sameAncestors(w)) return;
+    let creds;
+    try { creds = w.navigator && w.navigator.credentials; } catch { return; }
+    if (!creds || typeof creds.get !== "function") return;
+    attached.add(w);
+    const P = (w && w.Promise) || Promise;
+    const get = creds.get.bind(creds);
+    creds.get = function (options) {
+      const pk = options && options.publicKey;
+      const ch = pk && b64(pk.challenge);
+      if (active === null || !pk || options.mediation === "conditional" || !ch || ch.length > 32768 || !sameAncestors(w)) return get(options);
+      const id = String(++next);
+      const allow = Array.isArray(pk.allowCredentials) ? pk.allowCredentials.map((c) => b64(c && c.id)).filter((x) => x) : [];
+      const host = (w.location && w.location.hostname) || (window.location && window.location.hostname) || "";
+      const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : host, challenge: ch, allow, userVerification: pk.userVerification || "preferred" };
+      return new P((yes, no) => {
+        const signal = options.signal;
+        if (signal && signal.aborted) return no(signal.reason !== undefined ? signal.reason : domErr(w, "The operation was aborted.", "AbortError"));
+        waiting.set(id, { yes, no, options, ask, get, win: w });
+        if (signal) signal.addEventListener("abort", () => {
+          if (!waiting.delete(id)) return;
+          said({ id, gone: true });
+          no(signal.reason !== undefined ? signal.reason : domErr(w, "The operation was aborted.", "AbortError"));
+        });
+        if (!said(ask)) { waiting.delete(id); get(options).then(yes, no); }
+      });
+    };
+    // (a frame left takes what it asked with it)
+    w.addEventListener("pagehide", () => {
+      for (const [id, entry] of [...waiting.entries()]) {
+        if (w === window || entry.win === w) {
+          waiting.delete(id);
+          said({ id, gone: true });
+        }
+      }
+      for (const [id, entry] of [...uvpaWaiting.entries()]) {
+        if (w === window || entry.win === w) uvpaWaiting.delete(id);
+      }
+    });
+    if (w.PublicKeyCredential) {
+      const PK = w.PublicKeyCredential;
+      const uvpa = typeof PK.isUserVerifyingPlatformAuthenticatorAvailable === "function" ? PK.isUserVerifyingPlatformAuthenticatorAvailable.bind(PK) : () => P.resolve(false);
+      PK.isUserVerifyingPlatformAuthenticatorAvailable = () => {
+        if (active === null || !sameAncestors(w)) return uvpa();
+        if (activeDevice) return P.resolve(true);
+        const id = "u" + (++next);
+        const host = String((w.location && w.location.hostname) || (window.location && window.location.hostname) || "");
+        return new P((res) => {
+          uvpaWaiting.set(id, { host, res, win: w });
+          if (!said({ id, uvpa: host })) { uvpaWaiting.delete(id); res(false); }
+        });
+      };
+      PK.isConditionalMediationAvailable = () => P.resolve(false);
+    }
+  };
+  const scan = (w, seen = new Set()) => {
+    if (!w || seen.has(w)) return;
+    seen.add(w);
+    attach(w);
+    let len = 0;
+    try { len = w.frames ? w.frames.length : 0; } catch { return; }
+    for (let i = 0; i < len; i++) {
+      try {
+        const child = w.frames[i];
+        if (child && child !== w) scan(child, seen);
+      } catch {}
+    }
+  };
+  Object.defineProperty(window, "__stillfailPasskeyFrame", { value: (w) => scan(w) });
   // New and old screen streams overlap on a resize. Only the active owner answers; an old stream ending cannot
   // switch off its replacement or reject a request it handed over. Pending requests follow an active stream whose
   // device signs passkeys, and settle as NotAllowedError when none does.
   Object.defineProperty(window, "__stillfailPasskeyWatch", { value: (id, on, dev = true) => {
     const useDevice = Boolean(dev);
+    if (on) scan(window);
     if (on ? owners.has(id) && owners.get(id) === useDevice : !owners.has(id)) return;
     if (on) owners.set(id, useDevice); else owners.delete(id);
     const last = [...owners.entries()].at(-1);
@@ -298,7 +397,7 @@ export const passkeyHook = (owner: string, device = true): string => `(() => {
     activeDevice = nextDevice;
     if (active !== null && activeDevice) { for (const w of waiting.values()) said(w.ask); }
     else {
-      for (const w of waiting.values()) w.no(new DOMException("The operation either timed out or was not allowed.", "NotAllowedError"));
+      for (const w of waiting.values()) w.no(domErr(w.win, "The operation either timed out or was not allowed.", "NotAllowedError"));
       waiting.clear();
     }
     if (active === null || activeDevice) {
@@ -317,51 +416,17 @@ export const passkeyHook = (owner: string, device = true): string => `(() => {
     if (!w) return;
     waiting.delete(id);
     // (one of the vault's: the browser signs it, with the tab's own authenticator)
-    if (a.browser) return get(w.options).then(w.yes, w.no);
-    if (a.error) return w.no(new DOMException(a.error === "NotAllowedError" ? "The operation either timed out or was not allowed." : String(a.error), a.error === "NotAllowedError" ? "NotAllowedError" : "UnknownError"));
-    const response = { clientDataJSON: buf(a.clientData), authenticatorData: buf(a.authenticatorData), signature: buf(a.signature), userHandle: a.userHandle ? buf(a.userHandle) : null };
-    const credential = { id: a.credential, rawId: buf(a.credential), type: "public-key", authenticatorAttachment: "platform", response,
+    if (a.browser) return w.get(w.options).then(w.yes, w.no);
+    if (a.error) return w.no(domErr(w.win, a.error === "NotAllowedError" ? "The operation either timed out or was not allowed." : String(a.error), a.error === "NotAllowedError" ? "NotAllowedError" : "UnknownError"));
+    const W = w.win;
+    const response = { clientDataJSON: buf(W, a.clientData), authenticatorData: buf(W, a.authenticatorData), signature: buf(W, a.signature), userHandle: a.userHandle ? buf(W, a.userHandle) : null };
+    const credential = { id: a.credential, rawId: buf(W, a.credential), type: "public-key", authenticatorAttachment: "platform", response,
       getClientExtensionResults: () => ({}),
       toJSON: () => ({ id: a.credential, rawId: a.credential, type: "public-key", authenticatorAttachment: "platform", clientExtensionResults: {},
         response: { clientDataJSON: b64(response.clientDataJSON), authenticatorData: a.authenticatorData, signature: a.signature, userHandle: a.userHandle || null } }) };
-    try { Object.setPrototypeOf(response, AuthenticatorAssertionResponse.prototype); Object.setPrototypeOf(credential, PublicKeyCredential.prototype); } catch {}
+    try { Object.setPrototypeOf(response, ((W && W.AuthenticatorAssertionResponse) || AuthenticatorAssertionResponse).prototype); Object.setPrototypeOf(credential, ((W && W.PublicKeyCredential) || PublicKeyCredential).prototype); } catch {}
     w.yes(credential);
   } });
-  creds.get = function (options) {
-    const pk = options && options.publicKey;
-    const ch = pk && b64(pk.challenge);
-    if (active === null || !pk || options.mediation === "conditional" || !ch || ch.length > 32768) return get(options);
-    const id = String(++next);
-    const allow = Array.isArray(pk.allowCredentials) ? pk.allowCredentials.map((c) => b64(c && c.id)).filter((x) => x) : [];
-    const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : location.hostname, challenge: ch, allow, userVerification: pk.userVerification || "preferred" };
-    return new Promise((yes, no) => {
-      const signal = options.signal;
-      if (signal && signal.aborted) return no(signal.reason !== undefined ? signal.reason : new DOMException("The operation was aborted.", "AbortError"));
-      waiting.set(id, { yes, no, options, ask });
-      if (signal) signal.addEventListener("abort", () => {
-        if (!waiting.delete(id)) return;
-        said({ id, gone: true });
-        no(signal.reason !== undefined ? signal.reason : new DOMException("The operation was aborted.", "AbortError"));
-      });
-      if (!said(ask)) { waiting.delete(id); get(options).then(yes, no); }
-    });
-  };
-  // (a page left takes what it asked with it)
-  window.addEventListener("pagehide", () => { for (const id of waiting.keys()) said({ id, gone: true }); waiting.clear(); uvpaWaiting.clear(); });
-  if (window.PublicKeyCredential) {
-    const uvpa = typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === "function" ? PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable.bind(PublicKeyCredential) : () => Promise.resolve(false);
-    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => {
-      if (active === null) return uvpa();
-      if (activeDevice) return Promise.resolve(true);
-      const id = "u" + (++next);
-      const host = String(location.hostname || "");
-      return new Promise((res) => {
-        uvpaWaiting.set(id, { host, res });
-        if (!said({ id, uvpa: host })) { uvpaWaiting.delete(id); res(false); }
-      });
-    };
-    PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
-  }
 })()`;
 
 /// Whether the client data a device made of the station's (`theirs`, JSON) says what the station's says: the same type,

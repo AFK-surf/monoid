@@ -1256,6 +1256,11 @@ pub struct Tree {
   withins_at : Array[(Int, Int)]
   /// whether a frame's laying out is telling what is under the pointer (Tree::laid_out): what it lays out then not again
   mut withins_passing : Bool
+  /// the pointer observations left by an oscillating layout; tried again once they change
+  priv mut pointer_still : PointerStill?
+  priv mut pointer_again : Bool
+  /// the current pass telling pointer observations, for bindings it marks
+  priv mut pointer_pass : Int
   /// the nodes whose taking input is read (View::takes_input), as first read
   inputs_at : Array[Int]
   /// what is to be told whether each node in it takes input as the change is committed (Tree::inputs_told): the nodes
@@ -1504,6 +1509,8 @@ pub struct Tree {
 struct Bound {
   /// the node it binds a property of (-1: none said)
   at : Int
+  /// the last pointer pass that marked this binding
+  mut pointer_pass : Int
   mut queued : Bool
   mut marked : Bool
   mut live : Bool
@@ -1530,6 +1537,7 @@ struct Bound {
 /// source, its drafts) till as many are queued again.
 let bound_gone : Bound = {
   at: -1,
+  pointer_pass: -1,
   queued: false,
   marked: false,
   live: false,
@@ -1762,6 +1770,9 @@ pub fn Tree::new(
     beside_widths: {},
     withins_at: [],
     withins_passing: false,
+    pointer_still: None,
+    pointer_again: false,
+    pointer_pass: 0,
     inputs_at: [],
     inputs_in: [],
     inputs_whole: false,
@@ -2829,6 +2840,8 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   self.drawn_marks.clear()
   self.looks_due.clear()
   self.places_due.clear()
+  self.pointer_still = None
+  self.pointer_again = false
   self.bindings_due.clear()
   self.after_bindings.clear()
   self.bindings = 0
@@ -3602,6 +3615,7 @@ fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = 
   // an allocation and a free of every node)
   let b : Bound = {
     at,
+    pointer_pass: -1,
     queued: false,
     marked: false,
     live: true,
@@ -3614,6 +3628,7 @@ fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = 
   }
   let w = @signals.watch(fn() {
     if b.live && !b.queued {
+      self.pointer_binding_changed(b)
       b.queued = true
       // (when what it read was told changed: its cause's moment, whatever frame works it out)
       b.told_at = if self.handing {
@@ -7381,6 +7396,7 @@ fn Tree::withins_settled(self : Tree) -> Unit {
   // (what takes input changed with nothing else to lay out: which column's bar the pointer is along told now, at the
   // change's end)
   if self.committing == 0 && !self.standing && !self.withins_passing && self.bars_due {
+    self.pointer_still_holds() |> ignore
     self.withins_passing = true
     self.bars_near_told() |> ignore
     self.withins_passing = false
@@ -7436,6 +7452,7 @@ fn Tree::withins_restored(self : Tree) -> Unit {
     self.standing = was_standing
   }
   if !self.withins_passing && self.bars_due {
+    self.pointer_still_holds() |> ignore
     self.withins_passing = true
     self.bars_near_told() |> ignore
     self.withins_passing = false
@@ -12936,6 +12953,15 @@ fn Tree::brought(self : Tree, upto : Double, via? : Int = 0) -> Unit {
 let told_passes_most : Int = 4
 
 ///|
+/// A hover may move the box that says it, leaving no stable state for the
+/// pointer. Check for repeated states after ordinary chains have time to settle.
+let pointer_passes_check : Int = 32
+
+///|
+/// Even a feedback loop that never repeats must not hold a frame forever.
+let pointer_passes_most : Int = 256
+
+///|
 /// What was marked laid out and drawn at `upto`, the logic not moved: no moment's work done, nothing due run (for where
 /// things are as an event finds them in the middle of its change: Tree::laid_now).
 fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
@@ -13136,20 +13162,47 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   // (what is under the pointer as it is placed now, View::pointer_within: told once all of it is placed, and what that
   // told marked done in this same pass, again till nothing it tells is told otherwise: what it marked all done, as one
   // change's whole)
-  if placing && !self.withins_passing {
+  let pointer_needed = if self.withins_passing {
+    false
+  } else {
+    let needed = self.pointer_again
+    self.pointer_again = false
+    needed
+  }
+  if !self.withins_passing {
+    self.pointer_still_holds() |> ignore
+  }
+  let pointer_ready = !self.withins_passing
+  if (placing || pointer_needed) && pointer_ready {
+    self.pointer_pass = self.pointer_pass + 1
     self.withins_passing = true
+    let mut passes = 0
+    let seen = []
     while self.withins_told() && self.due {
       self.again_said(6)
       self.laid_out(upto)
+      self.pointer_still_holds() |> ignore
+      passes = passes + 1
+      if self.pointer_cycle_seen(passes, seen) {
+        break
+      }
     }
     self.withins_passing = false
-  } else if !self.withins_passing && self.bar_cols.length() > 0 && (ordered || self.changed.length() > 0 || self.bars_due) {
+  } else if pointer_ready && self.bar_cols.length() > 0 && (ordered || self.changed.length() > 0 || self.bars_due) {
     // (which column's bar the pointer is along told anew as what is drawn or found there changes without anything
     // placed: an order, what bounds input, what takes it; in this same pass)
+    self.pointer_pass = self.pointer_pass + 1
     self.withins_passing = true
+    let mut passes = 0
+    let seen = []
     while self.bars_near_told() && self.due {
       self.again_said(7)
       self.laid_out(upto)
+      self.pointer_still_holds() |> ignore
+      passes = passes + 1
+      if self.pointer_cycle_seen(passes, seen) {
+        break
+      }
     }
     self.withins_passing = false
   }
@@ -15812,6 +15865,7 @@ fn Tree::offset_told(self : Tree, at : Int) -> Unit {
   guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return }
   let id = { at, gen: self.nodes[at].gen }
   if self.pointer_xy.0 >= 0.0 {
+    self.pointer_still_holds() |> ignore
     self.withins_told() |> ignore
   }
   for b in self.besides_at {
@@ -16406,6 +16460,8 @@ fn Tree::pointer_now(self : Tree, x : Double, y : Double) -> Unit {
   if self.pointer_xy == p {
     return
   }
+  self.pointer_still = None
+  self.pointer_again = false
   self.pointer_xy = p
   self.withins_told() |> ignore
   for at in self.besides_at {
@@ -16461,6 +16517,10 @@ fn Tree::withins_told(self : Tree) -> Bool {
     let (at, gen) = w
     let n = self.nodes[at]
     if !n.live || n.gen != gen {
+      continue
+    }
+    if self.pointer_within_still(at, gen) {
+      keep.push(w)
       continue
     }
     match n.within_cell {
@@ -16575,6 +16635,10 @@ fn Tree::bars_near_told(self : Tree) -> Bool {
     let n = self.nodes[i]
     match n.bar_near_cell {
       Some(cell) if n.live && n.gen == gen => {
+        if self.pointer_bar_still(i, gen) {
+          keep.push(e)
+          continue
+        }
         let now = at == Some(i)
         if cell.untracked() != now {
           changed = true

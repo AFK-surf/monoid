@@ -80,7 +80,12 @@ fn bridged_runtime_driver(
   let open = async fn(
     options : Json,
     events : (@jsjson.JValue) -> Unit,
+    cancelled : () -> Bool,
   ) -> Agent {
+    // (given up before it started: no process)
+    if cancelled() {
+      raise LiveError(open_aborted + ": cancelled")
+    }
     let o = @agent_runtimes.Options::of(to_jv(options))
     let env = agent_env(ctx)
     let base = fields_of_env(env)
@@ -202,7 +207,12 @@ fn acp_runtime_driver(
     options : Json,
     events : (@jsjson.JValue) -> Unit,
     probe : Bool,
+    cancelled : () -> Bool,
   ) -> Agent {
+    // (given up before it started: no process)
+    if cancelled() {
+      raise LiveError(open_aborted + ": cancelled")
+    }
     let o = @agent_runtimes.Options::of(to_jv(options))
     let base = fields_of_env(agent_env(ctx))
     let start = match kind {
@@ -354,7 +364,9 @@ fn acp_runtime_driver(
       }
     }
   }
-  let open = async fn(options : Json, events : (@jsjson.JValue) -> Unit) -> Agent { open_as(options, events, false) }
+  let open = async fn(options : Json, events : (@jsjson.JValue) -> Unit, cancelled : () -> Bool) -> Agent {
+    open_as(options, events, false, cancelled)
+  }
   // hermes.ts `models`: a session opened only to ask, asked again only while a fresh HERMES_HOME waits on another
   // launch's update of the shared checkout (`hermes_models_again`), then ended
   let models = async fn(profile : Json) -> Json {
@@ -376,7 +388,7 @@ fn acp_runtime_driver(
         "mcpUrl": jstr(""),
         "route": jstr("model-discovery"),
       }
-      match (try { Ok(open_as(options, _ => (), true)) } catch { e => Err(e) }) {
+      match (try { Ok(open_as(options, _ => (), true, () => false)) } catch { e => Err(e) }) {
         Ok(_) => {
           guard probes.get(key) is Some((session, said)) else { raise LiveError("Hermes Agent opened no session") }
           probes.remove(key)
@@ -401,7 +413,7 @@ fn acp_runtime_driver(
     adopt: async fn(options, _snap, events) {
       let id = (sessions.length(), jtext(options, "resume"))
       ignore(id)
-      open(options, events)
+      open(options, events, () => false)
     },
     shutdown: async fn(again) {
       stopping.val = true

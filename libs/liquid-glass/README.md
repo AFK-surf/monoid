@@ -55,22 +55,23 @@ All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `
 | `liquid_menu_node`, `LiquidMenuEntry` | Anchored refractive dropdown menu supporting action items, check items, shortcuts, icons, and cleaned separators. |
 | `liquid_select_node`, `LiquidSelectOption` | Capsule select trigger with floating refractive option menu and detail subtitles. |
 | `liquid_popover_node` | Anchored floating refractive popover panel positioned via `@headless.Placement`. |
-| `liquid_tooltip_node` | Hover/focus glass tooltip capsule that never blocks pointer clicks. |
-| `liquid_drawer_node`, `DrawerSide` | Floating island side drawer (`Leading`/`Trailing`, 10pt margin, `r=28pt`) with horizontal drag-to-dismiss, rubber-band over-pull, and velocity-continuous spring settle. |
+| `liquid_tooltip_node`, `liquid_tooltip_bubble_node` | Hover/focus glass tooltip capsule (and reusable bubble with optional shortcut keycap badge) that never blocks pointer clicks. |
+| `liquid_drawer_node`, `DrawerSide` | Floating island side drawer (`Leading`/`Trailing`, 10pt margin, `r=28pt`, optional `show_header=false` & narrow-window width clamp) with horizontal drag-to-dismiss, rubber-band over-pull, and velocity-continuous spring settle. |
 | `liquid_sheet_node` | Detached floating modal glass sheet (`r=36pt`) with interactive vertical drag-to-dismiss and optional `detents=true` morphing to a full-height docked reading surface. |
 | `liquid_action_sheet_node`, `LiquidActionSheetItem` | Separated iOS-style action group with independent Cancel glass capsule. |
-| `liquid_dialog_node` | Modal refractive glass dialog over a dimmed page, with Cancel and primary action. |
-| `liquid_toast_node`, `LiquidStatus` | Floating status capsule (`Info`, `Success`, `Warning`, `Error`) with optional action pill and dismiss button. |
+| `liquid_dialog_node`, `liquid_dialog_shell_node` | Modal refractive glass dialog (iOS 26/27 symmetric 70% luminous glass, `320pt` compact alert) and composable dialog shell for custom centered panels and switchers. |
+| `liquid_toast_node`, `liquid_toast_shell_node`, `LiquidStatus` | Floating status capsule (`Info`, `Success`, `Warning`, `Error`) with swipe-to-dismiss, optional action pill, and composable toast shell. |
 | `liquid_progress_bar_node`, `liquid_progress_ring_node` | Determinate (`Some(0..1)`) and closed-form indeterminate (`None`) linear and circular progress indicators. |
 
 ### Optics & Physics
 | Part | What it is |
 | --- | --- |
 | `liquid_merge_node`, `LiquidMerge` | Two liquid glass bodies with 360° 2D capillary bridge hysteresis: zero attraction before contact, smooth liquid bridge while pulling, crisp snap-off and auto-separation past `break_gap`. |
-| `liquid_progressive_blur_node` | Smoothstep progressive blur overlay fading cleanly over scrolling or dense text. |
+| `liquid_progressive_blur_node`, `liquid_scroll_edge_node`, `ScrollEdgeSide` | Native `progressive=true` variable-blur scroll-edge backdrop (`Top`/`Bottom`, zero hidden glass at `base_h=0`, click-through shield) and alpha-masked progressive blur band. |
 | `liquid_adaptive_surface_node`, `adaptive_glass` | Luminance-aware glass that continuously adapts to the brightness of the backdrop underneath. |
 | `liquid_magnifier_node` | Draggable 1.5× glyph-snapped optical loupe over text and source code. |
 | `DampedDrag`, `InteractiveHighlight` | Closed-form spring controllers (`DampedDragAnimation` and `InteractiveHighlight`) for caller-driven motion. |
+| `liquid_panel_glass`, `liquid_dialog_glass`, `liquid_sheet_glass`, `liquid_drawer_glass`, `liquid_toast_glass`, `liquid_capsule_glass`, `liquid_scroll_edge_glass`, `liquid_overlay_solid_edge` | Calibrated overlay, capsule, and scroll-edge glass recipes with optional `solid`/`bg` overrides and `MBUI_GLASS=solid` 1pt edge token. |
 
 `set_dark` chooses the light or dark look, `colors()` gives the catalog's colours in it, and `ui_theme` is mbui's
 theme in the catalog's look.

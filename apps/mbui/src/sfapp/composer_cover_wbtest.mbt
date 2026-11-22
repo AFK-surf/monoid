@@ -182,6 +182,26 @@ test "composer adaptive glass steps from 2.1 compact capsule to 4.0 expanded box
 }
 
 ///|
+test "the messages fade behind the composer only while the soft keyboard is up, eased in and out" {
+  let t = composer_cover_tester(pointing=Finger, platform=2)
+  // (the keyboard's fade: the page's ground, nearly opaque, reaching over the composer's glass from above it)
+  let backdrop = fn() {
+    let (gx, gy, gw, gh) = composer_cover_glass_box(t)
+    t.drawn_instances().filter(fn(a) {
+      a[5] == 0.0 && a[53] > 0.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw &&
+      a[1] < gy && a[1] + a[3] > gy + gh / 2.0
+    })
+  }
+  assert_eq(backdrop().length(), 0, msg="none with the keyboard down")
+  t.set_ime_inset(300.0)
+  t.run_for(@ui.move_most_ms)
+  guard backdrop() is [_, ..] else { fail("no fade behind the composer with the keyboard up") }
+  t.set_ime_inset(0.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(backdrop().length(), 0, msg="gone as the keyboard goes")
+}
+
+///|
 test "composer over messages on Android: the messages pulled past their top stretch, the composer drawn where it rests" {
   let t = composer_cover_tester(pointing=Finger, platform=2)
   let glass = fn() {

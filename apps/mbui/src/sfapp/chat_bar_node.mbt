@@ -1003,7 +1003,7 @@ fn chat_composer_bar_node(o : @view.View, src : Source, r : ChatRef, shows : () 
   .min_height(Is(Some(34.0)))
   .lines_up(Is(Some(Middle)))
   .gap(Is(6.0))
-  .padding(Is((12.0, 0.0, 12.0, 4.0)))
+  .padding(Is((2.0, 0.0, 2.0, 4.0)))
   .laid_nowhere(By(fn() { @ui.system_tabletop() is Some(_) }))
   |> ignore
   let agents = fn() {

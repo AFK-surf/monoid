@@ -4,9 +4,89 @@
 // what is under it is, and a lens over words that a finger drags.
 
 ///|
+/// Which edge of a scroll viewport a `liquid_scroll_edge_node` softens.
+#derive(Eq, Debug)
+pub(all) enum ScrollEdgeSide {
+  Top
+  Bottom
+}
+
+///|
+/// Native four-platform progressive variable-blur scroll-edge backdrop (`UIScrollEdgeEffect.soft`, `progressive=true`)
+/// anchored to the `Top` or `Bottom` edge of `parent`.
+///
+/// Blurs and veils scrolled content smoothly over `fade_h` within a `base_h`-tall band, emits zero hidden glass
+/// instances when `base_h(fill) <= 0.0`, and when `shield=true` (default) blocks click-through onto scrolled content
+/// behind floating top/bottom bars without affecting hover.
+#callsite(autofill(loc))
+pub fn liquid_scroll_edge_node(
+  parent : @view.View,
+  base_h : (@view.View) -> Double,
+  fade_h : (@view.View) -> Double,
+  side? : ScrollEdgeSide = Top,
+  bg? : () -> Int64,
+  shield? : Bool = true,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let build_scrim = fn(scrim : @view.View) {
+    scrim
+    .width_share(Is(1.0))
+    .height(By(fn() { Some(base_h(scrim)) }))
+    .fades(
+      By(fn() {
+        match side {
+          Top => (0.0, 0.0, 0.0, fade_h(scrim))
+          Bottom => (0.0, fade_h(scrim), 0.0, 0.0)
+        }
+      }),
+    )
+    |> ignore
+    scrim.box(fn(fill) {
+      // Register fill in inputs_in via pointed() while keeping points=false when shield=true so Tree::target_at
+      // visits fill and applies Node::covers to block click-through onto scrolled content without affecting hover.
+      fill
+      .width_share(Is(1.0))
+      .height_share(Is(1.0))
+      .glass(
+        By(fn() {
+          if base_h(fill) > 0.0 {
+            let color = match bg {
+              Some(f) => f()
+              None => clear
+            }
+            Some(liquid_scroll_edge_glass(bg=color))
+          } else {
+            None
+          }
+        }),
+      )
+      .points(Is(false))
+      |> ignore
+      if shield {
+        @signals.untracked(fn() { fill.pointed() }) |> ignore
+      }
+    })
+    |> ignore
+  }
+  match side {
+    Top =>
+      parent.box(made_for=loc, fn(scrim) {
+        scrim.over(Is(true)) |> ignore
+        build_scrim(scrim)
+      })
+    Bottom =>
+      parent.box(made_for=loc, fn(wrap) {
+        wrap.over(Is(true)).points(Is(false)).lies_along(Is(End)) |> ignore
+        wrap.box(build_scrim) |> ignore
+      })
+  }
+}
+
+///|
 /// A progressive blur in `parent` (ProgressiveBlurContent): a band 128 high across what holds it, what is under it
 /// blurred by 4 with the tint over 80% of it (white, or grey in the dark), whole down its upper half and fading out to
-/// nothing at its foot via a single frosted glass layer masked by `fades`; `words` in its middle. The node.
+/// nothing at its foot via a single progressive frosted glass layer (`progressive=true`) masked by `fades`; `words` in
+/// its middle. The node.
 #callsite(autofill(loc))
 pub fn liquid_progressive_blur_node(
   parent : @view.View,
@@ -18,7 +98,13 @@ pub fn liquid_progressive_blur_node(
     b.height(Is(Some(height))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
     let glass = fn() {
       let tint = alpha(colors().blur_tint, blur_band_tint)
-      @paint.Glass::frosted(blur=blur_band_blur, tint~, solid=colors().blur_tint, contained=false)
+      @paint.Glass::frosted(
+        blur=blur_band_blur,
+        tint~,
+        solid=colors().blur_tint,
+        contained=false,
+        progressive=true,
+      )
     }
     b.box(fn(mask) {
       mask.over(Is(true)).fades(Is((0.0, 0.0, 0.0, height / 2.0))) |> ignore

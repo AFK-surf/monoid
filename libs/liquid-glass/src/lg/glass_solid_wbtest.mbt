@@ -88,3 +88,40 @@ test "MBUI_GLASS=solid degrades all core Liquid Glass controls cleanly to solid 
     assert_eq((dark, liquid_count, audits), (dark, 0, []))
   }
 }
+
+///|
+test "MBUI_GLASS=solid degrades uplifted overlay shells, drawer, toast, toolbar, tooltip and scroll edge cleanly with zero audit faults" {
+  for dark in [false, true] {
+    let t = solid_case(dark, fn(page) {
+      liquid_dialog_shell_node(page, radius=24.0, fn(d) {
+        d.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+        d.box(fn(w) {
+          w.words(Is("Solid Dialog Shell"), look=words_at(ovl_type_body)).ink(By(fn() { colors().content })) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      liquid_toast_shell_node(page, fn(tb) {
+        tb.padding(Is((14.0, 10.0, 14.0, 10.0))) |> ignore
+        tb.box(fn(w) {
+          w.words(Is("Solid Toast Shell"), look=words_at(ovl_type_body)).ink(By(fn() { colors().content })) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      liquid_toast_node(page, fn() { true }, fn() { "Solid Toast" }, subtitle=fn() { "With hairline edge" }) |> ignore
+      liquid_toolbar_node(page, pad=14.0, gap=10.0, fn(bar) {
+        bar.box(fn(w) { w.words(Is("Solid Toolbar"), look=words_at(ovl_type_sub)).ink(By(fn() { colors().content })) |> ignore })
+        |> ignore
+      })
+      |> ignore
+      liquid_tooltip_bubble_node(page, fn() { "Solid Tip" }, shortcut=fn() { "⌘P" }) |> ignore
+      liquid_scroll_edge_node(page, fn(_) { 48.0 }, fn(_) { 48.0 }, side=Top) |> ignore
+    })
+    t.run_for(springs_out)
+    let liquid_count = t.drawn_glass().filter(fn(g) { g.4 == 6 }).length()
+    let audits = t.audit()
+    @ui.set_glass_solid(None)
+    assert_eq((dark, liquid_count, audits), (dark, 0, []))
+  }
+}

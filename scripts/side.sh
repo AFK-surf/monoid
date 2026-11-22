@@ -25,6 +25,8 @@ for part in $parts; do
     # The native parts' tests of real processes' timing (#[ignore = "side: …"]): a handover with no gap on real ports,
     # restarts' backoff, a signal that leaves a grandchild be.
     rust) for crate in launcher runner; do (cd station/native/$crate && cargo test --locked -- --ignored) || status=1; done ;;
+    # The Linux screen helper on a private Xvfb display. SCREEN_BIN names a built stillfail-screen-linux binary.
+    x11-keys) python3 station/side/x11-key-leases.py || status=1 ;;
     # The locks end to end (apps/mbui/e2e/locks.ts): alice's and bob's devices, each still.fail's core in Node,
     # against a cloud, a relay and two stations of their own on this machine (scripts/e2e-local.sh locks-all), the
     # station and the cloud frozen and started anew between; directories and ports of its own, beside the app's e2e.

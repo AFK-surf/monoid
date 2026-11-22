@@ -89,6 +89,14 @@ fn chat_picked_words(p : @ui.WordsPicked, m : Message, whole : Bool) -> String {
 }
 
 ///|
+/// Let go of this pick if it has not been replaced by a later one.
+fn chat_pick_gone(p : @ui.WordsPicked) -> Unit {
+  if @signals.untracked(@ui.picked_now) is Some(q) && q.made == p.made {
+    @ui.picked_let_go()
+  }
+}
+
+///|
 /// Over chat `r`'s list in `v` (its rows `rows`, each message's words, from where they are read, said of its key:
 /// picked_of, so 全选 over a finger's pick takes all of that message's, @ui's finger_select_all):
 /// the pill 引用 over a mouse's pick within one message, quoting it into the chat's draft (writing_quote, its text
@@ -104,10 +112,9 @@ fn chat_quote_node(
   place : @view.ListPlace[String],
 ) -> Unit {
   let draft = r.station + ":" + r.session
-  // (a finger's pick whose words' block was put by as the list moved on (View::park: kept to be taken for another
-  // key's, no longer let go): let go of, the bar with it, as the list says what it has in sight then)
+  // (a pick whose words' block was put by as the list moved on: let go of it and its bar or pill)
   place.on_sight(fn(_) {
-    match chat_finger_picked(rows) {
+    match chat_picked_message(rows) {
       Some((p, _)) =>
         match @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) {
           Some(end) if !end.shown_nowhere() => ()
@@ -189,11 +196,7 @@ fn chat_quote_node(
         None => ()
       }
       holds.box(fn(b) {
-        let gone = fn() {
-          if @signals.untracked(@ui.picked_now) is Some(q) && q.made == p.made {
-            @ui.picked_let_go()
-          }
-        }
+        let gone = fn() { chat_pick_gone(p) }
         let unkept = end.owns_while(gone)
         b.owns(unkept) |> ignore
         // (taken for another message's words: View::scrolls_window's `reused`)
@@ -219,7 +222,12 @@ fn chat_quote_node(
   let quote_in = fn(host : @view.View) {
     host.pick(fn() { chat_quotable(rows).map(fn(q) { q.0.made }) }, fn(holds, made) {
       guard made is Some(_) && @signals.untracked(fn() { chat_quotable(rows) }) is Some((p, _)) else { return }
+      guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) else { return }
       @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(src, draft, rows) }, fn(b) {
+        let gone = fn() { chat_pick_gone(p) }
+        let unkept = end.owns_while(gone)
+        b.owns(unkept) |> ignore
+        end.on_reused(gone)
         @sf.style_node(b, fn() { chat_quote_pill })
         @ui.keeps_picked(b)
         .glass(By(fn() { Some(@sf.glass_menu()) }))

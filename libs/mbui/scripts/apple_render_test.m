@@ -1146,6 +1146,20 @@ int main(void) {
       mb_render_present(tb4, 4, 0.95, 0.95, 0.95);
       present_drain();
       CHECK(mb_render_adaptive_settling() == 0);
+      // Kind 7 (adaptive glyph) has its own specialized pipeline.
+      CHECK(has_own_pipe(7) == 1);
+      // Same-side backdrop change (0.95 -> 0.93, both light) converges early via async readback instead of spinning
+      // for the full 420ms settle window.
+      tb[8] = 0.93; tb[9] = 0.93; tb[10] = 0.93;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(tb, 3, 0.93, 0.93, 0.93);
+      present_drain();
+      for (int s = 0; s < 4 && mb_render_adaptive_settling(); s++) {
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(tb, 3, 0.93, 0.93, 0.93);
+        present_drain();
+      }
+      CHECK(mb_render_adaptive_settling() == 0);
       mb_render_set_fixed_dt(0.0);
       glass_forget();
     }

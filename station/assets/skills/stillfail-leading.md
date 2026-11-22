@@ -39,6 +39,7 @@ Each conclusion you tell people says whether you checked it, and how.
   ledger's measure, against a baseline of the same toolchain.
 - **A large judgement on the design**: a fresh agent checks it, given the code and the question, never the conclusion.
 - Found wrong: written in the ledger, and sent back saying why it is wrong and what to do, not "have another look".
+- **Archive finished sub-chats**: once a led sub-chat (`chat_create for: "me"`) finishes and its result is accepted or dropped with no further back-and-forth needed, archive it with `chat_archive` so the leader's sub-chats list stays focused on active work.
 
 ## 4. What you tell your person, in four parts
 1. Progress by the goal, direction by direction of the ledger, those not started included.

@@ -24,6 +24,8 @@ mod view;
 mod wayland;
 #[cfg(target_os = "linux")]
 mod x11;
+#[cfg(target_os = "linux")]
+mod x11_key_leases;
 
 #[cfg(target_os = "linux")]
 fn main() {

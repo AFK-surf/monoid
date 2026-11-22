@@ -1,6 +1,6 @@
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions, Response as MFResponse, Log, LogLevel } from "miniflare";
-import { exportJWK, exportPKCS8, generateKeyPair, SignJWT } from "jose";
+import { exportJWK, exportPKCS8, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import { ulid } from "ulid";
 import { digest, randomSecret, type Tokens } from "../src/auth.ts";
 import type { MailMessage } from "../src/mail.ts";
@@ -54,6 +54,9 @@ export async function harness(
     port?: number;
     signingKey?: string;
     noGoogle?: boolean;
+    /** Sign in with Apple (apple.ts): its keys and endpoints mocked deterministically; `appleRevokeFail` makes /auth/revoke return 500. */
+    apple?: boolean;
+    appleRevokeFail?: boolean;
     /** LOGIN_LIMIT_TIMES: the sign-ins an address may start, times this (env.ts). */
     loginLimitTimes?: number;
     /** REVIEW_ACCOUNTS: who signs in with a password (password.ts). */
@@ -139,6 +142,21 @@ export async function harness(
   /** What the provider gave for each code: `claims` more of its ID token's (the OpenID provider's). */
   const codes = new Map<string, { nonce: string; challenge: string; sub: string; invalid?: string; claims?: Record<string, unknown> }>();
   const mails: MailMessage[] = [];
+  // Sign in with Apple stand-in: Apple's RS256 signing key, the team's ES256 client_secret key, one-time codes and revoked refresh tokens.
+  const apple = options.apple ? await generateKeyPair("RS256") : null;
+  const applePublicJwk = apple ? { ...(await exportJWK(apple.publicKey)), kid: "test-apple", alg: "RS256", use: "sig" } : null;
+  const appleTeamKey = options.apple ? await generateKeyPair("ES256", { extractable: true }) : null;
+  const appleTeamPem = appleTeamKey ? await exportPKCS8(appleTeamKey.privateKey) : null;
+  const appleCodes = new Map<string, { nonce: string; sub: string; email?: string; refreshToken?: string | null; emailVerified?: boolean | string; invalid?: string }>();
+  const appleRevoked: { token: string; tokenTypeHint: string | null; clientId: string | null }[] = [];
+  const appleToken = (claims: Record<string, unknown>, aud = "test-apple-services") =>
+    new SignJWT({ email_verified: "true", is_private_email: "false", ...claims })
+      .setProtectedHeader({ alg: "RS256", kid: "test-apple" })
+      .setIssuedAt(now())
+      .setExpirationTime(now() + 300)
+      .setIssuer("https://appleid.apple.com")
+      .setAudience(aud)
+      .sign(apple!.privateKey);
   const telemetryAccount = options.telemetry === "real"
     ? process.env.GCP_TELEMETRY!
     : options.telemetry
@@ -199,6 +217,7 @@ export async function harness(
         BETA_ORIGIN: betaOrigin,
         GOOGLE_CLIENT_ID: options.noGoogle ? "" : "test-google-client",
         GOOGLE_CLIENT_SECRET: options.oidc ? "" : randomSecret(),
+        ...(options.apple ? { APPLE_CLIENT_ID: "test-apple-services", APPLE_TEAM_ID: "TEAMID1234", APPLE_KEY_ID: "KEYID12345", APPLE_PRIVATE_KEY: appleTeamPem! } : {}),
         ...(options.oidc ? { OIDC_ISSUER: OIDC_ISSUER, OIDC_NAME: "Example SSO", ...(options.oidcRoleClaim ? { OIDC_ROLE_CLAIM: options.oidcRoleClaim } : {}) } : {}),
         AUTH_SIGNING_KEY: signingKey,
         ADMIN_TOKEN: adminToken,
@@ -259,6 +278,49 @@ export async function harness(
         }
         if (url.href === "https://www.googleapis.com/oauth2/v3/certs") {
           return MFResponse.json({ keys: [publicJwk] }, { headers: { "cache-control": "max-age=3600" } });
+        }
+        if (options.apple && url.href === "https://appleid.apple.com/auth/keys") {
+          return MFResponse.json({ keys: [applePublicJwk] }, { headers: { "cache-control": "max-age=3600" } });
+        }
+        if (options.apple && url.href === "https://appleid.apple.com/auth/token") {
+          const body = new URLSearchParams(await request.text());
+          const code = appleCodes.get(body.get("code") ?? "");
+          appleCodes.delete(body.get("code") ?? "");
+          const secret = await jwtVerify(body.get("client_secret") ?? "", appleTeamKey!.publicKey, {
+            issuer: "TEAMID1234",
+            subject: "test-apple-services",
+            audience: "https://appleid.apple.com",
+            currentDate: new Date(now() * 1000),
+          }).catch(() => null);
+          if (!code || !secret || secret.protectedHeader.kid !== "KEYID12345" || body.get("client_id") !== "test-apple-services" || body.get("redirect_uri") !== origin + "/v1/auth/apple/callback") {
+            return new MFResponse(null, { status: 400 });
+          }
+          const idToken = await appleToken(
+            {
+              sub: code.sub,
+              nonce: code.invalid === "nonce" ? "incorrect" : code.nonce,
+              email_verified: code.invalid === "email" ? "false" : (code.emailVerified ?? "true"),
+              ...(code.invalid === "noEmail" ? {} : { email: code.email ?? "apple-user@privaterelay.appleid.com" }),
+            },
+            code.invalid === "aud" ? "wrong" : "test-apple-services",
+          );
+          const refresh = code.refreshToken === undefined ? `rt-${ulid()}` : code.refreshToken;
+          return MFResponse.json({ id_token: idToken, access_token: "apple-access", ...(refresh ? { refresh_token: refresh } : {}), token_type: "Bearer" });
+        }
+        if (options.apple && url.href === "https://appleid.apple.com/auth/revoke") {
+          const body = new URLSearchParams(await request.text());
+          const secret = await jwtVerify(body.get("client_secret") ?? "", appleTeamKey!.publicKey, {
+            issuer: "TEAMID1234",
+            subject: "test-apple-services",
+            audience: "https://appleid.apple.com",
+            currentDate: new Date(now() * 1000),
+          }).catch(() => null);
+          if (!secret || secret.protectedHeader.kid !== "KEYID12345" || body.get("client_id") !== "test-apple-services") {
+            return new MFResponse(null, { status: 400 });
+          }
+          if (options.appleRevokeFail) return new MFResponse(null, { status: 500 });
+          appleRevoked.push({ token: body.get("token") ?? "", tokenTypeHint: body.get("token_type_hint"), clientId: body.get("client_id") });
+          return new MFResponse(null, { status: 200 });
         }
         if (options.telemetry === "real" && (url.origin === "https://telemetry.googleapis.com" || (url.href === "https://oauth2.googleapis.com/token" && new URLSearchParams(await request.clone().text()).get("grant_type") === "urn:ietf:params:oauth:grant-type:jwt-bearer"))) {
           const answer = await globalThis.fetch(url, { method: request.method, headers: Object.fromEntries(request.headers), body: await request.arrayBuffer() });
@@ -370,8 +432,8 @@ export async function harness(
       code_challenge_method: "S256",
     });
     let response = await fetch("/v1/auth/google/start?" + start, { redirect: "manual" });
-    // With signing in by email offered (`mail`), the page that asks how comes first: Google, as a browser chooses it.
-    if (response.status === 200 && options.mail) {
+    // With signing in by email or Apple offered, the page that asks how comes first: Google, as a browser chooses it.
+    if (response.status === 200 && (options.mail || options.apple)) {
       const id = /action="\/v1\/auth\/login\/([A-Za-z0-9_-]{43})"/.exec(await response.text())?.[1];
       const cookie = response.headers.get("set-cookie")?.split(";")[0] ?? "";
       response = await fetch(`/v1/auth/login/${id}`, { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded", origin, cookie }, body: new URLSearchParams({ csrf: cookie.split("=")[1] ?? "", via: "google" }).toString() });
@@ -460,6 +522,8 @@ export async function harness(
     feedbackToken,
     signingKey,
     codes,
+    appleCodes,
+    appleRevoked,
     mails,
     fetch,
     fetchAdmin,
