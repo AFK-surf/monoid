@@ -399,6 +399,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
         run: |
+          # An older release's deploy.py gives `r2 object put` no CLOUDFLARE_ACCOUNT_ID: drop still.fail's account that
+          # the step before cached for wrangler, else monoid's web.json put goes to still.fail's account (403).
+          rm -rf cloud/node_modules/.cache/wrangler
           rm -rf dist/cloud-web
           sh .github/deploy.sh --dry-run web-beta
           test "$(node -p 'require("./dist/cloud-web/build.json").revision')" = "${{ needs.plan.outputs.sha }}"
@@ -420,7 +423,11 @@ jobs:
           STILLFAIL_CLOUD: monoid
           CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
           RELEASE_REVISION: ${{ needs.plan.outputs.sha }}
-        run: python3 scripts/promote-web.py --revision "$RELEASE_REVISION"
+        run: |
+          # An older release's deploy.py gives `r2 object put` no CLOUDFLARE_ACCOUNT_ID: drop still.fail's account that
+          # the step before cached for wrangler, else monoid's web.json put goes to still.fail's account (403).
+          rm -rf cloud/node_modules/.cache/wrangler
+          python3 scripts/promote-web.py --revision "$RELEASE_REVISION"
 
   # The station's native parts of the release's revision, each where the release or the store (natives/: main's
   # natives-store copies the release's there, which keeps only 20 of a part, a few hours of main's) has it or else

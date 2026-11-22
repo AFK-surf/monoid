@@ -486,13 +486,14 @@ def promote_web(name: str) -> None:
     build = promoted_build(name)
     if not (build / "index.html").exists():
         sys.exit(f"{build} has no index.html: not a build of the web app")
-    config = {**read_template(PARTS["web"]), "account_id": account_id()}
+    account = account_id()
+    config = {**read_template(PARTS["web"]), "account_id": account}
     config["assets"] = {**config["assets"], "directory": str(build)}
     local = ROOT / "wrangler.web.local.json"
     local.write_text(json.dumps(config, indent=2) + "\n")
     print(f"promoting {build} to web ({config['name']})", flush=True)
     wrangler("deploy", "--config", str(local), capture=True)
-    say_web_build(build, beta=False)
+    say_web_build(build, beta=False, account=account)
     origin = read_template()["vars"]["PUBLIC_ORIGIN"]
     request = urllib.request.Request(f"{origin}/", headers={"user-agent": "stillfail-deploy"})
     try:
@@ -502,15 +503,19 @@ def promote_web(name: str) -> None:
         print("check web", origin, "failed:", error)
 
 
-def say_web_build(build: Path, beta: bool) -> None:
+def say_web_build(build: Path, beta: bool, account: str, env=None) -> None:
     """What the web app has out on a channel, from its build.json, in the releases bucket's web.json (web-beta.json) for
-    the changelog to say which fixes it carries (src/changelog.ts). A build from before build.json says nothing."""
+    the changelog to say which fixes it carries (src/changelog.ts). A build from before build.json says nothing.
+    `r2 object put` takes no --config, so the account is given by CLOUDFLARE_ACCOUNT_ID: without it wrangler took the
+    one cached in node_modules/.cache/wrangler by the deploy before, still.fail's when stable then deployed monoid's,
+    and was refused (403), leaving monoid's web.json at 0.1.7227."""
     said = build / "build.json"
     if not said.exists():
         print(f"note: {said} is missing: web{'-beta' if beta else ''}.json not written", flush=True)
         return
     name = "web-beta.json" if beta else "web.json"
-    wrangler("r2", "object", "put", f"stillfail-releases/{name}", "--file", str(said), "--content-type", "application/json", "--remote", capture=True)
+    put_env = {**(os.environ if env is None else env), "CLOUDFLARE_ACCOUNT_ID": account}
+    wrangler("r2", "object", "put", f"stillfail-releases/{name}", "--file", str(said), "--content-type", "application/json", "--remote", env=put_env, capture=True)
     print(f"put {name} ({json.loads(said.read_text()).get('version')})", flush=True)
 
 
@@ -631,7 +636,7 @@ def main() -> None:
         if part == "web-beta":
             print(f"kept the build for promote-web in {keep_build()}", flush=True)
         if part in ("web", "web-beta"):
-            say_web_build(REPO / "dist" / "cloud-web", beta=part == "web-beta")
+            say_web_build(REPO / "dist" / "cloud-web", beta=part == "web-beta", account=account, env=env)
         if part in secrets_of:
             given = secrets_of[part]()
             with tempfile.TemporaryDirectory(prefix="stillfail-secrets-") as directory:
