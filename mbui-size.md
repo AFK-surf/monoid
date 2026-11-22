@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5fa0192bb](https://github.com/AFK-surf/monoid/commit/5fa0192bb5782095d688727bbd49077f2ef0f834) perf(mbui): eliminate Windows glyph rasterization  | 2.67 | 3.6 | 14.59 | 36.68 | 55.74 | 32.13 | 65.06 | 98.88 | 123.68 |
 | [77a2cb29f](https://github.com/AFK-surf/monoid/commit/77a2cb29f3b020a65bf0ecb03b4a8648b83b1e4c) fix(chat): fade messages behind the composer while | 2.67 | 3.6 | 14.59 | 36.68 | 55.74 | 32.13 | 65.06 | 98.88 | 123.68 |
 | [a2ddd8aa2](https://github.com/AFK-surf/monoid/commit/a2ddd8aa24f464260c38c45d0be8b1db9a6de453) feat(liquid-glass): uplift overlay glass recipes,  | 2.67 | 3.6 | 14.59 | 36.68 | 55.74 | 32.13 | 65.06 | 98.88 | 123.68 |
 | [5b7e17f0e](https://github.com/AFK-surf/monoid/commit/5b7e17f0eb53e8a04e5fd1104b3bb3569d6d3eb2) fix(sfapp): uncrowd agent info sheet header with 3 | 2.67 | 3.6 | 14.59 | 36.68 | 55.74 | 32.14 | 65.06 | 99.08 | 122.11 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6529ca3f4](https://github.com/AFK-surf/monoid/commit/6529ca3f41c9836795828dff53320d72feeba729) fix(mbui): adapt nested filling children and image | 2.65 | 3.57 | 14.52 | 36.58 | 55.46 | 32.04 | 64.8 | 98.75 | 127.49 |
 | [c1f08f804](https://github.com/AFK-surf/monoid/commit/c1f08f80495f7713706056602b328737b83ac5fc) feat(screens): one volume control by the device, a | 2.65 | 3.57 | 14.52 | 36.58 | 55.46 | 32.04 | 64.8 | 98.75 | 127.49 |
 | [94808184c](https://github.com/AFK-surf/monoid/commit/94808184c2aa571dca96391de3f044d5038607a8) fix(mbui): keep cut words square and their ellipsi | 2.65 | 3.57 | 14.5 | 36.56 | 55.4 | 32.02 | 64.75 | 98.83 | 145.93 |
-| [749e0b7cc](https://github.com/AFK-surf/monoid/commit/749e0b7cc89b2a20a08bee16e5f0fd552d58061d) fix(sf-ui,sfdesk): close hover card submenus on le | 2.65 | 3.57 | 14.5 | 36.56 | 55.4 | 32.02 | 64.75 | 98.83 | 145.93 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5fa0192bb](https://github.com/AFK-surf/monoid/commit/5fa0192bb5782095d688727bbd49077f2ef0f834) perf(mbui): eliminate Windows glyph rasterization  | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.51 |
 | [77a2cb29f](https://github.com/AFK-surf/monoid/commit/77a2cb29f3b020a65bf0ecb03b4a8648b83b1e4c) fix(chat): fade messages behind the composer while | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.35 |
 | [a2ddd8aa2](https://github.com/AFK-surf/monoid/commit/a2ddd8aa24f464260c38c45d0be8b1db9a6de453) feat(liquid-glass): uplift overlay glass recipes,  | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.31 |
 | [5b7e17f0e](https://github.com/AFK-surf/monoid/commit/5b7e17f0eb53e8a04e5fd1104b3bb3569d6d3eb2) fix(sfapp): uncrowd agent info sheet header with 3 | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6529ca3f4](https://github.com/AFK-surf/monoid/commit/6529ca3f41c9836795828dff53320d72feeba729) fix(mbui): adapt nested filling children and image | 0.47 | 0.62 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 53.94 |
 | [c1f08f804](https://github.com/AFK-surf/monoid/commit/c1f08f80495f7713706056602b328737b83ac5fc) feat(screens): one volume control by the device, a | 0.47 | 0.61 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.33 |
 | [94808184c](https://github.com/AFK-surf/monoid/commit/94808184c2aa571dca96391de3f044d5038607a8) fix(mbui): keep cut words square and their ellipsi | 0.47 | 0.61 | 2.38 | 3.42 | 5.63 | 1.72 | 4.65 | 54.33 |
-| [749e0b7cc](https://github.com/AFK-surf/monoid/commit/749e0b7cc89b2a20a08bee16e5f0fd552d58061d) fix(sf-ui,sfdesk): close hover card submenus on le | 0.47 | 0.61 | 2.38 | 3.42 | 5.62 | 1.72 | 4.65 | 54.46 |
