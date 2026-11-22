@@ -158,8 +158,11 @@ pub let native_in : Double = 4.0
 /// screen's own there, so the screen cuts none of a card's line (the user, 2026-10-27), each corner its own (an iPhone
 /// Duo's outer screen: along its hinge, its 8, the cards' 4); 0 where it says none.
 pub fn native_card_corner_at(k : Int) -> Double {
+  if !native_bars.on.get() {
+    return 0.0
+  }
   let r = native_bars.corners.get()[k]
-  if native_bars.on.get() && r > 0.0 {
+  if r > 0.0 {
     @ui.concentric(r, native_in)
   } else {
     0.0
@@ -169,6 +172,9 @@ pub fn native_card_corner_at(k : Int) -> Double {
 ///|
 /// The roundest of the cards' corners in the screen's (native_card_corner_at); 0 where it says none.
 pub fn native_card_corner() -> Double {
+  if !native_bars.on.get() {
+    return 0.0
+  }
   let mut most = 0.0
   for k in 0..<4 {
     most = dmax(most, native_card_corner_at(k))

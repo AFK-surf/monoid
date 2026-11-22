@@ -16,6 +16,7 @@ cc -Wall -I "$D/../src/host" "$D/log_files_test.c" -o "$D/../out/log_files_test"
 # the frame waiting between Android's app thread and its GL thread (src/host/frame_mail.h; its Java side, FrameMail)
 cc -Wall -I "$D/../src/host" "$D/frame_mail_test.c" -lm -o "$D/../out/frame_mail_test" && "$D/../out/frame_mail_test" || exit 1
 sh "$D/framemail_test.sh" || exit 1
+sh "$D/touchmoves_test.sh" || exit 1
 . "$D/env.sh"
 if [ "$(uname)" = Darwin ]; then
   cc -Wall -fobjc-arc -I "$D/../src/host" -I "$MOON_HOME/include" "$D/apple_render_test.m" \

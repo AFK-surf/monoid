@@ -54,6 +54,8 @@ priv struct TapeGoes {
   /// its row, the sidebar's column, the page's panel's column, as made (for what is asked of them: tape_seen)
   parts : Array[@view.View]
   mut panel_of : () -> SideOf?
+  mut shown_side_of : (() -> SideOf?)?
+  mut room_of : (() -> TapeRoom)?
   /// whether the core has given what the page shows of a page (sfapp's pane_ready), waited for that long at most
   mut ready : (Page) -> Bool
   mut most : Double
@@ -75,6 +77,8 @@ let tape_goes : TapeGoes = {
   node: None,
   parts: [],
   panel_of: fn() { None },
+  shown_side_of: None,
+  room_of: None,
   ready: fn(_) { true },
   most: 0.0,
 }
@@ -110,6 +114,8 @@ fn tape_goes_reset() -> Unit {
   tape_goes.node = None
   tape_goes.parts.clear()
   tape_goes.panel_of = fn() { None }
+  tape_goes.shown_side_of = None
+  tape_goes.room_of = None
 }
 
 ///|
@@ -141,6 +147,7 @@ pub fn tape_holds(src : Source, w : Workspace, width : Double) -> Bool {
 /// starts), as tape_side_w has it now; the bars' room at the top and the foot; the panels' top and height (6 in from the
 /// bars); the page's panel's width with the side panel open (`open`) or not, and the side panel's while it shows
 /// (`shown`: open, or closing).
+#derive(Eq)
 priv struct TapeRoom {
   tw : Double
   under : Double
@@ -194,7 +201,7 @@ fn tape_room(ww : Double, wh : Double, ime : Double, open : Bool, shown : Bool) 
 ///|
 /// The side panel shown on the tape: the one open on the page on top, else the one last open while it closes (what it
 /// showed kept as it goes: side_leaving).
-fn tape_shown_side() -> SideOf? {
+fn tape_shown_side_uncached() -> SideOf? {
   match (tape_goes.panel_of)() {
     Some(s) => Some(s)
     None =>
@@ -206,8 +213,16 @@ fn tape_shown_side() -> SideOf? {
 }
 
 ///|
+fn tape_shown_side() -> SideOf? {
+  match tape_goes.shown_side_of {
+    Some(f) => f()
+    None => tape_shown_side_uncached()
+  }
+}
+
+///|
 /// The tape's room now (tape_room), its window as the tree's frames give it.
-fn tape_room_now() -> TapeRoom {
+fn tape_room_now_uncached() -> TapeRoom {
   let (ww, wh, ime) = match tape_goes.node {
     Some(v) => {
       let (w, h) = v.window()
@@ -215,7 +230,15 @@ fn tape_room_now() -> TapeRoom {
     }
     None => (0.0, 0.0, 0.0)
   }
-  tape_room(ww, wh, ime, (tape_goes.panel_of)() is Some(_), tape_shown_side() is Some(_))
+  tape_room(ww, wh, ime, (tape_goes.panel_of)() is Some(_), tape_shown_side_uncached() is Some(_))
+}
+
+///|
+fn tape_room_now() -> TapeRoom {
+  match (tape_goes.node, tape_goes.room_of) {
+    (Some(_), Some(f)) => f()
+    _ => tape_room_now_uncached()
+  }
 }
 
 ///|
@@ -260,12 +283,50 @@ fn tape_page_at(t : Double) -> Double {
   tape_along(tape_goes.page, 0, t)
 }
 
+fn tape_col_in(n : @view.View) -> Double {
+  tape_goes.said.get() |> ignore
+  if tape_goes.col[0] == tape_goes.col[1] {
+    return tape_goes.col[1]
+  }
+  tape_goes.way.said()
+  tape_col_at(n.drawn_while(fn(t) { tape_goes.way.goes_at(t) }))
+}
+
+///|
+fn tape_page_in(n : @view.View) -> Double {
+  tape_goes.said.get() |> ignore
+  if tape_goes.page[0] == tape_goes.page[1] {
+    return tape_goes.page[1]
+  }
+  tape_goes.way.said()
+  tape_page_at(n.drawn_while(fn(t) { tape_goes.way.goes_at(t) }))
+}
+
+///|
+fn tape_behind_in(p : TapePane, n : @view.View) -> Double {
+  if wide.tape_pull.get() is Some(_) {
+    return tape_behind_at(p, @double.infinity)
+  }
+  tape_goes.said.get() |> ignore
+  let i = tape_index(p)
+  if tape_goes.behind[2 * i] == tape_goes.behind[2 * i + 1] {
+    return tape_goes.behind[2 * i + 1]
+  }
+  tape_goes.way.said()
+  tape_along(tape_goes.behind, i, n.drawn_while(fn(t) { tape_goes.way.goes_at(t) }))
+}
+
 ///|
 /// How much narrower than it is drawn in node `n` a chat page's column in the page's panel is laid out, and how far across
 /// it is moved (chat_page_made's `narrower`, laid_across): while the tape's move takes the page's panel to another width
 /// (a side panel opened or closed beside it, another place's sidebar), as at the narrower of where it set off and where
 /// it goes; at rest none, laid out as wide as it is.
 fn tape_page_narrower(n : @view.View) -> @sfbase.ColumnLaid {
+  tape_goes.said.get() |> ignore
+  if tape_goes.page[0] == tape_goes.page[1] {
+    let at = tape_goes.page[1]
+    return { by: 0.0, across: 0.0, laid: at, toward: at, toward_by: 0.0 }
+  }
   let t = tape_drawn_at(n)
   if t == @double.infinity || !tape_goes.way.goes_at(t) {
     let at = tape_page_at(t)
@@ -781,12 +842,35 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   tape_goes.node = Some(v)
   tape_goes.ready = ready
   tape_goes.most = most
-  tape_goes.panel_of = fn() {
+  let panel_raw = fn() {
     match @sfbase.workspace_in_view(src).0 {
       Some(w) => side_open_for(src, w, tape_top())
       None => None
     }
   }
+  let panel_c = @signals.computed(fn(_) { panel_raw() }, same=fn(a, b) { a == b })
+  let panel_of = fn() { if @signals.active_sub() is None { panel_raw() } else { panel_c.get() } }
+  let shown_raw = fn() {
+    match panel_of() {
+      Some(s) => Some(s)
+      None =>
+        match tape_goes.last_side.get() {
+          Some(s) if side_leaving(s.key()) is Some(_) => Some(s)
+          _ => None
+        }
+    }
+  }
+  let shown_c = @signals.computed(fn(_) { shown_raw() }, same=fn(a, b) { a == b })
+  let shown_of = fn() { if @signals.active_sub() is None { shown_raw() } else { shown_c.get() } }
+  let room_raw = fn() {
+    let (w, h) = v.window()
+    tape_room(w, h, v.keyboard_inset(), panel_of() is Some(_), shown_of() is Some(_))
+  }
+  let room_c = @signals.computed(fn(_) { room_raw() }, same=fn(a, b) { a == b })
+  let room_of = fn() { if @signals.active_sub() is None { room_raw() } else { room_c.get() } }
+  tape_goes.panel_of = panel_of
+  tape_goes.shown_side_of = Some(shown_of)
+  tape_goes.room_of = Some(room_of)
   // (where the system lays out the app's tabs, its bars handed what the tape's frame has for them each frame it shows:
   // rail_native.mbt nav_frame)
   nav_hold(src)
@@ -809,6 +893,11 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     tape_goes.node = None
     tape_goes.parts.clear()
     tape_goes.panel_of = fn() { None }
+    tape_goes.shown_side_of = None
+    tape_goes.room_of = None
+    room_c.dispose()
+    shown_c.dispose()
+    panel_c.dispose()
     nav_held.val = fn() { None }
     // (a panel pulled over, by a finger or back's gesture, let go with it: nothing of it on the tape made next)
     wide.tape_pull.set(None)
@@ -908,10 +997,9 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     // (as wide as the tape: its panels side by side, the last on to the window's edge under the system's column)
     .width(By(fn() {
       let r = tape_room_now()
-      let t = tape_drawn_at(row)
       Some(
-        tape_col_at(t) +
-        tape_page_at(t) +
+        tape_col_in(row) +
+        tape_page_in(row) +
         (if tape_shown_side() is Some(_) { bar_gap_now() + r.panel_w } else { 0.0 }) +
         r.under,
       )
@@ -928,35 +1016,52 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     row.box(fn(side) {
       tape_goes.parts.push(side)
       side.width(By(fn() {
-        let w = tape_col_at(tape_drawn_at(side))
+        let w = tape_col_in(side)
         native_floating_schedule()
         Some(w)
       }))
       |> ignore
       tape_in_use(side, Side)
       tape_swipes(side, Side)
+      let side_geom_c = @signals.computed(fn(_) { tape_side_geom(side) }, same=fn(a, b) { a == b })
+      let side_ground_c = @signals.computed(fn(_) { tape_side_ground(side) }, same=fn(a, b) { a == b })
+      let rail_geom_c = @signals.computed(fn(_) { rail_at_tape(apart_ground()) }, same=fn(a, b) { a == b })
+      side.owns(fn() {
+        side_geom_c.dispose()
+        side_ground_c.dispose()
+        rail_geom_c.dispose()
+      })
+      |> ignore
+      let side_geom = fn() { if @signals.active_sub() is None { tape_side_geom(side) } else { side_geom_c.get() } }
+      let side_ground = fn() { if @signals.active_sub() is None { tape_side_ground(side) } else { side_ground_c.get() } }
+      let rail_geom = fn() { if @signals.active_sub() is None { rail_at_tape(apart_ground()) } else { rail_geom_c.get() } }
       // (the block, the tree's: its ground, the rail and a place's sidebar not made once in it, dock_node)
       side.box(fn(b) {
         b.over(Is(true)) |> ignore
         let tips = @sf.TipLayer::new(fn() { tape_goes.node })
-        dock_node(b, fn() { tape_side_at(side) }, fn(r) {
-          // (nothing of it read out while the panel is behind the one in use: tape_behind's)
-          r.hides(By(fn() { wide.tape_at.get() != Side })) |> ignore
-          rail_node(r, src, tips, fn() { rail_at_tape(tape_side_at(side).ground) })
-        })
+        dock_node(
+          b,
+          side_geom,
+          fn(r) {
+            // (nothing of it read out while the panel is behind the one in use: tape_behind's)
+            r.hides(By(fn() { wide.tape_at.get() != Side })) |> ignore
+            rail_node(r, src, tips, rail_geom, under=side_ground)
+          },
+          ground=side_ground,
+        )
       })
       |> ignore
       // (the sidebar made once, the tree's, over the panel where it lays its sidebar out; nothing of it read out while
       // the panel is behind the one in use: tape_behind's)
       side.box(fn(sides) {
         sides.over(Is(true)).hides(By(fn() { wide.tape_at.get() != Side })) |> ignore
-        side_node(sides, src, @sf.TipLayer::new(fn() { tape_goes.node }), fn() { tape_side_at(side) })
+        side_node(sides, src, @sf.TipLayer::new(fn() { tape_goes.node }), side_geom, ground=side_ground)
       })
       |> ignore
       // (the block's line over all it holds: dock_edge_node)
       side.box(fn(line) {
         line.over(Is(true)) |> ignore
-        dock_edge_node(line, fn() { tape_side_at(side) })
+        dock_edge_node(line, side_geom)
       })
       |> ignore
       tape_cover(side, Side, fn() {
@@ -976,7 +1081,7 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
       page
       .width(By(fn() {
         let r = tape_room_now()
-        let w = tape_page_at(tape_drawn_at(page))
+        let w = tape_page_in(page)
         Some(if tape_shown_side() is None { w + r.under } else { w })
       }))
       |> ignore
@@ -1302,24 +1407,31 @@ fn tape_covered(p : TapePane) -> Bool {
 
 ///|
 /// Where the sidebar's panel on the tape lays its sidebar out as node `side` (its column) is drawn: as dock_node
-/// lays it out (dock_side_at, the tape's look), in the column's own room.
-fn tape_side_at(side : @view.View) -> SideAt {
+/// lays it out (dock_side_at, the tape's look), in the column's own room. Geometry only (ground is separate so drag
+/// dimming does not re-evaluate layout bindings).
+fn tape_side_geom(side : @view.View) -> SideAt {
   let r = tape_room_now()
-  let col = tape_col_at(tape_drawn_at(side))
+  let col = tape_col_in(side)
   let s = dmax(0.0, col - rail_left() - bar_in_now() - bar_gap_now() - rail_more())
   let top = if side_full_height(false) { 0.0 } else { r.top }
   // (its top row the tape's, its band the bar's, as tape_under says them: side_brand_h)
-  // (behind the panel in use, its ground a step darker as far as the tape's move has got: tape_behind's)
-  let k = tape_behind_at(Side, tape_drawn_at(side))
   {
     ..dock_side_at(false, false, s, col, top, r.foot, 0.0, side.window_h(), None),
-    ground: if k <= 0.0 { apart_ground() } else { @sf.behind_ground(k~) },
+    ground: apart_ground(),
     brand: side_brand_h(false, r.top),
     band: 1.0,
     list_brand: side_brand_h(false, r.top),
     list_band: 1.0,
     tape: true,
   }
+}
+
+///|
+/// The sidebar panel's ground on the tape: behind the panel in use, a step darker as far as the tape's move or pull
+/// has got.
+fn tape_side_ground(side : @view.View) -> Int64 {
+  let k = tape_behind_in(Side, side)
+  if k <= 0.0 { apart_ground() } else { @sf.behind_ground(k~) }
 }
 
 ///|
@@ -1412,7 +1524,7 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
     // (the panel's ground, line and corners as the page's panel's, whichever it holds)
     q
     .clips(Is(true))
-    .ground(By(fn() { tape_ground(tape_behind_at(Panel, tape_drawn_at(q))) }))
+    .ground(By(fn() { tape_ground(tape_behind_in(Panel, q)) }))
     .edge(By(fn() { (1.0, @sf.theme().p.line) }))
     .padding(By(fn() { (0.0, 0.0, tape_room_now().under, 0.0) }))
     |> ignore

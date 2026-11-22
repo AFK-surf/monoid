@@ -22,7 +22,7 @@ fn side_place_index(place : String) -> Int {
 /// The sidebar the block holds now in node `n` (as large as what holds the block, over it), where `at` says the block
 /// has it: cut to the block's room, its corners the block's (its line over it, dock_edge_node's); shown while what is in
 /// it is drawn.
-fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
+fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt, ground? : () -> Int64) -> Unit {
   n.box(fn(cut) {
     cut
     // (not shown, as the device waits in the lock: laid out nowhere, the same nodes, what had the focus in it given
@@ -109,9 +109,9 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
             "stations" => stations_side_node(s, src, tips, at)
             "profiles" => profiles_side_node(s, src, tips, at)
             // (远程's: its band over the remote list, made as the chats' sidebar is)
-            "remote" => remote_side_node(s, src, tips, at)
+            "remote" => remote_side_node(s, src, tips, at, ground?)
             // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
-            _ => lists_side_node(s, src, tips, at)
+            _ => lists_side_node(s, src, tips, at, ground?)
           }
         },
       )
@@ -154,7 +154,7 @@ fn side_band_at(a : SideAt, held : Bool) -> BandAt {
 /// The chats' sidebar (lists_side's) in node `s` as wide as the sidebar: the lists (sfpages' chats_lists_node: 全部,
 /// 我参与的, 监控中, then 已归档 on its track: archive_pane_node) under the band (新建对话 and the filter: lists_band_node)
 /// and over the foot (lists_foot_node).
-fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
+fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt, ground? : () -> Int64) -> Unit {
   let workspace = fn() { @sfbase.workspace_in_view(src).0 }
   // (the tape's side column or one beside the page: the block's, each its own sidebar made once)
   let list_at = side_list_at(@signals.untracked(at))
@@ -180,10 +180,13 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
     },
     // (over the foot's band where it shows: their last row clear of it, their bar too, lists_foot_h)
     foot: fn() { lists_foot_h(src, workspace) },
-    // (on the tape the block's, a step darker behind the panel in use: tape_side_at)
+    // (on the tape the block's, a step darker behind the panel in use: tape_side_ground)
     ground: fn() {
       if wide.tape.get() {
-        at().ground
+        match ground {
+          Some(g) => g()
+          None => at().ground
+        }
       } else if side_folded() {
         apart_ground()
       } else {
@@ -256,7 +259,7 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
   // pointer is over and a press takes there)
   s.box(fn(o) {
     o.over(Is(true)).alpha(By(fn() { 1.0 - away() })) |> ignore
-    lists_band_node(o, src, tips, workspace, at)
+    lists_band_node(o, src, tips, workspace, at, ground?)
     o.box(fn(between) { between.grow(Is(1.0)) |> ignore }) |> ignore
     lists_foot_node(o, src, workspace, at)
   })
@@ -276,6 +279,7 @@ fn lists_band_node(
   tips : @sf.TipLayer,
   workspace : () -> Workspace?,
   at : () -> SideAt,
+  ground? : () -> Int64,
 ) -> Unit {
   let list_at = side_list_at(@signals.untracked(at))
   let band_at = fn() {
@@ -289,10 +293,18 @@ fn lists_band_node(
     }
   }
   o.box(fn(band) {
-    // (on the tape the block's ground, a step darker behind the panel in use as the lists under it are: tape_side_at)
+    // (on the tape the block's ground, a step darker behind the panel in use as the lists under it are: tape_side_ground)
     band.ground(By(fn() {
       let a = at()
-      @sf.mix(if a.tape { a.ground } else { apart_ground() }, a.band, @sf.theme().p.sidebar)
+      let bg = if a.tape {
+        match ground {
+          Some(g) => g()
+          None => a.ground
+        }
+      } else {
+        apart_ground()
+      }
+      @sf.mix(bg, a.band, @sf.theme().p.sidebar)
     }))
     |> ignore
     // (its top row the window's title bar where the window's buttons are in the app's top row, under what is in it: as
@@ -558,7 +570,7 @@ fn filter_glass_rows(shown : String) -> Array[(String, String, Bool, String)] {
 /// remote list (sfpages' remote_list_node: each station under its heading, its ＋ there making a new view on it, its rows
 /// opening tabs of the workbench beside it) under the sidebar's top row (remote_band_node). No row of its own over the
 /// list: a new terminal or browser tab is its station's heading's ＋ (左子健, 2026-11-16).
-fn remote_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
+fn remote_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt, ground? : () -> Int64) -> Unit {
   let list_at = side_list_at(@signals.untracked(at))
   let ws = fn() { @sfbase.workspace_in_view(src).0.map_or("", fn(w) { w.id }) }
   s
@@ -595,7 +607,7 @@ fn remote_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -
   |> ignore
   s.box(fn(o) {
     o.over(Is(true)) |> ignore
-    remote_band_node(o, at)
+    remote_band_node(o, at, ground?)
   })
   |> ignore
 }
@@ -612,11 +624,19 @@ fn remote_band_h(at : BandAt) -> Double {
 ///|
 /// What covers the remote list's top (lists_band_node's ground) in `o`, where `at` says the block has it: on the
 /// sidebar's own ground, its top row (the window's buttons' row, dragging it).
-fn remote_band_node(o : @view.View, at : () -> SideAt) -> Unit {
+fn remote_band_node(o : @view.View, at : () -> SideAt, ground? : () -> Int64) -> Unit {
   o.box(fn(band) {
     band.ground(By(fn() {
       let a = at()
-      @sf.mix(if a.tape { a.ground } else { apart_ground() }, a.band, @sf.theme().p.sidebar)
+      let bg = if a.tape {
+        match ground {
+          Some(g) => g()
+          None => a.ground
+        }
+      } else {
+        apart_ground()
+      }
+      @sf.mix(bg, a.band, @sf.theme().p.sidebar)
     }))
     |> ignore
     side_top_node(band, fn() { at().brand })

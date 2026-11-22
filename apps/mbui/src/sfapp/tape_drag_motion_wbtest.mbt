@@ -75,3 +75,47 @@ test "中屏磁带高速甩手松手后前 2 帧位移显著大于静止松手�
     assert_true(fast_end <= 0.5, msg="settled at Side x=0 without overshoot: \{fast_end}")
   }
 }
+
+///|
+test "中屏磁带水平拖拽每步绑定与布局收敛，零重排且松手后位置与底色正确" {
+  let t = tape_chat(2, 720.0, 840.0, width="medium", height="medium")
+  page_over(t, 720.0)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+  let x_rest = tape_now().0
+  let x0 = 160.0
+  let y0 = 360.0
+  t.touch(0, x0, y0)
+  t.advance(@ui.input_step_ms)
+  t.touch(1, x0 + 40.0, y0)
+  if !@ui.test_at_a_rate() {
+    t.frame()
+  }
+  t.tree_frames_from_now()
+  for dx in [70.0, 100.0, 130.0, 160.0] {
+    t.advance(@ui.input_step_ms)
+    t.touch(1, x0 + dx, y0)
+    if !@ui.test_at_a_rate() {
+      t.frame()
+    }
+  }
+  if !@ui.test_at_a_rate() {
+    let frames = t.tree_frames()
+    assert_true(frames.length() == 4, msg="expected 4 drag frames, got \{frames.length()}")
+    for i, f in frames {
+      assert_eq(f.laid, 0, msg="drag frame \{i} triggered layout: \{f.laid}")
+      assert_true(f.bindings <= 20, msg="drag frame \{i} ran too many bindings: \{f.bindings}")
+    }
+  }
+  let x_mid = tape_now().0
+  assert_true(x_mid > x_rest + 80.0, msg="mid drag should move tape right: rest=\{x_rest}, mid=\{x_mid}")
+  let b_page_mid = @sfdesk.tape_behind_now(Page, t.time())
+  let b_side_mid = @sfdesk.tape_behind_now(Side, t.time())
+  assert_true(b_page_mid > 0.15 && b_side_mid < 0.85, msg="mid drag behind: page=\{b_page_mid}, side=\{b_side_mid}")
+  t.advance(@ui.input_step_ms)
+  t.touch(2, x0 + 160.0, y0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
+  assert_true(tape_now().0.abs() < 0.5, msg="settled at Side x=0: \{tape_now().0}")
+  assert_true(@sfdesk.tape_behind_now(Side, t.time()) < 0.01)
+  assert_true(@sfdesk.tape_behind_now(Page, t.time()) > 0.99)
+}

@@ -119,7 +119,7 @@ fn rail_opens(ask : (String, Map[String, Json]) -> @sfbase.TopicState) -> Bool {
 ///|
 /// The rail in node `n` (as wide as the rail is drawn, the block's height), where `at` says it is drawn, in the workspace
 /// in view; its tips in `tips`, its places' cards in `cards` (a layer over all of the window).
-fn rail_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailAt) -> Unit {
+fn rail_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailAt, under? : () -> Int64) -> Unit {
   let ws = fn() { @sfbase.workspace_in_view(src).0 }
   n.box(fn(r) {
     rail_col.val = Some(r)
@@ -192,7 +192,7 @@ fn rail_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailA
             fn(e) { e },
             fn(item, entry) {
               let (added, place) = entry.untracked()
-              rail_place_node(item, src, tips, place, added, at)
+              rail_place_node(item, src, tips, place, added, at, under?)
             },
           )
         })
@@ -203,9 +203,9 @@ fn rail_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailA
     |> ignore
     r.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
     // what comes and goes (transfers.mbt), over the workspaces
-    rail_transfers_node(r, src, tips, at)
+    rail_transfers_node(r, src, tips, at, under?)
     // the workspaces (sfpages' workspace.mbt), giving way and scrolling where the window is short
-    rail_workspaces_node(r, src, tips, at)
+    rail_workspaces_node(r, src, tips, at, under?)
     // settings
     rail_key_node(r, tips, at, fn() { lit_place() == "settings" }, fn() { @sf.t("web-pages.settings.title") }, fn() { rail_gear(src) }, fn(k) {
       @sf.icon_node(k.sq, "settings", rail_icon_size, By(k.ink)) |> ignore
@@ -331,7 +331,13 @@ fn rail_drawn_corner(bar : Bool) -> Double {
 /// A mark hung on the top right corner of a ground of the rail (`sq`, its 30 square), as rail_hung's: on the corner,
 /// its middle on the ground's curve where it turns 45°, on a disc of what the rail stands on 2 round it; `shown` of the
 /// way in (a list's as the sidebar folds: from 40%, clear up to half its size). What it is by `mark`.
-fn rail_hung_node(sq : @view.View, at : () -> RailAt, shown : () -> Double, mark : (@view.View) -> Unit) -> Unit {
+fn rail_hung_node(
+  sq : @view.View,
+  at : () -> RailAt,
+  shown : () -> Double,
+  mark : (@view.View) -> Unit,
+  under? : () -> Int64,
+) -> Unit {
   let reach = fn() {
     @sf.on_corner(@ui.tree_theme().corner(rail_round_of(at().bar)), rail_hung_side, room=rail_sq_side / 2.0)
   }
@@ -351,7 +357,12 @@ fn rail_hung_node(sq : @view.View, at : () -> RailAt, shown : () -> Double, mark
           }
         }
         ring
-        .ground(By(fn() { at().under }))
+        .ground(By(fn() {
+          match under {
+            Some(u) => u()
+            None => at().under
+          }
+        }))
         .alpha(By(fn() { @sf.seen_at(scale()) }))
         .scale(By(scale))
         |> ignore
@@ -384,6 +395,7 @@ fn rail_place_node(
   place : String,
   added : Bool,
   at : () -> RailAt,
+  under? : () -> Int64,
 ) -> Unit {
   let ws = fn() { @sfbase.workspace_in_view(src).0 }
   let t = fn() { @sf.theme() }
@@ -549,11 +561,11 @@ fn rail_place_node(
     // hung on its ground's corner
     k.sq.show(fn() { tone() != "" && at().mark > 0.0 }, fn(m) {
       m.over(Is(true)) |> ignore
-      rail_hung_node(m, at, fn() { at().mark }, fn(ring) { @sfpages.chat_mark_node(ring, tone) })
+      rail_hung_node(m, at, fn() { at().mark }, fn(ring) { @sfpages.chat_mark_node(ring, tone) }, under?)
     })
     k.sq.show(dot, fn(m) {
       m.over(Is(true)) |> ignore
-      rail_hung_node(m, at, fn() { 1.0 }, rail_dot_node)
+      rail_hung_node(m, at, fn() { 1.0 }, rail_dot_node, under?)
     })
   })
   // right clicked, the rail's menu beside it (its key's: the node a press there finds)
@@ -723,7 +735,13 @@ let rail_card_words : @ui.Style = @ui.css("w=Full p=S2_5")
 /// key: transfers_key): as far as it has come (@sf.coming_mark_node in its mark's place), the alert's dot hung on its
 /// corner when one failed; pressed, their list beside it (rail_overlays: where it was as it was pressed). Laid nowhere
 /// while there is none.
-fn rail_transfers_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailAt) -> Unit {
+fn rail_transfers_node(
+  r : @view.View,
+  src : Source,
+  tips : @sf.TipLayer,
+  at : () -> RailAt,
+  under? : () -> Int64,
+) -> Unit {
   let ws = fn() {
     match @sfbase.workspace_in_view(src).0 {
       Some(w) => w.id
@@ -752,7 +770,7 @@ fn rail_transfers_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : (
       @sf.coming_mark_node(k.sq, fn() { going().1.to_double() / 100.0 }, rail_icon_size, k.ink)
       k.sq.show(fn() { going().2 }, fn(m) {
         m.over(Is(true)) |> ignore
-        rail_hung_node(m, at, fn() { 1.0 }, fn(ring) { @sfpages.chat_mark_node(ring, fn() { "alert" }) })
+        rail_hung_node(m, at, fn() { 1.0 }, fn(ring) { @sfpages.chat_mark_node(ring, fn() { "alert" }) }, under?)
       })
     },
   )
@@ -793,7 +811,13 @@ let transfers_from : Ref[(Double, Double, Double, Double)?] = Ref(None)
 /// while one waits) always seen (the web's only as the pointer comes over them), lit while its menu is open; pressed,
 /// its menu (sfpages' workspace_add_pressed, beside it). Pressed, that workspace.
 /// Giving way and scrolling where the window is short.
-fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailAt) -> Unit {
+fn rail_workspaces_node(
+  r : @view.View,
+  src : Source,
+  tips : @sf.TipLayer,
+  at : () -> RailAt,
+  under? : () -> Int64,
+) -> Unit {
   let ws = fn() { @sfbase.workspace_in_view(src).0 }
   let marks = fn() {
     match ws() {
@@ -830,7 +854,7 @@ fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : 
             // an invitation waiting: the accent's dot
             k.sq.show(fn() { @sfpages.invitations_waiting(src).length() > 0 }, fn(m) {
               m.over(Is(true)) |> ignore
-              rail_hung_node(m, at, fn() { 1.0 }, rail_invite_node)
+              rail_hung_node(m, at, fn() { 1.0 }, rail_invite_node, under?)
             })
           },
         )
@@ -925,7 +949,7 @@ fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : 
                 // another's: what waits there, as its rows' marks
                 k.sq.show(fn() { tone() != "" }, fn(m) {
                   m.over(Is(true)) |> ignore
-                  rail_hung_node(m, at, fn() { 1.0 }, fn(ring) { @sfpages.chat_mark_node(ring, tone) })
+                  rail_hung_node(m, at, fn() { 1.0 }, fn(ring) { @sfpages.chat_mark_node(ring, tone) }, under?)
                 })
               },
             )

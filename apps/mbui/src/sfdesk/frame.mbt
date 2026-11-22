@@ -470,7 +470,7 @@ fn dock_edge_node(n : @view.View, at : () -> SideAt) -> Unit {
 /// block, over it), where `at` says it is: a node with its ground and its shadow, as round as its corners are
 /// (dock_round_node), holding, cut to it, the rail (`rail`'s nodes: rail_node, as wide as the rail is drawn; none
 /// beside the system's tabs). Its line is drawn over all it holds by dock_edge_node, every place's sidebar by side_node.
-fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit) -> Unit {
+fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit, ground? : () -> Int64) -> Unit {
   n.box(fn(o) {
     o.over(Is(true)) |> ignore
     // (laid out where the block is, not drawn off where it is laid out: the old views in it laid out where they are
@@ -481,7 +481,12 @@ fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit) -> 
       .width(By(fn() { Some(at().block.2) }))
       .height(By(fn() { Some(at().block.3) }))
       .margin(By(fn() { (at().block.0, at().block.1, 0.0, 0.0) }))
-      .ground(By(fn() { at().ground }))
+      .ground(By(fn() {
+        match ground {
+          Some(gr) => gr()
+          None => at().ground
+        }
+      }))
       .shadow(By(fn() { at().shadow }))
       .clips(Is(true))
       .row(Is(true))

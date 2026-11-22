@@ -7,7 +7,7 @@
 /// How far behind the one in use the page's panel is drawn by what reads it in node `n` (tape_behind's): its ground a
 /// step darker that far, the page's own where it is in use.
 fn tape_page_ground(n : @view.View) -> Int64 {
-  tape_ground(tape_behind_at(Page, tape_drawn_at(n)))
+  tape_ground(tape_behind_in(Page, n))
 }
 
 ///|
@@ -24,12 +24,15 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
   page_switch_said(v, fn() { @sfbase.workspace_in_view(src).0 is Some(_) })
   tape_pick_said(v, src)
   v.box(fn(panel) {
+    let page_ground_c = @signals.computed(fn(_) { tape_page_ground(panel) }, same=fn(a, b) { a == b })
+    panel.owns(fn() { page_ground_c.dispose() }) |> ignore
+    let page_ground = fn() { if @signals.active_sub() is None { tape_page_ground(panel) } else { page_ground_c.get() } }
     panel
     .grow(Is(1.0))
     .clips(Is(true))
     // (out of the semantics tree while the tape's side is over it, as the old page's tape_behind was)
     .hides(By(fn() { wide.tape_at.get() != Page }))
-    .ground(By(fn() { tape_page_ground(panel) }))
+    .ground(By(page_ground))
     .edge(By(fn() { (1.0, @sf.theme().p.line) }))
     .padding(By(fn() { (0.0, 0.0, if tape_shown_side() is None { tape_room_now().under } else { 0.0 }, 0.0) }))
     |> ignore
@@ -42,7 +45,7 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       fn(_c, _p) {  },
       fn(p) { (tape_goes.ready)(p) },
       tape_goes.most,
-      bg=fn() { tape_page_ground(panel) },
+      bg=page_ground,
       // (a page's bar on the tape the tree's, over its own view: what the page says of it)
       head=fn(b, k, made) {
         // (and Home / Remote workbench, which draw their own top bar)
@@ -219,7 +222,7 @@ fn tape_bar_head(b : @view.View, k : Int, made : Bool, tips : @sf.TipLayer) -> U
       fn() { tape_page_ground(h) },
       tips,
       // (the page's width, as its page is built in it: the stack's room in the panel)
-      fn() { tape_page_at(tape_drawn_at(h)) },
+      fn() { tape_page_in(h) },
       // (nothing of it read out while the panel is not in use, as the page under it: tape_behind)
       fn() { wide.tape_at.get() != Page },
       // (what a page made once does, at its end)

@@ -1076,6 +1076,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
     // ---- input ----
 
+    private final TouchMoves touchMoves = new TouchMoves();
+
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         // each finger by its pointer id (an index is only its place in this event): handed on as it comes, down, moved,
@@ -1103,6 +1105,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                 final int id = e.getPointerId(i);
                 final float x = e.getX(i) / density, y = e.getY(i) / density;
                 final int phase = a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_POINTER_DOWN ? 10 : 12;
+                touchMoves.seal();
                 toApp(() -> Native.touch(phase, id, x, y, t));
                 return true;
             }
@@ -1116,13 +1119,15 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                     xs[p] = e.getX(p) / density;
                     ys[p] = e.getY(p) / density;
                 }
+                touchMoves.seal();
                 toApp(() -> { for (int p = 0; p < n; p++) Native.touch(13, ids[p], xs[p], ys[p], t); });
                 return true;
             }
             case MotionEvent.ACTION_MOVE: {
                 // each finger's samples batched into the move (MotionEvent's history) and the event itself, each at its
-                // own time (uptime ms, as Compose's PointerInputChange has them); each but the last of them all as 14,
-                // more of the batch after it, so what they do is laid out once, as the last is taken (touches.mbt)
+                // own time (uptime ms, as Compose's PointerInputChange has them); consecutive moves queued before the
+                // logic thread drains coalesce into one bucket, with each sample but the very last as 14 so what they
+                // do is laid out once, as the last is taken (touches.mbt)
                 final int n = e.getPointerCount(), h = e.getHistorySize();
                 final int[] ids = new int[n];
                 final float[] xs = new float[n * (h + 1)], ys = new float[n * (h + 1)];
@@ -1138,13 +1143,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                     xs[p * (h + 1) + h] = e.getX(p) / density;
                     ys[p * (h + 1) + h] = e.getY(p) / density;
                 }
-                toApp(() -> {
-                    for (int k = 0; k <= h; k++)
-                        for (int p = 0; p < n; p++) {
-                            final int kind = k == h && p == n - 1 ? 11 : 14;
-                            Native.touch(kind, ids[p], xs[p * (h + 1) + k], ys[p * (h + 1) + k], ts[k]);
-                        }
-                });
+                final TouchMoves.Bucket bucket = touchMoves.enqueue(ids, xs, ys, ts, n, h);
+                if (bucket != null) {
+                    toApp(() -> touchMoves.drain(bucket, Native::touch));
+                }
                 return true;
             }
             default: return true;
