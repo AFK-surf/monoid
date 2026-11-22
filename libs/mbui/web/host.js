@@ -1311,8 +1311,8 @@
       // the foot and right less), 0.5 wide
       bool prog_glass = (v_pad.z < -0.5);
       vec3 g3 = backdrop(p);
-      float ps = prog_glass ? smoothstep(0.0, 1.0, fade_r) : 1.0;
-      float ts = prog_glass ? (ps <= 0.0 ? 0.0 : pow(ps, 1.35)) : 1.0;
+      float ps = prog_glass ? fade_r : 1.0;
+      float ts = prog_glass ? (fade_r <= 0.0 ? 0.0 : pow(fade_r, 1.25)) : 1.0;
       float sat = prog_glass ? mix(1.0, v_p.z, ps) : v_p.z;
       float bg_diff = prog_glass ? smoothstep(0.22, 0.72, abs(luma(col.rgb) - luma(g3))) : 0.0;
       float base_a = prog_glass ? mix(col.a, min(0.86, col.a + 0.34), bg_diff) : col.a;
@@ -1414,8 +1414,7 @@
       if (kf < 0.5) { o = texture(u_src, clamp(gl_FragCoord.xy * m0.xy, m0.xy * 0.5, m0.zw)); return; }
       float sig1 = pow(sp, 1.0 / kf);
       float r = clamp(ramp, 0.0, 1.0);
-      float s_r = smoothstep(0.0, 1.0, r);
-      float target_px = s_r <= 0.0 ? 0.0 : sp * pow(s_r, 1.25);
+      float target_px = r <= 0.0 ? 0.0 : sp * pow(r, 1.15);
       if (target_px <= sig1 || kf <= 1.05) {
         vec2 uv0_min = m0.xy * 0.5, uv0_max = m0.zw;
         vec2 c_uv = gl_FragCoord.xy * m0.xy;
@@ -1423,9 +1422,10 @@
         if (target_px <= 0.01) {
           g_small = texture(u_src, clamp(c_uv, uv0_min, uv0_max));
         } else {
-          vec2 d0 = vec2(target_px, 0.0) * m0.xy;
-          vec2 d1 = vec2(0.0, target_px) * m0.xy;
-          vec2 dd = vec2(target_px * 0.70710678, target_px * 0.70710678) * m0.xy;
+          float r_tap = target_px * 1.5;
+          vec2 d0 = vec2(r_tap, 0.0) * m0.xy;
+          vec2 d1 = vec2(0.0, r_tap) * m0.xy;
+          vec2 dd = vec2(r_tap * 0.70710678, r_tap * 0.70710678) * m0.xy;
           g_small  = texture(u_src, clamp(c_uv, uv0_min, uv0_max)) * 0.25;
           g_small += (texture(u_src, clamp(c_uv + d0, uv0_min, uv0_max)) +
                       texture(u_src, clamp(c_uv - d0, uv0_min, uv0_max)) +
