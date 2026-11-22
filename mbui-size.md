@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dd5869c8c](https://github.com/AFK-surf/monoid/commit/dd5869c8cb9ceb4ff62cc17ec883ee02ffb12ed9) fix(sf-ui): in-container submenu slide, pill morph | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.16 | 123.14 |
 | [627160f39](https://github.com/AFK-surf/monoid/commit/627160f39bc0c40e1bcab473e7161d2d4789ec48) chore(sf-ui): guard against raw glass outside @lg  | 2.7 | 3.63 | 14.73 | 36.82 | 56.09 | 32.25 | 65.38 | 99.21 | 121.28 |
 | [dd573a706](https://github.com/AFK-surf/monoid/commit/dd573a706239ec1ae450b59bff9fef8f5d839ce3) refactor(sf-ui): delegate controls, capsules, lens | 2.7 | 3.63 | 14.73 | 36.82 | 56.09 | 32.25 | 65.38 | 99.32 | 125.45 |
 | [f70cbae6f](https://github.com/AFK-surf/monoid/commit/f70cbae6f66c4022f8d655a311a01a188ebc1ae9) fix(mbui,sf-ui): let the wheel scroll the page und | 2.7 | 3.64 | 14.73 | 36.82 | 56.11 | 32.25 | 65.39 | 99.12 | 119.8 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1fa4ef07a](https://github.com/AFK-surf/monoid/commit/1fa4ef07a8be5bf44c3ca223cd9e8e6825777442) fix(mbui): keep later photos in the attach strip o | 2.67 | 3.6 | 14.58 | 36.67 | 55.72 | 32.11 | 65.01 | 98.81 | 121.72 |
 | [831ca02c9](https://github.com/AFK-surf/monoid/commit/831ca02c945fd701cc13e872350fb1f06844502a) fix(mbui): redraw complete glass captures during s | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.81 | 114.66 |
 | [2b7f56a69](https://github.com/AFK-surf/monoid/commit/2b7f56a69b3ae604abf57b6ded7787dcfd649652) feat(core,mbui,sfapp): step down model labels in t | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.81 | 114.66 |
-| [7a1ead641](https://github.com/AFK-surf/monoid/commit/7a1ead64114b749fcea9384e2c69dab1d844438e) fix(mbui): remove double smoothstep flattening on  | 2.67 | 3.59 | 14.57 | 36.66 | 55.67 | 32.11 | 65.01 | 98.81 | 114.66 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dd5869c8c](https://github.com/AFK-surf/monoid/commit/dd5869c8cb9ceb4ff62cc17ec883ee02ffb12ed9) fix(sf-ui): in-container submenu slide, pill morph | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
 | [627160f39](https://github.com/AFK-surf/monoid/commit/627160f39bc0c40e1bcab473e7161d2d4789ec48) chore(sf-ui): guard against raw glass outside @lg  | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
 | [dd573a706](https://github.com/AFK-surf/monoid/commit/dd573a706239ec1ae450b59bff9fef8f5d839ce3) refactor(sf-ui): delegate controls, capsules, lens | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
 | [f70cbae6f](https://github.com/AFK-surf/monoid/commit/f70cbae6f66c4022f8d655a311a01a188ebc1ae9) fix(mbui,sf-ui): let the wheel scroll the page und | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1fa4ef07a](https://github.com/AFK-surf/monoid/commit/1fa4ef07a8be5bf44c3ca223cd9e8e6825777442) fix(mbui): keep later photos in the attach strip o | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.31 |
 | [831ca02c9](https://github.com/AFK-surf/monoid/commit/831ca02c945fd701cc13e872350fb1f06844502a) fix(mbui): redraw complete glass captures during s | 0.47 | 0.62 | 2.39 | 3.45 | 5.67 | 1.74 | 4.72 | 54.31 |
 | [2b7f56a69](https://github.com/AFK-surf/monoid/commit/2b7f56a69b3ae604abf57b6ded7787dcfd649652) feat(core,mbui,sfapp): step down model labels in t | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.72 | 54.26 |
-| [7a1ead641](https://github.com/AFK-surf/monoid/commit/7a1ead64114b749fcea9384e2c69dab1d844438e) fix(mbui): remove double smoothstep flattening on  | 0.47 | 0.62 | 2.39 | 3.45 | 5.66 | 1.74 | 4.7 | 54.53 |
