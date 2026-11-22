@@ -1420,9 +1420,128 @@ void mb_render_set_size(int pw, int ph, double w, double h, double scale) {
   fb_h = ph;
 }
 
+#ifndef MB_WIN_ATLAS_UPDATE
+#define MB_WIN_ATLAS_UPDATE(c, tex, box, data, pitch) ((c)->UpdateSubresource((tex), 0, (box), (data), (pitch), 0))
+#endif
+
+// Glyphs queued for the atlas before the next draw: consecutive glyphs placed on the same shelf (same y, x == right + 1
+// within the same 512px atlas plot) are merged into a single horizontal UpdateSubresource strip in atlas_flush().
+struct AtlasPut {
+  int x, y, w, h;
+  size_t off;
+};
+static AtlasPut *atlas_puts;
+static int atlas_puts_n, atlas_puts_cap;
+static uint8_t *atlas_px_buf;
+static size_t atlas_px_len, atlas_px_cap;
+static uint8_t *atlas_row_buf;
+static size_t atlas_row_cap;
+
+static void atlas_flush(void) {
+  if (atlas_puts_n == 0 || !ctx || !atlas) return;
+  int i = 0;
+  while (i < atlas_puts_n) {
+    AtlasPut first = atlas_puts[i];
+    int plot_x = first.x >> 9;
+    int j = i + 1;
+    int right = first.x + first.w;
+    int h = first.h;
+    while (j < atlas_puts_n) {
+      AtlasPut g = atlas_puts[j];
+      if (g.y != first.y || g.x != right + 1 || (g.x >> 9) != plot_x) break;
+      right = g.x + g.w;
+      if (g.h > h) h = g.h;
+      j++;
+    }
+    if (j - i == 1) {
+      D3D11_BOX box = {(UINT)first.x, (UINT)first.y, 0, (UINT)(first.x + first.w), (UINT)(first.y + first.h), 1};
+      MB_WIN_ATLAS_UPDATE(ctx, atlas, &box, atlas_px_buf + first.off, (UINT)first.w * 4);
+    } else {
+      int w = right - first.x;
+      size_t bytes = (size_t)w * (size_t)h * 4;
+      if (bytes > atlas_row_cap) {
+        size_t cap = bytes <= (SIZE_MAX / 2) ? bytes * 2 : bytes;
+        uint8_t *grown = (uint8_t *)realloc(atlas_row_buf, cap);
+        if (!grown && cap != bytes) {
+          cap = bytes;
+          grown = (uint8_t *)realloc(atlas_row_buf, cap);
+        }
+        if (grown) {
+          atlas_row_buf = grown;
+          atlas_row_cap = cap;
+        }
+      }
+      if (atlas_row_buf && atlas_row_cap >= bytes) {
+        memset(atlas_row_buf, 0, bytes);
+        for (int k = i; k < j; k++) {
+          AtlasPut g = atlas_puts[k];
+          int ox = g.x - first.x;
+          const uint8_t *src = atlas_px_buf + g.off;
+          size_t row_bytes = (size_t)g.w * 4;
+          for (int r = 0; r < g.h; r++) {
+            memcpy(atlas_row_buf + ((size_t)r * (size_t)w + (size_t)ox) * 4, src + (size_t)r * row_bytes, row_bytes);
+          }
+        }
+        D3D11_BOX box = {(UINT)first.x, (UINT)first.y, 0, (UINT)(first.x + w), (UINT)(first.y + h), 1};
+        MB_WIN_ATLAS_UPDATE(ctx, atlas, &box, atlas_row_buf, (UINT)w * 4);
+      } else {
+        for (int k = i; k < j; k++) {
+          AtlasPut g = atlas_puts[k];
+          D3D11_BOX box = {(UINT)g.x, (UINT)g.y, 0, (UINT)(g.x + g.w), (UINT)(g.y + g.h), 1};
+          MB_WIN_ATLAS_UPDATE(ctx, atlas, &box, atlas_px_buf + g.off, (UINT)g.w * 4);
+        }
+      }
+    }
+    i = j;
+  }
+  atlas_puts_n = 0;
+  atlas_px_len = 0;
+}
+
 void mb_atlas_upload(int x, int y, int w, int h, const void *rgba) {
-  D3D11_BOX box = {(UINT)x, (UINT)y, 0, (UINT)(x + w), (UINT)(y + h), 1};
-  ctx->UpdateSubresource(atlas, 0, &box, rgba, (UINT)w * 4, 0);
+  if (w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > mb_atlas_size || y + h > mb_atlas_size || !rgba) return;
+  size_t bytes = (size_t)w * (size_t)h * 4;
+  if (atlas_puts_n == atlas_puts_cap) {
+    int cap = atlas_puts_cap ? atlas_puts_cap * 2 : 128;
+    AtlasPut *grown = (AtlasPut *)realloc(atlas_puts, (size_t)cap * sizeof *atlas_puts);
+    if (!grown) {
+      if (ctx && atlas) {
+        atlas_flush();
+        D3D11_BOX box = {(UINT)x, (UINT)y, 0, (UINT)(x + w), (UINT)(y + h), 1};
+        MB_WIN_ATLAS_UPDATE(ctx, atlas, &box, rgba, (UINT)w * 4);
+      }
+      return;
+    }
+    atlas_puts = grown;
+    atlas_puts_cap = cap;
+  }
+  if (bytes > SIZE_MAX - atlas_px_len) {
+    atlas_flush();
+  }
+  if (atlas_px_len + bytes > atlas_px_cap) {
+    size_t need = atlas_px_len + bytes;
+    size_t cap = atlas_px_cap ? atlas_px_cap : (1u << 16);
+    while (cap < need) cap = cap <= (SIZE_MAX / 2) ? cap * 2 : need;
+    uint8_t *grown = (uint8_t *)realloc(atlas_px_buf, cap);
+    if (!grown && cap != need) {
+      cap = need;
+      grown = (uint8_t *)realloc(atlas_px_buf, cap);
+    }
+    if (!grown) {
+      if (ctx && atlas) {
+        atlas_flush();
+        D3D11_BOX box = {(UINT)x, (UINT)y, 0, (UINT)(x + w), (UINT)(y + h), 1};
+        MB_WIN_ATLAS_UPDATE(ctx, atlas, &box, rgba, (UINT)w * 4);
+      }
+      return;
+    }
+    atlas_px_buf = grown;
+    atlas_px_cap = cap;
+  }
+  size_t off = atlas_px_len;
+  memcpy(atlas_px_buf + off, rgba, bytes);
+  atlas_px_len += bytes;
+  atlas_puts[atlas_puts_n++] = {x, y, w, h, off};
 }
 
 // ---------------------------------------------------------------------------
@@ -2171,6 +2290,7 @@ static void draw_banded(const float *f, int32_t start, int32_t end, int32_t coun
 // the frame's in the vertex buffer, submit's); NULL, all of it, cleared to the ground.
 static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count, const float *bg,
                    const float *f, const D3D11_RECT *part = NULL) {
+  atlas_flush();
   float clear[4] = {bg[0], bg[1], bg[2], 1};
   encode_missing = 0;
   ctx->OMSetRenderTargets(1, &target, NULL);
@@ -2287,6 +2407,7 @@ static int ensure_vbuf(size_t room) {
 static int submit(const double *inst, int32_t count, double r, double g, double b, int *parts_out = NULL,
                   D3D11_RECT *cuts = NULL, int adaptive_damage = 0) {
   if (!rtv || !dev || !ctx || count < 0) return 0;
+  atlas_flush();
   size_t slots = (size_t)(count > 0 ? count : 1);
   const size_t stride_bytes = (size_t)MB_INST * sizeof(float);
   if (slots > ((size_t)UINT_MAX - stride_bytes) / stride_bytes) return 0;

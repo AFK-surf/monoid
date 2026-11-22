@@ -73,6 +73,9 @@ struct Target {
   ID2D1RenderTarget *fine_rt;
   ID2D1SolidColorBrush *fine_black;
   double fine_scale;
+  float *fine_a;
+  float *fine_g;
+  size_t fine_cap;
 };
 static Target main_target;
 static double text_scale = 1;
@@ -1082,6 +1085,28 @@ static bool fine_ensure(Target *t, double scale, int fw, int fh) {
 // diagonal and a curve grow alike, the middle of a narrow counter (where the gradient is nothing, its two sides
 // pulling apart) does not fill, and a quarter pixel's shift is a whole fine pixel's, so each phase is the same picture
 // moved (hostapi's atlas keeps four).
+static inline uint8_t fine_cover_from_sum(int sum) {
+  int c = (sum + (FINE * FINE) / 2) / (FINE * FINE);
+  return (uint8_t)(c > 255 ? 255 : c);
+}
+
+static void fine_downsample_nogrow(const uint8_t *src, UINT stride, int pw, int ph, uint8_t *px) {
+  for (int y = 0; y < ph; y++) {
+    const uint8_t *row0 = src + (size_t)(y * FINE) * stride;
+    for (int x = 0; x < pw; x++) {
+      int inv = 0;
+      const uint8_t *cell = row0 + (size_t)(x * FINE) * 4;
+      for (int j = 0; j < FINE; j++) {
+        const uint8_t *s = cell + (size_t)j * stride;
+        for (int k = 0; k < FINE; k++) inv += s[k * 4 + 1];
+      }
+      uint8_t c = fine_cover_from_sum(255 * FINE * FINE - inv);
+      uint8_t *o = px + ((size_t)y * pw + x) * 4;
+      o[0] = o[1] = o[2] = o[3] = c;
+    }
+  }
+}
+
 static bool draw_fine(IDWriteTextLayout *l, double sc, double x0, double y0, double dx, int pw, int ph, double grow,
                       Target *t, uint8_t *px) {
   int fw = pw * FINE, fh = ph * FINE;
@@ -1102,27 +1127,46 @@ static bool draw_fine(IDWriteTextLayout *l, double sc, double x0, double y0, dou
   BYTE *src = NULL;
   lock->GetStride(&stride);
   lock->GetDataPointer(&bytes, &src);
+  if (grow <= 0.0) {
+    // No dilation: downsample directly from the locked WIC bitmap in pure integer arithmetic (zero allocations).
+    fine_downsample_nogrow(src, stride, pw, ph, px);
+    lock->Release();
+    return true;
+  }
+  size_t need = (size_t)fw * (size_t)fh;
+  if (need > t->fine_cap) {
+    float *na = (float *)realloc(t->fine_a, sizeof(float) * need);
+    if (!na) {
+      lock->Release();
+      return false;
+    }
+    t->fine_a = na;
+    float *ng = (float *)realloc(t->fine_g, sizeof(float) * need);
+    if (!ng) {
+      lock->Release();
+      return false;
+    }
+    t->fine_g = ng;
+    t->fine_cap = need;
+  }
   // the cover, 0..1 (black on white at linear gamma: 255 less the green)
-  float *a = (float *)malloc(sizeof(float) * (size_t)fw * fh);
+  float *a = t->fine_a;
   for (int y = 0; y < fh; y++) {
     const BYTE *s = src + (size_t)y * stride;
     for (int x = 0; x < fw; x++) a[(size_t)y * fw + x] = (255 - s[x * 4 + 1]) / 255.0f;
   }
   lock->Release();
-  float *g = a;
-  if (grow > 0) {
-    // (the step: an edge's cover goes from 0 to 1 within a fine pixel, where a central difference is a half; δ twice
-    // the distance moved)
-    float delta = (float)(2.0 * grow);
-    g = (float *)malloc(sizeof(float) * (size_t)fw * fh);
-    for (int y = 0; y < fh; y++) {
-      for (int x = 0; x < fw; x++) {
-        size_t i = (size_t)y * fw + x;
-        float gx = ((x + 1 < fw ? a[i + 1] : 0.0f) - (x > 0 ? a[i - 1] : 0.0f)) * 0.5f;
-        float gy = ((y + 1 < fh ? a[i + fw] : 0.0f) - (y > 0 ? a[i - fw] : 0.0f)) * 0.5f;
-        float v = a[i] + delta * sqrtf(gx * gx + gy * gy);
-        g[i] = v > 1.0f ? 1.0f : v;
-      }
+  // (the step: an edge's cover goes from 0 to 1 within a fine pixel, where a central difference is a half; δ twice
+  // the distance moved)
+  float delta = (float)(2.0 * grow);
+  float *g = t->fine_g;
+  for (int y = 0; y < fh; y++) {
+    for (int x = 0; x < fw; x++) {
+      size_t i = (size_t)y * fw + x;
+      float gx = ((x + 1 < fw ? a[i + 1] : 0.0f) - (x > 0 ? a[i - 1] : 0.0f)) * 0.5f;
+      float gy = ((y + 1 < fh ? a[i + fw] : 0.0f) - (y > 0 ? a[i - fw] : 0.0f)) * 0.5f;
+      float v = a[i] + delta * sqrtf(gx * gx + gy * gy);
+      g[i] = v > 1.0f ? 1.0f : v;
     }
   }
   for (int y = 0; y < ph; y++) {
@@ -1137,8 +1181,6 @@ static bool draw_fine(IDWriteTextLayout *l, double sc, double x0, double y0, dou
       o[0] = o[1] = o[2] = o[3] = (uint8_t)(c > 255 ? 255 : c);
     }
   }
-  if (g != a) free(g);
-  free(a);
   return true;
 }
 
@@ -1267,6 +1309,7 @@ struct Ahead {
   uint8_t want_mask;
   uint8_t first_mask;
   uint8_t drawing_mask;
+  uint8_t skip_mask;
   uint8_t have_mask;
   bool dropped;
   int refs;
@@ -1282,7 +1325,7 @@ struct AheadQueue {
 // The most glyph clusters asked for or drawn ahead and not all placed yet (the oldest drawn let go past it).
 #define AHEAD_MOST 2048
 static CRITICAL_SECTION ahead_lock;
-static CONDITION_VARIABLE ahead_more, ahead_done;
+static CONDITION_VARIABLE ahead_more;
 static int ahead_started;
 // (under ahead_lock) what the threads are to draw: each glyph's first phases, an item a phase, before any of the rest
 // (an item a glyph)
@@ -1341,6 +1384,21 @@ static IDWriteTextLayout *layout_with(const WCHAR *s, int len, IDWriteTextFormat
   return l;
 }
 
+static void ahead_finish_phase(Ahead *a, int s, bool built, Drawn d) {
+  uint8_t bit = (uint8_t)(1 << s);
+  EnterCriticalSection(&ahead_lock);
+  a->drawing_mask &= (uint8_t)~bit;
+  bool skipped = (a->skip_mask & bit) != 0;
+  a->skip_mask &= (uint8_t)~bit;
+  if (built && !a->dropped && !skipped) {
+    a->drawn[s] = d;
+    a->have_mask |= bit;
+  } else {
+    free(d.px);
+  }
+  LeaveCriticalSection(&ahead_lock);
+}
+
 // A thread drawing ahead (with a target of its own, on COM's multithreaded apartment): a glyph's first phase not begun,
 // the oldest asked, else the rest of a glyph's phases, each phase given to the frames' thread as it is drawn.
 static DWORD WINAPI ahead_thread(void *) {
@@ -1383,21 +1441,12 @@ static DWORD WINAPI ahead_thread(void *) {
       uint8_t bit = (uint8_t)(1 << s);
       if (!(claim & bit)) continue;
       EnterCriticalSection(&ahead_lock);
-      bool drop_now = a->dropped;
+      bool drop_now = a->dropped || (a->skip_mask & bit) != 0;
       LeaveCriticalSection(&ahead_lock);
       Drawn d = {};
       bool built = l && !drop_now;
       if (built) draw_cluster(l, &cb, a->scale, sub_dx(s) / a->scale, a->size, a->weight, &t, &d);
-      EnterCriticalSection(&ahead_lock);
-      a->drawing_mask &= (uint8_t)~bit;
-      if (built && !a->dropped) {
-        a->drawn[s] = d;
-        a->have_mask |= bit;
-      } else {
-        free(d.px);
-      }
-      WakeAllConditionVariable(&ahead_done);
-      LeaveCriticalSection(&ahead_lock);
+      ahead_finish_phase(a, s, built, d);
     }
     if (l) l->Release();
     EnterCriticalSection(&ahead_lock);
@@ -1465,7 +1514,8 @@ static bool drop_oldest_drawn(void) {
 }
 
 // What was drawn ahead of `key` at subpixel phase `sub` and the scale of now, taken (true, its picture in *d); false
-// when it was not (asked and not begun: no longer asked, drawn here). Waited for only while a thread draws that phase.
+// when it was not ready (asked and not begun: no longer asked; being drawn on a lower-priority worker thread: marked
+// skipped so the worker discards it and the frames' thread draws it immediately without blocking).
 static bool drawn_ahead(int key, int sub, Drawn *d) {
   if (sub < 0 || sub >= SUB_COUNT) return false;
   Ahead *a = key < ahead_of_cap ? ahead_of[key] : NULL;
@@ -1477,14 +1527,15 @@ static bool drawn_ahead(int key, int sub, Drawn *d) {
     // (left out of what the threads draw, which pass over it where nothing is left)
     a->want_mask &= (uint8_t)~bit;
     a->first_mask &= (uint8_t)~bit;
-  } else {
-    while (a->drawing_mask & bit) SleepConditionVariableCS(&ahead_done, &ahead_lock, INFINITE);
-    if ((a->have_mask & bit) && a->scale == text_scale) {
-      *d = a->drawn[sub];
-      a->drawn[sub] = {};
-      a->have_mask &= (uint8_t)~bit;
-      ok = true;
-    }
+  } else if (a->drawing_mask & bit) {
+    // (a below-normal worker thread is drawing this phase: never stall the frames' thread on it; mark skipped so the
+    // worker frees its bitmap when done and draw here immediately)
+    a->skip_mask |= bit;
+  } else if ((a->have_mask & bit) && a->scale == text_scale) {
+    *d = a->drawn[sub];
+    a->drawn[sub] = {};
+    a->have_mask &= (uint8_t)~bit;
+    ok = true;
   }
   bool done = (a->want_mask | a->drawing_mask | a->have_mask) == 0 || a->scale != text_scale;
   LeaveCriticalSection(&ahead_lock);
@@ -1501,7 +1552,7 @@ static void ahead_ensure_started(void) {
   ahead_started = 1;
   InitializeCriticalSection(&ahead_lock);
   InitializeConditionVariable(&ahead_more);
-  InitializeConditionVariable(&ahead_done);
+#ifndef MB_WIN_AHEAD_NO_THREADS
   // (a page's few hundred glyphs drawn in the time a frame or two takes, over the cores there are, the frames'
   // thread's left to it)
   SYSTEM_INFO si;
@@ -1512,6 +1563,9 @@ static void ahead_ensure_started(void) {
     HANDLE h = CreateThread(NULL, 0, ahead_thread, NULL, 0, NULL);
     if (h) SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL), CloseHandle(h);
   }
+#else
+  (void)&ahead_thread;
+#endif
 }
 
 // Glyph `k` asked of the threads ahead at the phases of `mask`, those of `first` before any other phase of any glyph,
@@ -1566,9 +1620,55 @@ static bool ahead_enqueue_one(int k, uint8_t mask, uint8_t first) {
   return true;
 }
 
+// Glyph `k` asked of the threads ahead at `mask` (with `first` prioritized): adds phases to an existing Ahead if one is
+// already tracked for `k`, else creates a new one.
+static bool ahead_enqueue_phases(int k, uint8_t mask, uint8_t first) {
+  if (k < 0 || k >= n_entries || mask == 0) return false;
+  ahead_ensure_started();
+  if (ahead_of_cap <= k) {
+    int cap = n_entries * 2;
+    if (cap <= k) cap = (k + 1) * 2;
+    ahead_of = (Ahead **)realloc(ahead_of, (size_t)cap * sizeof *ahead_of);
+    memset(ahead_of + ahead_of_cap, 0, (size_t)(cap - ahead_of_cap) * sizeof *ahead_of);
+    ahead_of_cap = cap;
+  }
+  Ahead *a = ahead_of[k];
+  if (a) {
+    bool queued = false;
+    EnterCriticalSection(&ahead_lock);
+    if (!a->dropped && a->scale == text_scale) {
+      uint8_t add = (uint8_t)(mask & ~(a->want_mask | a->drawing_mask | a->have_mask));
+      if (add) {
+        a->want_mask |= add;
+        entries[k].subs_queued |= add;
+        uint8_t add_first = (uint8_t)(first & add);
+        if (add_first) {
+          a->first_mask |= add_first;
+          for (int s = 0; s < SUB_COUNT; s++) {
+            if (add_first & (1 << s)) queue_push(&ahead_first, a);
+          }
+        }
+        if (add & ~add_first) queue_push(&ahead_rest, a);
+        queued = true;
+      }
+      uint8_t promote = (uint8_t)(first & a->want_mask & ~a->first_mask);
+      if (promote) {
+        a->first_mask |= promote;
+        for (int s = 0; s < SUB_COUNT; s++) {
+          if (promote & (1 << s)) queue_push(&ahead_first, a);
+        }
+        queued = true;
+      }
+    }
+    LeaveCriticalSection(&ahead_lock);
+    return queued;
+  }
+  return ahead_enqueue_one(k, mask, first);
+}
+
 // The glyphs of keys[0..n) (each with the phase to draw first: bits 26..27, where its line put it) to draw ahead at
-// the phases of each not drawn or asked yet; a glyph asked again at another phase not begun has that phase drawn first
-// too.
+// that phase alone on first sight; the remaining phases are queued into ahead_rest only once the same glyph is actually
+// requested at a second distinct phase (horizontal subpixel motion).
 extern "C" void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
   if (n <= 0 || !dw) return;
   int asked = 0;
@@ -1578,27 +1678,31 @@ extern "C" void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
     int sub = (keys[i] >> 26) & 3;
     if (k >= n_entries) continue;
     uint8_t bit = (uint8_t)(1 << sub);
-    Ahead *a = ahead_started && k < ahead_of_cap ? ahead_of[k] : NULL;
-    if (a) {
-      EnterCriticalSection(&ahead_lock);
-      if ((a->want_mask & bit) && !(a->first_mask & bit) && !a->dropped) {
-        a->first_mask |= bit;
-        queue_push(&ahead_first, a);
-        asked++;
+    uint8_t prev = entries[k].subs_queued;
+    bool moved = prev != 0 && (prev & bit) == 0;
+    uint8_t want = moved ? (uint8_t)(SUB_ALL & ~prev) : (uint8_t)(bit & ~prev);
+    if (want) {
+      if (ahead_enqueue_phases(k, want, (uint8_t)(want & bit))) asked++;
+    } else {
+      Ahead *a = ahead_started && k < ahead_of_cap ? ahead_of[k] : NULL;
+      if (a) {
+        EnterCriticalSection(&ahead_lock);
+        if ((a->want_mask & bit) && !(a->first_mask & bit) && !a->dropped) {
+          a->first_mask |= bit;
+          queue_push(&ahead_first, a);
+          asked++;
+        }
+        LeaveCriticalSection(&ahead_lock);
       }
-      LeaveCriticalSection(&ahead_lock);
-      continue;
     }
-    uint8_t rem = (uint8_t)(SUB_ALL & ~entries[k].subs_queued);
-    if (ahead_enqueue_one(k, rem, bit)) asked++;
   }
   if (asked) WakeAllConditionVariable(&ahead_more);
 }
 
 // Glyph `full_key` drawn in white, a pixel round its bounds: its box (in its entry) and its picture, held for
 // mb_host_glyph_put (where it goes in the atlas is MoonBit's: hostapi's atlas.mbt). From what was drawn ahead of it
-// when ready, else drawn here using cached cluster bounds and layout while its remaining subpixel phases are queued
-// ahead in the background.
+// when ready, else drawn here using cached cluster bounds and layout; remaining subpixel phases are queued ahead only
+// once this glyph is actually requested at a second distinct phase.
 static void rasterize(int full_key) {
   int key = full_key & 0x03FFFFFF;
   int sub = (full_key >> 26) & 7;
@@ -1608,18 +1712,19 @@ static void rasterize(int full_key) {
   held_key = -1;
   entries[key].w = entries[key].h = 0;
   Drawn d = {};
+  uint8_t bit = (uint8_t)(1 << sub);
+  glyph_entry *e = &entries[key];
+  bool moved = e->subs_queued != 0 && (e->subs_queued & bit) == 0;
   if (!drawn_ahead(key, sub, &d)) {
     IDWriteTextLayout *l = main_layout_for(key);
-    glyph_entry *e = &entries[key];
     measure_bounds(l, &e->bounds);
     draw_cluster(l, &e->bounds, text_scale, sub_dx(sub) / text_scale, e->size, e->weight, &main_target, &d);
-    e->subs_queued |= (uint8_t)(1 << sub);
-    uint8_t rem = (uint8_t)(SUB_ALL & ~e->subs_queued);
-    if (rem && ahead_enqueue_one(key, rem, 0)) WakeAllConditionVariable(&ahead_more);
-  } else {
-    entries[key].subs_queued |= (uint8_t)(1 << sub);
   }
-  glyph_entry *e = &entries[key];
+  e->subs_queued |= bit;
+  if (moved) {
+    uint8_t rem = (uint8_t)(SUB_ALL & ~e->subs_queued);
+    if (rem && ahead_enqueue_phases(key, rem, 0)) WakeAllConditionVariable(&ahead_more);
+  }
   if (d.px) {
     held_key = full_key;
     held_w = d.pw;
