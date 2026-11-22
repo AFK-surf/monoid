@@ -57,7 +57,7 @@ const PARTS: [RegExp, Part[]][] = [
   [/^web\//, ["web"]],
   [/^apps\/android\//, ["android"]],
   [/^apps\/desktop\//, ["desktop"]],
-  // still.fail's mbui app (apps/mbui, mbui itself in libs/mbui, its component library in libs/sf-ui): the Android app since 2026-10-23 (the Kotlin one,
+  // still.fail's mbui app (apps/mbui, mbui itself in libs/mbui, its component libraries in libs/sf-ui and libs/liquid-glass): the Android app since 2026-10-23 (the Kotlin one,
   // apps/android, before it), and the desktop app, in the Electron one's place since 2026-10-26 (it tells the core it is
   // "desktop"). What one platform's host alone builds reaches that platform (iOS is no part yet); the desktop's own
   // pages (src/sfdesk, and what sfapp still has of them: its wide frame, the menu bar, the settings ported from the
@@ -65,7 +65,7 @@ const PARTS: [RegExp, Part[]][] = [
   [/^(apps|libs)\/mbui\/(ios\/|src\/host\/ios_)/, []],
   [/^(apps|libs)\/mbui\/((engine\/)?android\/|src\/host\/android_)/, ["android"]],
   [/^(apps|libs)\/mbui\/(src\/host\/(apple|mac_|win|electron_)|src\/sfdesk\/|src\/sfapp\/((strings_)?wide|menu_bar|preview_desk|settings\/(web|desk)_))/, ["desktop"]],
-  [/^((apps|libs)\/mbui|libs\/sf-ui)\//, ["android", "desktop"]],
+  [/^((apps|libs)\/mbui|libs\/(sf-ui|liquid-glass))\//, ["android", "desktop"]],
   [/^cloud\/src\//, ["cloud"]],
 ];
 
@@ -78,10 +78,10 @@ const CHANGES_NOTHING = new RegExp(
     /^client\/core-ts\/(test|bench|harness|side|scripts)\//,
     /^apps\/android\/[^/]+\/src\/(androidTest|test)\/|^apps\/android\/(carries\.sh|not-carried\.txt)$/,
     /^client\/core-ts\/src\/shapes\/schema\.ts$|^web\/src\/core\/(shapes|operations)\.ts$|^apps\/android\/.*\/data\/(Shapes|Operations)\.kt$/,
-    /^((apps|libs)\/mbui|libs\/sf-ui)\/([^/]+|(detlint\.counts|e2e|docs|screens|scripts|tools|bench|goldens|test|web)\/.*)$/,
+    /^((apps|libs)\/mbui|libs\/(sf-ui|liquid-glass))\/([^/]+|(detlint\.counts|e2e|docs|screens|scripts|tools|bench|goldens|test|web)\/.*)$/,
     /^apps\/mbui\/src\/(sffilm|sfreplay|sffix|sfkept|sflayout|sfscreens|sfapptest|sfapp_realsize|sfapp_pages_test|coredemo|books|photos|videos)\//,
     /^libs\/mbui\/src\/(\w*demo|effecttest|awly|film|textdiff)\//,
-    /^((apps|libs)\/mbui|libs\/sf-ui)\/.*(_test|_wbtest|_fixture|\/fixture)\.mbt$|^apps\/mbui\/core\/(.*[_-]test\.(m|js)|smoke\.m)$/,
+    /^((apps|libs)\/mbui|libs\/(sf-ui|liquid-glass))\/.*(_test|_wbtest|_fixture|\/fixture)\.mbt$|^apps\/mbui\/core\/(.*[_-]test\.(m|js)|smoke\.m)$/,
   ].map((r) => r.source).join("|"),
 );
 

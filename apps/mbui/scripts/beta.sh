@@ -64,7 +64,7 @@ build_number() { git -C "$REPO" rev-list --count HEAD; }
 # new package: 2026-10-21). Not the four config files HBC_TREES ends with, on purpose (it says why): a change to one
 # alone is no new package, and goes out with the next, its core made anew.
 APP_SRC=(apps/mbui/src apps/mbui/core apps/mbui/android apps/mbui/ios apps/mbui/windows apps/mbui/engine
-  libs/mbui/src libs/mbui/android libs/mbui/moon.mod libs/sf-ui/src libs/sf-ui/moon.mod apps/mbui/moon.mod apps/mbui/moon.work apps/mbui/farview.pin client media vendor
+  libs/mbui/src libs/mbui/android libs/mbui/moon.mod libs/liquid-glass/src libs/liquid-glass/moon.mod libs/sf-ui/src libs/sf-ui/moon.mod apps/mbui/moon.mod apps/mbui/moon.work apps/mbui/farview.pin client media vendor
   rules/js shared/release-keys.ts shared/moved-from.ts web/public/avatars/index.json
   ':(exclude,glob)**/test/**' ':(exclude,glob)**/tests/**' ':(exclude,glob)**/*_test.mbt' ':(exclude,glob)**/*_wbtest.mbt' ':(exclude,glob)**/*.test.*'
   ':(exclude,glob)**/*.md')
@@ -122,14 +122,15 @@ tools() {
   summary "- MoonBit $("$C/tools/moon/bin/moon" version | head -1); mbui $(git -C "$A" log -1 --format=%h -- "$mbui"); tools in $(secs $t0) s"
 }
 
-# apps/mbui into WORK as git has it, and libs/mbui and libs/sf-ui beside it where the app's paths name them
-# (../../libs/mbui, ../../libs/sf-ui), a file
+# apps/mbui into WORK as git has it, and libs/mbui, libs/liquid-glass and libs/sf-ui beside it where the app's paths
+# name them (../../libs/mbui, ../../libs/liquid-glass, ../../libs/sf-ui), a file
 # gone going there too, by content: a file that did not change keeps its time, and moon sees it as it was; the build's
 # outputs (what git ignores) stay.
 copy() {
   [ "$WORK" != "$A" ] || return 0
   mirror "$A" "$WORK"
   mirror "$(sh "$A/scripts/mbui.sh")" "$WORK/../../libs/mbui"
+  mirror "$REPO/libs/liquid-glass" "$WORK/../../libs/liquid-glass"
   mirror "$REPO/libs/sf-ui" "$WORK/../../libs/sf-ui"
 }
 

@@ -22,6 +22,7 @@ on:
     paths:
       - "apps/mbui/**"
       - "libs/mbui/**"
+      - "libs/liquid-glass/**"
       - "libs/sf-ui/**"
       - "client/**"
       - "rules/js/**"
