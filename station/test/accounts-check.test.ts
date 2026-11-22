@@ -188,6 +188,42 @@ test("a Claude subscription check fails when renewal fails and the old token is 
   }
 });
 
+test("Claude subscription check forwards claudeVersion User-Agent to both token refresh and /v1/models", async () => {
+  const ua = "claude-cli/2.1.100 (external, cli)";
+  const m = machine({ claude: `echo '{"loggedIn":true,"email":"a@x.com","subscriptionType":"max"}'` });
+  const home = join(m.home, "profile");
+  mkdirSync(home);
+  const login = (oauth: object) => writeFileSync(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "ref", ...oauth } }));
+  const p = await provider((asked) => {
+    if (asked.method === "POST") return { status: 200, body: { access_token: "new", refresh_token: "ref2", expires_in: 3600 } };
+    return asked.headers.authorization === "Bearer new" ? { status: 200, body: { data: [{ id: "claude-opus-5-5" }] } } : { status: 401, body: {} };
+  });
+  const urls = { ...URLS, anthropic: p.base, claudeToken: p.base };
+  try {
+    // With claudeVersion: initial GET, POST refresh, retry GET all carry claude-cli UA.
+    login({ expiresAt: Date.now() + 3_600_000 });
+    const withVersion = await checkProfile({ ...base, kind: "subscription", home, env: m.env, urls, claudeVersion: "2.1.100" });
+    assert.deepEqual([withVersion.state, withVersion.models], ["ok", ["claude-opus-5-5"]]);
+    assert.deepEqual(p.asked.map((r) => [r.method, r.headers["user-agent"]]), [
+      ["GET", ua],
+      ["POST", ua],
+      ["GET", ua],
+    ]);
+
+    // Without claudeVersion: does not fabricate claude-cli UA.
+    p.asked.length = 0;
+    login({ expiresAt: 1 });
+    const withoutVersion = await checkProfile({ ...base, kind: "subscription", home, env: m.env, urls });
+    assert.equal(withoutVersion.state, "ok");
+    assert.equal(p.asked.length, 2);
+    for (const req of p.asked) {
+      assert.ok(!String(req.headers["user-agent"] ?? "").startsWith("claude-cli/"));
+    }
+  } finally {
+    await p.close();
+  }
+});
+
 // ── what a profile can decide with ──
 
 const logprobs = (best: string) => ({

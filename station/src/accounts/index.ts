@@ -320,9 +320,9 @@ export class Accounts {
     this.logins = new LoginManager(deps.data, deps.loginCommands, undefined, deps.clock, this.urls.console, this.urls.cursor ?? CURSOR, () => `still.fail · ${hostname()}`, this.urls.kimi ?? KIMI_AUTH);
     this.logins.setStateFile((id) => this.loginStateFile(id));
     this.machine =
-      deps.machine !== undefined ? deps.machine : new MachineLogins(this.env, (runtime, env) => machineUsage(runtime, env, this.urls), undefined, deps.clock);
+      deps.machine !== undefined ? deps.machine : new MachineLogins(this.env, (runtime, env) => machineUsage(runtime, env, this.urls, undefined, deps.claudeVersion?.() ?? null), undefined, deps.clock);
     this.checkFn =
-      deps.check ?? ((request, lang) => checkProfile({ ...request, services: this.services, env: this.env, machineToken: (env, rejected) => this.machineToken(env, rejected), urls: this.urls, lang }));
+      deps.check ?? ((request, lang) => checkProfile({ ...request, services: this.services, env: this.env, machineToken: (env, rejected) => this.machineToken(env, rejected), urls: this.urls, lang, claudeVersion: deps.claudeVersion?.() ?? null }));
     this.quotaFn =
       deps.quota !== undefined
         ? deps.quota
@@ -507,7 +507,7 @@ export class Accounts {
 
   /// The machine login's current Claude token, renewed when about to run out (the Claude driver's `machineToken`).
   async machineToken(env: Env = this.env, rejected?: string, lent = false): Promise<MachineToken> {
-    const [token, expiresAt] = await claudeOAuthToken(env, null, rejected ?? null, this.urls.claudeToken, stationLang(), HANDED_MARGIN_MS, lent ? this.lendBound() : undefined);
+    const [token, expiresAt] = await claudeOAuthToken(env, null, rejected ?? null, this.urls.claudeToken, stationLang(), HANDED_MARGIN_MS, lent ? this.lendBound() : undefined, this.deps.claudeVersion?.() ?? null);
     return { token, expiresAt };
   }
 
@@ -517,7 +517,7 @@ export class Accounts {
   async claudeToken(profile: Json, rejected?: string, lent = false): Promise<MachineToken> {
     if (profile.machine === true) return this.machineToken(this.env, rejected, lent);
     const home = String(profile.home ?? "");
-    const [token, expiresAt] = await claudeOAuthToken(this.env, joinPath(this.deps.data, home), rejected ?? null, this.urls.claudeToken, stationLang(), HANDED_MARGIN_MS, lent ? this.lendBound() : undefined);
+    const [token, expiresAt] = await claudeOAuthToken(this.env, joinPath(this.deps.data, home), rejected ?? null, this.urls.claudeToken, stationLang(), HANDED_MARGIN_MS, lent ? this.lendBound() : undefined, this.deps.claudeVersion?.() ?? null);
     return { token, expiresAt };
   }
 

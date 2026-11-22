@@ -83,8 +83,9 @@ export function chromeArgs(o: { profile: string; port: number; headless: boolean
     // Headless, drawn at twice its CSS pixels, as on a Retina screen: its one screen's scale is 1 otherwise, and Chrome
     // casts a tab at that whatever scale the tab is laid out at, so a phone's or a Retina window's view of it came as
     // a picture of half its pixels, drawn twice as large (a captcha could not be read: Peng Xiao, 2026-11-17). A
-    // viewer's bounds still cap what is cast.
-    ...(o.headless ? ["--headless=new", "--window-size=1280,900", "--force-device-scale-factor=2"] : ["--no-startup-window"]),
+    // viewer's bounds still cap what is cast. Without --screen-info, headless Chrome's default 800x600 physical screen
+    // divides by DPR 2 to 400x300 CSS pixels (smaller than the 1280x900 window); {2880x1800} yields a 1440x900 @2x screen.
+    ...(o.headless ? ["--headless=new", "--window-size=1280,900", "--force-device-scale-factor=2", "--screen-info={2880x1800}"] : ["--no-startup-window"]),
     ...(o.userAgent ? [`--user-agent=${o.userAgent}`] : []),
   ];
 }

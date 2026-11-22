@@ -749,12 +749,25 @@ pub async fn Accounts::lent_health(self : Accounts, id : String, recheck? : Bool
 }
 
 ///|
+async fn Accounts::claude_version(self : Accounts) -> String? {
+  if self.given.claude_version {
+    match self.ask("claudeVersion", []) {
+      Str(v) if v != "" => Some(v)
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+///|
 /// `machineToken`: the machine login's current Claude token, renewed when about to run out.
 pub async fn Accounts::machine_token(
   self : Accounts,
   rejected : String?,
   lent : Bool,
 ) -> JV {
+  let claude_version = self.claude_version()
   let (token, expires_at) = claude_oauth_token(
     self.ctx,
     None,
@@ -763,6 +776,7 @@ pub async fn Accounts::machine_token(
     self.ctx.station_lang,
     margin=handed_margin_ms,
     lent~,
+    claude_version?,
   )
   jobj([("token", js(token)), ("expiresAt", jnum(expires_at))])
 }
@@ -783,6 +797,7 @@ pub async fn Accounts::claude_token(
     h => js_string(h)
   }
   let joined = @nodepath.join(self.b.sep, [self.given.data, home])
+  let claude_version = self.claude_version()
   let (token, expires_at) = claude_oauth_token(
     self.ctx,
     Some(joined),
@@ -791,6 +806,7 @@ pub async fn Accounts::claude_token(
     self.ctx.station_lang,
     margin=handed_margin_ms,
     lent~,
+    claude_version?,
   )
   jobj([("token", js(token)), ("expiresAt", jnum(expires_at))])
 }

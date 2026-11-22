@@ -15,6 +15,7 @@ import { log } from "../ops/log.ts";
 import { type Lang, Said, stationLang, tr } from "../ops/i18n.ts";
 import { platform } from "../platform/index.ts";
 import { profileFetch } from "../ops/agent-env.ts";
+import { claudeUserAgent } from "./claude-reset.ts";
 import { RenewRefused } from "./console.ts";
 
 type Json = any;
@@ -159,14 +160,14 @@ export type Bound = { ms: number; after: (ms: number, f: () => void) => () => vo
 /// and the renewal goes on behind: the station that asked waits 30 s for its answer (mesh/peer.ts ANSWER_MS), as long as
 /// the renewal's call may take, and a renewal that timed out had its token lent 343 ms after it gave up, the chat's turn
 /// lost (2026-11-14).
-export async function claudeOAuthToken(env: Env, home: string | null, rejected: string | null, endpoint: string, lang: Lang = stationLang(), margin = MARGIN_MS, bound?: Bound): Promise<[string, number]> {
+export async function claudeOAuthToken(env: Env, home: string | null, rejected: string | null, endpoint: string, lang: Lang = stationLang(), margin = MARGIN_MS, bound?: Bound, version: string | null = null): Promise<[string, number]> {
   const machine = home === null;
   const dir = home ?? join(homeOf(env), ".claude");
   const initial = await read(env, dir, machine, lang);
   if (usable(initial, rejected, lang, margin)) return access(initial, lang);
   if (bound !== undefined && margin > MARGIN_MS && usable(initial, rejected, lang)) {
     const given = access(initial, lang);
-    const renewed = renewal(dir, given, () => renewLocked(env, dir, machine, rejected, endpoint, lang, margin));
+    const renewed = renewal(dir, given, () => renewLocked(env, dir, machine, rejected, endpoint, lang, margin, version));
     return new Promise((resolve) => {
       const began = wall.now();
       let over = false;
@@ -186,7 +187,7 @@ export async function claudeOAuthToken(env: Env, home: string | null, rejected: 
   }
   const began = wall.now();
   try {
-    const got = await renewLocked(env, dir, machine, rejected, endpoint, lang, margin);
+    const got = await renewLocked(env, dir, machine, rejected, endpoint, lang, margin, version);
     // (its provider refused it for now, the token it has given while it lasts the usual margin: renew's own way)
     if (margin > MARGIN_MS && !usableFor(got, margin)) notRenewed(dir, began, got[1], new Error("its provider did not renew it"));
     return got;
@@ -240,13 +241,13 @@ function notRenewed(dir: string, began: number, expiresAt: number, error: unknow
   });
 }
 
-async function renewLocked(env: Env, dir: string, machine: boolean, rejected: string | null, endpoint: string, lang: Lang, margin: number): Promise<[string, number]> {
+async function renewLocked(env: Env, dir: string, machine: boolean, rejected: string | null, endpoint: string, lang: Lang, margin: number, version: string | null): Promise<[string, number]> {
   await mkdir(dir, { recursive: true });
   const current = await RefreshLock.acquire(join(dir, ".oauth_refresh.lock"), lang);
   try {
     const legacy = await RefreshLock.acquire(`${await realpath(dir)}.lock`, lang);
     try {
-      return await renew(env, dir, machine, rejected, endpoint, lang, margin);
+      return await renew(env, dir, machine, rejected, endpoint, lang, margin, version);
     } finally {
       await legacy.release();
     }
@@ -255,7 +256,7 @@ async function renewLocked(env: Env, dir: string, machine: boolean, rejected: st
   }
 }
 
-async function renew(env: Env, home: string, machine: boolean, rejected: string | null, endpoint: string, lang: Lang, margin: number): Promise<[string, number]> {
+async function renew(env: Env, home: string, machine: boolean, rejected: string | null, endpoint: string, lang: Lang, margin: number, version: string | null): Promise<[string, number]> {
   const t = (key: string, args?: Record<string, unknown>) => tr(lang, key, args);
   const credentials = await read(env, home, machine, lang);
   if (usable(credentials, rejected, lang, margin)) return access(credentials, lang);
@@ -269,7 +270,7 @@ async function renew(env: Env, home: string, machine: boolean, rejected: string 
   }
   let response: Response;
   try {
-    response = await profileFetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), redirect: "manual", signal: AbortSignal.timeout(30_000) });
+    response = await profileFetch(endpoint, { method: "POST", headers: { "content-type": "application/json", ...claudeUserAgent(version) }, body: JSON.stringify(body), redirect: "manual", signal: AbortSignal.timeout(30_000) });
   } catch {
     throw new Said(t("station.claudeAuth.refreshFailed"));
   }

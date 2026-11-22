@@ -149,10 +149,10 @@ async function opencode(urls: Urls, key: string, lang: Lang): Promise<ProfileQuo
 /// token is not good. `home`: the profile's (null: the machine's own login). `version`: the installed Claude Code's,
 /// which its limit resets are offered to (none: they are not asked).
 export async function claudeWithRefresh(env: Env, home: string | null, urls: Urls = URLS, lang: Lang = stationLang(), version: string | null = null): Promise<ProfileQuota> {
-  const [token] = await claudeOAuthToken(env, home, null, urls.claudeToken, lang);
+  const [token] = await claudeOAuthToken(env, home, null, urls.claudeToken, lang, undefined, undefined, version);
   const [first, unauthorized] = await claudeUsageResponse(urls.anthropic, token, lang, version);
   if (!unauthorized) return first;
-  const [renewed] = await claudeOAuthToken(env, home, token, urls.claudeToken, lang);
+  const [renewed] = await claudeOAuthToken(env, home, token, urls.claudeToken, lang, undefined, undefined, version);
   const [second, stillUnauthorized] = await claudeUsageResponse(urls.anthropic, renewed, lang, version);
   return stillUnauthorized ? { ...second, signedOut: true } : second;
 }
@@ -528,10 +528,10 @@ export async function lentCodexUsage(home: string, now: number, urls: Urls = URL
 /// The allowance of the machine's own login of a runtime, read without starting anything of the station's. Null when
 /// there is nothing to read it with. The account's own windows alone: what its models have to themselves shows on the
 /// profile it becomes, not on the offer to make it one.
-export async function machineUsage(runtime: "claude" | "codex", env: Env, urls: Urls = URLS, lang: Lang = stationLang()): Promise<ProfileQuota | null> {
+export async function machineUsage(runtime: "claude" | "codex", env: Env, urls: Urls = URLS, lang: Lang = stationLang(), claudeVersion: string | null = null): Promise<ProfileQuota | null> {
   try {
     if (runtime === "codex") return await codexUsage(codexAuthFile(env), urls, lang);
-    const { scoped: _, ...own } = await claudeWithRefresh(env, null, urls, lang);
+    const { scoped: _, ...own } = await claudeWithRefresh(env, null, urls, lang, claudeVersion);
     return own;
   } catch (e) {
     return failed(e, lang);

@@ -346,6 +346,8 @@ test "Chrome started headless on a profile of its own, started again with its he
   assert_eq(started.length(), 2)
   assert_true(started[1].contains("--user-agent=Mozilla/5.0 Chrome/156.0"))
   assert_true(started[0].contains("--headless=new"))
+  assert_true(started[0].contains("--screen-info={2880x1800}"))
+  assert_true(!chrome_args("/p", 0, false).iter().any(a => a.has_prefix("--screen-info")))
   assert_eq(ended, [41])
   let state = parse(m.files.get("/d/browser/state.json").unwrap())
   assert_eq(text(at_path(Some(state), ["headlessAgent", "agent"])), "Mozilla/5.0 Chrome/156.0")

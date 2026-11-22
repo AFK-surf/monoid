@@ -180,6 +180,7 @@ pub async fn ClaudeAuth::token(
   lang : String,
   margin? : Int64 = margin_ms,
   bound? : Bound,
+  claude_version? : String,
 ) -> (String, Int64) {
   let machine = home is None
   let dir = match home {
@@ -193,7 +194,7 @@ pub async fn ClaudeAuth::token(
   if bound is Some(b) && margin > margin_ms && usable(self.io, self.words, initial, rejected, lang, margin_ms) {
     let given = access_of(self.words, initial, lang)
     let renewed = self.renewal(dir, given, async fn() {
-      self.renew_locked(env, dir, machine, rejected, endpoint, lang, margin)
+      self.renew_locked(env, dir, machine, rejected, endpoint, lang, margin, claude_version?)
     })
     let out : @effect.Deferred[(String, Int64)] = @effect.Deferred::new()
     let began = (self.io.wall)()
@@ -219,7 +220,7 @@ pub async fn ClaudeAuth::token(
     return out.wait()
   }
   let began = (self.io.wall)()
-  let got = self.renew_locked(env, dir, machine, rejected, endpoint, lang, margin) catch {
+  let got = self.renew_locked(env, dir, machine, rejected, endpoint, lang, margin, claude_version?) catch {
     error => {
       // Renewed early and it could not be: the token is still given while it lasts the usual margin.
       if margin > margin_ms {
@@ -319,13 +320,14 @@ async fn ClaudeAuth::renew_locked(
   endpoint : String,
   lang : String,
   margin : Int64,
+  claude_version? : String,
 ) -> (String, Int64) {
   (self.io.mkdir)(dir, true)
   let current = RefreshLock::acquire(self.io, self.words, join([dir, ".oauth_refresh.lock"]), lang)
   let result = try {
     let legacy = RefreshLock::acquire(self.io, self.words, (self.io.realpath)(dir) + ".lock", lang)
     let got = try {
-      self.renew(env, dir, machine, rejected, endpoint, lang, margin)
+      self.renew(env, dir, machine, rejected, endpoint, lang, margin, claude_version?)
     } catch {
       e => {
         legacy.release()
@@ -354,6 +356,7 @@ async fn ClaudeAuth::renew(
   endpoint : String,
   lang : String,
   margin : Int64,
+  claude_version? : String,
 ) -> (String, Int64) {
   let t = (key : String, args : Array[(String, String)]) => tr(self.words, lang, key, args)
   let credentials = self.read(env, home, machine, lang)
@@ -378,10 +381,15 @@ async fn ClaudeAuth::renew(
       body["scope"] = Json::string(scopes.join(" "))
     }
   }
+  let headers : Array[(String, String)] = [("content-type", "application/json")]
+  match claude_version {
+    Some(v) if v != "" => headers.push(("user-agent", "claude-cli/\{v} (external, cli)"))
+    _ => ()
+  }
   let response = (self.io.fetch)({
     url: endpoint,
     method_: "POST",
-    headers: [("content-type", "application/json")],
+    headers,
     body: Some(stringify(Json::object(body))),
     timeout_ms: 30_000,
     manual: true,

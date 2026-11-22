@@ -356,7 +356,7 @@ pub async fn claude_with_refresh(
   version : String?,
 ) -> JV {
   let token_url = ctx.url("claudeToken").unwrap_or("")
-  let token = claude_oauth_token(ctx, home, None, token_url, lang)
+  let token = claude_oauth_token(ctx, home, None, token_url, lang, claude_version?=version)
   let (first, unauthorized) = claude_usage_response(
     ctx,
     ctx.url("anthropic").unwrap_or(""),
@@ -367,7 +367,7 @@ pub async fn claude_with_refresh(
   if !unauthorized {
     return first
   }
-  let renewed = claude_oauth_token(ctx, home, Some(token.0), token_url, lang)
+  let renewed = claude_oauth_token(ctx, home, Some(token.0), token_url, lang, claude_version?=version)
   let (second, still_unauthorized) = claude_usage_response(
     ctx,
     ctx.url("anthropic").unwrap_or(""),
@@ -392,6 +392,7 @@ pub async fn claude_oauth_token(
   lang : String,
   margin? : Double,
   lent? : Bool = false,
+  claude_version? : String,
 ) -> (String, Double) {
   let args = [jopt(home), jopt(rejected), js(token_url), js(lang)]
   match margin {
@@ -399,6 +400,7 @@ pub async fn claude_oauth_token(
     None => args.push(jundef)
   }
   args.push(jbool(lent))
+  args.push(jopt(claude_version))
   let a = ctx.io.b.ask("oauth.claudeOAuthToken", args)
   let items = jitems(Some(a))
   (
@@ -1390,12 +1392,17 @@ pub async fn lent_codex_usage(
 
 ///|
 /// `machineUsage`: the allowance of the machine's own login of a runtime, the account's own windows alone.
-pub async fn machine_usage(ctx : Ctx, runtime : String, lang : String) -> JV? {
+pub async fn machine_usage(
+  ctx : Ctx,
+  runtime : String,
+  lang : String,
+  claude_version? : String,
+) -> JV? {
   let run = async fn() -> JV? {
     if runtime == "codex" {
       return codex_usage(ctx, codex_auth_file(ctx), lang)
     }
-    let own = claude_with_refresh(ctx, None, lang, None)
+    let own = claude_with_refresh(ctx, None, lang, claude_version)
     Some(jdel(own, "scoped"))
   }
   run() catch {

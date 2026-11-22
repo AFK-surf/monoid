@@ -19,8 +19,8 @@ pub fn claude_headers(token : String, version : String?) -> Array[(String, Strin
     ("anthropic-beta", "oauth-2025-04-20"),
   ]
   match version {
-    Some(v) => h.push(("user-agent", "claude-cli/\{v} (external, cli)"))
-    None => ()
+    Some(v) if v != "" => h.push(("user-agent", "claude-cli/\{v} (external, cli)"))
+    _ => ()
   }
   h
 }
