@@ -49,8 +49,62 @@ pub fn liquid_popover_node(
 }
 
 ///|
+/// Reusable single-layer Liquid Glass tooltip capsule (`r=12pt`, `points(Is(false))`, `shadow_outside(Is(true))`,
+/// `MBUI_GLASS=solid` 1pt edge fallback, optional concentric shortcut keycap badge) shared by `liquid_tooltip_node`
+/// and external global tooltip layers.
+#callsite(autofill(loc))
+pub fn liquid_tooltip_bubble_node(
+  parent : @view.View,
+  text : () -> String,
+  shortcut? : () -> String = fn() { "" },
+  solid? : () -> Int64,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(b) {
+    b
+    .row(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .gap(Is(8.0))
+    .points(Is(false))
+    .max_width(Is(Some(ovl_tooltip_max_w)))
+    .padding(Is((ovl_tooltip_px, ovl_tooltip_py, ovl_tooltip_px, ovl_tooltip_py)))
+    .radius(Is(ovl_tooltip_radius))
+    .shadow(Is(shadow_default))
+    .shadow_outside(Is(true))
+    .glass(
+      By(fn() {
+        let s = match solid {
+          Some(f) => f()
+          None => clear
+        }
+        Some(liquid_capsule_glass(solid=s))
+      }),
+    )
+    .edge(By(fn() { if b.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
+    |> ignore
+    b.box(fn(w) {
+      w.shrink(Is(1.0)).words(By(text), look=words_at(ovl_type_sub, wrap=true)).ink(By(fn() { colors().content }))
+      |> ignore
+    })
+    |> ignore
+    b.show(fn() { shortcut() != "" }, fn(kbd) {
+      kbd
+      .shrink(Is(0.0))
+      .padding(Is((6.0, 2.0, 6.0, 2.0)))
+      .radius(Is(ovl_tooltip_radius - ovl_tooltip_py))
+      .ground(By(ovl_close_ground))
+      |> ignore
+      kbd.box(fn(kw) {
+        kw.words(By(shortcut), look=words_at(ovl_type_meta, weight=weight_medium)).ink(By(ovl_muted_ink)) |> ignore
+      })
+      |> ignore
+    })
+  })
+}
+
+///|
 /// A Liquid Glass tooltip: wraps `trigger_look` in `parent` and floats a refractive capsule
-/// (`r=12pt`, `presses(Is(false))`, zero click occlusion) in `host` on hover or keyboard focus.
+/// (`r=12pt`, `points(Is(false))`, zero click occlusion, optional shortcut badge) in `host` on hover or keyboard focus.
 #callsite(autofill(loc))
 pub fn liquid_tooltip_node(
   parent : @view.View,
@@ -58,6 +112,7 @@ pub fn liquid_tooltip_node(
   tip : () -> String,
   trigger_look : (@view.View) -> Unit,
   placement? : @headless.Placement = AboveCenter,
+  shortcut? : () -> String = fn() { "" },
   loc~ : SourceLoc,
 ) -> @view.View {
   let shown : @signals.Signal[Int?] = @signals.signal(None)
@@ -113,19 +168,10 @@ pub fn liquid_tooltip_node(
         }
         b
         .points(Is(false))
-        .max_width(Is(Some(ovl_tooltip_max_w)))
-        .padding(Is((ovl_tooltip_px, ovl_tooltip_py, ovl_tooltip_px, ovl_tooltip_py)))
-        .radius(Is(ovl_tooltip_radius))
-        .shadow(Is(shadow_default))
-        .shadow_outside(Is(true))
-        .glass(By(fn() { Some(ovl_capsule_glass()) }))
         .alpha(By(fn() { look().alpha }))
         .scale(By(fn() { look().sx }), about=FromBeside)
         |> ignore
-        b.box(fn(w) {
-          w.words(By(tip), look=words_at(ovl_type_sub, wrap=true)).ink(By(fn() { colors().content })) |> ignore
-        })
-        |> ignore
+        liquid_tooltip_bubble_node(b, tip, shortcut~, loc~) |> ignore
       })
       |> ignore
     },

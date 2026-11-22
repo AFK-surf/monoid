@@ -9,22 +9,43 @@
 // and a press outside it (on the scrim).
 
 ///|
-/// The card's glass (iOS 27 regular liquid glass, large card blur=8.0).
+/// The card's glass: symmetric 80% dense iOS 27 liquid glass (`liquid_dialog_glass()`).
 fn dialog_glass() -> @paint.Glass {
-  let d = is_dark()
-  let c = colors()
-  @paint.Glass::liquid(
-    blur=8.0,
-    tint=if d { 0x202020BFL } else { 0xFDFCFD67L },
-    solid=alpha(c.dialog_container, if d { 1.0 / 0.4 } else { 1.0 / 0.6 }),
-    saturation=1.0,
-    rim=0.6,
-    bezel=20.0,
-    refraction=48.0,
-    chroma=0.0,
-    merge=0.0,
-    adaptive=false,
-  )
+  liquid_dialog_glass()
+}
+
+///|
+/// Composable single-layer dense Liquid Glass dialog shell (`r=24pt` by default) with symmetric 80%
+/// `liquid_dialog_glass`, `shadow_outside(Is(true))`, `MBUI_GLASS=solid` 1pt hairline fallback, and `clips(Is(true))`.
+/// Lets callers such as centered panels, confirm dialogs, and command switchers own their routing, scroll body,
+/// and footer layout while reusing `@lg`'s calibrated dialog surface.
+#callsite(autofill(loc))
+pub fn liquid_dialog_shell_node(
+  parent : @view.View,
+  radius? : Double = 24.0,
+  solid? : () -> Int64,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(shell) {
+    shell
+    .radius(Is(radius))
+    .shadow(Is(shadow_default))
+    .shadow_outside(Is(true))
+    .glass(
+      By(fn() {
+        let s = match solid {
+          Some(f) => f()
+          None => clear
+        }
+        Some(liquid_dialog_glass(solid=s))
+      }),
+    )
+    .edge(By(fn() { if shell.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
+    .clips(Is(true))
+    |> ignore
+    body(shell)
+  })
 }
 
 ///|
@@ -107,6 +128,7 @@ pub fn liquid_dialog_node(
           .shadow(Is(shadow_default))
           .shadow_outside(Is(true))
           .glass(By(fn() { Some(dialog_glass()) }))
+          .edge(By(fn() { if card.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
           .alpha(By(fn() { look().alpha }))
           .scale(By(fn() { look().sx }))
           .offset(By(fn() { (0.0, look().dy) }))
