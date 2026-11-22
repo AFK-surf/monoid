@@ -45,10 +45,8 @@ fn steps_centred_node(
         .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - dialog_room)) }))
         .padding(Is((0.0, 0.0, 0.0, 0.0)))
         .radius(Is(dialog_r))
-        .ground(By(fn() { panel_ground() }))
-        .edge(By(fn() { (1.0, @ui.tree_theme().color(Line)) }))
-        .shadow(By(fn() { (dialog_shadow, dialog_shadow_y, library_theme().p.shadow) }))
-        .clips(Is(true))
+        |> ignore
+        dialog_surface_decorate(d)
         .alpha(By(fn() { look().alpha }))
         .scale(By(fn() { look().sx }))
         .offset(By(fn() { (look().dx, look().dy) }))

@@ -54,9 +54,8 @@ pub fn ask_node(
       // (dialog_box: 24 over its title; 24 in at its sides, each part's own, what it holds scrolling out to them)
       .padding(Is((0.0, dialog_pad, 0.0, 0.0)))
       .radius(Is(dialog_r))
-      .ground(By(fn() { panel_ground() }))
-      .edge(By(fn() { (1.0, theme().color(Line)) }))
-      .shadow(By(fn() { (dialog_shadow, dialog_shadow_y, library_theme().p.shadow) }))
+      |> ignore
+      dialog_surface_decorate(d)
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }))
       .offset(By(fn() { (look().dx, look().dy) }))

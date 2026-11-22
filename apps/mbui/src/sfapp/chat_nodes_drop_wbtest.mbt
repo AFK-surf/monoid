@@ -67,7 +67,7 @@ fn drop_nodes_composer_glass(
   let (x, y, w, h) = match at {
     Some(r) => r
     None => {
-      let glass = t.drawn_glass()
+      let glass = t.drawn_glass().filter(fn(g) { g.4 == 6 })
       guard glass.length() > 0 else { fail("no glass drawn") }
       let mut foot = glass[0]
       for g in glass {
@@ -81,7 +81,7 @@ fn drop_nodes_composer_glass(
   let drawn = t
     .drawn_instances()
     .iter()
-    .find_first(fn(i) { i[0] == x && i[1] == y && i[2] == w && i[3] == h && (i[5] == 5.0 || i[5] == 6.0) })
+    .find_first(fn(i) { i[0] == x && i[1] == y && i[2] == w && i[3] == h && i[5] == 6.0 })
   guard drawn is Some(i) else { fail("its glass not drawn") }
   ((x, y, w, h), i)
 }

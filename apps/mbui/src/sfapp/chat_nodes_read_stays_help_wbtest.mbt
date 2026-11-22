@@ -281,8 +281,8 @@ fn rs_read_up(t : @ui.Tester, s : (String, Double, Double, Int), skip? : RsCore)
 fn rs_ground(t : @ui.Tester) -> (Double, Double, Double)? {
   let mut at : (Double, Double, Double, Double)? = None
   for g in t.drawn_glass() {
-    let (x, y, w, h, _, _) = g
-    if w > 150.0 {
+    let (x, y, w, h, kind, _) = g
+    if kind == 6 && w > 150.0 {
       match at {
         Some((_, ay, _, ah)) if ay + ah > y + h || (ay + ah == y + h && ay <= y) => ()
         _ => at = Some((x, y, w, h))

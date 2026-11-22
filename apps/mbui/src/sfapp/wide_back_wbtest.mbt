@@ -442,7 +442,7 @@ test "大屏: swipe-back hint follows across monotonically, retreats on reverse,
   let cx_ready = d_ready.x + d_ready.w / 2.0
   let max_cx = @sf.card_pad + @sf.corner_inset + @sf.float_button_side / 2.0 + 0.5
   assert_true(cx_ready > cx2 && cx_ready < max_cx, msg="past far and damped: \{cx_ready}")
-  assert_eq(d_ready.ground, @sf.theme().p.accent, msg="accent fill when ready")
+  assert_eq(d_ready.glass.map(fn(g) { g.tint }), Some(@sf.theme().p.accent), msg="accent glass tint when ready")
   // (hit-testing / window drag at badge location unchanged)
   assert_eq(t.drags_window_at(probe_x, probe_y), drag_before, msg="drags_window_at unchanged under badge")
   // (let go via stillness: commits back to s-c1, badge fades out and leaves)

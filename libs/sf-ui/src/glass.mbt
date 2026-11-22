@@ -182,6 +182,7 @@ pub fn floating_capsule_decorate(
   sharing? : Bool = false,
   tint? : () -> Int64?,
   extra_blur? : () -> Double,
+  active? : () -> Bool,
   with_edge? : Bool = false,
   with_shadow? : Bool = true,
   clips? : Bool = false,
@@ -203,6 +204,7 @@ pub fn floating_capsule_decorate(
       }
     },
     extra_blur?,
+    active?,
     shadow=glass_control_shadow,
     solid_edge=@glass.liquid_solid_edge,
     with_edge~,
@@ -286,4 +288,15 @@ pub fn top_scroll_edge_by_node(
     shield~,
     loc~,
   )
+}
+
+///|
+/// Thin `@sf` progressive blur scroll-edge fill decorator delegating to `@glass.liquid_scroll_edge_fill_decorate`
+/// (zero wrapper nodes, one binding; emits `None` when `active()` is false).
+pub fn scroll_edge_fill_decorate(
+  fill : @view.View,
+  ground : () -> Int64,
+  active? : () -> Bool = fn() { true },
+) -> @view.View {
+  @glass.liquid_scroll_edge_fill_decorate(fill, ground, active~)
 }

@@ -88,7 +88,7 @@ fn composer_cover_glass_box(t : @ui.Tester) -> (Double, Double, Double, Double) 
   match @sfpages.composer_node_shown(t.time()) {
     Some(r) => r
     None => {
-      let g = t.drawn_glass()[0]
+      let g = t.drawn_glass().filter(fn(g) { g.4 == 6 })[0]
       (g.0, g.1, g.2, g.3)
     }
   }
@@ -174,7 +174,7 @@ test "composer over messages: clicking inside its field clears a previous messag
 fn composer_cover_backdrop(t : @ui.Tester) -> Array[Array[Double]] {
   let (gx, gy, gw, gh) = composer_cover_glass_box(t)
   t.drawn_instances().filter(fn(a) {
-    a[5] == 0.0 && a[53] > 0.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw &&
+    a[5] == 5.0 && a[22] < -0.5 && a[53] > 0.0 && a[0] <= gx && a[2] >= gw &&
     a[1] < gy && a[1] + a[3] > gy + gh / 2.0
   })
 }
@@ -183,7 +183,7 @@ fn composer_cover_backdrop(t : @ui.Tester) -> Array[Array[Double]] {
 fn composer_cover_visible_fade(t : @ui.Tester) -> Array[Array[Double]] {
   let (gx, gy, gw, gh) = composer_cover_glass_box(t)
   t.drawn_instances().filter(fn(a) {
-    a[5] == 0.0 && a[53] > 0.0 && (a[11] * 255.0).round().to_int() == 0xFE && a[0] <= gx && a[2] >= gw &&
+    a[5] == 5.0 && a[22] < -0.5 && a[53] > 0.0 && a[0] <= gx && a[2] >= gw &&
     a[1] < gy + gh
   })
 }
@@ -204,6 +204,11 @@ test "composer adaptive glass shows its backdrop fade only when expanded and kee
   assert_eq(glass_of(), (2.1, 0x67, true))
   assert_eq(composer_cover_backdrop(t).length(), 0, msg="expected no backdrop fade on compact single-line capsule")
   assert_eq(composer_cover_visible_fade(t).length(), 0, msg="expected no visible 0xFE fade behind compact capsule")
+  assert_eq(
+    t.drawn_glass().filter(fn(g) { g.4 == 5 && g.1 > 100.0 }).length(),
+    0,
+    msg="expected zero bottom scroll-edge glass on compact single-line capsule",
+  )
   let check_tight = fn(label : String) -> (Double, Double) raise {
     let (_, gy, _, _) = composer_cover_glass_box(t)
     guard composer_cover_backdrop(t) is [a, ..] else {
@@ -268,6 +273,11 @@ test "composer backdrop fade stays off when compact and tight above the composer
 test "the messages fade behind the composer only while the soft keyboard is up, eased in and out" {
   let t = composer_cover_tester(pointing=Finger, platform=2)
   assert_eq(composer_cover_backdrop(t).length(), 0, msg="none with the keyboard down")
+  assert_eq(
+    t.drawn_glass().filter(fn(g) { g.4 == 5 && g.1 > 100.0 }).length(),
+    0,
+    msg="expected zero bottom scroll-edge glass on single-line phone composer at rest",
+  )
   t.set_ime_inset(300.0)
   t.run_for(@ui.move_most_ms)
   let (_, gy, _, _) = composer_cover_glass_box(t)

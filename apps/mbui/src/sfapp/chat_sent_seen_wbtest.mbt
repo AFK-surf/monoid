@@ -19,7 +19,7 @@ fn ss_glass(t : @ui.Tester) -> ((Double, Double, Double, Double), Int)? {
   let mut best : ((Double, Double, Double, Double), Int)? = None
   for i, o in order {
     let (kind, x, y, w, h, _) = o
-    if (kind == 5 || kind == 6) && w > 150.0 {
+    if kind == 6 && w > 150.0 {
       match best {
         Some(((_, by, _, _), _)) if by >= y => ()
         _ => best = Some(((x, y, w, h), i))

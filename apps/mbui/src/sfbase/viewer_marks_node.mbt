@@ -321,12 +321,9 @@ fn note_box_node(w : @view.View) -> Unit {
       },
     )
     let shown = fn() { pop.shown(b) }
-    b
+    @sf.glass_capsule_node(b, radius=Some(note_box_corner), dark=true, sharing=false, solid=fn() { note_ground })
     .padding(Is((keys_in, 10.0, keys_in, keys_in)))
     .gap(Is(6.0))
-    .radius(Is(note_box_corner))
-    .ground(Is(note_ground))
-    .shadow(Is((@sf.floating.sigma, @sf.floating.dy, @sf.floating.color)))
     .alpha(By(shown))
     .scale(By(fn() { 0.97 + 0.03 * shown() }))
     |> ignore
@@ -602,13 +599,10 @@ fn note_tray_card_node(
     },
     fn(_) { press() },
     fn(c) {
-      c
+      @sf.glass_capsule_node(c, radius=Some(note_card_corner), dark=true, sharing=false, solid=fn() { note_ground })
       .width(Is(Some(w)))
       .padding(Is((pin_in, pin_in - (note_first_line - note_pin) / 2.0, note_card_end, note_card_foot)))
       .gap(Is(3.0))
-      .radius(Is(note_card_corner))
-      .ground(Is(note_ground))
-      .shadow(Is((@sf.floating.sigma, @sf.floating.dy, @sf.floating.color)))
       |> ignore
       c.box(fn(h) {
         h.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S1_5))) |> ignore

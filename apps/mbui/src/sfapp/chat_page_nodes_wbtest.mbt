@@ -254,8 +254,8 @@ test "大屏 with its inside nodes: an agent's picture opens its card under a po
 fn foot_gap(t : @ui.Tester) -> Double raise {
   let mut top : Double? = None
   for g in t.drawn_glass() {
-    let (_, y, w, _, _, _) = g
-    if w > 150.0 && (top is None || top.unwrap() < y) {
+    let (_, y, w, _, kind, _) = g
+    if kind == 6 && w > 150.0 && (top is None || top.unwrap() < y) {
       top = Some(y)
     }
   }
@@ -1087,8 +1087,8 @@ fn composer_capsule(t : @ui.Tester) -> (Double, Double, Double, Double)? {
   let (x, y) = (fx + fw / 2.0, fy + fh / 2.0)
   let mut at : (Double, Double, Double, Double)? = None
   for g in t.drawn_glass() {
-    let (gx, gy, gw, gh, _, _) = g
-    if x >= gx && x < gx + gw && y >= gy && y < gy + gh && (at is None || at.unwrap().2 * at.unwrap().3 > gw * gh) {
+    let (gx, gy, gw, gh, kind, _) = g
+    if kind == 6 && x >= gx && x < gx + gw && y >= gy && y < gy + gh && (at is None || at.unwrap().2 * at.unwrap().3 > gw * gh) {
       at = Some((gx, gy, gw, gh))
     }
   }

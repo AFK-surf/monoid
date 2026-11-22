@@ -160,9 +160,36 @@ fn back_hint_node(v : @view.View, hint : BackHint) -> Unit {
       @sf.style_node(b, fn() { @sf.float_badge_look })
       let side = @sf.float_button_side
       let ready_u = fn() { hint_clamp(hint.ready_way.shown(b), 0.0, 1.0) }
-      b
-      .ground(By(fn() { @ui.blend(@ui.tree_theme().surface, @sf.theme().p.accent, ready_u()) }))
-      .edge(By(fn() { (@ui.Stroke::B1.px(), @ui.blend(@ui.tree_theme().line, @sf.theme().p.accent, ready_u())) }))
+      let badge_alpha = fn() {
+        let u = hint_clamp(shown(), 0.0, 1.0)
+        if o.leaving() {
+          if hint.committed {
+            u
+          } else {
+            let p = hint_clamp(hint.across.get() * u / back_hint_far, 0.0, 1.0)
+            @sf.seen_at(0.5 + 0.5 * hint_clamp(p * 2.0, 0.0, 1.0))
+          }
+        } else {
+          let p = hint_clamp(hint.across.get() / back_hint_far, 0.0, 1.0)
+          @sf.seen_at(0.5 + 0.5 * hint_clamp(p * 2.0, 0.0, 1.0))
+        }
+      }
+      @sf.floating_capsule_decorate(
+        b,
+        sharing=false,
+        tint=fn() {
+          let u = ready_u()
+          if u <= 0.001 {
+            None
+          } else {
+            Some(@ui.blend(@sf.glass_floating().tint, @sf.theme().p.accent, u))
+          }
+        },
+        active=fn() { badge_alpha() > 0.001 },
+        with_edge=true,
+        with_shadow=true,
+        clips=true,
+      )
       .offset(By(fn() {
         let wh = o.window_h()
         let y = (wh - side) / 2.0
@@ -194,20 +221,7 @@ fn back_hint_node(v : @view.View, hint : BackHint) -> Unit {
         }),
         about=At(0.5, 0.5),
       )
-      .alpha(By(fn() {
-        let u = hint_clamp(shown(), 0.0, 1.0)
-        if o.leaving() {
-          if hint.committed {
-            u
-          } else {
-            let p = hint_clamp(hint.across.get() * u / back_hint_far, 0.0, 1.0)
-            @sf.seen_at(0.5 + 0.5 * hint_clamp(p * 2.0, 0.0, 1.0))
-          }
-        } else {
-          let p = hint_clamp(hint.across.get() / back_hint_far, 0.0, 1.0)
-          @sf.seen_at(0.5 + 0.5 * hint_clamp(p * 2.0, 0.0, 1.0))
-        }
-      }))
+      .alpha(By(badge_alpha))
       |> ignore
       @sf.icon_node(
         b,

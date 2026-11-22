@@ -30,7 +30,7 @@ test "on a small screen a waiting quote moves with the composer when another arr
   @sfbase.writing_quote(src, w, { "author": "Ana", "text": quote_passage, "ts": "ts8" })
   t.run_for(@ui.move_most_ms)
   let ground = fn() {
-    let glasses = t.drawn_glass_corners()
+    let glasses = t.drawn_glass_corners().filter(fn(g) { g.4 > 0.0 })
     glasses.sort_by(fn(a, b) { a.1.compare(b.1) })
     glasses[glasses.length() - 1].1
   }
@@ -248,7 +248,7 @@ test "a waiting video is a picture tile from the first frame, its composer stead
   // (its tile in the node composer: a 56 square, where the viewer's flight would end, waiting_tile_at; still before its video still arrives)
   assert_eq(waiting_tile_at(t, "ws1/st1//draft:" + id).map(fn(tile) { (tile.2, tile.3) }), Some((56.0, 56.0)))
   let ground = fn() {
-    let glasses = t.drawn_glass_corners()
+    let glasses = t.drawn_glass_corners().filter(fn(g) { g.4 > 0.0 })
     glasses.sort_by(fn(a, b) { a.1.compare(b.1) })
     glasses[glasses.length() - 1].1
   }
@@ -396,7 +396,7 @@ test "small screen unfocused capsule adding attachments expands smoothly without
   let src = made.val.unwrap()
   let w = @sfbase.writing(src, "ws1/st1:s-c1")
   let ground = fn() {
-    let glasses = t.drawn_glass_corners()
+    let glasses = t.drawn_glass_corners().filter(fn(g) { g.4 > 0.0 })
     glasses.sort_by(fn(a, b) { a.1.compare(b.1) })
     glasses[glasses.length() - 1]
   }
@@ -440,7 +440,7 @@ test "small screen focused composer adding, wrapping, and removing attachments a
   t.resize(390.0, 520.0)
   t.run_for(@ui.move_most_ms)
   let ground = fn() {
-    let glasses = t.drawn_glass_corners().filter(fn(g) { g.2 > 200.0 })
+    let glasses = t.drawn_glass_corners().filter(fn(g) { g.2 > 200.0 && g.4 > 0.0 })
     glasses.sort_by(fn(a, b) { a.1.compare(b.1) })
     glasses[glasses.length() - 1]
   }

@@ -9,6 +9,25 @@ pub(all) enum ScrollEdgeSide {
 }
 
 ///|
+/// Decorates an existing scroll-edge fill node `fill` in place (zero wrapper nodes, one binding) with
+/// `liquid_scroll_edge_glass(bg=bg())` while `active()` is true, and `None` when inactive (zero hidden glass).
+pub fn liquid_scroll_edge_fill_decorate(
+  fill : @view.View,
+  bg : () -> Int64,
+  active? : () -> Bool = fn() { true },
+) -> @view.View {
+  fill.glass(
+    By(fn() {
+      if active() {
+        Some(liquid_scroll_edge_glass(bg=bg()))
+      } else {
+        None
+      }
+    }),
+  )
+}
+
+///|
 /// Native four-platform progressive variable-blur scroll-edge backdrop (`UIScrollEdgeEffect.soft`, `progressive=true`)
 /// anchored to the `Top` or `Bottom` edge of `parent`.
 ///

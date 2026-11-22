@@ -572,6 +572,7 @@ fn composer_node_of(
       fn() { stand.at(fn() { composer_foot_at(rest_wide()) }) },
       backdrop_top,
       lift_backdrop_top,
+      fn(u) { shared.morph.shown(u) > 0.001 },
     )
     match made {
       None =>
@@ -678,6 +679,7 @@ fn composer_foot_scrim_node(
   seam_h : () -> Double,
   backdrop_top : (@view.View) -> Double,
   lift_backdrop_top : (@view.View) -> Double,
+  expanded : (@view.View) -> Bool,
 ) -> Unit {
   foot.box(fn(scrim) {
     scrim
@@ -704,6 +706,13 @@ fn composer_foot_scrim_node(
         @sf.theme().p.bg
       }
     }
+    let fill_active = fn() {
+      fill_ground() != 0L &&
+      (match made {
+        Some(m) => !(m.away)()
+        None => true
+      })
+    }
     if !@sf.soft_keyboard() {
       scrim.box(fn(band) {
         band
@@ -714,13 +723,11 @@ fn composer_foot_scrim_node(
         .points(Is(false))
         |> ignore
         band.box(fn(fill) {
-          fill
+          @sf.scroll_edge_fill_decorate(fill, fill_ground, active=fn() { fill_active() && expanded(fill) })
           .width_share(Is(1.0))
           .height_share(Is(1.0))
           .points(Is(false))
-          .ground(By(fill_ground))
           .ground_drawn(Is({ dx: 0.0, dy: 0.0, dw: 0.0, dh: 300.0, corners: None }))
-          .alpha(Is(254.0 / 255.0))
           |> ignore
         })
         |> ignore
@@ -775,13 +782,11 @@ fn composer_foot_scrim_node(
         .points(Is(false))
         |> ignore
         band.box(fn(fill) {
-          fill
+          @sf.scroll_edge_fill_decorate(fill, fill_ground, active=fill_active)
           .width_share(Is(1.0))
           .height_share(Is(1.0))
           .points(Is(false))
-          .ground(By(fill_ground))
           .ground_drawn(Is({ dx: 0.0, dy: 0.0, dw: 0.0, dh: 300.0, corners: None }))
-          .alpha(Is(254.0 / 255.0))
           |> ignore
         })
         |> ignore

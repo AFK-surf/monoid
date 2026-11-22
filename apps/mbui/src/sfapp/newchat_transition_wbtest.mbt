@@ -42,8 +42,8 @@ fn trans_word_pos(t : @ui.Tester, text : String) -> (Double, Double)? {
 fn trans_composer_glass_rect(t : @ui.Tester, min_x : Double, min_w : Double) -> (Double, Double, Double, Double)? {
   let mut best : (Double, Double, Double, Double)? = None
   for g in t.drawn_glass() {
-    let (x, y, w, h, _, _) = g
-    if x >= min_x && w >= min_w && y >= 100.0 && h >= 36.0 {
+    let (x, y, w, h, kind, _) = g
+    if kind == 6 && x >= min_x && w >= min_w && y >= 100.0 && h >= 36.0 {
       match best {
         None => best = Some((x, y, w, h))
         Some((_, by, _, _)) => if y > by { best = Some((x, y, w, h)) }

@@ -2730,7 +2730,9 @@ fn wide_note_first(late : Double) -> (Double, Double) raise {
   t.touch(2, px + 60.0, py + 40.0)
   let at = t.time()
   let card = fn() {
-    match @ui.view_tree().unwrap().drawn().iter().find_first(fn(d) { d.ground == @sfbase.note_ground }) {
+    match @ui.view_tree().unwrap().drawn().iter().find_first(fn(d) {
+      d.glass is Some(g) && g.solid == @sfbase.note_ground
+    }) {
       Some(d) => d.alpha
       None => -1.0
     }
