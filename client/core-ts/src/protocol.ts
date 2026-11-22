@@ -236,7 +236,7 @@ function fits(value: unknown, kind: Param): boolean {
 /// showing a line of every station reads (权限's archiving, 自动决策's policy of each, the profiles' page), or a page
 /// showing one part of a station that is not its own (关于's 本机 Station: its software, `updates`), not each
 /// station's whole page.
-export const STATION_PARTS: readonly string[] = ["archiving", "automaticDecisions", "profiles", "machineLogins", "logins", "updates"];
+export const STATION_PARTS: readonly string[] = ["archiving", "automaticDecisions", "profiles", "machineLogins", "logins", "updates", "copies"];
 
 /// A topic as the UI said it, or null when it is none (the subscribe is then no message the core knows).
 export function parseTopic(raw: unknown): Topic | null {

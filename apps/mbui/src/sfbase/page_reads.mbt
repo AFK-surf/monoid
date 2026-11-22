@@ -236,9 +236,11 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
     AutoDecisions => reads_of([("settings", scope)])
     // (the station whose rule it shows, the page's own choice among them)
     AutoCompletion => reads_of([stations])
-    AutoPolicy(address) | StationArchiving(address) => reads_of([station_ask(ws, address)])
+    AutoPolicy(address) | StationArchiving(address) | StationBackup(address) => reads_of([station_ask(ws, address)])
     // (each station's archiving is its row's, as it comes)
     Archiving => reads_of([("settings", scope), stations])
+    // (each station's backup summary is its row's, as it comes)
+    Backup => reads_of([stations])
     // (nothing chosen to move yet, as it opens)
     StationMove(address) =>
       reads_of([

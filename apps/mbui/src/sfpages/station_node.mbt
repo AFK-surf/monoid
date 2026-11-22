@@ -271,7 +271,7 @@ fn station_view_node(
       "elevation" => station_elevation_node(b, core, address, station_overview_of(s, "elevation"))
       "workspaces" => station_workspaces_node(b, core, address)
       "network" => station_network_node(b, core, address, station_overview_of(s, "network"), manager)
-      "copies" => station_copies_node(b, core, address, station_overview_of(s, "copies"), manager, fn() { flag(top(), "online") })
+      "copies" => station_copies_node(b, core, address, station_overview_of(s, "copies"))
       "moving" => station_moving_node(b, core, here, station_narrowed(s, ["copies"]), manager)
       "move" => station_move_section(b, core, address)
       "software" =>
@@ -434,8 +434,7 @@ fn station_settings_keys(s : Json?, manager : Bool) -> Array[String] {
   if has_env || has_search || field(o, "diagnostics") is Some(Object(_)) || field(o, "elevation") is Some(Object(_)) || field(o, "screenService") is Some(Object(_)) || field(o, "autoChats") is Some(Object(_)) {
     out.push("system")
   }
-  let copies = field(o, "copies")
-  if online && (items(copies, "offers").length() > 0 || field(copies, "backup") is Some(Object(_))) {
+  if online && items(field(o, "copies"), "offers").length() > 0 {
     out.push("copies")
   }
   out

@@ -584,6 +584,14 @@ fn narrow_made_as(
       made("station-archiving/" + st, fn(p, core, here, frame, _stint, _acts) {
         @sfpages.station_archiving_node(p, core, here, st, on_back=core.pop, frame~)
       })
+    Setting(Backup) =>
+      made("backup", fn(p, core, here, frame, stint, _acts) {
+        @sfpages.backup_node(p, core, here, on_back=core.pop, frame~, stint~)
+      })
+    Setting(StationBackup(st)) =>
+      made("station-backup/" + st, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.station_backup_node(p, core, here, st, on_back=core.pop, frame~)
+      })
     Setting(StationMove(st)) =>
       made("station-move/" + st, fn(p, core, here, frame, _stint, _acts) {
         @sfpages.station_move_node(p, core, here, st, on_back=core.pop, frame~)

@@ -228,12 +228,11 @@ test "a new station's backup to restore is a row of its 设置, 恢复到这台 
     legacy.run_for(@ui.move_most_ms)
     assert_true(legacy.find("再加一台 station 就会自动备份") is None, msg="quiet legacy backup status not shown: \{at}")
     assert_true(legacy.find("恢复到这台") is None, msg="nothing to press: \{at}")
-    // station with backup settings: collapsed by default with status row and 管理 button
+    // station with backup settings (no restore offers): quiet backup status stays in the dedicated 备份 tab, not Station 设置
     let t = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-copies", h=2400.0)
     t.run_for(@ui.move_most_ms)
-    assert_true(t.find("已备份到 Cedar 和 Aspen · 2 分钟前") is Some(_), msg="backup status shown: \{at}")
-    assert_true(t.find("管理") is Some(_), msg="manage toggle shown: \{at}")
-    assert_true(t.find("允许替其他 Station 存备份") is None, msg="collapsed by default: \{at}")
+    assert_true(t.find("已备份到 Cedar 和 Aspen · 2 分钟前") is None, msg="quiet backup status moved to 备份 tab: \{at}")
+    assert_true(t.find("允许替其他 Station 存备份") is None, msg="config not shown in Station 设置: \{at}")
     // a new station: the backup of a station no longer there in 设置, 恢复到这台 its one button
     let r = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-restore-offer", h=2400.0)
     r.run_for(@ui.move_most_ms)
@@ -254,11 +253,84 @@ test "a new station's backup to restore is a row of its 设置, 恢复到这台 
 }
 
 ///|
-test "backup targets config: expand, toggle peers and acceptOthers, test/save S3 with generated recovery key, restore from S3, audit clean" {
+test "backup tab and per-station backup page: sidebar row, unified apply with shared generated key, per-station flat config, S3 form, restore from S3, offline/non-admin read-only, audit clean" {
+  // 1. Settings list has 备份 right between 归档 and 用量
+  let nav = setting_tester(Home, 390.0, platform=2, h=1800.0)
+  nav.run_for(@ui.move_most_ms)
+  let arch_y = nav.find("归档").unwrap().1
+  let back_y = nav.find("备份").unwrap().1
+  let usage_y = nav.find("用量").unwrap().1
+  assert_true(arch_y < back_y && back_y < usage_y, msg="备份 between 归档 and 用量: \{arch_y} < \{back_y} < \{usage_y}")
+  assert_eq(nav.audit(), [], msg="audit settings home")
+  // 2. Top-level Backup tab: unified settings + sequential multi-station apply sharing generatedKeys + station row navigation
   for (w, platform) in [(390.0, 2), (1280.0, 0)] {
     let at = "\{w} platform \{platform}"
     let calls : Array[(String, Json)] = []
-    let t = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-copies-config", h=2600.0, over=fn(s) {
+    let t = setting_tester(Backup, w, platform~, mode="settings-backup", h=2600.0, over=fn(s) {
+      {
+        ..s,
+        call: fn(name, params, done) {
+          if name == "copies.setSettings" {
+            calls.push((name, params))
+            // First station generates an encryption key for the S3 target
+            if calls.length() == 1 {
+              done(
+                Ok(
+                  @settings.obj([
+                    (
+                      "generatedKeys",
+                      @settings.obj([("r2-1", Json::string("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))]),
+                    ),
+                  ]),
+                ),
+              )
+            } else {
+              done(Ok(@settings.obj([])))
+            }
+            return
+          }
+          (s.call)(name, params, done)
+        },
+      }
+    })
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("统一设置") is Some(_), msg="unified heading: \{at}")
+    assert_true(t.find("各 Station") is Some(_), msg="stations heading: \{at}")
+    assert_true(t.find("应用到全部在线 Station") is Some(_), msg="apply button: \{at}")
+    assert_true(t.find("Willow") is Some(_), msg="station Willow: \{at}")
+    assert_true(t.find("Maple") is Some(_), msg="station Maple: \{at}")
+    assert_eq(t.audit(), [], msg="audit backup tab \{at}: \{Repr(t.audit())}")
+    assert_eq(t.squeeze_faults(), [], msg="squeeze backup tab \{at}: \{Repr(t.squeeze_faults())}")
+    // Click 应用到全部在线 Station -> sequential calls to ws1/st1 then ws1/st2 sharing generated encryptionKey
+    t.click(Button, label="应用到全部在线 Station")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(calls.length(), 2, msg="two online stations updated: \{at}")
+    assert_eq(text(Some(calls[0].1), "station"), "ws1/st1", msg="first station: \{at}")
+    assert_eq(text(Some(calls[1].1), "station"), "ws1/st2", msg="second station: \{at}")
+    let second_s3 = items(Some(calls[1].1), "s3")
+    assert_true(second_s3.length() == 1, msg="second station s3 count: \{at}")
+    assert_eq(
+      text(Some(second_s3[0]), "encryptionKey"),
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      msg="shared generated key propagated to second station: \{at}",
+    )
+    // Recovery key dialog popped once
+    assert_true(t.find("保存端到端加密恢复密钥") is Some(_), msg="generated key dialog: \{at}")
+    t.click(Button, label="我已保存")
+    t.run_for(@ui.move_most_ms)
+    // Clicking a station row navigates to StationBackup(address)
+    let willow_rows = t.words().filter(fn(x) { x.0 == "Willow" })
+    assert_true(willow_rows.length() >= 1, msg="Willow row visible: \{at}")
+    let last_w = willow_rows[willow_rows.length() - 1]
+    t.tap(last_w.1 + last_w.3 / 2.0, last_w.2 + last_w.4 / 2.0)
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() == Setting(StationBackup("ws1/st1")), msg="navigated to StationBackup: \{at}")
+  }
+  // 3. Per-station StationBackup page: flat config, acceptOthers, S3 form, 1.3x scale, English + 320px narrow
+  for (w, platform) in [(390.0, 2), (1280.0, 0)] {
+    let at = "\{w} platform \{platform}"
+    let calls : Array[(String, Json)] = []
+    let t = setting_tester(StationBackup("ws1/st1"), w, platform~, mode="settings-backup-station", h=2600.0, over=fn(s) {
       {
         ..s,
         call: fn(name, params, done) {
@@ -297,19 +369,19 @@ test "backup targets config: expand, toggle peers and acceptOthers, test/save S3
     assert_true(t.find("Cloudflare R2") is Some(_), msg="s3 target name: \{at}")
     assert_true(t.find("stillfail-backups") is Some(_), msg="s3 bucket: \{at}")
     assert_true(t.find("密钥指纹 ab12cd34") is Some(_), msg="s3 key fingerprint: \{at}")
-    assert_eq(t.audit(), [], msg="audit config \{at}: \{Repr(t.audit())}")
-    assert_eq(t.squeeze_faults(), [], msg="squeeze config \{at}: \{Repr(t.squeeze_faults())}")
+    assert_eq(t.audit(), [], msg="audit station backup \{at}: \{Repr(t.audit())}")
+    assert_eq(t.squeeze_faults(), [], msg="squeeze station backup \{at}: \{Repr(t.squeeze_faults())}")
     // 1.3x font scale check
     t.set_font_scale(1.3)
     t.run_for(@ui.move_most_ms)
     assert_eq(t.squeeze_faults(), [], msg="squeeze 1.3x \{at}: \{Repr(t.squeeze_faults())}")
     t.set_font_scale(1.0)
     t.run_for(@ui.move_most_ms)
-    // Toggle acceptOthers switch -> copies.setSettings
+    // Toggle acceptOthers switch -> copies.setSettings for ws1/st1 only
     t.click(Switch, label="允许替其他 Station 存备份")
     t.run_for(@ui.move_most_ms)
     assert_true(
-      calls.iter().any(fn(c) { c.0 == "copies.setSettings" && !flag(Some(c.1), "acceptOthers") }),
+      calls.iter().any(fn(c) { c.0 == "copies.setSettings" && text(Some(c.1), "station") == "ws1/st1" && !flag(Some(c.1), "acceptOthers") }),
       msg="acceptOthers call: \{at}",
     )
     // Click 添加 to open S3 add form dialog/sheet directly and audit it
@@ -321,72 +393,28 @@ test "backup targets config: expand, toggle peers and acceptOthers, test/save S3
     assert_eq(t.squeeze_faults(), [], msg="squeeze form \{at}: \{Repr(t.squeeze_faults())}")
     t.click(Button, label="取消")
     t.run_for(@ui.move_most_ms)
-    // English + 320px narrow + long station/bucket name check on station_copies_node directly
-    @sfbase.reset()
-    reset()
-    @settings.reset()
-    @sffixture.fixture_reset()
-    @sf.presenters_reset()
-    @sf.set_words(@sfbase.fill)
-    @settings.station_copies_open["ws1/st1"] = true
-    let en_core = @sfbase.settings_core(@sffixture.fixture("settings"), rig_workspace)
-    let en_copies : Json = {
-      "line": "Backed up to Cedar-Production-Primary-Node-01 and Cloudflare R2 · 2m ago",
-      "level": "ok",
-      "offers": [],
-      "canRestore": true,
-      "formerly": [],
-      "backup": {
-        "mode": "manual",
-        "stations": ["st2"],
-        "acceptOthers": true,
-        "peers": [
-          { "station": "st2", "name": "Cedar-Production-Primary-Node-01", "acceptOthers": true, "online": true },
-          { "station": "st3", "name": "Aspen-Secondary-Archive-Host", "acceptOthers": false, "online": true },
-        ],
-        "s3": [
-          {
-            "id": "r2-1",
-            "name": "Cloudflare R2 Primary Backup",
-            "endpoint": "https://account-id-123456.r2.cloudflarestorage.com",
-            "region": "auto",
-            "bucket": "stillfail-team-encrypted-backups-prod",
-            "prefix": "stillfail-backup",
-            "forcePathStyle": true,
-            "accessKeyMask": "AKIA****1234",
-            "keyFingerprint": "ab12cd34",
-            "includeTranscripts": true,
-            "to": 7,
-            "at": 480000,
-            "error": null,
-            "reason": null,
-            "statusLine": "Synced · 2m ago",
-            "level": "ok",
-          },
-        ],
-      },
-    }
-    let en_w = if w < 500.0 { 320.0 } else { w }
-    let en = station_part_tester(
-      fn(p) {
-        @sf.set_language(Some("en"))
-        station_copies_node(p, en_core, "ws1/st1", fn() { Some(en_copies) }, true, fn() { true })
-      },
-      w=en_w,
-      h=1200.0,
-      platform~,
-    )
-    en.run_for(@ui.move_most_ms)
-    let en_words = en.words().map(fn(x) { x.0 }).join("|")
-    assert_true(en.find("R2 / S3 storage") is Some(_), msg="en s3 heading \{at}: \{en_words}")
-    assert_true(en.find("stillfail-team-encrypted-backups-prod") is Some(_), msg="en long bucket: \{at}")
-    assert_eq(en.audit(), [], msg="en audit \{en_w} \{at}: \{Repr(en.audit())}")
-    assert_eq(en.squeeze_faults(), [], msg="en squeeze \{en_w} \{at}: \{Repr(en.squeeze_faults())}")
+    // English + 320px narrow check
+    @sf.set_language(Some("en"))
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("R2 / S3 storage") is Some(_), msg="en s3 heading: \{at}")
+    assert_eq(t.audit(), [], msg="en audit \{at}: \{Repr(t.audit())}")
+    assert_eq(t.squeeze_faults(), [], msg="en squeeze \{at}: \{Repr(t.squeeze_faults())}")
     @sf.set_language(None)
   }
-  // Restore from S3 passes fromS3 (not fromStation)
+  // 4. 320px narrow Backup & StationBackup clean
+  let n320 = setting_tester(StationBackup("ws1/st1"), 320.0, platform=2, mode="settings-backup-station", h=2600.0)
+  n320.run_for(@ui.move_most_ms)
+  assert_eq(n320.audit(), [], msg="320px audit: \{Repr(n320.audit())}")
+  assert_eq(n320.squeeze_faults(), [], msg="320px squeeze: \{Repr(n320.squeeze_faults())}")
+  // 5. Offline station hides write controls
+  let off = setting_tester(StationBackup("ws1/st1"), 390.0, platform=2, mode="settings-station-away", h=1600.0)
+  off.run_for(@ui.move_most_ms)
+  assert_true(off.find("Station 当前离线，上线后可修改备份配置。") is Some(_), msg="offline notice")
+  assert_true(off.find("备份方式") is None, msg="no write controls when offline")
+  assert_eq(off.audit(), [], msg="offline audit")
+  // 6. Restore from S3 on StationBackup passes fromS3 (not fromStation)
   let restore_calls : Array[(String, Json)] = []
-  let r = setting_tester(Station("ws1/st1"), 390.0, platform=2, mode="settings-station-restore-s3", h=2400.0, over=fn(s) {
+  let r = setting_tester(StationBackup("ws1/st1"), 390.0, platform=2, mode="settings-backup-restore-s3", h=2400.0, over=fn(s) {
     {
       ..s,
       call: fn(name, params, done) {
@@ -405,7 +433,6 @@ test "backup targets config: expand, toggle peers and acceptOthers, test/save S3
   assert_eq(r.squeeze_faults(), [], msg="squeeze restore s3")
   r.click(Button, label="恢复到这台")
   r.run_for(@ui.move_most_ms)
-  // Confirm dialog's primary button
   let btns = r.words().filter(fn(w) { w.0 == "恢复到这台" })
   assert_true(btns.length() >= 1)
   let last = btns[btns.length() - 1]

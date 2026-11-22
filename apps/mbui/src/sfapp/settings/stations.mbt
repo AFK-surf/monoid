@@ -50,11 +50,6 @@ pub let station_parts : @sf.LiveMap[String, String] = @sf.LiveMap::new()
 pub let station_network_open : Map[String, Bool] = Map([])
 
 ///|
-/// Whose page has its 备份配置区 opened, by station (opened by the person, or the fixture's
-/// settings-station-copies-config); kept while the page is in the stack.
-pub let station_copies_open : Map[String, Bool] = Map([])
-
-///|
 /// Whether station `s` is this machine's (the host's station, one id in every workspace it is in): Station's list puts
 /// it first, tagged 本机 (the user, 2026-11-16).
 pub fn is_this_machine(s : Json?) -> Bool {

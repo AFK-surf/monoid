@@ -371,6 +371,7 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
     ("notifications", @settings.Route::Notifications, @sf.t("web-pages.settings.nav.notifications")),
     ("permissions", @settings.Route::Permissions, @sf.t("web-pages.settings.nav.permissions")),
     ("archive", @settings.Route::Archiving, @sf.t("web-pages.archiving.title")),
+    ("backup", @settings.Route::Backup, @sf.t("web-pages.backup.title")),
     ("memory", @settings.Route::Memories, @sf.t("web-pages.settings.nav.memory")),
     ("security", @settings.Route::Security, @sf.t("web-pages.security.title")),
     ("vault", @settings.Route::Vault, @sf.t("web-pages.vault.title")),

@@ -185,6 +185,10 @@ pub(all) enum Route {
   Permissions
   Archiving
   StationArchiving(String)
+  /// 备份: workspace-wide backup settings and each station's backup status (src/sfpages station_copies_node.mbt)
+  Backup
+  /// a station's own backup configuration and restore offers, by its address
+  StationBackup(String)
   /// moving a station's things to another, module by module (src/sfpages station_move_node.mbt), by its address
   StationMove(String)
   /// the prices the usage is counted at, over its days (UsagePricesScreen)
@@ -574,7 +578,6 @@ pub fn reset() -> Unit {
   login_marked.val = None
   station_parts.clear()
   station_network_open.clear()
-  station_copies_open.clear()
   lock_prompts_reset()
   vault_prompts_reset()
   fonts_at.set(0)
@@ -644,7 +647,7 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
+  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | Backup | StationBackup(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
 }
 
 ///|
@@ -682,6 +685,7 @@ pub fn route_of(name : String) -> Route? {
     "notifications" => Some(Notifications)
     "permissions" => Some(Permissions)
     "archiving" => Some(Archiving)
+    "backup" => Some(Backup)
     _ =>
       match name.find(":") {
         Some(i) => {
@@ -702,6 +706,7 @@ pub fn route_of(name : String) -> Route? {
             "vault-item" => Some(VaultItem(address, id))
             "policy" => Some(AutoPolicy(arg))
             "archiving" => Some(StationArchiving(arg))
+            "backup" => Some(StationBackup(arg))
             "move" => Some(StationMove(arg))
             "prices" => Some(UsagePrices(int_of(arg, 7)))
             "memory" => Some(Memory(arg))

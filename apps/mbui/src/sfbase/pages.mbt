@@ -1192,6 +1192,8 @@ fn setting_kind(r : @settings.Route) -> String {
     Permissions => "Permissions"
     Archiving => "Archiving"
     StationArchiving(_) => "StationArchiving"
+    Backup => "Backup"
+    StationBackup(_) => "StationBackup"
     StationMove(_) => "StationMove"
     UsagePrices(_) => "UsagePrices"
   }
@@ -1722,6 +1724,7 @@ pub fn back_label(p : Page) -> String {
     Setting(@settings.Route::AutoDecisions) => @sf.t("web-pages.automaticDecisions.title")
     Setting(@settings.Route::AutoCompletion) => @sf.t("web-pages.automaticDecisions.completion")
     Setting(@settings.Route::Archiving) => @sf.t("web-pages.archiving.title")
+    Setting(@settings.Route::Backup) => @sf.t("web-pages.backup.title")
     Setting(@settings.Route::Shortcuts) => @sf.t("web-main.shortcuts.title")
     Setting(@settings.Route::Usage) => @sf.t("web-pages.settings.nav.usage")
     Setting(@settings.Route::Security) => @sf.t("web-pages.security.title")

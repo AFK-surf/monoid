@@ -986,9 +986,19 @@ pub fn fixture_page(mode : String) -> String {
       station_parts["ws1/st1"] = "settings"
       up("", "settings/station/ws1/st1", -1)
     }
+    "settings-backup" => {
+      fx.copies = Some(fixture_copies_config())
+      fx.mba_online = true
+    }
+    "settings-backup-station" | "settings-backup-s3-form" => {
+      fx.copies = Some(fixture_copies_config())
+      if m == "settings-backup-s3-form" {
+        fixture_open.desk = "copies-s3-form"
+      }
+    }
+    "settings-backup-restore-s3" => fx.copies = Some(fixture_copies_restore_s3())
     "settings-station-copies-config" | "settings-station-copies-s3-form" => {
       fx.copies = Some(fixture_copies_config())
-      station_copies_open["ws1/st1"] = true
       station_parts["ws1/st1"] = "settings"
       up("", "settings/station/ws1/st1", -1)
       if m == "settings-station-copies-s3-form" {
@@ -1300,6 +1310,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings" => "home"
     _ if moves && (m == "settings-station-move-section" || m == "settings-station-move-offered") => "station:ws1/st1"
     _ if moves => "move:ws1/st1"
+    "settings-backup" => "backup"
+    "settings-backup-station" | "settings-backup-s3-form" | "settings-backup-restore-s3" => "backup:ws1/st1"
     "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-back" | "settings-station-back-held" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-copies-config" | "settings-station-copies-s3-form" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restore-s3" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" | "settings-station-terminals" =>
       "station:ws1/st1"
     "settings-stations-add" | "settings-stations-existing" | "settings-stations-command" | "settings-first-station" =>
@@ -2903,6 +2915,14 @@ fn fx_station(address : String) -> Json {
       ("problems", if up { [] } else { [obj([("key", str("away")), ("level", str("red")), ("text", str("离线：在该机器上打开 still.fail 即可重新连接"))])] }),
       ("runtimes", []),
       ("models", []),
+      (
+        "overview",
+        if up && fx.copies is Some(_) {
+          obj([("copies", fx.copies.unwrap_or(Json::null()))])
+        } else {
+          Json::null()
+        },
+      ),
     ])
   }
 }

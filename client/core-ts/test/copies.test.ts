@@ -8,6 +8,8 @@ import { conform } from "../src/conform.ts";
 import { copiesShown } from "../src/copies.ts";
 import { holdLanguage } from "../src/i18n.ts";
 import { request } from "../src/ops.ts";
+import { shapeOf } from "../src/present.ts";
+import { parseTopic } from "../src/protocol.ts";
 
 holdLanguage();
 const c = { now: 10 * 60_000, offsetMin: 0 };
@@ -316,4 +318,9 @@ test("backup settings: S3-only, mixed station+S3, partial failure, unconfigured,
 
   const restoreStReq = request("copies.restore", { station: "ws1/st1", origin: A, gen: "1-abcdef01", fromStation: B });
   assert.deepEqual(restoreStReq?.body, { station: A, gen: "1-abcdef01", from: { station: B } });
+
+  // stationPart "copies" is an allowed overview part with StationCopies shape
+  const partTopic = parseTopic({ topic: "stationPart", scope: "ws1", station: "ws1/st1", part: "copies" });
+  assert.deepEqual(partTopic, { topic: "stationPart", scope: "ws1", station: "ws1/st1", part: "copies" });
+  assert.deepEqual(shapeOf(partTopic!), { opt: "StationCopies" });
 });

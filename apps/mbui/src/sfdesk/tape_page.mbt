@@ -606,6 +606,14 @@ fn tape_made(
       made("station-archiving/" + st, fn(p, core, here, _stint, told, _acts) {
         @sfpages.station_archiving_node(p, core, here, st, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(Backup) =>
+      made("backup", fn(p, core, here, stint, told, _acts) {
+        @sfpages.backup_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, stint~, said=told, width~)
+      })
+    Setting(StationBackup(st)) =>
+      made("station-backup/" + st, fn(p, core, here, _stint, told, _acts) {
+        @sfpages.station_backup_node(p, core, here, st, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
     Setting(StationMove(st)) =>
       made("station-move/" + st, fn(p, core, here, _stint, told, _acts) {
         @sfpages.station_move_node(p, core, here, st, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
