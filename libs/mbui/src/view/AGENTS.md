@@ -35,6 +35,7 @@
 
 ## Pointer hover, row fitting, layout, and focus
 
+- A pointer-dependent layout can oscillate. Limit its passes, keep other observers responsive, and retry held observers when their inputs or geometry change.
 - Recompute hover (`View::pointed`, tips, hover cards) only on input, immediate change, or end of a geometry-moving transition (`Tree::hand_at_end`, `Prop::moves_hits`), never mid-motion. Batch multi-sample touch frames into one layout at the last sample (`libs/mbui/src/ui/touches.mbt`). Clock, layout, and hover changes never bump hits (`Tree::hits_bump`).
 - Declaring `View::pointed` makes a node hoverable even without taking presses (`View::points`, `Node::points_alone`). Set `points=false` for `pointer-events: none`. `Node::covers` still governs click occlusion. Pointer hit-testing (`Tree::target_in`) and hover (`Tree::points_over`) skip nodes whose resting composed opacity is `<= 0.001` (not mid-fade) unless opted in via `View::takes_unseen(Is(true))`.
 - In `View::fits` rows, hide optional direct children before shrinking `View::cuts` text down to 4 em (`cut_kept_ems`), keeping `View::keeps_held` (`fit_least_held`) until siblings also hit minimum, then shrinking text below 4 em only as a last resort (`fit_soft_held`, `libs/mbui/src/ui/fits_row_least_wbtest.mbt`).
