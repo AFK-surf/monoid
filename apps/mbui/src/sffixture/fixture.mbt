@@ -595,10 +595,138 @@ fn with_subchats(v : Json?) -> Json? {
           "stateText": "做完了：开关和三处颜色都改好了",
           "led": true,
         },
-        { "station": "ws1/st1", "session": "s-c12", "title": "旧版引导页的截图", "archived": true, "note": "已归档", "led": true },
+        {
+          "station": "ws1/st1",
+          "session": "s-c12",
+          "title": "旧版引导页的截图",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：归档前的残留提示",
+          "led": true,
+        },
         { "station": "ws1/st1", "session": "s-c9", "title": "给产品评审建的独立讨论", "stateLead": "done", "stateText": "已整理好议程" },
       ]
       m["openedText"] = "创建了 5 个对话"
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
+/// Long led sub-chats fixture (chat-subchats-many): 2 active + 10 archived led sub-chats (several archived items carry
+/// stale pre-archive `stateText` that must stay hidden), used to verify sheet scrolling and archived state hiding.
+fn with_subchats_many(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      m["opened"] = [
+        {
+          "station": "ws1/st1",
+          "session": "s-c2",
+          "title": "安卓构建与冒烟测试",
+          "mark": "run",
+          "stateText": "正在运行端到端用例",
+          "led": true,
+        },
+        {
+          "station": "ws1/st2",
+          "session": "s-c3",
+          "title": "夜里的构建又失败了",
+          "mark": "block",
+          "stateLead": "need",
+          "stateText": "要你帮忙：测试机的磁盘满了，要不要清理旧的缓存？",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c12",
+          "title": "旧版引导页的截图",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：归档前的残留提示",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c13",
+          "title": "排查消息推送延迟问题",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "出错：额度已用完",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c14",
+          "title": "整理季度发布回归清单",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：确认测试账号权限",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c15",
+          "title": "重构侧栏拖拽动画参数",
+          "archived": true,
+          "note": "已归档",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c16",
+          "title": "核对深色主题对比度边界",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "出错：额度已用完",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c17",
+          "title": "补齐英文翻译缺失词条",
+          "archived": true,
+          "note": "已归档",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c18",
+          "title": "压缩启动阶段首屏资源包",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：选择压缩等级",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c19",
+          "title": "迁移旧版工作站配置格式",
+          "archived": true,
+          "note": "已归档",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c20",
+          "title": "修复平板分屏切换偶发闪屏",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "出错：额度已用完",
+          "led": true,
+        },
+        {
+          "station": "ws1/st1",
+          "session": "s-c4",
+          "title": "历史日志导出脚本清理",
+          "archived": true,
+          "note": "已归档",
+          "stateText": "需要你处理：清理过期归档",
+          "led": true,
+        },
+      ]
+      m["openedText"] = "创建了 12 个对话"
       Some(Json::object(m))
     }
     other => other
@@ -1319,6 +1447,8 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
     "profiles" => @settings.profiles_rows(@settings.profiles_of_stations(value, wholes()))
     "profile" =>
       @settings.profile_said(fixture_topic_inner(f, "profiles", { "scope": Json::string(text(Some(Json::object(params)), "scope")) }), params)
+    "chat" if f.mode == "chat-subchats-many" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_subchats_many(value))
     "chat" if f.mode.has_prefix("chat-subchats") && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_subchats(value))
     "chat" if f.mode == "chat-lineage" && params.get("session") is Some(String("s-c1")) =>

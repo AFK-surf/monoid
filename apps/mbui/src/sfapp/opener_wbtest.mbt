@@ -178,14 +178,26 @@ test "wide: sub-chats bar entry excludes non-led chats, opens popover, navigates
   let d = dialogs[dialogs.length() - 1].rect
   assert_true(d.1 + d.3 <= sub_btn.rect.1 + 1.0, msg="wide subchats popover must open above composer pill: \{Repr(d)} vs \{Repr(sub_btn.rect)}")
   assert_eq(t2.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
-  // 4 led sub-chats shown (running, waiting, done, archived), non-led chat excluded!
+  // 3 active led sub-chats shown, archived collapsed by default, non-led chat excluded!
   assert_true(t2.query(Button, label="安卓构建与冒烟测试") is Some(_))
   assert_true(t2.query(Button, label="夜里的构建又失败了") is Some(_))
   assert_true(t2.query(Button, label="给设置页加一个深色模式开关") is Some(_))
-  assert_true(t2.query(Button, label="旧版引导页的截图") is Some(_))
+  assert_true(t2.query(Button, label="旧版引导页的截图") is None)
   assert_true(t2.query(Button, label="给产品评审建的独立讨论") is None)
   assert_true(t2.find("1 进行中") is Some(_))
   assert_true(t2.find("1 待处理") is Some(_))
+  // Expand archived disclosure, verify archived item shows without stale stateText, then collapse again
+  guard t2.query(Button, label="已归档") is Some(arch_btn) else { fail("expected archived disclosure button") }
+  assert_eq(arch_btn.expanded, Some(false))
+  t2.click(Button, label="已归档")
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(t2.query(Button, label="已归档").unwrap().expanded, Some(true))
+  assert_true(t2.query(Button, label="旧版引导页的截图") is Some(_))
+  assert_true(t2.find("归档前的残留提示") is None)
+  t2.click(Button, label="已归档")
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(t2.query(Button, label="已归档").unwrap().expanded, Some(false))
+  assert_true(t2.query(Button, label="旧版引导页的截图") is None)
   // Open in side panel sends chat.tabs.open with tab: "subchats"
   t2.click(Button, label="在侧栏查看")
   t2.run_for(@ui.move_most_ms)
@@ -240,4 +252,99 @@ test "small: chat-lineage breadcrumb navigates and chat-subchats-pop sheet exclu
   assert_eq(t2.audit(), [])
   assert_true(t2.query(Button, label="安卓构建与冒烟测试") is Some(_))
   assert_true(t2.query(Button, label="给产品评审建的独立讨论") is None)
+}
+
+///|
+test "small: subchats sheet aligns heading, shows header counts, collapses/expands archived without stale stateText, and navigates" {
+  let calls : Array[Made] = []
+  let t = decide_core(calls, "chat-subchats-pop")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [])
+  guard t.words().filter(fn(w) { w.0 == "子会话" && w.5 > 0.5 }).last() is Some(head) else {
+    fail("expected sheet title 子会话")
+  }
+  let x_title = head.1
+  let (x_archived, _, _, _) = t.rect_of("已归档").unwrap()
+  assert_true((x_archived - x_title).abs() <= 1.0, msg="archived head x=\{x_archived} must align with title x=\{x_title}")
+  assert_true(t.find("1 进行中") is Some(_), msg="expected running count in sheet head_end")
+  assert_true(t.find("1 待处理") is Some(_), msg="expected need count in sheet head_end")
+  assert_true(t.find("正在运行端到端用例") is Some(_), msg="active subchat stateText must show")
+  // Archived group starts collapsed when active subchats exist
+  guard t.query(Button, label="已归档") is Some(arch_btn) else { fail("expected archived disclosure button") }
+  assert_eq(arch_btn.expanded, Some(false))
+  assert_true(t.query(Button, label="旧版引导页的截图") is None, msg="archived subchat must start collapsed")
+  // Expand archived group
+  t.click(Button, label="已归档")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [])
+  assert_eq(t.query(Button, label="已归档").unwrap().expanded, Some(true))
+  assert_true(t.query(Button, label="旧版引导页的截图") is Some(_), msg="archived subchat must show after expand")
+  assert_true(t.find("归档前的残留提示") is None, msg="archived subchat must hide stale stateText")
+  // Collapse archived group again
+  t.click(Button, label="已归档")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.query(Button, label="已归档").unwrap().expanded, Some(false))
+  assert_true(t.query(Button, label="旧版引导页的截图") is None, msg="archived subchat must hide after collapse")
+  t.click(Button, label="安卓构建与冒烟测试")
+  t.run_for(@ui.move_most_ms)
+  match app.nav.top() {
+    Chat(r) => assert_eq(r.session, "s-c2")
+    _ => fail("expected sub-chat s-c2 open")
+  }
+}
+
+///|
+test "small: long subchats sheet collapses archived by default, expands and scrolls to bottom archived item" {
+  let calls : Array[Made] = []
+  let t = decide_core(calls, "chat-subchats-many")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [])
+  assert_true(t.query(Button, label="安卓构建与冒烟测试") is Some(_))
+  assert_true(t.query(Button, label="夜里的构建又失败了") is Some(_))
+  assert_true(t.find("10") is Some(_), msg="expected archived count 10")
+  assert_true(t.query(Button, label="旧版引导页的截图") is None, msg="archived items start collapsed")
+  // Expand archived group
+  t.click(Button, label="已归档")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [])
+  assert_true(t.query(Button, label="旧版引导页的截图") is Some(_))
+  assert_true(t.find("归档前的残留提示") is None, msg="archived subchats must hide stale stateText")
+  assert_true(t.find("出错：额度已用完") is None, msg="archived subchats must hide stale error stateText")
+  // Last archived item starts off-screen after expanding
+  let initially_visible = match t.query(Button, label="历史日志导出脚本清理") {
+    Some(n) => n.rect.1 + n.rect.3 <= 844.0
+    None => false
+  }
+  assert_true(!initially_visible, msg="last archived subchat should start outside viewport")
+  // Scroll up inside the sheet list to reach the bottom archived item
+  for _ in [0, 1, 2, 3, 4] {
+    t.drag(195.0, 700.0, 195.0, 420.0, steps=16)
+    t.run_for(@ui.move_most_ms)
+  }
+  guard t.query(Button, label="历史日志导出脚本清理") is Some(last_btn) else {
+    fail("expected last archived subchat visible after scrolling")
+  }
+  assert_true(last_btn.rect.1 + last_btn.rect.3 <= 844.0, msg="last archived subchat should be inside viewport: \{Repr(last_btn.rect)}")
+  t.click(Button, label="历史日志导出脚本清理")
+  t.run_for(@ui.move_most_ms)
+  match app.nav.top() {
+    Chat(r) => assert_eq(r.session, "s-c4")
+    _ => fail("expected last archived subchat s-c4 open")
+  }
+}
+
+///|
+test "small: subchats sheet passes audit at 1.3x font scale" {
+  let phone = ("phone", 390.0, 844.0, 2, "")
+  let t = screen_in("chat-subchats-pop", phone, "zh", font_scale=1.3)
+  assert_eq(t.audit(), [])
+  t.click(Button, label="已归档")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [])
+
+  let t2 = screen_in("chat-subchats-many", phone, "zh", font_scale=1.3)
+  assert_eq(t2.audit(), [])
+  t2.click(Button, label="已归档")
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(t2.audit(), [])
 }

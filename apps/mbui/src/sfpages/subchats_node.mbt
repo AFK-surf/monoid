@@ -35,9 +35,86 @@ pub fn opened_summary_tone(opened : Array[@sfbase.OpenedChat]) -> String {
 }
 
 ///|
+/// Count of active led sub-chats currently running (`mark == "run"`).
+pub fn subchats_running_count(subchats : Array[@sfbase.OpenedChat]) -> Int {
+  let mut n = 0
+  for o in subchats {
+    if !o.archived && o.mark == "run" {
+      n += 1
+    }
+  }
+  n
+}
+
+///|
+/// Count of active led sub-chats waiting on a person or blocked (`state_lead` is `"need"`/`"decision"` or `mark == "block"`).
+pub fn subchats_need_count(subchats : Array[@sfbase.OpenedChat]) -> Int {
+  let mut n = 0
+  for o in subchats {
+    if !o.archived && (o.state_lead is ("need" | "decision") || o.mark == "block") {
+      n += 1
+    }
+  }
+  n
+}
+
+///|
+/// Status mark kind for a sub-chat row: 0=run dot, 1=need dot, 2=fail dot, 3=archived icon, 4=done icon, 5=spawned icon.
+pub fn subchat_mark_kind(o : @sfbase.OpenedChat?) -> Int {
+  match o {
+    Some(o) =>
+      if o.archived {
+        3
+      } else if o.mark == "failed" {
+        2
+      } else if o.state_lead is ("need" | "decision") || o.mark == "block" {
+        1
+      } else if o.mark == "run" {
+        0
+      } else if o.state_lead == "done" {
+        4
+      } else {
+        5
+      }
+    None => 5
+  }
+}
+
+///|
+/// Live running / waiting counts as separate nodes (never `·`-joined), shared by the popover header and Small sheet `head_end`.
+pub fn subchats_counts_node(parent : @view.View, opened : () -> Array[@sfbase.OpenedChat]) -> Unit {
+  let subchats = fn() { led_subchats(opened()) }
+  let running_count = fn() { subchats_running_count(subchats()) }
+  let need_count = fn() { subchats_need_count(subchats()) }
+  parent.box(fn(counts) {
+    @sf.style_node(counts, fn() { subchats_counts }, in_row=true)
+    counts.show(at_once=true, fn() { running_count() > 0 }, fn(rn) {
+      @sf.words_node(
+        rn,
+        fn() { @sf.t("web-pages.chat.subchatsRunning", args=[("n", running_count().to_string())]) },
+        fn() { subchats_count_words },
+      )
+      .ink(By(fn() { @sf.theme().p.green_ink }))
+      |> ignore
+    })
+    counts.show(at_once=true, fn() { need_count() > 0 }, fn(nn) {
+      @sf.words_node(
+        nn,
+        fn() { @sf.t("web-pages.chat.subchatsNeed", args=[("n", need_count().to_string())]) },
+        fn() { subchats_count_words },
+      )
+      .ink(By(fn() { @sf.theme().p.warn_ink }))
+      |> ignore
+    })
+  })
+  |> ignore
+}
+
+///|
 /// Shared sub-chats list in `v`: optional header with live running/waiting counts (separate nodes, never `·`-joined),
-/// active sub-chats first and archived sub-chats under a section heading when present, optional footer action to open
-/// the right side-panel `subchats` tab (`in_panel`).
+/// active sub-chats first and archived sub-chats under a collapsible disclosure heading (collapsed by default when
+/// active sub-chats exist, expanded when only archived sub-chats exist), optional footer action to open the right
+/// side-panel `subchats` tab (`in_panel`).
 pub fn subchats_list_node(
   v : @view.View,
   opened : () -> Array[@sfbase.OpenedChat],
@@ -48,50 +125,12 @@ pub fn subchats_list_node(
   let subchats = fn() { led_subchats(opened()) }
   let active = fn() { subchats().filter(fn(o) { !o.archived }) }
   let archived = fn() { subchats().filter(fn(o) { o.archived }) }
-  let running_count = fn() {
-    let mut n = 0
-    for o in active() {
-      if o.mark == "run" {
-        n += 1
-      }
-    }
-    n
-  }
-  let need_count = fn() {
-    let mut n = 0
-    for o in active() {
-      if o.state_lead is ("need" | "decision") || o.mark == "block" {
-        n += 1
-      }
-    }
-    n
-  }
+  let archived_open = @signals.signal(@signals.untracked(fn() { active().length() == 0 }))
   if show_head {
     v.box(fn(head) {
       @sf.style_node(head, fn() { subchats_head })
       @sf.words_node(head, fn() { @sf.t("web-pages.chat.subchats") }, fn() { subchats_head_title }) |> ignore
-      head.box(fn(counts) {
-        @sf.style_node(counts, fn() { subchats_counts }, in_row=true)
-        counts.show(at_once=true, fn() { running_count() > 0 }, fn(rn) {
-          @sf.words_node(
-            rn,
-            fn() { @sf.t("web-pages.chat.subchatsRunning", args=[("n", running_count().to_string())]) },
-            fn() { subchats_count_words },
-          )
-          .ink(By(fn() { @sf.theme().p.green_ink }))
-          |> ignore
-        })
-        counts.show(at_once=true, fn() { need_count() > 0 }, fn(nn) {
-          @sf.words_node(
-            nn,
-            fn() { @sf.t("web-pages.chat.subchatsNeed", args=[("n", need_count().to_string())]) },
-            fn() { subchats_count_words },
-          )
-          .ink(By(fn() { @sf.theme().p.warn_ink }))
-          |> ignore
-        })
-      })
-      |> ignore
+      subchats_counts_node(head, opened)
     })
     |> ignore
   }
@@ -123,14 +162,38 @@ pub fn subchats_list_node(
             subchats_group
           }
         })
-        g.box(fn(h) {
-          @sf.style_node(h, fn() { subchats_section_head })
-          @sf.words_node(h, fn() { @sf.t("web-pages.chat.subchatsArchived") }, fn() { subchats_section_words }) |> ignore
-        })
+        @sf.action_box_node(
+          g,
+          fn() { @sf.t("web-pages.chat.subchatsArchived") },
+          fn(_) { archived_open.set(!archived_open.untracked()) },
+          expanded=fn() { archived_open.get() },
+          fn(h) {
+            @sf.style_node(h, fn() { subchats_section_head.then(subchats_round) })
+            h.min_height(Is(Some(44.0))) |> ignore
+            @sf.hover_ground_node(h)
+            h.box(fn(l) {
+              @sf.style_node(l, fn() { subchats_section_left }, in_row=true)
+              @sf.words_node(l, fn() { @sf.t("web-pages.chat.subchatsArchived") }, fn() { subchats_section_words }) |> ignore
+              @sf.words_node(l, fn() { archived().length().to_string() }, fn() { subchats_section_count }) |> ignore
+            })
+            |> ignore
+            @sf.icon_node(
+              h,
+              "",
+              14.0,
+              By(fn() { @sf.theme().p.subtle }),
+              name_now=fn() { if archived_open.get() { "chevron-down" } else { "chevron-right" } },
+            )
+            |> ignore
+          },
+        )
         |> ignore
-        g.each(fn() { archived().map(key_of) }, fn(k) { k }, fn(row, k) {
-          let id = k.untracked()
-          subchat_row_node(row, fn() { by_key.get(id) }, close?=close)
+        g.show(fn() { archived_open.get() }, fn(ag) {
+          @sf.style_node(ag, fn() { subchats_group })
+          ag.each(fn() { archived().map(key_of) }, fn(k) { k }, fn(row, k) {
+            let id = k.untracked()
+            subchat_row_node(row, fn() { by_key.get(id) }, close?=close)
+          })
         })
       })
     })
@@ -177,26 +240,7 @@ fn subchat_row_node(row : @view.View, item : () -> @sfbase.OpenedChat?, close? :
       None => false
     }
   }
-  // 0: run dot, 1: need dot, 2: fail dot, 3: archived icon, 4: done icon, 5: spawned icon
-  let mark_kind = fn() {
-    match item() {
-      Some(o) =>
-        if o.archived {
-          3
-        } else if o.mark == "failed" {
-          2
-        } else if o.state_lead is ("need" | "decision") || o.mark == "block" {
-          1
-        } else if o.mark == "run" {
-          0
-        } else if o.state_lead == "done" {
-          4
-        } else {
-          5
-        }
-      None => 5
-    }
-  }
+  let mark_kind = fn() { subchat_mark_kind(item()) }
   @sf.action_box_node(row, title, fn(_) {
     match @signals.untracked(item) {
       Some(o) => {
@@ -236,7 +280,7 @@ fn subchat_row_node(row : @view.View, item : () -> @sfbase.OpenedChat?, close? :
         @sf.words_node(w, title, fn() { if is_archived() { subchats_title_archived } else { subchats_title } })
         .allow_ellipsis(Is(true))
         |> ignore
-        w.show(at_once=true, fn() { state_text() != "" }, fn(st) {
+        w.show(at_once=true, fn() { !is_archived() && state_text() != "" }, fn(st) {
           @sf.words_node(st, state_text, fn() { subchats_state_words }).allow_ellipsis(Is(true)) |> ignore
         })
       })
@@ -295,11 +339,19 @@ let subchats_group_spaced : @ui.Style = @ui.css("w=Full mt=S2 gap=S0_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_section_head : @ui.Style = @ui.css("w=Full px=S2_5 pt=S1 pb=S1")
+let subchats_section_head : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_5 gap=S2 align=ACenter justify=JBetween")
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_section_left : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
 let subchats_section_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, color=Muted, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_section_count : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, color=Muted, tabular=true, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
